@@ -1,0 +1,74 @@
+---
+sidebar_position: 2
+tags:
+  - leetcode
+  - algorithm
+---
+
+# 665. 非递减数列
+
+## 1. 题目简介
+
+难度：中等，原题链接：[665. 非递减数列](https://leetcode.cn/problems/non-decreasing-array/)。
+
+> 给你一个长度为 n 的整数数组 nums ，请你判断在 最多 改变 1 个元素的情况下，该数组能否变成一个非递减数列。
+
+## 2. 问题分析
+
+通过对题目的分析，我们可以发现这道题包含两个子问题：
+
+1. 判断当前数组是否是一个非递减数组
+2. 如果不是非递减数组，修改 `1` 个元素，使其变为非递减数组
+
+让我们依次分析这两个条件。
+
+1. **判断非递减数组**
+
+对于一个数列中，如果存在至少一个 `i` 满足 `nums[i]` > `nums[i + 1]`，则表示当前数列不是一个非递减数列。题目中规定最多改变 `1` 个元素，则找到第一个符合条件的 `i` 即可。
+
+2. **修改 `1` 个元素，使数组变为非递减数组**
+
+当存在 `nums[i] > nums[i + 1]` 时，根据数组的值，我们需要判断修改的元素是 `nums[i]` 还是 `nums[i + 1]`。
+
+1. 调整 `nums[i]` 的情况：考虑数列 `[1, 2, 1, 1]`，当 `i = 1` 时有 `nums[i] > nums[i + 1]`，此时需要使 `nums[1] = 1` 才能保证非递减数列；
+2. 调整 `nums[i + 1]` 的情况：考虑数列 `[1, 2, 1, 2]`，当 `i = 1` 时有 `nums[i] > nums[i + 1]`，此时需要调整 `nums[2] = 2` 才能保证非递减数列。
+
+因此，我们需要分别判断修改 `nums[i]` 还是 `nums[i + 1]` 才能保证非递减数组成立。
+
+此时还有一个引申的问题，就是如何修改指定元素。对于一个非递减数组，对于 `nums[i]` 存在 `nums[i - 1] <= nums[i] <= nums[i + 1]`，可以考虑将 `nums[i]` 修改为下界 `nums[i - 1]` 或者上界 `nums[i + 1]`。对于边界情况，可以直接赋最大值或者最小值即可。本题解选择修改为下界。
+
+修改后，还需要校验修改后的数组是否为一个非递减数组，遍历修改后的数组即可。
+
+## 3. 代码实现
+
+```java
+class Solution {
+    public boolean checkPossibility(int[] nums) {
+        for (int i = 0; i < nums.length - 1; i++) {
+            if (nums[i] > nums[i + 1]) {
+                return check(nums, i) || check(nums, i + 1);
+            }
+        }
+        return true;
+    }
+
+    private boolean check(int[] nums, int i) {
+        int tmp = nums[i];
+        nums[i] = i == 0 ? Integer.MIN_VALUE : nums[i - 1];
+        boolean flag = true;
+        for (int j = 0; j < nums.length - 1; j++) {
+            if (nums[j] > nums[j + 1]) {
+                flag = false;
+                break;
+            }
+        }
+        nums[i] = tmp;
+        return flag;
+    }
+}
+```
+
+## 4. 复杂度分析
+
+- 时间复杂度：O(n)，需要遍历数组，确定是否为非递减数组。
+- 空间复杂度：O(1)。
