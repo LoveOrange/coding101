@@ -1,0 +1,50 @@
+---
+sidebar_position: 3
+tags:
+  - leetcode
+  - algorithm
+---
+
+# 283. 移动零
+
+## 1. 题目简介
+
+难度：简单，原题链接：[283. 移动零](https://leetcode.cn/problems/move-zeroes/)。
+
+> 给定一个数组 `nums`，编写一个函数将所有 `0` 移动到数组的末尾，同时保持非零元素的相对顺序。
+>
+> **请注意** ，必须在不复制数组的情况下原地对数组进行操作。
+
+## 2. 问题分析
+
+可以使用快慢指针。快指针 `fast` 遍历所有的非零元素：
+
+1. 如果 `nums[fast] == 0`，则使 `fast` 指向下一个元素
+2. 如果 `nums[fast] != 0`，则使 `nums[slow] == nums[fast]`，同时将两个指针后移
+
+`fast` 指针遍历结束后，`slow` 指针指向最后一个非零元素，原数组中剩下的元素都应该为 0，但是在 `fast` 遍历过程中，没有对 `i > slow` 的元素进行赋值，因此还需要将 `slow` 后面的元素都修改为 `0`。
+
+## 3. 代码实现
+
+```java
+class Solution {
+    public void moveZeroes(int[] nums) {
+        int left = 0;
+        int right = 0;
+        while (right < nums.length) {
+            if (nums[right] != 0) {
+                nums[left++] = nums[right];
+            }
+            right++;
+        }
+        while (left < nums.length) {
+            nums[left++] = 0;
+        }
+    }
+}
+```
+
+## 4. 复杂度分析
+
+- 时间复杂度：O(n)，需要遍历数组。
+- 空间复杂度：O(1)，原地修改，仅申请了常量的空间。

@@ -11,17 +11,17 @@ type FeatureItem = {
 const FeatureList: FeatureItem[] = [
   {
     title: "知识网络",
-    Svg: require("@site/static/img/undraw_docusaurus_mountain.svg").default,
+    Svg: require("@site/static/img/undraw_docusaurus_tree.svg").default,
     description: (
-      <>梳理各个知识点间的关系，形成体系化的知识结构，方便查阅和学习。</>
+      <>梳理各个知识点间的关系，形成体系化的知识结构，方便查阅和学习</>
     ),
   },
   {
     title: "易于理解",
-    Svg: require("@site/static/img/undraw_docusaurus_tree.svg").default,
+    Svg: require("@site/static/img/undraw_docusaurus_mountain.svg").default,
     description: (
       <>
-        用尽可能易于理解的表达方式，拆解软件领域知识点，降低理解的成本，减少学习的负担。
+        用尽可能易于理解的表达方式，拆解软件领域知识点，降低理解的成本，减少学习的负担
       </>
     ),
   },
@@ -29,9 +29,7 @@ const FeatureList: FeatureItem[] = [
     title: "面向 Offer",
     Svg: require("@site/static/img/undraw_docusaurus_react.svg").default,
     description: (
-      <>
-        针对求职中常见的形式和问题，整理常见的考点和解题思路，面向 Offer 学习。
-      </>
+      <>针对求职中常见的形式和问题，整理常见的考点和解题思路，面向 Offer 学习</>
     ),
   },
 ];
