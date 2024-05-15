@@ -70,6 +70,12 @@ const config: Config = {
           position: "left",
           label: "LeetCode",
         },
+        {
+          type: "docSidebar",
+          sidebarId: "chatgptBeginSidebar",
+          position: "left",
+          label: "ChatGPT 简明指南",
+        },
         // {
         //   type: "docSidebar",
         //   sidebarId: "extrasSidebar",
