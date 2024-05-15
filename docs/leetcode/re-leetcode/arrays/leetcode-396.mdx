@@ -1,0 +1,84 @@
+---
+sidebar_position: 5
+tags:
+  - leetcode
+  - algorithm
+---
+
+# 396. 旋转函数
+
+## 1. 题目简介
+
+难度：中等，原题链接：[396. 旋转函数](https://leetcode.cn/problems/rotate-function/)。
+
+> 给定一个长度为 `n` 的整数数组 `nums` 。
+>
+> 假设 `arrk` 是数组 `nums` 顺时针旋转 `k` 个位置后的数组，我们定义 `nums` 的 **旋转函数**  `F` 为：
+>
+> - `F(k) = 0 * arrk[0] + 1 * arrk[1] + ... + (n - 1) * arrk[n - 1]`
+>
+> 返回 _`F(0), F(1), ..., F(n-1)`中的最大值_ 。
+>
+> 生成的测试用例让答案符合 **32 位** 整数。
+
+## 2. 问题分析
+
+### 2.1 寻找规律
+
+考察的依然是对题意的理解，进一步来说是找规律，理解了 `F(i + 1)` 与 `F(i)` 之间的关系，那么就可以轻松计算出所有的 `F(i)` 的值。
+
+仔细观察，可以发现 `F(i + 1)` 相当于 `F(i)` 经过类似“平移”的操作得来。这里举例说明。
+
+令 `k` 为旋转的步数，比较 `k = 0` 和 `k = 1` 时，`F(k)` 的值：
+
+```
+F(0) = 0 * arr[0] + 1 * arr[1] + ... + (n - 1) * arr[n - 1]
+F(1) = (n - 1) * arr[0] + 0 * arr[1] + ... + (n - 2) * arr[n - 1]
+```
+
+观察 `F(1)` 与 `F(0)` 之间的差异，有
+
+```
+F(1) - F(0) = n * arr[0] - sum(arr)
+```
+
+上述的公式扩展到任意的 `i` 值：
+
+```
+F(i + 1) = F(i) + n * arr[i] - sum(arr)
+```
+
+### 2.2 代码拆分
+
+将算法转换为代码，我们需要做以下的事情：
+
+1. 获取到 `F(0)` 的值，作为后续计算的依据
+2. 计算 `sum(arr)` 的值，同样用于后续的计算
+3. 计算每一个 `F(i)`，保留最大值
+
+## 3. 代码实现
+
+```java
+class Solution {
+    public int maxRotateFunction(int[] nums) {
+        int walk = 0;
+        int n = nums.length;
+        int sum = 0;
+        for (int i = 0; i < n; i++) {
+            walk += i * nums[i];
+            sum += nums[i];
+        }
+        int ans = walk;
+        for (int i = 1; i < n; i++) {
+            walk = walk + n * nums[i - 1] - sum;
+            ans = Math.max(ans, walk);
+        }
+        return ans;
+    }
+}
+```
+
+## 4. 复杂度分析
+
+- 时间复杂度：O(n)，需要遍历数组。
+- 空间复杂度：O(1)。
