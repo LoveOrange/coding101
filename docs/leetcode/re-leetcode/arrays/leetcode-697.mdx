@@ -1,0 +1,71 @@
+---
+sidebar_position: 7
+tags:
+  - leetcode
+  - algorithm
+---
+
+# 697. 数组的度
+
+## 1. 题目简介
+
+难度：简单，原题链接：[697. 数组的度](https://leetcode.cn/problems/degree-of-an-array/)。
+
+> 给定一个非空且只包含非负数的整数数组 `nums`，数组的 **度** 的定义是指数组里任一元素出现频数的最大值。
+>
+> 你的任务是在 `nums` 中找到与 `nums` 拥有相同大小的度的最短连续子数组，返回其长度。
+
+题目虽然是难度是简单，但是代码写起来还是略显复杂的，简单更多指的是解题的思路本身不难。
+
+## 2. 问题分析
+
+首先，需要理解数组的 **度** 的定义。统计数组中每一个数字出现的频率，其中最大的频率值就是数组的度。从这里可以得出两个隐含的条件：
+
+1. 需要遍历一次数组，才能够得出数组的度
+2. 可能有多个数字的出现频率，与数组的度相同
+
+继续看题目后半段，找出与 nums 具有相同的度的最短连续子数组。假设数组中数字 `t` 出现频率最多，那么符合条件的子数组中，一定包含了原始数组中所有的 `t`，要使这个子数组最小，那么子数组的开头和结尾一定都是 `t`。
+
+如果有多个数字的出现频率都为数组的度，我们需要判断哪个子数组是最短的。子数组的长度为 `lastIndex(t) - firstIndex(t) + 1`。
+
+至此，我们找到了解出题目的全部拼图：
+
+1. 遍历数组，找到数组的度，即最大的同一数字的出现频率
+2. 记录数字出现的 **起始位置** 和 **结束位置**
+3. 如果当前数字的出现频率等同于数组的度，那么判断以当前数组开头和结尾的子数组，是否是最小子数组
+
+也就是说，我们需要记录某一个数字的 **出现频率**、**起始位置** 和 **结束位置**，可以使用一个 `int[3]` 来记录。
+
+## 3. 代码实现
+
+```java
+class Solution {
+    public int findShortestSubArray(int[] nums) {
+        Map<Integer, int[]> degrees = new HashMap<>();
+        int maxDegree = 0;
+        for (int i = 0; i < nums.length; i++) {
+            int[] cur = degrees.getOrDefault(nums[i], new int[3]);
+            cur[0]++;
+            if (cur[0] == 1) {
+                cur[1] = i;
+            }
+            cur[2] = i;
+            degrees.put(nums[i], cur);
+            maxDegree = Math.max(maxDegree, cur[0]);
+        }
+
+        int res = nums.length;
+        for (int[] value : degrees.values()) {
+            if (value[0] == maxDegree) {
+                res = Math.min(res, value[2] - value[1] + 1);
+            }
+        }
+        return res;
+    }
+}
+```
+
+## 4. 复杂度分析
+
+- 时间复杂度：O(n)，至少需要完整地遍历数组，才能够获取数组的度。
+- 空间复杂度：O(n)，要申请额外的 `int[3]` 来保存当前数字的相关信息。
