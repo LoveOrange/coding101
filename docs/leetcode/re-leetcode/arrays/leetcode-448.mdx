@@ -1,0 +1,75 @@
+---
+sidebar_position: 8
+tags:
+  - leetcode
+  - algorithm
+---
+
+# 448. 找到所有数组中消失的数字
+
+## 1. 题目简介
+
+难度：简单，原题链接：[448. 找到所有数组中消失的数字](https://leetcode.cn/problems/find-all-numbers-disappeared-in-an-array/)。
+
+> 给你一个含 `n` 个整数的数组 `nums` ，其中 `nums[i]` 在区间 `[1, n]` 内。请你找出所有在 `[1, n]` 范围内但没有出现在 `nums` 中的数字，并以数组的形式返回结果。
+>
+> **进阶**：你能在不使用额外空间且时间复杂度为 `O(n)` 的情况下解决这个问题吗? 你可以假定返回的数组不算在额外空间内。
+
+## 2. 问题分析
+
+不考虑进阶的内容，可以使用桶排序快速得出结果。
+
+申请一个 `boolean[n]` 数组，如果数字 `t` 在 `nums` 中出现了，那么使 `boolean[t - 1] = true` 即可。
+
+不过既然有进阶的内容，我们也考虑下进阶的解法。
+
+已知桶排序是最快的排序算法，那么能不能在原数组的基础上实现桶排序呢？答案是可以的。
+
+回想桶排序的解法，我们通过判断 `boolean[i]` 的值来的出 `i + 1` 是否出现过。我们能否通过判断数组 `nums[i]` 的值，来判断 `i + 1` 是否出现过呢？
+
+仔细读题，发现原题中有如下的限制条件：
+
+> `1 <= nums[i] <= n`
+
+对于数组中出现的数字 `t`，如果我们对 `nums[t - 1]` 进行模型变换，使其超出上述的范围。对所有的元素都执行同样的操作后，再次遍历数组时，我们可以通过判断上述条件，来获取对于任意下标 `i`，其对应的数字 `i + 1` 是否出现过。
+
+变换的方式有很多种，比如我尝试过的两种：
+
+1. 变为负数
+2. 增加 `n`
+
+在我尝试的实现里，第一种算法要进行更多的正负判断，执行效率略慢于第二种，因此仅给出第二种题解。
+
+## 3. 代码实现
+
+```java
+class Solution {
+    public int findShortestSubArray(int[] nums) {
+        Map<Integer, int[]> degrees = new HashMap<>();
+        int maxDegree = 0;
+        for (int i = 0; i < nums.length; i++) {
+            int[] cur = degrees.getOrDefault(nums[i], new int[3]);
+            cur[0]++;
+            if (cur[0] == 1) {
+                cur[1] = i;
+            }
+            cur[2] = i;
+            degrees.put(nums[i], cur);
+            maxDegree = Math.max(maxDegree, cur[0]);
+        }
+
+        int res = nums.length;
+        for (int[] value : degrees.values()) {
+            if (value[0] == maxDegree) {
+                res = Math.min(res, value[2] - value[1] + 1);
+            }
+        }
+        return res;
+    }
+}
+```
+
+## 4. 复杂度分析
+
+- 时间复杂度：O(n)。
+- 空间复杂度：O(1)。
