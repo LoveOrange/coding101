@@ -44,24 +44,18 @@ tags:
 
 ```java
 class Solution {
-    public int findShortestSubArray(int[] nums) {
-        Map<Integer, int[]> degrees = new HashMap<>();
-        int maxDegree = 0;
-        for (int i = 0; i < nums.length; i++) {
-            int[] cur = degrees.getOrDefault(nums[i], new int[3]);
-            cur[0]++;
-            if (cur[0] == 1) {
-                cur[1] = i;
-            }
-            cur[2] = i;
-            degrees.put(nums[i], cur);
-            maxDegree = Math.max(maxDegree, cur[0]);
+    public List<Integer> findDisappearedNumbers(int[] nums) {
+        int n = nums.length;
+        for (int i = 0; i < n; i++) {
+            // 1. 数字 t 对应的数组下标为 t - 1
+            // 2. 当前元素可能已经被变换过，所以需要取模
+            int tmp = (nums[i] - 1) % n;
+            nums[tmp] += n;
         }
-
-        int res = nums.length;
-        for (int[] value : degrees.values()) {
-            if (value[0] == maxDegree) {
-                res = Math.min(res, value[2] - value[1] + 1);
+        List<Integer> res = new ArrayList<>();
+        for (int i = 0; i < nums.length; i++) {
+            if (nums[i] <= n) {
+                res.add(i + 1);
             }
         }
         return res;

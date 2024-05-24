@@ -1,0 +1,50 @@
+---
+sidebar_position: 9
+tags:
+  - leetcode
+  - algorithm
+---
+
+# 442. 数组中重复的数据
+
+## 1. 题目简介
+
+难度：中等，原题链接：[442. 数组中重复的数据](https://leetcode.cn/problems/find-all-duplicates-in-an-array/)。
+
+> 给你一个长度为 `n` 的整数数组 `nums` ，其中 `nums` 的所有整数都在范围 `[1, n]` 内，且每个整数出现 **一次** 或 **两次** 。请你找出所有出现 **两次** 的整数，并以数组形式返回。
+>
+> 你必须设计并实现一个时间复杂度为 `O(n)` 且仅使用常量额外空间的算法解决此问题。
+
+## 2. 问题分析
+
+思路与 [448. 找到所有数组中消失的数字](./leetcode-448.mdx) 完全一致。
+
+对于数字 `t` 使用下标在 `t - 1` 的元素进行计数。数组中每次出现 `t`，则使 `nums[t - 1] += n`，如果数字 `t` 出现的次数大于 2，则 `nums[t - 1]` 至少加了 2 次 `n`，考虑 `nums` 中元素的取值范围，一定有 `nums[t - 1] - 2 * n > 0`；反之出现次数小于 2 的元素存在 `nums[t - 1] - 2 * n <= 0`。
+
+## 3. 代码实现
+
+```java
+class Solution {
+    public List<Integer> findDuplicates(int[] nums) {
+        int n = nums.length;
+        for (int i = 0; i < n; i++) {
+            // 1. 数字 t 对应的数组下标为 t - 1
+            // 2. 当前元素可能已经被变换过，所以需要取模
+            int target = (nums[i] - 1) % n;
+            nums[target] += n;
+        }
+        List<Integer> res = new ArrayList<>();
+        for (int i = 0; i < n; i++) {
+            if (nums[i] - 2 * n > 0) {
+                res.add(i + 1);
+            }
+        }
+        return res;
+    }
+}
+```
+
+## 4. 复杂度分析
+
+- 时间复杂度：O(n)。
+- 空间复杂度：O(1)。
