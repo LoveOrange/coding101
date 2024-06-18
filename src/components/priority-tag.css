@@ -1,0 +1,33 @@
+.priority-tag {
+    font-weight: bold;
+}
+
+/* Light mode */
+@media (prefers-color-scheme: light) {
+    .priority-high {
+        color: green;
+    }
+
+    .priority-medium {
+        color: blue;
+    }
+
+    .priority-low {
+        color: red;
+    }
+}
+
+/* Dark mode */
+@media (prefers-color-scheme: dark) {
+    .priority-high {
+        color: #4CAF50; /* 更深的绿色 */
+    }
+
+    .priority-medium {
+        color: #2196F3; /* 更深的蓝色 */
+    }
+
+    .priority-low {
+        color: #F44336; /* 更深的红色 */
+    }
+}

@@ -80,12 +80,12 @@ const config: Config = {
           position: "left",
           label: "ChatGPT 简明指南",
         },
-        // {
-        //   type: "docSidebar",
-        //   sidebarId: "extrasSidebar",
-        //   position: "left",
-        //   label: "Tutorial",
-        // },
+        {
+          type: "docSidebar",
+          sidebarId: "interviewSidebar",
+          position: "left",
+          label: "2025 秋招专题",
+        },
         { to: "/blog", label: "Blog", position: "right" },
         {
           href: "https://github.com/loveorange/coding101",
