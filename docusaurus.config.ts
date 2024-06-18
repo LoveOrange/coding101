@@ -70,6 +70,12 @@ const config: Config = {
         },
         {
           type: "docSidebar",
+          sidebarId: "toolsAndFrameworksSidebar",
+          position: "left",
+          label: "工具与框架",
+        },
+        {
+          type: "docSidebar",
           sidebarId: "chatgptBeginSidebar",
           position: "left",
           label: "ChatGPT 简明指南",
@@ -80,7 +86,7 @@ const config: Config = {
         //   position: "left",
         //   label: "Tutorial",
         // },
-        { to: "/blog", label: "Blog", position: "left" },
+        { to: "/blog", label: "Blog", position: "right" },
         {
           href: "https://github.com/loveorange/coding101",
           label: "GitHub",
