@@ -84,7 +84,7 @@ const config: Config = {
           type: "docSidebar",
           sidebarId: "interviewSidebar",
           position: "left",
-          label: "2025 秋招专题",
+          label: "🌟 2025 秋招专题 🌟",
         },
         { to: "/blog", label: "Blog", position: "right" },
         {
@@ -148,6 +148,10 @@ const config: Config = {
         // 'sh',
         "sql",
       ],
+    },
+    tableOfContents: {
+      minHeadingLevel: 2,
+      maxHeadingLevel: 4,
     },
   } satisfies Preset.ThemeConfig,
 };
