@@ -76,15 +76,21 @@ const config: Config = {
         },
         {
           type: "docSidebar",
-          sidebarId: "chatgptBeginSidebar",
+          sidebarId: "systemDesignSidebar",
           position: "left",
-          label: "ChatGPT 简明指南",
+          label: "系统设计",
         },
         {
           type: "docSidebar",
           sidebarId: "interviewSidebar",
           position: "left",
           label: "🌟 2025 秋招专题 🌟",
+        },
+        {
+          type: "docSidebar",
+          sidebarId: "chatgptBeginSidebar",
+          position: "right",
+          label: "ChatGPT 简明指南",
         },
         { to: "/blog", label: "Blog", position: "right" },
         {
