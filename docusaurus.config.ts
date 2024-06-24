@@ -70,15 +70,21 @@ const config: Config = {
         },
         {
           type: "docSidebar",
-          sidebarId: "toolsAndFrameworksSidebar",
+          sidebarId: "basicKnowledgeSidebar",
           position: "left",
-          label: "工具与框架",
+          label: "基础知识",
         },
         {
           type: "docSidebar",
           sidebarId: "systemDesignSidebar",
           position: "left",
           label: "系统设计",
+        },
+        {
+          type: "docSidebar",
+          sidebarId: "toolsAndFrameworksSidebar",
+          position: "left",
+          label: "工具与框架",
         },
         {
           type: "docSidebar",
