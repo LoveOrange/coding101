@@ -4,7 +4,7 @@ import type * as Preset from "@docusaurus/preset-classic";
 
 const config: Config = {
   title: "Coding 101",
-  tagline: "Make coding fun and easy!",
+  tagline: "Have fun with Coding and Studying!",
   favicon: "img/favicon.ico",
 
   // Set the production url of your site here
@@ -51,6 +51,11 @@ const config: Config = {
       } satisfies Preset.Options,
     ],
   ],
+
+  markdown: {
+    mermaid: true,
+  },
+  themes: ["@docusaurus/theme-mermaid"],
 
   themeConfig: {
     // Replace with your project's social card
