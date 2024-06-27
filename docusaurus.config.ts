@@ -48,16 +48,11 @@ const config: Config = {
         theme: {
           customCss: "./src/css/custom.css",
         },
-      } satisfies Preset.Options,
-    ],
-    [
-      "@docusaurus/preset-classic",
-      {
         gtag: {
           trackingID: "G-Q16V88YMHD",
           anonymizeIP: true,
         },
-      },
+      } satisfies Preset.Options,
     ],
   ],
 
