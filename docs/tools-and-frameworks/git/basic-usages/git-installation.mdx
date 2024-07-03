@@ -1,0 +1,61 @@
+---
+sidebar_position: 1
+tags:
+  - git
+  - tools
+---
+
+# 2.1. Git 的安装与配置
+
+## 1. 安装 Git
+
+任何软件都**只推荐**去**官网**下载，Git 的官网地址是 [https://git-scm.com](https://git-scm.com/)。
+
+下好对应的安装包后，根据提示下一步即可，虽然安装过程中可能会出现现在还看不太懂的提示，但是直接选择默认选项即可。
+
+安装好 Git 后，我们需要打开终端工具，输入 `git --version` 进行测试，如果正常显示了 Git 的版本号，说明 Git 安装成功。
+
+```bash
+$ git --version
+git version 2.24.3
+```
+
+## 2. 配置 Git
+
+### 2.1. 配置用户信息
+
+在 [版本控制简介](/docs/tools-and-frameworks/git/introduce#112-版本控制的内容) 中，我们介绍了版本控制系统主要管理的内容，其中就包括了 **变更人**。
+
+我们需要告诉 Git 我们的名字和邮箱地址，这样 Git 才能知道是谁做了这次变更。
+
+通常我们会配置一个全局的用户名和邮箱地址，这样就不需要在每一个 Git 仓库中都配置一次。
+
+使用下面的命令配置全局的用户名和邮箱地址，注意替换 `Your Name` 和 `Your Email` 为你自己的姓名和邮箱：
+
+```bash
+git config --global user.name "Your Name"
+git config --global user.email "Your Email"
+```
+
+### 2.2. 配置常用的缩写
+
+虽然市面上有很多出色的 Git 图形化工具，但是我还是推荐使用 Git 提供的强大的命令行工具。
+
+Git 的命令行工具可能是这个世界上最友好的命令行工具之一，习惯了之后，你会发现你当前完成的工作、接下来应该做的工作，命令行都有很好的提示。
+
+Git 提供了一系列命令来完成日常的操作，比如 `add`, `commit`, `checkout` 等，随后的章节会介绍这些命令的作用。
+
+在使用命令行操作 Git 时，我们可能会大量输入上面的命令，为了提高开发人员的工作效率，Git 提供了一个特殊的配置 `alias`，用来为常用的命令设置缩写。
+
+下面是我个人常用的 Git 缩写：
+
+```bash
+git config --global alias.co checkout
+git config --global alias.br branch
+git config --global alias.ci commit
+git config --global alias.st status
+git config --global alias.sw switch
+git config --global alias.last 'log -1 HEAD'
+```
+
+大家可以直接参考上面的进行配置，随着对 Git 的使用加深，你会发现自己更多适合自己需求的缩写。

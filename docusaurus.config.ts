@@ -5,7 +5,8 @@ import type * as Preset from "@docusaurus/preset-classic";
 const config: Config = {
   title: "Coding 101",
   tagline: "Have fun with Coding and Studying!",
-  favicon: "img/favicon.ico",
+  // favicon: "img/favicon.ico",
+  favicon: "img/logo-duck.svg",
 
   // Set the production url of your site here
   url: "https://coding101.linsama.com",
@@ -38,6 +39,7 @@ const config: Config = {
           // Please change this to your repo.
           // Remove this to remove the "edit this page" links.
           editUrl: "https://github.com/loveorange/coding101/tree/main/",
+          showLastUpdateTime: true,
         },
         blog: {
           showReadingTime: true,
@@ -68,7 +70,7 @@ const config: Config = {
       title: "Coding 101",
       logo: {
         alt: "My Site Logo",
-        src: "img/logo.svg",
+        src: "img/logo-duck.svg",
       },
       items: [
         {
