@@ -101,7 +101,7 @@ const config: Config = {
           type: "docSidebar",
           sidebarId: "interviewSidebar",
           position: "left",
-          label: "🌟 2025 秋招专题 🌟",
+          label: "面试准备",
         },
         {
           type: "docSidebar",
