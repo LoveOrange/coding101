@@ -1,0 +1,62 @@
+---
+sidebar_position: 11
+tags:
+  - leetcode
+  - algorithm
+---
+import { Yellow } from '@site/src/components/priority-tag';
+
+# 419. 棋盘上的战舰
+
+## 1. 题目简介
+
+难度：<Yellow>中等</Yellow>，原题链接：[419. 棋盘上的战舰](https://leetcode.cn/problems/battleships-in-a-board/)。
+
+> 给你一个大小为 m x n 的矩阵 board ，表示甲板，其中，每个单元格可以是一艘战舰 'X' 或者是一个空位 '.' ，返回在甲板 board 上放置的 **舰队** 的数量。
+>
+> 战舰 只能水平或者垂直放置在 board 上。换句话说，战舰只能按 1 x k（1 行，k 列）或 k x 1（k 行，1 列）的形状建造，其中 k 可以是任意大小。两艘战舰之间至少有一个水平或垂直的空位分隔 （即没有相邻的战舰）。
+
+## 2. 问题分析
+
+如果熟悉**深度优先搜索（DFS）**的话，那么第一反应就是本题可以用 DFS 来解决。类似的题目有 [200. 岛屿数量](https://leetcode.cn/problems/number-of-islands/)。
+
+但是与「岛屿数量」不同的是，本题的舰队**仅**由**水平**或**垂直**放置的战舰组成，因此本题要简单的多，可以仅通过一次遍历统计出舰队的数量。
+
+我们可以按照「从左到右」、「从上到下」的顺序遍历矩阵。如果一个战舰的左侧和上方都没有战舰，那么这艘战舰是它所在舰队的第一艘战舰，计数器加一；如果一艘战舰的左侧或上方有战舰，那么这个舰队已经统计过了，跳过即可。
+
+## 3. 代码实现
+
+```java
+class Solution {
+    public int countBattleships(char[][] board) {
+        int m = board.length;
+        int n = board[0].length;
+        int res = 0;
+        for (int i = 0; i < m; i++) {
+            for (int j = 0; j < n; j++) {
+                // 如果当前位置是空位，直接跳过
+                if (board[i][j] == '.') {
+                    continue;
+                }
+                // 如果当前战舰的上方有战舰，说明是同一艘垂直战舰，跳过
+                if (i - 1 >= 0 && board[i - 1][j] == 'X') {
+                    continue;
+                }
+                // 如果当前战舰的左方有战舰，说明是同一艘水平战舰，跳过
+                if (j - 1 >= 0 && board[i][j - 1] == 'X') {
+                    continue;
+                }
+                // 当前位置既不是空位，上方和左方也都没有战舰
+                // 说明是一艘新战舰的起始位置，计数加1
+                res++;
+            }
+        }
+        return res;
+    }
+}
+```
+
+## 4. 复杂度分析
+
+- 时间复杂度：O(m * n)，其中 m 是矩阵的行数，n 是矩阵的列数。
+- 空间复杂度：O(1)，仅使用常数级别的空间。
