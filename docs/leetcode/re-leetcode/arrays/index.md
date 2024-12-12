@@ -39,7 +39,7 @@ import { Green, Yellow, Blue, Red } from '@site/src/components/priority-tag';
 - <Green>简单</Green> | [119. 杨辉三角 II](https://leetcode.cn/problems/pascals-triangle-ii/)
 - <Green>简单</Green> | [661. 图片平滑器](https://leetcode.cn/problems/image-smoother/)
 - <Green>简单</Green> | [598. 区间加法 II](https://leetcode.cn/problems/range-addition-ii/)
-- <Yellow>中等</Yellow> | [419. 棋盘上的战舰](https://leetcode.cn/problems/battleships-in-a-board/)
+- <Yellow>中等</Yellow> | [419. 棋盘上的战舰](https://leetcode.cn/problems/battleships-in-a-board/) | [题解](./leetcode-419.mdx)
 
 ### 特定顺序遍历二维数组
 
