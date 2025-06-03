@@ -1,0 +1,71 @@
+---
+sidebar_position: 54
+tags:
+  - leetcode
+  - algorithm
+---
+import { Blue, Green, Yellow, Red } from '@site/src/components/priority-tag';
+
+# 54. 螺旋矩阵
+
+## 1. 题目简介
+
+难度：<Yellow>中等</Yellow>，原题链接：[54. 螺旋矩阵](https://leetcode.cn/problems/spiral-matrix/)。
+
+> 给你一个 m 行 n 列的矩阵 matrix ，请按照 顺时针螺旋顺序 ，返回矩阵中的所有元素。
+
+## 2. 问题分析
+
+一道比较纯粹的模拟题目，只要能够模拟出螺旋矩阵的遍历过程，就可以轻松解决本题。
+
+首先，遍历会按照「**右**」、「**下**」、「**左**」、「**上**」四个方向进行。
+
+其次，如果遍历的下一个元素越过了矩阵的边界，或者下一个元素是已经遍历过的元素，那么就需要改变遍历的方向。
+
+有了以上的两点，我们就清楚了遍历过程需要维护的状态：
+
+1. 当前遍历的元素
+2. 当前遍历的方向
+3. 元素是否已经被遍历过
+
+## 3. 代码实现
+
+```java
+class Solution {
+    public List<Integer> spiralOrder(int[][] matrix) {
+        int m = matrix.length;
+        int n = matrix[0].length;
+
+        // 记录元素是否已经被遍历过
+        int[][] walked = new int[m][n];
+
+        // 分别表示「右」、「下」、「左」、「上」四个方向，
+        // t 用来记录当前遍历的方向 directions[t]
+        int[][] directions = new int[][]{{0, 1}, {1, 0}, {0, -1}, {-1, 0}};
+        int t = 0;
+
+        // 记录当前遍历的元素
+        int i = 0, j = 0;
+
+        List<Integer> res = new ArrayList<>();
+        // 添加的元素个数就是原始矩阵的总个数
+        while (res.size() < m * n) {
+            res.add(matrix[i][j]);
+            walked[i][j]++;
+            int nexti = i + directions[t][0];
+            int nextj = j + directions[t][1];
+            if (nexti < 0 || nexti >= m || nextj < 0 || nextj >= n || walked[nexti][nextj] > 0) {
+                t = (t + 1) % 4;
+            }
+            i += directions[t][0];
+            j += directions[t][1];
+        }
+        return res;
+    }
+}
+```
+
+## 4. 复杂度分析
+
+- 时间复杂度：O(n)，所有的元素只被遍历一次。
+- 空间复杂度：O(n)，需要一个额外的矩阵记录元素是否已经被遍历过。

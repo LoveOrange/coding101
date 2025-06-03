@@ -1,0 +1,53 @@
+---
+sidebar_position: 59
+tags:
+  - leetcode
+  - algorithm
+---
+import { Blue, Green, Yellow, Red } from '@site/src/components/priority-tag';
+
+# 59. 螺旋矩阵 II
+
+## 1. 题目简介
+
+难度：<Yellow>中等</Yellow>，原题链接：[59. 螺旋矩阵 II](https://leetcode.cn/problems/spiral-matrix-ii/)。
+
+> 给你一个正整数 n ，生成一个包含 1 到 n2 所有元素，且元素按顺时针顺序螺旋排列的 n x n 正方形矩阵 matrix 。
+
+## 2. 问题分析
+
+与 [54. 螺旋矩阵](./leetcode-54.mdx) 类似，只是将对原始矩阵的遍历，变成了生成一个矩阵。
+
+简单的修改即可 AC。
+
+## 3. 代码实现
+
+```java
+class Solution {
+    public int[][] generateMatrix(int n) {
+        int[][] walked = new int[n][n];
+        int[][] directions = new int[][] { { 0, 1 }, { 1, 0 }, { 0, -1 }, { -1, 0 } };
+        int i = 0, j = 0;
+        int t = 0;
+        int[][] res = new int[n][n];
+        int cur = 1;
+        while (cur <= n * n) {
+            res[i][j] = cur++;
+            walked[i][j]++;
+            int nexti = i + directions[t][0];
+            int nextj = j + directions[t][1];
+            if (nexti < 0 || nexti >= n || nextj < 0 || nextj >= n || walked[nexti][nextj] > 0) {
+                t = (t + 1) % 4;
+            }
+            i += directions[t][0];
+            j += directions[t][1];
+        }
+        return res;
+    }
+}
+```
+
+## 4. 复杂度分析
+
+- 时间复杂度：O(n)，所有的元素只被遍历一次。
+- 空间复杂度：O(n)，需要一个额外的矩阵记录元素是否已经被遍历过。
