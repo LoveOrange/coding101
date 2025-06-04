@@ -1,0 +1,83 @@
+---
+sidebar_position: 73
+tags:
+  - leetcode
+  - algorithm
+---
+import { Blue, Green, Yellow, Red } from '@site/src/components/priority-tag';
+
+# 73. 矩阵置零
+
+## 1. 题目简介
+
+难度：<Yellow>中等</Yellow>，原题链接：[73. 矩阵置零](https://leetcode.cn/problems/set-matrix-zeroes/)。
+
+> 给定一个 m x n 的矩阵，如果一个元素为 0 ，则将其所在行和列的所有元素都设为 0 。请使用 <Red>**原地**</Red> 算法。
+
+## 2. 问题分析
+
+题目中特意提到了需要使用 「<Red>**原地**</Red>」 算法，那么就需要考虑在原数组中，记录需要置零的行和列。
+
+我们可以使用原始数组中，**最上方的行**与**最左边的列**来记录需要置零的行和列。如果某一个元素为 `0`，那么就将该元素所在的行和列的第一个元素设置为 `0`。
+
+但是还需要注意一点，那就是**最上方的行**与**最左边的列**，是否也需要全部都置零？因为在遍历的过程中，我们已经将在最上方的行与最左侧的列添加了 `0` 来标记需要置零的行和列，所以我们还需要额外的标记为，单独保存最上方的行与最左边的列是否需要全部都置零。
+
+## 3. 代码实现
+
+```java
+class Solution {
+    public void setZeroes(int[][] matrix) {
+        int m = matrix.length;
+        int n = matrix[0].length;
+        boolean flag1 = false;
+        boolean flag2 = false;
+
+        // 单独保存最上方的行是否需要全部都置零
+        for (int i = 0; i < m; i++) {
+            if (matrix[i][0] == 0) {
+                flag1 = true;
+            }
+        }
+        // 单独保存最左边的列是否需要全部都置零
+        for (int i = 0; i < n; i++) {
+            if (matrix[0][i] == 0) {
+                flag2 = true;
+            }
+        }
+        // 遍历矩阵，如果某一个元素为 0，那么就将该元素所在的行和列的第一个元素设置为 0
+        for (int i = 1; i < m; i++) {
+            for (int j = 1; j < n; j++) {
+                if (matrix[i][j] == 0) {
+                    matrix[0][j] = 0;
+                    matrix[i][0] = 0;
+                }
+            }
+        }
+        // 将需要置零的行和列的元素全部置零
+        for (int i = 1; i < m; i++) {
+            for (int j = 1; j < n; j++) {
+                if (matrix[i][0] == 0 || matrix[0][j] == 0) {
+                    matrix[i][j] = 0;
+                }
+            }
+        }
+        // 将最上方的行全部置零
+        if (flag1) {
+            for (int i = 0; i < m; i++) {
+                matrix[i][0] = 0;
+            }
+        }
+        // 将最左边的列全部置零
+        if (flag2) {
+            for (int i = 0; i < n; i++) {
+                matrix[0][i] = 0;
+            }
+        }
+    }
+}
+```
+
+## 4. 复杂度分析
+
+- 时间复杂度：**O(n)**
+- 空间复杂度：**O(1)**

@@ -1,0 +1,56 @@
+---
+sidebar_position: 238
+tags:
+  - leetcode
+  - algorithm
+---
+import { Blue, Green, Yellow, Red } from '@site/src/components/priority-tag';
+
+# 238. 除自身以外数组的乘积
+
+## 1. 题目简介
+
+难度：<Yellow>中等</Yellow>，原题链接：[238. 除自身以外数组的乘积](https://leetcode.cn/problems/product-of-array-except-self/)。
+
+> 给你一个整数数组 `nums`，返回 数组 `answer` ，其中 `answer[i]` 等于 `nums` 中除 `nums[i]` 之外其余各元素的乘积 。
+>
+> 题目数据 保证 数组 `nums` 之中任意元素的全部前缀元素和后缀的乘积都在  32 位 整数范围内。
+>
+> 请不要使用除法，且在 O(n) 时间复杂度内完成此题。
+
+## 2. 问题分析
+
+原题规定不能够使用除法，那么我们可以使用前缀和后缀的乘积来解决这个问题。
+
+我们定义两个数组 `left` 和 `right`，其中 `left[i]` 表示 `nums[0]` 到 `nums[i - 1]` 的乘积，`right[i]` 表示 `nums[i + 1]` 到 `nums[n - 1]` 的乘积。
+
+那么 `answer[i]` 就是 `left[i]` 和 `right[i]` 的乘积。
+
+## 3. 代码实现
+
+```java
+class Solution {
+    public int[] productExceptSelf(int[] nums) {
+        int[] left = new int[nums.length];
+        int[] right = new int[nums.length];
+        left[0] = 1;
+        for (int i = 1; i < nums.length; i++) {
+            left[i] = nums[i - 1] * left[i - 1];
+        }
+        right[nums.length - 1] = 1;
+        for (int i = nums.length - 2; i >= 0; i--) {
+            right[i] = nums[i + 1] * right[i + 1];
+        }
+        int[] ans = new int[nums.length];
+        for (int i = 0; i < nums.length; i++) {
+            ans[i] = left[i] * right[i];
+        }
+        return ans;
+    }
+}
+```
+
+## 4. 复杂度分析
+
+- 时间复杂度：**O(n)**，需要遍历数组两次。
+- 空间复杂度：**O(n)**，需要两个额外的数组来保存前缀和后缀的乘积。

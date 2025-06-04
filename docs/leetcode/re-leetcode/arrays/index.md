@@ -58,15 +58,15 @@ import { Green, Yellow, Blue, Red } from '@site/src/components/priority-tag';
 |------|------|------|
 | <Yellow>中等</Yellow> | [54. 螺旋矩阵](https://leetcode.cn/problems/spiral-matrix/) | [题解](./leetcode-54.mdx) |
 | <Yellow>中等</Yellow> | [59. 螺旋矩阵 II](https://leetcode.cn/problems/spiral-matrix-ii/) | [题解](./leetcode-59.mdx) |
-| <Yellow>中等</Yellow> | [498. 对角线遍历](https://leetcode.cn/problems/diagonal-traverse/) | - |
+| <Yellow>中等</Yellow> | [498. 对角线遍历](https://leetcode.cn/problems/diagonal-traverse/) | [题解](./leetcode-498.mdx) |
 
 ### 二维数组变换
 
 | 难度 | 题目 | 题解 |
 |------|------|------|
 | <Green>简单</Green> | [566. 重塑矩阵](https://leetcode.cn/problems/reshape-the-matrix/) | - |
-| <Yellow>中等</Yellow> | [48. 旋转图像](https://leetcode.cn/problems/rotate-image/) | - |
-| <Yellow>中等</Yellow> | [73. 矩阵置零](https://leetcode.cn/problems/set-matrix-zeroes/) | - |
+| <Yellow>中等</Yellow> | [48. 旋转图像](https://leetcode.cn/problems/rotate-image/) | [题解](./leetcode-48.mdx) |
+| <Yellow>中等</Yellow> | [73. 矩阵置零](https://leetcode.cn/problems/set-matrix-zeroes/) | [题解](./leetcode-73.mdx) |
 | <Yellow>中等</Yellow> | [289. 生命游戏](https://leetcode.cn/problems/game-of-life/) | [题解](./leetcode-289.mdx) |
 
 ### 前缀和数组
@@ -74,5 +74,5 @@ import { Green, Yellow, Blue, Red } from '@site/src/components/priority-tag';
 | 难度 | 题目 | 题解 |
 |------|------|------|
 | <Green>简单</Green> | [303. 区域和检索 - 数组不可变](https://leetcode.cn/problems/range-sum-query-immutable/) | - |
-| <Yellow>中等</Yellow> | [304. 二维区域和检索 - 矩阵不可变](https://leetcode.cn/problems/range-sum-query-2d-immutable/) | - |
-| <Yellow>中等</Yellow> | [238. 除自身以外数组的乘积](https://leetcode.cn/problems/product-of-array-except-self/) | - |
+| <Yellow>中等</Yellow> | [304. 二维区域和检索 - 矩阵不可变](https://leetcode.cn/problems/range-sum-query-2d-immutable/) | [题解](./leetcode-304.mdx) |
+| <Yellow>中等</Yellow> | [238. 除自身以外数组的乘积](https://leetcode.cn/problems/product-of-array-except-self/) | [题解](./leetcode-238.mdx) |

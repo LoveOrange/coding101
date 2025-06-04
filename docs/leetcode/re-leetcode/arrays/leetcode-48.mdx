@@ -1,0 +1,63 @@
+---
+sidebar_position: 48
+tags:
+  - leetcode
+  - algorithm
+---
+import { Blue, Green, Yellow, Red } from '@site/src/components/priority-tag';
+
+# 48. 旋转图像
+
+## 1. 题目简介
+
+难度：<Yellow>中等</Yellow>，原题链接：[48. 旋转图像](https://leetcode.cn/problems/rotate-image/)。
+
+> 给定一个 n × n 的二维矩阵 `matrix` 表示一个图像。请你将图像顺时针旋转 90 度。
+>
+> 你必须在 原地 旋转图像，这意味着你需要直接修改输入的二维矩阵。请不要 使用另一个矩阵来旋转图像。
+
+## 2. 问题分析
+
+因为题目有明确的变换规则，所以我们可以直接模拟变换过程。
+
+因为是旋转了 90 度，所以矩阵的元素可以看作是每 4 个一组，旋转相当于在这四个元素之间变换位置。
+
+对于位置在 `(i, j)` 的元素，与其一组的元素分别是：
+
+- `(i, j)`
+- `(j, n - i - 1)`
+- `(n - i - 1, n - j - 1)`
+- `(n - j - 1, i)`
+
+也就是说，我们只需要将这四个元素进行交换即可。
+
+同样，扩大到整个矩阵，我们以中线做分割，只需要遍历左上角的 1 / 4 个矩阵，即可完成整个矩阵的旋转。
+
+## 3. 代码实现
+
+```java
+class Solution {
+    public void rotate(int[][] matrix) {
+        int n = matrix.length;
+        int m = (n + 1) / 2;
+        for (int i = 0; i < m; i++) {
+            for (int j = 0; j < m - n % 2; j++) {
+                swap(matrix, i, j, j, n - 1 - i);
+                swap(matrix, i, j, n - 1 - i, n - 1 - j);
+                swap(matrix, i, j, n - 1 - j, i);
+            }
+        }
+    }
+
+    private void swap(int[][] matrix, int i1, int j1, int i2, int j2) {
+        int tmp = matrix[i1][j1];
+        matrix[i1][j1] = matrix[i2][j2];
+        matrix[i2][j2] = tmp;
+    }
+}
+```
+
+## 4. 复杂度分析
+
+- 时间复杂度：**o(n)**。
+- 空间复杂度：**o(1)**。
