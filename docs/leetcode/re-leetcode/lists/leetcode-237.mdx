@@ -1,0 +1,50 @@
+---
+sidebar_position: 237
+tags:
+  - leetcode
+  - algorithm
+---
+import { Blue, Green, Yellow, Red } from '@site/src/components/priority-tag';
+
+# 237. 删除链表中的节点
+
+## 1. 题目简介
+
+难度：<Yellow>中等</Yellow>，原题链接：[237. 删除链表中的节点](https://leetcode.cn/problems/delete-node-in-a-linked-list/)。
+
+> 有一个单链表的 head，我们想删除它其中的一个节点 node。
+>
+> 给你一个需要删除的节点 node 。你将 **<Red>无法访问</Red>** 第一个节点 head。
+>
+> 链表的所有值都是 唯一的，并且保证给定的节点 node 不是链表中的最后一个节点。
+
+## 2. 问题分析
+
+如果能够获取到当前节点的前一个节点，那么我们只要让 `prev.next = node.next` 即可。
+
+但是题目中给出的只有当前节点 `node`，并且无法访问头结点 `head`。那么就需要改变思路。既然无法获取到前一个节点，那么可以做一个“**偷梁换柱**”，将 `node` 的值与下一个节点的值交换，然后删除下一个节点即可。
+
+## 3. 代码实现
+
+```java
+/**
+ * Definition for singly-linked list.
+ * public class ListNode {
+ *     int val;
+ *     ListNode next;
+ *     ListNode(int x) { val = x; }
+ * }
+ */
+class Solution {
+    public void deleteNode(ListNode node) {
+        // 修改当前 node 的 val，即可让当前 node 替换掉下一个 node
+        node.val = node.next.val;
+        node.next = node.next.next;
+    }
+}
+```
+
+## 4. 复杂度分析
+
+- 时间复杂度：**O(1)**，只需要修改当前节点的值和指针。
+- 空间复杂度：**O(1)**，不需要额外的空间。

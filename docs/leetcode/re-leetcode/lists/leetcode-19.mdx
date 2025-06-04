@@ -1,0 +1,59 @@
+---
+sidebar_position: 19
+tags:
+  - leetcode
+  - algorithm
+---
+import { Blue, Green, Yellow, Red } from '@site/src/components/priority-tag';
+
+# 19. 删除链表的倒数第 N 个结点
+
+## 1. 题目简介
+
+难度：<Yellow>中等</Yellow>，原题链接：[19. 删除链表的倒数第 N 个结点](https://leetcode.cn/problems/remove-nth-node-from-end-of-list/)。
+
+> 给你一个链表，删除链表的倒数第 n 个结点，并且返回链表的头结点。
+
+## 2. 问题分析
+
+一个基础是的**双指针**问题。
+
+本题的关键在于如何找到倒数的第 N 个节点。可以使用**快慢指针**来解决。让 `fast` 指针先前进 `n` 个节点，然后再让 `fast` 和 `slow` 指针同时前进，直到 `fast` 指针到达链表的末尾。此时 `slow` 指针就指向了倒数的第 N 个节点。
+
+一个优化技巧，如果删除的是头结点，那么需要单独处理。可以在头结点前添加一个虚拟节点，这样所有的节点都可以统一处理了。
+
+## 3. 代码实现
+
+```java
+/**
+ * Definition for singly-linked list.
+ * public class ListNode {
+ *     int val;
+ *     ListNode next;
+ *     ListNode() {}
+ *     ListNode(int val) { this.val = val; }
+ *     ListNode(int val, ListNode next) { this.val = val; this.next = next; }
+ * }
+ */
+class Solution {
+    public ListNode removeNthFromEnd(ListNode head, int n) {
+        ListNode prev = new ListNode(-1, head);
+        ListNode fast = prev;
+        for (int i = 0; i < n; i++) {
+            fast = fast.next;
+        }
+        ListNode slow = prev;
+        while (fast.next != null) {
+            fast = fast.next;
+            slow = slow.next;
+        }
+        slow.next = slow.next.next;
+        return prev.next;
+    }
+}
+```
+
+## 4. 复杂度分析
+
+- 时间复杂度：**O(n)**，需要遍历链表。
+- 空间复杂度：**O(1)**，只需要常数级别的额外空间，保存快慢指针。
