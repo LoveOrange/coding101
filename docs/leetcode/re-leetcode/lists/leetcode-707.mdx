@@ -1,0 +1,176 @@
+---
+sidebar_position: 707
+tags:
+  - leetcode
+  - algorithm
+---
+import { Blue, Green, Yellow, Red } from '@site/src/components/priority-tag';
+
+# 707. 设计链表
+
+## 1. 题目简介
+
+难度：<Yellow>中等</Yellow>，原题链接：[707. 设计链表](https://leetcode.cn/problems/design-linked-list/)。
+
+> 设计链表的实现。您可以选择使用单链表或双链表。单链表中的节点应该具有两个属性：`val` 和 `next`。`val` 是当前节点的值，`next` 是指向下一个节点的指针/引用。如果要使用双向链表，则还需要一个属性 `prev` 以指示链表中的上一个节点。假设链表中的所有节点都是 0-index 的。
+>
+> 在链表类中实现这些功能：
+>
+> - get(index)：获取链表中第 `index` 个节点的值。如果索引无效，则返回 -1。
+> - addAtHead(val)：在链表的第一个元素之前添加一个值为 `val` 的节点。插入后，新节点将成为链表的第一个节点。
+> - addAtTail(val)：将值为 `val` 的节点追加到链表的最后一个元素。
+> - addAtIndex(index, val)：在链表中的第 `index` 个节点之前添加值为 `val` 的节点。如果 `index` 等于链表的长度，则该节点将附加到链表的末尾。如果 `index` 大于链表长度，则不会插入节点。如果 `index` 小于 0，则在头部插入节点。
+
+## 2. 问题分析
+
+链表可以说是最常用的数据结构之一。
+
+我们以 Java 为例。Java 中存在两种经典的链表实现，分别是 `LinkedList` 和 `ArrayList`。本文将分别给出两种 `List` 的实现。
+
+当然对于 Javaer 来说，实际使用链表时，近乎全部的情况，用到的都是 `ArrayList`。
+
+## 3. 代码实现
+
+### 3.1. LinkedList 方式实现
+
+```java
+class MyLinkedList {
+
+    private class ListNode {
+        int val;
+        ListNode next;
+
+        public ListNode(int val, ListNode next) {
+            this.val = val;
+            this.next = next;
+        }
+    }
+
+    private ListNode root;
+    private int size;
+
+    public MyLinkedList() {
+        root = new ListNode(-1, null);
+
+    }
+
+    public int get(int index) {
+        ListNode node = getAtIndex(index);
+        return node == null ? -1 : node.val;
+    }
+
+    public void addAtHead(int val) {
+        addAtIndex(0, val);
+    }
+
+    public void addAtTail(int val) {
+        addAtIndex(size, val);
+    }
+
+    public void addAtIndex(int index, int val) {
+        ListNode prev = getAtIndex(index - 1);
+        if (prev == null) {
+            return;
+        }
+        ListNode add = new ListNode(val, prev.next);
+        prev.next = add;
+        size++;
+    }
+
+    private ListNode getAtIndex(int index) {
+        if (index > size) {
+            return null;
+        }
+        if (index == -1) {
+            return root;
+        }
+        ListNode walk = root;
+        for (int i = 0; i <= index; i++) {
+            walk = walk.next;
+        }
+        return walk;
+    }
+
+    public void deleteAtIndex(int index) {
+        if (index >= size) {
+            return;
+        }
+        ListNode prev = getAtIndex(index - 1);
+        if (prev == null) {
+            return;
+        }
+        prev.next = prev.next.next;
+        size--;
+    }
+}
+```
+
+### 3.2. ArrayList 方式实现
+
+```java
+class MyLinkedList {
+    
+    private int[] category;
+
+    private int len;
+
+    private int size;
+
+
+    public MyLinkedList() {
+        size = 8;
+        len = 0;
+        category = new int[size];
+    }
+    
+    public int get(int index) {
+        return index < len ? category[index] : -1;
+    }
+    
+    public void addAtHead(int val) {
+        addAtIndex(0, val);
+    }
+    
+    public void addAtTail(int val) {
+        addAtIndex(len, val);
+    }
+    
+    public void addAtIndex(int index, int val) {
+        if (index < 0 || index > len) {
+            return;
+        }
+        if (len == size) {
+            size *= 2;
+            int[] newCategory = new int[size];
+            for (int i = 0; i < len; i++) {
+                newCategory[i] = category[i];
+            }
+            category = newCategory;
+        }
+        for (int i = len; i > index; i--) {
+            category[i] = category[i - 1];
+        }
+        category[index] = val;
+        len++;
+    }
+    
+    public void deleteAtIndex(int index) {
+        if (index < 0 || index >= len) {
+            return;
+        }
+        for (int i = index; i < len - 1; i++) {
+            category[i] = category[i + 1];
+        }
+        len--;
+    }
+}
+```
+
+## 4. 复杂度分析
+
+这里不再分析两种实现的复杂度了。只需要记住链表与数组的复杂度区别：
+
+- 链表的查询复杂度为 **O(n)**，插入与删除复杂度为 **O(1)**
+- 数组的查询复杂度为 **O(1)**，插入与删除复杂度为 **O(n)**
+
+需要注意的一点是，虽然链表的插入与删除复杂度为 **O(1)**，但是以 Java 的实现来看，找到插入位置的这一步，实际上的复杂度是 **O(n)**。这也是 Java 中很少使用 `LinkedList` 的原因之一。
