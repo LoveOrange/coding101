@@ -3,21 +3,19 @@ sidebar_position: 1
 draft: true
 ---
 
-# 索引 Index
+# 索引
 
 ## 1. 为什么要有索引
-
-:::tip 索引的定义
-索引是数据库中的一种**数据结构**，用于提高查询效率。
-:::
 
 假设这个世界没有索引，那么当我们需要查询数据表时，尤其是面对 `GROUP BY`、`ORDER BY` 等查询条件时，需要对整个表进行遍历，显然这个时间复杂度是 `O(n)`。
 
 虽然对于一些有序的数据，可以使用类似 「二分查找」 的算法提高查询效率。但是实际数据库中可能会存储上百万条数据，二分查找的性能也会急剧下降。
 
-数据的存储是为了后续的查询需求服务的，为了解决查询时的性能问题，数据库引入了「索引（Index）」的概念。
+数据的存储是为了后续的查询需求服务的，为了解决查询时的性能问题，数据库引入了「**索引（Index）**」的概念。
 
-> 索引是数据库中的一种数据结构，用于提高查询效率。
+:::tip 索引的定义
+索引是数据库中的一种**数据结构**，用于提高查询效率。
+:::
 
 对数据表中的某些列创建索引后，数据库会在索引中存储「索引列的值」与「该值在原始数据表中的位置」，方便后续的查询操作。
 
@@ -61,25 +59,25 @@ class BPlusTree {
     // 成员变量
     int M;          // 每个节点最多M个子节点
     Node root;      // 根节点
-    
+
     // 节点抽象类
     abstract class Node {
         List<Key> keys;     // 键值列表
         boolean isLeaf;     // 是否为叶子节点
     }
-    
+
     // 内部节点
     class InternalNode extends Node {
         List<Node> children;  // 子节点指针列表
     }
-    
+
     // 叶子节点
     class LeafNode extends Node {
         List<Value> values;   // 值列表
         LeafNode next;        // 指向下一个叶子节点
         LeafNode prev;        // 指向上一个叶子节点
     }
-    
+
     // 基本操作
     Value search(Key key);                // 查找操作
     void insert(Key key, Value value);    // 插入操作
