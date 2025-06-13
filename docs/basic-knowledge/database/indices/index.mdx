@@ -1,6 +1,6 @@
 ---
 sidebar_position: 1
-draft: true
+draft: false
 ---
 
 # 索引
@@ -41,6 +41,8 @@ draft: true
 ## 3. 索引的数据结构
 
 ### 3.1. B+ 树
+
+本段简单介绍了一下 B+ 树在数据库中的使用，更多细节可以参考 [B+ 树](./b_plus_tree/index.mdx) 章节。
 
 最长用的索引结构是 B+ 树，可以很高效地应对 `=`, `>`， `GROUP BY`， `ORDER BY` 等查询请求。
 
@@ -84,8 +86,6 @@ class BPlusTree {
     List<Value> rangeSearch(Key start, Key end);  // 范围查询
 }
 ```
-
-// TODO 补一张图
 
 当面对一个查询请求时：
 
