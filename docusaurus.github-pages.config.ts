@@ -4,7 +4,7 @@ import baseConfig from './docusaurus.config';
 
 const githubPagesConfig: Config = {
   ...baseConfig,
-  url: 'https://loveorange.github.io',
+  url: 'https://linsama.me',
   baseUrl: '/coding101/',
   trailingSlash: true,
 };
