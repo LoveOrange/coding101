@@ -11,6 +11,14 @@ export type RoadmapArticle = {
   href?: string;
 };
 
+export type RoadmapTopicDetail = {
+  mechanism: string;
+  outcomes: string[];
+  interviewQuestions: string[];
+  practice: string;
+  seniorFollowUp: string;
+};
+
 export type RoadmapTopic = {
   id: string;
   title: string;
@@ -18,7 +26,7 @@ export type RoadmapTopic = {
   level: RoadmapLevel;
   priority: RoadmapPriority;
   objective: string;
-  articleCount: number;
+  details: RoadmapTopicDetail;
   articles: RoadmapArticle[];
 };
 
@@ -231,7 +239,7 @@ export default function InterviewRoadmap({
                         </span>
                         <p className={styles.objective}>{topic.objective}</p>
                         <span className={styles.articleCount}>
-                          {topic.articleCount} 篇
+                          {topic.articles.length} 篇
                         </span>
                         <button
                           type="button"
@@ -271,8 +279,39 @@ export default function InterviewRoadmap({
             className={`${styles.priorityTag} ${styles[selectedTopic.priority]}`}>
             {PRIORITY_LABELS[selectedTopic.priority]}
           </span>
-          <span>计划 {selectedTopic.articleCount} 篇文章</span>
+          <span>{selectedTopic.articles.length} 篇专题文章</span>
         </div>
+
+        <section className={styles.topicDetails}>
+          <div>
+            <h3>原理链路</h3>
+            <p>{selectedTopic.details.mechanism}</p>
+          </div>
+          <div>
+            <h3>掌握标准</h3>
+            <ul>
+              {selectedTopic.details.outcomes.map((outcome) => (
+                <li key={outcome}>{outcome}</li>
+              ))}
+            </ul>
+          </div>
+          <div>
+            <h3>必会问题</h3>
+            <ul>
+              {selectedTopic.details.interviewQuestions.map((question) => (
+                <li key={question}>{question}</li>
+              ))}
+            </ul>
+          </div>
+          <div>
+            <h3>实践检验</h3>
+            <p>{selectedTopic.details.practice}</p>
+          </div>
+          <div>
+            <h3>Senior 追问</h3>
+            <p>{selectedTopic.details.seniorFollowUp}</p>
+          </div>
+        </section>
 
         <section className={styles.articleSeries}>
           <h3>专题文章</h3>
@@ -288,9 +327,6 @@ export default function InterviewRoadmap({
               </li>
             ))}
           </ol>
-          {selectedTopic.articleCount > selectedTopic.articles.length && (
-            <p>这里先列出主干文章，其余内容会随着专题建设逐步补充。</p>
-          )}
         </section>
       </dialog>
     </>

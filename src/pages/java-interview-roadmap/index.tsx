@@ -8,7 +8,7 @@ export default function JavaInterviewRoadmap(): JSX.Element {
   return (
     <Layout
       title={javaInterviewRoadmap.title}
-      description="按照学习顺序、能力等级和面试优先级组织的 Java 开发面试复习路线。">
+      description="包含 8 个阶段、40 个 Topic 和完整文章序列的 Java 后端开发面试路线。">
       <InterviewRoadmap roadmap={javaInterviewRoadmap} />
     </Layout>
   );
