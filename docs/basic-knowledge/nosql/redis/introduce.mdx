@@ -7,7 +7,7 @@ draft: false
 
 ## 1. 为什么需要使用 Redis？
 
-在 [关系型数据库的性能瓶颈](../#1-关系型数据库的性能瓶颈) 中，我们提到了关系型数据库 「**ACID**」 的特性会导致性能瓶颈。除此之外，关系型数据库的数据都保存在磁盘上，读写速度较慢，也会带来较大的延迟。
+在 [关系型数据库的性能瓶颈](/docs/basic-knowledge/nosql/#1-关系型数据库的性能瓶颈) 中，我们提到了关系型数据库 「**ACID**」 的特性会导致性能瓶颈。除此之外，关系型数据库的数据都保存在磁盘上，读写速度较慢，也会带来较大的延迟。
 
 那么如果将常用的数据都保存在内存中，是否可以提升访问速度？
 
@@ -23,7 +23,7 @@ draft: false
 2. **单线程模型**：Redis 所有的操作都是在主线程中执行的，避免了多个线程间的一致性与阻塞问题，带来了极高的运行效率
 3. **数据结构优化**：几乎所有 Redis 支持的数据结构，都做了特殊的优化，不论是更新还是查询操作，都具备更好的时间复杂度
 
-关于 Redis 支持的数据结构可以参考 [Redis 数据结构](./data_structure)
+关于 Redis 支持的数据结构可以参考 [Redis 数据结构](/docs/basic-knowledge/nosql/redis/data_structure)
 
 ## 3. Redis 与 Memcached 的区别
 
@@ -31,7 +31,7 @@ draft: false
 
 Memcached 支持的结构只有字符串，而 Redis 支持的结构有字符串、列表、有序集合、哈希表、集合等。
 
-另外虽然两者都是内存数据库，但是 Redis 提供了 [持久化](./persistence) 功能，而 Memcached 没有，这也意味着 Memcached 在重启后数据会丢失。
+另外虽然两者都是内存数据库，但是 Redis 提供了 [持久化](/docs/basic-knowledge/nosql/redis/persistence) 功能，而 Memcached 没有，这也意味着 Memcached 在重启后数据会丢失。
 
 最后 Redis 还支持水平扩展，可以用来保存更大规模的缓存数据，而 Memcached 仅支持单机部署。
 
