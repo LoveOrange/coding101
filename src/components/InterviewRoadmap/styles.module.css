@@ -37,6 +37,9 @@
 .routeSidebar nav {
   position: sticky;
   top: calc(var(--ifm-navbar-height) + 1rem);
+  max-height: calc(100vh - var(--ifm-navbar-height) - 2rem);
+  overflow-y: auto;
+  scrollbar-width: thin;
 }
 
 .routeGroup + .routeGroup {
@@ -411,6 +414,38 @@
   padding: 0.25rem 1.5rem 1.5rem;
 }
 
+.topicDetails {
+  display: grid;
+  gap: 1rem;
+  padding: 0.35rem 1.5rem 1.1rem;
+}
+
+.topicDetails > div {
+  padding-bottom: 0.9rem;
+  border-bottom: 1px solid var(--route-border);
+}
+
+.topicDetails h3 {
+  margin: 0 0 0.4rem;
+  font-size: 0.86rem;
+}
+
+.topicDetails p,
+.topicDetails ul {
+  margin: 0;
+  color: #475467;
+  font-size: 0.8rem;
+  line-height: 1.7;
+}
+
+.topicDetails ul {
+  padding-left: 1.15rem;
+}
+
+.topicDetails li + li {
+  margin-top: 0.22rem;
+}
+
 .articleSeries h3 {
   margin: 0 0 0.55rem;
   font-size: 0.9rem;
@@ -471,7 +506,9 @@
 
 [data-theme='dark'] .plannedRoute,
 [data-theme='dark'] .objective,
-[data-theme='dark'] .dialogObjective {
+[data-theme='dark'] .dialogObjective,
+[data-theme='dark'] .topicDetails p,
+[data-theme='dark'] .topicDetails ul {
   color: #c4cbd4;
 }
 
@@ -651,6 +688,7 @@
   .dialogHeader,
   .dialogObjective,
   .dialogMeta,
+  .topicDetails,
   .articleSeries {
     padding-right: 1rem;
     padding-left: 1rem;
