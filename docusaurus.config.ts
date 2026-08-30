@@ -2,6 +2,24 @@ import { themes as prismThemes } from "prism-react-renderer";
 import type { Config } from "@docusaurus/types";
 import type * as Preset from "@docusaurus/preset-classic";
 
+const isProduction = process.env.NODE_ENV === "production";
+
+const stylePreviewPlugins: NonNullable<Config["plugins"]> =
+  process.env.STYLE_PREVIEW === "true"
+    ? [
+        [
+          "@docusaurus/plugin-content-docs",
+          {
+            id: "stylePreview",
+            path: "plans/style-calibration/2026-08-28",
+            routeBasePath: "preview",
+            include: ["WELCOME.md"],
+            sidebarPath: false,
+          },
+        ],
+      ]
+    : [];
+
 const config: Config = {
   title: "Coding 101",
   tagline: "Have fun with Coding and Studying!",
@@ -49,10 +67,14 @@ const config: Config = {
         theme: {
           customCss: "./src/css/custom.css",
         },
-        gtag: {
-          trackingID: "G-Q16V88YMHD",
-          anonymizeIP: true,
-        },
+        ...(isProduction
+          ? {
+              gtag: {
+                trackingID: "G-Q16V88YMHD",
+                anonymizeIP: true,
+              },
+            }
+          : {}),
       } satisfies Preset.Options,
     ],
   ],
@@ -180,6 +202,7 @@ const config: Config = {
     },
   } satisfies Preset.ThemeConfig,
   plugins: [
+    ...stylePreviewPlugins,
     // [
     //   "@docusaurus/plugin-ideal-image",
     //   {

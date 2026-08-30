@@ -105,8 +105,10 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               '需要降低反射成本或提高 Native Image 兼容性时，可以把哪些工作移到编译期？',
           },
           articles: [
-            {title: '泛型、类型擦除与桥接方法'},
-            {title: '通配符与 PECS'},
+            {
+              title: 'Java 泛型',
+              href: '/docs/basic-knowledge/java/language/generics',
+            },
             {title: '注解的保留策略与处理阶段'},
             {title: '反射 API、MethodHandle 与调用成本'},
             {title: '从运行时扫描到编译期代码生成'},
