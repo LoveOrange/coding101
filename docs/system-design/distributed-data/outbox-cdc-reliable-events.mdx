@@ -2,7 +2,7 @@
 sidebar_position: 4
 ---
 
-# Outbox、CDC 与可靠事件
+# Transactional Outbox 与 CDC
 
 Transactional Outbox 把业务变化和待发布事件写进同一个本地数据库事务，再由独立 relay 发布到消息系统。它关闭“数据库已提交但消息未发送”的窗口，但 relay 与 broker 之间仍可能重复发送。
 

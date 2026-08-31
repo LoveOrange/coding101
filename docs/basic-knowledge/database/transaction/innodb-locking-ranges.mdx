@@ -2,7 +2,7 @@
 sidebar_position: 3
 ---
 
-# InnoDB 锁模型与加锁范围
+# InnoDB 锁
 
 InnoDB 通过索引记录锁和索引区间锁约束并发写入。分析一条 SQL 会锁住什么，不能只看 `WHERE` 条件，还要结合隔离级别、访问索引和实际扫描范围。
 

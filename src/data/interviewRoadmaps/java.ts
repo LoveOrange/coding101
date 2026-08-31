@@ -44,23 +44,15 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           },
           articles: [
             {
-              title: 'Java 类型、引用与值传递',
+              title: 'Java 类型系统',
               href: '/docs/basic-knowledge/java/language/types-references-value-passing',
             },
             {
-              title: '封装、继承与多态的真实边界',
+              title: '面向对象编程（Object-Oriented Programming）',
               href: '/docs/basic-knowledge/java/language/encapsulation-inheritance-polymorphism',
             },
             {
-              title: '接口、抽象类与组合的选择',
-              href: '/docs/basic-knowledge/java/language/interfaces-abstract-classes-composition',
-            },
-            {
-              title: '重载、重写与动态绑定',
-              href: '/docs/basic-knowledge/java/language/overloading-overriding-dynamic-binding',
-            },
-            {
-              title: 'equals、hashCode 与对象身份',
+              title: '对象相等性',
               href: '/docs/basic-knowledge/java/language/equals-hashcode-object-identity',
             },
           ],
@@ -90,23 +82,23 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           },
           articles: [
             {
-              title: 'String 不可变性与字符串常量池',
+              title: 'String',
               href: '/docs/basic-knowledge/java/language/string-immutability-pool',
             },
             {
-              title: '包装类型、自动装箱与缓存',
+              title: '包装类型',
               href: '/docs/basic-knowledge/java/language/wrappers-boxing-cache',
             },
             {
-              title: 'BigDecimal 与金额计算',
+              title: 'BigDecimal',
               href: '/docs/basic-knowledge/java/language/bigdecimal-money',
             },
             {
-              title: '异常体系与错误边界',
+              title: 'Java 异常',
               href: '/docs/basic-knowledge/java/language/exceptions-error-boundaries',
             },
             {
-              title: 'Optional 能解决什么，不能解决什么',
+              title: 'Optional',
               href: '/docs/basic-knowledge/java/language/optional-boundaries',
             },
           ],
@@ -140,15 +132,15 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               href: '/docs/basic-knowledge/java/language/generics',
             },
             {
-              title: '注解的保留策略与处理阶段',
+              title: 'Java 注解',
               href: '/docs/basic-knowledge/java/language/annotations-retention-processing',
             },
             {
-              title: '反射 API、MethodHandle 与调用成本',
+              title: 'Java 反射',
               href: '/docs/basic-knowledge/java/language/reflection-method-handles',
             },
             {
-              title: '从运行时扫描到编译期代码生成',
+              title: 'Java 注解处理器',
               href: '/docs/basic-knowledge/java/language/runtime-scanning-compile-time-generation',
             },
           ],
@@ -178,23 +170,23 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           },
           articles: [
             {
-              title: '字节流、字符流与缓冲',
+              title: 'Java 流式 I/O',
               href: '/docs/basic-knowledge/java/io/byte-character-buffered-streams',
             },
             {
-              title: 'try-with-resources 与关闭语义',
+              title: 'try-with-resources',
               href: '/docs/basic-knowledge/java/io/try-with-resources-close-semantics',
             },
             {
-              title: 'Buffer、Channel 与 Selector',
+              title: 'Java NIO',
               href: '/docs/basic-knowledge/java/io/buffer-channel-selector',
             },
             {
-              title: '文件映射、零拷贝与直接内存',
+              title: '零拷贝',
               href: '/docs/basic-knowledge/java/io/file-mapping-zero-copy-direct-memory',
             },
             {
-              title: 'Java 序列化的兼容与安全边界',
+              title: 'Java 序列化',
               href: '/docs/basic-knowledge/java/io/java-serialization-compatibility-security',
             },
           ],
@@ -224,23 +216,23 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           },
           articles: [
             {
-              title: 'Lambda、函数式接口与闭包捕获',
+              title: 'Lambda 表达式',
               href: '/docs/basic-knowledge/java/functional/lambda-functional-interfaces-capture',
             },
             {
-              title: 'Stream 流水线与惰性求值',
+              title: 'Stream',
               href: '/docs/basic-knowledge/java/functional/stream-pipeline-lazy-evaluation',
             },
             {
-              title: 'Collector、分组与归约',
+              title: 'Collector',
               href: '/docs/basic-knowledge/java/functional/collectors-grouping-reduction',
             },
             {
-              title: '并行流的执行模型与陷阱',
+              title: '并行流',
               href: '/docs/basic-knowledge/java/functional/parallel-stream-model-pitfalls',
             },
             {
-              title: 'java.time 与时区边界',
+              title: 'java.time',
               href: '/docs/basic-knowledge/java/functional/java-time-time-zone-boundaries',
             },
           ],
@@ -279,23 +271,23 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           },
           articles: [
             {
-              title: 'List、Set、Map 与 Queue 的选择',
+              title: 'Java 集合框架',
               href: '/docs/basic-knowledge/java/collections/collection-interface-selection',
             },
             {
-              title: 'ArrayList 扩容与内存局部性',
+              title: 'ArrayList',
               href: '/docs/basic-knowledge/java/collections/arraylist-growth-memory-locality',
             },
             {
-              title: 'LinkedList 的语义与现实成本',
+              title: 'LinkedList',
               href: '/docs/basic-knowledge/java/collections/linkedlist-semantics-cost',
             },
             {
-              title: 'TreeMap、TreeSet 与有序查询',
+              title: 'TreeMap 与 TreeSet',
               href: '/docs/basic-knowledge/java/collections/treemap-treeset-ordered-query',
             },
             {
-              title: '迭代器、fail-fast 与不可变集合',
+              title: '集合迭代器',
               href: '/docs/basic-knowledge/java/collections/iterator-fail-fast-immutable',
             },
           ],
@@ -325,23 +317,23 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           },
           articles: [
             {
-              title: 'HashMap 的数据结构与查找路径',
+              title: 'HashMap',
               href: '/docs/basic-knowledge/java/collections/hashmap-structure-lookup-path',
             },
             {
-              title: '哈希冲突、树化与退化条件',
+              title: 'HashMap 树化',
               href: '/docs/basic-knowledge/java/collections/hashmap-collisions-treeification',
             },
             {
-              title: '容量、负载因子与扩容',
+              title: 'HashMap 扩容',
               href: '/docs/basic-knowledge/java/collections/hashmap-capacity-load-factor-resize',
             },
             {
-              title: 'equals 与 hashCode 契约',
+              title: '对象相等性',
               href: '/docs/basic-knowledge/java/language/equals-hashcode-object-identity',
             },
             {
-              title: 'LinkedHashMap 与 LRU',
+              title: 'LinkedHashMap',
               href: '/docs/basic-knowledge/java/collections/linkedhashmap-lru',
             },
           ],
@@ -371,23 +363,23 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           },
           articles: [
             {
-              title: 'ConcurrentHashMap 与原子复合操作',
+              title: 'ConcurrentHashMap',
               href: '/docs/basic-knowledge/java/collections/concurrenthashmap-atomic-compound-operations',
             },
             {
-              title: 'CopyOnWrite 容器的成本模型',
+              title: 'CopyOnWrite 容器',
               href: '/docs/basic-knowledge/java/collections/copy-on-write-cost-model',
             },
             {
-              title: 'BlockingQueue 与生产消费',
+              title: 'BlockingQueue',
               href: '/docs/basic-knowledge/java/collections/blockingqueue-producer-consumer',
             },
             {
-              title: 'ConcurrentLinkedQueue 的无锁路径',
+              title: 'ConcurrentLinkedQueue',
               href: '/docs/basic-knowledge/java/collections/concurrentlinkedqueue-lock-free-path',
             },
             {
-              title: '并发容器的迭代一致性',
+              title: '迭代一致性',
               href: '/docs/basic-knowledge/java/collections/concurrent-collection-iteration-consistency',
             },
           ],
@@ -417,23 +409,23 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           },
           articles: [
             {
-              title: '复杂度、约束与 Java 成本模型',
+              title: '算法复杂度',
               href: '/docs/basic-knowledge/java/algorithms/complexity-constraints-java-cost',
             },
             {
-              title: '数组、字符串与滑动窗口',
+              title: '滑动窗口',
               href: '/docs/basic-knowledge/java/algorithms/arrays-strings-sliding-window',
             },
             {
-              title: '树、图与搜索模板',
+              title: '树与图搜索',
               href: '/docs/basic-knowledge/java/algorithms/trees-graphs-search',
             },
             {
-              title: '动态规划的状态设计',
+              title: '动态规划',
               href: '/docs/basic-knowledge/java/algorithms/dynamic-programming-state-design',
             },
             {
-              title: '现场编码中的反例与测试',
+              title: '算法正确性',
               href: '/docs/basic-knowledge/java/algorithms/live-coding-counterexamples-tests',
             },
           ],
@@ -463,23 +455,23 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           },
           articles: [
             {
-              title: '从不变量出发设计 Java API',
+              title: 'Java API 设计',
               href: '/docs/basic-knowledge/java/quality/api-design-from-invariants',
             },
             {
-              title: '不可变对象与防御性复制',
+              title: '不可变对象',
               href: '/docs/basic-knowledge/java/quality/immutable-objects-defensive-copying',
             },
             {
-              title: 'JUnit、断言与参数化测试',
+              title: 'JUnit',
               href: '/docs/basic-knowledge/java/quality/junit-assertions-parameterized-tests',
             },
             {
-              title: 'Mock、Stub 与测试替身边界',
+              title: '测试替身',
               href: '/docs/basic-knowledge/java/quality/test-doubles-mock-stub-boundaries',
             },
             {
-              title: '测试金字塔、契约与回归成本',
+              title: '测试金字塔',
               href: '/docs/basic-knowledge/java/quality/test-pyramid-contract-regression',
             },
           ],
@@ -518,23 +510,23 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           },
           articles: [
             {
-              title: '从 Java 源码到字节码',
+              title: 'Java 字节码',
               href: '/docs/basic-knowledge/java/jvm/source-to-bytecode',
             },
             {
-              title: '类加载的五个阶段',
+              title: '类加载',
               href: '/docs/basic-knowledge/java/jvm/class-loading-stages',
             },
             {
-              title: '双亲委派模型解决的问题',
+              title: '双亲委派模型',
               href: '/docs/basic-knowledge/java/jvm/parent-delegation',
             },
             {
-              title: '类加载器、SPI 与隔离',
+              title: '类加载器',
               href: '/docs/basic-knowledge/java/jvm/classloaders-spi-isolation',
             },
             {
-              title: '类初始化死锁与版本冲突排查',
+              title: '类加载故障',
               href: '/docs/basic-knowledge/java/jvm/class-initialization-conflicts',
             },
           ],
@@ -568,19 +560,19 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               href: '/docs/basic-knowledge/java/jvm/runtime-data-areas',
             },
             {
-              title: '对象创建、对象头与内存布局',
+              title: 'Java 对象布局',
               href: '/docs/basic-knowledge/java/jvm/object-creation-layout',
             },
             {
-              title: '指针压缩、对齐与对象成本',
+              title: '压缩指针与对象对齐',
               href: '/docs/basic-knowledge/java/jvm/compressed-pointers-alignment',
             },
             {
-              title: '直接内存与 Native Memory',
+              title: 'Java 直接内存',
               href: '/docs/basic-knowledge/java/jvm/direct-native-memory',
             },
             {
-              title: '常见 OOM 与栈溢出场景',
+              title: 'OutOfMemoryError 与 StackOverflowError',
               href: '/docs/basic-knowledge/java/jvm/oom-stack-overflow',
             },
           ],
@@ -610,23 +602,23 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           },
           articles: [
             {
-              title: 'GC Roots 与可达性分析',
+              title: 'GC Roots',
               href: '/docs/basic-knowledge/java/jvm/gc-roots-reachability',
             },
             {
-              title: '分代回收、屏障与安全点',
+              title: '分代回收',
               href: '/docs/basic-knowledge/java/jvm/generational-barriers-safepoints',
             },
             {
-              title: 'Serial、Parallel 与 CMS 的历史位置',
+              title: 'Serial、Parallel 与 CMS',
               href: '/docs/basic-knowledge/java/jvm/serial-parallel-cms',
             },
             {
-              title: 'G1 的 Region、RSet 与回收集合',
+              title: 'G1',
               href: '/docs/basic-knowledge/java/jvm/g1-regions-rset-collection-set',
             },
             {
-              title: 'ZGC、Shenandoah 与低延迟代价',
+              title: '低延迟垃圾收集器',
               href: '/docs/basic-knowledge/java/jvm/zgc-shenandoah-low-latency',
             },
           ],
@@ -656,7 +648,7 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           },
           articles: [
             {
-              title: '解释器、分层编译与热点探测',
+              title: '分层编译',
               href: '/docs/basic-knowledge/java/jvm/interpreter-tiered-compilation',
             },
             {
@@ -668,11 +660,11 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               href: '/docs/basic-knowledge/java/jvm/escape-analysis-scalar-replacement',
             },
             {
-              title: 'JMH 如何避免错误基准',
+              title: 'JMH',
               href: '/docs/basic-knowledge/java/jvm/jmh-correct-benchmarks',
             },
             {
-              title: 'AOT、CDS 与 Native Image 的取舍',
+              title: 'Java 启动优化',
               href: '/docs/basic-knowledge/java/jvm/aot-cds-native-image',
             },
           ],
@@ -702,23 +694,23 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           },
           articles: [
             {
-              title: 'JVM 诊断工具与证据选择',
+              title: 'JVM 诊断',
               href: '/docs/basic-knowledge/java/jvm/diagnostic-tools-evidence',
             },
             {
-              title: 'CPU 升高的排查路径',
+              title: 'CPU 使用率',
               href: '/docs/basic-knowledge/java/jvm/cpu-high-diagnosis',
             },
             {
-              title: '线程转储、死锁与锁竞争',
+              title: '线程转储',
               href: '/docs/basic-knowledge/java/jvm/thread-dumps-deadlocks-contention',
             },
             {
-              title: '堆转储与内存泄漏',
+              title: '堆转储',
               href: '/docs/basic-knowledge/java/jvm/heap-dumps-memory-leaks',
             },
             {
-              title: 'GC 日志、JFR 与停顿分析',
+              title: 'GC 停顿分析',
               href: '/docs/basic-knowledge/java/jvm/gc-logs-jfr-pauses',
             },
           ],
@@ -757,23 +749,23 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           },
           articles: [
             {
-              title: '线程安全问题从哪里产生',
+              title: '线程安全',
               href: '/docs/basic-knowledge/java/concurrency/thread-safety-race-conditions',
             },
             {
-              title: '线程生命周期与中断语义',
+              title: 'Java 线程',
               href: '/docs/basic-knowledge/java/concurrency/thread-lifecycle-interruption',
             },
             {
-              title: 'Java 内存模型与 happens-before',
+              title: 'Java 内存模型',
               href: '/docs/basic-knowledge/java/concurrency/jmm-happens-before',
             },
             {
-              title: '安全发布、逸出与 final 语义',
+              title: '安全发布',
               href: '/docs/basic-knowledge/java/concurrency/safe-publication-escape-final',
             },
             {
-              title: '从共享状态到消息传递',
+              title: '消息传递',
               href: '/docs/basic-knowledge/java/concurrency/shared-state-message-passing',
             },
           ],
@@ -803,23 +795,23 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           },
           articles: [
             {
-              title: 'synchronized 的 monitor 与优化',
+              title: 'synchronized',
               href: '/docs/basic-knowledge/java/concurrency/synchronized-monitor-optimizations',
             },
             {
-              title: 'volatile、屏障与可见性',
+              title: 'volatile',
               href: '/docs/basic-knowledge/java/concurrency/volatile-barriers-visibility',
             },
             {
-              title: 'CAS、ABA 与版本标记',
+              title: 'CAS',
               href: '/docs/basic-knowledge/java/concurrency/cas-aba-versioning',
             },
             {
-              title: '原子类、LongAdder 与热点竞争',
+              title: 'Java 原子类',
               href: '/docs/basic-knowledge/java/concurrency/atomic-longadder-contention',
             },
             {
-              title: '锁与无锁方案的成本比较',
+              title: '锁与无锁',
               href: '/docs/basic-knowledge/java/concurrency/locks-vs-lock-free-cost',
             },
           ],
@@ -849,23 +841,23 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           },
           articles: [
             {
-              title: 'AQS 的同步状态与等待队列',
+              title: 'AQS',
               href: '/docs/basic-knowledge/java/concurrency/aqs-state-wait-queue',
             },
             {
-              title: 'ReentrantLock、公平性与 Condition',
+              title: 'ReentrantLock',
               href: '/docs/basic-knowledge/java/concurrency/reentrantlock-fairness-condition',
             },
             {
-              title: '读写锁与 StampedLock',
+              title: '读写锁',
               href: '/docs/basic-knowledge/java/concurrency/readwritelock-stampedlock',
             },
             {
-              title: 'Latch、Barrier 与 Semaphore',
+              title: 'Java 并发同步器',
               href: '/docs/basic-knowledge/java/concurrency/latch-barrier-semaphore',
             },
             {
-              title: '中断、超时与取消协议',
+              title: '任务取消',
               href: '/docs/basic-knowledge/java/concurrency/interruption-timeout-cancellation',
             },
           ],
@@ -895,23 +887,23 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           },
           articles: [
             {
-              title: '线程池的核心参数与执行路径',
+              title: 'ThreadPoolExecutor',
               href: '/docs/basic-knowledge/java/concurrency/threadpoolexecutor-execution-path',
             },
             {
-              title: '队列、拒绝策略与过载',
+              title: '线程池过载保护',
               href: '/docs/basic-knowledge/java/concurrency/queues-rejection-overload',
             },
             {
-              title: '线程池大小的估算与验证',
+              title: '线程池容量',
               href: '/docs/basic-knowledge/java/concurrency/thread-pool-sizing-validation',
             },
             {
-              title: 'Future、CompletableFuture 与异常传播',
+              title: 'CompletableFuture',
               href: '/docs/basic-knowledge/java/concurrency/future-completablefuture-errors',
             },
             {
-              title: '虚拟线程的适用条件与边界',
+              title: '虚拟线程',
               href: '/docs/basic-knowledge/java/concurrency/virtual-threads-boundaries',
             },
           ],
@@ -941,23 +933,23 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           },
           articles: [
             {
-              title: '死锁、活锁与饥饿',
+              title: '并发活跃性',
               href: '/docs/basic-knowledge/java/concurrency/liveness-deadlock-livelock-starvation',
             },
             {
-              title: '线程转储与等待关系',
+              title: '线程转储',
               href: '/docs/basic-knowledge/java/jvm/thread-dumps-deadlocks-contention',
             },
             {
-              title: '线程池饱和与任务堆积',
+              title: '线程池饱和',
               href: '/docs/basic-knowledge/java/concurrency/thread-pool-saturation-backlog',
             },
             {
-              title: 'ThreadLocal 泄漏与上下文污染',
+              title: 'ThreadLocal',
               href: '/docs/basic-knowledge/java/concurrency/threadlocal-leaks-context',
             },
             {
-              title: '锁竞争、切换成本与并发压测',
+              title: '锁竞争',
               href: '/docs/basic-knowledge/java/concurrency/lock-contention-context-switch-benchmark',
             },
           ],
@@ -996,23 +988,23 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           },
           articles: [
             {
-              title: 'IoC 容器解决的问题',
+              title: 'IoC 容器',
               href: '/docs/basic-knowledge/java/spring/ioc-container-purpose',
             },
             {
-              title: 'BeanDefinition 与容器启动',
+              title: 'BeanDefinition',
               href: '/docs/basic-knowledge/java/spring/beandefinition-container-startup',
             },
             {
-              title: '依赖注入方式的选择',
+              title: '依赖注入',
               href: '/docs/basic-knowledge/java/spring/dependency-injection-selection',
             },
             {
-              title: 'Bean 的创建与生命周期',
+              title: 'Bean 生命周期',
               href: '/docs/basic-knowledge/java/spring/bean-creation-lifecycle',
             },
             {
-              title: '循环依赖、作用域与提前暴露',
+              title: 'Spring 循环依赖',
               href: '/docs/basic-knowledge/java/spring/circular-dependencies-scopes-early-exposure',
             },
           ],
@@ -1042,7 +1034,7 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           },
           articles: [
             {
-              title: 'AOP、切点与拦截链',
+              title: 'Spring AOP',
               href: '/docs/basic-knowledge/java/spring/aop-pointcut-interceptor-chain',
             },
             {
@@ -1050,15 +1042,15 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               href: '/docs/basic-knowledge/java/spring/jdk-proxy-cglib',
             },
             {
-              title: '声明式事务的执行路径',
+              title: '声明式事务',
               href: '/docs/basic-knowledge/java/spring/declarative-transaction-execution',
             },
             {
-              title: '事务传播、隔离与回滚规则',
+              title: 'Spring 事务',
               href: '/docs/basic-knowledge/java/spring/transaction-propagation-isolation-rollback',
             },
             {
-              title: '事务、缓存与异步注解的失效场景',
+              title: 'Spring 代理失效',
               href: '/docs/basic-knowledge/java/spring/transaction-cache-async-failures',
             },
           ],
@@ -1088,23 +1080,23 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           },
           articles: [
             {
-              title: '一次 HTTP 请求如何到达 Controller',
+              title: 'Spring MVC 请求生命周期',
               href: '/docs/basic-knowledge/java/spring/http-request-to-controller',
             },
             {
-              title: 'DispatcherServlet 与处理器映射',
+              title: 'DispatcherServlet',
               href: '/docs/basic-knowledge/java/spring/dispatcherservlet-handler-mapping',
             },
             {
-              title: '过滤器、拦截器与切面的边界',
+              title: 'Spring 拦截机制',
               href: '/docs/basic-knowledge/java/spring/filter-interceptor-aspect-boundaries',
             },
             {
-              title: '参数绑定、校验与内容协商',
+              title: 'Spring MVC 参数解析',
               href: '/docs/basic-knowledge/java/spring/binding-validation-content-negotiation',
             },
             {
-              title: '统一异常处理与 API 错误契约',
+              title: 'API 错误契约',
               href: '/docs/basic-knowledge/java/spring/api-error-contract',
             },
           ],
@@ -1134,23 +1126,23 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           },
           articles: [
             {
-              title: 'Spring Boot 启动流程',
+              title: 'Spring Boot 启动',
               href: '/docs/basic-knowledge/java/spring/spring-boot-startup',
             },
             {
-              title: '自动配置与条件评估',
+              title: 'Spring Boot 自动配置',
               href: '/docs/basic-knowledge/java/spring/auto-configuration-conditions',
             },
             {
-              title: '配置文件、环境变量与属性优先级',
+              title: 'Spring Boot 外部化配置',
               href: '/docs/basic-knowledge/java/spring/external-config-precedence',
             },
             {
-              title: '自定义 Starter 的边界',
+              title: 'Spring Boot Starter',
               href: '/docs/basic-knowledge/java/spring/custom-starter-boundaries',
             },
             {
-              title: 'Actuator、健康检查与启动诊断',
+              title: 'Spring Boot Actuator',
               href: '/docs/basic-knowledge/java/spring/actuator-health-startup-diagnostics',
             },
           ],
@@ -1180,23 +1172,23 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           },
           articles: [
             {
-              title: 'MyBatis 映射、执行器与插件',
+              title: 'MyBatis',
               href: '/docs/basic-knowledge/java/data-access/mybatis-mapping-executor-plugins',
             },
             {
-              title: 'JPA 实体状态、脏检查与懒加载',
+              title: 'JPA',
               href: '/docs/basic-knowledge/java/data-access/jpa-entity-states-dirty-checking-lazy-loading',
             },
             {
-              title: 'N+1 查询与抓取策略',
+              title: 'N+1 查询',
               href: '/docs/basic-knowledge/java/data-access/n-plus-one-fetch-strategies',
             },
             {
-              title: '连接池容量、超时与泄漏',
+              title: '数据库连接池',
               href: '/docs/basic-knowledge/java/data-access/connection-pool-capacity-timeout-leaks',
             },
             {
-              title: '批处理、分页与数据访问测试',
+              title: '批处理与分页',
               href: '/docs/basic-knowledge/java/data-access/batching-pagination-data-access-tests',
             },
           ],
@@ -1236,13 +1228,13 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           articles: [
             {title: '网络模型', href: '/docs/basic-knowledge/network/network-models'},
             {title: 'TCP 与 UDP', href: '/docs/basic-knowledge/network/tcp_udp'},
-            {title: 'TCP 建立与释放连接', href: '/docs/basic-knowledge/network/tcp_handshake'},
+            {title: 'TCP 连接', href: '/docs/basic-knowledge/network/tcp_handshake'},
             {
-              title: 'HTTP 版本、连接复用与超时',
+              title: 'HTTP',
               href: '/docs/basic-knowledge/network/http-versions-connection-reuse-timeouts',
             },
             {
-              title: 'RPC、序列化与 Netty 事件循环',
+              title: 'RPC',
               href: '/docs/basic-knowledge/network/rpc-serialization-netty-event-loop',
             },
           ],
@@ -1271,15 +1263,15 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               '索引继续增加但收益下降时，如何比较查询改写、反范式、缓存和数据拆分？',
           },
           articles: [
-            {title: '索引总览', href: '/docs/basic-knowledge/database/indices/'},
+            {title: '数据库索引', href: '/docs/basic-knowledge/database/indices/'},
             {title: 'B+ 树', href: '/docs/basic-knowledge/database/indices/b_plus_tree/'},
             {title: '聚簇索引', href: '/docs/basic-knowledge/database/indices/clustered_index/'},
             {
-              title: '联合索引、覆盖索引与回表',
+              title: '联合索引与覆盖索引',
               href: '/docs/basic-knowledge/database/indices/composite-covering-back-table',
             },
             {
-              title: '索引复习与 EXPLAIN',
+              title: '索引设计',
               href: '/docs/basic-knowledge/database/indices/index-review',
             },
           ],
@@ -1309,23 +1301,23 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           },
           articles: [
             {
-              title: '事务与隔离级别',
+              title: '数据库事务',
               href: '/docs/basic-knowledge/database/transaction/',
             },
             {
-              title: 'InnoDB 锁模型与加锁范围',
+              title: 'InnoDB 锁',
               href: '/docs/basic-knowledge/database/transaction/innodb-locking-ranges',
             },
             {
-              title: 'MVCC、Read View 与一致性读',
+              title: 'MVCC',
               href: '/docs/basic-knowledge/database/transaction/mvcc-read-view-consistent-read',
             },
             {
-              title: '死锁检测、超时与重试',
+              title: '数据库死锁',
               href: '/docs/basic-knowledge/database/transaction/deadlock-detection-timeout-retry',
             },
             {
-              title: '长事务、热点更新与边界调整',
+              title: '长事务',
               href: '/docs/basic-knowledge/database/transaction/long-transactions-hot-updates-boundaries',
             },
           ],
@@ -1354,21 +1346,21 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               '强一致要求提高后，应继续修补缓存协议，还是改变读取路径和数据所有权？',
           },
           articles: [
-            {title: 'Redis 基础', href: '/docs/basic-knowledge/nosql/redis/'},
+            {title: 'Redis', href: '/docs/basic-knowledge/nosql/redis/'},
             {
-              title: '缓存模式、更新顺序与一致性',
+              title: '缓存一致性',
               href: '/docs/basic-knowledge/nosql/redis/cache-patterns-consistency',
             },
             {
-              title: '穿透、击穿、雪崩与热点治理',
+              title: '缓存穿透、击穿、雪崩与热点 Key',
               href: '/docs/basic-knowledge/nosql/redis/cache-penetration-stampede-avalanche-hotkeys',
             },
             {
-              title: 'Redis 持久化、复制与 Cluster',
+              title: 'Redis 持久化、复制与集群',
               href: '/docs/basic-knowledge/nosql/redis/persistence',
             },
             {
-              title: '分布式锁的成立条件与边界',
+              title: '分布式锁',
               href: '/docs/basic-knowledge/nosql/redis/distributed-lock-conditions-boundaries',
             },
           ],
@@ -1398,23 +1390,23 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           },
           articles: [
             {
-              title: 'Kafka、RabbitMQ 与队列语义',
+              title: '消息队列',
               href: '/docs/basic-knowledge/middleware/kafka-rabbitmq-queue-semantics',
             },
             {
-              title: '消息确认、重试与死信',
+              title: '消息可靠性',
               href: '/docs/basic-knowledge/middleware/message-ack-retry-dead-letter',
             },
             {
-              title: '幂等消费、顺序与重复处理',
+              title: '消息幂等性',
               href: '/docs/basic-knowledge/middleware/idempotent-consumption-order-duplicates',
             },
             {
-              title: '倒排索引与 Elasticsearch 写入可见性',
+              title: 'Elasticsearch',
               href: '/docs/basic-knowledge/middleware/elasticsearch-inverted-index-refresh-visibility',
             },
             {
-              title: '定时任务、分片与故障恢复',
+              title: '分布式任务调度',
               href: '/docs/basic-knowledge/middleware/scheduled-tasks-sharding-recovery',
             },
           ],
@@ -1453,23 +1445,23 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           },
           articles: [
             {
-              title: '服务注册、发现与健康检查',
+              title: '服务发现',
               href: '/docs/system-design/microservices/service-discovery-health-checks',
             },
             {
-              title: '配置中心、版本与动态刷新',
+              title: '配置中心',
               href: '/docs/system-design/microservices/config-center-version-refresh',
             },
             {
-              title: 'API 网关与请求路由',
+              title: 'API 网关',
               href: '/docs/system-design/microservices/api-gateway-routing',
             },
             {
-              title: '灰度发布、流量染色与回滚',
+              title: '灰度发布',
               href: '/docs/system-design/microservices/canary-traffic-tagging-rollback',
             },
             {
-              title: '控制面与数据面的故障边界',
+              title: '控制平面与数据平面',
               href: '/docs/system-design/microservices/control-plane-data-plane-failures',
             },
           ],
@@ -1499,23 +1491,23 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           },
           articles: [
             {
-              title: '超时预算与取消传播',
+              title: '超时',
               href: '/docs/system-design/reliability/timeout-budget-cancellation',
             },
             {
-              title: '重试、退避、抖动与重试风暴',
+              title: '重试',
               href: '/docs/system-design/reliability/retry-backoff-jitter-storms',
             },
             {
-              title: '限流算法与容量保护',
+              title: '限流',
               href: '/docs/system-design/reliability/rate-limiting-capacity-protection',
             },
             {
-              title: '熔断、降级与舱壁隔离',
+              title: '服务容错',
               href: '/docs/system-design/reliability/circuit-breaker-degradation-bulkhead',
             },
             {
-              title: '幂等键与安全重试',
+              title: '幂等键',
               href: '/docs/system-design/reliability/idempotency-keys-safe-retries',
             },
           ],
@@ -1545,23 +1537,23 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           },
           articles: [
             {
-              title: '从业务不变量到一致性方案',
+              title: '分布式一致性',
               href: '/docs/system-design/distributed-data/invariants-to-consistency-strategy',
             },
             {
-              title: '2PC、TCC 与协调成本',
+              title: '2PC 与 TCC',
               href: '/docs/system-design/distributed-data/2pc-tcc-coordination-cost',
             },
             {
-              title: 'Saga、补偿与中间状态',
+              title: 'Saga',
               href: '/docs/system-design/distributed-data/saga-compensation-intermediate-state',
             },
             {
-              title: 'Outbox、CDC 与可靠事件',
+              title: 'Transactional Outbox 与 CDC',
               href: '/docs/system-design/distributed-data/outbox-cdc-reliable-events',
             },
             {
-              title: '幂等、对账与人工修复',
+              title: '分布式流程恢复',
               href: '/docs/system-design/distributed-data/idempotency-reconciliation-manual-repair',
             },
           ],
@@ -1591,7 +1583,7 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           },
           articles: [
             {
-              title: '认证、授权与信任边界',
+              title: '认证与授权',
               href: '/docs/system-design/security/authentication-authorization-trust-boundaries',
             },
             {
@@ -1599,11 +1591,11 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               href: '/docs/system-design/security/session-jwt-oauth-oidc',
             },
             {
-              title: 'Spring Security 过滤器链',
+              title: 'Spring Security',
               href: '/docs/system-design/security/spring-security-filter-chain',
             },
             {
-              title: '注入、越权、SSRF 与反序列化风险',
+              title: 'Web 应用安全',
               href: '/docs/system-design/security/injection-authorization-ssrf-deserialization',
             },
             {
@@ -1636,21 +1628,21 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               '遥测成本开始影响业务预算时，怎样按风险设计采样、保留和高基数限制？',
           },
           articles: [
-            {title: 'Git 的工作区与分支模型', href: '/docs/tools-and-frameworks/git/'},
+            {title: 'Git', href: '/docs/tools-and-frameworks/git/'},
             {
-              title: 'Maven 生命周期与依赖收敛',
+              title: 'Maven',
               href: '/docs/system-design/production/maven-lifecycle-dependency-convergence',
             },
             {
-              title: 'Docker、CI/CD 与可重复交付',
+              title: '可重复交付',
               href: '/docs/system-design/production/docker-ci-cd-reproducible-delivery',
             },
             {
-              title: '日志、指标、Trace 与关联 ID',
+              title: '可观测性',
               href: '/docs/system-design/production/logs-metrics-traces-correlation',
             },
             {
-              title: 'JVM、线程、SQL 与网络联合排障',
+              title: '生产故障诊断',
               href: '/docs/system-design/production/jvm-thread-sql-network-joint-diagnosis',
             },
           ],
@@ -1689,23 +1681,23 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           },
           articles: [
             {
-              title: '系统设计面试流程',
+              title: '系统设计面试',
               href: '/docs/system-design/system-design/interview-process',
             },
             {
-              title: '系统设计通用架构',
+              title: '系统架构',
               href: '/docs/system-design/system-design/universe_architecture',
             },
             {
-              title: '容量估算、SLO 与故障模型',
+              title: '容量规划',
               href: '/docs/system-design/system-design/capacity-slo-failure-model',
             },
             {
-              title: '读写路径、热点与数据拆分',
+              title: '数据拆分',
               href: '/docs/system-design/system-design/read-write-paths-hotspots-sharding',
             },
             {
-              title: '系统设计题目',
+              title: '系统设计题',
               href: '/docs/system-design/system-design/system-design-problems/',
             },
           ],
@@ -1743,15 +1735,15 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               href: '/docs/system-design/distributed-system/primary_backup_replication',
             },
             {
-              title: '一致性模型、Quorum 与线性一致',
+              title: '一致性模型',
               href: '/docs/system-design/distributed-system/consistency-models-quorum-linearizability',
             },
             {
-              title: 'Raft 选举与日志复制',
+              title: 'Raft',
               href: '/docs/system-design/distributed-system/raft-election-log-replication',
             },
             {
-              title: '跨地域复制、延迟与冲突',
+              title: '跨地域复制',
               href: '/docs/system-design/distributed-system/cross-region-replication-latency-conflicts',
             },
           ],
@@ -1781,23 +1773,23 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           },
           articles: [
             {
-              title: '领域、限界上下文与统一语言',
+              title: '限界上下文',
               href: '/docs/system-design/architecture/domain-bounded-context-ubiquitous-language',
             },
             {
-              title: '聚合、不变量与事务边界',
+              title: '聚合',
               href: '/docs/system-design/architecture/aggregate-invariants-transaction-boundaries',
             },
             {
-              title: '模块化单体的依赖约束',
+              title: '模块化单体',
               href: '/docs/system-design/architecture/modular-monolith-dependency-constraints',
             },
             {
-              title: '微服务拆分的收益与账单',
+              title: '微服务架构',
               href: '/docs/system-design/architecture/microservice-splitting-benefits-costs',
             },
             {
-              title: '绞杀者迁移、兼容与回退',
+              title: '绞杀者模式',
               href: '/docs/system-design/architecture/strangler-migration-compatibility-rollback',
             },
           ],
@@ -1827,23 +1819,23 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           },
           articles: [
             {
-              title: 'SLI、SLO、错误预算与容量余量',
+              title: '服务等级目标（SLO）',
               href: '/docs/system-design/availability/sli-slo-error-budget-capacity-headroom',
             },
             {
-              title: '高可用、备份、RTO 与 RPO',
+              title: '灾难恢复',
               href: '/docs/system-design/availability/high-availability-backup-rto-rpo',
             },
             {
-              title: '故障转移、演练与恢复验证',
+              title: '故障转移',
               href: '/docs/system-design/availability/failover-drills-recovery-validation',
             },
             {
-              title: '多租户隔离、配额与数据边界',
+              title: '多租户',
               href: '/docs/system-design/availability/multi-tenant-isolation-quotas-data-boundaries',
             },
             {
-              title: '性能、可靠性与成本归因',
+              title: '成本归因',
               href: '/docs/system-design/availability/performance-reliability-cost-attribution',
             },
           ],
@@ -1873,23 +1865,23 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           },
           articles: [
             {
-              title: '从约束到架构决策记录',
+              title: '架构决策记录（ADR）',
               href: '/docs/system-design/leadership/constraints-architecture-decision-records',
             },
             {
-              title: '兼容、迁移、灰度与退出条件',
+              title: '架构迁移',
               href: '/docs/system-design/leadership/compatibility-migration-canary-exit-criteria',
             },
             {
-              title: '技术债、优先级与业务价值',
+              title: '技术债',
               href: '/docs/system-design/leadership/technical-debt-priority-business-value',
             },
             {
-              title: '跨团队设计评审与分歧处理',
+              title: '设计评审',
               href: '/docs/system-design/leadership/cross-team-design-review-disagreement',
             },
             {
-              title: '事故复盘、失败方案与组织学习',
+              title: '事故复盘',
               href: '/docs/system-design/leadership/incident-review-failed-designs-organizational-learning',
             },
           ],

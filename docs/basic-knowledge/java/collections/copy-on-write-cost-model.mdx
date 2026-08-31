@@ -2,7 +2,7 @@
 sidebar_position: 11
 ---
 
-# CopyOnWrite 容器的成本模型
+# CopyOnWrite 容器
 
 `CopyOnWriteArrayList` 在每次结构更新时复制底层数组，并让读操作访问一个稳定数组。它适合元素较少、读取和遍历远多于写入，并且允许迭代期间看到旧快照的场景。
 

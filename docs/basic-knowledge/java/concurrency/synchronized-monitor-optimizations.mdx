@@ -2,7 +2,7 @@
 sidebar_position: 6
 ---
 
-# synchronized 的 monitor 与优化
+# synchronized
 
 `synchronized` 为一段代码提供互斥，并在解锁和后续加锁之间建立 happens-before。理解它时先确定锁的是哪个对象，再讨论 HotSpot 如何优化无竞争和有竞争的获取过程。
 

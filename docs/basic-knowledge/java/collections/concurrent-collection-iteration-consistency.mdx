@@ -2,7 +2,7 @@
 sidebar_position: 14
 ---
 
-# 并发容器的迭代一致性
+# 迭代一致性
 
 并发容器允许遍历与更新重叠，但不同实现提供的视图不同。ConcurrentHashMap 是弱一致遍历，CopyOnWrite 容器是创建时快照；两者都不等于整个业务状态的事务快照。
 

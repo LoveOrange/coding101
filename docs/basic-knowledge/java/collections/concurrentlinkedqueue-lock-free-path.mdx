@@ -2,7 +2,7 @@
 sidebar_position: 13
 ---
 
-# ConcurrentLinkedQueue 的无锁路径
+# ConcurrentLinkedQueue
 
 `ConcurrentLinkedQueue` 是基于链式节点的无界 FIFO 并发队列。它使用 CAS 推进入队和出队状态，线程不会因为获取队列互斥锁而阻塞，但仍可能在竞争中重试。
 

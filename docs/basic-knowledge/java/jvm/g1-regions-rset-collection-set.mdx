@@ -2,7 +2,7 @@
 sidebar_position: 14
 ---
 
-# G1 的 Region、RSet 与回收集合
+# G1
 
 G1 把堆划分为等大小 Region，每次停顿选择一部分 Region 做疏散回收。Region 让年轻代和旧代可以由一组离散区域组成，Remembered Set 则记录来自其他 Region 的引用，使局部回收不必扫描整个堆。
 

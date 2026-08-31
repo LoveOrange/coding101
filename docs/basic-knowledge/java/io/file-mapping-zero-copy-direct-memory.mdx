@@ -2,7 +2,7 @@
 sidebar_position: 4
 ---
 
-# 文件映射、零拷贝与直接内存
+# 零拷贝
 
 `MappedByteBuffer`、`FileChannel.transferTo` 和直接 `ByteBuffer` 都能减少某些 I/O 路径中的数据复制或用户态参与，但它们优化的环节不同。“零拷贝”描述的是省掉特定副本，不是数据完全不移动。
 

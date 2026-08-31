@@ -2,7 +2,7 @@
 sidebar_position: 10
 ---
 
-# 事务、缓存与异步注解的失效场景
+# Spring 代理失效
 
 `@Transactional`、`@Cacheable` 和 `@Async` 通常依赖 Spring 代理。注解没有产生预期行为时，先检查对象是否由容器管理、调用是否经过代理、方法能否被代理，以及异常和线程边界是否符合协议。
 

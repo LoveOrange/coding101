@@ -2,7 +2,7 @@
 sidebar_position: 15
 ---
 
-# 统一异常处理与 API 错误契约
+# API 错误契约
 
 API 错误响应要让客户端稳定判断失败类型，同时为服务端保留可追踪证据。Spring MVC 可以用 `@RestControllerAdvice` 和 `@ExceptionHandler` 集中映射异常，但异常分类与 HTTP 语义仍需业务定义。
 
