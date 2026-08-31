@@ -1,0 +1,281 @@
+---
+sidebar_position: 5
+---
+
+# java.time 与时区边界
+
+`java.time` 将时间线上的瞬间、本地日期时间、固定偏移量和地区时区拆成不同类型。选择类型时先确定数据表示的是“全球同一时刻”，还是“某地日历上的时间”。
+
+## 1. Instant 表示时间线上的瞬间
+
+`Instant` 表示 UTC 时间线上的一个点，适合记录已经发生的事件：
+
+```java
+Instant createdAt = Instant.now();
+```
+
+订单创建时间、消息发送时间和审计日志时间通常属于这一类。两个系统只要使用同一时间尺度，就能比较先后和计算经过时长。
+
+`Instant` 不包含用户所在地区，也不能直接回答“当地是星期几”。展示时需要应用时区：
+
+```java
+ZoneId shanghai = ZoneId.of("Asia/Shanghai");
+ZonedDateTime localView = createdAt.atZone(shanghai);
+```
+
+同一个 `Instant` 在上海和纽约会显示不同的本地日期时间，但仍是同一个瞬间。
+
+## 2. LocalDateTime 不包含时区
+
+`LocalDate`、`LocalTime` 和 `LocalDateTime` 表示 ISO 日历中的本地字段：
+
+```java
+LocalDate date = LocalDate.of(2026, 8, 30);
+LocalTime time = LocalTime.of(9, 30);
+LocalDateTime meeting = LocalDateTime.of(date, time);
+```
+
+`2026-08-30 09:30` 没有说明在哪个地区，不能唯一对应时间线上的瞬间。它适合表示：
+
+- 生日等只关心日历日期的数据。
+- 每天 09:30 开门等本地规则。
+- 用户刚输入、尚未选择时区的日期时间。
+
+如果把服务收到的 `LocalDateTime` 直接当作 UTC 或服务器默认时区，就会让部署地区影响业务结果。
+
+## 3. OffsetDateTime 与 ZonedDateTime
+
+`OffsetDateTime` 包含固定 UTC 偏移量：
+
+```java
+OffsetDateTime value = OffsetDateTime.parse("2026-08-30T09:30:00+08:00");
+```
+
+`+08:00` 能确定一个瞬间，但没有说明偏移量来自哪个地区规则。
+
+`ZonedDateTime` 包含 `ZoneId`，例如 `Asia/Shanghai` 或 `Europe/Paris`：
+
+```java
+ZonedDateTime parisMeeting = ZonedDateTime.of(
+    LocalDateTime.of(2026, 10, 25, 2, 30),
+    ZoneId.of("Europe/Paris")
+);
+```
+
+地区时区包含历史和未来的偏移规则，能够处理夏令时变化。需要“每月按纽约当地时间执行”时，应保存本地规则和 `America/New_York`，只保存当前偏移量无法表达未来规则。
+
+### 3.1 ZoneOffset 不等于 ZoneId
+
+`ZoneOffset.ofHours(8)` 永远表示 `+08:00`。`ZoneId.of("Europe/Paris")` 的偏移量会随日期和时区数据库规则变化。固定偏移适合协议中的明确偏移值，地区时区适合需要遵循当地规则的安排。
+
+## 4. 从本地时间解析成瞬间需要业务规则
+
+```java
+LocalDateTime local = LocalDateTime.parse(
+    "2026-03-29 02:30",
+    DateTimeFormatter.ofPattern("uuuu-MM-dd HH:mm")
+);
+
+ZonedDateTime zoned = local.atZone(ZoneId.of("Europe/Paris"));
+Instant instant = zoned.toInstant();
+```
+
+夏令时切换可能造成：
+
+- **间隙**：某段本地时间不存在，时钟直接向前跳。
+- **重叠**：某段本地时间出现两次，对应两个不同瞬间。
+
+`atZone` 有默认解析规则，但支付截止、航班和调度系统不能只依赖默认行为。业务需要明确：不存在的时间向后推移、拒绝输入还是改用固定瞬间；重叠时选择较早还是较晚偏移。
+
+可以通过 `ZoneRules.getValidOffsets(localDateTime)` 检查一个本地时间对应零个、一个还是两个有效偏移。
+
+## 5. 切换时区时区分瞬间与本地字段
+
+保持同一瞬间切换显示地区：
+
+```java
+ZonedDateTime shanghai = instant.atZone(ZoneId.of("Asia/Shanghai"));
+ZonedDateTime newYork = shanghai.withZoneSameInstant(
+    ZoneId.of("America/New_York")
+);
+```
+
+两者的本地时钟不同，`toInstant()` 相同。
+
+`withZoneSameLocal` 保持本地日期时间不变，把它重新解释在另一个时区。这个方法会改变对应瞬间，通常只用于迁移错误数据或明确的日历规则，不能用来做普通时区展示。
+
+## 6. Duration 与 Period 表示不同的跨度
+
+`Duration` 按秒和纳秒计算时间线上的时长：
+
+```java
+Duration elapsed = Duration.between(startInstant, endInstant);
+```
+
+`Period` 按年、月、日表示日历差异：
+
+```java
+Period age = Period.between(birthDate, today);
+```
+
+“24 小时后”和“当地时间明天同一时刻”在夏令时切换日可能不同。前者使用 `Duration.ofHours(24)`，后者通常在带时区的时间上执行 `plusDays(1)`。选择哪一种取决于业务语义。
+
+## 7. DateTimeFormatter 不可变且线程安全
+
+```java
+private static final DateTimeFormatter ORDER_TIME =
+    DateTimeFormatter.ofPattern("uuuu-MM-dd HH:mm:ss")
+        .withResolverStyle(ResolverStyle.STRICT);
+```
+
+`DateTimeFormatter` 可以安全共享。旧的 `SimpleDateFormat` 内部维护可变解析状态，并没有线程安全保证，不能作为无同步的静态共享实例。
+
+严格解析能拒绝 2 月 30 日等非法日期。模式中的 `uuuu` 表示纪年年份；`yyyy` 是纪元年，在严格解析和公元前年份场景中语义不同。
+
+协议优先使用 ISO 8601 格式，例如：
+
+```java
+String encoded = DateTimeFormatter.ISO_INSTANT.format(createdAt);
+Instant decoded = Instant.parse(encoded);
+```
+
+自定义展示格式属于界面或集成边界，不应成为系统内部唯一时间语义。
+
+## 8. 让当前时间可以测试
+
+直接在业务方法中调用 `Instant.now()` 会让测试依赖真实时钟。可以注入 `Clock`：
+
+```java
+final class ExpirationPolicy {
+    private final Clock clock;
+
+    ExpirationPolicy(Clock clock) {
+        this.clock = clock;
+    }
+
+    boolean expired(Instant deadline) {
+        return !Instant.now(clock).isBefore(deadline);
+    }
+}
+```
+
+测试使用固定时钟：
+
+```java
+Clock clock = Clock.fixed(
+    Instant.parse("2026-08-30T01:30:00Z"),
+    ZoneOffset.UTC
+);
+```
+
+这样可以稳定覆盖到期边界、跨日和夏令时切换，不需要在测试中等待或修改系统时间。
+
+## 9. 存储与接口边界
+
+### 9.1 已发生事件
+
+保存 `Instant` 或具有明确 UTC 语义的数据库时间戳。API 输出带 `Z` 或显式偏移量，展示时再按用户时区转换。
+
+### 9.2 未来日程
+
+如果要求“每周一纽约时间 09:00 执行”，保存：
+
+- 本地日期或重复规则。
+- 本地时间。
+- 地区 `ZoneId`。
+- 对间隙和重叠的处理策略。
+
+只提前计算并长期保存下一次 UTC 时间，会在时区规则变化或夏令时切换后失去原始意图。
+
+### 9.3 数据库字段
+
+数据库的 `TIMESTAMP`、`DATETIME` 和 JDBC 映射在不同数据库中的时区语义并不相同。不能只根据字段名字判断。需要验证驱动、连接时区、数据库会话时区和 ORM 映射，并做跨时区往返测试。
+
+:::tip 一个简单判断
+
+已发生事件优先使用 `Instant`；只有本地日期或时间含义时使用 `LocalDate`、`LocalTime`；未来安排需要遵循某地规则时，保留 `ZoneId`。
+
+:::
+
+## 10. 常见问题
+
+### 10.1 时间戳是否完全没有时区问题
+
+时间线上的 epoch 值本身不含展示时区，但解析输入、数据库转换和界面格式化仍需要时区。把没有时区的字符串误当成时间戳输入，问题只会被推迟到边界。
+
+### 10.2 可以统一使用 LocalDateTime 吗
+
+不可以。它无法区分不同地区的同名本地时间，也无法唯一确定夏令时重叠区间中的瞬间。只在业务本身不需要时区或瞬间语义时使用。
+
+### 10.3 服务器默认时区可以作为业务时区吗
+
+只有系统明确约定并持续验证时才可以。容器基础镜像、JVM 参数和部署地区都可能改变默认时区。核心业务应使用显式 `ZoneId` 或 `Clock`，不要让环境默认值悄悄决定结果。
+
+### 10.4 epoch 毫秒会丢失精度吗
+
+会。`Instant` 可以表示纳秒，转换为 epoch 毫秒会截断更细粒度部分。数据库和协议也可能只有微秒或毫秒精度，比较和去重前应明确最低共同精度。
+
+## 11. 面试题
+
+### 11.1 SimpleDateFormat 为什么线程不安全，应该怎样替代
+
+<!-- 面试来源：
+- CVTE：https://www.nowcoder.com/discuss/353155526273998848
+- 三七互娱：https://www.nowcoder.com/discuss/353154703343165440
+-->
+
+**出现公司**：CVTE、三七互娱
+
+**考察重点**
+
+- 共享可变解析状态如何产生数据竞争。
+- 加锁、每次新建、ThreadLocal 与 DateTimeFormatter 的差异。
+- 新代码为何优先使用不可变的 java.time API。
+
+**相关内容**：第 7 节“DateTimeFormatter 不可变且线程安全”。
+
+<details>
+<summary>参考回答</summary>
+
+`SimpleDateFormat` 和它使用的日期解析对象包含可变状态，多线程共享同一实例时，格式化和解析过程会相互覆盖，因此没有线程安全保证。可以为每次调用创建实例、通过锁保护或为每个线程保存实例，但这些方案各自增加分配、串行竞争或生命周期管理成本。
+
+新代码应优先使用不可变且线程安全的 `DateTimeFormatter`，同时把 `Date`、`Calendar` 迁移到语义更明确的 `Instant`、`LocalDate` 或 `ZonedDateTime`。
+
+</details>
+
+### 11.2 跨时区定时任务怎样保证执行时间正确
+
+<!-- 面试来源：
+- 蚂蚁集团：https://www.nowcoder.com/discuss/732371978492866560
+-->
+
+**出现公司**：蚂蚁集团
+
+**考察重点**
+
+- 固定瞬间与本地日程的区别。
+- ZoneId、夏令时间隙和重叠。
+- 时区规则更新、幂等与错过执行的恢复。
+
+**相关内容**：第 3 节“OffsetDateTime 与 ZonedDateTime”、第 4 节“从本地时间解析成瞬间需要业务规则”、第 9 节“存储与接口边界”。
+
+<details>
+<summary>参考回答</summary>
+
+先明确任务是“某个全球瞬间执行”，还是“按某地日历规则重复执行”。前者保存 `Instant`；后者保存本地时间、重复规则和地区 `ZoneId`，每次根据最新时区规则计算下一次瞬间。
+
+还要定义夏令时间隙和重叠时的选择，避免依赖服务器默认时区。调度系统应持久化任务状态，使用幂等执行，记录计划时间与实际时间，并能在进程停机或时区规则更新后重新计算和补偿。
+
+</details>
+
+:::note 参考资料
+
+1. [Java API：java.time](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/time/package-summary.html)
+2. [Java API：Instant](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/time/Instant.html)
+3. [Java API：LocalDateTime](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/time/LocalDateTime.html)
+4. [Java API：ZonedDateTime](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/time/ZonedDateTime.html)
+5. [Java API：ZoneRules](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/time/zone/ZoneRules.html)
+6. [Java API：DateTimeFormatter](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/time/format/DateTimeFormatter.html)
+7. [Java API：Clock](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/time/Clock.html)
+
+:::

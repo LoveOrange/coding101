@@ -1,0 +1,174 @@
+---
+sidebar_position: 22
+---
+
+# CPU 升高的排查路径
+
+Java 进程 CPU 升高时，先确认是业务线程、GC、JIT 还是 native/内核工作，再把高 CPU 的操作系统线程映射到 Java 栈。线程总数多、Load Average 高或请求变慢，都不能单独证明 CPU 已经成为瓶颈。
+
+## 1. 确认范围与饱和程度
+
+先回答：
+
+- 是单个实例还是整个集群。
+- 容器 CPU usage 是否接近 quota。
+- user、system、iowait、throttling 分别怎样。
+- 吞吐和延迟是否同时变化。
+- 发生前是否有流量、发布或定时任务。
+
+在容器中，一个进程显示 100% 可能只占一个核，也可能已经用完 1 CPU 配额。使用率还要结合 throttled time 和机器核数解释。
+
+## 2. 定位进程和高 CPU 线程
+
+Linux 示例：
+
+```bash
+top -H -p <pid>
+pidstat -t -p <pid> 1
+```
+
+记录持续高 CPU 的线程 ID（TID），不要只看一次瞬时排序。将十进制 TID 转为十六进制，以匹配传统线程转储中的 `nid`：
+
+```bash
+printf '%x\n' <tid>
+jcmd <pid> Thread.print -l > threads.txt
+```
+
+找到相同 `nid=0x...` 的线程和栈。不同 JDK 的线程转储格式会变化，虚拟线程也不等同于一个固定 OS 线程；CPU 映射主要针对实际承载执行的操作系统线程。
+
+## 3. 多份线程栈区分持续热点
+
+间隔 3—10 秒采集数份，观察同一线程：
+
+- 是否持续停在同一业务循环或正则回溯。
+- 栈是否推进，只是某个算法长期占用 CPU。
+- 是否为 GC Worker、CompilerThread 或 VM Thread。
+- 是否大量线程 RUNNABLE 且频繁切换。
+
+持续同栈提示死循环或重计算；栈不断变化但始终集中在同一调用树，更适合用 CPU profile 统计。
+
+## 4. 用 CPU profile 获得调用树占比
+
+```bash
+asprof -d 30 -f cpu.html <pid>
+```
+
+火焰图宽度代表采样占比，不代表单次调用耗时。先看最宽的叶子和调用路径，再映射到请求、消息或定时任务入口。
+
+典型热点：
+
+- 序列化、压缩、加密和大集合排序。
+- 无终止循环或指数级算法。
+- 正则灾难性回溯。
+- 大量异常构造与堆栈填充。
+- 竞争自旋和高频 CAS 重试。
+- JNI 或内核系统调用。
+
+## 5. 检查 GC 和分配
+
+GC 线程占用高通常是结果，背后可能是分配率、live set 或堆配置：
+
+```bash
+jstat -gcutil <pid> 1000
+jcmd <pid> JFR.start name=cpu settings=profile duration=60s filename=cpu.jfr
+```
+
+同时查看 GC 日志中的回收频率、GC CPU、回收后堆和分配停滞。减少对象分配或无界保留可能比调整 GC 线程数更有效。
+
+## 6. 检查 JIT、类加载和 native 时间
+
+发布后短时 CPU 高可能来自类加载与 JIT 预热。JFR 的 Compilation 和 Class Load 事件、`Compiler.queue` 可验证。
+
+system CPU 高时检查：
+
+- 线程创建与上下文切换。
+- 网络/文件系统调用。
+- page fault 和内存压力。
+- native 库或 agent。
+
+只看 Java 栈可能把 native 热点显示为一个宽泛的 native 方法。async-profiler 的 native/kernel 栈或系统 `perf` 能继续展开，前提是权限和符号可用。
+
+## 7. 修复后按同一负载验证
+
+至少比较：
+
+- 每请求 CPU 或每秒 CPU time。
+- 吞吐、P99 与超时率。
+- GC CPU 和分配率。
+- 线程数、上下文切换和 throttling。
+- 热点调用树占比。
+
+降低 CPU 但显著增加延迟或内存，不是完整修复。若通过缓存换 CPU，还要验证缓存上限和一致性。
+
+## 8. 常见问题
+
+### 8.1 Load Average 高就是 CPU 高吗
+
+不是。不同系统的 load 还可能包含等待不可中断 I/O 的任务。要看 CPU usage、run queue、iowait 和具体进程线程。
+
+### 8.2 大量线程是 CPU 高的直接原因吗
+
+不一定。大量 WAITING 线程可能几乎不消耗 CPU，但占栈内存；大量可运行线程会增加调度和切换。用状态和 CPU time 判断。
+
+### 8.3 看到 RUNNABLE 就说明线程在计算吗
+
+不一定。Java RUNNABLE 包含一些在 native I/O 中的状态。结合多份栈、线程 CPU 和 wall/CPU profile。
+
+## 9. 面试题
+
+### 9.1 Java 进程 CPU 飙高，怎样定位到具体代码
+
+<!-- 面试来源：
+- 淘天：https://www.nowcoder.com/discuss/648973753296093184
+- 美团：https://www.nowcoder.com/discuss/904064312031932416
+-->
+
+**出现公司**：淘天、美团
+
+**考察重点**
+
+- 容器/进程/线程三级定位。
+- TID 与线程转储 `nid` 的映射。
+- 多快照和 CPU profile。
+
+**相关内容**：第 1 节“确认范围与饱和程度”至第 6 节“检查 JIT、类加载和 native 时间”。
+
+<details>
+<summary>参考回答</summary>
+
+先确认 CPU 配额、user/system/throttling 和受影响实例，再用 `top -H` 或 `pidstat -t` 找持续高 CPU 的 TID。把 TID 转成十六进制，在多份 `jcmd Thread.print` 中匹配 `nid`，初步确认业务、GC、JIT 或 native 线程。
+
+随后用短时 CPU profile 获得调用树占比，并把结果与 GC、编译和发布时间线关联。修复后比较每请求 CPU、P99、分配率和 throttling，不能只看一个瞬时使用率。
+
+</details>
+
+### 9.2 CPU 高但线程栈没有明显死循环，下一步看什么
+
+<!-- 面试来源：
+- 阿里巴巴：https://www.nowcoder.com/discuss/353148456472616960
+-->
+
+**出现公司**：阿里巴巴
+
+**考察重点**
+
+- 栈快照不能给出时间占比。
+- CPU profiler、GC/JIT 和 native 栈。
+- system CPU 与上下文切换。
+
+**相关内容**：第 3 节“多份线程栈区分持续热点”至第 6 节“检查 JIT、类加载和 native 时间”。
+
+<details>
+<summary>参考回答</summary>
+
+线程可能在很多方法间推进，一份快照看不到占比。采集 CPU profile，确认最宽的调用树；同时检查 GC 线程、编译线程和类加载事件。如果 system CPU 或 native 方法占比高，再看上下文切换、系统调用、page fault 和带 native/kernel 栈的 profile。
+
+</details>
+
+:::note 参考资料
+
+1. [Oracle：Troubleshoot Process Hangs and Loops](https://docs.oracle.com/en/java/javase/26/troubleshoot/troubleshoot-process-hangs-and-loops.html)
+2. [Oracle：Diagnostic Tools](https://docs.oracle.com/en/java/javase/26/troubleshoot/diagnostic-tools.html)
+3. [async-profiler](https://github.com/async-profiler/async-profiler)
+
+:::

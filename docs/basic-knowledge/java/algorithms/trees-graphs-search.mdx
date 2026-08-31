@@ -1,0 +1,253 @@
+---
+sidebar_position: 3
+---
+
+# 树、图与搜索模板
+
+树和图搜索的共同任务是从一个状态访问可达邻居。DFS 深入一条路径后回退，BFS 按距离层次扩展；选择取决于结果目标、边权和内存约束。
+
+## 1. 先把问题建模成节点与边
+
+显式图包含顶点和邻接关系，许多问题也有隐式图：
+
+- 二叉树节点的左右孩子是邻居。
+- 网格中的上下左右位置是邻居。
+- 单词经过一次合法变换得到相邻状态。
+- 任务依赖形成有向边。
+
+明确：
+
+1. 一个状态包含哪些字段。
+2. 怎样生成邻居。
+3. 什么状态算相同。
+4. 边是否有方向与权重。
+5. 从一个起点还是多个起点开始。
+
+搜索代码只是这些定义的执行器。
+
+## 2. DFS 适合路径与完整遍历
+
+递归遍历二叉树：
+
+```java
+static void preorder(TreeNode node, List<Integer> result) {
+    if (node == null) {
+        return;
+    }
+
+    result.add(node.value());
+    preorder(node.left(), result);
+    preorder(node.right(), result);
+}
+```
+
+DFS 常用于：
+
+- 树的前中后序遍历。
+- 连通分量。
+- 路径存在性。
+- 回溯枚举。
+- 拓扑排序的深度优先实现。
+
+时间通常与访问节点和边之和相关，为 O(V + E)。递归空间由最大深度决定；一条很深的链会导致 StackOverflowError。
+
+### 2.1 用显式栈避免调用栈上限
+
+```java
+Deque<TreeNode> stack = new ArrayDeque<>();
+stack.push(root);
+
+while (!stack.isEmpty()) {
+    TreeNode node = stack.pop();
+    visit(node);
+
+    if (node.right() != null) {
+        stack.push(node.right());
+    }
+    if (node.left() != null) {
+        stack.push(node.left());
+    }
+}
+```
+
+显式栈仍需 O(depth) 空间，只是把资源从 JVM 调用栈移到堆，并允许更灵活地保存状态和恢复。
+
+## 3. BFS 按边数距离扩展
+
+```java
+Queue<TreeNode> queue = new ArrayDeque<>();
+queue.offer(root);
+
+while (!queue.isEmpty()) {
+    int levelSize = queue.size();
+
+    for (int i = 0; i < levelSize; i++) {
+        TreeNode node = queue.poll();
+        visit(node);
+
+        if (node.left() != null) {
+            queue.offer(node.left());
+        }
+        if (node.right() != null) {
+            queue.offer(node.right());
+        }
+    }
+}
+```
+
+BFS 适合：
+
+- 按层遍历。
+- 无权图的最少边数路径。
+- 距离起点 k 层的节点。
+- 多源最近距离。
+
+队列峰值由图的前沿宽度决定，宽树可能需要 O(V) 内存。
+
+## 4. visited 在入队时标记
+
+图中存在环或多条路径时，必须避免重复扩展：
+
+```java
+Queue<Node> queue = new ArrayDeque<>();
+Set<Node> visited = new HashSet<>();
+
+queue.offer(start);
+visited.add(start);
+
+while (!queue.isEmpty()) {
+    Node current = queue.poll();
+
+    for (Node next : current.neighbors()) {
+        if (visited.add(next)) {
+            queue.offer(next);
+        }
+    }
+}
+```
+
+在入队时标记，能阻止多个父节点把同一节点重复加入队列。如果等到出队才标记，结果可能仍正确，但队列和运行时间会被重复状态放大。
+
+树在确认没有父指针和共享子节点时可以省略 visited；一旦把树转成无向图，父节点也成为邻居，必须记录访问状态。
+
+## 5. 多源 BFS 计算最近距离
+
+网格中有多个起点时，把所有起点按距离 0 同时入队：
+
+```java
+for (Cell source : sources) {
+    distance[source.row()][source.column()] = 0;
+    queue.offer(source);
+}
+```
+
+BFS 随后一层层扩展，每个格子第一次到达的距离就是离任一源点的最短边数。这比为每个目标分别跑一次 BFS 更高效。
+
+边权都相同才可以直接使用普通 BFS。边权为 0 或 1 可以用双端队列做 0-1 BFS；一般非负权使用 Dijkstra；存在负权则要进一步判断 Bellman-Ford 等算法及负环。
+
+## 6. DFS 回溯需要恢复状态
+
+搜索所有组合时，路径状态只属于当前递归分支：
+
+```java
+path.add(choice);
+search(nextState, path, result);
+path.remove(path.size() - 1);
+```
+
+加入、递归、撤销必须成对。visited 有两种不同含义：
+
+- **全局已处理**：节点以后无需再次访问，不撤销。
+- **当前路径已使用**：只防止路径内重复，回溯时撤销。
+
+混淆两者会漏掉合法路径或造成环。
+
+## 7. 拓扑排序处理依赖关系
+
+有向无环图中，Kahn 算法从入度为 0 的节点开始：
+
+1. 统计每个节点入度。
+2. 把所有入度 0 节点入队。
+3. 取出节点并删除其出边。
+4. 邻居入度降到 0 时入队。
+5. 最终处理节点数小于 V，说明存在环。
+
+它适合构建顺序、课程依赖和任务调度。多个入度 0 节点意味着拓扑序可能不唯一；需要字典序最小时使用优先队列。
+
+## 8. 常见问题
+
+### 8.1 BFS 一定比 DFS 快吗
+
+两者完整遍历通常都是 O(V + E)，只是访问顺序和空间不同。寻找无权最短路时 BFS 能按层首次到达；路径很深但分支很窄时 DFS 更省前沿内存。
+
+### 8.2 递归 DFS 为什么会栈溢出
+
+每层调用都占用栈帧，深度接近节点数的退化树可能超过线程栈。改用显式 Deque，或从数据约束限制最大深度。
+
+### 8.3 网格 visited 可以直接修改原数组吗
+
+只有允许破坏输入、标记值不会与合法数据冲突时才可以。公共 API 更适合说明是否修改参数；需要保留输入时使用独立 boolean 数组或状态编码。
+
+### 8.4 BFS 能处理带权最短路吗
+
+普通 BFS 只在每条边成本相同的情况下保证最短。权重不同需要按当前最小累计距离选择节点，通常使用 Dijkstra；存在负权时还要换算法。
+
+## 9. 面试题
+
+### 9.1 二叉树右视图怎样用 BFS 或 DFS 实现
+
+<!-- 面试来源：
+- 字节跳动：https://www.nowcoder.com/discuss/353156568445296640
+-->
+
+**出现公司**：字节跳动
+
+**考察重点**
+
+- BFS 的层边界与每层最后节点。
+- DFS 的深度和首次访问顺序。
+- 两种方法的时间与峰值空间。
+
+**相关内容**：第 2 节“DFS 适合路径与完整遍历”、第 3 节“BFS 按边数距离扩展”。
+
+<details>
+<summary>参考回答</summary>
+
+BFS 可以记录每层开始时的队列大小，处理这一层时把最后一个节点加入结果。DFS 可以先访问右子树，并在第一次到达某个深度时记录节点；需要让结果长度表示已经记录的深度。
+
+两者都访问每个节点一次，时间 O(n)。BFS 空间由最大层宽决定，DFS 递归空间由树高决定。深树用递归还要考虑栈溢出。
+
+</details>
+
+### 9.2 怎样计算网格中每个位置到最近起点的距离
+
+<!-- 面试来源：
+- 字节跳动：https://www.nowcoder.com/discuss/353156568445296640
+-->
+
+**出现公司**：字节跳动
+
+**考察重点**
+
+- 多源 BFS 为什么只需遍历一次。
+- visited 或 distance 在入队时设置。
+- 边权改变后为何不能继续用普通 BFS。
+
+**相关内容**：第 4 节“visited 在入队时标记”、第 5 节“多源 BFS 计算最近距离”。
+
+<details>
+<summary>参考回答</summary>
+
+把所有起点的距离设为 0 并同时加入队列，然后按 BFS 扩展上下左右邻居。一个格子第一次被访问时，距离就是当前格子距离加 1，并立即标记，避免重复入队。
+
+所有边成本相同，所以首次到达就是离任一源点的最短距离，时间和空间都是 O(行数 × 列数)。如果移动成本不同，则要根据权重改用 0-1 BFS 或 Dijkstra。
+
+</details>
+
+:::note 参考资料
+
+1. [Java API：ArrayDeque](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/ArrayDeque.html)
+2. [Java API：HashSet](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/HashSet.html)
+3. [Java API：PriorityQueue](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/PriorityQueue.html)
+
+:::

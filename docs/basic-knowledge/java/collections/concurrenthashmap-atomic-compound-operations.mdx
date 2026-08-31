@@ -1,0 +1,202 @@
+---
+sidebar_position: 10
+---
+
+# ConcurrentHashMap 与原子复合操作
+
+`ConcurrentHashMap` 允许多个线程并发读取和更新不同键。当前实现使用 volatile、CAS、桶级同步和协作扩容；正确性仍取决于调用方是否使用原子复合方法表达完整操作。
+
+## 1. 并发 Map 解决什么问题
+
+普通 HashMap 没有并发读写保证。把每个方法都放进一把全局锁可以保证基本安全，却会让无关键也排队。
+
+ConcurrentHashMap 的目标是：
+
+- 读取通常不需要获取桶锁。
+- 空桶插入可通过 CAS 完成。
+- 冲突桶更新只同步相关桶。
+- 扩容时多个线程可以协作迁移。
+- 迭代与更新能够并发进行。
+
+它仍然是共享可变状态。高竞争热点键、耗时计算函数和跨多个键的不变量不会因为换了容器就自动解决。
+
+## 2. 当前实现不再使用 Segment
+
+JDK 7 的 ConcurrentHashMap 使用 Segment 分段。JDK 8 之后的主线实现改为桶数组加节点结构：
+
+- table 字段和节点值、链接使用可见性机制发布。
+- 桶为空时，插入者通过 CAS 安装首节点。
+- 桶非空时，对桶首节点同步并更新链表或树。
+- 遇到迁移标记时，线程可以参与扩容。
+
+因此回答当前实现时，不应继续说“默认 16 个 Segment”。版本差异可以作为历史补充，但要先说明目标 JDK。
+
+## 3. get 为什么通常不加锁
+
+`get` 计算哈希并定位桶，通过 volatile 读取和不可变键字段沿节点查找。写线程会按实现的发布规则更新节点，使随后读取能够观察到有效结构。
+
+```java
+V value = cache.get(key);
+```
+
+不加互斥锁不等于完全没有同步语义，也不等于一次读取能代表整个 Map 的全局快照。ConcurrentHashMap 保证已完成更新与随后针对该键的读取之间的 happens-before 关系；跨多个键的组合状态仍可能来自不同时间点。
+
+## 4. 先检查后执行仍然有竞态
+
+下面的代码即使用 ConcurrentHashMap 也不原子：
+
+```java
+if (!users.containsKey(id)) {
+    users.put(id, loadUser(id));
+}
+```
+
+两个线程可能同时看见键不存在，并各自执行加载。应使用表达完整意图的方法：
+
+```java
+User user = users.computeIfAbsent(id, this::loadUser);
+```
+
+常用原子复合方法：
+
+| 需求 | 方法 |
+| --- | --- |
+| 仅不存在时写入 | `putIfAbsent` |
+| 仅值仍匹配时替换 | `replace(key, old, next)` |
+| 仅值仍匹配时删除 | `remove(key, value)` |
+| 按旧值计算新值 | `compute`、`computeIfPresent` |
+| 不存在时计算 | `computeIfAbsent` |
+| 合并已有与新增值 | `merge` |
+
+这些方法只保证单个键对应操作的原子性，不会把数据库写入、另一个 Map 和消息发送一起变成事务。
+
+## 5. compute 函数必须短小
+
+```java
+LongAdder counter = counters.computeIfAbsent(
+    key,
+    ignored -> new LongAdder()
+);
+counter.increment();
+```
+
+计算过程中，其他线程对相关键的更新可能被阻塞。映射函数应该：
+
+- 快速完成。
+- 不发起不可控网络或数据库阻塞。
+- 不再次递归修改会形成冲突的同一个 Map。
+- 能处理调用失败，不留下外部副作用歧义。
+
+`computeIfAbsent` 不应被当作完整的缓存加载协议。加载超时、刷新、失败缓存、穿透保护和容量淘汰需要专门设计。
+
+## 6. 为什么不允许 null
+
+ConcurrentHashMap 不允许 null 键和值：
+
+```java
+// map.put("key", null); // 抛出 NullPointerException
+```
+
+在并发环境中，`get(key) == null` 被明确解释为“当前没有映射”。如果允许 null 值，调用方再执行 `containsKey` 的过程中状态可能已经变化，无法稳定区分“映射到 null”和“映射不存在”。禁止 null 让缺失成为单一哨兵语义，也支持并行归约使用 null 表示没有结果。
+
+需要保存“已查询但没有业务值”时，可以保存显式状态对象，而不是 null。
+
+## 7. 多线程协作扩容
+
+当元素增加需要扩容时，当前实现会把旧表的桶迁移到更大数组。线程发现某一范围正在迁移时，可以领取一段桶参与复制；完成的旧桶会放置转发标记，后续操作前往新表。
+
+协作可以缩短单个线程独自搬完所有数据的时间，但扩容仍会消耗 CPU、内存带宽和分配空间。已知规模时合理预估容量仍有价值。
+
+扩容期间 Map 可以继续服务，并不代表全局遍历获得单一时刻快照。迭代器按弱一致语义工作。
+
+## 8. 热点键仍会串行竞争
+
+不同桶可以并发更新，同一个键的更新却必须保持顺序。下面的计数若所有请求都写一个键，竞争仍然集中：
+
+```java
+counts.merge("all", 1L, Long::sum);
+```
+
+高频统计可以把值设为 `LongAdder`，把单个数值内部竞争分散；更大的系统还可以按业务维度分片、本地聚合后批量合并，或者改变数据所有权。
+
+不要把 key 人为加随机后缀就算完成设计。读取、过期、容错和最终合并必须一起定义。
+
+## 9. 常见问题
+
+### 9.1 ConcurrentHashMap 的 size 是精确快照吗
+
+方法会返回调用过程观察到的映射数量，但并发更新可以在统计前后继续发生，因此不能把它与随后操作组合成全局不变量。容量控制和业务限额需要原子协议，不能先看 size 再 put。
+
+### 9.2 可以锁住 ConcurrentHashMap 对象完成多键事务吗
+
+只有所有访问者都严格遵守同一外部锁时才有意义；容器自身的方法不会自动取得这把用户锁。多键不变量通常应封装在持有明确锁的组件内，或改用不可变快照和单写者模型。
+
+### 9.3 Hashtable 与 ConcurrentHashMap 有什么区别
+
+Hashtable 是较早的同步 Map，常用操作围绕实例锁串行。ConcurrentHashMap 提供更细粒度并发、原子复合 API 和弱一致遍历。新代码通常选择 ConcurrentHashMap，但仍需按所需的一致性语义判断。
+
+### 9.4 ConcurrentHashMap 的读取一定是最新值吗
+
+针对某个键，已完成的更新与随后报告该更新值的读取有 happens-before 关系。但“最新”需要定义全局时间和多个键的一致快照，ConcurrentHashMap 并不提供这种事务视图。
+
+## 10. 面试题
+
+### 10.1 JDK 8 之后 ConcurrentHashMap 怎样保证并发安全
+
+<!-- 面试来源：
+- 快手：https://www.nowcoder.com/discuss/179560
+- 阿里巴巴：https://www.nowcoder.com/discuss/353159278544494592
+-->
+
+**出现公司**：快手、阿里巴巴
+
+**考察重点**
+
+- 当前数组、链表或树结构与 JDK 7 Segment 的区别。
+- volatile、CAS、桶级 synchronized 与协作扩容的分工。
+- 容器安全与业务复合操作原子性的边界。
+
+**相关内容**：第 2 节“当前实现不再使用 Segment”至第 4 节“先检查后执行仍然有竞态”、第 7 节“多线程协作扩容”。
+
+<details>
+<summary>参考回答</summary>
+
+JDK 8 之后的实现不再以 Segment 作为主结构，而是使用桶数组、链表和树。读取通过 volatile 等发布关系查找，空桶插入使用 CAS，冲突桶更新对桶首同步；扩容时线程可以根据转发节点协作迁移。
+
+这些机制保证容器方法的并发契约，但两次方法调用组合起来不自动原子。先 contains 再 put 仍有竞态，应使用 `putIfAbsent`、`compute`、`merge` 等单键原子方法；跨键不变量需要更高层同步。
+
+</details>
+
+### 10.2 ConcurrentHashMap 为什么不允许 null
+
+<!-- 面试来源：
+- 阿里巴巴：https://www.nowcoder.com/discuss/353159278544494592
+- 快手：https://www.nowcoder.com/discuss/179560
+-->
+
+**出现公司**：阿里巴巴、快手
+
+**考察重点**
+
+- null 在并发 get 中承担缺失哨兵的作用。
+- `containsKey` 与 `get` 分开调用不能形成稳定判断。
+- 怎样用显式状态替代业务 null。
+
+**相关内容**：第 6 节“为什么不允许 null”。
+
+<details>
+<summary>参考回答</summary>
+
+ConcurrentHashMap 用 `get` 返回 null 明确表示当前没有映射。如果允许 null 值，调用方还要再检查 `containsKey`，但两个调用之间可能发生并发更新，无法可靠区分缺失和值为 null。
+
+禁止 null 让读取和并行归约都有清楚的“没有结果”语义。业务确实要记录空结果时，可以保存一个枚举或包装对象，显式区分未加载、没有值和加载失败。
+
+</details>
+
+:::note 参考资料
+
+1. [Java API：ConcurrentHashMap](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/ConcurrentHashMap.html)
+2. [OpenJDK：ConcurrentHashMap 源码](https://github.com/openjdk/jdk/blob/jdk-26-ga/src/java.base/share/classes/java/util/concurrent/ConcurrentHashMap.java)
+3. [Java API：ConcurrentMap](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/ConcurrentMap.html)
+
+:::

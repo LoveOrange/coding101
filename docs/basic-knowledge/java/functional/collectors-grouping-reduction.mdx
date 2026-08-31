@@ -1,0 +1,314 @@
+---
+sidebar_position: 3
+---
+
+# Collector、分组与归约
+
+`collect` 把 Stream 中的元素累积到列表、Map 或自定义结果容器。`Collector` 定义容器怎样创建、元素怎样加入、并行结果怎样合并，以及最终需要返回什么类型。
+
+## 1. collect 处理可变归约
+
+把活跃用户收集到可变列表，可以写成：
+
+```java
+List<User> activeUsers = users.stream()
+    .filter(User::active)
+    .collect(Collectors.toCollection(ArrayList::new));
+```
+
+这个过程可以理解为三步：
+
+1. 创建一个空 `ArrayList`。
+2. 遍历元素并调用 `add`。
+3. 返回累积完成的列表。
+
+`collect` 的结果容器会在流水线内部修改，调用方不需要维护外部共享列表。并行执行时，每个分区可以先建立自己的容器，再按 Collector 的规则合并。
+
+### 1.1 collect 与 reduce 的区别
+
+`reduce` 更适合把元素合成一个不可变值：
+
+```java
+int total = orders.stream()
+    .map(Order::amount)
+    .reduce(0, Integer::sum);
+```
+
+不要用 `reduce` 修改同一个 `ArrayList`：
+
+```java
+// 错误示例：并行时多个任务可能共享并修改 identity
+List<User> result = users.parallelStream().reduce(
+    new ArrayList<>(),
+    (list, user) -> {
+        list.add(user);
+        return list;
+    },
+    (left, right) -> {
+        left.addAll(right);
+        return left;
+    }
+);
+```
+
+`reduce` 的 identity 和累积函数需要满足归约契约；把可变容器当成共享 identity 会破坏它。收集可变结果时使用 `collect`。
+
+## 2. Collector 的五个组成部分
+
+一个 `Collector<T, A, R>` 有三个类型参数：
+
+- `T`：Stream 中的元素类型。
+- `A`：内部累积容器类型。
+- `R`：最终结果类型。
+
+它由五部分组成：
+
+| 组成部分 | 作用 |
+| --- | --- |
+| `supplier` | 创建新的累积容器 |
+| `accumulator` | 把一个元素加入容器 |
+| `combiner` | 合并两个分区的容器 |
+| `finisher` | 把累积容器转换成最终结果 |
+| `characteristics` | 声明并发、顺序和是否无需转换等特征 |
+
+下面是一个简化的字符串拼接 Collector：
+
+```java
+Collector<String, StringJoiner, String> commaSeparated = Collector.of(
+    () -> new StringJoiner(", "),
+    StringJoiner::add,
+    StringJoiner::merge,
+    StringJoiner::toString
+);
+```
+
+```java
+String names = users.stream()
+    .map(User::displayName)
+    .collect(commaSeparated);
+```
+
+串行流中 `combiner` 可能不会执行，但它仍然是 Collector 契约的一部分。缺少正确的合并规则，自定义 Collector 一旦并行就会丢数据或产生错误顺序。
+
+## 3. 收集到 List、Set 与不可修改结果
+
+常用写法包括：
+
+```java
+List<String> names = users.stream()
+    .map(User::displayName)
+    .collect(Collectors.toList());
+
+Set<String> roles = users.stream()
+    .flatMap(user -> user.roles().stream())
+    .collect(Collectors.toSet());
+
+List<String> immutableNames = users.stream()
+    .map(User::displayName)
+    .collect(Collectors.toUnmodifiableList());
+```
+
+`Collectors.toList()` 不承诺具体实现类型，也不承诺可变性、线程安全性或可序列化性。需要明确的容器能力时，直接指定工厂：
+
+```java
+LinkedHashSet<String> orderedRoles = users.stream()
+    .flatMap(user -> user.roles().stream())
+    .collect(Collectors.toCollection(LinkedHashSet::new));
+```
+
+`Stream.toList()` 明确返回不可修改列表；它与 `Collectors.toList()` 的契约不同。
+
+## 4. toMap 必须处理键冲突
+
+如果键确定唯一，可以使用两个参数的 `toMap`：
+
+```java
+Map<Long, User> usersById = users.stream()
+    .collect(Collectors.toMap(User::id, Function.identity()));
+```
+
+遇到重复键时，这个 Collector 会抛出 `IllegalStateException`。键可能重复时，需要提供合并函数：
+
+```java
+Map<String, User> latestByEmail = users.stream()
+    .collect(Collectors.toMap(
+        User::email,
+        Function.identity(),
+        (left, right) -> left.updatedAt().isAfter(right.updatedAt())
+            ? left
+            : right
+    ));
+```
+
+如果还需要保持遇到顺序，可以指定 Map 工厂：
+
+```java
+Map<String, User> ordered = users.stream()
+    .collect(Collectors.toMap(
+        User::email,
+        Function.identity(),
+        (left, right) -> right,
+        LinkedHashMap::new
+    ));
+```
+
+合并函数不是为了消除异常而随便补上的参数。它定义了数据冲突的处理规则，应该能解释为什么保留左值、右值或合并后的新值。
+
+## 5. groupingBy 与下游 Collector
+
+按部门分组会得到 `Map<Department, List<User>>`：
+
+```java
+Map<Department, List<User>> usersByDepartment = users.stream()
+    .collect(Collectors.groupingBy(User::department));
+```
+
+`groupingBy` 的第二个参数是下游 Collector。它决定每组怎样继续归约：
+
+```java
+Map<Department, Long> counts = users.stream()
+    .collect(Collectors.groupingBy(
+        User::department,
+        Collectors.counting()
+    ));
+```
+
+```java
+Map<Department, Set<String>> roleNames = users.stream()
+    .collect(Collectors.groupingBy(
+        User::department,
+        Collectors.flatMapping(
+            user -> user.roles().stream(),
+            Collectors.toSet()
+        )
+    ));
+```
+
+常用下游 Collector 还包括：
+
+- `mapping`：先转换组内元素。
+- `filtering`：只收集组内满足条件的元素，同时保留空组。
+- `summingInt`、`averagingLong`：聚合数值。
+- `maxBy`、`minBy`：查找组内极值。
+- `collectingAndThen`：在下游结果完成后再转换。
+
+### 5.1 partitioningBy 只产生两个布尔分区
+
+```java
+Map<Boolean, List<User>> partition = users.stream()
+    .collect(Collectors.partitioningBy(User::active));
+```
+
+`partitioningBy` 的键固定为 `true` 和 `false`，适合二元条件。需要按多个业务键分类时使用 `groupingBy`。
+
+## 6. 归约必须满足结合律
+
+并行归约会改变分组和合并顺序。合并操作必须满足结合律：
+
+```text
+(a op b) op c == a op (b op c)
+```
+
+整数加法满足这个条件，整数减法不满足：
+
+```java
+int value = Stream.of(10, 3, 2)
+    .reduce(0, (left, right) -> left - right);
+```
+
+串行执行得到的某个结果，不能保证与不同分区方式下的并行结果相同。浮点加法在数学上可结合，但受舍入影响也可能因为合并顺序不同产生细小差异。
+
+Collector 还要求：
+
+- 同一个输入在等价分区方式下得到等价结果。
+- `combiner` 能合并两个独立累积容器。
+- 声明 `CONCURRENT` 前，累积容器和累积操作确实支持并发。
+- 声明 `IDENTITY_FINISH` 时，`A` 能直接作为 `R` 返回。
+
+## 7. 常见问题
+
+### 7.1 groupingBy 会保留输入顺序吗
+
+默认外层 Map 的类型没有顺序承诺。组内列表在有序串行流中通常保留遇到顺序，但如果业务依赖外层键顺序，应该显式提供 `LinkedHashMap` 工厂；需要排序键时使用 `TreeMap`。
+
+```java
+Map<Department, List<User>> ordered = users.stream()
+    .collect(Collectors.groupingBy(
+        User::department,
+        LinkedHashMap::new,
+        Collectors.toList()
+    ));
+```
+
+### 7.2 groupingByConcurrent 一定更快吗
+
+不一定。它允许并发累积，并通常返回 `ConcurrentMap`，但需要无序语义或接受相应顺序约束。数据量、键分布、下游 Collector 和合并成本都会影响结果，热点键还可能形成竞争。
+
+### 7.3 如何同时计算多个统计值
+
+可以使用 `summarizingInt` 得到数量、总和、最小值、最大值和平均值，也可以用 `teeing` 把两个 Collector 的结果合并。统计口径复杂时，定义有名字的结果类型通常比嵌套 Map 更容易维护。
+
+### 7.4 收集结果里可以包含 null 吗
+
+取决于 Collector 的具体契约。`toUnmodifiableList`、`toUnmodifiableSet` 和 `toUnmodifiableMap` 不允许 null。`toMap` 对键和值的限制还会受目标 Map 实现影响。不要把“某个当前实现能保存 null”当作所有 Collector 的统一保证。
+
+## 8. 面试题
+
+### 8.1 使用 Stream 把人员列表转换成 Map，重复姓名怎样处理
+
+<!-- 面试来源：
+- 飞猪：https://www.nowcoder.com/discuss/864543031494467584
+-->
+
+**出现公司**：飞猪
+
+**考察重点**
+
+- `Collectors.toMap` 的键函数、值函数与合并函数。
+- 重复键为什么不是单纯的语法问题。
+- 结果 Map 的顺序和实现是否需要显式指定。
+
+**相关内容**：第 4 节“toMap 必须处理键冲突”。
+
+<details>
+<summary>参考回答</summary>
+
+可以使用 `Collectors.toMap(Person::name, Function.identity(), mergeFunction)`。不提供合并函数时，重复键会抛出 `IllegalStateException`。如果姓名不是唯一标识，更合理的结果可能是 `groupingBy(Person::name)`；如果业务确认只保留一条，则合并函数应按版本、更新时间或明确优先级选择，不能无依据地丢弃。
+
+如果调用方还依赖遍历顺序，需要通过第四个参数指定 `LinkedHashMap::new`，而不是依赖默认 Map 的当前实现。
+
+</details>
+
+### 8.2 collect 和 reduce 应该怎样选择
+
+<!-- 面试来源：
+- 经纬恒润：https://www.nowcoder.com/discuss/850635333283672064
+-->
+
+**出现公司**：经纬恒润
+
+**考察重点**
+
+- 不可变值归约与可变容器累积的区别。
+- identity、累积函数和组合函数需要满足的契约。
+- 串行代码为什么可能在并行后暴露错误。
+
+**相关内容**：第 1 节“collect 处理可变归约”、第 6 节“归约必须满足结合律”。
+
+<details>
+<summary>参考回答</summary>
+
+把元素合成一个值，例如求和、最值或不可变对象时使用 `reduce`；把元素放进列表、Map 或其他可变容器时使用 `collect`。`collect` 会为分区创建独立累积容器，并通过 combiner 合并。
+
+无论使用哪一种，并行执行都要求组合规则满足结合律，identity 与累积函数保持一致。不能因为串行测试通过，就假定修改共享容器的归约写法是正确的。
+
+</details>
+
+:::note 参考资料
+
+1. [Java API：Collector](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/stream/Collector.html)
+2. [Java API：Collectors](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/stream/Collectors.html)
+3. [Java API：Stream.collect](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/stream/Stream.html#collect(java.util.stream.Collector))
+4. [Java API：Stream.reduce](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/stream/Stream.html#reduce(T,java.util.function.BinaryOperator))
+
+:::

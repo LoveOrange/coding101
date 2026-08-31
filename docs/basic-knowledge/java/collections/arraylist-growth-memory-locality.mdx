@@ -1,0 +1,201 @@
+---
+sidebar_position: 2
+---
+
+# ArrayList 扩容与内存局部性
+
+`ArrayList` 用一段连续的引用数组保存元素。随机访问只需计算下标，尾部追加通常很快；容量不足时则要申请更大的数组并复制已有引用。
+
+## 1. size 与 capacity 是两个概念
+
+`size` 是当前元素数量，capacity 是内部数组能容纳的元素数量：
+
+```java
+List<String> values = new ArrayList<>(100);
+System.out.println(values.size()); // 0
+```
+
+构造参数 `100` 只预留容量，不会创建 100 个逻辑元素。此时调用 `get(0)` 仍然会抛出 `IndexOutOfBoundsException`。
+
+ArrayList 只保存对象引用。引用数组连续，不代表每个元素对象也在堆中连续排列。
+
+## 2. 随机访问为什么是常数时间
+
+读取第 `i` 个元素时，ArrayList 先检查 `0 <= i < size`，再读取内部数组对应位置：
+
+```java
+User user = users.get(i);
+```
+
+不需要从第一个元素逐个移动，因此 `get` 和 `set` 是常数时间。顺序遍历也能连续读取引用数组，通常比在分散节点之间跳转更利于 CPU 缓存和预取。
+
+这类局部性优势不是 Java API 的复杂度符号能够完整表达的。两个操作都写作 O(n)，连续数组复制和链表节点遍历的实际吞吐仍可能明显不同。
+
+## 3. 尾部追加与扩容
+
+只要内部数组还有空位，尾部 `add` 就把引用写到 `elementData[size]`，再增加 size：
+
+```java
+users.add(user);
+```
+
+容量不足时，当前 OpenJDK 实现会：
+
+1. 根据最小需要容量计算新容量。
+2. 通常按旧容量约 1.5 倍增长。
+3. 申请新的引用数组。
+4. 复制现有元素引用。
+5. 把内部字段指向新数组。
+
+增长比例属于实现细节，不是 `List` 或 `ArrayList` API 对所有 JDK 的永久保证。可以依赖的是：尾部追加具有摊销常数时间，而单次扩容需要线性复制。
+
+### 3.1 什么是摊销复杂度
+
+假设连续追加很多元素，大多数 `add` 只写一个数组位置，少数操作承担扩容复制。把这些扩容成本分摊到整段追加操作，每次追加的平均成本仍是 O(1)。
+
+这不代表每一次延迟都相同。对延迟敏感的热路径，恰好发生的一次大数组复制仍可能形成明显抖动。
+
+## 4. 指定初始容量的作用
+
+已知大致元素数量时，可以预留容量：
+
+```java
+List<OrderLine> lines = new ArrayList<>(expectedLineCount);
+```
+
+它可以减少：
+
+- 多次数组分配。
+- 已有引用复制。
+- 旧数组等待 GC 的短期内存峰值。
+
+容量也不能盲目放大。为大量小列表统一预留很大数组，会让空槽占用超过扩容节省。预估应来自真实数据分布，而不是固定“性能优化常数”。
+
+已有列表需要追加大量元素时，可以调用 `ensureCapacity`；元素减少后确实需要长期保留列表时，`trimToSize` 可以请求缩小容量，但同样会复制数组，不适合频繁调用。
+
+## 5. 中间插入与删除需要搬移
+
+在索引位置插入元素时，后面的引用需要整体向右移动：
+
+```java
+users.add(0, user);
+```
+
+删除元素后，后面的引用向左移动，最后一个旧位置会被置为 `null`，使已删除对象可以被回收。
+
+因此：
+
+- 尾部追加通常 O(1) 摊销。
+- 中间插入、删除通常 O(n)。
+- 按值查找与删除通常先线性查找，再搬移数组。
+
+批量删除时，倒序按索引删除虽然避免索引错位，仍可能反复搬移。可以使用 `removeIf`，或者一次筛选出保留元素，让实现统一压缩数组。
+
+## 6. subList 是原列表的视图
+
+```java
+List<User> page = users.subList(from, to);
+```
+
+`subList` 不是自动复制的数据。对视图的修改会反映到原列表；原列表发生视图不知道的结构修改后，再操作视图可能抛出 `ConcurrentModificationException`。
+
+需要独立快照时显式复制：
+
+```java
+List<User> page = new ArrayList<>(users.subList(from, to));
+```
+
+旧版本 JDK 的子列表还可能间接保留很大的底层数组。当前实现细节会变化，但“视图共享结构、快照独立持有数据”的语义区分始终需要明确。
+
+## 7. ArrayList 的线程边界
+
+ArrayList 不提供并发修改保证。下面的复合操作不是原子的：
+
+```java
+if (!users.contains(user)) {
+    users.add(user);
+}
+```
+
+多个线程可能同时通过检查并重复写入。外部加锁、线程封闭、不可变快照或并发集合应根据共享模型选择。`Collections.synchronizedList` 只为单个方法提供同步，迭代时仍需按其文档在同一锁上同步。
+
+## 8. 常见问题
+
+### 8.1 `new ArrayList<>()` 会立即分配默认容量吗
+
+当前 OpenJDK 实现会使用共享空数组，在首次加入元素时再分配实际存储。默认容量和延迟分配策略属于实现细节，不应成为业务正确性的依赖。
+
+### 8.2 `Arrays.asList` 是 ArrayList 吗
+
+不是 `java.util.ArrayList`。它是由数组支持的固定大小列表，可以替换已有位置，但 `add` 和 `remove` 会抛出 `UnsupportedOperationException`。数组与列表对元素修改仍相互可见。
+
+### 8.3 为什么删除 `List<Integer>` 中的 1 容易写错
+
+`remove(1)` 选择的是接收 `int` 索引的重载，删除下标 1。删除值为 1 的元素应写 `remove(Integer.valueOf(1))`。重载选择发生在编译阶段。
+
+### 8.4 ArrayList 一定比数组慢吗
+
+ArrayList 增加边界检查、容量管理和泛型容器语义，基本类型还需要装箱。JIT 可以消除部分开销，但不能假定完全相同。固定长度、基本类型密集计算可直接使用数组；一般业务序列优先选择可读性更好的 List。
+
+## 9. 面试题
+
+### 9.1 ArrayList 怎样扩容，指定初始容量有什么作用
+
+<!-- 面试来源：
+- 一嗨租车：https://www.nowcoder.com/discuss/501136023770976256
+- 美团：https://www.nowcoder.com/discuss/400870/
+-->
+
+**出现公司**：一嗨租车、美团
+
+**考察重点**
+
+- size、capacity 与内部引用数组。
+- 扩容复制和摊销常数时间。
+- 预留过小和过大分别产生什么成本。
+
+**相关内容**：第 1 节“size 与 capacity 是两个概念”、第 3 节“尾部追加与扩容”、第 4 节“指定初始容量的作用”。
+
+<details>
+<summary>参考回答</summary>
+
+ArrayList 通过引用数组保存元素。尾部有空位时，追加只写入当前 size 对应位置；容量不足时，需要计算更大容量、申请新数组并复制已有引用。当前 OpenJDK 通常按约 1.5 倍增长，但增长比例是实现细节。
+
+连续追加的扩容成本分摊后是 O(1)，单次扩容仍是 O(n)。已知大致数量时指定初始容量可以减少分配和复制，但预留过大也会让大量空槽长期占用内存。
+
+</details>
+
+### 9.2 ArrayList 与 LinkedList 应该怎样选择
+
+<!-- 面试来源：
+- 字节跳动、阿里巴巴：https://www.nowcoder.com/discuss/353147579288461312
+- 美团：https://www.nowcoder.com/discuss/400870/
+-->
+
+**出现公司**：字节跳动、阿里巴巴、美团
+
+**考察重点**
+
+- 随机访问、定位和节点修改的不同成本。
+- 引用数组的缓存局部性与链表的节点开销。
+- “插入多就用 LinkedList”为什么缺少前提。
+
+**相关内容**：第 2 节“随机访问为什么是常数时间”、第 5 节“中间插入与删除需要搬移”。
+
+<details>
+<summary>参考回答</summary>
+
+一般列表优先使用 ArrayList：随机访问 O(1)，顺序遍历局部性好，尾部追加是摊销 O(1)。LinkedList 按索引定位是 O(n)，每个元素还需要独立节点和前后指针。
+
+只有已经持有迭代位置，并频繁在该位置插入删除时，链表才能省去数组搬移。作为队列或栈通常使用 ArrayDeque，因此不能只按“增删多、查询少”做抽象判断。
+
+</details>
+
+:::note 参考资料
+
+1. [Java API：ArrayList](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/ArrayList.html)
+2. [OpenJDK：ArrayList 源码](https://github.com/openjdk/jdk/blob/jdk-26-ga/src/java.base/share/classes/java/util/ArrayList.java)
+3. [Java API：Arrays.asList](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/Arrays.html#asList(T...))
+4. [Java API：List.subList](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/List.html#subList(int,int))
+
+:::

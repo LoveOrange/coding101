@@ -1,0 +1,143 @@
+---
+sidebar_position: 18
+---
+
+# 配置文件、环境变量与属性优先级
+
+Spring Boot 把配置文件、环境变量、系统属性和命令行参数统一放进 `Environment`。同一个配置项出现多次时，最终值由 PropertySource 的优先级和配置文件内部的加载顺序共同决定。
+
+## 1. Environment 保存配置来源
+
+应用可以通过三种常见方式读取属性：
+
+```java
+@Value("${payment.timeout}")
+Duration timeout;
+```
+
+```java
+environment.getProperty("payment.timeout", Duration.class);
+```
+
+```java
+@ConfigurationProperties("payment")
+public record PaymentProperties(URI endpoint, Duration timeout) {}
+```
+
+一组相关配置优先使用 `@ConfigurationProperties`。它支持结构化绑定、类型转换、校验和配置元数据，比散落的字符串 key 更容易维护。
+
+## 2. 后加入的高优先级来源覆盖默认值
+
+Spring Boot 官方顺序较长，日常排查可以先记住常见层级：
+
+1. 应用设置的默认属性。
+2. jar 内、jar 外及 profile 对应的配置数据。
+3. 操作系统环境变量和 Java 系统属性。
+4. `SPRING_APPLICATION_JSON`。
+5. 命令行参数。
+6. 测试专用属性来源。
+
+在官方顺序中，后面的来源可以覆盖前面的值。例如：
+
+```bash
+java -jar order.jar --server.port=9000
+```
+
+这条命令默认会覆盖 `application.yaml` 中的 `server.port`。真正排查时应查看当前版本文档或 Environment 中的 PropertySource，不需要背完整编号。
+
+## 3. 配置文件本身也有覆盖顺序
+
+默认配置数据通常按以下方向提高优先级：
+
+- jar 内 `application.*`
+- jar 内 `application-{profile}.*`
+- jar 外 `application.*`
+- jar 外 `application-{profile}.*`
+
+多个 profile 同时激活时，后声明的 profile 可以覆盖前面的值。`spring.config.import` 引入的文档会放到声明它的文档之后，因此可以覆盖声明处的值；多个 import 则继续遵循后者优先。
+
+同一位置同时存在 properties 和 YAML 文件时，Spring Boot 规定 properties 优先。项目最好统一一种格式，避免同目录下出现肉眼难以发现的覆盖。
+
+## 4. 环境变量使用宽松绑定规则
+
+操作系统通常不允许环境变量名包含点，可以把属性名转换为大写下划线形式：
+
+```text
+payment.retry.max-attempts
+PAYMENT_RETRY_MAXATTEMPTS
+```
+
+属性名中的点替换为下划线，连字符删除，再转成大写。复杂集合和 Map 的环境变量映射更难阅读，适合通过配置文件、配置树或平台专用配置能力提供。
+
+占位符中使用小写 kebab-case，例如 `${payment.retry.max-attempts}`，可以获得更完整的宽松绑定匹配。
+
+## 5. 配置与密钥采用不同治理方式
+
+数据库密码、访问令牌和私钥不应提交到仓库中的 `application-prod.yaml`。可以通过平台 Secret、外部密钥服务或挂载配置树提供，并限制 Actuator、日志和错误页的暴露范围。
+
+配置值是否敏感，与它来自环境变量还是文件无关。环境变量也可能出现在进程诊断、部署清单或错误报告中。
+
+## 6. 启动时校验关键配置
+
+```java
+@ConfigurationProperties("payment")
+@Validated
+public record PaymentProperties(
+    @NotNull URI endpoint,
+    @NotNull Duration timeout
+) {
+    public PaymentProperties {
+        if (timeout != null && (timeout.isZero() || timeout.isNegative())) {
+            throw new IllegalArgumentException("payment.timeout must be positive");
+        }
+    }
+}
+```
+
+连接地址、超时、容量和业务开关应在启动时验证范围及组合关系。缺少关键配置时直接失败，比运行到某条请求才产生空指针更容易诊断。
+
+不要给生产关键参数随意设置“能启动就行”的默认值。默认值应当安全、含义稳定，而且适用于所有未显式配置的环境。
+
+## 7. 配置不符合预期时怎样排查
+
+1. 确认最终读取的 key 使用规范名称。
+2. 查看激活的 profile 与配置文件搜索位置。
+3. 检查 `spring.config.location` 是否替换了默认路径；追加路径应使用 `spring.config.additional-location`。
+4. 查看 `env` 或 `configprops` 端点提供的来源与绑定结果。
+5. 检查部署平台是否注入了同名环境变量、系统属性或命令行参数。
+6. 对敏感值只确认来源和是否存在，不打印明文。
+
+## 8. 面试题
+
+### 8.1 Spring Boot 配置的优先级怎样判断
+
+<!-- 面试来源：
+- 金山办公：https://www.nowcoder.com/discuss/800822936729894912
+-->
+
+**出现公司**：金山办公
+
+**考察重点**
+
+- PropertySource 的覆盖原则。
+- 配置数据、环境变量和命令行的关系。
+- profile、外部文件与诊断方式。
+
+**相关内容**：第 1 节“Environment 保存配置来源”至第 7 节“配置不符合预期时怎样排查”。
+
+<details>
+<summary>参考回答</summary>
+
+Spring Boot 把不同来源加入 Environment，并按确定顺序解析；在官方顺序中，后加入的高优先级来源覆盖前面的默认值。常见情况下，命令行高于系统属性和环境变量，这些来源又高于 application 配置数据；测试还有单独的高优先级来源。
+
+配置数据内部也有顺序，jar 外文件和 profile 文件可以覆盖 jar 内默认值。线上出现意外值时，不靠记忆猜测，应检查激活 profile、搜索路径以及 env/configprops 端点给出的 PropertySource，同时避免暴露敏感值。
+
+</details>
+
+:::note 参考资料
+
+1. [Spring Boot：Externalized Configuration](https://docs.spring.io/spring-boot/reference/features/external-config.html)
+2. [Spring Boot：Type-safe Configuration Properties](https://docs.spring.io/spring-boot/reference/features/external-config.html#features.external-config.typesafe-configuration-properties)
+3. [Spring Boot：Environment Endpoint](https://docs.spring.io/spring-boot/api/rest/actuator/env.html)
+
+:::

@@ -1,0 +1,111 @@
+---
+sidebar_position: 15
+---
+
+# 中断、超时与取消协议
+
+中断、超时和取消分别描述信号、时间边界和任务结果状态。可靠的并发 API 需要把三者连成一套协议：谁发出取消、哪些操作响应、资源怎样清理，以及完成与取消竞争时以什么结果为准。
+
+## 1. 超时应使用同一个截止时间
+
+```java
+long deadline = System.nanoTime() + timeout.toNanos();
+
+Result execute() throws InterruptedException, TimeoutException {
+    long remaining = deadline - System.nanoTime();
+    if (remaining <= 0) {
+        throw new TimeoutException();
+    }
+    return future.get(remaining, TimeUnit.NANOSECONDS);
+}
+```
+
+如果一条调用链的三个步骤分别使用 1 秒超时，总耗时可能接近 3 秒。入口应计算截止时间，每个后续操作只使用剩余预算。
+
+持续时间使用 `System.nanoTime()`，它适合计算相对间隔，不受墙上时钟校准影响。
+
+## 2. 中断负责唤醒可中断等待
+
+`interrupt()` 设置中断状态；`sleep`、`wait`、`join`、许多锁和队列方法会通过 `InterruptedException` 提前返回。任务要么继续抛出，要么恢复状态后退出自己的边界：
+
+```java
+catch (InterruptedException exception) {
+    Thread.currentThread().interrupt();
+    return Result.cancelled();
+}
+```
+
+恢复状态以后不要继续长时间执行普通业务，否则上层仍无法完成取消。
+
+## 3. `Future.cancel(true)` 只是尝试中断
+
+`cancel(true)` 在任务尚未开始时可以阻止执行；任务正在运行时，会尝试中断执行线程。若任务忽略中断、卡在不响应中断的外部调用，取消状态并不能强行终止底层副作用。
+
+因此，数据库和网络客户端仍需配置各自的连接、读取和请求超时。对已经发送出去的扣款等副作用，还要通过幂等键、状态查询或补偿处理。
+
+## 4. 清理必须覆盖所有退出路径
+
+```java
+Permit permit = pool.acquire();
+try {
+    return doWork();
+} finally {
+    permit.close();
+}
+```
+
+正常完成、异常、中断和超时都必须释放资源。特别注意“获取一半”的情况：只有成功取得锁、许可或连接后，才执行对应释放。
+
+若操作不可安全中断，可以先记录取消请求，在下一个一致性边界退出。协议应明确最迟响应时间，而不是假装任何代码都能立即停止。
+
+## 5. 完成与取消存在竞争
+
+任务可能在调用 `cancel` 的同一时刻完成。调用方应依据 Future 最终状态处理，而不是假定自己发出取消就一定胜出。回调、指标和业务状态更新也应能够去重。
+
+结构化并发的目标之一，是让子任务生命周期受词法作用域管理；但具体 API 在不同 JDK 版本可能仍是预览功能。生产代码应确认所用版本和预览开关，不把它当成已经固定的跨版本接口。
+
+## 6. 常见问题
+
+### 6.1 超时以后任务会自动停止吗
+
+不会。调用方结束等待与后台任务终止是两件事。需要显式取消，并确认底层操作响应中断或拥有自己的超时。
+
+### 6.2 为什么不能捕获所有异常后统一返回失败
+
+`InterruptedException` 携带线程取消协议。把它吞进普通失败会让线程池关闭、请求超时等上层控制失效，应单独传递或恢复中断状态。
+
+## 7. 面试题
+
+### 7.1 怎样设计一个支持超时和取消的并发任务
+
+<!-- 面试来源：
+- 阿里巴巴：https://www.nowcoder.com/discuss/461925
+- 美团：https://www.nowcoder.com/discuss/377447203734921216
+-->
+
+**出现公司**：阿里巴巴、美团
+
+**考察重点**
+
+- 截止时间与剩余预算。
+- 中断传播和 Future 取消边界。
+- 资源清理与外部副作用。
+
+**相关内容**：第 1 节“超时应使用同一个截止时间”至第 5 节“完成与取消存在竞争”。
+
+<details>
+<summary>参考回答</summary>
+
+入口把超时换成单一截止时间，向下游传递剩余预算；阻塞操作使用可中断和带超时 API。取消时通过 `Future.cancel(true)` 或中断发出请求，任务在一致性边界响应，捕获 `InterruptedException` 后继续抛出或恢复状态。
+
+所有资源用 `finally` 或作用域关闭，网络和数据库调用还要配置自己的超时。已经发生的外部副作用不能靠线程中断回滚，需要幂等、查询或补偿协议。
+
+</details>
+
+:::note 参考资料
+
+1. [Java API：`Future`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/Future.html)
+2. [Java API：`InterruptedException`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/InterruptedException.html)
+3. [Java API：`System.nanoTime`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/System.html#nanoTime())
+
+:::

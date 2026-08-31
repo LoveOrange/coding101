@@ -1,0 +1,119 @@
+---
+sidebar_position: 5
+---
+
+# 从共享状态到消息传递
+
+并发设计首先要确定谁拥有状态。让一个执行单元独占修改权，其他线程通过消息提交操作，可以把许多共享内存竞态转化为有顺序的任务处理。
+
+## 1. 共享对象会扩大同步范围
+
+```java
+public final class OrderBook {
+    private final Map<Long, Order> orders = new HashMap<>();
+
+    public void create(Order order) { /* ... */ }
+    public void cancel(long id) { /* ... */ }
+    public Summary summary() { /* ... */ }
+}
+```
+
+如果多个线程直接调用这些方法，就要为 map、订单状态以及跨对象不变量设计共同的锁协议。调用路径越多，遗漏一条未加锁读取的概率越高。
+
+另一种设计是让一个消费者拥有 `OrderBook`，其他线程只发送命令：
+
+```java
+BlockingQueue<Command> mailbox = new LinkedBlockingQueue<>(1_000);
+
+void eventLoop() throws InterruptedException {
+    while (!Thread.currentThread().isInterrupted()) {
+        Command command = mailbox.take();
+        command.apply(orderBook);
+    }
+}
+```
+
+只要 `orderBook` 不从所有者线程逸出，其内部操作不需要为多个调用者互斥。
+
+## 2. 消息边界同时定义了数据边界
+
+消息最好是不可变值，并包含完成一次状态转换所需的信息：
+
+```java
+record CancelOrder(long orderId, String reason) implements Command {}
+```
+
+不要在消息中传递一个仍由发送方继续修改的集合。可以传不可变对象、复制后的快照，或者只传标识符并由所有者查询自己管理的数据。
+
+JUC 队列提供内存一致性保证：发送线程把对象放入队列之前的动作，对消费线程取出该对象后的动作可见。
+
+## 3. 回复可以通过结果通道返回
+
+需要返回值时，可以让消息携带 `CompletableFuture<Result>`：
+
+```java
+record CreateOrder(Order order, CompletableFuture<Long> reply) implements Command {}
+```
+
+所有者完成处理后调用 `reply.complete(id)`。调用方应设置截止时间并处理异常；否则消息已经排队、调用方却无限等待，故障会从消费者扩散出去。
+
+## 4. 有界队列让过载显式出现
+
+消息传递没有消灭容量限制。消费者每秒处理 1,000 条、生产者持续发送 2,000 条时，积压必然增长。
+
+有界队列可以在容量耗尽时选择阻塞、超时、拒绝、合并或丢弃。选择取决于业务语义：订单命令不能静默丢弃，重复指标可能允许合并，刷新通知可能只保留最新一次。
+
+## 5. 何时仍应使用共享状态
+
+消息传递会引入排队延迟、所有者热点和异步错误处理。下面的情况未必需要它：
+
+- 只维护一个独立计数器，原子变量更直接。
+- 读取远多于写入且允许快照语义，不可变快照更简单。
+- 临界区短、竞争低，并且多个调用必须同步取得结果，普通锁更清楚。
+
+选择时要检查状态所有权、吞吐目标、失败语义和可观察性是否清晰；是否使用锁只是其中一项实现选择。
+
+## 6. 常见问题
+
+### 6.1 使用队列以后还会有竞态吗
+
+会。只要消息引用的对象仍被其他线程修改，或者多个消费者同时拥有同一状态，竞态仍然存在。队列只为交接动作和消息顺序提供约束。
+
+### 6.2 单消费者会不会成为瓶颈
+
+可能。可以按互不影响的 key 分片，让每个分片拥有自己的状态；但同一个 key 必须稳定路由，并处理热点倾斜和跨分片事务。
+
+## 7. 面试题
+
+### 7.1 怎样通过设计减少共享状态
+
+<!-- 面试来源：
+- 腾讯：https://www.nowcoder.com/discuss/801036113035931648
+- 阿里巴巴：https://www.nowcoder.com/discuss/461925
+-->
+
+**出现公司**：腾讯、阿里巴巴
+
+**考察重点**
+
+- 不可变性、线程封闭和单一所有者。
+- 消息交接的内存语义。
+- 队列容量与失败策略。
+
+**相关内容**：第 1 节“共享对象会扩大同步范围”至第 4 节“有界队列让过载显式出现”。
+
+<details>
+<summary>参考回答</summary>
+
+先按状态划分所有权：能做成局部变量或不可变值的就不共享；需要连续修改的一组状态可以交给单一线程，其他线程通过不可变消息提交操作。JUC 队列负责交接可见性，业务还要定义顺序、回复和失败语义。
+
+消息传递仍需容量控制。有界队列满时必须明确阻塞、拒绝、合并或丢弃，并监控积压和处理延迟。简单计数或低竞争短临界区则未必值得引入消息循环。
+
+</details>
+
+:::note 参考资料
+
+1. [Java API：`BlockingQueue`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/BlockingQueue.html)
+2. [Java API：JUC Memory Consistency Properties](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/package-summary.html#MemoryVisibility)
+
+:::

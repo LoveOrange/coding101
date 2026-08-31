@@ -1,0 +1,208 @@
+---
+sidebar_position: 4
+---
+
+# Mock、Stub 与测试替身边界
+
+测试替身用可控对象代替真实依赖。Stub 提供预设结果，Mock 还验证交互；替身适合隔离进程外边界，不应把类内部每次方法调用都固定成测试契约。
+
+## 1. 常见测试替身
+
+| 类型 | 主要作用 | 示例 |
+| --- | --- | --- |
+| Dummy | 只填充参数，不参与行为 | 未使用的回调对象 |
+| Stub | 为测试场景返回预设结果 | 固定汇率提供者 |
+| Fake | 有可运行的简化实现 | 内存 Repository |
+| Spy | 记录真实或包装对象的调用 | 记录发送次数 |
+| Mock | 按期望验证交互 | 验证消息网关收到命令 |
+
+这些词描述用途，不由创建它的框架方法决定。一个 Mockito 对象只提供固定返回值时，实际承担的是 Stub 角色。
+
+## 2. Stub 让输入条件可控
+
+```java
+ExchangeRateProvider rates = mock(ExchangeRateProvider.class);
+when(rates.rate(USD, CNY, at))
+    .thenReturn(new ExchangeRate("7.20"));
+
+Price result = service.convert(price, CNY, at);
+
+assertEquals(expected, result);
+```
+
+测试重点是转换结果，Stub 只提供所需汇率。它避免真实网络波动，也能稳定构造超时、缺失和异常等难以复现条件。
+
+Stub 不能证明真实服务协议、序列化和客户端配置正确，这些需要契约或集成测试。
+
+## 3. Mock 验证重要的外部效果
+
+```java
+PaymentGateway gateway = mock(PaymentGateway.class);
+
+service.pay(command);
+
+verify(gateway).charge(command.idempotencyKey(), command.amount());
+```
+
+适合验证：
+
+- 必须发送一次支付命令。
+- 拒绝请求时不应发送消息。
+- 重试使用同一个幂等键。
+- 事务提交后才发布事件。
+
+不要验证所有 getter、内部 helper 和调用顺序。实现重构后可观察结果没变，测试应尽量继续通过。
+
+## 4. 状态断言与交互断言
+
+状态断言检查结果：
+
+```java
+assertEquals(PAID, order.status());
+```
+
+交互断言检查协作者调用：
+
+```java
+verify(eventPublisher).publish(any(PaymentAccepted.class));
+```
+
+纯计算和值对象优先验证状态。外部副作用没有方便返回值时，验证端口交互。两者可以组合，但不要用几十条 verify 代替业务结果断言。
+
+## 5. 适合替换的是稳定边界
+
+良好边界通常是：
+
+- 时钟与随机源。
+- 支付、邮件、对象存储等外部客户端。
+- Repository 接口。
+- 消息发布端口。
+- 昂贵或不可稳定复现的系统依赖。
+
+不值得 Mock：
+
+- String、Money 等值对象。
+- 当前类内部的私有方法。
+- 简单数据结构。
+- 被测对象本身。
+- 只有一行转发、且 Mock 后没有真实逻辑剩余的组件。
+
+如果一个类需要十几个 Mock 才能构造，它可能承担过多职责，或接口边界按技术层而不是业务能力划分。
+
+## 6. Fake 适合有状态协作
+
+内存 Repository 可以真实执行保存和查询：
+
+```java
+final class InMemoryOrderRepository implements OrderRepository {
+    private final Map<OrderId, Order> orders = new HashMap<>();
+
+    @Override
+    public void save(Order order) {
+        orders.put(order.id(), order);
+    }
+}
+```
+
+Fake 让多个操作共享可控状态，比为每次调用配置 when 更自然。它也可能与真实数据库行为漂移，例如唯一约束、事务、排序和锁不同，因此必须用真实集成测试补充。
+
+## 7. Spy 与部分 Mock 的风险
+
+Spy 默认调用真实方法，同时允许局部替换。它适合观测遗留对象，但容易形成“部分真实、部分虚假”的难懂状态。
+
+```java
+List<String> spy = spy(new ArrayList<>());
+```
+
+业务代码大量依赖 spy，通常说明职责难以隔离。优先提取明确协作者，而不是为了测试绕过内部方法。
+
+## 8. 严格交互会锁死实现
+
+以下测试对重构很脆弱：
+
+- 验证每个内部调用恰好一次。
+- 使用 `inOrder` 固定无业务意义的顺序。
+- 对所有参数使用 `any()`，实际什么都没验证。
+- 对所有调用使用精确对象匹配，连无关字段也固定。
+- 使用 `verifyNoMoreInteractions` 阻止新增遥测等无害行为。
+
+只验证属于公共契约的交互：是否调用外部系统、携带哪些业务字段、允许几次以及失败后怎样处理。
+
+## 9. 常见问题
+
+### 9.1 Mock 数据库是否算数据库测试
+
+不算。它只能测试代码如何响应预设 Repository 行为，不能验证 SQL、映射、约束、隔离和连接配置。数据访问层需要真实数据库集成测试。
+
+### 9.2 私有方法可以用 Mockito Mock 吗
+
+不应以此为设计目标。Mock 私有实现会让测试绑定内部结构。通过公开行为测试，或把独立复杂规则提取成正常对象。
+
+### 9.3 应不应该验证调用次数
+
+次数有业务含义时验证，例如支付只能提交一次、通知允许重试最多三次。无业务意义的 helper 调用次数不应进入契约。
+
+### 9.4 使用 Mock 后测试一定是单元测试吗
+
+不一定。单元边界由测试验证的行为和运行依赖决定。一个测试可以不用 Mock 仍是单元测试，也可以用了 Mock 却启动完整容器并跨多个组件。
+
+## 10. 面试题
+
+### 10.1 Mock 与 Stub 有什么区别，分别什么时候使用
+
+<!-- 面试来源：
+- 招银网络：https://www.nowcoder.com/discuss/401781105202933760
+- 爱客科技：https://www.nowcoder.com/discuss/353157880536834048
+-->
+
+**出现公司**：招银网络、爱客科技
+
+**考察重点**
+
+- 预设输入与验证交互的区别。
+- 状态断言和交互断言的选择。
+- 替身不能证明真实集成行为。
+
+**相关内容**：第 1 节“常见测试替身”至第 5 节“适合替换的是稳定边界”。
+
+<details>
+<summary>参考回答</summary>
+
+Stub 为测试提供预设返回值或异常，用来控制被测对象的输入；Mock 还记录并验证是否按契约调用协作者。纯计算优先断言结果，必须发生的外部副作用再验证交互。
+
+替身适合时钟、Repository 和远程网关等稳定边界，不适合值对象和私有方法。Mock 客户端只能验证调用意图，真实序列化、数据库约束和网络配置仍需集成或契约测试。
+
+</details>
+
+### 10.2 过度 Mock 会带来什么问题
+
+<!-- 面试来源：
+- 阿里巴巴：https://www.nowcoder.com/discuss/353156377390555136
+-->
+
+**出现公司**：阿里巴巴
+
+**考察重点**
+
+- 测试绑定实现调用图后为何难以重构。
+- 全部依赖被替换后留下了哪些盲区。
+- 大量 Mock 是否暴露职责过多。
+
+**相关内容**：第 5 节“适合替换的是稳定边界”、第 8 节“严格交互会锁死实现”。
+
+<details>
+<summary>参考回答</summary>
+
+如果测试验证每一个内部调用、顺序和次数，代码只做等价重构也会大量失败；所有依赖都 Mock 后，SQL、序列化、Spring 配置和协议兼容性又完全没有被验证。
+
+应围绕公开行为和重要外部效果写断言，只替换不稳定边界。一个类需要很多 Mock 才能测试时，还要检查它是否承担过多职责，并用真实集成和契约测试覆盖替身留下的盲区。
+
+</details>
+
+:::note 参考资料
+
+1. [Mockito 官方 API](https://javadoc.io/doc/org.mockito/mockito-core/latest/org.mockito/org/mockito/Mockito.html)
+2. [Mockito：ArgumentMatchers](https://javadoc.io/doc/org.mockito/mockito-core/latest/org.mockito/org/mockito/ArgumentMatchers.html)
+3. [JUnit User Guide](https://docs.junit.org/current/user-guide/)
+
+:::

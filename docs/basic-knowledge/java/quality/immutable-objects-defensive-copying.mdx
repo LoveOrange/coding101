@@ -1,0 +1,236 @@
+---
+sidebar_position: 2
+---
+
+# 不可变对象与防御性复制
+
+不可变对象在构造完成后，外部无法观察到它的状态变化。`final` 字段只能固定引用，引用指向数组、集合或可变对象时，还需要防御性复制和受控返回值。
+
+## 1. final 只禁止字段重新赋值
+
+```java
+public final class Schedule {
+    private final List<Instant> times;
+
+    public Schedule(List<Instant> times) {
+        this.times = times;
+    }
+}
+```
+
+字段不能改指向另一列表，但调用方仍持有原引用：
+
+```java
+List<Instant> source = new ArrayList<>();
+Schedule schedule = new Schedule(source);
+source.add(Instant.now());
+```
+
+Schedule 的可观察状态随 source 变化，因此不是不可变对象。
+
+## 2. 在输入边界复制可变结构
+
+```java
+public final class Schedule {
+    private final List<Instant> times;
+
+    public Schedule(List<Instant> times) {
+        this.times = List.copyOf(times);
+    }
+
+    public List<Instant> times() {
+        return times;
+    }
+}
+```
+
+`List.copyOf` 创建不可修改副本，并拒绝 null 元素。Instant 本身不可变，因此可以安全共享元素引用。
+
+如果元素可变，仅复制列表不够：
+
+```java
+public Snapshot(List<MutablePoint> points) {
+    this.points = points.stream()
+        .map(MutablePoint::copy)
+        .toList();
+}
+```
+
+需要复制到什么深度取决于对象图的所有权。没有必要盲目“深拷贝整个世界”，但不能让外部保留能修改内部状态的路径。
+
+## 3. 输出边界不能泄露可变引用
+
+数组 getter 直接返回内部数组会泄露：
+
+```java
+public byte[] digest() {
+    return digest;
+}
+```
+
+应该返回副本：
+
+```java
+public byte[] digest() {
+    return digest.clone();
+}
+```
+
+构造时也要 clone 一次，防止传入数组随后变化。输入和输出两个边界缺一不可。
+
+对于只读集合，可以保存 `List.copyOf` 后直接返回，因为返回对象不支持结构修改；元素仍要满足不可变条件。
+
+## 4. 不可变类的设计条件
+
+常见检查：
+
+1. 对象构造后没有修改状态的方法。
+2. 字段私有，必要字段为 final。
+3. 构造期间完成验证，不泄露 `this`。
+4. 对输入中的可变对象做防御性复制。
+5. 不返回可修改内部状态的引用。
+6. 防止子类增加可变语义，或让构造与方法设计在继承下仍安全。
+7. `equals` 与 `hashCode` 基于稳定状态。
+
+类不一定必须声明 final。也可以使用私有构造、sealed 层次或只暴露不可变实现。但允许任意子类时，调用方不能从父类型保证整体不可变。
+
+## 5. record 不会自动深度不可变
+
+```java
+public record Team(String name, List<User> members) {}
+```
+
+record 组件引用是 final，却仍保存传入可变列表。应在紧凑构造器复制：
+
+```java
+public record Team(String name, List<User> members) {
+    public Team {
+        Objects.requireNonNull(name, "name");
+        members = List.copyOf(members);
+    }
+}
+```
+
+如果 User 可变，Team 仍只是结构不可修改，不是深度不可变。record 提供数据载体语法和基于组件的相等性，不代替所有权设计。
+
+## 6. 不可变对象怎样更新
+
+更新返回一个新值：
+
+```java
+public Money add(Money other) {
+    requireSameCurrency(other);
+    return new Money(amount.add(other.amount), currency);
+}
+```
+
+复杂对象可以提供 `withX` 或 Builder：
+
+```java
+Configuration next = current.withTimeout(Duration.ofSeconds(2));
+```
+
+方法名应明确返回新对象，不要让调用方误以为原对象被修改。大量小步复制成本高时，可以在单线程 Builder 中累积，最终生成不可变结果。
+
+## 7. 并发收益与发布条件
+
+对象真正不可变，并且构造期间没有让 `this` 逸出时，可以安全跨线程共享，读者不需要为状态变化加锁。final 字段还有特殊初始化安全语义，使正确构造后的值能被其他线程可靠观察。
+
+不可变不代表所有操作都无竞争：
+
+- 懒加载缓存若写字段，仍需同步。
+- 外部集合保存不可变对象，集合本身仍可能可变。
+- 读取远程资源的方法仍可能阻塞。
+- 大对象反复复制会带来分配成本。
+
+## 8. 防御性复制的成本与替代
+
+复制大数组和大对象图会消耗时间与内存。可选方案：
+
+- 明确转移所有权，调用后原引用不再使用。
+- 使用不可变持久化数据结构共享未变化部分。
+- 用只读接口隐藏修改能力，但仍需控制实际所有者。
+- 在受控包内共享，在公共边界复制。
+- 对大型二进制数据使用只读缓冲区，并说明底层共享风险。
+
+性能优化必须保持契约清楚。把“不许改”只写在注释里，无法阻止意外修改。
+
+## 9. 常见问题
+
+### 9.1 `Collections.unmodifiableList` 是否等于防御性复制
+
+不是。它是原列表的不可修改视图，原列表变化仍会反映。需要独立状态时使用 `List.copyOf` 或先复制再包装。
+
+### 9.2 getter 每次都复制是否必要
+
+如果内部保存的是不可修改集合且元素不可变，可以直接返回；内部是数组或可变对象时需要副本或只读抽象。根据所有权选择，不机械复制。
+
+### 9.3 不可变对象一定适合作为 HashMap key 吗
+
+不可变能保证哈希和相等性不会因状态变化而失效，但仍要正确实现 equals/hashCode，并选择代表稳定身份或值的字段。
+
+### 9.4 深拷贝如何处理循环引用
+
+需要身份映射记录已经复制的对象，否则递归会无限循环并破坏共享关系。对象图复杂到需要通用深拷贝时，应重新评估边界是否应该暴露整张可变图。
+
+## 10. 面试题
+
+### 10.1 怎样设计一个不可变类
+
+<!-- 面试来源：
+- 字节跳动：https://www.nowcoder.com/discuss/353156331500675072
+- 阿里巴巴：https://www.nowcoder.com/discuss/80045
+-->
+
+**出现公司**：字节跳动、阿里巴巴
+
+**考察重点**
+
+- final 字段与对象深度不可变的区别。
+- 输入和输出边界的防御性复制。
+- 继承、构造逸出和稳定相等性。
+
+**相关内容**：第 1 节“final 只禁止字段重新赋值”至第 5 节“record 不会自动深度不可变”、第 7 节“并发收益与发布条件”。
+
+<details>
+<summary>参考回答</summary>
+
+对象构造后不提供修改状态的方法，字段保持私有并在构造时完成验证。对数组、集合和其他可变输入做防御性复制，getter 不返回能修改内部状态的引用；元素也要不可变或继续复制。
+
+还要防止任意子类破坏语义，构造期间不能泄露 this，equals/hashCode 使用稳定字段。record 只能保证组件引用 final，包含可变集合时仍需在紧凑构造器中复制。
+
+</details>
+
+### 10.2 不可变对象为什么更容易在线程间共享
+
+<!-- 面试来源：
+- 京东、字节跳动：https://www.nowcoder.com/discuss/353149101678206976
+-->
+
+**出现公司**：京东、字节跳动
+
+**考察重点**
+
+- 没有状态写入就没有同一对象上的读写竞态。
+- final 字段初始化安全和 this 逸出。
+- 容器与元素的线程安全需要分开。
+
+**相关内容**：第 7 节“并发收益与发布条件”。
+
+<details>
+<summary>参考回答</summary>
+
+对象状态在构造后不再变化，多个线程只读同一状态，不需要用锁协调修改。正确构造且 this 没有提前逸出时，final 字段还具有初始化安全保证，其他线程能可靠观察构造值。
+
+这个结论只覆盖对象自身状态。保存它的可变集合、对象内部引用到的可变元素以及懒加载缓存仍要分别处理同步和所有权。
+
+</details>
+
+:::note 参考资料
+
+1. [Java Tutorials：A Strategy for Defining Immutable Objects](https://docs.oracle.com/javase/tutorial/essential/concurrency/imstrat.html)
+2. [Java Language Specification：final Field Semantics](https://docs.oracle.com/en/java/javase/26/docs/specs/jls/jls-17.html#jls-17.5)
+3. [Java Language Specification：Record Classes](https://docs.oracle.com/en/java/javase/26/docs/specs/jls/jls-8.html#jls-8.10)
+4. [Java API：List.copyOf](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/List.html#copyOf(java.util.Collection))
+
+:::

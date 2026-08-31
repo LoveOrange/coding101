@@ -1,0 +1,225 @@
+---
+sidebar_position: 5
+---
+
+# 迭代器、fail-fast 与不可变集合
+
+Iterator 把遍历位置从集合实现中抽离。普通集合的迭代器通常会尽力检测遍历期间的结构修改并抛出异常，但 fail-fast 只是错误提示，不是并发安全机制。
+
+## 1. Iterable 提供迭代器
+
+增强 `for` 会使用 `Iterable.iterator()`：
+
+```java
+for (User user : users) {
+    consume(user);
+}
+```
+
+它的核心逻辑相当于：
+
+```java
+Iterator<User> iterator = users.iterator();
+while (iterator.hasNext()) {
+    User user = iterator.next();
+    consume(user);
+}
+```
+
+Iterator 通常保存当前位置和遍历所需状态，不要求集合支持索引。数组列表、链表、哈希表和树都可以暴露统一遍历接口。
+
+## 2. 结构修改与 fail-fast
+
+下面的代码会在遍历中通过列表本身删除元素：
+
+```java
+for (User user : users) {
+    if (user.disabled()) {
+        users.remove(user);
+    }
+}
+```
+
+普通集合实现通常维护结构修改计数。创建迭代器时记录预期计数，`next`、`remove` 等操作检查计数是否仍一致；发现集合绕过当前迭代器发生结构变化时，抛出 `ConcurrentModificationException`。
+
+“结构修改”通常指改变元素数量或会破坏遍历结构的操作。替换某个位置的值是否计入，取决于具体集合契约。
+
+### 2.1 fail-fast 是尽力检测
+
+Java API 明确说明，迭代器无法在所有非同步并发修改条件下作出绝对保证。因此：
+
+- 没抛异常不代表没有竞态。
+- 抛异常不用于正常业务控制流。
+- `modCount` 检查不提供内存可见性或原子性。
+- 集合仍需要线程封闭、锁或并发实现。
+
+## 3. 通过迭代器安全删除当前元素
+
+```java
+Iterator<User> iterator = users.iterator();
+
+while (iterator.hasNext()) {
+    User user = iterator.next();
+    if (user.disabled()) {
+        iterator.remove();
+    }
+}
+```
+
+迭代器知道当前位置，可以在修改后同步自己的预期状态。更简单的条件删除可以使用：
+
+```java
+users.removeIf(User::disabled);
+```
+
+`ListIterator` 还支持向前遍历、替换当前元素和在游标处插入，适用于 List 的局部编辑。
+
+## 4. 并发集合使用不同的迭代语义
+
+`ConcurrentHashMap` 的迭代器是弱一致的：
+
+- 不抛 `ConcurrentModificationException`。
+- 能遍历到创建迭代器时或之后的一部分状态。
+- 不保证得到某个瞬间的完整快照。
+
+`CopyOnWriteArrayList` 的迭代器基于创建时的数组快照：
+
+- 后续修改不会出现在这次遍历中。
+- 遍历无需与写操作争用同一结构。
+- 迭代器不支持修改操作。
+
+把这些行为统称为“fail-safe”容易掩盖差异。Java API 并没有定义一个统一的 fail-safe 接口，应该直接说明弱一致还是快照语义。
+
+## 5. 不可修改视图与不可变副本
+
+不可修改视图阻止通过当前引用写入，但仍观察原集合变化：
+
+```java
+List<String> source = new ArrayList<>(List.of("A", "B"));
+List<String> view = Collections.unmodifiableList(source);
+
+source.add("C");
+System.out.println(view); // [A, B, C]
+```
+
+`List.copyOf` 创建不可修改副本：
+
+```java
+List<String> snapshot = List.copyOf(source);
+source.add("D");
+
+System.out.println(snapshot); // [A, B, C]
+```
+
+如果输入本身已经是合适的不可修改集合，实现可以复用实例，因此不要依赖对象身份。
+
+`List.of`、`Set.of` 和 `Map.of` 直接创建不可修改集合，并拒绝 null；Set 和 Map 工厂还会拒绝重复元素或重复键。
+
+## 6. 不可变集合通常是浅层的
+
+```java
+List<User> snapshot = List.copyOf(users);
+snapshot.get(0).rename("changed");
+```
+
+集合结构不能增删，但元素引用指向的 User 仍可能可变。要得到完整不可变状态，元素类型也需要不可变，或者在边界进行防御性复制。
+
+不可修改集合可以减少调用方意外改写结构，也更容易安全发布；它不会自动解决元素内部的线程安全问题。
+
+## 7. 固定大小列表不等于不可修改列表
+
+`Arrays.asList` 返回由原数组支持的固定大小列表：
+
+```java
+String[] array = {"A", "B"};
+List<String> fixed = Arrays.asList(array);
+
+fixed.set(0, "X");       // 可以
+// fixed.add("C");       // UnsupportedOperationException
+System.out.println(array[0]); // X
+```
+
+它允许替换元素，但不能改变长度。`List.of` 则连 `set` 也不允许，并且不与传入可变数组共享可观察的结构修改。
+
+## 8. 常见问题
+
+### 8.1 为什么单线程也会抛 ConcurrentModificationException
+
+异常检测的是迭代期间绕过迭代器发生的结构修改，不要求真的存在多个线程。异常名称中的 concurrent 指操作时序重叠，不是线程数量证明。
+
+### 8.2 使用索引循环就不会有问题吗
+
+不会触发迭代器的 fail-fast 检查，但删除后元素左移仍可能造成跳过，线程并发修改也仍不安全。应根据操作使用倒序索引、Iterator、`removeIf` 或新结果集合。
+
+### 8.3 `Collections.unmodifiableList` 能作为安全 API 返回值吗
+
+只有原集合不会再被外部修改时才足够。否则调用方看到的内容仍会变化。跨边界返回稳定结果通常使用 `List.copyOf`，并检查元素自身是否可变。
+
+### 8.4 `List.copyOf` 可以保存 null 吗
+
+不可以，遇到 null 会抛出 `NullPointerException`。这与某些 ArrayList 可以保存 null 的行为不同，迁移时要先明确 null 的业务含义。
+
+## 9. 面试题
+
+### 9.1 fail-fast 怎样工作，它能保证线程安全吗
+
+<!-- 面试来源：
+- 招银网络：https://www.nowcoder.com/discuss/353154885766029312
+- 58 同城：https://www.nowcoder.com/discuss/81137
+-->
+
+**出现公司**：招银网络、58 同城
+
+**考察重点**
+
+- 结构修改计数和迭代器预期状态。
+- 尽力检测与线程安全保证的区别。
+- 正确删除当前元素的方式。
+
+**相关内容**：第 2 节“结构修改与 fail-fast”、第 3 节“通过迭代器安全删除当前元素”。
+
+<details>
+<summary>参考回答</summary>
+
+普通集合通常记录结构修改次数，迭代器创建时保存预期值。遍历过程中如果发现集合绕过当前迭代器发生结构修改，就抛出 `ConcurrentModificationException`，帮助尽早暴露错误。
+
+这个检查是尽力而为，不提供同步、可见性或原子性，因此不能用“没有抛异常”证明线程安全。遍历时删除当前元素应使用 `Iterator.remove` 或集合提供的 `removeIf`；跨线程共享还要使用锁或合适的并发集合。
+
+</details>
+
+### 9.2 怎样创建不会被调用方修改的 List
+
+<!-- 面试来源：
+- Momenta：https://www.nowcoder.com/discuss/795798890707423232
+- 招银网络：https://www.nowcoder.com/discuss/353154885766029312
+-->
+
+**出现公司**：Momenta、招银网络
+
+**考察重点**
+
+- `final`、固定大小、不可修改视图和不可变副本的区别。
+- 集合不可变与元素不可变的区别。
+- API 返回值是否仍与内部状态共享。
+
+**相关内容**：第 5 节“不可修改视图与不可变副本”至第 7 节“固定大小列表不等于不可修改列表”。
+
+<details>
+<summary>参考回答</summary>
+
+`final` 只固定变量引用，不能阻止列表修改；`Arrays.asList` 只是固定大小，仍可替换元素。`Collections.unmodifiableList` 创建不可修改视图，但原列表变化仍会反映出来。
+
+如果 API 要返回稳定快照，可以使用 `List.copyOf` 或 `List.of`。它们拒绝结构修改，但仍是浅层不可变：元素对象可变时，还需要不可变元素或防御性复制。
+
+</details>
+
+:::note 参考资料
+
+1. [Java API：Iterator](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/Iterator.html)
+2. [Java API：ConcurrentModificationException](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/ConcurrentModificationException.html)
+3. [Java API：List.copyOf](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/List.html#copyOf(java.util.Collection))
+4. [Java API：Collections.unmodifiableList](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/Collections.html#unmodifiableList(java.util.List))
+5. [Java API：ConcurrentHashMap 的迭代语义](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/ConcurrentHashMap.html)
+6. [Java API：CopyOnWriteArrayList](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/CopyOnWriteArrayList.html)
+
+:::

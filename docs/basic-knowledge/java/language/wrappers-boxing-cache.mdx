@@ -1,0 +1,243 @@
+---
+sidebar_position: 7
+---
+
+# 包装类型、自动装箱与缓存
+
+包装类型把基本类型的值放进对象中，使它们能够用于泛型、集合和需要引用类型的 API。自动装箱减少了转换代码，但也引入了对象身份、空值和隐式转换问题。
+
+## 1. 基本类型与包装类型
+
+Java 为八种基本类型提供了对应的包装类：
+
+| 基本类型 | 包装类型 |
+| --- | --- |
+| `boolean` | `Boolean` |
+| `byte` | `Byte` |
+| `short` | `Short` |
+| `char` | `Character` |
+| `int` | `Integer` |
+| `long` | `Long` |
+| `float` | `Float` |
+| `double` | `Double` |
+
+基本类型变量不能为 `null`，也不是对象。包装类型是引用类型，可以为 `null`，并提供解析、比较和进制转换等方法：
+
+```java
+int port = Integer.parseInt("8080");
+String hex = Integer.toHexString(255);
+int compared = Integer.compare(10, 20);
+```
+
+泛型只能使用引用类型，所以集合元素需要写成 `Integer`，不能写成 `int`：
+
+```java
+List<Integer> numbers = List.of(1, 2, 3);
+```
+
+## 2. 自动装箱与拆箱
+
+自动装箱把基本类型表达式转换为对应包装类型，自动拆箱执行相反转换：
+
+```java
+Integer boxed = 101; // 自动装箱
+int value = boxed;   // 自动拆箱
+```
+
+这段代码可以近似理解为：
+
+```java
+Integer boxed = Integer.valueOf(101);
+int value = boxed.intValue();
+```
+
+“近似理解”强调语义，不要求编译器一定生成完全相同的源代码形态。装箱和拆箱也会出现在赋值、方法调用、算术运算和条件表达式中。
+
+### 2.1 算术运算会触发拆箱
+
+```java
+Integer count = 10;
+int next = count + 1;
+```
+
+计算 `count + 1` 前，`count` 会被拆箱为 `int`。结果是否重新装箱，取决于接收位置的类型。
+
+循环和大量数值运算如果不需要对象语义，优先使用基本类型。无意的装箱会增加对象或引用处理成本，集合中的包装元素也会带来额外内存开销。
+
+### 2.2 `null` 拆箱会抛出异常
+
+```java
+Integer count = null;
+// int value = count;     // NullPointerException
+// int next = count + 1;  // NullPointerException
+```
+
+拆箱需要从包装对象取得基本值。引用为 `null` 时没有对象可调用，因此抛出 `NullPointerException`。
+
+这种错误也可能藏在条件表达式中：
+
+```java
+Boolean enabled = null;
+
+// if (enabled) {         // 自动拆箱，抛出 NullPointerException
+//     start();
+// }
+```
+
+如果三态值确实存在，应当明确处理 `null`；如果业务只有真和假，使用 `boolean` 可以让无效状态更早消失。
+
+## 3. 包装对象的缓存与身份
+
+部分基本值装箱后允许复用已有包装对象。Java 语言规范保证，对特定常量表达式进行装箱时，常见小值会得到相同引用，其中整数范围包括 `-128` 到 `127`：
+
+```java
+Integer first = 127;
+Integer second = 127;
+
+System.out.println(first == second); // true
+```
+
+范围外的值不应对对象身份作任何假设：
+
+```java
+Integer first = 128;
+Integer second = 128;
+
+System.out.println(first == second); // 结果不应作为业务判断依据
+System.out.println(first.equals(second)); // true
+```
+
+实现可以缓存更多值，但程序不能依赖具体 JVM 参数或缓存范围。包装值比较使用 `equals`，数值排序使用 `compare` 或先明确处理空值后拆箱。
+
+### 3.1 `==` 的结果取决于两侧类型
+
+两个包装类型引用使用 `==` 时，比较对象身份：
+
+```java
+Integer first = 1000;
+Integer second = 1000;
+
+System.out.println(first == second); // 不应期待为 true
+```
+
+一侧是基本类型时，包装对象会先拆箱，再比较数值：
+
+```java
+Integer boxed = 1000;
+int primitive = 1000;
+
+System.out.println(boxed == primitive); // true
+```
+
+如果 `boxed` 为 `null`，第二种比较会在拆箱时抛出 `NullPointerException`。同一个 `==` 表达式因为静态类型不同而具有不同语义，这也是包装类型判断容易出错的原因。
+
+## 4. 包装类型的使用场景
+
+### 4.1 泛型与集合
+
+`List<Integer>`、`Map<Long, User>` 等泛型参数必须是引用类型。读写集合时可能发生自动装箱和拆箱：
+
+```java
+List<Integer> numbers = new ArrayList<>();
+numbers.add(101);       // 装箱
+int first = numbers.get(0); // 拆箱
+```
+
+性能敏感且数据量很大的数值处理，需要把对象数量和内存布局纳入评估，而不是只比较算法复杂度。
+
+### 4.2 表达缺失值
+
+包装类型可以用 `null` 表示“未提供”，例如更新请求中的 `Integer retryCount` 可以区分未传值和明确传入 `0`。
+
+这个能力也带来空值传播。进入核心业务对象后，通常应把“未提供”转换为默认值、明确的状态类型或校验错误，不要让可能为空的包装类型在计算链路中继续流动。
+
+### 4.3 框架和通用 API
+
+反射、ORM、序列化框架和以 `Object` 为边界的 API 经常需要包装类型。是否使用包装类型，应由接口是否需要对象或空值语义决定，不要统一把所有字段都改成包装类型。
+
+## 5. 常见问题
+
+### 5.1 `Integer.valueOf(1)` 与 `new Integer(1)` 有什么区别
+
+`valueOf` 可以复用缓存对象。显式调用包装类构造方法会要求创建新对象，并且这些构造方法已经被弃用。正常代码使用 `valueOf`、自动装箱或解析方法，不手动 `new` 包装对象。
+
+### 5.2 包装类型为什么适合做不可变值
+
+标准包装类都是不可变的，创建后内部表示的基本值不会改变。加减运算会拆箱计算，再得到新的基本值或包装对象，不会修改原包装对象。
+
+### 5.3 方法参数用 `int` 还是 `Integer`
+
+参数不允许缺失并且只做数值运算时，使用 `int` 更清楚，也不会发生空拆箱。只有接口需要表达 `null`、使用泛型或对接要求引用类型的框架时，才使用 `Integer`，并在边界明确处理空值。
+
+### 5.4 `Integer` 与 `Long` 能否通过 `equals` 判断数值相等
+
+不能：
+
+```java
+System.out.println(Integer.valueOf(1).equals(Long.valueOf(1))); // false
+```
+
+包装类的 `equals` 同时要求类型和数值匹配。跨数值类型比较时，应先根据业务需要转换到共同且不会丢失信息的表示。
+
+## 6. 面试题
+
+### 6.1 什么是自动装箱和拆箱，可能产生哪些问题
+
+<!-- 面试来源：
+- 百度：https://www.nowcoder.com/discuss/866618516718350336
+- 阿里巴巴：https://www.nowcoder.com/discuss/633691/
+-->
+
+**出现公司**：百度、阿里巴巴
+
+**考察重点**
+
+- 基本类型与包装类型之间发生了什么转换。
+- 哪些赋值和运算会隐式触发转换。
+- 缓存身份、空值拆箱和额外对象成本。
+
+**相关内容**：第 2 节“自动装箱与拆箱”、第 3 节“包装对象的缓存与身份”。
+
+<details>
+<summary>参考回答</summary>
+
+自动装箱把基本类型转换为对应包装类型，通常通过 `valueOf` 取得对象；自动拆箱从包装对象中取得基本值。它们会出现在赋值、方法调用、比较和算术运算中。
+
+使用时要注意三点：包装对象使用 `==` 比较的是引用身份，结果可能受缓存影响；`null` 在拆箱时会抛出 `NullPointerException`；大量不必要的装箱会增加对象和内存成本。数值不能为空时优先使用基本类型，包装值判断相等使用 `equals`。
+
+</details>
+
+### 6.2 为什么两个值为 127 的 Integer 使用 `==` 可能为 true
+
+<!-- 面试来源：
+- 实在智能：https://www.nowcoder.com/discuss/801106458455629824
+- 百度：https://www.nowcoder.com/discuss/866618516718350336
+-->
+
+**出现公司**：实在智能、百度
+
+**考察重点**
+
+- 装箱缓存与对象身份的关系。
+- Java 规范保证的范围与实现可扩展的范围。
+- 为什么业务判断不应依赖缓存。
+
+**相关内容**：第 3 节“包装对象的缓存与身份”。
+
+<details>
+<summary>参考回答</summary>
+
+对结果位于 `-128` 到 `127` 的整数常量表达式进行装箱时，Java 规范保证重复装箱得到不可区分的相同引用，所以两个 `Integer` 使用 `==` 可能为 `true`。实现还可以缓存更多值，但范围外不能依赖引用身份。
+
+`==` 对两个包装引用比较的是对象身份，不是稳定的数值判断。无论数值是否落在缓存范围，包装值的内容比较都应使用 `equals`。
+
+</details>
+
+:::note 参考资料
+
+1. [Java Language Specification：Boxing Conversion](https://docs.oracle.com/en/java/javase/26/docs/specs/jls/jls-5.html#jls-5.1.7)
+2. [Java Language Specification：Unboxing Conversion](https://docs.oracle.com/en/java/javase/26/docs/specs/jls/jls-5.html#jls-5.1.8)
+3. [Java API：Integer](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/Integer.html)
+4. [Java API：Boolean](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/Boolean.html)
+
+:::

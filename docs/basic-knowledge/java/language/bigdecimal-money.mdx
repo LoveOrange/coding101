@@ -1,0 +1,266 @@
+---
+sidebar_position: 8
+---
+
+# BigDecimal 与金额计算
+
+`BigDecimal` 使用十进制数值和小数位数表示数据，适合需要明确精度与舍入规则的金额计算。它能避免二进制浮点表示带来的意外结果，但不会替业务决定保留几位、何时舍入或使用哪种舍入方式。
+
+## 1. double 为什么会出现十进制误差
+
+`double` 使用二进制浮点数表示数值。许多常见十进制小数无法用有限长度的二进制小数精确表示，运行时会保存最接近的可表示值：
+
+```java
+double result = 0.1 + 0.2;
+System.out.println(result); // 0.30000000000000004
+```
+
+这是二进制浮点表示的正常结果，并非 Java 计算错误。科学计算、图形和允许误差的统计场景仍然适合使用 `double`；金额、税率结算等要求十进制规则可控的场景，通常使用 `BigDecimal` 或明确的最小货币单位整数。
+
+## 2. BigDecimal 怎样表示数值
+
+一个 `BigDecimal` 由任意精度整数值和 `scale` 组成，其数值可以理解为：
+
+```text
+unscaledValue × 10^-scale
+```
+
+例如：
+
+```java
+BigDecimal amount = new BigDecimal("123.45");
+
+System.out.println(amount.unscaledValue()); // 12345
+System.out.println(amount.scale());         // 2
+System.out.println(amount.precision());     // 5
+```
+
+- `scale` 表示小数点右侧的位数。
+- `precision` 表示有效数字的位数。
+- `unscaledValue` 保存去掉小数点后的整数表示。
+
+`BigDecimal` 是不可变对象。`add`、`setScale` 等方法都会返回新对象：
+
+```java
+BigDecimal original = new BigDecimal("10.00");
+BigDecimal updated = original.add(new BigDecimal("2.50"));
+
+System.out.println(original); // 10.00
+System.out.println(updated);  // 12.50
+```
+
+## 3. 正确创建 BigDecimal
+
+已知十进制文本时，使用字符串构造方法：
+
+```java
+BigDecimal price = new BigDecimal("19.90");
+BigDecimal taxRate = new BigDecimal("0.06");
+```
+
+整数来源可以直接使用 `valueOf(long)` 或常量：
+
+```java
+BigDecimal count = BigDecimal.valueOf(3);
+BigDecimal zero = BigDecimal.ZERO;
+```
+
+### 3.1 避免使用 `new BigDecimal(double)` 表示十进制字面量
+
+```java
+BigDecimal unexpected = new BigDecimal(0.1);
+System.out.println(unexpected);
+// 0.1000000000000000055511151231257827021181583404541015625
+```
+
+构造方法精确保存传入的 `double` 实际值，而 `0.1` 在成为参数前已经是近似的二进制浮点数。
+
+如果来源只能提供 `double`，`BigDecimal.valueOf(double)` 会先使用该浮点数的规范字符串表示，通常更符合人们看到的十进制形式：
+
+```java
+BigDecimal value = BigDecimal.valueOf(0.1);
+System.out.println(value); // 0.1
+```
+
+但这不能恢复来源在转换成 `double` 前丢失的精度。金额数据最好从文本、数据库十进制类型或整数最小单位进入系统，不要先经过浮点数。
+
+## 4. 运算必须明确舍入规则
+
+加、减、乘通常可以直接得到精确十进制结果：
+
+```java
+BigDecimal subtotal = new BigDecimal("19.90")
+    .multiply(BigDecimal.valueOf(3));
+
+System.out.println(subtotal); // 59.70
+```
+
+除法可能产生无限循环小数。如果结果无法用有限小数表示，而调用方没有指定精度或舍入规则，`divide` 会抛出 `ArithmeticException`：
+
+```java
+BigDecimal one = BigDecimal.ONE;
+BigDecimal three = BigDecimal.valueOf(3);
+
+// one.divide(three); // ArithmeticException
+
+BigDecimal result = one.divide(three, 2, RoundingMode.HALF_UP);
+System.out.println(result); // 0.33
+```
+
+舍入属于业务规则，不能作为补救异常的临时参数。应明确：
+
+- 中间计算保留多少精度。
+- 哪一步进行舍入。
+- 最终展示、结算和入账分别使用什么小数位。
+- 正数和负数是否使用相同舍入方式。
+
+### 4.1 `setScale` 不会修改原对象
+
+```java
+BigDecimal amount = new BigDecimal("12.345");
+BigDecimal rounded = amount.setScale(2, RoundingMode.HALF_UP);
+
+System.out.println(amount);  // 12.345
+System.out.println(rounded); // 12.35
+```
+
+只调用 `amount.setScale(...)` 而不接收返回值，不会改变 `amount`。
+
+### 4.2 MathContext 控制有效数字
+
+`MathContext` 通过精度和舍入模式限制整个运算结果的有效数字，与固定小数位的 `setScale` 解决的问题不同：
+
+```java
+MathContext context = new MathContext(4, RoundingMode.HALF_UP);
+BigDecimal result = new BigDecimal("123.45")
+    .multiply(new BigDecimal("6.789"), context);
+
+System.out.println(result); // 838.1
+```
+
+金融结算中常见的是按货币和业务规则控制小数位；高精度科学计算可能更关心有效数字。不要在没有确定语义时统一套用一个全局 `MathContext`。
+
+## 5. 比较时区分数值与表示
+
+`equals` 同时比较数值和 `scale`：
+
+```java
+BigDecimal first = new BigDecimal("2.0");
+BigDecimal second = new BigDecimal("2.00");
+
+System.out.println(first.equals(second)); // false
+```
+
+`compareTo` 比较数值大小，不要求 `scale` 相同：
+
+```java
+System.out.println(first.compareTo(second)); // 0
+```
+
+判断金额数值是否相同，通常使用 `compareTo(...) == 0`。需要把对象作为 `HashMap` 的键或 `HashSet` 的元素时，要特别注意：集合使用 `equals` 和 `hashCode`，`2.0` 与 `2.00` 会被当成不同键。
+
+一种做法是在进入领域对象时统一 `scale`，让对象表示也具有明确约束：
+
+```java
+public record Money(BigDecimal amount) {
+    public Money {
+        amount = amount.setScale(2, RoundingMode.UNNECESSARY);
+    }
+}
+```
+
+这个示例只适用于明确要求两位小数且输入不得舍入的业务。不同货币和业务不一定都使用两位小数，规则应由领域决定。
+
+## 6. 金额模型怎样选择
+
+常见方案有两种：
+
+### 6.1 使用 BigDecimal 保存主单位
+
+适合直接对接数据库 `DECIMAL`、需要可变小数位或计算规则复杂的场景。需要在边界统一精度、舍入模式、货币单位和序列化格式。
+
+### 6.2 使用 long 保存最小单位
+
+```java
+long amountInCents = 1990;
+```
+
+整数运算没有小数表示误差，类型也更轻量。但需要防止溢出，并且只有在货币的最小单位和换算规则固定时才简单。涉及比例、税率和分摊时仍然必须定义余数和舍入规则。
+
+无论选择哪一种，都应把数值与币种放在同一个领域模型中，避免把人民币 100 元与美元 100 元当作可以直接相加的两个裸数字。
+
+## 7. 常见问题
+
+### 7.1 `BigDecimal` 能彻底解决金额问题吗
+
+不能。它解决十进制表示和精度控制，但货币、汇率时间点、分摊余数、舍入位置和会计规则仍然需要业务定义。错误地选择 `scale` 或在每一步重复舍入，同样会得到错误结果。
+
+### 7.2 `stripTrailingZeros()` 适合统一 scale 吗
+
+它会移除末尾零，但结果的 `scale` 可能为负数，例如某些整十数会使用科学计数形式表示。用于显示或持久化前，需要确认这是否符合接口契约。金额模型通常更适合显式指定要求的 `scale`。
+
+### 7.3 为什么不直接使用 `double` 再格式化为两位小数
+
+格式化只改变输出文本，不能修复中间计算已经产生的二进制近似和舍入传播。金额规则需要从输入、计算到结算全程明确，而不是最后隐藏多余小数位。
+
+## 8. 面试题
+
+### 8.1 金额为什么不适合直接使用 double
+
+<!-- 面试来源：
+- 帆软：https://www.nowcoder.com/discuss/655505397251338240
+- 阿里巴巴：https://www.nowcoder.com/discuss/633691/
+-->
+
+**出现公司**：帆软、阿里巴巴
+
+**考察重点**
+
+- 十进制小数与二进制浮点表示之间的差异。
+- `BigDecimal` 怎样保存数值和小数位。
+- 精确表示不等于已经确定业务舍入规则。
+
+**相关内容**：第 1 节“double 为什么会出现十进制误差”、第 2 节“BigDecimal 怎样表示数值”、第 4 节“运算必须明确舍入规则”。
+
+<details>
+<summary>参考回答</summary>
+
+`double` 使用二进制浮点表示，很多十进制小数只能保存近似值，连续计算会出现用户可见的尾差。`BigDecimal` 使用任意精度整数和 `scale` 表示十进制数，可以准确保存从字符串或十进制数据源得到的金额。
+
+使用 `BigDecimal` 时仍要明确创建方式和舍入规则。我会从字符串、数据库 `DECIMAL` 或最小货币单位创建，避免 `new BigDecimal(double)`；除法和结算时由业务指定精度与 `RoundingMode`。
+
+</details>
+
+### 8.2 `BigDecimal` 的 equals 与 compareTo 有什么区别
+
+<!-- 面试来源：
+- 帆软：https://www.nowcoder.com/discuss/655505397251338240
+-->
+
+**出现公司**：帆软
+
+**考察重点**
+
+- 数值相同与表示相同的区别。
+- `scale` 对 `equals`、`hashCode` 和哈希集合的影响。
+- 业务模型是否需要统一小数位。
+
+**相关内容**：第 5 节“比较时区分数值与表示”。
+
+<details>
+<summary>参考回答</summary>
+
+`equals` 同时比较数值和 `scale`，所以 `2.0` 与 `2.00` 不相等；`compareTo` 比较数值大小，两者比较结果为 0。判断金额数值是否一致通常使用 `compareTo(...) == 0`。
+
+如果 `BigDecimal` 作为哈希键，集合会使用 `equals` 和 `hashCode`，不同 `scale` 会形成不同键。领域模型可以在构造边界统一合法的小数位，让表示规则也保持一致。
+
+</details>
+
+:::note 参考资料
+
+1. [Java API：BigDecimal](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/math/BigDecimal.html)
+2. [Java API：RoundingMode](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/math/RoundingMode.html)
+3. [Java API：MathContext](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/math/MathContext.html)
+4. [Java Language Specification：Floating-Point Types, Formats, and Values](https://docs.oracle.com/en/java/javase/26/docs/specs/jls/jls-4.html#jls-4.2.3)
+
+:::

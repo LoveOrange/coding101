@@ -1,0 +1,141 @@
+---
+sidebar_position: 1
+---
+
+# MyBatis 映射、执行器与插件
+
+MyBatis 把 Mapper 方法和 SQL 映射为 `MappedStatement`，再通过 SqlSession、Executor 和 JDBC 处理一次数据库访问。掌握这条执行路径，才能判断缓存、插件、参数绑定和事务分别在哪一层生效。
+
+## 1. 映射配置形成 MappedStatement
+
+应用启动时，MyBatis 读取 XML 或注解中的 statement、动态 SQL、参数类型、ResultMap 和缓存配置，并保存到 `Configuration`。每条语句使用 `namespace + id` 作为标识，对应一个 `MappedStatement`。
+
+```xml
+<select id="findById" resultMap="orderResultMap">
+  select id, user_id, status
+  from orders
+  where id = #{id}
+</select>
+```
+
+Mapper 接口通常由动态代理实现。调用 `orderMapper.findById(id)` 时，代理根据接口与方法找到 statement id，再把参数交给 SqlSession。接口方法本身不包含查询实现。
+
+## 2. 一次查询经过多个处理组件
+
+主路径可以概括为：
+
+```text
+Mapper proxy
+  → SqlSession
+  → Executor
+  → StatementHandler
+  → ParameterHandler
+  → JDBC PreparedStatement
+  → ResultSetHandler
+  → Java result
+```
+
+- **Executor**：组织查询或更新，管理本地缓存和事务相关操作。
+- **StatementHandler**：创建、参数化并执行 JDBC Statement。
+- **ParameterHandler**：使用 TypeHandler 把 Java 参数设置到 JDBC。
+- **ResultSetHandler**：读取 ResultSet，并按 ResultMap 或结果类型构造对象。
+
+理解职责比背类名更重要。SQL 没有生成正确，先看动态 SQL 与 BoundSql；参数类型错误看 ParameterHandler 和 TypeHandler；列映射错误看 ResultMap 与 ResultSetHandler。
+
+## 3. Executor 决定语句复用与批处理方式
+
+MyBatis 提供三种主要 ExecutorType：
+
+- `SIMPLE`：每次执行创建新的 Statement，是默认方式。
+- `REUSE`：在当前执行器范围复用相同 SQL 的 PreparedStatement。
+- `BATCH`：积累更新语句并批量提交给 JDBC 驱动。
+
+`BATCH` 并不表示 Mapper 方法返回时数据库一定已经执行。需要在 flush 或事务提交时检查批处理结果；中间查询也可能触发待执行语句刷新。批量执行的错误定位、生成键和事务大小都要单独测试。
+
+## 4. 参数占位符与字符串替换用途不同
+
+`#{value}` 会生成 JDBC `?` 占位符，再由 PreparedStatement 绑定值。它适用于普通数据参数。
+
+`${column}` 会把文本原样替换进 SQL，无法通过 PreparedStatement 绑定。表名、列名和排序方向确实不能作为普通值参数时，应在代码中映射到固定白名单：
+
+```java
+String orderBy = switch (sort) {
+    case CREATED_AT -> "created_at";
+    case AMOUNT -> "amount";
+};
+```
+
+不能把请求中的字符串直接传给 `${}`，否则会形成 SQL 注入入口。
+
+## 5. 一级缓存属于 SqlSession
+
+每个 SqlSession 都有本地缓存。默认 `localCacheScope=SESSION` 时，相同 statement、参数和分页条件的查询可以复用结果；update、commit、rollback、close 等操作会清理缓存。
+
+缓存保存并返回对象引用。在同一 Session 内修改查询结果对象，后续缓存命中可能看到修改后的值。缩短 Session 生命周期、不随意修改查询结果，比依赖缓存副本更稳妥。
+
+二级缓存按 Mapper namespace 配置，可以跨 SqlSession 使用。它增加失效、序列化和一致性约束，不应仅为了减少一次简单查询就默认开启。
+
+## 6. 插件只拦截指定扩展点
+
+MyBatis 插件可以包装以下四类组件的指定方法：
+
+- Executor
+- StatementHandler
+- ParameterHandler
+- ResultSetHandler
+
+分页、审计或租户条件插件需要选择最窄的扩展点。拦截器修改 BoundSql 时，要同时处理参数映射、缓存键、数据库方言和嵌套查询，不能只拼一段字符串。
+
+插件顺序会改变行为。两个插件都重写 SQL 或参数时，应通过集成测试确认代理嵌套顺序和最终 SQL，而不是依赖注册代码的表面阅读。
+
+## 7. 与 Spring 事务共用同一 SqlSession
+
+使用 MyBatis-Spring 时，SqlSession 的创建、复用和提交由 Spring 事务同步管理。同一事务内的 Mapper 调用通常使用绑定到当前线程的 Session；直接手工创建另一个 Session 会脱离当前事务和一级缓存范围。
+
+Mapper 方法正常返回不等于事务已经提交。缓存可见性、批处理 flush 和连接释放都要结合外层事务边界判断。
+
+## 8. 常见问题
+
+### 8.1 MyBatis 一级缓存会导致脏读吗
+
+它可能让同一 SqlSession 重复读取到本地对象，而没有再次访问数据库。是否称为“脏读”还取决于事务隔离和其他事务状态；排查时应先确认 Session 范围、是否执行过更新以及查询是否真正命中缓存。
+
+### 8.2 插件可以拦截任意 MyBatis 方法吗
+
+不能。官方插件机制只支持规定的四类接口及其方法。需要修改其他行为时，应使用明确扩展点或封装层，避免依赖内部类的偶然实现。
+
+## 9. 面试题
+
+### 9.1 MyBatis 的一次查询是怎样执行的
+
+<!-- 面试来源：
+- 金山办公：https://www.nowcoder.com/discuss/800822936729894912
+- CVTE：https://www.nowcoder.com/discuss/353154893408051200
+-->
+
+**出现公司**：金山办公、CVTE
+
+**考察重点**
+
+- Mapper 代理、MappedStatement 和 SqlSession。
+- Executor 与 JDBC 处理组件的职责。
+- 本地缓存、插件和事务所在位置。
+
+**相关内容**：第 1 节“映射配置形成 MappedStatement”至第 7 节“与 Spring 事务共用同一 SqlSession”。
+
+<details>
+<summary>参考回答</summary>
+
+启动时，XML 或注解被解析为 Configuration 中的 MappedStatement。调用 Mapper 接口时，动态代理根据接口与方法定位 statement，交给 SqlSession 和 Executor；Executor 处理本地缓存并调用 StatementHandler，后者通过 ParameterHandler 绑定 PreparedStatement 参数，执行后由 ResultSetHandler 映射结果。
+
+插件只能包装 Executor、StatementHandler、ParameterHandler 和 ResultSetHandler 的指定方法。使用 MyBatis-Spring 时，SqlSession 与外层 Spring 事务同步，因此批处理执行、一级缓存和连接释放都要结合事务边界判断。
+
+</details>
+
+:::note 参考资料
+
+1. [MyBatis：Mapper XML Files](https://mybatis.org/mybatis-3/sqlmap-xml.html)
+2. [MyBatis：Java API](https://mybatis.org/mybatis-3/java-api.html)
+3. [MyBatis：Configuration](https://mybatis.org/mybatis-3/configuration.html)
+
+:::

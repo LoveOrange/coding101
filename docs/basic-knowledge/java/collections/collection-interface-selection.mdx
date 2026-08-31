@@ -1,0 +1,247 @@
+---
+sidebar_position: 1
+---
+
+# List、Set、Map 与 Queue 的选择
+
+Java 集合接口分别表达顺序、唯一性、键值关联和排队规则。选型时先确定调用方需要的语义，再比较具体实现的时间、空间和并发成本。
+
+## 1. Collection 与 Map 是两条接口分支
+
+`Collection<E>` 表示一组元素，常用子接口包括 `List`、`Set` 和 `Queue`。`Map<K, V>` 表示键到值的映射，不是 `Collection` 的子接口。
+
+```text
+Iterable
+└── Collection
+    ├── List
+    ├── Set
+    └── Queue
+        └── Deque
+
+Map
+```
+
+这个划分来自访问方式：集合按元素处理，Map 通过键定位值。`Map.entrySet()`、`keySet()` 和 `values()` 会提供不同的集合视图，但 Map 自身仍不属于 Collection。
+
+## 2. List 保留位置与重复元素
+
+`List` 是有顺序、允许重复的序列。它适合：
+
+- 需要按索引访问。
+- 需要保留插入或业务排序后的顺序。
+- 同一个值可以出现多次。
+- 需要在特定位置插入或替换。
+
+```java
+List<String> steps = new ArrayList<>();
+steps.add("validate");
+steps.add("persist");
+steps.add("publish");
+
+String second = steps.get(1);
+```
+
+默认优先考虑 `ArrayList`。它的随机访问是常数时间，尾部追加通常成本低，引用数组也有较好的遍历局部性。
+
+`LinkedList` 同时实现 `List` 和 `Deque`，但通过索引访问需要沿节点移动。只有调用方已经持有迭代位置，并且确实频繁在中间插入或删除时，链表的节点修改成本才可能有价值。作为队列通常优先使用 `ArrayDeque`。
+
+## 3. Set 表达唯一性
+
+`Set` 不允许两个满足集合相等关系的元素同时存在：
+
+```java
+Set<String> permissions = new HashSet<>();
+permissions.add("order:read");
+permissions.add("order:read");
+
+System.out.println(permissions.size()); // 1
+```
+
+常见实现的差异：
+
+| 实现 | 顺序 | 典型操作 | 适用情况 |
+| --- | --- | --- | --- |
+| `HashSet` | 不承诺遍历顺序 | 平均常数时间 | 只关心去重和成员判断 |
+| `LinkedHashSet` | 保留遇到顺序 | 平均常数时间，额外维护链 | 去重后仍需稳定顺序 |
+| `TreeSet` | 按自然顺序或 Comparator 排序 | 对数时间 | 范围查询、前驱后继、有序输出 |
+| `EnumSet` | 枚举声明顺序 | 位向量实现 | 一组枚举标志 |
+
+`HashSet` 通常基于 `HashMap`，元素作为键存放。自定义元素能否正确去重，取决于 `equals` 与 `hashCode` 是否保持契约。
+
+## 4. Map 表达键到值的关联
+
+`Map` 适合通过稳定键查找、更新或删除值：
+
+```java
+Map<Long, User> usersById = new HashMap<>();
+usersById.put(user.id(), user);
+
+User found = usersById.get(userId);
+```
+
+常见实现：
+
+| 实现 | 键顺序 | 典型复杂度 | 主要用途 |
+| --- | --- | --- | --- |
+| `HashMap` | 不承诺 | 平均 O(1) | 一般键值查找 |
+| `LinkedHashMap` | 插入顺序或访问顺序 | 平均 O(1) | 稳定遍历、简单 LRU |
+| `TreeMap` | 排序 | O(log n) | 范围、最近键、有序导航 |
+| `EnumMap` | 枚举声明顺序 | 接近数组访问 | 枚举键 |
+| `ConcurrentHashMap` | 不承诺 | 并发实现 | 多线程共享映射 |
+
+Map 只能为一个键保存一个当前值。如果同一业务键需要保留多条记录，值类型应当是集合，或者重新设计键，而不是依赖多次 `put`：
+
+```java
+Map<Department, List<User>> usersByDepartment = new HashMap<>();
+usersByDepartment
+    .computeIfAbsent(user.department(), ignored -> new ArrayList<>())
+    .add(user);
+```
+
+## 5. Queue 与 Deque 表达取出规则
+
+`Queue` 通常按先进先出处理元素：
+
+```java
+Queue<Job> jobs = new ArrayDeque<>();
+jobs.offer(job);
+Job next = jobs.poll();
+```
+
+队列 API 有两组方法：
+
+| 操作 | 失败时抛异常 | 失败时返回特殊值 |
+| --- | --- | --- |
+| 插入 | `add` | `offer` |
+| 读取队首 | `element` | `peek` |
+| 取出队首 | `remove` | `poll` |
+
+有容量限制或失败属于正常控制流时，`offer`、`peek` 和 `poll` 更容易处理。
+
+`Deque` 支持两端操作，可以作为队列或栈：
+
+```java
+Deque<Node> stack = new ArrayDeque<>();
+stack.push(root);
+Node current = stack.pop();
+```
+
+新代码不需要使用旧的 `Stack` 类。单线程双端队列优先使用 `ArrayDeque`；跨线程生产消费则根据阻塞和容量要求选择 `BlockingQueue`。
+
+### 5.1 PriorityQueue 按优先级取出
+
+`PriorityQueue` 的队首是比较顺序中的最小元素，不保留完整排序后的线性结构：
+
+```java
+Queue<Task> tasks = new PriorityQueue<>(
+    Comparator.comparing(Task::deadline)
+);
+```
+
+`peek` 和 `poll` 取得当前最小项，遍历队列不保证整体有序。需要完整排序结果时，应逐个 `poll` 或使用排序算法。
+
+## 6. 选型从访问模式开始
+
+可以依次回答：
+
+1. **是否允许重复**：不允许时考虑 Set；需要按键覆盖时考虑 Map。
+2. **是否需要顺序**：区分插入顺序、访问顺序、排序顺序和队列顺序。
+3. **主要操作是什么**：索引访问、成员判断、范围查询、两端操作还是优先级取出。
+4. **数据规模多大**：节点对象、装箱、空桶和扩容都占内存。
+5. **是否跨线程共享**：并发语义需要专门容器或外部同步。
+6. **是否需要可变**：固定结果优先返回不可修改快照。
+
+| 需求 | 常见起点 |
+| --- | --- |
+| 保持顺序并按索引读取 | `ArrayList` |
+| 去重，不要求顺序 | `HashSet` |
+| 去重并保留输入顺序 | `LinkedHashSet` |
+| 按键快速查找 | `HashMap` |
+| 按键范围查询 | `TreeMap` |
+| 单线程 FIFO 或双端操作 | `ArrayDeque` |
+| 取出当前最小或最大元素 | `PriorityQueue` |
+| 有界跨线程生产消费 | `ArrayBlockingQueue` |
+
+这个表是起点，不是结论。比如排行榜既可能需要 `TreeSet` 的排序，也可能需要 Map 定位和单独的索引结构，取决于更新频率和查询方式。
+
+## 7. 常见问题
+
+### 7.1 HashSet 为什么不保证顺序
+
+元素位置由哈希值、容量、冲突和扩容结果决定。即使某次运行看起来稳定，API 也没有承诺这种顺序。依赖插入顺序时使用 `LinkedHashSet`，依赖排序时使用 `TreeSet`。
+
+### 7.2 ArrayDeque 可以保存 null 吗
+
+不可以。`null` 被队列 API 用作“当前没有元素”的返回值，禁止存储可以避免语义冲突。需要表示缺失状态时，应在元素类型或调用协议中显式表达。
+
+### 7.3 final 集合就是不可变集合吗
+
+不是。`final` 只禁止变量重新指向另一个集合，仍然可以调用 `add` 或 `remove`。不可修改视图、不可变副本和元素自身的不可变性是三个不同层次。
+
+### 7.4 Collection 与 Collections 有什么区别
+
+`Collection` 是集合接口，`Collections` 是包含排序、查找、包装等静态工具方法的类。类似地，`Arrays` 是数组工具类，不是数组类型的父类。
+
+## 8. 面试题
+
+### 8.1 List、Set、Map 分别适合什么场景
+
+<!-- 面试来源：
+- 阿里巴巴、腾讯、京东、美团：https://www.nowcoder.com/discuss/400870/
+- 招银网络：https://www.nowcoder.com/discuss/353154885766029312
+-->
+
+**出现公司**：阿里巴巴、腾讯、京东、美团、招银网络
+
+**考察重点**
+
+- 顺序、重复、键值关联和取出规则的区别。
+- 接口语义与具体数据结构不能混为一谈。
+- 访问模式、内存与并发条件如何影响选型。
+
+**相关内容**：第 2 节“List 保留位置与重复元素”至第 6 节“选型从访问模式开始”。
+
+<details>
+<summary>参考回答</summary>
+
+`List` 表示有位置、允许重复的序列；`Set` 表示按相等关系去重的元素集合；`Map` 表示键到值的关联；`Queue` 表示特定取出规则。先根据业务需要选择接口，再根据顺序、访问方式和并发条件选择实现。
+
+例如一般顺序列表使用 `ArrayList`，成员判断用 `HashSet`，键值查找用 `HashMap`，范围查询用 `TreeMap`，单线程队列用 `ArrayDeque`。复杂度只是其中一个条件，元素数量、内存布局和线程共享也需要一起判断。
+
+</details>
+
+### 8.2 HashSet 怎样判断元素重复
+
+<!-- 面试来源：
+- 字节跳动、阿里巴巴：https://www.nowcoder.com/discuss/353147579288461312
+-->
+
+**出现公司**：字节跳动、阿里巴巴
+
+**考察重点**
+
+- HashSet 与 HashMap 的实现关系。
+- `hashCode` 用于定位候选范围，`equals` 用于确认相等。
+- 可变字段参与哈希计算时会发生什么。
+
+**相关内容**：第 3 节“Set 表达唯一性”。
+
+<details>
+<summary>参考回答</summary>
+
+`HashSet` 通常把元素作为底层 `HashMap` 的键。加入元素时先根据 `hashCode` 定位桶，再用 `equals` 与候选键确认是否已经存在。两个相等对象必须返回相同哈希值，否则它们可能进入不同桶而无法正确去重。
+
+元素加入后，如果参与 `equals` 或 `hashCode` 的字段发生变化，集合可能再也找不到它。因此 Set 中的键应使用稳定的相等性字段。
+
+</details>
+
+:::note 参考资料
+
+1. [Java API：Collection](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/Collection.html)
+2. [Java API：List](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/List.html)
+3. [Java API：Set](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/Set.html)
+4. [Java API：Map](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/Map.html)
+5. [Java API：Queue](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/Queue.html)
+6. [Java API：Deque](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/Deque.html)
+
+:::

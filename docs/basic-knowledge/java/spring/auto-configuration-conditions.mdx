@@ -1,0 +1,132 @@
+---
+sidebar_position: 17
+---
+
+# 自动配置与条件评估
+
+Spring Boot 自动配置会根据应用类路径、配置属性和容器中已有的 Bean，选择当前应用需要注册的配置。它提供的是带条件的默认值，用户配置应当能够覆盖这些默认值。
+
+## 1. 自动配置类从 imports 文件进入候选集合
+
+第三方自动配置通常在以下文件中登记类名：
+
+```text
+META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports
+```
+
+```text
+com.example.payment.autoconfigure.PaymentAutoConfiguration
+```
+
+候选类使用 `@AutoConfiguration` 声明。当前 Spring Boot 不要求把自动配置放进应用的组件扫描范围，也不建议自动配置类自行进行宽泛扫描；需要的配置应通过明确的 `@Import` 引入。
+
+`@EnableAutoConfiguration` 负责发起候选配置导入。应用可以排除某个候选，但排除只解决“不要使用这份默认配置”，不应成为修复依赖冲突的常规手段。
+
+## 2. 条件决定配置是否生效
+
+```java
+@AutoConfiguration
+@ConditionalOnClass(PaymentClient.class)
+@EnableConfigurationProperties(PaymentProperties.class)
+class PaymentAutoConfiguration {
+    @Bean
+    @ConditionalOnMissingBean
+    PaymentService paymentService(PaymentProperties properties) {
+        return new PaymentService(properties.endpoint());
+    }
+}
+```
+
+常见条件分别检查：
+
+- 类路径是否存在某个类。
+- 容器是否已有或缺少某类 Bean。
+- 某个配置属性是否启用。
+- 应用类型、资源或表达式是否匹配。
+
+条件可以标在配置类或 Bean 方法上。类级条件不成立时，整组配置都不会解析；方法级条件只控制一个 Bean。
+
+## 3. 回退机制保留用户控制权
+
+`@ConditionalOnMissingBean` 让自动配置在用户已经声明 Bean 时退让。例如应用自定义 `ObjectMapper` 后，框架不应再无条件创建同类型默认实现。
+
+回退是否成功取决于条件评估时已经可见的 BeanDefinition。自定义自动配置之间若存在明确先后关系，可以通过 `before`、`after` 等元数据排序；Bean 实例的实际创建顺序仍由依赖关系决定。
+
+不要仅为了“让条件先看到”而依赖偶然的文件名或扫描顺序。公共扩展点应有明确类型、配置属性和自动配置顺序。
+
+## 4. 属性条件要定义清楚默认行为
+
+```java
+@Bean
+@ConditionalOnProperty(
+    prefix = "payment.retry",
+    name = "enabled",
+    havingValue = "true"
+)
+RetryPolicy retryPolicy() { ... }
+```
+
+需要明确三个问题：属性缺失时是否启用、什么值算匹配、错误值是否应让启动失败。关键能力最好通过类型安全的 `@ConfigurationProperties` 校验参数，而不是让拼写错误静默回退到另一种行为。
+
+## 5. 条件评估报告解释选择过程
+
+使用 `--debug` 启动，或查看 Actuator 的 `conditions` 端点，可以看到每个自动配置匹配和未匹配的原因。例如：
+
+- 类路径缺少驱动类。
+- 已存在用户 Bean，所以默认 Bean 回退。
+- 属性值没有满足条件。
+- 应用不是 Servlet Web 类型。
+
+“没有创建某个 Bean”通常只是结果。条件报告、BeanDefinition 来源和最终配置值才能说明原因。
+
+## 6. 自动配置应避免启动副作用
+
+自动配置类的职责是声明 Bean 和配置关系。类加载或配置解析期间直接访问网络、创建线程、写文件，会让条件评估变得昂贵，也使测试和应用关闭难以控制。
+
+确实需要连接外部系统时，把行为放进有超时、生命周期和健康状态的组件，并明确它是否阻塞应用就绪。
+
+## 7. 常见问题
+
+### 7.1 `spring.factories` 还能用来登记自动配置吗
+
+当前自动配置候选应登记在 `AutoConfiguration.imports` 文件。`spring.factories` 仍可能用于部分扩展机制和旧版本兼容，但不应把历史自动配置注册方式当作当前做法。
+
+### 7.2 `@ConditionalOnMissingBean` 为什么没有退让
+
+先确认条件检查的类型、名称和泛型信息是否与用户 Bean 相同，再看条件评估发生时该 BeanDefinition 是否已经注册。还要排查父子容器的搜索范围以及用户配置是否根本未被扫描。
+
+## 8. 面试题
+
+### 8.1 Spring Boot 自动配置是怎样生效的
+
+<!-- 面试来源：
+- 阿里巴巴天猫：https://www.nowcoder.com/discuss/863791917840990208
+- 美团：https://www.nowcoder.com/discuss/353158567966482432
+-->
+
+**出现公司**：阿里巴巴天猫、美团
+
+**考察重点**
+
+- 自动配置候选的发现方式。
+- 条件注解与用户 Bean 回退。
+- 条件报告和排查方法。
+
+**相关内容**：第 1 节“自动配置类从 imports 文件进入候选集合”至第 6 节“自动配置应避免启动副作用”。
+
+<details>
+<summary>参考回答</summary>
+
+`@SpringBootApplication` 包含 `@EnableAutoConfiguration`。Spring Boot 从 `AutoConfiguration.imports` 读取候选自动配置类，再依据 `@ConditionalOnClass`、`@ConditionalOnBean`、`@ConditionalOnMissingBean` 和属性条件等决定哪些 BeanDefinition 可以注册。
+
+自动配置应提供可被用户覆盖的默认值，所以经常用 `@ConditionalOnMissingBean` 退让。结果不符合预期时，可以通过 debug 条件评估报告或 Actuator conditions 端点检查类路径、属性值、已有 Bean 和应用类型，而不是只猜包扫描是否生效。
+
+</details>
+
+:::note 参考资料
+
+1. [Spring Boot：Creating Your Own Auto-configuration](https://docs.spring.io/spring-boot/reference/features/developing-auto-configuration.html)
+2. [Spring Boot：Auto-configuration Classes](https://docs.spring.io/spring-boot/appendix/auto-configuration-classes/)
+3. [Spring Boot：Conditions Evaluation Report Endpoint](https://docs.spring.io/spring-boot/api/rest/actuator/conditions.html)
+
+:::

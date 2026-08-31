@@ -1,0 +1,206 @@
+---
+sidebar_position: 19
+---
+
+# JMH 如何避免错误基准
+
+Java 微基准容易测到 JIT 的死代码消除、常量折叠、预热过程或测试框架开销。JMH 提供进程分叉、预热、状态隔离和结果消费机制，但基准设计仍要保证被测工作与真实问题一致。
+
+## 1. 先写清楚要比较的量
+
+常用模式：
+
+- `Throughput`：单位时间完成多少次操作。
+- `AverageTime`：每次操作平均耗时。
+- `SampleTime`：采样延迟分布。
+- `SingleShotTime`：一次操作耗时，常用于冷启动或批次。
+
+```java
+@BenchmarkMode(Mode.AverageTime)
+@OutputTimeUnit(TimeUnit.NANOSECONDS)
+public class ParserBenchmark {
+    // ...
+}
+```
+
+纳秒单位不代表纳秒精度。结果可信度来自稳定环境、足够样本和合理置信区间。
+
+## 2. 返回结果避免死代码消除
+
+错误示例：
+
+```java
+@Benchmark
+public void parse() {
+    parser.parse(INPUT); // 结果无人观察，工作可能被消除
+}
+```
+
+可以返回结果：
+
+```java
+@Benchmark
+public ParsedOrder parse(BenchmarkState state) {
+    return state.parser.parse(state.input);
+}
+```
+
+复杂场景可以把结果交给 `Blackhole`。不要把日志、断言或 I/O 放进每次 benchmark invocation，它们可能成为真正热点。
+
+## 3. 参数来自状态，避免常量折叠
+
+```java
+@State(Scope.Thread)
+public static class BenchmarkState {
+    @Param({"16", "256", "4096"})
+    int size;
+
+    byte[] input;
+
+    @Setup(Level.Trial)
+    public void setup() {
+        input = createInput(size);
+    }
+}
+```
+
+把固定常量直接写在 benchmark 中，JIT 可能在编译期算出答案。`@Param` 还能让结果明确显示输入规模。
+
+Setup 层级要匹配成本：
+
+- `Trial`：整个 fork 中少量执行。
+- `Iteration`：每轮测量前执行。
+- `Invocation`：每次调用执行，开销大且可能干扰流水线，只在确有必要时使用。
+
+## 4. 预热和测量回答稳态问题
+
+```java
+@Warmup(iterations = 5, time = 1)
+@Measurement(iterations = 8, time = 1)
+@Fork(3)
+```
+
+预热让类加载和 JIT 逐步稳定，预热结果不计入最终统计。多个 fork 在独立 JVM 中重复实验，减少前一个 benchmark 的编译画像、静态状态和 Code Cache 对后一个结果的污染。
+
+若问题是冷启动，不能用充分预热后的平均耗时回答。使用 SingleShot、零或指定预热，并把整个进程启动纳入测量边界。
+
+## 5. 不要在基准方法里手写大循环
+
+```java
+@Benchmark
+public long wrong() {
+    long sum = 0;
+    for (int i = 0; i < 1_000_000; i++) {
+        sum += operation(i);
+    }
+    return sum;
+}
+```
+
+大循环改变内联、向量化、分支预测和常量传播条件，测到的可能是批处理后的新程序。JMH 已经负责反复调用；需要批量语义时明确使用 `@OperationsPerInvocation`，并让批量大小属于业务问题。
+
+## 6. `State` 的 Scope 决定共享和竞争
+
+- `Scope.Thread`：每个测试线程独立状态。
+- `Scope.Benchmark`：所有线程共享一个实例。
+- `Scope.Group`：同一线程组共享。
+
+测并发容器时若误用 Thread scope，各线程操作自己的容器，结果根本没有竞争。测纯算法时误用共享可变状态，又可能把锁和伪共享混入结果。
+
+## 7. 使用 profiler 解释差异
+
+```bash
+java -jar target/benchmarks.jar ParserBenchmark -prof gc
+java -jar target/benchmarks.jar ParserBenchmark -prof async
+```
+
+具体 profiler 取决于环境。至少确认：
+
+- CPU 时间花在哪些方法。
+- 每次操作分配多少字节。
+- 是否发生意外锁竞争或 GC。
+- 生成代码是否按预期内联、向量化。
+
+两组均值有差异不等于知道原因。置信区间重叠、机器降频、后台进程和容器 CPU 限流也会污染结果。
+
+## 8. 微基准不能替代系统压测
+
+JMH 适合比较小块 CPU/内存代码，例如解析器、集合操作和序列化核心。数据库、网络、线程池、缓存命中和请求排队需要更接近生产的负载模型。
+
+一个可靠结论通常包含两层：JMH 证明局部改动确实改变每次操作成本；服务压测证明它改善目标吞吐或延迟，没有把成本转移到其他资源。
+
+## 9. 常见问题
+
+### 9.1 为什么不能在 IDE 里循环一百万次计时
+
+IDE Agent、共享 JVM 状态、未控制预热、死代码消除和计时器开销都会影响结果。JMH 生成 harness 并提供 fork、迭代和统计，但仍需正确设计输入和状态。
+
+### 9.2 Blackhole 是否任何结果都要用
+
+方法直接返回结果通常更简单。Blackhole 适合消费多个结果或无法自然返回的值；它也有开销，不应用来掩盖设计不清的 benchmark。
+
+### 9.3 得到更快的 ns/op 就可以改生产代码吗
+
+先确认差异显著、输入代表真实分布、热点确实重要，再做系统压测。可读性和正确性不应为不可观察的局部提升让步。
+
+## 10. 面试题
+
+### 10.1 怎样设计一个可信的 Java 微基准
+
+<!-- 面试来源：
+- 腾讯云：https://www.nowcoder.com/discuss/comment/19834454
+- 京东数科：https://www.nowcoder.com/discuss/353156055045709824
+-->
+
+**出现公司**：腾讯云、京东数科
+
+**考察重点**
+
+- 预热、fork、State 与参数化。
+- 死代码消除和常量折叠。
+- 用 profiler 解释差异。
+
+**相关内容**：第 1 节“先写清楚要比较的量”至第 7 节“使用 profiler 解释差异”。
+
+<details>
+<summary>参考回答</summary>
+
+先定义测吞吐、稳态单次耗时还是冷启动，再用 JMH 控制预热、测量迭代和多个独立 fork。输入放在合适 Scope 的 State 中并参数化，结果要返回或交给 Blackhole，避免死代码消除和常量折叠；不要在方法里手写无业务含义的大循环。
+
+结果同时看误差和 profiler，确认 CPU、分配与编译行为。局部提升还要通过系统压测验证业务长尾和资源成本。
+
+</details>
+
+### 10.2 为什么微基准需要 fork 新的 JVM
+
+<!-- 面试来源：
+- 京东数科：https://www.nowcoder.com/discuss/353156055045709824
+-->
+
+**出现公司**：京东数科
+
+**考察重点**
+
+- 编译画像、静态状态和 Code Cache 污染。
+- 独立进程提供重复样本。
+- fork 不能消除操作系统噪声。
+
+**相关内容**：第 4 节“预热和测量回答稳态问题”。
+
+<details>
+<summary>参考回答</summary>
+
+同一 JVM 先运行的测试会改变类初始化、JIT 画像、Code Cache 和静态状态，后续结果可能依赖执行顺序。Fork 在独立 JVM 中重复完整实验，既隔离状态，也提供进程级样本。
+
+它仍不能自动控制 CPU 频率、后台任务和 NUMA，所以环境、JDK 参数和机器信息也要记录。
+
+</details>
+
+:::note 参考资料
+
+1. [OpenJDK JMH](https://github.com/openjdk/jmh)
+2. [OpenJDK JMH Samples](https://github.com/openjdk/jmh/tree/master/jmh-samples/src/main/java/org/openjdk/jmh/samples)
+3. [JMH Sample：Benchmark Modes](https://github.com/openjdk/jmh/blob/master/jmh-samples/src/main/java/org/openjdk/jmh/samples/JMHSample_02_BenchmarkModes.java)
+4. [JMH Sample：Profilers](https://github.com/openjdk/jmh/blob/master/jmh-samples/src/main/java/org/openjdk/jmh/samples/JMHSample_35_Profilers.java)
+
+:::

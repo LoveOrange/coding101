@@ -1,0 +1,122 @@
+---
+sidebar_position: 1
+---
+
+# Maven 生命周期与依赖收敛
+
+Maven 用生命周期组织构建步骤，用插件 goal 执行具体工作，用依赖图决定编译和运行时类路径。构建能成功不代表依赖已经一致；版本选择、插件版本和构建环境都需要显式收敛。
+
+## 1. 生命周期定义阶段顺序
+
+Maven 有 clean、default 和 site 等独立生命周期。日常构建主要使用 default，其中常见阶段依次包括：
+
+```text
+validate → compile → test → package → verify → install → deploy
+```
+
+执行某一阶段，会先执行同一生命周期中位于它之前的阶段。`mvn verify` 会完成编译、测试、打包和验证；`mvn clean verify` 则先运行独立 clean 生命周期，再运行 default 到 verify。
+
+`install` 把产物放进本地仓库供本机其他项目使用，`deploy` 把产物上传到远程仓库。它们不是应用部署到生产环境的同义词。
+
+## 2. 插件 goal 承担具体构建动作
+
+生命周期 phase 只是挂载点。compiler、surefire、jar、failsafe 等插件的 goal 绑定到相应 phase，才真正执行编译、单元测试、打包和集成测试。
+
+插件 goal 也可以直接运行，但在 CI 中应优先通过完整 phase 获得一致顺序。自定义插件绑定要检查是否会在父 POM 与子模块重复执行。
+
+插件版本应固定。依赖版本固定而插件使用随时间变化的默认版本，仍可能让同一提交产生不同结果。
+
+## 3. Scope 控制类路径和传递
+
+- `compile`：默认范围，进入编译、测试和运行时，并向下游传递。
+- `provided`：编译和测试可用，运行环境预期提供，通常不传递。
+- `runtime`：编译主代码不需要，测试和运行时需要。
+- `test`：只用于测试，不传递给使用当前项目的下游。
+
+Scope 配错可能让本地测试通过、生产启动时报 `ClassNotFoundException`，也可能把容器已提供的 API 重复打进产物。
+
+## 4. 依赖仲裁选择一条实际版本
+
+同一 `groupId:artifactId` 通过多条传递路径出现不同版本时，Maven 通常选择离当前项目依赖图更近的定义；深度相同时，POM 中先声明的路径会影响结果。
+
+这只是构建工具的仲裁规则，不证明被选版本与所有上游二进制兼容。应使用：
+
+```bash
+mvn dependency:tree
+```
+
+查看版本来自哪条路径，再通过显式直接依赖、exclusion 或升级上游组件解决。不要盲目排除一个 jar，只为了让树看起来干净。
+
+## 5. dependencyManagement 统一版本，不自动引入依赖
+
+父 POM 的 `dependencyManagement` 为子模块和传递依赖提供受控版本。BOM 通过 `type=pom`、`scope=import` 导入一组经过测试的版本组合。
+
+被管理的依赖仍需在模块的 `dependencies` 中实际声明才会进入类路径。`pluginManagement` 同理，只提供插件缺省配置，除非插件被生命周期或模块显式使用。
+
+平台 BOM 可以减少任意组合，但升级 BOM 仍需运行兼容性测试并审查实际 dependency tree。
+
+## 6. Dependency convergence 提前暴露分叉
+
+Maven Enforcer 的 dependency convergence 规则可以让同一坐标出现多个传递版本时构建失败，迫使团队明确选择。还可以限制 JDK、Maven 版本、禁止快照依赖和重复类等问题。
+
+严格 convergence 可能要求对成熟框架的合法依赖图做额外管理。规则例外要具体到坐标、原因和到期条件，不能因为首次失败就整体关闭。
+
+## 7. 可重复构建固定全部输入
+
+除依赖和插件版本外，还要固定：
+
+- JDK 与 Maven 版本，可使用 toolchains 和 Maven Wrapper。
+- 仓库与镜像配置，避免同坐标内容被覆盖。
+- 编译字符集、时区和 locale。
+- 归档时间戳，例如 `project.build.outputTimestamp`。
+- 生成代码工具和前端构建依赖。
+
+CI 从干净环境构建，并保存依赖树、构建日志、源码提交和产物摘要。不要用开发者本地 `install` 的未发布快照作为生产输入。
+
+## 8. 常见问题
+
+### 8.1 `mvn package` 与 `mvn install` 有什么区别
+
+package 生成当前模块的 jar 或 war；install 还会把产物与 POM 放进本地仓库。多模块 reactor 内部通常不需要先 install，Maven 可以直接使用同一次构建中的模块产物。
+
+### 8.2 出现 `NoSuchMethodError` 为什么编译仍能通过
+
+编译时看到的类版本包含该方法，运行时类路径却加载了另一个不兼容版本。应检查最终打包内容、容器提供依赖和启动类路径，而不只看 IDE 的依赖视图。
+
+## 9. 面试题
+
+### 9.1 Maven 如何选择冲突依赖，怎样让多模块版本收敛
+
+<!-- 面试来源：
+- 阿里巴巴：https://www.nowcoder.com/discuss/353154066979168256
+- 字节跳动：https://www.nowcoder.com/discuss/353159293912424448
+- 华为：https://www.nowcoder.com/discuss/353159360346005504
+-->
+
+**出现公司**：阿里巴巴、字节跳动、华为
+
+**考察重点**
+
+- 生命周期 phase 与插件 goal。
+- 最近定义、dependency tree 和 scope。
+- dependencyManagement、BOM 与 convergence。
+
+**相关内容**：第 1 节“生命周期定义阶段顺序”至第 7 节“可重复构建固定全部输入”。
+
+<details>
+<summary>参考回答</summary>
+
+Maven 生命周期规定阶段顺序，具体动作由绑定到 phase 的插件 goal 完成。依赖冲突时通常采用依赖图中离当前项目更近的版本，同深度再受声明顺序影响；这只是仲裁，不保证运行兼容。先用 `dependency:tree` 找到路径，再通过直接声明、升级上游或精确 exclusion 解决。
+
+多模块用父 POM 的 dependencyManagement 或导入 BOM 统一版本，它只管理版本，不自动引入依赖。CI 可以用 Enforcer 的 dependency convergence 让分叉提前失败，并固定插件、JDK、Maven Wrapper、仓库和输出时间戳，让同一提交在干净环境产生可追踪产物。
+
+</details>
+
+:::note 参考资料
+
+1. [Apache Maven：Introduction to the Build Lifecycle](https://maven.apache.org/guides/introduction/introduction-to-the-lifecycle.html)
+2. [Apache Maven：Introduction to the Dependency Mechanism](https://maven.apache.org/guides/introduction/introduction-to-dependency-mechanism.html)
+3. [Maven Enforcer：Dependency Convergence](https://maven.apache.org/enforcer/enforcer-rules/dependencyConvergence.html)
+4. [Apache Maven：Reproducible Builds](https://maven.apache.org/guides/mini/guide-reproducible-builds.html)
+
+:::

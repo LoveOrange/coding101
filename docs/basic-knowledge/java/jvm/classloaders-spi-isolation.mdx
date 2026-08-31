@@ -1,0 +1,172 @@
+---
+sidebar_position: 4
+---
+
+# 类加载器、SPI 与隔离
+
+SPI 让框架只依赖一个服务接口，在运行时发现实现。困难在于：发起发现的框架可能由上层加载器定义，而服务实现位于应用或插件中，默认父委派无法从上向下看到这些实现。
+
+## 1. `ServiceLoader` 按服务接口发现提供者
+
+服务接口：
+
+```java
+public interface PaymentProvider {
+    String name();
+    PaymentResult charge(PaymentCommand command);
+}
+```
+
+使用者：
+
+```java
+for (PaymentProvider provider : ServiceLoader.load(PaymentProvider.class)) {
+    providers.put(provider.name(), provider);
+}
+```
+
+类路径部署中，提供者通常在 `META-INF/services/<接口全名>` 中声明。模块化部署可以在 `module-info.java` 中使用 `uses` 和 `provides ... with ...`。
+
+SPI 的核心契约是服务接口。接口、参数类型和返回类型必须位于使用者与实现都能看到的共享加载边界。
+
+## 2. 线程上下文类加载器提供向下查找入口
+
+`ServiceLoader.load(service)` 使用当前线程的上下文类加载器。框架代码即使由平台或公共加载器定义，也可以借助线程上下文类加载器发现应用层提供者：
+
+```java
+ClassLoader original = Thread.currentThread().getContextClassLoader();
+try {
+    Thread.currentThread().setContextClassLoader(pluginLoader);
+    ServiceLoader<PaymentProvider> loader =
+        ServiceLoader.load(PaymentProvider.class);
+    // 使用 provider
+} finally {
+    Thread.currentThread().setContextClassLoader(original);
+}
+```
+
+上下文类加载器是线程可变状态。在线程池中修改后必须恢复，否则后续任务可能加载错误应用的类，并且线程还会长期持有本应卸载的加载器。
+
+## 3. 插件隔离需要明确共享包和私有包
+
+一个实用边界通常是：
+
+```text
+宿主加载器
+├── Java 平台类
+├── 插件 API
+└── 公共协议模型
+    ├── 插件 A 加载器：A 的实现与私有依赖
+    └── 插件 B 加载器：B 的实现与私有依赖
+```
+
+插件 API 由共同父加载器定义。插件私有库可以 child-first，以允许不同版本并存。若插件把自己的 API 副本也加载一次，实现类看似实现了同名接口，宿主仍无法转换。
+
+## 4. 模块层提供另一种隔离单位
+
+JPMS 用模块描述可读关系和导出包。`ModuleLayer` 可以建立新的模块图，并配合一个或多个类加载器加载模块：
+
+```java
+ServiceLoader<PaymentProvider> providers =
+    ServiceLoader.load(layer, PaymentProvider.class);
+```
+
+模块解决“哪些模块可以读哪些模块、哪些包对外导出”的问题；类加载器解决“由谁查找并定义这个类”。两者相关但不是同一个概念。
+
+## 5. 资源查找也有顺序和重复问题
+
+框架不只加载类，还读取配置、模板和服务声明：
+
+```java
+Enumeration<URL> resources = loader.getResources("META-INF/services/... ");
+```
+
+多个 JAR 可以提供同名资源，`getResource` 只返回一个，`getResources` 才能枚举全部。自定义 child-first 逻辑若只改类查找、不改资源查找，类和配置可能来自不同版本。
+
+## 6. 卸载的单位是类加载器及其所有类
+
+单个类不能独立卸载。只有定义它的类加载器连同所有已定义类都不可达时，JVM 才可能在 GC 中卸载它们。
+
+常见阻止卸载的引用：
+
+- 线程及其上下文类加载器。
+- 未停止的执行器、定时任务和驱动线程。
+- 父加载器中的静态集合保存插件实例或 `Class`。
+- `ThreadLocal` 值、日志缓存、MBean 和 JDBC Driver 注册。
+
+插件停止流程要先取消任务、注销全局注册、清理上下文，再释放加载器引用。看到 Metaspace 增长时，应同时观察加载器数量，而不是只增大上限。
+
+## 7. 常见问题
+
+### 7.1 SPI 为什么不直接使用服务接口的类加载器
+
+服务接口可能由上层加载器定义，而实现只对应用加载器可见。只用接口的加载器会看不到下层提供者。线程上下文类加载器或显式 `ServiceLoader.load(service, loader)` 让调用方给出发现范围。
+
+### 7.2 `ServiceLoader` 是否会一次实例化所有实现
+
+迭代 `ServiceLoader` 时会按需定位并实例化提供者。也可以使用 `stream()` 先检查 `Provider` 的类型信息，再决定是否调用 `get()`。提供者构造应轻量，失败需要单独隔离。
+
+### 7.3 类隔离能解决依赖的所有冲突吗
+
+不能。JNI 库、系统属性、端口、文件、线程和进程级单例仍是共享资源；跨隔离边界传递的对象还必须属于共享类型。
+
+## 8. 面试题
+
+### 8.1 Java SPI 为什么常使用线程上下文类加载器
+
+<!-- 面试来源：
+- 阿里巴巴：https://www.nowcoder.com/discuss/353157613372252160
+- 字节跳动：https://www.nowcoder.com/discuss/366687810131165184
+-->
+
+**出现公司**：阿里巴巴、字节跳动
+
+**考察重点**
+
+- 父加载器不能主动看到子加载器内容。
+- 服务接口与实现所在加载层级。
+- 线程池中恢复上下文类加载器的重要性。
+
+**相关内容**：第 1 节“`ServiceLoader` 按服务接口发现提供者”和第 2 节“线程上下文类加载器提供向下查找入口”。
+
+<details>
+<summary>参考回答</summary>
+
+SPI 的框架和接口可能由上层加载器加载，实现却在应用类路径。父委派只能向上查找，上层加载器不能自然发现下层实现。`ServiceLoader` 使用线程上下文类加载器，或调用方显式传入加载器，就能以应用的可见范围查找提供者。
+
+上下文类加载器是线程状态。在线程池里临时切换后要在 `finally` 中恢复，否则可能造成跨应用污染和类加载器泄漏。
+
+</details>
+
+### 8.2 插件系统怎样允许不同版本依赖共存
+
+<!-- 面试来源：
+- 阿里巴巴：https://www.nowcoder.com/discuss/353157613372252160
+-->
+
+**出现公司**：阿里巴巴
+
+**考察重点**
+
+- 共享 API 和插件私有依赖的边界。
+- 父优先与子优先的包级策略。
+- 加载器卸载需要清理的反向引用。
+
+**相关内容**：第 3 节“插件隔离需要明确共享包和私有包”至第 6 节“卸载的单位是类加载器及其所有类”。
+
+<details>
+<summary>参考回答</summary>
+
+每个插件使用独立加载器加载实现和私有依赖，对这些包可以采用子优先。宿主 API、协议模型和 Java 平台包仍由共同父加载器定义并父优先，确保跨边界类型一致。资源查找也要使用同样策略。
+
+卸载插件时还要停止线程与定时任务，注销驱动、MBean 和静态注册，恢复线程上下文类加载器。只删除加载器变量不足以让其类卸载。
+
+</details>
+
+:::note 参考资料
+
+1. [Java API：`ServiceLoader`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/ServiceLoader.html)
+2. [Java API：线程上下文类加载器](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/Thread.html#getContextClassLoader())
+3. [Java API：`ModuleLayer`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/ModuleLayer.html)
+
+:::

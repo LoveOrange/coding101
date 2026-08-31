@@ -1,0 +1,170 @@
+---
+sidebar_position: 17
+---
+
+# 方法内联与去优化
+
+方法内联把被调用方法的代码放入调用点，使 JIT 能跨方法传播常量、消除分支和继续优化。动态分派无法静态确定时，HotSpot 可以根据运行时类型画像做投机内联，并在假设失效后去优化。
+
+## 1. 内联的收益不止省掉一次调用
+
+```java
+int finalPrice(Order order) {
+    return applyDiscount(order.subtotal(), order.discountRate());
+}
+
+int applyDiscount(int subtotal, int rate) {
+    return subtotal - subtotal * rate / 100;
+}
+```
+
+内联后，编译器能在一个更大的优化范围里：
+
+- 传播常量。
+- 消除不可达分支。
+- 消除临时对象和边界检查。
+- 识别循环不变量。
+- 继续内联下层调用。
+
+因此微小 getter 经常“没有调用成本”，但这取决于实际编译结果，不是 Java 语言保证。
+
+## 2. 代码大小限制内联深度
+
+所有方法都内联会导致机器码膨胀，增加编译时间和指令缓存压力。JIT 根据调用点热度、方法字节码大小、递归深度、异常路径和历史画像选择。
+
+`final`、`private` 或 `static` 能让调用目标更容易静态确定，但非 final 虚方法也可以依靠类型画像内联。为了性能把公共 API 全部改成 final，通常没有依据。
+
+## 3. 单态调用点适合投机内联
+
+```java
+interface Codec {
+    byte[] encode(Message message);
+}
+```
+
+若某调用点几乎只出现 `JsonCodec`，JIT 可以生成：
+
+```text
+if (receiver is JsonCodec) {
+    // 内联 JsonCodec.encode
+} else {
+    // 回退或去优化
+}
+```
+
+调用点出现少量稳定类型时也可能形成多态内联缓存；类型种类继续增加后，内联收益下降，调用可能保持间接分派。
+
+## 4. 去优化恢复符合 Java 语义的执行状态
+
+投机优化依赖假设，例如：
+
+- 调用点只有一种接收者类型。
+- 某个分支几乎不会发生。
+- 某个类层级当前没有新的子类。
+- 某个值可以当作常量。
+
+新类加载、罕见路径被触发或依赖改变时，JVM 可以让已编译代码失效，把线程状态还原为解释器或较低层级能继续执行的栈帧，再收集新画像并重新编译。
+
+去优化保证语义正确，但频繁 deopt/recompile 会消耗 CPU，并让延迟出现波动。
+
+## 5. 异常与罕见路径可能使用 uncommon trap
+
+JIT 可以把低概率路径从主机器码中移出。当实际进入该路径时触发 uncommon trap，去优化后按完整语义执行。这让常见路径更小，但画像错误或输入分布突变会带来频繁陷阱。
+
+例如压测只覆盖正常输入，生产突然出现大量校验失败，原本罕见的异常路径可能改变编译行为。性能测试需要包含真实分支分布。
+
+## 6. 用日志确认内联与去优化
+
+诊断环境可以使用：
+
+```bash
+java \
+  -XX:+UnlockDiagnosticVMOptions \
+  -XX:+PrintCompilation \
+  -XX:+PrintInlining \
+  -jar app.jar
+```
+
+完整编译日志可配合 JITWatch 等工具阅读；JFR 也提供 Compilation、Deoptimization、Code Cache 事件。选项与输出是 HotSpot 诊断接口，升级 JDK 时要重新验证。
+
+判断流程：
+
+1. 确认目标调用点是否为真实 CPU 热点。
+2. 看方法有没有编译到预期层级。
+3. 看内联拒绝原因，而不是只看方法修饰符。
+4. 关联 deoptimization 与流量、类加载或输入变化。
+5. 修改后用 JMH 和端到端 profile 双重验证。
+
+## 7. 常见问题
+
+### 7.1 小方法一定会被内联吗
+
+不一定。调用点是否热、代码预算、递归、调用类型分布和编译层级都会影响决策。
+
+### 7.2 内联会改变异常栈吗
+
+Java 语义上的栈跟踪仍应反映方法调用关系。JVM 保留调试和去优化所需元数据，可以从内联机器码重建逻辑栈帧。
+
+### 7.3 去优化是不是 JVM 出错
+
+不是。它是投机优化的正常配套机制。只有频率高并与性能波动相关时，才需要继续定位画像不稳定或代码形态问题。
+
+## 8. 面试题
+
+### 8.1 JVM 在什么情况下会进行方法内联
+
+<!-- 面试来源：
+- 京东数科：https://www.nowcoder.com/discuss/353156055045709824
+-->
+
+**出现公司**：京东数科
+
+**考察重点**
+
+- 调用点热度、代码大小和类型画像。
+- 虚方法也能投机内联。
+- 内联为后续优化扩大范围。
+
+**相关内容**：第 1 节“内联的收益不止省掉一次调用”至第 3 节“单态调用点适合投机内联”。
+
+<details>
+<summary>参考回答</summary>
+
+JIT 根据调用点热度、被调用方法大小、内联深度和代码预算决定。静态、private、final 方法目标容易确定，但普通虚方法如果运行时画像长期单态，也可以带类型检查做投机内联。
+
+主要收益是扩大优化范围，使常量传播、分支消除、逃逸分析等跨过方法边界，不只是省一次跳转。最终结果用 `PrintInlining` 或编译事件确认。
+
+</details>
+
+### 8.2 什么是去优化，为什么优化后的代码还要退回去
+
+<!-- 面试来源：
+- 京东数科：https://www.nowcoder.com/discuss/353156055045709824
+-->
+
+**出现公司**：京东数科
+
+**考察重点**
+
+- JIT 根据当前画像做投机假设。
+- 新类型或罕见分支可使假设失效。
+- JVM 重建逻辑栈并继续正确执行。
+
+**相关内容**：第 4 节“去优化恢复符合 Java 语义的执行状态”和第 5 节“异常与罕见路径可能使用 uncommon trap”。
+
+<details>
+<summary>参考回答</summary>
+
+JIT 会根据当前类型和分支画像生成投机代码，例如假设接口调用只有一种实现。后来加载新实现或进入罕见分支时，这个版本不再适用，JVM 将它标为不可进入，并根据元数据把当前机器栈恢复为解释器或较低层级栈帧。
+
+去优化是保证动态语义的正常机制。频繁发生时才说明画像不稳定，可能造成重复编译和延迟波动。
+
+</details>
+
+:::note 参考资料
+
+1. [OpenJDK Wiki：Performance Techniques](https://wiki.openjdk.org/display/HotSpot/PerformanceTechniques)
+2. [Oracle：`java` 命令](https://docs.oracle.com/en/java/javase/26/docs/specs/man/java.html)
+3. [JDK Mission Control：JFR 事件参考](https://docs.oracle.com/en/java/javase/26/jfapi/flight-recorder-runtime-guide.pdf)
+
+:::

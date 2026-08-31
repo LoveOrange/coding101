@@ -1,0 +1,147 @@
+---
+sidebar_position: 4
+---
+
+# 安全发布、逸出与 final 语义
+
+对象构造完成不等于其他线程已经可以安全使用它。引用需要通过带有 happens-before 保证的路径发布；对象若在构造期间逸出，另一个线程甚至可能看到尚未完成初始化的状态。
+
+## 1. 普通字段赋值不是发布协议
+
+```java
+final class Registry {
+    private Configuration configuration;
+
+    void reload() {
+        configuration = new Configuration(8080, List.of("api"));
+    }
+}
+```
+
+如果其他线程无同步地读取 `configuration`，程序存在数据竞争。即使引用非空，也不能据此证明该线程看到了构造期间的全部写入。
+
+安全发布需要明确的同步边，例如：
+
+- 在静态初始化期间创建对象。
+- 在锁内写入，并在同一锁保护下读取。
+- 通过 `volatile` 或原子引用发布。
+- 放入具有内存一致性保证的并发集合或队列。
+- 在线程启动前准备对象，再由新线程使用。
+
+## 2. 构造期间不要泄露 `this`
+
+```java
+public final class Listener {
+    private final int threshold;
+
+    public Listener(EventBus bus) {
+        bus.register(this); // this 已经可被外部调用
+        threshold = 10;
+    }
+}
+```
+
+`register` 可能把当前对象交给另一个线程。回调在构造器返回前执行时，会观察到未完成初始化的字段。
+
+更稳妥的做法是先完成构造，再由工厂注册：
+
+```java
+public static Listener create(EventBus bus) {
+    Listener listener = new Listener();
+    bus.register(listener);
+    return listener;
+}
+```
+
+构造器启动线程、注册回调、把 `this` 放入静态集合，或者调用可被子类重写的方法，都可能造成逸出。
+
+## 3. `final` 字段有初始化安全保证
+
+只要对象在构造期间没有逸出，构造器对 `final` 字段的赋值具有额外语义：另一个线程在取得对象引用后，能够看到该字段在构造结束时的值。对通过该 final 字段可达对象的构造期状态，规范也提供特定保证。
+
+```java
+public final class Endpoint {
+    private final String host;
+    private final int port;
+
+    public Endpoint(String host, int port) {
+        this.host = host;
+        this.port = port;
+    }
+}
+```
+
+这使正确构造的不可变对象更容易安全共享，但 `final` 不能冻结引用指向的可变对象：
+
+```java
+private final List<String> roles = new ArrayList<>();
+```
+
+`roles` 引用不能重新赋值，列表内容仍可变化，后续修改仍需要同步或防御性复制。
+
+## 4. 双重检查需要 `volatile`
+
+```java
+private static volatile Client instance;
+
+public static Client getInstance() {
+    Client local = instance;
+    if (local == null) {
+        synchronized (Client.class) {
+            local = instance;
+            if (local == null) {
+                local = new Client();
+                instance = local;
+            }
+        }
+    }
+    return local;
+}
+```
+
+`volatile` 发布保证构造写入先于其他线程读到新引用。更简单时可使用静态初始化、枚举单例或容器生命周期，避免手写协议。
+
+## 5. 常见问题
+
+### 5.1 对象所有字段都是 `final`，引用可以随便共享吗
+
+必须先保证对象没有在构造期间逸出。若字段指向可变对象，还要限制该对象的后续修改。
+
+### 5.2 返回不可修改视图等于不可变快照吗
+
+不等于。`Collections.unmodifiableList(source)` 只是禁止通过该视图修改；原始 `source` 变化仍会反映出来。需要快照时可以使用 `List.copyOf(source)`，并继续考虑元素本身是否可变。
+
+## 6. 面试题
+
+### 6.1 `final` 字段为什么有额外的线程安全语义
+
+<!-- 面试来源：
+- 拼多多：https://www.nowcoder.com/discuss/353150007719174144
+- 美团：https://www.nowcoder.com/discuss/383727207275933696
+-->
+
+**出现公司**：拼多多、美团
+
+**考察重点**
+
+- 构造器完成与对象逸出。
+- final 字段初始化安全。
+- final 引用和对象可变性的区别。
+
+**相关内容**：第 2 节“构造期间不要泄露 `this`”和第 3 节“`final` 字段有初始化安全保证”。
+
+<details>
+<summary>参考回答</summary>
+
+JMM 对正确构造的对象提供 final 字段语义：构造期间对 final 字段的写入，在对象引用被其他线程取得后具有额外的可见性保证。前提是 `this` 没有在构造完成前逸出。
+
+它只固定字段引用或基本值，不会让引用指向的集合自动不可变。构造后的可变状态仍要通过锁、并发容器或不可变快照管理。
+
+</details>
+
+:::note 参考资料
+
+1. [JLS 17.5：Final Field Semantics](https://docs.oracle.com/javase/specs/jls/se26/html/jls-17.html#jls-17.5)
+2. [JLS 12.4.2：类初始化过程](https://docs.oracle.com/javase/specs/jls/se26/html/jls-12.html#jls-12.4.2)
+
+:::

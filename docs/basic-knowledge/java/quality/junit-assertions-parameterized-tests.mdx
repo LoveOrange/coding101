@@ -1,0 +1,221 @@
+---
+sidebar_position: 3
+---
+
+# JUnit、断言与参数化测试
+
+JUnit 测试用可重复的示例验证公开行为。一个有效测试需要清楚的前置状态、一次目标动作和能够区分正确与错误实现的断言。
+
+## 1. 测试由准备、执行和验证组成
+
+```java
+@Test
+void rejectsNegativeAmount() {
+    IllegalArgumentException exception = assertThrows(
+        IllegalArgumentException.class,
+        () -> new Money(new BigDecimal("-1.00"), CNY)
+    );
+
+    assertEquals("amount must be >= 0", exception.getMessage());
+}
+```
+
+这个测试包含：
+
+- Arrange：构造金额与订单。
+- Act：调用 pay。
+- Assert：验证异常类型和可观察信息。
+
+三段不必用注释机械标记，但读者应能快速辨认。一个测试覆盖一个行为条件，可以有多条共同描述该行为的断言。
+
+## 2. 断言验证结果，不重复实现算法
+
+常用断言：
+
+```java
+assertEquals(expected, actual);
+assertTrue(result.isValid());
+assertNull(repository.findRaw(id));
+assertIterableEquals(expectedItems, actualItems);
+```
+
+避免只断言“结果不为 null”，它通常无法区分多数错误实现。也不要在测试里复制生产算法计算 expected，否则两边可能保留同一种错误。
+
+优先使用明确常量、小型手算结果或独立性质。失败消息应帮助定位业务条件：
+
+```java
+assertEquals(expected, actual, "discount for first-time customer");
+```
+
+## 3. 异常和多个结果的断言
+
+`assertThrows` 返回捕获的异常，可以继续验证：
+
+```java
+DuplicateOrder exception = assertThrowsExactly(
+    DuplicateOrder.class,
+    () -> service.create(command)
+);
+
+assertEquals(command.idempotencyKey(), exception.key());
+```
+
+验证多个相关字段时可以使用 `assertAll`，让一次运行报告多个失败：
+
+```java
+assertAll(
+    () -> assertEquals(PAID, order.status()),
+    () -> assertEquals(paymentId, order.paymentId()),
+    () -> assertEquals(paidAt, order.paidAt())
+);
+```
+
+不要把互不相关的场景塞进一个 assertAll；前置动作失败后，后续断言可能只产生噪音。
+
+## 4. 参数化测试覆盖同一规则的多组输入
+
+```java
+@ParameterizedTest
+@CsvSource({
+    "0, 1",
+    "1, 1",
+    "10, 2",
+    "99, 2"
+})
+void countsDecimalDigits(int input, int expectedDigits) {
+    assertEquals(expectedDigits, DecimalDigits.count(input));
+}
+```
+
+参数化测试适合相同执行逻辑、不同输入输出的等价类和边界值。数据来源包括：
+
+- `@ValueSource`
+- `@NullSource`、`@EmptySource`
+- `@CsvSource`、`@CsvFileSource`
+- `@EnumSource`
+- `@MethodSource`
+- 自定义 `ArgumentsProvider`
+
+输入对象复杂或需要清楚名称时，`@MethodSource` 通常比很长的 CSV 更易维护。
+
+## 5. 生命周期与测试隔离
+
+JUnit Jupiter 默认每个测试方法创建一个测试类实例。`@BeforeEach` 适合建立独立起点：
+
+```java
+@BeforeEach
+void setUp() {
+    repository = new InMemoryOrderRepository();
+    service = new OrderService(repository, fixedClock);
+}
+```
+
+测试不应依赖执行顺序。共享静态可变状态、复用数据库脏数据和读取真实当前时间都会让测试相互污染。
+
+昂贵资源可以在 `@BeforeAll` 建立，但每个测试仍要重置业务数据。使用 `PER_CLASS` 生命周期时，更要留意实例字段被共享。
+
+## 6. 时间、随机和并发测试要可控制
+
+注入 `Clock` 代替直接 `Instant.now()`，注入随机源或固定种子，外部端口和临时目录由测试框架管理。
+
+```java
+Clock clock = Clock.fixed(
+    Instant.parse("2026-08-30T00:00:00Z"),
+    ZoneOffset.UTC
+);
+```
+
+`assertTimeout` 能限制测试调用耗时，但不是性能基准。并发测试不能只 sleep 后期望任务完成，应使用 Latch、Future、Awaitility 一类明确同步条件，并让失败有上限时间。
+
+## 7. 测试命名说明条件和结果
+
+比起 `testPay1`，下面的名字更直接：
+
+```java
+@Test
+void payingCancelledOrderIsRejected() {}
+```
+
+名称可以表达“条件—行为—结果”。`@Nested` 可按方法或状态分组，`@DisplayName` 适合补充业务语言，但不应让方法名完全失去可搜索性。
+
+## 8. 常见问题
+
+### 8.1 一个测试只能有一个 assert 吗
+
+不是硬规则。一个行为可能有多个相关结果，应一起验证。问题在于一个测试包含多个独立动作和失败原因，而不是断言数量本身。
+
+### 8.2 私有方法怎样测试
+
+通过公开行为测试。私有方法是实现细节；如果它包含独立复杂规则，考虑提取为有明确包级或公开契约的对象，而不是使用反射调用。
+
+### 8.3 参数化测试是否替代普通测试
+
+不替代。它适合同一种行为的多组数据；复杂流程、异常状态和特定回归往往用独立测试更清楚。
+
+### 8.4 `assertTimeoutPreemptively` 有什么风险
+
+它在不同线程执行代码，可能影响 ThreadLocal、事务和中断语义。优先使用普通 `assertTimeout`；必须抢占时明确被测代码的线程边界。
+
+## 9. 面试题
+
+### 9.1 平时怎样使用 JUnit 编写单元测试
+
+<!-- 面试来源：
+- 阿里巴巴：https://www.nowcoder.com/discuss/353156377390555136
+- 招银网络：https://www.nowcoder.com/discuss/401781105202933760
+- 众安保险：https://www.nowcoder.com/discuss/353156243269296128
+-->
+
+**出现公司**：阿里巴巴、招银网络、众安保险
+
+**考察重点**
+
+- 测试隔离、准备执行验证和断言质量。
+- 时间、随机和外部依赖怎样变得可控。
+- 单元测试与启动完整 Spring 环境的区别。
+
+**相关内容**：第 1 节“测试由准备、执行和验证组成”至第 7 节“测试命名说明条件和结果”。
+
+<details>
+<summary>参考回答</summary>
+
+每个测试从独立、可重复的状态开始，准备输入和替身后只执行目标行为，再断言可观察结果与失败路径。断言要能区分错误实现，不只检查非 null；时间使用固定 Clock，随机使用固定种子，测试不能依赖顺序。
+
+纯领域逻辑不启动 Spring 容器，外部依赖通过窄接口替换。数据库映射、事务和 Bean 配置属于集成测试，使用真实组件验证，不能全部 Mock 后声称已经覆盖集成行为。
+
+</details>
+
+### 9.2 什么情况下使用参数化测试
+
+<!-- 面试来源：
+- 字节跳动：https://www.nowcoder.com/discuss/353158433438375936
+- 网易雷火：https://www.nowcoder.com/discuss/72222
+-->
+
+**出现公司**：字节跳动、网易雷火
+
+**考察重点**
+
+- 同一规则的等价类与边界数据。
+- 数据源和测试逻辑如何保持可读。
+- 复杂场景为什么仍需要独立测试。
+
+**相关内容**：第 4 节“参数化测试覆盖同一规则的多组输入”。
+
+<details>
+<summary>参考回答</summary>
+
+当多组输入执行同一条业务规则、只改变参数和期望结果时使用参数化测试，例如金额边界、日期解析和状态枚举。简单值用 ValueSource 或 CsvSource，复杂对象和有名字的案例用 MethodSource。
+
+如果每组输入需要不同准备、不同动作或不同断言路径，拆成独立测试更清楚。参数化的目标是减少重复同时保留失败案例可读性，不是把所有场景塞进一张表。
+
+</details>
+
+:::note 参考资料
+
+1. [JUnit User Guide：Writing Tests](https://docs.junit.org/current/user-guide/#writing-tests)
+2. [JUnit User Guide：Assertions](https://docs.junit.org/current/user-guide/#writing-tests-assertions)
+3. [JUnit User Guide：Parameterized Tests](https://docs.junit.org/current/user-guide/#writing-tests-parameterized-tests)
+4. [JUnit User Guide：Test Instance Lifecycle](https://docs.junit.org/current/user-guide/#writing-tests-test-instance-lifecycle)
+
+:::

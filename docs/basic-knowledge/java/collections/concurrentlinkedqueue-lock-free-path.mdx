@@ -1,0 +1,173 @@
+---
+sidebar_position: 13
+---
+
+# ConcurrentLinkedQueue 的无锁路径
+
+`ConcurrentLinkedQueue` 是基于链式节点的无界 FIFO 并发队列。它使用 CAS 推进入队和出队状态，线程不会因为获取队列互斥锁而阻塞，但仍可能在竞争中重试。
+
+## 1. 头尾指针允许暂时落后
+
+队列包含 head、tail 和节点的 next 链接。实现允许 head 或 tail 暂时不指向最靠前或最后的节点，只要线程能沿 next 找到真正位置并协助推进。
+
+```text
+head                             tail
+ ↓                                ↓
+[removed] -> [A] -> [B] -> [C] -> null
+```
+
+允许指针落后可以减少每次操作必须完成的 CAS 数量。后续线程发现落后时顺手更新，单个线程暂停不会一直持有一把队列锁。
+
+## 2. offer 通过 CAS 链接新节点
+
+入队的大致逻辑：
+
+1. 创建 item 为新元素、next 为 null 的节点。
+2. 从观察到的尾部向后寻找真正末端。
+3. 对末端节点的 next 执行 CAS，把 null 改为新节点。
+4. 视情况推进 tail；失败也不影响元素已经成功链接。
+
+多个生产者竞争同一个末端时，只有一个 CAS 成功，其他线程重新读取并继续尝试。这提供 lock-free 进展：系统整体会有线程完成，但不保证每个具体线程在固定时间内完成。
+
+## 3. poll 逻辑移除元素
+
+出队会从头部向后寻找第一个 item 非 null 的节点，并通过 CAS 把 item 置为 null。这个逻辑删除决定元素只由一个消费者成功取得，之后再尝试推进 head，帮助旧节点脱离主要链路。
+
+节点链接不会在 CAS 的同一瞬间全部清理。实现会兼顾并发遍历和 GC 可达性，内部头尾位置只是算法状态，不能当作业务队列长度或快照边界。
+
+## 4. 无锁不等于没有等待成本
+
+ConcurrentLinkedQueue 不使用队列级互斥锁，因此线程不会在锁队列中挂起。高竞争时仍会发生：
+
+- CAS 失败和重试。
+- 同一缓存行在核心间传递。
+- 节点分配与 GC。
+- 遍历 next 链寻找有效节点。
+
+无锁算法通常改善阻塞和故障隔离特征，不保证在所有负载下吞吐最高。应与有界队列、分片队列或批处理按真实工作负载比较。
+
+## 5. size 是线性遍历
+
+```java
+int pending = queue.size();
+```
+
+ConcurrentLinkedQueue 不能用一个简单计数器在所有并发操作下低成本保持精确 size。`size()` 需要遍历节点，可能 O(n)，并且并发入队出队意味着返回值只是调用期间的观察。
+
+因此不要写：
+
+```java
+if (queue.size() < limit) {
+    queue.offer(job);
+}
+```
+
+这既昂贵又不原子。需要容量限制和背压时，直接使用有界 BlockingQueue 或显式并发许可。
+
+## 6. 弱一致迭代
+
+迭代器不会抛 `ConcurrentModificationException`，可以与入队出队并发。它会返回创建后遍历过程中可观察到的一组元素，并保证已返回的元素不会重复；不保证某个瞬间的完整快照。
+
+```java
+for (Job job : queue) {
+    inspect(job);
+}
+```
+
+这种遍历适合监控、诊断和允许近似视图的操作。需要一致快照时，必须在业务层停止修改、转移所有权或建立版本协议。
+
+## 7. 适用边界
+
+适合：
+
+- 多生产者、多消费者的进程内 FIFO。
+- 不需要阻塞等待、容量限制和严格快照。
+- 调用方能自行处理空队列轮询策略。
+
+不适合：
+
+- 必须通过容量向上游施加背压。
+- 消费者希望在队列为空时睡眠等待；此时 BlockingQueue 更合适。
+- 任务必须持久化或跨进程。
+- 需要按优先级、延迟或严格公平处理。
+
+`poll` 返回 null 表示当前观察不到元素，因此队列禁止保存 null。
+
+## 8. 常见问题
+
+### 8.1 无锁是否等于 wait-free
+
+不等于。lock-free 保证在持续执行中系统整体有操作取得进展；某个线程可能因反复 CAS 失败而长时间重试。wait-free 要求每个操作在有界步骤内完成，保证更强。
+
+### 8.2 空队列时消费者应该怎样等待
+
+ConcurrentLinkedQueue 本身不阻塞。自旋轮询会浪费 CPU，固定 sleep 会增加延迟。需要条件等待时使用 BlockingQueue；只有事件循环已有自己的唤醒机制时，才与非阻塞队列组合。
+
+### 8.3 能用 `isEmpty` 后再 poll 吗
+
+没有必要，也不能形成原子判断。两个调用之间状态可能变化，直接调用 poll 并处理 null。
+
+### 8.4 ConcurrentLinkedQueue 是否严格公平
+
+它保证 FIFO 元素语义，但不承诺生产者或消费者线程按等待先后公平获得执行机会。线程调度和 CAS 竞争仍会影响谁先完成。
+
+## 9. 面试题
+
+### 9.1 ConcurrentLinkedQueue 怎样用 CAS 完成入队和出队
+
+<!-- 面试来源：
+- 快手：https://www.nowcoder.com/discuss/179560
+- 蚂蚁集团：https://www.nowcoder.com/discuss/353157545105760256
+-->
+
+**出现公司**：快手、蚂蚁集团
+
+**考察重点**
+
+- 节点链接与逻辑删除分别使用什么 CAS。
+- head、tail 为什么允许暂时落后。
+- lock-free 与 wait-free 的区别。
+
+**相关内容**：第 1 节“头尾指针允许暂时落后”至第 4 节“无锁不等于没有等待成本”。
+
+<details>
+<summary>参考回答</summary>
+
+入队创建新节点，沿 tail 找到真正末端，再 CAS 把末端 next 从 null 指向新节点；成功链接后可以尝试推进 tail。出队沿 head 找到第一个有效节点，CAS 把 item 置为 null，使一个消费者取得元素，再尝试推进 head。
+
+head 和 tail 允许落后，其他线程会协助推进，减少每次操作的强制更新。算法是 lock-free，保证系统整体进展，但单个线程仍可能因 CAS 竞争重试，并不是 wait-free。
+
+</details>
+
+### 9.2 ConcurrentLinkedQueue 与 LinkedBlockingQueue 怎样选择
+
+<!-- 面试来源：
+- 快手：https://www.nowcoder.com/discuss/179560
+-->
+
+**出现公司**：快手
+
+**考察重点**
+
+- 非阻塞无界队列与可阻塞有界队列的协议差异。
+- size、背压和消费者等待。
+- CAS 重试与锁条件等待各自的成本。
+
+**相关内容**：第 5 节“size 是线性遍历”、第 7 节“适用边界”。
+
+<details>
+<summary>参考回答</summary>
+
+ConcurrentLinkedQueue 是无界非阻塞 FIFO，offer 和 poll 不等待，适合已有唤醒机制且不需要容量控制的并发通道；size 需要遍历，不能用来实现可靠上限。
+
+LinkedBlockingQueue 支持 put/take 条件等待并可设置容量，更适合生产者消费者和背压。选择重点是调用协议，不是笼统比较“CAS 一定比锁快”。
+
+</details>
+
+:::note 参考资料
+
+1. [Java API：ConcurrentLinkedQueue](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/ConcurrentLinkedQueue.html)
+2. [OpenJDK：ConcurrentLinkedQueue 源码](https://github.com/openjdk/jdk/blob/jdk-26-ga/src/java.base/share/classes/java/util/concurrent/ConcurrentLinkedQueue.java)
+3. [Java API：LinkedBlockingQueue](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/LinkedBlockingQueue.html)
+
+:::

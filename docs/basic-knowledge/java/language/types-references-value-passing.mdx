@@ -1,0 +1,276 @@
+---
+sidebar_position: 1
+---
+
+# Java 类型、引用与值传递
+
+Java 方法调用只有值传递。理解这句话，需要先分清变量保存的值、对象本身，以及多个引用指向同一个对象时发生的共享修改。
+
+## 1. Java 变量保存什么
+
+Java 的类型分为基本类型和引用类型。两类变量保存的内容不同，但赋值和传参遵循同一条规则：**复制变量当前保存的值**。
+
+### 1.1 基本类型变量保存具体的值
+
+`int`、`long`、`double`、`boolean` 等基本类型变量直接保存对应类型的值：
+
+```java
+int original = 101;
+int copied = original;
+
+copied = 202;
+
+System.out.println(original); // 101
+System.out.println(copied);   // 202
+```
+
+执行 `int copied = original` 时，整数 `101` 被复制给了 `copied`。之后修改 `copied`，不会影响 `original`。
+
+### 1.2 引用类型变量保存引用值
+
+对象由 `new` 创建，引用类型变量保存一个指向该对象的引用值，也可以保存 `null`：
+
+```java
+User first = new User("Lin");
+User second = first;
+
+second.setName("Asuka");
+
+System.out.println(first.getName()); // Asuka
+```
+
+执行 `User second = first` 时，被复制的是 `first` 保存的引用值。`first` 和 `second` 是两个变量，但它们指向同一个 `User` 对象。通过其中任意一个引用修改对象，另一个引用随后都会看到变化。
+
+:::note 变量、引用与对象
+
+- `first` 和 `second` 是两个独立变量。
+- 两个变量保存了相同的引用值。
+- 两个引用指向同一个对象，所以对象状态是共享的。
+
+:::
+
+不要把“引用”直接等同于对象，也不要依赖“基本类型一定在栈上、对象一定在堆上”来解释语言语义。JVM 可以优化对象和变量的实际存储方式，而赋值与传参规则不会因此改变。
+
+## 2. 赋值复制变量当前的值
+
+引用变量重新赋值，不会改变另一个变量保存的引用：
+
+```java
+User first = new User("Lin");
+User second = first;
+
+second = new User("Asuka");
+
+System.out.println(first.getName());  // Lin
+System.out.println(second.getName()); // Asuka
+```
+
+前两行执行后，两个变量指向同一个对象。`second = new User("Asuka")` 随后只替换了 `second` 保存的引用值，`first` 仍然指向原来的对象。
+
+可以用下面这组关系区分“修改对象”和“修改变量”：
+
+| 操作 | 被修改的内容 | 其他引用是否能看到变化 |
+| --- | --- | --- |
+| `second.setName("Asuka")` | 共享对象的字段 | 能 |
+| `second = new User("Asuka")` | `second` 变量保存的引用值 | 不能 |
+
+## 3. 方法调用始终传递值
+
+每次调用方法，Java 都会为形参创建一个新的变量，再使用实参的值初始化它。实参是基本类型时，复制具体的值；实参是引用类型时，复制引用值。
+
+### 3.1 修改形参不会修改调用方变量
+
+```java
+static void increase(int number) {
+    number++;
+}
+
+int count = 1;
+increase(count);
+
+System.out.println(count); // 1
+```
+
+`increase` 中的 `number` 是新的局部变量。它最初保存 `count` 的值 `1`，但 `number++` 只修改这个局部副本。
+
+引用类型也是一样：
+
+```java
+static void replace(User user) {
+    user = new User("Asuka");
+}
+
+User account = new User("Lin");
+replace(account);
+
+System.out.println(account.getName()); // Lin
+```
+
+`replace` 收到的是 `account` 中引用值的副本。让形参 `user` 指向新对象，不会替换 `account` 保存的引用。
+
+### 3.2 通过形参修改对象会被调用方看到
+
+```java
+static void rename(User user) {
+    user.setName("Asuka");
+}
+
+User account = new User("Lin");
+rename(account);
+
+System.out.println(account.getName()); // Asuka
+```
+
+`user` 和 `account` 保存的是两个相同的引用值，因此它们指向同一个对象。`rename` 没有改变调用方的变量，而是修改了双方共同指向的对象。
+
+这也是“传入对象后修改字段仍然可见”的原因。**可见的是共享对象的变化，不是形参对实参变量的反向赋值。**
+
+## 4. 常见问题
+
+### 4.1 Java 有没有引用传递
+
+没有。引用传递意味着方法拿到调用方变量本身，可以把调用方的变量改为指向另一个对象。Java 方法只能拿到引用值的副本，不能直接替换调用方变量中保存的引用。
+
+下面的交换方法因此无效：
+
+```java
+static void swap(User left, User right) {
+    User temporary = left;
+    left = right;
+    right = temporary;
+}
+
+User first = new User("Lin");
+User second = new User("Asuka");
+swap(first, second);
+
+System.out.println(first.getName());  // Lin
+System.out.println(second.getName()); // Asuka
+```
+
+`swap` 只交换了两个形参变量保存的引用值。方法返回以后，这两个局部变量随之失效，调用方的 `first` 和 `second` 没有改变。
+
+### 4.2 数组作为参数时是否也是值传递
+
+是。数组是对象，数组变量保存引用值。方法可以通过复制得到的引用修改同一个数组，但不能替换调用方保存的数组引用：
+
+```java
+static void update(int[] values) {
+    values[0] = 101;
+    values = new int[] {202};
+}
+
+int[] numbers = {1};
+update(numbers);
+
+System.out.println(numbers[0]); // 101
+```
+
+`values[0] = 101` 修改了共享数组。后面的重新赋值只让局部变量 `values` 指向新数组，所以调用方仍然持有原来的数组。
+
+### 4.3 String 为什么看起来像基本类型
+
+`String` 是引用类型，传参时复制的仍然是引用值。区别在于 `String` 不可变，所有看起来像“修改字符串”的操作都会得到一个新对象或另一个已有对象：
+
+```java
+static void append(String value) {
+    value = value + " 101";
+}
+
+String title = "Coding";
+append(title);
+
+System.out.println(title); // Coding
+```
+
+方法中的拼接结果只赋给局部变量 `value`，没有改变调用方的 `title`。
+
+### 4.4 方法怎样返回多个修改结果
+
+不要试图通过重新赋值多个参数带回结果。可以返回一个明确的结果对象、记录类型或集合：
+
+```java
+record Range(int min, int max) {}
+
+static Range normalize(int first, int second) {
+    return first <= second
+        ? new Range(first, second)
+        : new Range(second, first);
+}
+```
+
+这种写法能直接表达方法产生了什么结果，也不会依赖调用方与方法共享可变对象。
+
+## 5. 面试题
+
+这一节用于检查是否能够从“复制变量的值”推导出代码结果。先用自己的话回答，再展开参考回答核对概念。
+
+### 5.1 Java 是值传递还是引用传递
+
+<!-- 面试来源：
+- 腾讯：https://www.nowcoder.com/discuss/353154969706635264
+- 网易：https://www.nowcoder.com/discuss/353157997255925760
+- 美团：https://www.nowcoder.com/discuss/736983199590494208
+-->
+
+**出现公司**：腾讯、网易、美团
+
+**考察重点**
+
+- 基本类型值与引用值分别是什么。
+- 方法形参与调用方变量是不是同一个变量。
+- 为什么修改对象字段可见，而重新给形参赋值不可见。
+
+**相关内容**：第 1 节“Java 变量保存什么”、第 3 节“方法调用始终传递值”。
+
+<details>
+<summary>参考回答</summary>
+
+Java 只有值传递。调用方法时，每个形参都是一个新变量，由对应实参当前保存的值初始化。基本类型参数复制具体的值，引用类型参数复制引用值。
+
+引用值复制以后，形参和实参可以指向同一个对象，所以通过形参修改对象字段，调用方能够看到变化。但给形参重新赋值只会改变局部变量保存的引用，不会替换调用方变量中的引用。这两种结果都符合值传递。
+
+</details>
+
+### 5.2 下面两个方法为什么产生不同结果
+
+<!-- 面试来源：
+- 哈啰数科：https://www.nowcoder.com/discuss/693865127052939264
+-->
+
+```java
+static void rename(User user) {
+    user.setName("Asuka");
+}
+
+static void replace(User user) {
+    user = new User("Asuka");
+}
+```
+
+**出现公司**：哈啰数科
+
+**考察重点**
+
+- 区分对象状态修改与引用变量重新赋值。
+- 能否画出调用前后形参、实参与对象之间的关系。
+- 是否误把“能修改对象”当成引用传递。
+
+**相关内容**：第 2 节“赋值复制变量当前的值”、第 3 节“方法调用始终传递值”。
+
+<details>
+<summary>参考回答</summary>
+
+调用两个方法时，形参最初都保存了调用方引用值的副本。`rename` 通过这个引用修改双方共同指向的对象，因此调用方能够看到对象名称变化。
+
+`replace` 只是把形参改为指向另一个对象。形参与实参是两个变量，修改形参保存的引用值不会影响调用方，所以调用方仍然指向原来的对象。
+
+</details>
+
+:::note 参考资料
+
+1. [Java Language Specification：Types, Values, and Variables](https://docs.oracle.com/en/java/javase/26/docs/specs/jls/jls-4.html)
+2. [Java Language Specification：Method Invocation Contexts](https://docs.oracle.com/javase/specs/jls/se26/html/jls-5.html#jls-5.3)
+3. [Java Language Specification：Run-Time Evaluation of Method Invocation](https://docs.oracle.com/javase/specs/jls/se26/html/jls-15.html#jls-15.12.4)
+
+:::

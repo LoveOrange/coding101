@@ -1,0 +1,129 @@
+---
+sidebar_position: 19
+---
+
+# 自定义 Starter 的边界
+
+自定义 Starter 用来把一项基础能力的依赖、默认配置和接入方式封装成稳定入口。它适合重复接入的日志、客户端、鉴权或监控组件，不适合把具体业务流程隐藏进所有应用的启动阶段。
+
+## 1. Starter 与自动配置承担不同职责
+
+一套完整能力可以拆成两个模块：
+
+```text
+acme-payment-spring-boot
+└── 自动配置、属性类与扩展接口
+
+acme-payment-spring-boot-starter
+└── 聚合自动配置模块和常用运行时依赖
+```
+
+Starter 本身通常只是依赖描述；真正创建 Bean 的逻辑放在自动配置模块。规模较小时也可以合并成一个模块，但职责仍应保持清楚。
+
+第三方 Starter 不要使用 `spring-boot-*` 作为名称开头，避免与 Spring Boot 官方模块混淆。
+
+## 2. 自动配置通过明确入口注册
+
+```java
+@AutoConfiguration
+@EnableConfigurationProperties(PaymentProperties.class)
+@ConditionalOnClass(PaymentClient.class)
+public class PaymentAutoConfiguration {
+    @Bean
+    @ConditionalOnMissingBean
+    PaymentClient paymentClient(PaymentProperties properties) {
+        return new PaymentClient(properties.endpoint());
+    }
+}
+```
+
+将类名写入：
+
+```text
+META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports
+```
+
+自动配置放在专用包中，不让业务应用的 ComponentScan 偶然发现，也不要通过宽泛扫描寻找内部组件。依赖明确的配置可使用 `@Import`。
+
+## 3. 对外接口由三部分组成
+
+- **依赖契约**：接入 Starter 后会引入哪些直接和传递依赖。
+- **配置契约**：统一前缀、字段类型、默认值、校验与废弃策略。
+- **Bean 契约**：默认提供哪些 Bean，用户可以替换哪些扩展点。
+
+配置属性应使用独立命名空间，例如 `acme.payment.*`。通过配置元数据给 IDE 提供提示；字段改名时考虑兼容窗口，不能悄悄改变同名参数的单位或含义。
+
+## 4. 条件与回退保持可覆盖
+
+常见组合是：类路径具备能力、属性开关已启用、用户尚未提供同类 Bean 时才创建默认实现。
+
+不要用 `@ConditionalOnMissingBean` 掩盖模糊的扩展模型。如果应用需要同时存在多个客户端，应使用清晰的 qualifier、注册表或 builder 定制接口，而不是让“容器里恰好已有一个 Bean”决定全部行为。
+
+## 5. 避免隐式副作用
+
+接入依赖不应自动执行这些操作：
+
+- 无限制地扫描业务包。
+- 启动无生命周期管理的线程。
+- 修改全局系统属性或默认 Locale。
+- 在启动阶段执行远程写操作。
+- 覆盖用户已有的序列化、安全或线程池配置。
+
+确有必要的后台组件应具备开关、超时、关闭回调、健康状态和清晰日志。可能产生外部成本或数据修改的能力，最好要求显式启用。
+
+## 6. 测试条件组合与兼容性
+
+使用 `ApplicationContextRunner` 可以构造不同类路径、属性和用户 Bean 组合，验证：
+
+- 条件满足时只创建预期 Bean。
+- 用户自定义 Bean 能使默认配置回退。
+- 缺少可选依赖时不会出现 ClassNotFoundException。
+- 错误配置在启动阶段给出明确失败信息。
+- 自动配置报告能说明匹配或未匹配原因。
+
+还应在支持的 Spring Boot 和 Java 版本矩阵上做集成测试，并检查依赖树是否意外升级日志、网络或序列化组件。
+
+## 7. 常见问题
+
+### 7.1 每个公共组件都需要做成 Starter 吗
+
+不需要。只有当多个应用需要同一套依赖、配置和 Bean 装配规则时，Starter 才能减少重复。单纯提供一个 Java API 的库保持普通依赖更清楚。
+
+### 7.2 为什么 Starter 引入后没有生效
+
+依次检查自动配置类是否写入 imports 文件、条件是否匹配、配置属性是否绑定、用户是否已有替代 Bean，以及版本依赖是否一致。条件评估报告通常能直接指出未匹配项。
+
+## 8. 面试题
+
+### 8.1 怎样设计一个可复用的 Spring Boot Starter
+
+<!-- 面试来源：
+- 去哪儿旅行：https://www.nowcoder.com/discuss/353158601923567616
+-->
+
+**出现公司**：去哪儿旅行
+
+**考察重点**
+
+- Starter 与自动配置模块的职责。
+- imports、条件注解与配置属性。
+- 可覆盖、无副作用和测试边界。
+
+**相关内容**：第 1 节“Starter 与自动配置承担不同职责”至第 6 节“测试条件组合与兼容性”。
+
+<details>
+<summary>参考回答</summary>
+
+Starter 聚合使用这项能力所需的常用依赖，自动配置模块通过 AutoConfiguration.imports 登记配置类，再用类路径、属性和 MissingBean 条件决定是否创建默认 Bean。对外需要稳定的配置命名空间、可替换扩展点和明确依赖边界。
+
+自动配置不应宽泛扫描业务包，也不应在类加载时创建线程或访问远程系统。要用 ApplicationContextRunner 覆盖条件成立、用户 Bean 回退、缺少可选依赖和错误配置等组合，并在支持的 Boot 与 Java 版本上验证兼容性。
+
+</details>
+
+:::note 参考资料
+
+1. [Spring Boot：Creating Your Own Auto-configuration](https://docs.spring.io/spring-boot/reference/features/developing-auto-configuration.html)
+2. [Spring Boot：Configuration Metadata](https://docs.spring.io/spring-boot/specification/configuration-metadata/index.html)
+3. [Spring Boot：Testing Auto-configuration](https://docs.spring.io/spring-boot/reference/features/developing-auto-configuration.html#features.developing-auto-configuration.testing)
+
+:::

@@ -1,0 +1,198 @@
+---
+sidebar_position: 11
+---
+
+# CopyOnWrite 容器的成本模型
+
+`CopyOnWriteArrayList` 在每次结构更新时复制底层数组，并让读操作访问一个稳定数组。它适合元素较少、读取和遍历远多于写入，并且允许迭代期间看到旧快照的场景。
+
+## 1. 读操作访问当前数组快照
+
+容器持有一个数组引用。`get` 取得当前数组，再按索引读取：
+
+```java
+CopyOnWriteArrayList<Listener> listeners = new CopyOnWriteArrayList<>();
+
+for (Listener listener : listeners) {
+    listener.onEvent(event);
+}
+```
+
+读操作不需要和其他读者争用互斥锁。数组引用按并发语义发布，因此线程能读取一个完整版本，而不是复制到一半的结构。
+
+## 2. 写入复制整个数组
+
+加入元素时，写线程会串行执行：
+
+1. 取得写锁。
+2. 读取当前数组。
+3. 分配长度增加后的新数组。
+4. 复制旧引用并写入新元素。
+5. 发布新数组引用。
+
+删除和替换也需要复制相应数组：
+
+```java
+listeners.add(listener);
+listeners.remove(listener);
+```
+
+因此一次写入是 O(n)，并产生与数组大小相关的临时分配。写入集中时，锁竞争、复制带宽和 GC 压力会同时增加。
+
+## 3. 迭代器看到创建时的快照
+
+```java
+Iterator<Listener> iterator = listeners.iterator();
+listeners.add(newListener);
+
+while (iterator.hasNext()) {
+    iterator.next(); // 不会看到 newListener
+}
+```
+
+迭代器保存创建时的数组，不抛 `ConcurrentModificationException`，也不会看到后续修改。它不支持 `remove`、`set` 或 `add`，这些操作会抛出 `UnsupportedOperationException`。
+
+快照语义适合广播监听器：一次事件只发给开始遍历时已经注册的监听器。若业务要求新增监听器立即参与正在进行的广播，CopyOnWrite 并不满足。
+
+## 4. 适合的场景
+
+典型条件：
+
+- 列表较小。
+- 读与遍历频率远高于写。
+- 遍历不能长时间持锁。
+- 读者可以接受短暂旧版本。
+- 每次写入由少量管理操作触发。
+
+例如：
+
+- 事件监听器列表。
+- 运行期很少变化的规则或处理器清单。
+- 小规模路由快照。
+- 只偶尔更新的白名单。
+
+“读多写少”还不够。一个包含百万元素的列表即使每天只写几次，每次完整复制也可能不可接受。
+
+## 5. 不适合的场景
+
+- 高频写入或批量单条写入。
+- 列表很大，复制导致明显内存峰值。
+- 写入后要求所有进行中的遍历立即可见。
+- 需要通过迭代器修改。
+- 元素对象本身被并发修改，并期望容器解决它。
+
+CopyOnWrite 只复制引用数组，不复制元素：
+
+```java
+listeners.get(0).changeState();
+```
+
+这个状态修改仍由 Listener 自己的线程安全契约决定。
+
+## 6. 批量更新减少复制次数
+
+逐个 add 会为每次操作复制数组：
+
+```java
+for (Listener listener : incoming) {
+    listeners.add(listener);
+}
+```
+
+可以使用 `addAll` 一次构造新版本：
+
+```java
+listeners.addAll(incoming);
+```
+
+去重插入可以使用 `addIfAbsent` 或 `addAllAbsent`，但它们需要扫描并比较元素。高频去重更适合 Set 或以不可变快照整体替换。
+
+如果配置天然按批次发布，可以构造普通不可变 List，再通过 volatile 或 AtomicReference 一次替换引用。这能把写入成本集中在快照构建阶段，也让版本边界更明确。
+
+## 7. CopyOnWriteArraySet
+
+`CopyOnWriteArraySet` 基于 CopyOnWriteArrayList，通过线性查找避免重复。它适合小型、读多写少的集合；成员判断是 O(n)，不能把它当作并发 HashSet 使用。
+
+```java
+Set<Listener> listeners = new CopyOnWriteArraySet<>();
+```
+
+需要大量键的并发成员判断时，通常使用 `ConcurrentHashMap.newKeySet()`。
+
+## 8. 常见问题
+
+### 8.1 读取完全没有成本吗
+
+读取避免了互斥锁，但仍要读取数组引用和元素，并可能读到旧快照。缓存局部性通常较好，不代表业务状态同步免费。
+
+### 8.2 为什么迭代器不支持 remove
+
+迭代器持有的是旧数组快照。对它修改无法直接、安全地合并到容器当前版本，因此迭代器被设计为只读。
+
+### 8.3 写入时旧数组何时释放
+
+只要没有迭代器或其他内部引用持有，旧数组就可以由 GC 回收。长时间保存的迭代器会延长旧快照生命周期，频繁写入时可能同时存在多个大数组版本。
+
+### 8.4 CopyOnWriteArrayList 与 synchronizedList 怎样选择
+
+CopyOnWrite 把主要成本放在写入，迭代读取无需持锁但允许旧快照；同步 List 的更新不复制整个数组，但迭代通常需要在锁内完成并阻塞写者。选择取决于读写比例、列表大小和一致性要求。
+
+## 9. 面试题
+
+### 9.1 CopyOnWriteArrayList 怎样保证遍历安全，代价是什么
+
+<!-- 面试来源：
+- 蚂蚁集团：https://www.nowcoder.com/discuss/353157545105760256
+-->
+
+**出现公司**：蚂蚁集团
+
+**考察重点**
+
+- 写锁、数组复制和引用发布的关系。
+- 迭代器的快照语义。
+- 写放大、内存峰值和旧数据可见性。
+
+**相关内容**：第 1 节“读操作访问当前数组快照”至第 3 节“迭代器看到创建时的快照”。
+
+<details>
+<summary>参考回答</summary>
+
+CopyOnWriteArrayList 的读者访问当前已发布数组，写线程在锁内复制旧数组、完成修改后一次发布新数组。迭代器保存创建时的数组，所以不会被并发结构修改破坏，也不会看到之后的更新。
+
+代价是每次写入 O(n) 复制，产生额外内存和 GC 压力，写线程还会串行。它适合小型、读远多于写并允许快照稍旧的列表，不适合大列表和高频更新。
+
+</details>
+
+### 9.2 CopyOnWriteArrayList 中的元素是否也线程安全
+
+<!-- 面试来源：
+- 蚂蚁集团：https://www.nowcoder.com/discuss/353157545105760256
+-->
+
+**出现公司**：蚂蚁集团
+
+**考察重点**
+
+- 容器结构快照与元素对象状态的区别。
+- 浅复制不会复制元素。
+- 怎样发布不可变配置或保护可变元素。
+
+**相关内容**：第 5 节“不适合的场景”。
+
+<details>
+<summary>参考回答</summary>
+
+不一定。写时复制只复制保存元素引用的数组，多个快照仍指向同一个元素对象。容器能保证列表结构的并发契约，元素字段的读写仍由元素自身负责。
+
+如果希望整个配置快照稳定，可以让元素不可变；元素必须可变时，使用锁、原子字段或线程封闭等机制保护它，不能只依赖 CopyOnWrite 容器。
+
+</details>
+
+:::note 参考资料
+
+1. [Java API：CopyOnWriteArrayList](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/CopyOnWriteArrayList.html)
+2. [OpenJDK：CopyOnWriteArrayList 源码](https://github.com/openjdk/jdk/blob/jdk-26-ga/src/java.base/share/classes/java/util/concurrent/CopyOnWriteArrayList.java)
+3. [Java API：CopyOnWriteArraySet](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/CopyOnWriteArraySet.html)
+
+:::

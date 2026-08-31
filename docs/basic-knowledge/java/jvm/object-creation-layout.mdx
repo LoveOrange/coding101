@@ -1,0 +1,165 @@
+---
+sidebar_position: 7
+---
+
+# 对象创建、对象头与内存布局
+
+执行 `new` 时，JVM 先确认类型可用，再为对象分配并清零存储、建立对象头，最后执行构造过程。对象头和字段排列属于 JVM 实现细节，分析时必须同时说明 JVM、版本和启动参数。
+
+## 1. `new` 指令先解析目标类型
+
+源码：
+
+```java
+Order order = new Order(id, amount);
+```
+
+通常对应 `new`、`dup`、参数准备和 `invokespecial <init>` 等字节码。JVM 执行 `new` 前要解析目标类；若类还未初始化，也会先完成必要的初始化。
+
+对象分配和构造函数执行是两个步骤。引用若在构造未完成时逸出，其他线程可能观察到尚未建立完整不变量的对象。
+
+## 2. HotSpot 从可用堆空间分配
+
+分配方式取决于收集器和堆当前布局：规整空间可以移动顶部指针，存在空洞时可能从空闲结构中选择空间。
+
+多线程同时分配需要同步。HotSpot 常为线程提供 TLAB（Thread-Local Allocation Buffer），线程在自己的小块区域内快速移动指针；TLAB 不足或对象不适合时再走共享分配路径。
+
+TLAB 是分配优化，不是“对象在线程私有堆中”。对象仍属于 Java 堆，发布后可以被其他线程访问并由 GC 移动。
+
+## 3. 新分配的实例字段先获得零值
+
+JVM 在 Java 代码可见前把对象存储初始化为零值：整数为 `0`，布尔为 `false`，引用为 `null`。随后才执行字段初始化表达式和构造器。
+
+```java
+final class Counter {
+    int step = 1;
+
+    Counter(int initial) {
+        value = initial;
+    }
+
+    int value;
+}
+```
+
+从概念顺序看：先有全部字段零值，再执行实例字段初始化与实例初始化块，最后执行构造器体；父类构造过程先于子类构造器体。
+
+## 4. HotSpot 对象通常由三部分组成
+
+在常见 HotSpot 配置下，对象布局可以分为：
+
+- **对象头**：锁状态、身份哈希、GC 信息以及类型关联信息等。
+- **实例数据**：继承而来的字段与当前类字段。
+- **对齐填充**：让对象大小满足实现所需的对齐边界。
+
+数组还需要记录长度。字段顺序可能为了减少空洞而调整，不能用源码声明顺序手算所有版本的布局。
+
+对象头的具体结构会变化。JDK 25 提供了产品化的 Compact Object Headers 选项，可以改变传统对象头布局；它在 JEP 519 中并未被设为默认。分析当前进程时应读取实际参数，不要套用固定的“Mark Word + Klass Word”字节数。
+
+## 5. 构造完成不等于已经安全发布
+
+```java
+final class Listener {
+    Listener(EventBus bus) {
+        bus.register(this); // this 在构造完成前逸出
+    }
+}
+```
+
+另一个线程可能在构造器返回前调用该对象。更稳妥的方式是构造完整对象后，由工厂或外层生命周期方法注册。
+
+`final` 字段在正确构造且没有构造期逸出时具有额外初始化安全保证。普通字段仍要通过锁、volatile、线程启动规则或并发容器等安全发布。
+
+## 6. 用 JOL 观察，不靠记忆计算
+
+OpenJDK JOL 可以显示对象字段布局和对象图估算：
+
+```java
+System.out.println(ClassLayout.parseClass(Order.class).toPrintable());
+```
+
+结果只代表当前 JVM 配置。检查时同时记录：
+
+- JDK 与 JVM 实现版本。
+- 32/64 位模式。
+- 压缩对象指针与压缩类指针状态。
+- 对象对齐参数。
+- Compact Object Headers 是否启用。
+
+`Instrumentation.getObjectSize` 返回实现相关的浅大小，也不包含被引用对象的深层大小。
+
+## 7. 常见问题
+
+### 7.1 `new` 出来的对象一定真实分配在堆上吗
+
+Java 语义上创建对象；HotSpot 的 JIT 若证明对象不逃逸，可以通过标量替换把字段拆开，最终不产生完整堆对象。不能从源码单独断言优化一定发生，应查看编译与分配证据。
+
+### 7.2 对象头里一定有 hashCode 吗
+
+对象头需要支持身份哈希，但未调用 `System.identityHashCode` 时不一定已经存有计算后的值。锁、GC 和紧凑对象头还会影响编码方式，具体看实现。
+
+### 7.3 空类对象为什么也占空间
+
+它仍要携带运行时类型、同步/GC 所需状态，并满足对象对齐。启用不同对象头方案后，具体大小可能变化。
+
+## 8. 面试题
+
+### 8.1 Java 对象的创建过程是什么
+
+<!-- 面试来源：
+- 字节跳动：https://www.nowcoder.com/discuss/353158260289118208
+- 阿里巴巴：https://www.nowcoder.com/discuss/353157613372252160
+-->
+
+**出现公司**：字节跳动、阿里巴巴
+
+**考察重点**
+
+- 类型解析、分配、清零、对象头和构造过程。
+- TLAB 的作用。
+- 构造期逸出与安全发布。
+
+**相关内容**：第 1 节“`new` 指令先解析目标类型”至第 5 节“构造完成不等于已经安全发布”。
+
+<details>
+<summary>参考回答</summary>
+
+JVM 先解析并确保目标类已经完成必要初始化，再从堆中分配对象存储；HotSpot 常通过 TLAB 降低多线程分配竞争。分配后先把实例字段置为零值并建立对象头，然后执行父类到子类的实例初始化和构造器。
+
+分配与构造要分开。`this` 若在构造期间逸出，其他线程可能看到不完整状态；对象应在构造完成后通过明确同步关系发布。
+
+</details>
+
+### 8.2 Java 对象的内存布局包含哪些部分
+
+<!-- 面试来源：
+- 字节跳动：https://www.nowcoder.com/discuss/353149262718509056
+-->
+
+**出现公司**：字节跳动
+
+**考察重点**
+
+- 对象头、实例字段和对齐填充。
+- 数组长度与普通对象的差异。
+- 布局是 HotSpot 版本与参数相关实现细节。
+
+**相关内容**：第 4 节“HotSpot 对象通常由三部分组成”和第 6 节“用 JOL 观察，不靠记忆计算”。
+
+<details>
+<summary>参考回答</summary>
+
+常见 HotSpot 对象包含对象头、实例数据和对齐填充，数组还记录长度。对象头承载锁、身份哈希、GC 与类型关联所需状态，但具体编码会受压缩指针和紧凑对象头等选项影响；字段也可能被实现重新排列。
+
+因此回答结构后还要补充版本边界，实际大小用 JOL 在目标 JVM 和启动参数下验证。
+
+</details>
+
+:::note 参考资料
+
+1. [JVMS：Representation of Objects](https://docs.oracle.com/javase/specs/jvms/se26/html/jvms-2.html#jvms-2.7)
+2. [JEP 519：Compact Object Headers](https://openjdk.org/jeps/519)
+3. [OpenJDK：Java Object Layout](https://openjdk.org/projects/code-tools/jol/)
+4. [JLS：Creation of New Class Instances](https://docs.oracle.com/javase/specs/jls/se26/html/jls-12.html#jls-12.5)
+
+:::

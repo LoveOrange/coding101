@@ -1,0 +1,122 @@
+---
+sidebar_position: 13
+---
+
+# 读写锁与 StampedLock
+
+读写锁允许多个读者并发访问，同时让写者独占状态。它只在读取占比高、读操作有一定成本并且写竞争可控时可能受益；`StampedLock` 进一步提供乐观读，但使用约束也更严格。
+
+## 1. 读锁共享，写锁独占
+
+```java
+private final ReentrantReadWriteLock rw = new ReentrantReadWriteLock();
+private final Lock read = rw.readLock();
+private final Lock write = rw.writeLock();
+
+Value find(Key key) {
+    read.lock();
+    try {
+        return values.get(key);
+    } finally {
+        read.unlock();
+    }
+}
+```
+
+只要没有写锁，多个线程可以同时持有读锁；写锁会排斥其他读者和写者。读操作必须无副作用，否则多个读者仍会互相破坏状态。
+
+临界区很短或写入频繁时，读写锁的状态管理和排队成本可能高于普通互斥锁。
+
+## 2. 降级可控，升级容易陷入等待
+
+持有写锁时可以先获取读锁，再释放写锁，完成从写到读的降级。反过来，多个线程都持有读锁并等待升级为写锁时，彼此不会释放读锁，容易无法进展。
+
+需要更新时通常先释放读锁，再获取写锁，并在写锁下重新检查条件。这个间隙里状态可能变化，所以不能沿用旧判断。
+
+## 3. StampedLock 用 stamp 表示访问能力
+
+```java
+long stamp = lock.readLock();
+try {
+    return new Point(x, y);
+} finally {
+    lock.unlockRead(stamp);
+}
+```
+
+每次获取返回一个 stamp，释放或模式转换时必须提供有效 stamp。`StampedLock` 不可重入，持锁代码调用可能再次获取同一锁的未知方法，会造成自我等待。
+
+它也不直接提供 `Condition`，因此不适合需要条件队列的协议。
+
+## 4. 乐观读必须验证并准备重读
+
+```java
+long stamp = lock.tryOptimisticRead();
+double currentX = x;
+double currentY = y;
+
+if (!lock.validate(stamp)) {
+    stamp = lock.readLock();
+    try {
+        currentX = x;
+        currentY = y;
+    } finally {
+        lock.unlockRead(stamp);
+    }
+}
+return new Point(currentX, currentY);
+```
+
+乐观读期间没有真正持有读锁，读取可能与写入交错。只有 `validate` 成功，才能接受这组结果；失败后要在读锁内全部重读。
+
+未验证前，代码只能做容忍暂时不一致的简单读取。不能沿着可能为 `null` 的引用调用任意方法，也不能产生不可撤销副作用。
+
+## 5. 先比较不可变快照和并发容器
+
+配置读取可以用 `volatile` 发布不可变快照；键值查询可以用 `ConcurrentHashMap`；读极多写极少的小集合可以考虑 Copy-on-Write。它们往往比手动维护读写锁更容易组合。
+
+使用读写锁前，应测量读写比例、临界区时间、写者等待和长尾，而不是只根据“读多写少”四个字决定。
+
+## 6. 常见问题
+
+### 6.1 乐观读是不是无锁读取
+
+读取阶段不持有读锁，但仍要取得版本 stamp、验证，并在失败时退回读锁。它是一套完整协议，不是删掉锁调用。
+
+### 6.2 `StampedLock` 为什么不能当作 `ReentrantReadWriteLock` 的直接替代
+
+它不可重入、没有 Condition，API 依赖 stamp，乐观读还要求容忍并验证不一致状态。迁移会改变调用约束，不只是性能实现。
+
+## 7. 面试题
+
+### 7.1 `StampedLock` 的乐观读怎样保证结果可用
+
+<!-- 面试来源：
+- 美团：https://www.nowcoder.com/discuss/383727207275933696
+-->
+
+**出现公司**：美团
+
+**考察重点**
+
+- 乐观读期间可能与写入交错。
+- stamp 验证和失败重读。
+- 不可重入与副作用边界。
+
+**相关内容**：第 3 节“StampedLock 用 stamp 表示访问能力”和第 4 节“乐观读必须验证并准备重读”。
+
+<details>
+<summary>参考回答</summary>
+
+先取得乐观读 stamp，再读取构成结果的全部字段，最后调用 `validate`。验证成功表示期间没有使该 stamp 失效的写锁获取，可以接受这组读取；失败则取得普通读锁并把所有字段重新读取。
+
+验证前不能根据可能不一致的值执行不可撤销副作用。`StampedLock` 还不可重入、没有 Condition，因此只适合能控制内部调用和数据不变量的组件。
+
+</details>
+
+:::note 参考资料
+
+1. [Java API：`ReentrantReadWriteLock`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/locks/ReentrantReadWriteLock.html)
+2. [Java API：`StampedLock`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/locks/StampedLock.html)
+
+:::

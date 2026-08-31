@@ -1,0 +1,116 @@
+---
+sidebar_position: 3
+---
+
+# Spring Security 过滤器链
+
+Spring Security 在 Servlet Filter 层建立安全边界。请求先由 FilterChainProxy 选择一条 SecurityFilterChain，再按顺序完成安全上下文加载、攻击防护、身份验证、异常转换和授权。
+
+## 1. DelegatingFilterProxy 连接容器与 Spring Bean
+
+Servlet 容器认识的是 Filter，Spring Security 的入口通常是 `DelegatingFilterProxy`。它从 ApplicationContext 找到名为 `springSecurityFilterChain` 的 Bean，并把请求委托给它。
+
+这个 Bean 实际类型是 `FilterChainProxy`。安全过滤器由 Spring 管理，不需要分别注册到 Servlet 容器；重复注册会让同一过滤器执行两次。
+
+## 2. FilterChainProxy 选择第一条匹配链
+
+应用可以声明多条 `SecurityFilterChain`：
+
+```java
+@Bean
+@Order(1)
+SecurityFilterChain api(HttpSecurity http) throws Exception {
+    http.securityMatcher("/api/**");
+    // API security
+    return http.build();
+}
+```
+
+FilterChainProxy 按顺序选择第一条 matcher 命中的链。更具体的 `/api/**` 应放在通用 `/**` 之前；若请求没有匹配任何链，它不会自动获得期望的安全规则。
+
+配置审查要覆盖所有路径、HTTP method、错误转发和管理端点，而不只测试首页。
+
+## 3. SecurityContext 保存当前 Authentication
+
+`SecurityContextHolder` 保存当前请求的 `SecurityContext`，其中的 `Authentication` 表示匿名、待认证凭据或已认证 principal，以及它拥有的 authorities。
+
+Servlet 应用默认使用 ThreadLocal。FilterChainProxy 在请求结束时负责清理上下文，避免线程池复用时把前一个用户身份带给下一个请求。
+
+任务切换到异步执行器时，ThreadLocal 不会自动安全传播。需要显式传递最小身份上下文，或使用 Spring Security 提供的委托包装器，并在任务结束后清理。
+
+## 4. AuthenticationManager 委托 Provider 验证
+
+认证过滤器从请求提取凭据，构造尚未认证的 Authentication，交给 `AuthenticationManager`。常用 `ProviderManager` 依次询问支持该类型的 `AuthenticationProvider`，例如用户名密码、JWT 或自定义凭据。
+
+认证成功返回包含 principal 与 authorities 的 Authentication，随后存入 SecurityContext。失败则进入统一失败处理，不应把密码、token 或内部验证细节写入响应和日志。
+
+## 5. 认证必须发生在授权之前
+
+过滤器顺序由依赖关系决定：安全上下文先建立，认证过滤器再确认主体，AuthorizationFilter 最后根据规则决定是否允许。
+
+自定义租户授权过滤器若需要当前用户，应放在认证完成之后。随意使用 `addFilterBefore` 插到未知位置，可能读不到身份，或者绕过异常处理和上下文清理。
+
+调试时可以输出实际 filter chain，确认自定义过滤器只执行一次并位于预期位置。
+
+## 6. ExceptionTranslationFilter 转换安全异常
+
+未认证主体访问受保护资源时，需要启动认证或返回 401；已认证但权限不足通常返回 403。`ExceptionTranslationFilter` 捕获下游的认证与拒绝异常，并调用相应 entry point 或 access denied handler。
+
+业务异常不要伪装成认证失败。稳定区分 401 和 403，既方便客户端处理，也避免把权限规则是否存在等敏感细节暴露出去。
+
+## 7. Session 与 Bearer Token 使用不同上下文策略
+
+浏览器 Session 登录会从安全上下文仓库恢复并保存认证。无状态 API 通常每次验证 Bearer Token，不创建服务端登录 Session。
+
+`SessionCreationPolicy.STATELESS` 不等于自动关闭所有浏览器风险。若认证信息仍放在自动携带的 Cookie 中，写请求仍要考虑 CSRF；只有客户端通过 Authorization header 主动携带 token，攻击模型才不同。
+
+## 8. URL 授权之后仍需方法与数据检查
+
+`authorizeHttpRequests` 保护路径和粗粒度 authority。领域方法可以使用 method security 表达动作权限，资源所有权和 tenant 条件还要落实到业务或查询层。
+
+测试至少包含匿名、普通用户、跨租户、管理员、过期 token、错误 audience 和 CSRF 场景。只测试正常 200，不能证明过滤器链没有遗漏路径。
+
+## 9. 常见问题
+
+### 9.1 一次请求会经过多条 SecurityFilterChain 吗
+
+不会。FilterChainProxy 选择第一条匹配的 SecurityFilterChain，并执行其中的过滤器。排序错误可能让通用链提前匹配，导致专用 API 规则永远不生效。
+
+### 9.2 自定义 JWT Filter 应该放在哪里
+
+取决于它承担的职责。若负责创建 Authentication，要放在授权之前，并让异常进入统一处理；更推荐使用 Spring Security Resource Server 已有 Bearer token 支持，减少自定义解析、算法和上下文错误。
+
+## 10. 面试题
+
+### 10.1 Spring Security 如何从请求进入过滤器链并完成鉴权
+
+<!-- 面试来源：
+- 美团 Java 面试题：https://www.nowcoder.com/discuss/383727207275933696
+-->
+
+**出现公司**：美团
+
+**考察重点**
+
+- DelegatingFilterProxy、FilterChainProxy 和 SecurityFilterChain。
+- SecurityContext、AuthenticationManager 与 Provider。
+- 过滤器顺序、401/403 和多链匹配。
+
+**相关内容**：第 1 节“DelegatingFilterProxy 连接容器与 Spring Bean”至第 8 节“URL 授权之后仍需方法与数据检查”。
+
+<details>
+<summary>参考回答</summary>
+
+Servlet 容器先进入 DelegatingFilterProxy，它把请求委托给 Spring Bean `FilterChainProxy`。FilterChainProxy 按顺序选择第一条 matcher 命中的 SecurityFilterChain，并执行其中过滤器。过滤器先建立和清理 SecurityContext，再由认证过滤器提取凭据，通过 AuthenticationManager 与对应 Provider 验证，成功后保存 Authentication，授权过滤器最后根据规则决定访问。
+
+认证异常和权限拒绝由 ExceptionTranslationFilter 转为 401 或 403。多条链要把具体 matcher 放前面，自定义过滤器按它依赖的上下文选择位置。URL 规则只做一层保护，资源所有权和多租户条件仍要在方法与数据访问层校验。
+
+</details>
+
+:::note 参考资料
+
+1. [Spring Security：Servlet Architecture](https://docs.spring.io/spring-security/reference/servlet/architecture.html)
+2. [Spring Security：Authentication Architecture](https://docs.spring.io/spring-security/reference/servlet/authentication/architecture.html)
+3. [Spring Security：Authorize HTTP Requests](https://docs.spring.io/spring-security/reference/servlet/authorization/authorize-http-requests.html)
+
+:::

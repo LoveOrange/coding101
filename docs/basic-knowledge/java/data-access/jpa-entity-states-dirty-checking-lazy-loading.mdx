@@ -1,0 +1,126 @@
+---
+sidebar_position: 2
+---
+
+# JPA 实体状态、脏检查与懒加载
+
+JPA 的核心运行边界是持久化上下文。实体是否会自动更新、关联能否延迟加载，以及同一主键是否对应同一对象，都取决于实体当前是否由这个上下文管理。
+
+## 1. 持久化上下文维护实体身份
+
+每个 EntityManager 关联一个 Persistence Context。在同一上下文中，同一实体类型与主键对应唯一的受管对象实例：
+
+```java
+Order first = entityManager.find(Order.class, 101L);
+Order second = entityManager.find(Order.class, 101L);
+
+assert first == second;
+```
+
+这个身份映射减少重复加载，也为脏检查和关联管理提供基础。它不是跨事务的全局缓存；上下文结束后，原对象不再自动与数据库同步。
+
+## 2. 实体有四种主要状态
+
+- **new**：刚创建，尚未与持久化上下文关联。
+- **managed**：由当前上下文管理，状态可能在 flush 时同步到数据库。
+- **detached**：有持久化身份，但已离开当前上下文。
+- **removed**：已标记删除，将在同步时执行删除。
+
+`persist` 让新实体进入 managed；`find` 或查询返回 managed 实体；`detach`、`clear` 或上下文关闭会使实体 detached；`remove` 把 managed 实体标记为 removed。
+
+## 3. merge 返回新的受管实例
+
+```java
+Order detached = ...;
+Order managed = entityManager.merge(detached);
+```
+
+`merge` 把传入对象的状态复制到当前上下文中的受管实例，并返回这个实例。传入的 `detached` 不会因此重新变为 managed。后续继续修改它，不能期待自动写入数据库。
+
+如果业务在一个事务中读取并修改实体，通常无需调用 `save` 或 `merge` 来触发每次更新；先确认对象是否已经 managed。
+
+## 4. 脏检查在 flush 时同步变化
+
+```java
+@Transactional
+public void rename(long id, String name) {
+    Customer customer = entityManager.find(Customer.class, id);
+    customer.rename(name);
+}
+```
+
+持久化提供者跟踪 managed 实体的状态。flush 时，它检测变化并生成相应 SQL。实现可以使用快照比较或字节码增强等方式，具体策略属于提供者实现。
+
+Flush 表示把内存中的变化同步给数据库连接，不等于事务已经提交。后续仍可回滚；查询前是否自动 flush 还受到 FlushMode 和查询类型影响。
+
+## 5. 事务边界决定状态管理范围
+
+典型 Spring 应用使用事务范围的持久化上下文：事务开始后获取 EntityManager，事务结束时 flush、提交或回滚，实体随后成为 detached。
+
+服务方法应在一个清楚的事务内完成读取、校验和修改。把实体长期保存到 Session、缓存或消息中，会把已脱离上下文的对象带到其他线程和请求，版本冲突与关联加载都会变得难以判断。
+
+## 6. 懒加载需要可用的持久化上下文
+
+LAZY 关联通常以代理或持久化集合表示，第一次访问时才执行查询：
+
+```java
+Order order = repository.findById(id).orElseThrow();
+return order.getItems().size();
+```
+
+如果访问发生在持久化上下文关闭之后，Hibernate 可能抛出 LazyInitializationException。直接把实体交给 Controller 序列化，还可能在不可控的位置触发大量 SQL 或递归关联。
+
+在事务内根据当前用例显式抓取需要的数据，再映射为 DTO。把所有关联改成 EAGER 会扩大每条查询的固定成本，也可能产生更多次级查询。
+
+## 7. OSIV 延长的是上下文，不是业务事务
+
+Open EntityManager in View 可以让持久化上下文覆盖到 Web 响应阶段，因此序列化时仍能懒加载。但 Controller 层的额外查询发生位置不明显，也更难统一事务、查询数量和错误处理。
+
+是否启用需要结合应用类型决定。对于 API 服务，通常更容易维护的做法是在服务事务内完成所需查询和 DTO 映射，并让测试断言查询边界。
+
+## 8. 乐观锁处理并发覆盖
+
+```java
+@Version
+private long version;
+```
+
+脏检查只能发现当前上下文中对象发生变化，不能自动阻止两个事务互相覆盖。`@Version` 让更新 SQL 检查读取时的版本；版本已变化时抛出乐观锁异常，业务再决定重试、提示冲突或重新合并。
+
+重试必须重新读取和执行完整业务判断，不能只重复最后一条 update。
+
+## 9. 面试题
+
+### 9.1 JPA 实体为什么修改字段后可以自动更新
+
+<!-- 面试来源：
+- 阿里巴巴：https://www.nowcoder.com/discuss/353157613372252160
+- 蔚来：https://ac.nowcoder.com/discuss/694882
+-->
+
+**出现公司**：阿里巴巴、蔚来
+
+**考察重点**
+
+- Persistence Context 与 managed 状态。
+- 脏检查、flush 和 commit 的区别。
+- detached、merge 与懒加载边界。
+
+**相关内容**：第 1 节“持久化上下文维护实体身份”至第 8 节“乐观锁处理并发覆盖”。
+
+<details>
+<summary>参考回答</summary>
+
+EntityManager 的持久化上下文会管理查询或 persist 得到的实体，并保证同一上下文内一个持久化身份对应一个对象。事务 flush 时，提供者通过快照或增强机制检测 managed 实体的变化，再生成 SQL；flush 只是与数据库同步，事务仍可能回滚。
+
+上下文关闭后实体变为 detached，修改不会自动同步。merge 会把状态复制到另一个 managed 实例并返回它，原对象仍是 detached。懒加载同样需要有效上下文，所以接口层应在事务内按用例抓取数据并映射 DTO。
+
+</details>
+
+:::note 参考资料
+
+1. [Jakarta Persistence 3.2 Specification](https://jakarta.ee/specifications/persistence/3.2/jakarta-persistence-spec-3.2.html)
+2. [Jakarta Persistence：EntityManager](https://jakarta.ee/specifications/persistence/3.2/apidocs/jakarta.persistence/jakarta/persistence/entitymanager)
+3. [Hibernate ORM：Persistence Contexts](https://docs.hibernate.org/orm/current/userguide/html_single/Hibernate_User_Guide.html#pc)
+
+:::

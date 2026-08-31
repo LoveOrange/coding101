@@ -1,0 +1,261 @@
+---
+sidebar_position: 14
+---
+
+# 从运行时扫描到编译期代码生成
+
+运行时扫描让框架在启动时发现用户代码，编译期生成则提前读取类型和注解，产出普通 Java 类或元数据。两种方式的差异不只在性能，还包括错误出现时间、部署约束和扩展方式。
+
+## 1. 运行时扫描怎样工作
+
+一个基于注解注册处理器的框架，启动时通常会执行以下步骤：
+
+1. 确定需要扫描的包、模块或 classpath 位置。
+2. 找出候选类并通过类加载器加载。
+3. 使用反射读取类和方法上的运行时注解。
+4. 校验方法签名、访问权限和配置冲突。
+5. 创建对象并把调用信息放入注册表。
+
+```java
+for (Class<?> candidate : scanner.findClasses("com.example")) {
+    for (Method method : candidate.getDeclaredMethods()) {
+        Route route = method.getAnnotation(Route.class);
+        if (route != null) {
+            registry.register(route.value(), candidate, method);
+        }
+    }
+}
+```
+
+这种方式的优点是灵活。应用只要把新类放进约定包并添加注解，框架就能在下一次启动时发现，不要求应用显式维护清单。
+
+### 1.1 运行时扫描的成本
+
+- 启动时需要枚举资源、加载类并解析注解。
+- 签名错误和重复配置直到启动才出现。
+- classpath、模块和自定义类加载器会增加发现难度。
+- 反射结果需要缓存，避免进入请求热路径后重复查找。
+- 闭世界编译无法仅从静态调用关系得知所有反射目标，需要额外元数据。
+
+实际成本取决于扫描范围和实现。扫描几个明确类与遍历所有依赖包不是同一个量级，应先限制发现边界，再判断是否需要迁移到编译期。
+
+## 2. 注解处理器在编译期读取程序模型
+
+标准注解处理 API 让处理器在编译阶段访问类型、方法、字段和注解。处理器看到的是 `Element`、`TypeMirror` 等语言模型，不需要加载并执行正在编译的业务类。
+
+```java
+@SupportedAnnotationTypes("com.example.GenerateMapper")
+@SupportedSourceVersion(SourceVersion.RELEASE_26)
+public final class MapperProcessor extends AbstractProcessor {
+    @Override
+    public boolean process(
+        Set<? extends TypeElement> annotations,
+        RoundEnvironment roundEnvironment
+    ) {
+        TypeElement marker = processingEnv
+            .getElementUtils()
+            .getTypeElement("com.example.GenerateMapper");
+
+        for (Element element : roundEnvironment.getElementsAnnotatedWith(marker)) {
+            generateMapper((TypeElement) element);
+        }
+        return true;
+    }
+}
+```
+
+处理器由编译器调用，不应在业务代码中手动实例化。构建需要把处理器放到注解处理器路径，或显式指定要运行的处理器。
+
+### 2.1 编译分为多个处理轮次
+
+处理器生成新源码后，编译器会在下一轮把新文件也纳入程序模型。直到没有新文件产生，才进入最后一轮并继续完成编译。
+
+因此处理器需要：
+
+- 能识别已经处理过的元素，避免重复生成。
+- 不依赖多个处理器之间的执行顺序。
+- 在最后一轮停止生成新的类型。
+- 对相同输入产生稳定结果，便于增量构建和缓存。
+
+`RoundEnvironment.processingOver()` 可以判断是否进入最后一轮，`errorRaised()` 可以判断此前是否报告过错误。
+
+## 3. 生成普通 Java 代码
+
+假设业务声明一个映射接口：
+
+```java
+@GenerateMapper
+public interface UserMapper {
+    UserDto toDto(User source);
+}
+```
+
+处理器可以通过 `Filer` 生成实现类：
+
+```java
+JavaFileObject file = processingEnv
+    .getFiler()
+    .createSourceFile("com.example.UserMapperGenerated", sourceElement);
+
+try (Writer writer = file.openWriter()) {
+    writer.write("""
+        package com.example;
+
+        public final class UserMapperGenerated implements UserMapper {
+            @Override
+            public UserDto toDto(User source) {
+                return new UserDto(source.id(), source.name());
+            }
+        }
+        """);
+}
+```
+
+生成类随后与业务源码一起编译。运行时调用它，与调用普通手写类没有本质区别：
+
+```java
+UserMapper mapper = new UserMapperGenerated();
+UserDto dto = mapper.toDto(user);
+```
+
+标准处理器应生成新的源码、class 文件或资源，不修改已经存在的业务源码。直接操作特定编译器的内部语法树会绑定实现细节，升级 JDK 和 IDE 时需要承担额外兼容成本。
+
+### 3.1 在编译期报告错误
+
+处理器可以使用 `Messager` 把错误定位到具体程序元素：
+
+```java
+processingEnv.getMessager().printMessage(
+    Diagnostic.Kind.ERROR,
+    "mapper method must have exactly one parameter",
+    methodElement
+);
+```
+
+错误会让构建失败，开发者不必等到应用启动或请求到来后才发现签名不符合要求。这是编译期处理最重要的收益之一。
+
+## 4. 运行时扫描与编译期生成的差异
+
+| 维度 | 运行时扫描 | 编译期生成 |
+| --- | --- | --- |
+| 发现时间 | 应用启动或首次使用 | 源码编译时 |
+| 错误出现时间 | 启动或运行时 | 构建时 |
+| 调用方式 | 常用反射、代理或动态分派 | 生成的普通类型和直接调用 |
+| 扩展方式 | 放入运行时 classpath 即可发现 | 需要在编译阶段看到扩展源码或元数据 |
+| 启动成本 | 扫描范围越大，成本越高 | 工作移到构建阶段 |
+| 动态性 | 更适合运行时插件和未知类型 | 更适合闭世界和固定应用组成 |
+| 调试重点 | 类加载、扫描条件、反射权限 | 生成源码、构建配置、处理轮次 |
+
+编译期生成会把一部分成本移到构建阶段，但不会自动让整体系统更简单。它增加了处理器模块、生成文件管理、IDE 集成和增量编译要求。
+
+## 5. 两种方式可以组合
+
+很多框架使用混合方案：
+
+### 5.1 编译期生成索引，运行时按索引装配
+
+处理器不生成完整调用代码，只生成候选类型清单或资源文件。运行时不再扫描整个 classpath，而是读取索引并加载少量明确类型。
+
+### 5.2 构建时分析，运行时保留扩展点
+
+应用自己的 Bean、路由和序列化器在构建时固定，第三方插件仍通过 `ServiceLoader` 或指定目录在运行时发现。这样可以降低常规启动成本，同时保留有限动态性。
+
+### 5.3 编译期生成工厂，运行时选择实现
+
+处理器生成类型安全的工厂或注册表，运行时仍根据配置选择具体实现。动态选择不等于必须动态扫描。
+
+选择方案时先确定哪些类型在部署前已经知道，哪些确实要在运行中加入。把整个应用都当成完全动态，会失去静态检查；把真实插件系统强行做成闭世界，也会让扩展流程变得笨重。
+
+## 6. Native Image 与 AOT 的影响
+
+闭世界编译需要在构建时确定可能到达的代码。按字符串加载类、反射访问成员和动态代理不会总能从静态调用图推导，因此通常需要显式注册或由框架生成元数据。
+
+将以下工作提前，有助于减少运行时配置：
+
+- 根据注解生成直接调用代码。
+- 生成序列化器、映射器和依赖注入工厂。
+- 为仍需反射的成员生成精确注册元数据。
+- 在构建阶段检查动态代理接口和资源文件。
+
+AOT 兼容性不是唯一目标。JVM 长期运行服务如果启动成本不敏感、插件动态性很重要，成熟的运行时模型仍然合理。
+
+## 7. 常见问题
+
+### 7.1 注解处理器能修改原有类吗
+
+标准 API 的主要能力是读取程序模型并生成新文件或报告诊断，不提供修改既有源码 AST 的可移植接口。依赖 `javac` 内部 API 修改语法树虽然可行，但会增加编译器、IDE 和 JDK 版本兼容风险。
+
+### 7.2 注解处理器生成的类为什么当前轮读不到
+
+新源码由 `Filer` 创建后，会在后续处理轮次进入语言模型。处理器不应假设生成后立刻能在当前轮通过元素工具取得完整类型，也不应手动编译生成文件。
+
+### 7.3 编译期生成一定比反射快吗
+
+生成的直接调用通常更容易优化，也省去运行时成员发现。但总收益还包括构建时间、生成代码体积、启动频率和运行热度。低频管理工具可能没有迁移价值，高频序列化和函数调用路径更值得测量。
+
+### 7.4 生成代码是否应该提交到 Git
+
+通常由构建可重复生成的文件放在构建目录，不提交版本库。这样避免手写源码与生成结果漂移。只有目标环境无法运行生成器、需要发布生成结果作为稳定源码等明确约束时，才考虑提交，并建立一致性校验。
+
+## 8. 面试题
+
+### 8.1 怎样实现一个编译期注解
+
+<!-- 面试来源：
+- 飞书：https://www.nowcoder.com/discuss/353157192121524224
+-->
+
+**出现公司**：飞书
+
+**考察重点**
+
+- `SOURCE` 保留策略与注解处理器的关系。
+- `Processor`、`RoundEnvironment`、`Filer` 和 `Messager` 的职责。
+- 多轮处理、重复生成和编译期错误报告。
+
+**相关内容**：第 2 节“注解处理器在编译期读取程序模型”、第 3 节“生成普通 Java 代码”。
+
+<details>
+<summary>参考回答</summary>
+
+先定义一个通常使用 `SOURCE` 保留策略的标记注解，再实现 `Processor` 或继承 `AbstractProcessor`。编译器会在处理轮次中把带注解的 `Element` 交给处理器，可以用 `TypeMirror` 和元素工具检查签名，通过 `Messager` 报告编译错误。
+
+需要生成代码时使用 `Filer` 创建新的源码或资源。新源码会在下一轮继续处理并最终编译，所以实现必须避免重复生成，也不能依赖多个处理器的执行顺序。构建还要把处理器显式配置在注解处理器路径上。
+
+</details>
+
+### 8.2 Java 为什么可以实现 IoC，反射在其中做了什么
+
+<!-- 面试来源：
+- 网易：https://www.nowcoder.com/discuss/353154359724810240
+-->
+
+**出现公司**：网易
+
+**考察重点**
+
+- 配置、类加载与反射如何让容器发现用户类型。
+- 容器怎样创建对象、注入依赖并保存注册关系。
+- 运行时发现和编译期生成各自适合什么边界。
+
+**相关内容**：第 1 节“运行时扫描怎样工作”、第 4 节“运行时扫描与编译期生成的差异”。
+
+<details>
+<summary>参考回答</summary>
+
+IoC 容器先从配置、扫描范围或显式注册中取得候选类型，再通过类加载和反射读取构造方法、字段、方法与注解。容器据此创建对象、解析依赖关系、完成注入，并把对象放进注册表，调用方随后只依赖容器提供的实例。
+
+反射提供的是运行时检查和调用能力，IoC 还需要对象生命周期、依赖解析与错误处理规则。应用组成在构建时已经确定时，可以把一部分扫描和调用信息提前生成；需要部署后安装插件时，则仍要保留明确的运行时发现边界。
+
+</details>
+
+:::note 参考资料
+
+1. [Java API：Processor](https://docs.oracle.com/en/java/javase/26/docs/api/java.compiler/javax/annotation/processing/Processor.html)
+2. [Java API：AbstractProcessor](https://docs.oracle.com/en/java/javase/26/docs/api/java.compiler/javax/annotation/processing/AbstractProcessor.html)
+3. [Java API：RoundEnvironment](https://docs.oracle.com/en/java/javase/26/docs/api/java.compiler/javax/annotation/processing/RoundEnvironment.html)
+4. [Java API：Filer](https://docs.oracle.com/en/java/javase/26/docs/api/java.compiler/javax/annotation/processing/Filer.html)
+5. [Java API：Package javax.lang.model](https://docs.oracle.com/en/java/javase/26/docs/api/java.compiler/javax/lang/model/package-summary.html)
+6. [javac：Annotation Processing Options](https://docs.oracle.com/en/java/javase/26/docs/specs/man/javac.html#annotation-processing)
+
+:::

@@ -1,0 +1,116 @@
+---
+sidebar_position: 4
+---
+
+# 连接池容量、超时与泄漏
+
+数据库连接池复用物理连接，并限制应用同时占用数据库的连接数量。连接池容量配置要同时服从应用并发和数据库承载能力；把池调大只能缩短应用侧排队，不能增加数据库实际吞吐。
+
+## 1. close 把代理连接归还池中
+
+```java
+try (Connection connection = dataSource.getConnection()) {
+    // execute SQL
+}
+```
+
+池返回的通常是代理 Connection。调用 `close()` 会重置必要状态并归还物理连接，而不是每次断开 TCP。try-with-resources 仍然是正确写法，它保证异常路径也能归还连接。
+
+DataSource 和连接池应作为长生命周期组件管理。每次请求新建一个池，会失去复用能力，并可能同时创建大量物理连接。
+
+## 2. maximumPoolSize 是并发上限
+
+HikariCP 的 `maximumPoolSize` 包含空闲和正在使用的连接。当所有连接都被占用时，新的 `getConnection()` 会等待，超过 `connectionTimeout` 后抛出异常。
+
+池大小至少受三项约束：
+
+- 数据库允许并能高效处理的并发连接。
+- 单实例数据库操作的并发量和持有时间。
+- 共享同一数据库的应用实例数量。
+
+例如 20 个实例各设 100，不代表系统获得 2000 份吞吐；数据库可能先在锁、I/O、CPU 和内存上进入竞争。
+
+## 3. 用等待与吞吐验证容量
+
+初始容量应通过压测和生产指标校准。观察：
+
+- active、idle、pending 连接数。
+- 获取连接的等待时间与超时数。
+- SQL 执行和事务持有时间。
+- 数据库 CPU、I/O、锁等待及最大连接使用量。
+- 应用实例扩缩容后的总连接数。
+
+若 active 长期满且数据库仍有余量，可以评估增加容量；若数据库已经饱和，继续扩池只会让更多慢查询同时进入数据库。先优化查询、缩短事务或限制上游并发。
+
+## 4. 超时要形成递减预算
+
+- `connectionTimeout`：从池中等待可用连接的最长时间。
+- JDBC 查询超时：一条语句允许执行多久。
+- 事务超时：整个数据库工作单元允许持续多久。
+- 请求超时：调用方等待整个接口的预算。
+
+内层超时应在外层预算耗尽前结束，并留出异常处理和响应时间。只有连接获取超时，没有查询与事务超时，连接仍可能被慢 SQL 长期占用。
+
+## 5. 连接生命周期配合基础设施
+
+`maxLifetime` 用于淘汰达到寿命的空闲连接，通常设置得比数据库、代理或网络设备的连接时限略短。使用中的连接不会在执行期间被强行关闭，归还后才会淘汰。
+
+`keepaliveTime` 可以在空闲连接上执行保活检查，并且必须短于 maxLifetime。JDBC 4 驱动优先使用 `Connection.isValid()`；没有必要时不要额外设置 validation query。
+
+`minimumIdle` 未单独设置时，HikariCP 默认与 maximumPoolSize 相同，形成固定容量池。动态缩减是否有价值，要根据资源成本和流量模式决定。
+
+## 6. 泄漏检测提供线索
+
+连接泄漏的常见原因包括：
+
+- 异常路径没有 close。
+- 事务范围包住远程调用、文件处理或长时间计算。
+- 流式 ResultSet 尚未关闭。
+- 异步任务或线程切换破坏资源边界。
+- 数据库阻塞让连接看起来长期未归还。
+
+HikariCP 的 `leakDetectionThreshold` 会在连接离池超过阈值时记录可能的泄漏堆栈。它是诊断信号，不会证明连接永久丢失；合法的长事务和慢 SQL 也可能触发。
+
+## 7. 连接池耗尽的排查顺序
+
+1. 确认 pending、active 和获取超时是否同步上升。
+2. 查看占用连接最长的调用栈、事务和 SQL。
+3. 在数据库侧检查运行语句、锁等待和连接状态。
+4. 判断是连接未归还、查询变慢，还是流量超过容量。
+5. 修复根因后重新压测池大小和超时，不直接永久扩容。
+
+## 8. 面试题
+
+### 8.1 怎样设计和配置数据库连接池
+
+<!-- 面试来源：
+- 招银网络科技：https://www.nowcoder.com/discuss/353155487401189376
+- 腾讯：https://www.nowcoder.com/discuss/353156687580307456
+-->
+
+**出现公司**：招银网络科技、腾讯
+
+**考察重点**
+
+- 连接复用、代理 close 与容量限制。
+- 池大小、数据库容量和超时预算。
+- 泄漏与慢查询的区分方法。
+
+**相关内容**：第 1 节“close 把代理连接归还池中”至第 7 节“连接池耗尽的排查顺序”。
+
+<details>
+<summary>参考回答</summary>
+
+连接池维护有限数量的物理连接，业务获取的是代理 Connection，close 时归还池中。maximumPoolSize 限制单实例数据库并发，所有连接占用时请求等待到 connectionTimeout。容量要结合实例数、连接持有时间和数据库实际承载能力压测，池越大并不必然提高吞吐。
+
+还要设置查询、事务和请求超时，保证内层先失败；maxLifetime 应略短于基础设施连接时限。池耗尽时同时查看 active、pending、获取等待、慢 SQL 和锁等待。泄漏检测堆栈只是线索，长事务或数据库阻塞也可能让连接长时间不归还。
+
+</details>
+
+:::note 参考资料
+
+1. [HikariCP：Configuration](https://github.com/brettwooldridge/HikariCP#gear-configuration-knobs-baby)
+2. [HikariCP：About Pool Sizing](https://github.com/brettwooldridge/HikariCP/wiki/About-Pool-Sizing)
+3. [JDBC：DataSource](https://docs.oracle.com/en/java/javase/26/docs/api/java.sql/javax/sql/DataSource.html)
+
+:::

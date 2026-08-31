@@ -1,0 +1,118 @@
+---
+sidebar_position: 8
+---
+
+# CAS、ABA 与版本标记
+
+CAS 根据“当前值仍等于预期值”这一条件完成原子更新。它适合把状态变化表达为一次可重试的转换，但调用方必须同时处理竞争失败、ABA 和副作用重复执行。
+
+## 1. CAS 比较预期值再更新
+
+```java
+AtomicInteger balance = new AtomicInteger(100);
+
+boolean withdraw(int amount) {
+    while (true) {
+        int current = balance.get();
+        if (current < amount) {
+            return false;
+        }
+        if (balance.compareAndSet(current, current - amount)) {
+            return true;
+        }
+    }
+}
+```
+
+`compareAndSet(current, next)` 只在变量仍为 `current` 时写入 `next`。成功的更新是这次状态转换的线性化点；失败表示期间有人修改过状态，调用方重新读取并判断。
+
+CAS 解决的是一个变量上的条件更新。多个独立 CAS 不能自动组成事务。
+
+## 2. 重试函数不能包含不可重复副作用
+
+```java
+value.updateAndGet(current -> {
+    auditClient.send(current); // 不安全：函数可能执行多次
+    return current + 1;
+});
+```
+
+原子类的更新函数可能在竞争失败后被重新调用。函数应当无副作用，并能根据输入重复计算。日志、扣款、网络请求等动作应放在 CAS 成功以后，并继续处理进程崩溃等业务一致性问题。
+
+## 3. ABA 会丢失变化历史
+
+线程 A 读到引用 `A` 后暂停；线程 B 将状态从 `A` 改成 `B`，又改回原来的 `A`。线程 A 的 CAS 只比较当前引用时仍会成功，但“状态从未变化”的前提已经失效。
+
+ABA 是否有害取决于算法。普通计数从 10 变到 11 再回到 10，若操作只关心当前数值，可能没有问题；无锁栈节点被移除、复用并重新插入时，丢失历史可能破坏链表结构。
+
+## 4. 将版本与值一起比较
+
+```java
+AtomicStampedReference<Node> head =
+        new AtomicStampedReference<>(initial, 0);
+
+int[] stamp = new int[1];
+Node current = head.get(stamp);
+boolean updated = head.compareAndSet(
+        current,
+        current.next(),
+        stamp[0],
+        stamp[0] + 1
+);
+```
+
+`AtomicStampedReference` 原子比较引用和整数版本。即使引用回到原值，版本变化也会让旧 CAS 失败。`AtomicMarkableReference` 适合只需要一个逻辑删除标记的算法。
+
+版本可能溢出，节点复用和内存回收也有各自约束。无锁数据结构还需要证明所有可能交错；增加时间戳本身不足以完成证明。
+
+## 5. CAS 并不保证每个线程及时成功
+
+CAS 避免了等待锁所有者，但高竞争下多个线程会重复读取、写缓存行并失败。系统整体可能持续前进，某个线程却多次失败；是否具备 lock-free、wait-free 等进度性质取决于完整算法，而不是是否调用了 CAS。
+
+竞争明显时应考虑退避、分片、批处理或锁，并通过基准与 profile 验证。
+
+## 6. 常见问题
+
+### 6.1 CAS 是乐观锁吗
+
+CAS 是原子条件更新原语，常用于实现乐观并发控制。把所有 CAS 代码都称为“锁”会掩盖它是否阻塞、怎样重试以及具有什么进度保证。
+
+### 6.2 `compareAndSet` 比较对象内容还是引用
+
+`AtomicReference.compareAndSet` 按引用身份比较预期引用。若业务要按版本或内容判断，应将需要比较的状态封装进一个不可变对象，并 CAS 整个引用，或者显式携带版本。
+
+## 7. 面试题
+
+### 7.1 什么是 ABA，什么时候需要处理
+
+<!-- 面试来源：
+- 阿里巴巴：https://www.nowcoder.com/discuss/461925
+- 蚂蚁集团：https://www.nowcoder.com/discuss/632476
+-->
+
+**出现公司**：阿里巴巴、蚂蚁集团
+
+**考察重点**
+
+- CAS 只比较当前值。
+- 状态历史是否参与正确性。
+- 版本标记与节点复用边界。
+
+**相关内容**：第 3 节“ABA 会丢失变化历史”和第 4 节“将版本与值一起比较”。
+
+<details>
+<summary>参考回答</summary>
+
+ABA 指线程读到 A 后，其他线程把值改成 B 又改回同一个 A，原线程的 CAS 仍会通过。若算法只关心当前值，它未必影响正确性；若节点是否被移除、复用等历史参与不变量，就会出错。
+
+可以把版本和引用一起原子比较，例如使用 `AtomicStampedReference`，也可以通过不复用节点或专门的内存回收协议解决。最终要按完整数据结构的交错证明，而不是看到 A→B→A 就机械加版本号。
+
+</details>
+
+:::note 参考资料
+
+1. [Java API：`java.util.concurrent.atomic`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/atomic/package-summary.html)
+2. [Java API：`AtomicStampedReference`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/atomic/AtomicStampedReference.html)
+3. [Java API：`VarHandle.compareAndSet`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/invoke/VarHandle.html#compareAndSet(java.lang.Object...))
+
+:::

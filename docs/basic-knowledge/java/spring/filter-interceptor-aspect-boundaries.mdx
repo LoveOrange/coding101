@@ -1,0 +1,106 @@
+---
+sidebar_position: 13
+---
+
+# 过滤器、拦截器与切面的边界
+
+Filter、Spring MVC Interceptor 和 AOP 都能在调用前后执行逻辑，但它们位于 Servlet、MVC 和 Bean 方法三个不同层级。选择标准是需要看到什么上下文，以及逻辑应覆盖多大范围。
+
+## 1. Filter 覆盖 Servlet 请求
+
+Filter 位于目标 Servlet 之前，可以访问或包装原始 request/response。适合：
+
+- 安全过滤链、CORS 和编码。
+- 请求体包装、响应头和压缩。
+- 覆盖 DispatcherServlet 之外的 Servlet 或资源。
+- 在 MVC 尚未找到 handler 前建立 request ID。
+
+注册规则决定它是否处理 REQUEST、ASYNC、ERROR 等 dispatch。Filter 不知道最终会匹配哪个 `HandlerMethod`，不适合依赖 Controller 注解的逻辑。
+
+## 2. Interceptor 覆盖 MVC handler
+
+Interceptor 在 HandlerMapping 已经找到 handler 后执行，因此可以检查：
+
+```java
+if (handler instanceof HandlerMethod method) {
+    RequiredTenant annotation =
+            method.getMethodAnnotation(RequiredTenant.class);
+}
+```
+
+它适合基于路由和 Controller 元数据的校验、区域设置、轻量审计等。未进入 DispatcherServlet 或没有匹配 handler 的请求，不一定经过同样路径。
+
+认证授权通常应使用 Spring Security 的成熟 Filter 链，避免自制 Interceptor 漏掉错误 dispatch、静态资源或方法安全。
+
+## 3. AOP 覆盖 Spring Bean 方法
+
+AOP 不依赖 HTTP，可以同时用于 Web、消息消费和定时任务。它适合事务、方法级授权、重试、监控等围绕业务方法的横切逻辑。
+
+AOP 只能拦截经过代理的调用，拿不到天然的 Servlet 链控制权。把 request/response 强行放进 service 切面会让业务层绑定 Web 上下文。
+
+## 4. 一项能力可能需要分层协作
+
+请求追踪可以这样拆分：
+
+- Filter 读取或生成 trace ID，并放入受控上下文。
+- Interceptor 添加规范化路由、handler 名称等 MVC 标签。
+- AOP 或可观测性库记录关键 service span。
+- Filter 的 `finally` 清理上下文并写响应头。
+
+各层只处理自己能可靠观察的信息，避免三处重复记录一份请求日志。
+
+## 5. 异常可见范围不同
+
+ControllerAdvice 处理的是 MVC 异常解析链中的异常。Filter 在调用 DispatcherServlet 前自身抛错时，不会自动进入 ControllerAdvice；应交给 Servlet 错误机制或在安全过滤链中统一处理。
+
+Interceptor `preHandle` 和 Controller 异常通常可以进入 MVC resolver，但响应已经提交后无法可靠改写错误体。AOP 只能看到目标方法和拦截链内抛出的异常，不包含后续 JSON 序列化失败。
+
+## 6. 异步与 ThreadLocal 需要额外验证
+
+异步 Servlet 可能在不同线程继续 dispatch，`@Async` 也会离开请求线程。Filter、Interceptor 或 AOP 中设置的 ThreadLocal 不会自动安全传播。使用框架提供的上下文传播并在每个退出路径清理。
+
+## 7. 常见问题
+
+### 7.1 Controller 鉴权应该放 Interceptor 还是 AOP
+
+入口认证和通用 Web 安全优先使用 Spring Security Filter 链；方法级业务授权可以使用 Spring Security Method Security。手写 Interceptor/AOP 只适合明确且被测试覆盖的补充规则。
+
+### 7.2 Filter 能拿到 Controller 方法注解吗
+
+执行 Filter 时 MVC 通常还未完成 handler 映射。可以做额外查询，但会耦合层级并可能重复匹配，直接在 Interceptor 中处理更自然。
+
+## 8. 面试题
+
+### 8.1 Filter、Interceptor 和 AOP 应怎样区分
+
+<!-- 面试来源：
+- 京东数科：https://www.nowcoder.com/discuss/353156912768294912
+- 旷视：https://www.nowcoder.com/discuss/353155347122692096
+-->
+
+**出现公司**：京东数科、旷视
+
+**考察重点**
+
+- Servlet、MVC handler 与 Bean 方法三个层级。
+- 可见上下文和覆盖范围。
+- 异常、异步与安全边界。
+
+**相关内容**：第 1 节“Filter 覆盖 Servlet 请求”至第 5 节“异常可见范围不同”。
+
+<details>
+<summary>参考回答</summary>
+
+Filter 属于 Servlet 链，能包装原始请求响应并覆盖 DispatcherServlet 之外的目标；Interceptor 在 MVC 找到 handler 后运行，可以读取 HandlerMethod 和路由信息；AOP 围绕 Spring Bean 方法，与 HTTP 无关，但要求调用经过代理。
+
+所以 CORS、安全入口和 request ID 更适合 Filter，Controller 元数据逻辑适合 Interceptor，事务和 service 方法监控适合 AOP。还要分别处理 Filter 异常、响应提交和异步线程上下文。
+
+</details>
+
+:::note 参考资料
+
+1. [Jakarta Servlet：`Filter`](https://jakarta.ee/specifications/servlet/6.1/apidocs/jakarta.servlet/jakarta/servlet/filter)
+2. [Spring Framework：Interception](https://docs.spring.io/spring-framework/reference/web/webmvc/mvc-config/interceptors.html)
+3. [Spring Framework：Spring AOP](https://docs.spring.io/spring-framework/reference/core/aop.html)
+
+:::

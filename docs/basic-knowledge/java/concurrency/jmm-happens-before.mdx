@@ -1,0 +1,122 @@
+---
+sidebar_position: 3
+---
+
+# Java 内存模型与 happens-before
+
+Java 内存模型规定线程之间可以观察到哪些读写结果。判断跨线程代码是否可靠时，应直接确认目标写入与读取之间是否存在 happens-before 关系，无需猜测 CPU 缓存何时刷新。
+
+## 1. 单线程顺序不能直接外推到另一个线程
+
+```java
+int value;
+boolean ready;
+
+// Thread A
+value = 42;
+ready = true;
+
+// Thread B
+if (ready) {
+    System.out.println(value);
+}
+```
+
+在没有同步的情况下，线程 B 读到 `ready == true` 并不能据此获得 `value == 42` 的保证。这段程序存在数据竞争，编译器、JIT 和处理器只需保持各自线程内允许观察到的语义，不必提供程序员想象中的跨线程顺序。
+
+## 2. happens-before 提供可传递的顺序保证
+
+如果动作 A happens-before 动作 B，那么 A 的结果必须对 B 可见，并且 A 在内存模型顺序上先于 B。常用规则包括：
+
+- 同一线程中，前面的动作 happens-before 程序顺序中后面的动作。
+- 对一个 monitor 的解锁 happens-before 随后对同一 monitor 的加锁。
+- 对一个 `volatile` 字段的写 happens-before 随后对该字段的读。
+- 调用 `Thread.start()` happens-before 新线程中的动作。
+- 线程中的动作 happens-before 另一个线程从其 `join()` 成功返回。
+
+happens-before 具有传递性，因此可以把多条规则连接起来推导结果。
+
+## 3. 用 `volatile` 建立发布信号
+
+```java
+private int value;
+private volatile boolean ready;
+
+public void publish() {
+    value = 42;
+    ready = true;
+}
+
+public int consume() {
+    if (!ready) {
+        throw new IllegalStateException("not ready");
+    }
+    return value;
+}
+```
+
+对 `ready` 的 volatile 写 happens-before 消费线程随后读到该写。结合线程内程序顺序和传递性，`value = 42` 也必须对消费者可见。
+
+这并不意味着 `value` 的所有复合更新都变得原子，也不意味着任意 volatile 变量可以替另一个无关协议建立顺序。
+
+## 4. JUC 组件已经定义了交接关系
+
+不必总是直接使用 `volatile` 或 monitor。JUC API 还规定：
+
+- 提交任务前的动作 happens-before 任务开始执行。
+- `Future` 计算中的动作 happens-before 另一个线程从 `get()` 取得结果后的动作。
+- 将对象放入并发集合前的动作 happens-before 另一个线程访问或移除该元素后的动作。
+- `countDown`、`release` 等释放动作与相应成功的 `await`、`acquire` 建立关系。
+
+选择这些组件时，既获得调度能力，也获得明确的内存一致性语义。
+
+## 5. 顺序一致性只是无数据竞争程序的结果
+
+正确同步、没有数据竞争的程序通常可以按照某个保持线程内顺序的交错来理解。存在数据竞争时，不能用“把两条线程代码随便穿插一下”穷举所有结果；编译优化和允许的重排序也属于模型的一部分。
+
+因此，排查问题时应先找缺失的同步边，再讨论某次机器执行可能如何实现它。
+
+## 6. 常见问题
+
+### 6.1 happens-before 表示两个动作在真实时间上紧挨着吗
+
+不表示。它是内存一致性关系，中间可以有很多其他动作，甚至两个动作并不并发发生。它保证的是可见性和允许的顺序。
+
+### 6.2 `volatile` 会把所有变量刷新到主内存吗
+
+“刷新主内存”只能作为粗略比喻，容易误导。规范保证的是 volatile 写与后续读之间的 happens-before 关系，具体通过哪些屏障和缓存一致性机制实现，由 JVM 与硬件决定。
+
+## 7. 面试题
+
+### 7.1 什么是 happens-before，常用规则有哪些
+
+<!-- 面试来源：
+- 美团：https://www.nowcoder.com/discuss/383727207275933696
+- 腾讯：https://www.nowcoder.com/discuss/801036113035931648
+-->
+
+**出现公司**：美团、腾讯
+
+**考察重点**
+
+- 可见性与顺序保证。
+- monitor、volatile、start 和 join 规则。
+- 传递性及其实际推导。
+
+**相关内容**：第 2 节“happens-before 提供可传递的顺序保证”至第 4 节“JUC 组件已经定义了交接关系”。
+
+<details>
+<summary>参考回答</summary>
+
+happens-before 是 JMM 中的偏序关系。A happens-before B 时，A 的结果必须对 B 可见，并且两者按该顺序参与合法执行。常见边包括线程内程序顺序、同一 monitor 的解锁到后续加锁、同一 volatile 字段的写到后续读，以及 `start`、`join`。
+
+实际分析时还要利用传递性。例如普通字段写在 volatile 发布标记之前，另一个线程读到标记后再读普通字段，这三步可以连成一条 happens-before 链。
+
+</details>
+
+:::note 参考资料
+
+1. [JLS 17.4.5：Happens-before Order](https://docs.oracle.com/javase/specs/jls/se26/html/jls-17.html#jls-17.4.5)
+2. [Java API：JUC Memory Consistency Properties](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/package-summary.html#MemoryVisibility)
+
+:::

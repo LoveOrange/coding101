@@ -1,0 +1,227 @@
+---
+sidebar_position: 4
+---
+
+# 文件映射、零拷贝与直接内存
+
+`MappedByteBuffer`、`FileChannel.transferTo` 和直接 `ByteBuffer` 都能减少某些 I/O 路径中的数据复制或用户态参与，但它们优化的环节不同。“零拷贝”描述的是省掉特定副本，不是数据完全不移动。
+
+## 1. 普通文件传输经过哪些缓冲区
+
+应用使用堆数组读取文件再写入 Socket 时，可以抽象为：
+
+```text
+存储设备 → 内核页缓存 → Java 堆缓冲区 → 内核 Socket 缓冲区 → 网卡
+```
+
+实际路径受操作系统、文件系统、驱动和 JVM 实现影响，但应用通常需要：
+
+1. 调用读取，把数据带到可以访问的用户态缓冲区。
+2. 再调用写入，把数据交回内核网络栈。
+3. 让 CPU 参与额外复制，并发生用户态与内核态切换。
+
+如果应用只负责把文件原样发出去，并不需要查看或修改每个字节，把数据复制进 Java 堆就没有必要。
+
+## 2. FileChannel.transferTo 减少用户态复制
+
+```java
+try (
+    FileChannel source = FileChannel.open(path, StandardOpenOption.READ);
+    SocketChannel target = SocketChannel.open(address)
+) {
+    long position = 0;
+    long size = source.size();
+
+    while (position < size) {
+        long transferred = source.transferTo(
+            position,
+            size - position,
+            target
+        );
+        if (transferred == 0) {
+            break;
+        }
+        position += transferred;
+    }
+}
+```
+
+`transferTo` 让通道实现直接把文件区域传给目标通道。在支持的系统上，JDK 可以使用 `sendfile` 等机制，避免把文件内容先复制到 Java 堆缓冲区。
+
+### 2.1 transferTo 不保证一次完成
+
+返回值是本次实际传输的字节数，可能小于请求数量，甚至为 0。非阻塞目标暂时不可写、操作系统单次传输限制等情况都需要调用方保存进度并稍后继续。
+
+上面为简化示例遇到 0 就退出；事件循环中应注册可写事件，等目标再次可写时从当前 `position` 继续。
+
+### 2.2 是否使用零拷贝由实现和平台决定
+
+Java API 规定传输语义，不承诺底层一定使用某个系统调用。源通道、目标通道、操作系统和文件类型都会影响实现。确认优化是否生效，需要在目标平台查看性能指标、系统调用或 JDK 实现行为。
+
+如果应用必须压缩、加密、修改协议内容或解析每个字节，数据仍然需要进入用户态处理，`transferTo` 就不适合直接覆盖整条路径。
+
+## 3. 内存映射把文件区域映射到地址空间
+
+`FileChannel.map` 返回 `MappedByteBuffer`：
+
+```java
+try (FileChannel channel = FileChannel.open(path, StandardOpenOption.READ)) {
+    MappedByteBuffer mapped = channel.map(
+        FileChannel.MapMode.READ_ONLY,
+        0,
+        channel.size()
+    );
+
+    while (mapped.hasRemaining()) {
+        consume(mapped.get());
+    }
+}
+```
+
+映射后，应用像访问内存一样访问文件区域。操作系统在页面首次访问时把对应文件页带入内存，并通过页缓存管理后续读写。
+
+### 3.1 适合内存映射的场景
+
+- 大文件的随机访问。
+- 多个进程读取同一文件页。
+- 固定布局的索引、日志或数据文件。
+- 希望减少用户态复制，并让操作系统管理页面换入换出。
+
+顺序读取一个小文件时，普通缓冲流或 `FileChannel.read` 通常更简单。映射不是“把整个文件免费放进内存”，访问仍然可能触发缺页和磁盘 I/O。
+
+### 3.2 映射的边界
+
+- 映射占用虚拟地址空间，超大区域要考虑进程地址空间和页表成本。
+- 第一次访问冷页面可能出现明显缺页延迟。
+- 随机访问模式可能造成大量页面换入和缓存抖动。
+- 映射对象的释放时机不能只用普通 `close()` 直观控制，长期大量映射要管理生命周期。
+- 文件被其他进程截断或并发修改时，需要定义一致性协议。
+
+`MappedByteBuffer.force()` 请求把对映射区域的修改写入存储设备，但持久化保证仍受平台和文件系统语义影响。
+
+## 4. 直接 ByteBuffer 使用堆外内存
+
+```java
+ByteBuffer direct = ByteBuffer.allocateDirect(64 * 1024);
+
+System.out.println(direct.isDirect()); // true
+```
+
+直接缓冲区的数据区域位于普通 Java 堆之外，JVM 可以更直接地把它交给本地 I/O 操作。使用堆 `ByteBuffer` 时，某些本地调用可能需要先复制到临时直接缓冲区。
+
+直接缓冲区仍然有一个 Java 对象作为引用入口，它的生命周期通常与对象可达性相关。数据不在堆里，不代表不受 GC 触发的清理机制影响，也不代表内存无限。
+
+### 4.1 直接内存的代价
+
+- 分配和释放通常比普通堆缓冲区昂贵。
+- 内存不直接体现在 Java 堆占用中，但仍受进程和 JVM 直接内存限制。
+- 大量短命直接缓冲区可能在真正释放前积压。
+- 随机 `get`、`put` 的纯 Java 计算不一定比堆数组更快。
+- OOM 可能来自直接缓冲区，即使堆还有空间。
+
+网络框架通常使用缓冲池复用直接内存，而不是为每个小消息调用 `allocateDirect`。
+
+## 5. 三种机制优化的环节
+
+| 机制 | 主要目标 | 数据是否进入 Java 堆 | 适合场景 | 主要风险 |
+| --- | --- | --- | --- | --- |
+| `transferTo` / `transferFrom` | 在通道间直接传输 | 通常不需要应用堆副本 | 文件原样发送 | 平台差异、部分传输 |
+| `MappedByteBuffer` | 将文件页映射到地址空间 | 不需要普通堆数组副本 | 大文件随机访问、固定布局 | 缺页延迟、映射生命周期 |
+| 直接 `ByteBuffer` | 为本地 I/O 提供直接数据区域 | 数据在堆外 | 高频网络或文件 I/O 缓冲 | 分配成本、堆外 OOM |
+
+它们可以组合，也可能互相替代。选择依据是应用是否需要处理内容、访问模式、数据大小和生命周期，不是看到“零拷贝”就同时启用所有机制。
+
+## 6. 怎样验证收益
+
+只比较一段微基准的平均耗时不够。I/O 优化还要观察：
+
+- 吞吐量与尾延迟。
+- CPU 使用率和系统调用次数。
+- 上下文切换与页错误。
+- Java 堆、直接内存和进程 RSS。
+- GC 停顿与缓冲区分配速率。
+- 文件页缓存是否挤压其他工作集。
+
+测试数据要大到能覆盖真实路径，并区分冷缓存与热缓存。否则测到的可能只是操作系统页缓存或 JIT 预热差异。
+
+## 7. 常见问题
+
+### 7.1 零拷贝是否真的一次复制都没有
+
+不是。数据仍然需要从存储设备进入内存，再传给网卡或其他设备。“零拷贝”通常指避免 CPU 在用户态与内核态之间复制数据，或避免内核中的冗余副本。讨论时必须说明省掉的是哪一步。
+
+### 7.2 直接内存是否不受垃圾回收影响
+
+数据区域不在普通 Java 堆中，但直接缓冲区对象仍由 Java 代码持有，其清理通常依赖对象不再可达后的机制。GC 压力、清理延迟和直接内存上限仍然会影响应用。
+
+### 7.3 内存映射一定比 read 快吗
+
+不一定。映射适合随机访问和减少复制，但会引入缺页、虚拟内存管理和生命周期成本。小文件顺序读取、一次性扫描或需要立刻释放文件句柄的场景，普通缓冲读取可能更稳定。
+
+### 7.4 `force()` 是否等于事务提交
+
+不是。它只处理映射区域修改的写回请求，不提供多文件原子性、业务一致性或数据库事务语义。需要崩溃一致性时，还要设计写入顺序、校验、日志和原子替换协议。
+
+## 8. 面试题
+
+### 8.1 Java 怎样实现零拷贝
+
+<!-- 面试来源：
+- 阿里巴巴：https://www.nowcoder.com/discuss/353157045090197504
+- 字节跳动：https://www.nowcoder.com/discuss/353155135289368576
+- Shopee：https://www.nowcoder.com/discuss/939969
+-->
+
+**出现公司**：阿里巴巴、字节跳动、Shopee
+
+**考察重点**
+
+- `transferTo` 与内存映射分别减少哪种复制。
+- 零拷贝为什么仍然存在设备与内存之间的数据移动。
+- 平台差异和部分传输怎样影响代码。
+
+**相关内容**：第 2 节“FileChannel.transferTo 减少用户态复制”、第 3 节“内存映射把文件区域映射到地址空间”、第 5 节“三种机制优化的环节”。
+
+<details>
+<summary>参考回答</summary>
+
+Java 可以使用 `FileChannel.transferTo` 或 `transferFrom` 在通道之间传输文件区域，底层在支持的平台上可以使用 `sendfile` 等机制，避免先复制到 Java 堆。`FileChannel.map` 则把文件页映射到进程地址空间，应用通过 `MappedByteBuffer` 访问，不需要普通堆数组副本。
+
+零拷贝会省掉用户态或内核中的特定冗余副本，数据仍然可能移动。API 也不保证某个平台一定使用特定系统调用，`transferTo` 还可能只完成部分数据，所以需要在目标环境验证。
+
+</details>
+
+### 8.2 直接内存有什么收益和风险
+
+<!-- 面试来源：
+- 字节跳动：https://www.nowcoder.com/discuss/725700
+- 小米：https://www.nowcoder.com/discuss/867149459858219008
+-->
+
+**出现公司**：字节跳动、小米
+
+**考察重点**
+
+- 直接缓冲区如何减少本地 I/O 的中间复制。
+- 堆外数据与 Java Buffer 对象的生命周期关系。
+- 分配成本、内存上限和池化。
+
+**相关内容**：第 4 节“直接 ByteBuffer 使用堆外内存”。
+
+<details>
+<summary>参考回答</summary>
+
+直接 `ByteBuffer` 的数据区域位于普通 Java 堆外，本地 I/O 可以直接使用它，减少某些堆缓冲区到本地缓冲区的复制。它适合复用的高频网络和文件缓冲。
+
+代价是分配释放较贵，内存不体现在堆大小中却仍受上限约束，短命缓冲可能在清理前积压。Buffer 对象仍受 Java 可达性管理，所以堆外不等于与 GC 无关。实际框架通常池化直接缓冲区。
+
+</details>
+
+:::note 参考资料
+
+1. [Java API：FileChannel](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/nio/channels/FileChannel.html)
+2. [Java API：MappedByteBuffer](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/nio/MappedByteBuffer.html)
+3. [Java API：ByteBuffer.allocateDirect](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/nio/ByteBuffer.html#allocateDirect(int))
+4. [Java API：FileChannel.transferTo](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/nio/channels/FileChannel.html#transferTo(long,long,java.nio.channels.WritableByteChannel))
+
+:::

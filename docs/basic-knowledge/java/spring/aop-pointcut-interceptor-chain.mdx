@@ -1,0 +1,111 @@
+---
+sidebar_position: 6
+---
+
+# AOP、切点与拦截链
+
+Spring AOP 在 Bean 外部放置代理，对匹配的方法调用执行一组拦截器。切点决定哪些调用需要增强，拦截链决定事务、鉴权、监控等逻辑以什么顺序包围目标方法。
+
+## 1. Spring AOP 的连接点是方法执行
+
+```java
+@Aspect
+@Component
+class TimingAspect {
+    @Around("@annotation(Measured)")
+    Object measure(ProceedingJoinPoint point) throws Throwable {
+        long start = System.nanoTime();
+        try {
+            return point.proceed();
+        } finally {
+            record(point.getSignature(), System.nanoTime() - start);
+        }
+    }
+}
+```
+
+代理收到方法调用后，先判断 Advisor 的 Pointcut 是否匹配，再执行对应 Advice。Spring AOP 主要处理 Spring Bean 的方法执行；字段访问、构造器等更广泛连接点属于 AspectJ 编译或加载期织入的范围。
+
+## 2. 常用概念对应不同职责
+
+| 概念 | 职责 |
+| --- | --- |
+| Aspect | 一组相关横切规则 |
+| Pointcut | 匹配目标方法 |
+| Advice | 在匹配位置执行的逻辑 |
+| Advisor | 将 Pointcut 与 Advice 组合 |
+| Proxy | 接收外部调用 |
+| MethodInterceptor | 拦截链中的统一调用节点 |
+
+业务代码最需要判断的是：调用是否经过代理、切点是否匹配、链中有哪些拦截器。
+
+## 3. 拦截链以嵌套调用执行
+
+每个拦截器收到当前 invocation，执行自己的前置逻辑，再调用 `proceed()` 进入下一个节点；返回时执行后置逻辑：
+
+```text
+监控 before
+  → 事务 before
+    → 目标方法
+  ← 事务 commit / rollback
+← 监控 record
+```
+
+环绕通知如果不调用 `proceed()`，目标和后续拦截器都不会执行；调用多次则可能重复执行业务。拦截器必须清楚自己是否允许短路或重试。
+
+## 4. 顺序会改变语义
+
+事务与重试的相对顺序决定每次重试是否拥有独立事务；缓存位于事务外时，提交前后可见性也要确认。可以使用 `@Order` 或 `Ordered` 明确优先级，但数值含义应由测试验证，不能只凭注解位置猜测。
+
+对于关键组合，写集成测试记录实际顺序、事务状态和异常结果。多个自动代理功能会共同参与一个代理创建过程，不应假定每个注解都套一层独立对象。
+
+## 5. 切点应稳定且范围可控
+
+基于包名的宽泛切点容易把框架配置、健康检查或内部任务一并拦截。业务语义明确时，使用专用注解或稳定接口，并在启动或测试阶段验证匹配集合。
+
+高频方法上的参数序列化、远程审计等 Advice 会显著增加延迟。横切逻辑也属于生产代码，需要超时、异常和敏感数据策略。
+
+## 6. 常见问题
+
+### 6.1 `@After` 和 `@AfterReturning` 有什么区别
+
+`@After` 类似 `finally`，正常与异常退出都会执行；`@AfterReturning` 只在正常返回后执行。异常路径使用 `@AfterThrowing`，完整控制优先用 `@Around`。
+
+### 6.2 AOP 能拦截普通 `new` 出来的对象吗
+
+默认不能。Spring AOP 代理由容器创建并交付，绕过容器得到的普通对象不会自动经过该代理。
+
+## 7. 面试题
+
+### 7.1 Spring AOP 的拦截链怎样执行
+
+<!-- 面试来源：
+- 美团：https://www.nowcoder.com/discuss/614236533700194304
+- 美团：https://www.nowcoder.com/discuss/353158567966482432
+-->
+
+**出现公司**：美团
+
+**考察重点**
+
+- Pointcut、Advisor 和 MethodInterceptor。
+- `proceed()` 的嵌套调用。
+- 顺序对事务、重试和缓存的影响。
+
+**相关内容**：第 1 节“Spring AOP 的连接点是方法执行”至第 4 节“顺序会改变语义”。
+
+<details>
+<summary>参考回答</summary>
+
+容器为匹配 Advisor 的 Bean 创建代理。外部方法调用进入代理后，代理按 Pointcut 选择 MethodInterceptor，并组成调用链；每个拦截器执行前置逻辑，调用 `proceed` 进入下一项，最后到目标方法，再逐层返回执行提交、记录等后置逻辑。
+
+环绕通知可以短路或重复调用，所以必须控制 `proceed`。多个切面的顺序会改变事务与重试等实际边界，应显式排序并用集成测试验证。
+
+</details>
+
+:::note 参考资料
+
+1. [Spring Framework：Spring AOP Capabilities and Goals](https://docs.spring.io/spring-framework/reference/core/aop/introduction-defn.html)
+2. [Spring Framework：Advice API](https://docs.spring.io/spring-framework/reference/core/aop-api/advice.html)
+
+:::

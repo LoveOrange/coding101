@@ -1,0 +1,112 @@
+---
+sidebar_position: 14
+---
+
+# 参数绑定、校验与内容协商
+
+Spring MVC 将路径、查询参数、头和请求体解析为 Controller 参数。绑定只负责得到 Java 值，校验负责判断值是否满足输入契约，内容协商负责确定请求和响应采用哪种媒体类型。
+
+## 1. 不同来源使用明确注解
+
+```java
+@PostMapping(path = "/orders/{id}", consumes = "application/json")
+OrderResponse update(
+        @PathVariable long id,
+        @RequestParam(defaultValue = "false") boolean dryRun,
+        @RequestHeader("If-Match") String version,
+        @Valid @RequestBody UpdateOrderRequest request) {
+    return service.update(id, version, dryRun, request);
+}
+```
+
+- `@PathVariable` 来自路径模板。
+- `@RequestParam` 来自查询或表单参数。
+- `@RequestHeader` 来自请求头。
+- `@RequestBody` 由 HttpMessageConverter 读取请求体。
+
+输入来源越明确，API 文档、错误定位和安全审查越容易。
+
+## 2. 绑定失败与校验失败不同
+
+`quantity=abc` 无法转换为整数，属于绑定/类型转换错误；`quantity=-1` 成功得到整数，但违反 `@Positive`，属于校验错误。
+
+```java
+record UpdateOrderRequest(
+        @NotBlank String address,
+        @Positive int quantity) {}
+```
+
+错误响应应分别保留字段、拒绝值类型和稳定错误码，不把内部异常类名直接交给客户端。
+
+## 3. 使用请求 DTO 控制可写字段
+
+直接把持久化实体作为 `@RequestBody` 容易暴露 `status`、`ownerId` 等本不允许客户端修改的字段，也会把数据库模型变化扩散到 API。
+
+为每个操作定义最小请求 DTO，在 service 中显式映射与授权：字段通过校验不代表当前用户有权修改它。
+
+嵌套对象需要 `@Valid` 才会继续级联校验；集合大小、字符串长度和金额范围也应有上限，避免合法 JSON 变成资源攻击。
+
+## 4. 方法校验覆盖非请求体参数
+
+Controller 方法参数或 service 方法可以使用 Bean Validation 方法校验。具体异常类型会随参数解析路径和 Spring 版本不同，统一异常处理不要只捕获一种历史异常。
+
+校验组可以表达创建与更新差异，但组层级过多会让契约难以理解。操作 DTO 通常更直观。
+
+## 5. `Content-Type` 与 `Accept` 作用不同
+
+- 请求 `Content-Type` 描述客户端发送的请求体格式。
+- `Accept` 描述客户端希望接收的响应格式。
+
+服务器找不到读取请求体的 converter 时通常返回 415；无法生成客户端接受的响应时返回 406。Controller 的 `consumes`、`produces` 与已注册 converter 共同参与协商。
+
+不要根据 URL 后缀或用户可控参数随意选择响应类型，明确支持的媒体类型和字符编码。
+
+## 6. 自定义解析器需要限制范围
+
+跨接口重复的租户、分页或当前用户参数可以实现 `HandlerMethodArgumentResolver`。resolver 应只匹配专用注解或类型，失败时返回稳定客户端错误，不能对所有 `String` 等宽泛类型生效。
+
+## 7. 常见问题
+
+### 7.1 `@Valid` 和 `@Validated` 有什么关系
+
+两者都可触发 Bean Validation；Spring 的 `@Validated` 还支持指定校验组，并用于方法级校验入口。具体放置方式要与当前 MVC 和方法校验配置匹配。
+
+### 7.2 校验通过是否说明请求安全
+
+不说明。校验只确认结构与字段约束，授权、业务状态、不变量和防重放仍要在相应层处理。
+
+## 8. 面试题
+
+### 8.1 Spring MVC 怎样完成 `@RequestBody` 绑定与校验
+
+<!-- 面试来源：
+- 珍爱网：https://www.nowcoder.com/discuss/353154991655428096
+- CVTE：https://www.nowcoder.com/discuss/353154893408051200
+-->
+
+**出现公司**：珍爱网、CVTE
+
+**考察重点**
+
+- HttpMessageConverter 与媒体类型。
+- 绑定错误和 Bean Validation 错误。
+- 请求 DTO 与授权边界。
+
+**相关内容**：第 1 节“不同来源使用明确注解”至第 5 节“`Content-Type` 与 `Accept` 作用不同”。
+
+<details>
+<summary>参考回答</summary>
+
+RequestMappingHandlerAdapter 选择参数解析器，`@RequestBody` 由匹配 Content-Type 的 HttpMessageConverter 反序列化为 DTO；带 `@Valid` 或相应校验配置时，再执行 Bean Validation。无法转换属于绑定错误，值违反约束属于校验错误。
+
+请求 DTO 只暴露允许写入的字段，ControllerAdvice 将错误转为稳定契约。Content-Type 决定怎样读取请求体，Accept 决定能否生成客户端接受的响应，两者不匹配分别可能得到 415 或 406。
+
+</details>
+
+:::note 参考资料
+
+1. [Spring Framework：Method Arguments](https://docs.spring.io/spring-framework/reference/web/webmvc/mvc-controller/ann-methods/arguments.html)
+2. [Spring Framework：Validation](https://docs.spring.io/spring-framework/reference/web/webmvc/mvc-config/validation.html)
+3. [Spring Framework：HTTP Message Conversion](https://docs.spring.io/spring-framework/reference/web/webmvc/message-converters.html)
+
+:::

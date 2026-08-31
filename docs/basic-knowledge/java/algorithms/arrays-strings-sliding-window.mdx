@@ -1,0 +1,228 @@
+---
+sidebar_position: 2
+---
+
+# 数组、字符串与滑动窗口
+
+滑动窗口用左右边界维护一段连续区间，适合“最长、最短、数量满足某个条件的子数组或子串”。关键是定义窗口不变量，并证明两个边界只单向移动。
+
+## 1. 先判断问题是否要求连续区间
+
+滑动窗口处理的是连续片段：
+
+- 最长无重复子串。
+- 和至少达到目标的最短正数子数组。
+- 包含指定字符计数的最小覆盖区间。
+- 固定长度窗口的最大值、平均值或频率。
+
+如果可以任意选择不连续元素，通常是子序列、组合、动态规划或贪心问题，不能直接套窗口。
+
+还要判断窗口条件是否具有单调性。正数数组中，右边界扩张会让和不减，左边界收缩会让和不增；包含负数时这个关系消失，简单双指针可能漏解。
+
+## 2. 确定半开区间和不变量
+
+推荐统一使用 `[left, right)`：
+
+- left 是窗口第一个元素。
+- right 是下一个尚未加入的元素。
+- 窗口长度是 `right - left`。
+
+```java
+int left = 0;
+int right = 0;
+
+while (right < values.length) {
+    add(values[right]);
+    right++;
+
+    while (windowInvalid()) {
+        remove(values[left]);
+        left++;
+    }
+
+    updateAnswer(left, right);
+}
+```
+
+这里维护的不变量是：退出内层循环后，当前窗口满足约束。答案是在窗口恢复有效后更新，还是在首次满足条件时更新，取决于是求最长有效区间还是最短覆盖区间。
+
+## 3. 固定窗口只需要增量更新
+
+计算每个长度 k 区间的和：
+
+```java
+long sum = 0;
+
+for (int right = 0; right < values.length; right++) {
+    sum += values[right];
+
+    if (right >= k) {
+        sum -= values[right - k];
+    }
+
+    if (right >= k - 1) {
+        best = Math.max(best, sum);
+    }
+}
+```
+
+每次只加入新元素、移除离开的元素，不重新扫描整个窗口。时间 O(n)，额外空间 O(1)。使用 long 保存和，避免 `int` 累加溢出。
+
+## 4. 可变窗口处理最长无重复子串
+
+可以记录字符最近出现的位置：
+
+```java
+static int longestUniqueSubstring(String value) {
+    Map<Integer, Integer> lastSeen = new HashMap<>();
+    int left = 0;
+    int best = 0;
+    int position = 0;
+
+    for (int offset = 0; offset < value.length();) {
+        int codePoint = value.codePointAt(offset);
+        Integer previous = lastSeen.put(codePoint, position);
+
+        if (previous != null && previous >= left) {
+            left = previous + 1;
+        }
+
+        best = Math.max(best, position - left + 1);
+        offset += Character.charCount(codePoint);
+        position++;
+    }
+
+    return best;
+}
+```
+
+窗口不变量是 `[left, position]` 中没有重复 code point。遇到窗口内出现过的字符时，left 直接跳到上次位置之后；使用 `Math.max` 或 `previous >= left` 防止 left 倒退。
+
+两个边界都只向前，哈希操作平均 O(1)，所以总时间平均 O(n)，空间取决于字符种类。
+
+## 5. Java String 的索引单位
+
+`String.length()` 和 `charAt` 使用 UTF-16 code unit。部分 Unicode 字符由两个 char 组成：
+
+```java
+String value = "A😀B";
+System.out.println(value.length()); // 4
+System.out.println(value.codePointCount(0, value.length())); // 3
+```
+
+题目明确只含 ASCII、小写字母或数字时，可以用固定大小 int 数组提高效率。输入包含一般 Unicode 字符时，需要说明按 char、code point 还是用户看到的字素簇计算。code point 仍不等于完整字素簇，组合字符和 emoji 序列可能包含多个 code point。
+
+不要为了面试题复杂化已明确的字符集；也不要在业务国际化代码里默认一个 char 就是一个字符。
+
+## 6. 数组问题中的其他常用线性方法
+
+### 6.1 相向双指针
+
+已排序数组中的两数和、回文判断和区间收缩，通常让 left 与 right 从两端靠近。每步根据有序性排除一部分候选。
+
+### 6.2 快慢指针
+
+原地去重、元素移除和链表环检测，让两个指针承担“读取位置”和“写入位置”或不同移动速度。
+
+### 6.3 前缀和
+
+需要多次查询静态区间和时，先构造：
+
+```java
+long[] prefix = new long[values.length + 1];
+for (int i = 0; i < values.length; i++) {
+    prefix[i + 1] = prefix[i] + values[i];
+}
+
+long rangeSum = prefix[right] - prefix[left];
+```
+
+预处理 O(n)，每次半开区间 `[left, right)` 查询 O(1)。包含负数且寻找特定区间和时，前缀和加哈希往往比简单滑动窗口合适。
+
+## 7. 怎样证明窗口没有漏解
+
+需要说明两点：
+
+1. 右边界每次加入一个新候选，所有可能的区间终点都会被考虑。
+2. 左边界只在约束要求时移动，被丢弃的更左起点不可能产生更优合法解。
+
+例如最长无重复子串中，一旦字符 c 在当前窗口重复，任何仍包含上一次 c 的更左起点都不合法，因此 left 可以跳过它。这个论证比背模板更重要；条件不具备这种排除关系时，窗口算法就不成立。
+
+## 8. 常见问题
+
+### 8.1 内层 while 为什么不会让复杂度变成 O(n²)
+
+right 最多前进 n 次，left 在整段算法中也最多前进 n 次。虽然移动发生在嵌套循环里，总次数不超过 2n，因此是 O(n)。
+
+### 8.2 最短区间何时更新答案
+
+通常在窗口已经满足覆盖条件时，先记录当前长度，再移动 left 尝试缩小；直到窗口不再有效。最长有效区间则通常在恢复有效后记录。先写出不变量能避免更新时机混乱。
+
+### 8.3 可以每次用 substring 保存当前窗口吗
+
+可以得到正确结果，但会产生额外字符串和复制，最坏可能把线性算法变成大量分配。只保存左右边界，最终需要结果时再构造一次子串。
+
+### 8.4 为什么负数数组的最短和窗口会失败
+
+加入一个负数可能让总和下降，移除一个负数可能让总和上升，边界移动不再具备单调排除关系。需要前缀和、单调队列或其他方法，取决于具体目标。
+
+## 9. 面试题
+
+### 9.1 怎样求最长无重复子串，并证明是 O(n)
+
+<!-- 面试来源：
+- 字节跳动：https://www.nowcoder.com/discuss/668419570088017920
+- 快手：https://www.nowcoder.com/discuss/353156450388221952
+-->
+
+**出现公司**：字节跳动、快手
+
+**考察重点**
+
+- `[left, right)` 窗口与“窗口内无重复”不变量。
+- 最近位置怎样让左边界直接跳转且不倒退。
+- 字符集与 Java char/code point 边界。
+
+**相关内容**：第 2 节“确定半开区间和不变量”、第 4 节“可变窗口处理最长无重复子串”、第 5 节“Java String 的索引单位”。
+
+<details>
+<summary>参考回答</summary>
+
+用 left 表示当前无重复窗口起点，遍历 right，并记录每个字符最近位置。字符上次位置仍在窗口内时，把 left 移到上次位置后一位；然后用 `right - left + 1` 更新最大长度。left 只能向前，不能被更早的重复位置拉回。
+
+right 和 left 各最多移动 n 次，因此平均时间 O(n)，哈希表空间 O(字符种类)。如果题目只含 ASCII 可以用数组；一般 Java 字符串需要先确认按 char 还是 Unicode code point 计数。
+
+</details>
+
+### 9.2 什么条件下可以使用滑动窗口
+
+<!-- 面试来源：
+- 美团、字节跳动：https://www.nowcoder.com/discuss/353159433079431168
+-->
+
+**出现公司**：美团、字节跳动
+
+**考察重点**
+
+- 连续区间要求。
+- 扩张和收缩能否单调排除候选。
+- 不满足单调性时怎样切换到前缀和等方法。
+
+**相关内容**：第 1 节“先判断问题是否要求连续区间”、第 7 节“怎样证明窗口没有漏解”。
+
+<details>
+<summary>参考回答</summary>
+
+问题首先要针对连续子数组或子串，其次要能在右边界扩张后，通过单向移动左边界恢复约束，并证明被移除的起点不可能再成为更优答案。固定长度窗口天然满足，许多频率和覆盖条件也满足。
+
+如果加入或移除元素对条件没有单调影响，例如含负数数组的区间和，就不能直接套窗口。应根据目标改用前缀和加哈希、单调队列或其他算法。
+
+</details>
+
+:::note 参考资料
+
+1. [Java API：String](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/String.html)
+2. [Java API：Character](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/Character.html)
+3. [Java API：HashMap](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/HashMap.html)
+
+:::

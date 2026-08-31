@@ -1,0 +1,119 @@
+---
+sidebar_position: 2
+---
+
+# 线程生命周期与中断语义
+
+Java 线程从创建到终止只会经历有限的状态。中断会向目标线程发出取消请求，并不会强制停止线程；任务是否以及何时退出，由运行中的代码和阻塞 API 共同决定。
+
+## 1. `start()` 才会创建并发执行
+
+```java
+Thread worker = new Thread(() -> loadData());
+worker.start();
+worker.join();
+```
+
+线程对象刚创建时是 `NEW`。`start()` 将它调度执行，调用者和新线程可以并发运行；直接调用 `worker.run()` 只是当前线程中的普通方法调用。
+
+一个 `Thread` 只能启动一次。`run` 正常返回或抛出的未捕获异常处理结束后，线程进入 `TERMINATED`，不能重新启动。
+
+## 2. 六种状态描述等待原因
+
+| `Thread.State` | 含义 |
+| --- | --- |
+| `NEW` | 尚未启动 |
+| `RUNNABLE` | 正在 JVM 中执行或等待操作系统调度 |
+| `BLOCKED` | 等待进入 `synchronized` monitor |
+| `WAITING` | 无期限等待另一个动作，例如 `join()`、`wait()` 或 `park()` |
+| `TIMED_WAITING` | 带期限的等待，例如 `sleep` 或超时等待 |
+| `TERMINATED` | 执行已经结束 |
+
+Java 的 `RUNNABLE` 不等于此刻正在占用 CPU，也可能包含某些 native I/O 状态。诊断必须把线程状态和栈、队列、CPU 一起看。
+
+## 3. 中断是一个可协作的请求
+
+```java
+while (!Thread.currentThread().isInterrupted()) {
+    processNextBatch();
+}
+```
+
+`interrupt()` 设置目标线程的中断状态。普通计算不会因此自动终止；任务需要定期检查状态，或者调用能响应中断的阻塞方法。
+
+`isInterrupted()` 只读取状态。静态方法 `Thread.interrupted()` 读取**当前线程**的状态并将其清除，通常不应被当成普通查询方法。
+
+## 4. `InterruptedException` 需要继续传递取消信号
+
+`sleep`、`wait`、`join` 以及很多 JUC 阻塞方法在响应中断时会抛出 `InterruptedException`，并先清除中断状态。调用方通常有两种正确选择：
+
+```java
+public Result load() throws InterruptedException {
+    return queue.take(); // 继续向上抛出
+}
+```
+
+或者在不能继续抛出时恢复状态：
+
+```java
+try {
+    return queue.take();
+} catch (InterruptedException exception) {
+    Thread.currentThread().interrupt();
+    throw new TaskCancelledException(exception);
+}
+```
+
+捕获后只记录日志并继续执行，会吞掉上层的关闭或取消请求。
+
+## 5. 安全终止需要清理协议
+
+任务退出前仍要释放锁、归还连接并关闭资源，所以不要用 `Thread.stop()` 破坏任意执行点的状态。推荐的关闭流程是：停止接收新任务、发出中断或设置受同步保护的停止条件、等待已有任务在期限内结束，最后处理未完成任务。
+
+线程池应使用 `shutdown()` 开始有序关闭；超时后再根据业务语义决定是否调用 `shutdownNow()`。后者主要尝试中断正在执行的任务，并返回尚未开始的任务，不保证任务立即停止。
+
+## 6. 常见问题
+
+### 6.1 `sleep` 和 `wait` 的区别是什么
+
+`sleep` 是 `Thread` 的定时暂停，不会释放已持有的 monitor。`wait` 是对象 monitor 的条件等待，调用者必须持有该 monitor，进入等待时会释放它。
+
+### 6.2 中断一个正在做网络 I/O 的线程一定有效吗
+
+取决于 API。可中断通道会关闭通道并抛出 `ClosedByInterruptException`；其他库或 native 调用可能采用不同协议。需要查具体 API，并为外部调用配置超时。
+
+## 7. 面试题
+
+### 7.1 Java 中怎样正确停止一个线程
+
+<!-- 面试来源：
+- 拼多多：https://www.nowcoder.com/discuss/353150007719174144
+- 美团：https://www.nowcoder.com/discuss/353155311630491648
+-->
+
+**出现公司**：拼多多、美团
+
+**考察重点**
+
+- 中断是协作式请求。
+- 阻塞方法与中断状态的关系。
+- 退出前的资源清理和超时。
+
+**相关内容**：第 3 节“中断是一个可协作的请求”至第 5 节“安全终止需要清理协议”。
+
+<details>
+<summary>参考回答</summary>
+
+调用方通过 `interrupt()` 发出请求；任务在循环边界检查中断状态，阻塞时使用可中断 API。捕获 `InterruptedException` 后应继续抛出，或者在转换异常前恢复中断状态，不能无条件吞掉。
+
+停止线程池时先 `shutdown()`，在期限内等待任务结束，必要时再 `shutdownNow()`。任务本身仍要设计幂等或补偿逻辑，并在 `finally` 或资源作用域内完成清理。
+
+</details>
+
+:::note 参考资料
+
+1. [Java API：`Thread`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/Thread.html)
+2. [Java API：`Thread.State`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/Thread.State.html)
+3. [Java API：`ExecutorService`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/ExecutorService.html)
+
+:::

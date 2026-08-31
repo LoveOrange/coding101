@@ -1,0 +1,192 @@
+---
+sidebar_position: 6
+---
+
+# HashMap 的数据结构与查找路径
+
+`HashMap` 先根据键的哈希值定位数组桶，再在桶内用哈希值和 `equals` 查找具体键。当前 OpenJDK 使用数组、链表和红黑树处理不同程度的冲突。
+
+## 1. table 保存桶的入口
+
+HashMap 的核心结构是一组桶。每个桶可能是：
+
+- 空。
+- 一个普通节点。
+- 一条节点链。
+- 一棵红黑树的入口。
+
+```text
+table
+  0 ──> null
+  1 ──> [key A] -> [key B]
+  2 ──> [key C]
+  3 ──> tree root
+```
+
+节点保存键、值、处理后的哈希和下一个节点引用。树节点还需要父子、颜色和链表顺序等额外字段。
+
+HashMap 不保证遍历顺序。桶位置会随容量和哈希分布变化，扩容后顺序也可能改变。
+
+## 2. 从 hashCode 到桶下标
+
+当前 OpenJDK 会把 `hashCode()` 的高位混入低位：
+
+```java
+static int spread(int hashCode) {
+    return hashCode ^ (hashCode >>> 16);
+}
+```
+
+示意代码省略了 null 键分支。桶下标按下面的方式计算：
+
+```java
+int index = (table.length - 1) & hash;
+```
+
+当数组长度是 2 的幂时，`length - 1` 的低位都是 1，这个按位与等价于保留决定桶位的低位。扰动让原始哈希高位也参与这些低位，改善一部分低位分布较差的键。
+
+HashMap 不能修复所有坏哈希。如果大量键最终仍产生相同哈希，它们会进入同一个桶。
+
+## 3. get 沿候选桶查找
+
+`map.get(key)` 的主要步骤是：
+
+1. 计算处理后的哈希。
+2. 根据当前容量计算桶下标。
+3. 检查桶首节点的哈希和键是否匹配。
+4. 桶是链表时逐个比较，桶是树时按树规则查找。
+5. 找不到则返回 null。
+
+键匹配通常先比较引用身份，再在哈希相同的候选中调用 `equals`。`hashCode` 只缩小候选范围，不能替代逻辑相等判断。
+
+```java
+V value = map.get(key);
+```
+
+这个返回值无法区分“键不存在”和“键存在但值为 null”。需要区分时调用 `containsKey`，或者从数据模型中禁止 null 值。
+
+## 4. put 先查找旧键再决定插入
+
+`map.put(key, value)` 会沿相同路径定位桶：
+
+- 桶为空时直接创建节点。
+- 找到相等键时替换旧值，并返回旧值。
+- 没找到时把新节点加入链或树。
+- 插入新键后，如果元素数量超过阈值则扩容。
+- 链表达到实现阈值时，可能树化或先扩容。
+
+```java
+Map<Long, User> users = new HashMap<>();
+User previous = users.put(user.id(), user);
+```
+
+Map 的键是唯一的，多次 put 相同键不会增加 size。需要“只在不存在时写入”时使用 `putIfAbsent`，但普通 HashMap 的该方法仍不是并发安全方案。
+
+## 5. 复杂度依赖哈希分布
+
+哈希分布均匀、容量合适时，查找和写入平均接近 O(1)。发生冲突时，还要在桶内比较：
+
+- 短链表需要线性比较。
+- 树桶查找接近 O(log k)，其中 k 是桶内节点数。
+- 极端坏哈希、比较器行为和实现边界仍会增加成本。
+
+大 O 不包含计算 `hashCode` 和 `equals` 本身的成本。如果键的哈希要扫描大数组，或 equals 进行远程调用，即使桶定位是常数步骤，整体也不会便宜。键的相等性方法应快速、稳定、无副作用。
+
+## 6. null 键和值
+
+HashMap 允许一个 null 键和多个 null 值。当前实现把 null 键的哈希视为 0，因此它会进入 0 号桶，但仍会与其他映射到该桶的键正常比较。
+
+允许不代表适合。null 值会让 `get` 的缺失语义变得含糊，公共 API 更适合通过 `Optional`、明确状态类型或 `containsKey` 表达差异。并发 Map 通常禁止 null，以避免并发读取时无法区分缺失和空值。
+
+## 7. HashMap 不支持并发写
+
+多个线程在没有同步的情况下修改 HashMap，可能产生：
+
+- 丢失更新。
+- size、桶和链结构观察不一致。
+- 迭代期间的 `ConcurrentModificationException`。
+- 读取到不符合复合业务不变量的状态。
+
+JDK 7 扩容环链是一个历史实现问题，不应作为今天唯一的解释。HashMap 的 API 从未承诺并发安全，即使某个版本不再出现环链，数据竞争仍然存在。
+
+跨线程共享时，使用 `ConcurrentHashMap` 的原子复合方法，或在更高层为一组状态建立锁和所有权。
+
+## 8. 常见问题
+
+### 8.1 为什么先比较 hash 再比较 equals
+
+哈希不同的键一定不相等，可以直接排除；哈希相同仍可能只是冲突，需要 equals 确认。这个顺序减少了昂贵相等比较的候选数量。
+
+### 8.2 HashMap 的遍历顺序为什么有时看起来固定
+
+同一组键、同一 JDK 和同一容量下，桶分布可能让结果暂时稳定，但 API 没有顺序承诺。任何扩容、键哈希变化或实现升级都可能改变它。需要稳定顺序时使用 LinkedHashMap 或 TreeMap。
+
+### 8.3 自定义 key 可以只重写 hashCode 吗
+
+不可以。相等对象必须有相同哈希，并且 equals 需要满足自反、对称、传递和一致。只重写一边会让查找、覆盖和删除行为不一致。
+
+### 8.4 HashMap 可以存多少元素
+
+受数组最大容量、整数索引、对象内存和 JVM 堆限制。实际系统通常先受到内存、GC 和单次扩容停顿限制，不应把理论上限当作可用容量设计。
+
+## 9. 面试题
+
+### 9.1 说明 HashMap 的 put 和 get 路径
+
+<!-- 面试来源：
+- 阿里巴巴：https://www.nowcoder.com/discuss/806065047708397568
+- 上海卫瓴信息科技：https://www.nowcoder.com/discuss/353159301244067840
+-->
+
+**出现公司**：阿里巴巴、上海卫瓴信息科技
+
+**考察重点**
+
+- 哈希扰动、桶定位、哈希比较和 equals 比较的顺序。
+- 链表与树桶分别怎样处理冲突。
+- 覆盖旧值、插入新值和触发扩容的边界。
+
+**相关内容**：第 1 节“table 保存桶的入口”至第 4 节“put 先查找旧键再决定插入”。
+
+<details>
+<summary>参考回答</summary>
+
+HashMap 先取得 key 的 hashCode，并在当前 OpenJDK 中做高低位扰动，再用 `(capacity - 1) & hash` 定位桶。get 先比较桶首，之后沿链表或红黑树查找；只有哈希相同的候选才需要用 equals 确认。
+
+put 沿同一路径查找，相等键会替换值；没有相等键就新增节点。链表过长时可能树化，新增键后 size 超过阈值会扩容。平均 O(1) 的前提是哈希分布与容量合理。
+
+</details>
+
+### 9.2 HashMap 为什么线程不安全
+
+<!-- 面试来源：
+- 阿里巴巴：https://www.nowcoder.com/discuss/353159278544494592
+- 上海卫瓴信息科技：https://www.nowcoder.com/discuss/353159301244067840
+-->
+
+**出现公司**：阿里巴巴、上海卫瓴信息科技
+
+**考察重点**
+
+- API 没有并发读写的同步与可见性保证。
+- 并发 put、resize 和复合操作会产生什么结果。
+- 历史环链问题与当前线程安全结论的区别。
+
+**相关内容**：第 7 节“HashMap 不支持并发写”。
+
+<details>
+<summary>参考回答</summary>
+
+HashMap 的桶数组、节点链接、size 和扩容过程都没有为并发写提供同步协议。两个线程可能覆盖彼此写入，读取线程也可能观察到迁移中的不同状态；先检查后写等复合操作同样存在竞态。
+
+JDK 7 并发扩容可能形成环链是历史上的一种具体故障，但并不是线程不安全的定义。当前版本即使没有同样实现，也仍不能并发修改。需要共享 Map 时使用 ConcurrentHashMap 的原子方法或外部锁。
+
+</details>
+
+:::note 参考资料
+
+1. [Java API：HashMap](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/HashMap.html)
+2. [Java API：Map](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/Map.html)
+3. [OpenJDK：HashMap 源码](https://github.com/openjdk/jdk/blob/jdk-26-ga/src/java.base/share/classes/java/util/HashMap.java)
+
+:::

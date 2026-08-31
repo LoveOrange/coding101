@@ -1,0 +1,114 @@
+---
+sidebar_position: 2
+---
+
+# Session、JWT、OAuth 2.0 与 OIDC
+
+Session 是服务端登录状态，JWT 是一种可签名的令牌格式，OAuth 2.0 用于委托访问授权，OIDC 在 OAuth 2.0 之上增加用户身份协议。它们处在不同层级，不能直接按“有状态和无状态”互相替换。
+
+## 1. Session ID 引用服务端状态
+
+用户登录后，服务端创建 Session 并把随机 Session ID 放入 Cookie。后续请求只携带不透明 ID，服务端从共享存储读取用户、权限版本和过期时间。
+
+Session 可以立即删除或更新，便于强制登出和权限撤销；多实例需要共享 Session、粘性路由或其他一致状态。Cookie 应设置 `Secure`、`HttpOnly` 和合适的 `SameSite`，并对会自动携带 Cookie 的写请求防护 CSRF。
+
+## 2. JWT 携带可验证 claims
+
+JWT 通常由 header、payload 和 signature 组成。签名防止内容被篡改，不会加密 payload；敏感信息不能因为“放进 token”就安全。
+
+资源服务至少校验：
+
+- 允许的签名算法与有效签名。
+- `iss` 是否为受信发行者。
+- `aud` 是否包含当前服务。
+- `exp`、`nbf` 和允许的时钟偏差。
+- token 类型、scope 和必要上下文。
+
+不能接受 token 自带的任意算法，也不能把 ID Token 当成面向 API 的 Access Token。
+
+## 3. JWT 的撤销需要额外机制
+
+自包含 Access Token 签发后，在过期前通常不查询服务端 Session。常见控制方式包括：
+
+- 缩短 Access Token 有效期。
+- 使用可撤销并轮换的 Refresh Token 获取新令牌。
+- 对紧急封禁维护 token 或会话撤销状态。
+- 高风险操作实时检查账号与权限版本。
+- 使用不透明 token 与 introspection 让资源服务查询状态。
+
+把所有 JWT 都放入实时黑名单查询，会重新引入中心状态和可用性依赖，应按风险选择。
+
+## 4. OAuth 2.0 授权客户端访问资源
+
+OAuth 参与者包括 resource owner、client、authorization server 和 resource server。用户授权客户端取得 Access Token，客户端用它调用资源 API。
+
+OAuth 本身不规定如何证明“当前用户是谁”。Access Token 的受众是资源服务，客户端不应把它当登录身份资料使用。
+
+现代浏览器和移动应用通常使用 Authorization Code Flow + PKCE。客户端为每次授权生成 verifier，只把 challenge 发到授权端；兑换 code 时提交 verifier，降低授权码被截获或注入的风险。
+
+## 5. OIDC 在授权流程中加入身份层
+
+OIDC 定义 ID Token、UserInfo 和发现元数据，让 client 验证用户在 OpenID Provider 的认证结果。ID Token 的 audience 是 client，包含 issuer、subject、认证时间等 claims。
+
+客户端校验签名、issuer、audience、nonce 和过期时间，并使用稳定的 `iss + sub` 识别用户。邮箱和展示名可能变化，不适合单独作为永久主键。
+
+资源 API 仍接收 Access Token，不接收为了 client 登录而签发的 ID Token。
+
+## 6. Refresh Token 属于高价值凭据
+
+Refresh Token 生命周期较长，只发送给授权服务器。公共客户端无法安全保存静态 client secret，应使用 PKCE，并把 Refresh Token 存在平台提供的安全存储中。
+
+轮换策略每次刷新签发新 token 并使旧 token 失效；旧 token 再次出现可能表示泄漏，应撤销整个 token family 并要求重新登录。
+
+浏览器应用可以使用 Backend for Frontend，把 token 保存在服务端，仅给浏览器安全 Session Cookie，减少脚本直接接触 token 的范围。
+
+## 7. 选择取决于撤销、边界和客户端类型
+
+同一系统可以同时使用：浏览器到 BFF 使用 Session Cookie，BFF 到 API 使用短期 JWT Access Token，第三方客户端通过 OAuth 获取授权，登录信息由 OIDC 提供。
+
+设计时比较撤销时限、离线验证需求、客户端是否可信、跨域边界和密钥轮换，不用“JWT 无状态、扩展性好”一句话决定。
+
+## 8. 常见问题
+
+### 8.1 JWT 放在 Local Storage 还是 Cookie
+
+Local Storage 中的 token 可被成功执行的 XSS 脚本读取；Cookie 可用 HttpOnly 降低读取风险，但浏览器会自动携带，需要 SameSite 与 CSRF 防护。更重要的是减少前端持有长期 token，按应用架构选择 BFF 或安全平台存储。
+
+### 8.2 OAuth 的 `state` 和 OIDC 的 `nonce` 一样吗
+
+用途有关联但不相同。`state` 关联授权请求与回调并可承载客户端状态，`nonce` 绑定 OIDC 认证请求与 ID Token。当前 OAuth 安全实践还要求授权码流程使用 PKCE，并按规范校验发行者和重定向 URI。
+
+## 9. 面试题
+
+### 9.1 为什么使用 JWT，如何实现撤销和安全刷新
+
+<!-- 面试来源：
+- 字节跳动：https://www.nowcoder.com/discuss/353157641318899712
+-->
+
+**出现公司**：字节跳动
+
+**考察重点**
+
+- 签名、claims 校验与未加密 payload。
+- Access Token、Refresh Token、ID Token 的边界。
+- 短期令牌、轮换、撤销和 Session 取舍。
+
+**相关内容**：第 1 节“Session ID 引用服务端状态”至第 7 节“选择取决于撤销、边界和客户端类型”。
+
+<details>
+<summary>参考回答</summary>
+
+JWT 让资源服务根据签名和 claims 本地验证 Access Token，但 payload 不是加密内容。服务要固定允许算法，并校验 issuer、audience、过期时间和 scope。它不会自动解决撤销，也不等于 OAuth 或登录协议。
+
+通常使用短期 Access Token，长期 Refresh Token 只交给授权服务器并启用轮换；检测旧 refresh 重用时撤销整个会话。高风险场景可查询权限版本或使用不透明 token introspection。第三方授权采用 Authorization Code + PKCE，OIDC 的 ID Token只供客户端确认登录，调用 API 仍使用正确 audience 的 Access Token。
+
+</details>
+
+:::note 参考资料
+
+1. [RFC 9700：Best Current Practice for OAuth 2.0 Security](https://www.rfc-editor.org/rfc/rfc9700.html)
+2. [OpenID Connect Core 1.0](https://openid.net/specs/openid-connect-core-1_0.html)
+3. [RFC 7519：JSON Web Token](https://www.rfc-editor.org/rfc/rfc7519.html)
+
+:::

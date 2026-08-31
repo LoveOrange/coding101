@@ -1,0 +1,122 @@
+---
+sidebar_position: 14
+---
+
+# Latch、Barrier 与 Semaphore
+
+`CountDownLatch`、`CyclicBarrier` 和 `Semaphore` 约束的是三种不同关系：等待一组事件完成、让一组参与者在阶段点会合，以及限制同时使用资源的数量。
+
+## 1. CountDownLatch 等待计数归零
+
+```java
+CountDownLatch done = new CountDownLatch(tasks.size());
+
+for (Task task : tasks) {
+    executor.execute(() -> {
+        try {
+            task.run();
+        } finally {
+            done.countDown();
+        }
+    });
+}
+
+if (!done.await(2, TimeUnit.SECONDS)) {
+    handleTimeout();
+}
+```
+
+一个或多个等待者调用 `await`，完成方调用 `countDown`。计数到零后所有等待者通过，之后的 `await` 也立即返回；它是一次性的，不能重置。
+
+`countDown` 放在 `finally` 中，避免任务异常让等待永远无法结束。等待超时后还要取消或接管未完成任务，不能只离开 `await`。
+
+## 2. CyclicBarrier 让固定参与者在阶段点会合
+
+```java
+CyclicBarrier barrier = new CyclicBarrier(workers, this::mergeRound);
+```
+
+每个参与者完成本轮工作后调用 `await`。最后一个到达时触发可选 barrier action，然后所有参与者进入下一轮。它可以复用，适合固定规模的分阶段并行计算。
+
+某个等待者中断、超时或失败时，barrier 可能进入 broken 状态，其他等待者收到 `BrokenBarrierException`。调用方必须把一名参与者退出视为整轮协议事件。
+
+动态注册参与者或阶段控制更复杂时，可以使用 `Phaser`。
+
+## 3. Semaphore 限制并发许可
+
+```java
+Semaphore permits = new Semaphore(20);
+
+permits.acquire();
+try {
+    callDownstream();
+} finally {
+    permits.release();
+}
+```
+
+每次 `acquire` 消耗许可，没有许可时等待；`release` 归还许可。它适合保护连接数、外部接口并发数或昂贵设备。
+
+许可不是线程所有权锁。`Semaphore` 不要求由获取许可的同一线程释放，因此更灵活，也更容易因重复释放使计数失真。应把获取成功与 `finally` 归还绑定起来。
+
+## 4. 三者的选择
+
+| 问题 | 组件 |
+| --- | --- |
+| 主线程等待 N 个任务完成 | `CountDownLatch` |
+| N 个工作线程每轮互相等待 | `CyclicBarrier` / `Phaser` |
+| 最多允许 N 个任务同时访问资源 | `Semaphore` |
+
+它们不能互换。例如 latch 的计数是“事件还剩多少”，semaphore 的许可是“容量还剩多少”；错误地用 latch 限流，计数归零后就再也不会恢复。
+
+## 5. 同步器还需要业务失败协议
+
+这些类只协调线程，不负责业务事务。超时后要决定结果是否废弃，中断后要归还许可，barrier 破坏后要终止还是重建本轮，进程重启后也不能依赖内存计数恢复分布式状态。
+
+跨进程协调需要数据库、消息系统或分布式协调服务提供相应一致性语义，不能把 JVM 内同步器直接外推。
+
+## 6. 常见问题
+
+### 6.1 `CountDownLatch` 能重复使用吗
+
+不能。计数只能减少到零。重复阶段使用 `CyclicBarrier`，参与者动态变化时考虑 `Phaser`。
+
+### 6.2 Semaphore 设置公平模式就能严格按请求顺序执行吗
+
+公平模式主要约束竞争获取许可的排队顺序，线程调度和批量许可获取仍会影响实际完成顺序；无参数 `tryAcquire` 也可能绕过公平顺序。
+
+## 7. 面试题
+
+### 7.1 `CountDownLatch`、`CyclicBarrier` 和 `Semaphore` 有什么区别
+
+<!-- 面试来源：
+- 拼多多：https://www.nowcoder.com/discuss/353150007719174144
+- 阅文集团：https://www.nowcoder.com/discuss/452443
+-->
+
+**出现公司**：拼多多、阅文集团
+
+**考察重点**
+
+- 事件完成、阶段会合和容量许可。
+- 一次性与可复用。
+- 超时、异常和许可归还。
+
+**相关内容**：第 1 节“CountDownLatch 等待计数归零”至第 4 节“三者的选择”。
+
+<details>
+<summary>参考回答</summary>
+
+CountDownLatch 让等待者等一组事件把计数减到零，是一次性的；CyclicBarrier 让固定数量参与者在同一阶段点会合，成功后可以进入下一轮；Semaphore 管理可重复获取和归还的许可，用于限制并发容量。
+
+选择后还要处理失败：latch 的 `countDown` 通常放在 `finally`，barrier 任一参与者失败可能破坏整轮，semaphore 只有成功获取后才能在 `finally` 归还。
+
+</details>
+
+:::note 参考资料
+
+1. [Java API：`CountDownLatch`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/CountDownLatch.html)
+2. [Java API：`CyclicBarrier`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/CyclicBarrier.html)
+3. [Java API：`Semaphore`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/Semaphore.html)
+
+:::

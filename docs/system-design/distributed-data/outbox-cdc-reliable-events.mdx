@@ -1,0 +1,121 @@
+---
+sidebar_position: 4
+---
+
+# Outbox、CDC 与可靠事件
+
+Transactional Outbox 把业务变化和待发布事件写进同一个本地数据库事务，再由独立 relay 发布到消息系统。它关闭“数据库已提交但消息未发送”的窗口，但 relay 与 broker 之间仍可能重复发送。
+
+## 1. 直接双写会留下两个失败窗口
+
+```text
+提交数据库 → 发送消息
+```
+
+数据库成功、发送失败时，下游永远不知道变化。交换顺序后，消息成功、数据库回滚时，下游又会处理一个并不存在的业务结果。
+
+应用进程无法用普通代码让数据库和消息 broker 原子提交。捕获异常重试也覆盖不了进程在两步之间崩溃。
+
+## 2. Outbox 与业务数据同事务写入
+
+业务事务同时写订单和 outbox 行：
+
+```text
+event_id, aggregate_type, aggregate_id, aggregate_version,
+event_type, payload, created_at, published_at
+```
+
+本地事务要么都提交，要么都回滚。event payload 描述已经发生的业务事实，不应只保存一段以后可能无法解释的任意代码指令。
+
+事件 schema 需要版本，payload 避免包含不必要的敏感字段。事件 ID 和聚合版本用于消费去重与乱序处理。
+
+## 3. 轮询 relay 读取未发布记录
+
+后台任务可以按主键或创建时间批量锁定未发布 outbox，发送到 broker 后标记已发布。多个 relay 使用 `SKIP LOCKED`、所有权租约或分片避免重复抢占。
+
+发送成功后、标记 published 前崩溃，会导致同一事件再次发送；先标记再发送则可能丢失。因此 relay 选择 at-least-once，并要求消费者幂等。
+
+轮询实现直接，但会增加数据库查询和更新。需要索引未发布状态、限制批次、保存进度并清理历史行。
+
+## 4. CDC 从事务日志捕获 Outbox
+
+CDC 连接器读取数据库提交日志，把 outbox insert 转换成消息。它减少业务数据库上的高频轮询，并保留事务提交顺序信息。
+
+连接器仍要保存日志 offset、处理 schema 演进和重复发布。数据库保留日志的时间必须覆盖连接器最长停机，否则可能需要重新快照。
+
+Debezium 的 Outbox Event Router 等组件可以把 outbox 列映射为消息 key、header 和 payload，但表结构与路由规则仍由业务定义。
+
+## 5. 按聚合键保持必要顺序
+
+同一订单的 `Created`、`Paid`、`Cancelled` 应使用相同 aggregate ID 作为消息 key，使它们进入同一 Kafka partition 或等价有序通道。事件携带单调 aggregate version，消费者拒绝旧版本覆盖新状态。
+
+数据库并发事务的提交顺序可能与业务预期不同。更新聚合时通过版本条件保证一次只产生合法的下一版本，不能仅依赖 outbox 自增 ID 推断所有实体的业务顺序。
+
+## 6. 消费者使用 Inbox 或业务幂等
+
+消费者可以把 event ID 写入本地 inbox 唯一表，并与自己的业务变化放在同一事务。重复事件命中唯一键后返回已有结果。
+
+若目标是可覆盖投影，可以按 aggregate version 条件 upsert；发送邮件、扣款等非幂等动作则需要独立业务唯一记录。去重保留时间要覆盖消息重放窗口。
+
+## 7. 发布成功不等于业务完成
+
+Outbox 保证本地提交后事件最终有机会被发布，不保证每个消费者一定完成。还需要 broker 持久性、消费重试、死信、监控和下游对账。
+
+生产者不能在 outbox 标记 published 后就把跨服务流程视为成功。流程状态应根据必要参与者的结果事件推进，或明确只承诺“事件已接受”。
+
+## 8. 运维要监控事件年龄和日志位置
+
+至少记录：
+
+- 最老未发布 outbox 的年龄。
+- 每批读取、发送、重复和失败数量。
+- CDC source offset 与数据库当前日志位置的 lag。
+- broker topic lag 和消费者死信。
+- 业务记录与已发布事件的定期核对。
+
+仅监控 relay 进程存活，无法发现它卡在同一个 poison event 或日志位置没有前进。
+
+## 9. 常见问题
+
+### 9.1 Outbox 能实现 exactly-once 吗
+
+它保证业务数据与待发送事件一起提交。relay 发送成功后可能在记录结果前崩溃，所以消息仍会重复；消费者要幂等。可以说它关闭了本地提交与事件产生的丢失窗口，不能泛化为端到端只执行一次。
+
+### 9.2 是否可以把整个业务表都交给 CDC
+
+可以捕获变化，但数据库行级变更不一定等于稳定业务事件。显式 outbox 能控制事件语义、schema、聚合键和敏感字段，也避免消费者依赖内部表结构。
+
+## 10. 面试题
+
+### 10.1 本地事务提交后消息发送失败，如何保证最终发布
+
+<!-- 面试来源：
+- 阿里淘天：https://www.nowcoder.com/discuss/874223817629913088
+-->
+
+**出现公司**：阿里巴巴
+
+**考察重点**
+
+- 数据库与 broker 双写窗口。
+- Outbox 本地原子提交和 relay 重复发送。
+- CDC offset、聚合顺序和消费幂等。
+
+**相关内容**：第 1 节“直接双写会留下两个失败窗口”至第 8 节“运维要监控事件年龄和日志位置”。
+
+<details>
+<summary>参考回答</summary>
+
+在同一个数据库事务中同时写业务数据和带稳定 event ID 的 outbox 记录，提交失败时两者都不存在，提交成功后事件不会只留在进程内。独立 relay 轮询 outbox 或由 CDC 读取事务日志，再发布到 broker。
+
+relay 可能在发送成功、记录 published 前崩溃，所以采用 at-least-once，消费者按 event ID 或聚合版本幂等。相同 aggregate 使用同一消息 key，并携带单调版本处理乱序。生产端监控最老 outbox 和 CDC lag，消费端保留重试、死信和业务对账，才能覆盖端到端恢复。
+
+</details>
+
+:::note 参考资料
+
+1. [Debezium：Outbox Event Router](https://debezium.io/documentation/reference/stable/transformations/outbox-event-router.html)
+2. [Debezium：Architecture](https://debezium.io/documentation/reference/stable/architecture.html)
+3. [Apache Kafka：Design](https://kafka.apache.org/documentation/#design)
+
+:::

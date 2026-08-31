@@ -1,0 +1,119 @@
+---
+sidebar_position: 4
+---
+
+# 注入、越权、SSRF 与反序列化风险
+
+应用安全问题常来自不可信输入跨过解释器、资源边界或网络边界。输入校验可以限制格式，但还需要参数化执行、资源级授权、出站网络控制和安全的数据格式共同阻断攻击链。
+
+## 1. 注入发生在数据被当成指令解释时
+
+SQL、Shell、模板、表达式和 LDAP 都有自己的语法。把用户字符串拼进命令，会让数据改变原有指令结构。
+
+```java
+// 风险：用户输入进入 SQL 结构
+String sql = "SELECT * FROM user WHERE name = '" + name + "'";
+```
+
+SQL 使用参数化查询；排序列、表名等无法作为普通值绑定的结构参数，使用服务端 allowlist 映射。Shell 命令优先调用结构化 API，必须执行进程时把程序和参数分开，并限制可执行项。
+
+转义依赖具体解释器和上下文，不能用一段通用字符串替换同时防 SQL、HTML 和 Shell 注入。
+
+## 2. 输入校验限制业务允许范围
+
+服务端校验类型、长度、字符范围、枚举、集合大小和字段关系，并在规范化后再做安全判断。客户端校验只改善体验，攻击者可以直接调用 API。
+
+校验不能替代参数化：一个合法用户名仍可能包含引号。参数化也不能替代授权：正确执行查询仍可能返回不属于当前用户的数据。
+
+## 3. 越权来自缺少资源级检查
+
+水平越权让普通用户访问其他同级用户资源，垂直越权让低权限用户执行管理员动作。常见错误是只验证 token 有效，然后直接使用 URL 中的 `orderId` 查询。
+
+查询应同时绑定可信 tenant、当前 principal 和资源条件，或者读取资源后执行统一授权策略。批量 API、导出、对象存储链接、GraphQL resolver 和后台消息处理都要应用同一边界。
+
+不可猜测 UUID 只能降低枚举概率，不能作为授权控制。
+
+## 4. SSRF 利用服务端访问攻击者指定地址
+
+图片下载、Webhook、URL 预览和代理接口若接受任意 URL，攻击者可能让服务器访问：
+
+- 云元数据和实例凭据端点。
+- 只在内网开放的管理接口。
+- localhost、私有地址和 Unix socket 代理。
+- 通过重定向或 DNS rebinding 变化后的地址。
+
+优先使用预登记目标和固定 endpoint。必须支持 URL 时，只允许明确协议，解析后校验 host 与最终 IP，限制端口、重定向、响应大小和超时，并在网络层禁止工作负载访问敏感网段。
+
+只检查字符串不以 `127.` 开头无法覆盖 IPv6、整数 IP、DNS 和重定向。
+
+## 5. 反序列化不应实例化任意类型
+
+Java 原生序列化和支持多态类型元数据的格式，可能在构造对象图时触发类路径中的危险代码。不要反序列化来自 Cookie、消息或网络的不可信原生对象。
+
+跨边界使用显式 schema 的 JSON、Protobuf 等数据结构，只映射允许的 DTO 和字段；限制消息大小、嵌套深度和集合数量。升级依赖并关闭不需要的动态类型解析。
+
+签名数据可以证明来源和完整性，但若可信生产者被攻陷或签名范围错误，危险对象仍会执行。安全格式和类型 allowlist 仍然必要。
+
+## 6. 多个缺陷可以组成攻击链
+
+一个 SSRF 先读取云凭据，再访问对象存储；泄漏的密钥签发内部 token，随后利用缺失资源授权导出其他租户数据。单点修复无法覆盖整条链。
+
+系统应采用纵深防御：最小 IAM 权限、网络 egress、短期凭据、资源授权、输入限制和审计共同降低影响。
+
+## 7. 错误响应和日志避免二次泄漏
+
+不要把 SQL、内部 URL、文件路径、token 或反序列化类名直接返回客户端。日志记录错误类别和关联 ID，敏感字段脱敏，并限制攻击流量造成的日志量。
+
+安全拒绝应可监控，例如按规则统计注入校验失败、SSRF 目标拦截和授权拒绝，但指标标签不能包含完整恶意 payload。
+
+## 8. 测试覆盖边界和编码变体
+
+除正常输入外，测试跨租户 ID、批量资源、重定向、IPv6/混合编码、超大响应、未知反序列化字段和嵌套深度。使用 SAST、依赖扫描和 DAST 提供线索，再由针对业务权限的测试确认结果。
+
+每次新增“根据 URL 抓取”或“通用对象转换”能力，都应单独做威胁建模，而不是等上线后只靠 WAF。
+
+## 9. 常见问题
+
+### 9.1 使用 ORM 是否就没有 SQL 注入
+
+ORM 的参数绑定能降低风险，但动态拼接查询片段、原生 SQL、排序字段和表达式接口仍可能注入。结构参数使用 allowlist，所有原生语句继续参数化。
+
+### 9.2 阻止私有 IP 是否足以防 SSRF
+
+不足。还要处理 DNS 解析变化、重定向、IPv6、特殊地址表示和代理，并通过网络 egress 阻止访问元数据与管理网段。最安全的方式仍是目标 allowlist。
+
+## 10. 面试题
+
+### 10.1 如何同时防止 SQL 注入、水平越权和 SSRF
+
+<!-- 面试来源：
+- 字节跳动：https://www.nowcoder.com/discuss/353159319300546560
+-->
+
+**出现公司**：字节跳动
+
+**考察重点**
+
+- 参数化与结构 allowlist。
+- 主体、租户和资源所有权检查。
+- URL 解析、重定向、DNS 与网络 egress。
+
+**相关内容**：第 1 节“注入发生在数据被当成指令解释时”至第 8 节“测试覆盖边界和编码变体”。
+
+<details>
+<summary>参考回答</summary>
+
+SQL 值使用参数化查询，表名和排序列等结构部分由服务端 allowlist 映射；服务端仍校验长度和业务范围。授权不能只看 token 有效，查询要绑定当前 principal 与 tenant，或读取资源后检查 owner 和动作，UUID 不代替权限。
+
+SSRF 优先限制到预登记目标；开放 URL 时校验协议、解析后的最终 IP、端口和每次重定向，并限制响应与超时，同时在网络层禁止访问元数据和管理网段。反序列化则使用显式 schema 与允许 DTO，关闭任意多态类型。最后用跨租户、重定向、IPv6 和编码变体测试这些边界。
+
+</details>
+
+:::note 参考资料
+
+1. [OWASP：Injection Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Injection_Prevention_Cheat_Sheet.html)
+2. [OWASP：Server Side Request Forgery Prevention](https://cheatsheetseries.owasp.org/cheatsheets/Server_Side_Request_Forgery_Prevention_Cheat_Sheet.html)
+3. [OWASP：Deserialization Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Deserialization_Cheat_Sheet.html)
+4. [OWASP API Security：Broken Object Level Authorization](https://owasp.org/API-Security/editions/2023/en/0xa1-broken-object-level-authorization/)
+
+:::

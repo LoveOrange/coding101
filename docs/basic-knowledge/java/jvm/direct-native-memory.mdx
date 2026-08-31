@@ -1,0 +1,185 @@
+---
+sidebar_position: 9
+---
+
+# 直接内存与 Native Memory
+
+Java 进程可以在堆外分配缓冲区、类元数据、线程栈和 JVM 内部结构。堆使用率正常而进程 RSS 持续增长时，应按本地内存来源排查，不能只导出 Java 堆。
+
+## 1. 直接缓冲区为原生 I/O 提供地址
+
+```java
+ByteBuffer buffer = ByteBuffer.allocateDirect(1024 * 1024);
+```
+
+直接 `ByteBuffer` 的内容通常位于普通 GC 堆之外。JVM 会尽力让底层原生 I/O 直接使用这块缓冲区，减少每次调用前后在 Java 堆和 native 缓冲区之间复制。
+
+它的分配与释放成本通常高于堆缓冲区，内存占用也不容易从普通堆图中看到。适合反复参与 I/O 的较大、较长寿命缓冲区，不应默认替代所有 `byte[]`。
+
+直接缓冲区对象本身仍在堆上，它保存对堆外区域的管理信息。若框架池化缓冲区，实际生命周期由池决定；若依赖对象不可达后的清理，释放时机与 GC 有关。
+
+## 2. FFM API 提供显式生命周期
+
+现代 Java 可以使用 `MemorySegment` 与 `Arena` 管理本地内存：
+
+```java
+try (Arena arena = Arena.ofConfined()) {
+    MemorySegment segment = arena.allocate(1024, 8);
+    segment.set(ValueLayout.JAVA_INT, 0, 42);
+}
+```
+
+`Arena` 定义生命周期和线程访问范围。可关闭 Arena 结束时释放其本地区域，之后访问 segment 会失败。这比依赖 GC 的不确定清理更适合资源边界明确的调用。
+
+`Arena.global()` 的区域不会自动释放；`ofAuto()` 仍由可达性决定释放时机。选择时要把生命周期写进 API，而不是只看分配语法。
+
+## 3. 文件映射占用地址空间和页缓存
+
+`FileChannel.map` 可以把文件区域映射为 `MappedByteBuffer` 或受 Arena 管理的 `MemorySegment`。访问页面时由操作系统按需调页，脏页回写也由映射模式和系统策略共同决定。
+
+映射文件并不等于“文件全部立即读入 JVM 堆”。不过它会消耗虚拟地址区间、页表和物理页，容器监控中的 RSS、cache 统计也可能随访问变化。
+
+使用带 Arena 的映射可以显式结束生命周期：
+
+```java
+try (Arena arena = Arena.ofShared();
+     FileChannel channel = FileChannel.open(path, READ)) {
+    MemorySegment mapped = channel.map(READ_ONLY, 0, channel.size(), arena);
+    // 读取 mapped
+}
+```
+
+## 4. HotSpot 本地内存还有多种来源
+
+常见类别包括：
+
+- Metaspace 与压缩类空间。
+- 平台线程栈。
+- JIT Code Cache。
+- GC remembered set、标记位图等结构。
+- 类加载、符号表、模块和 JVM 内部数据。
+- JNI 或第三方 native 库分配。
+
+`-Xmx` 只限制 Java 堆。平台线程数量上升、动态生成类或 native 库泄漏，都可能在堆平稳时耗尽容器内存。
+
+## 5. Native Memory Tracking 观察 HotSpot 内部分配
+
+启动时开启：
+
+```bash
+java -XX:NativeMemoryTracking=summary -jar app.jar
+```
+
+建立基线并比较：
+
+```bash
+jcmd <pid> VM.native_memory baseline
+jcmd <pid> VM.native_memory summary.diff
+```
+
+NMT 区分 reserved 和 committed，并按 Class、Thread、Code、GC 等类别汇总 HotSpot 内部分配。`detail` 提供更多调用点，但开销更高。
+
+NMT 不是完整的进程内存追踪器。它不能覆盖所有第三方 native 代码分配，仍要结合 `/proc/<pid>/smaps`、`pmap`、系统 profiler 和容器指标。
+
+## 6. Direct buffer OOM 的判断
+
+`OutOfMemoryError: Direct buffer memory` 表示直接缓冲区分配无法满足。先检查：
+
+- 当前直接缓冲区池的数量、容量和已用内存。
+- 是否存在无界池或请求大小失控。
+- 缓冲区对象是否仍被队列、缓存或未完成 I/O 持有。
+- 进程是否还有足够 native memory。
+- `MaxDirectMemorySize` 和容器上限是否与工作负载匹配。
+
+增大上限只能解决容量确实不足的情况。若释放跟不上分配或池没有边界，扩大内存只会延迟故障。
+
+## 7. 容器中的内存预算
+
+可以从下面的关系开始估算：
+
+```text
+进程峰值 ≈ Java 堆
+         + Metaspace / Code Cache / GC 结构
+         + 平台线程栈
+         + direct / FFM / JNI
+         + 映射与动态库
+         + 安全余量
+```
+
+先测稳定负载和故障峰值，再决定 `-Xmx`。把堆设到容器上限附近，会让非堆正常增长直接触发 OOM Kill，JVM 甚至来不及输出 Java OOM 证据。
+
+## 8. 常见问题
+
+### 8.1 堆外内存不受 GC 管理吗
+
+内存区域本身不在 Java 堆，但其生命周期可能仍由堆上对象可达性间接控制，例如直接 ByteBuffer。FFM 的可关闭 Arena 可以提供显式释放；具体 native 库也可能有自己的生命周期。
+
+### 8.2 NMT 中 reserved 很大就是泄漏吗
+
+不是。reserved 是虚拟地址范围，committed 才更接近已承诺内存。判断泄漏要看稳定负载下 committed 或 RSS 的持续增长，并定位增长类别。
+
+### 8.3 堆转储为什么看不到全部进程内存
+
+堆转储主要描述 Java 堆对象和引用关系。线程栈、Metaspace、Code Cache、直接内存和 native 库需要 NMT、线程信息或操作系统工具补充。
+
+## 9. 面试题
+
+### 9.1 什么是 Java 直接内存，什么时候使用
+
+<!-- 面试来源：
+- 字节跳动：https://www.nowcoder.com/discuss/799998276333322240
+-->
+
+**出现公司**：字节跳动
+
+**考察重点**
+
+- 直接 ByteBuffer 与 native I/O。
+- 分配、释放成本和生命周期。
+- 堆正常时仍可能出现直接内存 OOM。
+
+**相关内容**：第 1 节“直接缓冲区为原生 I/O 提供地址”和第 6 节“Direct buffer OOM 的判断”。
+
+<details>
+<summary>参考回答</summary>
+
+直接 ByteBuffer 的内容通常位于普通 GC 堆外，JVM 会尽力让原生 I/O 直接访问它，以减少中间复制。它更适合反复参与 I/O 的较大、较长寿命缓冲区，分配释放比堆数组更贵，也需要有界池和明确生命周期。
+
+`Direct buffer memory` OOM 时要检查分配速率、池上限、未完成 I/O 持有和进程 native memory，不能只看 Java 堆或直接增大上限。
+
+</details>
+
+### 9.2 堆使用率正常但进程内存持续增长，怎样排查
+
+<!-- 面试来源：
+- 阿里巴巴：https://www.nowcoder.com/discuss/353149059378651136
+- 腾讯：https://www.nowcoder.com/discuss/814856294694678528
+-->
+
+**出现公司**：阿里巴巴、腾讯
+
+**考察重点**
+
+- 堆、线程、类元数据、Code Cache 和 native 库的区分。
+- NMT baseline/diff 的证据。
+- 容器指标与操作系统内存映射。
+
+**相关内容**：第 4 节“HotSpot 本地内存还有多种来源”至第 7 节“容器中的内存预算”。
+
+<details>
+<summary>参考回答</summary>
+
+先把 RSS 与 Java heap committed/used 对齐，确认差值是否持续增长。若进程已用 NMT，建立 baseline 后查看 `summary.diff`，判断增长来自 Class、Thread、Code、GC 等 HotSpot 类别；同时统计线程和直接缓冲区池。
+
+NMT 看不到所有 native 库分配，所以还要结合 `smaps`、`pmap` 或 native profiler。最后把增长时间线与发布、流量、线程和类加载事件关联，而不是只导出堆。
+
+</details>
+
+:::note 参考资料
+
+1. [Java API：`ByteBuffer`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/nio/ByteBuffer.html)
+2. [Java API：`MemorySegment`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/foreign/MemorySegment.html)
+3. [Java API：`Arena`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/foreign/Arena.html)
+4. [Oracle：Native Memory Tracking](https://docs.oracle.com/en/java/javase/26/troubleshoot/diagnostic-tools.html#GUID-70507484-EF25-4E2D-B62F-7A82AE849584)
+
+:::

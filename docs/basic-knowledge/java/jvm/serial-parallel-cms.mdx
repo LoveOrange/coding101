@@ -1,0 +1,144 @@
+---
+sidebar_position: 13
+---
+
+# Serial、Parallel 与 CMS 的历史位置
+
+Serial、Parallel 和 CMS 代表了三种不同目标：降低收集器自身复杂度、提高批处理吞吐，以及用并发标记缩短老年代停顿。CMS 已在 JDK 14 移除，今天学习它主要为了理解旧系统和并发收集器的演进。
+
+## 1. Serial 用单个 GC 线程完成回收
+
+Serial Collector 在垃圾回收时暂停应用线程，并由单个 GC 线程完成主要工作：
+
+```bash
+java -XX:+UseSerialGC -jar app.jar
+```
+
+它没有并行协调开销，适合小堆、CPU 很少或对占用敏感的简单程序。单线程回收在大 live set 上会形成较长停顿，所以不适合作为大型多核服务的默认答案。
+
+JDK 26 在非 server-class 条件下仍可能选择 Serial；实际默认值应通过启动日志确认。
+
+## 2. Parallel 用多个线程提高回收吞吐
+
+```bash
+java -XX:+UseParallelGC -jar batch-job.jar
+```
+
+Parallel Collector 也以 Stop-The-World 为主，但使用多个 GC 线程并行处理，目标是让应用在总运行时间中占更高比例。它适合批处理、离线计算和能够接受较长暂停的吞吐优先任务。
+
+增加 GC 线程不会无限提速。扫描、内存带宽、NUMA 和 CPU 配额都会限制收益，GC 线程还会与同机应用争抢资源。
+
+## 3. CMS 并发处理旧代标记与清理
+
+CMS（Concurrent Mark Sweep）曾针对老年代做大部分并发标记和清理，以减少长时间 STW。它通常包含短暂的初始标记和重新标记停顿，主要标记与清理阶段和应用线程并发。
+
+CMS 使用 mark-sweep，不在正常并发周期中整体压缩旧代，因此容易产生碎片。它还面临：
+
+- 并发线程占用 CPU，降低应用吞吐。
+- 应用仍在分配，需要预留旧代空间。
+- 并发周期跟不上时发生 concurrent mode failure，退化到更重的回收。
+- 浮动垃圾要留到后续周期处理。
+
+## 4. CMS 已从现代 JDK 移除
+
+CMS 在 JDK 9 弃用，JDK 14 通过 JEP 363 移除。现代 JDK 上不能再用 `-XX:+UseConcMarkSweepGC` 启动它。
+
+迁移旧服务时不要逐个翻译 CMS 参数。先使用目标 JDK 的默认 G1 配置建立基线，观察堆、暂停和吞吐；只有证据表明不满足目标时，再调整 G1 或评估 ZGC。
+
+旧文章中的 `PermGen`、ParNew、CMS 参数和默认比例也可能已经失效，升级时要按目标 JDK 官方文档重新验证。
+
+## 5. 三者比较的是目标，不是单项快慢
+
+| 收集器 | 主要方式 | 优先目标 | 主要代价 |
+| --- | --- | --- | --- |
+| Serial | 单线程 STW | 简单、小占用 | 大工作集停顿长 |
+| Parallel | 多线程 STW | 吞吐 | 停顿仍随回收工作增长 |
+| CMS | 旧代并发标记清理 | 缩短旧代停顿 | CPU、碎片、并发失败；已移除 |
+
+同一程序要比较总吞吐、暂停分布、CPU 和内存余量。只比较一次 GC 用时无法判断业务效果。
+
+## 6. 选择收集器先写服务目标
+
+可用的判断顺序：
+
+1. 批处理还是在线请求。
+2. 可接受的 P99/P999 暂停与端到端延迟。
+3. 堆大小、live set 与分配率。
+4. 可用 CPU 和容器内存余量。
+5. 目标 JDK 和发行版支持的收集器。
+6. 用同一负载比较至少一个完整稳定周期。
+
+默认收集器通常是合理起点，不是无需验证的最终配置。
+
+## 7. 常见问题
+
+### 7.1 Parallel 是并发收集器吗
+
+它的 GC 工作可以由多个线程并行，但主要回收期间应用线程仍暂停。“parallel”强调 GC 线程之间并行，“concurrent”强调 GC 与应用线程同时运行。
+
+### 7.2 CMS 为什么会产生碎片
+
+它主要使用标记—清除，回收不可达对象留下的空洞，不像压缩/疏散算法那样在正常周期统一移动存活对象。大对象可能找不到连续空间，即使总空闲量看似足够。
+
+### 7.3 新系统还需要学习 CMS 吗
+
+需要能阅读旧 GC 日志、解释迁移风险和理解并发回收的 CPU/余量代价，但不应给现代 JDK 配置 CMS。
+
+## 8. 面试题
+
+### 8.1 Serial、Parallel 和 CMS 的目标有什么区别
+
+<!-- 面试来源：
+- 阿里云：https://www.nowcoder.com/discuss/401459816646942720
+- 阿里巴巴：https://www.nowcoder.com/discuss/353157613372252160
+-->
+
+**出现公司**：阿里云、阿里巴巴
+
+**考察重点**
+
+- 并行和并发的区别。
+- 吞吐、暂停、CPU 与碎片的权衡。
+- CMS 已在 JDK 14 移除。
+
+**相关内容**：第 1 节“Serial 用单个 GC 线程完成回收”至第 5 节“三者比较的是目标，不是单项快慢”。
+
+<details>
+<summary>参考回答</summary>
+
+Serial 用一个 GC 线程在 STW 中完成工作，协调成本低，适合小堆。Parallel 用多个 GC 线程缩短回收墙钟时间，仍以 STW 为主，目标偏吞吐。CMS 把旧代大量标记和清理工作与应用并发，换取较短停顿，但消耗 CPU、需要堆余量且会产生碎片。
+
+CMS 已在 JDK 14 移除。现代迁移应以 G1 或目标 JDK 支持的收集器重新压测，不照搬 CMS 参数。
+
+</details>
+
+### 8.2 为什么 CMS 可能发生 concurrent mode failure
+
+<!-- 面试来源：
+- 阿里巴巴：https://www.nowcoder.com/discuss/353157613372252160
+-->
+
+**出现公司**：阿里巴巴
+
+**考察重点**
+
+- 收集器和应用并发时，应用仍在分配。
+- 周期启动时机与旧代余量。
+- 退化回收带来的长停顿。
+
+**相关内容**：第 3 节“CMS 并发处理旧代标记与清理”。
+
+<details>
+<summary>参考回答</summary>
+
+CMS 并发标记和清理时，应用线程仍会产生对象并向旧代晋升。如果并发周期完成前旧代可用空间耗尽，CMS 无法继续满足分配，就会退化到更重的 STW 回收。根因可能是周期启动太晚、分配/晋升过快、live set 太大或碎片严重。
+
+</details>
+
+:::note 参考资料
+
+1. [Oracle：Available Collectors](https://docs.oracle.com/en/java/javase/26/gctuning/available-collectors.html)
+2. [Oracle：Parallel Collector](https://docs.oracle.com/en/java/javase/26/gctuning/parallel-collector1.html)
+3. [JEP 363：Remove the Concurrent Mark Sweep GC](https://openjdk.org/jeps/363)
+
+:::

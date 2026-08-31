@@ -1,0 +1,105 @@
+---
+sidebar_position: 11
+---
+
+# AQS 的同步状态与等待队列
+
+`AbstractQueuedSynchronizer`（AQS）是实现阻塞锁和同步器的框架。子类定义一个 `int` 同步状态代表什么以及如何获取、释放；AQS 负责竞争失败后的排队、阻塞、取消和唤醒。
+
+## 1. `state` 的含义由同步器决定
+
+AQS 只提供原子访问同步状态的方法：
+
+```java
+getState();
+setState(next);
+compareAndSetState(expected, next);
+```
+
+它不规定数值含义。例如：
+
+- `ReentrantLock` 可以用它记录持有次数。
+- `CountDownLatch` 用它记录剩余计数。
+- `Semaphore` 用它记录可用许可。
+
+子类通过 `tryAcquire`、`tryRelease` 或共享模式的对应方法实现具体协议。直接调用 AQS 的模板方法时，框架再把协议与等待机制组合起来。
+
+## 2. 获取失败的线程进入 FIFO 等待队列
+
+以独占获取为例，整体路径可以概括为：
+
+1. 子类尝试取得同步状态。
+2. 失败后，AQS 将当前线程对应的节点加入等待队列。
+3. 节点在合适位置再次尝试；暂时无进展时通过 `LockSupport.park` 停止运行。
+4. 释放方更新状态，并在需要时唤醒可能取得资源的后继节点。
+
+队列用于组织等待者，却不自动保证严格公平。具体同步器可以在 `tryAcquire` 中检查前驱，也可以允许新线程直接竞争。
+
+## 3. 独占模式和共享模式表达不同传播方式
+
+独占模式一次只允许一个持有者，例如互斥锁。共享模式允许一次状态变化使多个线程具备获取条件，例如 latch 计数归零后，所有等待者都可以继续。
+
+共享不等于无限资源。`Semaphore(3)` 允许最多三个许可被占用，成功获取后的剩余状态会决定是否继续传播。
+
+## 4. 中断、超时和取消属于队列协议
+
+AQS 提供不可中断、可中断和带超时的获取模板。等待者超时或响应中断后，其节点需要被取消并跳过；释放方也要找到有效的后继节点。
+
+这说明等待队列并不是一条始终整洁的业务 FIFO。诊断时看到估算的队列长度，也不能把它当成精确不变的线程清单。
+
+## 5. Condition 使用独立的条件队列
+
+`Condition.await()` 的线程先释放已经持有的锁，进入对应条件队列。其他线程在持锁状态下调用 `signal` 后，目标等待者被转移去重新竞争同步队列；`signal` 并不会把锁立即交给它。
+
+一个 `ReentrantLock` 可以创建多个 Condition，例如“非空”和“未满”，从而比单个 monitor wait-set 更明确地唤醒相关等待者。
+
+## 6. AQS 适合实现什么
+
+AQS 适合状态能由一个原子 `int` 管理，并且获取失败需要排队阻塞的同步器。子类还可以保存其他字段，但 AQS 只跟踪这一个同步状态。
+
+业务代码通常应直接使用成熟的 `ReentrantLock`、`Semaphore`、`CountDownLatch` 等组件。自行扩展 AQS 时，需要同时证明状态转换、所有权、中断、取消和序列化行为。
+
+## 7. 常见问题
+
+### 7.1 AQS 就是 CLH 锁吗
+
+AQS 的等待队列设计受到 CLH 队列锁思想影响，但它是支持阻塞、取消、独占和共享模式的 JVM 级同步框架。把它等同于教科书中的自旋 CLH 锁，会丢失 park/unpark 与取消协议。
+
+### 7.2 线程被 `unpark` 后是否已经取得锁
+
+没有。唤醒只让它有机会继续运行，线程仍要重新检查并尝试取得同步状态。
+
+## 8. 面试题
+
+### 8.1 AQS 如何组织获取失败的线程
+
+<!-- 面试来源：
+- 蚂蚁集团：https://www.nowcoder.com/discuss/632476
+- 阅文集团：https://www.nowcoder.com/discuss/452443
+-->
+
+**出现公司**：蚂蚁集团、阅文集团
+
+**考察重点**
+
+- `state` 与子类协议。
+- 同步队列、park 和重试。
+- 独占、共享与取消。
+
+**相关内容**：第 1 节“`state` 的含义由同步器决定”至第 4 节“中断、超时和取消属于队列协议”。
+
+<details>
+<summary>参考回答</summary>
+
+AQS 让子类用一个原子 `int state` 表示同步状态，并实现尝试获取、释放的方法。模板方法先调用子类协议，获取失败时把线程节点加入 FIFO 等待队列，在不能继续时 park；释放后唤醒合适的后继，后继再竞争状态。
+
+它同时支持独占、共享、可中断和超时获取。队列是等待管理骨架，不等于严格公平；公平策略仍由具体同步器的获取逻辑决定。
+
+</details>
+
+:::note 参考资料
+
+1. [Java API：`AbstractQueuedSynchronizer`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/locks/AbstractQueuedSynchronizer.html)
+2. [Java API：`LockSupport`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/locks/LockSupport.html)
+
+:::

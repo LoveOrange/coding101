@@ -1,0 +1,118 @@
+---
+sidebar_position: 4
+---
+
+# 倒排索引与 Elasticsearch 写入可见性
+
+Elasticsearch 用倒排索引保存“词项到文档”的映射，适合全文检索和多维过滤。文档写入成功后并不一定立刻能被搜索命中，因为搜索可见性还受 refresh 和分片状态影响。
+
+## 1. 倒排索引从词项找到文档
+
+关系型索引常从字段值定位行，倒排索引则为每个 term 保存包含它的文档集合，并记录频率、位置等检索信息。
+
+例如文本“Java 并发编程”经过分析后得到若干 term，搜索“并发”时可以直接查对应 posting list，而不必遍历每个文档正文。查询还可以结合相关性评分、布尔条件和聚合。
+
+倒排索引优化的是按词查文档。根据文档 ID 取回 `_source`、排序、聚合和更新仍有各自的数据结构与成本。
+
+## 2. analyzer 决定文本如何成为词项
+
+analyzer 通常由字符过滤器、tokenizer 和 token filter 组成。它会处理大小写、标点、词形和语言分词。
+
+同一个 text 字段通常在索引与搜索时使用兼容的 analyzer。索引时产生“java”，搜索时却产生完全不同的 term，就无法命中。
+
+- `text` 适合经过分析的全文检索。
+- `keyword` 保留完整值，适合精确过滤、聚合和排序。
+
+字段用途应在 mapping 中提前确定。把订单状态等枚举字段只建成 text，会让精确过滤与聚合变得含混。
+
+## 3. 写入响应和搜索可见性是两个时点
+
+Elasticsearch 接受索引请求后，会把变化写入内存缓冲等内部结构，并记录恢复所需信息。新数据要在 refresh 后形成可搜索的 segment，搜索请求才能看到它。
+
+默认情况下，活跃被搜索的索引会周期性 refresh，常见默认间隔约为 1 秒。因此 Elasticsearch 被称为 near real-time search：写入到可搜索之间通常有短暂延迟。
+
+根据 ID 的实时 GET 可以读取尚未 refresh 的最新文档，而普通 search 仍可能找不到它。测试“写完立即搜索”时要区分这两类读取。
+
+## 4. refresh、flush 和 merge 处理不同工作
+
+- **refresh**：让近期变化进入可被搜索的 segment。
+- **flush**：建立新的恢复边界，并处理 translog 生命周期。
+- **merge**：把多个 segment 合并，回收已删除文档占用并改善搜索结构。
+
+频繁强制 refresh 可以缩短写后搜索延迟，但会产生许多小 segment，增加写入、搜索和 merge 成本。批量导入时通常降低 refresh 频率，完成后再恢复正常设置。
+
+若业务只要求当前写请求在返回前可搜索，可以评估 `refresh=wait_for` 等等待策略，而不是每次都强制执行 refresh。仍需测量它对吞吐和尾延迟的影响。
+
+## 5. 分片让索引和查询并行执行
+
+索引由 primary shard 和 replica shard 组成，文档根据路由值映射到某个主分片。写请求先由主分片处理，再复制到副本；搜索通常分发到相关分片并合并结果。
+
+分片太少可能限制容量，太多则增加集群状态、内存、文件句柄和查询扇出成本。分片规划要根据数据量、写入速率、查询模式和节点规模验证，不能把分片数量当成越多越好。
+
+需要同一业务键稳定路由时，可以显式设置 routing，但热点租户也可能因此集中到单一分片。
+
+## 6. 数据库同步要使用可恢复事件
+
+应用先提交数据库，再直接调用 Elasticsearch，调用失败会让两边不一致；先写 Elasticsearch，再提交数据库也有相反窗口。更稳妥的链路是：
+
+1. 在数据库本地事务中写业务变化和 Outbox 事件，或使用 CDC 读取变更日志。
+2. 发布带稳定事件 ID、文档 ID 和业务版本的更新事件。
+3. 消费者使用确定文档 ID 幂等写入 Elasticsearch。
+4. 只允许较新业务版本覆盖旧版本，处理重试和乱序。
+5. 记录同步 lag、失败与死信。
+
+消息系统提供传输，权威数据仍在数据库。索引可以丢弃并重建，业务不应依靠搜索索引保存唯一状态。
+
+## 7. 对账和重建修复长期不一致
+
+在线同步无法覆盖所有软件缺陷、历史数据和错误 mapping。需要定期比较数据库与索引的记录数、版本、更新时间或业务校验值，发现缺失与陈旧文档。
+
+完整重建时可以创建带版本的新索引，批量导入数据库快照，再追赶快照之后的变更。校验完成后通过 alias 原子切换读取目标。保留旧索引一段时间，便于快速回退。
+
+mapping 中部分字段类型不能原地修改，使用版本化索引和 alias 也能让 schema 演进更可控。
+
+## 8. 常见问题
+
+### 8.1 写入返回成功后立即搜索不到，是数据丢了吗
+
+不一定。文档可能尚未 refresh，因此 search 暂时不可见；可以用实时 GET、refresh 状态和写入结果区分。若超过预期 refresh 周期仍不可见，再检查目标索引、路由、版本冲突和分片错误。
+
+### 8.2 可以把数据库和 Elasticsearch 放进一个分布式事务吗
+
+常见系统不会这样做。搜索索引是可重建投影，通常使用 Outbox 或 CDC、幂等消费、版本控制和定期对账获得最终一致，并保留完整重建能力。
+
+## 9. 面试题
+
+### 9.1 Elasticsearch 为什么写入后不能立即搜索，如何与数据库保持一致
+
+<!-- 面试来源：
+- 去哪儿：https://www.nowcoder.com/discuss/353157505142431744
+- 字节跳动：https://www.nowcoder.com/discuss/534377411895472128
+-->
+
+**出现公司**：去哪儿、字节跳动
+
+**考察重点**
+
+- analyzer、term、posting list 与字段 mapping。
+- refresh、实时 GET 和近实时搜索。
+- Outbox、CDC、幂等版本和索引重建。
+
+**相关内容**：第 1 节“倒排索引从词项找到文档”至第 7 节“对账和重建修复长期不一致”。
+
+<details>
+<summary>参考回答</summary>
+
+Elasticsearch 先用 analyzer 把 text 转成 term，并在倒排索引中保存 term 到文档的映射。索引请求成功后，新变化还要经过 refresh 才进入可搜索 segment，所以普通 search 是近实时的；按 ID 的 GET 可以有不同的实时可见性。
+
+数据库与 Elasticsearch 是两个提交边界，通常把数据库作为权威状态，用 Outbox 或 CDC 产生可恢复事件，消费者按稳定文档 ID 和业务版本幂等更新索引，并监控 lag 与失败。还要定期对账，并能够从数据库重建新索引、追赶增量后通过 alias 切换，不能只依靠在线双写。
+
+</details>
+
+:::note 参考资料
+
+1. [Elasticsearch：Index and search analysis](https://www.elastic.co/docs/manage-data/data-store/text-analysis/index-search-analysis)
+2. [Elasticsearch：Near real-time search](https://www.elastic.co/docs/manage-data/data-store/near-real-time-search)
+3. [Elasticsearch：Index basics](https://www.elastic.co/docs/manage-data/data-store/index-basics)
+
+:::

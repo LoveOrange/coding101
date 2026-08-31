@@ -1,0 +1,167 @@
+---
+sidebar_position: 18
+---
+
+# 逃逸分析与标量替换
+
+逃逸分析判断一个新对象是否可能被当前方法、线程或未知调用观察。JIT 利用结果做标量替换、分配消除和锁消除；HotSpot 常见收益是“不再创建完整对象”，不应简单描述为把所有不逃逸对象搬到线程栈。
+
+## 1. 先判断对象能被谁观察
+
+```java
+static long distance(int x1, int y1, int x2, int y2) {
+    Point left = new Point(x1, y1);
+    Point right = new Point(x2, y2);
+    return Math.abs(left.x() - right.x())
+         + Math.abs(left.y() - right.y());
+}
+```
+
+两个 Point 没有返回、写入字段或传给未知代码。若内联后的完整调用图证明它们不会逃逸，JIT 可以继续优化。
+
+会增加逃逸可能的写法：
+
+```java
+return point;
+this.latest = point;
+consumer.accept(point); // 目标无法分析时
+```
+
+“作为方法参数”本身不等于一定逃逸。若调用目标被内联，分析仍可能跨方法看到完整用途。
+
+## 2. 标量替换把对象拆成字段值
+
+Point 的对象身份若不可观察，JIT 可以把它拆成 `x`、`y` 两个标量，在寄存器或编译器中间值里计算：
+
+```text
+创建 Point → 读取 x/y
+```
+
+可能被优化成：
+
+```text
+直接使用 x1、y1、x2、y2
+```
+
+这同时消除对象头、堆分配和后续 GC 压力。若某条罕见路径需要真实对象，去优化元数据可以帮助 JVM 重新物化对象。
+
+## 3. 锁消除依赖对象不被其他线程看到
+
+```java
+String format(Order order) {
+    StringBuffer buffer = new StringBuffer();
+    buffer.append(order.id()).append(':').append(order.status());
+    return buffer.toString();
+}
+```
+
+若 buffer 只在当前调用内使用，同步操作不会与其他线程竞争，JIT 可能消除其 monitor。现代业务代码仍应按语义选择 `StringBuilder`；不能用“JIT 可能消除”替代清晰 API。
+
+锁粗化则是另一方向：相邻多次锁定同一对象时，JIT 可能扩大临界区以减少反复进入退出成本。
+
+## 4. 逃逸分析不保证优化一定发生
+
+限制包括：
+
+- 调用没有内联，分析边界不完整。
+- 对象身份、反射、native 调用或复杂控制流需要保留。
+- 代码尚未达到高优化层级。
+- 编译器预算认为优化收益不够。
+- JDK 版本和具体编译器实现不同。
+
+因此源码中“对象没有返回”只是线索，不是证据。
+
+## 5. “栈上分配”要谨慎表述
+
+从语言语义看，对象由 JVM 自动管理。HotSpot C2 常通过标量替换直接消除分配，而不是为每个不逃逸对象在 Java 线程栈上保留一个完整对象布局。
+
+如果对象仍需要身份且分配未消除，通常仍走堆分配，只是 TLAB 让它很快。面试中可以说“逃逸分析为分配消除和标量替换提供依据”，不要断言“未逃逸对象一定放栈上”。
+
+## 6. 用分配证据验证
+
+JMH 可结合 GC profiler 比较每次操作分配：
+
+```bash
+java -jar target/benchmarks.jar EscapeBenchmark -prof gc
+```
+
+JFR 的 Object Allocation in New TLAB / Outside TLAB 事件、async-profiler allocation 模式也能显示真实分配热点。
+
+验证时避免常量折叠和死代码消除。基准方法返回结果或交给 Blackhole，并使用不同参数确认算法确实执行。
+
+如果优化目标是降低线上 GC，最终还要看服务的 bytes allocated per request、分配率和端到端吞吐，而不是只看单个纳秒结果。
+
+## 7. 常见问题
+
+### 7.1 对象没有逃出方法就一定不在堆上吗
+
+不一定。JIT 还要成功分析并决定优化；未编译、未内联或身份可观察时都可能保留堆分配。
+
+### 7.2 逃逸分析能消除所有临时集合吗
+
+通常不能。集合会动态扩容、包含数组并经过复杂调用，完整标量替换比小型值对象困难。减少不必要中间集合仍应从算法和 API 设计入手。
+
+### 7.3 分配很快，为什么还要优化对象数量
+
+TLAB 让分配本身便宜，但初始化、内存带宽和 GC 扫描仍有成本。只有 profile 证明分配率限制性能时，才值得牺牲可读性优化。
+
+## 8. 面试题
+
+### 8.1 Java 对象一定分配在堆上吗
+
+<!-- 面试来源：
+- 字节跳动：https://www.nowcoder.com/discuss/353158260289118208
+- 美团、高德等：https://www.nowcoder.com/discuss/606575623565242368
+-->
+
+**出现公司**：字节跳动、美团、高德
+
+**考察重点**
+
+- Java 语义与 HotSpot 优化实现的区别。
+- 逃逸分析、标量替换和分配消除。
+- 不应把优化简化为固定栈上分配。
+
+**相关内容**：第 1 节“先判断对象能被谁观察”至第 5 节“‘栈上分配’要谨慎表述”。
+
+<details>
+<summary>参考回答</summary>
+
+JVM 规范把对象存储归入堆，但实现可以做语义等价优化。HotSpot JIT 若证明对象身份不会被方法外或其他线程观察，可以标量替换字段并完全消除分配，所以运行时未必存在一个完整堆对象。
+
+不能进一步说所有不逃逸对象都会以完整形态放在线程栈。优化是否发生取决于内联、编译层级、控制流和 JDK 实现，应通过分配 profile 验证。
+
+</details>
+
+### 8.2 逃逸分析可能带来哪些优化
+
+<!-- 面试来源：
+- 满帮：https://www.nowcoder.com/discuss/353158686027751424
+-->
+
+**出现公司**：满帮
+
+**考察重点**
+
+- 标量替换与分配消除。
+- 不逃逸 monitor 的锁消除。
+- 分析结果只是优化依据。
+
+**相关内容**：第 2 节“标量替换把对象拆成字段值”至第 4 节“逃逸分析不保证优化一定发生”。
+
+<details>
+<summary>参考回答</summary>
+
+逃逸分析本身判断对象可见范围。基于结果，JIT 可以把对象拆成标量并消除堆分配，也可以消除只作用于线程私有对象的锁；与内联结合后，分析还能跨方法进行。
+
+这些都不是源码级保证。调用无法内联、对象身份可观察或代码未进入高优化层级时，优化可能不发生。
+
+</details>
+
+:::note 参考资料
+
+1. [Oracle：Escape Analysis](https://docs.oracle.com/en/java/javase/26/vm/java-virtual-machine-guide.pdf)
+2. [OpenJDK：HotSpot Compiler](https://openjdk.org/groups/hotspot/docs/HotSpotGlossary.html)
+3. [OpenJDK JMH Samples](https://github.com/openjdk/jmh/tree/master/jmh-samples/src/main/java/org/openjdk/jmh/samples)
+
+:::

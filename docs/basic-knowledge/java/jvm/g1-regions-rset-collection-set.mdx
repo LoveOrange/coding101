@@ -1,0 +1,156 @@
+---
+sidebar_position: 14
+---
+
+# G1 的 Region、RSet 与回收集合
+
+G1 把堆划分为等大小 Region，每次停顿选择一部分 Region 做疏散回收。Region 让年轻代和旧代可以由一组离散区域组成，Remembered Set 则记录来自其他 Region 的引用，使局部回收不必扫描整个堆。
+
+## 1. Region 是 G1 的空间单位
+
+G1 在启动时选择 Region 大小，整个堆由大量等大小 Region 构成。一个 Region 在某个时刻可以承担 Eden、Survivor、Old 或 Humongous 等角色。
+
+```text
+[Eden][Old][Free][Survivor][Old][Humongous][Humongous][Free]
+```
+
+这种布局不要求年轻代和旧代各是一段连续地址。G1 可以根据暂停目标和当前负载动态调整年轻代所占 Region 数量。
+
+大于或等于约半个 Region 的对象会按 Humongous 路径处理，并占用一个或多个连续 Region。大量临界尺寸对象可能增加空间浪费与回收压力，应从 GC 日志确认而不是只按源码估计。
+
+## 2. RSet 描述指向某个 Region 的外部引用
+
+局部回收 Region A 时，除了 GC Roots，还要知道其他 Region 中哪些对象指向 A。G1 通过写屏障、卡表和 Remembered Set 维护这类跨 Region 引用摘要。
+
+RSet 的方向可以理解为“谁从外面指向我”。回收集合中的 Region 只需扫描相关根和记忆集合，不必遍历全部未回收 Region。
+
+代价是：
+
+- 每次引用写入增加屏障成本。
+- 后台线程要处理卡片更新。
+- RSet 占用额外内存。
+- 跨 Region 引用密集时，扫描和合并工作会增加。
+
+## 3. 年轻代停顿通过疏散回收空间
+
+G1 在 Young GC 中选择年轻 Region 作为 collection set，暂停应用线程，将存活对象复制到 Survivor 或 Old Region，并一次释放原 Region。
+
+疏散同时实现回收与压缩，避免 CMS 那类长期碎片。但它需要目标 Region 有足够空闲空间；余量不足时可能发生 evacuation failure，并导致更重的处理。
+
+## 4. 并发标记估算旧 Region 的回收价值
+
+堆占用达到启动条件后，G1 开始并发标记，计算旧 Region 的存活情况。标记完成后，G1 可以在后续 Mixed GC 中把一部分回收价值较高的 Old Region 加入 collection set，与年轻代一起疏散。
+
+“Garbage First”表示优先选择预期能回收较多空间、且能够放进暂停预算的 Region，不代表每次都严格回收垃圾百分比最高的一个 Region。选择还受依赖、候选集合和暂停预测影响。
+
+## 5. 暂停目标是软目标
+
+```bash
+java -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -jar app.jar
+```
+
+G1 根据历史统计预测不同 collection set 的工作量，尝试满足暂停目标。它不是实时保证：live set、RSet 扫描、系统调度、大对象和机器负载都可能让实际暂停超过目标。
+
+把目标设得很低，G1 可能缩小年轻代并更频繁收集，增加屏障、GC CPU 和吞吐损失。调整前先确认业务端到端延迟是否真的由 GC 停顿主导。
+
+## 6. Full GC 通常说明正常周期没有及时提供空间
+
+常见信号包括：
+
+- 并发标记启动太晚。
+- live set 接近最大堆。
+- 分配或晋升速率过高。
+- Humongous 对象导致连续 Region 压力。
+- 疏散所需目标空间不足。
+
+调优顺序通常是：减少分配和无界保留，确认堆有足够余量，观察并发周期是否及时，再考虑少量 G1 参数。一次改很多 flags 会破坏 G1 的自适应关系。
+
+## 7. 从 G1 日志读一条因果链
+
+```bash
+java -Xlog:gc*,gc+heap=debug:file=gc.log:time,uptime,level,tags -jar app.jar
+```
+
+关联以下信息：
+
+1. Young、Mixed、Concurrent Cycle 或 Full 的类型与原因。
+2. Eden、Survivor、Old 和 Humongous Region 变化。
+3. Evacuate、Merge/Scan Heap Roots、Reference Processing 等阶段。
+4. 暂停前后堆占用与回收量。
+5. 同期分配率、请求延迟和 CPU。
+
+只看一行“Pause 120ms”无法判断它为什么发生，也无法知道调整堆还是减少跨 Region 引用更有效。
+
+## 8. 常见问题
+
+### 8.1 G1 还分年轻代和老年代吗
+
+分。区别在于各代由动态的一组 Region 构成，不是必须连续的固定地址区间。
+
+### 8.2 RSet 是否保存所有对象引用
+
+它维护局部回收所需的跨 Region 引用摘要，不是完整对象图副本。具体 card set 与精度属于 HotSpot 实现。
+
+### 8.3 Mixed GC 和 Full GC 一样吗
+
+不一样。Mixed GC 在正常 G1 疏散停顿中同时选择年轻 Region 和部分旧 Region；Full GC 是更重的全堆路径，通常说明正常并发/疏散周期无法及时提供空间或由显式原因触发。
+
+## 9. 面试题
+
+### 9.1 G1 怎样通过 Region 和 RSet 完成局部回收
+
+<!-- 面试来源：
+- 阿里巴巴：https://www.nowcoder.com/discuss/353157613372252160
+- 某云原生企业：https://www.nowcoder.com/discuss/732685882523758592
+-->
+
+**出现公司**：阿里巴巴、某云原生企业
+
+**考察重点**
+
+- Region、collection set 和疏散。
+- RSet 记录来自集合外的引用。
+- 屏障、内存与扫描成本。
+
+**相关内容**：第 1 节“Region 是 G1 的空间单位”至第 4 节“并发标记估算旧 Region 的回收价值”。
+
+<details>
+<summary>参考回答</summary>
+
+G1 把堆切成等大小 Region，每次停顿选择一组 Region 作为 collection set，把其中存活对象疏散到其他 Region，再整体释放原区域。为了不扫描集合外全部对象，写屏障维护跨 Region 引用的卡片和 Remembered Set，回收时把这些外部引用当作根扫描。
+
+这种局部化用写屏障、RSet 内存和后台处理换取可预测的小批次回收；跨 Region 引用很多时，根扫描成本也会升高。
+
+</details>
+
+### 9.2 G1 的暂停目标为什么不是保证
+
+<!-- 面试来源：
+- 阿里云：https://www.nowcoder.com/discuss/401459816646942720
+-->
+
+**出现公司**：阿里云
+
+**考察重点**
+
+- 基于历史统计选择 collection set。
+- live set、RSet、调度和大对象会改变成本。
+- 过低目标可能损失吞吐。
+
+**相关内容**：第 5 节“暂停目标是软目标”至第 7 节“从 G1 日志读一条因果链”。
+
+<details>
+<summary>参考回答</summary>
+
+G1 根据历史数据预测回收一组 Region 的时间，尽量把 collection set 放进 `MaxGCPauseMillis` 预算，但实际存活对象、RSet 扫描、系统调度和大对象都可能偏离预测，因此它是软目标。
+
+目标过低可能让年轻代变小、GC 更频繁。应先从日志确认超时阶段和业务延迟关系，再调整分配、堆余量或少量参数。
+
+</details>
+
+:::note 参考资料
+
+1. [Oracle：G1 Garbage Collector](https://docs.oracle.com/en/java/javase/26/gctuning/garbage-first-g1-garbage-collector1.html)
+2. [Oracle：G1 Tuning](https://docs.oracle.com/en/java/javase/26/gctuning/garbage-first-garbage-collector-tuning.html)
+
+:::

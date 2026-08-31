@@ -1,0 +1,261 @@
+---
+sidebar_position: 1
+---
+
+# Lambda、函数式接口与闭包捕获
+
+Lambda 表达式为只有一个抽象方法的接口提供实现，让行为可以作为参数和返回值传递。它依赖目标接口确定参数与返回类型，并能读取外层作用域中不再变化的局部变量。
+
+## 1. Lambda 的目标类型是函数式接口
+
+```java
+Predicate<String> isBlank = value -> value.isBlank();
+```
+
+编译器从左侧的 `Predicate<String>` 得知：
+
+- 参数类型是 `String`。
+- 返回类型是 `boolean`。
+- Lambda 要实现的方法是 `test`。
+
+Lambda 本身没有独立的名义类型，必须出现在能够推断目标类型的上下文中，例如赋值、方法参数、返回值或显式类型转换。
+
+```java
+static Predicate<String> longerThan(int length) {
+    return value -> value.length() > length;
+}
+```
+
+### 1.1 什么是函数式接口
+
+函数式接口只有一个抽象方法：
+
+```java
+@FunctionalInterface
+public interface Converter<S, T> {
+    T convert(S source);
+}
+```
+
+`default` 和 `static` 方法不计入抽象方法数量。与 `Object` 公开方法签名相同的声明也不会让接口失去函数式接口资格。
+
+`@FunctionalInterface` 不是必须的，但能让编译器阻止后续修改意外增加第二个抽象方法。准备作为 Lambda 目标的公开接口应当添加它。
+
+### 1.2 同一段 Lambda 可以对应不同接口
+
+```java
+Callable<String> task = () -> "done";
+Supplier<String> supplier = () -> "done";
+```
+
+两个 Lambda 形状相同，但目标接口不同，异常契约和使用场景也不同。Java 使用结构匹配确定 Lambda 能否实现接口，却仍然保留接口的名义类型，`Callable<String>` 不能直接赋给 `Supplier<String>`。
+
+## 2. 常用函数式接口
+
+`java.util.function` 提供了通用接口：
+
+| 接口 | 抽象方法 | 语义 |
+| --- | --- | --- |
+| `Function<T, R>` | `R apply(T value)` | 把 T 转换为 R |
+| `Predicate<T>` | `boolean test(T value)` | 判断条件 |
+| `Consumer<T>` | `void accept(T value)` | 消费值并产生副作用 |
+| `Supplier<T>` | `T get()` | 延迟提供值 |
+| `UnaryOperator<T>` | `T apply(T value)` | 同类型转换 |
+| `BinaryOperator<T>` | `T apply(T left, T right)` | 合并两个同类型值 |
+
+```java
+Function<User, String> name = User::displayName;
+Predicate<User> active = User::active;
+Consumer<User> audit = auditService::record;
+Supplier<User> guest = User::guest;
+```
+
+对大量基本类型数据，`IntFunction`、`IntPredicate`、`IntConsumer` 等专门接口可以减少装箱。
+
+### 2.1 组合小函数
+
+```java
+Predicate<User> activeAdult = User::active;
+activeAdult = activeAdult.and(user -> user.age() >= 18);
+
+Function<User, String> normalizedName = User::displayName;
+normalizedName = normalizedName.andThen(String::trim);
+```
+
+组合适合短、纯粹且命名清楚的转换。把异常处理、远程调用和多步状态修改堆进一条函数链，通常会降低可读性。
+
+## 3. 捕获外层变量
+
+Lambda 可以读取外层局部变量，但这些变量必须是 `final` 或有效 final：
+
+```java
+int minimumLength = 3;
+
+Predicate<String> accepted = value -> value.length() >= minimumLength;
+
+// minimumLength = 5; // 编译错误：变量不再是有效 final
+```
+
+局部变量的值会被捕获。Lambda 可能在创建它的方法返回后才执行，如果允许同时修改原局部变量，就需要定义两个生命周期之间的共享与可见性语义。Java 通过有效 final 限制避免了这类局部变量共享。
+
+### 3.1 对象引用不变，不代表对象状态不变
+
+```java
+List<String> names = new ArrayList<>();
+Consumer<String> addName = names::add;
+
+addName.accept("Lin");
+```
+
+变量 `names` 没有重新赋值，所以可以捕获；它指向的列表仍然可变。多个线程调用这个 Consumer 时，`ArrayList` 不会因为引用是 final 就变得线程安全。
+
+函数式代码更适合无副作用转换。必须修改共享对象时，仍然要按并发模型同步或隔离状态。
+
+### 3.2 成员字段不受有效 final 限制
+
+Lambda 可以读写当前对象的字段：
+
+```java
+final class Counter {
+    private int value;
+
+    Runnable incrementer() {
+        return () -> value++;
+    }
+}
+```
+
+字段属于对象状态，不是被复制的局部变量。这个例子在多线程下仍有数据竞争，Lambda 不提供额外同步。
+
+## 4. this 与匿名内部类不同
+
+Lambda 不建立新的 `this` 作用域，内部的 `this` 指向外层对象：
+
+```java
+final class Service {
+    Runnable task() {
+        return () -> System.out.println(this.getClass().getSimpleName());
+    }
+}
+```
+
+匿名内部类中的 `this` 指向匿名类实例。迁移旧代码时，如果逻辑使用了 `this` 或 `super`，不能只做机械语法替换。
+
+Lambda 也不应该依赖生成对象的具体类名、对象身份或序列化形态。JVM 可以用不同策略实现同一个调用点。
+
+## 5. 方法引用是已有调用的简写
+
+常见方法引用有四种形式：
+
+```java
+Function<String, Integer> parse = Integer::parseInt; // 静态方法
+Supplier<String> getName = user::displayName;        // 特定对象实例方法
+Function<String, String> trim = String::trim;        // 任意对象实例方法
+Supplier<List<String>> listFactory = ArrayList::new; // 构造方法
+```
+
+`String::trim` 对应的第一个函数参数成为方法接收者，可以理解为 `value -> value.trim()`。
+
+方法引用只有在目标接口已知、参数映射直观时才更清楚。需要重新排列参数、补充条件或处理异常时，普通 Lambda 往往更容易读。
+
+## 6. 异常与 Lambda
+
+函数式接口的抽象方法是否声明受检异常，决定 Lambda 能否直接抛出：
+
+```java
+Callable<String> callable = () -> Files.readString(path);
+
+// Supplier<String> supplier = () -> Files.readString(path);
+// 编译错误：Supplier.get 不声明 IOException
+```
+
+不要为了塞进 `Function` 就统一把受检异常包装成没有语义的 `RuntimeException`。可以定义带明确异常契约的领域接口，在调用边界转换异常，或把 I/O 与纯转换拆成不同阶段。
+
+## 7. Lambda 在运行时怎样实现
+
+Java 编译器通常使用 `invokedynamic` 调用点，由 `LambdaMetafactory` 等运行时引导逻辑创建实现。它不要求每个 Lambda 都编译成一个普通匿名内部类文件。
+
+这个实现方式让 JVM 可以按捕获状态和调用热度选择策略：无捕获 Lambda 可能复用实例，有捕获 Lambda 需要保存捕获值。但语言规范不保证对象是否复用，业务代码不能用 `==` 判断两个 Lambda 是否“相同”。
+
+对日常开发更重要的是目标类型和行为契约。只有排查性能、字节码或框架兼容问题时，才需要进入 `invokedynamic` 和调用点细节。
+
+## 8. 常见问题
+
+### 8.1 函数式接口能有多个方法吗
+
+可以有多个 `default`、`static` 或 `private` 方法，但只能有一个需要实现的抽象方法。两个抽象方法即使参数相同但返回类型不兼容，也不能作为 Lambda 目标。
+
+### 8.2 Lambda 一定比匿名内部类快吗
+
+不能只按语法判断。实现、分配和 JIT 优化取决于捕获状态、调用点是否稳定和 JDK 版本。两者首先应按 `this` 语义、接口需求和可读性选择，热点路径再用基准测试验证。
+
+### 8.3 为什么循环变量有时可以被捕获
+
+增强 `for` 的每次迭代会产生一个新的迭代变量值，因此每次捕获对应当次值。普通循环中不断修改同一个索引变量，它不是有效 final，不能直接捕获；可以在循环体中复制到新的 final 局部变量。
+
+### 8.4 Lambda 能否序列化
+
+只有目标类型同时实现 `Serializable` 时才可能序列化，但生成格式与捕获实现不适合作为长期协议。任务持久化应保存业务参数和任务类型，再由稳定代码重建行为，不保存 Lambda 对象。
+
+## 9. 面试题
+
+### 9.1 什么是函数式接口，Function、Consumer 和 Supplier 有什么区别
+
+<!-- 面试来源：
+- 快手：https://www.nowcoder.com/discuss/797425690797744128
+- 印宏网络科技：https://www.nowcoder.com/discuss/1610774
+-->
+
+**出现公司**：快手、印宏网络科技
+
+**考察重点**
+
+- 单一抽象方法怎样成为 Lambda 的目标类型。
+- 输入、输出与副作用如何区分常用接口。
+- 默认方法是否影响函数式接口资格。
+
+**相关内容**：第 1 节“Lambda 的目标类型是函数式接口”、第 2 节“常用函数式接口”。
+
+<details>
+<summary>参考回答</summary>
+
+函数式接口只有一个需要实现的抽象方法，可以有多个默认或静态方法。Lambda 根据目标函数式接口推断参数、返回类型和异常契约，`@FunctionalInterface` 可以让编译器检查这个约束。
+
+`Function<T,R>` 把输入转换为输出，`Consumer<T>` 接收输入并执行没有返回值的副作用，`Supplier<T>` 不接收参数并延迟提供一个结果。选择接口应根据行为语义，而不是为了使用 Lambda 强行套类型。
+
+</details>
+
+### 9.2 Lambda 表达式依赖什么目标类型，平时怎样使用
+
+<!-- 面试来源：
+- 用友：https://www.nowcoder.com/discuss/385135983392550912
+-->
+
+**出现公司**：用友
+
+**考察重点**
+
+- Lambda 为什么必须匹配函数式接口。
+- 常用函数式接口与方法引用的选择。
+- 捕获局部变量时的有效 final 限制。
+
+**相关内容**：第 1 节“Lambda 的目标类型是函数式接口”、第 2 节“常用函数式接口”、第 3 节“捕获外层变量”。
+
+<details>
+<summary>参考回答</summary>
+
+Lambda 没有独立的名义类型，它需要赋给或传给一个函数式接口，编译器据此确定参数、返回值和异常契约。数据转换常用 `Function`，条件判断使用 `Predicate`，产生副作用使用 `Consumer`，延迟提供数据使用 `Supplier`。只有在参数映射直观时，才用方法引用进一步简化。
+
+Lambda 可以捕获 final 或有效 final 的局部变量。捕获对象引用时，引用不能重新赋值，但对象状态仍然可能变化，因此并发调用时仍需处理线程安全。
+
+</details>
+
+:::note 参考资料
+
+1. [Java Language Specification：Lambda Expressions](https://docs.oracle.com/en/java/javase/26/docs/specs/jls/jls-15.html#jls-15.27)
+2. [Java Language Specification：Functional Interfaces](https://docs.oracle.com/en/java/javase/26/docs/specs/jls/jls-9.html#jls-9.8)
+3. [Java API：java.util.function](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/function/package-summary.html)
+4. [Java API：FunctionalInterface](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/FunctionalInterface.html)
+5. [Java API：LambdaMetafactory](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/invoke/LambdaMetafactory.html)
+
+:::

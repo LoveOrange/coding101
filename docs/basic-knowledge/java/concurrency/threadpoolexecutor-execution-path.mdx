@@ -1,0 +1,111 @@
+---
+sidebar_position: 16
+---
+
+# 线程池的核心参数与执行路径
+
+`ThreadPoolExecutor` 用工作线程执行任务，用队列承接暂时无法运行的任务，并在容量耗尽时拒绝提交。核心线程数、最大线程数和队列必须放在同一条执行路径中理解。
+
+## 1. 七个构造参数分成四类
+
+```java
+new ThreadPoolExecutor(
+        corePoolSize,
+        maximumPoolSize,
+        keepAliveTime,
+        TimeUnit.SECONDS,
+        workQueue,
+        threadFactory,
+        rejectedExecutionHandler
+);
+```
+
+| 作用 | 参数 |
+| --- | --- |
+| 并发容量 | `corePoolSize`、`maximumPoolSize` |
+| 空闲回收 | `keepAliveTime`、`unit` |
+| 等待容量 | `workQueue` |
+| 创建与过载行为 | `threadFactory`、`handler` |
+
+参数数量不是重点。要回答的是任务到来时，它会直接执行、进入队列、扩容线程还是被拒绝。
+
+## 2. `execute` 按核心线程、队列和最大线程分流
+
+线程池处于 RUNNING 时，主要路径是：
+
+1. 工作线程少于 `corePoolSize`，尝试创建线程直接执行新任务。
+2. 否则尝试把任务放入 `workQueue`。
+3. 入队后重新检查线程池状态，并确保至少有工作线程可以消费。
+4. 队列无法接收时，若工作线程少于 `maximumPoolSize`，尝试创建额外线程执行任务。
+5. 仍不能接收时，调用拒绝策略。
+
+因此，使用无界队列时通常不会因为队列满而扩展到 `maximumPoolSize`；最大线程数看似配置了，实际可能长期不起作用。
+
+## 3. Worker 会持续从队列取任务
+
+新建 Worker 可以带一个首任务；执行完以后，它会继续从队列获取后续任务，而不是每个任务都创建线程。线程复用节省创建成本，也让 ThreadLocal、线程名和未清理上下文跨任务保留下来。
+
+默认情况下，超过核心数量的空闲线程经过 `keepAliveTime` 后可退出。调用 `allowCoreThreadTimeOut(true)` 后核心线程也可超时回收，但启动抖动和空闲资源目标需要重新评估。
+
+## 4. 线程工厂决定可诊断性
+
+生产线程工厂至少应设置有意义的名称、未捕获异常处理和必要的 daemon 策略：
+
+```java
+ThreadFactory factory = Thread.ofPlatform()
+        .name("order-worker-", 0)
+        .factory();
+```
+
+线程名应该能映射到执行器和业务用途。不要依赖线程优先级解决容量问题，也不要随意把关键任务线程改成 daemon；JVM 只剩 daemon 线程时可以开始退出。
+
+## 5. `execute` 和 `submit` 的异常表现不同
+
+`execute(Runnable)` 中未捕获异常会从任务逃出，并到达工作线程的未捕获异常处理流程；`submit` 会把异常保存在返回的 `Future` 中，调用方若从不 `get`，错误可能没有业务可见信号。
+
+可以在任务边界统一记录结果、耗时和异常，并确保日志不会代替 Future 的调用方处理。
+
+## 6. 常见问题
+
+### 6.1 创建线程池后会立即创建所有核心线程吗
+
+默认不会，通常在任务到达时按需创建。需要预热可调用 `prestartCoreThread()` 或 `prestartAllCoreThreads()`。
+
+### 6.2 为什么不直接使用 `Executors.newFixedThreadPool`
+
+它使用无界队列，突发压力可能变成长时间积压和内存增长。并非任何使用都错误，但生产系统通常需要显式决定队列容量、线程工厂与拒绝语义。
+
+## 7. 面试题
+
+### 7.1 `ThreadPoolExecutor.execute` 的任务处理流程是什么
+
+<!-- 面试来源：
+- 阿里巴巴：https://www.nowcoder.com/discuss/461925
+- 美团：https://www.nowcoder.com/discuss/639130444558045184
+-->
+
+**出现公司**：阿里巴巴、美团
+
+**考察重点**
+
+- 核心线程、队列和最大线程的先后关系。
+- 入队后的状态复查。
+- 无界队列对最大线程数的影响。
+
+**相关内容**：第 1 节“七个构造参数分成四类”至第 3 节“Worker 会持续从队列取任务”。
+
+<details>
+<summary>参考回答</summary>
+
+运行中提交任务时，先在工作线程少于 core 时尝试新建 Worker；否则尝试入队，并在入队后复查运行状态与是否存在消费者。队列满时再尝试扩展到 maximum；仍无法接收或线程池不再运行时执行拒绝策略。
+
+所以参数必须和队列一起解释。无界队列通常不会触发 maximum 扩容，过载表现会变成队列和延迟持续增长。
+
+</details>
+
+:::note 参考资料
+
+1. [Java API：`ThreadPoolExecutor`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/ThreadPoolExecutor.html)
+2. [OpenJDK：`ThreadPoolExecutor` 源码](https://github.com/openjdk/jdk/blob/jdk-26%2B36/src/java.base/share/classes/java/util/concurrent/ThreadPoolExecutor.java)
+
+:::

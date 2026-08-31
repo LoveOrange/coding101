@@ -1,0 +1,129 @@
+---
+sidebar_position: 12
+---
+
+# ReentrantLock、公平性与 Condition
+
+`ReentrantLock` 提供与 `synchronized` 相近的互斥和内存语义，并增加可中断获取、尝试获取、超时、公平策略和多个条件队列。只有确实需要这些能力时，它才比语言级锁更合适。
+
+## 1. 获取和释放必须形成固定结构
+
+```java
+private final ReentrantLock lock = new ReentrantLock();
+
+void update() {
+    lock.lock();
+    try {
+        updateState();
+    } finally {
+        lock.unlock();
+    }
+}
+```
+
+`unlock()` 必须放在成功获取后的 `finally` 中。不要把 `lock()` 放进 `try` 后再无条件释放，因为获取过程若失败或被中断，当前线程并不拥有锁。
+
+和 `synchronized` 一样，它是可重入锁；同一线程每次成功获取都要有匹配的释放。
+
+## 2. 可中断和超时让等待可以退出
+
+```java
+if (lock.tryLock(200, TimeUnit.MILLISECONDS)) {
+    try {
+        updateState();
+    } finally {
+        lock.unlock();
+    }
+} else {
+    rejectBusyRequest();
+}
+```
+
+`lockInterruptibly()` 可以响应中断，超时 `tryLock` 可以把资源等待纳入请求期限。这些能力适合必须避免无限等待或需要打破潜在锁环的流程。
+
+## 3. 公平锁减少插队但通常降低吞吐
+
+`new ReentrantLock(true)` 在竞争时倾向让等待最久的线程先获得锁。更强的排队约束会减少新到线程直接取得空闲锁的机会，也增加调度和唤醒成本。
+
+公平锁不能保证操作系统公平调度；无参数 `tryLock()` 也不遵守公平策略，只要锁可用就可能直接成功。只有业务真的需要控制长期等待时才启用公平性，并用等待分布验证效果。
+
+## 4. Condition 表示“状态条件尚未满足”
+
+```java
+private final Condition notEmpty = lock.newCondition();
+
+Item take() throws InterruptedException {
+    lock.lockInterruptibly();
+    try {
+        while (queue.isEmpty()) {
+            notEmpty.await();
+        }
+        return queue.removeFirst();
+    } finally {
+        lock.unlock();
+    }
+}
+```
+
+`await()` 原子地释放关联锁并等待，返回前重新取得锁。条件必须用 `while` 重查，因为线程可能被无理由唤醒，或者从收到 signal 到重新加锁期间，条件又被其他线程改变。
+
+## 5. `signal` 只是通知重新竞争
+
+修改条件的线程应在持锁状态下更新共享状态，再调用 `signal` 或 `signalAll`：
+
+```java
+lock.lock();
+try {
+    queue.addLast(item);
+    notEmpty.signal();
+} finally {
+    lock.unlock();
+}
+```
+
+收到 signal 的线程不会立刻运行，也不会直接继承锁；它要回到同步队列重新竞争。能精确确认一个等待者足够时使用 `signal`，条件关联复杂或遗漏唤醒风险高时使用 `signalAll`。
+
+## 6. 常见问题
+
+### 6.1 `ReentrantLock` 一定比 `synchronized` 快吗
+
+没有普遍结论。现代 JVM 会优化两者的常见路径。默认优先选择语义简单的方案；只有需要可中断、超时、公平或多个 Condition 时再选 `ReentrantLock`，性能由基准判断。
+
+### 6.2 Condition 可以脱离 Lock 使用吗
+
+不能。等待、signal 和条件检查都必须在对应锁保护下完成，否则会抛出异常或产生检查与等待之间的丢失通知。
+
+## 7. 面试题
+
+### 7.1 公平锁为什么通常吞吐更低
+
+<!-- 面试来源：
+- 蚂蚁集团：https://www.nowcoder.com/discuss/353150007719174144
+- 美团：https://www.nowcoder.com/discuss/383727207275933696
+-->
+
+**出现公司**：蚂蚁集团、美团
+
+**考察重点**
+
+- 插队、排队与唤醒成本。
+- 公平锁和线程调度公平的区别。
+- `tryLock()` 的特殊行为。
+
+**相关内容**：第 2 节“可中断和超时让等待可以退出”和第 3 节“公平锁减少插队但通常降低吞吐”。
+
+<details>
+<summary>参考回答</summary>
+
+非公平锁在释放瞬间可以让正在运行的新线程直接取得锁，减少一次挂起和唤醒；公平锁倾向服务等待最久的线程，需要遵守队列，调度切换更多，因此吞吐通常更低，但等待时间方差可能更小。
+
+公平策略不等于操作系统调度公平，无参数 `tryLock()` 还允许插队。应在确实需要限制长期等待时使用，并观察吞吐和等待分位数。
+
+</details>
+
+:::note 参考资料
+
+1. [Java API：`ReentrantLock`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/locks/ReentrantLock.html)
+2. [Java API：`Condition`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/locks/Condition.html)
+
+:::

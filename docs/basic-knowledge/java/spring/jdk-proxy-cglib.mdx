@@ -1,0 +1,117 @@
+---
+sidebar_position: 7
+---
+
+# JDK 动态代理与 CGLIB
+
+Spring AOP 可以生成实现接口的 JDK 动态代理，也可以生成目标类的 CGLIB 子类代理。两者主要差异是代理暴露的类型和可拦截的方法，不应靠旧版本性能结论选择。
+
+## 1. JDK 动态代理实现一组接口
+
+```java
+PaymentService target = new DefaultPaymentService();
+
+PaymentService proxy = (PaymentService) Proxy.newProxyInstance(
+        PaymentService.class.getClassLoader(),
+        new Class<?>[] {PaymentService.class},
+        (object, method, arguments) -> method.invoke(target, arguments)
+);
+```
+
+代理类实现指定接口，调用进入 `InvocationHandler`。客户端应按接口类型引用代理；目标类上未出现在代理接口中的方法不会通过这份代理暴露。
+
+## 2. CGLIB 生成目标类的子类
+
+CGLIB 代理通过继承目标类并覆盖可重写方法进行拦截。它可以代理没有业务接口的类，但受 Java 继承规则限制：
+
+- `final` 类不能被继承。
+- `final` 方法不能覆盖。
+- `private` 方法对子类不可见，不能按这种方式拦截。
+- 模块边界可能限制对不可见成员的访问。
+
+Spring 将 CGLIB 重新打包在 `spring-core` 中，应用通常不需要单独添加 cglib 依赖。
+
+## 3. 实际默认值取决于 Spring 配置
+
+Spring Framework 的代理创建可根据目标是否具有接口选择类型，也可以通过 `proxyTargetClass` 强制类代理。Spring Boot 的配置可能设置全局默认；Spring Framework 7 还允许针对特定 Bean 指定代理类型。
+
+因此，排查时直接检查运行对象：
+
+```java
+AopUtils.isAopProxy(bean);
+AopUtils.isJdkDynamicProxy(bean);
+AopUtils.isCglibProxy(bean);
+```
+
+不要只根据“类实现了接口”猜测最终结果。
+
+## 4. 自调用对两类代理都有相同边界
+
+```java
+public void checkout() {
+    this.reserve();
+}
+
+@Transactional
+public void reserve() {}
+```
+
+外部调用先进入代理，再到目标对象；目标内部的 `this.reserve()` 已经在目标对象中直接分派，不会重新经过外部代理。改成 CGLIB 也不能把所有自调用自动变成代理调用。
+
+优先把事务边界移动到另一个 Bean 或上层编排。通过当前代理、自注入来绕行会增加隐藏耦合。
+
+## 5. 类型和注解位置会影响匹配
+
+JDK 代理暴露接口，基于具体类获取 Bean 或只在实现方法上读取注解的框架逻辑可能产生差异。Spring 自身会处理许多桥接和目标方法解析，但自定义反射代码要明确检查代理类型、目标类和最具体方法。
+
+类代理对构造、可见性和 final 的约束也会在 Kotlin 等默认 final 的语言中更明显。
+
+## 6. 性能由当前 JDK 与调用链决定
+
+现代 JDK、Spring 和 CGLIB 实现持续变化，代理调用开销通常小于数据库、网络和业务逻辑。先按类型契约和拦截能力选择；真的处在高频短方法路径时，再用当前运行版本做 JMH 与 profile。
+
+## 7. 常见问题
+
+### 7.1 强制 CGLIB 就能代理 private 方法吗
+
+不能。子类无法覆盖 private 方法，final 方法也不能覆盖。
+
+### 7.2 代理对象和目标对象是同一个实例吗
+
+不是同一个引用。代理持有或能够定位目标，并在调用前后执行拦截链；容器通常把代理引用交给其他 Bean。
+
+## 8. 面试题
+
+### 8.1 JDK 动态代理与 CGLIB 有什么区别
+
+<!-- 面试来源：
+- 阅文集团：https://www.nowcoder.com/discuss/353156602796646400
+- 美团：https://www.nowcoder.com/discuss/353158567966482432
+-->
+
+**出现公司**：阅文集团、美团
+
+**考察重点**
+
+- 接口实现与子类覆盖。
+- final、private 和自调用限制。
+- 默认策略应从运行配置确认。
+
+**相关内容**：第 1 节“JDK 动态代理实现一组接口”至第 4 节“自调用对两类代理都有相同边界”。
+
+<details>
+<summary>参考回答</summary>
+
+JDK 动态代理生成实现指定接口的类，调用通过 InvocationHandler；CGLIB 生成目标类子类并覆盖可重写方法，所以能代理没有接口的类，但不能处理 final 类、final 或 private 方法。
+
+实际使用哪种受 Spring 和 Boot 配置影响，应检查运行对象。两者都是外部代理模型，同类 `this` 自调用都会绕过代理；性能也应基于当前 JDK 和真实调用链测量，不能复述旧版本倍数。
+
+</details>
+
+:::note 参考资料
+
+1. [Spring Framework：Proxying Mechanisms](https://docs.spring.io/spring-framework/reference/core/aop/proxying.html)
+2. [Java API：`Proxy`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/reflect/Proxy.html)
+3. [Spring API：`AopUtils`](https://docs.spring.io/spring-framework/docs/current/javadoc-api/org/springframework/aop/support/AopUtils.html)
+
+:::

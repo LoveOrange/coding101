@@ -1,0 +1,127 @@
+---
+sidebar_position: 3
+---
+
+# N+1 查询与抓取策略
+
+N+1 查询是先查出 N 个主对象，再为每个对象分别查询关联数据，最终产生 1+N 次数据库往返。它通常由循环内查询或 ORM 懒加载触发，只有观察实际 SQL 数量才能确认。
+
+## 1. 一次列表访问怎样变成 N+1
+
+```java
+List<Order> orders = orderRepository.findAll(); // 1 次
+
+for (Order order : orders) {
+    render(order.getCustomer().getName());       // 最多 N 次
+}
+```
+
+第一次查询只加载 Order。循环访问未加载的 customer 时，Hibernate 为每个不同关联继续发 SQL。小数据集看不出问题，分页数量或延迟上升后，往返成本会线性放大。
+
+N+1 并不限于 ORM：在循环中手工调用 Mapper、RPC 或缓存，也会形成相同结构。
+
+## 2. 先用 SQL 与指标确认问题
+
+排查一条列表接口时，至少记录：
+
+- 一次请求的 SQL 总数和重复 SQL 模板。
+- 每条 SQL 的耗时、返回行数和扫描行数。
+- 数据库连接占用时间与等待时间。
+- 页面大小变化时，SQL 数量是否按比例增长。
+
+开发环境打开 SQL 日志只能帮助定位，生产环境更适合使用低开销指标、采样追踪和慢查询。不要把完整参数和敏感字段长期写入日志。
+
+## 3. Join Fetch 一次取回已知关联
+
+```java
+select distinct o
+from Order o
+join fetch o.customer
+where o.status = :status
+```
+
+对 to-one 关联，join fetch 通常能直接消除额外查询。对 to-many 集合，SQL 会产生父行与子行的组合，结果集可能显著膨胀；同时抓取多个集合还可能形成笛卡尔积。
+
+JPQL 的 `distinct` 处理实体重复，不代表数据库传输量一定减少。选择 join fetch 前要估算关联基数和返回列宽。
+
+## 4. EntityGraph 按用例选择加载范围
+
+`@NamedEntityGraph` 或动态 EntityGraph 可以在不改实体默认抓取设置的前提下，为某次查询声明所需关联。它适合多个接口对同一实体需要不同视图的情况。
+
+EntityGraph 描述要抓取什么，具体 SQL 形态仍由提供者决定。需要通过实际 SQL 和查询计划验证，不能把声明当作“一定只有一条 SQL”的承诺。
+
+## 5. 批量抓取减少往返次数
+
+Hibernate batch fetching 会收集一批待加载关联的主键，用 `where id in (...)` 等形式分批查询。它可以把 N 次降为若干次，适合 join 会产生巨大结果集、又无法提前确定每个关联是否都会访问的情况。
+
+批量抓取缓解了 N+1，但查询数量仍取决于批大小和访问模式。IN 参数上限、执行计划与结果集大小也需要压测。
+
+手写数据访问可以先收集所有外键，批量查询后按 key 分组回填，原理相同。
+
+## 6. DTO 投影只读取接口需要的数据
+
+列表接口若只显示订单号、客户名和金额，可以直接查询 DTO：
+
+```java
+select new com.example.OrderRow(o.id, c.name, o.amount)
+from Order o
+join o.customer c
+where o.status = :status
+```
+
+投影避免构造完整实体图，也不会在序列化阶段继续懒加载。代价是查询结果面向具体用例，不能作为受管实体直接修改。
+
+## 7. 集合抓取与分页要分两步考虑
+
+对 to-many 集合使用 join fetch 后，数据库结果中的一条父记录会重复多次。此时直接分页可能切断集合、得到错误页大小，或让 ORM 在内存中分页。
+
+稳定方案通常是：
+
+1. 先按稳定排序分页查询父对象 ID。
+2. 再按这一页 ID 抓取详情和关联。
+3. 在内存中按第一页的顺序组装结果。
+
+查询数从一条变成两条是有意选择；目标是固定往返次数和结果规模，不是机械追求一条 SQL。
+
+## 8. 防止问题再次出现
+
+- 为关键接口添加 SQL 数量上限或查询统计断言。
+- 用真实页面大小测试，不只查一条数据。
+- 代码评审检查循环内 Repository/Mapper 调用和实体序列化。
+- 压测同时观察连接池等待、数据库 CPU 和返回行数。
+- 新增关联字段时重新检查查询策略。
+
+## 9. 面试题
+
+### 9.1 怎样定位并解决 ORM 的 N+1 查询
+
+<!-- 面试来源：
+- 字节跳动：https://www.nowcoder.com/discuss/920379874269794304
+-->
+
+**出现公司**：字节跳动
+
+**考察重点**
+
+- N+1 的触发结构与证据。
+- join fetch、EntityGraph、批量抓取和 DTO 投影。
+- to-many 分页与结果集膨胀。
+
+**相关内容**：第 1 节“一次列表访问怎样变成 N+1”至第 8 节“防止问题再次出现”。
+
+<details>
+<summary>参考回答</summary>
+
+先统计一次请求的 SQL 数量和重复模板，确认查询数是否随页面 N 线性增长，再定位是懒加载还是循环内手工查询。已知且基数可控的关联可以 join fetch 或用 EntityGraph；join 会放大结果集时，可使用批量抓取或收集外键后一次查询。只读列表也可以直接 DTO 投影。
+
+to-many join fetch 不能直接假定能正确分页，常见做法是先分页查父 ID，再按这一页 ID 抓取关联。修复后应断言查询数量，并在真实页大小下观察返回行数、连接池等待和数据库负载。
+
+</details>
+
+:::note 参考资料
+
+1. [Hibernate ORM：Association Fetching](https://docs.hibernate.org/orm/7.1/introduction/html_single/#association-fetching)
+2. [Hibernate ORM User Guide：Dynamic Fetching](https://docs.hibernate.org/orm/current/userguide/html_single/Hibernate_User_Guide.html#fetching-strategies-dynamic-fetching)
+3. [Jakarta Persistence：Entity Graphs](https://jakarta.ee/specifications/persistence/3.2/jakarta-persistence-spec-3.2.html#a2813)
+
+:::

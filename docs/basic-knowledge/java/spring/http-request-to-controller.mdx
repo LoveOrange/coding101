@@ -1,0 +1,117 @@
+---
+sidebar_position: 11
+---
+
+# 一次 HTTP 请求如何到达 Controller
+
+在 Spring MVC 应用中，请求先由网络服务器和 Servlet 容器接收，再经过 Filter 链进入 `DispatcherServlet`。MVC 随后查找处理器、解析参数、调用 Controller，并把返回值转换成 HTTP 响应。
+
+## 1. 连接由 Web 服务器与 Servlet 容器管理
+
+客户端建立连接并发送 HTTP 消息后，Tomcat、Jetty 等服务器解析请求行、头和请求体，构造 Servlet API 的 request/response，并从容器线程模型中安排一次请求处理。
+
+Spring MVC 默认运行在 Servlet 栈上，不直接负责 TCP 握手或 HTTP 报文解析。连接数、accept 队列、请求线程和 keep-alive 属于容器配置，排查慢请求时要和应用线程池分开观察。
+
+## 2. Filter 在 Servlet 调度链上运行
+
+```java
+class RequestIdFilter extends OncePerRequestFilter {
+    @Override
+    protected void doFilterInternal(
+            HttpServletRequest request,
+            HttpServletResponse response,
+            FilterChain chain) throws ServletException, IOException {
+        chain.doFilter(request, response);
+    }
+}
+```
+
+Filter 可以包装原始请求和响应，也可能覆盖静态资源、错误或异步 dispatch，具体取决于 URL 与 dispatcher type 注册。Spring Security 也主要以一组 Servlet Filter 接入。
+
+调用 `chain.doFilter` 才会进入下一项；返回后 Filter 还可以执行清理，但响应可能已经提交。
+
+## 3. DispatcherServlet 进入 MVC 处理链
+
+主要步骤是：
+
+1. `HandlerMapping` 根据请求找到 handler 和 Interceptor。
+2. `HandlerAdapter` 选择能够调用该 handler 的适配方式。
+3. Interceptor 执行 `preHandle`。
+4. 参数解析器、数据绑定和消息转换器准备方法参数。
+5. Controller 方法执行。
+6. 返回值处理器写响应体或形成视图。
+7. Interceptor 完成后置与清理回调。
+8. 异常交给 `HandlerExceptionResolver` 链。
+
+`DispatcherServlet` 是协调者，具体动作委托给这些策略组件。
+
+## 4. Controller 返回值还要经过转换
+
+```java
+@GetMapping("/orders/{id}")
+OrderResponse get(@PathVariable long id) {
+    return service.find(id);
+}
+```
+
+`@ResponseBody` 或 `@RestController` 场景下，返回值处理器根据协商的媒体类型选择 `HttpMessageConverter`，例如把对象序列化为 JSON。视图应用则可能交给 `ViewResolver` 和 `View` 渲染。
+
+序列化异常发生在 Controller 已经返回之后，仍属于 MVC 返回值处理链，而不是业务方法内部异常。
+
+## 5. 异步请求会发生后续 dispatch
+
+Servlet async、`Callable` 或 `DeferredResult` 可以让初始容器线程退出，在结果就绪后继续处理。Filter 和 Interceptor 对异步 dispatch 的回调规则与普通同步请求不同，上下文清理不能只放在一个看似“返回后”的位置。
+
+WebFlux 使用响应式服务器与不同执行模型，不经过这套 Servlet `DispatcherServlet` 链。虚拟线程则仍可运行传统 Servlet 同步代码，选择依据是阻塞特征、框架支持和下游容量。
+
+## 6. 建立端到端请求证据
+
+每个入口至少保留 request ID、方法、规范化路径、状态、耗时和响应大小。路径模板比原始 URL 更适合指标标签，避免把用户 ID 变成高基数。
+
+连接等待、Filter、handler、数据库和序列化时间应能在 trace 或 profile 中区分，不能把 Controller 方法耗时当成完整请求耗时。
+
+## 7. 常见问题
+
+### 7.1 Controller 是 Servlet 吗
+
+通常不是。Controller 是 Spring Bean，由 HandlerAdapter 调用；`DispatcherServlet` 才是 Servlet 前端控制器。
+
+### 7.2 一个请求一定只执行一次 Filter 吗
+
+不一定。Servlet 还可能发生 ASYNC、ERROR、FORWARD 等 dispatch。`OncePerRequestFilter` 也提供针对异步和错误 dispatch 的控制钩子，名字不能代替注册语义。
+
+## 8. 面试题
+
+### 8.1 一次 HTTP 请求在 Spring MVC 中怎样到达 Controller
+
+<!-- 面试来源：
+- 滴滴：https://www.nowcoder.com/discuss/353155833452240896
+- 远景能源：https://www.nowcoder.com/discuss/353154242703728640
+-->
+
+**出现公司**：滴滴、远景能源
+
+**考察重点**
+
+- Servlet 容器、Filter 与 DispatcherServlet。
+- HandlerMapping、HandlerAdapter 和参数解析。
+- 返回值转换与异常解析。
+
+**相关内容**：第 1 节“连接由 Web 服务器与 Servlet 容器管理”至第 4 节“Controller 返回值还要经过转换”。
+
+<details>
+<summary>参考回答</summary>
+
+Web 服务器解析 HTTP 并由 Servlet 容器安排请求线程，请求先经过 Filter 链，再进入 DispatcherServlet。它通过 HandlerMapping 找到 Controller 和拦截器，通过 HandlerAdapter 调用；参数解析器和消息转换器准备参数，返回值处理器再序列化响应或渲染视图。
+
+异常会交给 HandlerExceptionResolver 链。完整耗时还包括连接、Filter、参数读取和响应序列化，不能只观察 Controller 方法。
+
+</details>
+
+:::note 参考资料
+
+1. [Spring Framework：DispatcherServlet](https://docs.spring.io/spring-framework/reference/web/webmvc/mvc-servlet.html)
+2. [Spring Framework：Spring MVC Processing Sequence](https://docs.spring.io/spring-framework/reference/web/webmvc/mvc-servlet/sequence.html)
+3. [Jakarta Servlet Specification](https://jakarta.ee/specifications/servlet/6.1/)
+
+:::

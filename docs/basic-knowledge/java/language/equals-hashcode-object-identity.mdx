@@ -1,0 +1,287 @@
+---
+sidebar_position: 5
+---
+
+# equals、hashCode 与对象身份
+
+`==` 判断两个引用是否指向同一个对象，`equals` 可以定义两个对象在业务上是否相等，`hashCode` 则让哈希集合能够先缩小查找范围。三者回答的问题不同，但自定义对象相等性时必须保持一致。
+
+## 1. `==` 判断对象身份
+
+基本类型使用 `==` 比较具体的值，引用类型使用 `==` 判断两个引用是否都为 `null`，或者是否指向同一个对象：
+
+```java
+String first = new String("Java");
+String second = new String("Java");
+String alias = first;
+
+System.out.println(first == second); // false
+System.out.println(first == alias);  // true
+```
+
+`first` 和 `second` 指向两个独立对象，即使内容相同，`==` 仍然返回 `false`。`alias` 保存了与 `first` 相同的引用值，所以结果为 `true`。
+
+对象身份不需要解释成“比较内存地址”。Java 语言规范只保证引用相等的语义，垃圾收集器可以移动对象，JVM 也可以选择不同的内部表示。
+
+### 1.1 字符串常量池会影响 `==` 的结果
+
+```java
+String left = "Java";
+String right = "Java";
+
+System.out.println(left == right); // 通常为 true，同一个驻留字符串对象
+```
+
+这不意味着字符串内容应该使用 `==` 比较。字符串可能来自文件、网络或运行时拼接，并不保证引用相同。判断内容时使用 `equals`：
+
+```java
+System.out.println(left.equals(right));
+```
+
+## 2. `equals` 定义逻辑相等
+
+`Object.equals` 的默认实现与引用相等相同，只有同一个对象才相等。值对象通常需要根据组成它的字段定义逻辑相等。
+
+例如，订单编号相同就表示同一个订单标识：
+
+```java
+import java.util.Objects;
+
+public final class OrderId {
+    private final String value;
+
+    public OrderId(String value) {
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException("value must not be blank");
+        }
+        this.value = value;
+    }
+
+    @Override
+    public boolean equals(Object other) {
+        if (this == other) {
+            return true;
+        }
+        if (!(other instanceof OrderId orderId)) {
+            return false;
+        }
+        return value.equals(orderId.value);
+    }
+
+    @Override
+    public int hashCode() {
+        return value.hashCode();
+    }
+}
+```
+
+先判断 `this == other` 是一种快速路径，不是正确性的必要条件。随后检查类型，再比较决定逻辑身份的字段。
+
+### 2.1 `equals` 必须满足的约束
+
+对所有非 `null` 引用，正确的 `equals` 实现应满足：
+
+- **自反性**：`x.equals(x)` 为 `true`。
+- **对称性**：`x.equals(y)` 与 `y.equals(x)` 结果相同。
+- **传递性**：如果 `x` 等于 `y`，`y` 等于 `z`，那么 `x` 也等于 `z`。
+- **一致性**：参与相等判断的信息未改变时，多次调用结果保持一致。
+- **非空性**：`x.equals(null)` 为 `false`。
+
+这些约束让集合、缓存和业务代码能够稳定使用对象。实现 `equals` 时只看某些字段，意味着这些字段共同定义了对象的逻辑身份。
+
+## 3. `hashCode` 支持哈希查找
+
+`HashMap` 和 `HashSet` 不会从头对所有元素逐个调用 `equals`。它们先使用 `hashCode` 定位可能的桶，再在桶内比较键。
+
+因此，`equals` 与 `hashCode` 必须满足以下关系：
+
+> 如果两个对象通过 `equals` 判断相等，它们的 `hashCode` 必须相同。
+
+反过来不成立。两个不相等的对象可以有相同的哈希值，集合会继续使用 `equals` 区分它们。
+
+```java
+OrderId first = new OrderId("ORDER-101");
+OrderId second = new OrderId("ORDER-101");
+
+System.out.println(first == second);            // false
+System.out.println(first.equals(second));       // true
+System.out.println(first.hashCode()
+        == second.hashCode());                  // true
+```
+
+### 3.1 为什么重写 `equals` 时通常必须重写 `hashCode`
+
+如果只重写 `equals`，两个逻辑相等的对象仍然可能继承各自的 `Object.hashCode` 结果。它们会被分配到不同位置，`HashSet` 可能保存两个“相等”元素，`HashMap.get` 也可能找不到使用等价键写入的值。
+
+```java
+Map<OrderId, String> orders = new HashMap<>();
+orders.put(new OrderId("ORDER-101"), "paid");
+
+System.out.println(orders.get(new OrderId("ORDER-101"))); // paid
+```
+
+这段代码依赖 `OrderId.equals` 和 `OrderId.hashCode` 使用相同的身份字段。
+
+### 3.2 哈希值相同不代表对象相等
+
+`hashCode` 只有 32 位，可能的对象和值远多于可用哈希值，冲突无法彻底避免。好的实现尽量让常见输入分布均匀，但最终相等性仍由 `equals` 判断。
+
+返回常量也可以满足“相等对象哈希相同”的最低约束，却会让所有键落入同一位置，使哈希查找失去效率。正确性契约和分布质量都需要考虑。
+
+## 4. 相等性应该基于稳定字段
+
+对象作为 `HashMap` 的键或 `HashSet` 的元素后，如果参与 `equals` 或 `hashCode` 的字段发生变化，集合可能无法在原来的位置找到它：
+
+```java
+final class MutableKey {
+    private String value;
+
+    MutableKey(String value) {
+        this.value = value;
+    }
+
+    void setValue(String value) {
+        this.value = value;
+    }
+
+    @Override
+    public boolean equals(Object other) {
+        return other instanceof MutableKey key
+            && Objects.equals(value, key.value);
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hashCode(value);
+    }
+}
+
+MutableKey key = new MutableKey("A");
+Set<MutableKey> keys = new HashSet<>();
+keys.add(key);
+
+key.setValue("B");
+System.out.println(keys.contains(key)); // 通常为 false
+```
+
+元素加入集合时按照 `"A"` 的哈希值放入某个桶。字段改为 `"B"` 后，查询会按照新的哈希值寻找，原元素却仍在旧位置。
+
+适合作为哈希键的值对象通常具备以下特点：
+
+- 身份字段在构造后不再变化。
+- `equals` 与 `hashCode` 使用相同字段。
+- 字段本身也具有稳定的相等性。
+
+Java 的 `record` 会根据所有组件自动生成 `equals` 和 `hashCode`，适合全部组件共同定义相等性的简单值对象：
+
+```java
+public record OrderId(String value) {
+    public OrderId {
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException("value must not be blank");
+        }
+    }
+}
+```
+
+## 5. 继承会增加相等性设计的难度
+
+如果父类只比较父类字段，子类又增加参与身份判断的字段，`instanceof` 风格的实现可能破坏对称性或传递性。
+
+假设 `Money.equals` 认为所有金额和币种相同的子类都相等，而 `DiscountedMoney.equals` 还要求折扣来源相同：
+
+- `money.equals(discountedMoney)` 可能为 `true`。
+- `discountedMoney.equals(money)` 可能为 `false`。
+
+常见处理方式包括：
+
+- 将值类声明为 `final`，不允许子类改变相等性语义。
+- 使用 `record` 表达最终的值类型。
+- 用组合增加附加信息，不让子类扩展父类的身份字段。
+- 如果继承确实存在，明确整个层次的相等性协议并进行成组测试。
+
+使用 `getClass()` 可以要求两个对象具有完全相同的运行时类型，但也会让父类对象与子类对象永远不相等。它不是通用答案，仍然要先确定业务上的身份定义。
+
+## 6. 常见问题
+
+### 6.1 `Objects.equals(a, b)` 做了什么
+
+它先处理 `null`：两个引用都为 `null` 时返回 `true`，只有一个为 `null` 时返回 `false`；否则调用第一个对象的 `equals`。它简化了空值判断，但不会替对象设计正确的相等性。
+
+### 6.2 两个对象的 `hashCode` 不同，是否一定不相等
+
+在 `equals` 与 `hashCode` 实现符合契约的前提下，一定不相等。相等对象必须具有相同哈希值，因此哈希值不同可以直接排除相等。
+
+### 6.3 两个对象的 `hashCode` 相同，是否一定相等
+
+不一定。哈希冲突是允许的，还需要调用 `equals` 判断。
+
+### 6.4 `System.identityHashCode` 有什么作用
+
+`System.identityHashCode(object)` 返回接近 `Object.hashCode` 默认语义的哈希值，即使对象重写了 `hashCode` 也不会改用逻辑相等性。它可用于诊断基于对象身份的问题，但返回值不是内存地址，也不能作为全局唯一标识。
+
+### 6.5 实体对象应该使用数据库主键还是业务字段判断相等
+
+没有适用于所有实体的固定答案。数据库生成主键在持久化前可能不存在，可变业务字段又不适合作为哈希键。需要根据对象生命周期、ORM 代理、集合使用方式和领域身份共同确定，并确保同一生命周期内契约稳定。
+
+## 7. 面试题
+
+### 7.1 `==`、`equals` 和 `hashCode` 有什么关系
+
+<!-- 面试来源：
+- 字节跳动：https://www.nowcoder.com/discuss/878687099648565248
+- 中软国际：https://www.nowcoder.com/discuss/353159488733650944
+-->
+
+**出现公司**：字节跳动、中软国际
+
+**考察重点**
+
+- 引用身份与逻辑相等的区别。
+- `Object.equals` 的默认行为和自定义相等性的约束。
+- 哈希集合为什么要求相等对象具有相同哈希值。
+
+**相关内容**：第 1 节“`==` 判断对象身份”、第 2 节“`equals` 定义逻辑相等”、第 3 节“`hashCode` 支持哈希查找”。
+
+<details>
+<summary>参考回答</summary>
+
+对引用类型来说，`==` 判断两个引用是否都为 `null` 或指向同一个对象。`Object.equals` 默认也使用对象身份，类可以重写它来定义业务上的逻辑相等。
+
+`hashCode` 用于让哈希集合先定位候选位置。契约要求两个对象只要 `equals` 为 `true`，哈希值就必须相同；哈希值相同却不代表对象相等，还要继续比较 `equals`。因此自定义逻辑相等时，通常要使用相同字段同时重写 `equals` 和 `hashCode`。
+
+</details>
+
+### 7.2 可变对象能否作为 `HashMap` 的键
+
+<!-- 面试来源：
+- 字节跳动：https://www.nowcoder.com/discuss/878687099648565248
+-->
+
+**出现公司**：字节跳动
+
+**考察重点**
+
+- 哈希集合写入和查找时怎样使用哈希值。
+- 身份字段变化后为什么可能无法找到原来的键。
+- 怎样设计稳定的值对象。
+
+**相关内容**：第 3 节“`hashCode` 支持哈希查找”、第 4 节“相等性应该基于稳定字段”。
+
+<details>
+<summary>参考回答</summary>
+
+技术上可以，但作为键使用期间，参与 `equals` 和 `hashCode` 的字段不能变化。对象放入 `HashMap` 时会按照当时的哈希值定位；字段变化导致哈希值改变后，查询会从另一个位置开始，可能找不到仍在旧位置的键。
+
+更稳妥的做法是使用不可变值对象作为键，在构造时确定身份字段，并让 `equals` 和 `hashCode` 基于同一组字段。
+
+</details>
+
+:::note 参考资料
+
+1. [Java API：Object](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/Object.html)
+2. [Java API：Objects](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/Objects.html)
+3. [Java Language Specification：Reference Equality Operators](https://docs.oracle.com/en/java/javase/26/docs/specs/jls/jls-15.html#jls-15.21.3)
+4. [Java API：System.identityHashCode](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/System.html#identityHashCode(java.lang.Object))
+
+:::

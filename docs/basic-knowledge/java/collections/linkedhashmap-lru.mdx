@@ -1,0 +1,191 @@
+---
+sidebar_position: 9
+---
+
+# LinkedHashMap 与 LRU
+
+`LinkedHashMap` 在 HashMap 的桶结构之外，为所有条目维护一条双向顺序链。它可以保留插入顺序，也可以在每次访问后把条目移到链尾，从而实现简单的有界 LRU。
+
+## 1. 哈希查找与顺序链同时存在
+
+HashMap 负责按键定位，顺序链负责遍历次序：
+
+```text
+table buckets                     encounter order
+0 -> [B]                           [A] ⇄ [B] ⇄ [C]
+1 -> [A] -> [C]
+```
+
+条目同时属于某个桶和全局顺序链。`get`、`put` 平均仍接近 O(1)，但每个条目多保存前后顺序引用，写入和访问时也可能需要维护链。
+
+## 2. 插入顺序模式
+
+默认构造保留键首次插入的顺序：
+
+```java
+Map<String, Integer> counts = new LinkedHashMap<>();
+counts.put("A", 1);
+counts.put("B", 2);
+counts.put("A", 3);
+
+System.out.println(counts.keySet()); // [A, B]
+```
+
+更新已有键的值不会把它当成新插入的条目。适合：
+
+- 稳定输出配置和聚合结果。
+- 去重后保留输入顺序。
+- API 需要可预测遍历顺序。
+
+如果只为了稳定顺序，不需要排序，LinkedHashMap 比 TreeMap 少了对数比较成本。
+
+## 3. 访问顺序模式
+
+构造参数 `accessOrder` 设为 true 后，成功访问条目会把它移动到链尾：
+
+```java
+Map<String, String> cache = new LinkedHashMap<>(16, 0.75f, true);
+cache.put("A", "value-a");
+cache.put("B", "value-b");
+
+cache.get("A");
+System.out.println(cache.keySet()); // [B, A]
+```
+
+链首是最久未访问条目，链尾是最近访问条目。哪些 Map 方法算作访问由 LinkedHashMap API 明确定义，不能只凭方法名猜测。
+
+访问顺序下，`get` 会修改内部顺序，因此它不再是结构上纯只读操作。迭代期间调用会改变顺序的方法可能触发 fail-fast，跨线程访问也必须同步。
+
+## 4. 用 removeEldestEntry 建立有界 LRU
+
+```java
+public final class LruCache<K, V> extends LinkedHashMap<K, V> {
+    private final int maximumSize;
+
+    public LruCache(int maximumSize) {
+        super(Math.max(16, maximumSize), 0.75f, true);
+        if (maximumSize < 0) {
+            throw new IllegalArgumentException("maximumSize must be >= 0");
+        }
+        this.maximumSize = maximumSize;
+    }
+
+    @Override
+    protected boolean removeEldestEntry(Map.Entry<K, V> eldest) {
+        return size() > maximumSize;
+    }
+}
+```
+
+`put` 加入新条目后，LinkedHashMap 调用 `removeEldestEntry`，返回 true 时移除链首。这个实现限制条目数量，并按最近访问顺序淘汰。
+
+### 4.1 它没有解决的缓存问题
+
+这个简单 LRU 不提供：
+
+- 并发访问控制。
+- 按内存重量限制。
+- 过期时间和刷新。
+- 加载去重，避免缓存击穿。
+- 命中率和淘汰监控。
+- 淘汰回调的失败隔离。
+
+生产缓存通常使用 Caffeine 等成熟库，或远程缓存系统。LinkedHashMap 适合教学、小规模局部缓存和约束简单的工具，不应因为代码短就承担完整缓存职责。
+
+## 5. LRU 与其他淘汰规则
+
+LRU 假设最近访问过的数据更可能再次访问。它可能被一次大范围扫描污染：大量只访问一次的键会挤出真正热点。
+
+其他策略包括：
+
+- FIFO：按写入时间淘汰，不考虑访问。
+- LFU：倾向保留访问频率高的条目。
+- 基于窗口和频率估计的混合策略。
+- TTL：按时间过期，与容量淘汰是不同维度。
+
+选择缓存策略要看访问分布、对象大小和可接受陈旧度，不能把所有“最近”需求都等同于 LRU。
+
+## 6. 迭代与内存成本
+
+LinkedHashMap 沿顺序链遍历，成本与 size 成正比，不需要扫描大量空桶。这在容量预留较大而又频繁完整遍历时有优势。
+
+代价是每个条目增加链接字段，访问顺序模式的读取还要修改链。内存敏感时，应按真实对象布局和数据量测量，而不是只比较接口复杂度。
+
+## 7. 常见问题
+
+### 7.1 `get` 为什么可能触发 ConcurrentModificationException
+
+访问顺序模式下，`get` 会改变条目顺序，属于结构修改。迭代器创建后调用 `get`，可能改变修改计数并触发 fail-fast。插入顺序模式下没有同样的访问重排。
+
+### 7.2 `removeEldestEntry` 在什么时候执行
+
+新增映射完成后调用，用于决定是否移除最旧条目。它不是后台清理器，也不会因为时间流逝主动执行，因此不能单独实现 TTL。
+
+### 7.3 LinkedHashMap 是线程安全的吗
+
+不是。即使多个线程只调用 `get`，访问顺序模式也会修改链。需要同步包装时，迭代仍要在同一锁内；复杂并发缓存更适合专用实现。
+
+### 7.4 LRU 的容量应该按条目数还是字节数
+
+取决于对象大小分布。条目大小接近时数量上限简单有效；大小差异很大时，一个大值可能占据大部分内存，应使用权重估算并监控实际堆占用。
+
+## 8. 面试题
+
+### 8.1 怎样使用 HashMap 和双向链表实现 LRU
+
+<!-- 面试来源：
+- 字节跳动：https://www.nowcoder.com/discuss/353148166503604224
+- 快手：https://www.nowcoder.com/discuss/353154378427211776
+-->
+
+**出现公司**：字节跳动、快手
+
+**考察重点**
+
+- HashMap O(1) 定位与双向链表 O(1) 重排怎样组合。
+- get、put、更新、淘汰和容量为零等边界。
+- LinkedHashMap 的访问顺序模式已经提供什么。
+
+**相关内容**：第 1 节“哈希查找与顺序链同时存在”至第 4 节“用 removeEldestEntry 建立有界 LRU”。
+
+<details>
+<summary>参考回答</summary>
+
+用 HashMap 从键定位双向链表节点，链首表示最久未使用，链尾表示最近使用。get 命中后把节点移到链尾；put 更新已有节点时同时移动，新增节点放链尾，超过容量就删除链首并从 Map 移除。
+
+所有节点移动和删除都必须正确维护头尾边界，容量为零也要覆盖。Java 的 LinkedHashMap 在 accessOrder 模式下已经组合了哈希表和顺序链，可以通过 `removeEldestEntry` 实现简单版本，但并发、TTL 和按重量淘汰仍需额外机制。
+
+</details>
+
+### 8.2 LinkedHashMap 的插入顺序与访问顺序有什么区别
+
+<!-- 面试来源：
+- 上海卫瓴信息科技：https://www.nowcoder.com/discuss/353159301244067840
+-->
+
+**出现公司**：上海卫瓴信息科技
+
+**考察重点**
+
+- 更新已有键是否改变插入顺序。
+- 哪些访问会在 accessOrder 模式中重排。
+- 读取修改结构对迭代和并发有什么影响。
+
+**相关内容**：第 2 节“插入顺序模式”、第 3 节“访问顺序模式”。
+
+<details>
+<summary>参考回答</summary>
+
+默认模式按键首次插入的顺序遍历，更新已有值不会把键移动到末尾。访问顺序模式会在成功访问后把条目移到链尾，因此链首可作为最久未访问项。
+
+访问顺序下 get 会改变内部结构，所以迭代期间可能触发 fail-fast，多线程读取也不能当作无写入操作。这个模式适合构造简单 LRU，但仍不是线程安全缓存。
+
+</details>
+
+:::note 参考资料
+
+1. [Java API：LinkedHashMap](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/LinkedHashMap.html)
+2. [OpenJDK：LinkedHashMap 源码](https://github.com/openjdk/jdk/blob/jdk-26-ga/src/java.base/share/classes/java/util/LinkedHashMap.java)
+3. [Java API：removeEldestEntry](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/LinkedHashMap.html#removeEldestEntry(java.util.Map.Entry))
+
+:::

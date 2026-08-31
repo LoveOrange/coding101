@@ -1,0 +1,300 @@
+---
+sidebar_position: 3
+---
+
+# Buffer、Channel 与 Selector
+
+Java NIO 使用 `Buffer` 保存待处理数据，用 `Channel` 在缓冲区与 I/O 端点之间搬运数据，再由 `Selector` 统一等待多个非阻塞通道的就绪事件。它把阻塞等待集中起来，同时把连接状态管理交给应用。
+
+## 1. Buffer 保存读写状态
+
+`Buffer` 不只是一个数组，还通过四个位置属性描述当前状态：
+
+- `capacity`：缓冲区总容量，创建后不会改变。
+- `position`：下一次读或写的位置。
+- `limit`：当前模式下不可越过的边界。
+- `mark`：可选标记，供 `reset()` 返回某个位置。
+
+创建一个字节缓冲区：
+
+```java
+ByteBuffer buffer = ByteBuffer.allocate(1024);
+```
+
+初始状态通常是：
+
+```text
+position = 0
+limit = capacity = 1024
+```
+
+### 1.1 从写模式切换到读模式
+
+```java
+buffer.put((byte) 'J');
+buffer.put((byte) 'a');
+buffer.put((byte) 'v');
+buffer.put((byte) 'a');
+
+buffer.flip();
+
+while (buffer.hasRemaining()) {
+    System.out.print((char) buffer.get());
+}
+```
+
+写入完成时，`position` 位于数据末尾。`flip()` 把当前 `position` 设为新的 `limit`，再把 `position` 归零，准备读取刚写入的区域。
+
+### 1.2 clear 与 compact
+
+读取完后，需要重新准备写入：
+
+- `clear()` 把 `position` 设为 0、`limit` 设为容量，适合已有数据全部消费完。
+- `compact()` 把尚未读取的数据移到缓冲区开头，再把 `position` 放到剩余数据之后，适合保留半包。
+
+`clear()` 不会擦除底层字节，只是重置位置。后续写入会覆盖旧内容，不能把它当作安全清零操作。
+
+```java
+channel.read(buffer);
+buffer.flip();
+
+consumeCompleteFrames(buffer);
+buffer.compact(); // 未完成的一帧留到下一次读取
+```
+
+网络协议经常一次读到半条消息或多条消息，`compact()` 是维护跨读取状态的关键操作。
+
+## 2. Channel 在端点与 Buffer 之间搬运数据
+
+`Channel` 可以读、写或同时支持两者。与流式 API 不同，数据通常显式经过 `Buffer`：
+
+```java
+try (FileChannel channel = FileChannel.open(path, StandardOpenOption.READ)) {
+    ByteBuffer buffer = ByteBuffer.allocate(8192);
+
+    while (channel.read(buffer) != -1) {
+        buffer.flip();
+        consume(buffer);
+        buffer.compact();
+    }
+
+    buffer.flip();
+    consume(buffer);
+}
+```
+
+方向容易混淆：
+
+- `channel.read(buffer)` 从通道读取数据，写入缓冲区。
+- `channel.write(buffer)` 从缓冲区读取数据，写入通道。
+
+### 2.1 写操作也可能只消费一部分
+
+非阻塞 `SocketChannel.write` 可能返回 0，也可能只写出缓冲区的一部分：
+
+```java
+while (buffer.hasRemaining()) {
+    int written = channel.write(buffer);
+    if (written == 0) {
+        break;
+    }
+}
+```
+
+剩余数据需要保存在连接状态中，并在通道再次可写时继续发送。直接丢弃缓冲区会造成响应截断。
+
+文件通道、Socket 通道和数据报通道有不同语义。`FileChannel` 不支持切换成 Selector 使用的非阻塞模式，NIO 也不等于所有通道都非阻塞。
+
+## 3. Selector 等待多个通道就绪
+
+`Selector` 与 `SelectableChannel` 配合。通道先切换为非阻塞模式，再注册感兴趣的事件：
+
+```java
+Selector selector = Selector.open();
+ServerSocketChannel server = ServerSocketChannel.open();
+
+server.configureBlocking(false);
+server.bind(new InetSocketAddress(8080));
+server.register(selector, SelectionKey.OP_ACCEPT);
+```
+
+事件循环等待至少一个注册通道就绪：
+
+```java
+while (!Thread.currentThread().isInterrupted()) {
+    selector.select();
+
+    Iterator<SelectionKey> iterator = selector.selectedKeys().iterator();
+    while (iterator.hasNext()) {
+        SelectionKey key = iterator.next();
+        iterator.remove();
+
+        if (!key.isValid()) {
+            continue;
+        }
+        if (key.isAcceptable()) {
+            accept(key);
+        }
+        if (key.isReadable()) {
+            read(key);
+        }
+        if (key.isWritable()) {
+            write(key);
+        }
+    }
+}
+```
+
+处理完必须从 selected-key 集合移除，否则旧事件会在后续循环中继续出现。
+
+### 3.1 就绪不等于操作已经完成
+
+`OP_READ` 表示读取操作现在可能取得数据，不表示完整业务消息已经到达。一次读取仍可能得到半包，也可能在状态变化后返回 0。
+
+`OP_WRITE` 表示内核发送缓冲区当前有空间，不表示应用响应已经全部发送。写入以后还要检查应用 `ByteBuffer` 是否有剩余。
+
+Selector 提供的是就绪通知，不是异步完成通知。真正的 `read` 和 `write` 仍由事件循环线程调用。
+
+### 3.2 不要一直注册 OP_WRITE
+
+Socket 在大多数时间都可写。如果每个连接始终关注 `OP_WRITE`，`select()` 会不断立即返回，事件循环形成空转。
+
+常见做法是：
+
+1. 平时只关注读取。
+2. 写操作未能发送完时，把剩余缓冲保存到连接状态并增加 `OP_WRITE`。
+3. 缓冲发送完后，取消 `OP_WRITE` 兴趣。
+
+## 4. 每个连接都需要独立状态
+
+非阻塞代码无法在一次方法调用中等待完整请求，因此要保存跨事件状态：
+
+```java
+final class ConnectionState {
+    final ByteBuffer input = ByteBuffer.allocate(8192);
+    final Deque<ByteBuffer> output = new ArrayDeque<>();
+}
+```
+
+注册通道时可以把状态附加到 `SelectionKey`：
+
+```java
+SelectionKey key = channel.register(selector, SelectionKey.OP_READ);
+key.attach(new ConnectionState());
+```
+
+状态至少要处理：
+
+- 半包和粘包。
+- 待发送队列与背压。
+- 连接关闭和异常清理。
+- 读取、解析和业务处理的阶段。
+- 空闲超时和协议限制。
+
+Selector 减少了等待连接所需的线程数，却没有减少这些状态。连接越多，状态生命周期和公平性越重要。
+
+## 5. 事件循环与业务线程
+
+一个 Selector 线程可以管理大量连接，但不应在事件循环中执行长时间计算、阻塞数据库调用或远程请求。某个处理器阻塞，会延迟同一循环中所有连接的读写。
+
+常见分工是：
+
+1. 事件循环负责接收、读取、协议拆帧和排队写出。
+2. 有界业务执行器处理可能阻塞或耗时的业务。
+3. 业务结果回到对应事件循环，加入连接的输出队列。
+
+跨线程修改注册事件时，需要使用线程安全队列，并调用 `selector.wakeup()` 让阻塞中的选择操作及时处理变更。
+
+把所有工作扔进无限队列也不能形成背压。输出速度低于业务生成速度时，应暂停读取、限制单连接队列或拒绝请求，防止内存持续增长。
+
+## 6. BIO、NIO 与异步 I/O
+
+| 模型 | 等待方式 | 调用结果 | 状态主要由谁维护 |
+| --- | --- | --- | --- |
+| 阻塞流/通道 | 每个调用等待数据或完成 | 调用返回时已有结果 | 线程调用栈 |
+| 非阻塞通道 + Selector | 一个线程等待多个通道就绪 | 就绪后应用继续读写 | 事件循环与连接状态 |
+| 异步通道 | 提交操作后由回调或 Future 接收完成 | 通知表示操作完成 | 异步 API 与回调状态 |
+
+线程模型不是由包名自动决定。`java.nio` 中有阻塞 `FileChannel`，`SocketChannel` 也可以保持阻塞模式；只有明确配置和使用 Selector 才进入就绪驱动模型。
+
+## 7. 常见问题
+
+### 7.1 flip、clear、compact 分别在什么时候使用
+
+写入 Buffer 后用 `flip` 准备读取；数据全部读完后用 `clear` 准备覆盖写入；还有未读数据时用 `compact` 把剩余数据移到开头，再继续接收。
+
+### 7.2 Selector 为什么可以减少线程数量
+
+多个非阻塞通道把就绪事件注册到同一个 Selector，一个线程可以集中等待并处理它们，不需要让每个连接各占一个阻塞线程。它减少的是等待线程，不代表所有请求只允许一个线程处理业务。
+
+### 7.3 一次 OP_READ 能否读取完整请求
+
+不能保证。TCP 提供字节流，没有应用消息边界。一次事件可能只有部分请求，也可能包含多个请求，需要协议长度、分隔符或固定格式完成拆帧。
+
+### 7.4 SelectionKey 取消后资源会立即释放吗
+
+`cancel()` 会把键加入取消集合，Selector 在后续选择操作中完成移除。通道仍然需要根据所有权显式关闭，连接状态和输出缓冲也要清理。
+
+## 8. 面试题
+
+### 8.1 Buffer、Channel 和 Selector 分别负责什么
+
+<!-- 面试来源：
+- 蚂蚁金服：https://www.nowcoder.com/discuss/353158462597177344
+- 字节跳动：https://www.nowcoder.com/discuss/725700
+-->
+
+**出现公司**：蚂蚁金服、字节跳动
+
+**考察重点**
+
+- Buffer 的位置状态和模式切换。
+- Channel 与 Buffer 之间的数据方向。
+- Selector 通知的是就绪还是完成。
+
+**相关内容**：第 1 节“Buffer 保存读写状态”、第 2 节“Channel 在端点与 Buffer 之间搬运数据”、第 3 节“Selector 等待多个通道就绪”。
+
+<details>
+<summary>参考回答</summary>
+
+`Buffer` 保存数据和 `position`、`limit`、`capacity` 等读写状态；`Channel` 在文件或 Socket 与 Buffer 之间搬运数据；`Selector` 集中等待多个非阻塞通道的接受、读取和写入就绪事件。
+
+收到就绪事件后，应用仍要调用 `read` 或 `write`，并处理 0、部分读写和连接关闭。网络消息还可能跨多次读取，所以每个连接需要保存输入、输出和协议解析状态。
+
+</details>
+
+### 8.2 NIO 为什么不等于异步 I/O
+
+<!-- 面试来源：
+- 蚂蚁金服：https://www.nowcoder.com/discuss/353158462597177344
+-->
+
+**出现公司**：蚂蚁金服
+
+**考察重点**
+
+- 非阻塞、就绪通知与完成通知的区别。
+- `select` 返回后谁执行实际读写。
+- java.nio 中是否所有 API 都是非阻塞。
+
+**相关内容**：第 3.1 节“就绪不等于操作已经完成”、第 6 节“BIO、NIO 与异步 I/O”。
+
+<details>
+<summary>参考回答</summary>
+
+Selector 告诉应用某个非阻塞通道现在可能读写，实际操作仍由应用线程调用，所以这是就绪通知。异步 I/O 是先提交操作，系统在操作完成后通过回调或 Future 通知结果。
+
+而且 `java.nio` 只是 API 包，`FileChannel` 和阻塞模式的 `SocketChannel` 都不是 Selector 驱动。要看通道模式和调用方式，不能只看类所在的包。
+
+</details>
+
+:::note 参考资料
+
+1. [Java API：Buffer](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/nio/Buffer.html)
+2. [Java API：ByteBuffer](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/nio/ByteBuffer.html)
+3. [Java API：Channel](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/nio/channels/Channel.html)
+4. [Java API：Selector](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/nio/channels/Selector.html)
+5. [Java API：SelectionKey](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/nio/channels/SelectionKey.html)
+6. [Java API：SocketChannel](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/nio/channels/SocketChannel.html)
+
+:::

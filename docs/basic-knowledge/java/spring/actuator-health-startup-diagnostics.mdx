@@ -1,0 +1,127 @@
+---
+sidebar_position: 20
+---
+
+# Actuator、健康检查与启动诊断
+
+Spring Boot Actuator 提供应用运行状态和诊断信息。使用它时要同时设计端点暴露、访问控制、探针语义和数据脱敏，不能把所有管理端点直接开放到业务网络。
+
+## 1. 端点按诊断目标选择
+
+常用端点包括：
+
+- `health`：应用与组件健康状态。
+- `metrics`：指标名称、标签和值。
+- `prometheus`：Prometheus 抓取格式的指标。
+- `conditions`：自动配置条件匹配报告。
+- `configprops`、`env`：配置绑定结果与属性来源。
+- `beans`、`mappings`：Bean 和 Web 路由信息。
+- `startup`：ApplicationStartup 采集的启动步骤。
+- `loggers`：查看或调整日志级别。
+- `threaddump`、`heapdump`：线程和堆诊断材料。
+
+每个端点都可能暴露内部结构。默认是否启用、是否通过 Web 暴露以及是否允许写操作，是三组不同配置。
+
+## 2. 只暴露实际需要的端点
+
+```yaml
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      show-details: when_authorized
+```
+
+生产环境通常只给探针和监控系统开放少量端点，其余诊断端点通过独立管理端口、内网、认证授权或临时运维流程访问。
+
+`env`、`configprops`、heap dump 和线程栈可能包含地址、类名、查询、令牌或用户数据。即使框架提供脱敏，也要按照实际版本检查返回内容和自定义属性。
+
+## 3. Liveness 只判断应用能否自行恢复
+
+Liveness 失败通常意味着应用内部已进入无法自行恢复的状态，平台可以重启进程。它不应依赖数据库、缓存或外部 API：这些依赖短暂故障时重启所有实例，既不能修复依赖，还可能制造重启风暴。
+
+Spring Boot 可以把 liveness 暴露为独立健康组。应用自身线程死锁、关键内部状态损坏等问题，才可能适合改变存活状态。
+
+## 4. Readiness 判断是否应接收流量
+
+Readiness 失败会让负载均衡停止向当前实例转发请求，但不要求结束进程。启动尚未完成、正在优雅下线或关键服务能力暂不可用时，可以拒绝流量。
+
+是否把数据库加入 readiness 取决于服务降级能力：
+
+- 全部请求都依赖数据库，断连时接流量没有意义，可以纳入。
+- 仍能提供缓存读取、静态接口或排队能力，则应按能力拆分状态，避免一项依赖拖掉所有流量。
+
+探针的超时、频率和失败阈值要覆盖正常启动与短暂抖动，不能用过于激进的参数制造自我故障。
+
+## 5. 启动慢要拆解阶段
+
+启用 `BufferingApplicationStartup` 后，可以通过 `startup` 端点查看已采集的 Spring 启动步骤；JFR 实现还能关联类加载、分配和 GC。
+
+启动诊断至少区分：
+
+1. 配置数据读取和条件评估。
+2. BeanDefinition 处理。
+3. Bean 实例创建与生命周期回调。
+4. WebServer、数据库迁移和连接池初始化。
+5. Runner 与应用自定义预热。
+
+只看总时长无法判断是框架、业务初始化还是外部依赖在等待。
+
+## 6. 用对应端点回答对应问题
+
+- Bean 为什么没有创建：查看 `conditions` 和 `beans`。
+- 配置为何不是预期值：查看 `env`、`configprops` 和 PropertySource。
+- 路由为何没有注册：查看 `mappings`。
+- 请求延迟或错误是否上升：看 metrics、trace ID 和应用日志。
+- 线程是否阻塞：获取 thread dump，并连续采样比较。
+- 内存是否泄漏：先看趋势和 GC，再按需获取 heap dump。
+
+诊断端点提供证据，但不会替代问题假设。一次打开全部端点并下载大对象，可能反过来增加生产负载。
+
+## 7. 常见问题
+
+### 7.1 `health` 返回 UP 就能证明业务正常吗
+
+不能。健康检查只覆盖已注册 Indicator 的有限条件。依赖可连接不表示查询结果、权限、数据延迟和业务规则都正确；还需要业务指标、合成探测和真实请求错误率。
+
+### 7.2 健康检查应该执行真实 SQL 吗
+
+可以做成本可控的连通性检查，但不要在高频探针中运行复杂查询或竞争关键锁。更深入的业务校验适合低频合成监控，并设置独立超时和容量限制。
+
+## 8. 面试题
+
+### 8.1 Spring Boot 服务怎样设计健康检查
+
+<!-- 面试来源：
+- 交通银行：https://www.nowcoder.com/discuss/353158580108992512
+-->
+
+**出现公司**：交通银行
+
+**考察重点**
+
+- liveness 与 readiness 的不同处置。
+- 外部依赖是否进入探针的判断。
+- Actuator 暴露与安全边界。
+
+**相关内容**：第 1 节“端点按诊断目标选择”至第 6 节“用对应端点回答对应问题”。
+
+<details>
+<summary>参考回答</summary>
+
+Liveness 表示进程内部是否还能自行恢复，失败后平台可以重启，因此一般不加入数据库等外部依赖。Readiness 表示实例当前是否应该接流量，可以根据服务对关键依赖的降级能力决定是否将其纳入。两类探针应有独立的超时、频率和失败阈值。
+
+Actuator 只通过管理网络或认证授权暴露必要端点，健康详情按权限展示，env、heapdump 等敏感端点默认不对业务网络开放。健康状态还需与业务指标和合成探测配合，因为 health 为 UP 不能证明全部业务路径正常。
+
+</details>
+
+:::note 参考资料
+
+1. [Spring Boot：Endpoints](https://docs.spring.io/spring-boot/reference/actuator/endpoints.html)
+2. [Spring Boot：Application Availability](https://docs.spring.io/spring-boot/reference/features/spring-application.html#features.spring-application.application-availability)
+3. [Spring Boot：Application Startup Tracking](https://docs.spring.io/spring-boot/reference/features/spring-application.html#features.spring-application.startup-tracking)
+
+:::

@@ -1,0 +1,100 @@
+---
+sidebar_position: 6
+---
+
+# synchronized 的 monitor 与优化
+
+`synchronized` 为一段代码提供互斥，并在解锁和后续加锁之间建立 happens-before。理解它时先确定锁的是哪个对象，再讨论 HotSpot 如何优化无竞争和有竞争的获取过程。
+
+## 1. 每个对象都可以关联 monitor
+
+```java
+public void update() {
+    synchronized (lock) {
+        state = next(state);
+    }
+}
+```
+
+一个线程持有 `lock` 对应的 monitor 时，其他线程不能同时进入由同一对象保护的同步块。monitor 是可重入的：当前线程再次获取同一 monitor 时，进入计数增加，匹配次数的退出后才真正释放。
+
+锁对象必须稳定。下面两段代码使用的 monitor 不同，不能互斥：
+
+```java
+synchronized (left)  { /* 修改 state */ }
+synchronized (right) { /* 也修改 state */ }
+```
+
+## 2. 同步方法使用隐式的锁对象
+
+- 实例 `synchronized` 方法锁定当前对象 `this`。
+- 静态 `synchronized` 方法锁定声明类对应的 `Class` 对象。
+- 同步代码块锁定括号中给出的对象。
+
+同步代码块通常编译为 `monitorenter` 和配套的 `monitorexit`，异常路径也必须释放 monitor。同步方法则由 Class 文件上的 `ACC_SYNCHRONIZED` 标志表示，不应简单地说所有 `synchronized` 都对应一对相同字节码指令。
+
+## 3. 解锁与后续加锁建立可见性
+
+线程 A 退出某个 monitor 前的写入，在线程 B 随后成功进入同一 monitor 后可见。这就是为什么读写双方必须遵守同一个锁协议：只在写路径加锁，未同步的读路径不会自动获得该保证。
+
+锁保护的应是业务不变量，而不只是某一行赋值。把远程调用放在锁内虽然正确，却会让不相关线程一起等待。
+
+## 4. HotSpot 会优化常见路径
+
+JVM 可以针对无竞争、短暂竞争和持续竞争采用不同的锁表示、快速路径、自旋或 monitor 膨胀。具体实现会随 JDK、虚拟机和启动参数变化。
+
+很多旧资料把“偏向锁 → 轻量级锁 → 重量级锁”画成每次加锁都遵循的固定升级流程。偏向锁从 JDK 15 起默认禁用，后续 HotSpot 锁实现也持续演进。这张图适合解释历史实现，不适合作为当前 Java 语义。
+
+正确性只能依赖 JLS 的 monitor 规则，不能依赖对象头位数或某个版本的优化路径。
+
+## 5. 锁消除与锁粗化由优化证据决定
+
+JIT 若证明锁对象不会逸出，可能消除对其他线程不可见的锁；也可能合并紧邻的重复获取，减少进入和退出成本。这些优化不是源码保证，代码仍应首先表达正确的同步边界。
+
+不要为了期待锁消除而写多余同步，也不要手动把临界区扩大到包含慢 I/O。是否产生优化可以通过 JIT 日志、JFR 和基准验证。
+
+## 6. 常见问题
+
+### 6.1 `synchronized` 可以被中断或设置获取超时吗
+
+等待进入 monitor 的线程不能通过 `interrupt()` 取消这次获取，也没有 `tryLock`。需要可中断、超时或多个条件队列时，可以使用 `ReentrantLock`。
+
+### 6.2 锁对象声明为 `final` 有什么意义
+
+`final` 避免引用在运行中换成另一个对象，保证各条路径持续使用同一 monitor。它不改变 monitor 的互斥语义。
+
+## 7. 面试题
+
+### 7.1 `synchronized` 如何实现互斥与可见性
+
+<!-- 面试来源：
+- 蚂蚁集团：https://www.nowcoder.com/discuss/353150007719174144
+- 腾讯：https://www.nowcoder.com/discuss/801036113035931648
+-->
+
+**出现公司**：蚂蚁集团、腾讯
+
+**考察重点**
+
+- monitor 的所有权与可重入。
+- 同步块和同步方法的表示。
+- 解锁到后续加锁的 happens-before。
+
+**相关内容**：第 1 节“每个对象都可以关联 monitor”至第 4 节“HotSpot 会优化常见路径”。
+
+<details>
+<summary>参考回答</summary>
+
+每个对象都可以关联 monitor。线程进入由同一对象保护的同步区域前必须取得所有权，同一时刻只有持有者能执行，当前线程可以重入。解锁 happens-before 随后对同一 monitor 的加锁，因此还提供跨线程可见性。
+
+同步块通常使用 `monitorenter`、`monitorexit`，同步方法由 `ACC_SYNCHRONIZED` 标志表示。HotSpot 会优化获取路径，但偏向锁等属于特定版本实现，不能拿历史升级图替代语言规范。
+
+</details>
+
+:::note 参考资料
+
+1. [JLS 17.1：Synchronization](https://docs.oracle.com/javase/specs/jls/se26/html/jls-17.html#jls-17.1)
+2. [JVMS 3.14：Compiling Synchronization](https://docs.oracle.com/javase/specs/jvms/se26/html/jvms-3.html#jvms-3.14)
+3. [OpenJDK JEP 374：Disable and Deprecate Biased Locking](https://openjdk.org/jeps/374)
+
+:::

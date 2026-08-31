@@ -1,0 +1,257 @@
+---
+sidebar_position: 12
+---
+
+# 注解的保留策略与处理阶段
+
+Java 注解为类、方法、字段等程序元素附加结构化元数据。注解本身不会执行校验、注入或事务逻辑，编译器、字节码工具或运行时框架读取它以后，才会产生对应行为。
+
+## 1. 定义和使用注解
+
+使用 `@interface` 定义注解类型：
+
+```java
+@Retention(RetentionPolicy.RUNTIME)
+@Target(ElementType.METHOD)
+@Documented
+public @interface RequiresRole {
+    String value();
+}
+```
+
+注解中的 `value()` 是注解元素，不是普通业务方法。使用时为它提供值：
+
+```java
+@RequiresRole("admin")
+public void deleteUser(long userId) {
+    // ...
+}
+```
+
+只有一个名为 `value` 的元素时，可以省略元素名。其他元素可以声明默认值：
+
+```java
+public @interface Retry {
+    int maxAttempts() default 3;
+    long delayMillis() default 100;
+}
+```
+
+注解元素的类型受到语言限制，可以使用基本类型、`String`、`Class`、枚举、其他注解及这些类型的一维数组。注解元素不能使用 `null` 作为值或默认值。
+
+## 2. 元注解限定注解自身
+
+用于描述注解类型的注解称为元注解。
+
+### 2.1 `@Target` 限制使用位置
+
+```java
+@Target({ElementType.TYPE, ElementType.METHOD})
+```
+
+它表示注解可以放在类型和方法上。常见目标还包括字段、构造方法、参数、局部变量、类型参数和类型使用位置。
+
+没有声明 `@Target` 时，注解可以用于多数声明位置，但不能自动用于所有类型上下文。为公开注解明确声明目标，能让编译器尽早阻止误用。
+
+### 2.2 `@Retention` 决定保留到哪个阶段
+
+```java
+@Retention(RetentionPolicy.RUNTIME)
+```
+
+保留策略有三种：
+
+| 策略 | 源码中存在 | class 文件中存在 | 运行时反射可见 | 常见用途 |
+| --- | --- | --- | --- | --- |
+| `SOURCE` | 是 | 否 | 否 | 编译检查、源码处理 |
+| `CLASS` | 是 | 是 | 否 | 字节码分析和转换 |
+| `RUNTIME` | 是 | 是 | 是 | 运行时框架读取 |
+
+没有声明 `@Retention` 时，默认策略是 `CLASS`。
+
+保留时间越长并不代表注解越好。只在编译期生成代码的注解没有必要进入运行时；需要反射读取的注解则必须使用 `RUNTIME`。
+
+### 2.3 `@Documented` 进入 API 文档
+
+带有 `@Documented` 的注解会被 Javadoc 等文档工具纳入被标注元素的公开文档。它只影响文档呈现，不改变运行时行为。
+
+### 2.4 `@Inherited` 只处理类的父子关系
+
+如果一个运行时注解带有 `@Inherited`，通过 `Class.getAnnotation` 查询子类时，可以沿超类链查找父类上的该注解。
+
+它有明确边界：
+
+- 只作用于类上的注解。
+- 不会让接口注解自动出现在实现类上。
+- 不会让父类方法或字段的注解自动成为子类对应成员的注解。
+- 使用 `getDeclaredAnnotation` 时只检查当前类，不沿超类查找。
+
+框架如果需要合并接口、方法和组合注解，通常会实现自己的搜索规则，不能只依赖 `@Inherited`。
+
+### 2.5 `@Repeatable` 允许同一位置重复使用
+
+可重复注解需要一个容器注解：
+
+```java
+@Repeatable(Roles.class)
+public @interface Role {
+    String value();
+}
+
+public @interface Roles {
+    Role[] value();
+}
+
+@Role("reader")
+@Role("editor")
+final class DocumentService {}
+```
+
+读取时使用 `getAnnotationsByType(Role.class)`，可以同时兼容单个注解和容器形式。
+
+## 3. 三个处理阶段
+
+注解的能力来自读取它的工具。根据读取时间，可以分为三个阶段。
+
+### 3.1 编译阶段
+
+`@Override`、`@SuppressWarnings` 等注解供编译器检查源码。自定义注解处理器也可以读取程序元素、报告编译错误，并生成新的源码或资源。
+
+```java
+@Retention(RetentionPolicy.SOURCE)
+@Target(ElementType.TYPE)
+public @interface GenerateMapper {}
+```
+
+如果处理器只需要在编译期读取 `@GenerateMapper`，使用 `SOURCE` 已经足够。生成后的类会作为普通代码继续编译，运行时不必保留这个标记。
+
+### 3.2 class 文件处理阶段
+
+`CLASS` 注解保留在 class 文件中，字节码分析器或构建工具可以读取，但运行时反射 API 不保证返回它。这个阶段适合静态分析、插桩和字节码变换。
+
+字节码工具是否支持某种注解格式，要看它读取可见和不可见注解属性的方式，不能仅凭“注解在 class 文件中”推断框架一定处理。
+
+### 3.3 运行阶段
+
+运行时框架可以通过反射读取 `RUNTIME` 注解：
+
+```java
+Method method = UserService.class
+    .getDeclaredMethod("deleteUser", long.class);
+
+RequiresRole rule = method.getAnnotation(RequiresRole.class);
+
+if (rule != null) {
+    authorization.check(rule.value());
+}
+```
+
+注解只提供角色名称。真正的权限校验由框架调用 `authorization.check` 完成。如果没有任何代码读取注解，`@RequiresRole` 不会自动阻止方法执行。
+
+## 4. 设计自定义注解
+
+设计前先确定消费方和阶段：
+
+1. 谁读取这个注解：编译器插件、构建工具还是运行时框架？
+2. 标记放在哪些元素上？
+3. 注解元素表达的是稳定配置，还是应该由普通代码完成的业务逻辑？
+4. 重复使用、继承和组合时采用什么规则？
+5. 配置无效时在编译期还是运行时报告错误？
+
+注解适合声明简短、静态且与程序元素紧密相关的元数据。复杂条件、动态查询和需要调试的控制流通常更适合普通对象与方法。
+
+### 4.1 元数据与执行逻辑分开
+
+```java
+@Retry(maxAttempts = 3, delayMillis = 200)
+void callPayment() {}
+```
+
+这个声明仍然需要拦截器或显式调用器读取配置、捕获允许重试的异常、等待并再次执行。重试是否幂等、哪些异常可重试、总超时如何限制，都不能由注解语法代替。
+
+### 4.2 默认值应当稳定且可解释
+
+注解默认值会影响所有省略配置的调用点。修改默认值可能在不改业务源码的情况下改变大量行为。公开注解应记录默认值的语义，并对危险行为要求显式配置。
+
+## 5. 常见问题
+
+### 5.1 为什么反射获取不到自定义注解
+
+先检查注解是否声明为 `RetentionPolicy.RUNTIME`，再检查读取的元素是否正确。类注解、方法注解和字段注解分别属于不同元素；父类、接口和重写方法也不会按照同一规则自动继承。
+
+### 5.2 注解可以继承另一个注解吗
+
+注解类型不能通过 `extends` 建立普通继承关系。一个注解可以标注另一个注解，框架也可以定义“组合注解”解析规则，但这是框架语义，不是 Java 注解继承。
+
+### 5.3 修改注解值会直接改变程序行为吗
+
+只有消费方读取并使用该值时才会改变。编译期处理器可能需要重新编译才能生成新代码；运行时框架可能在启动时缓存结果，需要重启或重新扫描。注解不是一个主动执行的对象。
+
+### 5.4 `@Inherited` 为什么对接口无效
+
+Java 规范把 `@Inherited` 定义为沿类的超类链查询。类可以实现多个接口，接口本身也有多重继承，自动合并会引入冲突和顺序问题。需要接口注解的框架必须明确实现自己的合并策略。
+
+## 6. 面试题
+
+### 6.1 SOURCE、CLASS 和 RUNTIME 有什么区别
+
+<!-- 面试来源：
+- 飞书：https://www.nowcoder.com/discuss/353157192121524224
+- 汇众网络科技：https://www.nowcoder.com/discuss/864476920900026368
+-->
+
+**出现公司**：飞书、汇众网络科技
+
+**考察重点**
+
+- 三种保留策略分别在哪个阶段可见。
+- 编译期处理、字节码处理和运行时反射怎样选择策略。
+- 默认保留策略是什么。
+
+**相关内容**：第 2.2 节“`@Retention` 决定保留到哪个阶段”、第 3 节“三个处理阶段”。
+
+<details>
+<summary>参考回答</summary>
+
+`SOURCE` 注解只存在于源码，编译后的 class 文件中不保留，适合编译检查和源码处理。`CLASS` 会进入 class 文件，但运行时反射不可见，适合字节码工具；它也是未声明 `@Retention` 时的默认策略。`RUNTIME` 会继续保留到运行时，可以通过反射读取。
+
+选择依据是消费注解的阶段。编译期生成代码通常使用 `SOURCE`，运行时框架扫描必须使用 `RUNTIME`，不需要为了保险统一保留到运行时。
+
+</details>
+
+### 6.2 自定义注解怎样产生实际行为
+
+<!-- 面试来源：
+- 商汤科技：https://www.nowcoder.com/discuss/353155013625192448
+- 携程：https://www.nowcoder.com/discuss/606744
+- 恒生电子：https://www.nowcoder.com/discuss/445275109109039104
+-->
+
+**出现公司**：商汤科技、携程、恒生电子
+
+**考察重点**
+
+- 注解元数据与消费方逻辑的分工。
+- 编译期处理器和运行时反射两条实现路径。
+- `@Target`、`@Retention` 与注解元素怎样设计。
+
+**相关内容**：第 1 节“定义和使用注解”、第 3 节“三个处理阶段”、第 4 节“设计自定义注解”。
+
+<details>
+<summary>参考回答</summary>
+
+注解本身只保存元数据，不会主动执行业务。先根据使用位置定义 `@Target`，再根据消费阶段选择 `@Retention`，并用注解元素保存必要配置。
+
+如果希望在编译阶段校验或生成代码，可以实现注解处理器读取程序元素；如果希望运行时生效，则使用 `RUNTIME` 保留策略，由框架通过反射扫描注解，再调用权限、事务或路由等实际逻辑。没有消费方读取时，注解不会产生效果。
+
+</details>
+
+:::note 参考资料
+
+1. [Java Language Specification：Annotation Interfaces](https://docs.oracle.com/en/java/javase/26/docs/specs/jls/jls-9.html#jls-9.6)
+2. [Java API：Retention](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/annotation/Retention.html)
+3. [Java API：RetentionPolicy](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/annotation/RetentionPolicy.html)
+4. [Java API：Target](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/annotation/Target.html)
+5. [Java API：AnnotatedElement](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/reflect/AnnotatedElement.html)
+
+:::

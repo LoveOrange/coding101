@@ -1,0 +1,108 @@
+---
+sidebar_position: 19
+---
+
+# Future、CompletableFuture 与异常传播
+
+`Future` 表示一个尚未完成的结果，`CompletableFuture` 进一步把结果之间的依赖组成流水线。使用它们时，执行器、异常、超时和取消都必须沿依赖关系显式设计。
+
+## 1. Future 把完成状态和结果放在一起
+
+```java
+Future<Profile> future = executor.submit(() -> loadProfile(id));
+
+try {
+    Profile profile = future.get(300, TimeUnit.MILLISECONDS);
+} catch (ExecutionException exception) {
+    Throwable cause = exception.getCause();
+    handleFailure(cause);
+}
+```
+
+`get` 等待结果并通过 `ExecutionException` 包装任务异常；带超时版本还能限制等待。提交方若丢弃 Future，`submit` 捕获的异常可能没有调用方消费。
+
+`cancel(true)` 只能尝试中断运行任务，任务是否退出仍取决于中断协议。
+
+## 2. CompletionStage 描述依赖关系
+
+```java
+CompletableFuture<OrderView> view =
+        CompletableFuture.supplyAsync(() -> loadOrder(id), ioExecutor)
+                .thenCombine(
+                        CompletableFuture.supplyAsync(
+                                () -> loadCustomer(id), ioExecutor),
+                        OrderView::new
+                );
+```
+
+`thenApply` 转换一个结果，`thenCompose` 把返回的异步阶段展平，`thenCombine` 合并两个独立结果。选择取决于真实依赖，不能把所有步骤都并行启动。
+
+## 3. 非 async 与 async 的执行线程不同
+
+非 `Async` 的 continuation 可以由完成上一步的线程，或触发完成的其他调用线程执行。若其中包含慢操作，可能意外阻塞网络回调或调用方线程。
+
+没有显式 Executor 的 `*Async` 方法默认使用 `ForkJoinPool.commonPool()`。不同业务共享 common pool 会互相影响，阻塞任务也可能占住公共资源。生产代码通常为不同依赖提供有界、可观测的执行器。
+
+## 4. 异常恢复应区分转换与观察
+
+- `exceptionally`：失败时提供替代值。
+- `handle`：无论成功失败都转换结果。
+- `whenComplete`：观察结果，通常不改变原有成功或失败。
+
+```java
+future.whenComplete((value, error) -> metrics.record(error));
+```
+
+恢复为默认值会把失败变成成功状态。只有业务允许降级时才这样做，并保留错误指标；否则继续让异常传播。
+
+`get()` 抛受检的 `ExecutionException`，`join()` 对异常完成抛 `CompletionException`。日志去重时要解开包装异常，同时保留原始 cause。
+
+## 5. 超时和取消不会自动治理整棵依赖图
+
+`orTimeout` 让 CompletableFuture 在期限后异常完成，`completeOnTimeout` 提供默认值，但底层外部调用未必因此停止。取消一个 CompletableFuture 也主要是异常完成语义，它没有像 `FutureTask` 一样直接控制所有产生结果的计算。
+
+应从入口传递截止时间，给每个外部调用设置超时，并明确兄弟任务失败后是否取消、等待还是保留结果。
+
+## 6. 常见问题
+
+### 6.1 `thenApply` 和 `thenCompose` 有什么区别
+
+回调返回普通值时用 `thenApply`；回调本身返回另一个 CompletionStage 时用 `thenCompose`，避免得到嵌套的 `CompletableFuture<CompletableFuture<T>>`。
+
+### 6.2 `allOf` 为什么拿不到结果列表
+
+`allOf` 只表示全部完成，返回 `CompletableFuture<Void>`。调用方仍要保留原 Future 列表，在全部完成后逐个读取，并决定任一失败时的聚合语义。
+
+## 7. 面试题
+
+### 7.1 CompletableFuture 的异常和执行器应该怎样处理
+
+<!-- 面试来源：
+- 美团：https://www.nowcoder.com/discuss/639130444558045184
+-->
+
+**出现公司**：美团
+
+**考察重点**
+
+- 非 async、async 与默认 common pool。
+- 异常包装和恢复语义。
+- 超时不等于底层任务停止。
+
+**相关内容**：第 3 节“非 async 与 async 的执行线程不同”至第 5 节“超时和取消不会自动治理整棵依赖图”。
+
+<details>
+<summary>参考回答</summary>
+
+非 async continuation 可能在线程完成上一步时直接执行，async 且未传 Executor 时默认进入 common pool，所以慢 I/O 应使用显式、隔离并可监控的执行器。`get` 用 `ExecutionException` 包装失败，`join` 通常抛 `CompletionException`。
+
+只有业务允许时才用 `exceptionally` 恢复默认值，否则继续传播并在边界处理。`orTimeout` 改变 Future 的完成状态，不保证底层网络或数据库操作停止，因此还要传递截止时间并配置下游超时。
+
+</details>
+
+:::note 参考资料
+
+1. [Java API：`Future`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/Future.html)
+2. [Java API：`CompletableFuture`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/CompletableFuture.html)
+
+:::

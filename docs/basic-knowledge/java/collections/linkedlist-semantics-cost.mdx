@@ -1,0 +1,161 @@
+---
+sidebar_position: 3
+---
+
+# LinkedList 的语义与现实成本
+
+`LinkedList` 用双向链表实现 `List` 和 `Deque`。它能在已知节点位置附近用常数次指针修改完成插入删除，但按索引定位、对象数量和缓存局部性常常使它不如直觉中高效。
+
+## 1. 每个元素对应一个链表节点
+
+一个节点需要保存：
+
+- 当前元素引用。
+- 前驱节点引用。
+- 后继节点引用。
+
+列表还保存首尾节点和元素数量。节点对象通常分散在堆中，遍历时需要不断读取下一个引用。
+
+```text
+first                                        last
+  ↓                                            ↓
+[prev|null, A, next] ⇄ [prev, B, next] ⇄ [prev, C, next|null]
+```
+
+与 ArrayList 的引用数组相比，LinkedList 为每个元素增加节点头和两个链接引用，也产生更多对象供 GC 跟踪。
+
+## 2. 按索引访问需要先定位节点
+
+```java
+User user = linkedUsers.get(index);
+```
+
+实现会根据 index 更靠近头还是尾，从相应方向逐个移动，复杂度仍是 O(n)。下面的循环会反复从链表头或尾定位，整体可能退化为 O(n²)：
+
+```java
+for (int i = 0; i < linkedUsers.size(); i++) {
+    consume(linkedUsers.get(i));
+}
+```
+
+使用增强 `for` 或 Iterator 只沿链移动一次：
+
+```java
+for (User user : linkedUsers) {
+    consume(user);
+}
+```
+
+但即使复杂度都是 O(n)，链表遍历还会受到指针跳转和缓存未命中的影响。
+
+## 3. 插入快的前提是已经到达位置
+
+在链表中已知节点前插入，只需要创建新节点并调整相邻链接，局部修改是 O(1)。然而 List API 的 `add(index, value)` 需要先按索引找到位置，总成本仍是 O(n)：
+
+```java
+linkedUsers.add(index, user);
+```
+
+通过 `ListIterator` 在当前游标处连续编辑，才能利用这个特征：
+
+```java
+ListIterator<String> iterator = values.listIterator();
+
+while (iterator.hasNext()) {
+    if (iterator.next().equals("marker")) {
+        iterator.add("inserted");
+    }
+}
+```
+
+ArrayList 的中间插入需要搬移连续引用，但底层批量复制很快。元素不多或插入并不频繁时，LinkedList 的理论节点优势未必能抵消定位和内存成本。
+
+## 4. 作为 Deque 使用
+
+LinkedList 支持首尾队列操作：
+
+```java
+Deque<Job> jobs = new LinkedList<>();
+jobs.addLast(job);
+Job next = jobs.pollFirst();
+```
+
+这些操作是 O(1)。不过单线程队列通常优先使用 `ArrayDeque`：
+
+- 它用循环数组保存引用，节点更少。
+- 顺序访问具有更好的局部性。
+- 两端扩缩不需要为每个元素分配节点。
+
+LinkedList 允许保存 `null`，ArrayDeque 不允许。队列方法会用 `null` 表示没有元素，因此实际队列协议中也不应使用 null 作为任务值。
+
+## 5. LinkedList 适用的窄场景
+
+它可能适合：
+
+- 必须使用标准 `List` API，同时持有 `ListIterator` 并进行大量局部编辑。
+- 需要元素为 null，并且两端队列语义确实重要。
+- 数据规模和基准证明节点方案符合当前负载。
+
+它通常不适合：
+
+- 按索引随机访问。
+- 只因为“会插入和删除”就默认选择。
+- 大量元素且堆占用、GC 或缓存效率敏感。
+- 普通栈、队列和 BFS；这些场景通常用 `ArrayDeque`。
+
+如果算法本身需要频繁持有和移动节点，标准 LinkedList 又不暴露节点对象，专用数据结构可能比强行通过索引操作更合适。
+
+## 6. 常见问题
+
+### 6.1 LinkedList 插入一定是 O(1) 吗
+
+只有已经持有要插入位置的迭代器或内部节点时，链接修改是 O(1)。按索引调用 `add(index, value)` 先要 O(n) 定位。面试和设计文档需要把定位成本与修改成本分开。
+
+### 6.2 为什么 LinkedList 实现了 Queue 仍常用 ArrayDeque
+
+接口能力相同，不代表成本相同。ArrayDeque 的循环数组减少节点分配和指针跳转，通常更适合栈和双端队列。需要阻塞或多线程时，则应选择 `BlockingQueue` 等并发结构。
+
+### 6.3 LinkedList 的迭代器可以安全并发修改吗
+
+不可以。迭代器的 `remove`、`add` 可以按迭代协议修改当前列表，但其他线程或列表方法的并发结构修改仍没有线程安全保证，并可能触发 fail-fast 检查。
+
+### 6.4 链表删除元素后会立即释放内存吗
+
+实现会断开节点链接，使没有其他引用的节点和元素可以被 GC；实际回收时机由垃圾收集器决定。删除不等于立即归还进程内存。
+
+## 7. 面试题
+
+### 7.1 ArrayList 与 LinkedList 的插入、查询和遍历成本有什么不同
+
+<!-- 面试来源：
+- 美团：https://www.nowcoder.com/discuss/400870/
+- 字节跳动、阿里巴巴：https://www.nowcoder.com/discuss/353147579288461312
+-->
+
+**出现公司**：美团、字节跳动、阿里巴巴
+
+**考察重点**
+
+- 链表定位与节点修改需要分别计算。
+- 大 O 相同的遍历为何仍有实际性能差异。
+- 队列场景为什么通常选择 ArrayDeque。
+
+**相关内容**：第 2 节“按索引访问需要先定位节点”、第 3 节“插入快的前提是已经到达位置”、第 4 节“作为 Deque 使用”。
+
+<details>
+<summary>参考回答</summary>
+
+ArrayList 按索引访问 O(1)，尾部追加摊销 O(1)，中间插入删除需要搬移后续引用。LinkedList 按索引访问 O(n)；只有已经持有迭代位置时，局部插入删除的链接修改才是 O(1)，`add(index, value)` 仍需先定位。
+
+LinkedList 每个元素还有节点和前后引用，遍历会发生指针跳转。实际项目中一般 List 先选 ArrayList，队列或栈先选 ArrayDeque，只有明确的局部编辑模式并经测量后才考虑 LinkedList。
+
+</details>
+
+:::note 参考资料
+
+1. [Java API：LinkedList](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/LinkedList.html)
+2. [OpenJDK：LinkedList 源码](https://github.com/openjdk/jdk/blob/jdk-26-ga/src/java.base/share/classes/java/util/LinkedList.java)
+3. [Java API：ArrayDeque](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/ArrayDeque.html)
+4. [Java API：ListIterator](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/ListIterator.html)
+
+:::

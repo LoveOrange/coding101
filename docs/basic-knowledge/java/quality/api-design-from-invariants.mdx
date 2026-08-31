@@ -1,0 +1,262 @@
+---
+sidebar_position: 1
+---
+
+# 从不变量出发设计 Java API
+
+Java API 的职责不只是暴露方法，还要让对象始终保持合法状态。先写出业务不变量，再决定构造入口、参数类型、状态转换和失败语义，可以减少调用方需要记住的隐含规则。
+
+## 1. 不变量说明什么状态始终成立
+
+订单金额模型可能有这些约束：
+
+- 币种不能为空。
+- 金额不能为负。
+- 已支付订单不能再次修改金额。
+- 取消订单后不能继续支付。
+
+如果类允许先创建空对象，再按任意顺序调用 setter，合法性只能靠调用方维持：
+
+```java
+Order order = new Order();
+order.setCurrency(null);
+order.setAmount(new BigDecimal("-1"));
+```
+
+更稳妥的入口在对象建立时验证：
+
+```java
+public record Money(BigDecimal amount, Currency currency) {
+    public Money {
+        Objects.requireNonNull(amount, "amount");
+        Objects.requireNonNull(currency, "currency");
+
+        if (amount.signum() < 0) {
+            throw new IllegalArgumentException("amount must be >= 0");
+        }
+    }
+}
+```
+
+创建成功的 Money 就是合法值，后续方法不必反复防守同一约束。
+
+## 2. 用类型减少无效组合
+
+```java
+void transfer(String from, String to, BigDecimal amount, String currency)
+```
+
+这个签名允许传错参数顺序、非法账户字符串和没有舍入规则的金额。可以使用领域类型：
+
+```java
+TransferResult transfer(
+    AccountId from,
+    AccountId to,
+    Money amount,
+    IdempotencyKey idempotencyKey
+)
+```
+
+类型不能表达所有规则，但能把解析、验证和相等性集中到明确位置。布尔参数、多个同类型字符串和可为空参数较多时，通常意味着 API 缺少命名清楚的概念。
+
+### 2.1 避免布尔参数隐藏语义
+
+```java
+send(message, true, false);
+```
+
+调用处无法看出两个值含义。可以拆成命名方法、枚举或配置值：
+
+```java
+send(message, DeliveryMode.RELIABLE, AuditMode.ENABLED);
+```
+
+## 3. 让状态转换通过行为发生
+
+把状态字段暴露给 setter，会允许绕过业务规则：
+
+```java
+order.setStatus(OrderStatus.PAID);
+```
+
+用行为方法表达转换：
+
+```java
+public PaymentAccepted pay(PaymentId paymentId, Instant paidAt) {
+    if (status != OrderStatus.PENDING_PAYMENT) {
+        throw new InvalidOrderState(status, "pay");
+    }
+
+    status = OrderStatus.PAID;
+    return new PaymentAccepted(id, paymentId, paidAt);
+}
+```
+
+方法可以同时检查前置状态、更新相关字段并返回发生的结果。状态不变量被封装在聚合内部，而不是散落在 Controller、Service 和消息消费者中。
+
+## 4. 参数与返回值的所有权
+
+API 需要说明是否保留、复制或修改传入集合：
+
+```java
+public final class PricingRuleSet {
+    private final List<PricingRule> rules;
+
+    public PricingRuleSet(List<PricingRule> rules) {
+        this.rules = List.copyOf(rules);
+    }
+
+    public List<PricingRule> rules() {
+        return rules;
+    }
+}
+```
+
+复制为不可修改列表后，调用方不能通过原列表或 getter 改变规则顺序。元素仍应不可变，或在边界继续复制。
+
+方法会修改参数时，命名和文档应明确。大多数公共 API 更容易推理的做法是：输入由调用方拥有，方法不修改；输出由返回方提供稳定语义。
+
+## 5. 缺失与失败要有清楚契约
+
+### 5.1 查询可能没有结果
+
+```java
+Optional<User> findById(UserId id);
+```
+
+Optional 适合方法返回的可选结果。找不到是正常情况时，不需要抛异常；调用方必须选择空结果处理方式。
+
+### 5.2 命令失败
+
+参数本身非法可抛 `IllegalArgumentException`，对象状态不允许操作可以使用有业务语义的异常或结果类型。跨服务 API 通常还要映射为稳定错误码，避免把内部类名和堆栈作为外部契约。
+
+### 5.3 不要同时用 null、异常和状态码表示同一失败
+
+一种失败保留一个主要表达，调用方才知道应该检查哪条路径。异常消息用于诊断，类型或错误码用于程序判断，不要解析消息文本控制逻辑。
+
+## 6. 接口保持窄而完整
+
+接口应暴露调用方需要的能力，而不是实现类所有方法：
+
+```java
+public interface ExchangeRateProvider {
+    ExchangeRate rate(Currency from, Currency to, Instant at);
+}
+```
+
+调用方不需要知道数据来自数据库、远程服务还是内存。窄接口更容易提供替代实现和测试替身。
+
+“窄”不等于把一次业务动作拆成很多必须按顺序调用的小方法。若正确使用需要调用 `begin`、`setX`、`setY`、`validate`、`commit`，API 暴露了太多中间非法状态。可以提供一次完整操作，或用 Builder 在 `build` 时验证。
+
+## 7. 并发、幂等与阻塞属于契约
+
+公开方法需要说明：
+
+- 实例能否跨线程共享。
+- 操作是否会阻塞或发起 I/O。
+- 超时和中断怎样传播。
+- 重复调用是否安全。
+- 回调会在哪个线程执行。
+
+```java
+PaymentResult charge(
+    IdempotencyKey key,
+    Money amount,
+    Duration timeout
+);
+```
+
+加入幂等键和超时不自动实现协议，但让调用方能够表达这些约束。隐藏的无限等待和不明确重试语义会在集成后放大。
+
+## 8. 兼容性从已发布契约判断
+
+改变 Java 方法签名会影响源码或二进制兼容；更隐蔽的变化包括：
+
+- 原来允许 null，现在拒绝。
+- 遍历顺序改变。
+- 异常类型或错误码改变。
+- 同步方法改为异步。
+- 返回可变集合改为不可修改集合。
+- equals、hashCode 或序列化形态改变。
+
+发布前记录调用方依赖的可观察行为，使用契约测试和迁移阶段验证。不要只看“代码能编译”就判断兼容。
+
+## 9. 常见问题
+
+### 9.1 构造函数还是静态工厂
+
+构造函数直接，适合含义唯一的创建；静态工厂可以命名不同语义、缓存实例或返回子类型。无论哪种入口，都应保证返回对象合法，不把必需初始化留给调用方。
+
+### 9.2 Builder 是否总比长构造函数好
+
+不是。参数很少且都是必需值时，构造函数或 record 更清楚。可选参数多、需要分步收集但最终统一验证时使用 Builder。Builder 不能让非法半成品逃出 `build` 边界。
+
+### 9.3 所有参数都要 `Objects.requireNonNull` 吗
+
+只有契约禁止 null 时才检查。更重要的是在最靠近公共边界的位置拒绝，并给出参数名。允许缺失时应使用 Optional、重载或明确状态类型，而不是先检查再悄悄接受。
+
+### 9.4 测试私有方法是否说明 API 设计有问题
+
+通常测试可观察行为。私有方法复杂到需要大量独立用例时，可能包含可以提取的领域概念；但不要只为测试把无意义实现细节变成 public。先判断它是否拥有独立职责和契约。
+
+## 10. 面试题
+
+### 10.1 设计一个类时，怎样保证对象不会进入非法状态
+
+<!-- 面试来源：
+- 蚂蚁集团：https://www.nowcoder.com/discuss/609350716972425216
+- 众安保险：https://www.nowcoder.com/discuss/353156243269296128
+-->
+
+**出现公司**：蚂蚁集团、众安保险
+
+**考察重点**
+
+- 先写不变量，再设计构造和状态转换。
+- 类型、封装与防御性复制怎样减少非法组合。
+- 失败和并发语义怎样成为 API 契约。
+
+**相关内容**：第 1 节“不变量说明什么状态始终成立”至第 7 节“并发、幂等与阻塞属于契约”。
+
+<details>
+<summary>参考回答</summary>
+
+先列出创建后始终成立的不变量和允许的状态转换。构造函数或静态工厂验证必需值，用有语义的值类型代替容易传错的字符串和布尔参数；状态通过 `pay`、`cancel` 等行为方法改变，不开放任意 setter。
+
+集合和可变参数要明确所有权并做防御性复制，缺失与失败保持单一表达。还要说明线程安全、阻塞、超时和幂等边界。测试验证的是这些可观察契约，而不是只覆盖字段 getter。
+
+</details>
+
+### 10.2 一个方法的参数很多时应该怎样改进
+
+<!-- 面试来源：
+- 蚂蚁集团：https://www.nowcoder.com/discuss/609350716972425216
+-->
+
+**出现公司**：蚂蚁集团
+
+**考察重点**
+
+- 参数是否属于同一个领域概念。
+- 必需参数、可选参数和布尔标志怎样表达。
+- 参数对象是否只是无约束数据袋。
+
+**相关内容**：第 2 节“用类型减少无效组合”、第 6 节“接口保持窄而完整”。
+
+<details>
+<summary>参考回答</summary>
+
+先检查方法是否承担了多个职责，再看参数能否按稳定业务概念组合成值对象，例如把金额与币种组成 Money，把分页字段组成 PageRequest。多个布尔值改为枚举或命名选项，必需与可选参数分开。
+
+参数对象本身也要验证不变量，不能只把十个散参数搬进一个全是 setter 的 Bean。若调用本来就是多个阶段，应让阶段类型或 Builder 在最终 build 时保证完整性。
+
+</details>
+
+:::note 参考资料
+
+1. [Java API：Objects.requireNonNull](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/Objects.html#requireNonNull(T,java.lang.String))
+2. [Java Language Specification：Record Classes](https://docs.oracle.com/en/java/javase/26/docs/specs/jls/jls-8.html#jls-8.10)
+3. [Java API：Optional](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/Optional.html)
+4. [Java API：List.copyOf](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/List.html#copyOf(java.util.Collection))
+
+:::

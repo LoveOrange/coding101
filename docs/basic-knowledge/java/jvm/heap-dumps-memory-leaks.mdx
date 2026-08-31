@@ -1,0 +1,170 @@
+---
+sidebar_position: 24
+---
+
+# 堆转储与内存泄漏
+
+堆转储保存某一时刻的 Java 堆对象和引用关系。它可以回答“谁占内存、谁在持有”，但不能单独证明对象增长速度或业务是否仍需要它；分析前先用 GC 后 live set 和时间序列确认问题。
+
+## 1. 先区分泄漏、容量不足和分配峰值
+
+- **泄漏**：无用对象仍被引用，live set 随时间增长。
+- **容量不足**：对象都仍有用，但稳定工作集超过堆。
+- **分配峰值**：短时间创建大量对象，GC 或堆弹性来不及应对。
+
+监控重点是稳定负载下多次 GC 后的占用趋势。普通 used heap 上升可能只是从上次 GC 后开始分配，不足以证明泄漏。
+
+## 2. 先用直方图缩小类型范围
+
+```bash
+jcmd <pid> GC.class_histogram > histogram.txt
+```
+
+直方图按类统计实例数量和浅大小，适合发现 `byte[]`、Map 节点、业务 DTO 等异常数量。类名 `[B` 表示 `byte[]`，但 byte 数组背后的业务归属仍要从引用链判断。
+
+带 live 语义的统计可能触发 GC，影响更高。具体命令选项先查看 `jcmd <pid> help GC.class_histogram`，不要在高峰期盲目执行。
+
+## 3. 完整堆转储是高成本证据
+
+```bash
+jcmd <pid> GC.heap_dump /safe/path/heap.hprof
+```
+
+堆很大时，转储可能导致长停顿、大量磁盘 I/O，并需要接近堆规模的空闲磁盘。执行前确认：
+
+- 目标路径位于足够空间的持久卷。
+- 业务允许的暂停窗口。
+- 是否可以先在流量摘除实例上采集。
+- 文件中是否包含密码、令牌、个人数据等敏感内容。
+- 下载、存储和销毁策略。
+
+在启动参数中配置 `HeapDumpOnOutOfMemoryError` 也要提前验证目录和容量。
+
+## 4. Histogram 找数量，Dominator Tree 找保留者
+
+MAT 等工具常见视图：
+
+- **Histogram**：某类型有多少实例、浅大小多少。
+- **Dominator Tree**：对象若释放，会连带释放多大的对象图。
+- **Path to GC Roots**：对象为什么仍可达。
+- **OQL**：按字段和类型查询具体实例。
+
+一个缓存管理器本身只有几百字节，却可能支配数 GB 值对象。优先看 retained size，再沿到 GC Roots 的路径找到静态字段、线程、ThreadLocal、队列或类加载器。
+
+## 5. 常见泄漏持有关系
+
+### 5.1 无界缓存和队列
+
+没有容量、过期或消费跟不上，业务键持续积累。
+
+### 5.2 监听器和回调未注销
+
+长生命周期发布者持有短生命周期订阅者。
+
+### 5.3 ThreadLocal 与线程池
+
+任务结束后值仍在线程的 ThreadLocalMap 中，平台线程长期存活。
+
+### 5.4 类加载器泄漏
+
+旧应用加载器被线程、JDBC Driver、MBean 或父加载器静态结构持有，整组类和静态状态无法卸载。
+
+### 5.5 未完成任务
+
+Future、响应聚合或重试队列持有请求上下文，根因可能是下游卡顿或没有超时。
+
+## 6. 多个时间点用于证明增长
+
+两份完整 heap dump 不是唯一方案。可以组合：
+
+- 周期 class histogram。
+- JFR Old Object Sample / heap statistics 和 top growers。
+- GC 日志的 live set。
+- 缓存、队列和业务 key 数量。
+
+先低成本确定增长类型和时间，再在代表性时刻导出一次完整堆。直接比较两个巨大转储成本高，也可能因负载不同得到错误结论。
+
+## 7. 修复要回到所有权和上限
+
+找到持有者后，回答：
+
+- 谁创建对象，谁负责删除或关闭。
+- 最大允许数量、字节和存活时间。
+- 消费者变慢时怎样背压或丢弃。
+- key 是否有界，过期是否真的执行。
+- 取消、超时和应用停止时是否清理。
+
+修复后在相同长稳负载下比较 GC 后 live set、对象数量和业务正确性。只调用 `clear()` 可能掩盖并发生产或生命周期设计问题。
+
+## 8. 常见问题
+
+### 8.1 堆里最大的对象就是泄漏源吗
+
+不一定。它可能是合理缓存、类元数据相关数组或当前大请求。看 retained size、增长趋势和业务上限。
+
+### 8.2 `byte[]` 很多怎样定位来源
+
+按支配者和 GC Roots 路径分组，查看它属于 String、网络缓冲、压缩结果、缓存还是类数据；再关联 allocation profile 和业务 key。
+
+### 8.3 线上能不能连续 dump 多次
+
+技术上可以，风险通常很高。先评估堆大小、停顿和磁盘，优先使用 histogram/JFR 建趋势，并在摘流实例或可控副本上采集。
+
+## 9. 面试题
+
+### 9.1 堆使用率持续升高，怎样判断缓存增长还是内存泄漏
+
+<!-- 面试来源：
+- 字节跳动：https://www.nowcoder.com/discuss/860815475284955136
+- 阿里、腾讯：https://www.nowcoder.com/discuss/353158121138888704
+-->
+
+**出现公司**：字节跳动、阿里巴巴、腾讯
+
+**考察重点**
+
+- GC 后 live set 与稳定负载。
+- Histogram、Dominator Tree 和 GC Roots。
+- 业务容量与过期策略。
+
+**相关内容**：第 1 节“先区分泄漏、容量不足和分配峰值”至第 7 节“修复要回到所有权和上限”。
+
+<details>
+<summary>参考回答</summary>
+
+先看稳定负载下多次 GC 后的 live set 是否持续增长，并对齐缓存 entry、队列和业务 key 数。用 class histogram 找增长类型，必要时 heap dump 看 Dominator Tree 与 Path to GC Roots，确认谁在持有。
+
+若增长符合有明确上限和命中收益的缓存策略，可能是预期工作集；若过期对象仍由静态 Map、ThreadLocal 或未完成任务持有，就是泄漏。修复后用同负载验证 live set 是否稳定。
+
+</details>
+
+### 9.2 堆转储分析时为什么既要看 shallow size，也要看 retained size
+
+<!-- 面试来源：
+- 字节跳动：https://www.nowcoder.com/discuss/860815475284955136
+-->
+
+**出现公司**：字节跳动
+
+**考察重点**
+
+- 对象自身大小和支配对象图大小。
+- 小缓存管理器可以保留大量值。
+- 引用链决定回收条件。
+
+**相关内容**：第 4 节“Histogram 找数量，Dominator Tree 找保留者”。
+
+<details>
+<summary>参考回答</summary>
+
+shallow size 只算对象自身，对集合管理器可能很小；retained size 估算该对象不可达后能连带释放的对象图。泄漏通常由一个小的长生命周期持有者支配大量元素，因此先看 retained size，再沿 GC Roots 路径找所有权。
+
+</details>
+
+:::note 参考资料
+
+1. [Oracle：Troubleshoot Memory Leaks](https://docs.oracle.com/en/java/javase/26/troubleshoot/troubleshooting-memory-leaks.html)
+2. [Oracle：`jcmd`](https://docs.oracle.com/en/java/javase/26/docs/specs/man/jcmd.html)
+3. [Eclipse MAT Documentation](https://help.eclipse.org/latest/topic/org.eclipse.mat.ui.help/welcome.html)
+
+:::

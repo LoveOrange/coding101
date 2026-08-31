@@ -1,0 +1,185 @@
+---
+sidebar_position: 25
+---
+
+# GC 日志、JFR 与停顿分析
+
+GC 停顿分析要把一次回收放回时间线：为什么触发、回收了哪些区域、各阶段花了多久、回收后留下多少 live data，以及同一时刻请求延迟和 CPU 怎样变化。只统计 Full GC 次数无法解释因果。
+
+## 1. 使用 Unified Logging 保留上下文
+
+```bash
+java \
+  -Xlog:gc*,safepoint:file=/logs/gc.log:time,uptime,level,tags:filecount=10,filesize=100m \
+  -jar app.jar
+```
+
+这条配置只是起点，目标 JDK 的 tag 和 rotation 语法应通过 `java -Xlog:help` 验证。日志同时带 wall-clock 和 uptime，便于与监控、发布事件对齐。
+
+生产长期日志要配置轮转和磁盘告警。需要阶段细节时短期开启 `gc+phases=debug` 等 tag，避免长期记录无关 debug 信息。
+
+## 2. 每个事件先读四类信息
+
+1. **Collector / Type**：G1 Young、Mixed、Full，ZGC cycle 等。
+2. **Cause**：allocation failure、metadata threshold、System.gc 等。
+3. **Before → After / Capacity**：回收量和堆容量。
+4. **Duration / Phases**：总停顿与最慢阶段。
+
+回收后占用下降明显但很快又涨回，可能是分配率高；回收后几乎不降，可能是 live set 大或泄漏；单次 object copy 很慢，需看存活对象量；root scan 慢则继续看线程、RSet 或根集合。
+
+## 3. GC 名称不能代替回收范围
+
+Minor、Major、Full 在不同收集器和工具中可能使用不同。分析报告应写清收集器、日志事件名、是否 STW、实际回收区域和结果。
+
+G1 Mixed GC 是年轻 Region 加部分旧 Region 的正常疏散，不等于 Full GC。ZGC 的 Minor/Major cycle 也不能套用传统 Serial/Parallel 的阶段含义。
+
+## 4. 区分 GC 停顿、进入安全点和操作系统停顿
+
+用户看到的空白可能来自：
+
+- 等待线程到达 safepoint。
+- GC 在 STW 中执行。
+- 进程被 CPU throttling 或调度暂停。
+- major page fault、swap 或宿主机 steal。
+- 应用锁、I/O 和下游超时。
+
+Unified safepoint 日志和 JFR 能把进入安全点、停顿工作和系统事件放在一起。GC pause 很短但请求长尾很高时，应继续看锁、线程池和 I/O。
+
+## 5. JFR 关联 GC、分配和业务线程
+
+```bash
+jcmd <pid> JFR.start \
+  name=latency \
+  settings=profile \
+  duration=5m \
+  filename=/logs/latency.jfr
+```
+
+在 JMC 中重点查看：
+
+- GC pause 与 concurrent phase。
+- Allocation in new/outside TLAB。
+- Old Object Sample 或 heap statistics。
+- Safepoint、CPU Load 和线程调度。
+- Java Monitor Blocked、Thread Park。
+- Compilation 与 Code Cache。
+
+事件是否启用和采样阈值由 recording settings 决定。看不到事件先检查配置，不要直接推断没有发生。
+
+## 6. 三类常见因果链
+
+### 6.1 分配率过高
+
+```text
+请求/批任务增加 → bytes allocated/s 上升 → Young GC 更频繁
+→ GC CPU 上升 → 吞吐或长尾受影响
+```
+
+用 allocation profile 找创建位置，优先减少不必要中间对象和批次峰值。
+
+### 6.2 live set 接近堆上限
+
+```text
+回收后 old/live 持续高 → 并发周期频繁 → 疏散余量不足
+→ Full/退化回收或 allocation stall
+```
+
+继续判断是业务容量还是意外持有，再决定调堆或修泄漏。
+
+### 6.3 safepoint 到达慢
+
+```text
+请求 safepoint → 某线程迟迟未到达安全状态
+→ time-to-safepoint 高 → 用户停顿大于 GC phase
+```
+
+需要看对应线程、native/JIT 情况和 JDK 版本，不应只调整收集器暂停目标。
+
+## 7. 调优一次只改变一个主要变量
+
+建立基线后按顺序处理：
+
+1. 明确延迟或吞吐目标。
+2. 降低异常分配和无界 live set。
+3. 确保堆与容器有余量。
+4. 保留收集器默认自适应，确认不足之处。
+5. 每次只改一类参数并回放相同负载。
+6. 比较暂停分位、GC CPU、吞吐和 RSS。
+
+把十几个网上参数一次加入，会让结果无法归因，并可能覆盖新 JDK 更好的默认值。
+
+## 8. 常见问题
+
+### 8.1 Young GC 很频繁就是问题吗
+
+不一定。单次很短、GC CPU 可接受且业务目标满足时可能正常。看总 CPU、分配率和端到端延迟。
+
+### 8.2 Full GC 一次都不能有吗
+
+长期在线服务通常希望避免不可预测 Full GC，但诊断命令、显式 GC 或特殊维护也可能触发。关键是原因、持续时间和是否重复。
+
+### 8.3 开启 JFR 会不会影响性能
+
+JFR 为低开销持续记录设计，但开销取决于事件、阈值和堆栈深度。使用 default/profile 基线，修改设置后在目标负载测量。
+
+## 9. 面试题
+
+### 9.1 线上 Full GC 频繁，怎样排查
+
+<!-- 面试来源：
+- 阿里巴巴：https://www.nowcoder.com/discuss/923310928014082048
+- 阿里云：https://www.nowcoder.com/discuss/401459816646942720
+-->
+
+**出现公司**：阿里巴巴、阿里云
+
+**考察重点**
+
+- 触发原因、回收后 live set 和分配率。
+- 类元数据、Humongous 与显式 GC 等不同路径。
+- GC 日志与 JFR 时间线。
+
+**相关内容**：第 1 节“使用 Unified Logging 保留上下文”至第 7 节“调优一次只改变一个主要变量”。
+
+<details>
+<summary>参考回答</summary>
+
+先从统一日志确认收集器、每次 Full 的 cause、回收前后堆和最慢阶段，再把它与分配率、old/live set、Metaspace、Humongous 对象和 `System.gc` 对齐。回收后仍高偏向 live set/泄漏，快速涨回偏向分配高，metadata cause 则查类加载器。
+
+用 JFR 或 allocation profile 找增长来源，先修无界保留和异常分配，再评估堆余量与收集器参数。每次只改一个主要变量并用同负载验证。
+
+</details>
+
+### 9.2 JFR 和 GC 日志各自能回答什么
+
+<!-- 面试来源：
+- 阿里云：https://www.nowcoder.com/discuss/401459816646942720
+-->
+
+**出现公司**：阿里云
+
+**考察重点**
+
+- GC 日志提供精确回收阶段和容量变化。
+- JFR 关联 CPU、线程、分配、锁和编译。
+- 二者通过时间与 uptime 对齐。
+
+**相关内容**：第 1 节“使用 Unified Logging 保留上下文”至第 5 节“JFR 关联 GC、分配和业务线程”。
+
+<details>
+<summary>参考回答</summary>
+
+GC 日志最适合看收集类型、原因、堆变化和具体 phase；JFR 把 GC 与分配样本、CPU、线程锁、safepoint 和 JIT 事件放在同一时间线。日志解释“这次 GC 做了什么”，JFR 更容易解释“它和业务现场同时发生了什么”。
+
+两者都要带 wall-clock/uptime 与实例信息，否则无法和请求监控准确关联。
+
+</details>
+
+:::note 参考资料
+
+1. [Oracle：GC Tuning Guide](https://docs.oracle.com/en/java/javase/26/gctuning/index.html)
+2. [Oracle：G1 Tuning and Logging](https://docs.oracle.com/en/java/javase/26/gctuning/garbage-first-garbage-collector-tuning.html)
+3. [Oracle：Flight Recorder API Guide](https://docs.oracle.com/en/java/javase/26/jfapi/index.html)
+4. [Oracle：`java -Xlog`](https://docs.oracle.com/en/java/javase/26/docs/specs/man/java.html)
+
+:::

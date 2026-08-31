@@ -1,0 +1,116 @@
+---
+sidebar_position: 9
+---
+
+# 原子类、LongAdder 与热点竞争
+
+原子类适合维护一个可以独立更新的状态。`AtomicLong` 在单点上提供精确的原子读改写；`LongAdder` 将高频更新分散到多个变量，换取更高吞吐，但读取不再是并发更新中的原子快照。
+
+## 1. 原子类把常用 CAS 循环封装起来
+
+```java
+private final AtomicLong sequence = new AtomicLong();
+
+long nextId() {
+    return sequence.incrementAndGet();
+}
+```
+
+`incrementAndGet` 对读取、加一和写回执行一次原子状态转换。它适合序列号、状态位和独立引用，但不能自动维护多个对象之间的不变量。
+
+```java
+if (stock.get() > 0) {
+    stock.decrementAndGet();
+}
+```
+
+上面的检查和扣减仍是两次操作。应使用返回失败的 CAS 循环，或者由锁覆盖完整条件。
+
+## 2. 单个原子变量会成为缓存热点
+
+很多核心同时更新同一个 `AtomicLong` 时，会争夺同一缓存行。CAS 失败的线程反复重试，缓存所有权频繁迁移，吞吐可能很快到达上限。
+
+竞争成本不能只从 Java 线程是否阻塞判断：没有 park 不代表没有等待，CPU 可能消耗在自旋、失败重试和缓存一致性流量上。
+
+## 3. `LongAdder` 分散更新压力
+
+```java
+private final LongAdder requests = new LongAdder();
+
+void recordRequest() {
+    requests.increment();
+}
+
+long observedRequests() {
+    return requests.sum();
+}
+```
+
+低竞争时更新基础值；发生竞争后，内部可以扩展多组变量，让不同线程更新不同位置。`sum()` 再将这些位置合并，因此高竞争计数的预期吞吐通常更好，代价是更多内存和读取成本。
+
+## 4. `sum()` 不是并发更新中的原子快照
+
+`sum()` 遍历各个分量时，其他线程仍可更新。返回值适合指标、频次和统计，不适合：
+
+- 生成不能重复的序列号。
+- 根据精确计数触发一次性状态转换。
+- 与另一个字段组成一致性快照。
+- 在并发写入时使用 `sumThenReset()` 精确切分结算周期。
+
+需要这些语义时，应使用 `AtomicLong`、锁，或将事件交给单一所有者。
+
+## 5. 原子引用可以封装多字段状态
+
+```java
+record State(int available, long version) {}
+
+AtomicReference<State> state =
+        new AtomicReference<>(new State(10, 0));
+```
+
+把相关字段放入不可变值，再 CAS 整个引用，可以保证一次转换中状态组合不被拆开。对象分配、重试函数和 ABA 仍需要评估；状态复杂时锁往往更容易审查。
+
+## 6. 常见问题
+
+### 6.1 `LongAdder` 一定比 `AtomicLong` 快吗
+
+不一定。低竞争下两者差异可能很小，`LongAdder` 的读取和空间成本更高。只有结合真实读写比例、线程数和硬件基准才有结论。
+
+### 6.2 原子类能替代所有锁吗
+
+不能。原子类擅长单变量状态转换；阻塞条件、多字段不变量或必须整体执行的副作用，通常需要锁或重新划分所有权。
+
+## 7. 面试题
+
+### 7.1 `AtomicLong` 和 `LongAdder` 应该怎样选择
+
+<!-- 面试来源：
+- 蚂蚁集团：https://www.nowcoder.com/discuss/632476
+- 美团：https://www.nowcoder.com/discuss/377447203734921216
+-->
+
+**出现公司**：蚂蚁集团、美团
+
+**考察重点**
+
+- 单点 CAS 与分散更新。
+- 精确原子值和统计值的差别。
+- 竞争、读频率和空间成本。
+
+**相关内容**：第 2 节“单个原子变量会成为缓存热点”至第 4 节“`sum()` 不是并发更新中的原子快照”。
+
+<details>
+<summary>参考回答</summary>
+
+需要随时得到精确原子值、生成序列或基于旧值做状态转换时选择 `AtomicLong`。很多线程高频累加，读取主要用于指标统计时，`LongAdder` 可以通过分散热点提高吞吐。
+
+`LongAdder.sum()` 在并发更新中不是原子快照，空间和读取成本也更高，所以不能只因为线程多就替换。最终应按读写比例与竞争强度做 JMH 和运行时 profile。
+
+</details>
+
+:::note 参考资料
+
+1. [Java API：`AtomicLong`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/atomic/AtomicLong.html)
+2. [Java API：`LongAdder`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/atomic/LongAdder.html)
+
+:::

@@ -1,0 +1,109 @@
+---
+sidebar_position: 20
+---
+
+# 虚拟线程的适用条件与边界
+
+虚拟线程适合大量任务以同步代码执行，并且大部分时间在等待阻塞 I/O 的场景。它降低的是线程承载成本，可以提高并发吞吐；它不会让 CPU 计算、数据库或下游接口变快。
+
+## 1. 虚拟线程仍然是 `Thread`
+
+```java
+try (ExecutorService executor =
+             Executors.newVirtualThreadPerTaskExecutor()) {
+    Future<Response> response = executor.submit(() -> client.call());
+    return response.get();
+}
+```
+
+每个任务创建一个虚拟线程。运行时将大量虚拟线程调度到较少的 carrier 平台线程上；阻塞 I/O 时，虚拟线程通常可以卸载，让 carrier 执行其他任务。
+
+现有的栈、异常、中断和 Thread API 大多仍然适用，因此可以保留清晰的线程每请求同步代码。
+
+## 2. 不要把虚拟线程放进固定大小池
+
+平台线程昂贵，线程池通过复用和数量限制管理它们。虚拟线程的设计目标是任务一线程，用完即结束；将它们固定为少量 Worker 会重新引入不必要的排队。
+
+`newVirtualThreadPerTaskExecutor()` 创建的线程数量没有池上限。容量控制应施加在真正稀缺的资源上：
+
+```java
+Semaphore dbPermits = new Semaphore(30);
+
+dbPermits.acquire();
+try {
+    return repository.query();
+} finally {
+    dbPermits.release();
+}
+```
+
+## 3. 适合高并发阻塞等待，不适合长期 CPU 计算
+
+典型场景包括大量独立 HTTP、JDBC 或文件 I/O 调用。虚拟线程主要提高给定机器上可以同时等待的任务数量，通常不会降低一次请求的固有延迟。
+
+长期 CPU 密集任务仍受核心数限制，应限制并行度；大量虚拟线程同时计算只会争夺相同 CPU。
+
+## 4. 当前 JDK 的 pinning 边界要按版本说明
+
+虚拟线程被 pin 到 carrier 时，阻塞期间无法卸载，会同时占住平台线程。JDK 21—23 中，在 `synchronized` 内阻塞是常见 pinning 来源；JEP 491 从 JDK 24 起改进了 monitor 实现，当前 JDK 26 文档列出的主要 pinning 情况是执行 native 方法或 Foreign Function 调用。
+
+因此，不应继续笼统地把所有 `synchronized` 换成 `ReentrantLock`。先确认部署 JDK 版本，再用 JFR 和虚拟线程诊断数据定位持续且影响吞吐的 pinning。
+
+## 5. ThreadLocal 与上下文传播仍需控制
+
+虚拟线程支持 ThreadLocal，但 JVM 可能创建极多虚拟线程。给每个线程缓存昂贵对象会把轻量线程重新变重，也不能依赖固定 Worker 复用缓存。
+
+不可变请求上下文可以考虑当前 JDK 已提供的 Scoped Values；使用前要确认目标 JDK 版本与框架支持。无论采用哪种机制，外部资源都应由作用域管理，而不是藏在线程局部变量中长期存活。
+
+## 6. 迁移需要比较完整链路
+
+压测时记录吞吐、p99、CPU、carrier 数量、pinning、数据库连接等待和内存。若瓶颈是 30 个数据库连接，虚拟线程可能只是让更多请求同时排在连接池前。
+
+还要确认所用 JDBC 驱动、客户端和监控工具对虚拟线程的支持，避免只替换 Executor 就宣布迁移完成。
+
+## 7. 常见问题
+
+### 7.1 虚拟线程比平台线程更快吗
+
+单个任务不一定更快。它们更便宜，适合承载更多阻塞任务，从而提升高并发 I/O 服务的吞吐和代码可读性。
+
+### 7.2 使用虚拟线程以后还需要线程池吗
+
+不需要用池限制虚拟线程本身，但平台线程执行器、定时任务和 CPU 并行计算仍可能需要池。数据库连接、接口并发等稀缺资源也必须单独限流。
+
+## 8. 面试题
+
+### 8.1 虚拟线程适合哪些场景，有哪些边界
+
+<!-- 面试来源：
+- 转转：https://www.nowcoder.com/discuss/comment/10453006
+- 虎牙：https://www.nowcoder.com/discuss/841426756815814656
+-->
+
+**出现公司**：转转、虎牙
+
+**考察重点**
+
+- 大量阻塞 I/O 与任务一线程模型。
+- CPU、下游容量和 ThreadLocal 边界。
+- JDK 24 前后 pinning 语义变化。
+
+**相关内容**：第 1 节“虚拟线程仍然是 `Thread`”至第 6 节“迁移需要比较完整链路”。
+
+<details>
+<summary>参考回答</summary>
+
+虚拟线程适合数量大、相互独立并且大部分时间阻塞等待 I/O 的任务，可以继续用同步代码表达线程每请求模型。它提高的是承载并发等待的能力，不会加速 CPU 计算或突破数据库连接数。
+
+通常使用每任务一个虚拟线程，不把它们放进固定大小池；在连接、接口等稀缺资源前用 Semaphore 等工具限流。还要按实际 JDK 版本检查 pinning：JDK 24 起 `synchronized` 导致的 monitor pinning 已被解决，native/FFM 调用仍可能 pin。
+
+</details>
+
+:::note 参考资料
+
+1. [Oracle：Virtual Threads](https://docs.oracle.com/en/java/javase/26/core/virtual-threads.html)
+2. [OpenJDK JEP 444：Virtual Threads](https://openjdk.org/jeps/444)
+3. [OpenJDK JEP 491：Synchronize Virtual Threads without Pinning](https://openjdk.org/jeps/491)
+4. [Java API：`Executors.newVirtualThreadPerTaskExecutor`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/Executors.html#newVirtualThreadPerTaskExecutor())
+
+:::

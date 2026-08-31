@@ -1,0 +1,169 @@
+---
+sidebar_position: 11
+---
+
+# GC Roots 与可达性分析
+
+垃圾回收器从一组必须保留的根引用出发，沿对象引用图标记能够到达的对象。没有从 GC Roots 到达路径的对象才具备回收条件；“引用计数为零”不是 HotSpot 判断普通堆对象存活的主要方式。
+
+## 1. 引用计数无法单独处理环
+
+```java
+final class Node {
+    Node next;
+}
+
+Node left = new Node();
+Node right = new Node();
+left.next = right;
+right.next = left;
+
+left = null;
+right = null;
+```
+
+两个 Node 仍互相引用，但整个环已经无法被程序访问。单纯引用计数会看到每个对象都有一个引用；从 GC Roots 做图遍历则不会到达它们，因此可以整体回收。
+
+## 2. GC Roots 来自正在运行的系统状态
+
+常见根来源包括：
+
+- 活跃线程栈帧中的局部引用和执行状态。
+- 已加载类持有的静态引用。
+- JNI 全局或局部引用。
+- JVM 内部维持运行所需的引用。
+
+这不是一张跨 JVM 实现完全固定的枚举表。诊断时更有用的问题是：某个对象通过哪条引用链连到哪类根，以及这条持有关系是否仍有业务意义。
+
+## 3. 可达不等于仍有用
+
+```java
+private static final Map<String, Session> SESSIONS = new HashMap<>();
+```
+
+Map 是静态字段，因此其中 Session 都从类根可达。GC 无法知道某个会话已经过期；如果应用不删除它，对 GC 来说仍是存活对象。
+
+Java 内存泄漏通常表现为无用对象仍被队列、缓存、监听器、ThreadLocal 或类加载器引用，并非底层内存没有执行 `free`。堆转储中的 `Path to GC Roots` 能解释为什么对象不能回收。
+
+## 4. 强、软、弱和虚引用改变保留语义
+
+### 4.1 强引用
+
+普通字段和局部引用属于强引用。只要强可达，对象就不会因内存压力被回收。
+
+### 4.2 软引用
+
+软可达对象会在内存压力和实现策略下被清理。它不提供稳定命中率、容量或过期策略，不适合作为通用业务缓存设计。
+
+### 4.3 弱引用
+
+对象只剩弱引用时，可在相应 GC 中被清理。`WeakHashMap` 的键使用弱引用，适合“键的其他所有者消失后，关联项不应独立延长键生命周期”的场景。
+
+### 4.4 虚引用
+
+`PhantomReference` 配合 `ReferenceQueue` 用于对象已经无法正常访问后的清理通知或生命周期跟踪。`get()` 始终返回 `null`，不能用来复活对象。
+
+## 5. ReferenceQueue 让清理事件可消费
+
+```java
+ReferenceQueue<ResourceOwner> queue = new ReferenceQueue<>();
+PhantomReference<ResourceOwner> ref =
+    new PhantomReference<>(owner, queue);
+```
+
+引用对象本身必须被保留，否则程序无法从队列关联到清理动作。清理线程要有停止协议，清理动作也不能重新强引用 referent。
+
+若资源有明确作用域，`AutoCloseable` 和 try-with-resources 仍是首选。基于可达性的清理时机不确定，只适合作为兜底或无法显式管理的场景。
+
+## 6. 类卸载也依赖加载器可达性
+
+类元数据并不是单个 `Class` 对象不可达就立即卸载。通常要让定义该组类的类加载器、其类和相关运行时状态整体不再可达，收集器才可能卸载。
+
+热部署中 Metaspace 增长时，检查旧加载器到 GC Roots 的路径。线程上下文类加载器、ThreadLocal、驱动注册和父加载器静态集合都可能持有旧加载器。
+
+## 7. 从堆转储阅读引用链
+
+推荐顺序：
+
+1. 用 Histogram 找数量或浅大小异常的类型。
+2. 用 Dominator Tree 找保留内存大的对象。
+3. 对具体实例查看 Path to GC Roots。
+4. 排除弱、软、虚引用等不一定阻止回收的路径。
+5. 把持有者映射回缓存、队列、线程或类加载器生命周期。
+
+一条最短路径不一定是唯一根因。对象可能被多条路径持有，修复后要通过同负载下的 live set 趋势验证。
+
+## 8. 常见问题
+
+### 8.1 两个对象循环引用会不会泄漏
+
+只有这个环仍能从 GC Roots 到达时才会保留。孤立环可以被可达性分析发现并回收。
+
+### 8.2 把缓存值改成软引用就能避免 OOM 吗
+
+不能保证。缓存还需要容量、过期、加载并发和命中率策略；软引用清理受实现与内存压力影响，行为不可作为业务容量控制。
+
+### 8.3 `finalize` 能用于释放资源吗
+
+不应使用。Finalization 已弃用并计划移除，执行时机不确定，还会延长对象生命周期。使用 try-with-resources、Cleaner 或显式生命周期。
+
+## 9. 面试题
+
+### 9.1 JVM 怎样判断一个对象可以回收
+
+<!-- 面试来源：
+- 阿里巴巴：https://www.nowcoder.com/discuss/353149059378651136
+- 美团：https://www.nowcoder.com/discuss/904064312031932416
+-->
+
+**出现公司**：阿里巴巴、美团
+
+**考察重点**
+
+- 从 GC Roots 遍历对象图。
+- 孤立环为什么可回收。
+- 可达对象也可能是业务泄漏。
+
+**相关内容**：第 1 节“引用计数无法单独处理环”至第 3 节“可达不等于仍有用”。
+
+<details>
+<summary>参考回答</summary>
+
+收集器从线程栈、类静态状态、JNI 和 JVM 内部引用等 GC Roots 出发遍历对象图。无法从这些根到达的对象具备回收条件，所以只有内部循环引用的孤立对象仍能被回收。
+
+可达性只说明程序仍持有对象，不说明业务仍需要它。无界缓存、监听器或 ThreadLocal 持有的过期对象仍可达，这就是 Java 中常见的泄漏形态。
+
+</details>
+
+### 9.2 强、软、弱、虚引用分别适合什么场景
+
+<!-- 面试来源：
+- 阿里巴巴：https://www.nowcoder.com/discuss/353157613372252160
+-->
+
+**出现公司**：阿里巴巴
+
+**考察重点**
+
+- 不同可达性级别的回收语义。
+- `ReferenceQueue` 的作用。
+- 显式资源管理优先于可达性清理。
+
+**相关内容**：第 4 节“强、软、弱和虚引用改变保留语义”和第 5 节“ReferenceQueue 让清理事件可消费”。
+
+<details>
+<summary>参考回答</summary>
+
+强引用维持普通对象生命周期；软引用可能在内存压力下清理，不适合替代有界缓存；弱引用适合不希望关联结构延长键或对象生命周期的场景；虚引用不能取得对象，配合 ReferenceQueue 做回收后的通知或兜底清理。
+
+文件、连接等资源有明确边界时仍应显式 close，因为引用处理不保证及时发生。
+
+</details>
+
+:::note 参考资料
+
+1. [Java API：`java.lang.ref`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/ref/package-summary.html)
+2. [Java API：`Reference`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/ref/Reference.html)
+3. [JEP 421：Deprecate Finalization for Removal](https://openjdk.org/jeps/421)
+
+:::

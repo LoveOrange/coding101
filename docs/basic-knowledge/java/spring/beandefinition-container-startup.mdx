@@ -1,0 +1,113 @@
+---
+sidebar_position: 2
+---
+
+# BeanDefinition 与容器启动
+
+Spring 容器启动时，先收集和处理 Bean 的定义，再创建需要预实例化的单例。把元数据阶段与实例阶段分开，才能判断一个扩展点为什么生效、为什么某个 Bean 被过早创建。
+
+## 1. 多种配置最终进入同一个定义注册表
+
+BeanDefinition 可以来自：
+
+- `@Bean` Java 配置。
+- `@Component` 及其派生注解的组件扫描。
+- XML、程序化注册或框架导入。
+- Spring Boot 自动配置。
+
+定义通常包含 Bean 类或工厂方法、构造参数、属性、作用域、是否懒加载、初始化和销毁方法等。它是一份创建配方，不是最终业务对象。
+
+## 2. `BeanFactoryPostProcessor` 修改定义
+
+定义注册完成后，容器会先运行 BeanFactory 级别的后处理器：
+
+```java
+public final class ClientTimeoutProcessor
+        implements BeanFactoryPostProcessor {
+    @Override
+    public void postProcessBeanFactory(
+            ConfigurableListableBeanFactory factory) {
+        BeanDefinition definition =
+                factory.getBeanDefinition("paymentClient");
+        definition.getPropertyValues().add("timeout", Duration.ofSeconds(1));
+    }
+}
+```
+
+它操作的是定义元数据。此阶段调用 `getBean()` 会让实例提前创建，可能绕过后续处理器或造成依赖链提前展开。
+
+## 3. `BeanPostProcessor` 处理实例
+
+容器在创建普通 Bean 之前先注册 BeanPostProcessor。它们可以参与依赖注入、生命周期注解处理，或在初始化后返回代理对象。
+
+```text
+定义注册
+  → BeanFactoryPostProcessor
+  → 注册 BeanPostProcessor
+  → 创建非懒加载单例
+  → 完成上下文刷新
+```
+
+顺序很重要：某个 Bean 被处理器提前依赖时，它可能“not eligible for auto-proxying”，最终没有获得预期代理。
+
+## 4. ApplicationContext 在 BeanFactory 上提供完整引导
+
+`BeanFactory` 提供对象创建与依赖装配的核心能力。`ApplicationContext` 在此基础上自动发现处理器，并集成资源加载、事件、国际化、环境和生命周期管理。
+
+典型应用应使用 `ApplicationContext`。直接创建 `DefaultListableBeanFactory` 时，注解处理和 AOP 不会仅因为定义存在就自动全部启用，需要调用方自行完成引导。
+
+## 5. 单例通常在刷新阶段预实例化
+
+非懒加载 singleton 默认在 ApplicationContext 初始化时创建，使缺少依赖、构造异常和配置错误尽早暴露。`@Lazy` 可以推迟成本，却也把错误延后到首次请求。
+
+启动慢时按阶段测量：类路径扫描与定义解析、处理器执行、Bean 构造、外部连接、迁移脚本和初始化任务。不要只根据最后一个日志行判断原因。
+
+## 6. `FactoryBean` 与 BeanFactory 的名字容易混淆
+
+`BeanFactory` 是容器接口。`FactoryBean<T>` 是由容器管理的特殊 Bean，用来生产另一种对象。按普通名称获取时通常得到它的产品；以 `&` 前缀获取时才得到 FactoryBean 本身。
+
+## 7. 常见问题
+
+### 7.1 BeanDefinition 注册完成后 Bean 已经存在吗
+
+不一定。定义只描述如何创建。非懒加载 singleton 通常在上下文刷新时实例化，lazy、prototype 等可能在请求时才创建。
+
+### 7.2 BeanFactoryPostProcessor 和 BeanPostProcessor 有什么区别
+
+前者在实例创建前处理 BeanDefinition；后者处理已经创建的 Bean 实例，可以修改或包装实例。
+
+## 8. 面试题
+
+### 8.1 BeanFactory 与 ApplicationContext 有什么区别
+
+<!-- 面试来源：
+- 美团：https://www.nowcoder.com/discuss/614236533700194304
+- 交通银行：https://www.nowcoder.com/discuss/353158580108992512
+-->
+
+**出现公司**：美团、交通银行
+
+**考察重点**
+
+- 核心工厂与完整容器引导。
+- 处理器自动发现和生命周期。
+- 不能简单归结为“懒加载与立即加载”。
+
+**相关内容**：第 2 节“`BeanFactoryPostProcessor` 修改定义”至第 5 节“单例通常在刷新阶段预实例化”。
+
+<details>
+<summary>参考回答</summary>
+
+BeanFactory 提供 Bean 定义、创建、作用域和依赖解析的核心能力。ApplicationContext 包含 BeanFactory，并负责自动发现和注册各种后处理器，同时集成环境、事件、资源、国际化和生命周期。
+
+典型应用使用 ApplicationContext。差异不能只说成一个懒加载、一个立即加载：单例是否预实例化由上下文刷新和 Bean 的 lazy 设置决定，真正关键是完整的容器引导与扩展点是否被启用。
+
+</details>
+
+:::note 参考资料
+
+1. [Spring Framework：Bean Overview](https://docs.spring.io/spring-framework/reference/core/beans/definition.html)
+2. [Spring Framework：Container Extension Points](https://docs.spring.io/spring-framework/reference/core/beans/factory-extension.html)
+3. [Spring Framework：The BeanFactory API](https://docs.spring.io/spring-framework/reference/core/beans/beanfactory.html)
+
+:::

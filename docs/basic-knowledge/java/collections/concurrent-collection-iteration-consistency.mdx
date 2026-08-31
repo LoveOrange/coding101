@@ -1,0 +1,203 @@
+---
+sidebar_position: 14
+---
+
+# 并发容器的迭代一致性
+
+并发容器允许遍历与更新重叠，但不同实现提供的视图不同。ConcurrentHashMap 是弱一致遍历，CopyOnWrite 容器是创建时快照；两者都不等于整个业务状态的事务快照。
+
+## 1. 先说明需要哪一种视图
+
+遍历共享集合时，常见需求有：
+
+1. **允许近似观察**：监控、日志和后台统计可接受漏掉刚写入的元素。
+2. **固定结构快照**：一次广播只处理开始时已有的监听器。
+3. **线性一致快照**：结果必须对应某个明确瞬间。
+4. **跨多个数据结构一致**：集合、计数和外部状态必须属于同一版本。
+
+并发集合通常只直接提供前两类。后两类需要锁、版本化不可变状态、数据库事务或单写者协议。
+
+## 2. ConcurrentHashMap 的弱一致遍历
+
+```java
+for (Map.Entry<String, Session> entry : sessions.entrySet()) {
+    inspect(entry);
+}
+```
+
+遍历可以与 put、remove 并发，不抛 `ConcurrentModificationException`。迭代器可能看到遍历期间的一些更新，也可能错过已经经过区域的更新，但不会故意复制整个 Map 或把所有写者锁住。
+
+适合：
+
+- 近似指标。
+- 后台清理候选扫描，删除时再用条件原子方法确认。
+- 管理页面的非事务列表。
+
+不适合把本次总和与另一个时刻的 size 比较，并据此断言系统不变量。
+
+## 3. CopyOnWrite 的数组快照
+
+```java
+for (Listener listener : listeners) {
+    listener.onEvent(event);
+}
+```
+
+迭代器固定引用创建时的数组，所以遍历期间结构不会变化，后来加入或删除的元素不影响当前迭代。这是一致的列表结构快照，但元素对象仍可被修改。
+
+快照通过写入时复制获得，代价集中在写操作和旧数组生命周期。它不适合大规模、高频更新集合。
+
+## 4. BlockingQueue 与 ConcurrentLinkedQueue
+
+多数并发队列迭代器也是弱一致的。队列的核心协议是 offer/put 与 poll/take，迭代通常只用于诊断，不是消费：
+
+```java
+for (Job job : queue) {
+    observe(job); // 不会把 job 从队列移除
+}
+```
+
+不要通过遍历寻找一个元素再 remove 来实现任务领取。多个消费者应使用原子的 poll 或 take。优先级和延迟队列的迭代顺序也不一定等于出队顺序，应查看具体 API。
+
+## 5. 聚合操作不是事务快照
+
+ConcurrentHashMap 提供 `forEach`、`search` 和 `reduce` 等并行批量操作。它们适合在并发更新下计算近似或逐键有效的结果，但整体结果可能混合不同时间点：
+
+```java
+long total = counters.reduceValuesToLong(
+    1_000,
+    LongAdder::sum,
+    0L,
+    Long::sum
+);
+```
+
+`mappingCount`、`size`、`isEmpty` 也不应与随后修改组成“先检查再执行”协议。需要严格上限时，使用独立原子计数与更新协议，或将状态封装在同一锁内。
+
+## 6. 建立一致快照的方式
+
+### 6.1 外部锁
+
+所有读写都遵守同一锁时，可以在锁内复制：
+
+```java
+synchronized (stateLock) {
+    return Map.copyOf(mutableState);
+}
+```
+
+集合内部的并发方法不会自动遵守用户锁，必须封装访问入口。
+
+### 6.2 不可变状态加原子替换
+
+写者基于旧版本构造新不可变对象，再一次替换引用：
+
+```java
+AtomicReference<State> state = new AtomicReference<>(State.empty());
+```
+
+读者一次读取引用即可获得同一版本的多个字段。适合读多写少、状态大小可控的配置。
+
+### 6.3 版本号与重试
+
+读取前后检查版本；发生变化时重试。必须防止版本回绕，并控制高写入压力下的饥饿。
+
+### 6.4 数据库或事件日志
+
+跨进程和持久状态需要由数据库隔离、日志偏移或快照协议提供边界，不能依赖单进程 ConcurrentHashMap。
+
+## 7. 迭代中删除需要再次确认
+
+后台清理过期会话：
+
+```java
+sessions.forEach((id, session) -> {
+    if (session.expired(clock.instant())) {
+        sessions.remove(id, session);
+    }
+});
+```
+
+条件 `remove(id, session)` 只在当前值仍是扫描到的对象时删除。若另一个线程已经刷新会话并替换值，删除失败，避免用旧观察删除新状态。
+
+这仍不是跨外部资源事务。若删除还要释放数据库租约，需要设计幂等和补偿。
+
+## 8. 常见问题
+
+### 8.1 弱一致是否等于最终一定能看到所有更新
+
+不是。它描述一次迭代可以与更新并发，不承诺这次遍历最终包含期间所有变化。后续新建的读取按容器内存语义观察已完成更新，但单次迭代没有追赶日志的义务。
+
+### 8.2 `toArray` 能得到严格快照吗
+
+它会构造一个数组结果，但并发复制过程中集合仍可能变化。结果适合独立遍历，不自动代表调用开始或结束时的精确状态。严格要求需建立外部版本边界。
+
+### 8.3 为什么并发迭代器不使用 fail-fast
+
+并发集合的目标就是允许更新与遍历重叠。把结构修改当成错误会阻碍该用途，而且 modCount 也无法提供一致快照。实现改为明确的弱一致或快照语义。
+
+### 8.4 CopyOnWrite 快照能保护元素字段吗
+
+不能。快照固定的是元素引用数组。元素可变时，遍历过程中仍可能看到字段变化；需要不可变元素或元素自己的同步协议。
+
+## 9. 面试题
+
+### 9.1 ConcurrentHashMap 的迭代器是什么一致性
+
+<!-- 面试来源：
+- 快手：https://www.nowcoder.com/discuss/179560
+- 阿里巴巴：https://www.nowcoder.com/discuss/353159278544494592
+-->
+
+**出现公司**：快手、阿里巴巴
+
+**考察重点**
+
+- 弱一致遍历允许观察什么。
+- 为什么它不抛 fail-fast 异常。
+- 近似统计与严格快照怎样区分。
+
+**相关内容**：第 1 节“先说明需要哪一种视图”、第 2 节“ConcurrentHashMap 的弱一致遍历”、第 5 节“聚合操作不是事务快照”。
+
+<details>
+<summary>参考回答</summary>
+
+ConcurrentHashMap 迭代器是弱一致的，可以与更新并发，不抛 `ConcurrentModificationException`。它会遍历一组有效节点，可能看到遍历期间部分更新，也可能错过已经经过位置的更新，不对应固定瞬间的完整快照。
+
+这种语义适合监控和可再次确认的后台扫描。业务需要精确快照时，应通过外部锁复制、不可变版本原子替换或持久化事务建立边界。
+
+</details>
+
+### 9.2 弱一致迭代时怎样安全删除过期数据
+
+<!-- 面试来源：
+- 阿里巴巴：https://www.nowcoder.com/discuss/353159278544494592
+-->
+
+**出现公司**：阿里巴巴
+
+**考察重点**
+
+- 扫描结果可能在使用前已经过期。
+- 条件 remove 或 replace 怎样避免覆盖新值。
+- 外部副作用为何还需要幂等和补偿。
+
+**相关内容**：第 7 节“迭代中删除需要再次确认”。
+
+<details>
+<summary>参考回答</summary>
+
+遍历时先把当前键和值当作候选，判断过期后调用 `remove(key, observedValue)`。只有 Map 中的当前值仍与扫描到的值相同才删除；如果另一个线程已经刷新或替换，条件删除失败。
+
+这个方法保护单个 Map 条目的检查后删除。若清理还涉及数据库、文件或远程租约，仍要使用幂等操作、状态机或补偿协议处理部分失败。
+
+</details>
+
+:::note 参考资料
+
+1. [Java API：ConcurrentHashMap](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/ConcurrentHashMap.html)
+2. [Java API：CopyOnWriteArrayList](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/CopyOnWriteArrayList.html)
+3. [Java API：ConcurrentLinkedQueue](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/ConcurrentLinkedQueue.html)
+4. [Java API：BlockingQueue](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/BlockingQueue.html)
+
+:::

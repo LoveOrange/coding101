@@ -1,0 +1,132 @@
+---
+sidebar_position: 15
+---
+
+# 统一异常处理与 API 错误契约
+
+API 错误响应要让客户端稳定判断失败类型，同时为服务端保留可追踪证据。Spring MVC 可以用 `@RestControllerAdvice` 和 `@ExceptionHandler` 集中映射异常，但异常分类与 HTTP 语义仍需业务定义。
+
+## 1. 先定义稳定的错误字段
+
+Spring 提供 `ProblemDetail` 表示 HTTP API 问题，可以扩展业务字段：
+
+```json
+{
+  "type": "https://coding101.dev/problems/order-state",
+  "title": "Order state conflict",
+  "status": 409,
+  "detail": "The order has already been paid",
+  "instance": "/orders/101",
+  "code": "ORDER_ALREADY_PAID",
+  "traceId": "..."
+}
+```
+
+客户端依赖稳定的 `code`、HTTP status 和字段错误结构，不应解析面向人的 `detail` 文本。
+
+## 2. 异常处理器负责映射
+
+```java
+@RestControllerAdvice
+class ApiExceptionHandler {
+    @ExceptionHandler(OrderStateException.class)
+    ResponseEntity<ProblemDetail> handle(OrderStateException exception) {
+        ProblemDetail problem = ProblemDetail.forStatus(409);
+        problem.setTitle("Order state conflict");
+        problem.setProperty("code", "ORDER_STATE_CONFLICT");
+        return ResponseEntity.status(409).body(problem);
+    }
+}
+```
+
+处理器选择遵循异常类型和 ControllerAdvice 范围。业务异常、输入错误、认证授权、依赖失败与未知错误应分别映射，不能所有失败都返回 HTTP 200 或 500。
+
+## 3. 状态码表达协议结果
+
+常见判断：
+
+- 400：请求结构或参数无法接受。
+- 401：缺少或无效身份认证。
+- 403：身份已知但无权执行。
+- 404：目标资源在当前可见范围不存在。
+- 409：当前资源状态与操作冲突。
+- 429：超过容量或速率限制。
+- 500：服务端未预期错误。
+- 502/503/504：网关或依赖可用性与超时。
+
+是否允许重试还要结合方法幂等性和响应头，不能只看 5xx。
+
+## 4. 日志与响应面向不同读者
+
+响应不应包含堆栈、SQL、文件路径、密钥或内部类名。服务端日志保留异常 cause、trace ID、规范化路由和必要业务标识，并对敏感数据脱敏。
+
+预期业务冲突通常不需要每次打印完整 ERROR 堆栈；未知异常应记录一次完整根因。Controller 和 Advice 同时记录会造成重复日志。
+
+## 5. 并非所有异常都能由 ControllerAdvice 处理
+
+Filter 在 DispatcherServlet 之前抛出的异常、响应已经提交后的序列化错误、异步后台任务失败，可能不进入同一 `@ExceptionHandler`。安全过滤链、Servlet error dispatch 和异步结果各有自己的错误边界。
+
+客户端断开连接也可能在写响应时产生 I/O 异常，应单独统计，避免都归类为应用 500。
+
+## 6. 校验错误需要字段级结构
+
+```json
+{
+  "code": "VALIDATION_FAILED",
+  "errors": [
+    {"field": "quantity", "code": "Positive"}
+  ]
+}
+```
+
+不要回显密码等拒绝值。字段路径要稳定，数组和嵌套对象需约定表示方式；面向用户的本地化文本可以由客户端或服务端另行生成。
+
+## 7. 契约测试覆盖异常路径
+
+为每类公开错误验证 status、Content-Type、code、字段结构和敏感信息缺失。还要测试不存在路由、错误方法、不可接受媒体类型、Filter 拒绝和下游超时，确保不同入口不产生几套互不兼容格式。
+
+## 8. 常见问题
+
+### 8.1 是否应该把所有响应都包装成 `{code, message, data}`
+
+不是必需。HTTP 已提供状态和头，成功响应可以直接返回资源；关键是错误结构稳定。团队若统一包装，也要避免 HTTP 永远 200 导致代理、监控和客户端语义失真。
+
+### 8.2 捕获 `Exception` 作为最后兜底可以吗
+
+可以在边界脱敏并记录未知错误，但应放在更具体处理器之后，不能吞掉已提交响应、取消信号或把所有错误误报为同一业务失败。
+
+## 9. 面试题
+
+### 9.1 Spring MVC 怎样实现统一异常处理
+
+<!-- 面试来源：
+- CVTE：https://www.nowcoder.com/discuss/353154991655428096
+- 珍爱网：https://www.nowcoder.com/discuss/353154991655428096
+-->
+
+**出现公司**：CVTE、珍爱网
+
+**考察重点**
+
+- ControllerAdvice、ExceptionHandler 与 resolver 链。
+- HTTP 状态和稳定业务错误码。
+- Filter、异步和响应提交边界。
+
+**相关内容**：第 1 节“先定义稳定的错误字段”至第 7 节“契约测试覆盖异常路径”。
+
+<details>
+<summary>参考回答</summary>
+
+使用 `@RestControllerAdvice` 集中声明 `@ExceptionHandler`，把业务冲突、校验、认证授权、依赖失败和未知异常分别映射为合适的 HTTP 状态及稳定错误码。可以使用 Spring 的 ProblemDetail，并附 trace ID；响应不暴露堆栈和内部信息。
+
+ControllerAdvice 参与 MVC 的 HandlerExceptionResolver 链，Filter 自身异常、异步后台任务和响应提交后的错误未必在其范围内。要为这些边界分别处理，并用契约测试覆盖状态、媒体类型和敏感字段。
+
+</details>
+
+:::note 参考资料
+
+1. [Spring Framework：Controller Exceptions](https://docs.spring.io/spring-framework/reference/web/webmvc/mvc-controller/ann-exceptionhandler.html)
+2. [Spring Framework：Error Responses](https://docs.spring.io/spring-framework/reference/web/webmvc/mvc-ann-rest-exceptions.html)
+3. [RFC 9457：Problem Details for HTTP APIs](https://www.rfc-editor.org/rfc/rfc9457.html)
+
+:::

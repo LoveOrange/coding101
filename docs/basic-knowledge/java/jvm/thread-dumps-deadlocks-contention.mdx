@@ -1,0 +1,177 @@
+---
+sidebar_position: 23
+---
+
+# 线程转储、死锁与锁竞争
+
+线程转储记录采集时刻各线程的 Java 栈、状态和部分锁关系。它适合判断系统在等什么，但不能直接给出等待了多久或占用多少 CPU；连续快照、锁事件和线程池指标才能形成完整结论。
+
+## 1. 采集多份可比较的线程转储
+
+```bash
+jcmd <pid> Thread.print -l > thread-01.txt
+```
+
+隔几秒再采 2—4 份，并记录同一时刻的线程池 active、queue、CPU 和请求延迟。`-l` 包含 `java.util.concurrent` ownable synchronizer 信息，输出影响随线程数量变化。
+
+现代 JDK 还提供 `Thread.dump_to_file`，可以更好地表示大量平台线程和虚拟线程。具体格式和选项先查看：
+
+```bash
+jcmd <pid> help Thread.dump_to_file
+```
+
+## 2. 线程状态要结合栈解释
+
+| 状态 | 典型含义 | 注意事项 |
+| --- | --- | --- |
+| `RUNNABLE` | 正在运行或可运行 | 也可能位于某些 native I/O |
+| `BLOCKED` | 等待进入 `synchronized` monitor | 查持有该 monitor 的线程 |
+| `WAITING` | 无期限 park/wait/join | 可能是正常线程池空闲 |
+| `TIMED_WAITING` | 带超时 sleep/park/wait | 看超时与任务期限是否合理 |
+| `NEW` / `TERMINATED` | 未开始 / 已结束 | 通常不是当前卡顿原因 |
+
+大量 WAITING 不等于故障。线程池工作线程没有任务时本就会 park；关键是队列是否增长、请求是否等待以及谁负责唤醒。
+
+## 3. 死锁是等待图中的环
+
+```java
+synchronized (left) {
+    synchronized (right) {
+        transfer();
+    }
+}
+```
+
+另一个线程按相反顺序获取 right、left 时可能形成：
+
+```text
+Thread A 持有 left，等待 right
+Thread B 持有 right，等待 left
+```
+
+线程转储会在部分 monitor / ownable synchronizer 死锁中直接报告环。即使没有自动报告，也可以从 `waiting to lock`、`locked` 和 LockSupport park 的 owner 信息构建等待图。
+
+修复通常通过统一锁顺序、合并临界区、使用带超时的获取或重新设计所有权。捕获死锁后强行重启只是恢复服务。
+
+## 4. 锁竞争不会形成环
+
+很多线程等待同一个热点锁时，系统仍在前进，只是吞吐下降和长尾增加：
+
+```java
+synchronized void record(Metric metric) {
+    remoteClient.send(metric); // 在锁内做慢 I/O
+}
+```
+
+多份线程转储会显示持有者栈和大量 BLOCKED 等待者。JFR 的 Java Monitor Blocked、Thread Park 等事件可以给出等待持续时间和锁对象；async-profiler lock 模式提供采样视角。
+
+优化方向：
+
+- 缩短锁内工作，尤其移出 I/O。
+- 拆分独立状态，而不是盲目拆锁。
+- 用不可变快照、并发集合或消息传递改变共享方式。
+- 对热点 key 做分片，但验证倾斜。
+
+## 5. 线程池饥饿看起来也像死锁
+
+```java
+Future<Result> child = executor.submit(task);
+return child.get();
+```
+
+若父任务占满同一个有界线程池，并同步等待仍在该池排队的子任务，所有线程都在 WAITING，任务再也没有执行者。它不是 monitor 环，却没有进展。
+
+排查要同时看 executor 的线程数、active、queue 和任务提交关系。修复可以拆分执行器、避免池内同步等待，或改为非阻塞编排。
+
+## 6. 活锁与饥饿需要时间线
+
+- **活锁**：线程不断重试和改变状态，却无法完成工作，CPU 可能很高。
+- **饥饿**：某些任务长期拿不到锁、许可或调度机会，系统整体仍在运行。
+
+单份转储可能看见普通 RUNNABLE。需要 JFR、重试指标、锁获取延迟和多份栈证明“持续有动作但没有完成”。
+
+## 7. 虚拟线程改变数量，不改变等待关系
+
+虚拟线程可以让大量阻塞任务不各占一个平台线程，但共享锁、数据库连接和下游容量仍有限。大量虚拟线程同时等待同一个 monitor 或连接池，仍会产生业务排队。
+
+诊断时区分：
+
+- 虚拟线程的业务栈和等待资源。
+- carrier 平台线程是否 CPU 饱和。
+- 是否发生 pinning，以及它是否真的影响吞吐。
+- 外部资源池的上限。
+
+## 8. 常见问题
+
+### 8.1 `sleep` 会释放锁吗
+
+不会。线程在 `synchronized` 中调用 `sleep` 仍持有 monitor；`Object.wait` 会在满足调用条件时释放对应 monitor 并进入等待。
+
+### 8.2 使用 `ReentrantLock` 就不会死锁吗
+
+仍会。只要形成互斥、持有并等待、不可强制剥夺和循环等待，就可能死锁。`tryLock(timeout)` 提供退出协议，但调用方必须正确释放已获得的锁。
+
+### 8.3 怎样判断线程池空闲还是卡住
+
+空闲时队列为空、工作线程等待任务且业务正常；卡住时队列或请求等待增长，线程可能都在同一外部资源、锁或子 Future 上等待。
+
+## 9. 面试题
+
+### 9.1 怎样从线程转储定位 Java 死锁
+
+<!-- 面试来源：
+- 阿里巴巴：https://www.nowcoder.com/discuss/353148456472616960
+- 字节跳动：https://www.nowcoder.com/discuss/366687810131165184
+-->
+
+**出现公司**：阿里巴巴、字节跳动
+
+**考察重点**
+
+- 持有者与等待者构成的锁图。
+- monitor 和 ownable synchronizer。
+- 自动死锁报告不是唯一证据。
+
+**相关内容**：第 1 节“采集多份可比较的线程转储”至第 3 节“死锁是等待图中的环”。
+
+<details>
+<summary>参考回答</summary>
+
+用 `jcmd Thread.print -l` 采集线程和锁信息，先看 JVM 是否报告 deadlock，再按每个线程的 `locked`、`waiting to lock` 或 park owner 建图。如果 A 持有 L1 等 L2、B 持有 L2 等 L1，就形成环。
+
+保存多份转储确认状态持续，并映射到代码中的锁顺序。修复通常统一获取顺序、减少嵌套或加入可失败的超时协议，而不是捕获异常。
+
+</details>
+
+### 9.2 大量线程处于 WAITING，为什么系统仍然可能故障
+
+<!-- 面试来源：
+- 阿里巴巴：https://www.nowcoder.com/discuss/353148456472616960
+-->
+
+**出现公司**：阿里巴巴
+
+**考察重点**
+
+- WAITING 可以正常，也可以是资源/线程池饥饿。
+- 队列、active 和等待目标共同判断。
+- 同池父子任务等待。
+
+**相关内容**：第 2 节“线程状态要结合栈解释”和第 5 节“线程池饥饿看起来也像死锁”。
+
+<details>
+<summary>参考回答</summary>
+
+空闲线程池的工作线程也会 WAITING，所以状态数量不能单独判断。要看栈在等任务、锁、连接还是 Future，再结合 executor active、queue 和请求等待。
+
+如果池内任务同步等待提交到同一已满线程池的子任务，所有工作线程都在等，队列中的子任务却没有线程执行，系统会停止前进但不一定被 JVM 报为死锁。
+
+</details>
+
+:::note 参考资料
+
+1. [Oracle：Diagnostic Tools](https://docs.oracle.com/en/java/javase/26/troubleshoot/diagnostic-tools.html)
+2. [Java API：`Thread.State`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/Thread.State.html)
+3. [Oracle：Virtual Thread Diagnostics](https://docs.oracle.com/en/java/javase/26/core/virtual-threads.html)
+
+:::

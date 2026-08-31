@@ -1,0 +1,121 @@
+---
+sidebar_position: 5
+---
+
+# 循环依赖、作用域与提前暴露
+
+循环依赖表示对象职责形成了闭环。Spring Framework 能在有限条件下通过单例早期引用完成属性注入，但 Spring Boot 当前默认禁止自动处理循环引用；设计上应先拆开闭环。
+
+## 1. 构造器循环无法得到第一个完整实例
+
+```java
+@Service
+class OrderService {
+    OrderService(PaymentService paymentService) {}
+}
+
+@Service
+class PaymentService {
+    PaymentService(OrderService orderService) {}
+}
+```
+
+创建 `OrderService` 需要先得到 `PaymentService`，而后者的构造又要求 `OrderService`。两个对象都无法先完成实例化，容器会报告 `BeanCurrentlyInCreationException`。
+
+`@Lazy` 或 Provider 可以把某条边变成代理或延迟查询，但只是延迟闭环，并未说明职责为什么互相依赖。
+
+## 2. 属性注入允许先实例化再连接
+
+对于 singleton 属性注入，Spring Framework 可以在实例化 A 后、初始化完成前暴露 A 的早期引用。创建 B 时取得这份引用，完成 B，再回到 A 填充 B。
+
+```text
+实例化 A
+  → 暴露 A 的引用工厂
+  → 创建并初始化 B
+  → B 注入 A 的早期引用
+  → A 注入完成后的 B
+  → 初始化 A
+```
+
+提前交付意味着 B 一度持有尚未完成生命周期的 A，所以这是一项兼容机制，不是推荐的依赖结构。
+
+## 3. 三层单例结构服务于不同阶段
+
+常见源码讨论中的三个结构是：
+
+- `singletonObjects`：完整创建并发布的 singleton。
+- `earlySingletonObjects`：已经生成并缓存的早期引用。
+- `singletonFactories`：按需生成早期引用的 `ObjectFactory`。
+
+工厂层让自动代理创建器在必要时提供与最终一致的早期代理，而不是只能提前暴露原始对象。具体字段和处理细节属于 Spring 实现，业务正确性不应依赖直接访问这些缓存。
+
+## 4. Spring Boot 默认拒绝循环引用
+
+当前 Spring Boot 的 `spring.main.allow-circular-references` 默认值为 `false`。即使底层容器在某些 singleton 属性注入场景有处理能力，Boot 应用也会默认把循环关系当成启动错误。
+
+打开开关只能处理部分情况：
+
+- 构造器循环仍不能靠早期实例解决。
+- prototype 没有相同的 singleton 缓存协议。
+- 跨作用域依赖可能需要 scoped proxy。
+- 代理类型和早期引用不一致时仍可能失败。
+
+## 5. 作用域改变实例取得时机
+
+Spring singleton 是每个容器、每个 Bean 定义一份实例。prototype 每次请求创建新实例；request、session 等作用域与 Web 上下文绑定。
+
+singleton 直接注入 prototype 时，只在 singleton 创建时解析一次。需要每次取得新实例，应使用 `ObjectProvider` 或作用域代理。request Bean 通过代理注入 singleton 后，只能在有效请求上下文中解析目标。
+
+## 6. 拆解循环依赖的方法
+
+- 提取两个服务共同依赖的第三个职责。
+- 将双向调用改成单向状态变更与领域事件。
+- 把编排放到上层 application service。
+- 重新定义接口，让一个服务返回结果而不是回调另一个服务。
+- 只在确实代表延迟资源时使用 Provider，而非隐藏结构。
+
+## 7. 常见问题
+
+### 7.1 Spring 能解决哪些循环依赖
+
+底层容器主要能在允许循环引用时处理部分 singleton 的 Setter/字段注入闭环。构造器和 prototype 循环不属于这条路径，Boot 默认也不允许自动处理。
+
+### 7.2 为什么早期引用可能需要代理
+
+如果 B 注入原始 A，而容器最终发布的是 A 的事务或 AOP 代理，同一个 singleton 会出现两种调用语义。早期引用工厂让后处理器有机会提前返回一致代理。
+
+## 8. 面试题
+
+### 8.1 Spring 的三级缓存怎样处理循环依赖，有哪些限制
+
+<!-- 面试来源：
+- 美团：https://www.nowcoder.com/discuss/614236533700194304
+- 美团：https://www.nowcoder.com/discuss/757650799244611584
+-->
+
+**出现公司**：美团
+
+**考察重点**
+
+- 实例化与依赖填充分离。
+- 早期引用工厂与代理一致性。
+- 构造器、prototype 和 Boot 默认设置。
+
+**相关内容**：第 1 节“构造器循环无法得到第一个完整实例”至第 4 节“Spring Boot 默认拒绝循环引用”。
+
+<details>
+<summary>参考回答</summary>
+
+在允许循环引用的 singleton 属性注入中，容器先实例化 A，并登记能生成 A 早期引用的工厂；创建 B 时按需取得这份早期引用，完成 B 后再回到 A。完整 singleton、已经生成的早期引用和引用工厂分处三个结构，工厂还能让 AOP 提供一致的早期代理。
+
+它不能解决构造器或 prototype 循环，当前 Spring Boot 默认也把循环依赖设为不允许。即使技术上可处理，也应先通过提取职责、上层编排或事件把依赖改成单向。
+
+</details>
+
+:::note 参考资料
+
+1. [Spring Framework：Circular Dependencies](https://docs.spring.io/spring-framework/reference/core/beans/dependencies/factory-collaborators.html#beans-dependency-resolution)
+2. [Spring Framework：Bean Scopes](https://docs.spring.io/spring-framework/reference/core/beans/factory-scopes.html)
+3. [Spring Boot：Common Application Properties](https://docs.spring.io/spring-boot/appendix/application-properties/index.html#application-properties.core.spring.main.allow-circular-references)
+
+:::

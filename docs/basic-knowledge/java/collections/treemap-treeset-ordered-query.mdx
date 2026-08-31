@@ -1,0 +1,187 @@
+---
+sidebar_position: 4
+---
+
+# TreeMap、TreeSet 与有序查询
+
+`TreeMap` 按键的自然顺序或 Comparator 保存映射，`TreeSet` 使用相同的排序结构保存唯一元素。它们适合范围、最近键和有序遍历，基本操作是 O(log n)。
+
+## 1. 排序规则决定键的位置
+
+使用自然顺序：
+
+```java
+NavigableMap<Integer, String> levels = new TreeMap<>();
+levels.put(30, "high");
+levels.put(10, "low");
+levels.put(20, "medium");
+
+System.out.println(levels.keySet()); // [10, 20, 30]
+```
+
+使用 Comparator：
+
+```java
+NavigableSet<User> users = new TreeSet<>(
+    Comparator.comparing(User::score)
+        .reversed()
+        .thenComparing(User::id)
+);
+```
+
+Comparator 必须形成稳定、可传递的全序。上例用 id 处理相同分数，避免两个不同用户因为比较结果为 0 而被 TreeSet 当作同一个元素。
+
+## 2. 红黑树维持对数高度
+
+当前 OpenJDK 的 TreeMap 使用红黑树。插入和删除后通过颜色与旋转恢复约束，使树高保持 O(log n)。因此：
+
+- `get`、`put`、`remove` 是 O(log n)。
+- 最小、最大、前驱、后继是 O(log n) 或沿已知节点取得。
+- 有序遍历是 O(n)。
+
+HashMap 平均查找更快，但不提供排序和范围导航。选择 TreeMap 的理由应当是需要它的有序查询，而不是笼统地认为“树更稳定”。
+
+## 3. NavigableMap 支持边界查询
+
+```java
+Map.Entry<Integer, String> atMost = levels.floorEntry(25);   // 20
+Map.Entry<Integer, String> above = levels.higherEntry(20);   // 30
+Map.Entry<Integer, String> atLeast = levels.ceilingEntry(20); // 20
+```
+
+常用方法：
+
+| 方法 | 含义 |
+| --- | --- |
+| `lowerKey(k)` | 严格小于 k 的最大键 |
+| `floorKey(k)` | 小于等于 k 的最大键 |
+| `ceilingKey(k)` | 大于等于 k 的最小键 |
+| `higherKey(k)` | 严格大于 k 的最小键 |
+
+这类操作适合版本生效点、价格区间、时间调度和阈值规则。
+
+## 4. 范围视图与边界
+
+```java
+NavigableMap<Integer, String> middle =
+    levels.subMap(10, true, 30, false);
+```
+
+这个视图包含 `[10, 30)`。它与原 Map 共享数据：通过视图更新会影响原 Map，原 Map 的更新也会反映到视图。向视图放入范围外的键会抛出 `IllegalArgumentException`。
+
+需要独立快照时复制：
+
+```java
+NavigableMap<Integer, String> snapshot = new TreeMap<>(middle);
+```
+
+`headMap`、`tailMap` 和 `descendingMap` 也返回视图。API 是否包含边界应显式写出，避免默认重载造成区间错误。
+
+## 5. compare 返回 0 就表示同一个键
+
+TreeMap 使用排序比较判断键是否相同，不会再用 `equals` 区分：
+
+```java
+Comparator<User> byNameIgnoreCase =
+    Comparator.comparing(User::name, String.CASE_INSENSITIVE_ORDER);
+
+Set<User> users = new TreeSet<>(byNameIgnoreCase);
+```
+
+如果 `Alice` 和 `alice` 比较结果为 0，TreeSet 只能保留一个。Comparator 与 equals 不一致是允许的，但 Set 的行为会与其他 Set 实现不同，调用方很容易误解。
+
+用于键排序的字段加入集合后也不应变化。字段变化不会自动重新平衡节点，后续查找和遍历可能违反预期顺序。
+
+## 6. TreeSet 复用有序 Map 语义
+
+TreeSet 只保存元素，没有独立值。它提供 `NavigableSet` 的范围和邻近元素操作：
+
+```java
+NavigableSet<Integer> scores = new TreeSet<>(List.of(10, 20, 30));
+
+Integer previous = scores.lower(20); // 10
+Integer next = scores.higher(20);    // 30
+```
+
+需要按一个键排序、又需要保存多个比较结果为 0 的对象时，不能直接把对象放进 TreeSet。可以把唯一 id 加入 Comparator，或使用 `TreeMap<SortKey, List<Value>>` 表达分组。
+
+## 7. 常见问题
+
+### 7.1 TreeMap 可以保存 null 键吗
+
+使用自然顺序时不能比较 null，插入会抛出异常。自定义 Comparator 理论上可以定义 null 顺序，但公开 API 更适合拒绝含义不清的 null 键。值是否允许 null 与键排序是不同问题。
+
+### 7.2 HashMap 与 TreeMap 怎样选择
+
+只需按键精确查找时通常用 HashMap；需要排序遍历、范围或前驱后继时用 TreeMap。两者的复杂度分别是平均 O(1) 与 O(log n)，还要考虑哈希契约和比较器契约。
+
+### 7.3 PriorityQueue 可以替代 TreeSet 吗
+
+PriorityQueue 只保证队首是最小元素，不能高效检查任意成员或查找前驱后继；还允许重复。TreeSet 维护全局有序唯一集合，接口目标不同。
+
+### 7.4 Comparator 中可以调用数据库吗
+
+不应该。比较会在树操作中反复调用，必须快速、确定且没有副作用。远程状态变化还会破坏传递性和稳定性。先把比较所需数据放进不可变键。
+
+## 8. 面试题
+
+### 8.1 TreeMap 的底层结构和适用场景是什么
+
+<!-- 面试来源：
+- 招银网络：https://www.nowcoder.com/discuss/353154885766029312
+- 字节跳动、阿里巴巴：https://www.nowcoder.com/discuss/353147579288461312
+-->
+
+**出现公司**：招银网络、字节跳动、阿里巴巴
+
+**考察重点**
+
+- 红黑树如何提供对数级查找与有序遍历。
+- 自然顺序与 Comparator 怎样判断键相同。
+- 范围和前驱后继查询为何不能由普通 HashMap 直接提供。
+
+**相关内容**：第 1 节“排序规则决定键的位置”至第 5 节“compare 返回 0 就表示同一个键”。
+
+<details>
+<summary>参考回答</summary>
+
+TreeMap 当前使用红黑树，按照键的自然顺序或 Comparator 组织节点。查找、插入和删除是 O(log n)，并提供 `floorKey`、`ceilingKey`、`subMap` 等有序导航和范围视图。
+
+它使用比较结果 0 判断键相同，因此 Comparator 应稳定、可传递，最好与 equals 一致。只需精确查找时 HashMap 平均成本更低；需要范围、前驱后继或排序输出时才选择 TreeMap。
+
+</details>
+
+### 8.2 TreeSet 中两个不相等对象为什么可能只能保留一个
+
+<!-- 面试来源：
+- 招银网络：https://www.nowcoder.com/discuss/353154885766029312
+-->
+
+**出现公司**：招银网络
+
+**考察重点**
+
+- TreeSet 的唯一性由比较结果决定。
+- Comparator 与 equals 不一致的后果。
+- 怎样为相同业务排序值补充唯一键。
+
+**相关内容**：第 5 节“compare 返回 0 就表示同一个键”、第 6 节“TreeSet 复用有序 Map 语义”。
+
+<details>
+<summary>参考回答</summary>
+
+TreeSet 使用 Comparator 或自然顺序定位元素，比较结果为 0 时就认为已经存在，不会再通过 equals 区分。如果只按分数比较，两个不同用户分数相同就只能保留一个。
+
+如果业务需要都保留，可以在 Comparator 最后比较唯一 id，或者把分数作为 TreeMap 的键、把同分对象放进列表。排序字段加入集合后还应保持稳定。
+
+</details>
+
+:::note 参考资料
+
+1. [Java API：TreeMap](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/TreeMap.html)
+2. [Java API：TreeSet](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/TreeSet.html)
+3. [Java API：NavigableMap](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/NavigableMap.html)
+4. [Java API：Comparator](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/Comparator.html)
+5. [OpenJDK：TreeMap 源码](https://github.com/openjdk/jdk/blob/jdk-26-ga/src/java.base/share/classes/java/util/TreeMap.java)
+
+:::

@@ -1,0 +1,293 @@
+---
+sidebar_position: 2
+---
+
+# 封装、继承与多态的真实边界
+
+封装、继承和多态共同决定了 Java 对象怎样保存状态、复用行为，以及在运行时选择具体实现。三者解决的问题不同，不能仅靠 `private`、`extends` 和方法重写来判断设计是否合理。
+
+## 1. 封装控制状态的修改入口
+
+封装的目标，是让对象始终处于有效状态。字段设为 `private` 只是第一步，对象还需要通过方法检查每次状态变化是否满足约束。
+
+```java
+public final class BankAccount {
+    private long balanceInCents;
+
+    public BankAccount(long initialBalanceInCents) {
+        if (initialBalanceInCents < 0) {
+            throw new IllegalArgumentException("initial balance must not be negative");
+        }
+        this.balanceInCents = initialBalanceInCents;
+    }
+
+    public void withdraw(long amountInCents) {
+        if (amountInCents <= 0) {
+            throw new IllegalArgumentException("amount must be positive");
+        }
+        if (amountInCents > balanceInCents) {
+            throw new IllegalStateException("insufficient balance");
+        }
+        balanceInCents -= amountInCents;
+    }
+
+    public long balanceInCents() {
+        return balanceInCents;
+    }
+}
+```
+
+如果直接提供 `setBalanceInCents(long value)`，调用方仍然可以跳过取款规则，把余额改为负数。这样的类虽然字段是私有的，却没有保护业务不变量。
+
+封装通常包含三件事：
+
+1. 隐藏不需要由调用方直接操作的状态。
+2. 为状态变化提供符合业务语义的方法。
+3. 在对象边界内校验并维护不变量。
+
+### 1.1 返回可变对象时要注意边界泄漏
+
+`private` 字段如果通过 getter 原样返回，调用方仍然可能绕过对象提供的方法：
+
+```java
+public final class Order {
+    private final List<String> items = new ArrayList<>();
+
+    public List<String> items() {
+        return List.copyOf(items);
+    }
+}
+```
+
+返回不可修改的副本，可以避免调用方直接修改内部列表。是否需要复制，要结合数据规模、更新频率和性能要求判断，但边界必须有意识地设计。
+
+## 2. 继承建立子类型关系
+
+类 `Child extends Parent` 同时获得两种关系：
+
+- `Child` 是 `Parent` 的子类型，可以在需要 `Parent` 的位置使用。
+- `Child` 会继承父类中允许继承的字段和方法，并可以重写部分实例方法。
+
+```java
+abstract class Notification {
+    private final String recipient;
+
+    protected Notification(String recipient) {
+        this.recipient = recipient;
+    }
+
+    public final void send() {
+        validateRecipient(recipient);
+        deliver(recipient);
+    }
+
+    protected abstract void deliver(String recipient);
+
+    private static void validateRecipient(String recipient) {
+        if (recipient.isBlank()) {
+            throw new IllegalArgumentException("recipient must not be blank");
+        }
+    }
+}
+
+final class EmailNotification extends Notification {
+    EmailNotification(String recipient) {
+        super(recipient);
+    }
+
+    @Override
+    protected void deliver(String recipient) {
+        System.out.println("send email to " + recipient);
+    }
+}
+```
+
+这里的父类定义了稳定的发送流程，子类只负责不同的投递方式。`send()` 声明为 `final`，防止子类跳过接收方校验。
+
+### 2.1 继承不等于复制父类的所有内容
+
+- 构造方法不会被继承。子类构造方法必须直接或间接调用父类构造方法。
+- 父类的 `private` 成员不能由子类直接访问。
+- `final` 类不能被继承，`final` 方法不能被重写。
+- `static` 方法属于类，不参与实例方法的动态绑定。
+- `sealed` 类可以明确限制允许继承它的类型。
+
+继承还会让子类依赖父类的可见实现。父类中一个 `protected` 方法的变化，可能影响所有子类。继承层次越深，这种影响越难分析和测试。
+
+## 3. 多态在运行时选择重写方法
+
+一个父类型变量可以引用子类对象：
+
+```java
+Notification notification = new EmailNotification("team@example.com");
+notification.send();
+```
+
+变量的编译时类型是 `Notification`，实际对象的运行时类型是 `EmailNotification`。编译器先确认 `Notification` 中存在可调用的 `send()`；执行到 `deliver()` 时，JVM 根据实际对象选择 `EmailNotification.deliver()`。
+
+这就是实例方法重写带来的运行时多态。调用方依赖稳定的父类型，具体对象可以提供不同实现。
+
+### 3.1 编译时类型决定能调用哪些成员
+
+```java
+class Animal {
+    void speak() {
+        System.out.println("animal");
+    }
+}
+
+class Cat extends Animal {
+    @Override
+    void speak() {
+        System.out.println("cat");
+    }
+
+    void climb() {
+        System.out.println("climb");
+    }
+}
+
+Animal animal = new Cat();
+animal.speak(); // cat
+// animal.climb(); // 编译错误：Animal 没有声明 climb()
+```
+
+运行时类型决定重写后的实例方法实现，但不会改变变量在编译阶段可见的成员。只有先确认对象确实是 `Cat`，才能将引用转换后调用 `climb()`。
+
+### 3.2 字段不参与多态
+
+字段访问根据引用的编译时类型确定。子类声明同名字段属于字段隐藏，不是方法重写：
+
+```java
+class Parent {
+    String name = "parent";
+}
+
+class Child extends Parent {
+    String name = "child";
+}
+
+Parent value = new Child();
+System.out.println(value.name); // parent
+```
+
+同名字段容易让对象状态变得模糊，通常应当避免。需要多态行为时，用实例方法表达。
+
+## 4. 继承的适用边界
+
+继承适合表达稳定的“是一个”关系，并要求子类能够遵守父类对外承诺。仅仅因为两个类有几行相同代码，不足以建立继承关系。
+
+可以从下面三个问题判断：
+
+1. **调用方能否在不区分子类的情况下使用父类型？** 如果子类需要不断抛出“不支持”异常，子类型关系可能不成立。
+2. **父类的约束是否适用于所有子类？** 子类不能削弱前置条件、破坏结果或改变父类定义的不变量。
+3. **变化来自类型差异还是可替换的协作方式？** 如果变化只是支付、计价、存储等策略，组合通常更容易替换和测试。
+
+### 4.1 优先组合的场景
+
+```java
+interface DiscountPolicy {
+    long discount(long originalPrice);
+}
+
+final class OrderService {
+    private final DiscountPolicy discountPolicy;
+
+    OrderService(DiscountPolicy discountPolicy) {
+        this.discountPolicy = discountPolicy;
+    }
+
+    long checkout(long originalPrice) {
+        return originalPrice - discountPolicy.discount(originalPrice);
+    }
+}
+```
+
+`OrderService` 不需要继承某个折扣基类，只需要持有一个能够计算折扣的协作者。测试时可以传入简单实现，运行时也可以按照业务条件选择不同策略。
+
+组合并不天然优于继承。父类确实定义了稳定的子类型契约和公共流程时，继承仍然合适。关键是根据变化方向选择关系，而不是为了消除重复代码建立层次。
+
+## 5. 常见问题
+
+### 5.1 有 getter 和 setter 就算完成封装吗
+
+不一定。无条件暴露每个字段的 getter 和 setter，只是把字段访问改成了方法调用。如果 setter 允许对象进入非法状态，或者 getter 泄漏内部可变集合，对象边界仍然没有建立。
+
+### 5.2 `private`、`static` 和 `final` 方法能否重写
+
+- `private` 方法不会被子类继承，因此不存在重写。
+- `static` 方法根据类或引用的编译时类型选择，子类同名方法属于隐藏。
+- `final` 方法会被继承，但编译器禁止子类重写。
+
+只有满足重写规则的实例方法才会参与动态绑定。使用 `@Override` 可以让编译器检查方法是否真的重写了父类型中的方法。
+
+### 5.3 多态是否一定需要继承类
+
+不需要。接口实现同样建立子类型关系，也是 Java 中更常见的多态入口。调用方依赖接口，不同实现类在运行时提供具体行为。
+
+### 5.4 向下转型越多，多态设计越灵活吗
+
+通常相反。如果调用方频繁使用 `instanceof` 判断具体类型并向下转型，说明共同抽象可能缺少必要行为，或者不同对象并不适合放在同一层次。先检查行为能否放回接口或通过组合拆分，而不是继续增加类型分支。
+
+## 6. 面试题
+
+### 6.1 如何理解 Java 的封装、继承和多态
+
+<!-- 面试来源：
+- 中软国际：https://www.nowcoder.com/discuss/353159488733650944
+- 菜鸟直管：https://www.nowcoder.com/discuss/885894032079986688
+- 成睿科技：https://www.nowcoder.com/discuss/864646969501704192
+-->
+
+**出现公司**：中软国际、菜鸟直管、成睿科技
+
+**考察重点**
+
+- 能否说明三个概念各自解决的问题，而不是只复述定义。
+- 能否解释编译时类型、运行时类型与动态绑定的关系。
+- 是否知道继承与封装的边界，以及组合的适用场景。
+
+**相关内容**：第 1 节“封装控制状态的修改入口”、第 2 节“继承建立子类型关系”、第 3 节“多态在运行时选择重写方法”。
+
+<details>
+<summary>参考回答</summary>
+
+封装把状态变化限制在对象提供的方法中，用来维护对象不变量。字段是否为 `private` 只是手段，还要避免无约束 setter 和内部可变状态泄漏。
+
+继承建立子类型关系并复用父类允许继承的实现，适合父类契约稳定、所有子类都能满足该契约的情况。多态让调用方使用父类型或接口，JVM 在运行时根据实际对象选择重写后的实例方法。
+
+设计时不会为了复用几行代码直接使用继承。如果变化来自一个可替换的策略或协作者，组合通常能减少对子类层次的依赖，也更容易测试。
+
+</details>
+
+### 6.2 哪些成员不会参与运行时多态
+
+<!-- 面试来源：
+- 中软国际：https://www.nowcoder.com/discuss/353159488733650944
+-->
+
+**出现公司**：中软国际
+
+**考察重点**
+
+- 实例方法重写与字段隐藏、静态方法隐藏的区别。
+- `private`、`static`、`final` 对重写的影响。
+- 编译时选择与运行时动态绑定分别负责什么。
+
+**相关内容**：第 3 节“多态在运行时选择重写方法”、第 5.2 节关于方法重写的说明。
+
+<details>
+<summary>参考回答</summary>
+
+运行时多态针对可重写的实例方法。字段访问由引用的编译时类型决定；静态方法属于类，子类声明同名静态方法属于隐藏；`private` 方法不会被继承；`final` 方法不能被重写。这些成员都不会按照实际对象进行动态绑定。
+
+</details>
+
+:::note 参考资料
+
+1. [dev.java：Object-Oriented Programming Concepts](https://dev.java/learn/oop/)
+2. [Java Language Specification：Classes](https://docs.oracle.com/en/java/javase/26/docs/specs/jls/jls-8.html)
+3. [Java Language Specification：Method Invocation Expressions](https://docs.oracle.com/en/java/javase/26/docs/specs/jls/jls-15.html#jls-15.12)
+4. [Java Language Specification：Sealed Classes](https://docs.oracle.com/en/java/javase/26/docs/specs/jls/jls-8.html#jls-8.1.6)
+
+:::

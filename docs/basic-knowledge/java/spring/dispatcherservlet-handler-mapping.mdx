@@ -1,0 +1,111 @@
+---
+sidebar_position: 12
+---
+
+# DispatcherServlet 与处理器映射
+
+`DispatcherServlet` 统一协调 Spring MVC 的请求处理。它不直接调用所有 Controller，而是通过 `HandlerMapping` 找到处理器，再由匹配的 `HandlerAdapter` 执行，从而支持注解方法和其他处理器模型。
+
+## 1. HandlerMapping 返回处理器执行链
+
+请求进入后，DispatcherServlet 依次询问已注册的 HandlerMapping。结果不只是一个 Controller，还包括当前请求匹配的 Interceptor：
+
+```text
+HandlerExecutionChain
+  ├─ handler: HandlerMethod
+  └─ interceptors: [auth, locale, metrics]
+```
+
+注解控制器通常由 `RequestMappingHandlerMapping` 在启动时扫描 `@RequestMapping`、`@GetMapping` 等方法并建立映射。
+
+## 2. 映射条件不只有 URL
+
+一个 handler 可以同时按以下条件匹配：
+
+- 路径模式与 HTTP 方法。
+- `params`、`headers` 条件。
+- 请求 `Content-Type`（consumes）。
+- 客户端接受类型（produces）。
+
+两个映射在同一请求上同样具体时，启动或运行阶段可能报告歧义。API 设计应让路径和媒体类型规则可读，避免依赖难以预测的优先级。
+
+## 3. HandlerAdapter 屏蔽调用方式差异
+
+DispatcherServlet 不假定 handler 一定是带注解的方法。HandlerAdapter 判断自己是否支持目标，并负责实际调用。
+
+`RequestMappingHandlerAdapter` 会：
+
+1. 创建数据绑定与模型上下文。
+2. 使用 `HandlerMethodArgumentResolver` 解析参数。
+3. 调用 Controller 方法。
+4. 使用 `HandlerMethodReturnValueHandler` 处理返回值。
+
+自定义参数类型通常扩展 resolver，而不是在每个 Controller 重复解析 request。
+
+## 4. Interceptor 属于 HandlerExecutionChain
+
+`preHandle` 在 Controller 前执行；成功进入的拦截器会在完成阶段收到回调。`postHandle` 面向同步 ModelAndView 流程，`afterCompletion` 适合清理与统一观察。
+
+某个 `preHandle` 返回 false 后，后续 handler 不再调用；该拦截器应已完成必要响应。异步处理还会调用 `afterConcurrentHandlingStarted` 等协议，不能按同步顺序照搬 ThreadLocal 清理。
+
+## 5. 异常解析也是可组合策略
+
+Controller、参数解析或返回值处理抛出的异常会交给 HandlerExceptionResolver。注解异常处理、响应状态异常和默认 MVC 异常各由不同 resolver 处理。
+
+resolver 返回已处理结果后链路结束；无法处理的异常继续向 Servlet 容器传播，可能触发 ERROR dispatch。Filter 层异常发生在 DispatcherServlet 之前时，不一定进入 ControllerAdvice。
+
+## 6. 排查 404、405、415 与 406
+
+| 状态 | 优先检查 |
+| --- | --- |
+| 404 | Servlet 映射、上下文路径、HandlerMapping 路径 |
+| 405 | URL 已匹配但 HTTP 方法不允许 |
+| 415 | 请求 `Content-Type` 与 consumes / converter 不匹配 |
+| 406 | `Accept` 与 produces / converter 无法协商 |
+
+打开 Spring MVC 映射诊断日志，可以看到启动时注册的 handler 与请求匹配过程。
+
+## 7. 常见问题
+
+### 7.1 为什么需要 HandlerAdapter
+
+它把“DispatcherServlet 找到一个处理器”与“这个处理器怎样调用”分开，使前端控制器无需绑定某一种 Controller 接口。
+
+### 7.2 DispatcherServlet 只有一个吗
+
+典型 Boot 应用通常一个，但 Servlet 规范允许注册多个实例并映射不同路径，每个实例也可以拥有自己的 WebApplicationContext。
+
+## 8. 面试题
+
+### 8.1 HandlerMapping 与 HandlerAdapter 分别负责什么
+
+<!-- 面试来源：
+- 远景能源：https://www.nowcoder.com/discuss/353154242703728640
+- 珍爱网：https://www.nowcoder.com/discuss/353154991655428096
+-->
+
+**出现公司**：远景能源、珍爱网
+
+**考察重点**
+
+- 定位处理器与适配调用的分工。
+- HandlerExecutionChain 包含 Interceptor。
+- 参数和返回值处理器属于适配过程。
+
+**相关内容**：第 1 节“HandlerMapping 返回处理器执行链”至第 4 节“Interceptor 属于 HandlerExecutionChain”。
+
+<details>
+<summary>参考回答</summary>
+
+HandlerMapping 根据路径、方法、媒体类型等条件找到 handler，并连同匹配的 Interceptor 返回 HandlerExecutionChain。HandlerAdapter 判断是否支持该 handler，并封装具体调用方式。
+
+对注解 Controller，RequestMappingHandlerAdapter 会调用参数解析器、目标方法和返回值处理器。这样 DispatcherServlet 只负责协调，不需要了解每一种处理器模型。
+
+</details>
+
+:::note 参考资料
+
+1. [Spring Framework：Special Bean Types](https://docs.spring.io/spring-framework/reference/web/webmvc/mvc-servlet/special-bean-types.html)
+2. [Spring Framework：Annotated Controllers](https://docs.spring.io/spring-framework/reference/web/webmvc/mvc-controller.html)
+
+:::

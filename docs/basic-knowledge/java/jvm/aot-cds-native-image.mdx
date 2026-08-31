@@ -1,0 +1,160 @@
+---
+sidebar_position: 20
+---
+
+# AOT、CDS 与 Native Image 的取舍
+
+Java 的启动优化至少有三条路径：CDS/AOT Cache 在 HotSpot 中复用预先处理的类和运行时资料；JIT 仍在运行期根据画像优化；GraalVM Native Image 用闭世界分析生成独立原生程序。它们解决的问题和兼容边界不同。
+
+## 1. CDS 复用类元数据
+
+Class Data Sharing 把一组预处理类存入共享归档，启动时通过内存映射使用，减少类解析成本，并允许同机 JVM 共享只读页面。现代 JDK 自带默认 CDS 归档。
+
+Application CDS 可以把应用类纳入归档。收益取决于应用规模和启动路径；长时间运行、类加载占比很低的服务，峰值吞吐未必明显变化。
+
+CDS 仍运行完整 HotSpot JVM，保留动态类加载、反射和 JIT。它不是把应用编译成一个无需 JVM 的可执行文件。
+
+## 2. JDK AOT Cache 提前完成更多启动工作
+
+JDK 24 引入 AOT Cache，之后加入更简洁的训练命令与方法画像。JDK 26 的 JEP 516 让缓存堆对象能力可与包括 ZGC 在内的收集器配合。
+
+简化流程可以是：
+
+```bash
+# 训练并生成缓存
+java -XX:AOTCacheOutput=app.aot -cp app.jar com.example.Main
+
+# 生产使用
+java -XX:AOTCache=app.aot -cp app.jar com.example.Main
+```
+
+缓存与应用、JDK 版本、操作系统/CPU 及部分 JVM 选项绑定，发布变化后需要重建。训练应覆盖实际启动路径，但不要执行会写入真实外部系统的危险业务。
+
+截至 JDK 26，Project Leyden 已交付类加载/链接、方法画像和对象缓存；Ahead-of-Time Code Compilation 仍列为进行中。不要把 JDK AOT Cache 描述成“已经把全部热点方法预编译进机器码”。
+
+## 3. AOT Cache 仍允许 JIT 继续优化
+
+AOT Cache 缩短类加载、链接和画像形成时间，生产进程仍是 HotSpot，JIT 可以根据本次运行继续编译和去优化。这保留了 JVM 对动态负载的适应能力。
+
+因此它适合希望改善启动和预热，又不想改变部署语义的服务。代价是增加训练与缓存产物管理，并要求训练和生产环境保持兼容。
+
+## 4. Native Image 生成独立原生程序
+
+GraalVM Native Image 在构建时从入口做静态可达性分析，只把可达代码和所需运行时放入原生可执行文件：
+
+```bash
+native-image -jar app.jar
+```
+
+它通常提供更快启动和更低初始内存，适合 CLI、函数计算、按需伸缩和短生命周期进程。构建时间、产物体积和调试方式会变化，峰值吞吐也必须实测。
+
+## 5. 闭世界假设限制动态发现
+
+反射、动态代理、JNI、序列化、资源文件和按名称加载的类，静态分析不一定能推断。缺失内容要通过 Reachability Metadata 或框架生成的元数据声明。
+
+```json
+{
+  "reflection": [
+    {
+      "type": "com.example.PaymentHandler",
+      "allDeclaredConstructors": true
+    }
+  ]
+}
+```
+
+主流框架已经为不少场景提供 AOT 处理，但自定义扫描、插件和运行时字节码生成仍要单独验证。测试只覆盖一条路径时，未访问的反射目标可能到生产才失败。
+
+## 6. 构建期初始化会改变时间边界
+
+Native Image 可以让部分类在构建期初始化，把对象写入 image heap。若静态初始化读取时区、环境变量、随机数、证书或机器路径，构建机状态可能被固化进产物。
+
+框架配置应明确哪些类 build-time 初始化、哪些 run-time 初始化。不要仅为了缩短启动，把外部环境相关值提前执行。
+
+## 7. 三种方案的比较
+
+| 方案 | 运行形态 | 主要收益 | 主要边界 |
+| --- | --- | --- | --- |
+| CDS | HotSpot + 共享归档 | 类加载启动、共享只读页面 | 收益范围较窄 |
+| JDK AOT Cache | HotSpot + 训练缓存 | 启动、预热，保留动态 JVM | 缓存兼容与训练管理 |
+| Native Image | 独立原生程序 | 启动、初始 footprint | 闭世界、构建和动态特性元数据 |
+
+选择时分别测：进程启动到 ready、第一批请求、稳定吞吐、P99、RSS、构建时间和产物发布复杂度。
+
+## 8. 常见问题
+
+### 8.1 AOT 一定比 JIT 快吗
+
+不一定。AOT 减少运行时准备，但 JIT 能利用当前真实类型和分支画像做投机优化。短任务更重视启动，长时间服务更重视峰值；现代 AOT Cache 还可以与 JIT 组合。
+
+### 8.2 Native Image 支持反射吗
+
+支持能够被静态分析发现或通过 Reachability Metadata 声明的反射目标。问题不在“完全不支持”，而在动态可达元素必须在构建时已知。
+
+### 8.3 AOT Cache 能跨 JDK 版本复用吗
+
+不能把它当稳定跨版本格式。应用、JDK、OS/CPU 或关键选项变化后应重建，并通过 `-Xlog:aot` 确认生产实际加载。
+
+## 9. 面试题
+
+### 9.1 JIT 和 AOT 有什么区别
+
+<!-- 面试来源：
+- 去哪儿：https://www.nowcoder.com/discuss/353158601923567616
+- 淘天：https://www.nowcoder.com/discuss/598215467999805440
+- 拼多多：https://www.nowcoder.com/discuss/821425558188732416
+-->
+
+**出现公司**：去哪儿、淘天、拼多多
+
+**考察重点**
+
+- 编译或优化发生的时间。
+- 启动、动态画像和峰值性能。
+- JDK AOT Cache 与 Native Image 不是同一种产物。
+
+**相关内容**：第 1 节“CDS 复用类元数据”至第 5 节“闭世界假设限制动态发现”。
+
+<details>
+<summary>参考回答</summary>
+
+JIT 在程序运行时根据实际热度、类型和分支画像生成机器码，能得到高峰值性能，但需要预热和编译资源。AOT 把部分工作提前，改善启动与 warmup，但训练或静态分析未必代表本次真实负载。
+
+还要区分两类 AOT：JDK AOT Cache 仍在 HotSpot 中运行并保留 JIT 与动态语义；GraalVM Native Image 用闭世界分析生成独立原生程序，对反射、资源和动态类需要 reachability metadata。
+
+</details>
+
+### 9.2 什么应用适合 Native Image
+
+<!-- 面试来源：
+- 淘天：https://www.nowcoder.com/discuss/598215467999805440
+-->
+
+**出现公司**：淘天
+
+**考察重点**
+
+- 短生命周期、快速扩缩容和低初始 footprint。
+- 动态特性与第三方库兼容性。
+- 构建时间、峰值性能和可观测性验证。
+
+**相关内容**：第 4 节“Native Image 生成独立原生程序”至第 7 节“三种方案的比较”。
+
+<details>
+<summary>参考回答</summary>
+
+CLI、函数计算、频繁冷启动或快速扩缩容服务更可能受益，因为启动和初始内存占比高。应用若大量依赖运行时插件、动态生成类和难以枚举的反射，迁移成本会更高。
+
+是否采用要用目标框架和真实请求测启动到 ready、首批请求、稳态吞吐、RSS、构建与诊断成本，不能只用 Hello World 的启动时间决定。
+
+</details>
+
+:::note 参考资料
+
+1. [Oracle：Class Data Sharing 与 AOT Cache](https://docs.oracle.com/en/java/javase/26/docs/specs/man/java.html)
+2. [Project Leyden](https://openjdk.org/projects/leyden/)
+3. [JEP 483：Ahead-of-Time Class Loading & Linking](https://openjdk.org/jeps/483)
+4. [JEP 516：Ahead-of-Time Object Caching with Any GC](https://openjdk.org/jeps/516)
+5. [GraalVM Native Image](https://www.graalvm.org/latest/reference-manual/native-image/)
+
+:::

@@ -1,0 +1,276 @@
+---
+sidebar_position: 9
+---
+
+# 异常体系与错误边界
+
+Java 异常把正常返回与失败路径分开。异常类型说明失败属于哪一层，`throw` 负责产生失败，调用方则选择处理、转换或继续传播；错误边界决定一段代码应该负责到哪里。
+
+## 1. Java 异常体系
+
+所有能够被 Java 语句抛出的对象都属于 `Throwable` 体系，主要分为 `Error` 和 `Exception`：
+
+```text
+Throwable
+├── Error
+└── Exception
+    └── RuntimeException
+```
+
+### 1.1 Error
+
+`Error` 表示 Java 运行环境或资源层面的严重问题，例如 `OutOfMemoryError`、`StackOverflowError` 和类定义错误。业务代码通常无法在局部恢复到可靠状态，因此不应通过 `catch (Error)` 把它们统一吞掉。
+
+这不代表任何 `Error` 都绝对无法观察或清理，也不代表捕获后进程一定立刻退出。关键是普通业务方法不应把处理 JVM 级故障当作自己的职责。
+
+### 1.2 Exception
+
+`Exception` 表示程序可以在 API 中声明和传播的失败。其中 `RuntimeException` 及其子类属于非受检异常，其他 `Exception` 子类通常属于受检异常。
+
+常见示例：
+
+- `IOException`：受检异常。
+- `SQLException`：受检异常。
+- `IllegalArgumentException`：非受检异常。
+- `NullPointerException`：非受检异常。
+
+受检与非受检是编译规则，不等同于“能够恢复”和“不能恢复”。网络文件暂时不可用可能可以重试，也可能必须终止请求；参数非法可能由调用方修正，也可能代表内部程序错误。恢复策略仍然要结合调用场景判断。
+
+## 2. 受检异常与非受检异常
+
+### 2.1 受检异常必须捕获或声明
+
+如果方法体可能抛出受检异常，方法必须使用 `try-catch` 处理，或者在 `throws` 中声明：
+
+```java
+static String readConfig(Path path) throws IOException {
+    return Files.readString(path);
+}
+```
+
+`throws IOException` 把处理责任交给调用方。调用方可以重试、使用默认配置、向上继续传播，或者在更合适的边界转换异常。
+
+受检异常适合调用方有合理处理机会，而且希望编译器强制其注意的失败。层层声明却没有任何一层能作出决策时，它也会增加 API 噪声。
+
+### 2.2 非受检异常不要求显式声明
+
+```java
+static int percentage(int part, int total) {
+    if (total <= 0) {
+        throw new IllegalArgumentException("total must be positive");
+    }
+    return part * 100 / total;
+}
+```
+
+调用方不需要在编译阶段捕获 `IllegalArgumentException`。这种异常适合表示违反方法前置条件、对象状态非法，或当前层无法合理恢复的错误。
+
+不受编译器强制，不代表可以忽略。公开 API 仍然应在文档中说明重要的非受检异常，入口层也需要把它们映射为稳定的响应或任务结果。
+
+## 3. throw、throws 与捕获
+
+### 3.1 `throw` 抛出具体异常对象
+
+```java
+if (order == null) {
+    throw new IllegalArgumentException("order must not be null");
+}
+```
+
+`throw` 是语句，后面跟一个 `Throwable` 对象。执行后，当前正常控制流停止，运行时沿调用栈寻找匹配的处理器。
+
+### 3.2 `throws` 声明方法可能传播的类型
+
+```java
+void importOrders(Path path) throws IOException {
+    // ...
+}
+```
+
+`throws` 写在方法签名中，描述调用者需要考虑的受检异常。它不负责创建异常，也不保证方法每次都会抛出。
+
+### 3.3 catch 应尽量匹配能够处理的范围
+
+```java
+try {
+    return Files.readString(path);
+} catch (NoSuchFileException exception) {
+    return defaultConfig;
+}
+```
+
+这里的调用方明确知道“文件不存在”可以回退到默认配置。直接捕获 `Exception` 会把权限错误、解码错误和程序缺陷一起隐藏。
+
+在 Web 请求入口、消息消费循环或任务调度器等顶层边界，捕获较宽类型可能是必要的：它们需要把失败转换为响应、拒绝消息或任务状态，并防止一个请求破坏整个处理循环。宽捕获应集中在这样的边界，而不是散落在每个业务方法中。
+
+## 4. 在边界转换异常
+
+基础设施异常不应无条件泄漏到业务和接口层。当前层理解失败含义时，可以转换为更稳定的异常，同时保留原始原因：
+
+```java
+public final class OrderLoadException extends RuntimeException {
+    public OrderLoadException(String message, Throwable cause) {
+        super(message, cause);
+    }
+}
+
+public Order loadOrder(long orderId) {
+    try {
+        return repository.findById(orderId);
+    } catch (SQLException exception) {
+        throw new OrderLoadException(
+            "failed to load order " + orderId,
+            exception
+        );
+    }
+}
+```
+
+`OrderLoadException` 告诉上层操作失败的业务上下文，`cause` 保留底层堆栈和数据库原因，便于诊断。
+
+### 4.1 哪一层应该处理异常
+
+一层代码只有能完成以下动作之一时，才适合捕获异常：
+
+- 依据明确规则重试或降级。
+- 补充当前层上下文后转换为更合适的类型。
+- 回滚或清理当前层负责的状态。
+- 在系统入口把失败映射为稳定的外部结果。
+
+如果只能打印日志再原样抛出，通常会造成重复日志；如果捕获后返回 `null`，又会丢失失败原因。让异常继续传播到真正拥有处理策略的边界更清楚。
+
+### 4.2 外部错误契约要保持稳定
+
+内部异常类型和堆栈不应直接作为 HTTP 响应或 RPC 错误暴露。入口层可以统一映射为公开错误码、可理解的信息和追踪标识，同时在内部日志保留异常链。
+
+业务拒绝也不一定都要用异常表达。批量校验、表单错误等需要同时返回多项结果时，明确的结果类型通常比抛出第一个异常更合适。
+
+## 5. 异常处理的常见规则
+
+### 5.1 不要丢失原始原因
+
+```java
+try {
+    callRemoteService();
+} catch (IOException exception) {
+    throw new OrderLoadException("remote call failed", exception);
+}
+```
+
+只传入新的消息而不保留 `exception`，会截断异常链，使排查只能看到转换位置。
+
+### 5.2 不要用异常替代正常分支
+
+可预期且频繁出现的条件，例如缓存未命中、用户输入校验失败列表或查找不到可选数据，可以使用条件、`Optional` 或结果类型表达。异常构造和堆栈处理有成本，更重要的是它会把正常业务状态写成失败控制流。
+
+### 5.3 不要在 finally 中返回
+
+```java
+static int unsafe() {
+    try {
+        throw new IllegalStateException("failed");
+    } finally {
+        return 1; // 会压过正在传播的异常
+    }
+}
+```
+
+`finally` 用于必须执行的收尾逻辑，不应通过 `return` 或新的异常覆盖原始结果。资源关闭优先使用 try-with-resources，它还能记录关闭阶段产生的受抑制异常。
+
+### 5.4 正确处理中断
+
+捕获 `InterruptedException` 后，如果当前方法不能继续向上抛出，应恢复中断标记并尽快结束当前工作：
+
+```java
+try {
+    queue.take();
+} catch (InterruptedException exception) {
+    Thread.currentThread().interrupt();
+    return;
+}
+```
+
+直接吞掉中断会让上层取消和关闭流程失效。
+
+## 6. 常见问题
+
+### 6.1 `finally` 一定会执行吗
+
+在正常退出 `try` 或匹配的 `catch` 时，`finally` 通常会执行，包括方法准备返回或继续抛异常的情况。但如果 JVM 终止、进程被强制结束或执行永远无法离开 `try`，就不能保证。不要把关键持久化协议建立在“finally 绝对执行”上。
+
+### 6.2 能否捕获 `Throwable`
+
+语法允许，但普通业务代码不应这样做。它会同时捕获 `Exception` 和 `Error`，可能把虚拟机或链接层面的严重问题当作普通业务失败继续运行。只有框架最外层、诊断或清理代码在明确重新抛出和隔离策略时才可能需要。
+
+### 6.3 自定义异常应该继承 Exception 还是 RuntimeException
+
+如果调用方必须显式决定恢复策略，而且每个调用点都有现实处理机会，可以考虑受检异常。若异常表示违反前置条件、非法状态，或通常只能由统一边界处理，继承 `RuntimeException` 更合适。选择依据是 API 希望强制调用方承担什么责任，不是异常名称。
+
+### 6.4 一个异常应该记录几次日志
+
+通常在真正消费异常、生成外部结果或终止任务的边界记录一次完整日志。中间层如果只是补充上下文并继续抛出，优先把上下文放入异常消息或结构化字段，避免每层重复打印同一堆栈。
+
+## 7. 面试题
+
+### 7.1 Error、Exception、受检异常和运行时异常有什么关系
+
+<!-- 面试来源：
+- 腾讯：https://www.nowcoder.com/discuss/353154887552802816
+- 京东：https://www.nowcoder.com/discuss/353156616361025536
+- 阿里云：https://www.nowcoder.com/discuss/353156587323858944
+-->
+
+**出现公司**：腾讯、京东、阿里云
+
+**考察重点**
+
+- `Throwable` 体系的层次关系。
+- 受检与非受检异常的编译规则。
+- 为什么不能简单等同于“可恢复”和“不可恢复”。
+
+**相关内容**：第 1 节“Java 异常体系”、第 2 节“受检异常与非受检异常”。
+
+<details>
+<summary>参考回答</summary>
+
+`Throwable` 的主要分支是 `Error` 和 `Exception`。`Error` 通常表示虚拟机、链接或资源层面的严重问题，普通业务代码不负责统一恢复。`Exception` 中，`RuntimeException` 及其子类属于非受检异常，其他异常通常属于受检异常。
+
+受检异常必须由调用方捕获或在方法签名中继续声明；非受检异常没有这个编译要求。这个分类约束的是 API 和编译器，不直接决定错误能否恢复，实际策略仍要由当前调用场景决定。
+
+</details>
+
+### 7.2 项目中应该怎样处理异常
+
+<!-- 面试来源：
+- 美团：https://www.nowcoder.com/discuss/603257053682941952
+- 顺丰科技：https://www.nowcoder.com/discuss/353155490999902208
+-->
+
+**出现公司**：美团、顺丰科技
+
+**考察重点**
+
+- 捕获、转换和继续传播分别在什么条件下使用。
+- 怎样保留异常原因并避免重复日志。
+- 系统入口如何形成稳定的外部错误契约。
+
+**相关内容**：第 3 节“throw、throws 与捕获”、第 4 节“在边界转换异常”、第 5 节“异常处理的常见规则”。
+
+<details>
+<summary>参考回答</summary>
+
+我只在当前层能够重试、降级、清理、补充语义或转换外部结果时捕获异常。基础设施异常进入业务层时，可以转换成稳定的领域异常，并把原异常作为 `cause` 保留下来；没有处理策略时继续传播。
+
+在 Web、消息或任务入口统一把异常映射为错误码和追踪标识，并记录一次完整日志。不会在每层捕获后只打印日志，也不会返回 `null` 隐藏失败。受检或非受检的选择取决于是否要强制每个调用者显式处理。
+
+</details>
+
+:::note 参考资料
+
+1. [Java Language Specification：Exceptions](https://docs.oracle.com/en/java/javase/26/docs/specs/jls/jls-11.html)
+2. [Java API：Throwable](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/Throwable.html)
+3. [Java API：Exception](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/Exception.html)
+4. [Java API：RuntimeException](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/RuntimeException.html)
+5. [Java API：Error](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/Error.html)
+
+:::

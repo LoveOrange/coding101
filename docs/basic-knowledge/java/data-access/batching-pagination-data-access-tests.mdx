@@ -1,0 +1,130 @@
+---
+sidebar_position: 5
+---
+
+# 批处理、分页与数据访问测试
+
+批处理控制写入数据库的往返次数，分页控制一次读取的数据范围，数据访问测试则验证最终 SQL 和目标数据库语义。三者都需要在真实事务和数据规模下检查，不能只看框架方法是否正常返回。
+
+## 1. JDBC 批处理复用语句结构
+
+```java
+try (PreparedStatement statement = connection.prepareStatement(SQL)) {
+    for (OrderRow row : rows) {
+        statement.setLong(1, row.id());
+        statement.setBigDecimal(2, row.amount());
+        statement.addBatch();
+    }
+    int[] counts = statement.executeBatch();
+}
+```
+
+PreparedStatement 批处理把同一结构的一组参数交给驱动，驱动再根据数据库协议合并发送或改写语句。是否真正减少网络往返、单批最大值和生成键行为都与驱动及配置有关，应通过 JDBC 日志和数据库指标确认。
+
+## 2. 批大小决定内存与失败范围
+
+一百万行不应一次积累在内存和单个事务中。常见做法是按固定批大小执行，并根据一致性要求决定多久提交。
+
+批太小，往返减少有限；批太大，会增加参数内存、锁持有时间、日志量和失败重试成本。遇到 BatchUpdateException 时要检查每条 update count，并明确是整批回滚、从失败位置重试还是记录坏数据。
+
+涉及唯一约束和幂等时，重试协议必须先于调大批量。
+
+## 3. MyBatis 与 JPA 还要处理本地状态
+
+MyBatis 使用 `ExecutorType.BATCH` 时，更新先进入批队列，`flushStatements()` 或事务边界才拿到执行结果。不要把 Mapper 方法的暂时返回值当作最终影响行数。
+
+JPA 批量写入时，Persistence Context 会保留 managed 实体。需要分批 `flush()` 和 `clear()`，避免上下文持续增长；同时确认主键生成策略、实体关系和 Hibernate JDBC batch 配置是否允许语句合批。
+
+批量更新语句绕过实体逐个脏检查时，当前上下文中的旧实体可能失效，应在明确边界清理或刷新。
+
+## 4. Offset 分页的成本随偏移增长
+
+```sql
+select id, created_at
+from orders
+order by created_at desc, id desc
+limit 20 offset 1000000;
+```
+
+数据库通常仍需定位并跳过前一百万行。合适索引可以减少排序和回表，但不能消除深偏移需要扫描或跳过大量索引项的事实。
+
+并发插入或删除还会让相邻两页出现重复或遗漏。后台管理页面偶尔跳到指定页，可以接受 offset；持续下拉和批量扫描更适合游标方式。
+
+## 5. Keyset 分页从最后一条继续
+
+```sql
+select id, created_at
+from orders
+where (created_at, id) < (:lastCreatedAt, :lastId)
+order by created_at desc, id desc
+limit 20;
+```
+
+排序必须稳定且能唯一定位位置，因此在非唯一时间字段后补主键。对应索引顺序要覆盖过滤和排序。
+
+游标可以编码最后一条记录的排序值、方向和查询条件摘要，并进行签名，避免客户端任意篡改。条件发生变化时，应重新从第一页开始。
+
+Keyset 不擅长直接跳到任意页，也不能自动提供低成本精确总页数。接口需要先说明产品是否真的需要这些能力。
+
+## 6. 分页关联数据要控制结果规模
+
+对一对多 join 结果直接分页，数据库按展开后的行截断，可能导致父对象数量不稳定。可以先分页查询主键，再按本页主键抓取关联，并恢复第一页的排序。
+
+批量扫描还要明确快照语义。若处理中持续有新数据写入，可以使用单调主键、固定截止点或版本条件，防止一条记录被漏掉或重复处理。
+
+## 7. 数据访问测试使用目标数据库
+
+H2 等内存数据库适合少量通用测试，但不能证明 MySQL 或 PostgreSQL 的方言、锁、索引、时区和执行计划行为。关键 Repository/Mapper 测试应通过 Testcontainers 等方式运行目标数据库版本。
+
+测试至少覆盖：
+
+- 参数绑定与空值、枚举、时间类型。
+- 唯一约束、外键和事务回滚。
+- 动态 SQL、排序字段白名单和分页边界。
+- N+1 查询数量及批处理实际执行。
+- 并发更新、锁等待和超时。
+- 数据库迁移脚本与旧数据兼容。
+
+测试事务自动回滚可能掩盖“提交后”行为。缓存、事件和数据库约束需要在真实 commit 后验证时，应显式划分事务。
+
+## 8. 性能验证同时记录结果正确性
+
+压测记录批大小、行宽、索引、驱动配置、提交频率和数据库资源。除了吞吐与 P99，还要检查影响行数、重复键、遗漏记录和重试次数。
+
+只有速度提升而结果不稳定的批处理或分页，不能进入生产路径。
+
+## 9. 面试题
+
+### 9.1 `limit 1000000, 20` 为什么慢，怎样改进
+
+<!-- 面试来源：
+- CVTE：https://www.nowcoder.com/discuss/353154893408051200
+-->
+
+**出现公司**：CVTE
+
+**考察重点**
+
+- Offset 深分页的扫描成本。
+- 覆盖索引、延迟关联与 Keyset 分页。
+- 稳定排序和并发数据变化。
+
+**相关内容**：第 4 节“Offset 分页的成本随偏移增长”至第 7 节“数据访问测试使用目标数据库”。
+
+<details>
+<summary>参考回答</summary>
+
+Offset 很大时，数据库通常仍要沿排序结果扫描并丢弃前面的记录，若查询列不能由索引覆盖还会产生大量回表。可以先用覆盖索引分页得到主键再关联详情，减少回表数据；持续翻页更适合根据上一页最后一条的稳定排序键做 Keyset 查询。
+
+Keyset 排序要唯一，例如 created_at 加 id，并建立匹配索引。它不能低成本任意跳页，所以要根据产品需求选择。优化后应在目标数据库和真实数据量下比较扫描行数、执行计划、并发插入时的重复遗漏以及接口延迟。
+
+</details>
+
+:::note 参考资料
+
+1. [JDBC：PreparedStatement](https://docs.oracle.com/en/java/javase/26/docs/api/java.sql/java/sql/PreparedStatement.html)
+2. [MyBatis：Java API](https://mybatis.org/mybatis-3/java-api.html)
+3. [Hibernate ORM User Guide：Batching](https://docs.hibernate.org/orm/current/userguide/html_single/Hibernate_User_Guide.html#batch)
+4. [Testcontainers for Java：Database Containers](https://java.testcontainers.org/modules/databases/)
+
+:::

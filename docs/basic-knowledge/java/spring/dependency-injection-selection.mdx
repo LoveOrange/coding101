@@ -1,0 +1,137 @@
+---
+sidebar_position: 3
+---
+
+# 依赖注入方式的选择
+
+构造器注入适合对象成立所必需的依赖，Setter 或配置方法适合确实可选、可重配的依赖。注入方式会直接影响对象不变量、循环依赖暴露和单元测试难度。
+
+## 1. 必需依赖使用构造器
+
+```java
+@Service
+public final class OrderService {
+    private final OrderRepository repository;
+    private final PaymentClient paymentClient;
+
+    public OrderService(
+            OrderRepository repository,
+            PaymentClient paymentClient) {
+        this.repository = repository;
+        this.paymentClient = paymentClient;
+    }
+}
+```
+
+构造完成后对象就满足基本不变量，字段可以是 `final`，测试也能直接调用构造器。一个类只有单个构造器时通常无需写 `@Autowired`。
+
+构造参数过多不是改用字段注入的理由，它往往说明类承担了过多职责，或者依赖边界没有聚合。
+
+## 2. Setter 注入表达可选或后置配置
+
+```java
+private AuditSink auditSink = AuditSink.noop();
+
+@Autowired(required = false)
+public void setAuditSink(AuditSink auditSink) {
+    this.auditSink = auditSink;
+}
+```
+
+对象在依赖缺失时仍应拥有明确行为。若没有该依赖就不能工作，应放回构造器，而不是让字段保持 `null` 到运行时才失败。
+
+Setter 也允许构造后的变化，这会扩大状态空间。业务组件通常不需要在运行中随意替换依赖。
+
+## 3. 字段注入隐藏了对象要求
+
+```java
+@Autowired
+private PaymentClient paymentClient;
+```
+
+字段注入代码短，但普通构造无法得到可用对象，依赖也不在公开签名中。测试往往需要启动容器或使用反射，字段无法自然声明为 `final`。
+
+框架基础设施或遗留代码可能仍使用字段注入，新业务代码优先构造器注入。
+
+## 4. 多个候选需要明确选择规则
+
+```java
+OrderService(@Qualifier("primaryPayment") PaymentClient client) {
+    this.client = client;
+}
+```
+
+候选冲突可以通过 `@Qualifier`、`@Primary` 或注入集合解决。限定符应表达稳定的业务角色，例如 `@OnlinePayment`，而不是依赖实现类名称。
+
+如果业务需要按请求动态选择策略，可以注入：
+
+```java
+Map<String, PaymentStrategy> strategies
+```
+
+再由一个明确的路由器验证 key 和回退行为。
+
+## 5. 延迟与可选依赖使用 Provider
+
+`ObjectProvider<T>` 可以按需取得对象、处理零个或多个候选，并适配 prototype 或 request 等较短作用域：
+
+```java
+public Report create() {
+    RequestFormatter formatter = formatterProvider.getObject();
+    return formatter.format(data);
+}
+```
+
+Provider 是明确的延迟边界。大量使用它来回避循环依赖，会把结构问题延迟到运行时。
+
+## 6. 作用域不同需要代理或按需获取
+
+singleton 在创建时直接注入 prototype，只会得到当时创建的一个实例。需要每次调用新对象时，使用 `ObjectProvider`、方法注入或 scoped proxy。
+
+将 request-scoped Bean 注入 singleton 时，通常注入的是作用域代理；代理在每次调用时找到当前请求对应的目标。异步线程离开请求上下文后，调用仍可能失败。
+
+## 7. 常见问题
+
+### 7.1 接口只有一个实现还有必要按接口注入吗
+
+取决于接口是否表达稳定边界，而不是实现数量。纯粹为了“解耦”给每个类造一层无语义接口，也会增加维护成本。
+
+### 7.2 `@Resource` 和 `@Autowired` 的选择标准是什么
+
+两者解析规则和规范来源不同。团队应统一约定，并通过显式限定符处理多实现，不依赖字段名偶然匹配。
+
+## 8. 面试题
+
+### 8.1 Spring 中有哪些依赖注入方式，怎样选择
+
+<!-- 面试来源：
+- 交通银行：https://www.nowcoder.com/discuss/353158580108992512
+- 金山云：https://www.nowcoder.com/discuss/800822936729894912
+-->
+
+**出现公司**：交通银行、金山云
+
+**考察重点**
+
+- 必需依赖与对象不变量。
+- 字段注入的测试和可见性问题。
+- 多候选、延迟与作用域边界。
+
+**相关内容**：第 1 节“必需依赖使用构造器”至第 6 节“作用域不同需要代理或按需获取”。
+
+<details>
+<summary>参考回答</summary>
+
+必需依赖优先构造器注入，让对象一经创建就可用，字段可以保持 final，也方便直接单元测试。确实可选并有默认行为的依赖可以用 Setter 或配置方法；字段注入会隐藏构造要求，通常不作为新代码首选。
+
+多个实现用限定符或业务注解明确选择，动态策略可以注入集合。需要延迟创建或跨作用域获取时使用 ObjectProvider 或 scoped proxy，但不应靠延迟获取掩盖循环依赖。
+
+</details>
+
+:::note 参考资料
+
+1. [Spring Framework：Dependency Injection](https://docs.spring.io/spring-framework/reference/core/beans/dependencies/factory-collaborators.html)
+2. [Spring Framework：Fine-tuning Annotation-based Autowiring](https://docs.spring.io/spring-framework/reference/core/beans/annotation-config/autowired-qualifiers.html)
+3. [Spring Framework：Bean Scopes](https://docs.spring.io/spring-framework/reference/core/beans/factory-scopes.html)
+
+:::

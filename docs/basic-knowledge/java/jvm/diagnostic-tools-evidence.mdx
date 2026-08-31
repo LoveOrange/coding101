@@ -1,0 +1,178 @@
+---
+sidebar_position: 21
+---
+
+# JVM 诊断工具与证据选择
+
+JVM 工具各自只能回答一类问题：线程转储描述某个时刻的调用和等待，堆转储描述对象引用，GC 日志描述回收时间线，JFR 和 profiler 描述一段时间内的事件。先定义症状，再选择能证伪假设的证据。
+
+## 1. 先记录故障时间线
+
+开始执行命令前先写清楚：
+
+- 用户看到的是错误、超时、吞吐下降还是进程退出。
+- 首次发生和恢复时间。
+- 影响哪些实例、接口和请求。
+- 同期是否发布、扩容、流量变化或下游异常。
+- CPU、RSS、堆、线程、GC 和容器限制怎样变化。
+
+没有同一时间轴，线程栈里的等待、堆里的大对象和日志中的 GC 都可能只是正常现象。
+
+## 2. `jcmd` 是现代 HotSpot 的统一入口
+
+```bash
+jcmd -l
+jcmd <pid> help
+jcmd <pid> VM.version
+jcmd <pid> VM.command_line
+jcmd <pid> VM.flags
+jcmd <pid> VM.system_properties
+```
+
+可用命令由 JVM 版本和实现决定，应先运行 `help`。Oracle 当前文档建议优先使用 `jcmd`，再按需要使用旧的 `jstack`、`jmap`、`jinfo`。
+
+Attach 通常要求同机、相同有效用户，并可能受容器 PID namespace、权限和 JVM 参数限制。工具版本最好与目标进程 JDK 匹配。
+
+## 3. 症状与首选证据
+
+| 症状 | 首选证据 | 后续证据 |
+| --- | --- | --- |
+| CPU 高 | OS 进程/线程 CPU、CPU profile | 线程栈、GC/JIT 事件 |
+| 请求卡住 | 多份线程转储、wall-clock profile | 锁与线程池指标 |
+| 堆持续增长 | GC 后 live set、class histogram | heap dump、JFR top growers |
+| RSS 高、堆正常 | NMT、线程数、BufferPool | `smaps`、native profiler |
+| GC 停顿 | GC unified log、JFR | 分配 profile、对象图 |
+| 进程崩溃 | `hs_err_pid`、core dump | native symbols、JFR |
+| 类冲突 | 类加载日志、代码来源 | 依赖树、loader stats |
+
+工具名字不是流程。比如 CPU 高时先确认真正消耗 CPU 的线程，直接导出堆通常没有帮助。
+
+## 4. 快照和时间序列回答不同问题
+
+一次线程转储只能说明“采集瞬间在哪里”。连续 3—5 份、间隔几秒的转储能区分持续热点与偶然经过。
+
+同理，一份 heap dump 可以显示引用图，却无法单独证明哪个对象持续增长。GC 日志、JFR 或多个低风险统计能先建立趋势，再在合适时刻采集完整堆。
+
+## 5. JFR 记录运行时事件
+
+```bash
+jcmd <pid> JFR.start \
+  name=incident \
+  settings=profile \
+  duration=2m \
+  filename=/safe/path/incident.jfr
+```
+
+JFR 可以关联 CPU 样本、线程、锁、分配、GC、类加载、编译和 I/O 等事件。`default` 配置适合低开销持续记录，`profile` 会开启更多事件；实际开销取决于事件和阈值。
+
+持续环形记录比故障后临时启动更容易保留“发生之前”的证据。要限制最大年龄、文件大小并验证磁盘路径。
+
+## 6. async-profiler 提供采样视角
+
+```bash
+asprof -d 30 -f cpu.html <pid>
+```
+
+它可以采样 CPU、wall-clock、分配和锁等事件，并在 HotSpot 上展示 Java、native 与部分内核栈。CPU profile 适合找真正使用处理器的路径；wall-clock profile 会包含运行、阻塞和睡眠线程，更适合端到端延迟。
+
+采样结果是统计分布，不是每次调用的完整追踪。采样时长、频率、平台支持和容器权限都会影响结果。
+
+## 7. 采集动作也有风险等级
+
+大致可以按影响递增理解：
+
+1. 读取已有日志、指标和启动参数。
+2. 短时 JFR/采样 profile、普通线程转储。
+3. class histogram、详细诊断命令。
+4. live histogram、完整 heap dump、core dump。
+
+实际影响取决于堆大小、线程数、磁盘与 JVM 状态。执行前运行 `jcmd <pid> help <command>` 查看 Impact，并明确文件落盘空间、停顿窗口和回滚方式。
+
+## 8. 证据要带环境元数据
+
+每份诊断包至少包含：
+
+- UTC/本地时间与进程 uptime。
+- 主机、容器、Pod 和实例标识。
+- JDK 完整版本、启动命令与 flags。
+- 发布版本或 commit。
+- 采集命令、持续时间和文件校验。
+- 对应监控图的时间区间。
+
+否则两台不同版本实例的线程栈、GC 日志很容易被错误拼在一起。
+
+## 9. 常见问题
+
+### 9.1 `jstack`、`jmap` 还能不能用
+
+可以在目标 JDK 支持时使用，但现代 HotSpot 优先考虑 `jcmd` 的对应命令。工具版本、Attach 权限和命令影响都要核对。
+
+### 9.2 Arthas 能替代 JFR 和堆分析吗
+
+不能简单替代。它擅长在线查看调用、类和线程；JFR 擅长时间线事件，heap dump 擅长完整对象引用图。按问题组合。
+
+### 9.3 为什么先采低风险证据
+
+故障进程本就资源紧张，完整 heap dump 可能造成长停顿、磁盘写满或 OOM Kill。先用指标、JFR 和 histogram 缩小范围，可以更安全地决定是否需要重证据。
+
+## 10. 面试题
+
+### 10.1 常用 JVM 诊断工具分别能解决什么问题
+
+<!-- 面试来源：
+- 字节跳动：https://www.nowcoder.com/discuss/366687810131165184
+- 阿里巴巴：https://www.nowcoder.com/discuss/353148456472616960
+-->
+
+**出现公司**：字节跳动、阿里巴巴
+
+**考察重点**
+
+- 工具与证据类型的对应关系。
+- 快照和时间序列的差异。
+- 采集风险与生产边界。
+
+**相关内容**：第 1 节“先记录故障时间线”至第 7 节“采集动作也有风险等级”。
+
+<details>
+<summary>参考回答</summary>
+
+先按症状选证据：CPU 用 OS 线程统计和 CPU profiler；卡顿用多份线程转储或 wall-clock profile；堆增长看 GC 后 live set、histogram 和必要时 heap dump；非堆增长用 NMT 与系统映射；GC 问题用统一日志和 JFR。
+
+现代 HotSpot 优先用 `jcmd` 查看可用命令。线程与堆转储是快照，JFR 和日志是时间序列；完整堆可能造成停顿和大量 I/O，执行前要评估风险。
+
+</details>
+
+### 10.2 为什么只采一份线程转储经常无法定位问题
+
+<!-- 面试来源：
+- 阿里巴巴：https://www.nowcoder.com/discuss/353148456472616960
+-->
+
+**出现公司**：阿里巴巴
+
+**考察重点**
+
+- 单点状态不能证明持续热点。
+- 多个快照和采样 profile 建立时间维度。
+- 线程栈要与 CPU、延迟和队列对齐。
+
+**相关内容**：第 4 节“快照和时间序列回答不同问题”。
+
+<details>
+<summary>参考回答</summary>
+
+线程可能刚好经过某个方法，单份栈只能描述采集瞬间。间隔几秒连续采集多份，才能看到同一线程是否持续停在计算、锁或 I/O；CPU/wall profile 还能给出一段时间内的样本占比。
+
+最后还要和线程 CPU、请求延迟、线程池队列对齐，否则正常等待也可能被误判为故障。
+
+</details>
+
+:::note 参考资料
+
+1. [Oracle：Diagnostic Tools](https://docs.oracle.com/en/java/javase/26/troubleshoot/diagnostic-tools.html)
+2. [Oracle：`jcmd`](https://docs.oracle.com/en/java/javase/26/docs/specs/man/jcmd.html)
+3. [Oracle：Flight Recorder API Guide](https://docs.oracle.com/en/java/javase/26/jfapi/index.html)
+4. [async-profiler](https://github.com/async-profiler/async-profiler)
+
+:::

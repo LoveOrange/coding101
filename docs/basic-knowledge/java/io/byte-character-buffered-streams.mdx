@@ -1,0 +1,244 @@
+---
+sidebar_position: 1
+---
+
+# 字节流、字符流与缓冲
+
+文件、Socket 和压缩数据的底层输入输出都是字节。字符流在字节与 Unicode 文本之间增加编码转换，缓冲则把多次小读写合并成较大的数据搬运。选择 API 前先确定数据是不是文本。
+
+## 1. 字节流处理原始数据
+
+`InputStream` 和 `OutputStream` 是阻塞式字节流的基础抽象。图片、压缩包、加密数据和未知格式文件都应按字节处理：
+
+```java
+Path source = Path.of("avatar.png");
+Path target = Path.of("avatar-copy.png");
+
+try (
+    InputStream input = Files.newInputStream(source);
+    OutputStream output = Files.newOutputStream(target)
+) {
+    input.transferTo(output);
+}
+```
+
+字节流不解释内容。值 `0x41` 是字符 `A`、图片数据还是压缩格式的一部分，由上层协议决定。
+
+### 1.1 正确处理部分读取
+
+一次 `read(byte[])` 不保证填满整个数组，只返回本次实际读取的字节数。返回 `-1` 表示到达流末尾：
+
+```java
+byte[] buffer = new byte[8192];
+int count;
+
+while ((count = input.read(buffer)) != -1) {
+    output.write(buffer, 0, count);
+}
+```
+
+最后一次读取通常只填充数组的一部分。写出时必须使用返回的 `count`，不能每次都写完整数组，否则会把上一次残留的数据也写进去。
+
+`available()` 只表示当前无需阻塞即可读取的估计字节数，不是整个流的总长度。网络输入尤其不能用它判断消息是否已经完整到达。
+
+## 2. 字符流负责文本编解码
+
+`Reader` 和 `Writer` 处理字符序列。字符流需要使用字符集，把外部字节解码为字符，或把字符编码为字节：
+
+```java
+Path path = Path.of("article.md");
+
+try (BufferedReader reader = Files.newBufferedReader(path, StandardCharsets.UTF_8)) {
+    String firstLine = reader.readLine();
+    System.out.println(firstLine);
+}
+```
+
+写出时同样指定编码：
+
+```java
+try (BufferedWriter writer = Files.newBufferedWriter(path, StandardCharsets.UTF_8)) {
+    writer.write("欢迎来到 Coding 101");
+    writer.newLine();
+}
+```
+
+如果读写两端使用不同字符集，同一组字节会被解释成错误字符。协议、文件格式和数据库连接都应明确字符集，不依赖进程默认值。
+
+### 2.1 InputStreamReader 与 OutputStreamWriter 是转换边界
+
+已有字节流时，可以显式增加解码层：
+
+```java
+Reader reader = new InputStreamReader(
+    socket.getInputStream(),
+    StandardCharsets.UTF_8
+);
+```
+
+反向写出使用 `OutputStreamWriter`：
+
+```java
+Writer writer = new OutputStreamWriter(
+    socket.getOutputStream(),
+    StandardCharsets.UTF_8
+);
+```
+
+转换发生在字节与字符的边界，不存在把 `Reader` “倒过来变成输入字节流”的通用转换。已经解码成字符后，如果再次需要字节，必须选择字符集重新编码。
+
+### 2.2 char 不一定对应一个用户看到的字符
+
+Java 字符流以 UTF-16 代码单元工作。部分 Unicode 码点需要两个 `char` 表示，组合字符还可能由多个码点组成。按语言学意义处理字符数量、截断或光标位置时，不能简单按 `char` 索引。
+
+## 3. 缓冲减少小粒度调用
+
+逐字节调用底层流，会产生大量方法调用，并可能频繁触发底层 I/O。缓冲流一次读取较大数据块放入内存，再满足后续小读取：
+
+```java
+try (
+    InputStream input = new BufferedInputStream(Files.newInputStream(source));
+    OutputStream output = new BufferedOutputStream(Files.newOutputStream(target))
+) {
+    input.transferTo(output);
+}
+```
+
+字符缓冲还提供 `readLine()` 和 `newLine()` 等按文本组织的操作。
+
+缓冲带来的收益主要是减少小粒度调用和系统边界往返，不代表每个包装层都会让 I/O 更快。`Files.copy`、`transferTo` 和部分底层流已经按块处理，继续重复包装需要根据调用方式判断。
+
+### 3.1 缓冲区不是越大越好
+
+更大的缓冲可能减少调用次数，但也会占用更多内存、增加缓存压力，并让每个连接持有更大的常驻空间。服务端如果同时维护数万连接，单连接缓冲大小会直接放大总体内存。
+
+先使用 API 默认值。只有性能分析确认 I/O 调用粒度是瓶颈时，再根据数据大小、并发连接数和延迟要求调整。
+
+## 4. 流的组合与装饰
+
+Java I/O 经常通过包装组合能力：
+
+```java
+try (
+    InputStream file = Files.newInputStream(Path.of("data.gz"));
+    InputStream buffered = new BufferedInputStream(file);
+    InputStream decompressed = new GZIPInputStream(buffered);
+    Reader decoded = new InputStreamReader(decompressed, StandardCharsets.UTF_8);
+    BufferedReader lines = new BufferedReader(decoded)
+) {
+    lines.lines().forEach(System.out::println);
+}
+```
+
+数据依次经过文件读取、缓冲、解压和 UTF-8 解码，最后按行消费。每一层只负责一种转换。
+
+包装顺序必须与数据格式一致。写出时如果先编码再压缩，读取时就要先解压再解码。关闭最外层流通常会沿包装链关闭底层资源，但仍要查阅具体 API 的关闭契约。
+
+## 5. 写入、flush 与持久化
+
+`flush()` 要求把 Java 层已经缓冲的输出继续交给底层流：
+
+```java
+writer.write("event\n");
+writer.flush();
+```
+
+它常用于长连接协议，需要在不关闭连接的情况下及时发送一批数据。`close()` 通常会先刷新再释放资源。
+
+`flush()` 不等同于数据已经持久化到物理介质。文件系统和设备仍可能缓存数据。确实需要崩溃后的持久化保证时，要使用 `FileChannel.force` 等 API，并理解文件系统与硬件提供的边界。
+
+频繁 `flush` 会削弱缓冲效果。应由消息边界、交互延迟或持久化协议决定，而不是每写几个字节就调用一次。
+
+## 6. 怎样选择 API
+
+1. **二进制数据**：使用 `InputStream`、`OutputStream` 或字节 `Channel`。
+2. **文本数据**：使用 `Reader`、`Writer` 或 `Files` 的带字符集方法。
+3. **大量小读写**：使用缓冲或显式块读取。
+4. **一次性文件复制**：优先查看 `Files.copy`、`InputStream.transferTo` 或 `FileChannel.transferTo`。
+5. **随机访问、内存映射或多路复用**：进入 NIO 的 `Channel`、`Buffer` 和 `Selector` 模型。
+
+不要因为字符流 API 更方便，就用它复制任意文件。二进制内容经过错误解码再编码，字节序列会被破坏。
+
+## 7. 常见问题
+
+### 7.1 字符流是否一定比字节流快
+
+不是。字符流增加了编解码工作，速度取决于缓冲、字符集、数据量和底层设备。两者首先是语义选择：文本需要解码，二进制数据不能随意解码。
+
+### 7.2 为什么 `InputStream.read()` 返回 int
+
+它需要同时表示 `0` 到 `255` 的所有字节值和流末尾 `-1`。如果返回 `byte`，`-1` 会与合法的 `0xFF` 无法区分。
+
+### 7.3 `readLine()` 为什么不保留换行符
+
+`BufferedReader.readLine()` 返回行内容，不包含行终止符。需要原样保留文件时，不适合通过逐行读取再统一添加系统换行，因为原文件可能使用不同终止符。
+
+### 7.4 默认字符集可以直接使用吗
+
+只有协议明确规定跟随运行环境时才适合。跨机器文件、网络协议和持久化数据应显式指定字符集，通常是格式约定的 UTF-8，避免部署环境变化导致结果不同。
+
+## 8. 面试题
+
+### 8.1 字节流和字符流有什么区别，怎样选择
+
+<!-- 面试来源：
+- 饿了么：https://www.nowcoder.com/discuss/600438441754513408
+- 网易：https://www.nowcoder.com/discuss/353154078219902976
+- 美团：https://www.nowcoder.com/discuss/353156832904552448
+- 金山云：https://www.nowcoder.com/discuss/353156741225455616
+-->
+
+**出现公司**：饿了么、网易、美团、金山云
+
+**考察重点**
+
+- 字节数据与文本字符之间是否需要编解码。
+- `InputStreamReader` 和 `OutputStreamWriter` 的作用。
+- 缓冲解决了什么调用粒度问题。
+
+**相关内容**：第 1 节“字节流处理原始数据”、第 2 节“字符流负责文本编解码”、第 3 节“缓冲减少小粒度调用”。
+
+<details>
+<summary>参考回答</summary>
+
+字节流读写原始字节，适合图片、压缩包和任意二进制协议。字符流在底层字节流上增加字符集编解码，适合文本；`InputStreamReader` 和 `OutputStreamWriter` 就是两种表示之间的转换边界。
+
+字符流不天然比字节流快。大量小读写时可以增加缓冲，把多次调用合并成块操作。选择时先看数据语义，再根据调用粒度决定是否需要缓冲，并为文本显式指定字符集。
+
+</details>
+
+### 8.2 读取流时为什么必须使用 read 的返回值
+
+<!-- 面试来源：
+- 美团：https://www.nowcoder.com/discuss/353156832904552448
+-->
+
+**出现公司**：美团
+
+**考察重点**
+
+- 一次读取为什么不保证填满缓冲区。
+- `-1` 与有效字节值怎样区分。
+- 最后一个数据块怎样避免写入旧内容。
+
+**相关内容**：第 1.1 节“正确处理部分读取”。
+
+<details>
+<summary>参考回答</summary>
+
+`read(byte[])` 返回本次实际读到的字节数，不保证填满数组，返回 `-1` 才表示流结束。最后一次读取常常只有部分数据，因此写出时必须使用 `write(buffer, 0, count)`。
+
+如果忽略返回值并总是写完整数组，未被本次读取覆盖的区域会保留旧数据，导致输出末尾重复或损坏。
+
+</details>
+
+:::note 参考资料
+
+1. [Java API：InputStream](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/io/InputStream.html)
+2. [Java API：Reader](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/io/Reader.html)
+3. [Java API：InputStreamReader](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/io/InputStreamReader.html)
+4. [Java API：BufferedInputStream](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/io/BufferedInputStream.html)
+5. [Java API：Files](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/nio/file/Files.html)
+6. [Java API：Charset](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/nio/charset/Charset.html)
+
+:::
