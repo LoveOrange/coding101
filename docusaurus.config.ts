@@ -38,13 +38,24 @@ const config: Config = {
   projectName: "coding101", // Usually your repo name.
 
   onBrokenLinks: "throw",
+  onBrokenMarkdownLinks: "warn",
 
   // Even if you don't use internationalization, you can use this field to set
   // useful metadata like html lang. For example, if your site is Chinese, you
   // may want to replace "en" with "zh-Hans".
   i18n: {
     defaultLocale: "zh-Hans",
-    locales: ["zh-Hans"],
+    locales: ["zh-Hans", "en"],
+    localeConfigs: {
+      "zh-Hans": {
+        label: "简体中文",
+        htmlLang: "zh-CN",
+      },
+      en: {
+        label: "English",
+        htmlLang: "en-US",
+      },
+    },
   },
 
   presets: [
@@ -81,9 +92,6 @@ const config: Config = {
 
   markdown: {
     mermaid: true,
-    hooks: {
-      onBrokenMarkdownLinks: "warn",
-    },
   },
   themes: ["@docusaurus/theme-mermaid"],
 
@@ -134,6 +142,10 @@ const config: Config = {
           label: "ChatGPT 简明指南",
         },
         { to: "/blog", label: "Blog", position: "right" },
+        {
+          type: "localeDropdown",
+          position: "right",
+        },
         {
           href: "https://github.com/loveorange/coding101",
           label: "GitHub",
