@@ -4,465 +4,133 @@ sidebar_position: 2
 
 # 面向对象编程（Object-Oriented Programming）
 
-面向对象编程（Object-Oriented Programming，OOP）使用对象组织状态和行为，并通过对象之间的关系完成协作。Java 中的封装、继承、多态、方法重载、接口、抽象类和组合分别承担不同职责，需要根据对象约束、子类型关系和变化方向一起理解。
+面向对象编程使用对象组织状态与行为。Java 面试中的重点是封装、继承和多态各自解决什么问题，以及接口、抽象类和组合应该怎样选择。
 
-## 1. 封装控制状态的修改入口
+:::tip 面试核心
 
-封装的目标，是让对象始终处于有效状态。字段设为 `private` 只是第一步，对象还需要通过方法检查每次状态变化是否满足约束。
+- 封装通过受控入口维护对象不变量，不等于只给字段加 `private`。
+- 继承建立“子类型可以替代父类型”的关系，不应只为复用几行代码使用。
+- 运行时多态只作用于可重写的实例方法；字段和静态方法不参与动态绑定。
+- 重载在编译阶段根据参数类型选择签名，重写在运行时根据实际对象选择实现。
+- 接口描述能力，抽象类共享状态与流程，组合把可替换的协作者交给对象使用。
+
+:::
+
+## 1. 封装维护对象不变量
+
+封装把状态变化集中到对象提供的方法中。对象可以在修改前校验条件，从而避免出现无效状态。
 
 ```java
-public final class BankAccount {
-    private long balanceInCents;
+final class Account {
+    private long balance;
 
-    public BankAccount(long initialBalanceInCents) {
-        if (initialBalanceInCents < 0) {
-            throw new IllegalArgumentException("initial balance must not be negative");
+    Account(long openingBalance) {
+        if (openingBalance < 0) {
+            throw new IllegalArgumentException("negative balance");
         }
-        this.balanceInCents = initialBalanceInCents;
+        this.balance = openingBalance;
     }
 
-    public void withdraw(long amountInCents) {
-        if (amountInCents <= 0) {
-            throw new IllegalArgumentException("amount must be positive");
+    void withdraw(long amount) {
+        if (amount <= 0 || amount > balance) {
+            throw new IllegalArgumentException("invalid amount");
         }
-        if (amountInCents > balanceInCents) {
-            throw new IllegalStateException("insufficient balance");
-        }
-        balanceInCents -= amountInCents;
+        balance -= amount;
     }
 
-    public long balanceInCents() {
-        return balanceInCents;
+    long balance() {
+        return balance;
     }
 }
 ```
 
-如果直接提供 `setBalanceInCents(long value)`，调用方仍然可以跳过取款规则，把余额改为负数。这样的类虽然字段是私有的，却没有保护业务不变量。
+如果把字段公开，或提供不校验的 `setBalance`，调用方仍然可以破坏“不允许负余额”的约束。返回内部的可变集合时也要注意边界泄漏，可以返回不可变视图或防御性副本。
 
-封装通常包含三件事：
+## 2. 继承与多态
 
-1. 隐藏不需要由调用方直接操作的状态。
-2. 为状态变化提供符合业务语义的方法。
-3. 在对象边界内校验并维护不变量。
-
-### 1.1 返回可变对象时要注意边界泄漏
-
-`private` 字段如果通过 getter 原样返回，调用方仍然可能绕过对象提供的方法：
+继承让子类获得父类可见的状态和行为，同时声明子类属于父类型。只有子类能够满足父类型契约时，这种关系才成立。
 
 ```java
-public final class Order {
-    private final List<String> items = new ArrayList<>();
-
-    public List<String> items() {
-        return List.copyOf(items);
-    }
-}
-```
-
-返回不可修改的副本，可以避免调用方直接修改内部列表。是否需要复制，要结合数据规模、更新频率和性能要求判断，但边界必须有意识地设计。
-
-## 2. 继承建立子类型关系
-
-类 `Child extends Parent` 同时获得两种关系：
-
-- `Child` 是 `Parent` 的子类型，可以在需要 `Parent` 的位置使用。
-- `Child` 会继承父类中允许继承的字段和方法，并可以重写部分实例方法。
-
-```java
-abstract class Notification {
-    private final String recipient;
-
-    protected Notification(String recipient) {
-        this.recipient = recipient;
-    }
-
-    public final void send() {
-        validateRecipient(recipient);
-        deliver(recipient);
-    }
-
-    protected abstract void deliver(String recipient);
-
-    private static void validateRecipient(String recipient) {
-        if (recipient.isBlank()) {
-            throw new IllegalArgumentException("recipient must not be blank");
-        }
-    }
+interface PricePolicy {
+    long calculate(long originalPrice);
 }
 
-final class EmailNotification extends Notification {
-    EmailNotification(String recipient) {
-        super(recipient);
-    }
-
+final class DiscountPolicy implements PricePolicy {
     @Override
-    protected void deliver(String recipient) {
-        System.out.println("send email to " + recipient);
+    public long calculate(long originalPrice) {
+        return originalPrice * 80 / 100;
     }
 }
+
+PricePolicy policy = new DiscountPolicy();
+long price = policy.calculate(1_000); // 800
 ```
 
-这里的父类定义了稳定的发送流程，子类只负责不同的投递方式。`send()` 声明为 `final`，防止子类跳过接收方校验。
+变量的编译时类型是 `PricePolicy`，实际对象是 `DiscountPolicy`。编译器先确认接口中存在 `calculate`，运行时再调用实际对象重写后的实现，这就是动态绑定。
 
-### 2.1 继承不等于复制父类的所有内容
+### 2.1 不参与运行时多态的成员
 
-- 构造方法不会被继承。子类构造方法必须直接或间接调用父类构造方法。
-- 父类的 `private` 成员不能由子类直接访问。
-- `final` 类不能被继承，`final` 方法不能被重写。
-- `static` 方法属于类，不参与实例方法的动态绑定。
-- `sealed` 类可以明确限制允许继承它的类型。
+- 字段访问由引用的编译时类型决定。
+- 静态方法属于类，子类声明同名方法属于隐藏。
+- `private` 方法不会被子类继承。
+- `final` 方法不能被重写。
 
-继承还会让子类依赖父类的可见实现。父类中一个 `protected` 方法的变化，可能影响所有子类。继承层次越深，这种影响越难分析和测试。
+因此“多态”默认指可重写实例方法的动态分派，不能推广到所有同名成员。
 
-## 3. 多态在运行时选择重写方法
-
-一个父类型变量可以引用子类对象：
+### 2.2 重载与重写
 
 ```java
-Notification notification = new EmailNotification("team@example.com");
-notification.send();
+void print(String value) {}
+void print(Object value) {} // 重载
 ```
 
-变量的编译时类型是 `Notification`，实际对象的运行时类型是 `EmailNotification`。编译器先确认 `Notification` 中存在可调用的 `send()`；执行到 `deliver()` 时，JVM 根据实际对象选择 `EmailNotification.deliver()`。
+重载要求方法名相同、参数列表不同，编译器根据参数的编译时类型选择签名。只改变返回类型不能形成重载。
 
-这就是实例方法重写带来的运行时多态。调用方依赖稳定的父类型，具体对象可以提供不同实现。
+重写发生在继承或接口实现关系中，子类为同签名实例方法提供实现。返回类型可以协变，访问权限不能缩小，受检异常范围不能扩大。
 
-### 3.1 编译时类型决定能调用哪些成员
+## 3. 接口、抽象类与组合
 
-```java
-class Animal {
-    void speak() {
-        System.out.println("animal");
-    }
-}
-
-class Cat extends Animal {
-    @Override
-    void speak() {
-        System.out.println("cat");
-    }
-
-    void climb() {
-        System.out.println("climb");
-    }
-}
-
-Animal animal = new Cat();
-animal.speak(); // cat
-// animal.climb(); // 编译错误：Animal 没有声明 climb()
-```
-
-运行时类型决定重写后的实例方法实现，但不会改变变量在编译阶段可见的成员。只有先确认对象确实是 `Cat`，才能将引用转换后调用 `climb()`。
-
-### 3.2 字段不参与多态
-
-字段访问根据引用的编译时类型确定。子类声明同名字段属于字段隐藏，不是方法重写：
-
-```java
-class Parent {
-    String name = "parent";
-}
-
-class Child extends Parent {
-    String name = "child";
-}
-
-Parent value = new Child();
-System.out.println(value.name); // parent
-```
-
-同名字段容易让对象状态变得模糊，通常应当避免。需要多态行为时，用实例方法表达。
-
-## 4. 方法重载与方法分派
-
-方法重载允许同一个类声明多个同名、不同参数列表的方法。编译器会根据接收者、参数数量、参数的编译时类型以及允许的方法调用转换，选择本次调用对应的签名：
-
-```java
-final class Formatter {
-    String format(int value) {
-        return Integer.toString(value);
-    }
-
-    String format(long value) {
-        return Long.toString(value);
-    }
-
-    String format(Object value) {
-        return String.valueOf(value);
-    }
-}
-
-Formatter formatter = new Formatter();
-
-formatter.format(1);       // format(int)
-formatter.format(1L);      // format(long)
-
-Object value = 1;
-formatter.format(value);   // format(Object)
-```
-
-最后一行对象的运行时类型是 `Integer`，变量的编译时类型却是 `Object`。重载解析只使用编译阶段可见的信息，因此选择 `format(Object)`。只有返回类型不同，不能形成重载；调用方可以忽略返回值，编译器无法仅靠期望的返回类型确定方法。
-
-### 4.1 重载解析与动态绑定发生在不同阶段
-
-下面的调用同时涉及重载和重写：
-
-```java
-class Printer {
-    public void print(Object value) {
-        System.out.println("object: " + value);
-    }
-}
-
-final class JsonPrinter extends Printer {
-    @Override
-    public void print(Object value) {
-        System.out.println("json object: " + value);
-    }
-
-    public void print(String value) {
-        System.out.println("json string: " + value);
-    }
-}
-
-Printer printer = new JsonPrinter();
-printer.print("Coding 101"); // json object: Coding 101
-```
-
-判断结果分为两个阶段：
-
-1. **编译阶段选择签名**：变量 `printer` 的编译时类型是 `Printer`，可见的候选方法只有 `print(Object)`，因此先确定这个签名。
-2. **运行时选择实现**：实际对象是 `JsonPrinter`，它重写了 `print(Object)`，因此最终执行子类实现。
-
-`JsonPrinter.print(String)` 的参数虽然更具体，但它不属于编译时类型 `Printer` 的成员集合，不会参与这次重载解析。如果变量直接声明为 `JsonPrinter`，编译器才会选择 `print(String)`。
-
-### 4.2 重载与重写
-
-| 维度 | 重载 | 重写 |
+| 方式 | 适合表达 | 主要限制 |
 | --- | --- | --- |
-| 声明位置 | 通常在同一个类中 | 发生在继承或接口实现关系中 |
-| 参数列表 | 必须不同 | 必须与父类型方法一致 |
-| 返回类型 | 不能单独用于区分重载 | 可以相同或使用协变返回类型 |
-| 访问权限 | 没有继承约束 | 不能比父类型方法更严格 |
-| 受检异常 | 每个声明独立决定 | 不能比父类型方法声明得更宽 |
-| 选择时机 | 编译阶段确定签名 | 实例方法实现在运行时动态绑定 |
+| 接口 | 调用方依赖的能力或协议 | 不能保存每个对象独有的实例状态 |
+| 抽象类 | 同一类对象共享的状态、构造过程或模板流程 | Java 只有单类继承，子类与基类耦合较强 |
+| 组合 | 一个对象使用可替换的策略或协作者 | 需要显式转发调用和管理依赖 |
 
-重载过多时，自动装箱、基本类型提升、可变参数和泛型会让调用结果难以判断。语义不同的操作优先使用不同方法名，不要只为了减少名称建立复杂重载。
+接口可以声明抽象方法、`default` 方法、静态方法和私有辅助方法。`default` 方法主要用于在一定范围内兼容地扩展接口；两个无继承关系的接口提供相同默认方法时，实现类必须重写消除歧义。
 
-## 5. 接口定义能力
-
-接口适合定义调用方真正需要的方法，而不要求实现类来自同一个继承层次：
+抽象类适合多个子类确实共享状态和稳定流程的情况。只需要替换计价、存储或通知策略时，优先使用小接口配合组合，变化不会被固定在继承层次中。
 
 ```java
-public interface PricePolicy {
-    long calculate(long originalPriceInCents);
-}
+final class OrderService {
+    private final PricePolicy policy;
 
-public final class MemberPricePolicy implements PricePolicy {
-    @Override
-    public long calculate(long originalPriceInCents) {
-        return Math.round(originalPriceInCents * 0.9);
+    OrderService(PricePolicy policy) {
+        this.policy = policy;
+    }
+
+    long quote(long originalPrice) {
+        return policy.calculate(originalPrice);
     }
 }
 ```
 
-调用方只依赖 `PricePolicy`，可以替换会员价、活动价或测试实现。一个类还能实现多个接口，因此可以同时表达多种能力。
+## 4. 常见问题
 
-### 5.1 接口成员
+### 4.1 有 getter 和 setter 就完成封装了吗
 
-现代 Java 接口不只包含抽象方法：
+没有。封装的判断标准是对象能否持续维护自己的约束。无条件暴露所有字段的读写，只是改变了访问语法。
 
-- 普通接口方法默认是 `public abstract`。
-- `default` 方法可以提供实例方法的默认实现。
-- `static` 方法属于接口本身，通过接口名调用。
-- `private` 方法可以复用接口内部的实现，只能由接口中的其他方法调用。
-- 接口字段只能是常量，隐式带有 `public static final`。
+### 4.2 “组合优于继承”是绝对规则吗
 
-```java
-public interface PricePolicy {
-    long calculate(long originalPriceInCents);
+不是。行为只是可替换协作者时，组合通常更灵活；确实存在稳定的子类型关系，并且多个子类共享状态和流程时，继承或抽象类仍然合适。
 
-    default boolean supports(long originalPriceInCents) {
-        return originalPriceInCents > 0;
-    }
+### 4.3 向下转型越多，多态设计越灵活吗
 
-    static PricePolicy originalPrice() {
-        return price -> price;
-    }
-}
-```
+通常相反。调用方频繁判断具体子类，说明父类型没有提供完成任务所需的抽象，新增子类也会迫使调用方修改。
 
-`default` 方法主要用于在兼容已有实现的前提下扩展接口。它不适合让接口逐渐承担实现类的全部职责，也不能保存每个对象独有的实例状态。
+## 5. 面试题
 
-## 6. 抽象类共享状态和实现
-
-抽象类不能直接实例化，但可以声明构造方法、实例字段、普通方法和抽象方法：
-
-```java
-public abstract class BasePricePolicy implements PricePolicy {
-    private final long minimumPriceInCents;
-
-    protected BasePricePolicy(long minimumPriceInCents) {
-        if (minimumPriceInCents < 0) {
-            throw new IllegalArgumentException("minimum price must not be negative");
-        }
-        this.minimumPriceInCents = minimumPriceInCents;
-    }
-
-    @Override
-    public final long calculate(long originalPriceInCents) {
-        long discounted = discount(originalPriceInCents);
-        return Math.max(discounted, minimumPriceInCents);
-    }
-
-    protected abstract long discount(long originalPriceInCents);
-}
-```
-
-这个抽象类固定了“先计算折扣，再保证最低价”的流程，并保存所有子类都需要的最低价。子类只实现变化的 `discount` 步骤。
-
-抽象类适合以下情况：
-
-- 多个子类确实属于同一类对象，并遵守共同契约。
-- 子类需要共享实例状态、构造过程或受保护的实现。
-- 父类能够提供稳定的模板流程，只把少量步骤交给子类完成。
-
-Java 类只能直接继承一个父类。选择抽象类，就同时选择了这条继承层次，也让子类依赖父类的生命周期和可见实现。
-
-## 7. 组合建立对象协作
-
-组合通过字段保存另一个对象，在需要时委托它完成工作：
-
-```java
-public final class CheckoutService {
-    private final PricePolicy pricePolicy;
-
-    public CheckoutService(PricePolicy pricePolicy) {
-        this.pricePolicy = pricePolicy;
-    }
-
-    public long checkout(long originalPriceInCents) {
-        if (!pricePolicy.supports(originalPriceInCents)) {
-            throw new IllegalArgumentException("unsupported price");
-        }
-        return pricePolicy.calculate(originalPriceInCents);
-    }
-}
-```
-
-`CheckoutService` 与 `PricePolicy` 是“使用”关系，不是父子类型。策略可以在构造时注入，也可以由工厂根据订单条件选择。
-
-组合的主要收益是：
-
-- 对象只依赖协作者公开的契约，不依赖父类实现细节。
-- 不同变化维度可以分别建模，避免子类数量相乘。
-- 协作者容易用测试替身替换。
-- 可以在运行时选择实现，而不需要改变对象的实际类型。
-
-组合也会增加对象和委托层次。如果行为稳定、没有替换需求，直接实现可能更清楚，不需要为了“面向接口”额外创建接口。
-
-## 8. 对象关系
-
-继承适合表达稳定的“是一个”关系，并要求子类能够遵守父类对外承诺。仅仅因为两个类有几行相同代码，不足以建立继承关系。
-
-可以从下面三个问题判断：
-
-1. **调用方能否在不区分子类的情况下使用父类型？** 如果子类需要不断抛出“不支持”异常，子类型关系可能不成立。
-2. **父类的约束是否适用于所有子类？** 子类不能削弱前置条件、破坏结果或改变父类定义的不变量。
-3. **变化来自类型差异还是可替换的协作方式？** 如果变化只是支付、计价、存储等策略，组合通常更容易替换和测试。
-
-接口、抽象类和组合可以一起使用，不是只能三选一：
-
-| 判断条件 | 接口 | 抽象类 | 组合 |
-| --- | --- | --- | --- |
-| 主要目的 | 定义可替换的能力或契约 | 共享状态、构造过程和部分实现 | 复用或替换一个协作者的行为 |
-| 类型关系 | 实现类具备这种能力 | 子类是这种对象 | 当前对象使用这个对象 |
-| 实现数量 | 一个类可实现多个接口 | 一个类只能直接继承一个类 | 可以持有多个不同协作者 |
-| 实例状态 | 接口不能保存实例状态 | 可以保存并保护共同状态 | 状态由各自对象独立维护 |
-| 运行时替换 | 替换接口实现 | 通常需要创建另一种子类对象 | 可以替换字段中的协作者 |
-| 主要代价 | 接口过细会增加间接层 | 子类与父类耦合较强 | 需要委托代码和对象装配 |
-
-实际设计中，可以用接口定义调用方需要的能力；只有部分实现确实共享状态和稳定流程时，才提供可选的抽象基类；业务对象则通过组合使用接口。
-
-组合并不天然优于继承。父类确实定义了稳定的子类型契约和公共流程时，继承仍然合适。关键是根据对象关系和变化方向建模，而不是为了消除重复代码建立层次。
-
-## 9. 常见问题
-
-### 9.1 有 getter 和 setter 就算完成封装吗
-
-不一定。无条件暴露每个字段的 getter 和 setter，只是把字段访问改成了方法调用。如果 setter 允许对象进入非法状态，或者 getter 泄漏内部可变集合，对象边界仍然没有建立。
-
-### 9.2 `private`、`static` 和 `final` 方法能否重写
-
-- `private` 方法不会被子类继承，因此不存在重写。
-- `static` 方法根据类或引用的编译时类型选择，子类同名方法属于隐藏。
-- `final` 方法会被继承，但编译器禁止子类重写。
-
-只有满足重写规则的实例方法才会参与动态绑定。使用 `@Override` 可以让编译器检查方法是否真的重写了父类型中的方法。
-
-### 9.3 多态是否一定需要继承类
-
-不需要。接口实现同样建立子类型关系，也是 Java 中更常见的多态入口。调用方依赖接口，不同实现类在运行时提供具体行为。
-
-### 9.4 向下转型越多，多态设计越灵活吗
-
-通常相反。如果调用方频繁使用 `instanceof` 判断具体类型并向下转型，说明共同抽象可能缺少必要行为，或者不同对象并不适合放在同一层次。先检查行为能否放回接口或通过组合拆分，而不是继续增加类型分支。
-
-### 9.5 抽象类可以没有抽象方法吗
-
-可以。`abstract` 类不能直接实例化，但不要求一定声明抽象方法。这样做可以表示一个只允许作为基类使用的类型。不过，如果类既没有抽象行为，也没有合理的继承约束，需要重新判断它是否真的应该是抽象类。
-
-### 9.6 接口可以有字段吗
-
-可以声明字段，但这些字段隐式是 `public static final`，属于接口本身，不是每个实现对象的实例状态。可变实例状态应放在实现类或组合对象中。
-
-### 9.7 两个接口提供同名 `default` 方法会怎样
-
-如果一个类继承了两个互不相关接口的同签名 `default` 方法，编译器无法自动确定使用哪一个，实现类必须重写并明确处理：
-
-```java
-interface Left {
-    default String name() {
-        return "left";
-    }
-}
-
-interface Right {
-    default String name() {
-        return "right";
-    }
-}
-
-final class Choice implements Left, Right {
-    @Override
-    public String name() {
-        return Left.super.name();
-    }
-}
-```
-
-类中已有的实例方法优先于接口 `default` 方法；更具体的子接口方法也优先于父接口方法。只有无法按这些规则确定时，才需要实现类解决冲突。
-
-### 9.8 “组合优于继承”是绝对规则吗
-
-不是。组合更适合独立变化的协作者，继承更适合稳定的子类型和公共流程。如果所有子类都能遵守父类契约，而且父类确实需要控制构造、状态和模板步骤，抽象类比重复委托更直接。判断依据是关系和变化方向，不是一句固定口号。
-
-### 9.9 构造方法可以重载或重写吗
-
-构造方法可以重载，因为同一个类可以提供多组不同参数的构造方法。构造方法不会被继承，因此不能重写。子类构造方法只是通过 `super(...)` 调用父类构造方法。
-
-### 9.10 可变参数与数组参数能否形成重载
-
-不能。`String... values` 在方法签名中按照 `String[]` 处理，下面两个声明会发生冲突：
-
-```java
-// void join(String... values) {}
-// void join(String[] values) {}
-```
-
-## 10. 面试题
-
-### 10.1 如何理解 Java 的封装、继承和多态
+### 5.1 如何理解 Java 的封装、继承和多态
 
 <!-- 面试来源：
 - 中软国际：https://www.nowcoder.com/discuss/353159488733650944
@@ -474,24 +142,22 @@ final class Choice implements Left, Right {
 
 **考察重点**
 
-- 能否说明三个概念各自解决的问题，而不是只复述定义。
-- 能否解释编译时类型、运行时类型与动态绑定的关系。
-- 是否知道继承与封装的边界，以及组合的适用场景。
+- 三个概念各自解决的问题。
+- 编译时类型、运行时类型与动态绑定的关系。
+- 继承与组合的适用条件。
 
-**相关内容**：第 1 节“封装控制状态的修改入口”、第 2 节“继承建立子类型关系”、第 3 节“多态在运行时选择重写方法”。
+**相关内容**：第 1 节“封装维护对象不变量”、第 2 节“继承与多态”。
 
 <details>
 <summary>参考回答</summary>
 
-封装把状态变化限制在对象提供的方法中，用来维护对象不变量。字段是否为 `private` 只是手段，还要避免无约束 setter 和内部可变状态泄漏。
+封装通过受控方法维护对象不变量；继承建立子类型关系，要求子类能够满足父类型契约；多态让调用方依赖父类型或接口，运行时再根据实际对象选择重写后的实例方法。
 
-继承建立子类型关系并复用父类允许继承的实现，适合父类契约稳定、所有子类都能满足该契约的情况。多态让调用方使用父类型或接口，JVM 在运行时根据实际对象选择重写后的实例方法。
-
-设计时不会为了复用几行代码直接使用继承。如果变化来自一个可替换的策略或协作者，组合通常能减少对子类层次的依赖，也更容易测试。
+继承不只是代码复用工具。变化来自可替换策略或协作者时，我会使用接口和组合；多个子类确实共享稳定状态与流程时，再考虑抽象基类。
 
 </details>
 
-### 10.2 接口和抽象类有什么区别，应该怎样选择
+### 5.2 接口和抽象类有什么区别，应该怎样选择
 
 <!-- 面试来源：
 - 中科创达：https://www.nowcoder.com/discuss/850316604708532224
@@ -503,72 +169,21 @@ final class Choice implements Left, Right {
 
 **考察重点**
 
-- 接口和抽象类分别能够声明哪些状态与方法。
-- 单继承、多接口实现对设计的影响。
-- 能否结合具体变化说明选择，而不只罗列语法差异。
+- 状态、方法和继承数量的差异。
+- 能否根据变化来源选择，而不是只罗列语法。
 
-**相关内容**：第 5 节“接口定义能力”、第 6 节“抽象类共享状态和实现”、第 8 节“对象关系”。
-
-<details>
-<summary>参考回答</summary>
-
-接口主要定义调用方可以依赖的能力，一个类可以实现多个接口。接口可以有抽象方法、默认方法、静态方法和私有辅助方法，但不能保存对象各自的实例状态。
-
-抽象类可以保存实例字段、定义构造过程并提供 `protected` 或普通方法，适合一组真正属于同一类型、需要共享状态和稳定流程的子类。由于 Java 只有单类继承，选择抽象类也会占用并绑定这条继承层次。
-
-如果只是让一个对象使用可替换的计价、存储或通知策略，我会定义一个小接口并通过组合注入实现。只有多个实现确实需要共同状态和模板流程时，再提供抽象基类。
-
-</details>
-
-### 10.3 接口的 `default` 方法解决了什么问题
-
-<!-- 面试来源：
-- 字节跳动：https://www.nowcoder.com/discuss/353159446983548928
--->
-
-**出现公司**：字节跳动
-
-**考察重点**
-
-- `default` 方法与抽象接口方法、静态方法的区别。
-- 为什么接口演进需要兼顾已有实现类。
-- 多个默认实现冲突时怎样处理。
-
-**相关内容**：第 5.1 节“接口成员”、第 9.7 节关于默认方法冲突的说明。
+**相关内容**：第 3 节“接口、抽象类与组合”。
 
 <details>
 <summary>参考回答</summary>
 
-`default` 方法允许接口在增加实例方法时提供默认实现。已有实现类不必立即实现这个新方法，因此接口可以在一定范围内兼容演进。实现类仍然可以重写默认方法。
+接口主要描述能力，一个类可以实现多个接口；抽象类可以保存实例状态、定义构造过程和共享实现，但会占用唯一的类继承关系。
 
-如果两个无继承关系的接口提供了相同签名的默认方法，实现类必须重写来消除歧义。类中已有的实例方法会优先于接口默认方法。`default` 方法适合提供小而通用的默认行为，不应被当作在接口中维护实例状态的工具。
-
-</details>
-
-### 10.4 哪些成员不会参与运行时多态
-
-<!-- 面试来源：
-- 中软国际：https://www.nowcoder.com/discuss/353159488733650944
--->
-
-**出现公司**：中软国际
-
-**考察重点**
-
-- 实例方法重写与字段隐藏、静态方法隐藏的区别。
-- `private`、`static`、`final` 对重写的影响。
-- 编译时选择与运行时动态绑定分别负责什么。
-
-**相关内容**：第 3 节“多态在运行时选择重写方法”、第 9.2 节关于方法重写的说明。
-
-<details>
-<summary>参考回答</summary>
-
-运行时多态针对可重写的实例方法。字段访问由引用的编译时类型决定；静态方法属于类，子类声明同名静态方法属于隐藏；`private` 方法不会被继承；`final` 方法不能被重写。这些成员都不会按照实际对象进行动态绑定。
+如果调用方只需要一个可替换能力，我会定义小接口并通过组合注入。只有一组真正属于同一类型的对象需要共享状态和稳定模板流程时，才使用抽象类。
 
 </details>
 
-### 10.5 重载和重写有什么区别
+### 5.3 重载和重写有什么区别
 
 <!-- 面试来源：
 - 招银网络科技：https://www.nowcoder.com/discuss/402033921599315968
@@ -580,18 +195,15 @@ final class Choice implements Left, Right {
 
 **考察重点**
 
-- 两者发生在同一个类还是继承关系中。
-- 方法签名、返回类型、访问权限和异常规则。
-- 编译阶段重载解析与运行时动态绑定的区别。
+- 参数列表与方法签名规则。
+- 编译阶段选择和运行时动态绑定的区别。
 
-**相关内容**：第 3 节“多态在运行时选择重写方法”、第 4 节“方法重载与方法分派”。
+**相关内容**：第 2.2 节“重载与重写”。
 
 <details>
 <summary>参考回答</summary>
 
-重载是同名方法使用不同参数列表，编译器根据接收者和参数的编译时类型选择一个方法签名。仅修改返回类型不能形成重载。
-
-重写发生在继承或接口实现关系中，子类为同签名的实例方法提供新实现。返回类型可以协变，访问权限不能缩小，受检异常不能扩大。调用可重写实例方法时，签名仍在编译阶段确定，JVM 再根据对象的运行时类型动态选择最终实现。
+重载是同名方法使用不同参数列表，编译器根据参数的编译时类型选择签名。重写发生在继承或接口实现关系中，子类为同签名实例方法提供新实现；调用时签名先由编译器确定，最终实现再按对象的运行时类型选择。
 
 </details>
 
@@ -599,11 +211,8 @@ final class Choice implements Left, Right {
 
 1. [dev.java：Object-Oriented Programming Concepts](https://dev.java/learn/oop/)
 2. [dev.java：Interfaces](https://dev.java/learn/interfaces/)
-3. [dev.java：Inheritance](https://dev.java/learn/inheritance/)
-4. [Java Language Specification：Classes](https://docs.oracle.com/en/java/javase/26/docs/specs/jls/jls-8.html)
-5. [Java Language Specification：Interfaces](https://docs.oracle.com/en/java/javase/26/docs/specs/jls/jls-9.html)
-6. [Java Language Specification：Method Invocation Expressions](https://docs.oracle.com/en/java/javase/26/docs/specs/jls/jls-15.html#jls-15.12)
-7. [Java Language Specification：Sealed Classes](https://docs.oracle.com/en/java/javase/26/docs/specs/jls/jls-8.html#jls-8.1.6)
-8. [Java Language Specification：Dynamic Method Lookup](https://docs.oracle.com/en/java/javase/26/docs/specs/jls/jls-15.html#jls-15.12.4.4)
+3. [Java Language Specification：Classes](https://docs.oracle.com/en/java/javase/26/docs/specs/jls/jls-8.html)
+4. [Java Language Specification：Interfaces](https://docs.oracle.com/en/java/javase/26/docs/specs/jls/jls-9.html)
+5. [Java Language Specification：Method Invocation Expressions](https://docs.oracle.com/en/java/javase/26/docs/specs/jls/jls-15.html#jls-15.12)
 
 :::

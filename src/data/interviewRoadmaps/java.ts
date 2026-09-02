@@ -5,9 +5,9 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
   eyebrow: 'R01 / Java Backend',
   title: 'Java 后端开发面试路线',
   introduction:
-    '这条路线把 Java 面试拆成 8 个阶段、40 个 Topic。顺序从语言和运行时出发，经过 Spring、数据与服务治理，最后进入架构决策。每个 Topic 都给出原理链路、掌握标准、必会问题、实践检验和 Senior 追问。',
+    '这条路线把 Java 后端面试拆成 8 个阶段、40 个 Topic。它不是完整知识清单：先用“必会”建立能够直接作答的核心框架，再根据 JD、项目经历和面试反馈补充常考与深入内容。',
   reviewHint:
-    '时间有限时先完成“高频”，再补“重点”。“扩展”不是冷知识仓库，而是岗位深度足够后才有收益的部分。',
+    '优先级决定先学什么；回答深度决定学到哪里。深度不是候选人职级。“按岗选学”只在目标岗位明确涉及，或能由自己的项目经历支撑时进入。',
   navigationTitle: 'Outline 目录',
   mobileNavigationLabel: '查看 Outline 目录',
   navigationGroups: createOutlineNavigation('R01'),
@@ -16,15 +16,15 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
       id: 'language-foundation',
       order: '01',
       title: 'Java 语言与标准库',
-      range: '初级',
+      focus: '基础必会',
       description: '先建立稳定的语言模型。框架会变化，类型、对象和异常语义不会替你一起变化。',
       topics: [
         {
           id: 'java-oop',
           title: '类型系统与对象模型',
           module: 'Java',
-          level: 'junior',
-          priority: 'high',
+          depth: 'foundation',
+          priority: 'must',
           objective: '解释对象如何协作，并根据变化方向选择组合、继承、接口或抽象类。',
           details: {
             mechanism:
@@ -37,14 +37,10 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               'Java 为什么只有值传递？传入对象后修改字段为什么仍然可见？',
               '重载、重写和动态绑定分别发生在什么阶段？',
             ],
-            practice:
-              '实现一个支持多种计价策略的订单模型，再新增一种策略，检查是否需要修改已有调用方。',
-            seniorFollowUp:
-              '当继承层次已经影响发布和测试时，如何迁移到组合模型，并保持二进制兼容？',
           },
           articles: [
             {
-              title: 'Java 类型系统',
+              title: 'Java 值传递',
               href: '/docs/basic-knowledge/java/language/types-references-value-passing',
             },
             {
@@ -61,8 +57,8 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           id: 'java-values-errors',
           title: '字符串、数值与异常',
           module: 'Java',
-          level: 'junior',
-          priority: 'high',
+          depth: 'foundation',
+          priority: 'must',
           objective: '正确处理不可变值、精度、空值和失败路径，避免把数据问题拖到生产环境。',
           details: {
             mechanism:
@@ -75,10 +71,6 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               '为什么金额不适合直接使用 double？',
               'String、StringBuilder 和 StringBuffer 的差异来自哪里？',
             ],
-            practice:
-              '实现一个金额计算与参数校验模块，覆盖精度、空值、非法状态和异常转换。',
-            seniorFollowUp:
-              '跨服务调用中，怎样设计稳定的错误契约，同时保留可诊断的内部原因？',
           },
           articles: [
             {
@@ -86,16 +78,16 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               href: '/docs/basic-knowledge/java/language/string-immutability-pool',
             },
             {
-              title: '包装类型',
-              href: '/docs/basic-knowledge/java/language/wrappers-boxing-cache',
+              title: 'Java 异常',
+              href: '/docs/basic-knowledge/java/language/exceptions-error-boundaries',
             },
             {
               title: 'BigDecimal',
               href: '/docs/basic-knowledge/java/language/bigdecimal-money',
             },
             {
-              title: 'Java 异常',
-              href: '/docs/basic-knowledge/java/language/exceptions-error-boundaries',
+              title: '包装类型',
+              href: '/docs/basic-knowledge/java/language/wrappers-boxing-cache',
             },
             {
               title: 'Optional',
@@ -107,8 +99,8 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           id: 'java-generics-reflection',
           title: '泛型、注解与反射',
           module: 'Java',
-          level: 'junior',
-          priority: 'important',
+          depth: 'mechanism',
+          priority: 'common',
           objective: '理解编译期类型约束如何落到运行时，并解释框架为何能够发现和调用用户代码。',
           details: {
             mechanism:
@@ -121,10 +113,6 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               '为什么不能直接创建 T 的实例或 new T[]？',
               'Spring 如何通过注解和反射找到 Bean 与处理方法？',
             ],
-            practice:
-              '实现一个带运行时校验注解的小型映射器，并记录反射缓存前后的调用差异。',
-            seniorFollowUp:
-              '需要降低反射成本或提高 Native Image 兼容性时，可以把哪些工作移到编译期？',
           },
           articles: [
             {
@@ -149,8 +137,8 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           id: 'java-io',
           title: 'I/O、NIO 与资源管理',
           module: 'Java',
-          level: 'junior',
-          priority: 'important',
+          depth: 'foundation',
+          priority: 'common',
           objective: '根据数据规模和阻塞模型选择 I/O API，并保证资源在失败路径上也能释放。',
           details: {
             mechanism:
@@ -163,10 +151,6 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               'BIO、NIO 和 AIO 的差异到底是线程模型还是 API 名字？',
               '零拷贝减少了哪些数据复制和上下文切换？',
             ],
-            practice:
-              '分别用流和 Channel 复制大文件，记录吞吐、内存与异常中断后的资源状态。',
-            seniorFollowUp:
-              '高并发文件服务中，怎样在吞吐、堆外内存、背压和连接公平性之间取舍？',
           },
           articles: [
             {
@@ -191,8 +175,8 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           id: 'java-functional',
           title: 'Lambda、Stream 与日期时间',
           module: 'Java',
-          level: 'junior',
-          priority: 'important',
+          depth: 'foundation',
+          priority: 'common',
           objective: '在可读性和性能边界内使用函数式 API，避免把一条数据管道写成调试盲区。',
           details: {
             mechanism:
@@ -205,10 +189,6 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               'Stream 为什么只能消费一次？惰性求值有什么作用？',
               'parallelStream 在服务端为什么可能让延迟更差？',
             ],
-            practice:
-              '把一段包含过滤、聚合和分组的循环改写为 Stream，并比较可读性与基准结果。',
-            seniorFollowUp:
-              '共享 ForkJoinPool 影响请求隔离时，怎样判断继续并行、改用独立执行器还是回到串行？',
           },
           articles: [
             {
@@ -239,15 +219,15 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
       id: 'collections-engineering',
       order: '02',
       title: '集合、算法与代码质量',
-      range: '初级 → 中级',
+      focus: '基础必会',
       description: '集合不是 API 背诵题。选择是否合理，取决于访问模式、数据规模和并发条件。',
       topics: [
         {
           id: 'java-collections',
           title: '集合框架与选型',
           module: 'Java',
-          level: 'junior',
-          priority: 'high',
+          depth: 'foundation',
+          priority: 'must',
           objective: '根据访问、顺序、去重和队列语义选择集合，并说清复杂度与内存代价。',
           details: {
             mechanism:
@@ -260,10 +240,6 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               'ArrayList 扩容时发生什么，为什么随机访问更快？',
               'HashSet 如何依赖 HashMap，同时保证元素不重复？',
             ],
-            practice:
-              '为订单去重、延迟任务和排行榜三个场景选集合，并用数据规模说明选择。',
-            seniorFollowUp:
-              '当堆占用和 GC 成为瓶颈时，集合布局、装箱和对象数量应如何进入选型？',
           },
           articles: [
             {
@@ -292,8 +268,8 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           id: 'hashmap',
           title: 'HashMap 与 LinkedHashMap',
           module: 'Java',
-          level: 'middle',
-          priority: 'high',
+          depth: 'mechanism',
+          priority: 'must',
           objective: '从哈希分布、冲突和扩容解释查询性能，并正确实现作为键的对象。',
           details: {
             mechanism:
@@ -306,10 +282,6 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               'HashMap 为什么通常使用 2 的幂作为容量？',
               'JDK 8 的扩容为什么能减少重新计算哈希？',
             ],
-            practice:
-              '实现一个基于 LinkedHashMap 的有界 LRU，并用碰撞键验证正确性。',
-            seniorFollowUp:
-              '攻击者可控制 Key 时，如何评估哈希碰撞、CPU 消耗和内存放大的风险？',
           },
           articles: [
             {
@@ -330,8 +302,8 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           id: 'concurrent-collections',
           title: '并发集合',
           module: 'Java',
-          level: 'middle',
-          priority: 'high',
+          depth: 'mechanism',
+          priority: 'common',
           objective: '根据竞争模式选择并发容器，理解弱一致迭代和复合操作的边界。',
           details: {
             mechanism:
@@ -344,10 +316,6 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               'ConcurrentHashMap 为什么不允许 null？',
               'CopyOnWriteArrayList 适合什么读写比例，代价是什么？',
             ],
-            practice:
-              '实现一个并发计数与生产消费示例，用压力测试验证丢更新和阻塞行为。',
-            seniorFollowUp:
-              '热点 Key 使并发 Map 吞吐下降时，如何通过分片、聚合或数据模型调整缓解竞争？',
           },
           articles: [
             {
@@ -376,8 +344,8 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           id: 'java-algorithms',
           title: '算法实现与复杂度',
           module: 'Algorithm',
-          level: 'junior',
-          priority: 'high',
+          depth: 'foundation',
+          priority: 'must',
           objective: '把算法复杂度、边界条件和 Java 实现细节放进同一次推理，而不是分别背答案。',
           details: {
             mechanism:
@@ -390,11 +358,8 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               '为什么相同 Big-O 的两个 Java 实现可能有明显性能差异？',
               '如何证明二分边界或动态规划状态转移没有漏解？',
             ],
-            practice:
-              '完成数组、链表、树、图和动态规划各一题，并为每题补反例与自动化测试。',
-            seniorFollowUp:
-              '数据无法完整装入内存或必须在线处理时，原算法需要怎样改写？',
           },
+          coreArticleCount: 3,
           articles: [
             {
               title: '算法复杂度',
@@ -422,8 +387,8 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           id: 'java-quality',
           title: 'API 设计、测试与代码质量',
           module: 'Engineering',
-          level: 'middle',
-          priority: 'important',
+          depth: 'foundation',
+          priority: 'optional',
           objective: '让类型、接口和测试共同约束变化，避免依靠注释维持正确性。',
           details: {
             mechanism:
@@ -436,10 +401,6 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               '什么情况下测试私有方法是在暴露设计问题？',
               '为什么高覆盖率仍然可能无法阻止严重回归？',
             ],
-            practice:
-              '为一个支付适配层编写单元、集成和契约测试，比较每层能发现的问题。',
-            seniorFollowUp:
-              '大型代码库中，怎样通过模块边界、兼容策略和测试组合控制变更成本？',
           },
           articles: [
             {
@@ -470,15 +431,15 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
       id: 'jvm-runtime',
       order: '03',
       title: 'JVM 与运行时',
-      range: '中级',
+      focus: '高频原理',
       description: 'JVM 题目的价值不在术语数量，而在于能否把代码、内存、编译和故障证据连起来。',
       topics: [
         {
           id: 'jvm-class-loading',
           title: '字节码与类加载',
           module: 'JVM',
-          level: 'middle',
-          priority: 'high',
+          depth: 'mechanism',
+          priority: 'common',
           objective: '说明源码如何变成可执行类，并判断类冲突、初始化和隔离问题出现在哪个阶段。',
           details: {
             mechanism:
@@ -491,10 +452,6 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               'ClassNotFoundException 与 NoClassDefFoundError 有什么区别？',
               'SPI 为什么常使用线程上下文类加载器？',
             ],
-            practice:
-              '编写自定义类加载器加载两个版本的同名类，观察类型身份和强制转换结果。',
-            seniorFollowUp:
-              '插件系统、应用服务器或热部署环境如何设计类隔离、共享包和卸载边界？',
           },
           articles: [
             {
@@ -523,8 +480,8 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           id: 'jvm-memory',
           title: '运行时内存与对象布局',
           module: 'JVM',
-          level: 'middle',
-          priority: 'high',
+          depth: 'mechanism',
+          priority: 'must',
           objective: '把对象、栈帧、类元数据和直接内存放回对应区域，并由此判断异常来源。',
           details: {
             mechanism:
@@ -537,15 +494,15 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               '哪些对象一定分配在堆上，这个说法为什么需要加条件？',
               '不同区域的 OOM 和 StackOverflowError 分别如何产生？',
             ],
-            practice:
-              '构造堆、元空间、直接内存和栈耗尽案例，记录异常、参数和监控差异。',
-            seniorFollowUp:
-              '容器内运行 JVM 时，堆、非堆、线程栈和 native memory 应怎样共同纳入容量预算？',
           },
           articles: [
             {
               title: 'JVM 运行时数据区域',
               href: '/docs/basic-knowledge/java/jvm/runtime-data-areas',
+            },
+            {
+              title: 'OutOfMemoryError 与 StackOverflowError',
+              href: '/docs/basic-knowledge/java/jvm/oom-stack-overflow',
             },
             {
               title: 'Java 对象布局',
@@ -559,18 +516,14 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               title: 'Java 直接内存',
               href: '/docs/basic-knowledge/java/jvm/direct-native-memory',
             },
-            {
-              title: 'OutOfMemoryError 与 StackOverflowError',
-              href: '/docs/basic-knowledge/java/jvm/oom-stack-overflow',
-            },
           ],
         },
         {
           id: 'jvm-gc',
           title: '垃圾回收与收集器',
           module: 'JVM',
-          level: 'middle',
-          priority: 'high',
+          depth: 'mechanism',
+          priority: 'must',
           objective: '从存活判断、复制与并发标记解释停顿，并根据延迟和吞吐目标选择收集器。',
           details: {
             mechanism:
@@ -583,11 +536,8 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               'Minor GC、Major GC 和 Full GC 为什么不能只按名字判断成本？',
               'G1 如何通过 Region 和 Remembered Set 回收局部区域？',
             ],
-            practice:
-              '对同一分配负载使用两种收集器，比较吞吐、P99 停顿和 CPU。',
-            seniorFollowUp:
-              '低延迟服务中，选择低停顿收集器后，还要怎样处理分配速率、堆余量和容器成本？',
           },
+          coreArticleCount: 3,
           articles: [
             {
               title: 'GC Roots',
@@ -598,12 +548,12 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               href: '/docs/basic-knowledge/java/jvm/generational-barriers-safepoints',
             },
             {
-              title: 'Serial、Parallel 与 CMS',
-              href: '/docs/basic-knowledge/java/jvm/serial-parallel-cms',
-            },
-            {
               title: 'G1',
               href: '/docs/basic-knowledge/java/jvm/g1-regions-rset-collection-set',
+            },
+            {
+              title: 'Serial、Parallel 与 CMS',
+              href: '/docs/basic-knowledge/java/jvm/serial-parallel-cms',
             },
             {
               title: '低延迟垃圾收集器',
@@ -615,8 +565,8 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           id: 'jvm-jit',
           title: 'JIT 与运行时优化',
           module: 'JVM',
-          level: 'middle',
-          priority: 'important',
+          depth: 'mechanism',
+          priority: 'optional',
           objective: '理解热点代码如何被优化，以及基准、预热和去优化为什么会改变观测结果。',
           details: {
             mechanism:
@@ -629,10 +579,6 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               'Java 是解释执行还是编译执行，为什么二选一不准确？',
               '逃逸分析可能带来哪些优化，为什么结果不能靠源码猜？',
             ],
-            practice:
-              '使用 JMH 比较两种实现，验证预热、分叉、黑洞和常量折叠的影响。',
-            seniorFollowUp:
-              '短生命周期任务更在意启动与峰值性能时，如何比较 JVM、AOT 和 Native Image？',
           },
           articles: [
             {
@@ -661,8 +607,8 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           id: 'jvm-diagnostics',
           title: 'JVM 性能诊断',
           module: 'JVM',
-          level: 'middle',
-          priority: 'high',
+          depth: 'scenario',
+          priority: 'common',
           objective: '从症状选择线程、堆、GC 或运行时证据，用排除法缩小故障范围。',
           details: {
             mechanism:
@@ -675,10 +621,6 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               'Java 进程 CPU 飙高时，怎样从系统线程定位到 Java 栈？',
               '堆使用率持续升高，如何判断是缓存增长还是内存泄漏？',
             ],
-            practice:
-              '构造 CPU 热点、死锁和对象泄漏，分别输出时间线、证据和结论。',
-            seniorFollowUp:
-              '生产环境不能长时间停顿或导出完整堆时，怎样设计低风险的证据采集方案？',
           },
           articles: [
             {
@@ -709,15 +651,15 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
       id: 'concurrency',
       order: '04',
       title: '并发与 Java 内存模型',
-      range: '中级',
+      focus: '高频原理',
       description: '并发问题来自共享状态和执行顺序。工具很多，证据最终仍要回到这两件事。',
       topics: [
         {
           id: 'java-concurrency',
           title: '线程、竞态与 JMM',
           module: 'JUC',
-          level: 'middle',
-          priority: 'high',
+          depth: 'mechanism',
+          priority: 'must',
           objective: '区分原子性、可见性和有序性，并用 happens-before 判断跨线程结果。',
           details: {
             mechanism:
@@ -730,11 +672,8 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               '可见性、原子性和有序性各自会产生什么错误？',
               'final 字段为什么拥有额外的初始化安全保证？',
             ],
-            practice:
-              '编写一个错误发布与丢更新示例，再分别用锁、volatile 和不可变对象修复。',
-            seniorFollowUp:
-              '跨线程对象生命周期复杂时，怎样用所有权、不可变性和消息传递减少共享状态？',
           },
+          coreArticleCount: 3,
           articles: [
             {
               title: '线程安全',
@@ -762,8 +701,8 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           id: 'synchronization',
           title: 'synchronized、volatile 与 CAS',
           module: 'JUC',
-          level: 'middle',
-          priority: 'high',
+          depth: 'mechanism',
+          priority: 'must',
           objective: '根据临界区和状态转换选择同步机制，而不是把 volatile 当成轻量锁。',
           details: {
             mechanism:
@@ -776,10 +715,6 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               'volatile 能否保证 i++ 的线程安全，为什么？',
               'CAS 的 ABA 问题何时影响正确性？',
             ],
-            practice:
-              '实现计数器、状态机和双重检查单例，分别证明所用同步机制足够。',
-            seniorFollowUp:
-              '竞争激烈时，无锁方案为何可能输给锁，怎样通过基准和 profile 判断？',
           },
           articles: [
             {
@@ -808,8 +743,8 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           id: 'aqs',
           title: 'Lock、AQS 与并发工具',
           module: 'JUC',
-          level: 'middle',
-          priority: 'high',
+          depth: 'mechanism',
+          priority: 'common',
           objective: '从同步状态和等待队列理解 Lock、Latch、Semaphore 与读写锁。',
           details: {
             mechanism:
@@ -822,10 +757,6 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               '公平锁为什么通常吞吐更低？',
               'CountDownLatch、CyclicBarrier 和 Semaphore 分别约束什么？',
             ],
-            practice:
-              '实现一个限并发的批处理器，并验证超时、取消、中断和许可归还。',
-            seniorFollowUp:
-              '读多写少场景中，读写锁、StampedLock、Copy-on-Write 和不可变快照应如何比较？',
           },
           articles: [
             {
@@ -854,8 +785,8 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           id: 'thread-pool',
           title: '线程池与异步编排',
           module: 'JUC',
-          level: 'middle',
-          priority: 'high',
+          depth: 'scenario',
+          priority: 'must',
           objective: '根据任务时间和资源上限配置执行器，并让过载通过队列与拒绝策略显式暴露。',
           details: {
             mechanism:
@@ -868,10 +799,6 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               '线程池大小应按 CPU 核数直接设置吗？还缺哪些变量？',
               'CompletableFuture 默认执行器会带来什么隔离问题？',
             ],
-            practice:
-              '为 CPU 与 I/O 两类任务各配置线程池，压测饱和后的延迟、队列和拒绝。',
-            seniorFollowUp:
-              '多个业务共用执行器造成互相拖累时，怎样设计舱壁、预算和动态保护？',
           },
           articles: [
             {
@@ -892,8 +819,8 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           id: 'concurrency-diagnostics',
           title: '并发故障与性能诊断',
           module: 'JUC',
-          level: 'middle',
-          priority: 'important',
+          depth: 'scenario',
+          priority: 'common',
           objective: '识别死锁、活锁、饥饿、线程泄漏和上下文切换，并用时间线证明原因。',
           details: {
             mechanism:
@@ -906,10 +833,6 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               '死锁的四个必要条件如何映射到 Java 代码？',
               '线程数很多但 CPU 不高，应该先检查什么？',
             ],
-            practice:
-              '构造死锁、线程池饥饿和 ThreadLocal 泄漏，形成一份带证据的故障报告。',
-            seniorFollowUp:
-              '偶发并发故障无法稳定复现时，如何设计低开销的事件记录与故障注入？',
           },
           articles: [
             {
@@ -936,15 +859,15 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
       id: 'spring-data-access',
       order: '05',
       title: 'Spring 与数据访问',
-      range: '初级 → 中级',
+      focus: '高频框架',
       description: '从一次请求进入容器，再沿代理、事务和持久化返回。框架原理应该落在这条链路上。',
       topics: [
         {
           id: 'spring-ioc',
           title: 'Spring IoC 与 Bean 生命周期',
           module: 'Spring',
-          level: 'junior',
-          priority: 'high',
+          depth: 'mechanism',
+          priority: 'must',
           objective: '解释对象创建为何交给容器，并判断作用域、生命周期和循环依赖问题。',
           details: {
             mechanism:
@@ -957,10 +880,6 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               'BeanFactory 与 ApplicationContext 的差异落在哪里？',
               '三级缓存能处理哪些循环依赖，为什么构造器循环依赖仍然失败？',
             ],
-            practice:
-              '实现一个最小 IoC 容器，支持定义注册、构造器注入和生命周期回调。',
-            seniorFollowUp:
-              '大型应用启动缓慢时，怎样区分扫描、Bean 创建、外部连接和初始化任务的成本？',
           },
           articles: [
             {
@@ -968,16 +887,16 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               href: '/docs/basic-knowledge/java/spring/ioc-container-purpose',
             },
             {
-              title: 'BeanDefinition',
-              href: '/docs/basic-knowledge/java/spring/beandefinition-container-startup',
+              title: 'Bean 生命周期',
+              href: '/docs/basic-knowledge/java/spring/bean-creation-lifecycle',
             },
             {
               title: '依赖注入',
               href: '/docs/basic-knowledge/java/spring/dependency-injection-selection',
             },
             {
-              title: 'Bean 生命周期',
-              href: '/docs/basic-knowledge/java/spring/bean-creation-lifecycle',
+              title: 'BeanDefinition',
+              href: '/docs/basic-knowledge/java/spring/beandefinition-container-startup',
             },
             {
               title: 'Spring 循环依赖',
@@ -989,8 +908,8 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           id: 'spring-aop',
           title: 'AOP、代理与声明式事务',
           module: 'Spring',
-          level: 'middle',
-          priority: 'high',
+          depth: 'mechanism',
+          priority: 'must',
           objective: '沿代理调用链解释切面如何生效，并识别事务、缓存和异步注解的失效边界。',
           details: {
             mechanism:
@@ -1003,10 +922,6 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               '@Transactional 为什么在 private 方法或同类自调用中常常无效？',
               'REQUIRES_NEW 与 NESTED 的资源和回滚语义有什么差异？',
             ],
-            practice:
-              '构造自调用、异常捕获和多数据源场景，用日志证明事务边界。',
-            seniorFollowUp:
-              '事务边界跨越远程调用或消息发布时，为什么继续扩大本地事务通常不是答案？',
           },
           articles: [
             {
@@ -1014,12 +929,12 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               href: '/docs/basic-knowledge/java/spring/aop-pointcut-interceptor-chain',
             },
             {
-              title: 'JDK 动态代理与 CGLIB',
-              href: '/docs/basic-knowledge/java/spring/jdk-proxy-cglib',
-            },
-            {
               title: 'Spring 事务',
               href: '/docs/basic-knowledge/java/spring/declarative-transaction-execution',
+            },
+            {
+              title: 'JDK 动态代理与 CGLIB',
+              href: '/docs/basic-knowledge/java/spring/jdk-proxy-cglib',
             },
           ],
         },
@@ -1027,8 +942,8 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           id: 'spring-request',
           title: 'Spring MVC 与 Web 请求链',
           module: 'Spring',
-          level: 'middle',
-          priority: 'high',
+          depth: 'mechanism',
+          priority: 'must',
           objective: '跟踪请求从连接进入 Controller 再到响应的路径，并放置正确的校验、鉴权和异常处理。',
           details: {
             mechanism:
@@ -1041,10 +956,6 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               '一次 HTTP 请求如何到达 Controller？',
               '过滤器与拦截器的执行范围和依赖能力有什么区别？',
             ],
-            practice:
-              '实现请求 ID、认证、参数校验和统一异常处理，并验证执行顺序。',
-            seniorFollowUp:
-              '同步 Servlet、异步 Servlet、WebFlux 和虚拟线程应按哪些工作负载变量选择？',
           },
           articles: [
             {
@@ -1073,8 +984,8 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           id: 'spring-boot',
           title: 'Spring Boot 自动配置与启动',
           module: 'Spring Boot',
-          level: 'middle',
-          priority: 'high',
+          depth: 'mechanism',
+          priority: 'must',
           objective: '解释自动配置为何生效、如何覆盖，并在启动失败时定位条件与配置来源。',
           details: {
             mechanism:
@@ -1087,10 +998,6 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               '@SpringBootApplication 实际组合了什么？',
               '自定义 starter 应如何提供自动配置并避免覆盖用户 Bean？',
             ],
-            practice:
-              '编写一个带配置属性和条件 Bean 的 starter，并验证覆盖规则。',
-            seniorFollowUp:
-              '数百个模块共用 starter 时，如何治理版本兼容、默认值变化和灰度升级？',
           },
           articles: [
             {
@@ -1119,8 +1026,8 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           id: 'data-access',
           title: 'MyBatis、JPA 与连接池',
           module: 'Data Access',
-          level: 'middle',
-          priority: 'high',
+          depth: 'mechanism',
+          priority: 'must',
           objective: '根据查询复杂度和领域模型选择持久化方式，并控制连接、事务和批处理成本。',
           details: {
             mechanism:
@@ -1133,15 +1040,15 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               'MyBatis 的一级、二级缓存分别绑定什么范围？',
               'JPA 的脏检查和懒加载为何容易制造意外 SQL？',
             ],
-            practice:
-              '实现同一组分页、批量写入和关联查询，记录 SQL 数量与连接占用。',
-            seniorFollowUp:
-              '数据库成为瓶颈时，怎样判断问题属于 SQL、连接、事务边界还是数据模型？',
           },
           articles: [
             {
               title: 'MyBatis',
               href: '/docs/basic-knowledge/java/data-access/mybatis-mapping-executor-plugins',
+            },
+            {
+              title: '数据库连接池',
+              href: '/docs/basic-knowledge/java/data-access/connection-pool-capacity-timeout-leaks',
             },
             {
               title: 'JPA',
@@ -1150,10 +1057,6 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
             {
               title: 'N+1 查询',
               href: '/docs/basic-knowledge/java/data-access/n-plus-one-fetch-strategies',
-            },
-            {
-              title: '数据库连接池',
-              href: '/docs/basic-knowledge/java/data-access/connection-pool-capacity-timeout-leaks',
             },
             {
               title: '批处理与分页',
@@ -1167,15 +1070,15 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
       id: 'service-data',
       order: '06',
       title: '网络、数据与服务端生态',
-      range: '中级',
+      focus: '后端基础',
       description: '服务端组件不是购物清单。每增加一个组件，都要说明它解决的问题和新增的故障模式。',
       topics: [
         {
           id: 'network',
           title: 'TCP、HTTP、RPC 与 Netty',
           module: 'Network',
-          level: 'middle',
-          priority: 'high',
+          depth: 'mechanism',
+          priority: 'must',
           objective: '从连接、协议和线程模型解释一次远程调用的延迟、超时与资源占用。',
           details: {
             mechanism:
@@ -1188,14 +1091,9 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               'HTTP/1.1、HTTP/2 和 HTTP/3 的并发与队头阻塞差异是什么？',
               'RPC 超时应从客户端、代理还是服务端开始计算？',
             ],
-            practice:
-              '实现一个带长度字段的 Netty 协议，加入超时、背压和连接指标。',
-            seniorFollowUp:
-              '跨机房调用中，如何共同设计连接池、超时预算、重试和限流，避免故障放大？',
           },
+          coreArticleCount: 3,
           articles: [
-            {title: '网络模型', href: '/docs/basic-knowledge/network/network-models'},
-            {title: 'TCP 与 UDP', href: '/docs/basic-knowledge/network/tcp_udp'},
             {title: 'TCP 连接', href: '/docs/basic-knowledge/network/tcp_handshake'},
             {
               title: 'HTTP',
@@ -1205,14 +1103,16 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               title: 'RPC',
               href: '/docs/basic-knowledge/network/rpc-serialization-netty-event-loop',
             },
+            {title: '网络模型', href: '/docs/basic-knowledge/network/network-models'},
+            {title: 'TCP 与 UDP', href: '/docs/basic-knowledge/network/tcp_udp'},
           ],
         },
         {
           id: 'database-index',
           title: 'MySQL 索引与查询优化',
           module: 'Database',
-          level: 'middle',
-          priority: 'high',
+          depth: 'mechanism',
+          priority: 'must',
           objective: '理解索引如何缩小扫描范围，并用执行计划验证联合索引与查询改写。',
           details: {
             mechanism:
@@ -1225,10 +1125,6 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               '为什么 InnoDB 使用 B+ 树，联合索引为什么遵循最左前缀？',
               'SQL 使用了索引，为什么仍然可能很慢？',
             ],
-            practice:
-              '为一组真实查询设计索引，对比执行计划、扫描行数、写入成本和数据分布变化。',
-            seniorFollowUp:
-              '索引继续增加但收益下降时，如何比较查询改写、反范式、缓存和数据拆分？',
           },
           articles: [
             {title: '数据库索引', href: '/docs/basic-knowledge/database/indices/'},
@@ -1248,8 +1144,8 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           id: 'database-transaction',
           title: '事务、锁与 MVCC',
           module: 'Database',
-          level: 'middle',
-          priority: 'high',
+          depth: 'mechanism',
+          priority: 'must',
           objective: '解释隔离级别如何约束并发读写，以及锁与多版本分别处理什么问题。',
           details: {
             mechanism:
@@ -1262,11 +1158,8 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               '可重复读如何避免大部分幻读，当前读为何仍需要间隙锁？',
               '死锁发生后，数据库为什么选择回滚一个事务而不是一直等待？',
             ],
-            practice:
-              '用两个会话复现脏读、不可重复读、锁等待和死锁，记录每一步可见结果。',
-            seniorFollowUp:
-              '热点行和长事务持续制造冲突时，如何从业务不变量重划事务边界？',
           },
+          coreArticleCount: 3,
           articles: [
             {
               title: '数据库事务',
@@ -1294,8 +1187,8 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           id: 'cache-mq',
           title: 'Redis 与缓存一致性',
           module: 'Middleware',
-          level: 'middle',
-          priority: 'high',
+          depth: 'scenario',
+          priority: 'must',
           objective: '根据访问模式决定是否缓存，并处理失效、热点和数据库一致性代价。',
           details: {
             mechanism:
@@ -1308,11 +1201,8 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               '先更新数据库再删缓存，仍然可能出现什么竞态？',
               'Redis 分布式锁需要哪些条件，为什么它不能自动保证业务正确？',
             ],
-            practice:
-              '实现 cache-aside，加入并发更新、失败注入和命中率监控，观察不一致窗口。',
-            seniorFollowUp:
-              '强一致要求提高后，应继续修补缓存协议，还是改变读取路径和数据所有权？',
           },
+          coreArticleCount: 3,
           articles: [
             {title: 'Redis', href: '/docs/basic-knowledge/nosql/redis/'},
             {
@@ -1337,8 +1227,8 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           id: 'messaging-search',
           title: '消息、搜索与后台任务',
           module: 'Middleware',
-          level: 'middle',
-          priority: 'important',
+          depth: 'scenario',
+          priority: 'common',
           objective: '用异步和专用索引处理慢任务与复杂查询，同时保证消息和索引可以恢复。',
           details: {
             mechanism:
@@ -1351,10 +1241,6 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               '如何做到消息不丢失，为什么“恰好一次”常需要限定范围？',
               '数据库与搜索索引不一致时，如何发现并重建？',
             ],
-            practice:
-              '实现带 Outbox、幂等消费和死信处理的索引更新链路，再注入重复与乱序。',
-            seniorFollowUp:
-              '积压持续增长时，怎样区分容量不足、分区倾斜、下游变慢和毒消息？',
           },
           articles: [
             {
@@ -1385,15 +1271,15 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
       id: 'microservices-production',
       order: '07',
       title: '微服务与生产治理',
-      range: '中级 → 高级',
+      focus: '按 JD 选学',
       description: '微服务把进程内问题变成网络和组织问题。拆分容易，稳定地运行才是主要成本。',
       topics: [
         {
           id: 'service-governance',
           title: '注册、配置、网关与流量治理',
           module: 'Microservices',
-          level: 'middle',
-          priority: 'high',
+          depth: 'scenario',
+          priority: 'common',
           objective: '理解服务实例如何被发现、配置和路由，并控制变更传播范围。',
           details: {
             mechanism:
@@ -1406,10 +1292,6 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               '注册中心短暂不可用时，客户端应该清空还是保留本地实例表？',
               '配置动态生效为何需要版本、校验和回滚？',
             ],
-            practice:
-              '为两个服务实现发现、灰度路由和配置变更，注入注册中心断连与错误配置。',
-            seniorFollowUp:
-              '治理控制面故障时，数据面怎样降级，哪些策略必须本地保留？',
           },
           articles: [
             {
@@ -1438,8 +1320,8 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           id: 'resilience',
           title: '超时、重试、限流与熔断',
           module: 'Reliability',
-          level: 'middle',
-          priority: 'high',
+          depth: 'scenario',
+          priority: 'common',
           objective: '为失败设置明确预算，避免局部变慢经由重试和排队扩散为系统故障。',
           details: {
             mechanism:
@@ -1452,10 +1334,6 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               '为什么重试会形成流量放大，哪些请求不适合自动重试？',
               '熔断、降级和限流分别处理什么问题？',
             ],
-            practice:
-              '构造一个逐步变慢的下游，比较无保护与加入预算后的吞吐、错误率和队列。',
-            seniorFollowUp:
-              '多层代理和服务都在重试时，如何建立统一预算并阻止乘法放大？',
           },
           articles: [
             {
@@ -1484,8 +1362,8 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           id: 'distributed-transaction',
           title: '分布式事务与数据一致性',
           module: 'Distributed Data',
-          level: 'senior',
-          priority: 'important',
+          depth: 'scenario',
+          priority: 'common',
           objective: '从业务不变量选择强一致、补偿或事件驱动方案，并设计可恢复的中间状态。',
           details: {
             mechanism:
@@ -1498,10 +1376,6 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               '本地事务提交后消息发送失败，如何保证最终发布？',
               '补偿操作为什么不等于数据库回滚？',
             ],
-            practice:
-              '实现订单、库存、支付的 Saga 或 Outbox 流程，注入每个步骤的超时与重复。',
-            seniorFollowUp:
-              '补偿本身失败或业务不可逆时，怎样定义终态、风险敞口和人工处置？',
           },
           articles: [
             {
@@ -1530,8 +1404,8 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           id: 'security',
           title: '认证、授权与应用安全',
           module: 'Security',
-          level: 'middle',
-          priority: 'important',
+          depth: 'scenario',
+          priority: 'common',
           objective: '把身份、权限、输入和密钥放到明确边界，避免依赖网络位置作为信任证明。',
           details: {
             mechanism:
@@ -1544,10 +1418,6 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               'JWT 如何撤销，短期令牌与刷新令牌分别承担什么？',
               '水平越权为何通常无法只靠网关鉴权解决？',
             ],
-            practice:
-              '为多租户 API 实现认证、资源级授权、审计和密钥轮换测试。',
-            seniorFollowUp:
-              '权限模型随业务扩张后，怎样治理策略复杂度、审计证据和跨服务一致性？',
           },
           articles: [
             {
@@ -1576,8 +1446,8 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           id: 'delivery',
           title: '可观测性、交付与联合排障',
           module: 'Production',
-          level: 'middle',
-          priority: 'high',
+          depth: 'scenario',
+          priority: 'common',
           objective: '让代码经过可重复构建进入环境，并用日志、指标和追踪解释生产故障。',
           details: {
             mechanism:
@@ -1590,10 +1460,6 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               'P99 延迟升高但 CPU 正常，排查路径如何展开？',
               '日志、指标和 Trace 各自能证明什么，不能证明什么？',
             ],
-            practice:
-              '为服务建立构建流水线和三类遥测，再注入慢 SQL、线程池饱和和 GC 压力。',
-            seniorFollowUp:
-              '遥测成本开始影响业务预算时，怎样按风险设计采样、保留和高基数限制？',
           },
           articles: [
             {title: 'Git', href: '/docs/tools-and-frameworks/git/'},
@@ -1618,18 +1484,18 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
       ],
     },
     {
-      id: 'architecture-leadership',
+      id: 'architecture-interview',
       order: '08',
-      title: '架构、演进与技术领导力',
-      range: '高级',
-      description: '高级面试不再奖励组件数量。真正需要说明的是约束、取舍、迁移路径和失败后的恢复。',
+      title: '系统设计与架构面试',
+      focus: '架构岗位选学',
+      description: '只在目标岗位明确考察系统设计或架构经验时进入。回答重点是约束、取舍、迁移路径和故障恢复。',
       topics: [
         {
           id: 'system-design',
           title: '系统设计方法与容量',
           module: 'System Design',
-          level: 'senior',
-          priority: 'high',
+          depth: 'scenario',
+          priority: 'optional',
           objective: '从需求、规模和可靠性目标出发，完成容量估算、边界拆分与关键选型。',
           details: {
             mechanism:
@@ -1642,10 +1508,6 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               '如何设计短链接、秒杀、Feed 或文件服务，并验证瓶颈？',
               '估算不精确时，容量计算还有什么价值？',
             ],
-            practice:
-              '在 45 分钟内完成一个系统设计，明确假设、数量级、单点故障和演进步骤。',
-            seniorFollowUp:
-              '需求和流量预测都不稳定时，怎样控制前期投入，又保留可演进的关键边界？',
           },
           articles: [
             {
@@ -1674,8 +1536,8 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           id: 'distributed-system',
           title: '复制、一致性与共识',
           module: 'Distributed Systems',
-          level: 'senior',
-          priority: 'important',
+          depth: 'scenario',
+          priority: 'optional',
           objective: '在节点故障和网络分区条件下，判断复制、一致性与可用性的真实边界。',
           details: {
             mechanism:
@@ -1688,10 +1550,6 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               'CAP 中的一致性与数据库 ACID 的 C 为什么不是一回事？',
               '网络分区时，为什么系统无法同时保证线性一致和所有请求成功？',
             ],
-            practice:
-              '为一个三副本 KV 服务画出故障时间线，分析主节点失联、延迟和脑裂。',
-            seniorFollowUp:
-              '跨地域部署中，如何按数据类型选择同步复制、异步复制和冲突合并？',
           },
           articles: [
             {
@@ -1720,8 +1578,8 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           id: 'domain-architecture',
           title: 'DDD、模块化单体与微服务',
           module: 'Architecture',
-          level: 'senior',
-          priority: 'important',
+          depth: 'scenario',
+          priority: 'optional',
           objective: '按业务变化和团队边界划分模块，避免用部署单元替代领域分析。',
           details: {
             mechanism:
@@ -1734,10 +1592,6 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               '服务应该按数据库表、技术层还是业务能力拆分？',
               '聚合边界过大或过小分别会制造什么问题？',
             ],
-            practice:
-              '为订单域建立上下文图，从模块化单体开始设计可回退的拆分步骤。',
-            seniorFollowUp:
-              '组织边界与领域边界长期错位时，架构调整应先改代码、接口还是团队责任？',
           },
           articles: [
             {
@@ -1766,8 +1620,8 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           id: 'availability-cost',
           title: '高可用、容灾、多租户与成本',
           module: 'Architecture',
-          level: 'senior',
-          priority: 'important',
+          depth: 'scenario',
+          priority: 'optional',
           objective: '把可靠性目标、恢复能力、租户隔离和资源成本放进同一份架构预算。',
           details: {
             mechanism:
@@ -1780,10 +1634,6 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               '高可用与容灾有什么区别，双机部署为什么不自动满足容灾？',
               '多租户系统如何避免噪声邻居和数据越权？',
             ],
-            practice:
-              '为一个多租户服务制定 SLO、容量、备份恢复和年度演练方案，并估算成本。',
-            seniorFollowUp:
-              '可靠性目标提高一个数量级时，如何判断用户收益是否值得新增成本和组织负担？',
           },
           articles: [
             {
@@ -1809,27 +1659,23 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           ],
         },
         {
-          id: 'technical-leadership',
-          title: '架构演进与技术领导力',
-          module: 'Leadership',
-          level: 'senior',
-          priority: 'important',
-          objective: '用证据推动跨团队技术决策，并为迁移、失败和长期维护保留责任边界。',
+          id: 'architecture-evolution',
+          title: '架构演进与技术决策',
+          module: 'Architecture',
+          depth: 'scenario',
+          priority: 'optional',
+          objective: '在架构面试中说明技术决策、迁移步骤、回滚条件和失败后的修正方式。',
           details: {
             mechanism:
-              '架构演进依赖可分阶段交付的迁移路径，技术决策则需要明确约束、备选方案和验证方式。影响力来自降低共同风险，不来自把个人偏好写进规范。',
+              '架构演进依赖可分阶段交付的迁移路径，技术决策需要明确约束、备选方案、验证指标和退出条件。面试回答应使用自己经历过的证据，不把管理方法当作通用结论。',
             outcomes: [
               '能编写 ADR、迁移计划、风险清单和回滚标准。',
               '能复盘故障与失败方案，并把改进项连接到责任和验证。',
             ],
             interviewQuestions: [
-              '如何推动一个没有汇报关系的团队接受接口迁移？',
+              '旧系统迁移如何拆分阶段，并为每一阶段保留回滚路径？',
               '短期交付与长期技术债冲突时，怎样形成可执行决策？',
             ],
-            practice:
-              '选择一个旧系统改造案例，写出约束、备选方案、阶段计划、指标和退出条件。',
-            seniorFollowUp:
-              '方向被证明错误后，如何停止投入、保护团队信任，并把结论沉淀为下一次决策的输入？',
           },
           articles: [
             {

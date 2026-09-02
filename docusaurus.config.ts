@@ -22,7 +22,7 @@ const stylePreviewPlugins: NonNullable<Config["plugins"]> =
 
 const config: Config = {
   title: "Coding 101",
-  tagline: "Have fun with Coding and Studying!",
+  tagline: "技术求职准备，从岗位路线到面试回答",
   // favicon: "img/favicon.ico",
   favicon: "img/logo-duck.svg",
 
@@ -93,7 +93,7 @@ const config: Config = {
     navbar: {
       title: "Coding 101",
       logo: {
-        alt: "My Site Logo",
+        alt: "Coding 101",
         src: "img/logo-duck.svg",
       },
       items: [
@@ -145,38 +145,25 @@ const config: Config = {
       style: "dark",
       links: [
         {
-          title: "Docs",
+          title: "开始准备",
           items: [
             {
-              label: "Tutorial",
+              label: "使用指南",
               to: "/docs/intro",
             },
-          ],
-        },
-        {
-          title: "Community",
-          items: [
             {
-              label: "Stack Overflow",
-              href: "https://stackoverflow.com/questions/tagged/docusaurus",
+              label: "岗位面试路线",
+              to: "/interview-roadmaps/",
             },
             {
-              label: "Discord",
-              href: "https://discordapp.com/invite/docusaurus",
-            },
-            {
-              label: "Twitter",
-              href: "https://twitter.com/docusaurus",
+              label: "Java 后端路线",
+              to: "/java-interview-roadmap/",
             },
           ],
         },
         {
-          title: "More",
+          title: "项目",
           items: [
-            {
-              label: "Blog",
-              to: "/blog",
-            },
             {
               label: "GitHub",
               href: "https://github.com/loveorange/coding101",
@@ -184,7 +171,7 @@ const config: Config = {
           ],
         },
       ],
-      copyright: `Copyright © ${new Date().getFullYear()} Coding 101, Inc. Built with Docusaurus.`,
+      copyright: `Copyright © ${new Date().getFullYear()} Coding 101.`,
     },
     prism: {
       theme: prismThemes.github,

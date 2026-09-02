@@ -64,25 +64,21 @@ export default function InterviewRoadmaps(): JSX.Element {
             <strong>14 条岗位路线</strong>
           </div>
           <p>
-            共享基础只维护一份，岗位路线负责语言、框架、平台和工作场景。全栈不是第十五条岗位路线，而是前端与一条后端路线的组合；复制内容不会让知识变多，只会让维护次数变多。
+            先选择目标岗位，再按“必会、常考、按岗选学”完成复习。路线会说明每个主题需要回答到基础、原理还是场景分析，不要求把目录中的所有内容都读完。
           </p>
         </header>
 
         <OutlineGroup
           title="共享基础"
-          description="算法、计算机基础、数据系统、工程、系统设计、安全、项目表达与 AI 基础。不同岗位要求的深度不同，知识本身不重复维护。"
+          description="算法、计算机基础、数据系统、工程、系统设计、安全、项目表达与 AI 基础。进入岗位路线后，只学习与目标岗位相关的部分。"
           entries={sharedFoundationOutlines}
         />
         <OutlineGroup
           title="岗位路线"
-          description="保留 Python 与 C++，移动端拆为通用跨平台、Android、iOS，大模型方向拆为训练推理、RAG、Agent。"
+          description="每条路线都给出第一轮最小复习集合，再根据 JD、简历项目和面试反馈补充深入内容。"
           entries={roleOutlines}
         />
 
-        <aside className={styles.sourceNote}>
-          完整审批稿作为原始 Markdown 资源保留在仓库的{' '}
-          <code>plans/interview-roadmap-outline-proposal.md</code>。
-        </aside>
       </main>
     </Layout>
   );

@@ -13,7 +13,7 @@ export const sharedFoundationOutlines: OutlineCatalogEntry[] = [
   {id: 'F04', label: '软件工程、测试与交付'},
   {id: 'F05', label: '系统设计与分布式系统'},
   {id: 'F06', label: '安全、隐私与供应链安全'},
-  {id: 'F07', label: '简历、项目与技术领导力'},
+  {id: 'F07', label: '简历、项目与面试表达'},
   {id: 'F08', label: '数学、机器学习与深度学习'},
 ];
 

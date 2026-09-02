@@ -2,46 +2,34 @@
 sidebar_position: 1
 ---
 
-# Tutorial Intro
+# Coding 101
 
-Let's discover **Docusaurus in less than 5 minutes**.
+Coding 101 是一个面向技术岗位求职者的就业准备网站。它帮助你从目标岗位出发，确定要复习什么、先复习什么，以及每个知识点需要回答到什么程度。
 
-## Getting Started
+## 适合哪些读者
 
-Get started by **creating a new site**.
+- 正在准备校招、社招或转岗面试，希望快速建立复习范围。
+- 已经有技术基础，但面对大量资料时无法判断优先级。
+- 需要检查技术答案、算法、项目介绍和系统设计是否达到面试要求。
 
-Or **try Docusaurus immediately** with **[docusaurus.new](https://docusaurus.new)**.
+本站不提供职业晋升或通用管理成长路线。资深岗位涉及的架构和协作内容，只会作为对应岗位的面试准备出现。
 
-### What you'll need
+## 提供什么
 
-- [Node.js](https://nodejs.org/en/download/) version 18.0 or above:
-  - When installing Node.js, you are recommended to check all checkboxes related to dependencies.
+- **岗位路线**：按照目标岗位组织知识顺序、复习优先级和回答深度。
+- **技术文章**：先给核心结论，再解释支撑结论所需的机制和边界。
+- **面试自测**：用代表性问题检查你能否独立解释，而不是继续堆积阅读量。
+- **算法与项目准备**：补齐现场编码、简历项目和系统设计环节。
 
-## Generate a new site
+## 如何使用
 
-Generate a new Docusaurus site using the **classic template**.
+1. 从[岗位面试路线](/interview-roadmaps/)选择目标方向。当前可以直接使用 [Java 后端开发面试路线](/java-interview-roadmap/)。
+2. 第一轮只完成“必会”和每个 Topic 的“核心阅读”。
+3. 能脱离文章回答自测问题后，再进入“常考”。
+4. “按岗选学”和深入阅读只根据 JD、简历项目与面试反馈补充。
 
-The classic template will automatically be added to your project after you run the command:
+:::tip 判断是否已经掌握
 
-```bash
-npm init docusaurus@latest my-website classic
-```
+合上文章后，能够用一两分钟说明定义、关键机制和使用边界，并能回答一个追问，就可以先进入下一个 Topic。复习的目标不是记住页面上的全部细节。
 
-You can type this command into Command Prompt, Powershell, Terminal, or any other integrated terminal of your code editor.
-
-The command also installs all necessary dependencies you need to run Docusaurus.
-
-## Start your site
-
-Run the development server:
-
-```bash
-cd my-website
-npm run start
-```
-
-The `cd` command changes the directory you're working with. In order to work with your newly created Docusaurus site, you'll need to navigate the terminal there.
-
-The `npm run start` command builds your website locally and serves it through a development server, ready for you to view at http://localhost:3000/.
-
-Open `docs/intro.md` (this page) and edit some lines: the site **reloads automatically** and displays your changes.
+:::

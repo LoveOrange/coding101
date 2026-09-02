@@ -10,26 +10,26 @@ type FeatureItem = {
 
 const FeatureList: FeatureItem[] = [
   {
-    title: "知识网络",
+    title: "按岗位准备",
     Svg: require("@site/static/img/undraw_docusaurus_tree.svg").default,
     description: (
-      <>梳理各个知识点间的关系，形成体系化的知识结构，方便查阅和学习</>
+      <>从目标岗位进入复习路线，直接看到考察范围、前后顺序和需要掌握的深度。</>
     ),
   },
   {
-    title: "易于理解",
+    title: "先抓核心",
     Svg: require("@site/static/img/undraw_docusaurus_mountain.svg").default,
     description: (
       <>
-        用尽可能易于理解的表达方式，拆解软件领域知识点，降低理解的成本，减少学习的负担
+        先完成必会内容，再补常考知识；只有与 JD 或项目相关时才进入深入主题。
       </>
     ),
   },
   {
-    title: "面向 Offer",
+    title: "用问题自测",
     Svg: require("@site/static/img/undraw_docusaurus_react.svg").default,
     description: (
-      <>针对求职中常见的形式和问题，整理常见的考点和解题思路，面向 Offer 学习</>
+      <>通过代表性面试题检查能否解释原理、比较方案并把项目经历讲清楚。</>
     ),
   },
 ];
