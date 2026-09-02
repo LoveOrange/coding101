@@ -2,11 +2,12 @@
 sidebar_position: 8
 ---
 
-# 声明式事务
+# Spring 事务
 
-`@Transactional` 为一次经过 Spring 代理的方法调用附加事务属性。代理通过事务拦截器选择事务管理器、取得资源、执行目标方法，并根据返回或异常结果提交或回滚。
+Spring 事务通过事务管理器和拦截器把一次方法调用映射为物理事务。理解它需要同时说明声明式执行过程、传播方式、隔离级别和回滚规则，以及这些配置与数据库事务之间的边界。
 
 ## 1. 注解只是事务属性来源
+
 
 ```java
 @Transactional
@@ -22,6 +23,7 @@ public Order create(CreateOrder command) {
 注解可以声明传播方式、隔离级别、超时、只读提示和回滚规则；真正能否支持这些属性，由所选 `TransactionManager` 和底层资源决定。
 
 ## 2. 拦截器围绕目标方法管理事务
+
 
 简化路径如下：
 
@@ -40,11 +42,13 @@ public Order create(CreateOrder command) {
 
 ## 3. JDBC 连接通常绑定到当前事务上下文
 
+
 事务开始后，Spring 获取连接并把它与当前执行上下文关联。同一事务内通过 Spring 数据访问基础设施取得连接时，会复用这项资源；事务结束后提交或回滚并归还连接池。
 
 业务代码自行调用独立 DataSource 或开启新线程，可能取得另一条连接，不会自动加入原事务。代理事务通常沿当前线程传播，线程切换必须使用框架明确支持的响应式或上下文协议。
 
 ## 4. 提交也可能失败
+
 
 目标方法正常返回，只说明业务代码没有抛出异常。数据库约束、连接故障或全局事务协调可能在 flush 或 commit 阶段才失败。
 
@@ -52,11 +56,13 @@ public Order create(CreateOrder command) {
 
 ## 5. 事务边界应围绕业务不变量
 
+
 事务过小会把需要共同提交的状态拆开；事务过大则长时间占用连接和锁，并把远程调用延迟放进数据库事务。
 
 典型边界是一个应用服务方法：读取完成决策所需状态，执行数据库更新，然后提交。慢网络调用尽量移出本地事务，并通过可恢复的状态连接前后步骤。
 
 ## 6. 编程式事务适合动态边界
+
 
 需要精确控制重试范围、在循环中逐批提交或避免代理自调用时，可以使用 `TransactionTemplate`：
 
@@ -66,19 +72,94 @@ return transactionTemplate.execute(status -> repository.save(order));
 
 它让边界直接出现在代码中，代价是业务逻辑显式依赖 Spring 事务 API。声明式与编程式应按边界清晰度选择。
 
-## 7. 常见问题
+## 7. 传播、隔离与回滚 {#transaction-settings}
 
-### 7.1 在事务方法中调用远程接口，远程操作会一起回滚吗
+传播方式决定方法进入时如何处理已有事务，隔离级别决定数据库并发读写可见性，回滚规则决定异常如何影响事务结果。这三组配置作用在不同层面，需要分别验证。
+
+### 7.1 `REQUIRED` 复用同一个物理事务
+
+
+默认 `PROPAGATION_REQUIRED` 在已有事务时加入，没有时新建。内外方法各自是逻辑事务范围，但共享同一个物理事务。
+
+内层把事务标记为 rollback-only 后，即使外层捕获异常并正常返回，最终提交也会回滚，并可能抛出 `UnexpectedRollbackException`。这避免调用方误以为提交成功。
+
+### 7.2 `REQUIRES_NEW` 使用独立物理事务
+
+
+已有事务被挂起，内层取得自己的连接和事务：
+
+```java
+@Transactional(propagation = Propagation.REQUIRES_NEW)
+public void recordAudit(AuditEvent event) {}
+```
+
+内层可以独立提交或回滚，并在完成后释放自己的锁。外层仍持有资源，内层还要再向连接池申请连接；并发线程都这样做时，池大小不足会互相等待。
+
+它适合确实要求独立提交的审计等场景，但也意味着外层失败时内层结果仍保留。
+
+### 7.3 `NESTED` 依赖同一事务的保存点
+
+
+`PROPAGATION_NESTED` 通常在一个物理 JDBC 事务中建立 savepoint。内层失败可以回滚到保存点，让外层决定是否继续；外层最终回滚时，内层变化仍会一起回滚。
+
+它不等同于独立事务，并非所有事务管理器都支持。Spring 文档明确指出典型支持来自 JDBC `DataSourceTransactionManager`。
+
+### 7.4 其他传播方式表达调用前置条件
+
+
+| 传播方式 | 已有事务 | 没有事务 |
+| --- | --- | --- |
+| `SUPPORTS` | 加入 | 非事务执行 |
+| `MANDATORY` | 加入 | 抛异常 |
+| `NOT_SUPPORTED` | 挂起 | 非事务执行 |
+| `NEVER` | 抛异常 | 非事务执行 |
+
+是否真的能挂起取决于事务管理器。大多数业务方法使用少数几种传播方式，复杂组合需要集成测试证明。
+
+### 7.5 隔离级别由新物理事务落实
+
+
+`Isolation.DEFAULT` 使用数据库默认值。指定隔离级别通常只在当前调用实际创建新事务时生效；加入已有事务时，内层不能凭注解把同一物理事务换成另一隔离级别。
+
+可以启用严格验证让不兼容声明尽早失败。隔离级别解决数据库并发可见性，不处理远程服务或缓存的一致性。
+
+### 7.6 默认回滚 RuntimeException 与 Error
+
+
+声明式事务默认对未处理的 `RuntimeException` 和 `Error` 回滚，对普通受检异常不自动回滚。业务需要时显式声明：
+
+```java
+@Transactional(rollbackFor = PaymentException.class)
+```
+
+更重要的是让异常离开代理调用。目标方法内部捕获后返回成功，拦截器看不到失败；如果需要回滚，应继续抛出或显式设置 rollback-only，并让调用方知道结果。
+
+## 8. 常见问题
+
+### 8.1 在事务方法中调用远程接口，远程操作会一起回滚吗
+
 
 不会。本地事务管理器只管理它负责的资源。远程请求已成功后，本地回滚不会撤销对方状态。
 
-### 7.2 `readOnly = true` 能保证方法不写数据库吗
+### 8.2 `readOnly = true` 能保证方法不写数据库吗
+
 
 通常是优化提示和框架配置，具体数据库与驱动支持不同，不能当成业务安全边界。写权限仍需数据库授权和代码约束。
 
-## 8. 面试题
+### 8.3 内层 `REQUIRES_NEW` 提交后，外层回滚会撤销它吗
 
-### 8.1 `@Transactional` 从调用到提交经历什么
+
+不会，它们是独立物理事务。业务必须接受内层记录单独存在，或设计后续补偿。
+
+### 8.4 `NESTED` 内层回滚以后外层一定能提交吗
+
+
+不一定。外层可以继续，但还要看异常处理、数据库错误是否使整个事务失效，以及事务管理器是否支持保存点。
+
+## 9. 面试题
+
+### 9.1 `@Transactional` 从调用到提交经历什么
+
 
 <!-- 面试来源：
 - 美团：https://www.nowcoder.com/discuss/624946712360001536
@@ -104,9 +185,39 @@ return transactionTemplate.execute(status -> repository.save(order));
 
 </details>
 
+### 9.2 `REQUIRES_NEW` 与 `NESTED` 有什么区别
+
+
+<!-- 面试来源：
+- 阿里云：https://www.nowcoder.com/discuss/592128174994075648
+- 美团：https://www.nowcoder.com/discuss/353158567966482432
+-->
+
+**出现公司**：阿里云、美团
+
+**考察重点**
+
+- 独立物理事务与同事务保存点。
+- 外层回滚的影响。
+- 连接池与事务管理器支持。
+
+**相关内容**：第 7.2 节“`REQUIRES_NEW` 使用独立物理事务”和第 7.3 节“`NESTED` 依赖同一事务的保存点”。
+
+<details>
+<summary>参考回答</summary>
+
+REQUIRES_NEW 挂起外层并创建独立物理事务，内层提交后不受外层回滚影响，但会额外占用连接。NESTED 通常在同一 JDBC 事务中建立 savepoint，内层可以局部回滚，外层最终回滚仍会撤销全部变化。
+
+两者还受 TransactionManager 能力限制。REQUIRES_NEW 要评估连接池耗尽，NESTED 要确认保存点支持，不能只按注解名称选择。
+
+</details>
+
 :::note 参考资料
 
 1. [Spring Framework：Declarative Transaction Management](https://docs.spring.io/spring-framework/reference/data-access/transaction/declarative.html)
 2. [Spring Framework：Transaction Abstraction](https://docs.spring.io/spring-framework/reference/data-access/transaction/strategies.html)
+3. [Spring Framework：Transaction Propagation](https://docs.spring.io/spring-framework/reference/data-access/transaction/declarative/tx-propagation.html)
+4. [Spring Framework：Rolling Back a Declarative Transaction](https://docs.spring.io/spring-framework/reference/data-access/transaction/declarative/rolling-back.html)
+5. [Spring API：`@Transactional`](https://docs.spring.io/spring-framework/docs/current/javadoc-api/org/springframework/transaction/annotation/Transactional.html)
 
 :::

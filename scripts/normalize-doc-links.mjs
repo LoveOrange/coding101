@@ -1,0 +1,156 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import process from 'node:process';
+import {unified} from 'unified';
+import remarkParse from 'remark-parse';
+import {visit} from 'unist-util-visit';
+
+const siteDir = process.cwd();
+const docsDir = path.join(siteDir, 'docs');
+const shouldWrite = process.argv.includes('--write');
+const shouldCheck = process.argv.includes('--check') || !shouldWrite;
+
+function listMarkdownFiles(directory) {
+  return fs.readdirSync(directory, {withFileTypes: true}).flatMap((entry) => {
+    const entryPath = path.join(directory, entry.name);
+    if (entry.isDirectory()) {
+      return listMarkdownFiles(entryPath);
+    }
+    return /\.mdx?$/.test(entry.name) ? [entryPath] : [];
+  });
+}
+
+function splitUrl(url) {
+  const suffixIndex = url.search(/[?#]/);
+  if (suffixIndex === -1) {
+    return {pathname: url, suffix: ''};
+  }
+  return {
+    pathname: url.slice(0, suffixIndex),
+    suffix: url.slice(suffixIndex),
+  };
+}
+
+function resolveDocsUrl(url) {
+  const {pathname, suffix} = splitUrl(url);
+  if (pathname !== '/docs' && !pathname.startsWith('/docs/')) {
+    return undefined;
+  }
+
+  const route = decodeURI(pathname.replace(/^\/docs\/?/, '')).replace(/\/$/, '');
+  const routePath = path.join(docsDir, route);
+  const candidates = [
+    `${routePath}.mdx`,
+    `${routePath}.md`,
+    path.join(routePath, 'index.mdx'),
+    path.join(routePath, 'index.md'),
+  ].filter(fs.existsSync);
+
+  if (candidates.length !== 1) {
+    throw new Error(
+      `${url} should resolve to exactly one docs source file, found ${candidates.length}`,
+    );
+  }
+
+  return {targetFile: candidates[0], suffix};
+}
+
+function toRelativeDocsUrl(sourceFile, targetFile, suffix) {
+  let relativePath = path
+    .relative(path.dirname(sourceFile), targetFile)
+    .split(path.sep)
+    .map((segment) => encodeURIComponent(segment))
+    .join('/');
+
+  if (!relativePath.startsWith('.')) {
+    relativePath = `./${relativePath}`;
+  }
+  return `${relativePath}${suffix}`;
+}
+
+function locateLinkUrl(source, node, file) {
+  const startOffset = node.position?.start.offset;
+  const endOffset = node.position?.end.offset;
+  if (startOffset === undefined || endOffset === undefined) {
+    throw new Error(`Missing source position for a link in ${file}`);
+  }
+
+  const linkSource = source.slice(startOffset, endOffset);
+  const destinationStart = linkSource.search(/\]\(\s*<?/);
+  if (destinationStart === -1) {
+    throw new Error(`Cannot locate Markdown link destination in ${file}: ${linkSource}`);
+  }
+
+  const localUrlStart = linkSource.indexOf(node.url, destinationStart);
+  if (localUrlStart === -1) {
+    throw new Error(`Cannot locate ${node.url} in ${file}: ${linkSource}`);
+  }
+
+  return {
+    start: startOffset + localUrlStart,
+    end: startOffset + localUrlStart + node.url.length,
+  };
+}
+
+let changedFiles = 0;
+let changedLinks = 0;
+const remaining = [];
+
+for (const file of listMarkdownFiles(docsDir)) {
+  const source = fs.readFileSync(file, 'utf8');
+  const processor = unified().use(remarkParse);
+  const tree = processor.parse(source);
+  const replacements = [];
+
+  visit(tree, 'link', (node) => {
+    const resolved = resolveDocsUrl(node.url);
+    if (!resolved) {
+      return;
+    }
+
+    const replacement = toRelativeDocsUrl(
+      file,
+      resolved.targetFile,
+      resolved.suffix,
+    );
+    const location = locateLinkUrl(source, node, file);
+    replacements.push({...location, replacement, original: node.url});
+  });
+
+  if (replacements.length === 0) {
+    continue;
+  }
+
+  if (!shouldWrite) {
+    remaining.push(
+      ...replacements.map(({original}) =>
+        `${path.relative(siteDir, file)}: ${original}`,
+      ),
+    );
+    continue;
+  }
+
+  let updated = source;
+  for (const replacement of replacements.sort((a, b) => b.start - a.start)) {
+    updated =
+      updated.slice(0, replacement.start) +
+      replacement.replacement +
+      updated.slice(replacement.end);
+  }
+
+  if (updated !== source) {
+    fs.writeFileSync(file, updated);
+    changedFiles += 1;
+    changedLinks += replacements.length;
+  }
+}
+
+if (shouldWrite) {
+  console.log(`Updated ${changedLinks} links in ${changedFiles} files.`);
+}
+
+if (shouldCheck && remaining.length > 0) {
+  console.error('Use relative source-file links instead of /docs URLs:');
+  console.error(remaining.join('\n'));
+  process.exitCode = 1;
+}

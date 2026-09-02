@@ -6,6 +6,12 @@ sidebar_position: 1
 
 文件、Socket 和压缩数据的底层输入输出都是字节。字符流在字节与 Unicode 文本之间增加编码转换，缓冲则把多次小读写合并成较大的数据搬运。选择 API 前先确定数据是不是文本。
 
+:::note 资源关闭
+
+流应由创建或明确接管所有权的一方关闭，并优先使用 try-with-resources。逆序关闭、受抑制异常和资源所有权见 [Java 异常：try-with-resources 与资源关闭](../language/exceptions-error-boundaries.mdx#try-with-resources)。
+
+:::
+
 ## 1. 字节流处理原始数据
 
 `InputStream` 和 `OutputStream` 是阻塞式字节流的基础抽象。图片、压缩包、加密数据和未知格式文件都应按字节处理：

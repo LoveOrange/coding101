@@ -1,0 +1,35 @@
+---
+sidebar_position: 0
+---
+
+# JVM
+
+JVM 内容包括字节码、类加载、运行时内存、垃圾回收、JIT 优化与生产诊断。建议先理解运行时结构，再学习优化和排障。
+
+## 内容
+
+- [Java 字节码](./source-to-bytecode.mdx)
+- [类加载](./class-loading-stages.mdx)
+- [双亲委派模型](./parent-delegation.mdx)
+- [类加载器](./classloaders-spi-isolation.mdx)
+- [类加载故障](./class-initialization-conflicts.mdx)
+- [JVM 运行时数据区域](./runtime-data-areas.mdx)
+- [Java 对象布局](./object-creation-layout.mdx)
+- [压缩指针与对象对齐](./compressed-pointers-alignment.mdx)
+- [Java 直接内存](./direct-native-memory.mdx)
+- [OutOfMemoryError 与 StackOverflowError](./oom-stack-overflow.mdx)
+- [GC Roots](./gc-roots-reachability.mdx)
+- [分代回收](./generational-barriers-safepoints.mdx)
+- [Serial、Parallel 与 CMS](./serial-parallel-cms.mdx)
+- [G1](./g1-regions-rset-collection-set.mdx)
+- [低延迟垃圾收集器](./zgc-shenandoah-low-latency.mdx)
+- [分层编译](./interpreter-tiered-compilation.mdx)
+- [方法内联与去优化](./inlining-deoptimization.mdx)
+- [逃逸分析与标量替换](./escape-analysis-scalar-replacement.mdx)
+- [JMH](./jmh-correct-benchmarks.mdx)
+- [Java 启动优化](./aot-cds-native-image.mdx)
+- [JVM 诊断](./diagnostic-tools-evidence.mdx)
+- [CPU 使用率](./cpu-high-diagnosis.mdx)
+- [线程转储](./thread-dumps-deadlocks-contention.mdx)
+- [堆转储](./heap-dumps-memory-leaks.mdx)
+- [GC 停顿分析](./gc-logs-jfr-pauses.mdx)

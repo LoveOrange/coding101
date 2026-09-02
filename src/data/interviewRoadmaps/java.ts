@@ -174,10 +174,6 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               href: '/docs/basic-knowledge/java/io/byte-character-buffered-streams',
             },
             {
-              title: 'try-with-resources',
-              href: '/docs/basic-knowledge/java/io/try-with-resources-close-semantics',
-            },
-            {
               title: 'Java NIO',
               href: '/docs/basic-knowledge/java/io/buffer-channel-selector',
             },
@@ -319,14 +315,6 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
             {
               title: 'HashMap',
               href: '/docs/basic-knowledge/java/collections/hashmap-structure-lookup-path',
-            },
-            {
-              title: 'HashMap 树化',
-              href: '/docs/basic-knowledge/java/collections/hashmap-collisions-treeification',
-            },
-            {
-              title: 'HashMap 扩容',
-              href: '/docs/basic-knowledge/java/collections/hashmap-capacity-load-factor-resize',
             },
             {
               title: '对象相等性',
@@ -887,16 +875,8 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
           },
           articles: [
             {
-              title: 'ThreadPoolExecutor',
+              title: 'Java 线程池',
               href: '/docs/basic-knowledge/java/concurrency/threadpoolexecutor-execution-path',
-            },
-            {
-              title: '线程池过载保护',
-              href: '/docs/basic-knowledge/java/concurrency/queues-rejection-overload',
-            },
-            {
-              title: '线程池容量',
-              href: '/docs/basic-knowledge/java/concurrency/thread-pool-sizing-validation',
             },
             {
               title: 'CompletableFuture',
@@ -939,10 +919,6 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
             {
               title: '线程转储',
               href: '/docs/basic-knowledge/java/jvm/thread-dumps-deadlocks-contention',
-            },
-            {
-              title: '线程池饱和',
-              href: '/docs/basic-knowledge/java/concurrency/thread-pool-saturation-backlog',
             },
             {
               title: 'ThreadLocal',
@@ -1042,16 +1018,8 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               href: '/docs/basic-knowledge/java/spring/jdk-proxy-cglib',
             },
             {
-              title: '声明式事务',
-              href: '/docs/basic-knowledge/java/spring/declarative-transaction-execution',
-            },
-            {
               title: 'Spring 事务',
-              href: '/docs/basic-knowledge/java/spring/transaction-propagation-isolation-rollback',
-            },
-            {
-              title: 'Spring 代理失效',
-              href: '/docs/basic-knowledge/java/spring/transaction-cache-async-failures',
+              href: '/docs/basic-knowledge/java/spring/declarative-transaction-execution',
             },
           ],
         },
