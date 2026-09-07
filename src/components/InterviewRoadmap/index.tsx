@@ -1,5 +1,6 @@
 import React, {useMemo, useRef, useState} from 'react';
 import Link from '@docusaurus/Link';
+import useBrokenLinks from '@docusaurus/useBrokenLinks';
 
 import styles from './styles.module.css';
 
@@ -162,6 +163,9 @@ export default function InterviewRoadmap({
     () => roadmap.phases.flatMap((phase) => phase.topics),
     [roadmap.phases],
   );
+  const brokenLinks = useBrokenLinks();
+  roadmap.phases.forEach((phase) => brokenLinks.collectAnchor(phase.id));
+  topics.forEach((topic) => brokenLinks.collectAnchor(topic.id));
   const mustTopics = topics.filter((topic) => topic.priority === 'must');
   const firstRoundArticleCount = mustTopics.reduce(
     (count, topic) => count + getCoreArticleCount(topic),

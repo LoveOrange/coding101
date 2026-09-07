@@ -1,62 +1,40 @@
-import clsx from "clsx";
-import Heading from "@theme/Heading";
-import styles from "./styles.module.css";
+import styles from './styles.module.css';
 
-type FeatureItem = {
-  title: string;
-  Svg: React.ComponentType<React.ComponentProps<"svg">>;
-  description: JSX.Element;
-};
-
-const FeatureList: FeatureItem[] = [
+const steps = [
   {
-    title: "按岗位准备",
-    Svg: require("@site/static/img/undraw_docusaurus_tree.svg").default,
-    description: (
-      <>从目标岗位进入复习路线，直接看到考察范围、前后顺序和需要掌握的深度。</>
-    ),
+    title: '按岗位确定范围',
+    description: '从目标岗位进入路线，明确复习顺序，以及每个主题需要回答到什么深度。',
   },
   {
-    title: "先抓核心",
-    Svg: require("@site/static/img/undraw_docusaurus_mountain.svg").default,
-    description: (
-      <>
-        先完成必会内容，再补常考知识；只有与 JD 或项目相关时才进入深入主题。
-      </>
-    ),
+    title: '先完成核心阅读',
+    description: '第一轮聚焦必会内容。掌握核心后，再根据 JD 和项目经历补充常考与选学主题。',
   },
   {
-    title: "用问题自测",
-    Svg: require("@site/static/img/undraw_docusaurus_react.svg").default,
-    description: (
-      <>通过代表性面试题检查能否解释原理、比较方案并把项目经历讲清楚。</>
-    ),
+    title: '用问题检查理解',
+    description: '合上文章，尝试解释原理、比较方案。根据自测结果，决定继续深入还是进入下一项。',
   },
 ];
 
-function Feature({ title, Svg, description }: FeatureItem) {
-  return (
-    <div className={clsx("col col--4")}>
-      <div className="text--center">
-        <Svg className={styles.featureSvg} role="img" />
-      </div>
-      <div className="text--center padding-horiz--md">
-        <Heading as="h3">{title}</Heading>
-        <p>{description}</p>
-      </div>
-    </div>
-  );
-}
-
 export default function HomepageFeatures(): JSX.Element {
   return (
-    <section className={styles.features}>
-      <div className="container">
-        <div className="row">
-          {FeatureList.map((props, idx) => (
-            <Feature key={idx} {...props} />
+    <section className={styles.section} aria-labelledby="review-method-title">
+      <div className={styles.inner}>
+        <h2 id="review-method-title" className={styles.heading}>
+          如何使用 Coding 101
+        </h2>
+        <ol className={styles.steps}>
+          {steps.map((step, index) => (
+            <li key={step.title}>
+              <span className={styles.number} aria-hidden="true">
+                {String(index + 1).padStart(2, '0')}
+              </span>
+              <div>
+                <h3>{step.title}</h3>
+                <p>{step.description}</p>
+              </div>
+            </li>
           ))}
-        </div>
+        </ol>
       </div>
     </section>
   );

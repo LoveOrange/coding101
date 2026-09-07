@@ -23,7 +23,6 @@ const stylePreviewPlugins: NonNullable<Config["plugins"]> =
 const config: Config = {
   title: "Coding 101",
   tagline: "技术求职准备，从岗位路线到面试回答",
-  // favicon: "img/favicon.ico",
   favicon: "img/logo-duck.svg",
 
   // Set the production url of your site here
@@ -88,8 +87,7 @@ const config: Config = {
   themes: ["@docusaurus/theme-mermaid"],
 
   themeConfig: {
-    // Replace with your project's social card
-    image: "img/docusaurus-social-card.jpg",
+    image: "img/coding101-social-card.png",
     navbar: {
       title: "Coding 101",
       logo: {
@@ -98,10 +96,10 @@ const config: Config = {
       },
       items: [
         {
-          type: "docSidebar",
-          sidebarId: "leetcodeSidebar",
+          to: "/interview-roadmaps/",
+          activeBaseRegex: "(interview-roadmaps|java-interview-roadmap)",
           position: "left",
-          label: "LeetCode",
+          label: "岗位路线",
         },
         {
           type: "docSidebar",
@@ -111,29 +109,27 @@ const config: Config = {
         },
         {
           type: "docSidebar",
+          sidebarId: "leetcodeSidebar",
+          position: "left",
+          label: "算法练习",
+        },
+        {
+          type: "docSidebar",
           sidebarId: "systemDesignSidebar",
           position: "left",
           label: "系统设计",
         },
         {
-          type: "docSidebar",
-          sidebarId: "toolsAndFrameworksSidebar",
+          type: "dropdown",
+          label: "更多",
           position: "left",
-          label: "工具与框架",
+          items: [
+            { to: "/docs/tools-and-frameworks/git/", label: "工具与框架" },
+            { to: "/docs/interview/", label: "面试准备" },
+            { to: "/docs/chatgpt-guide/", label: "ChatGPT 简明指南" },
+            { to: "/blog", label: "Blog" },
+          ],
         },
-        {
-          type: "docSidebar",
-          sidebarId: "interviewSidebar",
-          position: "left",
-          label: "面试准备",
-        },
-        {
-          type: "docSidebar",
-          sidebarId: "chatgptBeginSidebar",
-          position: "right",
-          label: "ChatGPT 简明指南",
-        },
-        { to: "/blog", label: "Blog", position: "right" },
         {
           href: "https://github.com/loveorange/coding101",
           label: "GitHub",
@@ -142,7 +138,7 @@ const config: Config = {
       ],
     },
     footer: {
-      style: "dark",
+      style: "light",
       links: [
         {
           title: "开始准备",
@@ -159,6 +155,14 @@ const config: Config = {
               label: "Java 后端路线",
               to: "/java-interview-roadmap/",
             },
+          ],
+        },
+        {
+          title: "复习资料",
+          items: [
+            { label: "基础知识", to: "/docs/basic-knowledge/" },
+            { label: "算法练习", to: "/docs/leetcode/re-leetcode/" },
+            { label: "系统设计", to: "/docs/system-design/" },
           ],
         },
         {

@@ -1,28 +1,354 @@
-/**
- * CSS files with the .module.css suffix will be treated as CSS modules
- * and scoped locally.
- */
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+.home {
+  background: var(--ifm-background-color);
+}
 
-.heroBanner {
-  padding: 4rem 0;
-  text-align: center;
-  position: relative;
+.hero {
+  border-bottom: 1px solid var(--c101-border);
+  background: var(--c101-background-soft);
+}
+
+.heroInner {
+  width: min(1160px, calc(100% - 4rem));
+  margin: 0 auto;
+  padding: 5.5rem 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+  align-items: center;
+  gap: clamp(2rem, 5vw, 5rem);
+}
+
+.eyebrow {
+  margin: 0 0 1.3rem;
+  color: var(--ifm-color-primary);
+  font-size: 0.75rem;
+  font-weight: 650;
+  letter-spacing: 0.1em;
+}
+
+.heroCopy {
+  min-width: 0;
+}
+
+.title {
+  margin: 0 0 1.5rem;
+  color: var(--c101-heading);
+  font-size: clamp(2.35rem, 4vw, 3.3rem);
+  font-weight: 750;
+  line-height: 1.35;
+  letter-spacing: -0.045em;
+}
+
+.title span {
+  display: block;
+  color: var(--ifm-color-primary);
+}
+
+.description {
+  max-width: 31rem;
+  margin-bottom: 2rem;
+  color: var(--c101-text-muted);
+  font-size: 1rem;
+  line-height: 1.95;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1rem 1.5rem;
+}
+
+.actions :global(.button) {
+  display: inline-flex;
+  align-items: center;
+  gap: 1rem;
+  font-size: 0.9rem;
+}
+
+.secondaryLink {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--c101-heading);
+  padding: 0.6rem 0;
+}
+
+.heroNote {
+  margin: 1.25rem 0 0;
+  color: var(--c101-text-muted);
+  font-size: 0.8rem;
+}
+
+.heroNote a {
+  margin-left: 0.2rem;
+  text-underline-offset: 4px;
+}
+
+.arrow {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+}
+
+.arrow g {
+  fill: currentColor;
+}
+
+.roadmap {
+  padding: 1.65rem 1.75rem 0;
+  background: var(--ifm-background-surface-color);
+  border: 1px solid var(--c101-border);
+  border-radius: 12px;
+  box-shadow: var(--c101-shadow);
   overflow: hidden;
 }
 
-@media screen and (max-width: 996px) {
-  .heroBanner {
-    padding: 2rem;
+.roadmapTopline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 1.35rem;
+  font-size: 0.74rem;
+  color: var(--c101-text-muted);
+}
+
+.roundLabel {
+  padding: 0.3rem 0.6rem;
+  border-radius: 4px;
+  color: var(--ifm-color-primary);
+  background: var(--c101-accent-soft);
+  font-weight: 600;
+}
+
+.roadmap h2 {
+  margin: 0 0 0.6rem;
+  color: var(--c101-heading);
+  font-size: clamp(1.15rem, 1.8vw, 1.4rem);
+  line-height: 1.5;
+  letter-spacing: -0.025em;
+}
+
+.roadmapDescription {
+  margin: 0 0 1.25rem;
+  color: var(--c101-text-muted);
+  font-size: 0.8rem;
+  line-height: 1.8;
+}
+
+.topicList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.topicList li {
+  border-top: 1px solid var(--c101-border);
+}
+
+.topicList a {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  padding: 1.05rem 0;
+  color: var(--c101-heading);
+  font-size: 0.85rem;
+}
+
+.topicNumber {
+  color: var(--c101-text-muted);
+  font: 0.72rem var(--ifm-font-family-monospace);
+}
+
+.topicTitle {
+  flex: 1;
+}
+
+.topicList .arrow {
+  width: 12px;
+  height: 12px;
+  color: var(--c101-text-muted);
+}
+
+.topicList a:hover {
+  color: var(--ifm-color-primary);
+  text-decoration: none;
+}
+
+.roadmapFooter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin: 0 -1.75rem;
+  padding: 1rem 1.75rem;
+  background: var(--c101-accent-soft);
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.roadmapFooter:hover {
+  text-decoration: none;
+  background: var(--ifm-menu-color-background-active);
+}
+
+.directory {
+  width: min(1160px, calc(100% - 4rem));
+  margin: 0 auto;
+  padding: 4.5rem 0 5rem;
+}
+
+.sectionHeading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1.5rem;
+  margin-bottom: 1.75rem;
+}
+
+.sectionHeading .eyebrow {
+  margin-bottom: 0.55rem;
+}
+
+.sectionHeading h2 {
+  margin: 0;
+  font-size: 1.65rem;
+  letter-spacing: -0.035em;
+}
+
+.sectionHeading > p {
+  margin: 0;
+  color: var(--c101-text-muted);
+  font-size: 0.85rem;
+}
+
+.subjectGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border: 1px solid var(--c101-border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.subject {
+  position: relative;
+  padding: 1.65rem 1.5rem;
+  color: var(--c101-heading);
+  background: var(--ifm-background-surface-color);
+  transition: background 160ms ease;
+}
+
+.subject + .subject {
+  border-left: 1px solid var(--c101-border);
+}
+
+.subjectLabel {
+  display: block;
+  color: var(--c101-text-muted);
+  font: 0.65rem var(--ifm-font-family-monospace);
+  letter-spacing: 0.05em;
+  margin-bottom: 1.5rem;
+}
+
+.subject h3 {
+  font-size: 1.05rem;
+  margin: 0 0 0.6rem;
+}
+
+.subject p {
+  color: var(--c101-text-muted);
+  font-size: 0.8rem;
+  line-height: 1.8;
+  margin: 0 0 1.5rem;
+}
+
+.subject > .arrow {
+  color: var(--ifm-color-primary);
+}
+
+.subject:hover {
+  background: var(--c101-background-soft);
+  text-decoration: none;
+}
+
+@media (max-width: 996px) {
+  .heroInner {
+    padding: 3.5rem 0;
+    gap: 2rem;
+  }
+
+  .title {
+    font-size: 2.35rem;
+  }
+
+  .roadmap {
+    padding: 1.3rem 1.3rem 0;
+  }
+
+  .roadmapFooter {
+    margin: 0 -1.3rem;
+    padding: 1rem 1.3rem;
+  }
+
+  .subjectGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .subject:nth-child(3) {
+    border-left: 0;
+  }
+
+  .subject:nth-child(n + 3) {
+    border-top: 1px solid var(--c101-border);
   }
 }
 
-.buttons {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-wrap: wrap;
-  gap: 0.75rem;
+@media (max-width: 760px) {
+  .heroInner,
+  .directory {
+    width: calc(100% - 2.5rem);
+  }
+
+  .heroInner {
+    grid-template-columns: 1fr;
+    padding: 3rem 0;
+    gap: 2.5rem;
+  }
+
+  .title {
+    font-size: clamp(2rem, 6.9vw, 2.8rem);
+  }
+
+  .description {
+    max-width: none;
+    font-size: 0.95rem;
+  }
+
+  .directory {
+    padding: 3rem 0;
+  }
+
+  .sectionHeading {
+    display: block;
+  }
+
+  .sectionHeading > p {
+    margin-top: 0.75rem;
+  }
+
+  .subject {
+    padding: 1.25rem;
+  }
+}
+
+@media (max-width: 400px) {
+  .actions {
+    gap: 0.65rem 1.25rem;
+  }
+
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .subject {
+    transition: none;
+  }
 }
