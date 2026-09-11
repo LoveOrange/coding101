@@ -1,0 +1,117 @@
+---
+sidebar_position: 7
+tags: [interview-preparation]
+---
+
+# 面经考点与来源
+
+本页从牛客、力扣的候选人公开复盘中归纳 Java 后端准备时值得练习的问题，帮助你从考点回到原理、编码与项目材料。采集日期：2026-09-11。
+
+## 1. 样本范围
+
+共整理 **40 个公司面试流程，覆盖 17 家公司**。同一候选人在同一公司的多轮合并；一篇个人长帖明确记录多家公司时，分别记录对应流程，因此不等于 40 位候选人或 40 篇独立文章。
+
+其中 38 个流程直接读到原帖正文，2 个历史流程的正文来自搜索服务返回的原帖内容，直接页面暂未返回正文，详见下表标记。另有 1 条材料尚未核验，不计入以上数量。企业题库、付费汇编和招聘宣传不作为独立面经。
+
+<div className="campus-resource-table" tabIndex={0} role="region" aria-label="面经资料表格，可横向滚动">
+
+| 时间范围 | 流程数 | 使用边界 |
+| --- | --- | --- |
+| 面试或发布日期在最近 18 个月 | 7 | 区分面试日期和发布日期，后者不能证明实际面试时间 |
+| 历史材料 | 17 | 补充题型，不能代表当前校招季要求 |
+| 年份尚未确认 | 16 | 保留考点线索，不参与近期趋势判断 |
+
+</div>
+
+这些是人工选择的公开样本，包含校招与实习，部分类型不明；不能据此估计全市场题目频率、录用标准或面试命中率。目前近期材料占比较低，**不将此表称为 2027 校招高频排名**。目标岗位的实际要求优先看[2027 校招岗位与投递](./campus-2027/index.mdx)。
+
+## 2. 考点与复习入口
+
+以下问题按相近概念和推理过程归纳，并非逐字摘录。每行来源支持该组中的部分考点，不意味着每家公司都问过整组问题。进入题目后先独立作答，再展开参考回答；需要补原理时使用题目下的“相关内容”。
+
+<div className="campus-resource-table" tabIndex={0} role="region" aria-label="面经资料表格，可横向滚动">
+
+| 考点 | 代表问题与练习方向 | 回查资料 | 样本出处 |
+| --- | --- | --- | --- |
+| 对象与相等性 | equals 与 hashCode 为什么必须配合？包装类型比较有哪些边界？ | [题目与原理](./questions.mdx#java-oop) | [I16](https://www.nowcoder.com/discuss/878687099648565248)、[I17](https://www.nowcoder.com/discuss/864646969501704192)、[I37](https://www.nowcoder.com/discuss/801106458455629824) |
+| 集合选择 | 数组、链表和哈希表分别适合什么操作？如何选择有序集合？ | [题目与原理](./questions.mdx#java-collections) | [I12](https://www.nowcoder.com/discuss/353157678383964160)、[I17](https://www.nowcoder.com/discuss/864646969501704192)、[I36](https://www.nowcoder.com/discuss/814856294694678528) |
+| HashMap | 不同线程修改不同 key 是否安全？自定义 key 应满足什么约束？ | [题目与原理](./questions.mdx#hashmap) | [I01](https://www.nowcoder.com/discuss/919630488380141568)、[I08](https://www.nowcoder.com/discuss/353159366805233664)、[I13](https://ac.nowcoder.com/discuss/787481)、[I27](https://leetcode.cn/discuss/post/3156530/shu-qi-shi-xi-mian-jing-by-wen-170-qjzn/) |
+| 并发集合 | 如何实现线程安全的 LRU？复合操作怎样保证原子性？ | [题目与原理](./questions.mdx#concurrent-collections) | [I20](https://www.nowcoder.com/feed/main/detail/f53e59489ee24bba9f24df14b1c81051)、[I32](https://leetcode.cn/discuss/post/3565958/-/comments/2845635/)、[I40](https://www.nowcoder.com/discuss/353156461347938304) |
+| 线程与同步 | synchronized 与 volatile 分别保证什么？怎样让多个线程交替输出？ | [题目与原理](./questions.mdx#synchronization) | [I02](https://www.nowcoder.com/discuss/920033557844688896)、[I08](https://www.nowcoder.com/discuss/353159366805233664)、[I36](https://www.nowcoder.com/discuss/814856294694678528)、[I37](https://www.nowcoder.com/discuss/801106458455629824) |
+| 线程池 | 任务提交后怎样执行或拒绝？线程数量如何结合任务约束选择？ | [题目与原理](./questions.mdx#thread-pool) | [I01](https://www.nowcoder.com/discuss/919630488380141568)、[I03](https://www.nowcoder.com/discuss/919948330229071872)、[I04](https://www.nowcoder.com/feed/main/detail/b18f8fa5192249009855921fa568421a)、[I11](https://www.nowcoder.com/discuss/683947269040697344) |
+| 并发问题排查 | ThreadLocal 为什么可能泄漏？等待多个任务完成时怎样处理失败？ | [题目与原理](./questions.mdx#java-concurrency) | [I19](https://www.nowcoder.com/discuss/863921212827672576)、[I21](https://leetcode.cn/discuss/post/Akwta3/)、[I38](https://www.nowcoder.com/discuss/800822936729894912) |
+| JVM 与内存 | 如何排查 OOM、Full GC 或堆外内存增长？先收集什么证据？ | [题目与原理](./questions.mdx#jvm-memory) | [I03](https://www.nowcoder.com/discuss/919948330229071872)、[I19](https://www.nowcoder.com/discuss/863921212827672576)、[I35](https://www.nowcoder.com/discuss/841426756815814656) |
+| 垃圾回收 | 对象如何判断可回收？停顿、吞吐和低延迟收集器怎样取舍？ | [题目与原理](./questions.mdx#jvm-gc) | [I01](https://www.nowcoder.com/discuss/919630488380141568)、[I34](https://leetcode.cn/circle/discuss/KaipEJ/) |
+| 进程与 I/O | 进程和线程如何通信？虚拟内存、零拷贝和多路复用解决什么问题？ | [题目与原理](./questions.mdx#operating-system-foundations) | [I05](https://www.nowcoder.com/feed/main/detail/6e4bd17e2fa84e98b315a9113e211687)、[I13](https://ac.nowcoder.com/discuss/787481)、[I14](https://leetcode.cn/discuss/post/JlrHm3/)、[I41](https://www.nowcoder.com/discuss/353155693442179072) |
+| Spring 容器 | Bean 怎样创建和初始化？条件装配何时生效？ | [题目与原理](./questions.mdx#spring-ioc) | [I08](https://www.nowcoder.com/discuss/353159366805233664)、[I10](https://www.nowcoder.com/discuss/353158533594161152)、[I33](https://leetcode.cn/circle/discuss/KaipEJ/) |
+| 请求与数据访问 | HTTP 请求怎样进入 Spring MVC？代理和 MyBatis 在哪里起作用？ | [题目与原理](./questions.mdx#spring-request) | [I22](https://leetcode.cn/discuss/post/OHlVef/)、[I37](https://www.nowcoder.com/discuss/801106458455629824) |
+| SQL | 怎样查询同时选了两门课的学生？连接、聚合和排名如何处理重复与空值？ | [题目与原理](./questions.mdx#sql-foundations) | [I12](https://www.nowcoder.com/discuss/353157678383964160)、[I37](https://www.nowcoder.com/discuss/801106458455629824)、[I38](https://www.nowcoder.com/discuss/800822936729894912) |
+| 索引与查询 | 联合索引怎样服务过滤和排序？如何用执行计划定位慢查询？ | [题目与原理](./questions.mdx#database-index) | [I04](https://www.nowcoder.com/feed/main/detail/b18f8fa5192249009855921fa568421a)、[I10](https://www.nowcoder.com/discuss/353158533594161152)、[I11](https://www.nowcoder.com/discuss/683947269040697344)、[I21](https://leetcode.cn/discuss/post/Akwta3/) |
+| 事务与锁 | RC、RR、MVCC 和锁分别处理什么并发问题？如何画出反例时序？ | [题目与原理](./questions.mdx#database-transaction) | [I01](https://www.nowcoder.com/discuss/919630488380141568)、[I02](https://www.nowcoder.com/discuss/920033557844688896)、[I14](https://leetcode.cn/discuss/post/JlrHm3/)、[I19](https://www.nowcoder.com/discuss/863921212827672576) |
+| 缓存一致性 | 更新数据库后删缓存失败怎么办？多实例缓存或令牌刷新如何协调？ | [题目与原理](./questions.mdx#cache-mq) | [I09](https://www.nowcoder.com/discuss/904825433772806144)、[I19](https://www.nowcoder.com/discuss/863921212827672576)、[I26](https://leetcode.cn/discuss/post/3156530/shu-qi-shi-xi-mian-jing-by-wen-170-qjzn/)、[I39](https://www.nowcoder.com/discuss/799949823636959232) |
+| 消息与失败处理 | 消息可能丢失、重复或乱序时，生产和消费链路如何处理？ | [题目与原理](./questions.mdx#messaging-search) | [I04](https://www.nowcoder.com/feed/main/detail/b18f8fa5192249009855921fa568421a)、[I18](https://www.nowcoder.com/discuss/864543031494467584)、[I31](https://leetcode.cn/discuss/post/3565958/-/comments/2845635/)、[I39](https://www.nowcoder.com/discuss/799949823636959232) |
+| 网络请求 | TCP 连接与关闭如何进行？HTTPS 和连接复用如何影响请求链路？ | [题目与原理](./questions.mdx#network) | [I05](https://www.nowcoder.com/feed/main/detail/6e4bd17e2fa84e98b315a9113e211687)、[I13](https://ac.nowcoder.com/discuss/787481)、[I15](https://leetcode.cn/discuss/post/JlrHm3/)、[I22](https://leetcode.cn/discuss/post/OHlVef/) |
+| 算法编码 | 如何从约束选择滑动窗口、树图遍历或堆？怎样检验边界与复杂度？ | [题目与原理](./questions.mdx#java-algorithms) | [I01](https://www.nowcoder.com/discuss/919630488380141568)、[I11](https://www.nowcoder.com/discuss/683947269040697344)、[I14](https://leetcode.cn/discuss/post/JlrHm3/)、[I21](https://leetcode.cn/discuss/post/Akwta3/)、[I30](https://leetcode.cn/discuss/post/3565958/-/comments/2845635/) |
+| 项目与验证 | 你负责什么、为什么这样设计、如何证明结果？AI 辅助开发的输出怎样核验？ | [项目准备](./project-preparation.mdx) | [I03](https://www.nowcoder.com/discuss/919948330229071872)、[I04](https://www.nowcoder.com/feed/main/detail/b18f8fa5192249009855921fa568421a)、[I05](https://www.nowcoder.com/feed/main/detail/6e4bd17e2fa84e98b315a9113e211687)、[I39](https://www.nowcoder.com/discuss/799949823636959232) |
+
+</div>
+
+编码和 SQL 需要实际完成，使用[编码与 SQL 练习](./coding-practice.mdx)的输入、边界与自检条件。只有两周时，先按[Java 校招复习范围](./java-campus-review.mdx)选核心主题；更多时间再补机制与迁移练习。分布式一致性、AI、服务治理等方向由具体 JD 和项目触发。
+
+## 3. 原始材料
+
+“近期”依据表中注明的日期判断；未写出的年份和招聘类型不自行补全。表内公司归属和面试经历来自作者自述，本站没有独立验证其任职或录用结果。面经中的技术回答可能有误，本站参考回答须依据规范、官方文档或可验证示例理解。
+
+<details>
+<summary>查看 40 个流程的来源、日期与类型</summary>
+
+<div className="campus-resource-table" tabIndex={0} role="region" aria-label="面经资料表格，可横向滚动">
+
+| 编号 | 公司与原帖 | 招聘类型 | 日期依据 | 材料范围 |
+| --- | --- | --- | --- | --- |
+| I01 | 字节跳动 · [字节后端一面](https://www.nowcoder.com/discuss/919630488380141568) | 实习 | 面试：08-12（年份未明确） | 年份不明 |
+| I02 | 字节跳动 · [字节 后端开发 中国交易与广告 秋招 一面 1h23min](https://www.nowcoder.com/discuss/920033557844688896) | 秋招 | 面试：08-18（年份未明确） | 年份不明 |
+| I03 | 快手 · [快手秋招一面](https://www.nowcoder.com/discuss/919948330229071872) | 秋招／AI 应用开发 | 发布：08-20 13:46（年份未明确） | 年份不明 |
+| I04 | 京东 · [京东后端开发一面面经](https://www.nowcoder.com/feed/main/detail/b18f8fa5192249009855921fa568421a) | 秋招 | 面试：08-17（年份未明确） | 年份不明 |
+| I05 | 腾讯 · [腾讯/wxg/微信支付/日常实习/一面](https://www.nowcoder.com/feed/main/detail/6e4bd17e2fa84e98b315a9113e211687) | 日常实习 | 面试：2026-08-11 | 近 18 个月日期 |
+| I07 | 字节跳动 · [面试经验 ／ 字节跳动 ／ 后端开发面经（已offer）](https://leetcode.cn/discuss/post/CTEQMT/) | 实习 | 发布：2022-01-18 | 历史材料 |
+| I08 | 美团 · [面经 ／ 美团 Java后端 一面](https://www.nowcoder.com/discuss/353159366805233664) | 实习 | 发布：2022-03-22 | 历史材料 |
+| I09 | 小红书 · [PE工程师-AI与全栈方向](https://www.nowcoder.com/discuss/904825433772806144) | 未明确 | 具体年份未确认 | 年份不明 |
+| I10 | 携程 · [携程JAVA后端一面面经](https://www.nowcoder.com/discuss/353158533594161152) | 未明确 | 面试：2021-09-16 | 历史材料 |
+| I11 | 携程 · [携程Java开发二面面经](https://www.nowcoder.com/discuss/683947269040697344) | 秋招 | 发布：2024-11-07 | 历史材料 |
+| I12 | 携程 · [携程 java后端 面经 一二面+hr面（已收到offer）](https://www.nowcoder.com/discuss/353157678383964160) | 实习 | 面试：2021-03-10 | 历史材料 |
+| I13 | 百度 · [百度正式批面经（已意向书）](https://ac.nowcoder.com/discuss/787481) | 秋招 | 面试：2021-10-23 | 历史材料 |
+| I14 | 字节跳动 · [个人秋招经验和面筋分享：国际化电商](https://leetcode.cn/discuss/post/JlrHm3/) | 秋招 | 面试：2021-07-20 | 历史材料 |
+| I15 | Shopee · [个人秋招经验和面筋分享：Shopee](https://leetcode.cn/discuss/post/JlrHm3/) | 秋招 | 面试：2021-07-14 | 历史材料 |
+| I16 | 字节跳动 · [字节后端暑期实习一面凉经](https://www.nowcoder.com/discuss/878687099648565248) | 实习 | 具体年份未确认 | 年份不明 |
+| I17 | 成睿科技 · [成睿科技一面](https://www.nowcoder.com/discuss/864646969501704192) | 实习 | 具体年份未确认 | 年份不明 |
+| I18 | 阿里巴巴 · [飞猪 Java 开发暑期实习一面](https://www.nowcoder.com/discuss/864543031494467584) | 实习 | 具体年份未确认 | 年份不明 |
+| I19 | 易点云 · [易点云一面](https://www.nowcoder.com/discuss/863921212827672576) | 未明确 | 具体年份未确认 | 年份不明 |
+| I20 | Shopee · [虾皮后端一面](https://www.nowcoder.com/feed/main/detail/f53e59489ee24bba9f24df14b1c81051) | 未明确 | 具体年份未确认 | 年份不明 |
+| I21 | 字节跳动 · [后端开发实习生一二面与 HR 面](https://leetcode.cn/discuss/post/Akwta3/) | 实习 | 具体年份未确认 | 年份不明 |
+| I22 | 腾讯 · [26届 Java 暑期实习二面：金融科技](https://leetcode.cn/discuss/post/OHlVef/) | 实习 | 发布：2025-04-17 | 近 18 个月日期 |
+| I23 | 字节跳动 · [暑期实习面经：飞书](https://leetcode.cn/discuss/post/3156530/shu-qi-shi-xi-mian-jing-by-wen-170-qjzn/) | 实习 | 具体年份未确认 | 年份不明 |
+| I24 | 阿里巴巴 · [暑期实习面经：Java](https://leetcode.cn/discuss/post/3156530/shu-qi-shi-xi-mian-jing-by-wen-170-qjzn/) | 实习 | 具体年份未确认 | 年份不明 |
+| I25 | 拼多多 · [暑期实习面经：后台](https://leetcode.cn/discuss/post/3156530/shu-qi-shi-xi-mian-jing-by-wen-170-qjzn/) | 实习 | 具体年份未确认 | 年份不明 |
+| I26 | 美团 · [暑期实习面经：外卖后端](https://leetcode.cn/discuss/post/3156530/shu-qi-shi-xi-mian-jing-by-wen-170-qjzn/) | 实习 | 具体年份未确认 | 年份不明 |
+| I27 | 快手 · [暑期实习面经：国际化](https://leetcode.cn/discuss/post/3156530/shu-qi-shi-xi-mian-jing-by-wen-170-qjzn/) | 实习 | 具体年份未确认 | 年份不明 |
+| I28 | 腾讯 · [23届暑期实习面经：IEG](https://leetcode.cn/discuss/post/3565958/-/comments/2845635/) | 实习 | 面试：2022-03-03 | 历史材料 |
+| I29 | 阿里巴巴 · [23届暑期实习面经：阿里云](https://leetcode.cn/discuss/post/3565958/-/comments/2845635/) | 实习 | 面试：2022-03-08 | 历史材料 |
+| I30 | 字节跳动 · [23届暑期实习面经：TikTok](https://leetcode.cn/discuss/post/3565958/-/comments/2845635/) | 实习 | 面试：2022-04-14 | 历史材料 |
+| I31 | 美团 · [23届暑期实习面经：基础平台](https://leetcode.cn/discuss/post/3565958/-/comments/2845635/) | 实习 | 面试：2022-04-14 | 历史材料 |
+| I32 | 拼多多 · [23届暑期实习面经：后端](https://leetcode.cn/discuss/post/3565958/-/comments/2845635/) | 实习 | 面试：2022-04-14 | 历史材料 |
+| I33 | 京东 · [2021.2 实习面经：健康](https://leetcode.cn/circle/discuss/KaipEJ/) | 实习 | 面试：2021-02 | 历史材料；仅检索返回的原帖正文 |
+| I34 | 爱奇艺 · [2021.2 实习面经：Java](https://leetcode.cn/circle/discuss/KaipEJ/) | 实习 | 面试：2021-02 | 历史材料；仅检索返回的原帖正文 |
+| I35 | 虎牙 · [虎牙 Java/Go 后台一面](https://www.nowcoder.com/discuss/841426756815814656) | 未明确 | 面试：2026-01-15 | 近 18 个月日期 |
+| I36 | 腾讯 · [企鹅后端日常实习一面](https://www.nowcoder.com/discuss/814856294694678528) | 实习 | 发布：2025-11-06 | 近 18 个月日期 |
+| I37 | 实在智能 · [实在智能一面、二面](https://www.nowcoder.com/discuss/801106458455629824) | 未明确 | 面试：2025-09-23 | 近 18 个月日期 |
+| I38 | 金山云 · [金山云软开日常实习一面](https://www.nowcoder.com/discuss/800822936729894912) | 实习 | 面试：2025-09-25 | 近 18 个月日期 |
+| I39 | 字节跳动 · [字节后端日常实习一面](https://www.nowcoder.com/discuss/799949823636959232) | 实习 | 发布：2025-09-23 | 近 18 个月日期 |
+| I40 | 阿里巴巴 · [阿里云 Java 实习面经及学习经验](https://www.nowcoder.com/discuss/353156461347938304) | 实习 | 具体年份未确认 | 历史材料 |
+| I41 | 腾讯 · [个人秋招总结：腾讯 IEG](https://www.nowcoder.com/discuss/353155693442179072) | 秋招 | 面试：2019-09-01 | 历史材料 |
+
+</div>
+
+</details>
+
+用这些材料了解追问方向即可。整理自己的回答时，应能解释条件、机制与边界，并通过代码、SQL、时序或项目证据核对。

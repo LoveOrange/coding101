@@ -1,8 +1,15 @@
 ---
+pagination_prev: null
+pagination_next: null
 sidebar_position: 2
 ---
 
+import {ReviewReading, ReviewCheckpoint, ReviewQuestionAnchor} from '@site/src/components/Review';
+import {javaCollectionsReview} from '@site/src/data/reviewPlans/javaCollections';
+
 # ArrayList
+
+<ReviewReading plan={javaCollectionsReview} stepId="collections-arraylist" />
 
 `ArrayList` 用一段连续的引用数组保存元素。随机访问只需计算下标，尾部追加通常很快；容量不足时则要申请更大的数组并复制已有引用。
 
@@ -91,6 +98,9 @@ users.add(0, user);
 
 批量删除时，倒序按索引删除虽然避免索引错位，仍可能反复搬移。可以使用 `removeIf`，或者一次筛选出保留元素，让实现统一压缩数组。
 
+<details>
+<summary>后续阅读：subList 视图</summary>
+
 ## 6. subList 是原列表的视图
 
 ```java
@@ -107,6 +117,8 @@ List<User> page = new ArrayList<>(users.subList(from, to));
 
 旧版本 JDK 的子列表还可能间接保留很大的底层数组。当前实现细节会变化，但“视图共享结构、快照独立持有数据”的语义区分始终需要明确。
 
+</details>
+
 ## 7. ArrayList 的线程边界
 
 ArrayList 不提供并发修改保证。下面的复合操作不是原子的：
@@ -118,6 +130,8 @@ if (!users.contains(user)) {
 ```
 
 多个线程可能同时通过检查并重复写入。外部加锁、线程封闭、不可变快照或并发集合应根据共享模型选择。`Collections.synchronizedList` 只为单个方法提供同步，迭代时仍需按其文档在同一锁上同步。
+
+<ReviewCheckpoint plan={javaCollectionsReview} stepId="collections-arraylist" />
 
 ## 8. 常见问题
 
@@ -139,6 +153,8 @@ ArrayList 增加边界检查、容量管理和泛型容器语义，基本类型�
 
 ## 9. 面试题
 
+<ReviewQuestionAnchor />
+
 ### 9.1 ArrayList 怎样扩容，指定初始容量有什么作用
 
 <!-- 面试来源：
@@ -154,7 +170,7 @@ ArrayList 增加边界检查、容量管理和泛型容器语义，基本类型�
 - 扩容复制和摊销常数时间。
 - 预留过小和过大分别产生什么成本。
 
-**相关内容**：第 1 节“size 与 capacity 是两个概念”、第 3 节“尾部追加与扩容”、第 4 节“指定初始容量的作用”。
+**相关内容**：[size 与 capacity 是两个概念](#1-size-与-capacity-是两个概念)、[尾部追加与扩容](#3-尾部追加与扩容)、[指定初始容量的作用](#4-指定初始容量的作用)。
 
 <details>
 <summary>参考回答</summary>
@@ -164,6 +180,8 @@ ArrayList 通过引用数组保存元素。尾部有空位时，追加只写入�
 连续追加的扩容成本分摊后是 O(1)，单次扩容仍是 O(n)。已知大致数量时指定初始容量可以减少分配和复制，但预留过大也会让大量空槽长期占用内存。
 
 </details>
+
+[返回本轮自测与下一篇](#review-checkpoint)
 
 ### 9.2 ArrayList 与 LinkedList 应该怎样选择
 
@@ -180,7 +198,7 @@ ArrayList 通过引用数组保存元素。尾部有空位时，追加只写入�
 - 引用数组的缓存局部性与链表的节点开销。
 - “插入多就用 LinkedList”为什么缺少前提。
 
-**相关内容**：第 2 节“随机访问为什么是常数时间”、第 5 节“中间插入与删除需要搬移”。
+**相关内容**：[随机访问为什么是常数时间](#2-随机访问为什么是常数时间)、[中间插入与删除需要搬移](#5-中间插入与删除需要搬移)。
 
 <details>
 <summary>参考回答</summary>

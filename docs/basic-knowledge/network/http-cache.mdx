@@ -1,0 +1,68 @@
+---
+sidebar_position: 8
+knowledge:
+  id: basic-knowledge.network.http-cache
+  type: concept
+---
+
+# HTTP 缓存
+
+HTTP 缓存复用已有响应，减少传输与源站计算。它先判断响应能否存储和复用，再判断是否需要向服务器验证；浏览器私有缓存与 CDN 等共享缓存的约束不同。
+
+## 1. 面试核心 {#core}
+
+- 新鲜响应可以按缓存规则直接复用，过期后通常需要验证或重新获取。
+- no-cache 允许存储但要求复用前验证，no-store 要求不要存储。
+- ETag 与 If-None-Match 可用于条件请求，资源未变时返回 304。
+
+## 2. 存储与新鲜度 {#mechanism}
+
+```http
+Cache-Control: public, max-age=60
+ETag: "version-7"
+```
+
+在满足其他缓存规则时，该响应可以存储并在规定的新鲜度内复用。缓存会结合响应年龄等信息判断是否仍新鲜，不是每转发一次就重新获得完整 60 秒。
+
+private 表示响应只适合私有缓存；public 可以允许共享缓存存储，但仍应符合实际鉴权和数据隔离需求。登录后的个人信息不能只因为 URL 相同就共享给其他用户。
+
+## 3. 条件请求
+
+```http
+GET /catalog HTTP/1.1
+If-None-Match: "version-7"
+```
+
+资源仍匹配时，服务器可返回 304，客户端复用已有响应体并按规则更新缓存元数据；资源变化则返回新的完整响应。Last-Modified 与 If-Modified-Since 也可用于验证，但时间粒度和资源修改方式会影响能力。
+
+304 不携带新的完整资源体，因此依赖客户端已有对应缓存。它仍发生了网络往返，只减少主体传输，不等于完全没有访问服务器。
+
+## 4. 使用边界 {#boundaries}
+
+Vary 指出哪些请求头参与选择响应，例如 Accept-Encoding。共享缓存需要把这些维度纳入匹配，否则可能返回错误表示。
+
+no-cache 与 no-store 应按是否允许存储来区分；设置 no-store 也不是清除所有先前副本的通用命令。涉及用户内容、权限变化和主动失效时，要同时设计缓存键与失效机制。业务数据库与 Redis 的更新问题见[缓存一致性](../nosql/redis/cache-patterns-consistency.mdx)。
+
+## 5. 面试题
+
+### 5.1 no-cache、no-store 和 304 分别表示什么？
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：缓存存储、新鲜度与条件验证三个不同判断。
+
+**相关内容**：[面试核心](#core)、[存储与新鲜度](#mechanism)、[使用边界](#boundaries)。
+
+<details>
+<summary>参考回答</summary>
+
+no-cache 允许保存响应，但每次复用前需要向源站验证；no-store 要求缓存不要存储这次请求或响应相关内容。带验证条件的请求若资源未修改，可收到 304 并复用原响应体。304 仍有网络往返，no-store 也不能被当成对所有历史副本的清理保证。
+
+</details>
+
+## 6. 参考资料
+
+- [IETF：HTTP Caching](https://www.rfc-editor.org/rfc/rfc9111.html)
+- [IETF：HTTP Semantics](https://www.rfc-editor.org/rfc/rfc9110.html)

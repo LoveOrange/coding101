@@ -1,0 +1,66 @@
+---
+knowledge:
+  id: basic-knowledge.database.modeling.constraints
+  type: concept
+---
+
+# 数据约束
+
+数据约束在数据库层限制允许保存的状态，常见形式有主键、非空、唯一、外键和 CHECK。应用校验可以提前报错，数据库约束则让所有写入路径遵守共同规则。
+
+## 1. 面试核心 {#core}
+
+- 主键标识一行，唯一约束限制重复值，非空约束限制缺失。
+- 外键维护引用关系，不能替代所有跨表业务规则。
+- 并发写入时，“先查不存在再插入”仍需唯一约束或其他正确协调。
+
+## 2. 在表结构中表达规则 {#mechanism}
+
+以下以 MySQL 8.4、InnoDB 为例：
+
+```sql
+CREATE TABLE accounts (
+  id BIGINT PRIMARY KEY,
+  email VARCHAR(200) NOT NULL UNIQUE,
+  balance DECIMAL(12,2) NOT NULL,
+  CHECK (balance >= 0)
+);
+```
+
+相同 email 的第二次插入会违反唯一约束，NULL email 违反非空约束，负余额违反 CHECK。CHECK 对未知值的处理不能替代 NOT NULL，所以余额同时声明两种约束。较老 MySQL 版本对 CHECK 的支持不同，不能把本例保证直接套到旧部署。
+
+## 3. 并发与引用完整性
+
+两个请求都先查询“邮箱不存在”，随后各自插入，查询通过不代表后续仍不存在。唯一约束让数据库在写入时处理冲突，应用需把冲突转为明确结果，必要时读取已有记录；不要无条件循环重试相同重复值。
+
+外键可以要求订单的 customer_id 引用真实客户，但不会自动验证“客户是否可下单”或“订单总额是否等于所有明细之和”。这些规则还需要合理事务、并发控制和业务逻辑。
+
+## 4. 使用边界 {#boundaries}
+
+NULL 在唯一约束中的行为有数据库差异；MySQL 唯一索引可允许多个 NULL，若要求每行必须有唯一业务值，应结合 NOT NULL。文本唯一性还受排序规则影响。
+
+删除父记录时，应明确拒绝删除、级联删除或置空的意图。约束会增加写入检查成本，但仅在应用端重复一遍校验无法提供同样的跨入口保证。
+
+## 5. 面试题
+
+### 5.1 应用已经检查邮箱未被使用，为什么数据库还需要唯一约束？
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：检查与写入之间的并发窗口，以及唯一、非空和排序规则的组合。
+
+**相关内容**：[面试核心](#core)、[在表结构中表达规则](#mechanism)、[使用边界](#boundaries)。
+
+<details>
+<summary>参考回答</summary>
+
+检查与插入之间存在并发窗口，两个请求可以同时通过查询。唯一约束在实际写入时执行，能统一限制全部写入入口。应用提前检查改善提示，但仍需处理约束冲突；若邮箱必须存在，还需 NOT NULL，并确认排序规则是否把大小写视为相同。
+
+</details>
+
+## 6. 参考资料
+
+- [MySQL：CREATE TABLE](https://dev.mysql.com/doc/refman/8.4/en/create-table.html)
+- [MySQL：CHECK Constraints](https://dev.mysql.com/doc/refman/8.4/en/create-table-check-constraints.html)

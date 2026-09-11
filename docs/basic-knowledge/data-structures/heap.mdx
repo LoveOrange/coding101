@@ -1,0 +1,70 @@
+---
+sidebar_position: 8
+knowledge:
+  id: basic-knowledge.data-structures.heap
+  type: concept
+---
+
+# 堆
+
+二叉堆是一棵满足堆序的完全二叉树，常用数组实现优先队列。最小堆保证根是最小值，但不保证所有元素按遍历顺序有序。本文的堆不指程序运行时的堆内存。
+
+## 1. 面试核心 {#core}
+
+- 查看堆顶 O(1)，插入和删除堆顶 O(log n)。
+- 从末个非叶节点向前下沉可以在 O(n) 时间建堆。
+- 维护 k 个候选的最小堆可以查找最大的 k 个元素。
+
+## 2. 数组位置与堆序 {#mechanism}
+
+以下标 0 为根时，节点 i 的孩子位于 `2*i+1`、`2*i+2`，非根节点的父亲位于 `(i-1)/2`。完全二叉树的形状保证没有中间空洞。
+
+插入把元素放到末尾，再与父节点比较并上浮；删除最小值时，用末尾元素替换根，再与较小的孩子比较并下沉。每次最多走过树高 O(log n)。
+
+## 3. Top K
+
+```java
+static int kthLargest(int[] values, int k) {
+    if (k < 1 || k > values.length) throw new IllegalArgumentException();
+    java.util.PriorityQueue<Integer> heap = new java.util.PriorityQueue<>();
+    for (int value : values) {
+        if (heap.size() < k) heap.offer(value);
+        else if (value > heap.peek()) {
+            heap.poll();
+            heap.offer(value);
+        }
+    }
+    return heap.peek();
+}
+```
+
+对 `[3,1,5,5,2]`、k=2，返回 5；这里重复元素占据各自排名。堆里始终保留已读元素中最大的 k 个，堆顶是其中最小的，即第 k 大。通常记时间 O(n log k)、空间 O(k)；k=1 时算法为 O(n)。遍历 `PriorityQueue` 本身不会得到排序结果。
+
+## 4. 使用边界 {#boundaries}
+
+堆适合不断得到当前极值，按任意值查找一般仍是 O(n)。优先级改变后不能直接修改内部对象字段并期待堆自动重排，需要移除重插或使用支持定位更新的结构。
+
+自底向上建堆是 O(n)，因为大量节点位于底部、只需少量下沉；逐个插入 n 个元素则是 O(n log n) 的上界。需要全部有序结果时，还要不断出堆或执行排序。
+
+## 5. 面试题
+
+### 5.1 查找最大的 k 个元素为什么通常维护最小堆？
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：候选集合的不变量、淘汰最小候选的依据与重复值排名。
+
+**相关内容**：[面试核心](#core)、[数组位置与堆序](#mechanism)、[使用边界](#boundaries)。
+
+<details>
+<summary>参考回答</summary>
+
+候选集满后，需要快速找到最弱的候选，也就是这 k 个元素中的最小值。新值不大于堆顶就可忽略，更大则替换堆顶。最大堆只方便找到最强候选，不能直接找到应淘汰的最小候选。还要说明重复值是否分别计数，以及 k 的合法范围。
+
+</details>
+
+## 6. 参考资料
+
+- [Open Data Structures：BinaryHeap](https://opendatastructures.org/ods-java/10_1_BinaryHeap_Implicit_Bi.html)

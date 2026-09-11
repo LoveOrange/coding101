@@ -1,0 +1,102 @@
+---
+sidebar_position: 6
+tags: [interview-preparation]
+---
+
+# 编码与 SQL 练习
+
+练习按算法模式、Java 并发和 SQL 组织。先独立实现，再检查输入边界、输出和复杂度；参考知识维护在对应主题文章中。本页自编练习不附公司归属，力扣链接以原题条件为准。
+
+## 1. 算法模式与迁移练习
+
+| 模式与原理 | 代表练习 | 迁移练习 | 自检条件 |
+| --- | --- | --- | --- |
+| [二分查找](../basic-knowledge/algorithms/binary-search.mdx) | [704. 二分查找](https://leetcode.cn/problems/binary-search/) | [35. 搜索插入位置](https://leetcode.cn/problems/search-insert-position/) | 目标在两端、不存在、小于最小值和大于最大值；区分返回失败与返回插入点 |
+| [双指针](../basic-knowledge/algorithms/two-pointers.mdx) | [141. 环形链表](https://leetcode.cn/problems/linked-list-cycle/) | 将问题改为找到环入口，解释快慢指针距离关系 | 空链表、自环、无环、环不从头开始；比较节点身份，不比较值 |
+| [树与图搜索](../basic-knowledge/java/algorithms/trees-graphs-search.mdx) | [102. 二叉树的层序遍历](https://leetcode.cn/problems/binary-tree-level-order-traversal/) | [103. 二叉树的锯齿形层序遍历](https://leetcode.cn/problems/binary-tree-zigzag-level-order-traversal/) | 空树、单节点、深链；改变输出方向时保留正确的层边界 |
+| [滑动窗口](../basic-knowledge/java/algorithms/arrays-strings-sliding-window.mdx) | 自编：求字符串中最长无重复连续片段的长度 | 自编：输出一个最长片段的起止位置 | `abba` 长度为 2，空串为 0；先约定字符范围，左边界不能回退 |
+| [前缀和](../basic-knowledge/algorithms/prefix-sum.mdx) | 自编：对 `[2,-1,3,0]` 回答半开区间 `[1,4)` 的和 | 自编：对同一数组多次查询，比较预处理与逐次累加 | 结果为 2；空区间、完整区间、负数；说明预处理和单次查询成本 |
+| [排序](../basic-knowledge/algorithms/sorting.mdx)与[贪心](../basic-knowledge/algorithms/greedy.mdx) | 自编：合并闭区间 `[1,3]、[2,4]、[6,8]` | 自编：端点相等视为重叠时，求最少删除多少区间使其互不重叠 | 合并结果为 `[1,4]、[6,8]`；区分两个任务的排序依据，先明确端点语义 |
+| [回溯](../basic-knowledge/algorithms/backtracking.mdx) | 自编：枚举 `[1,2,3]` 的全部子集 | 自编：输入改为 `[1,1,2]`，输出不重复子集 | 前者 8 个，后者 6 个；保存结果时复制状态，撤销选择后原状态恢复 |
+| [动态规划](../basic-knowledge/java/algorithms/dynamic-programming-state-design.mdx) | 自编：每次走 1 或 2 级台阶，求到第 4 级的方案数 | 自编：第 2 级禁止落脚，重新定义状态与转移 | 无障碍时 5 种，有障碍时 1 种；约定第 0 级有一种空走法，解释初始化 |
+
+不把“看过答案”作为完成标准。修改一个条件后仍能说明不变量，并独立写出实现，才说明方法能够迁移。更多检查方法见[算法正确性](../basic-knowledge/java/algorithms/live-coding-counterexamples-tests.mdx)。
+
+## 2. Java 并发练习
+
+自编任务：用容量为 2 的阻塞队列连接一个生产者和一个消费者，传递整数 1 至 100，再传递约定的结束标记。消费者汇总后退出，主线程等待两个线程结束。原理与 API 用法见[BlockingQueue](../basic-knowledge/java/collections/blockingqueue-producer-consumer.mdx)。
+
+自行检查：
+
+- 消费数量为 100，总和为 5050，没有重复或遗漏。
+- 队列满时生产者等待，队列空时消费者等待，不用循环查询制造忙等。
+- 结束标记不计入总数与求和，两个线程都能退出。
+- 将任务改为允许外部取消，说明中断如何传递、未处理任务怎么办；不能只捕获异常后无条件继续。
+
+练习不要求输出顺序或耗时完全固定。先验证行为，再分析线程池替代方案的队列、并发和拒绝策略；对应知识见[Java 线程](../basic-knowledge/java/concurrency/thread-lifecycle-interruption.mdx)与[Java 线程池](../basic-knowledge/java/concurrency/threadpoolexecutor-execution-path.mdx)。
+
+## 3. SQL 练习
+
+以下为本站自编练习。数据与查询使用常见 SQL 语法；先阅读[SQL 连接](../basic-knowledge/database/sql/joins.mdx)和[SQL 聚合](../basic-knowledge/database/sql/aggregation.mdx)。在自己的练习数据库中运行建表与插入语句。
+
+```sql
+CREATE TABLE practice_customers (id INTEGER PRIMARY KEY, name VARCHAR(20));
+CREATE TABLE practice_orders (
+  id INTEGER PRIMARY KEY,
+  customer_id INTEGER,
+  amount INTEGER,
+  status VARCHAR(20)
+);
+INSERT INTO practice_customers VALUES (1, 'Lin'), (2, 'Ming'), (3, 'Yu');
+INSERT INTO practice_orders VALUES
+  (10, 1, 50, 'paid'), (11, 1, 80, 'paid'),
+  (12, 2, 20, 'pending'), (13, 2, 30, 'paid');
+```
+
+### 3.1 每位客户已支付的订单数和金额是多少？
+
+要求保留没有已支付订单的客户，按客户 ID 升序，订单数和金额均用 0 表示没有记录。先写查询，再核对结果。
+
+<details>
+<summary>参考回答</summary>
+
+```sql
+SELECT c.id,
+       COUNT(o.id) AS paid_count,
+       COALESCE(SUM(o.amount), 0) AS paid_amount
+FROM practice_customers c
+LEFT JOIN practice_orders o
+  ON o.customer_id = c.id AND o.status = 'paid'
+GROUP BY c.id
+ORDER BY c.id;
+```
+
+结果为 `(1,2,130)、(2,1,30)、(3,0,0)`。支付条件放在连接条件中，保留未匹配的客户；COUNT 使用右表非空主键，避免把补空行算成一笔订单。
+
+迁移检查：将客户 2 唯一已支付订单的状态改为 pending，应得到 `(2,0,0)`；把过滤条件移到 WHERE 后，哪些客户会消失？回到[SQL 连接](../basic-knowledge/database/sql/joins.mdx)解释原因。
+
+</details>
+
+### 3.2 如何筛选已支付总金额至少为 100 的客户？
+
+先过滤已支付订单，再按客户分组，用分组结果筛选。区分 WHERE 与 HAVING 的作用。
+
+<details>
+<summary>参考回答</summary>
+
+```sql
+SELECT customer_id, SUM(amount) AS paid_amount
+FROM practice_orders
+WHERE status = 'paid'
+GROUP BY customer_id
+HAVING SUM(amount) >= 100
+ORDER BY customer_id;
+```
+
+结果为 `(1,130)`。进一步练习将阈值改为 130 和 131，检查包含边界与没有结果的情况。
+
+</details>
+
+### 3.3 添加索引后如何证明查询变快？
+
+不要只看“创建成功”。在实际数据库中准备有代表性的数据量和分布，查看[执行计划](../basic-knowledge/database/indices/execution-plan.mdx)，比较访问路径、扫描量与真实执行表现。这个只有四笔订单的样例可以验证语义，无法证明生产规模的索引收益。

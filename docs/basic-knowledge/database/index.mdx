@@ -1,77 +1,43 @@
 ---
-position: 1
-draft: false
+sidebar_position: 0
 ---
-import { Green, Blue, Red, Yellow } from '@site/src/components/priority-tag';
 
 # 关系型数据库
 
-## 1. 常见开源、免费关系型数据库
+关系型数据库用表表达数据，用键与约束限制合法状态，通过 SQL 查询和更新数据。表中的一行表示一条记录，列定义记录的属性；表之间通过键建立联系。面试复习需要同时掌握查询结果、访问成本和并发读写的保证。
 
-当我们提及「数据库」时，通常指的是**关系型数据库（Relational Database）**。
+本文目录以 MySQL InnoDB 为主要实现参照。不同数据库的隔离与执行计划细节可能不同，回答时应明确产品、版本及查询类型。
 
-这里列举一些常见的**开源、免费、关系型数据库**：
+## 1. 必会 · 查询与数据规则
 
-1. MySQL
-2. MariaDB
-3. PostgreSQL
-4. SQLite
+先完成可运行查询，能够解释 NULL、重复行和一对多连接，再进入索引与事务。
 
-除了关系性数据库外，还有**非关系型数据库（NoSQL）**，我们将在 [NoSQL 数据库](../nosql/index.mdx) 中介绍。
+- [数据约束](./modeling/constraints.mdx)
+- [SQL 查询](./sql/query.mdx)
+- [SQL 连接](./sql/joins.mdx)
+- [SQL 聚合](./sql/aggregation.mdx)
 
-## 2. 高频考点
+## 2. 必会 · 索引与访问路径
 
-数据存储作为软件开发的重要一环，关于数据库的内容，在面试中也一直是**<Red>高频考点</Red>**。
+停止条件：根据 WHERE 与 ORDER BY 推导索引范围，区分扫描、回表和额外排序，并用计划核对推断。
 
-另外虽然主流的开源数据库有很多，并且各自的使用场景也十分广泛。但是在实际面试中，**<Green>MySQL</Green>** 一直是被提问最多的数据库，需要重点复习。
+- [数据库索引](./indices/index.mdx)
+- [B+ 树](./indices/b_plus_tree/index.mdx)
+- [聚簇索引](./indices/clustered_index/index.mdx)
+- [联合索引与覆盖索引](./indices/composite-covering-back-table.mdx)
+- [执行计划](./indices/execution-plan.mdx)
 
-1. [事务](./transaction/index.mdx)
-    1. 事务的四大特性 - ACID
-    2. 事务的隔离级别
-    3. 什么是脏读、幻读、不可重复读
-2. [索引](./indices/index.mdx)
-    1. 索引的实现原理 - B+ 树
-    2. 聚簇索引和非聚簇索引
-    2. 索引的类型
-    3. 索引的优化
-3. 锁
-    1. 锁的类型
-    2. 锁的优化
-    3. 死锁的产生原因与解决方法
-4. 查询优化
-    1. 查询优化的原理
-    2. Join 的使用与基本原理
-5. 扩展
-    1. 数据库集群的原理 - 主从复制、读写分离
-    2. 数据库分库分表的原理
-6. MySQL 的存储引擎
-    1. InnoDB 与 MyISAM 的区别
-    2. InnoDB 的索引实现
-    3. MyISAM 的索引实现
-7. 维护
-    1. 数据库的备份与恢复
-    2. Binlog 的原理与使用
+## 3. 必会 · 事务与并发控制
 
-## 3. 高频面试题
+停止条件：能画出两个事务的读写时序，说明隔离级别、快照读、当前读和锁的作用。
 
-### 3.1. 事务
+- [数据库事务](./transaction/index.mdx)
+- [MVCC](./transaction/mvcc-read-view-consistent-read.mdx)
+- [InnoDB 锁](./transaction/innodb-locking-ranges.mdx)
 
-1. 为什么需要事务，解决了什么问题，如何解决的？
-2. 事务的四大特性是什么？
-3. 事务的隔离级别有哪些？
-4. 什么是脏读、幻读、不可重复读，如何解决？
+## 4. 常考 · 并发故障
 
-### 3.2. 索引
+- [数据库死锁](./transaction/deadlock-detection-timeout-retry.mdx)
+- [长事务](./transaction/long-transactions-hot-updates-boundaries.mdx)
 
-1. 介绍一下 **B+ 树** 的实现原理，与 **B 树** 有什么区别？
-2. 聚簇索引和非聚簇索引有什么区别？
-
-### 3.3. 锁
-
-1. MySQL 中行锁、表锁、间隙锁、意向锁的含义与使用场景？
-2. 死锁的产生原因与解决方法？
-
-### 3.4. 扩展
-
-1. MySQL 如何进行集群化部署，原理是什么？
-2. 什么时候需要对数据库进行分库、分表？
+主路径完成后，可以进入 [Redis](../nosql/redis/index.mdx)，解释缓存命中、失效与回源。存储引擎日志、复制与备份的独立专题仍需补齐，不将目录覆盖视为这些内容已经完成。

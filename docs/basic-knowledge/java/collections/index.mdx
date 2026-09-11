@@ -1,12 +1,49 @@
 ---
+pagination_prev: null
+pagination_next: null
 sidebar_position: 0
 ---
 
+import {ReviewGuide} from '@site/src/components/Review';
+import {javaCollectionsReview} from '@site/src/data/reviewPlans/javaCollections';
+
 # Java 集合
 
-Java 集合覆盖容器接口及其在 Java 中的具体实现。通用数据结构原理由[数据结构](../../data-structures/index.mdx)部分维护，这里重点解释 Java API、OpenJDK 实现、复杂度和并发语义。
+Java 集合用于组织对象、查找数据和表达取出规则。第一轮先掌握容器选择、ArrayList 的操作成本和 HashMap 的查找机制。
 
-## 内容
+<ReviewGuide plan={javaCollectionsReview} />
+
+## 1. 关键结论
+
+- **先确定容器语义。** List 保留位置和重复元素，Set 表达唯一性，Map 保存键值关联；需要按规则取出元素时使用 Queue 或 Deque。顺序、去重和查找要求会影响实现选择，见[Java 集合框架](./collection-interface-selection.mdx)。
+- **数组存储决定 ArrayList 的主要成本。** 随机访问可以直接定位，尾部追加通常不需要移动已有元素；扩容和中间插入可能复制或搬移数据。要区分一次操作的成本与连续操作的摊销成本，见[ArrayList](./arraylist-growth-memory-locality.mdx)。
+- **HashMap 通过哈希缩小查找范围，再确认键是否相等。** 相同哈希不代表相等，自定义键的相等性字段需要保持稳定。平均查询性能依赖哈希分布，它也不保证顺序和无同步并发写的安全，见[HashMap](./hashmap-structure-lookup-path.mdx)。
+
+不熟悉数组、链表或哈希表时，先补充[数据结构](../../data-structures/index.mdx)；不能解释键的相等性时，回看[对象相等性](../language/equals-hashcode-object-identity.mdx)。
+
+## 2. 后续复习
+
+<details>
+<summary>第二轮：常考与追问</summary>
+
+- [LinkedList](./linkedlist-semantics-cost.mdx)：区分定位元素和修改节点的成本，说明已经持有迭代位置时的操作前提。
+- [TreeMap 与 TreeSet](./treemap-treeset-ordered-query.mdx)：补充有序查询、比较器与范围操作。
+- [集合迭代器](./iterator-fail-fast-immutable.mdx)：补充遍历时修改、fail-fast、不可修改视图和不可变副本。
+- [HashMap](./hashmap-structure-lookup-path.mdx)：继续解释容量选择、树化条件和扩容后的节点迁移。
+
+</details>
+
+<details>
+<summary>按场景补充：访问顺序与并发集合</summary>
+
+项目涉及访问顺序或 LRU 时，阅读 [LinkedHashMap](./linkedhashmap-lru.mdx)。需要多线程共享容器时，先学习[Java 并发编程](../concurrency/index.mdx)，再根据读写方式选择 [ConcurrentHashMap](./concurrenthashmap-atomic-compound-operations.mdx)、[CopyOnWrite 容器](./copy-on-write-cost-model.mdx)或 [BlockingQueue](./blockingqueue-producer-consumer.mdx)。
+
+</details>
+
+## 3. 全部内容
+
+<details>
+<summary>查看集合的完整文章目录</summary>
 
 - [Java 集合框架](./collection-interface-selection.mdx)
 - [ArrayList](./arraylist-growth-memory-locality.mdx)
@@ -20,3 +57,7 @@ Java 集合覆盖容器接口及其在 Java 中的具体实现。通用数据结
 - [BlockingQueue](./blockingqueue-producer-consumer.mdx)
 - [ConcurrentLinkedQueue](./concurrentlinkedqueue-lock-free-path.mdx)
 - [迭代一致性](./concurrent-collection-iteration-consistency.mdx)
+
+</details>
+
+[返回 Java 后端开发面试路线](/java-interview-roadmap/?round=first#java-collections)

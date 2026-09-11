@@ -1,4 +1,6 @@
 ---
+pagination_prev: null
+pagination_next: null
 sidebar_position: 6
 knowledge:
   id: java.collections.hash-map
@@ -8,7 +10,12 @@ knowledge:
       target: data-structures.hash-table
 ---
 
+import {ReviewReading, ReviewCheckpoint, ReviewQuestionAnchor} from '@site/src/components/Review';
+import {javaCollectionsReview} from '@site/src/data/reviewPlans/javaCollections';
+
 # HashMap
+
+<ReviewReading plan={javaCollectionsReview} stepId="collections-hashmap" />
 
 HashMap 使用桶数组保存键值对，通过键的哈希定位桶，再用 `equals` 确认键是否相等。面试重点是 `put`/`get` 路径、冲突处理、扩容和线程安全边界。
 
@@ -101,6 +108,8 @@ index = (capacity - 1) & hash;
 - **并发访问**：并发写可能丢失更新或观察到不一致状态。共享可变 Map 应使用 ConcurrentHashMap 的原子方法，或在更高层建立锁。
 - **复合操作**：即使换成并发 Map，`containsKey` 后再 `put` 仍不是一个原子动作，应使用 `putIfAbsent`、`compute` 等复合方法。
 
+<ReviewCheckpoint plan={javaCollectionsReview} stepId="collections-hashmap" />
+
 ## 6. 常见问题
 
 ### 6.1 为什么先比较 hash 再比较 equals
@@ -117,21 +126,22 @@ index = (capacity - 1) & hash;
 
 ## 7. 面试题
 
+<ReviewQuestionAnchor />
+
 ### 7.1 说明 HashMap 的 put 和 get 路径
 
 <!-- 面试来源：
-- 阿里巴巴：https://www.nowcoder.com/discuss/806065047708397568
 - 上海卫瓴信息科技：https://www.nowcoder.com/discuss/353159301244067840
 -->
 
-**出现公司**：阿里巴巴、上海卫瓴信息科技
+**出现公司**：上海卫瓴信息科技
 
 **考察重点**
 
 - 桶定位、哈希比较和 `equals` 比较的顺序。
 - 覆盖旧值、插入新值和触发结构变化的边界。
 
-**相关内容**：第 1 节“结构与查找路径”、第 2 节“`equals` 与 `hashCode`”。
+**相关内容**：[结构与查找路径](#1-结构与查找路径)、[`equals` 与 `hashCode`](#2-equals-与-hashcode)。
 
 <details>
 <summary>参考回答</summary>
@@ -141,6 +151,8 @@ HashMap 先取得键的哈希并做扰动，再按容量定位桶。`get` 在桶
 `put` 沿同一路径查找，相等键会替换值；不存在时新增节点。桶持续过长时可能树化，新增映射使 size 越过阈值后会扩容。平均 O(1) 的前提是哈希分布和容量合理。
 
 </details>
+
+[返回本轮自测与下一篇](#review-checkpoint)
 
 ### 7.2 HashMap 什么时候树化，为什么小容量时先扩容
 
@@ -156,7 +168,7 @@ HashMap 先取得键的哈希并做扰动，再按容量定位桶。`get` 在桶
 - 树化阈值与最小表容量的协作。
 - 扩容分散普通碰撞与树处理持续碰撞的区别。
 
-**相关内容**：第 3 节“冲突与树化”。
+**相关内容**：[冲突与树化](#hashmap-treeification)。
 
 <details>
 <summary>参考回答</summary>
@@ -181,7 +193,7 @@ HashMap 先取得键的哈希并做扰动，再按容量定位桶。`get` 在桶
 - 位掩码怎样定位桶。
 - 容量翻倍后节点为什么只有两个候选位置。
 
-**相关内容**：第 4 节“容量与扩容”。
+**相关内容**：[容量与扩容](#hashmap-resize)。
 
 <details>
 <summary>参考回答</summary>

@@ -1,0 +1,81 @@
+---
+sidebar_position: 1
+knowledge:
+  id: basic-knowledge.database.sql.query
+  type: concept
+---
+
+# SQL 查询
+
+SQL 查询用声明式条件描述需要返回的数据。本文用最小数据集练习过滤、NULL、去重、排序和分页；示例使用 MySQL 8.4 支持的基本语法，可在独立练习库执行。
+
+## 1. 面试核心 {#core}
+
+- WHERE 只保留条件为 TRUE 的行，NULL 应使用 IS NULL 判断。
+- SELECT 默认保留重复行，DISTINCT 根据所选列组合去重。
+- 没有 ORDER BY 就没有可靠的结果顺序；分页排序应包含唯一的决胜列。
+
+## 2. 最小表与过滤 {#mechanism}
+
+```sql
+CREATE TABLE candidates (
+  id INTEGER PRIMARY KEY,
+  city VARCHAR(20),
+  score INTEGER
+);
+INSERT INTO candidates VALUES
+  (1, '上海', 80), (2, '杭州', NULL),
+  (3, '上海', 95), (4, '杭州', 80);
+
+SELECT id, score
+FROM candidates
+WHERE score >= 80
+ORDER BY score DESC, id ASC;
+```
+
+结果依次为 `(3,95)、(1,80)、(4,80)`。id=2 的比较结果是 UNKNOWN，没有通过 WHERE。查询未填写成绩者应使用 `WHERE score IS NULL`，不能写 `score = NULL`。
+
+## 3. 去重与分页
+
+```sql
+SELECT DISTINCT city FROM candidates ORDER BY city;
+
+SELECT id, score FROM candidates
+WHERE score IS NOT NULL
+ORDER BY score DESC, id ASC
+LIMIT 2 OFFSET 1;
+```
+
+第一个查询返回上海、杭州各一行，具体中文排序由排序规则决定。第二个查询跳过成绩最高的一行，返回 `(1,80)、(4,80)`。只按 score 排序时，相同成绩之间没有稳定的先后保证，加入唯一 id 才能确定次序。
+
+逻辑上先形成来源行，再过滤、选取结果并去重排序；优化器可以改变物理执行方式，只要保持查询语义一致。
+
+## 4. 使用边界 {#boundaries}
+
+AND 的优先级高于 OR，混合条件应加括号表达意图。字符串比较还受字符集与排序规则影响，不能把所有数据库的大小写规则视为相同。
+
+大 OFFSET 往往需要读取并跳过大量记录，可根据访问模式改用稳定排序键的游标分页。即使排序稳定，多次查询之间发生数据写入也可能移动分页位置，需要进一步明确快照与一致性需求。
+
+## 5. 面试题
+
+### 5.1 为什么 score = NULL 查不到空值，分页时又为什么需要稳定排序？
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：NULL 的三值逻辑、分页决胜列与多次查询间的数据变化。
+
+**相关内容**：[面试核心](#core)、[最小表与过滤](#mechanism)、[使用边界](#boundaries)。
+
+<details>
+<summary>参考回答</summary>
+
+NULL 表示未知，普通相等比较得到 UNKNOWN，WHERE 不保留这种行；应使用 IS NULL。结果只有在 ORDER BY 约束下才有顺序，同分数据还需唯一决胜列。稳定排序解决同值行的任意次序，但不自动冻结多次查询间的数据变化。
+
+</details>
+
+## 6. 参考资料
+
+- [MySQL：SELECT](https://dev.mysql.com/doc/refman/8.4/en/select.html)
+- [MySQL：Working with NULL](https://dev.mysql.com/doc/refman/8.4/en/working-with-null.html)

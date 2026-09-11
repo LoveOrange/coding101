@@ -30,7 +30,7 @@ function OutlineGroup({
             <>
               <span>{entry.id}</span>
               <strong>{entry.label}</strong>
-              <small>{entry.href ? '已展开' : '规划中'}</small>
+              <small>{entry.href ? '进入阅读' : '规划中'}</small>
             </>
           );
 
@@ -52,16 +52,16 @@ function OutlineGroup({
 export default function InterviewRoadmaps(): JSX.Element {
   return (
     <Layout
-      title="面试路线 Outline 目录"
-      description="按照 8 条共享基础和 14 条岗位路线组织的技术面试学习目录。">
+      title="岗位面试路线"
+      description="从 Java 后端路线或通用基础开始复习，其他岗位方向仍在规划。">
       <main className={styles.page}>
         <header className={styles.intro}>
           <p>Interview Roadmaps</p>
-          <h1>面试路线 Outline 目录</h1>
+          <h1>岗位面试路线</h1>
           <div>
-            <strong>8 条共享基础</strong>
+            <strong>通用基础</strong>
             <span>+</span>
-            <strong>14 条岗位路线</strong>
+            <strong>Java 路线可用</strong>
           </div>
           <p>
             先选择目标岗位，再按“必会、常考、按岗选学”完成复习。路线会说明每个主题需要回答到基础、原理还是场景分析，不要求把目录中的所有内容都读完。
@@ -75,7 +75,7 @@ export default function InterviewRoadmaps(): JSX.Element {
         />
         <OutlineGroup
           title="岗位路线"
-          description="每条路线都给出第一轮最小复习集合，再根据 JD、简历项目和面试反馈补充深入内容。"
+          description="当前可用的是 Java 后端路线。其余方向为规划，尚未提供完整的岗位复习内容。"
           entries={roleOutlines}
         />
 

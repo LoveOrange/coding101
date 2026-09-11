@@ -1,0 +1,63 @@
+---
+sidebar_position: 4
+knowledge:
+  id: basic-knowledge.data-structures.queue
+  type: concept
+---
+
+# 队列
+
+队列是先进先出（FIFO）的抽象数据类型，适合按到达顺序处理任务和按层扩展搜索。队列的顺序保证与容量、阻塞、线程安全是不同属性。
+
+## 1. 面试核心 {#core}
+
+- 标准队列从尾部入队、头部出队。
+- 循环数组和维护首尾指针的链表都能实现高效端点操作。
+- 无界积压会转化为内存与延迟问题；优先队列不遵守普通 FIFO。
+
+## 2. 首尾位置与循环数组 {#mechanism}
+
+用长度为 capacity 的数组存储队列时，head 指向待出队位置，tail 指向待写入位置。每次移动位置都取模：`next = (index + 1) % capacity`。
+
+head 与 tail 相等可能表示空，也可能表示满。实现必须选定判定方式：额外维护 size，或者保留一个不使用的槽位。不能混用两套规则，否则会覆盖未消费元素。
+
+## 3. 按到达顺序处理
+
+```java
+java.util.Queue<Integer> queue = new java.util.ArrayDeque<>();
+queue.offer(10);
+queue.offer(20);
+System.out.println(queue.poll()); // 10
+System.out.println(queue.peek()); // 20，仍留在队列中
+```
+
+在 BFS 中，先到达的节点先扩展，上一层生成的节点全部处理完才进入下一层，从而得到按边数递增的访问顺序。普通任务队列也可以保持取出顺序；若多个工作线程并行执行，完成顺序仍可能不同。
+
+## 4. 使用边界 {#boundaries}
+
+生产速度长期大于消费速度时，无界队列会持续增长。设置有界容量后，需要决定满队列时阻塞、拒绝、丢弃还是让上游减速，这个决定属于业务负载策略。
+
+`ArrayDeque` 本身不提供线程安全与阻塞等待。需要跨线程交付时应选择合适的并发队列，不能在普通队列外反复检查 `isEmpty()` 就认为复合操作安全。按优先级取出任务则使用[堆](./heap.mdx)等结构。
+
+## 5. 面试题
+
+### 5.1 FIFO 队列能保证并发任务按入队顺序完成吗？
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：入队、出队和完成顺序的区别，以及并发执行的顺序约束。
+
+**相关内容**：[面试核心](#core)、[首尾位置与循环数组](#mechanism)、[使用边界](#boundaries)。
+
+<details>
+<summary>参考回答</summary>
+
+它只能约束出队顺序。多个工作线程取出任务后，执行时间和调度不同，后取出的任务可能先完成。如果业务需要结果有序，可以顺序执行，或者按业务键串行处理并对结果排序；这会增加等待或限制并行度。
+
+</details>
+
+## 6. 参考资料
+
+- [Open Data Structures：ArrayQueue](https://opendatastructures.org/ods-java/2_3_ArrayQueue_Array_Based_.html)

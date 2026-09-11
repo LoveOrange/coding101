@@ -2,7 +2,8 @@ import { themes as prismThemes } from "prism-react-renderer";
 import type { Config } from "@docusaurus/types";
 import type * as Preset from "@docusaurus/preset-classic";
 
-const isProduction = process.env.NODE_ENV === "production";
+const enableAnalytics =
+  process.env.NODE_ENV === "production" && process.env.LOCAL_PREVIEW !== "true";
 
 const stylePreviewPlugins: NonNullable<Config["plugins"]> =
   process.env.STYLE_PREVIEW === "true"
@@ -66,7 +67,7 @@ const config: Config = {
         theme: {
           customCss: "./src/css/custom.css",
         },
-        ...(isProduction
+        ...(enableAnalytics
           ? {
               gtag: {
                 trackingID: "G-Q16V88YMHD",
@@ -108,8 +109,7 @@ const config: Config = {
           label: "基础知识",
         },
         {
-          type: "docSidebar",
-          sidebarId: "leetcodeSidebar",
+          to: "/docs/basic-knowledge/algorithms/",
           position: "left",
           label: "算法练习",
         },
@@ -119,13 +119,14 @@ const config: Config = {
           position: "left",
           label: "系统设计",
         },
+        {to: "/docs/tags/campus-2027", label: "2027 校招季", position: "left"},
+        {to: "/docs/tags/interview-preparation", label: "面试准备", position: "left"},
         {
           type: "dropdown",
           label: "更多",
           position: "left",
           items: [
             { to: "/docs/tools-and-frameworks/git/", label: "工具与框架" },
-            { to: "/docs/interview/", label: "面试准备" },
             { to: "/docs/chatgpt-guide/", label: "ChatGPT 简明指南" },
             { to: "/blog", label: "Blog" },
           ],
@@ -161,7 +162,7 @@ const config: Config = {
           title: "复习资料",
           items: [
             { label: "基础知识", to: "/docs/basic-knowledge/" },
-            { label: "算法练习", to: "/docs/leetcode/re-leetcode/" },
+            { label: "算法练习", to: "/docs/basic-knowledge/algorithms/" },
             { label: "系统设计", to: "/docs/system-design/" },
           ],
         },

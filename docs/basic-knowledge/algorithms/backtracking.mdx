@@ -1,0 +1,71 @@
+---
+sidebar_position: 6
+knowledge:
+  id: basic-knowledge.algorithms.backtracking
+  type: concept
+---
+
+# 回溯
+
+回溯通过“选择、递归、撤销”枚举候选解，在当前分支确定不可能产生合法解时剪枝。它适合组合、排列与约束搜索，不保证多项式时间。
+
+## 1. 面试核心 {#core}
+
+- 路径状态只属于当前分支，递归返回后需要恢复。
+- 保存答案要复制当前路径，避免后续修改影响已保存结果。
+- 剪枝必须证明不会删去合法答案，复杂度包含输出数量。
+
+## 2. 决策树与状态恢复 {#mechanism}
+
+对互异元素生成所有子集，每个位置有“选”和“不选”两种选择。沿路径走到末端时保存当前集合。
+
+```java
+static void subsets(int[] a, int i, java.util.List<Integer> path,
+                    java.util.List<java.util.List<Integer>> result) {
+    if (i == a.length) {
+        result.add(new java.util.ArrayList<>(path));
+        return;
+    }
+    subsets(a, i + 1, path, result);
+    path.add(a[i]);
+    subsets(a, i + 1, path, result);
+    path.remove(path.size() - 1);
+}
+```
+
+以 i=0、空 path 和空 result 调用，输入 `[1,2]` 得到 `[]、[2]、[1]、[1,2]`。不选分支先访问只影响输出顺序。撤销最后一次加入，使函数返回时 path 恢复为调用前的状态。
+
+## 3. 剪枝与重复状态
+
+选择 k 个元素时，如果“已选数量 + 剩余元素数量”小于 k，就不可能补齐，可以提前结束。剪枝依据来自上界证明。
+
+输入包含重复值时，上述按位置枚举会产生值相同的子集。可以排序后在同一层跳过重复候选，但要区分“同层去重”与“路径中不可重复使用位置”，两者不能混为一个全局 visited。
+
+## 4. 使用边界 {#boundaries}
+
+n 个互异元素有 2ⁿ 个子集，复制输出总成本为 O(n·2ⁿ)。除答案外，递归栈与路径空间 O(n)；若把输出也算入空间，则为 O(n·2ⁿ)。
+
+需要最优值且许多分支共享同一后续状态时，可以考虑[动态规划](../java/algorithms/dynamic-programming-state-design.mdx)。但若要求列出所有答案，不能指望缓存消除输出本身的成本。
+
+## 5. 面试题
+
+### 5.1 回溯中直接把 path 加入结果列表为什么可能得到错误答案？
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：可变对象的引用共享、答案复制与分支状态恢复。
+
+**相关内容**：[面试核心](#core)、[决策树与状态恢复](#mechanism)、[使用边界](#boundaries)。
+
+<details>
+<summary>参考回答</summary>
+
+结果列表保存的是同一个可变对象的引用。后续追加和撤销还会修改它，最终多个结果可能都变成相同内容。保存时复制路径，递归返回时再撤销本层选择，分别保证已完成答案的独立性和下一分支的初始状态。
+
+</details>
+
+## 6. 参考资料
+
+- [Stanford CS106B：Recursive Backtracking](https://web.stanford.edu/class/archive/cs/cs106b/cs106b.1258/lectures/11-backtracking1/)

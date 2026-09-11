@@ -120,11 +120,10 @@ static void recurse() {
 ### 9.1 `StackOverflowError` 和不同 OOM 分别怎样产生
 
 <!-- 面试来源：
-- 阿里巴巴：https://www.nowcoder.com/discuss/923310928014082048
 - 腾讯：https://www.nowcoder.com/discuss/814856294694678528
 -->
 
-**出现公司**：阿里巴巴、腾讯
+**出现公司**：腾讯
 
 **考察重点**
 
@@ -132,7 +131,7 @@ static void recurse() {
 - 完整 detail message 的诊断价值。
 - OOM 不等于内存泄漏。
 
-**相关内容**：第 1 节“`Java heap space`”至第 6 节“`StackOverflowError`”。
+**相关内容**：[`Java heap space`](#1-java-heap-space)至[`StackOverflowError`](#6-stackoverflowerror)。
 
 <details>
 <summary>参考回答</summary>
@@ -146,11 +145,10 @@ static void recurse() {
 ### 9.2 线上发生 OOM 应该怎样定位
 
 <!-- 面试来源：
-- 阿里巴巴：https://www.nowcoder.com/discuss/923310928014082048
 - 高德：https://www.nowcoder.com/discuss/720058098571849728
 -->
 
-**出现公司**：阿里巴巴、高德
+**出现公司**：高德
 
 **考察重点**
 
@@ -158,7 +156,7 @@ static void recurse() {
 - 泄漏、容量不足和分配过快的区分。
 - 采集动作本身的停顿与磁盘风险。
 
-**相关内容**：第 7 节“一套按错误类型选择证据的流程”。
+**相关内容**：[一套按错误类型选择证据的流程](#7-一套按错误类型选择证据的流程)。
 
 <details>
 <summary>参考回答</summary>

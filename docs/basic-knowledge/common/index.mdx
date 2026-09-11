@@ -1,0 +1,35 @@
+---
+sidebar_position: 1
+---
+
+# 通用基础复习
+
+通用基础复习面向已有一门编程语言基础的技术求职者，覆盖现场编码、程序运行、网络通信和数据访问。后端岗位可以顺序完成下表；其他岗位根据 JD 选择涉及的阶段，语言和框架再进入对应岗位路线。
+
+## 第一轮复习
+
+优先级与回答深度分别判断：必会决定先复习什么，原理解释决定答到哪里。能独立完成停止条件后，先进入下一阶段，不需要背完所有细节。
+
+| 阶段 | 优先级／深度 | 核心阅读 | 停止条件 |
+| --- | --- | --- | --- |
+| 1. 数据结构 | 必会／原理解释 | [数据结构](../data-structures/index.mdx) | 按查找、顺序和极值需求选结构，解释时间与空间成本 |
+| 2. 算法模式 | 编码面试必会／原理解释 | [算法](../algorithms/index.mdx) | 脱离题解写出代表实现，给出不变量、复杂度和反例 |
+| 3. 程序运行 | 必会／原理解释 | [进程与线程](../operating-system/processes-threads.mdx)、[线程同步](../operating-system/synchronization.mdx)、[死锁](../operating-system/deadlock.mdx)、[虚拟内存](../operating-system/virtual-memory.mdx) | 区分共享资源、等待关系、地址转换与缺页 |
+| 4. 请求通信 | 必会／原理解释 | [计算机网络](../network/index.mdx)的必会阅读 | 串起 DNS、TCP、TLS、HTTP，判断失败发生在哪一步 |
+| 5. SQL 与约束 | 数据访问岗位必会／基础回答与实操 | [SQL](../database/sql/index.mdx)、[数据约束](../database/modeling/constraints.mdx) | 在小表上写过滤、连接与分组，并解释 NULL、重复行和约束冲突 |
+| 6. 索引与事务 | 后端必会／原理解释 | [关系型数据库](../database/index.mdx)第 2、3 节 | 推导索引范围并检查计划，画出并发读写可见性 |
+| 7. 缓存 | 后端必会／原理解释 | [Redis](../nosql/redis/index.mdx)、[缓存一致性](../nosql/redis/cache-patterns-consistency.mdx)、[缓存穿透、击穿、雪崩与热点 Key](../nosql/redis/cache-penetration-stampede-avalanche-hotkeys.mdx)、[Redis 过期](../nosql/redis/expiration.mdx)、[Redis 内存淘汰](../nosql/redis/eviction.mdx) | 解释失效、回源、并发更新和内存不足时的行为 |
+| 8. 工程与安全 | 必会／基础回答 | [Git](../../tools-and-frameworks/git/index.md)、[使用 Git 进行第一次提交](../../tools-and-frameworks/git/basic-usages/first-commit.mdx)、[测试金字塔](../java/quality/test-pyramid-contract-regression.mdx)、[测试替身](../java/quality/test-doubles-mock-stub-boundaries.mdx)、[认证与授权](../../system-design/security/authentication-authorization-trust-boundaries.mdx) | 完成并核对一次提交，为功能选择测试，区分身份与资源权限 |
+
+## 常考与深入阅读
+
+- 网络服务的运行路径：[文件描述符](../operating-system/file-descriptors.mdx)、[I/O 模型](../operating-system/io-models.mdx)、[I/O 多路复用](../operating-system/io-multiplexing.mdx)、[HTTP 缓存](../network/http-cache.mdx)。停止条件是能说明等待、读取和连接复用的边界。
+- 使用 Redis 保存重要状态时：[Redis 持久化、复制与集群](../nosql/redis/persistence.mdx)。停止条件是能解释确认成功与故障丢失窗口。
+- 涉及异步任务时：[消息队列](../middleware/kafka-rabbitmq-queue-semantics.mdx)、[消息可靠性](../middleware/message-ack-retry-dead-letter.mdx)、[消息幂等性](../middleware/idempotent-consumption-order-duplicates.mdx)。停止条件是能解释确认、重复和失败恢复。
+- 需要线上问题分析时：[可观测性](../../system-design/production/logs-metrics-traces-correlation.mdx)、[生产故障诊断](../../system-design/production/jvm-thread-sql-network-joint-diagnosis.mdx)。停止条件是能用证据定位瓶颈，而不只列工具名。
+
+## 自检与下一步
+
+完成一次“小型订单接口”口述练习：客户端如何找到服务器、请求如何被处理、订单如何写入和查询、如何避免重复提交、缓存何时失效、日志怎样定位失败。逐项引用读过的机制；这是串联练习，不要求先实现完整分布式系统。
+
+技术基础之外，还需准备目标 JD、简历项目、系统设计与面试表达。进入[面试准备](../../interview/index.mdx)和[岗位面试路线](/interview-roadmaps/)；当前可使用 [Java 后端开发面试路线](/java-interview-roadmap/)。其他岗位路线尚在规划，不能把通用基础当作完整岗位课程。

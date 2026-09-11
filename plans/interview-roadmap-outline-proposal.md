@@ -1,414 +1,285 @@
-# Coding101 面试路线 Outline 审批稿（v1）
+# Coding 101 复习知识树与文档目录
 
-> 状态：仅供内容结构审批，不参与 Docusaurus 渲染。
->
-> 更新时间：2026-08-18
+Coding 101 的复习内容按技术概念组织，岗位路线负责说明顺序、重点和停止条件。本轮展开 **Java、通用基础、系统设计、AI 应用与 Agent** 四个领域，并整理它们与现有文档的对应关系。
 
-## 1. 目标与口径
+> **状态：供 Review 的内容规划与本地样例。** 整理日期：2026-09-06。Java 路线和集合导读已有本地实现；其余新增、拆分和归属调整仍为提案，不表示内容已经完成，也不承诺面试题覆盖率。
 
-这套路线服务技术岗位求职准备，不追求堆出一份无限长的“八股题库”。读者先完成目标岗位的最小复习集合，再根据 JD、项目经历和面试反馈逐层深入。
+## 1. Review 入口
 
-- **覆盖目标**：覆盖目标岗位约 90% 的常见技术面试考点。“90%”是内容设计目标，不冒充严格统计结论；验收口径是抽样面经中的问题至少 90% 能归入现有 Topic，剩余问题多为公司业务、特定工具或研究前沿。
-- **回答深度**：基础回答侧重定义、用途和直接差异；原理解释侧重关键执行链路；场景分析侧重约束、故障和方案取舍。回答深度不是候选人职级。
-- **复习优先级**：必会、常考、按岗选学三级。必会构成第一轮最小集合；按岗选学只在 JD、项目经历或目标面试明确涉及时进入。
-- **组织方式**：共享基础只维护一份，岗位路线通过 Topic 引用进行组合；岗位页只保留该岗位独有的语言、框架、平台和场景。
-- **内容单元**：每个 Topic 包含核心结论、停止条件、自测问题，以及区分核心与深入的文章入口。
-
-## 2. 总清单：22 条 Outline
-
-### A. 共享基础（8 条）
-
-| ID | Outline | 主要服务岗位 |
-| --- | --- | --- |
-| F01 | 数据结构、算法与现场编码 | 全部研发、测开、数据、AI 岗位 |
-| F02 | 计算机基础综合：体系结构、操作系统、Linux、网络、编译原理 | 全部技术岗位 |
-| F03 | 数据库、缓存、搜索与存储系统 | 后端、大数据、测开、SRE、AI 应用 |
-| F04 | 软件工程、测试、Git、构建与交付 | 全部工程岗位 |
-| F05 | 系统设计与分布式系统 | Middle/Senior 工程岗位 |
-| F06 | 安全、隐私与供应链安全 | 前后端、移动端、SRE、测试、AI/Agent |
-| F07 | 简历、项目深挖、行为面与面试表达 | 全部岗位 |
-| F08 | 数学、机器学习与深度学习基础 | 大模型、RAG、Agent、大数据的 AI 分支 |
-
-### B. 岗位路线（14 条）
-
-| ID | Outline | 说明 |
-| --- | --- | --- |
-| R01 | Java 后端开发 | 扩充当前 Java v1，而非推倒重做 |
-| R02 | Go 后端与云原生开发 | Go runtime、并发、服务端与云原生 |
-| R03 | Python 后端与 AI 服务开发 | Django/FastAPI、异步、任务系统、AI 服务 |
-| R04 | C++ 系统与基础设施开发 | 现代 C++、Linux、网络与性能工程 |
-| R05 | Web 前端开发 | HTML/CSS/JS/TS、React/Vue、浏览器与前端架构 |
-| R06 | 移动端通用与跨平台开发 | 移动约束、离线同步、发布、Flutter/RN/KMP |
-| R07 | Android 开发 | Kotlin、Compose/Views、Jetpack、Framework |
-| R08 | iOS 开发 | Swift、SwiftUI/UIKit、并发、Runtime 与 Instruments |
-| R09 | 大数据与数据工程 | 数仓、Spark/Flink/Kafka、湖仓与治理 |
-| R10 | 软件测试与测试开发（QA/SDET） | 测试设计、自动化、性能、安全与测试平台 |
-| R11 | 运维、DevOps、SRE 与平台工程 | Linux、Kubernetes、可观测性、可靠性与平台化 |
-| R12 | 大模型算法、训练与推理 | Transformer、数据、后训练、评测、推理部署 |
-| R13 | 大模型应用与 RAG 工程 | Prompt、检索、评测、线上服务和企业级治理 |
-| R14 | AI Agent 工程 | 工具、MCP、工作流、记忆、评测、安全与运行时 |
-
-全栈开发不单独复制一套内容，推荐由 R05 前端 + R01/R02/R03 任一后端组合；AI 全栈由 R05 + R03 + R13/R14 组合。
-
-## 3. 共享基础详细 Outline
-
-### F01. 数据结构、算法与现场编码
-
-**定位**：所有技术岗位的共同必修；同一题目同时训练复杂度、沟通、正确性和可测试性。
-
-1. **Junior 01｜复杂度与编码基本功**：Big-O/Ω/Θ；时间与空间权衡；递归复杂度；输入约束；边界条件；溢出、空值和异常；手写测试用例；代码可读性。
-2. **Junior 02｜线性结构与哈希**：数组、字符串、链表、栈、队列、双端队列、哈希表、集合；冲突与扩容；LRU/LFU；位图与布隆过滤器入门。
-3. **Junior 03｜树、堆与图基础**：二叉树、BST、平衡树概念、Trie、堆、并查集、图的表示；DFS/BFS；拓扑排序；最短路与最小生成树入门。
-4. **Middle 01｜高频解题模式**：双指针、滑动窗口、前缀和/差分、二分、排序、分治、回溯、贪心、动态规划、单调栈/队列、区间问题。
-5. **Middle 02｜算法正确性与工程约束**：循环不变量；归纳证明；摊还分析；随机化；流式/外存算法；并发场景的数据结构选择；内存局部性。
-6. **Senior 01｜高级结构与场景设计**：跳表、B/B+ 树、LSM Tree、倒排索引、一致性哈希、近似统计、Count-Min Sketch、向量检索结构概念；从业务约束选择结构。
-7. **Senior 02｜面试现场能力**：澄清需求；先暴力后优化；口述复杂度；主动构造反例；增量提交；调试错误代码；把算法题连接到真实系统设计。
-
-### F02. 计算机基础综合
-
-**定位**：把数据库之外的 CS 基础放入一个循序渐进的总路线；数据库因内容量和存量文档较多独立为 F03。
-
-1. **Junior 01｜数据表示与计算机体系结构**：二进制、补码、浮点数；CPU/指令/寄存器；调用栈；内存层次；缓存局部性；中断、系统调用和用户态/内核态。
-2. **Junior 02｜进程、线程与并发**：进程/线程/协程；调度与上下文切换；临界区；互斥、信号量、条件变量；死锁；原子性、可见性、有序性。
-3. **Junior 03｜内存与文件系统**：虚拟内存、分页、TLB、缺页、堆/栈、内存映射；文件描述符、inode、目录、缓存、日志文件系统；磁盘/SSD 基础。
-4. **Junior 04｜网络分层与端到端请求**：OSI/TCP-IP；以太网、ARP、IP、路由、NAT；DNS；TCP/UDP；三次握手/四次挥手；拥塞与流控；从 URL 到页面/响应。
-5. **Middle 01｜HTTP、TLS 与现代网络**：HTTP/1.1、HTTP/2、HTTP/3/QUIC；长连接、连接池、缓存、Cookie/Session；HTTPS、证书和 TLS 握手；代理、网关、负载均衡、CDN、WebSocket。
-6. **Middle 02｜Linux I/O 与系统诊断**：阻塞/非阻塞、同步/异步；select/poll/epoll/kqueue 概念；零拷贝；socket；常用 Linux 命令；CPU、内存、磁盘、网络与进程排障。
-7. **Middle 03｜编程语言与编译原理**：词法/语法分析；AST；符号表和类型检查；IR；解释、AOT、JIT；链接与装载；GC；闭包、协程和异常的运行时实现。
-8. **Senior 01｜内存模型与性能**：缓存一致性、伪共享、内存屏障、语言内存模型、NUMA、锁竞争、无锁基础；profile/trace/flame graph；性能实验设计。
-9. **Senior 02｜系统综合题**：高并发网络服务；资源隔离；进程崩溃与恢复；网络抖动/丢包/半开连接；内存泄漏/碎片；把 OS、网络、编译和运行时证据串成排障链路。
-
-### F03. 数据库、缓存、搜索与存储系统
-
-**定位**：复用并扩充现有 `docs/basic-knowledge/database` 与 Redis 内容。
-
-1. **Junior 01｜关系模型与 SQL**：表、键、约束；范式与反范式；DDL/DML；连接、聚合、子查询、窗口函数、CTE；NULL 语义；SQL 手写题。
-2. **Junior 02｜索引与执行计划**：B/B+ 树；聚簇/非聚簇；主键/二级/联合/覆盖索引；最左匹配；选择性；回表；EXPLAIN；索引失效与慢查询定位。
-3. **Middle 01｜事务与并发控制**：ACID；隔离级别；脏读/不可重复读/幻读；锁与间隙锁；MVCC；快照读/当前读；死锁检测；乐观/悲观并发控制。
-4. **Middle 02｜存储引擎与查询优化**：页、Buffer Pool、WAL/redo/undo；Checkpoint；优化器、统计信息、Join 算法；分区表；连接池；批处理；冷热数据。
-5. **Middle 03｜缓存与 Redis**：数据类型和编码；过期/淘汰；RDB/AOF；主从、哨兵、Cluster；缓存穿透/击穿/雪崩；热点 Key/大 Key；缓存与数据库一致性；分布式锁边界。
-6. **Middle 04｜NoSQL、搜索与向量存储**：KV、文档、宽列、时序、图数据库；Elasticsearch/Lucene 倒排索引；分词、相关性与聚合；向量索引、过滤和混合检索基础。
-7. **Senior 01｜复制、分片与高可用**：同步/异步复制；主从切换；读写分离；分库分表；一致性哈希；全局 ID；跨分片事务；备份恢复；RPO/RTO；数据校验。
-8. **Senior 02｜存储系统设计**：B+ Tree 与 LSM Tree 权衡；写放大/读放大/空间放大；一致性与可用性；容量规划；多租户隔离；数据生命周期、合规与成本。
-
-### F04. 软件工程、测试、Git、构建与交付
-
-1. **Junior 01｜代码与协作基本功**：Git 工作区/暂存区/提交；branch/rebase/merge；冲突处理；代码评审；命名、错误处理、日志、配置和文档。
-2. **Junior 02｜设计原则与重构**：模块化、抽象边界、耦合/内聚、SOLID、组合优于继承、常用设计模式；识别重复、长函数、隐式依赖和过度设计。
-3. **Junior 03｜测试基础**：单元/集成/E2E；测试金字塔；mock/stub/fake；fixtures；参数化；覆盖率的价值与局限；可测试性设计；TDD 的适用边界。
-4. **Middle 01｜依赖、构建与制品**：包管理、语义化版本、锁文件、依赖冲突；编译/打包；制品库；可复现构建；SBOM；多模块/monorepo 基础。
-5. **Middle 02｜CI/CD 与发布**：流水线、质量门禁、环境管理、数据库迁移；滚动/蓝绿/金丝雀发布；feature flag；回滚；GitOps；发布审计。
-6. **Middle 03｜可观测性与故障定位**：结构化日志、指标、追踪、事件；correlation ID；错误预算入门；告警质量；从症状到证据；故障复盘。
-7. **Senior 01｜工程效能与质量体系**：研发度量的误区；测试策略；架构守护；依赖治理；平台化与 paved road；技术债；渐进式迁移；开发者体验。
-8. **Senior 02｜交付决策**：风险分级；变更管理；跨团队接口；build vs buy；升级/弃用策略；生产事故责任边界；用数据评估工程改进。
-
-### F05. 系统设计与分布式系统
-
-1. **Junior 01｜面试方法**：需求澄清；功能/非功能需求；规模估算；API/数据模型；画核心链路；识别瓶颈；总结权衡。
-2. **Middle 01｜通用组件**：反向代理、负载均衡、缓存、数据库、对象存储、搜索、消息队列、任务调度、限流器、ID 生成、配置/注册中心。
-3. **Middle 02｜数据与异步**：同步/异步；事件驱动；投递语义；幂等；去重；顺序；重试与退避；DLQ；Saga/Outbox；批处理与流处理。
-4. **Middle 03｜扩展性与可靠性**：水平扩展；无状态化；分片；复制；超时、熔断、隔离、降级、背压；过载保护；单点与故障域。
-5. **Senior 01｜一致性与共识**：CAP/PACELC；线性一致性/最终一致性；quorum；租约；逻辑时钟；主备复制；Raft/Paxos 概念；分布式事务取舍。
-6. **Senior 02｜容量、性能和成本**：QPS、带宽、存储、峰值；P50/P95/P99；排队；热点；多区域；容灾；RPO/RTO；容量余量；单位经济性。
-7. **Senior 03｜经典设计题**：短链、Feed、聊天、通知、搜索、秒杀、支付、网盘、监控、日志、爬虫、任务调度、推荐/特征平台、RAG/Agent 平台。
-8. **架构岗位选学｜架构演进面试**：演进路线；兼容与迁移；多租户；安全与合规；可运维性；架构决策记录；失败方案复盘。只使用候选人真实经历。
-
-### F06. 安全、隐私与供应链安全
-
-1. **Junior 01｜Web 与 API 安全**：认证/授权；Session/JWT/OAuth/OIDC 概念；XSS、CSRF、SQL 注入、SSRF、文件上传、越权、重放；CORS 与 CSP。
-2. **Junior 02｜密码学常识**：加密/哈希/MAC/签名；随机数、盐和 KDF；TLS；密钥轮换；不要自创密码协议。
-3. **Middle 01｜安全开发生命周期**：威胁建模；输入验证与输出编码；最小权限；secret 管理；审计日志；依赖漏洞；SAST/DAST/IAST；安全测试。
-4. **Middle 02｜主机、容器与云安全**：IAM/RBAC；网络策略；镜像与运行时；沙箱；供应链、SBOM、签名和 provenance；CI/CD 权限边界。
-5. **Middle 03｜数据安全与隐私**：数据分类；传输/静态加密；脱敏；租户隔离；保留与删除；备份；隐私最小化；合规意识。
-6. **Senior 01｜架构与事件响应**：零信任；纵深防御；安全边界；攻击面；滥用检测；安全降级；漏洞处置；取证与复盘；风险接受。
-7. **Senior 02｜AI/Agent 专项**：Prompt Injection、数据投毒、模型/工具越权、敏感信息泄露、沙箱逃逸；工具白名单；人类审批；结果校验与可追责。
-
-### F07. 简历、项目深挖、行为面与面试表达
-
-1. **Junior 01｜简历与自我介绍**：岗位匹配；成果量化；技术栈可信度；项目背景/目标/个人贡献；一分钟和三分钟版本。
-2. **Junior 02｜项目深挖**：架构图、核心链路、数据模型、技术选型、难点、故障、测试、上线、指标；准备“为什么不用另一种方案”。
-3. **Middle 01｜问题解决与复盘**：模糊需求澄清；调试路径；线上事故；性能优化；冲突协作；失败项目；从证据到结论。
-4. **有经验岗位｜技术沟通**：向不同受众解释复杂问题；设计评审；代码评审分歧；依赖协调；书面决策与风险同步。只使用候选人真实经历。
-5. **有经验岗位｜业务与技术决策**：从用户、成本和风险解释技术选择；build vs buy；速度与质量；短期交付与长期架构平衡。
-6. **通用｜面试过程**：现场编码沟通；系统设计表达；反问；薪酬、动机与离职原因；面后记录与知识缺口回填。
-
-### F08. 数学、机器学习与深度学习基础
-
-1. **Junior 01｜数学与概率**：向量/矩阵、导数/梯度、链式法则、常见分布、条件概率、Bayes、期望/方差、最大似然、信息熵/KL。
-2. **Junior 02｜机器学习基本范式**：监督/无监督；分类/回归/聚类/降维；特征工程；训练/验证/测试；偏差-方差；过拟合；正则化。
-3. **Junior 03｜评估与实验**：Precision/Recall/F1/AUC；回归和排序指标；不平衡数据；交叉验证；数据泄漏；置信区间；A/B 测试基础。
-4. **Middle 01｜经典模型**：线性/逻辑回归、树模型、GBDT、SVM、聚类、PCA；损失函数、优化方法和模型选择。
-5. **Middle 02｜深度学习**：MLP、CNN、RNN、Attention；反向传播；初始化、归一化、Dropout；SGD/Adam；学习率；混合精度。
-6. **Middle 03｜工程框架与数据**：PyTorch/JAX 概念；Dataset/DataLoader；GPU/显存；checkpoint；实验跟踪；数据版本；可复现性。
-7. **Senior 01｜MLOps 与生产系统**：训练/特征/模型流水线；离线在线一致性；模型服务；漂移；监控；回滚；成本与容量；Responsible AI。
-
-## 4. 岗位路线详细 Outline
-
-### R01. Java 后端开发（Java v2）
-
-**依赖**：F01–F07。**调整**：保留当前 16 个 Topic 和已有链接，扩为约 8 个阶段、36–44 个 Topic。
-
-1. **Junior 01｜Java 语言与对象模型**：类型、运算、流程；OOP；接口/抽象类；重载/重写；equals/hashCode；String；异常；泛型；注解；反射。
-2. **Junior 02｜标准库与集合**：List/Set/Map/Queue；HashMap/ConcurrentHashMap；迭代器；Stream/Lambda；日期时间；I/O/NIO；序列化边界。
-3. **Middle 01｜JVM 与运行时**：字节码；类加载/双亲委派；对象布局；运行时内存；GC Roots；垃圾回收算法与收集器；JIT；逃逸分析；OOM。
-4. **Middle 02｜并发与 JMM**：线程生命周期；synchronized/volatile/CAS；happens-before；Lock/AQS；线程池；CompletableFuture；并发容器；死锁和性能诊断。
-5. **Junior→Middle｜Spring 与数据访问**：IoC/DI、AOP/代理、Bean 生命周期、循环依赖；Spring MVC 请求链；Spring Boot 自动配置/启动；事务失效；MyBatis/JPA；连接池；测试。
-6. **Middle 02｜服务端生态**：REST/RPC、Netty 概念；MySQL/Redis；Kafka/RabbitMQ；缓存一致性；消息可靠性；定时任务；搜索；文件/对象存储。
-7. **Middle→Senior｜微服务与生产治理**：注册/发现、配置、网关、限流、熔断、重试、幂等、分布式事务；认证授权；日志/指标/追踪；JVM/SQL/线程/GC 联合排障。
-8. **架构岗位选学｜系统设计与演进**：DDD 边界、模块化单体与微服务、容量与高可用、数据拆分、异步化、容灾、多租户、性能与成本；只在目标岗位明确考察时进入。
-
-### R02. Go 后端与云原生开发
-
-**依赖**：F01–F07，重点复用 F02/F05。
-
-1. **Junior 01｜Go 语言基础**：类型、零值、数组/slice/map/string、函数、方法、接口、组合、泛型、错误、panic/recover、defer、包与 module。
-2. **Middle 01｜数据结构与 runtime**：slice 扩容；map 实现与并发限制；interface 表示；逃逸分析；内存分配；GC；栈增长；编译、链接和跨平台构建。
-3. **Middle 02｜并发模型**：goroutine、channel、select、关闭语义；sync/atomic；context；竞态/死锁/泄漏；worker pool；GMP 调度；Go 内存模型。
-4. **Junior→Middle｜网络与服务开发**：net/http；middleware；REST；gRPC/Protobuf；连接池；超时/取消；流式通信；WebSocket；常用 Web 框架的边界。
-5. **Middle 03｜数据与微服务**：database/sql、事务、ORM 取舍；Redis、MQ；配置/发现；幂等、重试、熔断、限流；服务优雅启动/停止。
-6. **Middle→Senior｜工程与诊断**：testing/benchmark/fuzz；race detector；pprof/trace；日志/指标/追踪；依赖与代码生成；容器、Kubernetes 和 CI/CD。
-7. **Senior｜高性能与云原生架构**：高并发网络服务、内存/GC/调度调优、控制器与 Operator 思想、平台 API、多租户、可靠性、容量、成本和系统设计。
-
-### R03. Python 后端与 AI 服务开发
-
-**依赖**：F01–F07；AI 服务方向再依赖 F08/R13。
-
-1. **Junior 01｜Python 语言与数据模型**：内置类型、可变性、作用域、函数、类、协议、dunder、异常、模块、类型注解、dataclass/Pydantic 概念。
-2. **Middle 01｜高级特性与 CPython**：迭代器/生成器、装饰器、闭包、上下文管理器、描述符、MRO/元类概念；引用计数、GC、内存管理、GIL 与 free-threaded 取舍。
-3. **Middle 02｜并发与异步**：thread/process/asyncio；event loop；coroutine/task/future；取消、超时、背压；CPU/I/O workload 选择；任务队列。
-4. **Junior→Middle｜Web 与 API**：HTTP；WSGI/ASGI；Django/DRF、FastAPI/Flask；middleware/DI；认证授权；ORM/迁移；WebSocket；OpenAPI；输入校验。
-5. **Middle 03｜数据、测试与后台任务**：PostgreSQL/MySQL、Redis、Kafka/RabbitMQ；Celery 等任务模型；pytest/fixtures/mock；数据一致性、幂等和重试。
-6. **Middle→Senior｜性能与交付**：profiling；async 陷阱；序列化；worker 模型；依赖/虚拟环境/打包；容器；可观测性；安全；容量和成本。
-7. **Senior｜服务架构与 AI 集成**：模块化/微服务、API gateway、多租户、长任务/流式响应、GPU 服务编排、模型路由、RAG/Agent 后端、可靠性与系统设计。
-
-### R04. C++ 系统与基础设施开发
-
-**依赖**：F01–F07，F02 为核心。
-
-1. **Junior 01｜C++ 语言与对象模型**：指针/引用/const；函数与类；继承/多态/虚函数；拷贝/移动；模板入门；编译单元、头文件、链接。
-2. **Junior→Middle｜生命周期与内存**：stack/heap；RAII；new/delete 与 malloc/free；智能指针；对象布局；对齐；UB；内存泄漏、悬空指针、越界；sanitizer。
-3. **Middle 01｜STL 与泛型编程**：容器、迭代器、算法、allocator；复杂度和迭代器失效；模板推导、特化、SFINAE/concepts；optional/variant/string_view/span。
-4. **Middle 02｜现代 C++ 与构建**：右值/移动/完美转发；lambda；constexpr；modules/coroutine 概念；CMake；ABI；静态/动态库；编译和链接诊断。
-5. **Middle 03｜并发与内存模型**：thread、mutex、condition_variable、future；atomic；memory order；线程池；lock-free 基础；伪共享和缓存局部性。
-6. **Middle→Senior｜Linux、网络与性能**：process/thread、IPC、socket、epoll、零拷贝；网络服务模型；gdb/perf/flame graph；内存池；延迟/吞吐优化。
-7. **Senior｜系统设计**：高性能服务器、存储引擎、消息/交易系统、资源管理、容错、并发安全 API、跨平台/ABI 演进、容量与技术取舍。
-
-### R05. Web 前端开发
-
-**依赖**：F01、F02 网络部分、F04–F07。
-
-1. **Junior 01｜Web 基础与 CSS**：语义化 HTML、表单、可访问性；CSS 选择器/层叠/盒模型；Flex/Grid；定位；响应式；动画；兼容性。
-2. **Junior 02｜JavaScript 核心**：类型与隐式转换；作用域/闭包/this/原型；模块；迭代器；Promise/async；事件循环；错误处理；常用手写题。
-3. **Middle 01｜TypeScript**：结构化类型、联合/交叉、泛型、条件/映射类型、类型收窄、声明文件、类型体操边界、编译配置与工程迁移。
-4. **Middle 02｜浏览器、网络与安全**：DOM/BOM、事件、渲染流水线、回流/重绘、存储、跨域、HTTP 缓存、Service Worker；XSS/CSRF/CSP；URL 到页面。
-5. **Junior→Middle｜React/Vue 双主线**：组件、状态、生命周期/Hooks/Composition API、响应式、VDOM、调度与更新、路由、表单、状态管理；原理与源码边界。
-6. **Middle 03｜工程化与测试**：Node.js 与前端工具链；npm/pnpm、Vite/Webpack/Rollup、Babel/SWC、ESLint、CSS 方案、monorepo；unit/component/E2E、Playwright/Cypress、视觉回归。
-7. **Middle→Senior｜性能与渲染架构**：Core Web Vitals；资源/图片/字体；懒加载/分包/预取；缓存；CSR/SSR/SSG/ISR/hydration；SEO；Next/Nuxt；性能监控。
-8. **Senior｜前端系统设计**：组件/API 设计、数据流、design system、微前端、BFF、实时协作、大列表/可视化、离线应用、国际化、灰度、可访问性治理与团队规范。
-
-### R06. 移动端通用与跨平台开发
-
-**依赖**：F01、F02、F04–F07；Android/iOS 候选人先学本路线，再进入 R07/R08。
-
-1. **Junior 01｜移动平台约束**：应用/页面生命周期；前后台；进程被杀；屏幕和输入；权限；资源、电量、网络和存储限制；多尺寸与可访问性。
-2. **Junior 02｜UI、状态与导航**：声明式/命令式 UI；布局、列表、动画、手势；状态保存；路由/深链；组件化；设计规范。
-3. **Middle 01｜数据与连接**：HTTP/WebSocket；序列化；本地数据库/Key-Value/文件；缓存；离线优先；同步、冲突解决；弱网、重试和幂等。
-4. **Middle 02｜并发与系统能力**：主线程规则；异步任务；后台执行；推送；定位、相机、媒体、蓝牙等能力；隐私权限与数据安全。
-5. **Middle 03｜质量与性能**：单元/UI/集成测试；设备矩阵；启动、卡顿、内存、耗电、包体和网络优化；崩溃/ANR/hang 诊断；端侧可观测性。
-6. **Middle→Senior｜交付与架构**：签名、渠道、商店审核、灰度、热修复边界；模块化；feature flag；兼容策略；移动端系统设计。
-7. **扩展｜跨平台**：Flutter/Dart、React Native/JSI、Kotlin Multiplatform、Compose Multiplatform；渲染/桥接模型；原生互操作；选型和迁移成本。
-
-### R07. Android 开发
-
-**依赖**：R06 + F01/F02/F04–F07。
-
-1. **Junior 01｜Kotlin/JVM**：空安全、data/sealed class、扩展、委托、高阶函数、泛型、协程语法；Java 互操作；集合与 JVM 基础。
-2. **Junior 02｜Android 组件与生命周期**：Activity/Service/BroadcastReceiver/ContentProvider；Intent；启动模式；Fragment；进程与任务栈；配置变化和状态恢复。
-3. **Junior→Middle｜UI：Views 与 Compose**：View 绘制/布局/事件分发；RecyclerView；Compose state/recomposition/layout；导航、动画、自定义 UI、适配与无障碍。
-4. **Middle 01｜架构与 Jetpack**：UI/Data/Domain 分层、UDF、ViewModel、Lifecycle、Navigation、Room、WorkManager、DataStore、DI；MVVM/MVI；模块边界。
-5. **Middle 02｜并发、网络与数据**：Coroutine/Flow；线程切换和取消；Retrofit/OkHttp；缓存、离线同步；数据库；后台限制、推送与深链。
-6. **Middle→Senior｜系统原理**：Handler/Looper/MessageQueue；Binder/IPC；Zygote；AMS/WMS/PMS；Window；ClassLoader；ART/GC；应用启动和包安装链路。
-7. **Middle→Senior｜性能、测试与构建**：启动、渲染、内存、ANR、耗电、包体；Profiler/Perfetto/LeakCanary；unit/instrumentation/Compose test；Gradle、R8、Baseline Profile。
-8. **Senior｜大型应用架构**：组件化/插件化边界、多进程、动态化边界、车机/折叠屏/大屏、稳定性平台、灰度发布、团队 API 与迁移策略。
-
-### R08. iOS 开发
-
-**依赖**：R06 + F01/F02/F04–F07。
-
-1. **Junior 01｜Swift 与 Objective-C 互操作**：value/reference、protocol/extension、generic、error、closure、optional、访问控制；Runtime 基础；桥接与混编。
-2. **Junior 02｜内存与对象生命周期**：ARC、strong/weak/unowned、循环引用、autorelease pool、copy-on-write、struct/class 取舍、内存布局概念。
-3. **Junior→Middle｜UIKit 与 SwiftUI**：App/Scene/ViewController 生命周期；Auto Layout；Table/Collection View；SwiftUI state/data flow、navigation、layout、animation；互操作。
-4. **Middle 01｜并发与事件系统**：GCD、OperationQueue、RunLoop；async/await、TaskGroup、Actor、MainActor、Sendable；取消、优先级和数据竞争。
-5. **Middle 02｜网络、数据与系统能力**：URLSession；缓存/弱网；Codable；Core Data/SQLite/文件；通知、后台任务、推送、深链、权限和 Keychain。
-6. **Middle→Senior｜系统与渲染原理**：Responder Chain、消息派发、KVC/KVO、Runtime、Core Animation、渲染循环、dyld、启动链路。
-7. **Middle→Senior｜质量、性能与交付**：XCTest/UI test；Instruments；启动、hang/hitch、内存、耗电、包体；签名、证书、TestFlight、商店审核、隐私清单。
-8. **Senior｜大型应用架构**：MVC/MVVM/TCA/VIPER 取舍；模块化；依赖管理；Swift/SwiftUI 渐进迁移；多平台；稳定性与可观测性；团队规范。
-
-### R09. 大数据与数据工程
-
-**依赖**：F01–F07；需要 Java/Scala/Python 中至少一条语言子路线。
-
-1. **Junior 01｜SQL 与数据建模**：复杂 SQL、窗口函数；OLTP/OLAP；范式；维度建模、星型/雪花；事实/维度；数仓分层；指标口径和数据血缘。
-2. **Junior→Middle｜Hadoop 生态**：HDFS 架构、读写、复制、HA、小文件；MapReduce/shuffle；YARN；Hive 分区/分桶/文件格式/执行与优化；HBase 读写与 Region；ZooKeeper 协调基础。
-3. **Middle 01｜Spark**：RDD/DataFrame/Dataset；DAG/stage/task；Catalyst/Tungsten；shuffle；join；缓存；数据倾斜；内存与资源调优；Structured Streaming。
-4. **Middle 02｜Flink**：DataStream/Table/SQL；event/process time；watermark/window；state/timer；checkpoint/savepoint；exactly-once；backpressure；状态与作业调优。
-5. **Middle 03｜Kafka 与数据集成**：partition/replica/ISR；producer/consumer；offset；顺序、幂等、事务；rebalance；积压；schema；CDC；ETL/ELT 和 connector。
-6. **Middle→Senior｜湖仓与批流一体**：Parquet/ORC；Iceberg/Hudi/Delta 概念；metadata、partition evolution、compaction；对象存储；batch/stream 统一语义。
-7. **Senior 01｜数据质量、治理与平台**：调度、依赖、SLA；质量规则；回溯/重跑；血缘、catalog、权限、脱敏；多租户；成本；可观测性和事故处理。
-8. **Senior 02｜数据系统设计**：实时数仓、用户画像、日志/埋点、CDC、推荐特征、流式聚合；容量、延迟、一致性、正确性、容灾和演进。
-
-### R10. 软件测试与测试开发（QA/SDET）
-
-**依赖**：F01–F07；测试开发需选择 Java/Python/Go 之一。
-
-1. **Junior 01｜测试基础与 SDLC**：质量模型；验证/确认；测试级别/类型；静态/动态测试；敏捷/DevOps 中的测试；shift-left/right；风险驱动测试。
-2. **Junior 02｜用例与缺陷**：等价类、边界值、判定表、状态迁移、因果图、pairwise、探索式；需求评审；测试计划；缺陷生命周期、报告和复现。
-3. **Junior→Middle｜Web/API/移动/数据库测试**：HTTP、抓包、接口断言、契约、鉴权、幂等；浏览器/设备兼容、弱网；SQL 校验；日志定位；常见场景题。
-4. **Middle 01｜编程与自动化基础**：Python/Java；数据结构与算法；pytest/JUnit；fixture/parametrize/mock；Selenium/Playwright/Cypress/Appium；Page Object；等待与隔离。
-5. **Middle 02｜自动化框架设计**：分层、驱动模型、数据/环境/账号管理、并发执行、失败重试边界、报告、截图/日志/trace、flaky test 治理、覆盖率和 ROI。
-6. **Middle 03｜非功能测试**：性能场景、负载模型、TPS/RPS/延迟/错误率、JMeter/k6/Locust；瓶颈分析；安全测试；可靠性/容灾/混沌；可访问性测试。
-7. **Middle→Senior｜CI/CD 与质量门禁**：测试金字塔/奖杯；契约测试；测试数据与环境；容器/K8s；流水线；发布验证；线上监控、流量回放与 canary。
-8. **Senior｜测试平台与质量架构**：用例/执行/压测平台；精准测试与影响分析；覆盖模型；服务虚拟化；质量度量；AI 辅助测试；组织级质量策略和效能权衡。
-
-### R11. 运维、DevOps、SRE 与平台工程
-
-**依赖**：F02–F07；自动化开发建议选择 Go/Python。
-
-1. **Junior 01｜Linux、Shell 与网络**：进程/线程、systemd、权限、文件系统、包、日志、cron；Bash/Python；DNS/TCP/HTTP/TLS；常用排障命令。
-2. **Junior 02｜主机、存储、云与服务运维**：CPU/内存/磁盘/网络指标；文件描述符；RAID/LVM；虚拟化；VPC/负载均衡/对象存储/IAM 基础；备份恢复；Nginx；数据库/缓存/MQ 基础运维；基线和变更。
-3. **Middle 01｜自动化与 IaC**：配置管理、Ansible；Terraform/Pulumi 概念；镜像；不可变基础设施；secret；环境漂移；资产/配置/权限管理。
-4. **Middle 02｜容器与 Kubernetes**：namespace/cgroup/union FS；镜像和网络；Pod/Deployment/StatefulSet/Service/Ingress；调度；CNI/CSI/CRI；RBAC；Operator/CRD。
-5. **Middle 03｜CI/CD、发布与 GitOps**：流水线、制品、环境、滚动/蓝绿/金丝雀、回滚、数据库变更、feature flag、Argo/Flux 概念、供应链安全。
-6. **Middle→Senior｜可观测性与 SRE 原则**：metrics/logs/traces；Prometheus/Grafana/OpenTelemetry；SLI/SLO/SLA；错误预算；告警设计；toil；容量和性能。
-7. **Senior 01｜事件与可靠性工程**：on-call、分级响应、故障指挥、排障、postmortem；过载/级联故障；容灾演练；RPO/RTO；混沌和可靠性测试。
-8. **Senior 02｜平台工程**：内部开发者平台、自助服务、paved road、策略即代码、多集群/多云、租户隔离、成本治理、平台 API、体验与采用率。
-
-### R12. 大模型算法、训练与推理
-
-**依赖**：F01、F02 性能部分、F04–F08。
-
-1. **Junior 01｜NLP 与 Transformer 基础**：tokenization/embedding；attention；multi-head；FFN；residual/normalization；位置编码；encoder/decoder；训练目标和生成。
-2. **Middle 01｜模型架构细节**：RoPE、ALiBi、MHA/MQA/GQA、RMSNorm、SwiGLU、MoE、长上下文；decoder-only；多模态和 reasoning 模型概念。
-3. **Middle 02｜数据与预训练**：采集、清洗、去重、质量、混合和采样；tokenizer；数据泄漏；scaling law；优化器/LR；checkpoint；稳定性；合成数据。
-4. **Middle 03｜分布式训练**：data/tensor/pipeline/expert parallel；ZeRO/FSDP；通信与集合操作；显存估算；混合精度；gradient checkpointing；故障恢复和利用率。
-5. **Middle 04｜后训练与对齐**：SFT；LoRA/QLoRA/PEFT；preference data；DPO/PPO/RLHF/RLAIF 概念；reward model；reasoning/post-training；灾难性遗忘。
-6. **Middle→Senior｜评测与安全**：任务/能力/偏好/事实性/鲁棒性；污染；LLM-as-judge 与人评；偏差；红队；安全对齐；评测集和回归。
-7. **Senior 01｜推理与服务**：prefill/decode、KV cache、continuous batching、quantization、speculative decoding、并行推理、吞吐/首 token/逐 token 延迟、调度和弹性。
-8. **Senior 02｜研究与系统设计**：训练失败诊断、loss/gradient/数据问题；模型/数据/算力权衡；复现实验；阅读论文；训练/评测/推理平台设计；成本和容量。
-
-### R13. 大模型应用与 RAG 工程
-
-**依赖**：R03 或其他后端路线 + F03–F08；理解 R12 的前两阶段。
-
-1. **Junior 01｜模型 API 与 Prompt**：消息/角色、token/context、采样参数、structured output、function calling、streaming；zero/few-shot；模板、版本和基本安全。
-2. **Junior→Middle｜RAG 数据入口**：解析、清洗、切块、metadata、embedding、向量库；索引更新、删除、权限和版本；文档/表格/图片的处理边界。
-3. **Middle 01｜检索与排序**：dense/sparse/hybrid；BM25；ANN；filter；query rewrite/decomposition；multi-query；reranker；Top-K；召回率、MRR/NDCG 和延迟。
-4. **Middle 02｜生成与对话**：上下文组装、引用、拒答、grounding；长上下文；history/memory；多轮指代；Prompt Injection；输出验证和业务规则。
-5. **Middle 03｜评测体系**：golden set；检索/生成/端到端指标；事实性、引用正确性、拒答、格式；LLM judge、人评校准、A/B、bad case 分类和回归集。
-6. **Middle→Senior｜生产工程**：模型选择/路由/fallback；cache；batch；限流；重试；成本、P95、token；可观测性；prompt/模型/索引版本；灰度和回滚。
-7. **Senior｜企业级架构**：多租户与 ACL；数据新鲜度；增量索引；合规/隐私；模型网关；供应商切换；SLA；容量；RAG vs fine-tuning vs long context 的决策。
-
-### R14. AI Agent 工程
-
-**依赖**：R13 + F04–F08；编码型 Agent 还需对应岗位路线。
-
-1. **Junior 01｜Agent 基本循环**：model → decide → tool → observe → repeat；workflow 与 autonomous agent 区别；状态、停止条件、失败边界和人类确认。
-2. **Middle 01｜工作流模式**：prompt chaining、routing、parallelization、orchestrator-workers、evaluator-optimizer；何时用确定性流程，何时允许模型决策。
-3. **Middle 02｜工具与协议**：tool schema/description；structured I/O；function calling；MCP 的 client/server/resource/tool/prompt 概念；认证；超时、重试、幂等、分页和错误语义。
-4. **Middle 03｜上下文与记忆**：system/user/tool context；短期/长期记忆；RAG；文件和结构化 artifact；摘要/压缩；context budget；信息新鲜度和隔离。
-5. **Middle 04｜计划与执行控制**：任务分解；动态 replanning；checkpoint；恢复；长任务；审批点；预算/步数限制；重复循环检测；补偿和回滚。
-6. **Middle→Senior｜多 Agent**：角色和边界；共享状态/消息；manager/peer/debate；并行与汇总；冲突、重复劳动、通信成本、终止和可解释性。
-7. **Senior 01｜评测与可观测性**：task/trial/trajectory/outcome；确定性 grader、模型 grader、人评；多次采样；工具选择/参数正确性；trace；回归、线上反馈和 A/B。
-8. **Senior 02｜安全与可信**：最小权限；沙箱/VM/网络隔离；secret；Prompt Injection；不可信工具输出；越权和数据泄漏；审计；人类控制；红队与 containment。
-9. **Senior 03｜Agent 运行时与架构**：durable execution、队列、事件、并发、租约、状态机、长任务恢复、多租户、模型/工具路由、成本、SLA、build vs buy 和故障复盘。
-
-## 5. 覆盖矩阵与去重规则
-
-### 5.1 各岗位必须引用的共享基础
-
-| 岗位组 | 必修共享 Outline | 按岗位选修 |
-| --- | --- | --- |
-| Java/Go/Python 后端 | F01–F07 | Python AI 服务补 F08 |
-| C++ 系统开发 | F01–F07，F02 深入 | 需要数据服务时补 F03/F05 |
-| Web 前端 | F01、F02 网络、F04–F07 | Node/BFF 补后端与 F03 |
-| Android/iOS/跨端 | F01、F02、F04–F07 | 强联网/数据产品补 F03/F05 |
-| 大数据 | F01–F07 | AI 数据方向补 F08 |
-| 测试开发 | F01–F07 | 测试平台选择一条后端路线 |
-| SRE/平台工程 | F02–F07 | 自动化开发选择 Go/Python |
-| LLM | F01、F02、F04–F08 | 服务化补 R03/R11 |
-| RAG/Agent | F03–F08 + 一条后端路线 | UI 产品补 R05 |
-
-### 5.2 内容只出现一次的规则
-
-- SQL、索引、事务、Redis 原理统一归 F03；岗位页只描述“岗位需要掌握到什么深度”。
-- TCP/HTTP/TLS、进程线程、内存和 I/O 统一归 F02；前端、移动、SRE 只增加岗位场景。
-- CI/CD、Git、测试原则和可观测性基础归 F04；SRE/测开继续讲专业深度。
-- 分布式一致性、可靠性和系统设计方法归 F05；Java/Go/大数据/Agent 只增加领域案例。
-- 认证授权、Web 安全、供应链和隐私归 F06；Agent 额外覆盖 Prompt Injection、沙箱和工具权限。
-- 算法题不在每个岗位重复列；岗位页只说明题型倾向，例如前端手写 Promise、C++ 并发结构、大数据 SQL、AI 数学推导。
-
-### 5.3 面经抽样映射检查
-
-| 面经中的典型追问 | 归属 |
+| 文档 | 本次要看的内容 |
 | --- | --- |
-| JS 事件循环、浏览器缓存、回流重绘、XSS/CSRF、React/Vue 更新原理 | R05-02/04/05，F06 |
-| Android 事件分发、内存泄漏、Handler/Binder、Jetpack、Compose 重组 | R07-03/04/06/07 |
-| iOS ARC/循环引用、RunLoop、Swift Concurrency、MVVM、列表性能 | R08-02/03/04/06/07 |
-| Spark shuffle/倾斜、小文件，Flink watermark/state/checkpoint/exactly-once，Kafka offset | R09-03/04/05 |
-| 等价类/边界值、接口自动化、flaky test、性能压测、测试平台 | R10-02/03/05/06/08 |
-| Linux 排障、Docker namespace/cgroup、K8s 调度/网络/存储、Prometheus、事故复盘 | R11-01/04/06/07 |
-| Java HashMap/JUC/JVM/Spring、缓存一致性、消息可靠性、微服务治理 | R01-02/03/04/05/06/07，F03/F05 |
-| Go slice/map/channel/GMP/GC/pprof、gRPC、优雅退出 | R02-02/03/04/06 |
-| C++ RAII/智能指针/STL、memory order、epoll/零拷贝、性能分析 | R04-02/03/05/06 |
-| Transformer、RoPE/GQA、训练/微调、评测、KV cache/量化/推理优化 | R12-01/02/03/05/06/07 |
-| chunk/embedding/hybrid retrieval/rerank、引用/拒答、RAG 评测与线上成本 | R13-02/03/04/05/06 |
-| function calling/MCP、工作流、多 Agent、记忆、trajectory eval、Prompt Injection/沙箱 | R14-02/03/04/06/07/08 |
+| [Java](./knowledge-tree/java.md) | 知识节点、第一轮考点、Topic 导读入口与 Java 集合示例 |
+| [通用基础](./knowledge-tree/foundations.md) | 数据结构与算法、操作系统、网络、数据库、缓存、中间件及工程基础 |
+| [系统设计](./knowledge-tree/system-design.md) | 设计方法、分布式原理、常见设计模式与完整设计题 |
+| [AI 应用与 Agent](./knowledge-tree/agent.md) | 模型调用、RAG、上下文、工具、运行时、评估、安全与框架实践 |
+| [存量文档目录](./knowledge-tree/document-inventory.md) | 全部 264 个文档文件的当前标题、路径、内容形态与建议归属，以及 11 个重定向页面 |
 
-## 6. 对当前 Java v1 的审阅结论
+先检查第 5 节的复习入口和 Java 分纲中的集合示例，再确认四个领域的第一轮最小集合。存量目录用于逐篇核对，不要求按文件顺序阅读。
 
-### 可以保留
+## 2. 现有内容与主要缺口
 
-- `InterviewRoadmap` 的 phase/topic/level/priority 展示模型清晰，可作为所有岗位路线的视觉模板。
-- 当前四阶段从语言运行时到架构的顺序正确。
-- Topic 弹窗、文章入口、计划中状态和已有数据库/网络/系统设计链接可以继续复用。
+本次扫描 `docs/` 下的全部 Markdown/MDX 文件，并抽读技术文章、栏目索引、设计题和文风样稿。文件数包含导航页、草稿和占位页，**不能当作已完成文章数**。
 
-### 需要补齐
+| 当前位置 | 文件数 | 现状与本轮判断 |
+| --- | ---: | --- |
+| `docs/basic-knowledge/java/` | 123 | 多数主题已有正文；通用算法和测试概念需要调整归属 |
+| `docs/basic-knowledge/` 下除 Java 外的内容 | 33 | 已有哈希表、数据库索引与事务、部分网络、Redis 和消息内容；SQL、操作系统和基础数据结构存在明显缺口 |
+| `docs/system-design/` | 68 | 分布式与可靠性概念较多；完整设计题较少，Pastebin 仅有标题，奶茶店设计仍为草稿 |
+| `docs/leetcode/` | 28 | 保留为练习与已有题解；后续重点建设算法主题 |
+| `docs/tools-and-frameworks/` | 5 | 目前都是 Git 内容，第一次提交页面只有标题；测试、构建和交付散落在其他目录 |
+| `docs/chatgpt-guide/` | 3 | 产品使用指南与简短的 LLM 介绍，尚不能承接 Agent 工程复习 |
+| `docs/interview/` 与 `docs/intro.md` | 4 | 已有站点介绍、面试流程和复习指南 |
+| **合计** | **264** | 仓库文档盘点，不是逐篇技术验收 |
 
-- 当前只有 16 个 Topic，无法独立支撑“约 90% Java 面试考点”的目标。
-- Java 层缺少泛型、异常、反射/注解、Stream、I/O/NIO、字节码、GC/JIT 等。
-- Spring 层缺少 AOP/代理细节、Boot 自动配置/启动、MyBatis/JPA、Web 容器与测试。
-- 后端层缺少 RPC/Netty、微服务治理、搜索、认证授权、分布式事务和可靠消息。
-- 生产层缺少可观测性、线程/GC/SQL 联合排障、容量、灰度、容灾和安全。
-- Senior 能力不能只用“系统设计/分布式一致性”代表，还要覆盖演进、成本、跨团队决策和事故复盘。
+当前[路线目录数据](../src/data/interviewRoadmaps/outlineCatalog.ts)列出 8 个共享基础入口和 14 个岗位入口，6 个共享基础入口已链接到现有内容，岗位中只有 Java 带有可访问的路线链接。[Java 路线数据](../src/data/interviewRoadmaps/java.ts)组织了 9 个阶段、42 个复习 Topic。知识树的统一元数据只在少量文档中出现，路线仍直接维护文章标题和链接；自动从知识节点生成全部路线属于待建设能力。
 
-### 渲染前建议调整的数据模型
+优先补齐核心前置知识，把已有文章放回合适的分支，并让路线区分核心阅读、深入阅读和内容缺口。
 
-本轮不改渲染代码。审批通过后建议把嵌套 Topic 改成“共享 Topic Catalog + 路线中的 Topic 引用”，否则 14 条岗位路线会复制数据库、网络和系统设计内容。建议新增：
+## 3. 行业参考与采用方式
 
-- `levelRange` 或 `requiredDepth`：允许同一 Topic 在不同岗位要求不同深度。
-- `prerequisites`：显式展示前置 Topic。
-- `skills`/`interviewQuestions`/`practice`：区分知识点、典型追问和练习。
-- `roleNotes`：保存岗位特定的掌握要求，不复制 Topic 正文。
-- `sourceTags` 与 `lastReviewedAt`：支持面经来源和内容时效审计。
+以下判断来自本轮查阅的公开目录和可访问正文，是本项目的编辑取舍。用户提到的 “guru” 同时参考 **Design Gurus** 与 **Refactoring.Guru**。Design Gurus 的课程详情抓取失败，本轮仅依据官方公开介绍，不推断付费章节内容。
 
-## 7. 调研依据（抽样）
+| 参考 | 可观察到的组织方式 | Coding 101 的采用方式 |
+| --- | --- | --- |
+| [小林 coding：图解系统](https://www.xiaolincoding.com/os/) | 按进程、内存、文件与网络 I/O 等机制展开，图解承担解释工作 | 用状态变化、时序和数据路径解释机制；标题沿用标准概念名 |
+| [JavaGuide](https://javaguide.cn/) | Java 主线连接数据库、分布式、系统设计及 AI 应用等共享内容 | 检查后端主题是否遗漏；路线引用共享文章，正文按概念拆分 |
+| [Design Gurus](https://www.designgurus.io/) | 区分系统设计基础、完整设计题和算法解题模式 | 基础、模式和综合练习分开；用少量代表练习检验迁移能力 |
+| [Refactoring.Guru](https://refactoring.guru/design-patterns/catalog) | 按创建型、结构型和行为型组织设计模式，并提供语言实现入口 | 面向对象设计先选少量能解释变化点的模式；通用模式与 Java 实现分开 |
+| [Hello Interview](https://www.hellointerview.com/learn/system-design/in-a-hurry/introduction) 与 [Delivery Framework](https://www.hellointerview.com/learn/system-design/in-a-hurry/delivery) | 从面试所需能力反推核心内容，另设深入材料；设计回答先满足需求，再讨论关键瓶颈 | 第一轮按需要回答的问题选择内容；设计题依次展开需求、接口与数据、主链路、扩展和故障 |
+| [Hello 算法](https://www.hello-algo.com/chapter_hello_algo/) | 按复杂度、数据结构和算法主题组织 | 算法按主题建设；题解作为练习入口，解释操作次数、不变量和边界输入 |
+| [Hugging Face Agents Course](https://huggingface.co/learn/agents-course/en/unit0/introduction) | 基础概念之后进入框架、用例和评估作业 | 先建立通用执行模型，再选一种框架实现；实践有可检验的任务结果 |
+| [Anthropic：Building effective agents](https://www.anthropic.com/engineering/building-effective-agents) | 区分固定工作流与模型自主决策，讨论复杂度、工具和反馈 | 工作流、Agent 执行循环、多 Agent 协作分开；评估、安全和停止条件进入主干 |
+| [NN/g：Progressive Disclosure](https://www.nngroup.com/articles/progressive-disclosure/) | 优先展示主要选项，通过明确入口提供次要内容 | 默认展示本轮复习范围，后续学习保留可见入口；是否改善本站使用体验仍需试读验证 |
 
-面经用于识别高频问题，官方资料用于校正知识边界和现代工程实践。
+这些参考支持选题与结构判断，不能证明某个主题在招聘中的出现频率。“必会／常考／按岗选学”是面向指定路线的初始建议，后续用目标 JD 和可核验面经校准。
 
-- 前端：[MDN Front-end Curriculum](https://developer.mozilla.org/en-US/curriculum/about-curriculum/)、[2025 字节前端面经](https://www.nowcoder.com/discuss/745084418779287552)
-- Android：[Android App Architecture](https://developer.android.com/topic/architecture)、[2025 Android 面经](https://www.nowcoder.com/discuss/797066691023736832)
-- iOS：[Apple Swift Concurrency](https://developer.apple.com/documentation/swift/concurrency)、[SwiftUI Performance](https://developer.apple.com/documentation/xcode/understanding-and-improving-swiftui-performance)、[iOS 面经](https://www.nowcoder.com/discuss/353153993587236864)
-- 大数据：[Spark Structured Streaming](https://spark.apache.org/docs/latest/streaming/index.html)、[Flink Checkpointing](https://nightlies.apache.org/flink/flink-docs-stable/docs/dev/datastream/fault-tolerance/checkpointing/)、[数据开发面经](https://www.nowcoder.com/creation/subject/32230ac1fb5249a99b47e1ea5647ea4f)
-- 测试：[ISTQB CTFL v4](https://istqb.org/certifications/certified-tester-foundation-level-ctfl-v4-0/)、[OWASP WSTG](https://owasp.org/www-project-web-security-testing-guide/)、[2025 测试面经整理](https://www.nowcoder.com/discuss/765573069506113536)
-- SRE/运维：[Google SRE Book](https://sre.google/sre-book/table-of-contents/)、[Kubernetes Observability](https://kubernetes.io/docs/concepts/cluster-administration/observability/)、[运维开发面经](https://www.nowcoder.com/discuss/353156915016441856)
-- Java/Go/C++/Python：[Java 2025 面试图谱](https://www.nowcoder.com/discuss/769886497045557248)、[Go 面经](https://www.nowcoder.com/discuss/795663630367727616)、[C++ 面经](https://www.nowcoder.com/feed/main/detail/51566a62649542f68e9b313ac4ba225a)、[Python 后端面试问题样本](https://www.reddit.com/r/technepal/comments/1nl5z6m)
-- LLM/RAG/Agent：[Hugging Face LLM Course](https://huggingface.co/learn/llm-course/en/chapter1/1)、[大模型算法面经汇总](https://www.nowcoder.com/discuss/848942791164981248)、[RAG 项目面试关注点](https://ac.nowcoder.com/discuss/1649000)、[Building Effective Agents](https://www.anthropic.com/engineering/building-effective-agents)、[Agent Evals](https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents)
+## 4. 知识树总览
 
-## 8. 审批项
+```text
+技术复习
+├── Java
+│   ├── 语言与类型、标准库、集合
+│   ├── I/O、并发、JVM
+│   └── Spring、数据访问、Java 工程实践
+├── 通用基础
+│   ├── 数据结构与算法
+│   ├── 操作系统与计算机网络
+│   ├── 数据库、缓存、消息与搜索
+│   └── Git、测试、构建交付、可观测性与应用安全
+├── 系统设计
+│   ├── 设计方法与接口、数据建模
+│   ├── 分布式系统与分布式数据
+│   ├── 扩展、可靠性、架构与演进
+│   └── 设计题：内容、消息、交易、搜索、任务与 AI 应用
+└── AI 应用与 Agent
+    ├── 大模型基础与模型调用
+    ├── 检索增强生成与上下文管理
+    ├── 工具调用、工作流与 Agent 执行
+    ├── 状态恢复、记忆与多 Agent 协作
+    └── 评估、安全、服务化与框架实践
+```
 
-进入渲染和数据文件编写前，需要确认以下四项：
+每个叶子概念只有一个正文归属。语言实现、设计模式和综合案例可以引用它。
 
-1. 是否接受“8 条共享基础 + 14 条岗位路线”的两层结构。
-2. 是否保留 Python 后端、C++ 系统开发，以及将 Android/iOS/移动通用拆开。
-3. 是否接受把“大模型算法”“大模型应用/RAG”“Agent”拆成三条路线。
-4. Java v2 是否按本稿补齐到约 8 个阶段、36–44 个 Topic，并作为其他路线的数据结构样板。
+### 4.1 前置关系
+
+```mermaid
+flowchart TD
+  DS[数据结构与复杂度] --> JC[Java 集合]
+  OS[进程、线程与内存] --> JV[Java 并发与 JVM]
+  NET[HTTP 与网络 I/O] --> WEB[Spring Web 与模型服务]
+  DB[SQL、索引与事务] --> DA[Java 数据访问与 Spring 事务]
+  DB --> DIST[复制、分片与分布式数据]
+  DIST --> SD[系统设计案例]
+  NET --> SD
+  LLM[大模型调用] --> TOOL[工具调用与 Agent 执行]
+  LLM --> RAG[RAG 与上下文]
+  DS --> SEARCH[搜索与向量索引]
+  SEARCH --> RAG
+  TOOL --> STATE[持久化、恢复与副作用控制]
+  DB --> STATE
+  TOOL --> EVAL[Agent 评估与安全验证]
+  RAG --> EVAL
+  STATE --> AISD[AI 应用设计案例]
+  EVAL --> AISD
+```
+
+前置关系只要求相关核心节点。例如，Agent 检索需要索引与查询基础，不必先完成全部数据库内容。
+
+### 4.2 归属边界
+
+| 容易重复的内容 | 正文归属 | 引用边界 |
+| --- | --- | --- |
+| 哈希表／HashMap | 通用数据结构／Java 实现 | HashMap 只展开 Java API 与实现差异 |
+| SQL 事务／Spring 事务／Saga | 数据库／Java 框架／分布式数据 | 分别解释数据库保证、框架管理、跨资源业务流程 |
+| 缓存一致性／Redis／案例中的缓存 | 通用缓存／Redis 实现／案例 | 案例只解释该业务的 key、失效和故障取舍 |
+| 零拷贝 | 通用 I/O | Java API 作为实现示例，Java 路线直接引用 |
+| 测试金字塔／JUnit | 通用测试／Java 工具 | 不按语言复制测试分层原则 |
+| 向量索引／RAG | 通用搜索与存储／AI 应用 | RAG 解释文档处理、召回、证据和生成链路 |
+| 重试与幂等／Agent 恢复 | 系统可靠性／Agent 执行 | Agent 解释模型与工具重放的特有状态边界 |
+| API 鉴权／提示注入 | 通用应用安全／AI 应用安全 | Agent 引用鉴权，只新增模型决策中的不可信内容问题 |
+| AI 应用完整设计 | 系统设计案例 | Agent 分支链接案例，实践页讲具体实现和验证 |
+
+## 5. 复习入口、优先级与阅读范围
+
+求职者第一次进入网站，需要立即知道从哪里开始、当前要会什么、达到什么程度可以继续。首页和路线首先帮助读者开始一项具体复习；完整目录用于查找和扩展阅读。
+
+### 5.1 优先级与深度
+
+**优先级依附于路线，深度依附于本次复习目标。** 两者都不固定绑定候选人职级。分纲中的建议用于首次 Review，换岗位时可以调整。
+
+| 维度 | 取值 | 使用方式 |
+| --- | --- | --- |
+| 复习优先级 | 必会／常考／按岗选学 | 必会进入第一轮；常考随后补充；选学需要 JD、项目或面试明确涉及 |
+| 回答深度 | 基础回答／原理解释／场景分析 | 分别要求说清定义与差异、执行链路、约束与代价 |
+| 阅读层次 | Topic 导读／核心阅读／深入阅读 | 导读标明本轮考点与关键结论；核心阅读覆盖相应机制、示例和边界，深入阅读补充追问 |
+| 内容状态 | 已有正文／已有待整理／草稿或占位／拟新增 | 有文件不代表通过技术核验，导航页不等于知识已覆盖 |
+
+第一轮覆盖本岗位的必会考点，深度以能完成对应自测为准。第二轮补充常考内容，也会回到第一轮的同一概念，继续做原理追问和场景分析。按岗选学由 JD、项目和目标面试决定，必要时可以提前进入第一轮。不能把所有原理解释留到第二轮，也不能按整篇文章给所有读者设同一个停止位置。
+
+### 5.2 读者进入与继续复习
+
+Java 路线已按轮次呈现内容，并记录本轮自测进度。集合导读与三篇核心文章已接通阅读、自测和继续入口；下表也包含其他 Topic 后续需要完成的体验。
+
+| 位置 | 默认呈现 | 后续入口 |
+| --- | --- | --- |
+| 首页与岗位入口 | 已有可用岗位、适用基础与“开始第一轮复习”；再次访问可继续上次内容 | 其他岗位与完整目录；规划中的路线单独说明状态 |
+| 岗位路线 | 第一轮的有序任务、本轮考点、下一项；选择依据和停止条件就近说明 | “第二轮：常考与追问”“按岗选学”“全部内容”，可以主动切换 |
+| Topic 的 index | 本轮重点、简短的关键结论、指定阅读位置、完成标准；主入口为“开始本轮阅读” | 后续考点及学习触发条件，完整文章目录放在后面 |
+| 概念文章 | 当前要回答的问题、面试核心、支撑回答的机制与最小示例；清楚标出本轮阅读范围 | 深入章节或独立文章，在核心范围结束后提供 |
+| 阅读结束 | 用一道代表问题检查能否解释，允许标记“待巩固”或“能解释”，继续下一项 | 返回本轮进度、复习薄弱项；读者可以跳过已会内容 |
+
+第一屏突出当前这轮的范围与下一步。全站文章总数、完整知识目录和内部编号不作为开始复习前必须处理的信息。已有基础的读者可以先自测，再决定是否阅读；第一次使用无需先填写长问卷。搜索直达文章时也提供所属 Topic 和复习入口。
+
+进度只计算当前选定范围，并说明“能解释”来自读者自评；打开页面只记为阅读中。内容尚未完成时显示缺口，不计作可完成任务。本轮项数需要在考点筛选后计算，不能把已有文章总数换一个标题当作复习负担。阅读时间先作为编辑估计，经过试读后再给出适用基础和耗时范围。
+
+### 5.3 Topic 的 index
+
+Java 的 J01—J12 每组保留一个 `index` 入口，提供**重点导读、关键结论与阅读顺序**。首屏让读者看清本轮需要回答的 3—5 个问题，并直接进入相应文章或章节。关键结论保留成立条件及简短原因，已有基础的读者可以据此回忆和自测。
+
+不统一要求每个 index 压缩出一篇能独立讲完整个 Topic 的教材。JVM、Spring 等分组需要进一步选择本轮考点；基础薄弱时，由标准概念文章承接解释。index 不必成为每次阅读的中转页，路线的“继续复习”可以直达尚未完成的内容。
+
+每个考点都要对应阅读位置和可检验的完成标准。核心与深入内容可以位于同一篇文章的不同章节；第一轮必须用到的解释和边界直接展开，不能为了页面短而藏进深入阅读。入口中的概括关联标准正文，修改结论时同步检查；岗位路线只保存选择和顺序。
+
+### 5.4 现有页面与优先调整
+
+当前[首页](../src/pages/index.tsx)提供第一轮复习入口，[Java 路线](../src/components/InterviewRoadmap/index.tsx)默认显示 18 项必会任务。完整路线保留 40 个 Topic，分为 18 项必会、15 项常考和 7 项按岗选学。第二轮同时提供常考内容与已学主题的深入阅读，其进度和第一轮分别保存。
+
+每篇路线阅读已明确标记是否属于核心，第一轮任务另有相应考点和自测问题。例如，《BigDecimal》和《包装类型》进入数值相关的核心阅读；集合第一轮覆盖基本选型、ArrayList 和 HashMap，HashMap 的容量与访问顺序追问进入第二轮。当前选择仍需结合目标岗位和实际试读校准。
+
+[Java 集合导读](../docs/basic-knowledge/java/collections/index.mdx)与三篇文章使用同一份[阅读安排](../src/data/reviewPlans/javaCollections.ts)，已提供阅读范围、核心阅读结束位置、原文面试题入口和浏览器本地进度。其他 Topic 目前通过路线专题窗口复习，尚未全部接入文章内的继续导航。
+
+本地检查使用 `npm run preview:local`：构建后在 `http://127.0.0.1:3000` 启动预览，不启用分析统计。页面交互实现与目录提案分开验收，尚未发布这些变更。
+
+知识节点后续至少保存：稳定 ID、标准标题、唯一正文位置、前置节点、相关节点和内容状态。路线保存：节点引用、顺序、优先级、深度、考点、停止条件与明确选择的文章或章节。核心阅读不能只通过文章位置和篇数推断。现有 `data-structures.hash-table` 和 `java.collections.hash-map` 等 ID 继续沿用。
+
+分纲中的 `J01`、`F01`、`S01`、`A01` 只是本次 Review 分组编号；其中 `F01` 等不是线上目录的同名 ID，也不是新的知识节点编码体系。
+
+## 6. 文档目录提案
+
+以下为目标目录；已有文件的当前位置与调整建议见[存量文档目录](./knowledge-tree/document-inventory.md)。拟新增文件名在分纲中列出，尚未建立页面。
+
+```text
+docs/
+├── intro.md
+├── interview/                    # 面试流程、复习方法、项目表达
+├── basic-knowledge/
+│   ├── java/                     # 语言、集合、JVM、并发、Spring 等
+│   ├── data-structures/
+│   ├── algorithms/               # 从 Java 下归入通用分支
+│   ├── operating-system/         # 新建；包含通用 I/O 与 Linux 基础
+│   ├── network/
+│   ├── database/                 # SQL、索引、事务、引擎与具体数据库
+│   ├── nosql/redis/
+│   └── middleware/               # 消息、搜索及向量索引
+├── system-design/
+│   ├── method/                   # 整理重复的 system-design 层级
+│   ├── distributed-system/
+│   ├── distributed-data/
+│   ├── patterns/                 # 扩展模式与任务调度
+│   ├── reliability/
+│   ├── availability/
+│   ├── architecture/decisions/   # 架构决策与演进，面向相关岗位追问
+│   ├── microservices/
+│   ├── ood/
+│   ├── cases/                    # 完整设计题，包括 AI 应用
+│   └── mit6.824/                 # 专题选读
+├── tools-and-frameworks/
+│   ├── git/
+│   ├── testing/
+│   ├── build/
+│   ├── production/               # 交付、观测、诊断
+│   └── security/
+├── ai/
+│   ├── llm/
+│   ├── rag/
+│   ├── agents/
+│   ├── evaluation/
+│   ├── security/
+│   ├── serving/
+│   └── frameworks/               # LangGraph、Spring AI 等实现
+├── leetcode/                     # 已有题解与练习入口
+└── chatgpt-guide/                # 产品资料，独立于岗位主路径
+```
+
+读者导航建议为“复习路线、Java、通用基础、系统设计、AI 与 Agent、算法练习”。Java 的物理路径继续保留 `basic-knowledge/java/`，导航独立展示。岗位入口由 `src/pages/` 和路线数据承接，不在 `docs/` 再写一份 Java 路线。
+
+Java 的 Topic 导读优先改造现有 `index.mdx`；J01—J03 和 J07—J08 分别增设独立入口，上层语言和并发索引继续承担目录导航。12 个入口的标题、位置和状态见 [Java 分纲](./knowledge-tree/java.md)。
+
+落地时同步修改索引、路线引用和标题，并为变动 URL 保留跳转。现有 `src/pages/docs/` 的 11 个页面都是重定向，不作为额外文章计数。当前阶段只审目录，不迁移页面。
+
+## 7. Coding 101 的文风
+
+**技术主题直接给出核心结论，正文解释原因，再交代会改变回答的条件。** 以已确认的 [Java 泛型](../docs/basic-knowledge/java/language/generics.mdx)为主要样稿，结合 `write-like-linsama` 的直接、克制和因果表达。[文风校准草案](./style-calibration/2026-08-28/STYLE-GUIDE-DRAFT.md)中的待定项继续保持待定。
+
+| 内容类型 | 结构与篇幅边界 |
+| --- | --- |
+| 栏目目录与岗位路线 | 目标、前置、顺序、重点、停止条件、下一步；默认呈现当前一轮，直接链接导读或指定阅读内容 |
+| Topic 导读 | 本轮考点、带条件的关键结论、对应阅读与完成标准；后续学习说明触发条件，篇幅以能迅速做出阅读决定为准 |
+| 技术主题 | 标准概念名作标题；开头说明范围，按需给 3—5 条“面试核心”；机制、最小示例、结果、边界，默认 5—10 分钟可复习 |
+| 算法主题 | 适用问题与约束、不变量、最小实现、复杂度、边界、代表练习 |
+| 系统设计 | 需求与约束、接口和数据、最小读写路径、瓶颈、代价、故障与验证；完整练习可超过技术短文篇幅 |
+| Agent 主题 | 明确输入、模型决策、工具、状态和停止条件；验证任务结果、失败行为、耗时与成本 |
+| 实践教程 | 前提、步骤、验证；版本差异和失败处理紧跟相关动作 |
+
+图表达结构、时序和状态变化，表格比较选择条件。独立概念或打断主线的深入内容拆成单篇。标题和段首直接说明技术对象，删除刻意对立、抽象比喻、机械排比和重复结论。
+
+技术主题默认保留 1—3 道代表性面试题，采用“出现公司／考察重点／相关内容／默认收起的参考回答”。公司只采用可核验公开面经，链接放在源码注释。尚无来源的题目先作为编辑候选，不补写公司归属。
+
+[事务隔离级别样稿](./style-calibration/2026-08-28/02-technical-transaction-isolation.md)和 [Pastebin 样稿](./style-calibration/2026-08-28/05-system-design-pastebin.md)仍待 Review，不能据此宣称所有文体已定稿。下一轮各选一篇通用基础、系统设计与 Agent 样稿验证，再决定批量建设范围。
+
+## 8. 岗位入口与建设顺序
+
+| 岗位或入口 | 本轮安排 | 内容组合 |
+| --- | --- | --- |
+| Java 后端开发 | 首批细化；已有路线 | Java + 通用基础核心 + 系统设计基础，AI 按 JD 选择 |
+| AI 应用与 RAG 工程 | 首批规划；路线待建设 | 任一服务端语言 + 模型调用 + RAG + 评估 + 通用服务能力 |
+| AI Agent 工程 | 首批规划；路线待建设 | AI 应用基础 + 工具与执行 + 恢复、安全、评估 + 一个可验证项目 |
+| 共享基础与系统设计 | 首批补齐正文与索引 | 为上述路线提供按需阅读入口 |
+| Go、Python、C++ 后端或系统开发 | 后续展开语言分支 | 复用共享基础；Agent 示例不等于已建好 Python 路线 |
+| Web 前端、移动通用、Android、iOS | 保留入口，后续规划 | 补齐语言、平台与端侧设计后再组合路线 |
+| 大数据与数据工程、测试开发、SRE 与平台工程 | 保留入口，后续规划 | 本轮仅提供部分前置，不宣称覆盖这些岗位 |
+| 大模型算法、训练与推理 | 后续独立规划 | 数学、机器学习、训练和推理优化不作为 Agent 的默认前置 |
+
+建议建设顺序：
+
+1. **核定第一轮范围**：按目标岗位逐项对应考点、阅读内容和完成标准，标清占位页及前置缺口。
+2. **验证复习入口**：先用 Java 集合试做路线入口、index 导读、核心阅读与自测，检查读者能否直接开始并判断何时继续，再扩展 J01—J12。
+3. **补齐复习主线**：补充线性结构、树与堆、SQL、进程与线程、虚拟内存、DNS/TLS、Redis 过期与淘汰；整理共享内容归属。Agent 先完成模型调用、工具执行、评估和安全。
+4. **用案例检验知识树**：内容分享、订单支付、知识库问答、客服 Agent。缺少原理时回到唯一归属补节点。
+
+## 9. 本轮 Review 决策
+
+| 决策 | 当前建议 |
+| --- | --- |
+| 首批范围 | Java、共享基础、系统设计、AI 应用与 Agent；其他岗位保留入口 |
+| 首轮复习规模 | 默认展示经过筛选的本轮范围，考点、指定阅读与完成标准逐项对应 |
+| Topic 导读入口 | Java 的 J01—J12 每组一个 index，重点与关键结论先行；不要求全部改写成独立的精简教材 |
+| 首个体验样例 | Java 集合；先验证开始复习、找到考点、定位解释与完成自测，再铺开其他入口 |
+| 内容归属 | 按第 4.2 节与存量目录整理，通用知识跨路线引用 |
+| 数据库范围 | MySQL 作为 Java 后端默认实现，通用原理独立；PostgreSQL 按岗位扩展 |
+| Agent 实现 | 原理保持框架无关；Python/LangGraph 与 Java/Spring AI 为可选实现，默认只练一条 |
+| 设计题首批 | 内容分享、订单支付、知识库问答、客服 Agent |
+| 文风 | Java 泛型作为技术基线，其他文体先验收样稿 |
+
+Review 可以直接指出分组编号、文章标题，以及“保留／删除／补充／调整优先级／调整归属”。

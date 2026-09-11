@@ -181,7 +181,7 @@ List<Profile> profiles = userIds.parallelStream()
 - 数据源拆分质量为什么影响并行流。
 - 阻塞任务为什么会降低 Fork/Join 的利用率。
 
-**相关内容**：第 1 节“从 Spliterator 开始拆分数据”、第 2 节“ForkJoinPool 执行分治任务”。
+**相关内容**：[从 Spliterator 开始拆分数据](#1-从-spliterator-开始拆分数据)、[ForkJoinPool 执行分治任务](#2-forkjoinpool-执行分治任务)。
 
 <details>
 <summary>参考回答</summary>
@@ -207,7 +207,7 @@ Fork/Join 把大任务递归拆成小任务，Worker 主要从自己的双端队
 - commonPool 共享、副作用、顺序与线程上下文。
 - 怎样用基准和容量约束判断是否采用并行流。
 
-**相关内容**：第 4 节“外部可变状态会产生数据竞争”、第 5 节“阻塞 I/O 会占住共享 Worker”、第 7 节“什么情况下可能获得收益”。
+**相关内容**：[外部可变状态会产生数据竞争](#4-外部可变状态会产生数据竞争)、[阻塞 I/O 会占住共享 Worker](#5-阻塞-io-会占住共享-worker)、[什么情况下可能获得收益](#7-什么情况下可能获得收益)。
 
 <details>
 <summary>参考回答</summary>

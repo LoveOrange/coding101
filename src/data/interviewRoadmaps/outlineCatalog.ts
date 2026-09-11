@@ -1,5 +1,3 @@
-import type {RoadmapNavigationGroup} from '../../components/InterviewRoadmap';
-
 export type OutlineCatalogEntry = {
   id: string;
   label: string;
@@ -7,12 +5,12 @@ export type OutlineCatalogEntry = {
 };
 
 export const sharedFoundationOutlines: OutlineCatalogEntry[] = [
-  {id: 'F01', label: '数据结构、算法与现场编码'},
-  {id: 'F02', label: '计算机基础综合'},
-  {id: 'F03', label: '数据库、缓存、搜索与存储'},
-  {id: 'F04', label: '软件工程、测试与交付'},
-  {id: 'F05', label: '系统设计与分布式系统'},
-  {id: 'F06', label: '安全、隐私与供应链安全'},
+  {id: 'F01', label: '数据结构、算法与现场编码', href: '/docs/basic-knowledge/algorithms/'},
+  {id: 'F02', label: '计算机基础综合', href: '/docs/basic-knowledge/common/'},
+  {id: 'F03', label: 'SQL、索引与事务', href: '/docs/basic-knowledge/database/'},
+  {id: 'F04', label: 'Git 与版本控制', href: '/docs/tools-and-frameworks/git/'},
+  {id: 'F05', label: '系统设计与分布式系统', href: '/docs/system-design/'},
+  {id: 'F06', label: '安全、隐私与供应链安全', href: '/docs/system-design/security/'},
   {id: 'F07', label: '简历、项目与面试表达'},
   {id: 'F08', label: '数学、机器学习与深度学习'},
 ];
@@ -33,33 +31,3 @@ export const roleOutlines: OutlineCatalogEntry[] = [
   {id: 'R13', label: '大模型应用与 RAG 工程'},
   {id: 'R14', label: 'AI Agent 工程'},
 ];
-
-export function createOutlineNavigation(
-  activeOutlineId: string,
-): RoadmapNavigationGroup[] {
-  const toNavigationItems = (entries: OutlineCatalogEntry[]) =>
-    entries.map((entry) => {
-      if (entry.id === activeOutlineId) {
-        return {label: `${entry.id} · ${entry.label}`, state: 'active' as const};
-      }
-
-      if (entry.href) {
-        return {label: `${entry.id} · ${entry.label}`, href: entry.href};
-      }
-
-      return {
-        label: `${entry.id} · ${entry.label}`,
-        state: 'planned' as const,
-        badge: '规划中',
-      };
-    });
-
-  return [
-    {
-      label: '总览',
-      items: [{label: '全部 Outline', href: '/interview-roadmaps/'}],
-    },
-    {label: '共享基础 · 8', items: toNavigationItems(sharedFoundationOutlines)},
-    {label: '岗位路线 · 14', items: toNavigationItems(roleOutlines)},
-  ];
-}

@@ -1,0 +1,79 @@
+---
+sidebar_position: 2
+knowledge:
+  id: basic-knowledge.data-structures.linked-list
+  type: concept
+---
+
+# 链表
+
+链表通过节点之间的链接组织元素。它适合已知节点位置后的局部修改；按下标定位仍需要遍历。本文以单链表为主，比较双向链表的额外能力。
+
+## 1. 面试核心 {#core}
+
+- 随机访问和按值查找为 O(n)，节点不要求连续存储。
+- 单链表在已知前驱时插入、删除为 O(1)，寻找前驱的成本另算。
+- 双向链表可在已知节点时直接修改两侧链接，但需要更多空间。
+
+## 2. 节点与链接 {#mechanism}
+
+单链表节点保存值和 `next`。头引用指出第一个节点，尾节点的 `next` 为空。双向链表还保存 `prev`，便于反向遍历和删除已知节点。
+
+```text
+head → A → B → C → null
+```
+
+在 A 后插入 X，先令 `X.next = A.next`，再令 `A.next = X`。顺序颠倒可能让 B 及后续节点失去可达路径。删除 B 时令 `A.next = B.next`，结构变成 A → C。
+
+## 3. 反转单链表
+
+```java
+static final class Node {
+    int value;
+    Node next;
+    Node(int value) { this.value = value; }
+}
+
+static Node reverse(Node head) {
+    Node previous = null;
+    Node current = head;
+    while (current != null) {
+        Node next = current.next;
+        current.next = previous;
+        previous = current;
+        current = next;
+    }
+    return previous;
+}
+```
+
+循环开始时，`previous` 指向已反转的前缀，`current` 指向尚未处理的后缀。保存 `next` 后才能改变链接，否则会丢失剩余节点。输入 1 → 2 → 3 得到 3 → 2 → 1，时间 O(n)，额外空间 O(1)。该实现假设链表无环，并会修改原链表。
+
+## 4. 使用边界 {#boundaries}
+
+删除头节点、空链表、只有一个节点以及更新尾引用需要单独检查。虚拟头节点可以统一部分边界，但不改变遍历复杂度。
+
+“已知待删节点”不总能让单链表 O(1) 删除：一般仍需前驱。把后继值复制到当前节点的技巧不能处理尾节点，也改变了节点身份，不适合存在外部节点引用的业务。
+
+## 5. 面试题
+
+### 5.1 如何反转单链表，修改链接时需要注意什么？
+
+<!-- 面试来源：美团：https://www.nowcoder.com/discuss/353154495385378816 。原面经询问反转链表／快速排序最坏复杂度；具体边界说明为本站推导。 -->
+
+**出现公司**：美团
+
+**考察重点**：链接修改顺序、已反转前缀的不变量，以及空链表和节点身份。
+
+**相关内容**：[面试核心](#core)、[节点与链接](#mechanism)、[使用边界](#boundaries)。
+
+<details>
+<summary>参考回答</summary>
+
+当前节点改指向前驱后，原后继链接就被覆盖了。先保存后继，才能继续处理未反转的后缀。空链表直接返回空，单节点最终仍指向空；有环输入需要先检测或明确禁止，否则普通反转循环的语义不再成立。
+
+</details>
+
+## 6. 参考资料
+
+- [Open Data Structures：SLList](https://opendatastructures.org/ods-java/3_1_SLList_Singly_Linked_Li.html)

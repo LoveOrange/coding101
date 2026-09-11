@@ -124,7 +124,7 @@ java -Xlog:gc*,safepoint:file=gc.log:time,uptime,level,tags -jar app.jar
 - 屏障在写入时维护引用摘要。
 - 空间换取扫描时间的权衡。
 
-**相关内容**：第 1 节“分代是假设，不是 Java 语义”至第 3 节“并发标记期间对象图仍在变化”。
+**相关内容**：[分代是假设，不是 Java 语义](#1-分代是假设不是-java-语义)至[并发标记期间对象图仍在变化](#3-并发标记期间对象图仍在变化)。
 
 <details>
 <summary>参考回答</summary>
@@ -149,7 +149,7 @@ java -Xlog:gc*,safepoint:file=gc.log:time,uptime,level,tags -jar app.jar
 - 到达安全点的时间和停顿工作时间。
 - 并发收集器仍有 STW 阶段。
 
-**相关内容**：第 4 节“安全点提供一致的线程状态”和第 5 节“Stop-The-World 不是‘所有 GC 都全程停顿’”。
+**相关内容**：[安全点提供一致的线程状态](#4-安全点提供一致的线程状态)和[Stop-The-World 不是“所有 GC 都全程停顿”](#5-stop-the-world-不是所有-gc-都全程停顿)。
 
 <details>
 <summary>参考回答</summary>

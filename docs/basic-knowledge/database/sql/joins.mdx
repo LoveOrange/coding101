@@ -1,0 +1,75 @@
+---
+sidebar_position: 2
+knowledge:
+  id: basic-knowledge.database.sql.joins
+  type: concept
+---
+
+# SQL 连接
+
+SQL 连接根据条件组合不同来源的行。本文比较 INNER JOIN 和 LEFT JOIN，重点检查一对多关系、未匹配行以及 ON 与 WHERE 的语义差异。
+
+## 1. 面试核心 {#core}
+
+- INNER JOIN 只保留匹配行，LEFT JOIN 还保留左侧未匹配行。
+- 右侧匹配多行时会扩大结果行数，不会自动按左侧主键去重。
+- 外连接中把右表过滤条件从 ON 移到 WHERE，可能丢掉左侧未匹配行。
+
+## 2. 匹配与补空 {#mechanism}
+
+```sql
+CREATE TABLE customers (id INTEGER PRIMARY KEY, name VARCHAR(20));
+CREATE TABLE purchases (
+  id INTEGER PRIMARY KEY, customer_id INTEGER, amount INTEGER
+);
+INSERT INTO customers VALUES (1, 'Lin'), (2, 'Ming'), (3, 'Yu');
+INSERT INTO purchases VALUES (10, 1, 50), (11, 1, 80), (12, 2, 20);
+
+SELECT c.id, p.id AS purchase_id
+FROM customers c
+LEFT JOIN purchases p ON p.customer_id = c.id
+ORDER BY c.id, p.id;
+```
+
+结果是 `(1,10)、(1,11)、(2,12)、(3,NULL)`。Lin 有两笔购买，出现两行；Yu 没有匹配记录，右侧列补 NULL。改成 INNER JOIN 就没有 Yu 这一行。
+
+## 3. ON 与 WHERE
+
+```sql
+SELECT c.id, p.id AS purchase_id
+FROM customers c
+LEFT JOIN purchases p
+  ON p.customer_id = c.id AND p.amount >= 50
+ORDER BY c.id, p.id;
+```
+
+得到 `(1,10)、(1,11)、(2,NULL)、(3,NULL)`。条件放在 ON 中限制哪些购买能匹配，仍保留所有客户。如果改成在连接后执行 `WHERE p.amount >= 50`，Ming、Yu 的补空行都无法通过条件，只剩 Lin 的两行。
+
+## 4. 使用边界 {#boundaries}
+
+先用业务关系推导行数，再看执行计划。一个客户既关联多个订单又关联多个标签时，两次一对多连接可能产生订单数乘标签数的行，直接求 SUM 会重复计数。
+
+只需判断存在性时，可用 EXISTS 避免为了“有没有”而引入多行。需要汇总多个明细表时，通常先分别聚合到客户粒度再连接。DISTINCT 不能被用来掩盖所有错误的连接条件。
+
+## 5. 面试题
+
+### 5.1 LEFT JOIN 后在 WHERE 中过滤右表字段，会有什么影响？
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：外连接补空、ON 匹配条件与 WHERE 结果过滤的先后关系。
+
+**相关内容**：[面试核心](#core)、[匹配与补空](#mechanism)、[使用边界](#boundaries)。
+
+<details>
+<summary>参考回答</summary>
+
+LEFT JOIN 先为未匹配左行补出右侧 NULL；WHERE 继续过滤整个结果。若条件要求右字段满足普通比较，补空行得到 UNKNOWN 而被移除。想保留所有左行、仅限制可匹配的右行时，应把相应条件放在 ON，并用没有右记录和右记录不满足条件两种输入验证。
+
+</details>
+
+## 6. 参考资料
+
+- [MySQL：JOIN Clause](https://dev.mysql.com/doc/refman/8.4/en/join.html)

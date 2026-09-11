@@ -1,0 +1,212 @@
+[
+  {
+    "title": "对象与相等性",
+    "question": "equals 与 hashCode 为什么必须配合？包装类型比较有哪些边界？",
+    "topicId": "java-oop",
+    "sources": [
+      "I16",
+      "I17",
+      "I37"
+    ]
+  },
+  {
+    "title": "集合选择",
+    "question": "数组、链表和哈希表分别适合什么操作？如何选择有序集合？",
+    "topicId": "java-collections",
+    "sources": [
+      "I12",
+      "I17",
+      "I36"
+    ]
+  },
+  {
+    "title": "HashMap",
+    "question": "不同线程修改不同 key 是否安全？自定义 key 应满足什么约束？",
+    "topicId": "hashmap",
+    "sources": [
+      "I01",
+      "I08",
+      "I13",
+      "I27"
+    ]
+  },
+  {
+    "title": "并发集合",
+    "question": "如何实现线程安全的 LRU？复合操作怎样保证原子性？",
+    "topicId": "concurrent-collections",
+    "sources": [
+      "I20",
+      "I32",
+      "I40"
+    ]
+  },
+  {
+    "title": "线程与同步",
+    "question": "synchronized 与 volatile 分别保证什么？怎样让多个线程交替输出？",
+    "topicId": "synchronization",
+    "sources": [
+      "I02",
+      "I08",
+      "I36",
+      "I37"
+    ]
+  },
+  {
+    "title": "线程池",
+    "question": "任务提交后怎样执行或拒绝？线程数量如何结合任务约束选择？",
+    "topicId": "thread-pool",
+    "sources": [
+      "I01",
+      "I03",
+      "I04",
+      "I11"
+    ]
+  },
+  {
+    "title": "并发问题排查",
+    "question": "ThreadLocal 为什么可能泄漏？等待多个任务完成时怎样处理失败？",
+    "topicId": "java-concurrency",
+    "sources": [
+      "I19",
+      "I21",
+      "I38"
+    ]
+  },
+  {
+    "title": "JVM 与内存",
+    "question": "如何排查 OOM、Full GC 或堆外内存增长？先收集什么证据？",
+    "topicId": "jvm-memory",
+    "sources": [
+      "I03",
+      "I19",
+      "I35"
+    ]
+  },
+  {
+    "title": "垃圾回收",
+    "question": "对象如何判断可回收？停顿、吞吐和低延迟收集器怎样取舍？",
+    "topicId": "jvm-gc",
+    "sources": [
+      "I01",
+      "I34"
+    ]
+  },
+  {
+    "title": "进程与 I/O",
+    "question": "进程和线程如何通信？虚拟内存、零拷贝和多路复用解决什么问题？",
+    "topicId": "operating-system-foundations",
+    "sources": [
+      "I05",
+      "I13",
+      "I14",
+      "I41"
+    ]
+  },
+  {
+    "title": "Spring 容器",
+    "question": "Bean 怎样创建和初始化？条件装配何时生效？",
+    "topicId": "spring-ioc",
+    "sources": [
+      "I08",
+      "I10",
+      "I33"
+    ]
+  },
+  {
+    "title": "请求与数据访问",
+    "question": "HTTP 请求怎样进入 Spring MVC？代理和 MyBatis 在哪里起作用？",
+    "topicId": "spring-request",
+    "sources": [
+      "I22",
+      "I37"
+    ]
+  },
+  {
+    "title": "SQL",
+    "question": "怎样查询同时选了两门课的学生？连接、聚合和排名如何处理重复与空值？",
+    "topicId": "sql-foundations",
+    "sources": [
+      "I12",
+      "I37",
+      "I38"
+    ]
+  },
+  {
+    "title": "索引与查询",
+    "question": "联合索引怎样服务过滤和排序？如何用执行计划定位慢查询？",
+    "topicId": "database-index",
+    "sources": [
+      "I04",
+      "I10",
+      "I11",
+      "I21"
+    ]
+  },
+  {
+    "title": "事务与锁",
+    "question": "RC、RR、MVCC 和锁分别处理什么并发问题？如何画出反例时序？",
+    "topicId": "database-transaction",
+    "sources": [
+      "I01",
+      "I02",
+      "I14",
+      "I19"
+    ]
+  },
+  {
+    "title": "缓存一致性",
+    "question": "更新数据库后删缓存失败怎么办？多实例缓存或令牌刷新如何协调？",
+    "topicId": "cache-mq",
+    "sources": [
+      "I09",
+      "I19",
+      "I26",
+      "I39"
+    ]
+  },
+  {
+    "title": "消息与失败处理",
+    "question": "消息可能丢失、重复或乱序时，生产和消费链路如何处理？",
+    "topicId": "messaging-search",
+    "sources": [
+      "I04",
+      "I18",
+      "I31",
+      "I39"
+    ]
+  },
+  {
+    "title": "网络请求",
+    "question": "TCP 连接与关闭如何进行？HTTPS 和连接复用如何影响请求链路？",
+    "topicId": "network",
+    "sources": [
+      "I05",
+      "I13",
+      "I15",
+      "I22"
+    ]
+  },
+  {
+    "title": "算法编码",
+    "question": "如何从约束选择滑动窗口、树图遍历或堆？怎样检验边界与复杂度？",
+    "topicId": "java-algorithms",
+    "sources": [
+      "I01",
+      "I11",
+      "I14",
+      "I21",
+      "I30"
+    ]
+  },
+  {
+    "title": "项目与验证",
+    "question": "你负责什么、为什么这样设计、如何证明结果？AI 辅助开发的输出怎样核验？",
+    "topicId": null,
+    "sources": [
+      "I03",
+      "I04",
+      "I05",
+      "I39"
+    ]
+  }
+]

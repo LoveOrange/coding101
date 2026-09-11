@@ -180,7 +180,7 @@ System.out.println(direct.isDirect()); // true
 - 零拷贝为什么仍然存在设备与内存之间的数据移动。
 - 平台差异和部分传输怎样影响代码。
 
-**相关内容**：第 2 节“FileChannel.transferTo 减少用户态复制”、第 3 节“内存映射把文件区域映射到地址空间”、第 5 节“三种机制优化的环节”。
+**相关内容**：[FileChannel.transferTo 减少用户态复制](#2-filechanneltransferto-减少用户态复制)、[内存映射把文件区域映射到地址空间](#3-内存映射把文件区域映射到地址空间)、[三种机制优化的环节](#5-三种机制优化的环节)。
 
 <details>
 <summary>参考回答</summary>
@@ -206,7 +206,7 @@ Java 可以使用 `FileChannel.transferTo` 或 `transferFrom` 在通道之间传
 - 堆外数据与 Java Buffer 对象的生命周期关系。
 - 分配成本、内存上限和池化。
 
-**相关内容**：第 4 节“直接 ByteBuffer 使用堆外内存”。
+**相关内容**：[直接 ByteBuffer 使用堆外内存](#4-直接-bytebuffer-使用堆外内存)。
 
 <details>
 <summary>参考回答</summary>

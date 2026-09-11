@@ -3,8 +3,67 @@ sidebar_position: 2
 tags:
   - git
   - tools
-draft: true
 ---
 
-# 2.2. 使用 Git 进行第一次提交
+# 使用 Git 进行第一次提交
 
+本教程在一个独立练习目录中创建本地仓库，完成编辑、暂存、提交和核对。完成后，你应能说明工作区、暂存区和提交之间的关系，并检查下一次提交究竟包含哪些内容。
+
+## 1. 创建练习仓库
+
+先完成[2.1. Git 的安装与配置](./git-installation.mdx)。在终端选择一个没有同名目录的位置：
+
+```sh
+mkdir git-first-commit-demo
+cd git-first-commit-demo
+git init
+```
+
+Git 在当前目录创建 .git，用来保存版本对象和引用；这个步骤没有创建远程仓库。默认分支名由本机配置决定，后续命令不依赖它。
+
+## 2. 编辑与暂存
+
+```sh
+printf 'Hello Git\n' > hello.txt
+git status --short
+git add hello.txt
+git diff --cached
+```
+
+暂存前 status 显示 `?? hello.txt`，表示未跟踪。add 后，`git diff --cached` 显示下一次提交将包含的新文件及 Hello Git 这一行。add 保存的是执行当时的内容，后续编辑不会自动进入暂存区。
+
+```sh
+printf 'Second line\n' >> hello.txt
+git diff
+git diff --cached
+```
+
+此时普通 diff 只显示工作区相对暂存区多出的 Second line；cached diff 仍只包含首次暂存的 Hello Git。这个差异是理解暂存区的关键。
+
+## 3. 提交并核对
+
+```sh
+git add hello.txt
+git diff --cached
+git commit -m "Add greeting example"
+git status --short
+git show --stat HEAD
+git show HEAD:hello.txt
+```
+
+再次 add 把第二行也纳入暂存区。提交成功后，status 应没有输出，HEAD 中的 hello.txt 应包含两行。若 commit 提示缺少作者信息，按安装配置文章设置你自己的姓名与邮箱，再执行提交。
+
+提交保存到本地仓库，未执行 push 时不会上传到远程。提交标识、时间和统计排版会因环境变化，不需要与截图或他人的输出逐字符一致。
+
+## 4. 自检
+
+尝试新增第三行后只执行 commit，观察它是否进入新提交。对于已经跟踪的文件，普通 commit 仍只使用暂存内容；应先查看 status、diff 和 cached diff，再决定暂存范围。
+
+误暂存某个文件但希望保留编辑时，在已有提交的仓库可以使用 `git restore --staged hello.txt`。它调整暂存区，工作区修改仍保留。不要把清空工作区当作取消暂存的必需步骤。
+
+后续分支、合并、变基与撤销机制见[Git](../index.md)。
+
+## 5. 参考资料
+
+- [Pro Git：Recording Changes to the Repository](https://git-scm.com/book/en/v2/Git-Basics-Recording-Changes-to-the-Repository)
+- [Git：git-diff](https://git-scm.com/docs/git-diff)

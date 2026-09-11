@@ -5,16 +5,18 @@
   "scripts": {
     "docusaurus": "docusaurus",
     "start": "docusaurus start",
-    "build": "npm run check:doc-links && docusaurus build",
+    "build": "npm run check:doc-links && npm run check:review-resources && docusaurus build",
     "swizzle": "docusaurus swizzle",
     "deploy": "docusaurus deploy",
     "clear": "docusaurus clear",
     "serve": "docusaurus serve",
+    "preview:local": "LOCAL_PREVIEW=true npm run build && docusaurus serve --host 127.0.0.1 --port 3000 --no-open",
     "check:doc-links": "node scripts/normalize-doc-links.mjs --check",
     "fix:doc-links": "node scripts/normalize-doc-links.mjs --write",
     "write-translations": "docusaurus write-translations",
     "write-heading-ids": "docusaurus write-heading-ids",
-    "typecheck": "tsc"
+    "typecheck": "tsc",
+    "check:review-resources": "node scripts/check-review-resources.mjs && node scripts/generate-campus-jobs.mjs --check && node scripts/generate-interview-research.mjs --check"
   },
   "dependencies": {
     "@docusaurus/core": "^3.10.2",

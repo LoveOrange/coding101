@@ -88,11 +88,10 @@ record CreateOrder(Order order, CompletableFuture<Long> reply) implements Comman
 ### 7.1 怎样通过设计减少共享状态
 
 <!-- 面试来源：
-- 腾讯：https://www.nowcoder.com/discuss/801036113035931648
 - 阿里巴巴：https://www.nowcoder.com/discuss/461925
 -->
 
-**出现公司**：腾讯、阿里巴巴
+**出现公司**：阿里巴巴
 
 **考察重点**
 
@@ -100,7 +99,7 @@ record CreateOrder(Order order, CompletableFuture<Long> reply) implements Comman
 - 消息交接的内存语义。
 - 队列容量与失败策略。
 
-**相关内容**：第 1 节“共享对象会扩大同步范围”至第 4 节“有界队列让过载显式出现”。
+**相关内容**：[共享对象会扩大同步范围](#1-共享对象会扩大同步范围)至[有界队列让过载显式出现](#4-有界队列让过载显式出现)。
 
 <details>
 <summary>参考回答</summary>

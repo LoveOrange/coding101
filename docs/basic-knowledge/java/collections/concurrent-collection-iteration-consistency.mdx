@@ -157,7 +157,7 @@ sessions.forEach((id, session) -> {
 - 为什么它不抛 fail-fast 异常。
 - 近似统计与严格快照怎样区分。
 
-**相关内容**：第 1 节“先说明需要哪一种视图”、第 2 节“ConcurrentHashMap 的弱一致遍历”、第 5 节“聚合操作不是事务快照”。
+**相关内容**：[先说明需要哪一种视图](#1-先说明需要哪一种视图)、[ConcurrentHashMap 的弱一致遍历](#2-concurrenthashmap-的弱一致遍历)、[聚合操作不是事务快照](#5-聚合操作不是事务快照)。
 
 <details>
 <summary>参考回答</summary>
@@ -182,7 +182,7 @@ ConcurrentHashMap 迭代器是弱一致的，可以与更新并发，不抛 `Con
 - 条件 remove 或 replace 怎样避免覆盖新值。
 - 外部副作用为何还需要幂等和补偿。
 
-**相关内容**：第 7 节“迭代中删除需要再次确认”。
+**相关内容**：[迭代中删除需要再次确认](#7-迭代中删除需要再次确认)。
 
 <details>
 <summary>参考回答</summary>

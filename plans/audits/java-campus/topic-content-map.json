@@ -1,0 +1,1983 @@
+{
+  "asOf": "2026-09-11",
+  "status": "working_inventory_not_content_validation",
+  "topics": [
+    {
+      "id": "java-oop",
+      "title": "类型系统与对象模型",
+      "priority": "must",
+      "depth": "foundation",
+      "articles": [
+        {
+          "title": "Java 值传递",
+          "core": true,
+          "path": "docs/basic-knowledge/java/language/types-references-value-passing.mdx",
+          "href": "/docs/basic-knowledge/java/language/types-references-value-passing"
+        },
+        {
+          "title": "面向对象编程（Object-Oriented Programming）",
+          "core": true,
+          "path": "docs/basic-knowledge/java/language/encapsulation-inheritance-polymorphism.mdx",
+          "href": "/docs/basic-knowledge/java/language/encapsulation-inheritance-polymorphism"
+        },
+        {
+          "title": "对象相等性",
+          "core": true,
+          "path": "docs/basic-knowledge/java/language/equals-hashcode-object-identity.mdx",
+          "href": "/docs/basic-knowledge/java/language/equals-hashcode-object-identity"
+        }
+      ],
+      "evidenceIds": [
+        "JD05",
+        "JD06",
+        "JD08"
+      ],
+      "evidenceScope": "基础前置；不是每项都有直接题目证据",
+      "proposedAction": "复用正文，限定核心章节并补题目锚点",
+      "contentValidation": "not_fully_reviewed"
+    },
+    {
+      "id": "java-values-errors",
+      "title": "字符串、数值与异常",
+      "priority": "must",
+      "depth": "foundation",
+      "articles": [
+        {
+          "title": "String",
+          "core": true,
+          "path": "docs/basic-knowledge/java/language/string-immutability-pool.mdx",
+          "href": "/docs/basic-knowledge/java/language/string-immutability-pool"
+        },
+        {
+          "title": "Java 异常",
+          "core": true,
+          "path": "docs/basic-knowledge/java/language/exceptions-error-boundaries.mdx",
+          "href": "/docs/basic-knowledge/java/language/exceptions-error-boundaries"
+        },
+        {
+          "title": "BigDecimal",
+          "core": true,
+          "path": "docs/basic-knowledge/java/language/bigdecimal-money.mdx",
+          "href": "/docs/basic-knowledge/java/language/bigdecimal-money"
+        },
+        {
+          "title": "包装类型",
+          "core": true,
+          "path": "docs/basic-knowledge/java/language/wrappers-boxing-cache.mdx",
+          "href": "/docs/basic-knowledge/java/language/wrappers-boxing-cache"
+        },
+        {
+          "title": "Optional",
+          "core": false,
+          "path": "docs/basic-knowledge/java/language/optional-boundaries.mdx",
+          "href": "/docs/basic-knowledge/java/language/optional-boundaries"
+        }
+      ],
+      "evidenceIds": [
+        "JD05",
+        "JD06",
+        "JD08"
+      ],
+      "evidenceScope": "基础前置；不是每项都有直接题目证据",
+      "proposedAction": "复用正文，限定核心章节并补题目锚点",
+      "contentValidation": "not_fully_reviewed"
+    },
+    {
+      "id": "java-generics-reflection",
+      "title": "泛型、注解与反射",
+      "priority": "common",
+      "depth": "mechanism",
+      "articles": [
+        {
+          "title": "Java 泛型",
+          "core": true,
+          "path": "docs/basic-knowledge/java/language/generics.mdx",
+          "href": "/docs/basic-knowledge/java/language/generics"
+        },
+        {
+          "title": "Java 注解",
+          "core": true,
+          "path": "docs/basic-knowledge/java/language/annotations-retention-processing.mdx",
+          "href": "/docs/basic-knowledge/java/language/annotations-retention-processing"
+        },
+        {
+          "title": "Java 反射",
+          "core": true,
+          "path": "docs/basic-knowledge/java/language/reflection-method-handles.mdx",
+          "href": "/docs/basic-knowledge/java/language/reflection-method-handles"
+        },
+        {
+          "title": "Java 注解处理器",
+          "core": false,
+          "path": "docs/basic-knowledge/java/language/runtime-scanning-compile-time-generation.mdx",
+          "href": "/docs/basic-knowledge/java/language/runtime-scanning-compile-time-generation"
+        }
+      ],
+      "evidenceIds": [
+        "JD08"
+      ],
+      "evidenceScope": "只支持部分能力，其余为前置或选学判断",
+      "proposedAction": "泛型和注解按前置关联，其余按用途选读",
+      "contentValidation": "not_fully_reviewed"
+    },
+    {
+      "id": "java-io",
+      "title": "I/O、NIO 与资源管理",
+      "priority": "common",
+      "depth": "foundation",
+      "articles": [
+        {
+          "title": "Java 流式 I/O",
+          "core": true,
+          "path": "docs/basic-knowledge/java/io/byte-character-buffered-streams.mdx",
+          "href": "/docs/basic-knowledge/java/io/byte-character-buffered-streams"
+        },
+        {
+          "title": "Java NIO",
+          "core": true,
+          "path": "docs/basic-knowledge/java/io/buffer-channel-selector.mdx",
+          "href": "/docs/basic-knowledge/java/io/buffer-channel-selector"
+        },
+        {
+          "title": "零拷贝",
+          "core": false,
+          "path": "docs/basic-knowledge/java/io/file-mapping-zero-copy-direct-memory.mdx",
+          "href": "/docs/basic-knowledge/java/io/file-mapping-zero-copy-direct-memory"
+        },
+        {
+          "title": "Java 序列化",
+          "core": false,
+          "path": "docs/basic-knowledge/java/io/java-serialization-compatibility-security.mdx",
+          "href": "/docs/basic-knowledge/java/io/java-serialization-compatibility-security"
+        }
+      ],
+      "evidenceIds": [
+        "JD08"
+      ],
+      "evidenceScope": "只支持部分能力，其余为前置或选学判断",
+      "proposedAction": "泛型和注解按前置关联，其余按用途选读",
+      "contentValidation": "not_fully_reviewed"
+    },
+    {
+      "id": "java-functional",
+      "title": "Lambda、Stream 与日期时间",
+      "priority": "common",
+      "depth": "foundation",
+      "articles": [
+        {
+          "title": "Lambda 表达式",
+          "core": true,
+          "path": "docs/basic-knowledge/java/functional/lambda-functional-interfaces-capture.mdx",
+          "href": "/docs/basic-knowledge/java/functional/lambda-functional-interfaces-capture"
+        },
+        {
+          "title": "Stream",
+          "core": true,
+          "path": "docs/basic-knowledge/java/functional/stream-pipeline-lazy-evaluation.mdx",
+          "href": "/docs/basic-knowledge/java/functional/stream-pipeline-lazy-evaluation"
+        },
+        {
+          "title": "Collector",
+          "core": false,
+          "path": "docs/basic-knowledge/java/functional/collectors-grouping-reduction.mdx",
+          "href": "/docs/basic-knowledge/java/functional/collectors-grouping-reduction"
+        },
+        {
+          "title": "并行流",
+          "core": false,
+          "path": "docs/basic-knowledge/java/functional/parallel-stream-model-pitfalls.mdx",
+          "href": "/docs/basic-knowledge/java/functional/parallel-stream-model-pitfalls"
+        },
+        {
+          "title": "java.time",
+          "core": true,
+          "path": "docs/basic-knowledge/java/functional/java-time-time-zone-boundaries.mdx",
+          "href": "/docs/basic-knowledge/java/functional/java-time-time-zone-boundaries"
+        }
+      ],
+      "evidenceIds": [
+        "JD08"
+      ],
+      "evidenceScope": "只支持部分能力，其余为前置或选学判断",
+      "proposedAction": "泛型和注解按前置关联，其余按用途选读",
+      "contentValidation": "not_fully_reviewed"
+    },
+    {
+      "id": "java-collections",
+      "title": "Java 集合",
+      "priority": "must",
+      "depth": "mechanism",
+      "articles": [
+        {
+          "title": "Java 集合框架",
+          "core": true,
+          "path": "docs/basic-knowledge/java/collections/collection-interface-selection.mdx",
+          "href": "/docs/basic-knowledge/java/collections/collection-interface-selection"
+        },
+        {
+          "title": "ArrayList",
+          "core": true,
+          "path": "docs/basic-knowledge/java/collections/arraylist-growth-memory-locality.mdx",
+          "href": "/docs/basic-knowledge/java/collections/arraylist-growth-memory-locality"
+        },
+        {
+          "title": "HashMap",
+          "core": true,
+          "path": "docs/basic-knowledge/java/collections/hashmap-structure-lookup-path.mdx",
+          "href": "/docs/basic-knowledge/java/collections/hashmap-structure-lookup-path"
+        },
+        {
+          "title": "LinkedList",
+          "core": false,
+          "path": "docs/basic-knowledge/java/collections/linkedlist-semantics-cost.mdx",
+          "href": "/docs/basic-knowledge/java/collections/linkedlist-semantics-cost"
+        },
+        {
+          "title": "TreeMap 与 TreeSet",
+          "core": false,
+          "path": "docs/basic-knowledge/java/collections/treemap-treeset-ordered-query.mdx",
+          "href": "/docs/basic-knowledge/java/collections/treemap-treeset-ordered-query"
+        },
+        {
+          "title": "集合迭代器",
+          "core": false,
+          "path": "docs/basic-knowledge/java/collections/iterator-fail-fast-immutable.mdx",
+          "href": "/docs/basic-knowledge/java/collections/iterator-fail-fast-immutable"
+        }
+      ],
+      "evidenceIds": [
+        "JD05",
+        "JD07",
+        "JD08",
+        "I01",
+        "I02",
+        "I04"
+      ],
+      "evidenceScope": "直接能力或题目证据",
+      "proposedAction": "保留已有 HashMap 核心范围；并发集合补操作语义和编码连接",
+      "contentValidation": "not_fully_reviewed"
+    },
+    {
+      "id": "hashmap",
+      "title": "HashMap 与 LinkedHashMap",
+      "priority": "common",
+      "depth": "mechanism",
+      "articles": [
+        {
+          "title": "HashMap",
+          "core": true,
+          "path": "docs/basic-knowledge/java/collections/hashmap-structure-lookup-path.mdx",
+          "href": "/docs/basic-knowledge/java/collections/hashmap-structure-lookup-path"
+        },
+        {
+          "title": "对象相等性",
+          "core": false,
+          "path": "docs/basic-knowledge/java/language/equals-hashcode-object-identity.mdx",
+          "href": "/docs/basic-knowledge/java/language/equals-hashcode-object-identity"
+        },
+        {
+          "title": "LinkedHashMap",
+          "core": true,
+          "path": "docs/basic-knowledge/java/collections/linkedhashmap-lru.mdx",
+          "href": "/docs/basic-knowledge/java/collections/linkedhashmap-lru"
+        }
+      ],
+      "evidenceIds": [
+        "JD05",
+        "JD07",
+        "JD08",
+        "I01",
+        "I02",
+        "I04"
+      ],
+      "evidenceScope": "直接能力或题目证据",
+      "proposedAction": "保留已有 HashMap 核心范围；并发集合补操作语义和编码连接",
+      "contentValidation": "not_fully_reviewed"
+    },
+    {
+      "id": "concurrent-collections",
+      "title": "并发集合",
+      "priority": "common",
+      "depth": "mechanism",
+      "articles": [
+        {
+          "title": "ConcurrentHashMap",
+          "core": true,
+          "path": "docs/basic-knowledge/java/collections/concurrenthashmap-atomic-compound-operations.mdx",
+          "href": "/docs/basic-knowledge/java/collections/concurrenthashmap-atomic-compound-operations"
+        },
+        {
+          "title": "CopyOnWrite 容器",
+          "core": true,
+          "path": "docs/basic-knowledge/java/collections/copy-on-write-cost-model.mdx",
+          "href": "/docs/basic-knowledge/java/collections/copy-on-write-cost-model"
+        },
+        {
+          "title": "BlockingQueue",
+          "core": true,
+          "path": "docs/basic-knowledge/java/collections/blockingqueue-producer-consumer.mdx",
+          "href": "/docs/basic-knowledge/java/collections/blockingqueue-producer-consumer"
+        },
+        {
+          "title": "ConcurrentLinkedQueue",
+          "core": false,
+          "path": "docs/basic-knowledge/java/collections/concurrentlinkedqueue-lock-free-path.mdx",
+          "href": "/docs/basic-knowledge/java/collections/concurrentlinkedqueue-lock-free-path"
+        },
+        {
+          "title": "迭代一致性",
+          "core": false,
+          "path": "docs/basic-knowledge/java/collections/concurrent-collection-iteration-consistency.mdx",
+          "href": "/docs/basic-knowledge/java/collections/concurrent-collection-iteration-consistency"
+        }
+      ],
+      "evidenceIds": [
+        "JD05",
+        "JD07",
+        "JD08",
+        "I01",
+        "I02",
+        "I04"
+      ],
+      "evidenceScope": "直接能力或题目证据",
+      "proposedAction": "保留已有 HashMap 核心范围；并发集合补操作语义和编码连接",
+      "contentValidation": "not_fully_reviewed"
+    },
+    {
+      "id": "java-algorithms",
+      "title": "算法实现与复杂度",
+      "priority": "must",
+      "depth": "foundation",
+      "articles": [
+        {
+          "title": "算法复杂度",
+          "core": true,
+          "path": "docs/basic-knowledge/java/algorithms/complexity-constraints-java-cost.mdx",
+          "href": "/docs/basic-knowledge/java/algorithms/complexity-constraints-java-cost"
+        },
+        {
+          "title": "数据结构",
+          "core": true,
+          "path": "docs/basic-knowledge/data-structures/index.mdx",
+          "href": "/docs/basic-knowledge/data-structures/"
+        },
+        {
+          "title": "算法",
+          "core": true,
+          "path": "docs/basic-knowledge/algorithms/index.mdx",
+          "href": "/docs/basic-knowledge/algorithms/"
+        },
+        {
+          "title": "滑动窗口",
+          "core": true,
+          "path": "docs/basic-knowledge/java/algorithms/arrays-strings-sliding-window.mdx",
+          "href": "/docs/basic-knowledge/java/algorithms/arrays-strings-sliding-window"
+        },
+        {
+          "title": "树与图搜索",
+          "core": true,
+          "path": "docs/basic-knowledge/java/algorithms/trees-graphs-search.mdx",
+          "href": "/docs/basic-knowledge/java/algorithms/trees-graphs-search"
+        },
+        {
+          "title": "动态规划",
+          "core": false,
+          "path": "docs/basic-knowledge/java/algorithms/dynamic-programming-state-design.mdx",
+          "href": "/docs/basic-knowledge/java/algorithms/dynamic-programming-state-design"
+        },
+        {
+          "title": "算法正确性",
+          "core": true,
+          "path": "docs/basic-knowledge/java/algorithms/live-coding-counterexamples-tests.mdx",
+          "href": "/docs/basic-knowledge/java/algorithms/live-coding-counterexamples-tests"
+        }
+      ],
+      "evidenceIds": [
+        "JD01",
+        "JD02",
+        "JD03",
+        "JD05",
+        "JD07",
+        "JD08",
+        "I01",
+        "I02",
+        "I03",
+        "I05"
+      ],
+      "evidenceScope": "直接能力或题型证据",
+      "proposedAction": "复用已有模式与动态规划，补代表练习、迁移练习和自检条件",
+      "contentValidation": "not_fully_reviewed"
+    },
+    {
+      "id": "java-quality",
+      "title": "API 设计、测试与代码质量",
+      "priority": "optional",
+      "depth": "foundation",
+      "articles": [
+        {
+          "title": "Java API 设计",
+          "core": true,
+          "path": "docs/basic-knowledge/java/quality/api-design-from-invariants.mdx",
+          "href": "/docs/basic-knowledge/java/quality/api-design-from-invariants"
+        },
+        {
+          "title": "不可变对象",
+          "core": true,
+          "path": "docs/basic-knowledge/java/quality/immutable-objects-defensive-copying.mdx",
+          "href": "/docs/basic-knowledge/java/quality/immutable-objects-defensive-copying"
+        },
+        {
+          "title": "JUnit",
+          "core": true,
+          "path": "docs/basic-knowledge/java/quality/junit-assertions-parameterized-tests.mdx",
+          "href": "/docs/basic-knowledge/java/quality/junit-assertions-parameterized-tests"
+        },
+        {
+          "title": "测试替身",
+          "core": false,
+          "path": "docs/basic-knowledge/java/quality/test-doubles-mock-stub-boundaries.mdx",
+          "href": "/docs/basic-knowledge/java/quality/test-doubles-mock-stub-boundaries"
+        },
+        {
+          "title": "测试金字塔",
+          "core": true,
+          "path": "docs/basic-knowledge/java/quality/test-pyramid-contract-regression.mdx",
+          "href": "/docs/basic-knowledge/java/quality/test-pyramid-contract-regression"
+        }
+      ],
+      "evidenceIds": [
+        "JD02",
+        "JD04",
+        "JD07",
+        "JD08",
+        "I04",
+        "I05"
+      ],
+      "evidenceScope": "支持结果验证，不代表指定 JUnit",
+      "proposedAction": "修 JUnit 示例解释；将最小验证加入项目准备，复杂测试架构选读",
+      "contentValidation": "not_fully_reviewed"
+    },
+    {
+      "id": "operating-system-foundations",
+      "title": "进程、内存与 I/O",
+      "priority": "must",
+      "depth": "mechanism",
+      "articles": [
+        {
+          "title": "进程与线程",
+          "core": true,
+          "path": "docs/basic-knowledge/operating-system/processes-threads.mdx",
+          "href": "/docs/basic-knowledge/operating-system/processes-threads"
+        },
+        {
+          "title": "线程同步",
+          "core": true,
+          "path": "docs/basic-knowledge/operating-system/synchronization.mdx",
+          "href": "/docs/basic-knowledge/operating-system/synchronization"
+        },
+        {
+          "title": "死锁",
+          "core": true,
+          "path": "docs/basic-knowledge/operating-system/deadlock.mdx",
+          "href": "/docs/basic-knowledge/operating-system/deadlock"
+        },
+        {
+          "title": "虚拟内存",
+          "core": true,
+          "path": "docs/basic-knowledge/operating-system/virtual-memory.mdx",
+          "href": "/docs/basic-knowledge/operating-system/virtual-memory"
+        },
+        {
+          "title": "文件描述符",
+          "core": false,
+          "path": "docs/basic-knowledge/operating-system/file-descriptors.mdx",
+          "href": "/docs/basic-knowledge/operating-system/file-descriptors"
+        },
+        {
+          "title": "I/O 模型",
+          "core": false,
+          "path": "docs/basic-knowledge/operating-system/io-models.mdx",
+          "href": "/docs/basic-knowledge/operating-system/io-models"
+        },
+        {
+          "title": "I/O 多路复用",
+          "core": false,
+          "path": "docs/basic-knowledge/operating-system/io-multiplexing.mdx",
+          "href": "/docs/basic-knowledge/operating-system/io-multiplexing"
+        }
+      ],
+      "evidenceIds": [
+        "JD01",
+        "JD02",
+        "JD03",
+        "JD07",
+        "I01",
+        "I05"
+      ],
+      "evidenceScope": "直接能力或题目证据",
+      "proposedAction": "复用正文，连接 Java 并发前置",
+      "contentValidation": "not_fully_reviewed"
+    },
+    {
+      "id": "sql-foundations",
+      "title": "SQL 与数据约束",
+      "priority": "must",
+      "depth": "foundation",
+      "articles": [
+        {
+          "title": "SQL 查询",
+          "core": true,
+          "path": "docs/basic-knowledge/database/sql/query.mdx",
+          "href": "/docs/basic-knowledge/database/sql/query"
+        },
+        {
+          "title": "SQL 连接",
+          "core": true,
+          "path": "docs/basic-knowledge/database/sql/joins.mdx",
+          "href": "/docs/basic-knowledge/database/sql/joins"
+        },
+        {
+          "title": "SQL 聚合",
+          "core": true,
+          "path": "docs/basic-knowledge/database/sql/aggregation.mdx",
+          "href": "/docs/basic-knowledge/database/sql/aggregation"
+        },
+        {
+          "title": "数据约束",
+          "core": true,
+          "path": "docs/basic-knowledge/database/modeling/constraints.mdx",
+          "href": "/docs/basic-knowledge/database/modeling/constraints"
+        }
+      ],
+      "evidenceIds": [
+        "JD07",
+        "JD08",
+        "I07"
+      ],
+      "evidenceScope": "JD 直接支持 SQL；I07 仅历史题型",
+      "proposedAction": "保留已有示例与结果，补需独立作答的迁移练习",
+      "contentValidation": "not_fully_reviewed"
+    },
+    {
+      "id": "jvm-class-loading",
+      "title": "字节码与类加载",
+      "priority": "common",
+      "depth": "mechanism",
+      "articles": [
+        {
+          "title": "Java 字节码",
+          "core": true,
+          "path": "docs/basic-knowledge/java/jvm/source-to-bytecode.mdx",
+          "href": "/docs/basic-knowledge/java/jvm/source-to-bytecode"
+        },
+        {
+          "title": "类加载",
+          "core": true,
+          "path": "docs/basic-knowledge/java/jvm/class-loading-stages.mdx",
+          "href": "/docs/basic-knowledge/java/jvm/class-loading-stages"
+        },
+        {
+          "title": "双亲委派模型",
+          "core": true,
+          "path": "docs/basic-knowledge/java/jvm/parent-delegation.mdx",
+          "href": "/docs/basic-knowledge/java/jvm/parent-delegation"
+        },
+        {
+          "title": "类加载器",
+          "core": true,
+          "path": "docs/basic-knowledge/java/jvm/classloaders-spi-isolation.mdx",
+          "href": "/docs/basic-knowledge/java/jvm/classloaders-spi-isolation"
+        },
+        {
+          "title": "类加载故障",
+          "core": false,
+          "path": "docs/basic-knowledge/java/jvm/class-initialization-conflicts.mdx",
+          "href": "/docs/basic-knowledge/java/jvm/class-initialization-conflicts"
+        }
+      ],
+      "evidenceIds": [
+        "JD01",
+        "JD05",
+        "JD07",
+        "JD08"
+      ],
+      "evidenceScope": "支持排障，不逐项支持类加载或 JIT 机制",
+      "proposedAction": "维持常考及按岗范围，补基于证据的排障示例",
+      "contentValidation": "not_fully_reviewed"
+    },
+    {
+      "id": "jvm-memory",
+      "title": "运行时内存与对象布局",
+      "priority": "must",
+      "depth": "mechanism",
+      "articles": [
+        {
+          "title": "JVM 运行时数据区域",
+          "core": true,
+          "path": "docs/basic-knowledge/java/jvm/runtime-data-areas.mdx",
+          "href": "/docs/basic-knowledge/java/jvm/runtime-data-areas"
+        },
+        {
+          "title": "OutOfMemoryError 与 StackOverflowError",
+          "core": true,
+          "path": "docs/basic-knowledge/java/jvm/oom-stack-overflow.mdx",
+          "href": "/docs/basic-knowledge/java/jvm/oom-stack-overflow"
+        },
+        {
+          "title": "Java 对象布局",
+          "core": false,
+          "path": "docs/basic-knowledge/java/jvm/object-creation-layout.mdx",
+          "href": "/docs/basic-knowledge/java/jvm/object-creation-layout"
+        },
+        {
+          "title": "压缩指针与对象对齐",
+          "core": false,
+          "path": "docs/basic-knowledge/java/jvm/compressed-pointers-alignment.mdx",
+          "href": "/docs/basic-knowledge/java/jvm/compressed-pointers-alignment"
+        },
+        {
+          "title": "Java 直接内存",
+          "core": false,
+          "path": "docs/basic-knowledge/java/jvm/direct-native-memory.mdx",
+          "href": "/docs/basic-knowledge/java/jvm/direct-native-memory"
+        }
+      ],
+      "evidenceIds": [
+        "I01",
+        "I03"
+      ],
+      "evidenceScope": "直接题目证据；年份未核实",
+      "proposedAction": "限定核心区域、可达性、OOM 与停顿；屏障等明确深入范围",
+      "contentValidation": "not_fully_reviewed"
+    },
+    {
+      "id": "jvm-gc",
+      "title": "垃圾回收与收集器",
+      "priority": "must",
+      "depth": "mechanism",
+      "articles": [
+        {
+          "title": "GC Roots",
+          "core": true,
+          "path": "docs/basic-knowledge/java/jvm/gc-roots-reachability.mdx",
+          "href": "/docs/basic-knowledge/java/jvm/gc-roots-reachability"
+        },
+        {
+          "title": "分代回收",
+          "core": true,
+          "path": "docs/basic-knowledge/java/jvm/generational-barriers-safepoints.mdx",
+          "href": "/docs/basic-knowledge/java/jvm/generational-barriers-safepoints"
+        },
+        {
+          "title": "G1",
+          "core": false,
+          "path": "docs/basic-knowledge/java/jvm/g1-regions-rset-collection-set.mdx",
+          "href": "/docs/basic-knowledge/java/jvm/g1-regions-rset-collection-set"
+        },
+        {
+          "title": "Serial、Parallel 与 CMS",
+          "core": false,
+          "path": "docs/basic-knowledge/java/jvm/serial-parallel-cms.mdx",
+          "href": "/docs/basic-knowledge/java/jvm/serial-parallel-cms"
+        },
+        {
+          "title": "低延迟垃圾收集器",
+          "core": false,
+          "path": "docs/basic-knowledge/java/jvm/zgc-shenandoah-low-latency.mdx",
+          "href": "/docs/basic-knowledge/java/jvm/zgc-shenandoah-low-latency"
+        }
+      ],
+      "evidenceIds": [
+        "I01",
+        "I03"
+      ],
+      "evidenceScope": "直接题目证据；年份未核实",
+      "proposedAction": "限定核心区域、可达性、OOM 与停顿；屏障等明确深入范围",
+      "contentValidation": "not_fully_reviewed"
+    },
+    {
+      "id": "jvm-jit",
+      "title": "JIT 与运行时优化",
+      "priority": "optional",
+      "depth": "mechanism",
+      "articles": [
+        {
+          "title": "分层编译",
+          "core": true,
+          "path": "docs/basic-knowledge/java/jvm/interpreter-tiered-compilation.mdx",
+          "href": "/docs/basic-knowledge/java/jvm/interpreter-tiered-compilation"
+        },
+        {
+          "title": "方法内联与去优化",
+          "core": true,
+          "path": "docs/basic-knowledge/java/jvm/inlining-deoptimization.mdx",
+          "href": "/docs/basic-knowledge/java/jvm/inlining-deoptimization"
+        },
+        {
+          "title": "逃逸分析与标量替换",
+          "core": true,
+          "path": "docs/basic-knowledge/java/jvm/escape-analysis-scalar-replacement.mdx",
+          "href": "/docs/basic-knowledge/java/jvm/escape-analysis-scalar-replacement"
+        },
+        {
+          "title": "JMH",
+          "core": true,
+          "path": "docs/basic-knowledge/java/jvm/jmh-correct-benchmarks.mdx",
+          "href": "/docs/basic-knowledge/java/jvm/jmh-correct-benchmarks"
+        },
+        {
+          "title": "Java 启动优化",
+          "core": false,
+          "path": "docs/basic-knowledge/java/jvm/aot-cds-native-image.mdx",
+          "href": "/docs/basic-knowledge/java/jvm/aot-cds-native-image"
+        }
+      ],
+      "evidenceIds": [
+        "JD01",
+        "JD05",
+        "JD07",
+        "JD08"
+      ],
+      "evidenceScope": "支持排障，不逐项支持类加载或 JIT 机制",
+      "proposedAction": "维持常考及按岗范围，补基于证据的排障示例",
+      "contentValidation": "not_fully_reviewed"
+    },
+    {
+      "id": "jvm-diagnostics",
+      "title": "JVM 性能诊断",
+      "priority": "common",
+      "depth": "scenario",
+      "articles": [
+        {
+          "title": "JVM 诊断",
+          "core": true,
+          "path": "docs/basic-knowledge/java/jvm/diagnostic-tools-evidence.mdx",
+          "href": "/docs/basic-knowledge/java/jvm/diagnostic-tools-evidence"
+        },
+        {
+          "title": "CPU 使用率",
+          "core": true,
+          "path": "docs/basic-knowledge/java/jvm/cpu-high-diagnosis.mdx",
+          "href": "/docs/basic-knowledge/java/jvm/cpu-high-diagnosis"
+        },
+        {
+          "title": "线程转储",
+          "core": true,
+          "path": "docs/basic-knowledge/java/jvm/thread-dumps-deadlocks-contention.mdx",
+          "href": "/docs/basic-knowledge/java/jvm/thread-dumps-deadlocks-contention"
+        },
+        {
+          "title": "堆转储",
+          "core": true,
+          "path": "docs/basic-knowledge/java/jvm/heap-dumps-memory-leaks.mdx",
+          "href": "/docs/basic-knowledge/java/jvm/heap-dumps-memory-leaks"
+        },
+        {
+          "title": "GC 停顿分析",
+          "core": false,
+          "path": "docs/basic-knowledge/java/jvm/gc-logs-jfr-pauses.mdx",
+          "href": "/docs/basic-knowledge/java/jvm/gc-logs-jfr-pauses"
+        }
+      ],
+      "evidenceIds": [
+        "JD01",
+        "JD05",
+        "JD07",
+        "JD08"
+      ],
+      "evidenceScope": "支持排障，不逐项支持类加载或 JIT 机制",
+      "proposedAction": "维持常考及按岗范围，补基于证据的排障示例",
+      "contentValidation": "not_fully_reviewed"
+    },
+    {
+      "id": "java-concurrency",
+      "title": "线程、竞态与 JMM",
+      "priority": "must",
+      "depth": "mechanism",
+      "articles": [
+        {
+          "title": "线程安全",
+          "core": true,
+          "path": "docs/basic-knowledge/java/concurrency/thread-safety-race-conditions.mdx",
+          "href": "/docs/basic-knowledge/java/concurrency/thread-safety-race-conditions"
+        },
+        {
+          "title": "Java 线程",
+          "core": true,
+          "path": "docs/basic-knowledge/java/concurrency/thread-lifecycle-interruption.mdx",
+          "href": "/docs/basic-knowledge/java/concurrency/thread-lifecycle-interruption"
+        },
+        {
+          "title": "Java 内存模型",
+          "core": true,
+          "path": "docs/basic-knowledge/java/concurrency/jmm-happens-before.mdx",
+          "href": "/docs/basic-knowledge/java/concurrency/jmm-happens-before"
+        },
+        {
+          "title": "安全发布",
+          "core": false,
+          "path": "docs/basic-knowledge/java/concurrency/safe-publication-escape-final.mdx",
+          "href": "/docs/basic-knowledge/java/concurrency/safe-publication-escape-final"
+        },
+        {
+          "title": "消息传递",
+          "core": false,
+          "path": "docs/basic-knowledge/java/concurrency/shared-state-message-passing.mdx",
+          "href": "/docs/basic-knowledge/java/concurrency/shared-state-message-passing"
+        }
+      ],
+      "evidenceIds": [
+        "JD08",
+        "I01",
+        "I02",
+        "I03",
+        "I04"
+      ],
+      "evidenceScope": "直接能力或题目证据",
+      "proposedAction": "补竞态、线程池和阻塞队列练习；锁使用先于 AQS 实现",
+      "contentValidation": "not_fully_reviewed"
+    },
+    {
+      "id": "synchronization",
+      "title": "同步与原子性",
+      "priority": "must",
+      "depth": "mechanism",
+      "articles": [
+        {
+          "title": "synchronized",
+          "core": true,
+          "path": "docs/basic-knowledge/java/concurrency/synchronized-monitor-optimizations.mdx",
+          "href": "/docs/basic-knowledge/java/concurrency/synchronized-monitor-optimizations"
+        },
+        {
+          "title": "volatile",
+          "core": true,
+          "path": "docs/basic-knowledge/java/concurrency/volatile-barriers-visibility.mdx",
+          "href": "/docs/basic-knowledge/java/concurrency/volatile-barriers-visibility"
+        },
+        {
+          "title": "CAS",
+          "core": false,
+          "path": "docs/basic-knowledge/java/concurrency/cas-aba-versioning.mdx",
+          "href": "/docs/basic-knowledge/java/concurrency/cas-aba-versioning"
+        },
+        {
+          "title": "Java 原子类",
+          "core": false,
+          "path": "docs/basic-knowledge/java/concurrency/atomic-longadder-contention.mdx",
+          "href": "/docs/basic-knowledge/java/concurrency/atomic-longadder-contention"
+        },
+        {
+          "title": "锁与无锁",
+          "core": false,
+          "path": "docs/basic-knowledge/java/concurrency/locks-vs-lock-free-cost.mdx",
+          "href": "/docs/basic-knowledge/java/concurrency/locks-vs-lock-free-cost"
+        }
+      ],
+      "evidenceIds": [
+        "JD08",
+        "I01",
+        "I02",
+        "I03",
+        "I04"
+      ],
+      "evidenceScope": "直接能力或题目证据",
+      "proposedAction": "补竞态、线程池和阻塞队列练习；锁使用先于 AQS 实现",
+      "contentValidation": "not_fully_reviewed"
+    },
+    {
+      "id": "aqs",
+      "title": "Lock、AQS 与并发工具",
+      "priority": "common",
+      "depth": "mechanism",
+      "articles": [
+        {
+          "title": "AQS",
+          "core": true,
+          "path": "docs/basic-knowledge/java/concurrency/aqs-state-wait-queue.mdx",
+          "href": "/docs/basic-knowledge/java/concurrency/aqs-state-wait-queue"
+        },
+        {
+          "title": "ReentrantLock",
+          "core": true,
+          "path": "docs/basic-knowledge/java/concurrency/reentrantlock-fairness-condition.mdx",
+          "href": "/docs/basic-knowledge/java/concurrency/reentrantlock-fairness-condition"
+        },
+        {
+          "title": "读写锁",
+          "core": true,
+          "path": "docs/basic-knowledge/java/concurrency/readwritelock-stampedlock.mdx",
+          "href": "/docs/basic-knowledge/java/concurrency/readwritelock-stampedlock"
+        },
+        {
+          "title": "Java 并发同步器",
+          "core": true,
+          "path": "docs/basic-knowledge/java/concurrency/latch-barrier-semaphore.mdx",
+          "href": "/docs/basic-knowledge/java/concurrency/latch-barrier-semaphore"
+        },
+        {
+          "title": "任务取消",
+          "core": false,
+          "path": "docs/basic-knowledge/java/concurrency/interruption-timeout-cancellation.mdx",
+          "href": "/docs/basic-knowledge/java/concurrency/interruption-timeout-cancellation"
+        }
+      ],
+      "evidenceIds": [
+        "JD08",
+        "I01",
+        "I02",
+        "I03",
+        "I04"
+      ],
+      "evidenceScope": "直接能力或题目证据",
+      "proposedAction": "补竞态、线程池和阻塞队列练习；锁使用先于 AQS 实现",
+      "contentValidation": "not_fully_reviewed"
+    },
+    {
+      "id": "thread-pool",
+      "title": "线程池与异步编排",
+      "priority": "must",
+      "depth": "scenario",
+      "articles": [
+        {
+          "title": "Java 线程池",
+          "core": true,
+          "path": "docs/basic-knowledge/java/concurrency/threadpoolexecutor-execution-path.mdx",
+          "href": "/docs/basic-knowledge/java/concurrency/threadpoolexecutor-execution-path"
+        },
+        {
+          "title": "CompletableFuture",
+          "core": true,
+          "path": "docs/basic-knowledge/java/concurrency/future-completablefuture-errors.mdx",
+          "href": "/docs/basic-knowledge/java/concurrency/future-completablefuture-errors"
+        },
+        {
+          "title": "虚拟线程",
+          "core": false,
+          "path": "docs/basic-knowledge/java/concurrency/virtual-threads-boundaries.mdx",
+          "href": "/docs/basic-knowledge/java/concurrency/virtual-threads-boundaries"
+        }
+      ],
+      "evidenceIds": [
+        "JD08",
+        "I01",
+        "I02",
+        "I03",
+        "I04"
+      ],
+      "evidenceScope": "直接能力或题目证据",
+      "proposedAction": "补竞态、线程池和阻塞队列练习；锁使用先于 AQS 实现",
+      "contentValidation": "not_fully_reviewed"
+    },
+    {
+      "id": "concurrency-diagnostics",
+      "title": "并发故障与性能诊断",
+      "priority": "common",
+      "depth": "scenario",
+      "articles": [
+        {
+          "title": "并发活跃性",
+          "core": true,
+          "path": "docs/basic-knowledge/java/concurrency/liveness-deadlock-livelock-starvation.mdx",
+          "href": "/docs/basic-knowledge/java/concurrency/liveness-deadlock-livelock-starvation"
+        },
+        {
+          "title": "线程转储",
+          "core": true,
+          "path": "docs/basic-knowledge/java/jvm/thread-dumps-deadlocks-contention.mdx",
+          "href": "/docs/basic-knowledge/java/jvm/thread-dumps-deadlocks-contention"
+        },
+        {
+          "title": "ThreadLocal",
+          "core": false,
+          "path": "docs/basic-knowledge/java/concurrency/threadlocal-leaks-context.mdx",
+          "href": "/docs/basic-knowledge/java/concurrency/threadlocal-leaks-context"
+        },
+        {
+          "title": "锁竞争",
+          "core": true,
+          "path": "docs/basic-knowledge/java/concurrency/lock-contention-context-switch-benchmark.mdx",
+          "href": "/docs/basic-knowledge/java/concurrency/lock-contention-context-switch-benchmark"
+        }
+      ],
+      "evidenceIds": [
+        "JD08",
+        "I01",
+        "I02",
+        "I03",
+        "I04"
+      ],
+      "evidenceScope": "直接能力或题目证据",
+      "proposedAction": "补竞态、线程池和阻塞队列练习；锁使用先于 AQS 实现",
+      "contentValidation": "not_fully_reviewed"
+    },
+    {
+      "id": "spring-ioc",
+      "title": "Spring IoC 与 Bean 生命周期",
+      "priority": "must",
+      "depth": "mechanism",
+      "articles": [
+        {
+          "title": "IoC 容器",
+          "core": true,
+          "path": "docs/basic-knowledge/java/spring/ioc-container-purpose.mdx",
+          "href": "/docs/basic-knowledge/java/spring/ioc-container-purpose"
+        },
+        {
+          "title": "Bean 生命周期",
+          "core": true,
+          "path": "docs/basic-knowledge/java/spring/bean-creation-lifecycle.mdx",
+          "href": "/docs/basic-knowledge/java/spring/bean-creation-lifecycle"
+        },
+        {
+          "title": "依赖注入",
+          "core": true,
+          "path": "docs/basic-knowledge/java/spring/dependency-injection-selection.mdx",
+          "href": "/docs/basic-knowledge/java/spring/dependency-injection-selection"
+        },
+        {
+          "title": "BeanDefinition",
+          "core": false,
+          "path": "docs/basic-knowledge/java/spring/beandefinition-container-startup.mdx",
+          "href": "/docs/basic-knowledge/java/spring/beandefinition-container-startup"
+        },
+        {
+          "title": "Spring 循环依赖",
+          "core": false,
+          "path": "docs/basic-knowledge/java/spring/circular-dependencies-scopes-early-exposure.mdx",
+          "href": "/docs/basic-knowledge/java/spring/circular-dependencies-scopes-early-exposure"
+        }
+      ],
+      "evidenceIds": [],
+      "evidenceScope": "项目路径前置判断；本批具体框架证据不足",
+      "proposedAction": "暂保留项目核心链路，精简启动细节，补专项证据后复核",
+      "contentValidation": "not_fully_reviewed"
+    },
+    {
+      "id": "spring-aop",
+      "title": "AOP、代理与声明式事务",
+      "priority": "must",
+      "depth": "mechanism",
+      "articles": [
+        {
+          "title": "Spring AOP",
+          "core": true,
+          "path": "docs/basic-knowledge/java/spring/aop-pointcut-interceptor-chain.mdx",
+          "href": "/docs/basic-knowledge/java/spring/aop-pointcut-interceptor-chain"
+        },
+        {
+          "title": "Spring 事务",
+          "core": true,
+          "path": "docs/basic-knowledge/java/spring/declarative-transaction-execution.mdx",
+          "href": "/docs/basic-knowledge/java/spring/declarative-transaction-execution"
+        },
+        {
+          "title": "JDK 动态代理与 CGLIB",
+          "core": true,
+          "path": "docs/basic-knowledge/java/spring/jdk-proxy-cglib.mdx",
+          "href": "/docs/basic-knowledge/java/spring/jdk-proxy-cglib"
+        }
+      ],
+      "evidenceIds": [],
+      "evidenceScope": "项目路径前置判断；本批具体框架证据不足",
+      "proposedAction": "暂保留项目核心链路，精简启动细节，补专项证据后复核",
+      "contentValidation": "not_fully_reviewed"
+    },
+    {
+      "id": "spring-request",
+      "title": "Spring MVC 与 Web 请求链",
+      "priority": "must",
+      "depth": "mechanism",
+      "articles": [
+        {
+          "title": "Spring MVC 请求生命周期",
+          "core": true,
+          "path": "docs/basic-knowledge/java/spring/http-request-to-controller.mdx",
+          "href": "/docs/basic-knowledge/java/spring/http-request-to-controller"
+        },
+        {
+          "title": "DispatcherServlet",
+          "core": true,
+          "path": "docs/basic-knowledge/java/spring/dispatcherservlet-handler-mapping.mdx",
+          "href": "/docs/basic-knowledge/java/spring/dispatcherservlet-handler-mapping"
+        },
+        {
+          "title": "Spring 拦截机制",
+          "core": true,
+          "path": "docs/basic-knowledge/java/spring/filter-interceptor-aspect-boundaries.mdx",
+          "href": "/docs/basic-knowledge/java/spring/filter-interceptor-aspect-boundaries"
+        },
+        {
+          "title": "Spring MVC 参数解析",
+          "core": false,
+          "path": "docs/basic-knowledge/java/spring/binding-validation-content-negotiation.mdx",
+          "href": "/docs/basic-knowledge/java/spring/binding-validation-content-negotiation"
+        },
+        {
+          "title": "API 错误契约",
+          "core": false,
+          "path": "docs/basic-knowledge/java/spring/api-error-contract.mdx",
+          "href": "/docs/basic-knowledge/java/spring/api-error-contract"
+        }
+      ],
+      "evidenceIds": [],
+      "evidenceScope": "项目路径前置判断；本批具体框架证据不足",
+      "proposedAction": "暂保留项目核心链路，精简启动细节，补专项证据后复核",
+      "contentValidation": "not_fully_reviewed"
+    },
+    {
+      "id": "spring-boot",
+      "title": "Spring Boot 自动配置与启动",
+      "priority": "must",
+      "depth": "mechanism",
+      "articles": [
+        {
+          "title": "Spring Boot 启动",
+          "core": true,
+          "path": "docs/basic-knowledge/java/spring/spring-boot-startup.mdx",
+          "href": "/docs/basic-knowledge/java/spring/spring-boot-startup"
+        },
+        {
+          "title": "Spring Boot 自动配置",
+          "core": true,
+          "path": "docs/basic-knowledge/java/spring/auto-configuration-conditions.mdx",
+          "href": "/docs/basic-knowledge/java/spring/auto-configuration-conditions"
+        },
+        {
+          "title": "Spring Boot 外部化配置",
+          "core": true,
+          "path": "docs/basic-knowledge/java/spring/external-config-precedence.mdx",
+          "href": "/docs/basic-knowledge/java/spring/external-config-precedence"
+        },
+        {
+          "title": "Spring Boot Starter",
+          "core": false,
+          "path": "docs/basic-knowledge/java/spring/custom-starter-boundaries.mdx",
+          "href": "/docs/basic-knowledge/java/spring/custom-starter-boundaries"
+        },
+        {
+          "title": "Spring Boot Actuator",
+          "core": false,
+          "path": "docs/basic-knowledge/java/spring/actuator-health-startup-diagnostics.mdx",
+          "href": "/docs/basic-knowledge/java/spring/actuator-health-startup-diagnostics"
+        }
+      ],
+      "evidenceIds": [],
+      "evidenceScope": "项目路径前置判断；本批具体框架证据不足",
+      "proposedAction": "暂保留项目核心链路，精简启动细节，补专项证据后复核",
+      "contentValidation": "not_fully_reviewed"
+    },
+    {
+      "id": "data-access",
+      "title": "MyBatis 与数据库连接池",
+      "priority": "must",
+      "depth": "mechanism",
+      "articles": [
+        {
+          "title": "MyBatis",
+          "core": true,
+          "path": "docs/basic-knowledge/java/data-access/mybatis-mapping-executor-plugins.mdx",
+          "href": "/docs/basic-knowledge/java/data-access/mybatis-mapping-executor-plugins"
+        },
+        {
+          "title": "数据库连接池",
+          "core": true,
+          "path": "docs/basic-knowledge/java/data-access/connection-pool-capacity-timeout-leaks.mdx",
+          "href": "/docs/basic-knowledge/java/data-access/connection-pool-capacity-timeout-leaks"
+        },
+        {
+          "title": "JPA",
+          "core": false,
+          "path": "docs/basic-knowledge/java/data-access/jpa-entity-states-dirty-checking-lazy-loading.mdx",
+          "href": "/docs/basic-knowledge/java/data-access/jpa-entity-states-dirty-checking-lazy-loading"
+        },
+        {
+          "title": "N+1 查询",
+          "core": false,
+          "path": "docs/basic-knowledge/java/data-access/n-plus-one-fetch-strategies.mdx",
+          "href": "/docs/basic-knowledge/java/data-access/n-plus-one-fetch-strategies"
+        },
+        {
+          "title": "批处理与分页",
+          "core": false,
+          "path": "docs/basic-knowledge/java/data-access/batching-pagination-data-access-tests.mdx",
+          "href": "/docs/basic-knowledge/java/data-access/batching-pagination-data-access-tests"
+        }
+      ],
+      "evidenceIds": [],
+      "evidenceScope": "项目路径前置判断；本批具体框架证据不足",
+      "proposedAction": "暂保留项目核心链路，精简启动细节，补专项证据后复核",
+      "contentValidation": "not_fully_reviewed"
+    },
+    {
+      "id": "network",
+      "title": "TCP、HTTP 与 RPC",
+      "priority": "must",
+      "depth": "mechanism",
+      "articles": [
+        {
+          "title": "TCP 连接",
+          "core": true,
+          "path": "docs/basic-knowledge/network/tcp_handshake.mdx",
+          "href": "/docs/basic-knowledge/network/tcp_handshake"
+        },
+        {
+          "title": "DNS",
+          "core": true,
+          "path": "docs/basic-knowledge/network/dns.mdx",
+          "href": "/docs/basic-knowledge/network/dns"
+        },
+        {
+          "title": "TLS",
+          "core": true,
+          "path": "docs/basic-knowledge/network/tls.mdx",
+          "href": "/docs/basic-knowledge/network/tls"
+        },
+        {
+          "title": "HTTP",
+          "core": true,
+          "path": "docs/basic-knowledge/network/http-versions-connection-reuse-timeouts.mdx",
+          "href": "/docs/basic-knowledge/network/http-versions-connection-reuse-timeouts"
+        },
+        {
+          "title": "RPC",
+          "core": true,
+          "path": "docs/basic-knowledge/network/rpc-serialization-netty-event-loop.mdx",
+          "href": "/docs/basic-knowledge/network/rpc-serialization-netty-event-loop"
+        },
+        {
+          "title": "网络模型",
+          "core": false,
+          "path": "docs/basic-knowledge/network/network-models.mdx",
+          "href": "/docs/basic-knowledge/network/network-models"
+        },
+        {
+          "title": "TCP 与 UDP",
+          "core": false,
+          "path": "docs/basic-knowledge/network/tcp_udp.mdx",
+          "href": "/docs/basic-knowledge/network/tcp_udp"
+        }
+      ],
+      "evidenceIds": [
+        "JD02",
+        "JD03",
+        "JD04",
+        "JD07",
+        "JD08",
+        "I01",
+        "I05",
+        "I07"
+      ],
+      "evidenceScope": "直接能力或题目证据；I07 仅历史补充",
+      "proposedAction": "核心解释请求和连接，RPC 深度按岗位与项目",
+      "contentValidation": "not_fully_reviewed"
+    },
+    {
+      "id": "database-index",
+      "title": "MySQL 索引与查询优化",
+      "priority": "must",
+      "depth": "mechanism",
+      "articles": [
+        {
+          "title": "数据库索引",
+          "core": true,
+          "path": "docs/basic-knowledge/database/indices/index.mdx",
+          "href": "/docs/basic-knowledge/database/indices/"
+        },
+        {
+          "title": "执行计划",
+          "core": true,
+          "path": "docs/basic-knowledge/database/indices/execution-plan.mdx",
+          "href": "/docs/basic-knowledge/database/indices/execution-plan"
+        },
+        {
+          "title": "B+ 树",
+          "core": true,
+          "path": "docs/basic-knowledge/database/indices/b_plus_tree/index.mdx",
+          "href": "/docs/basic-knowledge/database/indices/b_plus_tree/"
+        },
+        {
+          "title": "聚簇索引",
+          "core": true,
+          "path": "docs/basic-knowledge/database/indices/clustered_index/index.mdx",
+          "href": "/docs/basic-knowledge/database/indices/clustered_index/"
+        },
+        {
+          "title": "联合索引与覆盖索引",
+          "core": true,
+          "path": "docs/basic-knowledge/database/indices/composite-covering-back-table.mdx",
+          "href": "/docs/basic-knowledge/database/indices/composite-covering-back-table"
+        },
+        {
+          "title": "索引设计",
+          "core": false,
+          "path": "docs/basic-knowledge/database/indices/index-review.mdx",
+          "href": "/docs/basic-knowledge/database/indices/index-review"
+        }
+      ],
+      "evidenceIds": [
+        "JD03",
+        "JD04",
+        "JD07",
+        "JD08",
+        "I01",
+        "I02",
+        "I04"
+      ],
+      "evidenceScope": "直接能力或题目证据",
+      "proposedAction": "复用正文，补查询计划与并发时序练习",
+      "contentValidation": "not_fully_reviewed"
+    },
+    {
+      "id": "database-transaction",
+      "title": "事务、锁与 MVCC",
+      "priority": "must",
+      "depth": "mechanism",
+      "articles": [
+        {
+          "title": "数据库事务",
+          "core": true,
+          "path": "docs/basic-knowledge/database/transaction/index.mdx",
+          "href": "/docs/basic-knowledge/database/transaction/"
+        },
+        {
+          "title": "InnoDB 锁",
+          "core": true,
+          "path": "docs/basic-knowledge/database/transaction/innodb-locking-ranges.mdx",
+          "href": "/docs/basic-knowledge/database/transaction/innodb-locking-ranges"
+        },
+        {
+          "title": "MVCC",
+          "core": true,
+          "path": "docs/basic-knowledge/database/transaction/mvcc-read-view-consistent-read.mdx",
+          "href": "/docs/basic-knowledge/database/transaction/mvcc-read-view-consistent-read"
+        },
+        {
+          "title": "数据库死锁",
+          "core": false,
+          "path": "docs/basic-knowledge/database/transaction/deadlock-detection-timeout-retry.mdx",
+          "href": "/docs/basic-knowledge/database/transaction/deadlock-detection-timeout-retry"
+        },
+        {
+          "title": "长事务",
+          "core": false,
+          "path": "docs/basic-knowledge/database/transaction/long-transactions-hot-updates-boundaries.mdx",
+          "href": "/docs/basic-knowledge/database/transaction/long-transactions-hot-updates-boundaries"
+        }
+      ],
+      "evidenceIds": [
+        "JD03",
+        "JD04",
+        "JD07",
+        "JD08",
+        "I01",
+        "I02",
+        "I04"
+      ],
+      "evidenceScope": "直接能力或题目证据",
+      "proposedAction": "复用正文，补查询计划与并发时序练习",
+      "contentValidation": "not_fully_reviewed"
+    },
+    {
+      "id": "cache-mq",
+      "title": "Redis 与缓存一致性",
+      "priority": "must",
+      "depth": "scenario",
+      "articles": [
+        {
+          "title": "Redis",
+          "core": true,
+          "path": "docs/basic-knowledge/nosql/redis/index.mdx",
+          "href": "/docs/basic-knowledge/nosql/redis/"
+        },
+        {
+          "title": "Redis 过期",
+          "core": true,
+          "path": "docs/basic-knowledge/nosql/redis/expiration.mdx",
+          "href": "/docs/basic-knowledge/nosql/redis/expiration"
+        },
+        {
+          "title": "Redis 内存淘汰",
+          "core": true,
+          "path": "docs/basic-knowledge/nosql/redis/eviction.mdx",
+          "href": "/docs/basic-knowledge/nosql/redis/eviction"
+        },
+        {
+          "title": "缓存一致性",
+          "core": true,
+          "path": "docs/basic-knowledge/nosql/redis/cache-patterns-consistency.mdx",
+          "href": "/docs/basic-knowledge/nosql/redis/cache-patterns-consistency"
+        },
+        {
+          "title": "缓存穿透、击穿、雪崩与热点 Key",
+          "core": true,
+          "path": "docs/basic-knowledge/nosql/redis/cache-penetration-stampede-avalanche-hotkeys.mdx",
+          "href": "/docs/basic-knowledge/nosql/redis/cache-penetration-stampede-avalanche-hotkeys"
+        },
+        {
+          "title": "Redis 持久化、复制与集群",
+          "core": false,
+          "path": "docs/basic-knowledge/nosql/redis/persistence.mdx",
+          "href": "/docs/basic-knowledge/nosql/redis/persistence"
+        },
+        {
+          "title": "分布式锁",
+          "core": false,
+          "path": "docs/basic-knowledge/nosql/redis/distributed-lock-conditions-boundaries.mdx",
+          "href": "/docs/basic-knowledge/nosql/redis/distributed-lock-conditions-boundaries"
+        }
+      ],
+      "evidenceIds": [
+        "JD03",
+        "JD04",
+        "I01",
+        "I02",
+        "I04"
+      ],
+      "evidenceScope": "直接能力或题目证据",
+      "proposedAction": "区分缓存、消息、搜索和调度范围；增加失败处理迁移练习",
+      "contentValidation": "not_fully_reviewed"
+    },
+    {
+      "id": "messaging-search",
+      "title": "消息、搜索与后台任务",
+      "priority": "common",
+      "depth": "scenario",
+      "articles": [
+        {
+          "title": "消息队列",
+          "core": true,
+          "path": "docs/basic-knowledge/middleware/kafka-rabbitmq-queue-semantics.mdx",
+          "href": "/docs/basic-knowledge/middleware/kafka-rabbitmq-queue-semantics"
+        },
+        {
+          "title": "消息可靠性",
+          "core": true,
+          "path": "docs/basic-knowledge/middleware/message-ack-retry-dead-letter.mdx",
+          "href": "/docs/basic-knowledge/middleware/message-ack-retry-dead-letter"
+        },
+        {
+          "title": "消息幂等性",
+          "core": true,
+          "path": "docs/basic-knowledge/middleware/idempotent-consumption-order-duplicates.mdx",
+          "href": "/docs/basic-knowledge/middleware/idempotent-consumption-order-duplicates"
+        },
+        {
+          "title": "Elasticsearch",
+          "core": true,
+          "path": "docs/basic-knowledge/middleware/elasticsearch-inverted-index-refresh-visibility.mdx",
+          "href": "/docs/basic-knowledge/middleware/elasticsearch-inverted-index-refresh-visibility"
+        },
+        {
+          "title": "分布式任务调度",
+          "core": false,
+          "path": "docs/basic-knowledge/middleware/scheduled-tasks-sharding-recovery.mdx",
+          "href": "/docs/basic-knowledge/middleware/scheduled-tasks-sharding-recovery"
+        }
+      ],
+      "evidenceIds": [
+        "JD03",
+        "JD04",
+        "I01",
+        "I02",
+        "I04"
+      ],
+      "evidenceScope": "直接能力或题目证据",
+      "proposedAction": "区分缓存、消息、搜索和调度范围；增加失败处理迁移练习",
+      "contentValidation": "not_fully_reviewed"
+    },
+    {
+      "id": "service-governance",
+      "title": "注册、配置、网关与流量治理",
+      "priority": "common",
+      "depth": "scenario",
+      "articles": [
+        {
+          "title": "服务发现",
+          "core": true,
+          "path": "docs/system-design/microservices/service-discovery-health-checks.mdx",
+          "href": "/docs/system-design/microservices/service-discovery-health-checks"
+        },
+        {
+          "title": "配置中心",
+          "core": true,
+          "path": "docs/system-design/microservices/config-center-version-refresh.mdx",
+          "href": "/docs/system-design/microservices/config-center-version-refresh"
+        },
+        {
+          "title": "API 网关",
+          "core": true,
+          "path": "docs/system-design/microservices/api-gateway-routing.mdx",
+          "href": "/docs/system-design/microservices/api-gateway-routing"
+        },
+        {
+          "title": "灰度发布",
+          "core": true,
+          "path": "docs/system-design/microservices/canary-traffic-tagging-rollback.mdx",
+          "href": "/docs/system-design/microservices/canary-traffic-tagging-rollback"
+        },
+        {
+          "title": "控制平面与数据平面",
+          "core": false,
+          "path": "docs/system-design/microservices/control-plane-data-plane-failures.mdx",
+          "href": "/docs/system-design/microservices/control-plane-data-plane-failures"
+        }
+      ],
+      "evidenceIds": [
+        "JD01",
+        "JD02",
+        "JD04",
+        "JD05",
+        "JD07",
+        "JD08",
+        "I04"
+      ],
+      "evidenceScope": "支持工程、可靠性或场景能力，不逐项指定工具",
+      "proposedAction": "项目最小范围包含构建运行、日志和失败处理，完整治理选读",
+      "contentValidation": "not_fully_reviewed"
+    },
+    {
+      "id": "resilience",
+      "title": "超时、重试、限流与熔断",
+      "priority": "common",
+      "depth": "scenario",
+      "articles": [
+        {
+          "title": "超时",
+          "core": true,
+          "path": "docs/system-design/reliability/timeout-budget-cancellation.mdx",
+          "href": "/docs/system-design/reliability/timeout-budget-cancellation"
+        },
+        {
+          "title": "重试",
+          "core": true,
+          "path": "docs/system-design/reliability/retry-backoff-jitter-storms.mdx",
+          "href": "/docs/system-design/reliability/retry-backoff-jitter-storms"
+        },
+        {
+          "title": "限流",
+          "core": true,
+          "path": "docs/system-design/reliability/rate-limiting-capacity-protection.mdx",
+          "href": "/docs/system-design/reliability/rate-limiting-capacity-protection"
+        },
+        {
+          "title": "服务容错",
+          "core": true,
+          "path": "docs/system-design/reliability/circuit-breaker-degradation-bulkhead.mdx",
+          "href": "/docs/system-design/reliability/circuit-breaker-degradation-bulkhead"
+        },
+        {
+          "title": "幂等键",
+          "core": false,
+          "path": "docs/system-design/reliability/idempotency-keys-safe-retries.mdx",
+          "href": "/docs/system-design/reliability/idempotency-keys-safe-retries"
+        }
+      ],
+      "evidenceIds": [
+        "JD01",
+        "JD02",
+        "JD04",
+        "JD05",
+        "JD07",
+        "JD08",
+        "I04"
+      ],
+      "evidenceScope": "支持工程、可靠性或场景能力，不逐项指定工具",
+      "proposedAction": "项目最小范围包含构建运行、日志和失败处理，完整治理选读",
+      "contentValidation": "not_fully_reviewed"
+    },
+    {
+      "id": "distributed-transaction",
+      "title": "分布式事务与数据一致性",
+      "priority": "common",
+      "depth": "scenario",
+      "articles": [
+        {
+          "title": "分布式一致性",
+          "core": true,
+          "path": "docs/system-design/distributed-data/invariants-to-consistency-strategy.mdx",
+          "href": "/docs/system-design/distributed-data/invariants-to-consistency-strategy"
+        },
+        {
+          "title": "2PC 与 TCC",
+          "core": true,
+          "path": "docs/system-design/distributed-data/2pc-tcc-coordination-cost.mdx",
+          "href": "/docs/system-design/distributed-data/2pc-tcc-coordination-cost"
+        },
+        {
+          "title": "Saga",
+          "core": true,
+          "path": "docs/system-design/distributed-data/saga-compensation-intermediate-state.mdx",
+          "href": "/docs/system-design/distributed-data/saga-compensation-intermediate-state"
+        },
+        {
+          "title": "Transactional Outbox 与 CDC",
+          "core": true,
+          "path": "docs/system-design/distributed-data/outbox-cdc-reliable-events.mdx",
+          "href": "/docs/system-design/distributed-data/outbox-cdc-reliable-events"
+        },
+        {
+          "title": "分布式流程恢复",
+          "core": false,
+          "path": "docs/system-design/distributed-data/idempotency-reconciliation-manual-repair.mdx",
+          "href": "/docs/system-design/distributed-data/idempotency-reconciliation-manual-repair"
+        }
+      ],
+      "evidenceIds": [
+        "JD06",
+        "JD03",
+        "I02"
+      ],
+      "evidenceScope": "专项岗位与场景证据",
+      "proposedAction": "权限、幂等和数据约束连接项目；PKI、共识和协调协议按岗",
+      "contentValidation": "not_fully_reviewed"
+    },
+    {
+      "id": "security",
+      "title": "认证、授权与应用安全",
+      "priority": "common",
+      "depth": "scenario",
+      "articles": [
+        {
+          "title": "认证与授权",
+          "core": true,
+          "path": "docs/system-design/security/authentication-authorization-trust-boundaries.mdx",
+          "href": "/docs/system-design/security/authentication-authorization-trust-boundaries"
+        },
+        {
+          "title": "Session、JWT、OAuth 2.0 与 OIDC",
+          "core": true,
+          "path": "docs/system-design/security/session-jwt-oauth-oidc.mdx",
+          "href": "/docs/system-design/security/session-jwt-oauth-oidc"
+        },
+        {
+          "title": "Spring Security",
+          "core": false,
+          "path": "docs/system-design/security/spring-security-filter-chain.mdx",
+          "href": "/docs/system-design/security/spring-security-filter-chain"
+        },
+        {
+          "title": "Web 应用安全",
+          "core": true,
+          "path": "docs/system-design/security/injection-authorization-ssrf-deserialization.mdx",
+          "href": "/docs/system-design/security/injection-authorization-ssrf-deserialization"
+        },
+        {
+          "title": "密钥、证书、审计与供应链安全",
+          "core": false,
+          "path": "docs/system-design/security/secrets-certificates-audit-supply-chain.mdx",
+          "href": "/docs/system-design/security/secrets-certificates-audit-supply-chain"
+        }
+      ],
+      "evidenceIds": [
+        "JD06",
+        "JD03",
+        "I02"
+      ],
+      "evidenceScope": "专项岗位与场景证据",
+      "proposedAction": "权限、幂等和数据约束连接项目；PKI、共识和协调协议按岗",
+      "contentValidation": "not_fully_reviewed"
+    },
+    {
+      "id": "delivery",
+      "title": "可观测性、交付与联合排障",
+      "priority": "common",
+      "depth": "scenario",
+      "articles": [
+        {
+          "title": "Git",
+          "core": true,
+          "path": "docs/tools-and-frameworks/git/index.md",
+          "href": "/docs/tools-and-frameworks/git/"
+        },
+        {
+          "title": "Maven",
+          "core": true,
+          "path": "docs/system-design/production/maven-lifecycle-dependency-convergence.mdx",
+          "href": "/docs/system-design/production/maven-lifecycle-dependency-convergence"
+        },
+        {
+          "title": "可重复交付",
+          "core": true,
+          "path": "docs/system-design/production/docker-ci-cd-reproducible-delivery.mdx",
+          "href": "/docs/system-design/production/docker-ci-cd-reproducible-delivery"
+        },
+        {
+          "title": "可观测性",
+          "core": true,
+          "path": "docs/system-design/production/logs-metrics-traces-correlation.mdx",
+          "href": "/docs/system-design/production/logs-metrics-traces-correlation"
+        },
+        {
+          "title": "生产故障诊断",
+          "core": true,
+          "path": "docs/system-design/production/jvm-thread-sql-network-joint-diagnosis.mdx",
+          "href": "/docs/system-design/production/jvm-thread-sql-network-joint-diagnosis"
+        }
+      ],
+      "evidenceIds": [
+        "JD01",
+        "JD02",
+        "JD04",
+        "JD05",
+        "JD07",
+        "JD08",
+        "I04"
+      ],
+      "evidenceScope": "支持工程、可靠性或场景能力，不逐项指定工具",
+      "proposedAction": "项目最小范围包含构建运行、日志和失败处理，完整治理选读",
+      "contentValidation": "not_fully_reviewed"
+    },
+    {
+      "id": "system-design",
+      "title": "系统设计方法与容量",
+      "priority": "optional",
+      "depth": "scenario",
+      "articles": [
+        {
+          "title": "系统设计面试",
+          "core": true,
+          "path": "docs/system-design/system-design/interview-process.mdx",
+          "href": "/docs/system-design/system-design/interview-process"
+        },
+        {
+          "title": "系统架构",
+          "core": true,
+          "path": "docs/system-design/system-design/universe_architecture.mdx",
+          "href": "/docs/system-design/system-design/universe_architecture"
+        },
+        {
+          "title": "容量规划",
+          "core": true,
+          "path": "docs/system-design/system-design/capacity-slo-failure-model.mdx",
+          "href": "/docs/system-design/system-design/capacity-slo-failure-model"
+        },
+        {
+          "title": "数据拆分",
+          "core": false,
+          "path": "docs/system-design/system-design/read-write-paths-hotspots-sharding.mdx",
+          "href": "/docs/system-design/system-design/read-write-paths-hotspots-sharding"
+        },
+        {
+          "title": "系统设计题",
+          "core": false,
+          "path": "docs/system-design/system-design/system-design-problems/index.mdx",
+          "href": "/docs/system-design/system-design/system-design-problems/"
+        }
+      ],
+      "evidenceIds": [
+        "JD01",
+        "JD03",
+        "JD04",
+        "JD07",
+        "JD08",
+        "I05"
+      ],
+      "evidenceScope": "职责、加分项或个别开放题；不支持全部专题必会",
+      "proposedAction": "补项目设计示例，复杂架构继续按岗选学",
+      "contentValidation": "not_fully_reviewed"
+    },
+    {
+      "id": "distributed-system",
+      "title": "复制、一致性与共识",
+      "priority": "optional",
+      "depth": "scenario",
+      "articles": [
+        {
+          "title": "CAP 理论",
+          "core": true,
+          "path": "docs/system-design/distributed-system/cap-theorem.mdx",
+          "href": "/docs/system-design/distributed-system/cap-theorem"
+        },
+        {
+          "title": "主备复制",
+          "core": true,
+          "path": "docs/system-design/distributed-system/primary_backup_replication.mdx",
+          "href": "/docs/system-design/distributed-system/primary_backup_replication"
+        },
+        {
+          "title": "一致性模型",
+          "core": true,
+          "path": "docs/system-design/distributed-system/consistency-models-quorum-linearizability.mdx",
+          "href": "/docs/system-design/distributed-system/consistency-models-quorum-linearizability"
+        },
+        {
+          "title": "Raft",
+          "core": true,
+          "path": "docs/system-design/distributed-system/raft-election-log-replication.mdx",
+          "href": "/docs/system-design/distributed-system/raft-election-log-replication"
+        },
+        {
+          "title": "跨地域复制",
+          "core": false,
+          "path": "docs/system-design/distributed-system/cross-region-replication-latency-conflicts.mdx",
+          "href": "/docs/system-design/distributed-system/cross-region-replication-latency-conflicts"
+        }
+      ],
+      "evidenceIds": [
+        "JD06",
+        "JD03",
+        "I02"
+      ],
+      "evidenceScope": "专项岗位与场景证据",
+      "proposedAction": "权限、幂等和数据约束连接项目；PKI、共识和协调协议按岗",
+      "contentValidation": "not_fully_reviewed"
+    },
+    {
+      "id": "domain-architecture",
+      "title": "DDD、模块化单体与微服务",
+      "priority": "optional",
+      "depth": "scenario",
+      "articles": [
+        {
+          "title": "限界上下文",
+          "core": true,
+          "path": "docs/system-design/architecture/domain-bounded-context-ubiquitous-language.mdx",
+          "href": "/docs/system-design/architecture/domain-bounded-context-ubiquitous-language"
+        },
+        {
+          "title": "聚合",
+          "core": true,
+          "path": "docs/system-design/architecture/aggregate-invariants-transaction-boundaries.mdx",
+          "href": "/docs/system-design/architecture/aggregate-invariants-transaction-boundaries"
+        },
+        {
+          "title": "模块化单体",
+          "core": true,
+          "path": "docs/system-design/architecture/modular-monolith-dependency-constraints.mdx",
+          "href": "/docs/system-design/architecture/modular-monolith-dependency-constraints"
+        },
+        {
+          "title": "微服务架构",
+          "core": true,
+          "path": "docs/system-design/architecture/microservice-splitting-benefits-costs.mdx",
+          "href": "/docs/system-design/architecture/microservice-splitting-benefits-costs"
+        },
+        {
+          "title": "绞杀者模式",
+          "core": false,
+          "path": "docs/system-design/architecture/strangler-migration-compatibility-rollback.mdx",
+          "href": "/docs/system-design/architecture/strangler-migration-compatibility-rollback"
+        }
+      ],
+      "evidenceIds": [
+        "JD01",
+        "JD03",
+        "JD04",
+        "JD07",
+        "JD08",
+        "I05"
+      ],
+      "evidenceScope": "职责、加分项或个别开放题；不支持全部专题必会",
+      "proposedAction": "补项目设计示例，复杂架构继续按岗选学",
+      "contentValidation": "not_fully_reviewed"
+    },
+    {
+      "id": "availability-cost",
+      "title": "高可用、容灾、多租户与成本",
+      "priority": "optional",
+      "depth": "scenario",
+      "articles": [
+        {
+          "title": "服务等级目标（SLO）",
+          "core": true,
+          "path": "docs/system-design/availability/sli-slo-error-budget-capacity-headroom.mdx",
+          "href": "/docs/system-design/availability/sli-slo-error-budget-capacity-headroom"
+        },
+        {
+          "title": "灾难恢复",
+          "core": true,
+          "path": "docs/system-design/availability/high-availability-backup-rto-rpo.mdx",
+          "href": "/docs/system-design/availability/high-availability-backup-rto-rpo"
+        },
+        {
+          "title": "故障转移",
+          "core": true,
+          "path": "docs/system-design/availability/failover-drills-recovery-validation.mdx",
+          "href": "/docs/system-design/availability/failover-drills-recovery-validation"
+        },
+        {
+          "title": "多租户",
+          "core": true,
+          "path": "docs/system-design/availability/multi-tenant-isolation-quotas-data-boundaries.mdx",
+          "href": "/docs/system-design/availability/multi-tenant-isolation-quotas-data-boundaries"
+        },
+        {
+          "title": "成本归因",
+          "core": false,
+          "path": "docs/system-design/availability/performance-reliability-cost-attribution.mdx",
+          "href": "/docs/system-design/availability/performance-reliability-cost-attribution"
+        }
+      ],
+      "evidenceIds": [
+        "JD01",
+        "JD03",
+        "JD04",
+        "JD07",
+        "JD08",
+        "I05"
+      ],
+      "evidenceScope": "职责、加分项或个别开放题；不支持全部专题必会",
+      "proposedAction": "补项目设计示例，复杂架构继续按岗选学",
+      "contentValidation": "not_fully_reviewed"
+    },
+    {
+      "id": "architecture-evolution",
+      "title": "架构演进与技术决策",
+      "priority": "optional",
+      "depth": "scenario",
+      "articles": [
+        {
+          "title": "架构决策记录（ADR）",
+          "core": true,
+          "path": "docs/system-design/leadership/constraints-architecture-decision-records.mdx",
+          "href": "/docs/system-design/leadership/constraints-architecture-decision-records"
+        },
+        {
+          "title": "架构迁移",
+          "core": true,
+          "path": "docs/system-design/leadership/compatibility-migration-canary-exit-criteria.mdx",
+          "href": "/docs/system-design/leadership/compatibility-migration-canary-exit-criteria"
+        },
+        {
+          "title": "技术债",
+          "core": true,
+          "path": "docs/system-design/leadership/technical-debt-priority-business-value.mdx",
+          "href": "/docs/system-design/leadership/technical-debt-priority-business-value"
+        },
+        {
+          "title": "设计评审",
+          "core": false,
+          "path": "docs/system-design/leadership/cross-team-design-review-disagreement.mdx",
+          "href": "/docs/system-design/leadership/cross-team-design-review-disagreement"
+        },
+        {
+          "title": "事故复盘",
+          "core": false,
+          "path": "docs/system-design/leadership/incident-review-failed-designs-organizational-learning.mdx",
+          "href": "/docs/system-design/leadership/incident-review-failed-designs-organizational-learning"
+        }
+      ],
+      "evidenceIds": [
+        "JD01",
+        "JD03",
+        "JD04",
+        "JD07",
+        "JD08",
+        "I05"
+      ],
+      "evidenceScope": "职责、加分项或个别开放题；不支持全部专题必会",
+      "proposedAction": "补项目设计示例，复杂架构继续按岗选学",
+      "contentValidation": "not_fully_reviewed"
+    }
+  ],
+  "sourceLedger": "research-sources.json",
+  "decisionsDocument": "../../java-campus-content-mapping.md",
+  "method": "现有路线和集合导读的文章引用展开后去重；证据按能力或题型分组关联，不代表每个子概念均被考察。优先级和深度为当前实现，proposedAction 尚未实施。",
+  "summary": {
+    "topics": 42,
+    "articleReferences": 208,
+    "uniqueDocuments": 205,
+    "existingMustTopics": 20
+  }
+}

@@ -1,0 +1,75 @@
+---
+sidebar_position: 3
+knowledge:
+  id: basic-knowledge.database.sql.aggregation
+  type: concept
+---
+
+# SQL 聚合
+
+SQL 聚合把若干输入行计算成计数、求和或其他统计值。分组前过滤用 WHERE，分组后过滤用 HAVING；先确认每一行代表什么，才能得到正确的业务统计。
+
+## 1. 面试核心 {#core}
+
+- COUNT(*) 统计行数，COUNT(column) 统计该列非 NULL 的行数。
+- GROUP BY 决定结果粒度，非聚合选择列应有明确的分组依据。
+- 空输入的 COUNT 为 0，SUM 通常为 NULL，需要按业务含义处理。
+
+## 2. 分组与 NULL {#mechanism}
+
+```sql
+CREATE TABLE sales (
+  id INTEGER PRIMARY KEY, team VARCHAR(20), amount INTEGER
+);
+INSERT INTO sales VALUES
+  (1, 'A', 30), (2, 'A', NULL), (3, 'A', 70), (4, 'B', 20);
+
+SELECT team, COUNT(*) AS rows_count,
+       COUNT(amount) AS known_count, SUM(amount) AS total
+FROM sales GROUP BY team ORDER BY team;
+```
+
+A 组得到 `(A,3,2,100)`，B 组得到 `(B,1,1,20)`。NULL 不参与 SUM 和 COUNT(amount)，但对应行仍被 COUNT(*) 计入。`AVG(amount)` 对 A 返回 50，而不是把 NULL 当成 0 后的三行平均。
+
+## 3. 分组前后过滤
+
+```sql
+SELECT team, SUM(amount) AS total
+FROM sales
+WHERE amount >= 30
+GROUP BY team
+HAVING SUM(amount) >= 100
+ORDER BY team;
+```
+
+WHERE 先保留 A 的 30、70，再按 team 分组，HAVING 留下总额至少 100 的组，最终只有 `(A,100)`。如果把 amount 的过滤改成另一种组级条件，参与统计的输入就会不同。
+
+## 4. 使用边界 {#boundaries}
+
+不要选择既未分组、也未聚合且无法由分组列确定的字段。MySQL 的 ONLY_FULL_GROUP_BY 模式会拒绝许多这种不明确的查询；关闭模式不等于业务语义已经正确。
+
+LEFT JOIN 后统计右表记录数量，应使用右表非空主键的 COUNT；COUNT(*) 会把补空行也算成一行。需要“没有记录时为 0”的总额，可用 COALESCE(SUM(amount),0)，但先确认 NULL 是否代表未知而非没有收入。
+
+## 5. 面试题
+
+### 5.1 COUNT(*) 和 COUNT(column) 有什么区别，LEFT JOIN 后怎样统计右表记录数？
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：输入行粒度、NULL 处理与外连接补空行的计数。
+
+**相关内容**：[面试核心](#core)、[分组与 NULL](#mechanism)、[使用边界](#boundaries)。
+
+<details>
+<summary>参考回答</summary>
+
+COUNT(*) 统计结果行，包括外连接为未匹配左行生成的补空行；COUNT(column) 忽略该列为 NULL 的行。右表主键本身不为空，因此用 COUNT(右表主键) 可以让没有匹配记录的左行得到 0。若连接产生重复明细，还要先修正结果粒度。
+
+</details>
+
+## 6. 参考资料
+
+- [MySQL：Aggregate Functions](https://dev.mysql.com/doc/refman/8.4/en/aggregate-functions.html)
+- [MySQL：GROUP BY Handling](https://dev.mysql.com/doc/refman/8.4/en/group-by-handling.html)

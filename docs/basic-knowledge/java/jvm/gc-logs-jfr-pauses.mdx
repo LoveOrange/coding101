@@ -127,11 +127,10 @@ JFR 为低开销持续记录设计，但开销取决于事件、阈值和堆栈�
 ### 9.1 线上 Full GC 频繁，怎样排查
 
 <!-- 面试来源：
-- 阿里巴巴：https://www.nowcoder.com/discuss/923310928014082048
 - 阿里云：https://www.nowcoder.com/discuss/401459816646942720
 -->
 
-**出现公司**：阿里巴巴、阿里云
+**出现公司**：阿里云
 
 **考察重点**
 
@@ -139,7 +138,7 @@ JFR 为低开销持续记录设计，但开销取决于事件、阈值和堆栈�
 - 类元数据、Humongous 与显式 GC 等不同路径。
 - GC 日志与 JFR 时间线。
 
-**相关内容**：第 1 节“使用 Unified Logging 保留上下文”至第 7 节“调优一次只改变一个主要变量”。
+**相关内容**：[使用 Unified Logging 保留上下文](#1-使用-unified-logging-保留上下文)至[调优一次只改变一个主要变量](#7-调优一次只改变一个主要变量)。
 
 <details>
 <summary>参考回答</summary>
@@ -164,7 +163,7 @@ JFR 为低开销持续记录设计，但开销取决于事件、阈值和堆栈�
 - JFR 关联 CPU、线程、分配、锁和编译。
 - 二者通过时间与 uptime 对齐。
 
-**相关内容**：第 1 节“使用 Unified Logging 保留上下文”至第 5 节“JFR 关联 GC、分配和业务线程”。
+**相关内容**：[使用 Unified Logging 保留上下文](#1-使用-unified-logging-保留上下文)至[JFR 关联 GC、分配和业务线程](#5-jfr-关联-gc分配和业务线程)。
 
 <details>
 <summary>参考回答</summary>

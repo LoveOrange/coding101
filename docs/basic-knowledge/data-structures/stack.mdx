@@ -1,0 +1,72 @@
+---
+sidebar_position: 3
+knowledge:
+  id: basic-knowledge.data-structures.stack
+  type: concept
+---
+
+# 栈
+
+栈是后进先出（LIFO）的抽象数据类型，只在一端添加和移除元素。它常用于括号匹配、表达式计算、深度优先搜索和函数调用状态保存。
+
+## 1. 面试核心 {#core}
+
+- push、pop、peek 分别表示入栈、出栈和查看栈顶。
+- 链式实现端点操作为 O(1)；动态数组实现的 push 通常是摊还 O(1)。
+- 栈保存尚未完成的上下文，空间取决于最大同时待处理数量。
+
+## 2. 后进先出与待完成状态 {#mechanism}
+
+输入左括号时，当前括号需要等内部表达式结束后才能匹配。越晚出现的左括号越早匹配，所以使用栈。
+
+```java
+static boolean balanced(String text) {
+    java.util.Deque<Character> stack = new java.util.ArrayDeque<>();
+    for (char c : text.toCharArray()) {
+        if (c == '(') stack.push(c);
+        else if (c == ')') {
+            if (stack.isEmpty()) return false;
+            stack.pop();
+        }
+    }
+    return stack.isEmpty();
+}
+```
+
+这个版本只检查圆括号，忽略其他字符。`(a())` 返回 true，`)(` 和 `(()` 返回 false。扫描到任意位置时，栈保存尚未匹配的左括号；右括号不能在空栈上匹配。时间 O(n)，空间 O(n)。
+
+## 3. 显式栈与调用栈
+
+递归调用会保存返回位置、参数与局部状态，返回时恢复最近的一层，因此调用过程也符合栈语义。把递归改成显式栈可以控制内存分配和暂停恢复，但不会自动消除保存状态所需的空间。
+
+遍历树时，如果希望先处理左孩子，应先把右孩子入栈，再把左孩子入栈。遍历顺序来自入栈顺序和 LIFO 的组合。
+
+## 4. 使用边界 {#boundaries}
+
+空栈操作要明确是返回空值还是抛异常。Java 的 `ArrayDeque` 不接受 null，`pop` 在空栈上抛异常；示例先检查非空。
+
+如果只需检查单一种类括号的数量关系，可以用计数器把空间降为 O(1)；多种括号还需要记住嵌套类型，单个计数器不够。需要先进先出时应选择[队列](./queue.mdx)。
+
+## 5. 面试题
+
+### 5.1 为什么多个括号类型的匹配不能只统计左右括号数量？
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：嵌套顺序、栈顶类型匹配，以及数量正确但顺序错误的反例。
+
+**相关内容**：[面试核心](#core)、[后进先出与待完成状态](#mechanism)、[使用边界](#boundaries)。
+
+<details>
+<summary>参考回答</summary>
+
+数量相等只说明总量一致，不能证明顺序与类型正确。例如 ([)] 各类数量都匹配，但第一个右括号与最近的左括号类型不一致。栈保留嵌套顺序，每次用右括号匹配栈顶类型，最后还要检查栈是否为空。
+
+</details>
+
+## 6. 参考资料
+
+- [Open Data Structures：Interfaces](https://opendatastructures.org/ods-java/1_2_Interfaces.html)
+- [Java：ArrayDeque](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/ArrayDeque.html)

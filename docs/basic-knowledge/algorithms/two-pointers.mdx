@@ -1,0 +1,70 @@
+---
+sidebar_position: 3
+knowledge:
+  id: basic-knowledge.algorithms.two-pointers
+  type: concept
+---
+
+# 双指针
+
+双指针通过两个位置的协调移动减少重复扫描。常见形式包括相向指针、同向读写指针和快慢指针；每种移动都需要对应的排除依据。
+
+## 1. 面试核心 {#core}
+
+- 相向指针求和通常依赖输入有序。
+- 同向读写指针可以原地压缩或去重。
+- 两个指针都只单向移动 O(n) 次时，总扫描成本为 O(n)。
+
+## 2. 相向移动的排除依据 {#mechanism}
+
+升序数组中求两个数之和：左端加右端偏小，就增大左端；偏大，就减小右端。和偏小时，当前左值与更小的右值相加也不可能达到目标，因此可以排除这个左值。
+
+```java
+static int[] twoSumSorted(int[] a, long target) {
+    int left = 0, right = a.length - 1;
+    while (left < right) {
+        long sum = (long) a[left] + a[right];
+        if (sum == target) return new int[]{left, right};
+        if (sum < target) left++;
+        else right--;
+    }
+    return new int[]{-1, -1};
+}
+```
+
+`[1,2,4,7]`、target=9 返回下标 `[1,3]`，同一元素不会被用两次。先转 long 再相加，避免 int 溢出影响比较。时间 O(n)，额外空间 O(1)。
+
+## 3. 同向指针与快慢指针
+
+数组去重时，read 遍历输入，write 指向下一个输出槽位。已经写出的前缀就是当前有效结果；只有需要保留的元素才推动 write。它适合在保序条件下压缩结果。
+
+链表判环中，慢指针每次走一步，快指针走两步；进入同一环后相对距离不断改变，最终相遇。这个证明依赖环和相对速度，与有序数组的排除逻辑不同。
+
+## 4. 使用边界 {#boundaries}
+
+无序数组不能直接按和的大小移动两端，否则可能跳过答案。排序后再找会增加 O(n log n) 成本，还可能丢失原始下标，需要额外保存映射。
+
+[滑动窗口](../java/algorithms/arrays-strings-sliding-window.mdx)是一类维护连续区间的同向双指针，是否能移动左端仍取决于窗口条件的性质。看到“子数组”不能直接假设所有问题都能用滑动窗口。
+
+## 5. 面试题
+
+### 5.1 双指针求两数之和为什么要求数组有序？
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：有序性如何支持排除候选，以及原始下标和重复值的处理。
+
+**相关内容**：[面试核心](#core)、[相向移动的排除依据](#mechanism)、[使用边界](#boundaries)。
+
+<details>
+<summary>参考回答</summary>
+
+和偏小时排除当前左值，需要保证它与区间内其他右值相加也不会更大；升序提供这个保证。无序数组没有这种关系，移动指针可能漏解。可以先排序并保留原下标，或使用哈希表，分别说明时间、空间和重复元素的处理。
+
+</details>
+
+## 6. 参考资料
+
+- [Princeton Algorithms：ThreeSumFast](https://algs4.cs.princeton.edu/14analysis/ThreeSumFast.java.html)

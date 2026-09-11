@@ -221,7 +221,7 @@ try (ObjectInputStream input = new ObjectInputStream(source)) {
 - UID 不一致时的结果，以及一致时仍需处理的语义兼容。
 - `static`、`transient` 和构造过程的边界。
 
-**相关内容**：第 1 节“Serializable 怎样工作”、第 2 节“serialVersionUID 表示序列化版本身份”。
+**相关内容**：[Serializable 怎样工作](#1-serializable-怎样工作)、[serialVersionUID 表示序列化版本身份](#2-serialversionuid-表示序列化版本身份)。
 
 <details>
 <summary>参考回答</summary>
@@ -246,7 +246,7 @@ try (ObjectInputStream input = new ObjectInputStream(source)) {
 - 对象图资源消耗和 gadget chain 风险。
 - `ObjectInputFilter` 能限制什么，不能替代什么。
 
-**相关内容**：第 4 节“反序列化不可信数据的风险”、第 5 节“使用反序列化过滤器限制对象图”。
+**相关内容**：[反序列化不可信数据的风险](#4-反序列化不可信数据的风险)、[使用反序列化过滤器限制对象图](#5-使用反序列化过滤器限制对象图)。
 
 <details>
 <summary>参考回答</summary>

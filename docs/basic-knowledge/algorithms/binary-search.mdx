@@ -1,0 +1,69 @@
+---
+sidebar_position: 2
+knowledge:
+  id: basic-knowledge.algorithms.binary-search
+  type: concept
+---
+
+# 二分查找
+
+二分查找通过一个具有单调性的判断，把候选区间反复缩小。以下使用升序数组上的 lower bound：找到第一个大于等于 target 的下标，若不存在则返回数组长度。
+
+## 1. 面试核心 {#core}
+
+- 前提是判断结果能够划分成连续的两段。
+- 区间开闭、边界更新和返回值必须使用同一套约定。
+- 数组查找 O(log n)，若用于答案二分，还要乘上每次判定成本。
+
+## 2. 半开区间不变量 {#mechanism}
+
+维护候选区间 `[left,right)`：left 之前的元素都小于 target，right 及之后的元素都大于等于 target。初始 left=0、right=n，两个已排除区域为空。
+
+```java
+static int lowerBound(int[] a, int target) {
+    int left = 0, right = a.length;
+    while (left < right) {
+        int middle = left + (right - left) / 2;
+        if (a[middle] < target) left = middle + 1;
+        else right = middle;
+    }
+    return left;
+}
+```
+
+在 `[1,3,3,7]` 中查 3 返回 1，查 8 返回 4，空数组返回 0。相等时继续收缩右界，才能找到第一个符合位置。每一步严格缩小区间，最终 left=right。
+
+## 3. 从位置查找到答案范围
+
+若判断“容量 c 能否在规定时间完成任务”对 c 单调，那么可以二分最小可行容量。必须先确定可行上界和不可行区域，再证明：某个 c 可行时，更大的值也可行。
+
+一次判定 O(n)，候选整数范围宽度为 U，则总时间 O(n log U)。数组中元素无序、可行性不单调或浮点精度目标不明确时，不能直接照搬整数二分模板。
+
+## 4. 使用边界 {#boundaries}
+
+找到 lower bound 后，判断元素是否存在还要检查 `index < a.length` 且 `a[index] == target`。返回 n 是合法哨兵，不能直接拿它读取数组。
+
+练习时测试空数组、单元素、全部相等、目标小于最小值和大于最大值，再手算每一步区间。链表按下标访问并非 O(1)，在链表上模拟数组二分不自动获得 O(log n) 总时间。
+
+## 5. 面试题
+
+### 5.1 二分查找遇到相等值时为什么不一定立即返回？
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：查找目标的定义、半开区间不变量与重复值边界。
+
+**相关内容**：[面试核心](#core)、[半开区间不变量](#mechanism)、[使用边界](#boundaries)。
+
+<details>
+<summary>参考回答</summary>
+
+取决于问题目标。查找任意一个相等值可以返回；查找第一个大于等于目标的位置时，相等值左边仍可能有更早答案，需要令 right=middle。维持半开区间不变量才能同时正确处理重复值、空数组和不存在的目标。
+
+</details>
+
+## 6. 参考资料
+
+- [Princeton Algorithms：BinarySearch](https://algs4.cs.princeton.edu/11model/BinarySearch.java.html)

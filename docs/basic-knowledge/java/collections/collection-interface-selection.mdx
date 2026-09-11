@@ -1,8 +1,15 @@
 ---
+pagination_prev: null
+pagination_next: null
 sidebar_position: 1
 ---
 
+import {ReviewReading, ReviewCheckpoint, ReviewQuestionAnchor} from '@site/src/components/Review';
+import {javaCollectionsReview} from '@site/src/data/reviewPlans/javaCollections';
+
 # Java 集合框架
+
+<ReviewReading plan={javaCollectionsReview} stepId="collections-selection" />
 
 Java 集合接口分别表达顺序、唯一性、键值关联和排队规则。选型时先确定调用方需要的语义，再比较具体实现的时间、空间和并发成本。
 
@@ -164,6 +171,8 @@ Queue<Task> tasks = new PriorityQueue<>(
 
 这个表是起点，不是结论。比如排行榜既可能需要 `TreeSet` 的排序，也可能需要 Map 定位和单独的索引结构，取决于更新频率和查询方式。
 
+<ReviewCheckpoint plan={javaCollectionsReview} stepId="collections-selection" />
+
 ## 7. 常见问题
 
 ### 7.1 HashSet 为什么不保证顺序
@@ -184,6 +193,8 @@ Queue<Task> tasks = new PriorityQueue<>(
 
 ## 8. 面试题
 
+<ReviewQuestionAnchor />
+
 ### 8.1 List、Set、Map 分别适合什么场景
 
 <!-- 面试来源：
@@ -199,7 +210,7 @@ Queue<Task> tasks = new PriorityQueue<>(
 - 接口语义与具体数据结构不能混为一谈。
 - 访问模式、内存与并发条件如何影响选型。
 
-**相关内容**：第 2 节“List 保留位置与重复元素”至第 6 节“选型从访问模式开始”。
+**相关内容**：[List 保留位置与重复元素](#2-list-保留位置与重复元素)至[选型从访问模式开始](#6-选型从访问模式开始)。
 
 <details>
 <summary>参考回答</summary>
@@ -209,6 +220,8 @@ Queue<Task> tasks = new PriorityQueue<>(
 例如一般顺序列表使用 `ArrayList`，成员判断用 `HashSet`，键值查找用 `HashMap`，范围查询用 `TreeMap`，单线程队列用 `ArrayDeque`。复杂度只是其中一个条件，元素数量、内存布局和线程共享也需要一起判断。
 
 </details>
+
+[返回本轮自测与下一篇](#review-checkpoint)
 
 ### 8.2 HashSet 怎样判断元素重复
 
@@ -224,7 +237,7 @@ Queue<Task> tasks = new PriorityQueue<>(
 - `hashCode` 用于定位候选范围，`equals` 用于确认相等。
 - 可变字段参与哈希计算时会发生什么。
 
-**相关内容**：第 3 节“Set 表达唯一性”。
+**相关内容**：[Set 表达唯一性](#3-set-表达唯一性)。
 
 <details>
 <summary>参考回答</summary>

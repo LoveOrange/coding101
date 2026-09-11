@@ -1,0 +1,73 @@
+---
+knowledge:
+  id: basic-knowledge.database.indices.execution-plan
+  type: concept
+---
+
+# 执行计划
+
+执行计划描述数据库为查询选择的访问路径与操作顺序。本文以 MySQL 8.4 为例，用 EXPLAIN 判断扫描、连接和排序，再用实际运行证据验证估计。
+
+## 1. 面试核心 {#core}
+
+- possible_keys 是候选索引，key 才是所选访问路径使用的索引。
+- rows、filtered 等通常为估算，不能直接当作实际扫描量与耗时。
+- EXPLAIN ANALYZE 会实际执行查询并展示运行统计，应先确认执行代价。
+
+## 2. 从查询条件到访问路径 {#mechanism}
+
+```sql
+CREATE TABLE orders_plan (
+  id BIGINT PRIMARY KEY,
+  user_id BIGINT NOT NULL,
+  created_at TIMESTAMP NOT NULL,
+  amount DECIMAL(10,2) NOT NULL
+);
+CREATE INDEX idx_user_created ON orders_plan(user_id, created_at);
+
+EXPLAIN SELECT id, created_at
+FROM orders_plan
+WHERE user_id = 7
+ORDER BY created_at
+LIMIT 20;
+```
+
+先按 user_id 定位，再按 created_at 读取，符合该联合索引的排列顺序。InnoDB 二级索引还包含主键 id，因此这个查询具有覆盖索引的可能。是否实际选择它，仍取决于数据规模、分布与优化器成本，不能预先编造固定 EXPLAIN 输出。
+
+## 3. 阅读计划与验证
+
+先检查实际选用的 key 和访问类型，再看 rows、filtered 估计留下多少行，最后检查排序、临时表与回表相关信息。传统输出中 `type=index` 可能表示全索引扫描，不代表只定位到少量目标。
+
+`Using index` 常表示查询所需信息可由索引提供；`Using index condition` 表示利用索引条件下推过滤，两者不同。`Using filesort` 表示使用额外排序过程，不等于一定把排序写到磁盘。
+
+对可控只读查询，可进一步用 EXPLAIN ANALYZE 检查实际行数、循环次数与时间，比较估计偏差。慢查询的等待、锁竞争和网络传输还需要其他运行指标配合。
+
+## 4. 使用边界 {#boundaries}
+
+小表全表扫描可能比索引访问更便宜；索引命中但返回大量行也可能很慢。判断优化时应比较同样参数、数据规模和缓存条件下的实际延迟，而不是只追求计划中的索引名称。
+
+修改索引后还要考虑写入成本、存储和其他查询。存在估计偏差时，先核对统计信息和数据倾斜，避免直接强制索引掩盖根因。
+
+## 5. 面试题
+
+### 5.1 查询使用了索引为什么仍然慢，如何用执行计划继续定位？
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：索引访问范围、估算与实际统计的区别，以及查询之外的等待成本。
+
+**相关内容**：[面试核心](#core)、[从查询条件到访问路径](#mechanism)、[使用边界](#boundaries)。
+
+<details>
+<summary>参考回答</summary>
+
+索引可能仍扫描大量条目，产生大量回表、排序或循环连接，也可能受到锁与 I/O 等待影响。检查实际访问路径、估计行数和过滤比例，再在可控条件下测量实际行数、循环与时间。索引名称存在只是起点，最终需以相同工作负载的实际表现判断。
+
+</details>
+
+## 6. 参考资料
+
+- [MySQL：EXPLAIN](https://dev.mysql.com/doc/refman/8.4/en/explain.html)
+- [MySQL：EXPLAIN Output](https://dev.mysql.com/doc/refman/8.4/en/explain-output.html)

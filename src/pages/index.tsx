@@ -20,7 +20,7 @@ const subjects = [
   {
     title: '算法与练习',
     description: '理解常见数据结构与算法，再通过题目练习。',
-    href: '/docs/leetcode/re-leetcode/',
+    href: '/docs/basic-knowledge/algorithms/',
     label: 'ALGORITHMS',
   },
   {
@@ -31,7 +31,7 @@ const subjects = [
   },
   {
     title: '面试准备',
-    description: '安排复习顺序，准备项目经历与面试表达。',
+    description: '查看岗位要求，准备简历、项目经历与面试表达。',
     href: '/docs/interview/',
     label: 'INTERVIEW PREP',
   },
@@ -60,7 +60,7 @@ function HomepageHeader() {
             </Link>
           </div>
           <p className={styles.heroNote}>
-            第一次来？<Link to="/docs/intro">阅读使用指南</Link>
+            <Link to="/docs/interview/campus-2027/">2027 校招岗位与投递</Link> · <Link to="/docs/interview/resume">简历准备</Link> · <Link to="/docs/intro">使用指南</Link>
           </p>
         </div>
 
