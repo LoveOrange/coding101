@@ -161,6 +161,11 @@ function parseCard(heading: ParsedHeading, lines: string[]): ParsedCard {
     }
     const company = /^\*\*出现公司\*\*[：:]\s*(.+)$/.exec(line);
     if (company) {
+      // "暂无公开来源记录" and similar mean the question has no verified source.
+      if (/^暂无/.test(company[1].trim())) {
+        mode = 'none';
+        continue;
+      }
       companies.push(
         ...company[1]
           .split(/[、，,]/)
