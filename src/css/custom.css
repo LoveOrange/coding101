@@ -89,3 +89,30 @@ html.c101-focus .navbar,html.c101-focus .footer{display:none}
 
 /* Keyboard focus */
 a:focus-visible,button:focus-visible,summary:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--c-green);outline-offset:2px}
+
+/* ---- Navbar (redesign) ---- */
+:root{--ifm-navbar-height:56px}
+.navbar{height:56px;padding:0 32px;border-bottom:1px solid var(--c-border);box-shadow:none;background:var(--c-paper)}
+.navbar__inner{max-width:none}
+.c101-logo{font-family:'JetBrains Mono',monospace;font-weight:600;font-size:16px;color:var(--c-ink);margin-right:40px}
+.c101-logo span{color:var(--c-accent)}
+.c101-logo:hover{color:var(--c-ink);text-decoration:none}
+.navbar__item.navbar__link{font-size:14px;color:var(--c-body);padding:18px 0;margin-right:28px}
+.navbar__link:hover{color:var(--c-ink)}
+.navbar__link--active{color:var(--c-ink);font-weight:700;box-shadow:inset 0 -2px 0 var(--c-ink)}
+.navbar__items--right{gap:16px}
+.navbar__items--right>.navbar__item{padding:0}
+.c101-signin{border:1px solid var(--c-ink);border-radius:999px;padding:5px 16px;font-size:14px;color:var(--c-ink)}
+.c101-signin:hover{color:var(--c-card);background:var(--c-ink);text-decoration:none}
+.c101-account{display:flex;align-items:center;gap:8px}
+.c101-account:hover{text-decoration:none}
+.c101-account__avatar{width:30px;height:30px;border-radius:50%;background:var(--c-green-t);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;color:var(--c-ink)}
+.c101-account__badge{font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:600;border-radius:4px;padding:2px 6px;background:var(--c-ink);color:var(--c-card)}
+.c101-account__badge--trial{background:var(--c-green)}
+.c101-account__badge--warn{background:none;color:var(--c-accent);box-shadow:inset 0 0 0 1px var(--c-accent)}
+.c101-account__badge--expired{background:var(--c-mute3)}
+@media (max-width:996px){.navbar{padding:0 16px}.c101-logo{margin-right:0}}
+.navbar__item.dropdown{padding:0}
+.navbar__item.dropdown>.navbar__link{font-size:14px;color:var(--c-body);padding:18px 0}
+.dropdown__menu{border:1px solid var(--c-border);box-shadow:0 12px 32px -12px rgba(var(--c-sh-rgb),.25);background:var(--c-card);padding:6px}
+.dropdown__link{font-size:14px;color:var(--c-body);border-radius:6px}
