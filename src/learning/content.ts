@@ -104,6 +104,38 @@ export function domainOf(index: LearningIndex, article: ArticleIndex) {
   return index.domains.find((domain) => domain.id === article.domainId);
 }
 
+export function topicOf(index: LearningIndex, article: ArticleIndex) {
+  return domainOf(index, article)?.topics.find((topic) => topic.id === article.topicId);
+}
+
+/**
+ * The article list an article belongs to for side navigation: its topic when
+ * the topic groups several articles, otherwise the whole domain.
+ */
+export function moduleOf(index: LearningIndex, article: ArticleIndex) {
+  const domain = domainOf(index, article);
+  const topic = topicOf(index, article);
+  if (!domain) return undefined;
+  if (topic && topic.articleIds.length > 1) {
+    return {label: `${domain.label} / ${topic.label}`, short: topic.label, articleIds: topic.articleIds, domain, topic};
+  }
+  return {label: domain.label, short: domain.label, articleIds: domain.articleIds, domain, topic};
+}
+
+/** Link to the knowledge tree with the article's topic selected. */
+export function topicsHref(article: ArticleIndex): string {
+  return `/topics?domain=${encodeURIComponent(article.domainId)}&topic=${encodeURIComponent(article.topicId)}`;
+}
+
+/** Status for a topic: aggregated over its articles. */
+export function topicGroupStatus(articleIds: string[], index: LearningIndex, learner: LearnerState): TopicStatus {
+  const statuses = articleIds.map((id) => topicStatus(index.articles[id], index, learner));
+  if (statuses.includes('weak')) return 'weak';
+  if (statuses.every((status) => status === 'mastered')) return 'mastered';
+  if (statuses.some((status) => status !== 'new')) return 'learning';
+  return 'new';
+}
+
 /** Short domain name for metadata lines, e.g. "Java · 语言基础" → "Java". */
 export function domainShortLabel(label: string): string {
   return label.split(' · ')[0];

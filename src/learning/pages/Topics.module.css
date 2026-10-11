@@ -351,3 +351,34 @@
     grid-template-columns: minmax(0, 1fr) 56px 48px;
   }
 }
+
+.topicCount {
+  font-size: 12px;
+  color: var(--c-mute3);
+  font-weight: 400;
+  white-space: nowrap;
+}
+
+.article .topicCount + .tagMust,
+.article .topicCount + .tagOptional {
+  margin-left: 8px;
+}
+
+.article .topicCount {
+  margin-left: auto;
+}
+
+.inlineMust,
+.inlineOptional {
+  margin-left: 10px;
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.inlineMust {
+  color: var(--c-accent);
+}
+
+.inlineOptional {
+  color: var(--c-mute3);
+}

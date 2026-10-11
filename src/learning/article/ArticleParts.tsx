@@ -2,7 +2,7 @@ import {type ReactNode, useMemo} from 'react';
 import clsx from 'clsx';
 import Link from '@docusaurus/Link';
 
-import {cardsInSection, domainOf, RATING_LABELS, sectionLabel, useLearningIndex} from '../content';
+import {cardsInSection, moduleOf, RATING_LABELS, sectionLabel, topicsHref, useLearningIndex} from '../content';
 import {useLearner} from '../store';
 import type {ArticleIndex, CardIndex, CardState} from '../types';
 import {Companies, PriorityDots} from '../ui';
@@ -16,14 +16,10 @@ export function reviewHref(article: ArticleIndex, card?: CardIndex): string {
 
 export function ArticleMeta({article}: {article: ArticleIndex}) {
   const index = useLearningIndex();
-  const domain = domainOf(index, article);
+  const module = moduleOf(index, article);
   return (
     <div className={styles.meta}>
-      {domain && (
-        <Link to={`/topics?domain=${encodeURIComponent(domain.id)}&article=${encodeURIComponent(article.id)}`}>
-          {domain.label}
-        </Link>
-      )}
+      {module && <Link to={topicsHref(article)}>{module.label.replace(' / ', ' · ')}</Link>}
       <span>约 {article.minutes} 分钟</span>
       {article.cardIds.length > 0 && <span>{article.cardIds.length} 张卡</span>}
     </div>

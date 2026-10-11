@@ -1,7 +1,7 @@
 import clsx from 'clsx';
 import Link from '@docusaurus/Link';
 
-import {domainOf, outlineSections, useLearningIndex} from '../content';
+import {moduleOf, outlineSections, topicsHref, useLearningIndex} from '../content';
 import {useLearner} from '../store';
 import type {ArticleIndex} from '../types';
 import {Segments} from '../ui';
@@ -11,22 +11,21 @@ import styles from './article.module.css';
 export function ModuleSidebar({article}: {article: ArticleIndex}) {
   const index = useLearningIndex();
   const learner = useLearner();
-  const domain = domainOf(index, article);
-  if (!domain) return null;
-  const articles = domain.articleIds.map((id) => index.articles[id]);
+  const module = moduleOf(index, article);
+  if (!module) return null;
+  const articles = module.articleIds.map((id) => index.articles[id]);
   const position = articles.findIndex((item) => item.id === article.id);
   const next = articles[position + 1];
   const done = articles.filter((item) => learner.reading[item.id]?.done).length;
   const reading = learner.reading[article.id];
   const sections = outlineSections(article).length || 1;
   const partial = reading && !reading.done ? Math.min(1, (reading.furthest + 1) / sections) : undefined;
-  const topicsHref = `/topics?domain=${encodeURIComponent(domain.id)}&article=${encodeURIComponent(article.id)}`;
-  const label = domain.label.replace(' · ', ' / ');
+  const treeHref = topicsHref(article);
 
   return (
-    <nav className={clsx('menu thin-scrollbar', styles.sidebar)} aria-label={`${domain.label} 文章`}>
-      <Link className={styles.sidebarLabel} to={topicsHref}>
-        {label}
+    <nav className={clsx('menu thin-scrollbar', styles.sidebar)} aria-label={`${module.label} 文章`}>
+      <Link className={styles.sidebarLabel} to={treeHref}>
+        {module.label}
       </Link>
       <ul className={styles.sidebarList}>
         {articles.map((item) => {
@@ -51,8 +50,8 @@ export function ModuleSidebar({article}: {article: ArticleIndex}) {
         })}
       </ul>
       <div className={styles.sidebarFoot}>
-        <Link className={styles.sidebarLabel} to={topicsHref}>
-          {domain.label.split(' · ').pop()} · 第 {position + 1} / {articles.length} 篇
+        <Link className={styles.sidebarLabel} to={treeHref}>
+          {module.short} · 第 {position + 1} / {articles.length} 篇
         </Link>
         <Segments
           className={styles.sidebarProgress}

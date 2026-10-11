@@ -6,8 +6,8 @@ import {useHistory, useLocation} from '@docusaurus/router';
 import {
   articlesForRole,
   cardStatus,
-  domainOf,
   dueCardIds,
+  moduleOf,
   RATING_LABELS,
   shuffle,
   useLearningIndex,
@@ -179,14 +179,14 @@ function ArticleReview({details, articleId, cardId}: {details: Record<string, Ca
     );
   }
 
-  const domain = domainOf(index, article);
+  const module = moduleOf(index, article);
   const interview = article.sections.find((section) => section.id === article.interviewAnchor);
 
   return (
     <main className={styles.split}>
       <aside className={styles.tree}>
-        <span className={styles.treeLabel}>{domain?.label.replace(' · ', ' / ')}</span>
-        {domain?.articleIds.map((id) => {
+        <span className={styles.treeLabel}>{module?.label}</span>
+        {module?.articleIds.map((id) => {
           const item = index.articles[id];
           const current = id === article.id;
           return (

@@ -11,14 +11,13 @@ import type {
   Domain,
   Priority,
   Role,
+  Topic,
 } from '../../src/learning/types';
 import {compactIndex} from '../../src/learning/compact';
 import {parseDoc} from './parse';
 
 /** Sidebars that make up the knowledge tree, in display order. */
 const TREE_SIDEBARS = ['basicKnowledgeSidebar', 'systemDesignSidebar'];
-/** A top-level category with more articles than this is split into its subcategories. */
-const SPLIT_THRESHOLD = 30;
 
 /** Routes served by the learning pages; each receives the card details module. */
 const ROUTES: {path: string; component: string}[] = [
@@ -73,26 +72,35 @@ function commonDir(ids: string[]): string {
 
 function buildDomains(items: SidebarItem[], indexDocs: Set<string>, docs: Map<string, DocMetadata>): Domain[] {
   const domains: Domain[] = [];
-  const push = (label: string, category: Extract<SidebarItem, {type: 'category'}>) => {
-    const articleIds = collectDocIds(category.items, indexDocs).filter((id) => docs.has(id));
-    if (!articleIds.length) return;
-    const linkId = category.link?.type === 'doc' ? category.link.id : undefined;
-    domains.push({
-      id: commonDir(articleIds) || linkId || label,
-      label,
-      permalink: linkId ? docs.get(linkId)?.permalink : undefined,
-      articleIds,
-    });
-  };
   for (const item of items) {
     if (item.type !== 'category' || !('items' in item)) continue;
-    const total = collectDocIds(item.items, indexDocs).length;
-    const subcategories = item.items.filter((child): child is Extract<SidebarItem, {type: 'category'}> => child.type === 'category');
-    if (total > SPLIT_THRESHOLD && subcategories.length) {
-      for (const child of subcategories) push(`${item.label} · ${child.label}`, child);
-    } else {
-      push(item.label, item);
+    const topics: Topic[] = [];
+    for (const child of item.items) {
+      if (child.type === 'doc' && 'id' in child) {
+        const doc = docs.get(child.id);
+        if (doc && !indexDocs.has(child.id)) topics.push({id: doc.id, label: doc.title, articleIds: [doc.id]});
+      } else if (child.type === 'category' && 'items' in child) {
+        const articleIds = collectDocIds(child.items, indexDocs).filter((id) => docs.has(id));
+        if (!articleIds.length) continue;
+        const linkId = child.link?.type === 'doc' ? child.link.id : undefined;
+        topics.push({
+          id: commonDir(articleIds) || linkId || child.label,
+          label: child.label,
+          permalink: linkId ? docs.get(linkId)?.permalink : undefined,
+          articleIds,
+        });
+      }
     }
+    const articleIds = topics.flatMap((topic) => topic.articleIds);
+    if (!articleIds.length) continue;
+    const linkId = item.link?.type === 'doc' ? item.link.id : undefined;
+    domains.push({
+      id: commonDir(articleIds) || linkId || item.label,
+      label: item.label,
+      permalink: linkId ? docs.get(linkId)?.permalink : undefined,
+      topics,
+      articleIds,
+    });
   }
   return domains;
 }
@@ -152,6 +160,7 @@ export default function learningContentPlugin(context: LoadContext): Plugin {
 
       for (const domain of domains) {
         for (const docId of domain.articleIds) {
+          const topic = domain.topics.find((item) => item.articleIds.includes(docId))!;
           const doc = docs.get(docId)!;
           const source = await fs.readFile(path.join(context.siteDir, doc.source.replace(/^@site\//, '')), 'utf8');
           const parsed = parseDoc(source);
@@ -192,6 +201,7 @@ export default function learningContentPlugin(context: LoadContext): Plugin {
             title: doc.title,
             permalink: doc.permalink,
             domainId: domain.id,
+            topicId: topic.id,
             minutes: parsed.minutes,
             priority: roadmap?.priority,
             roles: roadmap?.roles ?? [],

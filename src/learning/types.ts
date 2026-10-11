@@ -35,6 +35,7 @@ export type ArticleIndex = {
   title: string;
   permalink: string;
   domainId: string;
+  topicId: string;
   minutes: number;
   priority?: Priority;
   /** Roadmap ids that list this article. */
@@ -70,10 +71,20 @@ export type CardDetail = CardIndex & {
   answer: Block[];
 };
 
+/** A doc subcategory, or a single article placed directly in a domain. */
+export type Topic = {
+  id: string;
+  label: string;
+  permalink?: string;
+  articleIds: string[];
+};
+
 export type Domain = {
   id: string;
   label: string;
   permalink?: string;
+  topics: Topic[];
+  /** All articles of the domain, in topic order. */
   articleIds: string[];
 };
 

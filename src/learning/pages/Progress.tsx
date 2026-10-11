@@ -4,12 +4,11 @@ import Link from '@docusaurus/Link';
 
 import {reviewHref} from '../article/ArticleParts';
 import {
-  articlesForRole,
   cardStatus,
   dueCardIds,
   isWeak,
   outlineSections,
-  topicStatus,
+  topicGroupStatus,
   type TopicStatus,
   useLearningIndex,
 } from '../content';
@@ -39,14 +38,20 @@ function ProgressPage() {
   const day = today();
   const role = index.roles.find((item) => item.id === learner.preferences.roleId);
 
-  const articles = articlesForRole(index, role?.id);
-  const statusOf = (articleId: string) => topicStatus(index.articles[articleId], index, learner);
-  const mastered = articles.filter((article) => statusOf(article.id) === 'mastered').length;
-  const weakTopics = articles.filter((article) => statusOf(article.id) === 'weak').length;
-
+  const inRole = (id: string) => !role || index.articles[id].roles.includes(role.id);
   const domains = index.domains
-    .map((domain) => ({domain, articles: domain.articleIds.filter((id) => !role || index.articles[id].roles.includes(role.id))}))
-    .filter((item) => item.articles.length);
+    .map((domain) => ({
+      domain,
+      articles: domain.articleIds.filter(inRole),
+      topics: domain.topics
+        .map((topic) => ({topic, articleIds: topic.articleIds.filter(inRole)}))
+        .filter((item) => item.articleIds.length)
+        .map((item) => ({...item, status: topicGroupStatus(item.articleIds, index, learner)})),
+    }))
+    .filter((item) => item.topics.length);
+  const allTopics = domains.flatMap((item) => item.topics);
+  const mastered = allTopics.filter((item) => item.status === 'mastered').length;
+  const weakTopics = allTopics.filter((item) => item.status === 'weak').length;
 
   const weakCards = Object.keys(learner.cards).filter((id) => index.cards[id] && isWeak(index.cards[id], learner.cards[id]));
   const due = dueCardIds(index, learner, day);
@@ -82,7 +87,7 @@ function ProgressPage() {
           <div className={styles.mapHead}>
             <div className={styles.mapTitle}>
               <span className={styles.scope}>
-                {role ? role.label : '全部领域'} · 共 {articles.length} 个主题
+                {role ? role.label : '全部领域'} · 共 {allTopics.length} 个主题
                 {readonly && learner.subscription.status === 'expired' ? ` · 截至 ${formatMonthDay(learner.subscription.endedAt)}` : ''}
               </span>
               <h1 id="progress-title" className={styles.title}>
@@ -100,14 +105,14 @@ function ProgressPage() {
           </div>
 
           <div className={styles.domains}>
-            {domains.map(({domain, articles: ids}) => {
+            {domains.map(({domain, articles: ids, topics}) => {
               const href = active ? practiceDomain(ids) : undefined;
               return (
                 <div key={domain.id} className={styles.domain}>
                   <div className={styles.domainSide}>
                     <span className={styles.domainName}>{domain.label}</span>
                     <span className={styles.domainCount}>
-                      {ids.filter((id) => statusOf(id) === 'mastered').length} / {ids.length} 掌握
+                      {topics.filter((item) => item.status === 'mastered').length} / {topics.length} 掌握
                     </span>
                     {href && (
                       <Link className={styles.domainPractice} to={href}>
@@ -116,12 +121,18 @@ function ProgressPage() {
                     )}
                   </div>
                   <div className={styles.topics}>
-                    {ids.map((id) => {
-                      const article = index.articles[id];
-                      const status = statusOf(id);
+                    {topics.map(({topic, articleIds, status}) => {
+                      const to =
+                        articleIds.length === 1
+                          ? index.articles[articleIds[0]].permalink
+                          : `/topics?domain=${encodeURIComponent(domain.id)}&topic=${encodeURIComponent(topic.id)}`;
                       return (
-                        <Link key={id} to={article.permalink} className={clsx(styles.topic, topicClass(status))} title={TOPIC_STATUS_LABELS[status]}>
-                          {article.title}
+                        <Link
+                          key={topic.id}
+                          to={to}
+                          className={clsx(styles.topic, topicClass(status))}
+                          title={`${TOPIC_STATUS_LABELS[status]}${articleIds.length > 1 ? ` · ${articleIds.length} 篇` : ''}`}>
+                          {topic.label}
                         </Link>
                       );
                     })}

@@ -23,11 +23,12 @@ const steps = [
 ];
 
 // 前端暂无文章，先不加链接。
-const topic = (domain: string) => `/topics?domain=${encodeURIComponent(domain)}`;
+const topic = (domain: string, topicId?: string) =>
+  `/topics?domain=${encodeURIComponent(domain)}${topicId ? `&topic=${encodeURIComponent(topicId)}` : ''}`;
 
 const domains: {label: string; href?: string}[] = [
   {label: '前端'},
-  {label: '后端', href: topic('basic-knowledge/java/language')},
+  {label: '后端', href: topic('basic-knowledge/java', 'basic-knowledge/java/language')},
   {label: '算法', href: topic('basic-knowledge/algorithms')},
   {label: '系统设计', href: topic('system-design/system-design')},
   {label: '数据库', href: topic('basic-knowledge/database')},

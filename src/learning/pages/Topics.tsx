@@ -4,29 +4,38 @@ import Link from '@docusaurus/Link';
 import {useHistory, useLocation} from '@docusaurus/router';
 import Layout from '@theme/Layout';
 
-import {
-  cardsInSection,
-  domainShortLabel,
-  outlineSections,
-  PRIORITY_LABELS,
-  sectionReadStatus,
-  useLearningIndex,
-} from '../content';
+import {cardsInSection, outlineSections, PRIORITY_LABELS, sectionReadStatus, useLearningIndex} from '../content';
 import {learnerActions, useLearner} from '../store';
-import type {ArticleIndex, Domain, ReadingState} from '../types';
+import type {ArticleIndex, Domain, LearnerState, Priority, Topic} from '../types';
 import styles from './Topics.module.css';
 
 type Progress = 'done' | 'reading' | 'none';
 
-function articleProgress(reading?: ReadingState): Progress {
-  if (!reading) return 'none';
-  return reading.done ? 'done' : 'reading';
-}
+const RANK: Record<Priority, number> = {must: 3, common: 2, optional: 1};
 
 function ProgressMark({progress, optional}: {progress: Progress; optional?: boolean}) {
   if (progress === 'done') return <span className={clsx(styles.mark, styles.markDone)}>✓</span>;
   if (progress === 'reading') return <span className={clsx(styles.mark, styles.markReading)} />;
   return <span className={clsx(styles.mark, optional ? styles.markOptional : styles.markNone)} />;
+}
+
+function articleProgress(article: ArticleIndex, learner: LearnerState): Progress {
+  const reading = learner.reading[article.id];
+  if (!reading) return 'none';
+  return reading.done ? 'done' : 'reading';
+}
+
+function topicProgress(articles: ArticleIndex[], learner: LearnerState): Progress {
+  const states = articles.map((article) => articleProgress(article, learner));
+  if (states.length && states.every((state) => state === 'done')) return 'done';
+  return states.some((state) => state !== 'none') ? 'reading' : 'none';
+}
+
+function highestPriority(articles: ArticleIndex[]): Priority | undefined {
+  return articles
+    .map((article) => article.priority)
+    .filter((priority): priority is Priority => Boolean(priority))
+    .sort((a, b) => RANK[b] - RANK[a])[0];
 }
 
 export default function Topics(): JSX.Element {
@@ -38,56 +47,51 @@ export default function Topics(): JSX.Element {
   const role = index.roles.find((item) => item.id === roleId);
 
   const params = new URLSearchParams(location.search);
-  const [domainId, setDomainId] = useState(params.get('domain') ?? undefined);
-  const [articleId, setArticleId] = useState(params.get('article') ?? undefined);
+  const linkedArticle = params.get('article') ? index.articles[params.get('article')!] : undefined;
+  const [domainId, setDomainId] = useState(linkedArticle?.domainId ?? params.get('domain') ?? undefined);
+  const [topicId, setTopicId] = useState(linkedArticle?.topicId ?? params.get('topic') ?? undefined);
 
   const inRole = (article: ArticleIndex) => !roleId || article.roles.includes(roleId);
-  const domainArticles = (domain: Domain) => domain.articleIds.map((id) => index.articles[id]);
-  const roleCount = (domain: Domain) => domainArticles(domain).filter(inRole).length;
+  const topicArticles = (topic: Topic) => topic.articleIds.map((id) => index.articles[id]);
+  const topicInRole = (topic: Topic) => topicArticles(topic).some(inRole);
+  const roleTopics = (domain: Domain) => domain.topics.filter(topicInRole);
 
+  // Older links may point at a topic id as the domain.
   const domain =
     index.domains.find((item) => item.id === domainId) ??
-    index.domains.find((item) => roleCount(item) > 0) ??
+    index.domains.find((item) => item.topics.some((topic) => topic.id === domainId)) ??
+    index.domains.find((item) => roleTopics(item).length > 0) ??
     index.domains[0];
 
-  // Articles in the role first (suggested order), then the rest as optional reading.
-  const articles = useMemo(() => {
-    const all = domainArticles(domain);
-    return [...all.filter(inRole), ...all.filter((article) => !inRole(article))];
+  // Topics in the role first (suggested order), then the rest as optional reading.
+  const topics = useMemo(
+    () => [...domain.topics.filter(topicInRole), ...domain.topics.filter((topic) => !topicInRole(topic))],
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [domain, roleId, index]);
+    [domain, roleId, index],
+  );
 
-  const article =
-    articles.find((item) => item.id === articleId) ??
-    articles.find((item) => inRole(item) && !learner.reading[item.id]?.done) ??
-    articles[0];
+  const topic =
+    topics.find((item) => item.id === topicId) ??
+    topics.find((item) => item.id === domainId) ??
+    topics.find((item) => topicInRole(item) && topicProgress(topicArticles(item), learner) !== 'done') ??
+    topics[0];
 
   useEffect(() => {
     const next = new URLSearchParams();
     next.set('domain', domain.id);
-    if (article) next.set('article', article.id);
+    if (topic) next.set('topic', topic.id);
     const search = `?${next.toString()}`;
     if (search !== location.search) history.replace({search});
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [domain.id, article?.id]);
+  }, [domain.id, topic?.id]);
 
-  const sections = article ? outlineSections(article) : [];
-  const reading = article ? learner.reading[article.id] : undefined;
-  const position = article ? articles.indexOf(article) + 1 : 0;
-  const cardCount = article?.cardIds.length ?? 0;
-  const resumeIndex = reading && !reading.done ? Math.min(reading.furthest, sections.length - 1) : 0;
-  const resume = sections[resumeIndex];
-
-  const action = !article
-    ? undefined
-    : reading?.done
-      ? {label: '重新阅读 →', to: article.permalink}
-      : reading
-        ? {label: `继续读第 ${resume?.number ?? resumeIndex + 1} 节 →`, to: `${article.permalink}#${resume?.id ?? ''}`}
-        : {label: '开始阅读 →', to: article.permalink};
+  const position = topic ? topics.indexOf(topic) + 1 : 0;
+  const articles = topic ? topicArticles(topic) : [];
+  const priority = highestPriority(articles.filter(inRole));
+  const meta = `${domain.label} / 主题 ${position} / ${topics.length}${role && priority && topic && topicInRole(topic) ? ` · ${role.label}${PRIORITY_LABELS[priority]}` : ''}`;
 
   return (
-    <Layout title="知识树" description="按目标岗位查看领域、主题和章节，并从上次读到的位置继续。">
+    <Layout title="知识树" description="按目标岗位查看领域、主题和文章，并从上次读到的位置继续。">
       <main className={styles.page}>
         <div className={styles.roles}>
           <span className={styles.rolesLabel}>我的目标岗位</span>
@@ -115,9 +119,9 @@ export default function Topics(): JSX.Element {
           <nav className={styles.domains} aria-label="领域">
             <div className={styles.columnLabel}>领域</div>
             {index.domains.map((item) => {
-              const count = roleCount(item);
-              const optional = Boolean(roleId) && count === 0;
-              const done = domainArticles(item).filter((a) => inRole(a) && learner.reading[a.id]?.done).length;
+              const list = roleTopics(item);
+              const optional = Boolean(roleId) && list.length === 0;
+              const done = list.filter((t) => topicProgress(topicArticles(t).filter(inRole), learner) === 'done').length;
               return (
                 <button
                   key={item.id}
@@ -125,10 +129,10 @@ export default function Topics(): JSX.Element {
                   className={clsx(styles.domain, item.id === domain.id && styles.domainActive, optional && styles.domainOptional)}
                   onClick={() => {
                     setDomainId(item.id);
-                    setArticleId(undefined);
+                    setTopicId(undefined);
                   }}>
                   <span>{item.label}</span>
-                  <span className={styles.domainCount}>{optional ? '选修' : `${done} / ${count}`}</span>
+                  <span className={styles.domainCount}>{optional ? '选修' : `${done} / ${list.length}`}</span>
                 </button>
               );
             })}
@@ -136,73 +140,161 @@ export default function Topics(): JSX.Element {
 
           <nav className={styles.articles} aria-label="主题">
             <div className={styles.columnLabel}>{domain.label} · 主题（建议顺序）</div>
-            {articles.map((item) => {
-              const optional = !inRole(item) || item.priority === 'optional';
+            {topics.map((item) => {
+              const list = topicArticles(item);
+              const optional = !topicInRole(item) || highestPriority(list.filter(inRole)) === 'optional';
+              const itemPriority = highestPriority(list.filter(inRole));
               return (
                 <button
                   key={item.id}
                   type="button"
-                  className={clsx(styles.article, item.id === article?.id && styles.articleActive, optional && styles.articleOptional)}
-                  onClick={() => setArticleId(item.id)}>
-                  <ProgressMark progress={articleProgress(learner.reading[item.id])} optional={optional} />
-                  <span>{item.title}</span>
-                  {item.priority === 'must' && inRole(item) && <span className={styles.tagMust}>必会</span>}
-                  {optional && <span className={styles.tagOptional}>{inRole(item) ? '按岗选学' : '选读'}</span>}
+                  className={clsx(styles.article, item.id === topic?.id && styles.articleActive, optional && styles.articleOptional)}
+                  onClick={() => setTopicId(item.id)}>
+                  <ProgressMark progress={topicProgress(list, learner)} optional={optional} />
+                  <span>{item.label}</span>
+                  {list.length > 1 && <span className={styles.topicCount}>{list.length} 篇</span>}
+                  {itemPriority === 'must' && topicInRole(item) && <span className={styles.tagMust}>必会</span>}
+                  {optional && <span className={styles.tagOptional}>{topicInRole(item) ? '按岗选学' : '选读'}</span>}
                 </button>
               );
             })}
           </nav>
 
-          {article && (
-            <section className={styles.detail} aria-labelledby="topic-title">
-              <div className={styles.detailHead}>
-                <span className={styles.detailMeta}>
-                  {domainShortLabel(domain.label)} / 主题 {position} / {articles.length}
-                  {role && article.priority && inRole(article) ? ` · ${role.label}${PRIORITY_LABELS[article.priority]}` : ''}
-                </span>
-                <h1 id="topic-title" className={styles.detailTitle}>
-                  {article.title}
-                </h1>
-                <span className={styles.detailFacts}>
-                  {sections.length} 节 · 约 {article.minutes} 分钟 · {cardCount} 道面试题
-                  {reading && !reading.done && resume ? ` · 读到第 ${resume.number ?? resumeIndex + 1} 节` : ''}
-                  {reading?.done ? ' · 已读完' : ''}
-                </span>
-              </div>
-
-              <ol className={styles.sections}>
-                {sections.map((section, i) => {
-                  const status = sectionReadStatus(i, reading);
-                  const count = cardsInSection(index, article, section.id).length;
-                  return (
-                    <li key={section.id} className={clsx(styles.section, status === 'reading' && styles.sectionReading, status === 'read' && styles.sectionRead)}>
-                      <Link to={`${article.permalink}#${section.id}`} className={styles.sectionTitle}>
-                        {section.number ? `${section.number}. ` : ''}
-                        {section.title}
-                      </Link>
-                      <span className={clsx(styles.sectionStatus, status === 'reading' && styles.green)}>
-                        {status === 'read' ? '已读' : status === 'reading' ? '阅读中' : '—'}
-                      </span>
-                      <span className={clsx(styles.sectionCards, status === 'read' && count > 0 && styles.green)}>
-                        {count ? `${count} 题` : '—'}
-                      </span>
-                    </li>
-                  );
-                })}
-              </ol>
-
-              {action && (
-                <div className={styles.actions}>
-                  <Link className={styles.primary} to={action.to}>
-                    {action.label}
-                  </Link>
-                  <span className={styles.actionsHint}>读过的章节，面试题会自动进入复习</span>
-                </div>
-              )}
-            </section>
+          {topic && articles.length > 1 && (
+            <TopicArticles topic={topic} articles={articles} meta={meta} inRole={inRole} learner={learner} />
           )}
+          {topic && articles.length === 1 && <ArticleSections article={articles[0]} meta={meta} learner={learner} />}
         </div>
       </main>
     </Layout>
+  );
+}
+
+/** Right column for a topic with several articles: the articles themselves. */
+function TopicArticles({
+  topic,
+  articles,
+  meta,
+  inRole,
+  learner,
+}: {
+  topic: Topic;
+  articles: ArticleIndex[];
+  meta: string;
+  inRole: (article: ArticleIndex) => boolean;
+  learner: LearnerState;
+}) {
+  const minutes = articles.reduce((sum, article) => sum + article.minutes, 0);
+  const cards = articles.reduce((sum, article) => sum + article.cardIds.length, 0);
+  const done = articles.filter((article) => learner.reading[article.id]?.done).length;
+  const next =
+    articles.find((article) => learner.reading[article.id] && !learner.reading[article.id].done) ??
+    articles.find((article) => inRole(article) && !learner.reading[article.id]) ??
+    articles.find((article) => !learner.reading[article.id]?.done);
+  const nextIndex = next ? articles.indexOf(next) + 1 : 0;
+  const started = articles.some((article) => learner.reading[article.id]);
+
+  return (
+    <section className={styles.detail} aria-labelledby="topic-title">
+      <div className={styles.detailHead}>
+        <span className={styles.detailMeta}>{meta}</span>
+        <h1 id="topic-title" className={styles.detailTitle}>
+          {topic.label}
+        </h1>
+        <span className={styles.detailFacts}>
+          {articles.length} 篇 · 约 {minutes} 分钟 · {cards} 道面试题
+          {done ? ` · 已读 ${done} 篇` : ''}
+        </span>
+      </div>
+
+      <ol className={styles.sections}>
+        {articles.map((article, i) => {
+          const status = articleProgress(article, learner);
+          const optional = !inRole(article);
+          return (
+            <li
+              key={article.id}
+              className={clsx(styles.section, status === 'reading' && styles.sectionReading, status === 'done' && styles.sectionRead)}>
+              <Link to={article.permalink} className={styles.sectionTitle}>
+                {i + 1}. {article.title}
+                {article.priority === 'must' && !optional && <span className={styles.inlineMust}>必会</span>}
+                {optional && <span className={styles.inlineOptional}>选读</span>}
+              </Link>
+              <span className={clsx(styles.sectionStatus, status === 'reading' && styles.green)}>
+                {status === 'done' ? '已读' : status === 'reading' ? '阅读中' : `${article.minutes} 分钟`}
+              </span>
+              <span className={clsx(styles.sectionCards, status === 'done' && article.cardIds.length > 0 && styles.green)}>
+                {article.cardIds.length ? `${article.cardIds.length} 题` : '—'}
+              </span>
+            </li>
+          );
+        })}
+      </ol>
+
+      {next && (
+        <div className={styles.actions}>
+          <Link className={styles.primary} to={next.permalink}>
+            {started ? `继续读第 ${nextIndex} 篇 →` : '从第 1 篇开始 →'}
+          </Link>
+          <span className={styles.actionsHint}>读过的文章，面试题会自动进入复习</span>
+        </div>
+      )}
+    </section>
+  );
+}
+
+/** Right column for a single-article topic: its sections. */
+function ArticleSections({article, meta, learner}: {article: ArticleIndex; meta: string; learner: LearnerState}) {
+  const index = useLearningIndex();
+  const sections = outlineSections(article);
+  const reading = learner.reading[article.id];
+  const resumeIndex = reading && !reading.done ? Math.min(reading.furthest, sections.length - 1) : 0;
+  const resume = sections[resumeIndex];
+  const action = reading?.done
+    ? {label: '重新阅读 →', to: article.permalink}
+    : reading
+      ? {label: `继续读第 ${resume?.number ?? resumeIndex + 1} 节 →`, to: `${article.permalink}#${resume?.id ?? ''}`}
+      : {label: '开始阅读 →', to: article.permalink};
+
+  return (
+    <section className={styles.detail} aria-labelledby="topic-title">
+      <div className={styles.detailHead}>
+        <span className={styles.detailMeta}>{meta}</span>
+        <h1 id="topic-title" className={styles.detailTitle}>
+          {article.title}
+        </h1>
+        <span className={styles.detailFacts}>
+          {sections.length} 节 · 约 {article.minutes} 分钟 · {article.cardIds.length} 道面试题
+          {reading && !reading.done && resume ? ` · 读到第 ${resume.number ?? resumeIndex + 1} 节` : ''}
+          {reading?.done ? ' · 已读完' : ''}
+        </span>
+      </div>
+
+      <ol className={styles.sections}>
+        {sections.map((section, i) => {
+          const status = sectionReadStatus(i, reading);
+          const count = cardsInSection(index, article, section.id).length;
+          return (
+            <li key={section.id} className={clsx(styles.section, status === 'reading' && styles.sectionReading, status === 'read' && styles.sectionRead)}>
+              <Link to={`${article.permalink}#${section.id}`} className={styles.sectionTitle}>
+                {section.number ? `${section.number}. ` : ''}
+                {section.title}
+              </Link>
+              <span className={clsx(styles.sectionStatus, status === 'reading' && styles.green)}>
+                {status === 'read' ? '已读' : status === 'reading' ? '阅读中' : '—'}
+              </span>
+              <span className={clsx(styles.sectionCards, status === 'read' && count > 0 && styles.green)}>{count ? `${count} 题` : '—'}</span>
+            </li>
+          );
+        })}
+      </ol>
+
+      <div className={styles.actions}>
+        <Link className={styles.primary} to={action.to}>
+          {action.label}
+        </Link>
+        <span className={styles.actionsHint}>读过的章节，面试题会自动进入复习</span>
+      </div>
+    </section>
   );
 }

@@ -23,9 +23,11 @@ type ArticleTuple = [
   cards: CardTuple[],
 ];
 
+type CompactTopic = {id: string; label: string; permalink?: string; a: string[]};
+
 export type CompactIndex = {
   roles: Role[];
-  domains: {id: string; label: string; permalink?: string; a: string[]}[];
+  domains: {id: string; label: string; permalink?: string; t: CompactTopic[]}[];
   a: Record<string, ArticleTuple>;
 };
 
@@ -61,7 +63,12 @@ export function compactIndex(index: LearningIndex): CompactIndex {
   }
   return {
     roles: index.roles,
-    domains: index.domains.map(({id, label, permalink, articleIds}) => ({id, label, permalink, a: articleIds})),
+    domains: index.domains.map(({id, label, permalink, topics}) => ({
+      id,
+      label,
+      permalink,
+      t: topics.map((topic) => ({id: topic.id, label: topic.label, permalink: topic.permalink, a: topic.articleIds})),
+    })),
     a,
   };
 }
@@ -71,6 +78,8 @@ export function cardIdOf(articleKey: string, anchor: string): string {
 }
 
 export function expandIndex(compact: CompactIndex): LearningIndex {
+  const topicOf = new Map<string, string>();
+  for (const domain of compact.domains) for (const topic of domain.t) for (const id of topic.a) topicOf.set(id, topic.id);
   const articles: Record<string, ArticleIndex> = {};
   const cards: Record<string, CardIndex> = {};
   for (const [id, tuple] of Object.entries(compact.a)) {
@@ -92,6 +101,7 @@ export function expandIndex(compact: CompactIndex): LearningIndex {
       title,
       permalink,
       domainId: compact.domains[domain]?.id ?? '',
+      topicId: topicOf.get(id) ?? id,
       minutes,
       priority: priority || undefined,
       roles,
@@ -102,7 +112,10 @@ export function expandIndex(compact: CompactIndex): LearningIndex {
   }
   return {
     roles: compact.roles,
-    domains: compact.domains.map(({id, label, permalink, a}) => ({id, label, permalink, articleIds: a})),
+    domains: compact.domains.map(({id, label, permalink, t}) => {
+      const topics = t.map((topic) => ({id: topic.id, label: topic.label, permalink: topic.permalink, articleIds: topic.a}));
+      return {id, label, permalink, topics, articleIds: topics.flatMap((topic) => topic.articleIds)};
+    }),
     articles,
     cards,
   };
