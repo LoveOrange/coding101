@@ -100,12 +100,12 @@
   background: var(--c-fill);
 }
 
-.treeArticleCurrent {
+.treeArticle.treeArticleCurrent {
   color: var(--c-ink);
   font-weight: 700;
 }
 
-.treeArticleRead {
+.treeArticle.treeArticleRead {
   color: var(--c-mute2);
 }
 
@@ -144,8 +144,8 @@
   background: var(--c-fill);
 }
 
-.treeCardCurrent,
-.treeCardCurrent:hover {
+.treeCard.treeCardCurrent,
+.treeCard.treeCardCurrent:hover {
   background: var(--c-card);
   font-weight: 700;
   color: var(--c-ink);
@@ -397,7 +397,7 @@
   background: var(--c-card);
 }
 
-.checkBoxOn {
+.checkBox.checkBoxOn {
   background: var(--c-ink);
   border-color: var(--c-ink);
   color: var(--c-card);
@@ -507,21 +507,21 @@
   box-shadow: inset 0 0 0 1px var(--c-ink);
 }
 
-.ratingSelected,
-.ratingSelected:hover:not(:disabled) {
+.rating.ratingSelected,
+.rating.ratingSelected:hover:not(:disabled) {
   background: var(--c-ink);
   color: var(--c-card);
   font-weight: 700;
   box-shadow: none;
 }
 
-.ratingDisabled {
+.rating.ratingDisabled {
   background: transparent;
   color: var(--c-mute3);
   cursor: default;
 }
 
-.ratingDisabled .ratingDot {
+.rating.ratingDisabled .ratingDot {
   opacity: 0.4;
 }
 
@@ -950,5 +950,13 @@
 
   .dialogActions {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (hover: none), (max-width: 600px) {
+  .backBar kbd,
+  .pillButton kbd,
+  .treeFoot > span:last-child {
+    display: none;
   }
 }

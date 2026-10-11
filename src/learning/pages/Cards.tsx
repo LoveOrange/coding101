@@ -53,7 +53,8 @@ function CardsPage() {
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState<string[]>([]);
   const [limit, setLimit] = useState(PAGE);
-  const [upgradeOpen, setUpgradeOpen] = useState(access === 'guest' || access === 'free');
+  const [dismissed, setDismissed] = useState(false);
+  const upgradeOpen = (access === 'guest' || access === 'free') && !dismissed;
   const day = today();
 
   const cards = useMemo(
@@ -231,7 +232,7 @@ function CardsPage() {
           </div>
         )
       )}
-      <UpgradeDialog open={upgradeOpen} onClose={() => setUpgradeOpen(false)} />
+      <UpgradeDialog open={upgradeOpen} onClose={() => setDismissed(true)} />
     </main>
   );
 }

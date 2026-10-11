@@ -47,7 +47,7 @@
   border-color: var(--c-ink);
 }
 
-.pillActive {
+.pill.pillActive {
   background: var(--c-ink);
   border-color: var(--c-ink);
   color: var(--c-card);
@@ -111,20 +111,20 @@
   white-space: nowrap;
 }
 
-.domainActive,
-.domainActive:hover {
+.domain.domainActive,
+.domain.domainActive:hover {
   background: var(--c-green);
   color: var(--c-card);
   font-weight: 700;
 }
 
-.domainActive .domainCount {
+.domain.domainActive .domainCount {
   color: inherit;
   font-weight: 400;
   opacity: 0.8;
 }
 
-.domainOptional {
+.domain.domainOptional {
   color: var(--c-mute3);
 }
 
@@ -133,13 +133,13 @@
   align-items: center;
 }
 
-.articleActive,
-.articleActive:hover {
+.article.articleActive,
+.article.articleActive:hover {
   background: var(--c-card);
   font-weight: 700;
 }
 
-.articleOptional {
+.article.articleOptional {
   color: var(--c-mute3);
 }
 
@@ -155,21 +155,21 @@
   font-size: 11px;
 }
 
-.markDone {
+.mark.markDone {
   background: var(--c-green);
   color: var(--c-card);
 }
 
-.markReading {
+.mark.markReading {
   border: 2px solid var(--c-green);
   background: linear-gradient(90deg, var(--c-green) 50%, transparent 50%);
 }
 
-.markNone {
+.mark.markNone {
   border: 1.5px solid var(--c-border3);
 }
 
-.markOptional {
+.mark.markOptional {
   border: 1.5px dashed var(--c-border3);
 }
 
@@ -246,12 +246,12 @@
   color: var(--c-green);
 }
 
-.sectionRead .sectionTitle,
-.sectionRead .sectionStatus {
+.section.sectionRead .sectionTitle,
+.section.sectionRead .sectionStatus {
   color: var(--c-mute2);
 }
 
-.sectionReading .sectionTitle {
+.section.sectionReading .sectionTitle {
   font-weight: 700;
 }
 

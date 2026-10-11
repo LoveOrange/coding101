@@ -34,7 +34,8 @@ function ProgressPage() {
   const access = accessOf(learner);
   const readonly = access === 'readonly';
   const active = access === 'active';
-  const [upgradeOpen, setUpgradeOpen] = useState(access === 'guest' || access === 'free');
+  const [dismissed, setDismissed] = useState(false);
+  const upgradeOpen = (access === 'guest' || access === 'free') && !dismissed;
   const day = today();
   const role = index.roles.find((item) => item.id === learner.preferences.roleId);
 
@@ -259,7 +260,7 @@ function ProgressPage() {
           </div>
         </aside>
       </div>
-      <UpgradeDialog open={upgradeOpen} onClose={() => setUpgradeOpen(false)} />
+      <UpgradeDialog open={upgradeOpen} onClose={() => setDismissed(true)} />
     </main>
   );
 }
