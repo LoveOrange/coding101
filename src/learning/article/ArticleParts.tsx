@@ -1,10 +1,11 @@
-import {type ReactNode, useMemo} from 'react';
+import {Children, cloneElement, createContext, isValidElement, type ReactNode, useContext, useMemo} from 'react';
 import clsx from 'clsx';
 import Link from '@docusaurus/Link';
 import Heading from '@theme/Heading';
 
 import {cardsInSection, moduleOf, RATING_LABELS, sectionLabel, topicsHref, useLearningIndex} from '../content';
 import {useLearnerFeatures} from '../features';
+import {useCurrentArticle} from './context';
 import {useLearner} from '../store';
 import type {ArticleIndex, CardIndex, CardState} from '../types';
 import {Companies, PriorityDots} from '../ui';
@@ -52,15 +53,85 @@ export function ArticleMeta({article}: {article: ArticleIndex}) {
   );
 }
 
-export function CoreSummary({children}: {children: ReactNode}) {
+const CoreContext = createContext(false);
+
+export function CoreSummary({title = '面试核心', children}: {title?: ReactNode; children: ReactNode}) {
   return (
-    <div className={styles.core}>
-      <div className={styles.coreHead}>
-        <span className={styles.coreTitle}>面试核心</span>
-        <span className={styles.coreHint}>先记住这几条，再读正文</span>
+    <CoreContext.Provider value>
+      <div className={styles.core}>
+        <div className={styles.coreHead}>
+          {typeof title === 'string' ? <span className={styles.coreTitle}>{title}</span> : title}
+          <span className={styles.coreHint}>先记住这几条，再读正文</span>
+        </div>
+        <div className={styles.coreBody}>{children}</div>
       </div>
-      <div className={styles.coreBody}>{children}</div>
-    </div>
+    </CoreContext.Provider>
+  );
+}
+
+/** A `## 面试核心` section, wrapped by the remark-article-blocks plugin. */
+export function CoreSection({children}: {children: ReactNode}) {
+  const [heading, ...body] = Children.toArray(children);
+  const props = isValidElement<{id?: string; children?: ReactNode}>(heading) ? heading.props : {};
+  const title = (
+    <Heading as="h2" id={props.id} className={styles.coreTitle}>
+      {props.children}
+    </Heading>
+  );
+  return <CoreSummary title={title}>{body}</CoreSummary>;
+}
+
+/**
+ * Inside 面试核心, a link to one of the article's question headings
+ * (`[卡](#question-anchor)`) becomes the point's card chip, shown at the end
+ * of the row. Returns undefined outside the block.
+ */
+export function useCoreItem(children: ReactNode): {className: string; content: ReactNode} | undefined {
+  const inCore = useContext(CoreContext);
+  const article = useCurrentArticle();
+  const index = useLearningIndex();
+  if (!inCore || !article) return undefined;
+
+  const cards: CardIndex[] = [];
+  const cardFor = (href: unknown) => {
+    if (typeof href !== 'string' || !href.startsWith('#')) return undefined;
+    const anchor = decodeURIComponent(href.slice(1));
+    return article.cardIds.map((id) => index.cards[id]).find((card) => card.anchor === anchor);
+  };
+  const strip = (nodes: ReactNode): ReactNode[] =>
+    Children.toArray(nodes).flatMap((node) => {
+      if (!isValidElement<{href?: unknown; children?: ReactNode}>(node)) return [node];
+      const card = cardFor(node.props.href);
+      if (card) {
+        cards.push(card);
+        return [];
+      }
+      return node.type === 'p' ? [cloneElement(node, undefined, ...strip(node.props.children))] : [node];
+    });
+  const text = strip(children);
+
+  return {
+    className: styles.coreItem,
+    content: (
+      <>
+        <span className={styles.coreText}>{text}</span>
+        {cards.length > 0 && (
+          <span className={styles.coreChips}>
+            {cards.map((card) => (
+              <CoreCardChip key={card.id} article={article} card={card} />
+            ))}
+          </span>
+        )}
+      </>
+    ),
+  };
+}
+
+export function CoreCardChip({article, card}: {article: ArticleIndex; card: CardIndex}) {
+  return (
+    <Link className={styles.coreChip} to={reviewHref(article, card)} title={card.question}>
+      卡 · {card.label}
+    </Link>
   );
 }
 

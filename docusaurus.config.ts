@@ -1,6 +1,7 @@
 import { themes as prismThemes } from "prism-react-renderer";
 import type { Config } from "@docusaurus/types";
 import type * as Preset from "@docusaurus/preset-classic";
+import remarkArticleBlocks from "./plugins/remark-article-blocks";
 
 const enableAnalytics =
   process.env.NODE_ENV === "production" && process.env.LOCAL_PREVIEW !== "true";
@@ -69,6 +70,7 @@ const config: Config = {
           // Remove this to remove the "edit this page" links.
           editUrl: "https://github.com/loveorange/coding101/tree/main/",
           showLastUpdateTime: true,
+          remarkPlugins: [remarkArticleBlocks],
         },
         blog: {
           showReadingTime: true,

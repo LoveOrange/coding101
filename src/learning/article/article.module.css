@@ -86,6 +86,52 @@
   border: none;
 }
 
+.core h2.coreTitle {
+  margin: 0;
+  font-size: 20px;
+  line-height: 1.4;
+  color: var(--c-paper);
+  scroll-margin-top: calc(var(--ifm-navbar-height) + 16px);
+}
+
+.coreBody > :not(ul, ol) {
+  margin: 0 0 10px;
+}
+
+.coreBody li.coreItem {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: baseline;
+}
+
+.coreChips {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+.coreChip {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--c-ink);
+  background: var(--c-accent-s);
+  border-radius: 4px;
+  padding: 2px 6px;
+}
+
+.coreChip:hover {
+  color: var(--c-ink);
+  text-decoration: none;
+  background: var(--c-accent-s2);
+}
+
 /* Section tags under h2 */
 .tags {
   display: flex;
@@ -118,6 +164,59 @@
 .chip:hover {
   color: var(--c-accent-h);
   text-decoration: none;
+}
+
+/* 常见问题 */
+.faq {
+  border-top: 1px solid var(--c-border);
+  padding: 14px 0;
+}
+
+.faq:has(+ :not(.faq)),
+.faq:last-child {
+  border-bottom: 1px solid var(--c-border);
+}
+
+.faqHead {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 16px;
+  cursor: pointer;
+}
+
+.faq .faqHead h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 400;
+  line-height: 1.6;
+  color: var(--c-ink);
+}
+
+.faq.faqOpen .faqHead h3 {
+  font-weight: 700;
+}
+
+.faqToggle {
+  flex: none;
+  font: inherit;
+  font-size: 13px;
+  color: var(--c-green);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.faqBody {
+  padding-top: 10px;
+  font-size: 15px;
+  color: var(--c-body);
+}
+
+.faqBody > :last-child {
+  margin-bottom: 0;
 }
 
 /* Interview cards section */
