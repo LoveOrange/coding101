@@ -68,6 +68,21 @@ export function applyMock(preset: MockPreset, index: LearningIndex) {
     finishedAt: new Date(Date.now() - 7 * 86400000).toISOString(),
     setup: {scope: 'role' as const, domainIds: [], count: 20, timed: false},
   };
+  const quizCards = Object.keys(index.cards).slice(20, 30);
+  const quiz = {
+    id: 's-mock-quiz',
+    mode: 'quiz' as const,
+    title: '随机自测 · 10 题',
+    cardIds: quizCards,
+    answers: quizCards.map((cardId, i) => {
+      const total = index.cards[cardId].checkpointCount;
+      const rating: Rating = i < 6 ? 'good' : i === 6 ? 'hard' : 'again';
+      const hits = rating === 'good' ? Array.from({length: total}, (_, k) => k) : rating === 'hard' ? [0] : [];
+      return {cardId, rating, hits};
+    }),
+    startedAt: new Date(Date.now() - 18 * 60000).toISOString(),
+    finishedAt: new Date().toISOString(),
+  };
   const todayIds = cardIds.filter((id) => cards[id].due <= today()).slice(0, 12);
   const todaySession = {
     id: 's-mock-today',
@@ -83,7 +98,7 @@ export function applyMock(preset: MockPreset, index: LearningIndex) {
     preferences: {roleId: index.roles[0]?.id, interviewDate: addDays(today(), 23), dailyLimit: 20},
     reading: sampleReading(index),
     cards: preset === 'free' ? {} : cards,
-    sessions: preset === 'free' ? [] : [todaySession, exam],
+    sessions: preset === 'free' ? [] : [todaySession, quiz, exam],
     billing:
       preset === 'pro' || preset === 'expired'
         ? [
