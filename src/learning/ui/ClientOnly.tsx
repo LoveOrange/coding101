@@ -5,6 +5,7 @@ import Layout from '@theme/Layout';
 
 import {useLearningIndex} from '../content';
 import {applyMock, type MockPreset} from '../mock';
+import {learnerActions} from '../store';
 
 const PRESETS: MockPreset[] = ['guest', 'free', 'trial', 'pro', 'expired'];
 
@@ -20,7 +21,9 @@ function useMockPreset(isBrowser: boolean) {
     const preset = params.get('mock') as MockPreset | null;
     if (!preset || !PRESETS.includes(preset)) return;
     applyMock(preset, index);
+    if (params.get('region') === 'intl') learnerActions.setRegion('intl');
     params.delete('mock');
+    params.delete('region');
     const search = params.toString();
     window.history.replaceState(null, '', `${window.location.pathname}${search ? `?${search}` : ''}${window.location.hash}`);
   }, [index, isBrowser, siteConfig.customFields]);
