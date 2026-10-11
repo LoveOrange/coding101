@@ -24,6 +24,16 @@ const SPLIT_THRESHOLD = 30;
 const ROUTES: {path: string; component: string}[] = [
   {path: '/topics', component: '@site/src/learning/pages/Topics'},
   {path: '/review', component: '@site/src/learning/pages/Review'},
+  {path: '/weak', component: '@site/src/learning/pages/Weak'},
+  {path: '/pricing', component: '@site/src/learning/pages/Pricing'},
+  {path: '/progress', component: '@site/src/learning/pages/Progress'},
+  {path: '/account', component: '@site/src/learning/pages/Account'},
+  {path: '/account/redeem', component: '@site/src/learning/pages/Redeem'},
+  {path: '/account/billing', component: '@site/src/learning/pages/Billing'},
+  {path: '/cards', component: '@site/src/learning/pages/Cards'},
+  {path: '/questions', component: '@site/src/learning/pages/Questions'},
+  {path: '/exam', component: '@site/src/learning/pages/Exam'},
+  {path: '/exam/report', component: '@site/src/learning/pages/Report'},
 ];
 
 type SidebarItem =

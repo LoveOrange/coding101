@@ -408,6 +408,15 @@ export const learnerActions = {
     }));
   },
 
+  unanswer(sessionId: string, cardId: string) {
+    update((current) => ({
+      ...current,
+      sessions: current.sessions.map((session) =>
+        session.id === sessionId ? {...session, answers: session.answers.filter((item) => item.cardId !== cardId)} : session,
+      ),
+    }));
+  },
+
   finishSession(sessionId: string) {
     update((current) => ({
       ...current,
@@ -424,6 +433,11 @@ export const learnerActions = {
 
   reset() {
     write(initialState);
+  },
+
+  /** Replace the whole state; used by local preview mocks. */
+  replace(next: LearnerState) {
+    write(settle(next));
   },
 };
 
