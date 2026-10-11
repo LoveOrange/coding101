@@ -197,6 +197,7 @@ const config: Config = {
     },
   } satisfies Preset.ThemeConfig,
   plugins: [
+    "./plugins/learning-content/index.ts",
     ...stylePreviewPlugins,
     // [
     //   "@docusaurus/plugin-ideal-image",
