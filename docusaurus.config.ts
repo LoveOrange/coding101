@@ -89,6 +89,9 @@ const config: Config = {
 
   themeConfig: {
     image: "img/coding101-social-card.png",
+    colorMode: {
+      respectPrefersColorScheme: true,
+    },
     navbar: {
       title: "Coding 101",
       logo: {
