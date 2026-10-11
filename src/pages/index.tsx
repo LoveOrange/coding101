@@ -1,5 +1,9 @@
+import {type FormEvent, useEffect, useState} from 'react';
 import Link from '@docusaurus/Link';
+import {useHistory} from '@docusaurus/router';
 import Layout from '@theme/Layout';
+
+import {getLearner} from '@site/src/learning/store';
 
 import styles from './index.module.css';
 
@@ -19,13 +23,15 @@ const steps = [
 ];
 
 // 前端暂无文章，先不加链接。
+const topic = (domain: string) => `/topics?domain=${encodeURIComponent(domain)}`;
+
 const domains: {label: string; href?: string}[] = [
   {label: '前端'},
-  {label: '后端', href: '/docs/basic-knowledge/java/'},
-  {label: '算法', href: '/docs/basic-knowledge/algorithms/'},
-  {label: '系统设计', href: '/docs/system-design/'},
-  {label: '数据库', href: '/docs/basic-knowledge/database/'},
-  {label: '网络', href: '/docs/basic-knowledge/network/'},
+  {label: '后端', href: topic('basic-knowledge/java/language')},
+  {label: '算法', href: topic('basic-knowledge/algorithms')},
+  {label: '系统设计', href: topic('system-design/system-design')},
+  {label: '数据库', href: topic('basic-knowledge/database')},
+  {label: '网络', href: topic('basic-knowledge/network')},
 ];
 
 const ratings = ['没想起来', '模糊', '记得'];
@@ -100,6 +106,40 @@ function HowItWorks() {
   );
 }
 
+function QuestionSearch() {
+  const history = useHistory();
+  const [query, setQuery] = useState('');
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    history.push(query.trim() ? `/questions?q=${encodeURIComponent(query.trim())}` : '/questions');
+  };
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const field = document.getElementById('home-question-search');
+      if (event.key === '/' && document.activeElement !== field) {
+        event.preventDefault();
+        field?.focus();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+  return (
+    <form className={styles.search} onSubmit={submit} role="search">
+      <input
+        id="home-question-search"
+        className={styles.searchInput}
+        type="search"
+        value={query}
+        onChange={(event) => setQuery(event.target.value)}
+        placeholder="搜索问题，例如「HTTPS 握手过程」"
+        aria-label="搜索问题"
+      />
+      <kbd className={styles.kbd}>/</kbd>
+    </form>
+  );
+}
+
 function Choose() {
   return (
     <section id="choose" className={styles.choose} aria-labelledby="choose-title">
@@ -134,7 +174,7 @@ function Choose() {
                 </li>
               ))}
             </ul>
-            <Link className={styles.routeButtonTopic} to="/docs/basic-knowledge/">
+            <Link className={styles.routeButtonTopic} to="/topics">
               <span>选一个领域</span>
               <span aria-hidden="true">→</span>
             </Link>
@@ -151,11 +191,8 @@ function Choose() {
             <p className={styles.routeText}>先答题，哪里答不上来，再去读对应的文章。</p>
           </div>
           <div className={styles.routeFoot}>
-            <Link className={styles.search} to="/docs/interview/questions">
-              <span>搜索问题，例如「HTTPS 握手过程」</span>
-              <kbd className={styles.kbd}>/</kbd>
-            </Link>
-            <Link className={styles.routeButtonQuestion} to="/docs/interview/questions">
+            <QuestionSearch />
+            <Link className={styles.routeButtonQuestion} to="/review?mode=quiz">
               <span>随机来 10 道题</span>
               <span aria-hidden="true">→</span>
             </Link>
@@ -166,7 +203,16 @@ function Choose() {
   );
 }
 
+/** Signed-in learners land on the route choice instead of the introduction. */
+function useLandOnChoice() {
+  useEffect(() => {
+    if (window.location.hash || !getLearner().account) return;
+    document.getElementById('choose')?.scrollIntoView();
+  }, []);
+}
+
 export default function Home(): JSX.Element {
+  useLandOnChoice();
   return (
     <Layout
       title="技术面试复习"

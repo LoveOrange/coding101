@@ -419,10 +419,26 @@ a.chip:hover {
   color: var(--c-mute2);
 }
 
-.search:hover {
+.search:focus-within {
+  border-color: var(--c-ink);
+}
+
+.searchInput {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  border: none;
+  background: none;
+  color: var(--c-ink);
+  padding: 0;
+}
+
+.searchInput::placeholder {
   color: var(--c-mute2);
-  text-decoration: none;
-  border-color: var(--c-border3);
+}
+
+.searchInput:focus {
+  outline: none;
 }
 
 .kbd {
