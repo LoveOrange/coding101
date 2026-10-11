@@ -2,11 +2,11 @@ import {useEffect, useMemo, useState} from 'react';
 import clsx from 'clsx';
 import Link from '@docusaurus/Link';
 import {useHistory, useLocation} from '@docusaurus/router';
-import Layout from '@theme/Layout';
 
 import {cardsInSection, outlineSections, PRIORITY_LABELS, sectionReadStatus, useLearningIndex} from '../content';
 import {learnerActions, useLearner} from '../store';
 import type {ArticleIndex, Domain, LearnerState, Priority, Topic} from '../types';
+import {ClientPage} from '../ui/ClientOnly';
 import styles from './Topics.module.css';
 
 type Progress = 'done' | 'reading' | 'none';
@@ -39,6 +39,16 @@ function highestPriority(articles: ArticleIndex[]): Priority | undefined {
 }
 
 export default function Topics(): JSX.Element {
+  // Selection comes from the URL and reading progress from localStorage,
+  // so render in the browser only to avoid hydration mismatches.
+  return (
+    <ClientPage title="知识树" description="按目标岗位查看领域、主题和文章，并从上次读到的位置继续。" noFooter={false}>
+      {() => <TopicsPage />}
+    </ClientPage>
+  );
+}
+
+function TopicsPage() {
   const index = useLearningIndex();
   const learner = useLearner();
   const location = useLocation();
@@ -91,8 +101,7 @@ export default function Topics(): JSX.Element {
   const meta = `${domain.label} / 主题 ${position} / ${topics.length}${role && priority && topic && topicInRole(topic) ? ` · ${role.label}${PRIORITY_LABELS[priority]}` : ''}`;
 
   return (
-    <Layout title="知识树" description="按目标岗位查看领域、主题和文章，并从上次读到的位置继续。">
-      <main className={styles.page}>
+    <main className={styles.page}>
         <div className={styles.roles}>
           <span className={styles.rolesLabel}>我的目标岗位</span>
           <div className={styles.rolePills}>
@@ -165,8 +174,7 @@ export default function Topics(): JSX.Element {
           )}
           {topic && articles.length === 1 && <ArticleSections article={articles[0]} meta={meta} learner={learner} />}
         </div>
-      </main>
-    </Layout>
+    </main>
   );
 }
 
