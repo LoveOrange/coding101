@@ -1,0 +1,107 @@
+# 系统设计 文章与闪卡
+
+- 系统设计
+  - 服务可靠性
+    - [超时](../../docs/system-design/reliability/timeout-budget-cancellation.mdx)（正文待核验）
+      - 连接超时与读取超时为什么需要分别设置？〔候选闪卡〕 <!-- kp:network.timeout -->
+      - 远程调用超时后为什么不能直接认定操作失败？〔候选闪卡〕 <!-- kp:distributed.unknown-result -->
+    - [重试](../../docs/system-design/reliability/retry-backoff-jitter-storms.mdx)（正文待核验）
+      - 什么情况下可以重试，怎样避免重试放大故障？〔候选闪卡〕 <!-- kp:distributed.retry -->
+    - [幂等键](../../docs/system-design/reliability/idempotency-keys-safe-retries.mdx)（正文待核验）
+      - 幂等键怎样防止请求重试产生重复效果？〔候选闪卡〕 <!-- kp:distributed.idempotency-key -->
+    - [限流](../../docs/system-design/reliability/rate-limiting-capacity-protection.mdx)（正文待核验）
+      - 限流与限制并发数分别控制什么？〔候选闪卡〕 <!-- kp:distributed.rate-limit -->
+    - [服务容错](../../docs/system-design/reliability/circuit-breaker-degradation-bulkhead.mdx)（正文待核验）
+      - 熔断、降级和隔离如何处理依赖故障？〔候选闪卡〕 <!-- kp:distributed.circuit-breaker -->
+    - 熔断（待补文章）
+    - 服务降级（待补文章）
+    - 故障隔离（待补文章）
+  - 复制与一致性
+    - [CAP 理论](../../docs/system-design/distributed-system/cap-theorem.mdx)（正文待核验）
+      - CAP 中网络分区发生时需要在什么保证之间取舍？〔候选闪卡〕 <!-- kp:distributed.cap -->
+    - [主备复制](../../docs/system-design/distributed-system/primary_backup_replication.mdx)（正文待核验）
+      - 同步与异步复制如何影响写入延迟和故障恢复？〔候选闪卡〕 <!-- kp:distributed.replication -->
+    - [一致性模型](../../docs/system-design/distributed-system/consistency-models-quorum-linearizability.mdx)（正文待核验）
+      - 最终一致性和线性一致性对客户端观察有什么差异？〔候选闪卡〕 <!-- kp:distributed.consistency -->
+    - [Raft](../../docs/system-design/distributed-system/raft-election-log-replication.mdx)（正文待核验）
+      - Raft 怎样防止节点恢复后破坏已提交日志？〔候选闪卡〕 <!-- kp:distributed.raft -->
+    - [跨地域复制](../../docs/system-design/distributed-system/cross-region-replication-latency-conflicts.mdx)（正文待核验）
+    - 部分失败（待补文章）
+    - 租约（待补文章）
+  - 分布式业务流程
+    - [Transactional Outbox 与 CDC](../../docs/system-design/distributed-data/outbox-cdc-reliable-events.mdx)（正文待核验）
+      - 本地事务提交与发送消息之间的失败窗口怎样处理？〔候选闪卡〕 <!-- kp:distributed.outbox -->
+    - [Saga](../../docs/system-design/distributed-data/saga-compensation-intermediate-state.mdx)（正文待核验）
+      - Saga 补偿为什么不等于数据库回滚？〔候选闪卡〕 <!-- kp:distributed.saga -->
+    - [2PC 与 TCC](../../docs/system-design/distributed-data/2pc-tcc-coordination-cost.mdx)（正文待核验）
+      - 2PC 与 TCC 分别依赖参与者提供什么能力？〔候选闪卡〕 <!-- kp:distributed.two-phase -->
+    - [分布式流程恢复](../../docs/system-design/distributed-data/idempotency-reconciliation-manual-repair.mdx)（正文待核验）
+    - [分布式一致性](../../docs/system-design/distributed-data/invariants-to-consistency-strategy.mdx)（正文待核验）
+    - 两阶段提交（待补文章）
+    - TCC（待补文章）
+    - Transactional Outbox（待补文章）
+    - CDC（待补文章）
+  - 架构与服务治理
+    - [服务发现](../../docs/system-design/microservices/service-discovery-health-checks.mdx)（正文待核验）
+      - 服务注册成功是否代表实例可以接流量？〔候选闪卡〕 <!-- kp:distributed.service-discovery -->
+    - [模块化单体](../../docs/system-design/architecture/modular-monolith-dependency-constraints.mdx)（正文待核验）
+      - 什么时候值得把单体中的模块拆成服务？〔候选闪卡〕；关联阅读：[微服务架构](../../docs/system-design/architecture/microservice-splitting-benefits-costs.mdx) <!-- kp:design.service-boundary -->
+    - [聚合](../../docs/system-design/architecture/aggregate-invariants-transaction-boundaries.mdx)（正文待核验）
+    - [限界上下文](../../docs/system-design/architecture/domain-bounded-context-ubiquitous-language.mdx)（正文待核验）
+    - [微服务架构](../../docs/system-design/architecture/microservice-splitting-benefits-costs.mdx)（正文待核验）
+    - [绞杀者模式](../../docs/system-design/architecture/strangler-migration-compatibility-rollback.mdx)（正文待核验）
+    - [API 网关](../../docs/system-design/microservices/api-gateway-routing.mdx)（正文待核验）
+    - [灰度发布](../../docs/system-design/microservices/canary-traffic-tagging-rollback.mdx)（正文待核验）
+    - [配置中心](../../docs/system-design/microservices/config-center-version-refresh.mdx)（正文待核验）
+    - [控制平面与数据平面](../../docs/system-design/microservices/control-plane-data-plane-failures.mdx)（正文待核验）
+  - 扩展与任务模式
+    - 负载均衡（待补文章）
+      - 负载均衡怎样避免把流量持续发送到故障实例？〔候选闪卡〕〔原覆盖评估：补充〕；关联阅读：[服务发现](../../docs/system-design/microservices/service-discovery-health-checks.mdx)、[API 网关](../../docs/system-design/microservices/api-gateway-routing.mdx) <!-- kp:distributed.load-balance -->
+    - 分布式 ID（待补文章）
+      - 分布式 ID 需要满足哪些约束？〔候选闪卡〕〔原覆盖评估：缺失〕 <!-- kp:distributed.unique-id -->
+    - 一致性哈希（待补文章）
+    - 扇出（待补文章）
+    - 长任务（待补文章）
+    - 背压（待补文章）
+    - CQRS（待补文章）
+    - 事件溯源（待补文章）
+  - 面向对象设计
+    - 策略模式（待补文章）
+      - 策略模式怎样组织可替换的业务规则？〔候选闪卡〕〔原覆盖评估：缺失〕 <!-- kp:design.pattern-strategy -->
+    - 工厂方法模式（待补文章）
+      - 工厂如何把对象创建与使用解耦？〔候选闪卡〕〔原覆盖评估：缺失〕 <!-- kp:design.pattern-factory -->
+    - 单例模式（待补文章）
+      - 单例的唯一性与线程安全为什么是不同问题？〔候选闪卡〕〔原覆盖评估：补充〕；关联阅读：[安全发布](../../docs/basic-knowledge/java/concurrency/safe-publication-escape-final.mdx) <!-- kp:design.singleton -->
+    - [SOLID 面向对象设计原则](../../docs/system-design/ood/solid.mdx)（正文待核验）
+    - 装饰器模式（待补文章）
+    - 观察者模式（待补文章）
+    - 适配器模式（待补文章）
+    - 代理模式（待补文章）
+    - 责任链模式（待补文章）
+  - 设计方法
+    - [系统设计面试](../../docs/system-design/system-design/interview-process.mdx)（正文待核验）
+      - 系统设计题开始时怎样界定最小需求？〔候选闪卡〕 <!-- kp:design.requirements -->
+    - [容量规划](../../docs/system-design/system-design/capacity-slo-failure-model.mdx)（正文待核验）
+      - 容量估算怎样影响架构选择？〔候选闪卡〕 <!-- kp:design.capacity -->
+    - [数据拆分](../../docs/system-design/system-design/read-write-paths-hotspots-sharding.mdx)（正文待核验）
+      - 分片键为什么可能造成热点或跨分片查询？〔候选闪卡〕 <!-- kp:design.sharding -->
+    - [系统设计简介](../../docs/system-design/index.mdx)（正文待核验）
+    - [系统架构](../../docs/system-design/system-design/universe_architecture.mdx)（正文待核验）
+    - [设计 Pastebin](../../docs/system-design/system-design/system-design-problems/pastebin/pastebin.mdx)（正文待核验）
+    - [设计网页爬虫](../../docs/system-design/system-design/system-design-problems/web_crawler/index.mdx)（正文待核验）
+    - 接口设计（待补文章）
+  - 可用性与容量
+    - [灾难恢复](../../docs/system-design/availability/high-availability-backup-rto-rpo.mdx)（正文待核验）
+      - 备份与高可用副本怎样服务不同恢复目标？〔候选闪卡〕 <!-- kp:design.rto-rpo -->
+    - [故障转移](../../docs/system-design/availability/failover-drills-recovery-validation.mdx)（正文待核验）
+    - [多租户](../../docs/system-design/availability/multi-tenant-isolation-quotas-data-boundaries.mdx)（正文待核验）
+    - [成本归因](../../docs/system-design/availability/performance-reliability-cost-attribution.mdx)（正文待核验）
+    - [服务等级目标（SLO）](../../docs/system-design/availability/sli-slo-error-budget-capacity-headroom.mdx)（正文待核验）
+  - 架构决策与复盘
+    - [架构决策记录（ADR）](../../docs/system-design/leadership/constraints-architecture-decision-records.mdx)（正文待核验）
+      - 怎样解释项目中的技术选择？〔候选闪卡〕；关联阅读：[项目准备](../../docs/interview/project-preparation.mdx) <!-- kp:design.architecture-decision -->
+    - [事故复盘](../../docs/system-design/leadership/incident-review-failed-designs-organizational-learning.mdx)（正文待核验）
+      - 怎样基于证据解释一次项目故障？〔候选闪卡〕；关联阅读：[项目准备](../../docs/interview/project-preparation.mdx) <!-- kp:design.incident -->
+    - [架构迁移](../../docs/system-design/leadership/compatibility-migration-canary-exit-criteria.mdx)（正文待核验）
+    - [设计评审](../../docs/system-design/leadership/cross-team-design-review-disagreement.mdx)（正文待核验）
+    - [技术债](../../docs/system-design/leadership/technical-debt-priority-business-value.mdx)（正文待核验）

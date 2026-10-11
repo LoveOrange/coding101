@@ -1,0 +1,256 @@
+# 通用基础 文章与闪卡
+
+- 通用基础
+  - 数据结构与算法
+    - [算法复杂度](../../docs/basic-knowledge/java/algorithms/complexity-constraints-java-cost.mdx)（正文待核验）
+      - 怎样从输入规模和操作次数推导复杂度？〔候选闪卡〕 <!-- kp:algorithms.complexity -->
+    - [数组](../../docs/basic-knowledge/data-structures/array.mdx)（正文待核验）
+      - 数组随机访问与中间插删的成本由什么决定？〔候选闪卡〕 <!-- kp:algorithms.array -->
+    - [链表](../../docs/basic-knowledge/data-structures/linked-list.mdx)（正文待核验）
+      - 反转单链表为什么要先保存后继节点？〔候选闪卡〕 <!-- kp:algorithms.linked-list -->
+    - [栈](../../docs/basic-knowledge/data-structures/stack.mdx)（正文待核验）
+      - 栈如何保存尚未完成的处理状态？〔候选闪卡〕 <!-- kp:algorithms.stack -->
+    - [队列](../../docs/basic-knowledge/data-structures/queue.mdx)（正文待核验）
+      - 循环数组怎样表示队列的空和满？〔候选闪卡〕 <!-- kp:algorithms.queue -->
+    - [哈希表](../../docs/basic-knowledge/data-structures/hash-table.mdx)（正文待核验）
+      - 哈希表查询的平均 O(1) 依赖什么条件？〔候选闪卡〕 <!-- kp:algorithms.hash -->
+    - [二叉树](../../docs/basic-knowledge/data-structures/binary-tree.mdx)（正文待核验）
+      - 二叉树遍历的时间和空间成本如何计算？〔候选闪卡〕 <!-- kp:algorithms.tree-traversal -->
+    - [二叉搜索树](../../docs/basic-knowledge/data-structures/binary-search-tree.mdx)（正文待核验）
+      - 怎样验证一棵树满足二叉搜索树约束？〔候选闪卡〕 <!-- kp:algorithms.bst -->
+    - [堆](../../docs/basic-knowledge/data-structures/heap.mdx)（正文待核验）
+      - 求最大的 k 个元素为什么可以维护最小堆？〔候选闪卡〕 <!-- kp:algorithms.heap-topk -->
+    - [图](../../docs/basic-knowledge/data-structures/graph.mdx)（正文待核验）
+      - 邻接表与邻接矩阵如何选择？〔候选闪卡〕 <!-- kp:algorithms.graph-model -->
+    - [树与图搜索](../../docs/basic-knowledge/java/algorithms/trees-graphs-search.mdx)（正文待核验）
+      - BFS 为什么能求无权图最短路径？〔候选闪卡〕 <!-- kp:algorithms.bfs -->
+      - DFS 搜索时什么时候需要撤销访问状态？〔候选闪卡〕 <!-- kp:algorithms.dfs -->
+      - 拓扑排序怎样判断有向依赖能否全部完成？〔候选闪卡〕〔原覆盖评估：补充〕 <!-- kp:algorithms.topological -->
+    - [二分查找](../../docs/basic-knowledge/algorithms/binary-search.mdx)（正文待核验）
+      - 二分查找如何保持区间不变量？〔候选闪卡〕 <!-- kp:algorithms.binary-search -->
+    - [双指针](../../docs/basic-knowledge/algorithms/two-pointers.mdx)（正文待核验）
+      - 双指针移动时为什么不会漏掉答案？〔候选闪卡〕 <!-- kp:algorithms.two-pointers -->
+    - [滑动窗口](../../docs/basic-knowledge/java/algorithms/arrays-strings-sliding-window.mdx)（正文待核验）
+      - 滑动窗口适用条件是什么？〔候选闪卡〕 <!-- kp:algorithms.sliding-window -->
+    - [前缀和](../../docs/basic-knowledge/algorithms/prefix-sum.mdx)（正文待核验）
+      - 前缀和如何处理含负数的子数组求和问题？〔候选闪卡〕 <!-- kp:algorithms.prefix-sum -->
+    - [排序](../../docs/basic-knowledge/algorithms/sorting.mdx)（正文待核验）
+      - 快速排序与归并排序如何按约束选择？〔候选闪卡〕 <!-- kp:algorithms.sorting -->
+    - [递归](../../docs/basic-knowledge/algorithms/recursion.mdx)（正文待核验）
+      - 递归有终止条件为什么仍可能栈溢出？〔候选闪卡〕 <!-- kp:algorithms.recursion -->
+    - [回溯](../../docs/basic-knowledge/algorithms/backtracking.mdx)（正文待核验）
+      - 回溯中为什么需要恢复状态并保存结果副本？〔候选闪卡〕 <!-- kp:algorithms.backtracking -->
+    - [动态规划](../../docs/basic-knowledge/java/algorithms/dynamic-programming-state-design.mdx)（正文待核验）
+      - 如何判断动态规划状态是否包含足够信息？〔候选闪卡〕 <!-- kp:algorithms.dp -->
+    - [贪心](../../docs/basic-knowledge/algorithms/greedy.mdx)（正文待核验）
+      - 怎样证明一个局部最优选择可以得到全局最优？〔候选闪卡〕 <!-- kp:algorithms.greedy -->
+    - 单调栈（待补文章）
+      - 单调栈如何找到下一个更大元素？〔候选闪卡〕〔原覆盖评估：缺失〕 <!-- kp:algorithms.monotonic-stack -->
+    - 区间合并（待补文章）
+      - 区间合并为什么先排序，再维护当前右边界？〔候选闪卡〕〔原覆盖评估：缺失〕 <!-- kp:algorithms.intervals -->
+    - 快速幂（待补文章）
+      - 快速幂如何把线性乘法次数降为对数级？〔候选闪卡〕〔原覆盖评估：缺失〕 <!-- kp:algorithms.bit-power -->
+    - 并查集（待补文章）
+      - 并查集怎样维护动态连通性？〔候选闪卡〕〔原覆盖评估：缺失〕 <!-- kp:algorithms.union-find -->
+    - Trie（待补文章）
+      - Trie 在前缀查询中有什么收益和空间代价？〔候选闪卡〕〔原覆盖评估：缺失〕 <!-- kp:algorithms.trie -->
+    - [算法正确性](../../docs/basic-knowledge/java/algorithms/live-coding-counterexamples-tests.mdx)（正文待核验）
+      - 现场编码怎样构造能暴露错误的边界用例？〔候选闪卡〕 <!-- kp:algorithms.test-boundaries -->
+  - 操作系统
+    - [零拷贝](../../docs/basic-knowledge/java/io/file-mapping-zero-copy-direct-memory.mdx)（正文待核验）
+      - 零拷贝减少了哪些数据复制和切换？〔候选闪卡〕 <!-- kp:java.io.zero-copy -->
+    - [进程与线程](../../docs/basic-knowledge/operating-system/processes-threads.mdx)（正文待核验）
+      - 进程与线程分别隔离或共享哪些资源？〔候选闪卡〕 <!-- kp:os.process-thread -->
+      - 线程在什么情况下发生上下文切换？〔候选闪卡〕 <!-- kp:os.scheduling -->
+      - 系统调用是否必然切换到另一个线程？〔候选闪卡〕 <!-- kp:os.syscall -->
+    - 进程间通信（待补文章）
+      - 管道、共享内存和 socket 如何用于进程间通信？〔候选闪卡〕〔原覆盖评估：补充〕；关联阅读：[进程与线程](../../docs/basic-knowledge/operating-system/processes-threads.mdx)、[文件描述符](../../docs/basic-knowledge/operating-system/file-descriptors.mdx) <!-- kp:os.ipc -->
+    - [线程同步](../../docs/basic-knowledge/operating-system/synchronization.mdx)（正文待核验）
+      - 互斥锁与条件变量如何共同实现等待条件？〔候选闪卡〕 <!-- kp:os.mutex -->
+    - [死锁](../../docs/basic-knowledge/operating-system/deadlock.mdx)（正文待核验）
+      - 死锁成立需要什么条件，如何破坏它？〔候选闪卡〕 <!-- kp:os.deadlock -->
+    - [虚拟内存](../../docs/basic-knowledge/operating-system/virtual-memory.mdx)（正文待核验）
+      - 虚拟地址怎样映射到物理内存？〔候选闪卡〕 <!-- kp:os.virtual-memory -->
+      - 发生缺页异常是否一定需要读取磁盘？〔候选闪卡〕 <!-- kp:os.page-fault -->
+    - [文件描述符](../../docs/basic-knowledge/operating-system/file-descriptors.mdx)（正文待核验）
+      - 两个文件描述符为什么可能共享读取位置？〔候选闪卡〕 <!-- kp:os.fd -->
+    - [I/O 模型](../../docs/basic-knowledge/operating-system/io-models.mdx)（正文待核验）
+      - 阻塞、非阻塞和异步 I/O 的区别是什么？〔候选闪卡〕 <!-- kp:os.io-model -->
+    - [I/O 多路复用](../../docs/basic-knowledge/operating-system/io-multiplexing.mdx)（正文待核验）
+      - epoll 如何减少多连接等待的检查成本？〔候选闪卡〕 <!-- kp:os.multiplexing -->
+      - 边缘触发为什么通常要读到 EAGAIN？〔候选闪卡〕 <!-- kp:os.et-lt -->
+    - 页缓存（待补文章）
+      - 页缓存如何影响文件读取与写入持久性？〔候选闪卡〕〔原覆盖评估：补充〕；关联阅读：[零拷贝](../../docs/basic-knowledge/java/io/file-mapping-zero-copy-direct-memory.mdx) <!-- kp:os.page-cache -->
+    - Reactor（待补文章）
+      - Reactor 如何组织事件分发与业务处理？〔候选闪卡〕；关联阅读：[RPC](../../docs/basic-knowledge/network/rpc-serialization-netty-event-loop.mdx) <!-- kp:os.reactor -->
+  - 计算机网络与 HTTP
+    - [网络模型](../../docs/basic-knowledge/network/network-models.mdx)（正文待核验）
+      - IP、端口与域名分别负责定位什么？〔候选闪卡〕；关联阅读：[IP](../../docs/basic-knowledge/network/ip.mdx) <!-- kp:network.layers -->
+    - [DNS](../../docs/basic-knowledge/network/dns.mdx)（正文待核验）
+      - DNS 缓存和递归查询如何影响一次域名解析？〔候选闪卡〕 <!-- kp:network.dns -->
+      - 一次 HTTPS 请求如何经过 DNS、连接、TLS 和 HTTP？〔候选闪卡〕；关联阅读：[TLS](../../docs/basic-knowledge/network/tls.mdx)、[HTTP](../../docs/basic-knowledge/network/http-versions-connection-reuse-timeouts.mdx) <!-- kp:network.request-path -->
+    - [TCP 与 UDP](../../docs/basic-knowledge/network/tcp_udp.mdx)（正文待核验）
+      - TCP 与 UDP 应按哪些传输语义选择？〔候选闪卡〕 <!-- kp:network.transport -->
+      - 序列号、确认和重传怎样共同提供可靠字节流？〔候选闪卡〕〔原覆盖评估：纠错〕 <!-- kp:network.retransmission -->
+      - 流量控制与拥塞控制分别保护什么？〔候选闪卡〕〔原覆盖评估：补充〕 <!-- kp:network.flow-congestion -->
+      - TCP 一次 send 为什么不对应一次 read？〔候选闪卡〕 <!-- kp:network.framing -->
+    - [TCP 连接](../../docs/basic-knowledge/network/tcp_handshake.mdx)（正文待核验）
+      - TCP 为什么需要三次握手？〔候选闪卡〕 <!-- kp:network.handshake -->
+      - TCP 关闭连接为什么可能需要四次交互？〔候选闪卡〕 <!-- kp:network.close -->
+      - TIME_WAIT 与 CLOSE_WAIT 分别提示什么？〔候选闪卡〕 <!-- kp:network.time-wait -->
+    - [HTTP](../../docs/basic-knowledge/network/http-versions-connection-reuse-timeouts.mdx)（正文待核验）
+      - HTTP 方法的安全性与幂等性有什么区别？〔候选闪卡〕〔原覆盖评估：补充〕 <!-- kp:network.http-method -->
+      - HTTP/2 与 HTTP/3 如何改变连接中的并发传输？〔候选闪卡〕 <!-- kp:network.http-versions -->
+    - [HTTP 缓存](../../docs/basic-knowledge/network/http-cache.mdx)（正文待核验）
+      - 强缓存与条件请求如何决定复用响应？〔候选闪卡〕 <!-- kp:network.http-cache -->
+    - [TLS](../../docs/basic-knowledge/network/tls.mdx)（正文待核验）
+      - TLS 如何验证服务器身份并保护传输？〔候选闪卡〕 <!-- kp:network.tls -->
+    - [RPC](../../docs/basic-knowledge/network/rpc-serialization-netty-event-loop.mdx)（正文待核验）
+      - RPC 为一次远程调用增加了哪些本地调用没有的问题？〔候选闪卡〕 <!-- kp:network.rpc -->
+    - WebSocket 与 SSE（待补文章）
+      - WebSocket 与 SSE 如何按通信方向选择？〔候选闪卡〕〔原覆盖评估：缺失〕 <!-- kp:network.websocket-sse -->
+    - [IP](../../docs/basic-knowledge/network/ip.mdx)（正文待核验）
+  - 关系模型与 SQL
+    - [数据约束](../../docs/basic-knowledge/database/modeling/constraints.mdx)（正文待核验）
+      - 主键、唯一约束和外键分别保证什么？〔候选闪卡〕 <!-- kp:database.sql.keys -->
+      - 多对多关系怎样设计表与约束？〔候选闪卡〕〔原覆盖评估：补充〕 <!-- kp:database.sql.modeling -->
+    - [SQL 查询](../../docs/basic-knowledge/database/sql/query.mdx)（正文待核验）
+      - SQL 中 NULL 为什么不能使用等号判断？〔候选闪卡〕 <!-- kp:database.sql.null -->
+      - 分页查询为什么需要稳定且唯一的排序？〔候选闪卡〕；关联阅读：[批处理与分页](../../docs/basic-knowledge/java/data-access/batching-pagination-data-access-tests.mdx) <!-- kp:database.sql.stable-page -->
+    - [SQL 连接](../../docs/basic-knowledge/database/sql/joins.mdx)（正文待核验）
+      - LEFT JOIN 后在 WHERE 过滤右表会发生什么？〔候选闪卡〕 <!-- kp:database.sql.join -->
+      - EXISTS 与 IN 子查询如何表达存在性条件？〔候选闪卡〕〔原覆盖评估：补充〕 <!-- kp:database.sql.subquery -->
+    - [SQL 聚合](../../docs/basic-knowledge/database/sql/aggregation.mdx)（正文待核验）
+      - COUNT(*) 与 COUNT(column) 如何处理 NULL？〔候选闪卡〕 <!-- kp:database.sql.aggregate -->
+      - WHERE 与 HAVING 分别在什么阶段过滤？〔候选闪卡〕 <!-- kp:database.sql.having -->
+    - SQL 窗口函数（待补文章）
+      - ROW_NUMBER、RANK 与 DENSE_RANK 如何处理并列？〔候选闪卡〕〔原覆盖评估：缺失〕 <!-- kp:database.sql.window -->
+    - 数据库规范化（待补文章）
+      - 什么时候需要规范化，什么时候可以冗余？〔候选闪卡〕〔原覆盖评估：缺失〕 <!-- kp:database.sql.schema-normalization -->
+    - [数据建模](../../docs/basic-knowledge/database/modeling/index.mdx)（正文待核验）
+  - MySQL 索引与事务
+    - [B+ 树](../../docs/basic-knowledge/database/indices/b_plus_tree/index.mdx)（正文待核验）
+      - B+ 树为什么适合数据库索引？〔候选闪卡〕 <!-- kp:database.engine.bplus -->
+    - [聚簇索引](../../docs/basic-knowledge/database/indices/clustered_index/index.mdx)（正文待核验）
+      - InnoDB 聚簇索引与二级索引分别保存什么？〔候选闪卡〕；关联阅读：[联合索引与覆盖索引](../../docs/basic-knowledge/database/indices/composite-covering-back-table.mdx) <!-- kp:database.engine.clustered -->
+    - [联合索引与覆盖索引](../../docs/basic-knowledge/database/indices/composite-covering-back-table.mdx)（正文待核验）
+      - 联合索引的列顺序如何影响可定位的范围？〔候选闪卡〕 <!-- kp:database.engine.composite -->
+      - 覆盖索引怎样减少查询成本？〔候选闪卡〕 <!-- kp:database.engine.covering -->
+    - [索引设计](../../docs/basic-knowledge/database/indices/index-review.mdx)（正文待核验）
+      - 为什么创建了索引，查询仍可能不使用它？〔候选闪卡〕 <!-- kp:database.engine.index-use -->
+    - [执行计划](../../docs/basic-knowledge/database/indices/execution-plan.mdx)（正文待核验）
+      - 如何用 EXPLAIN 验证查询优化判断？〔候选闪卡〕 <!-- kp:database.engine.explain -->
+    - [数据库索引](../../docs/basic-knowledge/database/indices/index.mdx)（正文待核验）
+      - 索引越多为什么可能降低写入性能？〔候选闪卡〕 <!-- kp:database.engine.index-write -->
+    - [数据库事务](../../docs/basic-knowledge/database/transaction/index.mdx)（正文待核验）
+      - ACID 分别约束事务的哪些行为？〔候选闪卡〕 <!-- kp:database.engine.acid -->
+      - 脏读、不可重复读与幻读如何用时序区分？〔候选闪卡〕 <!-- kp:database.engine.anomalies -->
+      - 怎样防止基于旧值写回导致的丢失更新？〔候选闪卡〕；关联阅读：[长事务](../../docs/basic-knowledge/database/transaction/long-transactions-hot-updates-boundaries.mdx) <!-- kp:database.engine.lost-update -->
+    - [MVCC](../../docs/basic-knowledge/database/transaction/mvcc-read-view-consistent-read.mdx)（正文待核验）
+      - RC 与 RR 下的一致性读何时建立可见性视图？〔候选闪卡〕 <!-- kp:database.engine.isolation -->
+      - MVCC 如何找到当前事务可见的记录版本？〔候选闪卡〕 <!-- kp:database.engine.mvcc -->
+    - [InnoDB 锁](../../docs/basic-knowledge/database/transaction/innodb-locking-ranges.mdx)（正文待核验）
+      - 普通 SELECT 与锁定读的可见性和加锁有什么区别？〔候选闪卡〕；关联阅读：[MVCC](../../docs/basic-knowledge/database/transaction/mvcc-read-view-consistent-read.mdx) <!-- kp:database.engine.current-read -->
+      - InnoDB 的加锁范围为什么与索引和条件有关？〔候选闪卡〕 <!-- kp:database.engine.lock-range -->
+    - [数据库死锁](../../docs/basic-knowledge/database/transaction/deadlock-detection-timeout-retry.mdx)（正文待核验）
+      - 数据库死锁与普通锁等待如何处理？〔候选闪卡〕 <!-- kp:database.engine.deadlock -->
+    - [长事务](../../docs/basic-knowledge/database/transaction/long-transactions-hot-updates-boundaries.mdx)（正文待核验）
+      - 长事务为什么影响连接、锁和旧版本回收？〔候选闪卡〕 <!-- kp:database.engine.long-tx -->
+    - 事务日志（待补文章）
+      - undo log 与 redo log 分别支撑什么能力？〔候选闪卡〕〔原覆盖评估：补充〕；关联阅读：[数据库事务](../../docs/basic-knowledge/database/transaction/index.mdx) <!-- kp:database.engine.undo-redo -->
+    - binlog（待补文章）
+      - binlog 与 redo log 为什么不能互相替代？〔候选闪卡〕〔原覆盖评估：补充〕；关联阅读：[数据库事务](../../docs/basic-knowledge/database/transaction/index.mdx) <!-- kp:database.engine.binlog -->
+    - Buffer Pool（待补文章）
+      - Buffer Pool 中的脏页为什么不必在每次提交时全部落盘？〔候选闪卡〕〔原覆盖评估：补充〕；关联阅读：[索引设计](../../docs/basic-knowledge/database/indices/index-review.mdx) <!-- kp:database.engine.buffer-pool -->
+    - MySQL 复制（待补文章）
+      - 主从复制延迟会怎样影响读后写一致性？〔候选闪卡〕〔原覆盖评估：补充〕；关联阅读：[主备复制](../../docs/system-design/distributed-system/primary_backup_replication.mdx) <!-- kp:database.engine.replica-lag -->
+  - 缓存与 Redis
+    - [Redis](../../docs/basic-knowledge/nosql/redis/index.mdx)（正文待核验）
+      - String、Hash、List、Set、ZSet 分别适合什么数据访问？〔候选闪卡〕〔原覆盖评估：纠错〕；关联阅读：[Redis 数据结构](../../docs/basic-knowledge/nosql/redis/data_structure.mdx) <!-- kp:cache.types -->
+      - Redis 的单线程执行为什么不意味着所有工作只有一个线程？〔候选闪卡〕 <!-- kp:cache.execution -->
+      - Redis 单条命令原子是否意味着多个命令组成的业务原子？〔候选闪卡〕 <!-- kp:cache.atomicity -->
+      - Pipeline 与 Lua 分别减少什么成本或提供什么保证？〔候选闪卡〕 <!-- kp:cache.pipeline -->
+    - [Redis 数据结构](../../docs/basic-knowledge/nosql/redis/data_structure.mdx)（正文待核验）
+      - Redis 数据类型与内部编码是什么关系？〔候选闪卡〕〔原覆盖评估：纠错〕 <!-- kp:cache.encoding -->
+      - 跳表怎样通过多层索引改善查找？〔候选闪卡〕〔原覆盖评估：纠错〕 <!-- kp:cache.skiplist -->
+    - [Redis 过期](../../docs/basic-knowledge/nosql/redis/expiration.mdx)（正文待核验）
+      - Redis 如何清理过期键，TTL 能否当精确定时器？〔候选闪卡〕 <!-- kp:cache.expiry -->
+    - [Redis 内存淘汰](../../docs/basic-knowledge/nosql/redis/eviction.mdx)（正文待核验）
+      - 内存淘汰与过期有什么区别？〔候选闪卡〕 <!-- kp:cache.eviction -->
+    - [缓存一致性](../../docs/basic-knowledge/nosql/redis/cache-patterns-consistency.mdx)（正文待核验）
+      - Cache-aside 如何处理一次读和更新？〔候选闪卡〕 <!-- kp:cache.cache-aside -->
+      - 先更新数据库再删除缓存为什么仍有不一致窗口？〔候选闪卡〕 <!-- kp:cache.stale-write -->
+      - 多实例本地缓存如何处理失效与版本差异？〔候选闪卡〕 <!-- kp:cache.local-cache -->
+    - [缓存穿透、击穿、雪崩与热点 Key](../../docs/basic-knowledge/nosql/redis/cache-penetration-stampede-avalanche-hotkeys.mdx)（正文待核验）
+      - 缓存穿透为什么持续压向数据库？〔候选闪卡〕 <!-- kp:cache.penetration -->
+      - 单个热点键失效时怎样避免大量请求同时回源？〔候选闪卡〕 <!-- kp:cache.stampede -->
+      - 大量缓存同时失效时怎样保护数据库？〔候选闪卡〕 <!-- kp:cache.avalanche -->
+      - 热点 key 与大 key 的性能风险有什么区别？〔候选闪卡〕 <!-- kp:cache.hot-big-key -->
+      - 布隆过滤器的误判如何影响缓存穿透防护？〔候选闪卡〕〔原覆盖评估：补充〕 <!-- kp:cache.bloom -->
+    - [Redis 持久化、复制与集群](../../docs/basic-knowledge/nosql/redis/persistence.mdx)（正文待核验）
+      - RDB 与 AOF 的恢复窗口和运行成本有什么区别？〔候选闪卡〕 <!-- kp:cache.persistence -->
+      - Redis 主从故障转移为什么可能丢失已确认写入？〔候选闪卡〕 <!-- kp:cache.failover -->
+      - Sentinel 与 Cluster 分别解决什么问题？〔候选闪卡〕 <!-- kp:cache.cluster -->
+    - [分布式锁](../../docs/basic-knowledge/nosql/redis/distributed-lock-conditions-boundaries.mdx)（正文待核验）
+      - Redis 锁为什么需要所有者 token 与过期时间？〔候选闪卡〕 <!-- kp:cache.lease-lock -->
+    - [NoSQL 数据库](../../docs/basic-knowledge/nosql/index.mdx)（正文待核验）
+  - 消息与搜索
+    - [消息队列](../../docs/basic-knowledge/middleware/kafka-rabbitmq-queue-semantics.mdx)（正文待核验）
+      - 引入消息队列后，异步和削峰带来哪些代价？〔候选闪卡〕 <!-- kp:middleware.queue-purpose -->
+      - Kafka 与 RabbitMQ 怎样按消费模型选择？〔候选闪卡〕 <!-- kp:middleware.kafka-rabbit -->
+    - [消息可靠性](../../docs/basic-knowledge/middleware/message-ack-retry-dead-letter.mdx)（正文待核验）
+      - 生产者收到发送确认后，还需要检查什么可靠性边界？〔候选闪卡〕 <!-- kp:middleware.producer-ack -->
+      - 消费确认放在业务提交前后分别有什么风险？〔候选闪卡〕 <!-- kp:middleware.consumer-ack -->
+      - 消费者持续积压时如何定位并处理？〔候选闪卡〕 <!-- kp:middleware.backlog -->
+    - [消息幂等性](../../docs/basic-knowledge/middleware/idempotent-consumption-order-duplicates.mdx)（正文待核验）
+      - 消息重复消费时怎样避免重复业务效果？〔候选闪卡〕 <!-- kp:middleware.idempotent-consumer -->
+      - 消息顺序保证为什么需要限定范围？〔候选闪卡〕 <!-- kp:middleware.ordering -->
+    - [Elasticsearch](../../docs/basic-knowledge/middleware/elasticsearch-inverted-index-refresh-visibility.mdx)（正文待核验）
+      - Elasticsearch 写入成功后为什么可能暂时搜不到？〔候选闪卡〕 <!-- kp:middleware.search-refresh -->
+    - [分布式任务调度](../../docs/basic-knowledge/middleware/scheduled-tasks-sharding-recovery.mdx)（正文待核验）
+      - 定时任务怎样处理重复调度与失败重跑？〔候选闪卡〕 <!-- kp:middleware.job-retry -->
+  - 工程基础与验证
+    - [Git](../../docs/tools-and-frameworks/git/index.md)（正文待核验）
+      - Git 的工作区、暂存区与提交分别保存什么？〔候选闪卡〕；关联阅读：[使用 Git 进行第一次提交](../../docs/tools-and-frameworks/git/basic-usages/first-commit.mdx) <!-- kp:engineering.git-areas -->
+      - merge 与 rebase 为什么会得到不同提交历史？〔候选闪卡〕 <!-- kp:engineering.git-merge -->
+      - 撤销工作区修改与撤销已共享提交应怎样选择命令？〔候选闪卡〕 <!-- kp:engineering.git-undo -->
+      - cherry-pick 怎样把某次提交引入另一条开发线？〔候选闪卡〕〔原覆盖评估：补充〕 <!-- kp:engineering.git-cherry-pick -->
+    - [Maven](../../docs/system-design/production/maven-lifecycle-dependency-convergence.mdx)（正文待核验）
+      - Maven 的生命周期、依赖作用域与传递依赖如何影响构建？〔候选闪卡〕 <!-- kp:engineering.maven -->
+    - [测试金字塔](../../docs/basic-knowledge/java/quality/test-pyramid-contract-regression.mdx)（正文待核验）
+      - 单元测试与集成测试分别能证明什么？〔候选闪卡〕 <!-- kp:engineering.test-scope -->
+    - [测试替身](../../docs/basic-knowledge/java/quality/test-doubles-mock-stub-boundaries.mdx)（正文待核验）
+      - 什么时候应使用 Stub 或 Mock，什么时候需要真实依赖？〔候选闪卡〕 <!-- kp:engineering.mock -->
+    - Linux 进程与端口（待补文章）
+      - Linux 服务异常时怎样确认进程、端口与资源占用？〔候选闪卡〕〔原覆盖评估：补充〕；关联阅读：[生产故障诊断](../../docs/system-design/production/jvm-thread-sql-network-joint-diagnosis.mdx) <!-- kp:engineering.linux-process -->
+    - Linux 日志检索（待补文章）
+      - 怎样从日志中筛选一次请求的相关记录？〔候选闪卡〕〔原覆盖评估：补充〕；关联阅读：[可观测性](../../docs/system-design/production/logs-metrics-traces-correlation.mdx) <!-- kp:engineering.linux-log -->
+    - [可观测性](../../docs/system-design/production/logs-metrics-traces-correlation.mdx)（正文待核验）
+      - 指标、日志和追踪分别适合回答什么问题？〔候选闪卡〕 <!-- kp:engineering.observability -->
+    - [生产故障诊断](../../docs/system-design/production/jvm-thread-sql-network-joint-diagnosis.mdx)（正文待核验）
+      - P99 升高但 CPU 不高时怎样定位等待？〔候选闪卡〕 <!-- kp:engineering.latency -->
+    - [可重复交付](../../docs/system-design/production/docker-ci-cd-reproducible-delivery.mdx)（正文待核验）
+      - 怎样让构建产物可复现并能够回滚？〔候选闪卡〕 <!-- kp:engineering.delivery -->
+    - 性能测试（待补文章）
+      - 压测如何区分吞吐瓶颈和不可持续积压？〔候选闪卡〕〔原覆盖评估：补充〕；关联阅读：[成本归因](../../docs/system-design/availability/performance-reliability-cost-attribution.mdx) <!-- kp:engineering.load-test -->
+    - [项目准备](../../docs/interview/project-preparation.mdx)（正文待核验）
+      - 使用 AI 生成代码后怎样验证输出？〔候选闪卡〕；关联阅读：[算法正确性](../../docs/basic-knowledge/java/algorithms/live-coding-counterexamples-tests.mdx)、[JUnit](../../docs/basic-knowledge/java/quality/junit-assertions-parameterized-tests.mdx) <!-- kp:engineering.ai-validation -->
+    - [使用 Git 进行第一次提交](../../docs/tools-and-frameworks/git/basic-usages/first-commit.mdx)（正文待核验）
+    - [2.1. Git 的安装与配置](../../docs/tools-and-frameworks/git/basic-usages/git-installation.mdx)（正文待核验）
+    - [2. Git 基本使用](../../docs/tools-and-frameworks/git/basic-usages/index.mdx)（正文待核验）
+    - [1. 版本控制简介](../../docs/tools-and-frameworks/git/introduce.md)（正文待核验）
+  - 认证与应用安全
+    - [认证与授权](../../docs/system-design/security/authentication-authorization-trust-boundaries.mdx)（正文待核验）
+      - 认证成功为什么不代表可以访问任意资源？〔候选闪卡〕 <!-- kp:security.authn-authz -->
+    - [Session、JWT、OAuth 2.0 与 OIDC](../../docs/system-design/security/session-jwt-oauth-oidc.mdx)（正文待核验）
+      - Session 与 JWT 的状态保存和失效有什么差异？〔候选闪卡〕 <!-- kp:security.session-jwt -->
+      - CSRF 为什么与浏览器自动携带身份凭据有关？〔候选闪卡〕〔原覆盖评估：补充〕 <!-- kp:security.csrf -->
+      - OAuth 2.0 与 OIDC 分别解决什么问题？〔候选闪卡〕 <!-- kp:security.oauth -->
+    - [Web 应用安全](../../docs/system-design/security/injection-authorization-ssrf-deserialization.mdx)（正文待核验）
+      - 参数化查询为什么能防止值参数的 SQL 注入？〔候选闪卡〕；关联阅读：[MyBatis](../../docs/basic-knowledge/java/data-access/mybatis-mapping-executor-plugins.mdx) <!-- kp:security.sql-injection -->
+      - XSS 如何发生，输出编码为什么需要区分上下文？〔候选闪卡〕〔原覆盖评估：补充〕 <!-- kp:security.xss -->
+      - 服务端访问用户提供的 URL 时有哪些风险？〔候选闪卡〕 <!-- kp:security.ssrf -->
+    - CORS（待补文章）
+      - CORS 是否能替代服务端权限检查？〔候选闪卡〕〔原覆盖评估：缺失〕 <!-- kp:security.cors -->
+    - [密钥、证书、审计与供应链安全](../../docs/system-design/security/secrets-certificates-audit-supply-chain.mdx)（正文待核验）
+    - [Spring Security](../../docs/system-design/security/spring-security-filter-chain.mdx)（正文待核验）

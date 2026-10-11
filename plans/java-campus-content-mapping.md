@@ -9,6 +9,8 @@
 | [java.ts](../src/data/interviewRoadmaps/java.ts) | 9 个阶段、42 个 Topic、20 必会／15 常考／7 按岗选学，文章与回答深度 |
 | [javaReadingResources.json](../src/data/reviewPlans/javaReadingResources.json) | 20 个核心主题前置、67 篇核心章节范围、205 个文档中的 277 道题目链接 |
 
+M1 的原子考点评审见[知识点清单](./knowledge-tree/m1-knowledge-points.md)，其[覆盖检查](./knowledge-tree/m1-coverage-review.md)逐项说明 42 个路线主题与 20 组面经主题的承接。候选正文尚未逐点验收，题目来源也不能按主题整组继承。
+
 ## 1. 核心范围与证据
 
 | 主题 | 证据示例 | 当前承接方式 |
@@ -28,9 +30,9 @@
 
 岗位页由 `scripts/generate-campus-jobs.mjs` 生成，面经页由 `scripts/generate-interview-research.mjs` 生成。修改来源或归纳数据后重新生成，构建中的一致性检查会阻止旧页面发布。
 
-核心导读使用同一份路线和资源映射。题目答案维护在所属正文；“相关内容”使用真实章节链接。生成入口由 Docusaurus 检查链接，资源脚本检查前置图与题目锚点。
+当前核心导读使用同一份路线和资源映射，题目答案维护在所属正文；“相关内容”使用真实章节链接。M1 按[内容模型](./content-model.md)整理知识点和独立卡片，使文章自测与闪卡练习引用同一份问答，并支持一张卡关联多篇文章。生成入口由 Docusaurus 检查链接，资源脚本检查前置图与题目锚点；卡片与岗位关系校验在 M1 补充。
 
-简历、项目与流程指南使用真实经历、技术选择和验证证据作为评价依据。JUnit 示例说明与 Money 示例保持一致；SQL 练习提供独立作答与核对条件。所有资料按静态资源使用，不保存个人进度。
+简历、项目与流程指南使用真实经历、技术选择和验证证据作为评价依据。JUnit 示例说明与 Money 示例保持一致；SQL 练习提供独立作答与核对条件。当前资料按静态资源使用，不保存个人进度。M2 的个人记录连接 M1 建立的稳定内容 ID，实施范围见[项目计划](./product-roadmap.md)。
 
 ## 3. 后续质量工作
 
