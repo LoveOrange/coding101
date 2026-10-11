@@ -286,6 +286,21 @@ export const learnerActions = {
     });
   },
 
+  /** Queue unrated cards for tomorrow once their article has been read. */
+  queueCards(cardIds: string[]) {
+    update((current) => {
+      if (accessOf(current) !== 'active') return current;
+      const fresh = cardIds.filter((cardId) => !current.cards[cardId]);
+      if (!fresh.length) return current;
+      const cards = {...current.cards};
+      const due = addDays(today(), 1);
+      for (const cardId of fresh) {
+        cards[cardId] = {rating: 'hard', interval: 0, due, reviewedAt: new Date().toISOString(), reps: 0};
+      }
+      return {...current, cards};
+    });
+  },
+
   setPreferences(preferences: Partial<Preferences>) {
     update((current) => ({...current, preferences: {...current.preferences, ...preferences}}));
   },

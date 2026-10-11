@@ -49,8 +49,27 @@ export function cardStatus(card: CardIndex, state?: CardState): CardStatus {
   return 'learning';
 }
 
+/** Due cards include unrated cards queued after their article was read. */
 export function isDue(state: CardState | undefined, day = today()): boolean {
-  return Boolean(state && !state.suspended && state.reps > 0 && state.due <= day);
+  return Boolean(state && !state.suspended && state.due <= day);
+}
+
+/** Section status for an article's level-2 sections, from reading progress. */
+export function sectionReadStatus(index: number, reading?: {furthest: number; done: boolean}): 'read' | 'reading' | 'none' {
+  if (!reading) return 'none';
+  if (reading.done || index < reading.furthest) return 'read';
+  return index === reading.furthest ? 'reading' : 'none';
+}
+
+/** Level-2 sections shown in outlines: everything except the interview section. */
+export function outlineSections(article: ArticleIndex) {
+  return article.sections.filter((section) => section.id !== article.interviewAnchor);
+}
+
+export function cardsInSection(index: LearningIndex, article: ArticleIndex, sectionId: string): CardIndex[] {
+  return article.cardIds
+    .map((id) => index.cards[id])
+    .filter((card) => card.refs.some((ref) => ref.section === sectionId));
 }
 
 export type TopicStatus = 'mastered' | 'learning' | 'weak' | 'new';
