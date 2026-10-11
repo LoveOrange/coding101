@@ -38,12 +38,7 @@ export function ModuleSidebar({article}: {article: ArticleIndex}) {
                 className={clsx(styles.sidebarItem, active && styles.sidebarActive, read && !active && styles.sidebarRead)}
                 aria-current={active ? 'page' : undefined}>
                 <span>{item.title}</span>
-                {item.cardIds.length > 0 && (
-                  <span className={styles.sidebarCount}>
-                    {read ? '✓ ' : ''}
-                    {item.cardIds.length} 卡
-                  </span>
-                )}
+                {read && <span className={styles.sidebarCount}>✓</span>}
               </Link>
             </li>
           );

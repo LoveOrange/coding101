@@ -195,12 +195,7 @@ function ArticleReview({details, articleId, cardId}: {details: Record<string, Ca
                 to={item.cardIds.length ? `/review?article=${encodeURIComponent(id)}` : item.permalink}
                 className={clsx(styles.treeArticle, current && styles.treeArticleCurrent, learner.reading[id]?.done && !current && styles.treeArticleRead)}>
                 <span>{item.title}</span>
-                {item.cardIds.length > 0 && (
-                  <span className={styles.treeCount}>
-                    {learner.reading[id]?.done ? '✓ ' : ''}
-                    {item.cardIds.length} 卡
-                  </span>
-                )}
+                {learner.reading[id]?.done && <span className={styles.treeCount}>✓</span>}
               </Link>
               {current && (
                 <div className={styles.treeCards}>
