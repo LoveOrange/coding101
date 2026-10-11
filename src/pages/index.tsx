@@ -3,7 +3,7 @@ import Link from '@docusaurus/Link';
 import {useHistory} from '@docusaurus/router';
 import Layout from '@theme/Layout';
 
-import {getLearner} from '@site/src/learning/store';
+import {useLearnerFeatures} from '@site/src/learning/features';
 
 import styles from './index.module.css';
 
@@ -15,10 +15,13 @@ const steps = [
   {
     title: '练闪卡',
     description: '每节末尾的面试题，答完标「没想起来 / 模糊 / 记得」，按间隔生成今日复习队列。',
+    // Shown while spaced review is held back (learnerFeatures off).
+    plain: '每篇文章末尾的面试题都能翻卡自测：先想答案，再对照考察重点和参考回答。',
   },
   {
     title: '回到原文',
     description: '汇总薄弱点，一键跳回对应段落，补读后重测。',
+    plain: '每张卡都标出相关章节，答不上来就跳回原文对应段落补读。',
   },
 ];
 
@@ -38,17 +41,20 @@ const domains: {label: string; href?: string}[] = [
 const ratings = ['没想起来', '模糊', '记得'];
 
 function Intro() {
+  const features = useLearnerFeatures();
   return (
     <section className={styles.intro}>
       <div className={styles.introCopy}>
-        <p className={styles.eyebrow}>技术面试复习 · 中文 / EN</p>
+        <p className={styles.eyebrow}>{features ? '技术面试复习 · 中文 / EN' : '技术面试复习'}</p>
         <h1 className={styles.title}>
           读懂一遍，
           <br />
           再练到记住。
         </h1>
         <p className={styles.lead}>
-          Coding101 把前端、后端、算法、系统设计、数据库、网络六个领域整理成文章，每节末尾配面试闪卡。读过的内容进入复习队列，答不上来的题会带你回到原文段落。
+          {features
+            ? 'Coding101 把前端、后端、算法、系统设计、数据库、网络六个领域整理成文章，每节末尾配面试闪卡。读过的内容进入复习队列，答不上来的题会带你回到原文段落。'
+            : 'Coding101 把后端、算法、系统设计、数据库、网络等面试内容整理成文章，每篇末尾配面试闪卡。先想答案再翻面，答不上来的题会带你回到原文段落。'}
         </p>
         <div className={styles.actions}>
           <a className={styles.primaryButton} href="#choose">
@@ -59,7 +65,9 @@ function Intro() {
             先读一篇文章
           </Link>
         </div>
-        <p className={styles.note}>文章全文免费阅读，无需登录。注册即 7 天完整 Pro，不绑卡。</p>
+        <p className={styles.note}>
+          {features ? '文章全文免费阅读，无需登录。注册即 7 天完整 Pro，不绑卡。' : '文章和面试题全部免费，无需登录。'}
+        </p>
       </div>
 
       <div className={styles.cardStack} aria-hidden="true">
@@ -70,6 +78,7 @@ function Intro() {
             <span>正面</span>
           </div>
           <p className={styles.cardQuestion}>HTTPS 握手时，客户端如何确认服务器的身份？</p>
+          {features ? (
           <div className={styles.ratings}>
             {ratings.map((rating, index) => (
               <span
@@ -79,6 +88,9 @@ function Intro() {
               </span>
             ))}
           </div>
+          ) : (
+            <div className={styles.flipHint}>先想一想，再翻面看答案</div>
+          )}
         </div>
       </div>
     </section>
@@ -86,6 +98,7 @@ function Intro() {
 }
 
 function HowItWorks() {
+  const features = useLearnerFeatures();
   return (
     <section className={styles.how} aria-labelledby="how-title">
       <div className={styles.sectionHeading}>
@@ -99,7 +112,7 @@ function HowItWorks() {
           <li key={step.title} className={styles.step}>
             <span className={styles.stepNumber}>{String(index + 1).padStart(2, '0')}</span>
             <h3 className={styles.stepTitle}>{step.title}</h3>
-            <p className={styles.stepText}>{step.description}</p>
+            <p className={styles.stepText}>{features || !step.plain ? step.description : step.plain}</p>
           </li>
         ))}
       </ol>
@@ -142,6 +155,7 @@ function QuestionSearch() {
 }
 
 function Choose() {
+  const features = useLearnerFeatures();
   return (
     <section id="choose" className={styles.choose} aria-labelledby="choose-title">
       <div className={styles.chooseHeading}>
@@ -186,15 +200,15 @@ function Choose() {
           <div className={styles.routeHead}>
             <div className={`${styles.routeMeta} ${styles.routeMetaAccent}`}>
               <span>路线 B · 先测再补</span>
-              <span className={styles.badgePro}>Pro</span>
+              {features && <span className={styles.badgePro}>Pro</span>}
             </div>
             <h3 className={styles.routeTitle}>从问题出发</h3>
             <p className={styles.routeText}>先答题，哪里答不上来，再去读对应的文章。</p>
           </div>
           <div className={styles.routeFoot}>
             <QuestionSearch />
-            <Link className={styles.routeButtonQuestion} to="/review?mode=quiz">
-              <span>随机来 10 道题</span>
+            <Link className={styles.routeButtonQuestion} to={features ? '/review?mode=quiz' : '/questions'}>
+              <span>{features ? '随机来 10 道题' : '去题库挑题'}</span>
               <span aria-hidden="true">→</span>
             </Link>
           </div>
@@ -204,16 +218,7 @@ function Choose() {
   );
 }
 
-/** Signed-in learners land on the route choice instead of the introduction. */
-function useLandOnChoice() {
-  useEffect(() => {
-    if (window.location.hash || !getLearner().account) return;
-    document.getElementById('choose')?.scrollIntoView();
-  }, []);
-}
-
 export default function Home(): JSX.Element {
-  useLandOnChoice();
   return (
     <Layout
       title="技术面试复习"

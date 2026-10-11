@@ -9,6 +9,7 @@ import {summarize} from '../review/WeakList';
 import {learnerActions, toDay, useLearner} from '../store';
 import type {CardIndex, Priority} from '../types';
 import {Companies, formatMonthDay, PriorityDots, StatusTag} from '../ui';
+import {useLearnerFeatures} from '../features';
 import {ClientPage} from '../ui/ClientOnly';
 import styles from './Questions.module.css';
 
@@ -32,6 +33,7 @@ function toggle<T>(list: T[], value: T): T[] {
 function QuestionsPage() {
   const index = useLearningIndex();
   const learner = useLearner();
+  const features = useLearnerFeatures();
   const initialQuery = new URLSearchParams(useLocation().search).get('q') ?? '';
   const [roleId, setRoleId] = useState(learner.preferences.roleId ?? '');
   const [group, setGroup] = useState<string>('');
@@ -149,6 +151,7 @@ function QuestionsPage() {
             ))}
           </div>
         </div>
+        {features && (
         <div className={styles.filterGroup}>
           <span className={styles.filterLabel}>我的状态</span>
           <div className={styles.chips}>
@@ -164,9 +167,11 @@ function QuestionsPage() {
             ))}
           </div>
         </div>
+        )}
       </aside>
 
       <section className={styles.main}>
+        {features && (
         <div className={styles.banner}>
           <div className={styles.bannerText}>
             <span className={styles.bannerLabel}>模拟测试</span>
@@ -183,6 +188,7 @@ function QuestionsPage() {
             设置并开始 →
           </Link>
         </div>
+        )}
 
         <div className={styles.toolbar}>
           <label className={styles.search}>
@@ -207,13 +213,13 @@ function QuestionsPage() {
           <span className={styles.total}>{sorted.length} 题</span>
         </div>
 
-        <div className={styles.table} role="table" aria-label="题目">
+        <div className={clsx(styles.table, !features && styles.noStatus)} role="table" aria-label="题目">
           <div className={styles.headRow} role="row">
             <span role="columnheader">题目</span>
             <span role="columnheader">主题</span>
             <span role="columnheader">考频</span>
             <span role="columnheader">公司</span>
-            <span role="columnheader">我的状态</span>
+            {features && <span role="columnheader">我的状态</span>}
           </div>
           {sorted.slice(0, limit).map((card) => {
             const article = index.articles[card.articleId];
@@ -227,9 +233,11 @@ function QuestionsPage() {
                 <span>
                   <Companies names={card.companies.slice(0, 2)} />
                 </span>
-                <span>
-                  <StatusTag status={cardStatus(card, learner.cards[card.id])} />
-                </span>
+                {features && (
+                  <span>
+                    <StatusTag status={cardStatus(card, learner.cards[card.id])} />
+                  </span>
+                )}
               </Link>
             );
           })}
@@ -240,7 +248,9 @@ function QuestionsPage() {
             再显示 {Math.min(PAGE, sorted.length - limit)} 题
           </button>
         )}
-        <span className={styles.note}>点任意一题进入翻卡。按领域筛选后，模拟测试会从这个领域抽题。</span>
+        <span className={styles.note}>
+          {features ? '点任意一题进入翻卡。按领域筛选后，模拟测试会从这个领域抽题。' : '点任意一题进入翻卡：先想答案，再看考察重点和参考回答。'}
+        </span>
       </section>
     </main>
   );

@@ -7,6 +7,7 @@ import type {WrapperProps} from '@docusaurus/types';
 import {ArticleProvider, articleByPermalink} from '@site/src/learning/article/context';
 import {useReadingTracker} from '@site/src/learning/article/useReadingTracker';
 import {useLearningIndex} from '@site/src/learning/content';
+import {useLearnerFeatures} from '@site/src/learning/features';
 
 type Props = WrapperProps<typeof LayoutType>;
 
@@ -16,7 +17,7 @@ type Props = WrapperProps<typeof LayoutType>;
 export default function LayoutWrapper(props: Props): ReactNode {
   const {pathname} = useLocation();
   const article = articleByPermalink(useLearningIndex().articles, pathname);
-  useReadingTracker(article);
+  useReadingTracker(useLearnerFeatures() ? article : undefined);
   return (
     <ArticleProvider article={article}>
       <div className={article ? 'c101-article' : undefined}>

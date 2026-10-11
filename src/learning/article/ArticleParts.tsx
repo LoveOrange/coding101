@@ -1,8 +1,10 @@
 import {type ReactNode, useMemo} from 'react';
 import clsx from 'clsx';
 import Link from '@docusaurus/Link';
+import Heading from '@theme/Heading';
 
 import {cardsInSection, moduleOf, RATING_LABELS, sectionLabel, topicsHref, useLearningIndex} from '../content';
+import {useLearnerFeatures} from '../features';
 import {useLearner} from '../store';
 import type {ArticleIndex, CardIndex, CardState} from '../types';
 import {Companies, PriorityDots} from '../ui';
@@ -14,12 +16,36 @@ export function reviewHref(article: ArticleIndex, card?: CardIndex): string {
   return `/review?${params.toString()}`;
 }
 
+/**
+ * Domain / topic breadcrumb back into the knowledge tree. The topic level is
+ * shown only when the topic groups several articles.
+ */
+export function TreeBreadcrumb({article, className}: {article: ArticleIndex; className?: string}) {
+  const index = useLearningIndex();
+  const module = moduleOf(index, article);
+  if (!module) return null;
+  const domainHref = `/topics?domain=${encodeURIComponent(module.domain.id)}`;
+  return (
+    <nav className={clsx(styles.crumbs, className)} aria-label="知识树位置">
+      <Link to={domainHref}>{module.domain.label}</Link>
+      {module.topic && module.topic.articleIds.length > 1 && (
+        <>
+          <span className={styles.crumbSep} aria-hidden="true">
+            /
+          </span>
+          <Link to={topicsHref(article)}>{module.topic.label}</Link>
+        </>
+      )}
+    </nav>
+  );
+}
+
 export function ArticleMeta({article}: {article: ArticleIndex}) {
   const index = useLearningIndex();
   const module = moduleOf(index, article);
   return (
     <div className={styles.meta}>
-      {module && <Link to={topicsHref(article)}>{module.label.replace(' / ', ' · ')}</Link>}
+      {module && <TreeBreadcrumb article={article} className={styles.metaCrumbs} />}
       <span>约 {article.minutes} 分钟</span>
       {article.cardIds.length > 0 && <span>{article.cardIds.length} 张卡</span>}
     </div>
@@ -112,13 +138,14 @@ function StatusDot({state}: {state?: CardState}) {
 export function InterviewCards({article, headingId}: {article: ArticleIndex; headingId: string}) {
   const index = useLearningIndex();
   const learner = useLearner();
+  const features = useLearnerFeatures();
   const section = article.sections.find((item) => item.id === headingId);
   const cards = article.cardIds.map((id) => index.cards[id]);
   return (
     <>
-      <h2 id={headingId} className={clsx('anchor', styles.interviewHeading, 'c101-interview')}>
+      <Heading as="h2" id={headingId} className={clsx(styles.interviewHeading, 'c101-interview')}>
         {section?.number ? `${section.number} · ` : ''}面试题卡片
-      </h2>
+      </Heading>
       <div className={clsx(styles.interview, 'c101-interview-cards')}>
         <div className={styles.interviewHead}>
           <div className={styles.interviewIntro}>
@@ -145,15 +172,17 @@ export function InterviewCards({article, headingId}: {article: ArticleIndex; hea
                   考察 {card.checkpointCount} 点
                   {card.refs.length > 0 && ` · 相关 ${card.refs.map((ref) => sectionLabel(ref.number)).filter(Boolean).join(' ')}`}
                 </span>
-                <StatusDot state={learner.cards[card.id]} />
+                {features && <StatusDot state={learner.cards[card.id]} />}
               </div>
             </Link>
           ))}
         </div>
-        <div className={styles.interviewNote}>
-          <span className={clsx(styles.dot, styles.dotGreen)} />
-          未标记的卡读完后明天进入复习；已标记的按状态安排
-        </div>
+        {features && (
+          <div className={styles.interviewNote}>
+            <span className={clsx(styles.dot, styles.dotGreen)} />
+            未标记的卡读完后明天进入复习；已标记的按状态安排
+          </div>
+        )}
       </div>
     </>
   );

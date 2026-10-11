@@ -5,6 +5,12 @@ import type * as Preset from "@docusaurus/preset-classic";
 const enableAnalytics =
   process.env.NODE_ENV === "production" && process.env.LOCAL_PREVIEW !== "true";
 
+// Accounts, subscriptions, spaced review and progress tracking are built but
+// held back until there are real users. LEARNER_FEATURES=true (or the mock
+// preview flag) turns them on for local work.
+const learnerFeatures =
+  process.env.LEARNER_FEATURES === "true" || process.env.LEARNER_MOCKS === "true";
+
 const stylePreviewPlugins: NonNullable<Config["plugins"]> =
   process.env.STYLE_PREVIEW === "true"
     ? [
@@ -42,6 +48,7 @@ const config: Config = {
   customFields: {
     // Local previews only: enables ?mock=<preset> sample learner states.
     learnerMocks: process.env.LEARNER_MOCKS === "true",
+    learnerFeatures,
   },
 
   // Even if you don't use internationalization, you can use this field to set
@@ -108,16 +115,20 @@ const config: Config = {
         },
         {
           to: "/questions",
-          activeBaseRegex: "^/(questions|exam|review|weak)",
+          activeBaseRegex: learnerFeatures ? "^/(questions|exam|review|weak)" : "^/(questions|review)",
           position: "left",
           label: "题库",
         },
-        {
-          to: "/progress",
-          activeBaseRegex: "^/(progress|cards)",
-          position: "left",
-          label: "我的进度",
-        },
+        ...(learnerFeatures
+          ? [
+              {
+                to: "/progress",
+                activeBaseRegex: "^/(progress|cards)",
+                position: "left" as const,
+                label: "我的进度",
+              },
+            ]
+          : []),
         {
           type: "dropdown",
           label: "更多",
@@ -132,7 +143,7 @@ const config: Config = {
             { href: "https://github.com/loveorange/coding101", label: "GitHub" },
           ],
         },
-        { type: "custom-account", position: "right" },
+        ...(learnerFeatures ? [{ type: "custom-account", position: "right" as const }] : []),
       ],
     },
     footer: {
@@ -191,7 +202,7 @@ const config: Config = {
     },
   } satisfies Preset.ThemeConfig,
   plugins: [
-    "./plugins/learning-content/index.ts",
+    ["./plugins/learning-content/index.ts", { learnerFeatures }],
     ...stylePreviewPlugins,
     // [
     //   "@docusaurus/plugin-ideal-image",

@@ -447,3 +447,42 @@
     align-items: flex-start;
   }
 }
+
+/* Knowledge-tree breadcrumb */
+.crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+}
+
+.crumbs a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.crumbs a:hover {
+  color: var(--c-green);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.crumbSep {
+  color: var(--c-mute3);
+}
+
+.sidebarCrumbs {
+  color: var(--c-mute2);
+  padding: 0 12px 10px;
+}
+
+.metaCrumbs {
+  color: inherit;
+  font-size: inherit;
+}
+
+.metaCrumbs a:hover {
+  color: var(--c-green);
+}

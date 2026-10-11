@@ -12,6 +12,7 @@ import {
   shuffle,
   useLearningIndex,
 } from '../content';
+import {TreeBreadcrumb} from '../article/ArticleParts';
 import {CardBody, CardMeta, SourceLink} from '../review/CardFace';
 import {RatingBar, Toast} from '../review/RatingBar';
 import {SessionRunner} from '../review/SessionRunner';
@@ -20,16 +21,19 @@ import styles from '../review/review.module.css';
 import {accessOf, learnerActions, nextInterval, toDay, today, useLearner} from '../store';
 import type {CardDetail, CardState, Rating} from '../types';
 import {formatInterval, Kbd} from '../ui';
+import {useLearnerFeatures} from '../features';
 import {ClientPage} from '../ui/ClientOnly';
 
 type Props = {details: Record<string, CardDetail>};
 
 export default function Review({details}: Props): JSX.Element {
-  return <ClientPage title="复习">{() => <ReviewRouter details={details} />}</ClientPage>;
+  return <ClientPage title="翻卡">{() => <ReviewRouter details={details} />}</ClientPage>;
 }
 
 function ReviewRouter({details}: Props) {
   const params = new URLSearchParams(useLocation().search);
+  const features = useLearnerFeatures();
+  if (!features) return <ArticleReview details={details} articleId={params.get('article')} cardId={params.get('card')} />;
   const sessionId = params.get('session');
   if (sessionId) return <SessionRunner sessionId={sessionId} details={details} />;
   const mode = params.get('mode');
@@ -106,9 +110,13 @@ function ArticleReview({details, articleId, cardId}: {details: Record<string, Ca
   const learner = useLearner();
   const history = useHistory();
   const access = accessOf(learner);
+  const features = useLearnerFeatures();
   const [revealed, setRevealed] = useState(false);
   const [upgradeOpen, setUpgradeOpen] = useState(false);
   const [toast, setToast] = useState<{message: string; undo: () => void} | undefined>();
+  // State before this visit's rating, per card: the buttons keep showing the
+  // intervals that were offered, and re-rating replaces the rating.
+  const [beforeRating, setBeforeRating] = useState<Record<string, CardState | undefined>>({});
 
   const article =
     (articleId && index.articles[articleId]) || (cardId && details[cardId] && index.articles[details[cardId].articleId]) || undefined;
@@ -130,6 +138,7 @@ function ArticleReview({details, articleId, cardId}: {details: Record<string, Ca
   const backHref = article ? `${article.permalink}#${article.interviewAnchor ?? ''}` : '/topics';
   const state: CardState | undefined = card ? learner.cards[card.id] : undefined;
   const ratedToday = state && state.reps > 0 && toDay(new Date(state.reviewedAt)) === today() ? state.rating : undefined;
+  const baseState = card && card.id in beforeRating ? beforeRating[card.id] : state;
 
   const rate = useCallback(
     (rating: Rating) => {
@@ -138,13 +147,24 @@ function ArticleReview({details, articleId, cardId}: {details: Record<string, Ca
         setUpgradeOpen(true);
         return;
       }
-      const previous = learnerActions.rate(card.id, rating);
+      const rerating = card.id in beforeRating;
+      const base = rerating ? beforeRating[card.id] : learner.cards[card.id];
+      if (rerating) learnerActions.restore(card.id, base);
+      learnerActions.rate(card.id, rating);
+      setBeforeRating((current) => ({...current, [card.id]: base}));
       setToast({
-        message: `已记为「${RATING_LABELS[rating]}」· ${formatInterval(nextInterval(rating, previous))}再出现`,
-        undo: () => learnerActions.restore(card.id, previous),
+        message: `已记为「${RATING_LABELS[rating]}」· ${formatInterval(nextInterval(rating, base))}再出现`,
+        undo: () => {
+          learnerActions.restore(card.id, base);
+          setBeforeRating((current) => {
+            const nextState = {...current};
+            delete nextState[card.id];
+            return nextState;
+          });
+        },
       });
     },
-    [access, card],
+    [access, beforeRating, card, learner.cards],
   );
 
   useEffect(() => {
@@ -162,11 +182,11 @@ function ArticleReview({details, articleId, cardId}: {details: Record<string, Ca
         event.preventDefault();
         setRevealed(true);
       } else if (event.key === 'Escape') history.push(backHref);
-      else if (revealed && ['1', '2', '3'].includes(event.key)) rate((['again', 'hard', 'good'] as Rating[])[Number(event.key) - 1]);
+      else if (features && revealed && ['1', '2', '3'].includes(event.key)) rate((['again', 'hard', 'good'] as Rating[])[Number(event.key) - 1]);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [backHref, go, history, next, prev, rate, revealed, upgradeOpen]);
+  }, [backHref, features, go, history, next, prev, rate, revealed, upgradeOpen]);
 
   if (!article || !card) {
     return (
@@ -185,7 +205,7 @@ function ArticleReview({details, articleId, cardId}: {details: Record<string, Ca
   return (
     <main className={styles.split}>
       <aside className={styles.tree}>
-        <span className={styles.treeLabel}>{module?.label}</span>
+        <TreeBreadcrumb article={article} className={styles.treeLabel} />
         {module?.articleIds.map((id) => {
           const item = index.articles[id];
           const current = id === article.id;
@@ -193,9 +213,9 @@ function ArticleReview({details, articleId, cardId}: {details: Record<string, Ca
             <div key={id}>
               <Link
                 to={item.cardIds.length ? `/review?article=${encodeURIComponent(id)}` : item.permalink}
-                className={clsx(styles.treeArticle, current && styles.treeArticleCurrent, learner.reading[id]?.done && !current && styles.treeArticleRead)}>
+                className={clsx(styles.treeArticle, current && styles.treeArticleCurrent, features && learner.reading[id]?.done && !current && styles.treeArticleRead)}>
                 <span>{item.title}</span>
-                {learner.reading[id]?.done && <span className={styles.treeCount}>✓</span>}
+                {features && learner.reading[id]?.done && <span className={styles.treeCount}>✓</span>}
               </Link>
               {current && (
                 <div className={styles.treeCards}>
@@ -207,7 +227,7 @@ function ArticleReview({details, articleId, cardId}: {details: Record<string, Ca
                         type="button"
                         className={clsx(styles.treeCard, item.id === card.id && styles.treeCardCurrent)}
                         onClick={() => go(item)}>
-                        <span className={clsx(styles.stateDot, itemState?.reps ? styles[`stateDot_${itemState.rating}`] : styles.stateDotNone)} />
+                        <span className={clsx(styles.stateDot, features && itemState?.reps ? styles[`stateDot_${itemState.rating}`] : styles.stateDotNone)} />
                         <span>{item.question}</span>
                       </button>
                     );
@@ -220,7 +240,7 @@ function ArticleReview({details, articleId, cardId}: {details: Record<string, Ca
         <div className={styles.treeFoot}>
           <SourceLink card={card} />
           <span>
-            ← → 切换　空格 翻面{access === 'active' ? '　1 2 3 标记' : ''}
+            ← → 切换　空格 翻面{features && access === 'active' ? '　1 2 3 标记' : ''}
           </span>
         </div>
       </aside>
@@ -250,8 +270,8 @@ function ArticleReview({details, articleId, cardId}: {details: Record<string, Ca
             <span className={styles.navTitle}>{prev?.label ?? '—'}</span>
           </button>
           <div className={styles.footerCenter}>
-            {access === 'active' ? (
-              <RatingBar previous={state} selected={ratedToday} disabled={!revealed} onRate={rate} />
+            {!features ? null : access === 'active' ? (
+              <RatingBar previous={baseState} selected={ratedToday} disabled={!revealed} onRate={rate} />
             ) : (
               <span className={styles.footerCta}>
                 标记状态、自动安排复习

@@ -23,6 +23,11 @@ const TREE_SIDEBARS = ['basicKnowledgeSidebar', 'systemDesignSidebar'];
 const ROUTES: {path: string; component: string}[] = [
   {path: '/topics', component: '@site/src/learning/pages/Topics'},
   {path: '/review', component: '@site/src/learning/pages/Review'},
+  {path: '/questions', component: '@site/src/learning/pages/Questions'},
+];
+
+/** Routes that need a learner account; registered only with learnerFeatures. */
+const LEARNER_ROUTES: {path: string; component: string}[] = [
   {path: '/weak', component: '@site/src/learning/pages/Weak'},
   {path: '/pricing', component: '@site/src/learning/pages/Pricing'},
   {path: '/progress', component: '@site/src/learning/pages/Progress'},
@@ -30,7 +35,6 @@ const ROUTES: {path: string; component: string}[] = [
   {path: '/account/redeem', component: '@site/src/learning/pages/Redeem'},
   {path: '/account/billing', component: '@site/src/learning/pages/Billing'},
   {path: '/cards', component: '@site/src/learning/pages/Cards'},
-  {path: '/questions', component: '@site/src/learning/pages/Questions'},
   {path: '/exam', component: '@site/src/learning/pages/Exam'},
   {path: '/exam/report', component: '@site/src/learning/pages/Report'},
 ];
@@ -127,7 +131,7 @@ function roadmapRoles(): {roles: Role[]; byPermalink: Map<string, {priority: Pri
   return {roles: roadmaps.map(({data, label, href}) => ({id: data.id, label, href})), byPermalink};
 }
 
-export default function learningContentPlugin(context: LoadContext): Plugin {
+export default function learningContentPlugin(context: LoadContext, options: {learnerFeatures?: boolean} = {}): Plugin {
   return {
     name: 'learning-content',
 
@@ -215,7 +219,7 @@ export default function learningContentPlugin(context: LoadContext): Plugin {
       actions.setGlobalData(compactIndex({domains, articles, cards, roles}));
 
       const detailsPath = await actions.createData('card-details.json', JSON.stringify(details));
-      for (const route of ROUTES) {
+      for (const route of options.learnerFeatures ? [...ROUTES, ...LEARNER_ROUTES] : ROUTES) {
         actions.addRoute({path: route.path, component: route.component, exact: true, modules: {details: detailsPath}});
       }
     },

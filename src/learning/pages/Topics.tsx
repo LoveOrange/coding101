@@ -6,6 +6,7 @@ import {useHistory, useLocation} from '@docusaurus/router';
 import {cardsInSection, outlineSections, PRIORITY_LABELS, sectionReadStatus, useLearningIndex} from '../content';
 import {learnerActions, useLearner} from '../store';
 import type {ArticleIndex, Domain, LearnerState, Priority, Topic} from '../types';
+import {useLearnerFeatures} from '../features';
 import {ClientPage} from '../ui/ClientOnly';
 import styles from './Topics.module.css';
 
@@ -50,7 +51,10 @@ export default function Topics(): JSX.Element {
 
 function TopicsPage() {
   const index = useLearningIndex();
-  const learner = useLearner();
+  const features = useLearnerFeatures();
+  const storedLearner = useLearner();
+  // Without learner features, reading progress is not shown anywhere.
+  const learner = features ? storedLearner : {...storedLearner, reading: {}};
   const location = useLocation();
   const history = useHistory();
   const roleId = learner.preferences.roleId;
@@ -141,7 +145,9 @@ function TopicsPage() {
                     setTopicId(undefined);
                   }}>
                   <span>{item.label}</span>
-                  <span className={styles.domainCount}>{optional ? '选修' : `${done} / ${list.length}`}</span>
+                  <span className={styles.domainCount}>
+                    {optional ? '选修' : features ? `${done} / ${list.length}` : `${list.length} 个主题`}
+                  </span>
                 </button>
               );
             })}
@@ -170,9 +176,9 @@ function TopicsPage() {
           </nav>
 
           {topic && articles.length > 1 && (
-            <TopicArticles topic={topic} articles={articles} meta={meta} inRole={inRole} learner={learner} />
+            <TopicArticles topic={topic} articles={articles} meta={meta} inRole={inRole} learner={learner} features={features} />
           )}
-          {topic && articles.length === 1 && <ArticleSections article={articles[0]} meta={meta} learner={learner} />}
+          {topic && articles.length === 1 && <ArticleSections article={articles[0]} meta={meta} learner={learner} features={features} />}
         </div>
     </main>
   );
@@ -185,12 +191,14 @@ function TopicArticles({
   meta,
   inRole,
   learner,
+  features,
 }: {
   topic: Topic;
   articles: ArticleIndex[];
   meta: string;
   inRole: (article: ArticleIndex) => boolean;
   learner: LearnerState;
+  features: boolean;
 }) {
   const minutes = articles.reduce((sum, article) => sum + article.minutes, 0);
   const cards = articles.reduce((sum, article) => sum + article.cardIds.length, 0);
@@ -244,7 +252,7 @@ function TopicArticles({
           <Link className={styles.primary} to={next.permalink}>
             {started ? `继续读第 ${nextIndex} 篇 →` : '从第 1 篇开始 →'}
           </Link>
-          <span className={styles.actionsHint}>读过的文章，面试题会自动进入复习</span>
+          {features && <span className={styles.actionsHint}>读过的文章，面试题会自动进入复习</span>}
         </div>
       )}
     </section>
@@ -252,7 +260,7 @@ function TopicArticles({
 }
 
 /** Right column for a single-article topic: its sections. */
-function ArticleSections({article, meta, learner}: {article: ArticleIndex; meta: string; learner: LearnerState}) {
+function ArticleSections({article, meta, learner, features}: {article: ArticleIndex; meta: string; learner: LearnerState; features: boolean}) {
   const index = useLearningIndex();
   const sections = outlineSections(article);
   const reading = learner.reading[article.id];
@@ -289,7 +297,7 @@ function ArticleSections({article, meta, learner}: {article: ArticleIndex; meta:
                 {section.title}
               </Link>
               <span className={clsx(styles.sectionStatus, status === 'reading' && styles.green)}>
-                {status === 'read' ? '已读' : status === 'reading' ? '阅读中' : '—'}
+                {status === 'read' ? '已读' : status === 'reading' ? '阅读中' : ''}
               </span>
               <span className={clsx(styles.sectionCards, status === 'read' && count > 0 && styles.green)}>{count ? `${count} 题` : '—'}</span>
             </li>
@@ -301,7 +309,7 @@ function ArticleSections({article, meta, learner}: {article: ArticleIndex; meta:
         <Link className={styles.primary} to={action.to}>
           {action.label}
         </Link>
-        <span className={styles.actionsHint}>读过的章节，面试题会自动进入复习</span>
+        {features && <span className={styles.actionsHint}>读过的章节，面试题会自动进入复习</span>}
       </div>
     </section>
   );
