@@ -43,7 +43,7 @@ export default function Topics(): JSX.Element {
   // Selection comes from the URL and reading progress from localStorage,
   // so render in the browser only to avoid hydration mismatches.
   return (
-    <ClientPage title="知识树" description="按目标岗位查看领域、主题和文章，并从上次读到的位置继续。" noFooter={false}>
+    <ClientPage title="知识树" description="按目标岗位查看领域、主题和文章，并从上次读到的位置继续。">
       {() => <TopicsPage />}
     </ClientPage>
   );

@@ -150,37 +150,28 @@ const config: Config = {
       style: "light",
       links: [
         {
-          title: "开始准备",
+          title: "学习",
           items: [
-            {
-              label: "使用指南",
-              to: "/docs/intro",
-            },
-            {
-              label: "岗位面试路线",
-              to: "/interview-roadmaps/",
-            },
-            {
-              label: "Java 后端路线",
-              to: "/java-interview-roadmap/",
-            },
+            { label: "主题", to: "/topics" },
+            { label: "题库", to: "/questions" },
+            { label: "岗位路线", to: "/interview-roadmaps/" },
+            { label: "Java 后端路线", to: "/java-interview-roadmap/" },
           ],
         },
         {
-          title: "复习资料",
+          title: "资料",
           items: [
-            { label: "基础知识", to: "/docs/basic-knowledge/" },
-            { label: "算法练习", to: "/docs/basic-knowledge/algorithms/" },
-            { label: "系统设计", to: "/docs/system-design/" },
+            { label: "2027 校招季", to: "/docs/tags/campus-2027" },
+            { label: "面试准备", to: "/docs/tags/interview-preparation" },
+            { label: "工具与框架", to: "/docs/tools-and-frameworks/git/" },
+            { label: "使用指南", to: "/docs/intro" },
           ],
         },
         {
           title: "项目",
           items: [
-            {
-              label: "GitHub",
-              href: "https://github.com/loveorange/coding101",
-            },
+            { label: "GitHub", href: "https://github.com/loveorange/coding101" },
+            { label: "Blog", to: "/blog" },
           ],
         },
       ],
