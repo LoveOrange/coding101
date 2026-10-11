@@ -1,122 +1,166 @@
 import Link from '@docusaurus/Link';
 import Layout from '@theme/Layout';
-import IconArrow from '@theme/Icon/Arrow';
-import HomepageFeatures from '@site/src/components/HomepageFeatures';
-import {javaInterviewRoadmap} from '@site/src/data/interviewRoadmaps/java';
 
 import styles from './index.module.css';
 
-const firstRoundTopics = javaInterviewRoadmap.phases
-  .flatMap((phase) => phase.topics)
-  .filter((topic) => topic.priority === 'must');
-
-const subjects = [
+const steps = [
   {
-    title: '基础知识',
-    description: '编程语言、数据结构、网络、数据库与缓存。',
-    href: '/docs/basic-knowledge/',
-    label: 'FOUNDATIONS',
+    title: '读文章',
+    description: '按领域和主题组织，全文阅读，无需登录。',
   },
   {
-    title: '算法与练习',
-    description: '理解常见数据结构与算法，再通过题目练习。',
-    href: '/docs/basic-knowledge/algorithms/',
-    label: 'ALGORITHMS',
+    title: '练闪卡',
+    description: '每节末尾的面试题，答完标「没想起来 / 模糊 / 记得」，按间隔生成今日复习队列。',
   },
   {
-    title: '系统设计',
-    description: '围绕需求、约束和代价，练习系统设计分析。',
-    href: '/docs/system-design/',
-    label: 'SYSTEM DESIGN',
-  },
-  {
-    title: '面试准备',
-    description: '查看岗位要求，准备简历、项目经历与面试表达。',
-    href: '/docs/interview/',
-    label: 'INTERVIEW PREP',
+    title: '回到原文',
+    description: '汇总薄弱点，一键跳回对应段落，补读后重测。',
   },
 ];
 
-function HomepageHeader() {
-  return (
-    <header className={styles.hero}>
-      <div className={styles.heroInner}>
-        <div className={styles.heroCopy}>
-          <p className={styles.eyebrow}>CODING 101 · 技术求职准备</p>
-          <h1 className={styles.title}>
-            技术面试准备，
-            <span>从核心知识开始。</span>
-          </h1>
-          <p className={styles.description}>
-            面向学生、转岗者和在职求职者，按目标岗位确定复习范围，掌握核心知识，再用面试题检验理解。
-          </p>
-          <div className={styles.actions}>
-            <Link className="button button--primary button--lg" to="/java-interview-roadmap/">
-              开始 Java 第一轮复习
-              <IconArrow viewBox="0 0 20 20" className={styles.arrow} />
-            </Link>
-            <Link className={styles.secondaryLink} to="/interview-roadmaps/">
-              查看岗位路线
-            </Link>
-          </div>
-          <p className={styles.heroNote}>
-            <Link to="/docs/interview/campus-2027/">2027 校招岗位与投递</Link> · <Link to="/docs/interview/resume">简历准备</Link> · <Link to="/docs/intro">使用指南</Link>
-          </p>
-        </div>
+// 前端暂无文章，先不加链接。
+const domains: {label: string; href?: string}[] = [
+  {label: '前端'},
+  {label: '后端', href: '/docs/basic-knowledge/java/'},
+  {label: '算法', href: '/docs/basic-knowledge/algorithms/'},
+  {label: '系统设计', href: '/docs/system-design/'},
+  {label: '数据库', href: '/docs/basic-knowledge/database/'},
+  {label: '网络', href: '/docs/basic-knowledge/network/'},
+];
 
-        <section className={styles.roadmap} aria-labelledby="featured-roadmap-title">
-          <div className={styles.roadmapTopline}>
-            <span>从这里开始</span>
-            <span className={styles.roundLabel}>第一轮 · 必会</span>
-          </div>
-          <h2 id="featured-roadmap-title">
-            {javaInterviewRoadmap.title}
-          </h2>
-          <p className={styles.roadmapDescription}>
-            已有 Java 基础？先按顺序完成核心复习。
-          </p>
-          <ol className={styles.topicList}>
-            {firstRoundTopics.slice(0, 3).map((topic, index) => (
-              <li key={topic.id}>
-                <Link to={`/java-interview-roadmap/#${topic.id}`}>
-                  <span className={styles.topicNumber} aria-hidden="true">
-                    {String(index + 1).padStart(2, '0')}
-                  </span>
-                  <span className={styles.topicTitle}>{topic.title}</span>
-                  <IconArrow viewBox="0 0 20 20" className={styles.arrow} />
-                </Link>
-              </li>
-            ))}
-          </ol>
-          <Link className={styles.roadmapFooter} to="/java-interview-roadmap/">
-            <span>查看全部 {firstRoundTopics.length} 项必会主题</span>
-            <IconArrow viewBox="0 0 20 20" className={styles.arrow} />
+const ratings = ['没想起来', '模糊', '记得'];
+
+function Intro() {
+  return (
+    <section className={styles.intro}>
+      <div className={styles.introCopy}>
+        <p className={styles.eyebrow}>技术面试复习 · 中文 / EN</p>
+        <h1 className={styles.title}>
+          读懂一遍，
+          <br />
+          再练到记住。
+        </h1>
+        <p className={styles.lead}>
+          Coding101 把前端、后端、算法、系统设计、数据库、网络六个领域整理成文章，每节末尾配面试闪卡。读过的内容进入复习队列，答不上来的题会带你回到原文段落。
+        </p>
+        <div className={styles.actions}>
+          <a className={styles.primaryButton} href="#choose">
+            <span>开始复习</span>
+            <span aria-hidden="true">↓</span>
+          </a>
+          <Link className={styles.secondaryButton} to="/docs/basic-knowledge/network/tls">
+            先读一篇文章
           </Link>
-        </section>
+        </div>
+        <p className={styles.note}>文章全文免费阅读，无需登录。注册即 7 天完整 Pro，不绑卡。</p>
       </div>
-    </header>
+
+      <div className={styles.cardStack} aria-hidden="true">
+        <div className={styles.cardShadow} />
+        <div className={styles.card}>
+          <div className={styles.cardMeta}>
+            <span>网络 · HTTPS</span>
+            <span>正面</span>
+          </div>
+          <p className={styles.cardQuestion}>HTTPS 握手时，客户端如何确认服务器的身份？</p>
+          <div className={styles.ratings}>
+            {ratings.map((rating, index) => (
+              <span
+                key={rating}
+                className={index === ratings.length - 1 ? styles.ratingActive : styles.rating}>
+                {rating}
+              </span>
+            ))}
+          </div>
+        </div>
+      </div>
+    </section>
   );
 }
 
-function SubjectDirectory() {
+function HowItWorks() {
   return (
-    <section className={styles.directory} aria-labelledby="subjects-title">
+    <section className={styles.how} aria-labelledby="how-title">
       <div className={styles.sectionHeading}>
-        <div>
-          <p className={styles.eyebrow}>按主题查阅</p>
-          <h2 id="subjects-title">补齐当前需要的知识</h2>
-        </div>
-        <p>带着问题阅读，沿着相关内容继续深入。</p>
+        <p className={styles.eyebrow}>怎么用</p>
+        <h2 id="how-title" className={styles.howTitle}>
+          一套内容，三步闭环
+        </h2>
       </div>
-      <div className={styles.subjectGrid}>
-        {subjects.map((subject) => (
-          <Link key={subject.href} className={styles.subject} to={subject.href}>
-            <span className={styles.subjectLabel}>{subject.label}</span>
-            <h3>{subject.title}</h3>
-            <p>{subject.description}</p>
-            <IconArrow viewBox="0 0 20 20" className={styles.arrow} />
-          </Link>
+      <ol className={styles.steps}>
+        {steps.map((step, index) => (
+          <li key={step.title} className={styles.step}>
+            <span className={styles.stepNumber}>{String(index + 1).padStart(2, '0')}</span>
+            <h3 className={styles.stepTitle}>{step.title}</h3>
+            <p className={styles.stepText}>{step.description}</p>
+          </li>
         ))}
+      </ol>
+    </section>
+  );
+}
+
+function Choose() {
+  return (
+    <section id="choose" className={styles.choose} aria-labelledby="choose-title">
+      <div className={styles.chooseHeading}>
+        <h2 id="choose-title" className={styles.chooseTitle}>
+          今天，你想怎么复习？
+        </h2>
+        <p className={styles.chooseLead}>两种方式用的是同一套文章和闪卡，随时可以切换。</p>
+      </div>
+
+      <div className={styles.routes}>
+        <div className={styles.routeTopic}>
+          <div className={styles.routeHead}>
+            <div className={styles.routeMeta}>
+              <span>路线 A · 先学再测</span>
+              <span className={styles.badgeFree}>阅读免费</span>
+            </div>
+            <h3 className={styles.routeTitle}>按主题学习</h3>
+            <p className={styles.routeTextInverse}>按领域读文章，每节末尾附面试题，读过的内容会进入复习。</p>
+          </div>
+          <div className={styles.routeFoot}>
+            <ul className={styles.chips}>
+              {domains.map((domain) => (
+                <li key={domain.label}>
+                  {domain.href ? (
+                    <Link className={styles.chip} to={domain.href}>
+                      {domain.label}
+                    </Link>
+                  ) : (
+                    <span className={styles.chip}>{domain.label}</span>
+                  )}
+                </li>
+              ))}
+            </ul>
+            <Link className={styles.routeButtonTopic} to="/docs/basic-knowledge/">
+              <span>选一个领域</span>
+              <span aria-hidden="true">→</span>
+            </Link>
+          </div>
+        </div>
+
+        <div className={styles.routeQuestion}>
+          <div className={styles.routeHead}>
+            <div className={`${styles.routeMeta} ${styles.routeMetaAccent}`}>
+              <span>路线 B · 先测再补</span>
+              <span className={styles.badgePro}>Pro</span>
+            </div>
+            <h3 className={styles.routeTitle}>从问题出发</h3>
+            <p className={styles.routeText}>先答题，哪里答不上来，再去读对应的文章。</p>
+          </div>
+          <div className={styles.routeFoot}>
+            <Link className={styles.search} to="/docs/interview/questions">
+              <span>搜索问题，例如「HTTPS 握手过程」</span>
+              <kbd className={styles.kbd}>/</kbd>
+            </Link>
+            <Link className={styles.routeButtonQuestion} to="/docs/interview/questions">
+              <span>随机来 10 道题</span>
+              <span aria-hidden="true">→</span>
+            </Link>
+          </div>
+        </div>
       </div>
     </section>
   );
@@ -125,12 +169,12 @@ function SubjectDirectory() {
 export default function Home(): JSX.Element {
   return (
     <Layout
-      title="技术求职准备"
-      description="Coding 101 按照目标岗位整理技术面试的复习范围、优先级、核心知识和自测问题。">
+      title="技术面试复习"
+      description="Coding101 把前端、后端、算法、系统设计、数据库、网络整理成文章，每节末尾配面试闪卡。">
       <main className={styles.home}>
-        <HomepageHeader />
-        <HomepageFeatures />
-        <SubjectDirectory />
+        <Intro />
+        <HowItWorks />
+        <Choose />
       </main>
     </Layout>
   );
