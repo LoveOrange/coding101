@@ -23,6 +23,7 @@ const SPLIT_THRESHOLD = 30;
 /** Routes served by the learning pages; each receives the card details module. */
 const ROUTES: {path: string; component: string}[] = [
   {path: '/topics', component: '@site/src/learning/pages/Topics'},
+  {path: '/review', component: '@site/src/learning/pages/Review'},
 ];
 
 type SidebarItem =

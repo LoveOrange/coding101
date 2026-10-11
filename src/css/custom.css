@@ -46,3 +46,40 @@ h1,h2,h3{font-family:'Noto Serif SC',serif;font-weight:900}
 .campus-resource-table{max-width:100%;overflow-x:auto;margin-bottom:1rem}
 .campus-resource-table table{display:table;width:100%;min-width:36rem;margin-bottom:0}
 .campus-resource-table th{white-space:nowrap}
+
+/* ---- Docs: article typography (02) ---- */
+.theme-doc-markdown{font-size:17px;line-height:1.9;color:var(--c-inv2)}
+.theme-doc-markdown > header h1,.theme-doc-markdown h1{font-weight:700;font-size:clamp(2rem,3vw,38px);line-height:1.35;margin-bottom:20px}
+.theme-doc-markdown h2{font-weight:700;font-size:26px;line-height:1.4;margin-top:48px;margin-bottom:20px}
+.theme-doc-markdown h3{font-family:'Noto Sans SC',sans-serif;font-weight:700;font-size:18px;margin-top:32px}
+.theme-doc-markdown code{background:var(--c-fill);border:none;border-radius:4px;padding:1px 5px;font-size:.9em}
+.theme-doc-markdown pre code{background:none;border-radius:0;font-size:inherit}
+.theme-doc-markdown mark{background:var(--c-accent-t2);color:inherit;padding:0 2px}
+.theme-doc-markdown .theme-code-block{--prism-background-color:var(--c-card);background:var(--c-card);border:none;border-radius:10px;box-shadow:none}
+.theme-doc-markdown .theme-code-block pre{background:var(--c-card)!important;font-size:13.5px;line-height:1.8}
+.theme-doc-markdown table{display:table;width:100%;border-collapse:collapse;background:var(--c-card);border-radius:10px;overflow:hidden;font-size:15px;line-height:1.7}
+.theme-doc-markdown thead tr{background:var(--c-fill);border:none}
+.theme-doc-markdown th,.theme-doc-markdown td{border:none;border-top:1px solid var(--c-border);padding:12px 16px;text-align:left}
+.theme-doc-markdown thead th{border-top:none}
+.theme-doc-markdown tr:nth-child(2n){background:transparent}
+.theme-doc-markdown details{background:var(--c-card);border:1px solid var(--c-border);border-radius:10px;--docusaurus-details-decoration-color:var(--c-border3)}
+.theme-admonition{--ifm-alert-background-color:var(--c-card);--ifm-alert-border-color:var(--c-border3);--ifm-alert-foreground-color:var(--c-body);border-radius:10px;font-size:15px;line-height:1.8}
+.theme-admonition-tip,.theme-admonition-info{--ifm-alert-border-color:var(--c-green)}
+.theme-admonition-warning,.theme-admonition-danger{--ifm-alert-border-color:var(--c-accent);--ifm-alert-background-color:var(--c-accent-t)}
+
+/* Interview section: the card grid replaces the question list on screen. */
+.theme-doc-markdown h2.c101-interview ~ :not(.c101-interview-cards,.theme-admonition,h2,h2.c101-interview ~ h2 ~ *){display:none}
+
+/* ---- Docs: sidebar and TOC ---- */
+.theme-doc-sidebar-container{border-right:1px solid var(--c-border)!important}
+.menu__link{font-size:14px;color:var(--c-body);border-radius:8px}
+.menu__link--active:not(.menu__link--sublist){background:var(--c-card);color:var(--c-ink);font-weight:700}
+.c101-toc{padding-top:40px}
+.c101-toc__label{display:block;font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--c-mute2);padding-bottom:10px}
+.c101-toc .table-of-contents{border-left:none;padding-left:0;font-size:13px;line-height:1.5}
+.c101-toc .table-of-contents ul{padding-left:14px}
+.c101-toc .table-of-contents__link{color:var(--c-body)}
+.c101-toc .table-of-contents__link--active{color:var(--c-ink);font-weight:700}
+.c101-toc__row{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.c101-card-mark{width:9px;height:12px;border:1.5px solid var(--c-accent);border-radius:2px;box-sizing:border-box;flex:none}
+.c101-article .theme-doc-toc-desktop{top:var(--ifm-navbar-height)}
