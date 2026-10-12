@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type {LoadContext, Plugin} from '@docusaurus/types';
+import {normalizeUrl} from '@docusaurus/utils';
 import type {DocMetadata, LoadedContent} from '@docusaurus/plugin-content-docs';
 
 import {javaInterviewRoadmap} from '../../src/data/interviewRoadmaps/java';
@@ -172,7 +173,7 @@ export default function learningContentPlugin(context: LoadContext, options: {le
 
       const detailsPath = await actions.createData('card-details.json', JSON.stringify(details));
       for (const route of options.learnerFeatures ? [...ROUTES, ...LEARNER_ROUTES] : ROUTES) {
-        actions.addRoute({path: route.path, component: route.component, exact: true, modules: {details: detailsPath}});
+        actions.addRoute({path: normalizeUrl([context.baseUrl, route.path]), component: route.component, exact: true, modules: {details: detailsPath}});
       }
     },
   };
