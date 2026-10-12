@@ -70,10 +70,11 @@ function TopicsPage() {
   const topicInRole = (topic: Topic) => topicArticles(topic).some(inRole);
   const roleTopics = (domain: Domain) => domain.topics.filter(topicInRole);
 
-  // Older links may point at a topic id as the domain.
+  // Older links may point at a topic id or a docs directory as the domain.
   const domain =
     index.domains.find((item) => item.id === domainId) ??
     index.domains.find((item) => item.topics.some((topic) => topic.id === domainId)) ??
+    (domainId ? index.domains.find((item) => item.articleIds.some((id) => id.startsWith(`${domainId}/`))) : undefined) ??
     index.domains.find((item) => roleTopics(item).length > 0) ??
     index.domains[0];
 

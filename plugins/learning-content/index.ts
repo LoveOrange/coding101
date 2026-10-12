@@ -4,6 +4,7 @@ import type {LoadContext, Plugin} from '@docusaurus/types';
 import type {DocMetadata, LoadedContent} from '@docusaurus/plugin-content-docs';
 
 import {javaInterviewRoadmap} from '../../src/data/interviewRoadmaps/java';
+import {knowledgeTree} from '../../src/data/knowledgeTree';
 import type {
   ArticleIndex,
   CardDetail,
@@ -15,9 +16,6 @@ import type {
 } from '../../src/learning/types';
 import {compactIndex} from '../../src/learning/compact';
 import {parseDoc} from './parse';
-
-/** Sidebars that make up the knowledge tree, in display order. */
-const TREE_SIDEBARS = ['basicKnowledgeSidebar', 'systemDesignSidebar'];
 
 /** Routes served by the learning pages; each receives the card details module. */
 const ROUTES: {path: string; component: string}[] = [
@@ -39,73 +37,41 @@ const LEARNER_ROUTES: {path: string; component: string}[] = [
   {path: '/exam/report', component: '@site/src/learning/pages/Report'},
 ];
 
-type SidebarItem =
-  | {type: 'doc'; id: string}
-  | {type: 'category'; label: string; items: SidebarItem[]; link?: {type: string; id?: string}}
-  | {type: string};
-
 const PRIORITY_RANK: Record<Priority, number> = {must: 3, common: 2, optional: 1};
 
 function normalizePath(href: string): string {
   return href.split('#')[0].replace(/\/$/, '');
 }
 
-function collectDocIds(items: SidebarItem[], skip: Set<string>): string[] {
-  const ids: string[] = [];
-  for (const item of items) {
-    if (item.type === 'doc' && 'id' in item) {
-      if (!skip.has(item.id)) ids.push(item.id);
-    } else if (item.type === 'category' && 'items' in item) {
-      ids.push(...collectDocIds(item.items, skip));
-    }
-  }
-  return ids;
-}
-
-function commonDir(ids: string[]): string {
-  const parts = ids.map((id) => id.split('/').slice(0, -1));
-  const first = parts[0] ?? [];
-  let length = first.length;
-  for (const other of parts) {
-    let i = 0;
-    while (i < length && other[i] === first[i]) i += 1;
-    length = i;
-  }
-  return first.slice(0, length).join('/');
-}
-
-function buildDomains(items: SidebarItem[], indexDocs: Set<string>, docs: Map<string, DocMetadata>): Domain[] {
+/**
+ * Domains for the knowledge tree from src/data/knowledgeTree.ts. Draft docs are
+ * skipped (they only exist in development); any other unknown id fails the build.
+ */
+function buildDomains(docs: Map<string, DocMetadata>, drafts: Set<string>): Domain[] {
+  const missing: string[] = [];
+  const placed = new Set<string>();
   const domains: Domain[] = [];
-  for (const item of items) {
-    if (item.type !== 'category' || !('items' in item)) continue;
+  for (const domain of knowledgeTree) {
     const topics: Topic[] = [];
-    for (const child of item.items) {
-      if (child.type === 'doc' && 'id' in child) {
-        const doc = docs.get(child.id);
-        if (doc && !indexDocs.has(child.id)) topics.push({id: doc.id, label: doc.title, articleIds: [doc.id]});
-      } else if (child.type === 'category' && 'items' in child) {
-        const articleIds = collectDocIds(child.items, indexDocs).filter((id) => docs.has(id));
-        if (!articleIds.length) continue;
-        const linkId = child.link?.type === 'doc' ? child.link.id : undefined;
-        topics.push({
-          id: commonDir(articleIds) || linkId || child.label,
-          label: child.label,
-          permalink: linkId ? docs.get(linkId)?.permalink : undefined,
-          articleIds,
-        });
-      }
+    for (const topic of domain.topics) {
+      const articleIds = topic.articles.filter((id) => {
+        if (placed.has(id)) throw new Error(`learning-content: ${id} appears twice in the knowledge tree`);
+        placed.add(id);
+        if (!docs.has(id) && !drafts.has(id)) missing.push(id);
+        return docs.has(id);
+      });
+      if (articleIds.length) topics.push({id: topic.id, label: topic.label, articleIds});
     }
-    const articleIds = topics.flatMap((topic) => topic.articleIds);
-    if (!articleIds.length) continue;
-    const linkId = item.link?.type === 'doc' ? item.link.id : undefined;
+    if (!topics.length) continue;
     domains.push({
-      id: commonDir(articleIds) || linkId || item.label,
-      label: item.label,
-      permalink: linkId ? docs.get(linkId)?.permalink : undefined,
+      id: domain.id,
+      label: domain.label,
+      permalink: domain.overview ? docs.get(domain.overview)?.permalink : undefined,
       topics,
-      articleIds,
+      articleIds: topics.flatMap((topic) => topic.articleIds),
     });
   }
+  if (missing.length) throw new Error(`learning-content: unknown doc ids in knowledgeTree.ts:\n  ${missing.join('\n  ')}`);
   return domains;
 }
 
@@ -141,21 +107,7 @@ export default function learningContentPlugin(context: LoadContext, options: {le
       if (!version) throw new Error('learning-content: docs content is not available');
 
       const docs = new Map(version.docs.map((doc) => [doc.id, doc]));
-      const indexDocs = new Set<string>();
-      const markIndexDocs = (items: SidebarItem[]) => {
-        for (const item of items) {
-          if (item.type !== 'category' || !('items' in item)) continue;
-          if (item.link?.type === 'doc' && item.link.id) indexDocs.add(item.link.id);
-          markIndexDocs(item.items);
-        }
-      };
-
-      const domains: Domain[] = [];
-      for (const sidebarId of TREE_SIDEBARS) {
-        const items = (version.sidebars[sidebarId] ?? []) as SidebarItem[];
-        markIndexDocs(items);
-        domains.push(...buildDomains(items, indexDocs, docs));
-      }
+      const domains = buildDomains(docs, new Set(version.drafts.map((doc) => doc.id)));
 
       const {roles, byPermalink} = roadmapRoles();
       const articles: Record<string, ArticleIndex> = {};
