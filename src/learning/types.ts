@@ -48,7 +48,12 @@ export type ArticleIndex = {
 };
 
 export type CardRef = SectionIndex & {
-  /** Level-2 section that contains the referenced heading. */
+  /** Article the ref points into; differs from the card's article for cross-article refs. */
+  articleId: string;
+  /**
+   * Level-2 section that contains the referenced heading. Empty, together
+   * with an empty `id`, when the ref points at a whole article.
+   */
   section: string;
 };
 
@@ -64,11 +69,15 @@ export type CardIndex = {
   companies: string[];
   checkpointCount: number;
   refs: CardRef[];
+  /** A composite question combines several articles or sections; atomic cards test one point. */
+  composite?: boolean;
 };
 
 export type CardDetail = CardIndex & {
   checkpoints: Inline[][];
   answer: Block[];
+  /** Hash of question, checkpoints and answer; changes when the card content changes. */
+  rev: string;
 };
 
 /** A doc subcategory, or a single article placed directly in a domain. */

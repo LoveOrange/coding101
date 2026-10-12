@@ -4,16 +4,27 @@ import remarkParse from 'remark-parse';
 
 import type {Block, Inline, SectionIndex} from '../../src/learning/types';
 
-export type ParsedHeading = SectionIndex & {depth: number; line: number};
+export type ParsedHeading = SectionIndex & {depth: number; line: number; explicitId: boolean};
+
+/**
+ * A link from the 相关内容 line: `#anchor` on the same page, or a relative
+ * path to another doc with an optional anchor.
+ */
+export type ParsedLink = {path?: string; anchor?: string};
 
 export type ParsedCard = {
   anchor: string;
+  /** Whether the heading carries an explicit `{#id}`; stable card ids need one. */
+  explicitId: boolean;
   question: string;
+  /** `**题型**：综合题` marks a question that combines several articles or sections. */
+  composite: boolean;
   companies: string[];
   checkpoints: Inline[][];
-  /** Same-page anchors from the 相关内容 line. */
-  related: string[];
+  related: ParsedLink[];
   answer: Block[];
+  /** Question, checkpoints and answer source, hashed into the card revision. */
+  source: string;
 };
 
 export type ParsedDoc = {
@@ -141,7 +152,8 @@ function estimateMinutes(lines: string[]): number {
 
 function parseCard(heading: ParsedHeading, lines: string[]): ParsedCard {
   const companies: string[] = [];
-  const related: string[] = [];
+  const related: ParsedLink[] = [];
+  let composite = false;
   const checkpointLines: string[] = [];
   const answerLines: string[] = [];
   let mode: 'none' | 'checkpoints' | 'answer' = 'none';
@@ -181,9 +193,19 @@ function parseCard(heading: ParsedHeading, lines: string[]): ParsedCard {
       if (focus[1]) checkpointLines.push(`- ${focus[1]}`);
       continue;
     }
+    const kind = /^\*\*题型\*\*[：:]\s*(.+)$/.exec(line);
+    if (kind) {
+      composite = /综合/.test(kind[1]);
+      mode = 'none';
+      continue;
+    }
     const refs = /^\*\*相关内容\*\*[：:]\s*(.+)$/.exec(line);
     if (refs) {
-      for (const match of refs[1].matchAll(/\]\(#([^)]+)\)/g)) related.push(decodeURIComponent(match[1]));
+      for (const match of refs[1].matchAll(/\]\(([^)\s]+)\)/g)) {
+        const [target, hash] = match[1].split('#');
+        if (/^[a-z]+:|^\//i.test(target)) continue;
+        related.push({path: target || undefined, anchor: hash ? decodeURIComponent(hash) : undefined});
+      }
       mode = 'none';
       continue;
     }
@@ -195,11 +217,14 @@ function parseCard(heading: ParsedHeading, lines: string[]): ParsedCard {
 
   return {
     anchor: heading.id,
+    explicitId: heading.explicitId,
     question: heading.title,
+    composite,
     companies,
     checkpoints: parseList(checkpointLines),
     related,
     answer: toBlocks(parseMarkdown(answerLines.join('\n'))),
+    source: [heading.title, ...checkpointLines, ...answerLines].join('\n'),
   };
 }
 
@@ -223,7 +248,7 @@ export function parseDoc(source: string): ParsedDoc {
     const text = plainHeading(parsed.text);
     const id = parsed.id ?? slugger.slug(text);
     const {number, title} = splitNumber(text.trim());
-    headings.push({id, title, number, depth: match[1].length, line: index});
+    headings.push({id, title, number, depth: match[1].length, line: index, explicitId: parsed.id !== undefined});
   });
 
   const cards: ParsedCard[] = [];

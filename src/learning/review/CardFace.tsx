@@ -1,26 +1,37 @@
 import clsx from 'clsx';
 import Link from '@docusaurus/Link';
 
-import {domainOf, domainShortLabel, sectionLabel, useLearningIndex} from '../content';
+import {domainOf, domainShortLabel, primaryRef, refHref, sectionLabel, useLearningIndex} from '../content';
+import type {CardRef} from '../types';
 import type {CardDetail} from '../types';
 import {Companies, InlineText, PriorityDots, RichText} from '../ui';
 import styles from './review.module.css';
 
-export function sourceHref(card: CardDetail, permalink: string): string {
-  const ref = card.refs[0];
-  return `${permalink}#${ref?.id ?? card.anchor}`;
-}
-
 export function SourceLink({card, variant = 'read'}: {card: CardDetail; variant?: 'read' | 'view'}) {
   const index = useLearningIndex();
-  const article = index.articles[card.articleId];
-  const ref = card.refs[0];
+  const ref = primaryRef(card);
   const section = ref ? `${sectionLabel(ref.number)} ${variant === 'view' ? ref.title : ''}`.trim() : '';
   const label = variant === 'view' ? `在原文中查看${section ? ` · ${section}` : ''} →` : `读 ${section || '原文'} 原文 →`;
-  return (
-    <Link className={styles.sourceLink} to={sourceHref(card, article.permalink)}>
+  const others = card.refs.filter((item: CardRef) => item.articleId !== card.articleId);
+  const link = (
+    <Link className={styles.sourceLink} to={refHref(index, card, ref)}>
       {label}
     </Link>
+  );
+  if (!others.length) return link;
+  return (
+    <div className={styles.sourceLinks}>
+      {link}
+      <span className={styles.sourceOthers}>
+        另见
+        {others.map((item) => (
+          <Link key={`${item.articleId}#${item.id}`} className={styles.sourceOther} to={refHref(index, card, item)}>
+            {index.articles[item.articleId]?.title}
+            {item.id && item.id !== item.section ? ` · ${item.title}` : item.number ? ` · ${sectionLabel(item.number)}` : ''}
+          </Link>
+        ))}
+      </span>
+    </div>
   );
 }
 
@@ -28,13 +39,13 @@ export function CardMeta({card, showCompanies = true}: {card: CardDetail; showCo
   const index = useLearningIndex();
   const article = index.articles[card.articleId];
   const domain = domainOf(index, article);
-  const ref = card.refs[0];
+  const ref = primaryRef(card);
   return (
     <div className={styles.metaRow}>
       <span className={styles.metaPath}>
         {domain ? `${domainShortLabel(domain.label)} · ` : ''}
         {article.title}
-        {ref?.number ? ` · ${sectionLabel(ref.number)}` : ''}
+        {card.composite ? ' · 综合题' : ref?.number && ref.articleId === card.articleId ? ` · ${sectionLabel(ref.number)}` : ''}
       </span>
       <div className={styles.metaRight}>
         <PriorityDots priority={article.priority} />

@@ -2,7 +2,7 @@ import {usePluginData} from '@docusaurus/useGlobalData';
 
 import {type CompactIndex, expandIndex} from './compact';
 import {today} from './store';
-import type {ArticleIndex, CardIndex, CardState, LearnerState, LearningIndex, Priority, Rating} from './types';
+import type {ArticleIndex, CardIndex, CardRef, CardState, LearnerState, LearningIndex, Priority, Rating} from './types';
 
 let expanded: {source: CompactIndex; index: LearningIndex} | undefined;
 
@@ -69,7 +69,30 @@ export function outlineSections(article: ArticleIndex) {
 export function cardsInSection(index: LearningIndex, article: ArticleIndex, sectionId: string): CardIndex[] {
   return article.cardIds
     .map((id) => index.cards[id])
-    .filter((card) => card.refs.some((ref) => ref.section === sectionId));
+    .filter((card) => card.refs.some((ref) => ref.articleId === article.id && ref.section === sectionId));
+}
+
+/** Refs that point into the card's own article. */
+export function localRefs(card: CardIndex): CardRef[] {
+  return card.refs.filter((ref) => ref.articleId === card.articleId && ref.id);
+}
+
+/** The ref a reader is sent back to: the first one in the card's own article, else the first ref. */
+export function primaryRef(card: CardIndex): CardRef | undefined {
+  return localRefs(card)[0] ?? card.refs[0];
+}
+
+/** Link to a ref, which may live in another article; falls back to the card's own heading. */
+export function refHref(index: LearningIndex, card: CardIndex, ref = primaryRef(card)): string {
+  const article = index.articles[ref?.articleId ?? card.articleId] ?? index.articles[card.articleId];
+  if (!ref) return `${article.permalink}#${card.anchor}`;
+  return ref.id ? `${article.permalink}#${ref.id}` : article.permalink;
+}
+
+/** Other articles a card draws on, in ref order. */
+export function crossArticles(index: LearningIndex, card: CardIndex): ArticleIndex[] {
+  const ids = [...new Set(card.refs.map((ref) => ref.articleId))].filter((id) => id !== card.articleId);
+  return ids.map((id) => index.articles[id]).filter(Boolean);
 }
 
 export type TopicStatus = 'mastered' | 'learning' | 'weak' | 'new';
@@ -143,7 +166,7 @@ export function domainShortLabel(label: string): string {
 
 /** Rough minutes needed to re-read the sections a card points to. */
 export function rereadMinutes(card: CardIndex, article: ArticleIndex): number {
-  const sections = new Set(card.refs.map((ref) => ref.section));
+  const sections = new Set(localRefs(card).map((ref) => ref.section));
   const share = article.sections.length ? Math.max(1, sections.size) / article.sections.length : 1;
   return Math.max(2, Math.round(article.minutes * share));
 }

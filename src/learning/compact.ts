@@ -7,9 +7,23 @@ import type {ArticleIndex, CardIndex, CardRef, LearningIndex, Priority, Role, Se
  */
 
 type SectionTuple = [id: string, title: string, number?: string];
-/** Title is omitted when the ref points at the section heading itself. */
-type RefTuple = [id: string, number: string, section: number, title?: string];
-type CardTuple = [anchor: string, question: string, label: string, companies: string[], checkpoints: number, refs: RefTuple[]];
+/**
+ * Refs inside the card's own article store the section as an index and omit
+ * the title when it is the section heading itself. Refs into another article,
+ * or to a whole article, carry the title, article id and section id.
+ */
+type RefTuple =
+  | [id: string, number: string, section: number, title?: string]
+  | [id: string, number: string, section: -1, title: string, articleId: string, sectionId: string];
+type CardTuple = [
+  anchor: string,
+  question: string,
+  label: string,
+  companies: string[],
+  checkpoints: number,
+  refs: RefTuple[],
+  composite?: 1,
+];
 type ArticleTuple = [
   title: string,
   permalink: string,
@@ -43,10 +57,15 @@ export function compactIndex(index: LearningIndex): CompactIndex {
     const cards = article.cardIds.map((cardId): CardTuple => {
       const card = index.cards[cardId];
       const refs = card.refs.map((ref): RefTuple => {
-        const section = sectionIndex.get(ref.section) ?? -1;
+        const section = sectionIndex.get(ref.section);
+        if (ref.articleId !== article.id || section === undefined) {
+          return [ref.id, ref.number ?? '', -1, ref.title, ref.articleId, ref.section];
+        }
         return ref.id === ref.section ? [ref.id, ref.number ?? '', section] : [ref.id, ref.number ?? '', section, ref.title];
       });
-      return [card.anchor, card.question, card.label, card.companies, card.checkpointCount, refs];
+      const tuple: CardTuple = [card.anchor, card.question, card.label, card.companies, card.checkpointCount, refs];
+      if (card.composite) tuple.push(1);
+      return tuple;
     });
     a[article.id] = [
       article.title,
@@ -86,13 +105,18 @@ export function expandIndex(compact: CompactIndex): LearningIndex {
     const [title, permalink, domain, minutes, priority, roles, sectionTuples, knowledgeId, interviewAnchor, cardTuples] = tuple;
     const sections = sectionTuples.map(([sectionId, sectionTitle, number]) => ({id: sectionId, title: sectionTitle, number}));
     const articleKey = knowledgeId || id;
-    const cardIds = cardTuples.map(([anchor, question, label, companies, checkpointCount, refTuples]) => {
+    const cardIds = cardTuples.map(([anchor, question, label, companies, checkpointCount, refTuples, composite]) => {
       const cardId = cardIdOf(articleKey, anchor);
-      const refs = refTuples.map(([refId, number, section, refTitle]): CardRef => {
+      const refs = refTuples.map((ref): CardRef => {
+        if (ref.length === 6) {
+          const [refId, number, , refTitle, articleId, sectionId] = ref;
+          return {articleId, id: refId, number: number || undefined, title: refTitle, section: sectionId};
+        }
+        const [refId, number, section, refTitle] = ref;
         const parent = sections[section];
-        return {id: refId, number: number || undefined, title: refTitle ?? parent?.title ?? '', section: parent?.id ?? refId};
+        return {articleId: id, id: refId, number: number || undefined, title: refTitle ?? parent?.title ?? '', section: parent?.id ?? refId};
       });
-      cards[cardId] = {id: cardId, articleId: id, anchor, question, label, companies, checkpointCount, refs};
+      cards[cardId] = {id: cardId, articleId: id, anchor, question, label, companies, checkpointCount, refs, ...(composite ? {composite: true} : {})};
       return cardId;
     });
     articles[id] = {

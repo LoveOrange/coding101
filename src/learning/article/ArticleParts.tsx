@@ -3,7 +3,7 @@ import clsx from 'clsx';
 import Link from '@docusaurus/Link';
 import Heading from '@theme/Heading';
 
-import {cardsInSection, moduleOf, RATING_LABELS, sectionLabel, topicsHref, useLearningIndex} from '../content';
+import {cardsInSection, crossArticles, localRefs, moduleOf, RATING_LABELS, sectionLabel, topicsHref, useLearningIndex} from '../content';
 import {useLearnerFeatures} from '../features';
 import {useCurrentArticle} from './context';
 import {useLearner} from '../store';
@@ -169,7 +169,7 @@ export function useCardHeadings(article?: ArticleIndex): Set<string> {
     const ids = new Set<string>();
     if (!article) return ids;
     for (const cardId of article.cardIds) {
-      for (const ref of index.cards[cardId].refs) {
+      for (const ref of localRefs(index.cards[cardId])) {
         ids.add(ref.id);
         ids.add(ref.section);
       }
@@ -241,7 +241,8 @@ export function InterviewCards({article, headingId}: {article: ArticleIndex; hea
               <div className={styles.cardFoot}>
                 <span>
                   考察 {card.checkpointCount} 点
-                  {card.refs.length > 0 && ` · 相关 ${card.refs.map((ref) => sectionLabel(ref.number)).filter(Boolean).join(' ')}`}
+                  {localRefs(card).length > 0 && ` · 相关 ${localRefs(card).map((ref) => sectionLabel(ref.number)).filter(Boolean).join(' ')}`}
+                  {crossArticles(index, card).length > 0 && ` · 另涉及 ${crossArticles(index, card).length} 篇`}
                 </span>
                 {features && <StatusDot state={learner.cards[card.id]} />}
               </div>

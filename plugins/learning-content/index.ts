@@ -1,3 +1,4 @@
+import {createHash} from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type {LoadContext, Plugin} from '@docusaurus/types';
@@ -6,17 +7,19 @@ import type {DocMetadata, LoadedContent} from '@docusaurus/plugin-content-docs';
 
 import {javaInterviewRoadmap} from '../../src/data/interviewRoadmaps/java';
 import {knowledgeTree} from '../../src/data/knowledgeTree';
+import moves from '../../src/data/contentMoves.json';
 import type {
   ArticleIndex,
   CardDetail,
   CardIndex,
+  CardRef,
   Domain,
   Priority,
   Role,
   Topic,
 } from '../../src/learning/types';
 import {compactIndex} from '../../src/learning/compact';
-import {parseDoc} from './parse';
+import {parseDoc, type ParsedDoc} from './parse';
 
 /** Routes served by the learning pages; each receives the card details module. */
 const ROUTES: {path: string; component: string}[] = [
@@ -37,6 +40,36 @@ const LEARNER_ROUTES: {path: string; component: string}[] = [
   {path: '/exam', component: '@site/src/learning/pages/Exam'},
   {path: '/exam/report', component: '@site/src/learning/pages/Report'},
 ];
+
+/** Doc id prefixes whose tree articles must declare `knowledge.id` (rolled out section by section). */
+const REQUIRE_KNOWLEDGE_ID = ['ai/'];
+const KNOWLEDGE_ID = /^[a-z0-9]+(?:[.-][a-z0-9]+)*$/;
+const CARD_ID = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+function knowledgeOf(doc: DocMetadata): {id?: string} | undefined {
+  return (doc.frontMatter as {knowledge?: {id?: string}}).knowledge;
+}
+
+/** Level-2 section containing the heading at `line`. */
+function sectionOf(parsed: ParsedDoc, line: number): string {
+  const h2s = parsed.headings.filter((heading) => heading.depth === 2 && heading.line <= line);
+  return h2s[h2s.length - 1]?.id ?? '';
+}
+
+/** Retired ids in src/data/contentMoves.json must point at content that exists. */
+function checkMoves(cards: Record<string, CardIndex>, articles: Record<string, ArticleIndex>): string[] {
+  const errors: string[] = [];
+  const articleKeys = new Set(Object.values(articles).map((article) => article.knowledgeId ?? article.id));
+  for (const [from, to] of Object.entries(moves.cards as Record<string, string>)) {
+    if (cards[from]) errors.push(`contentMoves.json: card ${from} still exists; remove the move or the card`);
+    if (!cards[to]) errors.push(`contentMoves.json: card ${from} moves to ${to}, which does not exist`);
+  }
+  for (const [from, to] of Object.entries(moves.articles as Record<string, string>)) {
+    if (articleKeys.has(from)) errors.push(`contentMoves.json: article ${from} still exists; remove the move or the article`);
+    if (!articleKeys.has(to)) errors.push(`contentMoves.json: article ${from} moves to ${to}, which does not exist`);
+  }
+  return errors;
+}
 
 const PRIORITY_RANK: Record<Priority, number> = {must: 3, common: 2, optional: 1};
 
@@ -114,47 +147,99 @@ export default function learningContentPlugin(context: LoadContext, options: {le
       const articles: Record<string, ArticleIndex> = {};
       const cards: Record<string, CardIndex> = {};
       const details: Record<string, CardDetail> = {};
+      const errors: string[] = [];
+      const legacy = {articles: 0, cards: 0};
+
+      // Parse every tree article first so cards can point into any of them.
+      const treeIds = domains.flatMap((domain) => domain.articleIds);
+      const sourcePathOf = (doc: DocMetadata) => path.join(context.siteDir, doc.source.replace(/^@site\//, ''));
+      const byPath = new Map(treeIds.map((id) => [sourcePathOf(docs.get(id)!), id]));
+      const parsedDocs = new Map<string, ParsedDoc>();
+      for (const id of treeIds) parsedDocs.set(id, parseDoc(await fs.readFile(sourcePathOf(docs.get(id)!), 'utf8')));
+
+      const knowledgeIds = new Map<string, string>();
+      for (const doc of version.docs) {
+        const knowledgeId = knowledgeOf(doc)?.id;
+        if (knowledgeId === undefined) continue;
+        if (!KNOWLEDGE_ID.test(knowledgeId)) errors.push(`${doc.id}: knowledge.id "${knowledgeId}" must be lowercase words joined by "." or "-"`);
+        const other = knowledgeIds.get(knowledgeId);
+        if (other) errors.push(`${doc.id}: knowledge.id "${knowledgeId}" is already used by ${other}`);
+        knowledgeIds.set(knowledgeId, doc.id);
+      }
 
       for (const domain of domains) {
         for (const docId of domain.articleIds) {
           const topic = domain.topics.find((item) => item.articleIds.includes(docId))!;
           const doc = docs.get(docId)!;
-          const source = await fs.readFile(path.join(context.siteDir, doc.source.replace(/^@site\//, '')), 'utf8');
-          const parsed = parseDoc(source);
-          const knowledge = (doc.frontMatter as {knowledge?: {id?: string}}).knowledge;
-          const articleKey = knowledge?.id ?? doc.id;
+          const parsed = parsedDocs.get(docId)!;
+          const knowledgeId = knowledgeOf(doc)?.id;
+          const strict = knowledgeId !== undefined;
+          if (!strict && REQUIRE_KNOWLEDGE_ID.some((prefix) => docId.startsWith(prefix))) {
+            errors.push(`${docId}: knowledge.id is required under ${REQUIRE_KNOWLEDGE_ID.join(', ')}`);
+          }
+          if (!strict) legacy.articles += 1;
+          const articleKey = knowledgeId ?? doc.id;
           const roadmap = byPermalink.get(normalizePath(doc.permalink));
-
           const h2s = parsed.headings.filter((heading) => heading.depth === 2);
-          const sectionOf = (line: number) => [...h2s].reverse().find((heading) => heading.line <= line)?.id ?? '';
 
           const cardIds: string[] = [];
           for (const card of parsed.cards) {
+            const where = `${docId}#${card.anchor}`;
+            const report = (message: string) => (strict ? errors.push(`${where}: ${message}`) : undefined);
+            if (!card.explicitId) {
+              report('card heading needs an explicit id, e.g. "### 6.1 问题 {#short-name}"');
+              if (!strict) legacy.cards += 1;
+            } else if (!CARD_ID.test(card.anchor)) {
+              report(`card id "${card.anchor}" must be lowercase words joined by "-"`);
+            }
+
+            const refs: CardRef[] = [];
+            for (const link of card.related) {
+              const targetId = link.path ? byPath.get(path.resolve(path.dirname(sourcePathOf(doc)), link.path)) : docId;
+              if (!targetId) {
+                report(`相关内容 links to ${link.path}, which is not an article in the knowledge tree`);
+                continue;
+              }
+              const target = parsedDocs.get(targetId)!;
+              if (!link.anchor) {
+                refs.push({articleId: targetId, id: '', title: docs.get(targetId)!.title, section: ''});
+                continue;
+              }
+              const heading = target.headings.find((item) => item.id === link.anchor);
+              if (!heading) {
+                report(`相关内容 anchor #${link.anchor} does not exist in ${targetId}`);
+                continue;
+              }
+              refs.push({articleId: targetId, id: heading.id, title: heading.title, number: heading.number, section: sectionOf(target, heading.line)});
+            }
+            if (!refs.length) report('相关内容 needs at least one link to the explanation');
+            if (card.composite && new Set(refs.map((ref) => `${ref.articleId}#${ref.section}`)).size < 2) {
+              report('a composite question must point to at least two sections or articles');
+            }
+
             const id = `${articleKey}#${card.anchor}`;
-            const refs = card.related.flatMap((anchor) => {
-              const heading = parsed.headings.find((item) => item.id === anchor);
-              return heading
-                ? [{id: heading.id, title: heading.title, number: heading.number, section: sectionOf(heading.line)}]
-                : [];
-            });
+            if (cards[id]) errors.push(`${where}: card id ${id} is used twice`);
+            const local = refs.find((ref) => ref.articleId === docId && ref.id);
             const index: CardIndex = {
               id,
               articleId: doc.id,
               anchor: card.anchor,
               question: card.question,
-              label: refs[0]?.title ?? doc.title,
+              label: card.composite ? '综合题' : (local ?? refs[0])?.title || doc.title,
               companies: card.companies,
               checkpointCount: card.checkpoints.length,
               refs,
+              ...(card.composite ? {composite: true} : {}),
             };
             cards[id] = index;
-            details[id] = {...index, checkpoints: card.checkpoints, answer: card.answer};
+            const rev = createHash('sha1').update(card.source).digest('hex').slice(0, 8);
+            details[id] = {...index, checkpoints: card.checkpoints, answer: card.answer, rev};
             cardIds.push(id);
           }
 
           articles[doc.id] = {
             id: doc.id,
-            knowledgeId: knowledge?.id,
+            knowledgeId,
             title: doc.title,
             permalink: doc.permalink,
             domainId: domain.id,
@@ -167,6 +252,14 @@ export default function learningContentPlugin(context: LoadContext, options: {le
             interviewAnchor: parsed.interviewAnchor,
           };
         }
+      }
+
+      errors.push(...checkMoves(cards, articles));
+      if (errors.length) throw new Error(`learning-content: ${errors.length} content problem(s):\n  ${errors.join('\n  ')}`);
+      if (legacy.articles) {
+        console.info(
+          `[learning-content] ${legacy.articles} article(s) without knowledge.id and ${legacy.cards} card(s) without an explicit id use path-based ids; see plans/content-schema.md.`,
+        );
       }
 
       actions.setGlobalData(compactIndex({domains, articles, cards, roles}));

@@ -1,7 +1,7 @@
 import clsx from 'clsx';
 import Link from '@docusaurus/Link';
 
-import {domainOf, domainShortLabel, rereadMinutes, sectionLabel, useLearningIndex} from '../content';
+import {domainOf, domainShortLabel, localRefs, refHref, rereadMinutes, sectionLabel, useLearningIndex} from '../content';
 import {learnerActions, useLearner} from '../store';
 import type {CardIndex, LearnerState, LearningIndex, ReviewSession, SessionAnswer} from '../types';
 import styles from './report.module.css';
@@ -69,8 +69,7 @@ export function WeakRow({answer, compact}: {answer: SessionAnswer; compact?: boo
   const article = index.articles[card.articleId];
   const domain = domainOf(index, article);
   const reread = learner.cards[card.id]?.reread;
-  const sections = [...new Set(card.refs.map((ref) => sectionLabel(ref.number)).filter(Boolean))];
-  const target = card.refs[0]?.id ?? card.anchor;
+  const sections = [...new Set(localRefs(card).map((ref) => sectionLabel(ref.number)).filter(Boolean))];
   const progressNote = answer.hits ? `答到 ${answer.hits.length} / ${card.checkpointCount}` : missLabel(card, answer);
 
   return (
@@ -85,7 +84,7 @@ export function WeakRow({answer, compact}: {answer: SessionAnswer; compact?: boo
       {reread ? (
         <span className={styles.rereadDone}>① 已补读 ✓</span>
       ) : (
-        <Link className={styles.rereadLink} to={`${article.permalink}#${target}`} onClick={() => learnerActions.markReread(card.id)}>
+        <Link className={styles.rereadLink} to={refHref(index, card)} onClick={() => learnerActions.markReread(card.id)}>
           ① 补读 {sections.length ? sections.join('、') : '原文'} · {rereadMinutes(card, article)} 分钟
         </Link>
       )}
