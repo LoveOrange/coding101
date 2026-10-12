@@ -1,0 +1,207 @@
+---
+sidebar_position: 1
+---
+
+# 提示词工程
+
+提示词工程是为模型写清任务、约束、输入材料和输出格式，并用评测结果迭代提示的过程。本文覆盖提示的组成、Few-shot 与思维链的适用条件、结构化输出，以及怎样用数据而非感觉调优提示。
+
+## 1. 面试核心 {#core}
+
+- 一份生产提示通常包含角色与任务、规则与约束、输入材料、示例、输出格式和异常处理说明。规则写成可检查的条件，而不是形容词。[卡](#61-agent-的提示词一般包含哪些部分如何设计)
+- 调优以评测集驱动：收集失败样例，归类原因，修改提示，在同一评测集上比较，确认没有引入回归。[卡](#62-系统-prompt-如何调优如何判断一个-prompt-的质量)
+- Few-shot 用于约束格式和边界判断，示例要覆盖难例且避免全部同类；思维链用于多步推理，代价是更多输出 Token 和延迟。[卡](#63-cot-和-few-shot-分别适合什么场景)
+- 需要程序解析的输出使用结构化输出或工具调用的 JSON Schema 约束，解析后仍要做业务校验：格式合法不等于内容正确。[卡](#64-想要模型按照固定结构输出应该怎么做)
+
+## 2. 提示的组成 {#structure}
+
+```xml
+<role>你是电商售后客服助手，只处理订单、物流和退款问题。</role>
+
+<rules>
+- 退款金额超过 500 元时，调用 create_ticket 转人工，不直接承诺退款。
+- 用户未提供订单号时，先询问订单号，不猜测。
+- 只依据 <order> 中的信息回答；信息缺失时说明无法确认。
+</rules>
+
+<order>{{order_json}}</order>
+
+<examples>
+  <example>…</example>
+</examples>
+
+<output_format>
+用中文回复，不超过 120 字；需要转人工时在末尾说明工单号。
+</output_format>
+```
+
+几条写法上的经验：
+
+- **规则可检查**：“回答要专业”无法验证；“不超过 120 字、必须引用订单状态字段”可以验证。
+- **说明原因**：“不要使用省略号，因为回复会被语音合成朗读”比单纯禁止更容易被泛化到相似情况。
+- **用标签分隔材料**：指令和数据分开，模型更容易区分，也便于程序替换变量。
+- **说明异常情况**：信息不足、请求越界、工具失败时怎么做，比只描述正常流程更重要。
+- **模板化与版本管理**：提示存放在仓库中，用模板引擎填充变量，每次修改有版本号，便于回滚和对照评测。
+
+## 3. Few-shot 与思维链 {#techniques}
+
+**Few-shot**（少样本示例）在提示中给出输入和期望输出的例子。它最适合传达难以用语言描述的格式、风格和边界判断。示例应覆盖难例和反例；全部示例都属于同一类时，模型会倾向输出这一类。示例过多占用上下文，也可能让模型照抄具体内容。
+
+**思维链**（Chain of Thought）让模型在给出答案前写出推理步骤，适合计算、多条件判断、规划等多步任务。代价是输出变长、延迟和费用增加。许多模型已内置推理模式，可以通过参数开启，不一定需要在提示中要求“一步步思考”。直接的分类、抽取、改写任务通常不需要思维链。
+
+| 场景 | 优先手段 |
+| --- | --- |
+| 输出格式、风格难以描述 | Few-shot |
+| 分类边界模糊 | Few-shot，包含边界附近的正反例 |
+| 多步计算或条件判断 | 思维链或推理模式 |
+| 简单抽取、改写 | 清晰指令 + 输出格式，不加推理 |
+
+## 4. 结构化输出 {#structured-output}
+
+程序需要解析模型输出时，只在提示中说“请输出 JSON”不够可靠：可能多出解释文字、缺字段或类型错误。可靠性从低到高：
+
+1. 提示中描述格式并给示例，程序侧用正则或解析器容错。
+2. JSON 模式：保证输出是合法 JSON，但不保证字段符合预期。
+3. **结构化输出 / 工具调用**：提供 JSON Schema，由提供方约束解码，输出符合 Schema 的字段和类型。
+
+```python
+schema = {
+    "type": "object",
+    "properties": {
+        "intent": {"type": "string", "enum": ["refund", "logistics", "other"]},
+        "order_id": {"type": ["string", "null"]},
+    },
+    "required": ["intent", "order_id"],
+    "additionalProperties": False,
+}
+```
+
+Schema 只保证结构。`order_id` 是否真实存在、退款金额是否超限，仍要由程序校验；校验失败时把错误写回让模型修正，或进入兜底流程。流式输出时 JSON 在结束前是不完整的，需要增量解析器，或者等完整结束后再解析。
+
+## 5. 评测驱动的调优 {#iteration}
+
+1. **建立评测集**：从真实请求中抽样，加入已知难例和失败样例，标注期望结果或评分标准。
+2. **定义指标**：分类准确率、字段级正确率、格式合规率、人工或模型评分。
+3. **分析失败**：把失败样例按原因归类，例如指令歧义、缺少信息、示例误导、格式错误。
+4. **针对性修改**：一次只改一类问题，记录版本。
+5. **回归比较**：在整个评测集上运行，确认目标问题改善且其他样例没有变差。模型输出有随机性，关键结论要多次运行取统计结果。
+
+上线后继续收集新的失败样例补充到评测集。更换模型时，提示要重新评测，不能假定在旧模型上调好的提示仍然最优。
+
+## 6. 面试题
+
+### 6.1 Agent 的提示词一般包含哪些部分？如何设计？
+
+<!-- 面试来源：
+- 未披露公司：https://www.nowcoder.com/discuss/930572525178748928 （“Agent 提示词大概包含什么，有多少行？”）
+- 未披露公司：https://www.nowcoder.com/feed/main/detail/6d52148d2e854ade92de493292f2e312 （“提示词怎么设计的 如何设计”）
+- Cognizant：https://www.reddit.com/r/Cognizant_benchers/comments/1wt9xgs/cognizant_ace_frontier_engineer_complete/ （结构化 Prompt 编写）
+- Infosys：https://medium.com/%40kalladisreevathsa18/infosys-interview-experience-associate-business-analyst-python-developer-generative-ai-f1fa542cb7cf （提示词类型）
+- 联想：https://www.nowcoder.com/discuss/869169098146537472 （“关于大模型提示词的经验”）
+-->
+
+**出现公司**：Cognizant、Infosys、联想
+
+**考察重点**
+
+- 提示各组成部分的作用。
+- 可检查的规则、异常处理和模板化管理。
+
+**相关内容**：[提示的组成](#structure)。
+
+<details>
+<summary>参考回答</summary>
+
+通常包含：角色与任务范围；规则与约束，如权限边界、何时转人工；输入材料，如结构化业务数据、检索结果、相似案例，用标签与指令分开；Few-shot 示例；输出格式；异常处理，即信息不足、请求越界或工具失败时怎么做。
+
+设计时规则写成可以验证的条件并说明原因，优先描述异常情况。提示用模板存放在仓库中，变量由程序填充，每次修改有版本号，并在评测集上验证后再发布。渲染后的长度随业务数据变化，需要计算 Token 预算。
+
+</details>
+
+### 6.2 系统 Prompt 如何调优？如何判断一个 Prompt 的质量？
+
+<!-- 面试来源：
+- 百度：https://www.nowcoder.com/feed/main/detail/b9521e2b51e04afeac0a3a32e13f4da9 （“你的系统Prompt如何调优的”）
+- 腾讯：https://www.nowcoder.com/feed/main/detail/28edcddf0c204c08b6562a3e6e6b73ae （Prompt 质量）
+- 阿里淘天：https://www.nowcoder.com/feed/main/detail/78d6c8c30f1741e6b0a1a02d7b4bbfab （提示优化）
+- 韶音：https://www.nowcoder.com/feed/main/detail/11e40634018b47a7974bf5c96605024c （Prompt 迭代）
+- 字节跳动：https://www.nowcoder.com/discuss/746382064101908480 （Prompt 和项目效果）
+-->
+
+**出现公司**：百度、腾讯、阿里淘天、韶音、字节跳动
+
+**考察重点**
+
+- 评测集、指标和失败归因。
+- 回归比较与输出随机性。
+
+**相关内容**：[评测驱动的调优](#iteration)。
+
+<details>
+<summary>参考回答</summary>
+
+先从真实请求和已知失败中建立评测集，并定义指标，例如准确率、字段正确率、格式合规率或评分标准。运行当前提示，把失败样例按原因归类，一次针对一类问题修改，记录版本。
+
+修改后在整个评测集上比较，确认目标问题改善且其他样例没有退化；因为输出有随机性，关键结论要多次运行取平均或通过率。Prompt 的质量由这些指标衡量，而不是读起来是否完整。上线后持续把新的失败样例加入评测集，换模型时重新评测。
+
+</details>
+
+### 6.3 CoT 和 Few-shot 分别适合什么场景？
+
+<!-- 面试来源：
+- 去哪儿旅行：https://www.nowcoder.com/feed/main/detail/505f5d9ae8104d0e93aa1bb99404087c （CoT 与 Few-shot 的适用场景）
+- 多家公司合并复盘：https://www.nowcoder.com/feed/main/detail/129eaa1c20444651ac3b932e200d3da4 （CoT）
+- Accenture：https://www.geeksforgeeks.org/interview-experiences/accenture-interview-experience-for-llm-operations-engineer-experienced/ （提示技术）
+-->
+
+**出现公司**：去哪儿旅行、Accenture
+
+**考察重点**
+
+- 两种技术分别解决的问题。
+- 示例选择、推理成本和内置推理模式。
+
+**相关内容**：[Few-shot 与思维链](#techniques)。
+
+<details>
+<summary>参考回答</summary>
+
+Few-shot 通过示例传达难以用语言描述的格式、风格和分类边界，适合输出格式固定、判断标准模糊的任务。示例要覆盖难例和反例，避免同类示例让输出偏向某一类，也要控制数量。
+
+CoT 让模型先写推理步骤，适合计算、多条件判断和规划等多步任务，代价是输出 Token、延迟和费用增加。简单的抽取、分类、改写一般不需要。许多模型内置推理模式，可以通过参数控制推理预算，不必在提示中手写“逐步思考”。两者可以结合，即在示例中展示推理过程。
+
+</details>
+
+### 6.4 想要模型按照固定结构输出，应该怎么做？
+
+<!-- 面试来源：
+- 未披露公司：https://www.nowcoder.com/feed/main/detail/6d52148d2e854ade92de493292f2e312 （“想要按照结构输出怎么办？”）
+- TCS：https://www.linkedin.com/posts/galgalepallavi_tcs-interviewexperience-genai-activity-7419624110521090048-Q3sC （固定输出格式）
+- 小红书：https://www.nowcoder.com/feed/main/detail/9f7361c709f4413396988b4f334a0d6f （结构化结果）
+- 拼多多：https://www.nowcoder.com/feed/main/detail/2109cf8eb0254507911fbf86bcbf51e4 （流式 JSON）
+- 字节跳动：https://www.nowcoder.com/feed/main/detail/0715f2653f414fa99da92b8db860ad78 （ToolCall 流式半 JSON 的方案选择）
+-->
+
+**出现公司**：TCS、小红书、拼多多、字节跳动
+
+**考察重点**
+
+- 提示约束、JSON 模式与 Schema 约束的可靠性差异。
+- 格式校验与业务校验，流式输出中的不完整 JSON。
+
+**相关内容**：[结构化输出](#structured-output)。
+
+<details>
+<summary>参考回答</summary>
+
+只靠提示描述格式最不可靠。优先使用提供方的结构化输出或工具调用，传入 JSON Schema，由约束解码保证字段和类型；不支持时退回 JSON 模式加程序校验。
+
+Schema 只保证结构，程序还要做业务校验，例如枚举值、ID 是否存在、金额范围；失败时把具体错误写回让模型修正，超过次数进入兜底。流式场景下 JSON 在结束前不完整，界面展示可用增量解析器容忍半截内容，执行工具或写库必须等完整结果并通过校验后再进行。
+
+</details>
+
+## 7. 参考资料
+
+- [Anthropic：Prompt engineering overview](https://docs.claude.com/en/docs/build-with-claude/prompt-engineering/overview)
+- [OpenAI：Structured Outputs](https://platform.openai.com/docs/guides/structured-outputs)
+- [Chain-of-Thought Prompting Elicits Reasoning in Large Language Models](https://arxiv.org/abs/2201.11903)

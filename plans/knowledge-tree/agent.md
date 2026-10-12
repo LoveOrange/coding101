@@ -6,7 +6,7 @@ AI 应用与 Agent 分支面向模型接入、检索、工具执行和应用交�
 
 使用 Agent 阅读、修改和验证软件的复习范围见 [Agentic Development 复习知识点与建设顺序](./agentic-development-knowledge-points.md)。本分支负责实现 Agent 系统；两条路线共享工具、上下文、评估和安全正文。本轮优先级参考 [Agentic Development 面经研究与复习重点](../audits/agentic-development/frequency/README.md)，其中 Agent 应用主样本为 142 篇；频率是样本披露率，不代表招聘市场概率。
 
-> 本文是[总纲](../interview-roadmap-outline-proposal.md)的分纲。当前没有独立 Agent 正文目录；除一篇简短 LLM 介绍可作为重写素材外，下面的 AI 专属文章均为拟建设内容。通用数据库、网络、消息、测试与安全继续引用共享分支。
+> 本文是[总纲](../interview-roadmap-outline-proposal.md)的分纲。2026-10-12 起，正文发布在 `docs/ai/`，已完成的文章以[知识树（第二版）](./knowledge-tree.md)第 17 节的 ✅ 标记为准；下表的文件名是第一版规划，与实际路径不完全一致。通用数据库、网络、消息、测试与安全继续引用共享分支。
 
 ## 1. 范围与前置
 

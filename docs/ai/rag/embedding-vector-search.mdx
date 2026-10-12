@@ -1,0 +1,155 @@
+---
+sidebar_position: 3
+---
+
+# Embedding 与向量检索
+
+Embedding 模型把文本映射成固定维度的向量，语义相近的文本在向量空间中距离更近。向量检索在大量向量中找出与查询向量最相似的若干个，是 RAG 语义召回的基础。本文讲相似度度量、近似最近邻索引 HNSW、向量数据库选型和向量检索的局限。
+
+## 1. 面试核心 {#core}
+
+- 检索流程：文档块和查询用**同一个** Embedding 模型向量化，计算相似度，取 Top-K。[卡](#61-讲一下向量检索的原理常用的相似度计算方法有哪些)
+- 常用相似度有余弦相似度、内积和欧氏距离。向量归一化后三者排序结果一致；要与 Embedding 模型训练时使用的度量保持一致。
+- 精确检索要与所有向量比较，数据量大时太慢，生产中用近似最近邻（ANN）索引，以少量召回损失换取速度。
+- HNSW 是多层图索引：上层稀疏用于快速定位，下层稠密用于精细搜索；`M`、`efConstruction`、`efSearch` 控制精度、内存和速度。[卡](#62-hnsw-索引的原理是什么关键参数如何影响效果)
+- 向量库按数据规模、是否需要与业务数据联合过滤、是否需要关键词混合检索来选，带过滤条件的召回和延迟要实测。[卡](#63-常见的向量数据库有哪些如何选型)
+- 向量检索对专有名词、编号、精确匹配不敏感，通常与关键词检索组合使用，见[混合检索与重排序](./hybrid-search-rerank.mdx)。
+
+## 2. Embedding {#embedding}
+
+Embedding 模型通常是 Transformer 编码器，输入文本输出一个几百到几千维的向量。训练目标是让语义相关的文本对（问题与答案、同义句）向量接近，不相关的远离。
+
+选择和使用时注意：
+
+- **语言与领域**：中文场景选择在中文语料上表现好的模型；专业领域可以用领域数据微调。
+- **输入长度上限**：超出部分会被截断，切分时块不能超过上限。
+- **非对称检索**：查询短、文档长，一些模型要求给查询和文档加不同前缀，按模型说明使用。
+- **模型一致**：更换 Embedding 模型后，所有文档都要重新向量化，新旧向量不可混用。
+
+## 3. 相似度度量 {#similarity}
+
+| 度量 | 公式 | 特点 |
+| --- | --- | --- |
+| 余弦相似度 | `cos(a,b) = a·b / (‖a‖‖b‖)` | 只看方向，不受向量长度影响，最常用 |
+| 内积 | `a·b` | 计算快；向量已归一化时等于余弦相似度 |
+| 欧氏距离 | `‖a − b‖` | 距离越小越相似；归一化后与余弦单调对应 |
+
+向量归一化为单位长度后，`‖a − b‖² = 2 − 2·cos(a,b)`，三种度量得到的排序相同。因此很多系统在写入时先归一化，再用计算最快的内积。
+
+## 4. 近似最近邻与 HNSW {#hnsw}
+
+精确检索（暴力搜索）对每个查询计算与全部 N 个向量的相似度，复杂度 O(N·d)。百万级以上数据需要 ANN 索引。
+
+**HNSW**（Hierarchical Navigable Small World，分层可导航小世界图）：
+
+- 每个向量是图中的一个节点，与若干个相近的节点相连。
+- 节点按概率分配到多层：最底层包含所有节点，越往上节点越少，连接跨度越大。
+- 查询时从最高层的入口点出发，贪心地移动到离查询更近的邻居，到达局部最近点后下降一层继续，直到最底层，在最底层维护一个候选列表找出 Top-K。
+
+上层像高速公路，快速接近目标区域；底层像街道，精细查找。查询复杂度接近 O(log N)。
+
+| 参数 | 作用 | 调大的影响 |
+| --- | --- | --- |
+| `M` | 每个节点的最大连接数 | 召回率提高，内存和构建时间增加 |
+| `efConstruction` | 构建时的候选列表大小 | 图质量更好，构建变慢 |
+| `efSearch` | 查询时的候选列表大小 | 召回率提高，查询变慢 |
+
+HNSW 需要把图放在内存中，删除通常是标记删除。其他常见索引有 IVF（先聚类，查询时只搜索最近的几个簇）和 PQ（乘积量化压缩向量以节省内存），数据量极大时常组合使用。
+
+## 5. 向量数据库 {#databases}
+
+| 类型 | 例子 | 适合 |
+| --- | --- | --- |
+| 专用向量数据库 | Milvus、Qdrant、Weaviate | 大规模向量、需要分布式和多种索引 |
+| 关系库扩展 | PostgreSQL + pgvector | 数据量中等，需要和业务数据一起做事务与过滤 |
+| 搜索引擎 | Elasticsearch、OpenSearch | 已有全文检索，需要关键词与向量混合检索 |
+| 内存库 | FAISS | 单机原型或离线批处理，不提供完整的数据库功能 |
+
+选型看数据规模、是否需要与业务数据联合过滤、是否需要关键词混合检索、运维成本和团队已有技术栈。元数据过滤（权限、版本）的性能也要实测：先过滤再检索可能导致 HNSW 图连通性变差，先检索再过滤可能导致结果不足 K 个。
+
+## 6. 面试题
+
+### 6.1 讲一下向量检索的原理。常用的相似度计算方法有哪些？
+
+<!-- 面试来源：
+- 百度：https://www.nowcoder.com/feed/main/detail/b9521e2b51e04afeac0a3a32e13f4da9 （“讲一下你说的向量检索的原理”）
+- 联想：https://www.nowcoder.com/discuss/869169098146537472 （“在rag中，有哪些相似度的计算方法”）
+- 未披露公司：https://www.nowcoder.com/feed/main/detail/10b2fcaf73d2401f8636bd0459e1cd08 （相似度）
+- 腾讯：https://www.nowcoder.com/feed/main/detail/427caf4cc5ec4192b64fdb6ea6698bef （“用的哪些embedding模型”）
+- 字节跳动：https://www.nowcoder.com/discuss/746382064101908480 （Embedding 召回）
+-->
+
+**出现公司**：百度、联想、腾讯、字节跳动
+
+**考察重点**
+
+- Embedding 的作用与模型一致性。
+- 余弦、内积、欧氏距离的关系，精确检索与 ANN。
+
+**相关内容**：[Embedding](#embedding)、[相似度度量](#similarity)。
+
+<details>
+<summary>参考回答</summary>
+
+用 Embedding 模型把文档块和查询映射为向量，语义相近的文本向量接近。查询时计算查询向量与库中向量的相似度，取最相似的 Top-K 个块。文档和查询必须使用同一个模型。
+
+相似度常用余弦相似度、内积和欧氏距离。余弦只看方向；内积计算最快；欧氏距离越小越相似。向量归一化后三者排序一致，所以常在写入时归一化再用内积，并与模型训练时的度量保持一致。数据量大时不做暴力比较，而是用 HNSW、IVF 等近似最近邻索引，用少量召回损失换取速度。
+
+</details>
+
+### 6.2 HNSW 索引的原理是什么？关键参数如何影响效果？
+
+<!-- 面试来源：
+- 阿里云：https://www.nowcoder.com/feed/main/detail/d1fd4cd344bc4d928e708c3e69c8f59c （“HNSW索引原理”）
+-->
+
+**出现公司**：阿里云
+
+**考察重点**
+
+- 分层图结构与贪心搜索过程。
+- `M`、`efConstruction`、`efSearch` 的精度、内存和速度取舍。
+
+**相关内容**：[近似最近邻与 HNSW](#hnsw)。
+
+<details>
+<summary>参考回答</summary>
+
+HNSW 把向量组织成多层近邻图。每个节点与若干相近节点相连，节点按概率进入不同层，底层包含全部节点，越往上越稀疏、连接跨度越大。查询从顶层入口点开始，贪心地走向离查询更近的邻居，到局部最优后下降一层继续，最底层用候选列表精细搜索得到 Top-K，复杂度接近对数级。
+
+`M` 是每个节点的连接数，越大召回越高但内存和构建时间增加；`efConstruction` 影响建图质量和构建速度；`efSearch` 是查询时的候选列表大小，越大召回越高、查询越慢，可以按延迟要求在线调整。HNSW 图常驻内存，删除多为标记删除，需要定期重建或合并。
+
+</details>
+
+### 6.3 常见的向量数据库有哪些？如何选型？
+
+<!-- 面试来源：
+- 联想：https://www.nowcoder.com/discuss/869169098146537472 （“你知道哪些向量数据库？”）
+- ZS：https://www.geeksforgeeks.org/interview-experiences/zs-llm-engineer-interview-experience/ （向量库）
+- Accenture：https://www.geeksforgeeks.org/interview-experiences/accenture-final-interview-experience-for-llm-operations-engineer-experienced-selected/ （向量库）
+- 淘宝闪购：https://www.nowcoder.com/feed/main/detail/c741b8f660b54db7bdbb77e4b81151bf （向量与数据库检索）
+-->
+
+**出现公司**：联想、ZS、Accenture、淘宝闪购
+
+**考察重点**
+
+- 专用向量库、关系库扩展、搜索引擎的差异。
+- 规模、联合过滤、混合检索和运维成本。
+
+**相关内容**：[向量数据库](#databases)。
+
+<details>
+<summary>参考回答</summary>
+
+常见的有专用向量数据库 Milvus、Qdrant、Weaviate，关系库扩展 pgvector，搜索引擎 Elasticsearch、OpenSearch，以及单机库 FAISS。
+
+选型看几点：数据规模和并发，大规模分布式选专用向量库；需要与业务表联合过滤、保证事务一致时，中等规模用 pgvector；已有全文检索、需要关键词和向量混合检索时用 Elasticsearch；原型或离线处理用 FAISS。还要实测带权限、版本过滤时的召回和延迟，并考虑团队运维能力。
+
+</details>
+
+## 7. 参考资料
+
+- [Efficient and robust approximate nearest neighbor search using HNSW graphs](https://arxiv.org/abs/1603.09320)
+- [pgvector](https://github.com/pgvector/pgvector)
+- [Milvus：Index explained](https://milvus.io/docs/index-explained.md)

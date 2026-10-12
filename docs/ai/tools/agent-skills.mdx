@@ -1,0 +1,202 @@
+---
+sidebar_position: 3
+---
+
+# Agent Skills
+
+Agent Skill 是一个包含说明文件、脚本和参考资料的目录，Agent 只在任务需要时才加载它的完整内容。它把“如何完成某类任务”的流程知识打包复用，例如按团队规范写发布说明、处理 PDF 表单、执行一次数据库迁移检查。本文讲 Skill 的结构、渐进式加载、与 Tool 和 MCP 的分工，以及选择错误时的处理。
+
+## 1. 面试核心 {#core}
+
+- Skill 是给模型读的流程知识和资源；Tool 是程序执行的确定性能力。Skill 可以指导模型调用哪些 Tool、运行哪些脚本，但它本身不执行任何动作，也不授予权限。[卡](#61-skill-和-tool-有什么区别什么情况下做成-skill什么情况下做成-tool)
+- 渐进式加载分三层：启动时只加载名称和描述；判断相关后读取 `SKILL.md` 正文；正文引用的脚本和资料再按需读取。未使用的 Skill 只占几十个 Token。[卡](#62-skill-的核心原理是什么为什么能减少-token-消耗)
+- 选择 Skill 依靠描述。描述要写清做什么和何时使用；相似 Skill 被混用时，修改描述的区分条件或合并。[卡](#63-agent-怎么选择要调用的-skill两个相似的-skill-被调用错误怎么办)
+- MCP 提供外部系统的工具和数据，CLI 提供本地命令，Skill 提供使用它们的流程；三者常组合使用。[卡](#64-mcpcli-和-skill-分别适合什么场景)
+
+## 2. 结构 {#structure}
+
+```text
+release-notes/
+├── SKILL.md            # 必需：元数据 + 使用说明
+├── scripts/
+│   └── collect_prs.py  # 可执行脚本，Agent 运行它而不是读它
+├── references/
+│   └── style-guide.md  # 详细规范，需要时再读
+└── assets/
+    └── template.md     # 输出模板
+```
+
+```markdown
+---
+name: release-notes
+description: 根据合并的 PR 生成发布说明。用户要求写 release notes、版本更新说明或 changelog 时使用。
+---
+
+# 生成发布说明
+
+1. 运行 `python scripts/collect_prs.py --since <上个标签>` 获取 PR 列表。
+2. 按 feature / fix / chore 分类；破坏性变更单独列出。
+3. 按 `assets/template.md` 输出；措辞规范见 `references/style-guide.md`。
+```
+
+`name` 和 `description` 是必填元数据。正文写步骤、判断规则和注意事项，篇幅控制在模型一次能读完的范围；更长的资料拆到 `references/` 中，并在正文中说明何时读取。
+
+## 3. 渐进式加载 {#progressive}
+
+| 层级 | 内容 | 何时进入上下文 | 大致开销 |
+| --- | --- | --- | --- |
+| 元数据 | `name`、`description` | 会话开始时，所有 Skill | 每个几十到一百 Token |
+| 说明 | `SKILL.md` 正文 | 模型判断任务与该 Skill 相关时 | 通常数千 Token 以内 |
+| 资源 | 脚本、参考文档、模板 | 正文指引需要时 | 脚本运行时只有输出进入上下文 |
+
+这种设计让 Agent 可以安装很多 Skill 而不撑满上下文：系统提示里只有一份简短目录。对比把所有流程说明写进系统提示，或把每个步骤都定义成工具，未使用的知识几乎不占用 Token。
+
+脚本是减少 Token 的另一个来源：确定性的处理（解析文件、批量重命名、校验格式）交给脚本执行，模型只读取结果，不需要把代码或中间数据读入上下文。
+
+### 3.1 Skill 放在沙箱中
+
+Skill 依赖文件系统：模型通过读文件工具加载 `SKILL.md`，通过执行命令运行脚本。如果 Agent 运行在容器或远程沙箱中，Skill 目录需要挂载或复制到沙箱内，读文件和执行命令都发生在沙箱里，结果再通过工具结果返回给模型。元数据仍需要在会话开始时由 Harness 读取并放入系统提示。
+
+## 4. Skill、Tool、MCP、CLI 的分工 {#comparison}
+
+| 形式 | 本质 | 适合 |
+| --- | --- | --- |
+| Tool | 带 Schema 的可执行函数 | 需要程序执行的原子能力，参数明确，如查询订单 |
+| MCP Server | 通过协议提供的一组 Tool 和数据 | 接入外部系统，可被多个应用复用 |
+| CLI | 本地命令行程序 | 模型熟悉的通用工具（git、grep、测试命令），输出可以管道处理 |
+| Skill | 流程说明 + 脚本 + 资料 | 多步流程、团队约定、需要领域知识才能做对的任务 |
+| 提示词 | 每次都加载的指令 | 每个请求都适用的全局规则 |
+
+判断方式：
+
+- 一步能完成、需要确定执行的，做 Tool。
+- 需要按顺序组合多个工具、包含判断规则和约定的，写成 Skill，在其中引用 Tool 或脚本。
+- 只在少数任务中需要的知识放 Skill；每次都需要的规则放系统提示或仓库指令。
+
+## 5. 常见问题
+
+### 5.1 Skill 失效或无法解决当前任务怎么办
+
+Skill 依赖的外部条件变化（页面结构、接口字段）时，Skill 中的步骤会失败。脚本应检查前置条件并输出明确错误，模型据此回退到通用工具完成任务或报告失败；同时记录失败，更新 Skill 并用评测任务回归。没有匹配的 Skill 时，Agent 按普通流程完成任务，不应强行套用相近的 Skill。
+
+### 5.2 Skill 中的脚本可以随意执行吗
+
+不可以。Skill 是文本和文件，执行脚本仍然通过 Harness 的命令工具，受同样的权限和沙箱限制。第三方 Skill 可能包含恶意指令或脚本，安装前要审核内容。
+
+## 6. 面试题
+
+### 6.1 Skill 和 Tool 有什么区别？什么情况下做成 Skill，什么情况下做成 Tool？
+
+<!-- 面试来源：
+- 小红书：https://www.nowcoder.com/feed/main/detail/e5e9311a623940eead6ec98c65e7f9e8 （“Skill 和 Tool 的区别？”“Skill 是知识库还是融合在 Agent 里？什么阶段 fetch？”）
+- 字节跳动：https://www.nowcoder.com/feed/main/detail/fe77496948f74b4091ab4bb6e8156c8b （“什么情况下会把某个能力做成skill?什么时候做成tool?”）
+- 深信服：https://www.nowcoder.com/feed/main/detail/14b2c379ae434062a009aefea9fc5df9 （Tools 与 Skills 区别）
+- 百度：https://www.nowcoder.com/feed/main/detail/2d033fd6daa04e2aaad2282b75531bbc （“散功能属于 Skill 还是 Tool”）
+- 小红书、百度：https://www.nowcoder.com/feed/main/detail/e319aadc79a9479397a6661a7f5ca088 （Skill 与 Prompt）
+- 联想：https://www.nowcoder.com/discuss/869169098146537472 （“谈谈对agent Skills的认识”）
+-->
+
+**出现公司**：小红书、字节跳动、深信服、百度、联想
+
+**考察重点**
+
+- 流程知识与可执行能力的区别。
+- Skill、Tool、系统提示之间的划分依据。
+
+**相关内容**：[Skill、Tool、MCP、CLI 的分工](#comparison)。
+
+<details>
+<summary>参考回答</summary>
+
+Tool 是程序执行的函数，有参数 Schema，调用后产生确定的结果或副作用。Skill 是给模型阅读的说明、脚本和资料，告诉模型完成某类任务的步骤、规则和该用哪些工具；它不执行动作，也不授予权限，执行仍然通过 Tool 或命令。
+
+单步、需要确定执行、参数清楚的能力做成 Tool，例如查询订单。多步流程、需要领域知识或团队约定才能做对的任务做成 Skill，例如按规范生成发布说明，Skill 中引用 Tool 和脚本。只在部分任务需要的知识放 Skill 按需加载；每个请求都适用的规则放系统提示。
+
+</details>
+
+### 6.2 Skill 的核心原理是什么？为什么能减少 Token 消耗？
+
+<!-- 面试来源：
+- 快手：https://www.nowcoder.com/feed/main/detail/daa06f995ea74445a13de42d67f66265 （“是否了解skill，介绍一下核心原理”“聊聊如何实现渐进式披露”“skill 能否放在 agent 沙箱里面”）
+- 阿里云：https://www.nowcoder.com/feed/main/detail/d9c2d15c31ce4496abae2d38095bc330 （“skills 为什么能减少 token 消耗”）
+- 阿里巴巴：https://www.nowcoder.com/feed/main/detail/556b3a764a614931bc5bb8a96e4f5f3f （Skill 渐进式加载）
+- 快手：https://www.nowcoder.com/discuss/904419777614049280 （Skill 渐进加载）
+- 字节跳动：https://www.nowcoder.com/feed/main/detail/6506d4b4addf447c8e2c135b5088cdc8 （Skill 渐进披露）
+- 蚂蚁：https://www.nowcoder.com/feed/main/detail/4247388b1f0e4e51b00962227843b24b （Skill 机制）
+-->
+
+**出现公司**：快手、阿里云、阿里巴巴、字节跳动、蚂蚁
+
+**考察重点**
+
+- 元数据、说明、资源三层加载。
+- 脚本执行只返回结果，以及沙箱中的加载方式。
+
+**相关内容**：[结构](#structure)、[渐进式加载](#progressive)、[Skill 放在沙箱中](#31-skill-放在沙箱中)。
+
+<details>
+<summary>参考回答</summary>
+
+Skill 是一个目录，核心是带 `name` 和 `description` 元数据的 `SKILL.md`。会话开始时只把所有 Skill 的元数据放入系统提示；模型判断任务相关后，用读文件工具加载正文；正文中引用的参考资料和脚本再按需读取或执行。
+
+节省 Token 有两点：未使用的 Skill 只占元数据的几十个 Token，不必把所有流程写进系统提示；确定性处理交给脚本执行，只有输出进入上下文。Agent 在沙箱中运行时，Skill 目录要挂载到沙箱，读取和执行都在沙箱内完成，结果通过工具结果返回。
+
+</details>
+
+### 6.3 Agent 怎么选择要调用的 Skill？两个相似的 Skill 被调用错误怎么办？
+
+<!-- 面试来源：
+- 百度：https://www.nowcoder.com/feed/main/detail/b9521e2b51e04afeac0a3a32e13f4da9 （“Agent 怎么选择要调用的 Skill？”“如果两个相似的Skills被调用错误怎么办？”“要是只有一个Skill但被错误执行呢？”“页面结构变化导致 Skill 失效怎么办？”）
+- 韶音：https://www.nowcoder.com/feed/main/detail/11e40634018b47a7974bf5c96605024c （“如果遇到现有skill无法解决的问题，agent会如何处理？”）
+- 滴滴：https://www.nowcoder.com/feed/main/detail/630bb86ca8224183ad3de301a69ec199 （Skill 质量）
+-->
+
+**出现公司**：百度、韶音、滴滴
+
+**考察重点**
+
+- 描述驱动的选择机制。
+- 相似 Skill 的区分、失效处理与回归评测。
+
+**相关内容**：[渐进式加载](#progressive)、[Skill 失效或无法解决当前任务怎么办](#51-skill-失效或无法解决当前任务怎么办)。
+
+<details>
+<summary>参考回答</summary>
+
+模型根据系统提示中各 Skill 的描述判断是否相关，所以描述要写清做什么、在什么情况下使用、与相似 Skill 的区别。
+
+两个相似 Skill 被混用时，先看失败样例中模型依据的是哪部分描述，在描述中加入区分条件，例如输入类型或适用业务线；差异很小的就合并成一个 Skill，在正文中分支处理。只有一个 Skill 却执行错误，通常是正文步骤不清或缺少前置检查：把容易错的步骤改成脚本，增加执行前校验。外部条件变化导致失效时，脚本应输出明确错误，模型回退到通用工具或报告失败。所有修改都用一组触发和不触发的评测请求回归。
+
+</details>
+
+### 6.4 MCP、CLI 和 Skill 分别适合什么场景？
+
+<!-- 面试来源：
+- 字节跳动：https://www.nowcoder.com/discuss/937314680270311424 （“怎样理解 CLI 和 MCP Tool，它们有什么区别？”“什么场景使用 MCP，什么场景使用 CLI，什么场景需要 Skill？”“如果重点追求性能和低延迟，CLI、MCP、Skill 应怎样选型和设计？”）
+- OPPO：https://www.nowcoder.com/feed/main/detail/09fd6466f3f64e7dbfb5a09ed9d660a4 （MCP 与 Skills）
+- 字节跳动：https://www.nowcoder.com/feed/main/detail/ed5e9d17f26e489da94afbf1241b885e （“如何将多个 MCP 工具预先编排成一个 Skill？”）
+-->
+
+**出现公司**：字节跳动、OPPO
+
+**考察重点**
+
+- 三者在执行、发现和复用上的区别。
+- 组合使用与延迟考虑。
+
+**相关内容**：[Skill、Tool、MCP、CLI 的分工](#comparison)、[MCP](./mcp.mdx)。
+
+<details>
+<summary>参考回答</summary>
+
+MCP 适合接入外部系统，如 GitHub、数据库、内部服务：工具定义标准化，可以被多个应用复用，支持远程部署和鉴权。CLI 适合本地已有的通用命令，如 git、grep、测试命令；模型熟悉这些命令，输出可以用管道过滤，没有额外协议开销。Skill 不提供执行能力，而是描述如何组合这些工具完成一类任务。
+
+追求低延迟时，本地操作优先 CLI 或脚本，减少网络往返；把多个固定步骤写成 Skill 中的一个脚本，可以避免每一步都经过模型推理。常见组合是 Skill 描述流程，流程中调用 MCP 工具访问外部系统，用 CLI 或脚本处理本地数据。
+
+</details>
+
+## 7. 参考资料
+
+- [Agent Skills：Specification](https://agentskills.io/specification)
+- [Anthropic：Equipping agents for the real world with Agent Skills](https://www.anthropic.com/engineering/equipping-agents-for-the-real-world-with-agent-skills)
+- [Claude Docs：Agent Skills overview](https://docs.claude.com/en/docs/agents-and-tools/agent-skills/overview)

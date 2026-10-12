@@ -620,7 +620,7 @@
     - 微调（待补文章）
   - 检索增强生成
     - 检索增强生成（RAG）（待补文章）
-    - 文档切分（待补文章）
+    - [文档解析与切分](../../docs/ai/rag/chunking.mdx)（正文待核验）
     - Embedding（待补文章）
     - 检索策略（待补文章）
     - 重排序（待补文章）
@@ -633,7 +633,7 @@
     - 工具契约（待补文章）
     - 工作流（待补文章）
     - Agent 执行循环（待补文章）
-    - Agent Harness（待补文章）
+    - [Agent Harness](../../docs/ai/agents/harness.mdx)（正文待核验）
     - ReAct（待补文章）
     - 规划与执行（待补文章）
     - Agent 状态（待补文章）
@@ -642,13 +642,13 @@
     - Agent 记忆（待补文章）
     - MCP（待补文章）
     - Agent Skills（待补文章）
-    - 多 Agent 协作（待补文章）
+    - [多 Agent 协作](../../docs/ai/agents/multi-agent.mdx)（正文待核验）
     - A2A（待补文章）
   - 评估与观测
-    - Agent 评估（待补文章）
+    - [Agent 评估](../../docs/ai/evaluation/agent-evaluation.mdx)（正文待核验）
     - 编码 Agent 评测（待补文章）
     - 工具调用评估（待补文章）
-    - RAG 评估（待补文章）
+    - [RAG 评估](../../docs/ai/evaluation/rag-evaluation.mdx)（正文待核验）
     - Agent 可观测性（待补文章）
     - LLM 评审（待补文章）
   - 安全与控制
@@ -663,7 +663,7 @@
     - LangGraph（待补文章）
     - Spring AI（待补文章）
   - Agent 辅助开发
-    - 代码库上下文（待补文章）
-    - 开发反馈迭代（待补文章）
-    - AI 代码调试（待补文章）
-    - 仓库指令（待补文章）
+    - [AI 辅助开发](../../docs/ai/development/ai-assisted-development.mdx)（正文待核验）
+    - [AI 代码调试](../../docs/ai/development/ai-code-debugging.mdx)（正文待核验）
+    - [仓库指令](../../docs/ai/development/repository-instructions.mdx)（正文待核验）
+    - [编码 Agent 评测](../../docs/ai/development/coding-agent-evaluation.mdx)（正文待核验）

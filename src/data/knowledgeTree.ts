@@ -26,6 +26,7 @@ export type KnowledgeDomain = {
 const BK = 'basic-knowledge';
 const SD = 'system-design';
 const JAVA = `${BK}/java`;
+const AI = 'ai';
 
 export const knowledgeTree: KnowledgeDomain[] = [
   {
@@ -600,7 +601,68 @@ export const knowledgeTree: KnowledgeDomain[] = [
   {id: 'browser', label: '浏览器与前端基础', topics: []},
   {id: 'frontend', label: '前端框架与工程化', topics: []},
   {id: 'nodejs', label: 'Node.js', topics: []},
-  {id: 'ai', label: 'AI 应用与 Agent', topics: []},
+  {
+    id: 'ai',
+    label: 'AI 应用与 Agent',
+    overview: `${AI}/index`,
+    topics: [
+      {
+        id: 'ai/prompting',
+        label: '模型调用与提示',
+        articles: [`${AI}/prompting/prompt-engineering`, `${AI}/prompting/context-management`, `${AI}/prompting/context-compaction`],
+      },
+      {
+        id: 'ai/rag',
+        label: 'RAG',
+        articles: [
+          `${AI}/rag/rag`,
+          `${AI}/rag/chunking`,
+          `${AI}/rag/embedding-vector-search`,
+          `${AI}/rag/hybrid-search-rerank`,
+        ],
+      },
+      {
+        id: 'ai/tools',
+        label: '工具调用与协议',
+        articles: [`${AI}/tools/function-calling`, `${AI}/tools/mcp`, `${AI}/tools/agent-skills`],
+      },
+      {
+        id: 'ai/agents',
+        label: 'Agent 架构',
+        articles: [
+          `${AI}/agents/workflow-vs-agent`,
+          `${AI}/agents/agent-loop`,
+          `${AI}/agents/harness`,
+          `${AI}/agents/multi-agent`,
+        ],
+      },
+      {
+        id: 'ai/state',
+        label: '状态与记忆',
+        articles: [`${AI}/state/durable-execution`, `${AI}/state/memory`],
+      },
+      {
+        id: 'ai/evaluation',
+        label: '评估与观测',
+        articles: [`${AI}/evaluation/agent-evaluation`, `${AI}/evaluation/rag-evaluation`],
+      },
+      {
+        id: 'ai/safety',
+        label: '安全与服务化',
+        articles: [`${AI}/safety/prompt-injection`, `${AI}/safety/tool-authorization-sandbox`],
+      },
+      {
+        id: 'ai/development',
+        label: '框架与 AI 辅助开发',
+        articles: [
+          `${AI}/development/ai-assisted-development`,
+          `${AI}/development/ai-code-debugging`,
+          `${AI}/development/repository-instructions`,
+          `${AI}/development/coding-agent-evaluation`,
+        ],
+      },
+    ],
+  },
   {
     id: 'bigdata',
     label: '大数据',

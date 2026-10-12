@@ -1,0 +1,210 @@
+---
+sidebar_position: 1
+---
+
+# Function Calling
+
+Function Calling（工具调用）让模型根据工具定义输出结构化的调用请求，由程序执行后把结果交回模型。模型从不直接执行函数。本文讲调用链路、消息结构、工具契约设计、可靠性保障，以及工具数量很多时如何让模型选对工具。
+
+## 1. 面试核心 {#core}
+
+- 链路是：程序发送工具定义 → 模型返回工具名和参数 → 程序校验并执行 → 结果以工具消息按调用 ID 写回 → 模型继续生成。[卡](#61-function-calling-的完整调用链路是什么为什么工具结果需要单独的-tool-message)
+- 模型根据工具的名称、描述和参数 Schema 选择工具，所以工具描述就是提示词的一部分，需要写清用途、适用条件和参数含义。
+- 工具契约包括参数 Schema、返回结构、错误码和副作用说明。错误信息要让模型能据此修正，而不是只返回 `500`。[卡](#63-tool-的设计原则是什么如何设计参数-schema-和错误码)
+- 可靠性靠程序保证：Schema 校验、业务校验、权限检查、超时重试、幂等和重复调用检测。[卡](#62-如何保障工具调用的可靠性模型传入错误或危险参数怎么办)
+- 工具很多时先检索或分组，再把少量候选工具的完整定义放入上下文。[卡](#64-工具扩展到几百上千个时如何保证模型选中正确的工具)
+
+## 2. 调用链路 {#flow}
+
+```python
+tools = [{
+    "name": "get_order",
+    "description": "按订单号查询订单状态和物流信息。用户询问订单进度、物流时使用。",
+    "input_schema": {
+        "type": "object",
+        "properties": {"order_id": {"type": "string", "description": "以 SO 开头的订单号"}},
+        "required": ["order_id"],
+    },
+}]
+
+resp = client.messages.create(model=MODEL, max_tokens=1024, tools=tools, messages=messages)
+messages.append({"role": "assistant", "content": resp.content})
+results = [
+    {"type": "tool_result", "tool_use_id": block.id,
+     "content": run_tool(block.name, block.input)}     # 程序执行模型请求的调用
+    for block in resp.content if block.type == "tool_use"
+]
+if results:
+    messages.append({"role": "user", "content": results})
+```
+
+不同提供方的字段名不同（有的叫 `tool_calls` 和 `role: "tool"`），结构一致：
+
+1. 请求中带上工具列表。
+2. 模型决定调用时，返回一个或多个调用块，每个有唯一 ID、工具名和 JSON 参数。
+3. 程序执行，生成结果。
+4. 结果以独立的工具结果消息返回，并引用对应的调用 ID。
+5. 模型读取结果，继续调用工具或给出最终回答。
+
+### 2.1 为什么要单独的工具结果消息
+
+- **对应关系**：一次回复可能包含多个并行调用，ID 把每个结果和请求一一对应。
+- **来源区分**：工具结果不是用户说的话，单独的类型让模型知道这是执行结果，也便于程序把它标为不可信内容。
+- **协议约束**：多数 API 要求每个调用都有对应结果，缺失会报错；这也迫使程序处理每一个调用，包括失败的调用。
+
+## 3. 工具契约设计 {#contract}
+
+| 部分 | 要求 |
+| --- | --- |
+| 名称 | 动词 + 对象，含义唯一，如 `search_orders`、`cancel_order` |
+| 描述 | 做什么、什么时候用、什么时候不用、与相似工具的区别 |
+| 参数 Schema | 类型、枚举、格式、必填项；参数描述写清单位和取值来源 |
+| 返回结构 | 只返回模型需要的字段，大结果分页或返回引用 |
+| 错误 | 错误码 + 可读原因 + 修正建议，如 `INVALID_ORDER_ID: 订单号应以 SO 开头` |
+| 副作用 | 是否修改外部状态、是否幂等、是否需要确认 |
+
+设计原则：
+
+- **按任务而非按接口封装**。一个 `schedule_meeting` 工具内部调用日历查询和创建，比暴露三个底层接口让模型自己组合更可靠。
+- **减少相似工具**。描述难以区分的工具会被混用，合并或明确各自边界。
+- **参数让模型容易填对**。用枚举代替自由文本，用业务 ID 代替数据库自增 ID，避免要求模型做单位换算。
+- **返回让模型容易读懂**。返回语义字段（名称、状态）而不是内部编码；截断时明确告诉模型“已截断，共 3200 行，可用 page 参数读取”。
+
+## 4. 可靠性保障 {#reliability}
+
+1. **Schema 校验**：参数类型、必填、枚举不符时不执行，返回校验错误让模型修正。支持严格模式的提供方可以在生成时约束参数符合 Schema。
+2. **业务校验**：ID 是否存在、金额是否超限、时间是否在允许范围内。
+3. **权限检查**：按当前用户和工具风险等级判断是否允许，写操作需要确认，见[工具授权与执行沙箱](../safety/tool-authorization-sandbox.mdx)。
+4. **执行控制**：超时、有限次数的退避重试、熔断；写操作通过幂等键防止重复执行。
+5. **结果处理**：异常转换为结构化错误返回给模型；大结果截断或落盘。
+6. **循环控制**：同一工具相同参数重复调用、连续失败达到阈值时停止并转入兜底。
+
+减少“工具幻觉”（调用不存在的工具、编造参数值）的办法：只提供当前任务需要的工具；参数要求来自上文的 ID 时，在描述中写明“必须来自 search_orders 的结果”；程序校验 ID 是否在本次会话中出现过。
+
+## 5. 大量工具的选择 {#selection}
+
+工具定义占用上下文，并且工具越多，模型越容易选错。几十个以上时可以：
+
+- **分层路由**：先由意图分类或路由模型确定领域，再只加载该领域的工具。
+- **工具检索**：把工具描述向量化或建立关键词索引，按当前请求检索 Top-K 个工具，把完整定义放入上下文。也可以提供一个“搜索工具”的工具，让模型按需检索。
+- **组合为高层工具或 Skill**：把常用的多步调用封装成一个工具，减少候选数量。
+- **评测命中率**：建立“请求 → 正确工具”的评测集，统计 Top-1 命中率和检索召回率，工具描述修改后回归。
+
+## 6. 面试题
+
+### 6.1 Function Calling 的完整调用链路是什么？为什么工具结果需要单独的 Tool Message？
+
+<!-- 面试来源：
+- 虾皮：https://www.nowcoder.com/feed/main/detail/79fe3fc8f8cb4c4d9beca478f4279e3a （“Agent调用工具后，工具返回结果时消息结构如何设计？为什么需要单独设计Tool Message？”）
+- TCS：https://www.linkedin.com/posts/galgalepallavi_tcs-interviewexperience-genai-activity-7419624110521090048-Q3sC （“What is function calling in LLMs? How does an LLM decide which function to call?”）
+- 快手：https://www.nowcoder.com/feed/main/detail/daa06f995ea74445a13de42d67f66265 （“聊聊你对 function call 的理解”）
+- 阿里淘天：https://www.nowcoder.com/feed/main/detail/ce768fff2ab241ea870562ec2155ccd2
+- 字节跳动：https://www.nowcoder.com/discuss/917561494512861184 （Tool Result 链路）
+- 字节跳动：https://www.nowcoder.com/feed/main/detail/b34f6902e8544fe2953696ed52e49dba （消息类型）
+-->
+
+**出现公司**：虾皮、TCS、快手、阿里淘天、字节跳动
+
+**考察重点**
+
+- 模型提出调用、程序执行的分工。
+- 调用 ID、并行调用和工具结果消息的作用。
+
+**相关内容**：[调用链路](#flow)、[为什么要单独的工具结果消息](#21-为什么要单独的工具结果消息)。
+
+<details>
+<summary>参考回答</summary>
+
+程序在请求中附带工具列表，包括名称、描述和参数 JSON Schema。模型依据描述和对话判断是否需要工具，需要时返回调用块：调用 ID、工具名和参数。程序校验参数和权限后执行，把结果作为工具结果消息追加，引用对应的调用 ID，再次请求模型；模型据此继续调用或给出回答。
+
+单独的 Tool Message 有三个作用：一次回复可能有多个并行调用，ID 保证结果与请求对应；把执行结果和用户输入区分开，便于模型理解来源，也便于程序把它当作不可信内容处理；API 要求每个调用都有结果，迫使程序处理包括失败在内的所有调用。
+
+</details>
+
+### 6.2 如何保障工具调用的可靠性？模型传入错误或危险参数怎么办？
+
+<!-- 面试来源：
+- 字节跳动：https://www.nowcoder.com/discuss/925342611194286080 （“这些工具都有固定地入参，需要模型结合上下文去提供……如何去保障工具调用的可靠性？”）
+- 凌脉：https://www.nowcoder.com/feed/main/detail/76f5be8b8bd5420b94d32a66e26a7ad9 （“工具调用前如何校验参数，避免模型传入错误或危险参数？”“如何识别并阻止 Agent 重复调用同一工具？”）
+- TCS：https://www.linkedin.com/posts/galgalepallavi_tcs-interviewexperience-genai-activity-7419624110521090048-Q3sC （“How do you validate and handle incorrect or partial function responses?”）
+- 快手：https://www.nowcoder.com/feed/main/detail/daa06f995ea74445a13de42d67f66265 （“如果想要减少工具调用幻觉你有什么好方法”）
+- 未披露公司：https://www.nowcoder.com/feed/main/detail/6d52148d2e854ade92de493292f2e312 （“工具调用失败 怎么办”）
+- 去哪儿旅行：https://www.nowcoder.com/feed/main/detail/3a2bb6126e714ff3814b81ce092b5fbd （调用链及参数错误处理）
+-->
+
+**出现公司**：字节跳动、凌脉、TCS、快手、去哪儿旅行
+
+**考察重点**
+
+- Schema 校验、业务校验和权限检查的分层。
+- 错误回传、重试、幂等与重复调用检测。
+
+**相关内容**：[可靠性保障](#reliability)、[工具契约设计](#contract)。
+
+<details>
+<summary>参考回答</summary>
+
+分层处理。生成阶段用严格模式或清晰的 Schema、枚举减少错误；执行前用 Schema 校验类型和必填项，再做业务校验（ID 是否存在、金额范围）和权限检查，危险操作需要用户确认。校验失败不执行，返回带原因和修正建议的结构化错误，让模型修正后重试。
+
+执行阶段设置超时、有限次数的退避重试和熔断，写操作用幂等键防止重复。记录每次调用的工具名和参数，相同调用重复或连续失败达到阈值时停止并进入兜底，例如转人工或返回部分结果。为减少编造参数，要求 ID 来自前序工具结果，并由程序核对。
+
+</details>
+
+### 6.3 Tool 的设计原则是什么？如何设计参数 Schema 和错误码？
+
+<!-- 面试来源：
+- 字节跳动：https://www.nowcoder.com/feed/main/detail/15af3788a038477bba99f2f9d94b2cef （“Tool 的设计原则是什么？哪些能力适合抽象成 Tool？如何设计 Tool 的参数 Schema 和错误码？”）
+- 安软：https://www.nowcoder.com/feed/main/detail/40920533fad14136bff01c3928c7e953 （“工具如何注册？工具的参数、权限和作用范围如何描述？”）
+- 百度：https://www.nowcoder.com/feed/main/detail/b9521e2b51e04afeac0a3a32e13f4da9 （“你怎么设计的工具调用”）
+-->
+
+**出现公司**：字节跳动、安软、百度
+
+**考察重点**
+
+- 按任务封装、名称与描述、参数和返回设计。
+- 让模型能据此修正的错误信息与副作用声明。
+
+**相关内容**：[工具契约设计](#contract)。
+
+<details>
+<summary>参考回答</summary>
+
+适合做成 Tool 的是需要外部数据或确定性执行的能力，例如查询、计算、写入。按用户任务封装，而不是一比一暴露底层接口，减少模型需要组合的步骤；相似工具合并或在描述中写清区别。
+
+名称用动词加对象；描述写用途、何时使用和何时不用。参数 Schema 标注类型、枚举、格式和必填项，参数描述写清来源和单位，尽量使用枚举和业务 ID。返回只给模型需要的语义字段，大结果分页。错误码配可读原因和修正建议，区分可重试（超时、限流）和需要改变决策（参数错误、权限不足）的错误。同时声明副作用、幂等性和是否需要确认，供程序做权限控制。
+
+</details>
+
+### 6.4 工具扩展到几百上千个时，如何保证模型选中正确的工具？
+
+<!-- 面试来源：
+- 百度：https://www.nowcoder.com/feed/main/detail/2d033fd6daa04e2aaad2282b75531bbc （“当前约十个工具时如何识别正确 Tool”“扩展到几百或几千个工具时如何保证命中率”）
+- 深信服：https://www.nowcoder.com/feed/main/detail/14b2c379ae434062a009aefea9fc5df9 （“现在 100 多个工具，AI 想调用的时候，能找到自己想要的接口吗？怎么保障？”）
+- 字节跳动：https://www.nowcoder.com/feed/main/detail/8a553bb6ea8445d0b0abe11e87614cea （“当Agent拥有大量工具时，如何避免工具描述导致Prompt过长？”）
+- 元戎启行：https://www.nowcoder.com/discuss/787738075525812224 （注册能力检索）
+-->
+
+**出现公司**：百度、深信服、字节跳动、元戎启行
+
+**考察重点**
+
+- 工具定义的上下文成本与选择错误率。
+- 分层路由、工具检索和命中率评测。
+
+**相关内容**：[大量工具的选择](#selection)。
+
+<details>
+<summary>参考回答</summary>
+
+十个左右的工具可以全部放入上下文，依靠清晰的描述区分。工具数量增多后，全部放入既占用大量上下文，又会提高选错率。
+
+做法是两阶段：先用意图分类或路由确定领域，或者按请求对工具描述做向量与关键词混合检索，只把 Top-K 个候选的完整定义放入上下文；也可以给模型一个“搜索工具”的工具按需加载。常用的多步组合封装成高层工具或 Skill，减少候选数量。最后建立“请求—正确工具”的评测集，统计检索召回率和最终选择准确率，工具新增或描述修改后回归。
+
+</details>
+
+## 7. 参考资料
+
+- [Anthropic：Tool use with Claude](https://docs.claude.com/en/docs/agents-and-tools/tool-use/overview)
+- [OpenAI：Function calling](https://platform.openai.com/docs/guides/function-calling)
+- [Anthropic：Writing effective tools for agents](https://www.anthropic.com/engineering/writing-tools-for-agents)

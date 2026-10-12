@@ -1,0 +1,170 @@
+---
+sidebar_position: 2
+---
+
+# Agent 执行循环
+
+Agent 执行循环是“模型提出动作—程序执行—结果写回上下文—模型继续决策”的重复过程。本文讲清 ReAct 的三个环节、程序与模型的职责划分、停止条件，以及 ReAct 与 Plan-and-Execute 的选择。
+
+## 1. 面试核心 {#core}
+
+- 模型只**提出**工具调用；读取文件、调用接口、执行命令都由程序完成，结果作为观测写回上下文。[卡](#71-react-agent-的核心执行流程是什么thoughtactionobservation-分别承担什么作用)
+- 循环必须有程序侧的停止条件：模型给出最终回答、达到最大步数、超时、预算耗尽、连续重复失败或需要人工确认。[卡](#72-如何避免-agent-陷入无限循环最大步数怎么确定)
+- 最大步数来自任务轨迹统计和成本约束，不是拍一个数字；触发上限时要返回可解释的失败状态。
+- ReAct 逐步决策，适合依赖中间结果的任务；Plan-and-Execute 先规划再执行，适合子任务清楚、需要减少模型调用和便于审计的任务。[卡](#73-react-和-plan-and-execute-分别适合什么场景)
+
+## 2. 一次循环的执行链路 {#mechanism}
+
+```python
+def run(task, tools, max_steps=20):
+    messages = [system_prompt(tools), user(task)]
+    for step in range(max_steps):
+        reply = model.generate(messages, tools=tool_schemas(tools))
+        messages.append(reply)
+        if not reply.tool_calls:                 # 模型认为可以回答
+            return Done(reply.text)
+        for call in reply.tool_calls:
+            result = execute(call, tools)        # 程序校验参数、检查权限并执行
+            messages.append(tool_result(call.id, result))
+    return Stopped("max_steps", messages)        # 由程序结束，而不是等模型自觉
+```
+
+每轮模型输出两类内容之一：工具调用（名称、参数）或最终回答。程序拿到工具调用后做三件事：校验参数和权限、执行并捕获异常、把结果按调用 ID 写回消息列表。下一轮模型基于新的观测继续决策。
+
+工具执行失败也是一种观测。把“参数缺少 `order_id`”“接口 429，30 秒后重试”这样的错误写回，模型有机会修正参数；直接抛异常终止，则失去自我修正机会。
+
+## 3. ReAct 的三个环节 {#react}
+
+ReAct 把推理（Reasoning）和行动（Acting）交替进行：
+
+| 环节 | 内容 | 作用 |
+| --- | --- | --- |
+| Thought | 模型对当前状态的分析和下一步打算 | 把任务拆到下一步，解释为何选这个工具 |
+| Action | 工具名和参数 | 获取外部信息或改变外部状态 |
+| Observation | 工具返回的结果 | 用真实数据修正推理，减少凭空生成 |
+
+原始论文用文本格式让模型输出 `Thought:` 和 `Action:`，程序解析后执行。现在的模型 API 普遍原生支持工具调用，Action 以结构化字段返回，Thought 可能是可见文本，也可能是模型内部的推理过程。循环结构没有变化。
+
+## 4. 停止条件与预算 {#stop}
+
+只依赖模型说“完成了”会出现两类问题：模型过早宣布完成，或者在两个动作之间来回震荡。程序侧至少需要以下控制：
+
+- **最大步数和总超时**：按任务类型设置。先在评测集上统计成功轨迹的步数分布，例如 P95 为 12 步，上限设为 20 步左右，再结合每步成本校验预算。
+- **Token 和费用预算**：累计用量超过阈值时停止或降级为总结当前进展。
+- **重复检测**：同一工具、相同参数连续出现，或连续 N 次工具报同一错误时，中止或改为请求人工。
+- **完成校验**：最终回答前检查验收条件，例如测试是否通过、必填字段是否齐全，未满足时把差异作为观测写回。
+- **人工确认点**：有副作用的动作在执行前暂停，见[工具授权与执行沙箱](../safety/tool-authorization-sandbox.mdx)。
+
+触发上限时返回结构化状态，例如 `stopped: max_steps`、已完成的动作和最后一次错误，让调用方可以重试、转人工或展示部分结果。
+
+## 5. ReAct 与 Plan-and-Execute {#planning}
+
+Plan-and-Execute 先让模型生成完整计划，再由执行器逐项完成，执行中出现偏差时重新规划。
+
+| 维度 | ReAct | Plan-and-Execute |
+| --- | --- | --- |
+| 决策时机 | 每一步根据最新观测决定 | 先规划，执行中按需重规划 |
+| 适合任务 | 下一步依赖上一步结果，如排查故障、浏览网页 | 子任务清楚、可并行，如多源调研、报表生成 |
+| 模型调用 | 每步都要用强模型推理 | 规划用强模型，执行可用便宜模型或固定代码 |
+| 风险 | 长任务中偏离目标，步数不可控 | 初始计划错误时整体返工，依赖重规划 |
+
+两者可以组合：外层计划给出阶段，每个阶段内部用 ReAct 处理不确定的细节。在计划中加入 Critic 或评审步骤，是为了在执行后检查结果是否满足要求，而不是另一种循环结构。
+
+## 6. 常见问题
+
+### 6.1 除了 ReAct 还有哪些交互模式
+
+常见的还有 Plan-and-Execute、Reflexion（失败后生成反思写入记忆再重试）、评审与修改循环，以及由编排者动态拆分子任务的多 Agent 模式。它们都在“谁规划、何时检查、何时停止”上做不同取舍，执行工具仍然由程序完成。
+
+### 6.2 工具调用失败后应该让模型重试还是程序重试
+
+可确定的瞬时错误，例如网络超时、429，由程序按退避策略重试，不占用模型轮次。参数错误、权限不足、业务规则拒绝这类需要改变决策的错误，作为观测返回给模型。有副作用的写操作只有在接口幂等时才能自动重试。
+
+## 7. 面试题
+
+### 7.1 ReAct Agent 的核心执行流程是什么？Thought、Action、Observation 分别承担什么作用？
+
+<!-- 面试来源：
+- 虾皮：https://www.nowcoder.com/feed/main/detail/79fe3fc8f8cb4c4d9beca478f4279e3a （“ReAct Agent的核心执行流程是什么？Thought、Action、Observation三个环节分别承担什么作用？”）
+- 小红书：https://www.nowcoder.com/feed/main/detail/f1ed02bfdae04730837753b62e0d58b9 （“讲一下 ReAct 的流程？”）
+- 百度：https://www.nowcoder.com/feed/main/detail/b9521e2b51e04afeac0a3a32e13f4da9 （“如何设计一个ReAct流程”）
+- 腾讯：https://www.nowcoder.com/feed/main/detail/427caf4cc5ec4192b64fdb6ea6698bef
+-->
+
+**出现公司**：虾皮、小红书、百度、腾讯
+
+**考察重点**
+
+- 模型提出动作、程序执行动作的职责划分。
+- 观测如何回到上下文并影响下一步。
+
+**相关内容**：[一次循环的执行链路](#mechanism)、[ReAct 的三个环节](#react)。
+
+<details>
+<summary>参考回答</summary>
+
+程序把任务、工具定义和历史消息交给模型。模型输出 Thought 和 Action：Thought 分析当前状态并决定下一步，Action 给出工具名与参数。程序校验参数和权限后执行工具，把结果作为 Observation 按调用 ID 追加到消息中，再次调用模型。模型不再请求工具、或程序触发停止条件时循环结束。
+
+Thought 负责拆解和选择，Action 负责获取信息或改变外部状态，Observation 用真实结果修正推理。工具失败也应作为 Observation 返回，让模型有机会修正参数。
+
+</details>
+
+### 7.2 如何避免 Agent 陷入无限循环？最大步数怎么确定？
+
+<!-- 面试来源：
+- 字节跳动：https://www.nowcoder.com/feed/main/detail/15af3788a038477bba99f2f9d94b2cef （“如何避免 Agent 出现无限循环或者多个 Agent 之间互相推诿任务？”）
+- 腾讯：https://www.nowcoder.com/feed/main/detail/0f48b7645a90434c8ab495a6073f3e03 （最大步数如何确定）
+- 科大讯飞：https://www.nowcoder.com/feed/main/detail/671d2fa1d7c04322837ee1f5788dd69d
+- 字节跳动：https://www.nowcoder.com/feed/main/detail/ccba40c7281f4d9197b01fe9c140b13d
+- 阿里云：https://www.nowcoder.com/feed/main/detail/3a61d09fc2fb436f9bd5c1ed99b43330
+-->
+
+**出现公司**：字节跳动、腾讯、科大讯飞、阿里云
+
+**考察重点**
+
+- 程序侧停止条件与模型自报完成的区别。
+- 用轨迹数据确定步数上限，以及触发上限后的处理。
+
+**相关内容**：[停止条件与预算](#stop)。
+
+<details>
+<summary>参考回答</summary>
+
+停止不能只靠模型判断。程序同时设置最大步数、总超时和 Token 预算；记录每次工具调用的名称和参数，连续重复同一调用或同一错误达到阈值时中止；最终回答前用可执行条件校验是否真的完成。
+
+最大步数按评测集中成功轨迹的步数分布确定，例如取 P95 再留余量，并用单步平均成本核对总预算。不同任务类型可以设置不同上限。触发上限时返回已完成的动作、最后的错误和停止原因，由调用方重试、转人工或返回部分结果。多 Agent 互相转交时，还要限制委派深度并记录任务归属。
+
+</details>
+
+### 7.3 ReAct 和 Plan-and-Execute 分别适合什么场景？
+
+<!-- 面试来源：
+- 快手：https://www.nowcoder.com/feed/main/detail/631e9b79e433415ca3dea24642f94b4c （“ReAct 和 Plan-and-Execute 分别适合什么场景？能举个例子吗？”）
+- 字节跳动：https://www.nowcoder.com/feed/main/detail/15af3788a038477bba99f2f9d94b2cef （“ReAct 和 Plan-Execute 架构分别适用于哪些场景？”）
+- 去哪儿旅行：https://www.nowcoder.com/feed/main/detail/505f5d9ae8104d0e93aa1bb99404087c
+-->
+
+**出现公司**：快手、字节跳动、去哪儿旅行
+
+**考察重点**
+
+- 逐步决策与预先规划的取舍。
+- 重规划和成本控制。
+
+**相关内容**：[ReAct 与 Plan-and-Execute](#planning)。
+
+<details>
+<summary>参考回答</summary>
+
+ReAct 每一步根据最新观测决定下一步，适合高度依赖中间结果的任务，例如排查线上故障：查完日志才知道该看哪台机器。代价是每一步都需要强模型推理，长任务容易偏离目标。
+
+Plan-and-Execute 先生成计划，再逐项执行，适合子任务清楚、可以并行或需要审计的任务，例如生成一份需要查询五个数据源的周报。规划用强模型，执行可以用便宜模型或固定代码；执行结果与计划不符时触发重规划。实际系统常把两者组合：外层按计划分阶段，阶段内部用 ReAct 处理细节。
+
+</details>
+
+## 8. 参考资料
+
+- [ReAct: Synergizing Reasoning and Acting in Language Models](https://arxiv.org/abs/2210.03629)
+- [Anthropic：Building effective agents](https://www.anthropic.com/engineering/building-effective-agents)
+- [OpenAI：Function calling](https://platform.openai.com/docs/guides/function-calling)

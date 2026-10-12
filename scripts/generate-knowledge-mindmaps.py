@@ -167,8 +167,15 @@ def main():
         path = ROOT / 'docs/ai' / folder / filename
         url = '../../' + str(path.relative_to(ROOT)) if path.exists() else None
         add(title, url, ('AI 应用与 Agent', ai_groups[folder]), key='ai:' + folder + filename, status='正文待核验' if url else '待补文章')
-    for title in ['代码库上下文', '开发反馈迭代', 'AI 代码调试', '仓库指令']:
-        add(title, group=('AI 应用与 Agent', 'Agent 辅助开发'), status='待补文章')
+    for title, filename in [
+        ('AI 辅助开发', 'ai-assisted-development.mdx'),
+        ('AI 代码调试', 'ai-code-debugging.mdx'),
+        ('仓库指令', 'repository-instructions.mdx'),
+        ('编码 Agent 评测', 'coding-agent-evaluation.mdx'),
+    ]:
+        path = ROOT / 'docs/ai/development' / filename
+        url = '../../' + str(path.relative_to(ROOT)) if path.exists() else None
+        add(title, url, ('AI 应用与 Agent', 'Agent 辅助开发'), status='正文待核验' if url else '待补文章')
 
     for line in read('system-design.md').splitlines():
         cells = line.split(' | ')

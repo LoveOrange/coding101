@@ -111,7 +111,7 @@ const config: Config = {
       items: [
         {
           to: "/topics",
-          activeBaseRegex: "^/(topics|docs/basic-knowledge|docs/system-design)",
+          activeBaseRegex: "^/(topics|docs/basic-knowledge|docs/system-design|docs/ai)",
           position: "left",
           label: "主题",
         },

@@ -1,0 +1,58 @@
+---
+sidebar_position: 0
+---
+
+# AI 应用与 Agent
+
+AI 应用与 Agent 覆盖模型调用、上下文、检索、工具执行、状态、评估和安全，面向 Agent 开发、LLM 应用开发和允许使用 AI 编码的面试。题目来自 2025-07 至 2026-09 公开的 167 篇候选人复盘，公司信息只说明候选人曾公开记录相关提问。
+
+:::info 阅读顺序
+
+先读[工作流与 Agent](./agents/workflow-vs-agent.mdx)和 [Agent 执行循环](./agents/agent-loop.mdx)，确定“模型提出动作、程序执行动作”这条主线；再按岗位补工具、上下文和评估。面试只考 AI 辅助编码时，从 [AI 辅助开发](./development/ai-assisted-development.mdx)开始。
+
+:::
+
+## 1. Agent 架构
+
+- [工作流与 Agent](./agents/workflow-vs-agent.mdx)：固定步骤与模型自主决策的选择条件。
+- [Agent 执行循环](./agents/agent-loop.mdx)：ReAct、观测、停止条件和预算。
+- [Agent Harness](./agents/harness.mdx)：模型之外的工具、上下文、状态、权限和验证。
+- [多 Agent 协作](./agents/multi-agent.mdx)：拆分依据、上下文隔离与结果汇总。
+
+## 2. 模型调用与提示
+
+- [提示词工程](./prompting/prompt-engineering.mdx)：任务、约束、示例和迭代方法。
+- [上下文管理](./prompting/context-management.mdx)：每一轮放入哪些信息，以及信任边界。
+- [上下文压缩](./prompting/context-compaction.mdx)：超出窗口时保留什么、丢弃什么。
+
+## 3. 工具调用与协议
+
+- [Function Calling](./tools/function-calling.mdx)：工具定义、调用链与错误回传。
+- [MCP](./tools/mcp.mdx)：Host、Client、Server 与传输方式。
+- [Agent Skills](./tools/agent-skills.mdx)：流程与资源的渐进加载。
+
+## 4. RAG
+
+- [检索增强生成（RAG）](./rag/rag.mdx)：离线索引、在线检索与生成。
+- [文档解析与切分](./rag/chunking.mdx)：块大小、重叠、父子索引与元数据。
+- [Embedding 与向量检索](./rag/embedding-vector-search.mdx)：相似度、ANN 与 HNSW。
+- [混合检索与重排序](./rag/hybrid-search-rerank.mdx)：BM25、RRF 与 Rerank。
+
+## 5. 状态与记忆
+
+- [Agent 状态与持久化执行](./state/durable-execution.mdx)：检查点、重试、恢复和人工介入。
+- [Agent 记忆](./state/memory.mdx)：短期、长期、写入、检索与遗忘。
+
+## 6. 评估与安全
+
+- [Agent 评估](./evaluation/agent-evaluation.mdx)：评测集、指标、失败归因和回归。
+- [RAG 评估](./evaluation/rag-evaluation.mdx)：检索、证据和生成分层评估。
+- [提示注入](./safety/prompt-injection.mdx)：不可信材料中的指令与防护。
+- [工具授权与执行沙箱](./safety/tool-authorization-sandbox.mdx)：权限分级、审批和运行隔离。
+
+## 7. AI 辅助开发
+
+- [AI 辅助开发](./development/ai-assisted-development.mdx)：需求、代码库上下文、反馈迭代和验收。
+- [AI 代码调试](./development/ai-code-debugging.mdx)：复现、假设、根因与回归。
+- [仓库指令](./development/repository-instructions.mdx)：AGENTS.md 等规则文件的内容与维护。
+- [编码 Agent 评测](./development/coding-agent-evaluation.mdx)：任务集、成功率与真实效能。
