@@ -1,0 +1,45 @@
+---
+sidebar_position: 0
+---
+
+# 运维与 SRE
+
+运维与 SRE 覆盖 Linux 排查、容器、Kubernetes、监控告警、故障响应和流量接入，面向 SRE、运维开发、DevOps 和需要负责线上排查的后端岗位。题目来自牛客网上公开的 SRE、运维开发和 DevOps 面试复盘，公司信息只说明候选人曾公开记录相关提问。
+
+:::info 阅读顺序
+
+先读 [Linux 性能排查](./linux/performance-troubleshooting.mdx) 和 [Linux 网络排查](./linux/network-troubleshooting.mdx)，建立“先看整体资源、再定位到进程和连接”的排查习惯；再读[容器原理](./containers/container-principles.mdx)和 [Kubernetes 架构](./kubernetes/architecture.mdx)。SLO、容灾、限流等稳定性原理在系统设计中讲解，这里侧重落地与排查。
+
+:::
+
+## 1. Linux
+
+- [Linux 性能排查](./linux/performance-troubleshooting.mdx)：load average、CPU 高、系统卡、CPU 不高但接口慢。
+- [Linux 常用命令与文件权限](./linux/commands-permissions.mdx)：grep、sed、awk 与日志统计，rwx 与目录权限。
+- [磁盘与文件系统排查](./linux/disk-filesystem.mdx)：inode、磁盘满、删除后空间不释放、buffer 与 cache。
+- [进程管理与信号](./linux/processes-signals.mdx)：用户态与内核态、僵尸进程、信号、systemd。
+- [Linux 网络排查](./linux/network-troubleshooting.mdx)：端口与连接状态、TIME_WAIT、tcpdump、iptables。
+
+## 2. 容器与 Kubernetes
+
+- [容器原理](./containers/container-principles.mdx)：Namespace、Cgroups、联合文件系统，容器与虚拟机。
+- [Docker 镜像与 Dockerfile](./containers/docker-images.mdx)：指令、分层、镜像优化与数据存储。
+- [Kubernetes 架构](./kubernetes/architecture.mdx)：组件、Pod 创建链路、调度、etcd。
+- [Pod：生命周期、探针与资源](./kubernetes/pods.mdx)：状态排查、探针、requests 与 limits、调度约束、HPA。
+- [工作负载、Service 与集群网络](./kubernetes/workloads-networking.mdx)：Deployment、StatefulSet、DaemonSet、Service、Ingress、CNI。
+
+## 3. 监控、故障与流量
+
+- [监控与告警](./observability/monitoring-alerting.mdx)：Prometheus、指标选择、告警降噪与升级。
+- [SRE 的职责与工作方式](./incidents/sre-practice.mdx)：SLO、错误预算、琐事、混沌工程。
+- [故障响应与排查](./incidents/incident-response.mdx)：处置流程、从用户反馈定位、复盘。
+- [Nginx 与负载均衡](./traffic/nginx-load-balancing.mdx)：Nginx 结构、四层与七层、LVS、502 与 504。
+
+## 4. 相关的共享内容
+
+- [可重复交付（Docker、CI/CD）](../system-design/production/docker-ci-cd-reproducible-delivery.mdx)
+- [日志、指标与追踪](../system-design/production/logs-metrics-traces-correlation.mdx)
+- [生产故障联合诊断](../system-design/production/jvm-thread-sql-network-joint-diagnosis.mdx)
+- [SLI、SLO 与错误预算](../system-design/availability/sli-slo-error-budget-capacity-headroom.mdx)
+- [高可用与容灾](../system-design/availability/high-availability-backup-rto-rpo.mdx)
+- [灰度发布与回滚](../system-design/microservices/canary-traffic-tagging-rollback.mdx)

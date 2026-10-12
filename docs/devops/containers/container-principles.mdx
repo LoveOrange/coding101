@@ -1,0 +1,145 @@
+---
+sidebar_position: 1
+knowledge:
+  id: devops.containers.container-principles
+  type: concept
+---
+
+# 容器原理
+
+容器不是轻量的虚拟机，而是宿主机上一组受到隔离和限制的普通进程。Linux 内核提供三样东西：Namespace 决定进程能看到什么，Cgroups 决定进程能用多少资源，联合文件系统提供分层的根文件系统。本文讲这三项机制，以及容器与虚拟机的本质区别。镜像构建见 [Docker 镜像与 Dockerfile](./docker-images.mdx)。
+
+## 1. 面试核心 {#core}
+
+- 容器与宿主机共享同一个内核，只隔离了进程的视图和资源；虚拟机通过 Hypervisor 模拟硬件，每台虚拟机运行自己的内核。所以容器启动快、开销小、密度高，但隔离强度弱于虚拟机。[卡](#container-vs-vm)
+- Namespace 隔离“看到什么”：PID、网络、挂载点、主机名、IPC、用户等各有一种 Namespace，容器内的进程只看到自己的那一份。[卡](#namespace-cgroups)
+- Cgroups 限制“用多少”：CPU 时间、内存、磁盘 I/O、进程数。内存超过上限时进程会被 OOM Killer 杀掉，容器退出码通常是 137。
+- 联合文件系统（如 OverlayFS）把镜像的多个只读层和容器的一个可写层合并成一个目录，修改文件时先复制到可写层（写时复制）。
+- `docker exec` 进入容器，本质上是在宿主机上启动一个新进程，并通过 `setns` 加入目标容器的各个 Namespace。
+
+## 2. 容器与虚拟机 {#vs-vm}
+
+| 维度 | 容器 | 虚拟机 |
+| --- | --- | --- |
+| 隔离方式 | 内核的 Namespace 和 Cgroups | Hypervisor 虚拟硬件 |
+| 内核 | 与宿主机共享 | 每台虚拟机独立运行 |
+| 启动时间 | 秒级以内（启动一个进程） | 数十秒（启动整个操作系统） |
+| 资源开销 | 接近原生进程 | 每台都有完整操作系统的内存和磁盘开销 |
+| 隔离强度 | 较弱：内核漏洞可能影响所有容器 | 较强：攻击需要突破 Hypervisor |
+| 操作系统 | 只能运行与宿主机内核兼容的系统（Linux 容器需要 Linux 内核） | 可以运行不同的操作系统 |
+
+需要强隔离（多租户、运行不可信代码）时，可以使用安全容器（如 Kata Containers 为每个容器启动轻量虚拟机）或 gVisor（用户态内核）。
+
+## 3. Namespace {#namespace}
+
+| Namespace | 隔离的内容 | 容器中的表现 |
+| --- | --- | --- |
+| PID | 进程号 | 容器内第一个进程的 PID 是 1，看不到宿主机的其他进程 |
+| Network | 网卡、IP、路由表、端口、iptables 规则 | 每个容器有自己的网络栈，通过 veth 对连接到宿主机的网桥 |
+| Mount | 挂载点 | 容器有自己的根文件系统 |
+| UTS | 主机名、域名 | 容器有自己的主机名 |
+| IPC | 信号量、消息队列、共享内存 | 容器之间不能直接用 System V IPC 通信 |
+| User | 用户和组 ID | 容器内的 root 可以映射为宿主机的普通用户（rootless 容器） |
+| Cgroup | 看到的 cgroup 层级 | 容器内看不到宿主机的 cgroup 路径 |
+
+查看一个进程所在的 Namespace：`ls -l /proc/<pid>/ns`。`nsenter -t <pid> -n ip addr` 可以进入某个容器的网络 Namespace 执行宿主机上的命令，排查网络问题时很常用。
+
+## 4. Cgroups {#cgroups}
+
+Cgroups 把进程分组，对每组设置资源限制并统计用量。常用的控制器：
+
+| 控制器 | 作用 | cgroup v2 中的文件 |
+| --- | --- | --- |
+| cpu | 按配额限制 CPU 时间，或按权重分配 | `cpu.max`（如 `50000 100000` 表示每 100 ms 最多用 50 ms，即半个核）、`cpu.weight` |
+| cpuset | 绑定可用的 CPU 核和内存节点 | `cpuset.cpus` |
+| memory | 限制内存，超过后回收缓存，仍不够则触发 OOM | `memory.max`、`memory.current` |
+| io | 限制块设备读写带宽和 IOPS | `io.max` |
+| pids | 限制进程数，防止 fork 炸弹 | `pids.max` |
+
+**v1 与 v2**：cgroup v1 中每类控制器有独立的层级，一个进程可以同时属于不同层级中的多个 cgroup，分别受到 CPU、内存等限制；cgroup v2 使用统一的层级，一个进程只属于一个 cgroup，由这个 cgroup 上启用的各个控制器共同限制。目前主流发行版和 Kubernetes 已默认使用 v2。
+
+**CPU 限制的副作用**：配额按周期计算，进程在一个周期内用完配额后会被暂停到下一个周期（CPU throttling），表现为延迟抖动，即使机器整体 CPU 并不忙。
+
+Docker 中对应的参数：`--cpus=1.5`、`--memory=512m`、`--pids-limit=100`。可以在宿主机的 `/sys/fs/cgroup/` 下找到容器对应的目录，查看实际的限制和用量。
+
+## 5. 联合文件系统 {#unionfs}
+
+镜像由多个只读层组成，容器启动时在最上面加一个可写层。OverlayFS 把它们合并：
+
+- **lowerdir**：镜像的只读层。
+- **upperdir**：容器的可写层。
+- **merged**：容器看到的合并视图。
+
+读取文件时从上往下查找；修改下层文件时，先把整个文件复制到可写层再修改（写时复制）；删除下层文件时在可写层创建一个“白障”文件把它遮住，下层数据仍然存在。容器删除后可写层随之删除，所以需要持久保存的数据要写到卷中。
+
+## 6. 面试题
+
+### 6.1 容器和虚拟机有什么本质区别？ {#container-vs-vm}
+
+<!-- 面试来源：
+- 虾皮：https://www.nowcoder.com/discuss/830797687548084224 （“容器跟我们这个虚拟机……他们之间的实现，有什么本质上的一个区别?”）
+- 虾皮：https://www.nowcoder.com/discuss/353156139321860096 （“docker原理，与虚拟机区别”）
+- 矩阵起源：https://www.nowcoder.com/discuss/813179226554642432 （“Docker和虚拟机的区别是什么？”）
+- 亿联：https://www.nowcoder.com/discuss/353159450502569984 （“容器……和虚拟机区别”）
+- 持安科技：https://www.nowcoder.com/feed/main/detail/056bc97b850944a5a9ce98b45703cbed （“容器与虚拟机的区别”）
+- 波克城市：https://www.nowcoder.com/feed/main/detail/310e8864c0084121a964c5277255cd30 （“docker和虚拟机区别”）
+- 虾皮：https://www.nowcoder.com/feed/main/detail/93b661f8e1e64788850f3e8472b054c0 （“docker和虚拟机的区别”）
+- 京东：https://www.nowcoder.com/discuss/521405985047445504 （“容器和虚拟机区别”）
+-->
+
+**出现公司**：虾皮、矩阵起源、亿联、持安科技、波克城市、京东
+
+**考察重点**
+
+- 是否共享内核：容器是隔离的进程，虚拟机虚拟了硬件。
+- 由此推出启动速度、开销、隔离强度和可运行系统的差异。
+
+**相关内容**：[容器与虚拟机](#vs-vm)、[Namespace](#namespace)、[Cgroups](#cgroups)。
+
+<details>
+<summary>参考回答</summary>
+
+本质区别是是否有自己的内核。虚拟机由 Hypervisor 虚拟出 CPU、内存、磁盘和网卡等硬件，每台虚拟机运行完整的操作系统和内核。容器没有自己的内核，它是宿主机上的普通进程，内核用 Namespace 让它只看到自己的进程、网络和文件系统，用 Cgroups 限制它能使用的 CPU、内存等资源，再用联合文件系统提供独立的根目录。
+
+由此带来的差异：容器启动只是启动一个进程，秒级以内完成，几乎没有额外开销，单机可以运行更多实例；虚拟机要启动整个系统，开销大但隔离更强。容器共享内核，一个内核漏洞可能影响宿主机上的所有容器，也不能运行与宿主机内核不兼容的系统；虚拟机可以运行任意操作系统。需要更强隔离时可以用 Kata Containers 这类安全容器。
+
+</details>
+
+### 6.2 容器是怎样实现隔离和资源限制的？Namespace 和 Cgroups 分别解决什么问题？ {#namespace-cgroups}
+
+<!-- 面试来源：
+- 米哈游：https://www.nowcoder.com/feed/main/detail/be1ee2369e5b4536b4bc5e47c8463c9e （“Docker 底层的 cgroups 和 namespaces 在容器中分别解决什么问题？”）
+- 虾皮：https://www.nowcoder.com/discuss/830797687548084224 （“那 Docker 它是怎么实现隔离的？像你拉起了一个 MySQL 的话，你又拉起了一个 Redis……他们之间是怎么实现隔离的?”）
+- 网易互娱：https://www.nowcoder.com/discuss/353156915016441856 （“Docker 的实现原理”“多个 Cgroup 是否可以对同一个进程加以限制”）
+- 字节跳动：https://www.nowcoder.com/feed/main/detail/09f134235a7044f5a2b00107a2f5363e （“容器内存，CPU隔离怎么实现的”）
+- DaoCloud：https://www.nowcoder.com/feed/main/detail/55eef84d42ed422a8d4a1c22d888e929 （“容器是怎么实现隔离的”“Cgroups主要是限制哪些资源的，实机演示查看”）
+- 京东：https://www.nowcoder.com/discuss/521405985047445504 （“cgroup和namespace介绍”）
+- 京东：https://www.nowcoder.com/discuss/478505627115880448 （“Docker exec -it进入容器的原理是什么”）
+-->
+
+**出现公司**：米哈游、虾皮、网易互娱、字节跳动、DaoCloud、京东
+
+**考察重点**
+
+- 各类 Namespace 隔离的内容；Cgroups 的主要控制器。
+- 内存超限与 CPU 限流的表现；v1 与 v2 的区别；`docker exec` 的原理。
+
+**相关内容**：[Namespace](#namespace)、[Cgroups](#cgroups)、[联合文件系统](#unionfs)。
+
+<details>
+<summary>参考回答</summary>
+
+Namespace 解决“能看到什么”。容器运行时为每个容器创建一组 Namespace：PID Namespace 让容器内的进程从 1 开始编号、看不到其他进程；Network Namespace 给容器独立的网卡、IP、路由和端口，所以 MySQL 和 Redis 容器都可以监听自己的端口而互不冲突；Mount Namespace 配合联合文件系统给容器独立的根目录；UTS、IPC、User Namespace 分别隔离主机名、进程间通信和用户 ID。`docker exec` 就是在宿主机上启动一个新进程，通过 `setns` 加入目标容器的这些 Namespace。
+
+Cgroups 解决“能用多少”。cpu 控制器按配额限制 CPU 时间，例如每 100 毫秒最多使用 50 毫秒；用完配额后进程会被限流到下一个周期，表现为延迟抖动。memory 控制器限制内存，超过上限且无法回收时触发 OOM，容器被杀掉，退出码 137。此外还有 io 限制磁盘带宽，pids 限制进程数。可以在 `/sys/fs/cgroup` 下查看容器对应目录中的限制和当前用量。
+
+在 cgroup v1 中，不同控制器有各自的层级，一个进程可以同时属于多个 cgroup 并分别受到限制；v2 统一为一个层级，一个进程只属于一个 cgroup，由它启用的多个控制器共同限制。
+
+</details>
+
+## 7. 参考资料
+
+- [man7：namespaces(7)](https://man7.org/linux/man-pages/man7/namespaces.7.html)
+- [Linux Kernel Documentation：Control Group v2](https://docs.kernel.org/admin-guide/cgroup-v2.html)
+- [Linux Kernel Documentation：Overlay Filesystem](https://docs.kernel.org/filesystems/overlayfs.html)
+- [Kubernetes：About cgroup v2](https://kubernetes.io/docs/concepts/architecture/cgroups/)

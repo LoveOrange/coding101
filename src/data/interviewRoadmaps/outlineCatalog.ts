@@ -2,6 +2,8 @@ export type OutlineCatalogEntry = {
   id: string;
   label: string;
   href?: string;
+  /** Published but still missing some articles. */
+  status?: 'building';
 };
 
 export const sharedFoundationOutlines: OutlineCatalogEntry[] = [
@@ -26,8 +28,8 @@ export const roleOutlines: OutlineCatalogEntry[] = [
   {id: 'R08', label: 'iOS 开发'},
   {id: 'R09', label: '大数据与数据工程'},
   {id: 'R10', label: '软件测试与测试开发'},
-  {id: 'R11', label: '运维、DevOps、SRE 与平台工程'},
+  {id: 'R11', label: '运维、DevOps、SRE 与平台工程', href: '/sre-interview-roadmap/', status: 'building'},
   {id: 'R12', label: '大模型算法、训练与推理'},
   {id: 'R13', label: '大模型应用与 RAG 工程'},
-  {id: 'R14', label: 'AI Agent 工程'},
+  {id: 'R14', label: 'AI Agent 工程', href: '/agent-interview-roadmap/'},
 ];

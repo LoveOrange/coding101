@@ -3,7 +3,21 @@ import {javaCollectionsReview} from '../reviewPlans/javaCollections';
 
 export const javaInterviewRoadmap: InterviewRoadmapData = {
   id: 'java-backend',
+  label: 'Java 后端',
   title: 'Java 后端开发面试路线',
+  start: {
+    kicker: 'Java 校招准备',
+    title: '先确定范围，再按主题阅读',
+    text: '查看岗位要求与核心阅读边界，按自己的时间选择内容。日程和复习笔记由你自行安排。',
+    links: [
+      {label: '两周与一个月的阅读范围', href: '/docs/interview/java-campus-review', primary: true},
+      {label: '2027 校招岗位与投递', href: '/docs/interview/campus-2027/'},
+      {label: '简历准备', href: '/docs/interview/resume'},
+      {label: '代表题与练习', href: '/docs/interview/questions'},
+    ],
+  },
+  guideHref: '/docs/interview/java-campus-review',
+  questionsHref: '/docs/interview/questions',
   introduction:
     '这条路线面向已有 Java 基础的后端求职者，按考点整理阅读顺序和完成标准。先完成第一轮核心复习，再根据目标岗位补充常考与深入内容。',
   reviewHint:

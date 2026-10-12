@@ -5,7 +5,9 @@ import type {LoadContext, Plugin} from '@docusaurus/types';
 import {normalizeUrl} from '@docusaurus/utils';
 import type {DocMetadata, LoadedContent} from '@docusaurus/plugin-content-docs';
 
+import {agentInterviewRoadmap} from '../../src/data/interviewRoadmaps/agent';
 import {javaInterviewRoadmap} from '../../src/data/interviewRoadmaps/java';
+import {sreInterviewRoadmap} from '../../src/data/interviewRoadmaps/sre';
 import {knowledgeTree} from '../../src/data/knowledgeTree';
 import moves from '../../src/data/contentMoves.json';
 import type {
@@ -108,7 +110,11 @@ function buildDomains(docs: Map<string, DocMetadata>, drafts: Set<string>): Doma
 }
 
 function roadmapRoles(): {roles: Role[]; byPermalink: Map<string, {priority: Priority; roles: string[]}>} {
-  const roadmaps = [{data: javaInterviewRoadmap, label: 'Java 后端', href: '/java-interview-roadmap/'}];
+  const roadmaps = [
+    {data: javaInterviewRoadmap, href: '/java-interview-roadmap/'},
+    {data: agentInterviewRoadmap, href: '/agent-interview-roadmap/'},
+    {data: sreInterviewRoadmap, href: '/sre-interview-roadmap/'},
+  ];
   const byPermalink = new Map<string, {priority: Priority; roles: string[]}>();
   for (const {data} of roadmaps) {
     for (const phase of data.phases) {
@@ -126,7 +132,7 @@ function roadmapRoles(): {roles: Role[]; byPermalink: Map<string, {priority: Pri
       }
     }
   }
-  return {roles: roadmaps.map(({data, label, href}) => ({id: data.id, label, href})), byPermalink};
+  return {roles: roadmaps.map(({data, href}) => ({id: data.id, label: data.label, href})), byPermalink};
 }
 
 export default function learningContentPlugin(context: LoadContext, options: {learnerFeatures?: boolean} = {}): Plugin {
@@ -142,6 +148,8 @@ export default function learningContentPlugin(context: LoadContext, options: {le
       const domains = buildDomains(docs, new Set(version.drafts.map((doc) => doc.id)));
 
       const {roles, byPermalink} = roadmapRoles();
+      // Roadmap hrefs are site-relative; permalinks include the baseUrl.
+      const sitePath = (doc: DocMetadata) => normalizePath('/' + doc.permalink.slice(context.baseUrl.length));
       const articles: Record<string, ArticleIndex> = {};
       const cards: Record<string, CardIndex> = {};
       const details: Record<string, CardDetail> = {};
@@ -174,7 +182,7 @@ export default function learningContentPlugin(context: LoadContext, options: {le
             errors.push(`${docId}: knowledge tree articles need a knowledge.id in front matter`);
             continue;
           }
-          const roadmap = byPermalink.get(normalizePath(doc.permalink));
+          const roadmap = byPermalink.get(sitePath(doc));
           const h2s = parsed.headings.filter((heading) => heading.depth === 2);
 
           const cardIds: string[] = [];
@@ -248,6 +256,11 @@ export default function learningContentPlugin(context: LoadContext, options: {le
         }
       }
 
+      // Roadmap dialogs are not server-rendered, so the broken-link check never sees these hrefs.
+      const docPaths = new Set(version.docs.map(sitePath));
+      for (const href of byPermalink.keys()) {
+        if (href.startsWith('/docs/') && !docPaths.has(href)) errors.push(`interview roadmap links to ${href}, which is not a doc`);
+      }
       errors.push(...checkMoves(cards, articles));
       if (errors.length) throw new Error(`learning-content: ${errors.length} content problem(s):\n  ${errors.join('\n  ')}`);
 

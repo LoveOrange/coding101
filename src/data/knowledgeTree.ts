@@ -27,6 +27,7 @@ const BK = 'basic-knowledge';
 const SD = 'system-design';
 const JAVA = `${BK}/java`;
 const AI = 'ai';
+const OPS = 'devops';
 
 export const knowledgeTree: KnowledgeDomain[] = [
   {
@@ -607,6 +608,11 @@ export const knowledgeTree: KnowledgeDomain[] = [
     overview: `${AI}/index`,
     topics: [
       {
+        id: 'ai/llm',
+        label: '大模型基础',
+        articles: [`${AI}/llm/llm-basics`, `${AI}/llm/transformer`, `${AI}/llm/hallucination`],
+      },
+      {
         id: 'ai/prompting',
         label: '模型调用与提示',
         articles: [`${AI}/prompting/prompt-engineering`, `${AI}/prompting/context-management`, `${AI}/prompting/context-compaction`],
@@ -649,7 +655,7 @@ export const knowledgeTree: KnowledgeDomain[] = [
       {
         id: 'ai/safety',
         label: '安全与服务化',
-        articles: [`${AI}/safety/prompt-injection`, `${AI}/safety/tool-authorization-sandbox`],
+        articles: [`${AI}/safety/prompt-injection`, `${AI}/safety/tool-authorization-sandbox`, `${AI}/safety/latency-cost-scaling`],
       },
       {
         id: 'ai/development',
@@ -659,6 +665,7 @@ export const knowledgeTree: KnowledgeDomain[] = [
           `${AI}/development/ai-code-debugging`,
           `${AI}/development/repository-instructions`,
           `${AI}/development/coding-agent-evaluation`,
+          `${AI}/development/agent-frameworks`,
         ],
       },
     ],
@@ -677,7 +684,29 @@ export const knowledgeTree: KnowledgeDomain[] = [
   {
     id: 'devops',
     label: '运维与云原生',
+    overview: `${OPS}/index`,
     topics: [
+      {
+        id: 'devops/linux',
+        label: 'Linux',
+        articles: [
+          `${OPS}/linux/performance-troubleshooting`,
+          `${OPS}/linux/commands-permissions`,
+          `${OPS}/linux/disk-filesystem`,
+          `${OPS}/linux/processes-signals`,
+          `${OPS}/linux/network-troubleshooting`,
+        ],
+      },
+      {
+        id: 'devops/containers',
+        label: '容器',
+        articles: [`${OPS}/containers/container-principles`, `${OPS}/containers/docker-images`],
+      },
+      {
+        id: 'devops/kubernetes',
+        label: 'Kubernetes',
+        articles: [`${OPS}/kubernetes/architecture`, `${OPS}/kubernetes/pods`, `${OPS}/kubernetes/workloads-networking`],
+      },
       {
         id: 'devops/delivery',
         label: 'CI/CD 与发布',
@@ -686,13 +715,23 @@ export const knowledgeTree: KnowledgeDomain[] = [
       {
         id: 'devops/observability',
         label: '可观测性',
-        articles: [`${SD}/production/logs-metrics-traces-correlation`],
+        articles: [`${OPS}/observability/monitoring-alerting`, `${SD}/production/logs-metrics-traces-correlation`],
       },
       {
         id: 'devops/incidents',
-        label: '故障排查与响应',
-        articles: [`${SD}/production/jvm-thread-sql-network-joint-diagnosis`],
+        label: 'SRE 与故障响应',
+        articles: [
+          `${OPS}/incidents/sre-practice`,
+          `${OPS}/incidents/incident-response`,
+          `${SD}/production/jvm-thread-sql-network-joint-diagnosis`,
+        ],
+      },
+      {
+        id: 'devops/traffic',
+        label: '流量与接入',
+        articles: [`${OPS}/traffic/nginx-load-balancing`],
       },
     ],
   },
+
 ];

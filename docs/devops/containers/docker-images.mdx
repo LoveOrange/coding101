@@ -1,0 +1,195 @@
+---
+sidebar_position: 2
+knowledge:
+  id: devops.containers.docker-images
+  type: concept
+---
+
+# Docker 镜像与 Dockerfile
+
+镜像是容器的只读模板，由 Dockerfile 中的指令逐层构建。面试中常让候选人现场写一个 Dockerfile，再追问指令的区别、镜像怎样分层、怎样让镜像更小、构建更快。本文讲常用指令、分层与构建缓存、体积和速度的优化方法，以及容器的数据存储。容器的隔离原理见[容器原理](./container-principles.mdx)。
+
+## 1. 面试核心 {#core}
+
+- 镜像是只读的分层文件系统加上元数据（启动命令、环境变量、端口）；容器是镜像加一个可写层再加运行中的进程。同一个镜像可以启动多个容器，它们共享只读层。[卡](#image-layers-storage)
+- `ENTRYPOINT` 定义容器启动时执行的程序，`CMD` 提供默认参数；`docker run` 后面的参数会替换 `CMD`。`COPY` 只复制本地文件，`ADD` 还会解压本地压缩包、下载 URL，一般优先用 `COPY`。[卡](#dockerfile-instructions)
+- 每条修改文件系统的指令生成一层；某一层变化后，它之后的所有层缓存都失效。把很少变化的步骤（安装依赖）放在前面、经常变化的步骤（复制源码）放在后面。
+- 减小镜像：多阶段构建只把产物复制到运行镜像、选择精简的基础镜像、同一层内安装并清理缓存、使用 `.dockerignore`。[卡](#image-optimization)
+- 容器的可写层随容器删除而消失，需要保留的数据写入卷（volume）或绑定挂载（bind mount）；多个容器可以挂载同一个卷共享数据。
+
+## 2. 常用指令 {#instructions}
+
+```dockerfile
+FROM eclipse-temurin:21-jre            # 基础镜像
+WORKDIR /app                           # 工作目录，后续相对路径以此为准
+ENV TZ=Asia/Shanghai                   # 环境变量，运行时也生效
+ARG VERSION=1.0                        # 构建参数，只在构建阶段可用
+COPY target/app.jar app.jar            # 复制构建上下文中的文件
+RUN useradd -r app                     # 构建时执行命令，生成新层
+USER app                               # 之后的指令和容器进程以该用户运行
+EXPOSE 8080                            # 声明端口，只是说明，不会发布端口
+HEALTHCHECK CMD curl -f http://localhost:8080/health || exit 1
+ENTRYPOINT ["java", "-jar", "app.jar"] # 启动程序
+CMD ["--spring.profiles.active=prod"]  # 默认参数
+```
+
+| 对比 | 区别 |
+| --- | --- |
+| `RUN` 与 `CMD` | `RUN` 在构建时执行并把结果保存为镜像层；`CMD` 在容器启动时执行 |
+| `CMD` 与 `ENTRYPOINT` | 同时存在时，`CMD` 作为 `ENTRYPOINT` 的参数；`docker run image arg` 替换 `CMD`，替换 `ENTRYPOINT` 需要 `--entrypoint` |
+| exec 格式与 shell 格式 | `["java","-jar"]` 直接执行程序，程序是 PID 1，能收到 SIGTERM；`java -jar ...` 由 `/bin/sh -c` 启动，信号发给 shell，程序可能无法优雅退出 |
+| `COPY` 与 `ADD` | `ADD` 额外支持远程 URL 和自动解压本地 tar 包，行为不够直观，一般用 `COPY` |
+| `ARG` 与 `ENV` | `ARG` 只在构建期有效；`ENV` 会写入镜像，运行时可见。都不要用来传递密钥 |
+| `EXPOSE` 与 `-p` | `EXPOSE` 只是文档说明；发布端口要用 `docker run -p 宿主端口:容器端口` |
+
+## 3. 分层与构建缓存 {#layers}
+
+`RUN`、`COPY`、`ADD` 会生成新的文件系统层，其他指令只修改元数据。构建时 Docker 逐条检查缓存：指令和输入（`COPY` 的文件内容）都没变，就复用已有的层；某一层失效后，之后的层全部重新构建。
+
+```dockerfile
+# 依赖描述文件单独复制，源码改动不会让依赖安装重新执行
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY . .
+RUN npm run build
+```
+
+删除文件不会让镜像变小：在后面的层中删除前面层的文件，只是加了一个遮挡标记，数据仍在前面的层中。所以下载、安装和清理要在同一个 `RUN` 中完成。
+
+`docker history <image>` 查看每一层的大小和生成它的指令，用于找出体积大的层。
+
+## 4. 体积与构建速度优化 {#optimization}
+
+**多阶段构建**：在构建阶段使用完整的编译环境，最终镜像只复制产物。
+
+```dockerfile
+FROM maven:3.9-eclipse-temurin-21 AS build
+WORKDIR /src
+COPY pom.xml .
+RUN mvn -q dependency:go-offline
+COPY src ./src
+RUN mvn -q package -DskipTests
+
+FROM eclipse-temurin:21-jre
+COPY --from=build /src/target/app.jar /app/app.jar
+ENTRYPOINT ["java", "-jar", "/app/app.jar"]
+```
+
+| 手段 | 作用 |
+| --- | --- |
+| 多阶段构建 | 编译器、源码、测试依赖不进入运行镜像 |
+| 精简基础镜像 | 用 `-slim`、distroless 或 Alpine；Alpine 使用 musl libc，部分程序有兼容问题 |
+| 同层安装并清理 | `apt-get install ... && rm -rf /var/lib/apt/lists/*` |
+| `.dockerignore` | 排除 `.git`、`node_modules`、构建产物，减小构建上下文、避免缓存误失效 |
+| 调整指令顺序 | 依赖安装在前、复制源码在后，提高缓存命中 |
+| 固定版本 | 基础镜像和依赖使用确定的版本或摘要，构建可复现 |
+| BuildKit 缓存挂载 | `RUN --mount=type=cache,target=/root/.m2 ...` 在多次构建之间复用依赖缓存 |
+
+安全方面：以非 root 用户运行；不在镜像中放密钥（`ARG`、`ENV` 和中间层都能被看到），构建期需要的密钥用 BuildKit 的 secret 挂载；定期扫描镜像漏洞。
+
+## 5. 容器的数据存储 {#storage}
+
+| 方式 | 参数 | 说明 |
+| --- | --- | --- |
+| 卷 | `-v data:/var/lib/mysql` 或 `--mount type=volume,...` | 由 Docker 管理，位于 Docker 数据目录下，与容器生命周期独立，推荐用于持久数据 |
+| 绑定挂载 | `-v /host/path:/container/path` | 直接挂载宿主机目录，适合配置文件和开发时挂载源码 |
+| tmpfs | `--tmpfs /tmp` | 存在内存中，容器停止即消失 |
+
+多个容器共享数据：挂载同一个命名卷，或绑定挂载同一个宿主机目录；要注意并发写入的一致性由应用自己负责。Docker 本身的镜像和卷存放位置由守护进程配置中的 `data-root` 决定。
+
+## 6. 面试题
+
+### 6.1 Dockerfile 有哪些常用指令？CMD 和 ENTRYPOINT、COPY 和 ADD 有什么区别？ {#dockerfile-instructions}
+
+<!-- 面试来源：
+- 京东：https://www.nowcoder.com/discuss/478505627115880448 （“手写Dockerfile 构建一个hello-world镜像 使用两层架构”“Docker CMD和ENTRYPOINT的区别”）
+- 矩阵起源：https://www.nowcoder.com/discuss/813179226554642432 （“ENTRYPOINT和CMD的区别？”）
+- 网易互娱：https://www.nowcoder.com/discuss/353156915016441856 （“Dockerfile COPY ADD 的区别”）
+- 钛动科技：https://www.nowcoder.com/feed/main/detail/79e648bbd5d44edb8088e6778c4c0837 （“dockerfile add copy用途及区别”）
+- 影石：https://www.nowcoder.com/feed/main/detail/5ed2ee165e8340a5b82c8c78eeaeb019 （“Dockerfile有哪些常用字段？”）
+- 金山云：https://www.nowcoder.com/feed/main/detail/178f968480af4a4d87f5dd658a71ebfd （“dockerfile常见语法”）
+- DevOps、K8s 运维开发实习：https://www.nowcoder.com/feed/main/detail/0266f163e800445cb8bd0be281f953fe （“说一下Dockerfile怎么编写”）
+-->
+
+**出现公司**：京东、矩阵起源、网易互娱、钛动科技、影石、金山云
+
+**考察重点**
+
+- 常用指令的用途；构建期和运行期指令的区分。
+- `CMD` 与 `ENTRYPOINT` 的组合规则、exec 格式与信号；`COPY` 与 `ADD`；`EXPOSE` 只是声明。
+
+**相关内容**：[常用指令](#instructions)。
+
+<details>
+<summary>参考回答</summary>
+
+常用指令有：`FROM` 指定基础镜像，`WORKDIR` 设置工作目录，`COPY`/`ADD` 复制文件，`RUN` 在构建时执行命令，`ENV`/`ARG` 设置运行时环境变量和构建参数，`USER` 切换运行用户，`EXPOSE` 声明端口，`HEALTHCHECK` 定义健康检查，`ENTRYPOINT`/`CMD` 定义启动命令。
+
+`ENTRYPOINT` 指定容器启动时执行的程序，`CMD` 提供默认参数，两者同时存在时 `CMD` 拼接到 `ENTRYPOINT` 后面。`docker run 镜像 参数` 会替换 `CMD`，替换 `ENTRYPOINT` 要用 `--entrypoint`。应使用 exec 格式（JSON 数组），这样程序就是容器的 PID 1，能直接收到 SIGTERM 并优雅退出；shell 格式会由 `sh -c` 启动，信号发给 shell。
+
+`COPY` 只复制构建上下文中的文件；`ADD` 还能下载 URL、自动解压本地 tar 包，行为不直观，除非需要解压，一般用 `COPY`。另外 `EXPOSE` 只是文档，真正发布端口要用 `-p`。
+
+</details>
+
+### 6.2 构建镜像时，怎样优化镜像体积和构建速度？ {#image-optimization}
+
+<!-- 面试来源：
+- 共济科技：https://www.nowcoder.com/discuss/908367488235110400 （“构建镜像时，如何优化镜像体积和构建速度？”）
+- 莉莉丝：https://www.nowcoder.com/feed/main/detail/41883e388cc14abe97de11d46816e45d （“有没有对镜像做一些优化？比如说你的镜像比较大的话”）
+- 钛动科技：https://www.nowcoder.com/feed/main/detail/79e648bbd5d44edb8088e6778c4c0837 （“dockerfile优化方案”）
+- 京东：https://www.nowcoder.com/discuss/478505627115880448 （“手写Dockerfile 构建一个hello-world镜像 使用两层架构”）
+- 波克城市：https://www.nowcoder.com/discuss/792889897148248064 （多阶段构建）
+-->
+
+**出现公司**：共济科技、莉莉丝、钛动科技、京东、波克城市
+
+**考察重点**
+
+- 多阶段构建、精简基础镜像、同层清理、`.dockerignore`。
+- 利用层缓存的指令顺序；删除文件不缩小镜像的原因。
+
+**相关内容**：[体积与构建速度优化](#optimization)、[分层与构建缓存](#layers)。
+
+<details>
+<summary>参考回答</summary>
+
+体积方面：用多阶段构建，在第一阶段用完整的编译环境构建，最终阶段只从前一阶段复制产物，编译器、源码和测试依赖都不会进入运行镜像；基础镜像选择 `-slim` 或 distroless，Alpine 更小但使用 musl，要验证兼容性；安装依赖和清理缓存写在同一个 `RUN` 里，因为后面的层删除文件不会减少前面层的大小；用 `.dockerignore` 排除 `.git`、本地依赖和构建产物。
+
+速度方面：利用层缓存，把很少变化的步骤放在前面，例如先复制依赖描述文件并安装依赖，再复制源码，这样只改代码时依赖层可以复用；开启 BuildKit，用缓存挂载在多次构建之间复用 Maven、npm 的下载缓存；在 CI 中使用远程构建缓存。最后用 `docker history` 检查各层大小，确认优化生效。
+
+</details>
+
+### 6.3 镜像和容器有什么区别？镜像为什么要分层？两个容器怎样共享数据？ {#image-layers-storage}
+
+<!-- 面试来源：
+- 钛动科技：https://www.nowcoder.com/feed/main/detail/79e648bbd5d44edb8088e6778c4c0837 （“docker应用场景，镜像和容器的区别，两个容器如何共享数据”）
+- 京东：https://www.nowcoder.com/discuss/521405985047445504 （“镜像的构造原理”）
+- 持安科技：https://www.nowcoder.com/feed/main/detail/056bc97b850944a5a9ce98b45703cbed （“docker什么参数指定存储”）
+-->
+
+**出现公司**：钛动科技、京东、持安科技
+
+**考察重点**
+
+- 只读层与可写层、写时复制；分层带来的复用。
+- 卷、绑定挂载与 tmpfs 的区别。
+
+**相关内容**：[分层与构建缓存](#layers)、[容器的数据存储](#storage)、[联合文件系统](./container-principles.mdx#unionfs)。
+
+<details>
+<summary>参考回答</summary>
+
+镜像是只读的模板，由多个文件系统层和启动命令、环境变量等元数据组成；容器是在镜像之上加一个可写层，再加上运行中的进程。联合文件系统把这些层合并成容器看到的根目录，修改下层文件时先复制到可写层。
+
+分层的好处是复用：多个镜像共用同一个基础镜像层，磁盘上只存一份，拉取时只下载缺少的层；同一个镜像启动的多个容器共享只读层；构建时没有变化的层可以直接使用缓存。
+
+容器删除后可写层也被删除，持久数据要放到容器之外：卷由 Docker 管理（`-v 卷名:路径` 或 `--mount`），生命周期独立于容器；绑定挂载直接映射宿主机目录，适合配置文件；tmpfs 放在内存中。两个容器共享数据就挂载同一个卷或同一个宿主机目录，并发写入的一致性由应用保证。
+
+</details>
+
+## 7. 参考资料
+
+- [Dockerfile reference](https://docs.docker.com/reference/dockerfile/)
+- [Docker：Multi-stage builds](https://docs.docker.com/build/building/multi-stage/)
+- [Docker：Build cache](https://docs.docker.com/build/cache/)
+- [Docker：Volumes](https://docs.docker.com/engine/storage/volumes/)

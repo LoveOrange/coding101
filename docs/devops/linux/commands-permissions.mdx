@@ -1,0 +1,168 @@
+---
+sidebar_position: 2
+knowledge:
+  id: devops.linux.commands-permissions
+  type: concept
+---
+
+# Linux 常用命令与文件权限
+
+运维和 SRE 面试几乎都会问“说几个常用的 Linux 命令”，接着让你现场写一条命令完成具体任务，例如从日志中统计访问最多的 IP。回答时按用途分组，并能把命令组合成管道，比罗列命令名更有说服力。本文整理按用途分组的常用命令、文本处理三件套 grep、sed、awk，以及文件权限模型。
+
+## 1. 面试核心 {#core}
+
+- 常用命令按用途回答：文件与查找、文本处理、进程、资源、网络、磁盘。每组说出一两个最常用的，并说明各自解决什么问题。
+- grep 按模式过滤行，sed 按行编辑和替换，awk 按字段处理和统计。日志统计的典型写法是 `awk` 取字段 → `sort` → `uniq -c` → `sort -nr` → `head`。[卡](#text-processing)
+- 权限分为属主、属组、其他人三组，每组有读、写、执行三位，用数字表示为 r=4、w=2、x=1。目录的 x 表示能否进入和穿过，r 表示能否列出内容；访问深层文件需要路径上每一级目录都有 x。[卡](#file-permissions)
+- 多个用户共享文件时，用组授权：把用户加入同一个组，文件属组设为该组并给组写权限；需要更细粒度时用 ACL。不要直接给 777 或把用户加入 root 组。
+
+## 2. 按用途分组的常用命令 {#commands}
+
+| 用途 | 命令 | 典型用法 |
+| --- | --- | --- |
+| 文件与查找 | `ls`、`find`、`ln`、`tar` | `find /var/log -name "*.log" -mtime +7 -size +100M` 查找 7 天前、大于 100 MB 的日志 |
+| 文本查看 | `cat`、`less`、`head`、`tail` | `tail -f app.log` 跟踪日志；`tail -n 200` 看最后 200 行 |
+| 文本处理 | `grep`、`sed`、`awk`、`sort`、`uniq`、`wc`、`cut` | 见下一节 |
+| 进程 | `ps`、`top`、`kill`、`pgrep`、`systemctl` | `ps -ef \| grep nginx`；`systemctl status nginx` |
+| 资源 | `free`、`vmstat`、`iostat`、`uptime` | 见 [Linux 性能排查](./performance-troubleshooting.mdx) |
+| 磁盘 | `df`、`du`、`lsof` | 见[磁盘与文件系统排查](./disk-filesystem.mdx) |
+| 网络 | `ss`、`curl`、`dig`、`ping`、`tcpdump` | `ss -lntp \| grep 8080` 查看哪个进程监听 8080 端口；见 [Linux 网络排查](./network-troubleshooting.mdx) |
+| 定时任务 | `crontab` | `crontab -e` 编辑；五个字段是分、时、日、月、周 |
+
+## 3. grep、sed 与 awk {#text-processing-tools}
+
+**grep**：按正则表达式过滤行。
+
+```bash
+grep -n "ERROR" app.log           # 显示行号
+grep -c "ERROR" app.log           # 统计匹配行数
+grep -v "DEBUG" app.log           # 反向过滤
+grep -E "timeout|refused" app.log # 扩展正则（egrep 等价于 grep -E）
+grep -rn "TODO" src/              # 递归搜索目录
+```
+
+**sed**：按行编辑，常用于替换和取指定行。
+
+```bash
+sed -n '10p' file                 # 打印第 10 行
+sed -n '100,200p' file            # 打印 100 到 200 行
+sed -i 's/old/new/g' config.conf  # 原地替换（先备份或用 -i.bak）
+```
+
+**awk**：把每行按分隔符拆成字段 `$1`、`$2`……，适合取列和统计。
+
+```bash
+awk 'NR==10' file                          # 打印第 10 行
+awk -F: '{print $1}' /etc/passwd            # 以 : 分隔，打印第一列
+awk '$9 >= 500' access.log                  # 状态码大于等于 500 的请求
+awk '{sum += $10} END {print sum}' access.log  # 累加某一列
+```
+
+**组合统计**：Nginx 访问日志中访问次数最多的 10 个 IP。
+
+```bash
+awk '{print $1}' access.log | sort | uniq -c | sort -nr | head -10
+```
+
+`uniq` 只合并相邻的重复行，所以要先 `sort`；`uniq -c` 输出“次数 内容”，再按数字倒序排序。
+
+## 4. 文件权限 {#permissions}
+
+`ls -l` 的输出：
+
+```text
+-rwxr-x---  1 app  devops  4096 Oct 13 10:00 deploy.sh
+```
+
+| 部分 | 含义 |
+| --- | --- |
+| 第 1 位 | 文件类型：`-` 普通文件、`d` 目录、`l` 符号链接 |
+| 后 9 位 | 属主、属组、其他人各三位权限 |
+| `1` | 硬链接数 |
+| `app devops` | 属主和属组 |
+
+**数字表示**：r=4、w=2、x=1，三组分别相加。`750` 表示属主读写执行、属组读和执行、其他人无权限。
+
+**文件和目录上的含义不同**：
+
+| 权限 | 文件 | 目录 |
+| --- | --- | --- |
+| r | 读取内容 | 列出目录中的文件名 |
+| w | 修改内容 | 在目录中创建、删除、重命名文件（删除文件看的是目录的 w，不是文件本身的权限） |
+| x | 作为程序执行 | 进入目录、访问其中已知名称的文件 |
+
+访问 `/data/app/logs/a.log`，路径上的 `/data`、`/data/app`、`/data/app/logs` 都需要 x 权限。
+
+**其他相关概念**
+
+- `umask`：新建文件的默认权限掩码，常见 `022`，新文件为 `644`、新目录为 `755`。
+- 特殊权限：SUID 让程序以文件属主身份运行（如 `passwd`）；SGID 用在目录上，让新文件继承目录的属组，适合共享目录；Sticky 位用在 `/tmp` 这类目录上，只有文件属主能删除自己的文件。
+- 软链接是一个指向路径的独立文件，可以跨文件系统、可以指向目录，目标删除后失效；硬链接是同一个 inode 的另一个名字，不能跨文件系统，删除其中一个名字不影响数据。
+- 权限正确但仍无法访问时，检查 ACL（`getfacl`）、SELinux、文件系统是否以只读或 `noexec` 挂载。
+
+## 5. 面试题
+
+### 5.1 怎样用 grep、awk 等命令统计日志？例如找出访问次数最多的 10 个 IP、打印文件第 10 行。 {#text-processing}
+
+<!-- 面试来源：
+- 蚂蚁金服：https://www.nowcoder.com/discuss/353156080794542080 （“写一个awk 打印出第10行”）
+- 美团：https://www.nowcoder.com/discuss/353155269590982656 （“了解sed awk吗”“grep了解吗 与egrep区别”）
+- 百度：https://www.nowcoder.com/discuss/376026509759315968 （“写一下 grep 查‘aaaa’在文件中的位置，返回第几行”）
+- 美团：https://www.nowcoder.com/discuss/391299604942270464 （“Linux各种命令：grep/egrep、top、ps、如何定时关闭进程”）
+- 虾皮：https://www.nowcoder.com/feed/main/detail/1c948b727fef404ca86d187c20496e8c （“说5-10个linux命令，再说3个网络相关的”）
+- 携程：https://www.nowcoder.com/discuss/353156832334127104 （“Linux 中自己常用的命令，说一下？”）
+-->
+
+**出现公司**：蚂蚁金服、美团、百度、虾皮、携程
+
+**考察重点**
+
+- grep、sed、awk 的分工。
+- 用管道组合出统计命令，并解释 `sort` 必须在 `uniq` 之前。
+
+**相关内容**：[grep、sed 与 awk](#text-processing-tools)、[按用途分组的常用命令](#commands)。
+
+<details>
+<summary>参考回答</summary>
+
+grep 按正则过滤行，`-n` 显示行号、`-c` 计数、`-v` 反向、`-E` 使用扩展正则（等同于 egrep）；sed 按行编辑，`sed -n '10p'` 打印第 10 行，`sed -i 's/a/b/g'` 原地替换；awk 把每行拆成字段处理，适合取列、过滤和统计，`awk 'NR==10'` 也能打印第 10 行。
+
+统计访问最多的 IP：`awk '{print $1}' access.log | sort | uniq -c | sort -nr | head -10`。先用 awk 取出 IP 列，sort 让相同的 IP 相邻，`uniq -c` 合并并计数（它只能合并相邻行），再按次数倒序取前 10。查找某个字符串在哪一行用 `grep -n "aaaa" file`。日志很大时可以先用 grep 缩小范围，或者用 `awk` 一次完成计数：`awk '{c[$1]++} END {for (ip in c) print c[ip], ip}' access.log | sort -nr | head`。
+
+</details>
+
+### 5.2 `ls -l` 的每一列是什么意思？目录的读、写、执行权限分别代表什么？两个用户都要操作同一个文件，应该怎样授权？ {#file-permissions}
+
+<!-- 面试来源：
+- 京东：https://www.nowcoder.com/discuss/478505627115880448 （“给了一个ls命令的截图问每一列什么意思”“进入一个目录需要什么权限”“对一个文件增删改查 需要什么权限”“软链接”）
+- 美团：https://www.nowcoder.com/discuss/353155269590982656 （“文件权限讲一下 一个文件 有两个用户 怎样使这两个用户可以操作这个文件”）
+- 共济科技：https://www.nowcoder.com/discuss/908367488235110400 （“如果要让普通用户访问某个子目录，所有父目录都要有权限吗？目录的执行权限代表什么？”）
+- 持安科技：https://www.nowcoder.com/feed/main/detail/056bc97b850944a5a9ce98b45703cbed （“rw权限，数字是什么”）
+-->
+
+**出现公司**：京东、美团、共济科技、持安科技
+
+**考察重点**
+
+- 三组九位权限和数字表示。
+- 文件与目录上 r、w、x 的不同含义；删除文件取决于目录的 w。
+- 用组或 ACL 授权，而不是放宽到所有人。
+
+**相关内容**：[文件权限](#permissions)。
+
+<details>
+<summary>参考回答</summary>
+
+`ls -l` 依次显示文件类型和权限、硬链接数、属主、属组、大小、修改时间和文件名。权限分为属主、属组、其他人三组，每组 r、w、x，用数字表示时 r=4、w=2、x=1，例如 755 表示属主可读写执行、其他人可读和执行。
+
+目录上的含义与文件不同：r 允许列出目录中的文件名，w 允许在目录中创建、删除和重命名文件，x 允许进入目录并访问其中的文件。所以删除一个文件看的是所在目录的 w；访问深层文件需要路径上每一级目录都有 x。对文件做读写需要文件本身的 r、w。
+
+两个用户共同操作一个文件：建一个组，把两个用户加入该组，把文件（或所在目录）的属组改成这个组并给组读写权限；共享目录可以设置 SGID，让新文件自动继承属组。需要给个别用户单独授权时用 ACL（`setfacl -m u:alice:rw file`）。不应该用 777 或把用户加入 root 组。
+
+</details>
+
+## 6. 参考资料
+
+- [GNU Awk User's Guide](https://www.gnu.org/software/gawk/manual/gawk.html)
+- [man7：chmod(1)](https://man7.org/linux/man-pages/man1/chmod.1.html)
+- [man7：path_resolution(7)](https://man7.org/linux/man-pages/man7/path_resolution.7.html)

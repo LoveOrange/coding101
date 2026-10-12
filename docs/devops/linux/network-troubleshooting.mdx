@@ -1,0 +1,267 @@
+---
+sidebar_position: 5
+knowledge:
+  id: devops.linux.network-troubleshooting
+  type: concept
+---
+
+# Linux 网络排查
+
+网络问题的排查从“通不通”到“快不快”分层进行：域名能否解析、IP 能否到达、端口能否建立连接、应用是否正常响应。本文讲每一层用什么工具确认，连接状态怎样统计和解读，TIME_WAIT 和 CLOSE_WAIT 过多的原因，tcpdump 的常用写法，以及 iptables 的表与链。TCP 握手与挥手的原理见 [TCP 连接管理](../../basic-knowledge/network/tcp_handshake.mdx)。
+
+## 1. 面试核心 {#core}
+
+- 按层排查：`dig` 看解析，`ping`/`traceroute` 看三层可达，`nc -zv`/`telnet`/`curl` 看端口和应用。`ping` 通只说明 ICMP 可达，不代表业务端口通，防火墙可能只放行了 ICMP。[卡](#connectivity-check)
+- `ss -lntp` 查看监听端口和对应进程，`ss -ant` 加 `awk`、`uniq -c` 统计各状态的连接数，`ss -s` 看汇总。`ss` 比 `netstat` 快，是现在的首选。[卡](#ports-connections)
+- TIME_WAIT 出现在主动关闭的一方，持续 2MSL，过多通常是短连接太多，用连接复用（长连接、连接池）解决；CLOSE_WAIT 出现在被动关闭的一方，表示对方已关闭而本方程序没有调用 close，几乎总是程序的连接泄漏，要改代码。[卡](#time-wait-close-wait)
+- tcpdump 抓包要指定网卡、过滤条件、不解析名称、写文件：`tcpdump -i eth0 -nn host 10.0.0.2 and port 8080 -w a.pcap`，再用 Wireshark 分析。[卡](#tcpdump)
+- iptables 基于内核的 netfilter，在报文经过的五个挂载点（链）上按表（filter、nat、mangle、raw）执行规则；Kubernetes 的 Service 默认用 nat 表的 DNAT 把 Service IP 转换成 Pod IP。[卡](#iptables)
+
+## 2. 分层确认连通性 {#layers}
+
+| 层次 | 问题 | 工具 |
+| --- | --- | --- |
+| 解析 | 域名是否解析到正确的地址 | `dig example.com`、`dig +trace`、`cat /etc/resolv.conf` |
+| 网络可达 | IP 能否到达、在哪一跳丢包 | `ping`（ICMP）、`traceroute`/`mtr`、`ip route` |
+| 端口 | 能否建立 TCP 连接 | `nc -zv host 3389`、`telnet host port`、`curl -v telnet://host:port` |
+| 应用 | 响应是否正确、各阶段耗时 | `curl -v`、`curl -w "%{time_connect} %{time_starttransfer} %{time_total}\n"` |
+| 本机 | 服务是否在监听、防火墙是否放行 | `ss -lntp`、`iptables -L -n`、`firewall-cmd --list-all` |
+
+**ping 的原理**：发送 ICMP Echo Request，目标回复 Echo Reply。输出中的 `icmp_seq` 是序号（不连续说明丢包），`ttl` 是剩余跳数（可以粗略判断经过几跳和对端系统），`time` 是往返时延，最后的统计给出丢包率和延迟的最小值、平均值、最大值、抖动。
+
+ping 不通也不一定是网络故障：很多云主机和防火墙默认禁止 ICMP。反过来 ping 通、端口不通的常见原因有：服务没有监听（或只监听了 127.0.0.1）、主机防火墙或安全组没有放行该端口、中间设备拦截。
+
+## 3. 端口与连接状态 {#connections}
+
+```bash
+ss -lntp                       # 监听中的 TCP 端口及进程（需要 root 才能看到其他用户的进程）
+ss -lntp | grep 8080           # 哪个进程在监听 8080
+lsof -i :8080                  # 同上，也能看到客户端连接
+ss -s                          # 各类连接汇总
+ss -ant | awk 'NR>1 {print $1}' | sort | uniq -c | sort -nr   # 按状态统计连接数
+ss -ant state time-wait | wc -l
+```
+
+常见状态的含义：
+
+| 状态 | 所在方 | 含义 |
+| --- | --- | --- |
+| LISTEN | 服务端 | 等待连接 |
+| SYN-RECV | 服务端 | 收到 SYN，等待第三次握手；大量出现可能是 SYN 洪泛或半连接队列满 |
+| ESTABLISHED | 双方 | 连接建立 |
+| CLOSE-WAIT | 被动关闭方 | 对方已发 FIN，本方程序尚未关闭连接 |
+| TIME-WAIT | 主动关闭方 | 等待 2MSL，确保对方收到最后的 ACK、旧报文过期 |
+
+## 4. TIME_WAIT 与 CLOSE_WAIT 过多 {#wait-states}
+
+**TIME_WAIT 过多**
+
+- 原因：本机频繁主动关闭短连接。典型场景是 Nginx 作为反向代理，默认用 HTTP/1.0 短连接访问上游，每个请求都新建和关闭连接；或者客户端程序不复用连接。
+- 影响：每个 TIME_WAIT 占用一个“本地 IP、本地端口、远端 IP、远端端口”组合。作为客户端频繁连接同一个目标时，可用的本地端口会被耗尽，新连接失败。服务端被动产生的 TIME_WAIT 主要占用少量内存，影响不大。
+- 处理：首选复用连接，Nginx 配置 `upstream` 的 `keepalive`，并设置 `proxy_http_version 1.1` 和清空 `Connection` 头；应用使用连接池。其次调整内核参数：`net.ipv4.tcp_tw_reuse=1` 允许客户端发起新连接时复用 TIME_WAIT 端口，`net.ipv4.ip_local_port_range` 扩大本地端口范围。`tcp_tw_recycle` 在 NAT 环境下会丢弃正常连接，已在 Linux 4.12 中移除，不要使用。
+
+**CLOSE_WAIT 过多**
+
+- 原因：对方已经关闭，本方程序没有调用 `close`。常见于异常分支没有释放连接、连接池泄漏、线程阻塞在其他地方没有机会处理关闭。
+- 处理：调参无效，要找到代码。用 `ss -antp state close-wait` 找到进程和对端地址，结合线程栈和代码检查连接的释放路径。
+
+## 5. tcpdump {#tcpdump-usage}
+
+```bash
+tcpdump -i eth0 -nn host 10.0.0.2 and tcp port 8080 -w handshake.pcap
+tcpdump -i any -nn 'tcp[tcpflags] & (tcp-syn|tcp-fin|tcp-rst) != 0' and port 443
+tcpdump -i eth0 -nn -A port 80 -c 100          # 打印内容，只抓 100 个包
+```
+
+| 参数 | 作用 |
+| --- | --- |
+| `-i` | 指定网卡，`any` 表示全部 |
+| `-nn` | 不解析主机名和端口名，避免 DNS 查询拖慢和干扰 |
+| `host` / `port` / `src` / `dst` | 过滤条件，可以用 `and`、`or`、`not` 组合 |
+| `-w` / `-r` | 写入和读取 pcap 文件，用 Wireshark 分析 |
+| `-c` | 抓取指定数量后停止 |
+| `-s 0` | 抓取完整报文（新版本默认） |
+
+看握手时关注标志位 `[S]`、`[S.]`、`[.]`、`[F.]`、`[R]`，以及序列号、窗口大小和时间间隔。只有 SYN 没有 SYN+ACK，说明报文被丢弃或服务未监听；收到 RST 说明端口未监听或被主动拒绝；重传和较大的时间间隔说明链路丢包或对端处理慢。Pod 之间不通时，要在源和目标两端（以及节点网卡、隧道网卡上）分别抓包，确认报文在哪一段消失。
+
+## 6. iptables {#iptables-chains}
+
+iptables 是配置内核 netfilter 框架的工具。netfilter 在报文路径上提供五个挂载点（链）：
+
+| 链 | 位置 |
+| --- | --- |
+| PREROUTING | 报文进入本机、路由判断之前 |
+| INPUT | 发往本机进程 |
+| FORWARD | 经本机转发 |
+| OUTPUT | 本机进程发出 |
+| POSTROUTING | 离开本机之前 |
+
+规则按功能分在不同的表中：
+
+| 表 | 用途 | 常见链 |
+| --- | --- | --- |
+| filter | 放行或拒绝（默认表） | INPUT、FORWARD、OUTPUT |
+| nat | 地址转换：DNAT 改目的地址，SNAT/MASQUERADE 改源地址 | PREROUTING、OUTPUT、POSTROUTING |
+| mangle | 修改报文标记、TTL 等 | 全部 |
+| raw | 在连接跟踪之前处理，例如对某些流量关闭跟踪 | PREROUTING、OUTPUT |
+
+iptables 主要工作在网络层，也能匹配传输层的端口和连接状态（依赖 conntrack 连接跟踪），所以常说它是三、四层的防火墙。
+
+在 Kubernetes 中，kube-proxy 的 iptables 模式在 nat 表中为每个 Service 生成规则，访问 Service IP 时通过 DNAT 随机转发到某个 Pod；规则数量随 Service 增多线性增长，大集群改用 IPVS 模式或基于 eBPF 的方案。
+
+## 7. 面试题
+
+### 7.1 怎样查看某个端口被哪个进程监听？怎样统计服务器上各状态（TIME_WAIT、ESTABLISHED 等）的连接数？ {#ports-connections}
+
+<!-- 面试来源：
+- 京东：https://www.nowcoder.com/discuss/478505627115880448 （“怎么查看监听在8080端口的是哪个进程”）
+- 吉比特：https://www.nowcoder.com/feed/main/detail/41b17c218ad64c9b85394a57e91169f1 （“Linux统计服务器上状态个数（time_wait, Established等）”）
+- 百度：https://www.nowcoder.com/feed/main/detail/da812a901bfb4b5d9872dea48e62b7be （“端口占用查看用什么命令”）
+- 矩阵起源：https://www.nowcoder.com/feed/main/detail/e297f923972f41d6860a0a6e58058772 （“Linux 系统上面有哪些网络端口在处于监听状态呢？”）
+- 京东：https://www.nowcoder.com/discuss/353155503322767360 （“df命令你都干啥用啊？为啥不用ss呢？”）
+-->
+
+**出现公司**：京东、吉比特、百度、矩阵起源
+
+**考察重点**
+
+- `ss`、`lsof` 的常用参数。
+- 用管道统计状态；各状态的含义。
+
+**相关内容**：[端口与连接状态](#connections)。
+
+<details>
+<summary>参考回答</summary>
+
+查看监听端口和进程用 `ss -lntp`：`-l` 只看监听，`-n` 不解析名称，`-t` 只看 TCP，`-p` 显示进程，需要 root 才能看到其他用户的进程；再 `grep 8080` 即可。也可以用 `lsof -i :8080`，它还能列出这个端口上的客户端连接。旧系统上用 `netstat -tnlp`，参数含义相同，但 `ss` 直接读取内核信息，连接多时快得多。
+
+统计各状态的连接数：`ss -ant | awk 'NR>1 {print $1}' | sort | uniq -c | sort -nr`，或用 `ss -s` 看汇总。看结果时关注异常的状态：大量 SYN-RECV 可能是半连接队列满或 SYN 洪泛，大量 TIME-WAIT 说明短连接多，大量 CLOSE-WAIT 说明程序没有关闭连接。
+
+</details>
+
+### 7.2 TIME_WAIT 和 CLOSE_WAIT 是什么？服务器上这两种状态过多分别是什么原因，怎样处理？ {#time-wait-close-wait}
+
+<!-- 面试来源：
+- BIGO：https://www.nowcoder.com/discuss/353156870250635264 （“CLOSE_WAIT和TIME_WAIT”“TIME_WAIT保留一段时间的原因”）
+- 虾皮：https://www.nowcoder.com/discuss/353157054686765056 （“time_wait,close_wait”）
+- 虾皮：https://www.nowcoder.com/discuss/622912438538694656 （“讲讲time_wait和close_wait”）
+- 虎牙：https://www.nowcoder.com/discuss/681082337408364544 （“TCP里面TIME_WAIT的状态是什么？具体说说”）
+- 吉比特：https://www.nowcoder.com/feed/main/detail/7d393840b53f4f86b2afdf6b47b2bd42 （“TIME_WAIT状态过多了，如何解决？”）
+- 触宝：https://www.nowcoder.com/feed/main/detail/347ad85d05e54e8ab9b3d9766f6a9d4c （“Nginx 实际上它的 time wait 的连接数量很多，那它可能是什么原因导致的呢？那我们可能应该用什么方法去处理呢？”）
+-->
+
+**出现公司**：BIGO、虾皮、虎牙、吉比特、触宝
+
+**考察重点**
+
+- 两个状态分别出现在主动关闭和被动关闭的一方。
+- TIME_WAIT 用连接复用解决，CLOSE_WAIT 要修代码；`tcp_tw_recycle` 的风险。
+
+**相关内容**：[TIME_WAIT 与 CLOSE_WAIT 过多](#wait-states)、[TCP 连接管理](../../basic-knowledge/network/tcp_handshake.mdx#three-way-handshake-time-wait)。
+
+<details>
+<summary>参考回答</summary>
+
+TIME_WAIT 是主动关闭方发出最后一个 ACK 后进入的状态，持续 2MSL（Linux 上固定 60 秒）。它有两个作用：如果最后的 ACK 丢失，对方会重发 FIN，本方还能重新确认；等待网络中这个连接的旧报文过期，避免被相同四元组的新连接误收。CLOSE_WAIT 是被动关闭方收到对方 FIN 之后、本方调用 close 之前的状态。
+
+TIME_WAIT 过多说明本机频繁主动关闭短连接，例如 Nginx 默认用短连接访问上游，每个请求都关闭一次。作为客户端时，大量 TIME_WAIT 会占满本地端口，导致新连接失败。处理首选复用连接：Nginx 的 upstream 配置 keepalive，同时设置 `proxy_http_version 1.1` 并清空 Connection 头；应用使用连接池。辅助手段是开启 `tcp_tw_reuse`、扩大本地端口范围。`tcp_tw_recycle` 在 NAT 后会丢弃正常连接，新内核已经移除。
+
+CLOSE_WAIT 过多几乎都是程序问题：对方关了，本方没有 close，常见于异常分支未释放连接或连接池泄漏。调内核参数没有用，要用 `ss -antp state close-wait` 找到进程和对端，结合代码检查释放逻辑。
+
+</details>
+
+### 7.3 能 ping 通对方 IP，是否说明业务端口一定是通的？ping 的原理是什么，怎样确认端口连通？ {#connectivity-check}
+
+<!-- 面试来源：
+- 青藤云：https://www.nowcoder.com/feed/main/detail/0b99f63bd74c4a52ad17159542e890ad （“能 ping 通 b 的 IP 地址，能保证我 A 连 B 的3389端口一定是通的吗,怎么确认我和他的业务端口通不通呢？”）
+- 京东：https://www.nowcoder.com/discuss/353155503322767360 （“你说一下ping命令返回的具体参数吧”）
+- 百度：https://www.nowcoder.com/discuss/376026509759315968 （“Ping讲一下”）
+- 多益网络：https://www.nowcoder.com/discuss/643390428145881088 （“知不知道ICMP”）
+- 字节跳动：https://www.nowcoder.com/feed/main/detail/10d17559d97f475da8011db31fb2b9d1 （“ping解决的问题”）
+-->
+
+**出现公司**：青藤云、京东、百度、多益网络、字节跳动
+
+**考察重点**
+
+- ICMP 与 TCP 端口是不同的检查；ping 输出各字段的含义。
+- 分层排查的工具；端口不通的常见原因。
+
+**相关内容**：[分层确认连通性](#layers)。
+
+<details>
+<summary>参考回答</summary>
+
+不能。ping 使用 ICMP 的回显请求和回显应答，只能说明三层可达。业务端口还要求对方进程在该端口监听、监听地址不是只有 127.0.0.1、主机防火墙和云安全组放行这个端口、中间没有设备拦截。反过来，ping 不通也可能只是禁止了 ICMP。
+
+ping 的输出中，`icmp_seq` 是序号，不连续说明丢包；`ttl` 是剩余跳数；`time` 是往返时延；结束时的统计给出丢包率和延迟的最小、平均、最大值和抖动。
+
+确认端口连通用 TCP 层的工具：`nc -zv B 3389` 或 `telnet B 3389`，HTTP 服务用 `curl -v` 并可以用 `-w` 输出连接、首字节和总耗时。连不上时按顺序检查：对端 `ss -lntp` 是否在监听正确的地址，对端防火墙和安全组规则，路径上的网络 ACL，必要时在两端抓包看 SYN 是否到达、是否收到 RST。
+
+</details>
+
+### 7.4 用 tcpdump 抓 TCP 握手时会用哪些参数？抓包后关注哪些字段？ {#tcpdump}
+
+<!-- 面试来源：
+- 共济科技：https://www.nowcoder.com/discuss/908367488235110400 （“使用 tcpdump 抓 TCP 握手时会用哪些参数？关注哪些字段？”“Pod 之间网络不通的排查案例”）
+- 字节跳动：https://www.nowcoder.com/discuss/353156036565606400 （“tcpdump抓包过程，和命令”）
+- 华为：https://www.nowcoder.com/discuss/353158503860740096 （“tcp三次握手四次挥手？有没有用过看过抓包过？”）
+- 美团：https://www.nowcoder.com/feed/main/detail/f4004e8efde94cf1b7b44de667df1fed （“分析过TCP报文吗……有没有接触过TCP报文或者使用一些抓包工具”）
+-->
+
+**出现公司**：共济科技、字节跳动、华为、美团
+
+**考察重点**
+
+- 网卡、过滤表达式、不解析名称、写文件等参数。
+- 从标志位、序列号和时间间隔判断问题位置。
+
+**相关内容**：[tcpdump](#tcpdump-usage)。
+
+<details>
+<summary>参考回答</summary>
+
+常用写法是 `tcpdump -i eth0 -nn host 10.0.0.2 and tcp port 8080 -w a.pcap`：`-i` 指定网卡（不确定时用 `any`），`-nn` 不解析主机名和端口名，过滤表达式缩小范围，`-w` 写入文件后用 Wireshark 分析，`-c` 限制数量，避免在繁忙的机器上抓太多。只看握手和关闭可以按标志位过滤：`'tcp[tcpflags] & (tcp-syn|tcp-fin|tcp-rst) != 0'`。
+
+分析时看标志位：`[S]`、`[S.]`、`[.]` 是三次握手，`[F.]` 是关闭，`[R]` 是重置。只有 SYN 没有 SYN+ACK，说明请求被丢弃或对端没有监听；立即收到 RST 说明端口未监听或被拒绝；同一个 SYN 多次出现是重传，说明丢包。再看序列号、窗口大小和时间间隔判断是否有丢包或接收方处理慢。跨节点问题要在源端、目标端和中间的网卡分别抓，确认报文在哪一段消失。
+
+</details>
+
+### 7.5 iptables 的原理是什么？有哪些表和链？工作在网络的哪一层？Kubernetes 中哪里用到了 DNAT？ {#iptables}
+
+<!-- 面试来源：
+- 虾皮：https://www.nowcoder.com/discuss/353156139321860096 （“iptables原理，工作在几层”）
+- 百度云：https://www.nowcoder.com/discuss/536273992093605888 （“防火墙的三表五链”）
+- 京东：https://www.nowcoder.com/discuss/478505627115880448 （“DNAT在哪里用到过，有什么场景”）
+- 米哈游：https://www.nowcoder.com/feed/main/detail/be1ee2369e5b4536b4bc5e47c8463c9e （“iptables、IPVS 和 Linux 路由表分别解决什么问题？”）
+- 青藤云：https://www.nowcoder.com/feed/main/detail/0b99f63bd74c4a52ad17159542e890ad （“防火墙主要关注哪些设置？”）
+- 上海银行：https://www.nowcoder.com/feed/main/detail/67ff310979144d98837bf08eb5417beb （“防火墙怎么实现的？”）
+- DaoCloud：https://www.nowcoder.com/feed/main/detail/55eef84d42ed422a8d4a1c22d888e929 （“清楚iptables吗”）
+-->
+
+**出现公司**：虾皮、百度云、京东、米哈游、青藤云、上海银行、DaoCloud
+
+**考察重点**
+
+- netfilter 的五个挂载点与常用表的用途。
+- 工作层次与连接跟踪；kube-proxy 的 DNAT 与 IPVS 的区别。
+
+**相关内容**：[iptables](#iptables-chains)。
+
+<details>
+<summary>参考回答</summary>
+
+iptables 是配置内核 netfilter 的用户态工具。netfilter 在报文经过的路径上设置了五个挂载点：PREROUTING（进入后路由前）、INPUT（发往本机）、FORWARD（转发）、OUTPUT（本机发出）、POSTROUTING（离开前）。规则按功能放在不同的表里：filter 负责放行和拒绝，nat 负责地址转换（DNAT 改目的地址、SNAT 和 MASQUERADE 改源地址），mangle 修改报文标记，raw 在连接跟踪之前处理。报文到达某条链时，依次执行各表中的规则，匹配后执行 ACCEPT、DROP、DNAT 等动作。
+
+它主要工作在网络层，同时可以匹配端口和连接状态，所以通常说是三、四层防火墙。作为主机防火墙时关注：默认策略、按来源地址和端口放行、放行已建立连接的回包、规则的顺序。
+
+Kubernetes 的 kube-proxy 在 iptables 模式下，为每个 Service 在 nat 表中生成规则，访问 Service 的 ClusterIP 时通过 DNAT 随机改写为某个 Pod 的 IP。规则是线性匹配的，Service 很多时性能下降，所以大集群使用 IPVS 模式，它用哈希表做四层负载均衡。路由表决定报文从哪个接口发往下一跳，与 iptables 的过滤和改写是不同的环节。
+
+</details>
+
+## 8. 参考资料
+
+- [man7：ss(8)](https://man7.org/linux/man-pages/man8/ss.8.html)
+- [tcpdump 手册](https://www.tcpdump.org/manpages/tcpdump.1.html)
+- [netfilter 项目](https://www.netfilter.org/)
+- [Kubernetes：Virtual IPs and Service Proxies](https://kubernetes.io/docs/reference/networking/virtual-ips/)

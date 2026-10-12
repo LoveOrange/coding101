@@ -12,47 +12,55 @@ AI 应用与 Agent 覆盖模型调用、上下文、检索、工具执行、状�
 
 :::
 
-## 1. Agent 架构
+## 1. 大模型基础
+
+- [大语言模型基础](./llm/llm-basics.mdx)：Token、生成过程、采样参数与能力边界。
+- [Transformer 与注意力机制](./llm/transformer.mdx)：自注意力、KV Cache 与长上下文的局限。
+- [模型幻觉](./llm/hallucination.mdx)：类型、成因与分层缓解。
+
+## 2. Agent 架构
 
 - [工作流与 Agent](./agents/workflow-vs-agent.mdx)：固定步骤与模型自主决策的选择条件。
 - [Agent 执行循环](./agents/agent-loop.mdx)：ReAct、观测、停止条件和预算。
 - [Agent Harness](./agents/harness.mdx)：模型之外的工具、上下文、状态、权限和验证。
 - [多 Agent 协作](./agents/multi-agent.mdx)：拆分依据、上下文隔离与结果汇总。
 
-## 2. 模型调用与提示
+## 3. 模型调用与提示
 
 - [提示词工程](./prompting/prompt-engineering.mdx)：任务、约束、示例和迭代方法。
 - [上下文管理](./prompting/context-management.mdx)：每一轮放入哪些信息，以及信任边界。
 - [上下文压缩](./prompting/context-compaction.mdx)：超出窗口时保留什么、丢弃什么。
 
-## 3. 工具调用与协议
+## 4. 工具调用与协议
 
 - [Function Calling](./tools/function-calling.mdx)：工具定义、调用链与错误回传。
 - [MCP](./tools/mcp.mdx)：Host、Client、Server 与传输方式。
 - [Agent Skills](./tools/agent-skills.mdx)：流程与资源的渐进加载。
 
-## 4. RAG
+## 5. RAG
 
 - [检索增强生成（RAG）](./rag/rag.mdx)：离线索引、在线检索与生成。
 - [文档解析与切分](./rag/chunking.mdx)：块大小、重叠、父子索引与元数据。
 - [Embedding 与向量检索](./rag/embedding-vector-search.mdx)：相似度、ANN 与 HNSW。
 - [混合检索与重排序](./rag/hybrid-search-rerank.mdx)：BM25、RRF 与 Rerank。
 
-## 5. 状态与记忆
+## 6. 状态与记忆
 
 - [Agent 状态与持久化执行](./state/durable-execution.mdx)：检查点、重试、恢复和人工介入。
 - [Agent 记忆](./state/memory.mdx)：短期、长期、写入、检索与遗忘。
 
-## 6. 评估与安全
+## 7. 评估、安全与服务化
 
 - [Agent 评估](./evaluation/agent-evaluation.mdx)：评测集、指标、失败归因和回归。
 - [RAG 评估](./evaluation/rag-evaluation.mdx)：检索、证据和生成分层评估。
 - [提示注入](./safety/prompt-injection.mdx)：不可信材料中的指令与防护。
 - [工具授权与执行沙箱](./safety/tool-authorization-sandbox.mdx)：权限分级、审批和运行隔离。
+- [延迟、成本与服务扩展](./safety/latency-cost-scaling.mdx)：延迟拆解、Token 成本、并发限制与降级。
 
-## 7. AI 辅助开发
+## 8. 框架与 AI 辅助开发
 
 - [AI 辅助开发](./development/ai-assisted-development.mdx)：需求、代码库上下文、反馈迭代和验收。
 - [AI 代码调试](./development/ai-code-debugging.mdx)：复现、假设、根因与回归。
 - [仓库指令](./development/repository-instructions.mdx)：AGENTS.md 等规则文件的内容与维护。
 - [编码 Agent 评测](./development/coding-agent-evaluation.mdx)：任务集、成功率与真实效能。
+- [Agent 框架选型](./development/agent-frameworks.mdx)：LangChain、LangGraph、自研与常见框架的定位。

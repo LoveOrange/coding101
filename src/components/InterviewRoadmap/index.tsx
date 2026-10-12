@@ -31,9 +31,23 @@ export type RoadmapTopic = {
   articles: RoadmapArticle[];
 };
 export type RoadmapPhase = {id: string; title: string; topics: RoadmapTopic[]};
+export type RoadmapStart = {
+  kicker: string;
+  title: string;
+  text: string;
+  links: {label: string; href: string; primary?: boolean}[];
+};
 export type InterviewRoadmapData = {
   id: string;
+  /** Short role name for the breadcrumb, e.g. “Java 后端”. */
+  label: string;
   title: string;
+  /** Optional entry block above the outline (reading scope, jobs, resume). */
+  start?: RoadmapStart;
+  /** Page with per-topic prerequisites, linked as `${guideHref}#${topic.id}` for must-learn topics. */
+  guideHref?: string;
+  /** Page with representative questions, linked as `${questionsHref}#${topic.id}`; defaults to the question bank filtered by role. */
+  questionsHref?: string;
   introduction: string;
   reviewHint: string;
   phases: RoadmapPhase[];
@@ -81,6 +95,10 @@ function isInRound(topic: RoadmapTopic, round: Round) {
     (topic.priority === 'must' &&
       topic.articles.some((article) => !article.core))
   );
+}
+/** A topic is still being written when none of its articles is published. */
+function isBuilding(topic: RoadmapTopic) {
+  return !topic.articles.some((article) => article.href);
 }
 function isDeepReview(topic: RoadmapTopic, round: Round) {
   return round === 'second' && topic.priority === 'must';
@@ -172,7 +190,7 @@ export default function InterviewRoadmap({
                   {article.title}
                 </Link>
               ) : (
-                <span>{article.title} · 待补充</span>
+                <span>{article.title} · 建设中</span>
               )}
               {article.core && !isDeepReview(selectedTopic, round) && <small>{coreReadings[article.href ?? '']?.scope ?? article.scope}</small>}
             </div>
@@ -189,7 +207,7 @@ export default function InterviewRoadmap({
           <div className={styles.breadcrumb}>
             <Link to="/interview-roadmaps/">岗位复习路线</Link>
             <span>/</span>
-            <span>Java 后端</span>
+            <span>{roadmap.label}</span>
           </div>
           <h1>{roadmap.title}</h1>
           <p>{roadmap.introduction}</p>
@@ -206,19 +224,22 @@ export default function InterviewRoadmap({
             </button>
           ))}
         </nav>
-        <section className={styles.start} aria-label="复习资源入口">
-          <div className={styles.startMain}>
-            <span className={styles.kicker}>Java 校招准备</span>
-            <h2>先确定范围，再按主题阅读</h2>
-            <p>查看岗位要求与核心阅读边界，按自己的时间选择内容。日程和复习笔记由你自行安排。</p>
-            <div className={styles.actions}>
-              <Link className="button button--primary" to="/docs/interview/java-campus-review">两周与一个月的阅读范围</Link>
-              <Link to="/docs/interview/campus-2027/">2027 校招岗位与投递</Link>
-              <Link to="/docs/interview/resume">简历准备</Link>
-              <Link to="/docs/interview/questions">代表题与练习</Link>
+        {roadmap.start && (
+          <section className={styles.start} aria-label="复习资源入口">
+            <div className={styles.startMain}>
+              <span className={styles.kicker}>{roadmap.start.kicker}</span>
+              <h2>{roadmap.start.title}</h2>
+              <p>{roadmap.start.text}</p>
+              <div className={styles.actions}>
+                {roadmap.start.links.map((link) => (
+                  <Link key={link.href} className={link.primary ? 'button button--primary' : undefined} to={link.href}>
+                    {link.label}
+                  </Link>
+                ))}
+              </div>
             </div>
-          </div>
-        </section>
+          </section>
+        )}
         <div className={styles.scope}>
           <h2>{ROUNDS[round].label}</h2>
           <p>{ROUNDS[round].description}</p>
@@ -255,17 +276,15 @@ export default function InterviewRoadmap({
                               ? '深入阅读'
                               : PRIORITY_LABELS[topic.priority]}
                           </span>
+                          {isBuilding(topic) && <span className={`${styles.tag} ${styles.building}`}>建设中</span>}
                         </div>
                         <p>{outcomesFor(topic, round)[0]}</p>
                         <div className={styles.meta}>
                           <span>{DEPTH_LABELS[topic.depth]}</span>
                           <span>
-                            {
-                              articlesFor(topic, round).filter(
-                                (article) => article.href,
-                              ).length
-                            }{' '}
-                            篇{deep ? '深入阅读' : '核心阅读'}
+                            {isBuilding(topic)
+                              ? `${topic.articles.length} 篇编写中`
+                              : `${articlesFor(topic, round).filter((article) => article.href).length} 篇${deep ? '深入阅读' : '核心阅读'}`}
                           </span>
                         </div>
                       </div>
@@ -316,7 +335,8 @@ export default function InterviewRoadmap({
           </form>
         </header>
         <div className={styles.dialogBody}>
-          {selectedTopic.priority === 'must' && <p><Link to={`/docs/interview/java-campus-review#${selectedTopic.id}`}>查看前置知识与核心导读</Link></p>}
+          {selectedTopic.priority === 'must' && roadmap.guideHref && <p><Link to={`${roadmap.guideHref}#${selectedTopic.id}`}>查看前置知识与核心导读</Link></p>}
+          {isBuilding(selectedTopic) && <p className={styles.feedback}>本主题的文章正在编写。下面列出计划覆盖的内容，可以先按自行检查的问题查阅其他资料。</p>}
           <h3>本轮需要会什么</h3>
           <ul>
             {outcomesFor(selectedTopic, round).map((outcome) => (
@@ -342,7 +362,13 @@ export default function InterviewRoadmap({
                 ))}
               </ul>
               <p className={styles.feedback}>
-                先独立解释，再对照文章中的参考回答。<Link to={`/docs/interview/questions#${selectedTopic.id}`}>按主题查找代表题与练习</Link>。
+                先独立解释，再对照文章中的参考回答。
+                {roadmap.questionsHref ? (
+                  <Link to={`${roadmap.questionsHref}#${selectedTopic.id}`}>按主题查找代表题与练习</Link>
+                ) : (
+                  <Link to={`/questions?role=${roadmap.id}`}>在题库中练习本岗位的题目</Link>
+                )}
+                。
               </p>
             </>
           )}

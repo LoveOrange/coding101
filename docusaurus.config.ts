@@ -111,7 +111,7 @@ const config: Config = {
       items: [
         {
           to: "/topics",
-          activeBaseRegex: "^/(topics|docs/basic-knowledge|docs/system-design|docs/ai)",
+          activeBaseRegex: "^/(topics|docs/basic-knowledge|docs/system-design|docs/ai|docs/devops)",
           position: "left",
           label: "主题",
         },
@@ -158,6 +158,8 @@ const config: Config = {
             { label: "题库", to: "/questions" },
             { label: "岗位路线", to: "/interview-roadmaps/" },
             { label: "Java 后端路线", to: "/java-interview-roadmap/" },
+            { label: "Agent 开发路线", to: "/agent-interview-roadmap/" },
+            { label: "运维 / SRE 路线", to: "/sre-interview-roadmap/" },
           ],
         },
         {

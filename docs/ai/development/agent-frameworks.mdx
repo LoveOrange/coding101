@@ -1,0 +1,215 @@
+---
+sidebar_position: 5
+knowledge:
+  id: ai.development.agent-frameworks
+  type: concept
+---
+
+# Agent 框架选型
+
+Agent 框架把模型调用、工具注册、执行循环、状态持久化和追踪等通用部分封装起来。面试中的框架问题很少考 API 细节，主要考两件事：能否说清框架替你做了什么，以及为什么在这个项目里选它、不选它或自研。本文以 LangChain 和 LangGraph 为主，比较常见框架的定位，并给出选型依据。框架版本变化很快，具体 API 以官方文档为准，本文内容核对于 2026-10。
+
+## 1. 面试核心 {#core}
+
+- LangChain 提供模型、提示、工具、检索器等组件的统一接口和组合方式，适合快速搭建线性链路和标准 Agent；LangGraph 用“状态 + 节点 + 边”的图描述流程，支持循环、分支、检查点、中断恢复，适合需要精确控制的长流程。[卡](#langchain-langgraph-native)
+- 手写 Agent 的核心只是一个循环：调用模型、解析工具调用、执行、把结果追加回上下文。框架的价值在于持久化、人工介入、流式输出、追踪和生态集成，而不是循环本身。
+- 选框架还是自研，看需求是否落在框架的抽象内：上下文策略、权限模型、部署环境有特殊要求，或团队需要掌控每一次调用时倾向自研；需要快速交付、标准能力足够时用框架。[卡](#framework-or-custom)
+- LangGraph 的 State 定义各字段的合并方式：节点返回部分更新，没有声明归并函数的字段被覆盖，声明了的（如消息列表）按函数合并。条件边用路由函数决定下一个节点，检查点按线程保存每一步的状态，用于恢复和人工审批。[卡](#langgraph-state)
+- 不同框架的定位不同：多 Agent 对话（AutoGen）、角色分工（CrewAI）、数据与检索（LlamaIndex）、提供方官方 SDK、Java 生态（Spring AI）、低代码平台（Dify、Coze）。[卡](#framework-landscape)
+
+## 2. 框架替你做了什么 {#responsibilities}
+
+一个可上线的 Agent 除了模型循环，还需要下面这些部分，框架覆盖的范围各不相同：
+
+| 能力 | 手写时要做的事 | 框架中的对应 |
+| --- | --- | --- |
+| 模型接入 | 适配不同提供方的消息格式、工具调用格式、流式事件 | 统一的模型接口 |
+| 工具 | 生成参数 Schema，解析调用，执行和错误回传 | 工具装饰器、工具节点 |
+| 执行循环 | 循环、停止条件、最大步数 | 预置 Agent（ReAct） |
+| 状态与持久化 | 保存每一步状态，进程重启后恢复 | 检查点（Checkpointer） |
+| 人工介入 | 暂停、等待审批、带着输入恢复 | 中断与恢复 |
+| 流式输出 | 转发模型 Token、工具进度事件 | 多种流式模式 |
+| 可观测性 | 记录每次调用的输入输出、耗时和 Token | 追踪平台集成 |
+| 生态 | 向量库、文档加载器、MCP | 集成包 |
+
+这张表也是面试回答“框架带来了什么”的结构：先说自己项目需要哪几项，再说框架提供了哪些、哪些仍需自己实现。
+
+## 3. LangChain 与 LangGraph {#langchain-langgraph}
+
+**LangChain** 的出发点是“链”：把提示模板、模型、输出解析器、检索器等组件用统一的接口串起来，一个组件的输出作为下一个的输入，形成固定的处理链路。早期的大量预置链（问答链、摘要链）抽象较重，调试困难。1.0 版本以后，LangChain 收敛为以 `create_agent` 为中心的 Agent 开发接口，底层运行在 LangGraph 上，用中间件在模型调用、工具调用前后插入自定义逻辑（如摘要、人工审批、重试）；旧的链式接口移入单独的兼容包。
+
+**LangGraph** 是更底层的编排框架，用有向图描述流程：
+
+- **State**：全局状态的结构，每个字段可以声明归并函数（reducer）。
+- **Node**：一个函数，读取状态，返回要更新的字段。
+- **Edge**：固定边指定下一个节点；条件边由路由函数根据状态返回下一个节点名。图可以有环，这就是 Agent 循环。
+- **Checkpointer**：每一步执行后按线程（thread）保存状态快照，用于恢复、回放和查看历史；生产环境使用数据库实现。
+- **Interrupt**：节点内暂停执行等待外部输入，之后用同一线程 ID 恢复，用于人工审批和补充信息。
+
+执行模型借鉴 Pregel：按“超步”推进，同一超步中可以并行执行多个节点，各节点的更新通过归并函数合并进状态，再进入下一超步。
+
+| 维度 | LangChain（1.0 以后） | LangGraph |
+| --- | --- | --- |
+| 抽象层次 | 高层 Agent 接口与组件集成 | 底层图编排与运行时 |
+| 适合 | 标准的工具调用 Agent、快速原型 | 多步骤、有分支和循环、需要持久化和人工介入的流程 |
+| 控制粒度 | 通过中间件定制 | 每个节点和边都由自己定义 |
+| 关系 | Agent 运行在 LangGraph 上 | 可以单独使用，也可以调用 LangChain 组件 |
+
+## 4. 常见框架的定位 {#landscape}
+
+| 框架 | 定位 | 适用场景 |
+| --- | --- | --- |
+| LangGraph | 图编排、持久化执行 | 复杂流程、长任务、人工介入 |
+| AutoGen | 微软的多 Agent 对话框架，Agent 之间通过消息协作。已进入维护模式，微软的后续方向是合并了 AutoGen 与 Semantic Kernel 的 Agent Framework（2026-04 发布 1.0） | 多角色讨论、研究原型 |
+| CrewAI | 按角色、任务、团队组织多 Agent | 分工明确的内容生成和业务流程 |
+| LlamaIndex | 数据接入、索引和检索 | 以知识库为中心的 RAG 应用 |
+| OpenAI Agents SDK、Claude Agent SDK、Google ADK | 提供方的官方 Agent SDK | 主要使用对应提供方的模型，需要其托管工具 |
+| Spring AI | Java 生态的模型、工具、RAG、MCP 接入 | Java 后端团队，复用 Spring 体系 |
+| Dify、Coze | 可视化编排平台 | 业务人员搭建、快速验证 |
+
+编码 Agent（Claude Code、Codex 等）是面向具体任务的完整产品，它们的 Harness 设计可以作为自研 Agent 的参考，见 [Agent Harness](../agents/harness.mdx)。
+
+## 5. 选型依据 {#selection}
+
+1. **流程复杂度**：一次调用或固定几步，直接调用 API 或用轻量封装即可；有循环、分支、并行和长时间运行，才需要图编排和持久化。
+2. **控制需求**：上下文怎样组装和压缩、工具怎样授权、何时停止，如果有框架无法表达的特殊要求，自研或只用底层组件。
+3. **团队与语言**：Java 团队优先评估 Spring AI，Python 团队选择更多；团队对框架内部的熟悉程度决定出问题时能否定位。
+4. **可观测与运维**：是否能拿到每一步的输入输出、Token 和耗时；检查点存储能否满足部署环境。
+5. **版本稳定性**：框架接口变化频繁，核心业务逻辑（工具实现、提示、评测集）不要依赖框架私有的抽象，便于升级或替换。
+
+自研不等于从零写所有东西。常见做法是用官方 SDK 调用模型、自己写循环和状态管理，在追踪、向量库等边缘能力上使用现成组件。
+
+## 6. 面试题
+
+### 6.1 LangChain、LangGraph 和原生手写 Agent 有什么区别？各自的优劣是什么？ {#langchain-langgraph-native}
+
+<!-- 面试来源：
+- 美团：https://www.nowcoder.com/feed/main/detail/50bcdc47e7754aa7be59b6318fea514b （“LangChain框架、LongGraph框架，还有原生手写Agent，三者区别和优劣势？”“如果不使用框架，原生实现Agent你写过吗？使用框架的优劣势？”）
+- 未披露公司：https://www.nowcoder.com/feed/main/detail/2f4e4cde4e524a16aae5f55a89c49273 （“你怎么理解 LangChain、LangGraph 以及手写或其他 Agent 框架之间的区别？”“LangChain 和 LangGraph 在设计理念和应用场景上有什么核心区别？”）
+- 字节跳动：https://www.nowcoder.com/feed/main/detail/fe77496948f74b4091ab4bb6e8156c8b （“LangChain、langgraph的区别”）
+- 药明康德：https://www.nowcoder.com/feed/main/detail/365904cd189149ffb52c36286ab23b37 （“讲讲LangGraph和LangChain的区别。”）
+- 未披露公司：https://www.nowcoder.com/feed/main/detail/6d52148d2e854ade92de493292f2e312 （“langchain的主要在这个chain 怎么理解这个chain”）
+- 新旦智能：https://www.nowcoder.com/feed/main/detail/299d356b23044bf39fb29e7f8569761d （“LangChain版本用的哪个？1.0之前和1.0之后，有差异点，知道吗？”）
+-->
+
+**出现公司**：美团、字节跳动、药明康德、新旦智能
+
+**考察重点**
+
+- 链式组合与图编排两种抽象，以及 LangChain 1.0 前后的变化。
+- 手写实现需要自己补的能力，和框架带来的代价。
+
+**相关内容**：[LangChain 与 LangGraph](#langchain-langgraph)、[框架替你做了什么](#responsibilities)。
+
+<details>
+<summary>参考回答</summary>
+
+LangChain 的“链”是把提示模板、模型、解析器、检索器等组件按固定顺序串起来，前一步的输出作为后一步的输入，适合线性流程；它的价值是统一了各家模型和组件的接口，集成很多。1.0 以后它收敛为以 create_agent 为中心的高层接口，底层运行在 LangGraph 上，用中间件定制模型和工具调用前后的逻辑。LangGraph 更底层，用 State、节点和边描述流程，支持环、分支、并行，以及检查点、中断恢复和人工介入，适合长流程和需要精确控制的场景。
+
+手写 Agent 的核心循环很简单，控制力最强、依赖最少、问题好定位，但持久化、恢复、流式事件、追踪、多提供方适配都要自己实现。框架省掉了这些工作，代价是学习成本、抽象带来的调试难度、版本变化快，以及上下文和权限策略要适应框架的设计。简单流程直接调 API，标准 Agent 用 LangChain，复杂有状态的流程用 LangGraph，有特殊控制需求时自研。
+
+</details>
+
+### 6.2 为什么自研 Agent 而不用成熟的开源框架？反过来，为什么用框架而不直接调模型接口？ {#framework-or-custom}
+
+<!-- 面试来源：
+- 小红书：https://www.nowcoder.com/feed/main/detail/e5e9311a623940eead6ec98c65e7f9e8 （“为什么自研不用开源框架？”）
+- 安软：https://www.nowcoder.com/feed/main/detail/40920533fad14136bff01c3928c7e953 （“为什么自研轻量 Agent，而不是直接使用成熟框架？”）
+- 字节跳动：https://www.nowcoder.com/discuss/937314680270311424 （“为什么自己实现这套流程，而不是直接使用成熟的开源 Agent 框架？”）
+- 多家公司（5 年经验汇总）：https://www.nowcoder.com/feed/main/detail/129eaa1c20444651ac3b932e200d3da4 （“为什么手搓agent，而不是用框架？”）
+- 百度：https://www.nowcoder.com/feed/main/detail/0ee219e39f254208bef730ca1e928fcc （“Agent 为什么选 LangChain，不直接调 OpenAI 接口？”）
+- 小红书：https://www.nowcoder.com/feed/main/detail/9f7361c709f4413396988b4f334a0d6f （“为什么用OpenManus这个框架？”“为什么不用 LangGraph 来实现这一套 Agent orchestration？”）
+- 阿里云：https://www.nowcoder.com/feed/main/detail/d577a09f95294565b464a8b0ce49a829 （“当时采用了langgraph架构，现在这么多框架，会考虑换框架吗？为什么？”）
+- 腾讯：https://www.nowcoder.com/feed/main/detail/0f48b7645a90434c8ab495a6073f3e03 （“Spring AI 已经提供了 ToolCallingManager，为什么还要手动实现工具调用流程？”）
+-->
+
+**出现公司**：小红书、安软、字节跳动、百度、阿里云、腾讯
+
+**考察重点**
+
+- 用项目的具体需求说明选择，而不是泛泛比较。
+- 框架覆盖与不覆盖的能力；替换框架的成本。
+
+**相关内容**：[选型依据](#selection)、[框架替你做了什么](#responsibilities)、[Harness 和 Agent 框架的关系](../agents/harness.mdx#modules)。
+
+<details>
+<summary>参考回答</summary>
+
+这类问题要用项目需求回答。先说明项目需要哪些能力：流程是否固定、是否需要长时间运行和恢复、是否需要人工审批、上下文和权限有没有特殊要求、团队使用什么语言。
+
+选择自研的常见理由：流程本身简单，核心循环几十行就能写清楚，引入框架的抽象和依赖不划算；需要自己掌控上下文组装、压缩和工具授权的每个细节，框架的预置 Agent 难以定制或难以调试；部署环境有限制；框架版本变化快，不希望核心逻辑被绑定。例如 Spring AI 1.x 默认在模型调用内部自动执行工具，2.0 起由 ChatClient 的工具调用循环负责；如果需要在每次执行前做权限检查、审批和审计，就关闭自动执行，自己驱动工具调用循环。
+
+选择框架的理由：需要的持久化、中断恢复、流式事件、追踪和多模型适配框架都已提供，自研这些能力的成本高于学习框架；团队熟悉框架，交付更快。是否换框架，看现有框架是否已经成为瓶颈，以及迁移成本。把工具实现、提示和评测集与框架解耦，才能低成本地替换框架。
+
+</details>
+
+### 6.3 讲一下 LangGraph 的原理。State 怎样设计，节点返回后是覆盖还是合并？条件边、断点续跑和人工介入怎样实现？ {#langgraph-state}
+
+<!-- 面试来源：
+- 科大讯飞：https://www.nowcoder.com/feed/main/detail/ec89f399f5e24573a019238282a9b912 （“讲一下LangGraph原理是什么？”）
+- 小红书：https://www.nowcoder.com/feed/main/detail/e5e9311a623940eead6ec98c65e7f9e8 （“agent框架参考 LangGraph，图的点和边能讲一下吗？”）
+- 药明康德：https://www.nowcoder.com/feed/main/detail/365904cd189149ffb52c36286ab23b37 （“你的state具体是怎么设计的？里面放了哪些字段？节点返回之后是覆盖还是合并”“LangGraph里面条件边是怎么写的？异常分支怎么处理”“怎么实现快照持久化、HITL人工介入，中断之后如何恢复？”）
+- 科大讯飞：https://www.nowcoder.com/feed/main/detail/671d2fa1d7c04322837ee1f5788dd69d （“你在 LangGraph 中是如何划分 Agent Loop 各个节点的？”）
+- 小红书、百度：https://www.nowcoder.com/feed/main/detail/e319aadc79a9479397a6661a7f5ca088 （“LangGraph设计中的3个子图Agent是怎么传递的？”）
+-->
+
+**出现公司**：科大讯飞、小红书、药明康德、百度
+
+**考察重点**
+
+- State、节点、边和超步执行模型。
+- 归并函数决定覆盖或合并；检查点与中断恢复的机制。
+
+**相关内容**：[LangChain 与 LangGraph](#langchain-langgraph)、[检查点与恢复](../state/durable-execution.mdx#checkpoint)。
+
+<details>
+<summary>参考回答</summary>
+
+LangGraph 用有向图描述流程。State 是全局状态的结构，节点是读取状态并返回部分更新的函数，边决定下一个节点：固定边直接连接，条件边由路由函数根据状态返回节点名，异常分支可以在状态里写入错误信息，由路由函数转到处理节点。图允许有环，模型节点和工具节点之间的环就是 Agent 循环。执行按超步推进，同一超步可以并行运行多个节点，更新合并进状态后再进入下一步。
+
+State 中每个字段可以声明归并函数：没有声明的字段，节点返回的新值直接覆盖；消息列表通常声明为追加合并，并行节点同时写同一字段时也依靠归并函数合并。设计 State 时只放流程需要传递的数据，如消息、当前计划、中间结果、错误和重试次数，大对象放外部存储只保留引用。
+
+持久化依靠 Checkpointer：每个超步结束后按 thread_id 保存状态快照，进程重启后用同一个 thread_id 从最后的检查点继续。人工介入在节点中调用中断，执行暂停并保存状态，把待审批内容返回给前端；用户处理后，用同一 thread_id 带着输入恢复，从中断处继续。子图可以作为节点嵌入，父图与子图通过共享的状态字段或输入输出转换传递数据。
+
+</details>
+
+### 6.4 你了解哪些 Agent 框架？框架里有哪些组件？不同框架适合什么场景？ {#framework-landscape}
+
+<!-- 面试来源：
+- 联想：https://www.nowcoder.com/discuss/869169098146537472 （“了解哪些框架”“你知道最近两年有哪些agent框架吗”）
+- 字节跳动：https://www.nowcoder.com/feed/main/detail/6506d4b4addf447c8e2c135b5088cdc8 （“你了解哪些agent开发的框架？框架里有哪些组件呢？”）
+- 深信服：https://www.nowcoder.com/feed/main/detail/14b2c379ae434062a009aefea9fc5df9 （“你们这种做 Agent 的框架，和 AutoGen、CrewAI 这些有没有特别大的差异？”）
+- 多家公司（5 年经验汇总）：https://www.nowcoder.com/feed/main/detail/129eaa1c20444651ac3b932e200d3da4 （“介绍一下 autogen”“有没有用过大模型的网关框架（litellm）”）
+- 新旦智能：https://www.nowcoder.com/feed/main/detail/299d356b23044bf39fb29e7f8569761d （“不同agent框架，应该适用什么样的场景？”）
+- 小红书、百度：https://www.nowcoder.com/feed/main/detail/e319aadc79a9479397a6661a7f5ca088 （“有没有调研过其他 AI 框架？你觉得哪种框架可能更适合做这种长链路场景？”）
+-->
+
+**出现公司**：联想、字节跳动、深信服、新旦智能、小红书、百度
+
+**考察重点**
+
+- 框架的通用组件。
+- 按定位区分框架，并能结合场景说出选择。
+
+**相关内容**：[常见框架的定位](#landscape)、[框架替你做了什么](#responsibilities)。
+
+<details>
+<summary>参考回答</summary>
+
+框架的通用组件包括：统一的模型接口、提示模板、工具定义与执行、执行循环或流程编排、状态与持久化、记忆、检索集成、流式输出和追踪。
+
+按定位区分：LangGraph 做图编排和持久化执行，适合长链路、有分支和人工介入的流程；LangChain 提供高层 Agent 接口和大量集成；AutoGen 以多个 Agent 互相发消息协作为核心，适合多角色讨论；CrewAI 按角色、任务和团队组织 Agent，适合分工明确的流程；LlamaIndex 侧重数据接入和检索，适合知识库应用；OpenAI、Anthropic、Google 的官方 SDK 与自家模型和托管工具结合紧密；Spring AI 面向 Java 团队；Dify、Coze 是可视化平台，适合快速验证。多模型接入时可以加 LiteLLM 这类网关统一接口和路由。
+
+长链路场景优先考虑支持检查点、中断恢复和细粒度控制的图编排框架，或者在官方 SDK 上自研循环。回答时最好对比自己项目实际评估过的两三个选项，说出放弃其他选项的原因。
+
+</details>
+
+## 7. 参考资料
+
+- [LangChain 文档](https://docs.langchain.com/oss/python/langchain/overview)
+- [LangGraph：Graph API](https://docs.langchain.com/oss/python/langgraph/graph-api)
+- [LangGraph：Persistence](https://docs.langchain.com/oss/python/langgraph/persistence)
+- [LangGraph：Interrupts](https://docs.langchain.com/oss/python/langgraph/interrupts)
+- [Spring AI：Tool Calling](https://docs.spring.io/spring-ai/reference/api/tools.html)
+- [LangChain 与 LangGraph 1.0 发布说明](https://blog.langchain.com/langchain-langgraph-1dot0)
+- [AutoGen](https://microsoft.github.io/autogen/) · [CrewAI](https://docs.crewai.com/) · [LlamaIndex](https://docs.llamaindex.ai/)

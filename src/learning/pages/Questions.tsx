@@ -34,8 +34,9 @@ function QuestionsPage() {
   const index = useLearningIndex();
   const learner = useLearner();
   const features = useLearnerFeatures();
-  const initialQuery = new URLSearchParams(useLocation().search).get('q') ?? '';
-  const [roleId, setRoleId] = useState(learner.preferences.roleId ?? '');
+  const params = new URLSearchParams(useLocation().search);
+  const initialQuery = params.get('q') ?? '';
+  const [roleId, setRoleId] = useState(params.get('role') ?? learner.preferences.roleId ?? '');
   const [group, setGroup] = useState<string>('');
   const [priorities, setPriorities] = useState<Priority[]>([]);
   const [statuses, setStatuses] = useState<CardStatus[]>([]);

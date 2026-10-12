@@ -1,0 +1,180 @@
+---
+sidebar_position: 4
+knowledge:
+  id: devops.linux.processes-signals
+  type: concept
+---
+
+# 进程管理与信号
+
+运维面试中的进程问题偏向操作和排障：怎样让程序在后台长期运行，怎样优雅地停止，系统里为什么有僵尸进程，`systemd` 怎样管理服务。本文讲用户态与内核态、进程的状态与父子关系、信号，以及服务的托管方式。进程与线程的区别见[进程与线程](../../basic-knowledge/operating-system/processes-threads.mdx)。
+
+## 1. 面试核心 {#core}
+
+- 用户态运行应用代码，只能访问自己的内存；访问硬件、文件、网络等需要通过系统调用进入内核态，由内核代为执行。中断和异常也会切换到内核态。[卡](#user-kernel-mode)
+- 子进程退出后，内核保留它的退出状态，等父进程调用 `wait` 回收；父进程没有回收前它是僵尸进程（状态 Z）。父进程先退出，子进程成为孤儿进程，被 init（PID 1）或指定的子进程收养者接管并回收。[卡](#zombie-orphan)
+- 僵尸进程已经释放了内存，只占一个进程表项，`kill -9` 杀不掉它；要处理的是父进程：让父进程回收，或结束父进程让 init 接管回收。
+- `kill` 默认发送 SIGTERM，进程可以捕获后清理退出；SIGKILL（`-9`）不能被捕获，进程立即终止，来不及清理。停止服务先发 SIGTERM，超时后再发 SIGKILL。
+- 长期运行的服务交给 `systemd` 托管：负责启动顺序、崩溃重启、日志收集和资源限制。`nohup` 加 `&` 只适合临时任务。[卡](#systemd-background)
+
+## 2. 用户态与内核态 {#modes}
+
+CPU 有不同的特权级。应用程序运行在用户态，不能直接执行特权指令，也不能访问其他进程和内核的内存；内核运行在内核态，可以访问全部硬件和内存。
+
+切换到内核态的三种途径：
+
+- **系统调用**：程序主动请求内核服务，如 `read`、`write`、`open`、`fork`。
+- **中断**：外部设备（网卡、磁盘、时钟）通知 CPU。
+- **异常**：缺页、除零等，由内核处理。
+
+每次切换都要保存和恢复寄存器等上下文，有一定开销。所以频繁的小块读写、过多的系统调用会让 `top` 中的 `sy` 升高，批量读写、零拷贝等优化都是为了减少切换和数据复制。用 `strace -c -p <pid>` 可以统计进程的系统调用。
+
+## 3. 进程状态与父子关系 {#states}
+
+`ps aux` 的 `STAT` 列：
+
+| 状态 | 含义 |
+| --- | --- |
+| R | 运行或在运行队列中 |
+| S | 可中断睡眠，等待事件（大多数进程平时处于此状态） |
+| D | 不可中断睡眠，通常在等待 I/O，信号无法打断 |
+| T | 被暂停（如收到 SIGSTOP、被调试） |
+| Z | 僵尸，已退出、等待父进程回收 |
+
+**fork 与写时复制**：`fork` 创建的子进程得到父进程地址空间的副本。为了减少复制，父子进程先共享物理页，任何一方写入时才复制该页。所以子进程修改内存中的数据不会影响父进程；但如果父子进程共享同一个打开的文件描述符，它们共用文件偏移，写入同一个文件会互相影响，见[文件描述符](../../basic-knowledge/operating-system/file-descriptors.mdx)。
+
+**僵尸进程**：子进程退出后，内核释放它的内存等资源，但保留进程表项和退出状态，等父进程调用 `wait`/`waitpid` 读取。父进程不回收，子进程就一直是 Z 状态。少量僵尸无害，大量僵尸会耗尽 PID。
+
+**孤儿进程**：父进程先退出，子进程被 PID 1（或设置了 subreaper 的进程）收养，由收养者负责回收，不会长期成为僵尸。
+
+**容器中的 PID 1**：容器内第一个进程就是 PID 1，如果它是普通业务程序，不会回收收养来的子进程，也可能不处理 SIGTERM。可以使用 `tini` 这类轻量 init，或者在 `docker run` 时加 `--init`。
+
+## 4. 信号 {#signals}
+
+| 信号 | 编号 | 默认行为 | 用途 |
+| --- | --- | --- | --- |
+| SIGHUP | 1 | 终止 | 终端断开；很多服务约定为重新加载配置 |
+| SIGINT | 2 | 终止 | Ctrl+C |
+| SIGKILL | 9 | 终止，不可捕获 | 强制结束 |
+| SIGTERM | 15 | 终止 | `kill` 默认，请求进程退出 |
+| SIGSTOP / SIGCONT | 19 / 18 | 暂停 / 继续 | 暂停进程 |
+| SIGCHLD | 17 | 忽略 | 子进程状态变化，父进程据此回收 |
+
+**优雅停止**：进程捕获 SIGTERM 后停止接收新请求、处理完进行中的请求、关闭连接和文件后退出。`systemd` 和 Kubernetes 停止进程时都是先发 SIGTERM，等待一段时间（如 Kubernetes 默认 30 秒）后再发 SIGKILL。
+
+## 5. 服务的托管与后台运行 {#service-management}
+
+| 方式 | 说明 | 适用 |
+| --- | --- | --- |
+| `cmd &` | 后台运行，终端关闭时可能收到 SIGHUP 而退出 | 临时 |
+| `nohup cmd > out.log 2>&1 &` | 忽略 SIGHUP，输出重定向 | 临时的长时间任务 |
+| `tmux` / `screen` | 保留终端会话，可以重新连接 | 需要交互的长任务 |
+| `systemd` 服务 | 开机启动、依赖顺序、崩溃重启、日志、资源限制 | 长期运行的服务 |
+
+CentOS 6 及以前使用 SysV init，服务脚本在 `/etc/init.d/`，按运行级别顺序启动；之后的主流发行版改用 `systemd`，并行启动，用单元文件描述服务。
+
+一个最小的服务单元文件：
+
+```ini
+# /etc/systemd/system/app.service
+[Unit]
+Description=Demo app
+After=network-online.target
+
+[Service]
+User=app
+ExecStart=/opt/app/bin/app --config /etc/app.yaml
+Restart=on-failure
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+```
+
+常用命令：`systemctl daemon-reload` 重新加载单元文件，`systemctl enable --now app` 设置开机启动并立即启动，`systemctl status app` 查看状态和最近日志，`systemctl cat app` 查看单元文件位置和内容，`journalctl -u app -f` 跟踪日志。
+
+## 6. 面试题
+
+### 6.1 用户态和内核态有什么区别？什么情况下会切换到内核态？ {#user-kernel-mode}
+
+<!-- 面试来源：
+- 网易互娱：https://www.nowcoder.com/feed/main/detail/088bdce8c91d453db9bb22a35527c388 （“用户态和内核态区别”）
+- 虾皮：https://www.nowcoder.com/feed/main/detail/8f2d7a7e8e344c1ebdc9a119fef149f0 （“LINUX用户态和内核态”“linux切换到内核要什么命令”“描述切换的具体过程”）
+- 虾皮：https://www.nowcoder.com/discuss/622912438538694656 （“你觉得协程是用户态还是内核态，为什么”）
+-->
+
+**出现公司**：网易互娱、虾皮
+
+**考察重点**
+
+- 特权级与内存访问范围的区别。
+- 系统调用、中断、异常三种进入方式；切换的开销与优化方向。
+
+**相关内容**：[用户态与内核态](#modes)。
+
+<details>
+<summary>参考回答</summary>
+
+CPU 区分特权级。用户态运行应用代码，只能访问自己进程的地址空间，不能直接操作硬件；内核态运行内核代码，可以执行特权指令、访问所有内存和设备。这样一个程序出错不会破坏其他程序和内核。
+
+进入内核态有三种情况：程序发起系统调用（如 `read`、`write`、`fork`），CPU 通过专门的指令陷入内核，内核按系统调用号执行对应功能后返回；外部设备发出中断；程序触发缺页等异常。切换需要保存和恢复寄存器上下文，系统调用过多会让 CPU 的内核态占比升高，所以有批量 I/O、零拷贝等优化。协程的调度由用户态的运行时完成，切换不经过内核，所以比线程切换开销小。
+
+</details>
+
+### 6.2 僵尸进程和孤儿进程有什么区别？僵尸进程怎样处理？ {#zombie-orphan}
+
+<!-- 面试来源：
+- 顺丰：https://www.nowcoder.com/discuss/418141126723477504 （“僵尸进程和孤儿进程区别？”）
+- 虾皮：https://www.nowcoder.com/feed/main/detail/3cb171a61c5445c580d9e8828a9a8b09 （“僵尸进程和孤儿进程”）
+- 虾皮：https://www.nowcoder.com/discuss/622912438538694656 （“fork了子进程写入文件会对父进程发生变化吗”）
+-->
+
+**出现公司**：顺丰、虾皮
+
+**考察重点**
+
+- 两种进程产生的条件和谁负责回收。
+- 僵尸进程不能被 kill，要处理父进程；容器中的 PID 1 问题。
+
+**相关内容**：[进程状态与父子关系](#states)。
+
+<details>
+<summary>参考回答</summary>
+
+子进程退出后，内核释放它的大部分资源，但保留进程表项和退出状态，等待父进程调用 `wait` 读取。在父进程回收之前，它就是僵尸进程，`ps` 中状态为 Z。孤儿进程是父进程先退出、自己仍在运行的进程，它会被 PID 1 收养，退出后由 PID 1 回收，所以孤儿进程本身无害。
+
+僵尸进程已经死了，`kill -9` 对它无效。处理方法是找到父进程（`ps -o ppid= -p <pid>`）：修复父进程使其处理 SIGCHLD 并调用 `wait`；无法修复时结束父进程，僵尸变成孤儿，由 PID 1 回收。少量僵尸只占进程表项，大量僵尸会耗尽 PID 导致无法创建新进程。在容器里，业务程序作为 PID 1 时不会回收收养来的进程，应使用 `tini` 等 init 进程。
+
+</details>
+
+### 6.3 怎样让程序在后台长期运行？systemd 是什么，怎样知道一个服务运行的是哪个程序？ {#systemd-background}
+
+<!-- 面试来源：
+- 京东：https://www.nowcoder.com/discuss/478505627115880448 （“知道init进程吗，说一说systemd，知道centos6怎么管理的吗”“怎么知道systemctl运行的是哪个程序”）
+- 共济科技：https://www.nowcoder.com/discuss/908367488235110400 （systemd 服务、组件启动方式）
+- 实在智能：https://www.nowcoder.com/feed/main/detail/6c75fffbde904485a664dfc7276501d9 （“Docker怎么启动与后台运行”）
+-->
+
+**出现公司**：京东、共济科技、实在智能
+
+**考察重点**
+
+- `nohup`、`tmux` 与 `systemd` 的适用场景。
+- 单元文件的关键配置；SysV init 与 systemd 的差异；优雅停止。
+
+**相关内容**：[服务的托管与后台运行](#service-management)、[信号](#signals)。
+
+<details>
+<summary>参考回答</summary>
+
+临时任务可以用 `nohup cmd > out.log 2>&1 &`，忽略终端断开的 SIGHUP 并把输出写到文件；需要交互的长任务用 `tmux`。长期运行的服务应该交给 systemd：它是现在主流发行版的 PID 1，用单元文件描述服务的启动命令、运行用户、依赖顺序、失败重启策略和资源限制，开机自动启动，日志进入 journald。CentOS 6 之前用 SysV init，服务脚本放在 `/etc/init.d/`，按运行级别串行启动；systemd 可以并行启动并管理依赖。
+
+要知道服务实际运行的程序，用 `systemctl status <服务>` 看主进程和单元文件路径，`systemctl cat <服务>` 看单元文件中的 `ExecStart`。停止服务时 systemd 先发 SIGTERM，超时后发 SIGKILL，所以程序应处理 SIGTERM 完成清理。
+
+</details>
+
+## 7. 参考资料
+
+- [man7：signal(7)](https://man7.org/linux/man-pages/man7/signal.7.html)
+- [man7：wait(2)](https://man7.org/linux/man-pages/man2/wait.2.html)
+- [systemd.service 文档](https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html)

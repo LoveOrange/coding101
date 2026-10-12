@@ -861,11 +861,11 @@
 
 ### 17.1 大模型基础
 
-- ⬜ ★ 大语言模型（LLM）（生成过程、能力边界）
-- ⬜ ★ Token 与上下文窗口
-- ⬜ ★ Transformer 与注意力机制（只讲到能解释上下文长度与 KV Cache） ↔ 推理部署与 KV Cache
-- ⬜ ★ 模型幻觉 ↔ 引用与证据
-- ⬜ 采样参数（temperature、top-p）
+- ✅ ★ 大语言模型（LLM）（生成过程、能力边界）
+- ✅ ★ Token 与上下文窗口（并入《大语言模型基础》）
+- ✅ ★ Transformer 与注意力机制（只讲到能解释上下文长度与 KV Cache） ↔ 推理部署与 KV Cache
+- ✅ ★ 模型幻觉 ↔ 引用与证据
+- ✅ 采样参数（temperature、top-p；并入《大语言模型基础》）
 - ⬜ ☆ 微调与 LoRA（与提示、检索的选择边界）
 
 ### 17.2 模型调用与提示
@@ -925,13 +925,13 @@
 - ✅ ★ 提示注入 ↔ Web 应用安全
 - ✅ ★ 工具授权与执行沙箱 ↔ 认证与授权、容器原理
 - ⬜ AI 数据安全（敏感数据、检索权限、记忆污染）
-- ⬜ AI 应用服务化（并发、限流、取消、任务队列） ↔ 限流、超时
-- ⬜ 成本与延迟优化（Token 预算、缓存、批处理）
+- ✅ AI 应用服务化（并发、限流、取消、任务队列；并入《延迟、成本与服务扩展》） ↔ 限流、超时
+- ✅ 成本与延迟优化（Token 预算、缓存、批处理；见《延迟、成本与服务扩展》）
 - ⬜ ☆ 推理部署与 KV Cache（vLLM、量化、批处理）
 
 ### 17.9 框架与 AI 辅助开发
 
-- ⬜ LangChain 与 LangGraph
+- ✅ LangChain 与 LangGraph（见《Agent 框架选型》）
 - ⬜ ☆ Spring AI ↔ Spring Boot 自动配置
 - ⬜ ☆ LlamaIndex
 - ✅ AI 辅助开发（任务拆分、上下文、验证与代码评审） ↔ 测试金字塔、分支策略与代码评审
@@ -1000,34 +1000,36 @@
 
 〔运维 后端〕面向 SRE、DevOps 和需要线上排查的后端岗位。SLO 与容灾正文在系统设计，本领域负责落地工具和排查。
 
+2026-10-13 起，正文发布在 `docs/devops/`；岗位路线见站点的“运维与 SRE 面试路线”（`src/data/interviewRoadmaps/sre.ts`），未完成的主题在路线中标为建设中。题目来源为牛客网约 270 篇 SRE、运维开发、DevOps 公开面经。
+
 ### 19.1 Linux
 
-- ⬜ ★ Linux 常用命令（文本处理 grep/awk/sed、查找、压缩）
-- ⬜ ★ 文件权限与用户（rwx、SUID、umask）
-- ⬜ ★ Linux 进程管理（ps、kill 与信号、nohup、systemd） ↔ 僵尸进程与孤儿进程
-- ⬜ ★ Linux 性能排查（top、vmstat、iostat、free、load average 的含义） ↔ CPU 使用率
-- ⬜ ★ Linux 网络排查（ss、netstat、tcpdump、curl、dig） ↔ TCP 连接排查
+- ✅ ★ Linux 常用命令（文本处理 grep/awk/sed、查找、压缩）
+- ✅ ★ 文件权限与用户（rwx、SUID、umask；并入《Linux 常用命令与文件权限》）
+- ✅ ★ Linux 进程管理（ps、kill 与信号、nohup、systemd） ↔ 僵尸进程与孤儿进程
+- ✅ ★ Linux 性能排查（top、vmstat、iostat、free、load average 的含义） ↔ CPU 使用率
+- ✅ ★ Linux 网络排查（ss、netstat、tcpdump、curl、dig） ↔ TCP 连接排查
 - ⬜ Shell 脚本
-- ⬜ ☆ 磁盘与文件系统管理（df/du、inode 耗尽、LVM） ↔ 页缓存与文件系统
+- ✅ ☆ 磁盘与文件系统管理（df/du、inode 耗尽；LVM 未展开） ↔ 页缓存与文件系统
 
 ### 19.2 容器
 
-- ⬜ ★ 容器原理（Namespace、Cgroups、联合文件系统） ↔ 进程与线程
-- ⬜ ★ Docker 镜像与 Dockerfile（分层、多阶段构建、镜像瘦身）
+- ✅ ★ 容器原理（Namespace、Cgroups、联合文件系统） ↔ 进程与线程
+- ✅ ★ Docker 镜像与 Dockerfile（分层、多阶段构建、镜像瘦身）
 - ⬜ Docker 网络与存储（bridge、host、卷）
 - ⬜ ☆ 容器运行时（containerd、OCI）
 
 ### 19.3 Kubernetes
 
-- ⬜ ★ Kubernetes 架构（API Server、etcd、Scheduler、Controller、kubelet） ↔ ZooKeeper 与 etcd
-- ⬜ ★ Pod（生命周期、探针、资源 requests 与 limits）
-- ⬜ ★ 工作负载（Deployment、StatefulSet、DaemonSet、Job）
-- ⬜ ★ Service 与 Ingress ↔ 服务发现、负载均衡
+- ✅ ★ Kubernetes 架构（API Server、etcd、Scheduler、Controller、kubelet） ↔ ZooKeeper 与 etcd
+- ✅ ★ Pod（生命周期、探针、资源 requests 与 limits）
+- ✅ ★ 工作负载（Deployment、StatefulSet、DaemonSet、Job；与 Service、网络合为一篇）
+- ✅ ★ Service 与 Ingress ↔ 服务发现、负载均衡
 - ⬜ ConfigMap 与 Secret
 - ⬜ 存储（PV、PVC、StorageClass）
-- ⬜ Kubernetes 调度（亲和性、污点与容忍）
-- ⬜ 弹性伸缩（HPA、VPA）
-- ⬜ ☆ Kubernetes 网络（CNI、Pod 间通信） ↔ ARP 与 NAT
+- ✅ Kubernetes 调度（亲和性、污点与容忍；并入《Kubernetes 架构》与《Pod》）
+- ✅ 弹性伸缩（HPA、VPA；并入《Pod》）
+- ✅ ☆ Kubernetes 网络（CNI、Pod 间通信） ↔ ARP 与 NAT
 - ⬜ ☆ Helm 与 Operator
 
 ### 19.4 CI/CD 与发布
@@ -1040,7 +1042,7 @@
 ### 19.5 可观测性
 
 - ✅ ★ 可观测性（日志、指标、追踪的关联）
-- ⬜ ★ 监控与告警（Prometheus、指标类型、告警设计） ↔ 服务等级目标（SLO）
+- ✅ ★ 监控与告警（Prometheus、指标类型、告警设计） ↔ 服务等级目标（SLO）
 - ⬜ 日志系统（ELK、Loki、结构化日志）
 - ⬜ 分布式追踪（OpenTelemetry、Trace 与 Span） ↔ Agent 可观测性
 - ⬜ ☆ 火焰图与 eBPF
@@ -1048,12 +1050,13 @@
 ### 19.6 故障排查与响应
 
 - ✅ ★ 生产故障诊断（JVM、线程、SQL、网络联合排查）
-- ⬜ ★ 故障响应（定级、止血、沟通、复盘） ↔ 事故复盘
+- ✅ ★ 故障响应（定级、止血、沟通、复盘） ↔ 事故复盘
+- ✅ ★ SRE 的职责与工作方式（SLO、错误预算、琐事、混沌工程）
 - ⬜ 常见线上故障（磁盘满、连接数耗尽、DNS 解析失败、证书过期）
 
 ### 19.7 流量与基础设施
 
-- ⬜ ★ Nginx（反向代理、负载均衡、限流、配置） ↔ 负载均衡
+- ✅ ★ Nginx（反向代理、负载均衡、LVS、502/504） ↔ 负载均衡
 - ⬜ ☆ 基础设施即代码（Terraform、Ansible）
 - ⬜ ☆ 云网络与权限（VPC、安全组、IAM）
 

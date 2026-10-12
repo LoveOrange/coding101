@@ -1,0 +1,196 @@
+---
+sidebar_position: 1
+knowledge:
+  id: devops.observability.monitoring-alerting
+  type: concept
+---
+
+# 监控与告警
+
+监控回答“系统现在怎么样”，告警决定“什么时候需要有人介入”。SRE 面试通常从你用过的工具问起（Prometheus 的架构、怎样采集），再问设计：一个服务该监控哪些指标，告警怎样设置才不会淹没值班的人。本文讲 Prometheus 的组成与数据模型、指标的选择方法和告警设计。日志、指标与追踪的关联见[日志、指标与追踪](../../system-design/production/logs-metrics-traces-correlation.mdx)，SLO 的制定见 [SLI、SLO 与错误预算](../../system-design/availability/sli-slo-error-budget-capacity-headroom.mdx)。
+
+## 1. 面试核心 {#core}
+
+- Prometheus 以拉取方式定期从各目标的 `/metrics` 接口抓取指标，存入本地时序数据库，用 PromQL 查询，按规则计算告警并发给 Alertmanager；Alertmanager 负责分组、抑制、静默和路由通知。目标通过服务发现（Kubernetes、Consul、文件等）自动获得。[卡](#prometheus-architecture)
+- 指标由名称和标签唯一确定，有 Counter（只增不减）、Gauge（可增可减）、Histogram 和 Summary（分布）四种类型；标签取值不能无限增长（如用户 ID），否则序列数爆炸。
+- 选指标有方法：服务看延迟、流量、错误、饱和度四个黄金信号（或 RED：速率、错误、耗时），资源看 USE：使用率、饱和度、错误。先监控用户能感知的症状，再监控原因。[卡](#what-to-monitor)
+- 告警应当可执行：只对影响用户或即将影响用户的情况告警，每条告警都有明确的处理步骤；用持续时间、迟滞阈值、聚合和抑制减少抖动和重复，按严重程度分级和升级。[卡](#alert-design)
+- 监控系统自身也要被监控：Prometheus 和 Alertmanager 做高可用部署，并用独立的“心跳告警”确认告警链路是通的。
+
+## 2. Prometheus 的组成 {#prometheus}
+
+| 组件 | 作用 |
+| --- | --- |
+| Prometheus Server | 服务发现、定期抓取、存储时序数据、执行 PromQL、计算记录规则和告警规则 |
+| Exporter | 把第三方系统的状态转成 Prometheus 格式：`node_exporter`（主机）、`mysqld_exporter`、`redis_exporter`、`blackbox_exporter`（从外部探测 HTTP、TCP、ICMP）等 |
+| 应用埋点 | 应用用客户端库直接暴露 `/metrics` |
+| Pushgateway | 短生命周期的批处理任务结束前把指标推送上来，再由 Prometheus 拉取 |
+| Alertmanager | 接收告警，按标签分组、去重、抑制、静默，路由到邮件、即时通讯或值班系统 |
+| Grafana | 可视化看板 |
+| 远程存储 | Thanos、VictoriaMetrics、Mimir 等，用于长期保存和多集群汇总 |
+
+**拉取模型的好处**：Prometheus 掌握采集的节奏，目标挂掉时抓取失败本身就是信号（`up == 0`）；目标只需暴露 HTTP 接口。代价是要求 Prometheus 能访问到目标，跨网络时需要部署就近的 Prometheus 或使用代理。
+
+**服务发现**：在 Kubernetes 中，Prometheus 通过 apiserver 发现 Pod、Service、节点和 Endpoints，再用 relabel 规则按注解或标签筛选目标、改写标签。Prometheus Operator 用 `ServiceMonitor`、`PodMonitor` 对象声明抓取目标。
+
+**指标类型**：
+
+| 类型 | 含义 | 用法 |
+| --- | --- | --- |
+| Counter | 累计值，只增不减，进程重启归零 | 请求数、错误数；用 `rate()` 计算每秒速率 |
+| Gauge | 当前值，可增可减 | 内存用量、队列长度、温度 |
+| Histogram | 按区间计数的分布，在服务端可以聚合 | 请求耗时；用 `histogram_quantile()` 计算 P99 |
+| Summary | 客户端计算好的分位数，不能跨实例聚合 | 单实例的耗时分位数 |
+
+```promql
+sum(rate(http_requests_total{status=~"5.."}[5m])) / sum(rate(http_requests_total[5m]))   # 错误率
+histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket[5m])))  # P99 延迟
+```
+
+**与 Zabbix 的区别**：Zabbix 以 Agent 为中心，支持主动和被动两种采集模式，数据存在关系数据库中，模板化管理主机和网络设备，适合传统的物理机、虚拟机环境；Prometheus 使用多维标签的数据模型和服务发现，适合容器和微服务这类实例频繁变化的环境，查询和聚合能力更强。
+
+## 3. 监控哪些指标 {#metrics}
+
+**服务（四个黄金信号）**
+
+| 信号 | 指标 |
+| --- | --- |
+| 延迟 | P50、P99 耗时，成功和失败请求分开统计 |
+| 流量 | QPS、并发连接数 |
+| 错误 | 5xx 比例、业务错误码、超时数 |
+| 饱和度 | 线程池、连接池、队列的使用率，CPU 与内存相对上限的比例 |
+
+**资源（USE 方法）**：每种资源看使用率、饱和度和错误。
+
+| 资源 | 使用率 | 饱和度 | 错误 |
+| --- | --- | --- | --- |
+| CPU | 使用率 | load、运行队列、容器 CPU 限流次数 | — |
+| 内存 | 已用比例 | 交换、OOM 次数 | — |
+| 磁盘 | 空间与 inode 使用率、I/O 利用率 | I/O 等待、队列长度 | 读写错误 |
+| 网络 | 带宽 | 丢包、重传、连接队列溢出 | 网卡错误 |
+
+**分层覆盖**：基础设施（主机、容器、网络）→ 中间件（数据库连接数与慢查询、Redis 内存与命中率、消息堆积）→ 应用（黄金信号、JVM 堆与 GC）→ 业务（下单量、支付成功率）→ 用户侧（外部拨测、真实用户的页面耗时）。例如监控一个代理服务器，要看连接数和新建速率、各上游的错误率和耗时、上游健康状态、TLS 证书剩余有效期，以及主机的 CPU、网络和文件描述符使用量。
+
+## 4. 告警设计 {#alerting}
+
+**告警什么**：优先告警用户能感知的症状（错误率升高、延迟超过目标、SLO 的错误预算消耗过快），原因类指标（某台机器 CPU 高）多数只需要放在看板上，或者作为低级别通知。每条需要人处理的告警都应附带说明和处理手册的链接。
+
+**减少噪声**
+
+| 手段 | 做法 |
+| --- | --- |
+| 持续时间 | 规则加 `for: 5m`，持续满足才触发，过滤瞬时尖峰 |
+| 迟滞阈值 | 触发阈值和恢复阈值分开（如 80% 触发、70% 恢复），避免在阈值附近反复触发和恢复 |
+| 平滑 | 用一段时间的平均值或分位数，而不是瞬时值 |
+| 分组 | Alertmanager 把同一服务、同一集群的告警合成一条通知 |
+| 抑制 | 上游已经告警（如整个机房网络中断）时，抑制下游的大量衍生告警 |
+| 静默 | 计划内的维护期间临时屏蔽 |
+| 定期治理 | 统计每条规则的触发次数和处理率，删除或修改从来没有人处理的规则 |
+
+**分级与升级**：按严重程度区分通知方式，严重告警通过电话、短信通知值班人，在规定时间内没有确认就升级到下一级或负责人；一般告警进入工单或群聊，在工作时间处理。
+
+**阈值怎样定**：参考 SLO 和历史数据，而不是凭感觉。磁盘这类缓慢增长的资源，与其按固定的 80% 告警，不如按增长趋势预测“多少小时后写满”（`predict_linear()`）。
+
+## 5. 面试题
+
+### 5.1 Prometheus 的架构是怎样的？它怎样发现和抓取目标？与 Zabbix 有什么区别？ {#prometheus-architecture}
+
+<!-- 面试来源：
+- 上海银行：https://www.nowcoder.com/feed/main/detail/67ff310979144d98837bf08eb5417beb （“prometheus架构是怎么样的？”）
+- 社招 SRE / 运维开发：https://www.nowcoder.com/discuss/353156007406804992 （“Prometheus的架构图”“openfalcon和Prometheus有什么区别？”）
+- DaoCloud：https://www.nowcoder.com/feed/main/detail/55eef84d42ed422a8d4a1c22d888e929 （“Prometheus怎么发现Target的”）
+- 影石：https://www.nowcoder.com/feed/main/detail/5ed2ee165e8340a5b82c8c78eeaeb019 （“prometheus有用什么抓取指标”“zabbix了解吗”）
+- 波克城市：https://www.nowcoder.com/feed/main/detail/310e8864c0084121a964c5277255cd30 （“普罗米修斯和zabbix区别各自优势”）
+- 网易互娱：https://www.nowcoder.com/discuss/353156915016441856 （“Prometheus 如何集成在项目中的”）
+- 小米：https://www.nowcoder.com/discuss/508626047940759552 （“如何设计一个运维监控系统，设计监控，预警，通知，报警等等”）
+-->
+
+**出现公司**：上海银行、DaoCloud、影石、波克城市、网易互娱、小米
+
+**考察重点**
+
+- Server、Exporter、Pushgateway、Alertmanager 的分工和拉取模型。
+- 服务发现与 relabel；指标类型；与 Zabbix 的定位差异。
+
+**相关内容**：[Prometheus 的组成](#prometheus)。
+
+<details>
+<summary>参考回答</summary>
+
+Prometheus Server 按配置的间隔向每个目标的 `/metrics` 接口发 HTTP 请求拉取指标，存入本地的时序数据库，提供 PromQL 查询，并定期计算记录规则和告警规则。应用通过客户端库直接暴露指标，第三方系统通过 Exporter 转换，例如主机用 node_exporter，MySQL、Redis 有对应的 Exporter，blackbox_exporter 从外部探测接口是否可用；短生命周期的任务把指标推送到 Pushgateway。触发的告警发给 Alertmanager，由它分组、去重、抑制、静默后路由到通知渠道。Grafana 负责看板，长期存储和多集群汇总用 Thanos 等远程存储。
+
+目标通过服务发现获得：在 Kubernetes 中 Prometheus 调用 apiserver 列出 Pod、Service、Endpoints，再用 relabel 规则按注解筛选目标、生成标签；使用 Operator 时用 ServiceMonitor 声明。拉取失败时 `up` 指标为 0，本身就能用来告警。
+
+Zabbix 以 Agent 为中心，数据存在关系数据库，模板化管理主机和网络设备，适合传统环境；Prometheus 用多维标签和服务发现，适合实例频繁变化的容器环境，聚合查询更灵活。设计一个监控系统也按这几个环节展开：采集、存储、查询与看板、告警规则、通知与升级，以及监控系统自身的高可用。
+
+</details>
+
+### 5.2 如果要监控一个生产环境的服务（例如一台代理服务器），你会监控哪些指标？ {#what-to-monitor}
+
+<!-- 面试来源：
+- 滴滴：https://www.nowcoder.com/discuss/677898695249006592 （“如果说你要监控一个生产环境的这个服务，那你大概会监控哪些东西？”“这里边的话你觉得这个指标细致一些，应该去监控哪些细致？”）
+- 百度：https://www.nowcoder.com/discuss/723877059239346176 （“监控一个代理服务器，你会监控哪些指标。”）
+- 杭州观远数据：https://www.nowcoder.com/discuss/908191304679456768 （“监控一般采集哪些指标？”）
+- 金山云：https://www.nowcoder.com/feed/main/detail/17ecb26845774a06aeb662cd03a4761b （“prometheus全链路监控都包括什么？”）
+- 德迩象网机器人：https://www.nowcoder.com/feed/main/detail/5c4019daef2f45559f7a8aad25a2e5e2 （“K8s 服务与节点健康监控、关键指标”）
+- 波克城市：https://www.nowcoder.com/feed/main/detail/310e8864c0084121a964c5277255cd30 （“我想要监控redis和mysql该如何监控呢”）
+-->
+
+**出现公司**：滴滴、百度、杭州观远数据、金山云、德迩象网机器人、波克城市
+
+**考察重点**
+
+- 用黄金信号、USE 方法组织指标，而不是罗列。
+- 分层覆盖：资源、中间件、应用、业务、用户侧。
+
+**相关内容**：[监控哪些指标](#metrics)。
+
+<details>
+<summary>参考回答</summary>
+
+按方法组织。服务层面看四个黄金信号：延迟（P50、P99，成功和失败分开）、流量（QPS、并发连接）、错误（5xx 比例、超时、业务错误码）、饱和度（线程池、连接池、队列使用率）。资源层面用 USE 方法：CPU、内存、磁盘、网络分别看使用率、饱和度和错误，例如 CPU 的使用率、负载和容器限流次数，磁盘的空间、inode 和 I/O 等待，网络的带宽、丢包和重传。
+
+然后分层覆盖：主机和容器；中间件，如 MySQL 的连接数、慢查询、主从延迟，Redis 的内存、命中率、驱逐数；应用，如 JVM 堆和 GC；业务，如下单量和支付成功率；用户侧，用外部拨测检查入口是否可用。
+
+以代理服务器为例：活跃连接数和新建速率，每个上游的请求量、错误率、耗时和健康状态，请求排队情况，TLS 证书剩余有效期，以及主机的 CPU、网络带宽和文件描述符使用量。告警只挑其中直接影响用户的几项，其余放在看板上用于排查。
+
+</details>
+
+### 5.3 告警怎样设置才合理？一个指标在阈值附近反复触发、一天告警几百次，怎样降下来？告警怎样收敛和升级？ {#alert-design}
+
+<!-- 面试来源：
+- 快手：https://www.nowcoder.com/discuss/676447175684952064 （“CPU超过了一个设定的阈值，然后一会儿恢复了……一天反复好几百次……你觉得有什么好办法去把它这种报警次数降下去吗？”“你是如何保持这个系统可用性的？”）
+- 蚂蚁金服：https://www.nowcoder.com/discuss/353156080794542080 （“报警收敛怎么做”）
+- 社招 SRE / 运维开发：https://www.nowcoder.com/discuss/353156007406804992 （“哪些维度适合做报警，是所有的维度都需要配报警吗？”“怎么保证这些报警是有用的”）
+- 莉莉丝：https://www.nowcoder.com/feed/main/detail/41883e388cc14abe97de11d46816e45d （“配置哪些告警策略，然后以及面对频繁告警怎么处理的”）
+- 哔哩哔哩：https://www.nowcoder.com/feed/main/detail/5abdda781c524235b0e40b708bb04b73 （“监控报警有没有做升级”）
+- 运维开发一面：https://www.nowcoder.com/discuss/862021700576083968 （“报警线设置多少合适，是以什么数据为标准”）
+-->
+
+**出现公司**：快手、蚂蚁金服、莉莉丝、哔哩哔哩
+
+**考察重点**
+
+- 告警症状而非原因，每条告警可执行。
+- 持续时间、迟滞、平滑、分组、抑制等降噪手段；分级与升级；告警系统自身的可用性。
+
+**相关内容**：[告警设计](#alerting)。
+
+<details>
+<summary>参考回答</summary>
+
+先确定告警什么：需要人立即处理的，只有已经影响或即将影响用户的情况，例如错误率、延迟超过目标、错误预算消耗过快；单台机器 CPU 高这类原因指标，大多数放在看板上或作为低级别通知。每条告警写清楚含义和处理步骤，长期没人处理的规则要删除或调整。阈值依据 SLO 和历史数据确定，缓慢增长的资源按趋势预测剩余时间告警。
+
+指标在阈值附近反复触发，有几种办法：规则加持续时间，例如连续 5 分钟超过才触发；触发和恢复使用不同阈值，形成迟滞区间；用一段时间的平均值或分位数代替瞬时值；同时检查这个阈值是否真的意味着需要处理，可能该提高或改成通知。
+
+收敛靠 Alertmanager：按服务、集群分组合并通知；上游故障时抑制下游的衍生告警；计划维护时静默。升级按严重程度分级，严重告警电话通知值班人，规定时间内未确认就升级给下一级。告警系统本身要高可用部署，并设置一条始终触发的心跳告警，由外部系统检查它是否按时到达，以发现告警链路的中断。
+
+</details>
+
+## 6. 参考资料
+
+- [Prometheus：Overview](https://prometheus.io/docs/introduction/overview/)
+- [Prometheus：Metric types](https://prometheus.io/docs/concepts/metric_types/)
+- [Alertmanager](https://prometheus.io/docs/alerting/latest/alertmanager/)
+- [Google SRE Book：Monitoring Distributed Systems](https://sre.google/sre-book/monitoring-distributed-systems/)
+- [Brendan Gregg：The USE Method](https://www.brendangregg.com/usemethod.html)

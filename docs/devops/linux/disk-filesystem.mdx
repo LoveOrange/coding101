@@ -1,0 +1,180 @@
+---
+sidebar_position: 3
+knowledge:
+  id: devops.linux.disk-filesystem
+  type: concept
+---
+
+# 磁盘与文件系统排查
+
+“磁盘满了怎么办”是运维面试的高频场景题，追问通常围绕一个现象：`df` 显示磁盘快满，`du` 却找不到大文件。要回答清楚，需要理解文件名、inode 和数据块的关系，以及“删除文件”在内核里到底做了什么。本文讲 inode、磁盘满的排查步骤、空间不释放的原因，以及内存中 buffer 和 cache 的区别。
+
+## 1. 面试核心 {#core}
+
+- 文件由目录项（文件名 → inode 号）、inode（权限、属主、大小、时间、数据块位置）和数据块组成。文件名不在 inode 里，硬链接就是多个目录项指向同一个 inode。[卡](#inode)
+- 磁盘满分两种：数据块用完（`df -h` 接近 100%）和 inode 用完（`df -i` 接近 100%，大量小文件）。两种都会导致无法写入。[卡](#disk-full)
+- `df` 统计文件系统已用的块，`du` 遍历目录树累加文件大小。两者差距大的常见原因：文件已删除但仍被进程打开、文件位于被挂载点遮住的目录下。前者用 `lsof +L1` 找到进程，清空或重启进程后释放。[卡](#space-not-released)
+- 删除只是去掉目录项、减少 inode 的链接计数；链接数和打开计数都为 0 时才真正释放数据块。所以清理正在写的日志应该用 `> file` 截断，而不是 `rm`。
+- buffer 缓存块设备的数据（文件系统元数据、直接读写块设备），cache（页缓存）缓存文件内容。两者都可以回收，判断内存是否够用看 `available`。[卡](#buffer-vs-cache)
+
+## 2. inode 与文件系统结构 {#inode-structure}
+
+以 ext4 为例，文件系统划分为若干块组，包含超级块（文件系统整体信息）、块位图和 inode 位图（记录哪些块和 inode 已使用）、inode 表和数据块。
+
+| 组成 | 保存的内容 |
+| --- | --- |
+| 目录项 | 文件名到 inode 号的映射；目录本身也是一个文件，内容就是这些目录项 |
+| inode | 文件类型、权限、属主、大小、时间戳、链接计数、数据块的位置 |
+| 数据块 | 文件内容 |
+
+打开 `/data/app.log` 的过程：从根目录开始逐级读取目录内容，找到 `app.log` 对应的 inode 号，读取 inode 得到数据块位置，再读取数据。
+
+- inode 数量在创建文件系统时确定（ext4），每个文件占用一个。大量小文件（缓存碎片、会话文件、邮件队列）会在空间未满时耗尽 inode。
+- `ls -i` 查看 inode 号，`stat file` 查看 inode 的全部信息，`df -i` 查看 inode 使用率。
+
+## 3. 磁盘满的排查 {#disk-full-steps}
+
+1. **确认是哪种满**：`df -h` 看空间，`df -i` 看 inode，找到使用率高的挂载点。
+2. **找到大目录和大文件**：
+
+   ```bash
+   du -xh --max-depth=1 /data | sort -rh | head      # 逐层下钻，-x 不跨文件系统
+   find /data -xdev -type f -size +1G -exec ls -lh {} \;  # 查找大于 1 GB 的文件
+   ```
+
+   目录中文件极多、`ls` 无法输出时，用 `find` 而不是 `ls`。
+3. **inode 满时找文件数最多的目录**：`find /data -xdev -type f | cut -d/ -f2-3 | sort | uniq -c | sort -nr | head`。
+4. **处理**：日志按策略压缩或删除，配置 logrotate；正在被写入的文件用 `> file` 或 `truncate -s 0` 截断；临时文件和过期缓存清理；需要时扩容。
+5. **防止再次发生**：磁盘使用率和增长速度告警、日志轮转与保留周期、应用写盘配额。
+
+## 4. 空间不释放与 df、du 不一致 {#space-not-released-causes}
+
+| 现象 | 原因 | 处理 |
+| --- | --- | --- |
+| `rm` 删除大文件后 `df` 不下降 | 进程仍持有文件句柄，数据块不会释放 | `lsof +L1` 或 `lsof \| grep deleted` 找到进程；重启或让进程重新打开文件；也可以通过 `/proc/<pid>/fd/<n>` 截断 |
+| `df` 高、`du` 统计不到 | 同上；或者某目录下原有的文件被后来挂载的文件系统遮住 | 卸载或用绑定挂载查看被遮住的目录 |
+| `du` 显示目录很大，`ls` 看着是空的 | 隐藏文件（以 `.` 开头） | `ls -la` 或 `du -sh .[!.]*` |
+| 空间未满却写不进去 | inode 用完；文件系统只读（磁盘错误后被重新挂载为只读）；预留块只给 root 使用 | `df -i`；`dmesg` 查看错误；`mount` 查看挂载选项 |
+
+## 5. buffer 与 cache {#buffer-cache}
+
+`free` 输出中的 `buff/cache` 是内核用空闲内存做的缓存：
+
+- **cache（页缓存）**：缓存文件内容。读文件时先查页缓存，写文件时先写入页缓存，再由内核异步刷回磁盘。
+- **buffer**：缓存块设备层面的数据，例如文件系统元数据、直接读写块设备的数据。
+
+现代 Linux 中两者由同一套页缓存机制管理，所以 `free` 把它们放在一起显示。这部分内存在应用需要时可以回收，判断内存是否够用看 `available`，而不是 `free` 列。`echo 3 > /proc/sys/vm/drop_caches` 可以手动释放干净的缓存，但会让后续读取变慢，只用于测试，不作为线上的常规操作。
+
+## 6. 面试题
+
+### 6.1 什么是 inode？文件系统由哪些部分组成？ {#inode}
+
+<!-- 面试来源：
+- 京东：https://www.nowcoder.com/discuss/478505627115880448 （“讲下inode”）
+- 虾皮：https://www.nowcoder.com/discuss/830797687548084224 （“Linux 的文件系统有了解吗？比如说文件系统它分成了哪些部分组成，以及那个 Inode 的概念?”）
+-->
+
+**出现公司**：京东、虾皮
+
+**考察重点**
+
+- 目录项、inode、数据块的分工；文件名不在 inode 中。
+- inode 数量有限，以及由此引出的 inode 耗尽和硬链接。
+
+**相关内容**：[inode 与文件系统结构](#inode-structure)。
+
+<details>
+<summary>参考回答</summary>
+
+文件系统把磁盘分成超级块、位图、inode 表和数据块。inode 保存文件的元数据：类型、权限、属主、大小、时间戳、链接计数和数据块位置，但不保存文件名。文件名保存在目录中，目录本身是一个文件，内容是“文件名到 inode 号”的映射。打开文件时逐级读取目录找到 inode 号，再通过 inode 找到数据块。
+
+由此可以解释几个现象：硬链接是多个目录项指向同一个 inode，删除其中一个名字不影响数据；inode 的数量在格式化时确定，大量小文件会在空间未满时耗尽 inode，导致无法创建文件，用 `df -i` 检查；移动同一文件系统内的文件只修改目录项，所以很快。
+
+</details>
+
+### 6.2 磁盘使用率很高甚至打满了，你怎样排查和处理？ {#disk-full}
+
+<!-- 面试来源：
+- 腾讯 IEG：https://www.nowcoder.com/feed/main/detail/bff085ef33e243e3adca46550dfa10ed （“如果磁盘打满了你怎么做，说一下你的排查思路”）
+- 触宝：https://www.nowcoder.com/feed/main/detail/347ad85d05e54e8ab9b3d9766f6a9d4c （“磁盘的使用量可能会比较高……这个时候你怎么去找到一些对应的大文件给删除的”）
+- 美团：https://www.nowcoder.com/discuss/353155269590982656 （“find指令相关 查找最大文件命令”）
+- 腾讯 CDG：https://www.nowcoder.com/feed/main/detail/9723c167139b4d34baa5562953f68c5a （“当一个路径下的文件数量大到ls无法显示时应该使用什么指令查找大文件”）
+- 顺丰：https://www.nowcoder.com/discuss/418141126723477504 （“怎么查看磁盘使用情况”）
+-->
+
+**出现公司**：腾讯、触宝、美团、顺丰
+
+**考察重点**
+
+- 区分空间满和 inode 满。
+- 用 `du`、`find` 逐层定位；安全地清理正在写入的文件；事后的预防。
+
+**相关内容**：[磁盘满的排查](#disk-full-steps)。
+
+<details>
+<summary>参考回答</summary>
+
+先用 `df -h` 和 `df -i` 确认是哪个挂载点满了，以及是空间满还是 inode 满。空间满时用 `du -xh --max-depth=1` 从挂载点逐层下钻，按大小排序找到大目录；也可以用 `find <dir> -xdev -type f -size +1G` 直接找大文件。目录下文件多到 `ls` 无法输出时，用 `find` 遍历。inode 满时统计每个目录下的文件数，找出产生大量小文件的程序。
+
+处理时先确认文件是否还在使用：正在被进程写入的日志不要直接 `rm`，用 `> file` 截断，否则空间不会释放；旧日志压缩或删除；清理临时文件和过期缓存；空间仍不够就扩容。之后补上预防：磁盘使用率和增长速度告警，logrotate 控制日志保留周期，给大文件写入的程序设置上限。
+
+</details>
+
+### 6.3 删除了大文件但空间没有释放，或者 du 找不到大文件但 df 显示快满了，可能是什么原因？ {#space-not-released}
+
+<!-- 面试来源：
+- 京东：https://www.nowcoder.com/discuss/478505627115880448 （“删掉一个大文件，文件已经不在了，但是空间仍然被占用，为什么”）
+- 触宝：https://www.nowcoder.com/feed/main/detail/347ad85d05e54e8ab9b3d9766f6a9d4c （“如果说磁盘使用量高，但是我们通过 du 或者是 find 命令又没有找到这种很大的文件或者目录的话……我们还需要又做什么处理呢？”）
+- 腾讯 IEG：https://www.nowcoder.com/feed/main/detail/bff085ef33e243e3adca46550dfa10ed （“如果有一个文件夹叫data占用磁盘空间很多， 但是你cd进去后发现是空的，有哪些原因导致”）
+-->
+
+**出现公司**：京东、触宝、腾讯
+
+**考察重点**
+
+- 删除操作只减少链接计数，进程打开的文件不会释放。
+- df 与 du 的统计方式不同；挂载点遮挡和隐藏文件。
+
+**相关内容**：[空间不释放与 df、du 不一致](#space-not-released-causes)、[inode 与文件系统结构](#inode-structure)。
+
+<details>
+<summary>参考回答</summary>
+
+`rm` 只是删除目录项、把 inode 的链接计数减一。只有链接计数为 0 且没有进程打开这个文件时，内核才释放数据块。如果日志文件被删除时进程还在写，文件在目录中看不到了，`du` 统计不到，但 `df` 仍然算作已用。用 `lsof +L1` 或 `lsof | grep deleted` 找到持有它的进程，重启进程或通知它重新打开日志（很多服务支持信号触发），也可以通过 `/proc/<pid>/fd/` 下对应的描述符把它截断。
+
+另一种情况是目录下原本有文件，后来又在这个目录上挂载了别的文件系统，原来的文件被遮住，`du` 只能看到挂载后的内容，可以卸载后或用绑定挂载查看。如果 `du` 显示某个目录很大，`cd` 进去却看着是空的，通常是隐藏文件，用 `ls -la` 查看。此外，inode 耗尽或文件系统因错误变为只读，也会表现为“有空间却写不进去”。
+
+</details>
+
+### 6.4 buffer 和 cache 有什么区别？ {#buffer-vs-cache}
+
+<!-- 面试来源：
+- UCloud：https://www.nowcoder.com/feed/main/detail/417022d5313d4fa0b805218840d20e92 （“讲讲缓存，buffer和cache的区别，举例说明”）
+- 中国电信：https://www.nowcoder.com/feed/main/detail/b1caa4747f154412b18d467f3fc68781 （“讲一下cache和buffer的区别”）
+- 小米：https://www.nowcoder.com/feed/main/detail/f492ee8e90374d7eb37a62735c59ec8f （“buffer和cache的区别”）
+- 米哈游：https://www.nowcoder.com/discuss/395588525813403648 （“Linux内存中Cache和Buffer的区别”）
+-->
+
+**出现公司**：UCloud、中国电信、小米、米哈游
+
+**考察重点**
+
+- 页缓存缓存文件内容，buffer 缓存块设备数据。
+- 两者可回收，判断内存是否紧张看 `available`。
+
+**相关内容**：[buffer 与 cache](#buffer-cache)。
+
+<details>
+<summary>参考回答</summary>
+
+两者都是内核利用空闲内存做的磁盘缓存。cache 指页缓存，缓存文件的内容：读文件时命中页缓存就不用访问磁盘，写文件时先写入页缓存，再由内核异步刷盘。buffer 缓存块设备层的数据，例如文件系统的元数据（inode、目录块）和直接读写块设备时的数据。现在两者由同一套页缓存机制管理，`free` 把它们合并显示为 `buff/cache`。
+
+这部分内存在应用需要时可以被回收，所以 `free` 列很小并不代表内存不足，应该看 `available`。如果 `available` 也很低、出现交换，才说明内存紧张。还要注意写入页缓存的脏数据在刷盘前断电会丢失，需要持久化保证的程序会调用 `fsync`。
+
+</details>
+
+## 7. 参考资料
+
+- [Linux Kernel Documentation：ext4 Data Structures and Algorithms](https://docs.kernel.org/filesystems/ext4/index.html)
+- [man7：lsof(8)](https://man7.org/linux/man-pages/man8/lsof.8.html)
+- [man7：free(1)](https://man7.org/linux/man-pages/man1/free.1.html)
