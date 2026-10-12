@@ -1,5 +1,8 @@
 ---
 sidebar_position: 4
+knowledge:
+  id: basic-knowledge.java.functional.parallel-stream-model-pitfalls
+  type: concept
 ---
 
 # 并行流
@@ -166,7 +169,7 @@ List<Profile> profiles = userIds.parallelStream()
 
 ## 10. 面试题
 
-### 10.1 ForkJoinPool 怎样调度任务，工作窃取解决了什么问题
+### 10.1 ForkJoinPool 怎样调度任务，工作窃取解决了什么问题 {#work-stealing}
 
 <!-- 面试来源：
 - 阿里巴巴：https://www.nowcoder.com/discuss/353159278544494592
@@ -192,7 +195,7 @@ Fork/Join 把大任务递归拆成小任务，Worker 主要从自己的双端队
 
 </details>
 
-### 10.2 在服务端使用 parallelStream 需要检查哪些条件
+### 10.2 在服务端使用 parallelStream 需要检查哪些条件 {#parallel-stream-checklist}
 
 <!-- 面试来源：
 - 美团：https://www.nowcoder.com/discuss/353154153574768640

@@ -1,5 +1,8 @@
 ---
 sidebar_position: 6
+knowledge:
+  id: basic-knowledge.nosql.redis.distributed-lock-conditions-boundaries
+  type: concept
 ---
 
 # 分布式锁
@@ -96,7 +99,7 @@ Redis 官方的 Redlock 算法尝试在多个相互独立的节点上取得多�
 
 ## 9. 面试题
 
-### 9.1 Redis 分布式锁需要满足哪些条件，为什么还需要 fencing token
+### 9.1 Redis 分布式锁需要满足哪些条件，为什么还需要 fencing token {#lock-requirements-fencing}
 
 <!-- 面试来源：
 - 字节跳动：https://www.nowcoder.com/discuss/368753882070085632

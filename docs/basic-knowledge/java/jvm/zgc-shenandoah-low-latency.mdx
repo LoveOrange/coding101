@@ -1,5 +1,8 @@
 ---
 sidebar_position: 15
+knowledge:
+  id: basic-knowledge.java.jvm.zgc-shenandoah-low-latency
+  type: concept
 ---
 
 # 低延迟垃圾收集器
@@ -101,7 +104,7 @@ java -XX:+UseShenandoahGC -version
 
 ## 9. 面试题
 
-### 9.1 G1 和 ZGC 的主要差异是什么，为什么不少服务仍使用 G1
+### 9.1 G1 和 ZGC 的主要差异是什么，为什么不少服务仍使用 G1 {#g1-vs-zgc}
 
 <!-- 面试来源：
 - 某云原生企业：https://www.nowcoder.com/discuss/732685882523758592
@@ -126,7 +129,7 @@ G1 并发完成全局标记，但存活对象疏散主要发生在 STW collectio
 
 </details>
 
-### 9.2 低延迟收集器为什么仍可能发生分配停滞
+### 9.2 低延迟收集器为什么仍可能发生分配停滞 {#allocation-stall}
 
 <!-- 面试来源：
 - 阿里云：https://www.nowcoder.com/discuss/401459816646942720

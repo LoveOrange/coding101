@@ -1,5 +1,8 @@
 ---
 sidebar_position: 5
+knowledge:
+  id: basic-knowledge.middleware.scheduled-tasks-sharding-recovery
+  type: concept
 ---
 
 # 分布式任务调度
@@ -97,7 +100,7 @@ Kubernetes CronJob 的 `concurrencyPolicy` 只约束同一个 CronJob 创建的 
 
 ## 10. 面试题
 
-### 10.1 如何设计可分片、可重试且不会重复产生业务结果的定时任务
+### 10.1 如何设计可分片、可重试且不会重复产生业务结果的定时任务 {#sharded-scheduled-jobs}
 
 <!-- 面试来源：
 - 字节跳动：https://www.nowcoder.com/discuss/682693768398548992

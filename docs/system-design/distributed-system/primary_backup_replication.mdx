@@ -1,6 +1,9 @@
 ---
 position: 4
 draft: false
+knowledge:
+  id: system-design.distributed-system.primary-backup-replication
+  type: concept
 ---
 
 import stateTransferImg from './assets/primary_backup_replication/state_transfer.png';
@@ -102,7 +105,7 @@ MySQL、Redis 和共识系统都可能出现主节点与副本角色，但复制
 
 ## 9. 面试题
 
-### 9.1 主节点故障后，怎样保证新主不丢失已提交数据并避免双主
+### 9.1 主节点故障后，怎样保证新主不丢失已提交数据并避免双主 {#failover-without-loss}
 
 <!-- 面试来源：
 - 字节跳动：https://www.nowcoder.com/discuss/353159293912424448

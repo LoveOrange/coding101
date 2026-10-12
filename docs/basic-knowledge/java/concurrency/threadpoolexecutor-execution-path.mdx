@@ -1,5 +1,8 @@
 ---
 sidebar_position: 16
+knowledge:
+  id: basic-knowledge.java.concurrency.threadpoolexecutor-execution-path
+  type: concept
 ---
 
 # Java 线程池
@@ -118,7 +121,7 @@ CPU 密集任务持续占用核心，线程数接近可用核心数通常已经�
 
 ## 7. 面试题
 
-### 7.1 `ThreadPoolExecutor.execute` 的任务处理流程是什么
+### 7.1 `ThreadPoolExecutor.execute` 的任务处理流程是什么 {#execute-flow}
 
 <!-- 面试来源：
 - 阿里巴巴：https://www.nowcoder.com/discuss/461925
@@ -143,7 +146,7 @@ CPU 密集任务持续占用核心，线程数接近可用核心数通常已经�
 
 </details>
 
-### 7.2 怎样为 I/O 密集任务配置线程池大小
+### 7.2 怎样为 I/O 密集任务配置线程池大小 {#io-pool-size}
 
 <!-- 面试来源：
 - 美团：https://www.nowcoder.com/discuss/377447203734921216
@@ -168,7 +171,7 @@ CPU 密集任务持续占用核心，线程数接近可用核心数通常已经�
 
 </details>
 
-### 7.3 队列满或任务持续堆积时应该怎样处理
+### 7.3 队列满或任务持续堆积时应该怎样处理 {#saturation-handling}
 
 <!-- 面试来源：
 - 美团：https://www.nowcoder.com/discuss/363477877092876288

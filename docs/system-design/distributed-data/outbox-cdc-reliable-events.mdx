@@ -1,5 +1,8 @@
 ---
 sidebar_position: 4
+knowledge:
+  id: system-design.distributed-data.outbox-cdc-reliable-events
+  type: concept
 ---
 
 # Transactional Outbox 与 CDC
@@ -87,7 +90,7 @@ Outbox 保证本地提交后事件最终有机会被发布，不保证每个消�
 
 ## 10. 面试题
 
-### 10.1 本地事务提交后消息发送失败，如何保证最终发布
+### 10.1 本地事务提交后消息发送失败，如何保证最终发布 {#publish-after-commit}
 
 **题目类型**：本站自测
 

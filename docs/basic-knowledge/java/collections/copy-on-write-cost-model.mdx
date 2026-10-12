@@ -1,5 +1,8 @@
 ---
 sidebar_position: 9
+knowledge:
+  id: basic-knowledge.java.collections.copy-on-write-cost-model
+  type: concept
 ---
 
 # CopyOnWrite 容器
@@ -139,7 +142,7 @@ CopyOnWrite 把主要成本放在写入，迭代读取无需持锁但允许旧�
 
 ## 9. 面试题
 
-### 9.1 CopyOnWriteArrayList 怎样保证遍历安全，代价是什么
+### 9.1 CopyOnWriteArrayList 怎样保证遍历安全，代价是什么 {#cow-iteration}
 
 <!-- 面试来源：
 - 蚂蚁集团：https://www.nowcoder.com/discuss/353157545105760256
@@ -164,7 +167,7 @@ CopyOnWriteArrayList 的读者访问当前已发布数组，写线程在锁内�
 
 </details>
 
-### 9.2 CopyOnWriteArrayList 中的元素是否也线程安全
+### 9.2 CopyOnWriteArrayList 中的元素是否也线程安全 {#cow-element-safety}
 
 <!-- 面试来源：
 - 蚂蚁集团：https://www.nowcoder.com/discuss/353157545105760256

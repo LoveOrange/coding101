@@ -41,8 +41,6 @@ const LEARNER_ROUTES: {path: string; component: string}[] = [
   {path: '/exam/report', component: '@site/src/learning/pages/Report'},
 ];
 
-/** Doc id prefixes whose tree articles must declare `knowledge.id` (rolled out section by section). */
-const REQUIRE_KNOWLEDGE_ID = ['ai/'];
 const KNOWLEDGE_ID = /^[a-z0-9]+(?:[.-][a-z0-9]+)*$/;
 const CARD_ID = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
@@ -148,7 +146,6 @@ export default function learningContentPlugin(context: LoadContext, options: {le
       const cards: Record<string, CardIndex> = {};
       const details: Record<string, CardDetail> = {};
       const errors: string[] = [];
-      const legacy = {articles: 0, cards: 0};
 
       // Parse every tree article first so cards can point into any of them.
       const treeIds = domains.flatMap((domain) => domain.articleIds);
@@ -173,22 +170,19 @@ export default function learningContentPlugin(context: LoadContext, options: {le
           const doc = docs.get(docId)!;
           const parsed = parsedDocs.get(docId)!;
           const knowledgeId = knowledgeOf(doc)?.id;
-          const strict = knowledgeId !== undefined;
-          if (!strict && REQUIRE_KNOWLEDGE_ID.some((prefix) => docId.startsWith(prefix))) {
-            errors.push(`${docId}: knowledge.id is required under ${REQUIRE_KNOWLEDGE_ID.join(', ')}`);
+          if (knowledgeId === undefined) {
+            errors.push(`${docId}: knowledge tree articles need a knowledge.id in front matter`);
+            continue;
           }
-          if (!strict) legacy.articles += 1;
-          const articleKey = knowledgeId ?? doc.id;
           const roadmap = byPermalink.get(normalizePath(doc.permalink));
           const h2s = parsed.headings.filter((heading) => heading.depth === 2);
 
           const cardIds: string[] = [];
           for (const card of parsed.cards) {
             const where = `${docId}#${card.anchor}`;
-            const report = (message: string) => (strict ? errors.push(`${where}: ${message}`) : undefined);
+            const report = (message: string) => errors.push(`${where}: ${message}`);
             if (!card.explicitId) {
               report('card heading needs an explicit id, e.g. "### 6.1 问题 {#short-name}"');
-              if (!strict) legacy.cards += 1;
             } else if (!CARD_ID.test(card.anchor)) {
               report(`card id "${card.anchor}" must be lowercase words joined by "-"`);
             }
@@ -217,7 +211,7 @@ export default function learningContentPlugin(context: LoadContext, options: {le
               report('a composite question must point to at least two sections or articles');
             }
 
-            const id = `${articleKey}#${card.anchor}`;
+            const id = `${knowledgeId}#${card.anchor}`;
             if (cards[id]) errors.push(`${where}: card id ${id} is used twice`);
             const local = refs.find((ref) => ref.articleId === docId && ref.id);
             const index: CardIndex = {
@@ -256,11 +250,6 @@ export default function learningContentPlugin(context: LoadContext, options: {le
 
       errors.push(...checkMoves(cards, articles));
       if (errors.length) throw new Error(`learning-content: ${errors.length} content problem(s):\n  ${errors.join('\n  ')}`);
-      if (legacy.articles) {
-        console.info(
-          `[learning-content] ${legacy.articles} article(s) without knowledge.id and ${legacy.cards} card(s) without an explicit id use path-based ids; see plans/content-schema.md.`,
-        );
-      }
 
       actions.setGlobalData(compactIndex({domains, articles, cards, roles}));
 

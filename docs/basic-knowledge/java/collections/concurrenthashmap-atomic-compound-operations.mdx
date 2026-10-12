@@ -1,5 +1,8 @@
 ---
 sidebar_position: 8
+knowledge:
+  id: basic-knowledge.java.collections.concurrenthashmap-atomic-compound-operations
+  type: concept
 ---
 
 # ConcurrentHashMap
@@ -141,7 +144,7 @@ Hashtable 是较早的同步 Map，常用操作围绕实例锁串行。Concurren
 
 ## 10. 面试题
 
-### 10.1 JDK 8 之后 ConcurrentHashMap 怎样保证并发安全
+### 10.1 JDK 8 之后 ConcurrentHashMap 怎样保证并发安全 {#chm-thread-safety}
 
 <!-- 面试来源：
 - 快手：https://www.nowcoder.com/discuss/179560
@@ -167,7 +170,7 @@ JDK 8 之后的实现不再以 Segment 作为主结构，而是使用桶数组�
 
 </details>
 
-### 10.2 ConcurrentHashMap 为什么不允许 null
+### 10.2 ConcurrentHashMap 为什么不允许 null {#chm-no-null}
 
 <!-- 面试来源：
 - 阿里巴巴：https://www.nowcoder.com/discuss/353159278544494592

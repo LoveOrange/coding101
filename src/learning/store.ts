@@ -124,7 +124,37 @@ function load(): LearnerState {
     }
   }
   state = settle(state);
+  if (Object.keys(state.cards).length || state.sessions.length) void migrateCardIds();
   return state;
+}
+
+/**
+ * Re-key records saved under card ids that were later retired (see
+ * src/data/contentMoves.json). The map is fetched only for learners with records.
+ */
+async function migrateCardIds() {
+  const {cards: moved} = (await import('@site/src/data/contentMoves.json')).default as {cards: Record<string, string>};
+  const current = load();
+  const rename = (id: string) => moved[id] ?? id;
+  const stale = [
+    ...Object.keys(current.cards),
+    ...current.sessions.flatMap((session) => [...session.cardIds, ...session.answers.map((answer) => answer.cardId)]),
+  ].some((id) => moved[id]);
+  if (!stale) return;
+  const cards: Record<string, CardState> = {};
+  for (const [id, card] of Object.entries(current.cards)) {
+    // A record already kept under the new id wins over the retired one.
+    if (!moved[id] || !current.cards[moved[id]]) cards[rename(id)] = card;
+  }
+  write({
+    ...current,
+    cards,
+    sessions: current.sessions.map((session) => ({
+      ...session,
+      cardIds: session.cardIds.map(rename),
+      answers: session.answers.map((answer) => ({...answer, cardId: rename(answer.cardId)})),
+    })),
+  });
 }
 
 function write(next: LearnerState) {

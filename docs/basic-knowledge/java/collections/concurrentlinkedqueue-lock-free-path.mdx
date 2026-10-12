@@ -1,5 +1,8 @@
 ---
 sidebar_position: 11
+knowledge:
+  id: basic-knowledge.java.collections.concurrentlinkedqueue-lock-free-path
+  type: concept
 ---
 
 # ConcurrentLinkedQueue
@@ -113,7 +116,7 @@ ConcurrentLinkedQueue 本身不阻塞。自旋轮询会浪费 CPU，固定 sleep
 
 ## 9. 面试题
 
-### 9.1 ConcurrentLinkedQueue 怎样用 CAS 完成入队和出队
+### 9.1 ConcurrentLinkedQueue 怎样用 CAS 完成入队和出队 {#cas-enqueue-dequeue}
 
 <!-- 面试来源：
 - 快手：https://www.nowcoder.com/discuss/179560
@@ -139,7 +142,7 @@ head 和 tail 允许落后，其他线程会协助推进，减少每次操作的
 
 </details>
 
-### 9.2 ConcurrentLinkedQueue 与 LinkedBlockingQueue 怎样选择
+### 9.2 ConcurrentLinkedQueue 与 LinkedBlockingQueue 怎样选择 {#clq-vs-lbq}
 
 <!-- 面试来源：
 - 快手：https://www.nowcoder.com/discuss/179560

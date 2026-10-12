@@ -1,5 +1,8 @@
 ---
 sidebar_position: 3
+knowledge:
+  id: basic-knowledge.java.jvm.parent-delegation
+  type: concept
 ---
 
 # 双亲委派模型
@@ -101,7 +104,7 @@ System.out.println(Service.class.getClassLoader());
 
 ## 8. 面试题
 
-### 8.1 双亲委派的加载流程和作用是什么
+### 8.1 双亲委派的加载流程和作用是什么 {#delegation-flow}
 
 <!-- 面试来源：
 - 阿里巴巴：https://www.nowcoder.com/discuss/353157613372252160
@@ -127,7 +130,7 @@ System.out.println(Service.class.getClassLoader());
 
 </details>
 
-### 8.2 为什么同名同字节码的两个类仍可能无法强制转换
+### 8.2 为什么同名同字节码的两个类仍可能无法强制转换 {#same-class-cast-failure}
 
 <!-- 面试来源：
 - 字节跳动：https://www.nowcoder.com/discuss/353158260289118208

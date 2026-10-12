@@ -1,5 +1,8 @@
 ---
 sidebar_position: 10
+knowledge:
+  id: basic-knowledge.java.concurrency.locks-vs-lock-free-cost
+  type: concept
 ---
 
 # 锁与无锁
@@ -81,7 +84,7 @@ JMH 负责建立可靠的微基准框架，JFR 或 async-profiler 用来解释�
 
 ## 7. 面试题
 
-### 7.1 为什么无锁方案在高竞争下可能比锁更慢
+### 7.1 为什么无锁方案在高竞争下可能比锁更慢 {#lock-free-under-contention}
 
 <!-- 面试来源：
 - 阿里巴巴：https://www.nowcoder.com/discuss/461925

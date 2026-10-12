@@ -1,5 +1,8 @@
 ---
 sidebar_position: 3
+knowledge:
+  id: basic-knowledge.java.io.file-mapping-zero-copy-direct-memory
+  type: concept
 ---
 
 # 零拷贝
@@ -164,7 +167,7 @@ System.out.println(direct.isDirect()); // true
 
 ## 8. 面试题
 
-### 8.1 Java 怎样实现零拷贝
+### 8.1 Java 怎样实现零拷贝 {#java-zero-copy}
 
 <!-- 面试来源：
 - 阿里巴巴：https://www.nowcoder.com/discuss/353157045090197504
@@ -191,7 +194,7 @@ Java 可以使用 `FileChannel.transferTo` 或 `transferFrom` 在通道之间传
 
 </details>
 
-### 8.2 直接内存有什么收益和风险
+### 8.2 直接内存有什么收益和风险 {#direct-memory-tradeoffs}
 
 <!-- 面试来源：
 - 字节跳动：https://www.nowcoder.com/discuss/725700

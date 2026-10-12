@@ -1,5 +1,8 @@
 ---
 sidebar_position: 6
+knowledge:
+  id: system-design.distributed-system.raft-election-log-replication
+  type: concept
 ---
 
 # Raft
@@ -72,7 +75,7 @@ Leader 刚刚与多数派失联时，可能尚未知道新 Leader 已产生。�
 
 ## 10. 面试题
 
-### 10.1 Raft 如何保证新 Leader 包含已经提交的日志
+### 10.1 Raft 如何保证新 Leader 包含已经提交的日志 {#leader-completeness}
 
 <!-- 面试来源：
 - 字节跳动：https://www.nowcoder.com/discuss/353159293912424448

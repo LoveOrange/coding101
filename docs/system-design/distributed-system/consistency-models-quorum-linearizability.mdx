@@ -1,5 +1,8 @@
 ---
 sidebar_position: 5
+knowledge:
+  id: system-design.distributed-system.consistency-models-quorum-linearizability
+  type: concept
 ---
 
 # 一致性模型
@@ -73,7 +76,7 @@ CAP 中的 consistency 通常指线性一致类的单一最新视图，和数据
 
 ## 10. 面试题
 
-### 10.1 Quorum 的 `W + R > N` 为什么仍不能单独证明线性一致
+### 10.1 Quorum 的 `W + R > N` 为什么仍不能单独证明线性一致 {#quorum-not-linearizable}
 
 <!-- 面试来源：
 - 字节跳动、百度、美团、滴滴分布式面试：https://www.nowcoder.com/discuss/353158294346866688

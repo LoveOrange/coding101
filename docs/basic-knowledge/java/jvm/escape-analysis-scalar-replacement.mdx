@@ -1,5 +1,8 @@
 ---
 sidebar_position: 18
+knowledge:
+  id: basic-knowledge.java.jvm.escape-analysis-scalar-replacement
+  type: concept
 ---
 
 # 逃逸分析与标量替换
@@ -107,7 +110,7 @@ TLAB 让分配本身便宜，但初始化、内存带宽和 GC 扫描仍有成�
 
 ## 8. 面试题
 
-### 8.1 Java 对象一定分配在堆上吗
+### 8.1 Java 对象一定分配在堆上吗 {#heap-allocation}
 
 <!-- 面试来源：
 - 字节跳动：https://www.nowcoder.com/discuss/353158260289118208
@@ -133,7 +136,7 @@ JVM 规范把对象存储归入堆，但实现可以做语义等价优化。HotS
 
 </details>
 
-### 8.2 逃逸分析可能带来哪些优化
+### 8.2 逃逸分析可能带来哪些优化 {#escape-analysis-optimizations}
 
 <!-- 面试来源：
 - 满帮：https://www.nowcoder.com/discuss/353158686027751424
