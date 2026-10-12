@@ -1,5 +1,8 @@
 ---
 sidebar_position: 2
+knowledge:
+  id: ai.tools.mcp
+  type: concept
 ---
 
 # MCP
@@ -8,11 +11,11 @@ MCP（Model Context Protocol）是连接 AI 应用与外部工具、数据源的
 
 ## 1. 面试核心 {#core}
 
-- 三个角色：**Host** 是 AI 应用（如 IDE、桌面客户端），内部为每个服务器创建一个 **Client**，**Server** 对外提供能力。Client 与 Server 一对一连接。[卡](#61-mcp-是什么agent-通过-mcp-调用工具的流程是什么)
+- 三个角色：**Host** 是 AI 应用（如 IDE、桌面客户端），内部为每个服务器创建一个 **Client**，**Server** 对外提供能力。Client 与 Server 一对一连接。[卡](#mcp-flow)
 - 消息格式是 JSON-RPC 2.0；标准传输有 stdio（本地子进程）和 Streamable HTTP（远程服务）。
 - Server 提供三类能力：Tools（模型决定调用的操作）、Resources（应用读取的数据）、Prompts（用户选择的提示模板）。
-- MCP 不替代 Function Calling：模型仍通过工具调用提出请求，MCP 规范的是 Host 如何发现和调用外部工具。它解决的是 M 个应用 × N 个工具的集成问题。[卡](#62-mcp-和普通-api-调用function-calling-有什么区别为什么-agent-生态广泛采用-mcp)
-- 风险来自第三方 Server：工具描述投毒、过度权限、数据外泄、远程服务鉴权缺失。接入前审核，执行时按工具授权。[卡](#63-agent-调用-mcp-有哪些风险mcp-server-应该如何鉴权)
+- MCP 不替代 Function Calling：模型仍通过工具调用提出请求，MCP 规范的是 Host 如何发现和调用外部工具。它解决的是 M 个应用 × N 个工具的集成问题。[卡](#mcp-vs-api)
+- 风险来自第三方 Server：工具描述投毒、过度权限、数据外泄、远程服务鉴权缺失。接入前审核，执行时按工具授权。[卡](#mcp-security)
 
 ## 2. 角色与能力 {#architecture}
 
@@ -78,7 +81,7 @@ MCP 被广泛采用的原因是降低集成成本：没有统一协议时，M �
 
 ## 6. 面试题
 
-### 6.1 MCP 是什么？Agent 通过 MCP 调用工具的流程是什么？
+### 6.1 MCP 是什么？Agent 通过 MCP 调用工具的流程是什么？ {#mcp-flow}
 
 <!-- 面试来源：
 - 字节跳动：https://www.nowcoder.com/feed/main/detail/8a553bb6ea8445d0b0abe11e87614cea （“MCP是什么？Agent通过MCP调用工具的流程是什么？”）
@@ -109,7 +112,7 @@ MCP 是连接 AI 应用和外部工具、数据源的开放协议。Host 是 AI 
 
 </details>
 
-### 6.2 MCP 和普通 API 调用、Function Calling 有什么区别？为什么 Agent 生态广泛采用 MCP？
+### 6.2 MCP 和普通 API 调用、Function Calling 有什么区别？为什么 Agent 生态广泛采用 MCP？ {#mcp-vs-api}
 
 <!-- 面试来源：
 - 百度：https://www.nowcoder.com/feed/main/detail/2d033fd6daa04e2aaad2282b75531bbc （“MCP 与普通 API 调用有什么区别”“为什么 Agent 生态开始广泛使用 MCP”）
@@ -139,7 +142,7 @@ MCP 被广泛采用，是因为它把 M 个应用对接 N 个工具的 M×N 集�
 
 </details>
 
-### 6.3 Agent 调用 MCP 有哪些风险？MCP Server 应该如何鉴权？
+### 6.3 Agent 调用 MCP 有哪些风险？MCP Server 应该如何鉴权？ {#mcp-security}
 
 <!-- 面试来源：
 - 拼多多：https://www.nowcoder.com/feed/main/detail/2109cf8eb0254507911fbf86bcbf51e4 （“Agent 调 MCP 有哪些隐患风险？”）

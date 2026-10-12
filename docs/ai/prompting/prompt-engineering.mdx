@@ -1,5 +1,8 @@
 ---
 sidebar_position: 1
+knowledge:
+  id: ai.prompting.prompt-engineering
+  type: concept
 ---
 
 # 提示词工程
@@ -8,10 +11,10 @@ sidebar_position: 1
 
 ## 1. 面试核心 {#core}
 
-- 一份生产提示通常包含角色与任务、规则与约束、输入材料、示例、输出格式和异常处理说明。规则写成可检查的条件，而不是形容词。[卡](#61-agent-的提示词一般包含哪些部分如何设计)
-- 调优以评测集驱动：收集失败样例，归类原因，修改提示，在同一评测集上比较，确认没有引入回归。[卡](#62-系统-prompt-如何调优如何判断一个-prompt-的质量)
-- Few-shot 用于约束格式和边界判断，示例要覆盖难例且避免全部同类；思维链用于多步推理，代价是更多输出 Token 和延迟。[卡](#63-cot-和-few-shot-分别适合什么场景)
-- 需要程序解析的输出使用结构化输出或工具调用的 JSON Schema 约束，解析后仍要做业务校验：格式合法不等于内容正确。[卡](#64-想要模型按照固定结构输出应该怎么做)
+- 一份生产提示通常包含角色与任务、规则与约束、输入材料、示例、输出格式和异常处理说明。规则写成可检查的条件，而不是形容词。[卡](#prompt-structure)
+- 调优以评测集驱动：收集失败样例，归类原因，修改提示，在同一评测集上比较，确认没有引入回归。[卡](#prompt-tuning)
+- Few-shot 用于约束格式和边界判断，示例要覆盖难例且避免全部同类；思维链用于多步推理，代价是更多输出 Token 和延迟。[卡](#cot-vs-few-shot)
+- 需要程序解析的输出使用结构化输出或工具调用的 JSON Schema 约束，解析后仍要做业务校验：格式合法不等于内容正确。[卡](#structured-output)
 
 ## 2. 提示的组成 {#structure}
 
@@ -90,7 +93,7 @@ Schema 只保证结构。`order_id` 是否真实存在、退款金额是否超�
 
 ## 6. 面试题
 
-### 6.1 Agent 的提示词一般包含哪些部分？如何设计？
+### 6.1 Agent 的提示词一般包含哪些部分？如何设计？ {#prompt-structure}
 
 <!-- 面试来源：
 - 未披露公司：https://www.nowcoder.com/discuss/930572525178748928 （“Agent 提示词大概包含什么，有多少行？”）
@@ -118,7 +121,7 @@ Schema 只保证结构。`order_id` 是否真实存在、退款金额是否超�
 
 </details>
 
-### 6.2 系统 Prompt 如何调优？如何判断一个 Prompt 的质量？
+### 6.2 系统 Prompt 如何调优？如何判断一个 Prompt 的质量？ {#prompt-tuning}
 
 <!-- 面试来源：
 - 百度：https://www.nowcoder.com/feed/main/detail/b9521e2b51e04afeac0a3a32e13f4da9 （“你的系统Prompt如何调优的”）
@@ -146,7 +149,7 @@ Schema 只保证结构。`order_id` 是否真实存在、退款金额是否超�
 
 </details>
 
-### 6.3 CoT 和 Few-shot 分别适合什么场景？
+### 6.3 CoT 和 Few-shot 分别适合什么场景？ {#cot-vs-few-shot}
 
 <!-- 面试来源：
 - 去哪儿旅行：https://www.nowcoder.com/feed/main/detail/505f5d9ae8104d0e93aa1bb99404087c （CoT 与 Few-shot 的适用场景）
@@ -172,7 +175,7 @@ CoT 让模型先写推理步骤，适合计算、多条件判断和规划等多�
 
 </details>
 
-### 6.4 想要模型按照固定结构输出，应该怎么做？
+### 6.4 想要模型按照固定结构输出，应该怎么做？ {#structured-output}
 
 <!-- 面试来源：
 - 未披露公司：https://www.nowcoder.com/feed/main/detail/6d52148d2e854ade92de493292f2e312 （“想要按照结构输出怎么办？”）

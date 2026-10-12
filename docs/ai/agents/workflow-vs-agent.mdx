@@ -1,5 +1,8 @@
 ---
 sidebar_position: 1
+knowledge:
+  id: ai.agents.workflow-vs-agent
+  type: concept
 ---
 
 # 工作流与 Agent
@@ -8,10 +11,10 @@ sidebar_position: 1
 
 ## 1. 面试核心 {#core}
 
-- 单次模型调用、工作流、Agent 的区别是**控制流由谁决定**：单次调用没有后续步骤，工作流由代码决定，Agent 由模型在运行时决定。[卡](#61-workflow-和自主-agent-有什么区别各自适合什么场景)
+- 单次模型调用、工作流、Agent 的区别是**控制流由谁决定**：单次调用没有后续步骤，工作流由代码决定，Agent 由模型在运行时决定。[卡](#workflow-vs-agent)
 - 路径可以预先枚举、需要稳定延迟和可审计性时优先工作流；步骤数量和顺序取决于中间结果时才引入 Agent。
-- Agent 不会自动优于单次调用。增加的轮次带来延迟、成本和错误累积，需要用同一评测集证明收益。[卡](#62-agent-流程一定比-llm-单次调用更好吗)
-- 实际系统常用混合结构：外层是固定工作流，个别开放步骤内嵌一个有预算的 Agent。[卡](#63-项目选择单-agent多-agent-还是-workflow-编排依据是什么)
+- Agent 不会自动优于单次调用。增加的轮次带来延迟、成本和错误累积，需要用同一评测集证明收益。[卡](#agent-vs-single-call)
+- 实际系统常用混合结构：外层是固定工作流，个别开放步骤内嵌一个有预算的 Agent。[卡](#architecture-choice)
 
 ## 2. 三种结构 {#structures}
 
@@ -69,7 +72,7 @@ RAG 描述“先检索证据，再生成回答”的信息供给方式，可以�
 
 ## 6. 面试题
 
-### 6.1 Workflow 和自主 Agent 有什么区别？各自适合什么场景？
+### 6.1 Workflow 和自主 Agent 有什么区别？各自适合什么场景？ {#workflow-vs-agent}
 
 <!-- 面试来源：
 - 小红书：https://www.nowcoder.com/feed/main/detail/9f7361c709f4413396988b4f334a0d6f （“Workflow 和你说的自治 agent 的区别？”）
@@ -96,7 +99,7 @@ RAG 描述“先检索证据，再生成回答”的信息供给方式，可以�
 
 </details>
 
-### 6.2 Agent 流程一定比 LLM 单次调用更好吗？
+### 6.2 Agent 流程一定比 LLM 单次调用更好吗？ {#agent-vs-single-call}
 
 <!-- 面试来源：
 - 百度：https://www.nowcoder.com/feed/main/detail/b9521e2b51e04afeac0a3a32e13f4da9 （“你做的Agent流程一定比llm单次调用更优嘛”）
@@ -121,7 +124,7 @@ Agent 的收益来自外部信息和中间反馈：任务需要查询数据、�
 
 </details>
 
-### 6.3 项目选择单 Agent、多 Agent 还是 Workflow 编排，依据是什么？
+### 6.3 项目选择单 Agent、多 Agent 还是 Workflow 编排，依据是什么？ {#architecture-choice}
 
 <!-- 面试来源：
 - 虾皮：https://www.nowcoder.com/feed/main/detail/79fe3fc8f8cb4c4d9beca478f4279e3a （“项目中采用了单Agent、多Agent还是Workflow编排模式？为什么选择这种方案？相比其他方案有什么优势？”）

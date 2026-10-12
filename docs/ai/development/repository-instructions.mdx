@@ -1,5 +1,8 @@
 ---
 sidebar_position: 3
+knowledge:
+  id: ai.development.repository-instructions
+  type: concept
 ---
 
 # 仓库指令
@@ -8,11 +11,11 @@ sidebar_position: 3
 
 ## 1. 面试核心 {#core}
 
-- 仓库指令保存**稳定、每次任务都可能用到**的信息：常用命令、项目结构、代码约定、验证方式和明确的禁止事项。[卡](#51-项目规则文件中应该保存哪些信息哪些信息不能在上下文压缩时丢失)
+- 仓库指令保存**稳定、每次任务都可能用到**的信息：常用命令、项目结构、代码约定、验证方式和明确的禁止事项。[卡](#rules-file-content)
 - 不写临时任务状态、可以从代码直接看出的内容和大段文档；内容越长，每次占用的上下文越多，重点越容易被稀释。
 - 指令文件在会话开始时加载，不依赖对话历史，因此上下文压缩后仍然有效；必须长期遵守的约束应写在这里，而不是只在对话中说一次。
-- 修改指令后用代表任务对比修改前后的结果，确认确实改善，而不是凭感觉增加规则。[卡](#52-更新-agentsmd-或-skills-后怎样验证效果确实提升)
-- 团队共用一份纳入版本管理的指令，可以让使用不同工具的开发者得到一致的约定。[卡](#53-多人使用不同-ai-工具开发同一个功能时怎样协作)
+- 修改指令后用代表任务对比修改前后的结果，确认确实改善，而不是凭感觉增加规则。[卡](#verify-instruction-change)
+- 团队共用一份纳入版本管理的指令，可以让使用不同工具的开发者得到一致的约定。[卡](#multi-tool-collaboration)
 
 ## 2. 写什么 {#content}
 
@@ -63,7 +66,7 @@ Node 20 + TypeScript 的订单服务，入口 src/server.ts。
 
 ## 5. 面试题
 
-### 5.1 项目规则文件中应该保存哪些信息？哪些信息不能在上下文压缩时丢失？
+### 5.1 项目规则文件中应该保存哪些信息？哪些信息不能在上下文压缩时丢失？ {#rules-file-content}
 
 <!-- 面试来源：
 - 安软：https://www.nowcoder.com/feed/main/detail/40920533fad14136bff01c3928c7e953 （“项目规则文件中会保存哪些不能在上下文压缩时丢失的信息？”）
@@ -88,7 +91,7 @@ Node 20 + TypeScript 的订单服务，入口 src/server.ts。
 
 </details>
 
-### 5.2 更新 AGENTS.md 或 Skills 后，怎样验证效果确实提升？
+### 5.2 更新 AGENTS.md 或 Skills 后，怎样验证效果确实提升？ {#verify-instruction-change}
 
 <!-- 面试来源：
 - 字节跳动：https://www.nowcoder.com/discuss/917561494512861184 （“自动更新 AGENTS.md 或 Skills 后，怎样验证效果确实提升？”“如何通过评价脚本或模型评审对比两个 Skill 的输出？”）
@@ -112,7 +115,7 @@ Node 20 + TypeScript 的订单服务，入口 src/server.ts。
 
 </details>
 
-### 5.3 多人使用不同 AI 工具开发同一个功能时，怎样协作？
+### 5.3 多人使用不同 AI 工具开发同一个功能时，怎样协作？ {#multi-tool-collaboration}
 
 <!-- 面试来源：
 - 快手：https://www.nowcoder.com/feed/main/detail/631e9b79e433415ca3dea24642f94b4c （“多个人用不同 AI 工具开发同一个功能时，你们怎样协作？”）

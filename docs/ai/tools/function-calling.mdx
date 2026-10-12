@@ -1,5 +1,8 @@
 ---
 sidebar_position: 1
+knowledge:
+  id: ai.tools.function-calling
+  type: concept
 ---
 
 # Function Calling
@@ -8,11 +11,11 @@ Function Calling（工具调用）让模型根据工具定义输出结构化的�
 
 ## 1. 面试核心 {#core}
 
-- 链路是：程序发送工具定义 → 模型返回工具名和参数 → 程序校验并执行 → 结果以工具消息按调用 ID 写回 → 模型继续生成。[卡](#61-function-calling-的完整调用链路是什么为什么工具结果需要单独的-tool-message)
+- 链路是：程序发送工具定义 → 模型返回工具名和参数 → 程序校验并执行 → 结果以工具消息按调用 ID 写回 → 模型继续生成。[卡](#call-flow)
 - 模型根据工具的名称、描述和参数 Schema 选择工具，所以工具描述就是提示词的一部分，需要写清用途、适用条件和参数含义。
-- 工具契约包括参数 Schema、返回结构、错误码和副作用说明。错误信息要让模型能据此修正，而不是只返回 `500`。[卡](#63-tool-的设计原则是什么如何设计参数-schema-和错误码)
-- 可靠性靠程序保证：Schema 校验、业务校验、权限检查、超时重试、幂等和重复调用检测。[卡](#62-如何保障工具调用的可靠性模型传入错误或危险参数怎么办)
-- 工具很多时先检索或分组，再把少量候选工具的完整定义放入上下文。[卡](#64-工具扩展到几百上千个时如何保证模型选中正确的工具)
+- 工具契约包括参数 Schema、返回结构、错误码和副作用说明。错误信息要让模型能据此修正，而不是只返回 `500`。[卡](#tool-design)
+- 可靠性靠程序保证：Schema 校验、业务校验、权限检查、超时重试、幂等和重复调用检测。[卡](#call-reliability)
+- 工具很多时先检索或分组，再把少量候选工具的完整定义放入上下文。[卡](#many-tools)
 
 ## 2. 调用链路 {#flow}
 
@@ -92,7 +95,7 @@ if results:
 
 ## 6. 面试题
 
-### 6.1 Function Calling 的完整调用链路是什么？为什么工具结果需要单独的 Tool Message？
+### 6.1 Function Calling 的完整调用链路是什么？为什么工具结果需要单独的 Tool Message？ {#call-flow}
 
 <!-- 面试来源：
 - 虾皮：https://www.nowcoder.com/feed/main/detail/79fe3fc8f8cb4c4d9beca478f4279e3a （“Agent调用工具后，工具返回结果时消息结构如何设计？为什么需要单独设计Tool Message？”）
@@ -121,7 +124,7 @@ if results:
 
 </details>
 
-### 6.2 如何保障工具调用的可靠性？模型传入错误或危险参数怎么办？
+### 6.2 如何保障工具调用的可靠性？模型传入错误或危险参数怎么办？ {#call-reliability}
 
 <!-- 面试来源：
 - 字节跳动：https://www.nowcoder.com/discuss/925342611194286080 （“这些工具都有固定地入参，需要模型结合上下文去提供……如何去保障工具调用的可靠性？”）
@@ -150,7 +153,7 @@ if results:
 
 </details>
 
-### 6.3 Tool 的设计原则是什么？如何设计参数 Schema 和错误码？
+### 6.3 Tool 的设计原则是什么？如何设计参数 Schema 和错误码？ {#tool-design}
 
 <!-- 面试来源：
 - 字节跳动：https://www.nowcoder.com/feed/main/detail/15af3788a038477bba99f2f9d94b2cef （“Tool 的设计原则是什么？哪些能力适合抽象成 Tool？如何设计 Tool 的参数 Schema 和错误码？”）
@@ -176,7 +179,7 @@ if results:
 
 </details>
 
-### 6.4 工具扩展到几百上千个时，如何保证模型选中正确的工具？
+### 6.4 工具扩展到几百上千个时，如何保证模型选中正确的工具？ {#many-tools}
 
 <!-- 面试来源：
 - 百度：https://www.nowcoder.com/feed/main/detail/2d033fd6daa04e2aaad2282b75531bbc （“当前约十个工具时如何识别正确 Tool”“扩展到几百或几千个工具时如何保证命中率”）

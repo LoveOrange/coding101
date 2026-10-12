@@ -1,5 +1,8 @@
 ---
 sidebar_position: 2
+knowledge:
+  id: ai.agents.agent-loop
+  type: concept
 ---
 
 # Agent 执行循环
@@ -8,10 +11,10 @@ Agent 执行循环是“模型提出动作—程序执行—结果写回上下�
 
 ## 1. 面试核心 {#core}
 
-- 模型只**提出**工具调用；读取文件、调用接口、执行命令都由程序完成，结果作为观测写回上下文。[卡](#71-react-agent-的核心执行流程是什么thoughtactionobservation-分别承担什么作用)
-- 循环必须有程序侧的停止条件：模型给出最终回答、达到最大步数、超时、预算耗尽、连续重复失败或需要人工确认。[卡](#72-如何避免-agent-陷入无限循环最大步数怎么确定)
+- 模型只**提出**工具调用；读取文件、调用接口、执行命令都由程序完成，结果作为观测写回上下文。[卡](#react-flow)
+- 循环必须有程序侧的停止条件：模型给出最终回答、达到最大步数、超时、预算耗尽、连续重复失败或需要人工确认。[卡](#loop-termination)
 - 最大步数来自任务轨迹统计和成本约束，不是拍一个数字；触发上限时要返回可解释的失败状态。
-- ReAct 逐步决策，适合依赖中间结果的任务；Plan-and-Execute 先规划再执行，适合子任务清楚、需要减少模型调用和便于审计的任务。[卡](#73-react-和-plan-and-execute-分别适合什么场景)
+- ReAct 逐步决策，适合依赖中间结果的任务；Plan-and-Execute 先规划再执行，适合子任务清楚、需要减少模型调用和便于审计的任务。[卡](#react-vs-plan-execute)
 
 ## 2. 一次循环的执行链路 {#mechanism}
 
@@ -82,7 +85,7 @@ Plan-and-Execute 先让模型生成完整计划，再由执行器逐项完成，
 
 ## 7. 面试题
 
-### 7.1 ReAct Agent 的核心执行流程是什么？Thought、Action、Observation 分别承担什么作用？
+### 7.1 ReAct Agent 的核心执行流程是什么？Thought、Action、Observation 分别承担什么作用？ {#react-flow}
 
 <!-- 面试来源：
 - 虾皮：https://www.nowcoder.com/feed/main/detail/79fe3fc8f8cb4c4d9beca478f4279e3a （“ReAct Agent的核心执行流程是什么？Thought、Action、Observation三个环节分别承担什么作用？”）
@@ -109,7 +112,7 @@ Thought 负责拆解和选择，Action 负责获取信息或改变外部状态�
 
 </details>
 
-### 7.2 如何避免 Agent 陷入无限循环？最大步数怎么确定？
+### 7.2 如何避免 Agent 陷入无限循环？最大步数怎么确定？ {#loop-termination}
 
 <!-- 面试来源：
 - 字节跳动：https://www.nowcoder.com/feed/main/detail/15af3788a038477bba99f2f9d94b2cef （“如何避免 Agent 出现无限循环或者多个 Agent 之间互相推诿任务？”）
@@ -137,7 +140,7 @@ Thought 负责拆解和选择，Action 负责获取信息或改变外部状态�
 
 </details>
 
-### 7.3 ReAct 和 Plan-and-Execute 分别适合什么场景？
+### 7.3 ReAct 和 Plan-and-Execute 分别适合什么场景？ {#react-vs-plan-execute}
 
 <!-- 面试来源：
 - 快手：https://www.nowcoder.com/feed/main/detail/631e9b79e433415ca3dea24642f94b4c （“ReAct 和 Plan-and-Execute 分别适合什么场景？能举个例子吗？”）

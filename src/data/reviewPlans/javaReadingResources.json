@@ -576,15 +576,15 @@
     "/docs/basic-knowledge/java/collections/hashmap-structure-lookup-path": [
       {
         "title": "说明 HashMap 的 put 和 get 路径",
-        "href": "/docs/basic-knowledge/java/collections/hashmap-structure-lookup-path#71-说明-hashmap-的-put-和-get-路径"
+        "href": "/docs/basic-knowledge/java/collections/hashmap-structure-lookup-path#put-get-path"
       },
       {
         "title": "HashMap 什么时候树化，为什么小容量时先扩容",
-        "href": "/docs/basic-knowledge/java/collections/hashmap-structure-lookup-path#72-hashmap-什么时候树化为什么小容量时先扩容"
+        "href": "/docs/basic-knowledge/java/collections/hashmap-structure-lookup-path#treeify"
       },
       {
         "title": "HashMap 为什么使用 2 的幂作为容量",
-        "href": "/docs/basic-knowledge/java/collections/hashmap-structure-lookup-path#73-hashmap-为什么使用-2-的幂作为容量"
+        "href": "/docs/basic-knowledge/java/collections/hashmap-structure-lookup-path#power-of-two-capacity"
       }
     ],
     "/docs/basic-knowledge/java/collections/linkedlist-semantics-cost": [
@@ -776,67 +776,67 @@
     "/docs/basic-knowledge/operating-system/processes-threads": [
       {
         "title": "进程与线程有什么区别，线程共享资源会带来哪些影响？",
-        "href": "/docs/basic-knowledge/operating-system/processes-threads#51-进程与线程有什么区别线程共享资源会带来哪些影响"
+        "href": "/docs/basic-knowledge/operating-system/processes-threads#process-vs-thread"
       }
     ],
     "/docs/basic-knowledge/operating-system/synchronization": [
       {
         "title": "线程间有哪些同步方式，互斥锁和条件变量分别解决什么问题？",
-        "href": "/docs/basic-knowledge/operating-system/synchronization#51-线程间有哪些同步方式互斥锁和条件变量分别解决什么问题"
+        "href": "/docs/basic-knowledge/operating-system/synchronization#thread-sync"
       }
     ],
     "/docs/basic-knowledge/operating-system/deadlock": [
       {
         "title": "死锁需要哪些条件，如何避免两个线程反向获取锁造成的死锁？",
-        "href": "/docs/basic-knowledge/operating-system/deadlock#51-死锁需要哪些条件如何避免两个线程反向获取锁造成的死锁"
+        "href": "/docs/basic-knowledge/operating-system/deadlock#avoid-deadlock"
       }
     ],
     "/docs/basic-knowledge/operating-system/virtual-memory": [
       {
         "title": "虚拟内存有什么作用，缺页一定意味着从磁盘读取吗？",
-        "href": "/docs/basic-knowledge/operating-system/virtual-memory#51-虚拟内存有什么作用缺页一定意味着从磁盘读取吗"
+        "href": "/docs/basic-knowledge/operating-system/virtual-memory#virtual-memory-page-fault"
       }
     ],
     "/docs/basic-knowledge/operating-system/file-descriptors": [
       {
         "title": "为什么两个文件描述符可能共享读取位置，关闭一个后另一个还能使用？",
-        "href": "/docs/basic-knowledge/operating-system/file-descriptors#51-为什么两个文件描述符可能共享读取位置关闭一个后另一个还能使用"
+        "href": "/docs/basic-knowledge/operating-system/file-descriptors#shared-file-offset"
       }
     ],
     "/docs/basic-knowledge/operating-system/io-models": [
       {
         "title": "阻塞和非阻塞 I/O 有什么区别，非阻塞是否就等于异步？",
-        "href": "/docs/basic-knowledge/operating-system/io-models#51-阻塞和非阻塞-io-有什么区别非阻塞是否就等于异步"
+        "href": "/docs/basic-knowledge/operating-system/io-models#blocking-vs-nonblocking"
       }
     ],
     "/docs/basic-knowledge/operating-system/io-multiplexing": [
       {
         "title": "epoll 和 poll 有什么区别，使用边缘触发时为什么通常要读到 EAGAIN？",
-        "href": "/docs/basic-knowledge/operating-system/io-multiplexing#51-epoll-和-poll-有什么区别使用边缘触发时为什么通常要读到-eagain"
+        "href": "/docs/basic-knowledge/operating-system/io-multiplexing#epoll-vs-poll"
       }
     ],
     "/docs/basic-knowledge/database/sql/query": [
       {
         "title": "为什么 score = NULL 查不到空值，分页时又为什么需要稳定排序？",
-        "href": "/docs/basic-knowledge/database/sql/query#51-为什么-score--null-查不到空值分页时又为什么需要稳定排序"
+        "href": "/docs/basic-knowledge/database/sql/query#null-and-stable-sort"
       }
     ],
     "/docs/basic-knowledge/database/sql/joins": [
       {
         "title": "LEFT JOIN 后在 WHERE 中过滤右表字段，会有什么影响？",
-        "href": "/docs/basic-knowledge/database/sql/joins#51-left-join-后在-where-中过滤右表字段会有什么影响"
+        "href": "/docs/basic-knowledge/database/sql/joins#left-join-where"
       }
     ],
     "/docs/basic-knowledge/database/sql/aggregation": [
       {
         "title": "COUNT(*) 和 COUNT(column) 有什么区别，LEFT JOIN 后怎样统计右表记录数？",
-        "href": "/docs/basic-knowledge/database/sql/aggregation#51-count-和-countcolumn-有什么区别left-join-后怎样统计右表记录数"
+        "href": "/docs/basic-knowledge/database/sql/aggregation#count-star-vs-column"
       }
     ],
     "/docs/basic-knowledge/database/modeling/constraints": [
       {
         "title": "应用已经检查邮箱未被使用，为什么数据库还需要唯一约束？",
-        "href": "/docs/basic-knowledge/database/modeling/constraints#51-应用已经检查邮箱未被使用为什么数据库还需要唯一约束"
+        "href": "/docs/basic-knowledge/database/modeling/constraints#unique-constraint"
       }
     ],
     "/docs/basic-knowledge/java/jvm/source-to-bytecode": [
@@ -1378,13 +1378,13 @@
     "/docs/basic-knowledge/network/dns": [
       {
         "title": "访问域名时 DNS 如何解析，修改记录后为什么可能仍访问旧地址？",
-        "href": "/docs/basic-knowledge/network/dns#51-访问域名时-dns-如何解析修改记录后为什么可能仍访问旧地址"
+        "href": "/docs/basic-knowledge/network/dns#dns-resolution"
       }
     ],
     "/docs/basic-knowledge/network/tls": [
       {
         "title": "HTTPS 中证书、密钥交换和对称加密分别负责什么？",
-        "href": "/docs/basic-knowledge/network/tls#51-https-中证书密钥交换和对称加密分别负责什么"
+        "href": "/docs/basic-knowledge/network/tls#https-roles"
       }
     ],
     "/docs/basic-knowledge/network/http-versions-connection-reuse-timeouts": [
@@ -1420,7 +1420,7 @@
     "/docs/basic-knowledge/database/indices/execution-plan": [
       {
         "title": "查询使用了索引为什么仍然慢，如何用执行计划继续定位？",
-        "href": "/docs/basic-knowledge/database/indices/execution-plan#51-查询使用了索引为什么仍然慢如何用执行计划继续定位"
+        "href": "/docs/basic-knowledge/database/indices/execution-plan#slow-indexed-query"
       }
     ],
     "/docs/basic-knowledge/database/indices/b_plus_tree/": [
@@ -1486,13 +1486,13 @@
     "/docs/basic-knowledge/nosql/redis/expiration": [
       {
         "title": "Redis 如何清理过期键，为什么 TTL 不能当作精确的定时任务？",
-        "href": "/docs/basic-knowledge/nosql/redis/expiration#51-redis-如何清理过期键为什么-ttl-不能当作精确的定时任务"
+        "href": "/docs/basic-knowledge/nosql/redis/expiration#expired-key-cleanup"
       }
     ],
     "/docs/basic-knowledge/nosql/redis/eviction": [
       {
         "title": "Redis 的内存淘汰策略有哪些，LRU 与 LFU 如何选择？",
-        "href": "/docs/basic-knowledge/nosql/redis/eviction#51-redis-的内存淘汰策略有哪些lru-与-lfu-如何选择"
+        "href": "/docs/basic-knowledge/nosql/redis/eviction#eviction-policies"
       }
     ],
     "/docs/basic-knowledge/nosql/redis/cache-patterns-consistency": [

@@ -1,5 +1,8 @@
 ---
 sidebar_position: 4
+knowledge:
+  id: ai.agents.multi-agent
+  type: concept
 ---
 
 # 多 Agent 协作
@@ -8,11 +11,11 @@ sidebar_position: 4
 
 ## 1. 面试核心 {#core}
 
-- 拆分的主要收益是**上下文隔离**和**并行**：子 Agent 在独立窗口中处理大量材料，只把结论返回给主 Agent。[卡](#71-多-agent-协作系统如何设计agent-之间的通信机制和状态共享如何实现)
+- 拆分的主要收益是**上下文隔离**和**并行**：子 Agent 在独立窗口中处理大量材料，只把结论返回给主 Agent。[卡](#multi-agent-design)
 - 最常用的是编排者—执行者结构：编排者拆分任务、分派、汇总，执行者之间不直接对话。
 - 通信用结构化消息或共享状态，必须带任务 ID、输入范围、输出格式和完成状态，不能只传自然语言摘要。
-- 多 Agent 增加 Token 成本、延迟、通信失真和调试难度。子任务强依赖、需要共享大量上下文时，单 Agent 更合适。[卡](#72-为什么不默认使用多-agent拆分后有哪些风险)
-- 并行写入同一资源会冲突，要按文件或数据范围划分所有权，或用锁、独立工作区和合并步骤处理。[卡](#73-多个-agent-并发执行时会争抢哪些资源如何隔离上下文和状态)
+- 多 Agent 增加 Token 成本、延迟、通信失真和调试难度。子任务强依赖、需要共享大量上下文时，单 Agent 更合适。[卡](#multi-agent-risks)
+- 并行写入同一资源会冲突，要按文件或数据范围划分所有权，或用锁、独立工作区和合并步骤处理。[卡](#multi-agent-isolation)
 
 ## 2. 组织方式 {#topologies}
 
@@ -88,7 +91,7 @@ MCP 连接 Agent 与工具、数据源，Server 提供能力，Host 中的模型
 
 ## 7. 面试题
 
-### 7.1 多 Agent 协作系统如何设计？Agent 之间的通信机制和状态共享如何实现？
+### 7.1 多 Agent 协作系统如何设计？Agent 之间的通信机制和状态共享如何实现？ {#multi-agent-design}
 
 <!-- 面试来源：
 - 字节跳动：https://www.nowcoder.com/feed/main/detail/15af3788a038477bba99f2f9d94b2cef （“多 Agent 协作系统如何设计？Agent 之间的通信机制和状态共享如何实现？”）
@@ -117,7 +120,7 @@ MCP 连接 Agent 与工具、数据源，Server 提供能力，Host 中的模型
 
 </details>
 
-### 7.2 为什么不默认使用多 Agent？拆分后有哪些风险？
+### 7.2 为什么不默认使用多 Agent？拆分后有哪些风险？ {#multi-agent-risks}
 
 <!-- 面试来源：
 - 小红书：https://www.nowcoder.com/feed/main/detail/9f7361c709f4413396988b4f334a0d6f （“为什么项目里不考虑做多Agent？”“假如你做了多Agent拆分，会有哪些风险？”）
@@ -144,7 +147,7 @@ MCP 连接 Agent 与工具、数据源，Server 提供能力，Host 中的模型
 
 </details>
 
-### 7.3 多个 Agent 并发执行时会争抢哪些资源？如何隔离上下文和状态？
+### 7.3 多个 Agent 并发执行时会争抢哪些资源？如何隔离上下文和状态？ {#multi-agent-isolation}
 
 <!-- 面试来源：
 - 小红书：https://www.nowcoder.com/feed/main/detail/9f7361c709f4413396988b4f334a0d6f （“多 Agent 同时执行具体争抢哪些资源？”“多 Agent 怎么做的上下文和状态的隔离？”）

@@ -1,5 +1,8 @@
 ---
 sidebar_position: 3
+knowledge:
+  id: ai.agents.harness
+  type: concept
 ---
 
 # Agent Harness
@@ -8,10 +11,10 @@ Agent Harness 指包裹模型、让它能够完成任务的运行时：执行循
 
 ## 1. 面试核心 {#core}
 
-- 模型只负责根据上下文生成下一步；Harness 负责其余所有事情：决定给模型看什么、执行模型提出的动作、保存进度、阻止越权动作、判断是否完成。[卡](#61-什么是-agent-harness一个标准的-harness-包含哪些核心模块)
+- 模型只负责根据上下文生成下一步；Harness 负责其余所有事情：决定给模型看什么、执行模型提出的动作、保存进度、阻止越权动作、判断是否完成。[卡](#harness-modules)
 - 核心模块可以按一次调用的链路记忆：上下文组装 → 模型调用 → 工具执行（含权限检查）→ 结果写回 → 状态保存 → 停止与验证。
-- 设计编码 Agent 时，难点不在“能调用工具”，而在长任务的上下文、可验证的完成条件、失败恢复和安全边界。[卡](#62-如果让你从零设计一个-coding-agent你会怎么设计)
-- 上下文工程是 Harness 的一个模块。Harness 还包括执行、状态、权限、验证这些和上下文无关的部分。[卡](#63-harness-和上下文工程有什么区别模型变强后-harness-还重要吗)
+- 设计编码 Agent 时，难点不在“能调用工具”，而在长任务的上下文、可验证的完成条件、失败恢复和安全边界。[卡](#design-coding-agent)
+- 上下文工程是 Harness 的一个模块。Harness 还包括执行、状态、权限、验证这些和上下文无关的部分。[卡](#harness-vs-context)
 
 ## 2. 模块与职责 {#modules}
 
@@ -63,7 +66,7 @@ Hook 在固定事件上执行确定性代码，例如工具调用前检查命令
 
 ## 6. 面试题
 
-### 6.1 什么是 Agent Harness？一个标准的 Harness 包含哪些核心模块？
+### 6.1 什么是 Agent Harness？一个标准的 Harness 包含哪些核心模块？ {#harness-modules}
 
 <!-- 面试来源：
 - 小红书：https://www.nowcoder.com/feed/main/detail/e5e9311a623940eead6ec98c65e7f9e8 （“harness 层是什么？包括哪些内容？”）
@@ -93,7 +96,7 @@ Harness 是模型之外让 Agent 能运行的全部工程部分。模型只根�
 
 </details>
 
-### 6.2 如果让你从零设计一个 Coding Agent，你会怎么设计？
+### 6.2 如果让你从零设计一个 Coding Agent，你会怎么设计？ {#design-coding-agent}
 
 <!-- 面试来源：
 - 百度：https://www.nowcoder.com/feed/main/detail/b9521e2b51e04afeac0a3a32e13f4da9 （一面“如果让你做一个类似cc或者code的Coding Agent你有什么思路”；二面“如果让你从零设计一个 Coding Agent，你会怎么设计？”）
@@ -104,12 +107,14 @@ Harness 是模型之外让 Agent 能运行的全部工程部分。模型只根�
 
 **出现公司**：百度、字节跳动、蚂蚁、美团
 
+**题型**：综合题
+
 **考察重点**
 
 - 以可验证结果为中心组织循环。
 - 代码库上下文、长任务进度、权限与沙箱的设计。
 
-**相关内容**：[模块与职责](#modules)、[一次修改任务的链路](#flow)、[长任务的处理](#long-running)。
+**相关内容**：[模块与职责](#modules)、[一次修改任务的链路](#flow)、[长任务的处理](#long-running)、[停止条件与预算](./agent-loop.mdx#stop)、[代码库上下文](../development/ai-assisted-development.mdx#codebase)、[压缩时保留什么](../prompting/context-compaction.mdx#retain)、[执行沙箱](../safety/tool-authorization-sandbox.mdx#sandbox)、[编码 Agent 评测](../development/coding-agent-evaluation.mdx)。
 
 <details>
 <summary>参考回答</summary>
@@ -122,7 +127,7 @@ Harness 是模型之外让 Agent 能运行的全部工程部分。模型只根�
 
 </details>
 
-### 6.3 Harness 和上下文工程有什么区别？模型变强后 Harness 还重要吗？
+### 6.3 Harness 和上下文工程有什么区别？模型变强后 Harness 还重要吗？ {#harness-vs-context}
 
 <!-- 面试来源：
 - 百度：https://www.nowcoder.com/discuss/921590204903723008 （Harness 与 Context 的区别；问法概括）

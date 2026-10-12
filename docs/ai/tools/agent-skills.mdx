@@ -1,5 +1,8 @@
 ---
 sidebar_position: 3
+knowledge:
+  id: ai.tools.agent-skills
+  type: concept
 ---
 
 # Agent Skills
@@ -8,10 +11,10 @@ Agent Skill 是一个包含说明文件、脚本和参考资料的目录，Agent
 
 ## 1. 面试核心 {#core}
 
-- Skill 是给模型读的流程知识和资源；Tool 是程序执行的确定性能力。Skill 可以指导模型调用哪些 Tool、运行哪些脚本，但它本身不执行任何动作，也不授予权限。[卡](#61-skill-和-tool-有什么区别什么情况下做成-skill什么情况下做成-tool)
-- 渐进式加载分三层：启动时只加载名称和描述；判断相关后读取 `SKILL.md` 正文；正文引用的脚本和资料再按需读取。未使用的 Skill 只占几十个 Token。[卡](#62-skill-的核心原理是什么为什么能减少-token-消耗)
-- 选择 Skill 依靠描述。描述要写清做什么和何时使用；相似 Skill 被混用时，修改描述的区分条件或合并。[卡](#63-agent-怎么选择要调用的-skill两个相似的-skill-被调用错误怎么办)
-- MCP 提供外部系统的工具和数据，CLI 提供本地命令，Skill 提供使用它们的流程；三者常组合使用。[卡](#64-mcpcli-和-skill-分别适合什么场景)
+- Skill 是给模型读的流程知识和资源；Tool 是程序执行的确定性能力。Skill 可以指导模型调用哪些 Tool、运行哪些脚本，但它本身不执行任何动作，也不授予权限。[卡](#skill-vs-tool)
+- 渐进式加载分三层：启动时只加载名称和描述；判断相关后读取 `SKILL.md` 正文；正文引用的脚本和资料再按需读取。未使用的 Skill 只占几十个 Token。[卡](#skill-loading)
+- 选择 Skill 依靠描述。描述要写清做什么和何时使用；相似 Skill 被混用时，修改描述的区分条件或合并。[卡](#skill-selection)
+- MCP 提供外部系统的工具和数据，CLI 提供本地命令，Skill 提供使用它们的流程；三者常组合使用。[卡](#mcp-cli-skill)
 
 ## 2. 结构 {#structure}
 
@@ -85,7 +88,7 @@ Skill 依赖的外部条件变化（页面结构、接口字段）时，Skill �
 
 ## 6. 面试题
 
-### 6.1 Skill 和 Tool 有什么区别？什么情况下做成 Skill，什么情况下做成 Tool？
+### 6.1 Skill 和 Tool 有什么区别？什么情况下做成 Skill，什么情况下做成 Tool？ {#skill-vs-tool}
 
 <!-- 面试来源：
 - 小红书：https://www.nowcoder.com/feed/main/detail/e5e9311a623940eead6ec98c65e7f9e8 （“Skill 和 Tool 的区别？”“Skill 是知识库还是融合在 Agent 里？什么阶段 fetch？”）
@@ -114,7 +117,7 @@ Tool 是程序执行的函数，有参数 Schema，调用后产生确定的结�
 
 </details>
 
-### 6.2 Skill 的核心原理是什么？为什么能减少 Token 消耗？
+### 6.2 Skill 的核心原理是什么？为什么能减少 Token 消耗？ {#skill-loading}
 
 <!-- 面试来源：
 - 快手：https://www.nowcoder.com/feed/main/detail/daa06f995ea74445a13de42d67f66265 （“是否了解skill，介绍一下核心原理”“聊聊如何实现渐进式披露”“skill 能否放在 agent 沙箱里面”）
@@ -143,7 +146,7 @@ Skill 是一个目录，核心是带 `name` 和 `description` 元数据的 `SKIL
 
 </details>
 
-### 6.3 Agent 怎么选择要调用的 Skill？两个相似的 Skill 被调用错误怎么办？
+### 6.3 Agent 怎么选择要调用的 Skill？两个相似的 Skill 被调用错误怎么办？ {#skill-selection}
 
 <!-- 面试来源：
 - 百度：https://www.nowcoder.com/feed/main/detail/b9521e2b51e04afeac0a3a32e13f4da9 （“Agent 怎么选择要调用的 Skill？”“如果两个相似的Skills被调用错误怎么办？”“要是只有一个Skill但被错误执行呢？”“页面结构变化导致 Skill 失效怎么办？”）
@@ -169,7 +172,7 @@ Skill 是一个目录，核心是带 `name` 和 `description` 元数据的 `SKIL
 
 </details>
 
-### 6.4 MCP、CLI 和 Skill 分别适合什么场景？
+### 6.4 MCP、CLI 和 Skill 分别适合什么场景？ {#mcp-cli-skill}
 
 <!-- 面试来源：
 - 字节跳动：https://www.nowcoder.com/discuss/937314680270311424 （“怎样理解 CLI 和 MCP Tool，它们有什么区别？”“什么场景使用 MCP，什么场景使用 CLI，什么场景需要 Skill？”“如果重点追求性能和低延迟，CLI、MCP、Skill 应怎样选型和设计？”）
