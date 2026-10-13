@@ -5,159 +5,200 @@ knowledge:
   id: system-design.mit6-824.mapreduce.lab
   type: concept
 ---
+
 # 实验 1: MapReduce
 
-## 1. 实验简介
+本文是 MIT MapReduce 实验的实现笔记。重点是任务状态、RPC、超时重派和输出提交。模型与论文容错见 [Lec 1: MapReduce](./lec1_mapreduce.mdx)。
 
-实验地址：[Lab 1: MapReduce](https://pdos.csail.mit.edu/6.824/labs/lab-mr.html)
+课程旧名为 6.824，当前页面使用 6.5840。以下实验约定采用 2026 年课程版本。实验要求与依赖版本应以所选学期仓库为准。
 
-实验 1 要求使用 GoLang 实现 MapReduce 模型。虽然要求看上去比较吓人，但是实验本身提供了一些基本的代码，只需要实现核心的 `Coordinator` 和 `Worker` 即可。另外实验实现的是一个简化版本的 MapReduce 模型，只需要处理 `Map` 和 `Reduce` 两个阶段。
+## 1. 面试核心 {#core}
 
-即使对 GoLang 不是十分熟悉，预计在 1 天内也可以完成实验。
+- Coordinator 管理任务状态，Worker 通过 RPC 领取并报告结果。
+- 本实验等待 10 秒后重派未完成任务，原 Worker 仍可继续运行。[卡](#mr-lab-stale-attempt)
+- 实验用阶段屏障确保 Reduce 收到全部 Map 的对应分区。[卡](#mr-lab-phase-barrier)
+- 临时文件加原子重命名避免读到半文件，提交版本需另行检查。[卡](#mr-lab-atomic-output)
 
-## 2. 基本配置
+## 2. 实验简介 {#实验简介}
 
-实验使用 Git 托管，用 GoLang 开发，因此需要提前配置好 Git 与 GoLang：
+实验使用 Go 实现单 Coordinator 与多个 Worker。所有进程运行在同一台机器，共享工作目录。该环境省略了跨机器文件传输与协调器复制。
 
-- Git: [Git Download](https://git-scm.com/downloads)
-- GoLang: [GoLang Download](https://golang.org/dl/)
+学习目标是完成正常执行，并处理 Worker 崩溃。调试时重点观察重复执行与完成报告的顺序。
 
-实验代码可以在 MIT 6.824 的 [官网](https://pdos.csail.mit.edu/6.824/labs/lab-mr.html) 上找到。这里不再赘述。
+## 3. 基本配置 {#基本配置}
 
-## 3. 实验要求
+先准备 Git 和课程要求的 Go 版本，再取得实验仓库。实验页面给出仓库地址、启动命令和测试入口。
 
-在实验页面的「Your Job」一节中，给出了实验具体要求。简单总结一下：
+Go 插件与主程序应使用相同工具链构建。更换工具链后重新编译两者，避免加载失败。
 
-> 1. 实现 `Coordinator` 类，实验中只有一个 `Coordinator` 实例。
-> 2. 实现 `Worker` 类，实验中有至少一个 `Worker` 实例。
-> 3. `Worker` 与 `Coordinator` 通过 RPC 通信。
-> 4. `Worker` 从 `Coordinator` 获取任务，并执行以下流程：
->    - 从 `Coordinator` 获取任务
->    - 读取任务的输入
->    - 执行任务
->    - 将任务结果写入到指定位置
->    - 通知 `Coordinator` 任务完成
-> 5. `Coordinator` 负责管理任务的状态，包括重新分配超时任务（本实验中超时时间设置为 10 秒）。
+## 4. 实验要求 {#实验要求}
 
-实验提供了一些基本的代码，这些代码用于创建并启动 `Coordinator` 与 `Worker`，**不要修改这些代码**：
+需要实现以下文件：
 
-- `main/mrcoordinator.go`
-- `main/mrworker.go`
+- `mr/coordinator.go` 管理任务和阶段。
+- `mr/worker.go` 执行任务并写出结果。
+- `mr/rpc.go` 定义通信字段。
 
-需要实现的代码如下：
+保留 `main/mrcoordinator.go` 与 `main/mrworker.go` 的启动逻辑。Worker 领取任务、读取输入、执行并写出文件。Coordinator 在 10 秒后重派未完成任务。
 
-- `mr/coordinator.go`
-- `mr/worker.go`
-- `mr/rpc.go`
+实验使用这一超时作为故障判断。超时是调度决策，无法证明原 Worker 已经停止。
 
-## 4. 任务细分
+## 5. 任务细分 {#任务细分}
 
-根据对 MapReduce 的理解，以及实验提供的代码，我们可以进一步细化实验的需求。
+### 5.1 Coordinator {#coordinator}
 
-### 4.1. Coordinator
+任务状态可分为 idle、running 和 completed。领取时在同一锁内选择任务并改为 running。分配时间从本次领取开始计时。
 
-本实验中只有一个 `Coordinator` 实例。考虑到 MapReduce 论文中对于 Coordinator 的描述，我们需要实现以下功能：
+Map 全部完成后，才向 Worker 分配 Reduce。Reduce 全部完成后，`Done()` 返回 true。暂时无可分配任务时，回复 wait，避免忙等。
 
-- 管理任务状态：任务可以分为「初始化」、「进行中」、「完成」三种状态。
-- 分配任务：
-    - 找到「初始化」状态的任务，分配给 Worker 执行，并将其状态设置为「进行中」。
-    - 如果有任务的执行时间超过 10 秒，则重新分配给其他 Worker 执行。
-- 管理文件地址：
-    - 每个 `Map` 任务的输入文件
-    - `Map` 任务的输出文件（Intermediate Files）
-    - `Reduce` 任务的输出文件
+完成数只在首次有效提交时增加。重复报告返回已接受结果，避免重复计数。
 
-另外还有一些需要注意的点：
+### 5.2 Worker {#worker}
 
-- Coordinator 同时负责分发 `Map` 任务和 `Reduce` 任务，但是 `Reduce` 任务依赖于 `Map` 任务的输出，需要在 `Map` 任务执行完毕后才能开始分发。
-- 实验中存在至少一个 `Worker` 实例，多个 `Worker` 存在竞争关系，在更新任务状态时需要加锁。
+Map 任务读取输入并调用用户函数。输出按 `ihash(key) % nReduce` 分区。中间文件约定为 `mr-X-Y`，X 与 Y 是任务编号。
 
-### 4.2. Worker
+Reduce 读取对应分区的所有 Map 输出。按 key 排序分组后调用 reduce 函数。最终输出写为 `mr-out-Y`。
 
-区别于论文中的描述，本实验中的 `Worker` 为一个函数，通过 RPC 从 `Coordinator` 获取并执行任务。根据实验的描述，`Worker` 需要实现以下功能：
+输出先写临时文件，成功关闭后再发布。Go 1.17 起可用 `os.CreateTemp`。文件命名与提交策略见 [输出提交](#输出提交)。
 
-- 从 `Coordinator` 获取任务
-- 执行 `Map` 或者 `Reduce` 任务
-- 将任务的输出写入到指定位置
-    - `Map` 任务的输出：`mr-X-Y`，其中 `X` 为 `Map` 任务的编号，`Y` 为 `Reduce` 任务的编号。`Y` 可以通过 `ihash` 函数计算得到
-    - `Reduce` 任务的输出：`mr-out-Y`，其中 `Y` 为 `Reduce` 任务的编号
-- 通知 `Coordinator` 任务完成，以及上报输出文件地址
+### 5.3 RPC {#rpc}
 
-通常每一个任务都有不同的输出文件，但是在异常发生时，可能会有多个任务向同一个文件输出。实验中建议使用 `ioutil.TempFile` 创建临时文件，等到任务执行完毕后，再重命名为最终的文件名。
+可以定义 `FetchTask` 与 `ReportTask` 两种 RPC。回复包含任务类型、任务编号和输入位置。完成报告还携带本次 attempt。
 
-### 4.3. RPC
+Go RPC 编码的结构体字段需要导出。字段名应以大写字母开头。RPC 失败后重试要处理重复提交。
 
-本实验使用 RPC 进行 `Worker` 与 `Coordinator` 之间的通信。基本的 RPC 框架已经提供，因此只需要考虑实验中需要的 RPC 方法即可。
+## 6. 实验实现 {#实验实现}
 
-- `Worker` 从 `Coordinator` 获取任务
-- `Worker` 通知 `Coordinator` 任务完成，以及上报输出文件地址
+本节保留设计片段，完整实现由读者自行完成。以下 attempt 方案是可选的加强设计。
 
-## 5. 实验实现
-
-由于官方并不建议将实验的实现开源，避免学生直接抄袭，因此这里不会贴出完整的代码。（虽然我也并不相信 MIT 的学生会抄我...）
-
-本文将仅贴出部分关键代码，也鼓励读者自行实现并优化，这真的很有趣。
-
-### 5.1. Coordinator 与 Task 的结构
-
-在实现细化部分没有提到的是，为了简化对于「任务」实例的管理，我们需要定义一个 `Task` 结构体，表示一个任务。
+### 6.1 任务结构 {#任务结构}
 
 ```go
 type Task struct {
-    TaskType string    // Map 或 Reduce
-    TaskID   int       // 任务编号
-    Inputs   []string  // 输入文件
-    Outputs  []string  // 输出文件
-    Status   string    // 初始化、进行中、完成
-    CreateAt time.Time // 任务创建时间
+    TaskType   string
+    TaskID     int
+    Inputs     []string
+    Outputs    []string
+    Status     string
+    Attempt    uint64
+    AssignedAt time.Time
 }
-```
 
-通过对与任务的细化，我们也能较为容易的写出 `Coordinator` 的结构体。
-
-```go
 type Coordinator struct {
-    mu           sync.Mutex // 锁，用于保护任务状态的更新
-    tasks        []Task     // 任务列表
-    nReduce      int        // Reduce 任务的数量
-    nMap         int        // Map 任务的数量
-    finishedMaps int        // 完成的 Map 任务的数量
+    mu           sync.Mutex
+    tasks        []Task
+    nReduce      int
+    nMap         int
+    finishedMaps int
 }
 ```
 
-根据不同的实现，`Coordinator` 的初始化方法也会有所不同，比如分开存储 `Map` 任务和 `Reduce`，可以在一定程度上简化任务分配
+这是结构定义片段，需要导入 `sync` 与 `time`。`AssignedAt` 记录本次分配时间。重新分配时更新时间并递增 `Attempt`。
 
-### 5.2. Worker 与 Coordinator 的交互
-
-Worker 与 Coordinator 的交互流程如下：
+### 6.2 Worker 与 Coordinator 的交互 {#worker-与-coordinator-的交互}
 
 ![Worker 与 Coordinator 的交互流程](mapreduce_lab.png)
 
-1. Worker 通过 `FetchTask` 方法从 Coordinator 获取任务
-2. Coordinator 根据任务状态分配任务
-    - 分配「初始化」与超时任务
-    - 修改任务状态为「进行中」
-3. Worker 执行任务
-    - 根据当前所处的 Map 还是 Reduce 阶段，执行用户定义的 `Map` 函数或者 `Reduce` 函数
-    - 将任务的输出写入到指定位置
-4. Worker 通过 `ReportTask` 方法向 Coordinator 上报任务完成
-5. Coordinator 更新任务状态
+1. Worker 通过 `FetchTask` 获取任务或等待指令。
+2. Coordinator 原子标记 running，并返回 attempt。
+3. Worker 执行任务，完成临时输出。
+4. Worker 报告任务编号、attempt 和文件位置。
+5. Coordinator 校验报告并提交，随后更新阶段。
 
-### 5.3. RPC 方法
+共享锁只保护状态变更。文件读取和计算放在锁外，避免阻塞其他任务领取。
 
-从交互流程中我们可以观察到，Worker 与 Coordinator 的交互方法主要有两个：
+### 6.3 RPC 状态校验 {#rpc-状态校验}
 
-- `FetchTask`：Worker 从 Coordinator 获取任务
-- `ReportTask`：Worker 向 Coordinator 上报任务完成
+假设 attempt 1 超时后，任务被重派为 attempt 2。旧 Worker 随后报告成功时，Coordinator 应拒绝旧版本。
 
-那么重点实现这两个方法即可。根据对 `Coordinator` 与 `Task` 的定义不同，此处的实现也会有所不同，这里不列举出详细的代码了，大家可以自行实现。
+接收报告时检查任务类型、编号、状态与 attempt。已完成任务的重复报告只返回确认。错误版本既不改状态，也不增加完成数。
 
-## 6. 测试
+### 6.4 输出提交 {#输出提交}
 
-代码仓库中包含了测试脚本，实验页面也给出了完整的测试方法，参考执行即可。
+原子 rename 保证读者看到完整文件。它并不阻止迟到的旧 attempt 覆盖新结果。
 
-## 7. 总结
+可让 Worker 只写 attempt 专属文件。Coordinator 验证版本后，在提交临界区发布最终文件。Worker 自身不直接覆盖最终路径。
 
-本实验通过实现一个简化版本的 MapReduce 模型，帮助大家加深了对 MapReduce 的理解，尤其是在 MapReduce 实现过程中的容错处理，以及如何处理多个 Worker 竞争的问题。
+多个 Map 分区文件可逐个发布，全部成功后才标记完成。阶段屏障确保 Reduce 在此之前不会读取。该方案依赖本实验 Coordinator 持续运行的假设。
 
-虽然「实现一个 MapReduce」的标题看上去略显复杂，但是经过对实验需求的分析与细化，可以发现实验本身的难度不高，实现的时间也不会太长，强烈建议大家都亲自实现一遍，一点一点的调试、优化，完成本实验。
+临时文件与目标文件放在同一文件系统。实验在 Unix 环境下使用 rename 的原子替换语义。跨文件系统移动无法沿用该保证。
+
+## 7. 测试 {#测试}
+
+在实验仓库运行课程的 `test-mr.sh`。以下边界值得分别观察：
+
+- 正常 Map 与 Reduce 输出应与顺序程序一致。
+- 并行领取后，同一任务只接受一次完成。
+- Worker 崩溃后，任务应在超时后恢复。
+- 旧 attempt 迟到时，当前结果保持不变。
+- Map 输出发布失败时，Reduce 阶段保持等待。
+
+可用 race detector 检查共享状态竞争。启用时应让插件和主程序使用一致的构建选项。本文仓库未包含实验实现，以上是读者验证步骤。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 Map 任务超时重派后，旧 Worker 报告完成该怎样处理？ {#mr-lab-stale-attempt}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：attempt、状态转换与重复报告。
+
+**相关内容**：[RPC 状态校验](#rpc-状态校验)。
+
+<details>
+<summary>参考回答</summary>
+
+拒绝旧 attempt 的报告，只接受当前运行版本。10 秒超时触发重派，但原 Worker 仍可完成。
+
+任务编号和 attempt 一起标识执行尝试。完成计数只增加一次。输出提交也要遵守同一个版本规则。
+
+</details>
+
+### 8.2 Reduce 为什么需要等待全部 Map 完成？ {#mr-lab-phase-barrier}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：完整输入、分区与阶段状态。
+
+**相关内容**：[Coordinator](#coordinator)、[Worker](#worker)。
+
+<details>
+<summary>参考回答</summary>
+
+Reduce 需要本分区来自全部 Map 的输入。实验通过 Map 阶段屏障确保文件集合完整。
+
+Coordinator 在锁内确认全部 Map 已提交后再分配 Reduce。重复完成报告无需再次计数。暂时没有任务时，Worker 等待后继续领取。
+
+</details>
+
+### 8.3 临时文件加 rename，能否同时解决半文件和旧任务覆盖？ {#mr-lab-atomic-output}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：原子可见性与版本提交。
+
+**相关内容**：[输出提交](#输出提交)。
+
+<details>
+<summary>参考回答</summary>
+
+rename 解决单文件的完整可见性，旧任务覆盖需版本控制。旧 Worker 仍能执行一次完整覆盖。
+
+Worker 写 attempt 专属文件，由 Coordinator 验证后发布。最终路径仅由提交逻辑更新。Map 全部输出发布后，再允许 Reduce 读取。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+
+- [MIT 6.824 / 6.5840：Lab 1 MapReduce](https://pdos.csail.mit.edu/6.824/labs/lab-mr.html)
+- [MIT 6.5840：2026 Schedule](https://pdos.csail.mit.edu/6.824/schedule.html)
+- [Dean、Ghemawat：MapReduce，OSDI 2004](https://pdos.csail.mit.edu/6.824/papers/mapreduce.pdf)
+- [Go：os.Rename](https://pkg.go.dev/os#Rename)
+- [Go：plugin](https://pkg.go.dev/plugin)
+- [Go：Data Race Detector](https://go.dev/doc/articles/race_detector)

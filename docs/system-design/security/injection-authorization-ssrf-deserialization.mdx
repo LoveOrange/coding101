@@ -7,95 +7,102 @@ knowledge:
 
 # Web 应用安全
 
-应用安全问题常来自不可信输入跨过解释器、资源边界或网络边界。输入校验可以限制格式，但还需要参数化执行、资源级授权、出站网络控制和安全的数据格式共同阻断攻击链。
+Web 应用安全控制输入的解释与跨边界访问。本文负责注入、XSS、CSRF、SSRF 与反序列化。资源权限模型见 [认证与授权](./authentication-authorization-trust-boundaries.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- 注入发生在用户数据被拼进 SQL、Shell 等指令时，用参数化查询防御，排序字段等结构参数用白名单。[卡](#sqli-idor-ssrf)
-- 服务端校验输入的类型、长度和取值范围，客户端校验只改善体验。
-- 越权来自缺少资源级检查：查询订单时要同时校验它属于当前用户或租户。
-- SSRF 让服务端访问攻击者指定的地址，防御依靠目标白名单、解析后地址校验和出站网络隔离。
-- 不反序列化不可信的原生对象；错误响应不暴露 SQL、内部地址和凭据。
+- SQL 参数绑定隔离数据与指令，动态列名需用白名单映射。[卡](#sqli-idor-ssrf)
+- XSS 执行站点内的恶意脚本，输出编码应匹配具体上下文。[卡](#xss-csrf-cors)
+- CSRF 借助自动携带的凭据发起请求，防护需验证请求来源。[卡](#xss-csrf-cors)
+- SSRF 防护需校验实际连接目标，并限制出站网络。[卡](#ssrf-dns-redirect)
+- 反序列化应限定类型和对象图规模，避免任意类实例化。[卡](#deserialization-type-limits)
 
 ## 2. 注入 {#注入}
 
-SQL、Shell、模板、表达式和 LDAP 都有自己的语法。把用户字符串拼进命令，会让数据改变原有指令结构。
+用户输入进入解释器语法后，会改变指令含义。SQL、Shell、模板和 LDAP 都存在此类边界。
 
 ```java
-// 风险：用户输入进入 SQL 结构
-String sql = "SELECT * FROM user WHERE name = '" + name + "'";
+// 风险示例：输入成为 SQL 语法的一部分。
+String sql = "SELECT * FROM users WHERE name = '" + name + "'";
 ```
 
-SQL 使用参数化查询；排序列、表名等无法作为普通值绑定的结构参数，使用服务端 allowlist 映射。Shell 命令优先调用结构化 API，必须执行进程时把程序和参数分开，并限制可执行项。
+值参数使用参数化查询。表名和排序列由服务端白名单映射。参数绑定只处理值，动态 SQL 结构仍需约束。
 
-转义依赖具体解释器和上下文，不能用一段通用字符串替换同时防 SQL、HTML 和 Shell 注入。
+执行进程时优先使用专用 API。必须启动程序时，固定可执行项并校验参数。即使绕开 Shell，危险命令选项仍需限制。
 
 ## 3. 输入校验 {#输入校验}
 
-服务端校验类型、长度、字符范围、枚举、集合大小和字段关系，并在规范化后再做安全判断。客户端校验只改善体验，攻击者可以直接调用 API。
+服务端校验类型、长度、枚举和字段关系。规范化之后再执行安全判断。客户端校验用于及时反馈，服务端仍需独立检查。
 
-校验不能替代参数化：一个合法用户名仍可能包含引号。参数化也不能替代授权：正确执行查询仍可能返回不属于当前用户的数据。
+输入校验与参数绑定承担不同职责。合法姓名可以含引号，参数绑定会把引号作为数据。查询权限则由资源授权决定。
 
 ## 4. 越权 {#越权}
 
-水平越权让普通用户访问其他同级用户资源，垂直越权让低权限用户执行管理员动作。常见错误是只验证 token 有效，然后直接使用 URL 中的 `orderId` 查询。
+水平越权涉及同级用户资源，垂直越权涉及高权限动作。统一防护见 [授权决策](./authentication-authorization-trust-boundaries.mdx#授权决策)。
 
-查询应同时绑定可信 tenant、当前 principal 和资源条件，或者读取资源后执行统一授权策略。批量 API、导出、对象存储链接、GraphQL resolver 和后台消息处理都要应用同一边界。
+批量接口要逐项检查资源权限。UUID 降低枚举概率，但不提供访问权限。导出、对象链接和异步任务同样需要校验。
 
-不可猜测 UUID 只能降低枚举概率，不能作为授权控制。
+## 5. XSS 与 CSRF {#xss-与-csrf}
 
-## 5. SSRF {#ssrf}
+XSS 让攻击脚本在受害站点的上下文中执行。存储型、反射型与 DOM XSS 的入口各异。输出时应按 HTML、属性或 JavaScript 上下文编码。
 
-图片下载、Webhook、URL 预览和代理接口若接受任意 URL，攻击者可能让服务器访问：
+展示纯文本可使用 `textContent` 等安全接口。允许富文本时使用 HTML 清理库。CSP 可缩小脚本执行范围，作为额外防护。
 
-- 云元数据和实例凭据端点。
-- 只在内网开放的管理接口。
-- localhost、私有地址和 Unix socket 代理。
-- 通过重定向或 DNS rebinding 变化后的地址。
+CSRF 利用浏览器自动附带的 Cookie 等凭据。站点应验证 CSRF token，并核对请求来源。`SameSite` 提供额外限制，状态变更使用非 GET 请求。
 
-优先使用预登记目标和固定 endpoint。必须支持 URL 时，只允许明确协议，解析后校验 host 与最终 IP，限制端口、重定向、响应大小和超时，并在网络层禁止工作负载访问敏感网段。
+`HttpOnly` 阻止脚本读取 Cookie。已执行的 XSS 仍可借浏览器发送认证请求。CORS 控制跨源脚本读取响应，并非完整的 CSRF 防线。
 
-只检查字符串不以 `127.` 开头无法覆盖 IPv6、整数 IP、DNS 和重定向。
+## 6. SSRF {#ssrf}
 
-## 6. 不安全的反序列化 {#不安全的反序列化}
+URL 预览、Webhook 与下载接口会访问外部地址。目标若由攻击者控制，服务就会代其发起请求。敏感目标包括云元数据、回环和内网管理接口。
 
-Java 原生序列化和支持多态类型元数据的格式，可能在构造对象图时触发类路径中的危险代码。不要反序列化来自 Cookie、消息或网络的不可信原生对象。
+预登记目标可使用域名白名单。开放 URL 接口需限制协议、端口和地址范围。响应大小、读取时长与重定向次数也应设上限。
 
-跨边界使用显式 schema 的 JSON、Protobuf 等数据结构，只映射允许的 DTO 和字段；限制消息大小、嵌套深度和集合数量。升级依赖并关闭不需要的动态类型解析。
+### 6.1 DNS 与重定向边界 {#dns-与重定向边界}
 
-签名数据可以证明来源和完整性，但若可信生产者被攻陷或签名范围错误，危险对象仍会执行。安全格式和类型 allowlist 仍然必要。
+校验与连接必须使用同一个已验证地址集合。否则第二次 DNS 解析会引入检查与使用的时间差。地址校验需覆盖 IPv4、IPv6 和特殊地址。
 
-## 7. 攻击链 {#攻击链}
+默认关闭自动重定向最容易控制边界。若业务需要跟随，每一跳都重新验证目标。代理层也必须遵循这些规则。
 
-一个 SSRF 先读取云凭据，再访问对象存储；泄漏的密钥签发内部 token，随后利用缺失资源授权导出其他租户数据。单点修复无法覆盖整条链。
+出站网络策略阻断敏感网段，作为第二层控制。仅检查 URL 字符串会遗漏实际连接地址。
 
-系统应采用纵深防御：最小 IAM 权限、网络 egress、短期凭据、资源授权、输入限制和审计共同降低影响。
+## 7. 不安全的反序列化 {#不安全的反序列化}
 
-## 8. 错误响应与日志 {#错误响应与日志}
+对象反序列化可在构造对象图时执行类中的逻辑。攻击者控制类型后，能组合类路径中的危险调用。
 
-不要把 SQL、内部 URL、文件路径、token 或反序列化类名直接返回客户端。日志记录错误类别和关联 ID，敏感字段脱敏，并限制攻击流量造成的日志量。
+跨边界数据使用明确 schema 和受限 DTO。JSON 若开放任意多态类型，也会引入同类风险。限制类型、字节数、嵌套深度和集合大小。
 
-安全拒绝应可监控，例如按规则统计注入校验失败、SSRF 目标拦截和授权拒绝，但指标标签不能包含完整恶意 payload。
+Java 17 可通过 `ObjectInputFilter` 检查对象输入。过滤规则需主动配置，并验证拒绝行为。签名只能约束来源与完整性，类型控制仍然必要。
 
-## 9. 安全测试 {#安全测试}
+## 8. 攻击链 {#攻击链}
 
-除正常输入外，测试跨租户 ID、批量资源、重定向、IPv6/混合编码、超大响应、未知反序列化字段和嵌套深度。使用 SAST、依赖扫描和 DAST 提供线索，再由针对业务权限的测试确认结果。
+SSRF 可读取高权限凭据，再触发数据导出。最小权限、出站隔离与资源授权共同限制影响。凭据管理见 [密钥管理](./secrets-certificates-audit-supply-chain.mdx#密钥管理)。
 
-每次新增“根据 URL 抓取”或“通用对象转换”能力，都应单独做威胁建模，而不是等上线后只靠 WAF。
+## 9. 错误信息与日志 {#错误响应与日志}
 
-## 10. 常见问题
+客户端只接收错误类别和关联 ID。内部 SQL 与文件路径仅用于受控诊断。token 等凭据值应从响应和日志中移除。
 
-### 10.1 使用 ORM 是否就没有 SQL 注入
+日志需脱敏、限速，并清理换行等控制字符。监控按拒绝规则聚合，避免用完整 payload 作标签。
 
-ORM 的参数绑定能降低风险，但动态拼接查询片段、原生 SQL、排序字段和表达式接口仍可能注入。结构参数使用 allowlist，所有原生语句继续参数化。
+## 10. 安全测试 {#安全测试}
 
-### 10.2 阻止私有 IP 是否足以防 SSRF
+测试覆盖跨租户 ID、批量资源和未知类型。URL 接口还需覆盖重定向、IPv6 与 DNS 变化。富文本测试同时检查渲染位置和危险 DOM 接口。
 
-不足。还要处理 DNS 解析变化、重定向、IPv6、特殊地址表示和代理，并通过网络 egress 阻止访问元数据与管理网段。最安全的方式仍是目标 allowlist。
+依赖扫描与静态分析提供风险线索。资源授权仍需用业务测试验证。
 
-## 11. 面试题
+## 11. 常见问题 {#常见问题}
 
-### 11.1 如何同时防止 SQL 注入、水平越权和 SSRF {#sqli-idor-ssrf}
+### 11.1 ORM 的参数边界 {#orm-的参数边界}
+
+ORM 的参数绑定保护值参数。原生 SQL、动态片段和排序表达式仍需单独审查。
+
+### 11.2 私有地址过滤的边界 {#私有地址过滤的边界}
+
+SSRF 校验要覆盖实际连接 IP 和全部跳转。地址过滤还需配合协议限制与网络隔离。
+
+## 12. 面试题 {#面试题}
+
+### 12.1 如何同时防止 SQL 注入、水平越权和 SSRF？ {#sqli-idor-ssrf}
 
 <!-- 面试来源：
 - 字节跳动：https://www.nowcoder.com/discuss/353159319300546560
@@ -103,26 +110,84 @@ ORM 的参数绑定能降低风险，但动态拼接查询片段、原生 SQL、
 
 **出现公司**：字节跳动
 
-**考察重点**
+**题型**：综合题
 
-- 参数化与结构 allowlist。
-- 主体、租户和资源所有权检查。
-- URL 解析、重定向、DNS 与网络 egress。
+**考察重点**：解释器、资源与网络边界。
 
-**相关内容**：[注入](#注入)至[安全测试](#安全测试)。
+**相关内容**：[注入](#注入)、[越权](#越权)、[SSRF](#ssrf)。
 
 <details>
 <summary>参考回答</summary>
 
-SQL 值使用参数化查询，表名和排序列等结构部分由服务端 allowlist 映射；服务端仍校验长度和业务范围。授权不能只看 token 有效，查询要绑定当前 principal 与 tenant，或读取资源后检查 owner 和动作，UUID 不代替权限。
+SQL 值使用参数绑定，结构参数使用白名单。资源服务按主体、租户、资源和动作授权。URL 接口校验实际目标，并限制出站网络。
 
-SSRF 优先限制到预登记目标；开放 URL 时校验协议、解析后的最终 IP、端口和每次重定向，并限制响应与超时，同时在网络层禁止访问元数据和管理网段。反序列化则使用显式 schema 与允许 DTO，关闭任意多态类型。最后用跨租户、重定向、IPv6 和编码变体测试这些边界。
+三类控制分别保护解释器、数据和网络。测试应覆盖动态 SQL、跨租户 ID 和重定向目标。
 
 </details>
 
-## 12. 参考资料
+### 12.2 XSS 与 CSRF 有何区别，CORS 和 HttpOnly 能防什么？ {#xss-csrf-cors}
 
-- [OWASP：Injection Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Injection_Prevention_Cheat_Sheet.html)
-- [OWASP：Server Side Request Forgery Prevention](https://cheatsheetseries.owasp.org/cheatsheets/Server_Side_Request_Forgery_Prevention_Cheat_Sheet.html)
-- [OWASP：Deserialization Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Deserialization_Cheat_Sheet.html)
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：脚本执行、凭据携带与浏览器边界。
+
+**相关内容**：[XSS 与 CSRF](#xss-与-csrf)。
+
+<details>
+<summary>参考回答</summary>
+
+XSS 在站点内执行脚本，CSRF 借自动凭据发起请求。XSS 防护以安全输出和富文本清理为主。CSRF 防护验证 token 与请求来源。
+
+HttpOnly 限制脚本读取 Cookie。CORS 限制跨源脚本读取响应。二者都无法覆盖所有伪造请求。
+
+</details>
+
+### 12.3 校验域名后再请求，为什么仍会发生 SSRF？ {#ssrf-dns-redirect}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：DNS 时间差、重定向与网络控制。
+
+**相关内容**：[DNS 与重定向边界](#dns-与重定向边界)。
+
+<details>
+<summary>参考回答</summary>
+
+DNS 再解析或重定向会改变实际连接目标。校验应绑定连接使用的地址。每次跳转都重新检查，或直接禁用跳转。
+
+IPv4、IPv6 和代理路径都要纳入校验。网络层另行阻断元数据和管理网段。
+
+</details>
+
+### 12.4 改用 JSON 后，怎样控制反序列化风险？ {#deserialization-type-limits}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：动态类型、schema 与资源限制。
+
+**相关内容**：[不安全的反序列化](#不安全的反序列化)。
+
+<details>
+<summary>参考回答</summary>
+
+使用明确 DTO，并关闭任意多态类型解析。JSON 的风险取决于解析器允许构造哪些对象。
+
+输入还需限制大小、深度与集合数量。Java 原生对象输入可配置 ObjectInputFilter。过滤器与依赖修复需要同时落实。
+
+</details>
+
+## 13. 参考资料 {#参考资料}
+
+- [OWASP：Injection Prevention](https://cheatsheetseries.owasp.org/cheatsheets/Injection_Prevention_Cheat_Sheet.html)
+- [OWASP：SSRF Prevention](https://cheatsheetseries.owasp.org/cheatsheets/Server_Side_Request_Forgery_Prevention_Cheat_Sheet.html)
+- [OWASP：Deserialization](https://cheatsheetseries.owasp.org/cheatsheets/Deserialization_Cheat_Sheet.html)
+- [OWASP：XSS Prevention](https://cheatsheetseries.owasp.org/cheatsheets/Cross_Site_Scripting_Prevention_Cheat_Sheet.html)
+- [OWASP：CSRF Prevention](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html)
+- [Java 17：Serialization Filtering](https://docs.oracle.com/en/java/javase/17/core/serialization-filtering1.html)
 - [OWASP API Security：Broken Object Level Authorization](https://owasp.org/API-Security/editions/2023/en/0xa1-broken-object-level-authorization/)
