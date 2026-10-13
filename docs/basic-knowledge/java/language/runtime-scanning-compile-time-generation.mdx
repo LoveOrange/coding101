@@ -7,19 +7,19 @@ knowledge:
 
 # Java 注解处理器
 
-Java 注解处理器（Annotation Processor）在编译阶段读取类型和注解，可以校验程序结构，也可以生成 Java 源码、字节码或资源文件。本文说明注解处理器的程序模型、处理轮次和代码生成接口，并将它与运行时反射扫描比较，解释两种机制在错误时机、启动成本和动态性上的差异。
+Java 注解处理器在编译期校验程序并生成文件。本文负责处理轮次、生成接口和构建配置。保留策略见 [Java 注解](./annotations-retention-processing.mdx)。运行时调用规则见 [Java 反射](./reflection-method-handles.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- 注解处理器在编译期读取 `Element`、`TypeMirror` 等程序模型，可以报告错误，也可以通过 `Filer` 生成源码和资源文件。[卡](#compile-time-annotation)
-- 处理器生成新源码后，编译器会进行下一轮处理，直到不再产生新文件。
-- 标准 API 不能修改已有类；Lombok 这类修改语法树的做法依赖 `javac` 内部 API。
-- 运行时扫描配合反射可以发现未知类型，代价是启动成本和运行时才暴露的错误；Spring 等 IoC 容器依靠反射创建 Bean 并注入依赖。[卡](#ioc-reflection)
-- 编译期生成把错误和成本提前到构建阶段，更适合闭世界的 AOT 和 Native Image。
+- 处理器读取 `Element` 和 `TypeMirror`，通过 `Filer` 生成新文件。[卡](#compile-time-annotation)
+- 生成的新类型进入后续处理轮次。
+- `process` 返回 `true` 表示认领当前注解类型。
+- JDK 23 起，`javac` 默认要求显式启用注解处理。[卡](#processor-discovery-rounds)
+- IoC 容器管理对象创建与依赖，反射支持运行时调用。[卡](#ioc-reflection)
 
 ## 2. 运行时扫描 {#运行时扫描}
 
-注解处理器常用于替代框架的一部分运行时扫描和反射工作。一个基于注解注册处理器的框架，启动时通常会执行以下步骤：
+注解处理器能提前完成部分发现工作。下面以运行时路由注册为例，展示扫描步骤：
 
 1. 确定需要扫描的包、模块或 classpath 位置。
 2. 找出候选类并通过类加载器加载。
@@ -38,7 +38,7 @@ for (Class<?> candidate : scanner.findClasses("com.example")) {
 }
 ```
 
-这种方式的优点是灵活。应用只要把新类放进约定包并添加注解，框架就能在下一次启动时发现，不要求应用显式维护清单。
+框架可在启动时发现新增的标注类。应用只需遵循扫描范围与注解约定。
 
 ### 2.1 运行时扫描的成本 {#运行时扫描的成本}
 
@@ -48,7 +48,7 @@ for (Class<?> candidate : scanner.findClasses("com.example")) {
 - 反射结果需要缓存，避免进入请求热路径后重复查找。
 - 闭世界编译无法仅从静态调用关系得知所有反射目标，需要额外元数据。
 
-实际成本取决于扫描范围和实现。扫描几个明确类与遍历所有依赖包不是同一个量级，应先限制发现边界，再判断是否需要迁移到编译期。
+扫描成本取决于候选范围和实现。先限制扫描范围，再评估编译期生成的收益。
 
 ## 3. 注解处理模型 {#注解处理模型}
 
@@ -63,10 +63,16 @@ public final class MapperProcessor extends AbstractProcessor {
         Set<? extends TypeElement> annotations,
         RoundEnvironment roundEnvironment
     ) {
+        if (roundEnvironment.processingOver()) {
+            return false;
+        }
         TypeElement marker = processingEnv
             .getElementUtils()
             .getTypeElement("com.example.GenerateMapper");
 
+        if (marker == null) {
+            return false;
+        }
         for (Element element : roundEnvironment.getElementsAnnotatedWith(marker)) {
             generateMapper((TypeElement) element);
         }
@@ -79,7 +85,7 @@ public final class MapperProcessor extends AbstractProcessor {
 
 ### 3.1 多轮处理 {#多轮处理}
 
-处理器生成新源码后，编译器会在下一轮把新文件也纳入程序模型。直到没有新文件产生，才进入最后一轮并继续完成编译。
+新源码或 class 文件会触发后续处理轮次。仅生成普通资源文件不会触发新轮次。最后一轮可做汇总和诊断。
 
 因此处理器需要：
 
@@ -129,7 +135,7 @@ UserMapper mapper = new UserMapperGenerated();
 UserDto dto = mapper.toDto(user);
 ```
 
-标准处理器应生成新的源码、class 文件或资源，不修改已经存在的业务源码。直接操作特定编译器的内部语法树会绑定实现细节，升级 JDK 和 IDE 时需要承担额外兼容成本。
+标准处理器生成新文件，现有源码保持不变。修改编译器内部语法树会绑定具体实现。JDK 和 IDE 升级时需验证兼容性。
 
 ### 4.1 编译期报错 {#编译期报错}
 
@@ -143,7 +149,7 @@ processingEnv.getMessager().printMessage(
 );
 ```
 
-错误会让构建失败，开发者不必等到应用启动或请求到来后才发现签名不符合要求。这是编译期处理最重要的收益之一。
+`Diagnostic.Kind.ERROR` 会让构建失败。开发者在编译阶段即可发现签名错误。
 
 ## 5. 运行时扫描与注解处理器的比较 {#运行时扫描与注解处理器的比较}
 
@@ -157,29 +163,29 @@ processingEnv.getMessager().printMessage(
 | 动态性 | 更适合运行时插件和未知类型 | 更适合闭世界和固定应用组成 |
 | 调试重点 | 类加载、扫描条件、反射权限 | 生成源码、构建配置、处理轮次 |
 
-编译期生成会把一部分成本移到构建阶段，但不会自动让整体系统更简单。它增加了处理器模块、生成文件管理、IDE 集成和增量编译要求。
+编译期生成把部分运行工作移到构建阶段。项目还需管理处理器、生成文件和增量编译。
 
 ## 6. 混合方案 {#混合方案}
 
 很多框架使用混合方案：
 
-### 6.1 编译期生成索引，运行时按索引装配
+### 6.1 编译期索引与运行时装配 {#编译期索引与运行时装配}
 
 处理器不生成完整调用代码，只生成候选类型清单或资源文件。运行时不再扫描整个 classpath，而是读取索引并加载少量明确类型。
 
-### 6.2 构建时分析，运行时保留扩展点
+### 6.2 构建分析与运行时扩展 {#构建分析与运行时扩展}
 
-应用自己的 Bean、路由和序列化器在构建时固定，第三方插件仍通过 `ServiceLoader` 或指定目录在运行时发现。这样可以降低常规启动成本，同时保留有限动态性。
+应用内部的 Bean、路由和序列化器在构建时固定。插件仍可通过 `ServiceLoader` 或指定目录发现。常规启动成本与动态扩展因此能分别管理。
 
-### 6.3 编译期生成工厂，运行时选择实现
+### 6.3 生成工厂与运行时选择 {#生成工厂与运行时选择}
 
-处理器生成类型安全的工厂或注册表，运行时仍根据配置选择具体实现。动态选择不等于必须动态扫描。
+处理器生成类型安全的工厂或注册表，运行时仍根据配置选择具体实现。候选类型仍由生成结果限定。
 
-选择方案时先确定哪些类型在部署前已经知道，哪些确实要在运行中加入。把整个应用都当成完全动态，会失去静态检查；把真实插件系统强行做成闭世界，也会让扩展流程变得笨重。
+构建时已知的类型可提前生成。部署后加入的插件需要运行时发现。选择应取决于类型何时确定。
 
 ## 7. Native Image 与 AOT {#native-image-与-aot}
 
-闭世界编译需要在构建时确定可能到达的代码。按字符串加载类、反射访问成员和动态代理不会总能从静态调用图推导，因此通常需要显式注册或由框架生成元数据。
+闭世界编译需要在构建时确定可达代码。反射和动态加载的目标需通过静态分析或元数据表达。
 
 将以下工作提前，有助于减少运行时配置：
 
@@ -188,29 +194,45 @@ processingEnv.getMessager().printMessage(
 - 为仍需反射的成员生成精确注册元数据。
 - 在构建阶段检查动态代理接口和资源文件。
 
-AOT 兼容性不是唯一目标。JVM 长期运行服务如果启动成本不敏感、插件动态性很重要，成熟的运行时模型仍然合理。
+启动成本较低且依赖动态插件时，运行时模型仍然适用。AOT 收益需结合构建成本与部署方式评估。
 
-## 8. 常见问题
+## 8. 处理器发现与认领规则 {#处理器发现与认领规则}
 
-### 8.1 注解处理器能修改原有类吗
+JDK 23 起，`javac` 要求显式配置注解处理。可指定 `-processor`、处理器路径或 `-proc:full`。只把处理器放入普通 classpath 不再默认执行。
 
-标准 API 的主要能力是读取程序模型并生成新文件或报告诊断，不提供修改既有源码 AST 的可移植接口。依赖 `javac` 内部 API 修改语法树虽然可行，但会增加编译器、IDE 和 JDK 版本兼容风险。
+```sh
+javac --processor-path processor.jar \
+  -processor com.example.MapperProcessor \
+  -d out -s generated src/com/example/UserMapper.java
+```
 
-### 8.2 注解处理器生成的类为什么当前轮读不到
+自动发现使用服务配置或模块的 `provides` 声明。classpath 服务文件名为 `META-INF/services/javax.annotation.processing.Processor`。文件内容是处理器的完整类名。
 
-新源码由 `Filer` 创建后，会在后续处理轮次进入语言模型。处理器不应假设生成后立刻能在当前轮通过元素工具取得完整类型，也不应手动编译生成文件。
+`process` 返回 `true` 表示认领传入的注解类型。后续处理器不再收到这些已认领类型。返回 `false` 允许后续处理器继续处理。该返回值与编译成功或失败无关。
 
-### 8.3 编译期生成一定比反射快吗
+同一轮次序列中重复创建同名文件会抛出 `FilerException`。生成器应记录已生成类型，避免重复创建。
 
-生成的直接调用通常更容易优化，也省去运行时成员发现。但总收益还包括构建时间、生成代码体积、启动频率和运行热度。低频管理工具可能没有迁移价值，高频序列化和函数调用路径更值得测量。
+## 9. 常见问题 {#常见问题}
 
-### 8.4 生成代码是否应该提交到 Git
+### 9.1 标准处理器的修改边界 {#标准处理器的修改边界}
 
-通常由构建可重复生成的文件放在构建目录，不提交版本库。这样避免手写源码与生成结果漂移。只有目标环境无法运行生成器、需要发布生成结果作为稳定源码等明确约束时，才考虑提交，并建立一致性校验。
+标准 API 支持读取语言模型、生成新文件和报告诊断。它没有修改既有 AST 的可移植接口。依赖内部 API 会增加编译器和 IDE 的兼容成本。
 
-## 9. 面试题
+### 9.2 生成类型的可见轮次 {#生成类型的可见轮次}
 
-### 9.1 怎样实现一个编译期注解 {#compile-time-annotation}
+`Filer` 创建的新源码会在后续轮次进入模型。当前轮无法立即查询完整的新类型。文件由编译器继续编译。
+
+### 9.3 编译生成的性能成本 {#编译生成的性能成本}
+
+生成代码省去部分运行时发现，并可使用直接调用。代价包括构建时间、代码体积与生成器维护。收益应结合启动频率和调用热度测量。
+
+### 9.4 生成文件的版本管理 {#生成文件的版本管理}
+
+可重复生成的文件放入构建目录。这样可避免源码与生成结果漂移。发布协议要求提交生成源码时，应增加一致性校验。
+
+## 10. 面试题 {#面试题}
+
+### 10.1 怎样实现一个编译期注解 {#compile-time-annotation}
 
 <!-- 面试来源：
 - 飞书：https://www.nowcoder.com/discuss/353157192121524224
@@ -229,13 +251,13 @@ AOT 兼容性不是唯一目标。JVM 长期运行服务如果启动成本不敏
 <details>
 <summary>参考回答</summary>
 
-先定义一个通常使用 `SOURCE` 保留策略的标记注解，再实现 `Processor` 或继承 `AbstractProcessor`。编译器会在处理轮次中把带注解的 `Element` 交给处理器，可以用 `TypeMirror` 和元素工具检查签名，通过 `Messager` 报告编译错误。
+编译期注解由注解类型与处理器共同实现。处理器继承 `AbstractProcessor`，读取 `Element` 和 `TypeMirror`。校验失败时通过 `Messager` 报告错误。
 
-需要生成代码时使用 `Filer` 创建新的源码或资源。新源码会在下一轮继续处理并最终编译，所以实现必须避免重复生成，也不能依赖多个处理器的执行顺序。构建还要把处理器显式配置在注解处理器路径上。
+处理器通过 `Filer` 创建新源码或资源。新类型进入后续轮次，生成器需避免重复创建。处理器顺序不应成为业务依赖。构建还需显式配置处理器。
 
 </details>
 
-### 9.2 Java 为什么可以实现 IoC，反射在其中做了什么 {#ioc-reflection}
+### 10.2 Java 为什么可以实现 IoC，反射在其中做了什么 {#ioc-reflection}
 
 <!-- 面试来源：
 - 网易：https://www.nowcoder.com/discuss/353154359724810240
@@ -254,13 +276,30 @@ AOT 兼容性不是唯一目标。JVM 长期运行服务如果启动成本不敏
 <details>
 <summary>参考回答</summary>
 
-IoC 容器先从配置、扫描范围或显式注册中取得候选类型，再通过类加载和反射读取构造方法、字段、方法与注解。容器据此创建对象、解析依赖关系、完成注入，并把对象放进注册表，调用方随后只依赖容器提供的实例。
+IoC 容器管理对象创建、依赖注入和生命周期。反射让它在运行时读取构造器及成员并完成调用。候选类型可来自配置、扫描或显式注册。
 
-反射提供的是运行时检查和调用能力，IoC 还需要对象生命周期、依赖解析与错误处理规则。应用组成在构建时已经确定时，可以把一部分扫描和调用信息提前生成；需要部署后安装插件时，则仍要保留明确的运行时发现边界。
+反射提供类型检查和调用能力。依赖解析与生命周期由 IoC 容器负责。构建时固定的组成可提前生成，动态插件保留运行时发现。
 
 </details>
 
-## 10. 参考资料
+### 10.3 升级到 JDK 23 后处理器为何不执行，process 返回值表示什么？ {#processor-discovery-rounds}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：发现配置、认领语义与重复生成。
+
+**相关内容**：[处理器发现与认领规则](#处理器发现与认领规则)。
+
+<details>
+<summary>参考回答</summary>
+
+JDK 23 起需要显式配置注解处理。可通过 `-processor` 和 `--processor-path` 指定处理器。`process` 返回 `true` 表示认领注解，编译错误应由 `Messager` 报告。
+
+</details>
+
+## 11. 参考资料 {#参考资料}
 
 - [Java API：Processor](https://docs.oracle.com/en/java/javase/26/docs/api/java.compiler/javax/annotation/processing/Processor.html)
 - [Java API：AbstractProcessor](https://docs.oracle.com/en/java/javase/26/docs/api/java.compiler/javax/annotation/processing/AbstractProcessor.html)
@@ -268,3 +307,4 @@ IoC 容器先从配置、扫描范围或显式注册中取得候选类型，再�
 - [Java API：Filer](https://docs.oracle.com/en/java/javase/26/docs/api/java.compiler/javax/annotation/processing/Filer.html)
 - [Java API：Package javax.lang.model](https://docs.oracle.com/en/java/javase/26/docs/api/java.compiler/javax/lang/model/package-summary.html)
 - [javac：Annotation Processing Options](https://docs.oracle.com/en/java/javase/26/docs/specs/man/javac.html#annotation-processing)
+- [Oracle JDK 23 Release Notes：Annotation Processing](https://www.oracle.com/java/technologies/javase/23-relnote-issues.html)

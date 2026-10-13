@@ -7,21 +7,15 @@ knowledge:
 
 # Java 流式 I/O
 
-文件、Socket 和压缩数据的底层输入输出都是字节。字符流在字节与 Unicode 文本之间增加编码转换，缓冲则把多次小读写合并成较大的数据搬运。选择 API 前先确定数据是不是文本。
+字节流读写原始字节，字符流读写字符序列。本文负责编码转换、部分读取、缓冲与刷新。非阻塞通道见 [Java NIO](./buffer-channel-selector.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- 字节流（`InputStream`/`OutputStream`）处理原始字节，适合图片、压缩包和未知格式；字符流（`Reader`/`Writer`）在字节和字符之间做编解码，适合文本。[卡](#byte-vs-char-streams)
-- `InputStreamReader` 和 `OutputStreamWriter` 是字节与字符的转换层，应显式指定字符集。
-- `read(byte[])` 不保证填满数组，必须使用返回的字节数，返回 `-1` 表示流结束。[卡](#read-return-value)
-- 缓冲流把多次小读写合并成大块 I/O，减少系统调用。
-- `flush()` 只把 Java 层缓冲交给底层，数据落盘还需要 `FileChannel.force` 等操作。
-
-:::note 资源关闭
-
-流应由创建或明确接管所有权的一方关闭，并优先使用 try-with-resources。逆序关闭、受抑制异常和资源所有权见 [Java 异常：try-with-resources 与资源关闭](../language/exceptions-error-boundaries.mdx#try-with-resources-与资源关闭)。
-
-:::
+- `InputStream` 读字节，`Reader` 读字符，转换流负责字符集解码。[卡](#byte-vs-char-streams)
+- `InputStreamReader` 和 `OutputStreamWriter` 连接字节与字符表示。
+- `read(byte[])` 返回实际读取量，-1 表示结束。[卡](#read-return-value)
+- 缓冲流聚合小读写，减少底层调用。
+- `flush` 推送缓冲数据，文件持久化由 `force` 等机制处理。
 
 ## 2. 字节流 {#字节流}
 
@@ -54,13 +48,13 @@ while ((count = input.read(buffer)) != -1) {
 }
 ```
 
-最后一次读取通常只填充数组的一部分。写出时必须使用返回的 `count`，不能每次都写完整数组，否则会把上一次残留的数据也写进去。
+最后一块可只占数组的一部分。写出时使用实际 `count`，否则会带出未覆盖的旧数据。
 
 `available()` 只表示当前无需阻塞即可读取的估计字节数，不是整个流的总长度。网络输入尤其不能用它判断消息是否已经完整到达。
 
 ## 3. 字符流 {#字符流}
 
-`Reader` 和 `Writer` 处理字符序列。字符流需要使用字符集，把外部字节解码为字符，或把字符编码为字节：
+`Reader` 和 `Writer` 处理字符序列。连接字节源时，由转换流执行字符集编解码：
 
 ```java
 Path path = Path.of("article.md");
@@ -102,15 +96,15 @@ Writer writer = new OutputStreamWriter(
 );
 ```
 
-转换发生在字节与字符的边界，不存在把 `Reader` “倒过来变成输入字节流”的通用转换。已经解码成字符后，如果再次需要字节，必须选择字符集重新编码。
+字符与字节之间需要字符集。已解码的字符若需重新输出字节，应按目标字符集编码。
 
 ### 3.2 char 与用户可见字符 {#char-与用户可见字符}
 
-Java 字符流以 UTF-16 代码单元工作。部分 Unicode 码点需要两个 `char` 表示，组合字符还可能由多个码点组成。按语言学意义处理字符数量、截断或光标位置时，不能简单按 `char` 索引。
+Java 字符流以 UTF-16 代码单元工作。码点与用户可见字符的区别见 [String](../language/string-immutability-pool.mdx#字符串存储与字符计数)。
 
 ## 4. 缓冲流 {#缓冲流}
 
-逐字节调用底层流，会产生大量方法调用，并可能频繁触发底层 I/O。缓冲流一次读取较大数据块放入内存，再满足后续小读取：
+逐字节读写会增加方法调用。底层直接访问设备时，还会增加 I/O 次数。缓冲流一次读取较大数据块放入内存，再满足后续小读取：
 
 ```java
 try (
@@ -123,13 +117,13 @@ try (
 
 字符缓冲还提供 `readLine()` 和 `newLine()` 等按文本组织的操作。
 
-缓冲带来的收益主要是减少小粒度调用和系统边界往返，不代表每个包装层都会让 I/O 更快。`Files.copy`、`transferTo` 和部分底层流已经按块处理，继续重复包装需要根据调用方式判断。
+缓冲聚合小调用，减少底层往返。`Files.copy`、`transferTo` 等 API 已能按块处理。额外包装的收益需按实际调用方式验证。
 
 ### 4.1 缓冲区大小 {#缓冲区大小}
 
-更大的缓冲可能减少调用次数，但也会占用更多内存、增加缓存压力，并让每个连接持有更大的常驻空间。服务端如果同时维护数万连接，单连接缓冲大小会直接放大总体内存。
+扩大缓冲可减少调用次数，也会增加常驻内存。连接数较多时，单连接容量会放大总占用。
 
-先使用 API 默认值。只有性能分析确认 I/O 调用粒度是瓶颈时，再根据数据大小、并发连接数和延迟要求调整。
+先使用默认容量。确认调用粒度是瓶颈后，再按数据量、并发数和延迟调整。
 
 ## 5. 装饰器组合 {#装饰器组合}
 
@@ -149,7 +143,7 @@ try (
 
 数据依次经过文件读取、缓冲、解压和 UTF-8 解码，最后按行消费。每一层只负责一种转换。
 
-包装顺序必须与数据格式一致。写出时如果先编码再压缩，读取时就要先解压再解码。关闭最外层流通常会沿包装链关闭底层资源，但仍要查阅具体 API 的关闭契约。
+包装顺序应匹配文件格式。写入时先编码再压缩，读取时先解压再解码。例中关闭最外层流会沿包装链关闭底层流。
 
 ## 6. flush 与持久化 {#flush-与持久化}
 
@@ -160,11 +154,11 @@ writer.write("event\n");
 writer.flush();
 ```
 
-它常用于长连接协议，需要在不关闭连接的情况下及时发送一批数据。`close()` 通常会先刷新再释放资源。
+它常用于长连接协议，需要在不关闭连接的情况下及时发送一批数据。`BufferedWriter.close()` 会先刷新，再关闭底层流。
 
-`flush()` 不等同于数据已经持久化到物理介质。文件系统和设备仍可能缓存数据。确实需要崩溃后的持久化保证时，要使用 `FileChannel.force` 等 API，并理解文件系统与硬件提供的边界。
+`flush` 推送 Java 缓冲，底层系统仍可缓存数据。文件持久化使用 `FileChannel.force` 等机制。映射写回边界见 [零拷贝](./file-mapping-zero-copy-direct-memory.mdx#内存映射)。
 
-频繁 `flush` 会削弱缓冲效果。应由消息边界、交互延迟或持久化协议决定，而不是每写几个字节就调用一次。
+频繁刷新会削弱缓冲效果。刷新时机应由消息边界、交互延迟或持久化协议确定。
 
 ## 7. API 选择 {#api-选择}
 
@@ -176,27 +170,48 @@ writer.flush();
 
 不要因为字符流 API 更方便，就用它复制任意文件。二进制内容经过错误解码再编码，字节序列会被破坏。
 
-## 8. 常见问题
+## 8. 跨块解码与错误处理 {#跨块解码与错误处理}
 
-### 8.1 字符流是否一定比字节流快
+UTF-8 字符可占多个字节，一次读取可截断字符。每块直接 `new String(bytes, UTF_8)` 会丢失跨块解码状态。`InputStreamReader` 会保留未完成的字节序列。
 
-不是。字符流增加了编解码工作，速度取决于缓冲、字符集、数据量和底层设备。两者首先是语义选择：文本需要解码，二进制数据不能随意解码。
+需要拒绝损坏文本时，显式配置解码器：
 
-### 8.2 为什么 `InputStream.read()` 返回 int
+```java
+CharsetDecoder decoder = StandardCharsets.UTF_8.newDecoder()
+    .onMalformedInput(CodingErrorAction.REPORT)
+    .onUnmappableCharacter(CodingErrorAction.REPORT);
+try (Reader reader = new InputStreamReader(input, decoder)) {
+    char[] chars = new char[1024];
+    int count;
+    while ((count = reader.read(chars)) != -1) {
+        consume(chars, 0, count); // 只处理本次字符；格式损坏时读取抛异常。
+    }
+}
+```
+
+JDK 18 起，默认字符集改为 UTF-8，允许兼容配置。协议仍应显式写出字符集。`DataInputStream.readFully` 适合读取固定长度字段。不足指定长度即遇 EOF 时，它抛出 `EOFException`。
+
+## 9. 常见问题 {#常见问题}
+
+### 9.1 字符流的成本 {#字符流的成本}
+
+字符流增加编解码工作，性能取决于字符集、缓冲及设备。文本按字符处理，二进制内容按字节保留。
+
+### 9.2 单字节读取的返回类型 {#单字节读取的返回类型}
 
 它需要同时表示 `0` 到 `255` 的所有字节值和流末尾 `-1`。如果返回 `byte`，`-1` 会与合法的 `0xFF` 无法区分。
 
-### 8.3 `readLine()` 为什么不保留换行符
+### 9.3 行内容与终止符 {#行内容与终止符}
 
-`BufferedReader.readLine()` 返回行内容，不包含行终止符。需要原样保留文件时，不适合通过逐行读取再统一添加系统换行，因为原文件可能使用不同终止符。
+`readLine()` 返回内容并移除行终止符。原文件可混用不同换行形式。需要保留原字节时，采用字节复制。
 
-### 8.4 默认字符集可以直接使用吗
+### 9.4 默认字符集 {#默认字符集}
 
-只有协议明确规定跟随运行环境时才适合。跨机器文件、网络协议和持久化数据应显式指定字符集，通常是格式约定的 UTF-8，避免部署环境变化导致结果不同。
+默认字符集仅适合明确依赖环境的输入。跨机器文件与网络协议应显式使用约定字符集，例如 UTF-8。
 
-## 9. 面试题
+## 10. 面试题 {#面试题}
 
-### 9.1 字节流和字符流有什么区别，怎样选择 {#byte-vs-char-streams}
+### 10.1 字节流和字符流有什么区别，怎样选择 {#byte-vs-char-streams}
 
 <!-- 面试来源：
 - 饿了么：https://www.nowcoder.com/discuss/600438441754513408
@@ -220,11 +235,11 @@ writer.flush();
 
 字节流读写原始字节，适合图片、压缩包和任意二进制协议。字符流在底层字节流上增加字符集编解码，适合文本；`InputStreamReader` 和 `OutputStreamWriter` 就是两种表示之间的转换边界。
 
-字符流不天然比字节流快。大量小读写时可以增加缓冲，把多次调用合并成块操作。选择时先看数据语义，再根据调用粒度决定是否需要缓冲，并为文本显式指定字符集。
+字符流还需编解码，速度应按具体路径比较。大量小读写可增加缓冲。文本需先确定字符集，再评估调用粒度。
 
 </details>
 
-### 9.2 读取流时为什么必须使用 read 的返回值 {#read-return-value}
+### 10.2 读取流时为什么必须使用 read 的返回值 {#read-return-value}
 
 <!-- 面试来源：
 - 美团：https://www.nowcoder.com/discuss/353156832904552448
@@ -245,11 +260,28 @@ writer.flush();
 
 `read(byte[])` 返回本次实际读到的字节数，不保证填满数组，返回 `-1` 才表示流结束。最后一次读取常常只有部分数据，因此写出时必须使用 `write(buffer, 0, count)`。
 
-如果忽略返回值并总是写完整数组，未被本次读取覆盖的区域会保留旧数据，导致输出末尾重复或损坏。
+总写完整数组会带出本次未覆盖的旧数据。结果就会重复或损坏。
 
 </details>
 
-## 10. 参考资料
+### 10.3 为什么不能把每次 read 的字节块分别转成 UTF-8 字符串？ {#incremental-decoding}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：跨块字符边界与错误策略。
+
+**相关内容**：[跨块解码与错误处理](#跨块解码与错误处理)。
+
+<details>
+<summary>参考回答</summary>
+
+读取边界能落在一个多字节字符中间。逐块创建字符串会把残缺序列当作错误输入。转换流保留解码状态，完整字节到达后再产生字符。
+
+</details>
+
+## 11. 参考资料 {#参考资料}
 
 - [Java API：InputStream](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/io/InputStream.html)
 - [Java API：Reader](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/io/Reader.html)
@@ -257,3 +289,6 @@ writer.flush();
 - [Java API：BufferedInputStream](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/io/BufferedInputStream.html)
 - [Java API：Files](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/nio/file/Files.html)
 - [Java API：Charset](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/nio/charset/Charset.html)
+- [Java API：CharsetDecoder](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/nio/charset/CharsetDecoder.html)
+- [Java API：DataInputStream](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/io/DataInputStream.html)
+- [JEP 400：UTF-8 by Default](https://openjdk.org/jeps/400)

@@ -7,14 +7,14 @@ knowledge:
 
 # Java 值传递
 
-Java 方法调用只有值传递。理解这条规则，只需要区分变量保存的值、对象本身，以及多个引用指向同一个对象时发生的共享修改。
+Java 方法调用只有值传递。本文负责变量复制、引用共享和形参重新赋值。字符串不可变机制见 [String](./string-immutability-pool.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- 基本类型变量保存具体值，引用类型变量保存引用值或 `null`。
-- Java 只有值传递：赋值和传参都复制变量当前保存的值，引用类型复制的是引用值。[卡](#pass-by-value)
-- 给形参重新赋值不会改变调用方变量；通过形参修改对象字段，调用方能看到，因为两个引用指向同一个对象。[卡](#rename-vs-replace)
-- 数组和 String 都是引用类型；String 不可变，“修改”字符串会产生新对象。
+- 基本类型变量保存基本值，引用变量保存引用值或 `null`。
+- Java 传参复制实参值，引用参数复制的是引用。[卡](#pass-by-value)
+- 修改共享对象对调用方可见，重赋形参只改变局部变量。[卡](#rename-vs-replace)
+- `final` 固定变量赋值，对象状态仍由对象自身约束。[卡](#final-reference-copy)
 
 ## 2. 变量保存的值 {#变量保存的值}
 
@@ -107,13 +107,30 @@ append(title);
 System.out.println(title); // Coding
 ```
 
-## 5. 常见问题
+## 5. final 引用与浅拷贝 {#final-引用与浅拷贝}
 
-### 5.1 为什么交换两个对象参数不会成功
+`final` 引用初始化后保持指向不变。它指向的对象仍可修改。
+
+```java
+final List<String> names = new ArrayList<>();
+names.add("Lin"); // 合法：修改列表
+// names = new ArrayList<>(); // 编译错误：重新赋值
+
+StringBuilder[] first = {new StringBuilder("A")};
+StringBuilder[] second = first.clone();
+second[0].append("B");
+System.out.println(first[0]); // AB
+```
+
+数组克隆创建了新的数组，但复制的是元素引用。两个数组因此共享同一个 `StringBuilder`。深拷贝还需复制可变子对象，并定义共享关系的处理方式。
+
+## 6. 常见问题 {#常见问题}
+
+### 6.1 参数交换 {#参数交换}
 
 交换的只是两个形参变量保存的引用副本。方法返回后，调用方的两个变量仍保存原来的引用。
 
-### 5.2 方法怎样返回多个结果
+### 6.2 多结果返回 {#多结果返回}
 
 返回记录类型、结果对象或集合，不要依赖重新给多个参数赋值。
 
@@ -121,13 +138,13 @@ System.out.println(title); // Coding
 record Range(int min, int max) {}
 ```
 
-### 5.3 引用值就是内存地址吗
+### 6.3 引用与内存地址 {#引用与内存地址}
 
-语言规范只定义引用的可观察语义，不保证它等于可直接操作的内存地址。垃圾收集器可以移动对象，JVM 也可以选择不同内部表示。
+引用提供对象访问语义，具体表示由 JVM 决定。GC 可移动对象，应用无需直接操作地址。
 
-## 6. 面试题
+## 7. 面试题 {#面试题}
 
-### 6.1 Java 是值传递还是引用传递 {#pass-by-value}
+### 7.1 Java 是值传递还是引用传递 {#pass-by-value}
 
 <!-- 面试来源：
 - 腾讯：https://www.nowcoder.com/discuss/353154969706635264
@@ -149,11 +166,11 @@ record Range(int min, int max) {}
 
 Java 只有值传递。调用方法时，形参是新变量，由实参当前保存的值初始化。基本类型复制具体值，引用类型复制引用值。
 
-复制引用后，形参和实参可以指向同一个对象，所以通过形参修改对象字段会被调用方看到；给形参重新赋值只改变局部变量，不会替换调用方变量中的引用。
+复制引用后，形参和实参可指向同一对象。通过形参修改字段，因此对调用方可见。重赋形参只改变局部变量，调用方引用保持不变。
 
 </details>
 
-### 6.2 `rename` 与 `replace` 为什么产生不同结果 {#rename-vs-replace}
+### 7.2 `rename` 与 `replace` 为什么产生不同结果 {#rename-vs-replace}
 
 <!-- 面试来源：
 - 哈啰数科：https://www.nowcoder.com/discuss/693865127052939264
@@ -175,8 +192,26 @@ Java 只有值传递。调用方法时，形参是新变量，由实参当前保
 
 </details>
 
-## 7. 参考资料
+### 7.3 final 引用和数组 clone 能否隔离对象修改？ {#final-reference-copy}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：变量约束、浅拷贝与对象共享。
+
+**相关内容**：[final 引用与浅拷贝](#final-引用与浅拷贝)。
+
+<details>
+<summary>参考回答</summary>
+
+`final` 只约束变量重新赋值，数组克隆只复制一层元素。引用数组的两个副本仍可共享可变元素。隔离修改需进一步复制这些子对象。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
 
 - [Java Language Specification：Types, Values, and Variables](https://docs.oracle.com/en/java/javase/26/docs/specs/jls/jls-4.html)
 - [Java Language Specification：Method Invocation Contexts](https://docs.oracle.com/javase/specs/jls/se26/html/jls-5.html#jls-5.3)
 - [Java Language Specification：Run-Time Evaluation of Method Invocation](https://docs.oracle.com/javase/specs/jls/se26/html/jls-15.html#jls-15.12.4)
+- [JLS：Arrays](https://docs.oracle.com/en/java/javase/26/docs/specs/jls/jls-10.html#jls-10.7)

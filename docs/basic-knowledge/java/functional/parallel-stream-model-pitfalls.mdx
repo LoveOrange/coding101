@@ -7,15 +7,15 @@ knowledge:
 
 # 并行流
 
-并行 Stream 会把数据拆成多个分区，在 Fork/Join 任务中处理并合并结果。它适合可拆分、计算量足够且没有共享副作用的数据运算；在请求线程中加入阻塞 I/O，往往会增加资源竞争和尾延迟。
+并行流将数据拆分处理，再合并结果。本文负责拆分、调度、顺序和共享资源边界。归约契约见 [Collector](./collectors-grouping-reduction.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- 并行流用 `Spliterator` 拆分数据，在 `ForkJoinPool.commonPool()` 中分治执行再合并结果。
-- ForkJoinPool 每个工作线程有自己的双端队列，空闲线程从其他队列尾部窃取任务，减少负载不均。[卡](#work-stealing)
-- 并行执行不保持处理顺序，操作中修改外部可变状态会产生数据竞争。
-- 公共池是进程级共享资源，阻塞 I/O 会占住工作线程，影响所有使用者。
-- 服务端使用前确认：数据量大、单元素计算重、数据源易拆分、无副作用、无阻塞，并用基准验证收益。[卡](#parallel-stream-checklist)
+- `Spliterator.trySplit` 为并行计算划分数据范围。
+- Fork/Join 通过工作窃取平衡待执行任务。[卡](#work-stealing)
+- 有序并行流可保留结果顺序，但各元素计算仍可并发。
+- OpenJDK 26 的公共池由多个任务来源共享。
+- 阻塞 I/O、共享状态和调度成本会削弱并行流收益。[卡](#parallel-stream-checklist)
 
 ## 2. Spliterator 拆分 {#spliterator-拆分}
 
@@ -29,20 +29,20 @@ Stream 通过 `Spliterator` 遍历和拆分数据源。并行流水线会尝试�
 [0..3]   [4..7]       [8..11]   [12..15]
 ```
 
-数组和 `ArrayList` 可以按索引近似均匀拆分。链表、迭代器、I/O 数据源或分布不均的数据，拆分成本可能更高，任务也更难均衡。
+数组和 `ArrayList` 可按索引均匀拆分。链式结构和 I/O 来源的拆分更复杂。单项耗时不均也会降低负载均衡效果。
 
-`Spliterator` 的特征会告诉 Stream 数据是否有顺序、大小是否已知、元素是否互异等。执行器可以据此选择拆分和合并策略，但不会凭空消除数据源本身的限制。
+`Spliterator` 特征描述顺序、大小和元素互异性。实现据此选择拆分策略，数据源结构仍影响成本。
 
 ## 3. ForkJoinPool {#forkjoinpool}
 
-并行流通常使用 `ForkJoinPool.commonPool()` 执行任务。Fork/Join 的核心流程是：
+OpenJDK 26 中，普通线程发起的并行流使用公共池。调用线程也可参与处理。Fork/Join 工作线程内启动的任务可使用所在池。Stream API 未提供指定执行器的参数。Fork/Join 流程如下：
 
 1. 大任务递归拆成较小任务。
 2. Worker 优先处理自己的任务队列。
 3. 空闲 Worker 从其他队列窃取任务。
 4. 子任务结果按终止操作的规则合并。
 
-工作窃取可以缓解任务耗时不均，但不能修复无法拆分的数据源，也不能解决一个子任务长期阻塞的问题。
+工作窃取平衡待执行任务。难以拆分的数据和长期阻塞仍会限制并行收益。
 
 ```java
 long total = orders.parallelStream()
@@ -51,7 +51,7 @@ long total = orders.parallelStream()
     .sum();
 ```
 
-这段代码适合并行的前提是：数据量足够、过滤和金额计算无共享副作用、计算成本能够覆盖拆分调度开销，而且当前进程还有可用 CPU。
+示例的过滤与金额计算应独立、无共享副作用。计算量需足以覆盖调度和合并成本，进程也需有可用 CPU。
 
 ## 4. 执行顺序 {#执行顺序}
 
@@ -65,7 +65,7 @@ List.of(1, 2, 3, 4)
 
 输出顺序不确定。`forEachOrdered` 可以按遇到顺序提交结果，但会增加协调并限制并行空间。
 
-有些终止操作在语义上保留顺序，例如有序流的 `findFirst`；`findAny` 则允许返回任意分区的结果。业务不要求顺序时，可以调用 `unordered()` 放宽约束，但必须确认结果语义确实不依赖顺序。
+有序流的 `findFirst` 保留遇到顺序。`findAny` 可返回任意结果。业务无顺序要求时，可用 `unordered()` 放宽约束。
 
 ## 5. 外部可变状态 {#外部可变状态}
 
@@ -79,7 +79,7 @@ users.parallelStream()
     .forEach(names::add);
 ```
 
-多个任务会同时修改 `ArrayList`。结果可能丢失、损坏或抛出异常。换成同步列表虽然能避免容器结构损坏，却会让所有写入竞争同一把锁：
+多个任务并发修改 `ArrayList`，可导致数据丢失或异常。同步列表会让写入竞争同一把锁。直接收集为列表可由框架管理结果：
 
 ```java
 List<String> names = users.parallelStream()
@@ -87,7 +87,7 @@ List<String> names = users.parallelStream()
     .toList();
 ```
 
-让 Collector 为分区维护独立结果，再合并，是更符合并行归约模型的做法。
+收集器可隔离分区结果，再合并。具体契约见 [Collector](./collectors-grouping-reduction.mdx#归约单位元与并发收集)。
 
 Lambda 还应避免依赖：
 
@@ -96,7 +96,7 @@ Lambda 还应避免依赖：
 - 非线程安全客户端和格式化器。
 - 需要严格调用顺序的外部系统。
 
-并行任务可能在主线程和不同 Worker 上执行，线程本地状态不会自动传播。
+任务可由调用线程或 Worker 执行，线程本地状态不会自动传播。
 
 ## 6. 阻塞 I/O {#阻塞-io}
 
@@ -106,7 +106,7 @@ List<Profile> profiles = userIds.parallelStream()
     .toList();
 ```
 
-如果 `load` 发起阻塞网络请求，每个等待中的任务都会占用 Worker。其他并行 Stream 和使用公共 ForkJoinPool 的任务可能因此排队。请求量增大后，单次处理看起来更并行，整个进程的尾延迟却可能更差。
+`load` 阻塞时会占用 Worker。其他公共池任务因此需要等待。请求量增大后，资源竞争会放大尾延迟。
 
 需要并发 I/O 时，应该显式控制：
 
@@ -116,7 +116,7 @@ List<Profile> profiles = userIds.parallelStream()
 - 取消和异常传播。
 - 不同请求或业务的资源隔离。
 
-虚拟线程、带界限的执行器或异步客户端都比“把 Stream 改成 parallel”更容易表达这些约束。具体选择取决于调用模型，不是统一替代关系。
+并发 I/O 可使用虚拟线程、有界执行器或异步客户端。实现仍需显式限制并发、超时及排队规模。
 
 ## 7. commonPool 竞争 {#commonpool-竞争}
 
@@ -132,7 +132,7 @@ List<Profile> profiles = userIds.parallelStream()
 
 ## 8. 适用条件 {#适用条件}
 
-并行流更可能适合：
+并行流的有利条件包括：
 
 - 数据规模足够大，拆分近似均匀。
 - 每个元素执行独立的 CPU 计算。
@@ -149,35 +149,52 @@ List<Profile> profiles = userIds.parallelStream()
 - 运行环境已经 CPU 饱和。
 - 流水线包含数据库、网络或文件阻塞。
 
-性能判断需要在接近生产的数据规模、核心数和并发背景下用 JMH 或端到端压测验证。只测一次 `System.currentTimeMillis()` 会混入类加载、JIT 编译和 GC。
+用接近生产的数据量、核心数和并发背景做测试。JMH 或端到端压测可帮助比较吞吐与尾延迟。单次计时会混入类加载、JIT 和 GC 开销。
 
 ## 9. 异常与取消 {#异常与取消}
 
-并行流水线中的某个任务抛出异常时，终止操作会失败，但已经开始的其他任务不一定立刻停止。Stream 没有提供请求级超时参数，也没有一套面向远程调用的补偿协议。
+某任务抛异常会使终止操作失败。已启动的其他任务仍可继续运行。Stream 没有请求级超时和外部副作用补偿协议。
 
-需要超时、部分成功、逐项错误记录或主动取消时，应使用显式任务模型。不要在 Lambda 内统一吞掉异常并返回 `null`，这会让失败混入正常数据，还可能在后续归约阶段产生新的异常。
+需要超时、部分成功或逐项错误时，使用显式任务模型。统一吞异常并返回 `null` 会混淆失败与缺失。
 
-## 10. 常见问题
+## 10. 并行标志与结果顺序 {#并行标志与结果顺序}
 
-### 10.1 parallelStream 使用多少线程
+`parallel()` 和 `sequential()` 修改整条流水线的执行模式。执行时以最后设置的模式为准。它们不会把前后阶段分配到不同线程池。
 
-通常受公共 ForkJoinPool 的并行度影响，调用线程也可能参与计算。并行度不是“同时执行的业务请求数”，阻塞、嵌套任务和运行环境都会影响实际活动线程。不要据此直接推导数据库或远程接口的并发上限。
+```java
+List<Integer> values = IntStream.range(0, 1000)
+    .parallel()
+    .map(i -> i * 2)
+    .sequential()
+    .boxed()
+    .toList();
+```
 
-### 10.2 并行流里使用线程安全集合就安全了吗
+这条流水线以串行模式执行。有序并行流的 `toList()` 仍按遇到顺序组织结果。`forEachOrdered` 约束终端动作顺序，其上游计算仍可并发。
 
-只能说明单次容器操作满足它的线程安全契约。检查后写入、跨多个容器更新、顺序要求和业务不变量仍可能出错；锁竞争也可能抵消并行收益。优先使用无副作用操作和并行 Collector。
+`unordered()` 取消顺序要求，不执行随机打乱。并行短路也会有已启动的额外计算，应避免依赖精确调用次数。
 
-### 10.3 `parallel()` 会创建一个新的线程池吗
+## 11. 常见问题 {#常见问题}
+
+### 11.1 并行度与活动线程 {#并行度与活动线程}
+
+OpenJDK 26 中，公共池并行度影响工作线程数量。调用线程也可参与计算。阻塞与嵌套任务会改变活动线程数，因此它不是业务并发上限。
+
+### 11.2 线程安全容器与业务状态 {#线程安全容器与业务状态}
+
+线程安全容器只保证自身操作契约。跨容器更新或检查后写入仍需协调。锁竞争也会削弱收益，优先采用分区隔离的收集过程。
+
+### 11.3 并行模式与执行资源 {#并行模式与执行资源}
 
 不会。它只把 Stream 的并行标志设为 true，终止操作执行时再按并行模型处理。它也不会异步返回，调用终止操作的线程仍然等待最终结果。
 
-### 10.4 嵌套 parallelStream 会更快吗
+### 11.4 嵌套并行流 {#嵌套并行流}
 
-通常不会按层数增加并行能力。内外层可能竞争同一公共池，增加拆分、排队和合并成本。应先选择一个清晰的并行维度，并用基准验证。
+嵌套并行增加拆分和合并工作，内外层还会共享执行资源。应先选择一个并行维度，再验证收益。
 
-## 11. 面试题
+## 12. 面试题 {#面试题}
 
-### 11.1 ForkJoinPool 怎样调度任务，工作窃取解决了什么问题 {#work-stealing}
+### 12.1 ForkJoinPool 怎样调度任务，工作窃取解决了什么问题 {#work-stealing}
 
 <!-- 面试来源：
 - 阿里巴巴：https://www.nowcoder.com/discuss/353159278544494592
@@ -197,13 +214,13 @@ List<Profile> profiles = userIds.parallelStream()
 <details>
 <summary>参考回答</summary>
 
-Fork/Join 把大任务递归拆成小任务，Worker 主要从自己的双端队列处理任务；空闲 Worker 会从其他队列窃取任务，从而减少某些线程空闲而另一些线程堆积的情况。子任务完成后再按归约规则合并结果。
+Fork/Join 将大任务拆成小任务。Worker 优先处理自身队列，空闲时窃取其他队列任务。子任务完成后按归约规则合并结果。
 
-它适合可以继续拆分、计算量相对均衡的 CPU 任务。数据源难以拆分或任务长期阻塞时，工作窃取无法创造更多 CPU 或连接资源，公共池中的其他任务也可能受到影响。
+它适合可拆分的 CPU 计算。任务阻塞会占用工作线程，公共池其他使用者也会排队。工作窃取只重新分配任务，不增加外部资源容量。
 
 </details>
 
-### 11.2 在服务端使用 parallelStream 需要检查哪些条件 {#parallel-stream-checklist}
+### 12.2 在服务端使用 parallelStream 需要检查哪些条件 {#parallel-stream-checklist}
 
 <!-- 面试来源：
 - 美团：https://www.nowcoder.com/discuss/353154153574768640
@@ -223,15 +240,33 @@ Fork/Join 把大任务递归拆成小任务，Worker 主要从自己的双端队
 <details>
 <summary>参考回答</summary>
 
-先确认流水线没有共享副作用，归约满足结合律，结果不依赖隐含线程上下文。然后判断数据源是否容易拆分、数据量与单项计算是否足以覆盖任务调度成本，以及进程是否有可用 CPU。
+采用并行流需满足独立计算、正确归约和资源充足三个条件。计算量还须覆盖拆分与合并成本。结果应独立于隐含的线程上下文。
 
-服务端还要检查公共 ForkJoinPool 的共享影响。数据库或网络阻塞不适合直接放进并行流，因为缺少业务并发上限、队列和拒绝策略。最终应在真实并发背景下比较串行与并行的吞吐和尾延迟，而不是根据核心数推断一定更快。
+公共池由多个模块共享。阻塞 I/O 需要明确并发上限、超时和隔离，宜用显式任务模型。在实际并发背景下比较串行与并行的吞吐及尾延迟。
 
 </details>
 
-## 12. 参考资料
+### 12.3 parallel 后调用 sequential，会只让后半段串行吗？ {#parallel-mode-order}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：流水线模式与遇到顺序。
+
+**相关内容**：[并行标志与结果顺序](#并行标志与结果顺序)。
+
+<details>
+<summary>参考回答</summary>
+
+不会，最后的模式设置作用于整条流水线。示例最终串行执行。有序并行流也可返回有序列表，计算顺序和结果顺序属于不同约束。
+
+</details>
+
+## 13. 参考资料 {#参考资料}
 
 - [Java API：Stream 的并行执行说明](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/stream/package-summary.html#parallelism)
 - [Java API：ForkJoinPool](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/ForkJoinPool.html)
 - [Java API：Spliterator](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/Spliterator.html)
 - [Java API：BaseStream.parallel](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/stream/BaseStream.html#parallel())
+- [OpenJDK 26：ForkJoinTask](https://github.com/openjdk/jdk/blob/jdk-26-ga/src/java.base/share/classes/java/util/concurrent/ForkJoinTask.java)

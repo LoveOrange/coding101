@@ -7,26 +7,26 @@ knowledge:
 
 # BigDecimal
 
-`BigDecimal` 使用十进制数值和小数位数表示数据，适合需要明确精度与舍入规则的金额计算。它能避免二进制浮点表示带来的意外结果，但不会替业务决定保留几位、何时舍入或使用哪种舍入方式。
+`BigDecimal` 用整数值和 `scale` 表示十进制数。本文负责构造、精度、舍入与金额比较。对象相等契约见 [对象相等性](./equals-hashcode-object-identity.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- `double` 用二进制浮点表示，`0.1` 这类十进制小数无法精确保存，金额计算会累积误差。[卡](#money-not-double)
-- `BigDecimal` 由任意精度整数和 `scale` 组成，用字符串构造或 `BigDecimal.valueOf(double)` 创建，避免 `new BigDecimal(double)`。
-- 除法结果可能无限循环，必须指定 `scale` 和 `RoundingMode`，否则抛出 `ArithmeticException`。
-- `BigDecimal` 不可变，`setScale`、`add` 等方法返回新对象。
-- `equals` 同时比较数值和 `scale`，`2.0` 与 `2.00` 不相等；比较数值大小用 `compareTo`。[卡](#bigdecimal-equals-compareto)
+- `double` 无法精确表示 `0.1`，金额输入可使用十进制文本。[卡](#money-not-double)
+- `BigDecimal` 的值等于 `unscaledValue × 10^-scale`。
+- 无舍入参数的 `divide` 遇到无限循环小数会抛出 `ArithmeticException`。
+- `BigDecimal` 运算保持原对象不变，结果需由调用方接收。
+- `equals` 比较数值和 `scale`，`compareTo` 只比较数值。[卡](#bigdecimal-equals-compareto)
 
 ## 2. double 的十进制误差 {#double-的十进制误差}
 
-`double` 使用二进制浮点数表示数值。许多常见十进制小数无法用有限长度的二进制小数精确表示，运行时会保存最接近的可表示值：
+`double` 使用二进制浮点表示。`0.1` 等小数无法精确保存，运行时使用最近的可表示值：
 
 ```java
 double result = 0.1 + 0.2;
 System.out.println(result); // 0.30000000000000004
 ```
 
-这是二进制浮点表示的正常结果，并非 Java 计算错误。科学计算、图形和允许误差的统计场景仍然适合使用 `double`；金额、税率结算等要求十进制规则可控的场景，通常使用 `BigDecimal` 或明确的最小货币单位整数。
+这是二进制浮点表示的舍入结果。允许误差的科学计算和图形处理可使用 `double`。金额可使用 `BigDecimal`，或按最小货币单位保存整数。
 
 ## 3. BigDecimal 的表示 {#bigdecimal-的表示}
 
@@ -46,11 +46,11 @@ System.out.println(amount.scale());         // 2
 System.out.println(amount.precision());     // 5
 ```
 
-- `scale` 表示小数点右侧的位数。
+- `scale` 为非负数时，表示小数点右侧的位数。
 - `precision` 表示有效数字的位数。
-- `unscaledValue` 保存去掉小数点后的整数表示。
+- `unscaledValue` 保存数值公式中的整数系数。
 
-`BigDecimal` 是不可变对象。`add`、`setScale` 等方法都会返回新对象：
+`BigDecimal` 是不可变对象。`add`、`setScale` 返回运算结果，原对象保持不变：
 
 ```java
 BigDecimal original = new BigDecimal("10.00");
@@ -60,7 +60,7 @@ System.out.println(original); // 10.00
 System.out.println(updated);  // 12.50
 ```
 
-## 4. 创建 BigDecimal {#创建-bigdecimal}
+## 4. BigDecimal 构造 {#创建-bigdecimal}
 
 已知十进制文本时，使用字符串构造方法：
 
@@ -84,20 +84,20 @@ System.out.println(unexpected);
 // 0.1000000000000000055511151231257827021181583404541015625
 ```
 
-构造方法精确保存传入的 `double` 实际值，而 `0.1` 在成为参数前已经是近似的二进制浮点数。
+构造方法精确转换传入的二进制浮点值。`0.1` 在传入之前已经发生舍入。
 
-如果来源只能提供 `double`，`BigDecimal.valueOf(double)` 会先使用该浮点数的规范字符串表示，通常更符合人们看到的十进制形式：
+来源为 `double` 时，`valueOf` 使用其规范字符串表示：
 
 ```java
 BigDecimal value = BigDecimal.valueOf(0.1);
 System.out.println(value); // 0.1
 ```
 
-但这不能恢复来源在转换成 `double` 前丢失的精度。金额数据最好从文本、数据库十进制类型或整数最小单位进入系统，不要先经过浮点数。
+已经丢失的输入精度无法恢复。金额输入应尽量直接使用文本、`DECIMAL` 或最小单位整数。
 
 ## 5. 运算与舍入 {#运算与舍入}
 
-加、减、乘通常可以直接得到精确十进制结果：
+不传入 `MathContext` 时，加、减、乘按精确值计算：
 
 ```java
 BigDecimal subtotal = new BigDecimal("19.90")
@@ -106,7 +106,7 @@ BigDecimal subtotal = new BigDecimal("19.90")
 System.out.println(subtotal); // 59.70
 ```
 
-除法可能产生无限循环小数。如果结果无法用有限小数表示，而调用方没有指定精度或舍入规则，`divide` 会抛出 `ArithmeticException`：
+精确除法要求结果能表示为有限小数。`1/3` 无法满足该条件，因此无舍入参数的 `divide` 会报错：
 
 ```java
 BigDecimal one = BigDecimal.ONE;
@@ -118,14 +118,14 @@ BigDecimal result = one.divide(three, 2, RoundingMode.HALF_UP);
 System.out.println(result); // 0.33
 ```
 
-舍入属于业务规则，不能作为补救异常的临时参数。应明确：
+舍入属于业务规则，应明确以下内容：
 
 - 中间计算保留多少精度。
 - 哪一步进行舍入。
 - 最终展示、结算和入账分别使用什么小数位。
 - 正数和负数是否使用相同舍入方式。
 
-### 5.1 `setScale` 返回新对象 {#setscale-返回新对象}
+### 5.1 小数位调整 {#setscale-返回新对象}
 
 ```java
 BigDecimal amount = new BigDecimal("12.345");
@@ -139,7 +139,7 @@ System.out.println(rounded); // 12.35
 
 ### 5.2 MathContext {#mathcontext}
 
-`MathContext` 通过精度和舍入模式限制整个运算结果的有效数字，与固定小数位的 `setScale` 解决的问题不同：
+`MathContext` 限定有效数字个数及舍入方式。`setScale` 则控制小数位数：
 
 ```java
 MathContext context = new MathContext(4, RoundingMode.HALF_UP);
@@ -149,7 +149,7 @@ BigDecimal result = new BigDecimal("123.45")
 System.out.println(result); // 838.1
 ```
 
-金融结算中常见的是按货币和业务规则控制小数位；高精度科学计算可能更关心有效数字。不要在没有确定语义时统一套用一个全局 `MathContext`。
+结算小数位由币种和业务规则决定。计算需要限定有效数字时，可指定 `MathContext`。两种精度要求应分别配置。
 
 ## 6. `equals` 与 `compareTo` {#equals-与-compareto}
 
@@ -168,7 +168,7 @@ System.out.println(first.equals(second)); // false
 System.out.println(first.compareTo(second)); // 0
 ```
 
-判断金额数值是否相同，通常使用 `compareTo(...) == 0`。需要把对象作为 `HashMap` 的键或 `HashSet` 的元素时，要特别注意：集合使用 `equals` 和 `hashCode`，`2.0` 与 `2.00` 会被当成不同键。
+判断数值相等使用 `compareTo(...) == 0`。`HashMap` 和 `HashSet` 按 `equals` 与 `hashCode` 识别元素。因此，`2.0` 与 `2.00` 是两个不同键。
 
 一种做法是在进入领域对象时统一 `scale`，让对象表示也具有明确约束：
 
@@ -186,11 +186,11 @@ public record Money(BigDecimal amount) {
 
 常见方案有两种：
 
-### 7.1 用 BigDecimal 保存主单位 {#用-bigdecimal-保存主单位}
+### 7.1 BigDecimal 主单位模型 {#用-bigdecimal-保存主单位}
 
 适合直接对接数据库 `DECIMAL`、需要可变小数位或计算规则复杂的场景。需要在边界统一精度、舍入模式、货币单位和序列化格式。
 
-### 7.2 用 long 保存最小单位 {#用-long-保存最小单位}
+### 7.2 long 最小单位模型 {#用-long-保存最小单位}
 
 ```java
 long amountInCents = 1990;
@@ -198,25 +198,41 @@ long amountInCents = 1990;
 
 整数运算没有小数表示误差，类型也更轻量。但需要防止溢出，并且只有在货币的最小单位和换算规则固定时才简单。涉及比例、税率和分摊时仍然必须定义余数和舍入规则。
 
-无论选择哪一种，都应把数值与币种放在同一个领域模型中，避免把人民币 100 元与美元 100 元当作可以直接相加的两个裸数字。
+金额模型应同时保存数值与币种。人民币与美元需要先换算，再按业务规则计算。
 
-## 8. 常见问题
+## 8. 舍入方向与精确转换 {#舍入方向与精确转换}
 
-### 8.1 `BigDecimal` 能彻底解决金额问题吗
+`HALF_UP` 在距离相等时远离零。`HALF_EVEN` 在距离相等时保留偶数末位。`DOWN` 向零舍入，`FLOOR` 向负无穷舍入。
 
-不能。它解决十进制表示和精度控制，但货币、汇率时间点、分摊余数、舍入位置和会计规则仍然需要业务定义。错误地选择 `scale` 或在每一步重复舍入，同样会得到错误结果。
+```java
+BigDecimal value = new BigDecimal("-1.25");
+System.out.println(value.setScale(1, RoundingMode.HALF_UP));   // -1.3
+System.out.println(value.setScale(1, RoundingMode.HALF_EVEN)); // -1.2
+System.out.println(value.setScale(1, RoundingMode.DOWN));      // -1.2
+System.out.println(value.setScale(1, RoundingMode.FLOOR));     // -1.3
+```
 
-### 8.2 `stripTrailingZeros()` 适合统一 scale 吗
+`UNNECESSARY` 要求无需舍入，否则抛出异常。`intValue()` 会截去小数，溢出时保留低 32 位。`intValueExact()` 在有非零小数或溢出时抛出异常。
 
-它会移除末尾零，但结果的 `scale` 可能为负数，例如某些整十数会使用科学计数形式表示。用于显示或持久化前，需要确认这是否符合接口契约。金额模型通常更适合显式指定要求的 `scale`。
+自然排序的 `TreeSet` 用 `compareTo` 判重。`2.0` 与 `2.00` 在其中合为一个元素。`HashSet` 使用 `equals`，会保留两个元素。
 
-### 8.3 为什么不直接使用 `double` 再格式化为两位小数
+## 9. 常见问题 {#常见问题}
 
-格式化只改变输出文本，不能修复中间计算已经产生的二进制近似和舍入传播。金额规则需要从输入、计算到结算全程明确，只在输出时截断小数位无法修正前面的误差。
+### 9.1 金额业务边界 {#金额业务边界}
 
-## 9. 面试题
+`BigDecimal` 负责十进制数值和精度控制。币种、汇率时点、余数分摊和会计规则仍由业务定义。重复舍入也会影响最终金额。
 
-### 9.1 金额为什么不适合直接使用 double {#money-not-double}
+### 9.2 尾零移除与负 scale {#尾零移除与负-scale}
+
+`stripTrailingZeros()` 移除末尾零。`new BigDecimal("1000").stripTrailingZeros()` 的 `scale` 为 -3。固定小数位的金额接口应显式使用 `setScale`。
+
+### 9.3 格式化与数值精度 {#格式化与数值精度}
+
+格式化只改变输出文本，中间值保留已有误差。金额规则应覆盖输入、计算和结算过程。
+
+## 10. 面试题 {#面试题}
+
+### 10.1 金额为什么不适合直接使用 double {#money-not-double}
 
 <!-- 面试来源：
 - 帆软：https://www.nowcoder.com/discuss/655505397251338240
@@ -229,20 +245,20 @@ long amountInCents = 1990;
 
 - 十进制小数与二进制浮点表示之间的差异。
 - `BigDecimal` 怎样保存数值和小数位。
-- 精确表示不等于已经确定业务舍入规则。
+- 精确表示与业务舍入规则各自的职责。
 
 **相关内容**：[double 的十进制误差](#double-的十进制误差)、[BigDecimal 的表示](#bigdecimal-的表示)、[运算与舍入](#运算与舍入)。
 
 <details>
 <summary>参考回答</summary>
 
-`double` 使用二进制浮点表示，很多十进制小数只能保存近似值，连续计算会出现用户可见的尾差。`BigDecimal` 使用任意精度整数和 `scale` 表示十进制数，可以准确保存从字符串或十进制数据源得到的金额。
+`double` 只能近似保存许多十进制小数，连续计算会出现尾差。`BigDecimal` 用整数系数与 `scale` 表示十进制数。它可精确保存十进制文本中的金额。
 
 使用 `BigDecimal` 时仍要明确创建方式和舍入规则。我会从字符串、数据库 `DECIMAL` 或最小货币单位创建，避免 `new BigDecimal(double)`；除法和结算时由业务指定精度与 `RoundingMode`。
 
 </details>
 
-### 9.2 `BigDecimal` 的 equals 与 compareTo 有什么区别 {#bigdecimal-equals-compareto}
+### 10.2 `BigDecimal` 的 equals 与 compareTo 有什么区别 {#bigdecimal-equals-compareto}
 
 <!-- 面试来源：
 - 帆软：https://www.nowcoder.com/discuss/655505397251338240
@@ -261,13 +277,30 @@ long amountInCents = 1990;
 <details>
 <summary>参考回答</summary>
 
-`equals` 同时比较数值和 `scale`，所以 `2.0` 与 `2.00` 不相等；`compareTo` 比较数值大小，两者比较结果为 0。判断金额数值是否一致通常使用 `compareTo(...) == 0`。
+`equals` 同时比较数值和 `scale`，所以 `2.0` 与 `2.00` 不相等；`compareTo` 比较数值大小，两者比较结果为 0。判断金额数值是否一致使用 `compareTo(...) == 0`。
 
 如果 `BigDecimal` 作为哈希键，集合会使用 `equals` 和 `hashCode`，不同 `scale` 会形成不同键。领域模型可以在构造边界统一合法的小数位，让表示规则也保持一致。
 
 </details>
 
-## 10. 参考资料
+### 10.3 负数的 HALF_UP、DOWN 和 FLOOR 有什么区别？ {#rounding-negative-exact}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：负数舍入方向与精度丢失。
+
+**相关内容**：[舍入方向与精确转换](#舍入方向与精确转换)。
+
+<details>
+<summary>参考回答</summary>
+
+`HALF_UP` 在中点远离零，`DOWN` 向零，`FLOOR` 向负无穷。`-1.25` 保留一位时依次为 -1.3、-1.2、-1.3。要求无精度损失时使用 `UNNECESSARY` 或精确转换方法。
+
+</details>
+
+## 11. 参考资料 {#参考资料}
 
 - [Java API：BigDecimal](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/math/BigDecimal.html)
 - [Java API：RoundingMode](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/math/RoundingMode.html)

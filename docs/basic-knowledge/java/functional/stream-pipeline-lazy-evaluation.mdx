@@ -7,15 +7,15 @@ knowledge:
 
 # Stream
 
-Java Stream 用一条流水线描述数据如何被筛选、转换和聚合。中间操作只登记处理步骤，终止操作才会触发遍历；理解这条执行链，比记住一组方法名更重要。
+Java Stream 用流水线筛选、转换和聚合数据。本文负责惰性求值、短路、一次性消费和副作用。收集规则见 [Collector](./collectors-grouping-reduction.mdx)。并行调度见 [并行流](./parallel-stream-model-pitfalls.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- Stream 流水线由数据源、中间操作和终止操作组成；中间操作是惰性的，只有终止操作才会触发遍历。[卡](#lazy-evaluation)
-- 无状态操作逐个元素依次经过各阶段；`sorted`、`distinct` 等有状态操作需要看到更多元素。
-- `anyMatch`、`findFirst`、`limit` 等短路操作在结果确定后停止读取。
-- Stream 只能消费一次；`Files.lines` 等 I/O 来源要用 try-with-resources 关闭。
-- 转成 Map 时用 `Collectors.toMap` 并处理重复键；Lambda 中不要修改外部状态，必须执行的业务动作不放在 `peek` 中。[卡](#list-to-map)
+- Stream 由数据源、中间操作和终止操作组成。[卡](#lazy-evaluation)
+- 中间操作是惰性的，终止操作触发求值。
+- `sorted` 需按排序要求缓冲输入，短路效果取决于操作顺序。
+- Stream 只可消费一次，I/O 来源需显式关闭。
+- `count` 可跳过无关遍历，因此 `peek` 不保证执行。[卡](#stream-empty-infinite)
 
 ## 2. 流水线结构 {#流水线结构}
 
@@ -32,9 +32,9 @@ List<String> names = users.stream()
     .toList();
 ```
 
-`users` 保存数据，Stream 不保存另一份用户列表。它保存的是“从这个数据源开始，依次执行过滤和映射，最后收集结果”的处理描述。
+`users` 保存用户数据，Stream 保存处理阶段。流水线描述从数据源到过滤、映射和收集的过程。
 
-Stream 使用内部迭代：调用方提供每个元素的处理规则，遍历时机和执行方式由 Stream 实现控制。这使框架能够合并处理步骤、提前结束遍历，也能在满足条件时并行执行。
+Stream 采用内部迭代。调用方提供元素操作，框架控制遍历时机与方式。框架据此融合阶段、短路或并行处理。
 
 ## 3. 惰性求值 {#惰性求值}
 
@@ -62,7 +62,7 @@ List<String> names = pipeline.toList();
 
 ### 3.1 元素的处理顺序 {#元素的处理顺序}
 
-对无状态中间操作，Stream 通常不会先生成完整的过滤结果，再生成完整的映射结果。一个元素可以依次经过 `filter` 和 `map`，然后才处理下一个元素。
+串行流水线可让单个元素连续经过 `filter` 和 `map`。阶段之间无需各自生成完整集合。
 
 ```java
 Optional<String> first = users.stream()
@@ -73,7 +73,7 @@ Optional<String> first = users.stream()
 
 找到第一个满足条件的结果后，`findFirst` 可以请求取消后续遍历。这里不需要先构造一份包含所有活跃用户的临时列表。
 
-惰性求值不保证每条 Stream 都更快。排序、去重和复杂 Lambda 仍然有真实成本，性能要看数据源、操作顺序和终止条件。
+惰性求值提供优化空间。实际成本仍由数据源、阶段顺序和终止条件决定。
 
 ## 4. 无状态操作与有状态操作 {#无状态操作与有状态操作}
 
@@ -87,7 +87,7 @@ Optional<String> first = users.stream()
 有状态操作需要记住已经处理过的元素，或者先看到更多输入：
 
 - `distinct` 需要记录已出现的值。
-- `sorted` 通常需要取得全部输入后才能按顺序输出。
+- 无排序信息可复用时，`sorted` 先取得全部输入再输出。
 - `limit`、`skip` 在有序并行流中需要维护位置关系。
 
 ```java
@@ -99,7 +99,7 @@ List<String> topNames = users.stream()
     .toList();
 ```
 
-这里先过滤再排序，可以减少需要排序的数据量。把 `sorted` 放在 `filter` 前面，结果可能相同，但通常会处理更多元素。
+先过滤再排序可减少排序元素。纯过滤移到排序之后时，会增加进入排序阶段的数据量。
 
 ### 4.1 短路操作 {#短路操作}
 
@@ -127,7 +127,7 @@ long count = activeUsers.count();
 // 运行时抛出 IllegalStateException
 ```
 
-Stream 可能持有遍历位置、短路状态和资源，第二次执行无法保证仍从相同状态开始。需要重复计算时，重新从可重复读取的数据源创建 Stream：
+Stream 保存遍历位置、短路状态和资源。它只允许消费一次。重复计算需从数据源重新创建流水线：
 
 ```java
 Supplier<Stream<User>> activeUsers =
@@ -139,9 +139,9 @@ List<User> result = activeUsers.get().toList();
 
 `Supplier` 每次返回的是新 Stream，不是复用已经消费的对象。
 
-### 5.1 关闭 I/O 数据源 {#关闭-io-数据源}
+### 5.1 I/O 数据源关闭 {#关闭-io-数据源}
 
-集合创建的 Stream 通常没有需要释放的资源。`Files.lines` 等 I/O 方法返回的 Stream 持有打开的文件，应该使用 try-with-resources：
+集合流无需关闭文件等外部资源。`Files.lines` 等 I/O 方法返回的 Stream 持有打开的文件，应该使用 try-with-resources：
 
 ```java
 try (Stream<String> lines = Files.lines(path, StandardCharsets.UTF_8)) {
@@ -172,7 +172,7 @@ List<String> roles = users.stream()
 
 使用 `map` 会得到 `Stream<List<String>>`，使用 `flatMap` 得到连续的 `Stream<String>`。
 
-`reduce` 把元素归约成一个值：
+数值流可直接执行求和归约：
 
 ```java
 int total = orders.stream()
@@ -180,7 +180,7 @@ int total = orders.stream()
     .sum();
 ```
 
-求和、计数和最值优先使用专门的终止操作。把结果收集到可变容器时使用 `collect`，不要用 `reduce` 反复复制或修改同一个容器。
+求和、计数和最值使用专门终止操作。值归约与可变收集的区别见 [Collector](./collectors-grouping-reduction.mdx#collect-与-reduce)。
 
 ## 7. 副作用 {#副作用}
 
@@ -204,18 +204,18 @@ List<String> names = users.stream()
     .toList();
 ```
 
-`peek` 主要用于观察流水线，不适合承担保存数据库、发送消息或修改业务状态等必要逻辑。短路操作可能让一部分元素根本不会到达 `peek`，实现也可以在不影响结果时优化遍历。
+`peek` 用于观察流水线。短路或优化会跳过部分调用，因此必要业务操作应独立执行。
 
 ## 8. 适用边界 {#适用边界}
 
-Stream 适合一条方向明确的数据转换链，例如筛选、映射、分组和聚合。出现以下情况时，普通循环可能更容易维护：
+Stream 适合一条方向明确的数据转换链，例如筛选、映射、分组和聚合。出现以下情况时，普通循环更容易维护：
 
 - 每一步包含多处分支和提前返回。
 - 处理过程需要频繁修改多个外部状态。
 - 异常恢复与重试逻辑比数据转换更重要。
 - 调试时必须观察细粒度的状态变化。
 
-不要以“行数更少”作为改写依据。可以先判断每个阶段是否能用一个明确动词命名，再检查副作用、异常和数据规模。
+每个阶段应有明确的数据转换职责。副作用、异常和数据规模都应纳入选择。
 
 性能敏感时至少验证：
 
@@ -225,27 +225,41 @@ Stream 适合一条方向明确的数据转换链，例如筛选、映射、分�
 4. 短路操作能否实际提前结束。
 5. 普通循环、串行 Stream 和并行 Stream 的基准结果。
 
-## 9. 常见问题
+## 9. 空流与无限流的终止边界 {#空流与无限流的终止边界}
 
-### 9.1 Stream 会修改原集合吗
+空流的 `anyMatch` 返回 false。`allMatch` 和 `noneMatch` 返回 true，且都不会执行谓词。无初值的 `reduce`、`findFirst` 在空流上返回空 `Optional`。
 
-Stream API 本身不会因为 `filter` 或 `map` 修改数据源，但 Lambda 可以主动修改元素或外部对象。流水线执行期间修改源集合，还可能触发 `ConcurrentModificationException` 或得到未定义的遍历结果。
+```java
+boolean all = Stream.<Integer>empty().allMatch(n -> n > 0); // true
+long count = Stream.of(1, 2, 3).peek(System.out::println).count();
+// count 为 3；实现可直接使用已知大小，跳过 peek。
+```
 
-### 9.2 `findFirst` 与 `findAny` 有什么区别
+短路操作提供提前结束的能力，顺序决定能否实际终止。无限递增流先 `sorted()` 再 `limit(10)`，排序会一直等待输入结束。先 `limit(10)` 再排序，则只需处理十项。
+
+`distinct()` 按 `equals` 判断重复，数组仍按身份比较。`mapToInt` 等基本类型流可减少包装对象开销。
+
+## 10. 常见问题 {#常见问题}
+
+### 10.1 源集合与元素修改 {#源集合与元素修改}
+
+`filter` 和 `map` 本身只描述转换，Lambda 仍可修改元素。执行期间修改普通源集合违反不干扰约束。结果可表现为异常或错误遍历。
+
+### 10.2 查找操作的顺序 {#查找操作的顺序}
 
 `findFirst` 在有顺序的数据源上保留遇到顺序。`findAny` 只要求返回任意一个元素，并行执行时有更大的调度空间。业务不关心具体哪一个结果时，可以使用 `findAny`。
 
-### 9.3 `Stream.toList()` 返回的列表能修改吗
+### 10.3 结果列表的可修改性 {#结果列表的可修改性}
 
-不能。`Stream.toList()` 返回的列表是不可修改的，调用 `add`、`remove` 等方法会抛出 `UnsupportedOperationException`。需要可变列表时，可以使用 `collect(Collectors.toCollection(ArrayList::new))`。
+`Stream.toList()` 返回不可修改列表。可修改性、空值和版本对比见 [Collector](./collectors-grouping-reduction.mdx#归约单位元与并发收集)。
 
-### 9.4 为什么 `peek` 有时没有执行
+### 10.4 观察操作的执行边界 {#观察操作的执行边界}
 
-`peek` 是惰性中间操作。没有终止操作时整条流水线都不执行；短路或实现优化也可能让部分元素不经过它。因此不能把必须发生的业务动作放进 `peek`。
+`peek` 是惰性中间操作。没有终止操作时整条流水线都不执行；短路或实现优化会跳过无需处理的元素。因此不能把必须发生的业务动作放进 `peek`。
 
-## 10. 面试题
+## 11. 面试题 {#面试题}
 
-### 10.1 Stream 的中间操作和终止操作有什么区别，惰性求值怎样工作 {#lazy-evaluation}
+### 11.1 Stream 的中间操作和终止操作有什么区别，惰性求值怎样工作 {#lazy-evaluation}
 
 <!-- 面试来源：
 - 阿里巴巴、腾讯、京东、美团：https://www.nowcoder.com/discuss/400870/
@@ -265,13 +279,13 @@ Stream API 本身不会因为 `filter` 或 `map` 修改数据源，但 Lambda �
 <details>
 <summary>参考回答</summary>
 
-中间操作返回新的 Stream，只登记过滤、映射或排序等阶段；终止操作产生列表、数值或查找结果，并触发数据从源头进入流水线。无状态操作通常可以让一个元素连续经过多个阶段，减少中间容器。
+中间操作返回新的 Stream，只登记过滤、映射或排序等阶段；终止操作产生列表、数值或查找结果，并触发求值。串行无状态阶段可逐元素衔接，减少中间容器。
 
-`findFirst`、`anyMatch` 等短路操作在结果确定后可以停止读取。`sorted`、`distinct` 等有状态操作需要保存更多上下文，可能必须先看到全部或大量输入。惰性求值提供了优化空间，但不代表每条流水线都比循环快。
+短路操作在结果确定后可结束遍历。排序和去重等阶段还需维护状态，影响提前结束的时机。
 
 </details>
 
-### 10.2 如何把 `List<Person>` 转成以姓名为键的 Map，姓名重复时怎么办 {#list-to-map}
+### 11.2 如何把 `List<Person>` 转成以姓名为键的 Map，姓名重复时怎么办 {#list-to-map}
 
 <!-- 面试来源：
 - 飞猪：https://www.nowcoder.com/discuss/864543031494467584
@@ -285,16 +299,33 @@ Stream API 本身不会因为 `filter` 或 `map` 修改数据源，但 Lambda �
 - `Collectors.toMap` 遇到重复键时的行为。
 - 合并规则应该来自业务语义。
 
-**相关内容**：[map、flatMap 与归约](#mapflatmap-与归约)。
+**相关内容**：[Collector：toMap 与键冲突](./collectors-grouping-reduction.mdx#tomap-与键冲突)。
 
 <details>
 <summary>参考回答</summary>
 
-可以使用 `Collectors.toMap(Person::name, Function.identity(), mergeFunction)`。如果不提供合并函数，重复姓名会抛出 `IllegalStateException`。合并函数可以保留较新的记录、拒绝冲突或聚合成列表，但具体规则必须由姓名是否唯一以及业务怎样处理冲突决定，不能随意选择“保留第一个”。
+使用 `Collectors.toMap(Person::name, Function.identity(), mergeFunction)`。省略合并函数时，重复键会抛出 `IllegalStateException`。每个姓名需保留多人时，使用 `groupingBy(Person::name)`。具体实现见 [Collector](./collectors-grouping-reduction.mdx#tomap-与键冲突)。
 
 </details>
 
-## 11. 参考资料
+### 11.3 空流的 allMatch 为何返回 true，limit 又为何不保证无限流结束？ {#stream-empty-infinite}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：空流逻辑、遍历优化与状态操作。
+
+**相关内容**：[空流与无限流的终止边界](#空流与无限流的终止边界)。
+
+<details>
+<summary>参考回答</summary>
+
+空流没有违反条件的元素，所以 `allMatch` 返回 true。短路还受上游操作约束。无限流先排序会持续等待输入结束，下游 `limit` 无法让排序先输出。
+
+</details>
+
+## 12. 参考资料 {#参考资料}
 
 - [Java API：Stream](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/stream/Stream.html)
 - [Java API：java.util.stream](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/stream/package-summary.html)

@@ -7,19 +7,19 @@ knowledge:
 
 # String
 
-`String` 对象创建后，字符序列不会再改变。不可变性让字符串可以安全共享，也让字符串常量池能够复用内容相同的字面量；需要持续拼接时，则应使用可变的构建器。
+`String` 表示不可变字符序列。本文负责字符串共享、常量池、拼接和字符计数。引用重赋值见 [Java 值传递](./types-references-value-passing.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- `String` 创建后字符序列不会改变，可以在线程之间安全共享，也能稳定地作为 `HashMap` 的键。
-- 内容相同的字符串字面量指向常量池中的同一个对象；编译期常量拼接会被折叠成一个字面量。[卡](#string-pool)
-- `intern()` 返回常量池中内容相同的字符串，比较内容仍要用 `equals`。
-- `StringBuilder` 可变、非线程安全；`StringBuffer` 的方法加了 `synchronized`，单线程拼接用 `StringBuilder`。[卡](#string-builder-buffer)
-- 单个表达式的 `+` 拼接由编译器优化，循环中反复拼接时用 `StringBuilder`。
+- `String` 内容不可变，可安全共享并稳定地用作哈希键。
+- 同内容字面量和字符串常量表达式共享驻留对象。[卡](#string-pool)
+- `intern()` 返回内容相同的规范字符串引用。
+- `StringBuilder` 适合单线程构建，`StringBuffer` 为单次操作提供同步。[卡](#string-builder-buffer)
+- `String.length()` 返回 UTF-16 代码单元数。[卡](#string-unicode-length)
 
 ## 2. String 的不可变性 {#string-的不可变性}
 
-`String` 的操作都返回新的字符串，原对象保持不变：
+`String` 的操作保持原对象不变。结果内容改变时返回另一个字符串，内容不变时可复用原对象：
 
 ```java
 String original = "Coding";
@@ -31,7 +31,7 @@ System.out.println(result);   // Coding 101
 
 `original` 变量仍然指向内容为 `"Coding"` 的对象。`concat` 的结果需要由调用方接收，否则结果会被丢弃。
 
-不可变性由完整的类设计保证，不能只归因于某一个 `final` 字段：
+不可变性由完整的类设计保证：
 
 - `String` 类不能被继承，子类无法改变它的语义。
 - 内部字符表示不向调用方直接暴露。
@@ -42,9 +42,9 @@ System.out.println(result);   // Coding 101
 
 ### 2.1 不可变性的作用 {#不可变性的作用}
 
-同一个 `String` 对象可以被多个对象和线程共享，调用方不需要担心另一处代码修改它的内容。字符串还能稳定地作为 `HashMap` 的键，因为参与 `equals` 和 `hashCode` 的字符序列不会变化。
+不可变字符串可以安全共享，其他调用方无法修改其内容。稳定的字符序列也使其适合作为哈希键。
 
-代价也很直接：每次产生不同内容，都需要得到另一个字符串。一次短表达式通常不成问题，在循环中反复拼接大量内容则可能产生不必要的中间结果。
+不同内容对应另一个字符串。循环中重复拼接会产生中间结果，并增加分配与复制。
 
 ## 3. 字符串常量池 {#字符串常量池}
 
@@ -58,7 +58,7 @@ System.out.println(first == second);      // true
 System.out.println(first.equals(second)); // true
 ```
 
-这里的 `==` 为 `true`，是字面量驻留产生的对象身份结果。业务代码判断字符串内容时仍然应使用 `equals`，因为字符串也可能在运行时创建：
+`==` 为 true 来自字面量驻留。运行时创建的同内容字符串可具有不同身份：
 
 ```java
 String created = new String("Java");
@@ -67,7 +67,7 @@ System.out.println(first == created);      // false
 System.out.println(first.equals(created)); // true
 ```
 
-`new String(...)` 明确创建了一个新的 `String` 对象。表达式中涉及的字面量是否早已加载，取决于类和运行时状态，因此不应把“这行代码总共创建几个对象”当作脱离上下文的固定数字。
+`new String(...)` 创建新对象。字面量对象是否已存在，取决于此前的加载状态。统计对象数量时应明确这一起点。
 
 ### 3.1 编译期常量折叠 {#编译期常量折叠}
 
@@ -80,7 +80,7 @@ String second = "Coding 101";
 System.out.println(first == second); // true
 ```
 
-如果表达式包含运行时变量，结果通常在运行时计算：
+表达式包含非恒定变量时，拼接在运行时计算：
 
 ```java
 String prefix = "Coding";
@@ -104,7 +104,7 @@ String canonical = created.intern();
 System.out.println(canonical == "Java"); // true
 ```
 
-`intern()` 适合内容重复度高、生命周期明确，并且经过测量确认能够节省内存的场景。对任意外部输入无条件驻留，可能让大量字符串长期保留。普通业务代码通常不需要主动调用它。
+重复内容较多时，可测量 `intern()` 是否节省内存。驻留会增加池维护工作，长期引用也会延长对象寿命。普通业务按内容比较即可。
 
 ## 4. StringBuilder 与 StringBuffer {#stringbuilder-与-stringbuffer}
 
@@ -127,9 +127,9 @@ String result = builder.toString();
 | `StringBuilder` | 是 | 不提供同步保证 | 方法内部或单线程构建文本 |
 | `StringBuffer` | 是 | 主要公开操作带同步 | 多线程共享同一个可变缓冲区 |
 
-绝大多数字符串构建器都只存在于一个方法内部，不会在线程间共享，此时使用 `StringBuilder` 更直接。
+构建器仅供当前方法使用时，选择 `StringBuilder`。
 
-`StringBuffer` 的单个方法具有同步保护，不代表多步组合自动具备原子性。例如“先判断长度，再追加内容”包含两次调用，如果整体必须不可分割，仍然需要在更高层定义同步边界。很多场景也可以避免共享构建器，让每个线程独立构建结果。
+`StringBuffer` 同步保护单次方法调用。长度检查与追加是两次操作，整体原子性需额外同步。也可由各线程独立构建结果，避免共享。
 
 ## 5. 字符串拼接的选择 {#字符串拼接的选择}
 
@@ -139,7 +139,7 @@ String result = builder.toString();
 String message = "order " + orderId + " created";
 ```
 
-Java 规范允许编译器选择具体的拼接实现，现代 JDK 不应简单概括为“所有 `+` 都会翻译成 `StringBuilder`”。对调用方重要的是表达式结果，不要依赖某个编译器版本的字节码形态。
+编译器可选择拼接实现。JDK 版本与字节码机制见 [字符串存储与字符计数](#字符串存储与字符计数)。
 
 循环或逐步构建较长文本时，显式复用一个 `StringBuilder`：
 
@@ -156,33 +156,47 @@ for (String item : items) {
 return result.toString();
 ```
 
-如果目标只是用固定分隔符连接现有字符串，`String.join` 或 `Collectors.joining` 通常比手写循环更清楚。只有性能真的重要时，再用基准测试验证容量预估和构建方式。
+固定分隔符连接可使用 `String.join` 或 `Collectors.joining`。热点路径再测量容量预估与构建方式。
 
-## 6. 常见问题
+## 6. 字符串存储与字符计数 {#字符串存储与字符计数}
 
-### 6.1 `String` 被 `final` 修饰，所以一定不可变吗
+JDK 9 的 Compact Strings 使用 `byte[]` 和编码标记。Latin-1 内容每个字符占一个字节，其余使用 UTF-16 表示。内部压缩不改变公开 API 的 UTF-16 索引规则。
 
-`final` 类只能阻止继承，不能自动保证对象内部状态不变。`String` 的不可变性还依赖私有内部表示、不暴露可变引用，以及所有公开操作都不修改已有字符序列。
+```java
+String face = "😀";
+System.out.println(face.length());                         // 2
+System.out.println(face.codePointCount(0, face.length())); // 1
+```
 
-### 6.2 `final String` 与不可变字符串有什么区别
+该字符占两个 UTF-16 代码单元，但只有一个码点。多个码点还可组合为一个用户可见字符。文本截断需明确按代码单元、码点还是字素处理。
+
+JDK 9 的 `javac` 还引入了 `invokedynamic` 字符串拼接。单个 `+` 表达式的实现因此取决于编译目标版本。循环拼接仍应关注反复生成中间字符串的成本。
+
+## 7. 常见问题 {#常见问题}
+
+### 7.1 final 类与不可变性 {#final-类与不可变性}
+
+`final` 类阻止继承，不保证内部状态不可变。`String` 还需保护内部表示，且公开操作保持原内容不变。
+
+### 7.2 final 变量与对象状态 {#final-变量与对象状态}
 
 ```java
 final String name = "Java";
 ```
 
-这里的 `final` 限制变量 `name` 不能重新赋值。即使变量不声明为 `final`，它指向的 `String` 对象仍然不可变。变量能否重新指向别处，与对象内容能否修改是两件事。
+这里的 `final` 固定了变量 `name` 的赋值。即使变量不声明为 `final`，它指向的 `String` 对象仍然不可变。变量能否重新指向别处，与对象内容能否修改是两件事。
 
-### 6.3 `StringBuilder` 一定比 `+` 快吗
+### 7.3 拼接的性能边界 {#拼接的性能边界}
 
-不能脱离上下文判断。单个表达式的 `+` 可读性更好，编译器也会优化常量和运行时拼接。循环中重复执行 `result = result + item` 会不断产生新结果，复用 `StringBuilder` 通常更合适。最终差异还取决于 JDK、数据量和调用方式。
+单个表达式用 `+` 更直观，编译器也可优化。循环复用 `StringBuilder` 可减少中间结果。性能差异取决于 JDK、数据量与调用方式。
 
-### 6.4 `String.length()` 返回字符数量吗
+### 7.4 UTF-16 长度 {#utf-16-长度}
 
-它返回 UTF-16 代码单元数量。部分 Unicode 字符由一对代理项表示，会占用两个位置。需要按 Unicode 码点处理时，使用 `codePoints()`、`codePointCount()` 等 API，而不是假设一个 `char` 就对应一个用户看到的字符。
+`length()` 返回 UTF-16 代码单元数。代理项与码点示例见 [字符串存储与字符计数](#字符串存储与字符计数)。
 
-## 7. 面试题
+## 8. 面试题 {#面试题}
 
-### 7.1 String、StringBuilder 和 StringBuffer 有什么区别 {#string-builder-buffer}
+### 8.1 String、StringBuilder 和 StringBuffer 有什么区别 {#string-builder-buffer}
 
 <!-- 面试来源：
 - 字节跳动：https://www.nowcoder.com/discuss/353159215772540928
@@ -203,13 +217,13 @@ final String name = "Java";
 <details>
 <summary>参考回答</summary>
 
-`String` 表示不可变字符序列，所有产生不同内容的操作都会返回另一个字符串，因此适合保存和共享最终文本。`StringBuilder` 和 `StringBuffer` 是可变字符序列，连续 `append` 可以复用同一个构建器。
+`String` 内容不可变，适合保存与共享文本。`StringBuilder` 和 `StringBuffer` 可原地追加，适合逐步构建。
 
-`StringBuilder` 不提供同步保证，适合方法内部等不共享场景。`StringBuffer` 的主要操作带同步，但多个方法组合仍不自动成为一个原子操作。少量拼接可以直接使用 `+`，循环中持续构建文本通常使用一个 `StringBuilder`。
+`StringBuilder` 不提供同步保证，适合方法内部等不共享场景。`StringBuffer` 的主要操作带同步，但多个方法组合仍不自动成为一个原子操作。少量拼接可以直接使用 `+`，循环中持续构建文本可复用一个 `StringBuilder`。
 
 </details>
 
-### 7.2 字符串常量池解决了什么问题 {#string-pool}
+### 8.2 字符串常量池解决了什么问题 {#string-pool}
 
 <!-- 面试来源：
 - 华为、网易互娱：https://www.nowcoder.com/discuss/138434
@@ -228,16 +242,35 @@ final String name = "Java";
 <details>
 <summary>参考回答</summary>
 
-Java 会驻留字符串字面量，让内容相同的字面量复用同一个规范字符串对象。因为 `String` 不可变，共享对象不会被任意调用方改坏。
+常量池让同内容字面量复用一个规范对象。`String` 内容不可变，因此共享者可以安全读取。
 
-`new String(...)` 会明确创建新对象，所以即使内容相同，也不保证与池中的对象引用相等。`intern()` 可以取得内容对应的规范表示。常量池会影响对象身份，但业务代码比较字符串内容仍然应使用 `equals`。
+`new String(...)` 创建新对象，与字面量具有不同身份。`intern()` 返回同内容的规范引用。业务内容比较使用 `equals`。
 
 </details>
 
-## 8. 参考资料
+### 8.3 为什么一个表情的 String.length() 是 2？ {#string-unicode-length}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：存储编码、UTF-16 索引与码点。
+
+**相关内容**：[字符串存储与字符计数](#字符串存储与字符计数)。
+
+<details>
+<summary>参考回答</summary>
+
+`length()` 统计 UTF-16 代码单元。示例表情由一对代理项表示，所以长度为 2、码点数为 1。JDK 9 的内部压缩存储保留了这套索引语义。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
 
 - [Java API：String](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/String.html)
 - [Java API：StringBuilder](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/StringBuilder.html)
 - [Java API：StringBuffer](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/StringBuffer.html)
 - [Java Language Specification：String Literals](https://docs.oracle.com/en/java/javase/26/docs/specs/jls/jls-3.html#jls-3.10.5)
 - [Java Language Specification：String Concatenation Operator](https://docs.oracle.com/en/java/javase/26/docs/specs/jls/jls-15.html#jls-15.18.1)
+- [JEP 254：Compact Strings](https://openjdk.org/jeps/254)
+- [JEP 280：Indify String Concatenation](https://openjdk.org/jeps/280)

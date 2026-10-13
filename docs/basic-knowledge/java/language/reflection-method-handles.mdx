@@ -7,17 +7,17 @@ knowledge:
 
 # Java 反射
 
-Java 反射允许程序在运行时检查类、字段、构造方法和方法，并在类型直到运行时才确定时完成调用。`MethodHandle` 也能表示可调用的方法，但提供更明确的方法类型和不同的优化路径。
+Java 反射在运行时检查类型并调用成员。本文负责反射 API、访问边界和方法句柄。注解保留规则见 [Java 注解](./annotations-retention-processing.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- 反射通过 `Class` 对象在运行时读取字段、方法、构造器和注解，并在类型运行时才确定时创建对象、调用方法。[卡](#reflection-uses)
-- 常见使用者是框架：依赖注入、ORM 映射、序列化、注解驱动的路由和动态代理。
-- 反射调用要做访问检查、参数装箱和类型校验，错误推迟到运行时；JDK 18 起核心反射改为基于方法句柄实现。[卡](#reflection-cost)
-- `MethodHandle` 携带精确的 `MethodType`，支持绑定和组合，更容易被 JIT 优化。
-- 模块系统下访问非公开成员需要目标模块开放对应包，私有成员也不是稳定 API。
+- 反射通过 `Class` 读取成员信息并创建对象或调用方法。[卡](#reflection-uses)
+- `getDeclaredMethods` 查本类声明，`getMethods` 查公开方法及继承成员。
+- `Method.invoke` 用 `InvocationTargetException` 包装目标异常。
+- JDK 18 起，核心反射改用方法句柄实现。[卡](#reflection-cost)
+- `invokeExact` 要求调用点的参数及返回类型与句柄完全一致。[卡](#method-handle-exact-type)
 
-## 2. 获取 Class 对象 {#获取-class-对象}
+## 2. Class 对象来源 {#获取-class-对象}
 
 `Class<?>` 是运行时访问类型信息的入口。常见取得方式有三种：
 
@@ -44,9 +44,9 @@ Class<?> type = Class.forName(
 );
 ```
 
-插件、序列化和依赖注入框架经常只知道类名、配置或注解，无法在框架源码中直接写出用户类型，因此需要运行时发现。
+框架通过配置或类名取得用户类型。类型到运行时才确定时，反射支持成员发现与调用。
 
-## 3. 读取成员信息 {#读取成员信息}
+## 3. 成员元数据 {#读取成员信息}
 
 `Class` 提供字段、方法、构造器、父类型、接口和注解等元数据：
 
@@ -66,7 +66,7 @@ for (Method method : type.getDeclaredMethods()) {
 
 检查到成员不代表一定有权访问。Java 访问控制和模块边界仍然生效。
 
-### 3.1 读取泛型信息 {#读取泛型信息}
+### 3.1 泛型声明信息 {#读取泛型信息}
 
 反射可以通过 `getGenericReturnType()`、`getGenericParameterTypes()` 等 API 读取 class 文件 `Signature` 属性中的泛型声明：
 
@@ -77,9 +77,9 @@ System.out.println(method.getReturnType());        // interface java.util.List
 System.out.println(method.getGenericReturnType()); // java.util.List<com.example.User>
 ```
 
-局部变量的具体类型实参、运行时新建的 `List<String>` 元素类型等信息通常已经擦除。反射不能恢复编译结果中从未保留的信息。
+运行时对象的具体泛型实参会被擦除。声明元数据与对象类型的区别见 [Java 泛型](./generics.mdx#类型擦除)。
 
-## 4. 创建对象与调用方法 {#创建对象与调用方法}
+## 4. 对象创建与方法调用 {#创建对象与调用方法}
 
 ```java
 Class<?> type = Class.forName("com.example.GreetingService");
@@ -120,9 +120,9 @@ if (!method.trySetAccessible()) {
 }
 ```
 
-在 Java 模块系统中，目标包没有向调用模块开放时，即使是反射也可能无法取得深层访问。启动参数 `--add-opens` 可以临时开放包，但库和应用不应默认依赖对 JDK 内部实现的非法访问。
+跨模块访问私有成员，需要目标包向调用模块开放。`--add-opens` 可显式建立该关系。公开 API 应优先使用正常的访问规则。
 
-优先使用公开 API。访问私有成员通常意味着框架与实现细节绑定，JDK 或依赖升级时更容易失效。
+访问私有成员会依赖实现细节，升级 JDK 或库时需验证兼容性。
 
 ## 5. MethodHandle {#methodhandle}
 
@@ -141,12 +141,12 @@ GreetingService service = new GreetingService();
 String result = (String) greet.invokeExact(service, "Lin");
 ```
 
-`findVirtual` 在查找时进行访问检查。得到句柄后，可以反复调用，也可以通过 `bindTo`、`asType`、参数插入和组合操作得到新句柄。
+`findVirtual` 在创建句柄时检查权限。取得句柄后可反复调用，也可用 `bindTo` 或 `asType` 适配。
 
-### 5.1 `invokeExact` 与 `invoke`
+### 5.1 `invokeExact` 与 `invoke` {#invokeexact-与-invoke}
 
 - `invokeExact` 要求调用点类型与句柄类型完全匹配。
-- `invoke` 允许按照方法调用转换规则适配部分类型。
+- `invoke` 按 `asType` 规则适配参数和返回类型。
 
 两者都具有签名多态语义，编译器对调用点的静态类型非常重要。随意把所有值都声明为 `Object`，会让 `invokeExact` 因类型不匹配失败。
 
@@ -161,7 +161,7 @@ String result = (String) greet.invokeExact(service, "Lin");
 
 ## 6. 反射的调用成本 {#反射的调用成本}
 
-反射相比直接调用可能增加以下工作：
+反射调用需要分析以下成本：
 
 - 按名称搜索成员和解析参数类型。
 - 运行时访问检查和参数检查。
@@ -179,13 +179,13 @@ RequestHandler(Method handlerMethod) {
 }
 ```
 
-缓存成员不会自动让反射等同于直接调用，但通常比每次 `getMethod` 后再 `invoke` 更合理。
+缓存可省去重复查找，调用阶段仍有类型检查与适配成本。
 
-### 6.1 性能随 JDK 版本变化 {#性能随-jdk-版本变化}
+### 6.1 JDK 版本与调用性能 {#性能随-jdk-版本变化}
 
 从 JDK 18 起，核心反射实现基于方法句柄重新实现。JIT 对常量 `Method`、`Constructor` 和 `MethodHandle` 的优化能力，也会随版本和调用形态变化。
 
-因此不能笼统断言“反射一定慢几十倍”或“MethodHandle 一定更快”。低频启动扫描通常不值得优化；高频序列化、路由或表达式执行路径，应在目标 JDK 上用 JMH 等工具测量真实调用形态。
+反射与句柄的性能取决于 JDK 及调用形态。低频扫描只占启动成本的一部分。热点调用应在目标 JDK 上用 JMH 验证。
 
 ## 7. 使用边界 {#使用边界}
 
@@ -196,9 +196,9 @@ RequestHandler(Method handlerMethod) {
 orderService.create(order);
 ```
 
-直接调用能够得到编译期检查、IDE 重构支持和清晰调用关系。反射把方法名、参数和权限错误推迟到运行时，需要框架通过启动校验、缓存和明确错误消息补回这些保障。
+直接调用保留编译检查和 IDE 重构支持。反射错误延迟到运行时。框架应在启动时校验签名，并缓存解析结果。
 
-使用反射的框架通常要处理：
+反射框架还需处理：
 
 - 类加载器隔离和类卸载。
 - 模块开放与访问权限。
@@ -206,27 +206,44 @@ orderService.create(order);
 - 缓存是否意外持有类加载器。
 - Native Image 或闭世界编译所需的反射配置。
 
-## 8. 常见问题
+## 8. 方法句柄的返回类型 {#方法句柄的返回类型}
 
-### 8.1 反射能否访问 private 成员
+调用点的返回类型也是 `invokeExact` 检查的一部分。显式强制转换决定这里的返回类型。
 
-可以发现当前类声明的私有成员，但不保证能够绕过访问控制。是否能 `trySetAccessible` 取决于调用者、目标类和模块开放关系。能访问也不代表应该访问，私有成员不是稳定 API。
+```java
+MethodHandle length = MethodHandles.lookup().findVirtual(
+    String.class, "length", MethodType.methodType(int.class)
+);
+int size = (int) length.invokeExact("Java"); // 4
+// Object wrong = length.invokeExact("Java"); // WrongMethodTypeException
+Object boxed = length.invoke("Java"); // Integer，值为 4
+```
 
-### 8.2 `Class.forName` 与 `ClassLoader.loadClass` 有什么差异
+上述调用需放在声明 `throws Throwable` 的方法中。句柄类型为 `(String)int`。返回 `Object` 的精确调用与该类型不匹配。`invoke` 则可通过适配完成装箱。
 
-常用的 `Class.forName(String)` 会加载并初始化类；`ClassLoader.loadClass` 通常只完成加载，不主动初始化。`Class.forName` 的三参数版本可以明确选择是否初始化。插件环境还要使用正确的类加载器，不能默认所有类都由系统类加载器可见。
+方法句柄直接传播目标方法抛出的异常。它的访问权限在创建句柄时检查。将私有方法句柄交给其他代码，也交出了对应调用能力。
 
-### 8.3 反射会破坏类型安全吗
+## 9. 常见问题 {#常见问题}
 
-反射 API 仍会在运行时检查成员、接收者和参数类型，但错误从编译阶段推迟到运行阶段，并常以 `ReflectiveOperationException` 或 `IllegalArgumentException` 体现。框架应在启动或注册阶段提前验证，避免第一次业务请求才发现签名错误。
+### 9.1 私有成员的访问权限 {#私有成员的访问权限}
 
-### 8.4 MethodHandle 与 Method 的主要区别是什么
+`getDeclaredMethod` 可发现本类私有方法。调用权限仍由类访问规则与模块开放关系决定。跨模块深层访问需检查 `trySetAccessible()` 的结果。
 
-`Method` 以反射对象描述声明，调用接口统一使用 `Object` 和可变参数；`MethodHandle` 自身携带精确的 `MethodType`，支持绑定、适配和组合，并为 JVM 动态调用提供更直接的抽象。两者都受访问控制，也都不保证比直接调用更快。
+### 9.2 类加载与初始化 {#类加载与初始化}
 
-## 9. 面试题
+`Class.forName(String)` 会加载并初始化类。`ClassLoader.loadClass` 加载类，但不主动初始化。三参数 `Class.forName` 可显式选择初始化行为。插件还需指定能找到目标类型的类加载器。
 
-### 9.1 什么是反射，常见使用场景有哪些 {#reflection-uses}
+### 9.3 运行时类型校验 {#运行时类型校验}
+
+反射会在运行时检查接收者和参数。签名错误可表现为 `IllegalArgumentException` 等异常。框架可在启动时校验，尽早发现调用不匹配。
+
+### 9.4 Method 与 MethodHandle {#method-与-methodhandle}
+
+`Method` 描述方法声明，调用接口使用 `Object` 和可变参数。`MethodHandle` 携带 `MethodType`，支持绑定、适配和组合。性能还取决于调用形态。
+
+## 10. 面试题 {#面试题}
+
+### 10.1 什么是反射，常见使用场景有哪些 {#reflection-uses}
 
 <!-- 面试来源：
 - 美团：https://www.nowcoder.com/discuss/353149601563746304
@@ -242,18 +259,18 @@ orderService.create(order);
 - 运行时发现为什么适合框架，又会失去哪些编译期保障。
 - 访问控制、异常和缓存的边界。
 
-**相关内容**：[获取 Class 对象](#获取-class-对象)、[读取成员信息](#读取成员信息)、[创建对象与调用方法](#创建对象与调用方法)、[使用边界](#使用边界)。
+**相关内容**：[Class 对象来源](#获取-class-对象)、[成员元数据](#读取成员信息)、[对象创建与方法调用](#创建对象与调用方法)、[使用边界](#使用边界)。
 
 <details>
 <summary>参考回答</summary>
 
-反射通过 `Class` 访问运行时类型信息，可以检查字段、方法、构造器和注解，也可以在类型直到运行时才确定时创建对象或调用方法。依赖注入、序列化、测试和插件框架都需要这种发现能力。
+反射通过 `Class` 访问运行时类型信息。它能发现成员、创建对象并调用方法。依赖注入、序列化、测试和插件框架都可使用这些能力。
 
-代价是部分类型和访问错误推迟到运行时，还要处理模块边界、参数转换、异常包装和类加载器。框架通常在启动阶段完成扫描和校验，并缓存解析结果；普通业务中类型已知时仍使用直接调用。
+反射将部分类型与权限错误推迟到运行时。框架还需处理参数适配、异常包装和类加载器。启动时校验并缓存结果，可减少重复发现工作。
 
 </details>
 
-### 9.2 反射调用为什么可能比直接调用开销更高 {#reflection-cost}
+### 10.2 反射调用为什么可能比直接调用开销更高 {#reflection-cost}
 
 <!-- 面试来源：
 - 数字马力：https://www.nowcoder.com/discuss/500758332618133504
@@ -272,13 +289,30 @@ orderService.create(order);
 <details>
 <summary>参考回答</summary>
 
-反射可能包含按名称查找成员、运行时权限与参数检查、`Object` 参数转换、装箱拆箱和异常包装，间接调用也比静态已知的直接调用更难优化。把扫描放在启动阶段并缓存调用对象，可以避免重复查找。
+反射增加了成员查找、参数适配和运行时检查。间接调用与装箱也会影响优化。缓存调用对象可省去重复查找。
 
-`MethodHandle` 提供精确方法类型和可组合调用入口，在部分高频动态场景更适合 JVM 优化。但现代 JDK 的核心反射本身也基于方法句柄实现，性能结果取决于句柄是否稳定、调用是否热点以及 JDK 版本，应使用目标环境基准测试，而不是背固定倍数。
+`MethodHandle` 提供带类型的可组合入口。JDK 18 起，核心反射本身也使用句柄实现。常量稳定性、调用热度与 JDK 版本决定实际成本。应按目标调用形态做基准。
 
 </details>
 
-## 10. 参考资料
+### 10.3 invokeExact 为什么连返回类型也要完全匹配？ {#method-handle-exact-type}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：调用点描述符与类型适配。
+
+**相关内容**：[方法句柄的返回类型](#方法句柄的返回类型)。
+
+<details>
+<summary>参考回答</summary>
+
+调用点描述符同时包含参数和返回类型。`(String)int` 句柄要求调用点也返回 `int`。接收为 `Object` 会报 `WrongMethodTypeException`，`invoke` 则可适配装箱。
+
+</details>
+
+## 11. 参考资料 {#参考资料}
 
 - [Java API：java.lang.reflect](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/reflect/package-summary.html)
 - [Java API：Class](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/Class.html)

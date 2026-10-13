@@ -7,15 +7,15 @@ knowledge:
 
 # Java 泛型
 
-Java 泛型让类、接口和方法用类型参数表达类型关系。面试重点是编译期类型安全、泛型不变性、通配符读写边界和类型擦除。
+Java 泛型用类型参数表达类型关系。本文负责不变性、通配符、擦除与桥接方法。反射读取声明信息见 [Java 反射](./reflection-method-handles.mdx#读取泛型信息)。
 
 ## 1. 面试核心 {#core}
 
-- 泛型把一部分类型错误提前到编译期，并减少读取数据时的强制转换。[卡](#generics-usage)
-- `List<Integer>` 与 `List<Number>` 之间没有子类型关系，否则可以写入不符合元素类型的值。
-- `? extends T` 适合读取 T，不能安全写入具体非 null 值；`? super T` 可以写入 T，读取时只能按 Object 使用。[卡](#wildcards)
-- 类型擦除发生在泛型检查之后，JVM 通常看不到具体类型参数。[卡](#type-erasure)
-- 擦除带来 `new T()`、`new T[]`、`instanceof List<String>` 和部分重载限制。
+- 泛型在编译期检查类型关系，并减少显式强制转换。[卡](#generics-usage)
+- `List<Integer>` 不是 `List<Number>` 的子类型。
+- `? extends T` 读取为 `T`，`? super T` 接收 `T`。[卡](#wildcards)
+- 编译器先检查泛型，再执行擦除并插入必要转换。[卡](#type-erasure)
+- 桥接方法在擦除后维持重写关系。[卡](#bridge-method)
 
 ## 2. 类型参数 {#类型参数}
 
@@ -46,7 +46,7 @@ static <T> List<T> wrap(T value) {
 }
 ```
 
-传入 String 时返回 `List<String>`，传入 Integer 时返回 `List<Integer>`。如果参数与返回值之间不需要保持类型关系，直接使用具体类型或接口通常更清楚。
+传入 String 返回 `List<String>`，传入 Integer 返回 `List<Integer>`。类型关系固定时，直接使用具体类型或接口即可。
 
 ### 2.1 类型上界 {#类型上界}
 
@@ -75,7 +75,7 @@ List<Integer> integers = List.of(1, 2);
 
 ## 4. 通配符 {#通配符}
 
-### 4.1 `? extends T`
+### 4.1 上界通配符 {#上界通配符}
 
 ```java
 static double sum(List<? extends Number> values) {
@@ -89,7 +89,7 @@ static double sum(List<? extends Number> values) {
 
 实参可以是 `List<Integer>` 或 `List<Double>`。读取结果至少是 Number；由于具体元素类型未知，不能安全写入 Integer 或 Double。
 
-### 4.2 `? super T`
+### 4.2 下界通配符 {#下界通配符}
 
 ```java
 static void addDefaults(List<? super Integer> target) {
@@ -102,47 +102,88 @@ static void addDefaults(List<? super Integer> target) {
 
 PECS（Producer Extends, Consumer Super）可以帮助记忆：参数主要提供 T 时用 `extends`，主要接收 T 时用 `super`。如果既要读又要写同一具体类型，直接使用 `List<T>`。
 
-### 4.3 `List<?>` 与 `List<Object>`
+### 4.3 未知类型与 Object 元素类型 {#未知类型与-object-元素类型}
 
-`List<?>` 表示元素类型未知，可以接收 `List<String>` 等任意元素类型的列表，但不能写入具体值。`List<Object>` 明确要求元素类型就是 Object，可以写入各种对象，却不能接收 `List<String>`。
+`List<?>` 接受任意元素类型的列表，读取结果为 `Object`。它允许传入 `null`，具体列表仍可拒绝空值。`List<Object>` 可接收任意对象，但只接受对应类型的列表。
 
 ## 5. 类型擦除 {#类型擦除}
 
-编译器先检查泛型关系，再把多数类型参数擦除为上界，并在读取位置插入必要的类型转换。下面的错误仍然发生在编译期：
+编译器先检查泛型关系，再将类型变量擦除为最左上界。无显式上界时擦除为 `Object`。读取处会插入必要的类型转换：
 
 ```java
 List<Integer> numbers = new ArrayList<>();
 // numbers.add("wrong"); // 编译错误
 ```
 
-擦除以后，JVM 通常只看到 List。原始类型、未检查转换或反射可以绕过编译器，形成堆污染，之后按 Integer 读取时可能抛出 `ClassCastException`。
+擦除后，运行时对象按原始类表示。原始类型或未检查转换可造成堆污染。随后按具体类型读取时，会因插入的转换而失败。
 
 擦除也解释了常见限制：
 
-- 不能直接执行 `new T()`，运行时不知道应该调用哪个构造器。
-- 不能直接创建 `new T[]`，数组需要在运行时检查元素类型。
-- 不能使用 `instanceof List<String>`，运行时通常只能检查到 List。
+- 创建 T 的实例需要显式工厂或构造器信息。
+- `new T[]` 会编译失败，数组需保留运行时元素类型。
+- `Object` 无法用 `instanceof List<String>` 检查元素类型。
 - 参数分别为 `List<String>` 和 `List<Integer>` 的两个方法擦除后签名相同，不能形成重载。
 
-编译器还可能生成桥接方法，用于保持泛型擦除后的多态关系。面试中能说明它是编译器为兼容方法签名生成的转发方法即可。
+泛型重写需要兼容擦除后的签名。具体转发过程见 [桥接方法与运行时类型检查](#桥接方法与运行时类型检查)。
 
-## 6. 常见问题
+## 6. 桥接方法与运行时类型检查 {#桥接方法与运行时类型检查}
 
-### 6.1 为什么不能向 `List<? extends Number>` 写入 Integer
+泛型方法擦除后，父子方法的参数类型会出现差异。编译器生成桥接方法，维持原有重写关系。
 
-因为实际对象可能是 `List<Double>`。编译器只知道元素属于某个未知的 Number 子类型，无法证明 Integer 符合该具体类型。
+```java
+interface Sink<T> { void accept(T value); }
+final class TextSink implements Sink<String> {
+    public void accept(String value) {}
+}
+```
 
-### 6.2 泛型擦除了，为什么还能通过反射看到部分泛型信息
+接口方法擦除后接收 `Object`。`TextSink` 的桥接方法先将参数转为 `String`，再转发调用。原始类型传入错误对象时，该转换会抛出 `ClassCastException`。
 
-类文件可以在 Signature 等元数据中保存声明信息，反射能够读取它；这不表示 JVM 会按具体类型参数检查每次元素写入。
+Java 16 起，部分参数化类型可用于 `instanceof`。前提是检查无需未检查转换。
 
-### 6.3 什么时候不需要泛型
+```java
+List<String> values = new ArrayList<>();
+System.out.println(values instanceof ArrayList<String>); // true，Java 16+
+Object unknown = values;
+// boolean valid = unknown instanceof List<String>; // 编译错误
+boolean list = unknown instanceof List<?>; // 合法
+```
 
-类型固定、没有跨位置类型关系，或泛型会让 API 更难理解时，直接使用具体类型。泛型用于表达类型约束，没有约束需要表达时不必引入 T。
+第一个检查利用了已有的静态类型信息。后两个检查无法从任意对象恢复其元素类型。
 
-## 7. 面试题
+## 7. 泛型变长参数与堆污染 {#泛型变长参数与堆污染}
 
-### 7.1 泛型是什么，一般用在什么场景 {#generics-usage}
+变长参数在调用处通过数组传递。`List<String>...` 擦除后只能得到 `List[]`。数组检查因此无法识别列表元素的泛型参数。
+
+```java
+static String broken(List<String>... values) { // 未检查警告
+    Object[] aliases = values;
+    aliases[0] = List.of(42); // 运行时数组类型允许 List
+    return values[0].get(0); // ClassCastException
+}
+```
+
+数组槽位被写入 `List<Integer>`，读取仍按 `String` 转换。`@SafeVarargs` 是作者对类型安全的声明，不会增加运行时检查。
+
+方法体需避免污染数组，也应避免将数组暴露给不安全代码。注解可用于构造器、静态方法和 final 实例方法。Java 9 起也可用于私有实例方法。
+
+## 8. 常见问题 {#常见问题}
+
+### 8.1 上界通配符的写入约束 {#上界通配符的写入约束}
+
+实参可来自 `List<Double>`。编译器只知道某个未知的 Number 子类型，无法保证 Integer 合法。
+
+### 8.2 擦除与声明元数据 {#擦除与声明元数据}
+
+泛型声明可保留在类文件的 `Signature` 属性中。运行时对象本身仍按擦除后的类型执行。
+
+### 8.3 泛型的适用范围 {#泛型的适用范围}
+
+类型固定且没有跨位置类型关系时，直接使用具体类型。泛型应表达明确的类型约束。
+
+## 9. 面试题 {#面试题}
+
+### 9.1 泛型是什么，一般用在什么场景 {#generics-usage}
 
 <!-- 面试来源：
 - 小米、百度：https://www.nowcoder.com/discuss/750688
@@ -161,13 +202,13 @@ List<Integer> numbers = new ArrayList<>();
 <details>
 <summary>参考回答</summary>
 
-泛型允许类、接口和方法声明类型参数，用同一个参数表达字段、入参和返回值之间的类型关系。编译器可以提前发现一部分类型错误，并减少读取时的强制转换。
+泛型允许类、接口和方法声明类型参数。同一参数关联字段、入参和返回值。编译器据此检查类型，并减少显式转换。
 
-集合、通用容器、转换接口和工具方法经常使用泛型。只有确实需要建立类型关系或复用同一结构时才引入类型参数，类型固定时直接使用具体类型更清楚。
+集合、容器、转换接口和工具方法都可使用泛型。需要跨位置类型关系时引入参数，固定类型直接写出即可。
 
 </details>
 
-### 7.2 类型擦除以后，为什么 `List<Integer>` 仍然不能写入 String {#type-erasure}
+### 9.2 类型擦除以后，为什么 `List<Integer>` 仍然不能写入 String {#type-erasure}
 
 <!-- 面试来源：
 - 高德：https://www.nowcoder.com/discuss/746711740418633728
@@ -187,11 +228,11 @@ List<Integer> numbers = new ArrayList<>();
 
 编译器先完成泛型检查，之后才擦除类型参数。编译 `add` 时仍然知道变量是 `List<Integer>`，所以传入 String 会直接失败。
 
-如果通过原始类型、未检查转换或反射绕过编译器，JVM 可能允许错误写入，之后按 Integer 读取时由编译器插入的转换抛出 `ClassCastException`。
+原始类型、未检查转换和反射可绕过泛型检查。错误对象写入后，读取处的转换会抛出 `ClassCastException`。
 
 </details>
 
-### 7.3 `? extends T` 与 `? super T` 有什么区别 {#wildcards}
+### 9.3 `? extends T` 与 `? super T` 有什么区别 {#wildcards}
 
 <!-- 面试来源：
 - 东方财富：https://www.nowcoder.com/discuss/353157780091641856
@@ -209,16 +250,54 @@ List<Integer> numbers = new ArrayList<>();
 <details>
 <summary>参考回答</summary>
 
-`? extends T` 表示某个未知的 T 子类型，读取时至少可以按 T 使用，但不能写入具体非 null 值。`? super T` 表示某个未知的 T 父类型，写入 T 安全，读取时只能按 Object 使用。
+`? extends T` 的具体类型未知，读取结果可按 T 使用。它只允许直接写入 `null`。`? super T` 可接收 T 及其子类型，读取结果只能视为 Object。
 
 参数主要提供数据时使用 extends，主要接收数据时使用 super；既要按同一具体类型读写时使用 `List<T>`。
 
 </details>
 
-## 8. 参考资料
+### 9.4 泛型桥接方法怎样保持重写关系？ {#bridge-method}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：擦除签名、动态分派与类型转换。
+
+**相关内容**：[桥接方法与运行时类型检查](#桥接方法与运行时类型检查)。
+
+<details>
+<summary>参考回答</summary>
+
+桥接方法用擦除后的签名接收调用，再转换参数并转发。例中 `accept(Object)` 转发到 `accept(String)`。原始类型混入其他对象时，转换会抛出 `ClassCastException`。
+
+</details>
+
+### 9.5 泛型变长参数为什么会堆污染，SafeVarargs 能修复吗？ {#generic-varargs-pollution}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：擦除数组、未检查警告与安全声明。
+
+**相关内容**：[泛型变长参数与堆污染](#泛型变长参数与堆污染)。
+
+<details>
+<summary>参考回答</summary>
+
+数组只检查擦除后的元素类型，因此可混入错误的参数化列表。读取时的具体类型转换才暴露错误。`@SafeVarargs` 只声明作者已验证安全，不会修复不安全的方法体。
+
+</details>
+
+## 10. 参考资料 {#参考资料}
 
 - [Oracle Java Tutorials：Generics](https://docs.oracle.com/javase/tutorial/java/generics/)
 - [Oracle Java Tutorials：Wildcards and Subtyping](https://docs.oracle.com/javase/tutorial/java/generics/subtyping.html)
 - [Oracle Java Tutorials：Guidelines for Wildcard Use](https://docs.oracle.com/javase/tutorial/java/generics/wildcardGuidelines.html)
 - [Java Language Specification：Type Erasure](https://docs.oracle.com/javase/specs/jls/se25/html/jls-4.html#jls-4.6)
 - [Java Virtual Machine Specification：Signature Attribute](https://docs.oracle.com/javase/specs/jvms/se25/html/jvms-4.html#jvms-4.7.9)
+- [Oracle：Bridge Methods](https://docs.oracle.com/javase/tutorial/java/generics/bridgeMethods.html)
+- [JLS：instanceof](https://docs.oracle.com/en/java/javase/26/docs/specs/jls/jls-15.html#jls-15.20.2)
+- [Java API：SafeVarargs](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/SafeVarargs.html)
+- [Oracle：Non-Reifiable Types](https://docs.oracle.com/javase/tutorial/java/generics/nonReifiableVarargsType.html)
