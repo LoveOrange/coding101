@@ -7,21 +7,18 @@ knowledge:
 
 # 类加载故障
 
-类加载故障常在启动、第一次请求或热部署时出现。排查时先区分“没有找到定义”“找到了不兼容定义”“初始化执行失败”和“初始化没有进展”，再检查实际类来源与定义加载器。
+类加载故障包括查找失败、链接冲突与初始化失败。本文负责按异常和线程状态定位原因。正常阶段与触发条件见[类加载](./class-loading-stages.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- `ClassNotFoundException` 来自显式加载 API 找不到类；`NoClassDefFoundError` 是编译期存在的类在运行时无法使用，可能缺少依赖，也可能之前初始化失败。[卡](#cnfe-vs-ncdfe)
-- 静态初始化第一次失败抛出 `ExceptionInInitializerError`，之后访问只得到 `NoClassDefFoundError: Could not initialize class`，根因要看第一次异常。
-- `NoSuchMethodError`、`NoSuchFieldError`、`AbstractMethodError` 通常表示编译和运行时使用了不同版本的依赖。[卡](#no-such-method-error)
-- 排查时先确认实际类来源：用 `-Xlog:class+load` 或 `getProtectionDomain().getCodeSource()` 查看是哪个 JAR、哪个加载器。
-- 两个类在不同线程中互相触发初始化，可能形成类初始化死锁。
+- `ClassNotFoundException` 表示显式类查找失败。[卡](#cnfe-vs-ncdfe)
+- 初始化失败后，再次主动使用会抛 `NoClassDefFoundError`。[卡](#initialization-failure-retry)
+- `NoSuchMethodError` 表示解析时找不到目标方法描述符。[卡](#no-such-method-error)
+- 跨线程的循环初始化依赖可以造成死锁。[卡](#initialization-deadlock)
 
 ## 2. 类初始化锁 {#类初始化锁}
 
-每个类或接口都有独立的初始化锁。同一时刻只有一个线程执行它的类初始化方法，其他主动使用该类的线程会等待初始化完成。
-
-这保证静态状态不会被初始化两次，但也意味着静态代码里的阻塞会卡住所有首次使用者：
+JVM 为每个类或接口维护初始化锁。一个线程执行初始化，其他首次使用者等待结果。正常完成后，静态初始化结果对后续使用者可见。
 
 ```java
 final class Registry {
@@ -29,9 +26,11 @@ final class Registry {
 }
 ```
 
-若 `loadFromRemote` 等待网络、线程池或另一个尚未初始化的类，故障表现可能是启动停住，而不是立即抛异常。
+若 `loadFromRemote()` 等待网络，首次使用者也会等待。外部 I/O 应放入显式生命周期步骤。静态初始化适合建立短小的内存状态。
 
 ## 3. 类初始化死锁 {#类初始化死锁}
+
+两个线程分别初始化 A 和 B，再请求对方完成，就会形成等待环：
 
 ```java
 final class A {
@@ -43,49 +42,50 @@ final class B {
 }
 ```
 
-单线程访问只会得到初始化顺序带来的中间默认值；若两个线程分别开始初始化 A 和 B，并在各自持有初始化锁时等待对方完成，就可能停止前进。
+该代码需要特定并发时序才会死锁。单线程访问会递归请求已在初始化的类。JVM 允许同一线程继续，因此本例读到 `null`。
 
-线程转储中不一定以常规 Java monitor deadlock 的形式直接报告。应查找多个线程停在类初始化或 `<clinit>` 相关栈帧，并结合类加载日志确认相互依赖。
+初始化线程在执行 `<clinit>` 时已释放初始化锁。死锁来自“等待另一线程完成初始化”的依赖环。线程转储中应查找 `<clinit>` 和初始化等待。
 
-避免方法包括：
-
-- 静态初始化只建立内存内、可快速完成的值。
-- 不在静态代码中启动并等待线程。
-- 把外部 I/O 和复杂依赖改为显式生命周期步骤。
-- 消除双向静态依赖，或集中到单一初始化顺序。
+Java monitor 死锁检测未必直接报告这种等待。应对照多个线程栈，还原类初始化依赖。移除双向静态依赖可消除本例的等待环。
 
 ## 4. 初始化失败与缺少类定义 {#初始化失败与缺少类定义}
+
+首次初始化抛出非 `Error` 异常时，JVM 会包装异常。包装类型是 `ExceptionInInitializerError`：
 
 ```text
 ExceptionInInitializerError
 Caused by: IllegalStateException: missing endpoint
 ```
 
-第一次失败时，根因通常在 `Caused by`。随后访问同一类可能只看到：
+若原异常已经是 `Error`，首次调用直接传播它。包装异常分配失败时，还可抛出 `OutOfMemoryError`。失败后的类会进入错误状态。
+
+后续主动使用同一 `Class` 会得到：
 
 ```text
 NoClassDefFoundError: Could not initialize class com.example.Config
 ```
 
-这不代表 Class 文件消失。需要回到进程最早的初始化异常，而不是继续修改 classpath。
+此时 Class 文件可以仍然存在。定位应回到最早异常与完整 cause chain。同一 `Class` 的初始化不会自动重试。
 
-显式查找一个从未存在的类通常是 `ClassNotFoundException`。区分错误类型可以大幅缩小排查范围。
+显式 API 找不到类会抛 `ClassNotFoundException`。JVM 加载依赖失败也会抛 `NoClassDefFoundError`。需要结合消息与首次异常区分两种原因。
 
 ## 5. 二进制版本冲突 {#二进制版本冲突}
 
-应用按新版本依赖编译，却在运行时加载旧版本，常见错误包括：
+应用按一个版本编译，运行时加载另一版本，就会产生链接风险。
 
-| 错误 | 常见含义 |
+| 错误 | 含义 |
 | --- | --- |
-| `NoSuchMethodError` | 运行时类型没有编译期调用的方法描述符 |
-| `NoSuchFieldError` | 运行时类型没有编译期引用的字段 |
-| `AbstractMethodError` | 调用方预期实现存在，但实际实现类没有该方法 |
-| `IncompatibleClassChangeError` | 类/接口或静态/实例形态发生不兼容变化 |
-| `UnsupportedClassVersionError` | 运行 JDK 不支持该 Class 文件版本 |
+| `NoSuchMethodError` | 解析时找不到目标方法描述符。 |
+| `NoSuchFieldError` | 解析时找不到目标字段。 |
+| `AbstractMethodError` | 调用到缺少有效具体实现的方法。 |
+| `IncompatibleClassChangeError` | 类、接口或成员形态发生不兼容变化。 |
+| `UnsupportedClassVersionError` | 运行 JDK 不支持该 Class 版本。 |
 
-这类 `LinkageError` 说明源码可能编译成功，但运行时解析到另一份二进制定义。重新编译调用方有时能暴露问题，但根本修复是统一运行时依赖和兼容策略。
+方法描述符包含参数类型与返回类型。只比较方法名会遗漏返回类型冲突。修复需要统一运行时依赖，或恢复二进制兼容。
 
-## 6. 确认类的来源 {#确认类的来源}
+## 6. 类来源证据 {#确认类的来源}
+
+JDK 9 及以后可记录类加载来源：
 
 ```bash
 java -Xlog:class+load=info -jar app.jar
@@ -93,7 +93,7 @@ jcmd <pid> VM.classloaders
 jcmd <pid> VM.classloader_stats
 ```
 
-在可修改代码时：
+代码中可查看目标类信息：
 
 ```java
 Class<?> type = SomeLibrary.class;
@@ -101,18 +101,18 @@ System.out.println(type.getProtectionDomain().getCodeSource());
 System.out.println(type.getClassLoader());
 ```
 
-然后检查构建依赖图：
+代码来源可为空，需结合加载日志判断。再对照依赖树与最终产物：
 
 ```bash
 mvn dependency:tree
 ./gradlew dependencies
 ```
 
-依赖图说明打包选择，类加载日志说明运行事实。容器挂载、启动脚本、应用服务器共享库和 shaded JAR 都可能让两者不同。
+依赖图说明构建选择，加载日志说明运行结果。服务器共享库、容器挂载和 shaded JAR 都需检查。
 
-## 7. 加载器冲突导致的 `ClassCastException` {#加载器冲突导致的-classcastexception}
+## 7. 加载器类型冲突 {#加载器冲突导致的-classcastexception}
 
-错误信息为“X cannot be cast to X”时，通常有两个加载器分别定义了同名 X。打印两边 `Class` 的加载器、模块和代码来源：
+“X cannot be cast to X”可由同名类型的加载器差异引起。应分别打印两边类型的加载器、模块和来源：
 
 ```java
 static void describe(Class<?> type) {
@@ -124,32 +124,32 @@ static void describe(Class<?> type) {
 }
 ```
 
-修复方向通常是把共享接口提升到共同父加载器，或避免跨隔离边界直接传递实现对象。
+共享 API 需由共同父加载器定义，见[类加载器](./classloaders-spi-isolation.mdx#插件隔离)。
 
 ## 8. 排查顺序 {#排查顺序}
 
 1. 保留最早异常和完整 cause chain。
-2. 判断是查找、链接、初始化还是等待问题。
+2. 判断故障处于查找、链接、初始化还是等待阶段。
 3. 记录目标类的加载器、模块和代码来源。
-4. 打开类加载日志复现，确认候选 JAR 的选择顺序。
-5. 对照构建依赖图、最终产物和真实启动命令。
-6. 最小化重复依赖或静态初始化链，再验证冷启动与热部署。
+4. 对照类加载日志、依赖图和最终产物。
+5. 检查启动脚本、容器挂载与共享库。
+6. 修复后验证冷启动和热部署路径。
 
-## 9. 常见问题
+## 9. 常见问题 {#常见问题}
 
-### 9.1 为什么重启后问题暂时消失
+### 9.1 重启与故障时序 {#重启与故障时序}
 
-类加载顺序、首次请求和并发初始化时序可能改变；热部署遗留的旧加载器也会被进程重启清除。重启只改变现场，仍应保留重启前线程转储、类加载日志和首个异常。
+重启会清除旧加载器，并改变首次访问顺序。并发初始化的触发时序也会变化。重启前应保留线程转储、首个异常与类加载日志。
 
-### 9.2 为什么依赖树只有一个版本，运行时仍冲突
+### 9.2 依赖树与运行时来源 {#依赖树与运行时来源}
 
-依赖树不包含所有运行来源。应用服务器共享目录、手工复制的 JAR、容器基础镜像、Java Agent 和运行时生成类都可能引入额外定义。
+依赖树只描述构建依赖。服务器共享目录、手工 JAR 和 Java Agent 可引入额外定义。定位以实际加载来源为准。
 
-### 9.3 初始化失败后能否在同一加载器中重试
+### 9.3 初始化失败后的恢复 {#初始化失败后的恢复}
 
-不能让同一个 `Class` 重新初始化。可以显式设计可重试的业务初始化，或者创建新的类加载器重新定义类型，但后者只适合插件、热部署等明确架构。
+同一 `Class` 进入错误状态后，主动使用持续失败。可重试业务应采用显式初始化方法。插件架构也可创建新加载器，重新定义类型。
 
-## 10. 面试题
+## 10. 面试题 {#面试题}
 
 ### 10.1 `ClassNotFoundException` 与 `NoClassDefFoundError` 有什么区别 {#cnfe-vs-ncdfe}
 
@@ -160,20 +160,16 @@ static void describe(Class<?> type) {
 
 **出现公司**：字节跳动、阿里巴巴
 
-**考察重点**
-
-- 显式加载失败与 JVM 使用定义失败。
-- 初始化失败也可能导致 `NoClassDefFoundError`。
-- 根据最早异常定位根因。
+**考察重点**：区分类查找失败、依赖缺失与初始化错误。
 
 **相关内容**：[初始化失败与缺少类定义](#初始化失败与缺少类定义)和[二进制版本冲突](#二进制版本冲突)。
 
 <details>
 <summary>参考回答</summary>
 
-`ClassNotFoundException` 是 `Class.forName`、`loadClass` 等显式查找 API 找不到类时抛出的受检异常。`NoClassDefFoundError` 是 JVM 在链接或使用某个编译期存在的定义时无法得到它，可能因为运行时缺少 Class，也可能因为该类之前初始化失败。
+`ClassNotFoundException` 表示显式加载 API 找不到类。`NoClassDefFoundError` 是 JVM 使用类定义失败的错误。运行时缺少依赖与之前初始化失败都能触发后者。
 
-排查时先找最早错误和 cause chain，再用类加载日志确认来源；看到 `Could not initialize class` 时不应只查 classpath。
+看到 `Could not initialize class`，先找最早初始化异常。再用类加载日志确认来源，区分缺类与失败状态。
 
 </details>
 
@@ -185,25 +181,56 @@ static void describe(Class<?> type) {
 
 **出现公司**：阿里巴巴
 
-**考察重点**
-
-- 编译期和运行时依赖不一致。
-- 方法描述符包含参数与返回类型。
-- 构建依赖图和类加载日志的证据范围。
+**考察重点**：根据方法描述符与实际加载来源定位版本冲突。
 
 **相关内容**：[二进制版本冲突](#二进制版本冲突)至[排查顺序](#排查顺序)。
 
 <details>
 <summary>参考回答</summary>
 
-它通常表示调用方按一个版本的方法描述符编译，运行时却加载了没有该方法的另一版本。先保留完整报错，打印目标类的代码来源和加载器，开启 `-Xlog:class+load` 确认实际 JAR，再对照 Maven 或 Gradle 依赖图、打包产物和启动环境。
+先确认运行时目标类中缺失的方法描述符。描述符包含参数和返回类型。记录报错中的签名、实际 JAR 与加载器。
 
-修复要统一运行时版本或恢复二进制兼容，不能只通过改变偶然的 classpath 顺序掩盖冲突。
+用 `-Xlog:class+load=info` 确认来源。再对照依赖树、打包产物和启动脚本。修复版本后，重新验证发生错误的调用路径。
 
 </details>
 
-## 11. 参考资料
+### 10.3 静态初始化首次抛出 Error 后，再次使用会怎样？ {#initialization-failure-retry}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：首次异常传播、错误状态与重试边界。
+
+**相关内容**：[初始化失败与缺少类定义](#初始化失败与缺少类定义)。
+
+<details>
+<summary>参考回答</summary>
+
+首次调用直接传播原 Error。该 Class 随后进入错误状态。再次主动使用会抛 `NoClassDefFoundError`。同一 Class 的初始化不会自动重试。需要重试的外部操作应移出静态初始化。
+
+</details>
+
+### 10.4 两个类互相引用静态字段，为何单线程成功而并发死锁？ {#initialization-deadlock}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：递归初始化与跨线程等待环。
+
+**相关内容**：[类初始化死锁](#类初始化死锁)。
+
+<details>
+<summary>参考回答</summary>
+
+同一线程递归请求初始化时，JVM 允许它继续执行。因此它可读到尚未赋值的静态字段零值。两个线程分别负责两个类时，会等待对方完成。若依赖构成环，初始化就无法推进。
+
+</details>
+
+## 11. 参考资料 {#参考资料}
 
 - [JLS：Initialization of Classes and Interfaces](https://docs.oracle.com/javase/specs/jls/se26/html/jls-12.html#jls-12.4)
 - [JVMS：Loading Constraints](https://docs.oracle.com/javase/specs/jvms/se26/html/jvms-5.html#jvms-5.3.4)
 - [Oracle：`jcmd`](https://docs.oracle.com/en/java/javase/26/docs/specs/man/jcmd.html)
+- [JLS 26：Detailed Initialization Procedure](https://docs.oracle.com/javase/specs/jls/se26/html/jls-12.html#jls-12.4.2)

@@ -7,29 +7,24 @@ knowledge:
 
 # JVM 诊断
 
-JVM 工具各自只能回答一类问题：线程转储描述某个时刻的调用和等待，堆转储描述对象引用，GC 日志描述回收时间线，JFR 和 profiler 描述一段时间内的事件。先定义症状，再选择能证伪假设的证据。
+JVM 诊断通过快照与时间序列定位运行问题。本文负责工具选择、证据范围和采集影响。CPU 定位见[CPU 使用率](./cpu-high-diagnosis.mdx)。对象引用分析见[堆转储](./heap-dumps-memory-leaks.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- 线程转储回答“某一时刻线程在哪里、等什么”，堆转储回答“对象被谁引用”，GC 日志回答“回收的时间线”，JFR 和 profiler 回答“一段时间内时间花在哪里”。[卡](#diagnostic-tools)
-- 现代 HotSpot 优先使用 `jcmd` 作为统一入口，`jstack`、`jmap` 等旧工具按需使用。
-- 单份线程转储只能说明瞬时状态，连续采集 3—5 份才能区分持续热点和偶然经过。[卡](#single-thread-dump)
-- 完整堆转储可能造成长停顿或写满磁盘，先用指标、JFR 和类直方图缩小范围。
-- 每份诊断证据都要记录采集时间、JDK 版本、启动参数和当时的负载。
+- 线程转储记录调用与等待，堆转储记录对象引用。[卡](#diagnostic-tools)
+- GC 日志记录回收过程，JFR 关联运行期事件。
+- 多份线程转储可区分持续停留与偶然经过。[卡](#single-thread-dump)
+- JDK 26 的 `GC.heap_dump` 默认请求 Full GC。[卡](#heap-dump-impact)
 
 ## 2. 故障时间线 {#故障时间线}
 
-开始执行命令前先写清楚：
+采集前先确认错误、延迟或退出的发生时间。记录受影响实例、接口与发布版本。再关联流量、下游状态和资源指标。
 
-- 用户看到的是错误、超时、吞吐下降还是进程退出。
-- 首次发生和恢复时间。
-- 影响哪些实例、接口和请求。
-- 同期是否发布、扩容、流量变化或下游异常。
-- CPU、RSS、堆、线程、GC 和容器限制怎样变化。
-
-没有同一时间轴，线程栈里的等待、堆里的大对象和日志中的 GC 都可能只是正常现象。
+证据需要来自同一实例与时间窗口。正常等待、大对象与 GC 事件都需结合症状解释。
 
 ## 3. `jcmd` {#jcmd}
+
+先查看目标 JVM 支持的命令：
 
 ```bash
 jcmd -l
@@ -37,96 +32,109 @@ jcmd <pid> help
 jcmd <pid> VM.version
 jcmd <pid> VM.command_line
 jcmd <pid> VM.flags
-jcmd <pid> VM.system_properties
 ```
 
-可用命令由 JVM 版本和实现决定，应先运行 `help`。Oracle 当前文档建议优先使用 `jcmd`，再按需要使用旧的 `jstack`、`jmap`、`jinfo`。
+命令集合由 JDK 版本与实现决定。采集工具应与目标 JDK 匹配。`jcmd` Attach 要求同机及相同有效用户和组。
 
-Attach 通常要求同机、相同有效用户，并可能受容器 PID namespace、权限和 JVM 参数限制。工具版本最好与目标进程 JDK 匹配。
+容器的 PID 命名空间会影响目标识别。`-XX:+DisableAttachMechanism` 会关闭 Attach。连接失败时，应先核对这些条件。
 
 ## 4. 症状与首选证据 {#症状与首选证据}
 
 | 症状 | 首选证据 | 后续证据 |
 | --- | --- | --- |
-| CPU 高 | OS 进程/线程 CPU、CPU profile | 线程栈、GC/JIT 事件 |
-| 请求卡住 | 多份线程转储、wall-clock profile | 锁与线程池指标 |
-| 堆持续增长 | GC 后 live set、class histogram | heap dump、JFR top growers |
-| RSS 高、堆正常 | NMT、线程数、BufferPool | `smaps`、native profiler |
-| GC 停顿 | GC unified log、JFR | 分配 profile、对象图 |
-| 进程崩溃 | `hs_err_pid`、core dump | native symbols、JFR |
-| 类冲突 | 类加载日志、代码来源 | 依赖树、loader stats |
+| CPU 高 | OS 线程 CPU 与 CPU profile。 | GC、JIT 和线程栈。 |
+| 请求卡住 | 多份线程栈与 wall-clock profile。 | 锁、队列与下游指标。 |
+| 堆增长 | GC 后 live set 与类直方图。 | 堆转储中的保留关系。 |
+| RSS 高、堆稳定 | NMT、BufferPool 与线程数。 | smaps 与 native profiler。 |
+| GC 停顿 | GC 日志与 JFR。 | 分配样本和对象图。 |
+| 进程崩溃 | hs_err_pid 与系统退出记录。 | core dump 与本地符号。 |
+| 类冲突 | 类加载日志与实际来源。 | 依赖树与加载器统计。 |
 
-工具名字不是流程。比如 CPU 高时先确认实际消耗 CPU 的线程，直接导出堆通常没有帮助。
+症状决定所需证据。CPU 高优先采线程 CPU 与调用路径。堆转储适合回答对象由谁持有。
 
 ## 5. 快照与时间序列 {#快照与时间序列}
 
-一次线程转储只能说明“采集瞬间在哪里”。连续 3—5 份、间隔几秒的转储能区分持续热点与偶然经过。
+一份线程转储只描述采集瞬间。间隔几秒采集 3—5 份，可以观察状态是否推进。CPU 占比仍需结合线程统计或采样结果。
 
-同理，一份 heap dump 可以显示引用图，却无法单独证明哪个对象持续增长。GC 日志、JFR 或多个低风险统计能先建立趋势，再在合适时刻采集完整堆。
+堆转储显示某一时刻的引用图。连续指标用于确认增长，再用引用图定位持有者。
 
 ## 6. JFR {#jfr}
 
+短时记录可使用 profile 配置：
+
 ```bash
-jcmd <pid> JFR.start \
-  name=incident \
-  settings=profile \
-  duration=2m \
-  filename=/safe/path/incident.jfr
+jcmd <pid> JFR.start name=incident settings=profile duration=2m filename=/logs/incident.jfr
 ```
 
-JFR 可以关联 CPU 样本、线程、锁、分配、GC、类加载、编译和 I/O 等事件。`default` 配置适合低开销持续记录，`profile` 会开启更多事件；实际开销取决于事件和阈值。
+JFR 关联 CPU、分配、锁、GC、编译与 I/O 事件。实际事件与阈值由配置决定。持续记录可用 default 配置，并限制年龄和大小：
 
-持续环形记录比故障后临时启动更容易保留“发生之前”的证据。要限制最大年龄、文件大小并验证磁盘路径。
+```bash
+jcmd <pid> JFR.start name=continuous settings=default maxage=30m maxsize=256m
+jcmd <pid> JFR.dump name=continuous filename=/logs/incident.jfr
+```
+
+第二条命令导出已有记录，记录本身继续运行。路径由目标 JVM 写入，需有权限与可用空间。暂停关联分析见[GC 停顿分析](./gc-logs-jfr-pauses.mdx)。
 
 ## 7. async-profiler {#async-profiler}
 
+CPU 与 wall-clock 使用不同采样目标：
+
 ```bash
-asprof -d 30 -f cpu.html <pid>
+asprof -e cpu -d 30 -f cpu.html <pid>
+asprof -e wall -d 30 -f wall.html <pid>
 ```
 
-它可以采样 CPU、wall-clock、分配和锁等事件，并在 HotSpot 上展示 Java、native 与部分内核栈。CPU profile 适合找实际占用处理器的路径；wall-clock profile 会包含运行、阻塞和睡眠线程，更适合端到端延迟。
+CPU profile 定位处理器消耗。wall-clock profile 还包含等待和睡眠线程。因此，后者适合分析锁、I/O 与延迟。
 
-采样结果是统计分布，不是每次调用的完整追踪。采样时长、频率、平台支持和容器权限都会影响结果。
+采样是统计结果。频率、时长、平台权限和符号都会影响解释。
 
-## 8. 采集动作的风险 {#采集动作的风险}
+## 8. 采集动作的影响 {#采集动作的风险}
 
-大致可以按影响递增理解：
+已有日志与指标适合先建立故障范围。线程转储、JFR 和 profile 用于补充时间维度。类直方图和堆转储涉及堆遍历，应评估停顿。
 
-1. 读取已有日志、指标和启动参数。
-2. 短时 JFR/采样 profile、普通线程转储。
-3. class histogram、详细诊断命令。
-4. live histogram、完整 heap dump、core dump。
+执行前查看命令影响：
 
-实际影响取决于堆大小、线程数、磁盘与 JVM 状态。执行前运行 `jcmd <pid> help <command>` 查看 Impact，并明确文件落盘空间、停顿窗口和回滚方式。
+```bash
+jcmd <pid> help GC.class_histogram
+jcmd <pid> help GC.heap_dump
+```
+
+JDK 26 将这两项命令标为 High impact。影响与堆大小、对象数量和落盘速度有关。
+
+### 8.1 堆转储与显式回收 {#堆转储与显式回收}
+
+JDK 26 的 `GC.heap_dump` 默认请求 Full GC。添加 `-all` 后包含不可达对象，并省去该回收请求：
+
+```bash
+jcmd <pid> GC.heap_dump /logs/live.hprof
+jcmd <pid> GC.heap_dump -all /logs/all.hprof
+```
+
+以上是两种采集方式，按目标选一种执行。`-all` 仍需遍历堆并写出文件。它不保证无停顿，文件还会包含待回收对象。
+
+转储前需确认磁盘空间和可接受停顿。分析时记录采集选项，避免混淆存活与不可达对象。
 
 ## 9. 证据的环境信息 {#证据的环境信息}
 
-每份诊断包至少包含：
+每份证据应记录采集时间、进程 uptime 和实例标识。还需包含 JDK 版本、启动参数与发布版本。
 
-- UTC/本地时间与进程 uptime。
-- 主机、容器、Pod 和实例标识。
-- JDK 完整版本、启动命令与 flags。
-- 发布版本或 commit。
-- 采集命令、持续时间和文件校验。
-- 对应监控图的时间区间。
+保留采集命令、持续时间和对应监控区间。这些信息用于确认不同证据是否来自同一现场。
 
-否则两台不同版本实例的线程栈、GC 日志很容易被错误拼在一起。
+## 10. 常见问题 {#常见问题}
 
-## 10. 常见问题
+### 10.1 传统工具的适用范围 {#传统工具的适用范围}
 
-### 10.1 `jstack`、`jmap` 还能不能用
+目标 JDK 支持时，`jstack` 与 `jmap` 仍可使用。`jcmd` 提供统一入口，并能查询命令影响。
 
-可以在目标 JDK 支持时使用，但现代 HotSpot 优先考虑 `jcmd` 的对应命令。工具版本、Attach 权限和命令影响都要核对。
+### 10.2 在线诊断与堆分析 {#在线诊断与堆分析}
 
-### 10.2 Arthas 能替代 JFR 和堆分析吗
+在线调用诊断用于观察具体执行路径。JFR 提供事件时间线，堆转储提供完整引用图。三者按症状组合。
 
-不能简单替代。它擅长在线查看调用、类和线程；JFR 擅长时间线事件，heap dump 擅长完整对象引用图。按问题组合。
+### 10.3 诊断动作与故障现场 {#诊断动作与故障现场}
 
-### 10.3 为什么先采低风险证据
+堆遍历与大文件写入会增加进程负担。先通过指标和事件确定需要回答的问题。再选择能提供所需证据的采集动作。
 
-故障进程本就资源紧张，完整 heap dump 可能造成长停顿、磁盘写满或 OOM Kill。先用指标、JFR 和 histogram 缩小范围，可以更安全地决定是否需要重证据。
-
-## 11. 面试题
+## 11. 面试题 {#面试题}
 
 ### 11.1 常用 JVM 诊断工具分别能解决什么问题 {#diagnostic-tools}
 
@@ -137,20 +145,16 @@ asprof -d 30 -f cpu.html <pid>
 
 **出现公司**：字节跳动、阿里巴巴
 
-**考察重点**
+**考察重点**：按证据范围选择工具，并评估采集影响。
 
-- 工具与证据类型的对应关系。
-- 快照和时间序列的差异。
-- 采集风险与生产边界。
-
-**相关内容**：[故障时间线](#故障时间线)至[采集动作的风险](#采集动作的风险)。
+**相关内容**：[故障时间线](#故障时间线)至[采集动作的影响](#采集动作的风险)。
 
 <details>
 <summary>参考回答</summary>
 
-先按症状选证据：CPU 用 OS 线程统计和 CPU profiler；卡顿用多份线程转储或 wall-clock profile；堆增长看 GC 后 live set、histogram 和必要时 heap dump；非堆增长用 NMT 与系统映射；GC 问题用统一日志和 JFR。
+线程转储显示调用栈与等待状态。堆转储显示对象图，GC 日志显示回收阶段。JFR 与 profiler 补充一段时间内的事件和样本。
 
-现代 HotSpot 优先用 `jcmd` 查看可用命令。线程与堆转储是快照，JFR 和日志是时间序列；完整堆可能造成停顿和大量 I/O，执行前要评估风险。
+CPU 高看线程 CPU 与 CPU profile。卡顿看线程栈和 wall-clock profile。对象增长看 live set 与保留关系。命令影响可通过 `jcmd <pid> help <command>` 查询。
 
 </details>
 
@@ -162,26 +166,40 @@ asprof -d 30 -f cpu.html <pid>
 
 **出现公司**：阿里巴巴
 
-**考察重点**
-
-- 单点状态不能证明持续热点。
-- 多个快照和采样 profile 建立时间维度。
-- 线程栈要与 CPU、延迟和队列对齐。
+**考察重点**：区分瞬时状态、持续停留与实际时间占比。
 
 **相关内容**：[快照与时间序列](#快照与时间序列)。
 
 <details>
 <summary>参考回答</summary>
 
-线程可能刚好经过某个方法，单份栈只能描述采集瞬间。间隔几秒连续采集多份，才能看到同一线程是否持续停在计算、锁或 I/O；CPU/wall profile 还能给出一段时间内的样本占比。
+单份转储只显示线程采集瞬间的位置。线程恰好经过某个方法，也会出现在栈中。连续快照能显示它是否长期停留或持续推进。
 
-最后还要和线程 CPU、请求延迟、线程池队列对齐，否则正常等待也可能被误判为故障。
+实际热点还需对照线程 CPU 与采样占比。等待栈则需结合请求延迟和队列变化。
 
 </details>
 
-## 12. 参考资料
+### 11.3 GC.heap_dump 的 -all 选项会消除停顿吗？ {#heap-dump-impact}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：Full GC 请求、堆遍历与不可达对象。
+
+**相关内容**：[堆转储与显式回收](#堆转储与显式回收)。
+
+<details>
+<summary>参考回答</summary>
+
+`-all` 省去默认的 Full GC 请求，但仍需遍历堆。它同时导出可达与不可达对象。堆遍历和文件写入仍会造成影响。选择该选项后，分析时也需区分待回收对象。
+
+</details>
+
+## 12. 参考资料 {#参考资料}
 
 - [Oracle：Diagnostic Tools](https://docs.oracle.com/en/java/javase/26/troubleshoot/diagnostic-tools.html)
 - [Oracle：`jcmd`](https://docs.oracle.com/en/java/javase/26/docs/specs/man/jcmd.html)
 - [Oracle：Flight Recorder API Guide](https://docs.oracle.com/en/java/javase/26/jfapi/index.html)
 - [async-profiler](https://github.com/async-profiler/async-profiler)
+- [async-profiler：Profiling Modes](https://github.com/async-profiler/async-profiler/blob/master/docs/ProfilingModes.md)

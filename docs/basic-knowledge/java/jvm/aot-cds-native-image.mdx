@@ -7,61 +7,76 @@ knowledge:
 
 # Java 启动优化
 
-Java 的启动优化至少有三条路径：CDS/AOT Cache 在 HotSpot 中复用预先处理的类和运行时资料；JIT 仍在运行期根据画像优化；GraalVM Native Image 用闭世界分析生成独立原生程序。它们解决的问题和兼容边界不同。
+Java 启动优化可以复用类信息，也可以提前编译代码。本文比较 CDS、JDK 24—26 AOT Cache 与 Native Image。运行期编译机制见[分层编译](./interpreter-tiered-compilation.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- JIT 在运行期根据真实类型和分支画像编译热点代码，峰值性能好，代价是启动和预热时间。
-- CDS 和 JDK 24 引入的 AOT Cache 提前处理类加载、链接和方法画像，生产进程仍是 HotSpot，JIT 继续工作。[卡](#jit-vs-aot)
-- GraalVM Native Image 在构建期做静态可达性分析，生成独立原生程序，启动快、初始内存小。
-- Native Image 基于闭世界假设，反射、动态代理、资源和序列化目标要通过 Reachability Metadata 声明。[卡](#native-image-fit)
-- 构建期初始化会把构建机的时区、环境变量等状态固化进产物。
+- CDS 复用预处理类信息，运行进程仍使用 HotSpot。
+- JDK 24 的 AOT Cache 缓存类加载与链接结果。[卡](#jit-vs-aot)
+- JDK 25 的 JEP 515 将方法画像加入 AOT Cache。
+- Native Image 用闭世界分析生成原生程序。[卡](#native-image-fit)
+- 构建期初始化的静态状态会进入 Native Image 产物。[卡](#native-initialization)
 
 ## 2. CDS {#cds}
 
-Class Data Sharing 把一组预处理类存入共享归档，启动时通过内存映射使用，减少类解析成本，并允许同机 JVM 共享只读页面。现代 JDK 自带默认 CDS 归档。
+CDS 将预处理类信息写入共享归档。HotSpot 启动时映射归档，减少重复处理。同机多个 JVM 可以共享只读页面。
 
-Application CDS 可以把应用类纳入归档。收益取决于应用规模和启动路径；长时间运行、类加载占比很低的服务，峰值吞吐未必明显变化。
+Application CDS 将应用类纳入归档。JDK 17 可用动态归档训练应用：
 
-CDS 仍运行完整 HotSpot JVM，保留动态类加载、反射和 JIT。它不是把应用编译成一个无需 JVM 的可执行文件。
+```bash
+java -XX:ArchiveClassesAtExit=app.jsa -cp app.jar com.example.Main
+java -XX:SharedArchiveFile=app.jsa -Xlog:cds=info -cp app.jar com.example.Main
+```
+
+第一条命令在正常退出时生成归档。第二条命令加载归档，并输出加载情况。应用仍保留动态类加载、反射和 JIT。
+
+CDS 的收益集中在启动与共享内存。长时间服务还需单独测量稳定吞吐。
 
 ## 3. JDK AOT Cache {#jdk-aot-cache}
 
-JDK 24 引入 AOT Cache，之后加入更简洁的训练命令与方法画像。JDK 26 的 JEP 516 让缓存堆对象能力可与包括 ZGC 在内的收集器配合。
+AOT Cache 的能力按 JDK 版本增加：
 
-简化流程可以是：
+| 版本 | 功能 |
+| --- | --- |
+| JDK 24，JEP 483 | 缓存类加载与链接结果。 |
+| JDK 25，JEP 514 | 用单条训练命令生成缓存。 |
+| JDK 25，JEP 515 | 复用训练得到的方法画像。 |
+| JDK 26，JEP 516 | 支持与收集器无关的对象缓存格式。 |
+
+JDK 25—26 可使用以下命令：
 
 ```bash
-# 训练并生成缓存
 java -XX:AOTCacheOutput=app.aot -cp app.jar com.example.Main
-
-# 生产使用
-java -XX:AOTCache=app.aot -cp app.jar com.example.Main
+java -XX:AOTCache=app.aot -Xlog:aot=info -cp app.jar com.example.Main
 ```
 
-缓存与应用、JDK 版本、操作系统/CPU 及部分 JVM 选项绑定，发布变化后需要重建。训练应覆盖实际启动路径，但不要执行会写入真实外部系统的危险业务。
+训练结束后，JVM 生成缓存。生产启动日志用于确认缓存是否成功加载。训练应覆盖真实启动路径，并使用隔离的外部依赖。
 
-截至 JDK 26，Project Leyden 已交付类加载/链接、方法画像和对象缓存；Ahead-of-Time Code Compilation 仍列为进行中。不要把 JDK AOT Cache 描述成“已经把全部热点方法预编译进机器码”。
+缓存要求兼容的应用、JDK、CPU 架构和操作系统。关键 JVM 选项变化也会影响兼容性。发布流程应同步生成、验证和替换缓存。
+
+JDK 26 的 JEP 516 让 ZGC 也能使用对象缓存。JDK 24—26 的这些功能仍由 JIT 生成热点机器码。
 
 ## 4. AOT Cache 与 JIT {#aot-cache-与-jit}
 
-AOT Cache 缩短类加载、链接和画像形成时间，生产进程仍是 HotSpot，JIT 可以根据本次运行继续编译和去优化。这保留了 JVM 对动态负载的适应能力。
+AOT Cache 减少类加载、链接和画像收集的重复工作。JIT 继续根据本次负载编译代码。它也可以在优化假设失效后去优化。
 
-因此它适合希望改善启动和预热，又不想改变部署语义的服务。代价是增加训练与缓存产物管理，并要求训练和生产环境保持兼容。
+这种组合适合保留 HotSpot 部署方式的服务。额外成本是训练时间、缓存空间和兼容性验证。
 
 ## 5. GraalVM Native Image {#graalvm-native-image}
 
-GraalVM Native Image 在构建时从入口做静态可达性分析，只把可达代码和所需运行时放入原生可执行文件：
+Native Image 从入口分析静态可达代码。构建产物包含可达代码和所需运行时：
 
 ```bash
 native-image -jar app.jar
 ```
 
-它通常提供更快启动和更低初始内存，适合 CLI、函数计算、按需伸缩和短生命周期进程。构建时间、产物体积和调试方式会变化，峰值吞吐也必须实测。
+产物以原生程序启动，自带所需的内存管理机制。CLI、函数计算和频繁冷启动服务重视这类收益。构建耗时、RSS 和稳定吞吐需在目标负载下测量。
 
 ## 6. 闭世界假设 {#闭世界假设}
 
-反射、动态代理、JNI、序列化、资源文件和按名称加载的类，静态分析不一定能推断。缺失内容要通过 Reachability Metadata 或框架生成的元数据声明。
+构建时需要确定运行所需的代码与资源。静态分析难以发现的动态访问需补充元数据。常见项目包括反射、JNI、代理和资源文件。
+
+以下元数据声明反射访问的构造器：
 
 ```json
 {
@@ -74,39 +89,47 @@ native-image -jar app.jar
 }
 ```
 
-主流框架已经为不少场景提供 AOT 处理，但自定义扫描、插件和运行时字节码生成仍要单独验证。测试只覆盖一条路径时，未访问的反射目标可能到生产才失败。
+框架可以生成部分 Reachability Metadata。Tracing Agent 也能记录测试中发生的动态访问。未执行的分支仍需单独覆盖。
+
+任意新字节码的运行期加载超出闭世界边界。插件清单和动态生成机制需在迁移时逐项验证。
 
 ## 7. 构建期初始化 {#构建期初始化}
 
-Native Image 可以让部分类在构建期初始化，把对象写入 image heap。若静态初始化读取时区、环境变量、随机数、证书或机器路径，构建机状态可能被固化进产物。
+Native Image 可在构建时执行类初始化。初始化产生的对象会进入 image heap。读取环境变量或路径的静态字段也会保存当时结果。
 
-框架配置应明确哪些类 build-time 初始化、哪些 run-time 初始化。不要仅为了缩短启动，把外部环境相关值提前执行。
+环境相关类应在运行时初始化：
+
+```bash
+native-image --initialize-at-run-time=com.example.EnvironmentConfig -jar app.jar
+```
+
+纯计算类可评估 `--initialize-at-build-time`。配置要使用明确类名或包范围。部署前应更换环境值，验证产物读取的是运行环境。
 
 ## 8. 三种方案的比较 {#三种方案的比较}
 
-| 方案 | 运行形态 | 主要收益 | 主要边界 |
+| 方案 | 运行形态 | 主要收益 | 额外成本 |
 | --- | --- | --- | --- |
-| CDS | HotSpot + 共享归档 | 类加载启动、共享只读页面 | 收益范围较窄 |
-| JDK AOT Cache | HotSpot + 训练缓存 | 启动、预热，保留动态 JVM | 缓存兼容与训练管理 |
-| Native Image | 独立原生程序 | 启动、初始 footprint | 闭世界、构建和动态特性元数据 |
+| CDS | HotSpot 与共享归档。 | 减少类处理，共享只读页面。 | 归档兼容性验证。 |
+| JDK AOT Cache | HotSpot 与训练缓存。 | 减少启动与预热工作。 | 训练与缓存管理。 |
+| Native Image | 独立原生程序。 | 减少冷启动工作。 | 闭世界适配与构建。 |
 
-选择时分别测：进程启动到 ready、第一批请求、稳定吞吐、P99、RSS、构建时间和产物发布复杂度。
+对比应覆盖 ready 时间、首批请求与稳定吞吐。还需记录 P99、RSS、构建时间和诊断成本。
 
-## 9. 常见问题
+## 9. 常见问题 {#常见问题}
 
-### 9.1 AOT 一定比 JIT 快吗
+### 9.1 AOT 与 JIT 的性能比较 {#aot-与-jit-的性能比较}
 
-不一定。AOT 减少运行时准备，但 JIT 能利用当前真实类型和分支画像做投机优化。短任务更重视启动，长时间服务更重视峰值；现代 AOT Cache 还可以与 JIT 组合。
+AOT 提前完成部分工作，JIT 利用本次运行画像。短任务更重视启动，长时间服务更重视稳定吞吐。AOT Cache 可以与 JIT 共同使用。
 
-### 9.2 Native Image 支持反射吗
+### 9.2 Native Image 的反射支持 {#native-image-的反射支持}
 
-支持能够被静态分析发现或通过 Reachability Metadata 声明的反射目标。问题不在“完全不支持”，而在动态可达元素必须在构建时已知。
+Native Image 支持构建时已知的反射目标。目标由静态分析识别，或通过元数据补充。
 
-### 9.3 AOT Cache 能跨 JDK 版本复用吗
+### 9.3 AOT Cache 的版本兼容性 {#aot-cache-的版本兼容性}
 
-不能把它当稳定跨版本格式。应用、JDK、OS/CPU 或关键选项变化后应重建，并通过 `-Xlog:aot` 确认生产实际加载。
+缓存随应用和运行环境一起管理。应用、JDK 或关键选项改变时，应重新生成缓存。使用 `-Xlog:aot=info` 验证实际加载结果。
 
-## 10. 面试题
+## 10. 面试题 {#面试题}
 
 ### 10.1 JIT 和 AOT 有什么区别 {#jit-vs-aot}
 
@@ -118,20 +141,16 @@ Native Image 可以让部分类在构建期初始化，把对象写入 image hea
 
 **出现公司**：去哪儿、淘天、拼多多
 
-**考察重点**
-
-- 编译或优化发生的时间。
-- 启动、动态画像和峰值性能。
-- JDK AOT Cache 与 Native Image 不是同一种产物。
+**考察重点**：区分运行期编译、训练缓存与原生编译产物。
 
 **相关内容**：[CDS](#cds)至[闭世界假设](#闭世界假设)。
 
 <details>
 <summary>参考回答</summary>
 
-JIT 在程序运行时根据实际热度、类型和分支画像生成机器码，能得到高峰值性能，但需要预热和编译资源。AOT 把部分工作提前，改善启动与 warmup，但训练或静态分析未必代表本次真实负载。
+JIT 在运行时编译代码，AOT 将工作提前到运行前。JIT 能利用本次负载的类型和分支画像。AOT 则以构建或训练成本换取启动收益。
 
-还要区分两类 AOT：JDK AOT Cache 仍在 HotSpot 中运行并保留 JIT 与动态语义；GraalVM Native Image 用闭世界分析生成独立原生程序，对反射、资源和动态类需要 reachability metadata。
+JDK 24—26 的 AOT Cache 保留 HotSpot 与 JIT。Native Image 通过闭世界分析生成原生程序。反射等动态访问需在构建时被发现或声明。
 
 </details>
 
@@ -143,27 +162,45 @@ JIT 在程序运行时根据实际热度、类型和分支画像生成机器码�
 
 **出现公司**：淘天
 
-**考察重点**
-
-- 短生命周期、快速扩缩容和低初始 footprint。
-- 动态特性与第三方库兼容性。
-- 构建时间、峰值性能和可观测性验证。
+**考察重点**：根据生命周期、动态特性和性能目标判断适用性。
 
 **相关内容**：[GraalVM Native Image](#graalvm-native-image)至[三种方案的比较](#三种方案的比较)。
 
 <details>
 <summary>参考回答</summary>
 
-CLI、函数计算、频繁冷启动或快速扩缩容服务更可能受益，因为启动和初始内存占比高。应用若大量依赖运行时插件、动态生成类和难以枚举的反射，迁移成本会更高。
+CLI、函数计算和频繁冷启动服务适合评估 Native Image。这些应用更重视启动速度与初始内存。动态插件和字节码生成会增加适配成本。
 
-是否采用要用目标框架和真实请求测启动到 ready、首批请求、稳态吞吐、RSS、构建与诊断成本，不能只用 Hello World 的启动时间决定。
+选择依据应包括真实请求下的启动与稳定性能。还需比较构建耗时、RSS 和诊断能力。
 
 </details>
 
-## 11. 参考资料
+### 10.3 Native Image 为何会读到构建机的配置，怎样处理？ {#native-initialization}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：构建期静态状态与运行期初始化。
+
+**相关内容**：[构建期初始化](#构建期初始化)。
+
+<details>
+<summary>参考回答</summary>
+
+构建期初始化会将静态状态写入 image heap。若静态字段读取环境变量，产物就会保留构建时的值。可用 `--initialize-at-run-time=com.example.EnvironmentConfig` 延后初始化。随后在不同环境中验证配置读取结果。
+
+</details>
+
+## 11. 参考资料 {#参考资料}
 
 - [Oracle：Class Data Sharing 与 AOT Cache](https://docs.oracle.com/en/java/javase/26/docs/specs/man/java.html)
 - [Project Leyden](https://openjdk.org/projects/leyden/)
 - [JEP 483：Ahead-of-Time Class Loading & Linking](https://openjdk.org/jeps/483)
 - [JEP 516：Ahead-of-Time Object Caching with Any GC](https://openjdk.org/jeps/516)
 - [GraalVM Native Image](https://www.graalvm.org/latest/reference-manual/native-image/)
+- [JEP 514：Ahead-of-Time Command-Line Ergonomics](https://openjdk.org/jeps/514)
+- [JEP 515：Ahead-of-Time Method Profiling](https://openjdk.org/jeps/515)
+- [Oracle JDK 17：Dynamic CDS Archives](https://docs.oracle.com/en/java/javase/17/vm/class-data-sharing.html)
+- [GraalVM：Class Initialization](https://www.graalvm.org/latest/reference-manual/native-image/optimizations-and-performance/ClassInitialization/)
+- [GraalVM：Reachability Metadata](https://www.graalvm.org/latest/reference-manual/native-image/metadata/)

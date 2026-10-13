@@ -7,17 +7,18 @@ knowledge:
 
 # GC 停顿分析
 
-GC 停顿分析要把一次回收放回时间线：为什么触发、回收了哪些区域、各阶段花了多久、回收后留下多少 live data，以及同一时刻请求延迟和 CPU 怎样变化。只统计 Full GC 次数无法解释因果。
+GC 停顿分析定位回收工作与业务延迟的关系。本文负责日志解读、JFR 关联和调优验证。收集过程见[G1](./g1-regions-rset-collection-set.mdx)。安全点机制见[分代回收](./generational-barriers-safepoints.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- 用 `-Xlog:gc*` 开启 Unified Logging，同时记录 wall-clock 和 uptime，便于和监控、发布时间对齐。
-- 每次 GC 事件先读收集器与类型、触发原因、回收前后的堆占用和各阶段耗时。
-- 用户看到的停顿可能来自 GC 本身、等待线程进入安全点，或操作系统调度和换页。
-- Full GC 频繁时，先区分分配率过高、live set 接近堆上限和元空间不足，再决定减少分配、修复泄漏还是调整堆。[卡](#frequent-full-gc)
-- GC 日志记录回收的时间线，JFR 能把 GC 与分配位置、业务线程和锁等待关联起来。[卡](#jfr-vs-gc-log)
+- `-Xlog:gc*,safepoint` 可同时记录 GC 与安全点事件。
+- GC 日志中的堆容量是当前容量，并非必然等于 `-Xmx`。[卡](#gc-log-capacity)
+- GC 后 live set 持续增长是保留量增长的线索。[卡](#frequent-full-gc)
+- JFR 可将 GC、分配样本与线程事件放入同一时间线。[卡](#jfr-vs-gc-log)
 
 ## 2. Unified Logging 配置 {#unified-logging-配置}
+
+JDK 9 及以后使用 Unified Logging：
 
 ```bash
 java \
@@ -25,115 +26,112 @@ java \
   -jar app.jar
 ```
 
-这条配置只是起点，目标 JDK 的 tag 和 rotation 语法应通过 `java -Xlog:help` 验证。日志同时带 wall-clock 和 uptime，便于与监控、发布事件对齐。
+time 与 uptime 用于对齐业务时间与进程运行时间。filecount 和 filesize 控制日志轮转。目标 JVM 可用 `java -Xlog:help` 查看支持项。
 
-生产长期日志要配置轮转和磁盘告警。需要阶段细节时短期开启 `gc+phases=debug` 等 tag，避免长期记录无关 debug 信息。
+需要阶段细节时，可短期开启 `gc+phases=debug`。排查结束后应恢复已验证的日志级别。
 
-## 3. GC 事件的四类信息 {#gc-事件的四类信息}
+## 3. GC 事件信息 {#gc-事件的四类信息}
 
-1. **Collector / Type**：G1 Young、Mixed、Full，ZGC cycle 等。
-2. **Cause**：allocation failure、metadata threshold、System.gc 等。
-3. **Before → After / Capacity**：回收量和堆容量。
-4. **Duration / Phases**：总停顿与最慢阶段。
+读一条 GC 事件时，先确认以下内容：
 
-回收后占用下降明显但很快又涨回，可能是分配率高；回收后几乎不降，可能是 live set 大或泄漏；单次 object copy 很慢，需看存活对象量；root scan 慢则继续看线程、RSet 或根集合。
+1. 确认收集器和事件类型。
+2. 确认触发原因与 GC ID。
+3. 比较回收前后占用及当前容量。
+4. 查看暂停时间与最慢阶段。
+
+回收后降得多、随后快速上涨，是高分配的线索。回收后仍高，应继续检查存活对象与回收范围。Young GC 后老年代仍高，不能直接判为泄漏。
+
+### 3.1 堆容量与 CPU 时间 {#堆容量与-cpu-时间}
+
+以下为格式示意：
+
+```text
+GC(12) Pause Young (Normal) (G1 Evacuation Pause) 800M->200M(1024M) 20.000ms
+GC(12) User=0.06s Sys=0.01s Real=0.02s
+```
+
+800M 与 200M 是此次 GC 前后的堆占用。1024M 是当前堆容量，最大堆需另查 `-Xmx`。20ms 是该暂停事件的耗时。
+
+User 与 Sys 记录该区间内的进程 CPU 时间。Real 是经过的墙钟时间。并行工作时，User 加 Sys 可以超过 Real。
+
+Real 明显偏高时，应关联调度、节流与缺页证据。CPU 时间相加也无法直接推出业务损失。
 
 ## 4. GC 类型与回收范围 {#gc-类型与回收范围}
 
-Minor、Major、Full 在不同收集器和工具中可能使用不同。分析报告应写清收集器、日志事件名、是否 STW、实际回收区域和结果。
+Minor、Major 和 Full 的含义依收集器而定。报告应使用实际日志事件名，并写清回收范围。
 
-G1 Mixed GC 是年轻 Region 加部分旧 Region 的正常疏散，不等于 Full GC。ZGC 的 Minor/Major cycle 也不能套用传统 Serial/Parallel 的阶段含义。
+G1 Mixed 回收年轻代与部分老 Region。ZGC 的并发 cycle 则包含自己的代与阶段。并发周期总时长也不同于 STW 总时长。
 
 ## 5. GC 停顿、安全点与系统停顿 {#gc-停顿安全点与系统停顿}
 
-用户看到的空白可能来自：
+业务长尾可来自安全点进入、GC 工作与系统等待。CPU 节流、换页、锁竞争和 I/O 都需关联。
 
-- 等待线程到达 safepoint。
-- GC 在 STW 中执行。
-- 进程被 CPU throttling 或调度暂停。
-- major page fault、swap 或宿主机 steal。
-- 应用锁、I/O 和下游超时。
-
-Unified safepoint 日志和 JFR 能把进入安全点、停顿工作和系统事件放在一起。GC pause 很短但请求长尾很高时，应继续看锁、线程池和 I/O。
+安全点日志区分到达安全状态与停顿内工作。某段 GC phase 很短时，还需查看该事件的总时间。若 GC 与长尾不在同一窗口，应继续检查其他原因。
 
 ## 6. JFR 关联分析 {#jfr-关联分析}
 
+采集与故障窗口一致的记录：
+
 ```bash
-jcmd <pid> JFR.start \
-  name=latency \
-  settings=profile \
-  duration=5m \
-  filename=/logs/latency.jfr
+jcmd <pid> JFR.start name=latency settings=profile duration=5m filename=/logs/latency.jfr
 ```
 
-在 JMC 中重点查看：
+在 JMC 中对齐 GC pause、CPU 和业务线程。再查看分配样本、Monitor Blocked 与 Thread Park。编译事件可帮助判断预热成本。
 
-- GC pause 与 concurrent phase。
-- Allocation in new/outside TLAB。
-- Old Object Sample 或 heap statistics。
-- Safepoint、CPU Load 和线程调度。
-- Java Monitor Blocked、Thread Park。
-- Compilation 与 Code Cache。
+`ObjectAllocationInNewTLAB` 记录触发新 TLAB 的分配。`ObjectAllocationOutsideTLAB` 记录 TLAB 外分配。前者并未记录 TLAB 内的每个对象。
 
-事件是否启用和采样阈值由 recording settings 决定。看不到事件先检查配置，不要直接推断没有发生。
+`ObjectAllocationSample` 用采样表示分配压力。估计总量需使用样本权重，而非直接数事件条数。事件缺失时，应先检查 recording settings。
+
+Old Object Sample 可提供存活对象线索。对象保留路径仍需结合堆分析核实。
 
 ## 7. 常见原因 {#常见原因}
 
-### 7.1 分配率过高
+### 7.1 分配压力 {#分配压力}
 
-```text
-请求/批任务增加 → bytes allocated/s 上升 → Young GC 更频繁
-→ GC CPU 上升 → 吞吐或长尾受影响
-```
+请求或批次增大，会推高每秒分配量。年轻代因此更快填满，GC 频率上升。分配 profile 可定位创建位置，再优化中间对象和批次大小。
 
-用 allocation profile 找创建位置，优先减少不必要中间对象和批次峰值。
+### 7.2 存活对象与堆余量 {#存活对象与堆余量}
 
-### 7.2 live set 接近堆上限
+回收后 live set 接近上限时，疏散余量缩小。需要区分业务容量增长与意外持有。容量合理时评估扩堆，持有错误时修复生命周期。
 
-```text
-回收后 old/live 持续高 → 并发周期频繁 → 疏散余量不足
-→ Full/退化回收或 allocation stall
-```
+### 7.3 安全点到达延迟 {#安全点到达延迟}
 
-继续判断是业务容量还是意外持有，再决定调堆或修泄漏。
+日志中的 Reaching safepoint 高，表示协调耗时较长。应检查线程状态、编译代码和系统调度。收集器暂停目标主要约束回收工作预算。
 
-### 7.3 safepoint 到达慢
+### 7.4 显式回收与元数据阈值 {#显式回收与元数据阈值}
 
-```text
-请求 safepoint → 某线程迟迟未到达安全状态
-→ time-to-safepoint 高 → 用户停顿大于 GC phase
-```
+`System.gc()` 与诊断命令也能发起回收。G1 下可评估 `-XX:+ExplicitGCInvokesConcurrent`。它让显式 GC 走并发路径。`-XX:+DisableExplicitGC` 则忽略应用显式 GC 请求。
 
-需要看对应线程、native/JIT 情况和 JDK 版本，不应只调整收集器暂停目标。
+诊断工具仍可请求回收，需检查采集记录。相关影响见[JVM 诊断](./diagnostic-tools-evidence.mdx#堆转储与显式回收)。
+
+Metadata GC Threshold 指向元数据分配压力。应检查加载器数量与类增长。这个原因本身不足以证明 Java 堆泄漏。
 
 ## 8. 调优步骤 {#调优步骤}
 
-建立基线后按顺序处理：
-
-1. 明确延迟或吞吐目标。
-2. 降低异常分配和无界 live set。
-3. 确保堆与容器有余量。
-4. 保留收集器默认自适应，确认不足之处。
-5. 每次只改一类参数并回放相同负载。
+1. 明确业务延迟、吞吐与资源目标。
+2. 建立日志、JFR 和负载基线。
+3. 修复异常分配与无界持有。
+4. 确认堆、容器内存和 CPU 配额有余量。
+5. 每次只改一类参数，并回放相同负载。
 6. 比较暂停分位、GC CPU、吞吐和 RSS。
 
-把十几个网上参数一次加入，会让结果无法归因，并可能覆盖新 JDK 更好的默认值。
+参数变更应能对应已观察到的原因。收集器默认自适应配置应作为比较基线。
 
-## 9. 常见问题
+## 9. 常见问题 {#常见问题}
 
-### 9.1 Young GC 很频繁就是问题吗
+### 9.1 Young GC 频率 {#young-gc-频率}
 
-不一定。单次很短、GC CPU 可接受且业务目标满足时可能正常。看总 CPU、分配率和端到端延迟。
+频率需与暂停、CPU 和业务目标一起判断。短暂停且成本可接受时，高频回收也可正常。
 
-### 9.2 Full GC 一次都不能有吗
+### 9.2 Full GC 的触发原因 {#full-gc-的触发原因}
 
-长期在线服务通常希望避免不可预测 Full GC，但诊断命令、显式 GC 或特殊维护也可能触发。关键是原因、持续时间和是否重复。
+空间不足、显式 GC 和诊断操作都可触发 Full GC。应分别记录原因、耗时与重复频率。
 
-### 9.3 开启 JFR 会不会影响性能
+### 9.3 JFR 的记录开销 {#jfr-的记录开销}
 
-JFR 为低开销持续记录设计，但开销取决于事件、阈值和堆栈深度。使用 default/profile 基线，修改设置后在目标负载测量。
+JFR 的开销随事件、阈值与堆栈深度变化。default 适合持续记录，profile 适合短时分析。修改配置后应在目标负载测量。
 
-## 10. 面试题
+## 10. 面试题 {#面试题}
 
 ### 10.1 线上 Full GC 频繁，怎样排查 {#frequent-full-gc}
 
@@ -143,20 +141,16 @@ JFR 为低开销持续记录设计，但开销取决于事件、阈值和堆栈�
 
 **出现公司**：阿里云
 
-**考察重点**
-
-- 触发原因、回收后 live set 和分配率。
-- 类元数据、Humongous 与显式 GC 等不同路径。
-- GC 日志与 JFR 时间线。
+**考察重点**：区分分配压力、保留增长、元数据与显式回收。
 
 **相关内容**：[Unified Logging 配置](#unified-logging-配置)至[调优步骤](#调优步骤)。
 
 <details>
 <summary>参考回答</summary>
 
-先从统一日志确认收集器、每次 Full 的 cause、回收前后堆和最慢阶段，再把它与分配率、old/live set、Metaspace、Humongous 对象和 `System.gc` 对齐。回收后仍高偏向 live set/泄漏，快速涨回偏向分配高，metadata cause 则查类加载器。
+先读取每次 Full GC 的 cause、回收范围与前后占用。再对照分配率、live set、Metaspace 和 Humongous 数量。显式 GC 与诊断操作需单独核对。
 
-用 JFR 或 allocation profile 找增长来源，先修无界保留和异常分配，再评估堆余量与收集器参数。每次只改一个主要变量并用同负载验证。
+回收后持续高，继续分析持有链与业务容量。迅速涨回，检查分配热点与批次峰值。元数据原因则查类加载器增长。修复后用同一负载比较吞吐、暂停和 RSS。
 
 </details>
 
@@ -168,26 +162,57 @@ JFR 为低开销持续记录设计，但开销取决于事件、阈值和堆栈�
 
 **出现公司**：阿里云
 
-**考察重点**
-
-- GC 日志提供精确回收阶段和容量变化。
-- JFR 关联 CPU、线程、分配、锁和编译。
-- 二者通过时间与 uptime 对齐。
+**考察重点**：关联回收阶段、容量变化与同时发生的运行事件。
 
 **相关内容**：[Unified Logging 配置](#unified-logging-配置)至[JFR 关联分析](#jfr-关联分析)。
 
 <details>
 <summary>参考回答</summary>
 
-GC 日志最适合看收集类型、原因、堆变化和具体 phase；JFR 把 GC 与分配样本、CPU、线程锁、safepoint 和 JIT 事件放在同一时间线。日志解释“这次 GC 做了什么”，JFR 更容易解释“它和业务现场同时发生了什么”。
+GC 日志说明回收类型、原因、容量变化与阶段耗时。JFR 关联 GC、分配样本、CPU、线程与编译事件。
 
-两者都要带 wall-clock/uptime 与实例信息，否则无法和请求监控准确关联。
+两者需按时间、uptime 和实例对齐。日志定位回收成本，JFR 补充同时发生的应用活动。
 
 </details>
 
-## 11. 参考资料
+### 10.3 800M→200M(1024M) 表示什么，1024M 就是 Xmx 吗？ {#gc-log-capacity}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：占用、当前容量与最大堆的区别。
+
+**相关内容**：[堆容量与 CPU 时间](#堆容量与-cpu-时间)。
+
+<details>
+<summary>参考回答</summary>
+
+800M 与 200M 分别表示回收前后的堆占用。1024M 表示当前堆容量，最大值需查看 `-Xmx`。回收量还需结合 Young、Mixed 或 Full 的范围解释。
+
+</details>
+
+### 10.4 能直接用 JFR 分配事件条数计算对象总量吗？ {#allocation-event-count}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：TLAB 事件与采样权重。
+
+**相关内容**：[JFR 关联分析](#jfr-关联分析)。
+
+<details>
+<summary>参考回答</summary>
+
+事件条数无法直接代表全部对象数量。NewTLAB 事件只记录触发新 TLAB 的那次分配。AllocationSample 则采用采样，应结合样本权重。总分配趋势还需对照分配率指标。
+
+</details>
+
+## 11. 参考资料 {#参考资料}
 
 - [Oracle：GC Tuning Guide](https://docs.oracle.com/en/java/javase/26/gctuning/index.html)
 - [Oracle：G1 Tuning and Logging](https://docs.oracle.com/en/java/javase/26/gctuning/garbage-first-garbage-collector-tuning.html)
 - [Oracle：Flight Recorder API Guide](https://docs.oracle.com/en/java/javase/26/jfapi/index.html)
 - [Oracle：`java -Xlog`](https://docs.oracle.com/en/java/javase/26/docs/specs/man/java.html)
+- [OpenJDK 26：JFR 事件定义](https://github.com/openjdk/jdk/blob/jdk-26-ga/src/hotspot/share/jfr/metadata/metadata.xml)
