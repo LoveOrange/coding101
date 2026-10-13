@@ -7,95 +7,116 @@ knowledge:
 
 # 进程管理与信号
 
-运维面试中的进程问题偏向操作和排障：怎样让程序在后台长期运行，怎样优雅地停止，系统里为什么有僵尸进程，`systemd` 怎样管理服务。本文讲用户态与内核态、进程的状态与父子关系、信号，以及服务的托管方式。进程与线程的区别见[进程与线程](../../basic-knowledge/operating-system/processes-threads.mdx)。
+进程管理协调程序启动、停止和子进程回收。本文负责特权状态、进程状态、信号与 systemd 托管。线程模型见 [进程与线程](../../basic-knowledge/operating-system/processes-threads.mdx)。Pod 停止过程见 [Pod：生命周期、探针与资源](../kubernetes/pods.mdx#优雅终止与流量排空)。
 
 ## 1. 面试核心 {#core}
 
-- 用户态运行应用代码，只能访问自己的内存；访问硬件、文件、网络等需要通过系统调用进入内核态，由内核代为执行。中断和异常也会切换到内核态。[卡](#user-kernel-mode)
-- 子进程退出后，内核保留它的退出状态，等父进程调用 `wait` 回收；父进程没有回收前它是僵尸进程（状态 Z）。父进程先退出，子进程成为孤儿进程，被 init（PID 1）或指定的子进程收养者接管并回收。[卡](#zombie-orphan)
-- 僵尸进程已经释放了内存，只占一个进程表项，`kill -9` 杀不掉它；要处理的是父进程：让父进程回收，或结束父进程让 init 接管回收。
-- `kill` 默认发送 SIGTERM，进程可以捕获后清理退出；SIGKILL（`-9`）不能被捕获，进程立即终止，来不及清理。停止服务先发 SIGTERM，超时后再发 SIGKILL。
-- 长期运行的服务交给 `systemd` 托管：负责启动顺序、崩溃重启、日志收集和资源限制。`nohup` 加 `&` 只适合临时任务。[卡](#systemd-background)
+- 系统调用、中断和异常都可使 CPU 进入内核执行路径。[卡](#user-kernel-mode)
+- 僵尸进程已退出，父进程通过 wait 系列接口回收状态。[卡](#zombie-orphan)
+- 孤儿进程由最近的 subreaper 或所在 PID 空间的 init 接管。[卡](#zombie-orphan)
+- SIGTERM 可捕获处理，SIGKILL 和 SIGSTOP 无法捕获、屏蔽或忽略。[卡](#signal-delivery)
+- systemd 的 After 指定顺序，Wants 声明弱依赖。[卡](#systemd-ordering)
 
 ## 2. 用户态与内核态 {#用户态与内核态}
 
-CPU 有不同的特权级。应用程序运行在用户态，不能直接执行特权指令，也不能访问其他进程和内核的内存；内核运行在内核态，可以访问全部硬件和内存。
+CPU 特权级限制指令和地址访问。用户态程序访问自己的虚拟地址空间。共享内存可显式映射进该空间。内核通过页表与权限检查维护隔离。
 
-切换到内核态的三种途径：
+| 入口 | 触发条件 |
+| --- | --- |
+| 系统调用 | 应用请求 read、write、open 等内核服务 |
+| 中断 | 时钟、网卡等设备触发 |
+| 异常 | 缺页、非法指令等执行事件 |
 
-- **系统调用**：程序主动请求内核服务，如 `read`、`write`、`open`、`fork`。
-- **中断**：外部设备（网卡、磁盘、时钟）通知 CPU。
-- **异常**：缺页、除零等，由内核处理。
+进入内核需保存相关执行上下文。系统调用返回后，原线程可继续执行。特权级切换与线程调度是不同事件。
 
-每次切换都要保存和恢复寄存器等上下文，有一定开销。所以频繁的小块读写、过多的系统调用会让 `top` 中的 `sy` 升高，批量读写、零拷贝等优化都是为了减少切换和数据复制。用 `strace -c -p <pid>` 可以统计进程的系统调用。
+频繁的小块 I/O 会增加调用与复制开销。批量 I/O 能减少调用次数。`strace -c -p <pid>` 可统计调用情况。协程自身的用户态切换可由运行时完成。协程内执行阻塞系统调用仍会进入内核。
 
 ## 3. 进程状态与父子关系 {#进程状态与父子关系}
 
-`ps aux` 的 `STAT` 列：
-
 | 状态 | 含义 |
 | --- | --- |
-| R | 运行或在运行队列中 |
-| S | 可中断睡眠，等待事件（大多数进程平时处于此状态） |
-| D | 不可中断睡眠，通常在等待 I/O，信号无法打断 |
-| T | 被暂停（如收到 SIGSTOP、被调试） |
-| Z | 僵尸，已退出、等待父进程回收 |
+| R | 正在运行或等待 CPU |
+| S | 可中断睡眠 |
+| D | 不可中断睡眠 |
+| T | 停止 |
+| t | 被调试器跟踪而停止 |
+| Z | 已退出，等待回收 |
 
-**fork 与写时复制**：`fork` 创建的子进程得到父进程地址空间的副本。为了减少复制，父子进程先共享物理页，任何一方写入时才复制该页。所以子进程修改内存中的数据不会影响父进程；但如果父子进程共享同一个打开的文件描述符，它们共用文件偏移，写入同一个文件会互相影响，见[文件描述符](../../basic-knowledge/operating-system/file-descriptors.mdx)。
+fork 后，父子有各自的虚拟地址空间。私有可写页通过写时复制分离。共享映射仍可让修改对双方可见。继承的描述符可指向同一打开文件描述，因而共享偏移。详细关系见 [文件描述符](../../basic-knowledge/operating-system/file-descriptors.mdx)。
 
-**僵尸进程**：子进程退出后，内核释放它的内存等资源，但保留进程表项和退出状态，等父进程调用 `wait`/`waitpid` 读取。父进程不回收，子进程就一直是 Z 状态。少量僵尸无害，大量僵尸会耗尽 PID。
+子进程退出后，内核保留 PID、退出状态等信息。父进程调用 wait 或 waitpid 后完成回收。大量僵尸会占用 PID 等内核资源。
 
-**孤儿进程**：父进程先退出，子进程被 PID 1（或设置了 subreaper 的进程）收养，由收养者负责回收，不会长期成为僵尸。
+父进程退出时，子进程被最近的 subreaper 接管。没有 subreaper 时，由所在 PID 空间的 init 接管。能否及时回收仍取决于收养者的行为。
 
-**容器中的 PID 1**：容器内第一个进程就是 PID 1，如果它是普通业务程序，不会回收收养来的子进程，也可能不处理 SIGTERM。可以使用 `tini` 这类轻量 init，或者在 `docker run` 时加 `--init`。
+容器 PID 1 需要处理信号和收养的子进程。应用若未实现这些职责，可通过 `docker run --init` 补充轻量 init。
 
 ## 4. 信号 {#信号}
 
-| 信号 | 编号 | 默认行为 | 用途 |
-| --- | --- | --- | --- |
-| SIGHUP | 1 | 终止 | 终端断开；很多服务约定为重新加载配置 |
-| SIGINT | 2 | 终止 | Ctrl+C |
-| SIGKILL | 9 | 终止，不可捕获 | 强制结束 |
-| SIGTERM | 15 | 终止 | `kill` 默认，请求进程退出 |
-| SIGSTOP / SIGCONT | 19 / 18 | 暂停 / 继续 | 暂停进程 |
-| SIGCHLD | 17 | 忽略 | 子进程状态变化，父进程据此回收 |
-
-**优雅停止**：进程捕获 SIGTERM 后停止接收新请求、处理完进行中的请求、关闭连接和文件后退出。`systemd` 和 Kubernetes 停止进程时都是先发 SIGTERM，等待一段时间（如 Kubernetes 默认 30 秒）后再发 SIGKILL。
-
-## 5. 服务的托管与后台运行 {#服务的托管与后台运行}
-
-| 方式 | 说明 | 适用 |
+| 信号 | 默认动作 | 典型用途 |
 | --- | --- | --- |
-| `cmd &` | 后台运行，终端关闭时可能收到 SIGHUP 而退出 | 临时 |
-| `nohup cmd > out.log 2>&1 &` | 忽略 SIGHUP，输出重定向 | 临时的长时间任务 |
-| `tmux` / `screen` | 保留终端会话，可以重新连接 | 需要交互的长任务 |
-| `systemd` 服务 | 开机启动、依赖顺序、崩溃重启、日志、资源限制 | 长期运行的服务 |
+| SIGHUP | 终止 | 终端挂断；部分服务约定为重载 |
+| SIGINT | 终止 | 终端前台任务中断 |
+| SIGTERM | 终止 | 请求正常退出 |
+| SIGKILL | 终止 | 强制终止 |
+| SIGSTOP | 停止 | 暂停执行 |
+| SIGCONT | 继续 | 恢复停止任务 |
+| SIGCHLD | 默认忽略 | 通知子进程状态变化 |
 
-CentOS 6 及以前使用 SysV init，服务脚本在 `/etc/init.d/`，按运行级别顺序启动；之后的主流发行版改用 `systemd`，并行启动，用单元文件描述服务。
+信号编号存在架构差异，脚本优先使用名称。`kill -TERM <pid>` 请求进程退出。应用处理时先停新任务，再清理在途工作和资源。
 
-一个最小的服务单元文件：
+`kill` 成功表示请求被接受，退出完成还需另行确认。D 状态任务等待内核操作完成时，终止可被延迟。SIGKILL 也无法跳过尚未结束的内核等待。
+
+普通信号在阻塞期间多次产生，只保留一个待决实例。实时信号可以排队。收到 SIGCHLD 后应循环调用 waitpid，回收所有已退出子进程。
+
+SIGCHLD 的默认“忽略”与显式设置 SIG_IGN 有区别。默认行为仍可留下僵尸。显式 SIG_IGN 或 SA_NOCLDWAIT 可让子进程自动回收。
+
+## 5. 服务托管与后台运行 {#服务的托管与后台运行}
+
+| 方式 | 行为 |
+| --- | --- |
+| `cmd &` | 交给 Shell 后台执行 |
+| `nohup cmd >out.log 2>&1 &` | 忽略 SIGHUP，并重定向输出 |
+| tmux、screen | 保留可重连的终端会话 |
+| systemd | 管理启动、依赖、失败重启和资源 |
+
+nohup 只改变挂断信号处理，缺少服务监督功能。CentOS 7 使用 systemd。CentOS 6 使用 Upstart，并兼容 SysV 服务脚本。
 
 ```ini
-# /etc/systemd/system/app.service
 [Unit]
 Description=Demo app
+Wants=network-online.target
 After=network-online.target
 
 [Service]
+Type=exec
 User=app
 ExecStart=/opt/app/bin/app --config /etc/app.yaml
 Restart=on-failure
+RestartSec=3s
+TimeoutStopSec=30s
 LimitNOFILE=65535
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-常用命令：`systemctl daemon-reload` 重新加载单元文件，`systemctl enable --now app` 设置开机启动并立即启动，`systemctl status app` 查看状态和最近日志，`systemctl cat app` 查看单元文件位置和内容，`journalctl -u app -f` 跟踪日志。
+示例要求 systemd 240 及以上版本。app 用户、程序和配置文件需已经存在。服务默认将输出交给 journal。Type=exec 在程序执行成功后确认启动步骤完成。它只确认进程执行，业务就绪仍需额外机制。
 
-## 6. 面试题
+`systemctl daemon-reload` 重读单元文件。`systemctl enable --now app` 设置开机启动并立即启动。`systemctl cat app` 查看定义及覆盖配置。`journalctl -u app -f` 跟踪日志。
 
-### 6.1 用户态和内核态有什么区别？什么情况下会切换到内核态？ {#user-kernel-mode}
+## 6. systemd 依赖与重启策略 {#systemd-依赖与重启策略}
+
+After 只规定两个单元之间的启动顺序。Wants 将另一个单元加入启动事务。Requires 声明更强的依赖关系。需要先启动某依赖时，应组合依赖和顺序配置。
+
+network-online.target 的效果取决于等待网络的实现。它只描述启动阶段的网络条件。远端数据库是否可用仍需应用处理。
+
+`Restart=on-failure` 在异常退出等失败后重启。`RestartSec` 控制重试间隔。启动频率还受 StartLimitIntervalSec 和 StartLimitBurst 约束。
+
+修改单元文件后执行 daemon-reload，再按需重启。reload 请求服务重新加载自身配置。是否支持 reload 取决于服务与单元定义。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 用户态和内核态有什么区别？什么情况下会切换到内核态？ {#user-kernel-mode}
 
 <!-- 面试来源：
 - 网易互娱：https://www.nowcoder.com/feed/main/detail/088bdce8c91d453db9bb22a35527c388 （“用户态和内核态区别”）
@@ -115,13 +136,13 @@ WantedBy=multi-user.target
 <details>
 <summary>参考回答</summary>
 
-CPU 区分特权级。用户态运行应用代码，只能访问自己进程的地址空间，不能直接操作硬件；内核态运行内核代码，可以执行特权指令、访问所有内存和设备。这样一个程序出错不会破坏其他程序和内核。
+用户态与内核态拥有不同的执行和访问权限。用户程序通过自己的虚拟地址空间访问数据。内核执行受特权保护的系统操作。
 
-进入内核态有三种情况：程序发起系统调用（如 `read`、`write`、`fork`），CPU 通过专门的指令陷入内核，内核按系统调用号执行对应功能后返回；外部设备发出中断；程序触发缺页等异常。切换需要保存和恢复寄存器上下文，系统调用过多会让 CPU 的内核态占比升高，所以有批量 I/O、零拷贝等优化。协程的调度由用户态的运行时完成，切换不经过内核，所以比线程切换开销小。
+系统调用、中断和异常可进入内核执行路径。进入内核涉及上下文保存，但未必发生线程切换。原线程完成系统调用后可直接继续运行。协程切换可由用户态运行时完成。它发起系统调用时仍会进入内核。
 
 </details>
 
-### 6.2 僵尸进程和孤儿进程有什么区别？僵尸进程怎样处理？ {#zombie-orphan}
+### 7.2 僵尸进程和孤儿进程有什么区别？僵尸进程怎样处理？ {#zombie-orphan}
 
 <!-- 面试来源：
 - 顺丰：https://www.nowcoder.com/discuss/418141126723477504 （“僵尸进程和孤儿进程区别？”）
@@ -141,13 +162,13 @@ CPU 区分特权级。用户态运行应用代码，只能访问自己进程的�
 <details>
 <summary>参考回答</summary>
 
-子进程退出后，内核释放它的大部分资源，但保留进程表项和退出状态，等待父进程调用 `wait` 读取。在父进程回收之前，它就是僵尸进程，`ps` 中状态为 Z。孤儿进程是父进程先退出、自己仍在运行的进程，它会被 PID 1 收养，退出后由 PID 1 回收，所以孤儿进程本身无害。
+僵尸已退出但尚未回收，孤儿的父进程先退出。wait 系列接口读取退出信息并完成回收。孤儿由最近的 subreaper 或 PID 空间的 init 接管。
 
-僵尸进程已经死了，`kill -9` 对它无效。处理方法是找到父进程（`ps -o ppid= -p <pid>`）：修复父进程使其处理 SIGCHLD 并调用 `wait`；无法修复时结束父进程，僵尸变成孤儿，由 PID 1 回收。少量僵尸只占进程表项，大量僵尸会耗尽 PID 导致无法创建新进程。在容器里，业务程序作为 PID 1 时不会回收收养来的进程，应使用 `tini` 等 init 进程。
+僵尸已经结束执行，发送 SIGKILL 无法再次终止它。应定位父进程并修复回收逻辑。结束父进程后，仍需收养者执行回收。容器 PID 1 若缺少该能力，可使用轻量 init。
 
 </details>
 
-### 6.3 怎样让程序在后台长期运行？systemd 是什么，怎样知道一个服务运行的是哪个程序？ {#systemd-background}
+### 7.3 怎样让程序在后台长期运行？systemd 是什么，怎样知道一个服务运行的是哪个程序？ {#systemd-background}
 
 <!-- 面试来源：
 - 京东：https://www.nowcoder.com/discuss/478505627115880448 （“知道init进程吗，说一说systemd，知道centos6怎么管理的吗”“怎么知道systemctl运行的是哪个程序”）
@@ -162,19 +183,61 @@ CPU 区分特权级。用户态运行应用代码，只能访问自己进程的�
 - `nohup`、`tmux` 与 `systemd` 的适用场景。
 - 单元文件的关键配置；SysV init 与 systemd 的差异；优雅停止。
 
-**相关内容**：[服务的托管与后台运行](#服务的托管与后台运行)、[信号](#信号)。
+**相关内容**：[服务托管与后台运行](#服务的托管与后台运行)、[信号](#信号)。
 
 <details>
 <summary>参考回答</summary>
 
-临时任务可以用 `nohup cmd > out.log 2>&1 &`，忽略终端断开的 SIGHUP 并把输出写到文件；需要交互的长任务用 `tmux`。长期运行的服务应该交给 systemd：它是现在主流发行版的 PID 1，用单元文件描述服务的启动命令、运行用户、依赖顺序、失败重启策略和资源限制，开机自动启动，日志进入 journald。CentOS 6 之前用 SysV init，服务脚本放在 `/etc/init.d/`，按运行级别串行启动；systemd 可以并行启动并管理依赖。
+长期服务适合由 systemd 监督运行。临时任务可用 nohup，交互任务可用 tmux。
 
-要知道服务实际运行的程序，用 `systemctl status <服务>` 看主进程和单元文件路径，`systemctl cat <服务>` 看单元文件中的 `ExecStart`。停止服务时 systemd 先发 SIGTERM，超时后发 SIGKILL，所以程序应处理 SIGTERM 完成清理。
+`systemctl status app` 查看服务与主进程。`systemctl cat app` 查看 ExecStart 及覆盖配置。需要确认实际程序时，可进一步核对主进程信息。
+
+单元文件定义用户、启动命令和重启策略。After 只控制顺序，Wants 或 Requires 定义依赖。停止行为还受 KillSignal 和 TimeoutStopSec 等配置影响。默认停止信号为 SIGTERM，超时后可发送 SIGKILL。
 
 </details>
 
-## 7. 参考资料
+### 7.4 kill -9 后进程为什么还在？一次 SIGCHLD 能对应多个退出吗？ {#signal-delivery}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：信号发送、内核等待与普通信号合并。
+
+**相关内容**：[信号](#信号)。
+
+<details>
+<summary>参考回答</summary>
+
+进程可处于尚未结束的内核等待，或已经变成僵尸。应先用 ps 确认状态，再检查等待点或父进程。普通 SIGCHLD 会合并多个待决通知。处理函数应循环调用 waitpid，直到没有可回收的子进程。
+
+</details>
+
+### 7.5 After 能保证依赖服务被启动吗？daemon-reload 与 reload 有何区别？ {#systemd-ordering}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：依赖事务、启动顺序与配置重载。
+
+**相关内容**：[systemd 依赖与重启策略](#systemd-依赖与重启策略)。
+
+<details>
+<summary>参考回答</summary>
+
+After 只规定顺序，Wants 或 Requires 才声明依赖。需要依赖先启动时，应组合配置。daemon-reload 重读 systemd 单元文件。reload 则要求服务重读自己的配置。应用是否支持 reload 需查看单元定义。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
 
 - [man7：signal(7)](https://man7.org/linux/man-pages/man7/signal.7.html)
 - [man7：wait(2)](https://man7.org/linux/man-pages/man2/wait.2.html)
 - [systemd.service 文档](https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html)
+- [Linux man-pages：fork(2)](https://man7.org/linux/man-pages/man2/fork.2.html)
+- [Linux man-pages：pid_namespaces(7)](https://man7.org/linux/man-pages/man7/pid_namespaces.7.html)
+- [systemd：systemd.unit](https://www.freedesktop.org/software/systemd/man/latest/systemd.unit.html)
+- [systemd：systemd.kill](https://www.freedesktop.org/software/systemd/man/latest/systemd.kill.html)
+- [Red Hat：RHEL 6 init and Upstart](https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/6/html/migration_planning_guide/sect-networking-upstart)
+- [systemd 240：Type=exec 发布说明](https://github.com/systemd/systemd/blob/v240/NEWS)

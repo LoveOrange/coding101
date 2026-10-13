@@ -7,71 +7,91 @@ knowledge:
 
 # Kubernetes 架构
 
-Kubernetes 是容器编排系统：用户声明“期望的状态”（运行几个副本、用什么镜像、需要多少资源），系统中的各个控制器持续比较实际状态和期望状态，并采取动作消除差异。理解这一点，就能解释各个组件为什么这样分工。本文讲控制平面和节点上的组件、一个 Pod 从提交到运行的完整链路、调度器的工作方式，以及 etcd 的作用。
+Kubernetes 通过控制循环协调容器工作负载。本文负责组件分工、创建链路、调度和 etcd。容器状态与探针见 [Pod：生命周期、探针与资源](./pods.mdx)。Service 转发见 [工作负载、Service 与集群网络](./workloads-networking.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- 控制平面包括 kube-apiserver（唯一的访问入口）、etcd（保存全部集群状态）、kube-scheduler（为 Pod 选择节点）、kube-controller-manager（运行各种控制器）；每个节点上运行 kubelet（管理本节点的 Pod）、kube-proxy（实现 Service 转发）和容器运行时。[卡](#components)
-- 组件之间不直接调用，都通过 apiserver 读写对象，并用 watch 机制监听变化。只有 apiserver 直接访问 etcd。
-- 创建 Deployment 的链路：apiserver 校验并写入 etcd → Deployment 控制器创建 ReplicaSet → ReplicaSet 控制器创建 Pod → 调度器选择节点并绑定 → 该节点的 kubelet 调用运行时创建容器 → 就绪后加入 Service 的后端。[卡](#pod-creation-flow)
-- 调度分两步：过滤掉不满足条件的节点（资源请求、节点选择器、污点、亲和性），再给剩余节点打分，选择分数最高的。调度依据的是 requests，而不是实际用量。
-- etcd 是基于 Raft 的强一致键值存储，写入要多数节点确认；集群一般部署 3 或 5 个节点，需要定期备份快照。etcd 不可用时已运行的 Pod 不受影响，但无法创建、修改和调度。[卡](#etcd)
+- apiserver 提供对象 API，etcd 保存集群对象的持久状态。[卡](#components)
+- 控制器通过 API 观察对象，并持续调整实际状态。[卡](#pod-creation-flow)
+- scheduler 选择节点，kubelet 通过 CRI 驱动本机容器。[卡](#pod-creation-flow)
+- etcd 的 Raft 提交需要多数成员确认。[卡](#etcd)
+- RBAC 约束 API 操作，Secret 静态加密保护落盘内容。[卡](#api-security)
 
 ## 2. 组件 {#组件}
 
 | 位置 | 组件 | 职责 |
 | --- | --- | --- |
-| 控制平面 | kube-apiserver | 提供 REST API，负责认证、授权、准入控制和对象校验，是唯一读写 etcd 的组件；默认安全端口 6443 |
-| 控制平面 | etcd | 保存集群的全部对象和状态 |
-| 控制平面 | kube-scheduler | 为未分配节点的 Pod 选择节点 |
-| 控制平面 | kube-controller-manager | 运行 Deployment、ReplicaSet、Node、Job、EndpointSlice 等控制器，每个控制器负责把一类对象调整到期望状态 |
-| 控制平面 | cloud-controller-manager | 对接云厂商：创建负载均衡器、管理云主机节点 |
-| 节点 | kubelet | 根据分配给本节点的 Pod 创建和监控容器，执行探针，上报状态 |
-| 节点 | kube-proxy | 根据 Service 和 EndpointSlice 维护 iptables 或 IPVS 规则 |
-| 节点 | 容器运行时 | 如 containerd，kubelet 通过 CRI 接口调用它拉取镜像、运行容器 |
-| 插件 | CNI 插件、CoreDNS、Ingress 或 Gateway 控制器、metrics-server | 分别负责 Pod 网络、集群内域名解析、外部七层流量入口和资源指标 |
+| 控制平面 | kube-apiserver | 提供对象 API，执行认证、授权与准入 |
+| 控制平面 | etcd | 持久保存 API 对象 |
+| 控制平面 | kube-scheduler | 给未绑定的 Pod 选择节点 |
+| 控制平面 | kube-controller-manager | 运行副本、节点等控制循环 |
+| 云集成 | cloud-controller-manager | 对接云节点、路由和负载均衡器 |
+| 节点 | kubelet | 管理本机 Pod，执行探针并上报状态 |
+| 节点 | 容器运行时 | 通过 CRI 接收镜像和容器操作 |
+| 节点 | kube-proxy 或替代组件 | 实现 Service 数据转发 |
+| 插件 | CNI、CoreDNS、CSI | 提供网络、域名解析和存储接入 |
 
-**控制循环**：每个控制器 watch 自己关心的对象，发现实际状态与期望不一致就采取动作。例如 ReplicaSet 期望 3 个副本，某个 Pod 被删除后，控制器发现只剩 2 个，就再创建一个。这种设计让系统在部分失败后能自动恢复，也让各组件可以独立重启。
+核心控制组件通过 apiserver 协调对象状态。其他通信仍有直接调用。例如 kubelet 调用运行时，apiserver 访问 kubelet。日志、exec 和端口转发都涉及节点通信。
 
-**静态 Pod**：kubelet 直接读取节点上某个目录（kubeadm 默认 `/etc/kubernetes/manifests`）中的清单启动的 Pod，不经过 apiserver 调度。kubeadm 部署的集群中，apiserver、etcd、scheduler、controller-manager 本身就是以静态 Pod 运行的，这解决了“控制平面还没启动时由谁来启动它”的问题。
+ReplicaSet 控制器观察到副本不足后，会创建 Pod。它持续校正差异，重试失败操作。控制器应按当前状态执行幂等协调。
 
-## 3. 一个 Pod 的创建链路 {#一个-pod-的创建链路}
+静态 Pod 由 kubelet 读取节点清单并管理。kubeadm 的清单目录默认是 `/etc/kubernetes/manifests`。本地 etcd 拓扑的控制平面可用静态 Pod 启动。API 中的镜像 Pod 用于展示状态。调度器无需参与这些 Pod 的创建。
 
-以 `kubectl apply -f deployment.yaml` 为例：
+## 3. Pod 创建链路 {#一个-pod-的创建链路}
 
-1. **kubectl** 把清单发给 apiserver。
-2. **apiserver** 认证用户身份，检查 RBAC 授权，执行准入控制（修改型准入可以注入默认值或 sidecar，校验型准入可以拒绝不合规的对象），校验通过后写入 etcd。
-3. **Deployment 控制器** watch 到新的 Deployment，创建对应的 ReplicaSet。
-4. **ReplicaSet 控制器** 发现 Pod 数量不足，创建 Pod 对象，此时 Pod 的 `nodeName` 为空，处于 Pending 状态。
-5. **调度器** watch 到未调度的 Pod，经过过滤和打分选出节点，把绑定结果写回 apiserver。
-6. **kubelet** watch 到分配给本节点的 Pod：通过 CRI 让运行时创建 Pod 沙箱（持有网络等 Namespace 的 pause 容器），调用 CNI 插件分配 IP，挂载卷，拉取镜像，依次运行 init 容器，再启动业务容器，执行启动、存活、就绪探针，并把状态上报给 apiserver。
-7. **EndpointSlice 控制器** 在 Pod 就绪后把它的 IP 加入对应 Service 的后端；各节点的 kube-proxy 更新转发规则，流量开始进入。
+以提交 Deployment 为例：
+
+1. kubectl 将清单发给 apiserver。
+2. API 请求通过认证、授权、准入和校验。
+3. apiserver 将对象持久保存到 etcd。
+4. Deployment 控制器创建或调整 ReplicaSet。
+5. ReplicaSet 控制器补足 Pod 对象。
+6. scheduler 为未绑定的 Pod 选择节点。
+7. kubelet 观察到分配结果，准备卷和容器环境。
+8. 运行时通过 CRI 接收操作，配置沙箱与网络。
+9. 容器启动后，kubelet 执行探针并上报状态。
+
+Linux CRI 运行时可调用 CNI 配置网络。pause 容器是保留沙箱 Namespace 的一种实现。卷准备、镜像拉取等步骤存在各自的重试流程。
+
+EndpointSlice 保存端点地址和就绪条件。未就绪端点也能出现在对象中。流量是否进入还取决于就绪状态和 Service 配置。数据路径见 [工作负载、Service 与集群网络](./workloads-networking.mdx#service-与流量入口)。
 
 ## 4. 调度 {#调度}
 
-| 阶段 | 做什么 | 例子 |
-| --- | --- | --- |
-| 过滤 | 排除不能运行该 Pod 的节点 | 剩余可分配资源小于 requests；不满足 `nodeSelector` 或必需的节点亲和性；有 Pod 不能容忍的污点；端口冲突；卷所在的可用区不匹配 |
-| 打分 | 对剩余节点评分 | 资源分配均衡、首选的亲和性、镜像已在本地、拓扑分布 |
-| 绑定 | 把 Pod 分配给得分最高的节点 | 写入 `nodeName` |
+| 阶段 | 主要依据 |
+| --- | --- |
+| 过滤 | requests、节点选择、污点、卷与拓扑约束 |
+| 打分 | 资源分布、首选亲和、拓扑和镜像位置 |
+| 绑定 | 将选择的节点写入 Pod 绑定结果 |
 
-没有节点通过过滤时，Pod 保持 Pending，事件中会写明原因，例如 `0/5 nodes are available: 3 Insufficient cpu, 2 node(s) had untolerated taint`。
+资源过滤使用 requests 和节点可分配量。实时 CPU 用量不直接替代 requests。调度还包括亲和性、污点、卷等条件。
 
-Pod 分布不均的常见原因是调度只看 requests：requests 设置偏小的 Pod 实际占用很高，调度器却认为节点仍有余量；另外调度只在创建时发生，节点扩容后已有 Pod 不会自动迁移。可以用拓扑分布约束（`topologySpreadConstraints`）和 Pod 反亲和让副本分散，用 descheduler 定期重新平衡。
+没有可行节点时，Pod 保持 Pending。`kubectl describe pod` 的事件会列出过滤原因。资源不足与硬约束冲突需要分别处理。
+
+Pod 绑定后会留在所选节点。扩容节点不会自动重新分配旧 Pod。拓扑分布约束可改善新 Pod 的分布。重新平衡需要额外策略，并考虑驱逐代价。
 
 ## 5. etcd 存储 {#etcd-存储}
 
-etcd 保存集群中的全部对象：节点、Pod、Service、ConfigMap、Secret 等。它的特点决定了集群的行为：
+etcd 保存 Pod、Service、Secret 等 API 对象。应用数据库内容、容器文件和业务日志由各自系统保存。
 
-- **强一致**：基于 Raft 协议，写请求由 Leader 接收，复制到多数节点后才提交，读请求默认也保证读到最新的已提交数据。3 个节点可以容忍 1 个故障，5 个节点可以容忍 2 个；节点数取奇数，因为偶数不会增加容错能力。
-- **watch**：客户端可以监听键的变化，apiserver 依靠它向各组件推送对象变化。
-- **性能敏感**：每次写入都要落盘，磁盘延迟高会导致 Leader 频繁切换、apiserver 变慢，所以 etcd 应使用低延迟的 SSD 并与高 I/O 的负载隔离。
+Raft 写入需多数成员确认。3 个成员可容忍 1 个失效，5 个可容忍 2 个。增加为偶数成员会提高多数派门槛。因此，成员规划常选择奇数规模。
 
-运维要点：定期用 `etcdctl snapshot save` 备份，并演练恢复；Secret 默认以 base64 编码存储，需要开启静态加密；etcd 故障时已运行的容器继续工作，但所有变更都无法进行。排查时先看 etcd 的成员健康状态、Leader 是否频繁变化和磁盘延迟，不要直接删除数据目录重建，那会丢失全部集群状态。
+磁盘持久化和成员间网络都会影响提交延迟。排查应关注成员健康、Leader 变化和磁盘延迟。Raft 机制详见 [Raft](../../system-design/distributed-system/raft-election-log-replication.mdx)。
 
-## 6. 面试题
+etcd 不可用会阻塞对象持久更新。已有容器和已安装的转发规则可继续工作。后端变化、节点故障和控制循环却无法正常协调。因此，业务可用性还取决于故障期间的变化。
 
-### 6.1 Kubernetes 的控制平面和节点上分别有哪些组件？各自的作用是什么？ {#components}
+etcd 3.6 用 `etcdctl snapshot save` 保存在线快照。恢复使用 `etcdutl snapshot restore`。Kubernetes 恢复还需处理 revision 回退与 watch 缓存。快照演练应包含 revision bump 和 mark-compacted。恢复方案应保留数据，并避免新旧集群同时提供服务。
+
+## 6. API 访问与 Secret 加密 {#api-访问与-secret-加密}
+
+认证确认请求者身份。授权判断该身份是否能执行目标操作。准入再修改或检查对象内容。
+
+RBAC 的 Role 约束命名空间内的权限。ClusterRole 定义集群级或可复用的权限集合。RoleBinding 在命名空间内绑定权限。ClusterRoleBinding 将权限绑定到集群范围。
+
+Secret 的 base64 是编码。默认存储行为仍需配置静态加密来保护内容。读取 Secret 的 API 权限也要最小化。备份应按同等敏感程度管理。加密密钥的保存与恢复需和数据备份配套。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 Kubernetes 的控制平面和节点上分别有哪些组件？各自的作用是什么？ {#components}
 
 <!-- 面试来源：
 - 嘉银科技：https://www.nowcoder.com/feed/main/detail/e2ac9948b87e4df283d6923893f51102 （“k8smaster节点和node节点的所有组件和作用”）
@@ -86,7 +106,9 @@ etcd 保存集群中的全部对象：节点、Pod、Service、ConfigMap、Secre
 - 蘑菇车联：https://www.nowcoder.com/discuss/722060503672946688 （“k8s架构和相关组件的用处”）
 -->
 
-**出现公司**：嘉银科技、DaoCloud、波克城市、虾皮、矩阵起源、字节跳动、米哈游、哔哩哔哩、蘑菇车联
+**出现公司**：嘉银科技、DaoCloud、波克城市、虾皮、矩阵起源
+
+**出现公司**：字节跳动、米哈游、哔哩哔哩、蘑菇车联
 
 **考察重点**
 
@@ -98,15 +120,15 @@ etcd 保存集群中的全部对象：节点、Pod、Service、ConfigMap、Secre
 <details>
 <summary>参考回答</summary>
 
-控制平面有四个核心组件。kube-apiserver 是唯一的入口，负责认证、授权、准入控制和对象校验，也是唯一直接读写 etcd 的组件。etcd 保存集群的全部状态。kube-scheduler 为还没有分配节点的 Pod 选择节点。kube-controller-manager 运行各种控制器，例如 Deployment 控制器管理 ReplicaSet、ReplicaSet 控制器维持副本数、Node 控制器处理失联节点、EndpointSlice 控制器维护 Service 后端。在云上还有 cloud-controller-manager 对接云负载均衡和云主机。
+控制平面负责 API、状态存储、调度和协调。apiserver 是对象访问入口，etcd 保存对象。scheduler 选择节点，各控制器持续调整实际状态。
 
-每个节点上有 kubelet，负责按分配给本节点的 Pod 创建容器、执行探针、上报状态；kube-proxy 根据 Service 维护 iptables 或 IPVS 转发规则；容器运行时（如 containerd）通过 CRI 被 kubelet 调用。此外还需要 CNI 网络插件、CoreDNS 和流量入口控制器等插件。
+节点的 kubelet 管理 Pod，运行时执行容器操作。Service 转发由 kube-proxy 或替代组件承担。CNI、CoreDNS 和 CSI 分别提供网络、解析与存储接入。
 
-这些组件不直接互相调用，而是通过 apiserver 读写对象并 watch 变化，各控制器持续把实际状态调整为期望状态，所以某个组件重启后能自动恢复工作。
+对象协调主要通过 apiserver。kubelet 到运行时等路径仍使用直接调用。
 
 </details>
 
-### 6.2 从 `kubectl apply` 一个 Deployment 到 Pod 运行起来，中间经历了哪些步骤？调度器怎样选择节点？ {#pod-creation-flow}
+### 7.2 从 `kubectl apply` 一个 Deployment 到 Pod 运行起来，中间经历了哪些步骤？调度器怎样选择节点？ {#pod-creation-flow}
 
 <!-- 面试来源：
 - DaoCloud：https://www.nowcoder.com/feed/main/detail/55eef84d42ed422a8d4a1c22d888e929 （“Pod的启动流程”）
@@ -123,18 +145,20 @@ etcd 保存集群中的全部对象：节点、Pod、Service、ConfigMap、Secre
 - apiserver、控制器、调度器、kubelet、CNI 在链路中的先后顺序。
 - 调度的过滤与打分；调度依据 requests；分布不均的原因和处理。
 
-**相关内容**：[一个 Pod 的创建链路](#一个-pod-的创建链路)、[调度](#调度)。
+**相关内容**：[Pod 创建链路](#一个-pod-的创建链路)、[调度](#调度)。
 
 <details>
 <summary>参考回答</summary>
 
-kubectl 把清单发给 apiserver，apiserver 完成认证、授权和准入控制后写入 etcd。Deployment 控制器 watch 到新对象，创建 ReplicaSet；ReplicaSet 控制器发现副本不足，创建 Pod 对象，这时 Pod 还没有节点，处于 Pending。调度器 watch 到未调度的 Pod，选出节点并写回绑定结果。目标节点上的 kubelet watch 到这个 Pod，通过 CRI 让 containerd 创建 Pod 沙箱，调用 CNI 插件分配 IP，挂载卷、拉取镜像，先运行 init 容器再启动业务容器，然后执行探针并上报状态。Pod 就绪后，EndpointSlice 控制器把它加入 Service 的后端，kube-proxy 更新规则，开始接收流量。
+Deployment 经 API 保存后，由控制器逐步创建 Pod。Deployment 控制器管理 ReplicaSet。ReplicaSet 控制器补足 Pod。scheduler 过滤并评分，然后提交节点绑定。
 
-调度器先过滤：排除剩余可分配资源小于 Pod requests 的节点、不满足节点选择器或必需亲和性的节点、带有 Pod 不能容忍的污点的节点。再对剩余节点打分，考虑资源均衡、首选亲和性、拓扑分布等，选择最高分的节点。因为调度只看 requests 而不看实际用量，并且只在创建时进行，所以 requests 设置不准或节点扩容后会出现分布不均，可以用拓扑分布约束、反亲和和 descheduler 处理。
+目标 kubelet 准备卷并调用 CRI。运行时准备沙箱、网络、镜像与容器。kubelet 持续上报状态和探针结果。Service 数据面再根据端点条件选择后端。
+
+资源过滤使用 requests。污点、亲和性、卷和拓扑也参与选择。节点扩容后，已有 Pod 仍留在原节点。
 
 </details>
 
-### 6.3 etcd 在 Kubernetes 中起什么作用？它怎样保证多节点数据一致？etcd 出问题会有什么影响？ {#etcd}
+### 7.3 etcd 在 Kubernetes 中起什么作用？它怎样保证多节点数据一致？etcd 出问题会有什么影响？ {#etcd}
 
 <!-- 面试来源：
 - 矩阵起源：https://www.nowcoder.com/feed/main/detail/e297f923972f41d6860a0a6e58058772 （“ETCD 在 K8S 里面起什么作用吗？”）
@@ -152,22 +176,43 @@ kubectl 把清单发给 apiserver，apiserver 完成认证、授权和准入控�
 - etcd 保存集群状态、提供 watch。
 - Raft 的多数派写入；奇数节点；故障影响与备份恢复；静态 Pod。
 
-**相关内容**：[etcd 存储](#etcd-存储)、[Raft 选举与日志复制](../../system-design/distributed-system/raft-election-log-replication.mdx)。
+**相关内容**：[etcd 存储](#etcd-存储)、[Raft](../../system-design/distributed-system/raft-election-log-replication.mdx)。
 
 <details>
 <summary>参考回答</summary>
 
-etcd 是 Kubernetes 唯一的状态存储，节点、Pod、Service、ConfigMap、Secret 等对象都保存在里面；apiserver 是唯一访问它的组件，并利用 etcd 的 watch 能力把对象变化推送给控制器、调度器和 kubelet。
+etcd 持久保存 Kubernetes 的 API 对象。Raft 通过多数派提交维持一致性。3 个成员可容忍 1 个失效，5 个可容忍 2 个。
 
-一致性由 Raft 保证：集群选出一个 Leader，写请求由 Leader 追加到日志并复制给其他成员，多数成员持久化后才提交并返回；Leader 故障时，拥有最新已提交日志的成员才能当选新 Leader。所以 3 个节点能容忍 1 个故障，5 个能容忍 2 个，节点数取奇数。每次写入都要刷盘，磁盘慢会导致 Leader 频繁切换和 apiserver 变慢，etcd 应使用低延迟磁盘。
+etcd 故障会阻塞持久更新和相关控制循环。已有容器与转发规则可继续运行。故障期间发生的节点和后端变化会增加业务风险。
 
-etcd 不可用时，已运行的容器不受影响，但所有创建、更新、调度和扩缩容都无法进行，控制平面组件也会报错。运维上要定期做快照备份并演练恢复，开启 Secret 的静态加密，出问题时先检查成员健康、Leader 变化和磁盘延迟，优先从快照恢复，而不是删除数据目录重建。kubeadm 部署的集群中 etcd 以静态 Pod 运行，由 kubelet 直接读取节点上的清单启动。
+处理时先确认成员、网络和磁盘状态。灾难恢复使用已验证的快照方案。etcd 3.6 恢复工具是 `etcdutl`。Kubernetes 场景还需处理 revision 和 watch 缓存。
 
 </details>
 
-## 7. 参考资料
+### 7.4 认证、RBAC 和准入分别检查什么？Secret 为什么还要加密？ {#api-security}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：身份、操作权限、对象约束和落盘保护。
+
+**相关内容**：[API 访问与 Secret 加密](#api-访问与-secret-加密)。
+
+<details>
+<summary>参考回答</summary>
+
+认证确认身份，RBAC 授权检查操作权限。准入检查或修改对象内容。Secret 的 base64 只改变表示方式。静态加密保护持久存储中的内容。API 读取权限与备份访问仍需分别约束。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
 
 - [Kubernetes：Cluster Architecture](https://kubernetes.io/docs/concepts/architecture/)
 - [Kubernetes：Kubernetes Scheduler](https://kubernetes.io/docs/concepts/scheduling-eviction/kube-scheduler/)
 - [Kubernetes：Operating etcd clusters for Kubernetes](https://kubernetes.io/docs/tasks/administer-cluster/configure-upgrade-etcd/)
 - [Kubernetes：Static Pods](https://kubernetes.io/docs/tasks/configure-pod-container/static-pod/)
+- [Kubernetes：Control Plane–Node Communication](https://kubernetes.io/docs/concepts/architecture/control-plane-node-communication/)
+- [Kubernetes：Secrets](https://kubernetes.io/docs/concepts/configuration/secret/)
+- [Kubernetes：RBAC](https://kubernetes.io/docs/reference/access-authn-authz/rbac/)
+- [etcd 3.6：Disaster recovery](https://etcd.io/docs/v3.6/op-guide/recovery/)

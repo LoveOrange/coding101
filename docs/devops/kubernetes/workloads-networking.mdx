@@ -7,41 +7,46 @@ knowledge:
 
 # 工作负载、Service 与集群网络
 
-部署一个应用通常要写三类对象：用工作负载（Deployment、StatefulSet、DaemonSet）声明运行什么，用 Service 给一组 Pod 提供稳定的访问地址，用 Ingress 或 Gateway 把外部 HTTP 流量引进来。这些对象背后依赖的是集群网络：CNI 插件让 Pod 之间能直接通信，kube-proxy 实现 Service 的转发。本文按这个顺序讲解。
+工作负载管理应用副本，Service 提供稳定的访问入口。本文负责工作负载选择、滚动更新和集群网络。Pod 探针和终止过程见 [Pod：生命周期、探针与资源](./pods.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- Deployment 管理无状态应用：通过 ReplicaSet 维持副本数，支持滚动更新和回滚。StatefulSet 管理有状态应用：Pod 有固定的名称和顺序，每个 Pod 绑定自己的持久卷。DaemonSet 在每个（或选定的）节点上运行一个 Pod，用于日志、监控代理和网络插件。[卡](#workload-types)
-- Service 用标签选择一组 Pod，提供稳定的虚拟 IP 和 DNS 名称。类型有 ClusterIP（集群内访问）、NodePort（每个节点的固定端口）、LoadBalancer（云负载均衡器）和 ExternalName（DNS 别名）；不分配 IP 的 Headless Service 直接返回 Pod 地址。[卡](#service-ingress)
-- Ingress 是七层 HTTP 路由规则，需要 Ingress 控制器执行；社区的 ingress-nginx 已于 2026-03 停止维护，官方推荐迁移到 Gateway API。
-- Kubernetes 网络模型要求所有 Pod 之间可以不经 NAT 直接通信。同一节点的 Pod 通过 veth 对和网桥通信，跨节点由 CNI 插件实现：封装隧道（Flannel VXLAN）或路由（Calico BGP）。[卡](#pod-networking)
-- CNI 插件负责 Pod 的 IP 和 Pod 之间的连通；kube-proxy 负责把访问 Service IP 的流量转发到后端 Pod，两者解决不同的问题。
+- Deployment 管理可替换副本，StatefulSet 管理稳定身份。[卡](#workload-types)
+- DaemonSet 在符合条件的节点上维护 Pod 副本。[卡](#workload-types)
+- Service 数据面依据端点信息，把流量送到后端。[卡](#service-ingress)
+- CNI 配置 Pod 网络，Service 代理实现虚拟地址转发。[卡](#pod-networking)
+- NetworkPolicy 的允许规则按并集生效。[卡](#network-policy)
 
 ## 2. 工作负载 {#工作负载}
 
-| 类型 | 特点 | 适用 |
-| --- | --- | --- |
-| Deployment | Pod 可以互相替换，名称随机；通过 ReplicaSet 管理副本；滚动更新、回滚 | Web 服务、API 等无状态应用 |
-| StatefulSet | 固定名称（`web-0`、`web-1`），按序号顺序创建和删除；每个 Pod 通过 `volumeClaimTemplates` 获得独立的持久卷；配合 Headless Service 获得稳定的 DNS | 数据库、消息队列、ZooKeeper 等需要身份和存储的应用 |
-| DaemonSet | 每个符合条件的节点运行一个副本，新节点加入时自动创建 | 日志采集、节点监控、CNI 插件、存储插件 |
-| Job / CronJob | 运行到完成；CronJob 按时间计划创建 Job | 批处理、数据迁移、定时任务 |
+| 对象 | 主要用途 |
+| --- | --- |
+| Deployment | 管理可替换副本、滚动更新和版本回滚 |
+| StatefulSet | 提供稳定序号、网络身份及按模板创建的 PVC |
+| DaemonSet | 在符合条件的节点上运行日志、网络等代理 |
+| Job | 执行到完成的任务 |
+| CronJob | 按计划创建 Job |
 
-**Deployment 与 ReplicaSet**：ReplicaSet 只负责保持指定数量的 Pod。Deployment 在它之上管理版本：每次修改 Pod 模板时创建新的 ReplicaSet，逐步增加新 ReplicaSet 的副本、减少旧的副本，`maxSurge` 控制最多超出期望数量多少个，`maxUnavailable` 控制最多有多少个不可用。旧 ReplicaSet 保留下来，`kubectl rollout undo` 可以回滚到之前的版本。一般不直接创建 ReplicaSet。
+StatefulSet 默认使用 OrderedReady 管理顺序。Parallel 策略可并行创建和删除 Pod。稳定身份有助于应用识别成员。数据库复制、选主和一致性仍由应用承担。
 
-**Deployment 清单的结构**：
+PVC 通过 StorageClass 可触发动态供应 PV。实际存储还取决于供应器和访问模式。StatefulSet 的卷保留行为由 PVC 保留策略决定。数据保留与应用备份应分别设计。
+
+### 2.1 滚动更新与回滚 {#滚动更新与回滚}
+
+ReplicaSet 维持副本数量。Deployment 在它之上管理 Pod 模板版本。修改模板会创建或复用对应的 ReplicaSet。
 
 ```yaml
 apiVersion: apps/v1
 kind: Deployment
-metadata:                # 名称、命名空间、标签
+metadata:
   name: web
 spec:
   replicas: 3
-  selector:              # 管理哪些 Pod，必须与模板标签一致
+  selector:
     matchLabels: {app: web}
   strategy:
     rollingUpdate: {maxSurge: 25%, maxUnavailable: 0}
-  template:              # Pod 模板
+  template:
     metadata:
       labels: {app: web}
     spec:
@@ -49,54 +54,80 @@ spec:
         - name: web
           image: registry.example.com/web:1.4.2
           ports: [{containerPort: 8080}]
+          readinessProbe:
+            httpGet: {path: /ready, port: 8080}
           resources:
             requests: {cpu: 250m, memory: 256Mi}
             limits: {memory: 512Mi}
 ```
 
-配置和密钥分别放在 ConfigMap 和 Secret 中，以环境变量或文件的形式注入。持久存储通过 PVC 申请，由 StorageClass 动态创建 PV。
+3 个副本的 25% maxSurge 向上取整为 1。maxUnavailable 为 0，要求维持 3 个可用副本。新副本未就绪时，滚动更新会停住。终止中的 Pod 仍占资源，应额外预留容量。
+
+`kubectl rollout status deployment/web` 检查进展。`progressDeadlineSeconds` 超时会记录进展失败。Deployment 控制器不会因此自动回滚。`kubectl rollout undo deployment/web` 可恢复保留的模板版本。外部配置、数据库迁移和业务数据需单独恢复。
+
+### 2.2 配置更新 {#配置更新}
+
+ConfigMap 保存普通配置，Secret 保存敏感配置。安全边界见 [Kubernetes 架构](./architecture.mdx#api-访问与-secret-加密)。
+
+环境变量在容器启动时注入。更新对象后，已有进程的环境变量保持原值。卷投射文件会经 kubelet 更新传播。应用还需重新读取或重载配置。subPath 挂载不会接收此类自动更新。
+
+需要确定切换时点时，可使用版本化配置。修改 Pod 模板引用，再触发滚动更新。
 
 ## 3. Service 与流量入口 {#service-与流量入口}
 
-| 类型 | 访问方式 | 说明 |
-| --- | --- | --- |
-| ClusterIP（默认） | 集群内通过虚拟 IP 或 DNS `名称.命名空间.svc.cluster.local` | 服务之间调用 |
-| NodePort | 任意节点 IP 加固定端口（默认 30000—32767） | 简单的对外暴露，或作为外部负载均衡器的后端 |
-| LoadBalancer | 云厂商创建的负载均衡器地址 | 云上对外暴露四层服务 |
-| ExternalName | 返回一个 CNAME | 用集群内名称访问外部服务 |
-| Headless（`clusterIP: None`） | DNS 直接返回各 Pod 的 IP | StatefulSet、需要客户端自己选择实例的场景 |
+| 类型或模式 | 行为 |
+| --- | --- |
+| ClusterIP | 分配集群虚拟 IP，供内部访问 |
+| NodePort | 在节点地址的指定端口提供入口 |
+| LoadBalancer | 请求负载均衡器实现提供外部入口 |
+| ExternalName | DNS 返回配置的 CNAME |
+| Headless | `clusterIP: None`，通过 DNS 提供端点地址 |
 
-**实现**：EndpointSlice 控制器根据 Service 的选择器，把就绪的 Pod 地址写入 EndpointSlice；每个节点上的 kube-proxy 监听这些变化，生成 iptables 或 IPVS 规则，把发往 Service IP 的流量 DNAT 到某个 Pod。CoreDNS 为 Service 提供域名解析。
+带选择器的 Service 由控制器维护 EndpointSlice。端点包含地址、端口和 ready 等条件。代理根据这些条件选择后端。无选择器的 Service 可由使用者维护端点。
 
-**临时访问**：调试时可以用 `kubectl port-forward svc/web 8080:80` 把 Service 转发到本地，它经过 apiserver 建立隧道，只适合调试，不能作为生产入口。
+CoreDNS 为 Service 提供名称解析。默认集群域为 `cluster.local`，部署可更改。`kubectl port-forward svc/web 8080:80` 选择后端 Pod 建立调试通道。它不经过 ClusterIP 的常规转发路径。
 
-**Ingress 与 Gateway API**：Ingress 定义按域名和路径把 HTTP 请求路由到不同 Service 的规则，并可以配置 TLS 证书；规则本身不生效，需要部署 Ingress 控制器（例如基于 Nginx、Envoy、Traefik 的实现）来执行，所以 Nginx 和 Ingress 的关系是“实现与规则”。社区维护的 ingress-nginx 已在 2026-03 结束维护，官方建议迁移到 Gateway API：它把基础设施（GatewayClass、Gateway）和路由（HTTPRoute 等）拆成不同对象，由不同角色管理，表达能力也更强。
+Ingress 描述 HTTP 域名和路径路由，需要控制器执行。Gateway API 用 GatewayClass、Gateway 和路由对象分工。Gateway API 同样需要具体实现。
+
+社区 ingress-nginx 已于 2026 年 3 月退役。该变化针对该控制器项目。Ingress API 和其他控制器有各自生命周期。迁移时应核对 Gateway API 实现的功能支持。
+
+### 3.1 外部流量策略 {#外部流量策略}
+
+`externalTrafficPolicy: Cluster` 可选择集群内后端。`Local` 只选择当前节点的本地后端。NodePort 等外部路径使用 Local 可保留客户端源 IP。
+
+没有本地后端的节点无法按 Local 正常转发。外部负载均衡器需正确检查节点健康。副本分布不均时，各节点流量也会不均。Local 需要在源地址、可用性和分布之间取舍。
 
 ## 4. 集群网络 {#集群网络}
 
-Kubernetes 网络模型的要求：每个 Pod 有自己的 IP；所有 Pod 之间不经过 NAT 即可通信；节点与 Pod 之间可以直接通信。具体实现交给 CNI 插件。
+普通 Pod 网络要求跨节点直接寻址。NetworkPolicy 可进一步限制允许的连接。hostNetwork Pod 则共享节点网络。
 
-| 场景 | 路径 |
+| 路径 | 实现方式 |
 | --- | --- |
-| 同一 Pod 内 | 共享网络 Namespace，通过 `localhost` |
-| 同一节点的两个 Pod | 每个 Pod 通过 veth 对连接到节点上的网桥（如 `cni0`），在二层直接转发 |
-| 跨节点的两个 Pod | 由 CNI 插件实现，见下表 |
-| 访问 Service | kube-proxy 规则把 Service IP 转换成某个 Pod IP，再按上面的路径转发 |
-| 外部访问 | LoadBalancer、NodePort 或 Ingress/Gateway 控制器进入集群 |
+| 同一 Pod | 通过共享网络空间与 localhost 通信 |
+| 同一节点 | 可通过网桥、主机路由或 eBPF 转发 |
+| 跨节点 | 通过封装隧道或可达的 Pod 网段路由 |
+| Service | 先选择后端，再经 Pod 网络送达 |
+| 外部入口 | 由负载均衡器和网关转入集群 |
 
-| CNI | 跨节点方式 | 特点 |
-| --- | --- | --- |
-| Flannel | 默认 VXLAN：把 Pod 之间的二层帧封装进节点之间的 UDP 报文；也支持 host-gw 直接路由 | 简单，主要解决连通，网络策略需要配合其他组件 |
-| Calico | BGP 路由，节点之间交换 Pod 网段的路由，不封装；跨网段时可以用 IPIP 或 VXLAN 封装 | 性能好，支持网络策略 |
-| Cilium | 基于 eBPF 处理转发、负载均衡和策略，可以替代 kube-proxy | 性能和可观测性强，对内核版本有要求 |
+Flannel 支持 VXLAN 和 host-gw 等后端。Calico 支持路由以及 IPIP、VXLAN 等封装。Cilium 可用 eBPF 实现网络和 Service 转发。具体路径应以插件及部署模式为准。
 
-**封装与路由**：隧道方式在原报文外再加一层头部，对底层网络没有要求，但有封装开销，需要注意 MTU；路由方式不封装、性能更好，但要求底层网络能够转发 Pod 网段的路由（同一二层网络，或支持 BGP）。
+隧道要求节点间承载网络可达，并放行相应协议。封装额外占用 MTU。直接路由则要求底层能转发 Pod 网段。
 
-Pod 之间不通时，按路径逐段确认：Pod 的 IP 和路由、节点上的网桥和 veth、CNI 的隧道接口或路由表、节点之间的安全组和防火墙、iptables 规则和 conntrack，必要时在两端和隧道接口上同时抓包。
+Linux kube-proxy 提供 iptables、nftables 等实现。IPVS 模式自 Kubernetes 1.35 起弃用。IPVS 曾将 Service VIP 绑定到虚拟接口。因此，VIP 的具体落点取决于代理模式。
 
-## 5. 面试题
+排查从源 Pod 路由开始，再看节点与目标 Pod。沿途检查策略、防火墙、隧道、MTU 和连接跟踪。两端抓包用于确认丢失位置。
 
-### 5.1 Deployment、StatefulSet 和 DaemonSet 有什么区别？Deployment 和 ReplicaSet 是什么关系？ {#workload-types}
+## 5. NetworkPolicy {#networkpolicy}
+
+NetworkPolicy 按 Pod、命名空间和网段选择流量。网络插件必须支持策略执行。
+
+某方向没有选择该 Pod 的策略时，该方向默认放行。策略选中 Pod 并声明该方向后，该方向进入隔离。所有匹配策略允许的流量取并集。
+
+连接需同时满足源端 egress 和目标端 ingress 规则。允许出站 DNS 时，需按部署开放 UDP 和 TCP 53。策略控制连接边界，HTTP 路径授权需由应用或网关完成。
+
+## 6. 面试题 {#面试题}
+
+### 6.1 Deployment、StatefulSet 和 DaemonSet 有什么区别？Deployment 和 ReplicaSet 是什么关系？ {#workload-types}
 
 <!-- 面试来源：
 - 矩阵起源：https://www.nowcoder.com/discuss/813179226554642432 （“Deployment和StatefulSet的区别？”“DaemonSet的作用是什么？”）
@@ -121,13 +152,13 @@ Pod 之间不通时，按路径逐段确认：Pod 的 IP 和路由、节点上�
 <details>
 <summary>参考回答</summary>
 
-Deployment 用于无状态应用，Pod 可以互相替换，名称随机，扩缩容和故障替换时不需要保留身份。StatefulSet 用于有状态应用：Pod 名称带固定序号，按顺序创建和删除；每个 Pod 通过卷声明模板拥有自己的持久卷，重建后仍挂载原来的卷；配合 Headless Service，每个 Pod 有稳定的 DNS 名称，适合数据库、消息队列等需要固定身份的集群。DaemonSet 保证每个符合条件的节点上运行一个副本，新节点加入时自动创建，用于日志采集、监控代理和网络插件。
+Deployment 管理可替换副本，StatefulSet 保留稳定身份。StatefulSet 可按卷模板为副本配置独立 PVC。数据复制与选主仍由应用完成。DaemonSet 在符合条件的节点运行代理。
 
-ReplicaSet 只负责维持指定数量的 Pod。Deployment 管理 ReplicaSet：修改 Pod 模板时创建新的 ReplicaSet，按 `maxSurge` 和 `maxUnavailable` 逐步扩大新的、缩小旧的，实现滚动更新；旧的 ReplicaSet 保留，可以回滚。Deployment 清单包括 apiVersion、kind、metadata 和 spec，spec 中有副本数、标签选择器、更新策略和 Pod 模板，模板里定义容器、镜像、端口、资源请求和限制、探针等。
+ReplicaSet 维持数量，Deployment 管理模板版本。滚动更新受 maxSurge 和 maxUnavailable 约束。回滚恢复历史 Pod 模板。外部配置和数据库数据需单独处理。
 
 </details>
 
-### 5.2 Service 有哪些类型？Service 是怎样把流量转发到 Pod 的？Ingress 和 Service、Nginx 是什么关系？ {#service-ingress}
+### 6.2 Service 有哪些类型？Service 是怎样把流量转发到 Pod 的？Ingress 和 Service、Nginx 是什么关系？ {#service-ingress}
 
 <!-- 面试来源：
 - 矩阵起源：https://www.nowcoder.com/discuss/813179226554642432 （“Service有哪些类型？”）
@@ -139,27 +170,29 @@ ReplicaSet 只负责维持指定数量的 Pod。Deployment 管理 ReplicaSet：�
 - 上海银行：https://www.nowcoder.com/feed/main/detail/67ff310979144d98837bf08eb5417beb （“k8s的内部网络架构？”）
 -->
 
-**出现公司**：矩阵起源、共济科技、持安科技、汇丰软件、莉莉丝、德迩象网机器人、上海银行
+**出现公司**：矩阵起源、共济科技、持安科技、汇丰软件
+
+**出现公司**：莉莉丝、德迩象网机器人、上海银行
 
 **考察重点**
 
 - 各类型的访问方式和适用场景；Headless Service。
 - EndpointSlice、kube-proxy、CoreDNS 的分工；Ingress 规则与控制器；Gateway API。
 
-**相关内容**：[Service 与流量入口](#service-与流量入口)、[iptables 规则](../linux/network-troubleshooting.mdx#iptables-规则)。
+**相关内容**：[Service 与流量入口](#service-与流量入口)、[Linux 网络排查](../linux/network-troubleshooting.mdx#iptables-规则)。
 
 <details>
 <summary>参考回答</summary>
 
-Service 用标签选择一组 Pod，提供稳定的访问地址。ClusterIP 是默认类型，分配一个只在集群内可达的虚拟 IP；NodePort 在每个节点上开放一个固定端口转发到 Service；LoadBalancer 在云上创建负载均衡器对外暴露；ExternalName 返回一个 CNAME，用于访问外部服务。设置 `clusterIP: None` 的 Headless Service 不分配虚拟 IP，DNS 直接返回各 Pod 的地址，StatefulSet 依靠它给每个 Pod 稳定的名称。
+Service 的类型有 ClusterIP、NodePort、LoadBalancer 和 ExternalName。Headless 是不分配 ClusterIP 的模式。其 DNS 可返回端点地址。
 
-转发过程：EndpointSlice 控制器把选择器匹配且就绪的 Pod 地址写入 EndpointSlice，每个节点上的 kube-proxy 监听变化，生成 iptables 或 IPVS 规则，访问 Service IP 时 DNAT 到某个 Pod；CoreDNS 把 Service 名称解析为 ClusterIP。调试时可以用 `kubectl port-forward` 临时把 Service 映射到本地，但不能作为生产入口。
+控制器维护 EndpointSlice，代理按端点条件转发。CoreDNS 负责名称解析。port-forward 通过 API 通道访问选中的 Pod。
 
-Ingress 是七层路由规则，按域名和路径把 HTTP 请求转到不同的 Service，并配置 TLS 证书；规则需要 Ingress 控制器来执行，Nginx 是常见的控制器实现之一，所以两者是“规则与执行者”的关系。对公网暴露 HTTP 服务应通过 Ingress 或 Gateway，而不是直接暴露 Pod，TLS 通常在入口终止。社区的 ingress-nginx 已于 2026-03 停止维护，新集群建议使用 Gateway API。
+Ingress 定义七层路由，控制器负责执行。Gateway API 使用分离的网关与路由对象。社区 ingress-nginx 于 2026 年 3 月退役。该项目的退役不等于 Ingress API 被移除。
 
 </details>
 
-### 5.3 Kubernetes 中 Pod 之间怎样通信？跨节点通信是怎样实现的？Flannel、Calico 和 kube-proxy 有什么区别？ {#pod-networking}
+### 6.3 Kubernetes 中 Pod 之间怎样通信？跨节点通信是怎样实现的？Flannel、Calico 和 kube-proxy 有什么区别？ {#pod-networking}
 
 <!-- 面试来源：
 - 虾皮：https://www.nowcoder.com/discuss/353156139321860096 （“k8s网络通信原理（pod内，pod间）”“k8s架构+网络模型，描述通信过程；假如遇到问题怎么处理”）
@@ -182,18 +215,77 @@ Ingress 是七层路由规则，按域名和路径把 HTTP 请求转到不同的
 <details>
 <summary>参考回答</summary>
 
-Kubernetes 要求每个 Pod 有独立 IP，任意 Pod 之间不经过 NAT 直接通信，具体由 CNI 插件实现。同一个 Pod 内的容器共享网络 Namespace，用 localhost 通信。同一节点上的 Pod 各自通过一对 veth 连接到节点的网桥，在二层直接转发。跨节点时有两种方式：Flannel 默认用 VXLAN，节点上的 flannel.1 设备把发往其他节点 Pod 网段的报文封装进 UDP，通过节点网络送到对端再解封装，对底层网络没有要求，但有封装开销，要注意 MTU；Calico 默认用 BGP 在节点之间交换各自 Pod 网段的路由，报文不封装直接路由，性能更好，但要求底层网络能转发这些路由，跨网段时可以改用 IPIP 或 VXLAN；Cilium 用 eBPF 实现转发和策略。Calico 和 Cilium 还支持 NetworkPolicy。
+Pod 网络由 CNI 等网络实现建立。Pod 内容器用 localhost 通信。同节点路径可用网桥、路由或 eBPF。跨节点路径可用隧道或直接路由。
 
-kube-proxy 解决的是另一个问题：Service 的虚拟 IP 并不对应任何网卡，kube-proxy 在每个节点上用 iptables 或 IPVS 规则把访问 Service IP 的流量转换为某个后端 Pod 的 IP，之后的报文再由 CNI 建立的网络送达。所以 Flannel 负责 Pod 与 Pod 之间的连通，kube-proxy 负责 Service 到 Pod 的负载均衡。
+Flannel 支持 VXLAN、host-gw 等模式。Calico 支持路由、IPIP 与 VXLAN。隧道要求承载网络可达，并需要合适的 MTU。直接路由要求底层能转发 Pod 网段。
 
-Pod 之间不通时，按路径逐段排查：源 Pod 的路由，节点上的网桥和 veth，隧道接口或节点路由表，节点之间的安全组，iptables 和 conntrack，同时在两端抓包确认报文在哪一段丢失。
+Service 代理负责虚拟地址到后端的选择与转发。它可由 kube-proxy 或网络插件实现。Linux kube-proxy 的 IPVS 模式自 1.35 起弃用。故障时按实际数据路径检查策略、路由和抓包。
 
 </details>
 
-## 6. 参考资料
+### 6.4 Deployment 更新卡住会自动回滚吗？ConfigMap 更新何时生效？ {#rollout-config-update}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：滚动参数、进展条件与配置传播。
+
+**相关内容**：[滚动更新与回滚](#滚动更新与回滚)、[配置更新](#配置更新)。
+
+<details>
+<summary>参考回答</summary>
+
+进展超时会记录失败条件，控制器不会自动回滚。需修复原因或执行 rollout undo。环境变量在容器启动时固定。投射文件经 kubelet 更新后，应用仍需重新读取。subPath 挂载不会自动接收更新。回滚模板也不会撤销数据库迁移。
+
+</details>
+
+### 6.5 NetworkPolicy 如何决定 Pod 能否通信？多条策略怎样合并？ {#network-policy}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：双向许可、默认隔离与策略并集。
+
+**相关内容**：[NetworkPolicy](#networkpolicy)。
+
+<details>
+<summary>参考回答</summary>
+
+多条策略的允许规则取并集。连接需满足源端 egress 和目标端 ingress。某方向被策略选中后，只放行规则允许的流量。策略生效还要求网络插件支持。默认拒绝出站后，还需按部署放行 DNS。
+
+</details>
+
+### 6.6 externalTrafficPolicy 设置为 Local 有什么收益和代价？ {#external-traffic-local}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：源地址、本地端点与节点负载。
+
+**相关内容**：[外部流量策略](#外部流量策略)。
+
+<details>
+<summary>参考回答</summary>
+
+Local 只使用节点本地后端。NodePort 等外部路径可因此保留客户端源 IP。没有本地后端的节点无法正常承接该流量。负载均衡器需检查节点健康，副本也要合理分布。
+
+</details>
+
+## 7. 参考资料 {#参考资料}
 
 - [Kubernetes：Workloads](https://kubernetes.io/docs/concepts/workloads/)
 - [Kubernetes：Service](https://kubernetes.io/docs/concepts/services-networking/service/)
 - [Kubernetes：Cluster Networking](https://kubernetes.io/docs/concepts/cluster-administration/networking/)
 - [Kubernetes：Gateway API](https://kubernetes.io/docs/concepts/services-networking/gateway/)
 - [Ingress NGINX Retirement: What You Need to Know](https://kubernetes.io/blog/2025/11/11/ingress-nginx-retirement/)
+- [Kubernetes：Deployments](https://kubernetes.io/docs/concepts/workloads/controllers/deployment/)
+- [Kubernetes：StatefulSets](https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/)
+- [Kubernetes：ConfigMaps](https://kubernetes.io/docs/concepts/configuration/configmap/)
+- [Kubernetes：Network Policies](https://kubernetes.io/docs/concepts/services-networking/network-policies/)
+- [Kubernetes：Virtual IPs and Service Proxies](https://kubernetes.io/docs/reference/networking/virtual-ips/)
+- [Flannel：Backends](https://github.com/flannel-io/flannel/blob/master/Documentation/backends.md)
+- [Calico：Networking options](https://docs.tigera.io/calico/latest/networking/determine-best-networking)
+- [Cilium：Routing](https://docs.cilium.io/en/stable/network/concepts/routing/)

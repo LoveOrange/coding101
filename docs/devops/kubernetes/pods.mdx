@@ -7,68 +7,72 @@ knowledge:
 
 # Pod：生命周期、探针与资源
 
-Pod 是 Kubernetes 调度和运行的最小单位。日常运维中最常见的问题都落在 Pod 上：一直 Pending、反复 CrashLoopBackOff、被 OOMKilled、探针配置不当导致服务被反复重启。本文讲 Pod 的组成、状态与排查方法、三种探针、资源请求与限制，以及调度约束和弹性伸缩。
+Pod 将紧密协作的容器作为一个整体调度。本文负责组成、状态、探针、资源与终止过程。组件创建链路见 [Kubernetes 架构](./architecture.mdx)。工作负载管理见 [工作负载、Service 与集群网络](./workloads-networking.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- Pod 是一组共享网络和存储的容器：同一个 Pod 内的容器共用 IP 和端口空间，可以通过 localhost 通信，可以挂载相同的卷。需要紧密协作、同生共死的进程（业务容器加日志、代理 sidecar）放进同一个 Pod。[卡](#why-pod)
-- 排查 Pod 异常先看 `kubectl describe pod` 的事件和 `kubectl logs --previous`。Pending 多是调度失败（资源不足、亲和性、污点、存储未绑定）；CrashLoopBackOff 是容器反复退出（程序报错、配置缺失、存活探针失败、OOMKilled）。[卡](#pod-troubleshooting)
-- 存活探针失败会重启容器，就绪探针失败会把 Pod 从 Service 后端摘除，启动探针用于启动慢的应用，在它成功前不执行其他两种探针。存活探针不要检查下游依赖，否则依赖故障会引发全部实例重启。[卡](#probes)
-- requests 用于调度，limits 由 cgroup 强制执行：CPU 超限被限流，内存超限被 OOMKilled。三者的关系决定 QoS 等级，节点资源紧张时按等级驱逐。
-- 调度约束用节点选择器和亲和性指定“应该去哪”，用污点和容忍控制“谁能来”，用反亲和与拓扑分布把副本分散；HPA 根据指标自动调整副本数。[卡](#scheduling-scaling)
+- Pod 内容器共享网络空间，并可挂载同一卷。[卡](#why-pod)
+- CrashLoopBackOff 表示容器重启退避，Pending 是 Pod 阶段。[卡](#pod-troubleshooting)
+- readiness 影响接流量，liveness 失败触发容器重启处理。[卡](#probes)
+- requests 参与调度，CPU limit 通过配额实施限流。[卡](#scheduling-scaling)
+- `preStop` 与应用退出共用终止宽限期。[卡](#graceful-termination)
 
 ## 2. Pod 的组成 {#pod-的组成}
 
-每个 Pod 先启动一个 pause 容器（Pod 沙箱），它持有网络、IPC 等 Namespace，其他容器加入这些 Namespace。因此：
+同一 Pod 的容器共用网络 Namespace。它们通过 localhost 通信，需避免监听端口冲突。共享卷可用于交换文件。容器根文件系统各自独立。
 
-- Pod 内所有容器共享一个 IP，端口不能冲突，可以用 `localhost` 互相访问。
-- 可以通过同一个卷共享文件，例如业务容器写日志、sidecar 读取并上报。
-- 调度以 Pod 为单位，Pod 内的容器总是在同一个节点上。
+Pod 内各容器调度到同一节点。Linux 运行时可用 pause 容器维持沙箱。默认配置下，各容器使用独立的进程视图。`shareProcessNamespace: true` 才显式共享进程空间。
 
-**init 容器**按顺序在业务容器之前运行，全部成功后才启动业务容器，用于等待依赖、初始化配置或数据。**sidecar** 与业务容器一起长期运行，提供日志收集、代理、证书刷新等辅助功能；新版本中 sidecar 可以声明为 `restartPolicy: Always` 的 init 容器，保证它先于业务容器启动、后于业务容器退出。
+普通 init 容器按顺序执行，并成功结束。随后，业务容器启动。sidecar 则长期提供代理、日志等辅助能力。
+
+原生 sidecar 在 Kubernetes 1.33 达到稳定状态。它声明在 initContainers 中，使用 `restartPolicy: Always`。kubelet 确认它已启动后，再处理后续 init 容器。配置 startupProbe 时，启动确认还依赖该探针。正常终止时，原生 sidecar 在业务容器之后停止。
 
 ## 3. 状态与排查 {#状态与排查}
 
-**Pod 阶段（phase）**：
-
-| 阶段 | 含义 |
+| Pod phase | 含义 |
 | --- | --- |
-| Pending | 已创建，但还有容器没有运行：未调度、正在拉取镜像或创建中 |
-| Running | 已绑定节点，至少一个容器在运行 |
-| Succeeded | 所有容器成功退出，不再重启（Job 常见） |
-| Failed | 所有容器已退出，至少一个失败 |
-| Unknown | 无法获取状态，通常是节点失联 |
+| Pending | 已接受，部分容器尚未完成启动准备 |
+| Running | 已绑定节点，容器已创建；至少一个在运行或启动重启中 |
+| Succeeded | 所有容器成功结束，并且不再重启 |
+| Failed | 所有容器结束，至少一个失败，并且不再重启 |
+| Unknown | 无法取得 Pod 状态 |
 
-`kubectl get pod` 的 STATUS 列显示的往往是更具体的容器原因：
+`kubectl get pod` 的 STATUS 是展示信息。它还会显示容器等待原因及终止状态。
 
-| 显示 | 常见原因 | 查看 |
-| --- | --- | --- |
-| Pending（未调度） | 资源不足、节点选择器或亲和性不满足、污点、PVC 未绑定 | `describe` 中的 FailedScheduling 事件 |
-| ContainerCreating | 拉取镜像慢、卷挂载失败、CNI 分配 IP 失败 | `describe` 的事件 |
-| ImagePullBackOff | 镜像名或标签错误、仓库认证失败、网络不通 | 事件中的拉取错误 |
-| CrashLoopBackOff | 容器启动后反复退出，重启间隔按指数增长 | `logs --previous` 看上一次的输出，`describe` 看退出码 |
-| OOMKilled | 内存超过 limit | 退出码 137，调大 limit 或排查内存使用 |
-| Terminating 卡住 | finalizer 未完成、节点失联 | 检查 finalizer 和节点状态 |
+| 表现 | 重点证据 |
+| --- | --- |
+| 未调度 Pending | FailedScheduling、requests、约束与 PVC |
+| ContainerCreating | 卷挂载、CNI 与镜像准备事件 |
+| ImagePullBackOff | 镜像地址、凭据、网络与拉取事件 |
+| CrashLoopBackOff | 上次退出原因、日志和探针事件 |
+| OOMKilled | 内存限额、节点压力与内核 OOM 记录 |
+| Terminating | preStop、存储卸载、finalizer 与节点状态 |
 
-CrashLoopBackOff 的常见根因：启动命令或参数错误、缺少配置文件或环境变量、依赖的 Secret 不存在、连接不上数据库后程序直接退出、存活探针配置过严导致刚启动就被杀、内存不足被 OOMKilled。退出码 1 通常是程序错误，137 是被 SIGKILL（OOM 或探针失败后被杀），143 是收到 SIGTERM。
+缺少必需 Secret 可阻止容器创建。程序读取配置后主动退出，则会进入重启流程。两者应按事件区分。
 
-排查顺序：`kubectl describe pod` 看事件 → `kubectl logs <pod> -c <容器> --previous` 看崩溃前的日志 → `kubectl get events --sort-by=.lastTimestamp` 看命名空间内的事件 → 必要时 `kubectl debug` 启动临时容器进入排查。
+```bash
+kubectl describe pod web
+kubectl logs web -c app --previous
+kubectl get events --sort-by=.lastTimestamp
+```
+
+describe 用于定位事件和上次容器状态。logs 的 `--previous` 读取上一个容器实例的日志。退出码 137 还需核对 OOMKilled 与终止记录。停止超时后的 SIGKILL 也能产生 137。
 
 ## 4. 探针 {#探针}
 
-| 探针 | 失败后 | 用途 |
-| --- | --- | --- |
-| livenessProbe（存活） | 重启容器 | 发现死锁、卡死等无法自愈的状态 |
-| readinessProbe（就绪） | 从 Service 后端摘除，不重启 | 启动预热、暂时过载、依赖暂时不可用时停止接收流量 |
-| startupProbe（启动） | 超过阈值后重启容器 | 启动慢的应用；成功之前不执行另外两种探针 |
+| 探针 | 失败达到阈值后的行为 |
+| --- | --- |
+| livenessProbe | kubelet 终止容器，再按重启策略处理 |
+| readinessProbe | 标记未就绪，常规 Service 流量停止选用该端点 |
+| startupProbe | 终止启动失败的容器，再按重启策略处理 |
 
-检查方式有 HTTP GET（2xx、3xx 为成功）、TCP 连接、在容器内执行命令（退出码 0 为成功）和 gRPC。关键参数：`initialDelaySeconds`、`periodSeconds`、`timeoutSeconds`、`failureThreshold`。
+startupProbe 成功前，另外两种探针暂缓执行。HTTP 探针接受 200—399 状态码。TCP 检查建连，exec 检查退出码 0。gRPC 探针检查健康服务响应。
 
 ```yaml
 startupProbe:
   httpGet: {path: /healthz, port: 8080}
   periodSeconds: 5
-  failureThreshold: 30        # 最多等待 150 秒启动
+  failureThreshold: 30
 livenessProbe:
   httpGet: {path: /healthz, port: 8080}
   periodSeconds: 10
@@ -78,43 +82,62 @@ readinessProbe:
   periodSeconds: 5
 ```
 
-设计原则：存活检查只判断进程本身是否还能工作，不检查数据库等下游，否则下游故障时所有实例同时重启，问题被放大；就绪检查可以包含必需的依赖。节点的健康由 kubelet 上报给控制平面，与 Pod 的探针是两回事。
+示例为启动预留约 150 秒的探测预算。实际时点还受单次超时与探测调度影响。liveness 用于识别重启能恢复的本地故障。将共享数据库故障纳入 liveness，会触发连锁重启。
 
-## 5. 资源请求、限制与 QoS {#资源请求限制与-qos}
+readiness 应反映当前实例能否处理请求。共享依赖检查也要考虑全部副本同时摘流量的后果。探针失败不会主动断开所有已有连接。
+
+## 5. 资源配置与 QoS {#资源请求限制与-qos}
+
+以下使用容器级资源配置。
 
 ```yaml
 resources:
-  requests: {cpu: 500m, memory: 512Mi}   # 调度时按此预留
-  limits:   {cpu: "1", memory: 1Gi}      # 运行时上限
+  requests: {cpu: 500m, memory: 512Mi}
+  limits: {cpu: "1", memory: 1Gi}
 ```
 
-| 资源 | 超过 limit 的后果 |
+调度器按 requests 计算资源需求。CPU 超过配额会限流。内存达到上限且回收不足时，内核可触发 OOM。具体 cgroup 机制见 [容器原理](../containers/container-principles.mdx#cgroups)。
+
+| QoS | 容器级配置下的条件 |
 | --- | --- |
-| CPU | 被 cgroup 限流，变慢但不会被杀 |
-| 内存 | 被 OOM Killer 杀掉，状态 OOMKilled |
+| Guaranteed | 每个容器都配置 CPU、内存；各自 request 等于 limit |
+| BestEffort | 所有容器都未配置 CPU、内存的 request 和 limit |
+| Burstable | 其他配置 |
 
-| QoS 等级 | 条件 | 节点压力下的驱逐顺序 |
-| --- | --- | --- |
-| Guaranteed | 每个容器的 CPU 和内存都设置了 requests 且等于 limits | 最后 |
-| Burstable | 至少一个容器设置了 requests 或 limits，但不满足 Guaranteed | 中间，用量超过 requests 越多越先被驱逐 |
-| BestEffort | 都没有设置 | 最先 |
+节点压力驱逐按所需回收的资源排序。主要依据是是否超过 requests、Priority 和超出量。QoS 只是部分资源配置的归类。磁盘或 inode 压力还需按对应资源处理。
 
-**驱逐**：节点可用内存、磁盘或 inode 低于阈值时，kubelet 主动驱逐 Pod 来回收资源（节点压力驱逐）。`kubectl drain` 维护节点时通过 Eviction API 驱逐，会遵守 PodDisruptionBudget，保证同时下线的副本不超过设定值。
+`kubectl drain` 默认通过 Eviction API 驱逐。该路径遵守 PodDisruptionBudget。节点压力驱逐与节点故障不受 PDB 保护。
 
 ## 6. 调度约束与弹性伸缩 {#调度约束与弹性伸缩}
 
-| 机制 | 作用 | 例子 |
-| --- | --- | --- |
-| `nodeSelector` / 节点亲和性 | 让 Pod 去特定节点；`required` 为硬性条件，`preferred` 为偏好 | 只调度到有 GPU 的节点 |
-| 污点与容忍 | 节点拒绝没有对应容忍的 Pod。效果有 `NoSchedule`（不调度）、`PreferNoSchedule`（尽量不调度）、`NoExecute`（不调度并驱逐已有的） | 专用节点、控制平面节点、故障节点 |
-| Pod 亲和与反亲和 | 根据其他 Pod 的位置决定去留，`topologyKey` 指定范围（节点、可用区） | 同一服务的副本分散到不同节点 |
-| 拓扑分布约束 | 限制副本在各拓扑域之间的数量差 | 每个可用区副本数相差不超过 1 |
+| 机制 | 含义 |
+| --- | --- |
+| nodeSelector、required 亲和 | 硬性筛选节点 |
+| preferred 亲和 | 为满足偏好的节点评分 |
+| NoSchedule 污点 | 拒绝缺少容忍的新调度 |
+| PreferNoSchedule 污点 | 尽量避开缺少容忍的 Pod |
+| NoExecute 污点 | 还可驱逐未容忍的已有 Pod |
+| 反亲和、拓扑分布 | 约束副本在节点或可用区的分布 |
 
-**HPA**：Horizontal Pod Autoscaler 周期性读取指标（CPU、内存来自 metrics-server，自定义指标来自 Prometheus 适配器等），按 `期望副本数 = ceil(当前副本数 × 当前指标 / 目标指标)` 调整副本。CPU 利用率是相对 requests 计算的，没有设置 requests 就无法按 CPU 伸缩。缩容默认有稳定窗口，避免频繁抖动。VPA 调整单个 Pod 的 requests；Cluster Autoscaler 在 Pod 因资源不足无法调度时增加节点。
+容忍只是通过污点检查。它不会保证 Pod 被调度到该节点。
 
-## 7. 面试题
+HPA 根据指标调整副本数。基本计算为 `ceil(当前副本数 × 当前指标 / 目标指标)`。CPU 利用率目标以 requests 为分母。使用 CPU 绝对值目标时，计算口径不同。
 
-### 7.1 为什么 Kubernetes 的最小调度单位是 Pod 而不是容器？Pod 和容器是什么关系？ {#why-pod}
+控制器还处理缺失指标、未就绪副本和容差。缩容稳定窗口用于减少抖动。VPA 调整资源请求，Cluster Autoscaler 调整节点。应用扩容需与节点容量配合。
+
+## 7. 优雅终止与流量排空 {#优雅终止与流量排空}
+
+正常删除 Pod 后，终止宽限期开始计时。默认 `terminationGracePeriodSeconds` 为 30 秒。kubelet 先运行 preStop，再请求运行时发送停止信号。默认信号为 SIGTERM，镜像或配置可以覆盖。
+
+preStop 耗时计入同一个宽限期。应用应停止接收新请求，并完成在途工作。宽限期结束后，剩余进程会被强制终止。
+
+端点更新与本地停止流程并行推进。终止端点会标记为未就绪，规则传播需要时间。应用需留出传播时间，并处理已有连接。固定 sleep 只能提供等待窗口。它的时长应结合入口传播和请求耗时验证。
+
+强制删除会先移除 API 对象。它无法确认失联节点上的进程已经停止。有状态业务还需隔离旧实例，避免重复执行。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 为什么 Kubernetes 的最小调度单位是 Pod 而不是容器？Pod 和容器是什么关系？ {#why-pod}
 
 <!-- 面试来源：
 - 京东：https://www.nowcoder.com/discuss/521405985047445504 （“容器和pod的区别，为什么有了容器还需要pod”）
@@ -134,13 +157,13 @@ resources:
 <details>
 <summary>参考回答</summary>
 
-Pod 是一组共享网络和存储、总是一起调度到同一节点的容器。每个 Pod 先启动一个 pause 容器持有网络等 Namespace，其余容器加入进来，所以它们共用一个 IP，可以通过 localhost 通信，也可以挂载同一个卷交换文件。
+Pod 把需要共享网络和卷的容器作为整体调度。它们共用网络空间，通过 localhost 通信。业务容器和日志 sidecar 也可挂载同一卷。
 
-很多应用需要几个进程紧密配合，例如业务程序加一个收集日志或代理流量的 sidecar。如果以容器为调度单位，这些容器可能被分到不同节点，无法共享网络和文件，也很难保证同时启动和停止。Pod 把它们作为一个整体调度和管理，同时仍然保持“一个容器一个进程”的镜像设计。Deployment 不是 Pod 的替代，它是管理一组相同 Pod 副本的控制器。
+Pod 内容器在同一节点运行，但各自管理进程生命周期。共享进程视图需额外配置。普通 init 容器先完成初始化。原生 sidecar 长期运行，并具有专门的停止顺序。Deployment 管理多个 Pod 副本。
 
 </details>
 
-### 7.2 Pod 有哪些状态？一个 Pod 一直 Pending 或反复 CrashLoopBackOff，你怎样排查？ {#pod-troubleshooting}
+### 8.2 Pod 有哪些状态？一个 Pod 一直 Pending 或反复 CrashLoopBackOff，你怎样排查？ {#pod-troubleshooting}
 
 <!-- 面试来源：
 - 虾皮：https://www.nowcoder.com/feed/main/detail/ca15e72d3c9145269f1136d353f723be （“一个pod一直处于崩溃，可能是什么原因？有碰到过这种情况吗”“k8s pod有什么状态”）
@@ -161,15 +184,15 @@ Pod 是一组共享网络和存储、总是一起调度到同一节点的容器�
 <details>
 <summary>参考回答</summary>
 
-Pod 的阶段有 Pending、Running、Succeeded、Failed、Unknown。`kubectl get pod` 看到的 ContainerCreating、ImagePullBackOff、CrashLoopBackOff、OOMKilled 是容器层面的具体原因。
+Pod phase 有 Pending、Running、Succeeded、Failed、Unknown。CrashLoopBackOff 是容器重启退避状态。
 
-Pending 先用 `kubectl describe pod` 看事件：如果是 FailedScheduling，事件会写明原因，常见的有 CPU 或内存的 requests 超过节点剩余可分配量、节点选择器或亲和性没有匹配的节点、节点有不能容忍的污点、PVC 没有绑定到 PV。已经调度但停在 ContainerCreating，通常是拉镜像慢、卷挂载失败或 CNI 分配 IP 失败；ImagePullBackOff 是镜像名错误或仓库认证失败。
+Pending 先查 `kubectl describe pod`。FailedScheduling 对应资源、污点、亲和性或卷约束。已调度时再查镜像、挂载和网络事件。缺少必需 Secret 会阻止容器创建。
 
-CrashLoopBackOff 表示容器启动后反复退出。先用 `kubectl logs --previous` 看上一次崩溃前的输出，再用 `describe` 看退出码和最近事件：退出码 1 一般是程序错误，例如配置或环境变量缺失、依赖连不上就退出；137 是被 SIGKILL，看 Last State 是否为 OOMKilled，或者存活探针在启动完成前就判定失败；配置错误可以对比最近的发布变更。定位后修正配置、调整资源或探针参数，必要时用 `kubectl debug` 进入临时容器排查。
+CrashLoopBackOff 先查 `kubectl logs --previous`。再结合上次退出原因、探针和 OOM 记录。137 需要区分 OOM 与其他 SIGKILL 来源。根据证据修正配置、资源或启动行为。
 
 </details>
 
-### 7.3 Kubernetes 有哪三种探针？分别起什么作用，配置时要注意什么？ {#probes}
+### 8.3 Kubernetes 有哪三种探针？分别起什么作用，配置时要注意什么？ {#probes}
 
 <!-- 面试来源：
 - 嘉银科技：https://www.nowcoder.com/feed/main/detail/e2ac9948b87e4df283d6923893f51102 （“三种探针及其作用”）
@@ -189,13 +212,15 @@ CrashLoopBackOff 表示容器启动后反复退出。先用 `kubectl logs --prev
 <details>
 <summary>参考回答</summary>
 
-存活探针判断容器是否还能工作，连续失败达到阈值后 kubelet 重启容器，用于发现死锁、卡死；就绪探针判断容器能否接收流量，失败时把 Pod 从 Service 的后端摘除，但不重启，用于启动预热、暂时过载；启动探针用于启动慢的应用，它成功之前不执行另外两种探针，超时后才重启。检查方式可以是 HTTP、TCP、执行命令或 gRPC。
+readiness 控制接流量，liveness 判断是否需要重启。startup 为慢启动提供独立的探测预算。startup 成功前，另外两类探针暂缓执行。
 
-配置要点：存活探针只检查进程自身，不能依赖数据库等下游，否则下游一故障所有实例被同时重启，故障扩大；就绪探针可以包含必需的依赖。启动慢的应用用启动探针，而不是把存活探针的初始延迟设得很长。超时和失败阈值要留余量，避免 GC 停顿等短暂抖动触发重启。节点是否健康由 kubelet 心跳反映，和 Pod 探针是两件事。
+liveness 失败达到阈值后，kubelet 终止容器。后续重启受 restartPolicy 约束。readiness 失败只改变就绪状态，已有连接仍需处理。
+
+liveness 应检查重启能修复的本地故障。共享依赖故障放入该探针会造成连锁重启。超时和失败阈值应覆盖可接受的短暂抖动。
 
 </details>
 
-### 7.4 资源的 requests 和 limits 有什么区别？什么情况下 Pod 会被驱逐？污点、亲和性和 HPA 怎样使用？ {#scheduling-scaling}
+### 8.4 资源的 requests 和 limits 有什么区别？什么情况下 Pod 会被驱逐？污点、亲和性和 HPA 怎样使用？ {#scheduling-scaling}
 
 <!-- 面试来源：
 - 字节跳动：https://www.nowcoder.com/feed/main/detail/09f134235a7044f5a2b00107a2f5363e （“Deployment里面是怎么去声明文件的使用跟限制啊？就是资源的使用跟限制。”）
@@ -212,23 +237,43 @@ CrashLoopBackOff 表示容器启动后反复退出。先用 `kubectl logs --prev
 - requests 用于调度、limits 强制执行；CPU 与内存超限的不同后果；QoS 与驱逐顺序。
 - 污点的三种效果、反亲和的用途；HPA 的计算方式和前提。
 
-**相关内容**：[资源请求、限制与 QoS](#资源请求限制与-qos)、[调度约束与弹性伸缩](#调度约束与弹性伸缩)。
+**相关内容**：[资源配置与 QoS](#资源请求限制与-qos)、[调度约束与弹性伸缩](#调度约束与弹性伸缩)。
 
 <details>
 <summary>参考回答</summary>
 
-requests 是调度时预留的资源，调度器只把 Pod 放到剩余可分配量足够的节点；limits 是运行时上限，由 cgroup 执行。CPU 超过 limit 会被限流变慢，内存超过 limit 会被 OOM 杀掉。根据设置情况，Pod 分为 Guaranteed（requests 等于 limits）、Burstable 和 BestEffort（都没设）三个 QoS 等级。
+requests 用于调度，limits 约束运行时资源。CPU 配额耗尽会限流。内存回收不足时可触发 OOM。
 
-节点可用内存、磁盘或 inode 低于阈值时，kubelet 会驱逐 Pod 回收资源，顺序是 BestEffort 先、然后是用量超过 requests 最多的 Burstable、最后是 Guaranteed。维护节点时 `kubectl drain` 也会驱逐 Pod，此时会遵守 PodDisruptionBudget。
+节点压力驱逐考虑超出 requests、Priority 和超出量。驱逐顺序并非固定的 QoS 排序。PDB 约束 Eviction API 发起的自愿驱逐。节点压力和节点故障仍能中断 Pod。
 
-污点设置在节点上，效果有 NoSchedule、PreferNoSchedule 和 NoExecute（还会驱逐已有的 Pod），只有带对应容忍的 Pod 才能调度上去，常用于专用节点和故障节点。反亲和让同一服务的副本避开彼此所在的节点或可用区，提高可用性。HPA 按指标调整副本数，期望副本数等于当前副本数乘以当前指标与目标的比值再向上取整；按 CPU 伸缩时利用率是相对 requests 计算的，所以必须设置 requests。节点资源不够时再配合 Cluster Autoscaler 扩充节点。
+硬性亲和筛选节点，软性亲和影响评分。容忍只允许通过对应污点检查。HPA 调整副本数，CPU 利用率按 requests 计算。节点不足时，还需节点扩容配合。
 
 </details>
 
-## 8. 参考资料
+### 8.5 preStop 是否另有 30 秒执行时间？删除 Pod 怎样减少请求失败？ {#graceful-termination}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：共享宽限期、端点传播和在途请求。
+
+**相关内容**：[优雅终止与流量排空](#优雅终止与流量排空)。
+
+<details>
+<summary>参考回答</summary>
+
+preStop 与应用退出共用终止宽限期。默认总宽限期为 30 秒。端点更新与本地停止并行进行。应用需等待流量摘除传播，并完成在途请求。宽限期应覆盖这两段工作。强制删除还需防止旧实例继续运行。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
 
 - [Kubernetes：Pod Lifecycle](https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/)
 - [Kubernetes：Configure Liveness, Readiness and Startup Probes](https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/)
 - [Kubernetes：Resource Management for Pods and Containers](https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/)
 - [Kubernetes：Node-pressure Eviction](https://kubernetes.io/docs/concepts/scheduling-eviction/node-pressure-eviction/)
 - [Kubernetes：Horizontal Pod Autoscaling](https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/)
+- [Kubernetes：Sidecar Containers](https://kubernetes.io/docs/concepts/workloads/pods/sidecar-containers/)
+- [Kubernetes：Disruptions](https://kubernetes.io/docs/concepts/workloads/pods/disruptions/)
+- [Kubernetes：Taints and Tolerations](https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/)

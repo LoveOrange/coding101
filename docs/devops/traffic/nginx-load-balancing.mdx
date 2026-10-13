@@ -7,43 +7,45 @@ knowledge:
 
 # Nginx 与负载均衡
 
-Nginx 是最常见的反向代理和七层负载均衡器，LVS 是 Linux 内核中的四层负载均衡。大型站点的入口通常是“LVS 加 Keepalived 做四层，Nginx 做七层，再转发给应用”。面试中常问 Nginx 为什么能支撑高并发、负载均衡有哪些算法、四层和七层有什么区别、LVS 的几种模式，以及 502 和 504 怎样排查。
+Nginx 提供反向代理、HTTP 路由和负载均衡。本文负责连接模型、代理参数、LVS 模式与错误诊断。网络命令见 [Linux 网络排查](../linux/network-troubleshooting.mdx)。TCP 状态见 [TCP 连接](../../basic-knowledge/network/tcp_handshake.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- Nginx 是一个 master 进程加多个 worker 进程的结构，每个 worker 单线程运行事件循环，用 epoll 同时处理大量非阻塞连接，不为每个连接创建线程，所以内存占用小、并发能力高。[卡](#nginx-architecture)
-- 常用功能：反向代理、负载均衡、静态文件服务（动静分离）、TLS 终止、缓存、限流、按域名和路径路由。
-- 四层负载均衡（LVS）按 IP 和端口转发，不解析应用协议，性能高；七层（Nginx）解析 HTTP，能按 URL、Header 路由，能改写请求，但开销更大。LVS 有 NAT、DR、TUN 等模式，DR 模式响应直接返回客户端，性能最好。[卡](#l4-vs-l7)
-- Nginx 的负载均衡算法有加权轮询（默认）、最少连接、IP 哈希和一致性哈希；开源版通过失败次数做被动健康检查。
-- 502 表示 Nginx 从上游得到无效响应或连不上上游（进程挂了、端口没监听、连接被重置）；504 表示上游在超时时间内没有响应（处理慢、下游慢）。先看 Nginx 错误日志，再看上游的状态和日志。[卡](#nginx-502-504)
+- Nginx worker 用事件循环处理连接，Linux 下可使用 epoll。[卡](#nginx-architecture)
+- 四层按连接分发，七层可按 HTTP 域名、路径和头部路由。[卡](#l4-vs-l7)
+- `keepalive` 指定每个 worker 的上游空闲连接缓存。[卡](#connection-capacity)
+- `proxy_read_timeout` 限制相邻两次读取间的等待时间。[卡](#proxy-timeout-retry)
+- 502 指向上游通信异常，504 指向网关等待上游超时。[卡](#nginx-502-504)
 
 ## 2. Nginx 的结构与常用配置 {#nginx-的结构与常用配置}
 
-**进程模型**：master 进程读取配置、管理 worker；worker 进程处理请求，数量一般等于 CPU 核数。每个 worker 用 epoll 监听大量连接，哪个连接有事件就处理哪个，处理过程中不阻塞。修改配置后执行 `nginx -s reload`，master 启动新的 worker，旧 worker 处理完已有请求后退出，实现不中断地重载。
+master 读取配置并管理 worker。worker 通过事件循环处理已就绪的网络操作。`worker_processes auto` 根据可用 CPU 自动设置数量。
 
-**与 Apache 的对比**：Apache 的传统模式（prefork、worker）为每个连接分配一个进程或线程，连接多时内存和上下文切换开销大；Nginx 用少量 worker 处理大量连接，适合高并发和反向代理。Apache 的模块生态丰富，`.htaccess` 支持按目录配置；现在 Apache 也有基于事件的 MPM。
+非阻塞网络 I/O 能让少量 worker 管理大量连接。磁盘访问、复杂计算或阻塞模块仍会拖慢事件循环。文件 I/O 可按平台和配置使用异步机制或线程池。
+
+Apache 的 prefork、worker 与 event MPM 有不同模型。比较性能应说明使用的 MPM、模块与工作负载。
+
+下面片段放在 http 上下文中。
 
 ```nginx
 upstream backend {
     least_conn;
     server 10.0.0.11:8080 weight=2 max_fails=3 fail_timeout=10s;
-    server 10.0.0.12:8080;
-    keepalive 64;                         # 与上游保持的空闲长连接
+    server 10.0.0.12:8080 max_fails=3 fail_timeout=10s;
+    keepalive 64;
 }
-
 server {
-    listen 443 ssl;
+    listen 8080;
     server_name example.com;
 
-    location /static/ {                   # 动静分离：静态文件由 Nginx 直接返回
+    location /static/ {
         root /data/www;
         expires 7d;
     }
-
     location /api/ {
         proxy_pass http://backend;
         proxy_http_version 1.1;
-        proxy_set_header Connection "";   # 配合 keepalive 复用上游连接
+        proxy_set_header Connection "";
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_connect_timeout 3s;
@@ -52,59 +54,110 @@ server {
 }
 ```
 
+`/static/a.css` 映射到 `/data/www/static/a.css`。上游接收到的请求仍带 `/api/` 前缀。HTTP/1.1 与清空 Connection 配合上游连接复用。
+
+Nginx 1.29.7 前默认代理 HTTP/1.0。1.29.7 起默认是 HTTP/1.1。显式配置便于跨版本说明意图。
+
+`nginx -t` 检查配置语法及引用文件。通过后可用 `nginx -s reload` 重载。master 成功应用新配置后，启动新 worker。旧 worker 完成已有请求后退出。
+
+### 2.1 连接容量 {#连接容量}
+
+`worker_connections` 约束每个 worker 的连接数。客户端和上游连接都占用额度。HTTP 反向代理的一次活跃请求可占两侧连接。
+
+文件描述符上限也约束实际容量。因此，worker 数量乘连接额度只给出粗略上界。HTTP/2 多路复用和上游复用还会改变比例。
+
+`keepalive 64` 表示每个 worker 缓存最多 64 条空闲连接。活跃上游连接可超出该值。上游并发控制需另行配置和评估。
+
 ## 3. 负载均衡 {#负载均衡}
 
-**Nginx 的算法**
-
-| 算法 | 配置 | 适用 |
+| 算法 | 配置 | 适用条件 |
 | --- | --- | --- |
-| 加权轮询 | 默认，`weight` 设置权重 | 后端处理能力相近、请求耗时相近 |
-| 最少连接 | `least_conn` | 请求耗时差别大 |
-| IP 哈希 | `ip_hash` | 同一客户端落到同一后端（会话保持），但客户端在 NAT 后会导致不均 |
-| 一致性哈希 | `hash $request_uri consistent` | 按 URL 等键固定后端，后端增减时只影响少量键，适合缓存 |
+| 加权轮询 | `weight` | 按后端能力分配请求 |
+| 最少连接 | `least_conn` | 请求占用时间差异较大 |
+| IP 哈希 | `ip_hash` | 需要按地址粘滞，注意 NAT 聚集 |
+| 一致性哈希 | `hash $request_uri consistent` | 缓存按键分布 |
 
-健康检查：开源版是被动检查，某个后端在 `fail_timeout` 时间内失败 `max_fails` 次，就在这段时间内不再转发给它；主动探测需要商业版或第三方模块。
+被动健康检查记录上游失败。`max_fails=3 fail_timeout=10s` 表示窗口内达到三次失败。后端随后在指定时段内被视为不可用。失败类型受 proxy_next_upstream 等配置影响。只有一个后端时，max_fails 与 fail_timeout 会被忽略。
 
-**四层与七层**
+四层关注连接与地址端口，七层解析应用协议。Nginx stream 也能提供四层代理。四层全代理会拆成两条连接，LVS NAT、DR 则转发原连接。具体性能需结合实现、TLS 和请求负载测试。
 
-| 维度 | 四层（LVS、云负载均衡的 TCP 监听） | 七层（Nginx、HAProxy、Envoy） |
-| --- | --- | --- |
-| 依据 | IP 和端口 | HTTP 的 URL、Host、Header、Cookie |
-| 能力 | 只转发，不理解请求内容 | 路由、改写、TLS 终止、缓存、限流、重试 |
-| 性能 | 高，LVS 在内核中转发 | 较低，需要在用户态解析协议 |
-| 连接 | 客户端与后端之间是同一条 TCP 连接（NAT、DR 模式） | 客户端到代理、代理到后端是两条连接 |
+| LVS 模式 | 请求与响应路径 |
+| --- | --- |
+| NAT | 改写目的地址；响应也经调度器反向转换 |
+| DR | 修改目的 MAC；后端直接响应客户端 |
+| TUN | 封装转发；后端解封装后直接响应 |
 
-**LVS 的模式**
+DR 要求调度器和后端处于可直达的二层网络。后端配置 VIP，并约束 VIP 的 ARP 应答。TUN 依赖隧道和底层可达性。绕过响应流量可减轻调度器带宽压力。
 
-| 模式 | 做法 | 特点 |
-| --- | --- | --- |
-| NAT | 改写目的 IP 转给后端，响应也经过 LVS 改回源地址 | 配置简单；请求和响应都经过 LVS，容易成为瓶颈；后端网关要指向 LVS |
-| DR | 只改写目的 MAC，后端在回环接口上配置 VIP，直接把响应发给客户端 | 性能最好；LVS 与后端必须在同一二层网络，后端要抑制对 VIP 的 ARP 响应 |
-| TUN | 用 IP 隧道封装后转发，后端解封装后直接响应客户端 | 可以跨网段；后端需要支持隧道 |
-| FULLNAT | 同时改写源和目的地址 | 可以跨网段部署，后端通过 TOA 等方式获取客户端真实 IP |
+FULLNAT 属于特定 LVS 扩展实现，例如阿里 LVS。它同时改写源、目的地址。TOA 等扩展可传递客户端地址，需两端配合。部署时需确认实现支持。
 
-**Keepalived**：用 VRRP 协议在主备两台负载均衡器之间漂移虚拟 IP，主节点故障时备节点接管 VIP；同时对后端做健康检查，自动维护 LVS 的后端列表。
+Keepalived 可用 VRRP 协调 VIP 主备切换。健康检查还可维护 LVS 后端列表。接管 VIP 后，业务恢复仍依赖容量和连接状态。
 
 ## 4. 502 与 504 {#502-与-504}
 
-| 状态码 | 产生方 | 含义 | 常见原因 |
-| --- | --- | --- | --- |
-| 500 | 应用 | 应用内部错误 | 代码异常 |
-| 502 Bad Gateway | Nginx | 连不上上游，或上游返回了无效响应 | 上游进程挂了、端口没有监听、连接被拒绝或重置；上游主动关闭了 Nginx 正在复用的长连接；响应头过大 |
-| 503 | Nginx 或应用 | 服务暂不可用 | 所有上游都被标记为不可用、触发限流 |
-| 504 Gateway Timeout | Nginx | 上游在超时时间内没有返回 | 应用处理慢、数据库慢查询、下游依赖超时、线程池耗尽 |
-| 499 | Nginx 日志 | 客户端在响应返回前断开了连接 | 客户端超时短于服务端处理时间 |
+| 状态 | 解释与线索 |
+| --- | --- |
+| 500 | 当前响应方内部错误，可由应用或代理产生 |
+| 502 | 上游连接失败、无有效响应或无可用后端 |
+| 503 | 服务不可用；Nginx limit_req 默认拒绝码 |
+| 504 | 网关等待上游超时 |
+| 499 | Nginx 日志记录客户端提前关闭 |
 
-排查步骤：
+上游返回的状态码也可被代理直接传递。应结合 upstream_status、错误日志与应用日志定位。无可用上游的 `no live upstreams` 对应 502。
 
-1. 看 Nginx 的 `error.log`，错误信息直接说明原因：`connect() failed (111: Connection refused)` 表示上游没监听，`upstream prematurely closed connection` 表示上游提前关闭，`upstream timed out` 表示超时。
-2. 看访问日志中的 `$upstream_addr`、`$upstream_status`、`$upstream_response_time`，确定是哪个上游、耗时多少，是否集中在某一台。
-3. 到对应的上游检查：进程是否存活、端口是否监听（`ss -lntp`）、应用日志、线程池和连接池、GC；504 还要沿调用链查慢在哪里。
-4. 检查配置：超时时间是否合理，上游长连接的空闲超时是否短于应用侧，避免复用已被关闭的连接。
+1. 查看 error.log，确认连接、响应头或读取阶段。
+2. 对比 upstream_addr、upstream_status 与各阶段耗时。
+3. 核对异常后端的监听、负载、线程池和依赖。
+4. 检查超时、连接复用及重试配置。
+5. 用用户请求成功率与延迟验证修复。
 
-## 5. 面试题
+Connection refused 表示连接遭到明确拒绝。进程未监听是原因之一，策略拒绝也需核对。upstream timed out 则需结合日志中的阶段定位。
 
-### 5.1 Nginx 有什么作用？它为什么能支撑很高的并发？与 Apache 有什么区别？ {#nginx-architecture}
+## 5. 代理超时与重试 {#代理超时与重试}
+
+`proxy_connect_timeout` 控制上游建连等待。`proxy_send_timeout` 控制相邻写操作间的等待。`proxy_read_timeout` 控制相邻读操作间的等待。持续返回数据的响应可超过该读取超时值。
+
+`proxy_next_upstream` 配置失败后换后端的条件。`proxy_next_upstream_tries` 限制重试次数。`proxy_next_upstream_timeout` 限制总重试窗口。响应已发给客户端后，换后端无法重新完成该响应。
+
+已发给上游的 POST 等非幂等请求，默认不会这样重试。`non_idempotent` 会放宽该限制。业务重试仍需幂等键，因为超时后原请求也可能已提交。
+
+## 6. 路径映射与真实地址 {#路径映射与真实地址}
+
+在普通前缀 location 中，proxy_pass 的 URI 决定替换方式。
+
+```nginx
+location /api/ {
+    proxy_pass http://backend/;
+}
+```
+
+请求 `/api/users` 会转为上游 `/users`。去掉 backend 后面的斜杠，则保留 `/api/users`。正则 location 和带变量配置有额外规则。
+
+root 将 URI 拼到根目录后。alias 将匹配的位置替换为指定路径。静态文件排查应根据最终映射检查路径权限。
+
+X-Forwarded-For 可携带代理链地址，客户端也能伪造该头。real_ip 模块需用 set_real_ip_from 指定可信代理。源地址用于限流或审计前，必须明确可信入口。
+
+## 7. 请求限流 {#请求限流}
+
+```nginx
+limit_req_zone $binary_remote_addr zone=perip:10m rate=10r/s;
+server {
+    listen 8081;
+    location / {
+        limit_req zone=perip burst=20 nodelay;
+        limit_req_status 429;
+        proxy_pass http://backend;
+    }
+}
+```
+
+此片段也放在 http 上下文中。limit_req 按泄漏桶方法控制请求速率。burst 提供超额请求额度。nodelay 允许额度内的突发立即处理。超过额度时拒绝，示例返回 429。
+
+limit_conn 约束并发连接，与请求速率是不同维度。按 IP 限流还需考虑 NAT 用户共享地址。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 Nginx 有什么作用？它为什么能支撑很高的并发？与 Apache 有什么区别？ {#nginx-architecture}
 
 <!-- 面试来源：
 - 虾皮：https://www.nowcoder.com/discuss/353156139321860096 （“nginx为什么比httpd快（epoll）”“四层、七层反向代理的区别”）
@@ -128,15 +181,15 @@ server {
 <details>
 <summary>参考回答</summary>
 
-Nginx 常用于反向代理和负载均衡、静态文件服务、TLS 终止、缓存、限流，以及按域名和路径把请求路由到不同的后端。动静分离就是用 `location` 区分路径，静态文件由 Nginx 直接从磁盘返回，动态请求通过 `proxy_pass` 转给应用。
+Nginx 用事件循环和非阻塞网络 I/O 管理大量连接。master 管理 worker，worker 处理就绪事件。Linux 可使用 epoll。阻塞模块和重计算仍会影响同一 worker 的请求。
 
-高并发来自它的结构：一个 master 进程管理若干 worker，worker 数量通常等于 CPU 核数；每个 worker 是单线程的事件循环，用 epoll 同时监听成千上万个非阻塞连接，只处理已经就绪的事件，等待 I/O 时不占用线程。连接数增加时不会增加进程或线程，内存占用和上下文切换都很少。配置重载时 master 启动新 worker，旧 worker 处理完已有请求再退出，服务不中断。
+它可做反向代理、静态服务、TLS、缓存与限流。配置重载时启动新 worker，旧 worker 逐步退出。容量还受连接数、文件描述符和上游能力约束。
 
-Apache 的传统模式为每个连接分配一个进程或线程，并发高时资源消耗大；它的优势是模块生态丰富、支持 `.htaccess` 按目录配置、对动态模块的支持成熟。现在 Apache 也有事件驱动的 MPM，但高并发的反向代理场景仍以 Nginx 为主。
+Apache 各 MPM 的连接处理模型不同。比较时应明确 prefork、worker 或 event。工作负载与模块配置比产品名称更能解释差异。
 
 </details>
 
-### 5.2 四层负载均衡和七层负载均衡有什么区别？Nginx 和 LVS 怎样选择？LVS 有哪几种模式？ {#l4-vs-l7}
+### 8.2 四层负载均衡和七层负载均衡有什么区别？Nginx 和 LVS 怎样选择？LVS 有哪几种模式？ {#l4-vs-l7}
 
 <!-- 面试来源：
 - 小米：https://www.nowcoder.com/discuss/353154327936180224 （“LVS的四种模式（尤其是FULL-NAT模式，后端RS是如何获取真实客户端IP的），以及keepalived原理”“Nginx与LVS负载均衡的区别”）
@@ -161,15 +214,15 @@ Apache 的传统模式为每个连接分配一个进程或线程，并发高时�
 <details>
 <summary>参考回答</summary>
 
-四层负载均衡只看 IP 和端口，按连接转发，不解析应用协议，LVS 在内核中完成转发，性能很高；七层负载均衡解析 HTTP，能按域名、URL、Header 路由，能做 TLS 终止、改写请求、缓存和重试，但要在用户态解析协议，开销更大，客户端到代理和代理到后端是两条连接。常见的组合是入口用 LVS 加 Keepalived 承担大流量的四层分发，后面接多台 Nginx 做七层路由。Nginx 的算法有加权轮询、最少连接、IP 哈希和一致性哈希，开源版通过 `max_fails` 做被动健康检查。
+四层按连接分发，七层可按应用内容路由。LVS 在内核中转发，Nginx HTTP 代理解析请求。Nginx stream 也能承担四层代理。
 
-LVS 的模式：NAT 模式改写目的 IP 转给后端，响应也要经过 LVS 改回，LVS 容易成为瓶颈；DR 模式只改写目的 MAC，后端在回环接口上配置 VIP 并抑制对 VIP 的 ARP 响应，响应直接返回客户端，性能最好，但要求 LVS 和后端在同一个二层网络；TUN 模式用 IP 隧道封装，后端解封装后直接响应，可以跨网段；FULLNAT 同时改写源和目的地址，可以跨网段，后端通过 TOA 等方式取得客户端真实 IP。
+LVS NAT 的响应经过调度器。DR 改目的 MAC，后端直接响应。TUN 封装请求，后端解封装并直接响应。FULLNAT 是特定扩展，实现需单独确认。
 
-Keepalived 用 VRRP 协议让主备两台负载均衡器共享一个虚拟 IP，主节点定期发送通告，备节点收不到时接管 VIP；它还对后端做健康检查，自动从 LVS 中摘除故障节点。
+Nginx 支持加权轮询、最少连接和哈希。Keepalived 用 VRRP 协调 VIP，并可检查后端。选择方案时应考虑路由能力、容量与运维复杂度。
 
 </details>
 
-### 5.3 Nginx 返回 502 和 504 分别是什么原因？怎样排查？和 500 有什么区别？ {#nginx-502-504}
+### 8.3 Nginx 返回 502 和 504 分别是什么原因？怎样排查？和 500 有什么区别？ {#nginx-502-504}
 
 <!-- 面试来源：
 - 社招 SRE / 运维开发：https://www.nowcoder.com/discuss/353156007406804992 （“nginx出现502的报错，应该如何排查？”“504是什么问题？怎么看后端机器问题？”“500和502之间的差别？”）
@@ -189,15 +242,92 @@ Keepalived 用 VRRP 协议让主备两台负载均衡器共享一个虚拟 IP，
 <details>
 <summary>参考回答</summary>
 
-500 是应用自己返回的内部错误。502 和 504 是 Nginx 作为网关产生的：502 表示 Nginx 连不上上游，或者上游返回了无效的响应，常见原因是上游进程挂了、端口没有监听、连接被拒绝或重置，还有一种是 Nginx 复用了上游已经关闭的长连接；504 表示上游在 `proxy_read_timeout` 时间内没有返回，原因是应用处理慢、数据库慢查询、下游依赖超时或线程池耗尽。
+502 表示上游通信异常，504 表示网关等待上游超时。500 表示响应方内部错误，应用和代理都可产生。状态码也可能由上游透传。
 
-排查时先看 Nginx 的 error.log，信息很直接：Connection refused 说明上游没有监听，upstream prematurely closed connection 说明上游提前断开，upstream timed out 说明超时。再看访问日志中的 `$upstream_addr`、`$upstream_status` 和 `$upstream_response_time`，确认是哪一台上游、耗时多少、是否集中在某一台。然后到这台机器上检查进程和端口、应用日志、线程池、GC，504 要沿调用链找慢的环节。最后检查配置：超时是否合理，上游长连接的空闲超时要短于应用服务器的空闲超时，避免 Nginx 使用已被对端关闭的连接。
+先看 error.log 的错误阶段。再结合 upstream_addr、upstream_status 和耗时定位后端。检查监听、负载、池等待及依赖。复用连接被对端关闭时，应核对双方空闲超时。
+
+`proxy_read_timeout` 限制相邻读取的等待。超时处理需结合业务期限和重试副作用。无可用上游会产生 502，应检查被动健康状态。
 
 </details>
 
-## 6. 参考资料
+### 8.4 worker_connections 与 keepalive 能直接算出业务并发上限吗？ {#connection-capacity}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：双侧连接、文件描述符与空闲缓存。
+
+**相关内容**：[连接容量](#连接容量)。
+
+<details>
+<summary>参考回答</summary>
+
+worker_connections 包含客户端和上游连接。实际容量还受文件描述符及业务处理能力约束。keepalive 只限制每个 worker 的上游空闲缓存。活跃连接可超过该数量，需独立评估上游并发。
+
+</details>
+
+### 8.5 proxy_read_timeout=30s 会限制总响应时间吗？POST 超时能否换后端重试？ {#proxy-timeout-retry}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：相邻读超时、重试窗口与幂等性。
+
+**相关内容**：[代理超时与重试](#代理超时与重试)。
+
+<details>
+<summary>参考回答</summary>
+
+它限制相邻两次读取间的等待。持续返回数据时，总响应可超过 30 秒。已发送的非幂等请求默认不会换后端重试。non_idempotent 可放宽限制，但需业务幂等保护。次数和时间窗口也应通过重试参数限制。
+
+</details>
+
+### 8.6 proxy_pass 末尾斜杠有什么影响？怎样可信地取得客户端地址？ {#proxy-uri-realip}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：URI 替换规则与可信代理。
+
+**相关内容**：[路径映射与真实地址](#路径映射与真实地址)。
+
+<details>
+<summary>参考回答</summary>
+
+普通前缀 location 中，带 URI 的 proxy_pass 会替换匹配前缀。示例的 /api/users 因而转为 /users。未指定 URI 时保留原请求路径。客户端可伪造 X-Forwarded-For。real_ip 只应信任 set_real_ip_from 指定的代理。
+
+</details>
+
+### 8.7 limit_req 的 burst 与 nodelay 分别做什么？ {#request-rate-limit}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：平均速率、突发额度与拒绝行为。
+
+**相关内容**：[请求限流](#请求限流)。
+
+<details>
+<summary>参考回答</summary>
+
+burst 允许一定数量的超额请求。默认会按配置速率延迟处理。nodelay 让额度内突发立即通过。超过额度仍会拒绝。limit_req_status 可将拒绝码设为 429。并发连接上限由 limit_conn 等机制另行控制。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
 
 - [nginx documentation：Using nginx as HTTP load balancer](https://nginx.org/en/docs/http/load_balancing.html)
 - [nginx documentation：ngx_http_upstream_module](https://nginx.org/en/docs/http/ngx_http_upstream_module.html)
 - [Linux Virtual Server：LVS 文档](http://www.linuxvirtualserver.org/how.html)
 - [Keepalived 文档](https://keepalived.readthedocs.io/)
+- [nginx：Core functionality](https://nginx.org/en/docs/ngx_core_module.html)
+- [nginx：HTTP proxy module](https://nginx.org/en/docs/http/ngx_http_proxy_module.html)
+- [nginx：HTTP core module](https://nginx.org/en/docs/http/ngx_http_core_module.html)
+- [nginx：Real IP module](https://nginx.org/en/docs/http/ngx_http_realip_module.html)
+- [nginx：Request limiting](https://nginx.org/en/docs/http/ngx_http_limit_req_module.html)
+- [nginx：Controlling nginx](https://nginx.org/en/docs/control.html)
+- [Alibaba LVS：FULLNAT](https://github.com/alibaba/LVS)

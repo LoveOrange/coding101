@@ -7,76 +7,92 @@ knowledge:
 
 # Linux 性能排查
 
-线上机器变慢时，排查的顺序是先看整体资源（CPU、内存、磁盘 I/O、网络）哪一项饱和，再定位到进程，最后定位到进程里的线程或代码。本文讲 load average 的含义、几个常用工具的关键字段，以及“CPU 高”“系统卡”“CPU 不高但接口慢”三类场景的排查路径。具体到 Java 进程的线程和代码定位见 [Java CPU 飙高排查](../../basic-knowledge/java/jvm/cpu-high-diagnosis.mdx)。
+Linux 性能排查用资源指标定位请求耗时。本文负责负载、CPU、内存、I/O 和等待分析。Java 栈定位见 [CPU 使用率](../../basic-knowledge/java/jvm/cpu-high-diagnosis.mdx)。网络路径见 [Linux 网络排查](./network-troubleshooting.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- load average 是 1、5、15 分钟内处于可运行（R）和不可中断睡眠（D，通常在等磁盘 I/O）状态的平均进程数，不是 CPU 使用率。要和 CPU 核数比较：持续高于核数说明有任务在排队。[卡](#load-average)
-- load 高不一定是 CPU 忙：大量进程在等 I/O 时 load 也会升高，而 CPU 使用率很低。用 `top` 的 `us/sy/wa` 和 `vmstat` 的 `r/b` 区分。
-- CPU 使用率高的排查链路：`top` 找进程 → `top -Hp` 或 `pidstat -t` 找线程 → `perf top`、`jstack` 等找到代码；同时区分用户态（业务计算）和内核态（系统调用、中断、上下文切换）。[卡](#high-cpu)
-- CPU 不高但接口慢，瓶颈在等待：磁盘 I/O、网络与下游依赖、锁、连接池或线程池耗尽、内存不足导致的交换。按“机器资源 → 网络 → 应用内部 → 下游”的顺序逐项排除。[卡](#slow-but-idle)
-- 先看趋势再看快照：对比问题前后的监控曲线，确认是突增还是缓慢增长，以及是否与发布、流量变化同时发生。
+- Linux load average 统计 R 与 D 状态任务的平均数量。[卡](#load-average)
+- `top` 的 us、sy 和 si 分别表示用户态、内核态和软中断时间。[卡](#high-cpu)
+- `iostat` 按设备统计，`pidstat -d` 按任务观察 I/O。[卡](#slow-but-idle)
+- PSI 量化任务因 CPU、内存和 I/O 资源受阻的时间。[卡](#psi-throttling)
+- CPU 配额限流可在宿主空闲时增加容器延迟。[卡](#psi-throttling)
 
 ## 2. load average 指标 {#load-average-指标}
 
-`uptime` 和 `top` 第一行显示三个数，分别是 1、5、15 分钟的指数加权平均负载。Linux 的负载统计两类进程：
+uptime 和 top 显示 1、5、15 分钟平均负载。Linux 按指数衰减计算 R 与 D 状态的任务数量。任务包含线程。
 
-- **R**：正在运行或在运行队列中等待 CPU。
-- **D**：不可中断睡眠，通常在等待磁盘 I/O，也可能在等 NFS 或某些内核锁。
+R 包括正在运行和等待 CPU 的任务。D 是不可中断睡眠，常见于存储和内核资源等待。D 的贡献会让负载高于 CPU 繁忙程度。
 
-判断方法：
-
-| 情况 | 含义 |
+| 现象 | 后续判断 |
 | --- | --- |
-| 负载 < 核数 | CPU 有空闲 |
-| 负载 ≈ 核数 | CPU 刚好用满 |
-| 负载持续 > 核数 | 有任务在排队；再看是 CPU 忙还是 I/O 等待 |
-| 1 分钟值远高于 15 分钟值 | 负载正在上升，问题刚发生 |
-| 1 分钟值远低于 15 分钟值 | 负载在回落 |
+| 负载高、CPU 忙、r 队列长 | 检查计算和 CPU 竞争 |
+| 负载高、CPU 空闲、D 多 | 检查不可中断等待 |
+| 1 分钟值高于 15 分钟值 | 近期负载高于较长时间尺度 |
+| 负载低、单核持续忙 | 检查单线程瓶颈 |
 
-核数用 `nproc` 或 `lscpu` 查看。负载高的常见原因：计算密集的进程、大量线程竞争 CPU、磁盘 I/O 慢导致大量 D 状态进程、频繁的上下文切换和中断。
+负载与 CPU 核数只能辅助比较。负载等于核数并不证明 CPU 刚好用满。应同时查看任务状态、每核用量和实际配额。
 
 ## 3. 常用工具与关键字段 {#常用工具与关键字段}
 
-| 工具 | 看什么 | 关键字段 |
-| --- | --- | --- |
-| `top` / `htop` | 整体和进程级 CPU、内存 | `us` 用户态、`sy` 内核态、`wa` 等待 I/O、`si` 软中断、`st` 被虚拟化宿主占用；进程的 `%CPU`、`RES`、状态 |
-| `vmstat 1` | 运行队列、内存、交换、上下文切换 | `r` 等待 CPU 的进程数、`b` 阻塞的进程数、`si/so` 交换、`cs` 上下文切换、`wa` |
-| `free -h` | 内存 | 看 `available` 而不是 `free`；`buff/cache` 可回收 |
-| `iostat -x 1` | 每块磁盘的 I/O | `r_await/w_await` 平均等待时间、`aqu-sz` 队列长度、`%util` 忙碌比例 |
-| `pidstat -u/-d/-w 1` | 按进程看 CPU、I/O、上下文切换 | 定位到具体进程 |
-| `iotop` | 按进程看实时磁盘读写 | 找出 I/O 最多的进程 |
-| `perf top` | 热点函数 | 定位到函数，包括内核函数 |
-| `dmesg` | 内核日志 | OOM Killer、磁盘错误 |
+| 工具 | 关键证据 |
+| --- | --- |
+| `top`、`mpstat -P ALL 1` | 总体与每核 CPU；us、sy、si、wa、st |
+| `vmstat 1` | r 可运行任务、b 阻塞任务、si/so 交换、cs 切换 |
+| `free -h` | available 与 swap 用量 |
+| `iostat -x 1` | await、aqu-sz、吞吐与 util |
+| `pidstat -u -d -w 1` | 任务的 CPU、I/O 和切换 |
+| `iotop` | 任务 I/O 活动 |
+| `perf top -p <pid>` | 热点函数采样 |
+| `dmesg` | OOM、设备错误等内核记录 |
 
-`iostat` 按磁盘统计，用于判断哪块盘有压力；`iotop` 按进程统计，用于找出是谁在读写。`%util` 接近 100% 对单块机械盘意味着饱和，但 SSD 和 RAID 可以并行处理请求，`%util` 高不一定饱和，要结合 `await` 判断。
+vmstat 和 iostat 首次报告包含启动以来的统计。诊断当前变化时，应观察后续间隔输出。
+
+iostat 的 await 包含排队和服务时间。util 表示统计周期内设备处理 I/O 的时间占比。SSD 和 RAID 可并行处理多个请求。util 接近 100% 仍需结合延迟与吞吐判断。
+
+wa 是 CPU 空闲且有待完成 I/O 时的统计。它不能单独定位设备或进程。st 表示虚拟 CPU 等待宿主调度的时间。虚拟机与容器的资源约束应分别核对。
 
 ## 4. 三类场景的排查路径 {#三类场景的排查路径}
 
-**CPU 使用率高**
+### 4.1 CPU 热点 {#cpu-热点}
 
-1. `top` 按 CPU 排序找到进程，看 `us` 和 `sy` 的比例。
-2. `us` 高：业务计算多。`top -Hp <pid>` 找到最忙的线程，用 `perf top -p <pid>` 或语言自带工具（Java 用 `jstack`，把线程 ID 转成十六进制后在线程栈中查找）定位代码。常见原因有死循环、正则回溯、序列化大对象、频繁 GC。
-3. `sy` 高：系统调用、上下文切换或中断过多。用 `vmstat` 看 `cs`，`pidstat -w` 找切换多的进程，`strace -c -p <pid>` 统计系统调用。常见原因有线程过多、锁竞争、小块读写。
-4. `si` 高：软中断，通常是网络包量大。
+1. 对比故障时间、流量和发布记录。
+2. 用 top 找高占用进程，再用每核统计检查分布。
+3. 用 `top -Hp <pid>` 或 pidstat 找线程。
+4. 用户态热点用 perf 或语言工具定位。
+5. 内核态热点结合调用、中断与上下文切换分析。
 
-**系统卡、内存和 CPU 都高**
+sy 高时可用 `strace -c -p <pid>` 统计系统调用。采样和跟踪本身有开销，应控制范围。si 高时核对网络包量和软中断分布。
 
-1. `free` 看 `available` 是否很低，`vmstat` 的 `si/so` 是否持续不为零。发生交换时，进程访问内存要等磁盘，整体变慢。
-2. 按内存排序找到占用最多的进程，判断是正常增长（缓存）还是泄漏（持续上涨不回落）。
-3. `dmesg | grep -i oom` 检查是否有进程被 OOM Killer 杀掉。
-4. 内存紧张时 GC 也会更频繁，CPU 随之升高，要确认因果顺序。
+### 4.2 内存压力 {#内存压力}
 
-**CPU 不高但接口慢**
+1. 查看 available，并观察 `vmstat 1` 的 si/so。
+2. 按进程核对 RSS、缓存和工作集变化。
+3. 查看 OOM 日志与 cgroup 内存事件。
+4. 结合 GC、回收和 I/O 指标确认因果关系。
 
-1. **I/O**：`vmstat` 的 `wa` 和 `b` 是否高，`iostat` 的 `await` 是否升高，`iotop` 找出读写多的进程（日志、备份、数据库）。
-2. **网络**：到下游的延迟和丢包（`ping`、`mtr`），连接状态是否异常（`ss -s`），DNS 解析是否慢。
-3. **应用内部**：线程池、连接池是否耗尽，是否在等锁；线程栈中大量线程处于等待状态说明在等资源。
-4. **下游依赖**：数据库慢查询、缓存失效、第三方接口变慢。用链路追踪看耗时在哪一段，见[日志、指标与追踪](../../system-design/production/logs-metrics-traces-correlation.mdx)。
+swap 已用量表示已有页面驻留交换空间。持续换入换出才说明当前存在交换活动。内存压力也可在未启用 swap 时发生。泄漏判断需看对象或内存持续保留的证据。
 
-## 5. 面试题
+### 4.3 低 CPU 与高延迟 {#低-cpu-与高延迟}
 
-### 5.1 top 显示的 load average 三个数字是什么含义？怎样判断 CPU 处于高负载？负载高可能有哪些原因？ {#load-average}
+机器平均 CPU 低时，先看单核与容器配额。单线程瓶颈会被多核平均值稀释。CPU 限流也会增加等待。
+
+随后分解请求耗时。设备 await 上升时，关联进程 I/O 和 PSI。线程池、连接池或锁等待需查看队列与线程栈。依赖延迟则通过追踪和下游指标核对。
+
+等待线程本身是正常状态。需要把堆栈与故障请求、队列增长关联。链路关联方法见 [可观测性](../../system-design/production/logs-metrics-traces-correlation.mdx)。
+
+## 5. PSI 与容器限流 {#psi-与容器限流}
+
+启用 PSI 的内核提供 `/proc/pressure/` 接口。cpu、memory、io 文件分别反映资源压力。avg10、avg60、avg300 是不同窗口的受阻时间比例。total 是累计受阻时间，单位微秒。
+
+some 表示至少一个任务因该资源受阻。full 表示所有非空闲任务同时受阻。系统级 CPU full 未定义，输出保持为零。CPU 诊断应重点结合 some、运行队列和配额。
+
+cgroup v2 还提供组级 pressure 文件。容器延迟升高时，检查本组及父组的资源限制。`cpu.stat` 中 throttled 计数持续增加，说明发生配额限流。机制见 [容器原理](../containers/container-principles.mdx#cgroups)。
+
+PSI 描述压力造成的等待，利用率描述资源忙碌。两者结合请求延迟，才能判断压力是否影响业务。
+
+## 6. 面试题 {#面试题}
+
+### 6.1 top 显示的 load average 三个数字是什么含义？怎样判断 CPU 处于高负载？负载高可能有哪些原因？ {#load-average}
 
 <!-- 面试来源：
 - 京东：https://www.nowcoder.com/discuss/478505627115880448 （“top命令中你关注的资源情况是什么（load average）”“load average中的三个数字代表什么，怎么得来的”）
@@ -98,13 +114,13 @@ knowledge:
 <details>
 <summary>参考回答</summary>
 
-三个数是最近 1、5、15 分钟的平均负载，按指数加权计算。Linux 统计的是处于可运行状态（正在运行或等待 CPU）和不可中断睡眠状态（通常在等磁盘 I/O）的进程数，所以它表示排队的程度，不是 CPU 使用率。
+三个数对应 1、5、15 分钟平均负载。Linux 统计 R 和 D 状态任务，包含线程。因此，load average 与 CPU 使用率是不同指标。
 
-判断时和核数比较：负载持续高于核数，说明有任务在排队；1 分钟值远高于 15 分钟值，说明负载正在上升。负载高之后还要区分原因：`top` 中 `us`、`sy` 高是 CPU 忙，可能是计算密集、线程过多竞争、频繁上下文切换；`wa` 高、`vmstat` 中 `b` 列大，是大量进程在等 I/O，CPU 使用率可能并不高。负载过高的后果是请求排队，响应时间变长，严重时健康检查超时、服务被摘除。
+高负载需区分 CPU 排队和不可中断等待。CPU 忙且 r 长时，检查计算与调度竞争。CPU 空闲但 D 多时，检查 I/O 和内核等待。还需核对单核热点、亲和性与容器配额。
 
 </details>
 
-### 5.2 发现某台机器 CPU 使用率很高、系统很卡，你怎样排查？ {#high-cpu}
+### 6.2 发现某台机器 CPU 使用率很高、系统很卡，你怎样排查？ {#high-cpu}
 
 <!-- 面试来源：
 - 虾皮：https://www.nowcoder.com/feed/main/detail/1c948b727fef404ca86d187c20496e8c （“你提到了top，如果发现某台机器cpu占用率很高，怎么排查”）
@@ -119,18 +135,18 @@ knowledge:
 - 从机器到进程、线程、代码的定位链路。
 - 区分用户态与内核态；内存不足引起的交换与 OOM。
 
-**相关内容**：[三类场景的排查路径](#三类场景的排查路径)、[Java CPU 飙高排查](../../basic-knowledge/java/jvm/cpu-high-diagnosis.mdx)。
+**相关内容**：[三类场景的排查路径](#三类场景的排查路径)、[CPU 使用率](../../basic-knowledge/java/jvm/cpu-high-diagnosis.mdx)。
 
 <details>
 <summary>参考回答</summary>
 
-先看监控确认开始时间，是否和发布、流量突增同时发生。登录机器后用 `top` 按 CPU 排序找到进程，看 `us` 和 `sy` 的比例。`us` 高是业务计算，用 `top -Hp <pid>` 找到最忙的线程，再用 `perf top` 或语言工具定位代码，Java 进程把线程 ID 转成十六进制后在 `jstack` 输出中找对应栈，常见原因是死循环、正则回溯、大对象序列化和频繁 GC。`sy` 高是系统调用或上下文切换多，用 `vmstat` 看 `cs`、`pidstat -w` 找切换多的进程，`strace -c` 统计系统调用。
+先确认时间和范围，再定位进程、线程与热点。top 找进程，mpstat 检查每核分布。`top -Hp <pid>` 或 pidstat 找高占用线程。perf 或语言工具用于定位代码。
 
-如果内存也高，用 `free` 看 `available`，`vmstat` 看 `si/so`：发生交换时所有访问都会变慢；`dmesg` 检查 OOM Killer 记录；按内存排序找到进程，判断是缓存增长还是泄漏。止血可以先摘流量、扩容或重启，但要先保留线程栈、堆转储等现场。
+us 高重点看计算、序列化和 GC。sy 高结合系统调用、切换和中断分析。内存也高时，检查 available、换页速率及 OOM。采集现场需控制开销，再按业务条件止血。
 
 </details>
 
-### 5.3 一台 Linux 服务器 CPU 占用不高，但接口访问很慢，你会怎样排查？ {#slow-but-idle}
+### 6.3 一台 Linux 服务器 CPU 占用不高，但接口访问很慢，你会怎样排查？ {#slow-but-idle}
 
 <!-- 面试来源：
 - 共济科技：https://www.nowcoder.com/discuss/908367488235110400 （“一台 Linux 服务器 CPU 占用不高，但访问接口很慢，你会怎么排查？”）
@@ -143,7 +159,7 @@ knowledge:
 
 **考察重点**
 
-- CPU 不高说明在等待：I/O、网络、锁、池耗尽、下游。
+- 识别单核热点、配额与各种等待。
 - `iostat` 与 `iotop` 的分工；按层次排除。
 
 **相关内容**：[三类场景的排查路径](#三类场景的排查路径)、[常用工具与关键字段](#常用工具与关键字段)。
@@ -151,14 +167,37 @@ knowledge:
 <details>
 <summary>参考回答</summary>
 
-CPU 不高而响应慢，说明请求大部分时间在等待，要找出在等什么。先看机器：`vmstat` 的 `wa` 和 `b` 列是否高，`iostat -x` 看哪块盘的 `await` 和队列长度升高，再用 `iotop` 或 `pidstat -d` 找出读写最多的进程，例如日志刷盘、备份任务；`free` 确认没有发生交换。
+先排除平均值掩盖的单核热点和容器限流。再按请求耗时检查 I/O、锁、池队列及下游。
 
-然后看网络：到下游的延迟和丢包，`ss -s` 看连接数和异常状态，DNS 解析是否变慢。再看应用内部：线程池或连接池是否耗尽，线程栈中是否有大量线程在等锁或等连接。最后看下游依赖：数据库慢查询、缓存命中率下降、第三方接口变慢。用链路追踪可以直接看到耗时集中在哪一段，比逐台机器排查更快。
+iostat 看设备延迟和队列，pidstat 或 iotop 关联任务。vmstat 的 si/so 判断交换活动。free 展示内存容量，无法单独证明没有交换。
+
+线程栈应与故障请求和队列变化关联。追踪可定位慢依赖。最终用延迟恢复和队列回落验证处理效果。
 
 </details>
 
-## 6. 参考资料
+### 6.4 宿主 CPU 很空闲，容器为什么仍会慢？PSI 能补充什么证据？ {#psi-throttling}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：配额、局部热点与受阻时间。
+
+**相关内容**：[PSI 与容器限流](#psi-与容器限流)。
+
+<details>
+<summary>参考回答</summary>
+
+容器仍会受到自身和父级 CPU 配额约束。配额用尽后，任务等待后续周期。用 cpu.stat 检查限流计数，再核对单核热点。PSI 表示因资源不足而受阻的时间。组级 PSI 与请求延迟可帮助判断限流影响。
+
+</details>
+
+## 7. 参考资料 {#参考资料}
 
 - [Brendan Gregg：Linux Load Averages: Solving the Mystery](https://www.brendangregg.com/blog/2017-08-08/linux-load-averages.html)
 - [Brendan Gregg：Linux Performance Analysis in 60,000 Milliseconds](https://netflixtechblog.com/linux-performance-analysis-in-60-000-milliseconds-accc10403c55)
 - [man7：proc(5)](https://man7.org/linux/man-pages/man5/proc.5.html)
+- [Linux man-pages：proc_loadavg(5)](https://man7.org/linux/man-pages/man5/proc_loadavg.5.html)
+- [Linux man-pages：iostat(1)](https://man7.org/linux/man-pages/man1/iostat.1.html)
+- [Linux Kernel：PSI](https://docs.kernel.org/accounting/psi.html)
+- [Linux Kernel：Control Group v2](https://docs.kernel.org/admin-guide/cgroup-v2.html)

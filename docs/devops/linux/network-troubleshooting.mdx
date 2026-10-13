@@ -7,111 +7,129 @@ knowledge:
 
 # Linux 网络排查
 
-网络问题的排查从“通不通”到“快不快”分层进行：域名能否解析、IP 能否到达、端口能否建立连接、应用是否正常响应。本文讲每一层用什么工具确认，连接状态怎样统计和解读，TIME_WAIT 和 CLOSE_WAIT 过多的原因，tcpdump 的常用写法，以及 iptables 的表与链。TCP 握手与挥手的原理见 [TCP 连接管理](../../basic-knowledge/network/tcp_handshake.mdx)。
+Linux 网络排查按解析、连接和应用响应逐层定位。本文负责命令、抓包证据与 netfilter 路径。TCP 状态原理见 [TCP 连接](../../basic-knowledge/network/tcp_handshake.mdx)。代理配置见 [Nginx 与负载均衡](../traffic/nginx-load-balancing.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- 按层排查：`dig` 看解析，`ping`/`traceroute` 看三层可达，`nc -zv`/`telnet`/`curl` 看端口和应用。`ping` 通只说明 ICMP 可达，不代表业务端口通，防火墙可能只放行了 ICMP。[卡](#connectivity-check)
-- `ss -lntp` 查看监听端口和对应进程，`ss -ant` 加 `awk`、`uniq -c` 统计各状态的连接数，`ss -s` 看汇总。`ss` 比 `netstat` 快，是现在的首选。[卡](#ports-connections)
-- TIME_WAIT 出现在主动关闭的一方，持续 2MSL，过多通常是短连接太多，用连接复用（长连接、连接池）解决；CLOSE_WAIT 出现在被动关闭的一方，表示对方已关闭而本方程序没有调用 close，几乎总是程序的连接泄漏，要改代码。[卡](#time-wait-close-wait)
-- tcpdump 抓包要指定网卡、过滤条件、不解析名称、写文件：`tcpdump -i eth0 -nn host 10.0.0.2 and port 8080 -w a.pcap`，再用 Wireshark 分析。[卡](#tcpdump)
-- iptables 基于内核的 netfilter，在报文经过的五个挂载点（链）上按表（filter、nat、mangle、raw）执行规则；Kubernetes 的 Service 默认用 nat 表的 DNAT 把 Service IP 转换成 Pod IP。[卡](#iptables)
+- ping 检查 ICMP 回显，业务端口仍需独立验证。[卡](#connectivity-check)
+- `ss -lntp` 查看 TCP 监听，`ss -Hant` 输出无表头连接列表。[卡](#ports-connections)
+- TIME_WAIT 保留关闭状态，CLOSE_WAIT 等待本地应用关闭。[卡](#time-wait-close-wait)
+- tcpdump 的双端抓包可缩小报文丢失范围。[卡](#tcpdump)
+- conntrack 保存连接状态与 NAT 映射，路由表选择下一跳。[卡](#iptables)
 
 ## 2. 分层确认连通性 {#分层确认连通性}
 
-| 层次 | 问题 | 工具 |
-| --- | --- | --- |
-| 解析 | 域名是否解析到正确的地址 | `dig example.com`、`dig +trace`、`cat /etc/resolv.conf` |
-| 网络可达 | IP 能否到达、在哪一跳丢包 | `ping`（ICMP）、`traceroute`/`mtr`、`ip route` |
-| 端口 | 能否建立 TCP 连接 | `nc -zv host 3389`、`telnet host port`、`curl -v telnet://host:port` |
-| 应用 | 响应是否正确、各阶段耗时 | `curl -v`、`curl -w "%{time_connect} %{time_starttransfer} %{time_total}\n"` |
-| 本机 | 服务是否在监听、防火墙是否放行 | `ss -lntp`、`iptables -L -n`、`firewall-cmd --list-all` |
+| 层次 | 命令与证据 |
+| --- | --- |
+| DNS | `dig example.com`、`dig @解析器 example.com` |
+| 路由 | `ip route get 目标IP` 查看出口与源地址 |
+| 三层路径 | `ping`、`traceroute`、`mtr` |
+| TCP 端口 | `nc -zv host 443` |
+| TLS 与 HTTP | `curl -v https://example.com` |
+| 本机监听 | `ss -lntp` 查看地址、端口与进程 |
+| 防火墙 | 按实际后端检查 iptables 或 nftables 规则 |
 
-**ping 的原理**：发送 ICMP Echo Request，目标回复 Echo Reply。输出中的 `icmp_seq` 是序号（不连续说明丢包），`ttl` 是剩余跳数（可以粗略判断经过几跳和对端系统），`time` 是往返时延，最后的统计给出丢包率和延迟的最小值、平均值、最大值、抖动。
+ping 发送 Echo Request，并等待 Echo Reply。`time` 是往返时间，`ttl` 是响应包的剩余跳数。初始 TTL 未知时，无法精确推算路径跳数。
 
-ping 不通也不一定是网络故障：很多云主机和防火墙默认禁止 ICMP。反过来 ping 通、端口不通的常见原因有：服务没有监听（或只监听了 127.0.0.1）、主机防火墙或安全组没有放行该端口、中间设备拦截。
+序号缺口需结合最终统计判断。抓取时尚未返回的响应也会形成暂时缺口。ICMP 被过滤时，业务 TCP 连接仍能正常工作。
+
+TCP 连接还依赖监听地址、端口及路径策略。只监听 127.0.0.1 的服务只能接受本机回环访问。排查应按实际源地址与目的地址验证。
 
 ## 3. 端口与连接状态 {#端口与连接状态}
 
 ```bash
-ss -lntp                       # 监听中的 TCP 端口及进程（需要 root 才能看到其他用户的进程）
-ss -lntp | grep 8080           # 哪个进程在监听 8080
-lsof -i :8080                  # 同上，也能看到客户端连接
-ss -s                          # 各类连接汇总
-ss -ant | awk 'NR>1 {print $1}' | sort | uniq -c | sort -nr   # 按状态统计连接数
-ss -ant state time-wait | wc -l
+ss -lntp 'sport = :8080'
+lsof -nP -iTCP:8080 -sTCP:LISTEN
+ss -s
+ss -Hant | awk '{print $1}' | sort | uniq -c | sort -nr
+ss -Hant state time-wait | wc -l
 ```
 
-常见状态的含义：
+精确端口过滤避免把 18080 等端口混入。`-H` 去掉表头，计数时只统计连接。查看其他用户的进程信息需要相应权限。
 
-| 状态 | 所在方 | 含义 |
-| --- | --- | --- |
-| LISTEN | 服务端 | 等待连接 |
-| SYN-RECV | 服务端 | 收到 SYN，等待第三次握手；大量出现可能是 SYN 洪泛或半连接队列满 |
-| ESTABLISHED | 双方 | 连接建立 |
-| CLOSE-WAIT | 被动关闭方 | 对方已发 FIN，本方程序尚未关闭连接 |
-| TIME-WAIT | 主动关闭方 | 等待 2MSL，确保对方收到最后的 ACK、旧报文过期 |
+| 状态 | 排查方向 |
+| --- | --- |
+| LISTEN | 地址、端口与监听队列 |
+| SYN-RECV | 握手未完成、丢包与 SYN 请求压力 |
+| ESTABLISHED | 活跃连接及收发队列 |
+| CLOSE-WAIT | 本地关闭路径与阻塞线程 |
+| TIME-WAIT | 短连接速率、端口与内存压力 |
 
-## 4. TIME_WAIT 与 CLOSE_WAIT 过多 {#time_wait-与-close_wait-过多}
+## 4. TIME_WAIT 与 CLOSE_WAIT 诊断 {#time_wait-与-close_wait-过多}
 
-**TIME_WAIT 过多**
+TIME_WAIT 的协议作用和复用条件见 [TCP 连接](../../basic-knowledge/network/tcp_handshake.mdx#time_wait-的资源压力与连接复用)。本篇只处理现场定位。
 
-- 原因：本机频繁主动关闭短连接。典型场景是 Nginx 作为反向代理，默认用 HTTP/1.0 短连接访问上游，每个请求都新建和关闭连接；或者客户端程序不复用连接。
-- 影响：每个 TIME_WAIT 占用一个“本地 IP、本地端口、远端 IP、远端端口”组合。作为客户端频繁连接同一个目标时，可用的本地端口会被耗尽，新连接失败。服务端被动产生的 TIME_WAIT 主要占用少量内存，影响不大。
-- 处理：首选复用连接，Nginx 配置 `upstream` 的 `keepalive`，并设置 `proxy_http_version 1.1` 和清空 `Connection` 头；应用使用连接池。其次调整内核参数：`net.ipv4.tcp_tw_reuse=1` 允许客户端发起新连接时复用 TIME_WAIT 端口，`net.ipv4.ip_local_port_range` 扩大本地端口范围。`tcp_tw_recycle` 在 NAT 环境下会丢弃正常连接，已在 Linux 4.12 中移除，不要使用。
+先确认主动关闭端、目标分布和连接创建速率。短连接多时，检查客户端连接池及代理上游复用。端口不足需结合临时端口范围和目标四元组判断。
 
-**CLOSE_WAIT 过多**
+Nginx 1.29.7 前默认代理 HTTP/1.0。1.29.7 起默认使用 HTTP/1.1。是否复用仍取决于 keepalive、请求头和对端行为。配置方式见 [Nginx 与负载均衡](../traffic/nginx-load-balancing.mdx#nginx-的结构与常用配置)。
 
-- 原因：对方已经关闭，本方程序没有调用 `close`。常见于异常分支没有释放连接、连接池泄漏、线程阻塞在其他地方没有机会处理关闭。
-- 处理：调参无效，要找到代码。用 `ss -antp state close-wait` 找到进程和对端地址，结合线程栈和代码检查连接的释放路径。
+持续 CLOSE_WAIT 表示本地发送方向尚未关闭。先用 `ss -antp state close-wait` 定位进程和对端。再检查异常分支、流关闭逻辑与线程栈。应用有意半关闭时，也需核对其业务期限。
 
 ## 5. tcpdump 抓包 {#tcpdump-抓包}
 
 ```bash
-tcpdump -i eth0 -nn host 10.0.0.2 and tcp port 8080 -w handshake.pcap
-tcpdump -i any -nn 'tcp[tcpflags] & (tcp-syn|tcp-fin|tcp-rst) != 0' and port 443
-tcpdump -i eth0 -nn -A port 80 -c 100          # 打印内容，只抓 100 个包
+tcpdump -i eth0 -nn 'host 10.0.0.2 and tcp port 8080' -c 1000 -w a.pcap
+tcpdump -i any -nn 'tcp port 443 and (tcp[tcpflags] & (tcp-syn|tcp-fin|tcp-rst) != 0)'
+tcpdump -nn -r a.pcap
 ```
 
-| 参数 | 作用 |
-| --- | --- |
-| `-i` | 指定网卡，`any` 表示全部 |
-| `-nn` | 不解析主机名和端口名，避免 DNS 查询拖慢和干扰 |
-| `host` / `port` / `src` / `dst` | 过滤条件，可以用 `and`、`or`、`not` 组合 |
-| `-w` / `-r` | 写入和读取 pcap 文件，用 Wireshark 分析 |
-| `-c` | 抓取指定数量后停止 |
-| `-s 0` | 抓取完整报文（新版本默认） |
+`-i` 指定接口，`-nn` 关闭名称解析。`-c` 限制数量，`-w` 保存原始包。`-r` 读取已有文件。`-s` 控制截取长度，`-s 0` 使用工具支持的最大默认长度。
 
-看握手时关注标志位 `[S]`、`[S.]`、`[.]`、`[F.]`、`[R]`，以及序列号、窗口大小和时间间隔。只有 SYN 没有 SYN+ACK，说明报文被丢弃或服务未监听；收到 RST 说明端口未监听或被主动拒绝；重传和较大的时间间隔说明链路丢包或对端处理慢。Pod 之间不通时，要在源和目标两端（以及节点网卡、隧道网卡上）分别抓包，确认报文在哪一段消失。
+| 现象 | 证据边界 |
+| --- | --- |
+| 只有 SYN | 尚未看到应答，需继续查目标与回程 |
+| 收到 RST | 对端或中间设备主动拒绝或复位 |
+| SYN 重传 | 发送方等待确认，需区分去程与回程丢失 |
+| 接收窗口趋近零 | 接收端提供的缓冲空间不足 |
+
+单端抓包无法确认包在哪里丢失。双端对比能区分请求未达和响应未返。时间间隔还会受处理延迟、抓包丢失与卸载影响。应结合序列号、重传和工具丢包统计。
 
 ## 6. iptables 规则 {#iptables-规则}
 
-iptables 是配置内核 netfilter 框架的工具。netfilter 在报文路径上提供五个挂载点（链）：
+iptables 配置 netfilter 规则。内核在网络路径中提供多个 hook。
 
-| 链 | 位置 |
+| 内建链 | 主要路径位置 |
 | --- | --- |
-| PREROUTING | 报文进入本机、路由判断之前 |
-| INPUT | 发往本机进程 |
+| PREROUTING | 入站后的路由判断前 |
+| INPUT | 送往本机进程 |
 | FORWARD | 经本机转发 |
-| OUTPUT | 本机进程发出 |
-| POSTROUTING | 离开本机之前 |
+| OUTPUT | 本机进程发包 |
+| POSTROUTING | 出站前 |
 
-规则按功能分在不同的表中：
+| 表 | 作用 |
+| --- | --- |
+| filter | 过滤与放行 |
+| nat | DNAT、SNAT 和 MASQUERADE |
+| mangle | 修改标记、TTL 等字段 |
+| raw | 在连接跟踪前处理 |
+| security | 强制访问控制相关规则 |
 
-| 表 | 用途 | 常见链 |
-| --- | --- | --- |
-| filter | 放行或拒绝（默认表） | INPUT、FORWARD、OUTPUT |
-| nat | 地址转换：DNAT 改目的地址，SNAT/MASQUERADE 改源地址 | PREROUTING、OUTPUT、POSTROUTING |
-| mangle | 修改报文标记、TTL 等 | 全部 |
-| raw | 在连接跟踪之前处理，例如对某些流量关闭跟踪 | PREROUTING、OUTPUT |
+同一 hook 的表按内核优先级执行。每条链内再按规则顺序匹配。`ACCEPT` 结束当前相关过滤处理。后续 hook 仍可丢弃报文。
 
-iptables 主要工作在网络层，也能匹配传输层的端口和连接状态（依赖 conntrack 连接跟踪），所以常说它是三、四层的防火墙。
+NAT 规则主要为连接首包建立映射。后续包按 conntrack 保存的映射转换。修改 NAT 规则后，已有连接仍会使用旧映射。
 
-在 Kubernetes 中，kube-proxy 的 iptables 模式在 nat 表中为每个 Service 生成规则，访问 Service IP 时通过 DNAT 随机转发到某个 Pod；规则数量随 Service 增多线性增长，大集群改用 IPVS 模式或基于 eBPF 的方案。
+kube-proxy 的 iptables 模式用 DNAT 选择后端。其他代理模式的数据路径不同。IPVS 模式自 Kubernetes 1.35 起弃用。模式选择和集群网络见 [工作负载、Service 与集群网络](../kubernetes/workloads-networking.mdx#集群网络)。
 
-## 7. 面试题
+## 7. DNS、TLS 与 HTTP 耗时 {#dns-tls-与-http-耗时}
 
-### 7.1 怎样查看某个端口被哪个进程监听？怎样统计服务器上各状态（TIME_WAIT、ESTABLISHED 等）的连接数？ {#ports-connections}
+curl 的 time 字段多为从请求开始累计的时间。
+
+```bash
+curl -sS -o /dev/null --connect-timeout 3 --max-time 10 \
+  -w 'dns=%{time_namelookup} tcp=%{time_connect} tls=%{time_appconnect} first=%{time_starttransfer} total=%{time_total}\n' \
+  https://example.com/
+curl --resolve example.com:443:192.0.2.10 https://example.com/
+```
+
+一次新的直连 HTTPS 请求可用相邻时间差定位阶段。TCP 时间用 time_connect 减 time_namelookup。TLS 时间用 time_appconnect 减 time_connect。首字节时间还包含请求传输与服务端处理。
+
+重定向、代理和连接复用会改变解释方式。排查时应先固定访问路径。
+
+`--resolve` 指定连接地址，并保留域名语义。HTTP Host、TLS SNI 与证书校验仍使用原域名。仅访问 IP 再修改 Host，会遗漏 TLS 名称差异。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 怎样查看某个端口被哪个进程监听？怎样统计服务器上各状态（TIME_WAIT、ESTABLISHED 等）的连接数？ {#ports-connections}
 
 <!-- 面试来源：
 - 京东：https://www.nowcoder.com/discuss/478505627115880448 （“怎么查看监听在8080端口的是哪个进程”）
@@ -133,13 +151,13 @@ iptables 主要工作在网络层，也能匹配传输层的端口和连接状�
 <details>
 <summary>参考回答</summary>
 
-查看监听端口和进程用 `ss -lntp`：`-l` 只看监听，`-n` 不解析名称，`-t` 只看 TCP，`-p` 显示进程，需要 root 才能看到其他用户的进程；再 `grep 8080` 即可。也可以用 `lsof -i :8080`，它还能列出这个端口上的客户端连接。旧系统上用 `netstat -tnlp`，参数含义相同，但 `ss` 直接读取内核信息，连接多时快得多。
+监听 8080 可用 `ss -lntp 'sport = :8080'`。`-l` 选监听，`-t` 选 TCP，`-p` 显示进程。`-n` 关闭名称解析。其他用户进程信息需要相应权限。
 
-统计各状态的连接数：`ss -ant | awk 'NR>1 {print $1}' | sort | uniq -c | sort -nr`，或用 `ss -s` 看汇总。看结果时关注异常的状态：大量 SYN-RECV 可能是半连接队列满或 SYN 洪泛，大量 TIME-WAIT 说明短连接多，大量 CLOSE-WAIT 说明程序没有关闭连接。
+统计状态可用 `ss -Hant | awk '{print $1}' | sort | uniq -c`。`-H` 去掉表头，避免计数多一行。再按对端、端口和时间趋势缩小异常范围。
 
 </details>
 
-### 7.2 TIME_WAIT 和 CLOSE_WAIT 是什么？服务器上这两种状态过多分别是什么原因，怎样处理？ {#time-wait-close-wait}
+### 8.2 TIME_WAIT 和 CLOSE_WAIT 是什么？服务器上这两种状态过多分别是什么原因，怎样处理？ {#time-wait-close-wait}
 
 <!-- 面试来源：
 - BIGO：https://www.nowcoder.com/discuss/353156870250635264 （“CLOSE_WAIT和TIME_WAIT”“TIME_WAIT保留一段时间的原因”）
@@ -155,22 +173,22 @@ iptables 主要工作在网络层，也能匹配传输层的端口和连接状�
 **考察重点**
 
 - 两个状态分别出现在主动关闭和被动关闭的一方。
-- TIME_WAIT 用连接复用解决，CLOSE_WAIT 要修代码；`tcp_tw_recycle` 的风险。
+- 结合资源压力判断 TIME_WAIT，并检查 CLOSE_WAIT 关闭路径。
 
-**相关内容**：[TIME_WAIT 与 CLOSE_WAIT 过多](#time_wait-与-close_wait-过多)、[TCP 连接管理](../../basic-knowledge/network/tcp_handshake.mdx#three-way-handshake-time-wait)。
+**相关内容**：[TIME_WAIT 与 CLOSE_WAIT 诊断](#time_wait-与-close_wait-过多)、[TCP 连接](../../basic-knowledge/network/tcp_handshake.mdx#three-way-handshake-time-wait)。
 
 <details>
 <summary>参考回答</summary>
 
-TIME_WAIT 是主动关闭方发出最后一个 ACK 后进入的状态，持续 2MSL（Linux 上固定 60 秒）。它有两个作用：如果最后的 ACK 丢失，对方会重发 FIN，本方还能重新确认；等待网络中这个连接的旧报文过期，避免被相同四元组的新连接误收。CLOSE_WAIT 是被动关闭方收到对方 FIN 之后、本方调用 close 之前的状态。
+TIME_WAIT 保留关闭状态，CLOSE_WAIT 等待应用关闭。协议细节与内核参数见 [TCP 连接](../../basic-knowledge/network/tcp_handshake.mdx)。
 
-TIME_WAIT 过多说明本机频繁主动关闭短连接，例如 Nginx 默认用短连接访问上游，每个请求都关闭一次。作为客户端时，大量 TIME_WAIT 会占满本地端口，导致新连接失败。处理首选复用连接：Nginx 的 upstream 配置 keepalive，同时设置 `proxy_http_version 1.1` 并清空 Connection 头；应用使用连接池。辅助手段是开启 `tcp_tw_reuse`、扩大本地端口范围。`tcp_tw_recycle` 在 NAT 后会丢弃正常连接，新内核已经移除。
+TIME_WAIT 多时先确认短连接和实际资源压力。检查应用连接池及 Nginx 上游 keepalive。Nginx 默认代理版本需按版本核对。
 
-CLOSE_WAIT 过多几乎都是程序问题：对方关了，本方没有 close，常见于异常分支未释放连接或连接池泄漏。调内核参数没有用，要用 `ss -antp state close-wait` 找到进程和对端，结合代码检查释放逻辑。
+CLOSE_WAIT 持续堆积时，定位进程和对端。再检查关闭路径、异常分支及阻塞线程。半关闭业务也应有完成期限。
 
 </details>
 
-### 7.3 能 ping 通对方 IP，是否说明业务端口一定是通的？ping 的原理是什么，怎样确认端口连通？ {#connectivity-check}
+### 8.3 能 ping 通对方 IP，是否说明业务端口一定是通的？ping 的原理是什么，怎样确认端口连通？ {#connectivity-check}
 
 <!-- 面试来源：
 - 青藤云：https://www.nowcoder.com/feed/main/detail/0b99f63bd74c4a52ad17159542e890ad （“能 ping 通 b 的 IP 地址，能保证我 A 连 B 的3389端口一定是通的吗,怎么确认我和他的业务端口通不通呢？”）
@@ -192,15 +210,13 @@ CLOSE_WAIT 过多几乎都是程序问题：对方关了，本方没有 close，
 <details>
 <summary>参考回答</summary>
 
-不能。ping 使用 ICMP 的回显请求和回显应答，只能说明三层可达。业务端口还要求对方进程在该端口监听、监听地址不是只有 127.0.0.1、主机防火墙和云安全组放行这个端口、中间没有设备拦截。反过来，ping 不通也可能只是禁止了 ICMP。
+ping 通只能确认 ICMP 回显路径。业务端口还依赖 TCP 监听与路径规则。`nc -zv B 3389` 可验证 TCP 建连。HTTP 服务需继续用 curl 验证响应。
 
-ping 的输出中，`icmp_seq` 是序号，不连续说明丢包；`ttl` 是剩余跳数；`time` 是往返时延；结束时的统计给出丢包率和延迟的最小、平均、最大值和抖动。
-
-确认端口连通用 TCP 层的工具：`nc -zv B 3389` 或 `telnet B 3389`，HTTP 服务用 `curl -v` 并可以用 `-w` 输出连接、首字节和总耗时。连不上时按顺序检查：对端 `ss -lntp` 是否在监听正确的地址，对端防火墙和安全组规则，路径上的网络 ACL，必要时在两端抓包看 SYN 是否到达、是否收到 RST。
+ping 的 time 是往返时间，ttl 是剩余跳数。序号和最终统计帮助确认丢包。端口不通时，检查监听地址、防火墙与安全组。再用两端抓包定位去程和回程。
 
 </details>
 
-### 7.4 用 tcpdump 抓 TCP 握手时会用哪些参数？抓包后关注哪些字段？ {#tcpdump}
+### 8.4 用 tcpdump 抓 TCP 握手时会用哪些参数？抓包后关注哪些字段？ {#tcpdump}
 
 <!-- 面试来源：
 - 共济科技：https://www.nowcoder.com/discuss/908367488235110400 （“使用 tcpdump 抓 TCP 握手时会用哪些参数？关注哪些字段？”“Pod 之间网络不通的排查案例”）
@@ -221,13 +237,13 @@ ping 的输出中，`icmp_seq` 是序号，不连续说明丢包；`ttl` 是剩�
 <details>
 <summary>参考回答</summary>
 
-常用写法是 `tcpdump -i eth0 -nn host 10.0.0.2 and tcp port 8080 -w a.pcap`：`-i` 指定网卡（不确定时用 `any`），`-nn` 不解析主机名和端口名，过滤表达式缩小范围，`-w` 写入文件后用 Wireshark 分析，`-c` 限制数量，避免在繁忙的机器上抓太多。只看握手和关闭可以按标志位过滤：`'tcp[tcpflags] & (tcp-syn|tcp-fin|tcp-rst) != 0'`。
+用接口、地址和端口过滤缩小抓包范围。例如 `tcpdump -i eth0 -nn 'tcp port 8080' -c 1000 -w a.pcap`。`-nn` 避免解析干扰，`-c` 限制数量。
 
-分析时看标志位：`[S]`、`[S.]`、`[.]` 是三次握手，`[F.]` 是关闭，`[R]` 是重置。只有 SYN 没有 SYN+ACK，说明请求被丢弃或对端没有监听；立即收到 RST 说明端口未监听或被拒绝；同一个 SYN 多次出现是重传，说明丢包。再看序列号、窗口大小和时间间隔判断是否有丢包或接收方处理慢。跨节点问题要在源端、目标端和中间的网卡分别抓，确认报文在哪一段消失。
+分析 SYN、ACK、FIN、RST 和序列号。只有 SYN 表示当前抓包未看到应答。它不足以确定目标未监听。对比双端抓包，再检查回程路由和策略。接收窗口、重传和时间间隔提供进一步线索。
 
 </details>
 
-### 7.5 iptables 的原理是什么？有哪些表和链？工作在网络的哪一层？Kubernetes 中哪里用到了 DNAT？ {#iptables}
+### 8.5 iptables 的原理是什么？有哪些表和链？工作在网络的哪一层？Kubernetes 中哪里用到了 DNAT？ {#iptables}
 
 <!-- 面试来源：
 - 虾皮：https://www.nowcoder.com/discuss/353156139321860096 （“iptables原理，工作在几层”）
@@ -251,17 +267,37 @@ ping 的输出中，`icmp_seq` 是序号，不连续说明丢包；`ttl` 是剩�
 <details>
 <summary>参考回答</summary>
 
-iptables 是配置内核 netfilter 的用户态工具。netfilter 在报文经过的路径上设置了五个挂载点：PREROUTING（进入后路由前）、INPUT（发往本机）、FORWARD（转发）、OUTPUT（本机发出）、POSTROUTING（离开前）。规则按功能放在不同的表里：filter 负责放行和拒绝，nat 负责地址转换（DNAT 改目的地址、SNAT 和 MASQUERADE 改源地址），mangle 修改报文标记，raw 在连接跟踪之前处理。报文到达某条链时，依次执行各表中的规则，匹配后执行 ACCEPT、DROP、DNAT 等动作。
+iptables 配置 netfilter 的过滤与转换规则。五条主要内建链对应入站、本地和转发路径。filter 用于过滤，nat 用于地址转换。mangle 修改报文属性，raw 在连接跟踪前处理。
 
-它主要工作在网络层，同时可以匹配端口和连接状态，所以通常说是三、四层防火墙。作为主机防火墙时关注：默认策略、按来源地址和端口放行、放行已建立连接的回包、规则的顺序。
+规则可匹配 IP、端口和连接状态。这些匹配覆盖网络层与传输层。conntrack 保存状态及 NAT 映射。路由表则选择下一跳和出口。
 
-Kubernetes 的 kube-proxy 在 iptables 模式下，为每个 Service 在 nat 表中生成规则，访问 Service 的 ClusterIP 时通过 DNAT 随机改写为某个 Pod 的 IP。规则是线性匹配的，Service 很多时性能下降，所以大集群使用 IPVS 模式，它用哈希表做四层负载均衡。路由表决定报文从哪个接口发往下一跳，与 iptables 的过滤和改写是不同的环节。
+Kubernetes 的 iptables 代理模式用 DNAT 转到端点。IPVS 和 nftables 等模式有各自实现。IPVS 模式自 Kubernetes 1.35 起弃用。
 
 </details>
 
-## 8. 参考资料
+### 8.6 怎样区分 DNS、TLS 与应用响应慢？为什么只改 Host 头还不够？ {#curl-phase-timing}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：累计时间差、SNI 与指定解析。
+
+**相关内容**：[DNS、TLS 与 HTTP 耗时](#dns-tls-与-http-耗时)。
+
+<details>
+<summary>参考回答</summary>
+
+先用 curl 的 time 字段区分请求阶段。新建直连 HTTPS 可通过相邻时间差估算耗时。首字节时间包含请求传输和服务端处理。访问 IP 只改 Host，TLS SNI 仍会不同。使用 --resolve 可固定 IP，同时保留域名与证书校验。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
 
 - [man7：ss(8)](https://man7.org/linux/man-pages/man8/ss.8.html)
 - [tcpdump 手册](https://www.tcpdump.org/manpages/tcpdump.1.html)
 - [netfilter 项目](https://www.netfilter.org/)
 - [Kubernetes：Virtual IPs and Service Proxies](https://kubernetes.io/docs/reference/networking/virtual-ips/)
+- [curl：Manual](https://curl.se/docs/manpage.html)
+- [Netfilter：NAT HOWTO](https://www.netfilter.org/documentation/HOWTO/NAT-HOWTO-5.html)
+- [nginx：HTTP proxy module](https://nginx.org/en/docs/http/ngx_http_proxy_module.html)

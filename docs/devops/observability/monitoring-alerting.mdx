@@ -7,93 +7,117 @@ knowledge:
 
 # 监控与告警
 
-监控回答“系统现在怎么样”，告警决定“什么时候需要有人介入”。SRE 面试通常从你用过的工具问起（Prometheus 的架构、怎样采集），再问设计：一个服务该监控哪些指标，告警怎样设置才不会淹没值班的人。本文讲 Prometheus 的组成与数据模型、指标的选择方法和告警设计。日志、指标与追踪的关联见[日志、指标与追踪](../../system-design/production/logs-metrics-traces-correlation.mdx)，SLO 的制定见 [SLI、SLO 与错误预算](../../system-design/availability/sli-slo-error-budget-capacity-headroom.mdx)。
+监控采集系统状态，告警触发需要处理的事件。本文负责 Prometheus、指标设计和告警规则。信号关联见 [可观测性](../../system-design/production/logs-metrics-traces-correlation.mdx)。目标制定见 [服务等级目标（SLO）](../../system-design/availability/sli-slo-error-budget-capacity-headroom.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- Prometheus 以拉取方式定期从各目标的 `/metrics` 接口抓取指标，存入本地时序数据库，用 PromQL 查询，按规则计算告警并发给 Alertmanager；Alertmanager 负责分组、抑制、静默和路由通知。目标通过服务发现（Kubernetes、Consul、文件等）自动获得。[卡](#prometheus-architecture)
-- 指标由名称和标签唯一确定，有 Counter（只增不减）、Gauge（可增可减）、Histogram 和 Summary（分布）四种类型；标签取值不能无限增长（如用户 ID），否则序列数爆炸。
-- 选指标有方法：服务看延迟、流量、错误、饱和度四个黄金信号（或 RED：速率、错误、耗时），资源看 USE：使用率、饱和度、错误。先监控用户能感知的症状，再监控原因。[卡](#what-to-monitor)
-- 告警应当可执行：只对影响用户或即将影响用户的情况告警，每条告警都有明确的处理步骤；用持续时间、迟滞阈值、聚合和抑制减少抖动和重复，按严重程度分级和升级。[卡](#alert-design)
-- 监控系统自身也要被监控：Prometheus 和 Alertmanager 做高可用部署，并用独立的“心跳告警”确认告警链路是通的。
+- Prometheus 采集并计算规则，Alertmanager 管理通知。[卡](#prometheus-architecture)
+- 指标名称与完整标签集共同标识时间序列。
+- Counter 速率应先按序列计算，再跨实例求和。[卡](#histogram-aggregation)
+- 服务指标包含延迟、流量、错误与饱和度。[卡](#what-to-monitor)
+- `for` 约束持续触发时间，分组和抑制减少重复通知。[卡](#alert-design)
 
 ## 2. Prometheus 的组成 {#prometheus-的组成}
 
-| 组件 | 作用 |
+| 组件 | 分工 |
 | --- | --- |
-| Prometheus Server | 服务发现、定期抓取、存储时序数据、执行 PromQL、计算记录规则和告警规则 |
-| Exporter | 把第三方系统的状态转成 Prometheus 格式：`node_exporter`（主机）、`mysqld_exporter`、`redis_exporter`、`blackbox_exporter`（从外部探测 HTTP、TCP、ICMP）等 |
-| 应用埋点 | 应用用客户端库直接暴露 `/metrics` |
-| Pushgateway | 短生命周期的批处理任务结束前把指标推送上来，再由 Prometheus 拉取 |
-| Alertmanager | 接收告警，按标签分组、去重、抑制、静默，路由到邮件、即时通讯或值班系统 |
-| Grafana | 可视化看板 |
-| 远程存储 | Thanos、VictoriaMetrics、Mimir 等，用于长期保存和多集群汇总 |
+| Prometheus Server | 发现目标、抓取、存储、查询和计算规则 |
+| 应用客户端库 | 在应用内记录并暴露指标 |
+| Exporter | 将系统状态转换成可抓取指标 |
+| Pushgateway | 为特定批处理任务保留推送指标 |
+| Alertmanager | 分组、去重、抑制、静默和路由 |
+| Grafana | 展示查询和看板 |
+| 远程存储 | 支持长期保存或跨集群查询 |
 
-**拉取模型的好处**：Prometheus 掌握采集的节奏，目标挂掉时抓取失败本身就是信号（`up == 0`）；目标只需暴露 HTTP 接口。代价是要求 Prometheus 能访问到目标，跨网络时需要部署就近的 Prometheus 或使用代理。
+默认抓取路径为 `/metrics`，可按目标配置。发现机制提供目标，relabel 规则筛选并改写标签。Kubernetes 可发现 Pod、Service 和 EndpointSlice。Operator 的 ServiceMonitor、PodMonitor 用来声明抓取配置。
 
-**服务发现**：在 Kubernetes 中，Prometheus 通过 apiserver 发现 Pod、Service、节点和 Endpoints，再用 relabel 规则按注解或标签筛选目标、改写标签。Prometheus Operator 用 `ServiceMonitor`、`PodMonitor` 对象声明抓取目标。
+`up == 0` 表示某个已发现目标抓取失败。目标从发现结果消失后，原 up 序列也会消失。该情形还需缺失检测或预期目标数量校验。
 
-**指标类型**：
+### 2.1 指标类型 {#指标类型}
 
-| 类型 | 含义 | 用法 |
-| --- | --- | --- |
-| Counter | 累计值，只增不减，进程重启归零 | 请求数、错误数；用 `rate()` 计算每秒速率 |
-| Gauge | 当前值，可增可减 | 内存用量、队列长度、温度 |
-| Histogram | 按区间计数的分布，在服务端可以聚合 | 请求耗时；用 `histogram_quantile()` 计算 P99 |
-| Summary | 客户端计算好的分位数，不能跨实例聚合 | 单实例的耗时分位数 |
-
-```promql
-sum(rate(http_requests_total{status=~"5.."}[5m])) / sum(rate(http_requests_total[5m]))   # 错误率
-histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket[5m])))  # P99 延迟
-```
-
-**与 Zabbix 的区别**：Zabbix 以 Agent 为中心，支持主动和被动两种采集模式，数据存在关系数据库中，模板化管理主机和网络设备，适合传统的物理机、虚拟机环境；Prometheus 使用多维标签的数据模型和服务发现，适合容器和微服务这类实例频繁变化的环境，查询和聚合能力更强。
-
-## 3. 监控哪些指标 {#监控哪些指标}
-
-**服务（四个黄金信号）**
-
-| 信号 | 指标 |
+| 类型 | 含义与用途 |
 | --- | --- |
-| 延迟 | P50、P99 耗时，成功和失败请求分开统计 |
-| 流量 | QPS、并发连接数 |
-| 错误 | 5xx 比例、业务错误码、超时数 |
-| 饱和度 | 线程池、连接池、队列的使用率，CPU 与内存相对上限的比例 |
+| Counter | 累计事件数，可在重启时重置 |
+| Gauge | 当前值，可上升或下降 |
+| Histogram | 保存分布，可聚合后计算分位数 |
+| Summary | 提供 sum、count 及预先计算的分位数 |
 
-**资源（USE 方法）**：每种资源看使用率、饱和度和错误。
+每个标签组合都会形成独立序列。用户 ID、完整 URL 等高基数标签会扩大存储和查询成本。HTTP 路径可用模板值，例如 `/users/:id`。
 
-| 资源 | 使用率 | 饱和度 | 错误 |
-| --- | --- | --- | --- |
-| CPU | 使用率 | load、运行队列、容器 CPU 限流次数 | — |
-| 内存 | 已用比例 | 交换、OOM 次数 | — |
-| 磁盘 | 空间与 inode 使用率、I/O 利用率 | I/O 等待、队列长度 | 读写错误 |
-| 网络 | 带宽 | 丢包、重传、连接队列溢出 | 网卡错误 |
+Zabbix 提供主机模板及多种主动、被动采集。Prometheus 以标签和 PromQL 组织时序分析。选型应结合采集对象、服务发现与维护成本。
 
-**分层覆盖**：基础设施（主机、容器、网络）→ 中间件（数据库连接数与慢查询、Redis 内存与命中率、消息堆积）→ 应用（黄金信号、JVM 堆与 GC）→ 业务（下单量、支付成功率）→ 用户侧（外部拨测、真实用户的页面耗时）。例如监控一个代理服务器，要看连接数和新建速率、各上游的错误率和耗时、上游健康状态、TLS 证书剩余有效期，以及主机的 CPU、网络和文件描述符使用量。
+### 2.2 Pushgateway 与监控高可用 {#pushgateway-与监控高可用}
+
+Pushgateway 适合服务级短生命周期批处理任务。它保留已推送的数据，直到显式删除。任务消失后，旧成功指标仍会继续被抓取。因此，任务完成时间和旧序列清理都需设计。
+
+长期服务优先暴露抓取端点。多个 Prometheus 可独立抓取同一目标。Alertmanager 集群协作去重通知。查询侧仍需处理重复序列，具体依赖远程存储方案。
+
+外部心跳接收端检查通知是否按时到达。它用于验证规则、通知和接收链路。心跳接收端应独立于被监控系统。
+
+## 3. 服务与资源指标 {#监控哪些指标}
+
+| 黄金信号 | 示例 |
+| --- | --- |
+| 延迟 | 成功与失败请求分别统计 P50、P99 |
+| 流量 | QPS、并发连接、新连接速率 |
+| 错误 | 5xx、业务失败、超时比例 |
+| 饱和度 | 队列积压、池等待、资源压力 |
+
+USE 分别检查资源使用率、饱和度与错误。CPU 可结合运行队列与限流。内存可结合 PSI、回收和 OOM。磁盘检查空间、inode、I/O 延迟和设备错误。
+
+代理服务还需监控每个上游的延迟与失败。TLS 证书期限、文件描述符和连接数也影响接入。业务层补充交易成功率，用户侧补充外部拨测。
 
 ## 4. 告警设计 {#告警设计}
 
-**告警什么**：优先告警用户能感知的症状（错误率升高、延迟超过目标、SLO 的错误预算消耗过快），原因类指标（某台机器 CPU 高）多数只需要放在看板上，或者作为低级别通知。每条需要人处理的告警都应附带说明和处理手册的链接。
+需要立即响应的告警，应对应用户影响或明确风险。每条规则需写清负责人、影响和处置入口。资源指标还可用于工单与容量规划。
 
-**减少噪声**
-
-| 手段 | 做法 |
+| 机制 | 作用 |
 | --- | --- |
-| 持续时间 | 规则加 `for: 5m`，持续满足才触发，过滤瞬时尖峰 |
-| 迟滞阈值 | 触发阈值和恢复阈值分开（如 80% 触发、70% 恢复），避免在阈值附近反复触发和恢复 |
-| 平滑 | 用一段时间的平均值或分位数，而不是瞬时值 |
-| 分组 | Alertmanager 把同一服务、同一集群的告警合成一条通知 |
-| 抑制 | 上游已经告警（如整个机房网络中断）时，抑制下游的大量衍生告警 |
-| 静默 | 计划内的维护期间临时屏蔽 |
-| 定期治理 | 统计每条规则的触发次数和处理率，删除或修改从来没有人处理的规则 |
+| `for: 5m` | 条件持续成立后进入 firing |
+| `keep_firing_for` | 条件消失后继续保留 firing 一段时间 |
+| 分组 | 合并同服务或同事故的通知 |
+| 抑制 | 已有上层故障时，抑制关联衍生告警 |
+| 静默 | 按匹配器和时间窗口暂停通知 |
+| 路由 | 根据标签选择接收人和通知渠道 |
 
-**分级与升级**：按严重程度区分通知方式，严重告警通过电话、短信通知值班人，在规定时间内没有确认就升级到下一级或负责人；一般告警进入工单或群聊，在工作时间处理。
+规则先进入 pending，持续满足 for 后进入 firing。Alertmanager 的 group_wait 是等待聚合首批通知。repeat_interval 则控制重复通知间隔。它们处理的是不同阶段。
 
-**阈值怎样定**：参考 SLO 和历史数据，而不是凭感觉。磁盘这类缓慢增长的资源，与其按固定的 80% 告警，不如按增长趋势预测“多少小时后写满”（`predict_linear()`）。
+迟滞需要独立的进入和退出条件。单独设置 for 只增加持续时间，无法实现双阈值。keep_firing_for 提供延迟恢复，语义也不同。
 
-## 5. 面试题
+SLO 消耗告警可组合长短窗口，见 [SRE 的职责与工作方式](../incidents/sre-practice.mdx#错误预算策略与消耗速率)。磁盘趋势预测可使用 predict_linear。流量低或数据缺失时，应另行核对统计有效性。
 
-### 5.1 Prometheus 的架构是怎样的？它怎样发现和抓取目标？与 Zabbix 有什么区别？ {#prometheus-architecture}
+严重告警需要值班确认与超时升级。升级可由外部值班系统实现。Alertmanager 的通知路由本身没有人工确认流程。
+
+## 5. 分位数聚合与速率 {#分位数聚合与速率}
+
+以下示例针对经典 Histogram，并保留 job 维度。
+
+```promql
+histogram_quantile(
+  0.99,
+  sum by (job, le) (
+    rate(http_request_duration_seconds_bucket[5m])
+  )
+)
+```
+
+rate 先处理各实例的计数重置。sum 再合并同一服务的桶。le 保留桶边界，最后计算整体 P99。参与合并的经典直方图应使用一致的桶边界。
+
+Summary 的分位数无法直接相加或平均成整体分位数。它的 sum 与 count 仍可聚合以计算均值。
+
+服务错误率应使用错误总速率除以请求总速率。
+
+```promql
+sum by (job) (rate(http_requests_total{status=~"5.."}[5m]))
+/
+sum by (job) (rate(http_requests_total[5m]))
+```
+
+该计算按各实例请求量加权。直接平均实例错误率会让低流量实例获得过高权重。还需处理零请求和错误序列未初始化的情形。数据缺失检测可使用 `absent_over_time`。动态服务也需维护预期目标的独立信息。
+
+## 6. 面试题 {#面试题}
+
+### 6.1 Prometheus 的架构是怎样的？它怎样发现和抓取目标？与 Zabbix 有什么区别？ {#prometheus-architecture}
 
 <!-- 面试来源：
 - 上海银行：https://www.nowcoder.com/feed/main/detail/67ff310979144d98837bf08eb5417beb （“prometheus架构是怎么样的？”）
@@ -117,15 +141,15 @@ histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket[
 <details>
 <summary>参考回答</summary>
 
-Prometheus Server 按配置的间隔向每个目标的 `/metrics` 接口发 HTTP 请求拉取指标，存入本地的时序数据库，提供 PromQL 查询，并定期计算记录规则和告警规则。应用通过客户端库直接暴露指标，第三方系统通过 Exporter 转换，例如主机用 node_exporter，MySQL、Redis 有对应的 Exporter，blackbox_exporter 从外部探测接口是否可用；短生命周期的任务把指标推送到 Pushgateway。触发的告警发给 Alertmanager，由它分组、去重、抑制、静默后路由到通知渠道。Grafana 负责看板，长期存储和多集群汇总用 Thanos 等远程存储。
+Prometheus Server 发现并抓取目标，存储时序并计算规则。应用埋点或 Exporter 提供指标。Alertmanager 管理分组、去重、静默、抑制与通知。
 
-目标通过服务发现获得：在 Kubernetes 中 Prometheus 调用 apiserver 列出 Pod、Service、Endpoints，再用 relabel 规则按注解筛选目标、生成标签；使用 Operator 时用 ServiceMonitor 声明。拉取失败时 `up` 指标为 0，本身就能用来告警。
+服务发现提供目标，relabel 筛选并改写标签。Operator 可用 ServiceMonitor 或 PodMonitor 描述采集。抓取失败会产生 up=0，目标消失还需缺失检测。
 
-Zabbix 以 Agent 为中心，数据存在关系数据库，模板化管理主机和网络设备，适合传统环境；Prometheus 用多维标签和服务发现，适合实例频繁变化的容器环境，聚合查询更灵活。设计一个监控系统也按这几个环节展开：采集、存储、查询与看板、告警规则、通知与升级，以及监控系统自身的高可用。
+Zabbix 提供主机模板及主动、被动采集。Prometheus 用标签与 PromQL 分析动态目标。两者选择取决于对象、查询及运维需求。
 
 </details>
 
-### 5.2 如果要监控一个生产环境的服务（例如一台代理服务器），你会监控哪些指标？ {#what-to-monitor}
+### 6.2 如果要监控一个生产环境的服务（例如一台代理服务器），你会监控哪些指标？ {#what-to-monitor}
 
 <!-- 面试来源：
 - 滴滴：https://www.nowcoder.com/discuss/677898695249006592 （“如果说你要监控一个生产环境的这个服务，那你大概会监控哪些东西？”“这里边的话你觉得这个指标细致一些，应该去监控哪些细致？”）
@@ -143,20 +167,20 @@ Zabbix 以 Agent 为中心，数据存在关系数据库，模板化管理主机
 - 用黄金信号、USE 方法组织指标，而不是罗列。
 - 分层覆盖：资源、中间件、应用、业务、用户侧。
 
-**相关内容**：[监控哪些指标](#监控哪些指标)。
+**相关内容**：[服务与资源指标](#监控哪些指标)。
 
 <details>
 <summary>参考回答</summary>
 
-按方法组织。服务层面看四个黄金信号：延迟（P50、P99，成功和失败分开）、流量（QPS、并发连接）、错误（5xx 比例、超时、业务错误码）、饱和度（线程池、连接池、队列使用率）。资源层面用 USE 方法：CPU、内存、磁盘、网络分别看使用率、饱和度和错误，例如 CPU 的使用率、负载和容器限流次数，磁盘的空间、inode 和 I/O 等待，网络的带宽、丢包和重传。
+服务应覆盖延迟、流量、错误和饱和度。再用 USE 方法检查 CPU、内存、磁盘与网络。
 
-然后分层覆盖：主机和容器；中间件，如 MySQL 的连接数、慢查询、主从延迟，Redis 的内存、命中率、驱逐数；应用，如 JVM 堆和 GC；业务，如下单量和支付成功率；用户侧，用外部拨测检查入口是否可用。
+代理服务重点看上游分布、连接数与建立速率。还需检查 TLS 证书、文件描述符和超时。业务成功率与外部拨测用于验证用户实际结果。
 
-以代理服务器为例：活跃连接数和新建速率，每个上游的请求量、错误率、耗时和健康状态，请求排队情况，TLS 证书剩余有效期，以及主机的 CPU、网络带宽和文件描述符使用量。告警只挑其中直接影响用户的几项，其余放在看板上用于排查。
+看板用于定位原因，紧急告警用于触发明确处置。每条告警应能关联影响、负责人和处理入口。
 
 </details>
 
-### 5.3 告警怎样设置才合理？一个指标在阈值附近反复触发、一天告警几百次，怎样降下来？告警怎样收敛和升级？ {#alert-design}
+### 6.3 告警怎样设置才合理？一个指标在阈值附近反复触发、一天告警几百次，怎样降下来？告警怎样收敛和升级？ {#alert-design}
 
 <!-- 面试来源：
 - 快手：https://www.nowcoder.com/discuss/676447175684952064 （“CPU超过了一个设定的阈值，然后一会儿恢复了……一天反复好几百次……你觉得有什么好办法去把它这种报警次数降下去吗？”“你是如何保持这个系统可用性的？”）
@@ -171,7 +195,7 @@ Zabbix 以 Agent 为中心，数据存在关系数据库，模板化管理主机
 
 **考察重点**
 
-- 告警症状而非原因，每条告警可执行。
+- 告警关联用户影响，并给出可执行动作。
 - 持续时间、迟滞、平滑、分组、抑制等降噪手段；分级与升级；告警系统自身的可用性。
 
 **相关内容**：[告警设计](#告警设计)。
@@ -179,18 +203,56 @@ Zabbix 以 Agent 为中心，数据存在关系数据库，模板化管理主机
 <details>
 <summary>参考回答</summary>
 
-先确定告警什么：需要人立即处理的，只有已经影响或即将影响用户的情况，例如错误率、延迟超过目标、错误预算消耗过快；单台机器 CPU 高这类原因指标，大多数放在看板上或作为低级别通知。每条告警写清楚含义和处理步骤，长期没人处理的规则要删除或调整。阈值依据 SLO 和历史数据确定，缓慢增长的资源按趋势预测剩余时间告警。
+告警应对应用户影响或需要处理的容量风险。阈值结合 SLO、基线与处置时限设定。
 
-指标在阈值附近反复触发，有几种办法：规则加持续时间，例如连续 5 分钟超过才触发；触发和恢复使用不同阈值，形成迟滞区间；用一段时间的平均值或分位数代替瞬时值；同时检查这个阈值是否真的意味着需要处理，可能该提高或改成通知。
+瞬时尖峰可用 for 过滤。恢复抖动可用 keep_firing_for 缓解。双阈值迟滞需要额外状态逻辑，for 本身无法实现。
 
-收敛靠 Alertmanager：按服务、集群分组合并通知；上游故障时抑制下游的衍生告警；计划维护时静默。升级按严重程度分级，严重告警电话通知值班人，规定时间内未确认就升级给下一级。告警系统本身要高可用部署，并设置一条始终触发的心跳告警，由外部系统检查它是否按时到达，以发现告警链路的中断。
+Alertmanager 按标签分组，并抑制关联衍生告警。静默用于计划维护。值班确认与升级可交给外部值班系统。外部心跳检测规则到通知的完整链路。
 
 </details>
 
-## 6. 参考资料
+### 6.4 多个实例的 P99 能直接平均吗？错误率怎样跨实例聚合？ {#histogram-aggregation}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：分布合并、计数重置与流量加权。
+
+**相关内容**：[分位数聚合与速率](#分位数聚合与速率)。
+
+<details>
+<summary>参考回答</summary>
+
+实例 P99 的平均值无法表示整体 P99。经典 Histogram 应先 rate，再按 job 和 le 求和。最后用 histogram_quantile 计算。Summary 的分位数无法这样聚合，但 sum 和 count 可以。错误率应使用错误总速率除以请求总速率。
+
+</details>
+
+### 6.5 目标消失为什么不一定触发 up==0？Pushgateway 有什么生命周期问题？ {#missing-metrics-pushgateway}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：目标缺失、旧序列与独立检测。
+
+**相关内容**：[Prometheus 的组成](#prometheus-的组成)、[Pushgateway 与监控高可用](#pushgateway-与监控高可用)。
+
+<details>
+<summary>参考回答</summary>
+
+up=0 对应仍被发现但抓取失败的目标。目标被移除后，up 序列会消失。缺失检测需结合 absent_over_time 和预期目标信息。Pushgateway 则保留推送序列，直到显式删除。旧成功指标会掩盖任务停止，应检查完成时间。
+
+</details>
+
+## 7. 参考资料 {#参考资料}
 
 - [Prometheus：Overview](https://prometheus.io/docs/introduction/overview/)
 - [Prometheus：Metric types](https://prometheus.io/docs/concepts/metric_types/)
 - [Alertmanager](https://prometheus.io/docs/alerting/latest/alertmanager/)
 - [Google SRE Book：Monitoring Distributed Systems](https://sre.google/sre-book/monitoring-distributed-systems/)
 - [Brendan Gregg：The USE Method](https://www.brendangregg.com/usemethod.html)
+- [Prometheus：Histograms and summaries](https://prometheus.io/docs/practices/histograms/)
+- [Prometheus：Query functions](https://prometheus.io/docs/prometheus/latest/querying/functions/)
+- [Prometheus：Alerting rules](https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/)
+- [Prometheus：When to use the Pushgateway](https://prometheus.io/docs/practices/pushing/)
