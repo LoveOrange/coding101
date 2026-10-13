@@ -7,108 +7,113 @@ knowledge:
 
 # RPC
 
-RPC 把一次远程调用包装成接近本地方法的接口，但请求仍要经过序列化、连接、网络传输、服务端排队和业务执行。理解完整调用链，才能给超时、线程和协议边界分配责任。
+RPC 把远程请求封装成方法调用接口。本文负责调用链、序列化和 Netty 4.2 的执行模型。字节流语义见 [TCP 与 UDP](./tcp_udp.mdx)。通用超时和重试规则见 [HTTP](./http-versions-connection-reuse-timeouts.mdx#超时设置)。
 
 ## 1. 面试核心 {#core}
 
-- 一次 RPC 调用包括客户端代理、序列化、连接选择、网络传输、服务端解码、排队和业务执行。
-- 序列化协议要支持字段演进：字段编号、缺省值和未知字段处理需要事先约定。
-- TCP 没有消息边界，需要用长度字段或分隔符拆帧来处理半包和粘包，Netty 提供 `LengthFieldBasedFrameDecoder`。[卡](#netty-connections-framing)
-- Netty 用 boss EventLoopGroup 接收连接、worker EventLoopGroup 处理 I/O，一个 Channel 的事件固定由一个 EventLoop 顺序处理；耗时业务要交给业务线程池。
-- 超时后响应可能只是丢失，写操作需要业务幂等键，否则重试可能重复执行。
+- RPC 用请求标识将远端响应关联到本地 Future 或回调。
+- Protobuf 字段编号用于识别字段，删除后应通过 reserved 保留编号。[卡](#protobuf-field-evolution)
+- LengthFieldBasedFrameDecoder 根据长度字段拆分消息帧。[卡](#netty-connections-framing)
+- NIO EventLoop 可管理多个 Channel，阻塞处理会拖延其他连接。
+- ByteBuf 通过 retain 与 release 管理引用生命周期。[卡](#bytebuf-async-lifetime)
 
 ## 2. RPC 调用链 {#rpc-调用链}
 
-客户端代理通常完成以下工作：
+一次调用包含以下阶段：
 
-1. 根据服务名选择目标实例。
-2. 把方法、参数、元数据和请求标识编码成消息。
-3. 从连接池取得连接并发送数据。
-4. 服务端解码消息，分派到业务处理器。
-5. 业务执行完成后编码响应并返回。
-6. 客户端把响应关联到原调用，完成 Future 或回调。
+1. 客户端代理根据服务名选择实例。
+2. 编码方法、参数、请求 ID 和元数据。
+3. 取得连接并发送消息。
+4. 服务端解码、鉴权并分派业务。
+5. 服务端编码并返回执行结果。
+6. 客户端按请求 ID 完成原调用。
 
-任何阶段都可能排队。只统计业务方法耗时，会遗漏客户端连接池、EventLoop 任务队列、业务线程池和响应写回的等待。
+多个请求可共享一条连接。响应完成顺序由服务端执行决定。客户端用请求 ID 查找等待者，而非按接收顺序配对。
+
+超时和取消时要移除等待记录。迟到响应按已结束调用处理，避免泄漏。只统计业务方法耗时会漏掉队列和网络等待。
 
 ## 3. 序列化协议 {#序列化协议}
 
-序列化决定对象如何变成网络字节。设计协议时需要明确字段编号或名称、数值范围、缺省值、未知字段处理和版本兼容规则。
+序列化将对象转换成协议字节。协议需要约定字段类型、缺省值和大小限制。接收方还要限制嵌套深度与集合长度。
 
-兼容演进通常遵循以下约束：
+Protobuf 的二进制字段通过编号识别。proto3 可保留未知字段，再序列化时继续输出。转成 JSON 或逐字段复制时，未知字段会丢失。
 
-- 新增可选字段时，旧接收方能够忽略它。
-- 删除字段后不立即复用原字段编号。
-- 不随意改变字段类型或语义。
-- 枚举遇到未知值时有明确处理方式。
-- 限制消息大小、嵌套深度和集合长度。
+删除字段后应将编号列入 reserved。复用编号会让旧数据被解释成新含义。即使 wire type 相同，业务语义也要保持兼容。
 
-Java 原生序列化把类实现细节直接带入协议，跨语言和版本演进都较困难，也扩大了反序列化攻击面。服务间协议通常使用 Protobuf 等显式 schema，或者经过约束的 JSON。
+下例使用 Protobuf 3.15+，其 proto3 optional 已默认启用。
+
+```protobuf
+syntax = "proto3";
+message Query {
+  reserved 2;
+  string request_id = 1;
+  optional int32 limit = 3;
+}
+```
+
+这里编号 2 已退役。optional 允许区分 limit 未提供与显式为 0。协议演进还应验证旧客户端与新服务端的组合。
 
 ## 4. 半包与粘包 {#半包与粘包}
 
-TCP 只提供有序字节流，一次 `write` 不对应接收方的一次 `read`。一条消息可能被拆成多段，也可能和后一条消息一起到达，这就是常说的半包和粘包。
+TCP 读取可得到半条消息，也可得到多条消息。应用协议需要定义边界。
 
-应用协议必须自己确定边界，常见方式包括：
+| 方案 | 处理条件 |
+| --- | --- |
+| 固定长度 | 每条消息占固定字节数。 |
+| 分隔符 | 需要处理转义并限制长度。 |
+| 长度字段 | 先解析头部，再累计所需消息体。 |
 
-- 固定长度。
-- 分隔符，并处理转义和最大长度。
-- 消息头携带正文长度。
-- 协议自身提供可解析的帧结构。
-
-Netty 的 `LengthFieldBasedFrameDecoder` 可以根据长度字段拆帧，但仍要设置最大帧长度，防止异常长度占满内存。
+Netty 的 LengthFieldBasedFrameDecoder 支持长度字段。配置需明确字段偏移、宽度和长度调整。maxFrameLength 限制最大帧，避免异常长度耗尽内存。
 
 ## 5. EventLoop {#eventloop}
 
-Netty 的服务端通常由接收连接的 EventLoopGroup 和处理已建立连接的 EventLoopGroup 组成。一个 Channel 注册到某个 EventLoop 后，它的 I/O 事件和提交到该 EventLoop 的任务会按顺序执行。
+以 Netty 4.2 的 NIO 服务端为例。接收组处理监听 Channel，工作组处理已建立连接。一个 Channel 注册到一个 EventLoop。一个 EventLoop 可服务多个 Channel。
 
-这个模型让 Channel 内的状态修改更容易保持顺序，也让少量线程可以管理大量连接。代价是：一个处理器在 EventLoop 中执行阻塞 I/O 或长时间计算，会延迟同一 EventLoop 管理的其他 Channel。
+同一 EventLoop 上的 I/O 事件和任务按序执行。handler 若阻塞，会拖延该线程上的其他 Channel。慢数据库调用应转交有界业务线程池。
 
-数据库访问、远程调用和耗时计算应转交到有界业务线程池。线程池满时要有拒绝、降级或背压策略，不能用无限队列把延迟隐藏起来。
+业务结果跨线程返回时，还需维护请求顺序和共享状态。Channel 的有序 I/O 不会自动串行所有业务任务。
 
 ## 6. ChannelPipeline {#channelpipeline}
 
-入站数据沿 ChannelPipeline 中的 inbound handler 传播，出站操作则沿 outbound handler 传播。常见管线可以依次包含：
+入站事件按添加顺序经过 inbound handler。出站操作沿相反方向经过 outbound handler。处理链可以包含 TLS、拆帧、解码、鉴权和业务分派。
 
-1. TLS 处理。
-2. 帧解码。
-3. 消息反序列化。
-4. 鉴权和限流。
-5. RPC 请求分派。
-6. 响应序列化和帧编码。
+channel.write 从管线尾端发起出站传播。ctx.write 从当前上下文向前寻找出站处理器。选择错误入口会跳过预期的编码器。
 
-每个 handler 只处理一个清晰阶段，有利于测试和复用。handler 是否可被多个 Channel 共享，要根据它有没有可变成员状态判断。
+handler 的共享需要满足线程安全要求。@Sharable 表示实例可安全复用，注解本身不会为状态加锁。
 
 ## 7. ByteBuf 引用计数 {#bytebuf-引用计数}
 
-Netty 的 ByteBuf 使用引用计数管理池化或直接内存。最后一个消费消息的 handler 负责释放它；如果继续向后传播，就把处理责任交给下一个 handler，不能提前 release。
+ByteBuf 使用引用计数管理生命周期。最后的使用者 release 后，缓冲区可被回收。向后传播消息时，应把释放责任交给下一个处理器。
 
-常见错误包括重复释放、异常路径漏释放，以及异步任务仍在使用已经释放的 ByteBuf。跨线程或延迟使用时，应先确认是否需要 `retain()`，并保证最终有对应的 `release()`。
+SimpleChannelInboundHandler 默认自动释放接收消息。把 ByteBuf 交给异步任务时，需要先 retain。异步任务结束后在 finally 中 release。任务提交失败的路径也要释放新增引用。
+
+slice 和 duplicate 共享底层数据，且不增加引用计数。跨异步边界需要独立引用时，可用 retainedSlice 或 retainedDuplicate。保留引用只延长生命周期，并未复制数据。
 
 ## 8. deadline 传递 {#deadline-传递}
 
-调用方应从发起调用时开始计算总 deadline，并把剩余时间传给代理和下游。服务端发现 deadline 已经过期或客户端已经取消后，应停止不再有价值的排队和子任务。
+RPC 应传递剩余调用预算，避免每层重新计时。gRPC 会将 deadline 转换为剩余超时再传递。服务端处理器需响应取消，停止过期任务。
 
-如果每一层都重新给出固定的 3 秒超时，三级调用链可能远超最外层预算。若网关和 RPC 客户端同时自动重试，一次请求还可能展开成多次下游调用。
-
-重试只适合幂等调用，并应使用退避、抖动和尝试上限。服务端已经产生外部副作用时，客户端超时不代表操作没有发生。
+取消请求后，已经提交的外部业务仍可生效。结果不明的写操作需要幂等键和结果查询。具体重试约束见 [HTTP](./http-versions-connection-reuse-timeouts.mdx#重试)。
 
 ## 9. 背压 {#背压}
 
-当服务端处理速度低于接收速度时，应限制未完成请求数、业务线程池队列和单连接可写缓冲。Netty 可以根据 Channel 的可写状态暂停生产，必要时关闭自动读取，再在容量恢复后继续读取。
+服务端应限制在途请求、业务队列和待发送字节。Netty 写缓冲超过高水位后，isWritable 返回 false。降到低水位以下后，它重新返回 true。
 
-背压只能把压力推回上游，不能凭空产生吞吐。最终还需要超时、限流、拒绝和负载均衡共同决定哪些请求继续执行。
+水位是反馈信号，应用仍可继续调用 write。处理器要主动暂停生产，并监听可写状态变化。入站压力过高时，可临时关闭 autoRead。容量恢复后再开启读取。
 
-## 10. 常见问题
+背压延缓上游发送，容量不足还需限流或拒绝。无限队列只会积累内存和等待时间。
 
-### 10.1 Netty 为什么不为每个连接创建一个线程
+## 10. 常见问题 {#常见问题}
 
-大量连接大部分时间都在等待网络。EventLoop 用事件通知处理就绪 I/O，减少线程数量和上下文切换。它适合短小、非阻塞的 handler；耗时业务仍需转交其他执行资源。
+### 10.1 连接与线程数量 {#连接与线程数量}
 
-### 10.2 RPC 看起来成功，为什么业务可能执行两次
+大量连接处于等待状态。EventLoop 用就绪事件驱动 I/O，减少所需线程。短小 handler 适合事件循环，耗时业务使用独立执行资源。
 
-服务端可能已经完成写入，但响应在网络中丢失，客户端随后超时重试。RPC 框架只能知道响应是否收到，不能自动撤销已经发生的外部副作用。写操作需要业务幂等键、去重记录或可重复执行的状态转换。
+### 10.2 RPC 重试与业务副作用 {#rpc-重试与业务副作用}
 
-## 11. 面试题
+服务端提交后响应丢失，客户端会看到超时。重试会再次发起同一业务。稳定幂等键和持久化结果用于约束重复效果。
+
+## 11. 面试题 {#面试题}
 
 ### 11.1 Netty 如何处理连接、粘包和耗时业务 {#netty-connections-framing}
 
@@ -130,16 +135,56 @@ Netty 的 ByteBuf 使用引用计数管理池化或直接内存。最后一个�
 <details>
 <summary>参考回答</summary>
 
-Netty 把 Channel 注册到 EventLoop，一个 EventLoop 可以管理多个连接，并顺序执行各 Channel 的 I/O 事件。handler 不能在 EventLoop 中执行数据库调用或长时间计算，否则会连带阻塞该线程上的其他连接，耗时业务应进入有界业务线程池。
+Netty 将 Channel 注册到 EventLoop，用少量线程处理多个连接。长度字段解码器负责消息拆帧。耗时业务转交有界线程池，防止阻塞事件循环。
 
-TCP 没有消息边界，所以协议要使用长度字段、分隔符或固定长度拆帧；Netty 可以用 LengthFieldBasedFrameDecoder 处理长度帧并限制最大消息。ByteBuf 采用引用计数，最后的消费者负责释放，跨异步边界时要明确 retain 和 release。处理速度不足时还要限制队列与未完成请求，通过背压、限流和超时保护系统。
+ByteBuf 的异步使用要配对 retain 和 release。压力过高时限制队列和在途请求。写缓冲水位通知应用暂停生产，应用需要主动响应。
 
 </details>
 
-## 12. 参考资料
+### 11.2 Protobuf 删除字段后为什么要保留编号？ {#protobuf-field-evolution}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：字段编号、历史数据与缺省值。
+
+**相关内容**：[序列化协议](#序列化协议)。
+
+<details>
+<summary>参考回答</summary>
+
+编号决定二进制字段的身份。复用旧编号会把历史数据解释成新字段。应使用 reserved 保留退役编号。需要区分未填写和默认值时，可使用 proto3 optional。
+
+</details>
+
+### 11.3 把 ByteBuf 交给异步线程时，怎样避免提前释放？ {#bytebuf-async-lifetime}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：自动释放、引用计数与共享内存。
+
+**相关内容**：[ByteBuf 引用计数](#bytebuf-引用计数)。
+
+<details>
+<summary>参考回答</summary>
+
+在当前引用释放前，为异步任务 retain 一次。任务结束后在 finally 中 release。提交失败时也要归还这次引用。普通 slice 共享内存且不增加计数。retainedSlice 可保留引用，但数据仍然共享。
+
+</details>
+
+## 12. 参考资料 {#参考资料}
 
 - [Netty 4.x User Guide](https://netty.io/wiki/user-guide-for-4.x.html)
 - [Netty：LengthFieldBasedFrameDecoder](https://netty.io/4.2/api/io/netty/handler/codec/LengthFieldBasedFrameDecoder.html)
 - [Netty：Reference-counted objects](https://netty.io/wiki/reference-counted-objects.html)
 - [gRPC：Core concepts](https://grpc.io/docs/what-is-grpc/core-concepts/)
 - [gRPC：Deadlines](https://grpc.io/docs/guides/deadlines/)
+- [Protobuf：Proto3 Language Guide](https://protobuf.dev/programming-guides/proto3/)
+- [Netty 4.2：ChannelPipeline](https://netty.io/4.2/api/io/netty/channel/ChannelPipeline.html)
+- [Netty 4.2：WriteBufferWaterMark](https://netty.io/4.2/api/io/netty/channel/WriteBufferWaterMark.html)
+- [Netty 4.2：EventLoop](https://netty.io/4.2/api/io/netty/channel/EventLoop.html)
+- [Netty 4.2：SimpleChannelInboundHandler](https://netty.io/4.2/api/io/netty/channel/SimpleChannelInboundHandler.html)
+- [Protobuf：Field Presence](https://protobuf.dev/programming-guides/field_presence/)

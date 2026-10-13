@@ -7,94 +7,100 @@ knowledge:
 
 # Elasticsearch
 
-Elasticsearch 用倒排索引保存“词项到文档”的映射，适合全文检索和多维过滤。文档写入成功后并不一定立刻能被搜索命中，因为搜索可见性还受 refresh 和分片状态影响。
+Elasticsearch 用倒排索引支持全文检索与过滤。本文以自管 Elasticsearch 8.19 为准。范围包括检索结构、搜索可见性和索引同步。消息重复与乱序处理见[消息幂等性](./idempotent-consumption-order-duplicates.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- 倒排索引为每个词项保存包含它的文档列表，适合全文检索；analyzer 决定文本如何切分成词项。
-- 写入成功后要等 refresh（默认约 1 秒）生成新的 segment，才能被搜索到，所以 Elasticsearch 是近实时的。[卡](#near-real-time-sync)
-- refresh 让数据可搜索，flush 把数据持久化并清理 translog，merge 合并小 segment。
-- 文档按路由值落到某个主分片，写入先到主分片再复制到副本，搜索分发到相关分片后合并结果。
-- 与数据库同步使用 Outbox 或 CDC、幂等写入和版本控制，并定期对账，必要时重建索引。
+- 倒排索引按 term 查文档，doc values 按文档读取字段值。[卡](#text-keyword-doc-values)
+- refresh 让新变化进入搜索视图，实时 GET 可读取尚未 refresh 的文档。[卡](#near-real-time-sync)
+- flush 执行 Lucene commit，translog 用于恢复尚未 commit 的操作。[卡](#refresh-translog-durability)
+- refresh=wait_for 等待写入可搜索，refresh=true 主动刷新相关分片。
+- 深分页可用 PIT 固定搜索视图，再用 search_after 继续读取。[卡](#search-after-pit)
 
 ## 2. 倒排索引 {#倒排索引}
 
-关系型索引常从字段值定位行，倒排索引则为每个 term 保存包含它的文档集合，并记录频率、位置等检索信息。
+倒排索引保存 term 到文档的映射。posting list 记录含有该 term 的文档及检索信息。全文查询先定位词项，再组合文档集合和评分。
 
-例如文本“Java 并发编程”经过分析后得到若干 term，搜索“并发”时可以直接查对应 posting list，而不必遍历每个文档正文。查询还可以结合相关性评分、布尔条件和聚合。
-
-倒排索引优化的是按词查文档。根据文档 ID 取回 `_source`、排序、聚合和更新仍有各自的数据结构与成本。
+按文档 ID 读取 _source、排序与聚合有各自的数据结构。doc values 按文档组织字段值，适合排序和聚合。倒排索引则适合按词项查找文档。
 
 ## 3. analyzer {#analyzer}
 
-analyzer 通常由字符过滤器、tokenizer 和 token filter 组成。它会处理大小写、标点、词形和语言分词。
+analyzer 包含一个 tokenizer。它还可包含字符过滤器和 token filter。分析结果决定索引中保存哪些 term。
 
-同一个 text 字段通常在索引与搜索时使用兼容的 analyzer。索引时产生“java”，搜索时却产生完全不同的 term，就无法命中。
+| 字段 | 适用操作 |
+| --- | --- |
+| text | 全文分析，配合 match 等查询。 |
+| keyword | 精确值过滤、聚合和排序。 |
 
-- `text` 适合经过分析的全文检索。
-- `keyword` 保留完整值，适合精确过滤、聚合和排序。
+match 会分析输入文本。term 直接匹配索引中的词项。对 text 直接使用 term 时，输入必须匹配分析后的词项。
 
-字段用途应在 mapping 中提前确定。把订单状态等枚举字段只建成 text，会让精确过滤与聚合变得含混。
+keyword 默认支持 doc values。text 默认没有 doc values，聚合需要合适的 keyword 子字段。开启 text 的 fielddata 会增加堆内存成本。
 
-## 4. 写入响应与搜索可见性 {#写入响应与搜索可见性}
+例如标题可同时有 title 和 title.keyword。全文检索查询 title，精确统计使用 title.keyword。索引与搜索 analyzer 应产生可匹配的词项。
 
-Elasticsearch 接受索引请求后，会把变化写入内存缓冲等内部结构，并记录恢复所需信息。新数据要在 refresh 后形成可搜索的 segment，搜索请求才能看到它。
+## 4. 写入结果与搜索可见性 {#写入响应与搜索可见性}
 
-默认情况下，活跃被搜索的索引会周期性 refresh，常见默认间隔约为 1 秒。因此 Elasticsearch 被称为 near real-time search：写入到可搜索之间通常有短暂延迟。
+写入改变 Lucene 内部结构，并记录 translog。refresh 打开新的搜索视图，近期变化才可被 search 读取。按 ID 的 GET 默认是实时读取，读取路径不同。
 
-根据 ID 的实时 GET 可以读取尚未 refresh 的最新文档，而普通 search 仍可能找不到它。测试“写完立即搜索”时要区分这两类读取。
+自管 8.19 默认周期为 1 秒。默认周期刷新针对最近 30 秒内被搜索过的索引。负载和配置会影响实际等待，因此该间隔并非延迟上限。Elastic Cloud Serverless 的默认 refresh 间隔为 5 秒。
+
+refresh=wait_for 等待本次变化可见，再返回响应。refresh=true 主动刷新相关分片。频繁主动刷新会增加小 segment 和合并成本。
 
 ## 5. refresh、flush 与 merge {#refreshflush-与-merge}
 
-- **refresh**：让近期变化进入可被搜索的 segment。
-- **flush**：建立新的恢复边界，并处理 translog 生命周期。
-- **merge**：把多个 segment 合并，回收已删除文档占用并改善搜索结构。
+| 操作 | 作用 |
+| --- | --- |
+| refresh | 更新可搜索视图。 |
+| flush | 执行 Lucene commit，并开启新一代 translog。 |
+| merge | 合并 segment，并回收已删除文档的空间。 |
 
-频繁强制 refresh 可以缩短写后搜索延迟，但会产生许多小 segment，增加写入、搜索和 merge 成本。批量导入时通常降低 refresh 频率，完成后再恢复正常设置。
+8.19 默认 `index.translog.durability=request`。成功响应前，主分片和已分配副本完成 translog 同步。尚未包含在 Lucene commit 的操作，可通过 translog 恢复。
 
-若业务只要求当前写请求在返回前可搜索，可以评估 `refresh=wait_for` 等等待策略，而不是每次都强制执行 refresh。仍需测量它对吞吐和尾延迟的影响。
+设置为 async 后，translog 按同步周期刷盘。默认 `index.translog.sync_interval=5s`。崩溃会丢失上次同步之后的操作，包括已响应成功的写入。
+
+因此，refresh 与持久性分属两个判断。flush 也不是每次写入安全的唯一来源。已无恢复用途的旧 translog 可在后续清理。
 
 ## 6. 分片 {#分片}
 
-索引由 primary shard 和 replica shard 组成，文档根据路由值映射到某个主分片。写请求先由主分片处理，再复制到副本；搜索通常分发到相关分片并合并结果。
+文档根据 routing 映射到主分片。未指定 routing 时，默认使用文档 ID。主分片处理写入，再复制到副本。
 
-分片太少可能限制容量，太多则增加集群状态、内存、文件句柄和查询扇出成本。分片规划要根据数据量、写入速率、查询模式和节点规模验证，不能把分片数量当成越多越好。
+搜索在每个相关分片选取一个可用副本执行。协调节点合并候选结果，再读取所需文档。请求扇出越多，协调和资源成本也越高。
 
-需要同一业务键稳定路由时，可以显式设置 routing，但热点租户也可能因此集中到单一分片。
+自定义 routing 可以减少查询涉及的分片。写入与读取要使用相同路由规则。热点路由会把流量集中到单个分片。
 
-## 7. 与数据库同步 {#与数据库同步}
+## 7. 深分页 {#深分页}
 
-应用先提交数据库，再直接调用 Elasticsearch，调用失败会让两边不一致；先写 Elasticsearch，再提交数据库也有相反窗口。更稳妥的链路是：
+from + size 分页需要各分片维护前面所有候选结果。页码越深，内存和排序开销越高。8.19 的 `index.max_result_window` 默认是 10000。
 
-1. 在数据库本地事务中写业务变化和 Outbox 事件，或使用 CDC 读取变更日志。
-2. 发布带稳定事件 ID、文档 ID 和业务版本的更新事件。
-3. 消费者使用确定文档 ID 幂等写入 Elasticsearch。
-4. 只允许较新业务版本覆盖旧版本，处理重试和乱序。
-5. 记录同步 lag、失败与死信。
+search_after 使用上一页最后一条的排序值继续查询。查询条件和排序必须保持一致。排序还需有稳定的并列处理字段。
 
-消息系统提供传输，权威数据仍在数据库。索引可以丢弃并重建，业务不应依靠搜索索引保存唯一状态。
+PIT 固定搜索视图，避免翻页间 refresh 改变结果。PIT 搜索隐含 _shard_doc 作为并列排序字段。客户端应续期并使用返回的最新 PIT ID，完成后关闭。该方案适合顺序翻页，随机跳页需另外设计。
 
-## 8. 对账与重建 {#对账与重建}
+## 8. 与数据库同步 {#与数据库同步}
 
-在线同步无法覆盖所有软件缺陷、历史数据和错误 mapping。需要定期比较数据库与索引的记录数、版本、更新时间或业务校验值，发现缺失与陈旧文档。
+数据库与搜索索引分别提交，直接双写存在失败窗口。可用本地 Outbox 或 CDC 生成可恢复变更。事件带稳定文档 ID 和业务版本。
 
-完整重建时可以创建带版本的新索引，批量导入数据库快照，再追赶快照之后的变更。校验完成后通过 alias 原子切换读取目标。保留旧索引一段时间，便于快速回退。
+索引写入应校验版本，防止旧事件覆盖新状态。确定文档 ID 只解决重复插入，乱序仍需版本控制。业务版本处理见[消息幂等性](./idempotent-consumption-order-duplicates.mdx#版本号)。
 
-mapping 中部分字段类型不能原地修改，使用版本化索引和 alias 也能让 schema 演进更可控。
+## 9. 对账与重建 {#对账与重建}
 
-## 9. 常见问题
+定期比较权威数据与索引的版本、数量和关键字段。重建时创建新索引，导入快照后追赶增量。完成核对再通过一次 alias 更新切换读取目标。
 
-### 9.1 写入返回成功后立即搜索不到，是数据丢了吗
+mapping 中的字段类型变更可通过新索引迁移。旧索引保留期间若未继续同步，回切后会读到旧状态。回退前也要核对增量进度。
 
-不一定。文档可能尚未 refresh，因此 search 暂时不可见；可以用实时 GET、refresh 状态和写入结果区分。若超过预期 refresh 周期仍不可见，再检查目标索引、路由、版本冲突和分片错误。
+## 10. 常见问题 {#常见问题}
 
-### 9.2 可以把数据库和 Elasticsearch 放进一个分布式事务吗
+### 10.1 写入成功与搜索缺失 {#写入成功与搜索缺失}
 
-常见系统不会这样做。搜索索引是可重建投影，通常使用 Outbox 或 CDC、幂等消费、版本控制和定期对账获得最终一致，并保留完整重建能力。
+先比较实时 GET 和 search。GET 可见而 search 缺失时，检查 refresh 和查询条件。两者都缺失时，再查目标索引、routing 和写入结果。
 
-## 10. 面试题
+### 10.2 搜索索引与权威状态 {#搜索索引与权威状态}
 
-### 10.1 Elasticsearch 为什么写入后不能立即搜索，如何与数据库保持一致 {#near-real-time-sync}
+业务数据库可作为权威状态，搜索索引作为可重建投影。同步延迟需要监控，关键结果需要定期对账。
+
+## 11. 面试题 {#面试题}
+
+### 11.1 Elasticsearch 为什么写入后不能立即搜索，如何与数据库保持一致 {#near-real-time-sync}
 
 <!-- 面试来源：
 - 去哪儿：https://www.nowcoder.com/discuss/353157505142431744
@@ -102,6 +108,8 @@ mapping 中部分字段类型不能原地修改，使用版本化索引和 alias
 -->
 
 **出现公司**：去哪儿、字节跳动
+
+**题型**：综合题
 
 **考察重点**
 
@@ -114,14 +122,74 @@ mapping 中部分字段类型不能原地修改，使用版本化索引和 alias
 <details>
 <summary>参考回答</summary>
 
-Elasticsearch 先用 analyzer 把 text 转成 term，并在倒排索引中保存 term 到文档的映射。索引请求成功后，新变化还要经过 refresh 才进入可搜索 segment，所以普通 search 是近实时的；按 ID 的 GET 可以有不同的实时可见性。
+写入成功与搜索视图更新发生在不同阶段。近期变化经过 refresh 后，普通 search 才能读取。按 ID 的实时 GET 可读取尚未 refresh 的文档。
 
-数据库与 Elasticsearch 是两个提交边界，通常把数据库作为权威状态，用 Outbox 或 CDC 产生可恢复事件，消费者按稳定文档 ID 和业务版本幂等更新索引，并监控 lag 与失败。还要定期对账，并能够从数据库重建新索引、追赶增量后通过 alias 切换，不能只依靠在线双写。
+数据库同步可通过 Outbox 或 CDC 产生恢复事件。消费者按稳定 ID 和业务版本更新索引。定期对账发现遗漏，重建后追赶增量并切换 alias。
 
 </details>
 
-## 11. 参考资料
+### 11.2 text、keyword 和 doc values 分别适合哪些查询？ {#text-keyword-doc-values}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：分词、精确匹配与列式字段读取。
+
+**相关内容**：[倒排索引](#倒排索引)、[analyzer](#analyzer)。
+
+<details>
+<summary>参考回答</summary>
+
+text 适合分析后的全文查询，keyword 适合精确值匹配。doc values 按文档读取字段，支持排序和聚合。text 默认没有 doc values，统计可使用 keyword 子字段。term 查询也要求输入匹配实际索引词项。
+
+</details>
+
+### 11.3 refresh 后就安全落盘了吗，flush 前的成功写入靠什么恢复？ {#refresh-translog-durability}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：搜索可见性与恢复日志。
+
+**相关内容**：[refresh、flush 与 merge](#refreshflush-与-merge)。
+
+<details>
+<summary>参考回答</summary>
+
+refresh 只更新搜索视图。8.19 默认 `index.translog.durability=request`。成功响应前同步 translog。尚未进入 Lucene commit 的操作由 translog 恢复。flush 执行 Lucene commit 并开启新日志代。async 则存在上次同步后的数据丢失窗口。
+
+</details>
+
+### 11.4 深分页为什么用 search_after 配合 PIT？ {#search-after-pit}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：候选集合成本与稳定搜索视图。
+
+**相关内容**：[深分页](#深分页)。
+
+<details>
+<summary>参考回答</summary>
+
+深 from 分页要保留前面所有候选结果。search_after 从上一页排序值继续，减少这部分开销。PIT 固定搜索视图，防止翻页期间数据变化。排序仍需稳定，客户端还要续期和关闭 PIT。
+
+</details>
+
+## 12. 参考资料 {#参考资料}
 
 - [Elasticsearch：Index and search analysis](https://www.elastic.co/docs/manage-data/data-store/text-analysis/index-search-analysis)
 - [Elasticsearch：Near real-time search](https://www.elastic.co/docs/manage-data/data-store/near-real-time-search)
 - [Elasticsearch：Index basics](https://www.elastic.co/docs/manage-data/data-store/index-basics)
+- [Elasticsearch 8.19：Near real-time search](https://www.elastic.co/guide/en/elasticsearch/reference/8.19/near-real-time.html)
+- [Elasticsearch 8.19：Translog](https://www.elastic.co/guide/en/elasticsearch/reference/8.19/index-modules-translog.html)
+- [Elasticsearch 8.19：Doc values](https://www.elastic.co/guide/en/elasticsearch/reference/8.19/doc-values.html)
+- [Elasticsearch 8.19：Pagination](https://www.elastic.co/guide/en/elasticsearch/reference/8.19/paginate-search-results.html)
+- [Elasticsearch：Refresh parameter](https://www.elastic.co/docs/reference/elasticsearch/rest-apis/refresh-parameter)
+- [Elasticsearch 8.19：GET API](https://www.elastic.co/guide/en/elasticsearch/reference/8.19/docs-get.html)
+- [Elasticsearch 8.19：Aliases](https://www.elastic.co/guide/en/elasticsearch/reference/8.19/aliases.html)
+- [Elasticsearch 8.19：Term query](https://www.elastic.co/guide/en/elasticsearch/reference/8.19/query-dsl-term-query.html)
+- [Elasticsearch 8.19：Replication model](https://www.elastic.co/guide/en/elasticsearch/reference/8.19/docs-replication.html)

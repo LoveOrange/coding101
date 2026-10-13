@@ -7,96 +7,97 @@ knowledge:
 
 # 消息队列
 
-Kafka 和 RabbitMQ 都能在生产者与消费者之间传递消息，但保存方式、消费位置和路由模型不同。选择组件时应先确定顺序、保留、重放和路由需求，再比较吞吐与运维成本。
+消息队列在生产者与消费者之间保存并传递工作。本文比较 Kafka 4.1 普通消费者组与 RabbitMQ 4.1 队列。范围是日志、路由、保留与选型。确认和失败恢复见[消息可靠性](./message-ack-retry-dead-letter.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- 消息队列让生产者和消费者以各自的速度工作，用于异步处理、削峰和系统解耦。
-- Kafka 把消息追加到 partition 日志，消费后不删除，消费者通过 offset 记录位置，可以重放。
-- RabbitMQ 通过 exchange 和 binding 把消息路由到 queue，消费者确认后消息从队列删除，路由方式更灵活。[卡](#kafka-vs-rabbitmq)
-- Kafka 只保证单个 partition 内有序，同一业务键要发往同一 partition。
-- 高吞吐、日志流和需要重放的场景选 Kafka；复杂路由、任务队列和单条消息级别的确认选 RabbitMQ。
+- Kafka 按 partition 保存日志，普通消费组用 offset 管理进度。[卡](#kafka-vs-rabbitmq)
+- RabbitMQ exchange 根据 binding 将消息路由到 queue。
+- Kafka 的日志保留独立于消费进度，compact 按键保留最新状态。[卡](#retention-compaction)
+- 普通消费组内，一个 partition 同时分配给一个消费者。
+- 削峰依赖队列容量与消费余量，持续入流超出消费能力会积压。
 
 ## 2. 消息队列的作用 {#消息队列的作用}
 
-生产者把工作写入中间件后，可以先结束当前请求；消费者按自己的容量异步处理。队列能够吸收短时流量峰值，也让消费者故障不必立刻拖垮生产者。
+生产者发布工作后，消费者按容量异步处理。队列吸收短时速率差，也隔离部分服务故障。代价是结果延迟和新的失败恢复流程。
 
-这种解耦增加了新的状态：消息是否已经写入、是否已经投递、消费是否完成、确认是否成功，都可能在不同时间发生。系统必须接受延迟、重复、积压和局部不可用，而不是把一次异步发送当成本地方法调用。
+异步发布后，业务需区分已接收、已处理和最终完成。接口可以返回任务标识，再提供结果查询。
 
 ## 3. Kafka 分区日志 {#kafka-分区日志}
 
-Kafka topic 由多个 partition 组成。生产者把 record 追加到某个 partition，分区内按 offset 形成有序日志。消息消费后不会立即从日志删除，而是按保留时间或大小策略清理。
+topic 包含多个 partition。record 在分区中按 offset 排列。消费读取不删除记录，清理策略决定保留范围。
 
-消费者保存自己已经处理到的 offset，因此可以从旧位置重新读取。相同数据还可以由不同 consumer group 独立消费，适合事件流、审计、数据管道和需要重放的处理链路。
+普通 consumer group 独立保存消费进度。不同组可以各自读取同一份数据。同组一个 partition 同时分配给一个 consumer。消费者多于分区时，多出的消费者空闲。
 
-分区是并行和顺序的共同边界：同一个 consumer group 中，一个 partition 同时只分配给一个 consumer；消费者数量超过分区数时，多出的消费者没有分区可处理。
+本节讨论 KafkaConsumer 的普通消费者组。Kafka 4.1 的 Share Groups 使用另一套共享投递机制。它不适用上述独占分区的消费模型。
 
 ## 4. RabbitMQ 路由 {#rabbitmq-路由}
 
-RabbitMQ 的生产者通常把消息发布到 exchange，exchange 根据类型、routing key 和 binding 把消息路由到一个或多个 queue。消费者从 queue 接收 delivery，并在处理完成后确认。
+生产者将消息发布到 exchange。exchange 根据类型、routing key 和 binding 选择队列。一个发布可进入多个已匹配队列。
 
-常见 exchange 类型包括：
+| exchange 类型 | 匹配方式 |
+| --- | --- |
+| direct | routing key 精确匹配 binding key。 |
+| topic | 按点分词匹配，* 匹配一个词，# 匹配零个或多个词。 |
+| fanout | 路由到所有绑定队列。 |
+| headers | 按头部属性和匹配规则选择队列。 |
 
-- direct：routing key 精确匹配。
-- topic：按点分单词和通配符匹配。
-- fanout：发送到所有已绑定 queue。
-- headers：根据消息头属性匹配。
-
-同一条业务消息可以通过不同 binding 复制到多个 queue，让不同业务组各自消费。队列中的消息在确认并满足相应条件后才从该队列移除。
+同一队列的多个消费者分担消息。多个独立业务组应使用各自队列。常规队列消息确认后可删除；RabbitMQ Streams 则采用保留日志模型。
 
 ## 5. 消费进度 {#消费进度}
 
-Kafka broker 保存日志，消费者以 offset 表示读取位置。提交 offset 只是在日志中记录消费进度，消息本身仍可能被再次读取。
+Kafka 的 position 是下一条待返回的记录位置。committed offset 是故障恢复使用的位置。手动提交时，应提交连续完成范围之后的下一个位置。
 
-RabbitMQ 记录消息是否已经向某个消费者投递和确认。未确认连接断开时，消息通常可以重新入队并投递给其他消费者。消息确认后，broker 不再为该 queue 保留这次 delivery。
+RabbitMQ 手动确认模式保留未确认投递状态。Channel 或连接关闭后，未确认消息会重新入队。确认具体时机见[消息可靠性](./message-ack-retry-dead-letter.mdx#消费者确认时机)。
 
-所以，Kafka 更自然地支持按时间回放和多个独立视图；RabbitMQ 更自然地表达复杂路由、工作队列和逐条确认。两者都可以完成很多相似工作，但默认模型会影响实现复杂度。
+## 6. 保留与日志压缩 {#保留与日志压缩}
 
-## 6. 消息顺序 {#消息顺序}
+Kafka topic 的 `cleanup.policy=delete` 按时间或大小清理 segment。消费者落后过久时，所需旧数据会被清除。重放范围受保留策略约束。
 
-Kafka 只保证单 partition 内 record 的顺序。需要同一业务键有序时，生产者应稳定地把该键映射到同一 partition。增加分区、修改分区算法或让消费者内部并发处理，都可能改变业务观察到的完成顺序。
+`cleanup.policy=compact` 在后台保留各键的较新记录。压缩保留记录顺序和原 offset，清理后 offset 可以有空洞。键对应的 null 值是删除标记，即 tombstone。
 
-RabbitMQ queue 有入队顺序，但多个消费者并发、不同处理耗时、消息重新入队和优先级队列都会让完成顺序发生变化。要求严格串行时，需要限制同一键的并发，并处理失败消息阻塞后续工作的代价。
+tombstone 也有保留期限。落后太久的消费者会错过删除标记。因此压缩日志适合恢复最新键状态，完整历史审计需另行保留事件。
 
-## 7. 投递语义 {#投递语义}
+## 7. 消息顺序 {#消息顺序}
 
-- **At-most-once**：先确认或推进进度，再处理；失败时可能丢消息，但通常不重复。
-- **At-least-once**：先完成处理，再确认；确认失败或进程崩溃时会重复，但不轻易丢失。
-- **Exactly-once**：只在明确的系统和事务边界内成立。
+Kafka 分区内按 offset 有序。业务完成顺序还取决于分区映射和消费并发。重复、重新入队和版本处理见[消息幂等性](./idempotent-consumption-order-duplicates.mdx#按业务键保证顺序)。
 
-Kafka 的幂等生产者和事务可以在 Kafka 内避免部分重复写入，并把 Kafka 读写与 offset 提交放进同一事务。若消费者还要写 MySQL、调用支付或发送邮件，外部副作用仍需幂等、Outbox 或业务状态机。
+## 8. 投递语义 {#投递语义}
 
-## 8. 选型 {#选型}
+| 语义 | 结果约束 |
+| --- | --- |
+| At-most-once | 每条至多处理一次，失败允许漏处理。 |
+| At-least-once | 保证重试交付，消费者要接受重复。 |
+| Exactly-once | 在明确定义的提交边界内产生一次有效结果。 |
 
-优先考虑 Kafka 的情况：
+交付保证依赖持久化、保留和恢复条件。Kafka 事务的适用范围见[消息幂等性](./idempotent-consumption-order-duplicates.mdx#exactly-once-的范围)。
 
-- 需要保留和重放较长时间的事件流。
-- 多个消费组要独立处理同一份记录。
-- 需要按分区扩展高吞吐流式处理。
-- 下游需要从任意 offset 恢复或回溯。
+## 9. 选型 {#选型}
 
-优先考虑 RabbitMQ 的情况：
+| 需求 | 重点比较 |
+| --- | --- |
+| 事件流长期保留、多组独立重放 | Kafka 分区日志与保留策略。 |
+| 按键维护最新状态 | Kafka compact 与 tombstone 窗口。 |
+| 复杂消息路由、逐条任务确认 | RabbitMQ exchange、queue 与 ack。 |
+| 短时流量削峰 | 队列容量、消费余量和消息时效。 |
 
-- 需要 direct、topic、fanout 等灵活路由。
-- 任务队列强调逐条确认、优先级、TTL 或死信。
-- 消息处理后不需要长期保留和任意重放。
-- 希望 broker 直接管理未确认 delivery 与消费者流量。
+Kafka 可通过分区、批量和顺序 I/O 扩展吞吐。RabbitMQ 便于表达多种路由与逐条投递控制。选型还需验证客户端、故障恢复和运维成本。
 
-最终还要比较团队运维经验、容量、故障恢复和客户端生态。不要仅根据“吞吐更高”选择消息系统。
+## 10. 常见问题 {#常见问题}
 
-## 9. 常见问题
+### 10.1 Kafka 的队列用途 {#kafka-的队列用途}
 
-### 9.1 Kafka 是否就是一个普通队列
+一个普通消费组可分担 topic 的处理工作。多个组则独立读取相同日志。消息生命周期由保留策略控制。
 
-Kafka 可以承担队列用途，但它保存的是可保留、可重放的分区日志。消费组通过 offset 管理进度，消费消息不会立即删除日志中的记录，这与传统工作队列的默认生命周期不同。
+### 10.2 削峰容量 {#削峰容量}
 
-### 9.2 消息队列能否自动削平任何流量峰值
+若每秒生产 2000 条、消费 1500 条，每秒积压 500 条。持续 60 秒就积压 30000 条。峰值结束后还需有消费余量才能清空。
 
-只能吸收容量范围内的临时差值。若生产速率长期高于消费速率，积压会持续增长，最终触及磁盘、保留时间或业务时效上限。仍需扩容消费者、限制生产或降低单条处理成本。
+应同时监控消息数量和最老消息年龄。最老年龄更接近业务等待体验。
 
-## 10. 面试题
+## 11. 面试题 {#面试题}
 
-### 10.1 Kafka 和 RabbitMQ 的模型有什么区别，应该如何选择 {#kafka-vs-rabbitmq}
+### 11.1 Kafka 和 RabbitMQ 的模型有什么区别，应该如何选择 {#kafka-vs-rabbitmq}
 
 <!-- 面试来源：
 - 快手：https://www.nowcoder.com/discuss/597116383192690688
@@ -115,14 +116,36 @@ Kafka 可以承担队列用途，但它保存的是可保留、可重放的分�
 <details>
 <summary>参考回答</summary>
 
-Kafka 把消息追加到 partition 日志，消费者通过 offset 保存进度，记录可以按保留策略长期存在并由多个 consumer group 独立重放；顺序只在单 partition 内保证。RabbitMQ 通过 exchange 和 binding 把消息路由到 queue，消费者处理后 ack，适合工作队列和复杂路由。
+Kafka 保存分区日志，消费组用 offset 管理进度。记录可在保留范围内重放。RabbitMQ 用 exchange 和 binding 路由到队列，再逐条投递确认。
 
-需要事件保留、回放、多消费组和分区吞吐时更倾向 Kafka；需要灵活路由、逐条 delivery 管理和任务队列能力时更倾向 RabbitMQ。两者都不会自动让外部业务只执行一次，写数据库或调用第三方仍需幂等和一致性设计。
+长期事件流和多个独立消费视图适合比较 Kafka。复杂路由和任务确认适合比较 RabbitMQ。选择还要考虑保留、顺序和恢复条件。外部业务副作用需独立设计幂等。
 
 </details>
 
-## 11. 参考资料
+### 11.2 Kafka 消费后还能一直重放吗，compact 保留全部历史吗？ {#retention-compaction}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：保留窗口、键状态与 offset 空洞。
+
+**相关内容**：[保留与日志压缩](#保留与日志压缩)。
+
+<details>
+<summary>参考回答</summary>
+
+重放范围受日志保留和清理策略约束。delete 可删除过期 segment，即使消费者尚未读取。compact 清理同键旧记录，保留最新状态所需的数据。原 offset 保持不变，因此日志中会出现空洞。
+
+</details>
+
+## 12. 参考资料 {#参考资料}
 
 - [Apache Kafka Documentation](https://kafka.apache.org/documentation/)
 - [RabbitMQ：Exchanges](https://www.rabbitmq.com/docs/exchanges)
 - [RabbitMQ：Consumer Acknowledgements and Publisher Confirms](https://www.rabbitmq.com/docs/confirms)
+- [Kafka 4.1：Design](https://kafka.apache.org/41/design/design/)
+- [Kafka 4.1：Topic Configs](https://kafka.apache.org/41/configuration/topic-configs/)
+- [Kafka 4.1：KafkaConsumer](https://kafka.apache.org/41/javadoc/org/apache/kafka/clients/consumer/KafkaConsumer.html)
+- [RabbitMQ 4.1：Queues](https://www.rabbitmq.com/docs/4.1/queues)
+- [RabbitMQ 4.1：Streams](https://www.rabbitmq.com/docs/4.1/streams)

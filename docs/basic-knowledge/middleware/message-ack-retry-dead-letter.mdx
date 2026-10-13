@@ -7,93 +7,102 @@ knowledge:
 
 # 消息可靠性
 
-消息可靠性需要分别确认生产端写入、broker 保存、消费者处理和消费进度提交。任何两个阶段之间发生故障，都可能产生消息丢失、重复或长时间积压。
+消息可靠性涵盖发布、保存、消费和进度确认。本文以 Kafka 4.1 与 RabbitMQ 4.1 为例，负责各阶段确认和失败恢复。业务去重见[消息幂等性](./idempotent-consumption-order-duplicates.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- 生产端用 publisher confirm（RabbitMQ）或 `acks=all`（Kafka）确认消息已被 broker 接受。
-- 消费者在业务副作用完成后再 ack 或提交 offset，否则崩溃会丢失处理。[卡](#ack-retry-dead-letter)
-- 短暂故障在消费者内做有限次退避重试；需要长时间等待的重试转到延迟重试队列，避免阻塞主队列。
-- 超过重试上限或永久错误的消息进入死信队列，保留原始消息、错误原因和尝试次数，修复后再重放。
-- 失败消息直接 requeue 会立即再次投递，形成高频循环。
+- RabbitMQ publisher confirm 确认发布阶段，consumer ack 确认消费阶段。[卡](#ack-retry-dead-letter)
+- mandatory 发布的不可路由消息，会先 basic.return 再 publisher confirm。[卡](#confirm-unroutable)
+- Kafka 的 acks=all 等待 ISR 确认，min.insync.replicas 限定最低副本数。[卡](#kafka-acks-isr)
+- 消费完成后再确认，Kafka 只推进连续完成范围的 offset。[卡](#consumer-progress-gap)
+- 延迟重试保留原消息 ID，死信存放终止重试的失败消息。
 
 ## 2. 生产者确认 {#生产者确认}
 
-RabbitMQ publisher confirm 用于通知生产者消息是否由 broker 接受。它与消费者 acknowledgement 是两套独立协议：publisher confirm 成功，只说明发布阶段完成，不代表任何消费者已经处理。
+RabbitMQ publisher confirm 与 consumer ack 相互独立。可路由消息被所有目标队列接收后，broker 才确认发布。持久消息进入持久队列时，还涉及持久化确认。quorum queue 的确认要求副本多数接受。
 
-Kafka producer 的 `acks` 决定 broker 在什么条件下确认写入。`acks=all` 表示当前同步副本集合满足确认条件，还应结合 `min.insync.replicas` 和副本数量配置。它能降低副本故障时的数据丢失风险，但网络超时后生产者仍可能无法确定写入是否已经成功。
+不可路由消息也会得到 publisher confirm。发布时设置 mandatory，可接收 basic.return。客户端应同时处理返回消息和确认结果。
 
-生产者因此需要稳定消息 ID、有限重试和发送结果监控。业务数据库提交后再发送消息还会形成双写窗口，可通过 Transactional Outbox 把业务变化和待发送事件写入同一本地事务。
+Kafka 的 `acks=all` 等待当前 ISR 满足确认条件。配合 `min.insync.replicas=2`，可要求至少两个同步副本。ISR 数量不足时，写入返回副本不足错误。
+
+副本数为 3、ISR 为 3 时，acks=all 等待 ISR 中全部副本。min.insync.replicas=2 并非只等待任意两个。ISR 收缩为 1 时，写入失败而非降为单副本成功。
+
+`enable.idempotence=true` 去重生产者协议重试。Kafka 4.1 要求 acks=all、retries 大于 0。还要求 `max.in.flight.requests.per.connection<=5`。应用再次主动发送同一业务消息，仍需业务 ID 去重。
+
+业务提交与消息发布的双写窗口可用 Outbox 处理。数据库事务同时保存业务变化和待发布事件。后台发布失败后，根据事件记录继续尝试。
 
 ## 3. 消费者确认时机 {#消费者确认时机}
 
-消费者若先 ack 或提交 offset，再写数据库，进程在两者之间崩溃会丢失业务处理。通常应先完成可持久化副作用，再确认消息进度。
+先提交业务，再确认消费进度，可避免提前跳过处理。业务完成后、确认前崩溃会重复，处理方式见[消息幂等性](./idempotent-consumption-order-duplicates.mdx)。
 
-反过来，业务已提交但确认尚未成功时崩溃，broker 会再次投递或消费者会从旧 offset 重读。因此 at-least-once 消费必然要求幂等。
+Kafka committed offset 表示恢复后要读取的下一位置。假设 10、11、12 三条记录并行处理。10 和 12 已完成，11 尚未完成，此时最多提交 11。提交 13 会让重启后跳过 11。
 
-对于批量 offset 提交，还要明确批内失败时从哪里恢复。不能因为最后一条成功，就越过前面尚未完成的消息提交进度。
+采用手动完成追踪时，设置 `enable.auto.commit=false`。应用逐分区维护连续完成位置，再提交 offset。
+
+RabbitMQ delivery tag 只在当前 Channel 内有效。消费者应在接收消息的 Channel 上确认。`multiple=true` 会确认该 tag 及之前的未确认投递。因此并发任务也需防止确认越过未完成项。
+
+prefetch 限制未确认投递数量。增大 prefetch 可提高在途并发，也增加内存与故障重投量。
 
 ## 4. 即时重试 {#即时重试}
 
-数据库瞬时连接失败、下游短暂超时可以在消费者内进行少量重试。重试应使用退避和随机抖动，并服从单条消息的总处理时限。
+短暂连接故障可进行有限重试，并使用退避和抖动。重试必须服从总处理时限。参数或 schema 错误应进入可观察的失败路径。
 
-立即无限重试会占住消费线程，持续攻击尚未恢复的下游。错误如果来自参数、schema 或业务约束，再多次执行也不会成功，应尽快转入可观察的失败路径。
+立即 requeue 会让失败消息快速重投。持续循环会占满消费者，并反复冲击下游。
 
 ## 5. 延迟重试 {#延迟重试}
 
-需要等待数十秒或数分钟后再试的消息，可以进入专用 retry topic 或 retry queue，并记录尝试次数、下次执行时间和原始消息标识。
+长等待可进入 retry topic 或 retry queue。消息保留原 ID，并记录次数和下次执行时间。例如按 10 秒、1 分钟、10 分钟分层重试。
 
-重试层级应有限，例如 10 秒、1 分钟、10 分钟后各尝试一次。达到上限后转入死信；不能让消息在主队列和重试队列之间无限循环。
+Kafka retry topic 本身不会按时间自动延迟交付。消费端或调度组件需要检查到期时间。RabbitMQ 可用 TTL 配合 DLX 实现等待队列。单条消息 TTL 混用长短延迟时，会出现队头等待。
 
-Kafka 常用多个 retry topic 表达延迟层级。RabbitMQ 可以结合 TTL、dead-letter exchange 或延迟消息能力实现，但要检查实际投递保证和队列积压行为。
+将失败消息移入重试通道，会改变原处理顺序。顺序敏感业务需决定是否暂停同键后续消息。
 
 ## 6. 死信队列 {#死信队列}
 
-消息达到最大重试次数、被拒绝不再重入队、过期或超过队列限制时，可以路由到 dead-letter queue。死信中应保留：
+RabbitMQ 配置 DLX 后，可转发被拒绝且不 requeue 的消息。消息过期、队列长度限制也可触发死信。quorum queue 超过 delivery-limit 时同样可进入死信。
 
-- 原 topic、queue 和 routing key。
-- 消息 ID、业务键和 schema 版本。
-- 首次与最后失败时间。
-- 尝试次数和最近错误类别。
-- 追踪标识及必要的处理上下文。
+应用重试次数超限，需要显式转入对应失败路径。Kafka 的死信 topic 由应用或框架实现。
 
-死信不是永久堆放区。团队需要告警、查看、修复、重放和归档流程，并限制敏感数据和保存时间。
+死信应保留原消息 ID、业务键、来源和错误类别。另记录尝试次数、首次与最后失败时间。修复后需要限速重放，并保留审计结果。
 
 ## 7. 死信转发失败 {#死信转发失败}
 
-RabbitMQ 的 dead-lettering 是一次新的发布过程。目标 exchange 配置错误、目标 queue 不存在或集群故障时，死信可能无法到达预期位置。不同队列类型和配置能提供的转发保证也不同。
+默认 dead-lettering 以 at-most-once 转发。转发到目标失败时，消息存在丢失窗口。只配置 DLX 尚缺少转发确认保障。
 
-因此要监控 dead-letter 数量、转发失败和目标队列增量，并做真实故障演练。仅声明一个 DLX 不等于已经获得无损失败存储。
+RabbitMQ 4.1 的源 quorum queue 可启用以下策略：
+
+- `dead-letter-strategy=at-least-once`。
+- `overflow=reject-publish`。
+- 配置 `dead-letter-exchange` 和有效路由。
+- 确认 stream_queue feature flag 已启用。
+
+源队列保留消息，直到内部转发获得确认。目标故障时消息继续占用源队列容量。因此还需限制容量并监控积压。目标收到重复消息时，仍需幂等处理。
+
+转发会保留原消息的 delivery mode。目标重启后仍需保存消息时，应使用持久目标队列。源发布消息也应设置持久化。
 
 ## 8. 重放 {#重放}
 
-修复消费者后，死信或历史消息可能需要重放。重放前应确认：
+重放保留原始消息 ID，以便消费端去重。另增加执行批次标识，用于跟踪本次恢复。
 
-1. 消费逻辑已经具备幂等能力。
-2. 下游容量能够承受重放与实时流量之和。
-3. 顺序敏感消息按业务键处理。
-4. 可以暂停、限速并记录重放进度。
-5. 已有成功结果不会被旧消息覆盖。
-
-重放工具要使用新的执行批次标识，同时保留原始消息 ID，便于去重和审计。
+开始前核对旧消息的版本和消费逻辑。重放速率受下游剩余容量约束。顺序敏感数据按键处理，并支持暂停和断点续跑。
 
 ## 9. 端到端指标 {#端到端指标}
 
-至少观察生产确认失败、发送重试、broker 副本状态、消费 lag、未确认消息、处理失败率、各重试层积压、死信数量和最老消息年龄。
+分别记录发布失败、路由失败和副本状态。消费侧观察 lag、未确认量、失败率和最老消息年龄。重试与死信通道也要监控转发和目标增量。
 
-单看队列长度无法区分流量增长、消费者变慢、分区倾斜和毒消息。应把消息 ID 与业务结果关联，定期核对已产生事件和已完成副作用。
+关键链路通过事件 ID 对照最终业务结果。broker 接收成功只完成中间一段交付。
 
-## 10. 常见问题
+## 10. 常见问题 {#常见问题}
 
-### 10.1 RabbitMQ 的 publisher confirm 成功是否表示消息不会丢
+### 10.1 发布确认与路由结果 {#发布确认与路由结果}
 
-它只确认 broker 接受了发布，具体持久性还取决于 queue、消息和集群配置。之后的路由、消费、ack 和死信是其他阶段，需要分别监控和处理。
+publisher confirm 可确认不可路由消息。mandatory 与 basic.return 用于暴露这类失败。之后的消费完成由 consumer ack 单独表达。
 
-### 10.2 消费失败后直接 requeue 有什么问题
+### 10.2 立即重新入队 {#立即重新入队}
 
-同一条无法处理的消息可能立即再次投递，形成高频循环并占满消费者。应区分可重试与永久错误，限制即时次数，使用延迟重试，并在上限后进入死信。
+瞬时重投适合很短的故障恢复窗口。持续失败应延迟并限制次数。永久错误进入死信或人工修复状态。
 
-## 11. 面试题
+## 11. 面试题 {#面试题}
 
 ### 11.1 如何设计消息确认、重试和死信流程 {#ack-retry-dead-letter}
 
@@ -103,6 +112,8 @@ RabbitMQ 的 dead-lettering 是一次新的发布过程。目标 exchange 配置
 -->
 
 **出现公司**：Shopee、京东
+
+**题型**：综合题
 
 **考察重点**
 
@@ -115,15 +126,91 @@ RabbitMQ 的 dead-lettering 是一次新的发布过程。目标 exchange 配置
 <details>
 <summary>参考回答</summary>
 
-生产端先确认消息是否进入 broker，RabbitMQ 的 publisher confirm 与 consumer ack 相互独立；Kafka 的 producer acks 还要结合副本和 min.insync.replicas。消费者通常先完成数据库等持久化副作用，再 ack 或提交 offset，这会在确认失败时产生重复，所以消费逻辑必须幂等。
+发布确认、消费确认和业务提交是独立阶段。RabbitMQ 同时检查 publisher confirm 与路由返回。Kafka 使用 acks=all 并配置足够的同步副本。
 
-短暂故障可以在总时限内少量退避重试，较长等待进入有限层级的 retry topic 或 queue，永久错误和达到上限的消息进入死信。死信需要告警、诊断、限速重放和转发失败监控。最后还要用业务消息 ID 核对事件与处理结果，不能只看 broker 的发送成功率。
+业务提交后再确认，重复由业务幂等处理。重试分为有限即时重试和延迟重试。永久失败进入死信，转发、告警和限速重放也要覆盖。最终用消息 ID 核对业务结果。
 
 </details>
 
-## 12. 参考资料
+### 11.2 RabbitMQ 发布确认成功，为什么目标队列仍没有消息？ {#confirm-unroutable}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：publisher confirm 与 mandatory 返回。
+
+**相关内容**：[生产者确认](#生产者确认)。
+
+<details>
+<summary>参考回答</summary>
+
+不可路由消息也可获得 publisher confirm。mandatory=true 时，broker 会先发 basic.return。客户端需要处理路由返回，再结合发布确认判断结果。确认发布阶段也并未确认消费者业务完成。
+
+</details>
+
+### 11.3 副本数为 3，acks=all、min.insync.replicas=2 如何确认写入？ {#kafka-acks-isr}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：ISR 全部确认与最低同步副本数。
+
+**相关内容**：[生产者确认](#生产者确认)。
+
+<details>
+<summary>参考回答</summary>
+
+ISR 有 3 个副本时，acks=all 等待这 3 个副本确认。ISR 为 2 时等待这 2 个。ISR 只有 1 个时，低于 min.insync.replicas=2，写入失败。它以写入可用性换取最低副本保障。
+
+</details>
+
+### 11.4 Kafka 的 offset 10、12 完成而 11 未完成，能提交 13 吗？ {#consumer-progress-gap}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：下一读取位置与连续完成水位。
+
+**相关内容**：[消费者确认时机](#消费者确认时机)。
+
+<details>
+<summary>参考回答</summary>
+
+应最多提交 11，让恢复从未完成的记录继续。提交 13 会跳过 11。并行消费要逐分区追踪连续完成位置。12 在故障恢复后可再次到达，因此业务仍需幂等。
+
+</details>
+
+### 11.5 RabbitMQ quorum queue 怎样提高死信转发可靠性？ {#quorum-dead-letter}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：转发确认、源端保留与容量代价。
+
+**相关内容**：[死信转发失败](#死信转发失败)。
+
+<details>
+<summary>参考回答</summary>
+
+设置 dead-letter-strategy=at-least-once。配合 overflow=reject-publish，并配置 DLX 和有效路由。还需确认 stream_queue feature flag 已启用。源队列保留消息到转发确认，因此目标故障会积压源容量。
+
+</details>
+
+## 12. 参考资料 {#参考资料}
 
 - [RabbitMQ：Reliability Guide](https://www.rabbitmq.com/docs/reliability)
 - [RabbitMQ：Consumer Acknowledgements and Publisher Confirms](https://www.rabbitmq.com/docs/confirms)
 - [RabbitMQ：Dead Letter Exchanges](https://www.rabbitmq.com/docs/dlx)
 - [Apache Kafka Documentation](https://kafka.apache.org/documentation/)
+- [RabbitMQ 4.1：Confirms](https://www.rabbitmq.com/docs/4.1/confirms)
+- [RabbitMQ 4.1：Quorum Queues](https://www.rabbitmq.com/docs/4.1/quorum-queues)
+- [RabbitMQ 4.1：Dead Letter Exchanges](https://www.rabbitmq.com/docs/4.1/dlx)
+- [RabbitMQ 4.1：TTL](https://www.rabbitmq.com/docs/4.1/ttl)
+- [Kafka 4.1：Producer Configs](https://kafka.apache.org/41/configuration/producer-configs/)
+- [Kafka 4.1：Topic Configs](https://kafka.apache.org/41/configuration/topic-configs/)
+- [Kafka 4.1：KafkaConsumer](https://kafka.apache.org/41/javadoc/org/apache/kafka/clients/consumer/KafkaConsumer.html)
+- [Debezium：Outbox Event Router](https://debezium.io/documentation/reference/stable/transformations/outbox-event-router.html)
