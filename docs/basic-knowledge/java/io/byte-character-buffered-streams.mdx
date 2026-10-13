@@ -189,7 +189,7 @@ try (Reader reader = new InputStreamReader(input, decoder)) {
 }
 ```
 
-JDK 18 起，默认字符集改为 UTF-8，允许兼容配置。协议仍应显式写出字符集。`DataInputStream.readFully` 适合读取固定长度字段。不足指定长度即遇 EOF 时，它抛出 `EOFException`。
+Java 17 的默认字符集取决于运行环境。Java 21 默认使用 UTF-8，允许兼容配置。协议仍应显式写出字符集。`DataInputStream.readFully` 适合读取固定长度字段。不足指定长度即遇 EOF 时，它抛出 `EOFException`。
 
 ## 9. 常见问题 {#常见问题}
 
@@ -283,12 +283,12 @@ JDK 18 起，默认字符集改为 UTF-8，允许兼容配置。协议仍应显�
 
 ## 11. 参考资料 {#参考资料}
 
-- [Java API：InputStream](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/io/InputStream.html)
-- [Java API：Reader](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/io/Reader.html)
-- [Java API：InputStreamReader](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/io/InputStreamReader.html)
-- [Java API：BufferedInputStream](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/io/BufferedInputStream.html)
-- [Java API：Files](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/nio/file/Files.html)
-- [Java API：Charset](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/nio/charset/Charset.html)
-- [Java API：CharsetDecoder](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/nio/charset/CharsetDecoder.html)
-- [Java API：DataInputStream](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/io/DataInputStream.html)
-- [JEP 400：UTF-8 by Default](https://openjdk.org/jeps/400)
+- [Java API：InputStream](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/io/InputStream.html)
+- [Java API：Reader](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/io/Reader.html)
+- [Java API：InputStreamReader](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/io/InputStreamReader.html)
+- [Java API：BufferedInputStream](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/io/BufferedInputStream.html)
+- [Java API：Files](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/nio/file/Files.html)
+- [Java API：Charset](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/nio/charset/Charset.html)
+- [Java API：CharsetDecoder](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/nio/charset/CharsetDecoder.html)
+- [Java API：DataInputStream](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/io/DataInputStream.html)
+- [Java 17 API：Charset](https://docs.oracle.com/en/java/javase/17/docs/api/java.base/java/nio/charset/Charset.html)

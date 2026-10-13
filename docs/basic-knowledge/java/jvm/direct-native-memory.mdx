@@ -7,13 +7,13 @@ knowledge:
 
 # Java 直接内存
 
-Java 直接内存用于在堆外保存 I/O 缓冲内容。本文负责直接缓冲区、FFM、文件映射与本地内存诊断。堆内持有关系见[堆转储](./heap-dumps-memory-leaks.mdx)。
+Java 直接内存用于在堆外保存 I/O 缓冲内容。本文负责直接缓冲区、文件映射与本地内存诊断。堆内持有关系见[堆转储](./heap-dumps-memory-leaks.mdx)。
 
 ## 1. 面试核心 {#core}
 
 - `ByteBuffer.allocateDirect` 在堆外分配内容，在堆内保留管理对象。[卡](#direct-memory-usage)
 - `-XX:MaxDirectMemorySize` 限制 NIO 直接缓冲区容量。[卡](#direct-limit-scope)
-- JDK 22 的 FFM API 可用可关闭 Arena 显式释放内存。
+- 直接缓冲区的管理对象不可达后，清理机制释放底层内存。
 - NMT 的 baseline 与 diff 用于比较 HotSpot 内存类别。[卡](#native-memory-growth)
 
 ## 2. 直接缓冲区 {#直接缓冲区}
@@ -32,9 +32,9 @@ Java 堆上仍有 ByteBuffer 管理对象。原生 I/O 可直接使用其内容�
 
 ### 2.1 直接内存上限与池统计 {#直接内存上限与池统计}
 
-在 HotSpot JDK 26 中，`MaxDirectMemorySize` 限制容量总和。未显式设置时，上限取 `Runtime.maxMemory()`。容量计数与实际 native 分配字节数可以不同。
+在 HotSpot JDK 21 中，`MaxDirectMemorySize` 限制容量总和。未显式设置时，上限取 `Runtime.maxMemory()`。容量计数与实际 native 分配字节数可以不同。
 
-该参数并非整个进程堆外内存的总上限。FFM Arena、JNI 分配和文件映射有各自生命周期。应分别为它们留出进程预算。
+该参数并非整个进程堆外内存的总上限。JNI 分配和文件映射有各自生命周期。应分别为它们留出进程预算。
 
 `BufferPoolMXBean` 提供 direct 与 mapped 池统计：
 
@@ -49,36 +49,26 @@ for (BufferPoolMXBean pool :
 
 容量表示缓冲区可容纳的字节总数。used 还受对齐与分配器影响。`slice()` 和 `duplicate()` 共享底层内容。长期保留小视图也会延长整块区域的生命周期。
 
-## 3. FFM API {#ffm-api}
+## 3. 直接缓冲区的生命周期 {#ffm-api}
 
-FFM API 在 JDK 22 成为正式功能。可关闭 Arena 提供明确的本地内存作用域：
+Java 17、21 的 `ByteBuffer` 没有公开的释放方法。HotSpot 用清理机制释放不可达缓冲区的本地内存。释放时机受 GC 和清理进度影响。
 
-```java
-try (Arena arena = Arena.ofConfined()) {
-    MemorySegment segment = arena.allocate(1024, 8);
-    segment.set(ValueLayout.JAVA_INT, 0, 42);
-}
-```
-
-关闭 Arena 后，该区域被释放，后续访问会失败。`ofConfined()` 只允许创建线程访问。`ofShared()` 允许多线程访问，数据竞争仍需同步。
-
-`Arena.global()` 的区域与进程同寿命。`Arena.ofAuto()` 依赖可达性触发回收。选择时应先确定资源的作用域。
+共享视图会持有底层缓冲区。归还缓冲池后，池仍可保留它供后续复用。业务使用结束与本地内存释放需要分别判断。
 
 ## 4. 文件映射 {#文件映射}
 
 文件映射将文件区域关联到虚拟地址。页面由操作系统按需调入，脏页按映射规则回写。映射长度与实际驻留内存需要分别观察。
 
-JDK 22 及以后可用 Arena 管理映射：
+Java 17、21 使用 `MappedByteBuffer` 访问映射：
 
 ```java
-try (Arena arena = Arena.ofShared();
-     FileChannel channel = FileChannel.open(path, READ)) {
-    MemorySegment mapped = channel.map(READ_ONLY, 0, channel.size(), arena);
-    // 读取 mapped。
+try (FileChannel channel = FileChannel.open(path, READ)) {
+    MappedByteBuffer mapped = channel.map(READ_ONLY, 0, channel.size());
+    // 读取 mapped，单段大小最多为 Integer.MAX_VALUE 字节。
 }
 ```
 
-关闭 Arena 会解除该映射。传统 `MappedByteBuffer` 的生命周期依赖可达性。关闭 FileChannel 本身不会立即解除传统映射。
+映射的生命周期依赖可达性。关闭 FileChannel 本身不会立即解除映射。
 
 ## 5. HotSpot 本地内存的来源 {#hotspot-本地内存的来源}
 
@@ -109,7 +99,7 @@ NMT 覆盖范围之外的 native 分配需由系统工具补充。可对照 `/pr
 
 ## 7. Direct buffer OOM {#direct-buffer-oom}
 
-容量计数达到上限后，分配会等待清理并尝试重试。HotSpot JDK 26 重试失败时抛出直接缓冲区 OOM。
+容量计数达到上限后，分配会等待清理并尝试重试。HotSpot JDK 21 重试失败时抛出直接缓冲区 OOM。
 
 先比较 direct 池容量与 `MaxDirectMemorySize`。再检查无界池、排队请求和未完成 I/O。若视图长期存活，还需检查它持有的原始区域。
 
@@ -121,7 +111,7 @@ NMT 覆盖范围之外的 native 分配需由系统工具补充。可对照 `/pr
 
 ```text
 进程峰值 ≈ 堆 + 类元数据 + Code Cache + GC 结构
-         + 线程栈 + direct / FFM / JNI
+         + 线程栈 + direct / JNI
          + 映射与动态库 + 余量
 ```
 
@@ -131,7 +121,7 @@ NMT 覆盖范围之外的 native 分配需由系统工具补充。可对照 `/pr
 
 ### 9.1 堆外区域的释放方式 {#堆外区域的释放方式}
 
-普通直接缓冲区依赖管理对象的可达性清理。可关闭 Arena 则提供显式释放。native 库按自身 API 管理资源。
+普通直接缓冲区依赖管理对象的可达性清理。native 库按自身 API 管理资源。
 
 ### 9.2 reserved 与泄漏 {#reserved-与泄漏}
 
@@ -197,18 +187,16 @@ Class 增长查加载器，Thread 增长查平台线程。NMT 未覆盖的部分
 <details>
 <summary>参考回答</summary>
 
-它限制 NIO 直接缓冲区的容量计数。HotSpot JDK 26 未显式设置时取 `Runtime.maxMemory()`。FFM、JNI 和文件映射仍需单独计入预算。direct 池的 capacity 与 used 也可因对齐而不同。
+它限制 NIO 直接缓冲区的容量计数。HotSpot JDK 21 未显式设置时取 `Runtime.maxMemory()`。JNI 和文件映射仍需单独计入预算。direct 池的 capacity 与 used 也可因对齐而不同。
 
 </details>
 
 ## 11. 参考资料 {#参考资料}
 
-- [Java API：`ByteBuffer`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/nio/ByteBuffer.html)
-- [Java API：`MemorySegment`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/foreign/MemorySegment.html)
-- [Java API：`Arena`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/foreign/Arena.html)
-- [Oracle：Native Memory Tracking](https://docs.oracle.com/en/java/javase/26/troubleshoot/diagnostic-tools.html#GUID-70507484-EF25-4E2D-B62F-7A82AE849584)
-- [Java API：BufferPoolMXBean](https://docs.oracle.com/en/java/javase/26/docs/api/java.management/java/lang/management/BufferPoolMXBean.html)
-- [OpenJDK 26：Bits](https://github.com/openjdk/jdk/blob/jdk-26-ga/src/java.base/share/classes/java/nio/Bits.java)
-- [OpenJDK 26：VM](https://github.com/openjdk/jdk/blob/jdk-26-ga/src/java.base/share/classes/jdk/internal/misc/VM.java)
-- [Java API：FileChannel](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/nio/channels/FileChannel.html)
-- [Oracle：Native Memory Tracking](https://docs.oracle.com/en/java/javase/26/vm/native-memory-tracking.html)
+- [Java API：`ByteBuffer`](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/nio/ByteBuffer.html)
+- [Oracle：Native Memory Tracking](https://docs.oracle.com/en/java/javase/21/troubleshoot/diagnostic-tools.html#GUID-70507484-EF25-4E2D-B62F-7A82AE849584)
+- [Java API：BufferPoolMXBean](https://docs.oracle.com/en/java/javase/21/docs/api/java.management/java/lang/management/BufferPoolMXBean.html)
+- [OpenJDK 21：Bits](https://github.com/openjdk/jdk/blob/jdk-21-ga/src/java.base/share/classes/java/nio/Bits.java)
+- [OpenJDK 21：VM](https://github.com/openjdk/jdk/blob/jdk-21-ga/src/java.base/share/classes/jdk/internal/misc/VM.java)
+- [Java API：FileChannel](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/nio/channels/FileChannel.html)
+- [Oracle：Native Memory Tracking](https://docs.oracle.com/en/java/javase/21/vm/native-memory-tracking.html)

@@ -15,7 +15,7 @@ knowledge:
 - 8 字节对齐使 32 位编码理论上覆盖 32 GiB。
 - 压缩对象指针与压缩类指针分别表示对象和类型地址。[卡](#oop-klass-independence)
 - 浅大小计算对象自身，保留大小计算其支配的对象图。[卡](#object-memory-cost)
-- JDK 25—26 的紧凑对象头需用 `-XX:+UseCompactObjectHeaders` 开启。
+- Java 17、21 的 64 位 HotSpot 普通对象头在类指针压缩时占 12 字节。
 
 ## 2. 压缩对象指针 {#压缩对象指针}
 
@@ -29,7 +29,7 @@ knowledge:
 
 8 字节对齐对应移位 3 位。理论编码范围为 `2^32 × 8 = 32 GiB`。堆放置、保留空间和实现策略影响实际启用边界。
 
-查看 JDK 25—26 的相关选项：
+查看 Java 17、21 的相关选项：
 
 ```bash
 java -XX:+PrintFlagsFinal -version | rg 'UseCompressedOops|UseCompressedClassPointers|ObjectAlignmentInBytes'
@@ -41,7 +41,7 @@ java -XX:+PrintFlagsFinal -version | rg 'UseCompressedOops|UseCompressedClassPoi
 
 对象引用指向堆中的另一个对象。类指针关联类元数据，两者压缩机制分别管理。扩大堆关闭压缩对象引用后，类指针仍可保持压缩。
 
-JDK 25 已弃用 `UseCompressedClassPointers`。JDK 27 忽略该选项，并始终压缩对象中的类指针。引用数组的元素宽度仍取决于对象引用方案。
+Java 17、21 用 `UseCompressedClassPointers` 控制类指针压缩。引用数组的元素宽度仍取决于对象引用方案。
 
 ## 3. 对象对齐 {#对象对齐}
 
@@ -94,13 +94,11 @@ record Metric(long timestamp, double value, int status) {}
 3. 用同一负载比较 live set、分配率和 GC CPU。
 4. 将 RSS 与容器内存上限纳入容量评估。
 
-## 8. Compact Object Headers {#compact-object-headers}
+## 8. 对象头布局 {#compact-object-headers}
 
-JDK 25 将紧凑对象头转为产品功能。JDK 25—26 用 `-XX:+UseCompactObjectHeaders` 显式开启。JDK 27 改为默认启用。
+Java 17、21 的 64 位 HotSpot 使用独立的标记字和类指针。标记字占 8 字节，压缩类指针占 4 字节。因此普通对象头共 12 字节。关闭类指针压缩后，对象头共 16 字节。
 
-在支持的 64 位平台上，紧凑头为 8 字节。传统压缩类指针布局的普通对象头为 12 字节。最终对象大小还要计入字段与对齐。
-
-迁移时应检查依赖固定字段偏移的代码。JOL 版本也需支持目标布局。内存收益应通过真实对象分布和负载验证。
+数组还需要 4 字节长度字段。最终对象大小需加上实例数据，再按对齐粒度取整。
 
 ## 9. 常见问题 {#常见问题}
 
@@ -171,16 +169,14 @@ HotSpot 会根据布局规则放置字段。手动调整源码顺序后，应重
 <details>
 <summary>参考回答</summary>
 
-类指针仍可保持压缩。对象引用受堆寻址范围约束，类指针指向类元数据。两者使用不同的编码范围与管理机制。JDK 27 更是始终压缩对象中的类指针。评估对象大小时还需确认对象头方案和对齐。
+类指针仍可保持压缩。对象引用受堆寻址范围约束，类指针指向类元数据。两者使用不同的编码范围与管理机制。评估对象大小时还需确认对象头方案和对齐。
 
 </details>
 
 ## 11. 参考资料 {#参考资料}
 
-- [Oracle Java 25：ObjectAlignmentInBytes 与 UseCompressedOops](https://docs.oracle.com/en/java/javase/25/docs/specs/man/java.html)
-- [Oracle：Compressed Ordinary Object Pointer](https://docs.oracle.com/en/java/javase/26/vm/java-virtual-machine-guide.pdf)
+- [Oracle Java 21：ObjectAlignmentInBytes 与 UseCompressedOops](https://docs.oracle.com/en/java/javase/21/docs/specs/man/java.html)
+- [Oracle：Compressed Ordinary Object Pointer](https://docs.oracle.com/en/java/javase/21/vm/java-virtual-machine-guide.pdf)
 - [OpenJDK：Java Object Layout](https://openjdk.org/projects/code-tools/jol/)
-- [JEP 519：Compact Object Headers](https://openjdk.org/jeps/519)
-- [Oracle：HotSpot Performance Enhancements](https://docs.oracle.com/en/java/javase/26/vm/java-hotspot-virtual-machine-performance-enhancements.html)
-- [Oracle：JDK 27 Release Notes](https://www.oracle.com/java/technologies/javase/27-relnote-issues.html)
+- [Oracle：HotSpot Performance Enhancements](https://docs.oracle.com/en/java/javase/21/vm/java-hotspot-virtual-machine-performance-enhancements.html)
 - [Eclipse MAT：Shallow vs. Retained Heap](https://help.eclipse.org/latest/topic/org.eclipse.mat.ui.help/concepts/shallowretainedheap.html)

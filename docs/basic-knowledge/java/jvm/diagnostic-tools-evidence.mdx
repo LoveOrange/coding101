@@ -14,7 +14,7 @@ JVM 诊断通过快照与时间序列定位运行问题。本文负责工具选�
 - 线程转储记录调用与等待，堆转储记录对象引用。[卡](#diagnostic-tools)
 - GC 日志记录回收过程，JFR 关联运行期事件。
 - 多份线程转储可区分持续停留与偶然经过。[卡](#single-thread-dump)
-- JDK 26 的 `GC.heap_dump` 默认请求 Full GC。[卡](#heap-dump-impact)
+- JDK 21 的 `GC.heap_dump` 默认请求 Full GC。[卡](#heap-dump-impact)
 
 ## 2. 故障时间线 {#故障时间线}
 
@@ -99,11 +99,11 @@ jcmd <pid> help GC.class_histogram
 jcmd <pid> help GC.heap_dump
 ```
 
-JDK 26 将这两项命令标为 High impact。影响与堆大小、对象数量和落盘速度有关。
+JDK 21 将这两项命令标为 High impact。影响与堆大小、对象数量和落盘速度有关。
 
 ### 8.1 堆转储与显式回收 {#堆转储与显式回收}
 
-JDK 26 的 `GC.heap_dump` 默认请求 Full GC。添加 `-all` 后包含不可达对象，并省去该回收请求：
+JDK 21 的 `GC.heap_dump` 默认请求 Full GC。添加 `-all` 后包含不可达对象，并省去该回收请求：
 
 ```bash
 jcmd <pid> GC.heap_dump /logs/live.hprof
@@ -198,8 +198,8 @@ CPU 高看线程 CPU 与 CPU profile。卡顿看线程栈和 wall-clock profile�
 
 ## 12. 参考资料 {#参考资料}
 
-- [Oracle：Diagnostic Tools](https://docs.oracle.com/en/java/javase/26/troubleshoot/diagnostic-tools.html)
-- [Oracle：`jcmd`](https://docs.oracle.com/en/java/javase/26/docs/specs/man/jcmd.html)
-- [Oracle：Flight Recorder API Guide](https://docs.oracle.com/en/java/javase/26/jfapi/index.html)
+- [Oracle：Diagnostic Tools](https://docs.oracle.com/en/java/javase/21/troubleshoot/diagnostic-tools.html)
+- [Oracle：`jcmd`](https://docs.oracle.com/en/java/javase/21/docs/specs/man/jcmd.html)
+- [Oracle：Flight Recorder API Guide](https://docs.oracle.com/en/java/javase/21/jfapi/index.html)
 - [async-profiler](https://github.com/async-profiler/async-profiler)
 - [async-profiler：Profiling Modes](https://github.com/async-profiler/async-profiler/blob/master/docs/ProfilingModes.md)

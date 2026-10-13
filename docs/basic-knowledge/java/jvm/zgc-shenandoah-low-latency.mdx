@@ -12,7 +12,7 @@ ZGC 与 Shenandoah 通过并发标记和移动对象缩短停顿。本文负责�
 ## 1. 面试核心 {#core}
 
 - ZGC 与 Shenandoah 将对象移动放入并发阶段，用引用屏障维持访问正确性。
-- JDK 23 的 ZGC 默认使用分代模式，JDK 24 移除非分代模式。
+- Java 21 的 ZGC 默认不分代，`-XX:+ZGenerational` 开启分代。
 - 分代 ZGC 用加载屏障修正引用，用存储屏障处理标记与跨代记录。[卡](#generational-zgc-barriers)
 - G1 的主要疏散在 STW 中完成，ZGC 并发重定位对象。[卡](#g1-vs-zgc)
 - 并发回收跟不上分配时，ZGC 的分配线程会等待可用空间。[卡](#allocation-stall)
@@ -29,14 +29,13 @@ ZGC 用染色指针记录元数据，并通过引用屏障处理。Shenandoah �
 
 | JDK 版本 | ZGC 模式 |
 | --- | --- |
-| 21—22 | `UseZGC` 选择非分代，另加 `ZGenerational` 选择分代 |
-| 23 | 分代默认，非分代弃用 |
-| 24 起 | 只保留分代，旧模式开关退出使用 |
+| 17 | `-XX:+UseZGC` 启用非分代 ZGC。 |
+| 21 | `-XX:+UseZGC` 默认不分代，另加 `-XX:+ZGenerational` 启用分代。 |
 
-JDK 24—26 可直接启用：
+Java 21 启用分代 ZGC 的命令如下：
 
 ```bash
-java -XX:+UseZGC -jar app.jar
+java -XX:+UseZGC -XX:+ZGenerational -jar app.jar
 ```
 
 分代 ZGC 把新对象与长寿命对象分开处理。年轻代可更频繁回收，减少反复扫描老对象。
@@ -53,16 +52,13 @@ java -XX:+UseZGC -jar app.jar
 
 Shenandoah 也并发标记和移动对象。目标 JDK 是否包含它，取决于发行版与构建。
 
-分代 Shenandoah 在 JDK 24 作为实验功能交付。JDK 25 将它产品化，但默认仍为单代。OpenJDK 26 默认模式也为 `satb`。
-
-JDK 25—26 的支持构建中，可显式选择分代：
+Java 17、21 的 Shenandoah 使用非分代回收。默认模式为 `satb`。支持的构建可用以下命令启用：
 
 ```bash
-java -XX:+UseShenandoahGC \
-  -XX:ShenandoahGCMode=generational -jar app.jar
+java -XX:+UseShenandoahGC -jar app.jar
 ```
 
-JDK 24 还需 `-XX:+UnlockExperimentalVMOptions`。启动失败时应核对构建支持与错误内容。
+启动失败时应核对构建支持与错误内容。
 
 ## 5. 分配余量 {#分配余量}
 
@@ -194,11 +190,7 @@ SoftMaxHeapSize 是 ZGC 尽量遵守的软目标，Xmx 是最大堆。配置 4 G
 
 ## 11. 参考资料 {#参考资料}
 
-- [JEP 439：Generational ZGC](https://openjdk.org/jeps/439)
-- [JEP 474：ZGC Generational Mode by Default](https://openjdk.org/jeps/474)
-- [JEP 490：Remove Non-Generational ZGC](https://openjdk.org/jeps/490)
-- [JEP 404：Generational Shenandoah Experimental](https://openjdk.org/jeps/404)
-- [JEP 521：Generational Shenandoah](https://openjdk.org/jeps/521)
-- [OpenJDK 26：Shenandoah 模式默认值](https://github.com/openjdk/jdk/blob/jdk-26-ga/src/hotspot/share/gc/shenandoah/shenandoah_globals.hpp)
+- [OpenJDK 21：Shenandoah 模式默认值](https://github.com/openjdk/jdk/blob/jdk-21-ga/src/hotspot/share/gc/shenandoah/shenandoah_globals.hpp)
 - [OpenJDK Wiki：Shenandoah](https://wiki.openjdk.org/display/shenandoah/Main)
-- [Oracle：JDK 26 GC Tuning Guide，第 9 章](https://docs.oracle.com/en/java/javase/26/gctuning/hotspot-virtual-machine-garbage-collection-tuning-guide.pdf)
+- [OpenJDK 21：ZGC 屏障](https://github.com/openjdk/jdk/blob/jdk-21-ga/src/hotspot/share/gc/z/zBarrier.hpp)
+- [OpenJDK 21：ZGC 参数默认值](https://github.com/openjdk/jdk/blob/jdk-21-ga/src/hotspot/share/gc/shared/gc_globals.hpp)

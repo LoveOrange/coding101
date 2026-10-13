@@ -14,7 +14,7 @@ Java 注解处理器在编译期校验程序并生成文件。本文负责处理
 - 处理器读取 `Element` 和 `TypeMirror`，通过 `Filer` 生成新文件。[卡](#compile-time-annotation)
 - 生成的新类型进入后续处理轮次。
 - `process` 返回 `true` 表示认领当前注解类型。
-- JDK 23 起，`javac` 默认要求显式启用注解处理。[卡](#processor-discovery-rounds)
+- Java 17、21 的 `javac` 默认搜索可用的注解处理器。[卡](#processor-discovery-rounds)
 - IoC 容器管理对象创建与依赖，反射支持运行时调用。[卡](#ioc-reflection)
 
 ## 2. 运行时扫描 {#运行时扫描}
@@ -56,7 +56,7 @@ for (Class<?> candidate : scanner.findClasses("com.example")) {
 
 ```java
 @SupportedAnnotationTypes("com.example.GenerateMapper")
-@SupportedSourceVersion(SourceVersion.RELEASE_26)
+@SupportedSourceVersion(SourceVersion.RELEASE_17)
 public final class MapperProcessor extends AbstractProcessor {
     @Override
     public boolean process(
@@ -198,7 +198,7 @@ processingEnv.getMessager().printMessage(
 
 ## 8. 处理器发现与认领规则 {#处理器发现与认领规则}
 
-JDK 23 起，`javac` 要求显式配置注解处理。可指定 `-processor`、处理器路径或 `-proc:full`。只把处理器放入普通 classpath 不再默认执行。
+Java 17、21 的 `javac` 默认搜索注解处理器。未指定处理器路径时，会搜索普通 classpath。`-proc:none` 可禁用注解处理。也可显式指定处理器与路径：
 
 ```sh
 javac --processor-path processor.jar \
@@ -282,7 +282,7 @@ IoC 容器管理对象创建、依赖注入和生命周期。反射让它在运�
 
 </details>
 
-### 10.3 升级到 JDK 23 后处理器为何不执行，process 返回值表示什么？ {#processor-discovery-rounds}
+### 10.3 Java 17、21 如何发现处理器，process 返回值表示什么？ {#processor-discovery-rounds}
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
@@ -295,16 +295,15 @@ IoC 容器管理对象创建、依赖注入和生命周期。反射让它在运�
 <details>
 <summary>参考回答</summary>
 
-JDK 23 起需要显式配置注解处理。可通过 `-processor` 和 `--processor-path` 指定处理器。`process` 返回 `true` 表示认领注解，编译错误应由 `Messager` 报告。
+Java 17、21 默认通过服务配置发现处理器。未指定处理器路径时，会搜索普通 classpath。可用 `-processor` 和 `--processor-path` 显式指定。`process` 返回 `true` 表示认领注解，编译错误应由 `Messager` 报告。
 
 </details>
 
 ## 11. 参考资料 {#参考资料}
 
-- [Java API：Processor](https://docs.oracle.com/en/java/javase/26/docs/api/java.compiler/javax/annotation/processing/Processor.html)
-- [Java API：AbstractProcessor](https://docs.oracle.com/en/java/javase/26/docs/api/java.compiler/javax/annotation/processing/AbstractProcessor.html)
-- [Java API：RoundEnvironment](https://docs.oracle.com/en/java/javase/26/docs/api/java.compiler/javax/annotation/processing/RoundEnvironment.html)
-- [Java API：Filer](https://docs.oracle.com/en/java/javase/26/docs/api/java.compiler/javax/annotation/processing/Filer.html)
-- [Java API：Package javax.lang.model](https://docs.oracle.com/en/java/javase/26/docs/api/java.compiler/javax/lang/model/package-summary.html)
-- [javac：Annotation Processing Options](https://docs.oracle.com/en/java/javase/26/docs/specs/man/javac.html#annotation-processing)
-- [Oracle JDK 23 Release Notes：Annotation Processing](https://www.oracle.com/java/technologies/javase/23-relnote-issues.html)
+- [Java API：Processor](https://docs.oracle.com/en/java/javase/21/docs/api/java.compiler/javax/annotation/processing/Processor.html)
+- [Java API：AbstractProcessor](https://docs.oracle.com/en/java/javase/21/docs/api/java.compiler/javax/annotation/processing/AbstractProcessor.html)
+- [Java API：RoundEnvironment](https://docs.oracle.com/en/java/javase/21/docs/api/java.compiler/javax/annotation/processing/RoundEnvironment.html)
+- [Java API：Filer](https://docs.oracle.com/en/java/javase/21/docs/api/java.compiler/javax/annotation/processing/Filer.html)
+- [Java API：Package javax.lang.model](https://docs.oracle.com/en/java/javase/21/docs/api/java.compiler/javax/lang/model/package-summary.html)
+- [javac：Annotation Processing Options](https://docs.oracle.com/en/java/javase/21/docs/specs/man/javac.html#annotation-processing)

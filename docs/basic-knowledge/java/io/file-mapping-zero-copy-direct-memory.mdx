@@ -159,19 +159,7 @@ System.out.println(direct.isDirect()); // true
 
 返回 `MappedByteBuffer` 的 `map` 重载最多映射 `Integer.MAX_VALUE` 字节。更大的文件需要分段映射。关闭 `FileChannel` 后，已有映射仍然有效。
 
-Java 22 起，可用接受 `Arena` 的重载管理映射生命周期：
-
-```java
-try (FileChannel channel = FileChannel.open(path, StandardOpenOption.READ);
-     Arena arena = Arena.ofConfined()) {
-    MemorySegment segment = channel.map(
-        FileChannel.MapMode.READ_ONLY, 0, channel.size(), arena
-    );
-    // 在 arena 关闭前访问 segment。
-}
-```
-
-关闭可关闭的 `Arena` 会使关联段失效，并释放其映射。传统 `MappedByteBuffer` 则没有公开的 `close()`。
+Java 17、21 的 `MappedByteBuffer` 依赖 GC 解除映射。它没有公开的 `close()`。映射对象及其共享视图不再被引用后，才具备回收条件。
 
 HotSpot 的 `-XX:MaxDirectMemorySize` 限制直接缓冲分配。它并非整个进程堆外内存或文件映射的统一上限。诊断时需分别查看 direct、mapped 与进程 RSS。
 
@@ -254,24 +242,23 @@ Java 用 `transferTo` 在通道间传输文件区域。支持的平台可省去 
 
 **出现公司**：暂无已核验的公开来源（本站自测）
 
-**考察重点**：映射大小、通道生命周期与 Arena。
+**考察重点**：映射大小、通道生命周期与映射回收。
 
 **相关内容**：[映射大小与释放时机](#映射大小与释放时机)。
 
 <details>
 <summary>参考回答</summary>
 
-关闭通道不会解除已有映射。传统缓冲区映射单段最多 `Integer.MAX_VALUE` 字节。Java 22 起可使用 `MemorySegment` 重载，并用可关闭的 `Arena` 管理释放。
+关闭通道不会解除已有映射。单段映射最多 `Integer.MAX_VALUE` 字节。更大的文件需要分段映射。Java 17、21 的 `MappedByteBuffer` 依赖 GC 解除映射。
 
 </details>
 
 ## 11. 参考资料 {#参考资料}
 
-- [Java API：FileChannel](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/nio/channels/FileChannel.html)
-- [Java API：MappedByteBuffer](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/nio/MappedByteBuffer.html)
-- [Java API：ByteBuffer.allocateDirect](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/nio/ByteBuffer.html#allocateDirect(int))
-- [Java API：FileChannel.transferTo](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/nio/channels/FileChannel.html#transferTo(long,long,java.nio.channels.WritableByteChannel))
-- [Java API：Arena](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/foreign/Arena.html)
-- [OpenJDK 26：Bits](https://github.com/openjdk/jdk/blob/jdk-26-ga/src/java.base/share/classes/java/nio/Bits.java)
-- [OpenJDK 26：FileChannelImpl](https://github.com/openjdk/jdk/blob/jdk-26-ga/src/java.base/share/classes/sun/nio/ch/FileChannelImpl.java)
-- [OpenJDK 26：IOUtil](https://github.com/openjdk/jdk/blob/jdk-26-ga/src/java.base/share/classes/sun/nio/ch/IOUtil.java)
+- [Java API：FileChannel](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/nio/channels/FileChannel.html)
+- [Java API：MappedByteBuffer](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/nio/MappedByteBuffer.html)
+- [Java API：ByteBuffer.allocateDirect](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/nio/ByteBuffer.html#allocateDirect(int))
+- [Java API：FileChannel.transferTo](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/nio/channels/FileChannel.html#transferTo(long,long,java.nio.channels.WritableByteChannel))
+- [OpenJDK 21：Bits](https://github.com/openjdk/jdk/blob/jdk-21-ga/src/java.base/share/classes/java/nio/Bits.java)
+- [OpenJDK 21：FileChannelImpl](https://github.com/openjdk/jdk/blob/jdk-21-ga/src/java.base/share/classes/sun/nio/ch/FileChannelImpl.java)
+- [OpenJDK 21：IOUtil](https://github.com/openjdk/jdk/blob/jdk-21-ga/src/java.base/share/classes/sun/nio/ch/IOUtil.java)

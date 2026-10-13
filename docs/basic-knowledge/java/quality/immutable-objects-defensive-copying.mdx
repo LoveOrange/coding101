@@ -7,7 +7,7 @@ knowledge:
 
 # 不可变对象
 
-不可变对象在构造后保持可观察状态稳定。本文负责输入输出复制、record 组件与线程共享。语言与 API 以 Java 26 为准。
+不可变对象在构造后保持可观察状态稳定。本文负责输入输出复制、record 组件与线程共享。语言与 API 以 Java 17、21 为准。
 
 只读视图与列表工厂的对比见 [集合迭代器](../collections/iterator-fail-fast-immutable.mdx)。
 
@@ -278,7 +278,7 @@ final 类可封闭继承，构造期间应避免 this 逸出。record 组件含�
 ## 13. 参考资料 {#参考资料}
 
 - [Java Tutorials：A Strategy for Defining Immutable Objects](https://docs.oracle.com/javase/tutorial/essential/concurrency/imstrat.html)
-- [Java Language Specification：final Field Semantics](https://docs.oracle.com/en/java/javase/26/docs/specs/jls/jls-17.html#jls-17.5)
-- [Java Language Specification：Record Classes](https://docs.oracle.com/en/java/javase/26/docs/specs/jls/jls-8.html#jls-8.10)
-- [Java API：List.copyOf](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/List.html#copyOf(java.util.Collection))
-- [JLS 26：Record Members](https://docs.oracle.com/en/java/javase/26/docs/specs/jls/jls-8.html#jls-8.10.3)
+- [Java Language Specification：final Field Semantics](https://docs.oracle.com/javase/specs/jls/se21/html/jls-17.html#jls-17.5)
+- [Java Language Specification：Record Classes](https://docs.oracle.com/javase/specs/jls/se21/html/jls-8.html#jls-8.10)
+- [Java API：List.copyOf](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/List.html#copyOf(java.util.Collection))
+- [JLS 21：Record Members](https://docs.oracle.com/javase/specs/jls/se21/html/jls-8.html#jls-8.10.3)

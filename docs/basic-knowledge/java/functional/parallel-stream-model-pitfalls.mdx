@@ -14,7 +14,7 @@ knowledge:
 - `Spliterator.trySplit` 为并行计算划分数据范围。
 - Fork/Join 通过工作窃取平衡待执行任务。[卡](#work-stealing)
 - 有序并行流可保留结果顺序，但各元素计算仍可并发。
-- OpenJDK 26 的公共池由多个任务来源共享。
+- OpenJDK 21 的公共池由多个任务来源共享。
 - 阻塞 I/O、共享状态和调度成本会削弱并行流收益。[卡](#parallel-stream-checklist)
 
 ## 2. Spliterator 拆分 {#spliterator-拆分}
@@ -35,7 +35,7 @@ Stream 通过 `Spliterator` 遍历和拆分数据源。并行流水线会尝试�
 
 ## 3. ForkJoinPool {#forkjoinpool}
 
-OpenJDK 26 中，普通线程发起的并行流使用公共池。调用线程也可参与处理。Fork/Join 工作线程内启动的任务可使用所在池。Stream API 未提供指定执行器的参数。Fork/Join 流程如下：
+OpenJDK 21 中，普通线程发起的并行流使用公共池。调用线程也可参与处理。Fork/Join 工作线程内启动的任务可使用所在池。Stream API 未提供指定执行器的参数。Fork/Join 流程如下：
 
 1. 大任务递归拆成较小任务。
 2. Worker 优先处理自己的任务队列。
@@ -178,7 +178,7 @@ List<Integer> values = IntStream.range(0, 1000)
 
 ### 11.1 并行度与活动线程 {#并行度与活动线程}
 
-OpenJDK 26 中，公共池并行度影响工作线程数量。调用线程也可参与计算。阻塞与嵌套任务会改变活动线程数，因此它不是业务并发上限。
+OpenJDK 21 中，公共池并行度影响工作线程数量。调用线程也可参与计算。阻塞与嵌套任务会改变活动线程数，因此它不是业务并发上限。
 
 ### 11.2 线程安全容器与业务状态 {#线程安全容器与业务状态}
 
@@ -265,8 +265,8 @@ Fork/Join 将大任务拆成小任务。Worker 优先处理自身队列，空闲
 
 ## 13. 参考资料 {#参考资料}
 
-- [Java API：Stream 的并行执行说明](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/stream/package-summary.html#parallelism)
-- [Java API：ForkJoinPool](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/ForkJoinPool.html)
-- [Java API：Spliterator](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/Spliterator.html)
-- [Java API：BaseStream.parallel](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/stream/BaseStream.html#parallel())
-- [OpenJDK 26：ForkJoinTask](https://github.com/openjdk/jdk/blob/jdk-26-ga/src/java.base/share/classes/java/util/concurrent/ForkJoinTask.java)
+- [Java API：Stream 的并行执行说明](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/stream/package-summary.html#parallelism)
+- [Java API：ForkJoinPool](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/ForkJoinPool.html)
+- [Java API：Spliterator](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/Spliterator.html)
+- [Java API：BaseStream.parallel](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/stream/BaseStream.html#parallel())
+- [OpenJDK 21：ForkJoinTask](https://github.com/openjdk/jdk/blob/jdk-21-ga/src/java.base/share/classes/java/util/concurrent/ForkJoinTask.java)

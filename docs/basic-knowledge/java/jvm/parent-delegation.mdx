@@ -89,7 +89,7 @@ JAR 路径说明字节来源，定义加载器说明类型身份。同一个 JAR
 
 ### 8.1 平台类的定义保护 {#平台类的定义保护}
 
-默认委派会先返回平台的 `String`。JDK 26 的 `defineClass` 还保护 `java.*` 包。平台加载器及其祖先之外的加载器定义时会被拒绝。
+默认委派会先返回平台的 `String`。JDK 21 的 `defineClass` 还保护 `java.*` 包。平台加载器及其祖先之外的加载器定义时会被拒绝。
 
 ### 8.2 依赖冲突与委派范围 {#依赖冲突与委派范围}
 
@@ -159,6 +159,6 @@ child-first 可只覆盖插件私有包。共享接口继续父优先，能让�
 
 ## 10. 参考资料 {#参考资料}
 
-- [Java API：ClassLoader](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/ClassLoader.html)
-- [JVMS：Creation and Loading](https://docs.oracle.com/javase/specs/jvms/se26/html/jvms-5.html#jvms-5.3)
-- [OpenJDK 26：ClassLoader 实现](https://github.com/openjdk/jdk/blob/jdk-26-ga/src/java.base/share/classes/java/lang/ClassLoader.java)
+- [Java API：ClassLoader](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/ClassLoader.html)
+- [JVMS：Creation and Loading](https://docs.oracle.com/javase/specs/jvms/se21/html/jvms-5.html#jvms-5.3)
+- [OpenJDK 21：ClassLoader 实现](https://github.com/openjdk/jdk/blob/jdk-21-ga/src/java.base/share/classes/java/lang/ClassLoader.java)
