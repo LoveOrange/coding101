@@ -7,17 +7,17 @@ knowledge:
 
 # MyBatis
 
-本文以 MyBatis 3 与 MyBatis-Spring 的常规用法为范围。MyBatis 把 Mapper 方法和 SQL 映射为 `MappedStatement`，再通过 SqlSession、Executor 和 JDBC 处理一次数据库访问。掌握这条执行路径，才能判断缓存、插件、参数绑定和事务分别在哪一层生效。
+本文以 MyBatis 3 与 MyBatis-Spring 的常规用法为范围。MyBatis 把 Mapper 方法和 SQL 映射为 `MappedStatement`，再通过 SqlSession、Executor 和 JDBC 处理一次数据库访问。本文负责执行链路、缓存、分页插件与延迟加载；连接资源的容量和超时见 [数据库连接池](./connection-pool-capacity-timeout-leaks.mdx)。
 
 ## 1. 面试核心 {#core}
 
 - Mapper 代理定位 MappedStatement，经 SqlSession、Executor 到 JDBC；缓存命中时可以不执行后续 JDBC 路径。[卡](#mybatis-query-flow)
-- `#{}` 绑定值，`${}` 替换文本；动态标识符只能来自受控白名单，不能直接拼接请求参数。[卡](#parameter-binding)
+- `#{}` 通过 PreparedStatement 绑定值，`${}` 替换 SQL 文本，动态标识符需由固定白名单映射。[卡](#parameter-binding)
 - 一级缓存绑定 SqlSession，二级缓存按 namespace 显式配置；跨 namespace 或外部写入不会自动全面失效。[卡](#cache-boundaries)
-- BATCH 的 flush 是执行批处理，commit 才是提交事务；Mapper 返回值不能直接当作真实影响行数。[卡](#batch-flush)
-- 插件只有四类接口扩展点；Spring 的 SqlSessionTemplate 可共享，不代表底层 DefaultSqlSession 可被多线程共享。[卡](#plugin-boundaries)
+- BATCH 的 `flushStatements()` 执行 JDBC 批处理，影响行数来自 BatchResult，事务通过 commit 提交。[卡](#batch-flush)
+- 插件拦截 Executor、StatementHandler、ParameterHandler 和 ResultSetHandler，PageHelper 在 Executor.query 处改写分页 SQL。[卡](#plugin-boundaries) [卡](#pagehelper-rewrite)
 
-## 2. 映射配置形成 MappedStatement {#1-映射配置形成-mappedstatement}
+## 2. MappedStatement 与 Mapper 代理 {#1-映射配置形成-mappedstatement}
 
 应用启动时，MyBatis 读取 XML 或注解中的 statement、动态 SQL、参数类型、ResultMap 和缓存配置，并保存到 `Configuration`。每条语句使用 `namespace + id` 作为标识，对应一个 `MappedStatement`。
 
@@ -29,11 +29,11 @@ knowledge:
 </select>
 ```
 
-Mapper 接口通常由动态代理实现。调用 `orderMapper.findById(id)` 时，代理根据接口与方法找到 statement id，再把参数交给 SqlSession。接口方法本身不包含查询实现。
+Mapper 接口由动态代理实现。调用 `orderMapper.findById(id)` 时，代理根据接口与方法找到 statement id，再把参数交给 SqlSession。接口方法本身不包含查询实现。
 
-## 3. 一次查询经过多个处理组件 {#2-一次查询经过多个处理组件}
+## 3. 查询执行链路 {#2-一次查询经过多个处理组件}
 
-以下是未命中缓存、采用 PreparedStatement 的常规查询路径；它是职责顺序，不是所有调用之间的直接调用关系：
+以下按职责顺序展示未命中缓存、采用 PreparedStatement 的查询链路：
 
 ```text
 Mapper proxy
@@ -53,7 +53,7 @@ Mapper proxy
 
 理解职责比背类名更重要。SQL 没有生成正确，先看动态 SQL 与 BoundSql；参数类型错误看 ParameterHandler 和 TypeHandler；列映射错误看 ResultMap 与 ResultSetHandler。
 
-## 4. Executor 决定语句复用与批处理方式 {#3-executor-决定语句复用与批处理方式}
+## 4. Executor 与批处理 {#3-executor-决定语句复用与批处理方式}
 
 MyBatis 提供三种主要 ExecutorType：
 
@@ -61,13 +61,13 @@ MyBatis 提供三种主要 ExecutorType：
 - `REUSE`：在当前执行器范围复用相同 SQL 的 PreparedStatement。
 - `BATCH`：积累更新语句并批量提交给 JDBC 驱动。
 
-`BATCH` 并不表示 Mapper 方法返回时数据库一定已经执行。`flushStatements()` 把积累的语句交给驱动执行并返回批处理结果；它本身不提交事务。实际行数应看 BatchResult/驱动返回值，不能把每次 Mapper 更新调用的返回值当成已完成影响行数。需要在 flush 或事务提交时检查批处理结果；中间查询也可能触发待执行语句刷新。批量执行的错误定位、生成键和事务大小都要单独测试。
+`BATCH` 将更新积累到 JDBC 批次；`flushStatements()` 执行批次并返回 BatchResult，事务仍由 commit 提交。Mapper 更新返回的是批处理占位值，实际影响行数需读取 BatchResult/驱动结果；查询进入 BatchExecutor.doQuery 时会先刷新待执行批次。批量执行的错误定位、生成键和事务大小都要单独测试。
 
-## 5. 参数占位符与字符串替换用途不同 {#4-参数占位符与字符串替换用途不同}
+## 5. 参数占位符与字符串替换 {#4-参数占位符与字符串替换用途不同}
 
 `#{value}` 会生成 JDBC `?` 占位符，再由 PreparedStatement 绑定值。它适用于普通数据参数。
 
-`${column}` 会把文本原样替换进 SQL，无法通过 PreparedStatement 绑定。表名、列名和排序方向确实不能作为普通值参数时，应在代码中映射到固定白名单：
+`${column}` 会把文本原样替换进 SQL，无法通过 PreparedStatement 绑定。表名、列名和排序方向属于 SQL 语法，使用时应在代码中映射到固定白名单：
 
 以下 Java 17+ 片段假定 `sort` 是已校验的枚举；只输出固定 SQL 标识符：
 
@@ -78,19 +78,19 @@ String orderBy = switch (sort) {
 };
 ```
 
-不能把请求中的字符串直接传给 `${}`，否则会形成 SQL 注入入口。
+请求中的任意字符串直接进入 `${}` 会形成 SQL 注入入口，示例通过枚举到固定文本的映射限制输入。
 
-## 6. 一级缓存属于 SqlSession {#5-一级缓存属于-sqlsession}
+## 6. 一级缓存与二级缓存 {#5-一级缓存属于-sqlsession}
 
 每个 SqlSession 都有本地缓存。默认 `localCacheScope=SESSION` 时，相同 statement、参数和分页条件的查询可以复用结果；update、commit、rollback、close 等操作会清理缓存。
 
-默认 SESSION 范围的本地缓存保存并返回对象引用。在同一 Session 内修改查询结果对象，后续缓存命中可能看到修改后的值。缩短 Session 生命周期、不随意修改查询结果，比依赖缓存副本更稳妥。
+默认 SESSION 范围的本地缓存保存并返回对象引用。在同一 Session 内修改查询结果对象，后续缓存命中会看到同一对象被修改后的值。缩短 Session 生命周期、不随意修改查询结果，比依赖缓存副本更稳妥。
 
-二级缓存按 Mapper namespace 配置，需要 `<cache/>`、`@CacheNamespace` 等显式声明，也受全局 `cacheEnabled` 和语句 `useCache` 控制。默认查询会使用已配置缓存，写语句默认触发所属 namespace 缓存刷新；缓存结果在会话的事务完成阶段按规则发布，不能认为查询返回时就对其他会话可见。
+二级缓存按 Mapper namespace 配置，需要 `<cache/>`、`@CacheNamespace` 等显式声明，也受全局 `cacheEnabled` 和语句 `useCache` 控制。默认查询会使用已配置缓存，写语句默认触发所属 namespace 缓存刷新；缓存结果在会话的事务完成阶段按规则发布。
 
-同一张表若由多个 namespace 或其他服务更新，某个 namespace 的缓存不会自动获知全部写入。可按依赖共享缓存配置或避免使用这种结果缓存。`localCacheScope=STATEMENT` 缩短一级缓存共享范围；查询的 `useCache=false` 控制二级缓存，不能据此断言一级缓存也关闭。
+同一张表若由多个 namespace 或其他服务更新，某个 namespace 的缓存不会自动获知全部写入。可按依赖共享缓存配置或避免使用这种结果缓存。`localCacheScope=STATEMENT` 缩短一级缓存共享范围；查询的 `useCache=false` 控制二级缓存，两级缓存分别控制。
 
-## 7. 插件只拦截指定扩展点 {#6-插件只拦截指定扩展点}
+## 7. 插件扩展点 {#6-插件只拦截指定扩展点}
 
 MyBatis 插件可以包装以下四类组件的指定方法：
 
@@ -99,35 +99,61 @@ MyBatis 插件可以包装以下四类组件的指定方法：
 - ParameterHandler
 - ResultSetHandler
 
-分页、审计或租户条件插件需要选择最窄的扩展点。拦截器修改 BoundSql 时，要同时处理参数映射、缓存键、数据库方言和嵌套查询，不能只拼一段字符串。
+分页、审计或租户条件插件需要选择最窄的扩展点。拦截器修改 BoundSql 时，要同时处理参数映射、缓存键、数据库方言和嵌套查询。
 
-插件顺序会改变行为。两个插件都重写 SQL 或参数时，应通过集成测试确认代理嵌套顺序和最终 SQL，而不是依赖注册代码的表面阅读。
+插件顺序会改变行为。两个插件都重写 SQL 或参数时，应通过集成测试确认代理嵌套顺序和最终 SQL。
 
-## 8. 与 Spring 事务共用同一 SqlSession {#7-与-spring-事务共用同一-sqlsession}
+### 7.1 PageHelper 分页 SQL 改写 {#pagehelper-分页-sql-改写}
 
-使用 MyBatis-Spring 且事务管理器与 SqlSessionFactory 使用同一 DataSource 时，SqlSession 的创建、复用和提交由 Spring 事务同步管理。同一事务内的 Mapper 调用通常使用绑定到当前线程的 Session；直接手工创建另一个 Session 会脱离当前事务和一级缓存范围。
+以 PageHelper 6.1.1 为例，`PageInterceptor` 拦截 `Executor.query` 的四参数和六参数重载。`PageHelper.startPage(2, 10)` 将页码、页大小放入当前线程的分页上下文，紧随其后的 Mapper 查询进入拦截器：
 
-DefaultSqlSession 不是线程安全对象，应按单次工作单元管理；线程安全的 SqlSessionTemplate 根据当前事务取得实际 Session。事务外多次 Mapper 调用通常各自完成会话生命周期，不应期待跨调用命中同一个一级缓存。
+1. 取得 `MappedStatement`、参数、`BoundSql` 和 `CacheKey`，判断是否启用分页。
+2. 启用 count 时执行计数查询，再通过数据库方言生成分页 SQL。
+3. MySQL 方言为第二页、每页 10 条生成 `LIMIT ?, ?`，绑定 offset=10、pageSize=10，同时处理参数映射、动态 SQL 附加参数与分页缓存键。
+4. 用新的 BoundSql 调用 Executor 执行数据库分页，返回分页结果，并在 finally 路径清理分页上下文。
 
-Mapper 方法正常返回不等于外层事务已经提交。缓存可见性、批处理 flush 和连接释放都要结合外层事务边界判断。
+例如 `SELECT id FROM orders ORDER BY id` 会在 JDBC 执行前变为带 LIMIT 的 SQL。`RowBounds.DEFAULT` 传给后续执行器，分页工作由改写后的 SQL 完成。`startPage` 后应立即执行目标查询；分支跳过查询或异常发生在拦截器进入前时，需要调用 `PageHelper.clearPage()` 清理线程上下文，避免线程复用影响下一次查询。
+
+## 8. Spring 事务与 SqlSession {#7-与-spring-事务共用同一-sqlsession}
+
+使用 MyBatis-Spring 且事务管理器与 SqlSessionFactory 使用同一 DataSource 时，SqlSession 的创建、复用和提交由 Spring 事务同步管理。同一事务内、经同一 SqlSessionFactory 的 Mapper 调用使用绑定的 Session；直接手工创建另一个 Session 会脱离当前事务和一级缓存范围。
+
+DefaultSqlSession 不是线程安全对象，应按单次工作单元管理；线程安全的 SqlSessionTemplate 根据当前事务取得实际 Session。事务外的多次 Mapper 调用各自完成会话生命周期，一级缓存随各次 Session 结束。
+
+Mapper 返回后，外层事务仍可继续执行或回滚。缓存可见性、批处理 flush 和连接释放都要结合外层事务边界判断。
 
 ## 9. 动态 SQL 与结果映射 {#动态-sql-与结果映射}
 
-动态 SQL 在运行时根据参数生成 BoundSql。`<if>` 决定片段是否存在，`<where>` 处理 WHERE 及开头连接词，`<foreach>` 生成列表参数。空集合、空字符串和 null 的语义必须由业务明确，不能让“没有筛选条件”意外变成全表操作。
+动态 SQL 在运行时根据参数生成 BoundSql。`<if>` 决定片段是否存在，`<where>` 处理 WHERE 及开头连接词，`<foreach>` 生成列表参数。空集合、空字符串和 null 的语义必须由业务明确，缺少必需筛选条件时应拒绝执行全表操作。
 
 `resultType` 适合简单结果自动映射；`resultMap` 用于显式列映射、构造器、association 与 collection 等复杂结构。一对多映射应明确对象标识，避免把同一主记录反复创建。多参数 Mapper 可用 `@Param` 给出稳定名称，避免依赖编译器参数名设置。
 
-嵌套 select 可能把一次列表查询变成 N+1 次访问；延迟加载只是推迟触发，不会消除查询数量。对照实际 SQL 日志决定 join、批量加载或分页策略，不能只看 Mapper 方法调用次数。
+列表查询逐项触发嵌套 select 会形成 N+1 次访问；延迟加载将关联查询推迟到访问属性时。关联访问频繁时，可通过 join 或批量加载减少查询次数。
+
+### 9.1 关联属性的延迟加载 {#关联属性的延迟加载}
+
+MyBatis 3.5.19 为带延迟关联的结果对象创建代理，默认 `proxyFactory=JAVASSIST`。`association` 或 `collection` 的嵌套 select 对应一个 `ResultLoader`，加载器保存在 `ResultLoaderMap` 中；触发属性读取时，代理执行关联查询并写回该属性。
+
+```xml
+<association property="user" column="user_id"
+             select="findUserById" fetchType="lazy"/>
+```
+
+此片段放在订单的 resultMap 中，`findUserById` 接收 `user_id` 查询用户。主查询返回订单后，`order.getUser()` 触发尚未完成的 user 加载；后续访问使用已填充的属性。
+
+全局 `lazyLoadingEnabled` 默认 false，配置为 true 可启用延迟关联；单个关联的 `fetchType="lazy"` 或 `"eager"` 覆盖全局设置。`aggressiveLazyLoading=false` 时按属性加载，默认 `lazyLoadTriggerMethods=equals,clone,hashCode,toString` 中的方法会触发全部待加载属性；设置为 true 时，普通方法调用也会触发全部加载。打印对象或序列化调用 getter 都能提前触发 SQL。
+
+加载发生在原 Executor 已关闭或其他线程时，`ResultLoader` 会通过已配置的 Environment/DataSource 创建新 Executor 执行查询，事务范围也随之改变。需要事务内一致性的关联数据，应在事务结束前完成加载；逐项访问列表关联的 N+1 查询应通过批量加载或 join 处理。
 
 ## 10. 常见问题 {#8-常见问题}
 
-### 10.1 MyBatis 一级缓存会导致脏读吗 {#81-mybatis-一级缓存会导致脏读吗}
+### 10.1 缓存旧值与脏读 {#81-mybatis-一级缓存会导致脏读吗}
 
-一级缓存可能让同一 SqlSession 重复读取到旧的本地对象，而没有再次访问数据库；这属于缓存与数据库之间的数据新鲜度问题。数据库“脏读”专指读取另一个事务尚未提交的修改，不能把缓存旧值直接称为脏读。排查时先确认 Session 范围、更新和缓存命中情况，再核对数据库隔离级别。
+一级缓存命中时会返回 SqlSession 中已有的对象，跳过数据库查询，形成数据新鲜度问题；数据库脏读则专指读取另一事务尚未提交的修改。排查时先确认 Session 范围、更新和缓存命中情况，再核对数据库隔离级别。
 
-### 10.2 插件可以拦截任意 MyBatis 方法吗 {#82-插件可以拦截任意-mybatis-方法吗}
+### 10.2 插件拦截范围 {#82-插件可以拦截任意-mybatis-方法吗}
 
-不能。官方插件机制只支持规定的四类接口及其方法。需要修改其他行为时，应使用明确扩展点或封装层，避免依赖内部类的偶然实现。
+官方插件机制支持 Executor、StatementHandler、ParameterHandler、ResultSetHandler 的规定方法。需要修改其他行为时，应使用明确扩展点或封装层，避免依赖内部类的偶然实现。
 
 ## 11. 面试题 {#9-面试题}
 
@@ -147,12 +173,12 @@ Mapper 方法正常返回不等于外层事务已经提交。缓存可见性、�
 - Executor 与 JDBC 处理组件的职责。
 - 本地缓存、插件和事务所在位置。
 
-**相关内容**：[映射配置形成 MappedStatement](#1-映射配置形成-mappedstatement)、[一次查询经过多个处理组件](#2-一次查询经过多个处理组件)、[与 Spring 事务共用同一 SqlSession](#7-与-spring-事务共用同一-sqlsession)。
+**相关内容**：[MappedStatement 与 Mapper 代理](#1-映射配置形成-mappedstatement)、[查询执行链路](#2-一次查询经过多个处理组件)、[Spring 事务与 SqlSession](#7-与-spring-事务共用同一-sqlsession)。
 
 <details>
 <summary>参考回答</summary>
 
-启动时，XML 或注解被解析为 Configuration 中的 MappedStatement。调用 Mapper 接口时，动态代理根据接口与方法定位 statement，交给 SqlSession 和 Executor；Executor 在未命中相应缓存后调用 StatementHandler，后者通过 ParameterHandler 绑定 PreparedStatement 参数，执行后由 ResultSetHandler 映射结果。
+查询由 Mapper 代理定位 MappedStatement，经 SqlSession 和 Executor 组织 JDBC 执行，再映射为结果对象。启动时，XML 或注解被解析为 Configuration 中的 MappedStatement。调用 Mapper 接口时，动态代理根据接口与方法定位 statement，交给 SqlSession 和 Executor；Executor 在未命中相应缓存后调用 StatementHandler，后者通过 ParameterHandler 绑定 PreparedStatement 参数，执行后由 ResultSetHandler 映射结果。
 
 插件只能包装 Executor、StatementHandler、ParameterHandler 和 ResultSetHandler 的指定方法。使用 MyBatis-Spring 时，SqlSession 与外层 Spring 事务同步，因此批处理执行、一级缓存和连接释放都要结合事务边界判断。
 
@@ -169,12 +195,12 @@ Mapper 方法正常返回不等于外层事务已经提交。缓存可见性、�
 - 值绑定与文本替换。
 - 标识符白名单与参数命名。
 
-**相关内容**：[参数占位符与字符串替换用途不同](#4-参数占位符与字符串替换用途不同)。
+**相关内容**：[参数占位符与字符串替换](#4-参数占位符与字符串替换用途不同)。
 
 <details>
 <summary>参考回答</summary>
 
-`#{}` 转成占位符并绑定数据值，`${}` 把内容作为 SQL 文本拼入。列名与排序方向不能用普通值占位符表示，应从枚举或固定映射中选择，再拼入受控标识符；用户传入的任意字符串不能直接用于 `${}`。多个方法参数用 `@Param` 明确名称。
+`#{}` 转成占位符并绑定数据值，`${}` 把内容作为 SQL 文本拼入。列名与排序方向属于 SQL 语法，应从枚举或固定映射中选择后用于 `${}`。多个方法参数用 `@Param` 明确名称。
 
 </details>
 
@@ -189,18 +215,18 @@ Mapper 方法正常返回不等于外层事务已经提交。缓存可见性、�
 - Session 与 namespace。
 - 事务发布、跨 Mapper 写入和外部更新。
 
-**相关内容**：[一级缓存属于 SqlSession](#5-一级缓存属于-sqlsession)、[与 Spring 事务共用同一 SqlSession](#7-与-spring-事务共用同一-sqlsession)。
+**相关内容**：[一级缓存与二级缓存](#5-一级缓存属于-sqlsession)、[Spring 事务与 SqlSession](#7-与-spring-事务共用同一-sqlsession)。
 
 <details>
 <summary>参考回答</summary>
 
-一级缓存随 SqlSession，默认可跨该 Session 的语句共享，更新、提交、回滚、关闭等会清理。二级缓存需按 namespace 配置，可在会话事务完成后供其他会话复用，默认写语句刷新所属缓存。它不按所有数据库表变化自动失效，跨 namespace 和外部写入都要单独设计一致性策略。Spring 事务外的多次调用也不能按一个长 Session 理解。
+一级缓存默认 `localCacheScope=SESSION`，可跨同一 Session 的语句共享，更新、提交、回滚、关闭等会清理。二级缓存需按 namespace 配置，可在会话事务完成后供其他会话复用，默认写语句刷新所属缓存。它不按所有数据库表变化自动失效，跨 namespace 和外部写入都要单独设计一致性策略。Spring 事务外每次调用各自管理 Session 生命周期。
 
 </details>
 
 ### 11.4 使用 BATCH 时，flushStatements、Mapper 返回和事务提交分别代表什么？ {#batch-flush}
 
-<!-- 面试来源：本站自测：根据本文机制与参考资料设计，无已核验的公司归属。 -->
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
 **出现公司**：暂无已核验的公开来源（本站自测）
 
@@ -209,18 +235,18 @@ Mapper 方法正常返回不等于外层事务已经提交。缓存可见性、�
 - 批处理积累、执行与提交。
 - 驱动结果和失败回滚。
 
-**相关内容**：[Executor 决定语句复用与批处理方式](#3-executor-决定语句复用与批处理方式)。
+**相关内容**：[Executor 与批处理](#3-executor-决定语句复用与批处理方式)。
 
 <details>
 <summary>参考回答</summary>
 
-Mapper 调用可能仅将操作加入批次，返回值不是最终影响行数。flushStatements 触发 JDBC 批处理并暴露结果或异常，之后仍需提交事务才能使修改提交。中间查询也可能刷新批次，应检查事务配置、BatchResult 和驱动批处理能力；失败时不要把已经 flush 等同于已经 commit。
+`ExecutorType.BATCH` 下 Mapper 更新调用将操作加入批次并返回占位值，`flushStatements()` 执行 JDBC 批处理，commit 提交事务。影响行数以 BatchResult 中的驱动结果为准；查询进入 BatchExecutor.doQuery 时会先刷新批次，执行失败应按事务边界处理回滚。
 
 </details>
 
 ### 11.5 MyBatis 插件能拦截哪些组件，为什么只修改 SQL 文本可能出错？ {#plugin-boundaries}
 
-<!-- 面试来源：本站自测：根据本文机制与参考资料设计，无已核验的公司归属。 -->
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
 **出现公司**：暂无已核验的公开来源（本站自测）
 
@@ -229,12 +255,46 @@ Mapper 调用可能仅将操作加入批次，返回值不是最终影响行数�
 - 四类接口及插件代理顺序。
 - 参数映射、缓存键与最终 SQL。
 
-**相关内容**：[插件只拦截指定扩展点](#6-插件只拦截指定扩展点)。
+**相关内容**：[插件扩展点](#6-插件只拦截指定扩展点)。
 
 <details>
 <summary>参考回答</summary>
 
-可拦截 Executor、StatementHandler、ParameterHandler、ResultSetHandler 的声明方法。若改写 SQL 却没有同步参数映射或在错误时机修改缓存相关条件，可能出现绑定错位或错误缓存命中。多个插件还存在嵌套顺序，应检查最终 BoundSql、参数和缓存命中，不能认为任意内部方法都能被插件机制拦截。
+可拦截 Executor、StatementHandler、ParameterHandler、ResultSetHandler 的声明方法。若改写 SQL 却没有同步参数映射或在错误时机修改缓存相关条件，会造成绑定错位或错误缓存命中。多个插件还存在嵌套顺序，应检查最终 BoundSql、参数和缓存命中。
+
+</details>
+
+### 11.6 PageHelper 怎样让 Mapper 查询变成数据库分页？ {#pagehelper-rewrite}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：Executor 拦截、方言 SQL、参数与分页缓存键。
+
+**相关内容**：[PageHelper 分页 SQL 改写](#pagehelper-分页-sql-改写)。
+
+<details>
+<summary>参考回答</summary>
+
+PageHelper 的 PageInterceptor 拦截 `Executor.query`，根据分页上下文和方言生成 count 与分页 SQL，再携带更新后的 BoundSql、参数和 CacheKey 执行查询。MySQL 下 `startPage(2,10)` 对应 offset=10、pageSize=10 的 LIMIT；拦截器 finally 清理线程上下文，未进入查询的分支需自行 clearPage。
+
+</details>
+
+### 11.7 MyBatis 延迟加载怎样实现，哪些调用会触发关联 SQL？ {#lazy-loading-triggers}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：结果代理、ResultLoader、按需加载与提前触发。
+
+**相关内容**：[关联属性的延迟加载](#关联属性的延迟加载)。
+
+<details>
+<summary>参考回答</summary>
+
+MyBatis 为结果对象建立代理并保存关联的 ResultLoader，访问未加载属性时执行嵌套 select，再填充属性。`lazyLoadingEnabled=true` 或关联 `fetchType="lazy"` 启用延迟加载；`aggressiveLazyLoading=false` 按属性触发，默认 equals、clone、hashCode、toString 仍触发全部待加载属性，设为 true 则普通方法调用也会加载全部关联。列表逐项访问关联仍会产生 N+1 查询。
 
 </details>
 
@@ -243,7 +303,12 @@ Mapper 调用可能仅将操作加入批次，返回值不是最终影响行数�
 - [MyBatis：Mapper XML Files](https://mybatis.org/mybatis-3/sqlmap-xml.html)
 - [MyBatis：Java API](https://mybatis.org/mybatis-3/java-api.html)
 - [MyBatis：Configuration](https://mybatis.org/mybatis-3/configuration.html)
-
 - [MyBatis-Spring：SqlSessionTemplate](https://mybatis.org/spring/sqlsession.html)
 - [MyBatis-Spring：Transactions](https://mybatis.org/spring/transactions.html)
 - [MyBatis：Dynamic SQL](https://mybatis.org/mybatis-3/dynamic-sql.html)
+- [PageHelper 6.1.1：PageInterceptor](https://github.com/pagehelper/Mybatis-PageHelper/blob/v6.1.1/src/main/java/com/github/pagehelper/PageInterceptor.java)
+- [PageHelper 6.1.1：ExecutorUtil](https://github.com/pagehelper/Mybatis-PageHelper/blob/v6.1.1/src/main/java/com/github/pagehelper/util/ExecutorUtil.java)
+- [PageHelper 6.1.1：MySqlDialect](https://github.com/pagehelper/Mybatis-PageHelper/blob/v6.1.1/src/main/java/com/github/pagehelper/dialect/helper/MySqlDialect.java)
+- [PageHelper：使用方法](https://github.com/pagehelper/Mybatis-PageHelper/blob/v6.1.1/wikis/zh/HowToUse.md)
+- [MyBatis 3.5.19：JavassistProxyFactory](https://github.com/mybatis/mybatis-3/blob/mybatis-3.5.19/src/main/java/org/apache/ibatis/executor/loader/javassist/JavassistProxyFactory.java)
+- [MyBatis 3.5.19：ResultLoader](https://github.com/mybatis/mybatis-3/blob/mybatis-3.5.19/src/main/java/org/apache/ibatis/executor/loader/ResultLoader.java)
