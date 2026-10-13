@@ -83,7 +83,7 @@ try {
 
 协作终止要求任务响应中断或停止条件。退出前还需释放锁、连接和其他资源。完整协议见 [任务取消](./interruption-timeout-cancellation.mdx)。
 
-Java 26 的 `Thread.stop()` 始终抛出 `UnsupportedOperationException`。旧实现的强制终止会破坏受锁保护的状态，因此已弃用。
+Java 17 的 `Thread.stop()` 会强制终止线程并释放 monitor。这会暴露未完成的状态，因此该方法已弃用。Java 21 中，该方法始终抛出 `UnsupportedOperationException`。
 
 线程池关闭通过 ExecutorService 管理。排队任务的处理见 [Java 线程池](./threadpoolexecutor-execution-path.mdx#线程池关闭与终止)。
 
@@ -182,8 +182,9 @@ System.out.println(Thread.interrupted());
 
 ## 11. 参考资料 {#参考资料}
 
-- [Java API：`Thread`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/Thread.html)
-- [Java API：`Thread.State`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/Thread.State.html)
-- [Java API：`ExecutorService`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/ExecutorService.html)
-- [Java 26 API：LockSupport](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/locks/LockSupport.html)
-- [Java 26 API：InterruptibleChannel](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/nio/channels/InterruptibleChannel.html)
+- [Java API：`Thread`](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/Thread.html)
+- [Java 17 API：Thread.stop](https://docs.oracle.com/en/java/javase/17/docs/api/java.base/java/lang/Thread.html#stop())
+- [Java API：`Thread.State`](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/Thread.State.html)
+- [Java API：`ExecutorService`](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/ExecutorService.html)
+- [Java 21 API：LockSupport](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/locks/LockSupport.html)
+- [Java 21 API：InterruptibleChannel](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/nio/channels/InterruptibleChannel.html)

@@ -57,7 +57,7 @@ long observedRequests() {
 }
 ```
 
-OpenJDK 26 的实现使用 `base` 和 Cell 数组。低竞争时可以直接更新 `base`。竞争发生后，更新分散到不同 Cell。`sum()` 读取 `base` 并累加各 Cell。
+OpenJDK 21 的实现使用 `base` 和 Cell 数组。低竞争时可以直接更新 `base`。竞争发生后，更新分散到不同 Cell。`sum()` 读取 `base` 并累加各 Cell。
 
 分散更新减少单点竞争，也增加空间开销。读取成本随 Cell 数量增加。示例适合请求统计，返回值用于观测。
 
@@ -145,7 +145,7 @@ AtomicReference<State> state =
 
 ## 10. 参考资料 {#参考资料}
 
-- [Java API：`AtomicLong`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/atomic/AtomicLong.html)
-- [Java API：`LongAdder`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/atomic/LongAdder.html)
-- [OpenJDK 26：Striped64](https://github.com/openjdk/jdk/blob/jdk-26%2B35/src/java.base/share/classes/java/util/concurrent/atomic/Striped64.java)
-- [Java 26 API：AtomicReference](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/atomic/AtomicReference.html)
+- [Java API：`AtomicLong`](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/atomic/AtomicLong.html)
+- [Java API：`LongAdder`](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/atomic/LongAdder.html)
+- [OpenJDK 21：Striped64](https://github.com/openjdk/jdk/blob/jdk-21-ga/src/java.base/share/classes/java/util/concurrent/atomic/Striped64.java)
+- [Java 21 API：AtomicReference](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/atomic/AtomicReference.html)

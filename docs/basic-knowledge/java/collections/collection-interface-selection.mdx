@@ -14,7 +14,7 @@ import {javaCollectionsReview} from '@site/src/data/reviewPlans/javaCollections'
 
 <ReviewReading plan={javaCollectionsReview} stepId="collections-selection" />
 
-Java 集合接口描述位置、唯一性、键值关联和取出规则。本文负责接口契约与选型入口，采用 Java 26 API。
+Java 集合接口描述位置、唯一性、键值关联和取出规则。本文负责接口契约与选型入口，采用 Java 21 API。
 
 具体实现分别见 [ArrayList](./arraylist-growth-memory-locality.mdx)、[HashMap](./hashmap-structure-lookup-path.mdx) 与 [TreeMap 与 TreeSet](./treemap-treeset-ordered-query.mdx)。
 
@@ -190,7 +190,7 @@ Queue<Task> tasks = new PriorityQueue<>(
 
 ## 8. 优先队列的遍历与复杂度 {#优先队列的遍历与复杂度}
 
-Java 26 的 PriorityQueue 使用优先堆。`offer` 和 `poll` 为 O(log n)，`peek` 为 O(1)。按对象调用 `contains`、`remove` 需线性查找。
+Java 21 的 PriorityQueue 使用优先堆。`offer` 和 `poll` 为 O(log n)，`peek` 为 O(1)。按对象调用 `contains`、`remove` 需线性查找。
 
 迭代器按内部存储遍历，结果未整体排序。需要升序输出时，应连续 `poll`。这会消费原队列，保留原数据时先复制。相同优先级的元素可按任意次序取出。
 
@@ -288,12 +288,12 @@ HashSet 把元素作为 HashMap 的键。哈希定位候选桶，equals 确认�
 
 ## 11. 参考资料 {#参考资料}
 
-- [Java API：Collection](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/Collection.html)
-- [Java API：List](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/List.html)
-- [Java API：Set](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/Set.html)
-- [Java API：Map](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/Map.html)
-- [Java API：Queue](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/Queue.html)
-- [Java API：Deque](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/Deque.html)
-- [Java 26：PriorityQueue](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/PriorityQueue.html)
-- [Java 26：SequencedCollection](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/SequencedCollection.html)
-- [Java 26：HashSet](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/HashSet.html)
+- [Java API：Collection](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/Collection.html)
+- [Java API：List](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/List.html)
+- [Java API：Set](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/Set.html)
+- [Java API：Map](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/Map.html)
+- [Java API：Queue](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/Queue.html)
+- [Java API：Deque](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/Deque.html)
+- [Java 21：PriorityQueue](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/PriorityQueue.html)
+- [Java 21：SequencedCollection](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/SequencedCollection.html)
+- [Java 21：HashSet](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/HashSet.html)

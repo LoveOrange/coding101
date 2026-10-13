@@ -124,7 +124,7 @@ CPU 密集任务持续占用核心。并行度增加到计算容量上限后，�
 
 ## 8. 线程池关闭与终止 {#线程池关闭与终止}
 
-OpenJDK 26 用五种状态管理线程池：
+OpenJDK 21 用五种状态管理线程池：
 
 | 状态 | 行为 |
 | --- | --- |
@@ -300,10 +300,10 @@ shutdownNow 返回排队任务，供调用方处理。运行任务仍需响应�
 
 ## 12. 参考资料 {#参考资料}
 
-- [Java API：ThreadPoolExecutor](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/ThreadPoolExecutor.html)
-- [OpenJDK：ThreadPoolExecutor 源码](https://github.com/openjdk/jdk/blob/jdk-26%2B35/src/java.base/share/classes/java/util/concurrent/ThreadPoolExecutor.java)
-- [Java API：RejectedExecutionHandler](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/RejectedExecutionHandler.html)
-- [Java API：BlockingQueue](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/BlockingQueue.html)
-- [Java 26 API：ExecutorService](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/ExecutorService.html)
-- [Java 26 API：Executors](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/Executors.html)
-- [Java 26 API：FutureTask](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/FutureTask.html)
+- [Java API：ThreadPoolExecutor](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/ThreadPoolExecutor.html)
+- [OpenJDK：ThreadPoolExecutor 源码](https://github.com/openjdk/jdk/blob/jdk-21-ga/src/java.base/share/classes/java/util/concurrent/ThreadPoolExecutor.java)
+- [Java API：RejectedExecutionHandler](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/RejectedExecutionHandler.html)
+- [Java API：BlockingQueue](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/BlockingQueue.html)
+- [Java 21 API：ExecutorService](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/ExecutorService.html)
+- [Java 21 API：Executors](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/Executors.html)
+- [Java 21 API：FutureTask](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/FutureTask.html)

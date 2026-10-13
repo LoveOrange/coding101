@@ -7,7 +7,7 @@ knowledge:
 
 # ConcurrentLinkedQueue
 
-`ConcurrentLinkedQueue` 是无界 FIFO 并发队列。本文负责 OpenJDK 26 的 CAS 入队、出队与进展保证。
+`ConcurrentLinkedQueue` 是无界 FIFO 并发队列。本文负责 OpenJDK 21 的 CAS 入队、出队与进展保证。
 
 容量和阻塞等待见 [BlockingQueue](./blockingqueue-producer-consumer.mdx)。遍历视图见 [迭代一致性](./concurrent-collection-iteration-consistency.mdx)。
 
@@ -65,7 +65,7 @@ offer 与 poll 使用无锁算法。高竞争时仍需承担这些成本：
 int pending = queue.size();
 ```
 
-OpenJDK 26 的 size 通过遍历统计有效节点，成本为 O(n)。并发入队与出队会影响统计结果。
+OpenJDK 21 的 size 通过遍历统计有效节点，成本为 O(n)。并发入队与出队会影响统计结果。
 
 因此不要写：
 
@@ -194,6 +194,6 @@ head、tail 可稍后推进，其他线程能协助完成。整体算法提供 l
 
 ## 12. 参考资料 {#参考资料}
 
-- [Java API：ConcurrentLinkedQueue](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/ConcurrentLinkedQueue.html)
-- [OpenJDK：ConcurrentLinkedQueue 源码](https://github.com/openjdk/jdk/blob/jdk-26-ga/src/java.base/share/classes/java/util/concurrent/ConcurrentLinkedQueue.java)
-- [Java API：LinkedBlockingQueue](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/LinkedBlockingQueue.html)
+- [Java API：ConcurrentLinkedQueue](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/ConcurrentLinkedQueue.html)
+- [OpenJDK：ConcurrentLinkedQueue 源码](https://github.com/openjdk/jdk/blob/jdk-21-ga/src/java.base/share/classes/java/util/concurrent/ConcurrentLinkedQueue.java)
+- [Java API：LinkedBlockingQueue](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/LinkedBlockingQueue.html)

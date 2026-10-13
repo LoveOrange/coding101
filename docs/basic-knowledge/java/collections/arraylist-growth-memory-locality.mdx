@@ -14,14 +14,14 @@ import {javaCollectionsReview} from '@site/src/data/reviewPlans/javaCollections'
 
 <ReviewReading plan={javaCollectionsReview} stepId="collections-arraylist" />
 
-`ArrayList` 用连续引用数组保存元素。本文负责容量管理、扩容、搬移和视图成本。实现细节以 OpenJDK 26 为准。
+`ArrayList` 用连续引用数组保存元素。本文负责容量管理、扩容、搬移和视图成本。实现细节以 OpenJDK 21 为准。
 
 链表定位成本见 [LinkedList](./linkedlist-semantics-cost.mdx)。固定大小与只读列表见 [集合迭代器](./iterator-fail-fast-immutable.mdx)。
 
 ## 1. 面试核心 {#core}
 
 - `ArrayList` 的 `get`、`set` 按下标访问，成本为 O(1)。
-- OpenJDK 26 的扩容首选增量是旧容量的一半。[卡](#arraylist-growth)
+- OpenJDK 21 的扩容首选增量是旧容量的一半。[卡](#arraylist-growth)
 - 尾部追加摊销 O(1)，单次扩容复制为 O(n)。[卡](#arraylist-growth)
 - 中间插入和删除搬移后续引用，最坏为 O(n)。[卡](#arraylist-vs-linkedlist)
 - `subList` 共享原列表，复制子列表才能隔离结构变化。[卡](#sublist-retention)
@@ -59,7 +59,7 @@ O(n) 描述增长趋势。连续数组复制与链表跳转的实际耗时仍有
 users.add(user);
 ```
 
-容量不足时，OpenJDK 26 会：
+容量不足时，OpenJDK 21 会：
 
 1. 根据最小需要容量计算新容量。
 2. 首选增加旧容量的一半，并满足最小所需容量。
@@ -105,7 +105,7 @@ users.add(0, user);
 - 中间插入、删除最坏为 O(n)。
 - 按值删除先线性查找，再搬移后续引用。
 
-倒序删除可避免索引错位，却仍会反复搬移。OpenJDK 26 的 `removeIf` 会集中压缩保留元素。
+倒序删除可避免索引错位，却仍会反复搬移。OpenJDK 21 的 `removeIf` 会集中压缩保留元素。
 
 <details>
 <summary>后续阅读：subList 视图</summary>
@@ -144,7 +144,7 @@ if (!users.contains(user)) {
 
 ## 9. 子列表的内存保留 {#子列表的内存保留}
 
-OpenJDK 26 的 `SubList` 保存 `root`、`parent` 和偏移量。只保留一个小视图，也会保留根列表及其数组。根列表中的其他元素引用因此仍可达。
+OpenJDK 21 的 `SubList` 保存 `root`、`parent` 和偏移量。只保留一个小视图，也会保留根列表及其数组。根列表中的其他元素引用因此仍可达。
 
 需要长期保存一页结果时，可复制这一页：
 
@@ -158,7 +158,7 @@ List<String> page = new ArrayList<>(all.subList(0, 10));
 
 ### 10.1 默认容量与延迟分配 {#默认容量与延迟分配}
 
-OpenJDK 26 的无参构造先使用共享空数组。首次单元素 `add` 分配容量 10。显式指定容量 0 时，首次单元素 `add` 分配容量 1。
+OpenJDK 21 的无参构造先使用共享空数组。首次单元素 `add` 分配容量 10。显式指定容量 0 时，首次单元素 `add` 分配容量 1。
 
 ### 10.2 Arrays.asList 的列表类型 {#arrays.aslist-的列表类型}
 
@@ -196,7 +196,7 @@ ArrayList 需要管理容量，基本类型元素还需装箱。Java 数组访�
 <details>
 <summary>参考回答</summary>
 
-ArrayList 容量不足时分配新数组并复制引用。OpenJDK 26 首选增加旧容量的一半。最小所需容量更大时，按所需容量增长。
+ArrayList 容量不足时分配新数组并复制引用。OpenJDK 21 首选增加旧容量的一半。最小所需容量更大时，按所需容量增长。
 
 连续追加的摊销成本是 O(1)，单次扩容为 O(n)。指定初始容量可减少分配和复制。预留过大则让空槽长期占用内存。
 
@@ -243,13 +243,13 @@ LinkedList 按索引定位为 O(n)。已有迭代位置时，局部插入删除�
 <details>
 <summary>参考回答</summary>
 
-子列表持有根列表，所以会间接保留整个底层数组。OpenJDK 26 仍采用这种实现。`new ArrayList<>(subList)` 可隔离列表结构。副本中的元素引用仍与原列表共享。
+子列表持有根列表，所以会间接保留整个底层数组。OpenJDK 21 仍采用这种实现。`new ArrayList<>(subList)` 可隔离列表结构。副本中的元素引用仍与原列表共享。
 
 </details>
 
 ## 12. 参考资料 {#参考资料}
 
-- [Java API：ArrayList](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/ArrayList.html)
-- [OpenJDK：ArrayList 源码](https://github.com/openjdk/jdk/blob/jdk-26-ga/src/java.base/share/classes/java/util/ArrayList.java)
-- [Java API：Arrays.asList](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/Arrays.html#asList(T...))
-- [Java API：List.subList](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/List.html#subList(int,int))
+- [Java API：ArrayList](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/ArrayList.html)
+- [OpenJDK：ArrayList 源码](https://github.com/openjdk/jdk/blob/jdk-21-ga/src/java.base/share/classes/java/util/ArrayList.java)
+- [Java API：Arrays.asList](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/Arrays.html#asList(T...))
+- [Java API：List.subList](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/List.html#subList(int,int))

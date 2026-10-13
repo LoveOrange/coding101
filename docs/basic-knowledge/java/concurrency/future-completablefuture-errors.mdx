@@ -12,7 +12,7 @@ knowledge:
 ## 1. 面试核心 {#core}
 
 - `thenCompose` 展平异步阶段，`thenCombine` 合并两个结果。
-- Java 26 的 `*Async` 默认使用 `ForkJoinPool.commonPool()`。[卡](#completablefuture-errors-executor)
+- Java 17/21 的 `*Async` 在公共池并行度大于 1 时默认使用该池。[卡](#completablefuture-errors-executor)
 - `whenComplete` 回调抛错能使后续阶段异常完成。[卡](#completion-observer-failure)
 - `allOf` 等待全部完成，任一失败会使聚合结果失败。[卡](#allof-anyof-failure)
 - `CompletableFuture.cancel(true)` 以异常完成表达取消。
@@ -54,7 +54,7 @@ CompletableFuture<OrderView> view =
 
 非 `Async` 回调可由完成当前阶段的线程执行。其他调用完成方法的线程也能执行回调。已完成阶段上注册回调时，调用线程也可直接执行。
 
-Java 26 中，默认异步执行器是 `ForkJoinPool.commonPool()`。子类可通过 `defaultExecutor()` 改写实例方法的默认值。显式传入 Executor 时，回调使用该执行器。
+Java 17/21 默认使用 `ForkJoinPool.commonPool()`。公共池并行度小于 2 时，每个异步任务新建一个线程。子类可通过 `defaultExecutor()` 改写实例方法的默认值。显式传入 Executor 时，回调使用该执行器。
 
 慢 I/O 会占用执行回调的线程。需要隔离的业务应使用独立执行器。容量与拒绝规则见 [Java 线程池](./threadpoolexecutor-execution-path.mdx)。
 
@@ -131,7 +131,7 @@ CompletableFuture<Integer> next =
 <details>
 <summary>参考回答</summary>
 
-慢回调应显式选择执行器，异常应在业务边界处理。非 `Async` 回调可占用完成线程。Java 26 的默认异步执行器是 common pool。
+慢回调应显式选择执行器，异常应在业务边界处理。非 `Async` 回调可占用完成线程。Java 17/21 默认使用 common pool。公共池并行度小于 2 时，每个异步任务新建一个线程。
 
 `exceptionally` 正常返回会把失败恢复为成功。业务允许降级时才返回默认值。`orTimeout` 使当前结果超时完成。底层 I/O 的停止需要独立取消机制。
 
@@ -173,5 +173,5 @@ CompletableFuture<Integer> next =
 
 ## 11. 参考资料 {#参考资料}
 
-- [Java API：`Future`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/Future.html)
-- [Java API：`CompletableFuture`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/CompletableFuture.html)
+- [Java API：`Future`](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/Future.html)
+- [Java API：`CompletableFuture`](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/CompletableFuture.html)

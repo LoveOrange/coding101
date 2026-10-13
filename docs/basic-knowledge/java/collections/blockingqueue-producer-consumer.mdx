@@ -7,7 +7,7 @@ knowledge:
 
 # BlockingQueue
 
-`BlockingQueue` 为入队和出队提供等待协议。本文负责方法选择、有界背压和停机。实现细节以 OpenJDK 26 为准。
+`BlockingQueue` 为入队和出队提供等待协议。本文负责方法选择、有界背压和停机。实现细节以 OpenJDK 21 为准。
 
 非阻塞队列的 CAS 路径见 [ConcurrentLinkedQueue](./concurrentlinkedqueue-lock-free-path.mdx)。
 
@@ -97,11 +97,11 @@ final class Worker implements Runnable {
 
 ### 5.1 ArrayBlockingQueue {#arrayblockingqueue}
 
-OpenJDK 26 使用固定容量循环数组。生产和消费共用一把锁，并分别等待两个条件。构造时可选择公平模式。
+OpenJDK 21 使用固定容量循环数组。生产和消费共用一把锁，并分别等待两个条件。构造时可选择公平模式。
 
 ### 5.2 LinkedBlockingQueue {#linkedblockingqueue}
 
-队列使用链式节点，可指定容量。默认上限是 `Integer.MAX_VALUE`，内存会先成为瓶颈。OpenJDK 26 分别使用 put 锁和 take 锁。入队与出队可重叠，每次入队需分配节点。
+队列使用链式节点，可指定容量。默认上限是 `Integer.MAX_VALUE`，内存会先成为瓶颈。OpenJDK 21 分别使用 put 锁和 take 锁。入队与出队可重叠，每次入队需分配节点。
 
 ### 5.3 SynchronousQueue {#synchronousqueue}
 
@@ -212,7 +212,7 @@ ArrayBlockingQueue 的公平模式按等待顺序协调访问。公平排队有�
 
 固定容量且希望减少节点分配时，选择 ArrayBlockingQueue。需要链式缓冲时，可使用有界 LinkedBlockingQueue。无需缓冲、只做直接交接时，使用 SynchronousQueue。
 
-OpenJDK 26 的前者共用一把主锁。LinkedBlockingQueue 分别使用 put 锁和 take 锁。吞吐仍需结合负载、分配与容量验证。
+OpenJDK 21 的前者共用一把主锁。LinkedBlockingQueue 分别使用 put 锁和 take 锁。吞吐仍需结合负载、分配与容量验证。
 
 </details>
 
@@ -235,10 +235,10 @@ OpenJDK 26 的前者共用一把主锁。LinkedBlockingQueue 分别使用 put �
 
 ## 11. 参考资料 {#参考资料}
 
-- [Java API：BlockingQueue](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/BlockingQueue.html)
-- [Java API：ArrayBlockingQueue](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/ArrayBlockingQueue.html)
-- [Java API：LinkedBlockingQueue](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/LinkedBlockingQueue.html)
-- [Java API：SynchronousQueue](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/SynchronousQueue.html)
-- [Java API：DelayQueue](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/DelayQueue.html)
-- [Java 26：PriorityBlockingQueue](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/PriorityBlockingQueue.html)
-- [OpenJDK 26：LinkedBlockingQueue](https://github.com/openjdk/jdk/blob/jdk-26-ga/src/java.base/share/classes/java/util/concurrent/LinkedBlockingQueue.java)
+- [Java API：BlockingQueue](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/BlockingQueue.html)
+- [Java API：ArrayBlockingQueue](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/ArrayBlockingQueue.html)
+- [Java API：LinkedBlockingQueue](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/LinkedBlockingQueue.html)
+- [Java API：SynchronousQueue](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/SynchronousQueue.html)
+- [Java API：DelayQueue](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/DelayQueue.html)
+- [Java 21：PriorityBlockingQueue](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/PriorityBlockingQueue.html)
+- [OpenJDK 21：LinkedBlockingQueue](https://github.com/openjdk/jdk/blob/jdk-21-ga/src/java.base/share/classes/java/util/concurrent/LinkedBlockingQueue.java)

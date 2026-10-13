@@ -7,7 +7,7 @@ knowledge:
 
 # 批处理与分页
 
-批处理减少写入往返，分页限定单次读取范围。本文负责执行批次、事务边界、游标与数据访问测试。示例采用 JDBC、MySQL 8.4 和 Hibernate ORM 7.1。
+批处理减少写入往返，分页限定单次读取范围。本文负责执行批次、事务边界、游标与数据访问测试。示例采用 JDBC、MySQL 8.0 和 Hibernate ORM 5.6/6.2。
 
 实体状态见 [JPA](./jpa-entity-states-dirty-checking-lazy-loading.mdx)。关联抓取与父对象分页见 [N+1 查询](./n-plus-one-fetch-strategies.mdx)。
 
@@ -17,7 +17,7 @@ knowledge:
 - `flush()` 同步待写变化，随后 `clear()` 才能安全解除实体管理。[卡](#flush-clear)
 - 深 offset 需跳过前方记录，覆盖索引只减少取列成本。[卡](#deep-pagination)
 - Keyset 依赖唯一稳定排序，精确导出还需固定快照。[卡](#keyset-consistency)
-- Hibernate 7.1 的 `hibernate.jdbc.batch_size=50` 设置单批语句上限。[卡](#batch-size-commit-boundary)
+- Hibernate 5.6/6.2 的 `hibernate.jdbc.batch_size=50` 设置单批语句上限。[卡](#batch-size-commit-boundary)
 
 ## 2. JDBC 批处理 {#1-jdbc-批处理复用语句结构}
 
@@ -57,7 +57,7 @@ order by created_at desc, id desc
 limit 20 offset 1000000;
 ```
 
-MySQL 8.4 需从排序结果中跳过前一百万行。匹配索引可减少排序，覆盖索引可减少回表。偏移对应的跳过成本仍存在。
+MySQL 8.0 需从排序结果中跳过前一百万行。匹配索引可减少排序，覆盖索引可减少回表。偏移对应的跳过成本仍存在。
 
 并发插入或删除会移动分页位置，造成重复或遗漏。需要任意跳页时可用 offset。持续下拉与顺序扫描适合 Keyset。
 
@@ -103,7 +103,7 @@ try (Connection connection = dataSource.getConnection()) {
 
 上例要求 created_at 与 id 非空，组合排序唯一。倒序下一页使用严格小于。只记录时间会漏掉同时间的剩余记录。
 
-MySQL 8.4 的元组比较需检查执行计划。可与下面的等价条件比较：
+MySQL 8.0 的元组比较需检查执行计划。可与下面的等价条件比较：
 
 ```sql
 created_at < :t OR (created_at = :t AND id < :id)
@@ -136,7 +136,7 @@ Keyset 隔离前方插入造成的偏移移动。排序字段更新仍会让记�
 
 ## 12. Hibernate 批次与提交频率 {#hibernate-批次与提交频率}
 
-Hibernate ORM 7.1 默认 `hibernate.jdbc.batch_size=0`。设为正数可启用有状态 Session 的 JDBC 批处理。
+Hibernate ORM 5.6/6.2 默认 `hibernate.jdbc.batch_size=0`。设为正数可启用有状态 Session 的 JDBC 批处理。
 
 ```properties
 hibernate.jdbc.batch_size=50
@@ -215,7 +215,7 @@ MySQL 需沿排序结果跳过前一百万行，再返回 20 行。覆盖索引�
 
 flush 先同步待写变化，clear 再解除实体管理。反过来执行，会丢弃尚未同步的修改。flush 只发送 SQL，最终提交仍由事务控制。
 
-Hibernate 7.1 的 IDENTITY 插入关闭 JDBC 合批。是否合批还受 batch_size 与 SQL 形态影响。
+Hibernate 5.6/6.2 的 IDENTITY 插入关闭 JDBC 合批。是否合批还受 batch_size 与 SQL 形态影响。
 
 </details>
 
@@ -260,11 +260,12 @@ Keyset 的游标无法冻结数据版本。排序字段变化仍会让记录跨�
 
 ## 14. 参考资料 {#参考资料}
 
-- [JDBC：PreparedStatement](https://docs.oracle.com/en/java/javase/26/docs/api/java.sql/java/sql/PreparedStatement.html)
+- [JDBC：PreparedStatement](https://docs.oracle.com/en/java/javase/21/docs/api/java.sql/java/sql/PreparedStatement.html)
 - [MyBatis：Java API](https://mybatis.org/mybatis-3/java-api.html)
-- [Hibernate ORM User Guide：Batching](https://docs.hibernate.org/orm/7.1/userguide/html_single/Hibernate_User_Guide.html#batch)
+- [Hibernate ORM 5.6 User Guide：Batching](https://docs.jboss.org/hibernate/orm/5.6/userguide/html_single/Hibernate_User_Guide.html#batch)
+- [Hibernate ORM 6.2 User Guide：Batching](https://docs.hibernate.org/orm/6.2/userguide/html_single/Hibernate_User_Guide.html#batch)
 - [Testcontainers for Java：Database Containers](https://java.testcontainers.org/modules/databases/)
-- [JDBC：BatchUpdateException](https://docs.oracle.com/en/java/javase/26/docs/api/java.sql/java/sql/BatchUpdateException.html)
-- [MySQL 8.4：Row Constructor Optimization](https://dev.mysql.com/doc/refman/8.4/en/row-constructor-optimization.html)
-- [JDBC 26：Statement.executeBatch](https://docs.oracle.com/en/java/javase/26/docs/api/java.sql/java/sql/Statement.html#executeBatch())
-- [MySQL 8.4：LIMIT Query Optimization](https://dev.mysql.com/doc/refman/8.4/en/limit-optimization.html)
+- [JDBC：BatchUpdateException](https://docs.oracle.com/en/java/javase/21/docs/api/java.sql/java/sql/BatchUpdateException.html)
+- [MySQL 8.0：Row Constructor Optimization](https://dev.mysql.com/doc/refman/8.0/en/row-constructor-optimization.html)
+- [JDBC 21：Statement.executeBatch](https://docs.oracle.com/en/java/javase/21/docs/api/java.sql/java/sql/Statement.html#executeBatch())
+- [MySQL 8.0：LIMIT Query Optimization](https://dev.mysql.com/doc/refman/8.0/en/limit-optimization.html)

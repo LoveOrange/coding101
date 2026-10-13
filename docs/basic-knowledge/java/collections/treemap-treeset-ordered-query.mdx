@@ -7,7 +7,7 @@ knowledge:
 
 # TreeMap 与 TreeSet
 
-TreeMap 按自然顺序或 Comparator 组织键。TreeSet 基于 TreeMap 保存唯一元素。本文负责 Java 26 的比较契约、范围视图和导航查询。
+TreeMap 按自然顺序或 Comparator 组织键。TreeSet 基于 TreeMap 保存唯一元素。本文负责 Java 21 的比较契约、范围视图和导航查询。
 
 精确键查找与哈希契约见 [HashMap](./hashmap-structure-lookup-path.mdx)。
 
@@ -46,7 +46,7 @@ Comparator 需满足反对称性、传递性和相等组一致性。上例在同
 
 ## 3. 红黑树 {#红黑树}
 
-OpenJDK 26 的 TreeMap 使用红黑树。增删后通过变色与旋转，使树高保持 O(log n)：
+OpenJDK 21 的 TreeMap 使用红黑树。增删后通过变色与旋转，使树高保持 O(log n)：
 
 - `get`、`put`、`remove` 是 O(log n)。
 - 最小、最大、前驱、后继是 O(log n) 或沿已知节点取得。
@@ -223,8 +223,8 @@ subMap 是共享视图，clear 会删除原 Map 内的区间条目。floorKey �
 
 ## 11. 参考资料 {#参考资料}
 
-- [Java API：TreeMap](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/TreeMap.html)
-- [Java API：TreeSet](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/TreeSet.html)
-- [Java API：NavigableMap](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/NavigableMap.html)
-- [Java API：Comparator](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/Comparator.html)
-- [OpenJDK：TreeMap 源码](https://github.com/openjdk/jdk/blob/jdk-26-ga/src/java.base/share/classes/java/util/TreeMap.java)
+- [Java API：TreeMap](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/TreeMap.html)
+- [Java API：TreeSet](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/TreeSet.html)
+- [Java API：NavigableMap](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/NavigableMap.html)
+- [Java API：Comparator](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/Comparator.html)
+- [OpenJDK：TreeMap 源码](https://github.com/openjdk/jdk/blob/jdk-21-ga/src/java.base/share/classes/java/util/TreeMap.java)

@@ -278,7 +278,7 @@ Map<Department, List<User>> ordered = users.stream()
 
 ### 9.4 收集器的空值约束 {#收集器的空值约束}
 
-OpenJDK 26 的 `toMap` 拒绝值映射函数返回 `null`。键的空值支持还取决于 Map 实现。`groupingBy` 拒绝分类函数返回 `null`。不可修改收集器也拒绝空元素、空键和空值。
+OpenJDK 21 的 `toMap` 拒绝值映射函数返回 `null`。键的空值支持还取决于 Map 实现。`groupingBy` 拒绝分类函数返回 `null`。不可修改收集器也拒绝空元素、空键和空值。
 
 ## 10. 面试题 {#面试题}
 
@@ -351,8 +351,8 @@ OpenJDK 26 的 `toMap` 拒绝值映射函数返回 `null`。键的空值支持�
 
 ## 11. 参考资料 {#参考资料}
 
-- [Java API：Collector](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/stream/Collector.html)
-- [Java API：Collectors](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/stream/Collectors.html)
-- [Java API：Stream.collect](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/stream/Stream.html#collect(java.util.stream.Collector))
-- [Java API：Stream.reduce](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/stream/Stream.html#reduce(T,java.util.function.BinaryOperator))
-- [OpenJDK 26：Collectors](https://github.com/openjdk/jdk/blob/jdk-26-ga/src/java.base/share/classes/java/util/stream/Collectors.java)
+- [Java API：Collector](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/stream/Collector.html)
+- [Java API：Collectors](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/stream/Collectors.html)
+- [Java API：Stream.collect](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/stream/Stream.html#collect(java.util.stream.Collector))
+- [Java API：Stream.reduce](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/stream/Stream.html#reduce(T,java.util.function.BinaryOperator))
+- [OpenJDK 21：Collectors](https://github.com/openjdk/jdk/blob/jdk-21-ga/src/java.base/share/classes/java/util/stream/Collectors.java)

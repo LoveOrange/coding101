@@ -11,7 +11,7 @@ knowledge:
 
 ## 1. 面试核心 {#core}
 
-- OpenJDK 26 在 Thread 的 ThreadLocalMap 中保存值。
+- OpenJDK 21 在 Thread 的 ThreadLocalMap 中保存值。
 - ThreadLocalMap 的 entry 使用弱 key 和强 value。[卡](#threadlocal-leak)
 - `remove()` 删除当前线程的 entry，后续 get 可重新初始化。
 - `InheritableThreadLocal` 在创建子线程时传递初始值。[卡](#inheritable-pool-context)
@@ -24,7 +24,7 @@ private static final ThreadLocal<RequestContext> CONTEXT =
         new ThreadLocal<>();
 ```
 
-OpenJDK 26 的 Thread 持有自己的 ThreadLocalMap。ThreadLocal 实例作为 key 定位该线程的值。不同线程因此可以关联不同的 RequestContext。
+OpenJDK 21 的 Thread 持有自己的 ThreadLocalMap。ThreadLocal 实例作为 key 定位该线程的值。不同线程因此可以关联不同的 RequestContext。
 
 隔离的是槽位。若多个线程放入同一个可变对象，对象仍由它们共享。对象内部访问还需同步。
 
@@ -61,11 +61,9 @@ try {
 
 ## 6. 虚拟线程与 ThreadLocal {#虚拟线程与-threadlocal}
 
-每任务一个虚拟线程，在线程结束时释放其局部状态。每个线程缓存昂贵对象，仍会造成内存压力。
+Java 21 可为每个任务创建一个虚拟线程。线程结束时释放其局部状态。每个线程缓存昂贵对象，仍会造成内存压力。
 
-ScopedValue 在 JDK 25 正式定版。它用有界作用域绑定只读上下文，退出后自动恢复。绑定的值若可变，仍需自行约束内部修改。
-
-跨线程继承需符合对应的结构化任务协议。普通线程池任务仍要显式传递上下文。
+跨线程任务需显式传递上下文。局部绑定仍按业务作用域清理，嵌套调用恢复外层值。
 
 ## 7. 内存保留与上下文诊断 {#诊断内存保留与上下文污染}
 
@@ -180,8 +178,6 @@ try {
 
 ## 12. 参考资料 {#参考资料}
 
-- [Java API：`ThreadLocal`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/ThreadLocal.html)
-- [OpenJDK：`ThreadLocal` 源码](https://github.com/openjdk/jdk/blob/jdk-26%2B35/src/java.base/share/classes/java/lang/ThreadLocal.java)
-- [Java API：`ScopedValue`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/ScopedValue.html)
-- [Java 26 API：InheritableThreadLocal](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/InheritableThreadLocal.html)
-- [OpenJDK JEP 506：Scoped Values](https://openjdk.org/jeps/506)
+- [Java API：`ThreadLocal`](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/ThreadLocal.html)
+- [OpenJDK：`ThreadLocal` 源码](https://github.com/openjdk/jdk/blob/jdk-21-ga/src/java.base/share/classes/java/lang/ThreadLocal.java)
+- [Java 21 API：InheritableThreadLocal](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/InheritableThreadLocal.html)

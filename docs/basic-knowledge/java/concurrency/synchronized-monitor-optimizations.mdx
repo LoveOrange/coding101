@@ -15,7 +15,7 @@ knowledge:
 - 同一线程可重入 monitor，退出次数与进入次数配对。
 - 同一 monitor 的解锁先于后续加锁。[卡](#synchronized-semantics)
 - `wait()` 释放目标 monitor，返回前重新获取它。[卡](#monitor-wait-notify)
-- HotSpot 从 JDK 15 起默认禁用偏向锁。
+- Java 17/21 的 HotSpot 默认不使用偏向锁。
 
 ## 2. 对象 monitor 与可重入 {#对象-monitor-与可重入}
 
@@ -56,9 +56,9 @@ synchronized (right) { /* 也修改 state */ }
 
 HotSpot 可使用快速获取、自旋和 monitor 膨胀。具体路径取决于 JDK 版本和运行条件。
 
-偏向锁从 JDK 15 起默认禁用。旧版本的固定升级图只适合描述对应实现。当前正确性应依赖 monitor 语义。
+Java 17/21 的 HotSpot 默认不使用偏向锁。Java 8 常见的偏向锁升级图只适合对应实现。程序正确性应依赖 monitor 语义。
 
-JDK 24 起，monitor 导致的虚拟线程 pinning 已改进。具体剩余边界见 [虚拟线程](./virtual-threads-boundaries.mdx#pinning-与-jdk-版本)。
+Java 21 中，持有 monitor 时阻塞会导致 pinning。具体边界见 [虚拟线程](./virtual-threads-boundaries.mdx#pinning-与-jdk-版本)。
 
 ## 6. 锁消除与锁粗化 {#锁消除与锁粗化}
 
@@ -141,9 +141,9 @@ final 锁字段固定 monitor 对应的对象引用。各条访问路径因此�
 
 ## 10. 参考资料 {#参考资料}
 
-- [JLS 17.1：Synchronization](https://docs.oracle.com/javase/specs/jls/se26/html/jls-17.html#jls-17.1)
-- [JVMS 3.14：Compiling Synchronization](https://docs.oracle.com/javase/specs/jvms/se26/html/jvms-3.html#jvms-3.14)
-- [OpenJDK JEP 374：Disable and Deprecate Biased Locking](https://openjdk.org/jeps/374)
-- [JLS 17.2：Wait Sets and Notification](https://docs.oracle.com/javase/specs/jls/se26/html/jls-17.html#jls-17.2)
-- [HotSpot：Performance Enhancements](https://docs.oracle.com/en/java/javase/26/vm/java-hotspot-virtual-machine-performance-enhancements.html)
-- [OpenJDK 26：C2 LockNode 锁粗化实现](https://github.com/openjdk/jdk/blob/jdk-26%2B35/src/hotspot/share/opto/callnode.cpp)
+- [JLS 17.1：Synchronization](https://docs.oracle.com/javase/specs/jls/se21/html/jls-17.html#jls-17.1)
+- [JVMS 3.14：Compiling Synchronization](https://docs.oracle.com/javase/specs/jvms/se21/html/jvms-3.html#jvms-3.14)
+- [Java 17：偏向锁选项](https://docs.oracle.com/en/java/javase/17/docs/specs/man/java.html#advanced-runtime-options-for-java)
+- [JLS 17.2：Wait Sets and Notification](https://docs.oracle.com/javase/specs/jls/se21/html/jls-17.html#jls-17.2)
+- [HotSpot：Performance Enhancements](https://docs.oracle.com/en/java/javase/21/vm/java-hotspot-virtual-machine-performance-enhancements.html)
+- [OpenJDK 21：C2 LockNode 锁粗化实现](https://github.com/openjdk/jdk/blob/jdk-21-ga/src/hotspot/share/opto/callnode.cpp)

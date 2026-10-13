@@ -90,7 +90,7 @@ Account second = first == from ? to : from;
 
 `ThreadMXBean.findDeadlockedThreads()` 检测平台线程锁环。它覆盖 monitor 和支持的 ownable synchronizer。Future、连接池与跨进程资源依赖需人工重建。
 
-Java 26 的 `ThreadMXBean` 不覆盖虚拟线程。返回 `null` 只说明未发现其支持范围内的锁环。
+Java 21 的 `ThreadMXBean` 不覆盖虚拟线程。返回 `null` 只说明未发现其支持范围内的锁环。
 
 ## 9. 常见问题 {#常见问题}
 
@@ -160,13 +160,13 @@ Java 26 的 `ThreadMXBean` 不覆盖虚拟线程。返回 `null` 只说明未发
 <details>
 <summary>参考回答</summary>
 
-返回 `null` 表示本次未发现受支持的锁环。Future 依赖和连接池容量仍可形成等待环。Java 26 的该接口也不覆盖虚拟线程。应结合任务关系和资源所有者补全等待图。
+返回 `null` 表示本次未发现受支持的锁环。Future 依赖和连接池容量仍可形成等待环。Java 21 的该接口也不覆盖虚拟线程。应结合任务关系和资源所有者补全等待图。
 
 </details>
 
 ## 11. 参考资料 {#参考资料}
 
-- [JLS 17.2：Wait Sets and Notification](https://docs.oracle.com/javase/specs/jls/se26/html/jls-17.html#jls-17.2)
-- [Java API：`ThreadMXBean.findDeadlockedThreads`](https://docs.oracle.com/en/java/javase/26/docs/api/java.management/java/lang/management/ThreadMXBean.html#findDeadlockedThreads())
-- [Java 26：jcmd](https://docs.oracle.com/en/java/javase/26/docs/specs/man/jcmd.html)
-- [Java 26 API：ThreadPoolExecutor](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/ThreadPoolExecutor.html)
+- [JLS 17.2：Wait Sets and Notification](https://docs.oracle.com/javase/specs/jls/se21/html/jls-17.html#jls-17.2)
+- [Java API：`ThreadMXBean.findDeadlockedThreads`](https://docs.oracle.com/en/java/javase/21/docs/api/java.management/java/lang/management/ThreadMXBean.html#findDeadlockedThreads())
+- [Java 21：jcmd](https://docs.oracle.com/en/java/javase/21/docs/specs/man/jcmd.html)
+- [Java 21 API：ThreadPoolExecutor](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/ThreadPoolExecutor.html)

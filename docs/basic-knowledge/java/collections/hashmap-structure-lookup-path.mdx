@@ -17,7 +17,7 @@ import {javaCollectionsReview} from '@site/src/data/reviewPlans/javaCollections'
 
 <ReviewReading plan={javaCollectionsReview} stepId="collections-hashmap" />
 
-HashMap 用桶数组组织键值对。哈希定位桶，equals 确认键相等。本文负责 OpenJDK 26 的查找、冲突处理和扩容。
+HashMap 用桶数组组织键值对。哈希定位桶，equals 确认键相等。本文负责 OpenJDK 21 的查找、冲突处理和扩容。
 
 并发更新见 [ConcurrentHashMap](./concurrenthashmap-atomic-compound-operations.mdx)。遇到顺序见 [LinkedHashMap](./linkedhashmap-lru.mdx)。
 
@@ -25,7 +25,7 @@ HashMap 用桶数组组织键值对。哈希定位桶，equals 确认键相等�
 
 - HashMap 用哈希定位桶，再用键引用或 equals 确认匹配。[卡](#put-get-path)
 - 哈希分布合理时，get 与 put 的平均成本为 O(1)。
-- OpenJDK 26 的 put 在链表第 9 项插入时请求树化。[卡](#treeify)
+- OpenJDK 21 的 put 在链表第 9 项插入时请求树化。[卡](#treeify)
 - 树化要求表容量至少 64，小表先扩容。[卡](#treeify)
 - 容量翻倍后，节点留在原索引或移到原索引加旧容量。[卡](#power-of-two-capacity)
 
@@ -70,7 +70,7 @@ HashMap 允许一个 null 键和多个 null 值。get 返回 null 可表示缺�
 
 不同键进入同一桶时，链表逐项检查候选键。树桶增加颜色、父子链接等字段，以换取树形查找。
 
-OpenJDK 26 的 `TREEIFY_THRESHOLD` 为 8。普通 put 向已有 8 项的链表追加第 9 项时，请求树化。表容量达到 64 才执行树化，小表先扩容。compute 系列的计数路径不同，应按调用路径分析。
+OpenJDK 21 的 `TREEIFY_THRESHOLD` 为 8。普通 put 向已有 8 项的链表追加第 9 项时，请求树化。表容量达到 64 才执行树化，小表先扩容。compute 系列的计数路径不同，应按调用路径分析。
 
 扩容拆分树桶时，某侧节点数不超过 6 会转回链表。普通 remove 则根据树形判断，迭代删除还有额外条件。退化时机应区分扩容与删除。
 
@@ -110,9 +110,9 @@ HashMap 的迭代成本与容量加 size 成正比。需要顺序时，使用 [L
 
 ## 7. 预期条目数与初始容量 {#预期条目数与初始容量}
 
-`new HashMap<>(100)` 表达桶容量提示，未表达 100 条映射。OpenJDK 26 首次分配 128 个桶，默认阈值为 96。插入第 97 个不同键时，就会触发容量扩展。
+`new HashMap<>(100)` 表达桶容量提示，未表达 100 条映射。OpenJDK 21 首次分配 128 个桶，默认阈值为 96。插入第 97 个不同键时，就会触发容量扩展。
 
-Java 19 起可用 `HashMap.newHashMap(expectedMappings)`。它根据预期条目数与默认负载因子估算容量。旧版本可按条目数除以 0.75 预估，再考虑容量取整。
+Java 21 可用 `HashMap.newHashMap(expectedMappings)`。它根据预期条目数与默认负载因子估算容量。Java 17 可按条目数除以 0.75 预估，再考虑容量取整。
 
 ## 8. 常见问题 {#常见问题}
 
@@ -126,7 +126,7 @@ HashMap 的遍历顺序未指定。扩容、键哈希和实现变化都会影响
 
 ### 8.3 链表长度与树化条件 {#链表长度与树化条件}
 
-OpenJDK 26 的普通 put 在追加第 9 项时请求树化。表容量小于 64 时，改为扩容。
+OpenJDK 21 的普通 put 在追加第 9 项时请求树化。表容量小于 64 时，改为扩容。
 
 ## 9. 面试题 {#面试题}
 
@@ -177,7 +177,7 @@ put 命中已有键时覆盖旧值，缺失时插入新节点。新增映射超�
 <details>
 <summary>参考回答</summary>
 
-OpenJDK 26 的普通 put 在链表追加第 9 项时请求树化。`TREEIFY_THRESHOLD=8`，最小树化容量为 64。
+OpenJDK 21 的普通 put 在链表追加第 9 项时请求树化。`TREEIFY_THRESHOLD=8`，最小树化容量为 64。
 
 小表先扩容，让更多哈希位参与桶定位。容量足够且冲突仍集中时，再承担树节点的维护成本。扩容拆分后，某侧不超过 6 项会退回链表。
 
@@ -219,13 +219,13 @@ OpenJDK 26 的普通 put 在链表追加第 9 项时请求树化。`TREEIFY_THRE
 <details>
 <summary>参考回答</summary>
 
-OpenJDK 26 首次分配 128 个桶，默认阈值为 96。第 97 个不同键会触发扩容。Java 19 起可用 `HashMap.newHashMap(100)` 按条目数估算容量。
+OpenJDK 21 首次分配 128 个桶，默认阈值为 96。第 97 个不同键会触发扩容。Java 21 可用 `HashMap.newHashMap(100)` 按条目数估算容量。Java 17 可按 100 除以 0.75 向上取整，传入容量 134。
 
 </details>
 
 ## 10. 参考资料 {#参考资料}
 
-- [Java API：HashMap](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/HashMap.html)
-- [Java API：Map](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/Map.html)
-- [OpenJDK：HashMap 源码](https://github.com/openjdk/jdk/blob/jdk-26-ga/src/java.base/share/classes/java/util/HashMap.java)
-- [Java API：Object.hashCode](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/Object.html#hashCode())
+- [Java API：HashMap](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/HashMap.html)
+- [Java API：Map](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/Map.html)
+- [OpenJDK：HashMap 源码](https://github.com/openjdk/jdk/blob/jdk-21-ga/src/java.base/share/classes/java/util/HashMap.java)
+- [Java API：Object.hashCode](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/Object.html#hashCode())

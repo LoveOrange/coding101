@@ -7,7 +7,7 @@ knowledge:
 
 # 集合迭代器
 
-Iterator 保存遍历位置，统一集合的遍历接口。本文负责 Java 26 的修改协议、fail-fast 和只读集合。
+Iterator 保存遍历位置，统一集合的遍历接口。本文负责 Java 21 的修改协议、fail-fast 和只读集合。
 
 并发遍历见 [迭代一致性](./concurrent-collection-iteration-consistency.mdx)。元素的防御性复制见 [不可变对象](../quality/immutable-objects-defensive-copying.mdx)。
 
@@ -305,12 +305,12 @@ final 只固定引用，Arrays.asList 只固定长度。元素可变时，还需
 
 ## 14. 参考资料 {#参考资料}
 
-- [Java API：Iterator](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/Iterator.html)
-- [Java API：ConcurrentModificationException](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/ConcurrentModificationException.html)
-- [Java API：List.copyOf](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/List.html#copyOf(java.util.Collection))
-- [Java API：Collections.unmodifiableList](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/Collections.html#unmodifiableList(java.util.List))
-- [Java API：ConcurrentHashMap 的迭代语义](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/ConcurrentHashMap.html)
-- [Java API：CopyOnWriteArrayList](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/CopyOnWriteArrayList.html)
-- [Java 26：Arrays.asList](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/Arrays.html#asList(T...))
-- [Java 26：Stream.toList](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/stream/Stream.html#toList())
-- [Java 26：Collections.synchronizedList](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/Collections.html#synchronizedList(java.util.List))
+- [Java API：Iterator](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/Iterator.html)
+- [Java API：ConcurrentModificationException](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/ConcurrentModificationException.html)
+- [Java API：List.copyOf](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/List.html#copyOf(java.util.Collection))
+- [Java API：Collections.unmodifiableList](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/Collections.html#unmodifiableList(java.util.List))
+- [Java API：ConcurrentHashMap 的迭代语义](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/ConcurrentHashMap.html)
+- [Java API：CopyOnWriteArrayList](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/CopyOnWriteArrayList.html)
+- [Java 21：Arrays.asList](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/Arrays.html#asList(T...))
+- [Java 21：Stream.toList](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/stream/Stream.html#toList())
+- [Java 21：Collections.synchronizedList](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/Collections.html#synchronizedList(java.util.List))

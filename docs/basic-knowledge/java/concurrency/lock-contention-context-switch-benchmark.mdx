@@ -43,7 +43,7 @@ jcmd <pid> Thread.print -l
 
 ## 4. JFR 等待事件 {#jfr-等待事件}
 
-Java 26 中可重点查看三类事件：
+Java 21 中可重点查看三类事件：
 
 | 事件 | 等待类型 |
 | --- | --- |
@@ -149,10 +149,10 @@ jfr print --events jdk.JavaMonitorEnter,jdk.JavaMonitorWait,jdk.ThreadPark locks
 
 ## 11. 参考资料 {#参考资料}
 
-- [Oracle：Java Flight Recorder](https://docs.oracle.com/en/java/javase/26/jfapi/flight-recorder-api-programming-guide.pdf)
-- [Oracle：Troubleshoot Process Hangs and Loops](https://docs.oracle.com/en/java/javase/26/troubleshoot/troubleshoot-process-hangs-and-loops.html)
+- [Oracle：Java Flight Recorder](https://docs.oracle.com/en/java/javase/21/jfapi/flight-recorder-api-programming-guide.pdf)
+- [Oracle：Troubleshoot Process Hangs and Loops](https://docs.oracle.com/en/java/javase/21/troubleshoot/troubleshoot-process-hangs-and-loops.html)
 - [OpenJDK：JMH](https://github.com/openjdk/jmh)
 - [async-profiler](https://github.com/async-profiler/async-profiler)
-- [OpenJDK 26：JFR 事件元数据](https://github.com/openjdk/jdk/blob/jdk-26%2B35/src/hotspot/share/jfr/metadata/metadata.xml)
-- [Java 26：jcmd](https://docs.oracle.com/en/java/javase/26/docs/specs/man/jcmd.html)
-- [Java 26：jfr](https://docs.oracle.com/en/java/javase/26/docs/specs/man/jfr.html)
+- [OpenJDK 21：JFR 事件元数据](https://github.com/openjdk/jdk/blob/jdk-21-ga/src/hotspot/share/jfr/metadata/metadata.xml)
+- [Java 21：jcmd](https://docs.oracle.com/en/java/javase/21/docs/specs/man/jcmd.html)
+- [Java 21：jfr](https://docs.oracle.com/en/java/javase/21/docs/specs/man/jfr.html)

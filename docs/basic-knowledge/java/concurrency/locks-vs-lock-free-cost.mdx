@@ -95,7 +95,7 @@ lock-free 允许某个线程反复失败而饥饿。wait-free 还约束每个操
 
 若变量位于同一缓存行，独立写入也会相互干扰。缓存一致性按缓存行协调写入。这种无业务共享的缓存竞争称为伪共享。
 
-OpenJDK 26 的 `Striped64.Cell` 使用 `@Contended` 填充。填充把热点单元分隔，降低相互干扰。代价是增加对象占用。
+OpenJDK 21 的 `Striped64.Cell` 使用 `@Contended` 填充。填充把热点单元分隔，降低相互干扰。代价是增加对象占用。
 
 JMH 的 FalseSharing 示例比较相邻字段与填充方案。实际收益需在目标处理器和对象布局下测量。
 
@@ -173,10 +173,10 @@ lock-free 保证整体有进展，允许个别操作饥饿。wait-free 保证每
 
 ## 11. 参考资料 {#参考资料}
 
-- [Java API：`java.util.concurrent.locks`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/locks/package-summary.html)
-- [Java API：`java.util.concurrent.atomic`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/atomic/package-summary.html)
+- [Java API：`java.util.concurrent.locks`](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/locks/package-summary.html)
+- [Java API：`java.util.concurrent.atomic`](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/atomic/package-summary.html)
 - [OpenJDK：JMH](https://github.com/openjdk/jmh)
-- [OpenJDK 26：Striped64](https://github.com/openjdk/jdk/blob/jdk-26%2B35/src/java.base/share/classes/java/util/concurrent/atomic/Striped64.java)
+- [OpenJDK 21：Striped64](https://github.com/openjdk/jdk/blob/jdk-21-ga/src/java.base/share/classes/java/util/concurrent/atomic/Striped64.java)
 - [OpenJDK JMH：FalseSharing](https://github.com/openjdk/jmh/blob/master/jmh-samples/src/main/java/org/openjdk/jmh/samples/JMHSample_22_FalseSharing.java)
 - [Herlihy：Wait-Free Synchronization](https://cs.brown.edu/~mph/Herlihy91/p124-herlihy.pdf)
 - [Herlihy、Luchangco、Moir：Obstruction-Free Synchronization](https://perso.telecom-paristech.fr/kuznetso/INF346-2015/papers/of.pdf)

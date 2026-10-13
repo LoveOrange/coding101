@@ -7,13 +7,13 @@ knowledge:
 
 # ConcurrentHashMap
 
-`ConcurrentHashMap` 提供线程安全的键值操作。本文负责节点结构、单键原子更新和协作扩容。实现细节以 OpenJDK 26 为准，并说明 JDK 7/8 的变化。
+`ConcurrentHashMap` 提供线程安全的键值操作。本文负责节点结构、单键原子更新和协作扩容。实现细节以 OpenJDK 21 为准，并说明 JDK 7/8 的变化。
 
 聚合结果与弱一致遍历见 [迭代一致性](./concurrent-collection-iteration-consistency.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- OpenJDK 26 用 CAS 安装空桶节点，用桶级同步协调冲突更新。[卡](#chm-thread-safety)
+- OpenJDK 21 用 CAS 安装空桶节点，用桶级同步协调冲突更新。[卡](#chm-thread-safety)
 - `get` 无需获取桶互斥锁，通过可见性机制读取节点。
 - `computeIfAbsent` 原子计算单键映射，回调应短小且避免修改本 Map。[卡](#compute-null-and-values)
 - ConcurrentHashMap 拒绝 null 键和值，`get` 返回 null 表示当前缺失。[卡](#chm-no-null)
@@ -27,7 +27,7 @@ ConcurrentHashMap 协调共享映射的读取与更新。不同桶可独立更�
 
 ## 3. JDK 8 之后的结构 {#jdk-8-之后的结构}
 
-JDK 7 使用 Segment 分段。JDK 8 改为桶数组、链表和树。OpenJDK 26 仍采用这个基本结构：
+JDK 7 使用 Segment 分段。JDK 8 改为桶数组、链表和树。OpenJDK 21 仍采用这个基本结构：
 
 - table、节点值和链接通过可见性机制发布。
 - 空桶插入通过 CAS 安装首节点。
@@ -35,7 +35,7 @@ JDK 7 使用 Segment 分段。JDK 8 改为桶数组、链表和树。OpenJDK 26 
 - 树桶使用 TreeBin 及内部状态协调访问。
 - 转发节点标记已迁移的桶。
 
-`concurrencyLevel` 在 OpenJDK 26 中用于估算初始容量。它已不表示 Segment 数量。
+`concurrencyLevel` 在 OpenJDK 21 中用于估算初始容量。它已不表示 Segment 数量。
 
 ## 4. 无锁读取 {#无锁读取}
 
@@ -106,7 +106,7 @@ ConcurrentHashMap 不允许 null 键和值：
 
 ## 8. 协作扩容 {#协作扩容}
 
-OpenJDK 26 按区间分配桶迁移任务。参与扩容的线程领取区间，把节点迁往新表。迁移完成的旧桶放置 ForwardingNode。
+OpenJDK 21 按区间分配桶迁移任务。参与扩容的线程领取区间，把节点迁往新表。迁移完成的旧桶放置 ForwardingNode。
 
 更新遇到转发节点时可协助迁移。读取则跟随标记进入新表。协作分担搬移工作，数组分配和内存带宽成本仍存在。
 
@@ -173,7 +173,7 @@ Hashtable 的常用操作围绕实例锁串行。ConcurrentHashMap 提供桶级�
 <details>
 <summary>参考回答</summary>
 
-JDK 8 起，主结构改为桶数组、链表和树。OpenJDK 26 用 CAS 安装空桶节点。冲突更新使用桶级同步，扩容由多个线程协作。
+JDK 8 起，主结构改为桶数组、链表和树。OpenJDK 21 用 CAS 安装空桶节点。冲突更新使用桶级同步，扩容由多个线程协作。
 
 get 通过可见性机制读取节点，无需桶互斥锁。两次调用仍可被其他线程穿插。单键复合更新应使用 compute、merge 或条件替换。
 
@@ -224,6 +224,6 @@ ConcurrentHashMap 用 null 明确表示读取时映射缺失。若允许 null �
 
 ## 13. 参考资料 {#参考资料}
 
-- [Java API：ConcurrentHashMap](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/ConcurrentHashMap.html)
-- [OpenJDK：ConcurrentHashMap 源码](https://github.com/openjdk/jdk/blob/jdk-26-ga/src/java.base/share/classes/java/util/concurrent/ConcurrentHashMap.java)
-- [Java API：ConcurrentMap](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/ConcurrentMap.html)
+- [Java API：ConcurrentHashMap](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/ConcurrentHashMap.html)
+- [OpenJDK：ConcurrentHashMap 源码](https://github.com/openjdk/jdk/blob/jdk-21-ga/src/java.base/share/classes/java/util/concurrent/ConcurrentHashMap.java)
+- [Java API：ConcurrentMap](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/ConcurrentMap.html)

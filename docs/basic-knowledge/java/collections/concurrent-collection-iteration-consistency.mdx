@@ -7,7 +7,7 @@ knowledge:
 
 # 迭代一致性
 
-迭代一致性决定并发遍历能观察哪些状态。本文负责弱一致视图、聚合结果和快照协议。采用 Java 26 API。
+迭代一致性决定并发遍历能观察哪些状态。本文负责弱一致视图、聚合结果和快照协议。采用 Java 21 API。
 
 写时复制成本见 [CopyOnWrite 容器](./copy-on-write-cost-model.mdx)。普通集合的修改检测见 [集合迭代器](./iterator-fail-fast-immutable.mdx)。
 
@@ -223,8 +223,8 @@ ConcurrentHashMap 的迭代器是弱一致的。它可与更新并发，并观�
 
 ## 12. 参考资料 {#参考资料}
 
-- [Java API：ConcurrentHashMap](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/ConcurrentHashMap.html)
-- [Java API：CopyOnWriteArrayList](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/CopyOnWriteArrayList.html)
-- [Java API：ConcurrentLinkedQueue](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/ConcurrentLinkedQueue.html)
-- [Java API：BlockingQueue](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/BlockingQueue.html)
-- [Java 26：StampedLock](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/locks/StampedLock.html)
+- [Java API：ConcurrentHashMap](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/ConcurrentHashMap.html)
+- [Java API：CopyOnWriteArrayList](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/CopyOnWriteArrayList.html)
+- [Java API：ConcurrentLinkedQueue](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/ConcurrentLinkedQueue.html)
+- [Java API：BlockingQueue](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/BlockingQueue.html)
+- [Java 21：StampedLock](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/locks/StampedLock.html)

@@ -7,7 +7,7 @@ knowledge:
 
 # LinkedList
 
-`LinkedList` 用双向链表实现 List 和 Deque。本文负责 OpenJDK 26 的定位、游标编辑和节点成本。
+`LinkedList` 用双向链表实现 List 和 Deque。本文负责 OpenJDK 21 的定位、游标编辑和节点成本。
 
 数组扩容与搬移见 [ArrayList](./arraylist-growth-memory-locality.mdx)。迭代器修改协议见 [集合迭代器](./iterator-fail-fast-immutable.mdx)。
 
@@ -186,7 +186,7 @@ next 返回原后继，因为 add 把新元素放在游标前。立即调用 pre
 
 ## 10. 参考资料 {#参考资料}
 
-- [Java API：LinkedList](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/LinkedList.html)
-- [OpenJDK：LinkedList 源码](https://github.com/openjdk/jdk/blob/jdk-26-ga/src/java.base/share/classes/java/util/LinkedList.java)
-- [Java API：ArrayDeque](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/ArrayDeque.html)
-- [Java API：ListIterator](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/ListIterator.html)
+- [Java API：LinkedList](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/LinkedList.html)
+- [OpenJDK：LinkedList 源码](https://github.com/openjdk/jdk/blob/jdk-21-ga/src/java.base/share/classes/java/util/LinkedList.java)
+- [Java API：ArrayDeque](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/ArrayDeque.html)
+- [Java API：ListIterator](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/ListIterator.html)

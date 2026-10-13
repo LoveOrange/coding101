@@ -7,7 +7,7 @@ knowledge:
 
 # CopyOnWrite 容器
 
-CopyOnWrite 容器通过复制数组隔离结构更新。本文负责 OpenJDK 26 的发布、快照生命周期和写入成本。
+CopyOnWrite 容器通过复制数组隔离结构更新。本文负责 OpenJDK 21 的发布、快照生命周期和写入成本。
 
 严格业务快照的协议见 [迭代一致性](./concurrent-collection-iteration-consistency.mdx)。
 
@@ -50,7 +50,7 @@ listeners.add(listener);
 listeners.remove(listener);
 ```
 
-新增元素的复制成本为 O(n)，并产生一个新数组。OpenJDK 26 中，set 为相同引用会复用数组。删除未命中时也可直接返回。连续大量更新会增加复制带宽与 GC 压力。
+新增元素的复制成本为 O(n)，并产生一个新数组。OpenJDK 21 中，set 为相同引用会复用数组。删除未命中时也可直接返回。连续大量更新会增加复制带宽与 GC 压力。
 
 ## 4. 快照迭代器 {#快照迭代器}
 
@@ -231,6 +231,6 @@ CopyOnWriteArrayList 在结构更新时构造并发布新数组。迭代器继�
 
 ## 12. 参考资料 {#参考资料}
 
-- [Java API：CopyOnWriteArrayList](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/CopyOnWriteArrayList.html)
-- [OpenJDK：CopyOnWriteArrayList 源码](https://github.com/openjdk/jdk/blob/jdk-26-ga/src/java.base/share/classes/java/util/concurrent/CopyOnWriteArrayList.java)
-- [Java API：CopyOnWriteArraySet](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/CopyOnWriteArraySet.html)
+- [Java API：CopyOnWriteArrayList](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/CopyOnWriteArrayList.html)
+- [OpenJDK：CopyOnWriteArrayList 源码](https://github.com/openjdk/jdk/blob/jdk-21-ga/src/java.base/share/classes/java/util/concurrent/CopyOnWriteArrayList.java)
+- [Java API：CopyOnWriteArraySet](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/CopyOnWriteArraySet.html)
