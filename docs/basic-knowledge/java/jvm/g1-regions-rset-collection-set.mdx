@@ -29,7 +29,7 @@ G1 用等大小 Region 管理堆空间。Region 在当前时刻可作为 Eden、
 
 ### 2.1 Humongous 对象 {#humongous-对象}
 
-Humongous 对象按连续 Region 分配，并直接归入老年代。判定使用对齐后的对象大小，含对象头。JDK 26 HotSpot 的阈值为严格大于半个 Region。
+Humongous 对象按连续 Region 分配，并直接归入老年代。判定使用对齐后的对象大小，含对象头。JDK 21 HotSpot 的阈值为严格大于半个 Region。
 
 最后一个 Region 剩余空间在对象回收前无法复用。因此，大对象会同时增加连续空间需求和尾部浪费。总空闲空间充足时，也会因缺少连续 Region 分配失败。
 
@@ -59,7 +59,7 @@ Mixed GC 将部分候选 Old Region 与年轻代一起回收。选择依据包�
 
 ### 5.1 IHOP 与启动时机 {#ihop-与启动时机}
 
-IHOP 决定何时发起并发标记。JDK 26 默认启用 `G1UseAdaptiveIHOP`。预测会结合标记耗时、老年代分配速率与预留空间。
+IHOP 决定何时发起并发标记。JDK 21 默认启用 `G1UseAdaptiveIHOP`。预测会结合标记耗时、老年代分配速率与预留空间。
 
 `InitiatingHeapOccupancyPercent=45` 是默认初始阈值。收集到足够样本后，由自适应结果决定阈值。因此，固定 45% 无法描述整个运行期。
 
@@ -196,6 +196,6 @@ Humongous 分配要求足够的连续 Region。分散的空闲 Region 无法满�
 
 ## 11. 参考资料 {#参考资料}
 
-- [Oracle：G1 Garbage Collector](https://docs.oracle.com/en/java/javase/26/gctuning/garbage-first-g1-garbage-collector1.html)
-- [Oracle：G1 Tuning](https://docs.oracle.com/en/java/javase/26/gctuning/garbage-first-garbage-collector-tuning.html)
-- [OpenJDK 26：G1 Humongous 判定](https://github.com/openjdk/jdk/blob/jdk-26-ga/src/hotspot/share/gc/g1/g1CollectedHeap.hpp)
+- [Oracle：G1 Garbage Collector](https://docs.oracle.com/en/java/javase/21/gctuning/garbage-first-g1-garbage-collector1.html)
+- [Oracle：G1 Tuning](https://docs.oracle.com/en/java/javase/21/gctuning/garbage-first-garbage-collector-tuning.html)
+- [OpenJDK 21：G1 Humongous 判定](https://github.com/openjdk/jdk/blob/jdk-21-ga/src/hotspot/share/gc/g1/g1CollectedHeap.hpp)

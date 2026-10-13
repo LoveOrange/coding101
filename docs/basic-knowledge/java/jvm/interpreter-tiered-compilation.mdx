@@ -33,7 +33,7 @@ OSR 即栈上替换。循环尚未结束时，当前执行可切到编译后的�
 
 ## 4. 分层编译的层级 {#分层编译的层级}
 
-以下层级以 OpenJDK 26 HotSpot 的 C1/C2 为准。
+以下层级以 OpenJDK 21 HotSpot 的 C1/C2 为准。
 
 | 层级 | 执行方式 | 画像 |
 | --- | --- | --- |
@@ -153,7 +153,7 @@ HotSpot 根据调用与循环回边等计数识别热点。长循环可在一次
 
 ## 10. 参考资料 {#参考资料}
 
-- [OpenJDK 26：CompilationPolicy](https://github.com/openjdk/jdk/blob/jdk-26-ga/src/hotspot/share/compiler/compilationPolicy.hpp)
-- [Oracle：java 命令](https://docs.oracle.com/en/java/javase/26/docs/specs/man/java.html)
-- [Oracle：jcmd 命令](https://docs.oracle.com/en/java/javase/26/docs/specs/man/jcmd.html)
-- [OpenJDK 26：Code Cache 管理](https://github.com/openjdk/jdk/blob/jdk-26-ga/src/hotspot/share/compiler/compileBroker.cpp)
+- [OpenJDK 21：CompilationPolicy](https://github.com/openjdk/jdk/blob/jdk-21-ga/src/hotspot/share/compiler/compilationPolicy.hpp)
+- [Oracle：java 命令](https://docs.oracle.com/en/java/javase/21/docs/specs/man/java.html)
+- [Oracle：jcmd 命令](https://docs.oracle.com/en/java/javase/21/docs/specs/man/jcmd.html)
+- [OpenJDK 21：Code Cache 管理](https://github.com/openjdk/jdk/blob/jdk-21-ga/src/hotspot/share/compiler/compileBroker.cpp)

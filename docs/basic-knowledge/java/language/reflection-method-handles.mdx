@@ -14,7 +14,7 @@ Java 反射在运行时检查类型并调用成员。本文负责反射 API、�
 - 反射通过 `Class` 读取成员信息并创建对象或调用方法。[卡](#reflection-uses)
 - `getDeclaredMethods` 查本类声明，`getMethods` 查公开方法及继承成员。
 - `Method.invoke` 用 `InvocationTargetException` 包装目标异常。
-- JDK 18 起，核心反射改用方法句柄实现。[卡](#reflection-cost)
+- Java 21 的核心反射基于方法句柄实现。[卡](#reflection-cost)
 - `invokeExact` 要求调用点的参数及返回类型与句柄完全一致。[卡](#method-handle-exact-type)
 
 ## 2. Class 对象来源 {#获取-class-对象}
@@ -183,7 +183,7 @@ RequestHandler(Method handlerMethod) {
 
 ### 6.1 JDK 版本与调用性能 {#性能随-jdk-版本变化}
 
-从 JDK 18 起，核心反射实现基于方法句柄重新实现。JIT 对常量 `Method`、`Constructor` 和 `MethodHandle` 的优化能力，也会随版本和调用形态变化。
+Java 17 的核心反射使用本地调用和生成的访问器。Java 21 改用方法句柄实现。JIT 对常量 `Method`、`Constructor` 和 `MethodHandle` 的优化能力，也会随版本和调用形态变化。
 
 反射与句柄的性能取决于 JDK 及调用形态。低频扫描只占启动成本的一部分。热点调用应在目标 JDK 上用 JMH 验证。
 
@@ -291,7 +291,7 @@ Object boxed = length.invoke("Java"); // Integer，值为 4
 
 反射增加了成员查找、参数适配和运行时检查。间接调用与装箱也会影响优化。缓存调用对象可省去重复查找。
 
-`MethodHandle` 提供带类型的可组合入口。JDK 18 起，核心反射本身也使用句柄实现。常量稳定性、调用热度与 JDK 版本决定实际成本。应按目标调用形态做基准。
+`MethodHandle` 提供带类型的可组合入口。Java 17 的核心反射使用本地调用和生成的访问器。Java 21 的核心反射也使用句柄实现。常量稳定性、调用热度与 JDK 版本决定实际成本。应按目标调用形态做基准。
 
 </details>
 
@@ -314,9 +314,10 @@ Object boxed = length.invoke("Java"); // Integer，值为 4
 
 ## 11. 参考资料 {#参考资料}
 
-- [Java API：java.lang.reflect](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/reflect/package-summary.html)
-- [Java API：Class](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/Class.html)
-- [Java API：Method](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/reflect/Method.html)
-- [Java API：MethodHandle](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/invoke/MethodHandle.html)
-- [Java API：MethodHandles.Lookup](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/invoke/MethodHandles.Lookup.html)
-- [JEP 416：Reimplement Core Reflection with Method Handles](https://openjdk.org/jeps/416)
+- [Java API：java.lang.reflect](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/reflect/package-summary.html)
+- [Java API：Class](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/Class.html)
+- [Java API：Method](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/reflect/Method.html)
+- [Java API：MethodHandle](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/invoke/MethodHandle.html)
+- [Java API：MethodHandles.Lookup](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/invoke/MethodHandles.Lookup.html)
+- [OpenJDK 17：ReflectionFactory](https://github.com/openjdk/jdk/blob/jdk-17-ga/src/java.base/share/classes/jdk/internal/reflect/ReflectionFactory.java)
+- [OpenJDK 21：ReflectionFactory](https://github.com/openjdk/jdk/blob/jdk-21-ga/src/java.base/share/classes/jdk/internal/reflect/ReflectionFactory.java)

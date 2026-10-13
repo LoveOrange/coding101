@@ -25,7 +25,7 @@ jcmd <pid> Thread.print -l > thread-01.txt
 
 隔几秒采集多份，并记录 CPU、请求延迟和队列长度。`-l` 增加 ownable synchronizer 信息，如 ReentrantLock。
 
-JDK 26 的 `Thread.print` 包含平台线程和已挂载虚拟线程。完整虚拟线程观察使用 `Thread.dump_to_file`。各命令的采集口径应分别记录。
+Java 21 的 `Thread.print` 主要用于观察平台线程。虚拟线程使用 `Thread.dump_to_file` 观察。各命令的采集口径应分别记录。
 
 ## 3. 线程状态与栈 {#线程状态与栈}
 
@@ -87,7 +87,7 @@ return child.get();
 
 ## 8. 虚拟线程的线程转储 {#虚拟线程的线程转储}
 
-以 JDK 26 为例，可导出 JSON 线程栈：
+以 JDK 21 为例，可导出 JSON 线程栈：
 
 ```bash
 jcmd <pid> Thread.dump_to_file -format=json /safe/path/threads.json
@@ -97,7 +97,7 @@ jcmd <pid> Thread.dump_to_file -format=json /safe/path/threads.json
 
 `ThreadMXBean.findDeadlockedThreads()` 检测平台线程的锁环。其结果不覆盖涉及虚拟线程的等待环。
 
-虚拟线程仍会争用数据库连接和共享锁。诊断时要查看业务栈、carrier CPU 与下游容量。JDK 24 起，synchronized 阻塞已解除旧的 pinning 限制。native 方法和外部函数仍会带来 pinning。
+虚拟线程仍会争用数据库连接和共享锁。诊断时要查看业务栈、carrier CPU 与下游容量。Java 21 在 synchronized 内阻塞时会发生 pinning。native 方法执行期间也会固定 carrier。长时间固定会降低可用 carrier 数量。
 
 ## 9. 常见问题 {#常见问题}
 
@@ -167,15 +167,14 @@ WAITING 只说明等待条件，空闲与故障都可出现。空闲线程等待
 <details>
 <summary>参考回答</summary>
 
-没有报告仍需检查虚拟线程和业务依赖。JDK 26 的 Thread.print 只包含已挂载虚拟线程。Thread.dump_to_file 能补充线程栈，但不自动检测死锁。ThreadMXBean 的死锁检测也限于平台线程。应结合锁持有者、任务依赖与多次采集判断。
+没有报告仍需检查虚拟线程和业务依赖。Java 21 的 Thread.print 无法完整覆盖虚拟线程。Thread.dump_to_file 能补充线程栈，但不自动检测死锁。ThreadMXBean 的死锁检测也限于平台线程。应结合锁持有者、任务依赖与多次采集判断。
 
 </details>
 
 ## 11. 参考资料 {#参考资料}
 
-- [Oracle：jcmd](https://docs.oracle.com/en/java/javase/26/docs/specs/man/jcmd.html)
-- [Java API：Thread.State](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/Thread.State.html)
-- [Java API：ThreadMXBean](https://docs.oracle.com/en/java/javase/26/docs/api/java.management/java/lang/management/ThreadMXBean.html)
-- [Oracle：Virtual Threads](https://docs.oracle.com/en/java/javase/26/core/virtual-threads.html)
-- [JEP 491：Synchronize Virtual Threads without Pinning](https://openjdk.org/jeps/491)
-- [Java API：Object.wait](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/Object.html#wait())
+- [Oracle：jcmd](https://docs.oracle.com/en/java/javase/21/docs/specs/man/jcmd.html)
+- [Java API：Thread.State](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/Thread.State.html)
+- [Java API：ThreadMXBean](https://docs.oracle.com/en/java/javase/21/docs/api/java.management/java/lang/management/ThreadMXBean.html)
+- [Oracle：Virtual Threads](https://docs.oracle.com/en/java/javase/21/core/virtual-threads.html)
+- [Java API：Object.wait](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/Object.html#wait())

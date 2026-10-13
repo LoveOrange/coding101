@@ -7,7 +7,7 @@ knowledge:
 
 # Java API 设计
 
-Java API 用类型和方法表达合法状态与操作。本文负责不变量、参数建模、失败语义和兼容性。语言与 API 示例以 Java 26 为准。
+Java API 用类型和方法表达合法状态与操作。本文负责不变量、参数建模、失败语义和兼容性。语言与 API 示例以 Java 17、21 为准。
 
 可变对象的复制细节见 [不可变对象](./immutable-objects-defensive-copying.mdx)。测试层级见 [测试金字塔](./test-pyramid-contract-regression.mdx)。
 
@@ -278,9 +278,9 @@ orElseGet 仅在 Optional 为空时调用 Supplier。默认值昂贵或包含副
 
 ## 13. 参考资料 {#参考资料}
 
-- [Java API：Objects.requireNonNull](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/Objects.html#requireNonNull(T,java.lang.String))
-- [Java Language Specification：Record Classes](https://docs.oracle.com/en/java/javase/26/docs/specs/jls/jls-8.html#jls-8.10)
-- [Java API：Optional](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/Optional.html)
-- [Java API：List.copyOf](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/List.html#copyOf(java.util.Collection))
-- [JLS 26：Binary Compatibility](https://docs.oracle.com/en/java/javase/26/docs/specs/jls/jls-13.html)
-- [JLS 26：Evaluation of Argument Lists](https://docs.oracle.com/en/java/javase/26/docs/specs/jls/jls-15.html#jls-15.12.4.2)
+- [Java API：Objects.requireNonNull](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/Objects.html#requireNonNull(T,java.lang.String))
+- [Java Language Specification：Record Classes](https://docs.oracle.com/javase/specs/jls/se21/html/jls-8.html#jls-8.10)
+- [Java API：Optional](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/Optional.html)
+- [Java API：List.copyOf](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/List.html#copyOf(java.util.Collection))
+- [JLS 21：Binary Compatibility](https://docs.oracle.com/javase/specs/jls/se21/html/jls-13.html)
+- [JLS 21：Evaluation of Argument Lists](https://docs.oracle.com/javase/specs/jls/se21/html/jls-15.html#jls-15.12.4.2)

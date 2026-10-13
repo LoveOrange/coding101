@@ -14,7 +14,7 @@ knowledge:
 - 逃逸分析依据内联后的调用图判断对象可见范围。
 - 标量替换将字段拆为独立值，并消除对象分配。[卡](#heap-allocation)
 - 线程私有对象的 monitor 可由 C2 消除。[卡](#escape-analysis-optimizations)
-- JDK 26 C2 的流不敏感分析会合并不同分支的逃逸结果。[卡](#conditional-escape)
+- JDK 21 C2 的流不敏感分析会合并不同分支的逃逸结果。[卡](#conditional-escape)
 
 ## 2. 对象逃逸的判断 {#对象逃逸的判断}
 
@@ -69,7 +69,7 @@ buffer 只在当前调用中使用。C2 能证明线程私有时，可以消除�
 
 ### 5.1 条件逃逸 {#条件逃逸}
 
-JDK 26 C2 使用流不敏感逃逸分析。某个分支将对象写入全局字段，就会影响整个分配点：
+JDK 21 C2 使用流不敏感逃逸分析。某个分支将对象写入全局字段，就会影响整个分配点：
 
 ```java
 static Point saved;
@@ -87,7 +87,7 @@ static int compute(boolean publish, int x) {
 
 ## 6. 栈上分配 {#栈上分配的说法}
 
-JDK 26 HotSpot C2 主要通过标量替换消除分配。它并未将所有不逃逸对象整体搬到线程栈。
+JDK 21 HotSpot C2 主要通过标量替换消除分配。它并未将所有不逃逸对象整体搬到线程栈。
 
 保留的对象分配仍属于堆分配。TLAB 是堆内线程私有分配区，见[Java 对象布局](./object-creation-layout.mdx)。
 
@@ -178,13 +178,13 @@ JVM 规范将对象存储归入堆，但 JIT 可消除对象分配。C2 成功�
 <details>
 <summary>参考回答</summary>
 
-JDK 26 C2 会合并保留分支的逃逸结果。若同一分配点在一个分支写入全局字段，就会被判为全局逃逸。分支很少执行，并不足以保证分配消除。需要确认编译图中的分支与实际分配数据。
+JDK 21 C2 会合并保留分支的逃逸结果。若同一分配点在一个分支写入全局字段，就会被判为全局逃逸。分支很少执行，并不足以保证分配消除。需要确认编译图中的分支与实际分配数据。
 
 </details>
 
 ## 10. 参考资料 {#参考资料}
 
-- [Oracle：Escape Analysis](https://docs.oracle.com/en/java/javase/26/vm/java-virtual-machine-guide.pdf)
+- [Oracle：Escape Analysis](https://docs.oracle.com/en/java/javase/21/vm/java-virtual-machine-guide.pdf)
 - [OpenJDK：HotSpot Compiler](https://openjdk.org/groups/hotspot/docs/HotSpotGlossary.html)
 - [OpenJDK JMH Samples](https://github.com/openjdk/jmh/tree/master/jmh-samples/src/main/java/org/openjdk/jmh/samples)
-- [Oracle JDK 26：Escape Analysis](https://docs.oracle.com/en/java/javase/26/vm/java-hotspot-virtual-machine-performance-enhancements.html)
+- [Oracle JDK 21：Escape Analysis](https://docs.oracle.com/en/java/javase/21/vm/java-hotspot-virtual-machine-performance-enhancements.html)

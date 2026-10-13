@@ -13,7 +13,7 @@ knowledge:
 
 - GC 后存活占用持续增长是泄漏线索，业务生命周期决定对象是否无用。[卡](#cache-growth-vs-leak)
 - `GC.class_histogram` 按类统计对象数量和浅大小。
-- JDK 26 的 `GC.heap_dump` 默认请求 Full GC，`-all` 包含不可达对象。[卡](#heap-dump-all)
+- JDK 21 的 `GC.heap_dump` 默认请求 Full GC，`-all` 包含不可达对象。[卡](#heap-dump-all)
 - 浅大小只计算对象自身，保留大小包含其支配的对象图。[卡](#shallow-vs-retained)
 - Dominator Tree 表达支配关系，GC Roots 路径解释对象的持有来源。
 
@@ -45,7 +45,7 @@ HPROF 会包含对象字段中的业务数据。文件按敏感数据控制访�
 
 ### 4.1 存活对象与全量对象 {#存活对象与全量对象}
 
-JDK 26 的默认命令会请求 Full GC。添加 `-all` 后，命令包含不可达对象。该选项省去命令主动请求的 Full GC。堆遍历与写文件仍有停顿成本。
+JDK 21 的默认命令会请求 Full GC。添加 `-all` 后，命令包含不可达对象。该选项省去命令主动请求的 Full GC。堆遍历与写文件仍有停顿成本。
 
 ```bash
 jcmd <pid> GC.heap_dump -all /safe/path/heap-all.hprof
@@ -162,13 +162,13 @@ GC 日志用于建立存活占用趋势。业务指标用于判断缓存与队�
 <details>
 <summary>参考回答</summary>
 
-JDK 26 的 `-all` 会包含不可达对象，并省去主动请求 Full GC。堆遍历和写文件仍有成本。不可达对象只是尚未回收，不能据此判断泄漏。比较转储时应保持选项一致。
+JDK 21 的 `-all` 会包含不可达对象，并省去主动请求 Full GC。堆遍历和写文件仍有成本。不可达对象只是尚未回收，不能据此判断泄漏。比较转储时应保持选项一致。
 
 </details>
 
 ## 11. 参考资料 {#参考资料}
 
-- [Oracle：Troubleshoot Memory Leaks](https://docs.oracle.com/en/java/javase/26/troubleshoot/troubleshooting-memory-leaks.html)
-- [Oracle：jcmd](https://docs.oracle.com/en/java/javase/26/docs/specs/man/jcmd.html)
+- [Oracle：Troubleshoot Memory Leaks](https://docs.oracle.com/en/java/javase/21/troubleshoot/troubleshooting-memory-leaks.html)
+- [Oracle：jcmd](https://docs.oracle.com/en/java/javase/21/docs/specs/man/jcmd.html)
 - [Eclipse MAT：Dominator Tree](https://help.eclipse.org/latest/topic/org.eclipse.mat.ui.help/concepts/dominatortree.html)
 - [Eclipse MAT：Shallow and Retained Heap](https://help.eclipse.org/latest/topic/org.eclipse.mat.ui.help/concepts/shallowretainedheap.html)

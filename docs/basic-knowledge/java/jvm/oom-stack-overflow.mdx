@@ -34,7 +34,7 @@ while (true) {
 
 该消息表示 GC 占用大量时间，却释放极少空间。它描述回收进展，未新增一种内存区域。
 
-以 HotSpot JDK 8 Parallel 的默认策略为例：GC 时间超过约 98%，回收空间低于约 2%。持续满足条件后会触发保护。此规则应结合收集器和版本解释。
+以 Java 17、21 的 Parallel 默认策略为例：GC 时间超过约 98%，回收空间低于约 2%。持续满足条件后会触发保护。此规则应结合收集器和版本解释。
 
 `-XX:-UseGCOverheadLimit` 可关闭该保护。工作集和可用空间问题仍需处理。应结合 GC 后存活占用、分配率和吞吐判断。
 
@@ -176,9 +176,9 @@ SIGKILL 没有给 JVM 留下清理窗口。退出码 137 只说明 SIGKILL，需
 
 ## 11. 参考资料 {#参考资料}
 
-- [Oracle：Troubleshoot Memory Leaks](https://docs.oracle.com/en/java/javase/26/troubleshoot/troubleshooting-memory-leaks.html)
-- [Oracle：JDK 8 Parallel Collector](https://docs.oracle.com/javase/8/docs/technotes/guides/vm/gctuning/parallel.html)
-- [JVMS：Run-Time Data Areas](https://docs.oracle.com/javase/specs/jvms/se26/html/jvms-2.html#jvms-2.5)
-- [OpenJDK 26：report_java_out_of_memory](https://github.com/openjdk/jdk/blob/jdk-26-ga/src/hotspot/share/utilities/debug.cpp)
+- [Oracle：Troubleshoot Memory Leaks](https://docs.oracle.com/en/java/javase/21/troubleshoot/troubleshooting-memory-leaks.html)
+- [Oracle Java 21：Parallel Collector](https://docs.oracle.com/en/java/javase/21/gctuning/parallel-collector3.html)
+- [JVMS：Run-Time Data Areas](https://docs.oracle.com/javase/specs/jvms/se21/html/jvms-2.html#jvms-2.5)
+- [OpenJDK 21：report_java_out_of_memory](https://github.com/openjdk/jdk/blob/jdk-21-ga/src/hotspot/share/utilities/debug.cpp)
 - [Linux：Control Group v2 Memory](https://docs.kernel.org/admin-guide/cgroup-v2.html#memory)
 - [Linux：signal(7)](https://man7.org/linux/man-pages/man7/signal.7.html)

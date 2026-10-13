@@ -105,7 +105,7 @@ PhantomReference<ResourceOwner> ref =
 
 清理 Runnable 应只持有清理所需状态。若它捕获目标对象的 `this`，目标就会一直被持有。静态嵌套状态类可避免隐式捕获。
 
-JDK 18 的 JEP 421 将 finalization 标记为待移除。新资源管理代码应使用显式关闭与必要的 Cleaner。
+Java 17 已弃用 finalization。Java 21 进一步将它标记为待移除。新资源管理代码应使用显式关闭与必要的 Cleaner。
 
 ## 7. 类卸载 {#类卸载}
 
@@ -129,7 +129,7 @@ JDK 18 的 JEP 421 将 finalization 标记为待移除。新资源管理代码�
 
 ### 9.3 finalize 与资源释放 {#finalize-与资源释放}
 
-finalize 的执行时机不确定，并会延长生命周期。JDK 18 起已弃用并计划移除。明确作用域的资源应显式关闭。
+finalize 的执行时机不确定，并会延长生命周期。Java 21 已将它标记为待移除。明确作用域的资源应显式关闭。
 
 ## 10. 面试题 {#面试题}
 
@@ -212,11 +212,12 @@ HotSpot 从 GC Roots 遍历对象图。孤立且没有特殊引用处理要求�
 
 ## 11. 参考资料 {#参考资料}
 
-- [Java API：`java.lang.ref`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/ref/package-summary.html)
-- [Java API：`Reference`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/ref/Reference.html)
-- [JEP 421：Deprecate Finalization for Removal](https://openjdk.org/jeps/421)
-- [Java API：WeakReference](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/ref/WeakReference.html)
-- [Java API：PhantomReference](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/ref/PhantomReference.html)
-- [Java API：WeakHashMap](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/WeakHashMap.html)
-- [Java API：Cleaner](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/ref/Cleaner.html)
-- [JLS 26：Unloading of Classes and Interfaces](https://docs.oracle.com/javase/specs/jls/se26/html/jls-12.html#jls-12.7)
+- [Java API：`java.lang.ref`](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/ref/package-summary.html)
+- [Java API：`Reference`](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/ref/Reference.html)
+- [Java API：WeakReference](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/ref/WeakReference.html)
+- [Java API：PhantomReference](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/ref/PhantomReference.html)
+- [Java API：WeakHashMap](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/WeakHashMap.html)
+- [Java API：Cleaner](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/ref/Cleaner.html)
+- [JLS 21：Unloading of Classes and Interfaces](https://docs.oracle.com/javase/specs/jls/se21/html/jls-12.html#jls-12.7)
+- [Java 17 API：Object.finalize](https://docs.oracle.com/en/java/javase/17/docs/api/java.base/java/lang/Object.html#finalize())
+- [Java 21 API：Object.finalize](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/Object.html#finalize())

@@ -52,7 +52,7 @@ final class Counter {
 
 本例隐式调用父类无参构造器。随后执行 `step = 1`，再执行 `value = initial`。初始零值和显式字段初始化属于不同步骤。
 
-Java 25 将灵活构造器体定为正式特性。`super(...)` 前可有受限的前置语句。构造顺序因此还需计入各层前置语句。
+Java 17、21 要求显式构造器调用位于首条语句。省略时，编译器会隐式插入 `super()`。
 
 ### 4.1 构造器中的动态分派 {#构造器中的动态分派}
 
@@ -78,7 +78,7 @@ class Child extends Parent {
 
 数组还包含长度字段。HotSpot 可调整字段排列，以减少空洞。源码字段顺序不足以推算实际偏移。
 
-JDK 25 的紧凑对象头已产品化，默认仍关闭。使用 `-XX:+UseCompactObjectHeaders` 可启用。具体布局和字节数见 [压缩指针与对象对齐](./compressed-pointers-alignment.mdx)。
+Java 17、21 的 HotSpot 对象头包含标记字和类指针。具体布局和字节数见 [压缩指针与对象对齐](./compressed-pointers-alignment.mdx)。
 
 ## 6. 构造与安全发布 {#构造与安全发布}
 
@@ -100,7 +100,7 @@ final class Listener {
 System.out.println(ClassLayout.parseClass(Order.class).toPrintable());
 ```
 
-JOL 输出字段偏移、对象头和对齐结果。记录结果时应附上 JDK 版本、位数与启动参数。压缩类指针、对象对齐和紧凑对象头都会影响布局。
+JOL 输出字段偏移、对象头和对齐结果。记录结果时应附上 JDK 版本、位数与启动参数。压缩类指针与对象对齐都会影响布局。
 
 `Instrumentation.getObjectSize` 返回实现相关的浅大小。引用所指向的对象需另外计算。
 
@@ -136,7 +136,7 @@ JIT 可消除完整对象分配，机制见 [逃逸分析与标量替换](./esca
 <details>
 <summary>参考回答</summary>
 
-JVM 先确保目标类可用，再分配实例并建立字段默认值。HotSpot 同时建立对象头。随后执行构造过程与显式字段初始化。TLAB 可降低分配竞争。Java 25 起，`super(...)` 前还能执行受限的前置语句。
+JVM 先确保目标类可用，再分配实例并建立字段默认值。HotSpot 同时建立对象头。随后执行构造过程与显式字段初始化。TLAB 可降低分配竞争。Java 17、21 的子类字段初始化在父类构造返回后执行。
 
 </details>
 
@@ -189,15 +189,15 @@ TLAB 是共享堆中供某个线程分配的一段缓冲区。对象发布后可
 <details>
 <summary>参考回答</summary>
 
-调用会动态分派到子类方法。示例中的子类字段初始化尚未执行，因此打印 0。Java 25 的构造器前置语句可提前给允许的字段赋值。判断结果时应按实际构造顺序分析。
+调用会动态分派到子类方法。示例中的子类字段初始化尚未执行，因此打印 0。判断结果时应按实际构造顺序分析。
 
 </details>
 
 ## 10. 参考资料 {#参考资料}
 
-- [JVMS：Representation of Objects](https://docs.oracle.com/javase/specs/jvms/se26/html/jvms-2.html#jvms-2.7)
-- [JLS：Creation of New Class Instances](https://docs.oracle.com/javase/specs/jls/se26/html/jls-12.html#jls-12.5)
-- [JLS：final Field Semantics](https://docs.oracle.com/javase/specs/jls/se26/html/jls-17.html#jls-17.5)
-- [Oracle：JDK 25 Compact Object Headers](https://docs.oracle.com/en/java/javase/25/gctuning/other-considerations.html)
+- [JVMS：Representation of Objects](https://docs.oracle.com/javase/specs/jvms/se21/html/jvms-2.html#jvms-2.7)
+- [JLS：Creation of New Class Instances](https://docs.oracle.com/javase/specs/jls/se21/html/jls-12.html#jls-12.5)
+- [JLS：final Field Semantics](https://docs.oracle.com/javase/specs/jls/se21/html/jls-17.html#jls-17.5)
 - [OpenJDK：Java Object Layout](https://openjdk.org/projects/code-tools/jol/)
-- [OpenJDK 26：MemAllocator](https://github.com/openjdk/jdk/blob/jdk-26-ga/src/hotspot/share/gc/shared/memAllocator.cpp)
+- [OpenJDK 21：MemAllocator](https://github.com/openjdk/jdk/blob/jdk-21-ga/src/hotspot/share/gc/shared/memAllocator.cpp)
+- [OpenJDK 21：对象头与类指针](https://github.com/openjdk/jdk/blob/jdk-21-ga/src/hotspot/share/oops/oop.hpp)
