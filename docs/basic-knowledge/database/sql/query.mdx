@@ -11,7 +11,7 @@ SQL 查询用声明式条件描述需要返回的数据。本文用最小数据�
 
 ## 1. 面试核心 {#core}
 
-- WHERE 只保留条件为 TRUE 的行，NULL 应使用 IS NULL 判断。
+- WHERE 只保留条件为 TRUE 的行，NULL 应使用 IS NULL 判断。[卡](#null-and-stable-sort)
 - SELECT 默认保留重复行，DISTINCT 根据所选列组合去重。
 - 没有 ORDER BY 就没有可靠的结果顺序；分页排序应包含唯一的决胜列。
 

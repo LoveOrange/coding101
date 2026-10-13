@@ -9,7 +9,15 @@ knowledge:
 
 领域驱动设计先确定一套业务模型在哪些范围内成立，再让代码、接口和团队沟通使用同一套业务语言。
 
-## 1. 领域模型来自业务规则
+## 1. 面试核心 {#core}
+
+- 领域是软件要解决的业务范围，通常再分为多个子域。
+- 限界上下文规定一套模型的适用范围：同一个词（如“客户”）在不同上下文中可以有不同含义和字段。[卡](#ddd-bounded-context)
+- 统一语言是业务和开发共同使用的词汇，要体现在接口、类名和方法名中。
+- 识别边界看业务规则、术语含义、数据所有权和团队职责在哪里分开。
+- 上下文之间通过 API、事件或防腐层协作；限界上下文是模型边界，是否拆成微服务另行决定。
+
+## 2. 领域与子域 {#domain}
 
 领域是软件需要解决的业务范围，例如电商、信贷或物流。一个大领域通常还会分成多个子域：电商可以包含商品、交易、库存、履约和售后。
 
@@ -22,7 +30,7 @@ knowledge:
 
 当业务规则很简单时，CRUD 已经足够。DDD 更适合规则复杂、概念容易混淆、业务仍在持续变化的部分。
 
-## 2. 限界上下文规定模型的适用范围
+## 3. 限界上下文 {#bounded-context}
 
 同一个词在不同业务环节可能有不同含义。以“客户”为例：
 
@@ -34,7 +42,7 @@ knowledge:
 
 限界上下文是逻辑边界，不自动等于一个微服务。它可以先落在一个模块里，也可以由多个部署单元共同实现。是否独立部署，要继续评估变更频率、扩缩容、故障隔离和团队责任。
 
-## 3. 统一语言连接需求与实现
+## 4. 统一语言 {#ubiquitous-language}
 
 统一语言是领域专家和开发者共同使用、并且能够落到模型中的词汇。它需要进入以下位置：
 
@@ -43,11 +51,11 @@ knowledge:
 - API 字段与错误码；
 - 监控指标、告警和运行手册。
 
-如果业务说“确认订单”，代码却使用 `updateStatus(3)`，真正的规则只能藏在注释和人的记忆里。更明确的接口可以是 `confirm()`，由方法内部检查当前状态、支付条件和版本。
+如果业务说“确认订单”，代码却使用 `updateStatus(3)`，业务规则只能藏在注释和人的记忆里。更明确的接口可以是 `confirm()`，由方法内部检查当前状态、支付条件和版本。
 
 统一语言允许在不同限界上下文中出现差异。同一个词一旦语义不同，就应通过上下文名称、转换模型或显式契约区分，避免追求全公司的单一大模型。
 
-## 4. 从业务变化识别边界
+## 5. 识别边界 {#identify}
 
 识别边界时，可以沿一条完整业务流程观察以下信号：
 
@@ -59,7 +67,7 @@ knowledge:
 
 边界需要通过真实需求验证。初次建模可以保守一些，把关系紧密的能力放在一起；当变化模式清楚后再拆分。过早切出服务，通常只会把尚未理解的业务关系变成网络调用。
 
-## 5. 上下文之间通过契约协作
+## 6. 上下文之间的协作 {#context-map}
 
 上下文图记录限界上下文之间的依赖方向和集成方式。常见做法包括：
 
@@ -70,7 +78,7 @@ knowledge:
 
 契约要包含字段语义、版本、幂等要求、错误处理和兼容期限。只画一张模块关系图，却允许双方直接读取彼此数据库，边界仍然无法独立演进。
 
-## 6. 一个订单场景
+## 7. 订单场景示例 {#example}
 
 假设交易系统收到“取消订单”请求：
 
@@ -81,21 +89,23 @@ knowledge:
 
 “订单取消”在订单上下文中是一条受状态机约束的命令，在库存和支付上下文中则是触发后续工作的事实。各上下文保留自己的模型，通过事件标识、版本和幂等规则完成协作，不共享一个可被所有服务修改的 `Order` 对象。
 
-## 7. 常见问题
+## 8. 常见问题
 
-### 7.1 DDD 是否要求使用充血模型
+### 8.1 DDD 是否要求使用充血模型
 
 DDD 要求关键业务规则有清楚的归属。复杂规则可以放在实体、值对象、聚合和领域服务中；简单查询或 CRUD 没有必要包装出大量空壳对象。判断标准是规则是否容易找到、能否独立测试，以及状态是否只能通过合法操作改变。
 
-### 7.2 限界上下文是否应该独占数据库
+### 8.2 限界上下文是否应该独占数据库
 
 它应该拥有自己的数据定义和写入权。物理上可以暂时共用一个数据库实例，但表的所有权、写入入口和迁移责任要明确。跨上下文直接更新表，会重新建立隐式耦合。
 
-## 8. 面试题
+## 9. 面试题
 
-### 8.1 如何理解 DDD，项目中怎样识别限界上下文 {#ddd-bounded-context}
+### 9.1 如何理解 DDD，项目中怎样识别限界上下文 {#ddd-bounded-context}
 
-**题目类型**：本站自测
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
 
 **考察重点**
 
@@ -103,7 +113,7 @@ DDD 要求关键业务规则有清楚的归属。复杂规则可以放在实体�
 - 业务边界与服务部署边界的区别。
 - 如何用规则、变化、一致性和团队责任验证边界。
 
-**相关内容**：[领域模型来自业务规则](#1-领域模型来自业务规则)至[上下文之间通过契约协作](#5-上下文之间通过契约协作)。
+**相关内容**：[领域与子域](#domain)至[上下文之间的协作](#context-map)。
 
 <details>
 <summary>参考回答</summary>
@@ -114,10 +124,8 @@ DDD 要求关键业务规则有清楚的归属。复杂规则可以放在实体�
 
 </details>
 
-:::note 参考资料
+## 10. 参考资料
 
-1. [Microsoft Learn：识别微服务的领域模型边界](https://learn.microsoft.com/en-us/dotnet/architecture/microservices/architect-microservice-container-applications/identify-microservice-domain-model-boundaries)
-2. [Microsoft Learn：设计微服务领域模型](https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/microservice-domain-model)
-3. [Martin Fowler：Bounded Context](https://martinfowler.com/bliki/BoundedContext.html)
-
-:::
+- [Microsoft Learn：识别微服务的领域模型边界](https://learn.microsoft.com/en-us/dotnet/architecture/microservices/architect-microservice-container-applications/identify-microservice-domain-model-boundaries)
+- [Microsoft Learn：设计微服务领域模型](https://learn.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/microservice-domain-model)
+- [Martin Fowler：Bounded Context](https://martinfowler.com/bliki/BoundedContext.html)

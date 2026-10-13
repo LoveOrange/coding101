@@ -9,7 +9,15 @@ knowledge:
 
 JUnit 测试用可重复的示例验证公开行为。一个有效测试需要清楚的前置状态、一次目标动作和能够区分正确与错误实现的断言。
 
-## 1. 测试由准备、执行和验证组成
+## 1. 面试核心 {#core}
+
+- 一个测试包含准备、执行、验证三部分，只针对一个行为。[卡](#junit-usage)
+- 断言检查可观察的结果，不在测试中重新实现一遍被测算法；异常用 `assertThrows` 验证。
+- 同一规则需要多组输入输出时使用 `@ParameterizedTest`，数据来自 `@ValueSource`、`@CsvSource` 或 `@MethodSource`。[卡](#parameterized-tests)
+- JUnit 5 默认为每个测试方法创建新的测试类实例，`@BeforeEach` 为每个测试建立独立起点。
+- 时间、随机数和外部资源通过注入 `Clock`、固定种子和临时目录变得可控。
+
+## 2. 测试结构 {#structure}
 
 下面用已有的 `Money` 类型演示异常断言；其构造方法约定拒绝负数金额。
 
@@ -33,7 +41,7 @@ void rejectsNegativeAmount() {
 
 三段不必用注释机械标记，但读者应能快速辨认。一个测试覆盖一个行为条件，可以有多条共同描述该行为的断言。
 
-## 2. 断言验证结果，不重复实现算法
+## 3. 断言 {#assertions}
 
 常用断言：
 
@@ -52,7 +60,7 @@ assertIterableEquals(expectedItems, actualItems);
 assertEquals(expected, actual, "discount for first-time customer");
 ```
 
-## 3. 异常和多个结果的断言
+## 4. 异常与多个结果的断言 {#exceptions}
 
 `assertThrows` 返回捕获的异常，可以继续验证：
 
@@ -77,7 +85,7 @@ assertAll(
 
 不要把互不相关的场景塞进一个 assertAll；前置动作失败后，后续断言可能只产生噪音。
 
-## 4. 参数化测试覆盖同一规则的多组输入
+## 5. 参数化测试 {#parameterized}
 
 ```java
 @ParameterizedTest
@@ -103,7 +111,7 @@ void countsDecimalDigits(int input, int expectedDigits) {
 
 输入对象复杂或需要清楚名称时，`@MethodSource` 通常比很长的 CSV 更易维护。
 
-## 5. 生命周期与测试隔离
+## 6. 生命周期与隔离 {#lifecycle}
 
 JUnit Jupiter 默认每个测试方法创建一个测试类实例。`@BeforeEach` 适合建立独立起点：
 
@@ -119,7 +127,7 @@ void setUp() {
 
 昂贵资源可以在 `@BeforeAll` 建立，但每个测试仍要重置业务数据。使用 `PER_CLASS` 生命周期时，更要留意实例字段被共享。
 
-## 6. 时间、随机和并发测试要可控制
+## 7. 时间、随机与并发 {#determinism}
 
 注入 `Clock` 代替直接 `Instant.now()`，注入随机源或固定种子，外部端口和临时目录由测试框架管理。
 
@@ -132,7 +140,7 @@ Clock clock = Clock.fixed(
 
 `assertTimeout` 能限制测试调用耗时，但不是性能基准。并发测试不能只 sleep 后期望任务完成，应使用 Latch、Future、Awaitility 一类明确同步条件，并让失败有上限时间。
 
-## 7. 测试命名说明条件和结果
+## 8. 测试命名 {#naming}
 
 比起 `testPay1`，下面的名字更直接：
 
@@ -143,27 +151,27 @@ void payingCancelledOrderIsRejected() {}
 
 名称可以表达“条件—行为—结果”。`@Nested` 可按方法或状态分组，`@DisplayName` 适合补充业务语言，但不应让方法名完全失去可搜索性。
 
-## 8. 常见问题
+## 9. 常见问题
 
-### 8.1 一个测试只能有一个 assert 吗
+### 9.1 一个测试只能有一个 assert 吗
 
 不是硬规则。一个行为可能有多个相关结果，应一起验证。问题在于一个测试包含多个独立动作和失败原因，而不是断言数量本身。
 
-### 8.2 私有方法怎样测试
+### 9.2 私有方法怎样测试
 
 通过公开行为测试。私有方法是实现细节；如果它包含独立复杂规则，考虑提取为有明确包级或公开契约的对象，而不是使用反射调用。
 
-### 8.3 参数化测试是否替代普通测试
+### 9.3 参数化测试是否替代普通测试
 
 不替代。它适合同一种行为的多组数据；复杂流程、异常状态和特定回归往往用独立测试更清楚。
 
-### 8.4 `assertTimeoutPreemptively` 有什么风险
+### 9.4 `assertTimeoutPreemptively` 有什么风险
 
 它在不同线程执行代码，可能影响 ThreadLocal、事务和中断语义。优先使用普通 `assertTimeout`；必须抢占时明确被测代码的线程边界。
 
-## 9. 面试题
+## 10. 面试题
 
-### 9.1 平时怎样使用 JUnit 编写单元测试 {#junit-usage}
+### 10.1 平时怎样使用 JUnit 编写单元测试 {#junit-usage}
 
 <!-- 面试来源：
 - 阿里巴巴：https://www.nowcoder.com/discuss/353156377390555136
@@ -179,7 +187,7 @@ void payingCancelledOrderIsRejected() {}
 - 时间、随机和外部依赖怎样变得可控。
 - 单元测试与启动完整 Spring 环境的区别。
 
-**相关内容**：[测试由准备、执行和验证组成](#1-测试由准备执行和验证组成)至[测试命名说明条件和结果](#7-测试命名说明条件和结果)。
+**相关内容**：[测试结构](#structure)至[测试命名](#naming)。
 
 <details>
 <summary>参考回答</summary>
@@ -190,7 +198,7 @@ void payingCancelledOrderIsRejected() {}
 
 </details>
 
-### 9.2 什么情况下使用参数化测试 {#parameterized-tests}
+### 10.2 什么情况下使用参数化测试 {#parameterized-tests}
 
 <!-- 面试来源：
 - 字节跳动：https://www.nowcoder.com/discuss/353158433438375936
@@ -205,7 +213,7 @@ void payingCancelledOrderIsRejected() {}
 - 数据源和测试逻辑如何保持可读。
 - 复杂场景为什么仍需要独立测试。
 
-**相关内容**：[参数化测试覆盖同一规则的多组输入](#4-参数化测试覆盖同一规则的多组输入)。
+**相关内容**：[参数化测试](#parameterized)。
 
 <details>
 <summary>参考回答</summary>
@@ -216,11 +224,9 @@ void payingCancelledOrderIsRejected() {}
 
 </details>
 
-:::note 参考资料
+## 11. 参考资料
 
-1. [JUnit User Guide：Writing Tests](https://docs.junit.org/current/user-guide/#writing-tests)
-2. [JUnit User Guide：Assertions](https://docs.junit.org/current/user-guide/#writing-tests-assertions)
-3. [JUnit User Guide：Parameterized Tests](https://docs.junit.org/current/user-guide/#writing-tests-parameterized-tests)
-4. [JUnit User Guide：Test Instance Lifecycle](https://docs.junit.org/current/user-guide/#writing-tests-test-instance-lifecycle)
-
-:::
+- [JUnit User Guide：Writing Tests](https://docs.junit.org/current/user-guide/#writing-tests)
+- [JUnit User Guide：Assertions](https://docs.junit.org/current/user-guide/#writing-tests-assertions)
+- [JUnit User Guide：Parameterized Tests](https://docs.junit.org/current/user-guide/#writing-tests-parameterized-tests)
+- [JUnit User Guide：Test Instance Lifecycle](https://docs.junit.org/current/user-guide/#writing-tests-test-instance-lifecycle)

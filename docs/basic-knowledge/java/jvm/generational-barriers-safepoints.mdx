@@ -9,7 +9,15 @@ knowledge:
 
 分代收集利用“大多数对象很快失效”的工作负载特征，频繁回收年轻对象，较少扫描长期存活对象。为了只扫描部分堆，收集器必须记录跨区域引用；为了并发标记，还要维护对象图变化带来的正确性。
 
-## 1. 分代是假设，不是 Java 语义
+## 1. 面试核心 {#core}
+
+- 分代收集基于“大多数对象很快死亡”的经验，频繁回收年轻代，较少处理老年代；它是收集器的设计假设，Java 语言并不规定分代。
+- 只回收年轻代时要知道哪些老年代对象引用了年轻对象，写屏障配合卡表或 Remembered Set 记录这些跨代引用。[卡](#write-barrier-rset)
+- 并发标记期间应用仍在修改引用，收集器用写屏障维护标记的正确性。
+- 安全点让所有线程停在栈和引用可以准确解释的位置，GC、去优化、类重定义等全局操作都需要它。[卡](#safepoints)
+- G1、ZGC、Shenandoah 把部分工作与应用并发执行，但仍有短暂的 STW 阶段。
+
+## 2. 分代假设 {#generational-hypothesis}
 
 典型分代堆把新对象放入年轻代，存活若干轮后晋升到老年代。年轻代收集主要处理新对象，老年代收集频率较低。
 
@@ -17,7 +25,7 @@ knowledge:
 
 “Minor GC”“Major GC”“Full GC”在不同收集器和日志工具中的含义不完全一致。诊断应看收集器名称、具体 phase、回收范围和是否 Stop-The-World。
 
-## 2. 只扫描年轻代需要知道老年代谁指向它
+## 3. 跨代引用与写屏障 {#cross-generation}
 
 ```java
 oldOrder.latestEvent = new Event();
@@ -29,7 +37,7 @@ HotSpot 收集器通常通过写屏障在引用写入时维护 card table、reme
 
 屏障是 JVM 在引用访问周围插入的小段逻辑，不是 CPU 内存屏障的同义词。它会增加每次读写成本，以换取较小的回收扫描范围或并发能力。
 
-## 3. 并发标记期间对象图仍在变化
+## 4. 并发标记与对象图变化 {#concurrent-marking}
 
 收集器和应用线程同时运行时，应用可能：
 
@@ -41,7 +49,7 @@ HotSpot 收集器通常通过写屏障在引用写入时维护 card table、reme
 
 理解屏障时先问它保护什么正确性条件，再看具体收集器实现。把 G1、ZGC 和 Shenandoah 的屏障机制混成一套固定步骤，会得到错误结论。
 
-## 4. 安全点提供一致的线程状态
+## 5. 安全点 {#safepoint}
 
 JVM 在执行某些全局操作时，需要线程到达可以准确解释栈和对象引用的位置。HotSpot 通过 safepoint 或更细粒度的 thread-local handshake 协调这些操作。
 
@@ -53,7 +61,7 @@ JVM 在执行某些全局操作时，需要线程到达可以准确解释栈和�
 
 GC 日志里的某个 phase 很短，不代表应用停顿必然同样短；线程进入安全点的延迟、引用处理、类卸载等都可能增加时间。
 
-## 5. Stop-The-World 不是“所有 GC 都全程停顿”
+## 6. Stop-The-World 阶段 {#stw}
 
 Serial 和 Parallel 的主要回收工作在停顿中完成。G1、ZGC、Shenandoah 会把部分标记、整理或重定位与应用并发，但仍存在很短或不同用途的 STW 阶段。
 
@@ -67,7 +75,7 @@ Serial 和 Parallel 的主要回收工作在停顿中完成。G1、ZGC、Shenand
 
 低停顿不是零停顿，也不意味着没有吞吐代价。
 
-## 6. 晋升与分配失败会改变回收路径
+## 7. 晋升与分配失败 {#promotion-failure}
 
 年轻对象存活后需要复制或晋升。如果目标空间不足，可能出现 evacuation failure、promotion failure、分配停滞或更重的回收路径，具体名称取决于收集器。
 
@@ -80,7 +88,7 @@ Serial 和 Parallel 的主要回收工作在停顿中完成。G1、ZGC、Shenand
 
 这类问题不能只通过“降低停顿目标”解决。更激进的停顿目标可能让每次回收工作更少、频率更高，并增加并发周期压力。
 
-## 7. 从统一日志观察过程
+## 8. 从日志观察回收过程 {#logs}
 
 ```bash
 java -Xlog:gc*,safepoint:file=gc.log:time,uptime,level,tags -jar app.jar
@@ -97,23 +105,23 @@ java -Xlog:gc*,safepoint:file=gc.log:time,uptime,level,tags -jar app.jar
 
 先用默认日志建立时间线，再按问题打开更细 tag，避免一次记录大量调试日志干扰生产。
 
-## 8. 常见问题
+## 9. 常见问题
 
-### 8.1 写屏障和 `volatile` 的内存屏障是一回事吗
+### 9.1 写屏障和 `volatile` 的内存屏障是一回事吗
 
 不是。GC 写屏障维护收集器所需的引用信息或标记不变量；Java 内存模型相关屏障约束跨线程内存顺序。底层实现可能都生成额外指令，但目的不同。
 
-### 8.2 安全点只会由 GC 触发吗
+### 9.2 安全点只会由 GC 触发吗
 
 不会。去优化、类重定义、偏向撤销的历史实现、某些诊断命令等 JVM 操作也可能需要全局协调。具体原因从 safepoint/JFR 事件判断。
 
-### 8.3 年轻代越大，性能一定越好吗
+### 9.3 年轻代越大，性能一定越好吗
 
 不一定。更大年轻代可能降低收集频率，却增加单次扫描与复制工作，还会挤压老年代余量。应按分配率、存活率和延迟目标验证。
 
-## 9. 面试题
+## 10. 面试题
 
-### 9.1 为什么分代收集需要写屏障和 Remembered Set {#write-barrier-rset}
+### 10.1 为什么分代收集需要写屏障和 Remembered Set {#write-barrier-rset}
 
 <!-- 面试来源：
 - 阿里巴巴：https://www.nowcoder.com/discuss/353157613372252160
@@ -127,7 +135,7 @@ java -Xlog:gc*,safepoint:file=gc.log:time,uptime,level,tags -jar app.jar
 - 屏障在写入时维护引用摘要。
 - 空间换取扫描时间的权衡。
 
-**相关内容**：[分代是假设，不是 Java 语义](#1-分代是假设不是-java-语义)至[并发标记期间对象图仍在变化](#3-并发标记期间对象图仍在变化)。
+**相关内容**：[分代假设](#generational-hypothesis)至[并发标记与对象图变化](#concurrent-marking)。
 
 <details>
 <summary>参考回答</summary>
@@ -138,7 +146,7 @@ java -Xlog:gc*,safepoint:file=gc.log:time,uptime,level,tags -jar app.jar
 
 </details>
 
-### 9.2 什么是安全点，GC 为什么需要它 {#safepoints}
+### 10.2 什么是安全点，GC 为什么需要它 {#safepoints}
 
 <!-- 面试来源：
 - 阿里云：https://www.nowcoder.com/discuss/401459816646942720
@@ -152,7 +160,7 @@ java -Xlog:gc*,safepoint:file=gc.log:time,uptime,level,tags -jar app.jar
 - 到达安全点的时间和停顿工作时间。
 - 并发收集器仍有 STW 阶段。
 
-**相关内容**：[安全点提供一致的线程状态](#4-安全点提供一致的线程状态)和[Stop-The-World 不是“所有 GC 都全程停顿”](#5-stop-the-world-不是所有-gc-都全程停顿)。
+**相关内容**：[安全点](#safepoint)和[Stop-The-World 阶段](#stw)。
 
 <details>
 <summary>参考回答</summary>
@@ -163,10 +171,8 @@ java -Xlog:gc*,safepoint:file=gc.log:time,uptime,level,tags -jar app.jar
 
 </details>
 
-:::note 参考资料
+## 11. 参考资料
 
-1. [Oracle：Garbage Collection Tuning Guide](https://docs.oracle.com/en/java/javase/26/gctuning/index.html)
-2. [Oracle：G1 Garbage Collection Cycle](https://docs.oracle.com/en/java/javase/26/gctuning/garbage-first-g1-garbage-collector1.html)
-3. [OpenJDK Wiki：Safepoints](https://wiki.openjdk.org/display/HotSpot/Safepoints)
-
-:::
+- [Oracle：Garbage Collection Tuning Guide](https://docs.oracle.com/en/java/javase/26/gctuning/index.html)
+- [Oracle：G1 Garbage Collection Cycle](https://docs.oracle.com/en/java/javase/26/gctuning/garbage-first-g1-garbage-collector1.html)
+- [OpenJDK Wiki：Safepoints](https://wiki.openjdk.org/display/HotSpot/Safepoints)

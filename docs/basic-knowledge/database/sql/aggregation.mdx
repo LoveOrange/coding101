@@ -11,7 +11,7 @@ SQL 聚合把若干输入行计算成计数、求和或其他统计值。分组�
 
 ## 1. 面试核心 {#core}
 
-- COUNT(*) 统计行数，COUNT(column) 统计该列非 NULL 的行数。
+- COUNT(*) 统计行数，COUNT(column) 统计该列非 NULL 的行数。[卡](#count-star-vs-column)
 - GROUP BY 决定结果粒度，非聚合选择列应有明确的分组依据。
 - 空输入的 COUNT 为 0，SUM 通常为 NULL，需要按业务含义处理。
 

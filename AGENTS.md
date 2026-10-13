@@ -105,3 +105,7 @@ Coding 101 是一个面向技术岗位求职者的就业准备网站。第一优
 知识树中的每篇文章都在 front matter 中声明 `knowledge.id`（新文章按路径生成，例如 `basic-knowledge.java.concurrency.cas-aba-versioning`），它与卡片显式 ID 组成卡片的稳定 ID，学习记录依赖它，发布后不再修改；确需拆分、合并或撤下时，在 `src/data/contentMoves.json` 中登记旧 ID。字段与校验规则见 `plans/content-schema.md`。
 
 公司信息需要有可核验的公开来源，但来源链接不在页面正文中展示。将公司和原始链接写在对应题目标题下方的 HTML 注释中，便于后续校验和更新。公司名称只说明题目曾出现在相关候选人的公开面试复盘中，不将其表述为公司的固定题库。
+
+## 格式检查
+
+新增或修改知识树文章后运行 `npm run check:article-format`（`npm run build` 也会执行）。它检查面试核心、`[卡]` 链接、参考资料、面试题字段和标题编号；加 `--list` 同时列出标题模板和正文用词提示。目前只报告不阻断构建，剩余文章修完后改为 `--strict`。

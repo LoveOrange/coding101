@@ -9,7 +9,15 @@ knowledge:
 
 故障转移把流量和写入权交给健康副本，演练和恢复验证用于确认切换后业务与数据都处于可接受状态。
 
-## 1. 先定义触发条件
+## 1. 面试核心 {#core}
+
+- 故障转移先定义触发条件，区分进程故障、节点故障、网络分区和性能退化，避免短暂抖动导致误切换。
+- 切换写入权时要用 fencing 阻止旧主继续写入，防止出现两个主节点。
+- 备库接管前检查复制延迟、数据完整性和容量，再分阶段切换流量。[卡](#validate-db-failover)
+- 恢复验证覆盖业务结果，例如关键交易能否完成、数据是否丢失，只看端口和进程不够。
+- 原主恢复后的 failback 是一次独立迁移；演练从小范围故障开始，并记录实际 RTO 和 RPO。
+
+## 2. 触发条件 {#triggers}
 
 故障转移需要区分进程故障、节点故障、网络分区、依赖故障和性能退化。单一心跳失败不足以覆盖这些情况，也容易因短暂抖动误切换。
 
@@ -23,7 +31,7 @@ knowledge:
 
 检测阈值需要平衡发现速度和误报。连续失败次数、恢复迟滞和最短稳定时间可以防止两个节点之间反复切换。
 
-## 2. 写入切换需要 fencing
+## 3. fencing {#fencing}
 
 网络分区时，旧主节点可能仍在运行，只是无法与控制面通信。直接让备用节点开始写入，可能形成两个主节点。
 
@@ -31,7 +39,7 @@ fencing 通过租约、任期、仲裁、存储令牌或断电隔离，确保旧
 
 只有健康检查、没有写入权协议的主备系统，无法可靠处理网络分区。故障转移设计必须说明谁拥有最终裁决权。
 
-## 3. 数据就绪后再接管
+## 4. 接管前的数据检查 {#data-readiness}
 
 备用节点可连接，不代表适合接管。切换前至少检查：
 
@@ -43,7 +51,7 @@ fencing 通过租约、任期、仲裁、存储令牌或断电隔离，确保旧
 
 同步复制系统还要确认多数派和提交位置；异步复制系统需要明确会丢失或重复哪些写入。恢复后通过业务幂等键、流水和对账修复边界数据。
 
-## 4. 流量切换按阶段执行
+## 5. 分阶段切换流量 {#traffic-switch}
 
 一次可控切换可以分为：
 
@@ -56,7 +64,7 @@ fencing 通过租约、任期、仲裁、存储令牌或断电隔离，确保旧
 
 DNS 切换要考虑 TTL 和客户端缓存，连接型协议还要处理已有长连接。即使控制面显示流量已经迁移，也要从多个用户位置确认真实路径。
 
-## 5. 恢复验证覆盖业务结果
+## 6. 恢复验证 {#validation}
 
 基础设施健康检查通常只验证端口、进程或简单查询。恢复验证还需要：
 
@@ -68,7 +76,7 @@ DNS 切换要考虑 TTL 和客户端缓存，连接型协议还要处理已有�
 
 验证数据要有独立标识并能安全清理。涉及真实资金或通知时，使用沙箱账户和无副作用路径。
 
-## 6. 演练从小故障开始
+## 7. 故障演练 {#drills}
 
 演练应有假设、范围、停止条件和观察指标。可以逐级覆盖：
 
@@ -80,7 +88,7 @@ DNS 切换要考虑 TTL 和客户端缓存，连接型协议还要处理已有�
 
 首次演练先在预生产或小流量环境验证自动化。生产演练控制爆炸半径，准备立即终止和人工接管渠道。演练目的是验证系统假设和团队协作，不追求制造更大的故障。
 
-## 7. Runbook 必须可以直接执行
+## 8. Runbook {#runbook}
 
 有效 runbook 包含前置检查、命令或控制台路径、每一步预期结果、负责人、超时和回退动作。关键凭据和工具不能只存在于故障区域。
 
@@ -88,13 +96,13 @@ DNS 切换要考虑 TTL 和客户端缓存，连接型协议还要处理已有�
 
 自动化脚本同样需要 dry-run、审计、幂等和权限最小化。一个未经演练的自动切换脚本只是另一项风险。
 
-## 8. Failback 是独立迁移
+## 9. Failback {#failback}
 
 原主节点恢复后，不应立即抢回流量。需要先确定当前权威数据源，修复旧主状态，重新建立复制并追平，再按普通灰度流程切回。
 
 有时继续使用新主比立即回切更安全。Failback 的时机由风险、性能、运维窗口和长期拓扑决定，不能只因为旧节点“恢复绿色”就执行。
 
-## 9. 用数据评估演练
+## 10. 演练评估 {#evaluation}
 
 每次演练记录：
 
@@ -106,19 +114,21 @@ DNS 切换要考虑 TTL 和客户端缓存，连接型协议还要处理已有�
 
 发现项转为有负责人、优先级、期限和验收方式的任务，并安排复测。只保存演练报告，没有关闭行动项，不能提高下一次恢复能力。
 
-## 10. 面试题
+## 11. 面试题
 
-### 10.1 怎样设计并验证数据库主备故障转移 {#validate-db-failover}
+### 11.1 怎样设计并验证数据库主备故障转移 {#validate-db-failover}
 
-**题目类型**：本站自测
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
 
 **考察重点**
 
 - 故障检测、仲裁和 fencing。
 - 复制位置、RPO、接管容量与流量切换。
-- 业务验证、failback 和演练闭环。
+- 业务验证、failback 和演练复盘。
 
-**相关内容**：[先定义触发条件](#1-先定义触发条件)至[用数据评估演练](#9-用数据评估演练)。
+**相关内容**：[触发条件](#triggers)至[演练评估](#evaluation)。
 
 <details>
 <summary>参考回答</summary>
@@ -129,10 +139,8 @@ DNS 切换要考虑 TTL 和客户端缓存，连接型协议还要处理已有�
 
 </details>
 
-:::note 参考资料
+## 12. 参考资料
 
-1. [AWS Well-Architected：Fail over to healthy resources](https://docs.aws.amazon.com/wellarchitected/latest/framework/rel_withstand_component_failures_failover2good.html)
-2. [Google SRE：Testing for Reliability](https://sre.google/sre-book/testing-reliability/)
-3. [Principles of Chaos Engineering](https://principlesofchaos.org/)
-
-:::
+- [AWS Well-Architected：Fail over to healthy resources](https://docs.aws.amazon.com/wellarchitected/latest/framework/rel_withstand_component_failures_failover2good.html)
+- [Google SRE：Testing for Reliability](https://sre.google/sre-book/testing-reliability/)
+- [Principles of Chaos Engineering](https://principlesofchaos.org/)

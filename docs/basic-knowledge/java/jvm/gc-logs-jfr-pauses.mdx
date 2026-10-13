@@ -9,7 +9,15 @@ knowledge:
 
 GC 停顿分析要把一次回收放回时间线：为什么触发、回收了哪些区域、各阶段花了多久、回收后留下多少 live data，以及同一时刻请求延迟和 CPU 怎样变化。只统计 Full GC 次数无法解释因果。
 
-## 1. 使用 Unified Logging 保留上下文
+## 1. 面试核心 {#core}
+
+- 用 `-Xlog:gc*` 开启 Unified Logging，同时记录 wall-clock 和 uptime，便于和监控、发布时间对齐。
+- 每次 GC 事件先读收集器与类型、触发原因、回收前后的堆占用和各阶段耗时。
+- 用户看到的停顿可能来自 GC 本身、等待线程进入安全点，或操作系统调度和换页。
+- Full GC 频繁时，先区分分配率过高、live set 接近堆上限和元空间不足，再决定减少分配、修复泄漏还是调整堆。[卡](#frequent-full-gc)
+- GC 日志记录回收的时间线，JFR 能把 GC 与分配位置、业务线程和锁等待关联起来。[卡](#jfr-vs-gc-log)
+
+## 2. Unified Logging 配置 {#unified-logging}
 
 ```bash
 java \
@@ -21,7 +29,7 @@ java \
 
 生产长期日志要配置轮转和磁盘告警。需要阶段细节时短期开启 `gc+phases=debug` 等 tag，避免长期记录无关 debug 信息。
 
-## 2. 每个事件先读四类信息
+## 3. GC 事件的四类信息 {#event-fields}
 
 1. **Collector / Type**：G1 Young、Mixed、Full，ZGC cycle 等。
 2. **Cause**：allocation failure、metadata threshold、System.gc 等。
@@ -30,13 +38,13 @@ java \
 
 回收后占用下降明显但很快又涨回，可能是分配率高；回收后几乎不降，可能是 live set 大或泄漏；单次 object copy 很慢，需看存活对象量；root scan 慢则继续看线程、RSet 或根集合。
 
-## 3. GC 名称不能代替回收范围
+## 4. GC 类型与回收范围 {#gc-types}
 
 Minor、Major、Full 在不同收集器和工具中可能使用不同。分析报告应写清收集器、日志事件名、是否 STW、实际回收区域和结果。
 
 G1 Mixed GC 是年轻 Region 加部分旧 Region 的正常疏散，不等于 Full GC。ZGC 的 Minor/Major cycle 也不能套用传统 Serial/Parallel 的阶段含义。
 
-## 4. 区分 GC 停顿、进入安全点和操作系统停顿
+## 5. GC 停顿、安全点与系统停顿 {#pause-sources}
 
 用户看到的空白可能来自：
 
@@ -48,7 +56,7 @@ G1 Mixed GC 是年轻 Region 加部分旧 Region 的正常疏散，不等于 Ful
 
 Unified safepoint 日志和 JFR 能把进入安全点、停顿工作和系统事件放在一起。GC pause 很短但请求长尾很高时，应继续看锁、线程池和 I/O。
 
-## 5. JFR 关联 GC、分配和业务线程
+## 6. JFR 关联分析 {#jfr}
 
 ```bash
 jcmd <pid> JFR.start \
@@ -69,9 +77,9 @@ jcmd <pid> JFR.start \
 
 事件是否启用和采样阈值由 recording settings 决定。看不到事件先检查配置，不要直接推断没有发生。
 
-## 6. 三类常见因果链
+## 7. 常见原因 {#causes}
 
-### 6.1 分配率过高
+### 7.1 分配率过高
 
 ```text
 请求/批任务增加 → bytes allocated/s 上升 → Young GC 更频繁
@@ -80,7 +88,7 @@ jcmd <pid> JFR.start \
 
 用 allocation profile 找创建位置，优先减少不必要中间对象和批次峰值。
 
-### 6.2 live set 接近堆上限
+### 7.2 live set 接近堆上限
 
 ```text
 回收后 old/live 持续高 → 并发周期频繁 → 疏散余量不足
@@ -89,7 +97,7 @@ jcmd <pid> JFR.start \
 
 继续判断是业务容量还是意外持有，再决定调堆或修泄漏。
 
-### 6.3 safepoint 到达慢
+### 7.3 safepoint 到达慢
 
 ```text
 请求 safepoint → 某线程迟迟未到达安全状态
@@ -98,7 +106,7 @@ jcmd <pid> JFR.start \
 
 需要看对应线程、native/JIT 情况和 JDK 版本，不应只调整收集器暂停目标。
 
-## 7. 调优一次只改变一个主要变量
+## 8. 调优步骤 {#tuning}
 
 建立基线后按顺序处理：
 
@@ -111,23 +119,23 @@ jcmd <pid> JFR.start \
 
 把十几个网上参数一次加入，会让结果无法归因，并可能覆盖新 JDK 更好的默认值。
 
-## 8. 常见问题
+## 9. 常见问题
 
-### 8.1 Young GC 很频繁就是问题吗
+### 9.1 Young GC 很频繁就是问题吗
 
 不一定。单次很短、GC CPU 可接受且业务目标满足时可能正常。看总 CPU、分配率和端到端延迟。
 
-### 8.2 Full GC 一次都不能有吗
+### 9.2 Full GC 一次都不能有吗
 
 长期在线服务通常希望避免不可预测 Full GC，但诊断命令、显式 GC 或特殊维护也可能触发。关键是原因、持续时间和是否重复。
 
-### 8.3 开启 JFR 会不会影响性能
+### 9.3 开启 JFR 会不会影响性能
 
 JFR 为低开销持续记录设计，但开销取决于事件、阈值和堆栈深度。使用 default/profile 基线，修改设置后在目标负载测量。
 
-## 9. 面试题
+## 10. 面试题
 
-### 9.1 线上 Full GC 频繁，怎样排查 {#frequent-full-gc}
+### 10.1 线上 Full GC 频繁，怎样排查 {#frequent-full-gc}
 
 <!-- 面试来源：
 - 阿里云：https://www.nowcoder.com/discuss/401459816646942720
@@ -141,7 +149,7 @@ JFR 为低开销持续记录设计，但开销取决于事件、阈值和堆栈�
 - 类元数据、Humongous 与显式 GC 等不同路径。
 - GC 日志与 JFR 时间线。
 
-**相关内容**：[使用 Unified Logging 保留上下文](#1-使用-unified-logging-保留上下文)至[调优一次只改变一个主要变量](#7-调优一次只改变一个主要变量)。
+**相关内容**：[Unified Logging 配置](#unified-logging)至[调优步骤](#tuning)。
 
 <details>
 <summary>参考回答</summary>
@@ -152,7 +160,7 @@ JFR 为低开销持续记录设计，但开销取决于事件、阈值和堆栈�
 
 </details>
 
-### 9.2 JFR 和 GC 日志各自能回答什么 {#jfr-vs-gc-log}
+### 10.2 JFR 和 GC 日志各自能回答什么 {#jfr-vs-gc-log}
 
 <!-- 面试来源：
 - 阿里云：https://www.nowcoder.com/discuss/401459816646942720
@@ -166,7 +174,7 @@ JFR 为低开销持续记录设计，但开销取决于事件、阈值和堆栈�
 - JFR 关联 CPU、线程、分配、锁和编译。
 - 二者通过时间与 uptime 对齐。
 
-**相关内容**：[使用 Unified Logging 保留上下文](#1-使用-unified-logging-保留上下文)至[JFR 关联 GC、分配和业务线程](#5-jfr-关联-gc分配和业务线程)。
+**相关内容**：[Unified Logging 配置](#unified-logging)至[JFR 关联分析](#jfr)。
 
 <details>
 <summary>参考回答</summary>
@@ -177,11 +185,9 @@ GC 日志最适合看收集类型、原因、堆变化和具体 phase；JFR 把 
 
 </details>
 
-:::note 参考资料
+## 11. 参考资料
 
-1. [Oracle：GC Tuning Guide](https://docs.oracle.com/en/java/javase/26/gctuning/index.html)
-2. [Oracle：G1 Tuning and Logging](https://docs.oracle.com/en/java/javase/26/gctuning/garbage-first-garbage-collector-tuning.html)
-3. [Oracle：Flight Recorder API Guide](https://docs.oracle.com/en/java/javase/26/jfapi/index.html)
-4. [Oracle：`java -Xlog`](https://docs.oracle.com/en/java/javase/26/docs/specs/man/java.html)
-
-:::
+- [Oracle：GC Tuning Guide](https://docs.oracle.com/en/java/javase/26/gctuning/index.html)
+- [Oracle：G1 Tuning and Logging](https://docs.oracle.com/en/java/javase/26/gctuning/garbage-first-garbage-collector-tuning.html)
+- [Oracle：Flight Recorder API Guide](https://docs.oracle.com/en/java/javase/26/jfapi/index.html)
+- [Oracle：`java -Xlog`](https://docs.oracle.com/en/java/javase/26/docs/specs/man/java.html)

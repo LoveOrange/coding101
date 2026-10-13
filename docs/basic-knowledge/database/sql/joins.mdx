@@ -13,7 +13,7 @@ SQL 连接根据条件组合不同来源的行。本文比较 INNER JOIN 和 LEF
 
 - INNER JOIN 只保留匹配行，LEFT JOIN 还保留左侧未匹配行。
 - 右侧匹配多行时会扩大结果行数，不会自动按左侧主键去重。
-- 外连接中把右表过滤条件从 ON 移到 WHERE，可能丢掉左侧未匹配行。
+- 外连接中把右表过滤条件从 ON 移到 WHERE，可能丢掉左侧未匹配行。[卡](#left-join-where)
 
 ## 2. 匹配与补空 {#mechanism}
 

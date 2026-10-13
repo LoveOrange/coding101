@@ -9,7 +9,15 @@ knowledge:
 
 Raft 让多数节点对复制日志的顺序达成共识，再由每个节点按相同顺序驱动状态机。它保证的是满足协议的多数派日志安全，不能让失去多数节点的集群继续接受线性一致写入。
 
-## 1. 节点在三个角色间转换
+## 1. 面试核心 {#core}
+
+- 节点在 follower、candidate、leader 三个角色间转换，term 是单调递增的任期，看到更大 term 的节点退回 follower。
+- follower 在随机超时内没有收到心跳就发起选举，获得多数票成为 leader；随机超时减少平票。
+- leader 把命令追加到日志并复制给 follower，当前 term 的日志存到多数节点后才提交。
+- 投票时只投给日志至少和自己一样新的候选者，因此新 leader 一定包含所有已提交日志。[卡](#leader-completeness)
+- 线性一致读需要 ReadIndex 或租约确认领导权；日志用快照压缩，成员变更用 joint consensus 避免两个多数派。
+
+## 2. 角色与任期 {#roles}
 
 - **Follower**：响应 Leader 与 Candidate 的 RPC。
 - **Candidate**：选举超时后发起新任期并请求投票。
@@ -17,7 +25,7 @@ Raft 让多数节点对复制日志的顺序达成共识，再由每个节点按
 
 term 是单调增加的逻辑任期。节点看到更大 term 时更新本地任期并退回 follower，旧 leader 的消息因此不能覆盖新任期状态。
 
-## 2. 随机选举超时减少平票
+## 3. 领导者选举 {#election}
 
 Follower 在一段随机时间内没有收到有效 Leader 通信，就增加 term、给自己投票，并向其他节点请求票。获得多数票的 Candidate 成为 Leader。
 
@@ -25,13 +33,13 @@ Follower 在一段随机时间内没有收到有效 Leader 通信，就增加 te
 
 平票时无人获得多数，节点在新的随机超时后进入下一 term。随机范围要显著大于正常广播和网络抖动，否则集群会频繁无效选举。
 
-## 3. Leader 为日志建立全局顺序
+## 4. 日志复制 {#log-replication}
 
 客户端命令先追加到 Leader 日志，条目包含 index、term 和命令。Leader 使用 AppendEntries 把新条目复制到 followers，并携带前一条日志的 index 与 term。
 
 Follower 只有当前缀匹配时才追加；不匹配则拒绝。Leader 回退 `nextIndex`，找到共同前缀后删除 follower 冲突后缀并重新复制，使日志最终一致。
 
-## 4. 多数复制后才推进 commit index
+## 5. 提交 {#commit}
 
 Leader 跟踪每个 follower 已复制位置。当前 term 的某条日志存储在多数节点后，Leader 可以推进 commit index，把条目按顺序应用到状态机并响应客户端。
 
@@ -39,43 +47,43 @@ Raft 对以前 term 条目的提交有一条重要限制：Leader 不会仅根�
 
 Follower 从 Leader 的 commit index 得知哪些条目可以应用。应用状态机必须按 index 顺序且确定性执行。
 
-## 5. 客户端重试需要请求去重
+## 6. 客户端重试 {#client-retry}
 
 Leader 可能已经提交命令，但响应在网络中丢失；客户端随后向新 Leader 重试。Raft 保证日志顺序，不自动理解两条命令属于同一个业务请求。
 
 状态机可以保存 client ID 与单调 request sequence，重复命令返回之前结果。涉及外部数据库、邮件或 HTTP 副作用时，它们不在 Raft 状态机内，仍需独立幂等协议。
 
-## 6. 线性一致读取也需要协议
+## 7. 线性一致读 {#linearizable-read}
 
 Leader 刚刚与多数派失联时，可能尚未知道新 Leader 已产生。若直接读取本地状态，会返回旧值。
 
 常见做法是先通过心跳或 ReadIndex 确认自己仍是当前多数派认可的 Leader，再读取已应用到 commit index 的状态；基于租约的读取依赖时钟和租约假设。Follower 读取通常是陈旧读，除非经过额外确认。
 
-## 7. 日志压缩使用 snapshot
+## 8. 快照 {#snapshot}
 
 日志持续增长后，节点把已应用前缀压缩为状态机 snapshot，记录最后包含的 index 与 term。落后太多的 follower 可以安装 snapshot，再继续复制后续日志。
 
 生成 snapshot 时要与状态机状态一致，传输支持校验和断点处理。不能删除仍有恢复或成员需要的日志前缀，也要备份集群之外的数据灾难恢复路径。
 
-## 8. 成员变更避免两个多数派定义
+## 9. 成员变更 {#membership}
 
 直接从旧配置切到新配置，可能在过渡期出现两个不相交的多数集合。Raft 使用 joint consensus 或经过证明的单节点变更流程，让过渡决策同时满足旧、新配置要求。
 
 不要一次替换多数成员，也不要把节点列表当普通配置文件手工编辑。新增节点先追赶日志，再进入投票集合；移除节点同样通过共识日志完成。
 
-## 9. 常见问题
+## 10. 常见问题
 
-### 9.1 三节点集群宕机两台后为什么不能写
+### 10.1 三节点集群宕机两台后为什么不能写
 
 剩余一台无法取得多数，也无法确认自己是不是与另两台隔离的旧 Leader。继续接受写入会允许两个分区各自提交，破坏单一日志。它可以提供明确允许的陈旧读，但不能承诺线性一致写。
 
-### 9.2 心跳是否只是空的 AppendEntries
+### 10.2 心跳是否只是空的 AppendEntries
 
-通常是。它携带 term、前缀与 commit 信息，用于维持领导权、发现日志差异并推进 follower 提交，不只是“进程还活着”的探测包。
+通常是。它携带 term、前缀与 commit 信息，用于维持领导权、发现日志差异并推进 follower 提交，作用超出单纯的存活探测。
 
-## 10. 面试题
+## 11. 面试题
 
-### 10.1 Raft 如何保证新 Leader 包含已经提交的日志 {#leader-completeness}
+### 11.1 Raft 如何保证新 Leader 包含已经提交的日志 {#leader-completeness}
 
 <!-- 面试来源：
 - 字节跳动：https://www.nowcoder.com/discuss/353159293912424448
@@ -89,7 +97,7 @@ Leader 刚刚与多数派失联时，可能尚未知道新 Leader 已产生。�
 - AppendEntries 前缀匹配与冲突修复。
 - 当前 term 提交规则、读取与成员变更。
 
-**相关内容**：[节点在三个角色间转换](#1-节点在三个角色间转换)至[成员变更避免两个多数派定义](#8-成员变更避免两个多数派定义)。
+**相关内容**：[角色与任期](#roles)至[成员变更](#membership)。
 
 <details>
 <summary>参考回答</summary>
@@ -100,10 +108,8 @@ Leader 刚刚与多数派失联时，可能尚未知道新 Leader 已产生。�
 
 </details>
 
-:::note 参考资料
+## 12. 参考资料
 
-1. [Raft paper](https://raft.github.io/raft.pdf)
-2. [Raft Dissertation](https://github.com/ongardie/dissertation)
-3. [etcd：Raft](https://etcd.io/docs/v3.6/learning/why/)
-
-:::
+- [Raft paper](https://raft.github.io/raft.pdf)
+- [Raft Dissertation](https://github.com/ongardie/dissertation)
+- [etcd：Raft](https://etcd.io/docs/v3.6/learning/why/)

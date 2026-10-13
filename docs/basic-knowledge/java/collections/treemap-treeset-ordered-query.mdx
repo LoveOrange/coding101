@@ -9,7 +9,15 @@ knowledge:
 
 `TreeMap` 按键的自然顺序或 Comparator 保存映射，`TreeSet` 使用相同的排序结构保存唯一元素。它们适合范围、最近键和有序遍历，基本操作是 O(log n)。
 
-## 1. 排序规则决定键的位置
+## 1. 面试核心 {#core}
+
+- `TreeMap` 用红黑树按键的自然顺序或 Comparator 排序，查找、插入、删除都是 O(log n)。[卡](#treemap-structure)
+- `NavigableMap` 提供 `floorKey`、`ceilingKey`、`headMap`、`subMap` 等范围和最近键查询。
+- TreeMap 和 TreeSet 用 `compare` 判断键是否相同，返回 0 就视为同一个键，不再调用 `equals`。[卡](#treeset-comparator)
+- `TreeSet` 基于 TreeMap 实现，只保存键。
+- 只需要精确查找时用 HashMap，需要排序、范围或前驱后继时用 TreeMap。
+
+## 2. 排序规则 {#ordering}
 
 使用自然顺序：
 
@@ -34,7 +42,7 @@ NavigableSet<User> users = new TreeSet<>(
 
 Comparator 必须形成稳定、可传递的全序。上例用 id 处理相同分数，避免两个不同用户因为比较结果为 0 而被 TreeSet 当作同一个元素。
 
-## 2. 红黑树维持对数高度
+## 3. 红黑树 {#red-black-tree}
 
 当前 OpenJDK 的 TreeMap 使用红黑树。插入和删除后通过颜色与旋转恢复约束，使树高保持 O(log n)。因此：
 
@@ -44,7 +52,7 @@ Comparator 必须形成稳定、可传递的全序。上例用 id 处理相同�
 
 HashMap 平均查找更快，但不提供排序和范围导航。选择 TreeMap 的理由应当是需要它的有序查询，而不是笼统地认为“树更稳定”。
 
-## 3. NavigableMap 支持边界查询
+## 4. NavigableMap 边界查询 {#navigable}
 
 ```java
 Map.Entry<Integer, String> atMost = levels.floorEntry(25);   // 20
@@ -63,7 +71,7 @@ Map.Entry<Integer, String> atLeast = levels.ceilingEntry(20); // 20
 
 这类操作适合版本生效点、价格区间、时间调度和阈值规则。
 
-## 4. 范围视图与边界
+## 5. 范围视图 {#range-views}
 
 ```java
 NavigableMap<Integer, String> middle =
@@ -80,7 +88,7 @@ NavigableMap<Integer, String> snapshot = new TreeMap<>(middle);
 
 `headMap`、`tailMap` 和 `descendingMap` 也返回视图。API 是否包含边界应显式写出，避免默认重载造成区间错误。
 
-## 5. compare 返回 0 就表示同一个键
+## 6. 比较结果与键相等 {#compare-zero}
 
 TreeMap 使用排序比较判断键是否相同，不会再用 `equals` 区分：
 
@@ -95,7 +103,7 @@ Set<User> users = new TreeSet<>(byNameIgnoreCase);
 
 用于键排序的字段加入集合后也不应变化。字段变化不会自动重新平衡节点，后续查找和遍历可能违反预期顺序。
 
-## 6. TreeSet 复用有序 Map 语义
+## 7. TreeSet {#treeset}
 
 TreeSet 只保存元素，没有独立值。它提供 `NavigableSet` 的范围和邻近元素操作：
 
@@ -108,27 +116,27 @@ Integer next = scores.higher(20);    // 30
 
 需要按一个键排序、又需要保存多个比较结果为 0 的对象时，不能直接把对象放进 TreeSet。可以把唯一 id 加入 Comparator，或使用 `TreeMap<SortKey, List<Value>>` 表达分组。
 
-## 7. 常见问题
+## 8. 常见问题
 
-### 7.1 TreeMap 可以保存 null 键吗
+### 8.1 TreeMap 可以保存 null 键吗
 
 使用自然顺序时不能比较 null，插入会抛出异常。自定义 Comparator 理论上可以定义 null 顺序，但公开 API 更适合拒绝含义不清的 null 键。值是否允许 null 与键排序是不同问题。
 
-### 7.2 HashMap 与 TreeMap 怎样选择
+### 8.2 HashMap 与 TreeMap 怎样选择
 
 只需按键精确查找时通常用 HashMap；需要排序遍历、范围或前驱后继时用 TreeMap。两者的复杂度分别是平均 O(1) 与 O(log n)，还要考虑哈希契约和比较器契约。
 
-### 7.3 PriorityQueue 可以替代 TreeSet 吗
+### 8.3 PriorityQueue 可以替代 TreeSet 吗
 
 PriorityQueue 只保证队首是最小元素，不能高效检查任意成员或查找前驱后继；还允许重复。TreeSet 维护全局有序唯一集合，接口目标不同。
 
-### 7.4 Comparator 中可以调用数据库吗
+### 8.4 Comparator 中可以调用数据库吗
 
 不应该。比较会在树操作中反复调用，必须快速、确定且没有副作用。远程状态变化还会破坏传递性和稳定性。先把比较所需数据放进不可变键。
 
-## 8. 面试题
+## 9. 面试题
 
-### 8.1 TreeMap 的底层结构和适用场景是什么 {#treemap-structure}
+### 9.1 TreeMap 的底层结构和适用场景是什么 {#treemap-structure}
 
 <!-- 面试来源：
 - 招银网络：https://www.nowcoder.com/discuss/353154885766029312
@@ -143,7 +151,7 @@ PriorityQueue 只保证队首是最小元素，不能高效检查任意成员或
 - 自然顺序与 Comparator 怎样判断键相同。
 - 范围和前驱后继查询为何不能由普通 HashMap 直接提供。
 
-**相关内容**：[排序规则决定键的位置](#1-排序规则决定键的位置)至[compare 返回 0 就表示同一个键](#5-compare-返回-0-就表示同一个键)。
+**相关内容**：[排序规则](#ordering)至[比较结果与键相等](#compare-zero)。
 
 <details>
 <summary>参考回答</summary>
@@ -154,7 +162,7 @@ TreeMap 当前使用红黑树，按照键的自然顺序或 Comparator 组织节
 
 </details>
 
-### 8.2 TreeSet 中两个不相等对象为什么可能只能保留一个 {#treeset-comparator}
+### 9.2 TreeSet 中两个不相等对象为什么可能只能保留一个 {#treeset-comparator}
 
 <!-- 面试来源：
 - 招银网络：https://www.nowcoder.com/discuss/353154885766029312
@@ -168,7 +176,7 @@ TreeMap 当前使用红黑树，按照键的自然顺序或 Comparator 组织节
 - Comparator 与 equals 不一致的后果。
 - 怎样为相同业务排序值补充唯一键。
 
-**相关内容**：[compare 返回 0 就表示同一个键](#5-compare-返回-0-就表示同一个键)、[TreeSet 复用有序 Map 语义](#6-treeset-复用有序-map-语义)。
+**相关内容**：[比较结果与键相等](#compare-zero)、[TreeSet](#treeset)。
 
 <details>
 <summary>参考回答</summary>
@@ -179,12 +187,10 @@ TreeSet 使用 Comparator 或自然顺序定位元素，比较结果为 0 时就
 
 </details>
 
-:::note 参考资料
+## 10. 参考资料
 
-1. [Java API：TreeMap](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/TreeMap.html)
-2. [Java API：TreeSet](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/TreeSet.html)
-3. [Java API：NavigableMap](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/NavigableMap.html)
-4. [Java API：Comparator](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/Comparator.html)
-5. [OpenJDK：TreeMap 源码](https://github.com/openjdk/jdk/blob/jdk-26-ga/src/java.base/share/classes/java/util/TreeMap.java)
-
-:::
+- [Java API：TreeMap](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/TreeMap.html)
+- [Java API：TreeSet](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/TreeSet.html)
+- [Java API：NavigableMap](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/NavigableMap.html)
+- [Java API：Comparator](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/Comparator.html)
+- [OpenJDK：TreeMap 源码](https://github.com/openjdk/jdk/blob/jdk-26-ga/src/java.base/share/classes/java/util/TreeMap.java)

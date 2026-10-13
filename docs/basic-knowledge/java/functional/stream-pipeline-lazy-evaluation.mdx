@@ -9,7 +9,15 @@ knowledge:
 
 Java Stream 用一条流水线描述数据如何被筛选、转换和聚合。中间操作只登记处理步骤，终止操作才会触发遍历；理解这条执行链，比记住一组方法名更重要。
 
-## 1. Stream 描述一次数据处理过程
+## 1. 面试核心 {#core}
+
+- Stream 流水线由数据源、中间操作和终止操作组成；中间操作是惰性的，只有终止操作才会触发遍历。[卡](#lazy-evaluation)
+- 无状态操作逐个元素依次经过各阶段；`sorted`、`distinct` 等有状态操作需要看到更多元素。
+- `anyMatch`、`findFirst`、`limit` 等短路操作在结果确定后停止读取。
+- Stream 只能消费一次；`Files.lines` 等 I/O 来源要用 try-with-resources 关闭。
+- 转成 Map 时用 `Collectors.toMap` 并处理重复键；Lambda 中不要修改外部状态，必须执行的业务动作不放在 `peek` 中。[卡](#list-to-map)
+
+## 2. 流水线结构 {#pipeline}
 
 一个 Stream 流水线由三部分组成：
 
@@ -28,7 +36,7 @@ List<String> names = users.stream()
 
 Stream 使用内部迭代：调用方提供每个元素的处理规则，遍历时机和执行方式由 Stream 实现控制。这使框架能够合并处理步骤、提前结束遍历，也能在满足条件时并行执行。
 
-## 2. 中间操作在终止操作前不会执行
+## 3. 惰性求值 {#laziness}
 
 下面的代码不会打印任何内容：
 
@@ -52,7 +60,7 @@ List<String> names = pipeline.toList();
 - 没有终止操作，流水线不会遍历数据源。
 - 终止操作不需要全部元素时，前面的操作也可以提前停止。
 
-### 2.1 元素通常按纵向穿过流水线
+### 3.1 元素的处理顺序 {#vertical-processing}
 
 对无状态中间操作，Stream 通常不会先生成完整的过滤结果，再生成完整的映射结果。一个元素可以依次经过 `filter` 和 `map`，然后才处理下一个元素。
 
@@ -67,7 +75,7 @@ Optional<String> first = users.stream()
 
 惰性求值不保证每条 Stream 都更快。排序、去重和复杂 Lambda 仍然有真实成本，性能要看数据源、操作顺序和终止条件。
 
-## 3. 无状态操作与有状态操作
+## 4. 无状态操作与有状态操作 {#stateful}
 
 无状态操作只依赖当前元素：
 
@@ -93,7 +101,7 @@ List<String> topNames = users.stream()
 
 这里先过滤再排序，可以减少需要排序的数据量。把 `sorted` 放在 `filter` 前面，结果可能相同，但通常会处理更多元素。
 
-### 3.1 短路终止操作
+### 4.1 短路操作 {#short-circuit}
 
 `anyMatch`、`allMatch`、`noneMatch`、`findFirst` 和 `findAny` 可以在结论确定后停止读取。`limit` 是短路中间操作，它限制后续阶段最多接收多少元素。
 
@@ -107,7 +115,7 @@ List<Integer> powers = Stream.iterate(1, value -> value * 2)
 
 删除 `limit` 后，`toList` 永远等不到数据结束，并且会持续消耗内存。
 
-## 4. Stream 只能消费一次
+## 5. 一次性消费 {#single-use}
 
 终止操作执行后，Stream 就被消费：
 
@@ -131,7 +139,7 @@ List<User> result = activeUsers.get().toList();
 
 `Supplier` 每次返回的是新 Stream，不是复用已经消费的对象。
 
-### 4.1 I/O 数据源需要关闭
+### 5.1 关闭 I/O 数据源 {#closing}
 
 集合创建的 Stream 通常没有需要释放的资源。`Files.lines` 等 I/O 方法返回的 Stream 持有打开的文件，应该使用 try-with-resources：
 
@@ -143,7 +151,7 @@ try (Stream<String> lines = Files.lines(path, StandardCharsets.UTF_8)) {
 
 终止操作完成不等于所有 Stream 都会自动关闭。资源所有权仍由创建它的调用方负责。
 
-## 5. map、flatMap 与归约
+## 6. map、flatMap 与归约 {#map-flatmap}
 
 `map` 让一个输入对应一个输出：
 
@@ -174,7 +182,7 @@ int total = orders.stream()
 
 求和、计数和最值优先使用专门的终止操作。把结果收集到可变容器时使用 `collect`，不要用 `reduce` 反复复制或修改同一个容器。
 
-## 6. 副作用会破坏流水线的可推理性
+## 7. 副作用 {#side-effects}
 
 下面的代码把结果写入外部列表：
 
@@ -198,7 +206,7 @@ List<String> names = users.stream()
 
 `peek` 主要用于观察流水线，不适合承担保存数据库、发送消息或修改业务状态等必要逻辑。短路操作可能让一部分元素根本不会到达 `peek`，实现也可以在不影响结果时优化遍历。
 
-## 7. Stream 的适用边界
+## 8. 适用边界 {#boundaries}
 
 Stream 适合一条方向明确的数据转换链，例如筛选、映射、分组和聚合。出现以下情况时，普通循环可能更容易维护：
 
@@ -217,27 +225,27 @@ Stream 适合一条方向明确的数据转换链，例如筛选、映射、分�
 4. 短路操作能否实际提前结束。
 5. 普通循环、串行 Stream 和并行 Stream 的基准结果。
 
-## 8. 常见问题
+## 9. 常见问题
 
-### 8.1 Stream 会修改原集合吗
+### 9.1 Stream 会修改原集合吗
 
 Stream API 本身不会因为 `filter` 或 `map` 修改数据源，但 Lambda 可以主动修改元素或外部对象。流水线执行期间修改源集合，还可能触发 `ConcurrentModificationException` 或得到未定义的遍历结果。
 
-### 8.2 `findFirst` 与 `findAny` 有什么区别
+### 9.2 `findFirst` 与 `findAny` 有什么区别
 
 `findFirst` 在有顺序的数据源上保留遇到顺序。`findAny` 只要求返回任意一个元素，并行执行时有更大的调度空间。业务不关心具体哪一个结果时，可以使用 `findAny`。
 
-### 8.3 `Stream.toList()` 返回的列表能修改吗
+### 9.3 `Stream.toList()` 返回的列表能修改吗
 
 不能。`Stream.toList()` 返回的列表是不可修改的，调用 `add`、`remove` 等方法会抛出 `UnsupportedOperationException`。需要可变列表时，可以使用 `collect(Collectors.toCollection(ArrayList::new))`。
 
-### 8.4 为什么 `peek` 有时没有执行
+### 9.4 为什么 `peek` 有时没有执行
 
 `peek` 是惰性中间操作。没有终止操作时整条流水线都不执行；短路或实现优化也可能让部分元素不经过它。因此不能把必须发生的业务动作放进 `peek`。
 
-## 9. 面试题
+## 10. 面试题
 
-### 9.1 Stream 的中间操作和终止操作有什么区别，惰性求值怎样工作 {#lazy-evaluation}
+### 10.1 Stream 的中间操作和终止操作有什么区别，惰性求值怎样工作 {#lazy-evaluation}
 
 <!-- 面试来源：
 - 阿里巴巴、腾讯、京东、美团：https://www.nowcoder.com/discuss/400870/
@@ -252,7 +260,7 @@ Stream API 本身不会因为 `filter` 或 `map` 修改数据源，但 Lambda �
 - 终止操作怎样触发遍历，短路操作怎样提前停止。
 - 有状态操作为什么会限制流水线融合和并行效率。
 
-**相关内容**：[Stream 描述一次数据处理过程](#1-stream-描述一次数据处理过程)、[中间操作在终止操作前不会执行](#2-中间操作在终止操作前不会执行)、[无状态操作与有状态操作](#3-无状态操作与有状态操作)。
+**相关内容**：[流水线结构](#pipeline)、[惰性求值](#laziness)、[无状态操作与有状态操作](#stateful)。
 
 <details>
 <summary>参考回答</summary>
@@ -263,7 +271,7 @@ Stream API 本身不会因为 `filter` 或 `map` 修改数据源，但 Lambda �
 
 </details>
 
-### 9.2 如何把 `List<Person>` 转成以姓名为键的 Map，姓名重复时怎么办 {#list-to-map}
+### 10.2 如何把 `List<Person>` 转成以姓名为键的 Map，姓名重复时怎么办 {#list-to-map}
 
 <!-- 面试来源：
 - 飞猪：https://www.nowcoder.com/discuss/864543031494467584
@@ -277,7 +285,7 @@ Stream API 本身不会因为 `filter` 或 `map` 修改数据源，但 Lambda �
 - `Collectors.toMap` 遇到重复键时的行为。
 - 合并规则应该来自业务语义。
 
-**相关内容**：[map、flatMap 与归约](#5-mapflatmap-与归约)。
+**相关内容**：[map、flatMap 与归约](#map-flatmap)。
 
 <details>
 <summary>参考回答</summary>
@@ -286,11 +294,9 @@ Stream API 本身不会因为 `filter` 或 `map` 修改数据源，但 Lambda �
 
 </details>
 
-:::note 参考资料
+## 11. 参考资料
 
-1. [Java API：Stream](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/stream/Stream.html)
-2. [Java API：java.util.stream](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/stream/package-summary.html)
-3. [Java API：BaseStream](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/stream/BaseStream.html)
-4. [Java API：Files.lines](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/nio/file/Files.html#lines(java.nio.file.Path,java.nio.charset.Charset))
-
-:::
+- [Java API：Stream](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/stream/Stream.html)
+- [Java API：java.util.stream](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/stream/package-summary.html)
+- [Java API：BaseStream](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/stream/BaseStream.html)
+- [Java API：Files.lines](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/nio/file/Files.html#lines(java.nio.file.Path,java.nio.charset.Charset))

@@ -9,7 +9,15 @@ knowledge:
 
 缓存异常通常表现为大量请求同时回到数据库，但原因并不相同。穿透来自不存在的数据，击穿来自单个热点失效，雪崩来自大量 key 或缓存节点同时不可用，热点 key 则可能直接压满 Redis 的单个执行路径或网络带宽。
 
-## 1. 缓存穿透持续查询不存在的数据
+## 1. 面试核心 {#core}
+
+- 缓存穿透是查询不存在的数据，每次都回源；用参数校验、缓存空值和布隆过滤器处理。[卡](#penetration-breakdown-avalanche)
+- 缓存击穿是单个热点 key 失效后大量请求同时回源；用互斥加载（singleflight）或逻辑过期加后台刷新处理。
+- 缓存雪崩是大量 key 同时过期或缓存整体不可用；用随机化 TTL、多级缓存、限流降级和高可用集群处理。
+- 热点 key 即使不失效也可能压满单个分片，可以用本地缓存或把 key 复制成多份分散读取。
+- 大 key 会放大删除、复制和迁移的耗时，需要拆分。
+
+## 2. 缓存穿透 {#penetration}
 
 请求的 key 在缓存和数据库中都不存在时，每次读取都会回源。恶意随机 key、无效参数和已经删除但仍被频繁访问的对象都可能产生穿透。
 
@@ -22,7 +30,7 @@ knowledge:
 
 Bloom filter 可能把不存在的数据误判为“可能存在”，所以仍要查数据库；它不会把真实存在的数据判断为不存在，前提是过滤器正确维护。负缓存也要考虑数据随后创建时如何失效。
 
-## 2. 缓存击穿发生在单个热点失效时
+## 3. 缓存击穿 {#breakdown}
 
 一个高频 key 到期或被删除后，大量并发请求同时未命中，并一起查询数据库。数据库面对的是同一个昂贵查询，而不是均匀分散的流量。
 
@@ -35,7 +43,7 @@ Bloom filter 可能把不存在的数据误判为“可能存在”，所以仍�
 
 等待队列必须有上限和超时。若加载方失败，其他请求要能结束或由下一位接管，不能永久等待一把重建锁。
 
-## 3. 缓存雪崩让大量 key 同时失效
+## 4. 缓存雪崩 {#avalanche}
 
 大量 key 使用相同 TTL 并在同一时刻到期，或者 Redis 分片、网络、客户端连接池整体故障时，回源量会突然上升。数据库平时按缓存命中后的流量配置，很可能无法承受全部请求。
 
@@ -49,7 +57,7 @@ Bloom filter 可能把不存在的数据误判为“可能存在”，所以仍�
 
 高可用 Redis 可以缩短节点故障，但主从切换和客户端重连期间仍会产生错误与延迟，不能替代回源保护。
 
-## 4. 热点 key 可能在未失效时成为瓶颈
+## 5. 热点 key {#hot-key}
 
 单个 key 的请求集中到同一个 Redis 分片。即使命中率为 100%，该分片的 CPU、网卡或连接也可能先达到上限。
 
@@ -62,13 +70,13 @@ Bloom filter 可能把不存在的数据误判为“可能存在”，所以仍�
 
 复制热点 key 会增加失效和一致性成本。写热点若要求全局严格顺序，单纯复制不能解决冲突。
 
-## 5. 大 key 会放大单次操作成本
+## 6. 大 key {#big-key}
 
 很大的 String、Hash、List、Set 或 Sorted Set 会占用较多内存和网络带宽。删除、序列化、复制、迁移或遍历大 key 时，还可能产生延迟尖峰。
 
 应限制单值大小和集合元素数量，使用渐进式扫描，按业务维度拆分，并避免在线路径执行返回全部元素的命令。删除大 key 时可以根据 Redis 版本和场景使用异步释放能力，但内存最终仍需回收。
 
-## 6. 防护顺序从入口到数据库
+## 7. 防护链路 {#defense}
 
 一条完整的防护链可以是：
 
@@ -81,25 +89,25 @@ Bloom filter 可能把不存在的数据误判为“可能存在”，所以仍�
 
 每层都需要上限。无限等待、无限队列和无限重试只是把故障向后推迟。
 
-## 7. 故障演练验证回源能力
+## 8. 故障演练 {#drills}
 
 应分别演练单个热点过期、大批 key 过期、Redis 分片不可用、连接池耗尽和数据库变慢。观察命中率、回源 QPS、合并加载等待、Redis 各分片 CPU/网络、数据库连接等待和接口尾延迟。
 
 缓存恢复后还要控制预热速度。所有请求同时重建缓存，可能在恢复阶段再次打满数据库。
 
-## 8. 常见问题
+## 9. 常见问题
 
-### 8.1 热点 key 永不过期是否能避免击穿
+### 9.1 热点 key 永不过期是否能避免击穿
 
 物理不过期可以避免 TTL 到点造成的击穿，但数据仍需要更新，也可能因为淘汰、节点故障或人工删除而消失。还要设计逻辑过期、后台刷新和失败时返回旧值的边界。
 
-### 8.2 Bloom filter 是否可以代替数据库查询
+### 9.2 Bloom filter 是否可以代替数据库查询
 
 不能。Bloom filter 只能确定“肯定不存在”或“可能存在”。可能存在仍需查询缓存或数据库，而且过滤器要处理新增、重建和误判率增长。
 
-## 9. 面试题
+## 10. 面试题
 
-### 9.1 缓存穿透、击穿和雪崩分别如何处理 {#penetration-breakdown-avalanche}
+### 10.1 缓存穿透、击穿和雪崩分别如何处理 {#penetration-breakdown-avalanche}
 
 <!-- 面试来源：
 - 字节跳动（飞书）：https://www.nowcoder.com/discuss/590867233786671104
@@ -113,7 +121,7 @@ Bloom filter 可能把不存在的数据误判为“可能存在”，所以仍�
 - 负缓存、Bloom filter、合并加载和 TTL 抖动。
 - 回源限流、降级与故障恢复。
 
-**相关内容**：[缓存穿透持续查询不存在的数据](#1-缓存穿透持续查询不存在的数据)至[故障演练验证回源能力](#7-故障演练验证回源能力)。
+**相关内容**：[缓存穿透](#penetration)至[故障演练](#drills)。
 
 <details>
 <summary>参考回答</summary>
@@ -124,10 +132,8 @@ Bloom filter 可能把不存在的数据误判为“可能存在”，所以仍�
 
 </details>
 
-:::note 参考资料
+## 11. 参考资料
 
-1. [Redis：Cache-aside pattern](https://redis.io/docs/latest/develop/use-cases/cache-aside/)
-2. [Redis：Latency monitoring](https://redis.io/docs/latest/operate/oss_and_stack/management/optimization/latency-monitor/)
-3. [Redis：Diagnosing latency issues](https://redis.io/docs/latest/operate/oss_and_stack/management/optimization/latency/)
-
-:::
+- [Redis：Cache-aside pattern](https://redis.io/docs/latest/develop/use-cases/cache-aside/)
+- [Redis：Latency monitoring](https://redis.io/docs/latest/operate/oss_and_stack/management/optimization/latency-monitor/)
+- [Redis：Diagnosing latency issues](https://redis.io/docs/latest/operate/oss_and_stack/management/optimization/latency/)

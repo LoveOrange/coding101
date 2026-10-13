@@ -9,7 +9,15 @@ knowledge:
 
 Java 原生序列化可以把对象图写入字节流，再按类信息恢复对象。它方便保存短期、受控的 JVM 内部状态，但格式与 Java 类型绑定紧密，反序列化还会执行类型相关逻辑，不适合作为默认的外部数据协议。
 
-## 1. Serializable 怎样工作
+## 1. 面试核心 {#core}
+
+- 实现 `Serializable` 的类可以由 `ObjectOutputStream` 写出对象图；`transient` 和 `static` 字段不参与默认序列化。[卡](#serialization-uid)
+- 反序列化不调用该类的构造方法，只执行第一个不可序列化父类的无参构造方法。
+- `serialVersionUID` 不一致时抛出 `InvalidClassException`；需要兼容已有数据时显式声明。
+- 反序列化不可信数据可能触发 gadget 链执行任意代码或耗尽资源，必须使用时用 `ObjectInputFilter` 限制类型和对象图规模。[卡](#untrusted-deserialization)
+- 跨服务和长期存储使用 JSON、Protobuf 等有明确模式的格式。
+
+## 2. Serializable {#serializable}
 
 类实现标记接口 `Serializable` 后，可以交给 `ObjectOutputStream`：
 
@@ -50,7 +58,7 @@ try (ObjectInputStream input = new ObjectInputStream(
 
 序列化会沿引用关系处理对象图。一个非 `transient` 实例字段指向不可序列化对象时，写入可能抛出 `NotSerializableException`。
 
-### 1.1 哪些字段不会按默认规则写入
+### 2.1 不参与默认序列化的字段 {#transient}
 
 - `static` 字段属于类，不属于单个对象状态。
 - `transient` 字段被默认序列化机制忽略。
@@ -61,13 +69,13 @@ private transient String accessToken;
 
 `transient` 可以避免写入临时缓存、文件句柄或敏感派生值，但不是完整安全策略。其他字段、嵌套对象和自定义写入方法仍可能泄漏信息。
 
-### 1.2 反序列化不等于普通 new
+### 2.2 反序列化与构造方法 {#constructors}
 
 恢复可序列化类时，不会按普通创建流程调用该类的构造方法。继承层次中第一个不可序列化父类的可访问无参构造方法会执行，然后序列化状态被恢复。
 
 因此不能只依赖可序列化类构造器维护不变量。读取外部数据时，还需要在反序列化钩子中校验状态。
 
-## 2. serialVersionUID 表示序列化版本身份
+## 3. serialVersionUID {#uid}
 
 反序列化会比较流中的类版本标识与本地类的 `serialVersionUID`。不匹配时抛出 `InvalidClassException`。
 
@@ -76,9 +84,9 @@ private transient String accessToken;
 private static final long serialVersionUID = 1L;
 ```
 
-没有显式声明时，JVM 会根据类的结构计算默认值。看似无关的编译器或类结构变化也可能改变结果，因此需要兼容已有数据时应显式声明。
+没有显式声明时，JVM 会根据类的结构计算默认值。编译器差异或细小的类结构变化也可能改变结果，因此需要兼容已有数据时应显式声明。
 
-### 2.1 UID 相同不保证语义兼容
+### 3.1 UID 与语义兼容 {#semantic-compat}
 
 `serialVersionUID` 只通过一个标识控制是否尝试反序列化，不会自动迁移业务语义：
 
@@ -89,13 +97,13 @@ private static final long serialVersionUID = 1L;
 
 保持 UID 不变，意味着开发者承诺新类能够合理读取旧数据。做不到时应改变 UID 并明确拒绝，或者提供独立迁移工具。
 
-### 2.2 长期数据需要显式模式版本
+### 3.2 长期数据的模式版本 {#schema-version}
 
 数据库记录、跨服务消息和长期文件格式通常需要字段编号、兼容规则、版本迁移和多语言支持。单个 `serialVersionUID` 无法承担这些职责。
 
 JSON、Protocol Buffers、Avro 等格式也各有代价，但它们能把传输模式与 Java 对象实现分开。边界数据应根据协议需求选择，而不是因为类已经实现 `Serializable` 就直接发送对象。
 
-## 3. 自定义序列化逻辑
+## 4. 自定义序列化 {#custom}
 
 类可以声明特定签名的私有方法参与读写：
 
@@ -126,9 +134,9 @@ private void readObject(ObjectInputStream input)
 
 这些钩子增加了兼容和安全复杂度。只为减少几个字节而加入自定义协议，通常不值得。
 
-## 4. 反序列化不可信数据的风险
+## 5. 反序列化不可信数据 {#untrusted}
 
-`ObjectInputStream` 不只是解析字段。它会根据流中的类型信息构造对象图，并可能触发：
+`ObjectInputStream` 会根据流中的类型信息构造对象图，并可能触发：
 
 - `readObject`、`readResolve` 等自定义钩子。
 - 集合重建过程中的比较、哈希和其他类型行为。
@@ -143,7 +151,7 @@ private void readObject(ObjectInputStream input)
 
 :::
 
-## 5. 使用反序列化过滤器限制对象图
+## 6. 反序列化过滤器 {#filters}
 
 必须兼容原生序列化时，可以使用 `ObjectInputFilter` 检查每个候选类和对象图规模：
 
@@ -170,7 +178,7 @@ try (ObjectInputStream input = new ObjectInputStream(source)) {
 
 过滤器是纵深防御，不会验证业务字段，也无法把一个本就不适合外部使用的对象协议变成稳定公共协议。
 
-## 6. 原生序列化的适用范围
+## 7. 适用范围 {#scope}
 
 相对合理的场景通常同时满足：
 
@@ -188,27 +196,27 @@ try (ObjectInputStream input = new ObjectInputStream(source)) {
 - 插件可任意扩展 classpath 的系统。
 - 无法确认历史字节来源是否可信的缓存。
 
-## 7. 常见问题
+## 8. 常见问题
 
-### 7.1 Serializable 为什么没有方法
+### 8.1 Serializable 为什么没有方法
 
 它是标记接口，用类型关系告诉序列化机制该类允许进入默认对象序列化流程。实际读写由 `ObjectOutputStream`、`ObjectInputStream` 和类的可选钩子完成。
 
-### 7.2 所有字段都 serializable，类就一定可以安全序列化吗
+### 8.2 所有字段都 serializable，类就一定可以安全序列化吗
 
 不一定。循环引用可以被协议处理，但对象图可能巨大；自定义钩子可能失败；类演进也可能不兼容。`Serializable` 只说明机制允许尝试，不是安全、稳定或高性能保证。
 
-### 7.3 transient 字段反序列化后是什么值
+### 8.3 transient 字段反序列化后是什么值
 
 默认序列化不会恢复它，字段得到对应 Java 默认值，例如对象引用为 `null`、整数为 `0`。如果它是可重新计算的派生状态，可以在读取钩子或首次使用时重建。
 
-### 7.4 serialVersionUID 应该什么时候改变
+### 8.4 serialVersionUID 应该什么时候改变
 
 能够保持反序列化兼容并正确处理新增默认值时可以保持不变；旧数据无法被新类可靠解释时应改变并拒绝读取。改变前还要决定历史数据是迁移、清除还是由旧版本读取。
 
-## 8. 面试题
+## 9. 面试题
 
-### 8.1 Java 原生序列化流程是什么，serialVersionUID 有什么作用 {#serialization-uid}
+### 9.1 Java 原生序列化流程是什么，serialVersionUID 有什么作用 {#serialization-uid}
 
 <!-- 面试来源：
 - 网易：https://www.nowcoder.com/discuss/353154078219902976
@@ -224,7 +232,7 @@ try (ObjectInputStream input = new ObjectInputStream(source)) {
 - UID 不一致时的结果，以及一致时仍需处理的语义兼容。
 - `static`、`transient` 和构造过程的边界。
 
-**相关内容**：[Serializable 怎样工作](#1-serializable-怎样工作)、[serialVersionUID 表示序列化版本身份](#2-serialversionuid-表示序列化版本身份)。
+**相关内容**：[Serializable](#serializable)、[serialVersionUID](#uid)。
 
 <details>
 <summary>参考回答</summary>
@@ -235,7 +243,7 @@ try (ObjectInputStream input = new ObjectInputStream(source)) {
 
 </details>
 
-### 8.2 为什么不应该反序列化不可信的 Java 对象流 {#untrusted-deserialization}
+### 9.2 为什么不应该反序列化不可信的 Java 对象流 {#untrusted-deserialization}
 
 <!-- 面试来源：
 - 奇安信：https://www.nowcoder.com/discuss/353158617492824064
@@ -249,7 +257,7 @@ try (ObjectInputStream input = new ObjectInputStream(source)) {
 - 对象图资源消耗和 gadget chain 风险。
 - `ObjectInputFilter` 能限制什么，不能替代什么。
 
-**相关内容**：[反序列化不可信数据的风险](#4-反序列化不可信数据的风险)、[使用反序列化过滤器限制对象图](#5-使用反序列化过滤器限制对象图)。
+**相关内容**：[反序列化不可信数据](#untrusted)、[反序列化过滤器](#filters)。
 
 <details>
 <summary>参考回答</summary>
@@ -260,13 +268,11 @@ Java 对象流包含类型和对象图信息，反序列化会实例化类并触
 
 </details>
 
-:::note 参考资料
+## 10. 参考资料
 
-1. [Java Object Serialization Specification](https://docs.oracle.com/en/java/javase/26/docs/specs/serialization/index.html)
-2. [Java API：Serializable](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/io/Serializable.html)
-3. [Java API：ObjectInputStream](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/io/ObjectInputStream.html)
-4. [Java API：ObjectInputFilter](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/io/ObjectInputFilter.html)
-5. [JEP 290：Filter Incoming Serialization Data](https://openjdk.org/jeps/290)
-6. [Java Serialization Filtering Guide](https://docs.oracle.com/en/java/javase/26/core/serialization-filtering1.html)
-
-:::
+- [Java Object Serialization Specification](https://docs.oracle.com/en/java/javase/26/docs/specs/serialization/index.html)
+- [Java API：Serializable](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/io/Serializable.html)
+- [Java API：ObjectInputStream](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/io/ObjectInputStream.html)
+- [Java API：ObjectInputFilter](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/io/ObjectInputFilter.html)
+- [JEP 290：Filter Incoming Serialization Data](https://openjdk.org/jeps/290)
+- [Java Serialization Filtering Guide](https://docs.oracle.com/en/java/javase/26/core/serialization-filtering1.html)

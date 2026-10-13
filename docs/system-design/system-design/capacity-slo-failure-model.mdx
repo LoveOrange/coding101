@@ -9,7 +9,15 @@ knowledge:
 
 容量估算把用户规模和接口目标转换成请求、并发、存储、带宽与副本数量级。估算不要求命中未来每个数字，它的作用是暴露最先达到上限的资源，并让 SLO 和故障假设可以验证。
 
-## 1. 先写清业务负载单位
+## 1. 面试核心 {#core}
+
+- 从日活、每用户操作数和读写比例算出平均与峰值 QPS，峰值通常取平均值的数倍。[卡](#capacity-estimation)
+- 用 Little's Law（在途并发 = 到达速率 × 平均耗时）估算线程、连接等并发资源。
+- 存储估算包含主数据、索引、日志和副本，带宽按请求和响应大小计算。
+- SLI 描述用户看到的结果，SLO 规定窗口内的目标，错误预算决定发布节奏。
+- 失去一个故障域后剩余容量仍要承载关键流量，估算结果通过压测和故障演练校准。
+
+## 2. 业务负载 {#workload}
 
 从日活、每用户操作次数和读写比例计算日请求量，再根据日内分布估计平均与峰值 QPS：
 
@@ -22,7 +30,7 @@ knowledge:
 
 除了请求数，还要估计 payload、热点键、批任务和后台流量。1000 个轻量读取与 1000 个大文件上传不能使用同一容量单位。
 
-## 2. 用 Little's Law 估算在途并发
+## 3. Little's Law {#littles-law}
 
 稳定系统中，平均在途数量约等于到达速率乘以平均停留时间：
 
@@ -34,7 +42,7 @@ concurrency ≈ QPS × latency_seconds
 
 平均值只能给出基线。实际配置还要考虑 P99、突发、队列和每实例限制，并通过压测观察饱和拐点。
 
-## 3. 分别估算存储与网络
+## 4. 存储与网络 {#storage-network}
 
 存储需要包含主数据、索引、版本、日志、临时文件和副本：
 
@@ -47,7 +55,7 @@ concurrency ≈ QPS × latency_seconds
 
 网络按请求与响应字节、复制、缓存回源和跨地域流量分别计算。入口 1 GB/s 并不代表内部只有 1 GB/s，一次写入可能复制到多个副本并产生事件。
 
-## 4. SLI 定义用户看到的结果
+## 5. SLI {#sli}
 
 SLI 是可测量指标，例如：
 
@@ -58,7 +66,7 @@ SLI 是可测量指标，例如：
 
 分母要排除什么必须明确。把服务端 5xx 算错误、却忽略 deadline exceeded 或错误业务结果，会得到看起来正常但用户不可用的 SLI。
 
-## 5. SLO 给出一段窗口内的目标
+## 6. SLO {#slo}
 
 SLO 为 SLI 规定目标和统计窗口，例如 28 天内 99.9% 的有效请求成功。错误预算是这段窗口内允许的不符合目标比例，可用于决定继续发布、优先修复还是降低风险变更。
 
@@ -66,7 +74,7 @@ SLO 不是所有组件都设得与用户目标相同。用户请求经过多个�
 
 目标越接近 100%，冗余、测试和运营成本通常越高。先根据用户损失与业务承诺确定，不用行业口号直接选择“四个九”。
 
-## 6. 故障模型列出系统必须承受什么
+## 7. 故障模型 {#failure-model}
 
 常见故障包括：
 
@@ -79,7 +87,7 @@ SLO 不是所有组件都设得与用户目标相同。用户请求经过多个�
 
 “多副本”只覆盖其中一部分。三个副本若都接受同一错误配置，无法防止逻辑删除；备份若从未恢复验证，也不能证明可用。
 
-## 7. 容量预留服务于故障与扩容时间
+## 8. 容量余量 {#headroom}
 
 正常峰值不能刚好吃满全部实例。失去一个故障域后，剩余容量仍要承载关键流量，并留出自动扩容、镜像启动和缓存预热时间。
 
@@ -87,25 +95,25 @@ SLO 不是所有组件都设得与用户目标相同。用户请求经过多个�
 
 容量计划应同时写出拒绝或降级顺序，不能假设突发永远低于预测。
 
-## 8. 用压测和故障演练校准估算
+## 9. 压测与演练 {#validation}
 
 压测逐步提高负载，记录吞吐、延迟、错误、并发、队列和下游资源，找到第一个非线性拐点。测试数据分布、缓存命中和请求比例要接近生产。
 
 再注入单实例、单区和依赖变慢，验证剩余容量、自动扩容和保护策略。估算值、压测上限和生产峰值形成持续更新的容量表，而不是只在面试白板上出现一次。
 
-## 9. 常见问题
+## 10. 常见问题
 
-### 9.1 估算数字不准确还有价值吗
+### 10.1 估算数字不准确还有价值吗
 
 有。数量级可以排除明显不适合的单机或全量扫描方案，并指出需要验证的敏感参数。关键是公开假设、给出范围，并说明哪个结论会随参数变化。
 
-### 9.2 SLO 是否等于告警阈值
+### 10.2 SLO 是否等于告警阈值
 
 不完全等于。SLO 是窗口目标，告警应关注错误预算消耗速度，例如短窗口和长窗口 burn rate，既发现快速事故，也发现缓慢持续退化。
 
-## 10. 面试题
+## 11. 面试题
 
-### 10.1 系统设计中如何做容量估算，并把结果连接到 SLO {#capacity-estimation}
+### 11.1 系统设计中如何做容量估算，并把结果连接到 SLO {#capacity-estimation}
 
 <!-- 面试来源：
 - 字节跳动、百度、美团、滴滴系统设计面试：https://www.nowcoder.com/discuss/353158294346866688
@@ -119,7 +127,7 @@ SLO 不是所有组件都设得与用户目标相同。用户请求经过多个�
 - SLI 分子分母、SLO 和错误预算。
 - 故障域、容量余量和压测校准。
 
-**相关内容**：[先写清业务负载单位](#1-先写清业务负载单位)至[用压测和故障演练校准估算](#8-用压测和故障演练校准估算)。
+**相关内容**：[业务负载](#workload)至[压测与演练](#validation)。
 
 <details>
 <summary>参考回答</summary>
@@ -130,10 +138,8 @@ SLO 不是所有组件都设得与用户目标相同。用户请求经过多个�
 
 </details>
 
-:::note 参考资料
+## 12. 参考资料
 
-1. [Google SRE：Service Level Objectives](https://sre.google/sre-book/service-level-objectives/)
-2. [Google SRE Workbook：Implementing SLOs](https://sre.google/workbook/implementing-slos/)
-3. [AWS Well-Architected：Manage service quotas and constraints](https://docs.aws.amazon.com/wellarchitected/latest/reliability-pillar/rel_manage_service_quotas_aws.html)
-
-:::
+- [Google SRE：Service Level Objectives](https://sre.google/sre-book/service-level-objectives/)
+- [Google SRE Workbook：Implementing SLOs](https://sre.google/workbook/implementing-slos/)
+- [AWS Well-Architected：Manage service quotas and constraints](https://docs.aws.amazon.com/wellarchitected/latest/reliability-pillar/rel_manage_service_quotas_aws.html)

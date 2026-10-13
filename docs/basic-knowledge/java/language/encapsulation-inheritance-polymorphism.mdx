@@ -9,17 +9,15 @@ knowledge:
 
 面向对象编程使用对象组织状态与行为。Java 面试中的重点是封装、继承和多态各自解决什么问题，以及接口、抽象类和组合应该怎样选择。
 
-:::tip 面试核心
+## 1. 面试核心 {#core}
 
-- 封装通过受控入口维护对象不变量，不等于只给字段加 `private`。
-- 继承建立“子类型可以替代父类型”的关系，不应只为复用几行代码使用。
-- 运行时多态只作用于可重写的实例方法；字段和静态方法不参与动态绑定。
-- 重载在编译阶段根据参数类型选择签名，重写在运行时根据实际对象选择实现。
-- 接口描述能力，抽象类共享状态与流程，组合把可替换的协作者交给对象使用。
+- 封装通过受控的方法修改状态，让对象在每次修改前校验条件、维护自身不变量；只把字段改为 `private` 再加 setter 达不到这个目的。[卡](#oop-pillars)
+- 继承表示子类可以替代父类使用，子类必须满足父类型的契约。
+- 运行时多态只作用于可重写的实例方法；字段、静态方法和私有方法不参与动态绑定。
+- 重载在编译期根据参数的声明类型选择方法，重写在运行时根据对象的实际类型选择实现。[卡](#overload-vs-override)
+- 接口描述能力，抽象类共享状态和流程，组合把可替换的协作者交给对象使用。[卡](#interface-vs-abstract-class)
 
-:::
-
-## 1. 封装维护对象不变量
+## 2. 封装 {#encapsulation}
 
 封装把状态变化集中到对象提供的方法中。对象可以在修改前校验条件，从而避免出现无效状态。
 
@@ -49,7 +47,7 @@ final class Account {
 
 如果把字段公开，或提供不校验的 `setBalance`，调用方仍然可以破坏“不允许负余额”的约束。返回内部的可变集合时也要注意边界泄漏，可以返回不可变视图或防御性副本。
 
-## 2. 继承与多态
+## 3. 继承与多态 {#inheritance-polymorphism}
 
 继承让子类获得父类可见的状态和行为，同时声明子类属于父类型。只有子类能够满足父类型契约时，这种关系才成立。
 
@@ -71,7 +69,7 @@ long price = policy.calculate(1_000); // 800
 
 变量的编译时类型是 `PricePolicy`，实际对象是 `DiscountPolicy`。编译器先确认接口中存在 `calculate`，运行时再调用实际对象重写后的实现，这就是动态绑定。
 
-### 2.1 不参与运行时多态的成员
+### 3.1 不参与运行时多态的成员 {#non-polymorphic}
 
 - 字段访问由引用的编译时类型决定。
 - 静态方法属于类，子类声明同名方法属于隐藏。
@@ -80,7 +78,7 @@ long price = policy.calculate(1_000); // 800
 
 因此“多态”默认指可重写实例方法的动态分派，不能推广到所有同名成员。
 
-### 2.2 重载与重写
+### 3.2 重载与重写 {#overload-override}
 
 ```java
 void print(String value) {}
@@ -91,7 +89,7 @@ void print(Object value) {} // 重载
 
 重写发生在继承或接口实现关系中，子类为同签名实例方法提供实现。返回类型可以协变，访问权限不能缩小，受检异常范围不能扩大。
 
-## 3. 接口、抽象类与组合
+## 4. 接口、抽象类与组合 {#interface-abstract-composition}
 
 | 方式 | 适合表达 | 主要限制 |
 | --- | --- | --- |
@@ -117,23 +115,23 @@ final class OrderService {
 }
 ```
 
-## 4. 常见问题
+## 5. 常见问题
 
-### 4.1 有 getter 和 setter 就完成封装了吗
+### 5.1 有 getter 和 setter 就完成封装了吗
 
 没有。封装的判断标准是对象能否持续维护自己的约束。无条件暴露所有字段的读写，只是改变了访问语法。
 
-### 4.2 “组合优于继承”是绝对规则吗
+### 5.2 “组合优于继承”是绝对规则吗
 
 不是。行为只是可替换协作者时，组合通常更灵活；确实存在稳定的子类型关系，并且多个子类共享状态和流程时，继承或抽象类仍然合适。
 
-### 4.3 向下转型越多，多态设计越灵活吗
+### 5.3 向下转型越多，多态设计越灵活吗
 
 通常相反。调用方频繁判断具体子类，说明父类型没有提供完成任务所需的抽象，新增子类也会迫使调用方修改。
 
-## 5. 面试题
+## 6. 面试题
 
-### 5.1 如何理解 Java 的封装、继承和多态 {#oop-pillars}
+### 6.1 如何理解 Java 的封装、继承和多态 {#oop-pillars}
 
 <!-- 面试来源：
 - 中软国际：https://www.nowcoder.com/discuss/353159488733650944
@@ -149,18 +147,18 @@ final class OrderService {
 - 编译时类型、运行时类型与动态绑定的关系。
 - 继承与组合的适用条件。
 
-**相关内容**：[封装维护对象不变量](#1-封装维护对象不变量)、[继承与多态](#2-继承与多态)。
+**相关内容**：[封装](#encapsulation)、[继承与多态](#inheritance-polymorphism)。
 
 <details>
 <summary>参考回答</summary>
 
 封装通过受控方法维护对象不变量；继承建立子类型关系，要求子类能够满足父类型契约；多态让调用方依赖父类型或接口，运行时再根据实际对象选择重写后的实例方法。
 
-继承不只是代码复用工具。变化来自可替换策略或协作者时，我会使用接口和组合；多个子类确实共享稳定状态与流程时，再考虑抽象基类。
+继承表达子类型关系，代码复用只是附带结果。变化来自可替换策略或协作者时，我会使用接口和组合；多个子类确实共享稳定状态与流程时，再考虑抽象基类。
 
 </details>
 
-### 5.2 接口和抽象类有什么区别，应该怎样选择 {#interface-vs-abstract-class}
+### 6.2 接口和抽象类有什么区别，应该怎样选择 {#interface-vs-abstract-class}
 
 <!-- 面试来源：
 - 网易：https://www.nowcoder.com/discuss/643936598198947840
@@ -174,18 +172,18 @@ final class OrderService {
 - 状态、方法和继承数量的差异。
 - 能否根据变化来源选择，而不是只罗列语法。
 
-**相关内容**：[接口、抽象类与组合](#3-接口抽象类与组合)。
+**相关内容**：[接口、抽象类与组合](#interface-abstract-composition)。
 
 <details>
 <summary>参考回答</summary>
 
 接口主要描述能力，一个类可以实现多个接口；抽象类可以保存实例状态、定义构造过程和共享实现，但会占用唯一的类继承关系。
 
-如果调用方只需要一个可替换能力，我会定义小接口并通过组合注入。只有一组真正属于同一类型的对象需要共享状态和稳定模板流程时，才使用抽象类。
+如果调用方只需要一个可替换能力，我会定义小接口并通过组合注入。只有一组属于同一类型的对象需要共享状态和稳定模板流程时，才使用抽象类。
 
 </details>
 
-### 5.3 重载和重写有什么区别 {#overload-vs-override}
+### 6.3 重载和重写有什么区别 {#overload-vs-override}
 
 <!-- 面试来源：
 - 招银网络科技：https://www.nowcoder.com/discuss/402033921599315968
@@ -200,7 +198,7 @@ final class OrderService {
 - 参数列表与方法签名规则。
 - 编译阶段选择和运行时动态绑定的区别。
 
-**相关内容**：[重载与重写](#22-重载与重写)。
+**相关内容**：[重载与重写](#overload-override)。
 
 <details>
 <summary>参考回答</summary>
@@ -209,12 +207,10 @@ final class OrderService {
 
 </details>
 
-:::note 参考资料
+## 7. 参考资料
 
-1. [dev.java：Object-Oriented Programming Concepts](https://dev.java/learn/oop/)
-2. [dev.java：Interfaces](https://dev.java/learn/interfaces/)
-3. [Java Language Specification：Classes](https://docs.oracle.com/en/java/javase/26/docs/specs/jls/jls-8.html)
-4. [Java Language Specification：Interfaces](https://docs.oracle.com/en/java/javase/26/docs/specs/jls/jls-9.html)
-5. [Java Language Specification：Method Invocation Expressions](https://docs.oracle.com/en/java/javase/26/docs/specs/jls/jls-15.html#jls-15.12)
-
-:::
+- [dev.java：Object-Oriented Programming Concepts](https://dev.java/learn/oop/)
+- [dev.java：Interfaces](https://dev.java/learn/interfaces/)
+- [Java Language Specification：Classes](https://docs.oracle.com/en/java/javase/26/docs/specs/jls/jls-8.html)
+- [Java Language Specification：Interfaces](https://docs.oracle.com/en/java/javase/26/docs/specs/jls/jls-9.html)
+- [Java Language Specification：Method Invocation Expressions](https://docs.oracle.com/en/java/javase/26/docs/specs/jls/jls-15.html#jls-15.12)

@@ -9,7 +9,15 @@ knowledge:
 
 技术债是当前技术选择持续增加未来交付成本或运行风险的部分，偿还优先级需要与业务影响、发生概率和投入一起评估。
 
-## 1. 把技术债写成具体问题
+## 1. 面试核心 {#core}
+
+- 技术债要写成具体问题：影响哪个系统、造成什么成本或风险、如何验证。
+- 本金是消除问题的一次性投入，利息是保留问题带来的重复成本，如事故、交付等待和人工操作。
+- 安全、合规、数据丢失和 SLO 风险是硬约束，优先满足最低要求。
+- 其他技术债与功能需求用同一尺度比较：用户价值、风险降低、投入和信心。[卡](#tech-debt-priority)
+- 优先渐进式偿还，并用原始问题的指标验证效果。
+
+## 2. 描述技术债 {#definition}
 
 “代码很乱”不能直接进入排期。一项可管理的技术债要说明：
 
@@ -24,7 +32,7 @@ knowledge:
 
 缺陷、功能缺口、过时依赖和技术债可以有交集，但处理方式不同。安全漏洞可能需要立即修复，不必等待技术债排序；纯审美偏好也不应自动占用业务资源。
 
-## 2. 区分本金与持续利息
+## 3. 本金与利息 {#principal-interest}
 
 本金是消除问题所需的一次性投入，例如重构、迁移和测试。利息是继续保留问题带来的重复成本，例如：
 
@@ -39,7 +47,7 @@ knowledge:
 
 一项债务本金很高、利息很低时，可以继续观察；本金较小并且每周都在付利息时，通常应尽快处理。
 
-## 3. 风险债务单独评估
+## 4. 风险类债务 {#risk-debt}
 
 有些问题尚未造成日常效率损失，却可能引发严重事件，例如证书无法轮换、备份从未恢复、单点组件停止维护。
 
@@ -53,7 +61,7 @@ knowledge:
 
 合规、安全和已承诺 SLO 可以形成硬约束。这些问题由对应责任人确定最低处理要求，不能只放进普通价值矩阵等待。
 
-## 4. 与业务工作使用共同尺度
+## 5. 与业务需求比较 {#prioritization}
 
 技术债和功能需求争夺同一批人力时，需要把两者都转换为结果：
 
@@ -68,7 +76,7 @@ knowledge:
 
 “技术质量”本身可以有价值，但要说明它如何影响持续交付、可靠性和维护责任，避免技术团队与业务团队使用两套无法对话的语言。
 
-## 5. 选择合适的偿还方式
+## 6. 偿还方式 {#repayment}
 
 技术债不都需要一次性重写。常见路径包括：
 
@@ -83,7 +91,7 @@ knowledge:
 
 如果问题来自缺少所有权、发布流程或架构约束，只改代码会再次积累。偿还方案要处理产生债务的机制。
 
-## 6. 为主动借债设置到期条件
+## 7. 主动借债 {#deliberate-debt}
 
 为了固定发布日期采用临时方案可以是合理选择，但要在决策当时记录：
 
@@ -97,7 +105,7 @@ knowledge:
 
 主动承担的债务也要控制总量。团队同时维护大量临时路径时，新的业务价值会被兼容和排障成本抵消。
 
-## 7. 在日常工作中持续处理
+## 8. 日常处理 {#continuous}
 
 只靠每季度一次“技术债冲刺”，容易让债务在其余时间继续增长。更稳定的做法包括：
 
@@ -110,7 +118,7 @@ knowledge:
 
 固定比例不是普遍答案。债务很少时不必为了用满比例创造工作；严重影响交付时，固定比例又可能不足。以可见风险和价值动态调整。
 
-## 8. 完成标准需要量化验证
+## 9. 完成标准 {#done}
 
 技术债任务的完成标准不是“完成重构”。它应回到原始问题，例如：
 
@@ -122,9 +130,9 @@ knowledge:
 
 指标没有改善时，说明原因判断、方案或实施范围可能有误。及时停止低收益投入，比继续扩大重写范围更有价值。
 
-## 9. 面试题
+## 10. 面试题
 
-### 9.1 业务需求很紧时，怎样决定是否优先偿还技术债 {#tech-debt-priority}
+### 10.1 业务需求很紧时，怎样决定是否优先偿还技术债 {#tech-debt-priority}
 
 <!-- 面试来源：
 - 蚂蚁金服：https://www.nowcoder.com/discuss/353157664937025536
@@ -138,7 +146,7 @@ knowledge:
 - 与业务需求使用共同结果和成本比较。
 - 增量偿还、到期条件和量化验收。
 
-**相关内容**：[把技术债写成具体问题](#1-把技术债写成具体问题)至[完成标准需要量化验证](#8-完成标准需要量化验证)。
+**相关内容**：[描述技术债](#definition)至[完成标准](#done)。
 
 <details>
 <summary>参考回答</summary>
@@ -149,10 +157,8 @@ knowledge:
 
 </details>
 
-:::note 参考资料
+## 11. 参考资料
 
-1. [Martin Fowler：Technical Debt](https://martinfowler.com/bliki/TechnicalDebt.html)
-2. [Martin Fowler：Technical Debt Quadrant](https://martinfowler.com/bliki/TechnicalDebtQuadrant.html)
-3. [AWS Well-Architected Tool：Prioritize improvements](https://docs.aws.amazon.com/wellarchitected/latest/userguide/prioritize-improvements.html)
-
-:::
+- [Martin Fowler：Technical Debt](https://martinfowler.com/bliki/TechnicalDebt.html)
+- [Martin Fowler：Technical Debt Quadrant](https://martinfowler.com/bliki/TechnicalDebtQuadrant.html)
+- [AWS Well-Architected Tool：Prioritize improvements](https://docs.aws.amazon.com/wellarchitected/latest/userguide/prioritize-improvements.html)

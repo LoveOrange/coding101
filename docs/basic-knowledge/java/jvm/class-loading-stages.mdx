@@ -9,7 +9,14 @@ knowledge:
 
 一个类从 Class 文件变成可以使用的运行时类型，要经过加载、验证、准备、解析和初始化。前三步顺序明确，解析可以按 JVM 实现和实际使用延后，初始化只在发生主动使用时执行。
 
-## 1. 加载创建运行时类型
+## 1. 面试核心 {#core}
+
+- 类加载分为加载、验证、准备、解析和初始化五个阶段，解析可以延迟到第一次使用。[卡](#loading-stages)
+- 准备阶段为静态字段分配存储并设为零值，源码中的赋值和静态代码块在初始化阶段按源码顺序执行。
+- `new`、读写静态字段、调用静态方法、反射调用、初始化子类和启动主类会触发初始化；引用编译期常量不会。[卡](#initialization-triggers)
+- 静态初始化失败后，这个类在当前加载器中进入错误状态，之后的访问都会失败。
+
+## 2. 加载 {#loading}
 
 加载阶段完成三件事：
 
@@ -21,7 +28,7 @@ knowledge:
 
 类的运行时身份由**二进制名称和定义它的类加载器**共同决定。同名字节码由两个互不关联的类加载器定义后，是两个不同类型。
 
-## 2. 验证拒绝不合法的 Class 文件
+## 3. 验证 {#verification}
 
 验证用于确认 Class 文件的结构和字节码满足 JVM 约束，常见检查包括：
 
@@ -32,7 +39,7 @@ knowledge:
 
 验证失败会产生 `VerifyError`、`ClassFormatError`、`UnsupportedClassVersionError` 等 `LinkageError`。具体错误取决于失败发生的位置。
 
-## 3. 准备为静态字段建立默认状态
+## 4. 准备 {#preparation}
 
 准备阶段为类的静态字段建立存储并设置默认值：
 
@@ -51,7 +58,7 @@ static final int MAX_RETRIES = 3;
 
 这类字段可以通过 Class 文件中的 `ConstantValue` 属性在准备阶段获得值，调用方还可能把值直接内联到自己的 Class 文件里。
 
-## 4. 解析把符号引用连接到运行时目标
+## 5. 解析 {#resolution}
 
 常量池中的类、字段、方法和接口方法最初以符号形式存在。解析检查目标是否存在、签名是否匹配、调用方是否有访问权限，并形成运行时可用的引用。
 
@@ -66,7 +73,7 @@ JVM 允许按需解析，所以“解析一定在初始化前一次完成”过�
 
 它们通常意味着编译时使用的依赖和运行时实际加载的依赖不一致。
 
-## 5. 初始化执行类初始化方法
+## 6. 初始化 {#initialization}
 
 编译器把静态字段赋值和静态代码块按源码顺序合并到类初始化方法中：
 
@@ -90,7 +97,7 @@ static {
 
 只引用 `SomeType.class`、创建该类型数组，或读取已经内联的编译期常量，通常不会触发初始化。
 
-## 6. 初始化失败会被记住
+## 7. 初始化失败 {#init-failure}
 
 如果静态初始化抛出非 `Error` 异常，第一次主动使用通常会看到 `ExceptionInInitializerError`。这个 `Class` 随后处于错误状态，其他主动使用会得到 `NoClassDefFoundError: Could not initialize class ...`。
 
@@ -102,23 +109,23 @@ final class Config {
 
 把外部连接、线程等待或复杂业务放进静态初始化，会让失败发生在难以控制的时刻，也会扩大启动和并发风险。更适合的做法是显式初始化并返回可观察结果。
 
-## 7. 常见问题
+## 8. 常见问题
 
-### 7.1 `Class.forName` 和 `ClassLoader.loadClass` 一样吗
+### 8.1 `Class.forName` 和 `ClassLoader.loadClass` 一样吗
 
 常用的 `Class.forName(name)` 会加载并初始化类；`loadClass(name)` 通常只加载，不主动初始化。`Class.forName` 也有接收 `initialize` 参数和指定类加载器的重载，判断时应看实际调用。
 
-### 7.2 `ClassNotFoundException` 和 `NoClassDefFoundError` 有什么区别
+### 8.2 `ClassNotFoundException` 和 `NoClassDefFoundError` 有什么区别
 
 `ClassNotFoundException` 是显式加载 API 找不到目标时抛出的受检异常。`NoClassDefFoundError` 是 JVM 在使用某个已在编译期存在的定义时无法得到它，原因可以是运行时缺少依赖，也可以是该类之前初始化失败。
 
-### 7.3 静态字段在准备阶段还是初始化阶段赋值
+### 8.3 静态字段在准备阶段还是初始化阶段赋值
 
 默认零值在准备阶段建立；普通源码赋值和静态代码块在初始化阶段执行；带 `ConstantValue` 属性的编译期常量是例外。
 
-## 8. 面试题
+## 9. 面试题
 
-### 8.1 类加载包含哪些阶段，每个阶段做什么 {#loading-stages}
+### 9.1 类加载包含哪些阶段，每个阶段做什么 {#loading-stages}
 
 <!-- 面试来源：
 - 阿里巴巴：https://www.nowcoder.com/discuss/353157613372252160
@@ -133,7 +140,7 @@ final class Config {
 - 准备阶段默认值与初始化阶段源码赋值的区别。
 - 解析可以延后的规范边界。
 
-**相关内容**：[加载创建运行时类型](#1-加载创建运行时类型)至[初始化执行类初始化方法](#5-初始化执行类初始化方法)。
+**相关内容**：[加载](#loading)至[初始化](#initialization)。
 
 <details>
 <summary>参考回答</summary>
@@ -144,7 +151,7 @@ final class Config {
 
 </details>
 
-### 8.2 类初始化在什么情况下触发 {#initialization-triggers}
+### 9.2 类初始化在什么情况下触发 {#initialization-triggers}
 
 <!-- 面试来源：
 - 阿里巴巴：https://www.nowcoder.com/discuss/353156165536260096
@@ -158,7 +165,7 @@ final class Config {
 - 父类、接口和编译期常量的初始化规则。
 - 初始化失败后的错误状态。
 
-**相关内容**：[初始化执行类初始化方法](#5-初始化执行类初始化方法)和[初始化失败会被记住](#6-初始化失败会被记住)。
+**相关内容**：[初始化](#initialization)和[初始化失败](#init-failure)。
 
 <details>
 <summary>参考回答</summary>
@@ -169,10 +176,8 @@ final class Config {
 
 </details>
 
-:::note 参考资料
+## 10. 参考资料
 
-1. [JVMS：Loading, Linking, and Initializing](https://docs.oracle.com/javase/specs/jvms/se26/html/jvms-5.html)
-2. [JLS：Execution](https://docs.oracle.com/javase/specs/jls/se26/html/jls-12.html)
-3. [Java API：`Class.forName`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/Class.html#forName(java.lang.String))
-
-:::
+- [JVMS：Loading, Linking, and Initializing](https://docs.oracle.com/javase/specs/jvms/se26/html/jvms-5.html)
+- [JLS：Execution](https://docs.oracle.com/javase/specs/jls/se26/html/jls-12.html)
+- [Java API：`Class.forName`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/Class.html#forName(java.lang.String))

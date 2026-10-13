@@ -9,7 +9,15 @@ knowledge:
 
 Serial、Parallel 和 CMS 代表了三种不同目标：降低收集器自身复杂度、提高批处理吞吐，以及用并发标记缩短老年代停顿。CMS 已在 JDK 14 移除，今天学习它主要为了理解旧系统和并发收集器的演进。
 
-## 1. Serial 用单个 GC 线程完成回收
+## 1. 面试核心 {#core}
+
+- Serial 用单个 GC 线程在停顿中完成回收，适合小堆和单核环境。
+- Parallel 用多个 GC 线程并行回收，以吞吐为目标，适合能接受较长停顿的批处理任务。[卡](#collector-goals)
+- CMS 并发标记和清除老年代以缩短停顿，代价是更多 CPU、内存碎片和浮动垃圾。
+- CMS 并发回收期间老年代空间耗尽会发生 concurrent mode failure，退化为单线程 Full GC。[卡](#concurrent-mode-failure)
+- CMS 在 JDK 9 弃用、JDK 14 移除，学习它主要为了阅读旧系统的日志和理解并发收集器的演进。
+
+## 2. Serial {#serial}
 
 Serial Collector 在垃圾回收时暂停应用线程，并由单个 GC 线程完成主要工作：
 
@@ -21,7 +29,7 @@ java -XX:+UseSerialGC -jar app.jar
 
 JDK 26 在非 server-class 条件下仍可能选择 Serial；实际默认值应通过启动日志确认。
 
-## 2. Parallel 用多个线程提高回收吞吐
+## 3. Parallel {#parallel}
 
 ```bash
 java -XX:+UseParallelGC -jar batch-job.jar
@@ -31,7 +39,7 @@ Parallel Collector 也以 Stop-The-World 为主，但使用多个 GC 线程并�
 
 增加 GC 线程不会无限提速。扫描、内存带宽、NUMA 和 CPU 配额都会限制收益，GC 线程还会与同机应用争抢资源。
 
-## 3. CMS 并发处理旧代标记与清理
+## 4. CMS {#cms}
 
 CMS（Concurrent Mark Sweep）曾针对老年代做大部分并发标记和清理，以减少长时间 STW。它通常包含短暂的初始标记和重新标记停顿，主要标记与清理阶段和应用线程并发。
 
@@ -42,7 +50,7 @@ CMS 使用 mark-sweep，不在正常并发周期中整体压缩旧代，因此�
 - 并发周期跟不上时发生 concurrent mode failure，退化到更重的回收。
 - 浮动垃圾要留到后续周期处理。
 
-## 4. CMS 已从现代 JDK 移除
+## 5. CMS 的移除 {#cms-removal}
 
 CMS 在 JDK 9 弃用，JDK 14 通过 JEP 363 移除。现代 JDK 上不能再用 `-XX:+UseConcMarkSweepGC` 启动它。
 
@@ -50,7 +58,7 @@ CMS 在 JDK 9 弃用，JDK 14 通过 JEP 363 移除。现代 JDK 上不能再用
 
 旧文章中的 `PermGen`、ParNew、CMS 参数和默认比例也可能已经失效，升级时要按目标 JDK 官方文档重新验证。
 
-## 5. 三者比较的是目标，不是单项快慢
+## 6. 三者的比较 {#comparison}
 
 | 收集器 | 主要方式 | 优先目标 | 主要代价 |
 | --- | --- | --- | --- |
@@ -60,7 +68,7 @@ CMS 在 JDK 9 弃用，JDK 14 通过 JEP 363 移除。现代 JDK 上不能再用
 
 同一程序要比较总吞吐、暂停分布、CPU 和内存余量。只比较一次 GC 用时无法判断业务效果。
 
-## 6. 选择收集器先写服务目标
+## 7. 选择收集器 {#selection}
 
 可用的判断顺序：
 
@@ -73,23 +81,23 @@ CMS 在 JDK 9 弃用，JDK 14 通过 JEP 363 移除。现代 JDK 上不能再用
 
 默认收集器通常是合理起点，不是无需验证的最终配置。
 
-## 7. 常见问题
+## 8. 常见问题
 
-### 7.1 Parallel 是并发收集器吗
+### 8.1 Parallel 是并发收集器吗
 
 它的 GC 工作可以由多个线程并行，但主要回收期间应用线程仍暂停。“parallel”强调 GC 线程之间并行，“concurrent”强调 GC 与应用线程同时运行。
 
-### 7.2 CMS 为什么会产生碎片
+### 8.2 CMS 为什么会产生碎片
 
-它主要使用标记—清除，回收不可达对象留下的空洞，不像压缩/疏散算法那样在正常周期统一移动存活对象。大对象可能找不到连续空间，即使总空闲量看似足够。
+它主要使用标记—清除，回收不可达对象留下的空洞，不像压缩/疏散算法那样在正常周期统一移动存活对象。大对象可能找不到连续空间，即使总空闲量足够。
 
-### 7.3 新系统还需要学习 CMS 吗
+### 8.3 新系统还需要学习 CMS 吗
 
 需要能阅读旧 GC 日志、解释迁移风险和理解并发回收的 CPU/余量代价，但不应给现代 JDK 配置 CMS。
 
-## 8. 面试题
+## 9. 面试题
 
-### 8.1 Serial、Parallel 和 CMS 的目标有什么区别 {#collector-goals}
+### 9.1 Serial、Parallel 和 CMS 的目标有什么区别 {#collector-goals}
 
 <!-- 面试来源：
 - 阿里云：https://www.nowcoder.com/discuss/401459816646942720
@@ -104,7 +112,7 @@ CMS 在 JDK 9 弃用，JDK 14 通过 JEP 363 移除。现代 JDK 上不能再用
 - 吞吐、暂停、CPU 与碎片的权衡。
 - CMS 已在 JDK 14 移除。
 
-**相关内容**：[Serial 用单个 GC 线程完成回收](#1-serial-用单个-gc-线程完成回收)至[三者比较的是目标，不是单项快慢](#5-三者比较的是目标不是单项快慢)。
+**相关内容**：[Serial](#serial)至[三者的比较](#comparison)。
 
 <details>
 <summary>参考回答</summary>
@@ -115,7 +123,7 @@ CMS 已在 JDK 14 移除。现代迁移应以 G1 或目标 JDK 支持的收集�
 
 </details>
 
-### 8.2 为什么 CMS 可能发生 concurrent mode failure {#concurrent-mode-failure}
+### 9.2 为什么 CMS 可能发生 concurrent mode failure {#concurrent-mode-failure}
 
 <!-- 面试来源：
 - 阿里巴巴：https://www.nowcoder.com/discuss/353157613372252160
@@ -129,7 +137,7 @@ CMS 已在 JDK 14 移除。现代迁移应以 G1 或目标 JDK 支持的收集�
 - 周期启动时机与旧代余量。
 - 退化回收带来的长停顿。
 
-**相关内容**：[CMS 并发处理旧代标记与清理](#3-cms-并发处理旧代标记与清理)。
+**相关内容**：[CMS](#cms)。
 
 <details>
 <summary>参考回答</summary>
@@ -138,10 +146,8 @@ CMS 并发标记和清理时，应用线程仍会产生对象并向旧代晋升�
 
 </details>
 
-:::note 参考资料
+## 10. 参考资料
 
-1. [Oracle：Available Collectors](https://docs.oracle.com/en/java/javase/26/gctuning/available-collectors.html)
-2. [Oracle：Parallel Collector](https://docs.oracle.com/en/java/javase/26/gctuning/parallel-collector1.html)
-3. [JEP 363：Remove the Concurrent Mark Sweep GC](https://openjdk.org/jeps/363)
-
-:::
+- [Oracle：Available Collectors](https://docs.oracle.com/en/java/javase/26/gctuning/available-collectors.html)
+- [Oracle：Parallel Collector](https://docs.oracle.com/en/java/javase/26/gctuning/parallel-collector1.html)
+- [JEP 363：Remove the Concurrent Mark Sweep GC](https://openjdk.org/jeps/363)

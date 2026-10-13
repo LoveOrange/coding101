@@ -9,7 +9,15 @@ knowledge:
 
 多个线程访问同一份可变状态，并且至少一个线程会修改它时，程序就需要明确同步规则。线程安全问题通常表现为丢失更新、读到不一致状态，或者根据过期数据作出决定。
 
-## 1. 一条语句也可能包含多个步骤
+## 1. 面试核心 {#core}
+
+- 多个线程访问同一份可变状态，且至少一个线程会写入时，才需要同步。
+- `count++` 包含读取、计算和写回三步，并发执行会丢失更新。
+- 原子性、可见性和有序性分别约束不同问题；`volatile` 提供可见性和有序性，不能让复合操作变成原子操作。
+- 临界区的范围由业务不变量决定，检查和更新必须在同一把锁内完成。[卡](#judge-thread-safety)
+- 优先用不共享、不可变或线程封闭减少同步需求，再选择锁、原子类或并发容器。
+
+## 2. 竞态条件 {#race-condition}
 
 下面的计数器会丢失更新：
 
@@ -31,7 +39,7 @@ public final class Counter {
 
 这类结果取决于线程交错顺序，属于**竞态条件**。如果两个相互冲突的普通内存访问没有被 happens-before 排序，其中至少一个是写入，则还构成 Java 内存模型所说的**数据竞争**。
 
-## 2. 原子性、可见性和有序性分别回答什么
+## 3. 原子性、可见性与有序性 {#atomicity-visibility-ordering}
 
 | 性质 | 要回答的问题 | 常见错误 |
 | --- | --- | --- |
@@ -41,7 +49,7 @@ public final class Counter {
 
 三者不能互相替代。`volatile` 可以为单次读写建立可见性和顺序约束，却不能把 `value++` 合并成一个不可分割的更新。
 
-## 3. 不变量决定临界区的范围
+## 4. 不变量与临界区 {#invariants}
 
 假设账户要求余额不能为负：
 
@@ -55,7 +63,7 @@ if (balance >= amount) {
 
 当多个字段共同描述一个状态时也一样。例如 `lower <= upper` 不能只靠两个独立的 `volatile` 字段保证。
 
-## 4. 先减少共享，再选择同步工具
+## 5. 同步策略 {#strategies}
 
 常见策略按约束方式可以分为：
 
@@ -66,7 +74,7 @@ if (balance >= amount) {
 
 同步工具应服从状态模型。一个计数值适合 `AtomicLong`；多个字段的事务式变更通常更适合锁；事件流可以交给队列和单一消费者。
 
-## 5. `synchronized` 修复的是整条状态转换
+## 6. 用 `synchronized` 保护状态转换 {#synchronized-fix}
 
 ```java
 public final class Counter {
@@ -84,19 +92,19 @@ public final class Counter {
 
 同一个 monitor 同时提供互斥和 happens-before：一次解锁之前的动作，对随后成功获取同一 monitor 的线程可见。若写方法加锁而读方法不使用同一同步协议，读线程仍没有相应保证。
 
-## 6. 常见问题
+## 7. 常见问题
 
-### 6.1 方法里只有局部变量就一定线程安全吗
+### 7.1 方法里只有局部变量就一定线程安全吗
 
 局部变量本身属于一次调用，但它可能引用共享对象。对共享 `List` 调用 `add`，风险来自列表，而不是保存引用的局部变量。
 
-### 6.2 代码在压力测试中一直正确，能证明线程安全吗
+### 7.2 代码在压力测试中一直正确，能证明线程安全吗
 
 不能。线程调度、JIT 优化和硬件都可能改变交错方式。测试可以发现错误，正确性仍要由同步协议和 happens-before 关系证明。
 
-## 7. 面试题
+## 8. 面试题
 
-### 7.1 怎样判断一段代码是否线程安全 {#judge-thread-safety}
+### 8.1 怎样判断一段代码是否线程安全 {#judge-thread-safety}
 
 <!-- 面试来源：
 - 拼多多：https://www.nowcoder.com/discuss/353150007719174144
@@ -110,7 +118,7 @@ public final class Counter {
 - 复合不变量与临界区。
 - 不能只按变量是否使用 `volatile` 判断。
 
-**相关内容**：[一条语句也可能包含多个步骤](#1-一条语句也可能包含多个步骤)至[先减少共享，再选择同步工具](#4-先减少共享再选择同步工具)。
+**相关内容**：[竞态条件](#race-condition)至[同步策略](#strategies)。
 
 <details>
 <summary>参考回答</summary>
@@ -121,9 +129,7 @@ public final class Counter {
 
 </details>
 
-:::note 参考资料
+## 9. 参考资料
 
-1. [JLS 17：Threads and Locks](https://docs.oracle.com/javase/specs/jls/se26/html/jls-17.html)
-2. [Java API：`java.util.concurrent` 的内存一致性说明](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/package-summary.html#MemoryVisibility)
-
-:::
+- [JLS 17：Threads and Locks](https://docs.oracle.com/javase/specs/jls/se26/html/jls-17.html)
+- [Java API：`java.util.concurrent` 的内存一致性说明](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/package-summary.html#MemoryVisibility)

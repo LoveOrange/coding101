@@ -9,7 +9,15 @@ knowledge:
 
 JVM 工具各自只能回答一类问题：线程转储描述某个时刻的调用和等待，堆转储描述对象引用，GC 日志描述回收时间线，JFR 和 profiler 描述一段时间内的事件。先定义症状，再选择能证伪假设的证据。
 
-## 1. 先记录故障时间线
+## 1. 面试核心 {#core}
+
+- 线程转储回答“某一时刻线程在哪里、等什么”，堆转储回答“对象被谁引用”，GC 日志回答“回收的时间线”，JFR 和 profiler 回答“一段时间内时间花在哪里”。[卡](#diagnostic-tools)
+- 现代 HotSpot 优先使用 `jcmd` 作为统一入口，`jstack`、`jmap` 等旧工具按需使用。
+- 单份线程转储只能说明瞬时状态，连续采集 3—5 份才能区分持续热点和偶然经过。[卡](#single-thread-dump)
+- 完整堆转储可能造成长停顿或写满磁盘，先用指标、JFR 和类直方图缩小范围。
+- 每份诊断证据都要记录采集时间、JDK 版本、启动参数和当时的负载。
+
+## 2. 故障时间线 {#timeline}
 
 开始执行命令前先写清楚：
 
@@ -21,7 +29,7 @@ JVM 工具各自只能回答一类问题：线程转储描述某个时刻的调�
 
 没有同一时间轴，线程栈里的等待、堆里的大对象和日志中的 GC 都可能只是正常现象。
 
-## 2. `jcmd` 是现代 HotSpot 的统一入口
+## 3. `jcmd` {#jcmd}
 
 ```bash
 jcmd -l
@@ -36,7 +44,7 @@ jcmd <pid> VM.system_properties
 
 Attach 通常要求同机、相同有效用户，并可能受容器 PID namespace、权限和 JVM 参数限制。工具版本最好与目标进程 JDK 匹配。
 
-## 3. 症状与首选证据
+## 4. 症状与首选证据 {#symptoms}
 
 | 症状 | 首选证据 | 后续证据 |
 | --- | --- | --- |
@@ -48,15 +56,15 @@ Attach 通常要求同机、相同有效用户，并可能受容器 PID namespac
 | 进程崩溃 | `hs_err_pid`、core dump | native symbols、JFR |
 | 类冲突 | 类加载日志、代码来源 | 依赖树、loader stats |
 
-工具名字不是流程。比如 CPU 高时先确认真正消耗 CPU 的线程，直接导出堆通常没有帮助。
+工具名字不是流程。比如 CPU 高时先确认实际消耗 CPU 的线程，直接导出堆通常没有帮助。
 
-## 4. 快照和时间序列回答不同问题
+## 5. 快照与时间序列 {#snapshot-vs-series}
 
 一次线程转储只能说明“采集瞬间在哪里”。连续 3—5 份、间隔几秒的转储能区分持续热点与偶然经过。
 
 同理，一份 heap dump 可以显示引用图，却无法单独证明哪个对象持续增长。GC 日志、JFR 或多个低风险统计能先建立趋势，再在合适时刻采集完整堆。
 
-## 5. JFR 记录运行时事件
+## 6. JFR {#jfr}
 
 ```bash
 jcmd <pid> JFR.start \
@@ -70,17 +78,17 @@ JFR 可以关联 CPU 样本、线程、锁、分配、GC、类加载、编译和
 
 持续环形记录比故障后临时启动更容易保留“发生之前”的证据。要限制最大年龄、文件大小并验证磁盘路径。
 
-## 6. async-profiler 提供采样视角
+## 7. async-profiler {#async-profiler}
 
 ```bash
 asprof -d 30 -f cpu.html <pid>
 ```
 
-它可以采样 CPU、wall-clock、分配和锁等事件，并在 HotSpot 上展示 Java、native 与部分内核栈。CPU profile 适合找真正使用处理器的路径；wall-clock profile 会包含运行、阻塞和睡眠线程，更适合端到端延迟。
+它可以采样 CPU、wall-clock、分配和锁等事件，并在 HotSpot 上展示 Java、native 与部分内核栈。CPU profile 适合找实际占用处理器的路径；wall-clock profile 会包含运行、阻塞和睡眠线程，更适合端到端延迟。
 
 采样结果是统计分布，不是每次调用的完整追踪。采样时长、频率、平台支持和容器权限都会影响结果。
 
-## 7. 采集动作也有风险等级
+## 8. 采集动作的风险 {#risk}
 
 大致可以按影响递增理解：
 
@@ -91,7 +99,7 @@ asprof -d 30 -f cpu.html <pid>
 
 实际影响取决于堆大小、线程数、磁盘与 JVM 状态。执行前运行 `jcmd <pid> help <command>` 查看 Impact，并明确文件落盘空间、停顿窗口和回滚方式。
 
-## 8. 证据要带环境元数据
+## 9. 证据的环境信息 {#metadata}
 
 每份诊断包至少包含：
 
@@ -104,23 +112,23 @@ asprof -d 30 -f cpu.html <pid>
 
 否则两台不同版本实例的线程栈、GC 日志很容易被错误拼在一起。
 
-## 9. 常见问题
+## 10. 常见问题
 
-### 9.1 `jstack`、`jmap` 还能不能用
+### 10.1 `jstack`、`jmap` 还能不能用
 
 可以在目标 JDK 支持时使用，但现代 HotSpot 优先考虑 `jcmd` 的对应命令。工具版本、Attach 权限和命令影响都要核对。
 
-### 9.2 Arthas 能替代 JFR 和堆分析吗
+### 10.2 Arthas 能替代 JFR 和堆分析吗
 
 不能简单替代。它擅长在线查看调用、类和线程；JFR 擅长时间线事件，heap dump 擅长完整对象引用图。按问题组合。
 
-### 9.3 为什么先采低风险证据
+### 10.3 为什么先采低风险证据
 
 故障进程本就资源紧张，完整 heap dump 可能造成长停顿、磁盘写满或 OOM Kill。先用指标、JFR 和 histogram 缩小范围，可以更安全地决定是否需要重证据。
 
-## 10. 面试题
+## 11. 面试题
 
-### 10.1 常用 JVM 诊断工具分别能解决什么问题 {#diagnostic-tools}
+### 11.1 常用 JVM 诊断工具分别能解决什么问题 {#diagnostic-tools}
 
 <!-- 面试来源：
 - 字节跳动：https://www.nowcoder.com/discuss/366687810131165184
@@ -135,7 +143,7 @@ asprof -d 30 -f cpu.html <pid>
 - 快照和时间序列的差异。
 - 采集风险与生产边界。
 
-**相关内容**：[先记录故障时间线](#1-先记录故障时间线)至[采集动作也有风险等级](#7-采集动作也有风险等级)。
+**相关内容**：[故障时间线](#timeline)至[采集动作的风险](#risk)。
 
 <details>
 <summary>参考回答</summary>
@@ -146,7 +154,7 @@ asprof -d 30 -f cpu.html <pid>
 
 </details>
 
-### 10.2 为什么只采一份线程转储经常无法定位问题 {#single-thread-dump}
+### 11.2 为什么只采一份线程转储经常无法定位问题 {#single-thread-dump}
 
 <!-- 面试来源：
 - 阿里巴巴：https://www.nowcoder.com/discuss/353148456472616960
@@ -160,7 +168,7 @@ asprof -d 30 -f cpu.html <pid>
 - 多个快照和采样 profile 建立时间维度。
 - 线程栈要与 CPU、延迟和队列对齐。
 
-**相关内容**：[快照和时间序列回答不同问题](#4-快照和时间序列回答不同问题)。
+**相关内容**：[快照与时间序列](#snapshot-vs-series)。
 
 <details>
 <summary>参考回答</summary>
@@ -171,11 +179,9 @@ asprof -d 30 -f cpu.html <pid>
 
 </details>
 
-:::note 参考资料
+## 12. 参考资料
 
-1. [Oracle：Diagnostic Tools](https://docs.oracle.com/en/java/javase/26/troubleshoot/diagnostic-tools.html)
-2. [Oracle：`jcmd`](https://docs.oracle.com/en/java/javase/26/docs/specs/man/jcmd.html)
-3. [Oracle：Flight Recorder API Guide](https://docs.oracle.com/en/java/javase/26/jfapi/index.html)
-4. [async-profiler](https://github.com/async-profiler/async-profiler)
-
-:::
+- [Oracle：Diagnostic Tools](https://docs.oracle.com/en/java/javase/26/troubleshoot/diagnostic-tools.html)
+- [Oracle：`jcmd`](https://docs.oracle.com/en/java/javase/26/docs/specs/man/jcmd.html)
+- [Oracle：Flight Recorder API Guide](https://docs.oracle.com/en/java/javase/26/jfapi/index.html)
+- [async-profiler](https://github.com/async-profiler/async-profiler)

@@ -9,7 +9,15 @@ knowledge:
 
 逃逸分析判断一个新对象是否可能被当前方法、线程或未知调用观察。JIT 利用结果做标量替换、分配消除和锁消除；HotSpot 常见收益是“不再创建完整对象”，不应简单描述为把所有不逃逸对象搬到线程栈。
 
-## 1. 先判断对象能被谁观察
+## 1. 面试核心 {#core}
+
+- 逃逸分析判断新对象是否会被返回、写入字段或传给未知代码；结论依赖 JIT 内联后的调用图。
+- 对象不逃逸时，C2 可以做标量替换，把对象拆成几个局部值，直接消除这次分配。[卡](#heap-allocation)
+- 对象只在当前线程使用时，JIT 可以消除它的锁。[卡](#escape-analysis-optimizations)
+- HotSpot 的主要收益是消除分配，并不是把完整对象放到线程栈上；方法未编译、未内联时优化不会发生。
+- 是否生效要用 JMH 的 GC profiler 比较每次操作的分配量来验证。
+
+## 2. 对象逃逸的判断 {#escape}
 
 ```java
 static long distance(int x1, int y1, int x2, int y2) {
@@ -32,7 +40,7 @@ consumer.accept(point); // 目标无法分析时
 
 “作为方法参数”本身不等于一定逃逸。若调用目标被内联，分析仍可能跨方法看到完整用途。
 
-## 2. 标量替换把对象拆成字段值
+## 3. 标量替换 {#scalar-replacement}
 
 Point 的对象身份若不可观察，JIT 可以把它拆成 `x`、`y` 两个标量，在寄存器或编译器中间值里计算：
 
@@ -48,7 +56,7 @@ Point 的对象身份若不可观察，JIT 可以把它拆成 `x`、`y` 两个�
 
 这同时消除对象头、堆分配和后续 GC 压力。若某条罕见路径需要真实对象，去优化元数据可以帮助 JVM 重新物化对象。
 
-## 3. 锁消除依赖对象不被其他线程看到
+## 4. 锁消除 {#lock-elision}
 
 ```java
 String format(Order order) {
@@ -62,7 +70,7 @@ String format(Order order) {
 
 锁粗化则是另一方向：相邻多次锁定同一对象时，JIT 可能扩大临界区以减少反复进入退出成本。
 
-## 4. 逃逸分析不保证优化一定发生
+## 5. 优化的限制条件 {#limits}
 
 限制包括：
 
@@ -74,13 +82,13 @@ String format(Order order) {
 
 因此源码中“对象没有返回”只是线索，不是证据。
 
-## 5. “栈上分配”要谨慎表述
+## 6. 栈上分配的说法 {#stack-allocation}
 
 从语言语义看，对象由 JVM 自动管理。HotSpot C2 常通过标量替换直接消除分配，而不是为每个不逃逸对象在 Java 线程栈上保留一个完整对象布局。
 
 如果对象仍需要身份且分配未消除，通常仍走堆分配，只是 TLAB 让它很快。面试中可以说“逃逸分析为分配消除和标量替换提供依据”，不要断言“未逃逸对象一定放栈上”。
 
-## 6. 用分配证据验证
+## 7. 用分配数据验证 {#verify}
 
 JMH 可结合 GC profiler 比较每次操作分配：
 
@@ -94,23 +102,23 @@ JFR 的 Object Allocation in New TLAB / Outside TLAB 事件、async-profiler all
 
 如果优化目标是降低线上 GC，最终还要看服务的 bytes allocated per request、分配率和端到端吞吐，而不是只看单个纳秒结果。
 
-## 7. 常见问题
+## 8. 常见问题
 
-### 7.1 对象没有逃出方法就一定不在堆上吗
+### 8.1 对象没有逃出方法就一定不在堆上吗
 
 不一定。JIT 还要成功分析并决定优化；未编译、未内联或身份可观察时都可能保留堆分配。
 
-### 7.2 逃逸分析能消除所有临时集合吗
+### 8.2 逃逸分析能消除所有临时集合吗
 
 通常不能。集合会动态扩容、包含数组并经过复杂调用，完整标量替换比小型值对象困难。减少不必要中间集合仍应从算法和 API 设计入手。
 
-### 7.3 分配很快，为什么还要优化对象数量
+### 8.3 分配很快，为什么还要优化对象数量
 
 TLAB 让分配本身便宜，但初始化、内存带宽和 GC 扫描仍有成本。只有 profile 证明分配率限制性能时，才值得牺牲可读性优化。
 
-## 8. 面试题
+## 9. 面试题
 
-### 8.1 Java 对象一定分配在堆上吗 {#heap-allocation}
+### 9.1 Java 对象一定分配在堆上吗 {#heap-allocation}
 
 <!-- 面试来源：
 - 字节跳动：https://www.nowcoder.com/discuss/353158260289118208
@@ -125,7 +133,7 @@ TLAB 让分配本身便宜，但初始化、内存带宽和 GC 扫描仍有成�
 - 逃逸分析、标量替换和分配消除。
 - 不应把优化简化为固定栈上分配。
 
-**相关内容**：[先判断对象能被谁观察](#1-先判断对象能被谁观察)至[“栈上分配”要谨慎表述](#5-栈上分配要谨慎表述)。
+**相关内容**：[对象逃逸的判断](#escape)至[栈上分配的说法](#stack-allocation)。
 
 <details>
 <summary>参考回答</summary>
@@ -136,7 +144,7 @@ JVM 规范把对象存储归入堆，但实现可以做语义等价优化。HotS
 
 </details>
 
-### 8.2 逃逸分析可能带来哪些优化 {#escape-analysis-optimizations}
+### 9.2 逃逸分析可能带来哪些优化 {#escape-analysis-optimizations}
 
 <!-- 面试来源：
 - 满帮：https://www.nowcoder.com/discuss/353158686027751424
@@ -150,7 +158,7 @@ JVM 规范把对象存储归入堆，但实现可以做语义等价优化。HotS
 - 不逃逸 monitor 的锁消除。
 - 分析结果只是优化依据。
 
-**相关内容**：[标量替换把对象拆成字段值](#2-标量替换把对象拆成字段值)至[逃逸分析不保证优化一定发生](#4-逃逸分析不保证优化一定发生)。
+**相关内容**：[标量替换](#scalar-replacement)至[优化的限制条件](#limits)。
 
 <details>
 <summary>参考回答</summary>
@@ -161,10 +169,8 @@ JVM 规范把对象存储归入堆，但实现可以做语义等价优化。HotS
 
 </details>
 
-:::note 参考资料
+## 10. 参考资料
 
-1. [Oracle：Escape Analysis](https://docs.oracle.com/en/java/javase/26/vm/java-virtual-machine-guide.pdf)
-2. [OpenJDK：HotSpot Compiler](https://openjdk.org/groups/hotspot/docs/HotSpotGlossary.html)
-3. [OpenJDK JMH Samples](https://github.com/openjdk/jmh/tree/master/jmh-samples/src/main/java/org/openjdk/jmh/samples)
-
-:::
+- [Oracle：Escape Analysis](https://docs.oracle.com/en/java/javase/26/vm/java-virtual-machine-guide.pdf)
+- [OpenJDK：HotSpot Compiler](https://openjdk.org/groups/hotspot/docs/HotSpotGlossary.html)
+- [OpenJDK JMH Samples](https://github.com/openjdk/jmh/tree/master/jmh-samples/src/main/java/org/openjdk/jmh/samples)

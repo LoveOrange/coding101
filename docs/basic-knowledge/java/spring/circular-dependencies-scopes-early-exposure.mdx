@@ -7,9 +7,17 @@ knowledge:
 
 # Spring 循环依赖
 
-循环依赖表示对象职责形成了闭环。Spring Framework 能在有限条件下通过单例早期引用完成属性注入，但 Spring Boot 当前默认禁止自动处理循环引用；设计上应先拆开闭环。
+循环依赖表示对象之间的依赖关系形成了环。Spring Framework 能在有限条件下通过单例早期引用完成属性注入，但 Spring Boot 当前默认禁止自动处理循环引用；设计上应先拆开这个环。
 
-## 1. 构造器循环无法得到第一个完整实例
+## 1. 面试核心 {#core}
+
+- 构造器注入形成的循环无法解决，两个对象都不能先完成实例化。
+- 单例的 Setter 或字段注入形成循环时，Spring 可以在实例化后提前暴露早期引用来完成注入。[卡](#three-level-cache)
+- 三级缓存分别保存完整单例、早期引用和早期引用工厂；工厂让需要 AOP 的 Bean 提前返回代理，保证注入的是同一个对象。
+- Spring Boot 2.6 起 `spring.main.allow-circular-references` 默认为 `false`，循环依赖会导致启动失败。
+- 根本解决方式是调整职责：提取公共服务、改用事件或回调，`@Lazy` 只是推迟依赖的获取。
+
+## 2. 构造器注入的循环 {#constructor-cycle}
 
 ```java
 @Service
@@ -25,9 +33,9 @@ class PaymentService {
 
 创建 `OrderService` 需要先得到 `PaymentService`，而后者的构造又要求 `OrderService`。两个对象都无法先完成实例化，容器会报告 `BeanCurrentlyInCreationException`。
 
-`@Lazy` 或 Provider 可以把某条边变成代理或延迟查询，但只是延迟闭环，并未说明职责为什么互相依赖。
+`@Lazy` 或 Provider 可以把某条边变成代理或延迟查询，但只是推迟了循环的建立，没有解决职责互相依赖的问题。
 
-## 2. 属性注入允许先实例化再连接
+## 3. 属性注入的循环 {#setter-cycle}
 
 对于 singleton 属性注入，Spring Framework 可以在实例化 A 后、初始化完成前暴露 A 的早期引用。创建 B 时取得这份引用，完成 B，再回到 A 填充 B。
 
@@ -42,7 +50,7 @@ class PaymentService {
 
 提前交付意味着 B 一度持有尚未完成生命周期的 A，所以这是一项兼容机制，不是推荐的依赖结构。
 
-## 3. 三层单例结构服务于不同阶段
+## 4. 三级缓存 {#three-caches}
 
 常见源码讨论中的三个结构是：
 
@@ -52,7 +60,7 @@ class PaymentService {
 
 工厂层让自动代理创建器在必要时提供与最终一致的早期代理，而不是只能提前暴露原始对象。具体字段和处理细节属于 Spring 实现，业务正确性不应依赖直接访问这些缓存。
 
-## 4. Spring Boot 默认拒绝循环引用
+## 5. Spring Boot 的默认行为 {#boot-default}
 
 当前 Spring Boot 的 `spring.main.allow-circular-references` 默认值为 `false`。即使底层容器在某些 singleton 属性注入场景有处理能力，Boot 应用也会默认把循环关系当成启动错误。
 
@@ -63,13 +71,13 @@ class PaymentService {
 - 跨作用域依赖可能需要 scoped proxy。
 - 代理类型和早期引用不一致时仍可能失败。
 
-## 5. 作用域改变实例取得时机
+## 6. 作用域 {#scopes}
 
 Spring singleton 是每个容器、每个 Bean 定义一份实例。prototype 每次请求创建新实例；request、session 等作用域与 Web 上下文绑定。
 
 singleton 直接注入 prototype 时，只在 singleton 创建时解析一次。需要每次取得新实例，应使用 `ObjectProvider` 或作用域代理。request Bean 通过代理注入 singleton 后，只能在有效请求上下文中解析目标。
 
-## 6. 拆解循环依赖的方法
+## 7. 拆解循环依赖 {#breaking-cycles}
 
 - 提取两个服务共同依赖的第三个职责。
 - 将双向调用改成单向状态变更与领域事件。
@@ -77,19 +85,19 @@ singleton 直接注入 prototype 时，只在 singleton 创建时解析一次。
 - 重新定义接口，让一个服务返回结果而不是回调另一个服务。
 - 只在确实代表延迟资源时使用 Provider，而非隐藏结构。
 
-## 7. 常见问题
+## 8. 常见问题
 
-### 7.1 Spring 能解决哪些循环依赖
+### 8.1 Spring 能解决哪些循环依赖
 
-底层容器主要能在允许循环引用时处理部分 singleton 的 Setter/字段注入闭环。构造器和 prototype 循环不属于这条路径，Boot 默认也不允许自动处理。
+底层容器主要能在允许循环引用时处理部分 singleton 的 Setter/字段注入形成的循环。构造器和 prototype 循环不属于这条路径，Boot 默认也不允许自动处理。
 
-### 7.2 为什么早期引用可能需要代理
+### 8.2 为什么早期引用可能需要代理
 
 如果 B 注入原始 A，而容器最终发布的是 A 的事务或 AOP 代理，同一个 singleton 会出现两种调用语义。早期引用工厂让后处理器有机会提前返回一致代理。
 
-## 8. 面试题
+## 9. 面试题
 
-### 8.1 Spring 的三级缓存怎样处理循环依赖，有哪些限制 {#three-level-cache}
+### 9.1 Spring 的三级缓存怎样处理循环依赖，有哪些限制 {#three-level-cache}
 
 <!-- 面试来源：
 - 美团：https://www.nowcoder.com/discuss/614236533700194304
@@ -104,7 +112,7 @@ singleton 直接注入 prototype 时，只在 singleton 创建时解析一次。
 - 早期引用工厂与代理一致性。
 - 构造器、prototype 和 Boot 默认设置。
 
-**相关内容**：[构造器循环无法得到第一个完整实例](#1-构造器循环无法得到第一个完整实例)至[Spring Boot 默认拒绝循环引用](#4-spring-boot-默认拒绝循环引用)。
+**相关内容**：[构造器注入的循环](#constructor-cycle)至[Spring Boot 的默认行为](#boot-default)。
 
 <details>
 <summary>参考回答</summary>
@@ -115,10 +123,9 @@ singleton 直接注入 prototype 时，只在 singleton 创建时解析一次。
 
 </details>
 
-:::note 参考资料
+## 10. 参考资料
 
-1. [Spring Framework：Circular Dependencies](https://docs.spring.io/spring-framework/reference/core/beans/dependencies/factory-collaborators.html#beans-dependency-resolution)
-2. [Spring Framework：Bean Scopes](https://docs.spring.io/spring-framework/reference/core/beans/factory-scopes.html)
-3. [Spring Boot：Common Application Properties](https://docs.spring.io/spring-boot/appendix/application-properties/index.html#application-properties.core.spring.main.allow-circular-references)
-
-:::
+- [Spring Boot 2.6 Release Notes：Circular References Prohibited by Default](https://github.com/spring-projects/spring-boot/wiki/Spring-Boot-2.6-Release-Notes#circular-references-prohibited-by-default)
+- [Spring Framework：Circular Dependencies](https://docs.spring.io/spring-framework/reference/core/beans/dependencies/factory-collaborators.html#beans-dependency-resolution)
+- [Spring Framework：Bean Scopes](https://docs.spring.io/spring-framework/reference/core/beans/factory-scopes.html)
+- [Spring Boot：Common Application Properties](https://docs.spring.io/spring-boot/appendix/application-properties/index.html#application-properties.core.spring.main.allow-circular-references)

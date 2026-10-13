@@ -9,7 +9,15 @@ knowledge:
 
 服务发现负责把稳定的服务名解析为一组当前可用的实例地址。实例会扩缩容、重启和迁移，因此调用方需要持续接收变化，同时在注册中心短暂不可用时保留可工作的本地视图。
 
-## 1. 注册信息描述实例位置和属性
+## 1. 面试核心 {#core}
+
+- 服务发现把服务名解析为当前可用的实例列表，实例可以主动注册，也可以由部署平台生成。
+- 客户端发现由调用方获取实例并负载均衡，服务端发现由代理或负载均衡器转发。
+- liveness 失败会重启实例，不应依赖外部服务；readiness 决定是否接收流量。
+- 注册中心不可用时，客户端继续使用本地缓存的最后可用实例表，并结合被动健康检查剔除故障实例。[卡](#registry-unavailable)
+- 实例上线前完成预热再进入 readiness，下线时先摘流并排空在途请求。
+
+## 2. 服务注册 {#registration}
 
 服务实例启动后，可以主动向注册中心登记地址、端口、版本、区域和路由标签，也可以由部署平台根据期望状态生成服务端点。
 
@@ -17,7 +25,7 @@ knowledge:
 
 注册地址要让调用方实际可达。容器内部地址、NAT 后地址或错误网卡常会出现“注册成功但无法调用”。
 
-## 2. 客户端发现和服务端发现分配不同责任
+## 3. 客户端发现与服务端发现 {#client-vs-server}
 
 **客户端发现**让调用方直接获取实例列表，并在本地做负载均衡。它少一次代理转发，但每种语言的客户端都要实现订阅、健康、负载均衡和重试。
 
@@ -25,7 +33,7 @@ knowledge:
 
 两种方式都可能使用同一个注册数据源。区别在于谁消费实例表、谁执行路由，而不是有没有注册中心。
 
-## 3. 健康检查要区分存活与可接流量
+## 4. liveness 与 readiness {#health-checks}
 
 - **Liveness** 判断进程是否陷入无法自行恢复的状态，失败可能触发重启。
 - **Readiness** 判断实例当前能否接收请求，失败应先从流量端点移除。
@@ -33,13 +41,13 @@ knowledge:
 
 数据库短暂超时通常不应直接导致 liveness 失败，否则所有实例可能同时重启，进一步扩大故障。readiness 也不应依赖过多非关键下游，避免一个共享依赖让全部服务同时摘流。
 
-## 4. 主动检查和被动观测需要组合
+## 5. 主动与被动健康检查 {#active-passive}
 
 注册中心或负载均衡器可以主动探测健康接口；调用方也可以根据连接失败、超时和异常响应做被动摘除。
 
 主动检查有固定间隔，发现故障存在延迟；被动判断更快，但一次偶发超时不代表实例失效。应设置连续失败阈值、最短摘除时间和恢复探测，并限制最多摘除比例，避免高负载时把全部实例判为异常。
 
-## 5. 注册中心断连时保留最后可用实例表
+## 6. 注册中心不可用 {#registry-outage}
 
 注册中心属于治理控制面，已有请求转发不应每次同步查询它。客户端应在本地缓存带版本的实例快照，订阅变更并原子替换。
 
@@ -52,31 +60,31 @@ knowledge:
 
 保留旧列表可能继续访问已经下线的实例，所以连接超时、失败重试和被动健康仍然必要。
 
-## 6. 实例上下线需要排空连接
+## 7. 上下线与连接排空 {#draining}
 
 新实例应先完成启动、配置加载和必要预热，再进入 readiness；旧实例则应先停止接收新请求，等待在途请求和长连接排空，再退出进程。
 
 注册变化、负载均衡刷新和客户端缓存都有传播延迟。仅在进程退出前调用一次注销，不能保证所有调用方立即停止访问。部署流程要预留 termination grace period，并让服务能够拒绝或安全结束过期请求。
 
-## 7. 用版本化快照处理乱序更新
+## 8. 版本化快照 {#versioned-snapshot}
 
 订阅连接重建、网络重传和控制器并发可能让增量事件乱序。客户端应根据版本或资源版本应用更新，检测缺口时重新拉取完整快照。
 
 实例列表切换应一次性生效，不能先删旧列表再逐个加入新实例，否则短窗口内会出现空列表或不完整路由。更新失败时继续使用最后一份通过校验的快照。
 
-## 8. 常见问题
+## 9. 常见问题
 
-### 8.1 心跳正常是否表示业务一定可用
+### 9.1 心跳正常是否表示业务一定可用
 
 不表示。进程可以继续发送心跳，但业务线程池、连接池或关键路径已经耗尽。健康检查应覆盖实例是否能够完成轻量核心操作，同时结合真实请求的错误率和延迟。
 
-### 8.2 DNS 是否也算服务发现
+### 9.2 DNS 是否也算服务发现
 
 算。DNS 用稳定名称返回地址，是常见服务端点发现方式。调用方仍要正确处理 TTL、连接复用和地址变化；已经建立的长连接不会因为 DNS 记录更新自动迁移。
 
-## 9. 面试题
+## 10. 面试题
 
-### 9.1 注册中心短暂不可用时，客户端应该如何处理实例列表 {#registry-unavailable}
+### 10.1 注册中心短暂不可用时，客户端应该如何处理实例列表 {#registry-unavailable}
 
 <!-- 面试来源：
 - 美团、阿里巴巴：https://www.nowcoder.com/discuss/360427586093146112
@@ -90,7 +98,7 @@ knowledge:
 - 本地快照、版本和被动健康检查。
 - 实例摘流、连接排空与陈旧数据边界。
 
-**相关内容**：[健康检查要区分存活与可接流量](#3-健康检查要区分存活与可接流量)至[用版本化快照处理乱序更新](#7-用版本化快照处理乱序更新)。
+**相关内容**：[liveness 与 readiness](#health-checks)至[版本化快照](#versioned-snapshot)。
 
 <details>
 <summary>参考回答</summary>
@@ -101,10 +109,8 @@ knowledge:
 
 </details>
 
-:::note 参考资料
+## 11. 参考资料
 
-1. [Kubernetes：Service](https://kubernetes.io/docs/concepts/services-networking/service/)
-2. [Kubernetes：Liveness, Readiness, and Startup Probes](https://kubernetes.io/docs/concepts/workloads/pods/probes/)
-3. [Kubernetes：EndpointSlices](https://kubernetes.io/docs/concepts/services-networking/endpoint-slices/)
-
-:::
+- [Kubernetes：Service](https://kubernetes.io/docs/concepts/services-networking/service/)
+- [Kubernetes：Liveness, Readiness, and Startup Probes](https://kubernetes.io/docs/concepts/workloads/pods/probes/)
+- [Kubernetes：EndpointSlices](https://kubernetes.io/docs/concepts/services-networking/endpoint-slices/)

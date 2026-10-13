@@ -9,17 +9,15 @@ knowledge:
 
 `==` 判断引用是否指向同一个对象，`equals` 定义逻辑相等，`hashCode` 帮助哈希集合缩小查找范围。自定义相等性时，三者的语义必须保持一致。
 
-:::tip 面试核心
+## 1. 面试核心 {#core}
 
-- 基本类型的 `==` 比较值，引用类型的 `==` 比较对象身份。
-- `Object.equals` 默认等同于引用相等，值对象可以重写它定义逻辑相等。
-- `equals` 相等的对象必须拥有相同 `hashCode`；哈希相同不代表对象相等。
-- `equals` 与 `hashCode` 应使用同一组稳定字段。
-- 作为 HashMap 键期间改变身份字段，可能导致原条目无法被找到。
+- 基本类型的 `==` 比较值，引用类型的 `==` 比较是否为同一个对象。
+- `Object.equals` 默认等同于 `==`，值对象可以重写它来定义逻辑相等。[卡](#equals-hashcode)
+- `equals` 相等的对象必须拥有相同的 `hashCode`；哈希相同的对象不一定相等。
+- `equals` 与 `hashCode` 应基于同一组字段计算。
+- 对象作为 HashMap 的键期间修改了参与哈希的字段，原条目可能再也查不到。[卡](#mutable-map-keys)
 
-:::
-
-## 1. 对象身份与逻辑相等
+## 2. 对象身份与逻辑相等 {#identity}
 
 ```java
 String first = new String("Java");
@@ -47,7 +45,7 @@ public record OrderId(String value) {
 
 record 会根据所有组件生成 `equals` 和 `hashCode`，适合所有组件共同定义身份的简单值对象。
 
-## 2. `equals` 契约
+## 3. `equals` 契约 {#equals-contract}
 
 正确的 `equals` 应满足：
 
@@ -59,7 +57,7 @@ record 会根据所有组件生成 `equals` 和 `hashCode`，适合所有组件�
 
 继承容易让父类与子类使用不同身份字段，从而破坏对称性或传递性。值类型通常声明为 `final`、使用 record，或通过组合增加附加信息。`getClass()` 与 `instanceof` 的选择仍取决于父子对象在业务上是否允许相等。
 
-## 3. `hashCode` 契约
+## 4. `hashCode` 契约 {#hashcode-contract}
 
 HashMap 和 HashSet 先用 `hashCode` 定位候选桶，再用 `equals` 确认键。因此必须满足：
 
@@ -78,7 +76,7 @@ System.out.println(first.hashCode() == second.hashCode()); // true
 
 只重写 `equals` 而不重写 `hashCode`，逻辑相等的键可能进入不同桶，导致 HashSet 保存重复逻辑值，或 HashMap 无法通过等价键找到条目。
 
-## 4. 哈希键需要稳定身份
+## 5. 可变对象作为哈希键 {#mutable-keys}
 
 对象放入哈希集合后，如果参与相等性和哈希计算的字段变化，查询会使用新哈希定位另一个桶，而条目仍在旧位置。
 
@@ -90,23 +88,23 @@ System.out.println(first.hashCode() == second.hashCode()); // true
 
 实体对象是否使用数据库主键判断相等，需要结合持久化前后生命周期、ORM 代理和集合使用方式决定。关键是同一生命周期内保持契约稳定。
 
-## 5. 常见问题
+## 6. 常见问题
 
-### 5.1 哈希值不同，两个对象一定不相等吗
+### 6.1 哈希值不同，两个对象一定不相等吗
 
 在实现符合契约的前提下，一定不相等。相等对象必须拥有相同哈希值。
 
-### 5.2 哈希值相同，两个对象一定相等吗
+### 6.2 哈希值相同，两个对象一定相等吗
 
 不一定。哈希冲突是允许的，还需要调用 `equals` 判断。
 
-### 5.3 `Objects.equals(a, b)` 做了什么
+### 6.3 `Objects.equals(a, b)` 做了什么
 
 它先处理 null：两个都为 null 时返回 true，只有一个为 null 时返回 false；否则调用第一个对象的 `equals`。它不会替对象设计正确的身份规则。
 
-## 6. 面试题
+## 7. 面试题
 
-### 6.1 `==`、`equals` 和 `hashCode` 有什么关系 {#equals-hashcode}
+### 7.1 `==`、`equals` 和 `hashCode` 有什么关系 {#equals-hashcode}
 
 <!-- 面试来源：
 - 字节跳动：https://www.nowcoder.com/discuss/878687099648565248
@@ -120,7 +118,7 @@ System.out.println(first.hashCode() == second.hashCode()); // true
 - 引用身份与逻辑相等的区别。
 - 哈希集合为什么同时使用哈希和相等比较。
 
-**相关内容**：[对象身份与逻辑相等](#1-对象身份与逻辑相等)、[`hashCode` 契约](#3-hashcode-契约)。
+**相关内容**：[对象身份与逻辑相等](#identity)、[`hashCode` 契约](#hashcode-contract)。
 
 <details>
 <summary>参考回答</summary>
@@ -131,7 +129,7 @@ System.out.println(first.hashCode() == second.hashCode()); // true
 
 </details>
 
-### 6.2 可变对象能否作为 HashMap 的键 {#mutable-map-keys}
+### 7.2 可变对象能否作为 HashMap 的键 {#mutable-map-keys}
 
 <!-- 面试来源：
 - 字节跳动：https://www.nowcoder.com/discuss/878687099648565248
@@ -144,7 +142,7 @@ System.out.println(first.hashCode() == second.hashCode()); // true
 - 写入和查找怎样使用哈希值。
 - 身份字段变化后为什么可能找不到原键。
 
-**相关内容**：[哈希键需要稳定身份](#4-哈希键需要稳定身份)。
+**相关内容**：[可变对象作为哈希键](#mutable-keys)。
 
 <details>
 <summary>参考回答</summary>
@@ -155,11 +153,9 @@ System.out.println(first.hashCode() == second.hashCode()); // true
 
 </details>
 
-:::note 参考资料
+## 8. 参考资料
 
-1. [Java API：Object](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/Object.html)
-2. [Java API：Objects](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/Objects.html)
-3. [Java Language Specification：Reference Equality Operators](https://docs.oracle.com/en/java/javase/26/docs/specs/jls/jls-15.html#jls-15.21.3)
-4. [Java API：System.identityHashCode](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/System.html#identityHashCode(java.lang.Object))
-
-:::
+- [Java API：Object](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/Object.html)
+- [Java API：Objects](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/Objects.html)
+- [Java Language Specification：Reference Equality Operators](https://docs.oracle.com/en/java/javase/26/docs/specs/jls/jls-15.html#jls-15.21.3)
+- [Java API：System.identityHashCode](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/System.html#identityHashCode(java.lang.Object))

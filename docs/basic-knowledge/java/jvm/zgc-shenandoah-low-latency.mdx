@@ -9,7 +9,15 @@ knowledge:
 
 ZGC 和 Shenandoah 都把大量标记与对象重定位工作放到应用运行期间，以缩短随堆增大而扩张的停顿。它们仍需要 CPU、内存余量和访问屏障，也不能在并发回收跟不上分配时保证延迟。
 
-## 1. 低停顿收集器把工作移到并发阶段
+## 1. 面试核心 {#core}
+
+- ZGC 和 Shenandoah 把标记和对象重定位放在应用运行期间进行，通过读屏障或加载屏障让应用访问到对象的正确位置，停顿不随堆大小线性增长。
+- JDK 23 起 ZGC 默认使用分代模式，JDK 24 移除了非分代 ZGC。
+- G1 在吞吐、内存占用和停顿之间更均衡，是默认收集器；ZGC 用更多 CPU 和内存换取更短停顿。[卡](#g1-vs-zgc)
+- 并发回收期间应用还在分配，堆余量不足或回收速度跟不上分配速度时，应用线程会发生分配停滞。[卡](#allocation-stall)
+- 迁移前后要对比 live set、分配率、停顿分布、GC CPU 和 RSS。
+
+## 2. 并发重定位 {#concurrent-relocation}
 
 传统疏散收集在 STW 中复制存活对象，停顿容易随 live set 增长。低延迟收集器通过读/加载屏障、转发表或带颜色的引用等机制，让应用线程可以在对象移动期间继续访问正确位置。
 
@@ -20,7 +28,7 @@ ZGC 和 Shenandoah 都把大量标记与对象重定位工作放到应用运行�
 - 堆要保留回收和重定位余量。
 - 某些阶段仍需短暂停顿完成根处理或全局切换。
 
-## 2. 现代 ZGC 使用分代模式
+## 3. 分代 ZGC {#generational-zgc}
 
 JDK 23 将 Generational ZGC 设为默认，JDK 24 移除了非分代 ZGC。现代 JDK 上启用：
 
@@ -32,7 +40,7 @@ java -XX:+UseZGC -jar app.jar
 
 ZGC 使用带元数据的引用和 load barriers 等机制支持并发标记与重定位。其目标是很低的最大暂停，同时支持从较小到很大的堆；实际业务延迟仍受 CPU 饱和、缺页、应用锁和 I/O 影响。
 
-## 3. Shenandoah 也并发压缩堆
+## 4. Shenandoah {#shenandoah}
 
 Shenandoah 的目标同样是在应用运行时并发移动对象，通过引用屏障保证访问正确。它由 OpenJDK 社区开发，但是否随 JDK 发行版提供取决于供应商和平台；Oracle JDK 的可用收集器列表与某些 OpenJDK 发行版并不相同。
 
@@ -44,7 +52,7 @@ java -XX:+UseShenandoahGC -version
 
 如果 JVM 报 Unrecognized VM option，说明当前构建没有提供它，不能只凭 Java 主版本判断。
 
-## 4. 并发回收需要分配余量
+## 5. 分配余量 {#headroom}
 
 设应用分配率为 `A`，一次并发周期需要时间 `T`。周期进行期间至少还会产生约 `A × T` 的新分配，再加上重定位与波动余量。若可用堆不足，应用可能等待 GC 提供空间，或收集器进入退化/更重路径。
 
@@ -57,7 +65,7 @@ java -XX:+UseShenandoahGC -version
 
 把堆刚好设到 live set 上方，会让并发优势失去运行空间。
 
-## 5. 吞吐、CPU 和内存是主要交换条件
+## 6. 吞吐、CPU 与内存的代价 {#costs}
 
 与 G1 或 Parallel 相比，低延迟收集器可能：
 
@@ -68,7 +76,7 @@ java -XX:+UseShenandoahGC -version
 
 这不是固定结论，版本优化会改变差距。选择时测量应用吞吐、P99/P999、GC CPU、RSS 和分配停滞，不只引用收集器宣传的最大暂停。
 
-## 6. G1、ZGC 与 Shenandoah 的选择
+## 7. 收集器的选择 {#selection}
 
 可从目标出发：
 
@@ -79,7 +87,7 @@ java -XX:+UseShenandoahGC -version
 
 先在相同 JDK、相同容器限制和相同请求回放下比较。切换收集器后应清理旧收集器专属参数，避免无效或冲突配置。
 
-## 7. 迁移验证清单
+## 8. 迁移验证清单 {#migration}
 
 1. 记录基线的 live set、分配率、暂停分布和 GC CPU。
 2. 只切换收集器，先保留简单堆参数。
@@ -88,23 +96,23 @@ java -XX:+UseShenandoahGC -version
 5. 检查 allocation stall、退化回收和容器 RSS。
 6. 对比端到端延迟，而不是只看 GC pause。
 
-## 8. 常见问题
+## 9. 常见问题
 
-### 8.1 ZGC 的暂停是否与堆大小完全无关
+### 9.1 ZGC 的暂停是否与堆大小完全无关
 
 目标是让主要耗时工作并发执行，使暂停不随堆大小线性增长；但根集合、线程数量、系统调度和实现细节仍会影响暂停。不能把它理解为数学上的完全无关或实时上限。
 
-### 8.2 使用 ZGC 后是否不需要调堆
+### 9.2 使用 ZGC 后是否不需要调堆
 
 仍需要为 live set、分配突发和并发周期预留容量，并把 RSS 纳入容器预算。堆太小会产生分配停滞，太大也可能占用不必要资源。
 
-### 8.3 Shenandoah 和 ZGC 哪个一定更快
+### 9.3 Shenandoah 和 ZGC 哪个一定更快
 
 没有跨工作负载答案。JDK 版本、对象图、分配率、CPU、堆大小和发行版实现都会影响结果，必须在目标环境比较。
 
-## 9. 面试题
+## 10. 面试题
 
-### 9.1 G1 和 ZGC 的主要差异是什么，为什么不少服务仍使用 G1 {#g1-vs-zgc}
+### 10.1 G1 和 ZGC 的主要差异是什么，为什么不少服务仍使用 G1 {#g1-vs-zgc}
 
 <!-- 面试来源：
 - 某云原生企业：https://www.nowcoder.com/discuss/732685882523758592
@@ -118,7 +126,7 @@ java -XX:+UseShenandoahGC -version
 - 低延迟用 CPU、屏障和内存余量交换。
 - 默认成熟度、目标延迟和实测结果决定选择。
 
-**相关内容**：[低停顿收集器把工作移到并发阶段](#1-低停顿收集器把工作移到并发阶段)至[G1、ZGC 与 Shenandoah 的选择](#6-g1zgc-与-shenandoah-的选择)。
+**相关内容**：[并发重定位](#concurrent-relocation)至[收集器的选择](#selection)。
 
 <details>
 <summary>参考回答</summary>
@@ -129,7 +137,7 @@ G1 并发完成全局标记，但存活对象疏散主要发生在 STW collectio
 
 </details>
 
-### 9.2 低延迟收集器为什么仍可能发生分配停滞 {#allocation-stall}
+### 10.2 低延迟收集器为什么仍可能发生分配停滞 {#allocation-stall}
 
 <!-- 面试来源：
 - 阿里云：https://www.nowcoder.com/discuss/401459816646942720
@@ -143,7 +151,7 @@ G1 并发完成全局标记，但存活对象疏散主要发生在 STW collectio
 - live set、分配率、周期时间与堆余量的关系。
 - CPU 不足会让收集器落后。
 
-**相关内容**：[并发回收需要分配余量](#4-并发回收需要分配余量)和[吞吐、CPU 和内存是主要交换条件](#5-吞吐cpu-和内存是主要交换条件)。
+**相关内容**：[分配余量](#headroom)和[吞吐、CPU 与内存的代价](#costs)。
 
 <details>
 <summary>参考回答</summary>
@@ -154,11 +162,9 @@ G1 并发完成全局标记，但存活对象疏散主要发生在 STW collectio
 
 </details>
 
-:::note 参考资料
+## 11. 参考资料
 
-1. [Oracle：The Z Garbage Collector](https://docs.oracle.com/en/java/javase/26/gctuning/z-garbage-collector.html)
-2. [JEP 474：ZGC Generational Mode by Default](https://openjdk.org/jeps/474)
-3. [JEP 490：Remove the Non-Generational ZGC Mode](https://openjdk.org/jeps/490)
-4. [JEP 521：Generational Shenandoah](https://openjdk.org/jeps/521)
-
-:::
+- [Oracle：The Z Garbage Collector](https://docs.oracle.com/en/java/javase/26/gctuning/z-garbage-collector.html)
+- [JEP 474：ZGC Generational Mode by Default](https://openjdk.org/jeps/474)
+- [JEP 490：Remove the Non-Generational ZGC Mode](https://openjdk.org/jeps/490)
+- [JEP 521：Generational Shenandoah](https://openjdk.org/jeps/521)

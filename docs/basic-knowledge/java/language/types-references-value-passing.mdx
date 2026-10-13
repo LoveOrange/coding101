@@ -9,17 +9,14 @@ knowledge:
 
 Java 方法调用只有值传递。理解这条规则，只需要区分变量保存的值、对象本身，以及多个引用指向同一个对象时发生的共享修改。
 
-:::tip 面试核心
+## 1. 面试核心 {#core}
 
 - 基本类型变量保存具体值，引用类型变量保存引用值或 `null`。
-- 赋值和传参都会复制变量当前保存的值；引用类型复制的也是引用值。
-- 给形参重新赋值不会改变调用方变量。
-- 通过形参修改对象字段会被调用方看到，因为两个引用指向同一个对象。
-- 数组和 String 都是引用类型；String 的不可变性让“修改”实际产生新值。
+- Java 只有值传递：赋值和传参都复制变量当前保存的值，引用类型复制的是引用值。[卡](#pass-by-value)
+- 给形参重新赋值不会改变调用方变量；通过形参修改对象字段，调用方能看到，因为两个引用指向同一个对象。[卡](#rename-vs-replace)
+- 数组和 String 都是引用类型；String 不可变，“修改”字符串会产生新对象。
 
-:::
-
-## 1. 变量保存值
+## 2. 变量保存的值 {#variables}
 
 基本类型变量直接保存具体值：
 
@@ -45,7 +42,7 @@ System.out.println(first.getName()); // Asuka
 
 不要用“基本类型一定在栈、对象一定在堆”解释语言语义。JVM 可以优化实际存储位置，赋值和传参规则不会因此改变。
 
-## 2. 赋值与传参
+## 3. 赋值与传参 {#assignment-passing}
 
 引用变量重新赋值只改变当前变量：
 
@@ -81,7 +78,7 @@ static void replace(User user) {
 
 这两种结果都符合值传递。Java 没有让方法直接替换调用方变量的引用传递机制。
 
-## 3. 数组与 String
+## 4. 数组与 String {#arrays-strings}
 
 数组是对象，传参时同样复制引用值：
 
@@ -110,13 +107,13 @@ append(title);
 System.out.println(title); // Coding
 ```
 
-## 4. 常见问题
+## 5. 常见问题
 
-### 4.1 为什么交换两个对象参数不会成功
+### 5.1 为什么交换两个对象参数不会成功
 
 交换的只是两个形参变量保存的引用副本。方法返回后，调用方的两个变量仍保存原来的引用。
 
-### 4.2 方法怎样返回多个结果
+### 5.2 方法怎样返回多个结果
 
 返回记录类型、结果对象或集合，不要依赖重新给多个参数赋值。
 
@@ -124,13 +121,13 @@ System.out.println(title); // Coding
 record Range(int min, int max) {}
 ```
 
-### 4.3 引用值就是内存地址吗
+### 5.3 引用值就是内存地址吗
 
 语言规范只定义引用的可观察语义，不保证它等于可直接操作的内存地址。垃圾收集器可以移动对象，JVM 也可以选择不同内部表示。
 
-## 5. 面试题
+## 6. 面试题
 
-### 5.1 Java 是值传递还是引用传递 {#pass-by-value}
+### 6.1 Java 是值传递还是引用传递 {#pass-by-value}
 
 <!-- 面试来源：
 - 腾讯：https://www.nowcoder.com/discuss/353154969706635264
@@ -145,7 +142,7 @@ record Range(int min, int max) {}
 - 基本类型值与引用值分别是什么。
 - 为什么对象修改可见，而形参重新赋值不可见。
 
-**相关内容**：[变量保存值](#1-变量保存值)、[赋值与传参](#2-赋值与传参)。
+**相关内容**：[变量保存的值](#variables)、[赋值与传参](#assignment-passing)。
 
 <details>
 <summary>参考回答</summary>
@@ -156,7 +153,7 @@ Java 只有值传递。调用方法时，形参是新变量，由实参当前保
 
 </details>
 
-### 5.2 `rename` 与 `replace` 为什么产生不同结果 {#rename-vs-replace}
+### 6.2 `rename` 与 `replace` 为什么产生不同结果 {#rename-vs-replace}
 
 <!-- 面试来源：
 - 哈啰数科：https://www.nowcoder.com/discuss/693865127052939264
@@ -169,7 +166,7 @@ Java 只有值传递。调用方法时，形参是新变量，由实参当前保
 - 对象状态修改与引用变量重新赋值的区别。
 - 能否画出形参、实参与对象之间的关系。
 
-**相关内容**：[赋值与传参](#2-赋值与传参)。
+**相关内容**：[赋值与传参](#assignment-passing)。
 
 <details>
 <summary>参考回答</summary>
@@ -178,10 +175,8 @@ Java 只有值传递。调用方法时，形参是新变量，由实参当前保
 
 </details>
 
-:::note 参考资料
+## 7. 参考资料
 
-1. [Java Language Specification：Types, Values, and Variables](https://docs.oracle.com/en/java/javase/26/docs/specs/jls/jls-4.html)
-2. [Java Language Specification：Method Invocation Contexts](https://docs.oracle.com/javase/specs/jls/se26/html/jls-5.html#jls-5.3)
-3. [Java Language Specification：Run-Time Evaluation of Method Invocation](https://docs.oracle.com/javase/specs/jls/se26/html/jls-15.html#jls-15.12.4)
-
-:::
+- [Java Language Specification：Types, Values, and Variables](https://docs.oracle.com/en/java/javase/26/docs/specs/jls/jls-4.html)
+- [Java Language Specification：Method Invocation Contexts](https://docs.oracle.com/javase/specs/jls/se26/html/jls-5.html#jls-5.3)
+- [Java Language Specification：Run-Time Evaluation of Method Invocation](https://docs.oracle.com/javase/specs/jls/se26/html/jls-15.html#jls-15.12.4)

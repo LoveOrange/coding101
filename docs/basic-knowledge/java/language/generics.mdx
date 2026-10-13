@@ -9,17 +9,15 @@ knowledge:
 
 Java 泛型让类、接口和方法用类型参数表达类型关系。面试重点是编译期类型安全、泛型不变性、通配符读写边界和类型擦除。
 
-:::tip 面试核心
+## 1. 面试核心 {#core}
 
-- 泛型把一部分类型错误提前到编译期，并减少读取数据时的强制转换。
-- `List<Integer>` 不是 `List<Number>` 的子类型，否则可以写入不符合元素类型的值。
-- `? extends T` 适合读取 T，不能安全写入具体非 null 值；`? super T` 可以写入 T，读取时只能按 Object 使用。
-- 类型擦除发生在泛型检查之后，JVM 通常看不到具体类型参数。
+- 泛型把一部分类型错误提前到编译期，并减少读取数据时的强制转换。[卡](#generics-usage)
+- `List<Integer>` 与 `List<Number>` 之间没有子类型关系，否则可以写入不符合元素类型的值。
+- `? extends T` 适合读取 T，不能安全写入具体非 null 值；`? super T` 可以写入 T，读取时只能按 Object 使用。[卡](#wildcards)
+- 类型擦除发生在泛型检查之后，JVM 通常看不到具体类型参数。[卡](#type-erasure)
 - 擦除带来 `new T()`、`new T[]`、`instanceof List<String>` 和部分重载限制。
 
-:::
-
-## 1. 类型参数建立关系
+## 2. 类型参数 {#type-parameters}
 
 泛型类把同一个类型参数用于字段、参数和返回值：
 
@@ -50,7 +48,7 @@ static <T> List<T> wrap(T value) {
 
 传入 String 时返回 `List<String>`，传入 Integer 时返回 `List<Integer>`。如果参数与返回值之间不需要保持类型关系，直接使用具体类型或接口通常更清楚。
 
-### 1.1 类型上界
+### 2.1 类型上界 {#bounds}
 
 类型参数可以要求调用方提供某一类子类型：
 
@@ -62,7 +60,7 @@ static <T extends Number> double twice(T value) {
 
 `T extends Number` 让方法能够使用 Number 提供的能力。多个上界中，类上界必须写在第一个位置。
 
-## 2. 泛型具有不变性
+## 3. 泛型的不变性 {#invariance}
 
 下面的赋值会编译失败：
 
@@ -75,9 +73,9 @@ List<Integer> integers = List.of(1, 2);
 
 数组是协变的，因此 `Integer[]` 可以赋给 `Number[]`，但错误写入会在运行时抛出 `ArrayStoreException`。泛型选择在编译期阻止这类问题。
 
-## 3. 通配符描述读写边界
+## 4. 通配符 {#wildcards-section}
 
-### 3.1 `? extends T`
+### 4.1 `? extends T`
 
 ```java
 static double sum(List<? extends Number> values) {
@@ -91,7 +89,7 @@ static double sum(List<? extends Number> values) {
 
 实参可以是 `List<Integer>` 或 `List<Double>`。读取结果至少是 Number；由于具体元素类型未知，不能安全写入 Integer 或 Double。
 
-### 3.2 `? super T`
+### 4.2 `? super T`
 
 ```java
 static void addDefaults(List<? super Integer> target) {
@@ -104,11 +102,11 @@ static void addDefaults(List<? super Integer> target) {
 
 PECS（Producer Extends, Consumer Super）可以帮助记忆：参数主要提供 T 时用 `extends`，主要接收 T 时用 `super`。如果既要读又要写同一具体类型，直接使用 `List<T>`。
 
-### 3.3 `List<?>` 与 `List<Object>`
+### 4.3 `List<?>` 与 `List<Object>`
 
 `List<?>` 表示元素类型未知，可以接收 `List<String>` 等任意元素类型的列表，但不能写入具体值。`List<Object>` 明确要求元素类型就是 Object，可以写入各种对象，却不能接收 `List<String>`。
 
-## 4. 类型擦除
+## 5. 类型擦除 {#erasure}
 
 编译器先检查泛型关系，再把多数类型参数擦除为上界，并在读取位置插入必要的类型转换。下面的错误仍然发生在编译期：
 
@@ -128,23 +126,23 @@ List<Integer> numbers = new ArrayList<>();
 
 编译器还可能生成桥接方法，用于保持泛型擦除后的多态关系。面试中能说明它是编译器为兼容方法签名生成的转发方法即可。
 
-## 5. 常见问题
+## 6. 常见问题
 
-### 5.1 为什么不能向 `List<? extends Number>` 写入 Integer
+### 6.1 为什么不能向 `List<? extends Number>` 写入 Integer
 
 因为实际对象可能是 `List<Double>`。编译器只知道元素属于某个未知的 Number 子类型，无法证明 Integer 符合该具体类型。
 
-### 5.2 泛型擦除了，为什么还能通过反射看到部分泛型信息
+### 6.2 泛型擦除了，为什么还能通过反射看到部分泛型信息
 
 类文件可以在 Signature 等元数据中保存声明信息，反射能够读取它；这不表示 JVM 会按具体类型参数检查每次元素写入。
 
-### 5.3 什么时候不需要泛型
+### 6.3 什么时候不需要泛型
 
-类型固定、没有跨位置类型关系，或泛型会让 API 更难理解时，直接使用具体类型。泛型用于表达约束，不是为了把所有类型都抽象成 T。
+类型固定、没有跨位置类型关系，或泛型会让 API 更难理解时，直接使用具体类型。泛型用于表达类型约束，没有约束需要表达时不必引入 T。
 
-## 6. 面试题
+## 7. 面试题
 
-### 6.1 泛型是什么，一般用在什么场景 {#generics-usage}
+### 7.1 泛型是什么，一般用在什么场景 {#generics-usage}
 
 <!-- 面试来源：
 - 小米、百度：https://www.nowcoder.com/discuss/750688
@@ -158,7 +156,7 @@ List<Integer> numbers = new ArrayList<>();
 - 编译期类型安全与代码复用。
 - 泛型类、接口和方法的适用位置。
 
-**相关内容**：[类型参数建立关系](#1-类型参数建立关系)。
+**相关内容**：[类型参数](#type-parameters)。
 
 <details>
 <summary>参考回答</summary>
@@ -169,7 +167,7 @@ List<Integer> numbers = new ArrayList<>();
 
 </details>
 
-### 6.2 类型擦除以后，为什么 `List<Integer>` 仍然不能写入 String {#type-erasure}
+### 7.2 类型擦除以后，为什么 `List<Integer>` 仍然不能写入 String {#type-erasure}
 
 <!-- 面试来源：
 - 高德：https://www.nowcoder.com/discuss/746711740418633728
@@ -182,7 +180,7 @@ List<Integer> numbers = new ArrayList<>();
 - 泛型检查与擦除的先后顺序。
 - 原始类型和反射怎样造成堆污染。
 
-**相关内容**：[类型擦除](#4-类型擦除)。
+**相关内容**：[类型擦除](#erasure)。
 
 <details>
 <summary>参考回答</summary>
@@ -193,7 +191,7 @@ List<Integer> numbers = new ArrayList<>();
 
 </details>
 
-### 6.3 `? extends T` 与 `? super T` 有什么区别 {#wildcards}
+### 7.3 `? extends T` 与 `? super T` 有什么区别 {#wildcards}
 
 <!-- 面试来源：
 - 东方财富：https://www.nowcoder.com/discuss/353157780091641856
@@ -206,7 +204,7 @@ List<Integer> numbers = new ArrayList<>();
 - 未知子类型和未知父类型带来的读写限制。
 - 能否从类型关系推导 PECS。
 
-**相关内容**：[通配符描述读写边界](#3-通配符描述读写边界)。
+**相关内容**：[通配符](#wildcards-section)。
 
 <details>
 <summary>参考回答</summary>
@@ -217,12 +215,10 @@ List<Integer> numbers = new ArrayList<>();
 
 </details>
 
-:::note 参考资料
+## 8. 参考资料
 
-1. [Oracle Java Tutorials：Generics](https://docs.oracle.com/javase/tutorial/java/generics/)
-2. [Oracle Java Tutorials：Wildcards and Subtyping](https://docs.oracle.com/javase/tutorial/java/generics/subtyping.html)
-3. [Oracle Java Tutorials：Guidelines for Wildcard Use](https://docs.oracle.com/javase/tutorial/java/generics/wildcardGuidelines.html)
-4. [Java Language Specification：Type Erasure](https://docs.oracle.com/javase/specs/jls/se25/html/jls-4.html#jls-4.6)
-5. [Java Virtual Machine Specification：Signature Attribute](https://docs.oracle.com/javase/specs/jvms/se25/html/jvms-4.html#jvms-4.7.9)
-
-:::
+- [Oracle Java Tutorials：Generics](https://docs.oracle.com/javase/tutorial/java/generics/)
+- [Oracle Java Tutorials：Wildcards and Subtyping](https://docs.oracle.com/javase/tutorial/java/generics/subtyping.html)
+- [Oracle Java Tutorials：Guidelines for Wildcard Use](https://docs.oracle.com/javase/tutorial/java/generics/wildcardGuidelines.html)
+- [Java Language Specification：Type Erasure](https://docs.oracle.com/javase/specs/jls/se25/html/jls-4.html#jls-4.6)
+- [Java Virtual Machine Specification：Signature Attribute](https://docs.oracle.com/javase/specs/jvms/se25/html/jvms-4.html#jvms-4.7.9)

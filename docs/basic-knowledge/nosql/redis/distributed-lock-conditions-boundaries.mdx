@@ -9,7 +9,15 @@ knowledge:
 
 分布式锁用于协调多个进程对共享资源的并发操作。一个可用的锁协议至少要区分锁的所有者、限制持有时间，并确保旧持有者不能误删新锁；涉及关键外部资源时，还要处理租约过期后的旧请求。
 
-## 1. 单节点锁需要原子获取与自动过期
+## 1. 面试核心 {#core}
+
+- 加锁用 `SET key token NX PX ttl` 一条命令同时完成互斥和过期。
+- 释放时用 Lua 脚本先比较 token 再删除，避免删掉别人的锁。
+- TTL 要覆盖临界区耗时；持有者暂停超过 TTL 后会出现两个执行者，外部资源需要用 fencing token 拒绝旧请求。[卡](#lock-requirements-fencing)
+- 主从异步复制下，主节点故障可能让锁丢失，同一把锁被两个客户端获得。
+- 锁不能替代业务幂等；同时锁多个资源时按固定顺序获取。
+
+## 2. 原子加锁与过期 {#acquire}
 
 Redis 上常用一条原子命令获取锁：
 
@@ -23,7 +31,7 @@ SET resource:42 <random-token> NX PX 10000
 
 先执行 `SETNX` 再单独设置过期时间存在崩溃窗口：第一条成功、第二条尚未执行时进程退出，锁可能永不过期。
 
-## 2. 释放时必须比较所有者 token
+## 3. 按 token 释放 {#release}
 
 客户端 A 的锁已经过期，客户端 B 随后取得同名锁。如果 A 恢复后直接执行 `DEL`，就会删掉 B 的锁。
 
@@ -38,7 +46,7 @@ return 0
 
 读取 token 和删除分成两条命令仍有竞态。检查通过后、删除执行前，锁可能已经到期并被他人取得。
 
-## 3. 租约时间必须覆盖临界区
+## 4. 租约时间 {#lease}
 
 锁的 TTL 要覆盖排队、业务执行和释放所需时间，并留出网络与调度抖动。TTL 太短会让业务尚未完成时锁已经过期；TTL 太长则在持有者崩溃后阻塞其他请求更久。
 
@@ -51,7 +59,7 @@ return 0
 
 GC 暂停、主机冻结和网络隔离都可能让持有者在租约到期后继续运行。
 
-## 4. 锁过期后可能同时存在两个执行者
+## 5. 锁过期与 fencing token {#fencing}
 
 客户端 A 取得 10 秒锁后暂停 15 秒。锁到期后 B 取得锁并开始写文件；A 随后恢复，也继续写同一个文件。Redis 中任意时刻可能只有一个锁 key，但外部系统已经同时收到两个持有者的操作。
 
@@ -59,7 +67,7 @@ GC 暂停、主机冻结和网络隔离都可能让持有者在租约到期后�
 
 如果外部资源无法校验 fencing token，分布式锁只能降低并发概率，不能单独证明业务操作互斥。
 
-## 5. 主从故障转移会影响锁安全
+## 6. 主从故障转移 {#failover}
 
 Redis 复制默认异步。客户端在主节点创建锁后，锁记录可能尚未复制，主节点便发生故障；落后的副本被提升后，另一个客户端可以再次取得同名锁。
 
@@ -67,7 +75,7 @@ Redis 官方的 Redlock 算法尝试在多个相互独立的节点上取得多�
 
 对资金、库存权威状态等高风险操作，可以优先使用数据库唯一约束、条件更新、具备共识的一致性协调系统，或由权威资源校验 fencing token。
 
-## 6. 业务操作仍需幂等与状态校验
+## 7. 业务幂等 {#idempotency}
 
 锁不会自动处理客户端超时、进程崩溃和结果丢失。调用方没有收到响应时，无法确认临界区是否已经完成，再次执行可能产生重复副作用。
 
@@ -81,25 +89,25 @@ Redis 官方的 Redlock 算法尝试在多个相互独立的节点上取得多�
 
 锁是并发协调的一层，不是业务正确性的全部来源。
 
-## 7. 多资源锁要固定获取顺序
+## 8. 多资源加锁 {#multi-resource}
 
 一次操作同时锁多个资源时，所有调用方应使用相同顺序，例如按规范化资源 ID 排序后依次获取。获取中途失败，要释放自己已经持有的锁，并使用随机退避重试。
 
 即使单个锁实现正确，不同顺序仍会形成分布式死锁。更复杂的跨资源原子性需求，通常说明应重新设计数据所有权或让操作进入一个串行执行单元。
 
-## 8. 常见问题
+## 9. 常见问题
 
-### 8.1 锁中保存线程 ID 可以吗
+### 9.1 锁中保存线程 ID 可以吗
 
 仅在单进程内可能足够，跨进程时会重复，而且同一线程后续任务可能误用旧标识。每次获取应生成全局难以碰撞的唯一 token，并把 token 与本次锁生命周期绑定。
 
-### 8.2 有 watchdog 自动续期后是否不需要 TTL
+### 9.2 有 watchdog 自动续期后是否不需要 TTL
 
 仍然需要。进程崩溃或与 Redis 失联时，续租会停止，TTL 是最终释放机制。watchdog 也不能防止长暂停超过 TTL 后旧任务继续操作外部资源。
 
-## 9. 面试题
+## 10. 面试题
 
-### 9.1 Redis 分布式锁需要满足哪些条件，为什么还需要 fencing token {#lock-requirements-fencing}
+### 10.1 Redis 分布式锁需要满足哪些条件，为什么还需要 fencing token {#lock-requirements-fencing}
 
 <!-- 面试来源：
 - 字节跳动：https://www.nowcoder.com/discuss/368753882070085632
@@ -114,7 +122,7 @@ Redis 官方的 Redlock 算法尝试在多个相互独立的节点上取得多�
 - 租约过期、进程暂停与异步复制故障转移。
 - fencing token、业务幂等与权威资源校验。
 
-**相关内容**：[单节点锁需要原子获取与自动过期](#1-单节点锁需要原子获取与自动过期)至[多资源锁要固定获取顺序](#7-多资源锁要固定获取顺序)。
+**相关内容**：[原子加锁与过期](#acquire)至[多资源加锁](#multi-resource)。
 
 <details>
 <summary>参考回答</summary>
@@ -125,9 +133,7 @@ Redis 官方的 Redlock 算法尝试在多个相互独立的节点上取得多�
 
 </details>
 
-:::note 参考资料
+## 11. 参考资料
 
-1. [Redis：Distributed Locks with Redis](https://redis.io/docs/latest/develop/clients/patterns/distributed-locks/)
-2. [Redis：Replication](https://redis.io/docs/latest/operate/oss_and_stack/management/replication/)
-
-:::
+- [Redis：Distributed Locks with Redis](https://redis.io/docs/latest/develop/clients/patterns/distributed-locks/)
+- [Redis：Replication](https://redis.io/docs/latest/operate/oss_and_stack/management/replication/)

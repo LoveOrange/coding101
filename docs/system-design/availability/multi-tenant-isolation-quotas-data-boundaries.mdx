@@ -9,7 +9,15 @@ knowledge:
 
 多租户系统共享应用或基础设施，同时要在身份、数据、资源和运维操作上限制租户之间的影响。
 
-## 1. 租户身份贯穿请求链路
+## 1. 面试核心 {#core}
+
+- 租户身份要贯穿整条请求链路，与用户身份分开，一个用户可能属于多个租户。
+- 隔离模型从共享表、独立 schema 到独立数据库和独立部署，隔离越强成本越高。
+- 授权同时检查用户和租户，数据访问默认带 `tenant_id` 条件，唯一约束和索引也包含租户维度。[卡](#tenant-isolation)
+- 用配额和公平调度限制单个租户的请求、连接、存储和消息占用，防止噪声邻居。
+- 发布和迁移按租户分批进行，并专门测试跨租户越权访问。
+
+## 2. 租户身份 {#tenant-identity}
 
 系统首先要定义租户是什么：客户组织、内部团队、项目或独立工作负载。用户身份与租户身份需要分开，一个用户可能属于多个租户，并在每次请求中选择当前租户。
 
@@ -17,7 +25,7 @@ knowledge:
 
 后台任务和系统管理员也需要显式租户范围。缺失租户上下文时默认拒绝，比默认访问全部租户更安全。
 
-## 2. 选择共享与隔离模型
+## 3. 隔离模型 {#isolation-models}
 
 常见部署模型有三类：
 
@@ -29,7 +37,7 @@ Pool 的资源利用率和运维效率较高，数据越权与噪声邻居风险
 
 选择依据包括合规要求、租户规模差异、性能保证、定制需求、服务限额和成本。一个产品可以让普通租户使用共享池，让高合规或大流量租户进入独立 stamp。
 
-## 3. 授权同时检查用户与租户
+## 4. 授权检查 {#authorization}
 
 通过身份认证后，还要确认用户在当前租户中的角色和资源权限。推荐的检查链是：
 
@@ -41,7 +49,7 @@ Pool 的资源利用率和运维效率较高，数据越权与噪声邻居风险
 
 全局管理员能力单独建模，使用更强认证、最小权限和完整审计。不要用一个普通 `isAdmin` 字段隐式绕过所有租户过滤。
 
-## 4. 数据访问默认带租户条件
+## 5. 数据访问 {#data-access}
 
 共享表至少包含不可为空的 `tenant_id`，唯一约束和索引也要把租户维度纳入：
 
@@ -54,7 +62,7 @@ ON orders (tenant_id, order_no);
 
 缓存键、对象存储路径、搜索索引和消息 topic 同样需要租户边界。备份恢复、数据导出和删除请求要能准确选择单个租户，避免共享存储让合规操作无法落地。
 
-## 5. 配额限制资源占用
+## 6. 配额 {#quotas}
 
 资源隔离既包括硬上限，也包括拥塞时的公平调度。常见控制点包括：
 
@@ -68,7 +76,7 @@ ON orders (tenant_id, order_no);
 
 硬限额触发时返回明确错误和当前用量；弹性配额允许借用空闲容量时，要保证其他租户需要资源后能够收回。
 
-## 6. 处理噪声邻居
+## 7. 噪声邻居 {#noisy-neighbor}
 
 噪声邻居不仅来自 CPU。慢 SQL、热点分区、大对象、连接池、消息积压和缓存淘汰都可能让一个租户影响其他租户。
 
@@ -82,7 +90,7 @@ ON orders (tenant_id, order_no);
 
 资源上限必须与产品套餐和业务预期一致，避免底层随意限流导致已承诺能力不可用。
 
-## 7. 运维操作也要隔离
+## 8. 运维隔离 {#operations}
 
 配置发布、数据库迁移和批处理可能同时影响所有租户。可以按 deployment stamp 或租户批次逐步发布，在小范围验证后扩大。
 
@@ -90,13 +98,13 @@ ON orders (tenant_id, order_no);
 
 监控至少能按租户和 stamp 切分。全局成功率正常时，大租户或某个区域仍可能已经完全不可用。
 
-## 8. 成本归因支持容量决策
+## 9. 成本归因 {#cost}
 
 独立资源可以直接归属租户；共享资源需要按请求、计算时间、存储量、消息量或其他使用指标分摊。代理指标要与真实成本有稳定关系，并公开计算方式。
 
 租户单位成本能帮助识别异常工作负载、定价缺口和隔离选择。成本归因不能替代安全隔离，但它能说明把某个租户移到独立资源是否合理。
 
-## 9. 测试跨租户边界
+## 10. 跨租户测试 {#testing}
 
 除普通功能测试外，还要覆盖：
 
@@ -109,9 +117,9 @@ ON orders (tenant_id, order_no);
 
 生产前可以用两个结构相似的测试租户执行对抗测试：任何一侧都不能观察或影响另一侧的私有数据和配额。
 
-## 10. 面试题
+## 11. 面试题
 
-### 10.1 多租户系统怎样避免数据越权和单个租户占满资源 {#tenant-isolation}
+### 11.1 多租户系统怎样避免数据越权和单个租户占满资源 {#tenant-isolation}
 
 <!-- 面试来源：
 - 网易严选：https://www.nowcoder.com/discuss/353155254101417984
@@ -125,7 +133,7 @@ ON orders (tenant_id, order_no);
 - Pool、Silo 与混合隔离模型。
 - 按租户配额、噪声邻居和可观测性。
 
-**相关内容**：[租户身份贯穿请求链路](#1-租户身份贯穿请求链路)至[测试跨租户边界](#9-测试跨租户边界)。
+**相关内容**：[租户身份](#tenant-identity)至[跨租户测试](#testing)。
 
 <details>
 <summary>参考回答</summary>
@@ -136,10 +144,8 @@ ON orders (tenant_id, order_no);
 
 </details>
 
-:::note 参考资料
+## 12. 参考资料
 
-1. [Kubernetes：Multi-tenancy](https://kubernetes.io/docs/concepts/security/multi-tenancy/)
-2. [AWS：SaaS Tenant Isolation Strategies](https://docs.aws.amazon.com/whitepapers/latest/saas-tenant-isolation-strategies/welcome.html)
-3. [Azure Architecture Center：Multitenant approaches](https://learn.microsoft.com/en-us/azure/architecture/guide/multitenant/approaches/overview)
-
-:::
+- [Kubernetes：Multi-tenancy](https://kubernetes.io/docs/concepts/security/multi-tenancy/)
+- [AWS：SaaS Tenant Isolation Strategies](https://docs.aws.amazon.com/whitepapers/latest/saas-tenant-isolation-strategies/welcome.html)
+- [Azure Architecture Center：Multitenant approaches](https://learn.microsoft.com/en-us/azure/architecture/guide/multitenant/approaches/overview)

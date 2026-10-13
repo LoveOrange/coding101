@@ -7,9 +7,17 @@ knowledge:
 
 # 数据库死锁
 
-数据库死锁发生在多个事务形成循环等待时。InnoDB 可以检测等待图中的环并回滚一个事务，但业务仍需正确处理失败、重试和可能已经发生的外部副作用。
+本文以 MySQL 8.4 InnoDB 为例。数据库死锁发生在多个事务形成循环等待时。InnoDB 可以检测等待图中的环并回滚一个事务，但业务仍需正确处理失败、重试和可能已经发生的外部副作用。
 
-## 1. 相反的加锁顺序会形成循环
+## 1. 面试核心 {#core}
+
+- 两个事务以相反顺序锁定同一组记录，会形成循环等待。
+- InnoDB 检测等待图中的环，选择回滚代价较小的事务作为牺牲者，其他事务继续执行。
+- 锁等待超时（`innodb_lock_wait_timeout`）不一定形成环，默认只回滚当前语句；死锁会回滚整个事务。
+- 处理死锁：用 `SHOW ENGINE INNODB STATUS` 查看最近一次死锁的两条 SQL 和锁，统一加锁顺序、缩短事务，并对完整事务做有限重试。[卡](#handle-deadlock)
+- 事务中已经发生的外部调用不会随回滚撤销，重试前要保证这些操作幂等。
+
+## 2. 死锁的形成 {#cycle}
 
 事务 A 先锁订单 1，再等待订单 2；事务 B 先锁订单 2，再等待订单 1。两边都无法继续，也不会仅靠其中一个锁正常释放而结束等待。
 
@@ -20,13 +28,13 @@ knowledge:
 
 死锁不仅来自两条显式 UPDATE。二级索引与聚簇索引的访问顺序、范围锁、外键检查和插入唯一键冲突也可能参与等待环。
 
-## 2. InnoDB 检测等待图并选择牺牲者
+## 3. InnoDB 死锁检测 {#detection}
 
 启用死锁检测时，InnoDB 会检查事务等待关系是否形成环。发现死锁后，它选择一个事务作为 victim 回滚，让其他事务继续。通常会倾向回滚修改较少、回滚成本较低的事务，但应用不能依赖某个固定事务一定获胜。
 
 收到死锁错误表示当前事务已经失败。继续在同一业务流程中假设前面的修改有效，会破坏状态判断。
 
-## 3. 锁等待超时与死锁不是一回事
+## 4. 锁等待超时与死锁 {#timeout-vs-deadlock}
 
 锁等待超时表示某个锁在配置时限内没有取得，等待关系未必形成环。默认情况下，InnoDB 的锁等待超时通常只回滚当前语句；死锁检测则会回滚整个事务。具体行为还会受配置影响。
 
@@ -34,7 +42,18 @@ knowledge:
 
 延长锁等待超时不会消除死锁，只会让普通阻塞占用连接更久。超时应服从接口总预算。
 
-## 4. 重试要重新执行完整事务
+## 5. 错误码与配置 {#error-codes}
+
+| 情况 | 常见错误码 | InnoDB 回滚范围 |
+| --- | --- | --- |
+| 检测到死锁 | 1213 | 整个事务 |
+| 行锁等待超时 | 1205 | 默认仅当前语句；启用 `innodb_rollback_on_timeout` 后回滚事务 |
+
+关闭 `innodb_deadlock_detect` 后，InnoDB 不再主动检测这种等待环，需要依靠锁等待超时解开阻塞。`innodb_lock_wait_timeout` 主要控制 InnoDB 行锁等待，不能作为所有元数据锁和网络超时的统一设置。
+
+在两个测试会话中，分别先更新主键 1 与 2，再各自更新对方已锁定的行，就能构造循环。记录两边实际错误与提交结果；不要假设总是后发起的事务成为牺牲者。
+
+## 6. 重试完整事务 {#retry}
 
 死锁通常是并发执行顺序造成的瞬时失败，适合有限重试。一次重试应：
 
@@ -44,15 +63,17 @@ knowledge:
 4. 使用指数退避和随机抖动错开竞争。
 5. 设置最大次数，并在总 deadline 内停止。
 
+在 Spring 中，重试循环应包在事务边界外，让每次调用真正开启新事务；在已经失败或标记 rollback-only 的事务中循环执行，不能恢复原事务。
+
 只重放最后一条 SQL 可能遗漏事务前面基于旧数据做出的判断。立即无限循环重试则会在热点冲突中进一步增加负载。
 
-## 5. 数据库事务外的副作用需要幂等
+## 7. 事务外的副作用 {#side-effects}
 
 如果事务中间已经发送 HTTP 请求、投递不可撤回的消息或调用第三方支付，数据库回滚不能撤销这些动作。重试整个方法可能再次执行副作用。
 
 应把远程调用移出持锁事务，并通过幂等键、Outbox、状态机或补偿流程协调。数据库事务只覆盖能由同一资源管理器原子提交的变化。
 
-## 6. 减少死锁依赖访问顺序和事务长度
+## 8. 减少死锁 {#prevention}
 
 常见控制方法包括：
 
@@ -64,9 +85,9 @@ knowledge:
 
 无法通过“按顺序加锁”覆盖所有索引内部行为，所以仍要保留正确的失败与重试处理。
 
-## 7. 从死锁记录还原两条执行链
+## 9. 分析死锁日志 {#analysis}
 
-`SHOW ENGINE INNODB STATUS` 会保留最近一次死锁信息，包括参与事务、持有和等待的锁以及相关 SQL。还可以使用 Performance Schema 查看当前 `data_locks` 和 `data_lock_waits`。
+`SHOW ENGINE INNODB STATUS` 会保留最近一次死锁信息，包括参与事务、持有和等待的锁以及相关 SQL。需要记录每次死锁时，可启用 `innodb_print_all_deadlocks` 将记录写入错误日志。还可以使用 Performance Schema 查看当前 `data_locks` 和 `data_lock_waits`。
 
 排查步骤是：
 
@@ -78,19 +99,19 @@ knowledge:
 
 只保留最后一条报错 SQL 往往无法还原循环，因为造成锁顺序的语句可能更早执行。
 
-## 8. 常见问题
+## 10. 常见问题 {#9-常见问题}
 
-### 8.1 发生死锁是否说明数据库有故障
+### 10.1 发生死锁是否说明数据库有故障 {#91-发生死锁是否说明数据库有故障}
 
 不一定。死锁是并发事务允许等待时可能出现的结果，数据库检测并打破它属于正常恢复机制。频繁死锁则说明访问顺序、索引、事务边界或热点模型需要调整。
 
-### 8.2 使用悲观锁能否避免死锁
+### 10.2 使用悲观锁能否避免死锁 {#92-使用悲观锁能否避免死锁}
 
 不能。悲观锁让冲突更早显式发生，但多个事务仍可能以不同顺序取得多把锁。统一顺序、缩短事务和正确重试仍然必要。
 
-## 9. 面试题
+## 11. 面试题 {#10-面试题}
 
-### 9.1 数据库发生死锁后应该如何定位和处理 {#handle-deadlock}
+### 11.1 数据库发生死锁后应该如何定位和处理 {#handle-deadlock}
 
 <!-- 面试来源：
 - 字节跳动：https://www.nowcoder.com/discuss/896137958967865344
@@ -104,7 +125,7 @@ knowledge:
 - 死锁与锁等待超时的区别。
 - 完整事务重试、幂等和事务外副作用。
 
-**相关内容**：[相反的加锁顺序会形成循环](#1-相反的加锁顺序会形成循环)至[从死锁记录还原两条执行链](#7-从死锁记录还原两条执行链)。
+**相关内容**：[死锁的形成](#cycle)至[分析死锁日志](#analysis)。
 
 <details>
 <summary>参考回答</summary>
@@ -115,10 +136,50 @@ knowledge:
 
 </details>
 
-:::note 参考资料
+### 11.2 1213 与 1205 的回滚范围有何区别，能否直接重试最后一条 SQL？ {#deadlock-timeout-retry}
 
-1. [MySQL 8.4：Deadlocks in InnoDB](https://dev.mysql.com/doc/refman/8.4/en/innodb-deadlocks.html)
-2. [MySQL 8.4：How to Minimize and Handle Deadlocks](https://dev.mysql.com/doc/refman/8.4/en/innodb-deadlocks-handling.html)
-3. [MySQL 8.4：InnoDB Locking](https://dev.mysql.com/doc/refman/8.4/en/innodb-locking.html)
+<!-- 面试来源：本站自测：依据本文机制与官方资料设计，无已核验的公司归属。 -->
 
-:::
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**
+
+- 语句回滚与事务回滚
+- 新事务与业务前置条件
+
+**相关内容**：[错误码与配置](#error-codes)、[重试完整事务](#retry)。
+
+<details>
+<summary>参考回答</summary>
+
+1213 的死锁回滚整个事务，1205 默认仅回滚超时语句，配置可改变后者。应用应明确处理范围；统一回滚业务事务后重试时，要从新事务重新读取条件，不能只重复最后一条 SQL 并认为此前修改仍在。
+
+</details>
+
+### 11.3 关闭死锁检测或延长锁等待时间，能否避免死锁？ {#deadlock-detection-off}
+
+<!-- 面试来源：本站自测：依据本文机制与官方资料设计，无已核验的公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**
+
+- 等待环与超时
+- 检测开销和恢复代价
+
+**相关内容**：[InnoDB 死锁检测](#detection)、[错误码与配置](#error-codes)。
+
+<details>
+<summary>参考回答</summary>
+
+不能消除循环等待。关闭检测可在特定高竞争负载中减少检测开销，但需要超时打破等待，失败事务可能更晚结束。是否调整应由负载测量决定，并保留有限重试、幂等和统一锁顺序。
+
+</details>
+
+## 12. 参考资料 {#11-参考资料}
+
+- [MySQL 8.4：Deadlocks in InnoDB](https://dev.mysql.com/doc/refman/8.4/en/innodb-deadlocks.html)
+- [MySQL 8.4：How to Minimize and Handle Deadlocks](https://dev.mysql.com/doc/refman/8.4/en/innodb-deadlocks-handling.html)
+- [MySQL 8.4：InnoDB Locking](https://dev.mysql.com/doc/refman/8.4/en/innodb-locking.html)
+- [MySQL 8.4：Error Handling](https://dev.mysql.com/doc/refman/8.4/en/innodb-error-handling.html)
+- [MySQL 8.4：Deadlock Detection](https://dev.mysql.com/doc/refman/8.4/en/innodb-deadlock-detection.html)

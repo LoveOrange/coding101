@@ -9,7 +9,15 @@ knowledge:
 
 Spring AOP 在 Bean 外部放置代理，对匹配的方法调用执行一组拦截器。切点决定哪些调用需要增强，拦截链决定事务、鉴权、监控等逻辑以什么顺序包围目标方法。
 
-## 1. Spring AOP 的连接点是方法执行
+## 1. 面试核心 {#core}
+
+- Spring AOP 通过代理拦截 Bean 的方法调用：Pointcut 决定拦截哪些方法，Advice 决定执行什么逻辑。
+- 多个拦截器组成链，每个拦截器调用 `proceed()` 进入下一个，返回时执行后置逻辑，形成嵌套结构。[卡](#interceptor-chain)
+- 事务、重试、缓存的相对顺序会改变语义，用 `@Order` 明确优先级并通过测试确认。
+- 同类内部的 `this` 调用不经过代理，`@Transactional`、`@Cacheable`、`@Async` 都会失效。[卡](#transactional-pitfalls)
+- `@Transactional` 失效的其他常见原因：方法不能被代理、异常被吞掉或不匹配回滚规则、在新线程中执行、选错事务管理器。
+
+## 2. 连接点与方法执行 {#join-points}
 
 ```java
 @Aspect
@@ -29,7 +37,7 @@ class TimingAspect {
 
 代理收到方法调用后，先判断 Advisor 的 Pointcut 是否匹配，再执行对应 Advice。Spring AOP 主要处理 Spring Bean 的方法执行；字段访问、构造器等更广泛连接点属于 AspectJ 编译或加载期织入的范围。
 
-## 2. 常用概念对应不同职责
+## 3. 常用概念 {#concepts}
 
 | 概念 | 职责 |
 | --- | --- |
@@ -42,7 +50,7 @@ class TimingAspect {
 
 业务代码最需要判断的是：调用是否经过代理、切点是否匹配、链中有哪些拦截器。
 
-## 3. 拦截链以嵌套调用执行
+## 4. 拦截链 {#chain}
 
 每个拦截器收到当前 invocation，执行自己的前置逻辑，再调用 `proceed()` 进入下一个节点；返回时执行后置逻辑：
 
@@ -56,23 +64,23 @@ class TimingAspect {
 
 环绕通知如果不调用 `proceed()`，目标和后续拦截器都不会执行；调用多次则可能重复执行业务。拦截器必须清楚自己是否允许短路或重试。
 
-## 4. 顺序会改变语义
+## 5. 拦截器顺序 {#ordering}
 
 事务与重试的相对顺序决定每次重试是否拥有独立事务；缓存位于事务外时，提交前后可见性也要确认。可以使用 `@Order` 或 `Ordered` 明确优先级，但数值含义应由测试验证，不能只凭注解位置猜测。
 
 对于关键组合，写集成测试记录实际顺序、事务状态和异常结果。多个自动代理功能会共同参与一个代理创建过程，不应假定每个注解都套一层独立对象。
 
-## 5. 切点应稳定且范围可控
+## 6. 切点范围 {#pointcut-scope}
 
 基于包名的宽泛切点容易把框架配置、健康检查或内部任务一并拦截。业务语义明确时，使用专用注解或稳定接口，并在启动或测试阶段验证匹配集合。
 
 高频方法上的参数序列化、远程审计等 Advice 会显著增加延迟。横切逻辑也属于生产代码，需要超时、异常和敏感数据策略。
 
-## 6. 代理边界 {#proxy-boundaries}
+## 7. 代理边界 {#proxy-boundaries}
 
 `@Transactional`、`@Cacheable` 和 `@Async` 通常依赖 Spring 代理。注解没有产生预期行为时，应检查对象是否由容器管理、调用是否经过代理、方法能否被代理，以及异常和线程边界是否符合协议。
 
-### 6.1 同类自调用绕过代理
+### 7.1 同类自调用 {#self-invocation}
 
 ```java
 public void createOrder() {
@@ -87,7 +95,7 @@ public void saveOrder() {}
 
 优先把 `saveOrder` 的边界移动到另一个 Bean，或让外部入口方法本身承担完整语义。自注入或 `AopContext.currentProxy()` 会把结构问题变成运行时约束。
 
-### 6.2 方法与类必须可被代理
+### 7.2 可代理的方法与类 {#proxyable}
 
 - 对象必须由当前 Spring 容器创建或处理。
 - JDK 代理只能从代理接口暴露调用。
@@ -96,7 +104,7 @@ public void saveOrder() {}
 
 当前 Spring 版本对受支持的方法可见性已有演进，不应只背“必须 public”。最稳妥的业务入口仍是可覆盖的公开方法，并用所部署版本的集成测试确认。
 
-### 6.3 异常必须到达事务拦截器
+### 7.3 异常与事务回滚 {#rollback}
 
 ```java
 @Transactional
@@ -111,13 +119,13 @@ public void importData() {
 
 方法正常返回时，代理会尝试提交。默认回滚规则也只自动匹配 RuntimeException 与 Error。不要通过吞异常伪造成功；需要转换异常时保留 cause 并让回滚规则匹配。
 
-### 6.4 新线程没有原事务上下文
+### 7.4 异步线程与事务上下文 {#async-thread}
 
 `@Async` 让方法在另一个执行器线程运行。调用线程的 JDBC 事务通常不会跟过去，异步方法若自己声明事务，会创建属于异步线程的新边界。
 
 调用方已经返回后，异步失败也不能通过原调用栈传播。需要 Future、CompletableFuture、事件结果、重试和监控来承接。
 
-### 6.5 缓存还受 key 与提交时机影响
+### 7.5 缓存 key 与提交时机 {#cache}
 
 `@Cacheable` 只在 key、condition 等规则匹配时读取或写入缓存。可变参数、不稳定 `toString()` 或租户字段遗漏会造成错误命中。
 
@@ -125,13 +133,13 @@ public void importData() {
 
 同类调用、非容器对象等代理边界同样会让缓存注解失效。
 
-### 6.6 多事务管理器需要明确选择
+### 7.6 多事务管理器 {#transaction-managers}
 
 应用含多个 DataSource 或事务技术时，默认 `TransactionManager` 可能不是目标资源。通过限定名称、类型或事务管理配置明确选择，并测试一条方法究竟绑定了哪些连接。
 
 本地事务无法原子覆盖两个独立数据库，除非使用相应全局事务能力；多个 `@Transactional` 注解不会自动合并资源。
 
-### 6.7 排查顺序
+### 7.7 排查顺序 {#checklist}
 
 1. 用 `AopUtils` 确认注入对象是否为代理、是哪种代理。
 2. 从调用入口确认是否经过代理，检查自调用。
@@ -140,19 +148,19 @@ public void importData() {
 5. 记录线程名、事务状态、缓存 key 和实际 SQL。
 6. 用集成测试复现成功、异常和并发路径。
 
-## 7. 常见问题
+## 8. 常见问题
 
-### 7.1 `@After` 和 `@AfterReturning` 有什么区别
+### 8.1 `@After` 和 `@AfterReturning` 有什么区别
 
 `@After` 类似 `finally`，正常与异常退出都会执行；`@AfterReturning` 只在正常返回后执行。异常路径使用 `@AfterThrowing`，完整控制优先用 `@Around`。
 
-### 7.2 AOP 能拦截普通 `new` 出来的对象吗
+### 8.2 AOP 能拦截普通 `new` 出来的对象吗
 
 默认不能。Spring AOP 代理由容器创建并交付，绕过容器得到的普通对象不会自动经过该代理。
 
-## 8. 面试题
+## 9. 面试题
 
-### 8.1 Spring AOP 的拦截链怎样执行 {#interceptor-chain}
+### 9.1 Spring AOP 的拦截链怎样执行 {#interceptor-chain}
 
 <!-- 面试来源：
 - 美团：https://www.nowcoder.com/discuss/614236533700194304
@@ -167,7 +175,7 @@ public void importData() {
 - `proceed()` 的嵌套调用。
 - 顺序对事务、重试和缓存的影响。
 
-**相关内容**：[Spring AOP 的连接点是方法执行](#1-spring-aop-的连接点是方法执行)至[顺序会改变语义](#4-顺序会改变语义)。
+**相关内容**：[连接点与方法执行](#join-points)至[拦截器顺序](#ordering)。
 
 <details>
 <summary>参考回答</summary>
@@ -178,7 +186,7 @@ public void importData() {
 
 </details>
 
-### 8.2 `@Transactional` 常见的失效原因有哪些 {#transactional-pitfalls}
+### 9.2 `@Transactional` 常见的失效原因有哪些 {#transactional-pitfalls}
 
 <!-- 面试来源：
 - 美团：https://www.nowcoder.com/discuss/353158567966482432
@@ -204,13 +212,11 @@ public void importData() {
 
 </details>
 
-:::note 参考资料
+## 10. 参考资料
 
-1. [Spring Framework：Spring AOP Capabilities and Goals](https://docs.spring.io/spring-framework/reference/core/aop/introduction-defn.html)
-2. [Spring Framework：Advice API](https://docs.spring.io/spring-framework/reference/core/aop-api/advice.html)
-3. [Spring Framework：Understanding AOP Proxies](https://docs.spring.io/spring-framework/reference/core/aop/proxying.html#aop-understanding-aop-proxies)
-4. [Spring Framework：Using `@Transactional`](https://docs.spring.io/spring-framework/reference/data-access/transaction/declarative/annotations.html)
-5. [Spring Framework：Annotation Support for Scheduling and Asynchronous Execution](https://docs.spring.io/spring-framework/reference/integration/scheduling.html#scheduling-annotation-support)
-6. [Spring Framework：Cache Annotations](https://docs.spring.io/spring-framework/reference/integration/cache/annotations.html)
-
-:::
+- [Spring Framework：Spring AOP Capabilities and Goals](https://docs.spring.io/spring-framework/reference/core/aop/introduction-defn.html)
+- [Spring Framework：Advice API](https://docs.spring.io/spring-framework/reference/core/aop-api/advice.html)
+- [Spring Framework：Understanding AOP Proxies](https://docs.spring.io/spring-framework/reference/core/aop/proxying.html#aop-understanding-aop-proxies)
+- [Spring Framework：Using `@Transactional`](https://docs.spring.io/spring-framework/reference/data-access/transaction/declarative/annotations.html)
+- [Spring Framework：Annotation Support for Scheduling and Asynchronous Execution](https://docs.spring.io/spring-framework/reference/integration/scheduling.html#scheduling-annotation-support)
+- [Spring Framework：Cache Annotations](https://docs.spring.io/spring-framework/reference/integration/cache/annotations.html)

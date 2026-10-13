@@ -9,7 +9,15 @@ knowledge:
 
 Java 反射允许程序在运行时检查类、字段、构造方法和方法，并在类型直到运行时才确定时完成调用。`MethodHandle` 也能表示可调用的方法，但提供更明确的方法类型和不同的优化路径。
 
-## 1. 从 Class 对象开始
+## 1. 面试核心 {#core}
+
+- 反射通过 `Class` 对象在运行时读取字段、方法、构造器和注解，并在类型运行时才确定时创建对象、调用方法。[卡](#reflection-uses)
+- 常见使用者是框架：依赖注入、ORM 映射、序列化、注解驱动的路由和动态代理。
+- 反射调用要做访问检查、参数装箱和类型校验，错误推迟到运行时；JDK 18 起核心反射改为基于方法句柄实现。[卡](#reflection-cost)
+- `MethodHandle` 携带精确的 `MethodType`，支持绑定和组合，更容易被 JIT 优化。
+- 模块系统下访问非公开成员需要目标模块开放对应包，私有成员也不是稳定 API。
+
+## 2. 获取 Class 对象 {#class-object}
 
 `Class<?>` 是运行时访问类型信息的入口。常见取得方式有三种：
 
@@ -38,7 +46,7 @@ Class<?> type = Class.forName(
 
 插件、序列化和依赖注入框架经常只知道类名、配置或注解，无法在框架源码中直接写出用户类型，因此需要运行时发现。
 
-## 2. 检查成员信息
+## 3. 读取成员信息 {#members}
 
 `Class` 提供字段、方法、构造器、父类型、接口和注解等元数据：
 
@@ -58,7 +66,7 @@ for (Method method : type.getDeclaredMethods()) {
 
 检查到成员不代表一定有权访问。Java 访问控制和模块边界仍然生效。
 
-### 2.1 泛型信息只能读取保留下来的部分
+### 3.1 读取泛型信息 {#generic-info}
 
 反射可以通过 `getGenericReturnType()`、`getGenericParameterTypes()` 等 API 读取 class 文件 `Signature` 属性中的泛型声明：
 
@@ -71,7 +79,7 @@ System.out.println(method.getGenericReturnType()); // java.util.List<com.example
 
 局部变量的具体类型实参、运行时新建的 `List<String>` 元素类型等信息通常已经擦除。反射不能恢复编译结果中从未保留的信息。
 
-## 3. 通过反射创建对象和调用方法
+## 4. 创建对象与调用方法 {#invoke}
 
 ```java
 Class<?> type = Class.forName("com.example.GreetingService");
@@ -100,7 +108,7 @@ try {
 
 框架应保留并传播实际原因，不能只记录包装异常的外层消息。
 
-### 3.1 非公开成员与模块边界
+### 4.1 非公开成员与模块边界 {#access}
 
 `getDeclaredMethod` 能发现非公开方法，但调用仍受访问检查限制。`trySetAccessible()` 会尝试关闭该成员的访问检查，并通过返回值说明是否成功：
 
@@ -116,7 +124,7 @@ if (!method.trySetAccessible()) {
 
 优先使用公开 API。访问私有成员通常意味着框架与实现细节绑定，JDK 或依赖升级时更容易失效。
 
-## 4. MethodHandle 表示带类型的方法
+## 5. MethodHandle {#method-handle}
 
 `MethodHandle` 是一个可以直接调用的方法、构造器或字段操作句柄。句柄具有 `MethodType`，参数和返回类型成为句柄契约的一部分。
 
@@ -135,23 +143,23 @@ String result = (String) greet.invokeExact(service, "Lin");
 
 `findVirtual` 在查找时进行访问检查。得到句柄后，可以反复调用，也可以通过 `bindTo`、`asType`、参数插入和组合操作得到新句柄。
 
-### 4.1 `invokeExact` 与 `invoke`
+### 5.1 `invokeExact` 与 `invoke`
 
 - `invokeExact` 要求调用点类型与句柄类型完全匹配。
 - `invoke` 允许按照方法调用转换规则适配部分类型。
 
 两者都具有签名多态语义，编译器对调用点的静态类型非常重要。随意把所有值都声明为 `Object`，会让 `invokeExact` 因类型不匹配失败。
 
-### 4.2 MethodHandle 适合什么场景
+### 5.2 MethodHandle 的适用场景 {#method-handle-use}
 
 - 动态语言运行时和 `invokedynamic` 调用点。
 - 需要组合、绑定和适配调用链的框架。
 - 已经完成发现，希望缓存一个带类型的高频调用入口。
 - 需要配合 `LambdaMetafactory` 等底层 API 生成调用对象。
 
-如果类型在编译期已知，普通方法调用最清楚。`MethodHandle` 不是为了替换所有直接调用。
+如果类型在编译期已知，普通方法调用最清楚。
 
-## 5. 调用成本来自哪里
+## 6. 反射的调用成本 {#cost}
 
 反射相比直接调用可能增加以下工作：
 
@@ -173,13 +181,13 @@ RequestHandler(Method handlerMethod) {
 
 缓存成员不会自动让反射等同于直接调用，但通常比每次 `getMethod` 后再 `invoke` 更合理。
 
-### 5.1 不要背固定性能倍数
+### 6.1 性能随 JDK 版本变化 {#jdk-versions}
 
 从 JDK 18 起，核心反射实现基于方法句柄重新实现。JIT 对常量 `Method`、`Constructor` 和 `MethodHandle` 的优化能力，也会随版本和调用形态变化。
 
 因此不能笼统断言“反射一定慢几十倍”或“MethodHandle 一定更快”。低频启动扫描通常不值得优化；高频序列化、路由或表达式执行路径，应在目标 JDK 上用 JMH 等工具测量真实调用形态。
 
-## 6. 反射的使用边界
+## 7. 使用边界 {#boundaries}
 
 反射适合框架发现和通用工具，不适合把普通业务代码改成字符串驱动：
 
@@ -198,27 +206,27 @@ orderService.create(order);
 - 缓存是否意外持有类加载器。
 - Native Image 或闭世界编译所需的反射配置。
 
-## 7. 常见问题
+## 8. 常见问题
 
-### 7.1 反射能否访问 private 成员
+### 8.1 反射能否访问 private 成员
 
 可以发现当前类声明的私有成员，但不保证能够绕过访问控制。是否能 `trySetAccessible` 取决于调用者、目标类和模块开放关系。能访问也不代表应该访问，私有成员不是稳定 API。
 
-### 7.2 `Class.forName` 与 `ClassLoader.loadClass` 有什么差异
+### 8.2 `Class.forName` 与 `ClassLoader.loadClass` 有什么差异
 
 常用的 `Class.forName(String)` 会加载并初始化类；`ClassLoader.loadClass` 通常只完成加载，不主动初始化。`Class.forName` 的三参数版本可以明确选择是否初始化。插件环境还要使用正确的类加载器，不能默认所有类都由系统类加载器可见。
 
-### 7.3 反射会破坏类型安全吗
+### 8.3 反射会破坏类型安全吗
 
 反射 API 仍会在运行时检查成员、接收者和参数类型，但错误从编译阶段推迟到运行阶段，并常以 `ReflectiveOperationException` 或 `IllegalArgumentException` 体现。框架应在启动或注册阶段提前验证，避免第一次业务请求才发现签名错误。
 
-### 7.4 MethodHandle 与 Method 的主要区别是什么
+### 8.4 MethodHandle 与 Method 的主要区别是什么
 
 `Method` 以反射对象描述声明，调用接口统一使用 `Object` 和可变参数；`MethodHandle` 自身携带精确的 `MethodType`，支持绑定、适配和组合，并为 JVM 动态调用提供更直接的抽象。两者都受访问控制，也都不保证比直接调用更快。
 
-## 8. 面试题
+## 9. 面试题
 
-### 8.1 什么是反射，常见使用场景有哪些 {#reflection-uses}
+### 9.1 什么是反射，常见使用场景有哪些 {#reflection-uses}
 
 <!-- 面试来源：
 - 美团：https://www.nowcoder.com/discuss/353149601563746304
@@ -234,7 +242,7 @@ orderService.create(order);
 - 运行时发现为什么适合框架，又会失去哪些编译期保障。
 - 访问控制、异常和缓存的边界。
 
-**相关内容**：[从 Class 对象开始](#1-从-class-对象开始)、[检查成员信息](#2-检查成员信息)、[通过反射创建对象和调用方法](#3-通过反射创建对象和调用方法)、[反射的使用边界](#6-反射的使用边界)。
+**相关内容**：[获取 Class 对象](#class-object)、[读取成员信息](#members)、[创建对象与调用方法](#invoke)、[使用边界](#boundaries)。
 
 <details>
 <summary>参考回答</summary>
@@ -245,7 +253,7 @@ orderService.create(order);
 
 </details>
 
-### 8.2 反射调用为什么可能比直接调用开销更高 {#reflection-cost}
+### 9.2 反射调用为什么可能比直接调用开销更高 {#reflection-cost}
 
 <!-- 面试来源：
 - 数字马力：https://www.nowcoder.com/discuss/500758332618133504
@@ -259,7 +267,7 @@ orderService.create(order);
 - 缓存 `Method` 或 `MethodHandle` 能减少哪些成本。
 - 为什么不能给出跨 JDK 和调用形态的固定倍数。
 
-**相关内容**：[MethodHandle 表示带类型的方法](#4-methodhandle-表示带类型的方法)、[调用成本来自哪里](#5-调用成本来自哪里)。
+**相关内容**：[MethodHandle](#method-handle)、[反射的调用成本](#cost)。
 
 <details>
 <summary>参考回答</summary>
@@ -270,13 +278,11 @@ orderService.create(order);
 
 </details>
 
-:::note 参考资料
+## 10. 参考资料
 
-1. [Java API：java.lang.reflect](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/reflect/package-summary.html)
-2. [Java API：Class](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/Class.html)
-3. [Java API：Method](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/reflect/Method.html)
-4. [Java API：MethodHandle](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/invoke/MethodHandle.html)
-5. [Java API：MethodHandles.Lookup](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/invoke/MethodHandles.Lookup.html)
-6. [JEP 416：Reimplement Core Reflection with Method Handles](https://openjdk.org/jeps/416)
-
-:::
+- [Java API：java.lang.reflect](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/reflect/package-summary.html)
+- [Java API：Class](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/Class.html)
+- [Java API：Method](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/reflect/Method.html)
+- [Java API：MethodHandle](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/invoke/MethodHandle.html)
+- [Java API：MethodHandles.Lookup](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/invoke/MethodHandles.Lookup.html)
+- [JEP 416：Reimplement Core Reflection with Method Handles](https://openjdk.org/jeps/416)

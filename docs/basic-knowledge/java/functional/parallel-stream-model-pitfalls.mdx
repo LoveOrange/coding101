@@ -9,7 +9,15 @@ knowledge:
 
 并行 Stream 会把数据拆成多个分区，在 Fork/Join 任务中处理并合并结果。它适合可拆分、计算量足够且没有共享副作用的数据运算；在请求线程中加入阻塞 I/O，往往会增加资源竞争和尾延迟。
 
-## 1. 从 Spliterator 开始拆分数据
+## 1. 面试核心 {#core}
+
+- 并行流用 `Spliterator` 拆分数据，在 `ForkJoinPool.commonPool()` 中分治执行再合并结果。
+- ForkJoinPool 每个工作线程有自己的双端队列，空闲线程从其他队列尾部窃取任务，减少负载不均。[卡](#work-stealing)
+- 并行执行不保持处理顺序，操作中修改外部可变状态会产生数据竞争。
+- 公共池是进程级共享资源，阻塞 I/O 会占住工作线程，影响所有使用者。
+- 服务端使用前确认：数据量大、单元素计算重、数据源易拆分、无副作用、无阻塞，并用基准验证收益。[卡](#parallel-stream-checklist)
+
+## 2. Spliterator 拆分 {#spliterator}
 
 Stream 通过 `Spliterator` 遍历和拆分数据源。并行流水线会尝试调用 `trySplit()`，把一个数据范围分成更小的范围：
 
@@ -25,7 +33,7 @@ Stream 通过 `Spliterator` 遍历和拆分数据源。并行流水线会尝试�
 
 `Spliterator` 的特征会告诉 Stream 数据是否有顺序、大小是否已知、元素是否互异等。执行器可以据此选择拆分和合并策略，但不会凭空消除数据源本身的限制。
 
-## 2. ForkJoinPool 执行分治任务
+## 3. ForkJoinPool {#fork-join}
 
 并行流通常使用 `ForkJoinPool.commonPool()` 执行任务。Fork/Join 的核心流程是：
 
@@ -45,7 +53,7 @@ long total = orders.parallelStream()
 
 这段代码适合并行的前提是：数据量足够、过滤和金额计算无共享副作用、计算成本能够覆盖拆分调度开销，而且当前进程还有可用 CPU。
 
-## 3. 并行不会自动保持执行顺序
+## 4. 执行顺序 {#ordering}
 
 有遇到顺序的数据源，不等于每个操作都按这个顺序执行：
 
@@ -59,7 +67,7 @@ List.of(1, 2, 3, 4)
 
 有些终止操作在语义上保留顺序，例如有序流的 `findFirst`；`findAny` 则允许返回任意分区的结果。业务不要求顺序时，可以调用 `unordered()` 放宽约束，但必须确认结果语义确实不依赖顺序。
 
-## 4. 外部可变状态会产生数据竞争
+## 5. 外部可变状态 {#shared-state}
 
 下面的代码不安全：
 
@@ -90,7 +98,7 @@ Lambda 还应避免依赖：
 
 并行任务可能在主线程和不同 Worker 上执行，线程本地状态不会自动传播。
 
-## 5. 阻塞 I/O 会占住共享 Worker
+## 6. 阻塞 I/O {#blocking-io}
 
 ```java
 List<Profile> profiles = userIds.parallelStream()
@@ -110,7 +118,7 @@ List<Profile> profiles = userIds.parallelStream()
 
 虚拟线程、带界限的执行器或异步客户端都比“把 Stream 改成 parallel”更容易表达这些约束。具体选择取决于调用模型，不是统一替代关系。
 
-## 6. commonPool 会形成进程级竞争
+## 7. commonPool 竞争 {#common-pool}
 
 公共 ForkJoinPool 是 JVM 进程内的共享资源。一个模块提交大量长任务，会影响其他使用者。只调整 `java.util.concurrent.ForkJoinPool.common.parallelism` 也是进程级配置，无法为每个接口建立独立预算。
 
@@ -122,7 +130,7 @@ List<Profile> profiles = userIds.parallelStream()
 
 :::
 
-## 7. 什么情况下可能获得收益
+## 8. 适用条件 {#when-useful}
 
 并行流更可能适合：
 
@@ -143,33 +151,33 @@ List<Profile> profiles = userIds.parallelStream()
 
 性能判断需要在接近生产的数据规模、核心数和并发背景下用 JMH 或端到端压测验证。只测一次 `System.currentTimeMillis()` 会混入类加载、JIT 编译和 GC。
 
-## 8. 异常与取消
+## 9. 异常与取消 {#exceptions}
 
 并行流水线中的某个任务抛出异常时，终止操作会失败，但已经开始的其他任务不一定立刻停止。Stream 没有提供请求级超时参数，也没有一套面向远程调用的补偿协议。
 
 需要超时、部分成功、逐项错误记录或主动取消时，应使用显式任务模型。不要在 Lambda 内统一吞掉异常并返回 `null`，这会让失败混入正常数据，还可能在后续归约阶段产生新的异常。
 
-## 9. 常见问题
+## 10. 常见问题
 
-### 9.1 parallelStream 使用多少线程
+### 10.1 parallelStream 使用多少线程
 
 通常受公共 ForkJoinPool 的并行度影响，调用线程也可能参与计算。并行度不是“同时执行的业务请求数”，阻塞、嵌套任务和运行环境都会影响实际活动线程。不要据此直接推导数据库或远程接口的并发上限。
 
-### 9.2 并行流里使用线程安全集合就安全了吗
+### 10.2 并行流里使用线程安全集合就安全了吗
 
 只能说明单次容器操作满足它的线程安全契约。检查后写入、跨多个容器更新、顺序要求和业务不变量仍可能出错；锁竞争也可能抵消并行收益。优先使用无副作用操作和并行 Collector。
 
-### 9.3 `parallel()` 会创建一个新的线程池吗
+### 10.3 `parallel()` 会创建一个新的线程池吗
 
 不会。它只把 Stream 的并行标志设为 true，终止操作执行时再按并行模型处理。它也不会异步返回，调用终止操作的线程仍然等待最终结果。
 
-### 9.4 嵌套 parallelStream 会更快吗
+### 10.4 嵌套 parallelStream 会更快吗
 
 通常不会按层数增加并行能力。内外层可能竞争同一公共池，增加拆分、排队和合并成本。应先选择一个清晰的并行维度，并用基准验证。
 
-## 10. 面试题
+## 11. 面试题
 
-### 10.1 ForkJoinPool 怎样调度任务，工作窃取解决了什么问题 {#work-stealing}
+### 11.1 ForkJoinPool 怎样调度任务，工作窃取解决了什么问题 {#work-stealing}
 
 <!-- 面试来源：
 - 阿里巴巴：https://www.nowcoder.com/discuss/353159278544494592
@@ -184,7 +192,7 @@ List<Profile> profiles = userIds.parallelStream()
 - 数据源拆分质量为什么影响并行流。
 - 阻塞任务为什么会降低 Fork/Join 的利用率。
 
-**相关内容**：[从 Spliterator 开始拆分数据](#1-从-spliterator-开始拆分数据)、[ForkJoinPool 执行分治任务](#2-forkjoinpool-执行分治任务)。
+**相关内容**：[Spliterator 拆分](#spliterator)、[ForkJoinPool](#fork-join)。
 
 <details>
 <summary>参考回答</summary>
@@ -195,7 +203,7 @@ Fork/Join 把大任务递归拆成小任务，Worker 主要从自己的双端队
 
 </details>
 
-### 10.2 在服务端使用 parallelStream 需要检查哪些条件 {#parallel-stream-checklist}
+### 11.2 在服务端使用 parallelStream 需要检查哪些条件 {#parallel-stream-checklist}
 
 <!-- 面试来源：
 - 美团：https://www.nowcoder.com/discuss/353154153574768640
@@ -210,7 +218,7 @@ Fork/Join 把大任务递归拆成小任务，Worker 主要从自己的双端队
 - commonPool 共享、副作用、顺序与线程上下文。
 - 怎样用基准和容量约束判断是否采用并行流。
 
-**相关内容**：[外部可变状态会产生数据竞争](#4-外部可变状态会产生数据竞争)、[阻塞 I/O 会占住共享 Worker](#5-阻塞-io-会占住共享-worker)、[什么情况下可能获得收益](#7-什么情况下可能获得收益)。
+**相关内容**：[外部可变状态](#shared-state)、[阻塞 I/O](#blocking-io)、[适用条件](#when-useful)。
 
 <details>
 <summary>参考回答</summary>
@@ -221,11 +229,9 @@ Fork/Join 把大任务递归拆成小任务，Worker 主要从自己的双端队
 
 </details>
 
-:::note 参考资料
+## 12. 参考资料
 
-1. [Java API：Stream 的并行执行说明](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/stream/package-summary.html#parallelism)
-2. [Java API：ForkJoinPool](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/ForkJoinPool.html)
-3. [Java API：Spliterator](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/Spliterator.html)
-4. [Java API：BaseStream.parallel](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/stream/BaseStream.html#parallel())
-
-:::
+- [Java API：Stream 的并行执行说明](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/stream/package-summary.html#parallelism)
+- [Java API：ForkJoinPool](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/ForkJoinPool.html)
+- [Java API：Spliterator](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/Spliterator.html)
+- [Java API：BaseStream.parallel](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/stream/BaseStream.html#parallel())

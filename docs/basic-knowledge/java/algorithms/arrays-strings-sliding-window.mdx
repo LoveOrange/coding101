@@ -9,7 +9,15 @@ knowledge:
 
 滑动窗口用左右边界维护一段连续区间，适合“最长、最短、数量满足某个条件的子数组或子串”。关键是定义窗口不变量，并证明两个边界只单向移动。
 
-## 1. 先判断问题是否要求连续区间
+## 1. 面试核心 {#core}
+
+- 滑动窗口适用于连续子数组或子串，且窗口的有效性随边界移动具有单调性。[卡](#sliding-window-conditions)
+- 用半开区间 `[left, right)` 维护窗口不变量，固定窗口只做增量更新。
+- 最长无重复子串：记录字符上次出现的位置，遇到重复时把 left 移到其后；left 和 right 各最多移动 n 次，总复杂度 O(n)。[卡](#longest-unique-substring)
+- 数组含负数时求和窗口失去单调性，需要前缀和或单调队列。
+- Java `String` 按 UTF-16 code unit 索引，部分字符占两个 `char`。
+
+## 2. 连续区间 {#contiguous}
 
 滑动窗口处理的是连续片段：
 
@@ -22,7 +30,7 @@ knowledge:
 
 还要判断窗口条件是否具有单调性。正数数组中，右边界扩张会让和不减，左边界收缩会让和不增；包含负数时这个关系消失，简单双指针可能漏解。
 
-## 2. 确定半开区间和不变量
+## 3. 半开区间与不变量 {#invariant}
 
 推荐统一使用 `[left, right)`：
 
@@ -49,7 +57,7 @@ while (right < values.length) {
 
 这里维护的不变量是：退出内层循环后，当前窗口满足约束。答案是在窗口恢复有效后更新，还是在首次满足条件时更新，取决于是求最长有效区间还是最短覆盖区间。
 
-## 3. 固定窗口只需要增量更新
+## 4. 固定窗口 {#fixed-window}
 
 计算每个长度 k 区间的和：
 
@@ -71,7 +79,7 @@ for (int right = 0; right < values.length; right++) {
 
 每次只加入新元素、移除离开的元素，不重新扫描整个窗口。时间 O(n)，额外空间 O(1)。使用 long 保存和，避免 `int` 累加溢出。
 
-## 4. 可变窗口处理最长无重复子串
+## 5. 可变窗口 {#variable-window}
 
 可以记录字符最近出现的位置：
 
@@ -103,7 +111,7 @@ static int longestUniqueSubstring(String value) {
 
 两个边界都只向前，哈希操作平均 O(1)，所以总时间平均 O(n)，空间取决于字符种类。
 
-## 5. Java String 的索引单位
+## 6. Java String 的索引单位 {#utf16}
 
 `String.length()` 和 `charAt` 使用 UTF-16 code unit。部分 Unicode 字符由两个 char 组成：
 
@@ -117,17 +125,17 @@ System.out.println(value.codePointCount(0, value.length())); // 3
 
 不要为了面试题复杂化已明确的字符集；也不要在业务国际化代码里默认一个 char 就是一个字符。
 
-## 6. 数组问题中的其他常用线性方法
+## 7. 其他线性方法 {#other-techniques}
 
-### 6.1 相向双指针
+### 7.1 相向双指针
 
 已排序数组中的两数和、回文判断和区间收缩，通常让 left 与 right 从两端靠近。每步根据有序性排除一部分候选。
 
-### 6.2 快慢指针
+### 7.2 快慢指针
 
 原地去重、元素移除和链表环检测，让两个指针承担“读取位置”和“写入位置”或不同移动速度。
 
-### 6.3 前缀和
+### 7.3 前缀和
 
 需要多次查询静态区间和时，先构造：
 
@@ -142,7 +150,7 @@ long rangeSum = prefix[right] - prefix[left];
 
 预处理 O(n)，每次半开区间 `[left, right)` 查询 O(1)。包含负数且寻找特定区间和时，前缀和加哈希往往比简单滑动窗口合适。
 
-## 7. 怎样证明窗口没有漏解
+## 8. 正确性证明 {#proof}
 
 需要说明两点：
 
@@ -151,27 +159,27 @@ long rangeSum = prefix[right] - prefix[left];
 
 例如最长无重复子串中，一旦字符 c 在当前窗口重复，任何仍包含上一次 c 的更左起点都不合法，因此 left 可以跳过它。这个论证比背模板更重要；条件不具备这种排除关系时，窗口算法就不成立。
 
-## 8. 常见问题
+## 9. 常见问题
 
-### 8.1 内层 while 为什么不会让复杂度变成 O(n²)
+### 9.1 内层 while 为什么不会让复杂度变成 O(n²)
 
 right 最多前进 n 次，left 在整段算法中也最多前进 n 次。虽然移动发生在嵌套循环里，总次数不超过 2n，因此是 O(n)。
 
-### 8.2 最短区间何时更新答案
+### 9.2 最短区间何时更新答案
 
 通常在窗口已经满足覆盖条件时，先记录当前长度，再移动 left 尝试缩小；直到窗口不再有效。最长有效区间则通常在恢复有效后记录。先写出不变量能避免更新时机混乱。
 
-### 8.3 可以每次用 substring 保存当前窗口吗
+### 9.3 可以每次用 substring 保存当前窗口吗
 
 可以得到正确结果，但会产生额外字符串和复制，最坏可能把线性算法变成大量分配。只保存左右边界，最终需要结果时再构造一次子串。
 
-### 8.4 为什么负数数组的最短和窗口会失败
+### 9.4 为什么负数数组的最短和窗口会失败
 
 加入一个负数可能让总和下降，移除一个负数可能让总和上升，边界移动不再具备单调排除关系。需要前缀和、单调队列或其他方法，取决于具体目标。
 
-## 9. 面试题
+## 10. 面试题
 
-### 9.1 怎样求最长无重复子串，并证明是 O(n) {#longest-unique-substring}
+### 10.1 怎样求最长无重复子串，并证明是 O(n) {#longest-unique-substring}
 
 <!-- 面试来源：
 - 字节跳动：https://www.nowcoder.com/discuss/668419570088017920
@@ -186,7 +194,7 @@ right 最多前进 n 次，left 在整段算法中也最多前进 n 次。虽然
 - 最近位置怎样让左边界直接跳转且不倒退。
 - 字符集与 Java char/code point 边界。
 
-**相关内容**：[确定半开区间和不变量](#2-确定半开区间和不变量)、[可变窗口处理最长无重复子串](#4-可变窗口处理最长无重复子串)、[Java String 的索引单位](#5-java-string-的索引单位)。
+**相关内容**：[半开区间与不变量](#invariant)、[可变窗口](#variable-window)、[Java String 的索引单位](#utf16)。
 
 <details>
 <summary>参考回答</summary>
@@ -197,7 +205,7 @@ right 和 left 各最多移动 n 次，因此平均时间 O(n)，哈希表空间
 
 </details>
 
-### 9.2 什么条件下可以使用滑动窗口 {#sliding-window-conditions}
+### 10.2 什么条件下可以使用滑动窗口 {#sliding-window-conditions}
 
 <!-- 面试来源：
 - 美团、字节跳动：https://www.nowcoder.com/discuss/353159433079431168
@@ -211,7 +219,7 @@ right 和 left 各最多移动 n 次，因此平均时间 O(n)，哈希表空间
 - 扩张和收缩能否单调排除候选。
 - 不满足单调性时怎样切换到前缀和等方法。
 
-**相关内容**：[先判断问题是否要求连续区间](#1-先判断问题是否要求连续区间)、[怎样证明窗口没有漏解](#7-怎样证明窗口没有漏解)。
+**相关内容**：[连续区间](#contiguous)、[正确性证明](#proof)。
 
 <details>
 <summary>参考回答</summary>
@@ -222,10 +230,8 @@ right 和 left 各最多移动 n 次，因此平均时间 O(n)，哈希表空间
 
 </details>
 
-:::note 参考资料
+## 11. 参考资料
 
-1. [Java API：String](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/String.html)
-2. [Java API：Character](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/Character.html)
-3. [Java API：HashMap](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/HashMap.html)
-
-:::
+- [Java API：String](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/String.html)
+- [Java API：Character](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/Character.html)
+- [Java API：HashMap](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/HashMap.html)

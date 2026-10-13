@@ -9,7 +9,15 @@ knowledge:
 
 不可变对象在构造完成后，外部无法观察到它的状态变化。`final` 字段只能固定引用，引用指向数组、集合或可变对象时，还需要防御性复制和受控返回值。
 
-## 1. final 只禁止字段重新赋值
+## 1. 面试核心 {#core}
+
+- 不可变类的条件：类为 `final` 或构造器私有、字段 `private final`、不提供修改方法、构造期间 `this` 不逸出。[卡](#immutable-class)
+- `final` 字段只固定引用，指向的集合或数组仍可修改，输入和输出边界都要防御性复制。
+- `Collections.unmodifiableList` 是只读视图，原列表变化仍会反映；`List.copyOf` 才是独立副本。
+- record 的组件引用是 final，但不会复制传入的可变集合，需要在紧凑构造器中复制。
+- 不可变对象可以在线程间直接共享，读取不需要加锁。[卡](#immutable-sharing)
+
+## 2. final 字段 {#final-fields}
 
 ```java
 public final class Schedule {
@@ -31,7 +39,7 @@ source.add(Instant.now());
 
 Schedule 的可观察状态随 source 变化，因此不是不可变对象。
 
-## 2. 在输入边界复制可变结构
+## 3. 输入边界的复制 {#input-copy}
 
 ```java
 public final class Schedule {
@@ -59,9 +67,9 @@ public Snapshot(List<MutablePoint> points) {
 }
 ```
 
-需要复制到什么深度取决于对象图的所有权。没有必要盲目“深拷贝整个世界”，但不能让外部保留能修改内部状态的路径。
+需要复制到什么深度取决于对象图的所有权。不需要深拷贝整个对象图，但不能让外部保留能修改内部状态的路径。
 
-## 3. 输出边界不能泄露可变引用
+## 4. 输出边界 {#output-copy}
 
 数组 getter 直接返回内部数组会泄露：
 
@@ -83,7 +91,7 @@ public byte[] digest() {
 
 对于只读集合，可以保存 `List.copyOf` 后直接返回，因为返回对象不支持结构修改；元素仍要满足不可变条件。
 
-## 4. 不可变类的设计条件
+## 5. 不可变类的条件 {#conditions}
 
 常见检查：
 
@@ -97,7 +105,7 @@ public byte[] digest() {
 
 类不一定必须声明 final。也可以使用私有构造、sealed 层次或只暴露不可变实现。但允许任意子类时，调用方不能从父类型保证整体不可变。
 
-## 5. record 不会自动深度不可变
+## 6. record 与可变组件 {#records}
 
 ```java
 public record Team(String name, List<User> members) {}
@@ -116,7 +124,7 @@ public record Team(String name, List<User> members) {
 
 如果 User 可变，Team 仍只是结构不可修改，不是深度不可变。record 提供数据载体语法和基于组件的相等性，不代替所有权设计。
 
-## 6. 不可变对象怎样更新
+## 7. 更新不可变对象 {#updates}
 
 更新返回一个新值：
 
@@ -135,9 +143,9 @@ Configuration next = current.withTimeout(Duration.ofSeconds(2));
 
 方法名应明确返回新对象，不要让调用方误以为原对象被修改。大量小步复制成本高时，可以在单线程 Builder 中累积，最终生成不可变结果。
 
-## 7. 并发收益与发布条件
+## 8. 线程间共享 {#sharing}
 
-对象真正不可变，并且构造期间没有让 `this` 逸出时，可以安全跨线程共享，读者不需要为状态变化加锁。final 字段还有特殊初始化安全语义，使正确构造后的值能被其他线程可靠观察。
+对象不可变，并且构造期间没有让 `this` 逸出时，可以安全跨线程共享，读者不需要为状态变化加锁。final 字段还有特殊初始化安全语义，使正确构造后的值能被其他线程可靠观察。
 
 不可变不代表所有操作都无竞争：
 
@@ -146,7 +154,7 @@ Configuration next = current.withTimeout(Duration.ofSeconds(2));
 - 读取远程资源的方法仍可能阻塞。
 - 大对象反复复制会带来分配成本。
 
-## 8. 防御性复制的成本与替代
+## 9. 复制成本与替代方案 {#cost}
 
 复制大数组和大对象图会消耗时间与内存。可选方案：
 
@@ -158,27 +166,27 @@ Configuration next = current.withTimeout(Duration.ofSeconds(2));
 
 性能优化必须保持契约清楚。把“不许改”只写在注释里，无法阻止意外修改。
 
-## 9. 常见问题
+## 10. 常见问题
 
-### 9.1 `Collections.unmodifiableList` 是否等于防御性复制
+### 10.1 `Collections.unmodifiableList` 是否等于防御性复制
 
 不是。它是原列表的不可修改视图，原列表变化仍会反映。需要独立状态时使用 `List.copyOf` 或先复制再包装。
 
-### 9.2 getter 每次都复制是否必要
+### 10.2 getter 每次都复制是否必要
 
 如果内部保存的是不可修改集合且元素不可变，可以直接返回；内部是数组或可变对象时需要副本或只读抽象。根据所有权选择，不机械复制。
 
-### 9.3 不可变对象一定适合作为 HashMap key 吗
+### 10.3 不可变对象一定适合作为 HashMap key 吗
 
 不可变能保证哈希和相等性不会因状态变化而失效，但仍要正确实现 equals/hashCode，并选择代表稳定身份或值的字段。
 
-### 9.4 深拷贝如何处理循环引用
+### 10.4 深拷贝如何处理循环引用
 
 需要身份映射记录已经复制的对象，否则递归会无限循环并破坏共享关系。对象图复杂到需要通用深拷贝时，应重新评估边界是否应该暴露整张可变图。
 
-## 10. 面试题
+## 11. 面试题
 
-### 10.1 怎样设计一个不可变类 {#immutable-class}
+### 11.1 怎样设计一个不可变类 {#immutable-class}
 
 <!-- 面试来源：
 - 字节跳动：https://www.nowcoder.com/discuss/353156331500675072
@@ -193,7 +201,7 @@ Configuration next = current.withTimeout(Duration.ofSeconds(2));
 - 输入和输出边界的防御性复制。
 - 继承、构造逸出和稳定相等性。
 
-**相关内容**：[final 只禁止字段重新赋值](#1-final-只禁止字段重新赋值)至[record 不会自动深度不可变](#5-record-不会自动深度不可变)、[并发收益与发布条件](#7-并发收益与发布条件)。
+**相关内容**：[final 字段](#final-fields)至[record 与可变组件](#records)、[线程间共享](#sharing)。
 
 <details>
 <summary>参考回答</summary>
@@ -204,7 +212,7 @@ Configuration next = current.withTimeout(Duration.ofSeconds(2));
 
 </details>
 
-### 10.2 不可变对象为什么更容易在线程间共享 {#immutable-sharing}
+### 11.2 不可变对象为什么更容易在线程间共享 {#immutable-sharing}
 
 <!-- 面试来源：
 - 京东、字节跳动：https://www.nowcoder.com/discuss/353149101678206976
@@ -218,7 +226,7 @@ Configuration next = current.withTimeout(Duration.ofSeconds(2));
 - final 字段初始化安全和 this 逸出。
 - 容器与元素的线程安全需要分开。
 
-**相关内容**：[并发收益与发布条件](#7-并发收益与发布条件)。
+**相关内容**：[线程间共享](#sharing)。
 
 <details>
 <summary>参考回答</summary>
@@ -229,11 +237,9 @@ Configuration next = current.withTimeout(Duration.ofSeconds(2));
 
 </details>
 
-:::note 参考资料
+## 12. 参考资料
 
-1. [Java Tutorials：A Strategy for Defining Immutable Objects](https://docs.oracle.com/javase/tutorial/essential/concurrency/imstrat.html)
-2. [Java Language Specification：final Field Semantics](https://docs.oracle.com/en/java/javase/26/docs/specs/jls/jls-17.html#jls-17.5)
-3. [Java Language Specification：Record Classes](https://docs.oracle.com/en/java/javase/26/docs/specs/jls/jls-8.html#jls-8.10)
-4. [Java API：List.copyOf](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/List.html#copyOf(java.util.Collection))
-
-:::
+- [Java Tutorials：A Strategy for Defining Immutable Objects](https://docs.oracle.com/javase/tutorial/essential/concurrency/imstrat.html)
+- [Java Language Specification：final Field Semantics](https://docs.oracle.com/en/java/javase/26/docs/specs/jls/jls-17.html#jls-17.5)
+- [Java Language Specification：Record Classes](https://docs.oracle.com/en/java/javase/26/docs/specs/jls/jls-8.html#jls-8.10)
+- [Java API：List.copyOf](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/List.html#copyOf(java.util.Collection))

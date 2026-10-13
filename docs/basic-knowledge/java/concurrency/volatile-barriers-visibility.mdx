@@ -9,7 +9,15 @@ knowledge:
 
 `volatile` 适合表示一个可以独立读写的共享变量，或者充当状态发布信号。它为读写提供可见性和顺序保证，但不为多步操作或多个字段的不变量提供互斥。
 
-## 1. volatile 写与后续读建立顺序
+## 1. 面试核心 {#core}
+
+- 对 `volatile` 变量的写，happens-before 其他线程随后读到这次写的读操作。
+- `volatile` 只保证单次读写的可见性和顺序，`count++` 这类读改写仍会丢失更新。[卡](#volatile-increment)
+- 用 `volatile` 标志发布数据时，读线程必须先读到标志，再读数据，才能看到发布前的普通写入。
+- 内存屏障是 JVM 在不同处理器上实现这些保证的手段，具体指令随架构变化。
+- 适合关闭标志和发布不可变配置；精确计数、检查后扣减、多字段一致性需要原子类或锁。
+
+## 2. volatile 读写的顺序保证 {#ordering}
 
 ```java
 private volatile boolean closed;
@@ -29,7 +37,7 @@ public void runLoop() {
 
 它适合状态标记、不可变配置引用和满足单写者等条件的状态机。
 
-## 2. `volatile` 不保护复合更新
+## 3. 复合更新 {#compound-update}
 
 ```java
 private volatile int count;
@@ -52,7 +60,7 @@ if (!initialized) {
 
 多个线程可能同时通过检查。`volatile` 不能代替互斥。
 
-## 3. 发布的是一条有方向的边
+## 4. 用 volatile 标志发布数据 {#publication}
 
 ```java
 private Data data;
@@ -68,13 +76,13 @@ void publish(Data next) {
 
 数组引用声明为 `volatile` 也只约束引用本身，普通数组元素不会因此全部获得 volatile 语义。需要原子数组时使用 `AtomicIntegerArray` 等类型。
 
-## 4. 内存屏障是实现手段
+## 5. 内存屏障 {#memory-barriers}
 
 JIT 会根据目标处理器把 volatile 与 VarHandle 的访问模式映射为相应的编译器约束、机器指令和屏障。不同架构的成本与具体屏障组合并不相同。
 
 工程代码应围绕 acquire/release 和 happens-before 表达需求，不要把某张 x86 屏障表当成 Java 规范。需要更细粒度语义的底层组件可以使用 VarHandle 的 plain、opaque、acquire、release 和 volatile 模式，但普通业务代码很少需要主动降低保证。
 
-## 5. 典型使用边界
+## 6. 使用场景 {#use-cases}
 
 | 需求 | `volatile` 是否合适 | 原因 |
 | --- | --- | --- |
@@ -84,19 +92,19 @@ JIT 会根据目标处理器把 volatile 与 VarHandle 的访问模式映射为�
 | 余额检查并扣减 | 不合适 | 多步不变量需要互斥或 CAS 协议 |
 | 两个字段必须同时一致 | 通常不合适 | 独立 volatile 写会暴露中间组合 |
 
-## 6. 常见问题
+## 7. 常见问题
 
-### 6.1 `volatile long` 的意义只是防止撕裂吗
+### 7.1 `volatile long` 的意义只是防止撕裂吗
 
-不只是。现代 Java 对单次 volatile 读写还规定了内存顺序和可见性语义。将它理解成“64 位原子写”会漏掉最重要的 happens-before 保证。
+防止撕裂只是其中一项。Java 对单次 volatile 读写还规定了内存顺序和可见性语义。将它理解成“64 位原子写”会漏掉最重要的 happens-before 保证。
 
-### 6.2 volatile 变量越多，线程安全性越高吗
+### 7.2 volatile 变量越多，线程安全性越高吗
 
 不会。多个变量分别可见，仍不能保证组合状态一致。应先写出不变量，再确定同步边界。
 
-## 7. 面试题
+## 8. 面试题
 
-### 7.1 为什么 `volatile` 不能保证 `i++` 的线程安全 {#volatile-increment}
+### 8.1 为什么 `volatile` 不能保证 `i++` 的线程安全 {#volatile-increment}
 
 <!-- 面试来源：
 - 阿里巴巴：https://www.nowcoder.com/discuss/461925
@@ -111,7 +119,7 @@ JIT 会根据目标处理器把 volatile 与 VarHandle 的访问模式映射为�
 - 丢失更新的交错过程。
 - 合适的原子类或锁方案。
 
-**相关内容**：[volatile 写与后续读建立顺序](#1-volatile-写与后续读建立顺序)和[`volatile` 不保护复合更新](#2-volatile-不保护复合更新)。
+**相关内容**：[volatile 读写的顺序保证](#ordering)和[复合更新](#compound-update)。
 
 <details>
 <summary>参考回答</summary>
@@ -122,10 +130,8 @@ volatile 读写各自有可见性和顺序保证，但 `i++` 包含读、计算�
 
 </details>
 
-:::note 参考资料
+## 9. 参考资料
 
-1. [JLS 8.3.1.4：`volatile` Fields](https://docs.oracle.com/javase/specs/jls/se26/html/jls-8.html#jls-8.3.1.4)
-2. [JLS 17.4.5：Happens-before Order](https://docs.oracle.com/javase/specs/jls/se26/html/jls-17.html#jls-17.4.5)
-3. [Java API：`VarHandle`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/invoke/VarHandle.html)
-
-:::
+- [JLS 8.3.1.4：`volatile` Fields](https://docs.oracle.com/javase/specs/jls/se26/html/jls-8.html#jls-8.3.1.4)
+- [JLS 17.4.5：Happens-before Order](https://docs.oracle.com/javase/specs/jls/se26/html/jls-17.html#jls-17.4.5)
+- [Java API：`VarHandle`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/invoke/VarHandle.html)

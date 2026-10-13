@@ -9,7 +9,15 @@ knowledge:
 
 批处理控制写入数据库的往返次数，分页控制一次读取的数据范围，数据访问测试则验证最终 SQL 和目标数据库语义。三者都需要在真实事务和数据规模下检查，不能只看框架方法是否正常返回。
 
-## 1. JDBC 批处理复用语句结构
+## 1. 面试核心 {#core}
+
+- JDBC batch 是执行与通信优化，不自动提供整批原子性；事务和驱动行为决定失败边界。[卡](#batch-results)
+- JPA flush 后再 clear 才能释放已同步实体；IDENTITY 等策略可能影响插入合批。[卡](#flush-clear)
+- 深 offset 仍需跳过前面记录；覆盖索引减少取列成本，不消除偏移扫描。[卡](#deep-pagination)
+- Keyset 依赖唯一稳定排序和匹配索引；排序键修改、NULL 与游标条件变化需明确处理。[卡](#keyset-consistency)
+- 两阶段关联读取和分批提交各有一致性边界，用目标数据库验证结果与执行成本。[卡](#keyset-consistency)
+
+## 2. JDBC 批处理复用语句结构 {#1-jdbc-批处理复用语句结构}
 
 ```java
 try (PreparedStatement statement = connection.prepareStatement(SQL)) {
@@ -24,15 +32,15 @@ try (PreparedStatement statement = connection.prepareStatement(SQL)) {
 
 PreparedStatement 批处理把同一结构的一组参数交给驱动，驱动再根据数据库协议合并发送或改写语句。是否真正减少网络往返、单批最大值和生成键行为都与驱动及配置有关，应通过 JDBC 日志和数据库指标确认。
 
-## 2. 批大小决定内存与失败范围
+## 3. 批大小决定内存与失败范围 {#2-批大小决定内存与失败范围}
 
 一百万行不应一次积累在内存和单个事务中。常见做法是按固定批大小执行，并根据一致性要求决定多久提交。
 
-批太小，往返减少有限；批太大，会增加参数内存、锁持有时间、日志量和失败重试成本。遇到 BatchUpdateException 时要检查每条 update count，并明确是整批回滚、从失败位置重试还是记录坏数据。
+批太小，往返减少有限；批太大，会增加参数内存、锁持有时间、日志量和失败重试成本。遇到 BatchUpdateException 时检查 update counts：驱动可能在失败处停止，也可能继续，成功项还可能用 SUCCESS_NO_INFO 表示，不能据数组位置猜出统一失败边界。先确认 autoCommit 和事务是否已提交，再决定整体回滚或以幂等标识核对，不能盲目从某条语句重试。
 
 涉及唯一约束和幂等时，重试协议必须先于调大批量。
 
-## 3. MyBatis 与 JPA 还要处理本地状态
+## 4. MyBatis 与 JPA 还要处理本地状态 {#3-mybatis-与-jpa-还要处理本地状态}
 
 MyBatis 使用 `ExecutorType.BATCH` 时，更新先进入批队列，`flushStatements()` 或事务边界才拿到执行结果。不要把 Mapper 方法的暂时返回值当作最终影响行数。
 
@@ -40,7 +48,7 @@ JPA 批量写入时，Persistence Context 会保留 managed 实体。需要分�
 
 批量更新语句绕过实体逐个脏检查时，当前上下文中的旧实体可能失效，应在明确边界清理或刷新。
 
-## 4. Offset 分页的成本随偏移增长
+## 5. Offset 分页的成本随偏移增长 {#4-offset-分页的成本随偏移增长}
 
 ```sql
 select id, created_at
@@ -53,7 +61,7 @@ limit 20 offset 1000000;
 
 并发插入或删除还会让相邻两页出现重复或遗漏。后台管理页面偶尔跳到指定页，可以接受 offset；持续下拉和批量扫描更适合游标方式。
 
-## 5. Keyset 分页从最后一条继续
+## 6. Keyset 分页从最后一条继续 {#5-keyset-分页从最后一条继续}
 
 ```sql
 select id, created_at
@@ -69,13 +77,39 @@ limit 20;
 
 Keyset 不擅长直接跳到任意页，也不能自动提供低成本精确总页数。接口需要先说明产品是否真的需要这些能力。
 
-## 6. 分页关联数据要控制结果规模
+## 7. 批处理结果与事务示例 {#batch-transaction}
+
+以下示意使用调用方新获取的独立连接，整批需要共同成功；若已由 Spring 管理事务，不要在内部自行改变 autocommit 或提交：
+
+```java
+try (Connection connection = dataSource.getConnection()) {
+    connection.setAutoCommit(false);
+    try {
+        // 使用该连接 addBatch / executeBatch，核对更新计数。
+        connection.commit();
+    } catch (SQLException e) {
+        try { connection.rollback(); }
+        catch (SQLException rollbackFailure) { e.addSuppressed(rollbackFailure); }
+        throw e;
+    }
+}
+```
+
+`SUCCESS_NO_INFO` 表示成功但没有精确行数，`EXECUTE_FAILED` 表示该命令失败，不能把所有负数当成影响零行。提交阶段断线仍可能结果不确定，需按业务唯一键核对。JPA 中要先 flush 再 clear；clear 先执行会丢弃尚未同步的受管变化。Hibernate 的 IDENTITY 主键生成通常阻止常规 JDBC 插入批处理，应在实际生成策略和驱动上验证。
+
+## 8. 游标与一致性边界 {#keyset-boundaries}
+
+上例要求 `created_at` 与 `id` 非空，并且组合能唯一排序。元组比较的优化程度取决于数据库，可对比等价条件 `created_at < :t OR (created_at = :t AND id < :id)` 的计划。对倒序下一页使用严格小于；只带时间、不带同时间的主键会漏掉边界记录。
+
+Keyset 避免 offset 因前方插入而整体移动，但不是数据库快照。排序字段更新可能使记录跨过游标，删除也会改变后续结果。需要精确导出时选择固定快照，或用业务版本/冻结数据集；固定最大 ID 只能限制新增范围，不能冻结已有行的内容。
+
+## 9. 分页关联数据要控制结果规模 {#6-分页关联数据要控制结果规模}
 
 对一对多 join 结果直接分页，数据库按展开后的行截断，可能导致父对象数量不稳定。可以先分页查询主键，再按本页主键抓取关联，并恢复第一页的排序。
 
 批量扫描还要明确快照语义。若处理中持续有新数据写入，可以使用单调主键、固定截止点或版本条件，防止一条记录被漏掉或重复处理。
 
-## 7. 数据访问测试使用目标数据库
+## 10. 数据访问测试使用目标数据库 {#7-数据访问测试使用目标数据库}
 
 H2 等内存数据库适合少量通用测试，但不能证明 MySQL 或 PostgreSQL 的方言、锁、索引、时区和执行计划行为。关键 Repository/Mapper 测试应通过 Testcontainers 等方式运行目标数据库版本。
 
@@ -90,15 +124,15 @@ H2 等内存数据库适合少量通用测试，但不能证明 MySQL 或 Postgr
 
 测试事务自动回滚可能掩盖“提交后”行为。缓存、事件和数据库约束需要在真实 commit 后验证时，应显式划分事务。
 
-## 8. 性能验证同时记录结果正确性
+## 11. 性能验证同时记录结果正确性 {#8-性能验证同时记录结果正确性}
 
 压测记录批大小、行宽、索引、驱动配置、提交频率和数据库资源。除了吞吐与 P99，还要检查影响行数、重复键、遗漏记录和重试次数。
 
 只有速度提升而结果不稳定的批处理或分页，不能进入生产路径。
 
-## 9. 面试题
+## 12. 面试题 {#9-面试题}
 
-### 9.1 `limit 1000000, 20` 为什么慢，怎样改进 {#deep-pagination}
+### 12.1 `limit 1000000, 20` 为什么慢，怎样改进 {#deep-pagination}
 
 <!-- 面试来源：
 - CVTE：https://www.nowcoder.com/discuss/353154893408051200
@@ -112,7 +146,7 @@ H2 等内存数据库适合少量通用测试，但不能证明 MySQL 或 Postgr
 - 覆盖索引、延迟关联与 Keyset 分页。
 - 稳定排序和并发数据变化。
 
-**相关内容**：[Offset 分页的成本随偏移增长](#4-offset-分页的成本随偏移增长)至[数据访问测试使用目标数据库](#7-数据访问测试使用目标数据库)。
+**相关内容**：[Offset 成本](#4-offset-分页的成本随偏移增长)、[Keyset](#5-keyset-分页从最后一条继续)、[游标边界](#keyset-boundaries)。
 
 <details>
 <summary>参考回答</summary>
@@ -123,11 +157,71 @@ Keyset 排序要唯一，例如 created_at 加 id，并建立匹配索引。它�
 
 </details>
 
-:::note 参考资料
+### 12.2 executeBatch 抛异常后，能直接从失败位置继续吗？ {#batch-results}
+
+<!-- 面试来源：本站自测：依据本文机制与官方资料设计，无已核验的公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**
+
+- update counts。
+- 事务与不确定提交。
+
+**相关内容**：[批大小](#2-批大小决定内存与失败范围)、[批处理结果](#batch-transaction)。
+
+<details>
+<summary>参考回答</summary>
+
+不能统一假定失败后全部未执行。驱动可停止或继续，SUCCESS_NO_INFO 不给精确行数，autocommit 下还可能已有提交。先判断事务状态；可回滚时重试整个业务单元，结果不确定时按幂等键核对。
+
+</details>
+
+### 12.3 JPA 批量插入为什么要先 flush 再 clear？ {#flush-clear}
+
+<!-- 面试来源：本站自测：依据本文机制与官方资料设计，无已核验的公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**
+
+- 同步和实体保留。
+- 主键生成与合批。
+
+**相关内容**：[本地状态](#3-mybatis-与-jpa-还要处理本地状态)、[批处理事务](#batch-transaction)。
+
+<details>
+<summary>参考回答</summary>
+
+flush 同步待写变化但不提交，clear 解除对象管理、释放上下文持有的实体；顺序反过来可能丢弃未同步修改。JDBC batch 还受配置、SQL 形态和主键生成策略影响，例如 Hibernate 的 IDENTITY 插入通常无法常规合批。
+
+</details>
+
+### 12.4 Keyset 分页能保证并发修改下完全不重不漏吗？ {#keyset-consistency}
+
+<!-- 面试来源：本站自测：依据本文机制与官方资料设计，无已核验的公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**
+
+- 唯一排序和边界。
+- 快照与固定截止点。
+
+**相关内容**：[Keyset](#5-keyset-分页从最后一条继续)、[一致性边界](#keyset-boundaries)。
+
+<details>
+<summary>参考回答</summary>
+
+不能。唯一组合游标解决同值边界和偏移移动，但排序键修改仍可使记录跨页。必须规定 NULL、方向、查询条件和排序键稳定性。精确导出需要快照或业务版本，固定最大 ID 只约束新增，不能冻结已有内容。
+
+</details>
+
+## 13. 参考资料 {#references}
 
 1. [JDBC：PreparedStatement](https://docs.oracle.com/en/java/javase/26/docs/api/java.sql/java/sql/PreparedStatement.html)
 2. [MyBatis：Java API](https://mybatis.org/mybatis-3/java-api.html)
-3. [Hibernate ORM User Guide：Batching](https://docs.hibernate.org/orm/current/userguide/html_single/Hibernate_User_Guide.html#batch)
+3. [Hibernate ORM User Guide：Batching](https://docs.hibernate.org/orm/7.1/userguide/html_single/Hibernate_User_Guide.html#batch)
 4. [Testcontainers for Java：Database Containers](https://java.testcontainers.org/modules/databases/)
-
-:::
+- [JDBC：BatchUpdateException](https://docs.oracle.com/en/java/javase/25/docs/api/java.sql/java/sql/BatchUpdateException.html)
+- [MySQL 8.4：Row Constructor Optimization](https://dev.mysql.com/doc/refman/8.4/en/row-constructor-optimization.html)

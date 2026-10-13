@@ -9,7 +9,15 @@ knowledge:
 
 类加载器收到加载请求后，通常先让父加载器尝试，父加载器找不到时才由自己查找。这个搜索顺序让基础类和共享依赖优先使用已有定义，也使类型身份更容易保持一致。
 
-## 1. 委派发生在查找类之前
+## 1. 面试核心 {#core}
+
+- 类加载器收到请求时先检查是否已加载，再委派父加载器，父加载器找不到时才自己查找。[卡](#delegation-flow)
+- 委派让 `java.lang.String` 等核心类总是由启动类加载器定义，应用无法用同名类替换。
+- JDK 9 之后的内置加载器是启动类加载器、平台类加载器和应用类加载器；父子是委派关系，与 Java 类继承无关。
+- JVM 用“类名 + 定义它的类加载器”确定类型，不同加载器加载的同名类之间不能强制转换。[卡](#same-class-cast-failure)
+- SPI、插件隔离和热部署会有选择地改变委派顺序，平台和共享 API 仍由父加载器优先加载。
+
+## 2. 委派流程 {#flow}
 
 `ClassLoader.loadClass` 的典型路径可以概括为：
 
@@ -32,7 +40,7 @@ final class PluginClassLoader extends ClassLoader {
 
 直接重写 `loadClass` 会改变搜索协议，需要明确哪些包父优先、哪些包子优先，以及如何处理并发加载。
 
-## 2. 委派减少基础类的重复定义
+## 3. 委派的作用 {#purpose}
 
 应用代码请求 `java.lang.String` 时，委派会让启动类加载器先处理。自定义加载器不能仅靠放置一个同名 Class 文件替换 Java 平台核心类。
 
@@ -44,7 +52,7 @@ final class PluginClassLoader extends ClassLoader {
 
 :::
 
-## 3. Java 的三层内置加载器
+## 4. 内置类加载器 {#builtin-loaders}
 
 现代 JDK 常见层级是：
 
@@ -54,13 +62,13 @@ final class PluginClassLoader extends ClassLoader {
 
 它们描述默认运行环境，不意味着所有框架都只能有三层。应用服务器、构建工具和插件系统可以建立自己的加载器图。
 
-## 4. 父加载器不是 Java 继承关系
+## 5. 父加载器与类继承 {#parent-vs-inheritance}
 
 `ClassLoader.getParent()` 返回委派关系中的父加载器。子加载器通过组合调用父加载器，不要求其 Java 类必须继承父加载器的具体实现。
 
 “双亲”是传统译名，模型里通常只有一条父委派链，不是两个父加载器。
 
-## 5. 什么时候需要改变默认顺序
+## 6. 改变委派顺序的场景 {#breaking-delegation}
 
 常见需求包括：
 
@@ -71,7 +79,7 @@ final class PluginClassLoader extends ClassLoader {
 
 改变委派必须保留一组共享边界。Java 平台包、宿主 API、日志门面或协议模型若被两边分别定义，很容易出现转换失败、静态状态分裂和资源泄漏。
 
-## 6. 怎样观察实际加载结果
+## 7. 观察实际加载结果 {#observe}
 
 ```bash
 java -Xlog:class+load=info -jar app.jar
@@ -88,23 +96,23 @@ System.out.println(Service.class.getClassLoader());
 
 排查时要确认**实际定义加载器**，不能只看文件位于哪个 JAR。一个加载器可以从多个位置找类，同一个 JAR 也可能被多个加载器分别读取。
 
-## 7. 常见问题
+## 8. 常见问题
 
-### 7.1 自定义 `java.lang.String` 会覆盖 JDK 的 String 吗
+### 8.1 自定义 `java.lang.String` 会覆盖 JDK 的 String 吗
 
 正常委派路径下不会。启动类加载器会先返回平台定义；此外 JVM 对 `java.*` 包的定义还有保护。业务代码不应依赖伪造平台包实现覆盖。
 
-### 7.2 双亲委派可以避免所有类冲突吗
+### 8.2 双亲委派可以避免所有类冲突吗
 
 不能。它只能确定一条加载器链中的搜索顺序。依赖版本不兼容、不同子加载器重复定义共享类型和资源查找顺序仍可能冲突。
 
-### 7.3 打破双亲委派等于完全不委派吗
+### 8.3 打破双亲委派等于完全不委派吗
 
 不等于。常用设计是有选择地 child-first：平台和共享 API 仍父优先，插件私有包子优先。完全取消共享边界会让类型无法交互。
 
-## 8. 面试题
+## 9. 面试题
 
-### 8.1 双亲委派的加载流程和作用是什么 {#delegation-flow}
+### 9.1 双亲委派的加载流程和作用是什么 {#delegation-flow}
 
 <!-- 面试来源：
 - 阿里巴巴：https://www.nowcoder.com/discuss/353157613372252160
@@ -119,7 +127,7 @@ System.out.println(Service.class.getClassLoader());
 - 平台类、共享 API 与类型身份。
 - 模型可以被受控调整，不是 JVM 的唯一加载方式。
 
-**相关内容**：[委派发生在查找类之前](#1-委派发生在查找类之前)至[什么时候需要改变默认顺序](#5-什么时候需要改变默认顺序)。
+**相关内容**：[委派流程](#flow)至[改变委派顺序的场景](#breaking-delegation)。
 
 <details>
 <summary>参考回答</summary>
@@ -130,7 +138,7 @@ System.out.println(Service.class.getClassLoader());
 
 </details>
 
-### 8.2 为什么同名同字节码的两个类仍可能无法强制转换 {#same-class-cast-failure}
+### 9.2 为什么同名同字节码的两个类仍可能无法强制转换 {#same-class-cast-failure}
 
 <!-- 面试来源：
 - 字节跳动：https://www.nowcoder.com/discuss/353158260289118208
@@ -144,7 +152,7 @@ System.out.println(Service.class.getClassLoader());
 - 定义加载器与发起加载器的区别。
 - 插件隔离时共享接口的位置。
 
-**相关内容**：[委派减少基础类的重复定义](#2-委派减少基础类的重复定义)和[什么时候需要改变默认顺序](#5-什么时候需要改变默认顺序)。
+**相关内容**：[委派的作用](#purpose)和[改变委派顺序的场景](#breaking-delegation)。
 
 <details>
 <summary>参考回答</summary>
@@ -153,10 +161,8 @@ JVM 使用二进制名称和定义类加载器共同标识类型。两个加载�
 
 </details>
 
-:::note 参考资料
+## 10. 参考资料
 
-1. [Java API：`ClassLoader`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/ClassLoader.html)
-2. [JVMS：Creation and Loading](https://docs.oracle.com/javase/specs/jvms/se26/html/jvms-5.html#jvms-5.3)
-3. [Oracle：JDK 迁移指南中的类加载器变化](https://docs.oracle.com/en/java/javase/26/migrate/significant-changes-jdk-release.html)
-
-:::
+- [Java API：`ClassLoader`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/ClassLoader.html)
+- [JVMS：Creation and Loading](https://docs.oracle.com/javase/specs/jvms/se26/html/jvms-5.html#jvms-5.3)
+- [Oracle：JDK 迁移指南中的类加载器变化](https://docs.oracle.com/en/java/javase/26/migrate/significant-changes-jdk-release.html)

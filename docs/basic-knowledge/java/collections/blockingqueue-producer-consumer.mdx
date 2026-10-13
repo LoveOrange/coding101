@@ -9,7 +9,15 @@ knowledge:
 
 `BlockingQueue` 在 Queue 基础上增加等待语义：队列为空时消费者可以等待，队列已满时生产者可以等待。使用有界队列还能把下游处理能力转化为明确的背压信号。
 
-## 1. 四组入队与出队方法
+## 1. 面试核心 {#core}
+
+- `BlockingQueue` 在队列为空时让消费者等待，在队列满时让生产者等待；`put`/`take` 阻塞，`offer`/`poll` 可以立即返回或限时等待。
+- 生产者消费者模型直接用 `put` 和 `take` 交接任务，队列负责等待、唤醒和可见性。[卡](#producer-consumer)
+- `ArrayBlockingQueue` 是固定容量数组；`LinkedBlockingQueue` 是链表，不指定容量时上限为 `Integer.MAX_VALUE`；`SynchronousQueue` 不存储元素，直接交接。[卡](#choose-blocking-queue)
+- 有界队列把消费能力不足转化为生产端的阻塞或拒绝，形成背压。
+- 停止消费者用中断或 poison pill；进程内队列不提供持久化和重试，跨进程可靠传递需要消息队列。
+
+## 2. 入队与出队方法 {#methods}
 
 BlockingQueue 为同一操作提供不同失败策略：
 
@@ -28,7 +36,7 @@ Job next = queue.take(); // 空时等待，可被中断
 
 选择方法就是选择失败协议：等待多久、是否允许调用线程被拖慢、超时后由谁处理任务。
 
-## 2. 有界队列建立容量边界
+## 3. 有界队列 {#bounded}
 
 生产速度长期高于消费速度时，任何缓冲区都会继续增长或拒绝数据。固定容量让这个边界提前显现：
 
@@ -49,7 +57,7 @@ if (!accepted) {
 
 没有统一最佳策略。关键是不能把“暂时放进内存”当作处理能力提升。
 
-## 3. 生产者与消费者不再手写 wait/notify
+## 4. 生产者消费者模型 {#producer-consumer-section}
 
 ```java
 final class Worker implements Runnable {
@@ -83,29 +91,29 @@ final class Worker implements Runnable {
 - 进程崩溃时内存任务是否允许丢失。
 - 停机时等待、排空还是转存。
 
-## 4. 常见实现怎样选择
+## 5. 常见实现 {#implementations}
 
-### 4.1 ArrayBlockingQueue
+### 5.1 ArrayBlockingQueue
 
 固定大小循环数组，在构造时确定容量。节点分配少，容量边界明确，可选公平锁。生产和消费围绕同一主锁协调。
 
-### 4.2 LinkedBlockingQueue
+### 5.2 LinkedBlockingQueue
 
-链式节点，可指定容量；不指定时上限很大，容易被误当成真正安全的无界队列。当前实现分别使用 put 和 take 锁，生产消费可以有更多并行，但每个元素需要节点分配。
+链式节点，可指定容量；不指定时上限为 `Integer.MAX_VALUE`，实际效果接近无界队列。当前实现分别使用 put 和 take 锁，生产消费可以有更多并行，但每个元素需要节点分配。
 
-### 4.3 SynchronousQueue
+### 5.3 SynchronousQueue
 
 容量为零。每次 put 必须与一个 take 直接交接，适合把任务立即移交给空闲消费者，不承担缓冲。
 
-### 4.4 PriorityBlockingQueue
+### 5.4 PriorityBlockingQueue
 
 按优先级取出，逻辑上无界。它不会因为“队列满”给生产者背压；相同优先级也不自动保证 FIFO，任务比较器必须稳定。
 
-### 4.5 DelayQueue
+### 5.5 DelayQueue
 
 只有延迟到期的元素才能取出，适合进程内延迟触发。它不持久化，系统时钟、进程重启和大量取消任务都需要考虑。
 
-## 5. 中断、关闭与 poison pill
+## 6. 中断、关闭与 poison pill {#shutdown}
 
 BlockingQueue 没有统一 `close` 方法。常见停止方式：
 
@@ -123,7 +131,7 @@ poison pill 需要保证：
 
 线程池任务队列通常由 ExecutorService 管理，不应绕过线程池直接拿内部队列实现自定义关闭。
 
-## 6. 内存队列与消息队列的边界
+## 7. 内存队列与消息队列 {#vs-message-queue}
 
 BlockingQueue 适合同一 JVM 内线程协作。它不提供：
 
@@ -134,27 +142,27 @@ BlockingQueue 适合同一 JVM 内线程协作。它不提供：
 
 任务不能丢、需要跨服务或要保留较长时间时，应使用持久消息系统或数据库任务表。进程内 BlockingQueue 仍可作为消费者内部的小型有界缓冲，但要与外部确认协议协调。
 
-## 7. 常见问题
+## 8. 常见问题
 
-### 7.1 LinkedBlockingQueue 不传容量有什么风险
+### 8.1 LinkedBlockingQueue 不传容量有什么风险
 
 它的容量上限非常大。消费者变慢时，生产者不会及时获得压力信号，节点会持续占用堆，最终可能触发长 GC 或 OOM。服务端线程池和任务管道通常显式设置容量。
 
-### 7.2 `remainingCapacity()` 后再 put 能保证不阻塞吗
+### 8.2 `remainingCapacity()` 后再 put 能保证不阻塞吗
 
 不能。两个调用之间其他线程可能填满队列。直接使用 `offer` 或限时 offer，把检查与插入交给队列的原子操作。
 
-### 7.3 BlockingQueue 保证业务只处理一次吗
+### 8.3 BlockingQueue 保证业务只处理一次吗
 
 不保证。消费者可能在业务提交后、记录完成前失败，调用方也可能重试入队。需要幂等键、状态记录或事务消息等业务协议。
 
-### 7.4 公平队列一定更好吗
+### 8.4 公平队列一定更好吗
 
 公平模式减少长期等待偏差，但通常降低吞吐。只有等待公平是明确需求时开启，并通过负载测试验证。
 
-## 8. 面试题
+## 9. 面试题
 
-### 8.1 怎样用 BlockingQueue 实现生产者消费者 {#producer-consumer}
+### 9.1 怎样用 BlockingQueue 实现生产者消费者 {#producer-consumer}
 
 <!-- 面试来源：
 - 快手：https://www.nowcoder.com/discuss/353156450388221952
@@ -168,7 +176,7 @@ BlockingQueue 适合同一 JVM 内线程协作。它不提供：
 - 有界容量怎样形成背压。
 - 任务失败、停机与丢失边界。
 
-**相关内容**：[四组入队与出队方法](#1-四组入队与出队方法)至[中断、关闭与 poison pill](#5-中断关闭与-poison-pill)。
+**相关内容**：[入队与出队方法](#methods)至[中断、关闭与 poison pill](#shutdown)。
 
 <details>
 <summary>参考回答</summary>
@@ -179,7 +187,7 @@ BlockingQueue 适合同一 JVM 内线程协作。它不提供：
 
 </details>
 
-### 8.2 ArrayBlockingQueue、LinkedBlockingQueue 和 SynchronousQueue 怎样选择 {#choose-blocking-queue}
+### 9.2 ArrayBlockingQueue、LinkedBlockingQueue 和 SynchronousQueue 怎样选择 {#choose-blocking-queue}
 
 <!-- 面试来源：
 - 去哪儿：https://www.nowcoder.com/discuss/353158601923567616
@@ -194,7 +202,7 @@ BlockingQueue 适合同一 JVM 内线程协作。它不提供：
 - 容量、分配、锁竞争与背压的关系。
 - 默认近似无界为何危险。
 
-**相关内容**：[有界队列建立容量边界](#2-有界队列建立容量边界)、[常见实现怎样选择](#4-常见实现怎样选择)。
+**相关内容**：[有界队列](#bounded)、[常见实现](#implementations)。
 
 <details>
 <summary>参考回答</summary>
@@ -205,12 +213,10 @@ ArrayBlockingQueue 是固定容量循环数组，节点分配少且边界清楚�
 
 </details>
 
-:::note 参考资料
+## 10. 参考资料
 
-1. [Java API：BlockingQueue](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/BlockingQueue.html)
-2. [Java API：ArrayBlockingQueue](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/ArrayBlockingQueue.html)
-3. [Java API：LinkedBlockingQueue](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/LinkedBlockingQueue.html)
-4. [Java API：SynchronousQueue](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/SynchronousQueue.html)
-5. [Java API：DelayQueue](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/DelayQueue.html)
-
-:::
+- [Java API：BlockingQueue](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/BlockingQueue.html)
+- [Java API：ArrayBlockingQueue](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/ArrayBlockingQueue.html)
+- [Java API：LinkedBlockingQueue](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/LinkedBlockingQueue.html)
+- [Java API：SynchronousQueue](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/SynchronousQueue.html)
+- [Java API：DelayQueue](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/DelayQueue.html)

@@ -16,7 +16,15 @@ import {javaCollectionsReview} from '@site/src/data/reviewPlans/javaCollections'
 
 Java 集合接口分别表达顺序、唯一性、键值关联和排队规则。选型时先确定调用方需要的语义，再比较具体实现的时间、空间和并发成本。
 
-## 1. Collection 与 Map 是两条接口分支
+## 1. 面试核心 {#core}
+
+- `Collection` 下有 `List`、`Set`、`Queue` 三个子接口；`Map` 是独立的接口分支，不属于 `Collection`。
+- `List` 保留位置、允许重复；`Set` 保证元素唯一；`Map` 通过键查找值；`Queue`/`Deque` 规定取出顺序。[卡](#list-set-map)
+- `HashSet` 基于 `HashMap` 实现，元素作为键存储，用 `hashCode` 和 `equals` 判断重复。[卡](#hashset-duplicates)
+- 需要插入顺序用 `LinkedHashMap`/`LinkedHashSet`，需要排序用 `TreeMap`/`TreeSet`。
+- 选型先确定访问模式（按位置、按键、去重、排序、先进先出），再比较时间、空间和并发成本。
+
+## 2. Collection 与 Map {#collection-map}
 
 `Collection<E>` 表示一组元素，常用子接口包括 `List`、`Set` 和 `Queue`。`Map<K, V>` 表示键到值的映射，不是 `Collection` 的子接口。
 
@@ -33,7 +41,7 @@ Map
 
 这个划分来自访问方式：集合按元素处理，Map 通过键定位值。`Map.entrySet()`、`keySet()` 和 `values()` 会提供不同的集合视图，但 Map 自身仍不属于 Collection。
 
-## 2. List 保留位置与重复元素
+## 3. List {#list}
 
 `List` 是有顺序、允许重复的序列。它适合：
 
@@ -55,7 +63,7 @@ String second = steps.get(1);
 
 `LinkedList` 同时实现 `List` 和 `Deque`，但通过索引访问需要沿节点移动。只有调用方已经持有迭代位置，并且确实频繁在中间插入或删除时，链表的节点修改成本才可能有价值。作为队列通常优先使用 `ArrayDeque`。
 
-## 3. Set 表达唯一性
+## 4. Set {#set}
 
 `Set` 不允许两个满足集合相等关系的元素同时存在：
 
@@ -78,7 +86,7 @@ System.out.println(permissions.size()); // 1
 
 `HashSet` 通常基于 `HashMap`，元素作为键存放。自定义元素能否正确去重，取决于 `equals` 与 `hashCode` 是否保持契约。
 
-## 4. Map 表达键到值的关联
+## 5. Map {#map}
 
 `Map` 适合通过稳定键查找、更新或删除值：
 
@@ -108,7 +116,7 @@ usersByDepartment
     .add(user);
 ```
 
-## 5. Queue 与 Deque 表达取出规则
+## 6. Queue 与 Deque {#queue-deque}
 
 `Queue` 通常按先进先出处理元素：
 
@@ -138,7 +146,7 @@ Node current = stack.pop();
 
 新代码不需要使用旧的 `Stack` 类。单线程双端队列优先使用 `ArrayDeque`；跨线程生产消费则根据阻塞和容量要求选择 `BlockingQueue`。
 
-### 5.1 PriorityQueue 按优先级取出
+### 6.1 PriorityQueue {#priority-queue}
 
 `PriorityQueue` 的队首是比较顺序中的最小元素，不保留完整排序后的线性结构：
 
@@ -150,7 +158,7 @@ Queue<Task> tasks = new PriorityQueue<>(
 
 `peek` 和 `poll` 取得当前最小项，遍历队列不保证整体有序。需要完整排序结果时，应逐个 `poll` 或使用排序算法。
 
-## 6. 选型从访问模式开始
+## 7. 选型步骤 {#selection}
 
 可以依次回答：
 
@@ -176,29 +184,29 @@ Queue<Task> tasks = new PriorityQueue<>(
 
 <ReviewCheckpoint plan={javaCollectionsReview} stepId="collections-selection" />
 
-## 7. 常见问题
+## 8. 常见问题
 
-### 7.1 HashSet 为什么不保证顺序
+### 8.1 HashSet 为什么不保证顺序
 
 元素位置由哈希值、容量、冲突和扩容结果决定。即使某次运行看起来稳定，API 也没有承诺这种顺序。依赖插入顺序时使用 `LinkedHashSet`，依赖排序时使用 `TreeSet`。
 
-### 7.2 ArrayDeque 可以保存 null 吗
+### 8.2 ArrayDeque 可以保存 null 吗
 
 不可以。`null` 被队列 API 用作“当前没有元素”的返回值，禁止存储可以避免语义冲突。需要表示缺失状态时，应在元素类型或调用协议中显式表达。
 
-### 7.3 final 集合就是不可变集合吗
+### 8.3 final 集合就是不可变集合吗
 
 不是。`final` 只禁止变量重新指向另一个集合，仍然可以调用 `add` 或 `remove`。不可修改视图、不可变副本和元素自身的不可变性是三个不同层次。
 
-### 7.4 Collection 与 Collections 有什么区别
+### 8.4 Collection 与 Collections 有什么区别
 
 `Collection` 是集合接口，`Collections` 是包含排序、查找、包装等静态工具方法的类。类似地，`Arrays` 是数组工具类，不是数组类型的父类。
 
-## 8. 面试题
+## 9. 面试题
 
 <ReviewQuestionAnchor />
 
-### 8.1 List、Set、Map 分别适合什么场景 {#list-set-map}
+### 9.1 List、Set、Map 分别适合什么场景 {#list-set-map}
 
 <!-- 面试来源：
 - 阿里巴巴、腾讯、京东、美团：https://www.nowcoder.com/discuss/400870/
@@ -213,7 +221,7 @@ Queue<Task> tasks = new PriorityQueue<>(
 - 接口语义与具体数据结构不能混为一谈。
 - 访问模式、内存与并发条件如何影响选型。
 
-**相关内容**：[List 保留位置与重复元素](#2-list-保留位置与重复元素)至[选型从访问模式开始](#6-选型从访问模式开始)。
+**相关内容**：[List](#list)至[选型步骤](#selection)。
 
 <details>
 <summary>参考回答</summary>
@@ -226,7 +234,7 @@ Queue<Task> tasks = new PriorityQueue<>(
 
 [返回本轮自测与下一篇](#review-checkpoint)
 
-### 8.2 HashSet 怎样判断元素重复 {#hashset-duplicates}
+### 9.2 HashSet 怎样判断元素重复 {#hashset-duplicates}
 
 <!-- 面试来源：
 - 字节跳动、阿里巴巴：https://www.nowcoder.com/discuss/353147579288461312
@@ -240,7 +248,7 @@ Queue<Task> tasks = new PriorityQueue<>(
 - `hashCode` 用于定位候选范围，`equals` 用于确认相等。
 - 可变字段参与哈希计算时会发生什么。
 
-**相关内容**：[Set 表达唯一性](#3-set-表达唯一性)。
+**相关内容**：[Set](#set)。
 
 <details>
 <summary>参考回答</summary>
@@ -251,13 +259,11 @@ Queue<Task> tasks = new PriorityQueue<>(
 
 </details>
 
-:::note 参考资料
+## 10. 参考资料
 
-1. [Java API：Collection](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/Collection.html)
-2. [Java API：List](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/List.html)
-3. [Java API：Set](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/Set.html)
-4. [Java API：Map](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/Map.html)
-5. [Java API：Queue](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/Queue.html)
-6. [Java API：Deque](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/Deque.html)
-
-:::
+- [Java API：Collection](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/Collection.html)
+- [Java API：List](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/List.html)
+- [Java API：Set](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/Set.html)
+- [Java API：Map](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/Map.html)
+- [Java API：Queue](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/Queue.html)
+- [Java API：Deque](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/Deque.html)

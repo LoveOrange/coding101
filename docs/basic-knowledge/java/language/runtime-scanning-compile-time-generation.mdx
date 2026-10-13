@@ -9,7 +9,15 @@ knowledge:
 
 Java 注解处理器（Annotation Processor）在编译阶段读取类型和注解，可以校验程序结构，也可以生成 Java 源码、字节码或资源文件。本文说明注解处理器的程序模型、处理轮次和代码生成接口，并将它与运行时反射扫描比较，解释两种机制在错误时机、启动成本和动态性上的差异。
 
-## 1. 运行时扫描
+## 1. 面试核心 {#core}
+
+- 注解处理器在编译期读取 `Element`、`TypeMirror` 等程序模型，可以报告错误，也可以通过 `Filer` 生成源码和资源文件。[卡](#compile-time-annotation)
+- 处理器生成新源码后，编译器会进行下一轮处理，直到不再产生新文件。
+- 标准 API 不能修改已有类；Lombok 这类修改语法树的做法依赖 `javac` 内部 API。
+- 运行时扫描配合反射可以发现未知类型，代价是启动成本和运行时才暴露的错误；Spring 等 IoC 容器依靠反射创建 Bean 并注入依赖。[卡](#ioc-reflection)
+- 编译期生成把错误和成本提前到构建阶段，更适合闭世界的 AOT 和 Native Image。
+
+## 2. 运行时扫描 {#runtime-scanning}
 
 注解处理器常用于替代框架的一部分运行时扫描和反射工作。一个基于注解注册处理器的框架，启动时通常会执行以下步骤：
 
@@ -32,7 +40,7 @@ for (Class<?> candidate : scanner.findClasses("com.example")) {
 
 这种方式的优点是灵活。应用只要把新类放进约定包并添加注解，框架就能在下一次启动时发现，不要求应用显式维护清单。
 
-### 1.1 运行时扫描的成本
+### 2.1 运行时扫描的成本 {#scanning-cost}
 
 - 启动时需要枚举资源、加载类并解析注解。
 - 签名错误和重复配置直到启动才出现。
@@ -42,7 +50,7 @@ for (Class<?> candidate : scanner.findClasses("com.example")) {
 
 实际成本取决于扫描范围和实现。扫描几个明确类与遍历所有依赖包不是同一个量级，应先限制发现边界，再判断是否需要迁移到编译期。
 
-## 2. 注解处理模型
+## 3. 注解处理模型 {#processing-model}
 
 标准注解处理 API 让处理器在编译阶段访问类型、方法、字段和注解。处理器看到的是 `Element`、`TypeMirror` 等语言模型，不需要加载并执行正在编译的业务类。
 
@@ -69,7 +77,7 @@ public final class MapperProcessor extends AbstractProcessor {
 
 处理器由编译器调用，不应在业务代码中手动实例化。构建需要把处理器放到注解处理器路径，或显式指定要运行的处理器。
 
-### 2.1 多轮处理
+### 3.1 多轮处理 {#rounds}
 
 处理器生成新源码后，编译器会在下一轮把新文件也纳入程序模型。直到没有新文件产生，才进入最后一轮并继续完成编译。
 
@@ -82,7 +90,7 @@ public final class MapperProcessor extends AbstractProcessor {
 
 `RoundEnvironment.processingOver()` 可以判断是否进入最后一轮，`errorRaised()` 可以判断此前是否报告过错误。
 
-## 3. 代码生成
+## 4. 代码生成 {#code-generation}
 
 假设业务声明一个映射接口：
 
@@ -114,7 +122,7 @@ try (Writer writer = file.openWriter()) {
 }
 ```
 
-生成类随后与业务源码一起编译。运行时调用它，与调用普通手写类没有本质区别：
+生成类随后与业务源码一起编译。运行时调用它，与调用普通手写类相同：
 
 ```java
 UserMapper mapper = new UserMapperGenerated();
@@ -123,7 +131,7 @@ UserDto dto = mapper.toDto(user);
 
 标准处理器应生成新的源码、class 文件或资源，不修改已经存在的业务源码。直接操作特定编译器的内部语法树会绑定实现细节，升级 JDK 和 IDE 时需要承担额外兼容成本。
 
-### 3.1 在编译期报告错误
+### 4.1 编译期报错 {#compile-errors}
 
 处理器可以使用 `Messager` 把错误定位到具体程序元素：
 
@@ -137,7 +145,7 @@ processingEnv.getMessager().printMessage(
 
 错误会让构建失败，开发者不必等到应用启动或请求到来后才发现签名不符合要求。这是编译期处理最重要的收益之一。
 
-## 4. 运行时扫描与注解处理器
+## 5. 运行时扫描与注解处理器的比较 {#comparison}
 
 | 维度 | 运行时扫描 | 编译期生成 |
 | --- | --- | --- |
@@ -151,25 +159,25 @@ processingEnv.getMessager().printMessage(
 
 编译期生成会把一部分成本移到构建阶段，但不会自动让整体系统更简单。它增加了处理器模块、生成文件管理、IDE 集成和增量编译要求。
 
-## 5. 混合处理
+## 6. 混合方案 {#hybrid}
 
 很多框架使用混合方案：
 
-### 5.1 编译期生成索引，运行时按索引装配
+### 6.1 编译期生成索引，运行时按索引装配
 
 处理器不生成完整调用代码，只生成候选类型清单或资源文件。运行时不再扫描整个 classpath，而是读取索引并加载少量明确类型。
 
-### 5.2 构建时分析，运行时保留扩展点
+### 6.2 构建时分析，运行时保留扩展点
 
 应用自己的 Bean、路由和序列化器在构建时固定，第三方插件仍通过 `ServiceLoader` 或指定目录在运行时发现。这样可以降低常规启动成本，同时保留有限动态性。
 
-### 5.3 编译期生成工厂，运行时选择实现
+### 6.3 编译期生成工厂，运行时选择实现
 
 处理器生成类型安全的工厂或注册表，运行时仍根据配置选择具体实现。动态选择不等于必须动态扫描。
 
 选择方案时先确定哪些类型在部署前已经知道，哪些确实要在运行中加入。把整个应用都当成完全动态，会失去静态检查；把真实插件系统强行做成闭世界，也会让扩展流程变得笨重。
 
-## 6. Native Image 与 AOT 的影响
+## 7. Native Image 与 AOT {#native-image}
 
 闭世界编译需要在构建时确定可能到达的代码。按字符串加载类、反射访问成员和动态代理不会总能从静态调用图推导，因此通常需要显式注册或由框架生成元数据。
 
@@ -182,27 +190,27 @@ processingEnv.getMessager().printMessage(
 
 AOT 兼容性不是唯一目标。JVM 长期运行服务如果启动成本不敏感、插件动态性很重要，成熟的运行时模型仍然合理。
 
-## 7. 常见问题
+## 8. 常见问题
 
-### 7.1 注解处理器能修改原有类吗
+### 8.1 注解处理器能修改原有类吗
 
 标准 API 的主要能力是读取程序模型并生成新文件或报告诊断，不提供修改既有源码 AST 的可移植接口。依赖 `javac` 内部 API 修改语法树虽然可行，但会增加编译器、IDE 和 JDK 版本兼容风险。
 
-### 7.2 注解处理器生成的类为什么当前轮读不到
+### 8.2 注解处理器生成的类为什么当前轮读不到
 
 新源码由 `Filer` 创建后，会在后续处理轮次进入语言模型。处理器不应假设生成后立刻能在当前轮通过元素工具取得完整类型，也不应手动编译生成文件。
 
-### 7.3 编译期生成一定比反射快吗
+### 8.3 编译期生成一定比反射快吗
 
 生成的直接调用通常更容易优化，也省去运行时成员发现。但总收益还包括构建时间、生成代码体积、启动频率和运行热度。低频管理工具可能没有迁移价值，高频序列化和函数调用路径更值得测量。
 
-### 7.4 生成代码是否应该提交到 Git
+### 8.4 生成代码是否应该提交到 Git
 
 通常由构建可重复生成的文件放在构建目录，不提交版本库。这样避免手写源码与生成结果漂移。只有目标环境无法运行生成器、需要发布生成结果作为稳定源码等明确约束时，才考虑提交，并建立一致性校验。
 
-## 8. 面试题
+## 9. 面试题
 
-### 8.1 怎样实现一个编译期注解 {#compile-time-annotation}
+### 9.1 怎样实现一个编译期注解 {#compile-time-annotation}
 
 <!-- 面试来源：
 - 飞书：https://www.nowcoder.com/discuss/353157192121524224
@@ -216,7 +224,7 @@ AOT 兼容性不是唯一目标。JVM 长期运行服务如果启动成本不敏
 - `Processor`、`RoundEnvironment`、`Filer` 和 `Messager` 的职责。
 - 多轮处理、重复生成和编译期错误报告。
 
-**相关内容**：[注解处理模型](#2-注解处理模型)、[代码生成](#3-代码生成)。
+**相关内容**：[注解处理模型](#processing-model)、[代码生成](#code-generation)。
 
 <details>
 <summary>参考回答</summary>
@@ -227,7 +235,7 @@ AOT 兼容性不是唯一目标。JVM 长期运行服务如果启动成本不敏
 
 </details>
 
-### 8.2 Java 为什么可以实现 IoC，反射在其中做了什么 {#ioc-reflection}
+### 9.2 Java 为什么可以实现 IoC，反射在其中做了什么 {#ioc-reflection}
 
 <!-- 面试来源：
 - 网易：https://www.nowcoder.com/discuss/353154359724810240
@@ -241,7 +249,7 @@ AOT 兼容性不是唯一目标。JVM 长期运行服务如果启动成本不敏
 - 容器怎样创建对象、注入依赖并保存注册关系。
 - 运行时发现和编译期生成各自适合什么边界。
 
-**相关内容**：[运行时扫描](#1-运行时扫描)、[运行时扫描与注解处理器](#4-运行时扫描与注解处理器)。
+**相关内容**：[运行时扫描](#runtime-scanning)、[运行时扫描与注解处理器的比较](#comparison)。
 
 <details>
 <summary>参考回答</summary>
@@ -252,13 +260,11 @@ IoC 容器先从配置、扫描范围或显式注册中取得候选类型，再�
 
 </details>
 
-:::note 参考资料
+## 10. 参考资料
 
-1. [Java API：Processor](https://docs.oracle.com/en/java/javase/26/docs/api/java.compiler/javax/annotation/processing/Processor.html)
-2. [Java API：AbstractProcessor](https://docs.oracle.com/en/java/javase/26/docs/api/java.compiler/javax/annotation/processing/AbstractProcessor.html)
-3. [Java API：RoundEnvironment](https://docs.oracle.com/en/java/javase/26/docs/api/java.compiler/javax/annotation/processing/RoundEnvironment.html)
-4. [Java API：Filer](https://docs.oracle.com/en/java/javase/26/docs/api/java.compiler/javax/annotation/processing/Filer.html)
-5. [Java API：Package javax.lang.model](https://docs.oracle.com/en/java/javase/26/docs/api/java.compiler/javax/lang/model/package-summary.html)
-6. [javac：Annotation Processing Options](https://docs.oracle.com/en/java/javase/26/docs/specs/man/javac.html#annotation-processing)
-
-:::
+- [Java API：Processor](https://docs.oracle.com/en/java/javase/26/docs/api/java.compiler/javax/annotation/processing/Processor.html)
+- [Java API：AbstractProcessor](https://docs.oracle.com/en/java/javase/26/docs/api/java.compiler/javax/annotation/processing/AbstractProcessor.html)
+- [Java API：RoundEnvironment](https://docs.oracle.com/en/java/javase/26/docs/api/java.compiler/javax/annotation/processing/RoundEnvironment.html)
+- [Java API：Filer](https://docs.oracle.com/en/java/javase/26/docs/api/java.compiler/javax/annotation/processing/Filer.html)
+- [Java API：Package javax.lang.model](https://docs.oracle.com/en/java/javase/26/docs/api/java.compiler/javax/lang/model/package-summary.html)
+- [javac：Annotation Processing Options](https://docs.oracle.com/en/java/javase/26/docs/specs/man/javac.html#annotation-processing)

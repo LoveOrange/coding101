@@ -9,9 +9,17 @@ knowledge:
 
 Java NIO 使用 `Buffer` 保存待处理数据，用 `Channel` 在缓冲区与 I/O 端点之间搬运数据，再由 `Selector` 统一等待多个非阻塞通道的就绪事件。它把阻塞等待集中起来，同时把连接状态管理交给应用。
 
-## 1. Buffer 保存读写状态
+## 1. 面试核心 {#core}
 
-`Buffer` 不只是一个数组，还通过四个位置属性描述当前状态：
+- `Buffer` 用 capacity、limit、position、mark 描述读写状态：写完后 `flip` 切换为读，读完后 `clear`，有剩余数据时 `compact`。
+- `Channel` 在 I/O 端点和 Buffer 之间搬运数据，非阻塞写可能只写出一部分。
+- `Selector` 让一个线程等待多个非阻塞通道的就绪事件，适合管理大量连接。[卡](#nio-components)
+- 就绪只表示现在可以读写，读写仍由应用调用完成；一次 `OP_READ` 可能只读到半个请求，需要协议拆帧。[卡](#nio-not-async)
+- 只在有待写数据时注册 `OP_WRITE`；事件循环中不能执行阻塞操作。
+
+## 2. Buffer {#buffer}
+
+`Buffer` 在数组之外，用四个位置属性描述当前状态：
 
 - `capacity`：缓冲区总容量，创建后不会改变。
 - `position`：下一次读或写的位置。
@@ -31,7 +39,7 @@ position = 0
 limit = capacity = 1024
 ```
 
-### 1.1 从写模式切换到读模式
+### 2.1 flip {#flip}
 
 ```java
 buffer.put((byte) 'J');
@@ -48,7 +56,7 @@ while (buffer.hasRemaining()) {
 
 写入完成时，`position` 位于数据末尾。`flip()` 把当前 `position` 设为新的 `limit`，再把 `position` 归零，准备读取刚写入的区域。
 
-### 1.2 clear 与 compact
+### 2.2 clear 与 compact {#clear-compact}
 
 读取完后，需要重新准备写入：
 
@@ -67,7 +75,7 @@ buffer.compact(); // 未完成的一帧留到下一次读取
 
 网络协议经常一次读到半条消息或多条消息，`compact()` 是维护跨读取状态的关键操作。
 
-## 2. Channel 在端点与 Buffer 之间搬运数据
+## 3. Channel {#channel}
 
 `Channel` 可以读、写或同时支持两者。与流式 API 不同，数据通常显式经过 `Buffer`：
 
@@ -91,7 +99,7 @@ try (FileChannel channel = FileChannel.open(path, StandardOpenOption.READ)) {
 - `channel.read(buffer)` 从通道读取数据，写入缓冲区。
 - `channel.write(buffer)` 从缓冲区读取数据，写入通道。
 
-### 2.1 写操作也可能只消费一部分
+### 3.1 部分写入 {#partial-write}
 
 非阻塞 `SocketChannel.write` 可能返回 0，也可能只写出缓冲区的一部分：
 
@@ -108,7 +116,7 @@ while (buffer.hasRemaining()) {
 
 文件通道、Socket 通道和数据报通道有不同语义。`FileChannel` 不支持切换成 Selector 使用的非阻塞模式，NIO 也不等于所有通道都非阻塞。
 
-## 3. Selector 等待多个通道就绪
+## 4. Selector {#selector}
 
 `Selector` 与 `SelectableChannel` 配合。通道先切换为非阻塞模式，再注册感兴趣的事件：
 
@@ -150,15 +158,15 @@ while (!Thread.currentThread().isInterrupted()) {
 
 处理完必须从 selected-key 集合移除，否则旧事件会在后续循环中继续出现。
 
-### 3.1 就绪不等于操作已经完成
+### 4.1 就绪事件的含义 {#readiness}
 
 `OP_READ` 表示读取操作现在可能取得数据，不表示完整业务消息已经到达。一次读取仍可能得到半包，也可能在状态变化后返回 0。
 
 `OP_WRITE` 表示内核发送缓冲区当前有空间，不表示应用响应已经全部发送。写入以后还要检查应用 `ByteBuffer` 是否有剩余。
 
-Selector 提供的是就绪通知，不是异步完成通知。真正的 `read` 和 `write` 仍由事件循环线程调用。
+Selector 只通知通道已经就绪，`read` 和 `write` 仍由事件循环线程调用。
 
-### 3.2 不要一直注册 OP_WRITE
+### 4.2 OP_WRITE 的注册时机 {#op-write}
 
 Socket 在大多数时间都可写。如果每个连接始终关注 `OP_WRITE`，`select()` 会不断立即返回，事件循环形成空转。
 
@@ -168,7 +176,7 @@ Socket 在大多数时间都可写。如果每个连接始终关注 `OP_WRITE`�
 2. 写操作未能发送完时，把剩余缓冲保存到连接状态并增加 `OP_WRITE`。
 3. 缓冲发送完后，取消 `OP_WRITE` 兴趣。
 
-## 4. 每个连接都需要独立状态
+## 5. 连接状态 {#connection-state}
 
 非阻塞代码无法在一次方法调用中等待完整请求，因此要保存跨事件状态：
 
@@ -196,7 +204,7 @@ key.attach(new ConnectionState());
 
 Selector 减少了等待连接所需的线程数，却没有减少这些状态。连接越多，状态生命周期和公平性越重要。
 
-## 5. 事件循环与业务线程
+## 6. 事件循环与业务线程 {#event-loop}
 
 一个 Selector 线程可以管理大量连接，但不应在事件循环中执行长时间计算、阻塞数据库调用或远程请求。某个处理器阻塞，会延迟同一循环中所有连接的读写。
 
@@ -210,7 +218,7 @@ Selector 减少了等待连接所需的线程数，却没有减少这些状态�
 
 把所有工作扔进无限队列也不能形成背压。输出速度低于业务生成速度时，应暂停读取、限制单连接队列或拒绝请求，防止内存持续增长。
 
-## 6. BIO、NIO 与异步 I/O
+## 7. BIO、NIO 与异步 I/O {#bio-nio-aio}
 
 | 模型 | 等待方式 | 调用结果 | 状态主要由谁维护 |
 | --- | --- | --- | --- |
@@ -220,27 +228,27 @@ Selector 减少了等待连接所需的线程数，却没有减少这些状态�
 
 线程模型不是由包名自动决定。`java.nio` 中有阻塞 `FileChannel`，`SocketChannel` 也可以保持阻塞模式；只有明确配置和使用 Selector 才进入就绪驱动模型。
 
-## 7. 常见问题
+## 8. 常见问题
 
-### 7.1 flip、clear、compact 分别在什么时候使用
+### 8.1 flip、clear、compact 分别在什么时候使用
 
 写入 Buffer 后用 `flip` 准备读取；数据全部读完后用 `clear` 准备覆盖写入；还有未读数据时用 `compact` 把剩余数据移到开头，再继续接收。
 
-### 7.2 Selector 为什么可以减少线程数量
+### 8.2 Selector 为什么可以减少线程数量
 
 多个非阻塞通道把就绪事件注册到同一个 Selector，一个线程可以集中等待并处理它们，不需要让每个连接各占一个阻塞线程。它减少的是等待线程，不代表所有请求只允许一个线程处理业务。
 
-### 7.3 一次 OP_READ 能否读取完整请求
+### 8.3 一次 OP_READ 能否读取完整请求
 
 不能保证。TCP 提供字节流，没有应用消息边界。一次事件可能只有部分请求，也可能包含多个请求，需要协议长度、分隔符或固定格式完成拆帧。
 
-### 7.4 SelectionKey 取消后资源会立即释放吗
+### 8.4 SelectionKey 取消后资源会立即释放吗
 
 `cancel()` 会把键加入取消集合，Selector 在后续选择操作中完成移除。通道仍然需要根据所有权显式关闭，连接状态和输出缓冲也要清理。
 
-## 8. 面试题
+## 9. 面试题
 
-### 8.1 Buffer、Channel 和 Selector 分别负责什么 {#nio-components}
+### 9.1 Buffer、Channel 和 Selector 分别负责什么 {#nio-components}
 
 <!-- 面试来源：
 - 蚂蚁金服：https://www.nowcoder.com/discuss/353158462597177344
@@ -255,7 +263,7 @@ Selector 减少了等待连接所需的线程数，却没有减少这些状态�
 - Channel 与 Buffer 之间的数据方向。
 - Selector 通知的是就绪还是完成。
 
-**相关内容**：[Buffer 保存读写状态](#1-buffer-保存读写状态)、[Channel 在端点与 Buffer 之间搬运数据](#2-channel-在端点与-buffer-之间搬运数据)、[Selector 等待多个通道就绪](#3-selector-等待多个通道就绪)。
+**相关内容**：[Buffer](#buffer)、[Channel](#channel)、[Selector](#selector)。
 
 <details>
 <summary>参考回答</summary>
@@ -266,7 +274,7 @@ Selector 减少了等待连接所需的线程数，却没有减少这些状态�
 
 </details>
 
-### 8.2 NIO 为什么不等于异步 I/O {#nio-not-async}
+### 9.2 NIO 为什么不等于异步 I/O {#nio-not-async}
 
 <!-- 面试来源：
 - 蚂蚁金服：https://www.nowcoder.com/discuss/353158462597177344
@@ -280,7 +288,7 @@ Selector 减少了等待连接所需的线程数，却没有减少这些状态�
 - `select` 返回后谁执行实际读写。
 - java.nio 中是否所有 API 都是非阻塞。
 
-**相关内容**：[就绪不等于操作已经完成](#31-就绪不等于操作已经完成)、[BIO、NIO 与异步 I/O](#6-bionio-与异步-io)。
+**相关内容**：[就绪事件的含义](#readiness)、[BIO、NIO 与异步 I/O](#bio-nio-aio)。
 
 <details>
 <summary>参考回答</summary>
@@ -291,13 +299,11 @@ Selector 告诉应用某个非阻塞通道现在可能读写，实际操作仍�
 
 </details>
 
-:::note 参考资料
+## 10. 参考资料
 
-1. [Java API：Buffer](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/nio/Buffer.html)
-2. [Java API：ByteBuffer](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/nio/ByteBuffer.html)
-3. [Java API：Channel](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/nio/channels/Channel.html)
-4. [Java API：Selector](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/nio/channels/Selector.html)
-5. [Java API：SelectionKey](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/nio/channels/SelectionKey.html)
-6. [Java API：SocketChannel](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/nio/channels/SocketChannel.html)
-
-:::
+- [Java API：Buffer](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/nio/Buffer.html)
+- [Java API：ByteBuffer](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/nio/ByteBuffer.html)
+- [Java API：Channel](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/nio/channels/Channel.html)
+- [Java API：Selector](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/nio/channels/Selector.html)
+- [Java API：SelectionKey](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/nio/channels/SelectionKey.html)
+- [Java API：SocketChannel](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/nio/channels/SocketChannel.html)

@@ -9,7 +9,14 @@ knowledge:
 
 原子类适合维护一个可以独立更新的状态。`AtomicLong` 在单点上提供精确的原子读改写；`LongAdder` 将高频更新分散到多个变量，换取更高吞吐，但读取不再是并发更新中的原子快照。
 
-## 1. 原子类把常用 CAS 循环封装起来
+## 1. 面试核心 {#core}
+
+- `AtomicLong` 用一次 CAS 完成单个变量的读改写，适合序列号、状态位和需要精确当前值的计数。
+- 检查后再更新的两步操作不是原子的，需要 CAS 循环或锁覆盖完整条件。
+- 大量线程更新同一个原子变量时，CAS 失败重试和缓存行迁移会限制吞吐。
+- `LongAdder` 把更新分散到多个单元，适合高并发统计；`sum()` 在并发更新时得到的是近似值，不能用于发号或精确阈值判断。[卡](#atomiclong-vs-longadder)
+
+## 2. 原子类与 CAS 循环 {#atomic-cas}
 
 ```java
 private final AtomicLong sequence = new AtomicLong();
@@ -29,13 +36,13 @@ if (stock.get() > 0) {
 
 上面的检查和扣减仍是两次操作。应使用返回失败的 CAS 循环，或者由锁覆盖完整条件。
 
-## 2. 单个原子变量会成为缓存热点
+## 3. 单变量的竞争成本 {#contention}
 
 很多核心同时更新同一个 `AtomicLong` 时，会争夺同一缓存行。CAS 失败的线程反复重试，缓存所有权频繁迁移，吞吐可能很快到达上限。
 
 竞争成本不能只从 Java 线程是否阻塞判断：没有 park 不代表没有等待，CPU 可能消耗在自旋、失败重试和缓存一致性流量上。
 
-## 3. `LongAdder` 分散更新压力
+## 4. `LongAdder` 的分段累加 {#longadder}
 
 ```java
 private final LongAdder requests = new LongAdder();
@@ -51,7 +58,7 @@ long observedRequests() {
 
 低竞争时更新基础值；发生竞争后，内部可以扩展多组变量，让不同线程更新不同位置。`sum()` 再将这些位置合并，因此高竞争计数的预期吞吐通常更好，代价是更多内存和读取成本。
 
-## 4. `sum()` 不是并发更新中的原子快照
+## 5. `sum()` 的读取语义 {#sum-semantics}
 
 `sum()` 遍历各个分量时，其他线程仍可更新。返回值适合指标、频次和统计，不适合：
 
@@ -62,7 +69,7 @@ long observedRequests() {
 
 需要这些语义时，应使用 `AtomicLong`、锁，或将事件交给单一所有者。
 
-## 5. 原子引用可以封装多字段状态
+## 6. 用 `AtomicReference` 更新多字段状态 {#atomic-reference}
 
 ```java
 record State(int available, long version) {}
@@ -73,19 +80,19 @@ AtomicReference<State> state =
 
 把相关字段放入不可变值，再 CAS 整个引用，可以保证一次转换中状态组合不被拆开。对象分配、重试函数和 ABA 仍需要评估；状态复杂时锁往往更容易审查。
 
-## 6. 常见问题
+## 7. 常见问题
 
-### 6.1 `LongAdder` 一定比 `AtomicLong` 快吗
+### 7.1 `LongAdder` 一定比 `AtomicLong` 快吗
 
 不一定。低竞争下两者差异可能很小，`LongAdder` 的读取和空间成本更高。只有结合真实读写比例、线程数和硬件基准才有结论。
 
-### 6.2 原子类能替代所有锁吗
+### 7.2 原子类能替代所有锁吗
 
 不能。原子类擅长单变量状态转换；阻塞条件、多字段不变量或必须整体执行的副作用，通常需要锁或重新划分所有权。
 
-## 7. 面试题
+## 8. 面试题
 
-### 7.1 `AtomicLong` 和 `LongAdder` 应该怎样选择 {#atomiclong-vs-longadder}
+### 8.1 `AtomicLong` 和 `LongAdder` 应该怎样选择 {#atomiclong-vs-longadder}
 
 <!-- 面试来源：
 - 蚂蚁集团：https://www.nowcoder.com/discuss/632476
@@ -100,7 +107,7 @@ AtomicReference<State> state =
 - 精确原子值和统计值的差别。
 - 竞争、读频率和空间成本。
 
-**相关内容**：[单个原子变量会成为缓存热点](#2-单个原子变量会成为缓存热点)至[`sum()` 不是并发更新中的原子快照](#4-sum-不是并发更新中的原子快照)。
+**相关内容**：[单变量的竞争成本](#contention)至[`sum()` 的读取语义](#sum-semantics)。
 
 <details>
 <summary>参考回答</summary>
@@ -111,9 +118,7 @@ AtomicReference<State> state =
 
 </details>
 
-:::note 参考资料
+## 9. 参考资料
 
-1. [Java API：`AtomicLong`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/atomic/AtomicLong.html)
-2. [Java API：`LongAdder`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/atomic/LongAdder.html)
-
-:::
+- [Java API：`AtomicLong`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/atomic/AtomicLong.html)
+- [Java API：`LongAdder`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/atomic/LongAdder.html)

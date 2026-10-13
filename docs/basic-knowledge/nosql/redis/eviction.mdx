@@ -12,7 +12,7 @@ Redis 内存淘汰在内存使用触及 maxmemory 限制时决定删除哪些键
 
 - allkeys 策略可从全部键中选择，volatile 策略只考虑设置了过期时间的键。
 - noeviction 不自动淘汰键，触及限制后部分写操作会失败。
-- LRU 依据近期访问，LFU 依据访问频率，Redis 使用近似机制而非完整精确排序。
+- LRU 依据近期访问，LFU 依据访问频率，Redis 使用近似机制而非完整精确排序。[卡](#eviction-policies)
 
 ## 2. 策略与候选范围 {#mechanism}
 

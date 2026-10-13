@@ -9,7 +9,15 @@ knowledge:
 
 消息可靠性需要分别确认生产端写入、broker 保存、消费者处理和消费进度提交。任何两个阶段之间发生故障，都可能产生消息丢失、重复或长时间积压。
 
-## 1. 生产者确认消息是否进入 broker
+## 1. 面试核心 {#core}
+
+- 生产端用 publisher confirm（RabbitMQ）或 `acks=all`（Kafka）确认消息已被 broker 接受。
+- 消费者在业务副作用完成后再 ack 或提交 offset，否则崩溃会丢失处理。[卡](#ack-retry-dead-letter)
+- 短暂故障在消费者内做有限次退避重试；需要长时间等待的重试转到延迟重试队列，避免阻塞主队列。
+- 超过重试上限或永久错误的消息进入死信队列，保留原始消息、错误原因和尝试次数，修复后再重放。
+- 失败消息直接 requeue 会立即再次投递，形成高频循环。
+
+## 2. 生产者确认 {#publisher-confirm}
 
 RabbitMQ publisher confirm 用于通知生产者消息是否由 broker 接受。它与消费者 acknowledgement 是两套独立协议：publisher confirm 成功，只说明发布阶段完成，不代表任何消费者已经处理。
 
@@ -17,7 +25,7 @@ Kafka producer 的 `acks` 决定 broker 在什么条件下确认写入。`acks=a
 
 生产者因此需要稳定消息 ID、有限重试和发送结果监控。业务数据库提交后再发送消息还会形成双写窗口，可通过 Transactional Outbox 把业务变化和待发送事件写入同一本地事务。
 
-## 2. 消费者在副作用完成后确认
+## 3. 消费者确认时机 {#consumer-ack}
 
 消费者若先 ack 或提交 offset，再写数据库，进程在两者之间崩溃会丢失业务处理。通常应先完成可持久化副作用，再确认消息进度。
 
@@ -25,13 +33,13 @@ Kafka producer 的 `acks` 决定 broker 在什么条件下确认写入。`acks=a
 
 对于批量 offset 提交，还要明确批内失败时从哪里恢复。不能因为最后一条成功，就越过前面尚未完成的消息提交进度。
 
-## 3. 短暂故障使用有限即时重试
+## 4. 即时重试 {#immediate-retry}
 
 数据库瞬时连接失败、下游短暂超时可以在消费者内进行少量重试。重试应使用退避和随机抖动，并服从单条消息的总处理时限。
 
 立即无限重试会占住消费线程，持续攻击尚未恢复的下游。错误如果来自参数、schema 或业务约束，再多次执行也不会成功，应尽快转入可观察的失败路径。
 
-## 4. 延迟重试避免阻塞主消费队列
+## 5. 延迟重试 {#delayed-retry}
 
 需要等待数十秒或数分钟后再试的消息，可以进入专用 retry topic 或 retry queue，并记录尝试次数、下次执行时间和原始消息标识。
 
@@ -39,7 +47,7 @@ Kafka producer 的 `acks` 决定 broker 在什么条件下确认写入。`acks=a
 
 Kafka 常用多个 retry topic 表达延迟层级。RabbitMQ 可以结合 TTL、dead-letter exchange 或延迟消息能力实现，但要检查实际投递保证和队列积压行为。
 
-## 5. 死信保存无法自动完成的消息
+## 6. 死信队列 {#dead-letter}
 
 消息达到最大重试次数、被拒绝不再重入队、过期或超过队列限制时，可以路由到 dead-letter queue。死信中应保留：
 
@@ -51,13 +59,13 @@ Kafka 常用多个 retry topic 表达延迟层级。RabbitMQ 可以结合 TTL、
 
 死信不是永久堆放区。团队需要告警、查看、修复、重放和归档流程，并限制敏感数据和保存时间。
 
-## 6. 死信转发本身也可能失败
+## 7. 死信转发失败 {#dead-letter-failure}
 
 RabbitMQ 的 dead-lettering 是一次新的发布过程。目标 exchange 配置错误、目标 queue 不存在或集群故障时，死信可能无法到达预期位置。不同队列类型和配置能提供的转发保证也不同。
 
 因此要监控 dead-letter 数量、转发失败和目标队列增量，并做真实故障演练。仅声明一个 DLX 不等于已经获得无损失败存储。
 
-## 7. 重放要避免制造第二次事故
+## 8. 重放 {#replay}
 
 修复消费者后，死信或历史消息可能需要重放。重放前应确认：
 
@@ -69,25 +77,25 @@ RabbitMQ 的 dead-lettering 是一次新的发布过程。目标 exchange 配置
 
 重放工具要使用新的执行批次标识，同时保留原始消息 ID，便于去重和审计。
 
-## 8. 可靠性要通过端到端指标验证
+## 9. 端到端指标 {#metrics}
 
 至少观察生产确认失败、发送重试、broker 副本状态、消费 lag、未确认消息、处理失败率、各重试层积压、死信数量和最老消息年龄。
 
 单看队列长度无法区分流量增长、消费者变慢、分区倾斜和毒消息。应把消息 ID 与业务结果关联，定期核对已产生事件和已完成副作用。
 
-## 9. 常见问题
+## 10. 常见问题
 
-### 9.1 RabbitMQ 的 publisher confirm 成功是否表示消息不会丢
+### 10.1 RabbitMQ 的 publisher confirm 成功是否表示消息不会丢
 
 它只确认 broker 接受了发布，具体持久性还取决于 queue、消息和集群配置。之后的路由、消费、ack 和死信是其他阶段，需要分别监控和处理。
 
-### 9.2 消费失败后直接 requeue 有什么问题
+### 10.2 消费失败后直接 requeue 有什么问题
 
 同一条无法处理的消息可能立即再次投递，形成高频循环并占满消费者。应区分可重试与永久错误，限制即时次数，使用延迟重试，并在上限后进入死信。
 
-## 10. 面试题
+## 11. 面试题
 
-### 10.1 如何设计消息确认、重试和死信流程 {#ack-retry-dead-letter}
+### 11.1 如何设计消息确认、重试和死信流程 {#ack-retry-dead-letter}
 
 <!-- 面试来源：
 - Shopee：https://www.nowcoder.com/discuss/353157268428496896
@@ -102,7 +110,7 @@ RabbitMQ 的 dead-lettering 是一次新的发布过程。目标 exchange 配置
 - 副作用提交和 ack、offset 提交的顺序。
 - 延迟重试、死信、重放和端到端核对。
 
-**相关内容**：[生产者确认消息是否进入 broker](#1-生产者确认消息是否进入-broker)至[可靠性要通过端到端指标验证](#8-可靠性要通过端到端指标验证)。
+**相关内容**：[生产者确认](#publisher-confirm)至[端到端指标](#metrics)。
 
 <details>
 <summary>参考回答</summary>
@@ -113,11 +121,9 @@ RabbitMQ 的 dead-lettering 是一次新的发布过程。目标 exchange 配置
 
 </details>
 
-:::note 参考资料
+## 12. 参考资料
 
-1. [RabbitMQ：Reliability Guide](https://www.rabbitmq.com/docs/reliability)
-2. [RabbitMQ：Consumer Acknowledgements and Publisher Confirms](https://www.rabbitmq.com/docs/confirms)
-3. [RabbitMQ：Dead Letter Exchanges](https://www.rabbitmq.com/docs/dlx)
-4. [Apache Kafka Documentation](https://kafka.apache.org/documentation/)
-
-:::
+- [RabbitMQ：Reliability Guide](https://www.rabbitmq.com/docs/reliability)
+- [RabbitMQ：Consumer Acknowledgements and Publisher Confirms](https://www.rabbitmq.com/docs/confirms)
+- [RabbitMQ：Dead Letter Exchanges](https://www.rabbitmq.com/docs/dlx)
+- [Apache Kafka Documentation](https://kafka.apache.org/documentation/)

@@ -7,9 +7,17 @@ knowledge:
 
 # 零拷贝
 
-`MappedByteBuffer`、`FileChannel.transferTo` 和直接 `ByteBuffer` 都能减少某些 I/O 路径中的数据复制或用户态参与，但它们优化的环节不同。“零拷贝”描述的是省掉特定副本，不是数据完全不移动。
+`MappedByteBuffer`、`FileChannel.transferTo` 和直接 `ByteBuffer` 都能减少某些 I/O 路径中的数据复制或用户态参与，但它们优化的环节不同。“零拷贝”指省掉特定环节的复制，数据仍然需要移动。
 
-## 1. 普通文件传输经过哪些缓冲区
+## 1. 面试核心 {#core}
+
+- 普通的“读文件再写 Socket”会在内核缓冲区和用户缓冲区之间多次复制，并发生多次用户态与内核态切换。
+- `FileChannel.transferTo` 在支持的平台上使用 `sendfile`，数据不经过 Java 堆，适合静态文件传输。[卡](#java-zero-copy)
+- `FileChannel.map` 把文件映射到进程地址空间，适合大文件随机访问；访问仍可能触发缺页和磁盘 I/O。
+- 直接 `ByteBuffer` 在堆外分配，本地 I/O 可以直接使用；分配和释放成本较高，需要池化并受 `MaxDirectMemorySize` 限制。[卡](#direct-memory-tradeoffs)
+- `transferTo` 可能只传输部分数据，调用方要循环直到完成。
+
+## 2. 普通文件传输的复制过程 {#traditional}
 
 应用使用堆数组读取文件再写入 Socket 时，可以抽象为：
 
@@ -25,7 +33,7 @@ knowledge:
 
 如果应用只负责把文件原样发出去，并不需要查看或修改每个字节，把数据复制进 Java 堆就没有必要。
 
-## 2. FileChannel.transferTo 减少用户态复制
+## 3. FileChannel.transferTo {#transfer-to}
 
 ```java
 try (
@@ -51,19 +59,19 @@ try (
 
 `transferTo` 让通道实现直接把文件区域传给目标通道。在支持的系统上，JDK 可以使用 `sendfile` 等机制，避免把文件内容先复制到 Java 堆缓冲区。
 
-### 2.1 transferTo 不保证一次完成
+### 3.1 部分传输 {#partial-transfer}
 
 返回值是本次实际传输的字节数，可能小于请求数量，甚至为 0。非阻塞目标暂时不可写、操作系统单次传输限制等情况都需要调用方保存进度并稍后继续。
 
 上面为简化示例遇到 0 就退出；事件循环中应注册可写事件，等目标再次可写时从当前 `position` 继续。
 
-### 2.2 是否使用零拷贝由实现和平台决定
+### 3.2 平台差异 {#platform}
 
 Java API 规定传输语义，不承诺底层一定使用某个系统调用。源通道、目标通道、操作系统和文件类型都会影响实现。确认优化是否生效，需要在目标平台查看性能指标、系统调用或 JDK 实现行为。
 
 如果应用必须压缩、加密、修改协议内容或解析每个字节，数据仍然需要进入用户态处理，`transferTo` 就不适合直接覆盖整条路径。
 
-## 3. 内存映射把文件区域映射到地址空间
+## 4. 内存映射 {#mmap}
 
 `FileChannel.map` 返回 `MappedByteBuffer`：
 
@@ -83,7 +91,7 @@ try (FileChannel channel = FileChannel.open(path, StandardOpenOption.READ)) {
 
 映射后，应用像访问内存一样访问文件区域。操作系统在页面首次访问时把对应文件页带入内存，并通过页缓存管理后续读写。
 
-### 3.1 适合内存映射的场景
+### 4.1 内存映射的适用场景 {#mmap-use}
 
 - 大文件的随机访问。
 - 多个进程读取同一文件页。
@@ -92,7 +100,7 @@ try (FileChannel channel = FileChannel.open(path, StandardOpenOption.READ)) {
 
 顺序读取一个小文件时，普通缓冲流或 `FileChannel.read` 通常更简单。映射不是“把整个文件免费放进内存”，访问仍然可能触发缺页和磁盘 I/O。
 
-### 3.2 映射的边界
+### 4.2 内存映射的限制 {#mmap-limits}
 
 - 映射占用虚拟地址空间，超大区域要考虑进程地址空间和页表成本。
 - 第一次访问冷页面可能出现明显缺页延迟。
@@ -102,7 +110,7 @@ try (FileChannel channel = FileChannel.open(path, StandardOpenOption.READ)) {
 
 `MappedByteBuffer.force()` 请求把对映射区域的修改写入存储设备，但持久化保证仍受平台和文件系统语义影响。
 
-## 4. 直接 ByteBuffer 使用堆外内存
+## 5. 直接 ByteBuffer {#direct-buffer}
 
 ```java
 ByteBuffer direct = ByteBuffer.allocateDirect(64 * 1024);
@@ -114,17 +122,17 @@ System.out.println(direct.isDirect()); // true
 
 直接缓冲区仍然有一个 Java 对象作为引用入口，它的生命周期通常与对象可达性相关。数据不在堆里，不代表不受 GC 触发的清理机制影响，也不代表内存无限。
 
-### 4.1 直接内存的代价
+### 5.1 直接内存的代价 {#direct-cost}
 
 - 分配和释放通常比普通堆缓冲区昂贵。
 - 内存不直接体现在 Java 堆占用中，但仍受进程和 JVM 直接内存限制。
-- 大量短命直接缓冲区可能在真正释放前积压。
+- 大量短命直接缓冲区可能在释放前积压。
 - 随机 `get`、`put` 的纯 Java 计算不一定比堆数组更快。
 - OOM 可能来自直接缓冲区，即使堆还有空间。
 
 网络框架通常使用缓冲池复用直接内存，而不是为每个小消息调用 `allocateDirect`。
 
-## 5. 三种机制优化的环节
+## 6. 三种机制的比较 {#comparison}
 
 | 机制 | 主要目标 | 数据是否进入 Java 堆 | 适合场景 | 主要风险 |
 | --- | --- | --- | --- | --- |
@@ -134,7 +142,7 @@ System.out.println(direct.isDirect()); // true
 
 它们可以组合，也可能互相替代。选择依据是应用是否需要处理内容、访问模式、数据大小和生命周期，不是看到“零拷贝”就同时启用所有机制。
 
-## 6. 怎样验证收益
+## 7. 验证收益 {#verification}
 
 只比较一段微基准的平均耗时不够。I/O 优化还要观察：
 
@@ -147,27 +155,27 @@ System.out.println(direct.isDirect()); // true
 
 测试数据要大到能覆盖真实路径，并区分冷缓存与热缓存。否则测到的可能只是操作系统页缓存或 JIT 预热差异。
 
-## 7. 常见问题
+## 8. 常见问题
 
-### 7.1 零拷贝是否真的一次复制都没有
+### 8.1 零拷贝是否真的一次复制都没有
 
 不是。数据仍然需要从存储设备进入内存，再传给网卡或其他设备。“零拷贝”通常指避免 CPU 在用户态与内核态之间复制数据，或避免内核中的冗余副本。讨论时必须说明省掉的是哪一步。
 
-### 7.2 直接内存是否不受垃圾回收影响
+### 8.2 直接内存是否不受垃圾回收影响
 
 数据区域不在普通 Java 堆中，但直接缓冲区对象仍由 Java 代码持有，其清理通常依赖对象不再可达后的机制。GC 压力、清理延迟和直接内存上限仍然会影响应用。
 
-### 7.3 内存映射一定比 read 快吗
+### 8.3 内存映射一定比 read 快吗
 
 不一定。映射适合随机访问和减少复制，但会引入缺页、虚拟内存管理和生命周期成本。小文件顺序读取、一次性扫描或需要立刻释放文件句柄的场景，普通缓冲读取可能更稳定。
 
-### 7.4 `force()` 是否等于事务提交
+### 8.4 `force()` 是否等于事务提交
 
 不是。它只处理映射区域修改的写回请求，不提供多文件原子性、业务一致性或数据库事务语义。需要崩溃一致性时，还要设计写入顺序、校验、日志和原子替换协议。
 
-## 8. 面试题
+## 9. 面试题
 
-### 8.1 Java 怎样实现零拷贝 {#java-zero-copy}
+### 9.1 Java 怎样实现零拷贝 {#java-zero-copy}
 
 <!-- 面试来源：
 - 阿里巴巴：https://www.nowcoder.com/discuss/353157045090197504
@@ -183,7 +191,7 @@ System.out.println(direct.isDirect()); // true
 - 零拷贝为什么仍然存在设备与内存之间的数据移动。
 - 平台差异和部分传输怎样影响代码。
 
-**相关内容**：[FileChannel.transferTo 减少用户态复制](#2-filechanneltransferto-减少用户态复制)、[内存映射把文件区域映射到地址空间](#3-内存映射把文件区域映射到地址空间)、[三种机制优化的环节](#5-三种机制优化的环节)。
+**相关内容**：[FileChannel.transferTo](#transfer-to)、[内存映射](#mmap)、[三种机制的比较](#comparison)。
 
 <details>
 <summary>参考回答</summary>
@@ -194,7 +202,7 @@ Java 可以使用 `FileChannel.transferTo` 或 `transferFrom` 在通道之间传
 
 </details>
 
-### 8.2 直接内存有什么收益和风险 {#direct-memory-tradeoffs}
+### 9.2 直接内存有什么收益和风险 {#direct-memory-tradeoffs}
 
 <!-- 面试来源：
 - 字节跳动：https://www.nowcoder.com/discuss/725700
@@ -209,7 +217,7 @@ Java 可以使用 `FileChannel.transferTo` 或 `transferFrom` 在通道之间传
 - 堆外数据与 Java Buffer 对象的生命周期关系。
 - 分配成本、内存上限和池化。
 
-**相关内容**：[直接 ByteBuffer 使用堆外内存](#4-直接-bytebuffer-使用堆外内存)。
+**相关内容**：[直接 ByteBuffer](#direct-buffer)。
 
 <details>
 <summary>参考回答</summary>
@@ -220,11 +228,9 @@ Java 可以使用 `FileChannel.transferTo` 或 `transferFrom` 在通道之间传
 
 </details>
 
-:::note 参考资料
+## 10. 参考资料
 
-1. [Java API：FileChannel](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/nio/channels/FileChannel.html)
-2. [Java API：MappedByteBuffer](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/nio/MappedByteBuffer.html)
-3. [Java API：ByteBuffer.allocateDirect](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/nio/ByteBuffer.html#allocateDirect(int))
-4. [Java API：FileChannel.transferTo](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/nio/channels/FileChannel.html#transferTo(long,long,java.nio.channels.WritableByteChannel))
-
-:::
+- [Java API：FileChannel](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/nio/channels/FileChannel.html)
+- [Java API：MappedByteBuffer](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/nio/MappedByteBuffer.html)
+- [Java API：ByteBuffer.allocateDirect](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/nio/ByteBuffer.html#allocateDirect(int))
+- [Java API：FileChannel.transferTo](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/nio/channels/FileChannel.html#transferTo(long,long,java.nio.channels.WritableByteChannel))

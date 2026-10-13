@@ -9,7 +9,15 @@ knowledge:
 
 Spring MVC 将路径、查询参数、头和请求体解析为 Controller 参数。绑定只负责得到 Java 值，校验负责判断值是否满足输入契约，内容协商负责确定请求和响应采用哪种媒体类型。
 
-## 1. 不同来源使用明确注解
+## 1. 面试核心 {#core}
+
+- `@PathVariable`、`@RequestParam`、`@RequestHeader`、`@RequestBody` 分别从路径、查询参数、请求头和请求体取值。
+- `@RequestBody` 由 `HttpMessageConverter` 根据 `Content-Type` 反序列化，加上 `@Valid` 后再执行 Bean Validation。[卡](#requestbody-binding)
+- 类型转换失败属于绑定错误，值不满足约束属于校验错误，两者应返回不同的错误信息。
+- 用专门的请求 DTO 接收输入，避免客户端写入实体中不允许修改的字段。
+- 无法读取请求体时返回 415，无法生成客户端接受的响应格式时返回 406。
+
+## 2. 参数来源注解 {#sources}
 
 ```java
 @PostMapping(path = "/orders/{id}", consumes = "application/json")
@@ -29,7 +37,7 @@ OrderResponse update(
 
 输入来源越明确，API 文档、错误定位和安全审查越容易。
 
-## 2. 绑定失败与校验失败不同
+## 3. 绑定失败与校验失败 {#binding-vs-validation}
 
 `quantity=abc` 无法转换为整数，属于绑定/类型转换错误；`quantity=-1` 成功得到整数，但违反 `@Positive`，属于校验错误。
 
@@ -41,7 +49,7 @@ record UpdateOrderRequest(
 
 错误响应应分别保留字段、拒绝值类型和稳定错误码，不把内部异常类名直接交给客户端。
 
-## 3. 使用请求 DTO 控制可写字段
+## 4. 请求 DTO {#request-dto}
 
 直接把持久化实体作为 `@RequestBody` 容易暴露 `status`、`ownerId` 等本不允许客户端修改的字段，也会把数据库模型变化扩散到 API。
 
@@ -49,13 +57,13 @@ record UpdateOrderRequest(
 
 嵌套对象需要 `@Valid` 才会继续级联校验；集合大小、字符串长度和金额范围也应有上限，避免合法 JSON 变成资源攻击。
 
-## 4. 方法校验覆盖非请求体参数
+## 5. 方法校验 {#method-validation}
 
 Controller 方法参数或 service 方法可以使用 Bean Validation 方法校验。具体异常类型会随参数解析路径和 Spring 版本不同，统一异常处理不要只捕获一种历史异常。
 
 校验组可以表达创建与更新差异，但组层级过多会让契约难以理解。操作 DTO 通常更直观。
 
-## 5. `Content-Type` 与 `Accept` 作用不同
+## 6. `Content-Type` 与 `Accept` {#content-negotiation}
 
 - 请求 `Content-Type` 描述客户端发送的请求体格式。
 - `Accept` 描述客户端希望接收的响应格式。
@@ -64,23 +72,23 @@ Controller 方法参数或 service 方法可以使用 Bean Validation 方法校�
 
 不要根据 URL 后缀或用户可控参数随意选择响应类型，明确支持的媒体类型和字符编码。
 
-## 6. 自定义解析器需要限制范围
+## 7. 自定义参数解析器 {#argument-resolver}
 
 跨接口重复的租户、分页或当前用户参数可以实现 `HandlerMethodArgumentResolver`。resolver 应只匹配专用注解或类型，失败时返回稳定客户端错误，不能对所有 `String` 等宽泛类型生效。
 
-## 7. 常见问题
+## 8. 常见问题
 
-### 7.1 `@Valid` 和 `@Validated` 有什么关系
+### 8.1 `@Valid` 和 `@Validated` 有什么关系
 
 两者都可触发 Bean Validation；Spring 的 `@Validated` 还支持指定校验组，并用于方法级校验入口。具体放置方式要与当前 MVC 和方法校验配置匹配。
 
-### 7.2 校验通过是否说明请求安全
+### 8.2 校验通过是否说明请求安全
 
 不说明。校验只确认结构与字段约束，授权、业务状态、不变量和防重放仍要在相应层处理。
 
-## 8. 面试题
+## 9. 面试题
 
-### 8.1 Spring MVC 怎样完成 `@RequestBody` 绑定与校验 {#requestbody-binding}
+### 9.1 Spring MVC 怎样完成 `@RequestBody` 绑定与校验 {#requestbody-binding}
 
 <!-- 面试来源：
 - 珍爱网：https://www.nowcoder.com/discuss/353154991655428096
@@ -95,7 +103,7 @@ Controller 方法参数或 service 方法可以使用 Bean Validation 方法校�
 - 绑定错误和 Bean Validation 错误。
 - 请求 DTO 与授权边界。
 
-**相关内容**：[不同来源使用明确注解](#1-不同来源使用明确注解)至[`Content-Type` 与 `Accept` 作用不同](#5-content-type-与-accept-作用不同)。
+**相关内容**：[参数来源注解](#sources)至[`Content-Type` 与 `Accept`](#content-negotiation)。
 
 <details>
 <summary>参考回答</summary>
@@ -106,10 +114,8 @@ RequestMappingHandlerAdapter 选择参数解析器，`@RequestBody` 由匹配 Co
 
 </details>
 
-:::note 参考资料
+## 10. 参考资料
 
-1. [Spring Framework：Method Arguments](https://docs.spring.io/spring-framework/reference/web/webmvc/mvc-controller/ann-methods/arguments.html)
-2. [Spring Framework：Validation](https://docs.spring.io/spring-framework/reference/web/webmvc/mvc-config/validation.html)
-3. [Spring Framework：HTTP Message Conversion](https://docs.spring.io/spring-framework/reference/web/webmvc/message-converters.html)
-
-:::
+- [Spring Framework：Method Arguments](https://docs.spring.io/spring-framework/reference/web/webmvc/mvc-controller/ann-methods/arguments.html)
+- [Spring Framework：Validation](https://docs.spring.io/spring-framework/reference/web/webmvc/mvc-config/validation.html)
+- [Spring Framework：HTTP Message Conversion](https://docs.spring.io/spring-framework/reference/web/webmvc/message-converters.html)

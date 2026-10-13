@@ -9,7 +9,15 @@ knowledge:
 
 `OutOfMemoryError` 只说明某次资源申请无法满足，未必是 Java 堆泄漏。第一步应保留完整错误消息，确认失败的是堆、类元数据、直接内存、native thread 还是其他资源，再选择证据。
 
-## 1. `Java heap space`
+## 1. 面试核心 {#core}
+
+- `OutOfMemoryError` 的消息说明是哪种资源不足：`Java heap space`、`GC overhead limit exceeded`、`Metaspace`、`Direct buffer memory`、`unable to create native thread` 的原因和证据各不相同。[卡](#oom-types)
+- 堆 OOM 先区分泄漏、工作集超过容量和瞬时分配峰值，再决定修复泄漏还是调整容量。
+- `StackOverflowError` 来自线程栈深度超限，常见于无终止递归和 `toString`、`equals` 的相互调用。
+- 发生 OOM 后先保存完整错误消息、启动参数、容器限制和同时段指标；预先配置 `-XX:+HeapDumpOnOutOfMemoryError` 可以自动留下堆转储。[卡](#locate-oom)
+- `System.gc()` 不能回收仍然可达的对象，不能用来处理 OOM。
+
+## 2. `Java heap space`
 
 ```java
 List<byte[]> retained = new ArrayList<>();
@@ -29,7 +37,7 @@ OOM 不自动证明泄漏。若堆中对象都是业务必须的 live set，问�
 
 建议在受控环境验证 `-XX:+HeapDumpOnOutOfMemoryError` 和转储路径。堆转储可能很大并造成额外停顿，生产环境要预留磁盘与采集策略。
 
-## 2. `GC overhead limit exceeded`
+## 3. `GC overhead limit exceeded`
 
 HotSpot 在绝大多数时间用于 GC、每次只回收很少空间时，可以抛出这个错误。它描述的是进展不足，不是一个独立内存区域。
 
@@ -42,7 +50,7 @@ HotSpot 在绝大多数时间用于 GC、每次只回收很少空间时，可以
 
 关闭这个保护只会让进程更久地停留在低进展状态，通常不是修复。
 
-## 3. `Metaspace` 与 `Compressed class space`
+## 4. `Metaspace` 与 `Compressed class space`
 
 常见来源：
 
@@ -57,13 +65,13 @@ jcmd <pid> VM.metaspace
 
 仅增大 Metaspace 会掩盖类加载器泄漏。要观察加载器数量、每个加载器定义的类以及能否卸载。
 
-## 4. `Direct buffer memory` 与 native allocation failure
+## 5. `Direct buffer memory` 与 native allocation failure
 
 直接缓冲区 OOM 常来自无界池、过大缓冲区或释放滞后。native heap 申请失败还可能显示 `Out of swap space`、`Native method` 等细节，甚至由 native 代码直接崩溃并生成 `hs_err_pid` 日志。
 
 这时堆转储可能很小。使用 NMT、直接缓冲区池指标、进程内存映射和 native profiler，不能按 Java 堆泄漏路径排查。
 
-## 5. `unable to create native thread`
+## 6. `unable to create native thread`
 
 创建平台线程需要本地线程结构和栈。失败可能因为：
 
@@ -79,7 +87,7 @@ ps -eLf | grep <pid> | wc -l
 
 修复应先控制并发和线程生命周期。盲目减小 `-Xss` 可能增加递归溢出风险，也不能解决任务没有背压的问题。
 
-## 6. `StackOverflowError`
+## 7. `StackOverflowError`
 
 ```java
 static void recurse() {
@@ -91,7 +99,7 @@ static void recurse() {
 
 先看重复栈帧定位调用环。如果算法深度确实随输入增长，优先改为显式栈或迭代；增大 `-Xss` 只适合最大深度可控且容量预算允许的场景。
 
-## 7. 一套按错误类型选择证据的流程
+## 8. 按错误类型选择证据 {#evidence}
 
 | 现象 | 首要证据 |
 | --- | --- |
@@ -104,23 +112,23 @@ static void recurse() {
 
 所有场景都先保存首次错误、启动参数、容器限制和同一时间窗口的指标。故障后重复触发 Full GC 或连续导出堆，可能让现场进一步恶化。
 
-## 8. 常见问题
+## 9. 常见问题
 
-### 8.1 内存泄漏和内存溢出有什么区别
+### 9.1 内存泄漏和内存溢出有什么区别
 
 泄漏是程序意外保留已经无用的对象或资源；溢出是一次申请无法满足。泄漏可以最终导致溢出，但合理的工作集超过容量也会溢出，没有泄漏。
 
-### 8.2 OOM 后进程一定退出吗
+### 9.2 OOM 后进程一定退出吗
 
 不一定。`OutOfMemoryError` 是 `Error`，可能只终止触发它的线程，也可能被捕获；但此时进程资源紧张，错误处理也可能分配失败。关键服务通常应通过外部监督安全重启，并在退出前尽可能保留低风险证据。
 
-### 8.3 `System.gc()` 能解决 OOM 吗
+### 9.3 `System.gc()` 能解决 OOM 吗
 
 它只是向 JVM 建议执行 GC，可能被忽略，也不能回收仍然可达的对象。频繁调用还可能带来昂贵停顿，不是容量或泄漏修复手段。
 
-## 9. 面试题
+## 10. 面试题
 
-### 9.1 `StackOverflowError` 和不同 OOM 分别怎样产生 {#oom-types}
+### 10.1 `StackOverflowError` 和不同 OOM 分别怎样产生 {#oom-types}
 
 <!-- 面试来源：
 - 腾讯：https://www.nowcoder.com/discuss/814856294694678528
@@ -134,7 +142,7 @@ static void recurse() {
 - 完整 detail message 的诊断价值。
 - OOM 不等于内存泄漏。
 
-**相关内容**：[`Java heap space`](#1-java-heap-space)至[`StackOverflowError`](#6-stackoverflowerror)。
+**相关内容**：[`Java heap space`](#2-java-heap-space)至[`StackOverflowError`](#7-stackoverflowerror)。
 
 <details>
 <summary>参考回答</summary>
@@ -145,7 +153,7 @@ static void recurse() {
 
 </details>
 
-### 9.2 线上发生 OOM 应该怎样定位 {#locate-oom}
+### 10.2 线上发生 OOM 应该怎样定位 {#locate-oom}
 
 <!-- 面试来源：
 - 高德：https://www.nowcoder.com/discuss/720058098571849728
@@ -159,7 +167,7 @@ static void recurse() {
 - 泄漏、容量不足和分配过快的区分。
 - 采集动作本身的停顿与磁盘风险。
 
-**相关内容**：[一套按错误类型选择证据的流程](#7-一套按错误类型选择证据的流程)。
+**相关内容**：[按错误类型选择证据](#evidence)。
 
 <details>
 <summary>参考回答</summary>
@@ -170,11 +178,9 @@ static void recurse() {
 
 </details>
 
-:::note 参考资料
+## 11. 参考资料
 
-1. [Oracle：Troubleshoot Memory Leaks](https://docs.oracle.com/en/java/javase/26/troubleshoot/troubleshooting-memory-leaks.html)
-2. [Oracle：Diagnostic Tools](https://docs.oracle.com/en/java/javase/26/troubleshoot/diagnostic-tools.html)
-3. [Java API：`OutOfMemoryError`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/OutOfMemoryError.html)
-4. [Java API：`StackOverflowError`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/StackOverflowError.html)
-
-:::
+- [Oracle：Troubleshoot Memory Leaks](https://docs.oracle.com/en/java/javase/26/troubleshoot/troubleshooting-memory-leaks.html)
+- [Oracle：Diagnostic Tools](https://docs.oracle.com/en/java/javase/26/troubleshoot/diagnostic-tools.html)
+- [Java API：`OutOfMemoryError`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/OutOfMemoryError.html)
+- [Java API：`StackOverflowError`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/StackOverflowError.html)

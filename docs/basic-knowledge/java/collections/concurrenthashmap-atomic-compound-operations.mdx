@@ -9,7 +9,15 @@ knowledge:
 
 `ConcurrentHashMap` 允许多个线程并发读取和更新不同键。当前实现使用 volatile、CAS、桶级同步和协作扩容；正确性仍取决于调用方是否使用原子复合方法表达完整操作。
 
-## 1. 并发 Map 解决什么问题
+## 1. 面试核心 {#core}
+
+- JDK 8 之后的 `ConcurrentHashMap` 不再使用 Segment，采用桶数组：空桶用 CAS 插入，非空桶对头节点加 `synchronized`，读取依靠 volatile，不加锁。[卡](#chm-thread-safety)
+- “先 `get` 再 `put`”即使用 ConcurrentHashMap 也有竞态，复合操作要用 `putIfAbsent`、`computeIfAbsent`、`merge` 等原子方法。
+- `compute` 系列的映射函数会在持有桶锁时执行，必须短小，不能访问同一个 Map 的其他键。
+- 不允许 null 键和值：并发场景下无法区分“键不存在”和“值为 null”。[卡](#chm-no-null)
+- 扩容时多个线程可以领取不同的桶区间协作迁移；`size()` 只是并发更新期间的估计值。
+
+## 2. 并发 Map 的需求 {#motivation}
 
 普通 HashMap 没有并发读写保证。把每个方法都放进一把全局锁可以保证基本安全，却会让无关键也排队。
 
@@ -23,7 +31,7 @@ ConcurrentHashMap 的目标是：
 
 它仍然是共享可变状态。高竞争热点键、耗时计算函数和跨多个键的不变量不会因为换了容器就自动解决。
 
-## 2. 当前实现不再使用 Segment
+## 3. JDK 8 之后的结构 {#structure}
 
 JDK 7 的 ConcurrentHashMap 使用 Segment 分段。JDK 8 之后的主线实现改为桶数组加节点结构：
 
@@ -34,7 +42,7 @@ JDK 7 的 ConcurrentHashMap 使用 Segment 分段。JDK 8 之后的主线实现�
 
 因此回答当前实现时，不应继续说“默认 16 个 Segment”。版本差异可以作为历史补充，但要先说明目标 JDK。
 
-## 3. get 为什么通常不加锁
+## 4. 无锁读取 {#get}
 
 `get` 计算哈希并定位桶，通过 volatile 读取和不可变键字段沿节点查找。写线程会按实现的发布规则更新节点，使随后读取能够观察到有效结构。
 
@@ -44,7 +52,7 @@ V value = cache.get(key);
 
 不加互斥锁不等于完全没有同步语义，也不等于一次读取能代表整个 Map 的全局快照。ConcurrentHashMap 保证已完成更新与随后针对该键的读取之间的 happens-before 关系；跨多个键的组合状态仍可能来自不同时间点。
 
-## 4. 先检查后执行仍然有竞态
+## 5. 复合操作的竞态 {#compound}
 
 下面的代码即使用 ConcurrentHashMap 也不原子：
 
@@ -73,7 +81,7 @@ User user = users.computeIfAbsent(id, this::loadUser);
 
 这些方法只保证单个键对应操作的原子性，不会把数据库写入、另一个 Map 和消息发送一起变成事务。
 
-## 5. compute 函数必须短小
+## 6. compute 系列方法 {#compute}
 
 ```java
 LongAdder counter = counters.computeIfAbsent(
@@ -92,7 +100,7 @@ counter.increment();
 
 `computeIfAbsent` 不应被当作完整的缓存加载协议。加载超时、刷新、失败缓存、穿透保护和容量淘汰需要专门设计。
 
-## 6. 为什么不允许 null
+## 7. null 键和值 {#no-null}
 
 ConcurrentHashMap 不允许 null 键和值：
 
@@ -104,7 +112,7 @@ ConcurrentHashMap 不允许 null 键和值：
 
 需要保存“已查询但没有业务值”时，可以保存显式状态对象，而不是 null。
 
-## 7. 多线程协作扩容
+## 8. 协作扩容 {#resize}
 
 当元素增加需要扩容时，当前实现会把旧表的桶迁移到更大数组。线程发现某一范围正在迁移时，可以领取一段桶参与复制；完成的旧桶会放置转发标记，后续操作前往新表。
 
@@ -112,7 +120,7 @@ ConcurrentHashMap 不允许 null 键和值：
 
 扩容期间 Map 可以继续服务，并不代表全局遍历获得单一时刻快照。迭代器按弱一致语义工作。
 
-## 8. 热点键仍会串行竞争
+## 9. 热点键竞争 {#hot-key}
 
 不同桶可以并发更新，同一个键的更新却必须保持顺序。下面的计数若所有请求都写一个键，竞争仍然集中：
 
@@ -124,27 +132,27 @@ counts.merge("all", 1L, Long::sum);
 
 不要把 key 人为加随机后缀就算完成设计。读取、过期、容错和最终合并必须一起定义。
 
-## 9. 常见问题
+## 10. 常见问题
 
-### 9.1 ConcurrentHashMap 的 size 是精确快照吗
+### 10.1 ConcurrentHashMap 的 size 是精确快照吗
 
 方法会返回调用过程观察到的映射数量，但并发更新可以在统计前后继续发生，因此不能把它与随后操作组合成全局不变量。容量控制和业务限额需要原子协议，不能先看 size 再 put。
 
-### 9.2 可以锁住 ConcurrentHashMap 对象完成多键事务吗
+### 10.2 可以锁住 ConcurrentHashMap 对象完成多键事务吗
 
 只有所有访问者都严格遵守同一外部锁时才有意义；容器自身的方法不会自动取得这把用户锁。多键不变量通常应封装在持有明确锁的组件内，或改用不可变快照和单写者模型。
 
-### 9.3 Hashtable 与 ConcurrentHashMap 有什么区别
+### 10.3 Hashtable 与 ConcurrentHashMap 有什么区别
 
 Hashtable 是较早的同步 Map，常用操作围绕实例锁串行。ConcurrentHashMap 提供更细粒度并发、原子复合 API 和弱一致遍历。新代码通常选择 ConcurrentHashMap，但仍需按所需的一致性语义判断。
 
-### 9.4 ConcurrentHashMap 的读取一定是最新值吗
+### 10.4 ConcurrentHashMap 的读取一定是最新值吗
 
 针对某个键，已完成的更新与随后报告该更新值的读取有 happens-before 关系。但“最新”需要定义全局时间和多个键的一致快照，ConcurrentHashMap 并不提供这种事务视图。
 
-## 10. 面试题
+## 11. 面试题
 
-### 10.1 JDK 8 之后 ConcurrentHashMap 怎样保证并发安全 {#chm-thread-safety}
+### 11.1 JDK 8 之后 ConcurrentHashMap 怎样保证并发安全 {#chm-thread-safety}
 
 <!-- 面试来源：
 - 快手：https://www.nowcoder.com/discuss/179560
@@ -159,7 +167,7 @@ Hashtable 是较早的同步 Map，常用操作围绕实例锁串行。Concurren
 - volatile、CAS、桶级 synchronized 与协作扩容的分工。
 - 容器安全与业务复合操作原子性的边界。
 
-**相关内容**：[当前实现不再使用 Segment](#2-当前实现不再使用-segment)至[先检查后执行仍然有竞态](#4-先检查后执行仍然有竞态)、[多线程协作扩容](#7-多线程协作扩容)。
+**相关内容**：[JDK 8 之后的结构](#structure)至[复合操作的竞态](#compound)、[协作扩容](#resize)。
 
 <details>
 <summary>参考回答</summary>
@@ -170,7 +178,7 @@ JDK 8 之后的实现不再以 Segment 作为主结构，而是使用桶数组�
 
 </details>
 
-### 10.2 ConcurrentHashMap 为什么不允许 null {#chm-no-null}
+### 11.2 ConcurrentHashMap 为什么不允许 null {#chm-no-null}
 
 <!-- 面试来源：
 - 阿里巴巴：https://www.nowcoder.com/discuss/353159278544494592
@@ -185,7 +193,7 @@ JDK 8 之后的实现不再以 Segment 作为主结构，而是使用桶数组�
 - `containsKey` 与 `get` 分开调用不能形成稳定判断。
 - 怎样用显式状态替代业务 null。
 
-**相关内容**：[为什么不允许 null](#6-为什么不允许-null)。
+**相关内容**：[null 键和值](#no-null)。
 
 <details>
 <summary>参考回答</summary>
@@ -196,10 +204,8 @@ ConcurrentHashMap 用 `get` 返回 null 明确表示当前没有映射。如果�
 
 </details>
 
-:::note 参考资料
+## 12. 参考资料
 
-1. [Java API：ConcurrentHashMap](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/ConcurrentHashMap.html)
-2. [OpenJDK：ConcurrentHashMap 源码](https://github.com/openjdk/jdk/blob/jdk-26-ga/src/java.base/share/classes/java/util/concurrent/ConcurrentHashMap.java)
-3. [Java API：ConcurrentMap](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/ConcurrentMap.html)
-
-:::
+- [Java API：ConcurrentHashMap](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/ConcurrentHashMap.html)
+- [OpenJDK：ConcurrentHashMap 源码](https://github.com/openjdk/jdk/blob/jdk-26-ga/src/java.base/share/classes/java/util/concurrent/ConcurrentHashMap.java)
+- [Java API：ConcurrentMap](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/ConcurrentMap.html)

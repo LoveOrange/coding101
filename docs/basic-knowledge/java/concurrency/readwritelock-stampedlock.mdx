@@ -9,7 +9,15 @@ knowledge:
 
 读写锁允许多个读者并发访问，同时让写者独占状态。它只在读取占比高、读操作有一定成本并且写竞争可控时可能受益；`StampedLock` 进一步提供乐观读，但使用约束也更严格。
 
-## 1. 读锁共享，写锁独占
+## 1. 面试核心 {#core}
+
+- 读写锁允许多个读者同时持有读锁，写锁与读锁、写锁互斥；只有读多写少且读操作有一定成本时才可能受益。
+- `ReentrantReadWriteLock` 支持写锁降级为读锁，不支持读锁升级为写锁。
+- `StampedLock` 不可重入、没有 Condition，释放和模式转换都要传入获取时得到的 stamp。
+- 乐观读先读取字段再 `validate`，验证失败时在读锁内重新读取全部字段。[卡](#optimistic-read)
+- 配置类数据优先考虑 `volatile` 发布不可变快照或并发容器。
+
+## 2. 读锁与写锁 {#read-write}
 
 ```java
 private final ReentrantReadWriteLock rw = new ReentrantReadWriteLock();
@@ -30,13 +38,13 @@ Value find(Key key) {
 
 临界区很短或写入频繁时，读写锁的状态管理和排队成本可能高于普通互斥锁。
 
-## 2. 降级可控，升级容易陷入等待
+## 3. 锁降级与锁升级 {#downgrade-upgrade}
 
 持有写锁时可以先获取读锁，再释放写锁，完成从写到读的降级。反过来，多个线程都持有读锁并等待升级为写锁时，彼此不会释放读锁，容易无法进展。
 
 需要更新时通常先释放读锁，再获取写锁，并在写锁下重新检查条件。这个间隙里状态可能变化，所以不能沿用旧判断。
 
-## 3. StampedLock 用 stamp 表示访问能力
+## 4. StampedLock 与 stamp {#stampedlock}
 
 ```java
 long stamp = lock.readLock();
@@ -51,7 +59,7 @@ try {
 
 它也不直接提供 `Condition`，因此不适合需要条件队列的协议。
 
-## 4. 乐观读必须验证并准备重读
+## 5. 乐观读 {#optimistic-read}
 
 ```java
 long stamp = lock.tryOptimisticRead();
@@ -70,29 +78,29 @@ if (!lock.validate(stamp)) {
 return new Point(currentX, currentY);
 ```
 
-乐观读期间没有真正持有读锁，读取可能与写入交错。只有 `validate` 成功，才能接受这组结果；失败后要在读锁内全部重读。
+乐观读期间不持有读锁，读取可能与写入交错。只有 `validate` 成功，才能接受这组结果；失败后要在读锁内全部重读。
 
 未验证前，代码只能做容忍暂时不一致的简单读取。不能沿着可能为 `null` 的引用调用任意方法，也不能产生不可撤销副作用。
 
-## 5. 先比较不可变快照和并发容器
+## 6. 不可变快照与并发容器 {#alternatives}
 
 配置读取可以用 `volatile` 发布不可变快照；键值查询可以用 `ConcurrentHashMap`；读极多写极少的小集合可以考虑 Copy-on-Write。它们往往比手动维护读写锁更容易组合。
 
 使用读写锁前，应测量读写比例、临界区时间、写者等待和长尾，而不是只根据“读多写少”四个字决定。
 
-## 6. 常见问题
+## 7. 常见问题
 
-### 6.1 乐观读是不是无锁读取
+### 7.1 乐观读是不是无锁读取
 
 读取阶段不持有读锁，但仍要取得版本 stamp、验证，并在失败时退回读锁。它是一套完整协议，不是删掉锁调用。
 
-### 6.2 `StampedLock` 为什么不能当作 `ReentrantReadWriteLock` 的直接替代
+### 7.2 `StampedLock` 为什么不能当作 `ReentrantReadWriteLock` 的直接替代
 
-它不可重入、没有 Condition，API 依赖 stamp，乐观读还要求容忍并验证不一致状态。迁移会改变调用约束，不只是性能实现。
+它不可重入、没有 Condition，API 依赖 stamp，乐观读还要求容忍并验证不一致状态。迁移时调用约束随之改变，需要逐处检查调用方。
 
-## 7. 面试题
+## 8. 面试题
 
-### 7.1 `StampedLock` 的乐观读怎样保证结果可用 {#optimistic-read}
+### 8.1 `StampedLock` 的乐观读怎样保证结果可用 {#optimistic-read}
 
 <!-- 面试来源：
 - 美团：https://www.nowcoder.com/discuss/383727207275933696
@@ -106,7 +114,7 @@ return new Point(currentX, currentY);
 - stamp 验证和失败重读。
 - 不可重入与副作用边界。
 
-**相关内容**：[StampedLock 用 stamp 表示访问能力](#3-stampedlock-用-stamp-表示访问能力)和[乐观读必须验证并准备重读](#4-乐观读必须验证并准备重读)。
+**相关内容**：[StampedLock 与 stamp](#stampedlock)和[乐观读](#optimistic-read)。
 
 <details>
 <summary>参考回答</summary>
@@ -117,9 +125,7 @@ return new Point(currentX, currentY);
 
 </details>
 
-:::note 参考资料
+## 9. 参考资料
 
-1. [Java API：`ReentrantReadWriteLock`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/locks/ReentrantReadWriteLock.html)
-2. [Java API：`StampedLock`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/locks/StampedLock.html)
-
-:::
+- [Java API：`ReentrantReadWriteLock`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/locks/ReentrantReadWriteLock.html)
+- [Java API：`StampedLock`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/locks/StampedLock.html)

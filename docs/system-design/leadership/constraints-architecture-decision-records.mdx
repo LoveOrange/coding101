@@ -9,7 +9,15 @@ knowledge:
 
 架构决策记录（ADR）保存一个重要技术选择的上下文、备选方案、决定和后果，让团队能够理解并验证当时的取舍。
 
-## 1. 识别值得记录的决策
+## 1. 面试核心 {#core}
+
+- ADR 记录影响广、代价高或难以逆转的技术选择，包括背景、约束、备选方案、决定和后果。[卡](#traceable-decisions)
+- 决策从问题和约束开始：业务目标、性能、合规、团队能力和已有系统。
+- 至少比较一个可行替代方案和“维持现状”，用同一组标准评估。
+- ADR 接受后不改写，新决定用 Superseded 状态关联旧记录。
+- 决策要连接到验证方式，例如压测、灰度指标和复查日期。
+
+## 2. 需要记录的决策 {#scope}
 
 ADR 适合影响广、代价高或以后难以逆转的选择，例如：
 
@@ -23,7 +31,7 @@ ADR 适合影响广、代价高或以后难以逆转的选择，例如：
 
 判断方法是：如果一年后有人想改掉它，是否需要知道当时的业务约束和被放弃的方案？答案为是，就值得记录。
 
-## 2. 约束先于方案
+## 3. 约束 {#constraints}
 
 决策从问题和约束开始。约束可以来自：
 
@@ -38,7 +46,7 @@ ADR 适合影响广、代价高或以后难以逆转的选择，例如：
 
 如果评审直接从“用 Kafka 还是 RabbitMQ”开始，团队很容易比较功能清单，却忘记要解决的问题。
 
-## 3. 备选方案使用同一组标准
+## 4. 备选方案比较 {#alternatives}
 
 至少保留一个可行替代方案和“维持现状”。对每个方案按同一维度比较：
 
@@ -53,7 +61,7 @@ ADR 适合影响广、代价高或以后难以逆转的选择，例如：
 
 对明显不满足硬约束的方案，可以说明原因后提前淘汰，不需要写成同样长度。
 
-## 4. ADR 保持短而完整
+## 5. ADR 的内容 {#contents}
 
 一份 ADR 至少包含：
 
@@ -76,7 +84,7 @@ ADR 适合影响广、代价高或以后难以逆转的选择，例如：
 
 标题直接写结论，例如“订单事件采用 transactional outbox 发布”，比“消息方案选型”更容易浏览决策日志。
 
-## 5. 决策状态保留演进关系
+## 6. 决策状态 {#status}
 
 ADR 可以经历 Proposed、Accepted、Rejected、Deprecated 和 Superseded 等状态。团队接受后，不直接改写原记录来适配新结论。
 
@@ -89,7 +97,7 @@ ADR 可以经历 Proposed、Accepted、Rejected、Deprecated 和 Superseded 等�
 
 草案阶段可以正常修改。接受后只修正链接和明显文字错误，结论变化通过新记录表达。
 
-## 6. 决策连接到验证
+## 7. 决策验证 {#validation}
 
 ADR 不是评审结束后的存档。它应连接到：
 
@@ -103,7 +111,7 @@ ADR 不是评审结束后的存档。它应连接到：
 
 架构测试也可以验证决定，例如禁止模块依赖环、限制数据库访问或检查 API 兼容性。
 
-## 7. 评审关注未知风险
+## 8. ADR 评审 {#review}
 
 ADR 评审先确认问题、约束和决策负责人，再讨论方案。评论需要指出具体风险、缺失证据或冲突约束；“我更喜欢另一个框架”不构成阻塞理由。
 
@@ -111,7 +119,7 @@ ADR 评审先确认问题、约束和决策负责人，再讨论方案。评论�
 
 评审时间也要有边界。可逆决策可以用小实验快速验证；高代价不可逆决策需要更充分的证据和更广的参与者。
 
-## 8. 一个简化示例
+## 9. 示例 {#example}
 
 订单服务需要可靠发布领域事件，约束是数据库提交与事件不能永久分离、现有团队只运维 MySQL 和 Kafka、允许秒级发布延迟。
 
@@ -119,11 +127,13 @@ ADR 评审先确认问题、约束和决策负责人，再讨论方案。评论�
 
 验证项包括故障注入、重复事件测试和发布延迟 SLO。若未来数据库原生 CDC 成为统一平台能力，再复审发布器实现。
 
-## 9. 面试题
+## 10. 面试题
 
-### 9.1 做技术选型时怎样形成可追溯的架构决策 {#traceable-decisions}
+### 10.1 做技术选型时怎样形成可追溯的架构决策 {#traceable-decisions}
 
-**题目类型**：本站自测
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
 
 **考察重点**
 
@@ -131,7 +141,7 @@ ADR 评审先确认问题、约束和决策负责人，再讨论方案。评论�
 - 备选方案、后果与可逆性。
 - ADR 生命周期、验证和复审条件。
 
-**相关内容**：[识别值得记录的决策](#1-识别值得记录的决策)至[评审关注未知风险](#7-评审关注未知风险)。
+**相关内容**：[需要记录的决策](#scope)至[ADR 评审](#review)。
 
 <details>
 <summary>参考回答</summary>
@@ -142,10 +152,8 @@ ADR 评审先确认问题、约束和决策负责人，再讨论方案。评论�
 
 </details>
 
-:::note 参考资料
+## 11. 参考资料
 
-1. [AWS Prescriptive Guidance：Architectural decision record process](https://docs.aws.amazon.com/prescriptive-guidance/latest/architectural-decision-records/adr-process.html)
-2. [MADR：Markdown Any Decision Records](https://adr.github.io/madr/)
-3. [ADR GitHub Organization](https://adr.github.io/)
-
-:::
+- [AWS Prescriptive Guidance：Architectural decision record process](https://docs.aws.amazon.com/prescriptive-guidance/latest/architectural-decision-records/adr-process.html)
+- [MADR：Markdown Any Decision Records](https://adr.github.io/madr/)
+- [ADR GitHub Organization](https://adr.github.io/)

@@ -9,7 +9,15 @@ knowledge:
 
 绞杀者迁移把遗留系统的一部分能力逐步转到新实现，并在新旧路径并存期间维持兼容、验证和回退能力。
 
-## 1. 选择一条可验证的业务切口
+## 1. 面试核心 {#core}
+
+- 绞杀者模式把遗留系统的能力逐个迁移到新实现，新旧路径并存期间保持兼容和可回退。[卡](#strangler-migration)
+- 第一刀选择边界清楚、调用方可枚举、影响可控的业务能力，在网关或代理层按规则路由流量。
+- 接口变更按 expand、migrate、contract 三步进行；数据迁移先确定唯一写入方，再用 CDC 或 Outbox 同步。
+- 用影子流量比较新旧结果，再按租户或比例灰度扩大。
+- 回退要同时考虑流量和已产生的数据；旧路径删除后迁移才算完成。
+
+## 2. 选择迁移切口 {#slice}
 
 第一次迁移应满足几个条件：业务边界相对清楚、调用方可枚举、失败影响可控，并且迁移收益能够测量。只按代码行数选择“最容易拆”的模块，可能得不到任何独立价值。
 
@@ -21,7 +29,7 @@ knowledge:
 - 新旧系统分别由谁维护；
 - 回退与最终删除旧路径的条件。
 
-## 2. 在稳定入口建立路由缝隙
+## 3. 路由入口 {#routing}
 
 绞杀者模式通常在客户端与遗留系统之间加入代理、网关或适配层。入口根据请求特征把一部分流量送往新系统，其余仍进入旧系统。
 
@@ -29,7 +37,7 @@ knowledge:
 
 新系统若仍需调用遗留能力，可以通过防腐层转换模型。转换逻辑集中在边界处，避免旧系统的字段、状态码和特殊规则扩散到新领域模型。
 
-## 3. 先扩展契约再迁移调用方
+## 4. 契约演进 {#expand-contract}
 
 接口和事件变更可以使用 expand–migrate–contract：
 
@@ -41,7 +49,7 @@ knowledge:
 
 兼容期要有截止日期和负责人。长期保留所有历史行为，会让新系统逐渐复制遗留系统的全部复杂度。
 
-## 4. 数据迁移区分所有权
+## 5. 数据迁移 {#data-migration}
 
 新旧系统同时写同一份业务数据时，双写顺序和部分失败很难处理。更稳妥的路径是先确定唯一写入方，再通过变更数据捕获、outbox 或迁移任务同步给另一方。
 
@@ -55,15 +63,15 @@ knowledge:
 
 数据量大时按租户、时间分区或业务键分批迁移。每一批都保留源范围、校验结果和当前所有权，避免回退时不知道应该相信哪一侧。
 
-## 5. 影子流量验证结果
+## 6. 影子流量 {#shadow-traffic}
 
 影子流量把真实请求复制给新系统，但不使用它的响应。它适合比较查询、计算和规则结果，同时不会直接影响用户。
 
-影子验证要屏蔽邮件、扣款和消息发布等副作用。比较结果时区分可接受差异，例如时间戳、随机 ID 和排序；真正的业务差异进入可追踪的问题队列。
+影子验证要屏蔽邮件、扣款和消息发布等副作用。比较结果时区分可接受差异，例如时间戳、随机 ID 和排序；业务差异进入可追踪的问题队列。
 
 影子流量无法覆盖真实写入竞争和下游反馈。它通过后，再用内部用户、小租户或低风险业务逐步承接真实流量。
 
-## 6. 灰度按风险逐步扩大
+## 7. 灰度发布 {#canary}
 
 灰度规则可以按租户、地域、账号、请求哈希或业务类型分桶。每一阶段都检查：
 
@@ -75,7 +83,7 @@ knowledge:
 
 扩大流量前先满足观察窗口和样本量，不能只看几分钟没有告警。高风险写入还要确认回退后的数据处理方法。
 
-## 7. 回退包含流量和数据
+## 8. 回退 {#rollback}
 
 把路由切回旧系统只是流量回退。如果新系统已经产生新状态，还要决定：
 
@@ -86,7 +94,7 @@ knowledge:
 
 迁移前应演练回退，在时间限制内验证流量、状态和依赖恢复。对不可逆的数据变化，准备向前修复方案，并把它与普通回滚明确区分。
 
-## 8. 退出条件决定何时完成
+## 9. 退出条件 {#exit-criteria}
 
 一条迁移只有在旧路径被安全删除后才结束。退出条件至少包括：
 
@@ -99,9 +107,9 @@ knowledge:
 
 缺少退出条件会形成永久双轨系统，维护成本比迁移前更高。
 
-## 9. 面试题
+## 10. 面试题
 
-### 9.1 怎样把一个遗留单体逐步迁移为新服务 {#strangler-migration}
+### 10.1 怎样把一个遗留单体逐步迁移为新服务 {#strangler-migration}
 
 <!-- 面试来源：
 - 阿里巴巴：https://www.nowcoder.com/discuss/353159407036997632
@@ -115,7 +123,7 @@ knowledge:
 - 契约兼容、数据所有权和分批校验。
 - 灰度、回退和旧路径退出条件。
 
-**相关内容**：[选择一条可验证的业务切口](#1-选择一条可验证的业务切口)至[退出条件决定何时完成](#8-退出条件决定何时完成)。
+**相关内容**：[选择迁移切口](#slice)至[退出条件](#exit-criteria)。
 
 <details>
 <summary>参考回答</summary>
@@ -126,10 +134,8 @@ knowledge:
 
 </details>
 
-:::note 参考资料
+## 11. 参考资料
 
-1. [Martin Fowler：Strangler Fig Application](https://martinfowler.com/bliki/StranglerFigApplication.html)
-2. [AWS Prescriptive Guidance：Strangler fig pattern](https://docs.aws.amazon.com/prescriptive-guidance/latest/cloud-design-patterns/strangler-fig.html)
-3. [Microsoft Azure Architecture Center：Anti-corruption Layer](https://learn.microsoft.com/en-us/azure/architecture/patterns/anti-corruption-layer)
-
-:::
+- [Martin Fowler：Strangler Fig Application](https://martinfowler.com/bliki/StranglerFigApplication.html)
+- [AWS Prescriptive Guidance：Strangler fig pattern](https://docs.aws.amazon.com/prescriptive-guidance/latest/cloud-design-patterns/strangler-fig.html)
+- [Microsoft Azure Architecture Center：Anti-corruption Layer](https://learn.microsoft.com/en-us/azure/architecture/patterns/anti-corruption-layer)

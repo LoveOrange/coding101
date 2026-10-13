@@ -9,7 +9,15 @@ knowledge:
 
 RPC 把一次远程调用包装成接近本地方法的接口，但请求仍要经过序列化、连接、网络传输、服务端排队和业务执行。理解完整调用链，才能给超时、线程和协议边界分配责任。
 
-## 1. 一次 RPC 调用经历多个阶段
+## 1. 面试核心 {#core}
+
+- 一次 RPC 调用包括客户端代理、序列化、连接选择、网络传输、服务端解码、排队和业务执行。
+- 序列化协议要支持字段演进：字段编号、缺省值和未知字段处理需要事先约定。
+- TCP 没有消息边界，需要用长度字段或分隔符拆帧来处理半包和粘包，Netty 提供 `LengthFieldBasedFrameDecoder`。[卡](#netty-connections-framing)
+- Netty 用 boss EventLoopGroup 接收连接、worker EventLoopGroup 处理 I/O，一个 Channel 的事件固定由一个 EventLoop 顺序处理；耗时业务要交给业务线程池。
+- 超时后响应可能只是丢失，写操作需要业务幂等键，否则重试可能重复执行。
+
+## 2. RPC 调用链 {#call-chain}
 
 客户端代理通常完成以下工作：
 
@@ -22,7 +30,7 @@ RPC 把一次远程调用包装成接近本地方法的接口，但请求仍要�
 
 任何阶段都可能排队。只统计业务方法耗时，会遗漏客户端连接池、EventLoop 任务队列、业务线程池和响应写回的等待。
 
-## 2. 序列化协议要支持演进
+## 3. 序列化协议 {#serialization}
 
 序列化决定对象如何变成网络字节。设计协议时需要明确字段编号或名称、数值范围、缺省值、未知字段处理和版本兼容规则。
 
@@ -36,7 +44,7 @@ RPC 把一次远程调用包装成接近本地方法的接口，但请求仍要�
 
 Java 原生序列化把类实现细节直接带入协议，跨语言和版本演进都较困难，也扩大了反序列化攻击面。服务间协议通常使用 Protobuf 等显式 schema，或者经过约束的 JSON。
 
-## 3. 字节流需要自己的消息边界
+## 4. 半包与粘包 {#framing}
 
 TCP 只提供有序字节流，一次 `write` 不对应接收方的一次 `read`。一条消息可能被拆成多段，也可能和后一条消息一起到达，这就是常说的半包和粘包。
 
@@ -49,7 +57,7 @@ TCP 只提供有序字节流，一次 `write` 不对应接收方的一次 `read`
 
 Netty 的 `LengthFieldBasedFrameDecoder` 可以根据长度字段拆帧，但仍要设置最大帧长度，防止异常长度占满内存。
 
-## 4. EventLoop 顺序处理一个 Channel 的事件
+## 5. EventLoop {#event-loop}
 
 Netty 的服务端通常由接收连接的 EventLoopGroup 和处理已建立连接的 EventLoopGroup 组成。一个 Channel 注册到某个 EventLoop 后，它的 I/O 事件和提交到该 EventLoop 的任务会按顺序执行。
 
@@ -57,7 +65,7 @@ Netty 的服务端通常由接收连接的 EventLoopGroup 和处理已建立连�
 
 数据库访问、远程调用和耗时计算应转交到有界业务线程池。线程池满时要有拒绝、降级或背压策略，不能用无限队列把延迟隐藏起来。
 
-## 5. ChannelPipeline 分离协议处理步骤
+## 6. ChannelPipeline {#pipeline}
 
 入站数据沿 ChannelPipeline 中的 inbound handler 传播，出站操作则沿 outbound handler 传播。常见管线可以依次包含：
 
@@ -70,13 +78,13 @@ Netty 的服务端通常由接收连接的 EventLoopGroup 和处理已建立连�
 
 每个 handler 只处理一个清晰阶段，有利于测试和复用。handler 是否可被多个 Channel 共享，要根据它有没有可变成员状态判断。
 
-## 6. ByteBuf 的引用计数需要明确所有权
+## 7. ByteBuf 引用计数 {#bytebuf}
 
 Netty 的 ByteBuf 使用引用计数管理池化或直接内存。最后一个消费消息的 handler 负责释放它；如果继续向后传播，就把处理责任交给下一个 handler，不能提前 release。
 
 常见错误包括重复释放、异常路径漏释放，以及异步任务仍在使用已经释放的 ByteBuf。跨线程或延迟使用时，应先确认是否需要 `retain()`，并保证最终有对应的 `release()`。
 
-## 7. deadline 应从调用方贯穿服务端
+## 8. deadline 传递 {#deadline}
 
 调用方应从发起调用时开始计算总 deadline，并把剩余时间传给代理和下游。服务端发现 deadline 已经过期或客户端已经取消后，应停止不再有价值的排队和子任务。
 
@@ -84,25 +92,25 @@ Netty 的 ByteBuf 使用引用计数管理池化或直接内存。最后一个�
 
 重试只适合幂等调用，并应使用退避、抖动和尝试上限。服务端已经产生外部副作用时，客户端超时不代表操作没有发生。
 
-## 8. 背压保护接收端资源
+## 9. 背压 {#backpressure}
 
 当服务端处理速度低于接收速度时，应限制未完成请求数、业务线程池队列和单连接可写缓冲。Netty 可以根据 Channel 的可写状态暂停生产，必要时关闭自动读取，再在容量恢复后继续读取。
 
 背压只能把压力推回上游，不能凭空产生吞吐。最终还需要超时、限流、拒绝和负载均衡共同决定哪些请求继续执行。
 
-## 9. 常见问题
+## 10. 常见问题
 
-### 9.1 Netty 为什么不为每个连接创建一个线程
+### 10.1 Netty 为什么不为每个连接创建一个线程
 
 大量连接大部分时间都在等待网络。EventLoop 用事件通知处理就绪 I/O，减少线程数量和上下文切换。它适合短小、非阻塞的 handler；耗时业务仍需转交其他执行资源。
 
-### 9.2 RPC 看起来成功，为什么业务可能执行两次
+### 10.2 RPC 看起来成功，为什么业务可能执行两次
 
 服务端可能已经完成写入，但响应在网络中丢失，客户端随后超时重试。RPC 框架只能知道响应是否收到，不能自动撤销已经发生的外部副作用。写操作需要业务幂等键、去重记录或可重复执行的状态转换。
 
-## 10. 面试题
+## 11. 面试题
 
-### 10.1 Netty 如何处理连接、粘包和耗时业务 {#netty-connections-framing}
+### 11.1 Netty 如何处理连接、粘包和耗时业务 {#netty-connections-framing}
 
 <!-- 面试来源：
 - 美团、字节跳动、阿里巴巴：https://www.nowcoder.com/discuss/353149111178305536
@@ -117,7 +125,7 @@ Netty 的 ByteBuf 使用引用计数管理池化或直接内存。最后一个�
 - TCP 字节流和应用消息边界。
 - ByteBuf 所有权、业务线程池与背压。
 
-**相关内容**：[字节流需要自己的消息边界](#3-字节流需要自己的消息边界)至[背压保护接收端资源](#8-背压保护接收端资源)。
+**相关内容**：[半包与粘包](#framing)至[背压](#backpressure)。
 
 <details>
 <summary>参考回答</summary>
@@ -128,12 +136,10 @@ TCP 没有消息边界，所以协议要使用长度字段、分隔符或固定�
 
 </details>
 
-:::note 参考资料
+## 12. 参考资料
 
-1. [Netty 4.x User Guide](https://netty.io/wiki/user-guide-for-4.x.html)
-2. [Netty：LengthFieldBasedFrameDecoder](https://netty.io/4.2/api/io/netty/handler/codec/LengthFieldBasedFrameDecoder.html)
-3. [Netty：Reference-counted objects](https://netty.io/wiki/reference-counted-objects.html)
-4. [gRPC：Core concepts](https://grpc.io/docs/what-is-grpc/core-concepts/)
-5. [gRPC：Deadlines](https://grpc.io/docs/guides/deadlines/)
-
-:::
+- [Netty 4.x User Guide](https://netty.io/wiki/user-guide-for-4.x.html)
+- [Netty：LengthFieldBasedFrameDecoder](https://netty.io/4.2/api/io/netty/handler/codec/LengthFieldBasedFrameDecoder.html)
+- [Netty：Reference-counted objects](https://netty.io/wiki/reference-counted-objects.html)
+- [gRPC：Core concepts](https://grpc.io/docs/what-is-grpc/core-concepts/)
+- [gRPC：Deadlines](https://grpc.io/docs/guides/deadlines/)

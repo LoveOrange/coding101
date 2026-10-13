@@ -7,9 +7,17 @@ knowledge:
 
 # 成本归因
 
-性能、可靠性和成本需要落到同一个业务单位与责任边界，团队才能判断一次架构优化是否真正创造了价值。
+性能、可靠性和成本需要落到同一个业务单位与责任边界，团队才能判断一次架构优化是否带来了收益。
 
-## 1. 先选择业务单位
+## 1. 面试核心 {#core}
+
+- 成本按业务单位计算，例如每千次请求、每个订单或每个活跃租户的成本。
+- 专用资源直接归属服务或团队，共享资源选择与成本驱动关系一致、可解释的分摊方式。
+- 优化前记录负载、吞吐、错误率和尾延迟，只看平均值可能掩盖 P99 变差。[卡](#optimization-worth)
+- 可靠性投入由用户风险决定，可用性每提高一个 9，成本通常显著增加。
+- 优先减少无效工作，并为每项优化设置成本、性能和可靠性的护栏指标。
+
+## 2. 业务单位 {#unit}
 
 只看云账单总额，很难解释成本为何变化。可以根据产品选择单位：
 
@@ -23,7 +31,7 @@ knowledge:
 
 同一指标长期保持定义稳定。口径变化时记录版本，否则优化前后无法比较。
 
-## 2. 建立资源所有权
+## 3. 资源所有权 {#ownership}
 
 专用数据库或集群可以直接归属服务、团队或租户。共享网关、Kubernetes 集群和消息平台则需要分摊。
 
@@ -37,7 +45,7 @@ knowledge:
 
 云资源使用账号结构、标签和命名约定；应用层通过 trace、请求数、CPU 时间、存储量和消息量补充归因。标签通常不能追溯应用到历史费用，因此要在资源创建流程中强制校验。
 
-## 3. 共享成本选择可解释的分摊方式
+## 4. 共享成本分摊 {#allocation}
 
 共享成本可以按固定比例、收入、租户数、请求量或实际资源消耗分配。选择标准是成本驱动关系和可操作性。
 
@@ -45,7 +53,7 @@ knowledge:
 
 无法准确归因的成本可以暂时作为平台公共预算，但要明确标记。强行使用一个失真的精确公式，会诱导团队优化代理指标而不是整体成本。
 
-## 4. 性能测量包含负载和尾延迟
+## 5. 性能测量 {#performance}
 
 优化前记录工作负载、吞吐、错误率、延迟分位数和资源用量。平均延迟降低，但 P99 变差，核心用户仍可能受到影响。
 
@@ -59,7 +67,7 @@ knowledge:
 
 单位资源安全吞吐比单次基准峰值更适合容量和成本计算。安全吞吐要求错误率和尾延迟仍在目标内，并保留故障接管余量。
 
-## 5. 可靠性投入由用户风险约束
+## 6. 可靠性投入 {#reliability}
 
 副本、跨地域、冗余供应商和更大的容量余量都会增加成本。可靠性目标从 99.9% 提高到 99.99% 时，新增投入可能包括更独立的故障域、更快复制、更严格发布和更多值班能力。
 
@@ -73,7 +81,7 @@ knowledge:
 
 在用户无法感知的范围继续提高可用性，会挤占其他产品与工程投入。SLO 提供停止过度建设的边界。
 
-## 6. 优化先减少无效工作
+## 7. 优化顺序 {#optimization}
 
 常见优化顺序是：
 
@@ -85,7 +93,7 @@ knowledge:
 
 先处理无效工作，风险和验证成本通常最低。直接迁移数据库或重写服务，可能节省单价，却增加研发、迁移和可靠性成本。
 
-## 7. 为优化设置护栏
+## 8. 优化护栏 {#guardrails}
 
 每项优化都要同时观察成本、性能和可靠性。例如降低副本数可以立刻省钱，也会减少故障余量；提高缓存 TTL 可以减轻数据库压力，也会增加数据陈旧时间。
 
@@ -99,7 +107,7 @@ knowledge:
 
 节省金额要扣除迁移、平台和人力维护成本。一次性账单下降不代表长期单位经济性改善。
 
-## 8. 用差异定位责任
+## 9. 成本差异分析 {#variance}
 
 月度或版本复盘可以把成本变化拆成：
 
@@ -111,9 +119,9 @@ knowledge:
 
 归因用于找到可以行动的所有者，不用于把共享平台账单机械转嫁给团队。平台团队也要对自身固定成本、利用率和服务质量负责。
 
-## 9. 面试题
+## 10. 面试题
 
-### 9.1 怎样判断一次性能优化是否值得投入 {#optimization-worth}
+### 10.1 怎样判断一次性能优化是否值得投入 {#optimization-worth}
 
 <!-- 面试来源：
 - 阿里巴巴：https://www.nowcoder.com/discuss/353159407036997632
@@ -127,7 +135,7 @@ knowledge:
 - 尾延迟、安全吞吐与 SLO 护栏。
 - 实现成本、持续成本和业务收益比较。
 
-**相关内容**：[先选择业务单位](#1-先选择业务单位)至[用差异定位责任](#8-用差异定位责任)。
+**相关内容**：[业务单位](#unit)至[成本差异分析](#variance)。
 
 <details>
 <summary>参考回答</summary>
@@ -138,11 +146,9 @@ knowledge:
 
 </details>
 
-:::note 参考资料
+## 11. 参考资料
 
-1. [FinOps Foundation：Cloud Cost Allocation](https://www.finops.org/wg/cloud-cost-allocation/)
-2. [FinOps Foundation：Allocation](https://www.finops.org/framework/capabilities/allocation/)
-3. [Google SRE：Service Level Objectives](https://sre.google/sre-book/service-level-objectives/)
-4. [Azure Architecture Center：Multitenant cost allocation](https://learn.microsoft.com/en-us/azure/architecture/guide/multitenant/approaches/cost-management-allocation)
-
-:::
+- [FinOps Foundation：Cloud Cost Allocation](https://www.finops.org/wg/cloud-cost-allocation/)
+- [FinOps Foundation：Allocation](https://www.finops.org/framework/capabilities/allocation/)
+- [Google SRE：Service Level Objectives](https://sre.google/sre-book/service-level-objectives/)
+- [Azure Architecture Center：Multitenant cost allocation](https://learn.microsoft.com/en-us/azure/architecture/guide/multitenant/approaches/cost-management-allocation)

@@ -9,7 +9,15 @@ knowledge:
 
 树和图搜索的共同任务是从一个状态访问可达邻居。DFS 深入一条路径后回退，BFS 按距离层次扩展；选择取决于结果目标、边权和内存约束。
 
-## 1. 先把问题建模成节点与边
+## 1. 面试核心 {#core}
+
+- 先把问题建模成节点与边，许多网格和状态问题是隐式图。
+- DFS 适合路径、连通性和完整遍历，递归过深时改用显式栈；回溯在返回时恢复状态。
+- BFS 按层扩展，无权图中首次到达即为最短距离；二叉树右视图取每层最后一个节点。[卡](#right-side-view)
+- 图中有环时在入队时标记 visited，避免重复入队。
+- 多个起点同时入队做多源 BFS，可以一次求出每个位置到最近起点的距离。[卡](#multi-source-bfs)
+
+## 2. 图的建模 {#modeling}
 
 显式图包含顶点和邻接关系，许多问题也有隐式图：
 
@@ -28,7 +36,7 @@ knowledge:
 
 搜索代码只是这些定义的执行器。
 
-## 2. DFS 适合路径与完整遍历
+## 3. DFS {#dfs}
 
 递归遍历二叉树：
 
@@ -54,7 +62,7 @@ DFS 常用于：
 
 时间通常与访问节点和边之和相关，为 O(V + E)。递归空间由最大深度决定；一条很深的链会导致 StackOverflowError。
 
-### 2.1 用显式栈避免调用栈上限
+### 3.1 显式栈 {#explicit-stack}
 
 ```java
 Deque<TreeNode> stack = new ArrayDeque<>();
@@ -75,7 +83,7 @@ while (!stack.isEmpty()) {
 
 显式栈仍需 O(depth) 空间，只是把资源从 JVM 调用栈移到堆，并允许更灵活地保存状态和恢复。
 
-## 3. BFS 按边数距离扩展
+## 4. BFS {#bfs}
 
 ```java
 Queue<TreeNode> queue = new ArrayDeque<>();
@@ -107,7 +115,7 @@ BFS 适合：
 
 队列峰值由图的前沿宽度决定，宽树可能需要 O(V) 内存。
 
-## 4. visited 在入队时标记
+## 5. visited 标记时机 {#visited}
 
 图中存在环或多条路径时，必须避免重复扩展：
 
@@ -133,7 +141,7 @@ while (!queue.isEmpty()) {
 
 树在确认没有父指针和共享子节点时可以省略 visited；一旦把树转成无向图，父节点也成为邻居，必须记录访问状态。
 
-## 5. 多源 BFS 计算最近距离
+## 6. 多源 BFS {#multi-source}
 
 网格中有多个起点时，把所有起点按距离 0 同时入队：
 
@@ -148,7 +156,7 @@ BFS 随后一层层扩展，每个格子第一次到达的距离就是离任一�
 
 边权都相同才可以直接使用普通 BFS。边权为 0 或 1 可以用双端队列做 0-1 BFS；一般非负权使用 Dijkstra；存在负权则要进一步判断 Bellman-Ford 等算法及负环。
 
-## 6. DFS 回溯需要恢复状态
+## 7. 回溯 {#backtracking}
 
 搜索所有组合时，路径状态只属于当前递归分支：
 
@@ -165,7 +173,7 @@ path.remove(path.size() - 1);
 
 混淆两者会漏掉合法路径或造成环。
 
-## 7. 拓扑排序处理依赖关系
+## 8. 拓扑排序 {#topological-sort}
 
 有向无环图中，Kahn 算法从入度为 0 的节点开始：
 
@@ -177,27 +185,27 @@ path.remove(path.size() - 1);
 
 它适合构建顺序、课程依赖和任务调度。多个入度 0 节点意味着拓扑序可能不唯一；需要字典序最小时使用优先队列。
 
-## 8. 常见问题
+## 9. 常见问题
 
-### 8.1 BFS 一定比 DFS 快吗
+### 9.1 BFS 一定比 DFS 快吗
 
 两者完整遍历通常都是 O(V + E)，只是访问顺序和空间不同。寻找无权最短路时 BFS 能按层首次到达；路径很深但分支很窄时 DFS 更省前沿内存。
 
-### 8.2 递归 DFS 为什么会栈溢出
+### 9.2 递归 DFS 为什么会栈溢出
 
 每层调用都占用栈帧，深度接近节点数的退化树可能超过线程栈。改用显式 Deque，或从数据约束限制最大深度。
 
-### 8.3 网格 visited 可以直接修改原数组吗
+### 9.3 网格 visited 可以直接修改原数组吗
 
 只有允许破坏输入、标记值不会与合法数据冲突时才可以。公共 API 更适合说明是否修改参数；需要保留输入时使用独立 boolean 数组或状态编码。
 
-### 8.4 BFS 能处理带权最短路吗
+### 9.4 BFS 能处理带权最短路吗
 
 普通 BFS 只在每条边成本相同的情况下保证最短。权重不同需要按当前最小累计距离选择节点，通常使用 Dijkstra；存在负权时还要换算法。
 
-## 9. 面试题
+## 10. 面试题
 
-### 9.1 二叉树右视图怎样用 BFS 或 DFS 实现 {#right-side-view}
+### 10.1 二叉树右视图怎样用 BFS 或 DFS 实现 {#right-side-view}
 
 <!-- 面试来源：
 - 字节跳动：https://www.nowcoder.com/discuss/353156568445296640
@@ -211,7 +219,7 @@ path.remove(path.size() - 1);
 - DFS 的深度和首次访问顺序。
 - 两种方法的时间与峰值空间。
 
-**相关内容**：[DFS 适合路径与完整遍历](#2-dfs-适合路径与完整遍历)、[BFS 按边数距离扩展](#3-bfs-按边数距离扩展)。
+**相关内容**：[DFS](#dfs)、[BFS](#bfs)。
 
 <details>
 <summary>参考回答</summary>
@@ -222,7 +230,7 @@ BFS 可以记录每层开始时的队列大小，处理这一层时把最后一�
 
 </details>
 
-### 9.2 怎样计算网格中每个位置到最近起点的距离 {#multi-source-bfs}
+### 10.2 怎样计算网格中每个位置到最近起点的距离 {#multi-source-bfs}
 
 <!-- 面试来源：
 - 字节跳动：https://www.nowcoder.com/discuss/353156568445296640
@@ -236,7 +244,7 @@ BFS 可以记录每层开始时的队列大小，处理这一层时把最后一�
 - visited 或 distance 在入队时设置。
 - 边权改变后为何不能继续用普通 BFS。
 
-**相关内容**：[visited 在入队时标记](#4-visited-在入队时标记)、[多源 BFS 计算最近距离](#5-多源-bfs-计算最近距离)。
+**相关内容**：[visited 标记时机](#visited)、[多源 BFS](#multi-source)。
 
 <details>
 <summary>参考回答</summary>
@@ -247,10 +255,8 @@ BFS 可以记录每层开始时的队列大小，处理这一层时把最后一�
 
 </details>
 
-:::note 参考资料
+## 11. 参考资料
 
-1. [Java API：ArrayDeque](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/ArrayDeque.html)
-2. [Java API：HashSet](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/HashSet.html)
-3. [Java API：PriorityQueue](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/PriorityQueue.html)
-
-:::
+- [Java API：ArrayDeque](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/ArrayDeque.html)
+- [Java API：HashSet](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/HashSet.html)
+- [Java API：PriorityQueue](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/PriorityQueue.html)

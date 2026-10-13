@@ -7,9 +7,17 @@ knowledge:
 
 # Java API 设计
 
-Java API 的职责不只是暴露方法，还要让对象始终保持合法状态。先写出业务不变量，再决定构造入口、参数类型、状态转换和失败语义，可以减少调用方需要记住的隐含规则。
+Java API 除了暴露方法，还要保证对象始终处于合法状态。先写出业务不变量，再决定构造入口、参数类型、状态转换和失败语义，可以减少调用方需要记住的隐含规则。
 
-## 1. 不变量说明什么状态始终成立
+## 1. 面试核心 {#core}
+
+- 先写出业务不变量，再在构造器或静态工厂中校验，保证对象从创建起就合法。[卡](#prevent-illegal-state)
+- 用领域类型代替原始的 `String`、`long` 和布尔参数，减少传错顺序和含义不清的调用。
+- 状态通过有业务含义的方法转换，不对外暴露 setter。
+- 参数很多时，按含义分组为参数对象，或在可选参数多时使用 Builder，最终在 `build` 中统一校验。[卡](#many-parameters)
+- 同一种失败只用一种方式表达：查询无结果返回 `Optional`，非法参数抛 `IllegalArgumentException`，业务拒绝使用业务异常或结果类型。
+
+## 2. 业务不变量 {#invariants}
 
 订单金额模型可能有这些约束：
 
@@ -43,7 +51,7 @@ public record Money(BigDecimal amount, Currency currency) {
 
 创建成功的 Money 就是合法值，后续方法不必反复防守同一约束。
 
-## 2. 用类型减少无效组合
+## 3. 领域类型 {#domain-types}
 
 ```java
 void transfer(String from, String to, BigDecimal amount, String currency)
@@ -62,7 +70,7 @@ TransferResult transfer(
 
 类型不能表达所有规则，但能把解析、验证和相等性集中到明确位置。布尔参数、多个同类型字符串和可为空参数较多时，通常意味着 API 缺少命名清楚的概念。
 
-### 2.1 避免布尔参数隐藏语义
+### 3.1 布尔参数 {#boolean-params}
 
 ```java
 send(message, true, false);
@@ -74,7 +82,7 @@ send(message, true, false);
 send(message, DeliveryMode.RELIABLE, AuditMode.ENABLED);
 ```
 
-## 3. 让状态转换通过行为发生
+## 4. 状态转换方法 {#state-transitions}
 
 把状态字段暴露给 setter，会允许绕过业务规则：
 
@@ -97,7 +105,7 @@ public PaymentAccepted pay(PaymentId paymentId, Instant paidAt) {
 
 方法可以同时检查前置状态、更新相关字段并返回发生的结果。状态不变量被封装在聚合内部，而不是散落在 Controller、Service 和消息消费者中。
 
-## 4. 参数与返回值的所有权
+## 5. 参数与返回值的所有权 {#ownership}
 
 API 需要说明是否保留、复制或修改传入集合：
 
@@ -119,9 +127,9 @@ public final class PricingRuleSet {
 
 方法会修改参数时，命名和文档应明确。大多数公共 API 更容易推理的做法是：输入由调用方拥有，方法不修改；输出由返回方提供稳定语义。
 
-## 5. 缺失与失败要有清楚契约
+## 6. 缺失与失败 {#failures}
 
-### 5.1 查询可能没有结果
+### 6.1 查询无结果 {#absent}
 
 ```java
 Optional<User> findById(UserId id);
@@ -129,15 +137,15 @@ Optional<User> findById(UserId id);
 
 Optional 适合方法返回的可选结果。找不到是正常情况时，不需要抛异常；调用方必须选择空结果处理方式。
 
-### 5.2 命令失败
+### 6.2 命令失败 {#command-failure}
 
 参数本身非法可抛 `IllegalArgumentException`，对象状态不允许操作可以使用有业务语义的异常或结果类型。跨服务 API 通常还要映射为稳定错误码，避免把内部类名和堆栈作为外部契约。
 
-### 5.3 不要同时用 null、异常和状态码表示同一失败
+### 6.3 统一失败的表达方式 {#single-failure-form}
 
 一种失败保留一个主要表达，调用方才知道应该检查哪条路径。异常消息用于诊断，类型或错误码用于程序判断，不要解析消息文本控制逻辑。
 
-## 6. 接口保持窄而完整
+## 7. 接口范围 {#interface-scope}
 
 接口应暴露调用方需要的能力，而不是实现类所有方法：
 
@@ -151,7 +159,7 @@ public interface ExchangeRateProvider {
 
 “窄”不等于把一次业务动作拆成很多必须按顺序调用的小方法。若正确使用需要调用 `begin`、`setX`、`setY`、`validate`、`commit`，API 暴露了太多中间非法状态。可以提供一次完整操作，或用 Builder 在 `build` 时验证。
 
-## 7. 并发、幂等与阻塞属于契约
+## 8. 并发、幂等与阻塞 {#concurrency-contract}
 
 公开方法需要说明：
 
@@ -171,7 +179,7 @@ PaymentResult charge(
 
 加入幂等键和超时不自动实现协议，但让调用方能够表达这些约束。隐藏的无限等待和不明确重试语义会在集成后放大。
 
-## 8. 兼容性从已发布契约判断
+## 9. 兼容性 {#compatibility}
 
 改变 Java 方法签名会影响源码或二进制兼容；更隐蔽的变化包括：
 
@@ -184,27 +192,27 @@ PaymentResult charge(
 
 发布前记录调用方依赖的可观察行为，使用契约测试和迁移阶段验证。不要只看“代码能编译”就判断兼容。
 
-## 9. 常见问题
+## 10. 常见问题
 
-### 9.1 构造函数还是静态工厂
+### 10.1 构造函数还是静态工厂
 
 构造函数直接，适合含义唯一的创建；静态工厂可以命名不同语义、缓存实例或返回子类型。无论哪种入口，都应保证返回对象合法，不把必需初始化留给调用方。
 
-### 9.2 Builder 是否总比长构造函数好
+### 10.2 Builder 是否总比长构造函数好
 
 不是。参数很少且都是必需值时，构造函数或 record 更清楚。可选参数多、需要分步收集但最终统一验证时使用 Builder。Builder 不能让非法半成品逃出 `build` 边界。
 
-### 9.3 所有参数都要 `Objects.requireNonNull` 吗
+### 10.3 所有参数都要 `Objects.requireNonNull` 吗
 
 只有契约禁止 null 时才检查。更重要的是在最靠近公共边界的位置拒绝，并给出参数名。允许缺失时应使用 Optional、重载或明确状态类型，而不是先检查再悄悄接受。
 
-### 9.4 测试私有方法是否说明 API 设计有问题
+### 10.4 测试私有方法是否说明 API 设计有问题
 
 通常测试可观察行为。私有方法复杂到需要大量独立用例时，可能包含可以提取的领域概念；但不要只为测试把无意义实现细节变成 public。先判断它是否拥有独立职责和契约。
 
-## 10. 面试题
+## 11. 面试题
 
-### 10.1 设计一个类时，怎样保证对象不会进入非法状态 {#prevent-illegal-state}
+### 11.1 设计一个类时，怎样保证对象不会进入非法状态 {#prevent-illegal-state}
 
 <!-- 面试来源：
 - 蚂蚁集团：https://www.nowcoder.com/discuss/609350716972425216
@@ -219,7 +227,7 @@ PaymentResult charge(
 - 类型、封装与防御性复制怎样减少非法组合。
 - 失败和并发语义怎样成为 API 契约。
 
-**相关内容**：[不变量说明什么状态始终成立](#1-不变量说明什么状态始终成立)至[并发、幂等与阻塞属于契约](#7-并发幂等与阻塞属于契约)。
+**相关内容**：[业务不变量](#invariants)至[并发、幂等与阻塞](#concurrency-contract)。
 
 <details>
 <summary>参考回答</summary>
@@ -230,7 +238,7 @@ PaymentResult charge(
 
 </details>
 
-### 10.2 一个方法的参数很多时应该怎样改进 {#many-parameters}
+### 11.2 一个方法的参数很多时应该怎样改进 {#many-parameters}
 
 <!-- 面试来源：
 - 蚂蚁集团：https://www.nowcoder.com/discuss/609350716972425216
@@ -244,7 +252,7 @@ PaymentResult charge(
 - 必需参数、可选参数和布尔标志怎样表达。
 - 参数对象是否只是无约束数据袋。
 
-**相关内容**：[用类型减少无效组合](#2-用类型减少无效组合)、[接口保持窄而完整](#6-接口保持窄而完整)。
+**相关内容**：[领域类型](#domain-types)、[接口范围](#interface-scope)。
 
 <details>
 <summary>参考回答</summary>
@@ -255,11 +263,9 @@ PaymentResult charge(
 
 </details>
 
-:::note 参考资料
+## 12. 参考资料
 
-1. [Java API：Objects.requireNonNull](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/Objects.html#requireNonNull(T,java.lang.String))
-2. [Java Language Specification：Record Classes](https://docs.oracle.com/en/java/javase/26/docs/specs/jls/jls-8.html#jls-8.10)
-3. [Java API：Optional](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/Optional.html)
-4. [Java API：List.copyOf](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/List.html#copyOf(java.util.Collection))
-
-:::
+- [Java API：Objects.requireNonNull](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/Objects.html#requireNonNull(T,java.lang.String))
+- [Java Language Specification：Record Classes](https://docs.oracle.com/en/java/javase/26/docs/specs/jls/jls-8.html#jls-8.10)
+- [Java API：Optional](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/Optional.html)
+- [Java API：List.copyOf](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/List.html#copyOf(java.util.Collection))

@@ -19,17 +19,15 @@ import {javaCollectionsReview} from '@site/src/data/reviewPlans/javaCollections'
 
 HashMap 使用桶数组保存键值对，通过键的哈希定位桶，再用 `equals` 确认键是否相等。面试重点是 `put`/`get` 路径、冲突处理、扩容和线程安全边界。
 
-:::tip 面试核心
+## 1. 面试核心 {#core}
 
-- 哈希先定位桶，哈希相同仍要用 `equals` 判断键是否相等。
+- 哈希先定位桶，哈希相同仍要用 `equals` 判断键是否相等。[卡](#put-get-path)
 - 哈希分布合理时，`get` 和 `put` 平均接近 O(1)；严重冲突会增加桶内查找成本。
-- 当前 OpenJDK 使用短链表处理普通冲突，表足够大且桶持续过长时才树化。
-- 容量通常是 2 的幂，扩容翻倍后节点只会留在原索引或移动到“原索引 + 旧容量”。
+- 当前 OpenJDK 使用短链表处理普通冲突；桶内节点达到 8 且表容量至少 64 时才树化，容量不足时先扩容。[卡](#treeify)
+- 容量是 2 的幂，下标用 `hash & (n - 1)` 计算；扩容翻倍后节点只会留在原索引或移动到“原索引 + 旧容量”。[卡](#power-of-two-capacity)
 - HashMap 不保证遍历顺序，也不支持无同步的并发写。
 
-:::
-
-## 1. 结构与查找路径
+## 2. 结构与查找路径 {#structure}
 
 HashMap 的核心结构是一组桶。桶为空时没有节点；发生冲突时，桶内可能是链表或红黑树。
 
@@ -50,7 +48,7 @@ User user = users.get(7L);
 
 平均 O(1) 依赖两个条件：哈希分布合理，且 `hashCode`、`equals` 本身足够便宜。复杂的相等比较仍会成为真实成本。
 
-## 2. `equals` 与 `hashCode`
+## 3. `equals` 与 `hashCode` {#equals-hashcode}
 
 相等键必须产生相同哈希；相同哈希的键不一定相等。自定义键应同时正确实现 `equals` 和 `hashCode`，并且参与比较的字段在键存入 Map 后保持稳定。
 
@@ -66,7 +64,7 @@ System.out.println(names.get(new UserId(7))); // Lin
 
 HashMap 允许一个 `null` 键和多个 `null` 值。`get` 返回 `null` 时无法区分“键不存在”和“值就是 null”，需要时使用 `containsKey` 或避免保存 null 值。
 
-## 3. 冲突与树化 {#hashmap-treeification}
+## 4. 冲突与树化 {#hashmap-treeification}
 
 不同键进入同一桶是正常现象。短链表结构简单，节点少时通常比红黑树更合适；只有冲突持续严重时，树的对数查找才值得额外字段和维护成本。
 
@@ -78,7 +76,7 @@ HashMap 允许一个 `null` 键和多个 `null` 值。`get` 返回 `null` 时无
 
 这些数字是当前实现细节，不是 Map 接口契约。面试回答应先说明取舍：短桶保持简单，小表先扩容，足够大的表仍有长桶时再用树限制退化。
 
-## 4. 容量与扩容 {#hashmap-resize}
+## 5. 容量与扩容 {#hashmap-resize}
 
 需要区分四个概念：
 
@@ -102,7 +100,7 @@ index = (capacity - 1) & hash;
 
 实现不必重新调用每个键的 `hashCode()`，但仍要分配新数组并迁移节点链接，因此扩容整体是 O(n)，大 Map 还会产生短时内存和延迟压力。已知元素数量时可以预估初始容量，避免明显的重复扩容；盲目预留过大数组会浪费内存并增加遍历空桶的成本。
 
-## 5. 使用边界
+## 6. 使用边界 {#boundaries}
 
 - **遍历顺序**：HashMap 没有顺序保证。需要插入顺序使用 LinkedHashMap，需要按键排序使用 TreeMap。
 - **并发访问**：并发写可能丢失更新或观察到不一致状态。共享可变 Map 应使用 ConcurrentHashMap 的原子方法，或在更高层建立锁。
@@ -110,25 +108,25 @@ index = (capacity - 1) & hash;
 
 <ReviewCheckpoint plan={javaCollectionsReview} stepId="collections-hashmap" />
 
-## 6. 常见问题
+## 7. 常见问题
 
-### 6.1 为什么先比较 hash 再比较 equals
+### 7.1 为什么先比较 hash 再比较 equals
 
 哈希不同可以直接排除，哈希相同仍可能只是冲突，需要 `equals` 确认。这个顺序减少了需要执行相等比较的候选数量。
 
-### 6.2 HashMap 的顺序有时看起来固定，可以依赖吗
+### 7.2 HashMap 的顺序有时看起来固定，可以依赖吗
 
 不可以。同一组键和同一运行环境下结果可能暂时稳定，但扩容、键哈希或实现版本变化都可能改变顺序。
 
-### 6.3 链表达到 8 个节点就一定树化吗
+### 7.3 链表达到 8 个节点就一定树化吗
 
 不一定。table 容量小于 64 时当前实现优先扩容；只有扩容后冲突仍集中并满足条件才树化。
 
-## 7. 面试题
+## 8. 面试题
 
 <ReviewQuestionAnchor />
 
-### 7.1 说明 HashMap 的 put 和 get 路径 {#put-get-path}
+### 8.1 说明 HashMap 的 put 和 get 路径 {#put-get-path}
 
 <!-- 面试来源：
 - 上海卫瓴信息科技：https://www.nowcoder.com/discuss/353159301244067840
@@ -141,7 +139,7 @@ index = (capacity - 1) & hash;
 - 桶定位、哈希比较和 `equals` 比较的顺序。
 - 覆盖旧值、插入新值和触发结构变化的边界。
 
-**相关内容**：[结构与查找路径](#1-结构与查找路径)、[`equals` 与 `hashCode`](#2-equals-与-hashcode)。
+**相关内容**：[结构与查找路径](#structure)、[`equals` 与 `hashCode`](#equals-hashcode)。
 
 <details>
 <summary>参考回答</summary>
@@ -154,7 +152,7 @@ HashMap 先取得键的哈希并做扰动，再按容量定位桶。`get` 在桶
 
 [返回本轮自测与下一篇](#review-checkpoint)
 
-### 7.2 HashMap 什么时候树化，为什么小容量时先扩容 {#treeify}
+### 8.2 HashMap 什么时候树化，为什么小容量时先扩容 {#treeify}
 
 <!-- 面试来源：
 - 阿里巴巴：https://www.nowcoder.com/discuss/353159278544494592
@@ -179,7 +177,7 @@ HashMap 先取得键的哈希并做扰动，再按容量定位桶。`get` 在桶
 
 </details>
 
-### 7.3 HashMap 为什么使用 2 的幂作为容量 {#power-of-two-capacity}
+### 8.3 HashMap 为什么使用 2 的幂作为容量 {#power-of-two-capacity}
 
 <!-- 面试来源：
 - 一嗨租车：https://www.nowcoder.com/discuss/501136023770976256
@@ -202,11 +200,9 @@ HashMap 先取得键的哈希并做扰动，再按容量定位桶。`get` 在桶
 
 </details>
 
-:::note 参考资料
+## 9. 参考资料
 
-1. [Java API：HashMap](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/HashMap.html)
-2. [Java API：Map](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/Map.html)
-3. [OpenJDK：HashMap 源码](https://github.com/openjdk/jdk/blob/jdk-26-ga/src/java.base/share/classes/java/util/HashMap.java)
-4. [Java API：Object.hashCode](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/Object.html#hashCode())
-
-:::
+- [Java API：HashMap](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/HashMap.html)
+- [Java API：Map](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/Map.html)
+- [OpenJDK：HashMap 源码](https://github.com/openjdk/jdk/blob/jdk-26-ga/src/java.base/share/classes/java/util/HashMap.java)
+- [Java API：Object.hashCode](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/Object.html#hashCode())

@@ -9,7 +9,15 @@ knowledge:
 
 Spring Boot 把配置文件、环境变量、系统属性和命令行参数统一放进 `Environment`。同一个配置项出现多次时，最终值由 PropertySource 的优先级和配置文件内部的加载顺序共同决定。
 
-## 1. Environment 保存配置来源
+## 1. 面试核心 {#core}
+
+- 配置文件、环境变量、系统属性和命令行参数都作为 PropertySource 进入 `Environment`，同一个 key 由优先级更高的来源决定。[卡](#config-precedence)
+- 常见优先级从高到低：命令行参数、Java 系统属性、操作系统环境变量、jar 外的 profile 配置文件、jar 内的配置文件。
+- profile 专属文件（`application-prod.yaml`）覆盖同位置的默认文件。
+- 环境变量通过宽松绑定对应属性名，例如 `SERVER_PORT` 对应 `server.port`。
+- 用 `@ConfigurationProperties` 加校验在启动时检查关键配置；密钥通过平台 Secret 提供，不提交到仓库。
+
+## 2. Environment 与 PropertySource {#environment}
 
 应用可以通过三种常见方式读取属性：
 
@@ -29,7 +37,7 @@ public record PaymentProperties(URI endpoint, Duration timeout) {}
 
 一组相关配置优先使用 `@ConfigurationProperties`。它支持结构化绑定、类型转换、校验和配置元数据，比散落的字符串 key 更容易维护。
 
-## 2. 后加入的高优先级来源覆盖默认值
+## 3. 配置来源的优先级 {#precedence}
 
 Spring Boot 官方顺序较长，日常排查可以先记住常见层级：
 
@@ -46,9 +54,9 @@ Spring Boot 官方顺序较长，日常排查可以先记住常见层级：
 java -jar order.jar --server.port=9000
 ```
 
-这条命令默认会覆盖 `application.yaml` 中的 `server.port`。真正排查时应查看当前版本文档或 Environment 中的 PropertySource，不需要背完整编号。
+这条命令默认会覆盖 `application.yaml` 中的 `server.port`。排查时应查看当前版本文档或 Environment 中的 PropertySource，不需要背完整编号。
 
-## 3. 配置文件本身也有覆盖顺序
+## 4. 配置文件的加载顺序 {#config-files}
 
 默认配置数据通常按以下方向提高优先级：
 
@@ -61,7 +69,7 @@ java -jar order.jar --server.port=9000
 
 同一位置同时存在 properties 和 YAML 文件时，Spring Boot 规定 properties 优先。项目最好统一一种格式，避免同目录下出现肉眼难以发现的覆盖。
 
-## 4. 环境变量使用宽松绑定规则
+## 5. 环境变量的宽松绑定 {#relaxed-binding}
 
 操作系统通常不允许环境变量名包含点，可以把属性名转换为大写下划线形式：
 
@@ -74,13 +82,13 @@ PAYMENT_RETRY_MAXATTEMPTS
 
 占位符中使用小写 kebab-case，例如 `${payment.retry.max-attempts}`，可以获得更完整的宽松绑定匹配。
 
-## 5. 配置与密钥采用不同治理方式
+## 6. 配置与密钥 {#secrets}
 
 数据库密码、访问令牌和私钥不应提交到仓库中的 `application-prod.yaml`。可以通过平台 Secret、外部密钥服务或挂载配置树提供，并限制 Actuator、日志和错误页的暴露范围。
 
 配置值是否敏感，与它来自环境变量还是文件无关。环境变量也可能出现在进程诊断、部署清单或错误报告中。
 
-## 6. 启动时校验关键配置
+## 7. 启动时校验配置 {#validation}
 
 ```java
 @ConfigurationProperties("payment")
@@ -101,7 +109,7 @@ public record PaymentProperties(
 
 不要给生产关键参数随意设置“能启动就行”的默认值。默认值应当安全、含义稳定，而且适用于所有未显式配置的环境。
 
-## 7. 配置不符合预期时怎样排查
+## 8. 排查步骤 {#troubleshooting}
 
 1. 确认最终读取的 key 使用规范名称。
 2. 查看激活的 profile 与配置文件搜索位置。
@@ -110,9 +118,9 @@ public record PaymentProperties(
 5. 检查部署平台是否注入了同名环境变量、系统属性或命令行参数。
 6. 对敏感值只确认来源和是否存在，不打印明文。
 
-## 8. 面试题
+## 9. 面试题
 
-### 8.1 Spring Boot 配置的优先级怎样判断 {#config-precedence}
+### 9.1 Spring Boot 配置的优先级怎样判断 {#config-precedence}
 
 <!-- 面试来源：
 - 金山办公：https://www.nowcoder.com/discuss/800822936729894912
@@ -126,7 +134,7 @@ public record PaymentProperties(
 - 配置数据、环境变量和命令行的关系。
 - profile、外部文件与诊断方式。
 
-**相关内容**：[Environment 保存配置来源](#1-environment-保存配置来源)至[配置不符合预期时怎样排查](#7-配置不符合预期时怎样排查)。
+**相关内容**：[Environment 与 PropertySource](#environment)至[排查步骤](#troubleshooting)。
 
 <details>
 <summary>参考回答</summary>
@@ -137,10 +145,8 @@ Spring Boot 把不同来源加入 Environment，并按确定顺序解析；在�
 
 </details>
 
-:::note 参考资料
+## 10. 参考资料
 
-1. [Spring Boot：Externalized Configuration](https://docs.spring.io/spring-boot/reference/features/external-config.html)
-2. [Spring Boot：Type-safe Configuration Properties](https://docs.spring.io/spring-boot/reference/features/external-config.html#features.external-config.typesafe-configuration-properties)
-3. [Spring Boot：Environment Endpoint](https://docs.spring.io/spring-boot/api/rest/actuator/env.html)
-
-:::
+- [Spring Boot：Externalized Configuration](https://docs.spring.io/spring-boot/reference/features/external-config.html)
+- [Spring Boot：Type-safe Configuration Properties](https://docs.spring.io/spring-boot/reference/features/external-config.html#features.external-config.typesafe-configuration-properties)
+- [Spring Boot：Environment Endpoint](https://docs.spring.io/spring-boot/api/rest/actuator/env.html)

@@ -9,7 +9,15 @@ knowledge:
 
 算法复杂度描述输入规模增长时，时间和额外空间怎样增长。面试和工程实现都应先从输入约束排除不可行方案，再把 Java 中的对象、装箱、哈希和递归成本放回分析。
 
-## 1. 先定义输入规模
+## 1. 面试核心 {#core}
+
+- 复杂度中的 n 要对应具体的输入数量；先根据数据规模估算可接受的数量级，排除不可行方案。
+- 连续循环相加，嵌套循环相乘；双指针每个指针只前进 n 次，总体仍是 O(n)。
+- 递归复杂度看调用树：归并排序有 O(log n) 层，每层 O(n)，时间 O(n log n)，合并需要 O(n) 辅助空间。[卡](#merge-sort-complexity)
+- 空间复杂度统计同时存活的额外状态，递归深度也计入。
+- Big-O 相同时，装箱、对象分配、缓存局部性和哈希计算仍会造成数倍差距。[卡](#same-big-o-different-speed)
+
+## 2. 输入规模 {#input-size}
 
 复杂度中的 `n` 必须对应具体数量：
 
@@ -21,7 +29,7 @@ knowledge:
 
 只写 O(n) 而不说明 n 是什么，无法判断真实资源。遍历一个有一百万个短字符串的列表，与遍历一个总长度一百万的单字符串，内存访问和对象数量都不同。
 
-## 2. 约束先决定可接受数量级
+## 3. 由约束估算数量级 {#constraints}
 
 假设单机算法时间上限大致固定，可以用数量级快速排除：
 
@@ -32,9 +40,9 @@ knowledge:
 | `n <= 100,000` | O(n log n) 或 O(n) |
 | `n` 达到千万 | 单次线性扫描也要关注常数、I/O 与内存 |
 
-这不是运行时承诺。元素操作成本、时间限制、语言和硬件都会改变边界。它的作用是帮助提问：数据能否放进内存、是否已排序、值域多大、允许近似吗、需要在线处理吗。
+这只是数量级估算。元素操作成本、时间限制、语言和硬件都会改变边界。它的作用是帮助提问：数据能否放进内存、是否已排序、值域多大、允许近似吗、需要在线处理吗。
 
-## 3. 最坏、平均与摊销复杂度
+## 4. 最坏、平均与摊销复杂度 {#worst-average-amortized}
 
 三种描述回答不同问题：
 
@@ -46,9 +54,9 @@ HashMap 查找平均接近 O(1)，但冲突分布决定桶内路径；ArrayList 
 
 面试中需要说明使用哪一种。如果系统面对恶意输入，平均复杂度的分布假设可能不成立，应同时考虑最坏路径与输入限额。
 
-## 4. 时间复杂度从执行次数推导
+## 5. 时间复杂度推导 {#time}
 
-### 4.1 连续循环相加，嵌套循环相乘
+### 5.1 连续循环与嵌套循环 {#loops}
 
 ```java
 for (int value : values) {
@@ -72,7 +80,7 @@ for (int left : values) {
 
 每个外层元素都遍历 n 个内层元素，总次数约 n²。
 
-### 4.2 双重语法不一定是 O(n²)
+### 5.2 嵌套循环与双指针 {#two-pointers}
 
 双指针中，每个指针都只向前移动：
 
@@ -87,11 +95,11 @@ while (right < values.length) {
 
 虽然循环嵌套，left 和 right 各最多移动 n 次，总成本仍为 O(n)。分析应计算状态总共变化多少次，不能只数大括号层数。
 
-### 4.3 递归看调用树
+### 5.3 递归 {#recursion}
 
 二分查找每次把规模减半，深度 O(log n)。归并排序每层处理 O(n)，共有 O(log n) 层，所以时间 O(n log n)。有两个递归调用不自动等于 O(2ⁿ)，还要看子问题规模和是否重复计算。
 
-## 5. 空间复杂度看同时存活的额外状态
+## 6. 空间复杂度 {#space}
 
 空间复杂度通常统计除输入和必要输出之外的峰值额外空间：
 
@@ -104,9 +112,9 @@ while (right < values.length) {
 
 原地算法也可能使用递归栈，因此“没有 new 数组”不一定是 O(1) 空间。
 
-## 6. Big-O 相同，Java 成本仍可能不同
+## 7. Java 中的实际成本 {#java-cost}
 
-### 6.1 基本类型与装箱
+### 7.1 基本类型与装箱
 
 `int[]` 连续保存数值，`List<Integer>` 保存引用并可能产生 Integer 对象。两者都能 O(n) 遍历，后者的内存、间接访问和装箱成本通常更高。
 
@@ -116,19 +124,19 @@ long sum = Arrays.stream(values).asLongStream().sum();
 
 数值密集路径使用基本类型数组和 `IntStream`、`LongStream` 可以减少装箱。
 
-### 6.2 连续内存与节点对象
+### 7.2 连续内存与节点对象
 
 ArrayList 和 LinkedList 遍历都是 O(n)，引用数组通常有更好的缓存局部性；链表为每个元素增加节点和链接。
 
-### 6.3 哈希与比较函数
+### 7.3 哈希与比较函数
 
 HashMap 操作的平均桶定位接近 O(1)，但 key 的 `hashCode` 可能本身是 O(k)。排序 O(n log n) 次比较，如果 Comparator 扫描长字符串，总成本还要乘上比较代价。
 
-### 6.4 分配与 GC
+### 7.4 分配与 GC
 
 循环中创建大量短命对象不会改变渐进复杂度，却可能增加分配速率和 GC。先用剖析或 JMH 证明热点，再决定是否复用缓冲、改用基本类型或调整数据布局。
 
-## 7. 数值范围也是算法约束
+## 8. 数值范围 {#overflow}
 
 ```java
 int middle = (left + right) / 2;
@@ -148,27 +156,27 @@ long area = (long) width * height;
 
 Comparator 不要写 `left.score() - right.score()`，差值可能溢出；使用 `Integer.compare`。
 
-## 8. 常见问题
+## 9. 常见问题
 
-### 8.1 O(1) 是否表示只执行一步
+### 9.1 O(1) 是否表示只执行一步
 
 不是。它表示执行次数不随输入规模增长，可以包含固定数量的多步操作。常数仍会影响实际延迟，只是在增长分析中省略。
 
-### 8.2 O(n log n) 一定比 O(n²) 快吗
+### 9.2 O(n log n) 一定比 O(n²) 快吗
 
 当 n 足够大且基本操作可比较时，增长更慢；小输入、昂贵常数和缓存行为可能让结果相反。复杂度用于判断扩展趋势，基准用于判断具体实现。
 
-### 8.3 输出本身有 O(n) 大小，空间复杂度怎么算
+### 9.3 输出本身有 O(n) 大小，空间复杂度怎么算
 
 要说明口径。通常把必要输出空间单独列出，再报告算法额外空间。例如返回 n 个元素的列表需要 O(n) 输出，算法除输出外可能只用 O(1) 辅助状态。
 
-### 8.4 Stream 会改变复杂度吗
+### 9.4 Stream 会改变复杂度吗
 
 同样的遍历和数据结构通常保持相同渐进复杂度，但中间有状态操作、装箱、对象分配和并行调度会改变常数甚至算法路径。应分析实际操作链，不能按语法风格下结论。
 
-## 9. 面试题
+## 10. 面试题
 
-### 9.1 归并排序的时间和空间复杂度怎样推导 {#merge-sort-complexity}
+### 10.1 归并排序的时间和空间复杂度怎样推导 {#merge-sort-complexity}
 
 <!-- 面试来源：
 - 字节跳动：https://www.nowcoder.com/discuss/353158334356332544
@@ -182,7 +190,7 @@ Comparator 不要写 `left.score() - right.score()`，差值可能溢出；使�
 - 同时存活空间与累计分配量的区别。
 - Java GC 不会改变算法峰值空间口径。
 
-**相关内容**：[时间复杂度从执行次数推导](#4-时间复杂度从执行次数推导)、[空间复杂度看同时存活的额外状态](#5-空间复杂度看同时存活的额外状态)。
+**相关内容**：[时间复杂度推导](#time)、[空间复杂度](#space)。
 
 <details>
 <summary>参考回答</summary>
@@ -193,7 +201,7 @@ Comparator 不要写 `left.score() - right.score()`，差值可能溢出；使�
 
 </details>
 
-### 9.2 为什么两个 O(n) 的 Java 实现性能可能差很多 {#same-big-o-different-speed}
+### 10.2 为什么两个 O(n) 的 Java 实现性能可能差很多 {#same-big-o-different-speed}
 
 <!-- 面试来源：
 - 腾讯、阿里巴巴、美团、快手、字节跳动：https://www.nowcoder.com/discuss/353156109227728896
@@ -207,7 +215,7 @@ Comparator 不要写 `left.score() - right.score()`，差值可能溢出；使�
 - 装箱、对象分配、缓存局部性和函数成本。
 - 怎样用剖析和基准验证。
 
-**相关内容**：[Big-O 相同，Java 成本仍可能不同](#6-big-o-相同java-成本仍可能不同)。
+**相关内容**：[Java 中的实际成本](#java-cost)。
 
 <details>
 <summary>参考回答</summary>
@@ -218,10 +226,8 @@ O(n) 只说明工作量随 n 线性增长，不说明每一步成本。`int[]` �
 
 </details>
 
-:::note 参考资料
+## 11. 参考资料
 
-1. [Java API：Arrays](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/Arrays.html)
-2. [Java API：Integer.compare](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/Integer.html#compare(int,int))
-3. [OpenJDK：JMH](https://openjdk.org/projects/code-tools/jmh/)
-
-:::
+- [Java API：Arrays](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/Arrays.html)
+- [Java API：Integer.compare](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/Integer.html#compare(int,int))
+- [OpenJDK：JMH](https://openjdk.org/projects/code-tools/jmh/)

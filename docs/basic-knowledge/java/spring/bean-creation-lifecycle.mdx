@@ -9,7 +9,15 @@ knowledge:
 
 一个 Spring Bean 从定义变成可用对象，要经过实例化、依赖填充、初始化前后处理和发布。容器关闭时再按作用域执行停止与销毁协议。
 
-## 1. 创建流程从实例化与依赖解析开始
+## 1. 面试核心 {#core}
+
+- 单例 Bean 的创建顺序：实例化、属性填充、Aware 回调、`BeanPostProcessor` 前置处理、初始化回调、`BeanPostProcessor` 后置处理。[卡](#bean-lifecycle)
+- 初始化回调的执行顺序是 `@PostConstruct`、`InitializingBean.afterPropertiesSet()`、自定义 `init-method`。
+- AOP 代理在初始化后的后置处理阶段创建，容器最终发布的可能是代理对象。
+- 容器关闭时依次执行 `@PreDestroy`、`DisposableBean.destroy()` 和自定义 `destroy-method`；prototype Bean 不由容器销毁。
+- 初始化完成只说明对象可用，外部连接、预热和长任务应放到启动完成事件之后。
+
+## 2. 实例化与依赖注入 {#creation}
 
 简化后的单例创建路径是：
 
@@ -23,7 +31,7 @@ knowledge:
 
 不同扩展点会插入更细的步骤，这条主线用于判断对象在某个时刻是否已经具备全部依赖、是否已经被代理。
 
-## 2. 初始化回调有明确顺序
+## 3. 初始化回调 {#init-callbacks}
 
 常用初始化方式：
 
@@ -42,19 +50,19 @@ void validateConfiguration() {
 
 优先使用 `@PostConstruct` 或自定义初始化方法，避免业务类不必要地依赖 Spring 接口。
 
-## 3. BeanPostProcessor 可以替换最终对象
+## 4. BeanPostProcessor {#post-processors}
 
 初始化前处理器常用于注解生命周期等逻辑；初始化后处理器可以返回包装对象或代理。AOP 自动代理创建器就在这一阶段参与，因此从容器取得的引用可能不是原始实例。
 
 初始化方法在原始 Bean 上执行，不能依赖事务或其他代理拦截器已经生效。需要代理生效后的启动任务时，可使用 `SmartInitializingSingleton`、上下文刷新事件或更明确的应用启动机制。
 
-## 4. “初始化完成”不等于服务已经就绪
+## 5. 初始化与服务就绪 {#readiness}
 
 Bean 构造和 `@PostConstruct` 中建立外部连接、全量预热或启动长任务，会延长上下文刷新，失败时也难区分阶段。
 
 可以将启动拆成：配置校验、必要资源建立、后台预热和 readiness。只有不能服务时才让健康状态失败，非关键预热应有超时、指标和降级。
 
-## 5. 销毁回调负责释放容器拥有的资源
+## 6. 销毁回调 {#destroy}
 
 容器关闭 singleton 时，常见顺序包括：
 
@@ -66,23 +74,23 @@ Bean 构造和 `@PostConstruct` 中建立外部连接、全量预热或启动长
 
 prototype Bean 的初始化回调会执行，但容器交付实例后不再完整跟踪，配置的销毁回调不会自动调用；使用者要负责清理。
 
-## 6. 生命周期日志要有 Bean 与阶段
+## 7. 生命周期日志 {#logging}
 
 排查启动慢或失败时，记录 Bean 名称、阶段、耗时和异常根因。不要在每个 Bean 打大量普通日志；可以利用 Spring Boot 启动步骤、JFR 或专门的启动分析工具形成时间线。
 
-## 7. 常见问题
+## 8. 常见问题
 
-### 7.1 `@PostConstruct` 中调用自己的事务方法会生效吗
+### 8.1 `@PostConstruct` 中调用自己的事务方法会生效吗
 
 通常不能依赖。此时初始化回调发生在最终代理发布之前，自调用也不会经过外部代理。应把事务工作放在容器刷新后的独立 Bean 调用或显式事务模板中。
 
-### 7.2 Bean 销毁后一定会执行 `@PreDestroy` 吗
+### 8.2 Bean 销毁后一定会执行 `@PreDestroy` 吗
 
 只有容器按正常关闭流程管理该 Bean 时才有机会执行。进程被强制终止、崩溃，或对象不在完整管理范围内，都不能依赖回调完成关键一致性操作。
 
-## 8. 面试题
+## 9. 面试题
 
-### 8.1 Spring Bean 从创建到销毁经历哪些关键阶段 {#bean-lifecycle}
+### 9.1 Spring Bean 从创建到销毁经历哪些关键阶段 {#bean-lifecycle}
 
 <!-- 面试来源：
 - 美团：https://www.nowcoder.com/discuss/757650799244611584
@@ -97,7 +105,7 @@ prototype Bean 的初始化回调会执行，但容器交付实例后不再完�
 - 初始化后可能返回代理。
 - 销毁与 prototype 边界。
 
-**相关内容**：[创建流程从实例化与依赖解析开始](#1-创建流程从实例化与依赖解析开始)至[销毁回调负责释放容器拥有的资源](#5-销毁回调负责释放容器拥有的资源)。
+**相关内容**：[实例化与依赖注入](#creation)至[销毁回调](#destroy)。
 
 <details>
 <summary>参考回答</summary>
@@ -108,10 +116,8 @@ prototype Bean 的初始化回调会执行，但容器交付实例后不再完�
 
 </details>
 
-:::note 参考资料
+## 10. 参考资料
 
-1. [Spring Framework：Customizing the Nature of a Bean](https://docs.spring.io/spring-framework/reference/core/beans/factory-nature.html)
-2. [Spring Framework：BeanPostProcessor](https://docs.spring.io/spring-framework/docs/current/javadoc-api/org/springframework/beans/factory/config/BeanPostProcessor.html)
-3. [Spring Framework：Bean Scopes](https://docs.spring.io/spring-framework/reference/core/beans/factory-scopes.html)
-
-:::
+- [Spring Framework：Customizing the Nature of a Bean](https://docs.spring.io/spring-framework/reference/core/beans/factory-nature.html)
+- [Spring Framework：BeanPostProcessor](https://docs.spring.io/spring-framework/docs/current/javadoc-api/org/springframework/beans/factory/config/BeanPostProcessor.html)
+- [Spring Framework：Bean Scopes](https://docs.spring.io/spring-framework/reference/core/beans/factory-scopes.html)

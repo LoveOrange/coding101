@@ -9,7 +9,15 @@ knowledge:
 
 跨团队设计评审用共同约束、证据和明确的决策责任处理接口与风险，避免让分歧停留在个人偏好和会议地位上。
 
-## 1. 评审材料先说明问题
+## 1. 面试核心 {#core}
+
+- 设计文档先说明问题、目标、约束和待决定事项。
+- 按风险选择必要的评审者，异步评论处理信息问题，会议只处理决策点。
+- 分歧时回到共同约束和证据，必要时用原型或压测验证。[卡](#cross-team-disagreement)
+- 事先明确决策人和升级路径，决定后记录理由、异议和验证条件并共同执行。
+- 评审还要覆盖迁移、运行和回退。
+
+## 2. 评审材料 {#materials}
 
 设计文档开头应让不熟悉项目的人快速回答：
 
@@ -24,7 +32,7 @@ knowledge:
 
 必要的架构图、调用链和数据流要标明所有权与信任边界。图上每条跨团队连线都应能对应接口、事件或运行责任。
 
-## 2. 提前找到必要参与者
+## 3. 参与者 {#participants}
 
 参与者根据风险选择，不按组织层级尽量扩大。通常包括：
 
@@ -39,7 +47,7 @@ knowledge:
 
 评审邀请要写清希望每个人检查的范围。所有人都“全面负责”，通常等于没有人负责。
 
-## 3. 异步评论解决信息问题
+## 4. 异步评论 {#async-review}
 
 先给评审者足够时间阅读和评论，会议集中处理仍有分歧的部分。文档评论可以分为：
 
@@ -52,7 +60,7 @@ knowledge:
 
 事实和数据优先于职位与资历。没有数据时，设计一个小实验通常比继续交换观点更快。
 
-## 4. 会议只处理决策点
+## 5. 评审会议 {#meeting}
 
 会议开始先重述问题、硬约束和待决定事项，确认所有人讨论的是同一范围。然后逐项处理：
 
@@ -66,7 +74,7 @@ knowledge:
 
 讨论偏离主题时，把新问题登记到后续项。一次会议同时解决平台战略、接口字段和代码格式，任何结论都会含糊。
 
-## 5. 明确决策权与升级路径
+## 6. 决策权与升级 {#decision-rights}
 
 评审者提供信息和风险，决策人对结果负责。决策权可以属于服务 owner、架构负责人、产品负责人或安全责任人，具体取决于问题。
 
@@ -80,7 +88,7 @@ knowledge:
 
 升级材料应包含问题、约束、证据、选项和双方意见，不能只要求上级判断谁对谁错。
 
-## 6. 记录异议并共同执行
+## 7. 记录异议 {#disagree-commit}
 
 决定做出后，将结论、理由、后果、异议和验证条件写入 ADR 或设计文档。记录异议的作用是保留风险信号，不是让执行阶段持续重开争论。
 
@@ -88,7 +96,7 @@ knowledge:
 
 如果决定由上级强制覆盖技术证据，也要记录责任和风险，便于后续验证与复盘。
 
-## 7. 评审覆盖迁移与运行
+## 8. 迁移与运行 {#operations}
 
 设计可以正确，迁移仍可能失败。跨团队评审还要确认：
 
@@ -101,7 +109,7 @@ knowledge:
 
 只评静态架构图，会把最难的风险留给上线阶段。实现团队、平台团队和值班人员都要能执行设计中的运行假设。
 
-## 8. 评估评审本身的效果
+## 9. 评审效果 {#effectiveness}
 
 可以观察：
 
@@ -113,19 +121,21 @@ knowledge:
 
 评审过慢时，先检查材料、决策权和范围是否清楚；直接减少评审可能让风险转移到生产。评审很多却仍反复返工，说明参与者出现太晚，或证据标准不一致。
 
-## 9. 面试题
+## 10. 面试题
 
-### 9.1 两个团队对核心接口方案长期无法达成一致，怎样推进 {#cross-team-disagreement}
+### 10.1 两个团队对核心接口方案长期无法达成一致，怎样推进 {#cross-team-disagreement}
 
-**题目类型**：本站自测
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
 
 **考察重点**
 
 - 共同问题、约束和决策范围。
 - 数据、原型和可逆实验处理分歧。
-- 决策责任、异议记录和执行闭环。
+- 决策责任、异议记录和执行跟进。
 
-**相关内容**：[评审材料先说明问题](#1-评审材料先说明问题)至[评审覆盖迁移与运行](#7-评审覆盖迁移与运行)。
+**相关内容**：[评审材料](#materials)至[迁移与运行](#operations)。
 
 <details>
 <summary>参考回答</summary>
@@ -136,10 +146,8 @@ knowledge:
 
 </details>
 
-:::note 参考资料
+## 11. 参考资料
 
-1. [Google Engineering Practices：The Standard of Code Review](https://google.github.io/eng-practices/review/reviewer/standard.html)
-2. [Google Engineering Practices：What to look for in a code review](https://google.github.io/eng-practices/review/reviewer/looking-for.html)
-3. [AWS Prescriptive Guidance：ADR review process](https://docs.aws.amazon.com/prescriptive-guidance/latest/architectural-decision-records/adr-process.html#adr-review-process)
-
-:::
+- [Google Engineering Practices：The Standard of Code Review](https://google.github.io/eng-practices/review/reviewer/standard.html)
+- [Google Engineering Practices：What to look for in a code review](https://google.github.io/eng-practices/review/reviewer/looking-for.html)
+- [AWS Prescriptive Guidance：ADR review process](https://docs.aws.amazon.com/prescriptive-guidance/latest/architectural-decision-records/adr-process.html#adr-review-process)

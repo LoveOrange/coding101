@@ -9,17 +9,15 @@ knowledge:
 
 Java 线程池复用工作线程并限制同时执行的任务数量。面试重点是 `ThreadPoolExecutor` 的接收顺序、线程与队列怎样共同形成容量边界，以及过载后如何拒绝和排查。
 
-:::tip 面试核心
+## 1. 面试核心 {#core}
 
-- 提交任务时依次尝试核心线程、工作队列、最大线程，最后执行拒绝策略。
+- 提交任务时依次尝试核心线程、工作队列、最大线程，最后执行拒绝策略。[卡](#execute-flow)
 - 无界队列通常让线程数无法增长到 `maximumPoolSize`，过载会表现为队列和延迟持续增加。
-- 线程数不能只按 CPU 核数套公式，还受任务等待时间、目标吞吐、下游容量和内存限制。
+- 线程数不能只按 CPU 核数套公式，还受任务等待时间、目标吞吐、下游容量和内存限制。[卡](#io-pool-size)
 - 有界队列和明确拒绝让过载可见；大队列只是延后失败，并增加过期任务和内存占用。
-- 排查堆积时先比较提交速率与完成速率，再用线程栈和下游指标解释任务为什么变慢。
+- 排查堆积时先比较提交速率与完成速率，再用线程栈和下游指标解释任务为什么变慢。[卡](#saturation-handling)
 
-:::
-
-## 1. 构造参数形成四类约束
+## 2. 构造参数 {#parameters}
 
 `ThreadPoolExecutor` 的七个主要参数可以分成四组：
 
@@ -43,7 +41,7 @@ ExecutorService executor = new ThreadPoolExecutor(
 
 参数必须放在一起解释。最大线程数很大但队列无界时，任务通常一直入队；队列很小则更早扩展线程或拒绝。
 
-## 2. `execute` 的任务接收顺序
+## 3. `execute` 的处理流程 {#execute-flow-section}
 
 运行中的线程池接收任务时主要经过四步：
 
@@ -56,11 +54,11 @@ ExecutorService executor = new ThreadPoolExecutor(
 
 Worker 完成初始任务后会继续从队列取任务。超过核心数量的线程空闲达到 `keepAliveTime` 后可以退出；启用 `allowCoreThreadTimeOut(true)` 后，核心线程也可以超时回收。
 
-### 2.1 `execute` 与 `submit` 的异常
+### 3.1 `execute` 与 `submit` 的异常
 
 `execute` 执行的 Runnable 抛出未捕获异常时，异常会到达线程的未捕获异常处理器。`submit` 会把异常保存在 Future 中，调用 `get()` 时通过 `ExecutionException` 交给调用方；如果从不读取 Future，失败很容易被忽略。
 
-## 3. 线程池容量 {#thread-pool-sizing}
+## 4. 线程池容量 {#thread-pool-sizing}
 
 CPU 密集任务持续占用核心，线程数接近可用核心数通常已经接近吞吐上限。I/O 密集任务会等待数据库或网络，可以有更多线程，但有效并发仍受下游限制。
 
@@ -80,7 +78,7 @@ CPU 密集任务持续占用核心，线程数接近可用核心数通常已经�
 
 逐步增加并发压测，观察吞吐、P95/P99、队列、拒绝、CPU、上下文切换和下游等待。吞吐不再增长而长尾继续变差时，继续增加线程已经没有收益。
 
-## 4. 过载保护 {#thread-pool-overload}
+## 5. 过载保护 {#thread-pool-overload}
 
 有界队列让等待任务数和内存上限可计算。四种内置拒绝策略表达不同结果：
 
@@ -93,7 +91,7 @@ CPU 密集任务持续占用核心，线程数接近可用核心数通常已经�
 
 `CallerRunsPolicy` 只在部分同步调用链中形成有限反压。如果提交者是 I/O 线程、事件循环或持锁线程，它可能扩大故障，应先确认调用上下文。
 
-## 5. 饱和与堆积诊断 {#thread-pool-saturation}
+## 6. 饱和与堆积诊断 {#thread-pool-saturation}
 
 队列持续增长说明任务到达速率长期高于完成速率。排查顺序是：
 
@@ -105,23 +103,23 @@ CPU 密集任务持续占用核心，线程数接近可用核心数通常已经�
 
 线程数很多而 CPU 不高，通常说明线程在等待锁、I/O、连接池或子任务，不足以证明“线程还不够”。
 
-## 6. 常见问题
+## 7. 常见问题
 
-### 6.1 创建线程池会立即创建所有核心线程吗
+### 7.1 创建线程池会立即创建所有核心线程吗
 
 默认不会。通常在任务到来时逐步创建，也可以调用 `prestartCoreThread` 或 `prestartAllCoreThreads` 预启动。
 
-### 6.2 为什么不直接使用 `Executors.newFixedThreadPool`
+### 7.2 为什么不直接使用 `Executors.newFixedThreadPool`
 
 它使用无界 `LinkedBlockingQueue`。流量持续超过处理能力时，任务会不断排队，延迟和内存占用缺少明确上限。显式构造 ThreadPoolExecutor 更容易表达容量与拒绝结果。
 
-### 6.3 队列越大越能抗突发吗
+### 7.3 队列越大越能抗突发吗
 
 队列可以吸收短时波动，但过大会延长等待时间、保存更多已经过期的任务，并推迟过载信号。容量应来自可接受排队时间和任务内存，而不是越大越好。
 
-## 7. 面试题
+## 8. 面试题
 
-### 7.1 `ThreadPoolExecutor.execute` 的任务处理流程是什么 {#execute-flow}
+### 8.1 `ThreadPoolExecutor.execute` 的任务处理流程是什么 {#execute-flow}
 
 <!-- 面试来源：
 - 阿里巴巴：https://www.nowcoder.com/discuss/461925
@@ -135,7 +133,7 @@ CPU 密集任务持续占用核心，线程数接近可用核心数通常已经�
 - 核心线程、队列和最大线程的先后关系。
 - 入队后的状态复查与无界队列的影响。
 
-**相关内容**：[构造参数形成四类约束](#1-构造参数形成四类约束)、[`execute` 的任务接收顺序](#2-execute-的任务接收顺序)。
+**相关内容**：[构造参数](#parameters)、[`execute` 的处理流程](#execute-flow-section)。
 
 <details>
 <summary>参考回答</summary>
@@ -146,7 +144,7 @@ CPU 密集任务持续占用核心，线程数接近可用核心数通常已经�
 
 </details>
 
-### 7.2 怎样为 I/O 密集任务配置线程池大小 {#io-pool-size}
+### 8.2 怎样为 I/O 密集任务配置线程池大小 {#io-pool-size}
 
 <!-- 面试来源：
 - 美团：https://www.nowcoder.com/discuss/377447203734921216
@@ -171,7 +169,7 @@ CPU 密集任务持续占用核心，线程数接近可用核心数通常已经�
 
 </details>
 
-### 7.3 队列满或任务持续堆积时应该怎样处理 {#saturation-handling}
+### 8.3 队列满或任务持续堆积时应该怎样处理 {#saturation-handling}
 
 <!-- 面试来源：
 - 美团：https://www.nowcoder.com/discuss/363477877092876288
@@ -196,11 +194,9 @@ CPU 密集任务持续占用核心，线程数接近可用核心数通常已经�
 
 </details>
 
-:::note 参考资料
+## 9. 参考资料
 
-1. [Java API：ThreadPoolExecutor](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/ThreadPoolExecutor.html)
-2. [OpenJDK：ThreadPoolExecutor 源码](https://github.com/openjdk/jdk/blob/jdk-26%2B36/src/java.base/share/classes/java/util/concurrent/ThreadPoolExecutor.java)
-3. [Java API：RejectedExecutionHandler](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/RejectedExecutionHandler.html)
-4. [Java API：BlockingQueue](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/BlockingQueue.html)
-
-:::
+- [Java API：ThreadPoolExecutor](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/ThreadPoolExecutor.html)
+- [OpenJDK：ThreadPoolExecutor 源码](https://github.com/openjdk/jdk/blob/jdk-26%2B36/src/java.base/share/classes/java/util/concurrent/ThreadPoolExecutor.java)
+- [Java API：RejectedExecutionHandler](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/RejectedExecutionHandler.html)
+- [Java API：BlockingQueue](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/BlockingQueue.html)
