@@ -100,6 +100,16 @@ function TopicsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [domain.id, topic?.id]);
 
+  // Domains in the role first, then the optional ones, each group in its original order.
+  const domains = useMemo(
+    () => [
+      ...index.domains.filter((item) => roleTopics(item).length > 0),
+      ...index.domains.filter((item) => roleTopics(item).length === 0),
+    ],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [roleId, index],
+  );
+
   const position = topic ? topics.indexOf(topic) + 1 : 0;
   const articles = topic ? topicArticles(topic) : [];
   const priority = highestPriority(articles.filter(inRole));
@@ -126,13 +136,13 @@ function TopicsPage() {
               全部
             </button>
           </div>
-          <span className={styles.rolesHint}>{role ? '只显示这个岗位面试常考的内容' : '显示全部领域与主题'}</span>
+          <span className={styles.rolesHint}>{role ? '高亮为这个岗位面试常考的内容，其余为选读' : '显示全部领域与主题'}</span>
         </div>
 
         <div className={styles.columns}>
           <nav className={styles.domains} aria-label="领域">
             <div className={styles.columnLabel}>领域</div>
-            {index.domains.map((item) => {
+            {domains.map((item) => {
               const list = roleTopics(item);
               const optional = Boolean(roleId) && list.length === 0;
               const done = list.filter((t) => topicProgress(topicArticles(t).filter(inRole), learner) === 'done').length;
