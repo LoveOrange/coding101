@@ -7,93 +7,104 @@ knowledge:
 
 # Spring Security
 
-Spring Security 在 Servlet Filter 层建立安全边界。请求先由 FilterChainProxy 选择一条 SecurityFilterChain，再按顺序完成安全上下文加载、攻击防护、身份验证、异常转换和授权。
+Spring Security 在 Servlet 过滤器链中处理认证与授权。本文以 Spring Security 6.5 为基准。重点是多链匹配、上下文生命周期和方法权限。协议区别见 [Session、JWT、OAuth 2.0 与 OIDC](./session-jwt-oauth-oidc.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- `DelegatingFilterProxy` 把 Servlet 容器的 Filter 调用委托给 Spring 中的 `FilterChainProxy`。
-- `FilterChainProxy` 从多条 `SecurityFilterChain` 中选择第一条匹配请求的链执行。[卡](#security-filter-chain)
-- 认证过滤器提取凭据，交给 `AuthenticationManager` 由对应的 `AuthenticationProvider` 验证，结果存入 `SecurityContextHolder`。
-- `AuthorizationFilter` 在认证之后判断是否允许访问，`ExceptionTranslationFilter` 把异常转换为 401 或 403。
-- URL 授权之后，方法级权限和资源归属检查仍要在业务层完成。
+- `DelegatingFilterProxy` 将容器调用委托给 Spring 中的 `FilterChainProxy`。
+- `FilterChainProxy` 每次选择第一条匹配的 `SecurityFilterChain`。[卡](#security-filter-chain)
+- Spring Security 6 默认要求显式保存跨请求的安全上下文。[卡](#explicit-context-save)
+- `ExceptionTranslationFilter` 将下游安全异常交给认证入口或拒绝处理器。
+- `@EnableMethodSecurity` 启用方法授权，代理边界影响注解生效。[卡](#method-security-proxy)
 
 ## 2. DelegatingFilterProxy {#delegatingfilterproxy}
 
-Servlet 容器认识的是 Filter，Spring Security 的入口通常是 `DelegatingFilterProxy`。它从 ApplicationContext 找到名为 `springSecurityFilterChain` 的 Bean，并把请求委托给它。
+Servlet 容器通过 `DelegatingFilterProxy` 进入安全链。它查找名为 `springSecurityFilterChain` 的 Spring Bean。该 Bean 的类型为 `FilterChainProxy`。
 
-这个 Bean 实际类型是 `FilterChainProxy`。安全过滤器由 Spring 管理，不需要分别注册到 Servlet 容器；重复注册会让同一过滤器执行两次。
+安全过滤器由 Spring 管理。重复注册到容器与安全链会造成重复执行。
 
 ## 3. FilterChainProxy {#filterchainproxy}
 
-应用可以声明多条 `SecurityFilterChain`：
+应用可以配置多条 `SecurityFilterChain`。`@Order` 控制检查顺序，`securityMatcher` 控制链的适用范围。
 
 ```java
 @Bean
 @Order(1)
 SecurityFilterChain api(HttpSecurity http) throws Exception {
-    http.securityMatcher("/api/**");
-    // API security
+    http.securityMatcher("/api/**")
+        .authorizeHttpRequests(auth -> auth.anyRequest().authenticated())
+        .httpBasic(Customizer.withDefaults());
     return http.build();
 }
 ```
 
-FilterChainProxy 按顺序选择第一条 matcher 命中的链。更具体的 `/api/**` 应放在通用 `/**` 之前；若请求没有匹配任何链，它不会自动获得期望的安全规则。
+这是 Spring Security 6.5 的配置片段。它只保护 `/api/**`。其他路径还需另一条兜底链。
 
-配置审查要覆盖所有路径、HTTP method、错误转发和管理端点，而不只测试首页。
+`requestMatchers` 则选择链内的授权规则。请求未命中任何链时，不受 Spring Security 保护。测试应覆盖管理端点、HTTP method 和错误转发。
 
 ## 4. SecurityContext {#securitycontext}
 
-`SecurityContextHolder` 保存当前请求的 `SecurityContext`，其中的 `Authentication` 表示匿名、待认证凭据或已认证 principal，以及它拥有的 authorities。
+`SecurityContextHolder` 持有当前执行线程的安全上下文。`Authentication` 包含主体、认证状态与 authorities。
 
-Servlet 应用默认使用 ThreadLocal。FilterChainProxy 在请求结束时负责清理上下文，避免线程池复用时把前一个用户身份带给下一个请求。
+Servlet 默认策略使用 ThreadLocal。请求结束后，安全链清理上下文。线程池复用才不会携带上次请求的身份。
 
-任务切换到异步执行器时，ThreadLocal 不会自动安全传播。需要显式传递最小身份上下文，或使用 Spring Security 提供的委托包装器，并在任务结束后清理。
+异步任务可使用 `DelegatingSecurityContextExecutor` 等包装器。它在执行任务时设置上下文，结束时清理。业务还需控制向异步任务传递的身份范围。
+
+### 4.1 上下文持久化 {#上下文持久化}
+
+Spring Security 5 默认自动保存 SecurityContext。Spring Security 6 默认使用 `SecurityContextHolderFilter`。它负责读取上下文，持久化由认证流程显式完成。
+
+自定义认证流程若需要跨请求登录，应调用 `saveContext`。目标是配置的 `SecurityContextRepository`。仅设置 `SecurityContextHolder` 只影响当前执行上下文。
+
+内置认证机制会按自身配置处理保存。排查自定义登录时，需核对仓库与保存时机。
 
 ## 5. AuthenticationManager {#authenticationmanager}
 
-认证过滤器从请求提取凭据，构造尚未认证的 Authentication，交给 `AuthenticationManager`。常用 `ProviderManager` 依次询问支持该类型的 `AuthenticationProvider`，例如用户名密码、JWT 或自定义凭据。
+认证过滤器提取凭据，构造待认证的 Authentication。`AuthenticationManager` 接收认证请求。`ProviderManager` 将请求交给支持该类型的 Provider。
 
-认证成功返回包含 principal 与 authorities 的 Authentication，随后存入 SecurityContext。失败则进入统一失败处理，不应把密码、token 或内部验证细节写入响应和日志。
+Provider 验证成功后返回认证结果。过滤器将结果写入上下文。失败处理器负责输出响应，凭据值应避开日志。
 
 ## 6. 过滤器顺序 {#过滤器顺序}
 
-过滤器顺序由依赖关系决定：安全上下文先建立，认证过滤器再确认主体，AuthorizationFilter 最后根据规则决定是否允许。
+上下文读取在前，认证与授权随后进行。需要用户身份的自定义过滤器应位于认证之后。授权过滤器依据当前身份与规则作决定。
 
-自定义租户授权过滤器若需要当前用户，应放在认证完成之后。随意使用 `addFilterBefore` 插到未知位置，可能读不到身份，或者绕过异常处理和上下文清理。
-
-调试时可以输出实际 filter chain，确认自定义过滤器只执行一次并位于预期位置。
+`ExceptionTranslationFilter` 只捕获其下游抛出的安全异常。位于它之前的认证过滤器使用自己的失败处理器。调试时应查看实际链顺序，并检查重复注册。
 
 ## 7. ExceptionTranslationFilter {#exceptiontranslationfilter}
 
-未认证主体访问受保护资源时，需要启动认证或返回 401；已认证但权限不足通常返回 403。`ExceptionTranslationFilter` 捕获下游的认证与拒绝异常，并调用相应 entry point 或 access denied handler。
+认证入口由 `AuthenticationEntryPoint` 决定。表单登录可以重定向到登录页。Basic 或 Bearer API 可返回 401。
 
-业务异常不要伪装成认证失败。稳定区分 401 和 403，既方便客户端处理，也避免把权限规则是否存在等敏感细节暴露出去。
+已认证主体权限不足时，默认拒绝处理返回 403。匿名主体的授权失败会启动认证入口。自定义处理器可改变响应形式。
+
+因此，过滤器职责是转换异常并委托处理。它并非把所有认证异常固定转换为 401。
 
 ## 8. Session 与 Bearer Token {#session-与-bearer-token}
 
-浏览器 Session 登录会从安全上下文仓库恢复并保存认证。无状态 API 通常每次验证 Bearer Token，不创建服务端登录 Session。
+Session 登录通过上下文仓库跨请求恢复身份。无状态 API 每次验证 Bearer Token。
 
-`SessionCreationPolicy.STATELESS` 不等于自动关闭所有浏览器风险。若认证信息仍放在自动携带的 Cookie 中，写请求仍要考虑 CSRF；只有客户端通过 Authorization header 主动携带 token，攻击模型才不同。
+`SessionCreationPolicy.STATELESS` 控制安全上下文的 Session 使用。若凭据放在自动携带的 Cookie 中，仍需 CSRF 防护。具体机制见 [XSS 与 CSRF](./injection-authorization-ssrf-deserialization.mdx#xss-与-csrf)。
 
 ## 9. 方法与数据级授权 {#方法与数据级授权}
 
-`authorizeHttpRequests` 保护路径和粗粒度 authority。领域方法可以使用 method security 表达动作权限，资源所有权和 tenant 条件还要落实到业务或查询层。
+`authorizeHttpRequests` 约束请求路径。`@EnableMethodSecurity` 启用方法权限。随后可用 `@PreAuthorize` 表达调用前检查。
 
-测试至少包含匿名、普通用户、跨租户、管理员、过期 token、错误 audience 和 CSRF 场景。只测试正常 200，不能证明过滤器链没有遗漏路径。
+默认代理模式下，同类内部调用绕过代理。因此，内部直接调用带注解的方法会漏掉方法拦截。入口应经过受保护的 Bean 代理。
 
-## 10. 常见问题
+方法权限还需结合资源归属与租户条件。数据层边界见 [多租户边界](./authentication-authorization-trust-boundaries.mdx#多租户边界)。
 
-### 10.1 一次请求会经过多条 SecurityFilterChain 吗
+## 10. 常见问题 {#常见问题}
 
-不会。FilterChainProxy 选择第一条匹配的 SecurityFilterChain，并执行其中的过滤器。排序错误可能让通用链提前匹配，导致专用 API 规则永远不生效。
+### 10.1 多链匹配范围 {#多链匹配范围}
 
-### 10.2 自定义 JWT Filter 应该放在哪里
+每次选择第一条匹配的链。通用链排在前面，会遮蔽专用链。配置末尾可用覆盖所有请求的链兜底。
 
-取决于它承担的职责。若负责创建 Authentication，要放在授权之前，并让异常进入统一处理；更推荐使用 Spring Security Resource Server 已有 Bearer token 支持，减少自定义解析、算法和上下文错误。
+### 10.2 自定义 JWT 过滤器的位置 {#自定义-jwt-过滤器的位置}
 
-## 11. 面试题
+创建身份的过滤器应位于授权之前。认证失败需进入正确的失败处理流程。Resource Server 已提供 Bearer 支持，可直接配置使用。
 
-### 11.1 Spring Security 如何从请求进入过滤器链并完成鉴权 {#security-filter-chain}
+## 11. 面试题 {#面试题}
+
+### 11.1 Spring Security 如何从请求进入过滤器链并完成鉴权？ {#security-filter-chain}
 
 <!-- 面试来源：
 - 美团 Java 面试题：https://www.nowcoder.com/discuss/383727207275933696
@@ -101,25 +112,62 @@ Servlet 应用默认使用 ThreadLocal。FilterChainProxy 在请求结束时负�
 
 **出现公司**：美团
 
-**考察重点**
+**考察重点**：容器委托、多链匹配与上下文生命周期。
 
-- DelegatingFilterProxy、FilterChainProxy 和 SecurityFilterChain。
-- SecurityContext、AuthenticationManager 与 Provider。
-- 过滤器顺序、401/403 和多链匹配。
-
-**相关内容**：[DelegatingFilterProxy](#delegatingfilterproxy)至[方法与数据级授权](#方法与数据级授权)。
+**相关内容**：[DelegatingFilterProxy](#delegatingfilterproxy)、[过滤器顺序](#过滤器顺序)。
 
 <details>
 <summary>参考回答</summary>
 
-Servlet 容器先进入 DelegatingFilterProxy，它把请求委托给 Spring Bean `FilterChainProxy`。FilterChainProxy 按顺序选择第一条 matcher 命中的 SecurityFilterChain，并执行其中过滤器。过滤器先建立和清理 SecurityContext，再由认证过滤器提取凭据，通过 AuthenticationManager 与对应 Provider 验证，成功后保存 Authentication，授权过滤器最后根据规则决定访问。
+容器通过 DelegatingFilterProxy 调用 FilterChainProxy。后者选择首条匹配链，再按顺序调用过滤器。
 
-认证异常和权限拒绝由 ExceptionTranslationFilter 转为 401 或 403。多条链要把具体 matcher 放前面，自定义过滤器按它依赖的上下文选择位置。URL 规则只做一层保护，资源所有权和多租户条件仍要在方法与数据访问层校验。
+认证过滤器委托 AuthenticationManager 验证凭据。认证结果进入 SecurityContext，授权过滤器再判断权限。请求结束后清理上下文。异常响应由相应 entry point 或失败处理器决定。
 
 </details>
 
-## 12. 参考资料
+### 11.2 Spring Security 6 自定义登录后，下次请求为何仍匿名？ {#explicit-context-save}
 
-- [Spring Security：Servlet Architecture](https://docs.spring.io/spring-security/reference/servlet/architecture.html)
-- [Spring Security：Authentication Architecture](https://docs.spring.io/spring-security/reference/servlet/authentication/architecture.html)
-- [Spring Security：Authorize HTTP Requests](https://docs.spring.io/spring-security/reference/servlet/authorization/authorize-http-requests.html)
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：显式保存与上下文仓库。
+
+**相关内容**：[上下文持久化](#上下文持久化)。
+
+<details>
+<summary>参考回答</summary>
+
+若只设置 ThreadLocal，上下文就仅在当前请求中生效。Spring Security 6 默认要求显式保存跨请求状态。
+
+排查时检查认证成功后是否调用 `saveContext`。再核对仓库配置、Session Cookie 与无状态策略。该问题也需结合实际登录实现定位。
+
+</details>
+
+### 11.3 同类调用带 PreAuthorize 的方法会触发权限检查吗？ {#method-security-proxy}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：代理拦截、启用配置与调用边界。
+
+**相关内容**：[方法与数据级授权](#方法与数据级授权)。
+
+<details>
+<summary>参考回答</summary>
+
+默认代理模式下，同类内部调用绕过方法拦截。`@EnableMethodSecurity` 启用后，外部调用还需经过代理。
+
+可将受保护操作放在独立 Bean，并经代理调用。测试同时覆盖 HTTP 入口和内部调用。资源归属仍由业务授权约束。
+
+</details>
+
+## 12. 参考资料 {#参考资料}
+
+- [Spring Security 6.5：Servlet Architecture](https://docs.spring.io/spring-security/reference/6.5/servlet/architecture.html)
+- [Spring Security 6.5：Authentication Architecture](https://docs.spring.io/spring-security/reference/6.5/servlet/authentication/architecture.html)
+- [Spring Security 6.5：Session Management](https://docs.spring.io/spring-security/reference/6.5/servlet/authentication/session-management.html)
+- [Spring Security 6.5：Method Security](https://docs.spring.io/spring-security/reference/6.5/servlet/authorization/method-security.html)
+- [Spring Security 6.5：Java Configuration](https://docs.spring.io/spring-security/reference/6.5/servlet/configuration/java.html)
+- [Spring Framework：Proxying Mechanisms](https://docs.spring.io/spring-framework/reference/core/aop/proxying.html)

@@ -7,180 +7,201 @@ knowledge:
 
 # SOLID 面向对象设计原则
 
-## 为什么需要 SOLID 原则？
+SOLID 用五项原则管理职责、扩展和依赖。本文负责原则含义、行为契约与代码判断。部署架构的演进见 [系统架构](../system-design/universe_architecture.mdx)。
 
-代码虽然由机器来执行，但是代码的读者始终是开发人员。写出可以运行的代码并不难，但是一个软件服务通常由大量的人力，经过长时间开发才能够完成，一段代码可能由不同的开发人员接手。因此，软件行业的开发者都需要面对一个严重的问题：
+## 1. 面试核心 {#core}
 
-**经过长时间开发后，代码如何保持良好的可读性和可维护性？**
+- SRP 按变化原因划分职责，同一类可包含多个相关方法。[卡](#srp-change-reasons)
+- OCP 通过稳定扩展点隔离变化，修改仍可发生在扩展点之外。
+- LSP 要求子类型遵守父类型的行为契约。[卡](#lsp-contract)
+- ISP 按客户端需要拆分接口，避免依赖无关能力。
+- DIP 让业务依赖抽象，DI 负责把具体依赖传入对象。[卡](#dip-versus-di)
 
-为了解决这个问题，软件开发人员们总结出了一系列的开发设计原则，其中有代表性的就是 SOLID 原则与设计模式。
+## 2. 职责与变化 {#职责与变化}
 
-## SOLID 简介
+代码维护的主要成本来自变化的传播。多个职责混在一起时，一处修改会影响无关调用者。SOLID 用于判断这些依赖与边界。
 
-在程序设计领域， SOLID（单一功能、开闭原则、里氏替换、接口隔离以及依赖反转）是由罗伯特·C·马丁（代表作《Clean Code》）在 21 世纪早期引入的记忆术首字母缩略字，指代了面向对象编程和面向对象设计的五个基本原则。
+抽象也有成本。类和接口增加后，阅读调用链会更费力。应围绕已经存在的变化点选择边界。
 
-SOLID 分别指代：
+## 3. SOLID 概念 {#solid-概念}
 
-- **S**ingle Responsibility Principle（单一功能原则）
-- **O**pen/Closed Principle（开闭原则）
-- **L**iskov Substitution Principle（里氏替换原则）
-- **I**nterface Segregation Principle（接口隔离原则）
-- **D**ependency Inversion Principle（依赖反转原则）
+| 原则 | 英文名称 | 判断对象 |
+| --- | --- | --- |
+| 单一职责 | Single Responsibility Principle | 导致模块变化的职责来源 |
+| 开闭原则 | Open/Closed Principle | 稳定部分与扩展点 |
+| 里氏替换 | Liskov Substitution Principle | 子类型的行为契约 |
+| 接口隔离 | Interface Segregation Principle | 客户端实际使用的能力 |
+| 依赖倒置 | Dependency Inversion Principle | 源码依赖的方向 |
 
-SOLID 原则旨在帮助软件开发人员设计出更易于维护、扩展和重用的代码。通过设计、重构等方式，清除代码异味。SOLID 被典型的应用在测试驱动开发上，并且是敏捷开发以及自适应软件开发的基本原则的重要组成部分。
+## 4. SOLID 原则 {#solid-原则}
 
-## SOLID 原则
+### 4.1 单一职责原则 {#单一职责原则}
 
-### 1. 单一职责原则（Single Responsibility Principle, SRP）
+SRP 将同一变化原因影响的内容组织在一起。例如薪资计算与报表格式由不同需求驱动。分离后，报表改版不会改变薪资规则。
 
-每个类应只有一个职责或原因导致其变更。这样可以使类更易于理解、维护和扩展，避免因为一个职责的修改而影响到其他职责的实现。
+一个类有多个方法，仍可围绕同一职责。实体维护自身不变量也属于合理职责。`User` 并非只能保存字段，校验也无需一律外移。
 
-设想一个用户注册的场景，我们通常会设计一个 `User` 类来维护用户的信息。如果需要对 `User` 进行校验，我们应该将校验逻辑放在一个独立的类 `UserValidator` 中，而不是将校验逻辑直接放在 `User` 类中。
+字段合法性可由值对象或实体维护。注册流程的唯一性检查则依赖仓库，适合放在应用服务中。
 
-`User` 类中应该只包含用户的基本信息：
+### 4.2 开闭原则 {#开闭原则}
 
-```java
-public class User {
-    private String username;
-    private String password;
-    private String email;
-
-    // getter and setter
-}
-```
-
-`UserValidator` 类中存放用户校验的逻辑：
+OCP 用稳定接口隔离可预见的扩展。例如绘图器通过 Shape 调用不同图形：
 
 ```java
-public class UserValidator {
-    public boolean validate(User user) {
-        // validate user
-    }
-}
-```
-
-### 2. 开闭原则（Open/Closed Principle, OCP）
-
-软件实体（类、模块、函数等）应对扩展开放，对修改关闭。这意味着在不修改现有代码的情况下，可以通过添加新功能来扩展系统，从而降低引入错误的风险。
-
-假设我们又一些类用来描述几何形状，比如 `TriAngle`、`Rectangle` 等，它们有共同的父类 `Shape`。如果我们需要增加一个新的形状 `Circle`，我们应该通过继承或接口的方式来实现，而不是直接修改现有的类。
-
-```java
-public abstract class Shape {
-    public abstract void draw();
+interface Shape {
+    void draw();
 }
 
-public class Triangle extends Shape {
-    @Override
+final class Circle implements Shape {
     public void draw() {
-        System.out.println("Triangle is drawing");
+        System.out.println("circle");
     }
 }
 
-// 增加一个新的形状 Circle
-public class Circle extends Shape {
-    @Override
-    public void draw() {
-        System.out.println("Circle is drawing");
+final class Renderer {
+    void render(Shape shape) {
+        shape.draw();
     }
 }
 ```
 
-### 3. 里氏替换原则（Liskov Substitution Principle, LSP）
+新增图形只需实现 Shape，Renderer 的调用逻辑保持稳定。注册实现、装配对象和修复缺陷仍可修改代码。
 
-子类必须能够替换其基类而不影响系统的正确性。这确保了继承关系的正确性，子类能完美适应父类的使用场景。
+扩展方向应来自业务变化。为了未知需求引入插件系统，会增加当前维护成本。
 
-继续上一个几何形状的示例。如果我们有一个函数接收 `Shape` 类型的参数，那么我们可以传入任何继承自 `Shape` 的类，而不用担心会影响函数的正确性。
+### 4.3 里氏替换原则 {#里氏替换原则}
 
-```java
-public void draw(Shape shape) {
-    shape.draw();
-}
-```
+LSP 要求调用者依赖的行为在替换后继续成立。子类型应保留父类型不变量，并遵守历史约束。例如父类型承诺创建后不变，子类型也应保持不变。它还应满足以下条件：
 
-下面的代码同样都是支持的：
+- 前置条件保持或放宽，避免拒绝父类型允许的输入。
+- 后置条件保持或加强，确保父类型承诺的结果成立。
 
-```java
-draw(new Triangle());
-draw(new Rectangle());
-draw(new Circle());
-```
+例如账户接口承诺余额足够时允许提款。子类额外要求“仅工作日提款”，就加强了前置条件。参数类型相同，仍会违反行为契约。
 
-### 4. 接口隔离原则（Interface Segregation Principle, ISP）
+父类型若承诺成功返回后已经持久化，子类型就需遵守。只把记录放入易失内存会削弱后置条件。
 
-客户端不应该被迫依赖它们不使用的方法。应将庞大的接口拆分成多个更小、更具体的接口，从而使实现类只需关注与其相关的接口。
+继承关系通过编译检查，只说明类型兼容。契约测试还需检查结果、异常与状态变化。
 
-对于功能的添加，我们应该通过增加接口的方式来实现。
+### 4.4 接口隔离原则 {#接口隔离原则}
 
-现在让我们来描述一下神奇的动物世界。所有的动物都继承自 `Animal` 类，但是不同的动物有不同的行为，比如有些动物会游泳，有些动物会飞。我们可以通过接口的方式来实现：
+ISP 按调用方需要划分能力。只读取数据的调用方可依赖只读接口。写入能力由另一个接口表达。
+
+动物能力也可以拆成独立接口：
 
 ```java
-public interface Flyable {
+interface Flyable {
     void fly();
 }
 
-public interface Swimmable {
+interface Swimmable {
     void swim();
 }
-```
 
-一只鸭子即会飞又会游泳，我们可以这样实现：
-
-```java
-public class Duck extends Animal implements Flyable, Swimmable {
-    @Override
-    public void fly() {
-        System.out.println("Duck is flying");
-    }
-
-    @Override
+final class Fish implements Swimmable {
     public void swim() {
-        System.out.println("Duck is swimming");
+        System.out.println("swim");
     }
 }
 ```
 
-但是鱼只会游泳，我们可以这样实现：
+Fish 只实现游泳能力，无需提供空的飞行方法。新增功能可以增加接口，也可以扩展已有稳定职责。是否拆分取决于客户端依赖关系。
+
+### 4.5 依赖倒置原则 {#依赖倒置原则}
+
+DIP 让高层业务和低层实现共同依赖抽象。抽象描述业务需要，避免直接暴露数据库细节。
 
 ```java
-public class Fish extends Animal implements Swimmable {
-    @Override
-    public void swim() {
-        System.out.println("Fish is swimming");
+interface UserRepository {
+    void save(String userId);
+}
+
+final class UserService {
+    private final UserRepository repository;
+
+    UserService(UserRepository repository) {
+        this.repository = repository;
+    }
+
+    void register(String userId) {
+        repository.save(userId);
     }
 }
 ```
 
-通过不同的接口隔离了不同的功能。需要实现不同的功能时，只需要实现对应的接口。增加新的功能时，也只需要增加新的接口即可。
+UserService 的源码只依赖 UserRepository。数据库适配器实现该接口，装配入口传入具体对象。
 
-### 5. 依赖倒置原则（Dependency Inversion Principle, DIP）
+构造器注入属于 DI，即依赖注入。若构造器直接接收具体 MySQL 类，仍有 DI。该写法却没有隔离高层对存储细节的依赖。
 
-高层模块不应依赖于低层模块，二者都应该依赖于抽象。抽象不应依赖于细节，细节应依赖于抽象。这样可以减少模块之间的耦合，提高系统的灵活性和可维护性。
+## 5. 使用边界 {#使用边界}
 
-在使用 Spring 框架中，我们大量应用了 DIP 原则。
+SOLID 用于控制变化传播，接口数量无需作为目标。稳定的小模块可以保留直接实现。
 
-考虑一个用户管理的场景，我们通常会设计一个 `UserService` 类来处理用户的信息。如果我们需要保存用户信息，我们应该将保存用户信息的逻辑放在一个独立的类 `UserRepository` 中，而不是直接在 `UserService` 类中实现。
+行为差异无法满足父类型契约时，可改用组合。调用者依赖所需能力，组件通过委托完成协作。
 
-`UserRepository` 中应该定义以下功能：
+评审时应使用具体变更检验设计。例如新增存储实现时，业务规则是否需要改动。新增读取客户端时，是否被迫依赖写方法。
 
-```java
-public interface UserRepository {
-    void save(User user);
-}
-```
+## 6. 面试题 {#面试题}
 
-对于 `UserService` 类，它不需要关注用户信息存储在 `MySQL` 还是 `MongoDB` 中，它只需要关注 `UserRepository` 提供了 `save` 方法即可，实际存储的逻辑由 `UserRepository` 实现。
+### 6.1 单一职责是否要求一个类只做一个动作？ {#srp-change-reasons}
 
-```java
-public class UserService {
-    private final UserRepository userRepository;
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
-    public UserService(UserRepository userRepository) {
-        this.userRepository = userRepository;
-    }
+**出现公司**：暂无已核验的公开来源（本站自测）
 
-    public void save(User user) {
-        userRepository.save(user);
-    }
-}
-```
+**考察重点**：变化原因、实体不变量与职责边界。
+
+**相关内容**：[单一职责原则](#单一职责原则)。
+
+<details>
+<summary>参考回答</summary>
+
+SRP 按变化原因划分职责，允许多个相关动作。薪资规则与报表格式由不同需求驱动，适合分离。
+
+实体可维护自身不变量。是否提取校验类，要看校验依赖与职责来源。方法数量无法直接决定职责数量。
+
+</details>
+
+### 6.2 子类方法签名相同，为什么仍会违反里氏替换原则？ {#lsp-contract}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：前置条件、后置条件与不变量。
+
+**相关内容**：[里氏替换原则](#里氏替换原则)。
+
+<details>
+<summary>参考回答</summary>
+
+方法签名只约束类型，LSP 还约束行为。子类若收紧合法输入，或削弱成功结果，就会破坏契约。
+
+提款子类额外限定工作日，会拒绝父类型允许的调用。持久化子类只写内存，则削弱成功承诺。契约测试应检查这些行为。
+
+</details>
+
+### 6.3 依赖倒置与依赖注入有什么区别？ {#dip-versus-di}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：源码依赖方向与对象装配。
+
+**相关内容**：[依赖倒置原则](#依赖倒置原则)。
+
+<details>
+<summary>参考回答</summary>
+
+DIP 管理源码依赖方向，DI 管理对象依赖的传入方式。业务依赖仓库接口，适配器实现接口，体现 DIP。
+
+构造器接收具体数据库类也属于 DI。它仍让业务源码依赖具体存储。两者可以配合使用，但解决的问题不同。
+
+</details>
+
+## 7. 参考资料 {#参考资料}
+
+- [Robert C. Martin：The Single Responsibility Principle](https://blog.cleancoder.com/uncle-bob/2014/05/08/SingleReponsibilityPrinciple.html)
+- [Robert C. Martin：SOLID Relevance](https://blog.cleancoder.com/uncle-bob/2020/10/18/Solid-Relevance.html)
+- [Liskov、Wing：A Behavioral Notion of Subtyping](https://www.cs.cmu.edu/~wing/publications/LiskovWing94.pdf)
+- [Martin Fowler：Inversion of Control Containers and Dependency Injection](https://martinfowler.com/articles/injection.html)
