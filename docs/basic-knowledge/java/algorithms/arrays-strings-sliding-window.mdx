@@ -7,113 +7,85 @@ knowledge:
 
 # 滑动窗口
 
-滑动窗口用左右边界维护一段连续区间，适合“最长、最短、数量满足某个条件的子数组或子串”。关键是定义窗口不变量，并证明两个边界只单向移动。
+滑动窗口维护连续区间，并增量更新区间状态。本文负责固定窗口、无重复子串、覆盖计数和窗口极值。相向移动见[双指针](../../algorithms/two-pointers.mdx)，静态求和见[前缀和](../../algorithms/prefix-sum.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- 滑动窗口适用于连续子数组或子串，且窗口的有效性随边界移动具有单调性。[卡](#sliding-window-conditions)
-- 用半开区间 `[left, right)` 维护窗口不变量，固定窗口只做增量更新。
-- 最长无重复子串：记录字符上次出现的位置，遇到重复时把 left 移到其后；left 和 right 各最多移动 n 次，总复杂度 O(n)。[卡](#longest-unique-substring)
-- 数组含负数时求和窗口失去单调性，需要前缀和或单调队列。
-- Java `String` 按 UTF-16 code unit 索引，部分字符占两个 `char`。
+- 固定窗口按长度移动，可处理含负数的数组。[卡](#sliding-window-conditions)
+- 无重复窗口的左端只向前移动，哈希实现期望 O(n)。[卡](#longest-unique-substring)
+- 最小覆盖窗口在覆盖成立时记录答案，再收缩左端。[卡](#minimum-cover-counts)
+- 单调队列保留未过期的极值候选，窗口最大值总耗时 O(n)。[卡](#window-maximum-deque)
+- Java String 按 UTF-16 code unit 索引，一个 code point 可占两个 char。
 
 ## 2. 连续区间 {#连续区间}
 
-滑动窗口处理的是连续片段：
+固定长度窗口每次加入一项、移除一项。可变窗口还需证明移走左端后的候选可被排除。
 
-- 最长无重复子串。
-- 和至少达到目标的最短正数子数组。
-- 包含指定字符计数的最小覆盖区间。
-- 固定长度窗口的最大值、平均值或频率。
-
-如果可以任意选择不连续元素，通常是子序列、组合、动态规划或贪心问题，不能直接套窗口。
-
-还要判断窗口条件是否具有单调性。正数数组中，右边界扩张会让和不减，左边界收缩会让和不增；包含负数时这个关系消失，简单双指针可能漏解。
+非负数组中，加入元素让和不减，移除元素让和不增。求最短达标和时可利用这个关系。含负数时，这套按和移动的证明失效。固定长度的求和窗口仍然适用。
 
 ## 3. 半开区间与不变量 {#半开区间与不变量}
 
-推荐统一使用 `[left, right)`：
+用 `[left,right)` 表示窗口，长度为 right−left。left 是首项，right 是下一待加入位置。以下为最长有效窗口的伪代码：
 
-- left 是窗口第一个元素。
-- right 是下一个尚未加入的元素。
-- 窗口长度是 `right - left`。
-
-```java
-int left = 0;
-int right = 0;
-
-while (right < values.length) {
-    add(values[right]);
-    right++;
-
-    while (windowInvalid()) {
-        remove(values[left]);
-        left++;
-    }
-
-    updateAnswer(left, right);
-}
+```text
+while right < n:
+    加入 a[right]
+    right += 1
+    while 当前窗口违反约束:
+        移除 a[left]
+        left += 1
+    用 right-left 更新最长长度
 ```
 
-这里维护的不变量是：退出内层循环后，当前窗口满足约束。答案是在窗口恢复有效后更新，还是在首次满足条件时更新，取决于是求最长有效区间还是最短覆盖区间。
+内层循环结束时，窗口恢复有效。最短覆盖题则需在仍有效时记录，再尝试收缩。
 
 ## 4. 固定窗口 {#固定窗口}
 
-计算每个长度 k 区间的和：
+以下代码求长度 k 的最大区间和：
 
 ```java
-long sum = 0;
-
-for (int right = 0; right < values.length; right++) {
-    sum += values[right];
-
-    if (right >= k) {
-        sum -= values[right - k];
+static long maxWindowSum(int[] values, int k) {
+    if (k < 1 || k > values.length) throw new IllegalArgumentException();
+    long sum = 0;
+    long best = Long.MIN_VALUE;
+    for (int right = 0; right < values.length; right++) {
+        sum += values[right];
+        if (right >= k) sum -= values[right - k];
+        if (right >= k - 1) best = Math.max(best, sum);
     }
-
-    if (right >= k - 1) {
-        best = Math.max(best, sum);
-    }
-}
-```
-
-每次只加入新元素、移除离开的元素，不重新扫描整个窗口。时间 O(n)，额外空间 O(1)。使用 long 保存和，避免 `int` 累加溢出。
-
-## 5. 可变窗口 {#可变窗口}
-
-可以记录字符最近出现的位置：
-
-```java
-static int longestUniqueSubstring(String value) {
-    Map<Integer, Integer> lastSeen = new HashMap<>();
-    int left = 0;
-    int best = 0;
-    int position = 0;
-
-    for (int offset = 0; offset < value.length();) {
-        int codePoint = value.codePointAt(offset);
-        Integer previous = lastSeen.put(codePoint, position);
-
-        if (previous != null && previous >= left) {
-            left = previous + 1;
-        }
-
-        best = Math.max(best, position - left + 1);
-        offset += Character.charCount(codePoint);
-        position++;
-    }
-
     return best;
 }
 ```
 
-窗口不变量是 `[left, position]` 中没有重复 code point。遇到窗口内出现过的字符时，left 直接跳到上次位置之后；使用 `Math.max` 或 `previous >= left` 防止 left 倒退。
+`[-5,-2,-3]`、k=2 返回 −5。best 使用最小 long 值，避免全负数被初值 0 覆盖。每项进出一次，时间 O(n)，额外空间 O(1)。
 
-两个边界都只向前，哈希操作平均 O(1)，所以总时间平均 O(n)，空间取决于字符种类。
+## 5. 可变窗口 {#可变窗口}
+
+以下按 Unicode code point 计算最长无重复长度：
+
+```java
+static int longestUniqueSubstring(String value) {
+    java.util.Map<Integer, Integer> lastSeen = new java.util.HashMap<>();
+    int left = 0, best = 0, position = 0;
+    for (int offset = 0; offset < value.length();) {
+        int codePoint = value.codePointAt(offset);
+        Integer previous = lastSeen.put(codePoint, position);
+        if (previous != null && previous >= left) left = previous + 1;
+        best = Math.max(best, position - left + 1);
+        offset += Character.charCount(codePoint);
+        position++;
+    }
+    return best;
+}
+```
+
+`abba` 返回 2，`A😀B😀` 返回 3。position 是 code point 下标，offset 是 UTF-16 偏移。当前闭区间 `[left,position]` 内保持无重复。旧位置在窗口外时，left 保持原值，避免倒退。
+
+哈希操作期望 O(1) 时，总时间为 O(n)。n 表示 code point 数，空间为已见字符种类数。
 
 ## 6. Java String 的索引单位 {#java-string-的索引单位}
 
-`String.length()` 和 `charAt` 使用 UTF-16 code unit。部分 Unicode 字符由两个 char 组成：
+Java 21 的 `length()` 与 `charAt()` 使用 UTF-16 单元。
 
 ```java
 String value = "A😀B";
@@ -121,65 +93,67 @@ System.out.println(value.length()); // 4
 System.out.println(value.codePointCount(0, value.length())); // 3
 ```
 
-题目明确只含 ASCII、小写字母或数字时，可以用固定大小 int 数组提高效率。输入包含一般 Unicode 字符时，需要说明按 char、code point 还是用户看到的字素簇计算。code point 仍不等于完整字素簇，组合字符和 emoji 序列可能包含多个 code point。
+😀 占两个 char，所以两种长度不同。用户看到的字素簇还可包含多个 code point。题目需约定 ASCII、char、code point 或字素簇单位。
 
-不要为了面试题复杂化已明确的字符集；也不要在业务国际化代码里默认一个 char 就是一个字符。
+已知字符集较小时，可用数组替代哈希计数。返回原串片段时，边界需转换为 UTF-16 偏移。
 
-## 7. 其他线性方法 {#其他线性方法}
+## 7. 最小覆盖与重复计数 {#最小覆盖与重复计数}
 
-### 7.1 相向双指针
+设 need 保存目标频次，have 保存窗口频次。未出现字符的频次视为 0。missing 记录仍缺少的字符总数，并包含重复项。
 
-已排序数组中的两数和、回文判断和区间收缩，通常让 left 与 right 从两端靠近。每步根据有序性排除一部分候选。
+加入字符前，若 `have[c]<need[c]`，missing 减一。然后增加 have。missing 为 0 时，记录当前窗口并尝试移走左端。移走后若 `have[c]<need[c]`，missing 加一。
 
-### 7.2 快慢指针
+目标 `AAB` 需要两个 A 和一个 B。窗口 `AB` 仍缺一个 A，用集合判断会误报覆盖。空目标可约定返回空串。频次处理统一使用题目规定的字符单位。
 
-原地去重、元素移除和链表环检测，让两个指针承担“读取位置”和“写入位置”或不同移动速度。
+## 8. 窗口最大值与单调队列 {#窗口最大值与单调队列}
 
-### 7.3 前缀和
+双端队列保存下标，值从队首到队尾严格递减。加入新下标前，弹出尾部所有不大于新值的项。新值更晚过期，且至少一样大，所以这些旧项可淘汰。
 
-需要多次查询静态区间和时，先构造：
+每轮弹出队首所有 `index<=right-k` 的过期项。窗口达到 k 项后，队首就是最大值。保存下标能区分重复值并判断过期。
 
-```java
-long[] prefix = new long[values.length + 1];
-for (int i = 0; i < values.length; i++) {
-    prefix[i + 1] = prefix[i] + values[i];
-}
+`[1,3,3,2]`、k=2 的窗口最大值为 `[3,3,3]`。每项至多入队、出队一次，总时间为 O(n)。队列最多保存 k 项，空间为 O(k)。
 
-long rangeSum = prefix[right] - prefix[left];
-```
+## 9. 其他线性方法 {#其他线性方法}
 
-预处理 O(n)，每次半开区间 `[left, right)` 查询 O(1)。包含负数且寻找特定区间和时，前缀和加哈希往往比简单滑动窗口合适。
+### 9.1 相向双指针 {#相向双指针}
 
-## 8. 正确性证明 {#正确性证明}
+有序两数和可排除端点，证明见[双指针](../../algorithms/two-pointers.mdx)。
 
-需要说明两点：
+### 9.2 快慢指针 {#快慢指针}
 
-1. 右边界每次加入一个新候选，所有可能的区间终点都会被考虑。
-2. 左边界只在约束要求时移动，被丢弃的更左起点不可能产生更优合法解。
+链表判环利用相对速度，推导见[链表](../../data-structures/linked-list.mdx)。
 
-例如最长无重复子串中，一旦字符 c 在当前窗口重复，任何仍包含上一次 c 的更左起点都不合法，因此 left 可以跳过它。这个论证比背模板更重要；条件不具备这种排除关系时，窗口算法就不成立。
+### 9.3 前缀和 {#前缀和}
 
-## 9. 常见问题
+含负数的目标和计数可用前缀差，见[前缀和](../../algorithms/prefix-sum.mdx)。
 
-### 9.1 内层 while 为什么不会让复杂度变成 O(n²)
+## 10. 正确性证明 {#正确性证明}
 
-right 最多前进 n 次，left 在整段算法中也最多前进 n 次。虽然移动发生在嵌套循环里，总次数不超过 2n，因此是 O(n)。
+右端逐项访问全部候选终点。左端移动则需解释为何可舍弃旧起点。
 
-### 9.2 最短区间何时更新答案
+无重复窗口遇到重复字符 c 时，旧 c 之前的起点都会包含两个 c。它们已失效，所以可将 left 移到旧 c 之后。最小覆盖中，当前已覆盖时才收缩，并先记录答案。
 
-通常在窗口已经满足覆盖条件时，先记录当前长度，再移动 left 尝试缩小；直到窗口不再有效。最长有效区间则通常在恢复有效后记录。先写出不变量能避免更新时机混乱。
+## 11. 常见问题 {#常见问题}
 
-### 9.3 可以每次用 substring 保存当前窗口吗
+### 11.1 累计移动次数 {#累计移动次数}
 
-可以得到正确结果，但会产生额外字符串和复制，最坏可能把线性算法变成大量分配。只保存左右边界，最终需要结果时再构造一次子串。
+两个边界各自至多前进 n 次，总次数至多 2n。单次增删为 O(1) 时，总成本为 O(n)。
 
-### 9.4 为什么负数数组的最短和窗口会失败
+### 11.2 最短区间的更新时机 {#最短区间的更新时机}
 
-加入一个负数可能让总和下降，移除一个负数可能让总和上升，边界移动不再具备单调排除关系。需要前缀和、单调队列或其他方法，取决于具体目标。
+覆盖成立时先记录长度，再尝试收缩。覆盖失效后继续扩张右端。最长有效区间则在恢复有效后记录。
 
-## 10. 面试题
+### 11.3 子串分配 {#子串分配}
 
-### 10.1 怎样求最长无重复子串，并证明是 O(n) {#longest-unique-substring}
+反复创建长度递增的子串会累计复制 O(n²) 个单元。保存最佳边界，结束后再创建一次结果即可。
+
+### 11.4 负数与窗口条件 {#负数与窗口条件}
+
+负数破坏的是按区间和单调收缩的依据。频次条件与固定长度仍可用窗口。具体替代方法由求和、计数或最短长度目标决定。
+
+## 12. 面试题 {#面试题}
+
+### 12.1 如何求最长无重复子串并证明线性时间？ {#longest-unique-substring}
 
 <!-- 面试来源：
 - 字节跳动：https://www.nowcoder.com/discuss/668419570088017920
@@ -188,24 +162,18 @@ right 最多前进 n 次，left 在整段算法中也最多前进 n 次。虽然
 
 **出现公司**：字节跳动、快手
 
-**考察重点**
+**考察重点**：窗口不变量、最近位置与字符单位。
 
-- `[left, right)` 窗口与“窗口内无重复”不变量。
-- 最近位置怎样让左边界直接跳转且不倒退。
-- 字符集与 Java char/code point 边界。
-
-**相关内容**：[半开区间与不变量](#半开区间与不变量)、[可变窗口](#可变窗口)、[Java String 的索引单位](#java-string-的索引单位)。
+**相关内容**：[可变窗口](#可变窗口)、[Java String 的索引单位](#java-string-的索引单位)。
 
 <details>
 <summary>参考回答</summary>
 
-用 left 表示当前无重复窗口起点，遍历 right，并记录每个字符最近位置。字符上次位置仍在窗口内时，把 left 移到上次位置后一位；然后用 `right - left + 1` 更新最大长度。left 只能向前，不能被更早的重复位置拉回。
-
-right 和 left 各最多移动 n 次，因此平均时间 O(n)，哈希表空间 O(字符种类)。如果题目只含 ASCII 可以用数组；一般 Java 字符串需要先确认按 char 还是 Unicode code point 计数。
+记录字符最近位置，并维护无重复区间即可。旧位置仍在窗口内时，将 left 移到其后一位。right 与 left 都只向前。哈希访问期望 O(1) 时，总时间为 O(n)。字符单位需与题目定义一致。
 
 </details>
 
-### 10.2 什么条件下可以使用滑动窗口 {#sliding-window-conditions}
+### 12.2 什么条件下可以使用滑动窗口？ {#sliding-window-conditions}
 
 <!-- 面试来源：
 - 美团、字节跳动：https://www.nowcoder.com/discuss/353159433079431168
@@ -213,25 +181,55 @@ right 和 left 各最多移动 n 次，因此平均时间 O(n)，哈希表空间
 
 **出现公司**：美团、字节跳动
 
-**考察重点**
-
-- 连续区间要求。
-- 扩张和收缩能否单调排除候选。
-- 不满足单调性时怎样切换到前缀和等方法。
+**考察重点**：连续区间、增量状态与排除依据。
 
 **相关内容**：[连续区间](#连续区间)、[正确性证明](#正确性证明)。
 
 <details>
 <summary>参考回答</summary>
 
-问题首先要针对连续子数组或子串，其次要能在右边界扩张后，通过单向移动左边界恢复约束，并证明被移除的起点不可能再成为更优答案。固定长度窗口天然满足，许多频率和覆盖条件也满足。
-
-如果加入或移除元素对条件没有单调影响，例如含负数数组的区间和，就不能直接套窗口。应根据目标改用前缀和加哈希、单调队列或其他算法。
+固定窗口需能增量维护区间状态。可变窗口还需证明左端单向移动不会漏掉更优答案。负数使按和收缩的证明失效，但固定长度窗口仍能处理负数。
 
 </details>
 
-## 11. 参考资料
+### 12.3 最小覆盖子串如何处理目标中的重复字符？ {#minimum-cover-counts}
 
-- [Java API：String](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/String.html)
-- [Java API：Character](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/Character.html)
-- [Java API：HashMap](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/HashMap.html)
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：频次缺口与收缩时机。
+
+**相关内容**：[最小覆盖与重复计数](#最小覆盖与重复计数)。
+
+<details>
+<summary>参考回答</summary>
+
+用频次记录需求，并将重复项计入 missing。missing 为 0 时先更新答案，再收缩左端。移除后若缺少所需字符，就继续扩张右端。目标 AAB 的覆盖必须包含两个 A。
+
+</details>
+
+### 12.4 滑动窗口最大值为何用单调队列保存下标？ {#window-maximum-deque}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：支配关系、过期判断与摊销。
+
+**相关内容**：[窗口最大值与单调队列](#窗口最大值与单调队列)。
+
+<details>
+<summary>参考回答</summary>
+
+下标能判断候选何时离开窗口。新项淘汰更早且不大的尾部候选，队首保留最大值。每项只入队、出队一次，所以总时间 O(n)。
+
+</details>
+
+## 13. 参考资料 {#参考资料}
+
+- [Java SE 21：String](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/String.html)
+- [Java SE 21：Character](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/Character.html)
+- [Java SE 21：HashMap](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/HashMap.html)
+- [Antti Laaksonen：Competitive Programmer’s Handbook](https://cses.fi/book/book.pdf)
+- [OpenJDK 21：StringUTF16 源码](https://github.com/openjdk/jdk/blob/jdk-21-ga/src/java.base/share/classes/java/lang/StringUTF16.java)

@@ -7,230 +7,172 @@ knowledge:
 
 # 树与图搜索
 
-树和图搜索的共同任务是从一个状态访问可达邻居。DFS 深入一条路径后回退，BFS 按距离层次扩展；选择取决于结果目标、边权和内存约束。
+树与图搜索沿邻接关系访问状态。本文负责 Java 遍历、最短路径、访问标记与判环。结构及存储成本见[二叉树](../../data-structures/binary-tree.mdx)和[图](../../data-structures/graph.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- 先把问题建模成节点与边，许多网格和状态问题是隐式图。
-- DFS 适合路径、连通性和完整遍历，递归过深时改用显式栈；回溯在返回时恢复状态。
-- BFS 按层扩展，无权图中首次到达即为最短距离；二叉树右视图取每层最后一个节点。[卡](#right-side-view)
-- 图中有环时在入队时标记 visited，避免重复入队。
-- 多个起点同时入队做多源 BFS，可以一次求出每个位置到最近起点的距离。[卡](#multi-source-bfs)
+- 邻接表完整 DFS、BFS 均为 O(V+E)，访问顺序与空间不同。
+- 左先右后的分层 BFS，每层最后访问项组成右视图。[卡](#right-side-view)
+- 等正权多源 BFS 首次到达的距离，是到最近源点的距离。[卡](#multi-source-bfs)
+- 有向 DFS 遇到当前路径中的灰色节点即可确认环。[卡](#directed-cycle-topological)
+- 二叉树后序可合并高度与平衡状态，每个节点只计算一次。[卡](#postorder-balance)
 
 ## 2. 图的建模 {#图的建模}
 
-显式图包含顶点和邻接关系，许多问题也有隐式图：
+显式图直接保存邻接关系。网格可按上下左右生成邻居，单词变换可按合法编辑生成邻居。
 
-- 二叉树节点的左右孩子是邻居。
-- 网格中的上下左右位置是邻居。
-- 单词经过一次合法变换得到相邻状态。
-- 任务依赖形成有向边。
+状态身份需覆盖影响后续选择的字段。例如带钥匙的寻路状态应同时包含位置与钥匙集合。只记录坐标会把不同可行动作混为一个状态。
 
-明确：
-
-1. 一个状态包含哪些字段。
-2. 怎样生成邻居。
-3. 什么状态算相同。
-4. 边是否有方向与权重。
-5. 从一个起点还是多个起点开始。
-
-搜索代码只是这些定义的执行器。
+边方向与边权决定可达关系和最短路算法。权重选择见[图](../../data-structures/graph.mdx#使用边界)。
 
 ## 3. DFS {#dfs}
 
-递归遍历二叉树：
+以下用 record 表示无环、无共享子节点的二叉树：
 
 ```java
-static void preorder(TreeNode node, List<Integer> result) {
-    if (node == null) {
-        return;
-    }
+record TreeNode(int value, TreeNode left, TreeNode right) {}
 
+static void preorder(TreeNode node, java.util.List<Integer> result) {
+    if (node == null) return;
     result.add(node.value());
     preorder(node.left(), result);
     preorder(node.right(), result);
 }
 ```
 
-DFS 常用于：
-
-- 树的前中后序遍历。
-- 连通分量。
-- 路径存在性。
-- 回溯枚举。
-- 拓扑排序的深度优先实现。
-
-时间通常与访问节点和边之和相关，为 O(V + E)。递归空间由最大深度决定；一条很深的链会导致 StackOverflowError。
+根 1、左孩子 2、右孩子 3，结果为 `[1,2,3]`。调用顺序对应前序。Java record 语法自 Java 16 正式提供；下文以 Java 21 为基准。
 
 ### 3.1 显式栈 {#显式栈}
 
 ```java
-Deque<TreeNode> stack = new ArrayDeque<>();
-stack.push(root);
-
-while (!stack.isEmpty()) {
-    TreeNode node = stack.pop();
-    visit(node);
-
-    if (node.right() != null) {
-        stack.push(node.right());
+static java.util.List<Integer> preorderIterative(TreeNode root) {
+    java.util.List<Integer> result = new java.util.ArrayList<>();
+    java.util.Deque<TreeNode> stack = new java.util.ArrayDeque<>();
+    if (root != null) stack.push(root);
+    while (!stack.isEmpty()) {
+        TreeNode node = stack.pop();
+        result.add(node.value());
+        if (node.right() != null) stack.push(node.right());
+        if (node.left() != null) stack.push(node.left());
     }
-    if (node.left() != null) {
-        stack.push(node.left());
-    }
+    return result;
 }
 ```
 
-显式栈仍需 O(depth) 空间，只是把资源从 JVM 调用栈移到堆，并允许更灵活地保存状态和恢复。
+空根返回空列表，避免向 ArrayDeque 放入 null。右孩子先压栈，左孩子就先弹出。此二叉树实现辅助空间为 O(h)，返回结果另占 O(n)。一般图还需访问集合，空间上界为 O(V)。
 
 ## 4. BFS {#bfs}
 
 ```java
-Queue<TreeNode> queue = new ArrayDeque<>();
-queue.offer(root);
-
-while (!queue.isEmpty()) {
-    int levelSize = queue.size();
-
-    for (int i = 0; i < levelSize; i++) {
-        TreeNode node = queue.poll();
-        visit(node);
-
-        if (node.left() != null) {
-            queue.offer(node.left());
-        }
-        if (node.right() != null) {
-            queue.offer(node.right());
+static java.util.List<Integer> rightView(TreeNode root) {
+    java.util.List<Integer> result = new java.util.ArrayList<>();
+    java.util.Queue<TreeNode> queue = new java.util.ArrayDeque<>();
+    if (root != null) queue.offer(root);
+    while (!queue.isEmpty()) {
+        int levelSize = queue.size();
+        for (int i = 0; i < levelSize; i++) {
+            TreeNode node = queue.poll();
+            if (i == levelSize - 1) result.add(node.value());
+            if (node.left() != null) queue.offer(node.left());
+            if (node.right() != null) queue.offer(node.right());
         }
     }
+    return result;
 }
 ```
 
-BFS 适合：
-
-- 按层遍历。
-- 无权图的最少边数路径。
-- 距离起点 k 层的节点。
-- 多源最近距离。
-
-队列峰值由图的前沿宽度决定，宽树可能需要 O(V) 内存。
+根 1、左孩子 2、右孩子 3，右视图为 `[1,3]`。每层开始时固定 levelSize，避免下一层混入当前层。辅助队列空间为 O(w)，w 为最大层宽。
 
 ## 5. visited 标记时机 {#visited-标记时机}
 
-图中存在环或多条路径时，必须避免重复扩展：
+图搜索在入队时标记，可避免多个前驱重复加入同一状态。用整数顶点编号的 BFS 核心如下，省略初始化：
 
 ```java
-Queue<Node> queue = new ArrayDeque<>();
-Set<Node> visited = new HashSet<>();
-
-queue.offer(start);
-visited.add(start);
-
-while (!queue.isEmpty()) {
-    Node current = queue.poll();
-
-    for (Node next : current.neighbors()) {
-        if (visited.add(next)) {
-            queue.offer(next);
-        }
+for (int next : graph[current]) {
+    if (distance[next] == -1) {
+        distance[next] = distance[current] + 1;
+        parent[next] = current;
+        queue.offer(next);
     }
 }
 ```
 
-在入队时标记，能阻止多个父节点把同一节点重复加入队列。如果等到出队才标记，结果可能仍正确，但队列和运行时间会被重复状态放大。
+distance 初始全为 −1，源点设为 0 后入队。普通 BFS 的边都视为单位成本。首次发现就得到最短边数，同时记录前驱。
 
-树在确认没有父指针和共享子节点时可以省略 visited；一旦把树转成无向图，父节点也成为邻居，必须记录访问状态。
+### 5.1 最短路径恢复 {#最短路径恢复}
+
+从目标沿 parent 回走到源点，再反转序列即可恢复路径。源点 parent 可设为 −1，作为停止标记。目标 distance 为 −1 时无可达路径。
+
+只记录一个 parent 会返回一条最短路径。若需全部最短路径，需保留所有距离相差 1 的合法前驱。输出数量还会增加总成本。
 
 ## 6. 多源 BFS {#多源-bfs}
 
-网格中有多个起点时，把所有起点按距离 0 同时入队：
+多源搜索将所有不同源点设为距离 0 并同时入队。之后按普通 BFS 扩展，每项首次到达就是最近源点距离。
 
 ```java
-for (Cell source : sources) {
-    distance[source.row()][source.column()] = 0;
-    queue.offer(source);
+for (int source : sources) {
+    if (distance[source] == -1) {
+        distance[source] = 0;
+        queue.offer(source);
+    }
 }
 ```
 
-BFS 随后一层层扩展，每个格子第一次到达的距离就是离任一源点的最短边数。这比为每个目标分别跑一次 BFS 更高效。
-
-边权都相同才可以直接使用普通 BFS。边权为 0 或 1 可以用双端队列做 0-1 BFS；一般非负权使用 Dijkstra；存在负权则要进一步判断 Bellman-Ford 等算法及负环。
+重复源点只加入一次。单位边权下，距离按层递增。阻塞网格跳过不可通行格，无法到达的格保留 −1。总时间和空间为 O(行数×列数)。
 
 ## 7. 回溯 {#回溯}
 
-搜索所有组合时，路径状态只属于当前递归分支：
-
-```java
-path.add(choice);
-search(nextState, path, result);
-path.remove(path.size() - 1);
-```
-
-加入、递归、撤销必须成对。visited 有两种不同含义：
-
-- **全局已处理**：节点以后无需再次访问，不撤销。
-- **当前路径已使用**：只防止路径内重复，回溯时撤销。
-
-混淆两者会漏掉合法路径或造成环。
+枚举路径时，路径标记随返回撤销；完整机制见[回溯](../../algorithms/backtracking.mdx)。全局 visited 则表示该状态已处理，后续可跳过。
 
 ## 8. 拓扑排序 {#拓扑排序}
 
-有向无环图中，Kahn 算法从入度为 0 的节点开始：
+Kahn 算法先统计入度，并加入所有入度 0 的节点。取出一项后，减少其出边终点的入度。新入度降到 0 时加入队列。
 
-1. 统计每个节点入度。
-2. 把所有入度 0 节点入队。
-3. 取出节点并删除其出边。
-4. 邻居入度降到 0 时入队。
-5. 最终处理节点数小于 V，说明存在环。
+若处理数小于 V，剩余子图含有环。剩余节点都有前驱，沿前驱反复回走必然重复。若所有点都处理完，输出顺序满足每条边的依赖。
 
-它适合构建顺序、课程依赖和任务调度。多个入度 0 节点意味着拓扑序可能不唯一；需要字典序最小时使用优先队列。
+多种零入度选择可产生不同拓扑序。要求字典序最小时，用最小堆管理零入度候选。普通邻接表队列实现为 O(V+E)。
 
-## 9. 常见问题
+### 8.1 有向图三色判环 {#有向图三色判环}
 
-### 9.1 BFS 一定比 DFS 快吗
+白色表示未访问，灰色表示仍在当前递归路径。黑色表示该节点的出边已处理完成。
 
-两者完整遍历通常都是 O(V + E)，只是访问顺序和空间不同。寻找无权最短路时 BFS 能按层首次到达；路径很深但分支很窄时 DFS 更省前沿内存。
+遇到灰色邻居，当前路径与该边构成环。遇到黑色邻居只表示到达已完成分支，仍需继续搜索。例如 `0→1、0→2、2→1` 无环，但会重复遇到 1。
 
-### 9.2 递归 DFS 为什么会栈溢出
+无向简单图需排除返回父节点的边。若允许平行边，应按边 ID 区分父边，避免漏检。
 
-每层调用都占用栈帧，深度接近节点数的退化树可能超过线程栈。改用显式 Deque，或从数据约束限制最大深度。
+## 9. 后序合并与树形结果 {#后序合并与树形结果}
 
-### 9.3 网格 visited 可以直接修改原数组吗
+检查高度平衡时，让子树返回高度或失败标记 −1。任一子树失败，或左右高度差大于 1，就返回 −1。否则返回最大子树高度加 1。
 
-只有允许破坏输入、标记值不会与合法数据冲突时才可以。公共 API 更适合说明是否修改参数；需要保留输入时使用独立 boolean 数组或状态编码。
+每个节点只合并一次，时间为 O(n)，递归空间为 O(h)。若在每个节点重新计算两侧高度，链状树会累计 O(n²) 工作。
 
-### 9.4 BFS 能处理带权最短路吗
+### 9.1 最近公共祖先 {#最近公共祖先}
 
-普通 BFS 只在每条边成本相同的情况下保证最短。权重不同需要按当前最小累计距离选择节点，通常使用 Dijkstra；存在负权时还要换算法。
+假设两个不同目标都存在，并按节点身份区分。空节点返回空，当前节点等于任一目标时直接返回它。否则分别递归左右子树。两侧都有结果时，当前节点就是最近公共祖先。只有一侧有结果时，将该结果向上传递。
 
-## 10. 面试题
+若允许目标缺失，还需核验两个目标是否都找到。若一个目标正是另一个的祖先，应返回该祖先。完整遍历时间 O(n)，递归空间 O(h)。
 
-### 10.1 二叉树右视图怎样用 BFS 或 DFS 实现 {#right-side-view}
+## 10. 常见问题 {#常见问题}
 
-<!-- 面试来源：
-- 字节跳动：https://www.nowcoder.com/discuss/353156568445296640
--->
+### 10.1 DFS 与 BFS 的成本 {#dfs-与-bfs-的成本}
 
-**出现公司**：字节跳动
+邻接表完整遍历均为 O(V+E)。BFS 按距离扩展，DFS 先走完一条路径。峰值空间应分别看待处理前沿、活动路径和访问集合。
 
-**考察重点**
+### 10.2 递归深度 {#递归深度}
 
-- BFS 的层边界与每层最后节点。
-- DFS 的深度和首次访问顺序。
-- 两种方法的时间与峰值空间。
+深链的活动调用数接近节点数，超出线程栈时会溢出。迭代版本让程序自己管理待处理节点。
 
-**相关内容**：[DFS](#dfs)、[BFS](#bfs)。
+### 10.3 原地访问标记 {#原地访问标记}
 
-<details>
-<summary>参考回答</summary>
+允许修改输入，且标记值与合法数据区分时，可在原网格上标记。需要保留输入时，用独立数组。
 
-BFS 可以记录每层开始时的队列大小，处理这一层时把最后一个节点加入结果。DFS 可以先访问右子树，并在第一次到达某个深度时记录节点；需要让结果长度表示已经记录的深度。
+### 10.4 带权最短路径 {#带权最短路径}
 
-两者都访问每个节点一次，时间 O(n)。BFS 空间由最大层宽决定，DFS 递归空间由树高决定。深树用递归还要考虑栈溢出。
+普通 BFS 保证最少边数，边成本不同就需换用对应方法。选择条件见[图](../../data-structures/graph.mdx#使用边界)。
 
-</details>
+## 11. 面试题 {#面试题}
 
-### 10.2 怎样计算网格中每个位置到最近起点的距离 {#multi-source-bfs}
+### 11.1 二叉树右视图如何用 BFS 或 DFS 实现？ {#right-side-view}
 
 <!-- 面试来源：
 - 字节跳动：https://www.nowcoder.com/discuss/353156568445296640
@@ -238,25 +180,110 @@ BFS 可以记录每层开始时的队列大小，处理这一层时把最后一�
 
 **出现公司**：字节跳动
 
-**考察重点**
+**考察重点**：层边界、访问顺序与空间。
 
-- 多源 BFS 为什么只需遍历一次。
-- visited 或 distance 在入队时设置。
-- 边权改变后为何不能继续用普通 BFS。
-
-**相关内容**：[visited 标记时机](#visited-标记时机)、[多源 BFS](#多源-bfs)。
+**相关内容**：[BFS](#bfs)、[DFS](#dfs)。
 
 <details>
 <summary>参考回答</summary>
 
-把所有起点的距离设为 0 并同时加入队列，然后按 BFS 扩展上下左右邻居。一个格子第一次被访问时，距离就是当前格子距离加 1，并立即标记，避免重复入队。
-
-所有边成本相同，所以首次到达就是离任一源点的最短距离，时间和空间都是 O(行数 × 列数)。如果移动成本不同，则要根据权重改用 0-1 BFS 或 Dijkstra。
+左先右后的 BFS 取每层最后一项即可。DFS 可先走右侧，并记录每个深度首次访问的节点。两者时间 O(n)。BFS 辅助空间 O(w)，DFS 递归空间 O(h)。
 
 </details>
 
-## 11. 参考资料
+### 11.2 如何求网格各位置到最近起点的距离？ {#multi-source-bfs}
 
-- [Java API：ArrayDeque](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/ArrayDeque.html)
-- [Java API：HashSet](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/HashSet.html)
-- [Java API：PriorityQueue](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/PriorityQueue.html)
+<!-- 面试来源：
+- 字节跳动：https://www.nowcoder.com/discuss/353156568445296640
+-->
+
+**出现公司**：字节跳动
+
+**考察重点**：多源初始化、单位边权与标记。
+
+**相关内容**：[多源 BFS](#多源-bfs)。
+
+<details>
+<summary>参考回答</summary>
+
+将全部不同源点设为距离 0 并同时入队，再按 BFS 扩展。首次发现邻居时写入当前距离加 1。单位边权保证按最短距离层次到达。阻塞格跳过，未到达格保留无解标记。
+
+</details>
+
+### 11.3 有向图遇到已访问节点就是环吗，Kahn 如何判环？ {#directed-cycle-topological}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：活动路径、已完成分支与入度。
+
+**相关内容**：[有向图三色判环](#有向图三色判环)、[拓扑排序](#拓扑排序)。
+
+<details>
+<summary>参考回答</summary>
+
+有向 DFS 遇到灰色节点才表明返回当前路径形成环。黑色节点已完成，重复到达它本身无妨。Kahn 若处理数小于 V，剩余图每点都有前驱，因此存在环。
+
+</details>
+
+### 11.4 如何在线性时间判断二叉树是否高度平衡？ {#postorder-balance}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：子树摘要与重复计算。
+
+**相关内容**：[后序合并与树形结果](#后序合并与树形结果)。
+
+<details>
+<summary>参考回答</summary>
+
+后序一次返回子树高度或失败标记即可。左右高度差超 1 或任一子树失败，就向上返回失败。每个节点只计算一次，所以时间 O(n)，递归空间 O(h)。
+
+</details>
+
+### 11.5 BFS 如何恢复一条最短路径？ {#bfs-path-recovery}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：首次发现、前驱链与不可达。
+
+**相关内容**：[最短路径恢复](#最短路径恢复)。
+
+<details>
+<summary>参考回答</summary>
+
+首次发现节点时，保存发现它的前驱。目标可达时，沿前驱回走至源点，再反转路径。首次发现来自最短距离层，所以路径也是最短的。目标未访问时返回无解。
+
+</details>
+
+### 11.6 二叉树最近公共祖先如何合并结果，目标缺失时怎么办？ {#tree-lca-presence}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：节点身份、子树合并与存在性。
+
+**相关内容**：[最近公共祖先](#最近公共祖先)。
+
+<details>
+<summary>参考回答</summary>
+
+两侧各找到一个目标时，当前节点就是最近公共祖先。只在一侧找到时，向上传递该侧结果。当前节点本身为目标时可直接作为候选返回。若目标允许缺失，还需确认两个目标都存在。
+
+</details>
+
+## 12. 参考资料 {#参考资料}
+
+- [Java SE 21：ArrayDeque](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/ArrayDeque.html)
+- [Java SE 21：HashSet](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/HashSet.html)
+- [Java SE 21：PriorityQueue](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/PriorityQueue.html)
+- [Princeton Algorithms：Directed Graphs](https://algs4.cs.princeton.edu/42digraph/)
+- [Princeton Algorithms：BreadthFirstPaths 源码](https://algs4.cs.princeton.edu/41graph/BreadthFirstPaths.java.html)
+- [Java SE 21：JLS Record Classes](https://docs.oracle.com/javase/specs/jls/se21/html/jls-8.html#jls-8.10)
+- [Antti Laaksonen：Competitive Programmer’s Handbook](https://cses.fi/book/book.pdf)
