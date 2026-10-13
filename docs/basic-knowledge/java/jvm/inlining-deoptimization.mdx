@@ -7,120 +7,100 @@ knowledge:
 
 # 方法内联与去优化
 
-方法内联把被调用方法的代码放入调用点，使 JIT 能跨方法传播常量、消除分支和继续优化。动态分派无法静态确定时，HotSpot 可以根据运行时类型画像做投机内联，并在假设失效后去优化。
+方法内联把被调用方法的代码纳入调用点。去优化在投机假设失效时恢复解释执行。本文负责内联条件、假设检查和状态恢复。编译层级见 [分层编译](./interpreter-tiered-compilation.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- 内联把被调用方法的代码放入调用点，让常量传播、分支消除和逃逸分析可以跨方法进行。
-- JIT 根据调用点热度、方法字节码大小和递归深度决定是否内联，避免机器码膨胀。[卡](#inlining-conditions)
-- 虚方法调用点如果只出现过一两种类型，JIT 会按类型画像做投机内联，并保留类型检查。
-- 假设失效时（出现新类型、加载了新子类、进入罕见分支），JVM 去优化，退回解释执行或低层级代码，之后可能重新编译。[卡](#deoptimization)
-- 用 `-XX:+PrintCompilation`、`PrintInlining` 或 JFR 编译事件确认实际决策。
+- 内联扩大优化范围，使常量传播和分支消除跨越方法边界。
+- HotSpot 按热度、方法大小和内联深度控制代码膨胀。[卡](#inlining-conditions)
+- 虚方法可根据接收者类型画像进行投机内联。
+- 去优化用编译元数据重建解释器栈帧，以继续执行 Java 语义。[卡](#deoptimization)
+- 去优化能重新创建被标量替换消除的对象。[卡](#deopt-state-reconstruction)
 
 ## 2. 内联的收益 {#内联的收益}
 
 ```java
-int finalPrice(Order order) {
-    return applyDiscount(order.subtotal(), order.discountRate());
+int price(int subtotal) {
+    return discount(subtotal, 10);
 }
 
-int applyDiscount(int subtotal, int rate) {
+int discount(int subtotal, int rate) {
     return subtotal - subtotal * rate / 100;
 }
 ```
 
-内联后，编译器能在一个更大的优化范围里：
+内联后，编译器在调用点能看到 `rate` 恒为 10。后续优化据此传播常量并简化计算。内联也为临时对象消除和循环优化提供机会。
 
-- 传播常量。
-- 消除不可达分支。
-- 消除临时对象和边界检查。
-- 识别循环不变量。
-- 继续内联下层调用。
+getter 内联后可省去独立调用。实际收益由编译结果和调用位置决定。
 
-因此微小 getter 经常“没有调用成本”，但这取决于实际编译结果，不是 Java 语言保证。
+## 3. 内联条件 {#内联的限制}
 
-## 3. 内联的限制 {#内联的限制}
+内联会增加调用者的机器码大小。代码膨胀会增加编译时间和指令缓存压力。因此 HotSpot 控制字节码大小、深度与总预算。
 
-所有方法都内联会导致机器码膨胀，增加编译时间和指令缓存压力。JIT 根据调用点热度、方法字节码大小、递归深度、异常路径和历史画像选择。
-
-`final`、`private` 或 `static` 能让调用目标更容易静态确定，但非 final 虚方法也可以依靠类型画像内联。为了性能把公共 API 全部改成 final，通常没有依据。
+`static`、`private`、`final` 有助于确定调用目标。普通虚方法也能依赖画像内联。目标确定与满足内联预算是两个条件。
 
 ## 4. 投机内联 {#投机内联}
 
-```java
-interface Codec {
-    byte[] encode(Message message);
-}
-```
-
-若某调用点几乎只出现 `JsonCodec`，JIT 可以生成：
+若接口调用点长期只接收 `JsonCodec`，编译器可生成类型检查。匹配时执行内联代码，否则进入回退路径。
 
 ```text
-if (receiver is JsonCodec) {
-    // 内联 JsonCodec.encode
+if (receiver 的类型是 JsonCodec) {
+    执行内联后的 encode
 } else {
-    // 回退或去优化
+    执行通用调用或触发去优化
 }
 ```
 
-调用点出现少量稳定类型时也可能形成多态内联缓存；类型种类继续增加后，内联收益下降，调用可能保持间接分派。
+这段伪代码表达类型守卫。少量稳定类型也可形成多个内联分支。类型增多后，间接调用能避免过多分支与代码膨胀。
+
+类层级分析还可依赖当前已加载的类型。新类使依赖失效时，JVM 会处理受影响的编译代码。
 
 ## 5. 去优化 {#去优化}
 
-投机优化依赖假设，例如：
+去优化把已编译帧恢复为解释器可执行的状态。触发原因包括类型守卫失败、罕见分支和依赖失效。JVM 随后继续收集画像，并按策略重新编译。
 
-- 调用点只有一种接收者类型。
-- 某个分支几乎不会发生。
-- 某个类层级当前没有新的子类。
-- 某个值可以当作常量。
+某次新类型调用若已有通用回退路径，可直接回退。新类加载也只影响依赖该假设的代码。
 
-新类加载、罕见路径被触发或依赖改变时，JVM 可以让已编译代码失效，把线程状态还原为解释器或较低层级能继续执行的栈帧，再收集新画像并重新编译。
+频繁去优化和重编译会消耗 CPU。排查时应对齐流量分布、类加载和编译事件。
 
-去优化保证语义正确，但频繁 deopt/recompile 会消耗 CPU，并让延迟出现波动。
+### 5.1 栈帧与对象恢复 {#栈帧与对象恢复}
+
+一次内联机器码执行可包含多个逻辑方法。HotSpot 保留字节码位置、局部值和锁状态等元数据。去优化据此展开解释器栈帧，并恢复执行位置。
+
+被标量替换消除的对象也可重新分配。JVM 将保留的字段值写回新对象。恢复从对应字节码位置继续，避免重做已完成的副作用。标量替换机制见 [逃逸分析与标量替换](./escape-analysis-scalar-replacement.mdx)。
 
 ## 6. uncommon trap {#uncommon-trap}
 
-JIT 可以把低概率路径从主机器码中移出。当实际进入该路径时触发 uncommon trap，去优化后按完整语义执行。这让常见路径更小，但画像错误或输入分布突变会带来频繁陷阱。
+uncommon trap 把罕见路径交给解释器处理。JIT 因此可以缩小常见路径的机器码。
 
-例如压测只覆盖正常输入，生产突然出现大量校验失败，原本罕见的异常路径可能改变编译行为。性能测试需要包含真实分支分布。
+输入分布变化后，原罕见路径会变热。HotSpot 可据新画像重新编译。测试数据应包含真实类型和分支分布。
 
-## 7. 用日志确认 {#用日志确认}
-
-诊断环境可以使用：
+## 7. 编译日志 {#用日志确认}
 
 ```bash
-java \
-  -XX:+UnlockDiagnosticVMOptions \
-  -XX:+PrintCompilation \
-  -XX:+PrintInlining \
-  -jar app.jar
+java -XX:+UnlockDiagnosticVMOptions \
+  -XX:+PrintCompilation -XX:+PrintInlining -jar app.jar
 ```
 
-完整编译日志可配合 JITWatch 等工具阅读；JFR 也提供 Compilation、Deoptimization、Code Cache 事件。选项与输出是 HotSpot 诊断接口，升级 JDK 时要重新验证。
+`PrintInlining` 输出内联结果和拒绝原因。`PrintCompilation` 显示方法编译与版本状态。JFR 的 Compilation 和 Deoptimization 事件可建立时间线。
 
-判断流程：
+先用 profile 确认目标调用点确为热点。再看内联拒绝原因与去优化频率。修改后通过 JMH 和业务负载验证收益。
 
-1. 确认目标调用点是否为真实 CPU 热点。
-2. 看方法有没有编译到预期层级。
-3. 看内联拒绝原因，而不是只看方法修饰符。
-4. 关联 deoptimization 与流量、类加载或输入变化。
-5. 修改后用 JMH 和端到端 profile 双重验证。
+## 8. 常见问题 {#常见问题}
 
-## 8. 常见问题
+### 8.1 小方法的内联条件 {#小方法的内联条件}
 
-### 8.1 小方法一定会被内联吗
+方法小只减少代码预算压力。热度、编译层级和调用类型分布仍参与决策。
 
-不一定。调用点是否热、代码预算、递归、调用类型分布和编译层级都会影响决策。
+### 8.2 内联后的逻辑栈 {#内联后的逻辑栈}
 
-### 8.2 内联会改变异常栈吗
+HotSpot 保留内联方法的调试信息。栈回溯工具可据此重建逻辑调用关系。
 
-Java 语义上的栈跟踪仍应反映方法调用关系。JVM 保留调试和去优化所需元数据，可以从内联机器码重建逻辑栈帧。
+### 8.3 去优化与性能波动 {#去优化与性能波动}
 
-### 8.3 去优化是不是 JVM 出错
+去优化是投机编译的正常恢复机制。频繁发生且与延迟波动对应时，才需定位原因。
 
-不是。它是投机优化的正常配套机制。只有频率高并与性能波动相关时，才需要继续定位画像不稳定或代码形态问题。
-
-## 9. 面试题
+## 9. 面试题 {#面试题}
 
 ### 9.1 JVM 在什么情况下会进行方法内联 {#inlining-conditions}
 
@@ -130,20 +110,14 @@ Java 语义上的栈跟踪仍应反映方法调用关系。JVM 保留调试和�
 
 **出现公司**：京东数科
 
-**考察重点**
+**考察重点**：热度、代码预算和类型画像。
 
-- 调用点热度、代码大小和类型画像。
-- 虚方法也能投机内联。
-- 内联为后续优化扩大范围。
-
-**相关内容**：[内联的收益](#内联的收益)至[投机内联](#投机内联)。
+**相关内容**：[内联条件](#内联的限制)。
 
 <details>
 <summary>参考回答</summary>
 
-JIT 根据调用点热度、被调用方法大小、内联深度和代码预算决定。静态、private、final 方法目标容易确定，但普通虚方法如果运行时画像长期单态，也可以带类型检查做投机内联。
-
-主要收益是扩大优化范围，使常量传播、分支消除、逃逸分析等跨过方法边界，省掉调用跳转只是次要收益。最终结果用 `PrintInlining` 或编译事件确认。
+HotSpot 按调用热度、方法大小和内联深度决定内联。目标明确的调用更容易分析。虚方法也能根据类型画像，带守卫进行内联。内联扩大优化范围，进而支持常量传播等优化。具体结果可用 `PrintInlining` 核对。
 
 </details>
 
@@ -155,25 +129,37 @@ JIT 根据调用点热度、被调用方法大小、内联深度和代码预算�
 
 **出现公司**：京东数科
 
-**考察重点**
+**考察重点**：投机假设、失效范围和解释器恢复。
 
-- JIT 根据当前画像做投机假设。
-- 新类型或罕见分支可使假设失效。
-- JVM 重建逻辑栈并继续正确执行。
-
-**相关内容**：[去优化](#去优化)和[uncommon trap](#uncommon-trap)。
+**相关内容**：[去优化](#去优化)。
 
 <details>
 <summary>参考回答</summary>
 
-JIT 会根据当前类型和分支画像生成投机代码，例如假设接口调用只有一种实现。后来加载新实现或进入罕见分支时，这个版本不再适用，JVM 将它标为不可进入，并根据元数据把当前机器栈恢复为解释器或较低层级栈帧。
-
-去优化是保证动态语义的正常机制。频繁发生时才说明画像不稳定，可能造成重复编译和延迟波动。
+去优化是在投机假设失效时恢复解释执行。HotSpot 用编译元数据重建逻辑栈帧与局部状态。类型守卫失败或类层级依赖失效可触发它。有通用回退路径时，也能直接执行回退调用。后续编译会使用更新后的画像。
 
 </details>
 
-## 10. 参考资料
+### 9.3 方法已内联、对象已被消除，去优化怎样继续执行？ {#deopt-state-reconstruction}
 
-- [OpenJDK Wiki：Performance Techniques](https://wiki.openjdk.org/display/HotSpot/PerformanceTechniques)
-- [Oracle：`java` 命令](https://docs.oracle.com/en/java/javase/26/docs/specs/man/java.html)
-- [JDK Mission Control：JFR 事件参考](https://docs.oracle.com/en/java/javase/26/jfapi/flight-recorder-runtime-guide.pdf)
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：逻辑栈帧、对象重建与副作用。
+
+**相关内容**：[栈帧与对象恢复](#栈帧与对象恢复)。
+
+<details>
+<summary>参考回答</summary>
+
+HotSpot 用元数据重建解释器帧，并恢复局部值与锁状态。被消除的对象可重新分配并回填字段。执行从对应字节码位置继续。已经发生的业务副作用无需从方法开头重做。
+
+</details>
+
+## 10. 参考资料 {#参考资料}
+
+- [OpenJDK：Performance Techniques](https://wiki.openjdk.org/display/HotSpot/PerformanceTechniques)
+- [Oracle：java 命令](https://docs.oracle.com/en/java/javase/26/docs/specs/man/java.html)
+- [OpenJDK 26：Deoptimization](https://github.com/openjdk/jdk/blob/jdk-26-ga/src/hotspot/share/runtime/deoptimization.cpp)
+- [OpenJDK 26：C2 内联策略](https://github.com/openjdk/jdk/blob/jdk-26-ga/src/hotspot/share/opto/bytecodeInfo.cpp)
