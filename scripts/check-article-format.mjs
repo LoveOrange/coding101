@@ -9,7 +9,8 @@
 //
 // Structural problems: missing "面试核心", references or card fields, no
 // [卡] link in the core section, unnumbered long articles.
-// Style warnings: templates and wording ruled out by AGENTS.md, hedge and
+// Style warnings: templates and wording ruled out by AGENTS.md, long
+// sentences, meta-commentary about sources, hedge and
 // negation density, statement-style headings, non-standard self-test
 // comments and reference lists split by blank lines.
 import fs from 'node:fs';
@@ -28,6 +29,8 @@ const HEDGES = /通常|可能|一般/g;
 const NEGATIONS = /不能|不代表|不等于|不表示/g;
 // A heading reads as a statement when a verb links a subject to a predicate.
 const STATEMENT_VERBS = /(是|会(?!话)|让|把|使|要|需要|决定|锁住|阻止|保护|描述|形成|负责|提供|限制|服务于|指向|保存|携带|只能|必须|应|可以|仍)/;
+const META_COMMENTARY = /(根据|依据|按照)[^。；]{0,20}(说明|资料|文档|历史)[^。；]{0,8}(解释|推断|理解)的|(官方|文档|资料)[^。；]{0,6}(并未|没有)将|这是[^。；]{2,24}的(背景|解释|推断|说法)[。；]/;
+const SENTENCE_LIMIT = 80; // characters, code and link text collapsed
 const HEDGE_LIMIT = 2.5; // per 1000 characters of prose
 const NEGATION_LIMIT = 1.5;
 
@@ -107,6 +110,16 @@ function checkFile(file) {
   body.split('\n').forEach((line, i) => {
     if (!line.startsWith('#') && BODY_WORDS.test(line)) warnings.push(`正文用词（约第 ${i + 1} 行）：${line.slice(0, 40)}`);
   });
+
+  for (const line of body.split('\n')) {
+    if (/^(#|\||<|-->|\s*$|\*\*相关内容)/.test(line) || /https?:\/\//.test(line)) continue;
+    const plain = line.replace(/`[^`]*`/g, 'X').replace(/\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/^\s*([-*]|\d+\.)\s+/, '');
+    for (const sentence of plain.split(/(?<=[。！？])/)) {
+      const s = sentence.trim();
+      if (s.length > SENTENCE_LIMIT) warnings.push(`长句（${s.length} 字）：${s.slice(0, 40)}…`);
+      if (META_COMMENTARY.test(s)) warnings.push(`元叙述：${s.slice(0, 40)}`);
+    }
+  }
 
   const text1k = prose(body).replace(/\s/g, '').length / 1000 || 1;
   const hedgeRate = (prose(body).match(HEDGES) ?? []).length / text1k;
