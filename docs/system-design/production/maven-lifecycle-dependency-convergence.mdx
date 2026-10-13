@@ -7,96 +7,113 @@ knowledge:
 
 # Maven
 
-Maven 用生命周期组织构建步骤，用插件 goal 执行具体工作，用依赖图决定编译和运行时类路径。构建能成功不代表依赖已经一致；版本选择、插件版本和构建环境都需要显式收敛。
+Maven 用生命周期、插件和依赖图组织构建。本文以 Maven 3 为范围，讲解阶段执行与依赖收敛。产物晋升和容器发布见[可重复交付](./docker-ci-cd-reproducible-delivery.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- Maven 生命周期定义阶段顺序，插件 goal 绑定到阶段上执行具体工作。
-- scope 控制依赖出现在哪些类路径中以及是否传递，配错会导致运行时缺类或重复打包。
-- 依赖冲突时 Maven 选择路径最短的版本，深度相同时先声明者优先。[卡](#dependency-convergence)
-- `dependencyManagement` 和 BOM 统一版本但不引入依赖；Enforcer 的 dependency convergence 规则让版本分叉在构建时失败。
-- 编译通过但运行时 `NoSuchMethodError`，通常是运行时加载了另一个版本的依赖。
+- phase 定义执行阶段，绑定的插件 goal 执行具体工作。
+- 未受显式管理时，依赖仲裁采用最近路径，同深度先声明者优先。[卡](#dependency-convergence)
+- `dependencyManagement` 管理版本，直接或传递依赖负责实际引入。
+- `mvn verify` 可执行 Failsafe 结果检查和此前的清理阶段。[卡](#failsafe-verify)
+- `mvn -pl app -am verify` 构建 app 及其 reactor 依赖。[卡](#reactor-parent-aggregation)
 
 ## 2. 生命周期 {#生命周期}
 
-Maven 有 clean、default 和 site 等独立生命周期。日常构建主要使用 default，其中常见阶段依次包括：
+clean、default 与 site 是独立生命周期。default 的常用阶段如下：
 
 ```text
 validate → compile → test → package → verify → install → deploy
 ```
 
-执行某一阶段，会先执行同一生命周期中位于它之前的阶段。`mvn verify` 会完成编译、测试、打包和验证；`mvn clean verify` 则先运行独立 clean 生命周期，再运行 default 到 verify。
+执行一个 phase 时，会先执行同生命周期的前置阶段。`mvn clean verify` 先清理，再执行 default 到 verify。
 
-`install` 把产物放进本地仓库供本机其他项目使用，`deploy` 把产物上传到远程仓库。它们不是应用部署到生产环境的同义词。
+`install` 把产物安装到本地仓库。`deploy` 发布到远程仓库，供其他项目使用。应用上线由 CD 完成。
 
 ## 3. 插件 goal {#插件-goal}
 
-生命周期 phase 只是挂载点。compiler、surefire、jar、failsafe 等插件的 goal 绑定到相应 phase，才执行编译、单元测试、打包和集成测试。
+phase 是阶段，goal 是插件提供的具体动作。packaging 和项目配置决定哪些 goal 绑定到阶段。
 
-插件 goal 也可以直接运行，但在 CI 中应优先通过完整 phase 获得一致顺序。自定义插件绑定要检查是否会在父 POM 与子模块重复执行。
+Surefire 执行单元测试，Failsafe 用于集成测试。集成测试需显式配置相应 goal。仅执行某个 phase，并不会自动补齐缺少的插件绑定。
 
-插件版本应固定。依赖版本固定而插件使用随时间变化的默认版本，仍可能让同一提交产生不同结果。
+插件版本与 JDK 版本一同固定。重复绑定需检查父 POM 与子模块的有效配置。
 
 ## 4. Scope {#scope}
 
-- `compile`：默认范围，进入编译、测试和运行时，并向下游传递。
-- `provided`：编译和测试可用，运行环境预期提供，通常不传递。
-- `runtime`：编译主代码不需要，测试和运行时需要。
-- `test`：只用于测试，不传递给使用当前项目的下游。
+| scope | 类路径与传递 |
+| --- | --- |
+| compile | 默认范围，进入主编译、测试与运行，可传递 |
+| provided | 主编译与测试可用，运行环境提供，不传递 |
+| runtime | 测试与运行可用，主编译不可用 |
+| test | 仅测试使用，不向下游传递 |
 
-Scope 配错可能让本地测试通过、生产启动时报 `ClassNotFoundException`，也可能把容器已提供的 API 重复打进产物。
+传递依赖的最终 scope 取决于两段路径的 scope。`system` 指向本地文件，降低跨环境可移植性。`import` 用于 dependencyManagement 中导入 POM。
 
 ## 5. 依赖仲裁 {#依赖仲裁}
 
-同一 `groupId:artifactId` 通过多条传递路径出现不同版本时，Maven 通常选择离当前项目依赖图更近的定义；深度相同时，POM 中先声明的路径会影响结果。
-
-这只是构建工具的仲裁规则，不证明被选版本与所有上游二进制兼容。应使用：
+未显式管理的冲突按最近路径选版本。同深度时，先声明的路径优先。显式依赖与 dependencyManagement 可控制实际选择。
 
 ```bash
 mvn dependency:tree
+mvn help:effective-pom
 ```
 
-查看版本来自哪条路径，再通过显式直接依赖、exclusion 或升级上游组件解决。不要盲目排除一个 jar，只为了让树看起来干净。
+依赖树显示引入路径，有效 POM 显示继承后的配置。修复可采用升级上游、精确 exclusion 或显式版本。版本统一后仍需验证二进制兼容性。
 
 ## 6. dependencyManagement 与 BOM {#dependencymanagement-与-bom}
 
-父 POM 的 `dependencyManagement` 为子模块和传递依赖提供受控版本。BOM 通过 `type=pom`、`scope=import` 导入一组经过测试的版本组合。
+`dependencyManagement` 提供依赖版本与默认配置。单独列在这里的坐标不会进入类路径。直接声明或传递依赖遇到它时，管理规则才参与解析。
 
-被管理的依赖仍需在模块的 `dependencies` 中实际声明才会进入类路径。`pluginManagement` 同理，只提供插件缺省配置，除非插件被生命周期或模块显式使用。
+BOM 以 `type=pom`、`scope=import` 导入管理项。导入 BOM 本身只带入这些版本规则。
 
-平台 BOM 可以减少任意组合，但升级 BOM 仍需运行兼容性测试并审查实际 dependency tree。
+`pluginManagement` 提供插件版本与配置。插件由生命周期或显式声明使用后，相关配置才生效。项目的 dependencyManagement 不管理插件自身依赖。
 
 ## 7. 依赖收敛检查 {#依赖收敛检查}
 
-Maven Enforcer 的 dependency convergence 规则可以让同一坐标出现多个传递版本时构建失败，迫使团队明确选择。还可以限制 JDK、Maven 版本、禁止快照依赖和重复类等问题。
+Enforcer 的 `dependencyConvergence` 检查依赖路径版本一致性。它与只看仲裁后的最终 jar 集合不同。
 
-严格 convergence 可能要求对成熟框架的合法依赖图做额外管理。规则例外要具体到坐标、原因和到期条件，不能因为首次失败就整体关闭。
+可通过 dependencyManagement 或精确排除消除分叉。例外应写明坐标、原因和期限。重复类检查需要额外规则，并非收敛规则的职责。
 
 ## 8. 可重复构建 {#可重复构建}
 
-除依赖和插件版本外，还要固定：
+固定 JDK、Maven、依赖、插件与仓库输入。Maven Wrapper 固定 Maven 分发版本。Toolchains 声明构建所需工具链。
 
-- JDK 与 Maven 版本，可使用 toolchains 和 Maven Wrapper。
-- 仓库与镜像配置，避免同坐标内容被覆盖。
-- 编译字符集、时区和 locale。
-- 归档时间戳，例如 `project.build.outputTimestamp`。
-- 生成代码工具和前端构建依赖。
+`project.build.outputTimestamp` 可稳定归档时间戳。字符集、时区和代码生成工具也需固定。
 
-CI 从干净环境构建，并保存依赖树、构建日志、源码提交和产物摘要。不要用开发者本地 `install` 的未发布快照作为生产输入。
+独立重建后比较产物摘要，才能验证字节级重复性。部署使用同一产物的方式见[可重复交付](./docker-ci-cd-reproducible-delivery.mdx)。
 
-## 9. 常见问题
+## 9. 聚合、继承与 reactor {#聚合继承与-reactor}
 
-### 9.1 `mvn package` 与 `mvn install` 有什么区别
+聚合通过 `modules` 收集构建模块。继承通过 `parent` 复用配置。聚合 POM 与父 POM 可以是同一个，也可以分开。
 
-package 生成当前模块的 jar 或 war；install 还会把产物与 POM 放进本地仓库。多模块 reactor 内部通常不需要先 install，Maven 可以直接使用同一次构建中的模块产物。
+Reactor 根据实际依赖关系排序模块。仅列在 dependencyManagement 中的依赖不影响排序。
 
-### 9.2 出现 `NoSuchMethodError` 为什么编译仍能通过
+```bash
+mvn -pl app -am verify
+```
 
-编译时看到的类版本包含该方法，运行时类路径却加载了另一个不兼容版本。应检查最终打包内容、容器提供依赖和启动类路径，而不只看 IDE 的依赖视图。
+该命令选择 app，并构建它依赖的 reactor 模块。`-amd` 则选择依赖当前所选模块的下游模块。执行前需位于包含这些模块的聚合工程。
 
-## 10. 面试题
+## 10. 集成测试阶段 {#集成测试阶段}
 
-### 10.1 Maven 如何选择冲突依赖，怎样让多模块版本收敛 {#dependency-convergence}
+配置 Failsafe 的 `integration-test` 与 `verify` goal 后，使用 `mvn verify`。
+
+Failsafe 在 integration-test 阶段记录测试失败。随后 post-integration-test 阶段仍可清理测试环境。verify 阶段检查结果，并决定构建是否失败。
+
+只运行 `mvn integration-test` 会跳过后续阶段。测试清理与最终结果检查因此缺失。
+
+## 11. 常见问题 {#常见问题}
+
+### 11.1 package 与 install {#package-与-install}
+
+package 生成 jar 或 war。install 还将产物与 POM 写入本地仓库。Reactor 可在同次构建中使用其他模块产物。
+
+### 11.2 NoSuchMethodError 与类路径 {#nosuchmethoderror-与类路径}
+
+编译期目标类有该方法，运行期加载的类却缺少对应签名。检查最终包、容器依赖与启动类路径。IDE 的依赖视图只反映其中一个环境。
+
+## 12. 面试题 {#面试题}
+
+### 12.1 Maven 如何选择冲突依赖，怎样让多模块版本收敛 {#dependency-convergence}
 
 <!-- 面试来源：
 - 阿里巴巴：https://www.nowcoder.com/discuss/353154066979168256
@@ -108,24 +125,60 @@ package 生成当前模块的 jar 或 war；install 还会把产物与 POM 放�
 
 **考察重点**
 
-- 生命周期 phase 与插件 goal。
-- 最近定义、dependency tree 和 scope。
-- dependencyManagement、BOM 与 convergence。
+- 理解生命周期 phase 与插件 goal。
+- 理解最近定义、dependency tree 和 scope。
+- 理解dependencyManagement、BOM 与 convergence。
 
 **相关内容**：[生命周期](#生命周期)至[可重复构建](#可重复构建)。
 
 <details>
 <summary>参考回答</summary>
 
-Maven 生命周期规定阶段顺序，具体动作由绑定到 phase 的插件 goal 完成。依赖冲突时通常采用依赖图中离当前项目更近的版本，同深度再受声明顺序影响；这只是仲裁，不保证运行兼容。先用 `dependency:tree` 找到路径，再通过直接声明、升级上游或精确 exclusion 解决。
+Maven 对未受显式管理的冲突采用最近路径规则。同深度时，先声明者优先。用 `dependency:tree` 确定引入路径，再决定升级或管理版本。
 
-多模块用父 POM 的 dependencyManagement 或导入 BOM 统一版本，它只管理版本，不自动引入依赖。CI 可以用 Enforcer 的 dependency convergence 让分叉提前失败，并固定插件、JDK、Maven Wrapper、仓库和输出时间戳，让同一提交在干净环境产生可追踪产物。
+父 POM 或 BOM 用 dependencyManagement 统一规则。依赖仍由直接声明或传递路径引入。Enforcer 的 `dependencyConvergence` 检查版本分叉。CI 同时固定工具链、插件和归档时间，并执行兼容性测试。
 
 </details>
 
-## 11. 参考资料
+### 12.2 Maven 的聚合和继承有什么区别，怎样构建一个模块及其依赖？ {#reactor-parent-aggregation}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：modules、parent 与 reactor 排序。
+
+**相关内容**：[聚合、继承与 reactor](#聚合继承与-reactor)。
+
+<details>
+<summary>参考回答</summary>
+
+聚合决定一起构建哪些模块，继承决定复用哪些配置。Maven 3 中可执行 `mvn -pl app -am verify`。它选择 app，并构建 app 依赖的 reactor 模块。实际依赖参与排序，管理项本身不参与排序。
+
+</details>
+
+### 12.3 Failsafe 集成测试为什么应执行 verify？ {#failsafe-verify}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：测试失败、环境清理与结果检查。
+
+**相关内容**：[集成测试阶段](#集成测试阶段)。
+
+<details>
+<summary>参考回答</summary>
+
+verify 会覆盖集成测试、后续清理和最终结果检查。Failsafe 将测试失败留到 verify 阶段报告。post-integration-test 因此能先清理环境。仅执行 integration-test 会跳过这些后续阶段。
+
+</details>
+
+## 13. 参考资料 {#参考资料}
 
 - [Apache Maven：Introduction to the Build Lifecycle](https://maven.apache.org/guides/introduction/introduction-to-the-lifecycle.html)
 - [Apache Maven：Introduction to the Dependency Mechanism](https://maven.apache.org/guides/introduction/introduction-to-dependency-mechanism.html)
 - [Maven Enforcer：Dependency Convergence](https://maven.apache.org/enforcer/enforcer-rules/dependencyConvergence.html)
 - [Apache Maven：Reproducible Builds](https://maven.apache.org/guides/mini/guide-reproducible-builds.html)
+- [Apache Maven 3：Multiple Modules](https://maven.apache.org/guides/mini/guide-multiple-modules.html)
+- [Maven Failsafe Plugin](https://maven.apache.org/surefire/maven-failsafe-plugin/)
