@@ -7,13 +7,15 @@ knowledge:
 
 # SQL 查询
 
-SQL 查询用声明式条件描述需要返回的数据。本文用最小数据集练习过滤、NULL、去重、排序和分页；示例使用 MySQL 8.4 支持的基本语法，可在独立练习库执行。
+SQL 查询用声明式条件描述需要返回的数据。本文负责 MySQL 8.4 的过滤、空值、去重、排序和分页。连接语义见 [SQL 连接](./joins.mdx)，分组统计见 [SQL 聚合](./aggregation.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- WHERE 只保留条件为 TRUE 的行，NULL 应使用 IS NULL 判断。[卡](#null-and-stable-sort)
-- SELECT 默认保留重复行，DISTINCT 根据所选列组合去重。
-- 没有 ORDER BY 就没有可靠的结果顺序；分页排序应包含唯一的决胜列。
+- WHERE 只保留 TRUE，普通等值比较遇到 NULL 会得到 UNKNOWN。[卡](#null-and-stable-sort)
+- DISTINCT 根据所选列组合去重，UNION ALL 保留合并后的重复行。[卡](#union-distinct)
+- 分页排序加入唯一决胜列，才能确定同值行的先后。[卡](#null-and-stable-sort)
+- NOT IN 集合含 NULL 时，未命中的比较得到 UNKNOWN。[卡](#not-in-null)
+- `ROW_NUMBER` 逐行编号，`RANK` 并列跳号，`DENSE_RANK` 并列连续。[卡](#window-top-n)
 
 ## 2. 最小表与过滤 {#最小表与过滤}
 
@@ -33,32 +35,91 @@ WHERE score >= 80
 ORDER BY score DESC, id ASC;
 ```
 
-结果依次为 `(3,95)、(1,80)、(4,80)`。id=2 的比较结果是 UNKNOWN，没有通过 WHERE。查询未填写成绩者应使用 `WHERE score IS NULL`，不能写 `score = NULL`。
+结果依次为 `(3,95)、(1,80)、(4,80)`。id=2 的比较结果是 UNKNOWN，因此被 WHERE 移除。查询未填写成绩者使用 `WHERE score IS NULL`。`score = NULL` 的结果仍是 UNKNOWN。
 
-## 3. 去重与分页
+## 3. NOT IN 与 NULL {#not-in-与-null}
+
+NOT IN 要求目标值与集合中每个值都不相等。
+
+```sql
+SELECT 3 NOT IN (1, NULL) AS result;
+SELECT NULL <=> NULL AS null_equal;
+```
+
+第一条返回 NULL，因为与 NULL 的比较为 UNKNOWN。WHERE 会排除该结果。第二条返回 1，`<=>` 是 MySQL 的空值安全等值运算。
+
+子查询列可空时，应明确是否排除 NULL。查询“没有关联记录”可用 NOT EXISTS 表达。具体连接写法见 [存在性与反连接](./joins.mdx#存在性与反连接)。
+
+## 4. 去重与分页 {#去重与分页}
+
+DISTINCT 对所选列的组合去重。
 
 ```sql
 SELECT DISTINCT city FROM candidates ORDER BY city;
-
 SELECT id, score FROM candidates
 WHERE score IS NOT NULL
-ORDER BY score DESC, id ASC
-LIMIT 2 OFFSET 1;
+ORDER BY score DESC, id ASC LIMIT 2 OFFSET 1;
 ```
 
-第一个查询返回上海、杭州各一行，具体中文排序由排序规则决定。第二个查询跳过成绩最高的一行，返回 `(1,80)、(4,80)`。只按 score 排序时，相同成绩之间没有稳定的先后保证，加入唯一 id 才能确定次序。
+第一条返回上海、杭州各一行。中文先后取决于排序规则。第二条跳过最高成绩，返回 `(1,80)、(4,80)`。同分记录按唯一 id 升序排列，因此顺序确定。
 
-逻辑上先形成来源行，再过滤、选取结果并去重排序；优化器可以改变物理执行方式，只要保持查询语义一致。
+逻辑上，FROM 与 JOIN 形成来源行。WHERE 筛选行，GROUP BY 和 HAVING 处理组。随后计算窗口与输出列，再去重、排序和取 LIMIT。优化器可调整物理步骤，但须保持相同语义。
 
-## 4. 使用边界 {#使用边界}
+## 5. 游标分页 {#游标分页}
 
-AND 的优先级高于 OR，混合条件应加括号表达意图。字符串比较还受字符集与排序规则影响，不能把所有数据库的大小写规则视为相同。
+大 OFFSET 需要先读取并跳过前面的记录。游标分页则从上页最后一个排序键继续查找。
 
-大 OFFSET 往往需要读取并跳过大量记录，可根据访问模式改用稳定排序键的游标分页。即使排序稳定，多次查询之间发生数据写入也可能移动分页位置，需要进一步明确快照与一致性需求。
+```sql
+-- 上页最后一行为 id=1、score=80。
+SELECT id, score FROM candidates
+WHERE score < 80 OR (score = 80 AND id > 1)
+ORDER BY score DESC, id ASC LIMIT 2;
+```
 
-## 5. 面试题
+结果为 `(4,80)`。成绩降序对应 `<80`，同分的 id 升序对应 `>1`。实际请求应绑定上页游标，避免硬编码。
 
-### 5.1 为什么 score = NULL 查不到空值，分页时又为什么需要稳定排序？ {#null-and-stable-sort}
+排序列频繁变化时，行仍会跨过游标边界。完整导出可使用稳定键，并明确数据截止范围。
+
+## 6. UNION 与 UNION ALL {#union-与-union-all}
+
+UNION 合并兼容的结果集，并去除重复行。UNION ALL 直接保留所有行，省去去重步骤。
+
+```sql
+SELECT city FROM candidates WHERE id=1
+UNION ALL
+SELECT city FROM candidates WHERE id=3;
+```
+
+结果包含两行上海。改为 UNION 后只剩一行。分支结果的拼接顺序没有保证。需要最终顺序时，在合并结果上使用 ORDER BY。
+
+## 7. 窗口排名与分组前几名 {#窗口排名与分组前几名}
+
+窗口函数为每行计算组内结果，仍保留明细行。MySQL 8.0 起支持窗口函数。
+
+```sql
+SELECT id, city, score FROM (
+  SELECT id, city, score,
+         ROW_NUMBER() OVER (
+           PARTITION BY city ORDER BY score DESC, id ASC
+         ) AS rn
+  FROM candidates WHERE score IS NOT NULL
+) ranked
+WHERE rn <= 1 ORDER BY id;
+```
+
+结果为 `(3,上海,95)`、`(4,杭州,80)`。内层对各城市按成绩编号，外层选每组第一行。用派生表过滤，是因为 WHERE 早于窗口结果计算。
+
+ROW_NUMBER 为每行分配不同序号。按成绩使用 RANK 时，并列后跳过对应名次。DENSE_RANK 为并列成绩分配相同且连续的名次。成绩为 95、95、80 时，RANK 为 1、1、3。DENSE_RANK 则为 1、1、2。
+
+## 8. 使用边界 {#使用边界}
+
+AND 的优先级高于 OR。混合条件可用括号明确组合关系。字符串比较由字符集和排序规则决定。
+
+稳定排序只确定单次查询中的先后。跨页期间新增或修改数据，仍会改变分页位置。需要完整一致的数据集时，还需约定快照范围。
+
+## 9. 面试题 {#面试题}
+
+### 9.1 为什么 score = NULL 查不到空值，分页时又为什么需要稳定排序？ {#null-and-stable-sort}
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
@@ -71,11 +132,83 @@ AND 的优先级高于 OR，混合条件应加括号表达意图。字符串比�
 <details>
 <summary>参考回答</summary>
 
-NULL 表示未知，普通相等比较得到 UNKNOWN，WHERE 不保留这种行；应使用 IS NULL。结果只有在 ORDER BY 约束下才有顺序，同分数据还需唯一决胜列。稳定排序解决同值行的任意次序，但不自动冻结多次查询间的数据变化。
+`score=NULL` 得到 UNKNOWN，WHERE 只保留 TRUE。判断空值应使用 IS NULL。分页还需 ORDER BY，并用唯一列确定同分顺序。稳定排序确定单次结果，跨次查询的一致性需另行设计。
 
 </details>
 
-## 6. 参考资料
+### 9.2 NOT IN 的子查询含 NULL 时，为什么会漏掉预期结果？ {#not-in-null}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：三值逻辑与反连接。
+
+**相关内容**：[NOT IN 与 NULL](#not-in-与-null)。
+
+<details>
+<summary>参考回答</summary>
+
+未命中其他值时，与 NULL 的比较仍是 UNKNOWN。因此整个 NOT IN 条件无法得到 TRUE。可明确过滤子查询 NULL，或用 NOT EXISTS 表达无关联记录。外层字段可空时，还需定义它是否应进入结果。
+
+</details>
+
+### 9.3 成绩降序、ID 升序时，如何写下一页的游标条件？ {#seek-pagination}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：混合排序方向与唯一决胜列。
+
+**相关内容**：[游标分页](#游标分页)。
+
+<details>
+<summary>参考回答</summary>
+
+下一页满足 `score<lastScore`，或同分且 `id>lastId`。ORDER BY 保持 `score DESC,id ASC`。该方式省去逐页增加的 OFFSET 跳过量。排序值改变仍会移动行，因此还需明确快照要求。
+
+</details>
+
+### 9.4 UNION、UNION ALL 与 DISTINCT 如何处理重复行？ {#union-distinct}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：合并结果与去重粒度。
+
+**相关内容**：[UNION 与 UNION ALL](#union-与-union-all)。
+
+<details>
+<summary>参考回答</summary>
+
+UNION 对合并后的结果去重，UNION ALL 保留重复行。DISTINCT 对一条查询所选列的组合去重。三者都按输出列判断重复。需要保留重复明细时，应使用 UNION ALL。
+
+</details>
+
+### 9.5 每组取前 N 行时，ROW_NUMBER、RANK、DENSE_RANK 如何选择？ {#window-top-n}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：明细保留、并列名次与过滤阶段。
+
+**相关内容**：[窗口排名与分组前几名](#窗口排名与分组前几名)。
+
+<details>
+<summary>参考回答</summary>
+
+固定最多 N 行可用 ROW_NUMBER，并加入唯一决胜列。需要保留同分名次时，用 RANK 或 DENSE_RANK。RANK 在并列后跳号，DENSE_RANK 连续编号。窗口结果应在外层查询中按名次过滤。
+
+</details>
+
+## 10. 参考资料 {#参考资料}
 
 - [MySQL：SELECT](https://dev.mysql.com/doc/refman/8.4/en/select.html)
 - [MySQL：Working with NULL](https://dev.mysql.com/doc/refman/8.4/en/working-with-null.html)
+- [MySQL 8.4：Comparison Operators](https://dev.mysql.com/doc/refman/8.4/en/comparison-operators.html)
+- [MySQL 8.4：UNION](https://dev.mysql.com/doc/refman/8.4/en/union.html)
+- [MySQL 8.4：Window Function Descriptions](https://dev.mysql.com/doc/refman/8.4/en/window-function-descriptions.html)
+- [MySQL 8.4：Window Function Concepts](https://dev.mysql.com/doc/refman/8.4/en/window-functions-usage.html)

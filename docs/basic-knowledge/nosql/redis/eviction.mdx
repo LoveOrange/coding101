@@ -6,39 +6,49 @@ knowledge:
 
 # Redis 内存淘汰
 
-Redis 内存淘汰在内存使用触及 maxmemory 限制时决定删除哪些键，或者拒绝需要更多内存的写命令。选择策略前，要明确实例保存的是可重建缓存还是不能随意丢弃的业务状态。
+Redis 内存淘汰在内存压力下选择删除对象。本文以 Redis 7.2 为基线，负责策略、候选范围与内存观测。按 TTL 清理的机制见 [Redis 过期](./expiration.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- allkeys 策略可从全部键中选择，volatile 策略只考虑设置了过期时间的键。
-- noeviction 不自动淘汰键，触及限制后部分写操作会失败。
-- LRU 依据近期访问，LFU 依据访问频率，Redis 使用近似机制而非完整精确排序。[卡](#eviction-policies)
+- allkeys 从全部键选候选，volatile 只从带过期时间的键中选候选。[卡](#eviction-policies)
+- `noeviction` 保留键，内存不足时拒绝相关写入命令。[卡](#volatile-no-candidate)
+- Redis 的 LRU 按近期访问采样，LFU 按衰减后的近似频率选择。[卡](#eviction-policies)
+- `maxmemory` 约束淘汰判断使用的内存，进程 RSS 还包含其他开销。[卡](#maxmemory-rss)
 
 ## 2. 策略与候选范围 {#策略与候选范围}
 
-| 策略 | 候选与选择依据 |
+Redis 7.2 提供以下八种策略。
+
+| 策略 | 候选与依据 |
 | --- | --- |
-| allkeys-lru | 全部键中近似选择最近较少使用的键 |
-| allkeys-lfu | 全部键中近似选择低频键 |
-| volatile-lru / volatile-lfu | 只从带过期时间的键中按相应规则选择 |
-| volatile-ttl | 从带过期时间的键中优先选择更接近到期者 |
-| noeviction | 不主动淘汰，内存不足时拒绝需要增加内存的相关命令 |
+| `allkeys-lru` | 全部键中，近似选择最久未使用者。 |
+| `allkeys-lfu` | 全部键中，选择衰减后低频者。 |
+| `allkeys-random` | 从全部键中随机选择。 |
+| `volatile-lru` | 从带 TTL 的键中按 LRU 选择。 |
+| `volatile-lfu` | 从带 TTL 的键中按 LFU 选择。 |
+| `volatile-random` | 从带 TTL 的键中随机选择。 |
+| `volatile-ttl` | 从带 TTL 的键中优先选择临近到期者。 |
+| `noeviction` | 保留键，内存不足时拒绝相关写入。 |
 
-volatile 策略若没有合适的可淘汰键，也可能无法通过淘汰满足写入。设置了 TTL 并不保证键会一直保留到到期，符合淘汰策略的键可能提前消失。
+volatile 策略缺少可淘汰候选时，行为与 noeviction 相同。内存已不足时，需要增加内存的写入会失败。带 TTL 的键也能在到期前因淘汰消失。
 
-## 3. 内存限制与观测
+## 3. 内存用量与观测 {#内存用量与观测}
 
-maxmemory 不是进程 RSS 的严格上限：分配器碎片、部分缓冲区、持久化期间的写时复制等都会影响实际内存占用。配置需要为这些成本和宿主机保留余量。
+`maxmemory` 用于判断是否触发淘汰。它与进程 RSS 存在不同统计口径。内存分配器碎片、复制与 AOF 缓冲都会占用额外内存。后台保存期间，写时复制也会增加宿主机占用。
 
-排查时共同观察 used_memory、RSS、evicted_keys、expired_keys、命中率、写入错误和回源量。evicted_keys 上升代表内存压力删除，expired_keys 上升代表过期删除；两个计数不能混用。
+`INFO memory` 的 `mem_not_counted_for_evict` 显示排除项。复制和 AOF 缓冲的部分内存不计入淘汰判断。否则淘汰产生的传播记录又会触发更多淘汰。
+
+观察 `used_memory`、`used_memory_rss` 和宿主机剩余量。`evicted_keys` 记录淘汰次数，`expired_keys` 记录过期删除次数。再结合命中率、写入错误和回源量判断影响。
 
 ## 4. 使用边界 {#使用边界}
 
-普通可重建缓存可以考虑 allkeys-lru 或 allkeys-lfu，再用实际命中率和访问分布判断效果。LFU 有频率衰减与近似计数，不应理解成永远保护历史上最热门的键。
+纯缓存实例可比较 allkeys-lru 与 allkeys-lfu。LRU 适合近期访问能预测后续访问的负载。LFU 用近似计数与衰减追踪访问频率，能适应热点变化。
 
-不可丢弃状态与普通缓存混在同一实例，会让淘汰选择困难。即使使用 noeviction，也只是改变内存不足时的行为，不能代替持久化、复制、备份与应用错误处理。扩容前还要检查大值、过长 TTL 和数据是否仍有业务用途。
+`maxmemory-samples` 调整采样精度与 CPU 成本。Redis 7.2 默认值为 5。LFU 还受 `lfu-log-factor` 和 `lfu-decay-time` 影响。策略效果需按实际访问分布比较命中率。
 
-## 5. 面试题
+权威业务状态应与可淘汰缓存分开规划。noeviction 只改变内存不足时的写入行为。持久化与恢复仍需独立设计。
+
+## 5. 面试题 {#面试题}
 
 ### 5.1 Redis 的内存淘汰策略有哪些，LRU 与 LFU 如何选择？ {#eviction-policies}
 
@@ -46,17 +56,54 @@ maxmemory 不是进程 RSS 的严格上限：分配器碎片、部分缓冲区�
 
 **出现公司**：暂无已核验的公开来源（本站自测）
 
-**考察重点**：淘汰候选范围、访问时间与频率的区别，以及状态丢失的业务影响。
+**考察重点**：候选范围、访问时间与频率、数据丢失影响。
 
 **相关内容**：[面试核心](#core)、[策略与候选范围](#策略与候选范围)、[使用边界](#使用边界)。
 
 <details>
 <summary>参考回答</summary>
 
-先区分全部键与仅有 TTL 的键，再比较近期访问、频率或剩余 TTL 等选择依据；noeviction 则在内存不足时让相关写入失败。LRU 关注近期使用，LFU 更关注访问频次，但实现是近似的，最终应按负载测试命中率。事实数据不能只靠策略名称保证不丢失。
+Redis 7.2 有 allkeys 和 volatile 两类候选范围。两类各有 LRU、LFU 和 random 策略。volatile 还提供 TTL 优先，另有 noeviction。
+
+LRU 看近期访问，LFU 看衰减后的近似频率。两者需按负载比较命中率和 CPU 成本。noeviction 会在内存不足时拒绝相关写入。
 
 </details>
 
-## 6. 参考资料
+### 5.2 volatile-lru 实例没有任何键设置 TTL，内存满后会怎样？ {#volatile-no-candidate}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：候选范围与写入错误。
+
+**相关内容**：[策略与候选范围](#策略与候选范围)。
+
+<details>
+<summary>参考回答</summary>
+
+它没有可淘汰候选，行为与 noeviction 相同。需要新增内存的相关写入会失败。读取和释放内存的操作仍可执行。可重建缓存可评估 allkeys 策略，或设置合理 TTL。
+
+</details>
+
+### 5.3 设置 maxmemory 后，为什么进程或宿主机内存仍能超出该值？ {#maxmemory-rss}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：淘汰口径、缓冲区、碎片与写时复制。
+
+**相关内容**：[内存用量与观测](#内存用量与观测)。
+
+<details>
+<summary>参考回答</summary>
+
+maxmemory 用于淘汰判断，并非进程 RSS 的硬限制。部分复制和 AOF 缓冲被排除，分配器也有碎片。后台持久化的写时复制还会增加宿主机内存。因此需结合 `mem_not_counted_for_evict` 等指标留出余量。
+
+</details>
+
+## 6. 参考资料 {#参考资料}
 
 - [Redis：Key Eviction](https://redis.io/docs/latest/develop/reference/eviction/)
+- [Redis 7.2：配置文件](https://github.com/redis/redis/blob/7.2/redis.conf)

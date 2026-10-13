@@ -6,17 +6,18 @@ knowledge:
 
 # 数据约束
 
-数据约束在数据库层限制允许保存的状态，常见形式有主键、非空、唯一、外键和 CHECK。应用校验可以提前报错，数据库约束则让所有写入路径遵守共同规则。
+数据约束限制数据库允许保存的状态。本文负责 MySQL 8.4 InnoDB 的唯一、非空、CHECK 和外键。多条写入的原子提交见[数据库事务](../transaction/index.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- 主键标识一行，唯一约束限制重复值，非空约束限制缺失。
-- 外键维护引用关系，不能替代所有跨表业务规则。
-- 并发写入时，“先查不存在再插入”仍需唯一约束或其他正确协调。[卡](#unique-constraint)
+- 主键唯一且非空，普通唯一索引允许多个 NULL。[卡](#check-null)
+- 唯一约束在写入时处理并发冲突，应用预查仍有竞争窗口。[卡](#unique-constraint)
+- MySQL 8.0.16 起执行 CHECK，表达式为 TRUE 或 UNKNOWN 时通过。[卡](#check-null)
+- InnoDB 外键即时检查引用关系，`NO ACTION` 等价于 `RESTRICT`。[卡](#foreign-key-actions)
 
-## 2. 在表结构中表达规则 {#在表结构中表达规则}
+## 2. 表级规则 {#在表结构中表达规则}
 
-以下以 MySQL 8.4、InnoDB 为例：
+下表要求邮箱非空且唯一，余额非空且非负。
 
 ```sql
 CREATE TABLE accounts (
@@ -24,26 +25,58 @@ CREATE TABLE accounts (
   email VARCHAR(200) NOT NULL UNIQUE,
   balance DECIMAL(12,2) NOT NULL,
   CHECK (balance >= 0)
-);
+) ENGINE=InnoDB;
 ```
 
-相同 email 的第二次插入会违反唯一约束，NULL email 违反非空约束，负余额违反 CHECK。CHECK 对未知值的处理不能替代 NOT NULL，所以余额同时声明两种约束。较老 MySQL 版本对 CHECK 的支持不同，不能把本例保证直接套到旧部署。
+重复邮箱违反 UNIQUE，空邮箱违反 NOT NULL。负余额违反 CHECK。
 
-## 3. 并发与引用完整性
+MySQL 8.0.16 起支持执行 CHECK 约束。更早版本会解析部分 CHECK 语法，但忽略检查。MySQL 8.4 还允许声明 `NOT ENFORCED`。本例省略该选项，因此实际执行检查。
 
-两个请求都先查询“邮箱不存在”，随后各自插入，查询通过不代表后续仍不存在。唯一约束让数据库在写入时处理冲突，应用需把冲突转为明确结果，必要时读取已有记录；不要无条件循环重试相同重复值。
+## 3. NULL 与 CHECK {#null-与-check}
 
-外键可以要求订单的 customer_id 引用真实客户，但不会自动验证“客户是否可下单”或“订单总额是否等于所有明细之和”。这些规则还需要合理事务、并发控制和业务逻辑。
+MySQL 唯一索引允许多个 NULL。联合唯一键中有 NULL 时，也允许相同的含空组合。需要完整业务值时，应将各组成列声明为 NOT NULL。
 
-## 4. 使用边界 {#使用边界}
+CHECK 只拒绝结果为 FALSE 的行。`balance=NULL` 时，`balance>=0` 得到 UNKNOWN。单独的 CHECK 因而允许该行。NOT NULL 才负责拒绝空余额。
 
-NULL 在唯一约束中的行为有数据库差异；MySQL 唯一索引可允许多个 NULL，若要求每行必须有唯一业务值，应结合 NOT NULL。文本唯一性还受排序规则影响。
+默认值只在省略列或使用 DEFAULT 时提供取值。它与非空约束承担不同职责。
 
-删除父记录时，应明确拒绝删除、级联删除或置空的意图。约束会增加写入检查成本，但仅在应用端重复一遍校验无法提供同样的跨入口保证。
+## 4. 并发与引用完整性 {#并发与引用完整性}
 
-## 5. 面试题
+两个请求可同时查询到“邮箱不存在”。查询结束后，其他事务仍可插入该邮箱。唯一约束在实际写入时仲裁冲突。应用应返回明确结果，或按幂等键读取已有记录。
 
-### 5.1 应用已经检查邮箱未被使用，为什么数据库还需要唯一约束？ {#unique-constraint}
+外键验证父记录是否存在。客户是否有下单资格、订单总额是否正确，还需业务规则。跨语句修改的提交边界见[数据库事务](../transaction/index.mdx)。
+
+## 5. 外键动作与检查时机 {#外键动作与检查时机}
+
+外键可为父记录的删除或键更新指定动作。
+
+| 动作 | 子表存在引用时的行为 |
+| --- | --- |
+| `RESTRICT` / `NO ACTION` | InnoDB 立即拒绝父记录变更。 |
+| `CASCADE` | 将删除或键更新传播到子表。 |
+| `SET NULL` | 将子表外键列置空，要求这些列可空。 |
+
+InnoDB 即时检查外键。事务中先插子行、后插父行，第一步就会失败。可空外键取 NULL 时，无需匹配父记录。
+
+```sql
+CREATE TABLE account_items (
+  id BIGINT PRIMARY KEY,
+  account_id BIGINT NOT NULL,
+  FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE RESTRICT
+) ENGINE=InnoDB;
+```
+
+已有明细引用账户时，删除账户会被拒绝。外键列需要以同序前缀建立索引。子表缺少该索引时，InnoDB 自动创建。父表使用主键或唯一键作为引用目标。
+
+## 6. 使用边界 {#使用边界}
+
+文本唯一性受排序规则影响。忽略大小写的排序规则会把部分大小写变体视为相同。邮箱等业务标识需先明确比较规则。
+
+数据库约束统一保护所有写入入口。应用校验用于提前反馈错误，仍需处理数据库约束异常。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 应用已经检查邮箱未被使用，为什么数据库还需要唯一约束？ {#unique-constraint}
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
@@ -51,16 +84,52 @@ NULL 在唯一约束中的行为有数据库差异；MySQL 唯一索引可允许
 
 **考察重点**：检查与写入之间的并发窗口，以及唯一、非空和排序规则的组合。
 
-**相关内容**：[面试核心](#core)、[在表结构中表达规则](#在表结构中表达规则)、[使用边界](#使用边界)。
+**相关内容**：[面试核心](#core)、[表级规则](#在表结构中表达规则)、[使用边界](#使用边界)。
 
 <details>
 <summary>参考回答</summary>
 
-检查与插入之间存在并发窗口，两个请求可以同时通过查询。唯一约束在实际写入时执行，能统一限制全部写入入口。应用提前检查改善提示，但仍需处理约束冲突；若邮箱必须存在，还需 NOT NULL，并确认排序规则是否把大小写视为相同。
+应用预查与插入之间存在并发窗口。两个请求可同时通过检查，再尝试写入相同邮箱。唯一约束在写入时拒绝重复值。邮箱必须有值时，还需 NOT NULL。文本比较则按列的排序规则进行。
 
 </details>
 
-## 6. 参考资料
+### 7.2 CHECK(balance >= 0) 能拒绝 NULL 吗，唯一索引又如何处理 NULL？ {#check-null}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：三值逻辑、非空与唯一性。
+
+**相关内容**：[NULL 与 CHECK](#null-与-check)。
+
+<details>
+<summary>参考回答</summary>
+
+CHECK 允许 UNKNOWN，因此空余额能通过该表达式。要拒绝 NULL，需另加 NOT NULL。MySQL 唯一索引允许多个 NULL。完整且唯一的业务值需要组合 UNIQUE 和 NOT NULL。
+
+</details>
+
+### 7.3 InnoDB 外键的 RESTRICT、CASCADE、SET NULL 有何区别？ {#foreign-key-actions}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：引用动作、可空性和即时检查。
+
+**相关内容**：[外键动作与检查时机](#外键动作与检查时机)。
+
+<details>
+<summary>参考回答</summary>
+
+RESTRICT 拒绝仍被引用的父记录变更。CASCADE 将相应删除或更新传播到子表。SET NULL 将子表引用列置空，要求该列可空。InnoDB 即时检查外键，NO ACTION 与 RESTRICT 相同。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
 
 - [MySQL：CREATE TABLE](https://dev.mysql.com/doc/refman/8.4/en/create-table.html)
 - [MySQL：CHECK Constraints](https://dev.mysql.com/doc/refman/8.4/en/create-table-check-constraints.html)
+- [MySQL 8.4：Foreign Key Constraints](https://dev.mysql.com/doc/refman/8.4/en/create-table-foreign-keys.html)
+- [MySQL 8.4：CREATE INDEX](https://dev.mysql.com/doc/refman/8.4/en/create-index.html)

@@ -10,221 +10,183 @@ knowledge:
 
 # 索引设计
 
-本文负责按查询负载设计索引、改写条件并用执行计划验证收益；索引分类与成本见 [数据库索引](./index.mdx)，列顺序、覆盖和 ICP 机制见[联合索引与覆盖索引](./composite-covering-back-table.mdx)。
-
-:::info 讨论范围
-除非另有说明，正文讨论的是 **MySQL 8.4 与 InnoDB**。
-:::
+索引设计根据查询负载选择列、顺序和覆盖范围。本文负责 MySQL 8.4 InnoDB 的设计与验证步骤。联合索引的访问机制见[联合索引与覆盖索引](./composite-covering-back-table.mdx)。计划字段的含义见[执行计划](./execution-plan.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- B+ 树的节点能保存多个键，树高较低；叶子节点有序，因此也适合范围查询。
-- InnoDB 二级索引保存聚簇索引键，本例就是主键 `id`。查询完整记录时可能回表；索引覆盖查询所需字段时，通常可省去取列的回表；MVCC 检查仍可能访问聚簇记录。
-- 联合索引按照定义顺序排列，由此产生最左前缀；列顺序还要兼顾范围、排序和写入成本。[卡](#workload-index)
-- 优化器比较的是执行成本。索引存在，不等于执行时一定会选中它。[卡](#explain-slow-sql)
+- 等值列限定前缀后，后续范围列可同时支持范围过滤和排序。[卡](#workload-index)
+- 返回多数行时，二级索引回表的成本可高于聚簇索引扫描。[卡](#explain-slow-sql)
+- 前缀索引只保存字符串前段，查询完整字符串仍需取行。[卡](#prefix-index-design)
+- 不可见索引默认退出优化器候选，写入维护和唯一校验仍继续。[卡](#invisible-index)
 
 <span id="1-索引解决了什么问题"></span>
 
 ## 2. 索引的作用 {#1-索引解决了什么问题}
 
-假设有一张用户表：
+以下用户表用于演示查询条件与候选索引。
 
 ```sql
 CREATE TABLE users (
-    id BIGINT PRIMARY KEY,
-    email VARCHAR(255) NOT NULL,
-    status TINYINT NOT NULL,
-    created_at DATETIME NOT NULL
+  id BIGINT PRIMARY KEY,
+  email VARCHAR(255) NOT NULL,
+  status TINYINT NOT NULL,
+  created_at DATETIME NOT NULL
 ) ENGINE = InnoDB;
 CREATE INDEX idx_users_email ON users(email);
 ```
 
-索引以额外的存储和写入维护换取更小的读取范围，基本成本见 [数据库索引](./index.mdx#1-索引减少需要读取的数据页)；后文围绕这张 users 表设计和验证查询路径。
+索引用额外空间和写入维护换取更小的读取范围。基本成本见[数据库索引](./index.mdx#1-索引减少需要读取的数据页)。
 
 <span id="2-innodb-怎样通过索引找到一行数据"></span>
 
-## 3. InnoDB 通过索引定位数据 {#2-innodb-怎样通过索引找到一行数据}
+## 3. 聚簇键与行定位 {#2-innodb-怎样通过索引找到一行数据}
 
-InnoDB 用聚簇索引组织行，二级索引保存聚簇键，存储机制见 [聚簇索引](./clustered_index/index.mdx)，查询缺失列时的回表与覆盖判断见[联合索引与覆盖索引](./composite-covering-back-table.mdx#3-二级索引叶子节点保存主键)。
+InnoDB 用聚簇键定位整行。存储方式见[聚簇索引](./clustered_index/index.mdx)。
 
 <span id="3-为什么常规索引使用-b-树"></span>
 
 ## 4. B+ 树索引 {#3-为什么常规索引使用-b-树}
 
-B+ 树通过高扇出减少导航层数，有序叶子支持范围扫描，节点结构与再平衡机制见 [B+ 树](./b_plus_tree/index.mdx)。
+B+ 树用多路导航和有序叶子支持范围访问。结构与页面调整见 [B+ 树](./b_plus_tree/index.mdx)。
 
 <span id="4-联合索引为什么有最左前缀"></span>
 
 ## 5. 联合索引与最左前缀 {#4-联合索引为什么有最左前缀}
 
-联合索引按定义的列顺序逐级排列，范围定位、ICP 和排序边界见 [联合索引与覆盖索引](./composite-covering-back-table.mdx)。
+联合索引按定义的列顺序逐级排列。范围、覆盖和 ICP 的推演见[联合索引与覆盖索引](./composite-covering-back-table.mdx)。
 
 <span id="5-有索引为什么没有被选中"></span>
 
-## 6. 索引未被使用的原因 {#5-有索引为什么没有被选中}
+## 6. 索引选择与查询条件 {#5-有索引为什么没有被选中}
 
-MySQL 优化器会估算不同执行计划的成本。索引只是候选访问路径；扫描范围太大，或者索引无法建立有效查找范围时，全表扫描反而可能更便宜。估算依赖索引统计信息、直方图等数据，统计信息失真或过期也会影响计划选择。
+优化器比较候选访问路径的总成本。扫描范围过大时，二级索引还需大量回表。全表扫描就有成本优势。统计信息与直方图影响这些估算。
 
-### 6.1 索引里没有计算结果 {#51-索引里没有计算结果}
+### 6.1 函数条件与范围改写 {#51-索引里没有计算结果}
 
-假设 `created_at` 已经建立普通索引：
+普通日期索引保存原始日期值。
 
 ```sql
-SELECT *
-FROM users
-WHERE YEAR(created_at) = 2026;
+SELECT * FROM users WHERE YEAR(created_at) = 2026;
 ```
 
-索引保存的是 `created_at` 原始值，不是 `YEAR(created_at)`。这条条件很难直接对应到索引中的一段连续范围。
-
-日期条件可以写回原始列：
+`YEAR(created_at)` 的结果未存入普通索引。将条件改为原始列范围，能直接表达查找边界。
 
 ```sql
-SELECT *
-FROM users
+SELECT * FROM users
 WHERE created_at >= '2026-01-01'
   AND created_at < '2027-01-01';
 ```
 
-MySQL 也支持生成列索引和函数索引，但需要显式创建与查询表达式匹配的索引。例如：
+MySQL 8.0.13 起支持函数索引。若工作负载确需按年份查找，可以显式建立：
 
 ```sql
-CREATE INDEX idx_users_created_year
-ON users ((YEAR(created_at)));
+CREATE INDEX idx_users_created_year ON users ((YEAR(created_at)));
 ```
 
-普通的 `created_at` 索引不会自动保存 `YEAR(created_at)` 的结果。
+该索引维护表达式结果，需计入额外写入成本。
 
-### 6.2 左侧通配符没有确定的起点 {#52-左侧通配符没有确定的起点}
+### 6.2 前导通配符 {#52-左侧通配符没有确定的起点}
+
+字符串 B+ 树按字符前缀排列。
 
 ```sql
-SELECT *
-FROM users
-WHERE email LIKE '%@example.com';
+SELECT * FROM users WHERE email LIKE '%@example.com';
 ```
 
-B+ 树中的字符串从左向右排列。条件以 `%` 开头时，数据库无法确定邮箱的左侧起点，也就无法形成普通的索引范围。对于普通字符串索引，并且没有函数或不利的隐式类型转换时，`email LIKE 'hello%'` 有明确前缀，可以从 `hello` 对应的位置开始查找。
+前导 `%` 缺少固定起点，无法形成普通前缀范围。`LIKE 'hello%'` 则可按固定前缀定位。后缀检索频繁时，可单独存储域名并为域名建索引。
 
-### 6.3 索引过滤不掉多少数据 {#53-索引过滤不掉多少数据}
+### 6.3 数据分布与选择性 {#53-索引过滤不掉多少数据}
 
-假设 `users` 有 100 万行，其中 90 万行的 `status` 都是 `1`：
+假设表有 100 万行，其中 90 万行满足 `status=1`。
 
 ```sql
 SELECT * FROM users WHERE status = 1;
 ```
 
-即使 `status` 建有二级索引，这条查询仍要读取大部分记录。沿二级索引找到 90 万个主键，再逐行回表，可能比直接扫描聚簇索引更贵。优化器选择全表扫描时，问题出在数据分布和读取成本，不在 `=` 这个操作符。
+二级索引方案需定位 90 万个主键，再取完整行。直接扫描聚簇索引则沿叶子读取。优化器会比较两条路径的总成本。
 
-这里的数字只是为了说明数据分布怎样影响执行计划。换成 `status = 0`，同一个索引可能就有完全不同的价值。
+`status=0` 对应较少记录，同一索引有不同收益。因此，测试参数要包含热点值和低频值。
 
 <span id="6-从一条查询决定索引怎么建"></span>
 
-## 7. 索引设计步骤 {#6-从一条查询决定索引怎么建}
+## 7. 字符串前缀索引 {#字符串前缀索引}
 
-索引设计需要落到具体查询上。继续使用 `users` 表，现在要查询最近创建的 20 个正常用户：
+长字符串可仅对前若干字符建索引。
 
 ```sql
-SELECT id, email
-FROM users
-WHERE status = 1
-  AND created_at >= '2026-01-01'
-ORDER BY created_at DESC
-LIMIT 20;
+CREATE INDEX idx_users_email_prefix ON users(email(20));
 ```
 
-`(status, created_at)` 与这条查询的过滤和排序顺序一致。`status` 先完成等值定位，随后在 `created_at` 的有序范围内倒序读取，得到 20 行后即可停止。
+该索引节省键空间，但相同前缀仍需检查完整值。前缀越短，需继续检查的候选记录越多。可比较前缀与完整值的去重比例，再验证实际扫描量。
 
-这里把 `status` 放在左侧，是因为查询先对它做等值限定，随后还需要 `created_at` 的范围和顺序。联合索引没有一条脱离查询的列顺序口诀；字段区分度、条件组合、排序和其他查询能否复用，都可能改变选择。
+前缀索引无法覆盖完整 `email` 的返回需求。它也无法单独提供完整字符串的排序。唯一前缀索引还会约束前缀本身唯一。两个不同邮箱共享前 20 个字符时，也会冲突。
 
-如果把 `email` 也放进索引，形成 `(status, created_at, email)`，这条查询可以避免回表。但它每次最多返回 20 行，较窄的索引只会产生有限次数的回表。为了省掉这部分读取，让插入、删除和涉及相关索引列的更新维护更宽的索引，在这个例子里未必划算。
+## 8. 索引设计步骤 {#6-从一条查询决定索引怎么建}
 
-另一些页面可能完全不带 `status`，只按 `created_at` 查询。`(status, created_at)` 无法为它们提供相同的定位能力。这时是否增加 `(created_at)`，要看这些查询出现的频率和扫描范围。字段列表本身给不出答案，查询才可以。
+现在需要查询最近创建的 20 个正常用户。
+
+```sql
+CREATE INDEX idx_users_status_created ON users(status, created_at);
+SELECT id, email FROM users
+WHERE status = 1 AND created_at >= '2026-01-01'
+ORDER BY created_at DESC LIMIT 20;
+```
+
+`status` 固定后，该前缀内按 `created_at` 排列。索引可倒序扫描，取得 20 个匹配项后停止。范围内不足 20 行时，扫描到范围末尾。
+
+加入 `email` 可形成覆盖索引，减少取列回表。但当前查询只需返回至多 20 行。扩大索引换来的读收益，要与持续写入成本比较。
+
+其他查询若只按日期过滤，需要单独评估日期索引。等值列顺序还取决于哪些查询需要复用前缀。列基数只是设计输入之一。
 
 <span id="7-用-explain-检查推断"></span>
 
-## 8. 用 EXPLAIN 验证 {#7-用-explain-检查推断}
+## 9. 执行计划验证 {#7-用-explain-检查推断}
 
-前面的分析来自索引结构，数据库实际选择了什么，可以从执行计划中看到：
+使用相同 SQL 和实际绑定值验证候选索引。
 
 ```sql
-EXPLAIN
-SELECT *
-FROM users
-WHERE status = 1
-  AND created_at >= '2026-01-01';
+EXPLAIN SELECT id, email FROM users
+WHERE status = 1 AND created_at >= '2026-01-01'
+ORDER BY created_at DESC LIMIT 20;
 ```
 
-初次阅读执行计划，可以先看下面几个字段：
+比较扫描量、取行量、排序和响应时间。字段含义及实际计时的读法见[执行计划](./execution-plan.mdx)。
 
-| 字段 | 说明 |
-| --- | --- |
-| `type` | MySQL 访问数据的方式 |
-| `possible_keys` | 候选索引 |
-| `key` | 实际选择的索引 |
-| `rows` | 预计需要检查的行数 |
-| `filtered` | 条件过滤后预计保留的数据比例 |
-| `Extra` | 覆盖索引、额外排序、临时表等补充信息 |
+### 9.1 慢查询验证步骤 {#71-从慢查询得到一个可以验证的结论}
 
-下面是一种可能的结果。`rows` 会随数据量和统计信息变化，这里只用来演示读取方式：
+1. 记录实际 SQL、参数、数据规模和调用频率。
+2. 用 EXPLAIN 确认索引、扫描范围和排序。
+3. 在受控环境用 `EXPLAIN ANALYZE` 记录实际统计。
+4. 调整 SQL 或索引后，按相同条件对照测试。
+5. 同时比较写入延迟、索引空间和其他高频查询。
 
-| `type` | `possible_keys` | `key` | `key_len` | `rows` | `filtered` | `Extra` |
-| --- | --- | --- | ---: | ---: | ---: | --- |
-| `range` | `idx_users_status_created` | `idx_users_status_created` | 6 | 1200 | 100.00 | `NULL` |
+计划改变后，仍需确认实际扫描量与延迟改善。热点参数与普通参数都应覆盖。
 
-`type = range` 表示 MySQL 使用索引范围访问，`key` 说明实际选择了哪个索引。示例中的 `key_len = 6` 需要结合列类型理解：`TINYINT` 占 1 字节，`DATETIME` 占 5 字节。这个结果与两列共同构造访问边界相符，只能作为旁证，不能独立证明每一列缩小了多少扫描量。可空列和字符集也会改变长度，因此不能把 `key_len` 直接当成“使用了几列”。
+## 10. 工作负载与索引维护 {#工作负载与索引维护}
 
-`rows` 是优化器估算的检查行数，`filtered` 是应用其余条件后预计保留的比例。`range` 只说明访问方式从全表扫描变成了索引范围；范围是否真的足够小，还要比较 `rows`、表的总行数和实际执行结果。
+候选索引应覆盖一组真实查询。记录各查询的过滤、排序、返回列和频率。再比较前缀复用率与读写成本。
 
-全表扫描可以直接从 `type = ALL` 识别。`type = index` 则通常表示全索引扫描，需要读取该索引的大量乃至全部叶子记录；它虽然出现了索引名，读取范围仍可能很大。即使 `key` 已经选中索引，`rows` 很大也说明这条访问路径可能仍然昂贵。
+字符串索引列应使用字符串参数。用数字比较字符串列时，会发生类型转换。多个字符串能转换为同一数值，妨碍索引等值定位。
 
-`Extra` 出现 `Using index condition` 时，表示 MySQL 可以先在索引层判断部分条件，再决定是否读取完整记录。它描述的是索引条件下推，不是 `range` 访问方式必然附带的结果。
-
-把几个容易混淆的概念放到同一条读取路径中，关系会更清楚：访问条件先确定索引读取范围；索引条件下推在索引层继续过滤；查询仍缺少列时发生回表；索引已经包含结果列时形成覆盖查询，可以省掉为了取列而进行的回表。
-
-需要实际行数和执行时间时，可以在测试环境使用 `EXPLAIN ANALYZE`。它会真正执行查询，因此不适合直接拿一条未知成本的 SQL 去生产环境试手气。下面是经过简化的示意输出：
-
-```text
--> Index range scan on users using idx_users_status_created
-   (cost=250 rows=1200)
-   (actual time=0.080..2.400 rows=1187 loops=1)
-```
-
-`actual time` 的两个值分别表示返回第一行和返回全部行的大致时间，单位是毫秒；存在多次循环时，它们是每次循环的平均值。实际处理量可以结合 `rows × loops` 理解。示例中预计 1200 行，实际每次循环返回 1187 行，估算与实测接近；两者相差很大时，统计信息和条件选择性就是后续检查方向。
-
-### 8.1 从慢查询得到一个可以验证的结论 {#71-从慢查询得到一个可以验证的结论}
-
-1. 还原真正执行的 SQL、参数和数据规模。
-2. 从 `EXPLAIN` 确认访问方式、索引和预计扫描行数。
-3. 用查询条件、索引顺序和数据分布解释当前计划。
-4. 修改 SQL 或索引后，在接近真实的数据上比较执行计划和耗时。
-
-新增索引没有被选择，主要访问路径也没有改变时，它通常没有解决原来的访问问题。计划发生了变化，也还要看实际扫描行数和耗时；换一条路不等于路程变短。
-
-## 9. 工作负载与索引维护 {#工作负载与索引维护}
-
-先列出高频查询的等值条件、范围、排序、返回列与调用频率，再设计联合索引。等值列的相对顺序还取决于其他查询能否复用前缀，不是把基数最高的列机械放到最前面。范围后的列仍可能支持过滤和覆盖，但通常不能同时提供另一列的整体排序。
-
-字符串索引列与数字比较时，隐式转换可能妨碍快速定位；统一参数类型，并用实际计划验证。`LIKE 'abc%'` 可能形成范围，`LIKE '%abc'` 通常不能靠常规 B+ 树定位前缀范围；这不排除优化器选择全索引扫描。
-
-新增索引还要比较更新延迟、空间和 Buffer Pool 压力。MySQL 8.4 的不可见索引默认不供优化器选择，但仍被维护，唯一约束也仍生效；可以用于评估撤下索引对查询的影响，不能把它当作已删除索引或关闭唯一校验。
+MySQL 8.4 默认忽略不可见索引。它仍承担写入维护，唯一约束也继续生效。可先将候选删除索引设为不可见，观察查询退化。删除前还需核对约束和完整业务周期。
 
 <span id="8-常见问题"></span>
 
-## 10. 常见问题 {#8-常见问题}
+## 11. 常见问题 {#8-常见问题}
 
-这篇文章覆盖的核心能力，可以压缩成五组问答：
+### 11.1 冗余索引的判断 {#冗余索引的判断}
 
-1. **索引解决什么问题？** 通过有序结构减少需要检查的数据，代价是额外的存储和写入维护。
-2. **为什么会回表？** 二级索引主要保存索引列和聚簇索引键，查询其他列时还要访问聚簇索引。
-3. **最左前缀从哪里来？** 联合索引按照列的定义顺序逐级排列，缺少左侧列就无法直接确定连续起点。
-4. **有索引为什么还会全表扫描？** 优化器估算的是总成本，低选择性的索引加上大量回表可能更贵。
-5. **怎样读最小执行计划？** `type` 看访问方式，`key` 看实际索引，`rows` 看预计检查量，再用 `EXPLAIN ANALYZE` 验证实际结果。
+普通索引 `(a)` 的查询前缀可被 `(a,b)` 覆盖。删除前仍需比较索引宽度和实际查询成本。唯一索引 `(a)` 与唯一索引 `(a,b)` 约束不同。后者允许相同 `a` 搭配不同 `b`，因此不能直接替换。
+
+### 11.2 低基数列的索引位置 {#低基数列的索引位置}
+
+低基数等值列也可作为联合索引前缀。例如状态固定后按时间取前 20 行。是否合适取决于过滤与排序组合，以及其他查询的复用。
 
 <span id="9-面试题"></span>
 
-## 11. 面试题 {#9-面试题}
+## 12. 面试题 {#9-面试题}
 
-### 11.1 给定一条慢 SQL，怎样用 EXPLAIN 判断索引是否有效 {#explain-slow-sql}
+### 12.1 给定一条慢 SQL，怎样用 EXPLAIN 判断索引是否有效 {#explain-slow-sql}
 
 <!-- 面试来源：
 - 美团：https://www.nowcoder.com/discuss/608995688709455872
@@ -238,20 +200,20 @@ WHERE status = 1
 - `type`、`key`、`rows`、`filtered` 与 `Extra`。
 - 联合索引、范围、回表和实测验证。
 
-**相关内容**：[有索引，为什么没有被选中](#5-有索引为什么没有被选中)至[用 EXPLAIN 检查推断](#7-用-explain-检查推断)。
+**相关内容**：[索引选择与查询条件](#5-有索引为什么没有被选中)至[执行计划验证](#7-用-explain-检查推断)。
 
 <details>
 <summary>参考回答</summary>
 
-先取得真正执行的 SQL、绑定参数、表结构和数据规模，再看 EXPLAIN。`type` 说明访问方式，`key` 是实际索引，`rows` 是预计检查量，`filtered` 反映剩余条件的过滤比例，`Extra` 可以提示覆盖、索引条件下推、额外排序或临时表。出现索引名不代表扫描范围小，`type = index` 仍可能读取整棵索引。
+先取得真实 SQL、绑定参数和数据分布。EXPLAIN 的 `key` 表示实际索引，`rows` 表示估计扫描量。再确认排序、覆盖和下推情况。
 
-接着用联合索引顺序、范围边界、选择性和回表解释计划。统计估算与实际分布可能不同，因此在安全环境用 EXPLAIN ANALYZE 对照实际行数和耗时。调整 SQL 或索引后比较同一负载下的扫描量与延迟；只有访问路径和业务指标都改善，才能确认优化有效。
+在受控环境用 `EXPLAIN ANALYZE` 比较实际统计。调整后对照同一负载的扫描量与延迟。还需检查写入成本和其他高频查询，确认整体收益。
 
 </details>
 
-### 11.2 如何为等值、范围和排序同时存在的查询设计联合索引？ {#workload-index}
+### 12.2 如何为等值、范围和排序同时存在的查询设计联合索引？ {#workload-index}
 
-<!-- 面试来源：本站自测：依据本文机制与官方资料设计，无已核验的公司归属。 -->
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
 **出现公司**：暂无已核验的公开来源（本站自测）
 
@@ -265,13 +227,13 @@ WHERE status = 1
 <details>
 <summary>参考回答</summary>
 
-先确定查询族，选择能形成有界扫描的前缀，检查范围后面的排序列是否仍全局有序，再评估是否需要少量覆盖列。对候选方案用相同数据和参数比较扫描量、回表、排序与写入开销；低选择性等值列也可能适合放在范围前，不能只按基数排序。
+等值列固定前缀，范围列承接扫描与兼容的排序。例如 `(status,created_at)` 适合按状态取最近记录。覆盖列是否加入，取决于回表收益和索引宽度。其他查询的前缀复用需求也会影响列顺序。
 
 </details>
 
-### 11.3 把索引设为不可见，是否会停止维护它并取消唯一约束？ {#invisible-index}
+### 12.3 把索引设为不可见，是否会停止维护它并取消唯一约束？ {#invisible-index}
 
-<!-- 面试来源：本站自测：依据本文机制与官方资料设计，无已核验的公司归属。 -->
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
 **出现公司**：暂无已核验的公开来源（本站自测）
 
@@ -285,17 +247,36 @@ WHERE status = 1
 <details>
 <summary>参考回答</summary>
 
-不会。不可见主要影响优化器默认选择，写入仍维护该索引，唯一索引仍检查唯一性。用它验证移除访问路径的影响后，还需独立评估真正删除后的约束和写入变化。
+不可见索引仍被维护，唯一约束也仍然生效。它只退出优化器的默认候选范围。测试查询退化后，还需核对约束用途再决定删除。
 
 </details>
 
 <span id="10-扩展阅读"></span>
 
-## 12. 参考资料 {#10-扩展阅读}
+### 12.4 邮箱前缀索引能覆盖完整邮箱查询并保证完整值唯一吗？ {#prefix-index-design}
 
-1. [MySQL 8.4：Optimization and Indexes](https://dev.mysql.com/doc/refman/8.4/en/optimization-indexes.html)
-2. [MySQL 8.4：Clustered and Secondary Indexes](https://dev.mysql.com/doc/refman/8.4/en/innodb-index-types.html)
-3. [MySQL 8.4：Multiple-Column Indexes](https://dev.mysql.com/doc/refman/8.4/en/multiple-column-indexes.html)
-4. [MySQL 8.4：EXPLAIN Statement](https://dev.mysql.com/doc/refman/8.4/en/explain.html)
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：前缀选择性、覆盖能力和唯一性。
+
+**相关内容**：[字符串前缀索引](#字符串前缀索引)。
+
+<details>
+<summary>参考回答</summary>
+
+前缀索引只保存部分邮箱，返回完整值仍需取行。普通前缀索引没有唯一性约束。唯一前缀索引要求前缀唯一，比完整邮箱唯一更严格。不同邮箱若共享相同前缀，也会被拒绝。
+
+</details>
+
+## 13. 参考资料 {#10-扩展阅读}
+
+- [MySQL 8.4：Optimization and Indexes](https://dev.mysql.com/doc/refman/8.4/en/optimization-indexes.html)
+- [MySQL 8.4：Clustered and Secondary Indexes](https://dev.mysql.com/doc/refman/8.4/en/innodb-index-types.html)
+- [MySQL 8.4：Multiple-Column Indexes](https://dev.mysql.com/doc/refman/8.4/en/multiple-column-indexes.html)
+- [MySQL 8.4：EXPLAIN Statement](https://dev.mysql.com/doc/refman/8.4/en/explain.html)
 - [MySQL 8.4：Invisible Indexes](https://dev.mysql.com/doc/refman/8.4/en/invisible-indexes.html)
 - [MySQL 8.4：Type Conversion](https://dev.mysql.com/doc/refman/8.4/en/type-conversion.html)
+- [MySQL 8.4：Column Indexes](https://dev.mysql.com/doc/refman/8.4/en/column-indexes.html)
+- [MySQL 8.4：CREATE INDEX](https://dev.mysql.com/doc/refman/8.4/en/create-index.html)

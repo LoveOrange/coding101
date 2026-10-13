@@ -7,13 +7,15 @@ knowledge:
 
 # SQL 连接
 
-SQL 连接根据条件组合不同来源的行。本文比较 INNER JOIN 和 LEFT JOIN，重点检查一对多关系、未匹配行以及 ON 与 WHERE 的语义差异。
+SQL 连接根据条件组合不同来源的行。本文负责 MySQL 8.4 的匹配、补空、存在性和结果粒度。分组统计见 [SQL 聚合](./aggregation.mdx)，计划判断见[执行计划](../indices/execution-plan.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- INNER JOIN 只保留匹配行，LEFT JOIN 还保留左侧未匹配行。
-- 右侧匹配多行时会扩大结果行数，不会自动按左侧主键去重。
-- 外连接中把右表过滤条件从 ON 移到 WHERE，可能丢掉左侧未匹配行。[卡](#left-join-where)
+- INNER JOIN 只返回匹配行，LEFT JOIN 还返回补空后的未匹配左行。[卡](#left-join-where)
+- 一对多连接为每个匹配对输出一行，结果会重复出现左表主键。
+- WHERE 中拒绝 NULL 的右表条件会移除 LEFT JOIN 补空行。[卡](#left-join-where)
+- EXISTS 只判断是否存在匹配行，NOT EXISTS 选择没有匹配项的行。[卡](#exists-anti-join)
+- 多个明细表先按目标粒度聚合，可避免连接后重复求和。[卡](#join-fanout)
 
 ## 2. 匹配与补空 {#匹配与补空}
 
@@ -31,29 +33,75 @@ LEFT JOIN purchases p ON p.customer_id = c.id
 ORDER BY c.id, p.id;
 ```
 
-结果是 `(1,10)、(1,11)、(2,12)、(3,NULL)`。Lin 有两笔购买，出现两行；Yu 没有匹配记录，右侧列补 NULL。改成 INNER JOIN 就没有 Yu 这一行。
+结果是 `(1,10)、(1,11)、(2,12)、(3,NULL)`。Lin 有两笔购买，因此出现两行。Yu 没有匹配记录，右侧列补 NULL。改成 INNER JOIN 后，结果只保留匹配行。
 
-## 3. ON 与 WHERE
+## 3. ON 与 WHERE {#on-与-where}
+
+ON 决定右表哪些行能匹配。
 
 ```sql
-SELECT c.id, p.id AS purchase_id
-FROM customers c
+SELECT c.id, p.id AS purchase_id FROM customers c
 LEFT JOIN purchases p
   ON p.customer_id = c.id AND p.amount >= 50
 ORDER BY c.id, p.id;
 ```
 
-得到 `(1,10)、(1,11)、(2,NULL)、(3,NULL)`。条件放在 ON 中限制哪些购买能匹配，仍保留所有客户。如果改成在连接后执行 `WHERE p.amount >= 50`，Ming、Yu 的补空行都无法通过条件，只剩 Lin 的两行。
+结果是 `(1,10)、(1,11)、(2,NULL)、(3,NULL)`。金额条件限制购买记录，三个客户仍全部保留。
 
-## 4. 使用边界 {#使用边界}
+改为连接后的 `WHERE p.amount>=50` 时，只剩 Lin 两行。Ming 的 20 不满足条件。Yu 的补空值比较结果为 UNKNOWN，也被 WHERE 移除。
 
-先用业务关系推导行数，再看执行计划。一个客户既关联多个订单又关联多个标签时，两次一对多连接可能产生订单数乘标签数的行，直接求 SUM 会重复计数。
+## 4. 存在性与反连接 {#存在性与反连接}
 
-只需判断存在性时，可用 EXISTS 避免为了“有没有”而引入多行。需要汇总多个明细表时，通常先分别聚合到客户粒度再连接。DISTINCT 不能被用来掩盖所有错误的连接条件。
+只关心是否有购买记录时，用 EXISTS 表达意图。
 
-## 5. 面试题
+```sql
+SELECT c.id FROM customers c
+WHERE EXISTS (SELECT 1 FROM purchases p WHERE p.customer_id=c.id)
+ORDER BY c.id;
+SELECT c.id FROM customers c
+WHERE NOT EXISTS (SELECT 1 FROM purchases p WHERE p.customer_id=c.id)
+ORDER BY c.id;
+```
 
-### 5.1 LEFT JOIN 后在 WHERE 中过滤右表字段，会有什么影响？ {#left-join-where}
+第一条返回 1、2，各出现一次。第二条只返回 3。右表匹配数量不会扩大 EXISTS 查询的结果。
+
+反连接也可写成 LEFT JOIN 后检查右表主键为空。应检查右表保证非空的列，避免误把真实空值当成未匹配。`NOT IN` 的空值问题见 [NOT IN 与 NULL](./query.mdx#not-in-与-null)。
+
+## 5. 多明细连接与重复统计 {#多明细连接与重复统计}
+
+一个客户有 2 个订单和 3 个标签。两张明细表都按客户关联时，会产生 6 个匹配组合。订单金额被重复 3 次，直接 SUM 会放大总额。
+
+应先将每张明细表聚合到客户粒度，再连接结果。例如购买总额可先计算为一人一行。
+
+```sql
+SELECT c.id, COALESCE(p.total, 0) AS total
+FROM customers c
+LEFT JOIN (
+  SELECT customer_id, SUM(amount) AS total
+  FROM purchases GROUP BY customer_id
+) p ON p.customer_id=c.id
+ORDER BY c.id;
+```
+
+结果为 `(1,130)、(2,20)、(3,0)`。其他明细也先聚合到一人一行，再加入连接。
+
+`SUM(DISTINCT amount)` 按金额值去重。两笔合法订单金额相同，也会被合并。因此它不能修复明细粒度错误。
+
+## 6. 连接算法 {#连接算法}
+
+嵌套循环对每个外层行查找内层匹配项。内层连接列有索引时，可减少每轮检查量。驱动表应关注过滤后的行数，而非仅看表总行数。
+
+MySQL 8.4 可对适合的连接选择 hash join。等值连接先构造哈希表，再探测匹配键。内存不足时还需考虑磁盘分区成本。实际算法与循环次数见[执行计划](../indices/execution-plan.mdx)。
+
+## 7. 使用边界 {#使用边界}
+
+ON 中的普通等值比较无法匹配两个 NULL。需要将空值视为相等时，可在 MySQL 中使用 `<=>`。该语义会增加空值之间的匹配，需明确业务意图。
+
+CROSS JOIN 无过滤时产生笛卡尔积。自连接则是同一张表使用不同别名参与匹配。内连接可由优化器重排，SQL 书写顺序与物理顺序分开判断。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 LEFT JOIN 后在 WHERE 中过滤右表字段，会有什么影响？ {#left-join-where}
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
@@ -66,10 +114,64 @@ ORDER BY c.id, p.id;
 <details>
 <summary>参考回答</summary>
 
-LEFT JOIN 先为未匹配左行补出右侧 NULL；WHERE 继续过滤整个结果。若条件要求右字段满足普通比较，补空行得到 UNKNOWN 而被移除。想保留所有左行、仅限制可匹配的右行时，应把相应条件放在 ON，并用没有右记录和右记录不满足条件两种输入验证。
+拒绝 NULL 的右表条件会移除左侧未匹配行。LEFT JOIN 先补出右侧 NULL，WHERE 再过滤结果。普通大小比较对 NULL 得到 UNKNOWN。要保留所有左行，可将右表匹配条件放在 ON。`WHERE p.id IS NULL` 则有相反用途，可选择未匹配行。
 
 </details>
 
-## 6. 参考资料
+### 8.2 只查有订单或没有订单的客户，为什么可以用 EXISTS 和 NOT EXISTS？ {#exists-anti-join}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：存在性、反连接与行数。
+
+**相关内容**：[存在性与反连接](#存在性与反连接)。
+
+<details>
+<summary>参考回答</summary>
+
+EXISTS 判断是否至少有一个匹配行。NOT EXISTS 判断是否完全没有匹配行。它们按客户筛选，多个订单也只保留一份客户行。用 LEFT JOIN 表达反连接时，应检查右表非空主键。
+
+</details>
+
+### 8.3 订单与标签同时连接后金额翻倍，为什么 DISTINCT 未必能修复？ {#join-fanout}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：多对多组合和统计粒度。
+
+**相关内容**：[多明细连接与重复统计](#多明细连接与重复统计)。
+
+<details>
+<summary>参考回答</summary>
+
+两个明细表会按客户产生匹配组合，重复订单金额。应先分别聚合到客户粒度，再连接结果。`SUM(DISTINCT amount)` 会合并金额相同的合法订单。因此，修复应针对行关系和统计粒度。
+
+</details>
+
+### 8.4 MySQL 连接一定由小表驱动大表吗，连接算法如何影响成本？ {#join-algorithms}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：过滤后基数、索引探测与哈希构建。
+
+**相关内容**：[连接算法](#连接算法)。
+
+<details>
+<summary>参考回答</summary>
+
+连接成本取决于过滤后行数和内层访问成本。嵌套循环需关注外层行数与每次索引探测。Hash join 则比较构建、探测及内存成本。MySQL 8.4 根据候选计划选算法，需用实际计划验证。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
 
 - [MySQL：JOIN Clause](https://dev.mysql.com/doc/refman/8.4/en/join.html)
+- [MySQL 8.4：EXISTS and NOT EXISTS](https://dev.mysql.com/doc/refman/8.4/en/exists-and-not-exists-subqueries.html)
+- [MySQL 8.4：Hash Join Optimization](https://dev.mysql.com/doc/refman/8.4/en/hash-joins.html)
+- [MySQL 8.4：Comparison Operators](https://dev.mysql.com/doc/refman/8.4/en/comparison-operators.html)
