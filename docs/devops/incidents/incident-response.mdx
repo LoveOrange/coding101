@@ -16,7 +16,7 @@ knowledge:
 - 用户反馈“慢”或“打不开”，先确定影响范围（全部用户还是部分地区、运营商、客户端版本），再沿请求路径逐段排查：客户端与本地网络 → DNS → CDN 与接入层 → 负载均衡 → 应用 → 依赖。[卡](#user-reported-slowness)
 - 复盘写清楚时间线、影响、根因、做得好和不好的地方，以及有负责人和截止时间的改进项；关注系统和流程，不追究个人。[卡](#postmortem)
 
-## 2. 处置流程 {#process}
+## 2. 处置流程 {#处置流程}
 
 | 阶段 | 要做的事 |
 | --- | --- |
@@ -38,7 +38,7 @@ knowledge:
 
 **保留现场**：重启前先收集线程栈、堆转储、关键日志和监控截图，否则根因可能无法确认。
 
-## 3. 从用户反馈定位问题 {#user-path}
+## 3. 从用户反馈定位问题 {#从用户反馈定位问题}
 
 用户说“某个功能很慢”或“页面打不开”，先回答三个问题：
 
@@ -59,7 +59,7 @@ knowledge:
 
 只影响部分地区时，重点看该地区的 DNS 解析结果、接入的 CDN 节点和机房，以及当地运营商网络；可以用分布在各地的拨测确认是否能复现。只影响部分用户时，看这些用户是否落在同一个实例、分片或灰度批次上。
 
-## 4. 复盘 {#postmortem-doc}
+## 4. 复盘 {#复盘}
 
 复盘文档的结构：
 
@@ -91,7 +91,7 @@ knowledge:
 - 止血优先于根因；先查最近的变更。
 - 定级、角色分工与沟通；机房故障的切流前提。
 
-**相关内容**：[处置流程](#process)、[高可用与容灾](../../system-design/availability/high-availability-backup-rto-rpo.mdx)。
+**相关内容**：[处置流程](#处置流程)、[高可用与容灾](../../system-design/availability/high-availability-backup-rto-rpo.mdx)。
 
 <details>
 <summary>参考回答</summary>
@@ -124,7 +124,7 @@ knowledge:
 - 先确定影响范围、开始时间和功能，找出受影响用户的共同特征。
 - 沿 DNS、CDN、接入层、应用、依赖逐段排查，每段说出检查方法。
 
-**相关内容**：[从用户反馈定位问题](#user-path)、[Linux 网络排查](../linux/network-troubleshooting.mdx)。
+**相关内容**：[从用户反馈定位问题](#从用户反馈定位问题)、[Linux 网络排查](../linux/network-troubleshooting.mdx)。
 
 <details>
 <summary>参考回答</summary>
@@ -153,7 +153,7 @@ knowledge:
 - 复盘文档的结构：影响、时间线、根因、防线为什么失效、改进项。
 - 改进项可跟踪；无责文化；按预防、发现、恢复、减小影响分类。
 
-**相关内容**：[复盘](#postmortem-doc)、[事故复盘与组织学习](../../system-design/leadership/incident-review-failed-designs-organizational-learning.mdx#release-incident-review)。
+**相关内容**：[复盘](#复盘)、[事故复盘与组织学习](../../system-design/leadership/incident-review-failed-designs-organizational-learning.mdx#release-incident-review)。
 
 <details>
 <summary>参考回答</summary>

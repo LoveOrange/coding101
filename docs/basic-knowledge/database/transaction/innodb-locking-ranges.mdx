@@ -85,7 +85,7 @@ FOR UPDATE;
 
 先找到等待事务、阻塞事务和锁定索引，再回到 SQL 与事务边界。只看到“Lock wait timeout”就增加超时，通常会让连接占用更久。
 
-## 10. 唯一键命中与未命中的双会话实验 {#unique-lock-example}
+## 10. 唯一键命中与未命中的双会话实验 {#唯一键命中与未命中的双会话实验}
 
 在独立练习库初始化：
 
@@ -106,7 +106,7 @@ SELECT * FROM lock_demo WHERE id = 15 FOR UPDATE;
 
 每轮实验结束后提交或回滚两个会话，再恢复表数据。用 `data_locks` 与 `data_lock_waits` 对照锁模式和索引；换成二级索引、非唯一条件或 RC 时，结论要重新核对。
 
-## 11. 死锁、超时与重试 {#deadlock-handling}
+## 11. 死锁、超时与重试 {#死锁超时与重试}
 
 两个事务按相反顺序占有记录，就可能形成循环等待。例如 A 先锁 10 再等 20，B 先锁 20 再等 10。正常等待可能最终被持锁方释放；死锁必须打破等待环。InnoDB 默认启用死锁检测，选择受害事务回滚；关闭检测后可能依赖超时处理。
 
@@ -114,7 +114,7 @@ SELECT * FROM lock_demo WHERE id = 15 FOR UPDATE;
 
 统一访问顺序、缩短事务、为过滤条件建合适索引可以降低概率，但不能承诺彻底消灭死锁。有界退避重试应放在新事务中，并以幂等标识约束副作用。
 
-## 12. NOWAIT 与 SKIP LOCKED {#locking-options}
+## 12. NOWAIT 与 SKIP LOCKED {#nowait-与-skip-locked}
 
 `FOR UPDATE NOWAIT` 遇到需要等待的行锁时直接报错；`FOR UPDATE SKIP LOCKED` 从结果中跳过被锁定的行。它们控制的是锁等待处理，不会让两个事务同时安全地修改同一行。
 
@@ -170,7 +170,7 @@ InnoDB 的记录锁作用于索引记录，gap lock 阻止在索引间隙中插�
 - 命中记录与不存在记录的差异。
 - RR 间隙锁与双会话验证。
 
-**相关内容**：[唯一键命中与未命中的双会话实验](#unique-lock-example)。
+**相关内容**：[唯一键命中与未命中的双会话实验](#唯一键命中与未命中的双会话实验)。
 
 <details>
 <summary>参考回答</summary>
@@ -190,7 +190,7 @@ InnoDB 的记录锁作用于索引记录，gap lock 阻止在索引间隙中插�
 - 等待环与超时阈值。
 - 回滚范围与新事务重试。
 
-**相关内容**：[死锁、超时与重试](#deadlock-handling)、[用数据库证据查看锁等待](#8-用数据库证据查看锁等待)。
+**相关内容**：[死锁、超时与重试](#死锁超时与重试)、[用数据库证据查看锁等待](#8-用数据库证据查看锁等待)。
 
 <details>
 <summary>参考回答</summary>
@@ -210,7 +210,7 @@ InnoDB 的记录锁作用于索引记录，gap lock 阻止在索引间隙中插�
 - 立即失败与跳过记录。
 - 任务领取与不完整结果集。
 
-**相关内容**：[NOWAIT 与 SKIP LOCKED](#locking-options)。
+**相关内容**：[NOWAIT 与 SKIP LOCKED](#nowait-与-skip-locked)。
 
 <details>
 <summary>参考回答</summary>
@@ -219,7 +219,7 @@ NOWAIT 把行锁等待变为立即错误，便于上层快速失败或重试。S
 
 </details>
 
-## 15. 参考资料 {#references}
+## 15. 参考资料 {#参考资料}
 
 - [MySQL 8.4：InnoDB Locking](https://dev.mysql.com/doc/refman/8.4/en/innodb-locking.html)
 - [MySQL 8.4：Transaction Isolation Levels](https://dev.mysql.com/doc/refman/8.4/en/innodb-transaction-isolation-levels.html)

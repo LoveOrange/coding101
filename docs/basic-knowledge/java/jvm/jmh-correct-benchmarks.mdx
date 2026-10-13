@@ -17,7 +17,7 @@ Java 微基准容易测到 JIT 的死代码消除、常量折叠、预热过程�
 - `@State` 的 Scope 决定线程之间是否共享对象，测并发结构时要用 `Scope.Benchmark`。
 - 微基准只适合比较小块 CPU 和内存代码，数据库、网络和排队问题要做系统压测。
 
-## 2. 测量模式 {#modes}
+## 2. 测量模式 {#测量模式}
 
 常用模式：
 
@@ -36,7 +36,7 @@ public class ParserBenchmark {
 
 纳秒单位不代表纳秒精度。结果可信度来自稳定环境、足够样本和合理置信区间。
 
-## 3. 死代码消除 {#dead-code}
+## 3. 死代码消除 {#死代码消除}
 
 错误示例：
 
@@ -58,7 +58,7 @@ public ParsedOrder parse(BenchmarkState state) {
 
 复杂场景可以把结果交给 `Blackhole`。不要把日志、断言或 I/O 放进每次 benchmark invocation，它们的耗时可能超过被测代码。
 
-## 4. 常量折叠与 `@State` {#constant-folding}
+## 4. 常量折叠与 `@State` {#常量折叠与-state}
 
 ```java
 @State(Scope.Thread)
@@ -83,7 +83,7 @@ Setup 层级要匹配成本：
 - `Iteration`：每轮测量前执行。
 - `Invocation`：每次调用执行，开销大且可能干扰流水线，只在确有必要时使用。
 
-## 5. 预热与 fork {#warmup-fork}
+## 5. 预热与 fork {#预热与-fork}
 
 ```java
 @Warmup(iterations = 5, time = 1)
@@ -95,7 +95,7 @@ Setup 层级要匹配成本：
 
 若问题是冷启动，不能用充分预热后的平均耗时回答。使用 SingleShot、零或指定预热，并把整个进程启动纳入测量边界。
 
-## 6. 基准方法中的循环 {#loops}
+## 6. 基准方法中的循环 {#基准方法中的循环}
 
 ```java
 @Benchmark
@@ -110,7 +110,7 @@ public long wrong() {
 
 大循环改变内联、向量化、分支预测和常量传播条件，测到的可能是批处理后的新程序。JMH 已经负责反复调用；需要批量语义时明确使用 `@OperationsPerInvocation`，并让批量大小属于业务问题。
 
-## 7. `State` 的 Scope {#state-scope}
+## 7. `State` 的 Scope {#state-的-scope}
 
 - `Scope.Thread`：每个测试线程独立状态。
 - `Scope.Benchmark`：所有线程共享一个实例。
@@ -118,7 +118,7 @@ public long wrong() {
 
 测并发容器时若误用 Thread scope，各线程操作自己的容器，结果根本没有竞争。测纯算法时误用共享可变状态，又可能把锁和伪共享混入结果。
 
-## 8. 用 profiler 解释差异 {#profilers}
+## 8. 用 profiler 解释差异 {#用-profiler-解释差异}
 
 ```bash
 java -jar target/benchmarks.jar ParserBenchmark -prof gc
@@ -134,7 +134,7 @@ java -jar target/benchmarks.jar ParserBenchmark -prof async
 
 两组均值有差异不等于知道原因。置信区间重叠、机器降频、后台进程和容器 CPU 限流也会污染结果。
 
-## 9. 微基准与系统压测 {#system-load-test}
+## 9. 微基准与系统压测 {#微基准与系统压测}
 
 JMH 适合比较小块 CPU/内存代码，例如解析器、集合操作和序列化核心。数据库、网络、线程池、缓存命中和请求排队需要更接近生产的负载模型。
 
@@ -171,7 +171,7 @@ IDE Agent、共享 JVM 状态、未控制预热、死代码消除和计时器开
 - 死代码消除和常量折叠。
 - 用 profiler 解释差异。
 
-**相关内容**：[测量模式](#modes)至[用 profiler 解释差异](#profilers)。
+**相关内容**：[测量模式](#测量模式)至[用 profiler 解释差异](#用-profiler-解释差异)。
 
 <details>
 <summary>参考回答</summary>
@@ -196,7 +196,7 @@ IDE Agent、共享 JVM 状态、未控制预热、死代码消除和计时器开
 - 独立进程提供重复样本。
 - fork 不能消除操作系统噪声。
 
-**相关内容**：[预热与 fork](#warmup-fork)。
+**相关内容**：[预热与 fork](#预热与-fork)。
 
 <details>
 <summary>参考回答</summary>

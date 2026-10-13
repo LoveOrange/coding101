@@ -17,7 +17,7 @@ Nginx 是最常见的反向代理和七层负载均衡器，LVS 是 Linux 内核
 - Nginx 的负载均衡算法有加权轮询（默认）、最少连接、IP 哈希和一致性哈希；开源版通过失败次数做被动健康检查。
 - 502 表示 Nginx 从上游得到无效响应或连不上上游（进程挂了、端口没监听、连接被重置）；504 表示上游在超时时间内没有响应（处理慢、下游慢）。先看 Nginx 错误日志，再看上游的状态和日志。[卡](#nginx-502-504)
 
-## 2. Nginx 的结构与常用配置 {#architecture}
+## 2. Nginx 的结构与常用配置 {#nginx-的结构与常用配置}
 
 **进程模型**：master 进程读取配置、管理 worker；worker 进程处理请求，数量一般等于 CPU 核数。每个 worker 用 epoll 监听大量连接，哪个连接有事件就处理哪个，处理过程中不阻塞。修改配置后执行 `nginx -s reload`，master 启动新的 worker，旧 worker 处理完已有请求后退出，实现不中断地重载。
 
@@ -52,7 +52,7 @@ server {
 }
 ```
 
-## 3. 负载均衡 {#load-balancing}
+## 3. 负载均衡 {#负载均衡}
 
 **Nginx 的算法**
 
@@ -85,7 +85,7 @@ server {
 
 **Keepalived**：用 VRRP 协议在主备两台负载均衡器之间漂移虚拟 IP，主节点故障时备节点接管 VIP；同时对后端做健康检查，自动维护 LVS 的后端列表。
 
-## 4. 502 与 504 {#errors}
+## 4. 502 与 504 {#502-与-504}
 
 | 状态码 | 产生方 | 含义 | 常见原因 |
 | --- | --- | --- | --- |
@@ -123,7 +123,7 @@ server {
 - master/worker 进程模型与 epoll 事件驱动。
 - 常用功能与动静分离；与 Apache 连接模型的差异。
 
-**相关内容**：[Nginx 的结构与常用配置](#architecture)、[I/O 多路复用](../../basic-knowledge/operating-system/io-multiplexing.mdx)。
+**相关内容**：[Nginx 的结构与常用配置](#nginx-的结构与常用配置)、[I/O 多路复用](../../basic-knowledge/operating-system/io-multiplexing.mdx)。
 
 <details>
 <summary>参考回答</summary>
@@ -156,7 +156,7 @@ Apache 的传统模式为每个连接分配一个进程或线程，并发高时�
 - 四层与七层的依据、能力和性能差异；Nginx 的负载均衡算法。
 - LVS 各模式的报文路径与限制；Keepalived 的 VRRP。
 
-**相关内容**：[负载均衡](#load-balancing)、[网络模型](../../basic-knowledge/network/network-models.mdx)。
+**相关内容**：[负载均衡](#负载均衡)、[网络模型](../../basic-knowledge/network/network-models.mdx)。
 
 <details>
 <summary>参考回答</summary>
@@ -184,7 +184,7 @@ Keepalived 用 VRRP 协议让主备两台负载均衡器共享一个虚拟 IP，
 - 状态码由谁产生；502 与 504 的典型原因。
 - 从 Nginx 错误日志和上游字段定位到具体后端；长连接复用导致的 502。
 
-**相关内容**：[502 与 504](#errors)、[Linux 网络排查](../linux/network-troubleshooting.mdx#connections)。
+**相关内容**：[502 与 504](#502-与-504)、[Linux 网络排查](../linux/network-troubleshooting.mdx#端口与连接状态)。
 
 <details>
 <summary>参考回答</summary>

@@ -17,7 +17,7 @@ knowledge:
 - 访问顺序模式下 `get` 也会修改链表，多线程只读也需要同步。
 - 这种 LRU 没有过期时间、加载并发控制和按大小淘汰，复杂缓存使用专用库。
 
-## 2. 哈希表与顺序链 {#structure}
+## 2. 哈希表与顺序链 {#哈希表与顺序链}
 
 HashMap 负责按键定位，顺序链负责遍历次序：
 
@@ -29,7 +29,7 @@ table buckets                     encounter order
 
 条目同时属于某个桶和全局顺序链。`get`、`put` 平均仍接近 O(1)，但每个条目多保存前后顺序引用，写入和访问时也可能需要维护链。
 
-## 3. 插入顺序 {#insertion-order}
+## 3. 插入顺序 {#插入顺序}
 
 默认构造保留键首次插入的顺序：
 
@@ -50,7 +50,7 @@ System.out.println(counts.keySet()); // [A, B]
 
 如果只为了稳定顺序，不需要排序，LinkedHashMap 比 TreeMap 少了对数比较成本。
 
-## 4. 访问顺序 {#access-order-section}
+## 4. 访问顺序 {#访问顺序}
 
 构造参数 `accessOrder` 设为 true 后，成功访问条目会把它移动到链尾：
 
@@ -67,7 +67,7 @@ System.out.println(cache.keySet()); // [B, A]
 
 访问顺序下，`get` 会修改内部顺序，因此它不再是结构上纯只读操作。迭代期间调用会改变顺序的方法可能触发 fail-fast，跨线程访问也必须同步。
 
-## 5. 用 removeEldestEntry 实现 LRU {#lru}
+## 5. 用 removeEldestEntry 实现 LRU {#用-removeeldestentry-实现-lru}
 
 ```java
 public final class LruCache<K, V> extends LinkedHashMap<K, V> {
@@ -90,7 +90,7 @@ public final class LruCache<K, V> extends LinkedHashMap<K, V> {
 
 `put` 加入新条目后，LinkedHashMap 调用 `removeEldestEntry`，返回 true 时移除链首。这个实现限制条目数量，并按最近访问顺序淘汰。
 
-### 5.1 简单 LRU 的局限 {#lru-limits}
+### 5.1 简单 LRU 的局限 {#简单-lru-的局限}
 
 这个简单 LRU 不提供：
 
@@ -103,7 +103,7 @@ public final class LruCache<K, V> extends LinkedHashMap<K, V> {
 
 生产缓存通常使用 Caffeine 等成熟库，或远程缓存系统。LinkedHashMap 适合教学、小规模局部缓存和约束简单的工具，不应因为代码短就承担完整缓存职责。
 
-## 6. LRU 与其他淘汰策略 {#eviction}
+## 6. LRU 与其他淘汰策略 {#lru-与其他淘汰策略}
 
 LRU 假设最近访问过的数据更可能再次访问。它可能被一次大范围扫描污染：大量只访问一次的键会挤出热点数据。
 
@@ -116,7 +116,7 @@ LRU 假设最近访问过的数据更可能再次访问。它可能被一次大�
 
 选择缓存策略要看访问分布、对象大小和可接受陈旧度，不能把所有“最近”需求都等同于 LRU。
 
-## 7. 迭代与内存成本 {#cost}
+## 7. 迭代与内存成本 {#迭代与内存成本}
 
 LinkedHashMap 沿顺序链遍历，成本与 size 成正比，不需要扫描大量空桶。这在容量预留较大而又频繁完整遍历时有优势。
 
@@ -157,7 +157,7 @@ LinkedHashMap 沿顺序链遍历，成本与 size 成正比，不需要扫描大
 - get、put、更新、淘汰和容量为零等边界。
 - LinkedHashMap 的访问顺序模式已经提供什么。
 
-**相关内容**：[哈希表与顺序链](#structure)至[用 removeEldestEntry 实现 LRU](#lru)。
+**相关内容**：[哈希表与顺序链](#哈希表与顺序链)至[用 removeEldestEntry 实现 LRU](#用-removeeldestentry-实现-lru)。
 
 <details>
 <summary>参考回答</summary>
@@ -182,7 +182,7 @@ LinkedHashMap 沿顺序链遍历，成本与 size 成正比，不需要扫描大
 - 哪些访问会在 accessOrder 模式中重排。
 - 读取修改结构对迭代和并发有什么影响。
 
-**相关内容**：[插入顺序](#insertion-order)、[访问顺序](#access-order-section)。
+**相关内容**：[插入顺序](#插入顺序)、[访问顺序](#访问顺序)。
 
 <details>
 <summary>参考回答</summary>

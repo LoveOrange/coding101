@@ -17,7 +17,7 @@ knowledge:
 - CPU 不高但接口慢，瓶颈在等待：磁盘 I/O、网络与下游依赖、锁、连接池或线程池耗尽、内存不足导致的交换。按“机器资源 → 网络 → 应用内部 → 下游”的顺序逐项排除。[卡](#slow-but-idle)
 - 先看趋势再看快照：对比问题前后的监控曲线，确认是突增还是缓慢增长，以及是否与发布、流量变化同时发生。
 
-## 2. load average {#load}
+## 2. load average 指标 {#load-average-指标}
 
 `uptime` 和 `top` 第一行显示三个数，分别是 1、5、15 分钟的指数加权平均负载。Linux 的负载统计两类进程：
 
@@ -36,7 +36,7 @@ knowledge:
 
 核数用 `nproc` 或 `lscpu` 查看。负载高的常见原因：计算密集的进程、大量线程竞争 CPU、磁盘 I/O 慢导致大量 D 状态进程、频繁的上下文切换和中断。
 
-## 3. 常用工具与关键字段 {#tools}
+## 3. 常用工具与关键字段 {#常用工具与关键字段}
 
 | 工具 | 看什么 | 关键字段 |
 | --- | --- | --- |
@@ -51,7 +51,7 @@ knowledge:
 
 `iostat` 按磁盘统计，用于判断哪块盘有压力；`iotop` 按进程统计，用于找出是谁在读写。`%util` 接近 100% 对单块机械盘意味着饱和，但 SSD 和 RAID 可以并行处理请求，`%util` 高不一定饱和，要结合 `await` 判断。
 
-## 4. 三类场景的排查路径 {#scenarios}
+## 4. 三类场景的排查路径 {#三类场景的排查路径}
 
 **CPU 使用率高**
 
@@ -93,7 +93,7 @@ knowledge:
 - 负载统计的是 R 和 D 状态的进程数，不是使用率。
 - 与核数比较的判断方法；区分 CPU 忙和 I/O 等待。
 
-**相关内容**：[load average](#load)、[常用工具与关键字段](#tools)。
+**相关内容**：[load average 指标](#load-average-指标)、[常用工具与关键字段](#常用工具与关键字段)。
 
 <details>
 <summary>参考回答</summary>
@@ -119,7 +119,7 @@ knowledge:
 - 从机器到进程、线程、代码的定位链路。
 - 区分用户态与内核态；内存不足引起的交换与 OOM。
 
-**相关内容**：[三类场景的排查路径](#scenarios)、[Java CPU 飙高排查](../../basic-knowledge/java/jvm/cpu-high-diagnosis.mdx)。
+**相关内容**：[三类场景的排查路径](#三类场景的排查路径)、[Java CPU 飙高排查](../../basic-knowledge/java/jvm/cpu-high-diagnosis.mdx)。
 
 <details>
 <summary>参考回答</summary>
@@ -146,7 +146,7 @@ knowledge:
 - CPU 不高说明在等待：I/O、网络、锁、池耗尽、下游。
 - `iostat` 与 `iotop` 的分工；按层次排除。
 
-**相关内容**：[三类场景的排查路径](#scenarios)、[常用工具与关键字段](#tools)。
+**相关内容**：[三类场景的排查路径](#三类场景的排查路径)、[常用工具与关键字段](#常用工具与关键字段)。
 
 <details>
 <summary>参考回答</summary>

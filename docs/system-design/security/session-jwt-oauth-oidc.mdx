@@ -37,7 +37,7 @@ JWT 通常由 header、payload 和 signature 组成。签名防止内容被篡�
 
 不能接受 token 自带的任意算法，也不能把 ID Token 当成面向 API 的 Access Token。
 
-## 4. JWT 撤销 {#revocation}
+## 4. JWT 撤销 {#jwt-撤销}
 
 自包含 Access Token 签发后，在过期前通常不查询服务端 Session。常见控制方式包括：
 
@@ -49,7 +49,7 @@ JWT 通常由 header、payload 和 signature 组成。签名防止内容被篡�
 
 把所有 JWT 都放入实时黑名单查询，会重新引入中心状态和可用性依赖，应按风险选择。
 
-## 5. OAuth 2.0 {#oauth}
+## 5. OAuth 2.0 {#oauth-20}
 
 OAuth 参与者包括 resource owner、client、authorization server 和 resource server。用户授权客户端取得 Access Token，客户端用它调用资源 API。
 
@@ -73,7 +73,7 @@ Refresh Token 生命周期较长，只发送给授权服务器。公共客户端
 
 浏览器应用可以使用 Backend for Frontend，把 token 保存在服务端，仅给浏览器安全 Session Cookie，减少脚本直接接触 token 的范围。
 
-## 8. 方案选择 {#selection}
+## 8. 方案选择 {#方案选择}
 
 同一系统可以同时使用：浏览器到 BFF 使用 Session Cookie，BFF 到 API 使用短期 JWT Access Token，第三方客户端通过 OAuth 获取授权，登录信息由 OIDC 提供。
 
@@ -105,7 +105,7 @@ Local Storage 中的 token 可被成功执行的 XSS 脚本读取；Cookie 可�
 - Access Token、Refresh Token、ID Token 的边界。
 - 短期令牌、轮换、撤销和 Session 取舍。
 
-**相关内容**：[Session](#session)至[方案选择](#selection)。
+**相关内容**：[Session](#session)至[方案选择](#方案选择)。
 
 <details>
 <summary>参考回答</summary>

@@ -17,7 +17,7 @@ knowledge:
 - 内存屏障是 JVM 在不同处理器上实现这些保证的手段，具体指令随架构变化。
 - 适合关闭标志和发布不可变配置；精确计数、检查后扣减、多字段一致性需要原子类或锁。
 
-## 2. volatile 读写的顺序保证 {#ordering}
+## 2. volatile 读写的顺序保证 {#volatile-读写的顺序保证}
 
 ```java
 private volatile boolean closed;
@@ -37,7 +37,7 @@ public void runLoop() {
 
 它适合状态标记、不可变配置引用和满足单写者等条件的状态机。
 
-## 3. 复合更新 {#compound-update}
+## 3. 复合更新 {#复合更新}
 
 ```java
 private volatile int count;
@@ -60,7 +60,7 @@ if (!initialized) {
 
 多个线程可能同时通过检查。`volatile` 不能代替互斥。
 
-## 4. 用 volatile 标志发布数据 {#publication}
+## 4. 用 volatile 标志发布数据 {#用-volatile-标志发布数据}
 
 ```java
 private Data data;
@@ -76,13 +76,13 @@ void publish(Data next) {
 
 数组引用声明为 `volatile` 也只约束引用本身，普通数组元素不会因此全部获得 volatile 语义。需要原子数组时使用 `AtomicIntegerArray` 等类型。
 
-## 5. 内存屏障 {#memory-barriers}
+## 5. 内存屏障 {#内存屏障}
 
 JIT 会根据目标处理器把 volatile 与 VarHandle 的访问模式映射为相应的编译器约束、机器指令和屏障。不同架构的成本与具体屏障组合并不相同。
 
 工程代码应围绕 acquire/release 和 happens-before 表达需求，不要把某张 x86 屏障表当成 Java 规范。需要更细粒度语义的底层组件可以使用 VarHandle 的 plain、opaque、acquire、release 和 volatile 模式，但普通业务代码很少需要主动降低保证。
 
-## 6. 使用场景 {#use-cases}
+## 6. 使用场景 {#使用场景}
 
 | 需求 | `volatile` 是否合适 | 原因 |
 | --- | --- | --- |
@@ -119,7 +119,7 @@ JIT 会根据目标处理器把 volatile 与 VarHandle 的访问模式映射为�
 - 丢失更新的交错过程。
 - 合适的原子类或锁方案。
 
-**相关内容**：[volatile 读写的顺序保证](#ordering)和[复合更新](#compound-update)。
+**相关内容**：[volatile 读写的顺序保证](#volatile-读写的顺序保证)和[复合更新](#复合更新)。
 
 <details>
 <summary>参考回答</summary>

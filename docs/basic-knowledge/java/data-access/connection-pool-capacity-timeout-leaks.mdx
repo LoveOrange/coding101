@@ -90,7 +90,7 @@ HikariCP 的 `leakDetectionThreshold` 会在连接离池超过阈值时记录可
 4. 判断是连接未归还、查询变慢，还是流量超过容量。
 5. 修复根因后重新压测池大小和超时，不直接永久扩容。
 
-## 9. 容量估算与多连接占用 {#capacity-example}
+## 9. 容量估算与多连接占用 {#容量估算与多连接占用}
 
 在稳定负载下，平均同时借出的连接数可以粗略估算为“每秒借用次数 × 平均持有秒数”。例如每秒 400 次借用，每次 50ms，平均约占用 20 个连接；这是占用量估计，不是建议直接把池设成 20。还要看峰值、长尾、等待目标和数据库饱和点。
 
@@ -98,7 +98,7 @@ HikariCP 的 `leakDetectionThreshold` 会在连接离池超过阈值时记录可
 
 一个请求持有连接再申请第二个连接时，可能在池内形成资源等待。典型例子是外层事务挂起但仍占有连接，内层 `REQUIRES_NEW` 又申请新连接。多个线程都持有一条再等待第二条时，数据库侧甚至没有锁冲突也可能卡住。优先减少嵌套持有，再根据最坏同时占用量与数据库容量评估池大小。
 
-## 10. 超时取消与连接轮换 {#timeout-cancellation}
+## 10. 超时取消与连接轮换 {#超时取消与连接轮换}
 
 `connectionTimeout` 只约束从池中取连接的等待，不能限制已开始的 SQL。JDBC `Statement.setQueryTimeout` 约束语句执行，但驱动如何取消、网络异常多久返回，以及数据库是否终止工作，需要按驱动与数据库验证；事务超时还取决于事务管理器如何传递到语句。
 
@@ -124,7 +124,7 @@ maxLifetime 管理的是连接轮换，不是 SQL 超时。数据库或代理在
 - 池大小、数据库容量和超时预算。
 - 泄漏与慢查询的区分方法。
 
-**相关内容**：[close 把代理连接归还池中](#1-close-把代理连接归还池中)、[maximumPoolSize 是并发上限](#2-maximumpoolsize-是并发上限)、[超时取消与连接轮换](#timeout-cancellation)、[连接池耗尽的排查顺序](#7-连接池耗尽的排查顺序)。
+**相关内容**：[close 把代理连接归还池中](#1-close-把代理连接归还池中)、[maximumPoolSize 是并发上限](#2-maximumpoolsize-是并发上限)、[超时取消与连接轮换](#超时取消与连接轮换)、[连接池耗尽的排查顺序](#7-连接池耗尽的排查顺序)。
 
 <details>
 <summary>参考回答</summary>
@@ -146,7 +146,7 @@ maxLifetime 管理的是连接轮换，不是 SQL 超时。数据库或代理在
 - 借用率、持有时间与占用量。
 - 数据库饱和、多实例和嵌套借用。
 
-**相关内容**：[用等待与吞吐验证容量](#3-用等待与吞吐验证容量)、[容量估算与多连接占用](#capacity-example)。
+**相关内容**：[用等待与吞吐验证容量](#3-用等待与吞吐验证容量)、[容量估算与多连接占用](#容量估算与多连接占用)。
 
 <details>
 <summary>参考回答</summary>
@@ -166,7 +166,7 @@ maxLifetime 管理的是连接轮换，不是 SQL 超时。数据库或代理在
 - 取连接与查询执行范围。
 - 剩余预算、驱动取消和资源释放。
 
-**相关内容**：[超时预算](#4-超时要形成递减预算)、[超时取消与连接轮换](#timeout-cancellation)。
+**相关内容**：[超时预算](#4-超时要形成递减预算)、[超时取消与连接轮换](#超时取消与连接轮换)。
 
 <details>
 <summary>参考回答</summary>
@@ -195,7 +195,7 @@ maxLifetime 管理的是连接轮换，不是 SQL 超时。数据库或代理在
 
 </details>
 
-## 12. 参考资料 {#references}
+## 12. 参考资料 {#参考资料}
 
 - [HikariCP：Configuration](https://github.com/brettwooldridge/HikariCP#gear-configuration-knobs-baby)
 - [HikariCP：About Pool Sizing](https://github.com/brettwooldridge/HikariCP/wiki/About-Pool-Sizing)

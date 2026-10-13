@@ -17,7 +17,7 @@ knowledge:
 - 排查时先确认实际类来源：用 `-Xlog:class+load` 或 `getProtectionDomain().getCodeSource()` 查看是哪个 JAR、哪个加载器。
 - 两个类在不同线程中互相触发初始化，可能形成类初始化死锁。
 
-## 2. 类初始化锁 {#init-lock}
+## 2. 类初始化锁 {#类初始化锁}
 
 每个类或接口都有独立的初始化锁。同一时刻只有一个线程执行它的类初始化方法，其他主动使用该类的线程会等待初始化完成。
 
@@ -31,7 +31,7 @@ final class Registry {
 
 若 `loadFromRemote` 等待网络、线程池或另一个尚未初始化的类，故障表现可能是启动停住，而不是立即抛异常。
 
-## 3. 类初始化死锁 {#init-deadlock}
+## 3. 类初始化死锁 {#类初始化死锁}
 
 ```java
 final class A {
@@ -54,7 +54,7 @@ final class B {
 - 把外部 I/O 和复杂依赖改为显式生命周期步骤。
 - 消除双向静态依赖，或集中到单一初始化顺序。
 
-## 4. 初始化失败与缺少类定义 {#init-failure}
+## 4. 初始化失败与缺少类定义 {#初始化失败与缺少类定义}
 
 ```text
 ExceptionInInitializerError
@@ -71,7 +71,7 @@ NoClassDefFoundError: Could not initialize class com.example.Config
 
 显式查找一个从未存在的类通常是 `ClassNotFoundException`。区分错误类型可以大幅缩小排查范围。
 
-## 5. 二进制版本冲突 {#binary-conflicts}
+## 5. 二进制版本冲突 {#二进制版本冲突}
 
 应用按新版本依赖编译，却在运行时加载旧版本，常见错误包括：
 
@@ -85,7 +85,7 @@ NoClassDefFoundError: Could not initialize class com.example.Config
 
 这类 `LinkageError` 说明源码可能编译成功，但运行时解析到另一份二进制定义。重新编译调用方有时能暴露问题，但根本修复是统一运行时依赖和兼容策略。
 
-## 6. 确认类的来源 {#class-source}
+## 6. 确认类的来源 {#确认类的来源}
 
 ```bash
 java -Xlog:class+load=info -jar app.jar
@@ -110,7 +110,7 @@ mvn dependency:tree
 
 依赖图说明打包选择，类加载日志说明运行事实。容器挂载、启动脚本、应用服务器共享库和 shaded JAR 都可能让两者不同。
 
-## 7. 加载器冲突导致的 `ClassCastException` {#loader-conflict}
+## 7. 加载器冲突导致的 `ClassCastException` {#加载器冲突导致的-classcastexception}
 
 错误信息为“X cannot be cast to X”时，通常有两个加载器分别定义了同名 X。打印两边 `Class` 的加载器、模块和代码来源：
 
@@ -126,7 +126,7 @@ static void describe(Class<?> type) {
 
 修复方向通常是把共享接口提升到共同父加载器，或避免跨隔离边界直接传递实现对象。
 
-## 8. 排查顺序 {#checklist}
+## 8. 排查顺序 {#排查顺序}
 
 1. 保留最早异常和完整 cause chain。
 2. 判断是查找、链接、初始化还是等待问题。
@@ -166,7 +166,7 @@ static void describe(Class<?> type) {
 - 初始化失败也可能导致 `NoClassDefFoundError`。
 - 根据最早异常定位根因。
 
-**相关内容**：[初始化失败与缺少类定义](#init-failure)和[二进制版本冲突](#binary-conflicts)。
+**相关内容**：[初始化失败与缺少类定义](#初始化失败与缺少类定义)和[二进制版本冲突](#二进制版本冲突)。
 
 <details>
 <summary>参考回答</summary>
@@ -191,7 +191,7 @@ static void describe(Class<?> type) {
 - 方法描述符包含参数与返回类型。
 - 构建依赖图和类加载日志的证据范围。
 
-**相关内容**：[二进制版本冲突](#binary-conflicts)至[排查顺序](#checklist)。
+**相关内容**：[二进制版本冲突](#二进制版本冲突)至[排查顺序](#排查顺序)。
 
 <details>
 <summary>参考回答</summary>

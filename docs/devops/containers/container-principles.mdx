@@ -17,7 +17,7 @@ knowledge:
 - 联合文件系统（如 OverlayFS）把镜像的多个只读层和容器的一个可写层合并成一个目录，修改文件时先复制到可写层（写时复制）。
 - `docker exec` 进入容器，本质上是在宿主机上启动一个新进程，并通过 `setns` 加入目标容器的各个 Namespace。
 
-## 2. 容器与虚拟机 {#vs-vm}
+## 2. 容器与虚拟机 {#容器与虚拟机}
 
 | 维度 | 容器 | 虚拟机 |
 | --- | --- | --- |
@@ -62,7 +62,7 @@ Cgroups 把进程分组，对每组设置资源限制并统计用量。常用的
 
 Docker 中对应的参数：`--cpus=1.5`、`--memory=512m`、`--pids-limit=100`。可以在宿主机的 `/sys/fs/cgroup/` 下找到容器对应的目录，查看实际的限制和用量。
 
-## 5. 联合文件系统 {#unionfs}
+## 5. 联合文件系统 {#联合文件系统}
 
 镜像由多个只读层组成，容器启动时在最上面加一个可写层。OverlayFS 把它们合并：
 
@@ -94,7 +94,7 @@ Docker 中对应的参数：`--cpus=1.5`、`--memory=512m`、`--pids-limit=100`�
 - 是否共享内核：容器是隔离的进程，虚拟机虚拟了硬件。
 - 由此推出启动速度、开销、隔离强度和可运行系统的差异。
 
-**相关内容**：[容器与虚拟机](#vs-vm)、[Namespace](#namespace)、[Cgroups](#cgroups)。
+**相关内容**：[容器与虚拟机](#容器与虚拟机)、[Namespace](#namespace)、[Cgroups](#cgroups)。
 
 <details>
 <summary>参考回答</summary>
@@ -124,7 +124,7 @@ Docker 中对应的参数：`--cpus=1.5`、`--memory=512m`、`--pids-limit=100`�
 - 各类 Namespace 隔离的内容；Cgroups 的主要控制器。
 - 内存超限与 CPU 限流的表现；v1 与 v2 的区别；`docker exec` 的原理。
 
-**相关内容**：[Namespace](#namespace)、[Cgroups](#cgroups)、[联合文件系统](#unionfs)。
+**相关内容**：[Namespace](#namespace)、[Cgroups](#cgroups)、[联合文件系统](#联合文件系统)。
 
 <details>
 <summary>参考回答</summary>

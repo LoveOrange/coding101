@@ -17,7 +17,7 @@ JUnit 测试用可重复的示例验证公开行为。一个有效测试需要�
 - JUnit 5 默认为每个测试方法创建新的测试类实例，`@BeforeEach` 为每个测试建立独立起点。
 - 时间、随机数和外部资源通过注入 `Clock`、固定种子和临时目录变得可控。
 
-## 2. 测试结构 {#structure}
+## 2. 测试结构 {#测试结构}
 
 下面用已有的 `Money` 类型演示异常断言；其构造方法约定拒绝负数金额。
 
@@ -41,7 +41,7 @@ void rejectsNegativeAmount() {
 
 三段不必用注释机械标记，但读者应能快速辨认。一个测试覆盖一个行为条件，可以有多条共同描述该行为的断言。
 
-## 3. 断言 {#assertions}
+## 3. 断言 {#断言}
 
 常用断言：
 
@@ -60,7 +60,7 @@ assertIterableEquals(expectedItems, actualItems);
 assertEquals(expected, actual, "discount for first-time customer");
 ```
 
-## 4. 异常与多个结果的断言 {#exceptions}
+## 4. 异常与多个结果的断言 {#异常与多个结果的断言}
 
 `assertThrows` 返回捕获的异常，可以继续验证：
 
@@ -85,7 +85,7 @@ assertAll(
 
 不要把互不相关的场景塞进一个 assertAll；前置动作失败后，后续断言可能只产生噪音。
 
-## 5. 参数化测试 {#parameterized}
+## 5. 参数化测试 {#参数化测试}
 
 ```java
 @ParameterizedTest
@@ -111,7 +111,7 @@ void countsDecimalDigits(int input, int expectedDigits) {
 
 输入对象复杂或需要清楚名称时，`@MethodSource` 通常比很长的 CSV 更易维护。
 
-## 6. 生命周期与隔离 {#lifecycle}
+## 6. 生命周期与隔离 {#生命周期与隔离}
 
 JUnit Jupiter 默认每个测试方法创建一个测试类实例。`@BeforeEach` 适合建立独立起点：
 
@@ -127,7 +127,7 @@ void setUp() {
 
 昂贵资源可以在 `@BeforeAll` 建立，但每个测试仍要重置业务数据。使用 `PER_CLASS` 生命周期时，更要留意实例字段被共享。
 
-## 7. 时间、随机与并发 {#determinism}
+## 7. 时间、随机与并发 {#时间随机与并发}
 
 注入 `Clock` 代替直接 `Instant.now()`，注入随机源或固定种子，外部端口和临时目录由测试框架管理。
 
@@ -140,7 +140,7 @@ Clock clock = Clock.fixed(
 
 `assertTimeout` 能限制测试调用耗时，但不是性能基准。并发测试不能只 sleep 后期望任务完成，应使用 Latch、Future、Awaitility 一类明确同步条件，并让失败有上限时间。
 
-## 8. 测试命名 {#naming}
+## 8. 测试命名 {#测试命名}
 
 比起 `testPay1`，下面的名字更直接：
 
@@ -187,7 +187,7 @@ void payingCancelledOrderIsRejected() {}
 - 时间、随机和外部依赖怎样变得可控。
 - 单元测试与启动完整 Spring 环境的区别。
 
-**相关内容**：[测试结构](#structure)至[测试命名](#naming)。
+**相关内容**：[测试结构](#测试结构)至[测试命名](#测试命名)。
 
 <details>
 <summary>参考回答</summary>
@@ -213,7 +213,7 @@ void payingCancelledOrderIsRejected() {}
 - 数据源和测试逻辑如何保持可读。
 - 复杂场景为什么仍需要独立测试。
 
-**相关内容**：[参数化测试](#parameterized)。
+**相关内容**：[参数化测试](#参数化测试)。
 
 <details>
 <summary>参考回答</summary>

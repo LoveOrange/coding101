@@ -28,7 +28,7 @@ Filter 位于目标 Servlet 之前，可以访问或包装原始 request/respons
 
 注册规则决定它是否处理 REQUEST、ASYNC、ERROR 等 dispatch。Filter 不知道最终会匹配哪个 `HandlerMethod`，不适合依赖 Controller 注解的逻辑。
 
-## 3. HandlerInterceptor {#interceptor}
+## 3. HandlerInterceptor {#handlerinterceptor}
 
 Interceptor 在 HandlerMapping 已经找到 handler 后执行，因此可以检查：
 
@@ -49,7 +49,7 @@ AOP 不依赖 HTTP，可以同时用于 Web、消息消费和定时任务。它�
 
 AOP 只能拦截经过代理的调用，拿不到天然的 Servlet 链控制权。把 request/response 强行放进 service 切面会让业务层绑定 Web 上下文。
 
-## 5. 分层协作 {#layering}
+## 5. 分层协作 {#分层协作}
 
 请求追踪可以这样拆分：
 
@@ -60,13 +60,13 @@ AOP 只能拦截经过代理的调用，拿不到天然的 Servlet 链控制权�
 
 各层只处理自己能可靠观察的信息，避免三处重复记录一份请求日志。
 
-## 6. 异常处理范围 {#exceptions}
+## 6. 异常处理范围 {#异常处理范围}
 
 ControllerAdvice 处理的是 MVC 异常解析链中的异常。Filter 在调用 DispatcherServlet 前自身抛错时，不会自动进入 ControllerAdvice；应交给 Servlet 错误机制或在安全过滤链中统一处理。
 
 Interceptor `preHandle` 和 Controller 异常通常可以进入 MVC resolver，但响应已经提交后无法可靠改写错误体。AOP 只能看到目标方法和拦截链内抛出的异常，不包含后续 JSON 序列化失败。
 
-## 7. 异步与 ThreadLocal {#async}
+## 7. 异步与 ThreadLocal {#异步与-threadlocal}
 
 异步 Servlet 可能在不同线程继续 dispatch，`@Async` 也会离开请求线程。Filter、Interceptor 或 AOP 中设置的 ThreadLocal 不会自动安全传播。使用框架提供的上下文传播并在每个退出路径清理。
 
@@ -97,7 +97,7 @@ Interceptor `preHandle` 和 Controller 异常通常可以进入 MVC resolver，�
 - 可见上下文和覆盖范围。
 - 异常、异步与安全边界。
 
-**相关内容**：[Filter](#filter)至[异常处理范围](#exceptions)。
+**相关内容**：[Filter](#filter)至[异常处理范围](#异常处理范围)。
 
 <details>
 <summary>参考回答</summary>

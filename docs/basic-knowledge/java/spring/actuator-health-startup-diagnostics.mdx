@@ -17,7 +17,7 @@ Spring Boot Actuator 提供应用运行状态和诊断信息。使用它时要�
 - 启动慢时用 `BufferingApplicationStartup` 和 `startup` 端点拆解各阶段耗时。
 - `health` 返回 UP 只说明已注册的检查通过，业务是否正常还要看业务指标和合成探测。
 
-## 2. 常用端点 {#endpoints}
+## 2. 常用端点 {#常用端点}
 
 常用端点包括：
 
@@ -33,7 +33,7 @@ Spring Boot Actuator 提供应用运行状态和诊断信息。使用它时要�
 
 每个端点都可能暴露内部结构。默认是否启用、是否通过 Web 暴露以及是否允许写操作，是三组不同配置。
 
-## 3. 端点暴露与访问控制 {#exposure}
+## 3. 端点暴露与访问控制 {#端点暴露与访问控制}
 
 ```yaml
 management:
@@ -50,13 +50,13 @@ management:
 
 `env`、`configprops`、heap dump 和线程栈可能包含地址、类名、查询、令牌或用户数据。即使框架提供脱敏，也要按照实际版本检查返回内容和自定义属性。
 
-## 4. Liveness 探针 {#liveness}
+## 4. Liveness 探针 {#liveness-探针}
 
 Liveness 失败通常意味着应用内部已进入无法自行恢复的状态，平台可以重启进程。它不应依赖数据库、缓存或外部 API：这些依赖短暂故障时重启所有实例，既不能修复依赖，还可能制造重启风暴。
 
 Spring Boot 可以把 liveness 暴露为独立健康组。应用自身线程死锁、关键内部状态损坏等问题，才可能适合改变存活状态。
 
-## 5. Readiness 探针 {#readiness}
+## 5. Readiness 探针 {#readiness-探针}
 
 Readiness 失败会让负载均衡停止向当前实例转发请求，但不要求结束进程。启动尚未完成、正在优雅下线或关键服务能力暂不可用时，可以拒绝流量。
 
@@ -67,7 +67,7 @@ Readiness 失败会让负载均衡停止向当前实例转发请求，但不要�
 
 探针的超时、频率和失败阈值要覆盖正常启动与短暂抖动，不能用过于激进的参数制造自我故障。
 
-## 6. 启动阶段分析 {#startup}
+## 6. 启动阶段分析 {#启动阶段分析}
 
 启用 `BufferingApplicationStartup` 后，可以通过 `startup` 端点查看已采集的 Spring 启动步骤；JFR 实现还能关联类加载、分配和 GC。
 
@@ -81,7 +81,7 @@ Readiness 失败会让负载均衡停止向当前实例转发请求，但不要�
 
 只看总时长无法判断是框架、业务初始化还是外部依赖在等待。
 
-## 7. 按问题选择端点 {#diagnostics}
+## 7. 按问题选择端点 {#按问题选择端点}
 
 - Bean 为什么没有创建：查看 `conditions` 和 `beans`。
 - 配置为何不是预期值：查看 `env`、`configprops` 和 PropertySource。
@@ -118,7 +118,7 @@ Readiness 失败会让负载均衡停止向当前实例转发请求，但不要�
 - 外部依赖是否进入探针的判断。
 - Actuator 暴露与安全边界。
 
-**相关内容**：[常用端点](#endpoints)至[按问题选择端点](#diagnostics)。
+**相关内容**：[常用端点](#常用端点)至[按问题选择端点](#按问题选择端点)。
 
 <details>
 <summary>参考回答</summary>

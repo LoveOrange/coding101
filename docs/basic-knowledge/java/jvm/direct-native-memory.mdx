@@ -17,7 +17,7 @@ Java 进程可以在堆外分配缓冲区、类元数据、线程栈和 JVM 内�
 - 堆正常而 RSS 持续增长时，用 Native Memory Tracking 的 baseline 和 diff 定位增长类别，堆转储看不到这些内存。[卡](#native-memory-growth)
 - 容器内存限制要为堆以外的部分留出预算。
 
-## 2. 直接缓冲区 {#direct-buffer}
+## 2. 直接缓冲区 {#直接缓冲区}
 
 ```java
 ByteBuffer buffer = ByteBuffer.allocateDirect(1024 * 1024);
@@ -29,7 +29,7 @@ ByteBuffer buffer = ByteBuffer.allocateDirect(1024 * 1024);
 
 直接缓冲区对象本身仍在堆上，它保存对堆外区域的管理信息。若框架池化缓冲区，实际生命周期由池决定；若依赖对象不可达后的清理，释放时机与 GC 有关。
 
-## 3. FFM API {#ffm}
+## 3. FFM API {#ffm-api}
 
 现代 Java 可以使用 `MemorySegment` 与 `Arena` 管理本地内存：
 
@@ -44,7 +44,7 @@ try (Arena arena = Arena.ofConfined()) {
 
 `Arena.global()` 的区域不会自动释放；`ofAuto()` 仍由可达性决定释放时机。选择时要把生命周期写进 API，而不是只看分配语法。
 
-## 4. 文件映射 {#mapped-files}
+## 4. 文件映射 {#文件映射}
 
 `FileChannel.map` 可以把文件区域映射为 `MappedByteBuffer` 或受 Arena 管理的 `MemorySegment`。访问页面时由操作系统按需调页，脏页回写也由映射模式和系统策略共同决定。
 
@@ -60,7 +60,7 @@ try (Arena arena = Arena.ofShared();
 }
 ```
 
-## 5. HotSpot 本地内存的来源 {#native-sources}
+## 5. HotSpot 本地内存的来源 {#hotspot-本地内存的来源}
 
 常见类别包括：
 
@@ -73,7 +73,7 @@ try (Arena arena = Arena.ofShared();
 
 `-Xmx` 只限制 Java 堆。平台线程数量上升、动态生成类或 native 库泄漏，都可能在堆平稳时耗尽容器内存。
 
-## 6. Native Memory Tracking {#nmt}
+## 6. Native Memory Tracking {#native-memory-tracking}
 
 启动时开启：
 
@@ -92,7 +92,7 @@ NMT 区分 reserved 和 committed，并按 Class、Thread、Code、GC 等类别�
 
 NMT 不是完整的进程内存追踪器。它不能覆盖所有第三方 native 代码分配，仍要结合 `/proc/<pid>/smaps`、`pmap`、系统 profiler 和容器指标。
 
-## 7. Direct buffer OOM {#direct-oom}
+## 7. Direct buffer OOM {#direct-buffer-oom}
 
 `OutOfMemoryError: Direct buffer memory` 表示直接缓冲区分配无法满足。先检查：
 
@@ -104,7 +104,7 @@ NMT 不是完整的进程内存追踪器。它不能覆盖所有第三方 native
 
 增大上限只能解决容量确实不足的情况。若释放跟不上分配或池没有边界，扩大内存只会延迟故障。
 
-## 8. 容器内存预算 {#container-budget}
+## 8. 容器内存预算 {#容器内存预算}
 
 可以从下面的关系开始估算：
 
@@ -147,7 +147,7 @@ NMT 不是完整的进程内存追踪器。它不能覆盖所有第三方 native
 - 分配、释放成本和生命周期。
 - 堆正常时仍可能出现直接内存 OOM。
 
-**相关内容**：[直接缓冲区](#direct-buffer)和[Direct buffer OOM](#direct-oom)。
+**相关内容**：[直接缓冲区](#直接缓冲区)和[Direct buffer OOM](#direct-buffer-oom)。
 
 <details>
 <summary>参考回答</summary>
@@ -173,7 +173,7 @@ NMT 不是完整的进程内存追踪器。它不能覆盖所有第三方 native
 - NMT baseline/diff 的证据。
 - 容器指标与操作系统内存映射。
 
-**相关内容**：[HotSpot 本地内存的来源](#native-sources)至[容器内存预算](#container-budget)。
+**相关内容**：[HotSpot 本地内存的来源](#hotspot-本地内存的来源)至[容器内存预算](#容器内存预算)。
 
 <details>
 <summary>参考回答</summary>

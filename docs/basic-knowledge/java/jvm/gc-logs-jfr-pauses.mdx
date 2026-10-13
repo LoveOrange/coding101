@@ -17,7 +17,7 @@ GC 停顿分析要把一次回收放回时间线：为什么触发、回收了�
 - Full GC 频繁时，先区分分配率过高、live set 接近堆上限和元空间不足，再决定减少分配、修复泄漏还是调整堆。[卡](#frequent-full-gc)
 - GC 日志记录回收的时间线，JFR 能把 GC 与分配位置、业务线程和锁等待关联起来。[卡](#jfr-vs-gc-log)
 
-## 2. Unified Logging 配置 {#unified-logging}
+## 2. Unified Logging 配置 {#unified-logging-配置}
 
 ```bash
 java \
@@ -29,7 +29,7 @@ java \
 
 生产长期日志要配置轮转和磁盘告警。需要阶段细节时短期开启 `gc+phases=debug` 等 tag，避免长期记录无关 debug 信息。
 
-## 3. GC 事件的四类信息 {#event-fields}
+## 3. GC 事件的四类信息 {#gc-事件的四类信息}
 
 1. **Collector / Type**：G1 Young、Mixed、Full，ZGC cycle 等。
 2. **Cause**：allocation failure、metadata threshold、System.gc 等。
@@ -38,13 +38,13 @@ java \
 
 回收后占用下降明显但很快又涨回，可能是分配率高；回收后几乎不降，可能是 live set 大或泄漏；单次 object copy 很慢，需看存活对象量；root scan 慢则继续看线程、RSet 或根集合。
 
-## 4. GC 类型与回收范围 {#gc-types}
+## 4. GC 类型与回收范围 {#gc-类型与回收范围}
 
 Minor、Major、Full 在不同收集器和工具中可能使用不同。分析报告应写清收集器、日志事件名、是否 STW、实际回收区域和结果。
 
 G1 Mixed GC 是年轻 Region 加部分旧 Region 的正常疏散，不等于 Full GC。ZGC 的 Minor/Major cycle 也不能套用传统 Serial/Parallel 的阶段含义。
 
-## 5. GC 停顿、安全点与系统停顿 {#pause-sources}
+## 5. GC 停顿、安全点与系统停顿 {#gc-停顿安全点与系统停顿}
 
 用户看到的空白可能来自：
 
@@ -56,7 +56,7 @@ G1 Mixed GC 是年轻 Region 加部分旧 Region 的正常疏散，不等于 Ful
 
 Unified safepoint 日志和 JFR 能把进入安全点、停顿工作和系统事件放在一起。GC pause 很短但请求长尾很高时，应继续看锁、线程池和 I/O。
 
-## 6. JFR 关联分析 {#jfr}
+## 6. JFR 关联分析 {#jfr-关联分析}
 
 ```bash
 jcmd <pid> JFR.start \
@@ -77,7 +77,7 @@ jcmd <pid> JFR.start \
 
 事件是否启用和采样阈值由 recording settings 决定。看不到事件先检查配置，不要直接推断没有发生。
 
-## 7. 常见原因 {#causes}
+## 7. 常见原因 {#常见原因}
 
 ### 7.1 分配率过高
 
@@ -106,7 +106,7 @@ jcmd <pid> JFR.start \
 
 需要看对应线程、native/JIT 情况和 JDK 版本，不应只调整收集器暂停目标。
 
-## 8. 调优步骤 {#tuning}
+## 8. 调优步骤 {#调优步骤}
 
 建立基线后按顺序处理：
 
@@ -149,7 +149,7 @@ JFR 为低开销持续记录设计，但开销取决于事件、阈值和堆栈�
 - 类元数据、Humongous 与显式 GC 等不同路径。
 - GC 日志与 JFR 时间线。
 
-**相关内容**：[Unified Logging 配置](#unified-logging)至[调优步骤](#tuning)。
+**相关内容**：[Unified Logging 配置](#unified-logging-配置)至[调优步骤](#调优步骤)。
 
 <details>
 <summary>参考回答</summary>
@@ -174,7 +174,7 @@ JFR 为低开销持续记录设计，但开销取决于事件、阈值和堆栈�
 - JFR 关联 CPU、线程、分配、锁和编译。
 - 二者通过时间与 uptime 对齐。
 
-**相关内容**：[Unified Logging 配置](#unified-logging)至[JFR 关联分析](#jfr)。
+**相关内容**：[Unified Logging 配置](#unified-logging-配置)至[JFR 关联分析](#jfr-关联分析)。
 
 <details>
 <summary>参考回答</summary>

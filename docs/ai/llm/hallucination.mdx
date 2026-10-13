@@ -7,7 +7,7 @@ knowledge:
 
 # 模型幻觉
 
-模型幻觉是指模型生成了看似合理、但与事实、输入材料或可用工具不符的内容。模型按概率生成文本，没有“我不知道”的内在机制，所以幻觉无法彻底消除，只能通过提供证据、约束输出、校验结果和设计兜底来控制影响。本文讲幻觉的类型、成因和分层缓解方法；工具调用中的幻觉见 [Function Calling](../tools/function-calling.mdx#reliability)，评估模型自身的幻觉见 [Agent 评估](../evaluation/agent-evaluation.mdx#grading)。
+模型幻觉是指模型生成了看似合理、但与事实、输入材料或可用工具不符的内容。模型按概率生成文本，没有“我不知道”的内在机制，所以幻觉无法彻底消除，只能通过提供证据、约束输出、校验结果和设计兜底来控制影响。本文讲幻觉的类型、成因和分层缓解方法；工具调用中的幻觉见 [Function Calling](../tools/function-calling.mdx#可靠性保障)，评估模型自身的幻觉见 [Agent 评估](../evaluation/agent-evaluation.mdx#评分方式)。
 
 ## 1. 面试核心 {#core}
 
@@ -17,7 +17,7 @@ knowledge:
 - RAG 场景先区分是检索没找到证据，还是有证据但生成没有忠实使用，两者的修复方法不同。[卡](#rag-hallucination)
 - 上线后无法保证零幻觉，要用置信度和风险等级决定是否自动执行，高风险操作需要确认，并记录可追溯的证据。[卡](#hallucination-fallback)
 
-## 2. 类型与成因 {#types}
+## 2. 类型与成因 {#类型与成因}
 
 | 类型 | 例子 | 主要成因 |
 | --- | --- | --- |
@@ -28,7 +28,7 @@ knowledge:
 
 用户问题不明确时，模型常用“看起来合理”的默认值补全，例如没有说日期就默认今天。这种情况应当由程序判断必填信息是否缺失，向用户追问，而不是让模型猜测。
 
-## 3. 分层缓解 {#mitigation}
+## 3. 分层缓解 {#分层缓解}
 
 **输入侧：给证据，允许不知道**
 
@@ -39,7 +39,7 @@ knowledge:
 **生成侧：约束形式**
 
 - 要求每个论断附带引用（文档 ID、段落），无法引用的内容不输出。
-- 使用结构化输出，把自由文本变成可校验的字段，见[结构化输出](../prompting/prompt-engineering.mdx#structured-output)。
+- 使用结构化输出，把自由文本变成可校验的字段，见[结构化输出](../prompting/prompt-engineering.mdx#结构化输出)。
 - 事实抽取、分类等任务降低 temperature。
 
 **输出侧：校验**
@@ -73,7 +73,7 @@ knowledge:
 - 幻觉的定义、类型和成因。
 - 从输入、生成、输出到业务的分层缓解，而不是只说“用 RAG”。
 
-**相关内容**：[类型与成因](#types)、[分层缓解](#mitigation)。
+**相关内容**：[类型与成因](#类型与成因)、[分层缓解](#分层缓解)。
 
 <details>
 <summary>参考回答</summary>
@@ -100,7 +100,7 @@ knowledge:
 - 先定位是检索问题还是生成问题。
 - 无证据拒答、引用约束和忠实度检查。
 
-**相关内容**：[分层缓解](#mitigation)、[RAG 评估](../evaluation/rag-evaluation.mdx#rag-metrics)、[重排序](../rag/hybrid-search-rerank.mdx#rerank)。
+**相关内容**：[分层缓解](#分层缓解)、[RAG 评估](../evaluation/rag-evaluation.mdx#rag-metrics)、[重排序](../rag/hybrid-search-rerank.mdx#重排序)。
 
 <details>
 <summary>参考回答</summary>
@@ -127,7 +127,7 @@ knowledge:
 - 置信度信号的来源，以及按风险决定自动执行还是确认。
 - 缺失信息由程序追问，不让模型猜默认值；上线后的监控与回流。
 
-**相关内容**：[类型与成因](#types)、[分层缓解](#mitigation)、[人工介入](../state/durable-execution.mdx#hitl)。
+**相关内容**：[类型与成因](#类型与成因)、[分层缓解](#分层缓解)、[人工介入](../state/durable-execution.mdx#人工介入)。
 
 <details>
 <summary>参考回答</summary>

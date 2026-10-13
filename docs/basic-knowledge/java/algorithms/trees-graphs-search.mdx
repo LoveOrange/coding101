@@ -17,7 +17,7 @@ knowledge:
 - 图中有环时在入队时标记 visited，避免重复入队。
 - 多个起点同时入队做多源 BFS，可以一次求出每个位置到最近起点的距离。[卡](#multi-source-bfs)
 
-## 2. 图的建模 {#modeling}
+## 2. 图的建模 {#图的建模}
 
 显式图包含顶点和邻接关系，许多问题也有隐式图：
 
@@ -62,7 +62,7 @@ DFS 常用于：
 
 时间通常与访问节点和边之和相关，为 O(V + E)。递归空间由最大深度决定；一条很深的链会导致 StackOverflowError。
 
-### 3.1 显式栈 {#explicit-stack}
+### 3.1 显式栈 {#显式栈}
 
 ```java
 Deque<TreeNode> stack = new ArrayDeque<>();
@@ -115,7 +115,7 @@ BFS 适合：
 
 队列峰值由图的前沿宽度决定，宽树可能需要 O(V) 内存。
 
-## 5. visited 标记时机 {#visited}
+## 5. visited 标记时机 {#visited-标记时机}
 
 图中存在环或多条路径时，必须避免重复扩展：
 
@@ -141,7 +141,7 @@ while (!queue.isEmpty()) {
 
 树在确认没有父指针和共享子节点时可以省略 visited；一旦把树转成无向图，父节点也成为邻居，必须记录访问状态。
 
-## 6. 多源 BFS {#multi-source}
+## 6. 多源 BFS {#多源-bfs}
 
 网格中有多个起点时，把所有起点按距离 0 同时入队：
 
@@ -156,7 +156,7 @@ BFS 随后一层层扩展，每个格子第一次到达的距离就是离任一�
 
 边权都相同才可以直接使用普通 BFS。边权为 0 或 1 可以用双端队列做 0-1 BFS；一般非负权使用 Dijkstra；存在负权则要进一步判断 Bellman-Ford 等算法及负环。
 
-## 7. 回溯 {#backtracking}
+## 7. 回溯 {#回溯}
 
 搜索所有组合时，路径状态只属于当前递归分支：
 
@@ -173,7 +173,7 @@ path.remove(path.size() - 1);
 
 混淆两者会漏掉合法路径或造成环。
 
-## 8. 拓扑排序 {#topological-sort}
+## 8. 拓扑排序 {#拓扑排序}
 
 有向无环图中，Kahn 算法从入度为 0 的节点开始：
 
@@ -244,7 +244,7 @@ BFS 可以记录每层开始时的队列大小，处理这一层时把最后一�
 - visited 或 distance 在入队时设置。
 - 边权改变后为何不能继续用普通 BFS。
 
-**相关内容**：[visited 标记时机](#visited)、[多源 BFS](#multi-source)。
+**相关内容**：[visited 标记时机](#visited-标记时机)、[多源 BFS](#多源-bfs)。
 
 <details>
 <summary>参考回答</summary>

@@ -14,10 +14,10 @@ knowledge:
 - 读写锁允许多个读者同时持有读锁，写锁与读锁、写锁互斥；只有读多写少且读操作有一定成本时才可能受益。
 - `ReentrantReadWriteLock` 支持写锁降级为读锁，不支持读锁升级为写锁。
 - `StampedLock` 不可重入、没有 Condition，释放和模式转换都要传入获取时得到的 stamp。
-- 乐观读先读取字段再 `validate`，验证失败时在读锁内重新读取全部字段。[卡](#optimistic-read)
+- 乐观读先读取字段再 `validate`，验证失败时在读锁内重新读取全部字段。[卡](#乐观读)
 - 配置类数据优先考虑 `volatile` 发布不可变快照或并发容器。
 
-## 2. 读锁与写锁 {#read-write}
+## 2. 读锁与写锁 {#读锁与写锁}
 
 ```java
 private final ReentrantReadWriteLock rw = new ReentrantReadWriteLock();
@@ -38,13 +38,13 @@ Value find(Key key) {
 
 临界区很短或写入频繁时，读写锁的状态管理和排队成本可能高于普通互斥锁。
 
-## 3. 锁降级与锁升级 {#downgrade-upgrade}
+## 3. 锁降级与锁升级 {#锁降级与锁升级}
 
 持有写锁时可以先获取读锁，再释放写锁，完成从写到读的降级。反过来，多个线程都持有读锁并等待升级为写锁时，彼此不会释放读锁，容易无法进展。
 
 需要更新时通常先释放读锁，再获取写锁，并在写锁下重新检查条件。这个间隙里状态可能变化，所以不能沿用旧判断。
 
-## 4. StampedLock 与 stamp {#stampedlock}
+## 4. StampedLock 与 stamp {#stampedlock-与-stamp}
 
 ```java
 long stamp = lock.readLock();
@@ -59,7 +59,7 @@ try {
 
 它也不直接提供 `Condition`，因此不适合需要条件队列的协议。
 
-## 5. 乐观读 {#optimistic-read}
+## 5. 乐观读 {#乐观读}
 
 ```java
 long stamp = lock.tryOptimisticRead();
@@ -82,7 +82,7 @@ return new Point(currentX, currentY);
 
 未验证前，代码只能做容忍暂时不一致的简单读取。不能沿着可能为 `null` 的引用调用任意方法，也不能产生不可撤销副作用。
 
-## 6. 不可变快照与并发容器 {#alternatives}
+## 6. 不可变快照与并发容器 {#不可变快照与并发容器}
 
 配置读取可以用 `volatile` 发布不可变快照；键值查询可以用 `ConcurrentHashMap`；读极多写极少的小集合可以考虑 Copy-on-Write。它们往往比手动维护读写锁更容易组合。
 
@@ -114,7 +114,7 @@ return new Point(currentX, currentY);
 - stamp 验证和失败重读。
 - 不可重入与副作用边界。
 
-**相关内容**：[StampedLock 与 stamp](#stampedlock)和[乐观读](#optimistic-read)。
+**相关内容**：[StampedLock 与 stamp](#stampedlock-与-stamp)和[乐观读](#乐观读)。
 
 <details>
 <summary>参考回答</summary>

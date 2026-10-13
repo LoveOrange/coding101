@@ -15,7 +15,7 @@ SQL 聚合把若干输入行计算成计数、求和或其他统计值。分组�
 - GROUP BY 决定结果粒度，非聚合选择列应有明确的分组依据。
 - 空输入的 COUNT 为 0，SUM 通常为 NULL，需要按业务含义处理。
 
-## 2. 分组与 NULL {#mechanism}
+## 2. 分组与 NULL {#分组与-null}
 
 ```sql
 CREATE TABLE sales (
@@ -44,7 +44,7 @@ ORDER BY team;
 
 WHERE 先保留 A 的 30、70，再按 team 分组，HAVING 留下总额至少 100 的组，最终只有 `(A,100)`。如果把 amount 的过滤改成另一种组级条件，参与统计的输入就会不同。
 
-## 4. 使用边界 {#boundaries}
+## 4. 使用边界 {#使用边界}
 
 不要选择既未分组、也未聚合且无法由分组列确定的字段。MySQL 的 ONLY_FULL_GROUP_BY 模式会拒绝许多这种不明确的查询；关闭模式不等于业务语义已经正确。
 
@@ -60,7 +60,7 @@ LEFT JOIN 后统计右表记录数量，应使用右表非空主键的 COUNT；C
 
 **考察重点**：输入行粒度、NULL 处理与外连接补空行的计数。
 
-**相关内容**：[面试核心](#core)、[分组与 NULL](#mechanism)、[使用边界](#boundaries)。
+**相关内容**：[面试核心](#core)、[分组与 NULL](#分组与-null)、[使用边界](#使用边界)。
 
 <details>
 <summary>参考回答</summary>

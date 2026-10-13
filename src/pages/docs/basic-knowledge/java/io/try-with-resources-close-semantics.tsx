@@ -2,7 +2,7 @@ import { Redirect } from "@docusaurus/router";
 import Head from "@docusaurus/Head";
 
 const destination =
-  "/docs/basic-knowledge/java/language/exceptions-error-boundaries#resource-closing";
+  "/docs/basic-knowledge/java/language/exceptions-error-boundaries#try-with-resources-与资源关闭";
 
 export default function TryWithResourcesRedirect(): JSX.Element {
   return (

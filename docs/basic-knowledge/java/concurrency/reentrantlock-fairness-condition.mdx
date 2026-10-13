@@ -16,7 +16,7 @@ knowledge:
 - 公平锁按等待顺序分配锁，减少插队但增加唤醒和调度成本，吞吐通常更低。[卡](#fair-lock-throughput)
 - `Condition.await()` 释放锁并等待，返回前重新获取锁；条件要放在 `while` 中重新检查。
 
-## 2. 加锁与释放的写法 {#lock-unlock}
+## 2. 加锁与释放的写法 {#加锁与释放的写法}
 
 ```java
 private final ReentrantLock lock = new ReentrantLock();
@@ -35,7 +35,7 @@ void update() {
 
 和 `synchronized` 一样，它是可重入锁；同一线程每次成功获取都要有匹配的释放。
 
-## 3. 可中断获取与超时获取 {#interruptible}
+## 3. 可中断获取与超时获取 {#可中断获取与超时获取}
 
 ```java
 if (lock.tryLock(200, TimeUnit.MILLISECONDS)) {
@@ -51,13 +51,13 @@ if (lock.tryLock(200, TimeUnit.MILLISECONDS)) {
 
 `lockInterruptibly()` 可以响应中断，超时 `tryLock` 可以把资源等待纳入请求期限。这些能力适合必须避免无限等待或需要打破潜在锁环的流程。
 
-## 4. 公平锁与非公平锁 {#fairness}
+## 4. 公平锁与非公平锁 {#公平锁与非公平锁}
 
 `new ReentrantLock(true)` 在竞争时倾向让等待最久的线程先获得锁。更强的排队约束会减少新到线程直接取得空闲锁的机会，也增加调度和唤醒成本。
 
 公平锁不能保证操作系统公平调度；无参数 `tryLock()` 也不遵守公平策略，只要锁可用就可能直接成功。只有业务真的需要控制长期等待时才启用公平性，并用等待分布验证效果。
 
-## 5. Condition 等待 {#condition}
+## 5. Condition 等待 {#condition-等待}
 
 ```java
 private final Condition notEmpty = lock.newCondition();
@@ -77,7 +77,7 @@ Item take() throws InterruptedException {
 
 `await()` 原子地释放关联锁并等待，返回前重新取得锁。条件必须用 `while` 重查，因为线程可能被无理由唤醒，或者从收到 signal 到重新加锁期间，条件又被其他线程改变。
 
-## 6. `signal` 与 `signalAll` {#signal}
+## 6. `signal` 与 `signalAll` {#signal-与-signalall}
 
 修改条件的线程应在持锁状态下更新共享状态，再调用 `signal` 或 `signalAll`：
 
@@ -120,7 +120,7 @@ try {
 - 公平锁和线程调度公平的区别。
 - `tryLock()` 的特殊行为。
 
-**相关内容**：[可中断获取与超时获取](#interruptible)和[公平锁与非公平锁](#fairness)。
+**相关内容**：[可中断获取与超时获取](#可中断获取与超时获取)和[公平锁与非公平锁](#公平锁与非公平锁)。
 
 <details>
 <summary>参考回答</summary>

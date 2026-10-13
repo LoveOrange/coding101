@@ -16,7 +16,7 @@ knowledge:
 - `exceptionally`、`handle` 会把失败恢复为成功结果，`whenComplete` 只观察结果，异常继续向下传播。
 - `orTimeout` 和 `cancel` 只改变这个 CompletableFuture 的完成状态，底层调用需要自己的超时或取消机制。
 
-## 2. Future 的结果与异常 {#future}
+## 2. Future 的结果与异常 {#future-的结果与异常}
 
 ```java
 Future<Profile> future = executor.submit(() -> loadProfile(id));
@@ -33,7 +33,7 @@ try {
 
 `cancel(true)` 只能尝试中断运行任务，任务是否退出仍取决于中断协议。
 
-## 3. CompletionStage 的依赖组合 {#composition}
+## 3. CompletionStage 的依赖组合 {#completionstage-的依赖组合}
 
 ```java
 CompletableFuture<OrderView> view =
@@ -47,13 +47,13 @@ CompletableFuture<OrderView> view =
 
 `thenApply` 转换一个结果，`thenCompose` 把返回的异步阶段展平，`thenCombine` 合并两个独立结果。选择取决于真实依赖，不能把所有步骤都并行启动。
 
-## 4. 回调的执行线程 {#executor}
+## 4. 回调的执行线程 {#回调的执行线程}
 
 非 `Async` 的 continuation 可以由完成上一步的线程，或触发完成的其他调用线程执行。若其中包含慢操作，可能意外阻塞网络回调或调用方线程。
 
 没有显式 Executor 的 `*Async` 方法默认使用 `ForkJoinPool.commonPool()`。不同业务共享 common pool 会互相影响，阻塞任务也可能占住公共资源。生产代码通常为不同依赖提供有界、可观测的执行器。
 
-## 5. 异常恢复与观察 {#exceptions}
+## 5. 异常恢复与观察 {#异常恢复与观察}
 
 - `exceptionally`：失败时提供替代值。
 - `handle`：无论成功失败都转换结果。
@@ -67,7 +67,7 @@ future.whenComplete((value, error) -> metrics.record(error));
 
 `get()` 抛受检的 `ExecutionException`，`join()` 对异常完成抛 `CompletionException`。日志去重时要解开包装异常，同时保留原始 cause。
 
-## 6. 超时与取消的作用范围 {#timeout-cancel}
+## 6. 超时与取消的作用范围 {#超时与取消的作用范围}
 
 `orTimeout` 让 CompletableFuture 在期限后异常完成，`completeOnTimeout` 提供默认值，但底层外部调用未必因此停止。取消一个 CompletableFuture 也主要是异常完成语义，它没有像 `FutureTask` 一样直接控制所有产生结果的计算。
 
@@ -99,7 +99,7 @@ future.whenComplete((value, error) -> metrics.record(error));
 - 异常包装和恢复语义。
 - 超时不等于底层任务停止。
 
-**相关内容**：[回调的执行线程](#executor)至[超时与取消的作用范围](#timeout-cancel)。
+**相关内容**：[回调的执行线程](#回调的执行线程)至[超时与取消的作用范围](#超时与取消的作用范围)。
 
 <details>
 <summary>参考回答</summary>

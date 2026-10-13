@@ -15,7 +15,7 @@ knowledge:
 - 区间开闭、边界更新和返回值必须使用同一套约定。[卡](#equal-value)
 - 数组查找 O(log n)，若用于答案二分，还要乘上每次判定成本。
 
-## 2. 半开区间不变量 {#mechanism}
+## 2. 半开区间不变量 {#半开区间不变量}
 
 维护候选区间 `[left,right)`：left 之前的元素都小于 target，right 及之后的元素都大于等于 target。初始 left=0、right=n，两个已排除区域为空。
 
@@ -39,7 +39,7 @@ static int lowerBound(int[] a, int target) {
 
 一次判定 O(n)，候选整数范围宽度为 U，则总时间 O(n log U)。数组中元素无序、可行性不单调或浮点精度目标不明确时，不能直接照搬整数二分模板。
 
-## 4. 使用边界 {#boundaries}
+## 4. 使用边界 {#使用边界}
 
 找到 lower bound 后，判断元素是否存在还要检查 `index < a.length` 且 `a[index] == target`。返回 n 是合法哨兵，不能直接拿它读取数组。
 
@@ -55,7 +55,7 @@ static int lowerBound(int[] a, int target) {
 
 **考察重点**：查找目标的定义、半开区间不变量与重复值边界。
 
-**相关内容**：[面试核心](#core)、[半开区间不变量](#mechanism)、[使用边界](#boundaries)。
+**相关内容**：[面试核心](#core)、[半开区间不变量](#半开区间不变量)、[使用边界](#使用边界)。
 
 <details>
 <summary>参考回答</summary>

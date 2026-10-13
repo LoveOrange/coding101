@@ -17,7 +17,7 @@ Spring Boot 启动的主要工作，是准备运行环境、创建并刷新 Spri
 - 刷新完成后依次调用 `ApplicationRunner` 和 `CommandLineRunner`，然后发布 `ApplicationReadyEvent`，应用进入就绪状态。
 - 启动慢时按阶段测量耗时，不要在 Runner 或就绪事件中阻塞执行长期任务。
 
-## 2. 启动类与 `@SpringBootApplication` {#entry}
+## 2. 启动类与 `@SpringBootApplication` {#启动类与-springbootapplication}
 
 ```java
 @SpringBootApplication
@@ -36,7 +36,7 @@ public class OrderApplication {
 
 启动类的位置会影响默认扫描范围。把它放进过深的业务包，可能让其他模块的组件无法被发现；直接扩大到根包，又可能扫描无关类型。
 
-## 3. 准备运行环境 {#prepare}
+## 3. 准备运行环境 {#准备运行环境}
 
 `run` 方法不会立即创建所有 Bean。它先完成一组容器之外的准备工作：
 
@@ -48,7 +48,7 @@ public class OrderApplication {
 
 有些事件发生在 ApplicationContext 创建之前，因此仅把监听器声明为 `@Bean` 无法收到全部早期事件。
 
-## 4. 容器刷新 {#refresh}
+## 4. 容器刷新 {#容器刷新}
 
 准备好上下文后，Spring Boot 会把启动类注册为配置来源，并调用 Spring Framework 的 `refresh()`。容器在这个阶段执行 BeanFactory 后处理器、解析配置类、注册 BeanDefinition、创建非懒加载单例、执行 Bean 生命周期回调并发布上下文刷新事件。
 
@@ -60,13 +60,13 @@ public class OrderApplication {
 
 :::
 
-## 5. 嵌入式 Web 服务器 {#web-server}
+## 5. 嵌入式 Web 服务器 {#嵌入式-web-服务器}
 
 Servlet 应用使用专门的 WebApplicationContext。Tomcat、Jetty 等嵌入式服务器由容器中的工厂创建，并在刷新流程中启动。Controller、Servlet、Filter 和监听器也会在这里完成注册。
 
 因此，日志中出现端口监听并不表示全部业务初始化都已完成。服务器启动失败通常要继续检查端口占用、连接器配置、证书和 WebServerFactory；Bean 创建失败则沿依赖链寻找最早的 cause。
 
-## 6. Runner 与就绪 {#runners}
+## 6. Runner 与就绪 {#runner-与就绪}
 
 容器刷新成功后，Spring Boot 会依次调用 `ApplicationRunner` 和 `CommandLineRunner`，随后发布应用已就绪的事件并更新可用性状态。
 
@@ -74,7 +74,7 @@ Runner 适合做必须在接收流量前完成、且耗时可控的初始化。�
 
 如果任务不影响服务接流量，应考虑放到后台任务、独立迁移流程或显式运维操作中。
 
-## 7. 启动、存活与就绪 {#liveness-readiness}
+## 7. 启动、存活与就绪 {#启动存活与就绪}
 
 - **进程启动**：JVM 已运行，不代表 Spring 容器可用。
 - **上下文刷新完成**：核心 Bean 已创建，仍可能正在执行 Runner。
@@ -83,7 +83,7 @@ Runner 适合做必须在接收流量前完成、且耗时可控的初始化。�
 
 部署平台应根据 readiness 决定是否转发请求，根据 liveness 判断是否需要重启。把同一个外部依赖同时加入两种探针，依赖故障时可能让所有实例反复重启。
 
-## 8. 启动耗时分析 {#startup-time}
+## 8. 启动耗时分析 {#启动耗时分析}
 
 先记录总启动时间，再定位慢在哪一段：
 
@@ -118,7 +118,7 @@ Runner 适合做必须在接收流量前完成、且耗时可控的初始化。�
 - 自动配置、Bean 生命周期和嵌入式服务器所在阶段。
 - Runner、启动事件与 readiness 的边界。
 
-**相关内容**：[启动类与 `@SpringBootApplication`](#entry)至[启动耗时分析](#startup-time)。
+**相关内容**：[启动类与 `@SpringBootApplication`](#启动类与-springbootapplication)至[启动耗时分析](#启动耗时分析)。
 
 <details>
 <summary>参考回答</summary>

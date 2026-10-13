@@ -16,7 +16,7 @@ knowledge:
 - 活锁中线程持续运行、反复让步重试，CPU 高而成功吞吐接近零。
 - 饥饿是系统整体在推进，但部分线程长期拿不到锁、许可、CPU 或执行器位置。[卡](#deadlock-livelock-starvation)
 
-## 2. 死锁 {#deadlock}
+## 2. 死锁 {#死锁}
 
 ```java
 void transfer(Account from, Account to, Money amount) {
@@ -39,19 +39,19 @@ Account second = first == from ? to : from;
 
 如果两个 key 相同，还要处理同对象或 tie lock，不能只比较哈希后假定顺序唯一。
 
-## 3. 超时获取锁 {#lock-timeout}
+## 3. 超时获取锁 {#超时获取锁}
 
 `ReentrantLock.tryLock(timeout)` 可以在无法取得第二把锁时释放第一把并重试，打破无限等待。重试必须有总截止时间、退避和失败结果，否则多个线程可能同步地反复让步，转成活锁。
 
 数据库锁、HTTP 调用和线程池 Future 也能构成跨组件等待环。JVM 只能自动识别部分 monitor 和 ownable synchronizer 死锁，不能理解整个分布式依赖图。
 
-## 4. 活锁 {#livelock}
+## 4. 活锁 {#活锁}
 
 两个礼貌线程检测到冲突后同时撤销、同时重试，每次都再次冲突。线程通常处于 RUNNABLE，CPU 和重试计数可能很高，但成功吞吐接近零。
 
 常见处理方式包括随机或指数退避、给一方确定优先级、减少冲突窗口，以及对重试次数和总时间设上限。只观察线程是否在运行，无法判断系统是否有业务进展。
 
-## 5. 饥饿 {#starvation}
+## 5. 饥饿 {#饥饿}
 
 系统整体仍在完成任务，但某个线程长期拿不到锁、许可、CPU 或执行器位置，就是饥饿。来源可能包括：
 
@@ -62,7 +62,7 @@ Account second = first == from ? to : from;
 
 公平锁可以缓解特定获取顺序问题，却通常牺牲吞吐，也不能保证操作系统调度公平。更直接的方案可能是拆分队列、设定配额或限制单租户占用。
 
-## 6. 进度指标与诊断 {#progress-metrics}
+## 6. 进度指标与诊断 {#进度指标与诊断}
 
 诊断至少同时观察：
 
@@ -100,7 +100,7 @@ Account second = first == from ? to : from;
 - 线程状态不能单独判断进度。
 - 锁顺序、退避和资源配额。
 
-**相关内容**：[死锁](#deadlock)至[进度指标与诊断](#progress-metrics)。
+**相关内容**：[死锁](#死锁)至[进度指标与诊断](#进度指标与诊断)。
 
 <details>
 <summary>参考回答</summary>

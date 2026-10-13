@@ -15,7 +15,7 @@ knowledge:
 - `EXPLAIN ANALYZE` 实际执行语句，`actual time` 包括子节点耗时；多次循环显示每次平均值。[卡](#actual-loops)
 - `Using filesort` 表示额外排序，不保证落盘；`Using index` 与索引条件下推含义不同。
 
-## 2. 从查询条件到访问路径 {#mechanism}
+## 2. 从查询条件到访问路径 {#从查询条件到访问路径}
 
 ```sql
 CREATE TABLE orders_plan (
@@ -43,7 +43,7 @@ LIMIT 20;
 
 对可控只读查询，可进一步用 EXPLAIN ANALYZE 检查实际行数、循环次数与时间，比较估计偏差。慢查询的等待、锁竞争和网络传输还需要其他运行指标配合。
 
-## 4. 实际统计与估算偏差 {#actual-statistics}
+## 4. 实际统计与估算偏差 {#实际统计与估算偏差}
 
 MySQL 8.4 的 `EXPLAIN ANALYZE FORMAT=TREE` 展示迭代器执行树。`actual time=a..b` 分别表示取得首行和完成该迭代器的时间，单位毫秒；存在多次循环时按循环取平均。父节点时间包含子节点，不应把整棵树所有时间相加。内层单次很快但 `loops` 很大，也会使连接昂贵；实际行数与循环数应一起阅读。
 
@@ -51,7 +51,7 @@ MySQL 8.4 的 `EXPLAIN ANALYZE FORMAT=TREE` 展示迭代器执行树。`actual t
 
 估算明显偏离实测时，检查采样统计是否过时、参数是否命中倾斜热点、列之间是否相关。`ANALYZE TABLE` 更新统计信息，与执行查询并采集时间的 `EXPLAIN ANALYZE` 是不同操作；直方图等统计手段也不能保证所有相关列估算准确。
 
-## 5. 使用边界 {#boundaries}
+## 5. 使用边界 {#使用边界}
 
 小表全表扫描可能比索引访问更便宜；索引命中但返回大量行也可能很慢。判断优化时应比较同样参数、数据规模和缓存条件下的实际延迟，而不是只追求计划中的索引名称。
 
@@ -67,7 +67,7 @@ MySQL 8.4 的 `EXPLAIN ANALYZE FORMAT=TREE` 展示迭代器执行树。`actual t
 
 **考察重点**：索引访问范围、估算与实际统计的区别，以及查询之外的等待成本。
 
-**相关内容**：[面试核心](#core)、[从查询条件到访问路径](#mechanism)、[使用边界](#boundaries)。
+**相关内容**：[面试核心](#core)、[从查询条件到访问路径](#从查询条件到访问路径)、[使用边界](#使用边界)。
 
 <details>
 <summary>参考回答</summary>
@@ -87,7 +87,7 @@ MySQL 8.4 的 `EXPLAIN ANALYZE FORMAT=TREE` 展示迭代器执行树。`actual t
 - 迭代器循环次数
 - 包含关系与平均时间
 
-**相关内容**：[实际统计与估算偏差](#actual-statistics)。
+**相关内容**：[实际统计与估算偏差](#实际统计与估算偏差)。
 
 <details>
 <summary>参考回答</summary>
@@ -107,7 +107,7 @@ MySQL 8.4 的 `EXPLAIN ANALYZE FORMAT=TREE` 展示迭代器执行树。`actual t
 - 统计信息和数据倾斜
 - 可比条件下的验证
 
-**相关内容**：[实际统计与估算偏差](#actual-statistics)、[使用边界](#boundaries)。
+**相关内容**：[实际统计与估算偏差](#实际统计与估算偏差)、[使用边界](#使用边界)。
 
 <details>
 <summary>参考回答</summary>

@@ -17,7 +17,7 @@ knowledge:
 - 用 `@ConditionalOnClass`、`@ConditionalOnProperty`、`@ConditionalOnMissingBean` 让用户可以关闭或替换默认实现。
 - Starter 不应在引入后自动发请求、建表或启动后台任务；用 `ApplicationContextRunner` 测试各种条件组合。
 
-## 2. Starter 与自动配置模块 {#modules}
+## 2. Starter 与自动配置模块 {#starter-与自动配置模块}
 
 一套完整能力可以拆成两个模块：
 
@@ -33,7 +33,7 @@ Starter 本身通常只是依赖描述；创建 Bean 的逻辑放在自动配置
 
 第三方 Starter 不要使用 `spring-boot-*` 作为名称开头，避免与 Spring Boot 官方模块混淆。
 
-## 3. 注册自动配置 {#registration}
+## 3. 注册自动配置 {#注册自动配置}
 
 ```java
 @AutoConfiguration
@@ -56,7 +56,7 @@ META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports
 
 自动配置放在专用包中，不让业务应用的 ComponentScan 偶然发现，也不要通过宽泛扫描寻找内部组件。依赖明确的配置可使用 `@Import`。
 
-## 4. 对外接口 {#public-api}
+## 4. 对外接口 {#对外接口}
 
 - **依赖契约**：接入 Starter 后会引入哪些直接和传递依赖。
 - **配置契约**：统一前缀、字段类型、默认值、校验与废弃策略。
@@ -64,13 +64,13 @@ META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports
 
 配置属性应使用独立命名空间，例如 `acme.payment.*`。通过配置元数据给 IDE 提供提示；字段改名时考虑兼容窗口，不能悄悄改变同名参数的单位或含义。
 
-## 5. 条件与覆盖 {#conditions}
+## 5. 条件与覆盖 {#条件与覆盖}
 
 常见组合是：类路径具备能力、属性开关已启用、用户尚未提供同类 Bean 时才创建默认实现。
 
 不要用 `@ConditionalOnMissingBean` 掩盖模糊的扩展模型。如果应用需要同时存在多个客户端，应使用清晰的 qualifier、注册表或 builder 定制接口，而不是让“容器里恰好已有一个 Bean”决定全部行为。
 
-## 6. 隐式副作用 {#side-effects}
+## 6. 隐式副作用 {#隐式副作用}
 
 接入依赖不应自动执行这些操作：
 
@@ -82,7 +82,7 @@ META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports
 
 确有必要的后台组件应具备开关、超时、关闭回调、健康状态和清晰日志。可能产生外部成本或数据修改的能力，最好要求显式启用。
 
-## 7. 测试条件组合 {#testing}
+## 7. 测试条件组合 {#测试条件组合}
 
 使用 `ApplicationContextRunner` 可以构造不同类路径、属性和用户 Bean 组合，验证：
 
@@ -120,7 +120,7 @@ META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports
 - imports、条件注解与配置属性。
 - 可覆盖、无副作用和测试边界。
 
-**相关内容**：[Starter 与自动配置模块](#modules)至[测试条件组合](#testing)。
+**相关内容**：[Starter 与自动配置模块](#starter-与自动配置模块)至[测试条件组合](#测试条件组合)。
 
 <details>
 <summary>参考回答</summary>

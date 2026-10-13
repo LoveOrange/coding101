@@ -17,7 +17,7 @@ knowledge:
 - Kubernetes 网络模型要求所有 Pod 之间可以不经 NAT 直接通信。同一节点的 Pod 通过 veth 对和网桥通信，跨节点由 CNI 插件实现：封装隧道（Flannel VXLAN）或路由（Calico BGP）。[卡](#pod-networking)
 - CNI 插件负责 Pod 的 IP 和 Pod 之间的连通；kube-proxy 负责把访问 Service IP 的流量转发到后端 Pod，两者解决不同的问题。
 
-## 2. 工作负载 {#workloads}
+## 2. 工作负载 {#工作负载}
 
 | 类型 | 特点 | 适用 |
 | --- | --- | --- |
@@ -56,7 +56,7 @@ spec:
 
 配置和密钥分别放在 ConfigMap 和 Secret 中，以环境变量或文件的形式注入。持久存储通过 PVC 申请，由 StorageClass 动态创建 PV。
 
-## 3. Service 与流量入口 {#services}
+## 3. Service 与流量入口 {#service-与流量入口}
 
 | 类型 | 访问方式 | 说明 |
 | --- | --- | --- |
@@ -72,7 +72,7 @@ spec:
 
 **Ingress 与 Gateway API**：Ingress 定义按域名和路径把 HTTP 请求路由到不同 Service 的规则，并可以配置 TLS 证书；规则本身不生效，需要部署 Ingress 控制器（例如基于 Nginx、Envoy、Traefik 的实现）来执行，所以 Nginx 和 Ingress 的关系是“实现与规则”。社区维护的 ingress-nginx 已在 2026-03 结束维护，官方建议迁移到 Gateway API：它把基础设施（GatewayClass、Gateway）和路由（HTTPRoute 等）拆成不同对象，由不同角色管理，表达能力也更强。
 
-## 4. 集群网络 {#networking}
+## 4. 集群网络 {#集群网络}
 
 Kubernetes 网络模型的要求：每个 Pod 有自己的 IP；所有 Pod 之间不经过 NAT 即可通信；节点与 Pod 之间可以直接通信。具体实现交给 CNI 插件。
 
@@ -116,7 +116,7 @@ Pod 之间不通时，按路径逐段确认：Pod 的 IP 和路由、节点上�
 - 三类工作负载在身份、存储、分布上的区别和适用场景。
 - Deployment 通过多个 ReplicaSet 实现滚动更新和回滚；清单的结构。
 
-**相关内容**：[工作负载](#workloads)。
+**相关内容**：[工作负载](#工作负载)。
 
 <details>
 <summary>参考回答</summary>
@@ -146,7 +146,7 @@ ReplicaSet 只负责维持指定数量的 Pod。Deployment 管理 ReplicaSet：�
 - 各类型的访问方式和适用场景；Headless Service。
 - EndpointSlice、kube-proxy、CoreDNS 的分工；Ingress 规则与控制器；Gateway API。
 
-**相关内容**：[Service 与流量入口](#services)、[iptables](../linux/network-troubleshooting.mdx#iptables-chains)。
+**相关内容**：[Service 与流量入口](#service-与流量入口)、[iptables 规则](../linux/network-troubleshooting.mdx#iptables-规则)。
 
 <details>
 <summary>参考回答</summary>
@@ -177,7 +177,7 @@ Ingress 是七层路由规则，按域名和路径把 HTTP 请求转到不同的
 - 网络模型的要求；同 Pod、同节点、跨节点三种路径。
 - 隧道与路由两种方式的取舍；CNI 与 kube-proxy 的分工。
 
-**相关内容**：[集群网络](#networking)、[Service 与流量入口](#services)。
+**相关内容**：[集群网络](#集群网络)、[Service 与流量入口](#service-与流量入口)。
 
 <details>
 <summary>参考回答</summary>

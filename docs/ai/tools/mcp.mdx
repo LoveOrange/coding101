@@ -17,7 +17,7 @@ MCP（Model Context Protocol）是连接 AI 应用与外部工具、数据源的
 - MCP 不替代 Function Calling：模型仍通过工具调用提出请求，MCP 规范的是 Host 如何发现和调用外部工具。它解决的是 M 个应用 × N 个工具的集成问题。[卡](#mcp-vs-api)
 - 风险来自第三方 Server：工具描述投毒、过度权限、数据外泄、远程服务鉴权缺失。接入前审核，执行时按工具授权。[卡](#mcp-security)
 
-## 2. 角色与能力 {#architecture}
+## 2. 角色与能力 {#角色与能力}
 
 ```text
 ┌──────────── Host（AI 应用）────────────┐
@@ -37,7 +37,7 @@ MCP（Model Context Protocol）是连接 AI 应用与外部工具、数据源的
 
 Server 向 Host 声明自己支持哪些能力，Host 也声明自己支持哪些客户端特性，双方在初始化时协商。
 
-## 3. 交互流程 {#flow}
+## 3. 交互流程 {#交互流程}
 
 1. **初始化**：Client 发送 `initialize`，带协议版本和客户端能力；Server 返回版本和服务端能力；Client 发送 `notifications/initialized`。
 2. **发现**：Client 调用 `tools/list`，拿到每个工具的名称、描述和 `inputSchema`。
@@ -56,7 +56,7 @@ Server 向 Host 声明自己支持哪些能力，Host 也声明自己支持哪�
 - **stdio**：Host 启动 Server 作为子进程，通过标准输入输出交换消息。适合本地工具，不经过网络，权限等同本地进程。
 - **Streamable HTTP**：Server 是独立的 HTTP 服务，Client 用 POST 发送消息，Server 可以用普通响应或 SSE 流返回。适合远程和多用户服务，需要鉴权。规范中更早的 HTTP+SSE 双端点方式已被它取代。
 
-## 4. 与 Function Calling、普通 API 的关系 {#comparison}
+## 4. 与 Function Calling、普通 API 的关系 {#与-function-calling普通-api-的关系}
 
 | 对比 | Function Calling | MCP | 普通 API |
 | --- | --- | --- | --- |
@@ -69,7 +69,7 @@ Server 向 Host 声明自己支持哪些能力，Host 也声明自己支持哪�
 
 MCP 被广泛采用的原因是降低集成成本：没有统一协议时，M 个应用接 N 个工具需要 M×N 份集成；有了协议，各自实现一次。代价是多了一层进程或网络调用，以及第三方 Server 的信任问题。
 
-## 5. 安全风险 {#security}
+## 5. 安全风险 {#安全风险}
 
 - **工具描述投毒**：恶意 Server 在工具描述中写入指令，诱导模型泄露数据或调用其他工具。描述本身会进入上下文，属于不可信内容。
 - **动态变更**：Server 在审核后修改工具定义。可以固定版本、记录定义的哈希，变化时重新确认。
@@ -101,7 +101,7 @@ MCP 被广泛采用的原因是降低集成成本：没有统一协议时，M �
 - Host、Client、Server 的职责。
 - 初始化、发现、调用的消息流程与传输方式。
 
-**相关内容**：[角色与能力](#architecture)、[交互流程](#flow)、[传输方式](#31-传输方式)。
+**相关内容**：[角色与能力](#角色与能力)、[交互流程](#交互流程)、[传输方式](#31-传输方式)。
 
 <details>
 <summary>参考回答</summary>
@@ -129,7 +129,7 @@ MCP 是连接 AI 应用和外部工具、数据源的开放协议。Host 是 AI 
 - 三者所处的层次和解决的问题。
 - M×N 集成问题与引入协议的代价。
 
-**相关内容**：[与 Function Calling、普通 API 的关系](#comparison)。
+**相关内容**：[与 Function Calling、普通 API 的关系](#与-function-calling普通-api-的关系)。
 
 <details>
 <summary>参考回答</summary>
@@ -158,7 +158,7 @@ MCP 被广泛采用，是因为它把 M 个应用对接 N 个工具的 M×N 集�
 - 工具描述投毒、动态变更、过度权限与数据外泄。
 - 远程 Server 的 OAuth 鉴权和本地 Server 的隔离。
 
-**相关内容**：[安全风险](#security)、[工具授权与执行沙箱](../safety/tool-authorization-sandbox.mdx)。
+**相关内容**：[安全风险](#安全风险)、[工具授权与执行沙箱](../safety/tool-authorization-sandbox.mdx)。
 
 <details>
 <summary>参考回答</summary>

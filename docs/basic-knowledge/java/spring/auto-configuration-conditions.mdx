@@ -17,7 +17,7 @@ Spring Boot 自动配置会根据应用类路径、配置属性和容器中已�
 - 用 `--debug` 启动或 Actuator 的 `conditions` 端点查看每个自动配置匹配或未匹配的原因。
 - 自动配置类只声明 Bean，不应在类加载或条件评估时访问网络、创建线程。
 
-## 2. 候选自动配置类 {#candidates}
+## 2. 候选自动配置类 {#候选自动配置类}
 
 第三方自动配置通常在以下文件中登记类名：
 
@@ -33,7 +33,7 @@ com.example.payment.autoconfigure.PaymentAutoConfiguration
 
 `@EnableAutoConfiguration` 负责发起候选配置导入。应用可以排除某个候选，但排除只解决“不要使用这份默认配置”，不应成为修复依赖冲突的常规手段。
 
-## 3. 条件注解 {#conditions}
+## 3. 条件注解 {#条件注解}
 
 ```java
 @AutoConfiguration
@@ -57,7 +57,7 @@ class PaymentAutoConfiguration {
 
 条件可以标在配置类或 Bean 方法上。类级条件不成立时，整组配置都不会解析；方法级条件只控制一个 Bean。
 
-## 4. 用户配置优先 {#back-off}
+## 4. 用户配置优先 {#用户配置优先}
 
 `@ConditionalOnMissingBean` 让自动配置在用户已经声明 Bean 时退让。例如应用自定义 `ObjectMapper` 后，框架不应再无条件创建同类型默认实现。
 
@@ -65,7 +65,7 @@ class PaymentAutoConfiguration {
 
 不要仅为了“让条件先看到”而依赖偶然的文件名或扫描顺序。公共扩展点应有明确类型、配置属性和自动配置顺序。
 
-## 5. 属性条件 {#property-conditions}
+## 5. 属性条件 {#属性条件}
 
 ```java
 @Bean
@@ -79,7 +79,7 @@ RetryPolicy retryPolicy() { ... }
 
 需要明确三个问题：属性缺失时是否启用、什么值算匹配、错误值是否应让启动失败。关键能力最好通过类型安全的 `@ConfigurationProperties` 校验参数，而不是让拼写错误静默回退到另一种行为。
 
-## 6. 条件评估报告 {#report}
+## 6. 条件评估报告 {#条件评估报告}
 
 使用 `--debug` 启动，或查看 Actuator 的 `conditions` 端点，可以看到每个自动配置匹配和未匹配的原因。例如：
 
@@ -90,7 +90,7 @@ RetryPolicy retryPolicy() { ... }
 
 “没有创建某个 Bean”通常只是结果。条件报告、BeanDefinition 来源和最终配置值才能说明原因。
 
-## 7. 启动副作用 {#side-effects}
+## 7. 启动副作用 {#启动副作用}
 
 自动配置类的职责是声明 Bean 和配置关系。类加载或配置解析期间直接访问网络、创建线程、写文件，会让条件评估变得昂贵，也使测试和应用关闭难以控制。
 
@@ -122,7 +122,7 @@ RetryPolicy retryPolicy() { ... }
 - 条件注解与用户 Bean 回退。
 - 条件报告和排查方法。
 
-**相关内容**：[候选自动配置类](#candidates)至[启动副作用](#side-effects)。
+**相关内容**：[候选自动配置类](#候选自动配置类)至[启动副作用](#启动副作用)。
 
 <details>
 <summary>参考回答</summary>

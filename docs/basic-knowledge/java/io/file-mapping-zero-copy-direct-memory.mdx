@@ -17,7 +17,7 @@ knowledge:
 - 直接 `ByteBuffer` 在堆外分配，本地 I/O 可以直接使用；分配和释放成本较高，需要池化并受 `MaxDirectMemorySize` 限制。[卡](#direct-memory-tradeoffs)
 - `transferTo` 可能只传输部分数据，调用方要循环直到完成。
 
-## 2. 普通文件传输的复制过程 {#traditional}
+## 2. 普通文件传输的复制过程 {#普通文件传输的复制过程}
 
 应用使用堆数组读取文件再写入 Socket 时，可以抽象为：
 
@@ -33,7 +33,7 @@ knowledge:
 
 如果应用只负责把文件原样发出去，并不需要查看或修改每个字节，把数据复制进 Java 堆就没有必要。
 
-## 3. FileChannel.transferTo {#transfer-to}
+## 3. FileChannel.transferTo {#filechanneltransferto}
 
 ```java
 try (
@@ -59,19 +59,19 @@ try (
 
 `transferTo` 让通道实现直接把文件区域传给目标通道。在支持的系统上，JDK 可以使用 `sendfile` 等机制，避免把文件内容先复制到 Java 堆缓冲区。
 
-### 3.1 部分传输 {#partial-transfer}
+### 3.1 部分传输 {#部分传输}
 
 返回值是本次实际传输的字节数，可能小于请求数量，甚至为 0。非阻塞目标暂时不可写、操作系统单次传输限制等情况都需要调用方保存进度并稍后继续。
 
 上面为简化示例遇到 0 就退出；事件循环中应注册可写事件，等目标再次可写时从当前 `position` 继续。
 
-### 3.2 平台差异 {#platform}
+### 3.2 平台差异 {#平台差异}
 
 Java API 规定传输语义，不承诺底层一定使用某个系统调用。源通道、目标通道、操作系统和文件类型都会影响实现。确认优化是否生效，需要在目标平台查看性能指标、系统调用或 JDK 实现行为。
 
 如果应用必须压缩、加密、修改协议内容或解析每个字节，数据仍然需要进入用户态处理，`transferTo` 就不适合直接覆盖整条路径。
 
-## 4. 内存映射 {#mmap}
+## 4. 内存映射 {#内存映射}
 
 `FileChannel.map` 返回 `MappedByteBuffer`：
 
@@ -91,7 +91,7 @@ try (FileChannel channel = FileChannel.open(path, StandardOpenOption.READ)) {
 
 映射后，应用像访问内存一样访问文件区域。操作系统在页面首次访问时把对应文件页带入内存，并通过页缓存管理后续读写。
 
-### 4.1 内存映射的适用场景 {#mmap-use}
+### 4.1 内存映射的适用场景 {#内存映射的适用场景}
 
 - 大文件的随机访问。
 - 多个进程读取同一文件页。
@@ -100,7 +100,7 @@ try (FileChannel channel = FileChannel.open(path, StandardOpenOption.READ)) {
 
 顺序读取一个小文件时，普通缓冲流或 `FileChannel.read` 通常更简单。映射不是“把整个文件免费放进内存”，访问仍然可能触发缺页和磁盘 I/O。
 
-### 4.2 内存映射的限制 {#mmap-limits}
+### 4.2 内存映射的限制 {#内存映射的限制}
 
 - 映射占用虚拟地址空间，超大区域要考虑进程地址空间和页表成本。
 - 第一次访问冷页面可能出现明显缺页延迟。
@@ -110,7 +110,7 @@ try (FileChannel channel = FileChannel.open(path, StandardOpenOption.READ)) {
 
 `MappedByteBuffer.force()` 请求把对映射区域的修改写入存储设备，但持久化保证仍受平台和文件系统语义影响。
 
-## 5. 直接 ByteBuffer {#direct-buffer}
+## 5. 直接 ByteBuffer {#直接-bytebuffer}
 
 ```java
 ByteBuffer direct = ByteBuffer.allocateDirect(64 * 1024);
@@ -122,7 +122,7 @@ System.out.println(direct.isDirect()); // true
 
 直接缓冲区仍然有一个 Java 对象作为引用入口，它的生命周期通常与对象可达性相关。数据不在堆里，不代表不受 GC 触发的清理机制影响，也不代表内存无限。
 
-### 5.1 直接内存的代价 {#direct-cost}
+### 5.1 直接内存的代价 {#直接内存的代价}
 
 - 分配和释放通常比普通堆缓冲区昂贵。
 - 内存不直接体现在 Java 堆占用中，但仍受进程和 JVM 直接内存限制。
@@ -132,7 +132,7 @@ System.out.println(direct.isDirect()); // true
 
 网络框架通常使用缓冲池复用直接内存，而不是为每个小消息调用 `allocateDirect`。
 
-## 6. 三种机制的比较 {#comparison}
+## 6. 三种机制的比较 {#三种机制的比较}
 
 | 机制 | 主要目标 | 数据是否进入 Java 堆 | 适合场景 | 主要风险 |
 | --- | --- | --- | --- | --- |
@@ -142,7 +142,7 @@ System.out.println(direct.isDirect()); // true
 
 它们可以组合，也可能互相替代。选择依据是应用是否需要处理内容、访问模式、数据大小和生命周期，不是看到“零拷贝”就同时启用所有机制。
 
-## 7. 验证收益 {#verification}
+## 7. 验证收益 {#验证收益}
 
 只比较一段微基准的平均耗时不够。I/O 优化还要观察：
 
@@ -191,7 +191,7 @@ System.out.println(direct.isDirect()); // true
 - 零拷贝为什么仍然存在设备与内存之间的数据移动。
 - 平台差异和部分传输怎样影响代码。
 
-**相关内容**：[FileChannel.transferTo](#transfer-to)、[内存映射](#mmap)、[三种机制的比较](#comparison)。
+**相关内容**：[FileChannel.transferTo](#filechanneltransferto)、[内存映射](#内存映射)、[三种机制的比较](#三种机制的比较)。
 
 <details>
 <summary>参考回答</summary>
@@ -217,7 +217,7 @@ Java 可以使用 `FileChannel.transferTo` 或 `transferFrom` 在通道之间传
 - 堆外数据与 Java Buffer 对象的生命周期关系。
 - 分配成本、内存上限和池化。
 
-**相关内容**：[直接 ByteBuffer](#direct-buffer)。
+**相关内容**：[直接 ByteBuffer](#直接-bytebuffer)。
 
 <details>
 <summary>参考回答</summary>

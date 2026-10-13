@@ -17,7 +17,7 @@ knowledge:
 - 同一类型有多个候选时用 `@Qualifier`、`@Primary` 或注入集合明确选择。
 - singleton 中使用 prototype 或 request 作用域的对象时，用 `ObjectProvider` 或 scoped proxy 按需获取。
 
-## 2. 构造器注入 {#constructor}
+## 2. 构造器注入 {#构造器注入}
 
 ```java
 @Service
@@ -38,7 +38,7 @@ public final class OrderService {
 
 构造参数过多不是改用字段注入的理由，它往往说明类承担了过多职责，或者依赖边界没有聚合。
 
-## 3. Setter 注入 {#setter}
+## 3. Setter 注入 {#setter-注入}
 
 ```java
 private AuditSink auditSink = AuditSink.noop();
@@ -53,7 +53,7 @@ public void setAuditSink(AuditSink auditSink) {
 
 Setter 也允许构造后的变化，这会扩大状态空间。业务组件通常不需要在运行中随意替换依赖。
 
-## 4. 字段注入 {#field}
+## 4. 字段注入 {#字段注入}
 
 ```java
 @Autowired
@@ -64,7 +64,7 @@ private PaymentClient paymentClient;
 
 框架基础设施或遗留代码可能仍使用字段注入，新业务代码优先构造器注入。
 
-## 5. 多个候选 Bean {#qualifiers}
+## 5. 多个候选 Bean {#多个候选-bean}
 
 ```java
 OrderService(@Qualifier("primaryPayment") PaymentClient client) {
@@ -82,7 +82,7 @@ Map<String, PaymentStrategy> strategies
 
 再由一个明确的路由器验证 key 和回退行为。
 
-## 6. `ObjectProvider` {#object-provider}
+## 6. `ObjectProvider` {#objectprovider}
 
 `ObjectProvider<T>` 可以按需取得对象、处理零个或多个候选，并适配 prototype 或 request 等较短作用域：
 
@@ -95,7 +95,7 @@ public Report create() {
 
 Provider 是明确的延迟边界。大量使用它来回避循环依赖，会把结构问题延迟到运行时。
 
-## 7. 不同作用域的注入 {#scopes}
+## 7. 不同作用域的注入 {#不同作用域的注入}
 
 singleton 在创建时直接注入 prototype，只会得到当时创建的一个实例。需要每次调用新对象时，使用 `ObjectProvider`、方法注入或 scoped proxy。
 
@@ -128,7 +128,7 @@ singleton 在创建时直接注入 prototype，只会得到当时创建的一个
 - 字段注入的测试和可见性问题。
 - 多候选、延迟与作用域边界。
 
-**相关内容**：[构造器注入](#constructor)至[不同作用域的注入](#scopes)。
+**相关内容**：[构造器注入](#构造器注入)至[不同作用域的注入](#不同作用域的注入)。
 
 <details>
 <summary>参考回答</summary>

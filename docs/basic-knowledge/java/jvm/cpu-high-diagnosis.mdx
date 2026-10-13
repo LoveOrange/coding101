@@ -17,7 +17,7 @@ Java 进程 CPU 升高时，先确认是业务线程、GC、JIT 还是 native/�
 - 栈上没有明显死循环时，用 async-profiler 或 JFR 看调用树占比，并检查 GC、分配率和 JIT 编译。[卡](#high-cpu-no-loop)
 - Load Average 高、线程多、`RUNNABLE` 多都不能单独证明 CPU 是瓶颈。
 
-## 2. 确认范围与饱和程度 {#scope}
+## 2. 确认范围与饱和程度 {#确认范围与饱和程度}
 
 先回答：
 
@@ -29,7 +29,7 @@ Java 进程 CPU 升高时，先确认是业务线程、GC、JIT 还是 native/�
 
 在容器中，一个进程显示 100% 可能只占一个核，也可能已经用完 1 CPU 配额。使用率还要结合 throttled time 和机器核数解释。
 
-## 3. 定位高 CPU 线程 {#find-thread}
+## 3. 定位高 CPU 线程 {#定位高-cpu-线程}
 
 Linux 示例：
 
@@ -47,7 +47,7 @@ jcmd <pid> Thread.print -l > threads.txt
 
 找到相同 `nid=0x...` 的线程和栈。不同 JDK 的线程转储格式会变化，虚拟线程也不等同于一个固定 OS 线程；CPU 映射主要针对实际承载执行的操作系统线程。
 
-## 4. 多份线程栈 {#thread-dumps}
+## 4. 多份线程栈 {#多份线程栈}
 
 间隔 3—10 秒采集数份，观察同一线程：
 
@@ -58,7 +58,7 @@ jcmd <pid> Thread.print -l > threads.txt
 
 持续同栈提示死循环或重计算；栈不断变化但始终集中在同一调用树，更适合用 CPU profile 统计。
 
-## 5. CPU profile {#profile}
+## 5. CPU profile {#cpu-profile}
 
 ```bash
 asprof -d 30 -f cpu.html <pid>
@@ -75,7 +75,7 @@ asprof -d 30 -f cpu.html <pid>
 - 竞争自旋和高频 CAS 重试。
 - JNI 或内核系统调用。
 
-## 6. GC 与分配 {#gc}
+## 6. GC 与分配 {#gc-与分配}
 
 GC 线程占用高通常是结果，背后可能是分配率、live set 或堆配置：
 
@@ -86,7 +86,7 @@ jcmd <pid> JFR.start name=cpu settings=profile duration=60s filename=cpu.jfr
 
 同时查看 GC 日志中的回收频率、GC CPU、回收后堆和分配停滞。减少对象分配或无界保留可能比调整 GC 线程数更有效。
 
-## 7. JIT、类加载与 native 时间 {#jit-native}
+## 7. JIT、类加载与 native 时间 {#jit类加载与-native-时间}
 
 发布后短时 CPU 高可能来自类加载与 JIT 预热。JFR 的 Compilation 和 Class Load 事件、`Compiler.queue` 可验证。
 
@@ -99,7 +99,7 @@ system CPU 高时检查：
 
 只看 Java 栈可能把 native 热点显示为一个宽泛的 native 方法。async-profiler 的 native/kernel 栈或系统 `perf` 能继续展开，前提是权限和符号可用。
 
-## 8. 修复验证 {#verification}
+## 8. 修复验证 {#修复验证}
 
 至少比较：
 
@@ -142,7 +142,7 @@ system CPU 高时检查：
 - TID 与线程转储 `nid` 的映射。
 - 多快照和 CPU profile。
 
-**相关内容**：[确认范围与饱和程度](#scope)至[JIT、类加载与 native 时间](#jit-native)。
+**相关内容**：[确认范围与饱和程度](#确认范围与饱和程度)至[JIT、类加载与 native 时间](#jit类加载与-native-时间)。
 
 <details>
 <summary>参考回答</summary>
@@ -167,7 +167,7 @@ system CPU 高时检查：
 - CPU profiler、GC/JIT 和 native 栈。
 - system CPU 与上下文切换。
 
-**相关内容**：[多份线程栈](#thread-dumps)至[JIT、类加载与 native 时间](#jit-native)。
+**相关内容**：[多份线程栈](#多份线程栈)至[JIT、类加载与 native 时间](#jit类加载与-native-时间)。
 
 <details>
 <summary>参考回答</summary>

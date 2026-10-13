@@ -17,13 +17,13 @@ knowledge:
 - 发送时每向下一层就加上本层头部，接收方的同一层解析对应头部。
 - 四层负载均衡按 IP 和端口转发连接；七层负载均衡解析 HTTP 等应用协议，可以按路径、Header 和 Cookie 路由。
 
-## 2. 概述 {#overview}
+## 2. 概述 {#概述}
 
-### 2.1 网络模型的作用 {#purpose}
+### 2.1 网络模型的作用 {#网络模型的作用}
 
 网络需要让不同硬件、操作系统和应用实现互通。分层模型为每一层规定职责与接口，使上层可以使用下层能力，而不必理解传输介质和每一跳设备的实现细节。
 
-### 2.2 OSI 与 TCP/IP 模型 {#models}
+### 2.2 OSI 与 TCP/IP 模型 {#osi-与-tcpip-模型}
 
 当我们提到网络模型时，通常指 OSI 七层模型与 TCP/IP 四层模型。
 
@@ -31,9 +31,9 @@ OSI 模型由**国际标准化组织（ISO）**提出，用七个层级描述开
 
 **TCP/IP 模型**来自互联网协议族的实际实现，通常以四层或五层方式描述。两套模型的层级不能机械地一一对应，但可以借助职责理解协议工作在哪个范围。
 
-## 3. OSI 七层模型 {#osi}
+## 3. OSI 七层模型 {#osi-七层模型}
 
-### 3.1 OSI 模型的设计原则 {#osi-principles}
+### 3.1 OSI 模型的设计原则 {#osi-模型的设计原则}
 
 虽然 OSI 七层模型基本没有在实际环境中被使用，但是其合理的划分了网络层次，为网络协议的设计提供了理论指导。作为一个教学工具，能够帮助我们更好的理解数据是如何在网络中传输的。
 
@@ -46,7 +46,7 @@ OSI 模型的分层基本原则包括：
 
 让我们从上到下，逐层分析 OSI 七层模型。
 
-### 3.2 OSI 各层 {#osi-layers}
+### 3.2 OSI 各层 {#osi-各层}
 
 #### 3.2.1 Application - 应用层
 
@@ -106,7 +106,7 @@ OSI 模型出于职责划分的目的，会单独列出**表示层**与**会话�
 
 物理层不用多说，就是真实的网络设备了，包括网线、光纤、无线网络设备等等。
 
-### 3.3 OSI 模型示意图 {#osi-diagram}
+### 3.3 OSI 模型示意图 {#osi-模型示意图}
 
 引用 [OSI - Wikipedia](https://en.wikipedia.org/wiki/OSI_model) 中的示意图：
 
@@ -114,13 +114,13 @@ OSI 模型出于职责划分的目的，会单独列出**表示层**与**会话�
 
 作者 MrsValdry，CC BY-SA 3.0，https://commons.wikimedia.org/w/index.php?curid=16941456
 
-## 4. TCP/IP 四层模型 {#tcpip}
+## 4. TCP/IP 四层模型 {#tcpip-四层模型}
 
-### 4.1 TCP/IP 模型的来源 {#tcpip-origin}
+### 4.1 TCP/IP 模型的来源 {#tcpip-模型的来源}
 
 **TCP/IP 模型** 在理论基础上不像 OSI 模型那样极其扎实，但是 TCP/IP 模型是根据实际的网络环境设计，也是实际网络中使用的模型。
 
-### 4.2 TCP/IP 各层 {#tcpip-layers}
+### 4.2 TCP/IP 各层 {#tcpip-各层}
 
 虽然 TCP/IP 与 OSI 模型的分层不同，但是还是具备很多相似之处，从某种程度来说，TCP/IP 模型算是 OSI 模型的简化版本。
 
@@ -159,13 +159,13 @@ TCP/IP 模型自顶向下分为四层：
 
 连接层主要用来解决**用户的数据如何在真实的物理网络中传输**的问题。
 
-### 4.3 TCP/IP 模型示意图 {#tcpip-diagram}
+### 4.3 TCP/IP 模型示意图 {#tcpip-模型示意图}
 
 参考 [TCP/IP 模型示意图](https://en.wikipedia.org/wiki/Internet_protocol_suite) 中的示意图：
 
 ![TCP/IP 四层模型示意图](./assets/tcp_ip_model.png)
 
-### 4.4 层级之间的交互 {#encapsulation}
+### 4.4 层级之间的交互 {#层级之间的交互}
 
 以一个网络请求为例，不论是 OSI 模型还是 TCP/IP 模型，从应用层开始，每向下走一层，下层都协议都会在上层的基础上，增加一些额外的头部信息，供接收方同一层级进行解析。这也是在 TCP/IP 的示意图中，为什么加上了接收方与发送方的层级之间的连线。
 
@@ -175,7 +175,7 @@ TCP/IP 模型自顶向下分为四层：
 
 作者 en:User:Cburnett original work, colorization by en:User:Kbrose - Original artwork by en:User:Cburnett，CC BY-SA 3.0，https://commons.wikimedia.org/w/index.php?curid=1546338
 
-## 5. 四层与七层负载均衡 {#load-balancing}
+## 5. 四层与七层负载均衡 {#四层与七层负载均衡}
 
 在日常开发中，我们经常听到两个数据「**四层负载均衡**」与「**七层负载均衡**」。
 
@@ -211,7 +211,7 @@ TCP/IP 模型自顶向下分为四层：
 - 封装、解封装和同层协议字段。
 - 四层与七层负载均衡可读取的信息和适用场景。
 
-**相关内容**：[OSI 七层模型](#osi)至[四层与七层负载均衡](#load-balancing)。
+**相关内容**：[OSI 七层模型](#osi-七层模型)至[四层与七层负载均衡](#四层与七层负载均衡)。
 
 <details>
 <summary>参考回答</summary>

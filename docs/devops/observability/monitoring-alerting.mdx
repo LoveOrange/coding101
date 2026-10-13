@@ -17,7 +17,7 @@ knowledge:
 - 告警应当可执行：只对影响用户或即将影响用户的情况告警，每条告警都有明确的处理步骤；用持续时间、迟滞阈值、聚合和抑制减少抖动和重复，按严重程度分级和升级。[卡](#alert-design)
 - 监控系统自身也要被监控：Prometheus 和 Alertmanager 做高可用部署，并用独立的“心跳告警”确认告警链路是通的。
 
-## 2. Prometheus 的组成 {#prometheus}
+## 2. Prometheus 的组成 {#prometheus-的组成}
 
 | 组件 | 作用 |
 | --- | --- |
@@ -49,7 +49,7 @@ histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket[
 
 **与 Zabbix 的区别**：Zabbix 以 Agent 为中心，支持主动和被动两种采集模式，数据存在关系数据库中，模板化管理主机和网络设备，适合传统的物理机、虚拟机环境；Prometheus 使用多维标签的数据模型和服务发现，适合容器和微服务这类实例频繁变化的环境，查询和聚合能力更强。
 
-## 3. 监控哪些指标 {#metrics}
+## 3. 监控哪些指标 {#监控哪些指标}
 
 **服务（四个黄金信号）**
 
@@ -71,7 +71,7 @@ histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket[
 
 **分层覆盖**：基础设施（主机、容器、网络）→ 中间件（数据库连接数与慢查询、Redis 内存与命中率、消息堆积）→ 应用（黄金信号、JVM 堆与 GC）→ 业务（下单量、支付成功率）→ 用户侧（外部拨测、真实用户的页面耗时）。例如监控一个代理服务器，要看连接数和新建速率、各上游的错误率和耗时、上游健康状态、TLS 证书剩余有效期，以及主机的 CPU、网络和文件描述符使用量。
 
-## 4. 告警设计 {#alerting}
+## 4. 告警设计 {#告警设计}
 
 **告警什么**：优先告警用户能感知的症状（错误率升高、延迟超过目标、SLO 的错误预算消耗过快），原因类指标（某台机器 CPU 高）多数只需要放在看板上，或者作为低级别通知。每条需要人处理的告警都应附带说明和处理手册的链接。
 
@@ -112,7 +112,7 @@ histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket[
 - Server、Exporter、Pushgateway、Alertmanager 的分工和拉取模型。
 - 服务发现与 relabel；指标类型；与 Zabbix 的定位差异。
 
-**相关内容**：[Prometheus 的组成](#prometheus)。
+**相关内容**：[Prometheus 的组成](#prometheus-的组成)。
 
 <details>
 <summary>参考回答</summary>
@@ -143,7 +143,7 @@ Zabbix 以 Agent 为中心，数据存在关系数据库，模板化管理主机
 - 用黄金信号、USE 方法组织指标，而不是罗列。
 - 分层覆盖：资源、中间件、应用、业务、用户侧。
 
-**相关内容**：[监控哪些指标](#metrics)。
+**相关内容**：[监控哪些指标](#监控哪些指标)。
 
 <details>
 <summary>参考回答</summary>
@@ -174,7 +174,7 @@ Zabbix 以 Agent 为中心，数据存在关系数据库，模板化管理主机
 - 告警症状而非原因，每条告警可执行。
 - 持续时间、迟滞、平滑、分组、抑制等降噪手段；分级与升级；告警系统自身的可用性。
 
-**相关内容**：[告警设计](#alerting)。
+**相关内容**：[告警设计](#告警设计)。
 
 <details>
 <summary>参考回答</summary>

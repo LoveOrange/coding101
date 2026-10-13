@@ -17,7 +17,7 @@ knowledge:
 - `StringBuilder` 可变、非线程安全；`StringBuffer` 的方法加了 `synchronized`，单线程拼接用 `StringBuilder`。[卡](#string-builder-buffer)
 - 单个表达式的 `+` 拼接由编译器优化，循环中反复拼接时用 `StringBuilder`。
 
-## 2. String 的不可变性 {#immutability}
+## 2. String 的不可变性 {#string-的不可变性}
 
 `String` 的操作都返回新的字符串，原对象保持不变：
 
@@ -40,13 +40,13 @@ System.out.println(result);   // Coding 101
 
 实现细节可以随 JDK 版本调整，例如内部存储不必永远是 `char[]`。对使用者稳定的契约是字符串值创建后保持不变。
 
-### 2.1 不可变性的作用 {#immutability-benefits}
+### 2.1 不可变性的作用 {#不可变性的作用}
 
 同一个 `String` 对象可以被多个对象和线程共享，调用方不需要担心另一处代码修改它的内容。字符串还能稳定地作为 `HashMap` 的键，因为参与 `equals` 和 `hashCode` 的字符序列不会变化。
 
 代价也很直接：每次产生不同内容，都需要得到另一个字符串。一次短表达式通常不成问题，在循环中反复拼接大量内容则可能产生不必要的中间结果。
 
-## 3. 字符串常量池 {#string-pool-section}
+## 3. 字符串常量池 {#字符串常量池}
 
 Java 会驻留字符串字面量。内容相同的字面量引用同一个规范字符串对象：
 
@@ -69,7 +69,7 @@ System.out.println(first.equals(created)); // true
 
 `new String(...)` 明确创建了一个新的 `String` 对象。表达式中涉及的字面量是否早已加载，取决于类和运行时状态，因此不应把“这行代码总共创建几个对象”当作脱离上下文的固定数字。
 
-### 3.1 编译期常量折叠 {#constant-folding}
+### 3.1 编译期常量折叠 {#编译期常量折叠}
 
 由字符串字面量和常量表达式组成的拼接，可以在编译阶段得到结果：
 
@@ -106,7 +106,7 @@ System.out.println(canonical == "Java"); // true
 
 `intern()` 适合内容重复度高、生命周期明确，并且经过测量确认能够节省内存的场景。对任意外部输入无条件驻留，可能让大量字符串长期保留。普通业务代码通常不需要主动调用它。
 
-## 4. StringBuilder 与 StringBuffer {#builders}
+## 4. StringBuilder 与 StringBuffer {#stringbuilder-与-stringbuffer}
 
 `StringBuilder` 和 `StringBuffer` 保存可变字符序列，`append` 等操作修改当前对象并返回自身：
 
@@ -131,7 +131,7 @@ String result = builder.toString();
 
 `StringBuffer` 的单个方法具有同步保护，不代表多步组合自动具备原子性。例如“先判断长度，再追加内容”包含两次调用，如果整体必须不可分割，仍然需要在更高层定义同步边界。很多场景也可以避免共享构建器，让每个线程独立构建结果。
 
-## 5. 字符串拼接的选择 {#concatenation}
+## 5. 字符串拼接的选择 {#字符串拼接的选择}
 
 少量、直观的一次性拼接可以直接使用 `+`：
 
@@ -198,7 +198,7 @@ final String name = "Java";
 - `StringBuffer` 的同步保证覆盖到什么粒度。
 - 一次性拼接、循环构建和共享缓冲区分别怎样选择。
 
-**相关内容**：[String 的不可变性](#immutability)、[StringBuilder 与 StringBuffer](#builders)、[字符串拼接的选择](#concatenation)。
+**相关内容**：[String 的不可变性](#string-的不可变性)、[StringBuilder 与 StringBuffer](#stringbuilder-与-stringbuffer)、[字符串拼接的选择](#字符串拼接的选择)。
 
 <details>
 <summary>参考回答</summary>
@@ -223,7 +223,7 @@ final String name = "Java";
 - `==` 与 `equals` 在字符串比较中的含义。
 - `new String(...)`、编译期常量和 `intern()` 的差异。
 
-**相关内容**：[字符串常量池](#string-pool-section)。
+**相关内容**：[字符串常量池](#字符串常量池)。
 
 <details>
 <summary>参考回答</summary>

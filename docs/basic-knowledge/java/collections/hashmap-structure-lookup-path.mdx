@@ -27,7 +27,7 @@ HashMap 使用桶数组保存键值对，通过键的哈希定位桶，再用 `e
 - 容量是 2 的幂，下标用 `hash & (n - 1)` 计算；扩容翻倍后节点只会留在原索引或移动到“原索引 + 旧容量”。[卡](#power-of-two-capacity)
 - HashMap 不保证遍历顺序，也不支持无同步的并发写。
 
-## 2. 结构与查找路径 {#structure}
+## 2. 结构与查找路径 {#结构与查找路径}
 
 HashMap 的核心结构是一组桶。桶为空时没有节点；发生冲突时，桶内可能是链表或红黑树。
 
@@ -48,7 +48,7 @@ User user = users.get(7L);
 
 平均 O(1) 依赖两个条件：哈希分布合理，且 `hashCode`、`equals` 本身足够便宜。复杂的相等比较仍会成为真实成本。
 
-## 3. `equals` 与 `hashCode` {#equals-hashcode}
+## 3. `equals` 与 `hashCode` {#equals-与-hashcode}
 
 相等键必须产生相同哈希；相同哈希的键不一定相等。自定义键应同时正确实现 `equals` 和 `hashCode`，并且参与比较的字段在键存入 Map 后保持稳定。
 
@@ -64,7 +64,7 @@ System.out.println(names.get(new UserId(7))); // Lin
 
 HashMap 允许一个 `null` 键和多个 `null` 值。`get` 返回 `null` 时无法区分“键不存在”和“值就是 null”，需要时使用 `containsKey` 或避免保存 null 值。
 
-## 4. 冲突与树化 {#hashmap-treeification}
+## 4. 冲突与树化 {#冲突与树化}
 
 不同键进入同一桶是正常现象。短链表结构简单，节点少时通常比红黑树更合适；只有冲突持续严重时，树的对数查找才值得额外字段和维护成本。
 
@@ -76,7 +76,7 @@ HashMap 允许一个 `null` 键和多个 `null` 值。`get` 返回 `null` 时无
 
 这些数字是当前实现细节，不是 Map 接口契约。面试回答应先说明取舍：短桶保持简单，小表先扩容，足够大的表仍有长桶时再用树限制退化。
 
-## 5. 容量与扩容 {#hashmap-resize}
+## 5. 容量与扩容 {#容量与扩容}
 
 需要区分四个概念：
 
@@ -100,7 +100,7 @@ index = (capacity - 1) & hash;
 
 实现不必重新调用每个键的 `hashCode()`，但仍要分配新数组并迁移节点链接，因此扩容整体是 O(n)，大 Map 还会产生短时内存和延迟压力。已知元素数量时可以预估初始容量，避免明显的重复扩容；盲目预留过大数组会浪费内存并增加遍历空桶的成本。
 
-## 6. 使用边界 {#boundaries}
+## 6. 使用边界 {#使用边界}
 
 - **遍历顺序**：HashMap 没有顺序保证。需要插入顺序使用 LinkedHashMap，需要按键排序使用 TreeMap。
 - **并发访问**：并发写可能丢失更新或观察到不一致状态。共享可变 Map 应使用 ConcurrentHashMap 的原子方法，或在更高层建立锁。
@@ -139,7 +139,7 @@ index = (capacity - 1) & hash;
 - 桶定位、哈希比较和 `equals` 比较的顺序。
 - 覆盖旧值、插入新值和触发结构变化的边界。
 
-**相关内容**：[结构与查找路径](#structure)、[`equals` 与 `hashCode`](#equals-hashcode)。
+**相关内容**：[结构与查找路径](#结构与查找路径)、[`equals` 与 `hashCode`](#equals-与-hashcode)。
 
 <details>
 <summary>参考回答</summary>
@@ -166,7 +166,7 @@ HashMap 先取得键的哈希并做扰动，再按容量定位桶。`get` 在桶
 - 树化阈值与最小表容量的协作。
 - 扩容分散普通碰撞与树处理持续碰撞的区别。
 
-**相关内容**：[冲突与树化](#hashmap-treeification)。
+**相关内容**：[冲突与树化](#冲突与树化)。
 
 <details>
 <summary>参考回答</summary>
@@ -191,7 +191,7 @@ HashMap 先取得键的哈希并做扰动，再按容量定位桶。`get` 在桶
 - 位掩码怎样定位桶。
 - 容量翻倍后节点为什么只有两个候选位置。
 
-**相关内容**：[容量与扩容](#hashmap-resize)。
+**相关内容**：[容量与扩容](#容量与扩容)。
 
 <details>
 <summary>参考回答</summary>

@@ -15,7 +15,7 @@ HTTP 缓存复用已有响应，减少传输与源站计算。它先判断响应
 - no-cache 允许存储但要求复用前验证，no-store 要求不要存储。[卡](#no-cache-no-store-304)
 - ETag 与 If-None-Match 可用于条件请求，资源未变时返回 304。
 
-## 2. 存储与新鲜度 {#mechanism}
+## 2. 存储与新鲜度 {#存储与新鲜度}
 
 ```http
 Cache-Control: public, max-age=60
@@ -37,7 +37,7 @@ If-None-Match: "version-7"
 
 304 不携带新的完整资源体，因此依赖客户端已有对应缓存。它仍发生了网络往返，只减少主体传输，不等于完全没有访问服务器。
 
-## 4. 使用边界 {#boundaries}
+## 4. 使用边界 {#使用边界}
 
 Vary 指出哪些请求头参与选择响应，例如 Accept-Encoding。共享缓存需要把这些维度纳入匹配，否则可能返回错误表示。
 
@@ -53,7 +53,7 @@ no-cache 与 no-store 应按是否允许存储来区分；设置 no-store 也不
 
 **考察重点**：缓存存储、新鲜度与条件验证三个不同判断。
 
-**相关内容**：[面试核心](#core)、[存储与新鲜度](#mechanism)、[使用边界](#boundaries)。
+**相关内容**：[面试核心](#core)、[存储与新鲜度](#存储与新鲜度)、[使用边界](#使用边界)。
 
 <details>
 <summary>参考回答</summary>

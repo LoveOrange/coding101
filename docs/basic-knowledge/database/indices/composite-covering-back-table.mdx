@@ -91,7 +91,7 @@ InnoDB 的二级索引项需要携带主键。主键很宽时，每棵二级索�
 
 MySQL 8 可以用 `EXPLAIN ANALYZE` 查看实际行数、循环次数和各算子耗时。优化应以执行证据为准，不只根据 SQL 文字猜测。
 
-## 8. 范围定位、下推过滤与覆盖 {#index-access-example}
+## 8. 范围定位、下推过滤与覆盖 {#范围定位下推过滤与覆盖}
 
 下面是独立的表结构示意。是否选中某条索引，仍取决于数据量和统计信息：
 
@@ -116,7 +116,7 @@ WHERE tenant_id = 10 AND created_at > '2026-08-01'
 
 前缀索引如 `name(10)` 只保存列的前一部分，通常不能覆盖需要完整 `name` 的查询。不要把索引定义中出现了列名直接等同于包含完整值。
 
-## 9. 排序、LIMIT 与列顺序 {#ordering-example}
+## 9. 排序、LIMIT 与列顺序 {#排序limit-与列顺序}
 
 假设主要查询是某租户已支付订单的最新列表：
 
@@ -182,7 +182,7 @@ InnoDB 二级索引叶子节点保存索引列和主键。查询二级索引没�
 - 复合键的有序区间。
 - 范围边界与剩余列过滤。
 
-**相关内容**：[联合索引先按第一列排序](#1-联合索引先按第一列排序)、[范围定位、下推过滤与覆盖](#index-access-example)。
+**相关内容**：[联合索引先按第一列排序](#1-联合索引先按第一列排序)、[范围定位、下推过滤与覆盖](#范围定位下推过滤与覆盖)。
 
 <details>
 <summary>参考回答</summary>
@@ -202,7 +202,7 @@ a 的等值与 b 的范围通常用于构造扫描区间，c 的条件不能把�
 - 覆盖取列与 ICP。
 - 回表与 MVCC 的边界。
 
-**相关内容**：[范围定位、下推过滤与覆盖](#index-access-example)、[覆盖索引让查询直接从索引返回](#4-覆盖索引让查询直接从索引返回)。
+**相关内容**：[范围定位、下推过滤与覆盖](#范围定位下推过滤与覆盖)、[覆盖索引让查询直接从索引返回](#4-覆盖索引让查询直接从索引返回)。
 
 <details>
 <summary>参考回答</summary>
@@ -222,7 +222,7 @@ Using index 表示有覆盖访问条件，通常无需为返回列取整行。Us
 - 固定前缀后的顺序。
 - LIMIT 与实际扫描量。
 
-**相关内容**：[排序、LIMIT 与列顺序](#ordering-example)。
+**相关内容**：[排序、LIMIT 与列顺序](#排序limit-与列顺序)。
 
 <details>
 <summary>参考回答</summary>
@@ -231,7 +231,7 @@ Using index 表示有覆盖访问条件，通常无需为返回列取整行。Us
 
 </details>
 
-## 12. 参考资料 {#references}
+## 12. 参考资料 {#参考资料}
 
 - [MySQL 8.4：Multiple-Column Indexes](https://dev.mysql.com/doc/refman/8.4/en/multiple-column-indexes.html)
 - [MySQL 8.4：Clustered and Secondary Indexes](https://dev.mysql.com/doc/refman/8.4/en/innodb-index-types.html)

@@ -29,7 +29,7 @@ G1 在启动时选择 Region 大小，整个堆由大量等大小 Region 构成�
 
 大于或等于约半个 Region 的对象会按 Humongous 路径处理，并占用一个或多个连续 Region。大量临界尺寸对象可能增加空间浪费与回收压力，应从 GC 日志确认而不是只按源码估计。
 
-## 3. Remembered Set {#rset}
+## 3. Remembered Set {#remembered-set}
 
 局部回收 Region A 时，除了 GC Roots，还要知道其他 Region 中哪些对象指向 A。G1 通过写屏障、卡表和 Remembered Set 维护这类跨 Region 引用摘要。
 
@@ -48,13 +48,13 @@ G1 在 Young GC 中选择年轻 Region 作为 collection set，暂停应用线�
 
 疏散同时实现回收与压缩，避免 CMS 那类长期碎片。但它需要目标 Region 有足够空闲空间；余量不足时可能发生 evacuation failure，并导致更重的处理。
 
-## 5. 并发标记与 Mixed GC {#mixed-gc}
+## 5. 并发标记与 Mixed GC {#并发标记与-mixed-gc}
 
 堆占用达到启动条件后，G1 开始并发标记，计算旧 Region 的存活情况。标记完成后，G1 可以在后续 Mixed GC 中把一部分回收价值较高的 Old Region 加入 collection set，与年轻代一起疏散。
 
 “Garbage First”表示优先选择预期能回收较多空间、且能够放进暂停预算的 Region，不代表每次都严格回收垃圾百分比最高的一个 Region。选择还受依赖、候选集合和暂停预测影响。
 
-## 6. 暂停目标 {#pause-goal}
+## 6. 暂停目标 {#暂停目标}
 
 ```bash
 java -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -jar app.jar
@@ -64,7 +64,7 @@ G1 根据历史统计预测不同 collection set 的工作量，尝试满足暂�
 
 把目标设得很低，G1 可能缩小年轻代并更频繁收集，增加屏障、GC CPU 和吞吐损失。调整前先确认业务端到端延迟是否真的由 GC 停顿主导。
 
-## 7. G1 的 Full GC {#full-gc}
+## 7. G1 的 Full GC {#g1-的-full-gc}
 
 常见信号包括：
 
@@ -76,7 +76,7 @@ G1 根据历史统计预测不同 collection set 的工作量，尝试满足暂�
 
 调优顺序通常是：减少分配和无界保留，确认堆有足够余量，观察并发周期是否及时，再考虑少量 G1 参数。一次改很多 flags 会破坏 G1 的自适应关系。
 
-## 8. 阅读 G1 日志 {#logs}
+## 8. 阅读 G1 日志 {#阅读-g1-日志}
 
 ```bash
 java -Xlog:gc*,gc+heap=debug:file=gc.log:time,uptime,level,tags -jar app.jar
@@ -123,7 +123,7 @@ java -Xlog:gc*,gc+heap=debug:file=gc.log:time,uptime,level,tags -jar app.jar
 - RSet 记录来自集合外的引用。
 - 屏障、内存与扫描成本。
 
-**相关内容**：[Region](#region)至[并发标记与 Mixed GC](#mixed-gc)。
+**相关内容**：[Region](#region)至[并发标记与 Mixed GC](#并发标记与-mixed-gc)。
 
 <details>
 <summary>参考回答</summary>
@@ -148,7 +148,7 @@ G1 把堆切成等大小 Region，每次停顿选择一组 Region 作为 collect
 - live set、RSet、调度和大对象会改变成本。
 - 过低目标可能损失吞吐。
 
-**相关内容**：[暂停目标](#pause-goal)至[阅读 G1 日志](#logs)。
+**相关内容**：[暂停目标](#暂停目标)至[阅读 G1 日志](#阅读-g1-日志)。
 
 <details>
 <summary>参考回答</summary>

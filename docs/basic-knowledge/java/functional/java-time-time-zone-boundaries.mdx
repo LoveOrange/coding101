@@ -36,7 +36,7 @@ ZonedDateTime localView = createdAt.atZone(shanghai);
 
 同一个 `Instant` 在上海和纽约会显示不同的本地日期时间，但仍是同一个瞬间。
 
-## 3. LocalDateTime {#local-date-time}
+## 3. LocalDateTime {#localdatetime}
 
 `LocalDate`、`LocalTime` 和 `LocalDateTime` 表示 ISO 日历中的本地字段：
 
@@ -54,7 +54,7 @@ LocalDateTime meeting = LocalDateTime.of(date, time);
 
 如果把服务收到的 `LocalDateTime` 直接当作 UTC 或服务器默认时区，就会让部署地区影响业务结果。
 
-## 4. OffsetDateTime 与 ZonedDateTime {#offset-zoned}
+## 4. OffsetDateTime 与 ZonedDateTime {#offsetdatetime-与-zoneddatetime}
 
 `OffsetDateTime` 包含固定 UTC 偏移量：
 
@@ -75,11 +75,11 @@ ZonedDateTime parisMeeting = ZonedDateTime.of(
 
 地区时区包含历史和未来的偏移规则，能够处理夏令时变化。需要“每月按纽约当地时间执行”时，应保存本地规则和 `America/New_York`，只保存当前偏移量无法表达未来规则。
 
-### 4.1 ZoneOffset 与 ZoneId {#offset-vs-zone}
+### 4.1 ZoneOffset 与 ZoneId {#zoneoffset-与-zoneid}
 
 `ZoneOffset.ofHours(8)` 永远表示 `+08:00`。`ZoneId.of("Europe/Paris")` 的偏移量会随日期和时区数据库规则变化。固定偏移适合协议中的明确偏移值，地区时区适合需要遵循当地规则的安排。
 
-## 5. 本地时间转换为瞬间 {#local-to-instant}
+## 5. 本地时间转换为瞬间 {#本地时间转换为瞬间}
 
 ```java
 LocalDateTime local = LocalDateTime.parse(
@@ -100,7 +100,7 @@ Instant instant = zoned.toInstant();
 
 可以通过 `ZoneRules.getValidOffsets(localDateTime)` 检查一个本地时间对应零个、一个还是两个有效偏移。
 
-## 6. 时区转换 {#zone-conversion}
+## 6. 时区转换 {#时区转换}
 
 保持同一瞬间切换显示地区：
 
@@ -115,7 +115,7 @@ ZonedDateTime newYork = shanghai.withZoneSameInstant(
 
 `withZoneSameLocal` 保持本地日期时间不变，把它重新解释在另一个时区。这个方法会改变对应瞬间，通常只用于迁移错误数据或明确的日历规则，不能用来做普通时区展示。
 
-## 7. Duration 与 Period {#duration-period}
+## 7. Duration 与 Period {#duration-与-period}
 
 `Duration` 按秒和纳秒计算时间线上的时长：
 
@@ -131,7 +131,7 @@ Period age = Period.between(birthDate, today);
 
 “24 小时后”和“当地时间明天同一时刻”在夏令时切换日可能不同。前者使用 `Duration.ofHours(24)`，后者通常在带时区的时间上执行 `plusDays(1)`。选择哪一种取决于业务语义。
 
-## 8. DateTimeFormatter {#formatter}
+## 8. DateTimeFormatter {#datetimeformatter}
 
 ```java
 private static final DateTimeFormatter ORDER_TIME =
@@ -152,7 +152,7 @@ Instant decoded = Instant.parse(encoded);
 
 自定义展示格式属于界面或集成边界，不应成为系统内部唯一时间语义。
 
-## 9. 用 Clock 测试当前时间 {#clock}
+## 9. 用 Clock 测试当前时间 {#用-clock-测试当前时间}
 
 直接在业务方法中调用 `Instant.now()` 会让测试依赖真实时钟。可以注入 `Clock`：
 
@@ -181,7 +181,7 @@ Clock clock = Clock.fixed(
 
 这样可以稳定覆盖到期边界、跨日和夏令时切换，不需要在测试中等待或修改系统时间。
 
-## 10. 存储与接口 {#storage}
+## 10. 存储与接口 {#存储与接口}
 
 ### 10.1 已发生事件
 
@@ -243,7 +243,7 @@ Clock clock = Clock.fixed(
 - 加锁、每次新建、ThreadLocal 与 DateTimeFormatter 的差异。
 - 新代码为何优先使用不可变的 java.time API。
 
-**相关内容**：[DateTimeFormatter](#formatter)。
+**相关内容**：[DateTimeFormatter](#datetimeformatter)。
 
 <details>
 <summary>参考回答</summary>
@@ -268,7 +268,7 @@ Clock clock = Clock.fixed(
 - ZoneId、夏令时间隙和重叠。
 - 时区规则更新、幂等与错过执行的恢复。
 
-**相关内容**：[OffsetDateTime 与 ZonedDateTime](#offset-zoned)、[本地时间转换为瞬间](#local-to-instant)、[存储与接口](#storage)。
+**相关内容**：[OffsetDateTime 与 ZonedDateTime](#offsetdatetime-与-zoneddatetime)、[本地时间转换为瞬间](#本地时间转换为瞬间)、[存储与接口](#存储与接口)。
 
 <details>
 <summary>参考回答</summary>

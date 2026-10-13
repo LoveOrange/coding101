@@ -17,7 +17,7 @@ Agent 框架把模型调用、工具注册、执行循环、状态持久化和�
 - LangGraph 的 State 定义各字段的合并方式：节点返回部分更新，没有声明归并函数的字段被覆盖，声明了的（如消息列表）按函数合并。条件边用路由函数决定下一个节点，检查点按线程保存每一步的状态，用于恢复和人工审批。[卡](#langgraph-state)
 - 不同框架的定位不同：多 Agent 对话（AutoGen）、角色分工（CrewAI）、数据与检索（LlamaIndex）、提供方官方 SDK、Java 生态（Spring AI）、低代码平台（Dify、Coze）。[卡](#framework-landscape)
 
-## 2. 框架替你做了什么 {#responsibilities}
+## 2. 框架替你做了什么 {#框架替你做了什么}
 
 一个可上线的 Agent 除了模型循环，还需要下面这些部分，框架覆盖的范围各不相同：
 
@@ -34,7 +34,7 @@ Agent 框架把模型调用、工具注册、执行循环、状态持久化和�
 
 这张表也是面试回答“框架带来了什么”的结构：先说自己项目需要哪几项，再说框架提供了哪些、哪些仍需自己实现。
 
-## 3. LangChain 与 LangGraph {#langchain-langgraph}
+## 3. LangChain 与 LangGraph {#langchain-与-langgraph}
 
 **LangChain** 的出发点是“链”：把提示模板、模型、输出解析器、检索器等组件用统一的接口串起来，一个组件的输出作为下一个的输入，形成固定的处理链路。早期的大量预置链（问答链、摘要链）抽象较重，调试困难。1.0 版本以后，LangChain 收敛为以 `create_agent` 为中心的 Agent 开发接口，底层运行在 LangGraph 上，用中间件在模型调用、工具调用前后插入自定义逻辑（如摘要、人工审批、重试）；旧的链式接口移入单独的兼容包。
 
@@ -55,7 +55,7 @@ Agent 框架把模型调用、工具注册、执行循环、状态持久化和�
 | 控制粒度 | 通过中间件定制 | 每个节点和边都由自己定义 |
 | 关系 | Agent 运行在 LangGraph 上 | 可以单独使用，也可以调用 LangChain 组件 |
 
-## 4. 常见框架的定位 {#landscape}
+## 4. 常见框架的定位 {#常见框架的定位}
 
 | 框架 | 定位 | 适用场景 |
 | --- | --- | --- |
@@ -69,7 +69,7 @@ Agent 框架把模型调用、工具注册、执行循环、状态持久化和�
 
 编码 Agent（Claude Code、Codex 等）是面向具体任务的完整产品，它们的 Harness 设计可以作为自研 Agent 的参考，见 [Agent Harness](../agents/harness.mdx)。
 
-## 5. 选型依据 {#selection}
+## 5. 选型依据 {#选型依据}
 
 1. **流程复杂度**：一次调用或固定几步，直接调用 API 或用轻量封装即可；有循环、分支、并行和长时间运行，才需要图编排和持久化。
 2. **控制需求**：上下文怎样组装和压缩、工具怎样授权、何时停止，如果有框架无法表达的特殊要求，自研或只用底层组件。
@@ -99,7 +99,7 @@ Agent 框架把模型调用、工具注册、执行循环、状态持久化和�
 - 链式组合与图编排两种抽象，以及 LangChain 1.0 前后的变化。
 - 手写实现需要自己补的能力，和框架带来的代价。
 
-**相关内容**：[LangChain 与 LangGraph](#langchain-langgraph)、[框架替你做了什么](#responsibilities)。
+**相关内容**：[LangChain 与 LangGraph](#langchain-与-langgraph)、[框架替你做了什么](#框架替你做了什么)。
 
 <details>
 <summary>参考回答</summary>
@@ -130,7 +130,7 @@ LangChain 的“链”是把提示模板、模型、解析器、检索器等组�
 - 用项目的具体需求说明选择，而不是泛泛比较。
 - 框架覆盖与不覆盖的能力；替换框架的成本。
 
-**相关内容**：[选型依据](#selection)、[框架替你做了什么](#responsibilities)、[Harness 和 Agent 框架的关系](../agents/harness.mdx#modules)。
+**相关内容**：[选型依据](#选型依据)、[框架替你做了什么](#框架替你做了什么)、[Harness 和 Agent 框架的关系](../agents/harness.mdx#模块与职责)。
 
 <details>
 <summary>参考回答</summary>
@@ -160,7 +160,7 @@ LangChain 的“链”是把提示模板、模型、解析器、检索器等组�
 - State、节点、边和超步执行模型。
 - 归并函数决定覆盖或合并；检查点与中断恢复的机制。
 
-**相关内容**：[LangChain 与 LangGraph](#langchain-langgraph)、[检查点与恢复](../state/durable-execution.mdx#checkpoint)。
+**相关内容**：[LangChain 与 LangGraph](#langchain-与-langgraph)、[检查点与恢复](../state/durable-execution.mdx#检查点与恢复)。
 
 <details>
 <summary>参考回答</summary>
@@ -191,7 +191,7 @@ State 中每个字段可以声明归并函数：没有声明的字段，节点�
 - 框架的通用组件。
 - 按定位区分框架，并能结合场景说出选择。
 
-**相关内容**：[常见框架的定位](#landscape)、[框架替你做了什么](#responsibilities)。
+**相关内容**：[常见框架的定位](#常见框架的定位)、[框架替你做了什么](#框架替你做了什么)。
 
 <details>
 <summary>参考回答</summary>

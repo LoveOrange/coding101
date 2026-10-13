@@ -17,7 +17,7 @@ ZGC 和 Shenandoah 都把大量标记与对象重定位工作放到应用运行�
 - 并发回收期间应用还在分配，堆余量不足或回收速度跟不上分配速度时，应用线程会发生分配停滞。[卡](#allocation-stall)
 - 迁移前后要对比 live set、分配率、停顿分布、GC CPU 和 RSS。
 
-## 2. 并发重定位 {#concurrent-relocation}
+## 2. 并发重定位 {#并发重定位}
 
 传统疏散收集在 STW 中复制存活对象，停顿容易随 live set 增长。低延迟收集器通过读/加载屏障、转发表或带颜色的引用等机制，让应用线程可以在对象移动期间继续访问正确位置。
 
@@ -28,7 +28,7 @@ ZGC 和 Shenandoah 都把大量标记与对象重定位工作放到应用运行�
 - 堆要保留回收和重定位余量。
 - 某些阶段仍需短暂停顿完成根处理或全局切换。
 
-## 3. 分代 ZGC {#generational-zgc}
+## 3. 分代 ZGC {#分代-zgc}
 
 JDK 23 将 Generational ZGC 设为默认，JDK 24 移除了非分代 ZGC。现代 JDK 上启用：
 
@@ -52,7 +52,7 @@ java -XX:+UseShenandoahGC -version
 
 如果 JVM 报 Unrecognized VM option，说明当前构建没有提供它，不能只凭 Java 主版本判断。
 
-## 5. 分配余量 {#headroom}
+## 5. 分配余量 {#分配余量}
 
 设应用分配率为 `A`，一次并发周期需要时间 `T`。周期进行期间至少还会产生约 `A × T` 的新分配，再加上重定位与波动余量。若可用堆不足，应用可能等待 GC 提供空间，或收集器进入退化/更重路径。
 
@@ -65,7 +65,7 @@ java -XX:+UseShenandoahGC -version
 
 把堆刚好设到 live set 上方，会让并发优势失去运行空间。
 
-## 6. 吞吐、CPU 与内存的代价 {#costs}
+## 6. 吞吐、CPU 与内存的代价 {#吞吐cpu-与内存的代价}
 
 与 G1 或 Parallel 相比，低延迟收集器可能：
 
@@ -76,7 +76,7 @@ java -XX:+UseShenandoahGC -version
 
 这不是固定结论，版本优化会改变差距。选择时测量应用吞吐、P99/P999、GC CPU、RSS 和分配停滞，不只引用收集器宣传的最大暂停。
 
-## 7. 收集器的选择 {#selection}
+## 7. 收集器的选择 {#收集器的选择}
 
 可从目标出发：
 
@@ -87,7 +87,7 @@ java -XX:+UseShenandoahGC -version
 
 先在相同 JDK、相同容器限制和相同请求回放下比较。切换收集器后应清理旧收集器专属参数，避免无效或冲突配置。
 
-## 8. 迁移验证清单 {#migration}
+## 8. 迁移验证清单 {#迁移验证清单}
 
 1. 记录基线的 live set、分配率、暂停分布和 GC CPU。
 2. 只切换收集器，先保留简单堆参数。
@@ -126,7 +126,7 @@ java -XX:+UseShenandoahGC -version
 - 低延迟用 CPU、屏障和内存余量交换。
 - 默认成熟度、目标延迟和实测结果决定选择。
 
-**相关内容**：[并发重定位](#concurrent-relocation)至[收集器的选择](#selection)。
+**相关内容**：[并发重定位](#并发重定位)至[收集器的选择](#收集器的选择)。
 
 <details>
 <summary>参考回答</summary>
@@ -151,7 +151,7 @@ G1 并发完成全局标记，但存活对象疏散主要发生在 STW collectio
 - live set、分配率、周期时间与堆余量的关系。
 - CPU 不足会让收集器落后。
 
-**相关内容**：[分配余量](#headroom)和[吞吐、CPU 与内存的代价](#costs)。
+**相关内容**：[分配余量](#分配余量)和[吞吐、CPU 与内存的代价](#吞吐cpu-与内存的代价)。
 
 <details>
 <summary>参考回答</summary>

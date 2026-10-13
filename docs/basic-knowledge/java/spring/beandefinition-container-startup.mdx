@@ -17,7 +17,7 @@ Spring 容器启动时，先收集和处理 Bean 的定义，再创建需要预�
 - 非懒加载的单例在上下文刷新时预先创建，让配置错误在启动阶段暴露。
 - `FactoryBean` 是用来生产其他对象的 Bean，用 `&` 前缀才能取到它本身。
 
-## 2. BeanDefinition 注册 {#registry}
+## 2. BeanDefinition 注册 {#beandefinition-注册}
 
 BeanDefinition 可以来自：
 
@@ -28,7 +28,7 @@ BeanDefinition 可以来自：
 
 定义通常包含 Bean 类或工厂方法、构造参数、属性、作用域、是否懒加载、初始化和销毁方法等。它是一份创建配方，不是最终业务对象。
 
-## 3. `BeanFactoryPostProcessor` {#bean-factory-post-processor}
+## 3. `BeanFactoryPostProcessor` {#beanfactorypostprocessor}
 
 定义注册完成后，容器会先运行 BeanFactory 级别的后处理器：
 
@@ -47,7 +47,7 @@ public final class ClientTimeoutProcessor
 
 它操作的是定义元数据。此阶段调用 `getBean()` 会让实例提前创建，可能绕过后续处理器或造成依赖链提前展开。
 
-## 4. `BeanPostProcessor` {#bean-post-processor}
+## 4. `BeanPostProcessor` {#beanpostprocessor}
 
 容器在创建普通 Bean 之前先注册 BeanPostProcessor。它们可以参与依赖注入、生命周期注解处理，或在初始化后返回代理对象。
 
@@ -61,19 +61,19 @@ public final class ClientTimeoutProcessor
 
 顺序很重要：某个 Bean 被处理器提前依赖时，它可能“not eligible for auto-proxying”，最终没有获得预期代理。
 
-## 5. BeanFactory 与 ApplicationContext {#application-context}
+## 5. BeanFactory 与 ApplicationContext {#beanfactory-与-applicationcontext}
 
 `BeanFactory` 提供对象创建与依赖装配的核心能力。`ApplicationContext` 在此基础上自动发现处理器，并集成资源加载、事件、国际化、环境和生命周期管理。
 
 典型应用应使用 `ApplicationContext`。直接创建 `DefaultListableBeanFactory` 时，注解处理和 AOP 不会仅因为定义存在就自动全部启用，需要调用方自行完成引导。
 
-## 6. 单例预实例化 {#pre-instantiation}
+## 6. 单例预实例化 {#单例预实例化}
 
 非懒加载 singleton 默认在 ApplicationContext 初始化时创建，使缺少依赖、构造异常和配置错误尽早暴露。`@Lazy` 可以推迟成本，却也把错误延后到首次请求。
 
 启动慢时按阶段测量：类路径扫描与定义解析、处理器执行、Bean 构造、外部连接、迁移脚本和初始化任务。不要只根据最后一个日志行判断原因。
 
-## 7. `FactoryBean` 与 `BeanFactory` {#factory-bean}
+## 7. `FactoryBean` 与 `BeanFactory` {#factorybean-与-beanfactory}
 
 `BeanFactory` 是容器接口。`FactoryBean<T>` 是由容器管理的特殊 Bean，用来生产另一种对象。按普通名称获取时通常得到它的产品；以 `&` 前缀获取时才得到 FactoryBean 本身。
 
@@ -104,7 +104,7 @@ public final class ClientTimeoutProcessor
 - 处理器自动发现和生命周期。
 - 不能简单归结为“懒加载与立即加载”。
 
-**相关内容**：[`BeanFactoryPostProcessor`](#bean-factory-post-processor)至[单例预实例化](#pre-instantiation)。
+**相关内容**：[`BeanFactoryPostProcessor`](#beanfactorypostprocessor)至[单例预实例化](#单例预实例化)。
 
 <details>
 <summary>参考回答</summary>

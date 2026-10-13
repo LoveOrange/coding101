@@ -17,7 +17,7 @@ knowledge:
 - 重载在编译期根据参数的声明类型选择方法，重写在运行时根据对象的实际类型选择实现。[卡](#overload-vs-override)
 - 接口描述能力，抽象类共享状态和流程，组合把可替换的协作者交给对象使用。[卡](#interface-vs-abstract-class)
 
-## 2. 封装 {#encapsulation}
+## 2. 封装 {#封装}
 
 封装把状态变化集中到对象提供的方法中。对象可以在修改前校验条件，从而避免出现无效状态。
 
@@ -47,7 +47,7 @@ final class Account {
 
 如果把字段公开，或提供不校验的 `setBalance`，调用方仍然可以破坏“不允许负余额”的约束。返回内部的可变集合时也要注意边界泄漏，可以返回不可变视图或防御性副本。
 
-## 3. 继承与多态 {#inheritance-polymorphism}
+## 3. 继承与多态 {#继承与多态}
 
 继承让子类获得父类可见的状态和行为，同时声明子类属于父类型。只有子类能够满足父类型契约时，这种关系才成立。
 
@@ -69,7 +69,7 @@ long price = policy.calculate(1_000); // 800
 
 变量的编译时类型是 `PricePolicy`，实际对象是 `DiscountPolicy`。编译器先确认接口中存在 `calculate`，运行时再调用实际对象重写后的实现，这就是动态绑定。
 
-### 3.1 不参与运行时多态的成员 {#non-polymorphic}
+### 3.1 不参与运行时多态的成员 {#不参与运行时多态的成员}
 
 - 字段访问由引用的编译时类型决定。
 - 静态方法属于类，子类声明同名方法属于隐藏。
@@ -78,7 +78,7 @@ long price = policy.calculate(1_000); // 800
 
 因此“多态”默认指可重写实例方法的动态分派，不能推广到所有同名成员。
 
-### 3.2 重载与重写 {#overload-override}
+### 3.2 重载与重写 {#重载与重写}
 
 ```java
 void print(String value) {}
@@ -89,7 +89,7 @@ void print(Object value) {} // 重载
 
 重写发生在继承或接口实现关系中，子类为同签名实例方法提供实现。返回类型可以协变，访问权限不能缩小，受检异常范围不能扩大。
 
-## 4. 接口、抽象类与组合 {#interface-abstract-composition}
+## 4. 接口、抽象类与组合 {#接口抽象类与组合}
 
 | 方式 | 适合表达 | 主要限制 |
 | --- | --- | --- |
@@ -147,7 +147,7 @@ final class OrderService {
 - 编译时类型、运行时类型与动态绑定的关系。
 - 继承与组合的适用条件。
 
-**相关内容**：[封装](#encapsulation)、[继承与多态](#inheritance-polymorphism)。
+**相关内容**：[封装](#封装)、[继承与多态](#继承与多态)。
 
 <details>
 <summary>参考回答</summary>
@@ -172,7 +172,7 @@ final class OrderService {
 - 状态、方法和继承数量的差异。
 - 能否根据变化来源选择，而不是只罗列语法。
 
-**相关内容**：[接口、抽象类与组合](#interface-abstract-composition)。
+**相关内容**：[接口、抽象类与组合](#接口抽象类与组合)。
 
 <details>
 <summary>参考回答</summary>
@@ -198,7 +198,7 @@ final class OrderService {
 - 参数列表与方法签名规则。
 - 编译阶段选择和运行时动态绑定的区别。
 
-**相关内容**：[重载与重写](#overload-override)。
+**相关内容**：[重载与重写](#重载与重写)。
 
 <details>
 <summary>参考回答</summary>

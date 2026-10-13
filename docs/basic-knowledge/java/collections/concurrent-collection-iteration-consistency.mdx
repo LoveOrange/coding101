@@ -17,7 +17,7 @@ knowledge:
 - 需要一致快照时使用外部锁、不可变状态加原子替换或版本号重试。
 - 遍历中删除过期数据时，用 `remove(key, value)` 等条件删除再次确认，避免删掉刚被更新的条目。[卡](#remove-while-iterating)
 
-## 2. 遍历需要的视图 {#views}
+## 2. 遍历需要的视图 {#遍历需要的视图}
 
 遍历共享集合时，常见需求有：
 
@@ -28,7 +28,7 @@ knowledge:
 
 并发集合通常只直接提供前两类。后两类需要锁、版本化不可变状态、数据库事务或单写者协议。
 
-## 3. ConcurrentHashMap 的弱一致遍历 {#weakly-consistent}
+## 3. ConcurrentHashMap 的弱一致遍历 {#concurrenthashmap-的弱一致遍历}
 
 ```java
 for (Map.Entry<String, Session> entry : sessions.entrySet()) {
@@ -46,7 +46,7 @@ for (Map.Entry<String, Session> entry : sessions.entrySet()) {
 
 不适合把本次总和与另一个时刻的 size 比较，并据此断言系统不变量。
 
-## 4. CopyOnWrite 的数组快照 {#snapshot}
+## 4. CopyOnWrite 的数组快照 {#copyonwrite-的数组快照}
 
 ```java
 for (Listener listener : listeners) {
@@ -58,7 +58,7 @@ for (Listener listener : listeners) {
 
 快照通过写入时复制获得，代价集中在写操作和旧数组生命周期。它不适合大规模、高频更新集合。
 
-## 5. 并发队列的迭代 {#queues}
+## 5. 并发队列的迭代 {#并发队列的迭代}
 
 多数并发队列迭代器也是弱一致的。队列的核心协议是 offer/put 与 poll/take，迭代通常只用于诊断，不是消费：
 
@@ -70,7 +70,7 @@ for (Job job : queue) {
 
 不要通过遍历寻找一个元素再 remove 来实现任务领取。多个消费者应使用原子的 poll 或 take。优先级和延迟队列的迭代顺序也不一定等于出队顺序，应查看具体 API。
 
-## 6. 聚合操作的一致性 {#aggregates}
+## 6. 聚合操作的一致性 {#聚合操作的一致性}
 
 ConcurrentHashMap 提供 `forEach`、`search` 和 `reduce` 等并行批量操作。它们适合在并发更新下计算近似或逐键有效的结果，但整体结果可能混合不同时间点：
 
@@ -85,7 +85,7 @@ long total = counters.reduceValuesToLong(
 
 `mappingCount`、`size`、`isEmpty` 也不应与随后修改组成“先检查再执行”协议。需要严格上限时，使用独立原子计数与更新协议，或将状态封装在同一锁内。
 
-## 7. 建立一致快照 {#consistent-snapshot}
+## 7. 建立一致快照 {#建立一致快照}
 
 ### 7.1 外部锁
 
@@ -117,7 +117,7 @@ AtomicReference<State> state = new AtomicReference<>(State.empty());
 
 跨进程和持久状态需要由数据库隔离、日志偏移或快照协议提供边界，不能依赖单进程 ConcurrentHashMap。
 
-## 8. 遍历中的条件删除 {#conditional-remove}
+## 8. 遍历中的条件删除 {#遍历中的条件删除}
 
 后台清理过期会话：
 
@@ -168,7 +168,7 @@ sessions.forEach((id, session) -> {
 - 为什么它不抛 fail-fast 异常。
 - 近似统计与严格快照怎样区分。
 
-**相关内容**：[遍历需要的视图](#views)、[ConcurrentHashMap 的弱一致遍历](#weakly-consistent)、[聚合操作的一致性](#aggregates)。
+**相关内容**：[遍历需要的视图](#遍历需要的视图)、[ConcurrentHashMap 的弱一致遍历](#concurrenthashmap-的弱一致遍历)、[聚合操作的一致性](#聚合操作的一致性)。
 
 <details>
 <summary>参考回答</summary>
@@ -193,7 +193,7 @@ ConcurrentHashMap 迭代器是弱一致的，可以与更新并发，不抛 `Con
 - 条件 remove 或 replace 怎样避免覆盖新值。
 - 外部副作用为何还需要幂等和补偿。
 
-**相关内容**：[遍历中的条件删除](#conditional-remove)。
+**相关内容**：[遍历中的条件删除](#遍历中的条件删除)。
 
 <details>
 <summary>参考回答</summary>

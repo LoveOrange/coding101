@@ -17,13 +17,13 @@ Spring Security 在 Servlet Filter 层建立安全边界。请求先由 FilterCh
 - `AuthorizationFilter` 在认证之后判断是否允许访问，`ExceptionTranslationFilter` 把异常转换为 401 或 403。
 - URL 授权之后，方法级权限和资源归属检查仍要在业务层完成。
 
-## 2. DelegatingFilterProxy {#delegating-filter-proxy}
+## 2. DelegatingFilterProxy {#delegatingfilterproxy}
 
 Servlet 容器认识的是 Filter，Spring Security 的入口通常是 `DelegatingFilterProxy`。它从 ApplicationContext 找到名为 `springSecurityFilterChain` 的 Bean，并把请求委托给它。
 
 这个 Bean 实际类型是 `FilterChainProxy`。安全过滤器由 Spring 管理，不需要分别注册到 Servlet 容器；重复注册会让同一过滤器执行两次。
 
-## 3. FilterChainProxy {#filter-chain-proxy}
+## 3. FilterChainProxy {#filterchainproxy}
 
 应用可以声明多条 `SecurityFilterChain`：
 
@@ -41,7 +41,7 @@ FilterChainProxy 按顺序选择第一条 matcher 命中的链。更具体的 `/
 
 配置审查要覆盖所有路径、HTTP method、错误转发和管理端点，而不只测试首页。
 
-## 4. SecurityContext {#security-context}
+## 4. SecurityContext {#securitycontext}
 
 `SecurityContextHolder` 保存当前请求的 `SecurityContext`，其中的 `Authentication` 表示匿名、待认证凭据或已认证 principal，以及它拥有的 authorities。
 
@@ -49,13 +49,13 @@ Servlet 应用默认使用 ThreadLocal。FilterChainProxy 在请求结束时负�
 
 任务切换到异步执行器时，ThreadLocal 不会自动安全传播。需要显式传递最小身份上下文，或使用 Spring Security 提供的委托包装器，并在任务结束后清理。
 
-## 5. AuthenticationManager {#authentication-manager}
+## 5. AuthenticationManager {#authenticationmanager}
 
 认证过滤器从请求提取凭据，构造尚未认证的 Authentication，交给 `AuthenticationManager`。常用 `ProviderManager` 依次询问支持该类型的 `AuthenticationProvider`，例如用户名密码、JWT 或自定义凭据。
 
 认证成功返回包含 principal 与 authorities 的 Authentication，随后存入 SecurityContext。失败则进入统一失败处理，不应把密码、token 或内部验证细节写入响应和日志。
 
-## 6. 过滤器顺序 {#filter-order}
+## 6. 过滤器顺序 {#过滤器顺序}
 
 过滤器顺序由依赖关系决定：安全上下文先建立，认证过滤器再确认主体，AuthorizationFilter 最后根据规则决定是否允许。
 
@@ -63,19 +63,19 @@ Servlet 应用默认使用 ThreadLocal。FilterChainProxy 在请求结束时负�
 
 调试时可以输出实际 filter chain，确认自定义过滤器只执行一次并位于预期位置。
 
-## 7. ExceptionTranslationFilter {#exception-translation}
+## 7. ExceptionTranslationFilter {#exceptiontranslationfilter}
 
 未认证主体访问受保护资源时，需要启动认证或返回 401；已认证但权限不足通常返回 403。`ExceptionTranslationFilter` 捕获下游的认证与拒绝异常，并调用相应 entry point 或 access denied handler。
 
 业务异常不要伪装成认证失败。稳定区分 401 和 403，既方便客户端处理，也避免把权限规则是否存在等敏感细节暴露出去。
 
-## 8. Session 与 Bearer Token {#session-vs-token}
+## 8. Session 与 Bearer Token {#session-与-bearer-token}
 
 浏览器 Session 登录会从安全上下文仓库恢复并保存认证。无状态 API 通常每次验证 Bearer Token，不创建服务端登录 Session。
 
 `SessionCreationPolicy.STATELESS` 不等于自动关闭所有浏览器风险。若认证信息仍放在自动携带的 Cookie 中，写请求仍要考虑 CSRF；只有客户端通过 Authorization header 主动携带 token，攻击模型才不同。
 
-## 9. 方法与数据级授权 {#method-security}
+## 9. 方法与数据级授权 {#方法与数据级授权}
 
 `authorizeHttpRequests` 保护路径和粗粒度 authority。领域方法可以使用 method security 表达动作权限，资源所有权和 tenant 条件还要落实到业务或查询层。
 
@@ -107,7 +107,7 @@ Servlet 应用默认使用 ThreadLocal。FilterChainProxy 在请求结束时负�
 - SecurityContext、AuthenticationManager 与 Provider。
 - 过滤器顺序、401/403 和多链匹配。
 
-**相关内容**：[DelegatingFilterProxy](#delegating-filter-proxy)至[方法与数据级授权](#method-security)。
+**相关内容**：[DelegatingFilterProxy](#delegatingfilterproxy)至[方法与数据级授权](#方法与数据级授权)。
 
 <details>
 <summary>参考回答</summary>

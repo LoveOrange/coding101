@@ -17,7 +17,7 @@ Lambda 表达式为只有一个抽象方法的接口提供实现，让行为可�
 - Lambda 内部的 `this` 指向外层对象，匿名内部类的 `this` 指向自身。
 - 函数式接口的抽象方法没有声明受检异常时，Lambda 不能直接抛出受检异常。
 
-## 2. 目标类型 {#target-type}
+## 2. 目标类型 {#目标类型}
 
 ```java
 Predicate<String> isBlank = value -> value.isBlank();
@@ -37,7 +37,7 @@ static Predicate<String> longerThan(int length) {
 }
 ```
 
-### 2.1 函数式接口 {#functional-interface}
+### 2.1 函数式接口 {#函数式接口}
 
 函数式接口只有一个抽象方法：
 
@@ -52,7 +52,7 @@ public interface Converter<S, T> {
 
 `@FunctionalInterface` 不是必须的，但能让编译器阻止后续修改意外增加第二个抽象方法。准备作为 Lambda 目标的公开接口应当添加它。
 
-### 2.2 同一段 Lambda 对应不同接口 {#same-shape}
+### 2.2 同一段 Lambda 对应不同接口 {#同一段-lambda-对应不同接口}
 
 ```java
 Callable<String> task = () -> "done";
@@ -61,7 +61,7 @@ Supplier<String> supplier = () -> "done";
 
 两个 Lambda 形状相同，但目标接口不同，异常契约和使用场景也不同。Java 使用结构匹配确定 Lambda 能否实现接口，却仍然保留接口的名义类型，`Callable<String>` 不能直接赋给 `Supplier<String>`。
 
-## 3. 常用函数式接口 {#common-interfaces}
+## 3. 常用函数式接口 {#常用函数式接口}
 
 `java.util.function` 提供了通用接口：
 
@@ -83,7 +83,7 @@ Supplier<User> guest = User::guest;
 
 对大量基本类型数据，`IntFunction`、`IntPredicate`、`IntConsumer` 等专门接口可以减少装箱。
 
-### 3.1 函数组合 {#composition}
+### 3.1 函数组合 {#函数组合}
 
 ```java
 Predicate<User> activeAdult = User::active;
@@ -95,7 +95,7 @@ normalizedName = normalizedName.andThen(String::trim);
 
 组合适合短、纯粹且命名清楚的转换。把异常处理、远程调用和多步状态修改堆进一条函数链，通常会降低可读性。
 
-## 4. 捕获外层变量 {#capture}
+## 4. 捕获外层变量 {#捕获外层变量}
 
 Lambda 可以读取外层局部变量，但这些变量必须是 `final` 或有效 final：
 
@@ -109,7 +109,7 @@ Predicate<String> accepted = value -> value.length() >= minimumLength;
 
 局部变量的值会被捕获。Lambda 可能在创建它的方法返回后才执行，如果允许同时修改原局部变量，就需要定义两个生命周期之间的共享与可见性语义。Java 通过有效 final 限制避免了这类局部变量共享。
 
-### 4.1 捕获可变对象 {#mutable-capture}
+### 4.1 捕获可变对象 {#捕获可变对象}
 
 ```java
 List<String> names = new ArrayList<>();
@@ -122,7 +122,7 @@ addName.accept("Lin");
 
 函数式代码更适合无副作用转换。必须修改共享对象时，仍然要按并发模型同步或隔离状态。
 
-### 4.2 捕获成员字段 {#field-capture}
+### 4.2 捕获成员字段 {#捕获成员字段}
 
 Lambda 可以读写当前对象的字段：
 
@@ -138,7 +138,7 @@ final class Counter {
 
 字段属于对象状态，不是被复制的局部变量。这个例子在多线程下仍有数据竞争，Lambda 不提供额外同步。
 
-## 5. `this` 的含义 {#this}
+## 5. `this` 的含义 {#this-的含义}
 
 Lambda 不建立新的 `this` 作用域，内部的 `this` 指向外层对象：
 
@@ -154,7 +154,7 @@ final class Service {
 
 Lambda 也不应该依赖生成对象的具体类名、对象身份或序列化形态。JVM 可以用不同策略实现同一个调用点。
 
-## 6. 方法引用 {#method-references}
+## 6. 方法引用 {#方法引用}
 
 常见方法引用有四种形式：
 
@@ -169,7 +169,7 @@ Supplier<List<String>> listFactory = ArrayList::new; // 构造方法
 
 方法引用只有在目标接口已知、参数映射直观时才更清楚。需要重新排列参数、补充条件或处理异常时，普通 Lambda 往往更容易读。
 
-## 7. 异常与 Lambda {#exceptions}
+## 7. 异常与 Lambda {#异常与-lambda}
 
 函数式接口的抽象方法是否声明受检异常，决定 Lambda 能否直接抛出：
 
@@ -182,7 +182,7 @@ Callable<String> callable = () -> Files.readString(path);
 
 不要为了塞进 `Function` 就统一把受检异常包装成没有语义的 `RuntimeException`。可以定义带明确异常契约的领域接口，在调用边界转换异常，或把 I/O 与纯转换拆成不同阶段。
 
-## 8. 运行时实现 {#runtime}
+## 8. 运行时实现 {#运行时实现}
 
 Java 编译器通常使用 `invokedynamic` 调用点，由 `LambdaMetafactory` 等运行时引导逻辑创建实现。它不要求每个 Lambda 都编译成一个普通匿名内部类文件。
 
@@ -225,7 +225,7 @@ Java 编译器通常使用 `invokedynamic` 调用点，由 `LambdaMetafactory` �
 - 输入、输出与副作用如何区分常用接口。
 - 默认方法是否影响函数式接口资格。
 
-**相关内容**：[目标类型](#target-type)、[常用函数式接口](#common-interfaces)。
+**相关内容**：[目标类型](#目标类型)、[常用函数式接口](#常用函数式接口)。
 
 <details>
 <summary>参考回答</summary>
@@ -250,7 +250,7 @@ Java 编译器通常使用 `invokedynamic` 调用点，由 `LambdaMetafactory` �
 - 常用函数式接口与方法引用的选择。
 - 捕获局部变量时的有效 final 限制。
 
-**相关内容**：[目标类型](#target-type)、[常用函数式接口](#common-interfaces)、[捕获外层变量](#capture)。
+**相关内容**：[目标类型](#目标类型)、[常用函数式接口](#常用函数式接口)、[捕获外层变量](#捕获外层变量)。
 
 <details>
 <summary>参考回答</summary>

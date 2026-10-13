@@ -17,7 +17,7 @@ knowledge:
 - 提交到线程池的任务不会自动继承提交线程的 ThreadLocal，`InheritableThreadLocal` 只在创建线程时复制一次。
 - 虚拟线程按任务创建，不存在跨任务复用，但大量虚拟线程各自缓存昂贵对象会占用大量内存。
 
-## 2. ThreadLocalMap 的结构 {#thread-local-map}
+## 2. ThreadLocalMap 的结构 {#threadlocalmap-的结构}
 
 ```java
 private static final ThreadLocal<RequestContext> CONTEXT =
@@ -28,13 +28,13 @@ private static final ThreadLocal<RequestContext> CONTEXT =
 
 隔离的是引用槽位。如果不同线程把同一个可变对象放进去，那个对象仍然共享，ThreadLocal 不会自动让它线程安全。
 
-## 3. 弱引用 key 与 value 保留 {#weak-key}
+## 3. 弱引用 key 与 value 保留 {#弱引用-key-与-value-保留}
 
 map entry 对 ThreadLocal key 使用弱引用，但 value 仍是强引用。外部不再持有 ThreadLocal 后，key 可能被回收并变成 `null`，value 仍由长期存活线程的 map 引用，直到后续清理或线程结束。
 
 线程池 Worker 可能与进程一样长寿，因此大对象、类加载器或请求对象会被意外保留。map 会在部分操作中清理陈旧 entry，但不能把它当成确定的生命周期协议。
 
-## 4. 用 `finally` 清理 {#remove-in-finally}
+## 4. 用 `finally` 清理 {#用-finally-清理}
 
 ```java
 CONTEXT.set(context);
@@ -49,19 +49,19 @@ try {
 
 上下文污染比内存泄漏更直接：Worker 执行下一条请求时，若新请求没有成功设置上下文，就可能读取旧用户身份、租户或 trace 信息。
 
-## 5. 跨线程的上下文传递 {#context-propagation}
+## 5. 跨线程的上下文传递 {#跨线程的上下文传递}
 
 任务提交到已有线程池后，Worker 不是请求线程，普通 ThreadLocal 不会传播。`InheritableThreadLocal` 在线程创建时复制初始值，而线程池 Worker 往往早已创建，所以也不能可靠地按任务传播。
 
 可以在任务包装器中显式捕获必要的不可变上下文，在 Worker 开始时设置、结束时恢复或清理；日志框架和可观测性库通常提供自己的传播机制。传播范围要最小化，不要把整个请求对象复制到后台任务。
 
-## 6. 虚拟线程与 ThreadLocal {#virtual-threads}
+## 6. 虚拟线程与 ThreadLocal {#虚拟线程与-threadlocal}
 
 每任务一个虚拟线程可以减少池化 Worker 的跨任务污染，因为线程结束后局部状态一起失去作用域。但数百万虚拟线程各自保存昂贵 ThreadLocal 会造成显著内存开销。
 
 当前 JDK 的 Scoped Values 适合在线程及其受控子任务中共享不可变上下文，并通过词法作用域自动恢复。选择前仍要确认框架和目标 JDK 版本；可变缓存或外部资源不应因此塞进上下文。
 
-## 7. 诊断内存保留与上下文污染 {#diagnosis}
+## 7. 诊断内存保留与上下文污染 {#诊断内存保留与上下文污染}
 
 - 堆转储中按 `ThreadLocalMap$Entry`、Worker 线程和可疑 value 查引用链。
 - 在线程池任务边界记录上下文是否已残留，但避免输出敏感值。
@@ -95,7 +95,7 @@ try {
 - 线程池长生命周期和上下文污染。
 - `finally` 中 `remove` 与显式传播。
 
-**相关内容**：[ThreadLocalMap 的结构](#thread-local-map)至[跨线程的上下文传递](#context-propagation)。
+**相关内容**：[ThreadLocalMap 的结构](#threadlocalmap-的结构)至[跨线程的上下文传递](#跨线程的上下文传递)。
 
 <details>
 <summary>参考回答</summary>

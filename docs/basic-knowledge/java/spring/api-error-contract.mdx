@@ -17,7 +17,7 @@ API 错误响应要让客户端稳定判断失败类型，同时为服务端保�
 - Filter 中的异常、响应已提交后的错误和异步任务失败不会进入 ControllerAdvice，需要各自处理。
 - 用契约测试覆盖每一类公开错误的状态码和字段结构。
 
-## 2. 错误字段 {#fields}
+## 2. 错误字段 {#错误字段}
 
 Spring 提供 `ProblemDetail` 表示 HTTP API 问题，可以扩展业务字段：
 
@@ -35,7 +35,7 @@ Spring 提供 `ProblemDetail` 表示 HTTP API 问题，可以扩展业务字段�
 
 客户端依赖稳定的 `code`、HTTP status 和字段错误结构，不应解析面向人的 `detail` 文本。
 
-## 3. 异常处理器 {#handlers}
+## 3. 异常处理器 {#异常处理器}
 
 ```java
 @RestControllerAdvice
@@ -52,7 +52,7 @@ class ApiExceptionHandler {
 
 处理器选择遵循异常类型和 ControllerAdvice 范围。业务异常、输入错误、认证授权、依赖失败与未知错误应分别映射，不能所有失败都返回 HTTP 200 或 500。
 
-## 4. 状态码 {#status-codes}
+## 4. 状态码 {#状态码}
 
 常见判断：
 
@@ -67,19 +67,19 @@ class ApiExceptionHandler {
 
 是否允许重试还要结合方法幂等性和响应头，不能只看 5xx。
 
-## 5. 日志与响应 {#logs-vs-response}
+## 5. 日志与响应 {#日志与响应}
 
 响应不应包含堆栈、SQL、文件路径、密钥或内部类名。服务端日志保留异常 cause、trace ID、规范化路由和必要业务标识，并对敏感数据脱敏。
 
 预期业务冲突通常不需要每次打印完整 ERROR 堆栈；未知异常应记录一次完整根因。Controller 和 Advice 同时记录会造成重复日志。
 
-## 6. ControllerAdvice 的处理范围 {#advice-scope}
+## 6. ControllerAdvice 的处理范围 {#controlleradvice-的处理范围}
 
 Filter 在 DispatcherServlet 之前抛出的异常、响应已经提交后的序列化错误、异步后台任务失败，可能不进入同一 `@ExceptionHandler`。安全过滤链、Servlet error dispatch 和异步结果各有自己的错误边界。
 
 客户端断开连接也可能在写响应时产生 I/O 异常，应单独统计，避免都归类为应用 500。
 
-## 7. 字段校验错误 {#validation-errors}
+## 7. 字段校验错误 {#字段校验错误}
 
 ```json
 {
@@ -92,7 +92,7 @@ Filter 在 DispatcherServlet 之前抛出的异常、响应已经提交后的序
 
 不要回显密码等拒绝值。字段路径要稳定，数组和嵌套对象需约定表示方式；面向用户的本地化文本可以由客户端或服务端另行生成。
 
-## 8. 契约测试 {#contract-tests}
+## 8. 契约测试 {#契约测试}
 
 为每类公开错误验证 status、Content-Type、code、字段结构和敏感信息缺失。还要测试不存在路由、错误方法、不可接受媒体类型、Filter 拒绝和下游超时，确保不同入口不产生几套互不兼容格式。
 
@@ -123,7 +123,7 @@ Filter 在 DispatcherServlet 之前抛出的异常、响应已经提交后的序
 - HTTP 状态和稳定业务错误码。
 - Filter、异步和响应提交边界。
 
-**相关内容**：[错误字段](#fields)至[契约测试](#contract-tests)。
+**相关内容**：[错误字段](#错误字段)至[契约测试](#契约测试)。
 
 <details>
 <summary>参考回答</summary>

@@ -17,7 +17,7 @@ knowledge:
 - 大量 `WAITING` 可能只是线程池空闲；如果队列增长、请求积压，再看它们在等哪个锁、连接或 Future。[卡](#waiting-threads)
 - 父任务在同一个有界线程池中同步等待子任务，会造成线程池饥饿，现象类似死锁。
 
-## 2. 采集线程转储 {#collect}
+## 2. 采集线程转储 {#采集线程转储}
 
 ```bash
 jcmd <pid> Thread.print -l > thread-01.txt
@@ -31,7 +31,7 @@ jcmd <pid> Thread.print -l > thread-01.txt
 jcmd <pid> help Thread.dump_to_file
 ```
 
-## 3. 线程状态与栈 {#states}
+## 3. 线程状态与栈 {#线程状态与栈}
 
 | 状态 | 典型含义 | 注意事项 |
 | --- | --- | --- |
@@ -43,7 +43,7 @@ jcmd <pid> help Thread.dump_to_file
 
 大量 WAITING 不等于故障。线程池工作线程没有任务时本就会 park；关键是队列是否增长、请求是否等待以及谁负责唤醒。
 
-## 4. 死锁 {#deadlock}
+## 4. 死锁 {#死锁}
 
 ```java
 synchronized (left) {
@@ -64,7 +64,7 @@ Thread B 持有 right，等待 left
 
 修复通常通过统一锁顺序、合并临界区、使用带超时的获取或重新设计所有权。捕获死锁后强行重启只是恢复服务。
 
-## 5. 锁竞争 {#contention}
+## 5. 锁竞争 {#锁竞争}
 
 很多线程等待同一个热点锁时，系统仍在前进，只是吞吐下降和长尾增加：
 
@@ -83,7 +83,7 @@ synchronized void record(Metric metric) {
 - 用不可变快照、并发集合或消息传递改变共享方式。
 - 对热点 key 做分片，但验证倾斜。
 
-## 6. 线程池饥饿 {#pool-starvation}
+## 6. 线程池饥饿 {#线程池饥饿}
 
 ```java
 Future<Result> child = executor.submit(task);
@@ -94,14 +94,14 @@ return child.get();
 
 排查要同时看 executor 的线程数、active、queue 和任务提交关系。修复可以拆分执行器、避免池内同步等待，或改为非阻塞编排。
 
-## 7. 活锁与饥饿 {#livelock-starvation}
+## 7. 活锁与饥饿 {#活锁与饥饿}
 
 - **活锁**：线程不断重试和改变状态，却无法完成工作，CPU 可能很高。
 - **饥饿**：某些任务长期拿不到锁、许可或调度机会，系统整体仍在运行。
 
 单份转储可能看见普通 RUNNABLE。需要 JFR、重试指标、锁获取延迟和多份栈证明“持续有动作但没有完成”。
 
-## 8. 虚拟线程的线程转储 {#virtual-threads}
+## 8. 虚拟线程的线程转储 {#虚拟线程的线程转储}
 
 虚拟线程可以让大量阻塞任务不各占一个平台线程，但共享锁、数据库连接和下游容量仍有限。大量虚拟线程同时等待同一个 monitor 或连接池，仍会产生业务排队。
 
@@ -143,7 +143,7 @@ return child.get();
 - monitor 和 ownable synchronizer。
 - 自动死锁报告不是唯一证据。
 
-**相关内容**：[采集线程转储](#collect)至[死锁](#deadlock)。
+**相关内容**：[采集线程转储](#采集线程转储)至[死锁](#死锁)。
 
 <details>
 <summary>参考回答</summary>
@@ -168,7 +168,7 @@ return child.get();
 - 队列、active 和等待目标共同判断。
 - 同池父子任务等待。
 
-**相关内容**：[线程状态与栈](#states)和[线程池饥饿](#pool-starvation)。
+**相关内容**：[线程状态与栈](#线程状态与栈)和[线程池饥饿](#线程池饥饿)。
 
 <details>
 <summary>参考回答</summary>

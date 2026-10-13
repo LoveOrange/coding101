@@ -56,7 +56,7 @@ while (buffer.hasRemaining()) {
 
 写入完成时，`position` 位于数据末尾。`flip()` 把当前 `position` 设为新的 `limit`，再把 `position` 归零，准备读取刚写入的区域。
 
-### 2.2 clear 与 compact {#clear-compact}
+### 2.2 clear 与 compact {#clear-与-compact}
 
 读取完后，需要重新准备写入：
 
@@ -99,7 +99,7 @@ try (FileChannel channel = FileChannel.open(path, StandardOpenOption.READ)) {
 - `channel.read(buffer)` 从通道读取数据，写入缓冲区。
 - `channel.write(buffer)` 从缓冲区读取数据，写入通道。
 
-### 3.1 部分写入 {#partial-write}
+### 3.1 部分写入 {#部分写入}
 
 非阻塞 `SocketChannel.write` 可能返回 0，也可能只写出缓冲区的一部分：
 
@@ -158,7 +158,7 @@ while (!Thread.currentThread().isInterrupted()) {
 
 处理完必须从 selected-key 集合移除，否则旧事件会在后续循环中继续出现。
 
-### 4.1 就绪事件的含义 {#readiness}
+### 4.1 就绪事件的含义 {#就绪事件的含义}
 
 `OP_READ` 表示读取操作现在可能取得数据，不表示完整业务消息已经到达。一次读取仍可能得到半包，也可能在状态变化后返回 0。
 
@@ -166,7 +166,7 @@ while (!Thread.currentThread().isInterrupted()) {
 
 Selector 只通知通道已经就绪，`read` 和 `write` 仍由事件循环线程调用。
 
-### 4.2 OP_WRITE 的注册时机 {#op-write}
+### 4.2 OP_WRITE 的注册时机 {#op_write-的注册时机}
 
 Socket 在大多数时间都可写。如果每个连接始终关注 `OP_WRITE`，`select()` 会不断立即返回，事件循环形成空转。
 
@@ -176,7 +176,7 @@ Socket 在大多数时间都可写。如果每个连接始终关注 `OP_WRITE`�
 2. 写操作未能发送完时，把剩余缓冲保存到连接状态并增加 `OP_WRITE`。
 3. 缓冲发送完后，取消 `OP_WRITE` 兴趣。
 
-## 5. 连接状态 {#connection-state}
+## 5. 连接状态 {#连接状态}
 
 非阻塞代码无法在一次方法调用中等待完整请求，因此要保存跨事件状态：
 
@@ -204,7 +204,7 @@ key.attach(new ConnectionState());
 
 Selector 减少了等待连接所需的线程数，却没有减少这些状态。连接越多，状态生命周期和公平性越重要。
 
-## 6. 事件循环与业务线程 {#event-loop}
+## 6. 事件循环与业务线程 {#事件循环与业务线程}
 
 一个 Selector 线程可以管理大量连接，但不应在事件循环中执行长时间计算、阻塞数据库调用或远程请求。某个处理器阻塞，会延迟同一循环中所有连接的读写。
 
@@ -218,7 +218,7 @@ Selector 减少了等待连接所需的线程数，却没有减少这些状态�
 
 把所有工作扔进无限队列也不能形成背压。输出速度低于业务生成速度时，应暂停读取、限制单连接队列或拒绝请求，防止内存持续增长。
 
-## 7. BIO、NIO 与异步 I/O {#bio-nio-aio}
+## 7. BIO、NIO 与异步 I/O {#bionio-与异步-io}
 
 | 模型 | 等待方式 | 调用结果 | 状态主要由谁维护 |
 | --- | --- | --- | --- |
@@ -288,7 +288,7 @@ Selector 减少了等待连接所需的线程数，却没有减少这些状态�
 - `select` 返回后谁执行实际读写。
 - java.nio 中是否所有 API 都是非阻塞。
 
-**相关内容**：[就绪事件的含义](#readiness)、[BIO、NIO 与异步 I/O](#bio-nio-aio)。
+**相关内容**：[就绪事件的含义](#就绪事件的含义)、[BIO、NIO 与异步 I/O](#bionio-与异步-io)。
 
 <details>
 <summary>参考回答</summary>

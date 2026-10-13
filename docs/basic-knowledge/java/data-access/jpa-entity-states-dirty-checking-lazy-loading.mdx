@@ -100,13 +100,13 @@ private long version;
 
 重试必须重新读取和执行完整业务判断，不能只重复最后一条 update。
 
-## 10. 关联所有权、级联与抓取 {#association-boundaries}
+## 10. 关联所有权、级联与抓取 {#关联所有权级联与抓取}
 
 双向关系的 owning side 决定关系写入，`mappedBy` 标识另一侧；只修改 inverse side 的集合，可能不会更新外键。应用应同时维护内存两侧，避免对象图与数据库关系不同步。`cascade` 决定 persist、merge、remove 等操作是否向关联传播，`fetch` 决定抓取要求，二者互不替代。
 
 Jakarta Persistence 中 to-one 默认通常为 EAGER，to-many 默认 LAZY；LAZY 是提供者可提前加载的提示，EAGER 也可能用额外查询实现。`orphanRemoval` 针对从拥有关系移除的子实体生命周期，不等于任何关系都适合级联删除。共享对象尤其不能随意 cascade REMOVE。
 
-## 11. 批量修改与上下文同步 {#bulk-context}
+## 11. 批量修改与上下文同步 {#批量修改与上下文同步}
 
 JPQL bulk update/delete 直接影响数据库，不会逐个更新已加载实体，也不会自动套用每个实体的普通版本校验。需要先决定已有变更是否 flush，再执行批量语句，随后 clear 或 refresh；先 clear 可能丢失尚未同步的修改。版本条件、版本递增和冲突检查应由批量语句或业务协议明确承担。
 
@@ -171,7 +171,7 @@ EntityManager 的持久化上下文会管理查询或 persist 得到的实体，
 - 抓取与生命周期。
 - 关联所有权。
 
-**相关内容**：[懒加载](#6-懒加载需要可用的持久化上下文)、[关联边界](#association-boundaries)、[OSIV](#7-osiv-延长的是上下文不是业务事务)。
+**相关内容**：[懒加载](#6-懒加载需要可用的持久化上下文)、[关联边界](#关联所有权级联与抓取)、[OSIV](#7-osiv-延长的是上下文不是业务事务)。
 
 <details>
 <summary>参考回答</summary>
@@ -191,7 +191,7 @@ EntityManager 的持久化上下文会管理查询或 persist 得到的实体，
 - 批量 DML 绕过上下文。
 - flush、clear 与版本协议。
 
-**相关内容**：[批量修改](#bulk-context)、[乐观锁](#8-乐观锁处理并发覆盖)。
+**相关内容**：[批量修改](#批量修改与上下文同步)、[乐观锁](#8-乐观锁处理并发覆盖)。
 
 <details>
 <summary>参考回答</summary>
@@ -200,7 +200,7 @@ EntityManager 的持久化上下文会管理查询或 persist 得到的实体，
 
 </details>
 
-## 13. 参考资料 {#references}
+## 13. 参考资料 {#参考资料}
 
 1. [Jakarta Persistence 3.2 Specification](https://jakarta.ee/specifications/persistence/3.2/jakarta-persistence-spec-3.2.html)
 2. [Jakarta Persistence：EntityManager](https://jakarta.ee/specifications/persistence/3.2/apidocs/jakarta.persistence/jakarta/persistence/entitymanager)

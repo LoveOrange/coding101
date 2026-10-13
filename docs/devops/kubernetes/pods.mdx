@@ -17,7 +17,7 @@ Pod 是 Kubernetes 调度和运行的最小单位。日常运维中最常见的�
 - requests 用于调度，limits 由 cgroup 强制执行：CPU 超限被限流，内存超限被 OOMKilled。三者的关系决定 QoS 等级，节点资源紧张时按等级驱逐。
 - 调度约束用节点选择器和亲和性指定“应该去哪”，用污点和容忍控制“谁能来”，用反亲和与拓扑分布把副本分散；HPA 根据指标自动调整副本数。[卡](#scheduling-scaling)
 
-## 2. Pod 的组成 {#pod-structure}
+## 2. Pod 的组成 {#pod-的组成}
 
 每个 Pod 先启动一个 pause 容器（Pod 沙箱），它持有网络、IPC 等 Namespace，其他容器加入这些 Namespace。因此：
 
@@ -27,7 +27,7 @@ Pod 是 Kubernetes 调度和运行的最小单位。日常运维中最常见的�
 
 **init 容器**按顺序在业务容器之前运行，全部成功后才启动业务容器，用于等待依赖、初始化配置或数据。**sidecar** 与业务容器一起长期运行，提供日志收集、代理、证书刷新等辅助功能；新版本中 sidecar 可以声明为 `restartPolicy: Always` 的 init 容器，保证它先于业务容器启动、后于业务容器退出。
 
-## 3. 状态与排查 {#status}
+## 3. 状态与排查 {#状态与排查}
 
 **Pod 阶段（phase）**：
 
@@ -54,7 +54,7 @@ CrashLoopBackOff 的常见根因：启动命令或参数错误、缺少配置文
 
 排查顺序：`kubectl describe pod` 看事件 → `kubectl logs <pod> -c <容器> --previous` 看崩溃前的日志 → `kubectl get events --sort-by=.lastTimestamp` 看命名空间内的事件 → 必要时 `kubectl debug` 启动临时容器进入排查。
 
-## 4. 探针 {#probes-config}
+## 4. 探针 {#探针}
 
 | 探针 | 失败后 | 用途 |
 | --- | --- | --- |
@@ -80,7 +80,7 @@ readinessProbe:
 
 设计原则：存活检查只判断进程本身是否还能工作，不检查数据库等下游，否则下游故障时所有实例同时重启，问题被放大；就绪检查可以包含必需的依赖。节点的健康由 kubelet 上报给控制平面，与 Pod 的探针是两回事。
 
-## 5. 资源请求、限制与 QoS {#resources}
+## 5. 资源请求、限制与 QoS {#资源请求限制与-qos}
 
 ```yaml
 resources:
@@ -101,7 +101,7 @@ resources:
 
 **驱逐**：节点可用内存、磁盘或 inode 低于阈值时，kubelet 主动驱逐 Pod 来回收资源（节点压力驱逐）。`kubectl drain` 维护节点时通过 Eviction API 驱逐，会遵守 PodDisruptionBudget，保证同时下线的副本不超过设定值。
 
-## 6. 调度约束与弹性伸缩 {#scheduling-scaling-config}
+## 6. 调度约束与弹性伸缩 {#调度约束与弹性伸缩}
 
 | 机制 | 作用 | 例子 |
 | --- | --- | --- |
@@ -129,7 +129,7 @@ resources:
 - Pod 内容器共享的网络和存储；pause 容器的作用。
 - 需要紧密协作的进程为什么要作为整体调度。
 
-**相关内容**：[Pod 的组成](#pod-structure)。
+**相关内容**：[Pod 的组成](#pod-的组成)。
 
 <details>
 <summary>参考回答</summary>
@@ -156,7 +156,7 @@ Pod 是一组共享网络和存储、总是一起调度到同一节点的容器�
 - Pod 阶段与容器状态原因的区别。
 - 按 Pending、拉镜像、崩溃分类的排查命令和常见根因；退出码。
 
-**相关内容**：[状态与排查](#status)。
+**相关内容**：[状态与排查](#状态与排查)。
 
 <details>
 <summary>参考回答</summary>
@@ -184,7 +184,7 @@ CrashLoopBackOff 表示容器启动后反复退出。先用 `kubectl logs --prev
 - 三种探针失败后的不同动作。
 - 存活探针不检查下游；启动探针保护慢启动应用；探针与节点健康的区别。
 
-**相关内容**：[探针](#probes-config)。
+**相关内容**：[探针](#探针)。
 
 <details>
 <summary>参考回答</summary>
@@ -212,7 +212,7 @@ CrashLoopBackOff 表示容器启动后反复退出。先用 `kubectl logs --prev
 - requests 用于调度、limits 强制执行；CPU 与内存超限的不同后果；QoS 与驱逐顺序。
 - 污点的三种效果、反亲和的用途；HPA 的计算方式和前提。
 
-**相关内容**：[资源请求、限制与 QoS](#resources)、[调度约束与弹性伸缩](#scheduling-scaling-config)。
+**相关内容**：[资源请求、限制与 QoS](#资源请求限制与-qos)、[调度约束与弹性伸缩](#调度约束与弹性伸缩)。
 
 <details>
 <summary>参考回答</summary>

@@ -17,7 +17,7 @@ knowledge:
 - 被 pin 住时虚拟线程阻塞会占住 carrier：JDK 21—23 中 `synchronized` 内阻塞是常见原因，JDK 24 起由 JEP 491 改进。
 - 迁移后要压测吞吐、p99、pinning 和连接等待，确认瓶颈没有转移到下游资源。
 
-## 2. 虚拟线程与 carrier 线程 {#carrier}
+## 2. 虚拟线程与 carrier 线程 {#虚拟线程与-carrier-线程}
 
 ```java
 try (ExecutorService executor =
@@ -31,7 +31,7 @@ try (ExecutorService executor =
 
 现有的栈、异常、中断和 Thread API 大多仍然适用，因此可以保留清晰的线程每请求同步代码。
 
-## 3. 虚拟线程与线程池 {#no-pooling}
+## 3. 虚拟线程与线程池 {#虚拟线程与线程池}
 
 平台线程昂贵，线程池通过复用和数量限制管理它们。虚拟线程的设计目标是任务一线程，用完即结束；将它们固定为少量 Worker 会重新引入不必要的排队。
 
@@ -48,25 +48,25 @@ try {
 }
 ```
 
-## 4. 适用场景 {#use-cases}
+## 4. 适用场景 {#适用场景}
 
 典型场景包括大量独立 HTTP、JDBC 或文件 I/O 调用。虚拟线程主要提高给定机器上可以同时等待的任务数量，通常不会降低一次请求的固有延迟。
 
 长期 CPU 密集任务仍受核心数限制，应限制并行度；大量虚拟线程同时计算只会争夺相同 CPU。
 
-## 5. pinning 与 JDK 版本 {#pinning}
+## 5. pinning 与 JDK 版本 {#pinning-与-jdk-版本}
 
 虚拟线程被 pin 到 carrier 时，阻塞期间无法卸载，会同时占住平台线程。JDK 21—23 中，在 `synchronized` 内阻塞是常见 pinning 来源；JEP 491 从 JDK 24 起改进了 monitor 实现，当前 JDK 26 文档列出的主要 pinning 情况是执行 native 方法或 Foreign Function 调用。
 
 因此，不应继续笼统地把所有 `synchronized` 换成 `ReentrantLock`。先确认部署 JDK 版本，再用 JFR 和虚拟线程诊断数据定位持续且影响吞吐的 pinning。
 
-## 6. ThreadLocal 与上下文传播 {#thread-local}
+## 6. ThreadLocal 与上下文传播 {#threadlocal-与上下文传播}
 
 虚拟线程支持 ThreadLocal，但 JVM 可能创建极多虚拟线程。给每个线程缓存昂贵对象会把轻量线程重新变重，也不能依赖固定 Worker 复用缓存。
 
 不可变请求上下文可以考虑当前 JDK 已提供的 Scoped Values；使用前要确认目标 JDK 版本与框架支持。无论采用哪种机制，外部资源都应由作用域管理，而不是藏在线程局部变量中长期存活。
 
-## 7. 迁移验证 {#migration}
+## 7. 迁移验证 {#迁移验证}
 
 压测时记录吞吐、p99、CPU、carrier 数量、pinning、数据库连接等待和内存。若瓶颈是 30 个数据库连接，虚拟线程可能只是让更多请求同时排在连接池前。
 
@@ -99,7 +99,7 @@ try {
 - CPU、下游容量和 ThreadLocal 边界。
 - JDK 24 前后 pinning 语义变化。
 
-**相关内容**：[虚拟线程与 carrier 线程](#carrier)至[迁移验证](#migration)。
+**相关内容**：[虚拟线程与 carrier 线程](#虚拟线程与-carrier-线程)至[迁移验证](#迁移验证)。
 
 <details>
 <summary>参考回答</summary>

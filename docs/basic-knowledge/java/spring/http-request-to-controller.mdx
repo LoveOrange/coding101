@@ -17,13 +17,13 @@ knowledge:
 - Filter 属于 Servlet 规范，能处理所有请求；`HandlerInterceptor` 属于 Spring MVC，只拦截进入 DispatcherServlet 的处理器调用。
 - 异步请求会产生多次 dispatch，Filter 和拦截器的上下文清理要考虑这一点。
 
-## 2. Servlet 容器 {#servlet-container}
+## 2. Servlet 容器 {#servlet-容器}
 
 客户端建立连接并发送 HTTP 消息后，Tomcat、Jetty 等服务器解析请求行、头和请求体，构造 Servlet API 的 request/response，并从容器线程模型中安排一次请求处理。
 
 Spring MVC 默认运行在 Servlet 栈上，不直接负责 TCP 握手或 HTTP 报文解析。连接数、accept 队列、请求线程和 keep-alive 属于容器配置，排查慢请求时要和应用线程池分开观察。
 
-## 3. Filter 链 {#filters}
+## 3. Filter 链 {#filter-链}
 
 ```java
 class RequestIdFilter extends OncePerRequestFilter {
@@ -41,7 +41,7 @@ Filter 可以包装原始请求和响应，也可能覆盖静态资源、错误�
 
 调用 `chain.doFilter` 才会进入下一项；返回后 Filter 还可以执行清理，但响应可能已经提交。
 
-## 4. DispatcherServlet {#dispatcher-servlet}
+## 4. DispatcherServlet {#dispatcherservlet}
 
 主要步骤是：
 
@@ -56,7 +56,7 @@ Filter 可以包装原始请求和响应，也可能覆盖静态资源、错误�
 
 `DispatcherServlet` 是协调者，具体动作委托给这些策略组件。
 
-## 5. 返回值处理 {#return-values}
+## 5. 返回值处理 {#返回值处理}
 
 ```java
 @GetMapping("/orders/{id}")
@@ -69,13 +69,13 @@ OrderResponse get(@PathVariable long id) {
 
 序列化异常发生在 Controller 已经返回之后，仍属于 MVC 返回值处理链，而不是业务方法内部异常。
 
-## 6. 异步请求 {#async}
+## 6. 异步请求 {#异步请求}
 
 Servlet async、`Callable` 或 `DeferredResult` 可以让初始容器线程退出，在结果就绪后继续处理。Filter 和 Interceptor 对异步 dispatch 的回调规则与普通同步请求不同，上下文清理不能只放在 Controller 返回后的位置。
 
 WebFlux 使用响应式服务器与不同执行模型，不经过这套 Servlet `DispatcherServlet` 链。虚拟线程则仍可运行传统 Servlet 同步代码，选择依据是阻塞特征、框架支持和下游容量。
 
-## 7. 请求日志与指标 {#observability}
+## 7. 请求日志与指标 {#请求日志与指标}
 
 每个入口至少保留 request ID、方法、规范化路径、状态、耗时和响应大小。路径模板比原始 URL 更适合指标标签，避免把用户 ID 变成高基数。
 
@@ -108,7 +108,7 @@ WebFlux 使用响应式服务器与不同执行模型，不经过这套 Servlet 
 - HandlerMapping、HandlerAdapter 和参数解析。
 - 返回值转换与异常解析。
 
-**相关内容**：[Servlet 容器](#servlet-container)至[返回值处理](#return-values)。
+**相关内容**：[Servlet 容器](#servlet-容器)至[返回值处理](#返回值处理)。
 
 <details>
 <summary>参考回答</summary>

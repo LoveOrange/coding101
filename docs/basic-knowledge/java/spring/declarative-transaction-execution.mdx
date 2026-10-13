@@ -17,7 +17,7 @@ Spring 事务通过事务管理器和拦截器把一次方法调用映射为物�
 - `REQUIRED` 加入已有事务；`REQUIRES_NEW` 挂起外层并开启独立事务；`NESTED` 在同一事务中使用保存点，外层回滚时一起回滚。[卡](#requires-new-vs-nested)
 - 本地事务不能回滚已经成功的远程调用，事务中不应包含耗时的外部请求。
 
-## 2. 事务注解与代理 {#annotation-proxy}
+## 2. 事务注解与代理 {#事务注解与代理}
 
 ```java
 @Transactional
@@ -32,7 +32,7 @@ public Order create(CreateOrder command) {
 
 注解可以声明传播方式、隔离级别、超时、只读提示和回滚规则；这些属性能否生效，由所选 `TransactionManager` 和底层资源决定。
 
-## 3. 事务拦截器 {#interceptor}
+## 3. 事务拦截器 {#事务拦截器}
 
 简化路径如下：
 
@@ -49,25 +49,25 @@ public Order create(CreateOrder command) {
 
 `PlatformTransactionManager` 是通用抽象；JDBC、JPA、JTA 和响应式事务使用的具体实现与上下文传播方式不同。
 
-## 4. 连接与事务上下文 {#connection-binding}
+## 4. 连接与事务上下文 {#连接与事务上下文}
 
 事务开始后，Spring 获取连接并把它与当前执行上下文关联。同一事务内通过 Spring 数据访问基础设施取得连接时，会复用这项资源；事务结束后提交或回滚并归还连接池。
 
 业务代码自行调用独立 DataSource 或开启新线程，可能取得另一条连接，不会自动加入原事务。代理事务通常沿当前线程传播，线程切换必须使用框架明确支持的响应式或上下文协议。
 
-## 5. 提交失败 {#commit-failure}
+## 5. 提交失败 {#提交失败}
 
 目标方法正常返回，只说明业务代码没有抛出异常。数据库约束、连接故障或全局事务协调可能在 flush 或 commit 阶段才失败。
 
 不要在事务方法返回后立即假定外部副作用都已经完成。发送消息、调用远程服务与本地数据库提交无法由单个 JDBC 事务统一原子化，需要 Outbox、幂等或补偿方案。
 
-## 6. 事务边界 {#boundaries}
+## 6. 事务边界 {#事务边界}
 
 事务过小会把需要共同提交的状态拆开；事务过大则长时间占用连接和锁，并把远程调用延迟放进数据库事务。
 
 典型边界是一个应用服务方法：读取完成决策所需状态，执行数据库更新，然后提交。慢网络调用尽量移出本地事务，并通过可恢复的状态连接前后步骤。
 
-## 7. 编程式事务 {#programmatic}
+## 7. 编程式事务 {#编程式事务}
 
 需要精确控制重试范围、在循环中逐批提交或避免代理自调用时，可以使用 `TransactionTemplate`：
 
@@ -77,7 +77,7 @@ return transactionTemplate.execute(status -> repository.save(order));
 
 它让边界直接出现在代码中，代价是业务逻辑显式依赖 Spring 事务 API。声明式与编程式应按边界清晰度选择。
 
-## 8. 传播、隔离与回滚 {#transaction-settings}
+## 8. 传播、隔离与回滚 {#传播隔离与回滚}
 
 传播方式决定方法进入时如何处理已有事务，隔离级别决定数据库并发读写可见性，回滚规则决定异常如何影响事务结果。这三组配置作用在不同层面，需要分别验证。
 
@@ -87,7 +87,7 @@ return transactionTemplate.execute(status -> repository.save(order));
 
 内层把事务标记为 rollback-only 后，即使外层捕获异常并正常返回，最终提交也会回滚，并可能抛出 `UnexpectedRollbackException`。这避免调用方误以为提交成功。
 
-### 8.2 `REQUIRES_NEW` {#requires-new}
+### 8.2 `REQUIRES_NEW` {#requires_new}
 
 已有事务被挂起，内层取得自己的连接和事务：
 
@@ -106,7 +106,7 @@ public void recordAudit(AuditEvent event) {}
 
 它不等同于独立事务，并非所有事务管理器都支持。Spring 文档明确指出典型支持来自 JDBC `DataSourceTransactionManager`。
 
-### 8.4 其他传播方式 {#other-propagation}
+### 8.4 其他传播方式 {#其他传播方式}
 
 | 传播方式 | 已有事务 | 没有事务 |
 | --- | --- | --- |
@@ -117,13 +117,13 @@ public void recordAudit(AuditEvent event) {}
 
 是否真的能挂起取决于事务管理器。大多数业务方法使用少数几种传播方式，复杂组合需要集成测试证明。
 
-### 8.5 隔离级别 {#isolation}
+### 8.5 隔离级别 {#隔离级别}
 
 `Isolation.DEFAULT` 使用数据库默认值。指定隔离级别通常只在当前调用实际创建新事务时生效；加入已有事务时，内层不能凭注解把同一物理事务换成另一隔离级别。
 
 可以启用严格验证让不兼容声明尽早失败。隔离级别解决数据库并发可见性，不处理远程服务或缓存的一致性。
 
-### 8.6 回滚规则 {#rollback-rules}
+### 8.6 回滚规则 {#回滚规则}
 
 声明式事务默认对未处理的 `RuntimeException` 和 `Error` 回滚，对普通受检异常不自动回滚。业务需要时显式声明：
 
@@ -168,7 +168,7 @@ public void recordAudit(AuditEvent event) {}
 - 事务管理器与资源绑定。
 - 提交阶段失败和远程调用边界。
 
-**相关内容**：[事务注解与代理](#annotation-proxy)至[事务边界](#boundaries)。
+**相关内容**：[事务注解与代理](#事务注解与代理)至[事务边界](#事务边界)。
 
 <details>
 <summary>参考回答</summary>
@@ -194,7 +194,7 @@ public void recordAudit(AuditEvent event) {}
 - 外层回滚的影响。
 - 连接池与事务管理器支持。
 
-**相关内容**：[`REQUIRES_NEW`](#requires-new)和[`NESTED`](#nested)。
+**相关内容**：[`REQUIRES_NEW`](#requires_new)和[`NESTED`](#nested)。
 
 <details>
 <summary>参考回答</summary>

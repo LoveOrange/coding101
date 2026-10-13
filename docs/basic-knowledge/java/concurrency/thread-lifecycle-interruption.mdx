@@ -17,7 +17,7 @@ Java 线程从创建到终止只会经历有限的状态。中断会向目标线
 - 捕获 `InterruptedException` 后要继续抛出，或调用 `Thread.currentThread().interrupt()` 恢复中断状态。
 - 停止线程使用中断或受同步保护的停止标志，并在退出前释放资源；`Thread.stop()` 不可用。[卡](#stop-thread)
 
-## 2. `start()` 与 `run()` {#start-run}
+## 2. `start()` 与 `run()` {#start-与-run}
 
 ```java
 Thread worker = new Thread(() -> loadData());
@@ -29,7 +29,7 @@ worker.join();
 
 一个 `Thread` 只能启动一次。`run` 正常返回或抛出的未捕获异常处理结束后，线程进入 `TERMINATED`，不能重新启动。
 
-## 3. 线程的六种状态 {#thread-states}
+## 3. 线程的六种状态 {#线程的六种状态}
 
 | `Thread.State` | 含义 |
 | --- | --- |
@@ -42,7 +42,7 @@ worker.join();
 
 Java 的 `RUNNABLE` 不等于此刻正在占用 CPU，也可能包含某些 native I/O 状态。诊断必须把线程状态和栈、队列、CPU 一起看。
 
-## 4. 协作式中断 {#interruption}
+## 4. 协作式中断 {#协作式中断}
 
 ```java
 while (!Thread.currentThread().isInterrupted()) {
@@ -54,7 +54,7 @@ while (!Thread.currentThread().isInterrupted()) {
 
 `isInterrupted()` 只读取状态。静态方法 `Thread.interrupted()` 读取**当前线程**的状态并将其清除，通常不应被当成普通查询方法。
 
-## 5. 处理 `InterruptedException` {#interrupted-exception}
+## 5. 处理 `InterruptedException` {#处理-interruptedexception}
 
 `sleep`、`wait`、`join` 以及很多 JUC 阻塞方法在响应中断时会抛出 `InterruptedException`，并先清除中断状态。调用方通常有两种正确选择：
 
@@ -77,7 +77,7 @@ try {
 
 捕获后只记录日志并继续执行，会吞掉上层的关闭或取消请求。
 
-## 6. 安全终止线程 {#shutdown}
+## 6. 安全终止线程 {#安全终止线程}
 
 任务退出前仍要释放锁、归还连接并关闭资源，所以不要用 `Thread.stop()` 破坏任意执行点的状态。推荐的关闭流程是：停止接收新任务、发出中断或设置受同步保护的停止条件、等待已有任务在期限内结束，最后处理未完成任务。
 
@@ -110,7 +110,7 @@ try {
 - 阻塞方法与中断状态的关系。
 - 退出前的资源清理和超时。
 
-**相关内容**：[协作式中断](#interruption)至[安全终止线程](#shutdown)。
+**相关内容**：[协作式中断](#协作式中断)至[安全终止线程](#安全终止线程)。
 
 <details>
 <summary>参考回答</summary>

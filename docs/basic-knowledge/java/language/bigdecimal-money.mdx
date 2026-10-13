@@ -17,7 +17,7 @@ knowledge:
 - `BigDecimal` 不可变，`setScale`、`add` 等方法返回新对象。
 - `equals` 同时比较数值和 `scale`，`2.0` 与 `2.00` 不相等；比较数值大小用 `compareTo`。[卡](#bigdecimal-equals-compareto)
 
-## 2. double 的十进制误差 {#double-error}
+## 2. double 的十进制误差 {#double-的十进制误差}
 
 `double` 使用二进制浮点数表示数值。许多常见十进制小数无法用有限长度的二进制小数精确表示，运行时会保存最接近的可表示值：
 
@@ -28,7 +28,7 @@ System.out.println(result); // 0.30000000000000004
 
 这是二进制浮点表示的正常结果，并非 Java 计算错误。科学计算、图形和允许误差的统计场景仍然适合使用 `double`；金额、税率结算等要求十进制规则可控的场景，通常使用 `BigDecimal` 或明确的最小货币单位整数。
 
-## 3. BigDecimal 的表示 {#representation}
+## 3. BigDecimal 的表示 {#bigdecimal-的表示}
 
 一个 `BigDecimal` 由任意精度整数值和 `scale` 组成，其数值可以理解为：
 
@@ -60,7 +60,7 @@ System.out.println(original); // 10.00
 System.out.println(updated);  // 12.50
 ```
 
-## 4. 创建 BigDecimal {#construction}
+## 4. 创建 BigDecimal {#创建-bigdecimal}
 
 已知十进制文本时，使用字符串构造方法：
 
@@ -76,7 +76,7 @@ BigDecimal count = BigDecimal.valueOf(3);
 BigDecimal zero = BigDecimal.ZERO;
 ```
 
-### 4.1 `new BigDecimal(double)` 的问题 {#double-constructor}
+### 4.1 `new BigDecimal(double)` 的问题 {#new-bigdecimaldouble-的问题}
 
 ```java
 BigDecimal unexpected = new BigDecimal(0.1);
@@ -95,7 +95,7 @@ System.out.println(value); // 0.1
 
 但这不能恢复来源在转换成 `double` 前丢失的精度。金额数据最好从文本、数据库十进制类型或整数最小单位进入系统，不要先经过浮点数。
 
-## 5. 运算与舍入 {#rounding}
+## 5. 运算与舍入 {#运算与舍入}
 
 加、减、乘通常可以直接得到精确十进制结果：
 
@@ -125,7 +125,7 @@ System.out.println(result); // 0.33
 - 最终展示、结算和入账分别使用什么小数位。
 - 正数和负数是否使用相同舍入方式。
 
-### 5.1 `setScale` 返回新对象 {#set-scale}
+### 5.1 `setScale` 返回新对象 {#setscale-返回新对象}
 
 ```java
 BigDecimal amount = new BigDecimal("12.345");
@@ -137,7 +137,7 @@ System.out.println(rounded); // 12.35
 
 只调用 `amount.setScale(...)` 而不接收返回值，不会改变 `amount`。
 
-### 5.2 MathContext {#math-context}
+### 5.2 MathContext {#mathcontext}
 
 `MathContext` 通过精度和舍入模式限制整个运算结果的有效数字，与固定小数位的 `setScale` 解决的问题不同：
 
@@ -151,7 +151,7 @@ System.out.println(result); // 838.1
 
 金融结算中常见的是按货币和业务规则控制小数位；高精度科学计算可能更关心有效数字。不要在没有确定语义时统一套用一个全局 `MathContext`。
 
-## 6. `equals` 与 `compareTo` {#comparison}
+## 6. `equals` 与 `compareTo` {#equals-与-compareto}
 
 `equals` 同时比较数值和 `scale`：
 
@@ -182,15 +182,15 @@ public record Money(BigDecimal amount) {
 
 这个示例只适用于明确要求两位小数且输入不得舍入的业务。不同货币和业务不一定都使用两位小数，规则应由领域决定。
 
-## 7. 金额模型的选择 {#money-model}
+## 7. 金额模型的选择 {#金额模型的选择}
 
 常见方案有两种：
 
-### 7.1 用 BigDecimal 保存主单位 {#bigdecimal-unit}
+### 7.1 用 BigDecimal 保存主单位 {#用-bigdecimal-保存主单位}
 
 适合直接对接数据库 `DECIMAL`、需要可变小数位或计算规则复杂的场景。需要在边界统一精度、舍入模式、货币单位和序列化格式。
 
-### 7.2 用 long 保存最小单位 {#long-minor-unit}
+### 7.2 用 long 保存最小单位 {#用-long-保存最小单位}
 
 ```java
 long amountInCents = 1990;
@@ -231,7 +231,7 @@ long amountInCents = 1990;
 - `BigDecimal` 怎样保存数值和小数位。
 - 精确表示不等于已经确定业务舍入规则。
 
-**相关内容**：[double 的十进制误差](#double-error)、[BigDecimal 的表示](#representation)、[运算与舍入](#rounding)。
+**相关内容**：[double 的十进制误差](#double-的十进制误差)、[BigDecimal 的表示](#bigdecimal-的表示)、[运算与舍入](#运算与舍入)。
 
 <details>
 <summary>参考回答</summary>
@@ -256,7 +256,7 @@ long amountInCents = 1990;
 - `scale` 对 `equals`、`hashCode` 和哈希集合的影响。
 - 业务模型是否需要统一小数位。
 
-**相关内容**：[`equals` 与 `compareTo`](#comparison)。
+**相关内容**：[`equals` 与 `compareTo`](#equals-与-compareto)。
 
 <details>
 <summary>参考回答</summary>

@@ -17,7 +17,7 @@ Java API 除了暴露方法，还要保证对象始终处于合法状态。先�
 - 参数很多时，按含义分组为参数对象，或在可选参数多时使用 Builder，最终在 `build` 中统一校验。[卡](#many-parameters)
 - 同一种失败只用一种方式表达：查询无结果返回 `Optional`，非法参数抛 `IllegalArgumentException`，业务拒绝使用业务异常或结果类型。
 
-## 2. 业务不变量 {#invariants}
+## 2. 业务不变量 {#业务不变量}
 
 订单金额模型可能有这些约束：
 
@@ -51,7 +51,7 @@ public record Money(BigDecimal amount, Currency currency) {
 
 创建成功的 Money 就是合法值，后续方法不必反复防守同一约束。
 
-## 3. 领域类型 {#domain-types}
+## 3. 领域类型 {#领域类型}
 
 ```java
 void transfer(String from, String to, BigDecimal amount, String currency)
@@ -70,7 +70,7 @@ TransferResult transfer(
 
 类型不能表达所有规则，但能把解析、验证和相等性集中到明确位置。布尔参数、多个同类型字符串和可为空参数较多时，通常意味着 API 缺少命名清楚的概念。
 
-### 3.1 布尔参数 {#boolean-params}
+### 3.1 布尔参数 {#布尔参数}
 
 ```java
 send(message, true, false);
@@ -82,7 +82,7 @@ send(message, true, false);
 send(message, DeliveryMode.RELIABLE, AuditMode.ENABLED);
 ```
 
-## 4. 状态转换方法 {#state-transitions}
+## 4. 状态转换方法 {#状态转换方法}
 
 把状态字段暴露给 setter，会允许绕过业务规则：
 
@@ -105,7 +105,7 @@ public PaymentAccepted pay(PaymentId paymentId, Instant paidAt) {
 
 方法可以同时检查前置状态、更新相关字段并返回发生的结果。状态不变量被封装在聚合内部，而不是散落在 Controller、Service 和消息消费者中。
 
-## 5. 参数与返回值的所有权 {#ownership}
+## 5. 参数与返回值的所有权 {#参数与返回值的所有权}
 
 API 需要说明是否保留、复制或修改传入集合：
 
@@ -127,9 +127,9 @@ public final class PricingRuleSet {
 
 方法会修改参数时，命名和文档应明确。大多数公共 API 更容易推理的做法是：输入由调用方拥有，方法不修改；输出由返回方提供稳定语义。
 
-## 6. 缺失与失败 {#failures}
+## 6. 缺失与失败 {#缺失与失败}
 
-### 6.1 查询无结果 {#absent}
+### 6.1 查询无结果 {#查询无结果}
 
 ```java
 Optional<User> findById(UserId id);
@@ -137,15 +137,15 @@ Optional<User> findById(UserId id);
 
 Optional 适合方法返回的可选结果。找不到是正常情况时，不需要抛异常；调用方必须选择空结果处理方式。
 
-### 6.2 命令失败 {#command-failure}
+### 6.2 命令失败 {#命令失败}
 
 参数本身非法可抛 `IllegalArgumentException`，对象状态不允许操作可以使用有业务语义的异常或结果类型。跨服务 API 通常还要映射为稳定错误码，避免把内部类名和堆栈作为外部契约。
 
-### 6.3 统一失败的表达方式 {#single-failure-form}
+### 6.3 统一失败的表达方式 {#统一失败的表达方式}
 
 一种失败保留一个主要表达，调用方才知道应该检查哪条路径。异常消息用于诊断，类型或错误码用于程序判断，不要解析消息文本控制逻辑。
 
-## 7. 接口范围 {#interface-scope}
+## 7. 接口范围 {#接口范围}
 
 接口应暴露调用方需要的能力，而不是实现类所有方法：
 
@@ -159,7 +159,7 @@ public interface ExchangeRateProvider {
 
 “窄”不等于把一次业务动作拆成很多必须按顺序调用的小方法。若正确使用需要调用 `begin`、`setX`、`setY`、`validate`、`commit`，API 暴露了太多中间非法状态。可以提供一次完整操作，或用 Builder 在 `build` 时验证。
 
-## 8. 并发、幂等与阻塞 {#concurrency-contract}
+## 8. 并发、幂等与阻塞 {#并发幂等与阻塞}
 
 公开方法需要说明：
 
@@ -179,7 +179,7 @@ PaymentResult charge(
 
 加入幂等键和超时不自动实现协议，但让调用方能够表达这些约束。隐藏的无限等待和不明确重试语义会在集成后放大。
 
-## 9. 兼容性 {#compatibility}
+## 9. 兼容性 {#兼容性}
 
 改变 Java 方法签名会影响源码或二进制兼容；更隐蔽的变化包括：
 
@@ -227,7 +227,7 @@ PaymentResult charge(
 - 类型、封装与防御性复制怎样减少非法组合。
 - 失败和并发语义怎样成为 API 契约。
 
-**相关内容**：[业务不变量](#invariants)至[并发、幂等与阻塞](#concurrency-contract)。
+**相关内容**：[业务不变量](#业务不变量)至[并发、幂等与阻塞](#并发幂等与阻塞)。
 
 <details>
 <summary>参考回答</summary>
@@ -252,7 +252,7 @@ PaymentResult charge(
 - 必需参数、可选参数和布尔标志怎样表达。
 - 参数对象是否只是无约束数据袋。
 
-**相关内容**：[领域类型](#domain-types)、[接口范围](#interface-scope)。
+**相关内容**：[领域类型](#领域类型)、[接口范围](#接口范围)。
 
 <details>
 <summary>参考回答</summary>

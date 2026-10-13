@@ -16,7 +16,7 @@ knowledge:
 - 权限分为属主、属组、其他人三组，每组有读、写、执行三位，用数字表示为 r=4、w=2、x=1。目录的 x 表示能否进入和穿过，r 表示能否列出内容；访问深层文件需要路径上每一级目录都有 x。[卡](#file-permissions)
 - 多个用户共享文件时，用组授权：把用户加入同一个组，文件属组设为该组并给组写权限；需要更细粒度时用 ACL。不要直接给 777 或把用户加入 root 组。
 
-## 2. 按用途分组的常用命令 {#commands}
+## 2. 按用途分组的常用命令 {#按用途分组的常用命令}
 
 | 用途 | 命令 | 典型用法 |
 | --- | --- | --- |
@@ -29,7 +29,7 @@ knowledge:
 | 网络 | `ss`、`curl`、`dig`、`ping`、`tcpdump` | `ss -lntp \| grep 8080` 查看哪个进程监听 8080 端口；见 [Linux 网络排查](./network-troubleshooting.mdx) |
 | 定时任务 | `crontab` | `crontab -e` 编辑；五个字段是分、时、日、月、周 |
 
-## 3. grep、sed 与 awk {#text-processing-tools}
+## 3. grep、sed 与 awk {#grepsed-与-awk}
 
 **grep**：按正则表达式过滤行。
 
@@ -66,7 +66,7 @@ awk '{print $1}' access.log | sort | uniq -c | sort -nr | head -10
 
 `uniq` 只合并相邻的重复行，所以要先 `sort`；`uniq -c` 输出“次数 内容”，再按数字倒序排序。
 
-## 4. 文件权限 {#permissions}
+## 4. 文件权限 {#文件权限}
 
 `ls -l` 的输出：
 
@@ -120,7 +120,7 @@ awk '{print $1}' access.log | sort | uniq -c | sort -nr | head -10
 - grep、sed、awk 的分工。
 - 用管道组合出统计命令，并解释 `sort` 必须在 `uniq` 之前。
 
-**相关内容**：[grep、sed 与 awk](#text-processing-tools)、[按用途分组的常用命令](#commands)。
+**相关内容**：[grep、sed 与 awk](#grepsed-与-awk)、[按用途分组的常用命令](#按用途分组的常用命令)。
 
 <details>
 <summary>参考回答</summary>
@@ -148,7 +148,7 @@ grep 按正则过滤行，`-n` 显示行号、`-c` 计数、`-v` 反向、`-E` �
 - 文件与目录上 r、w、x 的不同含义；删除文件取决于目录的 w。
 - 用组或 ACL 授权，而不是放宽到所有人。
 
-**相关内容**：[文件权限](#permissions)。
+**相关内容**：[文件权限](#文件权限)。
 
 <details>
 <summary>参考回答</summary>

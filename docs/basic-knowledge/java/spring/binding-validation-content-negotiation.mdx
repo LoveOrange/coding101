@@ -17,7 +17,7 @@ Spring MVC 将路径、查询参数、头和请求体解析为 Controller 参数
 - 用专门的请求 DTO 接收输入，避免客户端写入实体中不允许修改的字段。
 - 无法读取请求体时返回 415，无法生成客户端接受的响应格式时返回 406。
 
-## 2. 参数来源注解 {#sources}
+## 2. 参数来源注解 {#参数来源注解}
 
 ```java
 @PostMapping(path = "/orders/{id}", consumes = "application/json")
@@ -37,7 +37,7 @@ OrderResponse update(
 
 输入来源越明确，API 文档、错误定位和安全审查越容易。
 
-## 3. 绑定失败与校验失败 {#binding-vs-validation}
+## 3. 绑定失败与校验失败 {#绑定失败与校验失败}
 
 `quantity=abc` 无法转换为整数，属于绑定/类型转换错误；`quantity=-1` 成功得到整数，但违反 `@Positive`，属于校验错误。
 
@@ -49,7 +49,7 @@ record UpdateOrderRequest(
 
 错误响应应分别保留字段、拒绝值类型和稳定错误码，不把内部异常类名直接交给客户端。
 
-## 4. 请求 DTO {#request-dto}
+## 4. 请求 DTO {#请求-dto}
 
 直接把持久化实体作为 `@RequestBody` 容易暴露 `status`、`ownerId` 等本不允许客户端修改的字段，也会把数据库模型变化扩散到 API。
 
@@ -57,13 +57,13 @@ record UpdateOrderRequest(
 
 嵌套对象需要 `@Valid` 才会继续级联校验；集合大小、字符串长度和金额范围也应有上限，避免合法 JSON 变成资源攻击。
 
-## 5. 方法校验 {#method-validation}
+## 5. 方法校验 {#方法校验}
 
 Controller 方法参数或 service 方法可以使用 Bean Validation 方法校验。具体异常类型会随参数解析路径和 Spring 版本不同，统一异常处理不要只捕获一种历史异常。
 
 校验组可以表达创建与更新差异，但组层级过多会让契约难以理解。操作 DTO 通常更直观。
 
-## 6. `Content-Type` 与 `Accept` {#content-negotiation}
+## 6. `Content-Type` 与 `Accept` {#content-type-与-accept}
 
 - 请求 `Content-Type` 描述客户端发送的请求体格式。
 - `Accept` 描述客户端希望接收的响应格式。
@@ -72,7 +72,7 @@ Controller 方法参数或 service 方法可以使用 Bean Validation 方法校�
 
 不要根据 URL 后缀或用户可控参数随意选择响应类型，明确支持的媒体类型和字符编码。
 
-## 7. 自定义参数解析器 {#argument-resolver}
+## 7. 自定义参数解析器 {#自定义参数解析器}
 
 跨接口重复的租户、分页或当前用户参数可以实现 `HandlerMethodArgumentResolver`。resolver 应只匹配专用注解或类型，失败时返回稳定客户端错误，不能对所有 `String` 等宽泛类型生效。
 
@@ -103,7 +103,7 @@ Controller 方法参数或 service 方法可以使用 Bean Validation 方法校�
 - 绑定错误和 Bean Validation 错误。
 - 请求 DTO 与授权边界。
 
-**相关内容**：[参数来源注解](#sources)至[`Content-Type` 与 `Accept`](#content-negotiation)。
+**相关内容**：[参数来源注解](#参数来源注解)至[`Content-Type` 与 `Accept`](#content-type-与-accept)。
 
 <details>
 <summary>参考回答</summary>

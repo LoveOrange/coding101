@@ -17,7 +17,7 @@ Spring Boot 把配置文件、环境变量、系统属性和命令行参数统�
 - 环境变量通过宽松绑定对应属性名，例如 `SERVER_PORT` 对应 `server.port`。
 - 用 `@ConfigurationProperties` 加校验在启动时检查关键配置；密钥通过平台 Secret 提供，不提交到仓库。
 
-## 2. Environment 与 PropertySource {#environment}
+## 2. Environment 与 PropertySource {#environment-与-propertysource}
 
 应用可以通过三种常见方式读取属性：
 
@@ -37,7 +37,7 @@ public record PaymentProperties(URI endpoint, Duration timeout) {}
 
 一组相关配置优先使用 `@ConfigurationProperties`。它支持结构化绑定、类型转换、校验和配置元数据，比散落的字符串 key 更容易维护。
 
-## 3. 配置来源的优先级 {#precedence}
+## 3. 配置来源的优先级 {#配置来源的优先级}
 
 Spring Boot 官方顺序较长，日常排查可以先记住常见层级：
 
@@ -56,7 +56,7 @@ java -jar order.jar --server.port=9000
 
 这条命令默认会覆盖 `application.yaml` 中的 `server.port`。排查时应查看当前版本文档或 Environment 中的 PropertySource，不需要背完整编号。
 
-## 4. 配置文件的加载顺序 {#config-files}
+## 4. 配置文件的加载顺序 {#配置文件的加载顺序}
 
 默认配置数据通常按以下方向提高优先级：
 
@@ -69,7 +69,7 @@ java -jar order.jar --server.port=9000
 
 同一位置同时存在 properties 和 YAML 文件时，Spring Boot 规定 properties 优先。项目最好统一一种格式，避免同目录下出现肉眼难以发现的覆盖。
 
-## 5. 环境变量的宽松绑定 {#relaxed-binding}
+## 5. 环境变量的宽松绑定 {#环境变量的宽松绑定}
 
 操作系统通常不允许环境变量名包含点，可以把属性名转换为大写下划线形式：
 
@@ -82,13 +82,13 @@ PAYMENT_RETRY_MAXATTEMPTS
 
 占位符中使用小写 kebab-case，例如 `${payment.retry.max-attempts}`，可以获得更完整的宽松绑定匹配。
 
-## 6. 配置与密钥 {#secrets}
+## 6. 配置与密钥 {#配置与密钥}
 
 数据库密码、访问令牌和私钥不应提交到仓库中的 `application-prod.yaml`。可以通过平台 Secret、外部密钥服务或挂载配置树提供，并限制 Actuator、日志和错误页的暴露范围。
 
 配置值是否敏感，与它来自环境变量还是文件无关。环境变量也可能出现在进程诊断、部署清单或错误报告中。
 
-## 7. 启动时校验配置 {#validation}
+## 7. 启动时校验配置 {#启动时校验配置}
 
 ```java
 @ConfigurationProperties("payment")
@@ -109,7 +109,7 @@ public record PaymentProperties(
 
 不要给生产关键参数随意设置“能启动就行”的默认值。默认值应当安全、含义稳定，而且适用于所有未显式配置的环境。
 
-## 8. 排查步骤 {#troubleshooting}
+## 8. 排查步骤 {#排查步骤}
 
 1. 确认最终读取的 key 使用规范名称。
 2. 查看激活的 profile 与配置文件搜索位置。
@@ -134,7 +134,7 @@ public record PaymentProperties(
 - 配置数据、环境变量和命令行的关系。
 - profile、外部文件与诊断方式。
 
-**相关内容**：[Environment 与 PropertySource](#environment)至[排查步骤](#troubleshooting)。
+**相关内容**：[Environment 与 PropertySource](#environment-与-propertysource)至[排查步骤](#排查步骤)。
 
 <details>
 <summary>参考回答</summary>

@@ -17,7 +17,7 @@ knowledge:
 - HotSpot 会针对无竞争、短暂竞争和持续竞争采用不同的获取路径，并可能进行锁消除和锁粗化；具体行为随 JDK 版本变化。
 - 等待 monitor 的线程不能被中断，也不能设置超时。
 
-## 2. 对象 monitor 与可重入 {#monitor}
+## 2. 对象 monitor 与可重入 {#对象-monitor-与可重入}
 
 ```java
 public void update() {
@@ -36,7 +36,7 @@ synchronized (left)  { /* 修改 state */ }
 synchronized (right) { /* 也修改 state */ }
 ```
 
-## 3. 同步方法与同步代码块 {#sync-method-block}
+## 3. 同步方法与同步代码块 {#同步方法与同步代码块}
 
 - 实例 `synchronized` 方法锁定当前对象 `this`。
 - 静态 `synchronized` 方法锁定声明类对应的 `Class` 对象。
@@ -44,13 +44,13 @@ synchronized (right) { /* 也修改 state */ }
 
 同步代码块通常编译为 `monitorenter` 和配套的 `monitorexit`，异常路径也必须释放 monitor。同步方法则由 Class 文件上的 `ACC_SYNCHRONIZED` 标志表示，不应简单地说所有 `synchronized` 都对应一对相同字节码指令。
 
-## 4. 可见性保证 {#visibility}
+## 4. 可见性保证 {#可见性保证}
 
 线程 A 退出某个 monitor 前的写入，在线程 B 随后成功进入同一 monitor 后可见。这就是为什么读写双方必须遵守同一个锁协议：只在写路径加锁，未同步的读路径不会自动获得该保证。
 
 锁的范围要覆盖整个业务不变量涉及的读写。把远程调用放在锁内虽然正确，却会让不相关线程一起等待。
 
-## 5. HotSpot 的锁优化 {#hotspot-optimizations}
+## 5. HotSpot 的锁优化 {#hotspot-的锁优化}
 
 JVM 可以针对无竞争、短暂竞争和持续竞争采用不同的锁表示、快速路径、自旋或 monitor 膨胀。具体实现会随 JDK、虚拟机和启动参数变化。
 
@@ -58,7 +58,7 @@ JVM 可以针对无竞争、短暂竞争和持续竞争采用不同的锁表示�
 
 正确性只能依赖 JLS 的 monitor 规则，不能依赖对象头位数或某个版本的优化路径。
 
-## 6. 锁消除与锁粗化 {#lock-elision}
+## 6. 锁消除与锁粗化 {#锁消除与锁粗化}
 
 JIT 若证明锁对象不会逸出，可能消除对其他线程不可见的锁；也可能合并紧邻的重复获取，减少进入和退出成本。这些优化不是源码保证，代码仍应首先表达正确的同步边界。
 
@@ -90,7 +90,7 @@ JIT 若证明锁对象不会逸出，可能消除对其他线程不可见的锁�
 - 同步块和同步方法的表示。
 - 解锁到后续加锁的 happens-before。
 
-**相关内容**：[对象 monitor 与可重入](#monitor)至[HotSpot 的锁优化](#hotspot-optimizations)。
+**相关内容**：[对象 monitor 与可重入](#对象-monitor-与可重入)至[HotSpot 的锁优化](#hotspot-的锁优化)。
 
 <details>
 <summary>参考回答</summary>

@@ -17,7 +17,7 @@ Java 泛型让类、接口和方法用类型参数表达类型关系。面试重
 - 类型擦除发生在泛型检查之后，JVM 通常看不到具体类型参数。[卡](#type-erasure)
 - 擦除带来 `new T()`、`new T[]`、`instanceof List<String>` 和部分重载限制。
 
-## 2. 类型参数 {#type-parameters}
+## 2. 类型参数 {#类型参数}
 
 泛型类把同一个类型参数用于字段、参数和返回值：
 
@@ -48,7 +48,7 @@ static <T> List<T> wrap(T value) {
 
 传入 String 时返回 `List<String>`，传入 Integer 时返回 `List<Integer>`。如果参数与返回值之间不需要保持类型关系，直接使用具体类型或接口通常更清楚。
 
-### 2.1 类型上界 {#bounds}
+### 2.1 类型上界 {#类型上界}
 
 类型参数可以要求调用方提供某一类子类型：
 
@@ -60,7 +60,7 @@ static <T extends Number> double twice(T value) {
 
 `T extends Number` 让方法能够使用 Number 提供的能力。多个上界中，类上界必须写在第一个位置。
 
-## 3. 泛型的不变性 {#invariance}
+## 3. 泛型的不变性 {#泛型的不变性}
 
 下面的赋值会编译失败：
 
@@ -73,7 +73,7 @@ List<Integer> integers = List.of(1, 2);
 
 数组是协变的，因此 `Integer[]` 可以赋给 `Number[]`，但错误写入会在运行时抛出 `ArrayStoreException`。泛型选择在编译期阻止这类问题。
 
-## 4. 通配符 {#wildcards-section}
+## 4. 通配符 {#通配符}
 
 ### 4.1 `? extends T`
 
@@ -106,7 +106,7 @@ PECS（Producer Extends, Consumer Super）可以帮助记忆：参数主要提�
 
 `List<?>` 表示元素类型未知，可以接收 `List<String>` 等任意元素类型的列表，但不能写入具体值。`List<Object>` 明确要求元素类型就是 Object，可以写入各种对象，却不能接收 `List<String>`。
 
-## 5. 类型擦除 {#erasure}
+## 5. 类型擦除 {#类型擦除}
 
 编译器先检查泛型关系，再把多数类型参数擦除为上界，并在读取位置插入必要的类型转换。下面的错误仍然发生在编译期：
 
@@ -156,7 +156,7 @@ List<Integer> numbers = new ArrayList<>();
 - 编译期类型安全与代码复用。
 - 泛型类、接口和方法的适用位置。
 
-**相关内容**：[类型参数](#type-parameters)。
+**相关内容**：[类型参数](#类型参数)。
 
 <details>
 <summary>参考回答</summary>
@@ -180,7 +180,7 @@ List<Integer> numbers = new ArrayList<>();
 - 泛型检查与擦除的先后顺序。
 - 原始类型和反射怎样造成堆污染。
 
-**相关内容**：[类型擦除](#erasure)。
+**相关内容**：[类型擦除](#类型擦除)。
 
 <details>
 <summary>参考回答</summary>
@@ -204,7 +204,7 @@ List<Integer> numbers = new ArrayList<>();
 - 未知子类型和未知父类型带来的读写限制。
 - 能否从类型关系推导 PECS。
 
-**相关内容**：[通配符](#wildcards-section)。
+**相关内容**：[通配符](#通配符)。
 
 <details>
 <summary>参考回答</summary>

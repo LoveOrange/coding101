@@ -17,7 +17,7 @@ CAS 根据“当前值仍等于预期值”这一条件完成原子更新。它�
 - 需要感知中间变化时，用 `AtomicStampedReference` 或业务版本号把版本和值一起比较。
 - 使用 CAS 只说明没有锁持有者阻塞，高竞争下单个线程仍可能反复失败。
 
-## 2. CAS 的条件更新 {#compare-and-set}
+## 2. CAS 的条件更新 {#cas-的条件更新}
 
 ```java
 AtomicInteger balance = new AtomicInteger(100);
@@ -39,7 +39,7 @@ boolean withdraw(int amount) {
 
 CAS 解决的是一个变量上的条件更新。多个独立 CAS 不能自动组成事务。
 
-## 3. 重试函数与副作用 {#retry-side-effects}
+## 3. 重试函数与副作用 {#重试函数与副作用}
 
 ```java
 value.updateAndGet(current -> {
@@ -50,13 +50,13 @@ value.updateAndGet(current -> {
 
 原子类的更新函数可能在竞争失败后被重新调用。函数应当无副作用，并能根据输入重复计算。日志、扣款、网络请求等动作应放在 CAS 成功以后，并继续处理进程崩溃等业务一致性问题。
 
-## 4. ABA 问题 {#aba}
+## 4. ABA 问题 {#aba-问题}
 
 线程 A 读到引用 `A` 后暂停；线程 B 将状态从 `A` 改成 `B`，又改回原来的 `A`。线程 A 的 CAS 只比较当前引用时仍会成功，但“状态从未变化”的前提已经失效。
 
 ABA 是否有害取决于算法。普通计数从 10 变到 11 再回到 10，若操作只关心当前数值，可能没有问题；无锁栈节点被移除、复用并重新插入时，丢失历史可能破坏链表结构。
 
-## 5. 版本号与 `AtomicStampedReference` {#versioning}
+## 5. 版本号与 `AtomicStampedReference` {#版本号与-atomicstampedreference}
 
 ```java
 AtomicStampedReference<Node> head =
@@ -76,7 +76,7 @@ boolean updated = head.compareAndSet(
 
 版本可能溢出，节点复用和内存回收也有各自约束。无锁数据结构还需要证明所有可能交错；增加时间戳本身不足以完成证明。
 
-## 6. CAS 的进度保证 {#progress}
+## 6. CAS 的进度保证 {#cas-的进度保证}
 
 CAS 避免了等待锁所有者，但高竞争下多个线程会重复读取、写缓存行并失败。系统整体可能持续前进，某个线程却多次失败；是否具备 lock-free、wait-free 等进度性质取决于完整算法，而不是是否调用了 CAS。
 
@@ -109,7 +109,7 @@ CAS 是原子条件更新原语，常用于实现乐观并发控制。把所有 
 - 状态历史是否参与正确性。
 - 版本标记与节点复用边界。
 
-**相关内容**：[ABA 问题](#aba)和[版本号与 `AtomicStampedReference`](#versioning)。
+**相关内容**：[ABA 问题](#aba-问题)和[版本号与 `AtomicStampedReference`](#版本号与-atomicstampedreference)。
 
 <details>
 <summary>参考回答</summary>

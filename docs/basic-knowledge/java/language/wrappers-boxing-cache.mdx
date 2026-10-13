@@ -17,7 +17,7 @@ knowledge:
 - 包装类型之间比较数值用 `equals` 或先拆箱；`Integer` 与 `Long` 的 `equals` 总是返回 `false`。
 - 参数不允许缺失时用基本类型，需要表达“未提供”时才用包装类型。
 
-## 2. 基本类型与包装类型 {#primitives-wrappers}
+## 2. 基本类型与包装类型 {#基本类型与包装类型}
 
 Java 为八种基本类型提供了对应的包装类：
 
@@ -46,7 +46,7 @@ int compared = Integer.compare(10, 20);
 List<Integer> numbers = List.of(1, 2, 3);
 ```
 
-## 3. 自动装箱与拆箱 {#boxing}
+## 3. 自动装箱与拆箱 {#自动装箱与拆箱}
 
 自动装箱把基本类型表达式转换为对应包装类型，自动拆箱执行相反转换：
 
@@ -64,7 +64,7 @@ int value = boxed.intValue();
 
 “近似理解”强调语义，不要求编译器一定生成完全相同的源代码形态。装箱和拆箱也会出现在赋值、方法调用、算术运算和条件表达式中。
 
-### 3.1 算术运算中的拆箱 {#arithmetic-unboxing}
+### 3.1 算术运算中的拆箱 {#算术运算中的拆箱}
 
 ```java
 Integer count = 10;
@@ -75,7 +75,7 @@ int next = count + 1;
 
 循环和大量数值运算如果不需要对象语义，优先使用基本类型。无意的装箱会增加对象或引用处理成本，集合中的包装元素也会带来额外内存开销。
 
-### 3.2 `null` 拆箱 {#null-unboxing}
+### 3.2 `null` 拆箱 {#null-拆箱}
 
 ```java
 Integer count = null;
@@ -97,7 +97,7 @@ Boolean enabled = null;
 
 如果三态值确实存在，应当明确处理 `null`；如果业务只有真和假，使用 `boolean` 可以让无效状态更早消失。
 
-## 4. 包装对象缓存 {#cache}
+## 4. 包装对象缓存 {#包装对象缓存}
 
 部分基本值装箱后允许复用已有包装对象。Java 语言规范保证，对特定常量表达式进行装箱时，常见小值会得到相同引用，其中整数范围包括 `-128` 到 `127`：
 
@@ -120,7 +120,7 @@ System.out.println(first.equals(second)); // true
 
 实现可以缓存更多值，但程序不能依赖具体 JVM 参数或缓存范围。包装值比较使用 `equals`，数值排序使用 `compare` 或先明确处理空值后拆箱。
 
-### 4.1 `==` 比较 {#equality}
+### 4.1 `==` 比较 {#-比较}
 
 两个包装类型引用使用 `==` 时，比较对象身份：
 
@@ -142,7 +142,7 @@ System.out.println(boxed == primitive); // true
 
 如果 `boxed` 为 `null`，第二种比较会在拆箱时抛出 `NullPointerException`。同一个 `==` 表达式因为静态类型不同而具有不同语义，这也是包装类型判断容易出错的原因。
 
-## 5. 使用场景 {#use-cases}
+## 5. 使用场景 {#使用场景}
 
 ### 5.1 泛型与集合
 
@@ -206,7 +206,7 @@ System.out.println(Integer.valueOf(1).equals(Long.valueOf(1))); // false
 - 哪些赋值和运算会隐式触发转换。
 - 缓存身份、空值拆箱和额外对象成本。
 
-**相关内容**：[自动装箱与拆箱](#boxing)、[包装对象缓存](#cache)。
+**相关内容**：[自动装箱与拆箱](#自动装箱与拆箱)、[包装对象缓存](#包装对象缓存)。
 
 <details>
 <summary>参考回答</summary>
@@ -231,7 +231,7 @@ System.out.println(Integer.valueOf(1).equals(Long.valueOf(1))); // false
 - Java 规范保证的范围与实现可扩展的范围。
 - 为什么业务判断不应依赖缓存。
 
-**相关内容**：[包装对象缓存](#cache)。
+**相关内容**：[包装对象缓存](#包装对象缓存)。
 
 <details>
 <summary>参考回答</summary>

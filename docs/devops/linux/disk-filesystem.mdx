@@ -17,7 +17,7 @@ knowledge:
 - 删除只是去掉目录项、减少 inode 的链接计数；链接数和打开计数都为 0 时才真正释放数据块。所以清理正在写的日志应该用 `> file` 截断，而不是 `rm`。
 - buffer 缓存块设备的数据（文件系统元数据、直接读写块设备），cache（页缓存）缓存文件内容。两者都可以回收，判断内存是否够用看 `available`。[卡](#buffer-vs-cache)
 
-## 2. inode 与文件系统结构 {#inode-structure}
+## 2. inode 与文件系统结构 {#inode-与文件系统结构}
 
 以 ext4 为例，文件系统划分为若干块组，包含超级块（文件系统整体信息）、块位图和 inode 位图（记录哪些块和 inode 已使用）、inode 表和数据块。
 
@@ -32,7 +32,7 @@ knowledge:
 - inode 数量在创建文件系统时确定（ext4），每个文件占用一个。大量小文件（缓存碎片、会话文件、邮件队列）会在空间未满时耗尽 inode。
 - `ls -i` 查看 inode 号，`stat file` 查看 inode 的全部信息，`df -i` 查看 inode 使用率。
 
-## 3. 磁盘满的排查 {#disk-full-steps}
+## 3. 磁盘满的排查 {#磁盘满的排查}
 
 1. **确认是哪种满**：`df -h` 看空间，`df -i` 看 inode，找到使用率高的挂载点。
 2. **找到大目录和大文件**：
@@ -47,7 +47,7 @@ knowledge:
 4. **处理**：日志按策略压缩或删除，配置 logrotate；正在被写入的文件用 `> file` 或 `truncate -s 0` 截断；临时文件和过期缓存清理；需要时扩容。
 5. **防止再次发生**：磁盘使用率和增长速度告警、日志轮转与保留周期、应用写盘配额。
 
-## 4. 空间不释放与 df、du 不一致 {#space-not-released-causes}
+## 4. 空间不释放与 df、du 不一致 {#空间不释放与-dfdu-不一致}
 
 | 现象 | 原因 | 处理 |
 | --- | --- | --- |
@@ -56,7 +56,7 @@ knowledge:
 | `du` 显示目录很大，`ls` 看着是空的 | 隐藏文件（以 `.` 开头） | `ls -la` 或 `du -sh .[!.]*` |
 | 空间未满却写不进去 | inode 用完；文件系统只读（磁盘错误后被重新挂载为只读）；预留块只给 root 使用 | `df -i`；`dmesg` 查看错误；`mount` 查看挂载选项 |
 
-## 5. buffer 与 cache {#buffer-cache}
+## 5. buffer 与 cache {#buffer-与-cache}
 
 `free` 输出中的 `buff/cache` 是内核用空闲内存做的缓存：
 
@@ -81,7 +81,7 @@ knowledge:
 - 目录项、inode、数据块的分工；文件名不在 inode 中。
 - inode 数量有限，以及由此引出的 inode 耗尽和硬链接。
 
-**相关内容**：[inode 与文件系统结构](#inode-structure)。
+**相关内容**：[inode 与文件系统结构](#inode-与文件系统结构)。
 
 <details>
 <summary>参考回答</summary>
@@ -109,7 +109,7 @@ knowledge:
 - 区分空间满和 inode 满。
 - 用 `du`、`find` 逐层定位；安全地清理正在写入的文件；事后的预防。
 
-**相关内容**：[磁盘满的排查](#disk-full-steps)。
+**相关内容**：[磁盘满的排查](#磁盘满的排查)。
 
 <details>
 <summary>参考回答</summary>
@@ -135,7 +135,7 @@ knowledge:
 - 删除操作只减少链接计数，进程打开的文件不会释放。
 - df 与 du 的统计方式不同；挂载点遮挡和隐藏文件。
 
-**相关内容**：[空间不释放与 df、du 不一致](#space-not-released-causes)、[inode 与文件系统结构](#inode-structure)。
+**相关内容**：[空间不释放与 df、du 不一致](#空间不释放与-dfdu-不一致)、[inode 与文件系统结构](#inode-与文件系统结构)。
 
 <details>
 <summary>参考回答</summary>
@@ -162,7 +162,7 @@ knowledge:
 - 页缓存缓存文件内容，buffer 缓存块设备数据。
 - 两者可回收，判断内存是否紧张看 `available`。
 
-**相关内容**：[buffer 与 cache](#buffer-cache)。
+**相关内容**：[buffer 与 cache](#buffer-与-cache)。
 
 <details>
 <summary>参考回答</summary>

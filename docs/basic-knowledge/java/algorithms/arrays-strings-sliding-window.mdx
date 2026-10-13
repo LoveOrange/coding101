@@ -17,7 +17,7 @@ knowledge:
 - 数组含负数时求和窗口失去单调性，需要前缀和或单调队列。
 - Java `String` 按 UTF-16 code unit 索引，部分字符占两个 `char`。
 
-## 2. 连续区间 {#contiguous}
+## 2. 连续区间 {#连续区间}
 
 滑动窗口处理的是连续片段：
 
@@ -30,7 +30,7 @@ knowledge:
 
 还要判断窗口条件是否具有单调性。正数数组中，右边界扩张会让和不减，左边界收缩会让和不增；包含负数时这个关系消失，简单双指针可能漏解。
 
-## 3. 半开区间与不变量 {#invariant}
+## 3. 半开区间与不变量 {#半开区间与不变量}
 
 推荐统一使用 `[left, right)`：
 
@@ -57,7 +57,7 @@ while (right < values.length) {
 
 这里维护的不变量是：退出内层循环后，当前窗口满足约束。答案是在窗口恢复有效后更新，还是在首次满足条件时更新，取决于是求最长有效区间还是最短覆盖区间。
 
-## 4. 固定窗口 {#fixed-window}
+## 4. 固定窗口 {#固定窗口}
 
 计算每个长度 k 区间的和：
 
@@ -79,7 +79,7 @@ for (int right = 0; right < values.length; right++) {
 
 每次只加入新元素、移除离开的元素，不重新扫描整个窗口。时间 O(n)，额外空间 O(1)。使用 long 保存和，避免 `int` 累加溢出。
 
-## 5. 可变窗口 {#variable-window}
+## 5. 可变窗口 {#可变窗口}
 
 可以记录字符最近出现的位置：
 
@@ -111,7 +111,7 @@ static int longestUniqueSubstring(String value) {
 
 两个边界都只向前，哈希操作平均 O(1)，所以总时间平均 O(n)，空间取决于字符种类。
 
-## 6. Java String 的索引单位 {#utf16}
+## 6. Java String 的索引单位 {#java-string-的索引单位}
 
 `String.length()` 和 `charAt` 使用 UTF-16 code unit。部分 Unicode 字符由两个 char 组成：
 
@@ -125,7 +125,7 @@ System.out.println(value.codePointCount(0, value.length())); // 3
 
 不要为了面试题复杂化已明确的字符集；也不要在业务国际化代码里默认一个 char 就是一个字符。
 
-## 7. 其他线性方法 {#other-techniques}
+## 7. 其他线性方法 {#其他线性方法}
 
 ### 7.1 相向双指针
 
@@ -150,7 +150,7 @@ long rangeSum = prefix[right] - prefix[left];
 
 预处理 O(n)，每次半开区间 `[left, right)` 查询 O(1)。包含负数且寻找特定区间和时，前缀和加哈希往往比简单滑动窗口合适。
 
-## 8. 正确性证明 {#proof}
+## 8. 正确性证明 {#正确性证明}
 
 需要说明两点：
 
@@ -194,7 +194,7 @@ right 最多前进 n 次，left 在整段算法中也最多前进 n 次。虽然
 - 最近位置怎样让左边界直接跳转且不倒退。
 - 字符集与 Java char/code point 边界。
 
-**相关内容**：[半开区间与不变量](#invariant)、[可变窗口](#variable-window)、[Java String 的索引单位](#utf16)。
+**相关内容**：[半开区间与不变量](#半开区间与不变量)、[可变窗口](#可变窗口)、[Java String 的索引单位](#java-string-的索引单位)。
 
 <details>
 <summary>参考回答</summary>
@@ -219,7 +219,7 @@ right 和 left 各最多移动 n 次，因此平均时间 O(n)，哈希表空间
 - 扩张和收缩能否单调排除候选。
 - 不满足单调性时怎样切换到前缀和等方法。
 
-**相关内容**：[连续区间](#contiguous)、[正确性证明](#proof)。
+**相关内容**：[连续区间](#连续区间)、[正确性证明](#正确性证明)。
 
 <details>
 <summary>参考回答</summary>

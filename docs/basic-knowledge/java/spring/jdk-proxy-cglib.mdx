@@ -17,7 +17,7 @@ Spring AOP 可以生成实现接口的 JDK 动态代理，也可以生成目标�
 - 两种代理都无法拦截目标对象内部的 `this` 调用。
 - 代理调用开销通常远小于业务和 I/O，选择依据是类型契约和可拦截的方法。
 
-## 2. JDK 动态代理 {#jdk-proxy}
+## 2. JDK 动态代理 {#jdk-动态代理}
 
 ```java
 PaymentService target = new DefaultPaymentService();
@@ -42,7 +42,7 @@ CGLIB 代理通过继承目标类并覆盖可重写方法进行拦截。它可�
 
 Spring 将 CGLIB 重新打包在 `spring-core` 中，应用通常不需要单独添加 cglib 依赖。
 
-## 4. Spring 的默认选择 {#defaults}
+## 4. Spring 的默认选择 {#spring-的默认选择}
 
 Spring Framework 的代理创建可根据目标是否具有接口选择类型，也可以通过 `proxyTargetClass` 强制类代理。Spring Boot 的配置可能设置全局默认；Spring Framework 7 还允许针对特定 Bean 指定代理类型。
 
@@ -56,7 +56,7 @@ AopUtils.isCglibProxy(bean);
 
 不要只根据“类实现了接口”猜测最终结果。
 
-## 5. 自调用 {#self-invocation}
+## 5. 自调用 {#自调用}
 
 ```java
 public void checkout() {
@@ -71,13 +71,13 @@ public void reserve() {}
 
 优先把事务边界移动到另一个 Bean 或上层编排。通过当前代理、自注入来绕行会增加隐藏耦合。
 
-## 6. 代理类型与注解匹配 {#types}
+## 6. 代理类型与注解匹配 {#代理类型与注解匹配}
 
 JDK 代理暴露接口，基于具体类获取 Bean 或只在实现方法上读取注解的框架逻辑可能产生差异。Spring 自身会处理许多桥接和目标方法解析，但自定义反射代码要明确检查代理类型、目标类和最具体方法。
 
 类代理对构造、可见性和 final 的约束也会在 Kotlin 等默认 final 的语言中更明显。
 
-## 7. 性能 {#performance}
+## 7. 性能 {#性能}
 
 现代 JDK、Spring 和 CGLIB 实现持续变化，代理调用开销通常小于数据库、网络和业务逻辑。先按类型契约和拦截能力选择；真的处在高频短方法路径时，再用当前运行版本做 JMH 与 profile。
 
@@ -108,7 +108,7 @@ JDK 代理暴露接口，基于具体类获取 Bean 或只在实现方法上读�
 - final、private 和自调用限制。
 - 默认策略应从运行配置确认。
 
-**相关内容**：[JDK 动态代理](#jdk-proxy)至[自调用](#self-invocation)。
+**相关内容**：[JDK 动态代理](#jdk-动态代理)至[自调用](#自调用)。
 
 <details>
 <summary>参考回答</summary>

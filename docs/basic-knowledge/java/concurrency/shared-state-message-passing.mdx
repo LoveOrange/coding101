@@ -17,7 +17,7 @@ knowledge:
 - 队列必须有界，并明确满队列时阻塞、拒绝还是降级。
 - 单个所有者可能成为热点，可以按 key 分片，同一 key 稳定路由到同一分片。
 
-## 2. 共享对象的同步范围 {#shared-objects}
+## 2. 共享对象的同步范围 {#共享对象的同步范围}
 
 ```java
 public final class OrderBook {
@@ -46,7 +46,7 @@ void eventLoop() throws InterruptedException {
 
 只要 `orderBook` 不从所有者线程逸出，其内部操作不需要为多个调用者互斥。
 
-## 3. 消息与状态所有权 {#message-ownership}
+## 3. 消息与状态所有权 {#消息与状态所有权}
 
 消息最好是不可变值，并包含完成一次状态转换所需的信息：
 
@@ -58,7 +58,7 @@ record CancelOrder(long orderId, String reason) implements Command {}
 
 JUC 队列提供内存一致性保证：发送线程把对象放入队列之前的动作，对消费线程取出该对象后的动作可见。
 
-## 4. 结果通道 {#reply-channel}
+## 4. 结果通道 {#结果通道}
 
 需要返回值时，可以让消息携带 `CompletableFuture<Result>`：
 
@@ -68,13 +68,13 @@ record CreateOrder(Order order, CompletableFuture<Long> reply) implements Comman
 
 所有者完成处理后调用 `reply.complete(id)`。调用方应设置截止时间并处理异常；否则消息已经排队、调用方却无限等待，故障会从消费者扩散出去。
 
-## 5. 有界队列与过载 {#bounded-queue}
+## 5. 有界队列与过载 {#有界队列与过载}
 
 消息传递没有消灭容量限制。消费者每秒处理 1,000 条、生产者持续发送 2,000 条时，积压必然增长。
 
 有界队列可以在容量耗尽时选择阻塞、超时、拒绝、合并或丢弃。选择取决于业务语义：订单命令不能静默丢弃，重复指标可能允许合并，刷新通知可能只保留最新一次。
 
-## 6. 共享状态的适用场景 {#when-shared-state}
+## 6. 共享状态的适用场景 {#共享状态的适用场景}
 
 消息传递会引入排队延迟、所有者热点和异步错误处理。下面的情况未必需要它：
 
@@ -110,7 +110,7 @@ record CreateOrder(Order order, CompletableFuture<Long> reply) implements Comman
 - 消息交接的内存语义。
 - 队列容量与失败策略。
 
-**相关内容**：[共享对象的同步范围](#shared-objects)至[有界队列与过载](#bounded-queue)。
+**相关内容**：[共享对象的同步范围](#共享对象的同步范围)至[有界队列与过载](#有界队列与过载)。
 
 <details>
 <summary>参考回答</summary>

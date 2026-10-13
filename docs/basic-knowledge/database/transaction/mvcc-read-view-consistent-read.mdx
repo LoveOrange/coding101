@@ -89,7 +89,7 @@ RC/RR 下普通 `SELECT` 一般是快照读，从版本链中寻找可见版本�
 
 批处理、导出和管理脚本应设置运行时限，并监控活跃事务年龄与 undo 历史。允许跨批次看到新数据时可以分批提交；要求全量导出来自同一快照时，分批提交会破坏该保证，应控制快照持续时间与负载，或使用专门的备份方案。不要让一个无人关注的会话长期保持事务打开。
 
-## 9. 双会话可见性推演 {#visibility-example}
+## 9. 双会话可见性推演 {#双会话可见性推演}
 
 先创建独立的练习表：
 
@@ -163,7 +163,7 @@ Read Committed 通常每条一致性读语句创建新快照，所以能看到�
 - RR 快照建立时间。
 - RC 与 WITH CONSISTENT SNAPSHOT 的区别。
 
-**相关内容**：[可重复读复用第一次一致性读的快照](#4-可重复读复用第一次一致性读的快照)、[双会话可见性推演](#visibility-example)。
+**相关内容**：[可重复读复用第一次一致性读的快照](#4-可重复读复用第一次一致性读的快照)、[双会话可见性推演](#双会话可见性推演)。
 
 <details>
 <summary>参考回答</summary>
@@ -183,7 +183,7 @@ Read Committed 通常每条一致性读语句创建新快照，所以能看到�
 - 快照可见性与当前读。
 - 锁等待、自己的写入和幻读边界。
 
-**相关内容**：[快照读和当前读服务不同目的](#5-快照读和当前读服务不同目的)、[双会话可见性推演](#visibility-example)。
+**相关内容**：[快照读和当前读服务不同目的](#5-快照读和当前读服务不同目的)、[双会话可见性推演](#双会话可见性推演)。
 
 <details>
 <summary>参考回答</summary>
@@ -212,7 +212,7 @@ Read Committed 通常每条一致性读语句创建新快照，所以能看到�
 
 </details>
 
-## 12. 参考资料 {#references}
+## 12. 参考资料 {#参考资料}
 
 - [MySQL 8.4：Consistent Nonlocking Reads](https://dev.mysql.com/doc/refman/8.4/en/innodb-consistent-read.html)
 - [MySQL 8.4：Transaction Isolation Levels](https://dev.mysql.com/doc/refman/8.4/en/innodb-transaction-isolation-levels.html)

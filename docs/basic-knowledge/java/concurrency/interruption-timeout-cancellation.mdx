@@ -16,7 +16,7 @@ knowledge:
 - `Future.cancel(true)` 只会尝试中断执行线程，忽略中断或阻塞在不可中断调用上的任务仍会继续执行。
 - 正常完成、异常、中断和超时都要释放已经取得的资源，完成与取消同时发生时以 Future 的最终状态为准。[卡](#timeout-cancellable-task)
 
-## 2. 截止时间与剩余预算 {#deadline}
+## 2. 截止时间与剩余预算 {#截止时间与剩余预算}
 
 ```java
 long deadline = System.nanoTime() + timeout.toNanos();
@@ -34,7 +34,7 @@ Result execute() throws InterruptedException, TimeoutException {
 
 持续时间使用 `System.nanoTime()`，它适合计算相对间隔，不受墙上时钟校准影响。
 
-## 3. 中断与可中断等待 {#interruption}
+## 3. 中断与可中断等待 {#中断与可中断等待}
 
 `interrupt()` 设置中断状态；`sleep`、`wait`、`join`、许多锁和队列方法会通过 `InterruptedException` 提前返回。任务要么继续抛出，要么恢复状态后退出自己的边界：
 
@@ -47,13 +47,13 @@ catch (InterruptedException exception) {
 
 恢复状态以后不要继续长时间执行普通业务，否则上层仍无法完成取消。
 
-## 4. `Future.cancel(true)` 的效果 {#future-cancel}
+## 4. `Future.cancel(true)` 的效果 {#futurecanceltrue-的效果}
 
 `cancel(true)` 在任务尚未开始时可以阻止执行；任务正在运行时，会尝试中断执行线程。若任务忽略中断、卡在不响应中断的外部调用，取消状态并不能强行终止底层副作用。
 
 因此，数据库和网络客户端仍需配置各自的连接、读取和请求超时。对已经发送出去的扣款等副作用，还要通过幂等键、状态查询或补偿处理。
 
-## 5. 资源清理 {#cleanup}
+## 5. 资源清理 {#资源清理}
 
 ```java
 Permit permit = pool.acquire();
@@ -68,7 +68,7 @@ try {
 
 若操作不可安全中断，可以先记录取消请求，在下一个一致性边界退出。协议应明确最迟响应时间，而不是假装任何代码都能立即停止。
 
-## 6. 完成与取消的竞争 {#completion-race}
+## 6. 完成与取消的竞争 {#完成与取消的竞争}
 
 任务可能在调用 `cancel` 的同一时刻完成。调用方应依据 Future 最终状态处理，而不是假定自己发出取消就一定胜出。回调、指标和业务状态更新也应能够去重。
 
@@ -101,7 +101,7 @@ try {
 - 中断传播和 Future 取消边界。
 - 资源清理与外部副作用。
 
-**相关内容**：[截止时间与剩余预算](#deadline)至[完成与取消的竞争](#completion-race)。
+**相关内容**：[截止时间与剩余预算](#截止时间与剩余预算)至[完成与取消的竞争](#完成与取消的竞争)。
 
 <details>
 <summary>参考回答</summary>

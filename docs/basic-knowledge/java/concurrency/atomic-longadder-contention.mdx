@@ -16,7 +16,7 @@ knowledge:
 - 大量线程更新同一个原子变量时，CAS 失败重试和缓存行迁移会限制吞吐。
 - `LongAdder` 把更新分散到多个单元，适合高并发统计；`sum()` 在并发更新时得到的是近似值，不能用于发号或精确阈值判断。[卡](#atomiclong-vs-longadder)
 
-## 2. 原子类与 CAS 循环 {#atomic-cas}
+## 2. 原子类与 CAS 循环 {#原子类与-cas-循环}
 
 ```java
 private final AtomicLong sequence = new AtomicLong();
@@ -36,13 +36,13 @@ if (stock.get() > 0) {
 
 上面的检查和扣减仍是两次操作。应使用返回失败的 CAS 循环，或者由锁覆盖完整条件。
 
-## 3. 单变量的竞争成本 {#contention}
+## 3. 单变量的竞争成本 {#单变量的竞争成本}
 
 很多核心同时更新同一个 `AtomicLong` 时，会争夺同一缓存行。CAS 失败的线程反复重试，缓存所有权频繁迁移，吞吐可能很快到达上限。
 
 竞争成本不能只从 Java 线程是否阻塞判断：没有 park 不代表没有等待，CPU 可能消耗在自旋、失败重试和缓存一致性流量上。
 
-## 4. `LongAdder` 的分段累加 {#longadder}
+## 4. `LongAdder` 的分段累加 {#longadder-的分段累加}
 
 ```java
 private final LongAdder requests = new LongAdder();
@@ -58,7 +58,7 @@ long observedRequests() {
 
 低竞争时更新基础值；发生竞争后，内部可以扩展多组变量，让不同线程更新不同位置。`sum()` 再将这些位置合并，因此高竞争计数的预期吞吐通常更好，代价是更多内存和读取成本。
 
-## 5. `sum()` 的读取语义 {#sum-semantics}
+## 5. `sum()` 的读取语义 {#sum-的读取语义}
 
 `sum()` 遍历各个分量时，其他线程仍可更新。返回值适合指标、频次和统计，不适合：
 
@@ -69,7 +69,7 @@ long observedRequests() {
 
 需要这些语义时，应使用 `AtomicLong`、锁，或将事件交给单一所有者。
 
-## 6. 用 `AtomicReference` 更新多字段状态 {#atomic-reference}
+## 6. 用 `AtomicReference` 更新多字段状态 {#用-atomicreference-更新多字段状态}
 
 ```java
 record State(int available, long version) {}
@@ -107,7 +107,7 @@ AtomicReference<State> state =
 - 精确原子值和统计值的差别。
 - 竞争、读频率和空间成本。
 
-**相关内容**：[单变量的竞争成本](#contention)至[`sum()` 的读取语义](#sum-semantics)。
+**相关内容**：[单变量的竞争成本](#单变量的竞争成本)至[`sum()` 的读取语义](#sum-的读取语义)。
 
 <details>
 <summary>参考回答</summary>

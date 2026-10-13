@@ -17,7 +17,7 @@ knowledge:
 - `groupingBy` 配合下游 Collector 做分组统计；需要固定顺序时显式指定 `LinkedHashMap` 或 `TreeMap`。
 - 并行归约的合并操作必须满足结合律。
 
-## 2. 可变归约 {#mutable-reduction}
+## 2. 可变归约 {#可变归约}
 
 把活跃用户收集到可变列表，可以写成：
 
@@ -35,7 +35,7 @@ List<User> activeUsers = users.stream()
 
 `collect` 的结果容器会在流水线内部修改，调用方不需要维护外部共享列表。并行执行时，每个分区可以先建立自己的容器，再按 Collector 的规则合并。
 
-### 2.1 collect 与 reduce {#collect-reduce}
+### 2.1 collect 与 reduce {#collect-与-reduce}
 
 `reduce` 更适合把元素合成一个不可变值：
 
@@ -64,7 +64,7 @@ List<User> result = users.parallelStream().reduce(
 
 `reduce` 的 identity 和累积函数需要满足归约契约；把可变容器当成共享 identity 会破坏它。收集可变结果时使用 `collect`。
 
-## 3. Collector 的组成 {#collector-parts}
+## 3. Collector 的组成 {#collector-的组成}
 
 一个 `Collector<T, A, R>` 有三个类型参数：
 
@@ -101,7 +101,7 @@ String names = users.stream()
 
 串行流中 `combiner` 可能不会执行，但它仍然是 Collector 契约的一部分。缺少正确的合并规则，自定义 Collector 一旦并行就会丢数据或产生错误顺序。
 
-## 4. 收集到 List 与 Set {#to-list-set}
+## 4. 收集到 List 与 Set {#收集到-list-与-set}
 
 常用写法包括：
 
@@ -129,7 +129,7 @@ LinkedHashSet<String> orderedRoles = users.stream()
 
 `Stream.toList()` 明确返回不可修改列表；它与 `Collectors.toList()` 的契约不同。
 
-## 5. toMap 与键冲突 {#to-map}
+## 5. toMap 与键冲突 {#tomap-与键冲突}
 
 如果键确定唯一，可以使用两个参数的 `toMap`：
 
@@ -165,7 +165,7 @@ Map<String, User> ordered = users.stream()
 
 合并函数不是为了消除异常而随便补上的参数。它定义了数据冲突的处理规则，应该能解释为什么保留左值、右值或合并后的新值。
 
-## 6. groupingBy 与下游 Collector {#grouping-by}
+## 6. groupingBy 与下游 Collector {#groupingby-与下游-collector}
 
 按部门分组会得到 `Map<Department, List<User>>`：
 
@@ -203,7 +203,7 @@ Map<Department, Set<String>> roleNames = users.stream()
 - `maxBy`、`minBy`：查找组内极值。
 - `collectingAndThen`：在下游结果完成后再转换。
 
-### 6.1 partitioningBy {#partitioning-by}
+### 6.1 partitioningBy {#partitioningby}
 
 ```java
 Map<Boolean, List<User>> partition = users.stream()
@@ -212,7 +212,7 @@ Map<Boolean, List<User>> partition = users.stream()
 
 `partitioningBy` 的键固定为 `true` 和 `false`，适合二元条件。需要按多个业务键分类时使用 `groupingBy`。
 
-## 7. 结合律 {#associativity}
+## 7. 结合律 {#结合律}
 
 并行归约会改变分组和合并顺序。合并操作必须满足结合律：
 
@@ -279,7 +279,7 @@ Map<Department, List<User>> ordered = users.stream()
 - 重复键为什么不是单纯的语法问题。
 - 结果 Map 的顺序和实现是否需要显式指定。
 
-**相关内容**：[toMap 与键冲突](#to-map)。
+**相关内容**：[toMap 与键冲突](#tomap-与键冲突)。
 
 <details>
 <summary>参考回答</summary>
@@ -304,7 +304,7 @@ Map<Department, List<User>> ordered = users.stream()
 - identity、累积函数和组合函数需要满足的契约。
 - 串行代码为什么可能在并行后暴露错误。
 
-**相关内容**：[可变归约](#mutable-reduction)、[结合律](#associativity)。
+**相关内容**：[可变归约](#可变归约)、[结合律](#结合律)。
 
 <details>
 <summary>参考回答</summary>

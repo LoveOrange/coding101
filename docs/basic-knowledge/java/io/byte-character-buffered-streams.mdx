@@ -19,11 +19,11 @@ knowledge:
 
 :::note 资源关闭
 
-流应由创建或明确接管所有权的一方关闭，并优先使用 try-with-resources。逆序关闭、受抑制异常和资源所有权见 [Java 异常：try-with-resources 与资源关闭](../language/exceptions-error-boundaries.mdx#resource-closing)。
+流应由创建或明确接管所有权的一方关闭，并优先使用 try-with-resources。逆序关闭、受抑制异常和资源所有权见 [Java 异常：try-with-resources 与资源关闭](../language/exceptions-error-boundaries.mdx#try-with-resources-与资源关闭)。
 
 :::
 
-## 2. 字节流 {#byte-streams}
+## 2. 字节流 {#字节流}
 
 `InputStream` 和 `OutputStream` 是阻塞式字节流的基础抽象。图片、压缩包、加密数据和未知格式文件都应按字节处理：
 
@@ -41,7 +41,7 @@ try (
 
 字节流不解释内容。值 `0x41` 是字符 `A`、图片数据还是压缩格式的一部分，由上层协议决定。
 
-### 2.1 部分读取 {#partial-reads}
+### 2.1 部分读取 {#部分读取}
 
 一次 `read(byte[])` 不保证填满整个数组，只返回本次实际读取的字节数。返回 `-1` 表示到达流末尾：
 
@@ -58,7 +58,7 @@ while ((count = input.read(buffer)) != -1) {
 
 `available()` 只表示当前无需阻塞即可读取的估计字节数，不是整个流的总长度。网络输入尤其不能用它判断消息是否已经完整到达。
 
-## 3. 字符流 {#char-streams}
+## 3. 字符流 {#字符流}
 
 `Reader` 和 `Writer` 处理字符序列。字符流需要使用字符集，把外部字节解码为字符，或把字符编码为字节：
 
@@ -82,7 +82,7 @@ try (BufferedWriter writer = Files.newBufferedWriter(path, StandardCharsets.UTF_
 
 如果读写两端使用不同字符集，同一组字节会被解释成错误字符。协议、文件格式和数据库连接都应明确字符集，不依赖进程默认值。
 
-### 3.1 InputStreamReader 与 OutputStreamWriter {#bridges}
+### 3.1 InputStreamReader 与 OutputStreamWriter {#inputstreamreader-与-outputstreamwriter}
 
 已有字节流时，可以显式增加解码层：
 
@@ -104,11 +104,11 @@ Writer writer = new OutputStreamWriter(
 
 转换发生在字节与字符的边界，不存在把 `Reader` “倒过来变成输入字节流”的通用转换。已经解码成字符后，如果再次需要字节，必须选择字符集重新编码。
 
-### 3.2 char 与用户可见字符 {#utf16}
+### 3.2 char 与用户可见字符 {#char-与用户可见字符}
 
 Java 字符流以 UTF-16 代码单元工作。部分 Unicode 码点需要两个 `char` 表示，组合字符还可能由多个码点组成。按语言学意义处理字符数量、截断或光标位置时，不能简单按 `char` 索引。
 
-## 4. 缓冲流 {#buffering}
+## 4. 缓冲流 {#缓冲流}
 
 逐字节调用底层流，会产生大量方法调用，并可能频繁触发底层 I/O。缓冲流一次读取较大数据块放入内存，再满足后续小读取：
 
@@ -125,13 +125,13 @@ try (
 
 缓冲带来的收益主要是减少小粒度调用和系统边界往返，不代表每个包装层都会让 I/O 更快。`Files.copy`、`transferTo` 和部分底层流已经按块处理，继续重复包装需要根据调用方式判断。
 
-### 4.1 缓冲区大小 {#buffer-size}
+### 4.1 缓冲区大小 {#缓冲区大小}
 
 更大的缓冲可能减少调用次数，但也会占用更多内存、增加缓存压力，并让每个连接持有更大的常驻空间。服务端如果同时维护数万连接，单连接缓冲大小会直接放大总体内存。
 
 先使用 API 默认值。只有性能分析确认 I/O 调用粒度是瓶颈时，再根据数据大小、并发连接数和延迟要求调整。
 
-## 5. 装饰器组合 {#decorators}
+## 5. 装饰器组合 {#装饰器组合}
 
 Java I/O 经常通过包装组合能力：
 
@@ -151,7 +151,7 @@ try (
 
 包装顺序必须与数据格式一致。写出时如果先编码再压缩，读取时就要先解压再解码。关闭最外层流通常会沿包装链关闭底层资源，但仍要查阅具体 API 的关闭契约。
 
-## 6. flush 与持久化 {#flush}
+## 6. flush 与持久化 {#flush-与持久化}
 
 `flush()` 要求把 Java 层已经缓冲的输出继续交给底层流：
 
@@ -166,7 +166,7 @@ writer.flush();
 
 频繁 `flush` 会削弱缓冲效果。应由消息边界、交互延迟或持久化协议决定，而不是每写几个字节就调用一次。
 
-## 7. API 选择 {#selection}
+## 7. API 选择 {#api-选择}
 
 1. **二进制数据**：使用 `InputStream`、`OutputStream` 或字节 `Channel`。
 2. **文本数据**：使用 `Reader`、`Writer` 或 `Files` 的带字符集方法。
@@ -213,7 +213,7 @@ writer.flush();
 - `InputStreamReader` 和 `OutputStreamWriter` 的作用。
 - 缓冲解决了什么调用粒度问题。
 
-**相关内容**：[字节流](#byte-streams)、[字符流](#char-streams)、[缓冲流](#buffering)。
+**相关内容**：[字节流](#字节流)、[字符流](#字符流)、[缓冲流](#缓冲流)。
 
 <details>
 <summary>参考回答</summary>
@@ -238,7 +238,7 @@ writer.flush();
 - `-1` 与有效字节值怎样区分。
 - 最后一个数据块怎样避免写入旧内容。
 
-**相关内容**：[部分读取](#partial-reads)。
+**相关内容**：[部分读取](#部分读取)。
 
 <details>
 <summary>参考回答</summary>

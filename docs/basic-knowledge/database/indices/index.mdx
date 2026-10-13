@@ -123,7 +123,7 @@ WHERE status = 1
 
 索引应服务一组明确访问路径。查询模式变化后，旧索引也要重新评估和清理。
 
-## 9. 聚簇键的选择与维护代价 {#clustered-key-choice}
+## 9. 聚簇键的选择与维护代价 {#聚簇键的选择与维护代价}
 
 InnoDB 优先使用显式主键作为聚簇索引；没有主键时选择第一个所有列都为 NOT NULL 的 UNIQUE 索引；再没有就生成隐藏的行 ID 和聚簇索引。所有二级索引都携带聚簇键，因此显式、稳定、较短的主键便于控制索引成本。
 
@@ -131,7 +131,7 @@ InnoDB 优先使用显式主键作为聚簇索引；没有主键时选择第一�
 
 MySQL 的 UNIQUE 索引允许多个 NULL，PRIMARY KEY 不允许 NULL。普通索引不能代替唯一约束来阻止重复写入；“应用先查不存在再插入”仍可能发生并发竞争。
 
-## 10. 执行计划的判断层次 {#plan-evidence}
+## 10. 执行计划的判断层次 {#执行计划的判断层次}
 
 | 证据 | 能说明什么 | 不能直接推出什么 |
 | --- | --- | --- |
@@ -171,7 +171,7 @@ MySQL 的 UNIQUE 索引允许多个 NULL，PRIMARY KEY 不允许 NULL。普通�
 - 联合索引、最左前缀、回表与覆盖查询。
 - 成本估算、数据分布和执行计划验证。
 
-**相关内容**：[InnoDB 常规索引使用 B+ 树](#2-innodb-常规索引使用-b-树)、[优化器按成本选择访问路径](#6-优化器按成本选择访问路径)、[执行计划的判断层次](#plan-evidence)。
+**相关内容**：[InnoDB 常规索引使用 B+ 树](#2-innodb-常规索引使用-b-树)、[优化器按成本选择访问路径](#6-优化器按成本选择访问路径)、[执行计划的判断层次](#执行计划的判断层次)。
 
 <details>
 <summary>参考回答</summary>
@@ -213,7 +213,7 @@ InnoDB 常规索引使用 B+ 树，以有序键减少需要读取的数据页。
 - 聚簇键选择顺序。
 - 二级索引携带聚簇键。
 
-**相关内容**：[聚簇键的选择与维护代价](#clustered-key-choice)。
+**相关内容**：[聚簇键的选择与维护代价](#聚簇键的选择与维护代价)。
 
 <details>
 <summary>参考回答</summary>
@@ -222,7 +222,7 @@ InnoDB 常规索引使用 B+ 树，以有序键减少需要读取的数据页。
 
 </details>
 
-## 13. 参考资料 {#references}
+## 13. 参考资料 {#参考资料}
 
 - [MySQL 8.4：Optimization and Indexes](https://dev.mysql.com/doc/refman/8.4/en/optimization-indexes.html)
 - [MySQL 8.4：Clustered and Secondary Indexes](https://dev.mysql.com/doc/refman/8.4/en/innodb-index-types.html)

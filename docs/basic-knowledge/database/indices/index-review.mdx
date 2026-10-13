@@ -23,7 +23,7 @@ knowledge:
 
 <span id="1-索引解决了什么问题"></span>
 
-## 2. 索引的作用 {#purpose}
+## 2. 索引的作用 {#1-索引解决了什么问题}
 
 假设有一张用户表：
 
@@ -58,7 +58,7 @@ CREATE INDEX idx_users_email ON users(email);
 
 <span id="2-innodb-怎样通过索引找到一行数据"></span>
 
-## 3. InnoDB 通过索引定位数据 {#lookup}
+## 3. InnoDB 通过索引定位数据 {#2-innodb-怎样通过索引找到一行数据}
 
 InnoDB 的行数据保存在 **聚簇索引（Clustered Index）** 中。表存在主键时，主键就是聚簇索引。没有主键时，InnoDB 会选择第一个所有列都不允许为 `NULL` 的唯一索引；这样的索引也不存在，才会生成隐藏的行标识。
 
@@ -90,7 +90,7 @@ WHERE email = 'hello@example.com';
 
 <span id="3-为什么常规索引使用-b-树"></span>
 
-## 4. B+ 树索引 {#b-plus-tree}
+## 4. B+ 树索引 {#3-为什么常规索引使用-b-树}
 
 数据库按页管理数据。在 InnoDB 的 B+ 树中，非叶子节点主要保存键和子页面编号，记录内容集中在叶子节点。同样大小的页面可以容纳更多导航项，分支更多，树高也就更低。一次查找经过的层数少，需要访问的页面通常也更少。
 
@@ -114,7 +114,7 @@ WHERE id BETWEEN 10000 AND 20000;
 
 <span id="4-联合索引为什么有最左前缀"></span>
 
-## 5. 联合索引与最左前缀 {#leftmost-prefix}
+## 5. 联合索引与最左前缀 {#4-联合索引为什么有最左前缀}
 
 用户表经常按照状态和创建时间查询：
 
@@ -156,7 +156,7 @@ WHERE created_at >= '2026-01-01' AND status = 1
 
 <span id="5-有索引为什么没有被选中"></span>
 
-## 6. 索引未被使用的原因 {#index-not-used}
+## 6. 索引未被使用的原因 {#5-有索引为什么没有被选中}
 
 MySQL 优化器会估算不同执行计划的成本。索引只是候选访问路径；扫描范围太大，或者索引无法建立有效查找范围时，全表扫描反而可能更便宜。估算依赖索引统计信息、直方图等数据，统计信息失真或过期也会影响计划选择。
 
@@ -214,7 +214,7 @@ SELECT * FROM users WHERE status = 1;
 
 <span id="6-从一条查询决定索引怎么建"></span>
 
-## 7. 索引设计步骤 {#design}
+## 7. 索引设计步骤 {#6-从一条查询决定索引怎么建}
 
 索引设计需要落到具体查询上。继续使用 `users` 表，现在要查询最近创建的 20 个正常用户：
 
@@ -237,7 +237,7 @@ LIMIT 20;
 
 <span id="7-用-explain-检查推断"></span>
 
-## 8. 用 EXPLAIN 验证 {#explain}
+## 8. 用 EXPLAIN 验证 {#7-用-explain-检查推断}
 
 前面的分析来自索引结构，数据库实际选择了什么，可以从执行计划中看到：
 
@@ -295,7 +295,7 @@ WHERE status = 1
 
 新增索引没有被选择，主要访问路径也没有改变时，它通常没有解决原来的访问问题。计划发生了变化，也还要看实际扫描行数和耗时；换一条路不等于路程变短。
 
-## 9. 工作负载与索引维护 {#workload}
+## 9. 工作负载与索引维护 {#工作负载与索引维护}
 
 先列出高频查询的等值条件、范围、排序、返回列与调用频率，再设计联合索引。等值列的相对顺序还取决于其他查询能否复用前缀，不是把基数最高的列机械放到最前面。范围后的列仍可能支持过滤和覆盖，但通常不能同时提供另一列的整体排序。
 
@@ -305,7 +305,7 @@ WHERE status = 1
 
 <span id="8-常见问题"></span>
 
-## 10. 常见问题 {#faq}
+## 10. 常见问题 {#8-常见问题}
 
 这篇文章覆盖的核心能力，可以压缩成五组问答：
 
@@ -317,7 +317,7 @@ WHERE status = 1
 
 <span id="9-面试题"></span>
 
-## 11. 面试题 {#questions}
+## 11. 面试题 {#9-面试题}
 
 ### 11.1 给定一条慢 SQL，怎样用 EXPLAIN 判断索引是否有效 {#explain-slow-sql}
 
@@ -333,7 +333,7 @@ WHERE status = 1
 - `type`、`key`、`rows`、`filtered` 与 `Extra`。
 - 联合索引、范围、回表和实测验证。
 
-**相关内容**：[有索引，为什么没有被选中](#index-not-used)至[用 EXPLAIN 检查推断](#explain)。
+**相关内容**：[有索引，为什么没有被选中](#5-有索引为什么没有被选中)至[用 EXPLAIN 检查推断](#7-用-explain-检查推断)。
 
 <details>
 <summary>参考回答</summary>
@@ -355,7 +355,7 @@ WHERE status = 1
 - 键顺序与可复用前缀
 - 读写成本和实际计划
 
-**相关内容**：[联合索引与最左前缀](#leftmost-prefix)、[工作负载与索引维护](#workload)。
+**相关内容**：[联合索引与最左前缀](#4-联合索引为什么有最左前缀)、[工作负载与索引维护](#工作负载与索引维护)。
 
 <details>
 <summary>参考回答</summary>
@@ -375,7 +375,7 @@ WHERE status = 1
 - 优化器可用性
 - 写入维护与唯一性
 
-**相关内容**：[工作负载与索引维护](#workload)。
+**相关内容**：[工作负载与索引维护](#工作负载与索引维护)。
 
 <details>
 <summary>参考回答</summary>
@@ -386,7 +386,7 @@ WHERE status = 1
 
 <span id="10-扩展阅读"></span>
 
-## 12. 参考资料 {#references}
+## 12. 参考资料 {#10-扩展阅读}
 
 1. [MySQL 8.4：Optimization and Indexes](https://dev.mysql.com/doc/refman/8.4/en/optimization-indexes.html)
 2. [MySQL 8.4：Clustered and Secondary Indexes](https://dev.mysql.com/doc/refman/8.4/en/innodb-index-types.html)

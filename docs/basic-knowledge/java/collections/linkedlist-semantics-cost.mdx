@@ -16,7 +16,7 @@ knowledge:
 - 已经持有位置时插入删除是 O(1)，`add(index, value)` 仍要先 O(n) 定位。[卡](#list-operation-costs)
 - 节点分配多、内存不连续，遍历的缓存局部性比数组差；栈和队列通常用 `ArrayDeque`。
 
-## 2. 链表节点 {#nodes}
+## 2. 链表节点 {#链表节点}
 
 一个节点需要保存：
 
@@ -34,7 +34,7 @@ first                                        last
 
 与 ArrayList 的引用数组相比，LinkedList 为每个元素增加节点头和两个链接引用，也产生更多对象供 GC 跟踪。
 
-## 3. 按索引访问 {#index-access}
+## 3. 按索引访问 {#按索引访问}
 
 ```java
 User user = linkedUsers.get(index);
@@ -58,7 +58,7 @@ for (User user : linkedUsers) {
 
 但即使复杂度都是 O(n)，链表遍历还会受到指针跳转和缓存未命中的影响。
 
-## 4. 插入与定位成本 {#insertion}
+## 4. 插入与定位成本 {#插入与定位成本}
 
 在链表中已知节点前插入，只需要创建新节点并调整相邻链接，局部修改是 O(1)。然而 List API 的 `add(index, value)` 需要先按索引找到位置，总成本仍是 O(n)：
 
@@ -80,7 +80,7 @@ while (iterator.hasNext()) {
 
 ArrayList 的中间插入需要搬移连续引用，但底层批量复制很快。元素不多或插入并不频繁时，LinkedList 的理论节点优势未必能抵消定位和内存成本。
 
-## 5. 作为 Deque 使用 {#deque}
+## 5. 作为 Deque 使用 {#作为-deque-使用}
 
 LinkedList 支持首尾队列操作：
 
@@ -98,7 +98,7 @@ Job next = jobs.pollFirst();
 
 LinkedList 允许保存 `null`，ArrayDeque 不允许。队列方法会用 `null` 表示没有元素，因此实际队列协议中也不应使用 null 作为任务值。
 
-## 6. 适用场景 {#use-cases}
+## 6. 适用场景 {#适用场景}
 
 它可能适合：
 
@@ -150,7 +150,7 @@ LinkedList 允许保存 `null`，ArrayDeque 不允许。队列方法会用 `null
 - 大 O 相同的遍历为何仍有实际性能差异。
 - 队列场景为什么通常选择 ArrayDeque。
 
-**相关内容**：[按索引访问](#index-access)、[插入与定位成本](#insertion)、[作为 Deque 使用](#deque)。
+**相关内容**：[按索引访问](#按索引访问)、[插入与定位成本](#插入与定位成本)、[作为 Deque 使用](#作为-deque-使用)。
 
 <details>
 <summary>参考回答</summary>

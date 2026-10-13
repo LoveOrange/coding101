@@ -17,7 +17,7 @@ knowledge:
 - 不允许 null 键和值：并发场景下无法区分“键不存在”和“值为 null”。[卡](#chm-no-null)
 - 扩容时多个线程可以领取不同的桶区间协作迁移；`size()` 只是并发更新期间的估计值。
 
-## 2. 并发 Map 的需求 {#motivation}
+## 2. 并发 Map 的需求 {#并发-map-的需求}
 
 普通 HashMap 没有并发读写保证。把每个方法都放进一把全局锁可以保证基本安全，却会让无关键也排队。
 
@@ -31,7 +31,7 @@ ConcurrentHashMap 的目标是：
 
 它仍然是共享可变状态。高竞争热点键、耗时计算函数和跨多个键的不变量不会因为换了容器就自动解决。
 
-## 3. JDK 8 之后的结构 {#structure}
+## 3. JDK 8 之后的结构 {#jdk-8-之后的结构}
 
 JDK 7 的 ConcurrentHashMap 使用 Segment 分段。JDK 8 之后的主线实现改为桶数组加节点结构：
 
@@ -42,7 +42,7 @@ JDK 7 的 ConcurrentHashMap 使用 Segment 分段。JDK 8 之后的主线实现�
 
 因此回答当前实现时，不应继续说“默认 16 个 Segment”。版本差异可以作为历史补充，但要先说明目标 JDK。
 
-## 4. 无锁读取 {#get}
+## 4. 无锁读取 {#无锁读取}
 
 `get` 计算哈希并定位桶，通过 volatile 读取和不可变键字段沿节点查找。写线程会按实现的发布规则更新节点，使随后读取能够观察到有效结构。
 
@@ -52,7 +52,7 @@ V value = cache.get(key);
 
 不加互斥锁不等于完全没有同步语义，也不等于一次读取能代表整个 Map 的全局快照。ConcurrentHashMap 保证已完成更新与随后针对该键的读取之间的 happens-before 关系；跨多个键的组合状态仍可能来自不同时间点。
 
-## 5. 复合操作的竞态 {#compound}
+## 5. 复合操作的竞态 {#复合操作的竞态}
 
 下面的代码即使用 ConcurrentHashMap 也不原子：
 
@@ -81,7 +81,7 @@ User user = users.computeIfAbsent(id, this::loadUser);
 
 这些方法只保证单个键对应操作的原子性，不会把数据库写入、另一个 Map 和消息发送一起变成事务。
 
-## 6. compute 系列方法 {#compute}
+## 6. compute 系列方法 {#compute-系列方法}
 
 ```java
 LongAdder counter = counters.computeIfAbsent(
@@ -100,7 +100,7 @@ counter.increment();
 
 `computeIfAbsent` 不应被当作完整的缓存加载协议。加载超时、刷新、失败缓存、穿透保护和容量淘汰需要专门设计。
 
-## 7. null 键和值 {#no-null}
+## 7. null 键和值 {#null-键和值}
 
 ConcurrentHashMap 不允许 null 键和值：
 
@@ -112,7 +112,7 @@ ConcurrentHashMap 不允许 null 键和值：
 
 需要保存“已查询但没有业务值”时，可以保存显式状态对象，而不是 null。
 
-## 8. 协作扩容 {#resize}
+## 8. 协作扩容 {#协作扩容}
 
 当元素增加需要扩容时，当前实现会把旧表的桶迁移到更大数组。线程发现某一范围正在迁移时，可以领取一段桶参与复制；完成的旧桶会放置转发标记，后续操作前往新表。
 
@@ -120,7 +120,7 @@ ConcurrentHashMap 不允许 null 键和值：
 
 扩容期间 Map 可以继续服务，并不代表全局遍历获得单一时刻快照。迭代器按弱一致语义工作。
 
-## 9. 热点键竞争 {#hot-key}
+## 9. 热点键竞争 {#热点键竞争}
 
 不同桶可以并发更新，同一个键的更新却必须保持顺序。下面的计数若所有请求都写一个键，竞争仍然集中：
 
@@ -167,7 +167,7 @@ Hashtable 是较早的同步 Map，常用操作围绕实例锁串行。Concurren
 - volatile、CAS、桶级 synchronized 与协作扩容的分工。
 - 容器安全与业务复合操作原子性的边界。
 
-**相关内容**：[JDK 8 之后的结构](#structure)至[复合操作的竞态](#compound)、[协作扩容](#resize)。
+**相关内容**：[JDK 8 之后的结构](#jdk-8-之后的结构)至[复合操作的竞态](#复合操作的竞态)、[协作扩容](#协作扩容)。
 
 <details>
 <summary>参考回答</summary>
@@ -193,7 +193,7 @@ JDK 8 之后的实现不再以 Segment 作为主结构，而是使用桶数组�
 - `containsKey` 与 `get` 分开调用不能形成稳定判断。
 - 怎样用显式状态替代业务 null。
 
-**相关内容**：[null 键和值](#no-null)。
+**相关内容**：[null 键和值](#null-键和值)。
 
 <details>
 <summary>参考回答</summary>

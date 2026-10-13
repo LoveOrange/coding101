@@ -17,7 +17,7 @@ knowledge:
 - 容器只复制引用数组，元素对象本身是否线程安全由元素类型决定。[卡](#cow-element-safety)
 - 批量更新用 `addAll` 等方法一次完成，减少复制次数。
 
-## 2. 读操作 {#reads}
+## 2. 读操作 {#读操作}
 
 容器持有一个数组引用。`get` 取得当前数组，再按索引读取：
 
@@ -31,7 +31,7 @@ for (Listener listener : listeners) {
 
 读操作不需要和其他读者争用互斥锁。数组引用按并发语义发布，因此线程能读取一个完整版本，而不是复制到一半的结构。
 
-## 3. 写入与数组复制 {#writes}
+## 3. 写入与数组复制 {#写入与数组复制}
 
 加入元素时，写线程会串行执行：
 
@@ -50,7 +50,7 @@ listeners.remove(listener);
 
 因此一次写入是 O(n)，并产生与数组大小相关的临时分配。写入集中时，锁竞争、复制带宽和 GC 压力会同时增加。
 
-## 4. 快照迭代器 {#iterator}
+## 4. 快照迭代器 {#快照迭代器}
 
 ```java
 Iterator<Listener> iterator = listeners.iterator();
@@ -65,7 +65,7 @@ while (iterator.hasNext()) {
 
 快照语义适合广播监听器：一次事件只发给开始遍历时已经注册的监听器。若业务要求新增监听器立即参与正在进行的广播，CopyOnWrite 并不满足。
 
-## 5. 适合的场景 {#good-fit}
+## 5. 适合的场景 {#适合的场景}
 
 典型条件：
 
@@ -84,7 +84,7 @@ while (iterator.hasNext()) {
 
 “读多写少”还不够。一个包含百万元素的列表即使每天只写几次，每次完整复制也可能不可接受。
 
-## 6. 不适合的场景 {#bad-fit}
+## 6. 不适合的场景 {#不适合的场景}
 
 - 高频写入或批量单条写入。
 - 列表很大，复制导致明显内存峰值。
@@ -100,7 +100,7 @@ listeners.get(0).changeState();
 
 这个状态修改仍由 Listener 自己的线程安全契约决定。
 
-## 7. 批量更新 {#batch}
+## 7. 批量更新 {#批量更新}
 
 逐个 add 会为每次操作复制数组：
 
@@ -120,7 +120,7 @@ listeners.addAll(incoming);
 
 如果配置天然按批次发布，可以构造普通不可变 List，再通过 volatile 或 AtomicReference 一次替换引用。这能把写入成本集中在快照构建阶段，也让版本边界更明确。
 
-## 8. CopyOnWriteArraySet {#cow-set}
+## 8. CopyOnWriteArraySet {#copyonwritearrayset}
 
 `CopyOnWriteArraySet` 基于 CopyOnWriteArrayList，通过线性查找避免重复。它适合小型、读多写少的集合；成员判断是 O(n)，不能把它当作并发 HashSet 使用。
 
@@ -164,7 +164,7 @@ CopyOnWrite 把主要成本放在写入，迭代读取无需持锁但允许旧�
 - 迭代器的快照语义。
 - 写放大、内存峰值和旧数据可见性。
 
-**相关内容**：[读操作](#reads)至[快照迭代器](#iterator)。
+**相关内容**：[读操作](#读操作)至[快照迭代器](#快照迭代器)。
 
 <details>
 <summary>参考回答</summary>
@@ -189,7 +189,7 @@ CopyOnWriteArrayList 的读者访问当前已发布数组，写线程在锁内�
 - 浅复制不会复制元素。
 - 怎样发布不可变配置或保护可变元素。
 
-**相关内容**：[不适合的场景](#bad-fit)。
+**相关内容**：[不适合的场景](#不适合的场景)。
 
 <details>
 <summary>参考回答</summary>

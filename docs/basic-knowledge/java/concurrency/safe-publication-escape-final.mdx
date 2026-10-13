@@ -17,7 +17,7 @@ knowledge:
 - 对象没有在构造期间逸出时，`final` 字段在构造结束时的值对任何取得引用的线程可见。[卡](#final-field-semantics)
 - 双重检查锁定的实例字段必须声明为 `volatile`。
 
-## 2. 未同步发布的问题 {#unsafe-publication}
+## 2. 未同步发布的问题 {#未同步发布的问题}
 
 ```java
 final class Registry {
@@ -39,7 +39,7 @@ final class Registry {
 - 放入具有内存一致性保证的并发集合或队列。
 - 在线程启动前准备对象，再由新线程使用。
 
-## 3. 构造期间的 `this` 逸出 {#this-escape}
+## 3. 构造期间的 `this` 逸出 {#构造期间的-this-逸出}
 
 ```java
 public final class Listener {
@@ -66,7 +66,7 @@ public static Listener create(EventBus bus) {
 
 构造器启动线程、注册回调、把 `this` 放入静态集合，或者调用可被子类重写的方法，都可能造成逸出。
 
-## 4. `final` 字段的初始化安全 {#final-fields}
+## 4. `final` 字段的初始化安全 {#final-字段的初始化安全}
 
 只要对象在构造期间没有逸出，构造器对 `final` 字段的赋值具有额外语义：另一个线程在取得对象引用后，能够看到该字段在构造结束时的值。对通过该 final 字段可达对象的构造期状态，规范也提供特定保证。
 
@@ -90,7 +90,7 @@ private final List<String> roles = new ArrayList<>();
 
 `roles` 引用不能重新赋值，列表内容仍可变化，后续修改仍需要同步或防御性复制。
 
-## 5. 双重检查锁定 {#double-checked-locking}
+## 5. 双重检查锁定 {#双重检查锁定}
 
 ```java
 private static volatile Client instance;
@@ -139,7 +139,7 @@ public static Client getInstance() {
 - final 字段初始化安全。
 - final 引用和对象可变性的区别。
 
-**相关内容**：[构造期间的 `this` 逸出](#this-escape)和[`final` 字段的初始化安全](#final-fields)。
+**相关内容**：[构造期间的 `this` 逸出](#构造期间的-this-逸出)和[`final` 字段的初始化安全](#final-字段的初始化安全)。
 
 <details>
 <summary>参考回答</summary>

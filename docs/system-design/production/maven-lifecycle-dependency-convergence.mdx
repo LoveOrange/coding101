@@ -17,7 +17,7 @@ Maven 用生命周期组织构建步骤，用插件 goal 执行具体工作，�
 - `dependencyManagement` 和 BOM 统一版本但不引入依赖；Enforcer 的 dependency convergence 规则让版本分叉在构建时失败。
 - 编译通过但运行时 `NoSuchMethodError`，通常是运行时加载了另一个版本的依赖。
 
-## 2. 生命周期 {#lifecycle}
+## 2. 生命周期 {#生命周期}
 
 Maven 有 clean、default 和 site 等独立生命周期。日常构建主要使用 default，其中常见阶段依次包括：
 
@@ -29,7 +29,7 @@ validate → compile → test → package → verify → install → deploy
 
 `install` 把产物放进本地仓库供本机其他项目使用，`deploy` 把产物上传到远程仓库。它们不是应用部署到生产环境的同义词。
 
-## 3. 插件 goal {#plugins}
+## 3. 插件 goal {#插件-goal}
 
 生命周期 phase 只是挂载点。compiler、surefire、jar、failsafe 等插件的 goal 绑定到相应 phase，才执行编译、单元测试、打包和集成测试。
 
@@ -46,7 +46,7 @@ validate → compile → test → package → verify → install → deploy
 
 Scope 配错可能让本地测试通过、生产启动时报 `ClassNotFoundException`，也可能把容器已提供的 API 重复打进产物。
 
-## 5. 依赖仲裁 {#mediation}
+## 5. 依赖仲裁 {#依赖仲裁}
 
 同一 `groupId:artifactId` 通过多条传递路径出现不同版本时，Maven 通常选择离当前项目依赖图更近的定义；深度相同时，POM 中先声明的路径会影响结果。
 
@@ -58,7 +58,7 @@ mvn dependency:tree
 
 查看版本来自哪条路径，再通过显式直接依赖、exclusion 或升级上游组件解决。不要盲目排除一个 jar，只为了让树看起来干净。
 
-## 6. dependencyManagement 与 BOM {#dependency-management}
+## 6. dependencyManagement 与 BOM {#dependencymanagement-与-bom}
 
 父 POM 的 `dependencyManagement` 为子模块和传递依赖提供受控版本。BOM 通过 `type=pom`、`scope=import` 导入一组经过测试的版本组合。
 
@@ -66,13 +66,13 @@ mvn dependency:tree
 
 平台 BOM 可以减少任意组合，但升级 BOM 仍需运行兼容性测试并审查实际 dependency tree。
 
-## 7. Dependency convergence {#convergence}
+## 7. 依赖收敛检查 {#依赖收敛检查}
 
 Maven Enforcer 的 dependency convergence 规则可以让同一坐标出现多个传递版本时构建失败，迫使团队明确选择。还可以限制 JDK、Maven 版本、禁止快照依赖和重复类等问题。
 
 严格 convergence 可能要求对成熟框架的合法依赖图做额外管理。规则例外要具体到坐标、原因和到期条件，不能因为首次失败就整体关闭。
 
-## 8. 可重复构建 {#reproducible}
+## 8. 可重复构建 {#可重复构建}
 
 除依赖和插件版本外，还要固定：
 
@@ -112,7 +112,7 @@ package 生成当前模块的 jar 或 war；install 还会把产物与 POM 放�
 - 最近定义、dependency tree 和 scope。
 - dependencyManagement、BOM 与 convergence。
 
-**相关内容**：[生命周期](#lifecycle)至[可重复构建](#reproducible)。
+**相关内容**：[生命周期](#生命周期)至[可重复构建](#可重复构建)。
 
 <details>
 <summary>参考回答</summary>

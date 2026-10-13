@@ -17,7 +17,7 @@ knowledge:
 - `equals` 与 `hashCode` 应基于同一组字段计算。
 - 对象作为 HashMap 的键期间修改了参与哈希的字段，原条目可能再也查不到。[卡](#mutable-map-keys)
 
-## 2. 对象身份与逻辑相等 {#identity}
+## 2. 对象身份与逻辑相等 {#对象身份与逻辑相等}
 
 ```java
 String first = new String("Java");
@@ -45,7 +45,7 @@ public record OrderId(String value) {
 
 record 会根据所有组件生成 `equals` 和 `hashCode`，适合所有组件共同定义身份的简单值对象。
 
-## 3. `equals` 契约 {#equals-contract}
+## 3. `equals` 契约 {#equals-契约}
 
 正确的 `equals` 应满足：
 
@@ -57,7 +57,7 @@ record 会根据所有组件生成 `equals` 和 `hashCode`，适合所有组件�
 
 继承容易让父类与子类使用不同身份字段，从而破坏对称性或传递性。值类型通常声明为 `final`、使用 record，或通过组合增加附加信息。`getClass()` 与 `instanceof` 的选择仍取决于父子对象在业务上是否允许相等。
 
-## 4. `hashCode` 契约 {#hashcode-contract}
+## 4. `hashCode` 契约 {#hashcode-契约}
 
 HashMap 和 HashSet 先用 `hashCode` 定位候选桶，再用 `equals` 确认键。因此必须满足：
 
@@ -76,7 +76,7 @@ System.out.println(first.hashCode() == second.hashCode()); // true
 
 只重写 `equals` 而不重写 `hashCode`，逻辑相等的键可能进入不同桶，导致 HashSet 保存重复逻辑值，或 HashMap 无法通过等价键找到条目。
 
-## 5. 可变对象作为哈希键 {#mutable-keys}
+## 5. 可变对象作为哈希键 {#可变对象作为哈希键}
 
 对象放入哈希集合后，如果参与相等性和哈希计算的字段变化，查询会使用新哈希定位另一个桶，而条目仍在旧位置。
 
@@ -118,7 +118,7 @@ System.out.println(first.hashCode() == second.hashCode()); // true
 - 引用身份与逻辑相等的区别。
 - 哈希集合为什么同时使用哈希和相等比较。
 
-**相关内容**：[对象身份与逻辑相等](#identity)、[`hashCode` 契约](#hashcode-contract)。
+**相关内容**：[对象身份与逻辑相等](#对象身份与逻辑相等)、[`hashCode` 契约](#hashcode-契约)。
 
 <details>
 <summary>参考回答</summary>
@@ -142,7 +142,7 @@ System.out.println(first.hashCode() == second.hashCode()); // true
 - 写入和查找怎样使用哈希值。
 - 身份字段变化后为什么可能找不到原键。
 
-**相关内容**：[可变对象作为哈希键](#mutable-keys)。
+**相关内容**：[可变对象作为哈希键](#可变对象作为哈希键)。
 
 <details>
 <summary>参考回答</summary>

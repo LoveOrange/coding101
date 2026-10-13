@@ -17,7 +17,7 @@ knowledge:
 - 修改指令后用代表任务对比修改前后的结果，确认确实改善，而不是凭感觉增加规则。[卡](#verify-instruction-change)
 - 团队共用一份纳入版本管理的指令，可以让使用不同工具的开发者得到一致的约定。[卡](#multi-tool-collaboration)
 
-## 2. 写什么 {#content}
+## 2. 写什么 {#写什么}
 
 ```markdown
 # 项目说明
@@ -50,7 +50,7 @@ Node 20 + TypeScript 的订单服务，入口 src/server.ts。
 - **只写例外**：通用的良好实践模型已经知道，写项目特有的约定和容易出错的地方。
 - **保持简短**：详细文档放在其他文件中，指令里写明在什么情况下去读哪个文件。
 
-## 3. 组织与维护 {#maintenance}
+## 3. 组织与维护 {#组织与维护}
 
 - **层级**：多数工具支持多级文件，例如用户级（个人偏好）、仓库根目录（全项目约定）、子目录（模块特有约定），离修改位置越近的文件通常越具体。
 - **来源**：Agent 犯了一次可以通过规则避免的错误，就是增加一条规则的时机；规则不再适用时删除。
@@ -80,7 +80,7 @@ Node 20 + TypeScript 的订单服务，入口 src/server.ts。
 - 稳定信息与临时状态的区分。
 - 指令文件独立于对话历史加载的特点。
 
-**相关内容**：[写什么](#content)、[上下文压缩](../prompting/context-compaction.mdx)。
+**相关内容**：[写什么](#写什么)、[上下文压缩](../prompting/context-compaction.mdx)。
 
 <details>
 <summary>参考回答</summary>
@@ -104,7 +104,7 @@ Node 20 + TypeScript 的订单服务，入口 src/server.ts。
 - 用代表任务做修改前后的对照。
 - 结果、成本与规则遵守情况的度量。
 
-**相关内容**：[组织与维护](#maintenance)、[编码 Agent 评测](./coding-agent-evaluation.mdx)。
+**相关内容**：[组织与维护](#组织与维护)、[编码 Agent 评测](./coding-agent-evaluation.mdx)。
 
 <details>
 <summary>参考回答</summary>
@@ -129,7 +129,7 @@ Node 20 + TypeScript 的订单服务，入口 src/server.ts。
 - 共享的规则、接口约定和验证标准。
 - 版本管理与评审流程不因工具不同而改变。
 
-**相关内容**：[组织与维护](#maintenance)。
+**相关内容**：[组织与维护](#组织与维护)。
 
 <details>
 <summary>参考回答</summary>

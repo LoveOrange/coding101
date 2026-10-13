@@ -17,7 +17,7 @@ Java 内存模型规定线程之间可以观察到哪些读写结果。判断跨
 - `BlockingQueue`、`CountDownLatch`、`Future` 等 JUC 组件在规范中定义了交接关系，使用它们时不需要再额外加 `volatile`。
 - 只有无数据竞争的程序才能按顺序一致的交错来理解。
 
-## 2. 跨线程可见性问题 {#visibility}
+## 2. 跨线程可见性问题 {#跨线程可见性问题}
 
 ```java
 int value;
@@ -35,7 +35,7 @@ if (ready) {
 
 在没有同步的情况下，线程 B 读到 `ready == true` 并不能据此获得 `value == 42` 的保证。这段程序存在数据竞争，编译器、JIT 和处理器只需保持各自线程内允许观察到的语义，不必提供程序员想象中的跨线程顺序。
 
-## 3. happens-before 规则 {#happens-before}
+## 3. happens-before 规则 {#happens-before-规则}
 
 如果动作 A happens-before 动作 B，那么 A 的结果必须对 B 可见，并且 A 在内存模型顺序上先于 B。常用规则包括：
 
@@ -47,7 +47,7 @@ if (ready) {
 
 happens-before 具有传递性，因此可以把多条规则连接起来推导结果。
 
-## 4. 用 `volatile` 发布数据 {#volatile-publish}
+## 4. 用 `volatile` 发布数据 {#用-volatile-发布数据}
 
 ```java
 private int value;
@@ -70,7 +70,7 @@ public int consume() {
 
 这并不意味着 `value` 的所有复合更新都变得原子，也不意味着任意 volatile 变量可以替另一个无关协议建立顺序。
 
-## 5. JUC 组件的交接语义 {#juc-handoff}
+## 5. JUC 组件的交接语义 {#juc-组件的交接语义}
 
 不必总是直接使用 `volatile` 或 monitor。JUC API 还规定：
 
@@ -81,7 +81,7 @@ public int consume() {
 
 选择这些组件时，既获得调度能力，也获得明确的内存一致性语义。
 
-## 6. 数据竞争与顺序一致性 {#sequential-consistency}
+## 6. 数据竞争与顺序一致性 {#数据竞争与顺序一致性}
 
 正确同步、没有数据竞争的程序通常可以按照某个保持线程内顺序的交错来理解。存在数据竞争时，不能用“把两条线程代码随便穿插一下”穷举所有结果；编译优化和允许的重排序也属于模型的一部分。
 
@@ -113,7 +113,7 @@ public int consume() {
 - monitor、volatile、start 和 join 规则。
 - 传递性及其实际推导。
 
-**相关内容**：[happens-before 规则](#happens-before)至[JUC 组件的交接语义](#juc-handoff)。
+**相关内容**：[happens-before 规则](#happens-before-规则)至[JUC 组件的交接语义](#juc-组件的交接语义)。
 
 <details>
 <summary>参考回答</summary>

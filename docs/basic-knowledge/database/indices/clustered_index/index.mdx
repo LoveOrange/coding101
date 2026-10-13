@@ -19,7 +19,7 @@ InnoDB 使用聚簇索引组织完整行数据，二级索引通过聚簇索引�
 - 覆盖描述查询所需列是否齐全；MVCC 判断仍可能要求读取聚簇记录。[卡](#covering-mvcc)
 - 主键宽度和更新频率会影响二级索引开销；递增键的局部性与右端热点需要一起评估。
 
-## 2. 聚簇索引 {#clustered}
+## 2. 聚簇索引 {#聚簇索引}
 
 InnoDB 表按照聚簇索引的键值组织数据，聚簇索引叶子记录组织该行的所有列；DYNAMIC 等行格式可能把较长的可变长度值放到溢出页，叶子保存相应指针。通常主键就是聚簇索引，因此按主键查询到叶子页后，可以直接取得完整记录。
 
@@ -31,7 +31,7 @@ SELECT * FROM users WHERE id = 42;
 
 <span id="2-没有主键时-innodb-会选择替代键"></span>
 
-## 3. 没有主键时的聚簇索引 {#no-primary-key}
+## 3. 没有主键时的聚簇索引 {#没有主键时的聚簇索引}
 
 InnoDB 按以下顺序选择聚簇索引：
 
@@ -43,7 +43,7 @@ InnoDB 按以下顺序选择聚簇索引：
 
 <span id="3-二级索引叶子保存主键"></span>
 
-## 4. 二级索引与回表 {#secondary}
+## 4. 二级索引与回表 {#二级索引与回表}
 
 假设 `users` 的主键是 `id`，并创建邮箱索引：
 
@@ -61,7 +61,7 @@ SELECT * FROM users WHERE email = 'lin@example.com';
 
 <span id="4-覆盖查询可以省去回表"></span>
 
-## 5. 覆盖索引 {#covering}
+## 5. 覆盖索引 {#覆盖索引}
 
 如果查询需要的列已经位于二级索引中，通常可以从该索引取得结果：
 
@@ -75,7 +75,7 @@ WHERE email = 'lin@example.com';
 
 <span id="5-主键宽度会影响所有二级索引"></span>
 
-## 6. 主键宽度 {#key-width}
+## 6. 主键宽度 {#主键宽度}
 
 二级索引叶子保存聚簇索引键，因此主键越宽，每个二级索引占用的空间通常越大，每页能够容纳的记录也越少。
 
@@ -85,7 +85,7 @@ WHERE email = 'lin@example.com';
 
 <span id="6-聚簇索引会影响范围与排序"></span>
 
-## 7. 范围查询与排序 {#range}
+## 7. 范围查询与排序 {#范围查询与排序}
 
 按主键范围读取可以沿聚簇索引叶子页顺序扫描：
 
@@ -123,7 +123,7 @@ WHERE id >= 10000 AND id < 10100;
 - 二级索引叶子中的主键与回表路径。
 - 覆盖查询、主键宽度和范围读取。
 
-**相关内容**：[聚簇索引叶子包含完整行](#clustered)至[聚簇索引会影响范围与排序](#range)。
+**相关内容**：[聚簇索引叶子包含完整行](#聚簇索引)至[聚簇索引会影响范围与排序](#范围查询与排序)。
 
 <details>
 <summary>参考回答</summary>
@@ -145,7 +145,7 @@ InnoDB 的聚簇索引叶子保存完整行，一张表只有一种这样的组�
 - 查询列覆盖与可见性
 - 二级索引版本检查
 
-**相关内容**：[覆盖索引](#covering)。
+**相关内容**：[覆盖索引](#覆盖索引)。
 
 <details>
 <summary>参考回答</summary>
@@ -165,7 +165,7 @@ InnoDB 的聚簇索引叶子保存完整行，一张表只有一种这样的组�
 - 聚簇键选择顺序
 - 宽度、稳定性、写入分布
 
-**相关内容**：[没有主键时的聚簇索引](#no-primary-key)、[主键宽度](#key-width)。
+**相关内容**：[没有主键时的聚簇索引](#没有主键时的聚簇索引)、[主键宽度](#主键宽度)。
 
 <details>
 <summary>参考回答</summary>
@@ -174,7 +174,7 @@ InnoDB 的聚簇索引叶子保存完整行，一张表只有一种这样的组�
 
 </details>
 
-## 10. 参考资料 {#references}
+## 10. 参考资料 {#参考资料}
 
 1. [MySQL 8.4：Clustered and Secondary Indexes](https://dev.mysql.com/doc/refman/8.4/en/innodb-index-types.html)
 2. [MySQL 8.4：The Physical Structure of an InnoDB Index](https://dev.mysql.com/doc/refman/8.4/en/innodb-physical-structure.html)

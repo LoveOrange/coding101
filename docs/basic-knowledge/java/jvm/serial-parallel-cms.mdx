@@ -50,7 +50,7 @@ CMS 使用 mark-sweep，不在正常并发周期中整体压缩旧代，因此�
 - 并发周期跟不上时发生 concurrent mode failure，退化到更重的回收。
 - 浮动垃圾要留到后续周期处理。
 
-## 5. CMS 的移除 {#cms-removal}
+## 5. CMS 的移除 {#cms-的移除}
 
 CMS 在 JDK 9 弃用，JDK 14 通过 JEP 363 移除。现代 JDK 上不能再用 `-XX:+UseConcMarkSweepGC` 启动它。
 
@@ -58,7 +58,7 @@ CMS 在 JDK 9 弃用，JDK 14 通过 JEP 363 移除。现代 JDK 上不能再用
 
 旧文章中的 `PermGen`、ParNew、CMS 参数和默认比例也可能已经失效，升级时要按目标 JDK 官方文档重新验证。
 
-## 6. 三者的比较 {#comparison}
+## 6. 三者的比较 {#三者的比较}
 
 | 收集器 | 主要方式 | 优先目标 | 主要代价 |
 | --- | --- | --- | --- |
@@ -68,7 +68,7 @@ CMS 在 JDK 9 弃用，JDK 14 通过 JEP 363 移除。现代 JDK 上不能再用
 
 同一程序要比较总吞吐、暂停分布、CPU 和内存余量。只比较一次 GC 用时无法判断业务效果。
 
-## 7. 选择收集器 {#selection}
+## 7. 选择收集器 {#选择收集器}
 
 可用的判断顺序：
 
@@ -112,7 +112,7 @@ CMS 在 JDK 9 弃用，JDK 14 通过 JEP 363 移除。现代 JDK 上不能再用
 - 吞吐、暂停、CPU 与碎片的权衡。
 - CMS 已在 JDK 14 移除。
 
-**相关内容**：[Serial](#serial)至[三者的比较](#comparison)。
+**相关内容**：[Serial](#serial)至[三者的比较](#三者的比较)。
 
 <details>
 <summary>参考回答</summary>

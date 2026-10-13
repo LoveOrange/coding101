@@ -94,7 +94,7 @@ where o.status = :status
 
 这两阶段限制的是父对象范围；关联可能仍分批加载，所以总数不必恰好为两条。两次读取之间若有并发修改，需要按隔离级别决定接受最新数据、维持事务快照还是做版本校验。空 ID 列表直接返回，IN 查询不会自动保留第一阶段顺序。
 
-## 9. 抓取范围与结果基数 {#fetch-cost}
+## 9. 抓取范围与结果基数 {#抓取范围与结果基数}
 
 同一页 20 个订单若都引用同一个客户，在同一持久化上下文中可能只额外加载一次客户，并非必然 21 次。反过来，EAGER 关联也可能为每个对象执行次级查询，单看注解不足以判断。
 
@@ -126,7 +126,7 @@ Hibernate 7.1 可通过 `hibernate.query.fail_on_pagination_over_collection_fetc
 - join fetch、EntityGraph、批量抓取和 DTO 投影。
 - to-many 分页与结果集膨胀。
 
-**相关内容**：[定位证据](#2-先用-sql-与指标确认问题)、[抓取范围](#fetch-cost)、[集合分页](#7-集合抓取与分页要分两步考虑)。
+**相关内容**：[定位证据](#2-先用-sql-与指标确认问题)、[抓取范围](#抓取范围与结果基数)、[集合分页](#7-集合抓取与分页要分两步考虑)。
 
 <details>
 <summary>参考回答</summary>
@@ -148,7 +148,7 @@ to-many join fetch 不能直接假定能正确分页，常见做法是先分页�
 - 加载要求与 SQL 形态。
 - 缓存和不同关联数量。
 
-**相关内容**：[EntityGraph](#4-entitygraph-按用例选择加载范围)、[结果基数](#fetch-cost)。
+**相关内容**：[EntityGraph](#4-entitygraph-按用例选择加载范围)、[结果基数](#抓取范围与结果基数)。
 
 <details>
 <summary>参考回答</summary>
@@ -168,7 +168,7 @@ to-many join fetch 不能直接假定能正确分页，常见做法是先分页�
 - 笛卡尔放大。
 - 传输与物化成本。
 
-**相关内容**：[Join Fetch](#3-join-fetch-一次取回已知关联)、[结果基数](#fetch-cost)。
+**相关内容**：[Join Fetch](#3-join-fetch-一次取回已知关联)、[结果基数](#抓取范围与结果基数)。
 
 <details>
 <summary>参考回答</summary>
@@ -197,7 +197,7 @@ to-many join fetch 不能直接假定能正确分页，常见做法是先分页�
 
 </details>
 
-## 12. 参考资料 {#references}
+## 12. 参考资料 {#参考资料}
 
 1. [Hibernate ORM：Association Fetching](https://docs.hibernate.org/orm/7.1/introduction/html_single/#association-fetching)
 2. [Hibernate ORM User Guide：Dynamic Fetching](https://docs.hibernate.org/orm/7.1/userguide/html_single/Hibernate_User_Guide.html#fetching-strategies-dynamic-fetching)

@@ -16,7 +16,7 @@ Agent 执行循环是“模型提出动作—程序执行—结果写回上下�
 - 最大步数来自任务轨迹统计和成本约束，不是拍一个数字；触发上限时要返回可解释的失败状态。
 - ReAct 逐步决策，适合依赖中间结果的任务；Plan-and-Execute 先规划再执行，适合子任务清楚、需要减少模型调用和便于审计的任务。[卡](#react-vs-plan-execute)
 
-## 2. 一次循环的执行链路 {#mechanism}
+## 2. 一次循环的执行链路 {#一次循环的执行链路}
 
 ```python
 def run(task, tools, max_steps=20):
@@ -36,7 +36,7 @@ def run(task, tools, max_steps=20):
 
 工具执行失败也是一种观测。把“参数缺少 `order_id`”“接口 429，30 秒后重试”这样的错误写回，模型有机会修正参数；直接抛异常终止，则失去自我修正机会。
 
-## 3. ReAct 的三个环节 {#react}
+## 3. ReAct 的三个环节 {#react-的三个环节}
 
 ReAct 把推理（Reasoning）和行动（Acting）交替进行：
 
@@ -48,7 +48,7 @@ ReAct 把推理（Reasoning）和行动（Acting）交替进行：
 
 原始论文用文本格式让模型输出 `Thought:` 和 `Action:`，程序解析后执行。现在的模型 API 普遍原生支持工具调用，Action 以结构化字段返回，Thought 可能是可见文本，也可能是模型内部的推理过程。循环结构没有变化。
 
-## 4. 停止条件与预算 {#stop}
+## 4. 停止条件与预算 {#停止条件与预算}
 
 只依赖模型说“完成了”会出现两类问题：模型过早宣布完成，或者在两个动作之间来回震荡。程序侧至少需要以下控制：
 
@@ -60,7 +60,7 @@ ReAct 把推理（Reasoning）和行动（Acting）交替进行：
 
 触发上限时返回结构化状态，例如 `stopped: max_steps`、已完成的动作和最后一次错误，让调用方可以重试、转人工或展示部分结果。
 
-## 5. ReAct 与 Plan-and-Execute {#planning}
+## 5. ReAct 与 Plan-and-Execute {#react-与-plan-and-execute}
 
 Plan-and-Execute 先让模型生成完整计划，再由执行器逐项完成，执行中出现偏差时重新规划。
 
@@ -101,7 +101,7 @@ Plan-and-Execute 先让模型生成完整计划，再由执行器逐项完成，
 - 模型提出动作、程序执行动作的职责划分。
 - 观测如何回到上下文并影响下一步。
 
-**相关内容**：[一次循环的执行链路](#mechanism)、[ReAct 的三个环节](#react)。
+**相关内容**：[一次循环的执行链路](#一次循环的执行链路)、[ReAct 的三个环节](#react-的三个环节)。
 
 <details>
 <summary>参考回答</summary>
@@ -129,7 +129,7 @@ Thought 负责拆解和选择，Action 负责获取信息或改变外部状态�
 - 程序侧停止条件与模型自报完成的区别。
 - 用轨迹数据确定步数上限，以及触发上限后的处理。
 
-**相关内容**：[停止条件与预算](#stop)。
+**相关内容**：[停止条件与预算](#停止条件与预算)。
 
 <details>
 <summary>参考回答</summary>
@@ -155,7 +155,7 @@ Thought 负责拆解和选择，Action 负责获取信息或改变外部状态�
 - 逐步决策与预先规划的取舍。
 - 重规划和成本控制。
 
-**相关内容**：[ReAct 与 Plan-and-Execute](#planning)。
+**相关内容**：[ReAct 与 Plan-and-Execute](#react-与-plan-and-execute)。
 
 <details>
 <summary>参考回答</summary>

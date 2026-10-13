@@ -17,7 +17,7 @@ knowledge:
 - 通常不用作方法参数、实体字段和集合返回值，集合直接返回空集合。
 - 空 `Optional` 只能表示“没有值”，需要区分权限不足、数据不存在、超时等原因时用异常或结果类型。
 
-## 2. 可选结果 {#optional-result}
+## 2. 可选结果 {#可选结果}
 
 下面的查询可能找到用户，也可能没有匹配项：
 
@@ -48,11 +48,11 @@ Optional<String> uncertain = Optional.ofNullable(value);
 
 :::
 
-## 3. 消费 Optional {#consume}
+## 3. 消费 Optional {#消费-optional}
 
 调用方根据缺失时的业务行为选择 API，避免先统一调用 `get()`。
 
-### 3.1 缺失时提供默认值 {#default-value}
+### 3.1 缺失时提供默认值 {#缺失时提供默认值}
 
 ```java
 String displayName = findUser(userId)
@@ -62,7 +62,7 @@ String displayName = findUser(userId)
 
 `map` 只在用户存在时执行转换。任一步没有结果，最终使用默认名称。
 
-### 3.2 延迟计算默认值 {#lazy-default}
+### 3.2 延迟计算默认值 {#延迟计算默认值}
 
 `orElse` 的参数会在方法调用前计算，无论 `Optional` 是否有值：
 
@@ -76,7 +76,7 @@ User user = cachedUser.orElse(loadFromDatabase());
 User user = cachedUser.orElseGet(this::loadFromDatabase);
 ```
 
-### 3.3 缺失时抛出异常 {#or-else-throw}
+### 3.3 缺失时抛出异常 {#缺失时抛出异常}
 
 ```java
 User user = findUser(userId)
@@ -85,7 +85,7 @@ User user = findUser(userId)
 
 查询层返回可选结果，业务层决定“用户不存在”在当前操作中是否属于错误。这个边界比查询方法直接为所有调用场景抛异常更灵活。
 
-### 3.4 执行副作用 {#if-present}
+### 3.4 执行副作用 {#执行副作用}
 
 ```java
 findUser(userId).ifPresent(user -> audit(user.id()));
@@ -93,7 +93,7 @@ findUser(userId).ifPresent(user -> audit(user.id()));
 
 如果存在和缺失都要处理，可以使用 `ifPresentOrElse`。但当分支逐渐包含多步业务逻辑时，普通 `if` 往往更容易调试，不需要为了链式写法隐藏控制流。
 
-## 4. map、flatMap 与 filter {#map-flatmap-filter}
+## 4. map、flatMap 与 filter {#mapflatmap-与-filter}
 
 ### 4.1 map 转换内部值
 
@@ -129,7 +129,7 @@ Optional<User> activeUser = findUser(userId)
 
 结果为空可能表示“用户不存在”，也可能表示“用户不活跃”。如果调用方必须区分两种原因，就不应把它们都压成同一个空 `Optional`，而应使用明确的结果类型或异常。
 
-## 5. 适用边界 {#boundaries}
+## 5. 适用边界 {#适用边界}
 
 ### 5.1 适合作为可能无结果的方法返回值
 
@@ -171,7 +171,7 @@ List<Order> findOrders(long userId) {
 
 只有这两种空状态确实有不同含义时，才保留额外层次，并在命名或结果类型中解释差异。
 
-## 6. Optional 的局限 {#limits}
+## 6. Optional 的局限 {#optional-的局限}
 
 ### 6.1 链路中的空指针
 
@@ -237,7 +237,7 @@ if (user.isPresent()) {
 - `map`、`flatMap`、`orElseGet` 和 `orElseThrow` 的适用条件。
 - 为什么它不适合替代所有 `null` 或所有异常。
 
-**相关内容**：[可选结果](#optional-result)、[消费 Optional](#consume)、[适用边界](#boundaries)、[Optional 的局限](#limits)。
+**相关内容**：[可选结果](#可选结果)、[消费 Optional](#消费-optional)、[适用边界](#适用边界)、[Optional 的局限](#optional-的局限)。
 
 <details>
 <summary>参考回答</summary>

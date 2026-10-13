@@ -17,7 +17,7 @@ knowledge:
 - 有界队列把消费能力不足转化为生产端的阻塞或拒绝，形成背压。
 - 停止消费者用中断或 poison pill；进程内队列不提供持久化和重试，跨进程可靠传递需要消息队列。
 
-## 2. 入队与出队方法 {#methods}
+## 2. 入队与出队方法 {#入队与出队方法}
 
 BlockingQueue 为同一操作提供不同失败策略：
 
@@ -36,7 +36,7 @@ Job next = queue.take(); // 空时等待，可被中断
 
 选择方法就是选择失败协议：等待多久、是否允许调用线程被拖慢、超时后由谁处理任务。
 
-## 3. 有界队列 {#bounded}
+## 3. 有界队列 {#有界队列}
 
 生产速度长期高于消费速度时，任何缓冲区都会继续增长或拒绝数据。固定容量让这个边界提前显现：
 
@@ -57,7 +57,7 @@ if (!accepted) {
 
 没有统一最佳策略。关键是不能把“暂时放进内存”当作处理能力提升。
 
-## 4. 生产者消费者模型 {#producer-consumer-section}
+## 4. 生产者消费者模型 {#生产者消费者模型}
 
 ```java
 final class Worker implements Runnable {
@@ -91,7 +91,7 @@ final class Worker implements Runnable {
 - 进程崩溃时内存任务是否允许丢失。
 - 停机时等待、排空还是转存。
 
-## 5. 常见实现 {#implementations}
+## 5. 常见实现 {#常见实现}
 
 ### 5.1 ArrayBlockingQueue
 
@@ -113,7 +113,7 @@ final class Worker implements Runnable {
 
 只有延迟到期的元素才能取出，适合进程内延迟触发。它不持久化，系统时钟、进程重启和大量取消任务都需要考虑。
 
-## 6. 中断、关闭与 poison pill {#shutdown}
+## 6. 中断、关闭与 poison pill {#中断关闭与-poison-pill}
 
 BlockingQueue 没有统一 `close` 方法。常见停止方式：
 
@@ -131,7 +131,7 @@ poison pill 需要保证：
 
 线程池任务队列通常由 ExecutorService 管理，不应绕过线程池直接拿内部队列实现自定义关闭。
 
-## 7. 内存队列与消息队列 {#vs-message-queue}
+## 7. 内存队列与消息队列 {#内存队列与消息队列}
 
 BlockingQueue 适合同一 JVM 内线程协作。它不提供：
 
@@ -176,7 +176,7 @@ BlockingQueue 适合同一 JVM 内线程协作。它不提供：
 - 有界容量怎样形成背压。
 - 任务失败、停机与丢失边界。
 
-**相关内容**：[入队与出队方法](#methods)至[中断、关闭与 poison pill](#shutdown)。
+**相关内容**：[入队与出队方法](#入队与出队方法)至[中断、关闭与 poison pill](#中断关闭与-poison-pill)。
 
 <details>
 <summary>参考回答</summary>
@@ -202,7 +202,7 @@ BlockingQueue 适合同一 JVM 内线程协作。它不提供：
 - 容量、分配、锁竞争与背压的关系。
 - 默认近似无界为何危险。
 
-**相关内容**：[有界队列](#bounded)、[常见实现](#implementations)。
+**相关内容**：[有界队列](#有界队列)、[常见实现](#常见实现)。
 
 <details>
 <summary>参考回答</summary>

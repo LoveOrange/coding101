@@ -17,7 +17,7 @@ knowledge:
 - tcpdump 抓包要指定网卡、过滤条件、不解析名称、写文件：`tcpdump -i eth0 -nn host 10.0.0.2 and port 8080 -w a.pcap`，再用 Wireshark 分析。[卡](#tcpdump)
 - iptables 基于内核的 netfilter，在报文经过的五个挂载点（链）上按表（filter、nat、mangle、raw）执行规则；Kubernetes 的 Service 默认用 nat 表的 DNAT 把 Service IP 转换成 Pod IP。[卡](#iptables)
 
-## 2. 分层确认连通性 {#layers}
+## 2. 分层确认连通性 {#分层确认连通性}
 
 | 层次 | 问题 | 工具 |
 | --- | --- | --- |
@@ -31,7 +31,7 @@ knowledge:
 
 ping 不通也不一定是网络故障：很多云主机和防火墙默认禁止 ICMP。反过来 ping 通、端口不通的常见原因有：服务没有监听（或只监听了 127.0.0.1）、主机防火墙或安全组没有放行该端口、中间设备拦截。
 
-## 3. 端口与连接状态 {#connections}
+## 3. 端口与连接状态 {#端口与连接状态}
 
 ```bash
 ss -lntp                       # 监听中的 TCP 端口及进程（需要 root 才能看到其他用户的进程）
@@ -52,7 +52,7 @@ ss -ant state time-wait | wc -l
 | CLOSE-WAIT | 被动关闭方 | 对方已发 FIN，本方程序尚未关闭连接 |
 | TIME-WAIT | 主动关闭方 | 等待 2MSL，确保对方收到最后的 ACK、旧报文过期 |
 
-## 4. TIME_WAIT 与 CLOSE_WAIT 过多 {#wait-states}
+## 4. TIME_WAIT 与 CLOSE_WAIT 过多 {#time_wait-与-close_wait-过多}
 
 **TIME_WAIT 过多**
 
@@ -65,7 +65,7 @@ ss -ant state time-wait | wc -l
 - 原因：对方已经关闭，本方程序没有调用 `close`。常见于异常分支没有释放连接、连接池泄漏、线程阻塞在其他地方没有机会处理关闭。
 - 处理：调参无效，要找到代码。用 `ss -antp state close-wait` 找到进程和对端地址，结合线程栈和代码检查连接的释放路径。
 
-## 5. tcpdump {#tcpdump-usage}
+## 5. tcpdump 抓包 {#tcpdump-抓包}
 
 ```bash
 tcpdump -i eth0 -nn host 10.0.0.2 and tcp port 8080 -w handshake.pcap
@@ -84,7 +84,7 @@ tcpdump -i eth0 -nn -A port 80 -c 100          # 打印内容，只抓 100 个�
 
 看握手时关注标志位 `[S]`、`[S.]`、`[.]`、`[F.]`、`[R]`，以及序列号、窗口大小和时间间隔。只有 SYN 没有 SYN+ACK，说明报文被丢弃或服务未监听；收到 RST 说明端口未监听或被主动拒绝；重传和较大的时间间隔说明链路丢包或对端处理慢。Pod 之间不通时，要在源和目标两端（以及节点网卡、隧道网卡上）分别抓包，确认报文在哪一段消失。
 
-## 6. iptables {#iptables-chains}
+## 6. iptables 规则 {#iptables-规则}
 
 iptables 是配置内核 netfilter 框架的工具。netfilter 在报文路径上提供五个挂载点（链）：
 
@@ -128,7 +128,7 @@ iptables 主要工作在网络层，也能匹配传输层的端口和连接状�
 - `ss`、`lsof` 的常用参数。
 - 用管道统计状态；各状态的含义。
 
-**相关内容**：[端口与连接状态](#connections)。
+**相关内容**：[端口与连接状态](#端口与连接状态)。
 
 <details>
 <summary>参考回答</summary>
@@ -157,7 +157,7 @@ iptables 主要工作在网络层，也能匹配传输层的端口和连接状�
 - 两个状态分别出现在主动关闭和被动关闭的一方。
 - TIME_WAIT 用连接复用解决，CLOSE_WAIT 要修代码；`tcp_tw_recycle` 的风险。
 
-**相关内容**：[TIME_WAIT 与 CLOSE_WAIT 过多](#wait-states)、[TCP 连接管理](../../basic-knowledge/network/tcp_handshake.mdx#three-way-handshake-time-wait)。
+**相关内容**：[TIME_WAIT 与 CLOSE_WAIT 过多](#time_wait-与-close_wait-过多)、[TCP 连接管理](../../basic-knowledge/network/tcp_handshake.mdx#three-way-handshake-time-wait)。
 
 <details>
 <summary>参考回答</summary>
@@ -187,7 +187,7 @@ CLOSE_WAIT 过多几乎都是程序问题：对方关了，本方没有 close，
 - ICMP 与 TCP 端口是不同的检查；ping 输出各字段的含义。
 - 分层排查的工具；端口不通的常见原因。
 
-**相关内容**：[分层确认连通性](#layers)。
+**相关内容**：[分层确认连通性](#分层确认连通性)。
 
 <details>
 <summary>参考回答</summary>
@@ -216,7 +216,7 @@ ping 的输出中，`icmp_seq` 是序号，不连续说明丢包；`ttl` 是剩�
 - 网卡、过滤表达式、不解析名称、写文件等参数。
 - 从标志位、序列号和时间间隔判断问题位置。
 
-**相关内容**：[tcpdump](#tcpdump-usage)。
+**相关内容**：[tcpdump 抓包](#tcpdump-抓包)。
 
 <details>
 <summary>参考回答</summary>
@@ -246,7 +246,7 @@ ping 的输出中，`icmp_seq` 是序号，不连续说明丢包；`ttl` 是剩�
 - netfilter 的五个挂载点与常用表的用途。
 - 工作层次与连接跟踪；kube-proxy 的 DNAT 与 IPVS 的区别。
 
-**相关内容**：[iptables](#iptables-chains)。
+**相关内容**：[iptables 规则](#iptables-规则)。
 
 <details>
 <summary>参考回答</summary>

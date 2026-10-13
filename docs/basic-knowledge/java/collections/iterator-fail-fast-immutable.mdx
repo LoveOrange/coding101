@@ -17,7 +17,7 @@ Iterator 把遍历位置从集合实现中抽离。普通集合的迭代器通�
 - `Collections.unmodifiableList` 返回只读视图，原集合变化仍可见；`List.copyOf` 返回不可变副本。[卡](#unmodifiable-list)
 - 不可变集合是浅层的，元素对象本身仍可能被修改。
 
-## 2. Iterable 与 Iterator {#iterable}
+## 2. Iterable 与 Iterator {#iterable-与-iterator}
 
 增强 `for` 会使用 `Iterable.iterator()`：
 
@@ -39,7 +39,7 @@ while (iterator.hasNext()) {
 
 Iterator 通常保存当前位置和遍历所需状态，不要求集合支持索引。数组列表、链表、哈希表和树都可以暴露统一遍历接口。
 
-## 3. 结构修改与 fail-fast {#fail-fast-section}
+## 3. 结构修改与 fail-fast {#结构修改与-fail-fast}
 
 下面的代码会在遍历中通过列表本身删除元素：
 
@@ -55,7 +55,7 @@ for (User user : users) {
 
 “结构修改”通常指改变元素数量或会破坏遍历结构的操作。替换某个位置的值是否计入，取决于具体集合契约。
 
-### 3.1 fail-fast 的检测范围 {#best-effort}
+### 3.1 fail-fast 的检测范围 {#fail-fast-的检测范围}
 
 Java API 明确说明，迭代器无法在所有非同步并发修改条件下作出绝对保证。因此：
 
@@ -64,7 +64,7 @@ Java API 明确说明，迭代器无法在所有非同步并发修改条件下�
 - `modCount` 检查不提供内存可见性或原子性。
 - 集合仍需要线程封闭、锁或并发实现。
 
-## 4. 遍历中删除元素 {#remove}
+## 4. 遍历中删除元素 {#遍历中删除元素}
 
 ```java
 Iterator<User> iterator = users.iterator();
@@ -85,7 +85,7 @@ users.removeIf(User::disabled);
 
 `ListIterator` 还支持向前遍历、替换当前元素和在游标处插入，适用于 List 的局部编辑。
 
-## 5. 并发集合的迭代语义 {#concurrent-iteration}
+## 5. 并发集合的迭代语义 {#并发集合的迭代语义}
 
 `ConcurrentHashMap` 的迭代器是弱一致的：
 
@@ -101,7 +101,7 @@ users.removeIf(User::disabled);
 
 把这些行为统称为“fail-safe”容易掩盖差异。Java API 并没有定义一个统一的 fail-safe 接口，应该直接说明弱一致还是快照语义。
 
-## 6. 不可修改视图与不可变副本 {#view-vs-copy}
+## 6. 不可修改视图与不可变副本 {#不可修改视图与不可变副本}
 
 不可修改视图阻止通过当前引用写入，但仍观察原集合变化：
 
@@ -126,7 +126,7 @@ System.out.println(snapshot); // [A, B, C]
 
 `List.of`、`Set.of` 和 `Map.of` 直接创建不可修改集合，并拒绝 null；Set 和 Map 工厂还会拒绝重复元素或重复键。
 
-## 7. 浅层不可变 {#shallow}
+## 7. 浅层不可变 {#浅层不可变}
 
 ```java
 List<User> snapshot = List.copyOf(users);
@@ -137,7 +137,7 @@ snapshot.get(0).rename("changed");
 
 不可修改集合可以减少调用方意外改写结构，也更容易安全发布；它不会自动解决元素内部的线程安全问题。
 
-## 8. `Arrays.asList` 的固定大小列表 {#fixed-size}
+## 8. `Arrays.asList` 的固定大小列表 {#arraysaslist-的固定大小列表}
 
 `Arrays.asList` 返回由原数组支持的固定大小列表：
 
@@ -187,7 +187,7 @@ System.out.println(array[0]); // X
 - 尽力检测与线程安全保证的区别。
 - 正确删除当前元素的方式。
 
-**相关内容**：[结构修改与 fail-fast](#fail-fast-section)、[遍历中删除元素](#remove)。
+**相关内容**：[结构修改与 fail-fast](#结构修改与-fail-fast)、[遍历中删除元素](#遍历中删除元素)。
 
 <details>
 <summary>参考回答</summary>
@@ -213,7 +213,7 @@ System.out.println(array[0]); // X
 - 集合不可变与元素不可变的区别。
 - API 返回值是否仍与内部状态共享。
 
-**相关内容**：[不可修改视图与不可变副本](#view-vs-copy)至[`Arrays.asList` 的固定大小列表](#fixed-size)。
+**相关内容**：[不可修改视图与不可变副本](#不可修改视图与不可变副本)至[`Arrays.asList` 的固定大小列表](#arraysaslist-的固定大小列表)。
 
 <details>
 <summary>参考回答</summary>

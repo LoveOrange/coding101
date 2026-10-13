@@ -17,7 +17,7 @@ knowledge:
 - 过度 Mock 会把内部调用固定成契约，重构时测试大量失败，而真实集成问题仍然发现不了。[卡](#over-mocking)
 - Mock 数据库不能验证 SQL、映射和约束，数据访问层需要真实数据库的集成测试。
 
-## 2. 测试替身的种类 {#kinds}
+## 2. 测试替身的种类 {#测试替身的种类}
 
 | 类型 | 主要作用 | 示例 |
 | --- | --- | --- |
@@ -64,7 +64,7 @@ verify(gateway).charge(command.idempotencyKey(), command.amount());
 
 不要验证所有 getter、内部 helper 和调用顺序。实现重构后可观察结果没变，测试应尽量继续通过。
 
-## 5. 状态断言与交互断言 {#assertions}
+## 5. 状态断言与交互断言 {#状态断言与交互断言}
 
 状态断言检查结果：
 
@@ -80,7 +80,7 @@ verify(eventPublisher).publish(any(PaymentAccepted.class));
 
 纯计算和值对象优先验证状态。外部副作用没有方便返回值时，验证端口交互。两者可以组合，但不要用几十条 verify 代替业务结果断言。
 
-## 6. 替换的边界 {#boundaries}
+## 6. 替换的边界 {#替换的边界}
 
 良好边界通常是：
 
@@ -117,7 +117,7 @@ final class InMemoryOrderRepository implements OrderRepository {
 
 Fake 让多个操作共享可控状态，比为每次调用配置 when 更自然。它也可能与真实数据库行为漂移，例如唯一约束、事务、排序和锁不同，因此必须用真实集成测试补充。
 
-## 8. Spy 与部分 Mock {#spy}
+## 8. Spy 与部分 Mock {#spy-与部分-mock}
 
 Spy 默认调用真实方法，同时允许局部替换。它适合观测遗留对象，但容易形成“部分真实、部分虚假”的难懂状态。
 
@@ -127,7 +127,7 @@ List<String> spy = spy(new ArrayList<>());
 
 业务代码大量依赖 spy，通常说明职责难以隔离。优先提取明确协作者，而不是为了测试绕过内部方法。
 
-## 9. 过度严格的交互验证 {#strict-interactions}
+## 9. 过度严格的交互验证 {#过度严格的交互验证}
 
 以下测试对重构很脆弱：
 
@@ -174,7 +174,7 @@ List<String> spy = spy(new ArrayList<>());
 - 状态断言和交互断言的选择。
 - 替身不能证明真实集成行为。
 
-**相关内容**：[测试替身的种类](#kinds)至[替换的边界](#boundaries)。
+**相关内容**：[测试替身的种类](#测试替身的种类)至[替换的边界](#替换的边界)。
 
 <details>
 <summary>参考回答</summary>
@@ -199,7 +199,7 @@ Stub 为测试提供预设返回值或异常，用来控制被测对象的输入
 - 全部依赖被替换后留下了哪些盲区。
 - 大量 Mock 是否暴露职责过多。
 
-**相关内容**：[替换的边界](#boundaries)、[过度严格的交互验证](#strict-interactions)。
+**相关内容**：[替换的边界](#替换的边界)、[过度严格的交互验证](#过度严格的交互验证)。
 
 <details>
 <summary>参考回答</summary>

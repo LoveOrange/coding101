@@ -17,7 +17,7 @@ Spring IoC 容器负责根据配置创建对象、连接依赖并管理生命周
 - 业务代码频繁调用 `getBean` 会退化为 Service Locator，依赖从构造器签名中消失。
 - 实体、值对象等短生命周期对象直接 `new`，需要注入、代理或生命周期管理的组件才注册为 Bean。
 
-## 2. 在对象内部创建依赖 {#problem}
+## 2. 在对象内部创建依赖 {#在对象内部创建依赖}
 
 ```java
 public final class OrderService {
@@ -42,7 +42,7 @@ public final class OrderService {
 
 谁创建 `PaymentClient`、选择哪个实现，由应用装配边界决定。
 
-## 3. IoC 与 DI {#ioc-vs-di}
+## 3. IoC 与 DI {#ioc-与-di}
 
 **控制反转（IoC）**指对象创建和协作关系的控制权从业务对象转移到外部容器。**依赖注入（DI）**是实现方式：容器通过构造器、工厂方法或属性把依赖交给对象。
 
@@ -53,7 +53,7 @@ Spring 容器还负责：
 - 执行初始化、销毁和作用域协议。
 - 应用事务、异步、校验等基础设施处理器。
 
-## 4. BeanDefinition 与实例 {#bean-definition}
+## 4. BeanDefinition 与实例 {#beandefinition-与实例}
 
 容器先注册 `BeanDefinition`，其中描述类、工厂方法、作用域、依赖、初始化方式等元数据；需要对象时，再按照定义创建 Bean。
 
@@ -69,7 +69,7 @@ class PaymentConfiguration {
 
 `@Bean` 方法的参数也是依赖声明。容器解析 `PaymentProperties`，再调用工厂方法得到实例。
 
-## 5. 替换与测试 {#testing}
+## 5. 替换与测试 {#替换与测试}
 
 测试可以直接构造业务对象：
 
@@ -82,7 +82,7 @@ OrderService service = new OrderService(stub);
 
 容器还能统一记录 Bean 创建时间、依赖图和配置来源，但集中管理也使启动链路更长。出现重复 Bean、条件不匹配或循环依赖时，需要查看容器证据，而不是只沿着 `new` 调用查找。
 
-## 6. 容器的使用边界 {#boundaries}
+## 6. 容器的使用边界 {#容器的使用边界}
 
 业务类频繁调用 `applicationContext.getBean(...)` 会重新变成 Service Locator：依赖从构造器签名中消失，测试和静态分析都更困难。
 
@@ -115,7 +115,7 @@ OrderService service = new OrderService(stub);
 - BeanDefinition、实例和生命周期。
 - 容器不能消除业务契约。
 
-**相关内容**：[在对象内部创建依赖](#problem)至[BeanDefinition 与实例](#bean-definition)。
+**相关内容**：[在对象内部创建依赖](#在对象内部创建依赖)至[BeanDefinition 与实例](#beandefinition-与实例)。
 
 <details>
 <summary>参考回答</summary>

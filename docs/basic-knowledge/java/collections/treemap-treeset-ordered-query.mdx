@@ -17,7 +17,7 @@ knowledge:
 - `TreeSet` 基于 TreeMap 实现，只保存键。
 - 只需要精确查找时用 HashMap，需要排序、范围或前驱后继时用 TreeMap。
 
-## 2. 排序规则 {#ordering}
+## 2. 排序规则 {#排序规则}
 
 使用自然顺序：
 
@@ -42,7 +42,7 @@ NavigableSet<User> users = new TreeSet<>(
 
 Comparator 必须形成稳定、可传递的全序。上例用 id 处理相同分数，避免两个不同用户因为比较结果为 0 而被 TreeSet 当作同一个元素。
 
-## 3. 红黑树 {#red-black-tree}
+## 3. 红黑树 {#红黑树}
 
 当前 OpenJDK 的 TreeMap 使用红黑树。插入和删除后通过颜色与旋转恢复约束，使树高保持 O(log n)。因此：
 
@@ -52,7 +52,7 @@ Comparator 必须形成稳定、可传递的全序。上例用 id 处理相同�
 
 HashMap 平均查找更快，但不提供排序和范围导航。选择 TreeMap 的理由应当是需要它的有序查询，而不是笼统地认为“树更稳定”。
 
-## 4. NavigableMap 边界查询 {#navigable}
+## 4. NavigableMap 边界查询 {#navigablemap-边界查询}
 
 ```java
 Map.Entry<Integer, String> atMost = levels.floorEntry(25);   // 20
@@ -71,7 +71,7 @@ Map.Entry<Integer, String> atLeast = levels.ceilingEntry(20); // 20
 
 这类操作适合版本生效点、价格区间、时间调度和阈值规则。
 
-## 5. 范围视图 {#range-views}
+## 5. 范围视图 {#范围视图}
 
 ```java
 NavigableMap<Integer, String> middle =
@@ -88,7 +88,7 @@ NavigableMap<Integer, String> snapshot = new TreeMap<>(middle);
 
 `headMap`、`tailMap` 和 `descendingMap` 也返回视图。API 是否包含边界应显式写出，避免默认重载造成区间错误。
 
-## 6. 比较结果与键相等 {#compare-zero}
+## 6. 比较结果与键相等 {#比较结果与键相等}
 
 TreeMap 使用排序比较判断键是否相同，不会再用 `equals` 区分：
 
@@ -151,7 +151,7 @@ PriorityQueue 只保证队首是最小元素，不能高效检查任意成员或
 - 自然顺序与 Comparator 怎样判断键相同。
 - 范围和前驱后继查询为何不能由普通 HashMap 直接提供。
 
-**相关内容**：[排序规则](#ordering)至[比较结果与键相等](#compare-zero)。
+**相关内容**：[排序规则](#排序规则)至[比较结果与键相等](#比较结果与键相等)。
 
 <details>
 <summary>参考回答</summary>
@@ -176,7 +176,7 @@ TreeMap 当前使用红黑树，按照键的自然顺序或 Comparator 组织节
 - Comparator 与 equals 不一致的后果。
 - 怎样为相同业务排序值补充唯一键。
 
-**相关内容**：[比较结果与键相等](#compare-zero)、[TreeSet](#treeset)。
+**相关内容**：[比较结果与键相等](#比较结果与键相等)、[TreeSet](#treeset)。
 
 <details>
 <summary>参考回答</summary>

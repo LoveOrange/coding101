@@ -17,7 +17,7 @@ knowledge:
 - 公共池是进程级共享资源，阻塞 I/O 会占住工作线程，影响所有使用者。
 - 服务端使用前确认：数据量大、单元素计算重、数据源易拆分、无副作用、无阻塞，并用基准验证收益。[卡](#parallel-stream-checklist)
 
-## 2. Spliterator 拆分 {#spliterator}
+## 2. Spliterator 拆分 {#spliterator-拆分}
 
 Stream 通过 `Spliterator` 遍历和拆分数据源。并行流水线会尝试调用 `trySplit()`，把一个数据范围分成更小的范围：
 
@@ -33,7 +33,7 @@ Stream 通过 `Spliterator` 遍历和拆分数据源。并行流水线会尝试�
 
 `Spliterator` 的特征会告诉 Stream 数据是否有顺序、大小是否已知、元素是否互异等。执行器可以据此选择拆分和合并策略，但不会凭空消除数据源本身的限制。
 
-## 3. ForkJoinPool {#fork-join}
+## 3. ForkJoinPool {#forkjoinpool}
 
 并行流通常使用 `ForkJoinPool.commonPool()` 执行任务。Fork/Join 的核心流程是：
 
@@ -53,7 +53,7 @@ long total = orders.parallelStream()
 
 这段代码适合并行的前提是：数据量足够、过滤和金额计算无共享副作用、计算成本能够覆盖拆分调度开销，而且当前进程还有可用 CPU。
 
-## 4. 执行顺序 {#ordering}
+## 4. 执行顺序 {#执行顺序}
 
 有遇到顺序的数据源，不等于每个操作都按这个顺序执行：
 
@@ -67,7 +67,7 @@ List.of(1, 2, 3, 4)
 
 有些终止操作在语义上保留顺序，例如有序流的 `findFirst`；`findAny` 则允许返回任意分区的结果。业务不要求顺序时，可以调用 `unordered()` 放宽约束，但必须确认结果语义确实不依赖顺序。
 
-## 5. 外部可变状态 {#shared-state}
+## 5. 外部可变状态 {#外部可变状态}
 
 下面的代码不安全：
 
@@ -98,7 +98,7 @@ Lambda 还应避免依赖：
 
 并行任务可能在主线程和不同 Worker 上执行，线程本地状态不会自动传播。
 
-## 6. 阻塞 I/O {#blocking-io}
+## 6. 阻塞 I/O {#阻塞-io}
 
 ```java
 List<Profile> profiles = userIds.parallelStream()
@@ -118,7 +118,7 @@ List<Profile> profiles = userIds.parallelStream()
 
 虚拟线程、带界限的执行器或异步客户端都比“把 Stream 改成 parallel”更容易表达这些约束。具体选择取决于调用模型，不是统一替代关系。
 
-## 7. commonPool 竞争 {#common-pool}
+## 7. commonPool 竞争 {#commonpool-竞争}
 
 公共 ForkJoinPool 是 JVM 进程内的共享资源。一个模块提交大量长任务，会影响其他使用者。只调整 `java.util.concurrent.ForkJoinPool.common.parallelism` 也是进程级配置，无法为每个接口建立独立预算。
 
@@ -130,7 +130,7 @@ List<Profile> profiles = userIds.parallelStream()
 
 :::
 
-## 8. 适用条件 {#when-useful}
+## 8. 适用条件 {#适用条件}
 
 并行流更可能适合：
 
@@ -151,7 +151,7 @@ List<Profile> profiles = userIds.parallelStream()
 
 性能判断需要在接近生产的数据规模、核心数和并发背景下用 JMH 或端到端压测验证。只测一次 `System.currentTimeMillis()` 会混入类加载、JIT 编译和 GC。
 
-## 9. 异常与取消 {#exceptions}
+## 9. 异常与取消 {#异常与取消}
 
 并行流水线中的某个任务抛出异常时，终止操作会失败，但已经开始的其他任务不一定立刻停止。Stream 没有提供请求级超时参数，也没有一套面向远程调用的补偿协议。
 
@@ -192,7 +192,7 @@ List<Profile> profiles = userIds.parallelStream()
 - 数据源拆分质量为什么影响并行流。
 - 阻塞任务为什么会降低 Fork/Join 的利用率。
 
-**相关内容**：[Spliterator 拆分](#spliterator)、[ForkJoinPool](#fork-join)。
+**相关内容**：[Spliterator 拆分](#spliterator-拆分)、[ForkJoinPool](#forkjoinpool)。
 
 <details>
 <summary>参考回答</summary>
@@ -218,7 +218,7 @@ Fork/Join 把大任务递归拆成小任务，Worker 主要从自己的双端队
 - commonPool 共享、副作用、顺序与线程上下文。
 - 怎样用基准和容量约束判断是否采用并行流。
 
-**相关内容**：[外部可变状态](#shared-state)、[阻塞 I/O](#blocking-io)、[适用条件](#when-useful)。
+**相关内容**：[外部可变状态](#外部可变状态)、[阻塞 I/O](#阻塞-io)、[适用条件](#适用条件)。
 
 <details>
 <summary>参考回答</summary>

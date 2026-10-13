@@ -17,7 +17,7 @@ knowledge:
 - 安全点让所有线程停在栈和引用可以准确解释的位置，GC、去优化、类重定义等全局操作都需要它。[卡](#safepoints)
 - G1、ZGC、Shenandoah 把部分工作与应用并发执行，但仍有短暂的 STW 阶段。
 
-## 2. 分代假设 {#generational-hypothesis}
+## 2. 分代假设 {#分代假设}
 
 典型分代堆把新对象放入年轻代，存活若干轮后晋升到老年代。年轻代收集主要处理新对象，老年代收集频率较低。
 
@@ -25,7 +25,7 @@ knowledge:
 
 “Minor GC”“Major GC”“Full GC”在不同收集器和日志工具中的含义不完全一致。诊断应看收集器名称、具体 phase、回收范围和是否 Stop-The-World。
 
-## 3. 跨代引用与写屏障 {#cross-generation}
+## 3. 跨代引用与写屏障 {#跨代引用与写屏障}
 
 ```java
 oldOrder.latestEvent = new Event();
@@ -37,7 +37,7 @@ HotSpot 收集器通常通过写屏障在引用写入时维护 card table、reme
 
 屏障是 JVM 在引用访问周围插入的小段逻辑，不是 CPU 内存屏障的同义词。它会增加每次读写成本，以换取较小的回收扫描范围或并发能力。
 
-## 4. 并发标记与对象图变化 {#concurrent-marking}
+## 4. 并发标记与对象图变化 {#并发标记与对象图变化}
 
 收集器和应用线程同时运行时，应用可能：
 
@@ -49,7 +49,7 @@ HotSpot 收集器通常通过写屏障在引用写入时维护 card table、reme
 
 理解屏障时先问它保护什么正确性条件，再看具体收集器实现。把 G1、ZGC 和 Shenandoah 的屏障机制混成一套固定步骤，会得到错误结论。
 
-## 5. 安全点 {#safepoint}
+## 5. 安全点 {#安全点}
 
 JVM 在执行某些全局操作时，需要线程到达可以准确解释栈和对象引用的位置。HotSpot 通过 safepoint 或更细粒度的 thread-local handshake 协调这些操作。
 
@@ -61,7 +61,7 @@ JVM 在执行某些全局操作时，需要线程到达可以准确解释栈和�
 
 GC 日志里的某个 phase 很短，不代表应用停顿必然同样短；线程进入安全点的延迟、引用处理、类卸载等都可能增加时间。
 
-## 6. Stop-The-World 阶段 {#stw}
+## 6. Stop-The-World 阶段 {#stop-the-world-阶段}
 
 Serial 和 Parallel 的主要回收工作在停顿中完成。G1、ZGC、Shenandoah 会把部分标记、整理或重定位与应用并发，但仍存在很短或不同用途的 STW 阶段。
 
@@ -75,7 +75,7 @@ Serial 和 Parallel 的主要回收工作在停顿中完成。G1、ZGC、Shenand
 
 低停顿不是零停顿，也不意味着没有吞吐代价。
 
-## 7. 晋升与分配失败 {#promotion-failure}
+## 7. 晋升与分配失败 {#晋升与分配失败}
 
 年轻对象存活后需要复制或晋升。如果目标空间不足，可能出现 evacuation failure、promotion failure、分配停滞或更重的回收路径，具体名称取决于收集器。
 
@@ -88,7 +88,7 @@ Serial 和 Parallel 的主要回收工作在停顿中完成。G1、ZGC、Shenand
 
 这类问题不能只通过“降低停顿目标”解决。更激进的停顿目标可能让每次回收工作更少、频率更高，并增加并发周期压力。
 
-## 8. 从日志观察回收过程 {#logs}
+## 8. 从日志观察回收过程 {#从日志观察回收过程}
 
 ```bash
 java -Xlog:gc*,safepoint:file=gc.log:time,uptime,level,tags -jar app.jar
@@ -135,7 +135,7 @@ java -Xlog:gc*,safepoint:file=gc.log:time,uptime,level,tags -jar app.jar
 - 屏障在写入时维护引用摘要。
 - 空间换取扫描时间的权衡。
 
-**相关内容**：[分代假设](#generational-hypothesis)至[并发标记与对象图变化](#concurrent-marking)。
+**相关内容**：[分代假设](#分代假设)至[并发标记与对象图变化](#并发标记与对象图变化)。
 
 <details>
 <summary>参考回答</summary>
@@ -160,7 +160,7 @@ java -Xlog:gc*,safepoint:file=gc.log:time,uptime,level,tags -jar app.jar
 - 到达安全点的时间和停顿工作时间。
 - 并发收集器仍有 STW 阶段。
 
-**相关内容**：[安全点](#safepoint)和[Stop-The-World 阶段](#stw)。
+**相关内容**：[安全点](#安全点)和[Stop-The-World 阶段](#stop-the-world-阶段)。
 
 <details>
 <summary>参考回答</summary>

@@ -82,19 +82,19 @@ ZADD interview:rank 120 alice
 # 更新 alice 的分数；集合仍然只有三个成员。
 ```
 
-## 6. Hash 与 Set {#hash-set}
+## 6. Hash 与 Set {#hash-与-set}
 
 Hash 保存字段到值的映射，字段值仍是字节串，不支持直接嵌套另一种 Redis 类型。`HSET` 更新单个字段不需要把整个 JSON 取回再写入；但对象之间的关联、复杂查询和字段生命周期仍需要应用设计。Redis 7.2 的 TTL 作用于整个键，不能把更新版本的字段过期能力当成该基线已有功能。
 
 Set 是无序的唯一成员集合，适合去重和集合运算。Redis 7.2 可见 `intset`、`listpack`、`hashtable` 等编码；小整数集合和普通字符串集合未必采用同一种编码。成员操作与大集合求交、全量读取的复杂度不同，应按具体命令评估。
 
-## 7. 紧凑编码与可观察性 {#encodings}
+## 7. 紧凑编码与可观察性 {#紧凑编码与可观察性}
 
 紧凑编码减少指针和分配开销，但查找、插入可能需要线性扫描或移动连续数据。元素数、元素长度或内容不满足条件时，Redis 会转换编码，类型和命令语义不随之改变；删除元素后也不能假定一定转换回原编码。
 
 在独立测试键上用 `TYPE`、`OBJECT ENCODING`、`MEMORY USAGE` 比较内容变化。不要根据一台实例上的阈值输出断言所有版本相同；配置、版本和数据决定实际编码。避免对大键使用 `LRANGE 0 -1`、`HGETALL` 等全量读取；SCAN 家族可分批遍历，但不提供快照，可能重复返回，COUNT 只是工作量提示。
 
-## 8. Stream 与专用操作 {#stream-specialized}
+## 8. Stream 与专用操作 {#stream-与专用操作}
 
 Stream 使用带 ID 的追加记录。消费组通过待确认列表跟踪已投递未确认消息，`XACK` 确认处理；消费者故障后可认领待处理项。确认丢失或认领重试会重复投递，业务仍需幂等，清理策略也不能提前删掉仍需要恢复的内容。
 
@@ -102,7 +102,7 @@ Bitmap 是 String 上的位操作，适合稠密用户编号的签到；极大�
 
 单条命令原子执行不意味着多命令业务流程原子。条件更新可用合适单命令，复杂判断可用有界 Lua 脚本或 WATCH 配合事务重试。脚本执行时间过长会阻塞其他请求；跨键操作在 Cluster 下还要考虑 hash slot。
 
-## 9. 面试题 {#interview}
+## 9. 面试题 {#面试题}
 
 ### 9.1 Redis 的 String、Hash 与键空间字典分别是什么？ {#type-encoding}
 
@@ -115,7 +115,7 @@ Bitmap 是 String 上的位操作，适合稠密用户编号的签到；极大�
 - 逻辑类型与内部编码。
 - SDS 与二进制安全。
 
-**相关内容**：[字符串](#2-字符串)、[Hash 与 Set](#hash-set)。
+**相关内容**：[字符串](#2-字符串)、[Hash 与 Set](#hash-与-set)。
 
 <details>
 <summary>参考回答</summary>
@@ -135,7 +135,7 @@ String 保存字节串，Hash 保存字段和值的映射，键空间字典负�
 - 操作需求与数据结构。
 - 队列确认和幂等。
 
-**相关内容**：[类型与场景](#1-redis-的数据结构与使用场景)、[Stream 与专用操作](#stream-specialized)。
+**相关内容**：[类型与场景](#1-redis-的数据结构与使用场景)、[Stream 与专用操作](#stream-与专用操作)。
 
 <details>
 <summary>参考回答</summary>
@@ -155,7 +155,7 @@ String 保存字节串，Hash 保存字段和值的映射，键空间字典负�
 - 空间与操作成本。
 - 版本和转换条件。
 
-**相关内容**：[列表](#3-列表)、[紧凑编码](#encodings)。
+**相关内容**：[列表](#3-列表)、[紧凑编码](#紧凑编码与可观察性)。
 
 <details>
 <summary>参考回答</summary>
@@ -195,7 +195,7 @@ String 保存字节串，Hash 保存字段和值的映射，键空间字典负�
 - 单命令原子性。
 - 多命令与跨键边界。
 
-**相关内容**：[字符串](#2-字符串)、[Stream 与专用操作](#stream-specialized)。
+**相关内容**：[字符串](#2-字符串)、[Stream 与专用操作](#stream-与专用操作)。
 
 <details>
 <summary>参考回答</summary>
@@ -215,7 +215,7 @@ String 保存字节串，Hash 保存字段和值的映射，键空间字典负�
 - 弹出与确认。
 - 重投递和业务幂等。
 
-**相关内容**：[列表](#3-列表)、[Stream 与专用操作](#stream-specialized)。
+**相关内容**：[列表](#3-列表)、[Stream 与专用操作](#stream-与专用操作)。
 
 <details>
 <summary>参考回答</summary>
@@ -224,7 +224,7 @@ String 保存字节串，Hash 保存字段和值的映射，键空间字典负�
 
 </details>
 
-## 10. 参考资料 {#references}
+## 10. 参考资料 {#参考资料}
 
 - [Redis：Data types](https://redis.io/docs/latest/develop/data-types/)
 - [Redis：OBJECT ENCODING](https://redis.io/docs/latest/commands/object-encoding/)

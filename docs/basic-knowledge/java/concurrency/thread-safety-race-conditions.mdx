@@ -17,7 +17,7 @@ knowledge:
 - 临界区的范围由业务不变量决定，检查和更新必须在同一把锁内完成。[卡](#judge-thread-safety)
 - 优先用不共享、不可变或线程封闭减少同步需求，再选择锁、原子类或并发容器。
 
-## 2. 竞态条件 {#race-condition}
+## 2. 竞态条件 {#竞态条件}
 
 下面的计数器会丢失更新：
 
@@ -39,7 +39,7 @@ public final class Counter {
 
 这类结果取决于线程交错顺序，属于**竞态条件**。如果两个相互冲突的普通内存访问没有被 happens-before 排序，其中至少一个是写入，则还构成 Java 内存模型所说的**数据竞争**。
 
-## 3. 原子性、可见性与有序性 {#atomicity-visibility-ordering}
+## 3. 原子性、可见性与有序性 {#原子性可见性与有序性}
 
 | 性质 | 要回答的问题 | 常见错误 |
 | --- | --- | --- |
@@ -49,7 +49,7 @@ public final class Counter {
 
 三者不能互相替代。`volatile` 可以为单次读写建立可见性和顺序约束，却不能把 `value++` 合并成一个不可分割的更新。
 
-## 4. 不变量与临界区 {#invariants}
+## 4. 不变量与临界区 {#不变量与临界区}
 
 假设账户要求余额不能为负：
 
@@ -63,7 +63,7 @@ if (balance >= amount) {
 
 当多个字段共同描述一个状态时也一样。例如 `lower <= upper` 不能只靠两个独立的 `volatile` 字段保证。
 
-## 5. 同步策略 {#strategies}
+## 5. 同步策略 {#同步策略}
 
 常见策略按约束方式可以分为：
 
@@ -74,7 +74,7 @@ if (balance >= amount) {
 
 同步工具应服从状态模型。一个计数值适合 `AtomicLong`；多个字段的事务式变更通常更适合锁；事件流可以交给队列和单一消费者。
 
-## 6. 用 `synchronized` 保护状态转换 {#synchronized-fix}
+## 6. 用 `synchronized` 保护状态转换 {#用-synchronized-保护状态转换}
 
 ```java
 public final class Counter {
@@ -118,7 +118,7 @@ public final class Counter {
 - 复合不变量与临界区。
 - 不能只按变量是否使用 `volatile` 判断。
 
-**相关内容**：[竞态条件](#race-condition)至[同步策略](#strategies)。
+**相关内容**：[竞态条件](#竞态条件)至[同步策略](#同步策略)。
 
 <details>
 <summary>参考回答</summary>

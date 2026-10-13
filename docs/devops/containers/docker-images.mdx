@@ -17,7 +17,7 @@ knowledge:
 - 减小镜像：多阶段构建只把产物复制到运行镜像、选择精简的基础镜像、同一层内安装并清理缓存、使用 `.dockerignore`。[卡](#image-optimization)
 - 容器的可写层随容器删除而消失，需要保留的数据写入卷（volume）或绑定挂载（bind mount）；多个容器可以挂载同一个卷共享数据。
 
-## 2. 常用指令 {#instructions}
+## 2. 常用指令 {#常用指令}
 
 ```dockerfile
 FROM eclipse-temurin:21-jre            # 基础镜像
@@ -42,7 +42,7 @@ CMD ["--spring.profiles.active=prod"]  # 默认参数
 | `ARG` 与 `ENV` | `ARG` 只在构建期有效；`ENV` 会写入镜像，运行时可见。都不要用来传递密钥 |
 | `EXPOSE` 与 `-p` | `EXPOSE` 只是文档说明；发布端口要用 `docker run -p 宿主端口:容器端口` |
 
-## 3. 分层与构建缓存 {#layers}
+## 3. 分层与构建缓存 {#分层与构建缓存}
 
 `RUN`、`COPY`、`ADD` 会生成新的文件系统层，其他指令只修改元数据。构建时 Docker 逐条检查缓存：指令和输入（`COPY` 的文件内容）都没变，就复用已有的层；某一层失效后，之后的层全部重新构建。
 
@@ -58,7 +58,7 @@ RUN npm run build
 
 `docker history <image>` 查看每一层的大小和生成它的指令，用于找出体积大的层。
 
-## 4. 体积与构建速度优化 {#optimization}
+## 4. 体积与构建速度优化 {#体积与构建速度优化}
 
 **多阶段构建**：在构建阶段使用完整的编译环境，最终镜像只复制产物。
 
@@ -87,7 +87,7 @@ ENTRYPOINT ["java", "-jar", "/app/app.jar"]
 
 安全方面：以非 root 用户运行；不在镜像中放密钥（`ARG`、`ENV` 和中间层都能被看到），构建期需要的密钥用 BuildKit 的 secret 挂载；定期扫描镜像漏洞。
 
-## 5. 容器的数据存储 {#storage}
+## 5. 容器的数据存储 {#容器的数据存储}
 
 | 方式 | 参数 | 说明 |
 | --- | --- | --- |
@@ -118,7 +118,7 @@ ENTRYPOINT ["java", "-jar", "/app/app.jar"]
 - 常用指令的用途；构建期和运行期指令的区分。
 - `CMD` 与 `ENTRYPOINT` 的组合规则、exec 格式与信号；`COPY` 与 `ADD`；`EXPOSE` 只是声明。
 
-**相关内容**：[常用指令](#instructions)。
+**相关内容**：[常用指令](#常用指令)。
 
 <details>
 <summary>参考回答</summary>
@@ -148,7 +148,7 @@ ENTRYPOINT ["java", "-jar", "/app/app.jar"]
 - 多阶段构建、精简基础镜像、同层清理、`.dockerignore`。
 - 利用层缓存的指令顺序；删除文件不缩小镜像的原因。
 
-**相关内容**：[体积与构建速度优化](#optimization)、[分层与构建缓存](#layers)。
+**相关内容**：[体积与构建速度优化](#体积与构建速度优化)、[分层与构建缓存](#分层与构建缓存)。
 
 <details>
 <summary>参考回答</summary>
@@ -174,7 +174,7 @@ ENTRYPOINT ["java", "-jar", "/app/app.jar"]
 - 只读层与可写层、写时复制；分层带来的复用。
 - 卷、绑定挂载与 tmpfs 的区别。
 
-**相关内容**：[分层与构建缓存](#layers)、[容器的数据存储](#storage)、[联合文件系统](./container-principles.mdx#unionfs)。
+**相关内容**：[分层与构建缓存](#分层与构建缓存)、[容器的数据存储](#容器的数据存储)、[联合文件系统](./container-principles.mdx#联合文件系统)。
 
 <details>
 <summary>参考回答</summary>

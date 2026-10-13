@@ -13,10 +13,10 @@ SPI 让框架只依赖一个服务接口，在运行时发现实现。困难在�
 
 - `ServiceLoader` 根据 `META-INF/services` 或模块声明发现服务接口的实现。
 - 服务接口可能由上层加载器定义，实现在应用类路径中；父委派无法向下查找，所以 SPI 默认使用线程上下文类加载器。[卡](#spi-context-classloader)
-- 插件隔离时，宿主与插件共享的 API 由共同父加载器加载，插件私有依赖用独立加载器，必要时 child-first。[卡](#plugin-isolation)
+- 插件隔离时，宿主与插件共享的 API 由共同父加载器加载，插件私有依赖用独立加载器，必要时 child-first。[卡](#插件隔离)
 - 类不能单独卸载，只有加载器和它定义的所有类都不可达时才能被回收。
 
-## 2. `ServiceLoader` {#service-loader}
+## 2. `ServiceLoader` {#serviceloader}
 
 服务接口：
 
@@ -39,7 +39,7 @@ for (PaymentProvider provider : ServiceLoader.load(PaymentProvider.class)) {
 
 SPI 的核心契约是服务接口。接口、参数类型和返回类型必须位于使用者与实现都能看到的共享加载边界。
 
-## 3. 线程上下文类加载器 {#context-classloader}
+## 3. 线程上下文类加载器 {#线程上下文类加载器}
 
 `ServiceLoader.load(service)` 使用当前线程的上下文类加载器。框架代码即使由平台或公共加载器定义，也可以借助线程上下文类加载器发现应用层提供者：
 
@@ -57,7 +57,7 @@ try {
 
 上下文类加载器是线程可变状态。在线程池中修改后必须恢复，否则后续任务可能加载错误应用的类，并且线程还会长期持有本应卸载的加载器。
 
-## 4. 插件隔离 {#plugin-isolation}
+## 4. 插件隔离 {#插件隔离}
 
 一个实用边界通常是：
 
@@ -72,7 +72,7 @@ try {
 
 插件 API 由共同父加载器定义。插件私有库可以 child-first，以允许不同版本并存。若插件把自己的 API 副本也加载一次，实现类实现的是插件加载器定义的同名接口，宿主仍无法转换。
 
-## 5. JPMS 模块层 {#module-layer}
+## 5. JPMS 模块层 {#jpms-模块层}
 
 JPMS 用模块描述可读关系和导出包。`ModuleLayer` 可以建立新的模块图，并配合一个或多个类加载器加载模块：
 
@@ -83,7 +83,7 @@ ServiceLoader<PaymentProvider> providers =
 
 模块解决“哪些模块可以读哪些模块、哪些包对外导出”的问题；类加载器解决“由谁查找并定义这个类”。两者相关但不是同一个概念。
 
-## 6. 资源查找 {#resources}
+## 6. 资源查找 {#资源查找}
 
 框架不只加载类，还读取配置、模板和服务声明：
 
@@ -93,7 +93,7 @@ Enumeration<URL> resources = loader.getResources("META-INF/services/... ");
 
 多个 JAR 可以提供同名资源，`getResource` 只返回一个，`getResources` 才能枚举全部。自定义 child-first 逻辑若只改类查找、不改资源查找，类和配置可能来自不同版本。
 
-## 7. 类的卸载 {#unloading}
+## 7. 类的卸载 {#类的卸载}
 
 单个类不能独立卸载。只有定义它的类加载器连同所有已定义类都不可达时，JVM 才可能在 GC 中卸载它们。
 
@@ -137,7 +137,7 @@ Enumeration<URL> resources = loader.getResources("META-INF/services/... ");
 - 服务接口与实现所在加载层级。
 - 线程池中恢复上下文类加载器的重要性。
 
-**相关内容**：[`ServiceLoader`](#service-loader)和[线程上下文类加载器](#context-classloader)。
+**相关内容**：[`ServiceLoader`](#serviceloader)和[线程上下文类加载器](#线程上下文类加载器)。
 
 <details>
 <summary>参考回答</summary>
@@ -162,7 +162,7 @@ SPI 的框架和接口可能由上层加载器加载，实现却在应用类路�
 - 父优先与子优先的包级策略。
 - 加载器卸载需要清理的反向引用。
 
-**相关内容**：[插件隔离](#plugin-isolation)至[类的卸载](#unloading)。
+**相关内容**：[插件隔离](#插件隔离)至[类的卸载](#类的卸载)。
 
 <details>
 <summary>参考回答</summary>

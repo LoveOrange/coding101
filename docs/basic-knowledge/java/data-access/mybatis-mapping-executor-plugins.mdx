@@ -111,7 +111,7 @@ DefaultSqlSession 不是线程安全对象，应按单次工作单元管理；�
 
 Mapper 方法正常返回不等于外层事务已经提交。缓存可见性、批处理 flush 和连接释放都要结合外层事务边界判断。
 
-## 9. 动态 SQL 与结果映射 {#dynamic-resultmap}
+## 9. 动态 SQL 与结果映射 {#动态-sql-与结果映射}
 
 动态 SQL 在运行时根据参数生成 BoundSql。`<if>` 决定片段是否存在，`<where>` 处理 WHERE 及开头连接词，`<foreach>` 生成列表参数。空集合、空字符串和 null 的语义必须由业务明确，不能让“没有筛选条件”意外变成全表操作。
 
@@ -238,7 +238,7 @@ Mapper 调用可能仅将操作加入批次，返回值不是最终影响行数�
 
 </details>
 
-## 12. 参考资料 {#references}
+## 12. 参考资料 {#参考资料}
 
 - [MyBatis：Mapper XML Files](https://mybatis.org/mybatis-3/sqlmap-xml.html)
 - [MyBatis：Java API](https://mybatis.org/mybatis-3/java-api.html)

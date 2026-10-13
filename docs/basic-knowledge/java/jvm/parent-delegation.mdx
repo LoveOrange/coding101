@@ -17,7 +17,7 @@ knowledge:
 - JVM 用“类名 + 定义它的类加载器”确定类型，不同加载器加载的同名类之间不能强制转换。[卡](#same-class-cast-failure)
 - SPI、插件隔离和热部署会有选择地改变委派顺序，平台和共享 API 仍由父加载器优先加载。
 
-## 2. 委派流程 {#flow}
+## 2. 委派流程 {#委派流程}
 
 `ClassLoader.loadClass` 的典型路径可以概括为：
 
@@ -40,7 +40,7 @@ final class PluginClassLoader extends ClassLoader {
 
 直接重写 `loadClass` 会改变搜索协议，需要明确哪些包父优先、哪些包子优先，以及如何处理并发加载。
 
-## 3. 委派的作用 {#purpose}
+## 3. 委派的作用 {#委派的作用}
 
 应用代码请求 `java.lang.String` 时，委派会让启动类加载器先处理。自定义加载器不能仅靠放置一个同名 Class 文件替换 Java 平台核心类。
 
@@ -52,7 +52,7 @@ final class PluginClassLoader extends ClassLoader {
 
 :::
 
-## 4. 内置类加载器 {#builtin-loaders}
+## 4. 内置类加载器 {#内置类加载器}
 
 现代 JDK 常见层级是：
 
@@ -62,13 +62,13 @@ final class PluginClassLoader extends ClassLoader {
 
 它们描述默认运行环境，不意味着所有框架都只能有三层。应用服务器、构建工具和插件系统可以建立自己的加载器图。
 
-## 5. 父加载器与类继承 {#parent-vs-inheritance}
+## 5. 父加载器与类继承 {#父加载器与类继承}
 
 `ClassLoader.getParent()` 返回委派关系中的父加载器。子加载器通过组合调用父加载器，不要求其 Java 类必须继承父加载器的具体实现。
 
 “双亲”是传统译名，模型里通常只有一条父委派链，不是两个父加载器。
 
-## 6. 改变委派顺序的场景 {#breaking-delegation}
+## 6. 改变委派顺序的场景 {#改变委派顺序的场景}
 
 常见需求包括：
 
@@ -79,7 +79,7 @@ final class PluginClassLoader extends ClassLoader {
 
 改变委派必须保留一组共享边界。Java 平台包、宿主 API、日志门面或协议模型若被两边分别定义，很容易出现转换失败、静态状态分裂和资源泄漏。
 
-## 7. 观察实际加载结果 {#observe}
+## 7. 观察实际加载结果 {#观察实际加载结果}
 
 ```bash
 java -Xlog:class+load=info -jar app.jar
@@ -127,7 +127,7 @@ System.out.println(Service.class.getClassLoader());
 - 平台类、共享 API 与类型身份。
 - 模型可以被受控调整，不是 JVM 的唯一加载方式。
 
-**相关内容**：[委派流程](#flow)至[改变委派顺序的场景](#breaking-delegation)。
+**相关内容**：[委派流程](#委派流程)至[改变委派顺序的场景](#改变委派顺序的场景)。
 
 <details>
 <summary>参考回答</summary>
@@ -152,7 +152,7 @@ System.out.println(Service.class.getClassLoader());
 - 定义加载器与发起加载器的区别。
 - 插件隔离时共享接口的位置。
 
-**相关内容**：[委派的作用](#purpose)和[改变委派顺序的场景](#breaking-delegation)。
+**相关内容**：[委派的作用](#委派的作用)和[改变委派顺序的场景](#改变委派顺序的场景)。
 
 <details>
 <summary>参考回答</summary>

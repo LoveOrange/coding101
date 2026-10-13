@@ -17,7 +17,7 @@ Transactional Outbox 把业务变化和待发布事件写进同一个本地数�
 - 同一聚合的事件用聚合 ID 作为消息 key 保证顺序，并携带版本号防止旧事件覆盖新状态。
 - 事件发布成功不代表业务流程完成，还需要消费重试、死信、监控和对账。
 
-## 2. 双写的问题 {#dual-write}
+## 2. 双写的问题 {#双写的问题}
 
 ```text
 提交数据库 → 发送消息
@@ -27,7 +27,7 @@ Transactional Outbox 把业务变化和待发布事件写进同一个本地数�
 
 应用进程无法用普通代码让数据库和消息 broker 原子提交。捕获异常重试也覆盖不了进程在两步之间崩溃。
 
-## 3. Outbox 表 {#outbox}
+## 3. Outbox 表 {#outbox-表}
 
 业务事务同时写订单和 outbox 行：
 
@@ -40,7 +40,7 @@ event_type, payload, created_at, published_at
 
 事件 schema 需要版本，payload 避免包含不必要的敏感字段。事件 ID 和聚合版本用于消费去重与乱序处理。
 
-## 4. 轮询 relay {#polling-relay}
+## 4. 轮询 relay {#轮询-relay}
 
 后台任务可以按主键或创建时间批量锁定未发布 outbox，发送到 broker 后标记已发布。多个 relay 使用 `SKIP LOCKED`、所有权租约或分片避免重复抢占。
 
@@ -56,25 +56,25 @@ CDC 连接器读取数据库提交日志，把 outbox insert 转换成消息。�
 
 Debezium 的 Outbox Event Router 等组件可以把 outbox 列映射为消息 key、header 和 payload，但表结构与路由规则仍由业务定义。
 
-## 6. 按聚合键排序 {#ordering}
+## 6. 按聚合键排序 {#按聚合键排序}
 
 同一订单的 `Created`、`Paid`、`Cancelled` 应使用相同 aggregate ID 作为消息 key，使它们进入同一 Kafka partition 或等价有序通道。事件携带单调 aggregate version，消费者拒绝旧版本覆盖新状态。
 
 数据库并发事务的提交顺序可能与业务预期不同。更新聚合时通过版本条件保证一次只产生合法的下一版本，不能仅依赖 outbox 自增 ID 推断所有实体的业务顺序。
 
-## 7. 消费者幂等 {#inbox}
+## 7. 消费者幂等 {#消费者幂等}
 
 消费者可以把 event ID 写入本地 inbox 唯一表，并与自己的业务变化放在同一事务。重复事件命中唯一键后返回已有结果。
 
 若目标是可覆盖投影，可以按 aggregate version 条件 upsert；发送邮件、扣款等非幂等动作则需要独立业务唯一记录。去重保留时间要覆盖消息重放窗口。
 
-## 8. 发布与业务完成 {#published-vs-completed}
+## 8. 发布与业务完成 {#发布与业务完成}
 
 Outbox 保证本地提交后事件最终有机会被发布，不保证每个消费者一定完成。还需要 broker 持久性、消费重试、死信、监控和下游对账。
 
 生产者不能在 outbox 标记 published 后就把跨服务流程视为成功。流程状态应根据必要参与者的结果事件推进，或明确只承诺“事件已接受”。
 
-## 9. 监控 {#monitoring}
+## 9. 监控 {#监控}
 
 至少记录：
 
@@ -110,7 +110,7 @@ Outbox 保证本地提交后事件最终有机会被发布，不保证每个消�
 - Outbox 本地原子提交和 relay 重复发送。
 - CDC offset、聚合顺序和消费幂等。
 
-**相关内容**：[双写的问题](#dual-write)至[监控](#monitoring)。
+**相关内容**：[双写的问题](#双写的问题)至[监控](#监控)。
 
 <details>
 <summary>参考回答</summary>
