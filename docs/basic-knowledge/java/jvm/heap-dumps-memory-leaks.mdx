@@ -7,23 +7,21 @@ knowledge:
 
 # 堆转储
 
-堆转储保存某一时刻的 Java 堆对象和引用关系。它可以回答“谁占内存、谁在持有”，但不能单独证明对象增长速度或业务是否仍需要它；分析前先用 GC 后 live set 和时间序列确认问题。
+堆转储记录某一时刻的堆对象和引用关系。本文负责采集成本、对象持有关系与泄漏验证。GC Roots 的类型见 [GC Roots](./gc-roots-reachability.mdx)。堆外问题见 [Java 直接内存](./direct-native-memory.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- 判断泄漏要看稳定负载下多次 GC 后的存活占用是否持续上升，单次 used heap 上升不能说明问题。[卡](#cache-growth-vs-leak)
-- 先用类直方图（`jcmd <pid> GC.class_histogram`）找数量异常的类型，再决定是否导出完整堆转储。
-- 完整堆转储会造成停顿并占用接近堆大小的磁盘，执行前要评估影响，最好在摘流的实例上采集。
-- 浅大小是对象自身占用，保留大小是对象被回收后能释放的总量；Dominator Tree 用来找持有大量内存的对象。[卡](#shallow-vs-retained)
-- 常见泄漏来源包括无界缓存、未注销的监听器、未清理的 ThreadLocal、类加载器泄漏和永远不完成的任务。
+- GC 后存活占用持续增长是泄漏线索，业务生命周期决定对象是否无用。[卡](#cache-growth-vs-leak)
+- `GC.class_histogram` 按类统计对象数量和浅大小。
+- JDK 26 的 `GC.heap_dump` 默认请求 Full GC，`-all` 包含不可达对象。[卡](#heap-dump-all)
+- 浅大小只计算对象自身，保留大小包含其支配的对象图。[卡](#shallow-vs-retained)
+- Dominator Tree 表达支配关系，GC Roots 路径解释对象的持有来源。
 
 ## 2. 泄漏、容量不足与分配峰值 {#泄漏容量不足与分配峰值}
 
-- **泄漏**：无用对象仍被引用，live set 随时间增长。
-- **容量不足**：对象都仍有用，但稳定工作集超过堆。
-- **分配峰值**：短时间创建大量对象，GC 或堆弹性来不及应对。
+泄漏是无用对象仍被强引用持有。容量不足是必需的工作集超过可用堆。分配峰值则是短期需求超过回收供给。
 
-监控重点是稳定负载下多次 GC 后的占用趋势。普通 used heap 上升可能只是从上次 GC 后开始分配，不足以证明泄漏。
+普通 used heap 会随分配上升。判断时应对齐负载和 GC 后存活占用。还要检查缓存上限、过期时间与队列长度。有限缓存填满后稳定，属于预期增长。过期条目持续滞留，才指向生命周期问题。
 
 ## 3. 类直方图 {#类直方图}
 
@@ -31,9 +29,9 @@ knowledge:
 jcmd <pid> GC.class_histogram > histogram.txt
 ```
 
-直方图按类统计实例数量和浅大小，适合发现 `byte[]`、Map 节点、业务 DTO 等异常数量。类名 `[B` 表示 `byte[]`，但 byte 数组背后的业务归属仍要从引用链判断。
+直方图按类汇总数量与浅大小。`[B` 表示 `byte[]`。数组的业务归属仍需沿引用链查找。
 
-带 live 语义的统计可能触发 GC，影响更高。具体命令选项先查看 `jcmd <pid> help GC.class_histogram`，不要在高峰期盲目执行。
+该命令需要遍历堆，采集会影响业务。输出文件小，也仍有采集成本。采集前用 `jcmd <pid> help GC.class_histogram` 确认选项。
 
 ## 4. 堆转储的成本 {#堆转储的成本}
 
@@ -41,87 +39,79 @@ jcmd <pid> GC.class_histogram > histogram.txt
 jcmd <pid> GC.heap_dump /safe/path/heap.hprof
 ```
 
-堆很大时，转储可能导致长停顿、大量磁盘 I/O，并需要接近堆规模的空闲磁盘。执行前确认：
+转储涉及堆遍历、停顿和磁盘写入。文件大小取决于对象与格式，须预留足够磁盘。线上采集应选择允许暂停的窗口。可摘流的实例优先摘流后采集。
 
-- 目标路径位于足够空间的持久卷。
-- 业务允许的暂停窗口。
-- 是否可以先在流量摘除实例上采集。
-- 文件中是否包含密码、令牌、个人数据等敏感内容。
-- 下载、存储和销毁策略。
+HPROF 会包含对象字段中的业务数据。文件按敏感数据控制访问、传输和留存。
 
-在启动参数中配置 `HeapDumpOnOutOfMemoryError` 也要提前验证目录和容量。
+### 4.1 存活对象与全量对象 {#存活对象与全量对象}
+
+JDK 26 的默认命令会请求 Full GC。添加 `-all` 后，命令包含不可达对象。该选项省去命令主动请求的 Full GC。堆遍历与写文件仍有停顿成本。
+
+```bash
+jcmd <pid> GC.heap_dump -all /safe/path/heap-all.hprof
+```
+
+不可达对象等待回收，不属于强引用泄漏。比较两份转储时，应使用相同采集口径。
 
 ## 5. Histogram 与 Dominator Tree {#histogram-与-dominator-tree}
 
-MAT 等工具常见视图：
+Histogram 按类型聚合，适合寻找增长对象。Dominator Tree 按支配关系聚合，适合寻找持有者。
 
-- **Histogram**：某类型有多少实例、浅大小多少。
-- **Dominator Tree**：对象若释放，会连带释放多大的对象图。
-- **Path to GC Roots**：对象为什么仍可达。
-- **OQL**：按字段和类型查询具体实例。
+若从 GC Roots 到 B 的每条路径都经过 A，A 就支配 B。A 的保留大小包含这些被支配对象。支配树的父子关系与直接引用关系不同。
 
-一个缓存管理器本身只有几百字节，却可能支配数 GB 值对象。优先看 retained size，再沿到 GC Roots 的路径找到静态字段、线程、ThreadLocal、队列或类加载器。
+例如小型缓存管理器能保留大量数组。若另有绕过管理器的路径，数组就不受它单独支配。删除缓存中的引用也未必释放该数组。
+
+定位时先看 retained size。再用 Path to GC Roots 找静态字段、线程或队列。OQL 可按实例字段继续筛选。
 
 ## 6. 常见泄漏来源 {#常见泄漏来源}
 
-### 6.1 无界缓存和队列
+### 6.1 无界缓存和队列 {#无界缓存和队列}
 
-没有容量、过期或消费跟不上，业务键持续积累。
+缓存缺少容量或过期机制，会持续积累键值。消费速度长期落后时，队列也会保留请求。
 
-### 6.2 监听器和回调未注销
+### 6.2 监听器和回调 {#监听器和回调}
 
-长生命周期发布者持有短生命周期订阅者。
+长生命周期发布者会持有订阅者。订阅结束后需要注销回调。
 
-### 6.3 ThreadLocal 与线程池
+### 6.3 ThreadLocal 与线程池 {#threadlocal-与线程池}
 
-任务结束后值仍在线程的 ThreadLocalMap 中，平台线程长期存活。
+池中线程长期存活，会保留任务留下的值。任务结束时应在 `finally` 中调用 `remove()`。
 
-### 6.4 类加载器泄漏
+### 6.4 类加载器泄漏 {#类加载器泄漏}
 
-旧应用加载器被线程、JDBC Driver、MBean 或父加载器静态结构持有，整组类和静态状态无法卸载。
+线程或静态注册表持有旧加载器，会阻碍卸载。卸载条件见 [类加载器](./classloaders-spi-isolation.mdx#类的卸载)。
 
-### 6.5 未完成任务
+### 6.5 未完成任务 {#未完成任务}
 
-Future、响应聚合或重试队列持有请求上下文，根因可能是下游卡顿或没有超时。
+Future 和重试队列会持有请求上下文。下游卡住且任务没有超时，会延长持有时间。
 
 ## 7. 多个时间点的对比 {#多个时间点的对比}
 
-两份完整 heap dump 不是唯一方案。可以组合：
+GC 日志用于建立存活占用趋势。业务指标用于判断缓存与队列增长。JFR Old Object Sample 提供老对象采样线索。采样遗漏的对象仍需结合完整转储分析。
 
-- 周期 class histogram。
-- JFR Old Object Sample / heap statistics 和 top growers。
-- GC 日志的 live set。
-- 缓存、队列和业务 key 数量。
-
-先低成本确定增长类型和时间，再在代表性时刻导出一次完整堆。直接比较两个巨大转储成本高，也可能因负载不同得到错误结论。
+先确定增长时段，再选择代表性时刻采集。比较时保持负载、采集选项与 GC 阶段一致。
 
 ## 8. 修复方式 {#修复方式}
 
-找到持有者后，回答：
+修复应落实对象的释放责任。缓存设置容量和有效过期策略。队列设置上限，并处理消费落后。监听器、任务和 ThreadLocal 补齐结束时的清理。
 
-- 谁创建对象，谁负责删除或关闭。
-- 最大允许数量、字节和存活时间。
-- 消费者变慢时怎样背压或丢弃。
-- key 是否有界，过期是否真的执行。
-- 取消、超时和应用停止时是否清理。
+修复后运行同等长稳负载。确认 GC 后存活占用与对象数量稳定。还要验证缓存命中、请求结果和取消行为。
 
-修复后在相同长稳负载下比较 GC 后 live set、对象数量和业务正确性。只调用 `clear()` 可能掩盖并发生产或生命周期设计问题。
+## 9. 常见问题 {#常见问题}
 
-## 9. 常见问题
+### 9.1 大对象与泄漏来源 {#大对象与泄漏来源}
 
-### 9.1 堆里最大的对象就是泄漏源吗
+大对象既能是合理工作集，也能是意外持有。判断依据是增长趋势、保留大小和业务生命周期。
 
-不一定。它可能是合理缓存、类元数据相关数组或当前大请求。看 retained size、增长趋势和业务上限。
+### 9.2 字节数组的持有来源 {#字节数组的持有来源}
 
-### 9.2 `byte[]` 很多怎样定位来源
+沿支配者和 GC Roots 路径分组。再检查数组属于缓存、网络缓冲还是请求上下文。
 
-按支配者和 GC Roots 路径分组，查看它属于 String、网络缓冲、压缩结果、缓存还是类数据；再关联 allocation profile 和业务 key。
+### 9.3 连续转储的采集成本 {#连续转储的采集成本}
 
-### 9.3 线上能不能连续 dump 多次
+每次采集都会增加堆遍历与写盘成本。先用监控和 JFR 定位增长时段，再采代表性转储。
 
-技术上可以，风险通常很高。先评估堆大小、停顿和磁盘，优先使用 histogram/JFR 建趋势，并在摘流实例或可控副本上采集。
-
-## 10. 面试题
+## 10. 面试题 {#面试题}
 
 ### 10.1 堆使用率持续升高，怎样判断缓存增长还是内存泄漏 {#cache-growth-vs-leak}
 
@@ -131,20 +121,14 @@ Future、响应聚合或重试队列持有请求上下文，根因可能是下�
 
 **出现公司**：阿里、腾讯
 
-**考察重点**
+**考察重点**：存活占用、引用链与业务上限。
 
-- GC 后 live set 与稳定负载。
-- Histogram、Dominator Tree 和 GC Roots。
-- 业务容量与过期策略。
-
-**相关内容**：[泄漏、容量不足与分配峰值](#泄漏容量不足与分配峰值)至[修复方式](#修复方式)。
+**相关内容**：[泄漏、容量不足与分配峰值](#泄漏容量不足与分配峰值)。
 
 <details>
 <summary>参考回答</summary>
 
-先看稳定负载下多次 GC 后的 live set 是否持续增长，并对齐缓存 entry、队列和业务 key 数。用 class histogram 找增长类型，必要时 heap dump 看 Dominator Tree 与 Path to GC Roots，确认谁在持有。
-
-若增长符合有明确上限和命中收益的缓存策略，可能是预期工作集；若过期对象仍由静态 Map、ThreadLocal 或未完成任务持有，就是泄漏。修复后用同负载验证 live set 是否稳定。
+先对齐稳定负载和多次 GC 后的存活占用。再用直方图定位增长类型，用转储追查持有者。缓存达到约定上限后稳定，属于预期工作集。失效条目仍被强引用持有，则属于泄漏。修复后用同等负载确认增长停止。
 
 </details>
 
@@ -154,23 +138,37 @@ Future、响应聚合或重试队列持有请求上下文，根因可能是下�
 
 **出现公司**：暂无已核验的公开来源（本站自测）
 
-**考察重点**
-
-- 对象自身大小和支配对象图大小。
-- 小缓存管理器可以保留大量值。
-- 引用链决定回收条件。
+**考察重点**：对象自身大小与支配关系。
 
 **相关内容**：[Histogram 与 Dominator Tree](#histogram-与-dominator-tree)。
 
 <details>
 <summary>参考回答</summary>
 
-shallow size 只算对象自身，对集合管理器可能很小；retained size 估算该对象不可达后能连带释放的对象图。泄漏通常由一个小的长生命周期持有者支配大量元素，因此先看 retained size，再沿 GC Roots 路径找所有权。
+浅大小计算对象自身，保留大小计算其支配的对象图。缓存管理器虽小，也能保留大量元素。其他根共享的元素不计入它独占的保留大小。分析时还需沿 GC Roots 路径确认持有来源。
 
 </details>
 
-## 11. 参考资料
+### 10.3 GC.heap_dump 添加 -all 后，采集结果和成本有什么变化？ {#heap-dump-all}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：Full GC、不可达对象与采集口径。
+
+**相关内容**：[存活对象与全量对象](#存活对象与全量对象)。
+
+<details>
+<summary>参考回答</summary>
+
+JDK 26 的 `-all` 会包含不可达对象，并省去主动请求 Full GC。堆遍历和写文件仍有成本。不可达对象只是尚未回收，不能据此判断泄漏。比较转储时应保持选项一致。
+
+</details>
+
+## 11. 参考资料 {#参考资料}
 
 - [Oracle：Troubleshoot Memory Leaks](https://docs.oracle.com/en/java/javase/26/troubleshoot/troubleshooting-memory-leaks.html)
-- [Oracle：`jcmd`](https://docs.oracle.com/en/java/javase/26/docs/specs/man/jcmd.html)
-- [Eclipse MAT Documentation](https://help.eclipse.org/latest/topic/org.eclipse.mat.ui.help/welcome.html)
+- [Oracle：jcmd](https://docs.oracle.com/en/java/javase/26/docs/specs/man/jcmd.html)
+- [Eclipse MAT：Dominator Tree](https://help.eclipse.org/latest/topic/org.eclipse.mat.ui.help/concepts/dominatortree.html)
+- [Eclipse MAT：Shallow and Retained Heap](https://help.eclipse.org/latest/topic/org.eclipse.mat.ui.help/concepts/shallowretainedheap.html)

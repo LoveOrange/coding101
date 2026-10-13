@@ -7,79 +7,68 @@ knowledge:
 
 # 双亲委派模型
 
-类加载器收到加载请求后，通常先让父加载器尝试，父加载器找不到时才由自己查找。这个搜索顺序让基础类和共享依赖优先使用已有定义，也使类型身份更容易保持一致。
+双亲委派规定类加载请求的默认查找顺序。本文负责委派流程、内置加载器和运行时类型身份。SPI 与插件实践见 [类加载器](./classloaders-spi-isolation.mdx)。加载后的链接与初始化见 [类加载](./class-loading-stages.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- 类加载器收到请求时先检查是否已加载，再委派父加载器，父加载器找不到时才自己查找。[卡](#delegation-flow)
-- 委派让 `java.lang.String` 等核心类总是由启动类加载器定义，应用无法用同名类替换。
-- JDK 9 之后的内置加载器是启动类加载器、平台类加载器和应用类加载器；父子是委派关系，与 Java 类继承无关。
-- JVM 用“类名 + 定义它的类加载器”确定类型，不同加载器加载的同名类之间不能强制转换。[卡](#same-class-cast-failure)
-- SPI、插件隔离和热部署会有选择地改变委派顺序，平台和共享 API 仍由父加载器优先加载。
+- `ClassLoader.loadClass` 默认先查已加载记录，再委派父加载器。[卡](#delegation-flow)
+- 父加载器查找失败后，默认流程调用当前加载器的 `findClass`。
+- 类的运行时身份由二进制名称和定义加载器共同确定。[卡](#same-class-cast-failure)
+- 发起加载器能通过委派取得类，定义加载器负责创建该运行时类型。[卡](#initiating-defining-loader)
+- JDK 9 起，内置加载器分为启动、平台和应用加载器。
 
 ## 2. 委派流程 {#委派流程}
 
-`ClassLoader.loadClass` 的典型路径可以概括为：
+`ClassLoader.loadClass` 的默认流程如下：
 
-1. 用 `findLoadedClass` 检查当前加载器是否已经加载。
-2. 有父加载器时委派给父加载器；没有显式父加载器时委派给启动类加载器。
-3. 父加载器找不到，当前加载器才执行 `findClass`。
-4. 根据调用参数决定是否解析。
+1. `findLoadedClass` 查询当前加载器的发起加载记录。
+2. 当前加载器委派给父加载器。父为 `null` 时，尝试启动类加载器。
+3. 父加载器抛出 `ClassNotFoundException` 后，调用当前 `findClass`。
+4. `resolve` 为 `true` 时，调用 `resolveClass`。
 
-自定义加载器通常重写 `findClass`，保留 `loadClass` 的委派流程：
+自定义字节码来源可重写 `findClass`。它读取字节后调用 `defineClass` 创建类型。这样能保留默认委派和加载同步逻辑。
 
-```java
-final class PluginClassLoader extends ClassLoader {
-    @Override
-    protected Class<?> findClass(String name) throws ClassNotFoundException {
-        byte[] bytes = readPluginClass(name);
-        return defineClass(name, bytes, 0, bytes.length);
-    }
-}
-```
-
-直接重写 `loadClass` 会改变搜索协议，需要明确哪些包父优先、哪些包子优先，以及如何处理并发加载。
+覆盖 `loadClass` 则需自行维护查找协议。父加载阶段的链接错误应按错误处理。默认流程只对查找失败转入本地查找。
 
 ## 3. 委派的作用 {#委派的作用}
 
-应用代码请求 `java.lang.String` 时，委派会让启动类加载器先处理。自定义加载器不能仅靠放置一个同名 Class 文件替换 Java 平台核心类。
+父优先让子加载器复用平台类与公共 API。多个插件共同实现父加载器定义的接口，宿主即可按同一接口调用。
 
-委派还让多个子加载器共享父加载器定义的 API。插件接口由父加载器加载、实现类由插件加载器加载时，双方看到的是同一个接口类型，实例才能正常转换和调用。
+隔离的子加载器仍可各自定义同名业务类。因此共享 API 需要放在共同可见的加载器中。
 
-:::warning 委派不保证全局只有一个同名类
+### 3.1 发起加载器与定义加载器 {#发起加载器与定义加载器}
 
-两个相互隔离的子加载器仍可以各自定义同名业务类。JVM 判断类型时同时看二进制名称和定义类加载器。
+发起加载器参与某个类型的加载请求。定义加载器将字节表示创建为运行时类型。
 
-:::
+假设子加载器请求 `api.Service`，父加载器定义该类。子加载器可被记录为发起加载器，父加载器是定义加载器。`Service.class.getClassLoader()` 返回定义加载器。
+
+`findLoadedClass` 查询的是发起加载记录。因此它也能返回经委派取得的类。判断类型身份时，应使用定义加载器。
 
 ## 4. 内置类加载器 {#内置类加载器}
 
-现代 JDK 常见层级是：
+| 加载器 | 职责 |
+| --- | --- |
+| Bootstrap | 加载核心平台类，Java API 中以 `null` 表示 |
+| Platform | 加载其他平台模块，JDK 9 起替代扩展加载器 |
+| Application/System | 加载应用类路径、模块路径等内容 |
 
-- **Bootstrap Class Loader**：由 JVM 实现，加载关键 Java 平台类，在 Java API 中通常表示为 `null`。
-- **Platform Class Loader**：加载部分平台模块，替代 JDK 8 时代的扩展类加载器概念。
-- **System/Application Class Loader**：通常加载应用类路径或模块路径上的内容。
+默认应用加载器以平台加载器为父加载器。模块加载还涉及模块归属与可读关系。内置加载器在模块场景下也有跨层委派机制。
 
-它们描述默认运行环境，不意味着所有框架都只能有三层。应用服务器、构建工具和插件系统可以建立自己的加载器图。
+双亲委派是 `ClassLoader` 的默认协议。JVM 规范允许自定义加载策略。
 
 ## 5. 父加载器与类继承 {#父加载器与类继承}
 
-`ClassLoader.getParent()` 返回委派关系中的父加载器。子加载器通过组合调用父加载器，不要求其 Java 类必须继承父加载器的具体实现。
+`getParent()` 表达委派关系。子加载器通过对象引用调用父加载器。这种关系由组合建立，与加载器实现类的继承关系分开。
 
-“双亲”是传统译名，模型里通常只有一条父委派链，不是两个父加载器。
+“双亲”是传统名称，一条默认委派链只有一个直接父节点。
 
 ## 6. 改变委派顺序的场景 {#改变委派顺序的场景}
 
-常见需求包括：
+child-first 可让应用或插件优先使用私有依赖。平台类和宿主接口仍需保持共享边界。否则同名接口也会成为不同类型。
 
-- 应用服务器让不同应用使用不同版本的业务依赖。
-- 插件系统隔离插件的第三方库。
-- SPI 由平台代码发起，却需要发现应用提供者。
-- 热部署希望新加载器定义新版业务类，并让旧加载器可卸载。
+SPI 用线程上下文加载器发现应用提供者，见 [类加载器](./classloaders-spi-isolation.mdx#线程上下文类加载器)。热部署的隔离与卸载也由该文负责。
 
-改变委派必须保留一组共享边界。Java 平台包、宿主 API、日志门面或协议模型若被两边分别定义，很容易出现转换失败、静态状态分裂和资源泄漏。
-
-## 7. 观察实际加载结果 {#观察实际加载结果}
+## 7. 加载结果观察 {#观察实际加载结果}
 
 ```bash
 java -Xlog:class+load=info -jar app.jar
@@ -87,30 +76,30 @@ jcmd <pid> VM.classloaders
 jcmd <pid> VM.classloader_stats
 ```
 
-代码中也可以检查：
+JDK 9 起可用统一日志观察类来源。定位类型冲突时，也可比较定义加载器：
 
 ```java
 System.out.println(value.getClass().getClassLoader());
 System.out.println(Service.class.getClassLoader());
 ```
 
-排查时要确认**实际定义加载器**，不能只看文件位于哪个 JAR。一个加载器可以从多个位置找类，同一个 JAR 也可能被多个加载器分别读取。
+JAR 路径说明字节来源，定义加载器说明类型身份。同一个 JAR 可由多个加载器分别读取。
 
-## 8. 常见问题
+## 8. 常见问题 {#常见问题}
 
-### 8.1 自定义 `java.lang.String` 会覆盖 JDK 的 String 吗
+### 8.1 平台类的定义保护 {#平台类的定义保护}
 
-正常委派路径下不会。启动类加载器会先返回平台定义；此外 JVM 对 `java.*` 包的定义还有保护。业务代码不应依赖伪造平台包实现覆盖。
+默认委派会先返回平台的 `String`。JDK 26 的 `defineClass` 还保护 `java.*` 包。平台加载器及其祖先之外的加载器定义时会被拒绝。
 
-### 8.2 双亲委派可以避免所有类冲突吗
+### 8.2 依赖冲突与委派范围 {#依赖冲突与委派范围}
 
-不能。它只能确定一条加载器链中的搜索顺序。依赖版本不兼容、不同子加载器重复定义共享类型和资源查找顺序仍可能冲突。
+委派确定搜索顺序，依赖版本仍需匹配。某个旧版本先被找到后，调用新方法仍会链接失败。
 
-### 8.3 打破双亲委派等于完全不委派吗
+### 8.3 选择性子优先 {#选择性子优先}
 
-不等于。常用设计是有选择地 child-first：平台和共享 API 仍父优先，插件私有包子优先。完全取消共享边界会让类型无法交互。
+child-first 可只覆盖插件私有包。共享接口继续父优先，能让隔离实现与宿主交互。
 
-## 9. 面试题
+## 9. 面试题 {#面试题}
 
 ### 9.1 双亲委派的加载流程和作用是什么 {#delegation-flow}
 
@@ -121,20 +110,14 @@ System.out.println(Service.class.getClassLoader());
 
 **出现公司**：阿里巴巴、字节跳动
 
-**考察重点**
+**考察重点**：已加载检查、父委派与本地查找。
 
-- 已加载检查、父委派和本地查找的顺序。
-- 平台类、共享 API 与类型身份。
-- 模型可以被受控调整，不是 JVM 的唯一加载方式。
-
-**相关内容**：[委派流程](#委派流程)至[改变委派顺序的场景](#改变委派顺序的场景)。
+**相关内容**：[委派流程](#委派流程)。
 
 <details>
 <summary>参考回答</summary>
 
-加载器先检查自己是否已有定义，再委派父加载器；父加载器无法找到时，当前加载器才执行自己的查找。这样平台类和公共依赖优先复用上层定义，也让多个子系统能围绕同一个共享 API 交互。
-
-它不保证整个 JVM 只有一个同名类型。类型身份还包含定义类加载器，隔离的子加载器仍可各自定义同名类。插件或容器可以调整搜索顺序，但要保留平台包与宿主 API 的共享边界。
+默认流程先查 `findLoadedClass`，再委派父加载器。父查找失败后，当前加载器执行 `findClass`。该顺序复用上层平台类和公共接口。自定义加载器可调整协议，但需要保留共享类型边界。
 
 </details>
 
@@ -146,23 +129,36 @@ System.out.println(Service.class.getClassLoader());
 
 **出现公司**：字节跳动
 
-**考察重点**
+**考察重点**：二进制名称和定义加载器。
 
-- 运行时类型身份。
-- 定义加载器与发起加载器的区别。
-- 插件隔离时共享接口的位置。
-
-**相关内容**：[委派的作用](#委派的作用)和[改变委派顺序的场景](#改变委派顺序的场景)。
+**相关内容**：[委派的作用](#委派的作用)。
 
 <details>
 <summary>参考回答</summary>
 
-JVM 使用二进制名称和定义类加载器共同标识类型。两个加载器分别调用 `defineClass` 得到的 `com.example.User` 是不同类型，即使字节完全相同也不能互相转换。插件系统应让宿主接口由共同父加载器定义，只隔离实现和私有依赖。
+定义加载器不同，同名同字节码的类仍是不同类型。两份类的实例无法仅凭名称互相转换。插件应共享父加载器定义的接口，再隔离实现与私有依赖。
 
 </details>
 
-## 10. 参考资料
+### 9.3 findLoadedClass 返回的类一定由当前加载器定义吗？ {#initiating-defining-loader}
 
-- [Java API：`ClassLoader`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/ClassLoader.html)
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：发起记录与类型身份。
+
+**相关内容**：[发起加载器与定义加载器](#发起加载器与定义加载器)。
+
+<details>
+<summary>参考回答</summary>
+
+它也能返回当前加载器通过委派取得的类。JVM 会记录发起加载关系，而父加载器可承担定义工作。`Class.getClassLoader()` 返回定义加载器。运行时类型身份使用该定义加载器与二进制名称。
+
+</details>
+
+## 10. 参考资料 {#参考资料}
+
+- [Java API：ClassLoader](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/ClassLoader.html)
 - [JVMS：Creation and Loading](https://docs.oracle.com/javase/specs/jvms/se26/html/jvms-5.html#jvms-5.3)
-- [Oracle：JDK 迁移指南中的类加载器变化](https://docs.oracle.com/en/java/javase/26/migrate/significant-changes-jdk-release.html)
+- [OpenJDK 26：ClassLoader 实现](https://github.com/openjdk/jdk/blob/jdk-26-ga/src/java.base/share/classes/java/lang/ClassLoader.java)

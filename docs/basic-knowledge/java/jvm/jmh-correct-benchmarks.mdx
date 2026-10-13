@@ -7,81 +7,93 @@ knowledge:
 
 # JMH
 
-Java 微基准容易测到 JIT 的死代码消除、常量折叠、预热过程或测试框架开销。JMH 提供进程分叉、预热、状态隔离和结果消费机制，但基准设计仍要保证被测工作与真实问题一致。
+JMH 用于构建 Java 微基准。本文负责测量边界、状态、预热和结果消费。JIT 的执行层级见 [分层编译](./interpreter-tiered-compilation.mdx)。基准结果还需与业务负载对照。
 
 ## 1. 面试核心 {#core}
 
-- 手写循环计时会测到 JIT 预热、死代码消除和常量折叠，JMH 用预热、fork 和结果消费处理这些问题。[卡](#trustworthy-benchmark)
-- 基准方法要返回结果或交给 `Blackhole`，输入放在 `@State` 中，避免被 JIT 消除或提前算出。
-- 每个 fork 在新的 JVM 中运行，避免前一个基准留下的编译画像和静态状态影响结果。[卡](#fork-jvm)
-- `@State` 的 Scope 决定线程之间是否共享对象，测并发结构时要用 `Scope.Benchmark`。
-- 微基准只适合比较小块 CPU 和内存代码，数据库、网络和排队问题要做系统压测。
+- JMH 用预热与独立 fork 控制编译状态和进程间隔离。[卡](#trustworthy-benchmark)
+- 基准返回结果或使用 `Blackhole`，可防止结果无用导致的消除。
+- 可变输入放在 `@State` 中，可降低常量折叠对测试的干扰。
+- `Scope.Thread` 每线程独立，`Scope.Benchmark` 在测试线程间共享。
+- 每个 fork 启动新的 JVM，隔离前次测试的画像和静态状态。[卡](#fork-jvm)
 
 ## 2. 测量模式 {#测量模式}
 
-常用模式：
-
-- `Throughput`：单位时间完成多少次操作。
-- `AverageTime`：每次操作平均耗时。
-- `SampleTime`：采样延迟分布。
-- `SingleShotTime`：一次操作耗时，常用于冷启动或批次。
+| 模式 | 测量对象 |
+| --- | --- |
+| `Throughput` | 单位时间操作数 |
+| `AverageTime` | 每次操作平均耗时 |
+| `SampleTime` | 采样得到的耗时分布 |
+| `SingleShotTime` | 一次方法调用或指定批次的耗时 |
 
 ```java
 @BenchmarkMode(Mode.AverageTime)
 @OutputTimeUnit(TimeUnit.NANOSECONDS)
 public class ParserBenchmark {
-    // ...
+    // 基准方法使用 @Benchmark 标记。
 }
 ```
 
-纳秒单位不代表纳秒精度。结果可信度来自稳定环境、足够样本和合理置信区间。
+纳秒是输出单位，精度还受计时器与样本影响。报告应保留迭代、fork、误差与环境参数。
 
 ## 3. 死代码消除 {#死代码消除}
 
-错误示例：
+以下片段中的计算结果无人使用：
 
 ```java
 @Benchmark
-public void parse() {
-    parser.parse(INPUT); // 结果无人观察，工作可能被消除
+public void wrong() {
+    Math.sqrt(123.0);
 }
 ```
 
-可以返回结果：
-
-```java
-@Benchmark
-public ParsedOrder parse(BenchmarkState state) {
-    return state.parser.parse(state.input);
-}
-```
-
-复杂场景可以把结果交给 `Blackhole`。不要把日志、断言或 I/O 放进每次 benchmark invocation，它们的耗时可能超过被测代码。
-
-## 4. 常量折叠与 `@State` {#常量折叠与-state}
+JIT 可删除没有可观察副作用的计算。正确做法是使用可变输入，并返回结果：
 
 ```java
 @State(Scope.Thread)
-public static class BenchmarkState {
-    @Param({"16", "256", "4096"})
-    int size;
+public static class Input {
+    public double value = 123.0;
+}
 
-    byte[] input;
+@Benchmark
+public double sqrt(Input input) {
+    return Math.sqrt(input.value);
+}
+```
+
+JMH 会消费返回值。多个结果可分别传给 `Blackhole.consume()`。副作用仍可被观察时，方法即使无返回值也会保留工作。日志与断言应放在测量路径之外。
+
+## 4. 常量折叠与 State {#常量折叠与-state}
+
+```java
+@State(Scope.Thread)
+public static class Input {
+    @Param({"16", "256", "4096"})
+    public int size;
+    public byte[] data;
 
     @Setup(Level.Trial)
     public void setup() {
-        input = createInput(size);
+        data = new byte[size];
     }
 }
 ```
 
-把固定常量直接写在 benchmark 中，JIT 可能在编译期算出答案。`@Param` 还能让结果明确显示输入规模。
+`@Param` 让输入规模成为实验维度。`@State` 字段向基准提供运行时数据。若数据仍可静态推导，JIT 仍能简化计算。
 
-Setup 层级要匹配成本：
+| Setup 层级 | 执行时机 |
+| --- | --- |
+| `Trial` | 每次 trial 开始前，对各状态实例执行 |
+| `Iteration` | 每轮预热和测量迭代前 |
+| `Invocation` | 每次基准方法调用前 |
 
-- `Trial`：整个 fork 中少量执行。
-- `Iteration`：每轮测量前执行。
-- `Invocation`：每次调用执行，开销大且可能干扰流水线，只在确有必要时使用。
+Invocation 需要逐次计时，会引入额外成本。它只适合足够长的调用，并需验证干扰。
+
+### 4.1 可变输入的重置 {#可变输入的重置}
+
+排序基准会修改原数组。若只在 Trial 创建随机数组，后续调用会处理有序数组。测试问题因此从随机排序变成有序输入排序。
+
+可以每次复制原数组，再排序副本。此时测量包含复制成本，需在结果中说明。若用 Invocation 重置，应验证计时和缓存干扰。仅把准备过程移出计时区，仍会改变缓存状态。
 
 ## 5. 预热与 fork {#预热与-fork}
 
@@ -91,70 +103,55 @@ Setup 层级要匹配成本：
 @Fork(3)
 ```
 
-预热让类加载和 JIT 逐步稳定，预热结果不计入最终统计。多个 fork 在独立 JVM 中重复实验，减少前一个 benchmark 的编译画像、静态状态和 Code Cache 对后一个结果的污染。
+该配置使用 5 轮预热和 8 轮测量，并启动 3 个 JVM。每轮设置的时间为 1 秒。预热轮次应根据稳态变化调整。
 
-若问题是冷启动，不能用充分预热后的平均耗时回答。使用 SingleShot、零或指定预热，并把整个进程启动纳入测量边界。
+fork 隔离 JIT 画像、Code Cache 与静态状态。多个进程样本还能暴露进程间波动。
+
+SingleShotTime 测的是基准调用，未包含 JVM 启动。测完整进程冷启动时，要用外部计时包住进程。
 
 ## 6. 基准方法中的循环 {#基准方法中的循环}
 
-```java
-@Benchmark
-public long wrong() {
-    long sum = 0;
-    for (int i = 0; i < 1_000_000; i++) {
-        sum += operation(i);
-    }
-    return sum;
-}
-```
+手写大循环会改变优化条件。JIT 可展开、向量化或合并循环中的计算。除以循环次数得到的数值只对应该批处理程序。
 
-大循环改变内联、向量化、分支预测和常量传播条件，测到的可能是批处理后的新程序。JMH 已经负责反复调用；需要批量语义时明确使用 `@OperationsPerInvocation`，并让批量大小属于业务问题。
+JMH 自身会重复调用基准方法。业务确有批处理时，可以保留批内循环。`@OperationsPerInvocation` 用于按逻辑操作数归一化。它只改变结果换算，无法撤销循环优化。
 
-## 7. `State` 的 Scope {#state-的-scope}
+## 7. State 的 Scope {#state-的-scope}
 
-- `Scope.Thread`：每个测试线程独立状态。
-- `Scope.Benchmark`：所有线程共享一个实例。
-- `Scope.Group`：同一线程组共享。
+`Scope.Thread` 为每个工作线程创建独立状态。`Scope.Benchmark` 让参与测试的线程共享状态。`Scope.Group` 让同组线程共享状态。
 
-测并发容器时若误用 Thread scope，各线程操作自己的容器，结果根本没有竞争。测纯算法时误用共享可变状态，又可能把锁和伪共享混入结果。
+测共享容器竞争时，应采用 Benchmark 或 Group。误用 Thread 会让各线程操作各自的容器。线程数也应显式配置，例如 `@Threads(4)`。仅声明共享状态不会自动形成并发。
 
-## 8. 用 profiler 解释差异 {#用-profiler-解释差异}
+## 8. Profiler 与测量证据 {#用-profiler-解释差异}
 
 ```bash
 java -jar target/benchmarks.jar ParserBenchmark -prof gc
-java -jar target/benchmarks.jar ParserBenchmark -prof async
 ```
 
-具体 profiler 取决于环境。至少确认：
+`gc.alloc.rate.norm` 表示每次操作的分配字节数。CPU 或汇编分析可解释内联和循环优化。额外 profiler 的可用性取决于安装环境。
 
-- CPU 时间花在哪些方法。
-- 每次操作分配多少字节。
-- 是否发生意外锁竞争或 GC。
-- 生成代码是否按预期内联、向量化。
-
-两组均值有差异不等于知道原因。置信区间重叠、机器降频、后台进程和容器 CPU 限流也会污染结果。
+同时检查误差、CPU 频率、后台负载和容器限流。均值变小只说明观察到差异，原因还需证据。
 
 ## 9. 微基准与系统压测 {#微基准与系统压测}
 
-JMH 适合比较小块 CPU/内存代码，例如解析器、集合操作和序列化核心。数据库、网络、线程池、缓存命中和请求排队需要更接近生产的负载模型。
+微基准适合拆解解析、集合与序列化成本。真实服务还包含网络、数据库与排队。
 
-一个可靠结论通常包含两层：JMH 证明局部改动确实改变每次操作成本；服务压测证明它改善目标吞吐或延迟，没有把成本转移到其他资源。
+局部优化应先确认输入分布和热点占比。再用服务负载检查吞吐、长尾与资源占用。局部节省的时间决定了整体收益上限。
 
-## 10. 常见问题
+## 10. 常见问题 {#常见问题}
 
-### 10.1 为什么不能在 IDE 里循环一百万次计时
+### 10.1 手写计时循环的干扰 {#手写计时循环的干扰}
 
-IDE Agent、共享 JVM 状态、未控制预热、死代码消除和计时器开销都会影响结果。JMH 生成 harness 并提供 fork、迭代和统计，但仍需正确设计输入和状态。
+预热、结果消除和循环优化都会改变被测工作。JMH 提供实验框架，输入和工作量仍需正确设计。
 
-### 10.2 Blackhole 是否任何结果都要用
+### 10.2 结果消费方式 {#结果消费方式}
 
-方法直接返回结果通常更简单。Blackhole 适合消费多个结果或无法自然返回的值；它也有开销，不应用来掩盖设计不清的 benchmark。
+单个结果可直接返回，多个结果可使用 Blackhole。两种方式都应保留被测计算的可观察结果。
 
-### 10.3 得到更快的 ns/op 就可以改生产代码吗
+### 10.3 微基准结果的应用范围 {#微基准结果的应用范围}
 
-先确认差异显著、输入代表真实分布、热点确实重要，再做系统压测。可读性和正确性不应为不可观察的局部提升让步。
+基准结论对应指定 JDK、硬件、输入与线程数。生产改动还需验证正确性和业务性能。
 
-## 11. 面试题
+## 11. 面试题 {#面试题}
 
 ### 11.1 怎样设计一个可信的 Java 微基准 {#trustworthy-benchmark}
 
@@ -165,20 +162,14 @@ IDE Agent、共享 JVM 状态、未控制预热、死代码消除和计时器开
 
 **出现公司**：腾讯云、京东数科
 
-**考察重点**
+**考察重点**：测量边界、状态和编译干扰。
 
-- 预热、fork、State 与参数化。
-- 死代码消除和常量折叠。
-- 用 profiler 解释差异。
-
-**相关内容**：[测量模式](#测量模式)至[用 profiler 解释差异](#用-profiler-解释差异)。
+**相关内容**：[测量模式](#测量模式)、[常量折叠与 State](#常量折叠与-state)。
 
 <details>
 <summary>参考回答</summary>
 
-先定义测吞吐、稳态单次耗时还是冷启动，再用 JMH 控制预热、测量迭代和多个独立 fork。输入放在合适 Scope 的 State 中并参数化，结果要返回或交给 Blackhole，避免死代码消除和常量折叠；不要在方法里手写无业务含义的大循环。
-
-结果同时看误差和 profiler，确认 CPU、分配与编译行为。局部提升还要通过系统压测验证业务长尾和资源成本。
+先明确吞吐、稳态耗时或首次调用耗时。使用 JMH 配置预热、测量轮次与多个 fork。输入放入合适 Scope 的 State，并覆盖真实规模。结果返回或交给 Blackhole。可变输入在每次操作前恢复所需状态。最后结合误差与 profiler 解释结果。
 
 </details>
 
@@ -190,26 +181,40 @@ IDE Agent、共享 JVM 状态、未控制预热、死代码消除和计时器开
 
 **出现公司**：京东数科
 
-**考察重点**
-
-- 编译画像、静态状态和 Code Cache 污染。
-- 独立进程提供重复样本。
-- fork 不能消除操作系统噪声。
+**考察重点**：进程隔离与环境噪声。
 
 **相关内容**：[预热与 fork](#预热与-fork)。
 
 <details>
 <summary>参考回答</summary>
 
-同一 JVM 先运行的测试会改变类初始化、JIT 画像、Code Cache 和静态状态，后续结果可能依赖执行顺序。Fork 在独立 JVM 中重复完整实验，既隔离状态，也提供进程级样本。
-
-它仍不能自动控制 CPU 频率、后台任务和 NUMA，所以环境、JDK 参数和机器信息也要记录。
+fork 用新 JVM 隔离此前基准的编译画像和静态状态。同进程复用会让结果依赖测试顺序。多个 fork 提供独立进程样本。CPU 频率和后台任务仍需控制，测试环境也需记录。
 
 </details>
 
-## 12. 参考资料
+### 11.3 排序基准只在 Trial 生成随机数组，会测到什么？ {#mutable-benchmark-input}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：输入状态变化与准备成本。
+
+**相关内容**：[可变输入的重置](#可变输入的重置)。
+
+<details>
+<summary>参考回答</summary>
+
+首次调用排序随机数组，后续调用处理已排序数组。若目标是随机输入排序，就需每次恢复随机数据。复制后排序会把复制成本计入结果。Invocation 重置会增加计时与缓存干扰，需要验证。
+
+</details>
+
+## 12. 参考资料 {#参考资料}
 
 - [OpenJDK JMH](https://github.com/openjdk/jmh)
-- [OpenJDK JMH Samples](https://github.com/openjdk/jmh/tree/master/jmh-samples/src/main/java/org/openjdk/jmh/samples)
-- [JMH Sample：Benchmark Modes](https://github.com/openjdk/jmh/blob/master/jmh-samples/src/main/java/org/openjdk/jmh/samples/JMHSample_02_BenchmarkModes.java)
-- [JMH Sample：Profilers](https://github.com/openjdk/jmh/blob/master/jmh-samples/src/main/java/org/openjdk/jmh/samples/JMHSample_35_Profilers.java)
+- [JMH：Benchmark Modes](https://github.com/openjdk/jmh/blob/master/jmh-samples/src/main/java/org/openjdk/jmh/samples/JMHSample_02_BenchmarkModes.java)
+- [JMH：Dead Code](https://github.com/openjdk/jmh/blob/master/jmh-samples/src/main/java/org/openjdk/jmh/samples/JMHSample_08_DeadCode.java)
+- [JMH：Constant Fold](https://github.com/openjdk/jmh/blob/master/jmh-samples/src/main/java/org/openjdk/jmh/samples/JMHSample_10_ConstantFold.java)
+- [JMH：Per Invoke Setup](https://github.com/openjdk/jmh/blob/master/jmh-samples/src/main/java/org/openjdk/jmh/samples/JMHSample_38_PerInvokeSetup.java)
+- [JMH：Level](https://github.com/openjdk/jmh/blob/master/jmh-core/src/main/java/org/openjdk/jmh/annotations/Level.java)
+- [JMH：Profilers](https://github.com/openjdk/jmh/blob/master/jmh-samples/src/main/java/org/openjdk/jmh/samples/JMHSample_35_Profilers.java)

@@ -7,17 +7,17 @@ knowledge:
 
 # OutOfMemoryError 与 StackOverflowError
 
-`OutOfMemoryError` 只说明某次资源申请无法满足，未必是 Java 堆泄漏。第一步应保留完整错误消息，确认失败的是堆、类元数据、直接内存、native thread 还是其他资源，再选择证据。
+OutOfMemoryError 表示一次资源申请失败。StackOverflowError 表示线程调用栈深度超限。本文负责错误分类、证据选择与恢复边界。堆内引用分析见 [堆转储](./heap-dumps-memory-leaks.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- `OutOfMemoryError` 的消息说明是哪种资源不足：`Java heap space`、`GC overhead limit exceeded`、`Metaspace`、`Direct buffer memory`、`unable to create native thread` 的原因和证据各不相同。[卡](#oom-types)
-- 堆 OOM 先区分泄漏、工作集超过容量和瞬时分配峰值，再决定修复泄漏还是调整容量。
-- `StackOverflowError` 来自线程栈深度超限，常见于无终止递归和 `toString`、`equals` 的相互调用。
-- 发生 OOM 后先保存完整错误消息、启动参数、容器限制和同时段指标；预先配置 `-XX:+HeapDumpOnOutOfMemoryError` 可以自动留下堆转储。[卡](#locate-oom)
-- `System.gc()` 不能回收仍然可达的对象，不能用来处理 OOM。
+- `Java heap space` 指堆分配失败，`Metaspace` 指类元数据分配失败。[卡](#oom-types)
+- `unable to create native thread` 指平台线程资源申请失败。
+- `StackOverflowError` 表示线程请求的调用栈深度超出允许范围。
+- `-XX:+HeapDumpOnOutOfMemoryError` 可在 HotSpot 支持的 OOM 路径导出堆。[卡](#locate-oom)
+- 操作系统 OOM Kill 可直接终止进程，JVM 来不及生成堆转储。[卡](#oom-kill-vs-java)
 
-## 2. `Java heap space`
+## 2. Java heap space {#java-heap-space}
 
 ```java
 List<byte[]> retained = new ArrayList<>();
@@ -26,68 +26,46 @@ while (true) {
 }
 ```
 
-常见原因：
+示例持续强引用新数组，堆耗尽后抛出 OOM。实际故障还包括必需工作集过大或突发分配。
 
-- 无界缓存、队列或批次持续持有对象。
-- 单次请求尝试建立过大的数组或对象图。
-- 工作集本身超过堆容量。
-- 分配速率过高，收集器来不及提供空间。
+泄漏要结合对象生命周期判断，见 [堆转储](./heap-dumps-memory-leaks.mdx#泄漏容量不足与分配峰值)。`Requested array size exceeds VM limit` 则指数组超出实现上限。增大堆也无法解除该数组长度限制。
 
-OOM 不自动证明泄漏。若堆中对象都是业务必须的 live set，问题可能是容量或模型；若稳定负载下 Full GC 后 live set 仍持续增长，才更像意外持有。
+## 3. GC overhead limit exceeded {#gc-overhead-limit-exceeded}
 
-建议在受控环境验证 `-XX:+HeapDumpOnOutOfMemoryError` 和转储路径。堆转储可能很大并造成额外停顿，生产环境要预留磁盘与采集策略。
+该消息表示 GC 占用大量时间，却释放极少空间。它描述回收进展，未新增一种内存区域。
 
-## 3. `GC overhead limit exceeded`
+以 HotSpot JDK 8 Parallel 的默认策略为例：GC 时间超过约 98%，回收空间低于约 2%。持续满足条件后会触发保护。此规则应结合收集器和版本解释。
 
-HotSpot 在绝大多数时间用于 GC、每次只回收很少空间时，可以抛出这个错误。它描述的是进展不足，不是一个独立内存区域。
+`-XX:-UseGCOverheadLimit` 可关闭该保护。工作集和可用空间问题仍需处理。应结合 GC 后存活占用、分配率和吞吐判断。
 
-需要同时看：
+## 4. 元空间与压缩类空间 {#元空间与压缩类空间}
 
-- Full/old collection 后的 live set。
-- 分配和晋升速率。
-- GC CPU 占比与应用吞吐。
-- 堆是否过小，或是否有大规模对象滞留。
-
-关闭这个保护只会让进程更久地停留在低进展状态，通常不是修复。
-
-## 4. `Metaspace` 与 `Compressed class space`
-
-常见来源：
-
-- 动态生成大量类。
-- 热部署反复创建类加载器，旧加载器仍被线程或静态注册持有。
-- `MaxMetaspaceSize` 或压缩类空间上限与实际类规模不匹配。
+动态生成类、加载器滞留和容量配置都可导致故障。`-XX:MaxMetaspaceSize` 管理元空间上限。`-XX:CompressedClassSpaceSize` 配置压缩类空间大小。
 
 ```bash
 jcmd <pid> VM.classloader_stats
 jcmd <pid> VM.metaspace
 ```
 
-仅增大 Metaspace 会掩盖类加载器泄漏。要观察加载器数量、每个加载器定义的类以及能否卸载。
+先检查加载器数量与类数量的变化。旧加载器应卸载却持续存活时，再查持有链。空间不足时，也需核对正常业务的类规模。
 
-## 5. `Direct buffer memory` 与 native allocation failure
+## 5. 直接内存与本地分配失败 {#直接内存与本地分配失败}
 
-直接缓冲区 OOM 常来自无界池、过大缓冲区或释放滞后。native heap 申请失败还可能显示 `Out of swap space`、`Native method` 等细节，甚至由 native 代码直接崩溃并生成 `hs_err_pid` 日志。
+直接缓冲区受限可抛出 `Direct buffer memory`。其他本地分配失败也可表现为 native OOM 或崩溃。此时 Java 堆仍可很小。
 
-这时堆转储可能很小。使用 NMT、直接缓冲区池指标、进程内存映射和 native profiler，不能按 Java 堆泄漏路径排查。
+BufferPool 指标用于观察直接缓冲区。NMT 追踪 HotSpot 管理的本地内存。第三方 native 分配还需操作系统映射等证据。工具范围见 [Java 直接内存](./direct-native-memory.mdx)。
 
-## 6. `unable to create native thread`
+## 6. 平台线程创建失败 {#平台线程创建失败}
 
-创建平台线程需要本地线程结构和栈。失败可能因为：
-
-- 应用无限创建线程或线程泄漏。
-- 线程栈配置过大，进程地址空间或物理内存不足。
-- 操作系统用户/进程线程数限制。
-- 容器 PID 或内存限制。
+平台线程需要本地结构和栈空间。线程无限增长会耗尽内存或线程数配额。容器 PID 限制也会导致创建失败。
 
 ```bash
-jcmd <pid> Thread.print
-ps -eLf | grep <pid> | wc -l
+jcmd <pid> Thread.print -l
 ```
 
-修复应先控制并发和线程生命周期。盲目减小 `-Xss` 可能增加递归溢出风险，也不能解决任务没有背压的问题。
+结合线程增长、OS 线程限制和容器事件排查。`-Xss` 影响平台线程栈容量。减小它可降低单线程栈预算，也会降低可承受调用深度。控制并发和任务积压仍是必要处理。
 
-## 7. `StackOverflowError`
+## 7. StackOverflowError {#stackoverflowerror}
 
 ```java
 static void recurse() {
@@ -95,38 +73,51 @@ static void recurse() {
 }
 ```
 
-线程请求的栈深度超过实现允许范围时抛出 `StackOverflowError`。常见原因是无终止递归、异常处理再次递归、对象 `toString`/`equals` 的循环调用，或正常递归在过小栈上运行。
+无限递归会持续增加栈帧，最终超过栈容量。循环调用的 `toString`、`equals` 也会触发同类问题。
 
-先看重复栈帧定位调用环。如果算法深度确实随输入增长，优先改为显式栈或迭代；增大 `-Xss` 只适合最大深度可控且容量预算允许的场景。
+先根据重复栈帧定位调用环。无终止递归应修正终止条件。输入决定的深递归可改为迭代和显式栈。深度已知且内存预算允许时，再调整 `-Xss`。
 
 ## 8. 按错误类型选择证据 {#按错误类型选择证据}
 
-| 现象 | 首要证据 |
+| 错误或现象 | 主要证据 |
 | --- | --- |
-| `Java heap space` | GC 时间线、class histogram、heap dump |
-| `Metaspace` | 类加载器统计、类加载/卸载趋势、NMT |
-| `Direct buffer memory` | BufferPool 指标、NMT、native 内存映射 |
-| `unable to create native thread` | 线程转储、OS/PID 限制、每线程栈预算 |
-| `StackOverflowError` | 异常栈中的重复调用环 |
-| 进程被 OOM Kill | 容器/内核事件、RSS 与各内存类别时间线 |
+| `Java heap space` | GC 日志、直方图、堆转储 |
+| `Metaspace` | 加载器统计、类卸载趋势 |
+| `Direct buffer memory` | BufferPool、NMT 与系统内存 |
+| `unable to create native thread` | 线程数、栈预算、OS 与 PID 配额 |
+| `StackOverflowError` | 重复调用栈帧 |
+| 操作系统 OOM Kill | 内核或容器事件、进程内存趋势 |
 
-所有场景都先保存首次错误、启动参数、容器限制和同一时间窗口的指标。故障后重复触发 Full GC 或连续导出堆，可能让现场进一步恶化。
+首先保留完整错误消息与首次发生时间。再关联启动参数、负载和容器限制。
 
-## 9. 常见问题
+```bash
+java -XX:+HeapDumpOnOutOfMemoryError \
+  -XX:HeapDumpPath=/safe/path -jar app.jar
+```
 
-### 9.1 内存泄漏和内存溢出有什么区别
+启动前验证路径可写，并为转储预留磁盘。该开关覆盖部分 HotSpot OOM 路径。应用手动抛出的 OOM 和线程创建失败等不保证产出。
 
-泄漏是程序意外保留已经无用的对象或资源；溢出是一次申请无法满足。泄漏可以最终导致溢出，但合理的工作集超过容量也会溢出，没有泄漏。
+### 8.1 操作系统 OOM Kill {#操作系统-oom-kill}
 
-### 9.2 OOM 后进程一定退出吗
+容器内存包含 Java 堆、线程栈和其他本地内存。即使堆未到 `-Xmx`，进程仍可超过容器限额。内核此时可直接杀死进程。
 
-不一定。`OutOfMemoryError` 是 `Error`，可能只终止触发它的线程，也可能被捕获；但此时进程资源紧张，错误处理也可能分配失败。关键服务通常应通过外部监督安全重启，并在退出前尽可能保留低风险证据。
+SIGKILL 没有给 JVM 留下清理窗口。退出码 137 只说明 SIGKILL，需要核对 OOM 事件。已配置的 heap dump 和 shutdown hook 也无法据此保证执行。
 
-### 9.3 `System.gc()` 能解决 OOM 吗
+## 9. 常见问题 {#常见问题}
 
-它只是向 JVM 建议执行 GC，可能被忽略，也不能回收仍然可达的对象。频繁调用还可能带来昂贵停顿，不是容量或泄漏修复手段。
+### 9.1 泄漏与溢出 {#泄漏与溢出}
 
-## 10. 面试题
+泄漏是无用资源仍被持有，溢出是资源申请失败。合理工作集超过容量也会溢出。
+
+### 9.2 OOM 后的进程状态 {#oom-后的进程状态}
+
+未捕获的 OOM 可终止当前线程。其他线程仍能运行，但进程资源已经紧张。恢复策略应由外部健康检查和监督机制配合。
+
+### 9.3 显式 GC 与容量 {#显式-gc-与容量}
+
+`System.gc()` 只是 GC 请求。仍被强引用持有的对象会继续存活。释放责任和容量配置需要分别修正。
+
+## 10. 面试题 {#面试题}
 
 ### 10.1 `StackOverflowError` 和不同 OOM 分别怎样产生 {#oom-types}
 
@@ -136,20 +127,14 @@ static void recurse() {
 
 **出现公司**：腾讯
 
-**考察重点**
+**考察重点**：调用栈与不同资源的分配失败。
 
-- 栈深度、堆、类元数据、直接内存和线程资源。
-- 完整 detail message 的诊断价值。
-- OOM 不等于内存泄漏。
-
-**相关内容**：[`Java heap space`](#2-java-heap-space)至[`StackOverflowError`](#7-stackoverflowerror)。
+**相关内容**：[Java heap space](#java-heap-space)、[StackOverflowError](#stackoverflowerror)。
 
 <details>
 <summary>参考回答</summary>
 
-递归或调用链超过线程栈可承受深度时通常是 `StackOverflowError`。OOM 要看详细消息：堆无法分配对象是 `Java heap space`，类元数据到达限制是 `Metaspace`，直接缓冲区受限是 `Direct buffer memory`，平台线程创建失败可能是 `unable to create native thread`。
-
-这些错误选择的证据不同。堆看 histogram 与 dump，类元数据看加载器，直接和 native 内存看 NMT 与系统工具，线程失败看线程数量、栈预算和 OS 限制。
+`StackOverflowError` 表示调用栈深度超限。OOM 根据消息区分资源。`Java heap space` 对应堆，`Metaspace` 对应类元数据。`Direct buffer memory` 对应直接缓冲区。`unable to create native thread` 对应平台线程申请。
 
 </details>
 
@@ -161,26 +146,39 @@ static void recurse() {
 
 **出现公司**：高德
 
-**考察重点**
-
-- 先分类再采证。
-- 泄漏、容量不足和分配过快的区分。
-- 采集动作本身的停顿与磁盘风险。
+**考察重点**：错误分类、首次证据和采集成本。
 
 **相关内容**：[按错误类型选择证据](#按错误类型选择证据)。
 
 <details>
 <summary>参考回答</summary>
 
-先保留完整错误、启动参数和容器事件，根据 detail message 判断资源类别。堆 OOM 关联 GC 后 live set、分配率、histogram 和 heap dump；Metaspace 检查加载器及类卸载；direct/native 检查 NMT、BufferPool 与系统映射；线程 OOM 检查线程转储和 OS 限制。
-
-最后区分意外持有、容量确实不足和短时分配峰值。生产采集要预估停顿与磁盘，避免在已失稳进程上连续导出大堆。
+先保存完整错误、首次时间和容器事件，再按资源分类。堆问题看 GC 趋势和堆转储。元空间看类与加载器，直接内存看 BufferPool。线程失败看线程数、栈预算和系统限制。预配 `-XX:+HeapDumpOnOutOfMemoryError` 并验证路径。采集时还要评估停顿与磁盘。
 
 </details>
 
-## 11. 参考资料
+### 10.3 堆未达到 Xmx，进程为何被杀死且没有 heap dump？ {#oom-kill-vs-java}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：容器总内存、SIGKILL 与 JVM 诊断路径。
+
+**相关内容**：[操作系统 OOM Kill](#操作系统-oom-kill)。
+
+<details>
+<summary>参考回答</summary>
+
+堆外内存也计入容器内存，进程可先触及容器上限。内核 OOM Kill 直接发送 SIGKILL。JVM 来不及执行自动转储。应核对内核或容器 OOM 事件，并检查各内存类别。137 也可来自其他 SIGKILL，单靠退出码不足以确认原因。
+
+</details>
+
+## 11. 参考资料 {#参考资料}
 
 - [Oracle：Troubleshoot Memory Leaks](https://docs.oracle.com/en/java/javase/26/troubleshoot/troubleshooting-memory-leaks.html)
-- [Oracle：Diagnostic Tools](https://docs.oracle.com/en/java/javase/26/troubleshoot/diagnostic-tools.html)
-- [Java API：`OutOfMemoryError`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/OutOfMemoryError.html)
-- [Java API：`StackOverflowError`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/StackOverflowError.html)
+- [Oracle：JDK 8 Parallel Collector](https://docs.oracle.com/javase/8/docs/technotes/guides/vm/gctuning/parallel.html)
+- [JVMS：Run-Time Data Areas](https://docs.oracle.com/javase/specs/jvms/se26/html/jvms-2.html#jvms-2.5)
+- [OpenJDK 26：report_java_out_of_memory](https://github.com/openjdk/jdk/blob/jdk-26-ga/src/hotspot/share/utilities/debug.cpp)
+- [Linux：Control Group v2 Memory](https://docs.kernel.org/admin-guide/cgroup-v2.html#memory)
+- [Linux：signal(7)](https://man7.org/linux/man-pages/man7/signal.7.html)

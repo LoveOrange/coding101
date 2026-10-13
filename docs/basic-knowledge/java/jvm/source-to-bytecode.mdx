@@ -7,17 +7,17 @@ knowledge:
 
 # Java 字节码
 
-Java 源码经过编译后成为 Class 文件。Class 文件记录类型、字段、方法和 JVM 指令，不绑定某一种处理器；JVM 在加载并验证它之后，才通过解释器或即时编译器执行其中的方法。
+Java 字节码是 JVM 执行的指令表示。本文负责 javac 编译、Class 结构、描述符和版本兼容。加载阶段见 [类加载](./class-loading-stages.mdx)。运行时优化见 [分层编译](./interpreter-tiered-compilation.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- `javac` 把源码编译成与处理器无关的 Class 文件，过程中完成类型检查、泛型擦除和语法糖展开。[卡](#source-to-run)
-- Class 文件包含常量池、字段、方法、字节码指令和属性表。
-- JVM 指令基于操作数栈和局部变量表执行，方法描述符保留参数和返回值的类型。
-- Class 文件经过加载和验证后，由解释器执行，热点代码再由 JIT 编译为机器码。
-- 用 `javap -c -v` 查看实际生成的字节码，可以确认某种语法糖的编译结果。[卡](#inspect-bytecode)
+- `javac` 完成语法与类型检查，将源码编译为 Class 文件。[卡](#source-to-run)
+- Class 文件包含版本、常量池、字段、方法和属性。
+- 方法描述符记录擦除后的参数与返回类型，泛型信息可保存在 Signature 属性中。
+- `javap -v -c -p` 可检查常量池、描述符和字节码。[卡](#inspect-bytecode)
+- `javac --release 8` 同时约束语言、Class 版本和可用平台 API。[卡](#release-compatibility)
 
-## 2. `javac` 编译 {#javac-编译}
+## 2. javac 编译 {#javac-编译}
 
 ```java
 public final class Price {
@@ -32,31 +32,27 @@ javac Price.java
 javap -c -p Price.class
 ```
 
-`javac` 先解析源码并完成类型检查，再把合法程序转换为 Class 文件。编译器会处理泛型擦除、语法糖展开和部分常量折叠，但不会把普通 Java 方法直接编译成当前机器的原生指令。
+`javac` 解析并检查源码，然后生成 Class 文件。泛型擦除、装箱调用和部分语法糖在编译时处理。一个源文件含多个类时，可生成多个 Class 文件。
 
-同一个 `.java` 文件可能产生多个 Class 文件，例如成员类、匿名类和某些编译器生成的辅助类型。文件数量不是判断源码结构的可靠依据。
+CPU 最终执行机器码。Class 中保存的是 JVM 指令与类型信息。
 
 ## 3. Class 文件的结构 {#class-文件的结构}
 
-Class 文件主要包含：
+Class 文件以魔数 `0xCAFEBABE` 开始。后面记录 minor、major 版本和常量池。类型信息还包括访问标志、父类、接口、字段与方法。
 
-- 魔数与 Class 文件版本。
-- 当前类型、父类和接口信息。
-- 常量池。
-- 字段、方法及其属性。
-- 方法的字节码、异常表、行号表和栈映射帧等属性。
+方法的 Code 属性包含字节码与异常表。它也记录 `max_stack` 和 `max_locals`。abstract 和 native 方法没有 Code 属性。
 
-常量池保存字符串常量，也保存类、字段和方法的符号引用。符号引用描述“要找谁”，类加载后的解析过程才可能把它转换为能够直接定位运行时目标的引用。
+常量池含常量及类、字段、方法的符号引用。符号引用通过名称与描述符定位目标。
 
 ```bash
 javap -v Price.class
 ```
 
-`-v` 可以看到常量池、方法描述符、访问标志和属性，适合判断编译器实际生成了什么。
+该命令可查看版本、常量池和属性。`-p` 进一步显示所有可见级别的成员。
 
 ## 4. 操作数栈与局部变量表 {#操作数栈与局部变量表}
 
-`total` 的核心指令可以简化为：
+`Price.total` 的字节码为：
 
 ```text
 iload_0
@@ -65,59 +61,78 @@ imul
 ireturn
 ```
 
-两个参数先压入操作数栈，`imul` 弹出两个整数并压入乘积，`ireturn` 返回结果。每次方法调用对应一个栈帧，栈帧包含局部变量表、操作数栈以及完成调用所需的信息。
+`iload_0` 和 `iload_1` 将两个参数压栈。`imul` 弹出整数并压入乘积。`ireturn` 弹出并返回该整数。
 
-字节码是 JVM 指令集，不等于某种 CPU 汇编。HotSpot 可以解释这些指令，也可以把热点方法编译为机器码。
+栈帧槽位与共享范围见 [JVM 运行时数据区域](./runtime-data-areas.mdx#局部变量槽位与操作数栈)。
 
 ## 5. 方法描述符 {#方法描述符}
 
-源码中的方法：
+下面的方法签名片段返回 `List<String>`：
 
 ```java
 List<String> find(long userId)
 ```
 
-其描述符只记录擦除后的参数和返回类型：
+擦除后的描述符为：
 
 ```text
 (J)Ljava/util/List;
 ```
 
-泛型信息通常保存在 `Signature` 属性中，JVM 方法调用仍按擦除后的描述符匹配。桥接方法、装箱、增强 for 等源码概念，也要以最终 Class 文件为准。
+`J` 表示 long，`L...;` 表示引用类型。括号中是参数，括号后是返回类型。泛型信息可在 Signature 属性中保存，供反射等工具读取。
+
+### 5.1 方法调用指令 {#方法调用指令}
+
+| 指令 | 主要用途 |
+| --- | --- |
+| `invokestatic` | 调用静态方法 |
+| `invokevirtual` | 按接收者类型进行虚方法调用 |
+| `invokeinterface` | 通过接口类型调用方法 |
+| `invokespecial` | 构造器、父类调用等特殊调用 |
+| `invokedynamic` | 通过 bootstrap method 链接动态调用点 |
+
+JDK 9 的 javac 可用 `invokedynamic` 实现字符串拼接。Lambda 也可使用该指令。调用点的链接结果由 bootstrap method 建立。具体语法生成何种指令，应以编译产物为准。JIT 内联后，机器码也可省去独立调用。
 
 ## 6. 字节码验证 {#字节码验证}
 
-Class 文件进入 JVM 后还要验证。验证会检查文件格式、类型约束、指令操作数和控制流等内容，避免非法字节码破坏 JVM 的运行时状态。
+JVM 会验证 Class 的格式、类型与控制流约束。非法操作数或不兼容类型会导致验证失败。
 
-`javac` 能生成合法字节码，不代表 JVM 只能运行 `javac` 的产物。Kotlin、Scala 等语言也可以生成符合 Class 文件规范的字节码；字节码工具还可以在编译后修改类。因此验证是类加载的一部分，不能只依赖源码编译器。
+符合格式的 Class 可来自 javac、其他语言或字节码工具。验证因此位于运行时链接过程，详见 [类加载](./class-loading-stages.mdx#验证)。
 
-## 7. 从字节码到执行 {#从字节码到执行}
+### 6.1 Class 版本与目标平台 {#class-版本与目标平台}
 
-一段方法通常经历：
+旧 JVM 遇到过新的 Class 版本，会抛出 `UnsupportedClassVersionError`。例如 Java 8 的 major 为 52，Java 17 为 61。与处理器无关仍需满足 JVM 版本要求。
 
-1. 类加载器找到 Class 文件并定义运行时类型。
-2. JVM 完成验证、准备、必要的解析和初始化。
-3. 解释器开始执行方法并收集运行时画像。
-4. 热点方法可能由 JIT 编译为机器码。
-5. 优化假设失效时，已编译代码可能去优化并回到较低层级执行。
+```bash
+javac --release 8 Price.java
+javap -v Price.class
+```
 
-因此，“Java 是编译型语言还是解释型语言”没有单一二选一答案。源码先编译为字节码，运行时又可能同时使用解释执行与即时编译。
+在支持该目标的 JDK 上，输出 major version 为 52。`--release 8` 也限制源码语法和 Java 8 平台 API。
 
-## 8. 常见问题
+只用 `-source 8 -target 8`，平台 API 仍可来自编译 JDK。误用新增 API 后，旧环境运行会出现链接错误。第三方依赖也要满足目标版本要求。
 
-### 8.1 `javac` 和 JIT 都叫编译，有什么区别
+## 7. 字节码执行 {#从字节码到执行}
 
-`javac` 在程序运行前把源码转换为 Class 文件；JIT 在程序运行期间根据实际调用与类型画像，把热点字节码转换为当前平台的机器码。前者提供可移植产物，后者利用运行时信息优化热点路径。
+JVM 加载并链接 Class，按触发条件完成初始化。解析可采用延迟策略，详见 [类加载](./class-loading-stages.mdx)。
 
-### 8.2 反编译结果为什么和源码不同
+HotSpot 可解释字节码，也可编译热点方法。执行层级与 OSR 见 [分层编译](./interpreter-tiered-compilation.mdx)。
 
-编译器会擦除泛型、生成桥接方法、插入装箱调用并展开语法糖。反编译器根据 Class 文件重建近似源码，无法保证恢复原来的变量名、结构和书写方式。
+## 8. 常见问题 {#常见问题}
 
-### 8.3 字节码相同，运行速度就相同吗
+### 8.1 javac 与 JIT {#javac-与-jit}
 
-不一定。JDK 版本、JVM 实现、运行参数、实际输入画像和硬件都会影响解释、编译、内联和垃圾回收结果。
+javac 生成可交给 JVM 的 Class 文件。JIT 在运行时利用画像，生成当前平台的机器码。
 
-## 9. 面试题
+### 8.2 反编译结果与源码 {#反编译结果与源码}
+
+反编译器从 Class 重建近似源码。擦除和语法糖转换已发生，原有写法与变量名未必保留。
+
+### 8.3 字节码与实际性能 {#字节码与实际性能}
+
+JDK、输入画像和硬件影响运行时优化。相同字节码在不同环境下可产生不同机器码。
+
+## 9. 面试题 {#面试题}
 
 ### 9.1 Java 程序从源码到运行经历了哪些过程 {#source-to-run}
 
@@ -128,20 +143,14 @@ Class 文件进入 JVM 后还要验证。验证会检查文件格式、类型约
 
 **出现公司**：去哪儿、字节跳动
 
-**考察重点**
+**考察重点**：源码、Class、加载和运行期执行。
 
-- `javac`、Class 文件、类加载与运行时执行的边界。
-- 字节码和机器码的区别。
-- 解释器与 JIT 为什么可以同时存在。
-
-**相关内容**：[`javac` 编译](#javac-编译)至[从字节码到执行](#从字节码到执行)。
+**相关内容**：[javac 编译](#javac-编译)、[字节码执行](#从字节码到执行)。
 
 <details>
 <summary>参考回答</summary>
 
-`javac` 先完成语法和类型检查，把源码编译为平台无关的 Class 文件。类加载器找到字节流后，JVM 创建运行时类型并完成验证、准备、解析和初始化。方法开始时可以由解释器执行，热点路径再由 JIT 编译为当前平台机器码；优化假设失效时还可能去优化。
-
-回答时要把编译期、类加载期和运行期分开。Class 文件是 JVM 的输入，不是 CPU 可以直接执行的机器码。
+源码由 javac 编译为 Class，再交给 JVM 加载和链接。类初始化按使用条件触发，解析可延迟。HotSpot 解释字节码，并将热点代码编译为机器码。各阶段分别处理源语言检查、运行时类型和执行优化。
 
 </details>
 
@@ -153,24 +162,56 @@ Class 文件进入 JVM 后还要验证。验证会检查文件格式、类型约
 
 **出现公司**：京东数科
 
-**考察重点**
+**考察重点**：编译参数与 javap 证据。
 
-- 使用 `javap` 检查 Class 文件。
-- 区分源码推断和运行时证据。
-- 泛型擦除、桥接方法和调用指令。
-
-**相关内容**：[Class 文件的结构](#class-文件的结构)至[方法描述符](#方法描述符)。
+**相关内容**：[Class 文件的结构](#class-文件的结构)、[方法描述符](#方法描述符)。
 
 <details>
 <summary>参考回答</summary>
 
-先用同一 JDK 和同一编译参数执行 `javac`，再用 `javap -v -c -p` 查看常量池、描述符、属性和指令。若还要确认运行时目标，需要结合类加载日志、JIT 日志或 JFR，因为字节码只说明编译产物，不足以证明最终是否内联或编译。
+使用相同 JDK 和参数编译，再运行 `javap -v -c -p`。输出包含版本、常量池、描述符和指令。字节码说明编译产物。若要确认最终内联，还需查看 JIT 日志或运行时 profile。
 
 </details>
 
-## 10. 参考资料
+### 9.3 为什么编译给 Java 8 使用时，应选 --release 8？ {#release-compatibility}
 
-- [JVMS：Compiling for the Java Virtual Machine](https://docs.oracle.com/javase/specs/jvms/se26/html/jvms-3.html)
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：字节码版本与平台 API 兼容。
+
+**相关内容**：[Class 版本与目标平台](#class-版本与目标平台)。
+
+<details>
+<summary>参考回答</summary>
+
+`--release 8` 同时限定源码、Class 版本和平台 API。单独设置 source 与 target 仍可误用当前 JDK 的新 API。产物虽能被旧 JVM 读取，调用时仍会链接失败。第三方依赖的目标版本也需检查。
+
+</details>
+
+### 9.4 invokevirtual、invokespecial 与 invokedynamic 各负责什么？ {#bytecode-invocations}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：动态分派、特殊调用与动态链接。
+
+**相关内容**：[方法调用指令](#方法调用指令)。
+
+<details>
+<summary>参考回答</summary>
+
+invokevirtual 根据接收者类型分派虚方法。invokespecial 用于构造器、父类等特殊调用。invokedynamic 通过 bootstrap method 建立调用点。JIT 可在运行时继续优化这些调用。
+
+</details>
+
+## 10. 参考资料 {#参考资料}
+
+- [JVMS：Compiling for the JVM](https://docs.oracle.com/javase/specs/jvms/se26/html/jvms-3.html)
 - [JVMS：The Class File Format](https://docs.oracle.com/javase/specs/jvms/se26/html/jvms-4.html)
-- [Oracle：`javac` 命令](https://docs.oracle.com/en/java/javase/26/docs/specs/man/javac.html)
-- [Oracle：`javap` 命令](https://docs.oracle.com/en/java/javase/26/docs/specs/man/javap.html)
+- [JVMS：Instructions](https://docs.oracle.com/javase/specs/jvms/se26/html/jvms-6.html#jvms-6.5)
+- [Oracle：javac](https://docs.oracle.com/en/java/javase/26/docs/specs/man/javac.html)
+- [Oracle：javap](https://docs.oracle.com/en/java/javase/26/docs/specs/man/javap.html)
+- [JEP 280：Indify String Concatenation](https://openjdk.org/jeps/280)
