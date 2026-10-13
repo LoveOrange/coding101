@@ -151,4 +151,4 @@ Coding 101 是一个面向技术岗位求职者的就业准备网站。第一优
 
 ## 格式检查
 
-新增或修改知识树文章后运行 `npm run check:article-format`（`npm run build` 也会执行）。它检查面试核心、`[卡]` 链接、参考资料、面试题字段和标题编号；加 `--list` 同时列出文风提示（标题模板、判断句标题、限定词与否定句密度、自测注释、参考资料空行）。修改一批文章后，用 `node scripts/check-article-format.mjs --style-strict -- <文件...>` 检查这批文件，结构问题和文风提示都必须清零。全站目前只报告不阻断构建，存量文章修完后改为 `--strict`。
+新增或修改知识树文章后运行 `npm run check:article-format`（`npm run build` 也会执行）。它检查面试核心、`[卡]` 链接、参考资料、面试题字段和标题编号；加 `--list` 同时列出文风提示（标题模板、判断句标题、限定词与否定句密度、自测注释、参考资料空行）。修改一批文章后，用 `node scripts/check-article-format.mjs --style-strict -- <文件...>` 检查这批文件，结构问题和文风提示都必须清零。`npm run build` 以 `--strict` 运行，出现结构问题时构建失败；文风提示仍只报告，提交前用 `--style-strict` 检查本次修改的文件。
