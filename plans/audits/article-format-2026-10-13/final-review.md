@@ -30,14 +30,9 @@
 
 ## 2. 需要人工复核
 
-### 2.1 时效性强的版本事实
+### 2.1 版本基线
 
-这些说法来自 Codex 查阅的较新资料，超出审查者能独立核对的范围：
-
-- `docs/basic-knowledge/java/jvm/compressed-pointers-alignment.mdx`：JDK 27 始终压缩类指针，并默认启用紧凑对象头。
-- `docs/devops/kubernetes/workloads-networking.mdx`：kube-proxy 的 IPVS 模式自 Kubernetes 1.35 弃用；ingress-nginx 项目退役，与 Ingress API 的生命周期分开说明。
-- `docs/basic-knowledge/network/tcp_handshake.mdx`：较新内核的 `tcp_tw_reuse_delay` 默认 1000ms。
-- AI 文章（`docs/ai/**`）：MCP 按 2025-11-25 规范，各厂商 API 字段按 2026-10-13 核对。模型与协议更新快，建议每季度复核一次。
+内容已按 AGENTS.md 的“版本基线”回调（批次 v1—v3，共 102 篇）：Java 以 17、21 为准，MySQL 以 8.0、Redis 以 6、7、Spring Boot 以 2.7、3.x 为准，Kubernetes 与 Linux 只写通用机制，模型 API 只写 OpenAI 与 Anthropic。原先列在这里的 JDK 27、Kubernetes 1.35、新内核参数等新版本说法已删除，不再需要复核。
 
 ### 2.2 未实际运行的示例
 
