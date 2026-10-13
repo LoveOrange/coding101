@@ -1,0 +1,38 @@
+{
+  "version": [
+    "8.4.11"
+  ],
+  "REPEATABLE READ": [
+    "110",
+    "110",
+    "120",
+    "110"
+  ],
+  "READ COMMITTED": [
+    "110",
+    "120",
+    "120",
+    "120"
+  ],
+  "consistent_snapshot": "100 despite later committed 110",
+  "rr_missing": {
+    "locks": [
+      "X,GAP\t20"
+    ],
+    "blocked": [
+      "ERROR 1205 (HY000) at line 19: Lock wait timeout exceeded; try restarting transaction"
+    ]
+  },
+  "rr_existing": "insert 15 succeeds while 10 locked",
+  "rc_missing": "insert 15 succeeds",
+  "timeout_rollback": "only waiting statement rolled back; prior insert present until explicit rollback",
+  "duplicate_key": "prior statement persists inside transaction until rollback",
+  "explain_controlled_force_index": {
+    "non_covering": [
+      "1\tSIMPLE\tindex_demo\tNULL\trange\tidx_tenant_time_status\tidx_tenant_time_status\t13\tNULL\t1\t50.00\tUsing index condition"
+    ],
+    "covering": [
+      "1\tSIMPLE\tindex_demo\tNULL\trange\tidx_tenant_time_status\tidx_tenant_time_status\t13\tNULL\t1\t50.00\tUsing where; Using index"
+    ]
+  }
+}

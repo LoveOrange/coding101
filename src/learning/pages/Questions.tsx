@@ -232,7 +232,7 @@ function QuestionsPage() {
                   <PriorityDots priority={article.priority} />
                 </span>
                 <span>
-                  <Companies names={card.companies.slice(0, 2)} />
+                  <Companies names={card.companies.slice(0, 2)} selfTest={card.selfTest} />
                 </span>
                 {features && (
                   <span>

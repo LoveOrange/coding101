@@ -67,6 +67,8 @@ export type CardIndex = {
   /** Short label taken from the first related section. */
   label: string;
   companies: string[];
+  /** Explicitly marked as a site-authored self-test in the article. */
+  selfTest?: boolean;
   checkpointCount: number;
   refs: CardRef[];
   /** A composite question combines several articles or sections; atomic cards test one point. */

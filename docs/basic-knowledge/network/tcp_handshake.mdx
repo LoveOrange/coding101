@@ -10,7 +10,15 @@ knowledge:
 
 TCP 通过三次握手同步连接状态与初始序列号，通过两个方向分别关闭来释放全双工连接。
 
-## 1. TCP 连接保存双方状态
+## 1. 面试核心 {#core}
+
+- 握手同步双方初始序列号和连接状态；SYN 占用序列号，第三次 ACK 完成服务端对确认的接收。[卡](#three-way-handshake-time-wait)
+- 客户端发出第三次 ACK 时可进入 ESTABLISHED，服务端收到有效 ACK 后才进入；连接状态不是双方同时变化。[卡](#lost-handshake-ack)
+- FIN 只关闭发送方向并占用序列号；两个方向分别关闭，ACK 与 FIN 可以合并。[卡](#half-close-reset)
+- TIME_WAIT 服务于可靠终止与旧报文隔离，通常由主动关闭方承担，同时关闭也可能两端都进入。[卡](#three-way-handshake-time-wait)
+- 持续 CLOSE_WAIT 应检查应用关闭路径，TIME_WAIT 多则先看短连接与资源压力，不能统一当作泄漏。[卡](#connection-states)
+
+## 2. TCP 连接保存双方状态 {#1-tcp-连接保存双方状态}
 
 TCP 向应用提供可靠、有序的字节流。通信双方需要维护序列号、确认号、接收窗口和连接状态，后续数据才能被确认、重传并按顺序交付。
 
@@ -21,19 +29,30 @@ TCP 向应用提供可靠、有序的字节流。通信双方需要维护序列�
 
 连接是全双工的，两个方向可以独立发送数据，也可以独立结束发送。这一点决定了关闭过程通常需要分别处理两个方向。
 
-## 2. 三次握手同步初始序列号
+## 3. 三次握手同步初始序列号 {#2-三次握手同步初始序列号}
 
-![TCP 三次握手](./assets/tcp_3-way-handshake.jpg)
+```mermaid
+sequenceDiagram
+    participant C as 客户端
+    participant S as 服务端
+    C->>S: SYN seq=x
+    Note over C: SYN-SENT
+    S->>C: SYN+ACK seq=y, ack=x+1
+    Note over S: SYN-RECEIVED
+    C->>S: ACK seq=x+1, ack=y+1
+    Note over C: 发出确认后<br/>ESTABLISHED
+    Note over S: 收到确认后<br/>ESTABLISHED
+```
 
 假设客户端初始序列号为 `x`，服务端初始序列号为 `y`：
 
 1. 客户端发送 `SYN`，序列号为 `x`，进入 `SYN-SENT`。
 2. 服务端回复 `SYN + ACK`，序列号为 `y`，确认号为 `x + 1`，进入 `SYN-RECEIVED`。
-3. 客户端回复 `ACK`，确认号为 `y + 1`。服务端收到后，双方进入 `ESTABLISHED`。
+3. 客户端回复 `ACK`，确认号为 `y + 1`，客户端进入 `ESTABLISHED`；服务端收到有效 ACK 后才进入 `ESTABLISHED`。
 
-`SYN` 会占用一个序列号，因此确认号在对方序列号基础上加一。第三个报文可以同时携带应用数据，但服务端必须收到该 ACK，才能确认客户端已经接收自己的 SYN 和初始序列号。
+`SYN` 会占用一个序列号，因此确认号在对方序列号基础上加一。不带数据的 ACK 不占序列号。第三个报文可以同时携带应用数据，但服务端必须收到该 ACK，才能确认客户端已经接收自己的 SYN 和初始序列号。
 
-## 3. 两次交互无法完成双方确认
+## 4. 第三次握手的作用 {#3-两次交互无法完成双方确认}
 
 如果只有客户端的 `SYN` 和服务端的 `SYN + ACK`，客户端能够确认服务端收到了自己的请求，服务端却不知道自己的回复是否到达客户端。服务端也就无法判断对方是否接受了本次连接参数。
 
@@ -41,9 +60,25 @@ TCP 向应用提供可靠、有序的字节流。通信双方需要维护序列�
 
 三次握手仍不能证明未来的数据一定到达。它只建立当前连接状态，后续可靠性继续依赖序列号、确认、超时重传和拥塞控制。
 
-## 4. 四次挥手分别关闭两个方向
+## 5. 四次挥手分别关闭两个方向 {#4-四次挥手分别关闭两个方向}
 
-![TCP 四次挥手](./assets/tcp_4-way-handshake.png)
+```mermaid
+sequenceDiagram
+    participant A as 主动关闭方
+    participant B as 被动关闭方
+    A->>B: FIN
+    Note over A: FIN-WAIT-1
+    B->>A: ACK
+    Note over B: CLOSE-WAIT
+    Note over A: FIN-WAIT-2
+    B->>A: 剩余数据（如果有）
+    B->>A: FIN
+    Note over B: LAST-ACK
+    A->>B: ACK
+    Note over A: TIME-WAIT<br/>等待 2MSL
+    Note over B: 收到 ACK 后<br/>CLOSED
+    Note over A: 等待结束后<br/>CLOSED
+```
 
 以客户端主动关闭为例：
 
@@ -54,34 +89,55 @@ TCP 向应用提供可靠、有序的字节流。通信双方需要维护序列�
 
 第二步的 ACK 与第三步的 FIN 可以在同一个报文中发送，因此抓包时不一定总能看到四个独立报文。“四次挥手”描述的是两个方向各自发送 FIN 并获得确认的逻辑过程。
 
-## 5. TIME_WAIT 与 CLOSE_WAIT 指向不同问题
+## 6. TIME_WAIT 与 CLOSE_WAIT 指向不同问题 {#5-time_wait-与-close_wait-指向不同问题}
 
-主动关闭的一方在发送最后一个 ACK 后进入 `TIME-WAIT`，通常等待 `2MSL`。这段时间允许它在最后 ACK 丢失、对方重传 FIN 时再次回复，也让旧连接中的迟到报文从网络中消失，避免污染随后复用相同四元组的连接。
+常规单方主动关闭过程中，主动关闭者在自己的 FIN 已被确认、又收到对端 FIN 并回复 ACK 后进入 `TIME-WAIT`，等待 `2MSL`。MSL 是报文最大生存时间，不是一次往返的 RTT；具体计时值与实现有关。这段时间允许它在最后 ACK 丢失、对方重传 FIN 时再次回复，也让旧连接中的迟到报文从网络中消失，避免污染随后复用相同四元组的连接。
 
 被动关闭的一方收到 FIN 后进入 `CLOSE-WAIT`。这个状态表示对端已经停止发送，本地应用还没有关闭自己的方向。少量、短暂的 `CLOSE-WAIT` 属于正常过渡；持续堆积通常说明应用没有及时关闭 socket，或相关线程被阻塞。
 
+双方同时关闭时，可能各自经过 `CLOSING` 后进入 `TIME-WAIT`，因此不能用“只有客户端才有 TIME_WAIT”判断连接状态。
+
 大量 `TIME-WAIT` 不等于连接泄漏。应先确认谁在主动关闭、连接是否缺少复用，以及端口范围、并发量和持续时间是否已经造成实际资源压力。
 
-## 6. 常见问题
+## 7. 握手丢包与半连接 {#handshake-loss}
 
-### 6.1 为什么建立连接通常是三次，关闭通常是四次
+| 丢失位置 | 典型状态与恢复 | 排查关注点 |
+| --- | --- | --- |
+| 初始 SYN | 客户端仍在 SYN-SENT，等待重传或超时 | 网络可达性、监听端口、防火墙 |
+| SYN+ACK | 客户端还未收到应答，双方可能各自重传对应 SYN 报文 | 返回路径、半连接积压 |
+| 第三次 ACK | 客户端可能已建立，服务端仍在 SYN-RECEIVED；服务端重传 SYN+ACK，客户端再次确认 | 不能因客户端 connect 返回就断定服务端已经完成握手 |
+
+纯 ACK 通常没有独立的重传定时器；通过对方重传 SYN+ACK 或后续携带有效确认的数据恢复。重试次数、退避和最终超时属于协议实现及配置，不应背成跨系统的固定常量。
+
+SYN flood 会让服务端不断处理难以完成的连接请求。SYN cookies、限制速率和合理配置队列可降低状态分配压力；它们不能解决带宽被耗尽的问题。半连接等待握手完成，与握手完成后等待应用 accept 是两个阶段，排障时要结合操作系统队列和指标。
+
+## 8. 半关闭、复位与业务完成 {#close-semantics}
+
+`shutdown(SHUT_WR)` 可以结束本端发送方向，仍保留接收方向；对端读完此前数据后读取到 EOF，但仍可返回结果。`FIN` 表示有序结束这一方向，`RST` 则用于复位连接，接收应用可能看到连接错误，不能按正常 EOF 处理。
+
+TCP ACK 表示对端协议栈接收了对应字节，不代表对端应用已执行请求或持久化数据；FIN 也不表示业务成功。需要端到端成功语义时，协议必须定义业务响应、超时、请求标识和重试规则。
+
+## 9. 常见问题 {#6-常见问题}
+
+### 9.1 为什么建立连接通常是三次，关闭通常是四次 {#61-为什么建立连接通常是三次关闭通常是四次}
 
 建立连接时，服务端可以把对客户端 SYN 的 ACK 与自己的 SYN 合并，所以三个报文能够完成双方初始序列号确认。关闭时，一方收到 FIN 后可能还有数据要发送，只能先 ACK，等应用完成发送后再发自己的 FIN，因此通常表现为四个报文。
 
-### 6.2 收到 FIN 是否表示连接中的数据都处理完了
+### 9.2 收到 FIN 是否表示连接中的数据都处理完了 {#62-收到-fin-是否表示连接中的数据都处理完了}
 
 FIN 表示发送方不会再发送新的字节，它在序列空间中位于此前数据之后。接收端协议栈会按序交付，但这不代表应用已经完成业务处理；应用仍需读取剩余数据并正确关闭资源。
 
-## 7. 面试题
+## 10. 面试题 {#7-面试题}
 
-### 7.1 为什么 TCP 建立连接需要三次握手，TIME_WAIT 有什么作用 {#three-way-handshake-time-wait}
+### 10.1 为什么 TCP 建立连接需要三次握手，TIME_WAIT 有什么作用 {#three-way-handshake-time-wait}
 
 <!-- 面试来源：
-- 字节跳动：https://www.nowcoder.com/discuss/353156517979430912
-- 美团：https://www.nowcoder.com/discuss/353154541233315840
+- 字节跳动：https://www.nowcoder.com/discuss/353156517979430912；2026-10-13 检索结果可核对三次握手、TIME_WAIT 与 CLOSE_WAIT。
+- 补充复核：https://www.nowcoder.com/discuss/353155506619490304；一面第 5—7 项。
+- 原美团链接：https://www.nowcoder.com/discuss/353154541233315840；本轮未取得正文，暂不展示公司归属。
 -->
 
-**出现公司**：字节跳动、美团
+**出现公司**：字节跳动
 
 **考察重点**
 
@@ -89,20 +145,80 @@ FIN 表示发送方不会再发送新的字节，它在序列空间中位于此�
 - 全双工关闭、半关闭和 ACK/FIN 合并。
 - TIME_WAIT、CLOSE_WAIT 与线上连接问题。
 
-**相关内容**：[TCP 连接保存双方状态](#1-tcp-连接保存双方状态)至[TIME_WAIT 与 CLOSE_WAIT 指向不同问题](#5-time_wait-与-close_wait-指向不同问题)。
+**相关内容**：[三次握手同步初始序列号](#2-三次握手同步初始序列号)、[第三次握手的作用](#3-两次交互无法完成双方确认)、[TIME_WAIT 与 CLOSE_WAIT 指向不同问题](#5-time_wait-与-close_wait-指向不同问题)。
 
 <details>
 <summary>参考回答</summary>
 
 客户端先发 SYN 和初始序列号，服务端用 SYN+ACK 确认客户端并发送自己的初始序列号，客户端最后用 ACK 让服务端确认其 SYN 已被接收。两次交互时服务端无法确认客户端是否收到自己的连接参数；三次能够同步双方状态和序列号，并降低旧 SYN 误建连接的风险。
 
-TCP 是全双工连接，一个方向发送 FIN 后，另一个方向仍可能继续发送，所以关闭通常需要两个 FIN 分别得到确认。主动关闭方发送最后 ACK 后进入 TIME_WAIT，用于应对对方重传 FIN，并等待旧报文消失。CLOSE_WAIT 则表示本地应用收到对端 FIN 后仍未关闭自己的方向，长期堆积应检查 socket 关闭路径和阻塞线程。
+TCP 是全双工连接，一个方向发送 FIN 后，另一个方向仍可能继续发送，所以关闭通常需要两个 FIN 分别得到确认。常规关闭中，主动关闭方在自己的 FIN 已确认且回复对方 FIN 后进入 TIME_WAIT，用于应对对方重传 FIN，并等待旧报文消失。CLOSE_WAIT 则表示本地应用收到对端 FIN 后仍未关闭自己的方向，长期堆积应检查 socket 关闭路径和阻塞线程。
 
 </details>
 
-:::note 参考资料
+### 10.2 第三次握手的 ACK 丢失，客户端和服务端分别处于什么状态？ {#lost-handshake-ack}
 
-1. [RFC 9293：Transmission Control Protocol](https://www.rfc-editor.org/rfc/rfc9293)
-2. [RFC 6528：Defending against Sequence Number Attacks](https://www.rfc-editor.org/rfc/rfc6528)
+<!-- 面试来源：本站自测：根据本文机制与参考资料设计，无已核验的公司归属。 -->
 
-:::
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**
+
+- 两端状态变化时机。
+- SYN+ACK 重传与纯 ACK。
+
+**相关内容**：[三次握手同步初始序列号](#2-三次握手同步初始序列号)、[握手丢包与半连接](#handshake-loss)。
+
+<details>
+<summary>参考回答</summary>
+
+客户端可能已经进入 ESTABLISHED，服务端仍停在 SYN-RECEIVED。服务端未收到确认会重传 SYN+ACK，客户端再回复 ACK；后续携带有效 ACK 的数据也可能完成确认。不能说纯 ACK 一定自行定时重传，也不能因为 connect 成功就认定服务端应用已经接收请求。
+
+</details>
+
+### 10.3 收到 FIN 后还能发送数据吗，RST 又有什么不同？ {#half-close-reset}
+
+<!-- 面试来源：本站自测：根据本文机制与参考资料设计，无已核验的公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**
+
+- 全双工与半关闭。
+- 协议确认和业务完成。
+
+**相关内容**：[四次挥手分别关闭两个方向](#4-四次挥手分别关闭两个方向)、[半关闭、复位与业务完成](#close-semantics)。
+
+<details>
+<summary>参考回答</summary>
+
+可以。FIN 结束对端发送方向，本端在应用尚未关闭时仍可以发送剩余数据，之后才发自己的 FIN。RST 复位连接，属于异常终止语义。无论收到 ACK 还是 FIN，都不能据此判断对方业务已提交，业务成功要依赖应用协议响应与幂等核对。
+
+</details>
+
+### 10.4 线上 TIME_WAIT 或 CLOSE_WAIT 大量堆积，各应该先查什么？ {#connection-states}
+
+<!-- 面试来源：本站自测：根据本文机制与参考资料设计，无已核验的公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**
+
+- 主动关闭与本地关闭责任。
+- 连接复用、资源压力和调用栈。
+
+**相关内容**：[TIME_WAIT 与 CLOSE_WAIT 指向不同问题](#5-time_wait-与-close_wait-指向不同问题)。
+
+<details>
+<summary>参考回答</summary>
+
+TIME_WAIT 多先看谁主动关闭、是否大量短连接、四元组与端口资源是否真正受限，再考虑连接复用和容量。CLOSE_WAIT 持续存在说明本地已收到对端 FIN，但应用尚未完成关闭，应查关闭路径、异常分支和阻塞线程。不能简单把两种状态都归为内核问题或通过缩短超时解决。
+
+</details>
+
+## 11. 参考资料 {#references}
+
+- [RFC 9293：Transmission Control Protocol](https://www.rfc-editor.org/rfc/rfc9293)
+- [RFC 6528：Defending against Sequence Number Attacks](https://www.rfc-editor.org/rfc/rfc6528)
+
+- [RFC 4987：TCP SYN Flooding Attacks](https://www.rfc-editor.org/rfc/rfc4987.html)

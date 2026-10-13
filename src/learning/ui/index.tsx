@@ -25,11 +25,11 @@ export function PriorityDots({priority}: {priority?: Priority}) {
   );
 }
 
-export function Companies({names, tone = 'fill'}: {names: string[]; tone?: 'fill' | 'paper'}) {
-  if (!names.length) return null;
+export function Companies({names, selfTest = false, tone = 'fill'}: {names: string[]; selfTest?: boolean; tone?: 'fill' | 'paper'}) {
+  const labels = selfTest ? ['本站自测'] : names.length ? names : ['公司未核验'];
   return (
     <span className={styles.companies}>
-      {names.map((name) => (
+      {labels.map((name) => (
         <span key={name} className={clsx(styles.company, tone === 'paper' && styles.companyPaper)}>
           {name}
         </span>

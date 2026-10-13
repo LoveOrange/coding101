@@ -47,6 +47,7 @@ public class User {
 
     // getter and setter
 }
+```
 
 `UserValidator` 类中存放用户校验的逻辑：
 
@@ -166,6 +167,7 @@ public class Fish extends Animal implements Swimmable {
 public interface UserRepository {
     void save(User user);
 }
+```
 
 对于 `UserService` 类，它不需要关注用户信息存储在 `MySQL` 还是 `MongoDB` 中，它只需要关注 `UserRepository` 提供了 `save` 方法即可，实际存储的逻辑由 `UserRepository` 实现。
 

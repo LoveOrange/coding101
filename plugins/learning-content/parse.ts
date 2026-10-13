@@ -20,6 +20,7 @@ export type ParsedCard = {
   /** `**题型**：综合题` marks a question that combines several articles or sections. */
   composite: boolean;
   companies: string[];
+  selfTest: boolean;
   checkpoints: Inline[][];
   related: ParsedLink[];
   answer: Block[];
@@ -154,6 +155,7 @@ function parseCard(heading: ParsedHeading, lines: string[]): ParsedCard {
   const companies: string[] = [];
   const related: ParsedLink[] = [];
   let composite = false;
+  let selfTest = false;
   const checkpointLines: string[] = [];
   const answerLines: string[] = [];
   let mode: 'none' | 'checkpoints' | 'answer' = 'none';
@@ -173,6 +175,7 @@ function parseCard(heading: ParsedHeading, lines: string[]): ParsedCard {
     }
     const company = /^\*\*出现公司\*\*[：:]\s*(.+)$/.exec(line);
     if (company) {
+      selfTest = /本站.*自测/.test(company[1]);
       // "暂无公开来源记录" and similar mean the question has no verified source.
       if (/^暂无/.test(company[1].trim())) {
         mode = 'none';
@@ -221,6 +224,7 @@ function parseCard(heading: ParsedHeading, lines: string[]): ParsedCard {
     question: heading.title,
     composite,
     companies,
+    selfTest,
     checkpoints: parseList(checkpointLines),
     related,
     answer: toBlocks(parseMarkdown(answerLines.join('\n'))),

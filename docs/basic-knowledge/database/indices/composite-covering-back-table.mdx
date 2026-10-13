@@ -7,9 +7,17 @@ knowledge:
 
 # 联合索引与覆盖索引
 
-联合索引把多列按确定顺序编码进同一棵 B+ 树。索引能否缩小扫描范围、是否需要回表，以及能否直接提供排序，都取决于查询条件如何使用这组有序键。
+本文讨论 MySQL 8.4 InnoDB 的常规 B+ 树索引。联合索引把多列按确定顺序编码进同一棵 B+ 树。索引能否缩小扫描范围、是否需要回表，以及能否直接提供排序，都取决于查询条件如何使用这组有序键。
 
-## 1. 联合索引先按第一列排序
+## 1. 面试核心 {#core}
+
+- 联合索引按定义的列顺序排序；等值前缀、范围条件和排序应放在同一次访问路径中判断。[卡](#left-prefix-range)
+- 范围之后的列仍可能参与索引条件下推或覆盖，不能把“没缩小边界”说成“整棵索引失效”。[卡](#icp-vs-covering)
+- 二级索引携带聚簇键，缺少所需列时要回表；覆盖是查询与索引的关系，并有 MVCC 可见性检查的边界。[卡](#covering-index)
+- 索引顺序能否消除排序，要看等值固定列、排序列顺序与方向；低扫描量比单纯看到索引名更有意义。[卡](#index-order-limit)
+- 增加覆盖列会扩大索引，减少回表的收益必须与写入、缓存和主键宽度的成本一起评估。
+
+## 2. 联合索引先按第一列排序 {#1-联合索引先按第一列排序}
 
 假设表上有索引 `(tenant_id, status, created_at)`，索引项先按 `tenant_id` 排序；tenant 相同时再按 `status` 排序；前两列都相同时，`created_at` 才是有序的。
 
@@ -23,7 +31,7 @@ WHERE tenant_id = 10
 
 如果只给出 `status`，不同 tenant 的同一状态分散在整棵索引中，通常无法通过这棵索引快速定位一个连续区间。这就是联合索引的左前缀特性。
 
-## 2. 等值列、范围列和排序共同决定列顺序
+## 3. 等值列、范围列和排序共同决定列顺序 {#2-等值列范围列和排序共同决定列顺序}
 
 设计索引时，不能只背“区分度高的列放前面”。需要从主要查询形态出发：
 
@@ -36,7 +44,7 @@ WHERE tenant_id = 10
 
 优化器也可能使用跳跃扫描、索引下推或多个索引合并，但这些能力不能替代按主要访问路径设计联合索引。
 
-## 3. 二级索引叶子节点保存主键
+## 4. 二级索引叶子节点保存主键 {#3-二级索引叶子节点保存主键}
 
 InnoDB 聚簇索引的叶子节点保存整行数据。普通二级索引的叶子节点保存二级索引列和主键值。
 
@@ -47,7 +55,7 @@ InnoDB 聚簇索引的叶子节点保存整行数据。普通二级索引的叶�
 
 第二步通常称为回表。若二级索引命中很多记录，随机或离散回表会成为主要成本。
 
-## 4. 覆盖索引让查询直接从索引返回
+## 5. 覆盖索引让查询直接从索引返回 {#4-覆盖索引让查询直接从索引返回}
 
 查询需要的过滤列和返回列都能从同一个索引得到时，该索引覆盖了这次查询：
 
@@ -57,17 +65,19 @@ FROM orders
 WHERE tenant_id = 10 AND status = 'PAID';
 ```
 
-索引 `(tenant_id, status, created_at)` 已包含查询所需数据，不必再访问聚簇索引。`EXPLAIN` 的 Extra 中可能出现 `Using index`。
+索引 `(tenant_id, status, created_at)` 已包含查询所需数据，通常可以避免为了取结果列而回表。`EXPLAIN` 的 Extra 中可能出现 `Using index`。
+
+但“覆盖”不承诺所有并发状态下零聚簇索引访问。二级索引记录被删除标记，或所在页被较新的事务修改时，InnoDB 可能需要访问聚簇记录与 undo 判断可见版本。
 
 覆盖是索引与具体查询之间的关系，不是某个索引永久具有的属性。把所有返回列都塞进索引会增加空间、缓存压力和写放大，应优先覆盖高频且性能敏感的窄查询。
 
-## 5. 主键宽度会影响全部二级索引
+## 6. 主键宽度会影响全部二级索引 {#5-主键宽度会影响全部二级索引}
 
 InnoDB 的二级索引项需要携带主键。主键很宽时，每棵二级索引都会变大，单个页能容纳的记录减少，缓存命中率和写入成本也会受到影响。
 
 这也是主键通常选择稳定、较短字段的原因之一。业务唯一标识可以建立唯一索引，不必一定充当聚簇主键。
 
-## 6. SQL 使用索引仍然可能很慢
+## 7. SQL 使用索引仍然可能很慢 {#6-sql-使用索引仍然可能很慢}
 
 出现 `key` 不为空，只说明优化器选择了某个索引。仍需检查：
 
@@ -81,19 +91,62 @@ InnoDB 的二级索引项需要携带主键。主键很宽时，每棵二级索�
 
 MySQL 8 可以用 `EXPLAIN ANALYZE` 查看实际行数、循环次数和各算子耗时。优化应以执行证据为准，不只根据 SQL 文字猜测。
 
-## 7. 常见问题
+## 8. 范围定位、下推过滤与覆盖 {#index-access-example}
 
-### 7.1 `LIKE 'abc%'` 会破坏左前缀吗
+下面是独立的表结构示意。是否选中某条索引，仍取决于数据量和统计信息：
+
+```sql
+CREATE TABLE index_demo (
+  id BIGINT PRIMARY KEY,
+  tenant_id BIGINT NOT NULL,
+  status VARCHAR(16) NOT NULL,
+  created_at DATETIME NOT NULL,
+  payload VARCHAR(200),
+  KEY idx_tenant_time_status (tenant_id, created_at, status)
+) ENGINE=InnoDB;
+
+EXPLAIN SELECT payload FROM index_demo
+WHERE tenant_id = 10 AND created_at > '2026-08-01'
+  AND status = 'PAID';
+```
+
+`tenant_id` 等值加 `created_at` 范围可以定位一段连续索引区间。`status` 不再进一步缩小该区间，但它仍在索引中：启用且满足 ICP 条件时，可先用它过滤索引项，再为剩余记录读取 `payload`，减少回表。`Using index condition` 就属于这种机制，并不表示无需回表。
+
+若将返回列改成 `id, created_at, status`，过滤与返回需要的列都已在索引项中，查询具备覆盖条件。`Using index` 与 `Using index condition` 分别回答“数据是否足够”和“过滤在哪里做”，不能互相替换。
+
+前缀索引如 `name(10)` 只保存列的前一部分，通常不能覆盖需要完整 `name` 的查询。不要把索引定义中出现了列名直接等同于包含完整值。
+
+## 9. 排序、LIMIT 与列顺序 {#ordering-example}
+
+假设主要查询是某租户已支付订单的最新列表：
+
+```sql
+SELECT id, created_at
+FROM orders
+WHERE tenant_id = 10 AND status = 'PAID'
+ORDER BY created_at DESC, id DESC
+LIMIT 20;
+```
+
+显式索引 `(tenant_id, status, created_at, id)` 在前两列被等值固定后，后两列的顺序可以服务排序；同向 DESC 可以通过反向扫描满足。显式写出 `id` 便于分析稳定排序，实际设计也要考虑 InnoDB 已携带的主键，避免无意义的冗余定义。
+
+若查询去掉 `status` 条件，索引先按不同状态分组，组内时间有序不等于整个租户全局时间有序。此时可能需要额外排序，或针对该查询另设 `(tenant_id, created_at, id)`。方向混合的排序还要核对索引各列升降序。
+
+LIMIT 不保证只扫描 20 行：如果先按时间扫描再过滤状态，可能检查很多不匹配的索引项才能找到 20 条；大 OFFSET 也需要跨过前面的记录。用实际扫描量验证，不能仅依据 LIMIT 小就认定查询便宜。
+
+## 10. 常见问题 {#7-常见问题}
+
+### 10.1 `LIKE 'abc%'` 会破坏左前缀吗 {#71-like-abc-会破坏左前缀吗}
 
 它通常可以利用字符串前缀形成范围扫描，但后续索引列是否还能继续缩小范围，要看优化器生成的访问区间。`LIKE '%abc'` 无法从 B+ 树起点定位前缀，通常不能用普通索引完成有效范围查找。
 
-### 7.2 联合索引是否能替代所有单列索引
+### 10.2 联合索引是否能替代所有单列索引 {#72-联合索引是否能替代所有单列索引}
 
-不能。联合索引只能支持与其有序前缀匹配的访问路径。如果某列经常独立查询，且不能依靠现有索引有效定位，仍可能需要单列索引或另一组联合索引。最终要结合读写成本和真实查询频率取舍。
+不能。联合索引最直接地支持与其有序前缀匹配的范围定位；全索引扫描、覆盖和满足条件的跳跃扫描也可能使用它。如果某列经常独立查询，且不能依靠现有索引有效定位，仍可能需要单列索引或另一组联合索引。最终要结合读写成本和真实查询频率取舍。
 
-## 8. 面试题
+## 11. 面试题 {#8-面试题}
 
-### 8.1 什么是覆盖索引和回表，如何减少回表成本 {#covering-index}
+### 11.1 什么是覆盖索引和回表，如何减少回表成本 {#covering-index}
 
 <!-- 面试来源：
 - 字节跳动：https://www.nowcoder.com/discuss/353159293912424448
@@ -107,21 +160,84 @@ MySQL 8 可以用 `EXPLAIN ANALYZE` 查看实际行数、循环次数和各算�
 - 覆盖索引是针对具体查询的判断。
 - 回表次数、索引宽度和写入成本的权衡。
 
-**相关内容**：[二级索引叶子节点保存主键](#3-二级索引叶子节点保存主键)至[SQL 使用索引仍然可能很慢](#6-sql-使用索引仍然可能很慢)。
+**相关内容**：[二级索引叶子节点保存主键](#3-二级索引叶子节点保存主键)、[覆盖索引让查询直接从索引返回](#4-覆盖索引让查询直接从索引返回)、[主键宽度会影响全部二级索引](#5-主键宽度会影响全部二级索引)。
 
 <details>
 <summary>参考回答</summary>
 
 InnoDB 二级索引叶子节点保存索引列和主键。查询二级索引没有包含的列时，要先取得主键，再访问聚簇索引读取整行，这一步是回表。若过滤条件命中大量记录，大量回表会明显增加 I/O。
 
-当查询需要的过滤列和返回列都包含在同一个索引中时，可以直接从索引返回，称为覆盖索引。可以通过调整联合索引列顺序和少量加入高频返回列减少回表，但索引越宽，空间、缓存和写入成本越高，所以应结合真实执行计划与查询频率决定。
+当查询需要的过滤列和返回列都包含在同一个索引中时，具有直接从索引取列的条件，称为覆盖索引；并发版本检查仍可能要求读取聚簇记录。可以通过调整联合索引列顺序和少量加入高频返回列减少回表，但索引越宽，空间、缓存和写入成本越高，所以应结合真实执行计划与查询频率决定。
 
 </details>
 
-:::note 参考资料
+### 11.2 联合索引 (a, b, c) 遇到 a=1、b>10、c=5，哪些列还起作用？ {#left-prefix-range}
 
-1. [MySQL 8.4：Multiple-Column Indexes](https://dev.mysql.com/doc/refman/8.4/en/multiple-column-indexes.html)
-2. [MySQL 8.4：Clustered and Secondary Indexes](https://dev.mysql.com/doc/refman/8.4/en/innodb-index-types.html)
-3. [MySQL 8.4：EXPLAIN Output Format](https://dev.mysql.com/doc/refman/8.4/en/explain-output.html)
+<!-- 面试来源：本站自测：根据本文机制与参考资料设计，无已核验的公司归属。 -->
 
-:::
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**
+
+- 复合键的有序区间。
+- 范围边界与剩余列过滤。
+
+**相关内容**：[联合索引先按第一列排序](#1-联合索引先按第一列排序)、[范围定位、下推过滤与覆盖](#index-access-example)。
+
+<details>
+<summary>参考回答</summary>
+
+a 的等值与 b 的范围通常用于构造扫描区间，c 的条件不能把每个 b 分组中分散的匹配项变成一个更小的连续范围。但 c 仍可用于 ICP 过滤或覆盖取列。还应确认实际计划；条件书写成 c、b、a 的顺序不会改变索引自身顺序。
+
+</details>
+
+### 11.3 Using index 和 Using index condition 有什么区别？ {#icp-vs-covering}
+
+<!-- 面试来源：本站自测：根据本文机制与参考资料设计，无已核验的公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**
+
+- 覆盖取列与 ICP。
+- 回表与 MVCC 的边界。
+
+**相关内容**：[范围定位、下推过滤与覆盖](#index-access-example)、[覆盖索引让查询直接从索引返回](#4-覆盖索引让查询直接从索引返回)。
+
+<details>
+<summary>参考回答</summary>
+
+Using index 表示有覆盖访问条件，通常无需为返回列取整行。Using index condition 表示引擎先根据索引列过滤，只有通过的记录再读取完整行。后者的目的正是减少回表，不等于已经没有回表；前者也不能忽略 InnoDB 的版本可见性检查。
+
+</details>
+
+### 11.4 同一个联合索引，为什么加上或去掉一个等值条件会改变排序成本？ {#index-order-limit}
+
+<!-- 面试来源：本站自测：根据本文机制与参考资料设计，无已核验的公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**
+
+- 固定前缀后的顺序。
+- LIMIT 与实际扫描量。
+
+**相关内容**：[排序、LIMIT 与列顺序](#ordering-example)。
+
+<details>
+<summary>参考回答</summary>
+
+索引是按复合键分组有序的。tenant 和 status 都固定时，后面的时间顺序就是目标集合的顺序；去掉 status 后，多个状态分组各自有序，合并起来不一定按时间有序。需要用计划确认是否 filesort，或为主要查询提供另一条路径；即使 LIMIT 很小，也可能因过滤或偏移扫描大量记录。
+
+</details>
+
+## 12. 参考资料 {#references}
+
+- [MySQL 8.4：Multiple-Column Indexes](https://dev.mysql.com/doc/refman/8.4/en/multiple-column-indexes.html)
+- [MySQL 8.4：Clustered and Secondary Indexes](https://dev.mysql.com/doc/refman/8.4/en/innodb-index-types.html)
+- [MySQL 8.4：EXPLAIN Output Format](https://dev.mysql.com/doc/refman/8.4/en/explain-output.html)
+
+- [MySQL 8.4：Range Optimization](https://dev.mysql.com/doc/refman/8.4/en/range-optimization.html)
+- [MySQL 8.4：Index Condition Pushdown](https://dev.mysql.com/doc/refman/8.4/en/index-condition-pushdown-optimization.html)
+- [MySQL 8.4：ORDER BY Optimization](https://dev.mysql.com/doc/refman/8.4/en/order-by-optimization.html)
+- [MySQL 8.4：InnoDB Multi-Versioning](https://dev.mysql.com/doc/refman/8.4/en/innodb-multi-versioning.html)

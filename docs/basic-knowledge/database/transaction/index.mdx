@@ -8,11 +8,21 @@ knowledge:
 
 # 数据库事务
 
-数据库事务把一组读写放进同一个提交边界，并规定失败恢复、并发可见性和提交后的持久性。
+数据库事务把一组读写放进同一个提交边界，并规定失败恢复、并发可见性和提交后的持久性。本文以 MySQL 8.4 InnoDB 为主要实现，区分隔离级别的通用语义与具体数据库行为。
 
-## 1. 事务保护一组相关状态变化
+## 1. 面试核心 {#core}
+
+- ACID 描述提交、约束、隔离和恢复的保证；业务不变量仍要由正确的 SQL 与事务边界维护。[卡](#acid-isolation-levels)
+- RC 的一致性读按语句取得快照，RR 通常复用首次一致性读的快照；串行化要求结果等价于串行执行。[卡](#acid-isolation-levels)
+- 先读旧值再覆盖写可能丢失更新；条件更新、版本校验和锁定读要按业务约束选择。[卡](#lost-update)
+- 一条语句失败不必然回滚整个事务；显式事务、自动提交、DDL 和异常处理共同决定实际边界。[卡](#transaction-failure)
+- 持久性取决于 redo 刷盘和存储保证；客户端未收到提交响应时，结果可能已提交，应凭业务标识核对。[卡](#commit-durability)
+
+## 2. 事务保护一组相关状态变化 {#1-事务保护一组相关状态变化}
 
 账户转账至少包含扣减付款方余额与增加收款方余额。如果其中一步提交、另一步失败，数据就会进入不符合业务规则的状态。把两步放进一个本地数据库事务，可以让它们共同提交或共同回滚。
+
+下面展示成功路径；两个更新之间必须由应用检查影响行数，失败时执行 `ROLLBACK` 并停止后续语句，不能直接把整个片段无条件执行：
 
 ```sql
 START TRANSACTION;
@@ -20,35 +30,37 @@ START TRANSACTION;
 UPDATE accounts
 SET balance = balance - 100
 WHERE id = 1 AND balance >= 100;
+-- 应用检查影响行数为 1；否则 ROLLBACK 并结束。
 
 UPDATE accounts
 SET balance = balance + 100
 WHERE id = 2;
+-- 应用检查影响行数为 1；否则 ROLLBACK 并结束。
 
 COMMIT;
 ```
 
-事务边界还要检查第一条更新是否真正影响一行，并通过约束防止非法余额。事务只能覆盖同一数据库能够协调的操作；HTTP 调用、消息发送和另一个数据库不会自动加入这次提交。
+事务边界还要检查两条更新是否各影响一行，并通过约束防止非法余额。事务只能覆盖同一数据库能够协调的操作；HTTP 调用、消息发送和另一个数据库不会自动加入这次提交。
 
-## 2. ACID 描述四类保证
+## 3. ACID 描述四类保证 {#2-acid-描述四类保证}
 
-### 2.1 原子性 Atomicity
+### 3.1 原子性 Atomicity {#21-原子性-atomicity}
 
 事务中的修改要么提交，要么在失败时不对外生效。InnoDB 使用 undo log 等机制保存回滚所需信息。原子性不表示代码块不会抛异常，而是异常后的数据库状态能够回到未提交结果不可见的状态。
 
-### 2.2 一致性 Consistency
+### 3.2 一致性 Consistency {#22-一致性-consistency}
 
 事务执行前后应满足数据库约束和业务不变量。数据库可以强制主键、唯一键、外键和检查约束；“账户总额不变”等跨行业务规则还需要应用正确读取、加锁和更新。ACID 的一致性不能替代业务设计。
 
-### 2.3 隔离性 Isolation
+### 3.3 隔离性 Isolation {#23-隔离性-isolation}
 
 并发事务的中间状态按照隔离级别受到限制。隔离越强，允许观察到的并发结果越少，通常也会增加冲突、等待或回滚概率。
 
-### 2.4 持久性 Durability
+### 3.4 持久性 Durability {#24-持久性-durability}
 
 数据库确认提交后，即使进程或机器随后故障，已提交结果仍应按系统承诺恢复。InnoDB 依赖 redo log、刷盘策略和恢复流程；复制副本与备份解决的是更大范围故障，不能仅凭“已经 COMMIT”推断跨机器零丢失。
 
-## 3. 并发读写会产生多种异常
+## 4. 并发读写会产生多种异常 {#3-并发读写会产生多种异常}
 
 - **脏读**：读取了另一个事务尚未提交的修改。
 - **不可重复读**：同一事务再次读取同一行时，看到其他事务已提交的新值。
@@ -58,21 +70,21 @@ COMMIT;
 
 前三个名称常用于介绍 SQL 标准隔离级别，但仅靠这三项不能完整判断并发正确性。设计时要写出事务的读集合、写集合和业务约束，再检查特定数据库在目标隔离级别下允许什么执行结果。
 
-## 4. 四种隔离级别限制不同可见性
+## 5. 四种隔离级别限制不同可见性 {#4-四种隔离级别限制不同可见性}
 
-### 4.1 Read Uncommitted
+### 5.1 Read Uncommitted {#41-read-uncommitted}
 
 读未提交允许事务读取其他事务尚未提交的修改，因此可能出现脏读。实际系统很少需要这种隔离级别。
 
-### 4.2 Read Committed
+### 5.2 Read Committed {#42-read-committed}
 
 读已提交只读取已经提交的版本。同一事务中的两条普通查询通常会各自建立可见性视图，因此可能看到期间刚提交的新值。PostgreSQL 默认使用 Read Committed。
 
-### 4.3 Repeatable Read
+### 5.3 Repeatable Read {#43-repeatable-read}
 
 可重复读要求事务中的重复读取保持稳定。InnoDB 默认配置为 Repeatable Read，普通一致性读通常复用事务级 Read View；锁定读与写操作还会使用当前版本和范围锁，行为不能只用“事务开始时拍快照”概括。
 
-### 4.4 Serializable
+### 5.4 Serializable {#44-serializable}
 
 串行化要求并发结果等价于某种串行执行顺序。实现可以通过锁、序列化冲突检测或两者结合完成，并不一定真的让所有事务一次只运行一个。代价通常是更多等待、死锁或序列化失败，应用必须能够处理回滚和重试。
 
@@ -82,15 +94,15 @@ SQL 标准给出隔离语义，数据库采用 MVCC、锁和冲突检测实现�
 
 :::
 
-## 5. InnoDB 同时使用 MVCC 与锁
+## 6. InnoDB 同时使用 MVCC 与锁 {#5-innodb-同时使用-mvcc-与锁}
 
-普通 `SELECT` 通常通过 MVCC 读取符合 Read View 的已提交版本，不会为了读取每行都加共享锁。`SELECT ... FOR UPDATE`、`UPDATE` 和 `DELETE` 读取当前版本并对访问到的索引记录或范围加锁。
+在 RC/RR 下，普通 `SELECT` 通常通过 MVCC 读取符合 Read View 的已提交版本，不会为了读取每行都加共享锁。`SELECT ... FOR UPDATE`、`UPDATE` 和 `DELETE` 读取当前版本并对访问到的索引记录或范围加锁。
 
 在 Repeatable Read 下，InnoDB 的 next-key lock 可以保护索引记录与相邻间隙，减少其他事务在锁定范围内插入。实际加锁范围取决于索引、查询条件和执行计划；缺少合适索引时，扫描范围扩大也会让锁影响更多记录。
 
 MVCC 不能自动避免所有丢失更新或写偏差。计数更新优先使用原子表达式与条件更新，高风险不变量可以使用锁定读、唯一约束或更强隔离级别，并处理死锁与重试。
 
-## 6. 事务边界要尽量短且完整
+## 7. 事务边界要尽量短且完整 {#6-事务边界要尽量短且完整}
 
 可靠的事务通常遵循以下原则：
 
@@ -104,19 +116,54 @@ MVCC 不能自动避免所有丢失更新或写偏差。计数更新优先使用
 
 事务过长会保留旧版本、占用连接和锁，增加回滚成本。拆分边界时也不能破坏原本必须共同成立的业务不变量。
 
-## 7. 常见问题
+## 8. 条件更新与丢失更新 {#conditional-update}
 
-### 7.1 可重复读能解决所有并发问题吗
+假设库存为 10，两个事务都先读取 10，再执行 `SET quantity = 9`，最终可能只扣减一次。即使每条 `UPDATE` 都会取得排他锁，应用已经算好的旧结果仍会覆盖前一次更新。
+
+把判断与修改放在同一条语句中：
+
+```sql
+UPDATE inventory
+SET quantity = quantity - 1
+WHERE sku_id = 100 AND quantity > 0;
+```
+
+两个事务更新同一行时会在写入处协调；后执行者根据可更新的当前记录判断剩余库存。影响行数为 0 表示本次扣减未成功，应用不能继续按成功处理。涉及多个表或跨行约束时，仍需完整事务、锁定读或约束设计。
+
+另一种做法是 `WHERE id = ? AND version = ?`，同时递增版本号；影响行数为 0 时重新读取并决定重试。与把旧值直接覆盖回去相比，它能检测并发修改。MVCC 的实现细节见 [MVCC](./mvcc-read-view-consistent-read.mdx)，锁定范围见 [InnoDB 锁](./innodb-locking-ranges.mdx)。
+
+## 9. 自动提交与失败边界 {#failure-boundary}
+
+MySQL 默认启用 autocommit，独立语句各自提交。需要多条 DML 共同成功时，用显式事务或事务管理器绑定同一连接。嵌套调用并不自动创建独立的数据库嵌套事务；保存点只能回滚到事务内的某个位置，也不等于独立提交。
+
+| 情况 | InnoDB 的典型行为 | 应用需要做什么 |
+| --- | --- | --- |
+| 普通重复键错误 | 回滚当前语句，事务可能继续有效 | 判断业务是否还能成立；不能默认前面操作已撤销 |
+| 检测到死锁 | 选择一个事务整体回滚 | 重开事务，有界重试完整业务单元 |
+| 锁等待超时 | 默认回滚当前语句；配置可改变范围 | 明确回滚或恢复策略，避免半完成业务继续提交 |
+| `CREATE TABLE`、`ALTER TABLE` 等 DDL | 多数会引发隐式提交 | 不把 DDL 与普通 DML 当成同一个可回滚单元 |
+
+框架可能在异常后把事务标为仅回滚；这是框架策略，不能拿来替代数据库错误语义。对业务而言，捕获异常后显式终止当前事务通常比继续提交部分结果更容易保证正确性。
+
+## 10. 提交持久性与结果确认 {#durability}
+
+redo 保存崩溃恢复需要的信息，undo 用于回滚与历史版本，binlog 用于复制等逻辑日志用途，三者不能互相替代。`innodb_flush_log_at_trx_commit=1` 要求每次提交写出并刷盘 redo；设置为 0 或 2 会改变写出、刷盘时机，某些故障下可能丢失最近提交。还需考虑操作系统、磁盘是否兑现刷盘，以及 binlog 的 `sync_binlog` 配置。
+
+应用发出 `COMMIT` 后网络断开，并不能仅凭异常判断数据库已经回滚。若数据库已提交但响应丢失，盲目重试会重复扣款或创建订单。应使用业务唯一标识与唯一约束，查询提交结果，再决定重试或对账。
+
+## 11. 常见问题 {#7-常见问题}
+
+### 11.1 可重复读能解决所有并发问题吗 {#71-可重复读能解决所有并发问题吗}
 
 不能。它主要限制重复读取的可见性，具体实现可能继续阻止部分幻读，但基于多个条件的业务不变量仍可能出现写偏差。应根据实际读写集合设计锁、约束或串行化策略。
 
-### 7.2 方法加了 `@Transactional` 就能覆盖远程调用吗
+### 11.2 方法加了 `@Transactional` 就能覆盖远程调用吗 {#72-方法加了-transactional-就能覆盖远程调用吗}
 
 不能。本地数据库事务管理数据库连接上的提交与回滚，无法让 HTTP 服务、消息系统或另一个独立数据库原子提交。跨资源流程需要幂等、outbox、Saga、对账或专门的分布式事务协议。
 
-## 8. 面试题
+## 12. 面试题 {#8-面试题}
 
-### 8.1 ACID 与四种隔离级别分别解决什么问题 {#acid-isolation-levels}
+### 12.1 ACID 与四种隔离级别分别解决什么问题 {#acid-isolation-levels}
 
 <!-- 面试来源：
 - 美团：https://www.nowcoder.com/discuss/353158342476505088
@@ -130,7 +177,7 @@ MVCC 不能自动避免所有丢失更新或写偏差。计数更新优先使用
 - 脏读、不可重复读、幻读与其他并发异常。
 - MVCC、锁、事务边界和数据库实现差异。
 
-**相关内容**：[事务保护一组相关状态变化](#1-事务保护一组相关状态变化)至[事务边界要尽量短且完整](#6-事务边界要尽量短且完整)。
+**相关内容**：[ACID 描述四类保证](#2-acid-描述四类保证)、[并发读写会产生多种异常](#3-并发读写会产生多种异常)、[四种隔离级别限制不同可见性](#4-四种隔离级别限制不同可见性)。
 
 <details>
 <summary>参考回答</summary>
@@ -141,10 +188,73 @@ Read Uncommitted 允许脏读，Read Committed 每条语句只看已提交数据
 
 </details>
 
-:::note 参考资料
+### 12.2 两个事务都先查询库存再写回，为什么可能少扣一次？ {#lost-update}
 
-1. [MySQL 8.4：InnoDB Transaction Isolation Levels](https://dev.mysql.com/doc/refman/8.4/en/innodb-transaction-isolation-levels.html)
-2. [MySQL 8.4：InnoDB Locking](https://dev.mysql.com/doc/refman/8.4/en/innodb-locking.html)
-3. [PostgreSQL：Transaction Isolation](https://www.postgresql.org/docs/current/transaction-iso.html)
+<!-- 面试来源：本站自测：根据本文机制与参考资料设计，无已核验的公司归属。 -->
 
-:::
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**
+
+- 写锁与应用旧值计算的区别。
+- 条件更新、版本号与影响行数。
+
+**相关内容**：[条件更新与丢失更新](#conditional-update)。
+
+<details>
+<summary>参考回答</summary>
+
+如果两个事务都根据 10 算出 9，写锁只能把两次写入排队，无法知道第二个 9 已经过期。使用 `quantity = quantity - 1` 并把库存约束写进 WHERE，可以让修改根据当前记录执行；也可带版本号检测冲突。两种方案都必须检查影响行数，多行不变量还要纳入同一事务。
+
+</details>
+
+### 12.3 事务内一条 SQL 报错，前面成功的修改会全部回滚吗？ {#transaction-failure}
+
+<!-- 面试来源：本站自测：根据本文机制与参考资料设计，无已核验的公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**
+
+- 语句回滚与事务回滚。
+- 死锁、超时和隐式提交。
+
+**相关内容**：[自动提交与失败边界](#failure-boundary)。
+
+<details>
+<summary>参考回答</summary>
+
+不一定。普通重复键错误和默认锁等待超时通常只撤销当前语句，死锁受害事务则会整体回滚。先确认数据库错误、配置和框架是否已将事务标为回滚，再处理整个业务单元。不能吞掉异常后默认提交仍然满足业务约束；DDL 还可能提前提交已有事务。
+
+</details>
+
+### 12.4 数据库返回提交成功就一定不会丢数据吗？提交时断线又该怎么处理？ {#commit-durability}
+
+<!-- 面试来源：本站自测：根据本文机制与参考资料设计，无已核验的公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**
+
+- redo 刷盘、存储保证与复制边界。
+- 提交响应丢失与幂等核对。
+
+**相关内容**：[提交持久性与结果确认](#durability)。
+
+<details>
+<summary>参考回答</summary>
+
+提交保证要结合日志刷盘策略和存储故障范围判断；内存或操作系统缓存中的日志可能尚未具备掉电持久性，异步副本也可能落后。提交阶段断线时，客户端不知道结果，数据库却可能已经提交。以业务唯一标识查询并核对，使用唯一约束防止重复执行，必要时进入对账流程。
+
+</details>
+
+## 13. 参考资料 {#references}
+
+- [MySQL 8.4：InnoDB Transaction Isolation Levels](https://dev.mysql.com/doc/refman/8.4/en/innodb-transaction-isolation-levels.html)
+- [MySQL 8.4：InnoDB Locking](https://dev.mysql.com/doc/refman/8.4/en/innodb-locking.html)
+- [PostgreSQL：Transaction Isolation](https://www.postgresql.org/docs/18/transaction-iso.html)
+
+- [MySQL 8.4：autocommit、Commit 与 Rollback](https://dev.mysql.com/doc/refman/8.4/en/innodb-autocommit-commit-rollback.html)
+- [MySQL 8.4：InnoDB Error Handling](https://dev.mysql.com/doc/refman/8.4/en/innodb-error-handling.html)
+- [MySQL 8.4：Implicit Commit](https://dev.mysql.com/doc/refman/8.4/en/implicit-commit.html)
+- [MySQL 8.4：innodb_flush_log_at_trx_commit](https://dev.mysql.com/doc/refman/8.4/en/innodb-parameters.html#sysvar_innodb_flush_log_at_trx_commit)

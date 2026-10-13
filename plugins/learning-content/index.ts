@@ -92,7 +92,7 @@ function buildDomains(docs: Map<string, DocMetadata>, drafts: Set<string>): Doma
         if (placed.has(id)) throw new Error(`learning-content: ${id} appears twice in the knowledge tree`);
         placed.add(id);
         if (!docs.has(id) && !drafts.has(id)) missing.push(id);
-        return docs.has(id);
+        return docs.has(id) && !drafts.has(id);
       });
       if (articleIds.length) topics.push({id: topic.id, label: topic.label, articleIds});
     }
@@ -145,7 +145,13 @@ export default function learningContentPlugin(context: LoadContext, options: {le
       if (!version) throw new Error('learning-content: docs content is not available');
 
       const docs = new Map(version.docs.map((doc) => [doc.id, doc]));
-      const domains = buildDomains(docs, new Set(version.drafts.map((doc) => doc.id)));
+      // Docusaurus only sets doc.draft in production; read front matter too so
+      // development previews never add unpublished articles to the learning index.
+      const draftIds = new Set([
+        ...version.drafts.map((doc) => doc.id),
+        ...version.docs.filter((doc) => doc.frontMatter.draft === true).map((doc) => doc.id),
+      ]);
+      const domains = buildDomains(docs, draftIds);
 
       const {roles, byPermalink} = roadmapRoles();
       // Roadmap hrefs are site-relative; permalinks include the baseUrl.
@@ -229,6 +235,7 @@ export default function learningContentPlugin(context: LoadContext, options: {le
               question: card.question,
               label: card.composite ? '综合题' : (local ?? refs[0])?.title || doc.title,
               companies: card.companies,
+              ...(card.selfTest ? {selfTest: true} : {}),
               checkpointCount: card.checkpoints.length,
               refs,
               ...(card.composite ? {composite: true} : {}),
