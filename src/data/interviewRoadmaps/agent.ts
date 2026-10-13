@@ -135,7 +135,7 @@ export const agentInterviewRoadmap: InterviewRoadmapData = {
             outcomes: ['说明 LangChain、LangGraph 和手写实现的区别，结合项目解释选择。', '讲清 LangGraph 的 State、节点、边、检查点和中断恢复。'],
             interviewQuestions: ['为什么自研 Agent 而不用成熟框架？', 'LangGraph 节点返回后是覆盖还是合并？中断后怎样恢复？'],
           },
-          articles: [{core: true, title: 'Agent 框架选型', href: '/docs/ai/development/agent-frameworks'}],
+          articles: [{core: true, title: 'Agent 框架', href: '/docs/ai/development/agent-frameworks'}],
         },
       ],
     },
