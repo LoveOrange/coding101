@@ -7,15 +7,17 @@ knowledge:
 
 # 测试替身
 
-测试替身用可控对象代替真实依赖。Stub 提供预设结果，Mock 还验证交互；替身适合隔离进程外边界，不应把类内部每次方法调用都固定成测试契约。
+测试替身用可控对象替换协作者。本文负责 Stub、Mock、Fake、Spy 的用途与交互验证。代码采用 Mockito 5.20.0。
+
+断言与生命周期见 [JUnit](./junit-assertions-parameterized-tests.mdx)。真实集成覆盖见 [测试金字塔](./test-pyramid-contract-regression.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- Stub 提供预设返回值，用来控制输入条件；Mock 额外验证交互，用来检查重要的外部效果。[卡](#mock-vs-stub)
-- Fake 是可运行的简化实现，例如内存 Repository；Spy 调用真实方法并允许局部替换。
-- 替身适合替换进程外的稳定边界：数据库、远程服务、消息、时钟和随机数。
-- 过度 Mock 会把内部调用固定成契约，重构时测试大量失败，而真实集成问题仍然发现不了。[卡](#over-mocking)
-- Mock 数据库不能验证 SQL、映射和约束，数据访问层需要真实数据库的集成测试。
+- Stub 提供预设结果，Mock 验证协作者交互。[卡](#mock-vs-stub)
+- Fake 是可运行的简化实现，Mockito Spy 默认执行真实方法。
+- Mock 验证调用意图，真实 SQL、映射与约束由集成测试验证。
+- 验证内部调用图会让等价重构破坏测试。[卡](#over-mocking)
+- `doReturn(...).when(spy)` 在配置阶段避开真实方法执行。[卡](#spy-stubbing)
 
 ## 2. 测试替身的种类 {#测试替身的种类}
 
@@ -27,7 +29,7 @@ knowledge:
 | Spy | 记录真实或包装对象的调用 | 记录发送次数 |
 | Mock | 按期望验证交互 | 验证消息网关收到命令 |
 
-这些词描述用途，不由创建它的框架方法决定。一个 Mockito 对象只提供固定返回值时，实际承担的是 Stub 角色。
+这些名称描述测试用途。Mockito 创建的对象只返回预设值时，承担 Stub 角色。
 
 ## 3. Stub {#stub}
 
@@ -43,7 +45,7 @@ assertEquals(expected, result);
 
 测试重点是转换结果，Stub 只提供所需汇率。它避免真实网络波动，也能稳定构造超时、缺失和异常等难以复现条件。
 
-Stub 不能证明真实服务协议、序列化和客户端配置正确，这些需要契约或集成测试。
+真实协议、序列化与客户端配置需用集成或契约测试验证。
 
 ## 4. Mock {#mock}
 
@@ -60,9 +62,9 @@ verify(gateway).charge(command.idempotencyKey(), command.amount());
 - 必须发送一次支付命令。
 - 拒绝请求时不应发送消息。
 - 重试使用同一个幂等键。
-- 事务提交后才发布事件。
+- 业务流程先登记事件，再交给发布端口。
 
-不要验证所有 getter、内部 helper 和调用顺序。实现重构后可观察结果没变，测试应尽量继续通过。
+verify 适合约束有业务意义的外部调用。真实事务提交后的发布时机，需用集成测试验证。
 
 ## 5. 状态断言与交互断言 {#状态断言与交互断言}
 
@@ -78,11 +80,11 @@ assertEquals(PAID, order.status());
 verify(eventPublisher).publish(any(PaymentAccepted.class));
 ```
 
-纯计算和值对象优先验证状态。外部副作用没有方便返回值时，验证端口交互。两者可以组合，但不要用几十条 verify 代替业务结果断言。
+纯计算和值对象优先验证状态。外部副作用可通过端口交互检查。两者可组合，分别验证结果与调用意图。
 
 ## 6. 替换的边界 {#替换的边界}
 
-良好边界通常是：
+可替换的边界包括：
 
 - 时钟与随机源。
 - 支付、邮件、对象存储等外部客户端。
@@ -98,7 +100,7 @@ verify(eventPublisher).publish(any(PaymentAccepted.class));
 - 被测对象本身。
 - 只有一行转发、且 Mock 后没有真实逻辑剩余的组件。
 
-如果一个类需要十几个 Mock 才能构造，它可能承担过多职责，或接口边界按技术层而不是业务能力划分。
+一个类需要十几个 Mock 时，应检查职责是否过多。也应检查接口能否按业务能力集中表达。
 
 ## 7. Fake {#fake}
 
@@ -115,7 +117,7 @@ final class InMemoryOrderRepository implements OrderRepository {
 }
 ```
 
-Fake 让多个操作共享可控状态，比为每次调用配置 when 更自然。它也可能与真实数据库行为漂移，例如唯一约束、事务、排序和锁不同，因此必须用真实集成测试补充。
+Fake 让多个操作共享可控状态。上例只是写入方法片段，查询需按接口补齐。真实数据库的约束、事务、排序与锁需集成测试覆盖。
 
 ## 8. Spy 与部分 Mock {#spy-与部分-mock}
 
@@ -125,7 +127,7 @@ Spy 默认调用真实方法，同时允许局部替换。它适合观测遗留�
 List<String> spy = spy(new ArrayList<>());
 ```
 
-业务代码大量依赖 spy，通常说明职责难以隔离。优先提取明确协作者，而不是为了测试绕过内部方法。
+大量部分替换会增加理解成本。有独立职责时，可提取明确协作者。
 
 ## 9. 过度严格的交互验证 {#过度严格的交互验证}
 
@@ -137,29 +139,60 @@ List<String> spy = spy(new ArrayList<>());
 - 对所有调用使用精确对象匹配，连无关字段也固定。
 - 使用 `verifyNoMoreInteractions` 阻止新增遥测等无害行为。
 
-只验证属于公共契约的交互：是否调用外部系统、携带哪些业务字段、允许几次以及失败后怎样处理。
+交互验证应围绕公共契约。检查目标端口、业务参数、重试次数与失败处理。
 
-## 10. 常见问题
+## 10. Spy 的配置阶段调用 {#spy-的配置阶段调用}
 
-### 10.1 Mock 数据库是否算数据库测试
+Mockito Spy 默认调用真实方法。`when(spy.get(0))` 会先求值，因此配置时就访问列表。
 
-不算。它只能测试代码如何响应预设 Repository 行为，不能验证 SQL、映射、约束、隔离和连接配置。数据访问层需要真实数据库集成测试。
+```java
+List<String> values = spy(new ArrayList<String>());
+// when(values.get(0)).thenReturn("A"); // 运行时越界
+doReturn("A").when(values).get(0);
+assertEquals("A", values.get(0));
+```
 
-### 10.2 私有方法可以用 Mockito Mock 吗
+doReturn 让配置阶段避开真实 get 调用。它适合已有 Spy 的副作用方法。普通 Mock 仍可使用更直观的 when/thenReturn。
 
-不应以此为设计目标。Mock 私有实现会让测试绑定内部结构。通过公开行为测试，或把独立复杂规则提取成正常对象。
+## 11. 参数匹配与捕获 {#参数匹配与捕获}
 
-### 10.3 应不应该验证调用次数
+同一次调用使用匹配器时，每个参数都需使用匹配器。固定值可用 eq 包装，空值用 isNull 匹配。
 
-次数有业务含义时验证，例如支付只能提交一次、通知允许重试最多三次。无业务意义的 helper 调用次数不应进入契约。
+```java
+verify(gateway).charge(eq(key), any(Money.class));
+```
 
-### 10.4 使用 Mock 后测试一定是单元测试吗
+any(Money.class) 只检查非空类型。需要验证金额内容时，可用 ArgumentCaptor 捕获参数：
 
-不一定。单元边界由测试验证的行为和运行依赖决定。一个测试可以不用 Mock 仍是单元测试，也可以用了 Mock 却启动完整容器并跨多个组件。
+```java
+ArgumentCaptor<Money> amount = ArgumentCaptor.forClass(Money.class);
+verify(gateway).charge(eq(key), amount.capture());
+assertEquals(expectedAmount, amount.getValue());
+```
 
-## 11. 面试题
+捕获后的断言检查业务字段。测试因此能发现类型正确但金额错误的调用。
 
-### 11.1 Mock 与 Stub 有什么区别，分别什么时候使用 {#mock-vs-stub}
+## 12. 常见问题 {#常见问题}
+
+### 12.1 Repository 替身与数据库测试 {#repository-替身与数据库测试}
+
+Mock Repository 验证上层如何响应预设结果。真实 SQL、约束与事务需数据库集成测试。
+
+### 12.2 Mockito 与私有方法 {#mockito-与私有方法}
+
+Mockito 的常规 API 不支持 Mock 私有方法。应通过公开行为测试，或提取独立协作者。
+
+### 12.3 调用次数的业务约束 {#调用次数的业务约束}
+
+次数有业务含义时验证。例如同一流程只发一次支付请求，通知最多重试三次。内部 helper 的调用次数可由实现调整。
+
+### 12.4 测试替身与测试层级 {#测试替身与测试层级}
+
+测试层级取决于验证范围和真实运行依赖。使用 Mock 的测试仍可启动完整容器并跨多个组件。
+
+## 13. 面试题 {#面试题}
+
+### 13.1 Mock 与 Stub 有什么区别，分别什么时候使用 {#mock-vs-stub}
 
 <!-- 面试来源：
 - 招银网络：https://www.nowcoder.com/discuss/401781105202933760
@@ -170,22 +203,22 @@ List<String> spy = spy(new ArrayList<>());
 
 **考察重点**
 
-- 预设输入与验证交互的区别。
-- 状态断言和交互断言的选择。
-- 替身不能证明真实集成行为。
+- 说明预设输入与验证交互的区别。
+- 说明状态断言和交互断言的选择。
+- 说明替身不能证明真实集成行为。
 
 **相关内容**：[测试替身的种类](#测试替身的种类)至[替换的边界](#替换的边界)。
 
 <details>
 <summary>参考回答</summary>
 
-Stub 为测试提供预设返回值或异常，用来控制被测对象的输入；Mock 还记录并验证是否按契约调用协作者。纯计算优先断言结果，必须发生的外部副作用再验证交互。
+Stub 提供预设结果，Mock 验证协作者调用。纯计算适合结果断言，外部副作用适合交互断言。
 
-替身适合时钟、Repository 和远程网关等稳定边界，不适合值对象和私有方法。Mock 客户端只能验证调用意图，真实序列化、数据库约束和网络配置仍需集成或契约测试。
+替身可隔离时钟、Repository 与远程网关。真实协议、序列化和数据库约束需集成或契约测试补充。
 
 </details>
 
-### 11.2 过度 Mock 会带来什么问题 {#over-mocking}
+### 13.2 过度 Mock 会带来什么问题 {#over-mocking}
 
 <!-- 面试来源：
 - 阿里巴巴：https://www.nowcoder.com/discuss/353156377390555136
@@ -195,23 +228,57 @@ Stub 为测试提供预设返回值或异常，用来控制被测对象的输入
 
 **考察重点**
 
-- 测试绑定实现调用图后为何难以重构。
-- 全部依赖被替换后留下了哪些盲区。
-- 大量 Mock 是否暴露职责过多。
+- 说明测试绑定实现调用图后为何难以重构。
+- 说明全部依赖被替换后留下了哪些盲区。
+- 说明大量 Mock 是否暴露职责过多。
 
 **相关内容**：[替换的边界](#替换的边界)、[过度严格的交互验证](#过度严格的交互验证)。
 
 <details>
 <summary>参考回答</summary>
 
-如果测试验证每一个内部调用、顺序和次数，代码只做等价重构也会大量失败；所有依赖都 Mock 后，SQL、序列化、Spring 配置和协议兼容性又完全没有被验证。
+过度 Mock 会把内部调用图固定成测试契约。等价重构也会让测试失败，真实集成行为却仍缺乏覆盖。
 
-应围绕公开行为和重要外部效果写断言，只替换不稳定边界。一个类需要很多 Mock 才能测试时，还要检查它是否承担过多职责，并用真实集成和契约测试覆盖替身留下的盲区。
+测试应验证公开结果与关键外部交互。大量替身还提示需要检查职责边界。
 
 </details>
 
-## 12. 参考资料
+### 13.3 给空列表 Spy 配置 get(0)，为什么 when 写法会直接抛异常？ {#spy-stubbing}
 
-- [Mockito 官方 API](https://javadoc.io/doc/org.mockito/mockito-core/latest/org.mockito/org/mockito/Mockito.html)
-- [Mockito：ArgumentMatchers](https://javadoc.io/doc/org.mockito/mockito-core/latest/org.mockito/org/mockito/ArgumentMatchers.html)
-- [JUnit User Guide](https://docs.junit.org/current/user-guide/)
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：实参求值、真实调用与 doReturn。
+
+**相关内容**：[Spy 的配置阶段调用](#spy-的配置阶段调用)。
+
+<details>
+<summary>参考回答</summary>
+
+when 的实参先求值，因此真实 get(0) 在配置时执行。空列表随即抛出越界异常。`doReturn("A").when(spy).get(0)` 可避开配置阶段的真实调用。
+
+</details>
+
+### 13.4 any 匹配的测试为何会漏掉错误金额，怎样验证实际参数？ {#mock-argument-capture}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：匹配器与业务字段断言。
+
+**相关内容**：[参数匹配与捕获](#参数匹配与捕获)。
+
+<details>
+<summary>参考回答</summary>
+
+any 只约束匹配范围，无法检查具体金额。可用 ArgumentCaptor 捕获参数，再断言金额与币种。同次调用用了匹配器时，其他参数也需用 eq 等匹配器。
+
+</details>
+
+## 14. 参考资料 {#参考资料}
+
+- [Mockito 官方 API](https://javadoc.io/static/org.mockito/mockito-core/5.20.0/org.mockito/org/mockito/Mockito.html)
+- [Mockito：ArgumentMatchers](https://javadoc.io/static/org.mockito/mockito-core/5.20.0/org.mockito/org/mockito/ArgumentMatchers.html)
+- [JUnit User Guide](https://docs.junit.org/5.13.4/user-guide/)

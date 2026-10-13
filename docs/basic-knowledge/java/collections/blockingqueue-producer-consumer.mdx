@@ -7,15 +7,17 @@ knowledge:
 
 # BlockingQueue
 
-`BlockingQueue` 在 Queue 基础上增加等待语义：队列为空时消费者可以等待，队列已满时生产者可以等待。使用有界队列还能把下游处理能力转化为明确的背压信号。
+`BlockingQueue` 为入队和出队提供等待协议。本文负责方法选择、有界背压和停机。实现细节以 OpenJDK 26 为准。
+
+非阻塞队列的 CAS 路径见 [ConcurrentLinkedQueue](./concurrentlinkedqueue-lock-free-path.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- `BlockingQueue` 在队列为空时让消费者等待，在队列满时让生产者等待；`put`/`take` 阻塞，`offer`/`poll` 可以立即返回或限时等待。
-- 生产者消费者模型直接用 `put` 和 `take` 交接任务，队列负责等待、唤醒和可见性。[卡](#producer-consumer)
-- `ArrayBlockingQueue` 是固定容量数组；`LinkedBlockingQueue` 是链表，不指定容量时上限为 `Integer.MAX_VALUE`；`SynchronousQueue` 不存储元素，直接交接。[卡](#choose-blocking-queue)
-- 有界队列把消费能力不足转化为生产端的阻塞或拒绝，形成背压。
-- 停止消费者用中断或 poison pill；进程内队列不提供持久化和重试，跨进程可靠传递需要消息队列。
+- `put`、`take` 等待可用条件，限时 `offer`、`poll` 可超时返回。[卡](#producer-consumer)
+- `ArrayBlockingQueue` 容量固定，`LinkedBlockingQueue` 默认上限为 `Integer.MAX_VALUE`。[卡](#choose-blocking-queue)
+- `SynchronousQueue` 容量为 0，插入与取出直接交接。[卡](#choose-blocking-queue)
+- 入队前的写入 happens-before 另一线程取出该元素后的动作。[卡](#queue-publication)
+- 有界队列通过等待或拒绝把消费压力传给生产者。
 
 ## 2. 入队与出队方法 {#入队与出队方法}
 
@@ -34,11 +36,11 @@ queue.put(job);     // 满时等待，可被中断
 Job next = queue.take(); // 空时等待，可被中断
 ```
 
-选择方法就是选择失败协议：等待多久、是否允许调用线程被拖慢、超时后由谁处理任务。
+方法决定等待方式。调用方需明确超时后由谁处理任务。
 
 ## 3. 有界队列 {#有界队列}
 
-生产速度长期高于消费速度时，任何缓冲区都会继续增长或拒绝数据。固定容量让这个边界提前显现：
+生产速度长期高于消费速度时，积压会持续增长。有界队列可限制积压数量：
 
 ```java
 boolean accepted = queue.offer(job, 100, TimeUnit.MILLISECONDS);
@@ -55,7 +57,7 @@ if (!accepted) {
 - 持久化到可靠队列。
 - 由调用线程处理，传播压力。
 
-没有统一最佳策略。关键是不能把“暂时放进内存”当作处理能力提升。
+缓冲只能吸收短时峰值。持续过载需要降速、拒绝或增加消费能力。
 
 ## 4. 生产者消费者模型 {#生产者消费者模型}
 
@@ -81,7 +83,7 @@ final class Worker implements Runnable {
 }
 ```
 
-队列封装了条件等待、唤醒和可见性。一个线程在入队前的动作 happens-before 另一个线程成功取出该元素后的动作，因此任务对象能按队列协议安全传递。
+队列封装条件等待、唤醒和对象发布。任务入队前的字段写入，对成功取出的线程可见。
 
 业务仍需处理：
 
@@ -93,25 +95,25 @@ final class Worker implements Runnable {
 
 ## 5. 常见实现 {#常见实现}
 
-### 5.1 ArrayBlockingQueue
+### 5.1 ArrayBlockingQueue {#arrayblockingqueue}
 
-固定大小循环数组，在构造时确定容量。节点分配少，容量边界明确，可选公平锁。生产和消费围绕同一主锁协调。
+OpenJDK 26 使用固定容量循环数组。生产和消费共用一把锁，并分别等待两个条件。构造时可选择公平模式。
 
-### 5.2 LinkedBlockingQueue
+### 5.2 LinkedBlockingQueue {#linkedblockingqueue}
 
-链式节点，可指定容量；不指定时上限为 `Integer.MAX_VALUE`，实际效果接近无界队列。当前实现分别使用 put 和 take 锁，生产消费可以有更多并行，但每个元素需要节点分配。
+队列使用链式节点，可指定容量。默认上限是 `Integer.MAX_VALUE`，内存会先成为瓶颈。OpenJDK 26 分别使用 put 锁和 take 锁。入队与出队可重叠，每次入队需分配节点。
 
-### 5.3 SynchronousQueue
+### 5.3 SynchronousQueue {#synchronousqueue}
 
-容量为零。每次 put 必须与一个 take 直接交接，适合把任务立即移交给空闲消费者，不承担缓冲。
+队列容量为 0。插入操作必须与取出操作配对，包括 offer 与 poll。它适合直接交接任务。
 
-### 5.4 PriorityBlockingQueue
+### 5.4 PriorityBlockingQueue {#priorityblockingqueue}
 
-按优先级取出，逻辑上无界。它不会因为“队列满”给生产者背压；相同优先级也不自动保证 FIFO，任务比较器必须稳定。
+队列按优先级取出，逻辑上无界。同优先级元素的次序未指定。比较器应使用稳定字段。
 
-### 5.5 DelayQueue
+### 5.5 DelayQueue {#delayqueue}
 
-只有延迟到期的元素才能取出，适合进程内延迟触发。它不持久化，系统时钟、进程重启和大量取消任务都需要考虑。
+队列仅取出 `getDelay` 已到期的元素。元素通过 `Delayed` 定义剩余延迟与排序。延迟计时可用 `System.nanoTime()`。进程重启后的恢复需要持久存储。
 
 ## 6. 中断、关闭与 poison pill {#中断关闭与-poison-pill}
 
@@ -129,40 +131,41 @@ poison pill 需要保证：
 - 队列已满时仍能完成停机。
 - 不会越过仍需处理的任务。
 
-线程池任务队列通常由 ExecutorService 管理，不应绕过线程池直接拿内部队列实现自定义关闭。
+线程池任务的停机由 ExecutorService 管理。自定义消费者则需自行定义结束协议。
 
 ## 7. 内存队列与消息队列 {#内存队列与消息队列}
 
-BlockingQueue 适合同一 JVM 内线程协作。它不提供：
+BlockingQueue 负责同一 JVM 内的线程交接。进程崩溃后，内存任务会丢失。跨服务传递、消费确认和重放需要持久消息系统。
 
-- 进程崩溃后的持久化恢复。
-- 跨进程消费。
-- 消费确认、死信和重放。
-- 分区扩展与副本容错。
+内存队列可以作为消息消费者的有界缓冲。消息确认时机应与业务完成协议一致。
 
-任务不能丢、需要跨服务或要保留较长时间时，应使用持久消息系统或数据库任务表。进程内 BlockingQueue 仍可作为消费者内部的小型有界缓冲，但要与外部确认协议协调。
+## 8. 任务发布与后续修改 {#任务发布与后续修改}
 
-## 8. 常见问题
+入队前的写入对成功取出元素的线程可见。例如先设置 `job.payload`，再执行 `queue.put(job)`。消费者取出该对象后，就能读取已发布的 payload。
 
-### 8.1 LinkedBlockingQueue 不传容量有什么风险
+入队后的字段修改需要另行同步。生产者继续修改同一个 Job，会与消费者形成读写竞争。可选择不可变任务，或在入队后转移对象所有权。
 
-它的容量上限非常大。消费者变慢时，生产者不会及时获得压力信号，节点会持续占用堆，最终可能触发长 GC 或 OOM。服务端线程池和任务管道通常显式设置容量。
+## 9. 常见问题 {#常见问题}
 
-### 8.2 `remainingCapacity()` 后再 put 能保证不阻塞吗
+### 9.1 LinkedBlockingQueue 的默认容量 {#linkedblockingqueue-的默认容量}
 
-不能。两个调用之间其他线程可能填满队列。直接使用 `offer` 或限时 offer，把检查与插入交给队列的原子操作。
+默认上限是 `Integer.MAX_VALUE`。消费变慢时，节点积压会增加堆占用和 GC 压力。服务端应按可承受的积压量设置容量。
 
-### 8.3 BlockingQueue 保证业务只处理一次吗
+### 9.2 容量检查与入队竞态 {#容量检查与入队竞态}
 
-不保证。消费者可能在业务提交后、记录完成前失败，调用方也可能重试入队。需要幂等键、状态记录或事务消息等业务协议。
+容量检查后，其他生产者仍能填满队列。直接调用 `offer` 或限时 offer，并处理返回值。
 
-### 8.4 公平队列一定更好吗
+### 9.3 任务重试与幂等 {#任务重试与幂等}
 
-公平模式减少长期等待偏差，但通常降低吞吐。只有等待公平是明确需求时开启，并通过负载测试验证。
+业务提交后、记录完成前的故障会触发重复处理。重复入队也会产生相同问题。业务需用幂等键和状态记录约束重复副作用。
 
-## 9. 面试题
+### 9.4 公平模式与吞吐 {#公平模式与吞吐}
 
-### 9.1 怎样用 BlockingQueue 实现生产者消费者 {#producer-consumer}
+ArrayBlockingQueue 的公平模式按等待顺序协调访问。公平排队有吞吐代价，应结合负载验证。
+
+## 10. 面试题 {#面试题}
+
+### 10.1 怎样用 BlockingQueue 实现生产者消费者 {#producer-consumer}
 
 <!-- 面试来源：
 - 快手：https://www.nowcoder.com/discuss/353156450388221952
@@ -172,22 +175,22 @@ BlockingQueue 适合同一 JVM 内线程协作。它不提供：
 
 **考察重点**
 
-- put/take 的等待与中断语义。
-- 有界容量怎样形成背压。
-- 任务失败、停机与丢失边界。
+- 说明put/take 的等待与中断语义。
+- 说明有界容量怎样形成背压。
+- 说明任务失败、停机与丢失边界。
 
 **相关内容**：[入队与出队方法](#入队与出队方法)至[中断、关闭与 poison pill](#中断关闭与-poison-pill)。
 
 <details>
 <summary>参考回答</summary>
 
-生产者通过 `put` 或限时 `offer` 写入有界 BlockingQueue，消费者循环调用 `take` 取出并处理。队列满时生产者等待或按超时策略失败，队列空时消费者等待，队列同时建立了任务发布的 happens-before 关系。
+生产者入队，消费者用 `take` 循环领取任务。`put` 在队满时等待，限时 `offer` 可超时失败。消费者在队空时等待。
 
-还要定义中断和关闭：消费者收到中断后恢复中断标记并退出，或使用明确的结束元素。生产失败、消费重试、幂等和进程崩溃后的任务丢失不由内存队列自动解决。
+消费者捕获中断后可恢复标记并退出。任务重试、幂等和停机排空由业务协议处理。
 
 </details>
 
-### 9.2 ArrayBlockingQueue、LinkedBlockingQueue 和 SynchronousQueue 怎样选择 {#choose-blocking-queue}
+### 10.2 ArrayBlockingQueue、LinkedBlockingQueue 和 SynchronousQueue 怎样选择 {#choose-blocking-queue}
 
 <!-- 面试来源：
 - 去哪儿：https://www.nowcoder.com/discuss/353158601923567616
@@ -198,25 +201,44 @@ BlockingQueue 适合同一 JVM 内线程协作。它不提供：
 
 **考察重点**
 
-- 固定数组、链式节点和零容量交接。
-- 容量、分配、锁竞争与背压的关系。
-- 默认近似无界为何危险。
+- 说明固定数组、链式节点和零容量交接。
+- 说明容量、分配、锁竞争与背压的关系。
+- 说明默认近似无界为何危险。
 
 **相关内容**：[有界队列](#有界队列)、[常见实现](#常见实现)。
 
 <details>
 <summary>参考回答</summary>
 
-ArrayBlockingQueue 是固定容量循环数组，节点分配少且边界清楚；LinkedBlockingQueue 使用链式节点，可指定容量，生产和消费使用不同锁，但不指定容量时容易积压到内存压力；SynchronousQueue 不存储元素，只做生产者和消费者的直接交接。
+固定容量且希望减少节点分配时，选择 ArrayBlockingQueue。需要链式缓冲时，可使用有界 LinkedBlockingQueue。无需缓冲、只做直接交接时，使用 SynchronousQueue。
 
-选择要看是否需要缓冲、允许多少积压、对象分配和吞吐要求。服务端通常显式设置有界容量，并为满队列定义超时或拒绝策略。
+OpenJDK 26 的前者共用一把主锁。LinkedBlockingQueue 分别使用 put 锁和 take 锁。吞吐仍需结合负载、分配与容量验证。
 
 </details>
 
-## 10. 参考资料
+### 10.3 任务入队后继续修改字段，消费者能安全读取吗？ {#queue-publication}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：happens-before 与对象所有权。
+
+**相关内容**：[任务发布与后续修改](#任务发布与后续修改)。
+
+<details>
+<summary>参考回答</summary>
+
+入队前的写入获得可见性保证，入队后的修改需另行同步。队列传递的是对象引用。使用不可变任务或明确转移所有权，可避免后续读写竞争。
+
+</details>
+
+## 11. 参考资料 {#参考资料}
 
 - [Java API：BlockingQueue](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/BlockingQueue.html)
 - [Java API：ArrayBlockingQueue](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/ArrayBlockingQueue.html)
 - [Java API：LinkedBlockingQueue](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/LinkedBlockingQueue.html)
 - [Java API：SynchronousQueue](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/SynchronousQueue.html)
 - [Java API：DelayQueue](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/DelayQueue.html)
+- [Java 26：PriorityBlockingQueue](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/PriorityBlockingQueue.html)
+- [OpenJDK 26：LinkedBlockingQueue](https://github.com/openjdk/jdk/blob/jdk-26-ga/src/java.base/share/classes/java/util/concurrent/LinkedBlockingQueue.java)

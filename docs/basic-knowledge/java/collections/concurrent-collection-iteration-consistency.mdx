@@ -7,17 +7,19 @@ knowledge:
 
 # 迭代一致性
 
-并发容器允许遍历与更新重叠，但不同实现提供的视图不同。ConcurrentHashMap 是弱一致遍历，CopyOnWrite 容器是创建时快照；两者都不等于整个业务状态的事务快照。
+迭代一致性决定并发遍历能观察哪些状态。本文负责弱一致视图、聚合结果和快照协议。采用 Java 26 API。
+
+写时复制成本见 [CopyOnWrite 容器](./copy-on-write-cost-model.mdx)。普通集合的修改检测见 [集合迭代器](./iterator-fail-fast-immutable.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- `ConcurrentHashMap` 的迭代器是弱一致的：可以与更新并发，不抛 `ConcurrentModificationException`，可能看到也可能错过遍历期间的更新。[卡](#weakly-consistent-iterator)
-- `CopyOnWriteArrayList` 的迭代器遍历创建时的数组快照，之后的修改不影响当前遍历，元素对象本身仍可能被修改。
-- `size`、`forEach`、`reduce` 等聚合结果可能混合不同时间点的状态。
-- 需要一致快照时使用外部锁、不可变状态加原子替换或版本号重试。
-- 遍历中删除过期数据时，用 `remove(key, value)` 等条件删除再次确认，避免删掉刚被更新的条目。[卡](#remove-while-iterating)
+- ConcurrentHashMap 使用弱一致迭代，遍历可与更新重叠。[卡](#weakly-consistent-iterator)
+- CopyOnWriteArrayList 的迭代器固定创建时的引用数组。
+- 并发更新期间，`size` 与 `reduce` 可混合多个时刻的状态。
+- 所有访问遵守同一锁时，锁内复制可取得一致的结构快照。[卡](#copy-map-snapshot)
+- `remove(key, value)` 按值相等条件删除，版本字段需参与比较。[卡](#remove-while-iterating)
 
-## 2. 遍历需要的视图 {#遍历需要的视图}
+## 2. 并发遍历的视图需求 {#遍历需要的视图}
 
 遍历共享集合时，常见需求有：
 
@@ -26,7 +28,7 @@ knowledge:
 3. **线性一致快照**：结果必须对应某个明确瞬间。
 4. **跨多个数据结构一致**：集合、计数和外部状态必须属于同一版本。
 
-并发集合通常只直接提供前两类。后两类需要锁、版本化不可变状态、数据库事务或单写者协议。
+本文的并发容器直接提供前两类视图。后两类需通过锁、不可变版本或事务建立边界。
 
 ## 3. ConcurrentHashMap 的弱一致遍历 {#concurrenthashmap-的弱一致遍历}
 
@@ -36,7 +38,7 @@ for (Map.Entry<String, Session> entry : sessions.entrySet()) {
 }
 ```
 
-遍历可以与 put、remove 并发，不抛 `ConcurrentModificationException`。迭代器可能看到遍历期间的一些更新，也可能错过已经经过区域的更新，但不会故意复制整个 Map 或把所有写者锁住。
+遍历可与 put、remove 并发，并采用弱一致语义。它可观察部分并发更新，也可错过后续变化。迭代器沿内部节点前进，无需复制整个 Map。
 
 适合：
 
@@ -44,23 +46,15 @@ for (Map.Entry<String, Session> entry : sessions.entrySet()) {
 - 后台清理候选扫描，删除时再用条件原子方法确认。
 - 管理页面的非事务列表。
 
-不适合把本次总和与另一个时刻的 size 比较，并据此断言系统不变量。
+总和与另一次 size 调用来自不同观察。严格业务约束需要共同的一致性边界。
 
 ## 4. CopyOnWrite 的数组快照 {#copyonwrite-的数组快照}
 
-```java
-for (Listener listener : listeners) {
-    listener.onEvent(event);
-}
-```
-
-迭代器固定引用创建时的数组，所以遍历期间结构不会变化，后来加入或删除的元素不影响当前迭代。这是一致的列表结构快照，但元素对象仍可被修改。
-
-快照通过写入时复制获得，代价集中在写操作和旧数组生命周期。它不适合大规模、高频更新集合。
+CopyOnWrite 迭代器固定创建时的引用数组。后续增删与元素共享边界见 [CopyOnWrite 容器](./copy-on-write-cost-model.mdx#快照迭代器)。
 
 ## 5. 并发队列的迭代 {#并发队列的迭代}
 
-多数并发队列迭代器也是弱一致的。队列的核心协议是 offer/put 与 poll/take，迭代通常只用于诊断，不是消费：
+ConcurrentLinkedQueue 的迭代器也是弱一致的。队列迭代用于观察，不会领取任务：
 
 ```java
 for (Job job : queue) {
@@ -68,11 +62,11 @@ for (Job job : queue) {
 }
 ```
 
-不要通过遍历寻找一个元素再 remove 来实现任务领取。多个消费者应使用原子的 poll 或 take。优先级和延迟队列的迭代顺序也不一定等于出队顺序，应查看具体 API。
+ConcurrentLinkedQueue 用 poll 领取任务。BlockingQueue 还可用 take 等待并领取。PriorityBlockingQueue 和 DelayQueue 的遍历次序未排序。
 
 ## 6. 聚合操作的一致性 {#聚合操作的一致性}
 
-ConcurrentHashMap 提供 `forEach`、`search` 和 `reduce` 等并行批量操作。它们适合在并发更新下计算近似或逐键有效的结果，但整体结果可能混合不同时间点：
+ConcurrentHashMap 提供 `forEach`、`search` 和 `reduce`。并发更新期间，聚合结果可混合多个时刻的状态：
 
 ```java
 long total = counters.reduceValuesToLong(
@@ -83,11 +77,11 @@ long total = counters.reduceValuesToLong(
 );
 ```
 
-`mappingCount`、`size`、`isEmpty` 也不应与随后修改组成“先检查再执行”协议。需要严格上限时，使用独立原子计数与更新协议，或将状态封装在同一锁内。
+`size` 与随后的插入是两个独立操作。严格容量限制需把检查与修改纳入同一协议。可在同一锁内维护集合与容量，或使用有界队列。
 
-## 7. 建立一致快照 {#建立一致快照}
+## 7. 一致快照协议 {#建立一致快照}
 
-### 7.1 外部锁
+### 7.1 外部锁 {#外部锁}
 
 所有读写都遵守同一锁时，可以在锁内复制：
 
@@ -97,25 +91,25 @@ synchronized (stateLock) {
 }
 ```
 
-集合内部的并发方法不会自动遵守用户锁，必须封装访问入口。
+所有读写入口都需获取 `stateLock`。Map.copyOf 要求键和值均非空，并固定结构。元素状态需由不可变类型保证。
 
-### 7.2 不可变状态加原子替换
+### 7.2 不可变状态与原子替换 {#不可变状态与原子替换}
 
-写者基于旧版本构造新不可变对象，再一次替换引用：
+写者构造完整的不可变状态，再原子替换引用：
 
 ```java
 AtomicReference<State> state = new AtomicReference<>(State.empty());
 ```
 
-读者一次读取引用即可获得同一版本的多个字段。适合读多写少、状态大小可控的配置。
+读者读取一次引用，即可访问同一版本的多个字段。多个写者基于旧值更新时，需用 CAS 检测版本冲突。
 
-### 7.3 版本号与重试
+### 7.3 版本号与重试 {#版本号与重试}
 
-读取前后检查版本；发生变化时重试。必须防止版本回绕，并控制高写入压力下的饥饿。
+版本校验必须配合完整的写入与可见性协议。仅在写完后递增计数，仍会漏掉正在进行的写入。Java 可用 StampedLock 的乐观读，并在校验失败后加读锁。复制遍历可变集合时，直接使用锁内复制更清楚。
 
-### 7.4 数据库或事件日志
+### 7.4 数据库或事件日志 {#数据库或事件日志}
 
-跨进程和持久状态需要由数据库隔离、日志偏移或快照协议提供边界，不能依赖单进程 ConcurrentHashMap。
+跨进程状态需通过数据库隔离或日志快照建立边界。单进程集合只管理本地状态。
 
 ## 8. 遍历中的条件删除 {#遍历中的条件删除}
 
@@ -129,31 +123,37 @@ sessions.forEach((id, session) -> {
 });
 ```
 
-条件 `remove(id, session)` 只在当前值仍是扫描到的对象时删除。若另一个线程已经刷新会话并替换值，删除失败，避免用旧观察删除新状态。
+条件删除按当前值与观察值的 `equals` 结果判断。对象被替换但仍相等时，删除仍会成功。原地修改同一对象，也无法用该条件检测版本变化。
 
-这仍不是跨外部资源事务。若删除还要释放数据库租约，需要设计幂等和补偿。
+可用不可变会话值，并让版本号参与 equals。刷新时替换为新版本，旧版本的删除条件才会失败。数据库租约等外部副作用仍需幂等和补偿。
 
-## 9. 常见问题
+## 9. 并发 Map 的复制边界 {#并发-map-的复制边界}
 
-### 9.1 弱一致是否等于最终一定能看到所有更新
+`new HashMap<>(concurrentMap)` 会逐项读取源映射。源 Map 同时更新时，副本会组合多个时刻的观察。副本独立只说明后续结构变化隔离。
 
-不是。它描述一次迭代可以与更新并发，不承诺这次遍历最终包含期间所有变化。后续新建的读取按容器内存语义观察已完成更新，但单次迭代没有追赶日志的义务。
+要固定一次导出的状态，可让所有更新遵守共同锁。复制过程也在该锁内完成。另一种方案是发布完整不可变 Map。读者一次读取引用，即可取得一个版本。
 
-### 9.2 `toArray` 能得到严格快照吗
+## 10. 常见问题 {#常见问题}
 
-它会构造一个数组结果，但并发复制过程中集合仍可能变化。结果适合独立遍历，不自动代表调用开始或结束时的精确状态。严格要求需建立外部版本边界。
+### 10.1 弱一致遍历的观察范围 {#弱一致遍历的观察范围}
 
-### 9.3 为什么并发迭代器不使用 fail-fast
+弱一致描述遍历可与更新重叠。一次迭代可遗漏期间发生的变化。需要追踪全部变化时，应使用事件日志或版本协议。
 
-并发集合的目标就是允许更新与遍历重叠。把结构修改当成错误会阻碍该用途，而且 modCount 也无法提供一致快照。实现改为明确的弱一致或快照语义。
+### 10.2 toArray 的复制结果 {#toarray-的复制结果}
 
-### 9.4 CopyOnWrite 快照能保护元素字段吗
+ConcurrentHashMap 集合视图的 toArray 会复制遍历结果。并发写入期间，结果可混合多个时刻的状态。严格快照需先建立共同的读写边界。
 
-不能。快照固定的是元素引用数组。元素可变时，遍历过程中仍可能看到字段变化；需要不可变元素或元素自己的同步协议。
+### 10.3 并发迭代与修改检测 {#并发迭代与修改检测}
 
-## 10. 面试题
+并发集合允许更新与遍历重叠。它用弱一致或快照契约定义可观察状态。普通集合的错误检测见 [集合迭代器](./iterator-fail-fast-immutable.mdx)。
 
-### 10.1 ConcurrentHashMap 的迭代器是什么一致性 {#weakly-consistent-iterator}
+### 10.4 结构快照与元素字段 {#结构快照与元素字段}
+
+快照固定元素引用，字段由元素自身管理。完整状态快照需要不可变元素。
+
+## 11. 面试题 {#面试题}
+
+### 11.1 ConcurrentHashMap 的迭代器是什么一致性 {#weakly-consistent-iterator}
 
 <!-- 面试来源：
 - 快手：https://www.nowcoder.com/discuss/179560
@@ -164,22 +164,22 @@ sessions.forEach((id, session) -> {
 
 **考察重点**
 
-- 弱一致遍历允许观察什么。
-- 为什么它不抛 fail-fast 异常。
-- 近似统计与严格快照怎样区分。
+- 说明弱一致遍历允许观察什么。
+- 说明为什么它不抛 fail-fast 异常。
+- 说明近似统计与严格快照怎样区分。
 
 **相关内容**：[遍历需要的视图](#遍历需要的视图)、[ConcurrentHashMap 的弱一致遍历](#concurrenthashmap-的弱一致遍历)、[聚合操作的一致性](#聚合操作的一致性)。
 
 <details>
 <summary>参考回答</summary>
 
-ConcurrentHashMap 迭代器是弱一致的，可以与更新并发，不抛 `ConcurrentModificationException`。它会遍历一组有效节点，可能看到遍历期间部分更新，也可能错过已经经过位置的更新，不对应固定瞬间的完整快照。
+ConcurrentHashMap 的迭代器是弱一致的。它可与更新并发，并观察部分更新。一次遍历的结果可来自多个时刻。
 
-这种语义适合监控和可再次确认的后台扫描。业务需要精确快照时，应通过外部锁复制、不可变版本原子替换或持久化事务建立边界。
+这种语义适合监控与后台候选扫描。精确快照需用共同锁或不可变状态的原子替换。
 
 </details>
 
-### 10.2 弱一致迭代时怎样安全删除过期数据 {#remove-while-iterating}
+### 11.2 弱一致迭代时怎样安全删除过期数据 {#remove-while-iterating}
 
 <!-- 面试来源：
 - 阿里巴巴：https://www.nowcoder.com/discuss/353159278544494592
@@ -189,24 +189,42 @@ ConcurrentHashMap 迭代器是弱一致的，可以与更新并发，不抛 `Con
 
 **考察重点**
 
-- 扫描结果可能在使用前已经过期。
-- 条件 remove 或 replace 怎样避免覆盖新值。
-- 外部副作用为何还需要幂等和补偿。
+- 说明扫描结果可能在使用前已经过期。
+- 说明条件 remove 或 replace 怎样避免覆盖新值。
+- 说明外部副作用为何还需要幂等和补偿。
 
 **相关内容**：[遍历中的条件删除](#遍历中的条件删除)。
 
 <details>
 <summary>参考回答</summary>
 
-遍历时先把当前键和值当作候选，判断过期后调用 `remove(key, observedValue)`。只有 Map 中的当前值仍与扫描到的值相同才删除；如果另一个线程已经刷新或替换，条件删除失败。
+使用 `remove(key, observedValue)`，按值相等条件删除。值应不可变，并让版本号参与 equals。刷新为新版本后，旧观察的删除条件才会失败。
 
-这个方法保护单个 Map 条目的检查后删除。若清理还涉及数据库、文件或远程租约，仍要使用幂等操作、状态机或补偿协议处理部分失败。
+单纯换成新对象仍有风险：新旧对象可能相等。原地修改也绕过版本检测。外部资源清理另需幂等协议。
 
 </details>
 
-## 11. 参考资料
+### 11.3 复制 ConcurrentHashMap 就能得到同一时刻的快照吗？ {#copy-map-snapshot}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：独立副本与一致快照。
+
+**相关内容**：[并发 Map 的复制边界](#并发-map-的复制边界)。
+
+<details>
+<summary>参考回答</summary>
+
+并发更新时，复制结果会组合多个时刻的观察。独立副本仅隔离复制完成后的结构变化。一致快照需共同锁，或一次读取已发布的不可变版本。
+
+</details>
+
+## 12. 参考资料 {#参考资料}
 
 - [Java API：ConcurrentHashMap](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/ConcurrentHashMap.html)
 - [Java API：CopyOnWriteArrayList](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/CopyOnWriteArrayList.html)
 - [Java API：ConcurrentLinkedQueue](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/ConcurrentLinkedQueue.html)
 - [Java API：BlockingQueue](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/BlockingQueue.html)
+- [Java 26：StampedLock](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/locks/StampedLock.html)

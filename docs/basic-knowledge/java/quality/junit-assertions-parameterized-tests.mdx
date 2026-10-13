@@ -7,15 +7,17 @@ knowledge:
 
 # JUnit
 
-JUnit 测试用可重复的示例验证公开行为。一个有效测试需要清楚的前置状态、一次目标动作和能够区分正确与错误实现的断言。
+JUnit 用可重复的示例验证公开行为。本文负责断言、参数化、生命周期与超时边界。示例采用 JUnit Jupiter 5.13.4。
+
+替身配置见 [测试替身](./test-doubles-mock-stub-boundaries.mdx)。集成与契约覆盖见 [测试金字塔](./test-pyramid-contract-regression.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- 一个测试包含准备、执行、验证三部分，只针对一个行为。[卡](#junit-usage)
-- 断言检查可观察的结果，不在测试中重新实现一遍被测算法；异常用 `assertThrows` 验证。
-- 同一规则需要多组输入输出时使用 `@ParameterizedTest`，数据来自 `@ValueSource`、`@CsvSource` 或 `@MethodSource`。[卡](#parameterized-tests)
-- JUnit 5 默认为每个测试方法创建新的测试类实例，`@BeforeEach` 为每个测试建立独立起点。
-- 时间、随机数和外部资源通过注入 `Clock`、固定种子和临时目录变得可控。
+- 测试以独立前置状态执行目标动作，再断言可观察结果。[卡](#junit-usage)
+- assertThrows 接受异常子类，assertThrowsExactly 要求精确类型。
+- ParameterizedTest 为同一规则的每组参数分别执行测试。[卡](#parameterized-tests)
+- Jupiter 默认 PER_METHOD，每次测试使用独立测试类实例。
+- assertTimeout 等待执行结束，assertTimeoutPreemptively 使用另一线程。[卡](#timeout-thread-boundary)
 
 ## 2. 测试结构 {#测试结构}
 
@@ -33,13 +35,15 @@ void rejectsNegativeAmount() {
 }
 ```
 
-这个测试包含：
+此例将异常消息视为稳定契约。若消息仅用于诊断，可只验证类型和业务字段。
+
+测试包含：
 
 - Arrange：准备负数金额和币种。
 - Act：调用 Money 构造方法。
 - Assert：验证异常类型和可观察信息。
 
-三段不必用注释机械标记，但读者应能快速辨认。一个测试覆盖一个行为条件，可以有多条共同描述该行为的断言。
+一个测试覆盖一个行为条件。多条断言可以共同验证该行为的结果。
 
 ## 3. 断言 {#断言}
 
@@ -52,9 +56,9 @@ assertNull(repository.findRaw(id));
 assertIterableEquals(expectedItems, actualItems);
 ```
 
-避免只断言“结果不为 null”，它通常无法区分多数错误实现。也不要在测试里复制生产算法计算 expected，否则两边可能保留同一种错误。
+仅断言非 null，难以区分错误结果。expected 可使用明确常量、手算结果或独立性质。复制生产算法会让测试复现同一种错误。
 
-优先使用明确常量、小型手算结果或独立性质。失败消息应帮助定位业务条件：
+失败消息应帮助定位业务条件：
 
 ```java
 assertEquals(expected, actual, "discount for first-time customer");
@@ -62,7 +66,7 @@ assertEquals(expected, actual, "discount for first-time customer");
 
 ## 4. 异常与多个结果的断言 {#异常与多个结果的断言}
 
-`assertThrows` 返回捕获的异常，可以继续验证：
+assertThrows 接受指定异常及其子类。assertThrowsExactly 要求精确类型。两者都返回捕获的异常：
 
 ```java
 DuplicateOrder exception = assertThrowsExactly(
@@ -83,7 +87,7 @@ assertAll(
 );
 ```
 
-不要把互不相关的场景塞进一个 assertAll；前置动作失败后，后续断言可能只产生噪音。
+assertAll 适合一项行为的多个相关结果。独立场景应拆为独立测试。
 
 ## 5. 参数化测试 {#参数化测试}
 
@@ -100,7 +104,7 @@ void countsDecimalDigits(int input, int expectedDigits) {
 }
 ```
 
-参数化测试适合相同执行逻辑、不同输入输出的等价类和边界值。数据来源包括：
+参数化测试复用同一执行逻辑，覆盖等价类与边界值。数据源包括：
 
 - `@ValueSource`
 - `@NullSource`、`@EmptySource`
@@ -109,7 +113,7 @@ void countsDecimalDigits(int input, int expectedDigits) {
 - `@MethodSource`
 - 自定义 `ArgumentsProvider`
 
-输入对象复杂或需要清楚名称时，`@MethodSource` 通常比很长的 CSV 更易维护。
+复杂对象可用 MethodSource 提供。默认 PER_METHOD 下，本类工厂方法需为 static。PER_CLASS 允许本类非静态工厂；外部工厂始终需 static。
 
 ## 6. 生命周期与隔离 {#生命周期与隔离}
 
@@ -123,13 +127,13 @@ void setUp() {
 }
 ```
 
-测试不应依赖执行顺序。共享静态可变状态、复用数据库脏数据和读取真实当前时间都会让测试相互污染。
+每个测试应独立通过。共享静态状态、数据库残留与真实时钟都会干扰隔离。
 
-昂贵资源可以在 `@BeforeAll` 建立，但每个测试仍要重置业务数据。使用 `PER_CLASS` 生命周期时，更要留意实例字段被共享。
+昂贵资源可在 BeforeAll 建立，每次测试重置业务数据。PER_CLASS 复用测试实例，实例字段也需清理。BeforeEach 对每次参数化调用分别执行。
 
 ## 7. 时间、随机与并发 {#时间随机与并发}
 
-注入 `Clock` 代替直接 `Instant.now()`，注入随机源或固定种子，外部端口和临时目录由测试框架管理。
+Clock 可固定当前时间，随机源可使用固定种子。临时目录可用 TempDir，端口由测试环境分配。
 
 ```java
 Clock clock = Clock.fixed(
@@ -138,7 +142,7 @@ Clock clock = Clock.fixed(
 );
 ```
 
-`assertTimeout` 能限制测试调用耗时，但不是性能基准。并发测试不能只 sleep 后期望任务完成，应使用 Latch、Future、Awaitility 一类明确同步条件，并让失败有上限时间。
+assertTimeout 在调用结束后检查耗时，超时不会提前终止。异步完成可用 Future 或 Latch 等待，并设置上限。性能测量则需专门基准。
 
 ## 8. 测试命名 {#测试命名}
 
@@ -149,29 +153,37 @@ Clock clock = Clock.fixed(
 void payingCancelledOrderIsRejected() {}
 ```
 
-名称可以表达“条件—行为—结果”。`@Nested` 可按方法或状态分组，`@DisplayName` 适合补充业务语言，但不应让方法名完全失去可搜索性。
+名称表达条件、行为与结果。Nested 可按状态分组，DisplayName 可补充业务描述。
 
-## 9. 常见问题
+## 9. 超时执行与线程边界 {#超时执行与线程边界}
 
-### 9.1 一个测试只能有一个 assert 吗
+assertTimeout 在当前线程执行，等待代码返回后再比较耗时。代码永久阻塞时，该断言本身也会持续等待。
 
-不是硬规则。一个行为可能有多个相关结果，应一起验证。问题在于一个测试包含多个独立动作和失败原因，而不是断言数量本身。
+assertTimeoutPreemptively 在另一线程执行。达到上限后测试可提前失败，并尝试中断执行线程。被测代码仍需响应中断，才能及时停止。
 
-### 9.2 私有方法怎样测试
+Spring 测试事务绑定当前线程。抢占式断言中的数据库操作会脱离该事务。即使外层测试回滚，这些操作仍可留下已提交数据。此类测试应使用匹配的线程与事务边界。
 
-通过公开行为测试。私有方法是实现细节；如果它包含独立复杂规则，考虑提取为有明确包级或公开契约的对象，而不是使用反射调用。
+## 10. 常见问题 {#常见问题}
 
-### 9.3 参数化测试是否替代普通测试
+### 10.1 行为与断言数量 {#行为与断言数量}
 
-不替代。它适合同一种行为的多组数据；复杂流程、异常状态和特定回归往往用独立测试更清楚。
+一个行为可以有多条相关断言。独立动作与不同前置条件应拆成测试用例。
 
-### 9.4 `assertTimeoutPreemptively` 有什么风险
+### 10.2 私有方法的测试入口 {#私有方法的测试入口}
 
-它在不同线程执行代码，可能影响 ThreadLocal、事务和中断语义。优先使用普通 `assertTimeout`；必须抢占时明确被测代码的线程边界。
+通过公开行为覆盖私有实现。规则有独立职责时，可提取为包级或公开契约对象。
 
-## 10. 面试题
+### 10.3 参数化与独立场景 {#参数化与独立场景}
 
-### 10.1 平时怎样使用 JUnit 编写单元测试 {#junit-usage}
+参数化适合同一行为的多组数据。不同流程、前置状态和失败路径适合独立测试。
+
+### 10.4 抢占式超时的使用边界 {#抢占式超时的使用边界}
+
+它在另一线程执行，原线程的 ThreadLocal 状态无法自动传递。测试事务与中断处理需按独立线程设计。
+
+## 11. 面试题 {#面试题}
+
+### 11.1 平时怎样使用 JUnit 编写单元测试 {#junit-usage}
 
 <!-- 面试来源：
 - 阿里巴巴：https://www.nowcoder.com/discuss/353156377390555136
@@ -183,22 +195,22 @@ void payingCancelledOrderIsRejected() {}
 
 **考察重点**
 
-- 测试隔离、准备执行验证和断言质量。
-- 时间、随机和外部依赖怎样变得可控。
-- 单元测试与启动完整 Spring 环境的区别。
+- 说明测试隔离、准备执行验证和断言质量。
+- 说明时间、随机和外部依赖怎样变得可控。
+- 说明单元测试与启动完整 Spring 环境的区别。
 
 **相关内容**：[测试结构](#测试结构)至[测试命名](#测试命名)。
 
 <details>
 <summary>参考回答</summary>
 
-每个测试从独立、可重复的状态开始，准备输入和替身后只执行目标行为，再断言可观察结果与失败路径。断言要能区分错误实现，不只检查非 null；时间使用固定 Clock，随机使用固定种子，测试不能依赖顺序。
+JUnit 测试从独立状态执行目标行为，再验证可观察结果。断言覆盖正常结果、边界和失败后的状态。时间用固定 Clock，随机用固定种子。
 
-纯领域逻辑不启动 Spring 容器，外部依赖通过窄接口替换。数据库映射、事务和 Bean 配置属于集成测试，使用真实组件验证，不能全部 Mock 后声称已经覆盖集成行为。
+纯规则可直接构造对象测试。数据库映射、事务和容器配置由集成测试验证。
 
 </details>
 
-### 10.2 什么情况下使用参数化测试 {#parameterized-tests}
+### 11.2 什么情况下使用参数化测试 {#parameterized-tests}
 
 <!-- 面试来源：
 - 字节跳动：https://www.nowcoder.com/discuss/353158433438375936
@@ -209,24 +221,41 @@ void payingCancelledOrderIsRejected() {}
 
 **考察重点**
 
-- 同一规则的等价类与边界数据。
-- 数据源和测试逻辑如何保持可读。
-- 复杂场景为什么仍需要独立测试。
+- 说明同一规则的等价类与边界数据。
+- 说明数据源和测试逻辑如何保持可读。
+- 说明复杂场景为什么仍需要独立测试。
 
 **相关内容**：[参数化测试](#参数化测试)。
 
 <details>
 <summary>参考回答</summary>
 
-当多组输入执行同一条业务规则、只改变参数和期望结果时使用参数化测试，例如金额边界、日期解析和状态枚举。简单值用 ValueSource 或 CsvSource，复杂对象和有名字的案例用 MethodSource。
+同一执行规则需要多组输入输出时，使用参数化测试。简单值用 ValueSource 或 CsvSource。复杂对象用 MethodSource。
 
-如果每组输入需要不同准备、不同动作或不同断言路径，拆成独立测试更清楚。参数化的目标是减少重复同时保留失败案例可读性，不是把所有场景塞进一张表。
+每组参数应保留明确的名称与期望结果。准备、动作或断言路径明显不同的场景，拆成独立测试。
 
 </details>
 
-## 11. 参考资料
+### 11.3 assertTimeout 会中止慢调用吗，抢占式超时为何会影响事务测试？ {#timeout-thread-boundary}
 
-- [JUnit User Guide：Writing Tests](https://docs.junit.org/current/user-guide/#writing-tests)
-- [JUnit User Guide：Assertions](https://docs.junit.org/current/user-guide/#writing-tests-assertions)
-- [JUnit User Guide：Parameterized Tests](https://docs.junit.org/current/user-guide/#writing-tests-parameterized-tests)
-- [JUnit User Guide：Test Instance Lifecycle](https://docs.junit.org/current/user-guide/#writing-tests-test-instance-lifecycle)
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：同线程等待、中断与 ThreadLocal。
+
+**相关内容**：[超时执行与线程边界](#超时执行与线程边界)。
+
+<details>
+<summary>参考回答</summary>
+
+assertTimeout 等待代码结束后再判断超时。抢占式超时使用另一线程，并尝试中断慢调用。原线程绑定的测试事务不会自动传入。数据库操作因此可脱离外层回滚范围。
+
+</details>
+
+## 12. 参考资料 {#参考资料}
+
+- [JUnit User Guide：Writing Tests](https://docs.junit.org/5.13.4/user-guide/#writing-tests)
+- [JUnit User Guide：Assertions](https://docs.junit.org/5.13.4/user-guide/#writing-tests-assertions)
+- [JUnit User Guide：Parameterized Tests](https://docs.junit.org/5.13.4/user-guide/#writing-tests-parameterized-tests)
+- [JUnit User Guide：Test Instance Lifecycle](https://docs.junit.org/5.13.4/user-guide/#writing-tests-test-instance-lifecycle)

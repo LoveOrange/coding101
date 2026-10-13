@@ -14,28 +14,30 @@ import {javaCollectionsReview} from '@site/src/data/reviewPlans/javaCollections'
 
 <ReviewReading plan={javaCollectionsReview} stepId="collections-arraylist" />
 
-`ArrayList` 用一段连续的引用数组保存元素。随机访问只需计算下标，尾部追加通常很快；容量不足时则要申请更大的数组并复制已有引用。
+`ArrayList` 用连续引用数组保存元素。本文负责容量管理、扩容、搬移和视图成本。实现细节以 OpenJDK 26 为准。
+
+链表定位成本见 [LinkedList](./linkedlist-semantics-cost.mdx)。固定大小与只读列表见 [集合迭代器](./iterator-fail-fast-immutable.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- `ArrayList` 用连续的引用数组保存元素，按下标访问是 O(1)。
-- `size` 是元素数量，capacity 是数组长度；容量不足时扩容为约 1.5 倍并复制，尾部追加的摊销成本是 O(1)。[卡](#arraylist-growth)
-- 已知元素数量时指定初始容量，可以减少扩容和复制。
-- 中间插入和删除需要搬移后续元素，成本是 O(n)；由于数组的内存局部性，多数场景下它仍比 `LinkedList` 快。[卡](#arraylist-vs-linkedlist)
-- `subList` 是原列表的视图，`Arrays.asList` 返回固定大小的列表，`ArrayList` 本身不是线程安全的。
+- `ArrayList` 的 `get`、`set` 按下标访问，成本为 O(1)。
+- OpenJDK 26 的扩容首选增量是旧容量的一半。[卡](#arraylist-growth)
+- 尾部追加摊销 O(1)，单次扩容复制为 O(n)。[卡](#arraylist-growth)
+- 中间插入和删除搬移后续引用，最坏为 O(n)。[卡](#arraylist-vs-linkedlist)
+- `subList` 共享原列表，复制子列表才能隔离结构变化。[卡](#sublist-retention)
 
 ## 2. size 与 capacity {#size-与-capacity}
 
-`size` 是当前元素数量，capacity 是内部数组能容纳的元素数量：
+`size` 是当前元素数量。capacity 是内部数组长度：
 
 ```java
 List<String> values = new ArrayList<>(100);
 System.out.println(values.size()); // 0
 ```
 
-构造参数 `100` 只预留容量，不会创建 100 个逻辑元素。此时调用 `get(0)` 仍然会抛出 `IndexOutOfBoundsException`。
+构造参数 `100` 预留 100 个引用槽，`size` 仍是 0。此时调用 `get(0)` 会抛出 `IndexOutOfBoundsException`。
 
-ArrayList 只保存对象引用。引用数组连续，不代表每个元素对象也在堆中连续排列。
+数组连续保存对象引用。元素对象位于各自的堆位置。
 
 ## 3. 随机访问 {#随机访问}
 
@@ -45,9 +47,9 @@ ArrayList 只保存对象引用。引用数组连续，不代表每个元素对�
 User user = users.get(i);
 ```
 
-不需要从第一个元素逐个移动，因此 `get` 和 `set` 是常数时间。顺序遍历也能连续读取引用数组，通常比在分散节点之间跳转更利于 CPU 缓存和预取。
+下标直接定位数组槽，因此 `get` 和 `set` 是常数时间。顺序遍历连续读取引用，有利于缓存和预取。
 
-这类局部性优势不是 Java API 的复杂度符号能够完整表达的。两个操作都写作 O(n)，连续数组复制和链表节点遍历的实际吞吐仍可能明显不同。
+O(n) 描述增长趋势。连续数组复制与链表跳转的实际耗时仍有差异。性能比较还需固定数据规模和访问方式。
 
 ## 4. 尾部追加与扩容 {#尾部追加与扩容}
 
@@ -57,21 +59,21 @@ User user = users.get(i);
 users.add(user);
 ```
 
-容量不足时，当前 OpenJDK 实现会：
+容量不足时，OpenJDK 26 会：
 
 1. 根据最小需要容量计算新容量。
-2. 通常按旧容量约 1.5 倍增长。
+2. 首选增加旧容量的一半，并满足最小所需容量。
 3. 申请新的引用数组。
 4. 复制现有元素引用。
 5. 把内部字段指向新数组。
 
-增长比例属于实现细节，不是 `List` 或 `ArrayList` API 对所有 JDK 的永久保证。可以依赖的是：尾部追加具有摊销常数时间，而单次扩容需要线性复制。
+增长比例属于 OpenJDK 实现细节。API 保证尾部追加具有摊销常数时间。单次扩容需要线性复制。
 
 ### 4.1 摊销复杂度 {#摊销复杂度}
 
-假设连续追加很多元素，大多数 `add` 只写一个数组位置，少数操作承担扩容复制。把这些扩容成本分摊到整段追加操作，每次追加的平均成本仍是 O(1)。
+连续追加时，多数操作只写入一个数组槽。少数操作需要分配数组并复制引用。几何增长让累计复制量随追加数量线性增长。因此，每次追加的摊销成本是 O(1)。
 
-这不代表每一次延迟都相同。对延迟敏感的热路径，恰好发生的一次大数组复制仍可能形成明显抖动。
+单次大数组复制仍会增加该次调用延迟。延迟敏感的路径可以提前预留容量。
 
 ## 5. 初始容量 {#初始容量}
 
@@ -81,15 +83,11 @@ users.add(user);
 List<OrderLine> lines = new ArrayList<>(expectedLineCount);
 ```
 
-它可以减少：
+预留容量可以减少数组分配与引用复制。旧数组等待 GC 造成的短期峰值也会减少。
 
-- 多次数组分配。
-- 已有引用复制。
-- 旧数组等待 GC 的短期内存峰值。
+预留容量应参考元素数量分布。大量小列表使用大数组，会长期保留空槽。
 
-容量也不能盲目放大。为大量小列表统一预留很大数组，会让空槽占用超过扩容节省。预估应来自真实数据分布，而不是固定“性能优化常数”。
-
-已有列表需要追加大量元素时，可以调用 `ensureCapacity`；元素减少后确实需要长期保留列表时，`trimToSize` 可以请求缩小容量，但同样会复制数组，不适合频繁调用。
+追加大量元素前，可以调用 `ensureCapacity`。元素减少后，`trimToSize` 可缩小数组。缩容也要复制引用，适合长期保留且已稳定的列表。
 
 ## 6. 中间插入与删除 {#中间插入与删除}
 
@@ -99,15 +97,15 @@ List<OrderLine> lines = new ArrayList<>(expectedLineCount);
 users.add(0, user);
 ```
 
-删除元素后，后面的引用向左移动，最后一个旧位置会被置为 `null`，使已删除对象可以被回收。
+删除后，后续引用向左移动。最后一个旧位置置为 `null`，释放多余引用。对象的其他引用也消失后，GC 才能回收它。
 
 因此：
 
-- 尾部追加通常 O(1) 摊销。
-- 中间插入、删除通常 O(n)。
-- 按值查找与删除通常先线性查找，再搬移数组。
+- 尾部追加摊销 O(1)。
+- 中间插入、删除最坏为 O(n)。
+- 按值删除先线性查找，再搬移后续引用。
 
-批量删除时，倒序按索引删除虽然避免索引错位，仍可能反复搬移。可以使用 `removeIf`，或者一次筛选出保留元素，让实现统一压缩数组。
+倒序删除可避免索引错位，却仍会反复搬移。OpenJDK 26 的 `removeIf` 会集中压缩保留元素。
 
 <details>
 <summary>后续阅读：subList 视图</summary>
@@ -118,7 +116,7 @@ users.add(0, user);
 List<User> page = users.subList(from, to);
 ```
 
-`subList` 不是自动复制的数据。对视图的修改会反映到原列表；原列表发生视图不知道的结构修改后，再操作视图可能抛出 `ConcurrentModificationException`。
+`subList` 与原列表共享数据。通过视图修改元素，会影响原列表。原列表在视图之外发生结构修改后，视图语义未定义。OpenJDK 的修改计数检查会尽力检测此类错误。
 
 需要独立快照时显式复制：
 
@@ -126,7 +124,7 @@ List<User> page = users.subList(from, to);
 List<User> page = new ArrayList<>(users.subList(from, to));
 ```
 
-旧版本 JDK 的子列表还可能间接保留很大的底层数组。当前实现细节会变化，但“视图共享结构、快照独立持有数据”的语义区分始终需要明确。
+子列表还会保留根列表，内存影响见 [子列表的内存保留](#子列表的内存保留)。
 
 </details>
 
@@ -140,33 +138,45 @@ if (!users.contains(user)) {
 }
 ```
 
-多个线程可能同时通过检查并重复写入。外部加锁、线程封闭、不可变快照或并发集合应根据共享模型选择。`Collections.synchronizedList` 只为单个方法提供同步，迭代时仍需按其文档在同一锁上同步。
+两个线程都通过检查后，会分别追加元素。共享可变列表需要统一的同步协议。`synchronizedList` 的遍历与复合操作需另加同步。具体迭代规则见 [集合迭代器](./iterator-fail-fast-immutable.mdx)。
 
 <ReviewCheckpoint plan={javaCollectionsReview} stepId="collections-arraylist" />
 
-## 9. 常见问题
+## 9. 子列表的内存保留 {#子列表的内存保留}
 
-### 9.1 `new ArrayList<>()` 会立即分配默认容量吗
+OpenJDK 26 的 `SubList` 保存 `root`、`parent` 和偏移量。只保留一个小视图，也会保留根列表及其数组。根列表中的其他元素引用因此仍可达。
 
-当前 OpenJDK 实现会使用共享空数组，在首次加入元素时再分配实际存储。默认容量和延迟分配策略属于实现细节，不应成为业务正确性的依赖。
+需要长期保存一页结果时，可复制这一页：
 
-### 9.2 `Arrays.asList` 是 ArrayList 吗
+```java
+List<String> page = new ArrayList<>(all.subList(0, 10));
+```
 
-不是 `java.util.ArrayList`。它是由数组支持的固定大小列表，可以替换已有位置，但 `add` 和 `remove` 会抛出 `UnsupportedOperationException`。数组与列表对元素修改仍相互可见。
+新列表仅保存这 10 个元素引用。复制后的元素仍是原对象；可变元素需要单独管理。
 
-### 9.3 为什么删除 `List<Integer>` 中的 1 容易写错
+## 10. 常见问题 {#常见问题}
+
+### 10.1 默认容量与延迟分配 {#默认容量与延迟分配}
+
+OpenJDK 26 的无参构造先使用共享空数组。首次单元素 `add` 分配容量 10。显式指定容量 0 时，首次单元素 `add` 分配容量 1。
+
+### 10.2 Arrays.asList 的列表类型 {#arrays.aslist-的列表类型}
+
+它是数组支持的固定大小列表。替换元素会写回原数组，改变长度会抛异常。示例见 [集合迭代器](./iterator-fail-fast-immutable.mdx#arraysaslist-的固定大小列表)。
+
+### 10.3 Integer 列表的删除重载 {#integer-列表的删除重载}
 
 `remove(1)` 选择的是接收 `int` 索引的重载，删除下标 1。删除值为 1 的元素应写 `remove(Integer.valueOf(1))`。重载选择发生在编译阶段。
 
-### 9.4 ArrayList 一定比数组慢吗
+### 10.4 ArrayList 与数组的开销 {#arraylist-与数组的开销}
 
-ArrayList 增加边界检查、容量管理和泛型容器语义，基本类型还需要装箱。JIT 可以消除部分开销，但不能假定完全相同。固定长度、基本类型密集计算可直接使用数组；一般业务序列优先选择可读性更好的 List。
+ArrayList 需要管理容量，基本类型元素还需装箱。Java 数组访问本身也有边界检查。JIT 优化效果取决于具体代码。固定长度的基本类型计算适合数组。需要动态增删的序列适合 List。
 
-## 10. 面试题
+## 11. 面试题 {#面试题}
 
 <ReviewQuestionAnchor />
 
-### 10.1 ArrayList 怎样扩容，指定初始容量有什么作用 {#arraylist-growth}
+### 11.1 ArrayList 怎样扩容，指定初始容量有什么作用 {#arraylist-growth}
 
 <!-- 面试来源：
 - 一嗨租车：https://www.nowcoder.com/discuss/501136023770976256
@@ -177,24 +187,24 @@ ArrayList 增加边界检查、容量管理和泛型容器语义，基本类型�
 
 **考察重点**
 
-- size、capacity 与内部引用数组。
-- 扩容复制和摊销常数时间。
-- 预留过小和过大分别产生什么成本。
+- 说明size、capacity 与内部引用数组。
+- 说明扩容复制和摊销常数时间。
+- 说明预留过小和过大分别产生什么成本。
 
 **相关内容**：[size 与 capacity](#size-与-capacity)、[尾部追加与扩容](#尾部追加与扩容)、[初始容量](#初始容量)。
 
 <details>
 <summary>参考回答</summary>
 
-ArrayList 通过引用数组保存元素。尾部有空位时，追加只写入当前 size 对应位置；容量不足时，需要计算更大容量、申请新数组并复制已有引用。当前 OpenJDK 通常按约 1.5 倍增长，但增长比例是实现细节。
+ArrayList 容量不足时分配新数组并复制引用。OpenJDK 26 首选增加旧容量的一半。最小所需容量更大时，按所需容量增长。
 
-连续追加的扩容成本分摊后是 O(1)，单次扩容仍是 O(n)。已知大致数量时指定初始容量可以减少分配和复制，但预留过大也会让大量空槽长期占用内存。
+连续追加的摊销成本是 O(1)，单次扩容为 O(n)。指定初始容量可减少分配和复制。预留过大则让空槽长期占用内存。
 
 </details>
 
 [返回本轮自测与下一篇](#review-checkpoint)
 
-### 10.2 ArrayList 与 LinkedList 应该怎样选择 {#arraylist-vs-linkedlist}
+### 11.2 ArrayList 与 LinkedList 应该怎样选择 {#arraylist-vs-linkedlist}
 
 <!-- 面试来源：
 - 字节跳动、阿里巴巴：https://www.nowcoder.com/discuss/353147579288461312
@@ -205,22 +215,39 @@ ArrayList 通过引用数组保存元素。尾部有空位时，追加只写入�
 
 **考察重点**
 
-- 随机访问、定位和节点修改的不同成本。
-- 引用数组的缓存局部性与链表的节点开销。
-- “插入多就用 LinkedList”为什么缺少前提。
+- 说明随机访问、定位和节点修改的不同成本。
+- 说明引用数组的缓存局部性与链表的节点开销。
+- 说明“插入多就用 LinkedList”为什么缺少前提。
 
 **相关内容**：[随机访问](#随机访问)、[中间插入与删除](#中间插入与删除)。
 
 <details>
 <summary>参考回答</summary>
 
-一般列表优先使用 ArrayList：随机访问 O(1)，顺序遍历局部性好，尾部追加是摊销 O(1)。LinkedList 按索引定位是 O(n)，每个元素还需要独立节点和前后指针。
+按索引读取或尾部追加时，优先考虑 ArrayList。它的随机访问为 O(1)，尾部追加摊销 O(1)。连续引用数组也减少了节点跳转。
 
-只有已经持有迭代位置，并频繁在该位置插入删除时，链表才能省去数组搬移。作为队列或栈通常使用 ArrayDeque，因此不能只按“增删多、查询少”做抽象判断。
+LinkedList 按索引定位为 O(n)。已有迭代位置时，局部插入删除为 O(1)。选择链表还需衡量节点分配和实际访问模式。
 
 </details>
 
-## 11. 参考资料
+### 11.3 只保留一个很小的 subList，为什么仍会占用大量内存？ {#sublist-retention}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：根列表可达性、结构复制与元素共享。
+
+**相关内容**：[子列表的内存保留](#子列表的内存保留)。
+
+<details>
+<summary>参考回答</summary>
+
+子列表持有根列表，所以会间接保留整个底层数组。OpenJDK 26 仍采用这种实现。`new ArrayList<>(subList)` 可隔离列表结构。副本中的元素引用仍与原列表共享。
+
+</details>
+
+## 12. 参考资料 {#参考资料}
 
 - [Java API：ArrayList](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/ArrayList.html)
 - [OpenJDK：ArrayList 源码](https://github.com/openjdk/jdk/blob/jdk-26-ga/src/java.base/share/classes/java/util/ArrayList.java)

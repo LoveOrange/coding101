@@ -7,26 +7,28 @@ knowledge:
 
 # Java API 设计
 
-Java API 除了暴露方法，还要保证对象始终处于合法状态。先写出业务不变量，再决定构造入口、参数类型、状态转换和失败语义，可以减少调用方需要记住的隐含规则。
+Java API 用类型和方法表达合法状态与操作。本文负责不变量、参数建模、失败语义和兼容性。语言与 API 示例以 Java 26 为准。
+
+可变对象的复制细节见 [不可变对象](./immutable-objects-defensive-copying.mdx)。测试层级见 [测试金字塔](./test-pyramid-contract-regression.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- 先写出业务不变量，再在构造器或静态工厂中校验，保证对象从创建起就合法。[卡](#prevent-illegal-state)
-- 用领域类型代替原始的 `String`、`long` 和布尔参数，减少传错顺序和含义不清的调用。
-- 状态通过有业务含义的方法转换，不对外暴露 setter。
-- 参数很多时，按含义分组为参数对象，或在可选参数多时使用 Builder，最终在 `build` 中统一校验。[卡](#many-parameters)
-- 同一种失败只用一种方式表达：查询无结果返回 `Optional`，非法参数抛 `IllegalArgumentException`，业务拒绝使用业务异常或结果类型。
+- 构造器或静态工厂校验不变量，让对象从创建起就合法。[卡](#prevent-illegal-state)
+- Money 等领域类型把参数校验与值语义集中到一个入口。[卡](#many-parameters)
+- pay、cancel 等状态方法封装前置条件与字段更新。
+- Builder 的 build 校验完整性，参数对象按业务含义分组。[卡](#many-parameters)
+- Optional.empty 表示缺失，orElseGet 按需计算默认结果。[卡](#optional-eager-default)
 
 ## 2. 业务不变量 {#业务不变量}
 
-订单金额模型可能有这些约束：
+以订单金额为例，不变量包括：
 
-- 币种不能为空。
-- 金额不能为负。
-- 已支付订单不能再次修改金额。
-- 取消订单后不能继续支付。
+- 币种必须存在。
+- 金额大于等于零。
+- 已支付订单保持原金额。
+- 支付入口只接受待支付状态。
 
-如果类允许先创建空对象，再按任意顺序调用 setter，合法性只能靠调用方维持：
+空对象加任意 setter，会把合法性检查交给调用方：
 
 ```java
 Order order = new Order();
@@ -49,15 +51,15 @@ public record Money(BigDecimal amount, Currency currency) {
 }
 ```
 
-创建成功的 Money 就是合法值，后续方法不必反复防守同一约束。
+构造成功后，Money 满足这两个不变量。后续方法可依赖已验证的状态。
 
 ## 3. 领域类型 {#领域类型}
 
 ```java
-void transfer(String from, String to, BigDecimal amount, String currency)
+void transfer(String from, String to, BigDecimal amount, String currency);
 ```
 
-这个签名允许传错参数顺序、非法账户字符串和没有舍入规则的金额。可以使用领域类型：
+原始类型难以表达账户与金额约束。领域类型可集中解析和校验：
 
 ```java
 TransferResult transfer(
@@ -65,10 +67,10 @@ TransferResult transfer(
     AccountId to,
     Money amount,
     IdempotencyKey idempotencyKey
-)
+);
 ```
 
-类型不能表达所有规则，但能把解析、验证和相等性集中到明确位置。布尔参数、多个同类型字符串和可为空参数较多时，通常意味着 API 缺少命名清楚的概念。
+领域类型集中解析、校验与相等性。跨对象约束仍需在操作入口校验。from 与 to 类型相同，调用方仍需核对方向。
 
 ### 3.1 布尔参数 {#布尔参数}
 
@@ -103,29 +105,11 @@ public PaymentAccepted pay(PaymentId paymentId, Instant paidAt) {
 }
 ```
 
-方法可以同时检查前置状态、更新相关字段并返回发生的结果。状态不变量被封装在聚合内部，而不是散落在 Controller、Service 和消息消费者中。
+方法先检查前置状态，再更新字段并返回结果。支付规则因此集中在一个入口。共享调用仍需把检查与更新纳入同一同步协议。
 
 ## 5. 参数与返回值的所有权 {#参数与返回值的所有权}
 
-API 需要说明是否保留、复制或修改传入集合：
-
-```java
-public final class PricingRuleSet {
-    private final List<PricingRule> rules;
-
-    public PricingRuleSet(List<PricingRule> rules) {
-        this.rules = List.copyOf(rules);
-    }
-
-    public List<PricingRule> rules() {
-        return rules;
-    }
-}
-```
-
-复制为不可修改列表后，调用方不能通过原列表或 getter 改变规则顺序。元素仍应不可变，或在边界继续复制。
-
-方法会修改参数时，命名和文档应明确。大多数公共 API 更容易推理的做法是：输入由调用方拥有，方法不修改；输出由返回方提供稳定语义。
+API 应声明会保留、复制还是修改传入对象。返回稳定集合结构可用 List.copyOf。元素复制与数组 getter 的处理见 [不可变对象](./immutable-objects-defensive-copying.mdx)。
 
 ## 6. 缺失与失败 {#缺失与失败}
 
@@ -135,19 +119,19 @@ public final class PricingRuleSet {
 Optional<User> findById(UserId id);
 ```
 
-Optional 适合方法返回的可选结果。找不到是正常情况时，不需要抛异常；调用方必须选择空结果处理方式。
+Optional 适合表达正常缺失的返回结果。返回值本身应始终是 Optional 实例，缺失用 empty。
 
 ### 6.2 命令失败 {#命令失败}
 
-参数本身非法可抛 `IllegalArgumentException`，对象状态不允许操作可以使用有业务语义的异常或结果类型。跨服务 API 通常还要映射为稳定错误码，避免把内部类名和堆栈作为外部契约。
+非法参数可抛 IllegalArgumentException。状态冲突可用业务异常或结果类型表达。跨服务接口应映射为稳定错误码。
 
-### 6.3 统一失败的表达方式 {#统一失败的表达方式}
+### 6.3 失败表达的一致性 {#统一失败的表达方式}
 
-一种失败保留一个主要表达，调用方才知道应该检查哪条路径。异常消息用于诊断，类型或错误码用于程序判断，不要解析消息文本控制逻辑。
+同一种失败保持一致的表达方式。消息用于诊断，类型或错误码用于程序判断。
 
 ## 7. 接口范围 {#接口范围}
 
-接口应暴露调用方需要的能力，而不是实现类所有方法：
+接口按调用方所需能力设计：
 
 ```java
 public interface ExchangeRateProvider {
@@ -155,9 +139,9 @@ public interface ExchangeRateProvider {
 }
 ```
 
-调用方不需要知道数据来自数据库、远程服务还是内存。窄接口更容易提供替代实现和测试替身。
+调用方依赖汇率能力，数据来源由实现负责。接口也便于提供测试替身。
 
-“窄”不等于把一次业务动作拆成很多必须按顺序调用的小方法。若正确使用需要调用 `begin`、`setX`、`setY`、`validate`、`commit`，API 暴露了太多中间非法状态。可以提供一次完整操作，或用 Builder 在 `build` 时验证。
+一次业务动作宜提供完整入口。必须分步收集参数时，可用 Builder。build 统一校验后，再返回合法对象。
 
 ## 8. 并发、幂等与阻塞 {#并发幂等与阻塞}
 
@@ -177,11 +161,13 @@ PaymentResult charge(
 );
 ```
 
-加入幂等键和超时不自动实现协议，但让调用方能够表达这些约束。隐藏的无限等待和不明确重试语义会在集成后放大。
+幂等键与超时参数表达调用约束。实现仍需保存幂等结果，并向下游传递等待上限。
 
 ## 9. 兼容性 {#兼容性}
 
-改变 Java 方法签名会影响源码或二进制兼容；更隐蔽的变化包括：
+兼容性包括源码、二进制和行为三个层面。删除公开方法会破坏旧客户端链接。新增重载保持旧二进制入口，但能改变源码重载选择。
+
+行为变化还包括：
 
 - 原来允许 null，现在拒绝。
 - 遍历顺序改变。
@@ -190,29 +176,39 @@ PaymentResult charge(
 - 返回可变集合改为不可修改集合。
 - equals、hashCode 或序列化形态改变。
 
-发布前记录调用方依赖的可观察行为，使用契约测试和迁移阶段验证。不要只看“代码能编译”就判断兼容。
+发布前记录可观察契约，并用旧客户端与契约测试验证。编译通过只覆盖其中一层。
 
-## 10. 常见问题
+## 10. Optional 的默认值求值 {#optional-的默认值求值}
 
-### 10.1 构造函数还是静态工厂
+`orElse(defaultValue())` 会先调用 defaultValue。Java 在调用方法前求值实参，因此有值时也会执行。
 
-构造函数直接，适合含义唯一的创建；静态工厂可以命名不同语义、缓存实例或返回子类型。无论哪种入口，都应保证返回对象合法，不把必需初始化留给调用方。
+```java
+User user = found.orElseGet(() -> loadDefaultUser());
+```
 
-### 10.2 Builder 是否总比长构造函数好
+orElseGet 仅在 Optional 为空时调用 Supplier。默认值昂贵或包含副作用时，这种差异尤其重要。需要把缺失转为异常时，可用 orElseThrow。
 
-不是。参数很少且都是必需值时，构造函数或 record 更清楚。可选参数多、需要分步收集但最终统一验证时使用 Builder。Builder 不能让非法半成品逃出 `build` 边界。
+## 11. 常见问题 {#常见问题}
 
-### 10.3 所有参数都要 `Objects.requireNonNull` 吗
+### 11.1 构造器与静态工厂 {#构造器与静态工厂}
 
-只有契约禁止 null 时才检查。更重要的是在最靠近公共边界的位置拒绝，并给出参数名。允许缺失时应使用 Optional、重载或明确状态类型，而不是先检查再悄悄接受。
+构造器适合含义单一的创建。静态工厂可命名创建方式、复用实例或返回子类型。两者都应在返回前完成必需校验。
 
-### 10.4 测试私有方法是否说明 API 设计有问题
+### 11.2 Builder 的适用条件 {#builder-的适用条件}
 
-通常测试可观察行为。私有方法复杂到需要大量独立用例时，可能包含可以提取的领域概念；但不要只为测试把无意义实现细节变成 public。先判断它是否拥有独立职责和契约。
+少量必需参数适合构造器或 record。可选参数多、需分步收集时使用 Builder。build 成功后才返回目标对象。
 
-## 11. 面试题
+### 11.3 公共参数的空值契约 {#公共参数的空值契约}
 
-### 11.1 设计一个类时，怎样保证对象不会进入非法状态 {#prevent-illegal-state}
+契约拒绝 null 时，在公共入口检查并提供参数名。可选输入可通过重载或明确的状态类型表达。Optional 主要用于可选返回结果。
+
+### 11.4 私有方法与测试边界 {#私有方法与测试边界}
+
+测试应围绕公开行为。私有方法有独立职责时，可提取为有明确契约的对象。可见性仍由调用需求决定。
+
+## 12. 面试题 {#面试题}
+
+### 12.1 设计一个类时，怎样保证对象不会进入非法状态 {#prevent-illegal-state}
 
 <!-- 面试来源：
 - 蚂蚁集团：https://www.nowcoder.com/discuss/609350716972425216
@@ -223,22 +219,22 @@ PaymentResult charge(
 
 **考察重点**
 
-- 先写不变量，再设计构造和状态转换。
-- 类型、封装与防御性复制怎样减少非法组合。
-- 失败和并发语义怎样成为 API 契约。
+- 说明先写不变量，再设计构造和状态转换。
+- 说明类型、封装与防御性复制怎样减少非法组合。
+- 说明失败和并发语义怎样成为 API 契约。
 
 **相关内容**：[业务不变量](#业务不变量)至[并发、幂等与阻塞](#并发幂等与阻塞)。
 
 <details>
 <summary>参考回答</summary>
 
-先列出创建后始终成立的不变量和允许的状态转换。构造函数或静态工厂验证必需值，用有语义的值类型代替容易传错的字符串和布尔参数；状态通过 `pay`、`cancel` 等行为方法改变，不开放任意 setter。
+在创建入口校验不变量，在状态方法中校验转换条件。领域类型集中参数解析与值约束。pay、cancel 等方法统一更新相关字段。
 
-集合和可变参数要明确所有权并做防御性复制，缺失与失败保持单一表达。还要说明线程安全、阻塞、超时和幂等边界。测试验证的是这些可观察契约，而不是只覆盖字段 getter。
+可变输入和输出需明确所有权。失败方式、并发、超时与幂等也属于契约。测试应验证合法转换和拒绝后的状态。
 
 </details>
 
-### 11.2 一个方法的参数很多时应该怎样改进 {#many-parameters}
+### 12.2 一个方法的参数很多时应该怎样改进 {#many-parameters}
 
 <!-- 面试来源：
 - 蚂蚁集团：https://www.nowcoder.com/discuss/609350716972425216
@@ -248,24 +244,43 @@ PaymentResult charge(
 
 **考察重点**
 
-- 参数是否属于同一个领域概念。
-- 必需参数、可选参数和布尔标志怎样表达。
-- 参数对象是否只是无约束数据袋。
+- 说明参数是否属于同一个领域概念。
+- 说明必需参数、可选参数和布尔标志怎样表达。
+- 说明参数对象是否只是无约束数据袋。
 
 **相关内容**：[领域类型](#领域类型)、[接口范围](#接口范围)。
 
 <details>
 <summary>参考回答</summary>
 
-先检查方法是否承担了多个职责，再看参数能否按稳定业务概念组合成值对象，例如把金额与币种组成 Money，把分页字段组成 PageRequest。多个布尔值改为枚举或命名选项，必需与可选参数分开。
+按稳定业务含义合并参数，例如金额与币种组成 Money。布尔标志可改为枚举或命名方法。可选参数多时，用 Builder 分步收集并在 build 校验。
 
-参数对象本身也要验证不变量，不能只把十个散参数搬进一个全是 setter 的 Bean。若调用本来就是多个阶段，应让阶段类型或 Builder 在最终 build 时保证完整性。
+若参数涉及多项独立职责，应先拆分方法职责。参数对象自身仍需维护不变量。
 
 </details>
 
-## 12. 参考资料
+### 12.3 Optional 有值时，orElse 中的方法还会执行吗？ {#optional-eager-default}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：实参求值与 Supplier。
+
+**相关内容**：[Optional 的默认值求值](#optional-的默认值求值)。
+
+<details>
+<summary>参考回答</summary>
+
+会。orElse 的实参在调用前求值，有值时也会执行。orElseGet 仅在缺失时调用 Supplier。昂贵默认值或有副作用的计算应按需执行。
+
+</details>
+
+## 13. 参考资料 {#参考资料}
 
 - [Java API：Objects.requireNonNull](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/Objects.html#requireNonNull(T,java.lang.String))
 - [Java Language Specification：Record Classes](https://docs.oracle.com/en/java/javase/26/docs/specs/jls/jls-8.html#jls-8.10)
 - [Java API：Optional](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/Optional.html)
 - [Java API：List.copyOf](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/List.html#copyOf(java.util.Collection))
+- [JLS 26：Binary Compatibility](https://docs.oracle.com/en/java/javase/26/docs/specs/jls/jls-13.html)
+- [JLS 26：Evaluation of Argument Lists](https://docs.oracle.com/en/java/javase/26/docs/specs/jls/jls-15.html#jls-15.12.4.2)

@@ -17,23 +17,25 @@ import {javaCollectionsReview} from '@site/src/data/reviewPlans/javaCollections'
 
 <ReviewReading plan={javaCollectionsReview} stepId="collections-hashmap" />
 
-HashMap 使用桶数组保存键值对，通过键的哈希定位桶，再用 `equals` 确认键是否相等。面试重点是 `put`/`get` 路径、冲突处理、扩容和线程安全边界。
+HashMap 用桶数组组织键值对。哈希定位桶，equals 确认键相等。本文负责 OpenJDK 26 的查找、冲突处理和扩容。
+
+并发更新见 [ConcurrentHashMap](./concurrenthashmap-atomic-compound-operations.mdx)。遇到顺序见 [LinkedHashMap](./linkedhashmap-lru.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- 哈希先定位桶，哈希相同仍要用 `equals` 判断键是否相等。[卡](#put-get-path)
-- 哈希分布合理时，`get` 和 `put` 平均接近 O(1)；严重冲突会增加桶内查找成本。
-- 当前 OpenJDK 使用短链表处理普通冲突；桶内节点达到 8 且表容量至少 64 时才树化，容量不足时先扩容。[卡](#treeify)
-- 容量是 2 的幂，下标用 `hash & (n - 1)` 计算；扩容翻倍后节点只会留在原索引或移动到“原索引 + 旧容量”。[卡](#power-of-two-capacity)
-- HashMap 不保证遍历顺序，也不支持无同步的并发写。
+- HashMap 用哈希定位桶，再用键引用或 equals 确认匹配。[卡](#put-get-path)
+- 哈希分布合理时，get 与 put 的平均成本为 O(1)。
+- OpenJDK 26 的 put 在链表第 9 项插入时请求树化。[卡](#treeify)
+- 树化要求表容量至少 64，小表先扩容。[卡](#treeify)
+- 容量翻倍后，节点留在原索引或移到原索引加旧容量。[卡](#power-of-two-capacity)
 
 ## 2. 结构与查找路径 {#结构与查找路径}
 
-HashMap 的核心结构是一组桶。桶为空时没有节点；发生冲突时，桶内可能是链表或红黑树。
+HashMap 的核心结构是一组桶。冲突元素存入同一个桶，以链表或红黑树组织。
 
 `get(key)` 的主要步骤是：
 
-1. 取得 `key.hashCode()` 并做扰动，让高位也参与桶定位。
+1. 非空键的 `hashCode()` 经扰动后参与桶定位。null 键使用哈希值 0。
 2. 使用当前容量计算桶下标。
 3. 先比较保存的哈希，再比较键引用或调用 `equals`。
 4. 在链表或树中找到相等键后返回值；找不到则返回 `null`。
@@ -46,11 +48,11 @@ users.put(7L, new User("Lin"));
 User user = users.get(7L);
 ```
 
-平均 O(1) 依赖两个条件：哈希分布合理，且 `hashCode`、`equals` 本身足够便宜。复杂的相等比较仍会成为真实成本。
+平均 O(1) 要求哈希分布合理。这个分析还把 hashCode 与 equals 视为常数成本。复杂键的计算和比较需另行计入。
 
 ## 3. `equals` 与 `hashCode` {#equals-与-hashcode}
 
-相等键必须产生相同哈希；相同哈希的键不一定相等。自定义键应同时正确实现 `equals` 和 `hashCode`，并且参与比较的字段在键存入 Map 后保持稳定。
+相等键必须产生相同哈希。相同哈希仍可对应不同键。自定义键需同时实现 equals 与 hashCode。参与比较的字段在入表后应保持稳定。
 
 ```java
 record UserId(long value) {}
@@ -60,21 +62,19 @@ names.put(new UserId(7), "Lin");
 System.out.println(names.get(new UserId(7))); // Lin
 ```
 
-如果键在存入后改变了参与哈希的字段，后续查找会从另一个桶开始，逻辑上相同的对象也可能找不到原条目。
+修改键的哈希字段，会改变后续查找路径。即使对象引用相同，也会因保存的哈希不匹配而查找失败。
 
-HashMap 允许一个 `null` 键和多个 `null` 值。`get` 返回 `null` 时无法区分“键不存在”和“值就是 null”，需要时使用 `containsKey` 或避免保存 null 值。
+HashMap 允许一个 null 键和多个 null 值。get 返回 null 可表示缺失，也可表示值为空。单线程下可用 containsKey 区分。
 
 ## 4. 冲突与树化 {#冲突与树化}
 
-不同键进入同一桶是正常现象。短链表结构简单，节点少时通常比红黑树更合适；只有冲突持续严重时，树的对数查找才值得额外字段和维护成本。
+不同键进入同一桶时，链表逐项检查候选键。树桶增加颜色、父子链接等字段，以换取树形查找。
 
-当前 OpenJDK 的关键边界是：
+OpenJDK 26 的 `TREEIFY_THRESHOLD` 为 8。普通 put 向已有 8 项的链表追加第 9 项时，请求树化。表容量达到 64 才执行树化，小表先扩容。compute 系列的计数路径不同，应按调用路径分析。
 
-- 桶内节点达到树化阈值 8。
-- table 容量至少为 64；容量较小时优先扩容，让更多哈希位参与定位。
-- 树桶拆分后节点较少时，可以退化回链表，相关阈值为 6。
+扩容拆分树桶时，某侧节点数不超过 6 会转回链表。普通 remove 则根据树形判断，迭代删除还有额外条件。退化时机应区分扩容与删除。
 
-这些数字是当前实现细节，不是 Map 接口契约。面试回答应先说明取舍：短桶保持简单，小表先扩容，足够大的表仍有长桶时再用树限制退化。
+树高为 O(log n)，但任意键查找仍有边界。哈希相同且缺少可用的 Comparable 顺序时，查找会搜索子树。此时最坏仍需线性检查候选键。
 
 ## 5. 容量与扩容 {#容量与扩容}
 
@@ -83,7 +83,7 @@ HashMap 允许一个 `null` 键和多个 `null` 值。`get` 返回 `null` 时无
 - `size`：键值对数量。
 - `capacity`：桶数组长度。
 - `loadFactor`：控制空间与冲突概率的比例，默认是 0.75。
-- `threshold`：触发扩容的元素数量边界，通常约为 `capacity × loadFactor`。
+- `threshold` 是扩容边界，已分配表中按容量和负载因子计算。
 
 容量是 2 的幂时，可以用位掩码定位桶：
 
@@ -91,42 +91,48 @@ HashMap 允许一个 `null` 键和多个 `null` 值。`get` 返回 `null` 时无
 index = (capacity - 1) & hash;
 ```
 
-容量翻倍只增加一个参与定位的哈希位，所以旧桶中的节点只有两个去向：
+容量翻倍新增一个定位位，旧桶节点只有两个去向：
 
 ```text
 (hash & oldCapacity) == 0  -> 原索引
 (hash & oldCapacity) != 0  -> 原索引 + oldCapacity
 ```
 
-实现不必重新调用每个键的 `hashCode()`，但仍要分配新数组并迁移节点链接，因此扩容整体是 O(n)，大 Map 还会产生短时内存和延迟压力。已知元素数量时可以预估初始容量，避免明显的重复扩容；盲目预留过大数组会浪费内存并增加遍历空桶的成本。
+迁移复用保存的哈希，并分配新表和调整链接。成本随旧容量与节点数量增长。负载因子固定且表较满时，可记为 O(n)。过大容量还会增加空桶扫描与内存成本。
 
 ## 6. 使用边界 {#使用边界}
 
-- **遍历顺序**：HashMap 没有顺序保证。需要插入顺序使用 LinkedHashMap，需要按键排序使用 TreeMap。
-- **并发访问**：并发写可能丢失更新或观察到不一致状态。共享可变 Map 应使用 ConcurrentHashMap 的原子方法，或在更高层建立锁。
-- **复合操作**：即使换成并发 Map，`containsKey` 后再 `put` 仍不是一个原子动作，应使用 `putIfAbsent`、`compute` 等复合方法。
+HashMap 的迭代成本与容量加 size 成正比。需要顺序时，使用 [LinkedHashMap](./linkedhashmap-lru.mdx) 或 [TreeMap 与 TreeSet](./treemap-treeset-ordered-query.mdx)。
+
+并发修改需要外部同步，或使用 [ConcurrentHashMap](./concurrenthashmap-atomic-compound-operations.mdx)。
 
 <ReviewCheckpoint plan={javaCollectionsReview} stepId="collections-hashmap" />
 
-## 7. 常见问题
+## 7. 预期条目数与初始容量 {#预期条目数与初始容量}
 
-### 7.1 为什么先比较 hash 再比较 equals
+`new HashMap<>(100)` 表达桶容量提示，未表达 100 条映射。OpenJDK 26 首次分配 128 个桶，默认阈值为 96。插入第 97 个不同键时，就会触发容量扩展。
 
-哈希不同可以直接排除，哈希相同仍可能只是冲突，需要 `equals` 确认。这个顺序减少了需要执行相等比较的候选数量。
+Java 19 起可用 `HashMap.newHashMap(expectedMappings)`。它根据预期条目数与默认负载因子估算容量。旧版本可按条目数除以 0.75 预估，再考虑容量取整。
 
-### 7.2 HashMap 的顺序有时看起来固定，可以依赖吗
+## 8. 常见问题 {#常见问题}
 
-不可以。同一组键和同一运行环境下结果可能暂时稳定，但扩容、键哈希或实现版本变化都可能改变顺序。
+### 8.1 hash 与 equals 的比较顺序 {#hash-与-equals-的比较顺序}
 
-### 7.3 链表达到 8 个节点就一定树化吗
+哈希不同可直接排除。哈希相同再用键引用或 equals 确认，减少相等比较。
 
-不一定。table 容量小于 64 时当前实现优先扩容；只有扩容后冲突仍集中并满足条件才树化。
+### 8.2 遍历顺序的约定 {#遍历顺序的约定}
 
-## 8. 面试题
+HashMap 的遍历顺序未指定。扩容、键哈希和实现变化都会影响次序。
+
+### 8.3 链表长度与树化条件 {#链表长度与树化条件}
+
+OpenJDK 26 的普通 put 在追加第 9 项时请求树化。表容量小于 64 时，改为扩容。
+
+## 9. 面试题 {#面试题}
 
 <ReviewQuestionAnchor />
 
-### 8.1 说明 HashMap 的 put 和 get 路径 {#put-get-path}
+### 9.1 说明 HashMap 的 put 和 get 路径 {#put-get-path}
 
 <!-- 面试来源：
 - 上海卫瓴信息科技：https://www.nowcoder.com/discuss/353159301244067840
@@ -136,23 +142,23 @@ index = (capacity - 1) & hash;
 
 **考察重点**
 
-- 桶定位、哈希比较和 `equals` 比较的顺序。
-- 覆盖旧值、插入新值和触发结构变化的边界。
+- 说明桶定位、哈希比较和 `equals` 比较的顺序。
+- 说明覆盖旧值、插入新值和触发结构变化的边界。
 
 **相关内容**：[结构与查找路径](#结构与查找路径)、[`equals` 与 `hashCode`](#equals-与-hashcode)。
 
 <details>
 <summary>参考回答</summary>
 
-HashMap 先取得键的哈希并做扰动，再按容量定位桶。`get` 在桶内先比较保存的哈希，再通过键引用或 `equals` 确认相等；桶可能使用链表或红黑树。
+get 与 put 都先用扰动后的哈希定位桶。get 比较保存的哈希，再用键引用或 equals 确认匹配。
 
-`put` 沿同一路径查找，相等键会替换值；不存在时新增节点。桶持续过长时可能树化，新增映射使 size 越过阈值后会扩容。平均 O(1) 的前提是哈希分布和容量合理。
+put 命中已有键时覆盖旧值，缺失时插入新节点。新增映射超过扩容阈值后触发扩容。长链还会按当前表容量决定树化或扩容。
 
 </details>
 
 [返回本轮自测与下一篇](#review-checkpoint)
 
-### 8.2 HashMap 什么时候树化，为什么小容量时先扩容 {#treeify}
+### 9.2 HashMap 什么时候树化，为什么小容量时先扩容 {#treeify}
 
 <!-- 面试来源：
 - 阿里巴巴：https://www.nowcoder.com/discuss/353159278544494592
@@ -163,21 +169,21 @@ HashMap 先取得键的哈希并做扰动，再按容量定位桶。`get` 在桶
 
 **考察重点**
 
-- 树化阈值与最小表容量的协作。
-- 扩容分散普通碰撞与树处理持续碰撞的区别。
+- 说明树化阈值与最小表容量的协作。
+- 说明扩容分散普通碰撞与树处理持续碰撞的区别。
 
 **相关内容**：[冲突与树化](#冲突与树化)。
 
 <details>
 <summary>参考回答</summary>
 
-当前 OpenJDK 在桶链达到树化阈值，并且 table 容量至少为 64 时才考虑转为红黑树。容量较小时先扩容，因为长链可能只是桶太少，扩容能让新的哈希位参与定位并分散节点。
+OpenJDK 26 的普通 put 在链表追加第 9 项时请求树化。`TREEIFY_THRESHOLD=8`，最小树化容量为 64。
 
-具体数字属于实现细节。核心取舍是少量冲突使用简单链表，小表优先扩容，足够大的表仍有严重冲突时再使用树。
+小表先扩容，让更多哈希位参与桶定位。容量足够且冲突仍集中时，再承担树节点的维护成本。扩容拆分后，某侧不超过 6 项会退回链表。
 
 </details>
 
-### 8.3 HashMap 为什么使用 2 的幂作为容量 {#power-of-two-capacity}
+### 9.3 HashMap 为什么使用 2 的幂作为容量 {#power-of-two-capacity}
 
 <!-- 面试来源：
 - 一嗨租车：https://www.nowcoder.com/discuss/501136023770976256
@@ -188,19 +194,36 @@ HashMap 先取得键的哈希并做扰动，再按容量定位桶。`get` 在桶
 
 **考察重点**
 
-- 位掩码怎样定位桶。
-- 容量翻倍后节点为什么只有两个候选位置。
+- 说明位掩码怎样定位桶。
+- 说明容量翻倍后节点为什么只有两个候选位置。
 
 **相关内容**：[容量与扩容](#容量与扩容)。
 
 <details>
 <summary>参考回答</summary>
 
-容量是 2 的幂时，`capacity - 1` 的低位全是 1，可以通过按位与取得桶下标。容量翻倍只新增一个参与定位的哈希位，因此旧桶节点要么留在原索引，要么移动到原索引加旧容量，扩容拆分更直接。
+2 的幂容量可用 `hash & (capacity - 1)` 定位桶。翻倍时只新增一个定位位。该位为 0 的节点留在原索引，为 1 的移到原索引加旧容量。
 
 </details>
 
-## 9. 参考资料
+### 9.4 预存 100 个键时，`new HashMap<>(100)` 能避免扩容吗？ {#hashmap-expected-size}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：桶容量、负载因子与条目数。
+
+**相关内容**：[预期条目数与初始容量](#预期条目数与初始容量)。
+
+<details>
+<summary>参考回答</summary>
+
+OpenJDK 26 首次分配 128 个桶，默认阈值为 96。第 97 个不同键会触发扩容。Java 19 起可用 `HashMap.newHashMap(100)` 按条目数估算容量。
+
+</details>
+
+## 10. 参考资料 {#参考资料}
 
 - [Java API：HashMap](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/HashMap.html)
 - [Java API：Map](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/Map.html)

@@ -7,15 +7,17 @@ knowledge:
 
 # LinkedHashMap
 
-`LinkedHashMap` 在 HashMap 的桶结构之外，为所有条目维护一条双向顺序链。它可以保留插入顺序，也可以在每次访问后把条目移到链尾，从而实现简单的有界 LRU。
+`LinkedHashMap` 在哈希桶之外维护双向顺序链。本文负责 Java 26 的插入顺序、访问顺序和简单 LRU。
+
+桶查找和扩容见 [HashMap](./hashmap-structure-lookup-path.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- `LinkedHashMap` 在 HashMap 之外维护一条双向链表，记录条目的顺序。
-- 默认按插入顺序遍历；构造时 `accessOrder = true` 改为访问顺序，每次访问把条目移到链尾。[卡](#access-order)
-- 访问顺序模式加上重写 `removeEldestEntry`，可以实现按条目数限制的 LRU 缓存。[卡](#lru-cache)
-- 访问顺序模式下 `get` 也会修改链表，多线程只读也需要同步。
-- 这种 LRU 没有过期时间、加载并发控制和按大小淘汰，复杂缓存使用专用库。
+- LinkedHashMap 用哈希桶定位条目，用双向链记录遇到顺序。
+- `accessOrder=true` 按访问顺序排列，链首是最久未访问条目。[卡](#access-order)
+- `removeEldestEntry` 返回 `size() > maximumSize` 可限制 LRU 条目数。[卡](#lru-cache)
+- 访问顺序模式的 get 会重排条目，共享读取也需同步。
+- `containsKey` 和集合视图遍历都不会刷新访问顺序。[卡](#lru-access-methods)
 
 ## 2. 哈希表与顺序链 {#哈希表与顺序链}
 
@@ -27,7 +29,7 @@ table buckets                     encounter order
 1 -> [A] -> [C]
 ```
 
-条目同时属于某个桶和全局顺序链。`get`、`put` 平均仍接近 O(1)，但每个条目多保存前后顺序引用，写入和访问时也可能需要维护链。
+条目同时属于哈希桶和顺序链。哈希分布合理时，get、put 平均为 O(1)。条目额外保存前后引用，重排时需维护链接。
 
 ## 3. 插入顺序 {#插入顺序}
 
@@ -48,7 +50,7 @@ System.out.println(counts.keySet()); // [A, B]
 - 去重后保留输入顺序。
 - API 需要可预测遍历顺序。
 
-如果只为了稳定顺序，不需要排序，LinkedHashMap 比 TreeMap 少了对数比较成本。
+保留插入顺序时，LinkedHashMap 可省去树的排序比较。
 
 ## 4. 访问顺序 {#访问顺序}
 
@@ -63,11 +65,11 @@ cache.get("A");
 System.out.println(cache.keySet()); // [B, A]
 ```
 
-链首是最久未访问条目，链尾是最近访问条目。哪些 Map 方法算作访问由 LinkedHashMap API 明确定义，不能只凭方法名猜测。
+链首是最久未访问条目，链尾是最近访问条目。不同方法是否触发访问重排，见后文方法表。
 
-访问顺序下，`get` 会修改内部顺序，因此它不再是结构上纯只读操作。迭代期间调用会改变顺序的方法可能触发 fail-fast，跨线程访问也必须同步。
+get 命中非尾条目时，会将它移到链尾。迭代期间的重排会触发 fail-fast 检测。跨线程访问需要同步。
 
-## 5. 用 removeEldestEntry 实现 LRU {#用-removeeldestentry-实现-lru}
+## 5. removeEldestEntry 与 LRU {#用-removeeldestentry-实现-lru}
 
 ```java
 public final class LruCache<K, V> extends LinkedHashMap<K, V> {
@@ -88,7 +90,7 @@ public final class LruCache<K, V> extends LinkedHashMap<K, V> {
 }
 ```
 
-`put` 加入新条目后，LinkedHashMap 调用 `removeEldestEntry`，返回 true 时移除链首。这个实现限制条目数量，并按最近访问顺序淘汰。
+put 新增条目后，会调用 removeEldestEntry。返回 true 时，容器移除链首。容量为 0 时，新增条目会立即被移除。
 
 ### 5.1 简单 LRU 的局限 {#简单-lru-的局限}
 
@@ -101,11 +103,11 @@ public final class LruCache<K, V> extends LinkedHashMap<K, V> {
 - 命中率和淘汰监控。
 - 淘汰回调的失败隔离。
 
-生产缓存通常使用 Caffeine 等成熟库，或远程缓存系统。LinkedHashMap 适合教学、小规模局部缓存和约束简单的工具，不应因为代码短就承担完整缓存职责。
+简单局部缓存可用这个实现。需要过期、加载去重或权重淘汰时，应使用专门缓存组件。
 
 ## 6. LRU 与其他淘汰策略 {#lru-与其他淘汰策略}
 
-LRU 假设最近访问过的数据更可能再次访问。它可能被一次大范围扫描污染：大量只访问一次的键会挤出热点数据。
+LRU 根据最近访问时间选择淘汰对象。大范围扫描会让一次性数据挤出热点条目。
 
 其他策略包括：
 
@@ -114,35 +116,48 @@ LRU 假设最近访问过的数据更可能再次访问。它可能被一次大�
 - 基于窗口和频率估计的混合策略。
 - TTL：按时间过期，与容量淘汰是不同维度。
 
-选择缓存策略要看访问分布、对象大小和可接受陈旧度，不能把所有“最近”需求都等同于 LRU。
+缓存策略需结合访问分布、对象大小和陈旧度要求。
 
 ## 7. 迭代与内存成本 {#迭代与内存成本}
 
-LinkedHashMap 沿顺序链遍历，成本与 size 成正比，不需要扫描大量空桶。这在容量预留较大而又频繁完整遍历时有优势。
+LinkedHashMap 沿顺序链遍历，成本为 O(size)。容量较大时，仍只需访问实际条目。
 
-代价是每个条目增加链接字段，访问顺序模式的读取还要修改链。内存敏感时，应按真实对象布局和数据量测量，而不是只比较接口复杂度。
+每个条目增加顺序链接，访问模式的 get 还需重排。内存成本应按实际对象布局和数据量测量。
 
-## 8. 常见问题
+## 8. 访问重排的方法范围 {#访问重排的方法范围}
 
-### 8.1 `get` 为什么可能触发 ConcurrentModificationException
+访问顺序模式中，方法的效果如下：
 
-访问顺序模式下，`get` 会改变条目顺序，属于结构修改。迭代器创建后调用 `get`，可能改变修改计数并触发 fail-fast。插入顺序模式下没有同样的访问重排。
+| 方法 | 访问重排 |
+| --- | --- |
+| get、getOrDefault | 命中时移到链尾 |
+| put、putIfAbsent、compute 系列、merge | 调用完成后条目仍存在时，构成访问 |
+| replace | 成功替换值时，构成访问 |
+| containsKey、keySet/entrySet 遍历 | 保持访问顺序 |
 
-### 8.2 `removeEldestEntry` 在什么时候执行
+因此，缓存探测调用 containsKey 并不会刷新 LRU 次序。遍历 keySet 时再调用 get，却会触发重排。需要读取键值时，直接遍历 entrySet。
 
-新增映射完成后调用，用于决定是否移除最旧条目。它不是后台清理器，也不会因为时间流逝主动执行，因此不能单独实现 TTL。
+## 9. 常见问题 {#常见问题}
 
-### 8.3 LinkedHashMap 是线程安全的吗
+### 9.1 get 与迭代器冲突 {#get-与迭代器冲突}
 
-不是。即使多个线程只调用 `get`，访问顺序模式也会修改链。需要同步包装时，迭代仍要在同一锁内；复杂并发缓存更适合专用实现。
+访问顺序模式中，get 命中非尾节点会重排。修改计数随之变化，已有迭代器会检测到冲突。插入顺序模式的 get 保持原顺序。
 
-### 8.4 LRU 的容量应该按条目数还是字节数
+### 9.2 淘汰钩子的触发时机 {#淘汰钩子的触发时机}
 
-取决于对象大小分布。条目大小接近时数量上限简单有效；大小差异很大时，一个大值可能占据大部分内存，应使用权重估算并监控实际堆占用。
+put 或 putAll 新增条目后触发该钩子。时间流逝本身不会触发清理。TTL 需额外的过期协议。
 
-## 9. 面试题
+### 9.3 访问顺序与线程安全 {#访问顺序与线程安全}
 
-### 9.1 怎样使用 HashMap 和双向链表实现 LRU {#lru-cache}
+共享访问需要同步，访问顺序模式的 get 也会写链。使用同步包装时，遍历还需锁定包装对象。
+
+### 9.4 条目容量与权重容量 {#条目容量与权重容量}
+
+条目大小接近时，数量上限简单有效。大小差异明显时，应按权重估算并监控堆占用。
+
+## 10. 面试题 {#面试题}
+
+### 10.1 怎样使用 HashMap 和双向链表实现 LRU {#lru-cache}
 
 <!-- 面试来源：
 - 字节跳动：https://www.nowcoder.com/discuss/353148166503604224
@@ -153,22 +168,22 @@ LinkedHashMap 沿顺序链遍历，成本与 size 成正比，不需要扫描大
 
 **考察重点**
 
-- HashMap O(1) 定位与双向链表 O(1) 重排怎样组合。
-- get、put、更新、淘汰和容量为零等边界。
-- LinkedHashMap 的访问顺序模式已经提供什么。
+- 说明HashMap O(1) 定位与双向链表 O(1) 重排怎样组合。
+- 说明get、put、更新、淘汰和容量为零等边界。
+- 说明LinkedHashMap 的访问顺序模式已经提供什么。
 
 **相关内容**：[哈希表与顺序链](#哈希表与顺序链)至[用 removeEldestEntry 实现 LRU](#用-removeeldestentry-实现-lru)。
 
 <details>
 <summary>参考回答</summary>
 
-用 HashMap 从键定位双向链表节点，链首表示最久未使用，链尾表示最近使用。get 命中后把节点移到链尾；put 更新已有节点时同时移动，新增节点放链尾，超过容量就删除链首并从 Map 移除。
+HashMap 定位节点，双向链维护最近访问次序。get 命中和 put 更新后，把节点移到链尾。新增节点放链尾，超限时从链首淘汰并删除映射。
 
-所有节点移动和删除都必须正确维护头尾边界，容量为零也要覆盖。Java 的 LinkedHashMap 在 accessOrder 模式下已经组合了哈希表和顺序链，可以通过 `removeEldestEntry` 实现简单版本，但并发、TTL 和按重量淘汰仍需额外机制。
+LinkedHashMap 的 accessOrder 模式已提供这种组合。重写 removeEldestEntry 可限制条目数。容量为 0 时每次新增都会被淘汰，并发访问仍需同步。
 
 </details>
 
-### 9.2 LinkedHashMap 的插入顺序与访问顺序有什么区别 {#access-order}
+### 10.2 LinkedHashMap 的插入顺序与访问顺序有什么区别 {#access-order}
 
 <!-- 面试来源：
 - 上海卫瓴信息科技：https://www.nowcoder.com/discuss/353159301244067840
@@ -178,22 +193,39 @@ LinkedHashMap 沿顺序链遍历，成本与 size 成正比，不需要扫描大
 
 **考察重点**
 
-- 更新已有键是否改变插入顺序。
-- 哪些访问会在 accessOrder 模式中重排。
-- 读取修改结构对迭代和并发有什么影响。
+- 说明更新已有键是否改变插入顺序。
+- 说明哪些访问会在 accessOrder 模式中重排。
+- 说明读取修改结构对迭代和并发有什么影响。
 
 **相关内容**：[插入顺序](#插入顺序)、[访问顺序](#访问顺序)。
 
 <details>
 <summary>参考回答</summary>
 
-默认模式按键首次插入的顺序遍历，更新已有值不会把键移动到末尾。访问顺序模式会在成功访问后把条目移到链尾，因此链首可作为最久未访问项。
+插入顺序记录键首次插入的位置，更新值保持原位置。访问顺序在 get 等操作命中后，把条目移到链尾。
 
-访问顺序下 get 会改变内部结构，所以迭代期间可能触发 fail-fast，多线程读取也不能当作无写入操作。这个模式适合构造简单 LRU，但仍不是线程安全缓存。
+访问重排会修改结构，因而影响迭代器与并发读取。containsKey 和集合视图遍历则保持原顺序。
 
 </details>
 
-## 10. 参考资料
+### 10.3 containsKey 或遍历 entrySet 会刷新 LRU 访问顺序吗？ {#lru-access-methods}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：访问方法与遍历冲突。
+
+**相关内容**：[访问重排的方法范围](#访问重排的方法范围)。
+
+<details>
+<summary>参考回答</summary>
+
+两者都保持访问顺序。get 命中非尾条目才会把它移到链尾。遍历期间应直接读取 entry 的值，避免用 get 触发重排。
+
+</details>
+
+## 11. 参考资料 {#参考资料}
 
 - [Java API：LinkedHashMap](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/LinkedHashMap.html)
 - [OpenJDK：LinkedHashMap 源码](https://github.com/openjdk/jdk/blob/jdk-26-ga/src/java.base/share/classes/java/util/LinkedHashMap.java)
