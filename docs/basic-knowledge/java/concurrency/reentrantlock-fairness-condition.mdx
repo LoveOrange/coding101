@@ -7,16 +7,17 @@ knowledge:
 
 # ReentrantLock
 
-`ReentrantLock` 提供与 `synchronized` 相近的互斥和内存语义，并增加可中断获取、尝试获取、超时、公平策略和多个条件队列。只有确实需要这些能力时，它才比语言级锁更合适。
+`ReentrantLock` 是支持重入的显式互斥锁。本文负责获取方式、公平策略和 Condition 使用。等待节点的内部组织见 [AQS](./aqs-state-wait-queue.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- `ReentrantLock` 与 `synchronized` 的互斥和内存语义相近，额外提供可中断获取、超时获取、公平策略和多个 Condition。
-- `lock()` 写在 `try` 之前，`unlock()` 写在 `finally` 中，保证只释放已经取得的锁。
-- 公平锁按等待顺序分配锁，减少插队但增加唤醒和调度成本，吞吐通常更低。[卡](#fair-lock-throughput)
-- `Condition.await()` 释放锁并等待，返回前重新获取锁；条件要放在 `while` 中重新检查。
+- `ReentrantLock` 支持可中断获取、超时获取和多个 Condition。
+- 每次成功加锁都应有一次对应的 `unlock()`。
+- 公平获取优先服务排队者，无超时 `tryLock()` 允许插队。[卡](#fair-lock-throughput)
+- `await()` 完全释放关联锁，返回前恢复原持有次数。[卡](#condition-recheck)
+- 带时限的条件等待应在循环中递减剩余预算。[卡](#condition-time-budget)
 
-## 2. 加锁与释放的写法 {#加锁与释放的写法}
+## 2. 加锁与释放 {#加锁与释放的写法}
 
 ```java
 private final ReentrantLock lock = new ReentrantLock();
@@ -31,9 +32,9 @@ void update() {
 }
 ```
 
-`unlock()` 必须放在成功获取后的 `finally` 中。不要把 `lock()` 放进 `try` 后再无条件释放，因为获取过程若失败或被中断，当前线程并不拥有锁。
+获取成功后，代码才进入 `try`。`finally` 在正常与异常路径释放锁。可中断获取若抛异常，流程会跳过该临界区。
 
-和 `synchronized` 一样，它是可重入锁；同一线程每次成功获取都要有匹配的释放。
+同一线程可重复获取同一把锁。重入次数降至零时，其他线程才能取得锁。
 
 ## 3. 可中断获取与超时获取 {#可中断获取与超时获取}
 
@@ -49,13 +50,17 @@ if (lock.tryLock(200, TimeUnit.MILLISECONDS)) {
 }
 ```
 
-`lockInterruptibly()` 可以响应中断，超时 `tryLock` 可以把资源等待纳入请求期限。这些能力适合必须避免无限等待或需要打破潜在锁环的流程。
+`tryLock(timeout, unit)` 在期限内尝试获取。超时返回 `false`，示例据此拒绝繁忙请求。它还会通过 `InterruptedException` 响应中断。
+
+`lockInterruptibly()` 等待时也可响应中断。`lock()` 则继续等待获取，保留中断状态。无超时 `tryLock()` 立即返回获取结果。
 
 ## 4. 公平锁与非公平锁 {#公平锁与非公平锁}
 
-`new ReentrantLock(true)` 在竞争时倾向让等待最久的线程先获得锁。更强的排队约束会减少新到线程直接取得空闲锁的机会，也增加调度和唤醒成本。
+`new ReentrantLock(true)` 启用公平策略。竞争时，排队最久者优先获取。当前所有者的重入仍可直接成功。
 
-公平锁不能保证操作系统公平调度；无参数 `tryLock()` 也不遵守公平策略，只要锁可用就可能直接成功。只有业务真的需要控制长期等待时才启用公平性，并用等待分布验证效果。
+非公平锁允许正在运行的线程插队。插队成功时可减少等待唤醒带来的空档。公平锁更严格的排队约束会影响吞吐。
+
+无超时 `tryLock()` 会忽略公平策略。需要遵守公平顺序的立即尝试，可用 `tryLock(0, unit)`。后者还会响应中断。操作系统的线程调度仍独立于锁的公平性。
 
 ## 5. Condition 等待 {#condition-等待}
 
@@ -75,11 +80,13 @@ Item take() throws InterruptedException {
 }
 ```
 
-`await()` 原子地释放关联锁并等待，返回前重新取得锁。条件必须用 `while` 重查，因为线程可能被无理由唤醒，或者从收到 signal 到重新加锁期间，条件又被其他线程改变。
+示例在同一把锁下检查队列并进入等待。`await()` 完全释放关联锁，等待通知。返回前，它重新加锁并恢复原持有次数。
+
+等待后必须用 `while` 重查条件。线程可虚假唤醒，也可在重获锁前被其他消费者抢先。只有队列确实非空，才执行删除。
+
+持有的其他锁仍由当前线程保留。设计等待协议时，也要检查这些锁是否阻碍生产者。
 
 ## 6. `signal` 与 `signalAll` {#signal-与-signalall}
-
-修改条件的线程应在持锁状态下更新共享状态，再调用 `signal` 或 `signalAll`：
 
 ```java
 lock.lock();
@@ -91,21 +98,48 @@ try {
 }
 ```
 
-收到 signal 的线程不会立刻运行，也不会直接继承锁；它要回到同步队列重新竞争。能精确确认一个等待者足够时使用 `signal`，条件关联复杂或遗漏唤醒风险高时使用 `signalAll`。
+示例在持锁状态下更新队列并通知等待者。通知后，生产者继续持有锁直到 `unlock()`。消费者重获锁后才能返回。
 
-## 7. 常见问题
+`signal()` 选择一个等待者。`signalAll()` 通知全部等待者，大家仍需重新检查条件。不同条件可使用不同的 Condition，减少无关唤醒。
 
-### 7.1 `ReentrantLock` 一定比 `synchronized` 快吗
+## 7. 条件重查与通知时机 {#条件重查与通知时机}
 
-没有普遍结论。现代 JVM 会优化两者的常见路径。默认优先选择语义简单的方案；只有需要可中断、超时、公平或多个 Condition 时再选 `ReentrantLock`，性能由基准判断。
+条件变量的通知只表示值得再次检查状态。等待还允许虚假唤醒，此时也需重新验证条件。
 
-### 7.2 Condition 可以脱离 Lock 使用吗
+例如两个消费者都等待队列非空。生产者加入一条数据并唤醒它们。第一个消费者取走数据后，第二个应再次等待。
 
-不能。等待、signal 和条件检查都必须在对应锁保护下完成，否则会抛出异常或产生检查与等待之间的丢失通知。
+用 `if` 只检查一次，会让第二个消费者操作空队列。用 `while` 可在每次恢复持锁后验证条件。
 
-## 8. 面试题
+## 8. 条件等待的剩余预算 {#条件等待的剩余预算}
 
-### 8.1 公平锁为什么通常吞吐更低 {#fair-lock-throughput}
+`awaitNanos` 返回估算的剩余纳秒数。重复等待时应使用该余额：
+
+```java
+long remaining = timeoutNanos;
+while (queue.isEmpty()) {
+    if (remaining <= 0L) {
+        return false;
+    }
+    remaining = notEmpty.awaitNanos(remaining);
+}
+return true;
+```
+
+本片段在持锁的 `try` 内执行，外围 `finally` 解锁。若每轮都传原始超时，反复唤醒就会重启等待预算。包含获取锁的总期限，需从调用入口统一计算。
+
+## 9. 常见问题 {#常见问题}
+
+### 9.1 ReentrantLock 与 synchronized {#reentrantlock-与-synchronized}
+
+两者都提供互斥和锁释放后的可见性。需要超时、中断获取或多个条件队列时，可选 `ReentrantLock`。性能取决于 JVM、竞争强度和临界区成本。
+
+### 9.2 Condition 的锁关联 {#condition-的锁关联}
+
+`ReentrantLock` 的 Condition 与创建它的锁关联。`await`、`signal` 和 `signalAll` 都要求持有该锁。缺少所有权时会抛出 `IllegalMonitorStateException`。
+
+## 10. 面试题 {#面试题}
+
+### 10.1 公平锁为什么通常吞吐更低 {#fair-lock-throughput}
 
 <!-- 面试来源：
 - 蚂蚁集团：https://www.nowcoder.com/discuss/353150007719174144
@@ -116,22 +150,56 @@ try {
 
 **考察重点**
 
-- 插队、排队与唤醒成本。
-- 公平锁和线程调度公平的区别。
-- `tryLock()` 的特殊行为。
+- 理解插队、排队与唤醒成本。
+- 理解公平锁和线程调度公平的区别。
+- 理解 `tryLock()` 的特殊行为。
 
 **相关内容**：[可中断获取与超时获取](#可中断获取与超时获取)和[公平锁与非公平锁](#公平锁与非公平锁)。
 
 <details>
 <summary>参考回答</summary>
 
-非公平锁在释放瞬间可以让正在运行的新线程直接取得锁，减少一次挂起和唤醒；公平锁倾向服务等待最久的线程，需要遵守队列，调度切换更多，因此吞吐通常更低，但等待时间方差可能更小。
+公平锁约束插队，会增加排队者唤醒后的交接等待。非公平锁允许运行中的线程直接利用空闲锁。持续竞争时，这会影响吞吐和等待时间分布。
 
-公平策略不等于操作系统调度公平，无参数 `tryLock()` 还允许插队。应在确实需要限制长期等待时使用，并观察吞吐和等待分位数。
+公平锁仍受操作系统调度影响。无超时 `tryLock()` 也允许插队。应同时测量吞吐与等待分位数，再决定策略。
 
 </details>
 
-## 9. 参考资料
+### 10.2 Condition.await 为什么必须放在 while 循环中？ {#condition-recheck}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：理解虚假唤醒与条件被其他线程改变。
+
+**相关内容**：[条件重查与通知时机](#条件重查与通知时机)。
+
+<details>
+<summary>参考回答</summary>
+
+恢复执行时，条件仍需重新验证。虚假唤醒或其他消费者抢先，都能使条件仍为假。`while` 在重获锁后再次检查，满足条件才继续。
+
+</details>
+
+### 10.3 条件被反复唤醒时，怎样避免等待超出原定预算？ {#condition-time-budget}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：理解 awaitNanos 返回值与统一截止时间。
+
+**相关内容**：[条件等待的剩余预算](#条件等待的剩余预算)。
+
+<details>
+<summary>参考回答</summary>
+
+每轮使用剩余预算，耗尽后返回失败。`awaitNanos` 返回的余额可用于下一轮。整个请求还包含加锁时间时，应使用统一截止时间。
+
+</details>
+
+## 11. 参考资料 {#参考资料}
 
 - [Java API：`ReentrantLock`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/locks/ReentrantLock.html)
 - [Java API：`Condition`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/locks/Condition.html)

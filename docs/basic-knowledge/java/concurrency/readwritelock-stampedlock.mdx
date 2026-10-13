@@ -7,15 +7,15 @@ knowledge:
 
 # 读写锁
 
-读写锁允许多个读者并发访问，同时让写者独占状态。它只在读取占比高、读操作有一定成本并且写竞争可控时可能受益；`StampedLock` 进一步提供乐观读，但使用约束也更严格。
+读写锁支持并发读取与独占写入。本文负责锁降级、模式转换和乐观读验证。不可变配置的发布方式见 [安全发布](./safe-publication-escape-final.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- 读写锁允许多个读者同时持有读锁，写锁与读锁、写锁互斥；只有读多写少且读操作有一定成本时才可能受益。
-- `ReentrantReadWriteLock` 支持写锁降级为读锁，不支持读锁升级为写锁。
-- `StampedLock` 不可重入、没有 Condition，释放和模式转换都要传入获取时得到的 stamp。
-- 乐观读先读取字段再 `validate`，验证失败时在读锁内重新读取全部字段。[卡](#乐观读)
-- 配置类数据优先考虑 `volatile` 发布不可变快照或并发容器。
+- 多个读锁可以共存，写锁与其他线程的读写锁互斥。
+- `ReentrantReadWriteLock` 支持写锁降级，读者获取写锁前需释放读锁。[卡](#read-write-downgrade)
+- `StampedLock` 按 stamp 释放锁，并且不可重入。
+- 乐观读先读取字段，再验证 stamp，失败后加读锁重读。[卡](#optimistic-read)
+- `tryConvertToWriteLock` 转换失败返回零，原读锁仍保留。[卡](#stamped-conversion)
 
 ## 2. 读锁与写锁 {#读锁与写锁}
 
@@ -34,15 +34,17 @@ Value find(Key key) {
 }
 ```
 
-只要没有写锁，多个线程可以同时持有读锁；写锁会排斥其他读者和写者。读操作必须无副作用，否则多个读者仍会互相破坏状态。
+多个读者可同时执行 `find`。写入方必须取得同一读写锁的写锁。读锁内的操作应保持共享状态不变。
 
-临界区很短或写入频繁时，读写锁的状态管理和排队成本可能高于普通互斥锁。
+返回的 `Value` 若可变，调用者仍需遵守访问协议。锁只覆盖方法内受保护的操作。短小读取的锁管理开销，需与互斥锁进行实测比较。
 
 ## 3. 锁降级与锁升级 {#锁降级与锁升级}
 
-持有写锁时可以先获取读锁，再释放写锁，完成从写到读的降级。反过来，多个线程都持有读锁并等待升级为写锁时，彼此不会释放读锁，容易无法进展。
+写锁持有者可先获取读锁，再释放写锁。读锁随后继续阻止其他写者修改状态。
 
-需要更新时通常先释放读锁，再获取写锁，并在写锁下重新检查条件。这个间隙里状态可能变化，所以不能沿用旧判断。
+`ReentrantReadWriteLock` 的读者无法直接升级。持读锁再等待写锁，会阻碍写锁获取。需要写入时，应释放读锁，再获取写锁。
+
+两次获取之间，其他写者可修改状态。因此必须在写锁下重新检查更新条件。
 
 ## 4. StampedLock 与 stamp {#stampedlock-与-stamp}
 
@@ -55,9 +57,9 @@ try {
 }
 ```
 
-每次获取返回一个 stamp，释放或模式转换时必须提供有效 stamp。`StampedLock` 不可重入，持锁代码调用可能再次获取同一锁的未知方法，会造成自我等待。
+获取成功后返回 stamp，释放时使用对应 stamp。示例在读锁内读取坐标，再释放读锁。锁通过 stamp 管理访问权限，无需绑定线程所有者。
 
-它也不直接提供 `Condition`，因此不适合需要条件队列的协议。
+`StampedLock` 不可重入。持写锁时再次调用 `writeLock()`，会造成自我等待。它的锁视图也不支持 `Condition`。
 
 ## 5. 乐观读 {#乐观读}
 
@@ -78,29 +80,73 @@ if (!lock.validate(stamp)) {
 return new Point(currentX, currentY);
 ```
 
-乐观读期间不持有读锁，读取可能与写入交错。只有 `validate` 成功，才能接受这组结果；失败后要在读锁内全部重读。
+本例要求所有坐标写入都使用同一把写锁。乐观读取不持有读锁，可与写入交错。`validate` 成功后，代码接受已经读出的局部值。
 
-未验证前，代码只能做容忍暂时不一致的简单读取。不能沿着可能为 `null` 的引用调用任意方法，也不能产生不可撤销副作用。
+失败时，示例在读锁内重新读取全部字段。验证前只应做能容忍临时不一致的读取。读取复杂对象图时，还需防范空引用和失效下标。
+
+验证成功只确认此前的读取区间。后续访问共享字段仍需重新验证或持锁。
 
 ## 6. 不可变快照与并发容器 {#不可变快照与并发容器}
 
-配置读取可以用 `volatile` 发布不可变快照；键值查询可以用 `ConcurrentHashMap`；读极多写极少的小集合可以考虑 Copy-on-Write。它们往往比手动维护读写锁更容易组合。
+配置读取可使用不可变快照。按键读写可使用并发容器。具体发布协议见 [安全发布](./safe-publication-escape-final.mdx)。
 
-使用读写锁前，应测量读写比例、临界区时间、写者等待和长尾，而不是只根据“读多写少”四个字决定。
+读写锁适合需要保护整体读写关系的状态。读操作有足够计算量时，并发读取才更有价值。评估应包含写者等待与 p99。
 
-## 7. 常见问题
+## 7. 写锁降级的持锁区间 {#写锁降级的持锁区间}
 
-### 7.1 乐观读是不是无锁读取
+降级要保持写锁与读锁的持有区间重叠：
 
-读取阶段不持有读锁，但仍要取得版本 stamp、验证，并在失败时退回读锁。它是一套完整协议，不是删掉锁调用。
+```java
+write.lock();
+try {
+    refresh();
+    read.lock();
+} finally {
+    write.unlock();
+}
+try {
+    useSnapshot();
+} finally {
+    read.unlock();
+}
+```
 
-### 7.2 `StampedLock` 为什么不能当作 `ReentrantReadWriteLock` 的直接替代
+`refresh` 成功后，当前线程先取得读锁。释放写锁后，其他写者仍被读锁阻挡。若先释放写锁再申请读锁，中间就会出现写入窗口。
 
-它不可重入、没有 Condition，API 依赖 stamp，乐观读还要求容忍并验证不一致状态。迁移时调用约束随之改变，需要逐处检查调用方。
+## 8. StampedLock 的模式转换 {#stampedlock-的模式转换}
 
-## 8. 面试题
+`tryConvertToWriteLock(stamp)` 尝试转换为写模式。持有写锁时可保留写模式。有效乐观 stamp 在锁空闲时可转为写模式。持读锁且自己是唯一读者时，也可转换成功。
 
-### 8.1 `StampedLock` 的乐观读怎样保证结果可用 {#optimistic-read}
+成功返回新的写 stamp。失败返回零，原有读锁保持不变。代码应先用临时变量接收转换结果。
+
+```java
+long writeStamp = lock.tryConvertToWriteLock(stamp);
+if (writeStamp != 0L) {
+    stamp = writeStamp;
+} else {
+    lock.unlockRead(stamp);
+    stamp = lock.writeLock();
+    // 重新检查更新条件。
+}
+```
+
+此片段假设进入时持有有效读 stamp。后续更新结束后要用 `unlockWrite(stamp)` 释放写锁。失败时保留旧 stamp，才能正确释放原读锁。
+
+## 9. 常见问题 {#常见问题}
+
+### 9.1 乐观读的使用边界 {#乐观读的使用边界}
+
+乐观读通过版本验证接受局部读取结果。失败后要回退到加锁读取。它适合简单字段组合，复杂可变结构需谨慎设计读取过程。
+
+### 9.2 读写锁的公平性与条件队列 {#读写锁的公平性与条件队列}
+
+`ReentrantReadWriteLock` 默认采用非公平策略。公平模式会约束排队读者和写者的进入顺序。无超时 `tryLock()` 仍允许插队。
+
+只有写锁支持 `newCondition()`。读锁调用该方法会抛出 `UnsupportedOperationException`。
+
+## 10. 面试题 {#面试题}
+
+### 10.1 `StampedLock` 的乐观读怎样保证结果可用 {#optimistic-read}
 
 <!-- 面试来源：
 - 美团：https://www.nowcoder.com/discuss/383727207275933696
@@ -110,22 +156,56 @@ return new Point(currentX, currentY);
 
 **考察重点**
 
-- 乐观读期间可能与写入交错。
-- stamp 验证和失败重读。
-- 不可重入与副作用边界。
+- 理解乐观读期间可能与写入交错。
+- 理解 stamp 验证和失败重读。
+- 理解不可重入与副作用边界。
 
 **相关内容**：[StampedLock 与 stamp](#stampedlock-与-stamp)和[乐观读](#乐观读)。
 
 <details>
 <summary>参考回答</summary>
 
-先取得乐观读 stamp，再读取构成结果的全部字段，最后调用 `validate`。验证成功表示期间没有使该 stamp 失效的写锁获取，可以接受这组读取；失败则取得普通读锁并把所有字段重新读取。
+读取全部字段后验证 stamp，成功才接受局部结果。所有写入必须使用同一把写锁。验证失败时，取得普通读锁并重新读取全部字段。
 
-验证前不能根据可能不一致的值执行不可撤销副作用。`StampedLock` 还不可重入、没有 Condition，因此只适合能控制内部调用和数据不变量的组件。
+验证前的读取应能容忍临时不一致。业务副作用应在确认结果后执行。stamp 验证也只覆盖已经完成的读取区间。
 
 </details>
 
-## 9. 参考资料
+### 10.2 写锁降级时，为什么要先取得读锁再释放写锁？ {#read-write-downgrade}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：理解连续保护区间与写入窗口。
+
+**相关内容**：[写锁降级的持锁区间](#写锁降级的持锁区间)。
+
+<details>
+<summary>参考回答</summary>
+
+持锁区间重叠能阻止其他写者插入修改。当前线程持写锁时先取得读锁。随后释放写锁，读锁继续保护读取。反向释放顺序会留下并发写入窗口。
+
+</details>
+
+### 10.3 StampedLock 转换写锁失败后，原来的读锁怎样处理？ {#stamped-conversion}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：理解转换返回值与旧 stamp 的生命周期。
+
+**相关内容**：[StampedLock 的模式转换](#stampedlock-的模式转换)。
+
+<details>
+<summary>参考回答</summary>
+
+失败返回零，原读锁仍由旧 stamp 表示。应保留旧 stamp，释放读锁后再申请写锁。取得写锁后重新检查业务条件。直接用零覆盖旧 stamp 会丢失释放所需的信息。
+
+</details>
+
+## 11. 参考资料 {#参考资料}
 
 - [Java API：`ReentrantReadWriteLock`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/locks/ReentrantReadWriteLock.html)
 - [Java API：`StampedLock`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/locks/StampedLock.html)

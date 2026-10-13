@@ -7,18 +7,18 @@ knowledge:
 
 # AQS
 
-`AbstractQueuedSynchronizer`（AQS）是实现阻塞锁和同步器的框架。子类定义一个 `int` 同步状态代表什么以及如何获取、释放；AQS 负责竞争失败后的排队、阻塞、取消和唤醒。
+`AbstractQueuedSynchronizer`（AQS）是阻塞同步器框架。本文负责同步状态、等待队列和获取协议。锁的使用方式见 [ReentrantLock](./reentrantlock-fairness-condition.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- AQS 用一个 `int state` 表示同步状态，它的含义由子类决定：`ReentrantLock` 记录重入次数，`Semaphore` 记录剩余许可，`CountDownLatch` 记录剩余计数。
-- 子类只实现 `tryAcquire`、`tryRelease` 等状态判断；获取失败后的排队、park/unpark、取消和唤醒由 AQS 统一处理。[卡](#aqs-wait-queue)
-- 独占模式一次只放行一个持有者，共享模式在状态满足时可以连续唤醒多个等待者。
-- `Condition` 使用独立的条件队列，`signal` 只把等待者转回同步队列，被唤醒的线程仍要重新获取锁。
+- AQS 用一个 `int state` 表示子类定义的同步状态。
+- AQS 在获取失败后管理排队、阻塞和取消。[卡](#aqs-wait-queue)
+- `tryAcquireShared` 用负数、零、正数表达获取结果。[卡](#shared-acquire-result)
+- `LockSupport` 为每个线程维护至多一个许可。[卡](#park-unpark-permit)
 
 ## 2. 同步状态 `state` {#同步状态-state}
 
-AQS 只提供原子访问同步状态的方法：
+`getState()` 和 `setState()` 具有 volatile 访问语义。`compareAndSetState()` 原子地比较并更新状态。
 
 ```java
 getState();
@@ -26,62 +26,77 @@ setState(next);
 compareAndSetState(expected, next);
 ```
 
-它不规定数值含义。例如：
+这些方法供 AQS 子类实现状态转换。`ReentrantLock` 用状态记录重入次数。`CountDownLatch` 用它记录剩余计数。`Semaphore` 用它记录可用许可。
 
-- `ReentrantLock` 可以用它记录持有次数。
-- `CountDownLatch` 用它记录剩余计数。
-- `Semaphore` 用它记录可用许可。
-
-子类通过 `tryAcquire`、`tryRelease` 或共享模式的对应方法实现具体协议。直接调用 AQS 的模板方法时，框架再把协议与等待机制组合起来。
+子类实现尝试获取和释放的方法。模板方法把状态转换与等待队列连接起来。
 
 ## 3. FIFO 等待队列 {#fifo-等待队列}
 
-以独占获取为例，整体路径可以概括为：
+独占获取沿以下路径执行：
 
-1. 子类尝试取得同步状态。
-2. 失败后，AQS 将当前线程对应的节点加入等待队列。
-3. 节点在合适位置再次尝试；暂时无进展时通过 `LockSupport.park` 停止运行。
-4. 释放方更新状态，并在需要时唤醒可能取得资源的后继节点。
+1. 子类通过 `tryAcquire` 尝试获取状态。
+2. 获取失败后，线程节点进入等待队列。
+3. 节点重新尝试获取，等待时调用 `park`。
+4. 释放方更新状态，并唤醒有效后继。
+5. 后继恢复执行后，再次尝试获取状态。
 
-队列用于组织等待者，却不自动保证严格公平。具体同步器可以在 `tryAcquire` 中检查前驱，也可以允许新线程直接竞争。
+FIFO 队列管理等待次序。公平性还取决于子类的获取策略。公平实现可用 `hasQueuedPredecessors()` 检查前驱。
 
 ## 4. 独占模式与共享模式 {#独占模式与共享模式}
 
-独占模式一次只允许一个持有者，例如互斥锁。共享模式允许一次状态变化使多个线程具备获取条件，例如 latch 计数归零后，所有等待者都可以继续。
+独占模式一次允许一个持有者。共享模式允许多个线程成功获取资源。两种模式的等待者使用同一条同步队列。
 
-共享不等于无限资源。`Semaphore(3)` 允许最多三个许可被占用，成功获取后的剩余状态会决定是否继续传播。
+共享获取成功后，后继还需检查状态。例如 latch 归零后可放行全部等待者。信号量则按剩余许可决定后继能否成功。
 
 ## 5. 中断、超时与取消 {#中断超时与取消}
 
-AQS 提供不可中断、可中断和带超时的获取模板。等待者超时或响应中断后，其节点需要被取消并跳过；释放方也要找到有效的后继节点。
+AQS 提供三类获取模板。`acquire` 在等待期间忽略中断。`acquireInterruptibly` 响应中断并退出。`tryAcquireNanos` 同时支持中断和超时。
 
-这说明等待队列并不是一条始终整洁的业务 FIFO。诊断时看到估算的队列长度，也不能把它当成精确不变的线程清单。
+等待者取消后，队列要跳过其节点。释放方随后寻找有效后继。`getQueueLength()` 返回等待线程数的估计值。监控代码应结合多次采样判断积压。
 
 ## 6. Condition 条件队列 {#condition-条件队列}
 
-`Condition.await()` 的线程先释放已经持有的锁，进入对应条件队列。其他线程在持锁状态下调用 `signal` 后，目标等待者被转移去重新竞争同步队列；`signal` 并不会把锁立即交给它。
+AQS 的 `ConditionObject` 使用独立条件队列。等待节点先进入条件队列，再完全释放同步状态。`signal` 将节点转入同步队列。等待线程重新获取状态后才能继续。
 
-一个 `ReentrantLock` 可以创建多个 Condition，例如“非空”和“未满”，从而比单个 monitor wait-set 更明确地唤醒相关等待者。
+该协议要求子类支持独占持有检查。它还要求完整释放并恢复原有持有状态。`await` 的使用方式见 [ReentrantLock](./reentrantlock-fairness-condition.mdx#condition-等待)。
 
 ## 7. AQS 的适用范围 {#aqs-的适用范围}
 
-AQS 适合状态能由一个原子 `int` 管理，并且获取失败需要排队阻塞的同步器。子类还可以保存其他字段，但 AQS 只跟踪这一个同步状态。
+AQS 适合用一个 `int` 管理同步状态的组件。子类也可维护所有者等辅助字段。自定义获取方法应短小，并避免阻塞。
 
-业务代码通常应直接使用成熟的 `ReentrantLock`、`Semaphore`、`CountDownLatch` 等组件。自行扩展 AQS 时，需要同时证明状态转换、所有权、中断、取消和序列化行为。
+业务代码可直接使用成熟的 JUC 同步器。自行扩展时，要验证所有权和取消协议。序列化只保存同步状态，等待队列反序列化后为空。
 
-## 8. 常见问题
+## 8. 共享获取的返回值 {#共享获取的返回值}
 
-### 8.1 AQS 就是 CLH 锁吗
+`tryAcquireShared(arg)` 的结果分三类：
 
-AQS 的等待队列设计受到 CLH 队列锁思想影响，但它是支持阻塞、取消、独占和共享模式的 JVM 级同步框架。把它等同于教科书中的自旋 CLH 锁，会丢失 park/unpark 与取消协议。
+| 返回值 | 含义 |
+| --- | --- |
+| 负数 | 本次获取失败 |
+| 零 | 本次成功，后续共享获取无法成功 |
+| 正数 | 本次成功，后续共享获取仍有成功机会 |
 
-### 8.2 线程被 `unpark` 后是否已经取得锁
+正数要求后继重新检查资源。它无需等于剩余许可数。`tryReleaseShared` 返回 `true` 时会触发后续唤醒。
 
-没有。唤醒只让它有机会继续运行，线程仍要重新检查并尝试取得同步状态。
+## 9. park 与 unpark 的许可 {#park-与-unpark-的许可}
 
-## 9. 面试题
+`unpark(thread)` 为目标线程提供一个许可。线程已有许可时，再次 `unpark` 仍只保留一个。`park` 消耗许可后返回，否则进入等待。
 
-### 9.1 AQS 如何组织获取失败的线程 {#aqs-wait-queue}
+因此，先 `unpark` 再 `park` 也能配对。`park` 还会因中断或虚假唤醒返回。返回时中断标志保持原状。调用者必须在循环中重查条件。
+
+## 10. 常见问题 {#常见问题}
+
+### 10.1 AQS 与 CLH 队列 {#aqs-与-clh-队列}
+
+AQS 借鉴 CLH 队列结构。它结合阻塞、取消和共享传播机制。经典自旋 CLH 锁则由等待者轮询前驱状态。
+
+### 10.2 唤醒与锁获取 {#唤醒与锁获取}
+
+`unpark` 让等待线程具备继续执行的机会。线程恢复后仍需尝试获取同步状态。资源是否可用，由子类协议决定。
+
+## 11. 面试题 {#面试题}
+
+### 11.1 AQS 如何组织获取失败的线程 {#aqs-wait-queue}
 
 <!-- 面试来源：
 - 蚂蚁集团：https://www.nowcoder.com/discuss/632476
@@ -92,22 +107,56 @@ AQS 的等待队列设计受到 CLH 队列锁思想影响，但它是支持阻�
 
 **考察重点**
 
-- `state` 与子类协议。
-- 同步队列、park 和重试。
-- 独占、共享与取消。
+- 理解 `state` 与子类协议。
+- 理解同步队列、park 和重试。
+- 理解独占、共享与取消。
 
 **相关内容**：[同步状态 `state`](#同步状态-state)至[中断、超时与取消](#中断超时与取消)。
 
 <details>
 <summary>参考回答</summary>
 
-AQS 让子类用一个原子 `int state` 表示同步状态，并实现尝试获取、释放的方法。模板方法先调用子类协议，获取失败时把线程节点加入 FIFO 等待队列，在不能继续时 park；释放后唤醒合适的后继，后继再竞争状态。
+AQS 把获取失败的线程加入 FIFO 等待队列。线程重试失败后通过 `park` 等待。释放方更新状态并唤醒有效后继。后继仍需调用获取协议竞争状态。
 
-它同时支持独占、共享、可中断和超时获取。队列是等待管理骨架，不等于严格公平；公平策略仍由具体同步器的获取逻辑决定。
+子类定义 `state` 的含义和转换条件。AQS 负责阻塞、取消和共享传播。公平策略由子类通过前驱检查等方式实现。
 
 </details>
 
-## 10. 参考资料
+### 11.2 `tryAcquireShared` 的三个返回区间分别表示什么？ {#shared-acquire-result}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：理解共享获取与后继传播。
+
+**相关内容**：[共享获取的返回值](#共享获取的返回值)。
+
+<details>
+<summary>参考回答</summary>
+
+负数表示失败，零和正数都表示本次成功。零表示后续共享获取无法成功。正数表示后继仍有成功机会。后继必须重新检查状态后才能取得资源。
+
+</details>
+
+### 11.3 先调用 unpark 再调用 park 会丢失唤醒吗？ {#park-unpark-permit}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：理解单许可、虚假唤醒与条件循环。
+
+**相关内容**：[park 与 unpark 的许可](#park-与-unpark-的许可)。
+
+<details>
+<summary>参考回答</summary>
+
+目标线程已启动且许可未被消耗时，唤醒会保留。下一次 `park` 消耗许可后直接返回。连续两次 `unpark` 仍只积累一个许可。条件循环还要处理虚假唤醒和中断。
+
+</details>
+
+## 12. 参考资料 {#参考资料}
 
 - [Java API：`AbstractQueuedSynchronizer`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/locks/AbstractQueuedSynchronizer.html)
 - [Java API：`LockSupport`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/locks/LockSupport.html)

@@ -7,14 +7,15 @@ knowledge:
 
 # Java 原子类
 
-原子类适合维护一个可以独立更新的状态。`AtomicLong` 在单点上提供精确的原子读改写；`LongAdder` 将高频更新分散到多个变量，换取更高吞吐，但读取不再是并发更新中的原子快照。
+Java 原子类负责独立状态的原子读改写。本文比较精确计数、分散累加和读取成本。CAS 重试与 ABA 见 [CAS](./cas-aba-versioning.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- `AtomicLong` 用一次 CAS 完成单个变量的读改写，适合序列号、状态位和需要精确当前值的计数。
-- 检查后再更新的两步操作不是原子的，需要 CAS 循环或锁覆盖完整条件。
-- 大量线程更新同一个原子变量时，CAS 失败重试和缓存行迁移会限制吞吐。
-- `LongAdder` 把更新分散到多个单元，适合高并发统计；`sum()` 在并发更新时得到的是近似值，不能用于发号或精确阈值判断。[卡](#atomiclong-vs-longadder)
+- `AtomicLong.incrementAndGet()` 原子递增并返回新值。
+- 检查余额与扣减余额需要组合为一次条件更新。
+- `LongAdder` 将热点更新分散到 `base` 和多个 Cell。[卡](#atomiclong-vs-longadder)
+- 并发更新期间，`LongAdder.sum()` 缺少原子快照语义。
+- `sumThenReset()` 适合在无并发更新时读取并清零。[卡](#adder-reset-boundary)
 
 ## 2. 原子类与 CAS 循环 {#原子类与-cas-循环}
 
@@ -26,7 +27,7 @@ long nextId() {
 }
 ```
 
-`incrementAndGet` 对读取、加一和写回执行一次原子状态转换。它适合序列号、状态位和独立引用，但不能自动维护多个对象之间的不变量。
+每次调用都执行原子递增，并返回新值。序列号还需处理 `long` 溢出和进程重启。
 
 ```java
 if (stock.get() > 0) {
@@ -34,13 +35,13 @@ if (stock.get() > 0) {
 }
 ```
 
-上面的检查和扣减仍是两次操作。应使用返回失败的 CAS 循环，或者由锁覆盖完整条件。
+第二段把检查与扣减分成两次操作。两个线程可同时检查到库存大于零。因此，库存扣减应采用 [CAS 条件更新](./cas-aba-versioning.mdx#cas-的条件更新)。
 
 ## 3. 单变量的竞争成本 {#单变量的竞争成本}
 
-很多核心同时更新同一个 `AtomicLong` 时，会争夺同一缓存行。CAS 失败的线程反复重试，缓存所有权频繁迁移，吞吐可能很快到达上限。
+多个核心更新同一原子变量时，会争夺缓存行。CAS 循环还要承担失败重试成本。原子加法的底层指令取决于 JVM 与处理器。
 
-竞争成本不能只从 Java 线程是否阻塞判断：没有 park 不代表没有等待，CPU 可能消耗在自旋、失败重试和缓存一致性流量上。
+`AtomicLong` 的 API 承诺原子读改写。一次方法调用并不等于一次 CAS 指令。性能评估要结合更新频率和竞争强度。
 
 ## 4. `LongAdder` 的分段累加 {#longadder-的分段累加}
 
@@ -56,20 +57,19 @@ long observedRequests() {
 }
 ```
 
-低竞争时更新基础值；发生竞争后，内部可以扩展多组变量，让不同线程更新不同位置。`sum()` 再将这些位置合并，因此高竞争计数的预期吞吐通常更好，代价是更多内存和读取成本。
+OpenJDK 26 的实现使用 `base` 和 Cell 数组。低竞争时可以直接更新 `base`。竞争发生后，更新分散到不同 Cell。`sum()` 读取 `base` 并累加各 Cell。
+
+分散更新减少单点竞争，也增加空间开销。读取成本随 Cell 数量增加。示例适合请求统计，返回值用于观测。
 
 ## 5. `sum()` 的读取语义 {#sum-的读取语义}
 
-`sum()` 遍历各个分量时，其他线程仍可更新。返回值适合指标、频次和统计，不适合：
+并发更新时，`sum()` 依次读取各分量。分量的采样时刻各不相同。因此，返回值缺少整体原子快照语义。
 
-- 生成不能重复的序列号。
-- 根据精确计数触发一次性状态转换。
-- 与另一个字段组成一致性快照。
-- 在并发写入时使用 `sumThenReset()` 精确切分结算周期。
+所有更新停止且对读取线程可见后，求和结果精确。指标统计可以使用该接口。序列号和精确阈值转换应选择原子读改写。跨字段一致性则需要统一的状态转换协议。
 
-需要这些语义时，应使用 `AtomicLong`、锁，或将事件交给单一所有者。
+## 6. AtomicReference 与不可变状态 {#用-atomicreference-更新多字段状态}
 
-## 6. 用 `AtomicReference` 更新多字段状态 {#用-atomicreference-更新多字段状态}
+以下示例使用 Java 16 起正式支持的 record：
 
 ```java
 record State(int available, long version) {}
@@ -78,21 +78,29 @@ AtomicReference<State> state =
         new AtomicReference<>(new State(10, 0));
 ```
 
-把相关字段放入不可变值，再 CAS 整个引用，可以保证一次转换中状态组合不被拆开。对象分配、重试函数和 ABA 仍需要评估；状态复杂时锁往往更容易审查。
+一次 CAS 替换整个不可变对象引用。读取方保留一次 `get()` 的结果，再访问各字段。由此，字段属于同一状态版本。
 
-## 7. 常见问题
+读者若对每个字段分别调用 `get()`，仍会混用版本。更新函数的重试约束见 [CAS](./cas-aba-versioning.mdx#重试函数与副作用)。
 
-### 7.1 `LongAdder` 一定比 `AtomicLong` 快吗
+## 7. 统计窗口与清零 {#统计窗口与清零}
 
-不一定。低竞争下两者差异可能很小，`LongAdder` 的读取和空间成本更高。只有结合真实读写比例、线程数和硬件基准才有结论。
+`LongAdder.reset()` 要求避开并发更新。`sumThenReset()` 也缺少整个操作的原子快照。写线程与清零交错时，窗口边界难以精确划分。
 
-### 7.2 原子类能替代所有锁吗
+若要求单计数器原子切换窗口，可用 `AtomicLong.getAndSet(0)`。并发递增会按该交换点落入前后窗口。多个计数器组成的快照仍需统一协调。
 
-不能。原子类擅长单变量状态转换；阻塞条件、多字段不变量或必须整体执行的副作用，通常需要锁或重新划分所有权。
+## 8. 常见问题 {#常见问题}
 
-## 8. 面试题
+### 8.1 LongAdder 的性能条件 {#longadder-的性能条件}
 
-### 8.1 `AtomicLong` 和 `LongAdder` 应该怎样选择 {#atomiclong-vs-longadder}
+`LongAdder` 适合高竞争且累加远多于读取的负载。`AtomicLong` 的空间和读取成本更低。应按线程数与读写比例测量两者。
+
+### 8.2 原子类的同步范围 {#原子类的同步范围}
+
+原子类负责其 API 定义的状态转换。多个字段、条件等待或业务副作用仍需统一协调。锁能直接覆盖多步临界区。
+
+## 9. 面试题 {#面试题}
+
+### 9.1 `AtomicLong` 和 `LongAdder` 应该怎样选择 {#atomiclong-vs-longadder}
 
 <!-- 面试来源：
 - 蚂蚁集团：https://www.nowcoder.com/discuss/632476
@@ -103,22 +111,41 @@ AtomicReference<State> state =
 
 **考察重点**
 
-- 单点 CAS 与分散更新。
-- 精确原子值和统计值的差别。
-- 竞争、读频率和空间成本。
+- 理解单点 CAS 与分散更新。
+- 理解精确原子值和统计值的差别。
+- 理解竞争、读频率和空间成本。
 
 **相关内容**：[单变量的竞争成本](#单变量的竞争成本)至[`sum()` 的读取语义](#sum-的读取语义)。
 
 <details>
 <summary>参考回答</summary>
 
-需要随时得到精确原子值、生成序列或基于旧值做状态转换时选择 `AtomicLong`。很多线程高频累加，读取主要用于指标统计时，`LongAdder` 可以通过分散热点提高吞吐。
+精确发号或条件更新应选择 `AtomicLong`。高竞争统计累加可以选择 `LongAdder`。后者用分散更新降低热点竞争。
 
-`LongAdder.sum()` 在并发更新中不是原子快照，空间和读取成本也更高，所以不能只因为线程多就替换。最终应按读写比例与竞争强度做 JMH 和运行时 profile。
+`sum()` 在并发写入时缺少整体原子快照。`LongAdder` 还需要更多空间和求和开销。选择应依据读写比例与实测吞吐。
 
 </details>
 
-## 9. 参考资料
+### 9.2 怎样精确切分并发计数窗口，sumThenReset 适合吗？ {#adder-reset-boundary}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：理解聚合清零与原子交换的边界。
+
+**相关内容**：[统计窗口与清零](#统计窗口与清零)。
+
+<details>
+<summary>参考回答</summary>
+
+单计数器可用 `AtomicLong.getAndSet(0)` 原子切分。交换返回旧值，并把计数重置为零。`LongAdder.sumThenReset()` 适合静止期。并发写入时，各分量的读取与清零会交错。
+
+</details>
+
+## 10. 参考资料 {#参考资料}
 
 - [Java API：`AtomicLong`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/atomic/AtomicLong.html)
 - [Java API：`LongAdder`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/atomic/LongAdder.html)
+- [OpenJDK 26：Striped64](https://github.com/openjdk/jdk/blob/jdk-26%2B35/src/java.base/share/classes/java/util/concurrent/atomic/Striped64.java)
+- [Java 26 API：AtomicReference](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/atomic/AtomicReference.html)

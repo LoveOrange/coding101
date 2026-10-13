@@ -7,14 +7,15 @@ knowledge:
 
 # Java 并发同步器
 
-`CountDownLatch`、`CyclicBarrier` 和 `Semaphore` 约束的是三种不同关系：等待一组事件完成、让一组参与者在阶段点会合，以及限制同时使用资源的数量。
+Java 并发同步器协调完成事件、阶段会合和资源许可。本文负责三类同步器的选择及失败边界。内部排队机制见 [AQS](./aqs-state-wait-queue.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- `CountDownLatch` 让等待者阻塞到计数归零，计数只减不增，归零后不能重置。
-- `CyclicBarrier` 让固定数量的参与者在每一轮的阶段点会合，可以复用；任一参与者超时或中断会让本轮 barrier 进入破坏状态。
-- `Semaphore` 用许可数限制同时访问资源的线程数，`acquire` 与 `release` 必须成对出现。
-- 三者分别表达“事件还剩多少”“参与者是否到齐”“容量还剩多少”，不能互相替代。[卡](#latch-barrier-semaphore)
+- `CountDownLatch` 在计数归零后永久放行等待者。
+- `CyclicBarrier` 在参与者会合成功后自动开始下一轮。[卡](#latch-barrier-semaphore)
+- `Semaphore` 用可重复获取和释放的许可管理容量。
+- barrier 等待者中断或超时会破坏本轮屏障。[卡](#barrier-broken-boundary)
+- `Semaphore.tryAcquire()` 即使在公平模式下也允许插队。
 
 ## 2. CountDownLatch {#countdownlatch}
 
@@ -36,9 +37,11 @@ if (!done.await(2, TimeUnit.SECONDS)) {
 }
 ```
 
-一个或多个等待者调用 `await`，完成方调用 `countDown`。计数到零后所有等待者通过，之后的 `await` 也立即返回；它是一次性的，不能重置。
+任务完成时调用 `countDown()`，等待者调用 `await()`。计数归零后，当前与后续等待者都可通过。该计数器使用一次，重复阶段需创建新实例。
 
-`countDown` 放在 `finally` 中，避免任务异常让等待永远无法结束。等待超时后还要取消或接管未完成任务，不能只离开 `await`。
+示例用 `finally` 确保任务异常时也递减计数。提交若被拒绝，该任务的 finally 尚未执行。调用方需处理拒绝并调整完成协议。
+
+`await` 超时返回 `false` 后，仍需接管剩余任务。计数归零只说明完成信号齐全。业务成功与异常结果应另行收集。
 
 ## 3. CyclicBarrier {#cyclicbarrier}
 
@@ -46,11 +49,9 @@ if (!done.await(2, TimeUnit.SECONDS)) {
 CyclicBarrier barrier = new CyclicBarrier(workers, this::mergeRound);
 ```
 
-每个参与者完成本轮工作后调用 `await`。最后一个到达时触发可选 barrier action，然后所有参与者进入下一轮。它可以复用，适合固定规模的分阶段并行计算。
+每个参与者完成一阶段工作后调用 `await()`。最后到达者执行可选 barrier action。action 成功结束后，本轮参与者全部放行。
 
-某个等待者中断、超时或失败时，barrier 可能进入 broken 状态，其他等待者收到 `BrokenBarrierException`。调用方必须把一名参与者退出视为整轮协议事件。
-
-动态注册参与者或阶段控制更复杂时，可以使用 `Phaser`。
+成功会合后，barrier 自动开始下一轮。动态参与者可用 `Phaser` 注册和注销。屏障失败时，应统一结束或重建该轮协作。
 
 ## 4. Semaphore {#semaphore}
 
@@ -65,39 +66,48 @@ try {
 }
 ```
 
-每次 `acquire` 消耗许可，没有许可时等待；`release` 归还许可。它适合保护连接数、外部接口并发数或昂贵设备。
+`acquire()` 消耗一个许可，许可不足时等待。示例在获取成功后用 `finally` 释放。各路径遵守配对规则时，最多 20 个调用同时进入。
 
-许可不是线程所有权锁。`Semaphore` 不要求由获取许可的同一线程释放，因此更灵活，也更容易因重复释放使计数失真。应把获取成功与 `finally` 归还绑定起来。
+`Semaphore` 没有线程所有权。另一个线程也能调用 `release()`。重复释放会增加许可，甚至超过初始数量。因此，业务要约束释放责任。
 
 ## 5. 三者的选择 {#三者的选择}
 
-| 问题 | 组件 |
+| 需求 | 组件 |
 | --- | --- |
-| 主线程等待 N 个任务完成 | `CountDownLatch` |
-| N 个工作线程每轮互相等待 | `CyclicBarrier` / `Phaser` |
-| 最多允许 N 个任务同时访问资源 | `Semaphore` |
+| 等待 N 个完成事件 | `CountDownLatch` |
+| 固定参与者逐轮会合 | `CyclicBarrier` |
+| 动态参与者逐阶段会合 | `Phaser` |
+| 限制同时占用资源的数量 | `Semaphore` |
 
-它们不能互换。例如 latch 的计数是“事件还剩多少”，semaphore 的许可是“容量还剩多少”；错误地用 latch 限流，计数归零后就再也不会恢复。
+latch 管理尚未完成的事件数。semaphore 管理可重复使用的资源数。用 latch 限流时，归零后会永久放行。
 
-## 6. 超时、中断与业务失败处理 {#超时中断与业务失败处理}
+## 6. 超时与业务失败 {#超时中断与业务失败处理}
 
-这些类只协调线程，不负责业务事务。超时后要决定结果是否废弃，中断后要归还许可，barrier 破坏后要终止还是重建本轮，进程重启后也不能依赖内存计数恢复分布式状态。
+同步器负责 JVM 内的协调。超时后，调用者应决定是否废弃结果和取消任务。获取许可后发生失败，应在清理路径归还许可。
 
-跨进程协调需要数据库、消息系统或分布式协调服务提供相应一致性语义，不能把 JVM 内同步器直接外推。
+barrier 失败时，参与者需要一致的退出策略。跨进程协调则应交给持久化或分布式协议。内存计数随进程结束而消失。
 
-## 7. 常见问题
+## 7. 屏障的破坏与恢复 {#屏障的破坏与恢复}
 
-### 7.1 `CountDownLatch` 能重复使用吗
+等待中的线程中断或超时，会打破本轮 barrier。该线程分别收到中断或超时异常。其他等待者收到 `BrokenBarrierException`。barrier action 抛错也会破坏屏障。
 
-不能。计数只能减少到零。重复阶段使用 `CyclicBarrier`，参与者动态变化时考虑 `Phaser`。
+参与者若在进入 `await` 前因业务异常退出，屏障无法自动感知。其余线程会继续等缺席者。可用带超时等待和统一取消协议结束本轮。
 
-### 7.2 Semaphore 设置公平模式就能严格按请求顺序执行吗
+`reset()` 会打破当前等待并开始新一代。重置前要协调旧参与者退出。否则新旧参与者混入同一轮，会破坏业务阶段。
 
-公平模式主要约束竞争获取许可的排队顺序，线程调度和批量许可获取仍会影响实际完成顺序；无参数 `tryAcquire` 也可能绕过公平顺序。
+## 8. 常见问题 {#常见问题}
 
-## 8. 面试题
+### 8.1 CountDownLatch 的生命周期 {#countdownlatch-的生命周期}
 
-### 8.1 `CountDownLatch`、`CyclicBarrier` 和 `Semaphore` 有什么区别 {#latch-barrier-semaphore}
+`CountDownLatch` 的计数只减至零。重复阶段可使用 `CyclicBarrier`。参与者动态变化时可选择 `Phaser`。
+
+### 8.2 Semaphore 的公平性 {#semaphore-的公平性}
+
+公平模式按内部排队点的到达顺序分配许可。无超时 `tryAcquire()` 仍允许插队。获取顺序与任务完成顺序还受调度和执行时长影响。
+
+## 9. 面试题 {#面试题}
+
+### 9.1 `CountDownLatch`、`CyclicBarrier` 和 `Semaphore` 有什么区别 {#latch-barrier-semaphore}
 
 <!-- 面试来源：
 - 拼多多：https://www.nowcoder.com/discuss/353150007719174144
@@ -108,23 +118,41 @@ try {
 
 **考察重点**
 
-- 事件完成、阶段会合和容量许可。
-- 一次性与可复用。
-- 超时、异常和许可归还。
+- 理解事件完成、阶段会合和容量许可。
+- 理解一次性与可复用。
+- 理解超时、异常和许可归还。
 
 **相关内容**：[CountDownLatch](#countdownlatch)至[三者的选择](#三者的选择)。
 
 <details>
 <summary>参考回答</summary>
 
-CountDownLatch 让等待者等一组事件把计数减到零，是一次性的；CyclicBarrier 让固定数量参与者在同一阶段点会合，成功后可以进入下一轮；Semaphore 管理可重复获取和归还的许可，用于限制并发容量。
+三者分别协调完成事件、阶段会合和容量许可。`CountDownLatch` 在计数归零后永久放行。`CyclicBarrier` 支持固定参与者逐轮会合。`Semaphore` 支持重复获取与释放许可。
 
-选择后还要处理失败：latch 的 `countDown` 通常放在 `finally`，barrier 任一参与者失败可能破坏整轮，semaphore 只有成功获取后才能在 `finally` 归还。
+latch 的完成信号与业务结果分别保存。barrier 需协调整轮失败。semaphore 需明确每个许可的归还责任。
 
 </details>
 
-## 9. 参考资料
+### 9.2 参与者业务失败会自动打破 CyclicBarrier 吗？ {#barrier-broken-boundary}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：理解 await 内外的失败边界和重置协议。
+
+**相关内容**：[屏障的破坏与恢复](#屏障的破坏与恢复)。
+
+<details>
+<summary>参考回答</summary>
+
+在进入 `await` 前失败，barrier 无法自动感知。等待中的中断、超时或 barrier action 异常会破坏屏障。其余等待者收到 `BrokenBarrierException`。业务需为缺席者设置超时并协调全轮退出。
+
+</details>
+
+## 10. 参考资料 {#参考资料}
 
 - [Java API：`CountDownLatch`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/CountDownLatch.html)
 - [Java API：`CyclicBarrier`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/CyclicBarrier.html)
 - [Java API：`Semaphore`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/Semaphore.html)
+- [Java 26 API：Phaser](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/Phaser.html)

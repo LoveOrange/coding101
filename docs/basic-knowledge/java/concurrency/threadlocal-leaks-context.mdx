@@ -7,15 +7,15 @@ knowledge:
 
 # ThreadLocal
 
-`ThreadLocal` 把值关联到当前线程，适合在线程边界稳定时保存少量调用上下文。在线程池中，线程会跨任务复用；忘记清理不仅会延长对象生命周期，还可能让下一次请求读到上一次请求的数据。
+`ThreadLocal` 为每个线程提供独立的值槽位。本文负责值的生命周期、泄漏和跨任务上下文。虚拟线程的承载模型见 [虚拟线程](./virtual-threads-boundaries.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- 值保存在每个 `Thread` 自己的 `ThreadLocalMap` 中，`ThreadLocal` 实例只是查找用的 key。
-- entry 的 key 是弱引用，value 是强引用；线程池线程长期存活时，value 会一直被引用。[卡](#threadlocal-leak)
-- 在同一作用域中设置，并在 `finally` 中调用 `remove()`，可以同时避免内存保留和下一个任务读到旧数据。
-- 提交到线程池的任务不会自动继承提交线程的 ThreadLocal，`InheritableThreadLocal` 只在创建线程时复制一次。
-- 虚拟线程按任务创建，不存在跨任务复用，但大量虚拟线程各自缓存昂贵对象会占用大量内存。
+- OpenJDK 26 在 Thread 的 ThreadLocalMap 中保存值。
+- ThreadLocalMap 的 entry 使用弱 key 和强 value。[卡](#threadlocal-leak)
+- `remove()` 删除当前线程的 entry，后续 get 可重新初始化。
+- `InheritableThreadLocal` 在创建子线程时传递初始值。[卡](#inheritable-pool-context)
+- 嵌套上下文应在 finally 恢复外层值。[卡](#threadlocal-nested-restore)
 
 ## 2. ThreadLocalMap 的结构 {#threadlocalmap-的结构}
 
@@ -24,17 +24,19 @@ private static final ThreadLocal<RequestContext> CONTEXT =
         new ThreadLocal<>();
 ```
 
-每个 `Thread` 可以持有自己的 `ThreadLocalMap`。`ThreadLocal` 对象用于在这张 map 中定位当前线程的值，所以并不是一个 ThreadLocal 实例内部保存“所有线程的值”。
+OpenJDK 26 的 Thread 持有自己的 ThreadLocalMap。ThreadLocal 实例作为 key 定位该线程的值。不同线程因此可以关联不同的 RequestContext。
 
-隔离的是引用槽位。如果不同线程把同一个可变对象放进去，那个对象仍然共享，ThreadLocal 不会自动让它线程安全。
+隔离的是槽位。若多个线程放入同一个可变对象，对象仍由它们共享。对象内部访问还需同步。
 
 ## 3. 弱引用 key 与 value 保留 {#弱引用-key-与-value-保留}
 
-map entry 对 ThreadLocal key 使用弱引用，但 value 仍是强引用。外部不再持有 ThreadLocal 后，key 可能被回收并变成 `null`，value 仍由长期存活线程的 map 引用，直到后续清理或线程结束。
+entry 的 key 是弱引用，value 是强引用。key 没有其他强引用时可被回收。其 value 仍被线程的 map 持有。
 
-线程池 Worker 可能与进程一样长寿，因此大对象、类加载器或请求对象会被意外保留。map 会在部分操作中清理陈旧 entry，但不能把它当成确定的生命周期协议。
+后续部分 map 操作会清理陈旧 entry。线程结束后，也可释放对应存储。线程池 Worker 长期存活时，值会被意外保留。
 
-## 4. 用 `finally` 清理 {#用-finally-清理}
+静态 ThreadLocal 的 key 持续存活时，旧请求值也会一直占据槽位。值的清理需要跟随业务作用域。
+
+## 4. finally 清理 {#用-finally-清理}
 
 ```java
 CONTEXT.set(context);
@@ -45,42 +47,78 @@ try {
 }
 ```
 
-`remove()` 比设置为 `null` 更明确，会删除当前线程的 entry。清理应和设置处位于同一作用域，覆盖正常返回和异常。
+此处假设每次请求独占该作用域。`remove()` 删除 entry，后续 `get()` 会重新走初始化。`set(null)` 则保留值为 null 的 entry。
 
-上下文污染比内存泄漏更直接：Worker 执行下一条请求时，若新请求没有成功设置上下文，就可能读取旧用户身份、租户或 trace 信息。
+线程复用时，遗漏清理会造成上下文污染。下一任务若未设置值，就会读到旧用户或租户。嵌套调用还需恢复外层绑定，见下文。
 
 ## 5. 跨线程的上下文传递 {#跨线程的上下文传递}
 
-任务提交到已有线程池后，Worker 不是请求线程，普通 ThreadLocal 不会传播。`InheritableThreadLocal` 在线程创建时复制初始值，而线程池 Worker 往往早已创建，所以也不能可靠地按任务传播。
+已有 Worker 使用自己的 ThreadLocalMap。提交任务时，普通 ThreadLocal 的值留在提交线程。
 
-可以在任务包装器中显式捕获必要的不可变上下文，在 Worker 开始时设置、结束时恢复或清理；日志框架和可观测性库通常提供自己的传播机制。传播范围要最小化，不要把整个请求对象复制到后台任务。
+任务包装器可捕获必要的不可变上下文。Worker 开始时绑定，结束时恢复原状态。包装器还需覆盖异常和调用者执行的路径。
+
+传播数据应限制在租户、trace 等必要字段。整个请求对象会延长大量关联数据的生命周期。
 
 ## 6. 虚拟线程与 ThreadLocal {#虚拟线程与-threadlocal}
 
-每任务一个虚拟线程可以减少池化 Worker 的跨任务污染，因为线程结束后局部状态一起失去作用域。但数百万虚拟线程各自保存昂贵 ThreadLocal 会造成显著内存开销。
+每任务一个虚拟线程，在线程结束时释放其局部状态。每个线程缓存昂贵对象，仍会造成内存压力。
 
-当前 JDK 的 Scoped Values 适合在线程及其受控子任务中共享不可变上下文，并通过词法作用域自动恢复。选择前仍要确认框架和目标 JDK 版本；可变缓存或外部资源不应因此塞进上下文。
+ScopedValue 在 JDK 25 正式定版。它用有界作用域绑定只读上下文，退出后自动恢复。绑定的值若可变，仍需自行约束内部修改。
 
-## 7. 诊断内存保留与上下文污染 {#诊断内存保留与上下文污染}
+跨线程继承需符合对应的结构化任务协议。普通线程池任务仍要显式传递上下文。
 
-- 堆转储中按 `ThreadLocalMap$Entry`、Worker 线程和可疑 value 查引用链。
-- 在线程池任务边界记录上下文是否已残留，但避免输出敏感值。
-- 对测试连续复用同一 Worker，验证异常路径后上下文为空。
-- 监控线程数和每任务内存，区分 ThreadLocal 保留与普通缓存增长。
+## 7. 内存保留与上下文诊断 {#诊断内存保留与上下文污染}
 
-## 8. 常见问题
+- 在堆转储中检查 Worker 到 entry 和 value 的引用链。
+- 在任务边界检查上下文是否残留。
+- 复用同一 Worker，验证异常后的清理结果。
+- 同时观察线程数量和单任务内存。
 
-### 8.1 ThreadLocal 的 key 为什么设计为弱引用
+诊断日志只记录是否存在残留，避免输出上下文敏感值。还应区分合法缓存和超出作用域的请求对象。
 
-它允许没有其他强引用的 ThreadLocal key 被回收，降低永久失去 key 的风险。但 value 的清理仍依赖 map 操作或线程结束，所以调用方仍必须 `remove()`。
+## 8. 子线程继承与线程池复用 {#子线程继承与线程池复用}
 
-### 8.2 ThreadLocal 能用来存数据库连接吗
+`InheritableThreadLocal` 在创建子线程时初始化子值。默认 `childValue` 返回父值引用。父子线程因此可共享同一可变对象。
 
-除非事务框架严格管理获取、绑定和释放，否则不建议。隐藏资源生命周期会造成连接泄漏、事务串扰，也难以适配异步和虚拟线程。
+线程池按任务复用已经创建的 Worker。新任务提交时，Worker 不会重新继承提交者上下文。若首次建线程时继承旧用户信息，还会污染后续任务。
 
-## 9. 面试题
+应按任务捕获不可变快照，并在执行边界绑定和恢复。
 
-### 9.1 ThreadLocal 为什么可能发生内存泄漏，怎样避免 {#threadlocal-leak}
+## 9. 嵌套作用域的恢复 {#嵌套作用域的恢复}
+
+内层调用覆盖上下文后，退出时应恢复外层值：
+
+```java
+RequestContext previous = CONTEXT.get();
+CONTEXT.set(inner);
+try {
+    invokeNested();
+} finally {
+    if (previous == null) {
+        CONTEXT.remove();
+    } else {
+        CONTEXT.set(previous);
+    }
+}
+```
+
+本例约定 null 表示未绑定，且使用默认初始化。内层直接 remove 会丢掉外层上下文。保存并恢复能保持嵌套调用的作用域。
+
+提交任务也应考虑 `CallerRunsPolicy`。任务有机会在提交线程执行，此时更需要恢复原值。
+
+## 10. 常见问题 {#常见问题}
+
+### 10.1 弱 key 的清理边界 {#弱-key-的清理边界}
+
+弱引用允许 ThreadLocal 在失去强引用后被回收。entry 中的 value 仍需 map 清理。业务应通过 `remove()` 明确结束值的生命周期。
+
+### 10.2 数据库连接的线程绑定 {#数据库连接的线程绑定}
+
+事务框架可在线程上临时绑定连接。框架必须完整管理获取、解绑和归还。异步切换线程时，还需重新确认事务边界。
+
+## 11. 面试题 {#面试题}
+
+### 11.1 ThreadLocal 为什么可能发生内存泄漏，怎样避免 {#threadlocal-leak}
 
 <!-- 面试来源：
 - 美团：https://www.nowcoder.com/discuss/624946712360001536
@@ -91,23 +129,59 @@ try {
 
 **考察重点**
 
-- ThreadLocalMap 的弱 key 与强 value。
-- 线程池长生命周期和上下文污染。
-- `finally` 中 `remove` 与显式传播。
+- 理解 ThreadLocalMap 的弱 key 与强 value。
+- 理解线程池长生命周期和上下文污染。
+- 理解 `finally` 中 `remove` 与显式传播。
 
 **相关内容**：[ThreadLocalMap 的结构](#threadlocalmap-的结构)至[跨线程的上下文传递](#跨线程的上下文传递)。
 
 <details>
 <summary>参考回答</summary>
 
-值实际保存在 Thread 的 ThreadLocalMap 中，entry 的 key 是 ThreadLocal 弱引用，value 仍是强引用。key 被回收后，长期存活的线程仍可能通过陈旧 entry 保留 value；线程池还可能让下一任务读到旧上下文。
+长期存活的线程会通过 ThreadLocalMap 保留 value。entry 的 key 是弱引用，value 是强引用。key 被回收后，陈旧 entry 仍会保留值直到清理。
 
-设置和清理必须放在同一作用域，在 `finally` 调用 `remove()`。跨线程任务要只捕获必要的不可变上下文，在执行边界设置并恢复，不能依赖 InheritableThreadLocal 对已有 Worker 自动传播。
+独立请求应在 `finally` 中 `remove()`。嵌套作用域则恢复先前绑定。跨线程任务需显式捕获并设置必要上下文。
 
 </details>
 
-## 10. 参考资料
+### 11.2 InheritableThreadLocal 为什么不适合直接传播线程池任务上下文？ {#inheritable-pool-context}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：理解线程创建、任务提交和引用共享。
+
+**相关内容**：[子线程继承与线程池复用](#子线程继承与线程池复用)。
+
+<details>
+<summary>参考回答</summary>
+
+它在线程创建时继承，而线程池会复用 Worker。后续任务提交时不会再次复制上下文。默认继承还会共享同一值引用。应按任务显式传递不可变上下文。
+
+</details>
+
+### 11.3 嵌套调用设置 ThreadLocal 后，直接 remove 有什么问题？ {#threadlocal-nested-restore}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：理解内层覆盖、外层恢复和调用者执行。
+
+**相关内容**：[嵌套作用域的恢复](#嵌套作用域的恢复)。
+
+<details>
+<summary>参考回答</summary>
+
+直接 remove 会丢失外层仍需使用的上下文。进入内层前保存原值，finally 中恢复。原先未绑定时才删除 entry。任务在调用线程执行时，也遵守同一规则。
+
+</details>
+
+## 12. 参考资料 {#参考资料}
 
 - [Java API：`ThreadLocal`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/ThreadLocal.html)
-- [OpenJDK：`ThreadLocal` 源码](https://github.com/openjdk/jdk/blob/jdk-26%2B36/src/java.base/share/classes/java/lang/ThreadLocal.java)
+- [OpenJDK：`ThreadLocal` 源码](https://github.com/openjdk/jdk/blob/jdk-26%2B35/src/java.base/share/classes/java/lang/ThreadLocal.java)
 - [Java API：`ScopedValue`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/ScopedValue.html)
+- [Java 26 API：InheritableThreadLocal](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/InheritableThreadLocal.html)
+- [OpenJDK JEP 506：Scoped Values](https://openjdk.org/jeps/506)

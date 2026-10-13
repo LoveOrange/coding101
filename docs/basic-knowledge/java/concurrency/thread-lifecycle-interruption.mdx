@@ -7,15 +7,15 @@ knowledge:
 
 # Java 线程
 
-Java 线程从创建到终止只会经历有限的状态。中断会向目标线程发出取消请求，并不会强制停止线程；任务是否以及何时退出，由运行中的代码和阻塞 API 共同决定。
+Java 线程具有明确的生命周期和中断状态。本文负责启动、状态转换及阻塞 API 的响应。调用链超时和资源清理见 [任务取消](./interruption-timeout-cancellation.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- 调用 `start()` 才会启动新线程，直接调用 `run()` 只是在当前线程中执行普通方法。
-- 线程有 `NEW`、`RUNNABLE`、`BLOCKED`、`WAITING`、`TIMED_WAITING`、`TERMINATED` 六种状态，`RUNNABLE` 也包括部分 native I/O 等待。
-- 中断只设置中断状态，普通计算要主动检查，阻塞方法通过 `InterruptedException` 响应。
-- 捕获 `InterruptedException` 后要继续抛出，或调用 `Thread.currentThread().interrupt()` 恢复中断状态。
-- 停止线程使用中断或受同步保护的停止标志，并在退出前释放资源；`Thread.stop()` 不可用。[卡](#stop-thread)
+- `start()` 启动新线程，平台线程的 `run()` 直接调用使用当前线程。
+- 线程状态为 `NEW`、`RUNNABLE`、`BLOCKED`、`WAITING`、`TIMED_WAITING` 和 `TERMINATED`。
+- `Thread.interrupted()` 读取并清除当前线程的中断标志。[卡](#interrupt-status-methods)
+- `InterruptedException` 抛出时，中断标志已被清除。
+- 任务通过中断检查或可中断 API 协作退出。[卡](#stop-thread)
 
 ## 2. `start()` 与 `run()` {#start-与-run}
 
@@ -25,22 +25,24 @@ worker.start();
 worker.join();
 ```
 
-线程对象刚创建时是 `NEW`。`start()` 将它调度执行，调用者和新线程可以并发运行；直接调用 `worker.run()` 只是当前线程中的普通方法调用。
+本例创建平台线程，启动后等待其结束。直接调用它的 `run()`，任务在当前线程执行。
 
-一个 `Thread` 只能启动一次。`run` 正常返回或抛出的未捕获异常处理结束后，线程进入 `TERMINATED`，不能重新启动。
+一个 Thread 只可启动一次。重复 `start()` 会抛出 `IllegalThreadStateException`。任务结束后，线程进入 TERMINATED。
+
+Java 21 起可创建虚拟线程。直接调用虚拟线程的 `run()` 没有效果。虚拟线程同样通过 `start()` 才能调度执行。
 
 ## 3. 线程的六种状态 {#线程的六种状态}
 
-| `Thread.State` | 含义 |
+| 状态 | 含义 |
 | --- | --- |
 | `NEW` | 尚未启动 |
-| `RUNNABLE` | 正在 JVM 中执行或等待操作系统调度 |
-| `BLOCKED` | 等待进入 `synchronized` monitor |
-| `WAITING` | 无期限等待另一个动作，例如 `join()`、`wait()` 或 `park()` |
-| `TIMED_WAITING` | 带期限的等待，例如 `sleep` 或超时等待 |
-| `TERMINATED` | 执行已经结束 |
+| `RUNNABLE` | 可运行或正在执行，也包含部分系统资源等待 |
+| `BLOCKED` | 等待进入或重新进入 monitor |
+| `WAITING` | 无期限等待，如 `wait()`、`join()`、`park()` |
+| `TIMED_WAITING` | 有期限等待，如 `sleep()` 或定时等待 |
+| `TERMINATED` | 执行已结束 |
 
-Java 的 `RUNNABLE` 不等于此刻正在占用 CPU，也可能包含某些 native I/O 状态。诊断必须把线程状态和栈、队列、CPU 一起看。
+状态属于 JVM 层，和操作系统线程状态并非一一对应。`RUNNABLE` 也可包含 native I/O 等待。诊断应同时检查栈与 CPU。
 
 ## 4. 协作式中断 {#协作式中断}
 
@@ -50,13 +52,13 @@ while (!Thread.currentThread().isInterrupted()) {
 }
 ```
 
-`interrupt()` 设置目标线程的中断状态。普通计算不会因此自动终止；任务需要定期检查状态，或者调用能响应中断的阻塞方法。
+`interrupt()` 设置目标线程的中断请求。普通计算需要主动检查，才能在安全边界退出。
 
-`isInterrupted()` 只读取状态。静态方法 `Thread.interrupted()` 读取**当前线程**的状态并将其清除，通常不应被当成普通查询方法。
+`isInterrupted()` 查询目标线程的标志，并保留它。静态 `Thread.interrupted()` 查询当前线程，并清除标志。API 响应还取决于当前阻塞操作。
 
-## 5. 处理 `InterruptedException` {#处理-interruptedexception}
+## 5. InterruptedException 的传播 {#处理-interruptedexception}
 
-`sleep`、`wait`、`join` 以及很多 JUC 阻塞方法在响应中断时会抛出 `InterruptedException`，并先清除中断状态。调用方通常有两种正确选择：
+`sleep`、`wait` 和 `join` 响应中断时会抛出异常。抛出 `InterruptedException` 前会清除中断标志。
 
 ```java
 public Result load() throws InterruptedException {
@@ -64,7 +66,7 @@ public Result load() throws InterruptedException {
 }
 ```
 
-或者在不能继续抛出时恢复状态：
+第一段把取消请求传给调用方。无法继续声明异常时，可恢复标志并转换异常：
 
 ```java
 try {
@@ -75,27 +77,50 @@ try {
 }
 ```
 
-捕获后只记录日志并继续执行，会吞掉上层的关闭或取消请求。
+第二段假设业务定义了 `TaskCancelledException`。恢复标志让上层仍可检测到中断。只记录日志后继续工作，会丢失取消请求。
 
 ## 6. 安全终止线程 {#安全终止线程}
 
-任务退出前仍要释放锁、归还连接并关闭资源，所以不要用 `Thread.stop()` 破坏任意执行点的状态。推荐的关闭流程是：停止接收新任务、发出中断或设置受同步保护的停止条件、等待已有任务在期限内结束，最后处理未完成任务。
+协作终止要求任务响应中断或停止条件。退出前还需释放锁、连接和其他资源。完整协议见 [任务取消](./interruption-timeout-cancellation.mdx)。
 
-线程池应使用 `shutdown()` 开始有序关闭；超时后再根据业务语义决定是否调用 `shutdownNow()`。后者主要尝试中断正在执行的任务，并返回尚未开始的任务，不保证任务立即停止。
+Java 26 的 `Thread.stop()` 始终抛出 `UnsupportedOperationException`。旧实现的强制终止会破坏受锁保护的状态，因此已弃用。
 
-## 7. 常见问题
+线程池关闭通过 ExecutorService 管理。排队任务的处理见 [Java 线程池](./threadpoolexecutor-execution-path.mdx#线程池关闭与终止)。
 
-### 7.1 `sleep` 和 `wait` 的区别是什么
+## 7. 中断状态的读取与清除 {#中断状态的读取与清除}
 
-`sleep` 是 `Thread` 的定时暂停，不会释放已持有的 monitor。`wait` 是对象 monitor 的条件等待，调用者必须持有该 monitor，进入等待时会释放它。
+假设当前线程已被中断：
 
-### 7.2 中断一个正在做网络 I/O 的线程一定有效吗
+```java
+Thread.currentThread().interrupt();
+System.out.println(Thread.currentThread().isInterrupted());
+System.out.println(Thread.interrupted());
+System.out.println(Thread.interrupted());
+```
 
-取决于 API。可中断通道会关闭通道并抛出 `ClosedByInterruptException`；其他库或 native 调用可能采用不同协议。需要查具体 API，并为外部调用配置超时。
+没有额外中断时，输出为 `true`、`true`、`false`。第一次查询保留标志。第二次查询读取后清除，第三次因此读到 false。
 
-## 8. 面试题
+## 8. park 与中断返回 {#park-与中断返回}
 
-### 8.1 Java 中怎样正确停止一个线程 {#stop-thread}
+`LockSupport.park()` 检测到中断时可以返回。它保留中断标志，也允许虚假返回。调用者应在循环中重查条件和中断策略。
+
+若循环忽略中断，后续 `park` 会持续立即返回。任务就会空转。与之相比，`sleep` 响应中断时抛异常并清除标志。
+
+许可与先唤醒机制见 [AQS](./aqs-state-wait-queue.mdx#park-与-unpark-的许可)。
+
+## 9. 常见问题 {#常见问题}
+
+### 9.1 sleep 与 wait {#sleep-与-wait}
+
+`sleep` 暂停当前线程，并保留已持有的 monitor。`wait` 则释放目标 monitor，返回前重新获取。条件等待细节见 [synchronized](./synchronized-monitor-optimizations.mdx#monitor-的等待与通知)。
+
+### 9.2 网络 I/O 的中断边界 {#网络-i/o-的中断边界}
+
+`InterruptibleChannel` 收到中断时会关闭通道。阻塞调用抛出 `ClosedByInterruptException`，中断标志保留。Socket 与其他客户端应按各自 API 的关闭和超时协议处理。
+
+## 10. 面试题 {#面试题}
+
+### 10.1 Java 中怎样正确停止一个线程 {#stop-thread}
 
 <!-- 面试来源：
 - 拼多多：https://www.nowcoder.com/discuss/353150007719174144
@@ -106,23 +131,59 @@ try {
 
 **考察重点**
 
-- 中断是协作式请求。
-- 阻塞方法与中断状态的关系。
-- 退出前的资源清理和超时。
+- 理解中断是协作式请求。
+- 理解阻塞方法与中断状态的关系。
+- 理解退出前的资源清理和超时。
 
 **相关内容**：[协作式中断](#协作式中断)至[安全终止线程](#安全终止线程)。
 
 <details>
 <summary>参考回答</summary>
 
-调用方通过 `interrupt()` 发出请求；任务在循环边界检查中断状态，阻塞时使用可中断 API。捕获 `InterruptedException` 后应继续抛出，或者在转换异常前恢复中断状态，不能无条件吞掉。
+通过中断发出请求，让任务在安全边界协作退出。计算循环检查 `isInterrupted()`。阻塞时使用可中断 API。捕获中断异常后继续抛出，或恢复标志后退出。
 
-停止线程池时先 `shutdown()`，在期限内等待任务结束，必要时再 `shutdownNow()`。任务本身仍要设计幂等或补偿逻辑，并在 `finally` 或资源作用域内完成清理。
+任务通过 `finally` 或资源作用域完成清理。调用者再在期限内等待退出。已经发生的外部副作用需由业务确认或补偿。
 
 </details>
 
-## 9. 参考资料
+### 10.2 isInterrupted 和 Thread.interrupted 有什么区别？ {#interrupt-status-methods}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：理解目标线程、当前线程和清除行为。
+
+**相关内容**：[中断状态的读取与清除](#中断状态的读取与清除)。
+
+<details>
+<summary>参考回答</summary>
+
+`isInterrupted()` 查询目标线程，并保留中断标志。`Thread.interrupted()` 查询当前线程，并清除标志。因此，连续两次静态查询可得到 true 和 false。
+
+</details>
+
+### 10.3 线程中断后，为什么 park 循环会持续空转？ {#park-interrupt-spin}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：理解 park 保留中断标志的行为。
+
+**相关内容**：[park 与中断返回](#park-与中断返回)。
+
+<details>
+<summary>参考回答</summary>
+
+`park` 响应中断后保留标志。循环忽略该标志时，下一次 park 继续立即返回。任务应按取消协议退出，或由明确的协议处理该中断。
+
+</details>
+
+## 11. 参考资料 {#参考资料}
 
 - [Java API：`Thread`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/Thread.html)
 - [Java API：`Thread.State`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/Thread.State.html)
 - [Java API：`ExecutorService`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/ExecutorService.html)
+- [Java 26 API：LockSupport](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/locks/LockSupport.html)
+- [Java 26 API：InterruptibleChannel](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/nio/channels/InterruptibleChannel.html)

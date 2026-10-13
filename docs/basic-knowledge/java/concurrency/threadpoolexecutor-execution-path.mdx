@@ -7,26 +7,27 @@ knowledge:
 
 # Java 线程池
 
-Java 线程池复用工作线程并限制同时执行的任务数量。面试重点是 `ThreadPoolExecutor` 的接收顺序、线程与队列怎样共同形成容量边界，以及过载后如何拒绝和排查。
+Java 线程池复用 Worker，并管理任务接收与过载。本文负责 ThreadPoolExecutor 的执行路径、容量和关闭。异步结果组合见 [CompletableFuture](./future-completablefuture-errors.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- 提交任务时依次尝试核心线程、工作队列、最大线程，最后执行拒绝策略。[卡](#execute-flow)
-- 无界队列通常让线程数无法增长到 `maximumPoolSize`，过载会表现为队列和延迟持续增加。
-- 线程数不能只按 CPU 核数套公式，还受任务等待时间、目标吞吐、下游容量和内存限制。[卡](#io-pool-size)
-- 有界队列和明确拒绝让过载可见；大队列只是延后失败，并增加过期任务和内存占用。
-- 排查堆积时先比较提交速率与完成速率，再用线程栈和下游指标解释任务为什么变慢。[卡](#saturation-handling)
+- 运行中的池依次尝试核心 Worker、队列和最大线程。[卡](#execute-flow)
+- 无界队列在核心 Worker 创建后持续接收积压任务。[卡](#queue-expansion-policy)
+- I/O 线程数同时受等待比例、下游并发和内存限制。[卡](#io-pool-size)
+- 池关闭或容量耗尽时会调用拒绝策略。[卡](#saturation-handling)
+- `shutdownNow()` 尝试中断在执行任务，并返回排队任务。[卡](#pool-shutdown-states)
 
 ## 2. 构造参数 {#构造参数}
 
-`ThreadPoolExecutor` 的七个主要参数可以分成四组：
+`ThreadPoolExecutor` 有七个主要构造参数：
 
-| 约束 | 参数 | 作用 |
+| 范围 | 参数 | 作用 |
 | --- | --- | --- |
-| 线程数量 | `corePoolSize`、`maximumPoolSize` | 控制常态与峰值工作线程 |
-| 空闲回收 | `keepAliveTime`、`unit` | 回收超过核心数的空闲线程 |
-| 等待空间 | `workQueue` | 保存尚未执行的任务 |
-| 创建与过载 | `threadFactory`、`handler` | 命名线程并定义拒绝结果 |
+| 线程数量 | `corePoolSize`、`maximumPoolSize` | 核心阈值与线程上限 |
+| 空闲回收 | `keepAliveTime`、`unit` | 空闲等待期限 |
+| 排队 | `workQueue` | 保存待执行任务 |
+| 创建 | `threadFactory` | 创建和命名 Worker 线程 |
+| 拒绝 | `handler` | 处理拒绝任务 |
 
 ```java
 ExecutorService executor = new ThreadPoolExecutor(
@@ -39,87 +40,137 @@ ExecutorService executor = new ThreadPoolExecutor(
 );
 ```
 
-参数必须放在一起解释。最大线程数很大但队列无界时，任务通常一直入队；队列很小则更早扩展线程或拒绝。
+示例使用六参数重载，采用默认 ThreadFactory。队列容量为 200，核心阈值为 8，上限为 16。饱和后，AbortPolicy 抛出拒绝异常。
 
-## 3. `execute` 的处理流程 {#execute-的处理流程}
+自定义 ThreadFactory 可指定业务线程名。参数应与队列类型一起解释。
 
-运行中的线程池接收任务时主要经过四步：
+## 3. execute 接收流程 {#execute-的处理流程}
 
-1. 工作线程少于 `corePoolSize` 时，尝试创建核心 Worker 执行任务。
-2. 否则尝试把任务放入队列，并在入队后复查线程池状态。
-3. 队列无法接收时，尝试创建非核心 Worker，直到 `maximumPoolSize`。
-4. 线程池不再运行，或线程和队列都没有容量时，调用拒绝策略。
+运行中的线程池按以下顺序接收任务：
 
-入队后复查很重要：提交期间线程池可能已经关闭；如果池中没有 Worker，还需要创建一个线程消费已经入队的任务。
+1. Worker 少于 `corePoolSize` 时，尝试创建 Worker。
+2. 否则尝试入队，并复查运行状态。
+3. 入队失败时，尝试扩展至 `maximumPoolSize`。
+4. 关闭或容量耗尽时，执行拒绝策略。
 
-Worker 完成初始任务后会继续从队列取任务。超过核心数量的线程空闲达到 `keepAliveTime` 后可以退出；启用 `allowCoreThreadTimeOut(true)` 后，核心线程也可以超时回收。
+入队后若池已关闭，且成功移除该任务，则拒绝它。池仍可消费任务但 Worker 为零时，要补建消费者。
 
-### 3.1 `execute` 与 `submit` 的异常
+Worker 完成任务后继续从队列取任务。超过核心阈值的空闲 Worker 可超时退出。`allowCoreThreadTimeOut(true)` 也允许核心数量内回收。此时 `keepAliveTime` 必须大于零。
 
-`execute` 执行的 Runnable 抛出未捕获异常时，异常会到达线程的未捕获异常处理器。`submit` 会把异常保存在 Future 中，调用 `get()` 时通过 `ExecutionException` 交给调用方；如果从不读取 Future，失败很容易被忽略。
+### 3.1 execute 与 submit 的异常 {#execute-与-submit-的异常}
+
+`execute` 的任务抛出未捕获异常时，Worker 会异常退出。异常会交给线程的未捕获异常处理器。线程池可按状态和容量补建 Worker。
+
+`submit` 把任务包装为 FutureTask。任务异常保存在 Future 中，`get()` 抛出 `ExecutionException`。因此，丢弃 Future 会失去处理任务失败的入口。
+
+`afterExecute` 的 Throwable 参数也有区别。FutureTask 捕获了异常时，该参数可为 null。自定义监控需进一步检查已完成 Future。
 
 ## 4. 线程池容量 {#线程池容量}
 
-CPU 密集任务持续占用核心，线程数接近可用核心数通常已经接近吞吐上限。I/O 密集任务会等待数据库或网络，可以有更多线程，但有效并发仍受下游限制。
+CPU 密集任务持续占用核心。并行度增加到计算容量上限后，更多线程会争抢 CPU。I/O 任务在等待期间释放 CPU，但仍占下游资源。
 
-估算可以从两个关系开始：
+可用以下关系估算压测起点：
 
 ```text
 线程数 ≈ CPU 核数 × 目标利用率 × (1 + 等待时间 / 计算时间)
 在途任务数 ≈ 目标吞吐 × 平均响应时间
 ```
 
-它们只提供实验起点。最终上限还要取以下约束中的较小值：
+第二条是稳定系统下的 Little 定律。第一条依赖计算与等待时间的估算。两者都需结合资源上限验证。
 
-- 数据库连接池和下游允许的并发。
-- 每个任务占用的内存与线程栈。
-- 容器 CPU 配额和可用核心数。
-- 目标延迟、超时与允许的排队时间。
+- 数据库连接数限制同时查询数量。
+- 下游配额限制并发调用数量。
+- 内存限制线程栈和在途任务数量。
+- 延迟预算限制排队时间。
 
-逐步增加并发压测，观察吞吐、P95/P99、队列、拒绝、CPU、上下文切换和下游等待。吞吐不再增长而长尾继续变差时，继续增加线程已经没有收益。
+逐步增加并发，观察吞吐和 p99。吞吐持平而长尾上升时，应停止继续加线程。
 
 ## 5. 过载保护 {#过载保护}
 
-有界队列让等待任务数和内存上限可计算。四种内置拒绝策略表达不同结果：
+| 策略 | 行为 |
+| --- | --- |
+| `AbortPolicy` | 抛出 `RejectedExecutionException` |
+| `CallerRunsPolicy` | 池未关闭时由提交线程执行，否则丢弃 |
+| `DiscardPolicy` | 静默丢弃当前任务 |
+| `DiscardOldestPolicy` | 池未关闭时移除队头，再尝试提交 |
 
-- `AbortPolicy`：抛出异常，让失败显式暴露。
-- `CallerRunsPolicy`：由提交线程执行，可能降低提交速度。
-- `DiscardPolicy`：静默丢弃当前任务。
-- `DiscardOldestPolicy`：丢弃队头任务后重试提交。
+拒绝结果应映射到业务响应。可选择返回繁忙、有限重试或降级。允许丢弃的任务也需有明确指标。
 
-生产系统不能只选择一个类名，还要定义业务结果：请求返回繁忙、有限重试、降级、合并还是允许丢弃。任务还需要幂等、截止时间和拒绝指标。
-
-`CallerRunsPolicy` 只在部分同步调用链中形成有限反压。如果提交者是 I/O 线程、事件循环或持锁线程，它可能扩大故障，应先确认调用上下文。
+`CallerRunsPolicy` 会占用提交者。若提交者是事件循环或持锁线程，就会扩大阻塞。其反压效果取决于提交链路。
 
 ## 6. 饱和与堆积诊断 {#饱和与堆积诊断}
 
-队列持续增长说明任务到达速率长期高于完成速率。排查顺序是：
+队列长期增长，说明完成速率低于到达速率。排查时可按以下顺序收集证据：
 
-1. 查看 active、pool size、队列长度、最老任务年龄、完成数和拒绝数。
-2. 比较提交速率、完成速率和任务耗时，区分流量增加与单个任务变慢。
-3. 采集多份线程栈，检查数据库连接等待、下游调用、锁和 CPU 热点。
-4. 检查池内任务是否同步等待同一个池提交的子任务，这会造成线程饥饿。
-5. 先限制新任务、隔离慢依赖并放弃已过期任务，再评估是否需要扩容。
+1. 查看 active、池大小、队列年龄和拒绝数。
+2. 比较提交、完成速率及任务耗时。
+3. 采集多份栈，检查锁、I/O 和连接等待。
+4. 检查父任务是否等待同池子任务。
+5. 限制新任务并清理已过期工作，再评估扩容。
 
-线程数很多而 CPU 不高，通常说明线程在等待锁、I/O、连接池或子任务，不足以证明“线程还不够”。
+同池等待的原因见 [并发活跃性](./liveness-deadlock-livelock-starvation.mdx#线程池的资源等待环)。CPU 低且线程多时，应先定位等待对象。
 
-## 7. 常见问题
+## 7. 队列类型与扩容 {#队列类型与扩容}
 
-### 7.1 创建线程池会立即创建所有核心线程吗
+| 队列 | 接收特点 | 对扩容的影响 |
+| --- | --- | --- |
+| 无界 `LinkedBlockingQueue` | 持续保存等待任务 | 核心数后优先积压 |
+| 有界 `ArrayBlockingQueue` | 容量固定 | 满后才扩展 Worker |
+| `SynchronousQueue` | 容量为零，直接交接 | 无接收者时尝试增线程 |
 
-默认不会。通常在任务到来时逐步创建，也可以调用 `prestartCoreThread` 或 `prestartAllCoreThreads` 预启动。
+无界队列使 `maximumPoolSize` 缺少触发扩容的机会。直接交接队列则要求及时提供消费者。默认 cached pool 使用直接交接，并给出很高线程上限。
 
-### 7.2 为什么不直接使用 `Executors.newFixedThreadPool`
+需要队列缓冲时，容量应由任务预算决定。任务过期后还应避免继续执行无效工作。
 
-它使用无界 `LinkedBlockingQueue`。流量持续超过处理能力时，任务会不断排队，延迟和内存占用缺少明确上限。显式构造 ThreadPoolExecutor 更容易表达容量与拒绝结果。
+## 8. 线程池关闭与终止 {#线程池关闭与终止}
 
-### 7.3 队列越大越能抗突发吗
+OpenJDK 26 用五种状态管理线程池：
 
-队列可以吸收短时波动，但过大会延长等待时间、保存更多已经过期的任务，并推迟过载信号。容量应来自可接受排队时间和任务内存，而不是越大越好。
+| 状态 | 行为 |
+| --- | --- |
+| `RUNNING` | 接收新任务，处理队列 |
+| `SHUTDOWN` | 拒绝新任务，继续处理队列 |
+| `STOP` | 拒绝新任务，停止取队列并尝试中断运行任务 |
+| `TIDYING` | Worker 已归零，执行终止钩子 |
+| `TERMINATED` | 终止钩子执行完成 |
 
-## 8. 面试题
+`shutdown()` 进入有序关闭。`shutdownNow()` 尝试中断，并返回尚未执行的排队任务。`awaitTermination` 用于在期限内等待终止。
 
-### 8.1 `ThreadPoolExecutor.execute` 的任务处理流程是什么 {#execute-flow}
+```java
+pool.shutdown();
+if (!pool.awaitTermination(5, TimeUnit.SECONDS)) {
+    List<Runnable> pending = pool.shutdownNow();
+    handlePending(pending);
+}
+```
+
+片段需处理或声明 `InterruptedException`。运行任务忽略中断时，线程池仍会等待其结束。返回的排队 FutureTask 也需调用方安排取消或接管。
+
+## 9. 静默拒绝与悬空 Future {#静默拒绝与悬空-future}
+
+`submit` 创建 FutureTask 后调用 `execute`。拒绝策略若静默丢弃，该 FutureTask 就不会执行。它也未被自动标为完成，`get()` 会持续等待。
+
+`DiscardPolicy` 会出现这个结果。关闭后的 `CallerRunsPolicy` 同样直接丢弃。`DiscardOldestPolicy` 还会遗留被移除任务的 Future。
+
+需要结果的任务应采用显式拒绝。自定义处理器也可取消被丢弃的 Future，并记录失败。调用者据此得到可结束的结果状态。
+
+## 10. 常见问题 {#常见问题}
+
+### 10.1 核心线程的预启动 {#核心线程的预启动}
+
+核心 Worker 默认按需创建。`prestartCoreThread()` 可预启动一个。`prestartAllCoreThreads()` 可预启动全部核心 Worker。
+
+### 10.2 固定线程池的排队边界 {#固定线程池的排队边界}
+
+`Executors.newFixedThreadPool` 使用无界队列。持续过载会增加排队延迟和内存占用。需要明确容量时，可显式构造有界线程池。
+
+### 10.3 队列容量与延迟预算 {#队列容量与延迟预算}
+
+队列可吸收短时突发。持续积压时，更大队列会延长排队并保留过期任务。容量应结合单任务内存和可接受等待时间。
+
+## 11. 面试题 {#面试题}
+
+### 11.1 `ThreadPoolExecutor.execute` 的任务处理流程是什么 {#execute-flow}
 
 <!-- 面试来源：
 - 阿里巴巴：https://www.nowcoder.com/discuss/461925
@@ -130,21 +181,21 @@ CPU 密集任务持续占用核心，线程数接近可用核心数通常已经�
 
 **考察重点**
 
-- 核心线程、队列和最大线程的先后关系。
-- 入队后的状态复查与无界队列的影响。
+- 理解核心线程、队列和最大线程的先后关系。
+- 理解入队后的状态复查与无界队列的影响。
 
-**相关内容**：[构造参数](#构造参数)、[`execute` 的处理流程](#execute-的处理流程)。
+**相关内容**：[构造参数](#构造参数)、[execute 接收流程](#execute-的处理流程)。
 
 <details>
 <summary>参考回答</summary>
 
-提交任务时，先在工作线程少于 core 时尝试创建 Worker；否则尝试入队，并在入队后复查运行状态和是否存在消费者。队列满时再尝试扩展到 maximum；仍无法接收或线程池不再运行时执行拒绝策略。
+运行中的池先尝试核心 Worker，再尝试入队。队列拒绝接收时，才尝试扩展至最大线程数。池关闭或容量耗尽时调用拒绝策略。
 
-因此参数必须和队列一起解释。无界队列通常不会触发 maximum 扩容，过载会表现为队列和延迟持续增长。
+成功入队后还要复查运行状态。关闭竞态下应移除并拒绝未执行任务。Worker 为零时，还需创建消费者处理队列。
 
 </details>
 
-### 8.2 怎样为 I/O 密集任务配置线程池大小 {#io-pool-size}
+### 11.2 怎样为 I/O 密集任务配置线程池大小 {#io-pool-size}
 
 <!-- 面试来源：
 - 美团：https://www.nowcoder.com/discuss/377447203734921216
@@ -155,21 +206,21 @@ CPU 密集任务持续占用核心，线程数接近可用核心数通常已经�
 
 **考察重点**
 
-- 等待时间、计算时间和目标吞吐。
-- 下游容量、内存边界与压测验证。
+- 理解等待时间、计算时间和目标吞吐。
+- 理解下游容量、内存边界与压测验证。
 
 **相关内容**：[线程池容量](#线程池容量)。
 
 <details>
 <summary>参考回答</summary>
 
-先测任务的计算时间、等待时间和目标吞吐，用核数与等待/计算比得到实验区间，也可以用 Little 定律检查目标吞吐对应的在途量。然后取数据库连接、对端并发和内存等约束中的更小上限。
+I/O 线程数应由任务等待比例和资源上限共同决定。可用核数与等待计算比估算初始区间。再按连接数、下游配额和内存约束缩小范围。
 
-逐步增加线程压测吞吐和 P99，同时观察队列、拒绝、CPU、切换与下游等待。吞吐停止增长而长尾变差的位置说明继续加线程无效。
+用逐步增加并发的压测验证吞吐和 p99。同步观察队列年龄、拒绝和下游等待。容量应停在吞吐与延迟满足目标的位置。
 
 </details>
 
-### 8.3 队列满或任务持续堆积时应该怎样处理 {#saturation-handling}
+### 11.3 队列满或任务持续堆积时应该怎样处理 {#saturation-handling}
 
 <!-- 面试来源：
 - 美团：https://www.nowcoder.com/discuss/363477877092876288
@@ -180,23 +231,79 @@ CPU 密集任务持续占用核心，线程数接近可用核心数通常已经�
 
 **考察重点**
 
-- 拒绝策略的业务结果。
-- 提交速率、完成速率、线程栈和下游等待。
+- 理解拒绝策略的业务结果。
+- 理解提交速率、完成速率、线程栈和下游等待。
 
 **相关内容**：[过载保护](#过载保护)、[饱和与堆积诊断](#饱和与堆积诊断)。
 
 <details>
 <summary>参考回答</summary>
 
-队列满后先尝试扩展到最大线程，仍无法接收才执行拒绝。系统应让失败显式可见，再按业务选择返回繁忙、有限重试、降级或允许丢弃，并监控队列年龄和拒绝数。
+运行中的池在队列满后尝试增加 Worker。达到上限仍无法接收时，执行拒绝策略。业务应明确返回繁忙、重试或降级结果。
 
-持续堆积时比较提交与完成速率，再用多份线程栈和数据库、下游、锁、CPU 时间线判断是流量增加还是任务变慢。恢复时先阻止继续恶化，只有证据表明确实缺少可用计算容量时才扩池。
+持续堆积时，先比较提交与完成速率。再通过线程栈区分 CPU、锁和下游等待。先限制新增负载，确认资源容量后再扩池。
 
 </details>
 
-## 9. 参考资料
+### 11.4 为什么 maximumPoolSize 很大，线程数仍停在 corePoolSize？ {#queue-expansion-policy}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：理解先入队后扩容及不同队列的容量。
+
+**相关内容**：[队列类型与扩容](#队列类型与扩容)。
+
+<details>
+<summary>参考回答</summary>
+
+核心阈值之后，execute 优先尝试入队。无界队列持续接收任务，扩容分支就难以触发。有界队列满后才尝试最大线程。SynchronousQueue 无缓冲，无接收者时可直接触发扩容。
+
+</details>
+
+### 11.5 shutdown、shutdownNow 和 awaitTermination 有什么区别？ {#pool-shutdown-states}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：理解关闭状态、排队任务和实际终止。
+
+**相关内容**：[线程池关闭与终止](#线程池关闭与终止)。
+
+<details>
+<summary>参考回答</summary>
+
+shutdown 拒绝新任务，但继续执行已接受任务。shutdownNow 停止取队列，并尝试中断运行任务。awaitTermination 在期限内等待线程池真正终止。
+
+shutdownNow 返回排队任务，供调用方处理。运行任务仍需响应中断，才能完成退出。
+
+</details>
+
+### 11.6 submit 配合 DiscardPolicy，为什么 get 会一直等待？ {#discarded-future}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：理解任务包装、静默丢弃与 Future 完成。
+
+**相关内容**：[静默拒绝与悬空 Future](#静默拒绝与悬空-future)。
+
+<details>
+<summary>参考回答</summary>
+
+被丢弃的 FutureTask 既未执行，也未自动取消。它会保持未完成，get 因而持续等待。可用 AbortPolicy 显式拒绝，或主动取消被丢弃的 Future。
+
+</details>
+
+## 12. 参考资料 {#参考资料}
 
 - [Java API：ThreadPoolExecutor](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/ThreadPoolExecutor.html)
-- [OpenJDK：ThreadPoolExecutor 源码](https://github.com/openjdk/jdk/blob/jdk-26%2B36/src/java.base/share/classes/java/util/concurrent/ThreadPoolExecutor.java)
+- [OpenJDK：ThreadPoolExecutor 源码](https://github.com/openjdk/jdk/blob/jdk-26%2B35/src/java.base/share/classes/java/util/concurrent/ThreadPoolExecutor.java)
 - [Java API：RejectedExecutionHandler](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/RejectedExecutionHandler.html)
 - [Java API：BlockingQueue](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/BlockingQueue.html)
+- [Java 26 API：ExecutorService](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/ExecutorService.html)
+- [Java 26 API：Executors](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/Executors.html)
+- [Java 26 API：FutureTask](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/FutureTask.html)

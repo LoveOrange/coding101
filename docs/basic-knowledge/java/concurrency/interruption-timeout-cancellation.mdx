@@ -7,21 +7,21 @@ knowledge:
 
 # 任务取消
 
-中断、超时和取消分别描述信号、时间边界和任务结果状态。可靠的并发 API 需要把三者连成一套协议：谁发出取消、哪些操作响应、资源怎样清理，以及完成与取消竞争时以什么结果为准。
+任务取消协调等待期限、任务状态与资源退出。本文负责截止时间、Future 取消和失败清理。中断标志与阻塞 API 见 [Java 线程](./thread-lifecycle-interruption.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- 一条调用链应在入口计算截止时间，后续每一步只使用剩余预算，避免各步超时相加。
-- 中断是协作式信号：阻塞方法通过 `InterruptedException` 响应，任务要继续抛出或恢复中断状态后退出。
-- `Future.cancel(true)` 只会尝试中断执行线程，忽略中断或阻塞在不可中断调用上的任务仍会继续执行。
-- 正常完成、异常、中断和超时都要释放已经取得的资源，完成与取消同时发生时以 Future 的最终状态为准。[卡](#timeout-cancellable-task)
+- 调用链共用截止时间，每一步消耗剩余预算。
+- `Future.get(timeout, unit)` 超时只结束本次等待。
+- `FutureTask.cancel(true)` 尝试中断正在执行的任务。
+- Future 已取消时，底层副作用仍可继续发生。[卡](#timeout-cancellable-task)
+- `FutureTask.cancel(false)` 成功后也可保留运行中的计算。[卡](#cancel-false-running)
 
 ## 2. 截止时间与剩余预算 {#截止时间与剩余预算}
 
 ```java
-long deadline = System.nanoTime() + timeout.toNanos();
-
-Result execute() throws InterruptedException, TimeoutException {
+Result awaitResult(long deadline)
+        throws InterruptedException, ExecutionException, TimeoutException {
     long remaining = deadline - System.nanoTime();
     if (remaining <= 0) {
         throw new TimeoutException();
@@ -30,13 +30,13 @@ Result execute() throws InterruptedException, TimeoutException {
 }
 ```
 
-如果一条调用链的三个步骤分别使用 1 秒超时，总耗时可能接近 3 秒。入口应计算截止时间，每个后续操作只使用剩余预算。
+入口用 `System.nanoTime() + budgetNanos` 计算截止时间。每次等待都重新计算剩余时间。示例把预算交给 Future 的超时等待。
 
-持续时间使用 `System.nanoTime()`，它适合计算相对间隔，不受墙上时钟校准影响。
+若三步各等待一秒，总等待会接近三秒。共用截止时间可以限制整条链路的等待预算。`nanoTime()` 适合测量间隔，且独立于墙上时钟。预算换算还需限制到 `long` 可表达的合理范围。
 
 ## 3. 中断与可中断等待 {#中断与可中断等待}
 
-`interrupt()` 设置中断状态；`sleep`、`wait`、`join`、许多锁和队列方法会通过 `InterruptedException` 提前返回。任务要么继续抛出，要么恢复状态后退出自己的边界：
+中断要求任务主动配合退出。捕获 `InterruptedException` 后可以继续抛出。转换为业务结果时，应恢复中断标志后退出。
 
 ```java
 catch (InterruptedException exception) {
@@ -45,13 +45,15 @@ catch (InterruptedException exception) {
 }
 ```
 
-恢复状态以后不要继续长时间执行普通业务，否则上层仍无法完成取消。
+该片段适合任务边界负责终止计算的场景。返回后，上层仍能观察到中断标志。具体 API 的响应差异见 [Java 线程](./thread-lifecycle-interruption.mdx#协作式中断)。
 
-## 4. `Future.cancel(true)` 的效果 {#futurecanceltrue-的效果}
+## 4. FutureTask 的中断取消 {#futurecanceltrue-的效果}
 
-`cancel(true)` 在任务尚未开始时可以阻止执行；任务正在运行时，会尝试中断执行线程。若任务忽略中断、卡在不响应中断的外部调用，取消状态并不能强行终止底层副作用。
+`FutureTask.cancel(true)` 成功后把结果标为取消。尚未开始的计算将跳过执行。计算正在运行时，它尝试中断执行线程。
 
-因此，数据库和网络客户端仍需配置各自的连接、读取和请求超时。对已经发送出去的扣款等副作用，还要通过幂等键、状态查询或补偿处理。
+忽略中断的计算仍会继续。数据库和网络客户端还需自己的请求超时。已提交的外部动作应通过幂等键查询或补偿。
+
+`CompletableFuture` 的取消只表达异常完成。它的差异见 [CompletableFuture](./future-completablefuture-errors.mdx#超时与取消的作用范围)。
 
 ## 5. 资源清理 {#资源清理}
 
@@ -64,29 +66,37 @@ try {
 }
 ```
 
-正常完成、异常、中断和超时都必须释放资源。特别注意“获取一半”的情况：只有成功取得锁、许可或连接后，才执行对应释放。
+示例在获取成功后进入 `try`。正常返回或抛异常时，`finally` 都会释放资源。获取过程失败时，无需归还未取得的许可。
 
-若操作不可安全中断，可以先记录取消请求，在下一个一致性边界退出。协议应明确最迟响应时间，而不是假装任何代码都能立即停止。
+业务还需处理只获取了部分资源的情况。每个资源都应有明确的清理责任。必须保持一致性的操作，可在安全边界响应取消。
 
 ## 6. 完成与取消的竞争 {#完成与取消的竞争}
 
-任务可能在调用 `cancel` 的同一时刻完成。调用方应依据 Future 最终状态处理，而不是假定自己发出取消就一定胜出。回调、指标和业务状态更新也应能够去重。
+完成与取消会竞争 Future 的最终结果。调用者应检查取消结果和最终状态。回调还需对重复通知去重。
 
-结构化并发的目标之一，是让子任务生命周期受词法作用域管理；但具体 API 在不同 JDK 版本可能仍是预览功能。生产代码应确认所用版本和预览开关，不把它当成已经固定的跨版本接口。
+结果状态与业务副作用分别确认。Future 进入取消状态时，扣款请求仍可已提交。调用方应查询幂等操作结果后再决定重试。
 
-## 7. 常见问题
+## 7. 非中断取消与任务状态 {#非中断取消与任务状态}
 
-### 7.1 超时以后任务会自动停止吗
+`FutureTask.cancel(false)` 允许计算继续运行。取消若先赢得状态竞争，Future 就成为取消状态。此后的 `get()` 抛出 `CancellationException`。
 
-不会。调用方结束等待与后台任务终止是两件事。需要显式取消，并确认底层操作响应中断或拥有自己的超时。
+计算尚未开始时，成功取消会阻止其执行。计算已经开始时，参数 `false` 保留其执行线程。任务最终返回的值也不会成为 Future 的正常结果。
 
-### 7.2 为什么不能捕获所有异常后统一返回失败
+`isDone()` 对正常、异常和取消完成都返回 `true`。需要确认底层任务退出时，应另设完成信号。
 
-`InterruptedException` 携带线程取消协议。把它吞进普通失败会让线程池关闭、请求超时等上层控制失效，应单独传递或恢复中断状态。
+## 8. 常见问题 {#常见问题}
 
-## 8. 面试题
+### 8.1 等待超时与任务退出 {#等待超时与任务退出}
 
-### 8.1 怎样设计一个支持超时和取消的并发任务 {#timeout-cancellable-task}
+`get` 超时会向等待者抛出 `TimeoutException`。调用者可按业务需要再取消任务。底层退出还取决于中断响应或客户端超时。
+
+### 8.2 中断异常的传播 {#中断异常的传播}
+
+`InterruptedException` 传递线程的取消信号。统一吞掉异常会丢失该信号。调用方应继续抛出，或恢复标志后结束当前任务。
+
+## 9. 面试题 {#面试题}
+
+### 9.1 怎样设计一个支持超时和取消的并发任务 {#timeout-cancellable-task}
 
 <!-- 面试来源：
 - 阿里巴巴：https://www.nowcoder.com/discuss/461925
@@ -97,23 +107,41 @@ try {
 
 **考察重点**
 
-- 截止时间与剩余预算。
-- 中断传播和 Future 取消边界。
-- 资源清理与外部副作用。
+- 理解截止时间与剩余预算。
+- 理解中断传播和 Future 取消边界。
+- 理解资源清理与外部副作用。
 
 **相关内容**：[截止时间与剩余预算](#截止时间与剩余预算)至[完成与取消的竞争](#完成与取消的竞争)。
 
 <details>
 <summary>参考回答</summary>
 
-入口把超时换成单一截止时间，向下游传递剩余预算；阻塞操作使用可中断和带超时 API。取消时通过 `Future.cancel(true)` 或中断发出请求，任务在一致性边界响应，捕获 `InterruptedException` 后继续抛出或恢复状态。
+任务应共用截止时间，并在退出路径释放资源。每次阻塞前计算剩余预算。计算循环定期检查中断，等待使用可中断 API。
 
-所有资源用 `finally` 或作用域关闭，网络和数据库调用还要配置自己的超时。已经发生的外部副作用不能靠线程中断回滚，需要幂等、查询或补偿协议。
+超时后显式安排取消，并等待资源清理。Future 的取消结果只说明结果状态。外部副作用仍需幂等查询或补偿。
 
 </details>
 
-## 9. 参考资料
+### 9.2 运行中的 FutureTask 执行 cancel(false) 会发生什么？ {#cancel-false-running}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：理解结果取消与执行终止的区别。
+
+**相关内容**：[非中断取消与任务状态](#非中断取消与任务状态)。
+
+<details>
+<summary>参考回答</summary>
+
+取消成功后，Future 成为取消状态，计算继续运行。`false` 表示此次取消不请求中断。`get()` 抛出 `CancellationException`。确认计算退出需要独立完成信号。
+
+</details>
+
+## 10. 参考资料 {#参考资料}
 
 - [Java API：`Future`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/Future.html)
 - [Java API：`InterruptedException`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/InterruptedException.html)
 - [Java API：`System.nanoTime`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/System.html#nanoTime())
+- [Java 26 API：FutureTask](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/FutureTask.html)

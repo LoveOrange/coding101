@@ -7,15 +7,15 @@ knowledge:
 
 # 虚拟线程
 
-虚拟线程适合大量任务以同步代码执行，并且大部分时间在等待阻塞 I/O 的场景。它降低的是线程承载成本，可以提高并发吞吐；它不会让 CPU 计算、数据库或下游接口变快。
+虚拟线程以较低线程成本承载大量阻塞任务。本文负责运行模型、容量边界及版本差异。线程局部上下文见 [ThreadLocal](./threadlocal-leaks-context.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- 虚拟线程由 JVM 调度到少量 carrier 平台线程上，阻塞 I/O 时通常可以卸载，让 carrier 执行其他虚拟线程。
-- 它提高的是同时等待的任务数量，适合大量阻塞 I/O 的同步代码，不会加快 CPU 计算或下游接口。[卡](#virtual-thread-fit)
-- 虚拟线程按任务创建，不放入固定大小的池；数据库连接、下游并发等稀缺资源用信号量或连接池单独限流。
-- 被 pin 住时虚拟线程阻塞会占住 carrier：JDK 21—23 中 `synchronized` 内阻塞是常见原因，JDK 24 起由 JEP 491 改进。
-- 迁移后要压测吞吐、p99、pinning 和连接等待，确认瓶颈没有转移到下游资源。
+- 虚拟线程自 JDK 21 正式提供，按任务创建使用。
+- 支持卸载的阻塞操作可释放 carrier，供其他任务运行。
+- 虚拟线程适合大量阻塞 I/O，CPU 吞吐仍受核心数限制。[卡](#virtual-thread-fit)
+- JDK 24 起，monitor 获取与持有时的阻塞可卸载。[卡](#pinning-version-boundary)
+- 虚拟线程是守护线程，退出前需显式等待任务完成。[卡](#virtual-thread-observation)
 
 ## 2. 虚拟线程与 carrier 线程 {#虚拟线程与-carrier-线程}
 
@@ -27,15 +27,17 @@ try (ExecutorService executor =
 }
 ```
 
-每个任务创建一个虚拟线程。运行时将大量虚拟线程调度到较少的 carrier 平台线程上；阻塞 I/O 时，虚拟线程通常可以卸载，让 carrier 执行其他任务。
+示例要求 Java 21 或更高版本。执行器为每个任务创建一个虚拟线程。`get()` 取得调用结果，退出作用域时关闭执行器。
 
-现有的栈、异常、中断和 Thread API 大多仍然适用，因此可以保留清晰的线程每请求同步代码。
+虚拟线程挂载在 carrier 平台线程上执行。支持卸载的等待会释放 carrier。等待结束后，虚拟线程重新排队等待挂载。
+
+虚拟线程保留 Java 的栈、异常和中断模型。`Thread.currentThread()` 返回当前虚拟线程对象。
 
 ## 3. 虚拟线程与线程池 {#虚拟线程与线程池}
 
-平台线程昂贵，线程池通过复用和数量限制管理它们。虚拟线程的设计目标是任务一线程，用完即结束；将它们固定为少量 Worker 会重新引入不必要的排队。
+平台线程池通过复用降低创建成本。虚拟线程按任务创建，用完即结束。`newVirtualThreadPerTaskExecutor()` 对线程数没有固定池上限。
 
-`newVirtualThreadPerTaskExecutor()` 创建的线程数量没有池上限。容量控制应施加在实际稀缺的资源上：
+稀缺资源应单独限定并发：
 
 ```java
 Semaphore dbPermits = new Semaphore(30);
@@ -48,43 +50,73 @@ try {
 }
 ```
 
+示例在成功取得许可后归还。所有调用都遵守此协议时，最多 30 个查询进入。入口还需限制总在途任务，避免大量等待占用内存。
+
 ## 4. 适用场景 {#适用场景}
 
-典型场景包括大量独立 HTTP、JDBC 或文件 I/O 调用。虚拟线程主要提高给定机器上可以同时等待的任务数量，通常不会降低一次请求的固有延迟。
+大量独立网络请求适合使用虚拟线程。JDK 的网络阻塞操作支持卸载 carrier。并发等待数量增加后，I/O 服务可提高吞吐。
 
-长期 CPU 密集任务仍受核心数限制，应限制并行度；大量虚拟线程同时计算只会争夺相同 CPU。
+CPU 计算仍要占用处理器时间。增加虚拟线程数量会增加竞争，单次计算时长仍受算力限制。
+
+文件 I/O 和第三方 native 调用应逐项确认。部分阻塞操作会保留 carrier，需要实际压测。
 
 ## 5. pinning 与 JDK 版本 {#pinning-与-jdk-版本}
 
-虚拟线程被 pin 到 carrier 时，阻塞期间无法卸载，会同时占住平台线程。JDK 21—23 中，在 `synchronized` 内阻塞是常见 pinning 来源；JEP 491 从 JDK 24 起改进了 monitor 实现，当前 JDK 26 文档列出的主要 pinning 情况是执行 native 方法或 Foreign Function 调用。
+pinning 表示虚拟线程在阻塞时仍绑定 carrier。平台线程随之被占用，影响其他虚拟线程调度。
 
-因此，不应继续笼统地把所有 `synchronized` 换成 `ReentrantLock`。先确认部署 JDK 版本，再用 JFR 和虚拟线程诊断数据定位持续且影响吞吐的 pinning。
+JDK 21—23 中，持有 monitor 时阻塞会导致 pinning。JDK 24 的 JEP 491 改进了 monitor 实现。获取 monitor、持锁阻塞和 `Object.wait` 可释放 carrier。
+
+native 或 FFM 调用仍有绑定边界。例如 native 回调 Java 后发生阻塞，会产生 pinning。迁移时应按实际 JDK 版本判断。
 
 ## 6. ThreadLocal 与上下文传播 {#threadlocal-与上下文传播}
 
-虚拟线程支持 ThreadLocal，但 JVM 可能创建极多虚拟线程。给每个线程缓存昂贵对象会把轻量线程重新变重，也不能依赖固定 Worker 复用缓存。
+虚拟线程支持 ThreadLocal，且每个线程有自己的值。给每个线程缓存昂贵资源，会增加总内存。
 
-不可变请求上下文可以考虑当前 JDK 已提供的 Scoped Values；使用前要确认目标 JDK 版本与框架支持。无论采用哪种机制，外部资源都应由作用域管理，而不是藏在线程局部变量中长期存活。
+ScopedValue 在 JDK 25 正式定版，适合有界上下文绑定。继承和恢复规则见 [ThreadLocal](./threadlocal-leaks-context.mdx#虚拟线程与-threadlocal)。
 
 ## 7. 迁移验证 {#迁移验证}
 
-压测时记录吞吐、p99、CPU、carrier 数量、pinning、数据库连接等待和内存。若瓶颈是 30 个数据库连接，虚拟线程可能只是让更多请求同时排在连接池前。
+压测应同时记录吞吐、p99、CPU 和内存。再检查 carrier 数量、pinning 与连接等待。
 
-还要确认所用 JDBC 驱动、客户端和监控工具对虚拟线程的支持，避免只替换 Executor 就宣布迁移完成。
+数据库只有 30 个连接时，大量任务仍会等待连接。虚拟线程降低承载等待的成本，容量约束仍由连接池决定。
 
-## 8. 常见问题
+客户端、驱动和观测工具需按实际版本验证。性能评估还应包含过载、超时和任务退出。
 
-### 8.1 虚拟线程比平台线程更快吗
+## 8. pinning 的版本诊断 {#pinning-的版本诊断}
 
-单个任务不一定更快。它们更便宜，适合承载更多阻塞任务，从而提升高并发 I/O 服务的吞吐和代码可读性。
+JDK 21—23 可用 `-Djdk.tracePinnedThreads=full` 查看部分 pinning。该参数覆盖持 monitor 时发生的阻塞。它对等待进入 monitor 等情况有观测限制。
 
-### 8.2 使用虚拟线程以后还需要线程池吗
+JDK 24 起，该参数已移除，设置后被忽略。JFR 的 `jdk.VirtualThreadPinned` 保留并改进。事件提供剩余 pinning 的原因与 carrier 信息。
 
-不需要用池限制虚拟线程本身，但平台线程执行器、定时任务和 CPU 并行计算仍可能需要池。数据库连接、接口并发等稀缺资源也必须单独限流。
+同一段 synchronized 代码在版本升级后应重新测量。替换锁应由仍存在的阻塞证据决定。
 
-## 9. 面试题
+## 9. 虚拟线程的观测与退出 {#虚拟线程的观测与退出}
 
-### 9.1 虚拟线程适合哪些场景，有哪些边界 {#virtual-thread-fit}
+Java 26 的 ThreadMXBean 只覆盖平台线程。查看虚拟线程可使用专门转储：
+
+```sh
+jcmd <pid> Thread.dump_to_file -format=json threads.json
+```
+
+命令输出包含平台与虚拟线程的结构化转储。它用于查看线程栈，与传统完整锁信息转储分工不同。
+
+虚拟线程始终为守护线程。仅剩守护线程时，JVM 可以开始退出。程序应通过 `join`、Future 或执行器关闭等待任务。
+
+`ExecutorService.close()` 会等待执行器终止。请求需要总超时时，仍应显式安排取消和退出期限。
+
+## 10. 常见问题 {#常见问题}
+
+### 10.1 单任务延迟与并发吞吐 {#单任务延迟与并发吞吐}
+
+虚拟线程主要降低线程承载成本。它适合让大量 I/O 任务同时等待。单次网络响应和 CPU 计算仍需相应的执行时间。
+
+### 10.2 资源池与执行器 {#资源池与执行器}
+
+虚拟线程无需通过固定 Worker 复用。连接池、限流器和 CPU 执行器仍有各自职责。资源容量应在实际使用入口控制。
+
+## 11. 面试题 {#面试题}
+
+### 11.1 虚拟线程适合哪些场景，有哪些边界 {#virtual-thread-fit}
 
 <!-- 面试来源：
 - 转转：https://www.nowcoder.com/discuss/comment/10453006
@@ -95,24 +127,62 @@ try {
 
 **考察重点**
 
-- 大量阻塞 I/O 与任务一线程模型。
-- CPU、下游容量和 ThreadLocal 边界。
-- JDK 24 前后 pinning 语义变化。
+- 理解大量阻塞 I/O 与任务一线程模型。
+- 理解 CPU、下游容量和 ThreadLocal 边界。
+- 理解 JDK 24 前后 pinning 语义变化。
 
 **相关内容**：[虚拟线程与 carrier 线程](#虚拟线程与-carrier-线程)至[迁移验证](#迁移验证)。
 
 <details>
 <summary>参考回答</summary>
 
-虚拟线程适合数量大、相互独立并且大部分时间阻塞等待 I/O 的任务，可以继续用同步代码表达线程每请求模型。它提高的是承载并发等待的能力，不会加速 CPU 计算或突破数据库连接数。
+虚拟线程适合数量大、独立且经常阻塞 I/O 的任务。它用较少平台线程承载大量等待。CPU 任务和下游资源仍受自身容量约束。
 
-通常使用每任务一个虚拟线程，不把它们放进固定大小池；在连接、接口等稀缺资源前用 Semaphore 等工具限流。还要按实际 JDK 版本检查 pinning：JDK 24 起 `synchronized` 导致的 monitor pinning 已被解决，native/FFM 调用仍可能 pin。
+按任务创建虚拟线程，稀缺资源单独限流。JDK 24 起，monitor 导致的 pinning 已改进。native 调用和实际资源等待仍需观测。
 
 </details>
 
-## 10. 参考资料
+### 11.2 JDK 24 后还需要为虚拟线程批量替换 synchronized 吗？ {#pinning-version-boundary}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：理解 monitor 改进与剩余 pinning 的诊断。
+
+**相关内容**：[pinning 的版本诊断](#pinning-的版本诊断)。
+
+<details>
+<summary>参考回答</summary>
+
+JDK 24 已改进 monitor 阻塞时的卸载。应先观测剩余 pinning，再决定代码调整。native 回调中的阻塞仍需关注。诊断使用 JFR 的 VirtualThreadPinned 事件。
+
+</details>
+
+### 11.3 传统线程指标为何漏掉虚拟线程，程序退出前怎样等待它们？ {#virtual-thread-observation}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：理解观测接口范围与守护线程生命周期。
+
+**相关内容**：[虚拟线程的观测与退出](#虚拟线程的观测与退出)。
+
+<details>
+<summary>参考回答</summary>
+
+ThreadMXBean 只统计平台线程。虚拟线程可通过 Thread.dump_to_file 观测。它们是守护线程，程序应显式等待任务结束。可使用 join、Future 或执行器关闭协议。
+
+</details>
+
+## 12. 参考资料 {#参考资料}
 
 - [Oracle：Virtual Threads](https://docs.oracle.com/en/java/javase/26/core/virtual-threads.html)
 - [OpenJDK JEP 444：Virtual Threads](https://openjdk.org/jeps/444)
 - [OpenJDK JEP 491：Synchronize Virtual Threads without Pinning](https://openjdk.org/jeps/491)
 - [Java API：`Executors.newVirtualThreadPerTaskExecutor`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/Executors.html#newVirtualThreadPerTaskExecutor())
+- [Java 26：jcmd](https://docs.oracle.com/en/java/javase/26/docs/specs/man/jcmd.html)
+- [Java 26 API：ThreadMXBean](https://docs.oracle.com/en/java/javase/26/docs/api/java.management/java/lang/management/ThreadMXBean.html)
+- [Java 26 API：ExecutorService](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/ExecutorService.html)
+- [OpenJDK JEP 506：Scoped Values](https://openjdk.org/jeps/506)

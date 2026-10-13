@@ -7,15 +7,15 @@ knowledge:
 
 # 安全发布
 
-对象构造完成不等于其他线程已经可以安全使用它。引用需要通过带有 happens-before 保证的路径发布；对象若在构造期间逸出，另一个线程甚至可能看到尚未完成初始化的状态。
+安全发布让其他线程按同步协议取得已初始化的对象。本文负责构造逸出、final 字段和单例发布。通用内存顺序见 [Java 内存模型](./jmm-happens-before.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- 无同步地把对象引用赋给共享字段会产生数据竞争，其他线程读到非空引用时，仍可能看不到构造器中的写入。
-- 安全发布的方式包括：`volatile` 字段、锁保护的字段、静态初始化器、`final` 字段，以及 `BlockingQueue` 等并发容器。
-- 构造器中注册监听器或启动线程会让 `this` 逸出，其他线程可能观察到未初始化完成的字段。
-- 对象没有在构造期间逸出时，`final` 字段在构造结束时的值对任何取得引用的线程可见。[卡](#final-field-semantics)
-- 双重检查锁定的实例字段必须声明为 `volatile`。
+- `volatile` 引用可以发布写入前完成的对象初始化。
+- 构造期间发布 `this` 会暴露尚未初始化的状态。
+- 正确构造对象的 final 字段具有初始化可见性保证。[卡](#final-field-semantics)
+- 双重检查锁定使用 volatile 实例字段。[卡](#dcl-volatile-holder)
+- 安全发布只交接已有状态，后续修改仍需同步。
 
 ## 2. 未同步发布的问题 {#未同步发布的问题}
 
@@ -29,15 +29,17 @@ final class Registry {
 }
 ```
 
-如果其他线程无同步地读取 `configuration`，程序存在数据竞争。即使引用非空，也不能据此证明该线程看到了构造期间的全部写入。
+其他线程直接读取普通 `configuration` 字段，会形成数据竞争。非空引用本身不足以证明全部普通字段已初始化。
 
-安全发布需要明确的同步边，例如：
+可选择以下发布方式：
 
-- 在静态初始化期间创建对象。
-- 在锁内写入，并在同一锁保护下读取。
-- 通过 `volatile` 或原子引用发布。
-- 放入具有内存一致性保证的并发集合或队列。
-- 在线程启动前准备对象，再由新线程使用。
+- 在类初始化中创建对象。
+- 在同一把锁下写入和读取引用。
+- 通过 volatile 字段或原子引用交接。
+- 通过并发队列等组件交接对象。
+- 在 `Thread.start()` 前准备新线程所需对象。
+
+final 字段还具有独立的构造期保证。该保证的范围见下文。
 
 ## 3. 构造期间的 `this` 逸出 {#构造期间的-this-逸出}
 
@@ -52,11 +54,15 @@ public final class Listener {
 }
 ```
 
-`register` 可能把当前对象交给另一个线程。回调在构造器返回前执行时，会观察到未完成初始化的字段。
+若 `register` 立即调用或跨线程暴露监听器，回调就能提前读取字段。此时 `threshold` 还未赋为 10。
 
-更稳妥的做法是先完成构造，再由工厂注册：
+可以改为构造结束后再注册：
 
 ```java
+private Listener() {
+    threshold = 10;
+}
+
 public static Listener create(EventBus bus) {
     Listener listener = new Listener();
     bus.register(listener);
@@ -64,11 +70,13 @@ public static Listener create(EventBus bus) {
 }
 ```
 
-构造器启动线程、注册回调、把 `this` 放入静态集合，或者调用可被子类重写的方法，都可能造成逸出。
+该片段替换原来的公开构造器。注册前，`threshold` 已完成初始化。事件总线还需安全交接已构造的对象。
+
+构造器调用可重写方法也会暴露未完成状态。子类字段此时仍未完成初始化。
 
 ## 4. `final` 字段的初始化安全 {#final-字段的初始化安全}
 
-只要对象在构造期间没有逸出，构造器对 `final` 字段的赋值具有额外语义：另一个线程在取得对象引用后，能够看到该字段在构造结束时的值。对通过该 final 字段可达对象的构造期状态，规范也提供特定保证。
+对象正确构造且构造期间没有逸出时，final 字段具有特殊可见性。其他线程取得引用后，可读到构造结束时的 final 值。
 
 ```java
 public final class Endpoint {
@@ -82,13 +90,13 @@ public final class Endpoint {
 }
 ```
 
-这使正确构造的不可变对象更容易安全共享，但 `final` 不能冻结引用指向的可变对象：
+另一个线程取得正确构造的 `Endpoint` 后，可读到其 host 和 port。通过 final 引用可达的构造期状态，也有对应保证。
 
 ```java
 private final List<String> roles = new ArrayList<>();
 ```
 
-`roles` 引用不能重新赋值，列表内容仍可变化，后续修改仍需要同步或防御性复制。
+第二段的 final 只固定列表引用。构造后继续修改列表，需要另行同步。若要不可变对象，应限制所有可达状态的修改。
 
 ## 5. 双重检查锁定 {#双重检查锁定}
 
@@ -110,21 +118,47 @@ public static Client getInstance() {
 }
 ```
 
-`volatile` 发布保证构造写入先于其他线程读到新引用。更简单时可使用静态初始化、枚举单例或容器生命周期，避免手写协议。
+第一次检查让已初始化的调用跳过加锁。第二次检查处理多个线程同时看到 `null` 的情况。volatile 写把构造结果发布给外层读取者。
 
-## 6. 常见问题
+局部变量保留本次观察到的引用。该示例假设实例初始化后持续复用。
 
-### 6.1 对象所有字段都是 `final`，引用可以随便共享吗
+## 6. 双重检查与静态持有者 {#双重检查与静态持有者}
 
-必须先保证对象没有在构造期间逸出。若字段指向可变对象，还要限制该对象的后续修改。
+双重检查的外层读取跳过锁。实例字段使用 volatile，才能安全交接构造写入。只锁初始化分支时，外层普通读取缺少发布关系。
 
-### 6.2 返回不可修改视图等于不可变快照吗
+静态持有者可利用类初始化实现延迟创建：
 
-不等于。`Collections.unmodifiableList(source)` 只是禁止通过该视图修改；原始 `source` 变化仍会反映出来。需要快照时可以使用 `List.copyOf(source)`，并继续考虑元素本身是否可变。
+```java
+final class Service {
+    private Service() {}
 
-## 7. 面试题
+    private static class Holder {
+        static final Service INSTANCE = new Service();
+    }
 
-### 7.1 `final` 字段为什么有额外的线程安全语义 {#final-field-semantics}
+    static Service getInstance() {
+        return Holder.INSTANCE;
+    }
+}
+```
+
+首次主动使用 Holder 时触发其初始化。类初始化协议串行完成初始化，并交接结果。该单例的范围是定义它的类及对应类加载器。
+
+## 7. 常见问题 {#常见问题}
+
+### 7.1 final 字段与引用交接 {#final-字段与引用交接}
+
+final 初始化保证要求对象正确构造。它也不保证读线程何时取得共享引用。需要可靠交接时，仍应使用明确的发布协议。
+
+### 7.2 不可修改视图与不可变快照 {#不可修改视图与不可变快照}
+
+`Collections.unmodifiableList(source)` 提供只读视图。原始列表变化仍会反映在视图中。Java 10 起可用 `List.copyOf(source)` 复制列表内容。
+
+副本与原列表的结构变化独立。元素本身若可变，仍需复制或约束修改。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 `final` 字段为什么有额外的线程安全语义 {#final-field-semantics}
 
 <!-- 面试来源：
 - 拼多多：https://www.nowcoder.com/discuss/353150007719174144
@@ -135,22 +169,41 @@ public static Client getInstance() {
 
 **考察重点**
 
-- 构造器完成与对象逸出。
-- final 字段初始化安全。
-- final 引用和对象可变性的区别。
+- 理解构造器完成与对象逸出。
+- 理解 final 字段初始化安全。
+- 理解 final 引用和对象可变性的区别。
 
 **相关内容**：[构造期间的 `this` 逸出](#构造期间的-this-逸出)和[`final` 字段的初始化安全](#final-字段的初始化安全)。
 
 <details>
 <summary>参考回答</summary>
 
-JMM 对正确构造的对象提供 final 字段语义：构造期间对 final 字段的写入，在对象引用被其他线程取得后具有额外的可见性保证。前提是 `this` 没有在构造完成前逸出。
+JMM 为正确构造对象的 final 字段提供初始化保证。取得对象引用的线程能看到构造结束时的 final 值。构造期间需避免 `this` 逸出。
 
-它只固定字段引用或基本值，不会让引用指向的集合自动不可变。构造后的可变状态仍要通过锁、并发容器或不可变快照管理。
+final 引用指向的对象仍可具有可变状态。构造后的修改需要同步或防御性复制。其他普通字段也应按发布协议交接。
 
 </details>
 
-## 8. 参考资料
+### 8.2 双重检查单例为什么使用 volatile，静态持有者如何替代？ {#dcl-volatile-holder}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：理解外层无锁读取与类初始化协议。
+
+**相关内容**：[双重检查与静态持有者](#双重检查与静态持有者)。
+
+<details>
+<summary>参考回答</summary>
+
+volatile 让外层读取安全观察构造完成的实例。内层锁还负责让初始化只发生一次。静态持有者则依赖 JVM 的类初始化协议。首次使用 Holder 时创建并发布实例。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
 
 - [JLS 17.5：Final Field Semantics](https://docs.oracle.com/javase/specs/jls/se26/html/jls-17.html#jls-17.5)
 - [JLS 12.4.2：类初始化过程](https://docs.oracle.com/javase/specs/jls/se26/html/jls-12.html#jls-12.4.2)
+- [Java 26 API：Collections.unmodifiableList](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/Collections.html#unmodifiableList(java.util.List))
+- [Java 26 API：List.copyOf](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/List.html#copyOf(java.util.Collection))
