@@ -7,30 +7,25 @@ knowledge:
 
 # BeanDefinition
 
-Spring 容器启动时，先收集和处理 Bean 的定义，再创建需要预实例化的单例。把元数据阶段与实例阶段分开，才能判断一个扩展点为什么生效、为什么某个 Bean 被过早创建。
+BeanDefinition 保存创建 Bean 所需的配置元数据。本文负责定义注册、容器扩展点和 FactoryBean。实例初始化与销毁见 [Bean 生命周期](./bean-creation-lifecycle.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- 注解、XML、Java 配置最终都转换为 `BeanDefinition`，描述类型、作用域、依赖和初始化方式，此时还没有创建对象。
-- `BeanFactoryPostProcessor` 在实例创建前修改 BeanDefinition，例如解析占位符、处理配置类；`BeanPostProcessor` 处理已创建的实例，例如创建代理。
-- `BeanFactory` 提供创建 Bean 和依赖注入；`ApplicationContext` 在此基础上自动注册后处理器，并提供事件、资源加载、国际化和环境配置。[卡](#beanfactory-vs-applicationcontext)
-- 非懒加载的单例在上下文刷新时预先创建，让配置错误在启动阶段暴露。
-- `FactoryBean` 是用来生产其他对象的 Bean，用 `&` 前缀才能取到它本身。
+- `BeanDefinition` 描述类型、作用域、依赖和生命周期配置。
+- `BeanFactoryPostProcessor` 处理定义，`BeanPostProcessor` 处理实例。
+- `ApplicationContext` 在 `BeanFactory` 上增加处理器引导等能力。[卡](#beanfactory-vs-applicationcontext)
+- `BeanDefinitionRegistryPostProcessor` 可在普通工厂后处理前注册定义。[卡](#registry-postprocessor)
+- `getBean("name")` 获取 FactoryBean 产品，`getBean("&name")` 获取工厂。[卡](#factorybean-product)
 
 ## 2. BeanDefinition 注册 {#beandefinition-注册}
 
-BeanDefinition 可以来自：
+BeanDefinition 的来源包括 `@Bean`、组件扫描、XML 和程序化注册。自动配置也通过配置类解析形成定义。
 
-- `@Bean` Java 配置。
-- `@Component` 及其派生注解的组件扫描。
-- XML、程序化注册或框架导入。
-- Spring Boot 自动配置。
-
-定义通常包含 Bean 类或工厂方法、构造参数、属性、作用域、是否懒加载、初始化和销毁方法等。它是一份创建配方，不是最终业务对象。
+定义保存类或工厂方法、参数、属性、作用域和生命周期设置。定义注册后，实例可在后续按需创建。注册成功与对象创建成功属于不同阶段。
 
 ## 3. `BeanFactoryPostProcessor` {#beanfactorypostprocessor}
 
-定义注册完成后，容器会先运行 BeanFactory 级别的后处理器：
+`BeanFactoryPostProcessor` 在普通 Bean 创建前处理元数据。
 
 ```java
 public final class ClientTimeoutProcessor
@@ -45,51 +40,95 @@ public final class ClientTimeoutProcessor
 }
 ```
 
-它操作的是定义元数据。此阶段调用 `getBean()` 会让实例提前创建，可能绕过后续处理器或造成依赖链提前展开。
+示例把 `paymentClient` 的 `timeout` 属性设为 1 秒。目标类型需有可写的 `timeout` 属性。
+
+此阶段调用 `getBean()` 会触发提前实例化。尚未注册的 BeanPostProcessor 将错过该对象。由此产生的代理缺失，应从提前创建的依赖链排查。
 
 ## 4. `BeanPostProcessor` {#beanpostprocessor}
 
-容器在创建普通 Bean 之前先注册 BeanPostProcessor。它们可以参与依赖注入、生命周期注解处理，或在初始化后返回代理对象。
+容器先注册 BeanPostProcessor，再创建普通 Bean。实例处理过程见 [Bean 生命周期](./bean-creation-lifecycle.mdx#beanpostprocessor)。
 
 ```text
-定义注册
-  → BeanFactoryPostProcessor
+注册初始定义
+  → 注册表后处理器扩展定义
+  → BeanFactoryPostProcessor 处理定义
   → 注册 BeanPostProcessor
   → 创建非懒加载单例
-  → 完成上下文刷新
+  → 完成刷新
 ```
 
-顺序很重要：某个 Bean 被处理器提前依赖时，它可能“not eligible for auto-proxying”，最终没有获得预期代理。
+处理器自身及其直接依赖会提前创建。它们应保持依赖精简，避免提前拉起业务 Bean。
 
 ## 5. BeanFactory 与 ApplicationContext {#beanfactory-与-applicationcontext}
 
-`BeanFactory` 提供对象创建与依赖装配的核心能力。`ApplicationContext` 在此基础上自动发现处理器，并集成资源加载、事件、国际化、环境和生命周期管理。
+`BeanFactory` 提供定义管理、对象创建与依赖解析。`ApplicationContext` 自动发现并注册后处理器。它还提供环境、事件、资源、国际化和生命周期能力。
 
-典型应用应使用 `ApplicationContext`。直接创建 `DefaultListableBeanFactory` 时，注解处理和 AOP 不会仅因为定义存在就自动全部启用，需要调用方自行完成引导。
+直接使用 `DefaultListableBeanFactory` 时，调用者负责引导。注解处理器和自动代理创建器需显式注册。应用开发使用 `ApplicationContext` 可复用这些引导步骤。
 
 ## 6. 单例预实例化 {#单例预实例化}
 
-非懒加载 singleton 默认在 ApplicationContext 初始化时创建，使缺少依赖、构造异常和配置错误尽早暴露。`@Lazy` 可以推迟成本，却也把错误延后到首次请求。
+ApplicationContext 刷新时创建非懒加载单例。缺失依赖或构造异常因此可在启动时暴露。`@Lazy` 将创建推迟到首次获取。
 
-启动慢时按阶段测量：类路径扫描与定义解析、处理器执行、Bean 构造、外部连接、迁移脚本和初始化任务。不要只根据最后一个日志行判断原因。
+若非懒加载单例直接依赖 lazy Bean，依赖解析仍会创建后者。注入点的 `@Lazy` 代理可继续推迟实际获取。
+
+启动耗时应按定义解析、处理器和实例初始化分段测量。
 
 ## 7. `FactoryBean` 与 `BeanFactory` {#factorybean-与-beanfactory}
 
-`BeanFactory` 是容器接口。`FactoryBean<T>` 是由容器管理的特殊 Bean，用来生产另一种对象。按普通名称获取时通常得到它的产品；以 `&` 前缀获取时才得到 FactoryBean 本身。
+`BeanFactory` 是容器接口。`FactoryBean<T>` 是生产其他对象的特殊 Bean。
 
-## 8. 常见问题
+`getBean("client")` 返回工厂的 `getObject()` 产品。`getBean("&client")` 返回工厂本身。`getObjectType()` 提供产品类型，参与按类型查找。
 
-### 8.1 BeanDefinition 注册完成后 Bean 已经存在吗
+`isSingleton()` 声明工厂是否提供共享产品。工厂自身为 singleton 且该值为 true 时，容器缓存产品。工厂定义的作用域与产品共享语义需分别判断。
 
-不一定。定义只描述如何创建。非懒加载 singleton 通常在上下文刷新时实例化，lazy、prototype 等可能在请求时才创建。
+容器管理 FactoryBean 自身的销毁。产品资源需由工厂或其他明确所有者负责释放。
 
-### 8.2 BeanFactoryPostProcessor 和 BeanPostProcessor 有什么区别
+## 8. 注册表后处理器 {#注册表后处理器}
 
-前者在实例创建前处理 BeanDefinition；后者处理已经创建的 Bean 实例，可以修改或包装实例。
+`BeanDefinitionRegistryPostProcessor` 扩展工厂后处理器。它先调用 `postProcessBeanDefinitionRegistry()` 注册额外定义。随后调用 `postProcessBeanFactory()` 处理工厂元数据。
 
-## 9. 面试题
+`ConfigurationClassPostProcessor` 属于注册表后处理器。它解析 `@Configuration`、`@Bean`、扫描和导入关系。定义集合因此在处理过程中继续扩展。
 
-### 9.1 BeanFactory 与 ApplicationContext 有什么区别 {#beanfactory-vs-applicationcontext}
+通过 `@Bean` 声明这类处理器时，方法宜为 `static`。静态方法可避免提前创建所属配置类。处理器的排序使用 `PriorityOrdered` 或 `Ordered`。
+
+## 9. 配置类的 Bean 方法调用 {#配置类的-bean-方法调用}
+
+`@Configuration` 默认 `proxyBeanMethods=true`。容器增强配置类，拦截其中 `@Bean` 方法的相互调用。被调用方法因此通过容器获取对应 Bean。
+
+`proxyBeanMethods=false` 时，配置类保留普通 Java 调用语义。直接调用另一个 `@Bean` 方法，会再次执行方法体。若方法体执行 `new`，就会得到额外对象。
+
+```java
+@Configuration(proxyBeanMethods = false)
+class ClientConfiguration {
+    @Bean
+    Client client() {
+        return new Client();
+    }
+
+    @Bean
+    ClientService clientService(Client client) {
+        return new ClientService(client);
+    }
+}
+```
+
+示例通过方法参数声明依赖。容器先解析 `Client`，再传给工厂方法。即使关闭配置类代理，也能使用受管依赖。
+
+普通 `@Component` 中的 `@Bean` 方法也采用这种轻量模式。Bean 的注册与作用域仍由容器管理。变化的是配置方法之间的直接调用行为。
+
+## 10. 常见问题 {#常见问题}
+
+### 10.1 定义与实例的创建时机 {#定义与实例的创建时机}
+
+定义描述创建方式。非懒加载 singleton 随上下文刷新创建。lazy 与 prototype 则可在获取时创建。
+
+### 10.2 两类后处理器的处理对象 {#两类后处理器的处理对象}
+
+`BeanFactoryPostProcessor` 处理定义元数据。`BeanPostProcessor` 处理实例，并能返回包装对象。
+
+## 11. 面试题 {#面试题}
+
+### 11.1 BeanFactory 与 ApplicationContext 有什么区别 {#beanfactory-vs-applicationcontext}
 
 <!-- 面试来源：
 - 美团：https://www.nowcoder.com/discuss/614236533700194304
@@ -98,25 +137,75 @@ public final class ClientTimeoutProcessor
 
 **出现公司**：美团、交通银行
 
-**考察重点**
-
-- 核心工厂与完整容器引导。
-- 处理器自动发现和生命周期。
-- 不能简单归结为“懒加载与立即加载”。
+**考察重点**：区分核心工厂能力与完整容器引导。
 
 **相关内容**：[`BeanFactoryPostProcessor`](#beanfactorypostprocessor)至[单例预实例化](#单例预实例化)。
 
 <details>
 <summary>参考回答</summary>
 
-BeanFactory 提供 Bean 定义、创建、作用域和依赖解析的核心能力。ApplicationContext 包含 BeanFactory，并负责自动发现和注册各种后处理器，同时集成环境、事件、资源、国际化和生命周期。
+BeanFactory 负责创建 Bean、解析依赖和管理作用域。ApplicationContext 增加后处理器自动发现与注册。它还集成环境、事件、资源和生命周期。
 
-典型应用使用 ApplicationContext。差异不能只说成一个懒加载、一个立即加载：单例是否预实例化由上下文刷新和 Bean 的 lazy 设置决定，关键差异在于完整的容器引导与扩展点是否被启用。
+单例是否预创建，取决于刷新过程与 lazy 设置。该行为只是一项差异，完整引导能力才是两者的主要分工。
 
 </details>
 
-## 10. 参考资料
+### 11.2 配置类解析为什么使用 BeanDefinitionRegistryPostProcessor？ {#registry-postprocessor}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：定义注册、扩展点顺序与提前实例化。
+
+**相关内容**：[注册表后处理器](#注册表后处理器)。
+
+<details>
+<summary>参考回答</summary>
+
+配置类解析会继续注册新的 BeanDefinition。注册表后处理器可在普通工厂后处理前扩展定义集合。`ConfigurationClassPostProcessor` 用它处理 `@Bean`、扫描和导入。此阶段应操作元数据，避免提前创建业务实例。
+
+</details>
+
+### 11.3 FactoryBean 与它的产品怎样获取，产品一定是单例吗？ {#factorybean-product}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：名称解引用、产品缓存与销毁责任。
+
+**相关内容**：[`FactoryBean` 与 `BeanFactory`](#factorybean-与-beanfactory)。
+
+<details>
+<summary>参考回答</summary>
+
+普通名称获取产品，`&` 前缀获取工厂。工厂自身为 singleton 且 `isSingleton()` 为 true 时，容器缓存产品。产品资源需由工厂或其他明确所有者清理。
+
+</details>
+
+### 11.4 proxyBeanMethods=false 后，直接调用另一个 Bean 方法会怎样？ {#configuration-bean-methods}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：配置类增强、普通调用与参数注入。
+
+**相关内容**：[配置类的 Bean 方法调用](#配置类的-bean-方法调用)。
+
+<details>
+<summary>参考回答</summary>
+
+直接调用按普通 Java 语义执行方法体。方法体若执行 new，就会创建额外对象。可将依赖写为 `@Bean` 方法参数，由容器解析后传入。容器管理的 singleton 定义仍只共享一份实例。
+
+</details>
+
+## 12. 参考资料 {#参考资料}
 
 - [Spring Framework：Bean Overview](https://docs.spring.io/spring-framework/reference/core/beans/definition.html)
 - [Spring Framework：Container Extension Points](https://docs.spring.io/spring-framework/reference/core/beans/factory-extension.html)
 - [Spring Framework：The BeanFactory API](https://docs.spring.io/spring-framework/reference/core/beans/beanfactory.html)
+- [Spring Framework：BeanDefinitionRegistryPostProcessor](https://docs.spring.io/spring-framework/docs/6.2.x/javadoc-api/org/springframework/beans/factory/support/BeanDefinitionRegistryPostProcessor.html)
+- [Spring Framework：FactoryBean](https://docs.spring.io/spring-framework/docs/6.2.x/javadoc-api/org/springframework/beans/factory/FactoryBean.html)
+- [Spring Framework：Bean and Configuration](https://docs.spring.io/spring-framework/reference/core/beans/java/basic-concepts.html)

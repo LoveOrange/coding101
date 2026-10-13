@@ -7,15 +7,15 @@ knowledge:
 
 # JDK 动态代理与 CGLIB
 
-Spring AOP 可以生成实现接口的 JDK 动态代理，也可以生成目标类的 CGLIB 子类代理。两者主要差异是代理暴露的类型和可拦截的方法，不应靠旧版本性能结论选择。
+JDK 动态代理实现接口，CGLIB 代理继承目标类。本文以 Spring 6.2、Boot 3.5 为基线。本文讲解类型契约、方法边界与默认选择。自调用机制见 [Spring AOP](./aop-pointcut-interceptor-chain.mdx#同类自调用)。
 
 ## 1. 面试核心 {#core}
 
-- JDK 动态代理实现目标的接口，调用进入 `InvocationHandler`，只能按接口类型使用。[卡](#jdk-proxy-vs-cglib)
-- CGLIB 生成目标类的子类并重写方法，可以代理没有接口的类，但无法拦截 `final`、`private` 和 `static` 方法。
-- Spring Boot 的 AOP 自动配置默认使用 CGLIB；将 `spring.aop.proxy-target-class` 设为 `false` 可改用 JDK 代理。Spring Framework 的默认代理选择在目标有接口时使用 JDK 代理。
-- 两种代理都无法拦截目标对象内部的 `this` 调用。
-- 代理调用开销通常远小于业务和 I/O，选择依据是类型契约和可拦截的方法。
+- JDK 代理实现指定接口，并通过 `InvocationHandler` 处理调用。[卡](#jdk-proxy-vs-cglib)
+- CGLIB 通过覆盖目标方法实现拦截。
+- Boot 3.5 默认类代理，`spring.aop.proxy-target-class=false` 优先接口代理。
+- JDK 代理可增强接口调用，即使目标实现方法为 `final`。[卡](#final-interface-method)
+- Spring 6.0 起，类代理事务默认支持 protected 与包可见方法。
 
 ## 2. JDK 动态代理 {#jdk-动态代理}
 
@@ -25,28 +25,41 @@ PaymentService target = new DefaultPaymentService();
 PaymentService proxy = (PaymentService) Proxy.newProxyInstance(
         PaymentService.class.getClassLoader(),
         new Class<?>[] {PaymentService.class},
-        (object, method, arguments) -> method.invoke(target, arguments)
+        (object, method, arguments) -> {
+            try {
+                return method.invoke(target, arguments);
+            } catch (InvocationTargetException exception) {
+                throw exception.getCause();
+            }
+        }
 );
 ```
 
-代理类实现指定接口，调用进入 `InvocationHandler`。客户端应按接口类型引用代理；目标类上未出现在代理接口中的方法不会通过这份代理暴露。
+代理实现 `PaymentService`，调用进入处理器。反射异常拆出 cause 后，调用方得到目标方法的原始异常。
+
+代理可赋给已实现的接口，无法强转为目标实现类。接口未声明的目标方法也无法从该接口调用。
 
 ## 3. CGLIB {#cglib}
 
-CGLIB 代理通过继承目标类并覆盖可重写方法进行拦截。它可以代理没有业务接口的类，但受 Java 继承规则限制：
+CGLIB 生成目标类的子类，通过覆盖方法拦截调用。
 
-- `final` 类不能被继承。
-- `final` 方法不能覆盖。
-- `private` 方法对子类不可见，不能按这种方式拦截。
-- 模块边界可能限制对不可见成员的访问。
+| 成员 | 子类代理边界 |
+| --- | --- |
+| `final` 类 | 无法生成子类 |
+| `final` 方法 | 无法覆盖 |
+| `private` 方法 | 子类无法覆盖 |
+| `static` 方法 | 属于类调用，无法通过实例覆盖 |
+| 跨包不可见方法 | 受 Java 可见性约束 |
 
-Spring 将 CGLIB 重新打包在 `spring-core` 中，应用通常不需要单独添加 cglib 依赖。
+Spring 将 CGLIB 放在 `spring-core` 中。Java 模块访问限制也会影响代理生成。
+
+Spring 使用 Objenesis 创建类代理实例，跳过其构造器调用。正常支持该机制时，目标构造器只为目标实例执行一次。JVM 禁止构造器绕过时，存在回退行为。
 
 ## 4. Spring 的默认选择 {#spring-的默认选择}
 
-Spring Framework 的代理创建可根据目标是否具有接口选择类型，也可以通过 `proxyTargetClass` 强制类代理。Spring Boot 的配置可能设置全局默认；Spring Framework 7 还允许针对特定 Bean 指定代理类型。
+Spring Framework 6.2 默认在目标有接口时使用 JDK 代理。无接口时使用 CGLIB。`proxyTargetClass=true` 可强制类代理。
 
-因此，排查时直接检查运行对象：
+Boot 3.5 的 AOP 自动配置默认启用类代理。设置 `spring.aop.proxy-target-class=false` 后，有接口的目标改用 JDK 代理。无接口目标仍需类代理。
 
 ```java
 AopUtils.isAopProxy(bean);
@@ -54,46 +67,55 @@ AopUtils.isJdkDynamicProxy(bean);
 AopUtils.isCglibProxy(bean);
 ```
 
-不要只根据“类实现了接口”猜测最终结果。
+这些方法分别判断代理身份与具体类型。多个配置可影响最终策略，应检查实际对象。
 
 ## 5. 自调用 {#自调用}
 
-```java
-public void checkout() {
-    this.reserve();
-}
-
-@Transactional
-public void reserve() {}
-```
-
-外部调用先进入代理，再到目标对象；目标内部的 `this.reserve()` 已经在目标对象中直接分派，不会重新经过外部代理。改成 CGLIB 也不能把所有自调用自动变成代理调用。
-
-优先把事务边界移动到另一个 Bean 或上层编排。通过当前代理、自注入来绕行会增加隐藏耦合。
+JDK 与 CGLIB 的目标对象自调用都绕过代理，处理方式见 [Spring AOP](./aop-pointcut-interceptor-chain.mdx#同类自调用)。
 
 ## 6. 代理类型与注解匹配 {#代理类型与注解匹配}
 
-JDK 代理暴露接口，基于具体类获取 Bean 或只在实现方法上读取注解的框架逻辑可能产生差异。Spring 自身会处理许多桥接和目标方法解析，但自定义反射代码要明确检查代理类型、目标类和最具体方法。
+反射直接查看代理类时，看到的是生成类。读取业务注解需定位目标类及具体方法。Spring 的事务属性解析器会处理接口与实现方法的对应关系。
 
-类代理对构造、可见性和 final 的约束也会在 Kotlin 等默认 final 的语言中更明显。
+Spring 6.0 起，类代理的事务默认支持 protected 和包可见方法。JDK 代理事务入口仍需是接口公开方法。自定义 `publicMethodsOnly` 设置可收窄识别范围。
 
 ## 7. 性能 {#性能}
 
-现代 JDK、Spring 和 CGLIB 实现持续变化，代理调用开销通常小于数据库、网络和业务逻辑。先按类型契约和拦截能力选择；真的处在高频短方法路径时，再用当前运行版本做 JMH 与 profile。
+代理成本包括方法分派、切点判断和整个拦截链。选择代理类型时，先确认接口与继承边界。
 
-## 8. 常见问题
+高频短方法可用目标 JDK、Spring 版本做基准测试。测量应包含真实 advice，避免只比较空代理调用。
 
-### 8.1 强制 CGLIB 就能代理 private 方法吗
+## 8. final 实现方法与接口代理 {#final-实现方法与接口代理}
 
-不能。子类无法覆盖 private 方法，final 方法也不能覆盖。
+JDK 代理实现接口，并把调用转交目标对象。它无需继承目标类，也无需覆盖目标方法。
 
-### 8.2 代理对象和目标对象是同一个实例吗
+```java
+interface PaymentService {
+    void pay();
+}
 
-不是同一个引用。代理持有或能够定位目标，并在调用前后执行拦截链；容器通常把代理引用交给其他 Bean。
+final class DefaultPaymentService implements PaymentService {
+    public final void pay() {}
+}
+```
 
-## 9. 面试题
+该实现可作为 JDK 代理的目标。调用代理的 `pay()` 仍会进入 InvocationHandler。若强制 CGLIB，目标类为 final 会导致代理生成失败。
 
-### 9.1 JDK 动态代理与 CGLIB 有什么区别 {#jdk-proxy-vs-cglib}
+把类改为非 final、仅保留方法 final 时，CGLIB 可生成子类。但该方法仍缺少可覆盖入口，增强无法生效。
+
+## 9. 常见问题 {#常见问题}
+
+### 9.1 非公开方法的代理范围 {#非公开方法的代理范围}
+
+CGLIB 按继承和可见性规则覆盖方法。private 方法无法覆盖；protected 与同包可见方法还需满足具体增强的识别规则。
+
+### 9.2 代理引用与目标引用 {#代理引用与目标引用}
+
+Spring AOP 代理与目标是不同引用。代理通过 TargetSource 定位目标，再执行拦截链。其他 Bean 应使用容器交付的代理引用。
+
+## 10. 面试题 {#面试题}
+
+### 10.1 JDK 动态代理与 CGLIB 有什么区别 {#jdk-proxy-vs-cglib}
 
 <!-- 面试来源：
 - 阅文集团：https://www.nowcoder.com/discuss/353156602796646400
@@ -102,26 +124,42 @@ JDK 代理暴露接口，基于具体类获取 Bean 或只在实现方法上读�
 
 **出现公司**：阅文集团、美团
 
-**考察重点**
-
-- 接口实现与子类覆盖。
-- final、private 和自调用限制。
-- 默认策略应从运行配置确认。
+**考察重点**：理解接口转发、子类覆盖与实际代理配置。
 
 **相关内容**：[JDK 动态代理](#jdk-动态代理)至[自调用](#自调用)。
 
 <details>
 <summary>参考回答</summary>
 
-JDK 动态代理生成实现指定接口的类，调用通过 InvocationHandler；CGLIB 生成目标类子类并覆盖可重写方法，所以能代理没有接口的类，但不能处理 final 类、final 或 private 方法。
+JDK 代理实现接口，CGLIB 代理继承目标类。前者通过 InvocationHandler，后者通过覆盖方法拦截。final 类和不可覆盖方法限制的是子类代理。
 
-实际使用哪种受 Spring 和 Boot 配置影响，应检查运行对象。两者都是外部代理模型，同类 `this` 自调用都会绕过代理；性能也应基于当前 JDK 和真实调用链测量，不能复述旧版本倍数。
+Boot 3.5 默认类代理，配置为 false 时优先接口代理。实际对象可用 AopUtils 检查。两种方式都要求调用经过代理入口。
 
 </details>
 
-## 10. 参考资料
+### 10.2 目标实现方法是 final，JDK 动态代理还能增强它吗？ {#final-interface-method}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：接口转发与子类覆盖的区别。
+
+**相关内容**：[final 实现方法与接口代理](#final-实现方法与接口代理)。
+
+<details>
+<summary>参考回答</summary>
+
+可以，前提是从代理接口调用该方法。JDK 代理实现接口，再转发给目标，完整调用会进入处理器。CGLIB 依靠覆盖目标方法，final 方法无法通过该方式增强。
+
+</details>
+
+## 11. 参考资料 {#参考资料}
 
 - [Spring Boot：Aspect-Oriented Programming](https://docs.spring.io/spring-boot/reference/features/aop.html)
 - [Spring Framework：Proxying Mechanisms](https://docs.spring.io/spring-framework/reference/core/aop/proxying.html)
 - [Java API：`Proxy`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/reflect/Proxy.html)
 - [Spring API：`AopUtils`](https://docs.spring.io/spring-framework/docs/current/javadoc-api/org/springframework/aop/support/AopUtils.html)
+- [Spring Boot 3.5：AOP](https://docs.spring.io/spring-boot/3.5/reference/features/aop.html)
+- [Spring Framework：Transactional Method Visibility](https://docs.spring.io/spring-framework/reference/data-access/transaction/declarative/annotations.html)
+- [Spring Boot 3.5.6：AopAutoConfiguration](https://github.com/spring-projects/spring-boot/blob/v3.5.6/spring-boot-project/spring-boot-autoconfigure/src/main/java/org/springframework/boot/autoconfigure/aop/AopAutoConfiguration.java)

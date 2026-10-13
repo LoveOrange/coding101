@@ -7,15 +7,15 @@ knowledge:
 
 # Spring 循环依赖
 
-循环依赖表示对象之间的依赖关系形成了环。Spring Framework 能在有限条件下通过单例早期引用完成属性注入，但 Spring Boot 当前默认禁止自动处理循环引用；设计上应先拆开这个环。
+循环依赖是 Bean 依赖图中的环。本文负责早期引用、三级缓存与作用域限制。Spring Boot 2.6 起默认禁止循环引用。注入候选选择见 [依赖注入](./dependency-injection-selection.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- 构造器注入形成的循环无法解决，两个对象都不能先完成实例化。
-- 单例的 Setter 或字段注入形成循环时，Spring 可以在实例化后提前暴露早期引用来完成注入。[卡](#three-level-cache)
-- 三级缓存分别保存完整单例、早期引用和早期引用工厂；工厂让需要 AOP 的 Bean 提前返回代理，保证注入的是同一个对象。
-- Spring Boot 2.6 起 `spring.main.allow-circular-references` 默认为 `false`，循环依赖会导致启动失败。
-- 根本解决方式是调整职责：提取公共服务、改用事件或回调，`@Lazy` 只是推迟依赖的获取。
+- 直接构造器循环在实例化前阻塞，早期引用无法解除它。
+- 允许循环引用时，部分 singleton 属性循环可用早期引用完成。[卡](#three-level-cache)
+- 三级缓存分别保存完整单例、早期引用和引用工厂。
+- Boot 2.6 起 `spring.main.allow-circular-references` 默认为 `false`。
+- singleton 直接注入 prototype 时，只解析一次该依赖。[卡](#prototype-in-singleton)
 
 ## 2. 构造器注入的循环 {#构造器注入的循环}
 
@@ -31,71 +31,96 @@ class PaymentService {
 }
 ```
 
-创建 `OrderService` 需要先得到 `PaymentService`，而后者的构造又要求 `OrderService`。两个对象都无法先完成实例化，容器会报告 `BeanCurrentlyInCreationException`。
+创建 `OrderService` 前需先得到 `PaymentService`。后者又需先得到前者，双方都缺少可用实例。容器最终报告创建中的循环依赖。
 
-`@Lazy` 或 Provider 可以把某条边变成代理或延迟查询，但只是推迟了循环的建立，没有解决职责互相依赖的问题。
+注入点 `@Lazy` 可先注入延迟代理。`ObjectProvider` 可把查询推迟到实际使用时。若构造或初始化阶段立即获取目标，循环仍会出现。
 
 ## 3. 属性注入的循环 {#属性注入的循环}
 
-对于 singleton 属性注入，Spring Framework 可以在实例化 A 后、初始化完成前暴露 A 的早期引用。创建 B 时取得这份引用，完成 B，再回到 A 填充 B。
+以下假设 A、B 都是 singleton，且允许循环引用。
 
 ```text
 实例化 A
-  → 暴露 A 的引用工厂
-  → 创建并初始化 B
-  → B 注入 A 的早期引用
-  → A 注入完成后的 B
-  → 初始化 A
+  → 登记 A 的早期引用工厂
+  → 为 A 注入 B，开始创建 B
+  → 为 B 注入 A，取得 A 的早期引用
+  → 完成 B 初始化
+  → 将 B 注入 A
+  → 完成 A 初始化
 ```
 
-提前交付意味着 B 一度持有尚未完成生命周期的 A，所以这是一项兼容机制，不是推荐的依赖结构。
+构造和属性填充分开，才有机会提前交付 A。B 获取 A 时，A 的属性与初始化尚未完成。B 在此阶段调用 A，仍会访问不完整状态。
 
 ## 4. 三级缓存 {#三级缓存}
 
-常见源码讨论中的三个结构是：
+Spring Framework 6.2.12 的单例注册表使用三个结构：
 
-- `singletonObjects`：完整创建并发布的 singleton。
-- `earlySingletonObjects`：已经生成并缓存的早期引用。
-- `singletonFactories`：按需生成早期引用的 `ObjectFactory`。
+| 结构 | 内容 |
+| --- | --- |
+| `singletonObjects` | 完成创建的单例 |
+| `earlySingletonObjects` | 已生成的早期引用 |
+| `singletonFactories` | 按需生成早期引用的工厂 |
 
-工厂层让自动代理创建器在必要时提供与最终一致的早期代理，而不是只能提前暴露原始对象。具体字段和处理细节属于 Spring 实现，业务正确性不应依赖直接访问这些缓存。
+查询先检查完整单例，再检查早期引用。需要早期引用时，工厂调用 `getEarlyBeanReference()` 扩展点。结果进入早期引用缓存，工厂项随后移除。
+
+自动代理创建器可在该扩展点返回代理。最终发布阶段复用这份早期代理，以保持引用一致。Bean 创建完成后进入完整单例缓存，并清理早期项。
+
+工厂层将早期代理创建推迟到确有依赖请求时。简单属性循环可通过提前交付原始实例完成。涉及代理时，还需协调早期引用和最终包装结果。
 
 ## 5. Spring Boot 的默认行为 {#spring-boot-的默认行为}
 
-当前 Spring Boot 的 `spring.main.allow-circular-references` 默认值为 `false`。即使底层容器在某些 singleton 属性注入场景有处理能力，Boot 应用也会默认把循环关系当成启动错误。
+Boot 2.6 起默认 `spring.main.allow-circular-references=false`。设置为 true 只允许容器尝试处理循环。
 
-打开开关只能处理部分情况：
+以下情况仍需分别处理：
 
-- 构造器循环仍不能靠早期实例解决。
-- prototype 没有相同的 singleton 缓存协议。
-- 跨作用域依赖可能需要 scoped proxy。
-- 代理类型和早期引用不一致时仍可能失败。
+- 直接构造器循环缺少可提前暴露的实例。
+- prototype 循环没有单例早期缓存协议。
+- 跨作用域依赖需满足目标作用域的上下文要求。
+- 后处理器若产生不同代理，早期引用与最终引用会冲突。
+
+优先拆分职责，可减少初始化阶段对半成品对象的依赖。
 
 ## 6. 作用域 {#作用域}
 
-Spring singleton 是每个容器、每个 Bean 定义一份实例。prototype 每次请求创建新实例；request、session 等作用域与 Web 上下文绑定。
+Spring singleton 按容器和 Bean 定义共享实例。prototype 在每次容器获取时创建实例。request 与 session 分别绑定 Web 请求和会话。
 
-singleton 直接注入 prototype 时，只在 singleton 创建时解析一次。需要每次取得新实例，应使用 `ObjectProvider` 或作用域代理。request Bean 通过代理注入 singleton 后，只能在有效请求上下文中解析目标。
+singleton 构造时直接注入 prototype，只获取当时那一份。后续方法调用继续使用相同引用。
 
-## 7. 拆解循环依赖 {#拆解循环依赖}
+```java
+class ReportService {
+    private final ObjectProvider<ReportBuilder> builders;
 
-- 提取两个服务共同依赖的第三个职责。
-- 将双向调用改成单向状态变更与领域事件。
-- 把编排放到上层 application service。
-- 重新定义接口，让一个服务返回结果而不是回调另一个服务。
-- 只在确实代表延迟资源时使用 Provider，而非隐藏结构。
+    ReportService(ObjectProvider<ReportBuilder> builders) {
+        this.builders = builders;
+    }
 
-## 8. 常见问题
+    Report create() {
+        return builders.getObject().build();
+    }
+}
+```
 
-### 8.1 Spring 能解决哪些循环依赖
+`ReportBuilder` 为 prototype 时，每次 `getObject()` 获取新实例。它的资源清理由使用方负责。
 
-底层容器主要能在允许循环引用时处理部分 singleton 的 Setter/字段注入形成的循环。构造器和 prototype 循环不属于这条路径，Boot 默认也不允许自动处理。
+request Bean 可通过作用域代理注入 singleton。代理在有效请求上下文中取得目标。离开该上下文后应显式传递请求数据。
 
-### 8.2 为什么早期引用可能需要代理
+## 7. 循环依赖的职责拆分 {#拆解循环依赖}
 
-如果 B 注入原始 A，而容器最终发布的是 A 的事务或 AOP 代理，同一个 singleton 会出现两种调用语义。早期引用工厂让后处理器有机会提前返回一致代理。
+上层编排服务可单向调用原来的两个服务。共同逻辑可提取为第三个组件。结果通知可使用事件或回调接口。
 
-## 9. 面试题
+Provider 适合实际需要延迟获取的资源。用它隐藏直接依赖，只会把初始化错误推迟到使用阶段。
+
+## 8. 常见问题 {#常见问题}
+
+### 8.1 循环依赖的支持范围 {#循环依赖的支持范围}
+
+允许循环引用时，容器可处理部分 singleton 属性循环。直接构造器循环和 prototype 循环会失败。
+
+### 8.2 早期代理的一致性 {#早期代理的一致性}
+
+若 B 持有原始 A，而容器发布代理 A，调用语义就会不同。早期引用工厂给自动代理创建器协调引用的机会。自定义后处理器仍需遵守该协议。
+
+## 9. 面试题 {#面试题}
 
 ### 9.1 Spring 的三级缓存怎样处理循环依赖，有哪些限制 {#three-level-cache}
 
@@ -106,26 +131,41 @@ singleton 直接注入 prototype 时，只在 singleton 创建时解析一次。
 
 **出现公司**：美团
 
-**考察重点**
-
-- 实例化与依赖填充分离。
-- 早期引用工厂与代理一致性。
-- 构造器、prototype 和 Boot 默认设置。
+**考察重点**：理解早期引用、代理一致性与作用域限制。
 
 **相关内容**：[构造器注入的循环](#构造器注入的循环)至[Spring Boot 的默认行为](#spring-boot-的默认行为)。
 
 <details>
 <summary>参考回答</summary>
 
-在允许循环引用的 singleton 属性注入中，容器先实例化 A，并登记能生成 A 早期引用的工厂；创建 B 时按需取得这份早期引用，完成 B 后再回到 A。完整 singleton、已经生成的早期引用和引用工厂分处三个结构，工厂还能让 AOP 提供一致的早期代理。
+三级缓存通过提前交付实例引用完成部分属性循环。A 实例化后登记引用工厂，B 注入 A 时按需获取早期引用。B 完成后再填回 A，最后发布完整单例。
 
-它不能解决构造器或 prototype 循环，当前 Spring Boot 默认也把循环依赖设为不允许。即使技术上可处理，也应先通过提取职责、上层编排或事件把依赖改成单向。
+工厂可生成早期代理，最终发布时复用该引用。此路径要求允许循环引用，且对象适用单例协议。直接构造器循环和 prototype 循环仍会失败。
 
 </details>
 
-## 10. 参考资料
+### 9.2 singleton 注入 prototype 后，每次调用都会创建新对象吗？ {#prototype-in-singleton}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：容器获取时机、Provider 与销毁责任。
+
+**相关内容**：[作用域](#作用域)。
+
+<details>
+<summary>参考回答</summary>
+
+直接注入只在 singleton 创建时解析一次。每次需要新对象时，可调用 `ObjectProvider.getObject()`。目标为 prototype 时，每次容器获取才创建新实例。使用者负责产品实例的资源清理。
+
+</details>
+
+## 10. 参考资料 {#参考资料}
 
 - [Spring Boot 2.6 Release Notes：Circular References Prohibited by Default](https://github.com/spring-projects/spring-boot/wiki/Spring-Boot-2.6-Release-Notes#circular-references-prohibited-by-default)
 - [Spring Framework：Circular Dependencies](https://docs.spring.io/spring-framework/reference/core/beans/dependencies/factory-collaborators.html#beans-dependency-resolution)
 - [Spring Framework：Bean Scopes](https://docs.spring.io/spring-framework/reference/core/beans/factory-scopes.html)
 - [Spring Boot：Common Application Properties](https://docs.spring.io/spring-boot/appendix/application-properties/index.html#application-properties.core.spring.main.allow-circular-references)
+- [Spring Framework 6.2.12：DefaultSingletonBeanRegistry](https://github.com/spring-projects/spring-framework/blob/v6.2.12/spring-beans/src/main/java/org/springframework/beans/factory/support/DefaultSingletonBeanRegistry.java)
+- [Spring Framework 6.2.12：AbstractAutoProxyCreator](https://github.com/spring-projects/spring-framework/blob/v6.2.12/spring-aop/src/main/java/org/springframework/aop/framework/autoproxy/AbstractAutoProxyCreator.java)

@@ -7,19 +7,19 @@ knowledge:
 
 # API 错误契约
 
-API 错误响应要让客户端稳定判断失败类型，同时为服务端保留可追踪证据。Spring MVC 可以用 `@RestControllerAdvice` 和 `@ExceptionHandler` 集中映射异常，但异常分类与 HTTP 语义仍需业务定义。
+API 错误契约让客户端按稳定字段处理失败。本文负责异常映射、HTTP 状态和错误响应。参数绑定与校验见 [Spring MVC 参数解析](./binding-validation-content-negotiation.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- 错误响应要有稳定的字段：HTTP 状态码、业务错误码、可读信息和 trace ID；Spring 6 提供了 `ProblemDetail`（RFC 9457）。
-- 用 `@RestControllerAdvice` 和 `@ExceptionHandler` 按异常类型集中映射，输入错误、认证授权、业务冲突、依赖失败和未知错误分别处理。[卡](#global-exception-handling)
-- 响应中不暴露堆栈、SQL 和内部类名，完整异常和 trace ID 记录在服务端日志。
-- Filter 中的异常、响应已提交后的错误和异步任务失败不会进入 ControllerAdvice，需要各自处理。
-- 用契约测试覆盖每一类公开错误的状态码和字段结构。
+- `@RestControllerAdvice` 通过 MVC 异常解析链集中映射错误。[卡](#global-exception-handling)
+- Spring 6 的 `ProblemDetail` 表达标准问题字段，并支持扩展字段。
+- 同一处理器内，异常类型匹配按继承深度选择。[卡](#exception-handler-selection)
+- MVC 异步结果中的异常仍能进入 `@ExceptionHandler`。
+- 响应已提交后，错误处理器无法重新设置完整响应。
 
 ## 2. 错误字段 {#错误字段}
 
-Spring 提供 `ProblemDetail` 表示 HTTP API 问题，可以扩展业务字段：
+`ProblemDetail` 提供 `type`、`title`、`status`、`detail` 和 `instance`。本文按 RFC 9457 说明字段语义。
 
 ```json
 {
@@ -33,7 +33,9 @@ Spring 提供 `ProblemDetail` 表示 HTTP API 问题，可以扩展业务字段�
 }
 ```
 
-客户端依赖稳定的 `code`、HTTP status 和字段错误结构，不应解析面向人的 `detail` 文本。
+`code` 和 `traceId` 是业务扩展字段。客户端按状态、`type` 或稳定错误码分支。`detail` 用于展示，内容可随语言变化。
+
+响应使用 `application/problem+json`。正文的 `status` 应与实际 HTTP 状态一致。Spring MVC 的消息转换器支持该格式。
 
 ## 3. 异常处理器 {#异常处理器}
 
@@ -50,34 +52,40 @@ class ApiExceptionHandler {
 }
 ```
 
-处理器选择遵循异常类型和 ControllerAdvice 范围。业务异常、输入错误、认证授权、依赖失败与未知错误应分别映射，不能所有失败都返回 HTTP 200 或 500。
+示例把订单状态冲突映射为 HTTP 409。异常类型承载失败分类，HTTP 状态表达协议语义。未知异常映射为 500，并在日志中保留根因。
+
+`ResponseEntityExceptionHandler` 提供 MVC 标准异常处理基类。继承它可统一绑定错误、媒体类型错误等响应。
 
 ## 4. 状态码 {#状态码}
 
-常见判断：
+| 状态 | 语义 |
+| --- | --- |
+| 400 | 请求语法、参数或校验错误 |
+| 401 | 缺少有效认证凭证；需返回 `WWW-Authenticate` |
+| 403 | 服务端理解请求，但拒绝执行 |
+| 404 | 资源不存在，或服务端拒绝披露其存在 |
+| 409 | 操作与资源当前状态冲突 |
+| 429 | 请求频率超过限制 |
+| 500 | 服务端未预期错误 |
+| 502 | 网关收到无效的上游响应 |
+| 503 | 服务暂时无法处理请求 |
+| 504 | 网关等待上游响应超时 |
 
-- 400：请求结构或参数无法接受。
-- 401：缺少或无效身份认证。
-- 403：身份已知但无权执行。
-- 404：目标资源在当前可见范围不存在。
-- 409：当前资源状态与操作冲突。
-- 429：超过容量或速率限制。
-- 500：服务端未预期错误。
-- 502/503/504：网关或依赖可用性与超时。
-
-是否允许重试还要结合方法幂等性和响应头，不能只看 5xx。
+客户端重试还需考虑幂等性和 `Retry-After`。依赖失败需根据服务角色映射，避免一律返回网关状态。
 
 ## 5. 日志与响应 {#日志与响应}
 
-响应不应包含堆栈、SQL、文件路径、密钥或内部类名。服务端日志保留异常 cause、trace ID、规范化路由和必要业务标识，并对敏感数据脱敏。
+错误响应只保留公开错误字段。堆栈、SQL、密钥和内部路径留在受控诊断范围。
 
-预期业务冲突通常不需要每次打印完整 ERROR 堆栈；未知异常应记录一次完整根因。Controller 和 Advice 同时记录会造成重复日志。
+服务端日志记录 cause、trace ID 和必要业务标识。预期业务冲突可记录简要信息。未知异常在处理边界记录一次完整堆栈，避免重复日志。
 
 ## 6. ControllerAdvice 的处理范围 {#controlleradvice-的处理范围}
 
-Filter 在 DispatcherServlet 之前抛出的异常、响应已经提交后的序列化错误、异步后台任务失败，可能不进入同一 `@ExceptionHandler`。安全过滤链、Servlet error dispatch 和异步结果各有自己的错误边界。
+`ControllerAdvice` 参与 `DispatcherServlet` 的异常解析。Filter 在进入 MVC 前抛出的异常需由过滤链或容器处理。
 
-客户端断开连接也可能在写响应时产生 I/O 异常，应单独统计，避免都归类为应用 500。
+MVC 的 `Callable` 抛错后会触发异步派发。`DeferredResult.setErrorResult(exception)` 也走该流程。异常随后交给 MVC resolver。独立后台任务的失败由任务结果或异常处理器承接。
+
+响应提交后，状态与已写出的正文已经交付。此时应记录写出失败，并按连接状态结束处理。客户端断开造成的 I/O 错误应单独统计。
 
 ## 7. 字段校验错误 {#字段校验错误}
 
@@ -90,25 +98,35 @@ Filter 在 DispatcherServlet 之前抛出的异常、响应已经提交后的序
 }
 ```
 
-不要回显密码等拒绝值。字段路径要稳定，数组和嵌套对象需约定表示方式；面向用户的本地化文本可以由客户端或服务端另行生成。
+字段路径需约定数组和嵌套对象的表达方式。响应省略密码等敏感拒绝值。本地化消息与稳定错误码分别维护。
 
 ## 8. 契约测试 {#契约测试}
 
-为每类公开错误验证 status、Content-Type、code、字段结构和敏感信息缺失。还要测试不存在路由、错误方法、不可接受媒体类型、Filter 拒绝和下游超时，确保不同入口不产生几套互不兼容格式。
+测试每类公开错误的状态、媒体类型和字段结构。用敏感值作为测试输入，检查响应是否泄露。
 
-## 9. 常见问题
+边界用例包括路由缺失、方法错误、校验失败和 Filter 拒绝。还需覆盖异步异常、下游超时与响应写出失败。
 
-### 9.1 是否应该把所有响应都包装成 `{code, message, data}`
+## 9. 异常处理器选择 {#异常处理器选择}
 
-不是必需。HTTP 已提供状态和头，成功响应可以直接返回资源；关键是错误结构稳定。团队若统一包装，也要避免 HTTP 永远 200 导致代理、监控和客户端语义失真。
+Controller 内的局部 `@ExceptionHandler` 优先于全局 Advice。多个 Advice 按 `Ordered` 或 `@Order` 排序。较小的值具有较高优先级。
 
-### 9.2 捕获 `Exception` 作为最后兜底可以吗
+同一 Controller 或 Advice 内，先匹配顶层异常。多个类型匹配时，选择继承距离更近的类型。顶层无匹配时再查 cause 链。Spring 5.3 起支持任意深度的 cause。
 
-可以在边界脱敏并记录未知错误，但应放在更具体处理器之后，不能吞掉已提交响应、取消信号或把所有错误误报为同一业务失败。
+跨 Advice 时，优先级先决定查找顺序。高优先级 Advice 的 cause 匹配可先于低优先级的顶层匹配。将 `Exception` 兜底放在低优先级 Advice，避免提前截获错误。方法书写顺序不参与选择。
 
-## 10. 面试题
+## 10. 常见问题 {#常见问题}
 
-### 10.1 Spring MVC 怎样实现统一异常处理 {#global-exception-handling}
+### 10.1 成功响应与错误响应 {#成功响应与错误响应}
+
+成功响应可直接返回资源，错误响应采用稳定结构。团队使用统一包装时，也应保留正确的 HTTP 状态。
+
+### 10.2 未知异常兜底 {#未知异常兜底}
+
+边界可捕获 `Exception`，脱敏后返回 500。兜底 Advice 应设置较低优先级。响应已提交时，应保留原响应并记录失败。
+
+## 11. 面试题 {#面试题}
+
+### 11.1 Spring MVC 怎样实现统一异常处理 {#global-exception-handling}
 
 <!-- 面试来源：
 - CVTE：https://www.nowcoder.com/discuss/353154991655428096
@@ -117,25 +135,42 @@ Filter 在 DispatcherServlet 之前抛出的异常、响应已经提交后的序
 
 **出现公司**：CVTE、珍爱网
 
-**考察重点**
-
-- ControllerAdvice、ExceptionHandler 与 resolver 链。
-- HTTP 状态和稳定业务错误码。
-- Filter、异步和响应提交边界。
+**考察重点**：理解异常映射、HTTP 状态与响应边界。
 
 **相关内容**：[错误字段](#错误字段)至[契约测试](#契约测试)。
 
 <details>
 <summary>参考回答</summary>
 
-使用 `@RestControllerAdvice` 集中声明 `@ExceptionHandler`，把业务冲突、校验、认证授权、依赖失败和未知异常分别映射为合适的 HTTP 状态及稳定错误码。可以使用 Spring 的 ProblemDetail，并附 trace ID；响应不暴露堆栈和内部信息。
+用 `@RestControllerAdvice` 声明集中异常映射。`@ExceptionHandler` 按异常类型选择处理方法。返回 `ProblemDetail` 或 `ResponseEntity`，明确状态与错误字段。
 
-ControllerAdvice 参与 MVC 的 HandlerExceptionResolver 链，Filter 自身异常、异步后台任务和响应提交后的错误未必在其范围内。要为这些边界分别处理，并用契约测试覆盖状态、媒体类型和敏感字段。
+MVC 异步异常仍可进入 resolver。Filter 自身异常需交给过滤链或容器。响应已提交后，应记录失败并结束当前写出。
 
 </details>
 
-## 11. 参考资料
+### 11.2 多个异常处理器都能匹配时，Spring MVC 怎样选择？ {#exception-handler-selection}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：局部处理器、Advice 顺序与 cause 匹配。
+
+**相关内容**：[异常处理器选择](#异常处理器选择)。
+
+<details>
+<summary>参考回答</summary>
+
+Controller 局部处理器优先，再按顺序查找全局 Advice。同一处理器中优先匹配顶层异常，再查 cause。类型匹配按继承深度选择。高优先级 Advice 的 cause 匹配可先于低优先级顶层匹配。
+
+</details>
+
+## 12. 参考资料 {#参考资料}
 
 - [Spring Framework：Controller Exceptions](https://docs.spring.io/spring-framework/reference/web/webmvc/mvc-controller/ann-exceptionhandler.html)
 - [Spring Framework：Error Responses](https://docs.spring.io/spring-framework/reference/web/webmvc/mvc-ann-rest-exceptions.html)
 - [RFC 9457：Problem Details for HTTP APIs](https://www.rfc-editor.org/rfc/rfc9457.html)
+- [Spring Framework：Asynchronous Requests](https://docs.spring.io/spring-framework/reference/web/webmvc/mvc-ann-async.html)
+- [RFC 9110：Status Codes](https://www.rfc-editor.org/rfc/rfc9110.html#section-15)
+- [RFC 6585：429 Too Many Requests](https://www.rfc-editor.org/rfc/rfc6585.html#section-4)
+- [Spring Framework：Controller Advice](https://docs.spring.io/spring-framework/reference/web/webmvc/mvc-controller/ann-advice.html)

@@ -7,17 +7,17 @@ knowledge:
 
 # IoC 容器
 
-Spring IoC 容器负责根据配置创建对象、连接依赖并管理生命周期。业务对象只声明自己需要什么，不再负责查找依赖或决定依赖的具体实现。
+Spring IoC 容器创建对象、装配依赖并管理生命周期。本文负责 IoC、DI 与容器的使用边界。定义处理见 [BeanDefinition](./beandefinition-container-startup.mdx)。装配规则见 [依赖注入](./dependency-injection-selection.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- 对象在内部 `new` 依赖会固定实现，测试和配置变化都要修改业务代码。
-- 控制反转（IoC）指对象的创建和装配由容器负责；依赖注入（DI）是它的实现方式，容器通过构造器、工厂方法或 Setter 把依赖交给对象。[卡](#ioc-di)
-- 容器先注册描述对象的 `BeanDefinition`，需要时按定义创建 Bean 并管理生命周期。
-- 业务代码频繁调用 `getBean` 会退化为 Service Locator，依赖从构造器签名中消失。
-- 实体、值对象等短生命周期对象直接 `new`，需要注入、代理或生命周期管理的组件才注册为 Bean。
+- IoC 将对象创建与装配交给外部容器，DI 通过参数或属性交付依赖。[卡](#ioc-di)
+- BeanDefinition 描述创建方式，Bean 是按定义得到的对象。
+- 构造器声明依赖，Service Locator 由业务对象主动查找依赖。
+- Spring singleton 按容器和 Bean 定义共享，业务可变状态仍需同步。[卡](#singleton-thread-safety)
+- 实体和值对象可直接创建，受管组件交给容器装配。
 
-## 2. 在对象内部创建依赖 {#在对象内部创建依赖}
+## 2. 依赖创建与外部装配 {#在对象内部创建依赖}
 
 ```java
 public final class OrderService {
@@ -26,9 +26,9 @@ public final class OrderService {
 }
 ```
 
-`OrderService` 同时决定业务流程、客户端实现和地址。测试时难以替换为本地桩，生产配置变化也需要修改业务代码。
+示例在业务类内固定客户端实现与地址。测试替换依赖或修改地址时，都需触及业务代码。
 
-将依赖交给构造器后，对象只保留协作关系：
+构造器注入将选择移到装配处：
 
 ```java
 public final class OrderService {
@@ -40,67 +40,58 @@ public final class OrderService {
 }
 ```
 
-谁创建 `PaymentClient`、选择哪个实现，由应用装配边界决定。
+业务类仍调用 `PaymentClient` 契约。创建哪种实现，由调用构造器的装配方决定。
 
 ## 3. IoC 与 DI {#ioc-与-di}
 
-**控制反转（IoC）**指对象创建和协作关系的控制权从业务对象转移到外部容器。**依赖注入（DI）**是实现方式：容器通过构造器、工厂方法或属性把依赖交给对象。
+控制反转将创建和协作装配交给外部容器。依赖注入是实现方式，容器通过参数或属性交付依赖。
 
-Spring 容器还负责：
-
-- 从 Java 配置、组件扫描或其他来源读取对象定义。
-- 解析按类型、名称、限定符表达的依赖关系。
-- 执行初始化、销毁和作用域协议。
-- 应用事务、异步、校验等基础设施处理器。
+Spring 读取配置后解析依赖，并执行作用域协议。处理器还能加入代理、生命周期注解等能力。业务类只声明需要的协作者。
 
 ## 4. BeanDefinition 与实例 {#beandefinition-与实例}
 
-容器先注册 `BeanDefinition`，其中描述类、工厂方法、作用域、依赖、初始化方式等元数据；需要对象时，再按照定义创建 Bean。
-
-```java
-@Configuration
-class PaymentConfiguration {
-    @Bean
-    PaymentClient paymentClient(PaymentProperties properties) {
-        return new HttpPaymentClient(properties.endpoint());
-    }
-}
-```
-
-`@Bean` 方法的参数也是依赖声明。容器解析 `PaymentProperties`，再调用工厂方法得到实例。
+定义先注册，实例按作用域创建，详见 [BeanDefinition](./beandefinition-container-startup.mdx)。
 
 ## 5. 替换与测试 {#替换与测试}
-
-测试可以直接构造业务对象：
 
 ```java
 PaymentClient stub = request -> PaymentResult.approved();
 OrderService service = new OrderService(stub);
 ```
 
-不需要为每个单元测试启动 Spring。集成测试再验证扫描、条件配置、代理和数据库等容器行为。
+测试直接传入桩对象，验证业务对支付结果的处理。集成测试再检查扫描、装配、代理与真实资源。
 
-容器还能统一记录 Bean 创建时间、依赖图和配置来源，但集中管理也使启动链路更长。出现重复 Bean、条件不匹配或循环依赖时，需要查看容器证据，而不是只沿着 `new` 调用查找。
+容器将对象装配集中管理，也增加启动诊断步骤。Bean 缺失时，应检查定义来源与条件。依赖成环时，应检查组件职责。
 
-## 6. 容器的使用边界 {#容器的使用边界}
+## 6. 容器管理范围 {#容器的使用边界}
 
-业务类频繁调用 `applicationContext.getBean(...)` 会重新变成 Service Locator：依赖从构造器签名中消失，测试和静态分析都更困难。
+业务类主动调用 `applicationContext.getBean(...)` 属于服务定位。依赖藏在方法内部，构造签名无法表达它。
 
-动态选择可以使用注入的 `Map<String, Strategy>`、`ObjectProvider<T>` 或明确的工厂接口。只有框架扩展、插件系统等确实需要查询容器时，才直接使用容器 API。
+动态策略可通过集合或工厂接口注入。框架扩展与插件注册可使用容器查询 API。
 
-## 7. 常见问题
+实体、值对象和局部临时对象可直接 `new`。需要装配、代理或生命周期管理的组件注册为 Bean。
 
-### 7.1 使用 Spring 以后还可以 `new` 对象吗
+## 7. 单例与线程安全 {#单例与线程安全}
 
-当然可以。实体、值对象和方法内部短生命周期对象通常直接创建。需要容器注入、代理、作用域或生命周期管理的组件才应成为 Bean。
+Spring singleton 表示同一容器内按定义共享实例。相同类型可注册多个 Bean，多个容器也各有实例。
 
-### 7.2 IoC 能消除对象之间的耦合吗
+容器负责安全发布初始化结果。发布后的业务可变状态，仍按 Java 并发规则保护。例如 singleton Controller 的字段会被并发请求共享。
 
-不能。`OrderService` 仍然依赖 `PaymentClient` 的契约。IoC 让实现选择和构建过程从业务逻辑中分离，使耦合更明确、更容易替换。
+请求数据应放在局部变量、参数或请求作用域中。确需共享的计数、缓存和集合，使用对应并发机制。把 Bean 改为 prototype，也需检查它是否被 singleton 长期持有。
 
-## 8. 面试题
+## 8. 常见问题 {#常见问题}
 
-### 8.1 Spring IoC 和依赖注入分别是什么 {#ioc-di}
+### 8.1 容器与手工对象 {#容器与手工对象}
+
+容器管理需要统一装配的组件。短生命周期实体和值对象可由业务直接创建。
+
+### 8.2 依赖契约与实现替换 {#依赖契约与实现替换}
+
+IoC 分离装配与业务处理。业务对象仍依赖协作者的接口语义。替换实现需满足相同契约。
+
+## 9. 面试题 {#面试题}
+
+### 9.1 Spring IoC 和依赖注入分别是什么 {#ioc-di}
 
 <!-- 面试来源：
 - 美团：https://www.nowcoder.com/discuss/614236533700194304
@@ -109,24 +100,39 @@ OrderService service = new OrderService(stub);
 
 **出现公司**：美团
 
-**考察重点**
+**考察重点**：区分对象装配控制权与依赖交付方式。
 
-- 对象控制权与依赖提供方式。
-- BeanDefinition、实例和生命周期。
-- 容器不能消除业务契约。
-
-**相关内容**：[在对象内部创建依赖](#在对象内部创建依赖)至[BeanDefinition 与实例](#beandefinition-与实例)。
+**相关内容**：[依赖创建与外部装配](#在对象内部创建依赖)至[BeanDefinition 与实例](#beandefinition-与实例)。
 
 <details>
 <summary>参考回答</summary>
 
-IoC 是把对象创建、实现选择和生命周期交给外部容器；DI 是容器通过构造器、工厂方法或属性把协作对象交给 Bean。业务对象因此只声明依赖，不负责查找或创建具体实现。
+IoC 把对象创建与装配交给外部容器。DI 通过构造参数或属性把协作对象交给 Bean。业务类因此可以显式声明依赖。
 
-Spring 先把配置表示成 BeanDefinition，再按作用域创建实例、解析依赖并执行扩展点。它让装配更容易替换和测试，但依赖契约仍然存在，也会增加容器启动和诊断成本。
+Spring 读取定义、解析依赖，并按作用域管理实例。实现选择集中在装配边界，便于替换和测试。业务契约仍由各组件共同遵守。
 
 </details>
 
-## 9. 参考资料
+### 9.2 Spring singleton Bean 是否天然线程安全？ {#singleton-thread-safety}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：容器共享、发布与运行时可变状态。
+
+**相关内容**：[单例与线程安全](#单例与线程安全)。
+
+<details>
+<summary>参考回答</summary>
+
+singleton 只定义共享范围，业务可变状态仍需同步。容器安全发布初始化结果，但请求后的字段修改由业务负责。无状态 Bean、局部变量和并发数据结构可分别处理不同需求。
+
+</details>
+
+## 10. 参考资料 {#参考资料}
 
 - [Spring Framework：Introduction to the Spring IoC Container and Beans](https://docs.spring.io/spring-framework/reference/core/beans/introduction.html)
 - [Spring Framework：Dependencies](https://docs.spring.io/spring-framework/reference/core/beans/dependencies/factory-collaborators.html)
+- [Spring Framework：Bean Scopes](https://docs.spring.io/spring-framework/reference/core/beans/factory-scopes.html)
+- [Spring Framework：Thread Safety and Visibility](https://docs.spring.io/spring-framework/reference/core/beans/factory-nature.html#beans-factory-thread-safety)
