@@ -7,79 +7,91 @@ knowledge:
 
 # MCP
 
-MCP（Model Context Protocol）是连接 AI 应用与外部工具、数据源的开放协议。工具提供方实现一次 MCP Server，就可以被任何支持 MCP 的应用接入，不必为每个应用单独写集成代码。本文讲 MCP 的角色、能力、交互流程、传输方式，以及它和 Function Calling、普通 API 的关系与安全风险。
+MCP 是 AI 应用接入工具与数据的开放协议。本文按 **2025-11-25** 规范讲解角色、传输和错误。核对日期为 2026-10-13。模型调用格式见 [Function Calling](./function-calling.mdx)。
 
 ## 1. 面试核心 {#core}
 
-- 三个角色：**Host** 是 AI 应用（如 IDE、桌面客户端），内部为每个服务器创建一个 **Client**，**Server** 对外提供能力。Client 与 Server 一对一连接。[卡](#mcp-flow)
-- 消息格式是 JSON-RPC 2.0；标准传输有 stdio（本地子进程）和 Streamable HTTP（远程服务）。
-- Server 提供三类能力：Tools（模型决定调用的操作）、Resources（应用读取的数据）、Prompts（用户选择的提示模板）。
-- MCP 不替代 Function Calling：模型仍通过工具调用提出请求，MCP 规范的是 Host 如何发现和调用外部工具。它解决的是 M 个应用 × N 个工具的集成问题。[卡](#mcp-vs-api)
-- 风险来自第三方 Server：工具描述投毒、过度权限、数据外泄、远程服务鉴权缺失。接入前审核，执行时按工具授权。[卡](#mcp-security)
+- Host 管理 Client，Client 与 Server 建立独立连接。[卡](#mcp-flow)
+- MCP 2025-11-25 使用 JSON-RPC 2.0 交换消息。
+- 标准传输包括 stdio 与 Streamable HTTP。
+- MCP 负责能力发现和调用，Function Calling 表达模型请求。[卡](#mcp-vs-api)
+- Roots 声明工作范围，实际访问权限由执行环境限制。[卡](#mcp-security)
 
 ## 2. 角色与能力 {#角色与能力}
 
 ```text
-┌──────────── Host（AI 应用）────────────┐
-│  模型  ←→  Client A  ←→  Server: GitHub │  （Streamable HTTP，远程）
-│        ←→  Client B  ←→  Server: 文件系统 │  （stdio，本地子进程）
-└────────────────────────────────────────┘
+Host（AI 应用）
+  ├─ Client A ↔ Server A（本地 stdio）
+  └─ Client B ↔ Server B（Streamable HTTP）
 ```
 
-| 方向 | 能力 | 由谁控制 | 说明 |
-| --- | --- | --- | --- |
-| Server → Host | Tools | 模型 | 可执行操作，带 JSON Schema 参数，如创建 Issue |
-| Server → Host | Resources | 应用 | 只读数据，用 URI 标识，如文件内容、表结构 |
-| Server → Host | Prompts | 用户 | 预定义提示模板，通常以斜杠命令形式出现 |
-| Host → Server | Sampling | Server 发起 | Server 请求 Host 代为调用模型 |
-| Host → Server | Roots | Host | 告诉 Server 可以访问的目录范围 |
-| Host → Server | Elicitation | Server 发起 | Server 请求向用户收集补充信息 |
+| 提供方 | 能力 | 用途 |
+| --- | --- | --- |
+| Server | Tools | 模型可选择的操作 |
+| Server | Resources | 应用读取的 URI 资源 |
+| Server | Prompts | 用户选择的提示模板 |
+| Client | Sampling | 接受 Server 的模型采样请求 |
+| Client | Roots | 向 Server 声明工作目录 |
+| Client | Elicitation | 接受 Server 的用户信息收集请求 |
 
-Server 向 Host 声明自己支持哪些能力，Host 也声明自己支持哪些客户端特性，双方在初始化时协商。
+Tools、Resources、Prompts 分别强调模型、应用和用户控制。实际交互仍由 Host 设计，并受授权约束。客户端特性由 Client 声明，Server 按协商结果使用。
+
+Roots 是目录信息，无法独立强制文件隔离。Server 的访问能力取决于进程权限和沙箱。
 
 ## 3. 交互流程 {#交互流程}
 
-1. **初始化**：Client 发送 `initialize`，带协议版本和客户端能力；Server 返回版本和服务端能力；Client 发送 `notifications/initialized`。
-2. **发现**：Client 调用 `tools/list`，拿到每个工具的名称、描述和 `inputSchema`。
-3. **注入**：Host 把这些工具转换为模型 API 的工具定义，放入请求。
-4. **调用**：模型返回工具调用后，Host 找到对应的 Client，发送 `tools/call`（工具名 + 参数）。
-5. **返回**：Server 执行并返回内容（文本、图片或资源引用）和 `isError` 标记，Host 把结果作为工具结果交给模型。
-6. **变化通知**：Server 的工具列表变化时发送 `notifications/tools/list_changed`，Client 重新拉取。
+1. Client 发送 `initialize`，携带版本与能力。
+2. Server 返回支持的版本和能力。
+3. Client 确认版本可用后，发送 `notifications/initialized`。
+4. Client 调用 `tools/list`，获取工具契约。
+5. Host 把选定工具映射为模型 API 定义。
+6. 模型提出请求后，Client 发送 `tools/call`。
+7. Server 返回结果，Host 再回传给模型。
+
+版本无法兼容时，Client 应结束连接。`tools/list` 支持分页，需按游标读取。Server 声明 `listChanged` 后，可发送列表变化通知。
 
 ```json
-{"jsonrpc": "2.0", "id": 7, "method": "tools/call",
- "params": {"name": "create_issue", "arguments": {"repo": "acme/web", "title": "登录页 500"}}}
+{"jsonrpc":"2.0","id":7,"method":"tools/call",
+ "params":{"name":"get_order","arguments":{"order_id":"SO100"}}}
 ```
 
-### 3.1 传输方式
+响应 `id=7` 对应这次 JSON-RPC 请求。Host 还需维护它与模型调用 ID 的映射。
 
-- **stdio**：Host 启动 Server 作为子进程，通过标准输入输出交换消息。适合本地工具，不经过网络，权限等同本地进程。
-- **Streamable HTTP**：Server 是独立的 HTTP 服务，Client 用 POST 发送消息，Server 可以用普通响应或 SSE 流返回。适合远程和多用户服务，需要鉴权。规范中更早的 HTTP+SSE 双端点方式已被它取代。
+### 3.1 传输方式 {#传输方式}
 
-## 4. 与 Function Calling、普通 API 的关系 {#与-function-calling普通-api-的关系}
+stdio 通过子进程的标准输入输出交换消息。`stdout` 只能写协议消息，日志可写 `stderr`。子进程权限由启动配置与沙箱决定。
 
-| 对比 | Function Calling | MCP | 普通 API |
-| --- | --- | --- | --- |
-| 解决的问题 | 模型如何表达“调用某个工具” | 应用如何发现、连接、调用外部工具 | 服务如何提供功能 |
-| 所在位置 | 模型 API | Host 与 Server 之间 | 服务与调用方之间 |
-| 工具定义 | 开发者写在代码中 | Server 运行时提供，可动态变化 | 文档或 OpenAPI，供开发者阅读 |
-| 复用 | 每个应用各写一遍 | 一个 Server 可被多个 Host 使用 | 每个应用各写集成代码 |
+Streamable HTTP 使用单个 MCP 端点。Client 通过 POST 发消息，响应可为 JSON 或 SSE。GET 可建立服务端消息流，未提供该流时返回 405。
 
-一次完整调用中，两者同时出现：MCP 提供工具定义和执行通道，Function Calling 让模型选择工具并生成参数。MCP Server 内部通常仍然调用普通 API，它增加的是统一的发现、描述和调用协议。
+2024-11-05 的 HTTP+SSE 使用旧的双端点方案。新版传输仍可使用 SSE，两种传输要按版本区分。
 
-MCP 被广泛采用的原因是降低集成成本：没有统一协议时，M 个应用接 N 个工具需要 M×N 份集成；有了协议，各自实现一次。代价是多了一层进程或网络调用，以及第三方 Server 的信任问题。
+### 3.2 错误类型与会话恢复 {#错误类型与会话恢复}
+
+协议错误使用 JSON-RPC `error`。例如工具名未知或方法不可用。工具执行中发生业务错误，可返回 `isError: true`。这仍是 `tools/call` 的结果，便于模型调整。
+
+HTTP 会话可在初始化时返回 `MCP-Session-Id`。Client 后续请求携带此 ID。收到该会话的 404 后，重新初始化。后续请求还携带协商的 `MCP-Protocol-Version`。
+
+连接断开只说明传输中断，工具执行状态需要另行确认。SSE 恢复通过事件 ID 与 `Last-Event-ID` 配合。重放消息与业务幂等是两项独立保证。
+
+## 4. Function Calling 与 API 分工 {#与-function-calling普通-api-的关系}
+
+| 层次 | 职责 |
+| --- | --- |
+| Function Calling | 模型表达工具选择与参数 |
+| MCP | 应用发现并调用外部能力 |
+| 业务 API | 服务执行具体业务操作 |
+
+MCP Server 可以封装已有业务 API。标准化减少应用与服务的专用适配。兼容性仍取决于协议版本、能力和内容类型。接入也增加进程或网络开销。
 
 ## 5. 安全风险 {#安全风险}
 
-- **工具描述投毒**：恶意 Server 在工具描述中写入指令，诱导模型泄露数据或调用其他工具。描述本身会进入上下文，属于不可信内容。
-- **动态变更**：Server 在审核后修改工具定义。可以固定版本、记录定义的哈希，变化时重新确认。
-- **过度权限**：本地 stdio Server 拥有启动它的用户的全部权限；远程 Server 拿到的令牌范围过大。
-- **数据外泄**：一个 Server 的结果被模型传给另一个 Server 的参数。
-- **鉴权**：远程 Server 应作为 OAuth 2.1 资源服务器校验访问令牌，令牌要绑定目标 Server，不能把用户令牌原样转发给下游。
+工具描述和结果都能携带恶意内容。定义变化后需要重新检查其访问与副作用范围。注入机制见[提示注入](../safety/prompt-injection.mdx)。
 
-缓解措施：只接入审核过的 Server；按工具配置自动允许、需要确认和禁止；本地 Server 放在沙箱中运行；记录所有调用；敏感操作要求用户确认。
+采用 HTTP 授权时，使用 OAuth 2.1 框架。Server 验证访问令牌。校验目标资源、有效期及权限范围。下游访问使用为下游正确签发的凭据。规范禁止直接透传收到的访问令牌。
 
-## 6. 面试题
+本地 HTTP 服务还需校验 Origin，并限制监听地址。stdio 进程按最小权限启动。认证识别身份，具体工具与数据仍需逐次授权。
+
+## 6. 面试题 {#面试题}
 
 ### 6.1 MCP 是什么？Agent 通过 MCP 调用工具的流程是什么？ {#mcp-flow}
 
@@ -101,14 +113,14 @@ MCP 被广泛采用的原因是降低集成成本：没有统一协议时，M �
 - Host、Client、Server 的职责。
 - 初始化、发现、调用的消息流程与传输方式。
 
-**相关内容**：[角色与能力](#角色与能力)、[交互流程](#交互流程)、[传输方式](#31-传输方式)。
+**相关内容**：[角色与能力](#角色与能力)、[交互流程](#交互流程)、[传输方式](#传输方式)。
 
 <details>
 <summary>参考回答</summary>
 
-MCP 是连接 AI 应用和外部工具、数据源的开放协议。Host 是 AI 应用，为每个 Server 创建一个 Client；Server 提供 Tools、Resources、Prompts。消息使用 JSON-RPC 2.0，本地 Server 通过 stdio 子进程通信，远程 Server 使用 Streamable HTTP。
+MCP 统一 AI 应用与外部能力的交互。Host 管理 Client，每个 Client 连接一个 Server。Server 暴露工具、资源和提示模板。
 
-流程：Client 发送 `initialize` 协商版本和能力；调用 `tools/list` 获取工具名称、描述和输入 Schema；Host 把它们转换成模型的工具定义；模型返回工具调用后，Host 通过对应 Client 发送 `tools/call`；Server 执行并返回结果和错误标记；Host 把结果作为工具结果交给模型继续推理。Server 的工具变化时会发送列表变更通知。
+Client 初始化时协商版本与能力，再发 initialized 通知。通过 `tools/list` 发现工具，经 Host 映射供模型选择。调用由 `tools/call` 发出，结果再交给模型。2025-11-25 的标准传输为 stdio 和 Streamable HTTP。
 
 </details>
 
@@ -129,16 +141,14 @@ MCP 是连接 AI 应用和外部工具、数据源的开放协议。Host 是 AI 
 - 三者所处的层次和解决的问题。
 - M×N 集成问题与引入协议的代价。
 
-**相关内容**：[与 Function Calling、普通 API 的关系](#与-function-calling普通-api-的关系)。
+**相关内容**：[Function Calling 与 API 分工](#与-function-calling普通-api-的关系)。
 
 <details>
 <summary>参考回答</summary>
 
-Function Calling 是模型 API 的能力，让模型输出要调用的工具和参数。MCP 是应用和工具服务之间的协议，规定如何发现工具、获取描述、发起调用和返回结果。普通 API 是服务本身的接口，面向开发者，调用方要自己写集成代码。
+Function Calling 负责模型请求，MCP 负责能力发现与调用。业务 API 则实现具体操作。Host 将 MCP 工具映射到模型接口，再把调用交给 Server。
 
-一次调用中三者配合：MCP Server 提供工具定义，Host 用 Function Calling 让模型选择，Host 再通过 MCP 发起调用，Server 内部调用普通 API。
-
-MCP 被广泛采用，是因为它把 M 个应用对接 N 个工具的 M×N 集成变成各自实现一次，工具定义可以在运行时发现和更新。代价是多一层进程或网络调用，以及需要处理第三方 Server 的信任和权限。
+统一协议减少专用集成代码，工具目录也可动态发现。兼容性仍需核对版本和能力。额外代价包括进程通信、网络延迟与服务信任管理。
 
 </details>
 
@@ -163,14 +173,36 @@ MCP 被广泛采用，是因为它把 M 个应用对接 N 个工具的 M×N 集�
 <details>
 <summary>参考回答</summary>
 
-风险有：工具描述和返回内容会进入模型上下文，恶意 Server 可以借此注入指令；Server 在接入后修改工具定义；本地 stdio Server 拥有当前用户的全部权限；模型可能把一个 Server 返回的敏感数据作为参数传给另一个 Server；远程 Server 没有鉴权或令牌范围过大。
+风险包括描述投毒、权限过宽和敏感数据外传。Host 需审核 Server，并限制工具与数据范围。Roots 只是目录声明，访问隔离依靠进程与沙箱。
 
-鉴权方面，远程 Server 作为 OAuth 2.1 资源服务器校验访问令牌，令牌按用户和权限范围签发，并绑定到该 Server，Server 访问下游服务时使用自己的凭据而不是转发用户令牌。其他措施：只接入审核过的 Server 并固定版本，定义变化时重新确认；按工具配置允许、确认或禁止；本地 Server 放在沙箱中；记录全部调用，敏感操作由用户确认。
+HTTP 授权使用 OAuth 2.1 框架，按 2025-11-25 规范校验令牌。令牌需面向当前 Server，并具备所需范围。访问下游使用面向下游签发的凭据，避免令牌透传。工具执行时仍要校验业务权限。
 
 </details>
 
-## 7. 参考资料
+### 6.4 MCP 协议错误、工具执行错误和 HTTP 断线应如何区分？ {#mcp-errors-reconnect}
 
-- [Model Context Protocol：Specification](https://modelcontextprotocol.io/specification/latest)
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**出现公司**：暂无已核验的公开来源（本站自测）
+
+**考察重点**：错误层次与恢复边界。
+
+**相关内容**：[错误类型与会话恢复](#错误类型与会话恢复)。
+
+<details>
+<summary>参考回答</summary>
+
+协议错误通过 JSON-RPC `error` 返回。工具业务失败可用结果中的 `isError: true` 表达。HTTP 断线只反映连接状态，写入结果仍需核对。会话 ID 收到 404 后重新初始化。消息恢复与业务防重复需要分别实现。
+
+</details>
+
+## 7. 参考资料 {#参考资料}
+
+- [Model Context Protocol：Specification](https://modelcontextprotocol.io/specification/2025-11-25)
 - [Model Context Protocol：Architecture overview](https://modelcontextprotocol.io/docs/learn/architecture)
-- [Model Context Protocol：Security best practices](https://modelcontextprotocol.io/specification/latest/basic/security_best_practices)
+- [Model Context Protocol：Security best practices](https://modelcontextprotocol.io/specification/2025-11-25/basic/security_best_practices)
+- [MCP 2025-11-25：Transports](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports)
+- [MCP 2025-11-25：Tools](https://modelcontextprotocol.io/specification/2025-11-25/server/tools)
+- [MCP 2025-11-25：Lifecycle](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle)
+- [MCP 2025-11-25：Authorization](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization)
+- [MCP 2025-11-25：Roots](https://modelcontextprotocol.io/specification/2025-11-25/client/roots)
