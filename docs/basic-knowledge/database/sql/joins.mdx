@@ -7,7 +7,7 @@ knowledge:
 
 # SQL 连接
 
-SQL 连接根据条件组合不同来源的行。本文负责 MySQL 8.4 的匹配、补空、存在性和结果粒度。分组统计见 [SQL 聚合](./aggregation.mdx)，计划判断见[执行计划](../indices/execution-plan.mdx)。
+SQL 连接根据条件组合不同来源的行。本文负责 MySQL 8.0 的匹配、补空、存在性和结果粒度。分组统计见 [SQL 聚合](./aggregation.mdx)，计划判断见[执行计划](../indices/execution-plan.mdx)。
 
 ## 1. 面试核心 {#core}
 
@@ -91,7 +91,7 @@ ORDER BY c.id;
 
 嵌套循环对每个外层行查找内层匹配项。内层连接列有索引时，可减少每轮检查量。驱动表应关注过滤后的行数，而非仅看表总行数。
 
-MySQL 8.4 可对适合的连接选择 hash join。等值连接先构造哈希表，再探测匹配键。内存不足时还需考虑磁盘分区成本。实际算法与循环次数见[执行计划](../indices/execution-plan.mdx)。
+MySQL 8.0.18 起可对适合的连接选择 hash join。等值连接先构造哈希表，再探测匹配键。内存不足时还需考虑磁盘分区成本。实际算法与循环次数见[执行计划](../indices/execution-plan.mdx)。
 
 ## 7. 使用边界 {#使用边界}
 
@@ -165,13 +165,13 @@ EXISTS 判断是否至少有一个匹配行。NOT EXISTS 判断是否完全没�
 <details>
 <summary>参考回答</summary>
 
-连接成本取决于过滤后行数和内层访问成本。嵌套循环需关注外层行数与每次索引探测。Hash join 则比较构建、探测及内存成本。MySQL 8.4 根据候选计划选算法，需用实际计划验证。
+连接成本取决于过滤后行数和内层访问成本。嵌套循环需关注外层行数与每次索引探测。Hash join 则比较构建、探测及内存成本。MySQL 8.0 根据候选计划选算法，需用实际计划验证。
 
 </details>
 
 ## 9. 参考资料 {#参考资料}
 
-- [MySQL：JOIN Clause](https://dev.mysql.com/doc/refman/8.4/en/join.html)
-- [MySQL 8.4：EXISTS and NOT EXISTS](https://dev.mysql.com/doc/refman/8.4/en/exists-and-not-exists-subqueries.html)
-- [MySQL 8.4：Hash Join Optimization](https://dev.mysql.com/doc/refman/8.4/en/hash-joins.html)
-- [MySQL 8.4：Comparison Operators](https://dev.mysql.com/doc/refman/8.4/en/comparison-operators.html)
+- [MySQL：JOIN Clause](https://dev.mysql.com/doc/refman/8.0/en/join.html)
+- [MySQL 8.0：EXISTS and NOT EXISTS](https://dev.mysql.com/doc/refman/8.0/en/exists-and-not-exists-subqueries.html)
+- [MySQL 8.0：Hash Join Optimization](https://dev.mysql.com/doc/refman/8.0/en/hash-joins.html)
+- [MySQL 8.0：Comparison Operators](https://dev.mysql.com/doc/refman/8.0/en/comparison-operators.html)

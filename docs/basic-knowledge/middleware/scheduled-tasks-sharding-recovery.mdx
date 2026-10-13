@@ -87,7 +87,7 @@ Job 的 backoffLimit 限制失败重试次数。达到运行时限会优先终�
 
 ### 8.1 时区与计划标识 {#时区与计划标识}
 
-Kubernetes 1.27 起，.spec.timeZone 为稳定功能。例如可设为 Etc/UTC。计划时间应转成明确的 UTC 时间点或携带偏移。
+Kubernetes CronJob 可以用 `.spec.timeZone` 指定时区，例如 Etc/UTC。计划时间应转成明确的 UTC 时间点或携带偏移。
 
 夏令时会产生重复或缺失的本地时间。业务需定义按自然日还是绝对时间结算。实例 ID 使用计划时间，而非重试开始时间。
 

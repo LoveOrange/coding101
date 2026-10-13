@@ -6,7 +6,7 @@ knowledge:
 
 # 执行计划
 
-执行计划描述查询的访问路径和操作顺序。本文负责 MySQL 8.4 的 EXPLAIN 字段与实测对照。索引候选方案的设计见[索引设计](./index-review.mdx)。
+执行计划描述查询的访问路径和操作顺序。本文负责 MySQL 8.0 的 EXPLAIN 字段与实测对照。索引候选方案的设计见[索引设计](./index-review.mdx)。
 
 ## 1. 面试核心 {#core}
 
@@ -70,11 +70,11 @@ WHERE user_id = 7 ORDER BY created_at LIMIT 20;
 
 ## 5. 实际统计与估算偏差 {#实际统计与估算偏差}
 
-`EXPLAIN ANALYZE FORMAT=TREE` 展示实际执行树。`actual time=a..b` 的单位是毫秒。`a` 是取得首行的时间，`b` 是完成迭代器的时间。存在多次循环时，时间和输出行数按次平均。
+MySQL 8.0.18 起支持 `EXPLAIN ANALYZE`。它展示实际执行树，8.0.21 起可显式指定 `FORMAT=TREE`。`actual time=a..b` 的单位是毫秒。`a` 是取得首行的时间，`b` 是完成迭代器的时间。存在多次循环时，时间和输出行数按次平均。
 
 父节点时间包含子节点。整棵树的节点时间相加会重复计算。内层每次只需 0.1ms，循环 10000 次也会累积成本。`rows × loops` 可辅助估算总输出量。
 
-`EXPLAIN ANALYZE` 会运行语句。MySQL 8.4 还支持它分析多表 UPDATE 和 DELETE。这些语句会修改数据，实验应使用独立练习库。
+`EXPLAIN ANALYZE` 会运行语句。MySQL 8.0 还支持它分析多表 UPDATE 和 DELETE。这些语句会修改数据，实验应使用独立练习库。
 
 估算偏差大时，检查实际参数和数据倾斜。再检查采样统计是否过时、过滤列是否相关。`ANALYZE TABLE` 更新统计信息。它与执行查询计时的 `EXPLAIN ANALYZE` 分属不同操作。
 
@@ -164,6 +164,6 @@ WHERE user_id = 7 ORDER BY created_at LIMIT 20;
 
 ## 8. 参考资料 {#6-参考资料}
 
-- [MySQL：EXPLAIN](https://dev.mysql.com/doc/refman/8.4/en/explain.html)
-- [MySQL：EXPLAIN Output](https://dev.mysql.com/doc/refman/8.4/en/explain-output.html)
-- [MySQL 8.4：Optimizer Statistics](https://dev.mysql.com/doc/refman/8.4/en/optimizer-statistics.html)
+- [MySQL：EXPLAIN](https://dev.mysql.com/doc/refman/8.0/en/explain.html)
+- [MySQL：EXPLAIN Output](https://dev.mysql.com/doc/refman/8.0/en/explain-output.html)
+- [MySQL 8.0：Optimizer Statistics](https://dev.mysql.com/doc/refman/8.0/en/optimizer-statistics.html)

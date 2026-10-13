@@ -7,7 +7,7 @@ knowledge:
 
 # 长事务
 
-长事务延长数据库资源的占用时间。本文负责 MySQL 8.4 InnoDB 的事务拆分与热点更新。快照机制见 [MVCC](./mvcc-read-view-consistent-read.mdx)。死锁后的重试见[数据库死锁](./deadlock-detection-timeout-retry.mdx)。
+长事务延长数据库资源的占用时间。本文负责 MySQL 8.0 InnoDB 的事务拆分与热点更新。快照机制见 [MVCC](./mvcc-read-view-consistent-read.mdx)。死锁后的重试见[数据库死锁](./deadlock-detection-timeout-retry.mdx)。
 
 ## 1. 面试核心 {#core}
 
@@ -212,9 +212,9 @@ SELECT 会取得表的元数据锁，并保留到事务结束。ALTER TABLE 需�
 
 ## 12. 参考资料 {#11-参考资料}
 
-- [MySQL 8.4：Optimizing InnoDB Transaction Management](https://dev.mysql.com/doc/refman/8.4/en/optimizing-innodb-transaction-management.html)
-- [MySQL 8.4：Consistent Nonlocking Reads](https://dev.mysql.com/doc/refman/8.4/en/innodb-consistent-read.html)
-- [MySQL 8.4：InnoDB Locking](https://dev.mysql.com/doc/refman/8.4/en/innodb-locking.html)
-- [MySQL 8.4：Purge Configuration](https://dev.mysql.com/doc/refman/8.4/en/innodb-purge-configuration.html)
-- [MySQL 8.4：Metadata Locking](https://dev.mysql.com/doc/refman/8.4/en/metadata-locking.html)
-- [MySQL 8.4：KILL](https://dev.mysql.com/doc/refman/8.4/en/kill.html)
+- [MySQL 8.0：Optimizing InnoDB Transaction Management](https://dev.mysql.com/doc/refman/8.0/en/optimizing-innodb-transaction-management.html)
+- [MySQL 8.0：Consistent Nonlocking Reads](https://dev.mysql.com/doc/refman/8.0/en/innodb-consistent-read.html)
+- [MySQL 8.0：InnoDB Locking](https://dev.mysql.com/doc/refman/8.0/en/innodb-locking.html)
+- [MySQL 8.0：Purge Configuration](https://dev.mysql.com/doc/refman/8.0/en/innodb-purge-configuration.html)
+- [MySQL 8.0：Metadata Locking](https://dev.mysql.com/doc/refman/8.0/en/metadata-locking.html)
+- [MySQL 8.0：KILL](https://dev.mysql.com/doc/refman/8.0/en/kill.html)

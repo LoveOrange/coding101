@@ -10,7 +10,7 @@ knowledge:
 
 # 索引设计
 
-索引设计根据查询负载选择列、顺序和覆盖范围。本文负责 MySQL 8.4 InnoDB 的设计与验证步骤。联合索引的访问机制见[联合索引与覆盖索引](./composite-covering-back-table.mdx)。计划字段的含义见[执行计划](./execution-plan.mdx)。
+索引设计根据查询负载选择列、顺序和覆盖范围。本文负责 MySQL 8.0 InnoDB 的设计与验证步骤。联合索引的访问机制见[联合索引与覆盖索引](./composite-covering-back-table.mdx)。计划字段的含义见[执行计划](./execution-plan.mdx)。
 
 ## 1. 面试核心 {#core}
 
@@ -168,7 +168,7 @@ ORDER BY created_at DESC LIMIT 20;
 
 字符串索引列应使用字符串参数。用数字比较字符串列时，会发生类型转换。多个字符串能转换为同一数值，妨碍索引等值定位。
 
-MySQL 8.4 默认忽略不可见索引。它仍承担写入维护，唯一约束也继续生效。可先将候选删除索引设为不可见，观察查询退化。删除前还需核对约束和完整业务周期。
+MySQL 8.0 默认忽略不可见索引。它仍承担写入维护，唯一约束也继续生效。可先将候选删除索引设为不可见，观察查询退化。删除前还需核对约束和完整业务周期。
 
 <span id="8-常见问题"></span>
 
@@ -272,11 +272,11 @@ MySQL 8.4 默认忽略不可见索引。它仍承担写入维护，唯一约束�
 
 ## 13. 参考资料 {#10-扩展阅读}
 
-- [MySQL 8.4：Optimization and Indexes](https://dev.mysql.com/doc/refman/8.4/en/optimization-indexes.html)
-- [MySQL 8.4：Clustered and Secondary Indexes](https://dev.mysql.com/doc/refman/8.4/en/innodb-index-types.html)
-- [MySQL 8.4：Multiple-Column Indexes](https://dev.mysql.com/doc/refman/8.4/en/multiple-column-indexes.html)
-- [MySQL 8.4：EXPLAIN Statement](https://dev.mysql.com/doc/refman/8.4/en/explain.html)
-- [MySQL 8.4：Invisible Indexes](https://dev.mysql.com/doc/refman/8.4/en/invisible-indexes.html)
-- [MySQL 8.4：Type Conversion](https://dev.mysql.com/doc/refman/8.4/en/type-conversion.html)
-- [MySQL 8.4：Column Indexes](https://dev.mysql.com/doc/refman/8.4/en/column-indexes.html)
-- [MySQL 8.4：CREATE INDEX](https://dev.mysql.com/doc/refman/8.4/en/create-index.html)
+- [MySQL 8.0：Optimization and Indexes](https://dev.mysql.com/doc/refman/8.0/en/optimization-indexes.html)
+- [MySQL 8.0：Clustered and Secondary Indexes](https://dev.mysql.com/doc/refman/8.0/en/innodb-index-types.html)
+- [MySQL 8.0：Multiple-Column Indexes](https://dev.mysql.com/doc/refman/8.0/en/multiple-column-indexes.html)
+- [MySQL 8.0：EXPLAIN Statement](https://dev.mysql.com/doc/refman/8.0/en/explain.html)
+- [MySQL 8.0：Invisible Indexes](https://dev.mysql.com/doc/refman/8.0/en/invisible-indexes.html)
+- [MySQL 8.0：Type Conversion](https://dev.mysql.com/doc/refman/8.0/en/type-conversion.html)
+- [MySQL 8.0：Column Indexes](https://dev.mysql.com/doc/refman/8.0/en/column-indexes.html)
+- [MySQL 8.0：CREATE INDEX](https://dev.mysql.com/doc/refman/8.0/en/create-index.html)

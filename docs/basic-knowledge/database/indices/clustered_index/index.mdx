@@ -8,7 +8,7 @@ knowledge:
 
 # 聚簇索引
 
-InnoDB 使用聚簇索引组织行数据。本文讲解 MySQL 8.4 的聚簇键选择和维护成本。二级索引取列的过程见[联合索引与覆盖索引](../composite-covering-back-table.mdx)。
+InnoDB 使用聚簇索引组织行数据。本文讲解 MySQL 8.0 的聚簇键选择和维护成本。二级索引取列的过程见[联合索引与覆盖索引](../composite-covering-back-table.mdx)。
 
 <span id="1-聚簇索引叶子包含完整行"></span>
 
@@ -179,8 +179,8 @@ InnoDB 先选第一个全列非空的唯一索引。没有合适索引时，使�
 
 ## 11. 参考资料 {#参考资料}
 
-- [MySQL 8.4：Clustered and Secondary Indexes](https://dev.mysql.com/doc/refman/8.4/en/innodb-index-types.html)
-- [MySQL 8.4：The Physical Structure of an InnoDB Index](https://dev.mysql.com/doc/refman/8.4/en/innodb-physical-structure.html)
-- [MySQL 8.4：MVCC 与二级索引](https://dev.mysql.com/doc/refman/8.4/en/innodb-multi-versioning.html)
-- [MySQL 8.4：行格式](https://dev.mysql.com/doc/refman/8.4/en/innodb-row-format.html)
-- [MySQL 8.4：Changing the Clustered Index](https://dev.mysql.com/doc/refman/8.4/en/innodb-online-ddl-operations.html)
+- [MySQL 8.0：Clustered and Secondary Indexes](https://dev.mysql.com/doc/refman/8.0/en/innodb-index-types.html)
+- [MySQL 8.0：The Physical Structure of an InnoDB Index](https://dev.mysql.com/doc/refman/8.0/en/innodb-physical-structure.html)
+- [MySQL 8.0：MVCC 与二级索引](https://dev.mysql.com/doc/refman/8.0/en/innodb-multi-versioning.html)
+- [MySQL 8.0：行格式](https://dev.mysql.com/doc/refman/8.0/en/innodb-row-format.html)
+- [MySQL 8.0：Changing the Clustered Index](https://dev.mysql.com/doc/refman/8.0/en/innodb-online-ddl-operations.html)

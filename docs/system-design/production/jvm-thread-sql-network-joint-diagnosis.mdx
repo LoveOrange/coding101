@@ -14,7 +14,7 @@ knowledge:
 - 端到端耗时包含排队、应用执行和下游等待。
 - CPU 较低时，连接池、锁和网络等待仍可抬高 P99。[卡](#p99-with-normal-cpu)
 - RUNNABLE 线程也能等待 native I/O，状态名不足以证明 CPU 忙。
-- JDK 24 消除了 synchronized 导致的虚拟线程 pinning。[卡](#jvm-diagnostic-evidence)
+- JDK 21 虚拟线程在 synchronized 内阻塞会 pin 住载体线程。[卡](#jvm-diagnostic-evidence)
 - 重启同时重置多种状态，恢复结果不足以确定根因。
 
 ## 2. 时间、范围与变更 {#时间范围与变更}
@@ -58,7 +58,7 @@ JFR 可关联分配、锁、Socket、文件 I/O 和执行采样。采集堆转�
 
 慢 SQL 可来自统计信息变化、长事务或调用次数增长。索引存在时，范围过大仍会读取大量数据。
 
-MySQL 8.4 的 `EXPLAIN ANALYZE` 会实际执行查询。生产重查询需先评估影响。锁诊断细节见 [InnoDB 锁](../../basic-knowledge/database/transaction/innodb-locking-ranges.mdx#8-用数据库证据查看锁等待)。
+MySQL 8.0 的 `EXPLAIN ANALYZE` 会实际执行查询。生产重查询需先评估影响。锁诊断细节见 [InnoDB 锁](../../basic-knowledge/database/transaction/innodb-locking-ranges.mdx#8-用数据库证据查看锁等待)。
 
 ## 7. 网络 {#网络}
 
@@ -96,7 +96,7 @@ jcmd 1234 VM.native_memory summary
 
 NMT 命令需在启动时启用 `-XX:NativeMemoryTracking=summary`。NMT 统计 JVM 内部 native 分配，并非进程 RSS 的完整清单。
 
-JDK 21 中，虚拟线程在 synchronized 内阻塞会 pin 住载体。JDK 24 通过 JEP 491 消除了这一来源。native 或外部函数调用仍需按具体栈检查。跨版本排障时，先记录实际 JDK 版本。
+JDK 21 中，虚拟线程在 synchronized 内阻塞会 pin 住载体。native 调用也会造成 pinning。可用 JFR 的 `jdk.VirtualThreadPinned` 事件定位。长时间阻塞的同步代码可评估改用 `ReentrantLock`。
 
 ## 11. 常见问题 {#常见问题}
 
@@ -137,13 +137,13 @@ JVM 侧关联 GC、JFR 与连续线程栈。数据库侧核对锁等待和实际
 
 </details>
 
-### 12.2 怎样采集 JVM 等待证据，虚拟线程 pinning 有何版本差异？ {#jvm-diagnostic-evidence}
+### 12.2 怎样采集 JVM 等待证据，JDK 21 的虚拟线程 pinning 如何定位？ {#jvm-diagnostic-evidence}
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
 **出现公司**：暂无已核验的公开来源（本站自测）
 
-**考察重点**：线程栈、JFR、NMT 与 JDK 版本。
+**考察重点**：线程栈、JFR、NMT 与 JDK 21 的 pinning。
 
 **相关内容**：[JDK 诊断命令与版本](#jdk-诊断命令与版本)。
 
@@ -152,17 +152,16 @@ JVM 侧关联 GC、JFR 与连续线程栈。数据库侧核对锁等待和实际
 
 平台线程可用 `jcmd 1234 Thread.print -l` 采集栈。短时 JFR 用于关联锁、I/O 与执行采样。NMT 需提前用 `-XX:NativeMemoryTracking=summary` 启用。
 
-JDK 21 需检查 synchronized 内阻塞造成的 pinning。JDK 24 已消除这一来源。native 调用和外部资源等待仍需独立检查。
+JDK 21 需检查 synchronized 内阻塞造成的 pinning。可结合 `jdk.VirtualThreadPinned` 事件定位调用栈。native 调用和外部资源等待仍需独立检查。
 
 </details>
 
 ## 13. 参考资料 {#参考资料}
 
-- [Oracle JDK 25：Flight Recorder API](https://docs.oracle.com/en/java/javase/25/jfapi/)
-- [MySQL 8.4：EXPLAIN ANALYZE](https://dev.mysql.com/doc/refman/8.4/en/explain.html)
+- [Oracle JDK 21：Flight Recorder API](https://docs.oracle.com/en/java/javase/21/jfapi/)
+- [MySQL 8.0：EXPLAIN ANALYZE](https://dev.mysql.com/doc/refman/8.0/en/explain.html)
 - [OpenTelemetry：Traces](https://opentelemetry.io/docs/concepts/signals/traces/)
 - [Google SRE：Monitoring Distributed Systems](https://sre.google/sre-book/monitoring-distributed-systems/)
 - [Oracle JDK 21：jcmd](https://docs.oracle.com/en/java/javase/21/docs/specs/man/jcmd.html)
 - [Oracle JDK 21：Virtual Threads](https://docs.oracle.com/en/java/javase/21/core/virtual-threads.html)
-- [Oracle：JDK 24 Release Notes](https://www.oracle.com/java/technologies/javase/24-relnote-issues.html)
 - [Oracle JDK 21：Native Memory Tracking](https://docs.oracle.com/en/java/javase/21/vm/native-memory-tracking.html)

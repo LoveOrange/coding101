@@ -7,7 +7,7 @@ knowledge:
 
 # MVCC
 
-MVCC 通过历史版本减少 InnoDB 普通读取与写入之间的阻塞。本文讲解 MySQL 8.4 RC/RR 的版本链与 Read View。内容还包括混合读写的可见性。ACID 与提交边界见 [数据库事务](./index.mdx)，锁定范围见 [InnoDB 锁](./innodb-locking-ranges.mdx)。
+MVCC 通过历史版本减少 InnoDB 普通读取与写入之间的阻塞。本文讲解 MySQL 8.0 RC/RR 的版本链与 Read View。内容还包括混合读写的可见性。ACID 与提交边界见 [数据库事务](./index.mdx)，锁定范围见 [InnoDB 锁](./innodb-locking-ranges.mdx)。
 
 ## 1. 面试核心 {#core}
 
@@ -60,7 +60,7 @@ START TRANSACTION;
 SELECT * FROM orders WHERE id = 100; -- 在这里建立快照
 ```
 
-普通 `START TRANSACTION` 将 Read View 的创建推迟到首次一致性读。若需要立即建立一致快照，在 RR 下可使用 `START TRANSACTION WITH CONSISTENT SNAPSHOT`。MySQL 8.4 只在 RR 下支持这项快照语义。其他隔离级别会忽略该子句并产生警告。
+普通 `START TRANSACTION` 将 Read View 的创建推迟到首次一致性读。若需要立即建立一致快照，在 RR 下可使用 `START TRANSACTION WITH CONSISTENT SNAPSHOT`。MySQL 8.0 只在 RR 下支持这项快照语义。其他隔离级别会忽略该子句并产生警告。
 
 同一事务自己的写入仍然可见。事务可以既读取旧快照，又修改最新状态。这时，结果会包含自己的新版本和其他行的旧版本。具体例子见[混合读写与新行可见性](#混合读写与新行可见性)。
 
@@ -241,9 +241,9 @@ UPDATE 使用当前读，修改了另一事务已提交的新行。后续 SELECT
 
 ## 12. 参考资料 {#参考资料}
 
-- [MySQL 8.4：Consistent Nonlocking Reads](https://dev.mysql.com/doc/refman/8.4/en/innodb-consistent-read.html)
-- [MySQL 8.4：Transaction Isolation Levels](https://dev.mysql.com/doc/refman/8.4/en/innodb-transaction-isolation-levels.html)
-- [MySQL 8.4：Locking Reads](https://dev.mysql.com/doc/refman/8.4/en/innodb-locking-reads.html)
-- [MySQL 8.4：InnoDB Multi-Versioning](https://dev.mysql.com/doc/refman/8.4/en/innodb-multi-versioning.html)
-- [MySQL 8.4：START TRANSACTION](https://dev.mysql.com/doc/refman/8.4/en/commit.html)
-- [MySQL 8.4.0 源码：ReadView](https://github.com/mysql/mysql-server/blob/mysql-8.4.0/storage/innobase/include/read0types.h)
+- [MySQL 8.0：Consistent Nonlocking Reads](https://dev.mysql.com/doc/refman/8.0/en/innodb-consistent-read.html)
+- [MySQL 8.0：Transaction Isolation Levels](https://dev.mysql.com/doc/refman/8.0/en/innodb-transaction-isolation-levels.html)
+- [MySQL 8.0：Locking Reads](https://dev.mysql.com/doc/refman/8.0/en/innodb-locking-reads.html)
+- [MySQL 8.0：InnoDB Multi-Versioning](https://dev.mysql.com/doc/refman/8.0/en/innodb-multi-versioning.html)
+- [MySQL 8.0：START TRANSACTION](https://dev.mysql.com/doc/refman/8.0/en/commit.html)
+- [MySQL 8.0.43 源码：ReadView](https://github.com/mysql/mysql-server/blob/mysql-8.0.43/storage/innobase/include/read0types.h)

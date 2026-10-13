@@ -7,7 +7,7 @@ knowledge:
 
 # 联合索引与覆盖索引
 
-联合索引把多列按确定顺序组织。覆盖索引表示一个索引包含当前查询所需的列。本文讲解 MySQL 8.4 InnoDB 的范围定位、回表、ICP 和排序推演。页结构见 [B+ 树](./b_plus_tree/index.mdx)，聚簇键选择见[聚簇索引](./clustered_index/index.mdx)。工作负载评估见[索引设计](./index-review.mdx)。
+联合索引把多列按确定顺序组织。覆盖索引表示一个索引包含当前查询所需的列。本文讲解 MySQL 8.0 InnoDB 的范围定位、回表、ICP 和排序推演。页结构见 [B+ 树](./b_plus_tree/index.mdx)，聚簇键选择见[聚簇索引](./clustered_index/index.mdx)。工作负载评估见[索引设计](./index-review.mdx)。
 
 ## 1. 面试核心 {#core}
 
@@ -216,10 +216,10 @@ a 的等值与 b 的范围构造扫描区间，c 可用于 ICP 过滤或覆盖�
 
 ## 12. 参考资料 {#参考资料}
 
-- [MySQL 8.4：Multiple-Column Indexes](https://dev.mysql.com/doc/refman/8.4/en/multiple-column-indexes.html)
-- [MySQL 8.4：Clustered and Secondary Indexes](https://dev.mysql.com/doc/refman/8.4/en/innodb-index-types.html)
-- [MySQL 8.4：EXPLAIN Output Format](https://dev.mysql.com/doc/refman/8.4/en/explain-output.html)
-- [MySQL 8.4：Range Optimization](https://dev.mysql.com/doc/refman/8.4/en/range-optimization.html)
-- [MySQL 8.4：Index Condition Pushdown](https://dev.mysql.com/doc/refman/8.4/en/index-condition-pushdown-optimization.html)
-- [MySQL 8.4：ORDER BY Optimization](https://dev.mysql.com/doc/refman/8.4/en/order-by-optimization.html)
-- [MySQL 8.4：InnoDB Multi-Versioning](https://dev.mysql.com/doc/refman/8.4/en/innodb-multi-versioning.html)
+- [MySQL 8.0：Multiple-Column Indexes](https://dev.mysql.com/doc/refman/8.0/en/multiple-column-indexes.html)
+- [MySQL 8.0：Clustered and Secondary Indexes](https://dev.mysql.com/doc/refman/8.0/en/innodb-index-types.html)
+- [MySQL 8.0：EXPLAIN Output Format](https://dev.mysql.com/doc/refman/8.0/en/explain-output.html)
+- [MySQL 8.0：Range Optimization](https://dev.mysql.com/doc/refman/8.0/en/range-optimization.html)
+- [MySQL 8.0：Index Condition Pushdown](https://dev.mysql.com/doc/refman/8.0/en/index-condition-pushdown-optimization.html)
+- [MySQL 8.0：ORDER BY Optimization](https://dev.mysql.com/doc/refman/8.0/en/order-by-optimization.html)
+- [MySQL 8.0：InnoDB Multi-Versioning](https://dev.mysql.com/doc/refman/8.0/en/innodb-multi-versioning.html)

@@ -7,7 +7,7 @@ knowledge:
 
 # 数据库死锁
 
-数据库死锁是事务之间的循环等待。本文负责 MySQL 8.4 InnoDB 的检测、诊断和失败重试。锁类型与区间见 [InnoDB 锁](./innodb-locking-ranges.mdx)。
+数据库死锁是事务之间的循环等待。本文负责 MySQL 8.0 InnoDB 的检测、诊断和失败重试。锁类型与区间见 [InnoDB 锁](./innodb-locking-ranges.mdx)。
 
 ## 1. 面试核心 {#core}
 
@@ -30,7 +30,7 @@ knowledge:
 
 ## 3. InnoDB 死锁检测 {#innodb-死锁检测}
 
-MySQL 8.4 默认启用 `innodb_deadlock_detect`。InnoDB 检查等待关系，发现环后选择受害事务回滚。选择倾向于较小事务，大小按增删改的行数衡量。
+MySQL 8.0 默认启用 `innodb_deadlock_detect`。InnoDB 检查等待关系，发现环后选择受害事务回滚。选择倾向于较小事务，大小按增删改的行数衡量。
 
 受害事务此前的修改全部失效。应用收到 1213 后，应从新事务重做业务单元。锁的具体类型见 [InnoDB 锁](./innodb-locking-ranges.mdx)。
 
@@ -38,7 +38,7 @@ MySQL 8.4 默认启用 `innodb_deadlock_detect`。InnoDB 检查等待关系，�
 
 锁等待超时表示等待超过 `innodb_lock_wait_timeout`。持锁事务只是执行很慢，也能让等待方超时。死锁则存在循环依赖。
 
-`innodb_rollback_on_timeout=OFF` 是 MySQL 8.4 默认值。此时超时只回滚当前语句，此前修改仍在事务内。应用可显式 ROLLBACK，再按完整业务单元重试。
+`innodb_rollback_on_timeout=OFF` 是 MySQL 8.0 默认值。此时超时只回滚当前语句，此前修改仍在事务内。应用可显式 ROLLBACK，再按完整业务单元重试。
 
 延长超时会增加等待预算，同时延长连接占用。它保持等待环原样，无法消除循环依赖。
 
@@ -212,10 +212,10 @@ A 先更新行 1，B 先更新行 2，均保持事务打开。A 再更新行 2 �
 
 ## 13. 参考资料 {#11-参考资料}
 
-- [MySQL 8.4：Deadlocks in InnoDB](https://dev.mysql.com/doc/refman/8.4/en/innodb-deadlocks.html)
-- [MySQL 8.4：How to Minimize and Handle Deadlocks](https://dev.mysql.com/doc/refman/8.4/en/innodb-deadlocks-handling.html)
-- [MySQL 8.4：InnoDB Locking](https://dev.mysql.com/doc/refman/8.4/en/innodb-locking.html)
-- [MySQL 8.4：Error Handling](https://dev.mysql.com/doc/refman/8.4/en/innodb-error-handling.html)
-- [MySQL 8.4：Deadlock Detection](https://dev.mysql.com/doc/refman/8.4/en/innodb-deadlock-detection.html)
-- [MySQL 8.4：Deadlock Example](https://dev.mysql.com/doc/refman/8.4/en/innodb-deadlock-example.html)
-- [MySQL 8.4：Server System Variables](https://dev.mysql.com/doc/refman/8.4/en/server-system-variables.html#sysvar_lock_wait_timeout)
+- [MySQL 8.0：Deadlocks in InnoDB](https://dev.mysql.com/doc/refman/8.0/en/innodb-deadlocks.html)
+- [MySQL 8.0：How to Minimize and Handle Deadlocks](https://dev.mysql.com/doc/refman/8.0/en/innodb-deadlocks-handling.html)
+- [MySQL 8.0：InnoDB Locking](https://dev.mysql.com/doc/refman/8.0/en/innodb-locking.html)
+- [MySQL 8.0：Error Handling](https://dev.mysql.com/doc/refman/8.0/en/innodb-error-handling.html)
+- [MySQL 8.0：Deadlock Detection](https://dev.mysql.com/doc/refman/8.0/en/innodb-deadlock-detection.html)
+- [MySQL 8.0：Deadlock Example](https://dev.mysql.com/doc/refman/8.0/en/innodb-deadlock-example.html)
+- [MySQL 8.0：Server System Variables](https://dev.mysql.com/doc/refman/8.0/en/server-system-variables.html#sysvar_lock_wait_timeout)

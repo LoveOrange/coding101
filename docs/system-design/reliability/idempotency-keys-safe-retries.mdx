@@ -42,7 +42,7 @@ status, resource_id, response, expires_at
 
 业务与幂等记录在同库时，可使用一个本地事务。占用 key、修改业务和保存结果共同提交。
 
-以 MySQL 8.4 的 RC/RR 为例，普通读取看不到未提交记录。重复插入会按数据库机制等待或冲突。提交后再读取已保存结果。
+以 MySQL 8.0 的 RC/RR 为例，普通读取看不到未提交记录。重复插入会按数据库机制等待或冲突。提交后再读取已保存结果。
 
 崩溃导致事务回滚时，幂等占用也回滚。另一请求可重新竞争执行权。
 
@@ -155,5 +155,5 @@ Redis key 与数据库事务分开提交时，存在一侧成功的窗口。缓�
 - [RFC 9110：Idempotent Methods](https://www.rfc-editor.org/rfc/rfc9110.html#name-idempotent-methods)
 - [Stripe：Idempotent requests](https://docs.stripe.com/api/idempotent_requests)
 - [Amazon Builders' Library：Making retries safe with idempotent APIs](https://aws.amazon.com/builders-library/making-retries-safe-with-idempotent-APIs/)
-- [MySQL 8.4：Consistent Nonlocking Reads](https://dev.mysql.com/doc/refman/8.4/en/innodb-consistent-read.html)
-- [MySQL 8.4：Locks Set by Different SQL Statements](https://dev.mysql.com/doc/refman/8.4/en/innodb-locks-set.html)
+- [MySQL 8.0：Consistent Nonlocking Reads](https://dev.mysql.com/doc/refman/8.0/en/innodb-consistent-read.html)
+- [MySQL 8.0：Locks Set by Different SQL Statements](https://dev.mysql.com/doc/refman/8.0/en/innodb-locks-set.html)

@@ -8,13 +8,13 @@ knowledge:
 
 # Redis 数据结构
 
-Redis 数据类型定义命令语义，内部编码定义存储方式。本文以 Redis 7.2 为基线，讲解类型选择、编码与复杂度。多命令事务及脚本边界见 [原子命令与事务](./index.mdx#原子命令与事务)。
+Redis 数据类型定义命令语义，内部编码定义存储方式。本文以 Redis 6、7 为基线，讲解类型选择、编码与复杂度。多命令事务及脚本边界见 [原子命令与事务](./index.mdx#原子命令与事务)。
 
 ## 1. 面试核心 {#core}
 
 - String 保存字节串，键空间字典则负责从键定位值对象。[卡](#type-encoding)
 - Hash 按字段读写，Set 去重，ZSet 按分数与成员顺序排列。[卡](#choose-type)
-- Redis 7.2 小列表可用 Listpack，较大列表使用 QuickList。[卡](#compact-encoding)
+- Redis 6 的 QuickList 用双向链表连接 ZipList 块。[卡](#compact-encoding)
 - ZSet 的 skiplist 编码以字典查成员，用跳表维护分数顺序。[卡](#sorted-set-index)
 - INCR 原子完成整数递增，客户端 GET 后 SET 存在丢失更新。[卡](#atomic-operations)
 
@@ -33,7 +33,7 @@ Redis 数据类型定义命令语义，内部编码定义存储方式。本文�
 
 ## 3. 字符串 {#2-字符串}
 
-String 保存文本、序列化对象和二进制字节。Redis 7.2 支持 `int`、`embstr`、`raw` 编码。符合整数编码条件的值可用 `int` 保存。短字符串可将对象头与 SDS 连续分配为 `embstr`。`raw` 将对象头与 SDS 分开分配。
+String 保存文本、序列化对象和二进制字节。Redis 6、7 支持 `int`、`embstr`、`raw` 编码。符合整数编码条件的值可用 `int` 保存。短字符串可将对象头与 SDS 连续分配为 `embstr`。`raw` 将对象头与 SDS 分开分配。
 
 SDS 显式记录长度，因此能保存零字节。它还保存分配容量，以减少连续增长时的重复分配。扩容仍需分配或复制内存。
 
@@ -51,9 +51,9 @@ GET interview:counter
 
 List 保持插入顺序，允许重复元素。`LPUSH` 配合 `RPOP` 构成先进先出队列。同端入出则是后进先出。单元素头尾操作为 O(1)。索引访问需沿列表定位，成本随位置增长。
 
-Redis 7.2 小列表可以直接使用 Listpack。超过相应容量条件后，转换为 QuickList。QuickList 用双向链表连接多个存储块。常规块内使用 Listpack，减少逐元素指针开销。
+Redis 6 的 List 使用 QuickList。QuickList 用双向链表连接多个 ZipList 存储块。ZipList 连续存储元素，减少逐元素指针开销。单块插入仍需移动数据，并可能触发连锁更新。
 
-旧版 QuickList 使用 ZipList 作为紧凑块。Listpack 将反向遍历信息保存在当前条目尾部。它避免 ZipList 的前一条目长度变化引发连锁更新。
+Redis 7.0 起，QuickList 的紧凑块由 Listpack 替代 ZipList。Listpack 将反向遍历信息保存在当前条目尾部。它避免 ZipList 的前一条目长度变化引发连锁更新。
 
 ```text
 LPUSH interview:queue first second
@@ -62,7 +62,7 @@ RPOP interview:queue
 
 弹出结果是 first，列表剩下 second。普通弹出会删除元素。消费者随后崩溃，就失去待处理记录。
 
-BLMOVE 可将任务原子移动到处理中列表。成功后确认删除，超时任务再交给其他消费者。重复处理由业务幂等控制。
+Redis 6.2 起，BLMOVE 可将任务原子移到处理中列表。成功后确认删除，超时任务再交给其他消费者。重复处理由业务幂等控制。
 
 ## 5. 有序集合 {#4-有序集合}
 
@@ -70,7 +70,7 @@ ZSet 的 member 唯一，score 可重复。同分成员按字节字典序排列�
 
 score 使用双精度浮点数。整数在 `[-2^53,2^53]` 范围内可精确表示。金额可先转为最小货币单位，再检查是否超出精确范围。
 
-小 ZSet 可用 Listpack。常规 skiplist 编码组合字典与跳表。字典用于按 member 查分数，跳表支持有序导航。节点各层记录前向指针和跨度，节点另有后退指针。
+Redis 6 的小 ZSet 可用 ZipList。Redis 7.0 起由 Listpack 替代 ZipList。常规 skiplist 编码组合字典与跳表。字典用于按 member 查分数，跳表支持有序导航。节点各层记录前向指针和跨度，节点另有后退指针。
 
 ```text
 高层：     [2] ----------> [6]
@@ -91,21 +91,21 @@ ZADD interview:rank 120 alice
 
 ## 6. Hash 与 Set {#hash-与-set}
 
-Hash 保存字段到字节串值的映射。HSET 可更新单个字段，减少整体对象的传输。Redis 7.2 使用 Listpack 或 hashtable 编码。该版本 TTL 作用于整键，字段过期是后续版本能力。
+Hash 保存字段到字节串值的映射。HSET 可更新单个字段，减少整体对象的传输。Redis 6 使用 ZipList 或 hashtable 编码。Redis 7.0 起由 Listpack 替代 ZipList。Redis 6 和 7.0 的 TTL 作用于整键。
 
-Set 保存无序、唯一的成员。Redis 7.2 有 intset、listpack、hashtable 编码。元素内容、大小和数量共同影响编码选择。
+Set 保存无序、唯一的成员。Redis 6 和 7.0 使用 intset 或 hashtable 编码。元素内容、大小和数量共同影响编码选择。Redis 7.2 增加了 listpack 编码。
 
 SISMEMBER 判断成员是否存在。集合求交和全量读取需要处理更多元素。因此，类型相同也需按具体命令估算复杂度。
 
 ## 7. 字典与渐进式 rehash {#字典与渐进式-rehash}
 
-键空间与 hashtable 编码都使用字典。Redis 7.2 字典用桶和链式结构处理哈希冲突。
+键空间与 hashtable 编码都使用字典。Redis 6、7 字典用桶和链式结构处理哈希冲突。
 
 扩缩容时，字典准备第二张哈希表。rehash 按桶逐步把旧表元素迁移到新表。迁移期间，查找按需检查两张表，新元素写入新表。迁移完成后释放旧表。
 
 普通字典操作会推动部分迁移。启用 `activerehashing` 时，定时任务也会推进键空间迁移。这样可分摊整表迁移的耗时。分配新桶数组和处理长冲突链仍会消耗时间。
 
-这套机制属于字典实现。String 的值编码、Listpack 和跳表各有自己的结构。
+这套机制属于字典实现。String 的值编码、ZipList、Listpack 和跳表各有自己的结构。
 
 ## 8. 紧凑编码与可观察性 {#紧凑编码与可观察性}
 
@@ -135,7 +135,7 @@ COUNT 是工作量提示，返回条数可以多于或少于该值。MATCH 过�
 
 ## 10. Stream 与专用操作 {#stream-与专用操作}
 
-Stream 按消息 ID 保存追加记录。消费组通过 PEL 跟踪已投递但未确认的消息。XACK 移除待确认记录，消息本体仍由删除或裁剪管理。消费者故障后，可用 XAUTOCLAIM 认领长时间未确认的消息。
+Stream 按消息 ID 保存追加记录。消费组通过 PEL 跟踪已投递但未确认的消息。XACK 移除待确认记录，消息本体仍由删除或裁剪管理。消费者故障后，可用 XCLAIM 认领待确认消息。Redis 6.2 起还可用 XAUTOCLAIM 自动扫描并认领。
 
 任务执行成功但确认丢失时，会再次投递。业务应通过幂等标识处理重复。裁剪策略也需保留待恢复的消息内容。
 
@@ -203,7 +203,7 @@ String 保存字节串，Hash 保存字段映射。键空间字典负责按键�
 <details>
 <summary>参考回答</summary>
 
-紧凑编码节省小对象的指针和分配成本。对象变大后，分块或哈希结构可减少操作成本。Redis 7.2 的 List 可从 Listpack 转为 QuickList。应结合目标版本、配置和 `OBJECT ENCODING` 判断实际结构。
+紧凑编码节省小对象的指针和分配成本。Redis 6 的 QuickList 用链表连接多个 ZipList 块。Redis 7.0 起将这些紧凑块替换为 Listpack。对象变大后，分块或哈希结构可减少操作成本。应结合目标版本、配置和 `OBJECT ENCODING` 判断实际结构。
 
 </details>
 
@@ -223,7 +223,7 @@ String 保存字节串，Hash 保存字段映射。键空间字典负责按键�
 <details>
 <summary>参考回答</summary>
 
-字典支持按 member 查分数，跳表维护分数与成员顺序。跨度还支持计算排名。常规跳表导航期望为 `O(log N)`，输出 M 条再加 `O(M)`。小集合使用 Listpack 时，内部访问方式不同。
+字典支持按 member 查分数，跳表维护分数与成员顺序。跨度还支持计算排名。常规跳表导航期望为 `O(log N)`，输出 M 条再加 `O(M)`。Redis 6 的小集合可用 ZipList，内部访问方式不同。Redis 7.0 起改用 Listpack。
 
 </details>
 
@@ -306,14 +306,17 @@ INCR 在一个原子命令内完成递增。GET 后由客户端计算再 SET，�
 - [Redis：Data types](https://redis.io/docs/latest/develop/data-types/)
 - [Redis：OBJECT ENCODING](https://redis.io/docs/latest/commands/object-encoding/)
 - [Redis：SCAN](https://redis.io/docs/latest/commands/scan/)
-- [Redis 7.2.0：List 实现](https://github.com/redis/redis/blob/7.2.0/src/t_list.c)
-- [Redis 7.2.0：Sorted Set 实现](https://github.com/redis/redis/blob/7.2.0/src/t_zset.c)
+- [Redis 6.2.0：QuickList 实现](https://github.com/redis/redis/blob/6.2.0/src/quicklist.c)
+- [Redis 6.2.0：ZipList 实现](https://github.com/redis/redis/blob/6.2.0/src/ziplist.c)
+- [Redis 7.0.0：List 实现](https://github.com/redis/redis/blob/7.0.0/src/t_list.c)
+- [Redis 7.0.0：Sorted Set 实现](https://github.com/redis/redis/blob/7.0.0/src/t_zset.c)
 - [Redis：Streams](https://redis.io/docs/latest/develop/data-types/streams/)
-- [Redis 7.2.0：String 对象实现](https://github.com/redis/redis/blob/7.2.0/src/object.c)
+- [Redis 7.0.0：String 对象实现](https://github.com/redis/redis/blob/7.0.0/src/object.c)
+- [Redis 7.0.0：Set 实现](https://github.com/redis/redis/blob/7.0.0/src/t_set.c)
+- [Redis 7.0.0：Listpack 实现](https://github.com/redis/redis/blob/7.0.0/src/listpack.c)
 - [Redis 7.2.0：Set 实现](https://github.com/redis/redis/blob/7.2.0/src/t_set.c)
-- [Redis 7.2.0：Listpack 实现](https://github.com/redis/redis/blob/7.2.0/src/listpack.c)
 - [Redis：Sorted Sets](https://redis.io/docs/latest/develop/data-types/sorted-sets/)
 - [Redis：HyperLogLog](https://redis.io/docs/latest/develop/data-types/probabilistic/hyperloglogs/)
-- [Redis 7.2.0：字典实现](https://github.com/redis/redis/blob/7.2.0/src/dict.c)
-- [Redis 7.2.0：周期任务](https://github.com/redis/redis/blob/7.2.0/src/server.c)
+- [Redis 7.0.0：字典实现](https://github.com/redis/redis/blob/7.0.0/src/dict.c)
+- [Redis 7.0.0：周期任务](https://github.com/redis/redis/blob/7.0.0/src/server.c)
 - [Redis：ZADD 分数精度](https://redis.io/docs/latest/commands/zadd/)

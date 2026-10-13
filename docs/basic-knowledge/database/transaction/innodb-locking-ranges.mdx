@@ -7,7 +7,7 @@ knowledge:
 
 # InnoDB 锁
 
-InnoDB 通过索引记录锁和索引区间锁约束并发写入。本文讲解 MySQL 8.4 的锁类型、扫描范围和双会话验证。快照可见性见 [MVCC](./mvcc-read-view-consistent-read.mdx)，提交与回滚边界见 [数据库事务](./index.mdx)。
+InnoDB 通过索引记录锁和索引区间锁约束并发写入。本文讲解 MySQL 8.0 的锁类型、扫描范围和双会话验证。快照可见性见 [MVCC](./mvcc-read-view-consistent-read.mdx)，提交与回滚边界见 [数据库事务](./index.mdx)。
 
 ## 1. 面试核心 {#core}
 
@@ -108,7 +108,7 @@ SELECT * FROM lock_demo WHERE id = 15 FOR UPDATE;
 
 ### 10.1 二级索引等值与范围锁实验 {#二级索引等值与范围锁实验}
 
-以下实验已在 MySQL 8.4.11 验证。会话 A 使用 RR、升序扫描和 `FOR UPDATE`。它通过 `FORCE INDEX` 固定访问路径。每条查询单独开启事务。观察完成后执行 `ROLLBACK`，再进行下一条。
+以下实验适用于 MySQL 8.0 及以上。会话 A 使用 RR、升序扫描和 `FOR UPDATE`。它通过 `FORCE INDEX` 固定访问路径。每条查询单独开启事务。观察完成后执行 `ROLLBACK`，再进行下一条。
 
 ```sql
 CREATE TABLE range_demo (
@@ -287,16 +287,16 @@ NOWAIT 把行锁等待变为立即错误，便于上层快速失败或重试。S
 <details>
 <summary>参考回答</summary>
 
-本文实验使用 MySQL 8.4.11，隔离级别为 RR。非唯一二级索引 `k=10` 锁住 `(5,10]` 和 `(10,15)`。唯一及非唯一二级索引的 `>5 AND <15` 扫描锁住 `(5,10]`、`(10,15]`。它们还给返回行的主键 10 加记录锁。唯一性的单记录优化适用于等值命中；范围扫描仍保护间隙。主键范围扫描在本例上界 15 只保留 gap lock。因此，锁范围需要结合索引类型和实际扫描验证。
+本例适用于 MySQL 8.0 及以上，隔离级别为 RR。非唯一二级索引 `k=10` 锁住 `(5,10]` 和 `(10,15)`。唯一及非唯一二级索引的 `>5 AND <15` 扫描锁住 `(5,10]`、`(10,15]`。它们还给返回行的主键 10 加记录锁。唯一性的单记录优化适用于等值命中；范围扫描仍保护间隙。主键范围扫描在本例上界 15 只保留 gap lock。因此，锁范围需要结合索引类型和实际扫描验证。
 
 </details>
 
 ## 15. 参考资料 {#参考资料}
 
-- [MySQL 8.4：InnoDB Locking](https://dev.mysql.com/doc/refman/8.4/en/innodb-locking.html)
-- [MySQL 8.4：Transaction Isolation Levels](https://dev.mysql.com/doc/refman/8.4/en/innodb-transaction-isolation-levels.html)
-- [MySQL 8.4：The data_locks Table](https://dev.mysql.com/doc/refman/8.4/en/performance-schema-data-locks-table.html)
-- [MySQL 8.4：Locks Set by Different SQL Statements](https://dev.mysql.com/doc/refman/8.4/en/innodb-locks-set.html)
-- [MySQL 8.4：Locking Reads](https://dev.mysql.com/doc/refman/8.4/en/innodb-locking-reads.html)
-- [MySQL 8.4：Deadlock Handling](https://dev.mysql.com/doc/refman/8.4/en/innodb-deadlocks-handling.html)
-- [MySQL 8.4：InnoDB Error Handling](https://dev.mysql.com/doc/refman/8.4/en/innodb-error-handling.html)
+- [MySQL 8.0：InnoDB Locking](https://dev.mysql.com/doc/refman/8.0/en/innodb-locking.html)
+- [MySQL 8.0：Transaction Isolation Levels](https://dev.mysql.com/doc/refman/8.0/en/innodb-transaction-isolation-levels.html)
+- [MySQL 8.0：The data_locks Table](https://dev.mysql.com/doc/refman/8.0/en/performance-schema-data-locks-table.html)
+- [MySQL 8.0：Locks Set by Different SQL Statements](https://dev.mysql.com/doc/refman/8.0/en/innodb-locks-set.html)
+- [MySQL 8.0：Locking Reads](https://dev.mysql.com/doc/refman/8.0/en/innodb-locking-reads.html)
+- [MySQL 8.0：Deadlock Handling](https://dev.mysql.com/doc/refman/8.0/en/innodb-deadlocks-handling.html)
+- [MySQL 8.0：InnoDB Error Handling](https://dev.mysql.com/doc/refman/8.0/en/innodb-error-handling.html)

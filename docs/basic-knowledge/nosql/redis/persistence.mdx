@@ -8,7 +8,7 @@ knowledge:
 
 # Redis 持久化、复制与集群
 
-Redis 持久化保存恢复数据，复制保留运行副本。Cluster 通过哈希槽将数据分布到多个主节点。本文以 Redis 7.2 为基线，负责恢复点、故障转移和分片边界。内存压力管理见 [Redis 内存淘汰](./eviction.mdx)。
+Redis 持久化保存恢复数据，复制保留运行副本。Cluster 通过哈希槽将数据分布到多个主节点。本文以 Redis 6、7 为基线，负责恢复点、故障转移和分片边界。内存压力管理见 [Redis 内存淘汰](./eviction.mdx)。
 
 ## 1. 面试核心 {#core}
 
@@ -42,11 +42,11 @@ AOF 重写根据当前数据生成更短的恢复表示。它保留恢复后的�
 
 ## 4. AOF 重写与混合格式 {#aof-重写与混合格式}
 
-Redis 7.0 起使用多文件 AOF。manifest 记录当前有效的基础文件和增量文件。基础文件保存重写时的数据集，增量文件继续记录新修改。
+Redis 6 重写 AOF 时，子进程生成新文件。父进程继续写旧 AOF，并保存重写期间的增量。新文件补齐增量后，替换旧文件。
 
-重写开始后，父进程切换到新的增量文件。子进程生成新基础文件，完成后原子替换 manifest。后续恢复按清单加载基础与增量。
+Redis 7.0 起改用多文件 AOF。重写时，父进程写新的增量文件，子进程生成基础文件。完成后原子切换 manifest，恢复时按清单加载文件。
 
-Redis 7.2 默认 `aof-use-rdb-preamble=yes`。基础文件采用 RDB 格式，后续增量仍是 AOF 命令。它兼顾基础数据加载与新增操作记录。备份必须保持清单及其引用文件一致。
+Redis 6、7 默认 `aof-use-rdb-preamble=yes`。重写结果以 RDB 保存基础数据，后续增量仍是 AOF 命令。它兼顾基础数据加载与新增操作记录。Redis 7 备份需保持清单及其引用文件一致。
 
 ## 5. RDB 与 AOF 恢复顺序 {#同时启用-rdb-与-aof}
 
@@ -154,7 +154,7 @@ RDB 保存时间点快照，AOF 保存恢复所需的写操作。复制保留运
 
 </details>
 
-### 14.2 Redis 7.x 的 AOF 重写期间如何接收新写入，混合格式是什么？ {#aof-rewrite}
+### 14.2 Redis 的 AOF 重写期间如何接收新写入，混合格式是什么？ {#aof-rewrite}
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
@@ -167,7 +167,9 @@ RDB 保存时间点快照，AOF 保存恢复所需的写操作。复制保留运
 <details>
 <summary>参考回答</summary>
 
-父进程继续写新增量文件，子进程生成基础文件。完成后，Redis 原子切换 manifest。Redis 7.2 默认 `aof-use-rdb-preamble=yes`，基础采用 RDB 格式。恢复时加载基础，再重放增量命令。
+Redis 6 的父进程继续写旧 AOF，并保存增量。子进程生成新文件，补齐增量后替换旧文件。Redis 7.0 起改用基础文件、增量文件和 manifest。父进程写增量，子进程生成基础文件，完成后切换清单。
+
+Redis 6、7 默认 `aof-use-rdb-preamble=yes`。基础数据采用 RDB 格式，增量采用 AOF 命令。恢复时加载基础，再重放增量命令。
 
 </details>
 
@@ -248,5 +250,7 @@ MOVED 指示槽的当前负责人，客户端应更新槽映射。ASK 只临时�
 - [Redis：WAITAOF](https://redis.io/docs/latest/commands/waitaof/)
 - [Redis：WAIT](https://redis.io/docs/latest/commands/wait/)
 - [Redis：Sentinel](https://redis.io/docs/latest/operate/oss_and_stack/management/sentinel/)
-- [Redis 7.2：配置文件](https://github.com/redis/redis/blob/7.2/redis.conf)
+- [Redis 6.2：配置文件](https://github.com/redis/redis/blob/6.2/redis.conf)
+- [Redis 7.0：配置文件](https://github.com/redis/redis/blob/7.0/redis.conf)
+- [Redis 6.2.0：AOF 重写实现](https://github.com/redis/redis/blob/6.2.0/src/aof.c)
 - [Redis 7.2.0：AOF 同步与延期实现](https://github.com/redis/redis/blob/7.2.0/src/aof.c)

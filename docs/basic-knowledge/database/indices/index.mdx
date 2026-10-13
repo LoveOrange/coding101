@@ -8,7 +8,7 @@ knowledge:
 
 # 数据库索引
 
-数据库索引用额外的数据结构缩小读取范围。它还为排序和取列提供有序访问路径。本文讲解 MySQL 8.4 InnoDB 的索引分类、读取成本和优化器选择。结构细节见 [B+ 树](./b_plus_tree/index.mdx)与[聚簇索引](./clustered_index/index.mdx)。查询推演见[联合索引与覆盖索引](./composite-covering-back-table.mdx)，审查流程见[索引设计](./index-review.mdx)。
+数据库索引用额外的数据结构缩小读取范围。它还为排序和取列提供有序访问路径。本文讲解 MySQL 8.0 InnoDB 的索引分类、读取成本和优化器选择。结构细节见 [B+ 树](./b_plus_tree/index.mdx)与[聚簇索引](./clustered_index/index.mdx)。查询推演见[联合索引与覆盖索引](./composite-covering-back-table.mdx)，审查流程见[索引设计](./index-review.mdx)。
 
 ## 1. 面试核心 {#core}
 
@@ -42,7 +42,7 @@ InnoDB 的聚簇索引和普通二级索引使用 B+ 树。高扇出减少导航
 索引名称分别表达约束、列组成和存储结构：
 
 - **主键索引**：它保证主键唯一且非空。在 InnoDB 中，它承担聚簇索引。
-- **唯一索引**：它约束非 NULL 键值唯一。MySQL 8.4 允许多个 `NULL`。
+- **唯一索引**：它约束非 NULL 键值唯一。MySQL 8.0 允许多个 `NULL`。
 - **普通索引**：它不附加唯一性约束。
 - **联合索引**：索引键由多列组成，按定义顺序逐级排列。
 - **聚簇索引**：叶子记录直接包含完整行数据。
@@ -173,9 +173,9 @@ InnoDB 没有主键时，选择第一个全部列非空的唯一索引。若仍�
 
 ## 13. 参考资料 {#参考资料}
 
-- [MySQL 8.4：Optimization and Indexes](https://dev.mysql.com/doc/refman/8.4/en/optimization-indexes.html)
-- [MySQL 8.4：Clustered and Secondary Indexes](https://dev.mysql.com/doc/refman/8.4/en/innodb-index-types.html)
-- [MySQL 8.4：Multiple-Column Indexes](https://dev.mysql.com/doc/refman/8.4/en/multiple-column-indexes.html)
-- [MySQL 8.4：EXPLAIN](https://dev.mysql.com/doc/refman/8.4/en/explain.html)
-- [MySQL 8.4：InnoDB Multi-Versioning](https://dev.mysql.com/doc/refman/8.4/en/innodb-multi-versioning.html)
-- [MySQL 8.4：EXPLAIN Output Format](https://dev.mysql.com/doc/refman/8.4/en/explain-output.html)
+- [MySQL 8.0：Optimization and Indexes](https://dev.mysql.com/doc/refman/8.0/en/optimization-indexes.html)
+- [MySQL 8.0：Clustered and Secondary Indexes](https://dev.mysql.com/doc/refman/8.0/en/innodb-index-types.html)
+- [MySQL 8.0：Multiple-Column Indexes](https://dev.mysql.com/doc/refman/8.0/en/multiple-column-indexes.html)
+- [MySQL 8.0：EXPLAIN](https://dev.mysql.com/doc/refman/8.0/en/explain.html)
+- [MySQL 8.0：InnoDB Multi-Versioning](https://dev.mysql.com/doc/refman/8.0/en/innodb-multi-versioning.html)
+- [MySQL 8.0：EXPLAIN Output Format](https://dev.mysql.com/doc/refman/8.0/en/explain-output.html)

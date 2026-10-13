@@ -7,7 +7,7 @@ knowledge:
 
 # Agent 框架
 
-Agent 框架封装模型接入、工具和运行状态。本文负责抽象层次、LangGraph 状态合并与选型。恢复语义见[Agent 状态与持久化执行](../state/durable-execution.mdx)。版本相关内容核对于 2026-10-13。
+Agent 框架封装模型接入、工具和运行状态。本文负责抽象层次、LangGraph 状态合并与选型。恢复语义见[Agent 状态与持久化执行](../state/durable-execution.mdx)。
 
 ## 1. 面试核心 {#core}
 
@@ -73,7 +73,6 @@ class ReviewState(TypedDict):
 | LlamaIndex | 数据接入、索引与检索 |
 | OpenAI Agents SDK | Agent 循环、工具、转交和追踪 |
 | Claude Agent SDK | 复用 Claude Code 的工具与执行能力 |
-| Google ADK | 模块化 Agent 与工作流开发 |
 | Spring AI | Spring 生态的模型、工具、RAG 与 MCP |
 | Dify、Coze | 可视化编排与应用集成 |
 
@@ -206,7 +205,7 @@ Checkpointer 按 `thread_id` 保存检查点。`interrupt()` 配合 `Command(res
 
 框架共性是模型适配、工具执行、状态和追踪。LangChain 偏高层集成，LangGraph 偏图编排。AutoGen 与 CrewAI 侧重协作组织。LlamaIndex 侧重数据与检索。
 
-OpenAI Agents SDK 和 Claude Agent SDK 提供运行时能力。Google ADK 提供模块化 Agent 开发。Spring AI 适合 Spring 集成，Dify 与 Coze 提供可视化流程。具体选型还要核对恢复、授权与运维要求。
+OpenAI Agents SDK 和 Claude Agent SDK 提供运行时能力。Spring AI 适合 Spring 集成，Dify 与 Coze 提供可视化流程。具体选型还要核对恢复、授权与运维要求。
 
 </details>
 
@@ -239,6 +238,5 @@ OpenAI Agents SDK 和 Claude Agent SDK 提供运行时能力。Google ADK 提供
 - [LangChain v1 migration guide](https://docs.langchain.com/oss/python/migrate/langchain-v1)
 - [OpenAI：Agents SDK](https://developers.openai.com/api/docs/guides/agents-sdk)
 - [Claude Agent SDK overview](https://platform.claude.com/docs/en/agent-sdk/overview)
-- [Google ADK](https://google.github.io/adk-docs/)
 - [Dify 文档](https://docs.dify.ai/)
 - [Coze Studio](https://github.com/coze-dev/coze-studio)

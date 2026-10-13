@@ -89,8 +89,6 @@ CoreDNS 为 Service 提供名称解析。默认集群域为 `cluster.local`，�
 
 Ingress 描述 HTTP 域名和路径路由，需要控制器执行。Gateway API 用 GatewayClass、Gateway 和路由对象分工。Gateway API 同样需要具体实现。
 
-社区 ingress-nginx 已于 2026 年 3 月退役。该变化针对该控制器项目。Ingress API 和其他控制器有各自生命周期。迁移时应核对 Gateway API 实现的功能支持。
-
 ### 3.1 外部流量策略 {#外部流量策略}
 
 `externalTrafficPolicy: Cluster` 可选择集群内后端。`Local` 只选择当前节点的本地后端。NodePort 等外部路径使用 Local 可保留客户端源 IP。
@@ -113,7 +111,7 @@ Flannel 支持 VXLAN 和 host-gw 等后端。Calico 支持路由以及 IPIP、VX
 
 隧道要求节点间承载网络可达，并放行相应协议。封装额外占用 MTU。直接路由则要求底层能转发 Pod 网段。
 
-Linux kube-proxy 提供 iptables、nftables 等实现。IPVS 模式自 Kubernetes 1.35 起弃用。IPVS 曾将 Service VIP 绑定到虚拟接口。因此，VIP 的具体落点取决于代理模式。
+Linux kube-proxy 可通过 iptables 或 IPVS 实现转发。IPVS 将 Service VIP 绑定到虚拟接口。因此，VIP 的具体落点取决于代理模式。
 
 排查从源 Pod 路由开始，再看节点与目标 Pod。沿途检查策略、防火墙、隧道、MTU 和连接跟踪。两端抓包用于确认丢失位置。
 
@@ -188,7 +186,7 @@ Service 的类型有 ClusterIP、NodePort、LoadBalancer 和 ExternalName。Head
 
 控制器维护 EndpointSlice，代理按端点条件转发。CoreDNS 负责名称解析。port-forward 通过 API 通道访问选中的 Pod。
 
-Ingress 定义七层路由，控制器负责执行。Gateway API 使用分离的网关与路由对象。社区 ingress-nginx 于 2026 年 3 月退役。该项目的退役不等于 Ingress API 被移除。
+Ingress 定义七层路由，控制器负责执行。Gateway API 使用分离的网关与路由对象。
 
 </details>
 
@@ -219,7 +217,7 @@ Pod 网络由 CNI 等网络实现建立。Pod 内容器用 localhost 通信。�
 
 Flannel 支持 VXLAN、host-gw 等模式。Calico 支持路由、IPIP 与 VXLAN。隧道要求承载网络可达，并需要合适的 MTU。直接路由要求底层能转发 Pod 网段。
 
-Service 代理负责虚拟地址到后端的选择与转发。它可由 kube-proxy 或网络插件实现。Linux kube-proxy 的 IPVS 模式自 1.35 起弃用。故障时按实际数据路径检查策略、路由和抓包。
+Service 代理负责虚拟地址到后端的选择与转发。它可由 kube-proxy 或网络插件实现。故障时按实际数据路径检查策略、路由和抓包。
 
 </details>
 
@@ -280,7 +278,6 @@ Local 只使用节点本地后端。NodePort 等外部路径可因此保留客�
 - [Kubernetes：Service](https://kubernetes.io/docs/concepts/services-networking/service/)
 - [Kubernetes：Cluster Networking](https://kubernetes.io/docs/concepts/cluster-administration/networking/)
 - [Kubernetes：Gateway API](https://kubernetes.io/docs/concepts/services-networking/gateway/)
-- [Ingress NGINX Retirement: What You Need to Know](https://kubernetes.io/blog/2025/11/11/ingress-nginx-retirement/)
 - [Kubernetes：Deployments](https://kubernetes.io/docs/concepts/workloads/controllers/deployment/)
 - [Kubernetes：StatefulSets](https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/)
 - [Kubernetes：ConfigMaps](https://kubernetes.io/docs/concepts/configuration/configmap/)

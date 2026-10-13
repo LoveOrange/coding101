@@ -6,7 +6,7 @@ knowledge:
 
 # 数据约束
 
-数据约束限制数据库允许保存的状态。本文负责 MySQL 8.4 InnoDB 的唯一、非空、CHECK 和外键。多条写入的原子提交见[数据库事务](../transaction/index.mdx)。
+数据约束限制数据库允许保存的状态。本文负责 MySQL 8.0 InnoDB 的唯一、非空、CHECK 和外键。多条写入的原子提交见[数据库事务](../transaction/index.mdx)。
 
 ## 1. 面试核心 {#core}
 
@@ -30,7 +30,7 @@ CREATE TABLE accounts (
 
 重复邮箱违反 UNIQUE，空邮箱违反 NOT NULL。负余额违反 CHECK。
 
-MySQL 8.0.16 起支持执行 CHECK 约束。更早版本会解析部分 CHECK 语法，但忽略检查。MySQL 8.4 还允许声明 `NOT ENFORCED`。本例省略该选项，因此实际执行检查。
+MySQL 8.0.16 起支持执行 CHECK 约束。更早版本会解析部分 CHECK 语法，但忽略检查。8.0.16 起还允许声明 `NOT ENFORCED`。本例省略该选项，因此实际执行检查。
 
 ## 3. NULL 与 CHECK {#null-与-check}
 
@@ -129,7 +129,7 @@ RESTRICT 拒绝仍被引用的父记录变更。CASCADE 将相应删除或更新
 
 ## 8. 参考资料 {#参考资料}
 
-- [MySQL：CREATE TABLE](https://dev.mysql.com/doc/refman/8.4/en/create-table.html)
-- [MySQL：CHECK Constraints](https://dev.mysql.com/doc/refman/8.4/en/create-table-check-constraints.html)
-- [MySQL 8.4：Foreign Key Constraints](https://dev.mysql.com/doc/refman/8.4/en/create-table-foreign-keys.html)
-- [MySQL 8.4：CREATE INDEX](https://dev.mysql.com/doc/refman/8.4/en/create-index.html)
+- [MySQL：CREATE TABLE](https://dev.mysql.com/doc/refman/8.0/en/create-table.html)
+- [MySQL：CHECK Constraints](https://dev.mysql.com/doc/refman/8.0/en/create-table-check-constraints.html)
+- [MySQL 8.0：Foreign Key Constraints](https://dev.mysql.com/doc/refman/8.0/en/create-table-foreign-keys.html)
+- [MySQL 8.0：CREATE INDEX](https://dev.mysql.com/doc/refman/8.0/en/create-index.html)

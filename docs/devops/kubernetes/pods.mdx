@@ -25,7 +25,7 @@ Pod 内各容器调度到同一节点。Linux 运行时可用 pause 容器维持
 
 普通 init 容器按顺序执行，并成功结束。随后，业务容器启动。sidecar 则长期提供代理、日志等辅助能力。
 
-原生 sidecar 在 Kubernetes 1.33 达到稳定状态。它声明在 initContainers 中，使用 `restartPolicy: Always`。kubelet 确认它已启动后，再处理后续 init 容器。配置 startupProbe 时，启动确认还依赖该探针。正常终止时，原生 sidecar 在业务容器之后停止。
+Kubernetes 的原生 sidecar 声明在 initContainers 中，使用 `restartPolicy: Always`。kubelet 确认它已启动后，再处理后续 init 容器。配置 startupProbe 时，启动确认还依赖该探针。正常终止时，原生 sidecar 在业务容器之后停止。
 
 ## 3. 状态与排查 {#状态与排查}
 

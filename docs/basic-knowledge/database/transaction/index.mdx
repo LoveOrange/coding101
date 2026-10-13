@@ -8,7 +8,7 @@ knowledge:
 
 # 数据库事务
 
-数据库事务把一组读写放进同一个提交边界。它规定失败恢复、并发可见性和提交后的持久性。本文以 MySQL 8.4 InnoDB 为例。内容包括 ACID、隔离级别、事务边界与提交持久性。版本可见性见 [MVCC](./mvcc-read-view-consistent-read.mdx)，记录与间隙的加锁规则见 [InnoDB 锁](./innodb-locking-ranges.mdx)。
+数据库事务把一组读写放进同一个提交边界。它规定失败恢复、并发可见性和提交后的持久性。本文以 MySQL 8.0 InnoDB 为例。内容包括 ACID、隔离级别、事务边界与提交持久性。版本可见性见 [MVCC](./mvcc-read-view-consistent-read.mdx)，记录与间隙的加锁规则见 [InnoDB 锁](./innodb-locking-ranges.mdx)。
 
 ## 1. 面试核心 {#core}
 
@@ -100,7 +100,7 @@ SQL 标准给出隔离语义，数据库采用 MVCC、锁和冲突检测实现�
 
 例如 A 的范围更新尚未提交，B 向该范围插入并先提交。假设 A 在源库执行时没处理 B 的新行。副本按 B、A 的提交顺序重放 SQL 时，A 却处理了该行。源库与副本就会出现差异。范围锁使 B 的插入等待 A 结束，约束这种执行顺序。
 
-官方文档没有说明默认选择 RR 的原因。上面是常见的解释。MySQL 8.4 默认 `binlog_format=ROW`，记录行变更。RC/RU 的 InnoDB 写入也要求 row 格式。选择隔离级别仍需依据业务读写语义。
+官方文档没有说明默认选择 RR 的原因。上面是常见的解释。MySQL 8.0 默认 `binlog_format=ROW`，记录行变更。RC/RU 的 InnoDB 写入也要求 row 格式。选择隔离级别仍需依据业务读写语义。
 
 ## 6. InnoDB 并发控制 {#5-innodb-同时使用-mvcc-与锁}
 
@@ -283,7 +283,7 @@ Read Uncommitted 允许脏读。Read Committed 每条语句只看已提交数据
 <details>
 <summary>参考回答</summary>
 
-早期默认的 `binlog_format=STATEMENT` 依赖 SQL 重放。RR 的 next-key 锁约束并发插入。这有助于保持源库与副本的写入范围一致。因此，解释默认 RR 时常会提到这段兼容历史。MySQL 5.7.7 起默认格式改为 ROW，MySQL 8.4 仍默认 RR。当前的隔离级别选择应依据业务语义。
+早期默认的 `binlog_format=STATEMENT` 依赖 SQL 重放。RR 的 next-key 锁约束并发插入。这有助于保持源库与副本的写入范围一致。因此，解释默认 RR 时常会提到这段兼容历史。MySQL 5.7.7 起默认格式改为 ROW，MySQL 8.0 仍默认 RR。当前的隔离级别选择应依据业务语义。
 
 </details>
 
@@ -306,14 +306,14 @@ Read Uncommitted 允许脏读。Read Committed 每条语句只看已提交数据
 
 ## 13. 参考资料 {#参考资料}
 
-- [MySQL 8.4：InnoDB Transaction Isolation Levels](https://dev.mysql.com/doc/refman/8.4/en/innodb-transaction-isolation-levels.html)
-- [MySQL 8.4：InnoDB Locking](https://dev.mysql.com/doc/refman/8.4/en/innodb-locking.html)
+- [MySQL 8.0：InnoDB Transaction Isolation Levels](https://dev.mysql.com/doc/refman/8.0/en/innodb-transaction-isolation-levels.html)
+- [MySQL 8.0：InnoDB Locking](https://dev.mysql.com/doc/refman/8.0/en/innodb-locking.html)
 - [PostgreSQL：Transaction Isolation](https://www.postgresql.org/docs/18/transaction-iso.html)
-- [MySQL 8.4：autocommit、Commit 与 Rollback](https://dev.mysql.com/doc/refman/8.4/en/innodb-autocommit-commit-rollback.html)
-- [MySQL 8.4：InnoDB Error Handling](https://dev.mysql.com/doc/refman/8.4/en/innodb-error-handling.html)
-- [MySQL 8.4：Implicit Commit](https://dev.mysql.com/doc/refman/8.4/en/implicit-commit.html)
-- [MySQL 8.4：innodb_flush_log_at_trx_commit](https://dev.mysql.com/doc/refman/8.4/en/innodb-parameters.html#sysvar_innodb_flush_log_at_trx_commit)
+- [MySQL 8.0：autocommit、Commit 与 Rollback](https://dev.mysql.com/doc/refman/8.0/en/innodb-autocommit-commit-rollback.html)
+- [MySQL 8.0：InnoDB Error Handling](https://dev.mysql.com/doc/refman/8.0/en/innodb-error-handling.html)
+- [MySQL 8.0：Implicit Commit](https://dev.mysql.com/doc/refman/8.0/en/implicit-commit.html)
+- [MySQL 8.0：innodb_flush_log_at_trx_commit](https://dev.mysql.com/doc/refman/8.0/en/innodb-parameters.html#sysvar_innodb_flush_log_at_trx_commit)
 - [MySQL 5.7：Replication Formats](https://dev.mysql.com/doc/mysql-replication-excerpt/5.7/en/replication-formats.html)
-- [MySQL 8.4：Setting The Binary Log Format](https://dev.mysql.com/doc/refman/8.4/en/binary-log-setting.html)
-- [MySQL 8.4：Locks Set by Different SQL Statements](https://dev.mysql.com/doc/refman/8.4/en/innodb-locks-set.html)
-- [MySQL 8.4：sync_binlog](https://dev.mysql.com/doc/refman/8.4/en/replication-options-binary-log.html#sysvar_sync_binlog)
+- [MySQL 8.0：Setting The Binary Log Format](https://dev.mysql.com/doc/refman/8.0/en/binary-log-setting.html)
+- [MySQL 8.0：Locks Set by Different SQL Statements](https://dev.mysql.com/doc/refman/8.0/en/innodb-locks-set.html)
+- [MySQL 8.0：sync_binlog](https://dev.mysql.com/doc/refman/8.0/en/replication-options-binary-log.html#sysvar_sync_binlog)

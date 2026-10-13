@@ -61,7 +61,7 @@ TIME_WAIT 的协议作用和复用条件见 [TCP 连接](../../basic-knowledge/n
 
 先确认主动关闭端、目标分布和连接创建速率。短连接多时，检查客户端连接池及代理上游复用。端口不足需结合临时端口范围和目标四元组判断。
 
-Nginx 1.29.7 前默认代理 HTTP/1.0。1.29.7 起默认使用 HTTP/1.1。是否复用仍取决于 keepalive、请求头和对端行为。配置方式见 [Nginx 与负载均衡](../traffic/nginx-load-balancing.mdx#nginx-的结构与常用配置)。
+Nginx 上游连接复用可显式配置 HTTP/1.1 与 keepalive。是否复用仍取决于请求头和对端行为。配置方式见 [Nginx 与负载均衡](../traffic/nginx-load-balancing.mdx#nginx-的结构与常用配置)。
 
 持续 CLOSE_WAIT 表示本地发送方向尚未关闭。先用 `ss -antp state close-wait` 定位进程和对端。再检查异常分支、流关闭逻辑与线程栈。应用有意半关闭时，也需核对其业务期限。
 
@@ -108,7 +108,7 @@ iptables 配置 netfilter 规则。内核在网络路径中提供多个 hook。
 
 NAT 规则主要为连接首包建立映射。后续包按 conntrack 保存的映射转换。修改 NAT 规则后，已有连接仍会使用旧映射。
 
-kube-proxy 的 iptables 模式用 DNAT 选择后端。其他代理模式的数据路径不同。IPVS 模式自 Kubernetes 1.35 起弃用。模式选择和集群网络见 [工作负载、Service 与集群网络](../kubernetes/workloads-networking.mdx#集群网络)。
+kube-proxy 的 iptables 模式用 DNAT 选择后端。其他代理模式的数据路径不同。模式选择和集群网络见 [工作负载、Service 与集群网络](../kubernetes/workloads-networking.mdx#集群网络)。
 
 ## 7. DNS、TLS 与 HTTP 耗时 {#dns-tls-与-http-耗时}
 
@@ -182,7 +182,7 @@ curl --resolve example.com:443:192.0.2.10 https://example.com/
 
 TIME_WAIT 保留关闭状态，CLOSE_WAIT 等待应用关闭。协议细节与内核参数见 [TCP 连接](../../basic-knowledge/network/tcp_handshake.mdx)。
 
-TIME_WAIT 多时先确认短连接和实际资源压力。检查应用连接池及 Nginx 上游 keepalive。Nginx 默认代理版本需按版本核对。
+TIME_WAIT 多时先确认短连接和实际资源压力。检查应用连接池及 Nginx 上游 keepalive。Nginx 可显式配置 HTTP/1.1，配合上游连接复用。
 
 CLOSE_WAIT 持续堆积时，定位进程和对端。再检查关闭路径、异常分支及阻塞线程。半关闭业务也应有完成期限。
 
@@ -271,7 +271,7 @@ iptables 配置 netfilter 的过滤与转换规则。五条主要内建链对应
 
 规则可匹配 IP、端口和连接状态。这些匹配覆盖网络层与传输层。conntrack 保存状态及 NAT 映射。路由表则选择下一跳和出口。
 
-Kubernetes 的 iptables 代理模式用 DNAT 转到端点。IPVS 和 nftables 等模式有各自实现。IPVS 模式自 Kubernetes 1.35 起弃用。
+Kubernetes 的 iptables 代理模式用 DNAT 转到端点。IPVS 等模式有各自实现。
 
 </details>
 

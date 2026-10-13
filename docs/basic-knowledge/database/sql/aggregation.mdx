@@ -7,7 +7,7 @@ knowledge:
 
 # SQL 聚合
 
-SQL 聚合将输入行计算为计数、总额或平均值。本文负责 MySQL 8.4 的分组、过滤、空值和统计粒度。连接产生的行数变化见 [SQL 连接](./joins.mdx)。
+SQL 聚合将输入行计算为计数、总额或平均值。本文负责 MySQL 8.0 的分组、过滤、空值和统计粒度。连接产生的行数变化见 [SQL 连接](./joins.mdx)。
 
 ## 1. 面试核心 {#core}
 
@@ -48,7 +48,7 @@ SELECT id, team, SUM(amount) FROM sales GROUP BY id;
 -- SELECT team, id, SUM(amount) FROM sales GROUP BY team;
 ```
 
-MySQL 8.4 默认 `ONLY_FULL_GROUP_BY` 会拒绝第二种查询。关闭该模式后，服务器可从组内任选一个 id。结果不再稳定，ORDER BY 也无法指定被选中的组内值。
+MySQL 8.0 默认 `ONLY_FULL_GROUP_BY` 会拒绝第二种查询。关闭该模式后，服务器可从组内任选一个 id。结果不再稳定，ORDER BY 也无法指定被选中的组内值。
 
 ## 4. 分组前后过滤 {#分组前后过滤}
 
@@ -165,12 +165,12 @@ WHERE 在分组前筛行，HAVING 在聚合后筛组。无 GROUP BY 的空输入
 <details>
 <summary>参考回答</summary>
 
-同一组内的其他列可有多个值，需要明确选择依据。主键唯一确定一行，因此其余列依赖主键。MySQL 8.4 允许这种函数依赖。仅按 team 分组时，多行的 id 不唯一，默认模式会拒绝查询。
+同一组内的其他列可有多个值，需要明确选择依据。主键唯一确定一行，因此其余列依赖主键。MySQL 8.0 允许这种函数依赖。仅按 team 分组时，多行的 id 不唯一，默认模式会拒绝查询。
 
 </details>
 
 ## 9. 参考资料 {#参考资料}
 
-- [MySQL：Aggregate Functions](https://dev.mysql.com/doc/refman/8.4/en/aggregate-functions.html)
-- [MySQL：GROUP BY Handling](https://dev.mysql.com/doc/refman/8.4/en/group-by-handling.html)
-- [MySQL 8.4：Flow Control Functions](https://dev.mysql.com/doc/refman/8.4/en/flow-control-functions.html)
+- [MySQL：Aggregate Functions](https://dev.mysql.com/doc/refman/8.0/en/aggregate-functions.html)
+- [MySQL：GROUP BY Handling](https://dev.mysql.com/doc/refman/8.0/en/group-by-handling.html)
+- [MySQL 8.0：Flow Control Functions](https://dev.mysql.com/doc/refman/8.0/en/flow-control-functions.html)

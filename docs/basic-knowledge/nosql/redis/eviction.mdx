@@ -6,7 +6,7 @@ knowledge:
 
 # Redis 内存淘汰
 
-Redis 内存淘汰在内存压力下选择删除对象。本文以 Redis 7.2 为基线，负责策略、候选范围与内存观测。按 TTL 清理的机制见 [Redis 过期](./expiration.mdx)。
+Redis 内存淘汰在内存压力下选择删除对象。本文以 Redis 6、7 为基线，负责策略、候选范围与内存观测。按 TTL 清理的机制见 [Redis 过期](./expiration.mdx)。
 
 ## 1. 面试核心 {#core}
 
@@ -17,7 +17,7 @@ Redis 内存淘汰在内存压力下选择删除对象。本文以 Redis 7.2 为
 
 ## 2. 策略与候选范围 {#策略与候选范围}
 
-Redis 7.2 提供以下八种策略。
+Redis 6、7 提供以下八种策略。
 
 | 策略 | 候选与依据 |
 | --- | --- |
@@ -44,7 +44,7 @@ volatile 策略缺少可淘汰候选时，行为与 noeviction 相同。内存�
 
 纯缓存实例可比较 allkeys-lru 与 allkeys-lfu。LRU 适合近期访问能预测后续访问的负载。LFU 用近似计数与衰减追踪访问频率，能适应热点变化。
 
-`maxmemory-samples` 调整采样精度与 CPU 成本。Redis 7.2 默认值为 5。LFU 还受 `lfu-log-factor` 和 `lfu-decay-time` 影响。策略效果需按实际访问分布比较命中率。
+`maxmemory-samples` 调整采样精度与 CPU 成本。Redis 6、7 默认值为 5。LFU 还受 `lfu-log-factor` 和 `lfu-decay-time` 影响。策略效果需按实际访问分布比较命中率。
 
 权威业务状态应与可淘汰缓存分开规划。noeviction 只改变内存不足时的写入行为。持久化与恢复仍需独立设计。
 
@@ -63,7 +63,7 @@ volatile 策略缺少可淘汰候选时，行为与 noeviction 相同。内存�
 <details>
 <summary>参考回答</summary>
 
-Redis 7.2 有 allkeys 和 volatile 两类候选范围。两类各有 LRU、LFU 和 random 策略。volatile 还提供 TTL 优先，另有 noeviction。
+Redis 6、7 有 allkeys 和 volatile 两类候选范围。两类各有 LRU、LFU 和 random 策略。volatile 还提供 TTL 优先，另有 noeviction。
 
 LRU 看近期访问，LFU 看衰减后的近似频率。两者需按负载比较命中率和 CPU 成本。noeviction 会在内存不足时拒绝相关写入。
 
@@ -106,4 +106,5 @@ maxmemory 用于淘汰判断，并非进程 RSS 的硬限制。部分复制和 A
 ## 6. 参考资料 {#参考资料}
 
 - [Redis：Key Eviction](https://redis.io/docs/latest/develop/reference/eviction/)
-- [Redis 7.2：配置文件](https://github.com/redis/redis/blob/7.2/redis.conf)
+- [Redis 6.2：配置文件](https://github.com/redis/redis/blob/6.2/redis.conf)
+- [Redis 7.0：配置文件](https://github.com/redis/redis/blob/7.0/redis.conf)

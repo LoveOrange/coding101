@@ -8,7 +8,7 @@ knowledge:
 
 # B+ 树
 
-B+ 树用多路导航和有序叶子支持索引查找。本文讲解树结构、范围扫描和页面调整。实现示例采用 MySQL 8.4 InnoDB。行存储由[聚簇索引](../clustered_index/index.mdx)介绍。查询成本的评估见[索引设计](../index-review.mdx)。
+B+ 树用多路导航和有序叶子支持索引查找。本文讲解树结构、范围扫描和页面调整。实现示例采用 MySQL 8.0 InnoDB。行存储由[聚簇索引](../clustered_index/index.mdx)介绍。查询成本的评估见[索引设计](../index-review.mdx)。
 
 <span id="1-b-树由内部节点和叶子节点组成"></span>
 
@@ -81,7 +81,7 @@ WHERE id >= 10000 AND id < 10100;
 
 ## 7. 页面合并 {#页面合并}
 
-MySQL 8.4 的 `MERGE_THRESHOLD` 默认是 50。删除或缩短记录后，页使用率低于阈值时会尝试合并。相邻页必须有空间容纳合并后的记录。
+MySQL 8.0 的 `MERGE_THRESHOLD` 默认是 50。删除或缩短记录后，页使用率低于阈值时会尝试合并。相邻页必须有空间容纳合并后的记录。
 
 页内空闲空间由 InnoDB 后续复用。表文件是否缩小还取决于表空间和重建操作。因此，删除大量记录后，文件大小可以保持不变。
 
@@ -181,13 +181,13 @@ B+ 树同时支持低树高导航和有序范围扫描。多路内部页比二�
 <details>
 <summary>参考回答</summary>
 
-页使用率降低后，InnoDB 会尝试合并相邻页。MySQL 8.4 默认 `MERGE_THRESHOLD=50`。合并需要相邻页有足够空间。释放的页可供表空间复用，文件缩小另需重建等操作。
+页使用率降低后，InnoDB 会尝试合并相邻页。MySQL 8.0 默认 `MERGE_THRESHOLD=50`。合并需要相邻页有足够空间。释放的页可供表空间复用，文件缩小另需重建等操作。
 
 </details>
 
 ## 11. 参考资料 {#参考资料}
 
-- [MySQL 8.4：The Physical Structure of an InnoDB Index](https://dev.mysql.com/doc/refman/8.4/en/innodb-physical-structure.html)
-- [MySQL 8.4：Clustered and Secondary Indexes](https://dev.mysql.com/doc/refman/8.4/en/innodb-index-types.html)
-- [MySQL 8.4：Index Page Merge Threshold](https://dev.mysql.com/doc/refman/8.4/en/index-page-merge-threshold.html)
-- [MySQL 8.4：Reclaiming Disk Space](https://dev.mysql.com/doc/refman/8.4/en/innodb-truncate-table-reclaim-space.html)
+- [MySQL 8.0：The Physical Structure of an InnoDB Index](https://dev.mysql.com/doc/refman/8.0/en/innodb-physical-structure.html)
+- [MySQL 8.0：Clustered and Secondary Indexes](https://dev.mysql.com/doc/refman/8.0/en/innodb-index-types.html)
+- [MySQL 8.0：Index Page Merge Threshold](https://dev.mysql.com/doc/refman/8.0/en/index-page-merge-threshold.html)
+- [MySQL 8.0：Reclaiming Disk Space](https://dev.mysql.com/doc/refman/8.0/en/innodb-truncate-table-reclaim-space.html)

@@ -103,11 +103,9 @@ TIME_WAIT 数量随短连接关闭速率和等待时长增长。处理时应看�
 
 TIME_WAIT 多时，先减少连接创建与关闭频率。HTTP keep-alive、HTTP/2 多路复用和数据库连接池都能复用连接。多个请求因此可以共享连接。用 `ss -tan state time-wait` 确认主动关闭端和目标分布。再检查临时端口耗尽、内存占用与连接失败。仅数量高且没有资源压力时，保留正常等待即可。
 
-Linux 的 `net.ipv4.tcp_tw_reuse` 可为新连接复用 TIME_WAIT socket。复用需满足协议安全条件，主要适用于主动发起连接的一端。Linux 6.6 中，`0` 表示关闭，`1` 表示全局启用。默认值 `2` 表示仅对回环启用。非回环出站连接确有端口压力时，才需要评估 `1`。连接还需协商 TCP timestamps，并通过内核时间戳和等待时间检查。`tcp_tw_reuse` 保留协议安全检查。复用效果需在目标内核与实际网络路径下验证。
+Linux 的 `net.ipv4.tcp_tw_reuse` 可为新连接复用 TIME_WAIT socket。复用需满足协议安全条件，主要适用于主动发起连接的一端。连接还需协商 TCP timestamps。内核会检查时间戳和等待时间。复用效果需在目标内核与实际网络路径下验证。
 
-支持 `tcp_tw_reuse_delay` 的内核还可配置复用等待。当前内核文档给出的默认值为 1000ms。该值至少要覆盖对端时间戳时钟的 tick 间隔。这能维持 PAWS 安全性。上线前应读取实际内核版本与 sysctl 值。这样能避免将新版本参数直接套到旧内核。
-
-`tcp_tw_recycle` 已在 Linux 4.12 移除。旧实现对同一对端地址的时间戳作假设。这会与 NAT 后的多个主机及时间戳偏移冲突。处理 TIME_WAIT 应考虑连接复用和容量调整。也可以根据实际情况评估 `tcp_tw_reuse`。`tcp_fin_timeout` 管理孤儿 FIN_WAIT_2 等待。它与 TIME_WAIT 计时分属不同机制。
+`tcp_tw_recycle` 的旧实现会快速回收 TIME_WAIT。它假设同一对端地址的时间戳单调递增。这会与 NAT 后的多个主机及时间戳偏移冲突。处理 TIME_WAIT 应考虑连接复用和容量调整。也可以根据实际情况评估 `tcp_tw_reuse`。`tcp_fin_timeout` 管理孤儿 FIN_WAIT_2 等待。它与 TIME_WAIT 计时分属不同机制。
 
 ## 7. 握手丢包与半连接 {#握手丢包与半连接}
 
@@ -262,14 +260,14 @@ SYN 队列等待完成握手，accept 队列等待应用取走已建立连接；
 
 **出现公司**：暂无已核验的公开来源（本站自测）
 
-**考察重点**：连接复用、主动连接端口压力、时间戳与内核版本。
+**考察重点**：连接复用、主动连接端口压力与时间戳安全检查。
 
 **相关内容**：[TIME_WAIT 的资源压力与连接复用](#time_wait-的资源压力与连接复用)。
 
 <details>
 <summary>参考回答</summary>
 
-优先通过 keep-alive、HTTP/2 或连接池减少短连接。再确认主动关闭端的端口和内存压力。Linux 6.6 中 `tcp_tw_reuse=2` 默认只对回环启用；非回环出站连接评估 `1` 时，还需协商 TCP timestamps。连接也需通过内核等待与安全检查。`tcp_tw_recycle` 因时间戳假设等问题在 Linux 4.12 移除，已无可配置项。
+优先通过 keep-alive、HTTP/2 或连接池减少短连接。再确认主动关闭端的端口和内存压力。`tcp_tw_reuse` 在协议安全条件下复用 TIME_WAIT socket。连接需协商 TCP timestamps，并通过内核等待检查。`tcp_tw_recycle` 的旧机制依赖对端时间戳单调递增。NAT 后多个主机会破坏这个假设。
 
 </details>
 
@@ -280,7 +278,5 @@ SYN 队列等待完成握手，accept 队列等待应用取走已建立连接；
 - [RFC 4987：TCP SYN Flooding Attacks](https://www.rfc-editor.org/rfc/rfc4987.html)
 - [Linux man-pages：listen(2)](https://man7.org/linux/man-pages/man2/listen.2.html)
 - [Linux Kernel：IP Sysctl](https://docs.kernel.org/networking/ip-sysctl.html)
-- [Linux 6.6：IP Sysctl](https://www.kernel.org/doc/html/v6.6/networking/ip-sysctl.html)
-- [Linux 6.6：tcp_twsk_unique](https://github.com/torvalds/linux/blob/v6.6/net/ipv4/tcp_ipv4.c)
 - [Linux man-pages：tcp(7)](https://man7.org/linux/man-pages/man7/tcp.7.html)
 - [Linux Kernel：SNMP counters](https://docs.kernel.org/networking/snmp_counter.html)
