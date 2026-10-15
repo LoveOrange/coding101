@@ -168,6 +168,7 @@ const config: Config = {
             { label: "2027 校招季", to: "/docs/tags/campus-2027" },
             { label: "面试准备", to: "/docs/tags/interview-preparation" },
             { label: "工具与框架", to: "/docs/tools-and-frameworks/git/" },
+            { label: "文章目录", to: "/articles/" },
             { label: "使用指南", to: "/docs/intro" },
           ],
         },
@@ -198,6 +199,7 @@ const config: Config = {
   } satisfies Preset.ThemeConfig,
   plugins: [
     ["./plugins/learning-content/index.ts", { learnerFeatures }],
+    "./plugins/content-discovery/index.ts",
     ...stylePreviewPlugins,
     // [
     //   "@docusaurus/plugin-ideal-image",

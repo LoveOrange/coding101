@@ -41,6 +41,9 @@ jobs:
       - name: Build for GitHub Pages
         run: npm run build -- --config docusaurus.github-pages.config.ts
 
+      - name: Check public content discovery
+        run: npm run check:discovery
+
       - name: Upload GitHub Pages artifact
         uses: actions/upload-pages-artifact@v5
         with:

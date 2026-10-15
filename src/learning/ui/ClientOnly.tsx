@@ -37,18 +37,20 @@ export function ClientPage({
   title,
   description,
   noFooter = true,
+  fallback,
   children,
 }: {
   title: string;
   description?: string;
   noFooter?: boolean;
+  fallback?: ReactNode;
   children: () => ReactNode;
 }) {
   const isBrowser = useIsBrowser();
   useMockPreset(isBrowser);
   return (
     <Layout title={title} description={description} noFooter={noFooter}>
-      {isBrowser ? children() : <main style={{minHeight: 'calc(100vh - var(--ifm-navbar-height))'}} />}
+      {isBrowser ? children() : fallback ?? <main style={{minHeight: 'calc(100vh - var(--ifm-navbar-height))'}} />}
     </Layout>
   );
 }

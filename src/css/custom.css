@@ -68,8 +68,10 @@ h1,h2,h3{font-family:'Noto Serif SC',serif;font-weight:900}
 .theme-admonition-tip,.theme-admonition-info{--ifm-alert-border-color:var(--c-green)}
 .theme-admonition-warning,.theme-admonition-danger{--ifm-alert-border-color:var(--c-accent);--ifm-alert-background-color:var(--c-accent-t)}
 
-/* Interview section: the card grid replaces the question list on screen. */
-.theme-doc-markdown h2.c101-interview ~ :not(.c101-interview-cards,.theme-admonition,h2,h2.c101-interview ~ h2 ~ *){display:none}
+/* Native disclosure keeps the original questions usable without JavaScript. */
+.theme-doc-markdown details.c101-question-list{margin:20px 0;padding:20px 24px}
+.c101-question-list > summary{cursor:pointer;font-weight:600;color:var(--c-ink)}
+.c101-question-list[open] > summary{margin-bottom:24px}
 
 /* ---- Docs: sidebar and TOC ---- */
 .theme-doc-sidebar-container{border-right:1px solid var(--c-border)!important}

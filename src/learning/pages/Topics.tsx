@@ -43,7 +43,16 @@ export default function Topics(): JSX.Element {
   // Selection comes from the URL and reading progress from localStorage,
   // so render in the browser only to avoid hydration mismatches.
   return (
-    <ClientPage title="知识树" description="按目标岗位查看领域、主题和文章，并从上次读到的位置继续。">
+    <ClientPage
+      title="知识树"
+      description="按目标岗位查看领域、主题和文章，并从上次读到的位置继续。"
+      fallback={
+        <main className="container padding-vert--lg">
+          <h1>技术主题</h1>
+          <p>按主题阅读技术原理与面试自测，也可以从岗位路线确定复习重点。</p>
+          <p><Link to="/articles/">浏览文章目录</Link> · <Link to="/interview-roadmaps/">选择岗位路线</Link></p>
+        </main>
+      }>
       {() => <TopicsPage />}
     </ClientPage>
   );

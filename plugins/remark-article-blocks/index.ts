@@ -10,6 +10,7 @@ type Node = {type: string; depth?: number; value?: string; children?: Node[]; [k
 
 const CORE_TITLE = /面试核心/;
 const FAQ_TITLE = /常见问题/;
+const INTERVIEW_TITLE = /^(?:\d+\.\s*)?面试题(?:\s*\{#[^}]+\})?$/;
 
 function textOf(node: Node): string {
   if (typeof node.value === 'string') return node.value;
@@ -51,6 +52,10 @@ export default function remarkArticleBlocks() {
       }
 
       output.push(node);
+      if (h2 && INTERVIEW_TITLE.test(h2.trim())) {
+        output.push(element('InterviewQuestionList', takeUntil(2)));
+        continue;
+      }
       if (!h2 || !FAQ_TITLE.test(h2)) continue;
 
       output.push(...takeUntil(3));
