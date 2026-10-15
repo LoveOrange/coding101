@@ -3,19 +3,21 @@ sidebar_position: 1
 knowledge:
   id: devops.linux.performance-troubleshooting
   type: concept
+description: "Linux 性能排查通过资源和等待指标定位耗时。本文讲解负载、CPU、内存、磁盘 I/O、PSI 与容器限流。本文适合准备 SRE 或后端面试的读者。读者可练习根据症状选择工具，比较负载与利用率。读者还可沿证据判断资源瓶颈。"
+keywords: ["load average", "vmstat", "iostat", "PSI", "Linux 性能瓶颈"]
 ---
 
 # Linux 性能排查
 
-Linux 性能排查用资源指标定位请求耗时。本文负责负载、CPU、内存、I/O 和等待分析。Java 栈定位见 [CPU 使用率](../../basic-knowledge/java/jvm/cpu-high-diagnosis.mdx)。网络路径见 [Linux 网络排查](./network-troubleshooting.mdx)。
+Linux 性能排查用资源指标定位请求耗时。本文负责负载、CPU、内存、I/O 和等待分析。
 
 ## 1. 面试核心 {#core}
 
-- Linux load average 统计 R 与 D 状态任务的平均数量。[卡](#load-average)
-- `top` 的 us、sy 和 si 分别表示用户态、内核态和软中断时间。[卡](#high-cpu)
-- `iostat` 按设备统计，`pidstat -d` 按任务观察 I/O。[卡](#slow-but-idle)
-- PSI 量化任务因 CPU、内存和 I/O 资源受阻的时间。[卡](#psi-throttling)
-- CPU 配额限流可在宿主空闲时增加容器延迟。[卡](#psi-throttling)
+- **平均负载。** Linux load average 统计 R 与 D 状态任务的平均数量。[卡](#load-average)
+- **CPU 时间分类。** `top` 的 us、sy 和 si 分别表示用户态、内核态和软中断时间。[卡](#high-cpu)
+- **I/O 观测。** `iostat` 按设备统计，`pidstat -d` 按任务观察 I/O。[卡](#slow-but-idle)
+- **资源压力。** PSI 量化任务因 CPU、内存和 I/O 资源受阻的时间。[卡](#psi-throttling)
+- **容器限流。** CPU 配额限流可在宿主空闲时增加容器延迟。[卡](#psi-throttling)
 
 ## 2. load average 指标 {#load-average-指标}
 
@@ -114,7 +116,9 @@ PSI 描述压力造成的等待，利用率描述资源忙碌。两者结合请�
 <details>
 <summary>参考回答</summary>
 
-三个数对应 1、5、15 分钟平均负载。Linux 统计 R 和 D 状态任务，包含线程。因此，load average 与 CPU 使用率是不同指标。
+**三个数对应 1、5、15 分钟平均负载。**
+
+Linux 统计 R 和 D 状态任务，包含线程。因此，load average 与 CPU 使用率是不同指标。
 
 高负载需区分 CPU 排队和不可中断等待。CPU 忙且 r 长时，检查计算与调度竞争。CPU 空闲但 D 多时，检查 I/O 和内核等待。还需核对单核热点、亲和性与容器配额。
 
@@ -140,7 +144,9 @@ PSI 描述压力造成的等待，利用率描述资源忙碌。两者结合请�
 <details>
 <summary>参考回答</summary>
 
-先确认时间和范围，再定位进程、线程与热点。top 找进程，mpstat 检查每核分布。`top -Hp <pid>` 或 pidstat 找高占用线程。perf 或语言工具用于定位代码。
+**先确认时间和范围，再定位进程、线程与热点。**
+
+top 找进程，mpstat 检查每核分布。`top -Hp <pid>` 或 pidstat 找高占用线程。perf 或语言工具用于定位代码。
 
 us 高重点看计算、序列化和 GC。sy 高结合系统调用、切换和中断分析。内存也高时，检查 available、换页速率及 OOM。采集现场需控制开销，再按业务条件止血。
 
@@ -167,7 +173,9 @@ us 高重点看计算、序列化和 GC。sy 高结合系统调用、切换和�
 <details>
 <summary>参考回答</summary>
 
-先排除平均值掩盖的单核热点和容器限流。再按请求耗时检查 I/O、锁、池队列及下游。
+**先排除平均值掩盖的单核热点和容器限流。**
+
+再按请求耗时检查 I/O、锁、池队列及下游。
 
 iostat 看设备延迟和队列，pidstat 或 iotop 关联任务。vmstat 的 si/so 判断交换活动。free 展示内存容量，无法单独证明没有交换。
 
@@ -188,7 +196,9 @@ iostat 看设备延迟和队列，pidstat 或 iotop 关联任务。vmstat 的 si
 <details>
 <summary>参考回答</summary>
 
-容器仍会受到自身和父级 CPU 配额约束。配额用尽后，任务等待后续周期。用 cpu.stat 检查限流计数，再核对单核热点。PSI 表示因资源不足而受阻的时间。组级 PSI 与请求延迟可帮助判断限流影响。
+**容器仍会受到自身和父级 CPU 配额约束。**
+
+配额用尽后，任务等待后续周期。用 cpu.stat 检查限流计数，再核对单核热点。PSI 表示因资源不足而受阻的时间。组级 PSI 与请求延迟可帮助判断限流影响。
 
 </details>
 

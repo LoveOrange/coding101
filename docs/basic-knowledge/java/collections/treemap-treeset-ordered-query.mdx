@@ -3,25 +3,27 @@ sidebar_position: 4
 knowledge:
   id: basic-knowledge.java.collections.treemap-treeset-ordered-query
   type: concept
+description: "介绍 TreeMap 与 TreeSet 如何根据比较规则维护有序元素，讲解红黑树、邻近键查询和范围视图。分析比较结果与对象相等约定的关系，帮助准备 Java 集合面试的读者判断去重、边界查找及范围删除的结果，并解释比较器稳定性和查询成本的影响。"
+keywords: ["NavigableMap", "Comparator", "红黑树", "TreeMap 范围查询"]
 ---
 
 # TreeMap 与 TreeSet
 
-TreeMap 按自然顺序或 Comparator 组织键。TreeSet 基于 TreeMap 保存唯一元素。本文负责 Java 21 的比较契约、范围视图和导航查询。
-
-精确键查找与哈希契约见 [HashMap](./hashmap-structure-lookup-path.mdx)。
+TreeMap 按键的顺序保存映射，TreeSet 基于 TreeMap 保存有序且唯一的元素。本文以 Java 21 为准，从排序规则和红黑树入手，再讲邻近键查询与范围视图。最后说明比较器怎样影响元素去重，以及使用时的边界。
 
 ## 1. 面试核心 {#core}
 
-- TreeMap 使用红黑树，get、put、remove 为 O(log n)。[卡](#treemap-structure)
-- floor、ceiling 包含相等键，lower、higher 使用严格边界。[卡](#ordered-range-view)
-- TreeMap 与 TreeSet 以比较结果 0 判断键重复。[卡](#treeset-comparator)
-- 比较顺序需与 equals 一致，才能满足 Map、Set 的通用契约。[卡](#treeset-comparator)
-- subMap 是共享视图，越界插入会抛出 IllegalArgumentException。[卡](#ordered-range-view)
+- **有序存储。** TreeMap 用红黑树按键排序，查找、插入和删除的时间复杂度都是 O(log n)。[卡](#treemap-structure)
+- **边界查询。** floor 和 ceiling 查询包含与目标相等的键，lower 和 higher 只查找严格小于或大于目标的键。[卡](#ordered-range-view)
+- **比较判重。** TreeMap 与 TreeSet 都以比较结果为 0 判断键重复，TreeSet 因此只保留一个元素。[卡](#treeset-comparator)
+- **相等契约。** TreeMap 和 TreeSet 的比较顺序与 equals 一致时，才能满足 Map、Set 的通用契约。[卡](#treeset-comparator)
+- **范围视图。** subMap 返回与原 Map 共享数据的范围视图，向视图插入越界键会抛出 IllegalArgumentException。[卡](#ordered-range-view)
 
 ## 2. 排序规则 {#排序规则}
 
-使用自然顺序：
+TreeMap 需要先确定键的大小关系，才能把节点放在正确的位置。自然顺序由键的 `Comparable` 实现定义，比如整数按数值从小到大排列。
+
+下面先看自然顺序的结果：
 
 ```java
 NavigableMap<Integer, String> levels = new TreeMap<>();
@@ -32,7 +34,7 @@ levels.put(20, "medium");
 System.out.println(levels.keySet()); // [10, 20, 30]
 ```
 
-使用 Comparator：
+虽然插入顺序是 30、10、20，遍历键时仍按 10、20、30 输出。需要自定义顺序时，可以传入 `Comparator`，也就是比较两个对象大小的规则：
 
 ```java
 NavigableSet<User> users = new TreeSet<>(
@@ -42,19 +44,33 @@ NavigableSet<User> users = new TreeSet<>(
 );
 ```
 
-Comparator 需满足反对称性、传递性和相等组一致性。上例在同分时继续比较 id，保留不同用户。
+上例先按分数降序排列，同分时再按 id 排列。这样，不同用户即使分数相同，也能同时保留。
+
+比较器要给出稳定的全序，也就是任意两个元素都有确定的大小关系。还需要满足以下**三项约束**：
+
+- 反对称性：交换两个比较对象后，结果的正负号应相反。
+- 传递性：若 A 小于 B、B 小于 C，那么 A 也应小于 C。
+- 相等组一致性：若 A 与 B 比较为 0，它们各自与 C 比较时，结果的正负号应一致。
 
 ## 3. 红黑树 {#红黑树}
 
-OpenJDK 21 的 TreeMap 使用红黑树。增删后通过变色与旋转，使树高保持 O(log n)：
+TreeMap 需要在持续增删后，仍能沿树快速找到键。OpenJDK 21 使用红黑树，这是一种用颜色约束控制树高的二叉搜索树。增删后，它会通过变色和旋转调整局部结构，使树高保持 O(log n)。
+
+因此，常用操作具有以下**复杂度**：
 
 - `get`、`put`、`remove` 是 O(log n)。
 - 最小、最大、前驱、后继是 O(log n) 或沿已知节点取得。
 - 有序遍历是 O(n)。
 
-需要排序、范围和前驱后继时，TreeMap 提供直接接口。复杂度分析把单次比较视为常数成本。
+这里的复杂度把单次比较视为常数成本。前驱和后继指排序中相邻的较小键与较大键，TreeMap 可以直接查询。
+
+如果只需精确查找，HashMap 的平均时间复杂度是 O(1)。需要排序、范围或前驱后继时，再选择 TreeMap。
 
 ## 4. NavigableMap 边界查询 {#navigablemap-边界查询}
+
+查询价格档位或生效版本时，目标键未必恰好存在。`NavigableMap` 在有序映射上提供邻近键查询，TreeMap 实现了这个接口。
+
+沿用前面的 `levels`，可以这样查找：
 
 ```java
 Map.Entry<Integer, String> atMost = levels.floorEntry(25);   // 20
@@ -62,7 +78,13 @@ Map.Entry<Integer, String> above = levels.higherEntry(20);   // 30
 Map.Entry<Integer, String> atLeast = levels.ceilingEntry(20); // 20
 ```
 
-常用方法：
+对照这三次调用，可以看到**边界是否包含相等键**的区别：
+
+- `floorEntry(25)` 找到不大于 25 的最近条目，所以返回键为 20 的条目。
+- `higherEntry(20)` 排除相等键，返回键为 30 的条目。
+- `ceilingEntry(20)` 包含相等键，所以返回键为 20 的条目。
+
+只需要键时，可以使用下表中的**四种边界查询**：
 
 | 方法 | 含义 |
 | --- | --- |
@@ -71,16 +93,18 @@ Map.Entry<Integer, String> atLeast = levels.ceilingEntry(20); // 20
 | `ceilingKey(k)` | 大于等于 k 的最小键 |
 | `higherKey(k)` | 严格大于 k 的最小键 |
 
-这类操作适合版本生效点、价格区间、时间调度和阈值规则。
+这类操作适合版本生效点、价格区间、时间调度和阈值规则。比如，用生效时间作键，`floorEntry` 可以找到指定时刻已生效的最近版本。找不到符合条件的键或条目时，这些方法返回 `null`。
 
 ## 5. 范围视图 {#范围视图}
+
+需要处理一段连续键时，可以用 `subMap` 取得范围视图。视图让调用方操作原 Map 的一部分，并与原 Map 共享数据：
 
 ```java
 NavigableMap<Integer, String> middle =
     levels.subMap(10, true, 30, false);
 ```
 
-视图包含 `[10, 30)`，并与原 Map 共享数据。两侧更新相互可见。向视图插入范围外的键，会抛出 IllegalArgumentException。
+这里的两个布尔参数决定是否包含端点，所以视图包含 `[10, 30)`。通过视图修改条目会影响原 Map，原 Map 在此范围内的更新也会反映到视图。向视图插入范围外的键，会抛出 IllegalArgumentException。
 
 需要独立快照时复制：
 
@@ -88,11 +112,13 @@ NavigableMap<Integer, String> middle =
 NavigableMap<Integer, String> snapshot = new TreeMap<>(middle);
 ```
 
-headMap、tailMap 与 descendingMap 也返回共享视图。headMap、tailMap 的端点可用 inclusive 参数声明。
+复制后，两个 Map 的条目增删互相独立，条目中的键和值对象仍被复用。
+
+`headMap`、`tailMap` 与 `descendingMap` 也返回共享视图。前两者分别选取某个端点之前或之后的范围，后者按相反顺序查看整个 Map。调用范围方法时，可用 `inclusive` 参数明确是否包含端点，避免选错重载。
 
 ## 6. 比较结果与键相等 {#比较结果与键相等}
 
-TreeMap 使用排序比较判断键是否相同，不会再用 `equals` 区分：
+排序规则也决定了 TreeMap 和 TreeSet 怎样去重。比较结果为 0 时，它们就视为同一个键，不会再用 `equals` 区分：
 
 ```java
 Comparator<User> byNameIgnoreCase =
@@ -101,13 +127,13 @@ Comparator<User> byNameIgnoreCase =
 Set<User> users = new TreeSet<>(byNameIgnoreCase);
 ```
 
-Alice 与 alice 比较结果为 0 时，集合只保留一个。比较顺序与 equals 不一致时，树的行为仍有定义。但该集合会违反 Set 的通用契约。
+上例忽略姓名的大小写，所以姓名为 Alice 与 alice 的用户比较结果为 0，集合只保留一个。如果两个用户的 `equals` 返回 false，这种去重就与 Set 的通用契约冲突。树仍会按比较器工作，但调用方按其他 Set 的规则使用它时，容易得到意外结果。
 
-排序字段加入集合后应保持稳定。字段修改后节点位置保持原状，会破坏查找与顺序。
+元素加入集合后，用于排序的字段应保持稳定。修改这些字段时，树中的节点仍留在原位置。因此，之后的查找会沿错误的路径进行，遍历结果也会偏离预期顺序。
 
 ## 7. TreeSet {#treeset}
 
-TreeSet 只保存元素，没有独立值。它提供 `NavigableSet` 的范围和邻近元素操作：
+只需要保存元素、无需为元素关联值时，可以使用 TreeSet。它把元素作为底层 TreeMap 的键，并通过 `NavigableSet` 提供范围和邻近元素操作：
 
 ```java
 NavigableSet<Integer> scores = new TreeSet<>(List.of(10, 20, 30));
@@ -116,11 +142,13 @@ Integer previous = scores.lower(20); // 10
 Integer next = scores.higher(20);    // 30
 ```
 
-需要保留同分对象时，可继续比较唯一 id。也可用 `TreeMap<SortKey, List<Value>>` 表达分组。
+示例中，20 的前驱是 10，后继是 30，两次查询都排除了 20 本身。
+
+需要保留同分对象时，可以在比较分数后继续比较唯一 id。也可以用 `TreeMap<SortKey, List<Value>>` 表达分组，把同一个排序键对应的对象放进列表。
 
 ## 8. 范围删除与导航边界 {#范围删除与导航边界}
 
-`subMap(10, true, 30, false)` 表示 `[10, 30)`。对该视图执行 clear，会删除原 Map 的区间条目。范围外的条目保持原状。
+共享视图也适合批量删除区间条目。对 `subMap(10, true, 30, false)` 执行 `clear()`，会删除原 Map 中 `[10, 30)` 内的条目。范围外的条目保持原状：
 
 ```java
 var values = new TreeMap<Integer, String>();
@@ -131,25 +159,27 @@ values.subMap(10, true, 30, false).clear();
 System.out.println(values.keySet()); // [30]
 ```
 
-`floorKey(30)` 返回 30，`lowerKey(30)` 返回 null。TreeMap 的 floorEntry 等导航方法返回条目快照。这类条目的 setValue 会抛出 UnsupportedOperationException。
+删除后只剩键 30，所以 `floorKey(30)` 返回 30，`lowerKey(30)` 返回 null。
+
+查询导航条目时，还要区分条目与范围视图。TreeMap 的 `floorEntry` 等方法返回查询时的条目快照。这类条目的 `setValue` 会抛出 UnsupportedOperationException。需要修改映射时，应调用 Map 的 `put` 等方法。
 
 ## 9. 常见问题 {#常见问题}
 
 ### 9.1 TreeMap 的空键与空值 {#treemap-的空键与空值}
 
-自然顺序下，插入 null 键会抛出 NullPointerException。自定义比较器可用 Comparator.nullsFirst 定义 null 顺序。TreeMap 允许 null 值。
+自然顺序无法比较 null，因此插入 null 键会抛出 NullPointerException。自定义比较器可用 `Comparator.nullsFirst` 定义 null 的顺序。如果接口允许 null 键，还应说明它在业务中代表什么。TreeMap 允许 null 值，因为值并未参与键的排序。
 
 ### 9.2 HashMap 与 TreeMap {#hashmap-与-treemap}
 
-精确查找可用 HashMap，范围和有序导航使用 TreeMap。选择还需满足各自的哈希或比较契约。
+只需精确查找时，可用平均 O(1) 的 HashMap。需要范围、排序遍历或前驱后继时，使用基本操作为 O(log n) 的 TreeMap。选择后，还需分别满足哈希契约或比较器契约。
 
 ### 9.3 PriorityQueue 与 TreeSet {#priorityqueue-与-treeset}
 
-PriorityQueue 按优先级取队首，并允许重复。TreeSet 提供有序唯一集合及前驱后继查询。
+PriorityQueue 适合反复取出优先级最高的元素，并允许重复。它只保证队首是按比较规则最小的元素，遍历时没有全局有序保证。检查任意成员需要线性查找，也缺少前驱后继接口。需要有序且唯一的元素集合，以及邻近元素查询时，应使用 TreeSet。
 
 ### 9.4 比较器的稳定性与开销 {#比较器的稳定性与开销}
 
-比较器应快速、确定，并使用稳定字段。远程调用增加延迟，远程状态变化还会破坏排序契约。可先把比较字段放入不可变键。
+比较器应快速、确定且无副作用，因为一次树操作会反复调用它。在比较器里访问数据库或其他远程服务，会把远程延迟带进每次比较。远程状态变化还会破坏传递性和排序稳定性。因此，应先取得比较所需的数据，再把它们放入不可变键。
 
 ## 10. 面试题 {#面试题}
 
@@ -173,9 +203,11 @@ PriorityQueue 按优先级取队首，并允许重复。TreeSet 提供有序唯�
 <details>
 <summary>参考回答</summary>
 
-TreeMap 用红黑树按键排序。get、put、remove 为 O(log n)，完整遍历为 O(n)。它适合范围查询、前驱后继与排序输出。
+**TreeMap 用红黑树按键排序，适合范围查询、前驱后继查询与排序输出。**
 
-键按自然顺序或 Comparator 比较。比较结果为 0 表示相同键，比较字段需保持稳定。
+红黑树通过变色和旋转控制树高，所以 get、put、remove 为 O(log n)，完整遍历为 O(n)。它提供 `floorKey`、`ceilingKey` 和 `subMap` 等接口。只需要精确查找时，HashMap 的平均成本更低。
+
+键按自然顺序或 Comparator 比较，比较结果为 0 表示相同键。因此，比较规则应稳定、可传递，并与 equals 一致，排序字段也应保持稳定。
 
 </details>
 
@@ -189,8 +221,8 @@ TreeMap 用红黑树按键排序。get、put、remove 为 O(log n)，完整遍�
 
 **考察重点**
 
-- 说明TreeSet 的唯一性由比较结果决定。
-- 说明Comparator 与 equals 不一致的后果。
+- 说明 TreeSet 的唯一性由比较结果决定。
+- 说明 Comparator 与 equals 不一致的后果。
 - 说明怎样为相同业务排序值补充唯一键。
 
 **相关内容**：[比较结果与键相等](#比较结果与键相等)、[TreeSet](#treeset)。
@@ -198,9 +230,11 @@ TreeMap 用红黑树按键排序。get、put、remove 为 O(log n)，完整遍�
 <details>
 <summary>参考回答</summary>
 
-TreeSet 用比较结果 0 判断重复，即使 equals 返回 false。只按分数比较时，同分用户就会被视为同一元素。
+**TreeSet 按比较结果判断重复，所以两个 equals 不相等的对象也会被视为同一元素。**
 
-需要保留不同用户时，可继续比较唯一 id。通用 Set 契约还要求比较顺序与 equals 一致。入集合后，排序字段应保持稳定。
+比如，只按分数比较时，同分用户的比较结果都是 0，集合只会保留一个。
+
+需要保留不同用户时，可以继续比较唯一 id。也可以把分数作为 TreeMap 的键，把同分用户放进列表。比较顺序还应与 equals 一致，才能满足 Set 的通用契约。元素加入集合后，排序字段也应保持稳定。
 
 </details>
 
@@ -210,14 +244,18 @@ TreeSet 用比较结果 0 判断重复，即使 equals 返回 false。只按分�
 
 **出现公司**：暂无已核验的公开来源（本站自测）
 
-**考察重点**：共享范围、端点与导航条目。
+**考察重点**：说明范围视图怎样影响原 Map，区分是否包含端点，并理解导航条目的快照语义。
 
 **相关内容**：[范围删除与导航边界](#范围删除与导航边界)。
 
 <details>
 <summary>参考回答</summary>
 
-subMap 是共享视图，clear 会删除原 Map 内的区间条目。floorKey 包含相等键，lowerKey 只取严格小于目标的键。找不到符合条件的键时返回 null。
+**`subMap.clear()` 会删除原 Map 中对应区间的条目，因为两者共享数据。**
+
+区间外的条目保持原状，是否包含端点由创建视图时的参数决定。
+
+`floorKey` 包含与目标相等的键，`lowerKey` 只取严格小于目标的键。找不到符合条件的键时，两者都返回 null。对应的 `floorEntry` 等方法返回条目快照，对它调用 `setValue` 会抛出异常。
 
 </details>
 

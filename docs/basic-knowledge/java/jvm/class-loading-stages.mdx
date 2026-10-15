@@ -3,54 +3,66 @@ sidebar_position: 2
 knowledge:
   id: basic-knowledge.java.jvm.class-loading-stages
   type: concept
+description: "类加载把 Class 字节流转换为运行时类型。本文按加载、验证、准备、解析和初始化讲解职责与触发条件。本文适合准备 JVM 面试的读者。读者可练习区分静态字段准备和初始化。读者可推演类使用时的执行顺序及初始化失败的影响。"
+keywords: ["类加载过程", "类初始化", "链接阶段", "Class 文件", "JVM 面试"]
 ---
 
 # 类加载
 
-类加载将 Class 字节流转换为运行时类型。本文讲解加载、链接、初始化及其触发条件。异常诊断见[类加载故障](./class-initialization-conflicts.mdx)。
+类加载将 Class 字节流转换为 JVM 可以使用的运行时类型。本文先介绍加载、验证、准备和解析各自做什么，再说明初始化的触发条件。重点是区分静态字段的零值与源码赋值，以及主动使用和被动引用。
 
 ## 1. 面试核心 {#core}
 
-- 加载创建运行时类型，链接包含验证、准备和解析。[卡](#loading-stages)
-- 准备阶段设置静态字段零值，初始化执行静态赋值。
-- 读取非常量静态字段会初始化实际声明该字段的类型。[卡](#initialization-triggers)
-- 初始化类之前会初始化声明默认方法的父接口。[卡](#default-method-initialization)
-- 编译期常量可内联到调用方，读取时无需初始化声明类。[卡](#constant-inlining)
+- **加载阶段。** 类加载包含加载、链接和初始化，链接又分为验证、准备和解析。[卡](#loading-stages)
+- **准备与初始化。** 准备阶段为静态字段建立存储并设置零值，初始化阶段按源码顺序执行普通静态赋值和静态代码块。
+- **主动使用。** 读取非常量静态字段会初始化实际声明该字段的类型。[卡](#initialization-triggers)
+- **父类型初始化。** JVM 初始化类之前，会先初始化父类，以及声明默认方法的直接或间接父接口。[卡](#default-method-initialization)
+- **编译期常量。** 编译期常量可内联到调用方，读取时无需初始化声明类。[卡](#constant-inlining)
 
 ## 2. 加载 {#加载}
 
-加载阶段取得字节流，并创建运行时类型。Java 代码通过对应的 `Class<?>` 对象访问类型信息。
+加载解决的是“怎样从字节流得到运行时类型”。对于普通类和接口，这个阶段完成三个动作：
 
-字节流可来自文件、网络或运行时生成器。运行时类型身份还包含定义加载器，见[双亲委派模型](./parent-delegation.mdx)。
+1. 根据二进制名称查找字节流，例如 `com.example.Order`。
+2. 根据字节流创建 JVM 内部的类或接口表示。
+3. 提供对应的 `Class<?>` 对象，让 Java 代码可以访问类型信息。
+
+字节流可以来自文件、模块、网络、数据库或运行时生成器。JVM 约束字节流的内容和加载结果，因此来源不限于磁盘上的 `.class` 文件。
+
+运行时类型由二进制名称和定义加载器共同确定，具体见[双亲委派模型](./parent-delegation.mdx)。
 
 ## 3. 验证 {#验证}
 
-验证检查类定义与字节码是否满足 JVM 约束。检查内容包括指令边界、栈类型和局部变量类型。
+验证用于检查类定义和字节码是否满足 JVM 约束，避免执行不合法的指令。理解这一阶段时，需要区分**格式检查、字节码验证与访问检查**：
 
-字节流解析阶段还检查格式与版本。格式不合法会产生 `ClassFormatError`。版本不支持会产生 `UnsupportedClassVersionError`。字节码验证失败会产生 `VerifyError`。
+- 读取字节流时，JVM 检查魔数、版本、常量池和属性格式。魔数是文件开头用于识别 Class 格式的固定标记。格式不合法会产生 `ClassFormatError`，版本不支持会产生 `UnsupportedClassVersionError`。
+- 验证阶段检查类、字段和方法声明是否符合约束。它还检查指令边界，以及操作数栈和局部变量的类型是否匹配。字节码验证失败会产生 `VerifyError`。
+- 解析阶段检查符号引用的目标及其访问权限。比如，调用方能否访问目标方法，要在解析该方法引用时判断。
 
-符号引用的目标访问权限在解析时检查。
+这些错误都属于 `LinkageError`。具体异常说明了失败的位置，排查时应保留原始错误类型。
 
 ## 4. 准备 {#准备}
 
-准备阶段为静态字段建立存储并设置零值：
+准备阶段先为静态字段建立存储，并设置类型对应的零值。此时还未执行源码中的普通赋值表达式：
 
 ```java
 static int retries = 3;
 static Object cache = new Object();
 ```
 
-准备完成后，两个字段的零值分别为 `0` 和 `null`。显式赋值在初始化阶段执行。
+准备完成后，`retries` 是 `0`，`cache` 是 `null`。到了初始化阶段，JVM 才把前者设为 `3`，并执行 `new Object()` 给后者赋值。
+
+编译期常量的值可以直接记录在 Class 文件中，例如：
 
 ```java
 static final int MAX_RETRIES = 3;
 ```
 
-该常量可使用 Class 文件的 `ConstantValue` 属性。该属性的赋值属于初始化，发生在调用 `<clinit>` 之前。调用方还可直接内联常量值。
+编译器可用 `ConstantValue` 属性保存这个常量值。JVM 在初始化阶段读取该属性并赋值，随后才调用类初始化方法 `<clinit>`。调用方还可以把常量值直接写入自己的字节码，这称为内联。
 
 ### 4.1 编译期常量与内联 {#编译期常量与内联}
 
-常量变量必须使用 `final` 声明。类型需为基本类型或 String，初值需为常量表达式。
+判断读取字段是否触发初始化，要看它是否属于**常量变量**。常量变量使用 `final` 声明，类型为基本类型或 `String`，初值是编译期可计算的常量表达式。下面把常见情况放在一起比较：
 
 ```java
 static final int LIMIT = 3;           // 编译期常量。
@@ -59,19 +71,23 @@ static final Integer BOXED = 3;      // 包装类型，不是常量变量。
 static final int SIZE = loadSize();  // 方法调用，不是常量表达式。
 ```
 
-读取 LIMIT 或 LABEL 时，调用方可直接使用内联值。读取 BOXED 或 SIZE 则需初始化声明类。仅替换常量所在 JAR 后，旧调用方仍会使用旧值。需要重新编译调用方，才能更新内联常量。
+读取 `LIMIT` 或 `LABEL` 时，调用方直接使用内联值，所以无需初始化声明类。`BOXED` 使用包装类型，`SIZE` 通过方法调用赋值，两者都需要初始化声明类。
+
+内联也会影响升级：只替换常量所在的 JAR，旧调用方仍会使用旧值。要更新这部分值，需要重新编译调用方。
 
 ## 5. 解析 {#解析}
 
-解析将符号引用连接到运行时目标。JVM 会检查类、字段、方法与访问权限。
+解析把字节码中的符号引用连接到实际的运行时目标。符号引用用名称和描述符表示目标，描述符记录字段类型或方法的参数、返回类型。JVM 据此查找类、字段和方法，再检查目标是否存在、签名是否匹配、访问是否合法。
 
-解析可以按实际使用时机延后。初始化之前，JVM 必须完成验证和准备。部分符号引用可在初始化之后才解析。
+解析可以延后到相应指令第一次使用符号引用时。也就是说，初始化之前必须完成验证和准备，部分引用则可以在初始化之后才解析。
 
-常见解析错误包括 `NoSuchMethodError` 和 `IllegalAccessError`。错误表示目标缺失或访问不合法。具体定位见[类加载故障](./class-initialization-conflicts.mdx)。
+编译时与运行时的依赖版本不一致，会导致目标缺失或成员形态不兼容。常见错误包括 `NoSuchMethodError`、`NoSuchFieldError` 和 `IncompatibleClassChangeError`。访问权限不合法则会产生 `IllegalAccessError`。
+
+这些错误的定位方法见[类加载故障](./class-initialization-conflicts.mdx#二进制版本冲突)。
 
 ## 6. 初始化 {#初始化}
 
-编译器按源码顺序组织静态赋值和静态代码块。需要执行的代码进入 `<clinit>`：
+初始化负责执行类的静态初始化代码。编译器把需要执行的静态赋值和静态代码块按源码顺序放入 `<clinit>`，例如：
 
 ```java
 static final Map<String, String> CONFIG = loadConfig();
@@ -81,17 +97,23 @@ static {
 }
 ```
 
-初始化执行时先调用 `loadConfig()`，再注册指标。初始化入口类、创建实例和调用静态方法会触发初始化。访问非常量静态字段也会触发。
+本例初始化时先调用 `loadConfig()`，再调用 `registerMetrics()`。JVM 在首次主动使用时执行初始化，常见的**触发操作**包括：
 
-读取字段只初始化实际声明它的类或接口。通过子类名称访问父类静态字段，也遵循该规则。类字面量、创建引用数组和读取内联常量属于被动引用。
+- 用 `new` 创建类的实例。
+- 调用类声明的静态方法。
+- 读取或写入类声明的非常量静态字段。
+- 执行要求初始化的反射调用，或首次调用特定 MethodHandle。MethodHandle 是可直接调用的字段或方法句柄。
+- 启动程序时，初始化包含入口方法的类。
 
-`Class.forName(name)` 会初始化目标类。`Class.forName(name, false, loader)` 则跳过初始化。`loadClass(name)` 的默认实现也不执行初始化。
+访问静态字段时，JVM 只初始化实际声明它的类或接口。因此，通过子类名称读取父类静态字段，也只会因此初始化父类。引用 `SomeType.class`、创建该类型的引用数组、读取内联常量属于被动引用。它们无需初始化对应类型。
+
+同一个运行时类型的初始化由 JVM 同步协调，成功完成后只执行一次。并发首次访问的等待机制见[类加载故障](./class-initialization-conflicts.mdx#类初始化锁)。
 
 ### 6.1 父类与默认方法接口 {#父类与默认方法接口}
 
-初始化类之前，JVM 先初始化父类。声明默认方法的父接口也需要初始化。这包括继承链中间接出现的相关父接口。
+类的初始化还会触发部分父类型的初始化。JVM 先初始化父类，再初始化声明默认方法的相关父接口。默认方法是接口中带方法体的实例方法，这里的父接口也包括间接继承的接口。
 
-初始化接口本身时，父接口无需一并初始化。只声明常量或抽象方法的接口也适用这一规则。
+初始化接口本身时，只处理该接口，父接口无需随之全部初始化。下面用一个默认方法接口说明它与类初始化的关系：
 
 ```java
 interface Defaults {
@@ -114,25 +136,29 @@ class InitializationDemo {
 }
 ```
 
-`Child` 的初始化需要先完成默认方法接口初始化。若移除 `run()`，本例只输出 `Child`。
+`Child` 声明的接口包含默认方法，所以本例依次输出 `Defaults`、`Child`。若移除 `run()`，本例只输出 `Child`。此时 `Defaults` 只声明静态字段和静态方法，创建 `Child` 无需初始化它。
 
 ## 7. 初始化失败 {#初始化失败}
 
-初始化失败后，当前 `Class` 进入错误状态。后续主动使用会得到 `NoClassDefFoundError`。首次异常与恢复边界见[类加载故障](./class-initialization-conflicts.mdx#初始化失败与缺少类定义)。
+初始化失败后，当前 `Class` 会进入错误状态，后续主动使用得到 `NoClassDefFoundError`。因此，静态初始化中的外部 I/O 或复杂业务失败，会影响后续所有使用者。
+
+首次异常、静态初始化示例与恢复方式见[类加载故障](./class-initialization-conflicts.mdx#初始化失败与缺少类定义)。外部操作适合放入显式生命周期，原因见[类初始化锁](./class-initialization-conflicts.mdx#类初始化锁)。
 
 ## 8. 常见问题 {#常见问题}
 
 ### 8.1 类加载 API 的初始化开关 {#类加载-api-的初始化开关}
 
-`Class.forName(name)` 默认初始化目标类。需要延后初始化时，使用带 `initialize=false` 的重载。`ClassLoader.loadClass(name)` 的默认实现只负责加载。
+`Class.forName(name)` 默认初始化目标类。需要延后初始化时，可以调用 `Class.forName(name, false, loader)`，将 `initialize` 设为 `false`。`ClassLoader.loadClass(name)` 的默认实现只负责加载。
 
 ### 8.2 类查找异常与定义错误 {#类查找异常与定义错误}
 
-显式查找失败与初始化失败有不同诊断路径，见[类加载故障](./class-initialization-conflicts.mdx#初始化失败与缺少类定义)。
+`ClassNotFoundException` 表示显式查找失败；依赖缺失或先前初始化失败都能导致 `NoClassDefFoundError`。
+
+区分方法见[类加载故障](./class-initialization-conflicts.mdx#初始化失败与缺少类定义)。
 
 ### 8.3 静态字段的赋值阶段 {#静态字段的赋值阶段}
 
-准备阶段设置零值。初始化阶段设置 `ConstantValue`，随后执行 `<clinit>`。普通静态赋值与静态代码块按源码顺序执行。
+静态字段先在准备阶段获得零值，再在初始化阶段获得实际值。带 `ConstantValue` 的字段先赋常量值，随后执行 `<clinit>` 中的普通静态赋值和静态代码块。后两者遵循源码顺序。
 
 ## 9. 面试题 {#面试题}
 
@@ -145,16 +171,18 @@ class InitializationDemo {
 
 **出现公司**：阿里巴巴、字节跳动
 
-**考察重点**：理解加载、链接、初始化的职责与时机。
+**考察重点**：说明加载、链接和初始化各自做什么，并区分零值、源码赋值与按需解析的时机。
 
 **相关内容**：[加载](#加载)至[初始化](#初始化)。
 
 <details>
 <summary>参考回答</summary>
 
-加载创建运行时类型。链接包括验证、准备和解析。验证检查字节码，准备设置静态字段零值。解析将符号引用连接到运行时目标。
+**类加载包含加载、链接和初始化，链接又包含验证、准备和解析。**
 
-初始化设置常量值，并执行静态赋值代码。初始化前必须完成验证和准备。解析则可延后到具体符号引用被使用时。
+加载取得字节流并创建运行时类型。验证检查类定义与字节码是否合法，准备为静态字段建立存储并设置零值。解析再把符号引用连接到实际的类、字段或方法。
+
+初始化先设置 `ConstantValue` 指定的常量值，再执行 `<clinit>` 中的静态赋值和静态代码块。初始化之前必须完成验证和准备；解析可以延后到具体引用被使用时。
 
 </details>
 
@@ -166,16 +194,20 @@ class InitializationDemo {
 
 **出现公司**：阿里巴巴
 
-**考察重点**：区分主动使用、被动引用与父类型初始化。
+**考察重点**：区分主动使用与被动引用，解释父类型的初始化顺序及初始化失败的后果。
 
 **相关内容**：[初始化](#初始化)和[初始化失败](#初始化失败)。
 
 <details>
 <summary>参考回答</summary>
 
-主动使用会触发类或接口初始化。创建实例和调用静态方法是常见触发操作。访问非常量静态字段也会触发。部分反射与 MethodHandle 调用同样如此。
+**首次主动使用会触发初始化，常见操作是创建实例、调用静态方法和访问非常量静态字段。**
 
-初始化类前，父类先初始化。声明默认方法的相关父接口也先初始化。类字面量、引用数组和内联常量属于被动引用。字段访问只初始化实际声明该字段的类型。
+程序入口类，以及要求初始化的反射和 MethodHandle 调用，也会触发初始化。
+
+初始化类之前，JVM 会先初始化父类和声明默认方法的相关父接口。访问静态字段时，只初始化实际声明字段的类型。类字面量、引用数组和内联常量属于被动引用，无需初始化对应类型。
+
+JVM 会同步协调同一类型的初始化。若初始化失败，该类型会进入错误状态，后续主动使用得到 `NoClassDefFoundError`。
 
 </details>
 
@@ -185,14 +217,16 @@ class InitializationDemo {
 
 **出现公司**：暂无已核验的公开来源（本站自测）
 
-**考察重点**：默认方法接口与接口初始化的区别。
+**考察重点**：解释默认方法怎样影响父接口初始化，并区分类初始化和接口初始化。
 
 **相关内容**：[父类与默认方法接口](#父类与默认方法接口)。
 
 <details>
 <summary>参考回答</summary>
 
-声明默认方法的父接口会先初始化。该规则也覆盖间接父接口。只声明抽象方法的接口无需因此初始化。初始化接口本身时，也无需初始化它的全部父接口。
+**声明默认方法的直接或间接父接口，会在实现类初始化之前完成初始化。**
+
+因为这些接口有默认方法，JVM 会将它们纳入类的初始化流程。只声明抽象方法的接口无需因此初始化。若初始化的是接口本身，流程则只处理该接口，而非递归初始化全部父接口。
 
 </details>
 
@@ -202,21 +236,25 @@ class InitializationDemo {
 
 **出现公司**：暂无已核验的公开来源（本站自测）
 
-**考察重点**：区分 final 字段与编译期常量。
+**考察重点**：根据字段类型和赋值表达式，判断 final 字段是否属于编译期常量。
 
 **相关内容**：[编译期常量与内联](#编译期常量与内联)。
 
 <details>
 <summary>参考回答</summary>
 
-只有符合常量变量规则的字段才适用内联常量规则。字段需为基本类型或 String，并用常量表达式赋值。`static final Integer BOXED=3` 仍会触发声明类初始化。方法调用赋值的 final 字段也需要初始化。
+**`static final` 字段中，只有编译期常量的读取无需初始化声明类。**
+
+它要求字段类型为基本类型或 `String`，并用常量表达式赋值。
+
+比如，读取 `static final Integer BOXED=3` 仍会触发初始化，因为 `Integer` 是包装类型。用方法调用给 final 字段赋值时，也需要初始化后才能得到值。
 
 </details>
 
 ## 10. 参考资料 {#参考资料}
 
-- [JVMS：Loading, Linking, and Initializing](https://docs.oracle.com/javase/specs/jvms/se26/html/jvms-5.html)
-- [JLS：Execution](https://docs.oracle.com/javase/specs/jls/se26/html/jls-12.html)
-- [Java API：`Class.forName`](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/Class.html#forName(java.lang.String))
-- [JVMS 26：ConstantValue](https://docs.oracle.com/javase/specs/jvms/se26/html/jvms-4.html#jvms-4.7.2)
-- [JLS 26：final Variables](https://docs.oracle.com/javase/specs/jls/se26/html/jls-4.html#jls-4.12.4)
+- [JVMS：Loading, Linking, and Initializing](https://docs.oracle.com/javase/specs/jvms/se21/html/jvms-5.html)
+- [JLS：Execution](https://docs.oracle.com/javase/specs/jls/se21/html/jls-12.html)
+- [Java API：`Class.forName`](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/Class.html#forName(java.lang.String))
+- [JVMS 21：ConstantValue](https://docs.oracle.com/javase/specs/jvms/se21/html/jvms-4.html#jvms-4.7.2)
+- [JLS 21：final Variables](https://docs.oracle.com/javase/specs/jls/se21/html/jls-4.html#jls-4.12.4)

@@ -3,19 +3,21 @@ sidebar_position: 2
 knowledge:
   id: basic-knowledge.middleware.message-ack-retry-dead-letter
   type: concept
+description: "消息可靠性覆盖发布、保存、消费与进度确认。本文讲解生产者确认、消费者确认、延迟重试、死信和重放。本文适合准备后端面试的读者。读者可练习分析各阶段的故障窗口。读者还可用端到端指标检查消息丢失、积压和恢复过程。"
+keywords: ["消息确认", "ACK", "死信队列", "消息重试", "可靠投递"]
 ---
 
 # 消息可靠性
 
-消息可靠性涵盖发布、保存、消费和进度确认。本文以 Kafka 4.1 与 RabbitMQ 4.1 为例，负责各阶段确认和失败恢复。业务去重见[消息幂等性](./idempotent-consumption-order-duplicates.mdx)。
+消息可靠性涵盖发布、保存、消费和进度确认。本文以 Kafka 4.1 与 RabbitMQ 4.1 为例，负责各阶段确认和失败恢复。
 
 ## 1. 面试核心 {#core}
 
-- RabbitMQ publisher confirm 确认发布阶段，consumer ack 确认消费阶段。[卡](#ack-retry-dead-letter)
-- mandatory 发布的不可路由消息，会先 basic.return 再 publisher confirm。[卡](#confirm-unroutable)
-- Kafka 的 acks=all 等待 ISR 确认，min.insync.replicas 限定最低副本数。[卡](#kafka-acks-isr)
-- 消费完成后再确认，Kafka 只推进连续完成范围的 offset。[卡](#consumer-progress-gap)
-- 延迟重试保留原消息 ID，死信存放终止重试的失败消息。
+- **发布与消费确认。** RabbitMQ publisher confirm 确认发布阶段，consumer ack 确认消费阶段。[卡](#ack-retry-dead-letter)
+- **不可路由消息。** mandatory 发布的不可路由消息，会先 basic.return 再 publisher confirm。[卡](#confirm-unroutable)
+- **副本确认。** Kafka 的 acks=all 等待 ISR 确认，min.insync.replicas 限定最低副本数。[卡](#kafka-acks-isr)
+- **消费进度。** 消费完成后再确认，Kafka 只推进连续完成范围的 offset。[卡](#consumer-progress-gap)
+- **重试与死信。** 延迟重试保留原消息 ID，死信存放终止重试的失败消息。
 
 ## 2. 生产者确认 {#生产者确认}
 
@@ -126,7 +128,9 @@ publisher confirm 可确认不可路由消息。mandatory 与 basic.return 用�
 <details>
 <summary>参考回答</summary>
 
-发布确认、消费确认和业务提交是独立阶段。RabbitMQ 同时检查 publisher confirm 与路由返回。Kafka 使用 acks=all 并配置足够的同步副本。
+**发布确认、消费确认和业务提交是独立阶段。**
+
+RabbitMQ 同时检查 publisher confirm 与路由返回。Kafka 使用 acks=all 并配置足够的同步副本。
 
 业务提交后再确认，重复由业务幂等处理。重试分为有限即时重试和延迟重试。永久失败进入死信，转发、告警和限速重放也要覆盖。最终用消息 ID 核对业务结果。
 
@@ -145,7 +149,9 @@ publisher confirm 可确认不可路由消息。mandatory 与 basic.return 用�
 <details>
 <summary>参考回答</summary>
 
-不可路由消息也可获得 publisher confirm。mandatory=true 时，broker 会先发 basic.return。客户端需要处理路由返回，再结合发布确认判断结果。确认发布阶段也并未确认消费者业务完成。
+**不可路由消息也可获得 publisher confirm。**
+
+mandatory=true 时，broker 会先发 basic.return。客户端需要处理路由返回，再结合发布确认判断结果。确认发布阶段也并未确认消费者业务完成。
 
 </details>
 
@@ -162,7 +168,9 @@ publisher confirm 可确认不可路由消息。mandatory 与 basic.return 用�
 <details>
 <summary>参考回答</summary>
 
-ISR 有 3 个副本时，acks=all 等待这 3 个副本确认。ISR 为 2 时等待这 2 个。ISR 只有 1 个时，低于 min.insync.replicas=2，写入失败。它以写入可用性换取最低副本保障。
+**ISR 有 3 个副本时，acks=all 等待这 3 个副本确认。**
+
+ISR 为 2 时等待这 2 个。ISR 只有 1 个时，低于 min.insync.replicas=2，写入失败。它以写入可用性换取最低副本保障。
 
 </details>
 
@@ -179,7 +187,9 @@ ISR 有 3 个副本时，acks=all 等待这 3 个副本确认。ISR 为 2 时等
 <details>
 <summary>参考回答</summary>
 
-应最多提交 11，让恢复从未完成的记录继续。提交 13 会跳过 11。并行消费要逐分区追踪连续完成位置。12 在故障恢复后可再次到达，因此业务仍需幂等。
+**应最多提交 11，让恢复从未完成的记录继续。**
+
+提交 13 会跳过 11。并行消费要逐分区追踪连续完成位置。12 在故障恢复后可再次到达，因此业务仍需幂等。
 
 </details>
 
@@ -196,7 +206,9 @@ ISR 有 3 个副本时，acks=all 等待这 3 个副本确认。ISR 为 2 时等
 <details>
 <summary>参考回答</summary>
 
-设置 dead-letter-strategy=at-least-once。配合 overflow=reject-publish，并配置 DLX 和有效路由。还需确认 stream_queue feature flag 已启用。源队列保留消息到转发确认，因此目标故障会积压源容量。
+**使用至少一次死信转发，让源队列保留消息直到目标确认。**
+
+配置 `dead-letter-strategy=at-least-once` 和 `overflow=reject-publish`，并设置 DLX 与有效路由。还需确认 `stream_queue` feature flag 已启用。目标故障时，未确认的消息会占用源队列容量，因此需要监控积压。
 
 </details>
 

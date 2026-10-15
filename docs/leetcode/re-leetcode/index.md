@@ -1,5 +1,7 @@
 ---
 sidebar_position: 1
+description: "力扣刷题路线介绍按知识点组织的练习路径。页面提供原始推荐路线和本站题解进度，并链接数组、链表与哈希表目录。本文适合已有编程基础的求职者。读者可按题型选择现有练习，通过相近问题比较思路。读者还可核对已经提供的题解。"
+keywords: ["力扣分类刷题", "LeetCode 学习路线", "算法题解目录", "按知识点练习"]
 ---
 import { Green, Yellow, Blue, Red } from '@site/src/components/priority-tag';
 

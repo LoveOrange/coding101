@@ -3,21 +3,25 @@ sidebar_position: 18
 knowledge:
   id: basic-knowledge.java.concurrency.virtual-threads-boundaries
   type: concept
+description: "虚拟线程以较低线程成本承载阻塞任务。本文围绕 Java 21 讲解载体线程、pinning、上下文与容量边界。本文适合准备并发面试的读者。读者可练习判断阻塞场景的适用性。读者还可分析迁移后的资源限制、观测和退出行为。"
+keywords: ["Java 21 虚拟线程", "Virtual Threads", "carrier 线程", "pinning", "虚拟线程面试"]
 ---
 
 # 虚拟线程
 
-虚拟线程以较低线程成本承载大量阻塞任务。本文负责 Java 21 的运行模型、容量边界及 pinning。线程局部上下文见 [ThreadLocal](./threadlocal-leaks-context.mdx)。
+虚拟线程由 JVM 调度，以较低的线程成本承载大量阻塞任务。本文以 Java 21 为范围，先解释虚拟线程怎样运行，再说明适用场景、资源限制和阻塞时的绑定问题。最后介绍迁移验证、观测与退出。
 
 ## 1. 面试核心 {#core}
 
-- 虚拟线程自 JDK 21 正式提供，按任务创建使用。
-- 支持卸载的阻塞操作可释放 carrier，供其他任务运行。
-- 虚拟线程适合大量阻塞 I/O，CPU 吞吐仍受核心数限制。[卡](#virtual-thread-fit)
-- Java 21 中，持有 monitor 时阻塞会导致 pinning。[卡](#pinning-version-boundary)
-- 虚拟线程是守护线程，退出前需显式等待任务完成。[卡](#virtual-thread-observation)
+- **任务与线程。** 虚拟线程自 JDK 21 正式提供，每个任务创建一个线程，任务结束后线程随之结束。
+- **阻塞卸载。** 虚拟线程遇到支持卸载的阻塞操作时，会让出承载它的平台线程，供其他虚拟线程运行。
+- **适用负载。** 虚拟线程适合用同步代码承载大量阻塞 I/O，CPU 计算的吞吐仍受可用核心数限制。[卡](#virtual-thread-fit)
+- **Java 21 的 pinning。** Java 21 中，虚拟线程持有 monitor 时阻塞会导致 pinning，使承载它的平台线程一起被占用。[卡](#pinning-version-boundary)
+- **任务完成等待。** 虚拟线程始终是守护线程，程序应在退出前通过 `join`、Future 或关闭执行器等待任务完成。[卡](#virtual-thread-observation)
 
 ## 2. 虚拟线程与 carrier 线程 {#虚拟线程与-carrier-线程}
+
+虚拟线程仍要借助平台线程执行代码。承载它的平台线程称为 **carrier 线程**，也叫载体线程。应用可以继续使用同步调用，由 JVM 管理挂载和等待：
 
 ```java
 try (ExecutorService executor =
@@ -27,17 +31,17 @@ try (ExecutorService executor =
 }
 ```
 
-示例使用 Java 21。执行器为每个任务创建一个虚拟线程。`get()` 取得调用结果，退出作用域时关闭执行器。
+示例使用 Java 21，执行器为每个任务创建一个虚拟线程。`get()` 等待并取得调用结果，退出作用域时关闭执行器。
 
-虚拟线程挂载在 carrier 平台线程上执行。支持卸载的等待会释放 carrier。等待结束后，虚拟线程重新排队等待挂载。
+JVM 把大量虚拟线程调度到较少的 carrier 上。虚拟线程占用 carrier 执行代码，称为挂载。遇到支持卸载的等待时，它会让出 carrier，使后者可以运行其他虚拟线程。等待结束后，原虚拟线程重新排队，等待再次挂载。
 
-虚拟线程保留 Java 的栈、异常和中断模型。`Thread.currentThread()` 返回当前虚拟线程对象。
+虚拟线程保留 Java 的调用栈、异常和中断模型，常用的 Thread API 仍然适用。`Thread.currentThread()` 返回的是当前虚拟线程对象。因此，应用可以保留一个请求对应一个线程的同步代码。
 
 ## 3. 虚拟线程与线程池 {#虚拟线程与线程池}
 
-平台线程池通过复用降低创建成本。虚拟线程按任务创建，用完即结束。`newVirtualThreadPerTaskExecutor()` 对线程数没有固定池上限。
+平台线程的创建和栈内存成本较高，所以线程池通过复用与数量限制管理它们。虚拟线程则按任务创建，用完即结束。若把虚拟线程固定为少量 Worker，任务又会在池前排队，限制它承载大量等待的能力。
 
-稀缺资源应单独限定并发：
+`newVirtualThreadPerTaskExecutor()` 对线程数没有固定池上限。因此，应在**稀缺资源的入口**单独限定并发，例如限制同时查询数据库的任务数：
 
 ```java
 Semaphore dbPermits = new Semaphore(30);
@@ -50,69 +54,76 @@ try {
 }
 ```
 
-示例在成功取得许可后归还。所有调用都遵守此协议时，最多 30 个查询进入。入口还需限制总在途任务，避免大量等待占用内存。
+`Semaphore` 是按许可数量限制并发的信号量。所有查询都使用同一个信号量并遵守上述协议时，最多有 30 个查询进入。只有成功取得许可后才进入 `try`，退出时在 `finally` 中归还。
+
+许可只限制正在查询的数量，等待许可的任务仍占内存。所以，入口还需限制总在途任务，也就是已接收但尚未完成的任务。
 
 ## 4. 适用场景 {#适用场景}
 
-大量独立网络请求适合使用虚拟线程。JDK 的网络阻塞操作支持卸载 carrier。并发等待数量增加后，I/O 服务可提高吞吐。
+虚拟线程适合数量大、彼此独立，且大部分时间等待 I/O 的任务。例如，服务需要同时发起大量 HTTP 请求或 JDBC 查询。JDK 的网络阻塞操作支持卸载 carrier，所以同一台机器可以承载更多等待中的任务。
 
-CPU 计算仍要占用处理器时间。增加虚拟线程数量会增加竞争，单次计算时长仍受算力限制。
+CPU 计算则持续占用处理器时间。大量虚拟线程同时计算时，仍在争夺相同的核心，因此长期计算任务应限制并行度。
 
-文件 I/O 和第三方 native 调用应逐项确认。部分阻塞操作会保留 carrier，需要实际压测。
+文件 I/O、JDBC 驱动和第三方 native 调用需要按实际实现验证。native 指调用本地机器代码的方法。部分阻塞操作会继续占用 carrier，所以要通过压测确认扩展能力。
 
 ## 5. pinning 与 JDK 版本 {#pinning-与-jdk-版本}
 
-pinning 表示虚拟线程在阻塞时仍绑定 carrier。平台线程随之被占用，影响其他虚拟线程调度。
+**pinning** 指虚拟线程被绑定到 carrier，阻塞时也无法卸载。这样，等待中的虚拟线程会占住一个平台线程，其他虚拟线程可用的执行资源就会减少。它影响并发扩展能力，线程语义仍然成立。
 
-Java 21 中，持有 monitor 时阻塞会导致 pinning。频繁在 synchronized 内执行慢 I/O，会长期占用 carrier。此类代码可改用 ReentrantLock，让阻塞时可以卸载。
+Java 21 中，虚拟线程持有 monitor，也就是 `synchronized` 使用的对象监视器锁时，阻塞会导致 pinning。频繁在锁内执行慢 I/O，就会长期占用 carrier。对此，可以用 `ReentrantLock` 替换，让原来由 monitor 导致的阻塞能够卸载。
 
-native 调用也有绑定边界。例如 native 回调 Java 后发生阻塞，会产生 pinning。
+native 调用也会造成绑定。例如，native 方法回调 Java 后发生阻塞，虚拟线程仍会被 pin 在 carrier 上。
 
 ## 6. ThreadLocal 与上下文传播 {#threadlocal-与上下文传播}
 
-虚拟线程支持 ThreadLocal，且每个线程有自己的值。给每个线程缓存昂贵资源，会增加总内存。
+虚拟线程支持 `ThreadLocal`，每个线程都能保存自己的值。但虚拟线程数量可以很大，给每个线程缓存昂贵对象，会显著增加总内存。按任务创建的线程也失去了固定 Worker 跨任务复用缓存的机会。
 
-跨线程任务需显式传递必要上下文。清理与恢复规则见 [ThreadLocal](./threadlocal-leaks-context.mdx#用-finally-清理)。
+外部资源应在明确的作用域内获取和释放，跨线程任务则显式传递必要上下文。清理与恢复规则见 [ThreadLocal](./threadlocal-leaks-context.mdx#用-finally-清理)。
 
 ## 7. 迁移验证 {#迁移验证}
 
-压测应同时记录吞吐、p99、CPU 和内存。再检查 carrier 数量、pinning 与连接等待。
+迁移验证要确认吞吐是否提高，以及瓶颈是否转移到了下游。数据库只有 30 个连接时，即使创建更多虚拟线程，也只是让更多任务排在连接池前。
 
-数据库只有 30 个连接时，大量任务仍会等待连接。虚拟线程降低承载等待的成本，容量约束仍由连接池决定。
+压测应记录以下**性能与资源指标**：
 
-客户端、驱动和观测工具需按实际版本验证。性能评估还应包含过载、超时和任务退出。
+- 吞吐与 P99，确认完成量和较慢请求的耗时。
+- CPU 与内存，确认计算和在途任务的成本。
+- carrier 数量与 pinning，确认平台线程是否被持续占住。
+- 数据库连接等待，确认请求是否卡在下游资源入口。
+
+JDBC 驱动、客户端和观测工具还需按实际版本验证。测试应覆盖过载、超时和任务退出，才能确认取消后资源会按预期释放。
 
 ## 8. pinning 的版本诊断 {#pinning-的版本诊断}
 
-Java 21 可用 `-Djdk.tracePinnedThreads=full` 查看部分 pinning。该参数覆盖持 monitor 时发生的阻塞。它对等待进入 monitor 等情况有观测限制。
+定位 pinning 时，需要找到持续占用 carrier 的阻塞栈，再判断是否值得替换锁。Java 21 可用 `-Djdk.tracePinnedThreads=full` 输出部分 pinning 的栈。该参数覆盖持有 monitor 时发生的阻塞，但对等待进入 monitor 等情况有观测限制。
 
-JFR 的 `jdk.VirtualThreadPinned` 记录超过阈值的 pinning。Java 21 默认启用该事件，阈值为 20 毫秒。
+JFR 是 JDK 的运行事件记录工具。它的 `jdk.VirtualThreadPinned` 事件记录超过阈值的 pinning；Java 21 默认启用该事件，阈值为 20 毫秒。
 
-短小的内存操作可继续使用 synchronized。替换锁应由持锁阻塞的频率和时长决定。
+短小的内存操作可以继续使用 `synchronized`。是否替换锁，应由持锁阻塞的频率、时长及其对吞吐的影响决定。
 
 ## 9. 虚拟线程的观测与退出 {#虚拟线程的观测与退出}
 
-Java 21 的 ThreadMXBean 只覆盖平台线程。查看虚拟线程可使用专门转储：
+迁移后，需要同时检查观测工具的范围和程序退出方式。Java 21 的 `ThreadMXBean` 只覆盖平台线程，因此查看虚拟线程要使用专门的转储命令：
 
 ```sh
 jcmd <pid> Thread.dump_to_file -format=json threads.json
 ```
 
-命令输出包含平台与虚拟线程的结构化转储。它用于查看线程栈，与传统完整锁信息转储分工不同。
+命令会把平台线程和虚拟线程的栈写入 JSON 文件。它便于查看大量线程，但不会包含传统转储中的完整锁信息等内容。
 
-虚拟线程始终为守护线程。仅剩守护线程时，JVM 可以开始退出。程序应通过 `join`、Future 或执行器关闭等待任务。
+虚拟线程始终是守护线程。守护线程本身不会阻止 JVM 退出，所以仅剩守护线程时，JVM 可以开始退出。程序应通过 `join`、Future 或关闭执行器等待任务完成。
 
-`ExecutorService.close()` 会等待执行器终止。请求需要总超时时，仍应显式安排取消和退出期限。
+`ExecutorService.close()` 会等待执行器终止，因此开篇示例退出作用域时也会等待。请求需要总超时时，仍应安排明确的取消和退出期限。
 
 ## 10. 常见问题 {#常见问题}
 
-### 10.1 单任务延迟与并发吞吐 {#单任务延迟与并发吞吐}
+### 10.1 虚拟线程会让单个任务更快吗？ {#单任务延迟与并发吞吐}
 
-虚拟线程主要降低线程承载成本。它适合让大量 I/O 任务同时等待。单次网络响应和 CPU 计算仍需相应的执行时间。
+虚拟线程主要降低的是线程承载成本，单次网络响应和 CPU 计算仍需原有的执行时间。它的收益来自让大量 I/O 任务同时等待，从而提高服务吞吐，并保留容易理解的同步代码。
 
-### 10.2 资源池与执行器 {#资源池与执行器}
+### 10.2 使用虚拟线程以后还需要线程池吗？ {#资源池与执行器}
 
-虚拟线程无需通过固定 Worker 复用。连接池、限流器和 CPU 执行器仍有各自职责。资源容量应在实际使用入口控制。
+虚拟线程按任务创建即可，平台线程执行器、定时任务和 CPU 并行计算仍可以使用池。连接池与限流器也继续负责限制稀缺资源，容量应在资源的实际使用入口控制。
 
 ## 11. 面试题 {#面试题}
 
@@ -127,18 +138,20 @@ jcmd <pid> Thread.dump_to_file -format=json threads.json
 
 **考察重点**
 
-- 理解大量阻塞 I/O 与任务一线程模型。
-- 理解 CPU、下游容量和 ThreadLocal 边界。
-- 理解 Java 21 中持有 monitor 时阻塞导致的 pinning。
+- 解释一个任务对应一个虚拟线程，怎样帮助服务承载大量阻塞 I/O。
+- 说明 CPU、下游容量和每线程缓存为什么仍会限制吞吐与内存。
+- 解释 Java 21 中持有 monitor 时阻塞，为什么会占住 carrier。
 
 **相关内容**：[虚拟线程与 carrier 线程](#虚拟线程与-carrier-线程)至[迁移验证](#迁移验证)。
 
 <details>
 <summary>参考回答</summary>
 
-虚拟线程适合数量大、独立且经常阻塞 I/O 的任务。它用较少平台线程承载大量等待。CPU 任务和下游资源仍受自身容量约束。
+**虚拟线程适合数量大、彼此独立，且大部分时间阻塞等待 I/O 的任务。**
 
-按任务创建虚拟线程，稀缺资源单独限流。Java 21 中，持有 monitor 时阻塞会导致 pinning。native 调用和实际资源等待仍需观测。
+支持卸载的等待会让出 carrier，所以能用较少平台线程承载更多并发请求，并继续使用同步代码。CPU 计算和数据库连接仍受自身容量限制。
+
+每个任务创建一个虚拟线程即可，连接和接口并发用信号量或资源池单独限流。每个线程缓存昂贵对象仍会增加内存，所以 ThreadLocal 也要控制大小和生命周期。Java 21 中，持有 monitor 时阻塞会导致 pinning；native 调用也要结合实际阻塞栈验证。
 
 </details>
 
@@ -148,14 +161,18 @@ jcmd <pid> Thread.dump_to_file -format=json threads.json
 
 **出现公司**：暂无已核验的公开来源（本站自测）
 
-**考察重点**：理解持锁阻塞、pinning 诊断与锁替换条件。
+**考察重点**：根据持锁阻塞的频率和时长判断 pinning 的影响，并解释锁替换的适用条件。
 
 **相关内容**：[pinning 的版本诊断](#pinning-的版本诊断)。
 
 <details>
 <summary>参考回答</summary>
 
-频繁持锁执行慢 I/O 时，可用 ReentrantLock 替换。Java 21 的 synchronized 内阻塞会绑定 carrier。短小的内存操作可保留 synchronized。可用 `-Djdk.tracePinnedThreads=full` 定位阻塞栈。JFR 的 `jdk.VirtualThreadPinned` 可记录超阈值的 pinning。
+**Java 21 中，频繁在 `synchronized` 内执行慢 I/O 时，可以考虑换成 `ReentrantLock`。**
+
+原因是持有 monitor 时阻塞会 pin 住 carrier，减少其他虚拟线程可用的执行资源。短小的内存操作则可以保留 `synchronized`。
+
+可用 `-Djdk.tracePinnedThreads=full` 定位部分阻塞栈，再结合 JFR 的 `jdk.VirtualThreadPinned` 事件判断持续时间。该事件默认阈值为 20 毫秒，替换应以实际吞吐影响为依据。
 
 </details>
 
@@ -165,14 +182,18 @@ jcmd <pid> Thread.dump_to_file -format=json threads.json
 
 **出现公司**：暂无已核验的公开来源（本站自测）
 
-**考察重点**：理解观测接口范围与守护线程生命周期。
+**考察重点**：说明 ThreadMXBean 的统计范围，以及虚拟线程的守护属性为什么要求显式等待。
 
 **相关内容**：[虚拟线程的观测与退出](#虚拟线程的观测与退出)。
 
 <details>
 <summary>参考回答</summary>
 
-ThreadMXBean 只统计平台线程。虚拟线程可通过 Thread.dump_to_file 观测。它们是守护线程，程序应显式等待任务结束。可使用 join、Future 或执行器关闭协议。
+**Java 21 的 `ThreadMXBean` 只统计平台线程，所以会漏掉虚拟线程。**
+
+查看它们可以使用 `jcmd` 的 `Thread.dump_to_file` 命令。
+
+虚拟线程始终是守护线程，仅剩它们时 JVM 可以退出。因此，程序应使用 `join`、Future 或执行器关闭流程，等待任务结束；有总超时要求时，还要设置取消和退出期限。
 
 </details>
 

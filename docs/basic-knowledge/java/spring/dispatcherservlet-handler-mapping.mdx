@@ -3,23 +3,25 @@ sidebar_position: 10
 knowledge:
   id: basic-knowledge.java.spring.dispatcherservlet-handler-mapping
   type: concept
+description: "前端控制器 DispatcherServlet 负责 Spring MVC 请求分派。本文讲解处理器映射、调用适配、拦截回调与异常解析，覆盖错误状态诊断。本文适合准备 Spring 面试的读者。读者可练习推演映射条件和执行顺序，并分析异常解析返回值的含义。"
+keywords: ["HandlerMapping", "HandlerAdapter", "MVC 前端控制器", "HandlerExceptionResolver"]
 ---
 
 # DispatcherServlet
 
-DispatcherServlet 是 Spring MVC 的前端控制器。本文负责处理器映射、调用适配与异常分派。参数细节见 [Spring MVC 参数解析](./binding-validation-content-negotiation.mdx)。拦截器回调见 [Spring 拦截机制](./filter-interceptor-aspect-boundaries.mdx)。
+DispatcherServlet 是 Spring MVC 的前端控制器，统一协调请求处理。本文从查找处理器入手，依次说明映射条件、适配调用和异常解析，再介绍 HTTP 错误的定位方法。处理器是实际处理请求的对象，可以是 Controller 方法，也可以是静态资源处理器。
 
 ## 1. 面试核心 {#core}
 
-- `HandlerMapping` 查找处理器，并返回 `HandlerExecutionChain`。[卡](#mapping-vs-adapter)
-- `HandlerAdapter` 封装不同处理器的调用方式。
-- `HandlerExceptionResolver` 通过非空结果表示异常已处理。[卡](#resolver-result)
-- 相同映射注册到不同方法会在启动时触发冲突。
-- 404、405、415、406 分别对应资源、方法和媒体类型问题。
+- **处理器查找。** `HandlerMapping` 根据请求条件查找处理器，返回包含处理器和匹配拦截器的 `HandlerExecutionChain`。[卡](#mapping-vs-adapter)
+- **执行适配。** `HandlerAdapter` 封装不同处理器的调用方式，让 DispatcherServlet 统一协调方法执行与返回值处理。
+- **异常解析结果。** `HandlerExceptionResolver` 通过非空结果表示异常已处理。[卡](#resolver-result)
+- **映射冲突。** 相同映射注册到不同方法会在启动时触发冲突。
+- **HTTP 错误类型。** MVC 中的 404 表示资源未找到，405 表示方法不允许，415 表示请求媒体类型不受支持，406 表示无法生成可接受的响应类型。
 
 ## 2. HandlerMapping {#handlermapping}
 
-DispatcherServlet 按顺序询问 HandlerMapping，采用首个非空结果。
+请求进入后，DispatcherServlet 先确定由谁处理。它按顺序询问已注册的 HandlerMapping，采用首个非空结果。结果用 `HandlerExecutionChain` 表示，其中包含处理器和当前请求匹配的拦截器：
 
 ```text
 HandlerExecutionChain
@@ -27,31 +29,45 @@ HandlerExecutionChain
   └─ interceptors: [locale, metrics]
 ```
 
-注解映射由 `RequestMappingHandlerMapping` 注册。它解析 `@RequestMapping`、`@GetMapping` 等注解。其他映射器也可返回静态资源等处理器。
+注解控制器的映射由 `RequestMappingHandlerMapping` 在启动时建立。它扫描 `@RequestMapping`、`@GetMapping` 等注解，把方法及其匹配条件登记下来。上图中的 `HandlerMethod` 就表示一个控制器方法。其他映射器也可返回静态资源等处理器，所以后续调用需要适配不同类型。
 
 ## 3. 映射条件 {#映射条件}
 
-映射可同时声明路径、方法、参数、请求头和媒体类型。`consumes` 约束请求类型，`produces` 约束可生成响应类型。
+HandlerMapping 根据映射条件判断一个方法能否处理当前请求。一个映射可同时约束以下**四类条件**：
 
-不同方法注册完全相同的映射，会在启动时失败。路径模式相互重叠时，框架在请求阶段比较具体程度。最优匹配仍并列时，会报告歧义。
+- 路径模式和 HTTP 方法决定访问哪个地址、执行哪种操作。
+- `params` 和 `headers` 分别约束请求参数与请求头。
+- `consumes` 约束请求的 `Content-Type`，也就是请求正文的媒体类型。
+- `produces` 声明能生成的响应媒体类型，并与客户端的 `Accept` 匹配。
+
+不同方法注册完全相同的映射，会在启动时失败。路径模式相互重叠时，框架在请求阶段比较具体程度。最优匹配仍并列时，会报告歧义。因此，设计 API 时应让路径和媒体类型规则清楚可辨，减少重叠条件。
 
 `GET` 映射支持 `HEAD`，输出阶段省略正文。`OPTIONS` 可自动生成包含允许方法的 `Allow` 头。客户端仍应按明确的业务方法调用。
 
 ## 4. HandlerAdapter {#handleradapter}
 
-DispatcherServlet 遍历适配器，找到 `supports(handler)` 为 true 的项。适配器负责具体调用，前端控制器只负责协调。
+找到处理器后，还需要确定怎样调用它。DispatcherServlet 遍历适配器，选择 `supports(handler)` 返回 true 的项。适配器封装具体调用方式，前端控制器因此可以协调不同类型的处理器。
 
-注解方法由 `RequestMappingHandlerAdapter` 执行。它准备绑定上下文、解析参数，再调用方法。随后，返回值处理器处理响应或视图。
+注解方法由 `RequestMappingHandlerAdapter` 执行，依次完成**参数准备、方法调用与返回值处理**：
+
+1. 创建数据绑定和模型上下文，用来转换输入并保存视图数据。
+2. 调用 `HandlerMethodArgumentResolver`，从请求中解析方法参数。
+3. 使用解析好的参数调用 Controller 方法。
+4. 调用 `HandlerMethodReturnValueHandler`，将返回值交给响应写出或视图处理。
+
+遇到自定义参数类型时，可以扩展参数解析器。这样，多个 Controller 就能复用解析规则。
 
 参数解析机制见 [Spring MVC 参数解析](./binding-validation-content-negotiation.mdx)。
 
 ## 5. Interceptor 回调 {#interceptor-回调}
 
-同步回调按进入与退出顺序执行，具体规则见 [Spring 拦截机制](./filter-interceptor-aspect-boundaries.mdx#拦截器回调顺序)。
+拦截器在处理器调用前后执行回调，用来决定是否放行、处理同步结果和清理资源。
+
+短路与异步回调的具体规则见 [Spring 拦截机制](./filter-interceptor-aspect-boundaries.mdx#拦截器回调顺序)。
 
 ## 6. 异常解析 {#异常解析}
 
-HandlerExceptionResolver 按顺序尝试处理 MVC 异常。默认链包含以下职责：
+参数解析、Controller 调用或返回值处理抛错后，MVC 会尝试生成错误响应。`HandlerExceptionResolver` 是异常解析器，多个解析器按顺序尝试，直到某个解析器接手。默认链中的**三类解析器**分工如下：
 
 | Resolver | 职责 |
 | --- | --- |
@@ -59,9 +75,13 @@ HandlerExceptionResolver 按顺序尝试处理 MVC 异常。默认链包含以�
 | `ResponseStatusExceptionResolver` | 处理 `@ResponseStatus` 和 `ResponseStatusException` |
 | `DefaultHandlerExceptionResolver` | 将标准 MVC 异常映射为状态码 |
 
-`@ExceptionHandler` 由 resolver 调用，本身是注解。API 错误字段见 [API 错误契约](./api-error-contract.mdx)。
+`@ExceptionHandler` 标记异常处理方法，由对应的解析器负责调用。Filter 在进入 DispatcherServlet 之前抛出的异常，由过滤链或 Servlet 错误机制处理。
+
+API 错误字段与处理范围见 [API 错误契约](./api-error-contract.mdx)。
 
 ## 7. HTTP 错误状态诊断 {#排查-404405415-与-406}
+
+状态码能帮助判断请求在哪个阶段失败。定位时，先按下表检查路径和媒体类型，再结合实际匹配的处理器确认原因。
 
 | 状态 | 检查内容 |
 | --- | --- |
@@ -70,25 +90,31 @@ HandlerExceptionResolver 按顺序尝试处理 MVC 异常。默认链包含以�
 | 415 | `Content-Type`、`consumes` 与消息读取器 |
 | 406 | `Accept`、`produces` 与消息写出器 |
 
-静态资源处理器也能返回 404，需检查实际匹配的 handler。参数内容读取失败与媒体类型错误的区别见 [Spring MVC 参数解析](./binding-validation-content-negotiation.mdx#content-type-与-accept)。
+静态资源处理器也能返回 404，所以要检查实际匹配的 handler。打开 Spring MVC 的映射诊断日志，可以查看启动时注册的映射，以及请求的匹配过程。
+
+参数内容读取失败与媒体类型错误的区别见 [Spring MVC 参数解析](./binding-validation-content-negotiation.mdx#content-type-与-accept)。
 
 ## 8. 异常解析返回值 {#异常解析返回值}
 
-Resolver 返回 null 时，表示交给下一项。返回空 `ModelAndView` 时，表示已处理且无需视图。返回非空视图信息时，DispatcherServlet 继续渲染。
+异常解析器通过返回值告诉 DispatcherServlet 是否已处理异常。`ModelAndView` 保存模型数据和视图信息，需要区分以下**三种结果**：
 
-全部 resolver 都返回 null，异常继续向 Servlet 容器传播。容器随后可触发 ERROR 派发。自定义 resolver 写完响应后，应返回空 `ModelAndView`。
+- 返回 null，表示当前解析器未处理，继续尝试下一项。
+- 返回空 `ModelAndView`，表示异常已处理，且无需渲染视图。
+- 返回带视图信息的 `ModelAndView`，表示异常已处理，DispatcherServlet 继续渲染该视图。
 
-响应已提交后的错误应按当前写出状态处理。完整响应无法再由后续 resolver 重新生成。
+如果所有解析器都返回 null，异常就继续向 Servlet 容器传播。容器可触发 ERROR 派发，也就是转入错误处理入口。自定义解析器写完响应后，应返回空 `ModelAndView`，让解析链结束。
+
+响应已提交，表示状态码和响应头已经发送给客户端。此后发生错误，解析器无法重新生成完整响应，需要按已写出的内容处理连接和日志。
 
 ## 9. 常见问题 {#常见问题}
 
-### 9.1 处理器适配的作用 {#处理器适配的作用}
+### 9.1 为什么需要 HandlerAdapter？ {#处理器适配的作用}
 
-HandlerAdapter 封装具体调用协议。DispatcherServlet 因此能统一协调注解方法与其他处理器。
+因为不同处理器的调用方式不同，HandlerAdapter 将这些差异封装起来。DispatcherServlet 只需选择合适的适配器，就能统一协调注解方法与其他处理器。
 
-### 9.2 多 DispatcherServlet 与上下文 {#多-dispatcherservlet-与上下文}
+### 9.2 一个应用能有多个 DispatcherServlet 吗？ {#多-dispatcherservlet-与上下文}
 
-Servlet 容器可注册多个 DispatcherServlet，并映射不同路径。每个实例可拥有自己的 WebApplicationContext。子上下文可读取父上下文 Bean，父容器无法读取子容器定义。
+可以。Boot MVC 应用默认使用一个 DispatcherServlet，Servlet 容器也允许注册多个实例并映射不同路径。每个实例可拥有自己的 WebApplicationContext，也就是管理 Web 组件的应用上下文。子上下文可读取父上下文的 Bean，父容器无法读取子容器的定义。
 
 ## 10. 面试题 {#面试题}
 
@@ -101,16 +127,18 @@ Servlet 容器可注册多个 DispatcherServlet，并映射不同路径。每个
 
 **出现公司**：远景能源、珍爱网
 
-**考察重点**：区分处理器定位与适配调用。
+**考察重点**：说明映射器怎样找到处理器和拦截器，以及适配器怎样解析参数、调用方法并处理返回值。
 
 **相关内容**：[HandlerMapping](#handlermapping)至[Interceptor 回调](#interceptor-回调)。
 
 <details>
 <summary>参考回答</summary>
 
-HandlerMapping 负责定位，HandlerAdapter 负责调用。映射结果包含 handler 和拦截器，形成 `HandlerExecutionChain`。
+**HandlerMapping 根据请求条件找到处理器，HandlerAdapter 负责按处理器类型执行调用。**
 
-适配器先确认支持该 handler，再执行对应调用。注解适配器负责参数解析、方法执行和返回值处理。
+映射器将 handler 与匹配的拦截器一起放进 `HandlerExecutionChain`。
+
+DispatcherServlet 再选择支持该 handler 的适配器。对于注解方法，适配器负责解析参数、执行方法和处理返回值。因此，DispatcherServlet 可以统一协调多种处理器。
 
 </details>
 
@@ -120,14 +148,18 @@ HandlerMapping 负责定位，HandlerAdapter 负责调用。映射结果包含 h
 
 **出现公司**：暂无已核验的公开来源（本站自测）
 
-**考察重点**：异常链继续、已处理与容器错误派发。
+**考察重点**：解释两种返回值怎样影响后续解析器，并说明所有解析器都未处理时异常会传到哪里。
 
 **相关内容**：[异常解析返回值](#异常解析返回值)。
 
 <details>
 <summary>参考回答</summary>
 
-null 表示未处理，继续尝试下一 resolver。空 `ModelAndView` 表示已处理，且无需渲染视图。全部 resolver 都返回 null 时，异常继续向 Servlet 容器传播。
+**null 表示当前解析器未处理异常，空 `ModelAndView` 表示已处理且无需渲染视图。**
+
+前者会让解析链继续，后者会结束解析链。
+
+例如，自定义解析器已经写出错误响应，就应返回空 `ModelAndView`。如果全部解析器都返回 null，异常会继续传给 Servlet 容器，由容器进入错误处理流程。
 
 </details>
 

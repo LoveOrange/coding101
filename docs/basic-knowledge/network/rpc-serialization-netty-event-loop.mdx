@@ -3,19 +3,21 @@ sidebar_position: 9
 knowledge:
   id: basic-knowledge.network.rpc-serialization-netty-event-loop
   type: concept
+description: "RPC 把远程请求封装为方法调用接口。本文讲解调用链、序列化、消息边界与 Netty 执行模型，覆盖截止时间和背压。本文适合准备后端面试的读者。读者可练习分析事件循环、缓冲区引用计数及远程调用中的失败传播。"
+keywords: ["远程过程调用", "Netty EventLoop", "序列化协议", "粘包半包", "RPC 超时"]
 ---
 
 # RPC
 
-RPC 把远程请求封装成方法调用接口。本文负责调用链、序列化和 Netty 4.2 的执行模型。字节流语义见 [TCP 与 UDP](./tcp_udp.mdx)。通用超时和重试规则见 [HTTP](./http-versions-connection-reuse-timeouts.mdx#超时设置)。
+RPC 把远程请求封装成方法调用接口。本文负责调用链、序列化和 Netty 4.2 的执行模型。
 
 ## 1. 面试核心 {#core}
 
-- RPC 用请求标识将远端响应关联到本地 Future 或回调。
-- Protobuf 字段编号用于识别字段，删除后应通过 reserved 保留编号。[卡](#protobuf-field-evolution)
-- LengthFieldBasedFrameDecoder 根据长度字段拆分消息帧。[卡](#netty-connections-framing)
-- NIO EventLoop 可管理多个 Channel，阻塞处理会拖延其他连接。
-- ByteBuf 通过 retain 与 release 管理引用生命周期。[卡](#bytebuf-async-lifetime)
+- **请求与响应关联。** RPC 用请求标识将远端响应关联到本地 Future 或回调。
+- **字段兼容。** Protobuf 字段编号用于识别字段，删除后应通过 reserved 保留编号。[卡](#protobuf-field-evolution)
+- **消息拆帧。** LengthFieldBasedFrameDecoder 根据长度字段拆分消息帧。[卡](#netty-connections-framing)
+- **事件循环。** NIO EventLoop 可管理多个 Channel，阻塞处理会拖延其他连接。
+- **缓冲区生命周期。** ByteBuf 通过 retain 与 release 管理引用生命周期。[卡](#bytebuf-async-lifetime)
 
 ## 2. RPC 调用链 {#rpc-调用链}
 
@@ -135,7 +137,9 @@ RPC 应传递剩余调用预算，避免每层重新计时。gRPC 会将 deadlin
 <details>
 <summary>参考回答</summary>
 
-Netty 将 Channel 注册到 EventLoop，用少量线程处理多个连接。长度字段解码器负责消息拆帧。耗时业务转交有界线程池，防止阻塞事件循环。
+**Netty 将 Channel 注册到 EventLoop，用少量线程处理多个连接。**
+
+长度字段解码器负责消息拆帧。耗时业务转交有界线程池，防止阻塞事件循环。
 
 ByteBuf 的异步使用要配对 retain 和 release。压力过高时限制队列和在途请求。写缓冲水位通知应用暂停生产，应用需要主动响应。
 
@@ -154,7 +158,9 @@ ByteBuf 的异步使用要配对 retain 和 release。压力过高时限制队�
 <details>
 <summary>参考回答</summary>
 
-编号决定二进制字段的身份。复用旧编号会把历史数据解释成新字段。应使用 reserved 保留退役编号。需要区分未填写和默认值时，可使用 proto3 optional。
+**编号决定二进制字段的身份。**
+
+复用旧编号会把历史数据解释成新字段。应使用 reserved 保留退役编号。需要区分未填写和默认值时，可使用 proto3 optional。
 
 </details>
 
@@ -171,7 +177,9 @@ ByteBuf 的异步使用要配对 retain 和 release。压力过高时限制队�
 <details>
 <summary>参考回答</summary>
 
-在当前引用释放前，为异步任务 retain 一次。任务结束后在 finally 中 release。提交失败时也要归还这次引用。普通 slice 共享内存且不增加计数。retainedSlice 可保留引用，但数据仍然共享。
+**在当前引用释放前，为异步任务 retain 一次。**
+
+任务结束后在 finally 中 release。提交失败时也要归还这次引用。普通 slice 共享内存且不增加计数。retainedSlice 可保留引用，但数据仍然共享。
 
 </details>
 

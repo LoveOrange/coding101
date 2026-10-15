@@ -3,21 +3,25 @@ sidebar_position: 17
 knowledge:
   id: basic-knowledge.java.concurrency.future-completablefuture-errors
   type: concept
+description: "CompletableFuture 用完成阶段表达异步依赖。本文讲解阶段组合、回调线程、异常恢复和超时取消，比较聚合完成条件。本文适合准备 Java 并发面试的读者。读者可练习推演结果与异常的传播路径，并判断底层任务的退出范围。"
+keywords: ["CompletionStage", "异步编排", "CompletableFuture 异常", "allOf 与 anyOf"]
 ---
 
 # CompletableFuture
 
-`CompletableFuture` 用完成阶段组织异步结果。本文负责阶段组合、执行线程和异常传播。底层任务的退出协议见 [任务取消](./interruption-timeout-cancellation.mdx)。
+`CompletableFuture` 用完成阶段组织异步结果，以及结果之间的依赖。一个完成阶段表示一次计算及其结果，计算结束后再触发依赖它的后续阶段。本文以 Java 17/21 为准，从 Future 的结果读取入手，再讲阶段组合与回调线程。之后说明异常怎样传播，以及超时、取消和聚合完成的边界。
 
 ## 1. 面试核心 {#core}
 
-- `thenCompose` 展平异步阶段，`thenCombine` 合并两个结果。
-- Java 17/21 的 `*Async` 在公共池并行度大于 1 时默认使用该池。[卡](#completablefuture-errors-executor)
-- `whenComplete` 回调抛错能使后续阶段异常完成。[卡](#completion-observer-failure)
-- `allOf` 等待全部完成，任一失败会使聚合结果失败。[卡](#allof-anyof-failure)
-- `CompletableFuture.cancel(true)` 以异常完成表达取消。
+- **异步阶段组合。** `thenCompose` 将回调返回的异步阶段展平为一层结果，`thenCombine` 等两个阶段正常完成后合并结果。
+- **默认执行器。** Java 17/21 的 CompletableFuture 异步方法默认使用公共池，并行度小于 2 时为每个任务新建线程。[卡](#completablefuture-errors-executor)
+- **回调失败。** 原阶段成功时，`whenComplete` 回调抛错会使它返回的新阶段异常完成。[卡](#completion-observer-failure)
+- **聚合完成。** `allOf` 等待全部输入阶段完成后报告结果，其中任一阶段失败，聚合结果就会失败。[卡](#allof-anyof-failure)
+- **取消边界。** `CompletableFuture.cancel(true)` 通过异常完成表达取消，底层任务仍需自己的退出机制。
 
 ## 2. Future 的结果与异常 {#future-的结果与异常}
+
+Future 表示异步计算的结果，计算结束前也可以先取得这个对象。它提供结果读取、超时等待和取消等操作。调用 `get` 时，调用线程会等待计算完成：
 
 ```java
 Future<Profile> future = executor.submit(() -> loadProfile(id));
@@ -30,11 +34,17 @@ try {
 }
 ```
 
-`get` 成功时返回计算结果。任务异常由 `ExecutionException` 包装。该片段捕获并处理任务失败。外围方法还需处理或声明等待中断和超时。
+示例最多等待 300 毫秒，成功时返回 Profile。任务自身抛错时，`get` 用 `ExecutionException` 包装异常，代码通过 `getCause()` 取得原始原因。等待被中断或超时则分别抛出 `InterruptedException`、`TimeoutException`，外围方法还需处理或声明它们。
 
-丢弃 Future 会丢失读取失败的入口。对 `FutureTask` 的取消效果见 [任务取消](./interruption-timeout-cancellation.mdx#futurecanceltrue-的效果)。
+`submit` 会把任务失败记录到返回的 Future 中。如果提交方丢弃这个对象，又没有其他失败记录，异常就会缺少读取和处理的入口。
+
+FutureTask 的 `cancel(true)` 会尝试中断任务，任务退出仍取决于是否响应中断。具体行为见 [任务取消](./interruption-timeout-cancellation.mdx#futurecanceltrue-的效果)。
 
 ## 3. CompletionStage 的依赖组合 {#completionstage-的依赖组合}
+
+CompletionStage 描述计算完成后要继续做什么，CompletableFuture 实现了这个接口。这样就能直接连接计算结果之间的依赖，无需调用线程逐步等待。
+
+订单和客户数据互相独立时，可以并行加载，再合并为订单视图：
 
 ```java
 CompletableFuture<OrderView> view =
@@ -46,41 +56,71 @@ CompletableFuture<OrderView> view =
                 );
 ```
 
-示例并行加载订单和客户，再合并为视图。`thenApply` 将一个值映射为另一个值。`thenCompose` 组合依赖上一步的异步调用。`thenCombine` 等待两个阶段正常完成后合并。
+示例把两个加载任务提交给 `ioExecutor`。只有两者都正常完成，才会调用 `OrderView::new`，生成最终视图。
 
-需要前一步输出的任务应沿依赖关系启动。独立任务才适合直接并行提交。
+组织依赖时，需要区分以下**三种组合方式**：
+
+- `thenApply` 把一个结果值转换为另一个值，适合普通结果映射。
+- `thenCompose` 接收回调返回的另一个异步阶段，并展平嵌套结果，适合依赖上一步的异步调用。
+- `thenCombine` 等待两个阶段正常完成后合并结果，适合汇合独立任务。
+
+需要前一步输出的任务，应在前一步成功后沿依赖关系启动。独立任务才适合像示例这样直接并行提交。
 
 ## 4. 回调的执行线程 {#回调的执行线程}
 
-非 `Async` 回调可由完成当前阶段的线程执行。其他调用完成方法的线程也能执行回调。已完成阶段上注册回调时，调用线程也可直接执行。
+异步阶段描述了执行顺序，还需要明确每个回调由谁执行。否则，一段慢回调就会占住完成上一步的网络线程或调用方线程。
 
-Java 17/21 默认使用 `ForkJoinPool.commonPool()`。公共池并行度小于 2 时，每个异步任务新建一个线程。子类可通过 `defaultExecutor()` 改写实例方法的默认值。显式传入 Executor 时，回调使用该执行器。
+非 `Async` 回调可由完成当前阶段的线程执行，其他调用完成方法的线程也能执行它。在已经完成的阶段上注册回调时，注册回调的线程也可直接执行。
 
-慢 I/O 会占用执行回调的线程。需要隔离的业务应使用独立执行器。容量与拒绝规则见 [Java 线程池](./threadpoolexecutor-execution-path.mdx)。
+带 `Async` 且未显式传入 Executor 时，Java 17/21 默认使用 `ForkJoinPool.commonPool()`。这是不同业务共享的公共线程池，其并行度小于 2 时，每个异步任务会新建一个线程。子类还可通过 `defaultExecutor()` 改写实例方法的默认执行器。显式传入 Executor 时，任务交给指定的执行器。
+
+慢 I/O 会长时间占用线程，不同业务共用公共池时就会互相影响。需要隔离的依赖应使用专用执行器，并设置容量限制、监控排队与拒绝情况。
+
+执行器的容量与拒绝规则见 [Java 线程池](./threadpoolexecutor-execution-path.mdx)。
 
 ## 5. 异常恢复与观察 {#异常恢复与观察}
 
-- `exceptionally` 在失败时计算替代结果。
-- `handle` 在成功或失败时转换结果。
-- `whenComplete` 接收结果和异常，用于观测。
+阶段失败后，业务需要决定是恢复为可用结果，还是继续传播异常。下面的**三种回调**承担不同职责：
+
+- `exceptionally` 只在失败时计算替代结果，适合业务允许的降级。
+- `handle` 在成功或失败时都转换结果，适合统一处理两种完成状态。
+- `whenComplete` 接收结果和异常，用于记录日志或指标，正常返回时保留原有结果。
 
 ```java
 future.whenComplete((value, error) -> metrics.record(error));
 ```
 
-前两种回调正常返回时，后续阶段得到成功结果。回调自身抛错时，后续阶段仍会失败。示例需保证指标回调能正常完成。
+示例用 `whenComplete` 记录失败指标。它返回一个新阶段，指标回调自身抛错也会影响这个阶段，因此要处理指标代码的失败。
 
-`get()` 用 `ExecutionException` 包装计算异常。`join()` 对异常完成抛出 `CompletionException`。直接取消后的两者均可抛出 `CancellationException`。读取包装异常时应保留原始 cause。
+`exceptionally` 和 `handle` 的回调正常返回时，后续阶段会得到成功结果。也就是说，返回默认值会把原来的失败恢复为成功。只有业务允许降级时才这样做，并保留错误指标；否则应让异常继续传播，在业务边界处理。回调自身抛错时，后续阶段仍会失败。
+
+读取结果时，还要区分以下**异常类型**：
+
+- `get()` 用受检的 `ExecutionException` 包装计算异常，调用方需要捕获或声明它。
+- `join()` 对异常完成抛出非受检的 `CompletionException`。
+- 直接取消后的 Future 在调用 `get()` 或 `join()` 时，会抛出 `CancellationException`。
+
+记录或去重日志时，应解开包装异常，并保留原始 cause，才能看到真正失败的调用。
 
 ## 6. 超时与取消的作用范围 {#超时与取消的作用范围}
 
-Java 9 起，`orTimeout` 支持超时异常完成。`completeOnTimeout` 则用默认值正常完成。两者都修改并返回当前 CompletableFuture。
+结果等待结束后，产生结果的网络或数据库调用仍有自己的生命周期。因此，设置超时和取消时，要分别处理 Future 状态与底层任务。
 
-`cancel` 将结果标为取消。其 `mayInterruptIfRunning` 参数在该实现中无效。外部调用仍需自己的超时和取消协议。兄弟阶段的取消也需调用方显式安排。
+Java 17/21 中，`orTimeout` 在期限到达且当前结果尚未完成时，使它以超时异常完成。`completeOnTimeout` 则用默认值正常完成。两者都修改并返回当前 CompletableFuture，底层外部调用仍需独立设置超时。
+
+`cancel` 将当前结果标为取消，但 `mayInterruptIfRunning` 参数在 CompletableFuture 中无效。它通过异常完成表达取消，任务是否退出取决于外部调用自己的取消机制。
+
+组合多个调用时，需要明确以下**超时与取消策略**：
+
+- 从请求入口传递截止时间，让后续阶段知道还剩多少可用时间。
+- 为每个外部调用设置超时，并安排底层任务的退出方式。
+- 一个阶段失败后，决定其他兄弟任务是取消、继续等待，还是保留已取得的结果。
 
 ## 7. 观察回调的异常 {#观察回调的异常}
 
-`whenComplete` 正常返回时保留原结果。原阶段成功、回调抛错时，新阶段异常完成。原阶段与回调都失败时，新阶段保留原阶段异常。
+观察结果的代码也会失败，所以需要区分原阶段异常和回调异常。`whenComplete` 的回调正常返回时，新阶段保留原结果。原阶段成功、回调抛错时，新阶段异常完成。如果两者都失败，则优先保留原阶段异常。
+
+下面让成功结果的观察回调主动抛错：
 
 ```java
 CompletableFuture<Integer> next =
@@ -90,25 +130,25 @@ CompletableFuture<Integer> next =
                 });
 ```
 
-`next.join()` 抛出 `CompletionException`。其 cause 是回调抛出的异常。原来的已完成 Future 仍保持成功。
+调用 `next.join()` 会抛出 `CompletionException`，其 cause 是回调抛出的 `IllegalStateException`。原来的已完成 Future 仍保持成功，失败的是 `whenComplete` 返回的新阶段。
 
 ## 8. allOf 与 anyOf 的完成条件 {#allof-与-anyof-的完成条件}
 
-`allOf` 等待所有输入阶段完成。只要其中有异常，聚合结果就异常完成。它会继续等待其余阶段，而非立即结束等待。
+同时启动多个任务后，聚合阶段何时结束，取决于使用的组合方法。`allOf` 等待所有输入阶段完成，只要其中有异常，聚合结果就异常完成。因此，即使一个任务很早失败，它仍会等待其他任务结束。
 
-`anyOf` 随任一输入完成而完成。最先完成的输入即使失败，也会触发聚合失败。它与“等待首个成功结果”语义不同。
+`anyOf` 随任一输入完成而完成。最先完成的输入即使失败，也会使聚合结果失败，所以它不会专门等待首个成功结果。需要“首个成功”策略时，要额外记录成功结果和失败数量，全部失败时再报告失败。
 
-这两个方法都保留其他任务的运行状态。需要停止剩余任务时，由调用方安排取消。空 `allOf` 立即成功，空 `anyOf` 保持未完成。
+这两个方法都保留其他任务的运行状态。需要停止剩余任务时，由调用方安排取消。输入为空时，`allOf` 立即正常完成，而 `anyOf` 保持未完成。
 
 ## 9. 常见问题 {#常见问题}
 
 ### 9.1 thenApply 与 thenCompose {#thenapply-与-thencompose}
 
-回调返回普通值时用 `thenApply`。返回另一个 CompletionStage 时用 `thenCompose`。后者会展平阶段，保留一层结果类型。
+回调返回普通值时用 `thenApply`，返回另一个 CompletionStage 时用 `thenCompose`。如果异步回调交给 `thenApply`，结果类型会嵌套为 `CompletableFuture<CompletableFuture<T>>`。`thenCompose` 会展平它，让调用方直接等待最终的 T。
 
 ### 9.2 allOf 的结果类型 {#allof-的结果类型}
 
-`allOf` 返回 `CompletableFuture<Void>`。调用方应保留各个 Future。聚合正常完成后，可逐个读取结果。
+`allOf` 表示一组阶段全部完成，返回类型是 `CompletableFuture<Void>`。它没有收集各个计算结果，所以调用方需要保留原 Future 列表。聚合正常完成后，可以逐个读取结果；存在失败时，则按业务规则决定整体报错还是保留部分结果。
 
 ## 10. 面试题 {#面试题}
 
@@ -122,18 +162,20 @@ CompletableFuture<Integer> next =
 
 **考察重点**
 
-- 理解非 async、async 与默认 common pool。
-- 理解异常包装和恢复语义。
-- 理解等待超时与底层任务退出的区别。
+- 说明普通回调与 Async 回调由哪些线程执行，以及何时需要专用执行器。
+- 解释读取结果时的异常包装，以及返回默认值为何会把失败恢复为成功。
+- 区分 Future 超时完成与底层任务退出，并说明下游调用需要的控制。
 
 **相关内容**：[回调的执行线程](#回调的执行线程)至[超时与取消的作用范围](#超时与取消的作用范围)。
 
 <details>
 <summary>参考回答</summary>
 
-慢回调应显式选择执行器，异常应在业务边界处理。非 `Async` 回调可占用完成线程。Java 17/21 默认使用 common pool。公共池并行度小于 2 时，每个异步任务新建一个线程。
+**慢 I/O 使用显式、隔离的执行器；异常在业务边界处理，超时还要落实到底层调用。**
 
-`exceptionally` 正常返回会把失败恢复为成功。业务允许降级时才返回默认值。`orTimeout` 使当前结果超时完成。底层 I/O 的停止需要独立取消机制。
+- **执行位置由方法和执行器共同决定。** 非 Async 回调可由完成线程或调用线程执行。Java 17/21 未指定执行器的 Async 方法使用公共池，并行度小于 2 时改为每个任务新建线程。
+- **保留原始失败原因。** `get` 和 `join` 分别用 `ExecutionException`、`CompletionException` 包装异常。只有业务允许降级时，才用 `exceptionally` 或 `handle` 返回替代值。
+- **Future 超时不等于底层 I/O 停止。** `orTimeout` 改变完成状态，网络和数据库调用仍需截止时间、超时与退出机制。
 
 </details>
 
@@ -143,14 +185,16 @@ CompletableFuture<Integer> next =
 
 **出现公司**：暂无已核验的公开来源（本站自测）
 
-**考察重点**：理解原结果与回调异常的优先关系。
+**考察重点**：说明观察回调怎样影响新阶段，并区分原阶段与回调同时失败时的异常优先关系。
 
 **相关内容**：[观察回调的异常](#观察回调的异常)。
 
 <details>
 <summary>参考回答</summary>
 
-原阶段成功时，观察回调抛错会使新阶段失败。原阶段本来就失败时，保留原阶段异常。日志或指标回调也应处理自己的失败。
+**`whenComplete` 的回调也是一次计算，原阶段成功时，回调抛错会使它返回的新阶段失败。**
+
+回调正常返回时，新阶段保留原结果。如果原阶段与回调都失败，则保留原阶段异常。原 Future 的状态保持不变，因此日志或指标回调应处理自己的失败，避免影响后续依赖。
 
 </details>
 
@@ -160,14 +204,16 @@ CompletableFuture<Integer> next =
 
 **出现公司**：暂无已核验的公开来源（本站自测）
 
-**考察重点**：理解聚合完成条件与剩余任务生命周期。
+**考察重点**：解释两个聚合方法的完成条件，以及聚合结束后剩余任务由谁管理。
 
 **相关内容**：[allOf 与 anyOf 的完成条件](#allof-与-anyof-的完成条件)。
 
 <details>
 <summary>参考回答</summary>
 
-`allOf` 等待全部完成后报告结果。`anyOf` 接受任一阶段的完成结果，包括失败。两者都需要调用方自行管理剩余任务。首个成功策略需要另外记录失败数和成功结果。
+**`allOf` 要等全部输入完成后才报告失败，`anyOf` 则随任一输入完成，包括失败。**
+
+因此，一个输入提前失败时，allOf 仍要等待其余输入；anyOf 则会直接接受这个失败结果。首个成功策略需要额外记录成功结果与失败数量，只有全部失败时才报告失败。两者都需要调用方自行管理剩余任务的取消和退出。
 
 </details>
 

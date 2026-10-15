@@ -3,19 +3,21 @@ sidebar_position: 1
 knowledge:
   id: devops.containers.container-principles
   type: concept
+description: "Linux 容器通过隔离和资源约束组织进程。本文讲解 Namespace、cgroup、联合文件系统与安全边界，并比较容器和虚拟机。本文适合准备运维或后端面试的读者。读者可练习解释进程看到的资源范围，并分析限制和文件分层的作用。"
+keywords: ["Linux 容器隔离", "Namespace", "Cgroups", "联合文件系统", "容器与虚拟机"]
 ---
 
 # 容器原理
 
-Linux 容器是一组受隔离和资源约束的进程。本文负责 Namespace、cgroup 和分层文件系统。镜像构建与持久存储见 [Docker 镜像与 Dockerfile](./docker-images.mdx)。
+Linux 容器是一组受隔离和资源约束的进程。本文负责 Namespace、cgroup 和分层文件系统。
 
 ## 1. 面试核心 {#core}
 
-- Linux 容器共享宿主内核，虚拟机运行独立内核。[卡](#container-vs-vm)
-- Namespace 隔离资源视图，cgroup 统计并约束资源用量。[卡](#namespace-cgroups)
-- cgroup v2 的 `cpu.max` 限制 CPU 配额，`memory.max` 限制内存。
-- OverlayFS 用可写上层和只读下层组成文件视图。
-- capabilities 拆分特权，seccomp 过滤系统调用。[卡](#container-security-boundary)
+- **容器与虚拟机。** Linux 容器共享宿主内核，虚拟机运行独立内核。[卡](#container-vs-vm)
+- **隔离与资源约束。** Namespace 隔离资源视图，cgroup 统计并约束资源用量。[卡](#namespace-cgroups)
+- **资源配额。** cgroup v2 的 `cpu.max` 限制 CPU 配额，`memory.max` 限制内存。
+- **文件系统。** OverlayFS 用可写上层和只读下层组成文件视图。
+- **权限控制。** capabilities 拆分特权，seccomp 过滤系统调用。[卡](#container-security-boundary)
 
 ## 2. 容器与虚拟机 {#容器与虚拟机}
 
@@ -125,7 +127,9 @@ capabilities 将 root 权限拆成独立能力。seccomp 按策略过滤系统�
 <details>
 <summary>参考回答</summary>
 
-Linux 容器共享宿主内核，虚拟机有独立的客户内核。容器通过 Namespace 隔离资源视图。cgroup 负责资源约束，运行时设置根文件系统。
+**Linux 容器共享宿主内核，虚拟机有独立的客户内核。**
+
+容器通过 Namespace 隔离资源视图。cgroup 负责资源约束，运行时设置根文件系统。
 
 容器省去客户内核及系统服务的开销。实际启动速度还取决于镜像和应用初始化。虚拟机增加了一层虚拟化安全边界。容器则依赖共享内核和权限策略。两者都需要结合具体实现评估隔离能力。
 
@@ -155,7 +159,9 @@ Linux 容器共享宿主内核，虚拟机有独立的客户内核。容器通�
 <details>
 <summary>参考回答</summary>
 
-Namespace 隔离资源视图，cgroup 约束资源用量。PID、Network、Mount 分别管理进程、网络与挂载视图。`docker exec` 让运行时启动新的容器内进程。运行时可通过 `setns()` 加入已有 Namespace。
+**Namespace 隔离资源视图，cgroup 约束资源用量。**
+
+PID、Network、Mount 分别管理进程、网络与挂载视图。`docker exec` 让运行时启动新的容器内进程。运行时可通过 `setns()` 加入已有 Namespace。
 
 cgroup v2 的 `cpu.max` 按周期限制 CPU 时间。配额用尽会引发限流。`memory.max` 触发回收，回收失败后可触发 OOM。退出码 137 还需结合 OOM 事件确认。`pids.max` 约束任务数，包含线程。
 
@@ -176,7 +182,9 @@ v1 可以有多个控制器层级，v2 使用统一层级。父级的资源上�
 <details>
 <summary>参考回答</summary>
 
-还需要限制 capabilities、系统调用和宿主资源访问。非 root 用户只降低进程的用户权限。seccomp 过滤系统调用，安全模块控制资源访问。User Namespace 提供 UID 映射。rootless 还降低守护进程权限。容器共享内核，因此仍需评估内核攻击面。
+**还需要限制 capabilities、系统调用和宿主资源访问。**
+
+非 root 用户只降低进程的用户权限。seccomp 过滤系统调用，安全模块控制资源访问。User Namespace 提供 UID 映射。rootless 还降低守护进程权限。容器共享内核，因此仍需评估内核攻击面。
 
 </details>
 

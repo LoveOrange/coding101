@@ -3,19 +3,21 @@ sidebar_position: 6
 knowledge:
   id: basic-knowledge.database.transaction.long-transactions-hot-updates-boundaries
   type: concept
+description: "长事务延长锁、连接和历史版本的占用时间。本文讲解 MySQL 8.0 的版本清理、元数据锁、远程调用与热点更新。本文适合准备后端面试的读者。读者可练习拆分批量任务，分析热点行竞争，并通过监控定位资源保留。"
+keywords: ["MySQL 长事务", "purge", "元数据锁", "热点行更新", "事务拆分"]
 ---
 
 # 长事务
 
-长事务延长数据库资源的占用时间。本文负责 MySQL 8.0 InnoDB 的事务拆分与热点更新。快照机制见 [MVCC](./mvcc-read-view-consistent-read.mdx)。死锁后的重试见[数据库死锁](./deadlock-detection-timeout-retry.mdx)。
+长事务延长数据库资源的占用时间。本文负责 MySQL 8.0 InnoDB 的事务拆分与热点更新。
 
 ## 1. 面试核心 {#core}
 
-- 长写事务持续持锁，长时间存活的 Read View 延缓相关 undo 清理。[卡](#long-transactions-hot-rows)
-- RR 只读事务也能保留旧快照，延长历史版本的存活时间。[卡](#readonly-snapshot)
-- 数据变更与 checkpoint 在同一事务提交，可避免批处理进度先行。[卡](#batch-checkpoint)
-- 同一热点行的并发写入串行取得记录锁，条件 UPDATE 可减少往返。
-- 事务访问表取得的元数据锁保留到事务结束，会阻塞冲突 DDL。[卡](#long-transaction-mdl)
+- **锁与版本保留。** 长写事务持续持锁，长时间存活的 Read View 延缓相关 undo 清理。[卡](#long-transactions-hot-rows)
+- **只读长事务。** RR 只读事务也能保留旧快照，延长历史版本的存活时间。[卡](#readonly-snapshot)
+- **批处理恢复。** 数据变更与 checkpoint 在同一事务提交，可避免批处理进度先行。[卡](#batch-checkpoint)
+- **热点行竞争。** 同一热点行的并发写入串行取得记录锁，条件 UPDATE 可减少往返。
+- **元数据锁。** 事务访问表取得的元数据锁保留到事务结束，会阻塞冲突 DDL。[卡](#long-transaction-mdl)
 
 ## 2. 事务持续时间与资源 {#事务持续时间与资源}
 
@@ -147,7 +149,9 @@ Redis 可承接计数更新，但会改变持久化与故障恢复方式。库�
 <details>
 <summary>参考回答</summary>
 
-缩短事务可减少连接与锁占用，热点拆分可降低单行竞争。先对照事务年龄、锁等待链和 undo 积压。再移出远程调用，将批任务拆成可恢复的小事务。
+**缩短事务可减少连接与锁占用，热点拆分可降低单行竞争。**
+
+先对照事务年龄、锁等待链和 undo 积压。再移出远程调用，将批任务拆成可恢复的小事务。
 
 热点行先使用条件 UPDATE 减少往返。达到单行上限后，按业务约束选择分片或排队。额度、余额等状态还需设计故障恢复与核对。
 
@@ -169,7 +173,9 @@ Redis 可承接计数更新，但会改变持久化与故障恢复方式。库�
 <details>
 <summary>参考回答</summary>
 
-RR 只读事务可维持旧 Read View，延缓相关 undo 清理。RC 普通读按语句建立快照，单次长查询仍会保留旧版本。实际影响需看查询与快照寿命。只读事务还会占用连接和表的元数据锁。
+**RR 只读事务可维持旧 Read View，延缓相关 undo 清理。**
+
+RC 普通读按语句建立快照，单次长查询仍会保留旧版本。实际影响需看查询与快照寿命。只读事务还会占用连接和表的元数据锁。
 
 </details>
 
@@ -189,7 +195,9 @@ RR 只读事务可维持旧 Read View，延缓相关 undo 清理。RC 普通读�
 <details>
 <summary>参考回答</summary>
 
-同库的数据修改和 checkpoint 应在同一事务提交。旧实现若已分开提交，恢复时从持久化进度重放。重放使用幂等更新，避免再次产生副作用。扫描还需稳定键及明确的截止范围。跨系统副作用另用可恢复事件和幂等键协调。
+**同库的数据修改和 checkpoint 应在同一事务提交。**
+
+旧实现若已分开提交，恢复时从持久化进度重放。重放使用幂等更新，避免再次产生副作用。扫描还需稳定键及明确的截止范围。跨系统副作用另用可恢复事件和幂等键协调。
 
 </details>
 
@@ -206,7 +214,9 @@ RR 只读事务可维持旧 Read View，延缓相关 undo 清理。RC 普通读�
 <details>
 <summary>参考回答</summary>
 
-SELECT 会取得表的元数据锁，并保留到事务结束。ALTER TABLE 需要冲突的锁，因此等待。可用 `performance_schema.metadata_locks` 查看状态。该等待由 `lock_wait_timeout` 控制。结束原事务后，相关 MDL 才释放。
+**SELECT 会取得表的元数据锁，并保留到事务结束。**
+
+ALTER TABLE 需要冲突的锁，因此等待。可用 `performance_schema.metadata_locks` 查看状态。该等待由 `lock_wait_timeout` 控制。结束原事务后，相关 MDL 才释放。
 
 </details>
 

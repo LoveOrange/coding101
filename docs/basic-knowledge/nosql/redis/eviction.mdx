@@ -2,18 +2,20 @@
 knowledge:
   id: basic-knowledge.nosql.redis.eviction
   type: concept
+description: "Redis 内存淘汰在内存压力下选择删除对象。本文以 Redis 6、7 讲解策略、候选范围和内存观测，区分淘汰与按期清理。本文适合准备缓存面试的读者。读者可练习根据数据用途选择策略，并分析容量指标和淘汰行为的关系。"
+keywords: ["maxmemory-policy", "LRU", "LFU", "Redis 淘汰策略", "Redis 内存监控"]
 ---
 
 # Redis 内存淘汰
 
-Redis 内存淘汰在内存压力下选择删除对象。本文以 Redis 6、7 为基线，负责策略、候选范围与内存观测。按 TTL 清理的机制见 [Redis 过期](./expiration.mdx)。
+Redis 内存淘汰在内存压力下选择删除对象。本文以 Redis 6、7 为基线，负责策略、候选范围与内存观测。
 
 ## 1. 面试核心 {#core}
 
-- allkeys 从全部键选候选，volatile 只从带过期时间的键中选候选。[卡](#eviction-policies)
-- `noeviction` 保留键，内存不足时拒绝相关写入命令。[卡](#volatile-no-candidate)
-- Redis 的 LRU 按近期访问采样，LFU 按衰减后的近似频率选择。[卡](#eviction-policies)
-- `maxmemory` 约束淘汰判断使用的内存，进程 RSS 还包含其他开销。[卡](#maxmemory-rss)
+- **候选范围。** allkeys 从全部键选候选，volatile 只从带过期时间的键中选候选。[卡](#eviction-policies)
+- **拒绝写入。** `noeviction` 保留键，内存不足时拒绝相关写入命令。[卡](#volatile-no-candidate)
+- **LRU 与 LFU。** Redis 的 LRU 按近期访问采样，LFU 按衰减后的近似频率选择。[卡](#eviction-policies)
+- **内存上限。** `maxmemory` 约束淘汰判断使用的内存，进程 RSS 还包含其他开销。[卡](#maxmemory-rss)
 
 ## 2. 策略与候选范围 {#策略与候选范围}
 
@@ -63,7 +65,9 @@ volatile 策略缺少可淘汰候选时，行为与 noeviction 相同。内存�
 <details>
 <summary>参考回答</summary>
 
-Redis 6、7 有 allkeys 和 volatile 两类候选范围。两类各有 LRU、LFU 和 random 策略。volatile 还提供 TTL 优先，另有 noeviction。
+**Redis 6、7 有 allkeys 和 volatile 两类候选范围。**
+
+两类各有 LRU、LFU 和 random 策略。volatile 还提供 TTL 优先，另有 noeviction。
 
 LRU 看近期访问，LFU 看衰减后的近似频率。两者需按负载比较命中率和 CPU 成本。noeviction 会在内存不足时拒绝相关写入。
 
@@ -82,7 +86,9 @@ LRU 看近期访问，LFU 看衰减后的近似频率。两者需按负载比较
 <details>
 <summary>参考回答</summary>
 
-它没有可淘汰候选，行为与 noeviction 相同。需要新增内存的相关写入会失败。读取和释放内存的操作仍可执行。可重建缓存可评估 allkeys 策略，或设置合理 TTL。
+**它没有可淘汰候选，行为与 noeviction 相同。**
+
+需要新增内存的相关写入会失败。读取和释放内存的操作仍可执行。可重建缓存可评估 allkeys 策略，或设置合理 TTL。
 
 </details>
 
@@ -99,7 +105,9 @@ LRU 看近期访问，LFU 看衰减后的近似频率。两者需按负载比较
 <details>
 <summary>参考回答</summary>
 
-maxmemory 用于淘汰判断，并非进程 RSS 的硬限制。部分复制和 AOF 缓冲被排除，分配器也有碎片。后台持久化的写时复制还会增加宿主机内存。因此需结合 `mem_not_counted_for_evict` 等指标留出余量。
+**maxmemory 用于淘汰判断，并非进程 RSS 的硬限制。**
+
+部分复制和 AOF 缓冲被排除，分配器也有碎片。后台持久化的写时复制还会增加宿主机内存。因此需结合 `mem_not_counted_for_evict` 等指标留出余量。
 
 </details>
 

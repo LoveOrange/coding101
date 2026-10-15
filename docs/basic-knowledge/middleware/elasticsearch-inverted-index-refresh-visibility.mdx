@@ -3,19 +3,21 @@ sidebar_position: 4
 knowledge:
   id: basic-knowledge.middleware.elasticsearch-inverted-index-refresh-visibility
   type: concept
+description: "Elasticsearch 用倒排索引支持全文检索与过滤。本文讲解分词、搜索可见性、分片、深分页和数据库同步。本文适合准备后端面试的读者。读者可练习区分 刷新可见性、落盘与段合并，并分析写入确认、结果核对及索引重建。"
+keywords: ["倒排索引", "Elasticsearch refresh", "搜索可见性", "深分页", "索引同步"]
 ---
 
 # Elasticsearch
 
-Elasticsearch 用倒排索引支持全文检索与过滤。本文以自管 Elasticsearch 8.19 为准。范围包括检索结构、搜索可见性和索引同步。消息重复与乱序处理见[消息幂等性](./idempotent-consumption-order-duplicates.mdx)。
+Elasticsearch 用倒排索引支持全文检索与过滤。本文以自管 Elasticsearch 8.19 为准。范围包括检索结构、搜索可见性和索引同步。
 
 ## 1. 面试核心 {#core}
 
-- 倒排索引按 term 查文档，doc values 按文档读取字段值。[卡](#text-keyword-doc-values)
-- refresh 让新变化进入搜索视图，实时 GET 可读取尚未 refresh 的文档。[卡](#near-real-time-sync)
-- flush 执行 Lucene commit，translog 用于恢复尚未 commit 的操作。[卡](#refresh-translog-durability)
-- refresh=wait_for 等待写入可搜索，refresh=true 主动刷新相关分片。
-- 深分页可用 PIT 固定搜索视图，再用 search_after 继续读取。[卡](#search-after-pit)
+- **索引结构。** 倒排索引按 term 查文档，doc values 按文档读取字段值。[卡](#text-keyword-doc-values)
+- **近实时搜索。** refresh 让新变化进入搜索视图，实时 GET 可读取尚未 refresh 的文档。[卡](#near-real-time-sync)
+- **故障恢复。** flush 执行 Lucene commit，translog 用于恢复尚未 commit 的操作。[卡](#refresh-translog-durability)
+- **刷新策略。** refresh=wait_for 等待写入可搜索，refresh=true 主动刷新相关分片。
+- **深分页。** 深分页可用 PIT 固定搜索视图，再用 search_after 继续读取。[卡](#search-after-pit)
 
 ## 2. 倒排索引 {#倒排索引}
 
@@ -122,7 +124,9 @@ mapping 中的字段类型变更可通过新索引迁移。旧索引保留期间
 <details>
 <summary>参考回答</summary>
 
-写入成功与搜索视图更新发生在不同阶段。近期变化经过 refresh 后，普通 search 才能读取。按 ID 的实时 GET 可读取尚未 refresh 的文档。
+**写入成功与搜索视图更新发生在不同阶段。**
+
+近期变化经过 refresh 后，普通 search 才能读取。按 ID 的实时 GET 可读取尚未 refresh 的文档。
 
 数据库同步可通过 Outbox 或 CDC 产生恢复事件。消费者按稳定 ID 和业务版本更新索引。定期对账发现遗漏，重建后追赶增量并切换 alias。
 
@@ -141,7 +145,9 @@ mapping 中的字段类型变更可通过新索引迁移。旧索引保留期间
 <details>
 <summary>参考回答</summary>
 
-text 适合分析后的全文查询，keyword 适合精确值匹配。doc values 按文档读取字段，支持排序和聚合。text 默认没有 doc values，统计可使用 keyword 子字段。term 查询也要求输入匹配实际索引词项。
+**text 适合分析后的全文查询，keyword 适合精确值匹配。**
+
+doc values 按文档读取字段，支持排序和聚合。text 默认没有 doc values，统计可使用 keyword 子字段。term 查询也要求输入匹配实际索引词项。
 
 </details>
 
@@ -158,7 +164,9 @@ text 适合分析后的全文查询，keyword 适合精确值匹配。doc values
 <details>
 <summary>参考回答</summary>
 
-refresh 只更新搜索视图。8.19 默认 `index.translog.durability=request`。成功响应前同步 translog。尚未进入 Lucene commit 的操作由 translog 恢复。flush 执行 Lucene commit 并开启新日志代。async 则存在上次同步后的数据丢失窗口。
+**refresh 让写入可搜索，故障恢复依靠 translog 持久化和 Lucene commit。**
+
+Elasticsearch 8.19 默认 `index.translog.durability=request`，成功响应前同步 translog；尚未进入 Lucene commit 的操作可由它恢复。flush 执行 Lucene commit 并开启新日志代。改为 `async` 后，上次同步之后的写入存在丢失窗口。
 
 </details>
 
@@ -175,7 +183,9 @@ refresh 只更新搜索视图。8.19 默认 `index.translog.durability=request`�
 <details>
 <summary>参考回答</summary>
 
-深 from 分页要保留前面所有候选结果。search_after 从上一页排序值继续，减少这部分开销。PIT 固定搜索视图，防止翻页期间数据变化。排序仍需稳定，客户端还要续期和关闭 PIT。
+**深 from 分页要保留前面所有候选结果。**
+
+search_after 从上一页排序值继续，减少这部分开销。PIT 固定搜索视图，防止翻页期间数据变化。排序仍需稳定，客户端还要续期和关闭 PIT。
 
 </details>
 

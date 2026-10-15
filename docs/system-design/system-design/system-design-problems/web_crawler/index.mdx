@@ -4,19 +4,21 @@ draft: false
 knowledge:
   id: system-design.system-design.system-design-problems.web-crawler
   type: concept
+description: "网页爬虫设计案例围绕发现、抓取与索引公开网页展开。本文讲解需求和规模、高层结构、调度、去重与礼貌抓取。本文适合准备系统设计面试的读者。读者可练习组织抓取队列和核心组件。读者还可分析失败恢复及系统扩展的条件。"
+keywords: ["Web Crawler", "爬虫架构设计", "URL 去重", "礼貌抓取", "爬虫调度"]
 ---
 
 # 设计网页爬虫
 
-网页爬虫持续发现、抓取并索引公开网页。本文保留一个简化搜索系统的设计案例。重点是调度、去重、礼貌抓取与故障恢复。通用面试顺序见 [系统设计面试](../../interview-process.mdx)。
+网页爬虫持续发现、抓取并索引公开网页。本文保留一个简化搜索系统的设计案例。重点是调度、去重、礼貌抓取与故障恢复。
 
 ## 1. 面试核心 {#core}
 
-- URL 规范化与原子去重共同约束待抓取任务。[卡](#crawler-dedup-leases)
-- 抓取调度按主机限制并发，并遵守 robots.txt。[卡](#crawler-politeness)
-- 租约超时允许重派任务，输出幂等处理重复执行。[卡](#crawler-dedup-leases)
-- ETag 与 Last-Modified 支持条件抓取，304 可省去响应正文。[卡](#crawler-recrawl)
-- 搜索索引是派生数据，应能从已存网页版本重建。
+- **URL 去重。** URL 规范化与原子去重共同约束待抓取任务。[卡](#crawler-dedup-leases)
+- **礼貌抓取。** 抓取调度按主机限制并发，并遵守 robots.txt。[卡](#crawler-politeness)
+- **任务重派。** 租约超时允许重派任务，输出幂等处理重复执行。[卡](#crawler-dedup-leases)
+- **条件抓取。** ETag 与 Last-Modified 支持条件抓取，304 可省去响应正文。[卡](#crawler-recrawl)
+- **索引恢复。** 搜索索引是派生数据，应能从已存网页版本重建。
 
 ## 2. 需求 {#需求}
 
@@ -152,7 +154,9 @@ frontier 可按主机分片，保持每台主机的礼貌预算。热点站点�
 <details>
 <summary>参考回答</summary>
 
-通过唯一键去重，并原子领取带租约的任务。每次重派增加 attempt，提交时验证当前版本。
+**通过唯一键去重，并原子领取带租约的任务。**
+
+每次重派增加 attempt，提交时验证当前版本。
 
 超时 worker 仍可继续运行，因此抓取允许重复执行。页面按版本保存，完成报告拒绝旧 attempt。索引消费按 URL 与版本幂等。
 
@@ -171,7 +175,9 @@ frontier 可按主机分片，保持每台主机的礼貌预算。热点站点�
 <details>
 <summary>参考回答</summary>
 
-由共享调度器按主机限制并发与抓取间隔。新增 worker 增加跨站并行度，同站预算保持受控。
+**由共享调度器按主机限制并发与抓取间隔。**
+
+新增 worker 增加跨站并行度，同站预算保持受控。
 
 抓取前解析 robots.txt。网络错误或 5xx 时按完全禁止处理。限流响应触发退避，并遵循 Retry-After。
 
@@ -190,7 +196,9 @@ frontier 可按主机分片，保持每台主机的礼貌预算。热点站点�
 <details>
 <summary>参考回答</summary>
 
-按重抓计划发送条件请求，未变化时复用正文。ETag 对应 If-None-Match，304 表示本次无需正文。
+**按重抓计划发送条件请求，未变化时复用正文。**
+
+ETag 对应 If-None-Match，304 表示本次无需正文。
 
 变化页面保存新版本，再异步更新索引。索引任务幂等处理，失败后重放。索引可从保存的页面版本重新构建。
 

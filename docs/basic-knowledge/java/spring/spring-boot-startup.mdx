@@ -3,21 +3,25 @@ sidebar_position: 14
 knowledge:
   id: basic-knowledge.java.spring.spring-boot-startup
   type: concept
+description: "Spring Boot 启动依次准备环境、刷新容器并执行启动任务。本文讲解启动类、Web 服务器、启动运行器、事件和就绪状态。本文适合准备 Spring 面试的读者。读者可练习推演阶段顺序，并结合启动耗时定位配置、装配和初始化问题。"
+keywords: ["SpringApplication.run", "容器刷新", "ApplicationRunner", "Spring Boot 启动流程"]
 ---
 
 # Spring Boot 启动
 
-Spring Boot 启动依次准备环境、刷新容器并执行启动任务。本文以 Boot 3.5 为准，负责阶段顺序、事件与就绪。定义扩展见 [BeanDefinition](./beandefinition-container-startup.mdx)。条件选择见 [Spring Boot 自动配置](./auto-configuration-conditions.mdx)。
+Spring Boot 启动负责从 `main` 方法创建 Spring 容器，并把应用推进到可以接收请求的状态。本文以 Boot 3.5 为准，从启动类和运行环境入手，说明容器刷新与初始化任务的执行过程。最后结合启动事件，区分端口监听、应用存活与业务就绪。
 
 ## 1. 面试核心 {#core}
 
-- `@SpringBootApplication` 组合配置、自动配置和组件扫描。
-- SpringApplication 先准备 Environment，再创建并刷新上下文。[卡](#boot-startup)
-- 嵌入式 Web 服务器在 refresh 阶段启动，早于 Runner 完成。
-- 两类 Runner 统一按 `Ordered` 或 `@Order` 排序。[卡](#runner-ready-order)
-- Runner 完成后发布 `ApplicationReadyEvent`，随后更新 readiness。
+- **入口注解。** `@SpringBootApplication` 组合了 `@SpringBootConfiguration`、`@EnableAutoConfiguration` 和 `@ComponentScan`。
+- **环境与容器。** `SpringApplication` 先准备保存配置的 `Environment`，再创建并刷新 `ApplicationContext`。[卡](#boot-startup)
+- **服务器启动。** 嵌入式 Web 服务器在 `refresh()` 阶段启动，此时应用的 Runner 启动任务尚未执行完毕。
+- **Runner 排序。** `ApplicationRunner` 与 `CommandLineRunner` 统一按 `Ordered` 或 `@Order` 排序，数值越小越早执行。[卡](#runner-ready-order)
+- **就绪状态。** 所有 Runner 成功返回后，Boot 发布 `ApplicationReadyEvent`，随后将就绪状态设为 `ACCEPTING_TRAFFIC`。
 
 ## 2. 启动类与 `@SpringBootApplication` {#启动类与-springbootapplication}
+
+启动类提供 Java 程序的入口，也为 Spring 指定应用配置来源。下面的 `main` 方法把启动类和命令行参数一起交给 `SpringApplication.run()`：
 
 ```java
 @SpringBootApplication
@@ -28,45 +32,81 @@ public class OrderApplication {
 }
 ```
 
-`@SpringBootConfiguration` 标记应用配置。`@EnableAutoConfiguration` 导入自动配置。`@ComponentScan` 默认扫描启动类所在包及子包。
+执行示例后，Boot 会以 `OrderApplication` 为配置来源启动应用。类上的注解组合了**应用配置、自动配置和组件扫描**三项职责：
 
-启动类宜位于业务根包。位置过深会遗漏同级组件，使用默认包则会扩大扫描范围。
+- `@SpringBootConfiguration` 把当前类标记为应用配置来源。
+- `@EnableAutoConfiguration` 导入自动配置候选，再按类路径、配置属性和已有 Bean 判断是否生效。
+- `@ComponentScan` 默认扫描启动类所在包及其子包，把发现的组件注册到容器。
+
+把启动类放在业务根包，可以让默认扫描覆盖各个业务子包。若放得过深，同级包中的组件就会被遗漏。若使用没有 `package` 声明的默认包，扫描会扩展到依赖中的大量类。这会增加扫描成本，也容易把无关类型带入容器。
 
 ## 3. 运行环境准备 {#准备运行环境}
 
-SpringApplication 构造时推断应用类型，并加载初始化器与监听器。执行 `run()` 后，先发布早期事件，再准备 Environment。
+容器需要先知道应用类型和配置，才能创建相应组件。`Environment` 汇总配置属性及其来源，`ApplicationContext` 则是管理 Bean 和应用事件的 Spring 容器。
 
-Boot 读取命令行、环境变量与配置数据。随后绑定 `spring.main.*`，创建相应上下文。初始化器在刷新前定制该上下文。
+从 `SpringApplication` 创建到容器刷新前，可以按下面的**环境准备顺序**理解：
 
-MVC 与 WebFlux 同时存在时，默认选择 Servlet 应用。可通过 `spring.main.web-application-type` 指定类型。非 Web 应用也会创建并刷新 Spring 容器。
+1. 构造 `SpringApplication` 时，根据类路径推断应用类型，并加载初始化器与监听器。
+2. 执行 `run()` 后，发布早期启动事件，让已注册的监听器参与启动。
+3. 读取命令行参数、环境变量和配置文件等来源，准备 `Environment`。
+4. 绑定 `spring.main.*` 属性，用这些值调整启动行为。
+5. 按确定的应用类型创建对应的 `ApplicationContext`。
+6. 执行初始化器，让它们在刷新前定制上下文。
 
-早期事件发生在 Bean 注册之前。要接收它们，可在 run 前用 `addListeners()` 注册监听器。
+Web 应用分为基于 Servlet 的 MVC 应用和基于响应式处理的 WebFlux 应用。MVC 与 WebFlux 同时存在时，默认选择 Servlet 应用。可以通过 `spring.main.web-application-type` 指定类型。非 Web 应用仍会创建并刷新 Spring 容器，只是无需启动 Web 服务器。
+
+部分早期事件发生在 `ApplicationContext` 创建之前，此时声明为 `@Bean` 的监听器还未注册。要接收这些事件，可在 `run()` 前调用 `addListeners()` 注册监听器。
 
 ## 4. 容器刷新 {#容器刷新}
 
-Boot 注册启动配置来源后，调用 `refresh()`。容器在刷新中解析用户配置与自动配置。具体定义处理顺序见 [BeanDefinition](./beandefinition-container-startup.mdx#beanpostprocessor)。
+容器刷新把配置定义变成可用的组件。Boot 先把启动类注册为配置来源，再调用 `refresh()`。刷新时，后处理器解析用户配置与自动配置，形成 `BeanDefinition` 集合。`BeanDefinition` 记录对象的类型、依赖和创建方式。
 
-非懒加载单例在此阶段创建。实例初始化见 [Bean 生命周期](./bean-creation-lifecycle.mdx)。刷新完成时，容器发布 `ContextRefreshedEvent`。
+定义处理先于普通业务 Bean 的批量创建，两类后处理器的顺序见 [BeanDefinition](./beandefinition-container-startup.mdx#beanpostprocessor)。
 
-定义注册与实例创建有不同顺序。实例依赖、`@DependsOn` 和 lazy 设置决定创建时机。
+非懒加载单例在刷新阶段完成创建和初始化，回调过程见 [Bean 生命周期](./bean-creation-lifecycle.mdx)。
+
+定义的注册顺序确定后，实例的创建时机还取决于以下**三类设置**：
+
+- 依赖关系要求先取得当前 Bean 所需的其他对象。
+- `@DependsOn` 指定某些 Bean 必须先完成初始化。
+- 懒加载设置把对象创建推迟到首次需要它时。
+
+所以，定义先注册的 Bean，实例仍会因依赖或懒加载而稍后创建。刷新完成时，容器发布 `ContextRefreshedEvent`，通知监听器上下文已刷新。
 
 ## 5. 嵌入式 Web 服务器 {#嵌入式-web-服务器}
 
-Servlet 应用使用专门的 WebApplicationContext。WebServerFactory 在刷新阶段创建服务器，生命周期流程随后启动它。
+Web 应用还要准备接收 HTTP 请求的服务器，这项工作也发生在容器刷新期间。Servlet 应用使用支持 Web 功能的 `WebApplicationContext`。容器中的 `WebServerFactory` 工厂创建 Tomcat、Jetty 等嵌入式服务器，随后由生命周期流程启动。
 
-服务器开始监听时，Runner 尚未执行完毕。端口可连接只说明接入路径已经打开。部署平台应等待 readiness 后再转发业务流量。
+Servlet、Filter 和 Web 监听器在这一阶段注册到 Servlet 容器。默认非懒加载时，Spring MVC 也会在刷新期间建立 Controller 的请求映射。两者分别准备服务器的请求入口和业务方法的路由。
 
-服务器失败时检查端口、证书与连接器配置。Bean 创建失败时沿 cause 链定位首个业务原因。
+服务器开始监听时，Boot 还没有完成 Runner 这类启动任务。Runner 是在容器刷新后执行的应用初始化任务，readiness 则表示应用是否已就绪。因此，端口可连接只说明服务器能接收连接，部署平台仍应等待就绪后再转发业务流量。
+
+服务器启动失败时，重点检查**端口、连接器、证书和服务器工厂**：
+
+- 检查端口是否被其他进程占用。
+- 检查连接器配置，确认服务器监听的地址和协议正确。
+- 启用 HTTPS 时，检查证书配置是否有效。
+- 检查容器中是否存在匹配当前 Web 类型的 `WebServerFactory`。
+
+若失败发生在 Bean 创建阶段，应沿依赖链和异常的 `cause` 查找最早的原因。`cause` 保存被包装的原始异常，能帮助区分外层创建失败与内部配置错误。
 
 ## 6. Runner 与就绪 {#runner-与就绪}
 
-两类 Runner 在上下文刷新后统一执行。`ApplicationRunner` 接收解析后的 `ApplicationArguments`。`CommandLineRunner` 接收原始 String 参数数组。
+Runner 用于容器刷新后、应用标为就绪前必须完成的初始化。两种接口的区别是接收参数的方式：`ApplicationRunner` 接收解析后的 `ApplicationArguments`。它能区分选项与普通参数，`CommandLineRunner` 则直接接收原始的 `String[]` 参数数组。
 
-所有 Runner 放在同一集合中排序。`@Order` 数值越小，执行越早。接口类型没有固定的先后顺序。
+Boot 把两类 Runner 放在同一集合中，按 `Ordered` 或 `@Order` 统一排序。数值越小，执行越早，所以执行顺序由排序值决定，接口类型没有固定优先级。
 
-Runner 适合必须完成且耗时有界的初始化。抛出异常会使启动失败，应用不会进入就绪状态。非必要长任务应交给受管理的后台执行器。
+Runner 的耗时会直接影响应用何时就绪。安排任务时，要控制**数据回填、重试和远程调用**带来的等待：
+
+- 大批量数据回填会让启动时间随数据量增长，应考虑独立迁移流程或显式运维操作。
+- 无限重试会让启动任务一直无法结束，因此需要限制重试次数或总时长。
+- 远程调用需要设置超时，否则一次迟迟未返回的请求就会阻塞启动。
+
+必须在接流量前完成的任务，应保留在启动流程中，并明确完成期限。非必要的长任务可交给受管理的后台执行器。Runner 抛出异常会使启动失败，应用保持未就绪状态。
 
 ## 7. 启动、存活与就绪 {#启动存活与就绪}
+
+进程存在、容器可用和可以接收流量，分别对应不同的完成程度。判断应用是否已经启动成功时，需要区分以下**四种状态**：
 
 | 阶段 | 含义 |
 | --- | --- |
@@ -75,17 +115,31 @@ Runner 适合必须完成且耗时有界的初始化。抛出异常会使启动�
 | Liveness 正常 | 应用内部状态被标为 CORRECT |
 | Readiness 正常 | 应用已标为 ACCEPTING_TRAFFIC |
 
-健康组与平台探针配置见 [Spring Boot Actuator](./actuator-health-startup-diagnostics.mdx)。
+Liveness 是存活状态，用于判断应用内部能否正常工作，或在失败后自行恢复。Readiness 是就绪状态，用于判断当前是否应接收流量。部署平台根据前者决定是否需要重启，根据后者决定是否转发请求。
+
+共享数据库故障若触发 liveness 失败，会让依赖它的多个实例反复重启，设计原则见 [Spring Boot Actuator](./actuator-health-startup-diagnostics.mdx#liveness-探针)。
+
+健康组与平台探针配置见 [Spring Boot Actuator](./actuator-health-startup-diagnostics.mdx#readiness-探针)。
 
 ## 8. 启动耗时分析 {#启动耗时分析}
 
-先区分配置加载、定义处理、Bean 创建、服务器与 Runner 耗时。启动记录器配置见 [Spring Boot Actuator](./actuator-health-startup-diagnostics.mdx#启动阶段分析)。
+排查启动慢时，先记录总耗时，再比较**各启动阶段的耗时**：
 
-`spring.main.lazy-initialization=true` 可延迟 Bean 创建。启动阶段会少做部分工作，首次访问则承担初始化成本。配置错误也随之延后暴露。必要基础设施应保留启动校验。
+- 配置加载阶段检查配置文件读取和条件评估。
+- 定义处理阶段检查扫描、配置类解析和后处理器执行。
+- Bean 创建阶段检查构造器与初始化回调，单独记录连接池初始化和数据库迁移的时间。
+- 服务器启动阶段检查 Web 服务器的创建与启动。
+- Runner 执行阶段为每个业务初始化任务单独计时。
+
+这些阶段若访问数据库或远程服务，还要分别记录调用耗时和超时。这样才能区分本地计算与等待外部依赖。
+
+`ApplicationStartup` 用于采集 Spring 启动步骤，Actuator 和 JFR 可用于查看或关联这些事件，配置见 [Spring Boot Actuator](./actuator-health-startup-diagnostics.mdx#启动阶段分析)。
+
+`spring.main.lazy-initialization=true` 可以把 Bean 创建推迟到需要它时。这样启动阶段少做了部分工作，首次请求却要承担初始化成本，配置错误也会延后暴露。因此，应先找到耗时来源，再判断是否只对少量 Bean 使用懒加载。必要基础设施仍应在启动时校验，避免接到请求后才发现关键配置错误。
 
 ## 9. 启动事件顺序 {#启动事件顺序}
 
-Boot 3.5 的主要事件顺序如下：
+启动事件用于通知监听器当前走到了哪个阶段。对照事件顺序，可以判断初始化任务放在哪里，以及某个监听器为何收不到事件。Boot 3.5 的主要顺序如下：
 
 ```text
 ApplicationStartingEvent
@@ -100,21 +154,32 @@ ApplicationStartingEvent
 → ReadinessState.ACCEPTING_TRAFFIC
 ```
 
-`ApplicationPreparedEvent` 表示初始定义已加载，刷新即将开始。完整配置解析仍在 refresh 中进行。
+`ApplicationPreparedEvent` 表示启动类等初始定义已加载，下一步即将刷新容器。完整的配置解析仍在 `refresh()` 中进行，所以此时全部业务定义尚未准备完成。
 
-默认事件监听器同步执行。`ApplicationReadyEvent` 的同步监听器未返回时，后续 readiness 更新仍需等待。长期任务直接放在该监听器中，会延迟接流量。
+事件监听器默认在发布事件的线程中同步执行，也就是发布方要等监听器返回后才继续。因此，`ApplicationReadyEvent` 的同步监听器未返回时，后续 readiness 更新仍需等待。在这里直接执行长期任务，就会推迟允许平台转发流量的时间。
 
-启动抛出异常时发布 `ApplicationFailedEvent`。诊断应记录异常所处阶段，保留最早的根因。
+启动过程中抛出异常时，Boot 发布 `ApplicationFailedEvent`。诊断日志应记录失败所处的阶段，并保留原始异常链，这样才能从外层启动失败追到最早的原因。
 
 ## 10. 常见问题 {#常见问题}
 
-### 10.1 早期配置与 PropertySource {#早期配置与-propertysource}
+### 10.1 为什么 `@PropertySource` 中的早期配置没有生效？ {#早期配置与-propertysource}
 
-`@PropertySource` 在刷新时才加入 Environment。部分日志和 `spring.main.*` 属性此前已读取。此类参数应放在配置数据或环境变量等早期来源中。
+`@PropertySource` 引入属性的时间晚于这些配置的读取时间。它在容器刷新时才把属性加入 `Environment`，而部分日志和 `spring.main.*` 属性此前已经读取。所以，这些属性应放在**刷新前可用的配置来源**中：
 
-### 10.2 就绪事件与长期任务 {#就绪事件与长期任务}
+- 把属性写入 `application.properties` 或 `application.yaml` 等配置文件。
+- 通过操作系统环境变量提供属性值。
+- 通过 Java 系统属性提供启动配置。
+- 在命令行参数中传入需要的属性。
 
-默认同步监听器会阻塞后续 readiness 更新。长期任务应移至受管理执行器，并提供超时与停止协议。
+### 10.2 `ApplicationReadyEvent` 适合执行长期任务吗？ {#就绪事件与长期任务}
+
+它不适合直接阻塞执行长期任务，因为默认同步监听器会延迟后续 readiness 更新。可以在监听器中把任务交给受管理的执行器，或改为独立作业。
+
+转到后台后，还需让任务具备**结束控制和状态查询**：
+
+- 设置超时和重试上限，避免任务无限等待。
+- 提供取消与关闭协议，让应用停止时能够结束任务。
+- 暴露执行状态，让运维能够判断任务是否完成或失败。
 
 ## 11. 面试题 {#面试题}
 
@@ -124,16 +189,20 @@ ApplicationStartingEvent
 
 **出现公司**：暂无已核验的公开来源（本站自测）
 
-**考察重点**：理解环境准备、容器刷新、Runner 与就绪顺序。
+**考察重点**：解释环境准备、容器刷新与启动任务的先后关系。能指出自动配置、Bean 初始化和 Web 服务器启动分别发生在哪个阶段。
 
 **相关内容**：[启动类与 `@SpringBootApplication`](#启动类与-springbootapplication)至[启动耗时分析](#启动耗时分析)。
 
 <details>
 <summary>参考回答</summary>
 
-SpringApplication 先准备 Environment，再创建上下文。初始配置来源注册后，refresh 解析配置并创建单例。嵌入式服务器也在刷新阶段启动。
+**Spring Boot 依次准备环境、刷新容器、执行 Runner，最后发布应用就绪状态。**
 
-刷新后发布 Started 事件，再按顺序执行全部 Runner。随后发布 Ready 事件，最后更新 readiness。失败时应按阶段定位配置、实例化或启动任务异常。
+- **环境阶段准备配置。** `SpringApplication` 推断应用类型、加载初始化器和监听器，`run()` 准备 `Environment` 并创建 `ApplicationContext`。
+- **刷新阶段建立应用。** 注册启动配置，调用 `refresh()` 解析用户配置与自动配置、注册 Bean 定义、创建并初始化非懒加载单例；Web 应用还会启动嵌入式服务器。
+- **Runner 完成后才就绪。** 刷新后发布 `ApplicationStartedEvent` 并设为 `CORRECT`，再执行 Runner。全部成功后发布 `ApplicationReadyEvent`，随后设为 `ACCEPTING_TRAFFIC`。
+
+所以端口已监听不代表启动任务已完成。启动失败时，按上述阶段沿异常链定位根因。
 
 </details>
 
@@ -143,21 +212,26 @@ SpringApplication 先准备 Environment，再创建上下文。初始配置来�
 
 **出现公司**：暂无已核验的公开来源（本站自测）
 
-**考察重点**：统一排序、Started 与 Ready 事件。
+**考察重点**：说明两类 Runner 如何共同排序，以及它们与 `ApplicationStartedEvent`、`ApplicationReadyEvent` 的先后关系。
 
 **相关内容**：[Runner 与就绪](#runner-与就绪)、[启动事件顺序](#启动事件顺序)。
 
 <details>
 <summary>参考回答</summary>
 
-两类 Runner 统一按 Ordered 或 `@Order` 排序。数值小的先执行，接口类型没有固定优先级。全部 Runner 成功返回后，才发布 Ready 事件并更新 readiness。
+**不一定，两类 Runner 按 `Ordered` 或 `@Order` 统一排序。**
+
+Boot 收集全部 Runner 后一起比较排序值，数值小的先执行。因此，顺序由排序值决定，接口类型没有固定优先级。
+
+`ApplicationStartedEvent` 在 Runner 执行前发布。全部 Runner 成功返回后，Boot 才发布 `ApplicationReadyEvent`，随后更新 readiness。任意 Runner 抛出异常，都会使启动失败。
 
 </details>
 
 ## 12. 参考资料 {#参考资料}
 
-- [Spring Boot：SpringApplication](https://docs.spring.io/spring-boot/reference/features/spring-application.html)
-- [Spring Boot：Using the `@SpringBootApplication` Annotation](https://docs.spring.io/spring-boot/tutorial/using-the-springbootapplication-annotation.html)
-- [Spring Framework：ApplicationContext Additional Capabilities](https://docs.spring.io/spring-framework/reference/core/beans/context-introduction.html)
+- [Spring Boot 3.5：Structuring Your Code](https://docs.spring.io/spring-boot/3.5/reference/using/structuring-your-code.html)
+- [Spring Boot 3.5：Using the `@SpringBootApplication` Annotation](https://docs.spring.io/spring-boot/3.5/reference/using/using-the-springbootapplication-annotation.html)
+- [Spring Framework 6.2：ApplicationContext Additional Capabilities](https://docs.spring.io/spring-framework/reference/6.2/core/beans/context-introduction.html)
 - [Spring Boot 3.5：SpringApplication](https://docs.spring.io/spring-boot/3.5/reference/features/spring-application.html)
 - [Spring Boot 3.5.6：SpringApplication Source](https://github.com/spring-projects/spring-boot/blob/v3.5.6/spring-boot-project/spring-boot/src/main/java/org/springframework/boot/SpringApplication.java)
+- [Spring Boot 3.5：Servlet Web Applications](https://docs.spring.io/spring-boot/3.5/reference/web/servlet.html)

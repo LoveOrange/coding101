@@ -4,20 +4,24 @@ draft: false
 knowledge:
   id: system-design.mit6-824.mapreduce.lab
   type: concept
+description: "MapReduce 实验笔记记录分布式任务的实现过程。内容覆盖基本配置、任务状态、RPC、超时重派、输出提交和测试。本文适合学习分布式系统并准备相关面试的读者。读者可结合实验要求梳理协调器与工作节点的职责及失败恢复。"
+keywords: ["MIT MapReduce 实验", "Coordinator Worker", "RPC 任务调度", "超时重派"]
 ---
 
 # 实验 1: MapReduce
 
-本文是 MIT MapReduce 实验的实现笔记。重点是任务状态、RPC、超时重派和输出提交。模型与论文容错见 [Lec 1: MapReduce](./lec1_mapreduce.mdx)。
+本文是 MIT MapReduce 实验的实现笔记。重点是任务状态、RPC、超时重派和输出提交。
 
 课程旧名为 6.824，当前页面使用 6.5840。以下实验约定采用 2026 年课程版本。实验要求与依赖版本应以所选学期仓库为准。
 
+本文直接使用 Map、Reduce 和分区的概念。尚不熟悉计算模型时，先读 [Lec 1: MapReduce](./lec1_mapreduce.mdx)。
+
 ## 1. 面试核心 {#core}
 
-- Coordinator 管理任务状态，Worker 通过 RPC 领取并报告结果。
-- 本实验等待 10 秒后重派未完成任务，原 Worker 仍可继续运行。[卡](#mr-lab-stale-attempt)
-- 实验用阶段屏障确保 Reduce 收到全部 Map 的对应分区。[卡](#mr-lab-phase-barrier)
-- 临时文件加原子重命名避免读到半文件，提交版本需另行检查。[卡](#mr-lab-atomic-output)
+- **任务分工。** Coordinator 管理任务状态，Worker 通过 RPC 领取并报告结果。
+- **超时重派。** 本实验等待 10 秒后重派未完成任务，原 Worker 仍可继续运行。[卡](#mr-lab-stale-attempt)
+- **阶段屏障。** 实验用阶段屏障确保 Reduce 收到全部 Map 的对应分区。[卡](#mr-lab-phase-barrier)
+- **输出提交。** 临时文件加原子重命名避免读到半文件，提交版本需另行检查。[卡](#mr-lab-atomic-output)
 
 ## 2. 实验简介 {#实验简介}
 
@@ -150,9 +154,11 @@ type Coordinator struct {
 <details>
 <summary>参考回答</summary>
 
-拒绝旧 attempt 的报告，只接受当前运行版本。10 秒超时触发重派，但原 Worker 仍可完成。
+**Coordinator 应拒绝旧 attempt 的完成报告，只接受当前任务版本。**
 
-任务编号和 attempt 一起标识执行尝试。完成计数只增加一次。输出提交也要遵守同一个版本规则。
+实验等待 10 秒后重派任务，但超时 Worker 仍可完成，所以需要用任务编号和 attempt 共同标识一次执行。
+
+完成计数只能增加一次，输出提交也要验证同一版本，避免旧 Worker 覆盖新结果。
 
 </details>
 
@@ -169,7 +175,9 @@ type Coordinator struct {
 <details>
 <summary>参考回答</summary>
 
-Reduce 需要本分区来自全部 Map 的输入。实验通过 Map 阶段屏障确保文件集合完整。
+**Reduce 需要本分区来自全部 Map 的输入。**
+
+实验通过 Map 阶段屏障确保文件集合完整。
 
 Coordinator 在锁内确认全部 Map 已提交后再分配 Reduce。重复完成报告无需再次计数。暂时没有任务时，Worker 等待后继续领取。
 
@@ -188,7 +196,9 @@ Coordinator 在锁内确认全部 Map 已提交后再分配 Reduce。重复完�
 <details>
 <summary>参考回答</summary>
 
-rename 解决单文件的完整可见性，旧任务覆盖需版本控制。旧 Worker 仍能执行一次完整覆盖。
+**rename 解决单文件的完整可见性，旧任务覆盖需版本控制。**
+
+旧 Worker 仍能执行一次完整覆盖。
 
 Worker 写 attempt 专属文件，由 Coordinator 验证后发布。最终路径仅由提交逻辑更新。Map 全部输出发布后，再允许 Reduce 读取。
 

@@ -3,21 +3,25 @@ sidebar_position: 17
 knowledge:
   id: basic-knowledge.java.spring.custom-starter-boundaries
   type: concept
+description: "Spring Boot Starter 聚合依赖与默认装配。本文讲解模块划分、自动配置登记、扩展契约、条件覆盖和可选依赖隔离。本文适合准备 Spring 面试的读者。读者可练习设计可替换的默认行为。读者还可用条件组合测试检查装配和隐式副作用。"
+keywords: ["自定义 Starter", "自动装配模块", "条件组合测试", "Spring Boot 扩展"]
 ---
 
 # Spring Boot Starter
 
-Spring Boot Starter 聚合一项能力所需的依赖与默认装配。本文以 Boot 3.5 为准，负责模块、扩展契约和测试。条件执行机制见 [Spring Boot 自动配置](./auto-configuration-conditions.mdx)。
+Spring Boot Starter 将一项能力所需的依赖、默认配置和接入方式集中提供给应用。本文以 Boot 3.5 为准，从模块划分入手，说明自动配置怎样登记、用户怎样替换默认行为。随后介绍启动副作用、条件组合测试和可选依赖隔离。
 
 ## 1. 面试核心 {#core}
 
-- starter 聚合依赖，autoconfigure 保存配置类与属性。[卡](#custom-starter)
-- `AutoConfiguration.imports` 登记自动配置类全限定名。
-- `spring-configuration-metadata.json` 为 IDE 提供配置提示。
-- 可选类型应隔离在带类条件的配置中，避免提前加载失败。[卡](#optional-class-isolation)
-- `ApplicationContextRunner` 可验证属性、类路径与用户 Bean 组合。
+- **模块分工。** Starter 模块聚合运行依赖，自动配置模块保存配置类、配置属性和默认 Bean 的装配逻辑。[卡](#custom-starter)
+- **配置发现。** Boot 3.x 从 `AutoConfiguration.imports` 读取自动配置类的全限定名，并按条件决定是否注册。
+- **属性提示。** 配置处理器生成 `spring-configuration-metadata.json`，为 IDE 提供配置属性的类型、默认值等提示。
+- **可选依赖隔离。** 可选类型隔离在带类条件的配置中后，Spring 可先评估条件，再决定是否加载对应配置。[卡](#optional-class-isolation)
+- **装配测试。** `ApplicationContextRunner` 创建精简上下文，用于验证属性、类路径和用户 Bean 的不同组合。
 
 ## 2. Starter 与自动配置模块 {#starter-与自动配置模块}
+
+日志、客户端、鉴权或监控组件经常需要在多个应用中重复接入。Starter 可以集中维护这套接入规则，一项完整能力可拆为**两个模块**：
 
 ```text
 acme-payment-spring-boot
@@ -27,43 +31,62 @@ acme-payment-spring-boot-starter
 └── 自动配置模块与常用运行时依赖
 ```
 
-starter 聚合依赖，自动配置模块负责装配。简单组件可合为一个模块，但应保持职责清晰。
+Starter 本身主要声明依赖，创建 Bean 的逻辑放在自动配置模块。这样，依赖聚合与默认装配可以分别维护。简单组件可合为一个模块，但仍应区分两项职责。
 
-自动配置模块把可选第三方库标为 optional。starter 再引入默认运行所需的依赖。第三方模块名使用自己的前缀，避免与官方模块混淆。
+自动配置模块把可选第三方库标为 `optional`，表示使用者可按需引入这些库。Starter 再引入默认运行所需的依赖，让应用通过一个入口完成接入。第三方模块名使用自己的前缀，避免使用官方的 `spring-boot-*` 命名。
 
 ## 3. 自动配置登记 {#注册自动配置}
 
-Boot 3.x 使用 `META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports`。文件每行填写一个自动配置类全限定名。
+自动配置类需要登记，Boot 才能找到它。Boot 3.x 使用 `META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports`，文件每行填写一个自动配置类全限定名。
 
-默认 Bean 用条件控制，见 [Spring Boot 自动配置](./auto-configuration-conditions.mdx#条件注解)。配置类放在专用包中，内部组件通过显式导入组织。
+配置类放在专用包中，通过 imports 文件进入容器，避免被业务应用的组件扫描偶然发现。内部组件使用明确的 `@Import` 导入，装配范围因此更容易控制。
+
+默认 Bean 通过条件注解控制，属性类可用 `@EnableConfigurationProperties` 启用绑定。示例见 [Spring Boot 自动配置](./auto-configuration-conditions.mdx#条件注解)。
 
 ## 4. 对外接口 {#对外接口}
 
-对外契约包括依赖、配置和可替换的 Bean。
+使用者需要知道引入 Starter 后会得到什么，以及哪些行为可以调整。对外应说明**三类约定**：
 
-- 依赖契约说明引入哪些运行时库与支持版本。
-- 配置契约说明前缀、类型、单位、默认值与校验。
-- Bean 契约说明默认组件和替换接口。
+- 依赖约定列出直接依赖、传递依赖与支持版本，让应用知道会引入哪些运行时库。
+- 配置约定说明属性前缀、类型、单位、默认值和校验规则，并给出废弃策略。
+- Bean 约定列出默认组件与替换接口，让用户知道怎样接入自己的实现。
 
-例如配置统一使用 `acme.payment.*`。`spring-boot-configuration-processor` 生成配置元数据。产物为 `META-INF/spring-configuration-metadata.json`，供 IDE 提示。
+例如，支付组件的配置统一使用 `acme.payment.*`，与宿主应用及其他库的属性区分。编译时，`spring-boot-configuration-processor` 生成描述属性的配置元数据。产物位于 `META-INF/spring-configuration-metadata.json`，IDE 读取后就能提供补全和提示。
 
-元数据本身只描述属性。实际绑定与校验由 `@ConfigurationProperties` 等基础设施完成。字段改名应保留明确的兼容与废弃说明。
+元数据描述属性，实际绑定与校验则由 `@ConfigurationProperties` 等基础设施完成。字段改名应提供兼容期与废弃说明。同名参数的单位和含义也应保持稳定，否则旧配置会在升级后产生不同结果。
 
 ## 5. 条件与覆盖 {#条件与覆盖}
 
-类存在、属性启用且用户未提供 Bean 时，才创建默认实现。退让规则见 [Spring Boot 自动配置](./auto-configuration-conditions.mdx#用户配置优先)。
+默认装配需要允许用户关闭功能，或替换其中的组件。常用条件组合是 `@ConditionalOnClass`、`@ConditionalOnProperty` 和 `@ConditionalOnMissingBean`。只有类存在、属性启用且用户未提供同类 Bean 时，才创建默认实现。
 
-需要多个客户端时，应设计限定符或 builder 定制接口。单个 MissingBean 条件适合“默认实现可替换”的扩展方式。
+退让的执行过程见 [Spring Boot 自动配置](./auto-configuration-conditions.mdx#用户配置优先)。
+
+如果应用需要同时使用多个客户端，应设计明确的限定符、客户端注册表或 builder 定制接口。builder 用于逐项设置参数后构造客户端。单个 MissingBean 条件适合替换唯一默认实现；多个客户端如何命名和选择，仍需由扩展接口明确表达。
 
 ## 6. 隐式副作用 {#隐式副作用}
 
-Starter 的默认行为应有清晰的开关和资源所有者。后台线程交给受管理的执行器，关闭时回收。外部连接需设置超时，并明确是否影响就绪。
+Starter 随应用启动而装配，因此隐式行为会直接影响宿主应用。默认配置应保持作用范围明确，重点处理以下**几类副作用**：
 
-远程写入、建表等行为应要求显式启用。宽泛扫描和修改全局系统属性会影响宿主应用，应避免使用。
+- 扫描范围限定在组件自身，避免把宿主业务包中的类意外注册。
+- 后台线程交给受管理的执行器，提供开关、超时和关闭回调。
+- 全局系统属性和默认 Locale 由宿主决定，组件使用自己的局部配置。
+- 远程写入、建表，以及产生外部费用的操作，需要显式启用。
+- 用户已有的序列化、安全和线程池配置应受到尊重，默认组件按条件退让。
+
+需要外部连接的组件还应报告健康状态，输出清晰日志，并说明连接失败是否阻止应用就绪。这样，宿主才能判断何时接收流量、关闭时由谁释放资源。具体业务流程应由应用服务编排，避免隐藏在所有应用的启动阶段。
 
 ## 7. 条件组合测试 {#测试条件组合}
 
-`ApplicationContextRunner` 创建精简上下文，并在测试后关闭。测试至少覆盖默认创建、用户替换、关闭开关和错误配置。
+自动配置是否正确，取决于类路径、属性和用户 Bean 的组合。`ApplicationContextRunner` 可以创建精简上下文，并在测试结束后关闭，适合验证以下**六类结果**：
+
+- 条件满足时，只创建预期的默认 Bean。
+- 用户提供自定义 Bean 时，默认配置会退让。
+- 显式关闭功能时，对应 Bean 不会创建。
+- 缺少可选依赖时，上下文仍能启动，且无 `ClassNotFoundException`。
+- 配置值错误时，启动会给出明确失败信息。
+- 条件评估报告能说明匹配或未匹配的原因。
+
+下面的测试检查关闭支付功能后的结果：
 
 ```java
 new ApplicationContextRunner()
@@ -72,13 +95,13 @@ new ApplicationContextRunner()
     .run(context -> assertThat(context).doesNotHaveBean(PaymentClient.class));
 ```
 
-下节自动配置使用该开关。测试断言显式关闭时没有默认客户端。
+下节的自动配置使用 `acme.payment.enabled` 开关。测试将其设为 `false`，断言上下文中没有默认客户端，验证关闭功能确实阻止了装配。
 
-用 `withUserConfiguration(...)` 验证自定义 Bean 退让。用 `FilteredClassLoader` 模拟缺少可选库。最后在支持的 Boot、Java 版本上验证完整接入。
+用户替换场景可用 `withUserConfiguration(...)` 加入自定义 Bean，缺类场景则用 `FilteredClassLoader` 隐藏可选库。最后还要在支持的 Boot、Java 版本组合上验证完整接入。依赖树也要检查，确认 Starter 是否意外升级了日志、网络或序列化组件。
 
 ## 8. 可选依赖隔离 {#可选依赖隔离}
 
-只在返回可选类型的 `@Bean` 方法上加类条件，仍有加载风险。JVM 解析方法签名时可先尝试加载返回类型。条件还未评估，类解析就已失败。
+可选库缺失时，自动配置需要安全跳过对应组件。只在返回可选类型的 `@Bean` 方法上加类条件，仍有加载风险。因为 JVM 解析方法签名时，就可能先加载返回类型，早于方法条件的评估。为此，可以把可选类型放入独立的条件配置类：
 
 ```java
 @AutoConfiguration
@@ -97,9 +120,9 @@ public class PaymentAutoConfiguration {
 }
 ```
 
-示例将可选类型隔离在条件配置类中。Spring 可先读取注解元数据，再决定是否加载该配置。示例假定 `PaymentClient` 有无参构造器。
+示例把 `PaymentClient` 隔离在嵌套配置类中。Spring 先读取类级注解元数据，确认客户端类型存在后，再处理其中的 Bean 方法。客户端有无参构造器时，这个方法就能创建默认实例；用户已提供客户端时，MissingBean 条件使默认实现退让。
 
-测试通过 `new FilteredClassLoader(PaymentClient.class)` 隐藏该类型。预期上下文能启动，且没有默认客户端。
+测试时，可通过 `new FilteredClassLoader(PaymentClient.class)` 隐藏这个类型。如果隔离有效，上下文应能启动，同时没有默认客户端。
 
 ## 9. 常见问题 {#常见问题}
 
@@ -109,7 +132,12 @@ public class PaymentAutoConfiguration {
 
 ### 9.2 Starter 未生效的诊断 {#starter-未生效的诊断}
 
-先检查 JAR 中的 imports 文件，再看条件报告。随后核对属性绑定、用户替代 Bean 和版本依赖。
+Starter 未生效时，要区分自动配置未被发现、条件未满足和 Bean 创建失败。可按以下**装配环节**定位：
+
+1. 检查 JAR 中的 imports 文件，确认已登记目标配置类。
+2. 查看条件评估报告，找到具体未匹配项。
+3. 核对配置属性是否绑定，以及用户 Bean 是否已让默认实现退让。
+4. 检查依赖版本是否一致，再沿异常链确认创建失败的原因。
 
 ## 10. 面试题 {#面试题}
 
@@ -121,16 +149,20 @@ public class PaymentAutoConfiguration {
 
 **出现公司**：去哪儿旅行
 
-**考察重点**：理解模块分工、扩展契约与条件测试。
+**考察重点**：说明依赖聚合与自动装配怎样分工，用户怎样关闭或替换默认行为，以及条件测试如何覆盖缺类和副作用。
 
 **相关内容**：[Starter 与自动配置模块](#starter-与自动配置模块)至[条件组合测试](#测试条件组合)。
 
 <details>
 <summary>参考回答</summary>
 
-Starter 聚合依赖，自动配置模块提供默认装配。类名写入 `AutoConfiguration.imports`，属性使用独立前缀。默认 Bean 允许用户替换，并提供配置元数据。
+**可复用的 Starter 应集中提供依赖和默认装配，并给用户保留明确的关闭与替换入口。**
 
-可选类型隔离在条件配置类中。用 `ApplicationContextRunner` 验证默认、替换、关闭与缺类场景。资源创建应有超时、关闭回调和明确开关。
+Starter 模块聚合依赖，自动配置模块将配置类登记到 `AutoConfiguration.imports`。默认 Bean 通过类路径、属性和 MissingBean 条件决定是否创建。
+
+对外属性使用独立前缀，说明类型、单位和默认值，并生成配置元数据供 IDE 提示。可选类型隔离在条件配置类中，缺少依赖时才能安全跳过。后台资源要有开关、超时和关闭回调，远程写入等操作需显式启用。
+
+测试用 `ApplicationContextRunner` 覆盖默认创建、用户替换、关闭、缺类和错误配置。在支持的 Boot、Java 版本上验证完整接入，并检查依赖树是否影响宿主已有组件。
 
 </details>
 
@@ -140,14 +172,18 @@ Starter 聚合依赖，自动配置模块提供默认装配。类名写入 `Auto
 
 **出现公司**：暂无已核验的公开来源（本站自测）
 
-**考察重点**：方法签名加载、配置隔离与缺类测试。
+**考察重点**：解释返回类型为何会早于方法条件被加载，并说明如何隔离配置、验证缺类时仍能启动。
 
 **相关内容**：[可选依赖隔离](#可选依赖隔离)。
 
 <details>
 <summary>参考回答</summary>
 
-JVM 可在条件评估前解析方法返回类型。把引用可选类型的 Bean 放入独立条件配置类，可先评估类级条件。再用 `FilteredClassLoader` 模拟缺类，验证上下文仍可启动。
+**JVM 解析方法返回类型的时机可能早于方法条件评估，因此返回类型缺失时会先加载失败。**
+
+把引用可选类型的 Bean 方法移入独立配置类，再在类上加 `@ConditionalOnClass`。这样，Spring 可以先读取注解元数据、判断条件，再决定是否加载配置。
+
+用 `FilteredClassLoader` 隐藏可选类型后，上下文应仍能启动，而且没有对应的默认 Bean。这个结果才能证明隔离有效。
 
 </details>
 

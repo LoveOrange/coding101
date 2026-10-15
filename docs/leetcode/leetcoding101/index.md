@@ -1,5 +1,7 @@
 ---
 sidebar_position: 1
+description: "LeetCode 101 资源页介绍按知识点整理的刷题攻略。页面提供原始项目、PDF 和在线阅读入口，说明题解语言与适用读者。本文适合已有编程基础但缺少刷题经验的求职者。读者可选择代表性题目复习，并通过原始资料继续练习。"
+keywords: ["力扣刷题资料", "LeetCode 101 攻略", "算法面试复习", "C++ Python 题解"]
 ---
 import { Green, Yellow, Blue, Red } from '@site/src/components/priority-tag';
 

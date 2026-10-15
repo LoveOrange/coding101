@@ -3,21 +3,26 @@ sidebar_position: 7
 knowledge:
   id: basic-knowledge.java.concurrency.volatile-barriers-visibility
   type: concept
+description: "volatile 关键字为变量访问提供可见性和顺序约束。本文讲解标志发布、复合更新、内存屏障与 VarHandle 访问模式。本文适合准备 Java 并发面试的读者。读者可练习推导发布关系，并区分变量引用、数组元素和原子操作的保证。"
+keywords: ["volatile 原理", "内存屏障", "可见性与原子性", "VarHandle"]
 ---
 
 # volatile
 
-`volatile` 为单次变量访问提供可见性和顺序约束。本文负责标志发布、复合更新和访问模式边界。完整规则见 [Java 内存模型](./jmm-happens-before.mdx)。
+`volatile` 是 Java 中用于线程间状态通知和数据发布的关键字。它让共享字段的读写遵守可见性与顺序规则，适合停止标志、配置替换等场景。涉及递增、检查后更新或多个字段一起变化时，还需要判断整个操作是否具有原子性。
 
 ## 1. 面试核心 {#core}
 
-- 同一 volatile 字段的写先于同步顺序中的后续读。
-- `volatile` 的单次读写原子，`count++` 仍是复合操作。[卡](#volatile-increment)
-- volatile 发布前的普通写，可通过传递关系交接给读者。
-- volatile 数组引用只约束引用访问，元素更新另需同步。[卡](#volatile-reference-elements)
-- VarHandle 的 acquire/release 模式比 volatile 顺序保证更弱。[卡](#varhandle-access-modes)
+- **可见性与顺序。** 对同一 `volatile` 字段的写，与同步顺序中后续的读建立 happens-before 关系。这条关系让线程之间能够可靠地交接状态。
+- **复合操作的原子性。** `volatile` 保证单次读写的原子性，但 `count++` 的读取、加一和写回仍可被其他线程穿插。精确递增需要原子类或锁。[卡](#volatile-increment)
+- **普通数据的安全发布。** 发布者先写数据，再写 `volatile` 标志；读者先读到这次发布的标志，再读数据，才能看到发布前的普通写入。
+- **引用与对象内容的区别。** 把数组引用声明为 `volatile`，约束的是引用的读写。数组元素的并发修改仍需单独同步；整组数据可以通过只读快照发布。[卡](#volatile-reference-elements)
+- **使用范围。** 停止标志和不可变配置适合用 `volatile`。检查并更新、多个字段共同保持一致等需求，需要原子操作、锁或整体发布方案。
+- **VarHandle 的访问强度。** opaque 约束同一变量的访问顺序，acquire/release 可配对发布关联数据，volatile 模式还要求所有 volatile 访问满足共同的总序。[卡](#varhandle-access-modes)
 
 ## 2. volatile 读写的顺序保证 {#volatile-读写的顺序保证}
+
+一个线程通知另一个线程停止工作，需要让新标志对工作线程可见。下面用 `volatile` 声明停止标志，让工作线程在每轮处理后重新检查：
 
 ```java
 private volatile boolean closed;
@@ -33,11 +38,15 @@ public void runLoop() {
 }
 ```
 
-关闭线程写入 `closed = true`，工作线程反复读取标志。每次处理结束后，循环重新判断是否退出。
+关闭线程写入 `closed = true` 后，工作线程在后续检查中读到新值，就会退出循环。这里依赖的是 Java 内存模型（JMM）的 happens-before 规则：对同一 volatile 字段的写，先行于同步顺序中后续的读。JVM 可以进行编译优化和指令重排，但执行结果必须满足这项可见性保证。
 
-volatile 写与后续读之间建立 happens-before。具体传递规则见 [Java 内存模型](./jmm-happens-before.mdx#happens-before-规则)。若 `processOne()` 长期阻塞，仍需对应的取消协议。
+这个标志要等工作线程再次检查才生效。如果 `processOne()` 长期阻塞，仍需中断或关闭资源等取消机制，让当前处理及时结束。
+
+具体传递规则见 [Java 内存模型](./jmm-happens-before.mdx#happens-before-规则)。
 
 ## 3. 复合更新 {#复合更新}
+
+`volatile` 的一次读取和一次写入各自具有原子性，合起来却未必是一个原子操作。最常见的例子是递增：
 
 ```java
 private volatile int count;
@@ -47,18 +56,26 @@ public void increment() {
 }
 ```
 
-`count++` 分为读、加一和写。两个线程都读到 10，就能分别写回 11。单次访问原子，整个组合仍会丢失更新。
+`count++` 要先读取旧值，再加一，最后写回。两个线程都读到 10 时，会分别写回 11，两次递增只留下了一次结果。精确计数可以使用 `AtomicInteger.incrementAndGet()`，或者用锁保护整个递增过程。
+
+检查后执行也有同样的问题。下面的标志即使声明为 `volatile`，也不能让初始化只执行一次：
 
 ```java
-if (!initialized) {
-    initialize();
-    initialized = true;
+private volatile boolean initialized;
+
+void initializeOnce() {
+    if (!initialized) {
+        initialize();
+        initialized = true;
+    }
 }
 ```
 
-第二段中，多个线程可同时看到 `initialized == false`。它们都会执行初始化。需要唯一执行时，应使用锁或完整的原子状态转换。
+多个线程可能同时读到 `false`，随后各自进入 `initialize()`。如果只允许初始化一次，就要用锁保护检查与初始化，或设计包含初始化过程的原子状态转换。
 
 ## 4. volatile 标志发布 {#用-volatile-标志发布数据}
+
+`volatile` 的可见性保证还可以覆盖普通字段的写入。下面的示例中，`publish` 只调用一次，随后不再修改 `data` 指向的对象。`publish` 先执行 `data = next`，再将 `ready` 设为 `true`：
 
 ```java
 private Data data;
@@ -68,23 +85,47 @@ void publish(Data next) {
     data = next;
     ready = true;
 }
+
+Data readIfReady() {
+    if (ready) {
+        return data;
+    }
+    return null;
+}
 ```
 
-本例只发布一次，且发布后保持数据不变。消费者先读到 `ready == true`，再读 `data`。写入数据、写标志和读标志形成传递链。
+调用 `publish` 前，当前线程已完成 `next` 指向的对象的初始化。另一线程调用 `readIfReady()` 时，可见性沿着下面的顺序传递：
 
-若先读数据再读标志，读取次序就缺少同样的保证。重复使用一直为 true 的标志，也无法标识某次新发布。
+1. 写线程先初始化 `next` 指向的对象，再调用 `publish`，依次执行 `data = next` 和 `ready = true`。
+2. 读线程在 `readIfReady()` 中读到 `ready == true`，这次 volatile 读与写线程对 `ready` 的写建立 happens-before 关系。
+3. 读线程随后读取 `data`，就能看到 `data = next` 的结果，以及写线程此前对该对象的初始化。
 
-反复更新配置可直接替换 volatile 不可变引用。每个读者读取一次引用，并持有该快照完成操作。
+因此，`data` 可以是普通引用字段。关键是写线程先赋值 `data`、再写入 `ready`，读线程先读到 `ready == true`、再读取 `data`。如果读线程先读取 `data` 再检查 `ready`，或者检查另一个标志，就缺少这条可见性链路。
+
+如果多次调用 `publish`，一直为 `true` 的 `ready` 无法区分每一次调用。读线程看到 `true` 时，无法据此确认 `data` 已被哪次调用更新。
+
+反复更新配置时，可以把新配置做成不可变对象，再替换 volatile 引用。读者只读一次引用，持有该快照完成操作，就能让本次使用的字段来自同一版本。
 
 ## 5. 内存屏障 {#内存屏障}
 
-JVM 将 volatile 访问转换为编译器约束和机器指令。所用屏障取决于处理器架构与 JIT 实现。
+内存屏障用于约束屏障前后的读写顺序，使处理器执行满足 Java 的内存语义。即时编译器（JIT）会把 volatile 和 VarHandle 访问映射为编译器约束、机器指令及所需屏障。
 
-LoadLoad、LoadStore、StoreStore 和 StoreLoad 描述访问次序约束。它们是理解实现的分类。具体机器指令数量需结合目标架构查看。
+描述屏障时，Load 表示读，Store 表示写。四种名称分别说明需要维持哪两类访问的先后关系：
 
-代码正确性应依赖 JMM 和访问模式。优化底层组件时，再测量屏障和缓存竞争成本。
+| 屏障类型 | 约束的访问顺序 |
+| --- | --- |
+| LoadLoad | 屏障前的读与屏障后的读 |
+| LoadStore | 屏障前的读与屏障后的写 |
+| StoreStore | 屏障前的写与屏障后的写 |
+| StoreLoad | 屏障前的写与屏障后的读 |
+
+这些名称用于描述顺序约束。具体使用什么机器指令、需要哪些屏障，以及执行成本多高，取决于处理器架构与 JIT 实现。
+
+所以，判断 Java 代码是否正确，应依赖 JMM 和访问模式，而不是某张 x86 屏障表。优化底层组件时，再结合目标架构测量屏障和缓存竞争的成本。
 
 ## 6. 使用场景 {#使用场景}
+
+选择 `volatile` 前，要先确定维护的是单个值，还是必须一起完成的多个变化。常见需求可以按下表选择：
 
 | 需求 | 选择 | 边界 |
 | --- | --- | --- |
@@ -94,13 +135,13 @@ LoadLoad、LoadStore、StoreStore 和 StoreLoad 描述访问次序约束。它�
 | 检查并扣减 | CAS 或锁 | 条件与更新共同生效 |
 | 多字段快照 | 不可变对象加发布协议 | 单次读取取得同一版本 |
 
-选择由需要维护的状态转换决定。多个字段独立可见时，中间组合仍可被读者观察。
+停止标志和不可变配置只需要独立读写或整体替换，适合 `volatile`。某些只有单一写线程的状态机也可以使用它，但要先证明每次状态转换符合业务要求。多个字段分别可见时，读者仍会观察到新旧字段混合的状态，因此要整体发布或加锁。
 
 ## 7. 引用与数组元素 {#引用与数组元素}
 
-数组引用声明为 volatile 后，引用替换具有 volatile 语义。直接执行 `values[0] = 1` 仍是普通元素写入。
+数组需要先区分**引用替换和元素修改**。引用声明为 volatile 后，替换整个引用具有 volatile 语义；直接执行 `values[0] = 1`，仍然是普通元素写入。
 
-需要逐项原子操作时，可用 `AtomicIntegerArray`。需要整组一致时，可创建新数组并发布引用。发布后的数组应保持只读。
+需要逐项原子操作时，可以用 `AtomicIntegerArray`。如果要求整组数据一致，则可以创建新数组，再发布它的引用，并让已发布数组保持只读：
 
 ```java
 private volatile int[] values = {0, 0};
@@ -115,32 +156,34 @@ int readSum() {
 }
 ```
 
-示例保持已发布数组不变。读者只读取一次引用，结果为 0 或 3。各元素来自同一数组版本。
+示例中，发布后的数组保持不变，读者又只读取一次共享引用。因此，两个元素来自同一版本，求和结果为 0 或 3。
 
 ## 8. VarHandle 的访问模式 {#varhandle-的访问模式}
 
-Java 9 起，VarHandle 提供不同强度的访问模式：
+VarHandle 是访问字段或数组元素的句柄，也就是一个能指定读写方式的访问入口。Java 9 起，可以通过它选择不同强度的内存语义：
 
 | 模式 | 保证重点 |
 | --- | --- |
-| plain | 按普通字段访问约束 |
-| opaque | 保证同一变量访问的相干顺序 |
-| acquire / release | 配对交接时约束周围访问的顺序 |
-| volatile | 在 acquire/release 基础上增加 volatile 总序约束 |
+| plain：`get` / `set` | 按普通字段的语义读写 |
+| opaque：`getOpaque` / `setOpaque` | 保证单次读写的原子性和同一变量的相干顺序 |
+| acquire / release：`getAcquire` / `setRelease` | 配对交接时约束周围访问的顺序 |
+| volatile：`getVolatile` / `setVolatile` | 在 acquire/release 基础上增加 volatile 总序约束 |
 
-`setRelease` 约束之前的访问。读到对应发布值的 `getAcquire` 约束之后的访问。opaque 单独使用时，无法承担关联数据的发布协议。
+表中的相干顺序，是指不同线程对同一变量的访问遵守一致的次序。它只围绕这个变量，opaque 单独使用时无法保证其他关联数据也被正确发布。
 
-选择更弱模式需要重新证明读写链路。普通业务可直接用 volatile 或成熟 JUC 组件。
+`setRelease` 保证此前的访问保持在发布之前。读到对应发布值的 `getAcquire`，则保证后续访问保持在读取之后。两者配合，可以把发布前的数据交给读者。volatile 模式还要求所有 volatile 访问满足一个共同的总顺序。
+
+降低访问模式的强度后，需要重新证明关联数据的可见性。普通业务可以直接使用 volatile 或成熟的 `java.util.concurrent` 组件。
 
 ## 9. 常见问题 {#常见问题}
 
-### 9.1 volatile long 的原子性 {#volatile-long-的原子性}
+### 9.1 volatile long 只是为了防止读写撕裂吗？ {#volatile-long-的原子性}
 
-JLS 允许普通 long 和 double 访问拆为两个 32 位操作。volatile long 和 double 的单次读写保证原子。volatile 还具有跨线程的可见性与顺序语义。
+防止撕裂只是其中一项，volatile 还提供可见性与顺序保证。JLS 允许普通 long 和 double 的访问拆为两个 32 位操作。读者若读到两次写入的不同部分，就会发生撕裂。volatile long 和 double 的单次读写保证原子，因此避免了这种结果。
 
-### 9.2 多字段状态的一致性 {#多字段状态的一致性}
+### 9.2 多个字段都加 volatile，就能保持状态一致吗？ {#多字段状态的一致性}
 
-两个 volatile 字段分别写入时，会暴露中间状态。把相关字段放进不可变对象，再整体发布，可保持版本一致。读取时应只获取一次共享引用。
+分别加 volatile 仍会暴露中间状态。例如，两个字段分别写入时，读者可以在两次写入之间取得一个新值和一个旧值。把相关字段放进不可变对象，再整体发布引用，才能按同一版本读取。读者还应只获取一次共享引用，并用它完成整次操作。
 
 ## 10. 面试题 {#面试题}
 
@@ -155,18 +198,20 @@ JLS 允许普通 long 和 double 访问拆为两个 32 位操作。volatile long
 
 **考察重点**
 
-- 理解单次 volatile 访问与复合操作的区别。
-- 理解丢失更新的交错过程。
-- 理解合适的原子类或锁方案。
+- 区分 volatile 对单次访问的保证与复合更新所需的原子性。
+- 说明两个线程怎样读到同一个旧值，进而丢失一次更新。
+- 按单变量计数或多字段约束，选择原子类或锁。
 
 **相关内容**：[volatile 读写的顺序保证](#volatile-读写的顺序保证)和[复合更新](#复合更新)。
 
 <details>
 <summary>参考回答</summary>
 
-`i++` 是复合读改写，volatile 只约束其中的单次访问。两个线程可读到同一旧值，再写回同一新值。结果就是一次递增丢失。
+**因为 `i++` 是复合操作，volatile 只保证其中单次读写的原子性。**
 
-独立计数可用 `AtomicInteger.incrementAndGet()`。若还涉及余额条件或其他字段，就需完整 CAS 协议或锁。
+两个线程都读到 10，再分别写回 11，就会丢失一次递增。可见性保证无法阻止这种交错执行。
+
+独立计数可用 `AtomicInteger.incrementAndGet()`。涉及余额条件或多个字段时，需要用锁保护完整操作，或把相关状态作为整体进行 CAS 更新。
 
 </details>
 
@@ -176,14 +221,19 @@ JLS 允许普通 long 和 double 访问拆为两个 32 位操作。volatile long
 
 **出现公司**：暂无已核验的公开来源（本站自测）
 
-**考察重点**：理解引用替换、元素更新与整体快照。
+**考察重点**：区分引用的读写与元素的修改，并说明怎样让多个元素来自同一快照。
 
 **相关内容**：[引用与数组元素](#引用与数组元素)。
 
 <details>
 <summary>参考回答</summary>
 
-volatile 语义作用于引用字段。元素的普通写入仍需同步。逐项更新可用 AtomicIntegerArray。整组快照可复制数组后发布，并保持旧数组只读。
+**不会。volatile 修饰的是引用字段，数组元素的读写仍是普通读写。**
+
+替换整个数组引用与执行 `values[0] = 1` 是两个不同的操作。
+
+- **逐项原子更新**可以用 `AtomicIntegerArray`。
+- **整组一致读取**可以先创建新数组，再发布引用，并保持已发布数组只读。读者只获取一次共享引用，让各元素来自同一个版本。
 
 </details>
 
@@ -193,14 +243,18 @@ volatile 语义作用于引用字段。元素的普通写入仍需同步。逐�
 
 **出现公司**：暂无已核验的公开来源（本站自测）
 
-**考察重点**：理解单变量相干顺序与跨变量发布。
+**考察重点**：说明同一变量的相干顺序、关联数据的发布顺序，以及 volatile 总序之间的区别。
 
 **相关内容**：[VarHandle 的访问模式](#varhandle-的访问模式)。
 
 <details>
 <summary>参考回答</summary>
 
-opaque 主要约束同一变量的相干访问。acquire/release 配对建立方向性的发布顺序。volatile 还要求 volatile 访问满足总序约束。降低模式强度后，需要重新证明关联数据的可见性。
+- **opaque 只保证同一变量的单次读写和相干顺序。** 它没有建立周围普通数据的发布关系，因此单独使用时不足以交接关联数据。
+- **acquire/release 可以配对发布关联数据。** release 约束发布前的访问；读到对应发布值的 acquire 约束读取后的访问，让读者看到发布前写好的数据。
+- **volatile 还要求所有 volatile 访问满足共同的总序。** 它在 acquire/release 的保证之上进一步约束访问顺序。
+
+改用较弱模式时，需要重新证明数据发布关系仍然成立。
 
 </details>
 

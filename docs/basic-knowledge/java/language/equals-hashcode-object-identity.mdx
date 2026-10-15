@@ -3,20 +3,24 @@ sidebar_position: 3
 knowledge:
   id: basic-knowledge.java.language.equals-hashcode-object-identity
   type: concept
+description: "讲解 Java 对象相等性中的引用身份与逻辑相等，说明 equals 和 hashCode 必须共同遵守的约定。结合可变哈希键、数组内容比较与身份哈希，帮助准备语言和集合面试的读者设计相等规则，推演字段修改后的查找结果，并判断哈希冲突的含义。"
+keywords: ["equals 契约", "hashCode 契约", "Java 对象比较", "可变哈希键"]
 ---
 
 # 对象相等性
 
-`equals` 定义逻辑相等，`hashCode` 支持哈希查找。本文负责对象身份、相等契约和可变键风险。引用传递规则见 [Java 值传递](./types-references-value-passing.mdx)。
+对象相等性区分两个引用指向同一个对象，以及两个对象在业务上表示相同的值。本文先比较 `==` 与 `equals`，再说明 `equals` 和 `hashCode` 必须共同遵守的约定。最后分析可变哈希键、数组内容比较和身份哈希。
 
 ## 1. 面试核心 {#core}
 
-- 引用的 `==` 比较对象身份，`Object.equals` 默认采用相同规则。[卡](#equals-hashcode)
-- `equals` 相等的对象必须具有相同 `hashCode`。
-- 哈希冲突允许存在，最终相等性仍由 `equals` 判断。
-- 修改哈希键的身份字段会破坏集合查找的稳定性。[卡](#mutable-map-keys)
+- **值与对象身份。** 基本类型的 `==` 比较值，引用类型的 `==` 比较对象身份，`Object.equals` 默认也比较对象身份。[卡](#equals-hashcode)
+- **相等契约。** `equals` 相等的对象必须具有相同 `hashCode`，哈希容器才能把它们放进同一个候选范围；相同哈希值则不保证对象相等。
+- **哈希冲突。** 哈希冲突允许存在，最终相等性仍由 `equals` 判断。
+- **键的稳定性。** 对象作为哈希键期间，参与 `equals` 和 `hashCode` 的字段需要保持稳定。[卡](#mutable-map-keys)
 
 ## 2. 对象身份与逻辑相等 {#对象身份与逻辑相等}
+
+基本类型的 `==` 比较值，引用类型的 `==` 则比较是否指向同一个对象，这称为对象身份。`Object.equals` 默认也采用身份比较，子类可以重写它来比较内容。例如，`String.equals` 比较字符串内容：
 
 ```java
 String first = new String("Java");
@@ -28,9 +32,11 @@ System.out.println(first == alias);       // true
 System.out.println(first.equals(second)); // true
 ```
 
-`first` 和 `second` 内容相同，但指向不同对象。`alias` 与 `first` 保存相同引用。字面量共享见 [String](./string-immutability-pool.mdx#字符串常量池)。
+`first` 和 `second` 内容相同，但分别创建，因此 `==` 为 false，`equals` 为 true。`alias` 与 `first` 保存相同引用，所以它们的 `==` 为 true。
 
-值对象根据组成身份的字段定义逻辑相等：
+字符串字面量可以共享对象，但内容比较仍应使用 `equals`。具体共享规则见 [String](./string-immutability-pool.mdx#字符串常量池)。
+
+值对象用字段值表达业务含义，并根据这些字段定义逻辑相等。例如，两个订单编号只要编号文本相同，就表示同一个编号：
 
 ```java
 public record OrderId(String value) {
@@ -42,11 +48,11 @@ public record OrderId(String value) {
 }
 ```
 
-record 按所有组件生成 `equals` 和 `hashCode`。它适合用组件共同定义相等性的值对象，Java 16 起正式可用。
+record 会根据所有组件生成 `equals` 和 `hashCode`。组件就是声明在 record 名称后面的字段，这里只有 `value`。因此，相同编号文本会得到逻辑相等的 `OrderId`。这种写法适合所有组件共同决定相等性的值对象，Java 16 起正式可用。
 
 ## 3. `equals` 契约 {#equals-契约}
 
-正确的 `equals` 应满足：
+调用方和集合需要稳定的相等规则，才能正确查找和去重。对于非空对象，`equals` 应满足以下**五项约定**：
 
 - **自反**：`x.equals(x)` 为 true。
 - **对称**：`x.equals(y)` 与 `y.equals(x)` 结果相同。
@@ -54,7 +60,15 @@ record 按所有组件生成 `equals` 和 `hashCode`。它适合用组件共同�
 - **一致**：身份字段未变化时，多次调用结果相同。
 - **非空**：`x.equals(null)` 为 false。
 
-继承容易让父类与子类使用不同身份字段，从而破坏对称性或传递性。值类型可声明为 `final`、使用 record，或通过组合增加附加信息。`getClass()` 与 `instanceof` 的选择仍取决于父子对象在业务上是否允许相等。
+这里的身份字段指参与逻辑相等判断的字段。父类只比较自身字段、子类又加入额外字段时，双方会采用不同规则，从而破坏对称性或传递性。
+
+值对象可以用以下**三种方式**控制这种差异：
+
+- 将类声明为 `final`，固定参与相等判断的字段。
+- 使用 record，让所有组件共同定义相等性。
+- 通过组合保存附加信息，避免在继承关系中扩展相等规则。
+
+`getClass()` 要求运行时类型相同，`instanceof` 则允许子类型通过类型检查。选择哪一种，要看业务是否允许父子对象相等，并确认双方遵循相同约定。
 
 ## 4. `hashCode` 契约 {#hashcode-契约}
 
@@ -62,7 +76,7 @@ HashMap 和 HashSet 先用 `hashCode` 定位候选桶，再用 `equals` 确认�
 
 > 如果两个对象通过 `equals` 判断相等，它们的 `hashCode` 必须相同。
 
-反过来不成立。32 位哈希值无法为所有对象提供唯一结果，冲突后仍要比较 `equals`。
+不同对象可以得到相同的哈希值，这称为哈希冲突。`hashCode` 返回 32 位整数，可用结果数量有限，因此无法为所有对象提供唯一编号。发生冲突后，集合还要用 `equals` 确认是否为相等的键。
 
 ```java
 OrderId first = new OrderId("ORDER-101");
@@ -73,23 +87,27 @@ System.out.println(first.equals(second));               // true
 System.out.println(first.hashCode() == second.hashCode()); // true
 ```
 
-只重写 `equals` 会让相等对象的哈希不一致。哈希集合因此可保存重复逻辑值，或找不到等价键。
+上例中的两个订单编号是不同对象，但编号文本相同，因此 `equals` 和哈希值比较都为 true。
+
+如果只重写 `equals`，逻辑相等的对象可能得到不同哈希值。集合会把它们定位到不同位置，结果是 `HashSet` 留下重复逻辑值，或 `HashMap` 找不到等价键。因此，两种方法应依据同一组字段定义。
 
 ## 5. 可变哈希键 {#可变对象作为哈希键}
 
-哈希集合保留写入时的定位信息。修改身份字段后，新哈希会指向其他位置。旧条目仍留在原位置，查询因此会失败。
+哈希集合按写入时的哈希值保存条目，后续查询则重新计算查询键的哈希值。如果修改字段导致哈希值变化，查询会使用新的定位信息，但旧条目仍留在原位置。这时，即使手中仍是原对象，也可能查不到它。
 
-适合作为键的对象应满足：
+适合作为键的对象应满足以下**稳定性要求**：
 
 - 构造后不再修改身份字段。
 - `equals` 和 `hashCode` 使用相同字段。
 - 字段本身也具有稳定的相等性。
 
-实体主键会受持久化阶段影响，ORM 代理也会改变运行时类型。相等规则应覆盖这些状态，并在键存续期间保持稳定。
+数据库实体需要额外考虑主键的生成时机。例如，持久化前主键为空，插入后才分配主键，前后的相等性就会变化。
+
+ORM 是把对象映射到数据库记录的框架，它生成的代理对象还会影响运行时类型。若相等判断使用 `getClass()`，就需要考虑代理与原实体的比较。最终规则应结合实体生命周期和集合用法确定，并在作为键期间保持稳定。
 
 ## 6. 数组内容与身份哈希 {#数组内容与身份哈希}
 
-数组继承 `Object.equals`，默认比较引用身份。单层数组按内容比较时使用 `Arrays.equals`。嵌套数组使用 `Arrays.deepEquals`。
+数组需要单独选择内容比较方法，因为它继承的 `Object.equals` 默认比较引用身份。单层数组按内容比较时使用 `Arrays.equals`，嵌套数组则使用 `Arrays.deepEquals`：
 
 ```java
 int[] first = {1, 2};
@@ -98,23 +116,31 @@ System.out.println(first.equals(second));         // false
 System.out.println(Arrays.equals(first, second)); // true
 ```
 
-重写相等性时，数组字段应配套使用对应哈希方法。单层内容对应 `Arrays.hashCode`。嵌套内容对应 `Arrays.deepHashCode`。
+上例创建了两个独立数组，因此 `equals` 为 false。两个数组的元素值相同，所以 `Arrays.equals` 为 true。
 
-`System.identityHashCode` 忽略对象重写的哈希逻辑。它仍是哈希值，允许冲突，也不等于内存地址。
+数组字段参与对象相等判断时，哈希计算也要按内容进行。单层数组使用 `Arrays.hashCode`，嵌套数组使用 `Arrays.deepHashCode`。这样才能让内容相等的数组贡献相同的哈希值。
+
+需要绕过重写的哈希逻辑时，可以调用 `System.identityHashCode`。它返回按对象身份计算的哈希值，采用 `Object.hashCode` 默认实现的规则。这仍是允许冲突的哈希值，不能当作唯一对象编号或内存地址。
 
 ## 7. 常见问题 {#常见问题}
 
-### 7.1 不同哈希值与相等性 {#不同哈希值与相等性}
+### 7.1 哈希值不同，两个对象一定不相等吗？ {#不同哈希值与相等性}
 
 在实现符合契约的前提下，一定不相等。相等对象必须拥有相同哈希值。
 
-### 7.2 哈希冲突 {#哈希冲突}
+### 7.2 哈希值相同，两个对象一定相等吗？ {#哈希冲突}
 
 不一定。哈希冲突是允许的，还需要调用 `equals` 判断。
 
-### 7.3 空值相等比较 {#空值相等比较}
+### 7.3 `Objects.equals(a, b)` 怎样处理空值？ {#空值相等比较}
 
-它先处理 null：两个都为 null 时返回 true，只有一个为 null 时返回 false；否则调用第一个对象的 `equals`。它不会替对象设计正确的身份规则。
+`Objects.equals(a, b)` 让调用方可以直接比较包含 `null` 的引用。对于遵守相等契约的对象，它的结果分为以下**三种情况**：
+
+- 两者都为 `null` 时，返回 true。
+- 只有一个为 `null` 时，返回 false。
+- 两者都非空时，相同引用直接返回 true，否则调用第一个对象的 `equals`。
+
+因此，非空对象的逻辑相等仍取决于类自身的实现。
 
 ## 8. 面试题 {#面试题}
 
@@ -129,15 +155,17 @@ System.out.println(Arrays.equals(first, second)); // true
 
 **考察重点**
 
-- 引用身份与逻辑相等的区别。
-- 哈希集合为什么同时使用哈希和相等比较。
+- 区分引用身份与逻辑相等，并解释各自的使用场景。
+- 说明哈希集合为什么需要先定位候选位置，再确认键是否相等。
 
 **相关内容**：[对象身份与逻辑相等](#对象身份与逻辑相等)、[`hashCode` 契约](#hashcode-契约)。
 
 <details>
 <summary>参考回答</summary>
 
-对引用类型来说，`==` 判断两个引用是否指向同一个对象。`Object.equals` 默认也使用对象身份，类可以重写它定义逻辑相等。
+**对引用类型来说，`==` 判断两个引用是否指向同一个对象。**
+
+`Object.equals` 默认也使用对象身份，类可以重写它定义逻辑相等。
 
 `hashCode` 让哈希集合先定位候选位置。只要 `equals` 为 true，哈希值就必须相同；哈希值相同却不代表对象相等，还要继续比较 `equals`。因此自定义逻辑相等时，应基于同一组字段同时重写两者。
 
@@ -153,17 +181,17 @@ System.out.println(Arrays.equals(first, second)); // true
 
 **考察重点**
 
-- 写入和查找怎样使用哈希值。
-- 身份字段变化后为什么可能找不到原键。
+- 说明写入和查找时分别怎样使用哈希值。
+- 根据字段变化前后的定位过程，解释为什么会找不到原键。
 
 **相关内容**：[可变哈希键](#可变对象作为哈希键)。
 
 <details>
 <summary>参考回答</summary>
 
-可变对象可以作为键，但身份字段须在键存续期间保持稳定。字段改变后，新哈希会与原位置不一致，查询因此会失败。
+**可变对象可以作为键，前提是参与 `equals` 和 `hashCode` 的字段在作为键期间保持稳定。**
 
-不可变值对象在构造时确定身份字段。让 `equals` 与 `hashCode` 使用同一组字段，可保持查找稳定。
+写入时，集合按当时的哈希值保存条目。修改字段后，如果查询算出不同的哈希值，就可能找不到仍留在原位置的条目。因此，适合作为键的是构造后身份固定的值对象，并让相等与哈希使用同一组字段。
 
 </details>
 
@@ -173,21 +201,23 @@ System.out.println(Arrays.equals(first, second)); // true
 
 **出现公司**：暂无已核验的公开来源（本站自测）
 
-**考察重点**：数组相等性与哈希契约。
+**考察重点**：解释数组为什么默认比较身份，以及内容比较怎样配套计算哈希。
 
 **相关内容**：[数组内容与身份哈希](#数组内容与身份哈希)。
 
 <details>
 <summary>参考回答</summary>
 
-数组默认按对象身份比较，所以示例返回 false。`Arrays.equals` 才比较单层数组内容。数组字段参与值对象相等性时，应使用配套的内容哈希方法。
+**两个独立数组即使内容相同，直接调用 `equals` 也会返回 false，因为数组继承的实现比较对象身份。**
+
+比较一维数组的内容应使用 `Arrays.equals`；比较嵌套数组可使用 `Arrays.deepEquals`。若把数组封装为业务对象并按内容定义相等性，也要提供一致的内容哈希计算。
 
 </details>
 
 ## 9. 参考资料 {#参考资料}
 
-- [Java API：Object](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/Object.html)
-- [Java API：Objects](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/Objects.html)
-- [Java Language Specification：Reference Equality Operators](https://docs.oracle.com/en/java/javase/26/docs/specs/jls/jls-15.html#jls-15.21.3)
-- [Java API：System.identityHashCode](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/System.html#identityHashCode(java.lang.Object))
-- [Java API：Arrays](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/Arrays.html)
+- [Java API：Object](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/Object.html)
+- [Java API：Objects](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/Objects.html)
+- [Java Language Specification：Reference Equality Operators](https://docs.oracle.com/en/java/javase/21/docs/specs/jls/jls-15.html#jls-15.21.3)
+- [Java API：System.identityHashCode](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/System.html#identityHashCode(java.lang.Object))
+- [Java API：Arrays](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/Arrays.html)

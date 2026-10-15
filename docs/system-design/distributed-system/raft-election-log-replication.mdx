@@ -3,19 +3,21 @@ sidebar_position: 6
 knowledge:
   id: system-design.distributed-system.raft-election-log-replication
   type: concept
+description: "Raft 通过选举和日志复制维护状态机执行顺序。本文讲解角色、任期、提交、线性读、快照与成员变更。本文适合准备分布式面试的读者。读者可练习推演领导者失效和客户端重试。读者可分析日志一致、多数派确认与读取安全的条件。"
+keywords: ["Raft 选举", "日志复制", "多数派提交", "线性一致读", "共识协议"]
 ---
 
 # Raft
 
-Raft 用选举和日志复制维护确定的状态机执行顺序。本文讲解任期、提交、线性读取、快照和成员变更。复制的确认层次见[主备复制](./primary_backup_replication.mdx)。
+Raft 用选举和日志复制维护确定的状态机执行顺序。本文讲解任期、提交、线性读取、快照和成员变更。
 
 ## 1. 面试核心 {#core}
 
-- 节点每个 term 最多投一票，currentTerm 与 votedFor 需持久化。
-- 日志新旧先比较最后条目的 term，再比较 index。[卡](#leader-completeness)
-- Leader 仅按多数副本数直接提交当前 term 条目。[卡](#raft-current-term-commit)
-- 线性读需确认领导权，并等待状态机应用到安全读取位置。[卡](#raft-linearizable-read)
-- joint consensus 同时要求新旧配置的多数，learner 追赶时不计票。[卡](#raft-learner-quorum)
+- **任期与投票。** 节点每个 term 最多投一票，currentTerm 与 votedFor 需持久化。
+- **日志新旧比较。** 日志新旧先比较最后条目的 term，再比较 index。[卡](#leader-completeness)
+- **提交规则。** Leader 仅按多数副本数直接提交当前 term 条目。[卡](#raft-current-term-commit)
+- **线性一致读。** 线性读需确认领导权，并等待状态机应用到安全读取位置。[卡](#raft-linearizable-read)
+- **成员变更。** joint consensus 同时要求新旧配置的多数，learner 追赶时不计票。[卡](#raft-learner-quorum)
 
 ## 2. 角色与任期 {#角色与任期}
 
@@ -132,7 +134,9 @@ etcd 3.6 支持以 learner 加入新节点。learner 接收日志，但不参与
 <details>
 <summary>参考回答</summary>
 
-新 Leader 保留已提交日志，依赖选举限制和当前任期提交规则。每个节点同任期只投一票。候选日志先比较最后 term，再比较 index。日志匹配保证共有条目前缀一致。
+**新 Leader 保留已提交日志，依赖选举限制和当前任期提交规则。**
+
+每个节点同任期只投一票。候选日志先比较最后 term，再比较 index。日志匹配保证共有条目前缀一致。
 
 当前 term 条目由多数持久化后才直接提交。结合这些性质，可证明后续 Leader 都包含该前缀。旧 term 条目随新任期条目间接提交。仅说明两个多数相交，还不足以完成证明。
 
@@ -151,7 +155,9 @@ etcd 3.6 支持以 learner 加入新节点。learner 接收日志，但不参与
 <details>
 <summary>参考回答</summary>
 
-旧任期条目的多数副本数不足以直接证明安全。后续候选者仍可凭更高任期后缀通过新旧比较。当前任期条目得到多数后，协议才能保证后续 Leader 保留它。此前日志随该条目一起提交。
+**旧任期条目的多数副本数不足以直接证明安全。**
+
+后续候选者仍可凭更高任期后缀通过新旧比较。当前任期条目得到多数后，协议才能保证后续 Leader 保留它。此前日志随该条目一起提交。
 
 </details>
 ### 11.3 Raft Leader 执行线性一致读时，需要哪些确认？ {#raft-linearizable-read}
@@ -167,7 +173,9 @@ etcd 3.6 支持以 learner 加入新节点。learner 接收日志，但不参与
 <details>
 <summary>参考回答</summary>
 
-Leader 需确认已提交前缀、当前领导权和状态机进度。新任期先提交当前 term 条目，例如 no-op。读取再经多数派确认得到安全位置。lastApplied 达到该位置后，才读取本地状态。租约优化还需额外时钟假设。
+**Leader 需确认已提交前缀、当前领导权和状态机进度。**
+
+新任期先提交当前 term 条目，例如 no-op。读取再经多数派确认得到安全位置。lastApplied 达到该位置后，才读取本地状态。租约优化还需额外时钟假设。
 
 </details>
 ### 11.4 三节点集群已有一台故障，为什么新增投票节点可能使集群停写？ {#raft-learner-quorum}
@@ -183,7 +191,9 @@ Leader 需确认已提交前缀、当前领导权和状态机进度。新任期�
 <details>
 <summary>参考回答</summary>
 
-成员数变为四个后，多数门槛从两票升到三票。新节点尚未就绪时，只有原来的两票可用。learner 追赶期间不计票，因此保留原门槛。追平后按协议提升为投票成员。
+**成员数变为四个后，多数门槛从两票升到三票。**
+
+新节点尚未就绪时，只有原来的两票可用。learner 追赶期间不计票，因此保留原门槛。追平后按协议提升为投票成员。
 
 </details>
 

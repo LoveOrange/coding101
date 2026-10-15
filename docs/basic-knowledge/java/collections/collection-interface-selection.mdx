@@ -5,6 +5,8 @@ sidebar_position: 1
 knowledge:
   id: basic-knowledge.java.collections.collection-interface-selection
   type: concept
+description: "介绍 Java 集合框架的接口关系，比较列表、集合、映射、队列和双端队列的元素组织规则。结合访问方式、顺序、去重和线程共享需求，分析实现的操作与内存成本，帮助准备基础面试的读者选择容器，并判断优先队列遍历、空值和集合可变性的边界。"
+keywords: ["Collection", "List 与 Set", "Map 选型", "Queue 与 Deque", "集合接口"]
 ---
 
 import {ReviewReading, ReviewCheckpoint, ReviewQuestionAnchor} from '@site/src/components/Review';
@@ -14,17 +16,15 @@ import {javaCollectionsReview} from '@site/src/data/reviewPlans/javaCollections'
 
 <ReviewReading plan={javaCollectionsReview} stepId="collections-selection" />
 
-Java 集合接口描述位置、唯一性、键值关联和取出规则。本文负责接口契约与选型入口，采用 Java 21 API。
-
-具体实现分别见 [ArrayList](./arraylist-growth-memory-locality.mdx)、[HashMap](./hashmap-structure-lookup-path.mdx) 与 [TreeMap 与 TreeSet](./treemap-treeset-ordered-query.mdx)。
+Java 集合框架用接口约定元素怎样组织，再由具体实现决定操作成本。本文先区分 Collection 与 Map，再比较列表、集合、映射和队列的用途。最后根据访问方式、内存和线程共享需求选择实现。内容采用 Java 21 API。
 
 ## 1. 面试核心 {#core}
 
-- `List`、`Set`、`Queue` 属于 `Collection` 分支，`Map` 独立于该分支。[卡](#list-set-map)
-- `List` 按位置保存元素，`Set` 按相等规则去重，`Map` 按键关联值。[卡](#list-set-map)
-- `HashSet` 基于 `HashMap`，通过 `hashCode` 与 `equals` 判断重复。[卡](#hashset-duplicates)
-- `PriorityQueue` 按比较顺序取队首，遍历顺序未排序。[卡](#priority-queue-order)
-- Java 21 引入 `SequencedCollection`，统一遇到顺序与两端访问。
+- **接口关系。** `List`、`Set`、`Queue` 属于 `Collection` 分支，`Map` 独立于该分支。[卡](#list-set-map)
+- **数据组织。** `List` 按位置保存元素，`Set` 按相等规则去重，`Map` 按键关联值。[卡](#list-set-map)
+- **哈希去重。** `HashSet` 基于 `HashMap`，通过 `hashCode` 与 `equals` 判断重复。[卡](#hashset-duplicates)
+- **优先队列。** `PriorityQueue` 按比较顺序取出当前最小元素，普通遍历得到的结果没有整体排序。[卡](#priority-queue-order)
+- **有序集合接口。** Java 21 的 `SequencedCollection` 为具有确定遍历次序的集合统一提供两端访问和反向视图。
 
 ## 2. Collection 与 Map {#collection-与-map}
 
@@ -43,13 +43,13 @@ Iterable
 Map
 ```
 
-集合按元素处理，Map 通过键定位值。`entrySet()`、`keySet()` 和 `values()` 都是集合视图。通过这些视图删除条目，也会修改原 Map。
+这个划分来自访问方式：Collection 按元素处理，Map 则通过键定位值。Map 可以通过 `entrySet()`、`keySet()` 和 `values()` 提供条目、键和值的集合视图。视图与原 Map 共享数据，所以通过支持删除的视图移除元素，也会修改原 Map。
 
-Java 21 引入 `SequencedCollection`。List 与 Deque 都继承它，支持 `reversed()` 等操作。`SequencedSet` 和 `SequencedMap` 分别扩展有序集合与映射。
+Java 21 引入 `SequencedCollection`，统一描述有确定“遇到顺序”的集合。遇到顺序就是遍历时看到元素的次序，例如 List 的位置顺序。List 与 Deque 都继承该接口，支持两端访问及 `reversed()` 反向视图。`SequencedSet` 和 `SequencedMap` 则分别扩展有序集合与映射。
 
 ## 3. List {#list}
 
-`List` 是有顺序、允许重复的序列。它适合：
+`List` 是有顺序、允许重复的序列，每个元素都有位置。业务需要以下**位置与顺序能力**时，可以选择 List：
 
 - 需要按索引访问。
 - 需要保留插入或业务排序后的顺序。
@@ -65,11 +65,15 @@ steps.add("publish");
 String second = steps.get(1);
 ```
 
-按索引读取可选 [ArrayList](./arraylist-growth-memory-locality.mdx)，其随机访问为 O(1)。已有游标处的局部编辑可考虑 [LinkedList](./linkedlist-semantics-cost.mdx)。
+上例按添加顺序保存三个步骤，所以 `get(1)` 取得的是 `"persist"`。索引从 0 开始，允许重复意味着相同步骤也能出现在不同位置。
+
+[ArrayList](./arraylist-growth-memory-locality.mdx) 适合一般顺序列表：随机访问为 O(1)，尾部追加摊销 O(1)。它连续保存引用，顺序遍历也有较好的缓存局部性。
+
+[LinkedList](./linkedlist-semantics-cost.mdx) 同时实现 List 和 Deque，但按索引访问需要逐个经过节点。已有迭代位置并频繁在该处增删时，才能直接修改节点链接，省去定位成本。单线程队列则可优先考虑 ArrayDeque。
 
 ## 4. Set {#set}
 
-`Set` 不允许两个满足集合相等关系的元素同时存在：
+`Set` 用来去重和判断元素是否存在。同一个集合按自己的相等规则判断重复，重复添加已有元素会保持元素数量不变：
 
 ```java
 Set<String> permissions = new HashSet<>();
@@ -79,7 +83,7 @@ permissions.add("order:read");
 System.out.println(permissions.size()); // 1
 ```
 
-常见实现的差异：
+上例两次添加同一个权限字符串，最终 `size` 为 1。选择具体实现时，还要比较**遍历顺序和查询能力**：
 
 | 实现 | 顺序 | 典型操作 | 适用情况 |
 | --- | --- | --- | --- |
@@ -88,7 +92,7 @@ System.out.println(permissions.size()); // 1
 | `TreeSet` | 按自然顺序或 Comparator 排序 | 对数时间 | 范围查询、前驱后继、有序输出 |
 | `EnumSet` | 枚举声明顺序 | 位向量实现 | 一组枚举标志 |
 
-`HashSet` 基于 `HashMap`，元素作为键存放。相等对象需返回相同哈希，详见 [HashMap](./hashmap-structure-lookup-path.mdx#equals-与-hashcode)。
+`HashSet` 把元素作为 HashMap 的键存放。自定义元素需要让相等对象返回相同哈希值，才能正确查找和去重。具体机制见 [HashMap](./hashmap-structure-lookup-path.mdx#equals-与-hashcode)。
 
 ## 5. Map {#map}
 
@@ -101,7 +105,7 @@ usersById.put(user.id(), user);
 User found = usersById.get(userId);
 ```
 
-常见实现：
+上例用用户 ID 作为键，所以读取时可以直接按 `userId` 查找用户。常见实现的**顺序与查询能力**如下：
 
 | 实现 | 键顺序 | 典型复杂度 | 主要用途 |
 | --- | --- | --- | --- |
@@ -111,7 +115,7 @@ User found = usersById.get(userId);
 | `EnumMap` | 枚举声明顺序 | 接近数组访问 | 枚举键 |
 | `ConcurrentHashMap` | 不承诺 | 并发实现 | 多线程共享映射 |
 
-Map 为一个键保存一个当前值。一个键对应多条记录时，可使用集合值：
+Map 为一个键保存一个当前值，对同一个键再次 `put` 会替换原值。一个业务键需要对应多条记录时，可以把值定义成集合，或重新设计能区分记录的键。下面把同一部门的用户放入一个 List：
 
 ```java
 Map<Department, List<User>> usersByDepartment = new HashMap<>();
@@ -120,9 +124,11 @@ usersByDepartment
     .add(user);
 ```
 
+`computeIfAbsent` 在部门还没有对应列表时创建列表，之后把用户加入该列表。这样，每个部门键仍只对应一个值，但这个值可以保存多名用户。
+
 ## 6. Queue 与 Deque {#queue-与-deque}
 
-FIFO 队列按先进先出处理元素。PriorityQueue 则按优先级取出。下面使用 ArrayDeque：
+`Queue` 约定元素的取出规则。FIFO 指先进先出，PriorityQueue 则按优先级取出。下面的 ArrayDeque 按 FIFO 处理任务：
 
 ```java
 Queue<Job> jobs = new ArrayDeque<>();
@@ -130,7 +136,7 @@ jobs.offer(job);
 Job next = jobs.poll();
 ```
 
-队列 API 有两组方法：
+`offer` 把任务放到队尾，`poll` 取出并移除队首任务，队空时返回 `null`。处理队满或队空时，可以选择以下**两组方法**：
 
 | 操作 | 失败时抛异常 | 失败时返回特殊值 |
 | --- | --- | --- |
@@ -148,7 +154,9 @@ stack.push(root);
 Node current = stack.pop();
 ```
 
-单线程栈和双端队列可用 `ArrayDeque`。跨线程等待与背压见 [BlockingQueue](./blockingqueue-producer-consumer.mdx)。
+上例的 `push` 把元素放到栈顶，`pop` 取出栈顶，形成后进先出的顺序。单线程栈和双端队列可优先使用 ArrayDeque，它也能替代旧的 Stack 类。
+
+跨线程交接任务时，如果还需要等待和限制积压，见 [BlockingQueue](./blockingqueue-producer-consumer.mdx)。
 
 ### 6.1 PriorityQueue {#priorityqueue}
 
@@ -160,18 +168,18 @@ Queue<Task> tasks = new PriorityQueue<>(
 );
 ```
 
-`peek` 和 `poll` 取得当前最小项，遍历队列不保证整体有序。需要完整排序结果时，应逐个 `poll` 或使用排序算法。
+上例按截止时间比较任务，所以 `peek` 查看的是最早到期的任务，`poll` 则将它取出。普通遍历没有整体排序，需要完整有序结果时，应逐个 `poll` 或使用排序算法。
 
 ## 7. 选型步骤 {#选型步骤}
 
-可以依次回答：
+选择集合时，可以围绕**数据组织与访问需求**确认以下六个方面，再比较实现成本：
 
-1. **是否允许重复**：不允许时考虑 Set；需要按键覆盖时考虑 Map。
-2. **是否需要顺序**：区分插入顺序、访问顺序、排序顺序和队列顺序。
-3. **主要操作是什么**：索引访问、成员判断、范围查询、两端操作还是优先级取出。
-4. **数据规模多大**：节点对象、装箱、空桶和扩容都占内存。
-5. **是否跨线程共享**：并发语义需要专门容器或外部同步。
-6. **是否需要可变**：固定结果优先返回不可修改快照。
+1. **重复与覆盖**：元素需要去重时考虑 Set，需要按键覆盖旧值时考虑 Map。
+2. **顺序要求**：确认需要保留插入或访问的次序，还是按比较器排序、按队列规则取出。
+3. **主要访问方式**：确定最频繁的操作是索引访问、成员判断、范围查询、两端操作还是优先级取出。
+4. **数据规模**：估算元素数量，因为节点对象、装箱、空桶和扩容都占内存。
+5. **线程共享**：多个线程读写同一个集合时，需要并发容器或外部同步。
+6. **可变性**：调用方只需读取固定结果时，优先返回不可修改的快照。
 
 | 需求 | 常见起点 |
 | --- | --- |
@@ -184,29 +192,31 @@ Queue<Task> tasks = new PriorityQueue<>(
 | 取出当前最小或最大元素 | `PriorityQueue` |
 | 有界跨线程生产消费 | `ArrayBlockingQueue` |
 
-一个场景可组合多种访问方式。例如排行榜用 Map 定位用户，用有序索引维护排名。选择时还需考虑更新频率和查询范围。
+一个场景可以组合多种访问方式。例如，排行榜可以用 TreeSet 排序，同时用 Map 定位用户；也可以单独维护排名索引。最终选择取决于更新频率，以及要查询个人排名还是一段排名范围。
 
 <ReviewCheckpoint plan={javaCollectionsReview} stepId="collections-selection" />
 
 ## 8. 优先队列的遍历与复杂度 {#优先队列的遍历与复杂度}
 
-Java 21 的 PriorityQueue 使用优先堆。`offer` 和 `poll` 为 O(log n)，`peek` 为 O(1)。按对象调用 `contains`、`remove` 需线性查找。
+PriorityQueue 的效率来自优先堆，也就是让最小元素保持在堆顶的结构。堆只维护父子节点之间的顺序约束，其余元素的位置由这个约束决定。Java 21 中，`peek` 直接读取堆顶，成本为 O(1)。`offer` 和 `poll` 要沿堆的高度调整元素，成本为 O(log n)。按对象调用 `contains`、`remove` 则需线性查找，成本为 O(n)。
 
-迭代器按内部存储遍历，结果未整体排序。需要升序输出时，应连续 `poll`。这会消费原队列，保留原数据时先复制。相同优先级的元素可按任意次序取出。
+迭代器按内部存储遍历，所以遍历结果没有整体排序。需要按比较顺序升序输出时，应连续 `poll`。每次取出最小项后，堆会重新维护队首。这会消费原队列，因此要保留原数据时先复制。相同优先级的元素可以按任意次序取出。
 
 ## 9. 常见问题 {#常见问题}
 
 ### 9.1 HashSet 的遍历顺序 {#hashset-的遍历顺序}
 
-HashSet 按哈希桶组织元素，扩容会改变遍历次序。插入顺序用 LinkedHashSet，排序用 TreeSet。
+HashSet 按哈希桶组织元素，位置受哈希值、容量和哈希冲突影响，扩容还会改变遍历次序。所以某次运行的次序稳定，也只是该次数据分布的结果。需要插入顺序时使用 LinkedHashSet，需要排序时使用 TreeSet。
 
 ### 9.2 ArrayDeque 的空值约束 {#arraydeque-的空值约束}
 
-ArrayDeque 拒绝 null。`poll` 用 null 表示空队列。业务缺失值应通过专用元素类型表达。
+ArrayDeque 拒绝 `null`，因为 `poll` 用它表示空队列。这样，调用方看到 `null` 时就能确定当前没有取到元素。业务需要表示缺失值时，应使用专用元素类型，区分“取到一个缺失状态”和“没有元素”。
 
 ### 9.3 final 与集合可变性 {#final-与集合可变性}
 
-`final` 只固定变量引用。只读视图和结构副本的区别见 [集合迭代器](./iterator-fail-fast-immutable.mdx)。
+`final` 只固定变量引用，阻止变量重新指向另一个集合。原集合支持修改时，仍可以调用 `add` 或 `remove`。
+
+只读视图、不可修改副本与元素自身不可变是不同层次，具体区别见 [集合迭代器](./iterator-fail-fast-immutable.mdx#不可修改视图与不可变副本)。
 
 ### 9.4 Collection 与 Collections {#collection-与-collections}
 
@@ -236,9 +246,11 @@ ArrayDeque 拒绝 null。`poll` 用 null 表示空队列。业务缺失值应通
 <details>
 <summary>参考回答</summary>
 
-List 保存有位置的序列，Set 保存唯一元素，Map 按键关联值。Queue 决定取出规则，Deque 还支持两端操作。
+**List 适合保留位置并允许重复的序列，Set 适合去重和成员判断，Map 适合按键查找与更新值。**
 
-接口确定语义，具体实现决定成本与并发能力。例如索引访问选 ArrayList，精确键查询选 HashMap。范围查询选 TreeMap，单线程双端操作选 ArrayDeque。
+Queue 规定元素的取出规则，Deque 还支持两端操作。
+
+接口先确定业务需要的行为，具体实现再决定成本与并发能力。例如，按索引访问可以选 ArrayList，精确键查询可以选 HashMap，范围查询可以选 TreeMap。成员判断可用 HashSet，单线程双端操作可用 ArrayDeque。比较时还要考虑元素数量、内存布局和线程共享方式。
 
 </details>
 
@@ -254,8 +266,8 @@ List 保存有位置的序列，Set 保存唯一元素，Map 按键关联值。Q
 
 **考察重点**
 
-- 说明HashSet 与 HashMap 的实现关系。
-- 说明`hashCode` 用于定位候选范围，`equals` 用于确认相等。
+- 说明 HashSet 怎样借助 HashMap 保存元素。
+- 说明 `hashCode` 怎样定位候选范围，以及 `equals` 怎样确认元素相等。
 - 说明可变字段参与哈希计算时会发生什么。
 
 **相关内容**：[Set](#set)。
@@ -263,9 +275,11 @@ List 保存有位置的序列，Set 保存唯一元素，Map 按键关联值。Q
 <details>
 <summary>参考回答</summary>
 
-HashSet 把元素作为 HashMap 的键。哈希定位候选桶，equals 确认是否重复。相等对象必须返回相同哈希值。
+**HashSet 用 `hashCode` 定位候选桶，再用 `equals` 确认是否存在相等元素。**
 
-参与哈希与相等判断的字段应保持稳定。入集合后修改这些字段，会破坏后续查找和去重。
+它把元素作为底层 HashMap 的键，所以遵守同样的哈希与相等契约。两个相等对象必须返回相同哈希值，否则它们会进入不同的候选范围，导致去重失败。
+
+元素入集合后，参与哈希与相等判断的字段应保持稳定。修改这些字段会改变后续查找和去重的依据。如果新哈希指向不同位置，集合就会在错误的候选范围中查找，导致查找失败。
 
 </details>
 
@@ -275,14 +289,18 @@ HashSet 把元素作为 HashMap 的键。哈希定位候选桶，equals 确认�
 
 **出现公司**：暂无已核验的公开来源（本站自测）
 
-**考察重点**：堆序、遍历与出队复杂度。
+**考察重点**：解释堆怎样保证队首最小，以及普通遍历和连续出队的顺序与成本有何区别。
 
 **相关内容**：[优先队列的遍历与复杂度](#优先队列的遍历与复杂度)。
 
 <details>
 <summary>参考回答</summary>
 
-迭代结果未整体排序，堆仅保证队首最小。连续 `poll` 可按比较顺序输出，单次成本为 O(log n)。需要保留原队列时，先创建副本再消费。
+**PriorityQueue 的遍历结果没有整体排序，按比较顺序输出需要连续调用 `poll`。**
+
+优先堆维护的是父子节点的顺序约束，确保队首为当前最小项，其内部数组并非排序结果。
+
+每次 `poll` 取出最小项，再调整堆，单次成本为 O(log n)。需要保留原队列时，先创建副本再消费；也可以复制元素后显式排序。同优先级元素的相对次序仍未指定。
 
 </details>
 

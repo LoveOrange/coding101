@@ -2,19 +2,21 @@
 knowledge:
   id: basic-knowledge.nosql.redis.expiration
   type: concept
+description: "Redis 过期通过 TTL 控制键的有效期。本文以 Redis 6、7 讲解期限设置、更新规则、惰性与主动清理，以及时钟影响。本文适合准备缓存面试的读者。读者可练习推演覆盖写入后的有效期。读者还可分析过期通知与任务调度的边界。"
+keywords: ["TTL", "EXPIRE", "Redis 过期删除", "惰性删除", "主动过期"]
 ---
 
 # Redis 过期
 
-Redis 过期按 TTL 控制键的有效期。本文以 Redis 6、7 为基线，负责写入期限、更新规则与过期清理。内存压力下的删除策略见 [Redis 内存淘汰](./eviction.mdx)。
+Redis 过期按 TTL 控制键的有效期。本文以 Redis 6、7 为基线，负责写入期限、更新规则与过期清理。
 
 ## 1. 面试核心 {#core}
 
-- Redis 通过访问检查和主动抽样清理过期键。[卡](#expired-key-cleanup)
-- `SET key value EX 60` 原子写入值和 60 秒有效期。
-- 普通 SET 覆盖值会清除 TTL，`SET ... KEEPTTL` 保留原期限。[卡](#ttl-update)
-- TTL 返回 -1 表示无期限，-2 表示键不存在。[卡](#ttl-update)
-- 过期通知在实际删除时产生，Pub/Sub 断线消息会丢失。[卡](#expiration-notifications)
+- **过期清理。** Redis 通过访问检查和主动抽样清理过期键。[卡](#expired-key-cleanup)
+- **原子设置期限。** `SET key value EX 60` 原子写入值和 60 秒有效期。
+- **覆盖与保留 TTL。** 普通 SET 覆盖值会清除 TTL，`SET ... KEEPTTL` 保留原期限。[卡](#ttl-update)
+- **TTL 返回值。** TTL 返回 -1 表示无期限，-2 表示键不存在。[卡](#ttl-update)
+- **过期通知。** 过期通知在实际删除时产生，Pub/Sub 断线消息会丢失。[卡](#expiration-notifications)
 
 ## 2. 写入值与 TTL {#写入值与-ttl}
 
@@ -86,7 +88,9 @@ Redis 访问键时检查是否过期，称为被动过期。后台主动抽样�
 <details>
 <summary>参考回答</summary>
 
-Redis 用访问检查和主动抽样清理过期键。清理有执行预算，内存释放与通知可晚于到期时刻。TTL 定义键的有效期，业务调度还需确认和恢复机制。因此，可靠到期任务应持久化任务状态并补偿执行。
+**Redis 用访问检查和主动抽样清理过期键。**
+
+清理有执行预算，内存释放与通知可晚于到期时刻。TTL 定义键的有效期，业务调度还需确认和恢复机制。因此，可靠到期任务应持久化任务状态并补偿执行。
 
 </details>
 
@@ -103,7 +107,9 @@ Redis 用访问检查和主动抽样清理过期键。清理有执行预算，�
 <details>
 <summary>参考回答</summary>
 
-普通 SET 清除已有 TTL，SET KEEPTTL 保留期限。INCR 和 HSET 修改键内数据时保留整键 TTL。Redis 7.0 起可用 `EXPIRE key seconds GT` 只延长已有期限。TTL 的 -1 表示无期限，-2 表示键不存在。
+**普通 SET 清除已有 TTL，SET KEEPTTL 保留期限。**
+
+INCR 和 HSET 修改键内数据时保留整键 TTL。Redis 7.0 起可用 `EXPIRE key seconds GT` 只延长已有期限。TTL 的 -1 表示无期限，-2 表示键不存在。
 
 </details>
 
@@ -120,7 +126,9 @@ Redis 用访问检查和主动抽样清理过期键。清理有执行预算，�
 <details>
 <summary>参考回答</summary>
 
-过期通知无法保证准点且可靠地完成取消。通知发生在实际清理时，断线期间也会丢失消息。订单应保存持久化的到期时间和状态。任务执行需幂等，并用重试和补偿扫描确保恢复。
+**过期通知无法保证准点且可靠地完成取消。**
+
+通知发生在实际清理时，断线期间也会丢失消息。订单应保存持久化的到期时间和状态。任务执行需幂等，并用重试和补偿扫描确保恢复。
 
 </details>
 

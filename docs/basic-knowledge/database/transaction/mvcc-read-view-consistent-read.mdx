@@ -3,19 +3,21 @@ sidebar_position: 4
 knowledge:
   id: basic-knowledge.database.transaction.mvcc-read-view-consistent-read
   type: concept
+description: "MVCC 多版本并发控制通过历史版本支持并发读取。本文讲解 MySQL 8.0 的 undo 链、Read View 与 RC、RR 快照差异。本文适合准备数据库面试的读者。读者可通过双会话推演快照读、当前读和混合读写的可见性。读者还可分析长快照成本。"
+keywords: ["多版本并发控制", "Read View", "undo log", "快照读", "RC 与 RR"]
 ---
 
 # MVCC
 
-MVCC 通过历史版本减少 InnoDB 普通读取与写入之间的阻塞。本文讲解 MySQL 8.0 RC/RR 的版本链与 Read View。内容还包括混合读写的可见性。ACID 与提交边界见 [数据库事务](./index.mdx)，锁定范围见 [InnoDB 锁](./innodb-locking-ranges.mdx)。
+MVCC 通过历史版本减少 InnoDB 普通读取与写入之间的阻塞。本文讲解 MySQL 8.0 RC/RR 的版本链与 Read View。内容还包括混合读写的可见性。
 
 ## 1. 面试核心 {#core}
 
-- MVCC 通过事务信息、undo 历史版本与 Read View 判断可见性。写写冲突仍需要锁。[卡](#mvcc-repeatable-read)
-- RC 每次一致性读创建 Read View。RR 复用首次一致性读的 Read View。`WITH CONSISTENT SNAPSHOT` 可在 RR 事务启动时建立快照。[卡](#snapshot-timing)
-- 当前事务自己的修改可见。其他事务的修改若对快照不可见，InnoDB 就沿版本链寻找旧值。[卡](#mvcc-repeatable-read)
-- RR 的普通 SELECT 使用旧快照。FOR UPDATE 与 UPDATE 使用当前记录。事务自己的修改对后续 SELECT 可见。[卡](#snapshot-current-read) [卡](#rr-update-new-row)
-- 活跃 Read View 需要保留旧版本，会延迟 purge 清理。导出分批提交会切换快照。[卡](#long-snapshot)
+- **版本可见性。** MVCC 通过事务信息、undo 历史版本与 Read View 判断可见性。写写冲突仍需要锁。[卡](#mvcc-repeatable-read)
+- **快照建立时机。** RC 每次一致性读创建 Read View。RR 复用首次一致性读的 Read View。`WITH CONSISTENT SNAPSHOT` 可在 RR 事务启动时建立快照。[卡](#snapshot-timing)
+- **版本链与自身修改。** 当前事务自己的修改可见。其他事务的修改若对快照不可见，InnoDB 就沿版本链寻找旧值。[卡](#mvcc-repeatable-read)
+- **快照读与当前读。** RR 的普通 SELECT 使用旧快照。FOR UPDATE 与 UPDATE 使用当前记录。事务自己的修改对后续 SELECT 可见。[卡](#snapshot-current-read) [卡](#rr-update-new-row)
+- **长快照成本。** 活跃 Read View 需要保留旧版本，会延迟 purge 清理。导出分批提交会切换快照。[卡](#long-snapshot)
 
 ## 2. 行版本与 undo 链 {#1-行版本通过事务信息连接}
 
@@ -156,9 +158,11 @@ undo 信息用于回滚未提交修改。它也用于构造一致性读需要的
 <details>
 <summary>参考回答</summary>
 
-InnoDB 通过 undo 版本链和 Read View 实现快照读取。RR 事务内复用 Read View，从而实现可重复读。普通一致性读创建 Read View，再根据事务状态判断版本可见性。事务分为快照建立时已提交、仍活跃和后来开始三类。最新版本不可见时，就沿版本链查找更早版本。
+**InnoDB 用 undo 版本链保存历史值，用 Read View 判断哪些版本可见；RR 事务内复用 Read View，实现可重复读。**
 
-Read Committed 每次一致性读创建新快照，所以能看到其间新提交的数据。Repeatable Read 在第一次一致性读时建立快照。后续快照读复用它，因此结果保持在同一可见范围。锁定读和更新需要读取当前版本。它们通过记录锁或 next-key lock 控制并发，锁定规则见 [InnoDB 锁](./innodb-locking-ranges.mdx)。
+一致性读按快照建立时的事务状态判断可见性，最新版本不可见时，沿 undo 链寻找更早版本。RC 每次一致性读创建新快照，RR 则复用首次一致性读的快照，因此后者保持相同的外部版本可见范围。
+
+本事务自己的修改仍可见。锁定读和更新使用当前记录，写入冲突由[索引锁](./innodb-locking-ranges.mdx)控制，不按旧快照直接决定修改结果。
 
 </details>
 
@@ -178,7 +182,9 @@ Read Committed 每次一致性读创建新快照，所以能看到其间新提�
 <details>
 <summary>参考回答</summary>
 
-可以。RR 的普通显式事务在首次一致性读时创建 Read View。因此，查询能看到 BEGIN 之后、该次读取之前提交的值。RR 的 WITH CONSISTENT SNAPSHOT 会提前建立快照；RC 则为每次一致性读获取新快照。
+**可以。**
+
+RR 的普通显式事务在首次一致性读时创建 Read View。因此，查询能看到 BEGIN 之后、该次读取之前提交的值。RR 的 WITH CONSISTENT SNAPSHOT 会提前建立快照；RC 则为每次一致性读获取新快照。
 
 </details>
 
@@ -198,7 +204,9 @@ Read Committed 每次一致性读创建新快照，所以能看到其间新提�
 <details>
 <summary>参考回答</summary>
 
-普通 SELECT 按旧 Read View 取版本。FOR UPDATE 锁定当前记录，能读到快照之后已提交的版本。有冲突的未提交写入时仍要等待。锁定读不会刷新原有快照，自己的更新又对自己可见。因此，混合读写的结果包含自己的新版本与其他行的旧版本。并发不变量应使用原子更新或明确的锁协议。
+**普通 SELECT 按旧 Read View 取版本。**
+
+FOR UPDATE 锁定当前记录，能读到快照之后已提交的版本。有冲突的未提交写入时仍要等待。锁定读不会刷新原有快照，自己的更新又对自己可见。因此，混合读写的结果包含自己的新版本与其他行的旧版本。并发不变量应使用原子更新或明确的锁协议。
 
 </details>
 
@@ -218,7 +226,9 @@ Read Committed 每次一致性读创建新快照，所以能看到其间新提�
 <details>
 <summary>参考回答</summary>
 
-只读事务持有 Read View，所需的旧版本必须保留。其他事务持续更新时，就会累积 undo 历史。缩短快照或控制导出负载可以降低保留成本。分批提交允许使用新快照。业务接受跨批次不一致时，才能直接这样改。
+**只读事务持有 Read View，所需的旧版本必须保留。**
+
+其他事务持续更新时，就会累积 undo 历史。缩短快照或控制导出负载可以降低保留成本。分批提交允许使用新快照。业务接受跨批次不一致时，才能直接这样改。
 
 </details>
 
@@ -235,7 +245,9 @@ Read Committed 每次一致性读创建新快照，所以能看到其间新提�
 <details>
 <summary>参考回答</summary>
 
-UPDATE 使用当前读，修改了另一事务已提交的新行。后续 SELECT 能看到本事务自己的修改，所以返回该行。以 `id=2` 为例，旧快照先返回空。UPDATE 将新插入的 200 改成 201，SELECT 随后返回 201。原 Read View 仍保持不变。这种新增可见行来自自己的写入。
+**UPDATE 使用当前读，修改了另一事务已提交的新行。**
+
+后续 SELECT 能看到本事务自己的修改，所以返回该行。以 `id=2` 为例，旧快照先返回空。UPDATE 将新插入的 200 改成 201，SELECT 随后返回 201。原 Read View 仍保持不变。这种新增可见行来自自己的写入。
 
 </details>
 

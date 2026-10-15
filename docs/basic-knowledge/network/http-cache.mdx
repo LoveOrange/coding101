@@ -3,18 +3,20 @@ sidebar_position: 8
 knowledge:
   id: basic-knowledge.network.http-cache
   type: concept
+description: "HTTP 缓存通过复用响应减少传输与源站计算。本文讲解存储规则、新鲜度、条件请求与共享缓存，分析 Vary 的作用。本文适合准备网络面试的读者。读者可练习区分直接复用和向服务器验证。读者还可判断不同请求的缓存匹配条件。"
+keywords: ["Cache-Control", "ETag", "Last-Modified", "协商缓存", "强缓存"]
 ---
 
 # HTTP 缓存
 
-HTTP 缓存复用已有响应，减少传输与源站计算。本文负责缓存存储、新鲜度和条件验证。业务缓存更新见[缓存一致性](../nosql/redis/cache-patterns-consistency.mdx)。
+HTTP 缓存复用已有响应，减少传输与源站计算。本文负责缓存存储、新鲜度和条件验证。
 
 ## 1. 面试核心 {#core}
 
-- 新鲜响应可直接复用，过期响应按规则验证或重新获取。
-- 无字段参数的 no-cache 要求复用前验证，no-store 禁止存储。[卡](#no-cache-no-store-304)
-- GET 的 If-None-Match 匹配当前 ETag 时可返回 304。[卡](#cache-validator-priority)
-- s-maxage 设置共享缓存寿命，Vary 扩展响应匹配条件。[卡](#shared-cache-vary)
+- **新鲜度。** 新鲜响应可直接复用，过期响应按规则验证或重新获取。
+- **缓存指令。** 无字段参数的 no-cache 要求复用前验证，no-store 禁止存储。[卡](#no-cache-no-store-304)
+- **条件验证。** GET 的 If-None-Match 匹配当前 ETag 时可返回 304。[卡](#cache-validator-priority)
+- **共享缓存。** s-maxage 设置共享缓存寿命，Vary 扩展响应匹配条件。[卡](#shared-cache-vary)
 
 ## 2. 存储与新鲜度 {#存储与新鲜度}
 
@@ -76,7 +78,9 @@ must-revalidate 要求过期后成功验证才能复用。源站失联时，缓�
 <details>
 <summary>参考回答</summary>
 
-no-cache 允许存储，但复用前必须验证。no-store 禁止存储本次请求或响应。这里的 no-cache 没有字段参数。GET 验证当前表示未变时可收到 304。客户端复用旧响应体，仍有一次网络往返。
+**no-cache 允许存储，但复用前必须验证。**
+
+no-store 禁止存储本次请求或响应。这里的 no-cache 没有字段参数。GET 验证当前表示未变时可收到 304。客户端复用旧响应体，仍有一次网络往返。
 
 </details>
 
@@ -93,7 +97,9 @@ no-cache 允许存储，但复用前必须验证。no-store 禁止存储本次�
 <details>
 <summary>参考回答</summary>
 
-If-None-Match 优先，服务器忽略 If-Modified-Since。GET 中 ETag 匹配可返回 304。时间验证受秒级精度约束，ETag 则标识表示版本。If-None-Match 允许弱比较，If-Range 要求强验证器。
+**If-None-Match 优先，服务器忽略 If-Modified-Since。**
+
+GET 中 ETag 匹配可返回 304。时间验证受秒级精度约束，ETag 则标识表示版本。If-None-Match 允许弱比较，If-Range 要求强验证器。
 
 </details>
 
@@ -110,7 +116,9 @@ If-None-Match 优先，服务器忽略 If-Modified-Since。GET 中 ETag 匹配�
 <details>
 <summary>参考回答</summary>
 
-使用 max-age 设置私有缓存寿命。再用 s-maxage 指定共享缓存寿命。Vary: Accept-Encoding 让缓存匹配请求编码。缓存还需遵守 private 和鉴权规则。
+**用 `max-age` 设置基本缓存寿命，再用 `s-maxage` 为 CDN 等共享缓存覆盖该值。**
+
+`Vary: Accept-Encoding` 让缓存按请求的编码能力匹配响应。共享缓存还需遵守 `private` 和鉴权规则，避免把用户私有响应用于其他请求。
 
 </details>
 

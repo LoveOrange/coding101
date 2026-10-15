@@ -1,14 +1,20 @@
 ---
 sidebar_position: 0
+description: "Java I/O 目录覆盖字节流、字符流、NIO、零拷贝与原生序列化。页面按数据搬运和 I/O 模型组织专题，并链接资源关闭相关内容。本文适合准备 Java 面试的读者。读者可复习编码、通道读写、缓冲区状态和对象恢复的使用边界。"
+keywords: ["Java I/O 复习", "文件读写", "NIO 面试", "序列化基础"]
 ---
 
 # Java I/O
 
-Java I/O 处理字节、文本、文件、网络端点和序列化。资源关闭的异常语义统一放在 Java 异常中，本目录关注数据搬运与 I/O 模型。
+本栏目介绍 Java 的文件与网络读写，以及对象的序列化。复习时，从字节和文本的处理入手，逐步理解数据怎样读取、转换和写出。
+
+流的关闭顺序与异常处理见 [Java 异常](../language/exceptions-error-boundaries.mdx#try-with-resources-与资源关闭)。
 
 ## 内容
 
-- [Java 流式 I/O](./byte-character-buffered-streams.mdx)
-- [Java NIO](./buffer-channel-selector.mdx)
-- [零拷贝](./file-mapping-zero-copy-direct-memory.mdx)
-- [Java 序列化](./java-serialization-compatibility-security.mdx)
+可以按下面的**复习顺序**阅读：
+
+- [Java 流式 I/O](./byte-character-buffered-streams.mdx)：先掌握字节流、字符流、编码转换与缓冲。
+- [Java NIO](./buffer-channel-selector.mdx)：再学习缓冲区状态、通道读写与就绪事件。
+- [零拷贝](./file-mapping-zero-copy-direct-memory.mdx)：比较文件传输、内存映射和直接内存各自减少的开销。
+- [Java 序列化](./java-serialization-compatibility-security.mdx)：理解对象如何保存和恢复，以及版本兼容与不可信输入的边界。

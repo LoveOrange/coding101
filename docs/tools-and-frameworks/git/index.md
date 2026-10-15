@@ -3,6 +3,8 @@ sidebar_position: 1
 tags:
   - git
   - tools
+description: "Git 用对象和引用保存项目快照与开发历史。本文讲解工作区、暂存区、分支、合并和变基，覆盖冲突、撤销与协作。本文适合准备工程面试的读者。读者可练习判断命令影响的区域，并组织便于审查和核对的提交。"
+keywords: ["Git 面试", "merge 与 rebase", "reset 与 revert", "Git 冲突", "工作区暂存区"]
 ---
 # Git
 

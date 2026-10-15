@@ -3,19 +3,21 @@ sidebar_position: 5
 knowledge:
   id: basic-knowledge.database.transaction.deadlock-detection-timeout-retry
   type: concept
+description: "数据库死锁源于事务之间的循环等待。本文讲解 MySQL 8.0 的检测、超时、错误码和完整事务重试，提供双会话复现。本文适合准备后端面试的读者。读者可练习读取死锁日志，并分析锁顺序、回滚范围和外部副作用。"
+keywords: ["InnoDB 死锁", "锁等待超时", "事务重试", "死锁日志"]
 ---
 
 # 数据库死锁
 
-数据库死锁是事务之间的循环等待。本文负责 MySQL 8.0 InnoDB 的检测、诊断和失败重试。锁类型与区间见 [InnoDB 锁](./innodb-locking-ranges.mdx)。
+数据库死锁是事务之间的循环等待。本文负责 MySQL 8.0 InnoDB 的检测、诊断和失败重试。
 
 ## 1. 面试核心 {#core}
 
-- 事务各自持锁并等待对方资源时，形成死锁等待环。[卡](#handle-deadlock)
-- `innodb_deadlock_detect=ON` 时，检测到死锁会回滚一个事务。
-- 1213 回滚整个事务，1205 在 `innodb_rollback_on_timeout=OFF` 时只回滚语句。[卡](#deadlock-timeout-retry)
-- `innodb_deadlock_detect=OFF` 时，InnoDB 依靠锁等待超时解除死锁。[卡](#deadlock-detection-off)
-- 数据库回滚只撤销受其管理的修改，外部调用结果仍需幂等处理。
+- **循环等待。** 事务各自持锁并等待对方资源时，形成死锁等待环。[卡](#handle-deadlock)
+- **死锁检测。** `innodb_deadlock_detect=ON` 时，检测到死锁会回滚一个事务。
+- **错误与回滚范围。** 1213 回滚整个事务，1205 在 `innodb_rollback_on_timeout=OFF` 时只回滚语句。[卡](#deadlock-timeout-retry)
+- **关闭检测的影响。** `innodb_deadlock_detect=OFF` 时，InnoDB 依靠锁等待超时解除死锁。[卡](#deadlock-detection-off)
+- **外部副作用。** 数据库回滚只撤销受其管理的修改，外部调用结果仍需幂等处理。
 
 ## 2. 死锁的形成 {#死锁的形成}
 
@@ -147,9 +149,11 @@ INSERT INTO deadlock_demo VALUES (1,0),(2,0);
 <details>
 <summary>参考回答</summary>
 
-先记录死锁中的持有锁、等待锁和参与事务。用 `SHOW ENGINE INNODB STATUS` 查看最近事件。需要完整事件记录时，设置 `innodb_print_all_deadlocks=ON`。
+**定位死锁要还原参与事务的持锁与等待关系；处理上打破等待环，并在新事务中有界重试。**
 
-再还原事务中的全部 SQL，并对照索引扫描路径。统一资源顺序、缩短事务和缩小扫描范围能减少冲突。1213 已回滚整个事务，重试应放在新事务中。退避、次数上限和幂等用于控制重复副作用。
+用 `SHOW ENGINE INNODB STATUS` 查看最近死锁，需要完整记录时开启 `innodb_print_all_deadlocks=ON`。核对全部 SQL 和索引扫描路径，再通过统一访问顺序、缩短事务和缩小扫描范围减少冲突。
+
+收到 1213 时整个事务已经回滚，应重新执行完整业务单元，并使用退避、次数上限和幂等控制重复副作用。
 
 </details>
 
@@ -169,7 +173,9 @@ INSERT INTO deadlock_demo VALUES (1,0),(2,0);
 <details>
 <summary>参考回答</summary>
 
-1213 回滚整个事务。1205 在 `innodb_rollback_on_timeout=OFF` 时只回滚当前语句。该参数为 ON 时，1205 回滚整个事务。业务单元需整体重试时，应结束原事务后重新开始。仅重放末条 SQL 会遗漏此前判断和已撤销的修改。
+**1213 回滚整个事务。**
+
+1205 在 `innodb_rollback_on_timeout=OFF` 时只回滚当前语句。该参数为 ON 时，1205 回滚整个事务。业务单元需整体重试时，应结束原事务后重新开始。仅重放末条 SQL 会遗漏此前判断和已撤销的修改。
 
 </details>
 
@@ -189,7 +195,9 @@ INSERT INTO deadlock_demo VALUES (1,0),(2,0);
 <details>
 <summary>参考回答</summary>
 
-关闭检测或延长等待时间都保留了循环依赖。`innodb_deadlock_detect=OFF` 后，由锁等待超时解除阻塞。它能减少检测开销，但延后故障恢复。调整应基于热点负载测试，应用仍需结束失败事务。
+**关闭检测或延长等待时间都保留了循环依赖。**
+
+`innodb_deadlock_detect=OFF` 后，由锁等待超时解除阻塞。它能减少检测开销，但延后故障恢复。调整应基于热点负载测试，应用仍需结束失败事务。
 
 </details>
 
@@ -206,7 +214,9 @@ INSERT INTO deadlock_demo VALUES (1,0),(2,0);
 <details>
 <summary>参考回答</summary>
 
-A 先更新行 1，B 先更新行 2，均保持事务打开。A 再更新行 2 等待，B 再更新行 1，便形成环。检测开启时，一个事务收到 1213 并整体回滚。若只有 A 等待 B，则可超时返回 1205。实验后两边均显式回滚。
+**A 先更新行 1，B 先更新行 2，均保持事务打开。**
+
+A 再更新行 2 等待，B 再更新行 1，便形成环。检测开启时，一个事务收到 1213 并整体回滚。若只有 A 等待 B，则可超时返回 1205。实验后两边均显式回滚。
 
 </details>
 

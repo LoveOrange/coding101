@@ -3,19 +3,21 @@ sidebar_position: 2
 knowledge:
   id: devops.containers.docker-images
   type: concept
+description: "Docker 镜像由文件系统层和运行配置组成。本文讲解 Dockerfile 指令、构建缓存、多阶段优化与数据挂载。本文适合准备运维面试的读者。读者可练习检查层复用和持久存储。读者可分析镜像体积、构建速度及密钥处理的边界。"
+keywords: ["Dockerfile 指令", "Docker 构建缓存", "多阶段构建", "数据卷", "镜像 digest"]
 ---
 
 # Docker 镜像与 Dockerfile
 
-Docker 镜像保存文件系统层与运行配置。本文负责 Dockerfile、构建缓存和数据挂载。容器隔离及 copy-up 机制见 [容器原理](./container-principles.mdx)。
+Docker 镜像保存文件系统层与运行配置。本文负责 Dockerfile、构建缓存和数据挂载。
 
 ## 1. 面试核心 {#core}
 
-- 镜像保存只读层与元数据，容器另有独立可写层。[卡](#image-layers-storage)
-- exec 格式的 `ENTRYPOINT` 指定程序，`CMD` 提供默认参数。[卡](#dockerfile-instructions)
-- 多阶段构建只向运行阶段复制所需产物。[卡](#image-optimization)
-- 卷的生命周期独立于容器，可保存持久数据。[卡](#image-layers-storage)
-- BuildKit secret 挂载按构建步骤提供密钥。[卡](#build-secrets-digests)
+- **镜像与容器。** 镜像保存只读层与元数据，容器另有独立可写层。[卡](#image-layers-storage)
+- **启动命令。** exec 格式的 `ENTRYPOINT` 指定程序，`CMD` 提供默认参数。[卡](#dockerfile-instructions)
+- **多阶段构建。** 多阶段构建只向运行阶段复制所需产物。[卡](#image-optimization)
+- **数据持久化。** 卷的生命周期独立于容器，可保存持久数据。[卡](#image-layers-storage)
+- **构建密钥。** BuildKit secret 挂载按构建步骤提供密钥。[卡](#build-secrets-digests)
 
 ## 2. 常用指令 {#常用指令}
 
@@ -157,11 +159,11 @@ RUN --mount=type=secret,id=token,required=true \
 <details>
 <summary>参考回答</summary>
 
-`RUN` 在构建时执行，`ENTRYPOINT` 与 `CMD` 决定启动行为。`FROM` 指定基础镜像，`COPY` 复制输入文件。`WORKDIR`、`ENV`、`USER` 设置运行配置。`EXPOSE` 声明端口，`HEALTHCHECK` 定义检查命令。
+**Dockerfile 分别定义构建步骤、运行配置和启动命令；`COPY` 负责明确的文件复制，`ADD` 还提供远程来源和解包能力。**
 
-exec 格式 `ENTRYPOINT` 指定程序，`CMD` 提供默认参数。运行时的参数覆盖 `CMD`。`--entrypoint` 可替换入口程序。入口脚本通过 `exec` 把信号接收责任交给应用。
-
-`COPY --from` 支持其他阶段或镜像。`ADD` 另支持远程来源和本地 tar 解包。普通文件复制使用 `COPY`，行为更明确。
+- **构建与配置。** `FROM` 指定基础镜像，`RUN` 执行构建命令。`WORKDIR`、`ENV`、`USER` 设置运行配置，`EXPOSE` 声明端口，`HEALTHCHECK` 定义检查命令。
+- **启动命令。** exec 格式的 `ENTRYPOINT` 指定程序，`CMD` 提供默认参数。运行时参数覆盖 `CMD`，`--entrypoint` 可替换入口程序。入口脚本用 `exec` 将信号接收交给应用。
+- **文件复制。** `COPY --from` 可从其他阶段或镜像复制。`ADD` 另支持远程来源和本地 tar 解包；普通复制使用 `COPY`，输入行为更明确。
 
 </details>
 
@@ -187,7 +189,9 @@ exec 格式 `ENTRYPOINT` 指定程序，`CMD` 提供默认参数。运行时的�
 <details>
 <summary>参考回答</summary>
 
-多阶段构建减少运行镜像内容，缓存复用缩短构建时间。最终阶段只复制产物，使用满足运行要求的基础镜像。安装与清理放在同一步骤，避免旧层保留缓存。
+**多阶段构建减少运行镜像内容，缓存复用缩短构建时间。**
+
+最终阶段只复制产物，使用满足运行要求的基础镜像。安装与清理放在同一步骤，避免旧层保留缓存。
 
 先复制依赖清单，再安装依赖，最后复制源码。`.dockerignore` 排除无关输入。BuildKit cache 挂载复用依赖下载。CI 还可导入和导出远程缓存。`docker history` 用于检查优化后的镜像历史。
 
@@ -213,7 +217,9 @@ exec 格式 `ENTRYPOINT` 指定程序，`CMD` 提供默认参数。运行时的�
 <details>
 <summary>参考回答</summary>
 
-镜像是文件层与配置，容器是镜像的运行实例。运行时为容器增加独立可写层。停止后的容器仍保留该层，删除容器才移除它。
+**镜像是文件层与配置，容器是镜像的运行实例。**
+
+运行时为容器增加独立可写层。停止后的容器仍保留该层，删除容器才移除它。
 
 分层让镜像共享相同内容，拉取时可复用已有层。卷和绑定挂载可让多个容器访问同一份数据。卷独立于容器生命周期，绑定挂载直接使用宿主路径。tmpfs 的内容在容器停止后消失。共享写入仍需要应用协调。
 
@@ -232,7 +238,9 @@ exec 格式 `ENTRYPOINT` 指定程序，`CMD` 提供默认参数。运行时的�
 <details>
 <summary>参考回答</summary>
 
-tag 可指向新内容，digest 才固定所引用的镜像内容。完整构建还需固定依赖和下载输入。密钥通过 BuildKit secret 挂载传入。ARG、ENV 和后续删除的文件都会留下暴露风险。密钥变化不会自动使缓存失效。需要重新执行时，应显式调整缓存输入。
+**tag 可指向新内容，digest 才固定所引用的镜像内容。**
+
+完整构建还需固定依赖和下载输入。密钥通过 BuildKit secret 挂载传入。ARG、ENV 和后续删除的文件都会留下暴露风险。密钥变化不会自动使缓存失效。需要重新执行时，应显式调整缓存输入。
 
 </details>
 

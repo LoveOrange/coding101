@@ -3,19 +3,21 @@ sidebar_position: 3
 knowledge:
   id: system-design.production.logs-metrics-traces-correlation
   type: concept
+description: "可观测性通过指标、日志与链路解释系统行为。本文讲解信号分工、关联标识、上下文传播、采样和遥测管道。本文适合准备后端面试的读者。读者可练习从告警下钻到具体请求。读者还可分析分位数聚合和尾部采样的使用边界。"
+keywords: ["Observability", "Logs Metrics Traces", "分布式追踪", "上下文传播", "采样"]
 ---
 
 # 可观测性
 
-可观测性通过日志、指标与 Trace 解释系统行为。本文负责信号分工、上下文、采样和聚合边界。跨层定位方法见[生产故障诊断](./jvm-thread-sql-network-joint-diagnosis.mdx)。
+可观测性通过日志、指标与 Trace 解释系统行为。本文负责信号分工、上下文、采样和聚合边界。
 
 ## 1. 面试核心 {#core}
 
-- 指标保存聚合趋势，日志记录事件，Trace 连接调用路径。[卡](#logs-metrics-traces)
-- Trace ID 关联技术调用，业务 ID 关联跨请求流程。
-- Histogram 可聚合分布，多个实例的 P99 无法直接取平均。[卡](#histogram-aggregate-quantile)
-- Tail sampling 仅能选择已到达采样器的数据。[卡](#tail-sampling-missing-spans)
-- 高基数标签会增加时间序列数量与存储成本。
+- **三类观测信号。** 指标保存聚合趋势，日志记录事件，Trace 连接调用路径。[卡](#logs-metrics-traces)
+- **技术与业务关联。** Trace ID 关联技术调用，业务 ID 关联跨请求流程。
+- **延迟分布聚合。** Histogram 可聚合分布，多个实例的 P99 无法直接取平均。[卡](#histogram-aggregate-quantile)
+- **尾部采样范围。** Tail sampling 仅能选择已到达采样器的数据。[卡](#tail-sampling-missing-spans)
+- **标签基数。** 高基数标签会增加时间序列数量与存储成本。
 
 ## 2. 指标 {#指标}
 
@@ -133,7 +135,9 @@ Trace 展示调用关系，日志保存状态变化与异常细节。按 Trace I
 <details>
 <summary>参考回答</summary>
 
-指标描述总体趋势，Trace 解释调用样本，日志补充事件细节。三者按时间、版本和 Trace ID 关联。排障从 SLI 确认范围，再看慢 span 与对应日志。
+**指标描述总体趋势，Trace 解释调用样本，日志补充事件细节。**
+
+三者按时间、版本和 Trace ID 关联。排障从 SLI 确认范围，再看慢 span 与对应日志。
 
 业务 ID 连接跨请求流程，避免作为无界指标标签。Trace 采样控制成本，完整请求统计由独立指标承担。遥测导出使用有界缓冲，并监控丢弃情况。
 
@@ -152,7 +156,9 @@ Trace 展示调用关系，日志保存状态变化与异常细节。按 Trace I
 <details>
 <summary>参考回答</summary>
 
-应聚合延迟分布后重新计算 P99。实例 P99 的平均值缺少完整分布与请求权重。经典 histogram 先按相同 bucket 求和，再用 `histogram_quantile` 计算。Summary 的预计算分位数无法直接合并。
+**应聚合延迟分布后重新计算 P99。**
+
+实例 P99 的平均值缺少完整分布与请求权重。经典 histogram 先按相同 bucket 求和，再用 `histogram_quantile` 计算。Summary 的预计算分位数无法直接合并。
 
 </details>
 
@@ -169,7 +175,9 @@ Trace 展示调用关系，日志保存状态变化与异常细节。按 Trace I
 <details>
 <summary>参考回答</summary>
 
-错误 Trace 仍会因前置采样或导出丢失而缺失。Tail sampler 只能选择收到的数据。同一 Trace 还需汇聚到同一决策节点。排查时核对 head 采样、等待窗口和缓冲丢弃。
+**错误 Trace 仍会因前置采样或导出丢失而缺失。**
+
+Tail sampler 只能选择收到的数据。同一 Trace 还需汇聚到同一决策节点。排查时核对 head 采样、等待窗口和缓冲丢弃。
 
 </details>
 

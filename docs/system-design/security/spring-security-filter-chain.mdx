@@ -3,19 +3,21 @@ sidebar_position: 3
 knowledge:
   id: system-design.security.spring-security-filter-chain
   type: concept
+description: "Spring Security 安全框架在过滤器链中处理身份与权限。本文讲解多链匹配、认证管理器、安全上下文与异常转换。本文适合准备 Spring 安全面试的读者。读者可练习推演 会话和令牌认证请求，并检查方法权限和数据授权的范围。"
+keywords: ["SecurityFilterChain", "SecurityContext", "AuthenticationManager", "Bearer Token", "方法授权"]
 ---
 
 # Spring Security
 
-Spring Security 在 Servlet 过滤器链中处理认证与授权。本文以 Spring Security 6.5 为基准。重点是多链匹配、上下文生命周期和方法权限。协议区别见 [Session、JWT、OAuth 2.0 与 OIDC](./session-jwt-oauth-oidc.mdx)。
+Spring Security 在 Servlet 过滤器链中处理认证与授权。本文以 Spring Security 6.5 为基准。重点是多链匹配、上下文生命周期和方法权限。
 
 ## 1. 面试核心 {#core}
 
-- `DelegatingFilterProxy` 将容器调用委托给 Spring 中的 `FilterChainProxy`。
-- `FilterChainProxy` 每次选择第一条匹配的 `SecurityFilterChain`。[卡](#security-filter-chain)
-- Spring Security 6 默认要求显式保存跨请求的安全上下文。[卡](#explicit-context-save)
-- `ExceptionTranslationFilter` 将下游安全异常交给认证入口或拒绝处理器。
-- `@EnableMethodSecurity` 启用方法授权，代理边界影响注解生效。[卡](#method-security-proxy)
+- **容器与 Spring 的衔接。** `DelegatingFilterProxy` 将容器调用委托给 Spring 中的 `FilterChainProxy`。
+- **过滤器链选择。** `FilterChainProxy` 每次选择第一条匹配的 `SecurityFilterChain`。[卡](#security-filter-chain)
+- **安全上下文保存。** Spring Security 6 默认要求显式保存跨请求的安全上下文。[卡](#explicit-context-save)
+- **安全异常处理。** `ExceptionTranslationFilter` 将下游安全异常交给认证入口或拒绝处理器。
+- **方法授权。** `@EnableMethodSecurity` 启用方法授权，代理边界影响注解生效。[卡](#method-security-proxy)
 
 ## 2. DelegatingFilterProxy {#delegatingfilterproxy}
 
@@ -119,7 +121,9 @@ Session 登录通过上下文仓库跨请求恢复身份。无状态 API 每次�
 <details>
 <summary>参考回答</summary>
 
-容器通过 DelegatingFilterProxy 调用 FilterChainProxy。后者选择首条匹配链，再按顺序调用过滤器。
+**容器通过 DelegatingFilterProxy 调用 FilterChainProxy。**
+
+后者选择首条匹配链，再按顺序调用过滤器。
 
 认证过滤器委托 AuthenticationManager 验证凭据。认证结果进入 SecurityContext，授权过滤器再判断权限。请求结束后清理上下文。异常响应由相应 entry point 或失败处理器决定。
 
@@ -138,7 +142,9 @@ Session 登录通过上下文仓库跨请求恢复身份。无状态 API 每次�
 <details>
 <summary>参考回答</summary>
 
-若只设置 ThreadLocal，上下文就仅在当前请求中生效。Spring Security 6 默认要求显式保存跨请求状态。
+**若只设置 ThreadLocal，上下文就仅在当前请求中生效。**
+
+Spring Security 6 默认要求显式保存跨请求状态。
 
 排查时检查认证成功后是否调用 `saveContext`。再核对仓库配置、Session Cookie 与无状态策略。该问题也需结合实际登录实现定位。
 
@@ -157,7 +163,9 @@ Session 登录通过上下文仓库跨请求恢复身份。无状态 API 每次�
 <details>
 <summary>参考回答</summary>
 
-默认代理模式下，同类内部调用绕过方法拦截。`@EnableMethodSecurity` 启用后，外部调用还需经过代理。
+**默认代理模式下，同类内部调用绕过方法拦截。**
+
+`@EnableMethodSecurity` 启用后，外部调用还需经过代理。
 
 可将受保护操作放在独立 Bean，并经代理调用。测试同时覆盖 HTTP 入口和内部调用。资源归属仍由业务授权约束。
 

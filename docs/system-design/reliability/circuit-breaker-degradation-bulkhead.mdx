@@ -3,19 +3,21 @@ sidebar_position: 4
 knowledge:
   id: system-design.reliability.circuit-breaker-degradation-bulkhead
   type: concept
+description: "服务容错通过熔断、降级和舱壁隔离减少故障扩散。本文讲解熔断状态机、半开探测、回退结果与资源额度。本文适合准备系统设计面试的读者。读者可练习组合超时和容量保护。读者还可用指标验证故障影响是否限制在预期范围。"
+keywords: ["Circuit Breaker", "服务降级", "Bulkhead", "熔断器状态", "半开探测"]
 ---
 
 # 服务容错
 
-服务容错通过熔断、降级与舱壁减少故障扩散。本文负责健康状态机、业务回退和资源隔离。[超时](./timeout-budget-cancellation.mdx)负责等待边界，[限流](./rate-limiting-capacity-protection.mdx)负责入口容量。
+服务容错通过熔断、降级与舱壁减少故障扩散。本文负责健康状态机、业务回退和资源隔离。
 
 ## 1. 面试核心 {#core}
 
-- 熔断按依赖健康暂停调用，降级定义失败后的业务结果。[卡](#breaker-degrade-bulkhead)
-- 舱壁为依赖或租户分配独立并发、连接与队列额度。
-- Resilience4j 熔断需达到最小样本数后再比较失败率。[卡](#breaker-window-permits)
-- 半开状态只放有限探测，用结果判断恢复。
-- 熔断滑动窗口记录结果，并不限制并发调用数。[卡](#breaker-window-permits)
+- **熔断与降级。** 熔断按依赖健康暂停调用，降级定义失败后的业务结果。[卡](#breaker-degrade-bulkhead)
+- **舱壁隔离。** 舱壁为依赖或租户分配独立并发、连接与队列额度。
+- **熔断样本。** Resilience4j 熔断需达到最小样本数后再比较失败率。[卡](#breaker-window-permits)
+- **半开探测。** 半开状态只放有限探测，用结果判断恢复。
+- **并发限制。** 熔断滑动窗口记录结果，并不限制并发调用数。[卡](#breaker-window-permits)
 
 ## 2. 超时 {#超时}
 
@@ -130,7 +132,9 @@ Envoy 的 circuit breaking 主要配置资源上限。按错误摘除实例属�
 <details>
 <summary>参考回答</summary>
 
-熔断按健康状态暂停调用，降级定义失败后的业务结果。舱壁隔离并发与连接等资源，限流控制入口配额。它们处理不同的故障传播环节。
+**熔断按健康状态暂停调用，降级定义失败后的业务结果。**
+
+舱壁隔离并发与连接等资源，限流控制入口配额。它们处理不同的故障传播环节。
 
 熔断器通过窗口样本与半开探测判断状态。资源上限由舱壁独立执行。降级可返回旧缓存或异步受理，但需符合业务语义。指标同时验证保护触发原因与核心业务结果。
 
@@ -149,7 +153,9 @@ Envoy 的 circuit breaking 主要配置资源上限。按错误摘除实例属�
 <details>
 <summary>参考回答</summary>
 
-窗口 100 记录最近 100 次调用结果，并发数由舱壁控制。示例中 `minimumNumberOfCalls=20` 表示至少收集 20 次结果。随后才按 `failureRateThreshold=50` 判断失败率。半开探测另由 `permittedNumberOfCallsInHalfOpenState=3` 控制。
+**计数滑动窗口设为 100，表示记录最近 100 次调用结果；并发调用数由舱壁等资源限制控制。**
+
+例如，`minimumNumberOfCalls=20` 要求至少收集 20 次结果，之后才按 `failureRateThreshold=50` 判断失败率。半开阶段可用 `permittedNumberOfCallsInHalfOpenState=3` 单独限制探测次数。
 
 </details>
 

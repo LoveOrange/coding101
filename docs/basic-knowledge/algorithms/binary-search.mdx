@@ -3,18 +3,20 @@ sidebar_position: 2
 knowledge:
   id: basic-knowledge.algorithms.binary-search
   type: concept
+description: "二分查找利用单调性缩小候选范围。本文讲解半开区间不变量、左右边界、重复元素计数与答案二分。本文适合准备现场编码的读者。读者可通过边界推演检查循环终止条件。读者还可判断可行性函数是否支持二分。"
+keywords: ["Binary Search", "二分边界", "答案二分", "算法面试"]
 ---
 
 # 二分查找
 
-二分查找用单调判断反复缩小范围。本文负责半开区间、重复值边界与答案二分。数组的下标访问成本见[数组](../data-structures/array.mdx)。
+二分查找用单调判断反复缩小范围。本文负责半开区间、重复值边界与答案二分。
 
 ## 1. 面试核心 {#core}
 
-- 二分要求判断结果分成连续两段，每次排除一半候选。
-- lower bound 返回首个大于等于目标的位置。[卡](#equal-value)
-- upper bound 返回首个大于目标的位置，两边界之差是频次。[卡](#lower-upper-bound)
-- 答案范围宽度为 U、一次判定为 O(n) 时，总成本为 O(n log U)。
+- **单调性。** 二分要求判断结果分成连续两段。利用这个单调边界，每次排除一半候选，并保持答案仍在剩余区间内。
+- **左边界。** lower bound 返回首个大于等于目标的位置。遇到相等值仍需向左收缩，才能找到重复值的起点。[卡](#equal-value)
+- **右边界与频次。** upper bound 返回首个大于目标的位置，两边界之差是频次。[卡](#lower-upper-bound)
+- **答案二分。** 答案范围宽度为 U、一次判定为 O(n) 时，总成本为 O(n log U)。
 
 ## 2. 半开区间不变量 {#半开区间不变量}
 
@@ -69,7 +71,9 @@ lower bound 返回 n 是合法结果。读取前需检查 `index<a.length`，再
 <details>
 <summary>参考回答</summary>
 
-lower bound 要求最早合格位置，所以相等时继续收缩右界。查任意相等值时才可立即返回。统一不变量后，重复值和无解边界都能由同一循环处理。
+**lower bound 要求最早合格位置，所以相等时继续收缩右界。**
+
+查任意相等值时才可立即返回。统一不变量后，重复值和无解边界都能由同一循环处理。
 
 </details>
 
@@ -86,7 +90,9 @@ lower bound 要求最早合格位置，所以相等时继续收缩右界。查�
 <details>
 <summary>参考回答</summary>
 
-用 upper bound 减去 lower bound 即得次数。两者分别寻找首个大于和首个大于等于目标的位置。上界直接比较大小，避免 target+1 的整数溢出。
+**用 upper bound 减去 lower bound 即得次数。**
+
+两者分别寻找首个大于和首个大于等于目标的位置。上界直接比较大小，避免 target+1 的整数溢出。
 
 </details>
 

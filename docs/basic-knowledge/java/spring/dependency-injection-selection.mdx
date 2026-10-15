@@ -3,21 +3,25 @@ sidebar_position: 3
 knowledge:
   id: basic-knowledge.java.spring.dependency-injection-selection
   type: concept
+description: "依赖注入由容器为 Bean 提供协作对象。本文比较构造器、Setter 和字段注入，讲解候选选择、可选依赖与不同作用域。本文适合准备 Spring 面试的读者。读者可练习分析多个 Bean 的匹配规则，并判断延迟获取和名称解析的用途。"
+keywords: ["DI", "Autowired", "Qualifier", "ObjectProvider", "构造器注入"]
 ---
 
 # 依赖注入
 
-依赖注入让容器把协作对象交给 Bean。本文负责注入方式、候选选择与可选依赖。跨作用域获取见 [Spring 循环依赖](./circular-dependencies-scopes-early-exposure.mdx#作用域)。
+依赖注入由容器把协作对象交给 Bean，例如为订单服务提供仓库与支付客户端。本文先比较构造器、Setter 和字段注入，再说明多个候选 Bean 怎样选择，以及可选依赖和延迟获取怎样表达。最后介绍 `@Resource` 的名称解析规则。
 
 ## 1. 面试核心 {#core}
 
-- 构造器注入声明必需依赖，支持 `final` 字段和直接单元测试。[卡](#injection-styles)
-- Spring 4.3 起，单构造器 Bean 可省略 `@Autowired`。
-- `@Qualifier` 筛选候选，`@Primary` 决定单值注入的首选项。[卡](#autowired-resource-selection)
-- `@Resource` 优先按名称解析，默认名称缺失时可回退按类型。
-- `ObjectProvider.getIfAvailable()` 允许缺失，歧义仍会报错。[卡](#optional-provider-ambiguity)
+- **构造器注入。** 构造器注入让 Bean 在构造完成时取得必需依赖，字段可声明为 `final`，测试可直接传入替代对象。[卡](#injection-styles)
+- **单构造器约定。** Spring 4.3 起，单构造器 Bean 可省略 `@Autowired`。
+- **类型候选选择。** `@Autowired` 按类型寻找候选，`@Qualifier` 缩小候选范围，`@Primary` 为单值注入指定首选项。[卡](#autowired-resource-selection)
+- **名称解析。** `@Resource` 优先按名称解析，默认名称缺失时可回退按类型。
+- **可选与歧义。** `ObjectProvider.getIfAvailable()` 在没有候选时返回 null，但多个候选无法唯一选择时仍会报错。[卡](#optional-provider-ambiguity)
 
 ## 2. 构造器注入 {#构造器注入}
+
+对象要正常工作所必需的依赖，可以直接写在构造器参数中。这样，创建者必须先提供这些对象，才能完成构造：
 
 ```java
 @Service
@@ -34,11 +38,15 @@ public class OrderService {
 }
 ```
 
-对象构造完成时已经取得必需依赖。测试可直接传入桩对象，字段也可声明为 `final`。
+示例构造完成时已经取得仓库与支付客户端，满足了对象工作所需的基本约束。测试可直接传入桩对象，也就是为测试提供固定行为的替代实现，无需先启动容器。字段还可以声明为 `final`，让依赖引用在构造后保持不变。
 
-Spring 4.3 起，单构造器 Bean 可省略 `@Autowired`。存在多个构造器时，应明确指定注入入口。参数过多时，应重新检查职责分配。
+Spring 4.3 起，单构造器 Bean 可省略 `@Autowired`。存在多个构造器时，应明确指定注入入口。参数过多说明需要检查类的职责和依赖边界，改成字段注入只会隐藏这些依赖。
+
+构造器要求依赖先存在，因此直接依赖环会在创建阶段暴露，具体见 [Spring 循环依赖](./circular-dependencies-scopes-early-exposure.mdx#构造器注入的循环)。
 
 ## 3. Setter 注入 {#setter-注入}
+
+Setter 适合可选或确实需要重新配置的依赖。可选依赖缺失时，对象也要有明确行为，例如默认跳过审计输出：
 
 ```java
 private AuditSink auditSink = AuditSink.noop();
@@ -49,22 +57,26 @@ public void setAuditSink(AuditSink auditSink) {
 }
 ```
 
-缺少候选时，示例跳过 Setter，保留默认实现。Setter 适合可选或确需重新配置的依赖。必需协作对象应通过构造器明确表达。
+缺少 `AuditSink` 候选时，容器跳过这个 Setter，保留 `AuditSink.noop()` 默认实现。有候选时，再调用 Setter 替换它。若缺少依赖就无法工作，应改为构造器参数，避免把空值错误推迟到业务调用时。
+
+Setter 允许构造后替换依赖，因此对象还要面对依赖变化后的行为。只有确实需要重新配置时，才应保留这种可变性。
 
 ## 4. 字段注入 {#字段注入}
+
+字段注入让容器直接填充成员变量，声明更短，但依赖从构造器签名中消失了：
 
 ```java
 @Autowired
 private PaymentClient paymentClient;
 ```
 
-字段由容器在实例化后填充。直接 `new` 得到的对象尚未完成依赖注入。测试需要额外装配或反射。
+字段由容器在实例化后填充，因此直接 `new` 得到的对象还缺少支付客户端。测试需要启动容器、额外装配或借助反射，字段也难以通过正常构造赋值为 `final`。
 
-字段注入隐藏构造要求。新业务代码使用构造器，可让依赖从签名中直接可见。
+框架基础设施和遗留代码中仍会见到字段注入。新业务代码使用构造器，可以让必需依赖直接出现在签名中，也更容易独立测试。
 
 ## 5. 多个候选 Bean {#多个候选-bean}
 
-`@Autowired` 先按类型寻找候选，包括泛型信息。`@Qualifier` 再筛选符合限定条件的候选。单值注入可用 `@Primary` 指定首选。
+同一个接口有多个实现时，容器需要明确应该交付哪一个。`@Autowired` 先按类型寻找候选，也会利用泛型信息区分类型。`@Qualifier` 再筛选符合限定条件的候选，单值注入还可用 `@Primary` 指定首选：
 
 ```java
 OrderService(@Qualifier("online") PaymentClient client) {
@@ -72,15 +84,17 @@ OrderService(@Qualifier("online") PaymentClient client) {
 }
 ```
 
-`online` 可以是限定符，也可匹配候选 Bean 名。名称匹配仍发生在类型候选范围内。
+`online` 可以是限定符，也可匹配候选 Bean 名，但匹配范围始终是类型兼容的候选。限定符宜表达稳定的业务角色，例如线上支付，也可定义 `@OnlinePayment` 这样的业务注解。这样，更换实现类名称时，注入意图仍然清楚。
 
-无更强选择标记时，字段或参数名可匹配 Bean 名。Spring 6.1 起，参数名回退需要 `-parameters` 编译选项。存在多个无法唯一选择的候选时，注入报错。
+缺少更强的选择标记时，容器还可用字段名或参数名匹配 Bean 名。Spring 6.1 起，参数名回退需要启用 `-parameters` 编译选项，让编译产物保留参数名。若最终仍有多个候选无法唯一选择，注入就会报错。
 
-注入 `List<PaymentClient>` 会收集匹配候选。`@Primary` 对集合注入没有排除其他项的作用。`@Order` 可对列表排序；`Map<String, PaymentClient>` 的键为 Bean 名。
+业务需要多个实现共同参与时，可以注入 `List<PaymentClient>` 收集匹配候选。集合仍包含其他匹配项，`@Primary` 只为单值注入指定首选。列表顺序可通过 `@Order` 调整，注入 `Map<String, PaymentClient>` 时则以 Bean 名为键。
+
+按请求动态选择支付策略时，可以把这张 Map 交给明确的路由器。路由器需要校验传入的键，并定义找不到策略时的回退或报错行为。
 
 ## 6. `ObjectProvider` {#objectprovider}
 
-`ObjectProvider<T>` 把解析推迟到调用时。
+`ObjectProvider<T>` 让 Bean 先拿到获取依赖的入口，等实际调用时再向容器解析对象。它适合延迟创建或按需获取较短作用域的对象，不同方法对缺失与歧义的处理如下：
 
 | API | 缺失候选 | 多候选且无法唯一选择 |
 | --- | --- | --- |
@@ -89,34 +103,38 @@ OrderService(@Qualifier("online") PaymentClient client) {
 | `getIfUnique()` | 返回 null | 返回 null |
 | `orderedStream()` | 空流 | 按顺序遍历候选 |
 
-`Optional<T>` 也允许没有候选，但仍要求单值解析唯一。`required=false` 只放宽缺失条件，候选歧义仍需解决。
+`Optional<T>` 也允许没有候选，但仍要求单值解析唯一。`required=false` 只放宽缺失条件，多个候选造成的歧义仍需用限定符等规则解决。
+
+Provider 把获取时机写进了代码。如果大量使用它只是为了避开循环依赖，结构问题就会延迟到运行时暴露，职责拆分仍需完成。
 
 ## 7. 不同作用域的注入 {#不同作用域的注入}
 
-singleton 直接注入 prototype 时只解析一次，按需获取见 [Spring 循环依赖](./circular-dependencies-scopes-early-exposure.mdx#作用域)。
+singleton 直接注入 prototype 时只解析一次，需要每次取得新实例时，可使用 Provider、方法注入或作用域代理。作用域代理会在调用时查找目标，request Bean 则要求调用时存在有效请求上下文。
+
+按需获取的示例和异步线程限制见 [Spring 循环依赖](./circular-dependencies-scopes-early-exposure.mdx#作用域)。
 
 ## 8. Resource 名称解析 {#resource-名称解析}
 
-Spring 6 使用 `jakarta.annotation.Resource`。它适用于字段和 Setter，优先按名称获取 Bean。
+注入目标由稳定名称标识时，可以使用 `@Resource`。它来自通用注解规范，适用于字段和 Setter，优先按名称获取 Bean。Spring 6 使用 `jakarta.annotation.Resource`：
 
 ```java
 @Resource(name = "onlinePayment")
 private PaymentClient paymentClient;
 ```
 
-显式 `name` 要求找到该名称，且类型兼容。省略名称时，默认取字段名或属性名。默认名称不存在时，Spring 可回退为按类型解析。
+示例显式指定 `onlinePayment`，容器需要找到这个名称且类型兼容的 Bean。省略 `name` 时，默认名称取字段名或 Setter 对应的属性名。只有这个默认名称不存在时，Spring 才可回退到按类型解析。
 
-`@Autowired` 以类型候选为起点，并支持构造器。两种注解都应通过明确的候选规则表达意图。
+`@Autowired` 属于 Spring 注解，以类型候选为起点，并支持构造器。团队应统一注入约定，使用明确的名称或限定符表达选择意图，减少对字段名偶然匹配的依赖。
 
 ## 9. 常见问题 {#常见问题}
 
 ### 9.1 接口与依赖边界 {#接口与依赖边界}
 
-接口适合表达稳定协作契约。是否创建接口，取决于边界价值和替换需求。实现数量只是一项参考。
+接口适合表达稳定的协作约定，例如支付服务需要提供哪些能力。即使只有一个实现，只要边界清晰、确有替换需求，按接口注入仍有价值。若接口只是逐项复制实现类方法，却没有独立含义，就会增加维护成本。
 
 ### 9.2 可选依赖的默认行为 {#可选依赖的默认行为}
 
-可选依赖缺失时，应保留明确默认行为。`Optional` 或 Provider 可把这种选择写入类型。
+可选依赖缺失时，对象应保留明确的默认行为，例如禁用附加功能或采用默认实现。`Optional` 或 Provider 可以把这种选择写入类型，调用方也就能看到需要处理的缺失情况。
 
 ## 10. 面试题 {#面试题}
 
@@ -129,16 +147,18 @@ private PaymentClient paymentClient;
 
 **出现公司**：交通银行、金山云
 
-**考察重点**：按必需性、候选数量与作用域选择注入方式。
+**考察重点**：根据依赖是否必需选择注入方式，解释它对对象可用性和测试的影响，再判断多候选与不同作用域怎样处理。
 
 **相关内容**：[构造器注入](#构造器注入)至[不同作用域的注入](#不同作用域的注入)。
 
 <details>
 <summary>参考回答</summary>
 
-必需依赖使用构造器注入，可选依赖可用 Setter。构造器让依赖显式可见，也便于直接单元测试。字段注入需容器在构造后填充。
+**Spring 支持构造器、Setter 和字段注入，必需依赖优先通过构造器提供。**
 
-多实现用 `@Qualifier` 筛选，单值首选可用 `@Primary`。动态策略可注入集合。延迟获取使用 `ObjectProvider`。
+这样，对象构造完成时就具备依赖，字段可声明为 `final`，测试也能直接传入替代实现。可选且有默认行为的依赖适合 Setter。字段注入则需要容器在构造后填充，隐藏了构造要求，也增加了独立测试的成本。
+
+多个实现可用 `@Qualifier` 筛选，单值首选可用 `@Primary`。业务需要动态选择策略时，可注入集合或 Map，再明确路由规则。延迟获取与跨作用域访问可以使用 `ObjectProvider` 或作用域代理，同时应满足目标作用域的上下文要求。
 
 </details>
 
@@ -148,14 +168,18 @@ private PaymentClient paymentClient;
 
 **出现公司**：暂无已核验的公开来源（本站自测）
 
-**考察重点**：类型筛选、名称解析和集合注入。
+**考察重点**：说明类型、限定符和名称怎样参与候选选择，并区分单值首选与集合收集的行为。
 
 **相关内容**：[多个候选 Bean](#多个候选-bean)、[Resource 名称解析](#resource-名称解析)。
 
 <details>
 <summary>参考回答</summary>
 
-`@Autowired` 按类型寻找候选，`@Qualifier` 缩小范围。`@Primary` 为单值注入指定首选。`@Resource` 优先按名称获取，默认名缺失时可回退类型。集合注入仍包含所有匹配项。
+**`@Autowired` 从类型候选中选择，`@Qualifier` 缩小范围，`@Primary` 为单值注入指定首选。**
+
+字段名或参数名也可参与回退匹配，Spring 6.1 起参数名匹配需要 `-parameters`。集合注入会收集所有匹配项，Primary 标记只影响单值选择。
+
+`@Resource` 优先按名称获取。显式指定 `name` 时，要求名称存在且类型兼容；省略时取字段名或属性名，这个默认名缺失后才可回退按类型查找。
 
 </details>
 
@@ -165,14 +189,18 @@ private PaymentClient paymentClient;
 
 **出现公司**：暂无已核验的公开来源（本站自测）
 
-**考察重点**：缺失候选与非唯一候选。
+**考察重点**：区分没有候选与无法唯一选择候选，并按业务需要选择返回 null、报错或遍历全部实现。
 
 **相关内容**：[`ObjectProvider`](#objectprovider)。
 
 <details>
 <summary>参考回答</summary>
 
-`getIfAvailable()` 只允许缺失，歧义仍报错。`getIfUnique()` 在缺失或无法唯一选择时返回 null。需要全部候选时使用流或集合。
+**`getIfAvailable()` 无法忽略候选歧义，多个候选无法唯一选择时仍会报错。**
+
+它只在完全没有候选时返回 null。
+
+如果业务希望在缺失或无法唯一选择时都使用默认行为，可用 `getIfUnique()`，两种情况都会返回 null。需要全部候选时则使用流或集合，让业务代码明确选择方式。
 
 </details>
 

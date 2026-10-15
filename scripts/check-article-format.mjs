@@ -3,16 +3,16 @@
 // Usage:
 //   node scripts/check-article-format.mjs                  report structural problems, exit 0
 //   node scripts/check-article-format.mjs --strict         exit 1 when structural problems remain
-//   node scripts/check-article-format.mjs --list           also print style warnings
-//   node scripts/check-article-format.mjs --style-strict   exit 1 when style warnings remain
+//   node scripts/check-article-format.mjs --list           also print advisory style hints
+//   node scripts/check-article-format.mjs --style-strict   deprecated alias for --strict --list
 //   node scripts/check-article-format.mjs -- file.mdx ...  only check the given files
 //
 // Structural problems: missing "面试核心", references or card fields, no
-// [卡] link in the core section, unnumbered long articles.
-// Style warnings: templates and wording ruled out by AGENTS.md, long
-// sentences, meta-commentary about sources, hedge and
-// negation density, statement-style headings, non-standard self-test
-// comments and reference lists split by blank lines.
+// [卡] link in the core section, non-standard self-test attribution comments,
+// unnumbered long articles.
+// Advisory style hints: templates, wording, long sentences, meta-commentary
+// about sources, statement-style headings and reference-list spacing.
+// These heuristics need editorial judgment and never affect the exit code.
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -21,18 +21,21 @@ const DOCS = path.join(ROOT, 'docs');
 const argv = process.argv.slice(2);
 const flags = new Set(argv.filter((a) => a.startsWith('--')));
 const only = argv.includes('--') ? argv.slice(argv.indexOf('--') + 1).map((f) => path.resolve(f)) : null;
+const legacyStyleStrict = flags.has('--style-strict');
+const strict = flags.has('--strict') || legacyStyleStrict;
+const showStyle = flags.has('--list') || legacyStyleStrict;
+
+if (legacyStyleStrict) {
+  console.warn('--style-strict 已弃用，现等同于 --strict --list；文风提示供通读判断，不影响退出码。');
+}
 
 const SELF_TEST_COMMENT = '<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->';
 const HEADING_TEMPLATES = /不是.*而是|不能.*只能|真正的|本质|看似|不只是|不仅是|不等于/;
 const BODY_WORDS = /不是[^。；\n]{0,30}而是|真正的|底层逻辑|闭环|看似/;
-const HEDGES = /通常|可能|一般/g;
-const NEGATIONS = /不能|不代表|不等于|不表示/g;
 // A heading reads as a statement when a verb links a subject to a predicate.
 const STATEMENT_VERBS = /(是|会(?!话)|让|把|使|要|需要|决定|锁住|阻止|保护|描述|形成|负责|提供|限制|服务于|指向|保存|携带|只能|必须|应|可以|仍)/;
 const META_COMMENTARY = /(根据|依据|按照)[^。；]{0,20}(说明|资料|文档|历史)[^。；]{0,8}(解释|推断|理解)的|(官方|文档|资料)[^。；]{0,6}(并未|没有)将|这是[^。；]{2,24}的(背景|解释|推断|说法)[。；]/;
-const SENTENCE_LIMIT = 30; // see sentenceLength()
-const HEDGE_LIMIT = 2.5; // per 1000 characters of prose
-const NEGATION_LIMIT = 1.5;
+const SENTENCE_REVIEW_THRESHOLD = 50; // A prompt to review readability, not a length limit.
 
 function walk(dir, out = []) {
   for (const entry of fs.readdirSync(dir, {withFileTypes: true})) {
@@ -55,13 +58,6 @@ function sentenceLength(sentence) {
 
 function stripCode(text) {
   return text.replace(/^(```|~~~)[\s\S]*?^\1/gm, '');
-}
-
-function prose(body) {
-  return body
-    .split('\n')
-    .filter((l) => !/^(#|\||<|\s*$|-\s*\[.*\]\(http)/.test(l))
-    .join('\n');
 }
 
 function checkFile(file) {
@@ -99,8 +95,9 @@ function checkFile(file) {
       if (!/^\*\*相关内容\*\*/m.test(card)) missing.push('相关内容');
       if (!/<summary>参考回答<\/summary>/.test(card)) missing.push('参考回答');
       if (missing.length) problems.push(`题目「${title.slice(0, 30)}」缺少${missing.join('、')}`);
-      if (/本站自测/.test(card) && /<!--[^>]*自测/.test(card) && !card.includes(SELF_TEST_COMMENT)) {
-        warnings.push(`自测注释不是统一写法：${title.slice(0, 30)}`);
+      const isSelfTest = /^\*\*出现公司\*\*[^\n]*本站自测/m.test(card) || /<!--[^>]*自测/.test(card);
+      if (isSelfTest && !card.includes(SELF_TEST_COMMENT)) {
+        problems.push(`自测题缺少统一归属注释：${title.slice(0, 30)}`);
       }
     });
     if (cards.length && coreMatch && !/\[卡\]\(#/.test(coreMatch[1])) problems.push('面试核心没有 [卡] 链接');
@@ -126,16 +123,10 @@ function checkFile(file) {
     const plain = line.replace(/\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/^\s*([-*]|\d+\.)\s+/, '');
     for (const sentence of plain.split(/[。！？；]/)) {
       const n = sentenceLength(sentence);
-      if (n > SENTENCE_LIMIT) warnings.push(`长句（${n} 字）：${sentence.trim().slice(0, 40)}`);
+      if (n > SENTENCE_REVIEW_THRESHOLD) warnings.push(`长句待复核（${n} 字）：${sentence.trim().slice(0, 40)}`);
       if (META_COMMENTARY.test(sentence + '。')) warnings.push(`元叙述：${sentence.trim().slice(0, 40)}`);
     }
   }
-
-  const text1k = prose(body).replace(/\s/g, '').length / 1000 || 1;
-  const hedgeRate = (prose(body).match(HEDGES) ?? []).length / text1k;
-  const negationRate = (prose(body).match(NEGATIONS) ?? []).length / text1k;
-  if (hedgeRate > HEDGE_LIMIT) warnings.push(`限定词偏多：每千字 ${hedgeRate.toFixed(1)} 个“通常/可能/一般”（上限 ${HEDGE_LIMIT}）`);
-  if (negationRate > NEGATION_LIMIT) warnings.push(`否定句偏多：每千字 ${negationRate.toFixed(1)} 个“不能/不代表/不等于/不表示”（上限 ${NEGATION_LIMIT}）`);
 
   return {file: path.relative(ROOT, file), problems, warnings};
 }
@@ -146,13 +137,12 @@ const failing = results.filter((r) => r.problems.length);
 const warned = results.filter((r) => r.warnings.length);
 
 console.log(`文章格式检查：${results.length} 篇知识树文章，${failing.length} 篇有结构问题，${warned.length} 篇有文风提示。`);
-const showStyle = flags.has('--list') || flags.has('--style-strict');
 const shown = showStyle ? results.filter((r) => r.problems.length || r.warnings.length) : failing;
+if (showStyle && warned.length) console.log('文风提示供通读复核，不要求清零；请按准确性、完整性和连贯性判断是否修改。');
 for (const r of shown) {
   console.log(`- ${r.file}`);
   for (const p of r.problems) console.log(`    ✗ ${p}`);
   if (showStyle) for (const w of r.warnings) console.log(`    · ${w}`);
 }
 
-if (flags.has('--strict') && failing.length) process.exit(1);
-if (flags.has('--style-strict') && (failing.length || warned.length)) process.exit(1);
+if (strict && failing.length) process.exit(1);

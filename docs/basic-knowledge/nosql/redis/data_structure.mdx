@@ -4,19 +4,21 @@ draft: false
 knowledge:
   id: basic-knowledge.nosql.redis.data-structure
   type: concept
+description: "Redis 数据类型规定命令语义，内部编码决定存储方式。本文以 Redis 6、7 讲解字符串、列表、集合与有序集合等结构。本文适合准备缓存面试的读者。读者可练习根据查询需求选类型。读者还可分析紧凑编码、渐进扩容和游标遍历成本。"
+keywords: ["Redis 底层结构", "ziplist", "listpack", "跳表", "渐进式 rehash"]
 ---
 
 # Redis 数据结构
 
-Redis 数据类型定义命令语义，内部编码定义存储方式。本文以 Redis 6、7 为基线，讲解类型选择、编码与复杂度。多命令事务及脚本边界见 [原子命令与事务](./index.mdx#原子命令与事务)。
+Redis 数据类型定义命令语义，内部编码定义存储方式。本文以 Redis 6、7 为基线，讲解类型选择、编码与复杂度。
 
 ## 1. 面试核心 {#core}
 
-- String 保存字节串，键空间字典则负责从键定位值对象。[卡](#type-encoding)
-- Hash 按字段读写，Set 去重，ZSet 按分数与成员顺序排列。[卡](#choose-type)
-- Redis 6 的 QuickList 用双向链表连接 ZipList 块。[卡](#compact-encoding)
-- ZSet 的 skiplist 编码以字典查成员，用跳表维护分数顺序。[卡](#sorted-set-index)
-- INCR 原子完成整数递增，客户端 GET 后 SET 存在丢失更新。[卡](#atomic-operations)
+- **键与值对象。** String 保存字节串，键空间字典则负责从键定位值对象。[卡](#type-encoding)
+- **数据类型选择。** Hash 按字段读写，Set 去重，ZSet 按分数与成员顺序排列。[卡](#choose-type)
+- **紧凑编码。** Redis 6 的 QuickList 用双向链表连接 ZipList 块，以减少小元素的内存开销。Redis 7.0 起，块内结构改为 Listpack。[卡](#compact-encoding)
+- **有序集合索引。** ZSet 的 skiplist 编码以字典查成员，用跳表维护分数顺序。[卡](#sorted-set-index)
+- **原子递增。** INCR 原子完成整数递增，客户端 GET 后 SET 存在丢失更新。[卡](#atomic-operations)
 
 ## 2. 数据类型与场景 {#1-redis-的数据结构与使用场景}
 
@@ -163,7 +165,9 @@ Geo 用于地理位置与距离范围检索。它支持候选筛选，路线规�
 <details>
 <summary>参考回答</summary>
 
-String 保存字节串，Hash 保存字段映射。键空间字典负责按键查找值对象。String 的 int、embstr、raw 是其内部编码。字典定位与值的存储分属两个层次。
+**String 保存字节串，Hash 保存字段映射。**
+
+键空间字典负责按键查找值对象。String 的 int、embstr、raw 是其内部编码。字典定位与值的存储分属两个层次。
 
 </details>
 
@@ -183,7 +187,9 @@ String 保存字节串，Hash 保存字段映射。键空间字典负责按键�
 <details>
 <summary>参考回答</summary>
 
-整体对象可用 String，字段级读写可用 Hash。精确去重用 Set，按分数排名用 ZSet。可靠任务可用处理中 List 或 Stream 消费组。两者都需超时恢复和业务幂等。
+**整体对象可用 String，字段级读写可用 Hash。**
+
+精确去重用 Set，按分数排名用 ZSet。可靠任务可用处理中 List 或 Stream 消费组。两者都需超时恢复和业务幂等。
 
 </details>
 
@@ -203,7 +209,9 @@ String 保存字节串，Hash 保存字段映射。键空间字典负责按键�
 <details>
 <summary>参考回答</summary>
 
-紧凑编码节省小对象的指针和分配成本。Redis 6 的 QuickList 用链表连接多个 ZipList 块。Redis 7.0 起将这些紧凑块替换为 Listpack。对象变大后，分块或哈希结构可减少操作成本。应结合目标版本、配置和 `OBJECT ENCODING` 判断实际结构。
+**紧凑编码节省小对象的指针和分配成本。**
+
+Redis 6 的 QuickList 用链表连接多个 ZipList 块。Redis 7.0 起将这些紧凑块替换为 Listpack。对象变大后，分块或哈希结构可减少操作成本。应结合目标版本、配置和 `OBJECT ENCODING` 判断实际结构。
 
 </details>
 
@@ -223,7 +231,9 @@ String 保存字节串，Hash 保存字段映射。键空间字典负责按键�
 <details>
 <summary>参考回答</summary>
 
-字典支持按 member 查分数，跳表维护分数与成员顺序。跨度还支持计算排名。常规跳表导航期望为 `O(log N)`，输出 M 条再加 `O(M)`。Redis 6 的小集合可用 ZipList，内部访问方式不同。Redis 7.0 起改用 Listpack。
+**字典支持按 member 查分数，跳表维护分数与成员顺序。**
+
+跨度还支持计算排名。常规跳表导航期望为 `O(log N)`，输出 M 条再加 `O(M)`。Redis 6 的小集合可用 ZipList，内部访问方式不同。Redis 7.0 起改用 Listpack。
 
 </details>
 
@@ -243,7 +253,9 @@ String 保存字节串，Hash 保存字段映射。键空间字典负责按键�
 <details>
 <summary>参考回答</summary>
 
-INCR 在一个原子命令内完成递增。GET 后由客户端计算再 SET，存在并发覆盖窗口。两个客户端都读到 1，再各写 2，会丢掉一次增加。复杂条件需使用相应原子命令、脚本或 WATCH 重试。
+**INCR 在一个原子命令内完成递增。**
+
+GET 后由客户端计算再 SET，存在并发覆盖窗口。两个客户端都读到 1，再各写 2，会丢掉一次增加。复杂条件需使用相应原子命令、脚本或 WATCH 重试。
 
 </details>
 
@@ -263,7 +275,9 @@ INCR 在一个原子命令内完成递增。GET 后由客户端计算再 SET，�
 <details>
 <summary>参考回答</summary>
 
-用 BLMOVE 将任务原子移入处理中列表，可保留恢复依据。处理成功后删除，超时未完成则重投。Stream 消费组可用 PEL 与认领机制管理该过程。任务完成但确认丢失时仍会重复，业务需保持幂等。
+**用 BLMOVE 将任务原子移入处理中列表，可保留恢复依据。**
+
+处理成功后删除，超时未完成则重投。Stream 消费组可用 PEL 与认领机制管理该过程。任务完成但确认丢失时仍会重复，业务需保持幂等。
 
 </details>
 
@@ -280,7 +294,9 @@ INCR 在一个原子命令内完成递增。GET 后由客户端计算再 SET，�
 <details>
 <summary>参考回答</summary>
 
-应以返回游标为 0 判断完成，空数组只代表本批没有匹配项。COUNT 是提示值，返回数没有固定保证。完整迭代会返回全程存在的元素，但可重复。期间变化的元素是否出现没有保证。
+**应以返回游标为 0 判断完成，空数组只代表本批没有匹配项。**
+
+COUNT 是提示值，返回数没有固定保证。完整迭代会返回全程存在的元素，但可重复。期间变化的元素是否出现没有保证。
 
 </details>
 
@@ -297,7 +313,9 @@ INCR 在一个原子命令内完成递增。GET 后由客户端计算再 SET，�
 <details>
 <summary>参考回答</summary>
 
-字典建立新表，按桶逐步迁移旧表元素。迁移期间查询按需检查两张表，新插入写入新表。普通操作和定时任务可推进迁移。它分摊迁移耗时，但新表分配和长链处理仍有成本。
+**字典建立新表，按桶逐步迁移旧表元素。**
+
+迁移期间查询按需检查两张表，新插入写入新表。普通操作和定时任务可推进迁移。它分摊迁移耗时，但新表分配和长链处理仍有成本。
 
 </details>
 

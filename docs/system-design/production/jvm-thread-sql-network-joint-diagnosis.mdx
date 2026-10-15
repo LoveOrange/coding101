@@ -3,19 +3,21 @@ sidebar_position: 4
 knowledge:
   id: system-design.production.jvm-thread-sql-network-joint-diagnosis
   type: concept
+description: "生产故障诊断通过跨层证据定位慢请求。本文讲解时间范围、变更、调用耗时、JVM、线程、SQL 与网络的联合分析。本文适合准备后端排障面试的读者。读者可练习把各层症状放到同一时间线，并根据证据选择下一步检查。"
+keywords: ["慢请求排查", "JVM SQL 联合诊断", "生产故障定位", "跨层排障"]
 ---
 
 # 生产故障诊断
 
-生产故障诊断通过跨层证据定位慢请求。本文负责 JVM、线程、SQL 与网络的联合分析。信号采集与关联方式见[可观测性](./logs-metrics-traces-correlation.mdx)。
+生产故障诊断通过跨层证据定位慢请求。本文负责 JVM、线程、SQL 与网络的联合分析。
 
 ## 1. 面试核心 {#core}
 
-- 端到端耗时包含排队、应用执行和下游等待。
-- CPU 较低时，连接池、锁和网络等待仍可抬高 P99。[卡](#p99-with-normal-cpu)
-- RUNNABLE 线程也能等待 native I/O，状态名不足以证明 CPU 忙。
-- JDK 21 虚拟线程在 synchronized 内阻塞会 pin 住载体线程。[卡](#jvm-diagnostic-evidence)
-- 重启同时重置多种状态，恢复结果不足以确定根因。
+- **耗时分解。** 端到端耗时包含排队、应用执行和下游等待。
+- **低 CPU 下的慢请求。** CPU 较低时，连接池、锁和网络等待仍可抬高 P99。[卡](#p99-with-normal-cpu)
+- **线程状态。** RUNNABLE 线程也能等待 native I/O，状态名不足以证明 CPU 忙。
+- **虚拟线程 pinning。** JDK 21 虚拟线程在 synchronized 内阻塞会 pin 住载体线程。[卡](#jvm-diagnostic-evidence)
+- **根因证据。** 重启同时重置多种状态，恢复结果不足以确定根因。
 
 ## 2. 时间、范围与变更 {#时间范围与变更}
 
@@ -131,7 +133,9 @@ JDK 21 中，虚拟线程在 synchronized 内阻塞会 pin 住载体。native �
 <details>
 <summary>参考回答</summary>
 
-先确认异常时间、路由、实例与版本，并同步保存现场。用网关与 Trace 分解排队、应用和下游耗时。CPU 正常时，继续看单核热点、配额和等待指标。
+**先确认异常时间、路由、实例与版本，并同步保存现场。**
+
+用网关与 Trace 分解排队、应用和下游耗时。CPU 正常时，继续看单核热点、配额和等待指标。
 
 JVM 侧关联 GC、JFR 与连续线程栈。数据库侧核对锁等待和实际扫描量。网络侧核对建连、首字节与重传。形成假设后只改变一个变量验证。修复结果用同负载下的 SLI 与等待指标确认。
 
@@ -150,9 +154,9 @@ JVM 侧关联 GC、JFR 与连续线程栈。数据库侧核对锁等待和实际
 <details>
 <summary>参考回答</summary>
 
-平台线程可用 `jcmd 1234 Thread.print -l` 采集栈。短时 JFR 用于关联锁、I/O 与执行采样。NMT 需提前用 `-XX:NativeMemoryTracking=summary` 启用。
+**用线程栈和 JFR 关联 JVM 等待，JDK 21 的虚拟线程 pinning 重点看 `jdk.VirtualThreadPinned` 事件及其调用栈。**
 
-JDK 21 需检查 synchronized 内阻塞造成的 pinning。可结合 `jdk.VirtualThreadPinned` 事件定位调用栈。native 调用和外部资源等待仍需独立检查。
+平台线程可用 `jcmd 1234 Thread.print -l` 采集栈，短时 JFR 用于关联锁、I/O 和执行采样。JDK 21 中要检查 `synchronized` 内阻塞造成的 pinning，native 调用和外部资源等待也需独立核对。若还需分析本地内存，NMT 要提前用 `-XX:NativeMemoryTracking=summary` 启用。
 
 </details>
 

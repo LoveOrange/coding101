@@ -144,8 +144,14 @@ function parseList(lines: string[]): Inline[][] {
 
 /* ---- Document parsing ---- */
 
+// Counts only what a reader reads: hidden comments (interview sources), link
+// URLs and the reference list are left out.
 function estimateMinutes(lines: string[]): number {
-  const text = lines.join('\n');
+  const references = lines.findIndex((line) => /^##\s+(?:\d+\.\s*)?参考资料/.test(line));
+  const text = (references === -1 ? lines : lines.slice(0, references))
+    .join('\n')
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/\]\([^)]*\)/g, ']');
   const cjk = (text.match(/[㐀-鿿]/g) ?? []).length;
   const words = (text.replace(/[㐀-鿿]/g, ' ').match(/[A-Za-z0-9_]+/g) ?? []).length;
   return Math.max(1, Math.round(cjk / 450 + words / 200));

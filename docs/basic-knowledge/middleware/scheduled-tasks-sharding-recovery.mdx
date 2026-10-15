@@ -3,19 +3,21 @@ sidebar_position: 5
 knowledge:
   id: basic-knowledge.middleware.scheduled-tasks-sharding-recovery
   type: concept
+description: "分布式任务调度按计划创建任务并协调执行。本文讲解实例标识、重叠策略、分片、租约与检查点，覆盖重试和补跑。本文适合准备后端面试的读者。读者可练习区分计划时间和实际执行。读者可分析节点故障后的任务归属与恢复。"
+keywords: ["任务分片", "分布式定时任务", "租约", "检查点恢复", "任务补跑"]
 ---
 
 # 分布式任务调度
 
-分布式任务调度按计划创建任务，并协调执行与恢复。本文负责实例标识、分片、租约、检查点和补跑。业务幂等机制见[消息幂等性](./idempotent-consumption-order-duplicates.mdx)。
+分布式任务调度按计划创建任务，并协调执行与恢复。本文负责实例标识、分片、租约、检查点和补跑。
 
 ## 1. 面试核心 {#core}
 
-- 任务实例以任务名和计划时间形成稳定 ID，重复触发读取同一记录。[卡](#sharded-scheduled-jobs)
-- 分片通过原子领取获得租约，失效后允许其他执行器接管。
-- fencing token 需要在资源写入端校验，才能拒绝过期执行器。[卡](#lease-fencing)
-- 检查点只推进已可靠完成的范围，业务写入需原子提交或幂等。
-- startingDeadlineSeconds 限制补调窗口，activeDeadlineSeconds 限制 Job 运行时间。[卡](#cronjob-deadlines)
+- **任务实例。** 任务实例以任务名和计划时间形成稳定 ID，重复触发读取同一记录。[卡](#sharded-scheduled-jobs)
+- **分片领取。** 分片通过原子领取获得租约，失效后允许其他执行器接管。
+- **过期执行器。** fencing token 需要在资源写入端校验，才能拒绝过期执行器。[卡](#lease-fencing)
+- **恢复进度。** 检查点只推进已可靠完成的范围，业务写入需原子提交或幂等。
+- **启动与运行期限。** startingDeadlineSeconds 限制补调窗口，activeDeadlineSeconds 限制 Job 运行时间。[卡](#cronjob-deadlines)
 
 ## 2. 调度时间与执行时间 {#调度时间与执行时间}
 
@@ -131,9 +133,11 @@ Kubernetes CronJob 可以用 `.spec.timeZone` 指定时区，例如 Etc/UTC。�
 <details>
 <summary>参考回答</summary>
 
-任务以稳定实例 ID 管理重复触发。共享数据库用唯一键保存实例状态。大任务拆成稳定分片，通过原子租约领取。
+**用稳定实例 ID 去重触发，用租约分配分片，再用业务幂等和 fencing token 控制重试与接管。**
 
-执行器保存已完成范围的检查点。业务结果与进度原子提交，或使用持久化幂等机制。接管后，资源端用 fencing token 拒绝旧写入。补跑按计划实例进行，并限速核对业务结果。
+共享数据库通过唯一键保存实例状态，大任务拆为稳定分片，由执行器原子领取。
+
+检查点只记录已完成范围，并与业务结果原子提交，或使用持久化幂等机制。接管后由资源端拒绝旧 token 的写入。补跑按计划实例进行，并限速核对业务结果。
 
 </details>
 
@@ -150,7 +154,9 @@ Kubernetes CronJob 可以用 `.spec.timeZone` 指定时区，例如 Etc/UTC。�
 <details>
 <summary>参考回答</summary>
 
-接管时分配并安装更新的 fencing token。每次写入由资源端原子验证 token，拒绝旧执行器。检查点与业务同库时，可把校验和更新放入同一事务。外部 API 还需自身支持 token，或提供幂等恢复协议。
+**接管时分配并安装更新的 fencing token。**
+
+每次写入由资源端原子验证 token，拒绝旧执行器。检查点与业务同库时，可把校验和更新放入同一事务。外部 API 还需自身支持 token，或提供幂等恢复协议。
 
 </details>
 
@@ -167,7 +173,9 @@ Kubernetes CronJob 可以用 `.spec.timeZone` 指定时区，例如 Etc/UTC。�
 <details>
 <summary>参考回答</summary>
 
-startingDeadlineSeconds 限制 CronJob 的迟到启动窗口。activeDeadlineSeconds 限制 Job 的运行时长。前者超限跳过该计划，后者超限终止运行并标记失败。backoffLimit 另外限制 Job 的失败重试次数。
+**startingDeadlineSeconds 限制 CronJob 的迟到启动窗口。**
+
+activeDeadlineSeconds 限制 Job 的运行时长。前者超限跳过该计划，后者超限终止运行并标记失败。backoffLimit 另外限制 Job 的失败重试次数。
 
 </details>
 

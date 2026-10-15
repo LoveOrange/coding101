@@ -8,6 +8,8 @@ knowledge:
   relations:
     - type: implements
       target: data-structures.hash-table
+description: "以 OpenJDK 21 讲解 HashMap 的桶数组、链表和红黑树，沿查找路径说明哈希定位与键相等判断。分析冲突、树化触发、容量选择和扩容拆分，帮助准备 Java 集合面试的读者推演插入与查询过程，区分不同操作的树化条件，并解释预分配的取舍。"
+keywords: ["HashMap 扩容", "HashMap 树化", "哈希冲突", "equals 与 hashCode", "HashMap 面试"]
 ---
 
 import {ReviewReading, ReviewCheckpoint, ReviewQuestionAnchor} from '@site/src/components/Review';
@@ -17,25 +19,23 @@ import {javaCollectionsReview} from '@site/src/data/reviewPlans/javaCollections'
 
 <ReviewReading plan={javaCollectionsReview} stepId="collections-hashmap" />
 
-HashMap 用桶数组组织键值对。哈希定位桶，equals 确认键相等。本文负责 OpenJDK 21 的查找、冲突处理和扩容。
-
-并发更新见 [ConcurrentHashMap](./concurrenthashmap-atomic-compound-operations.mdx)。遇到顺序见 [LinkedHashMap](./linkedhashmap-lru.mdx)。
+HashMap 用哈希值定位键值对，再确认键是否相等。本文以 OpenJDK 21 为准，从桶内查找入手，依次讲解键的相等性、冲突与树化，以及容量选择和扩容。
 
 ## 1. 面试核心 {#core}
 
-- HashMap 用哈希定位桶，再用键引用或 equals 确认匹配。[卡](#put-get-path)
-- 哈希分布合理时，get 与 put 的平均成本为 O(1)。
-- OpenJDK 21 的 put 在链表第 9 项插入时请求树化。[卡](#treeify)
-- 树化要求表容量至少 64，小表先扩容。[卡](#treeify)
-- 容量翻倍后，节点留在原索引或移到原索引加旧容量。[卡](#power-of-two-capacity)
+- **查找路径。** HashMap 用哈希定位桶，再用键引用或 equals 确认匹配。[卡](#put-get-path)
+- **平均成本。** 哈希分布合理时，HashMap 的 `get` 与 `put` 平均成本为 O(1)。
+- **树化触发。** OpenJDK 21 的 HashMap 通过普通 `put` 向链表追加第 9 项时，会请求树化。[卡](#treeify)
+- **树化容量。** HashMap 的树化要求桶数组容量至少为 64，小表先通过扩容分散冲突。[卡](#treeify)
+- **扩容拆分。** HashMap 的容量翻倍后，节点留在原索引，或移到原索引加旧容量的位置。[卡](#power-of-two-capacity)
 
 ## 2. 结构与查找路径 {#结构与查找路径}
 
-HashMap 的核心结构是一组桶。冲突元素存入同一个桶，以链表或红黑树组织。
+HashMap 先缩小候选键的范围，再逐个确认匹配。它用数组保存一组桶，每个桶是哈希值映射到的一个位置。空桶没有节点，不同键落入同一桶称为哈希冲突，冲突节点以链表或红黑树组织。
 
-`get(key)` 的主要步骤是：
+`get(key)` 的**查找路径**分为四步：
 
-1. 非空键的 `hashCode()` 经扰动后参与桶定位。null 键使用哈希值 0。
+1. 非空键先计算 `hashCode()`，再把高位信息混入低位，这一步称为扰动。这样，高位也能参与桶定位。null 键使用哈希值 0。
 2. 使用当前容量计算桶下标。
 3. 先比较保存的哈希，再比较键引用或调用 `equals`。
 4. 在链表或树中找到相等键后返回值；找不到则返回 `null`。
@@ -48,11 +48,13 @@ users.put(7L, new User("Lin"));
 User user = users.get(7L);
 ```
 
-平均 O(1) 要求哈希分布合理。这个分析还把 hashCode 与 equals 视为常数成本。复杂键的计算和比较需另行计入。
+示例通过键 `7L` 找到之前保存的 `User`。哈希分布合理时，每个桶只需检查少量节点，所以 `get` 与 `put` 的平均成本为 O(1)。严重冲突会增加桶内查找成本。
+
+这个分析把 `hashCode` 与 `equals` 当作常数成本。若键的哈希计算或相等比较很复杂，还要把这些耗时计入。
 
 ## 3. `equals` 与 `hashCode` {#equals-与-hashcode}
 
-相等键必须产生相同哈希。相同哈希仍可对应不同键。自定义键需同时实现 equals 与 hashCode。参与比较的字段在入表后应保持稳定。
+HashMap 依靠 `equals` 与 `hashCode` 共同识别键。相等键必须产生相同哈希，但相同哈希仍可对应不同键。因此，自定义键需要同时正确实现这两个方法，参与比较的字段在入表后也应保持稳定。
 
 ```java
 record UserId(long value) {}
@@ -62,30 +64,38 @@ names.put(new UserId(7), "Lin");
 System.out.println(names.get(new UserId(7))); // Lin
 ```
 
-修改键的哈希字段，会改变后续查找路径。即使对象引用相同，也会因保存的哈希不匹配而查找失败。
+示例中的两个 `UserId(7)` 是不同对象，但 record 根据字段生成的相等性方法让它们被识别为同一个键。
 
-HashMap 允许一个 null 键和多个 null 值。get 返回 null 可表示缺失，也可表示值为空。单线程下可用 containsKey 区分。
+如果入表后修改参与哈希的字段，后续计算出的哈希就会改变。查找会进入另一个桶，或因新哈希与节点保存的哈希不同而跳过它。所以，即使传入同一个对象引用，也会查找失败。
+
+HashMap 允许一个 null 键和多个 null 值。因此，`get` 返回 null 既可表示键缺失，也可表示值为空。单线程下可以用 `containsKey` 区分，业务上也可以约定只保存非空值。
 
 ## 4. 冲突与树化 {#冲突与树化}
 
-不同键进入同一桶时，链表逐项检查候选键。树桶增加颜色、父子链接等字段，以换取树形查找。
+树化是把桶内链表转换成红黑树，用来降低严重冲突下的查找成本。红黑树是一种自平衡二叉搜索树，能在更新后控制树的高度。节点较少时，链表结构简单，更省维护成本。节点持续增多时，再增加颜色、父子链接等字段，用树形查找缩小候选范围。
 
-OpenJDK 21 的 `TREEIFY_THRESHOLD` 为 8。普通 put 向已有 8 项的链表追加第 9 项时，请求树化。表容量达到 64 才执行树化，小表先扩容。compute 系列的计数路径不同，应按调用路径分析。
+OpenJDK 21 的**树化与退化条件**需要按操作区分：
 
-扩容拆分树桶时，某侧节点数不超过 6 会转回链表。普通 remove 则根据树形判断，迭代删除还有额外条件。退化时机应区分扩容与删除。
+- `TREEIFY_THRESHOLD` 为 8。普通 `put` 向已有 8 项的链表追加第 9 项时，请求树化。
+- 桶数组容量达到 64 才执行树化。小表先扩容，让更多哈希位参与定位，有机会把长链分散到不同桶。
+- `compute` 系列的节点计数路径与普通 `put` 不同，需要按调用路径分析。
+- 扩容拆分树桶时，某侧节点数不超过 6，会转回链表。
+- 普通 `remove` 根据树形判断是否退化，迭代器删除还有额外条件。
 
-树高为 O(log n)，但任意键查找仍有边界。哈希相同且缺少可用的 Comparable 顺序时，查找会搜索子树。此时最坏仍需线性检查候选键。
+这些数字属于 OpenJDK 21 的实现细节，Map 接口并未要求所有实现都使用相同阈值。
+
+树高为 O(log n)，查找成本还取决于能否判断键应在哪一侧。`Comparable` 是对象声明自身比较顺序的接口。哈希相同且缺少可用的 `Comparable` 顺序时，查找需要搜索子树，最坏仍需线性检查候选键。
 
 ## 5. 容量与扩容 {#容量与扩容}
 
-需要区分四个概念：
+容量决定桶的数量，也影响冲突和扩容频率。分析扩容前，需要区分以下**四个概念**：
 
-- `size`：键值对数量。
-- `capacity`：桶数组长度。
-- `loadFactor`：控制空间与冲突概率的比例，默认是 0.75。
-- `threshold` 是扩容边界，已分配表中按容量和负载因子计算。
+- `size` 是当前保存的键值对数量。
+- `capacity` 是桶数组的长度。
+- `loadFactor` 是负载因子，默认是 0.75，用于权衡空间占用与冲突概率。
+- `threshold` 是扩容的条目数边界。常规扩容阈值按 `capacity × loadFactor` 计算并取整数部分。
 
-容量是 2 的幂时，可以用位掩码定位桶：
+容量是 2 的幂时，`capacity - 1` 的二进制低位全为 1。把它作为位掩码，也就是用来选取特定位的数，就能通过按位与取得桶下标：
 
 ```java
 index = (capacity - 1) & hash;
@@ -98,35 +108,41 @@ index = (capacity - 1) & hash;
 (hash & oldCapacity) != 0  -> 原索引 + oldCapacity
 ```
 
-迁移复用保存的哈希，并分配新表和调整链接。成本随旧容量与节点数量增长。负载因子固定且表较满时，可记为 O(n)。过大容量还会增加空桶扫描与内存成本。
+迁移会复用节点保存的哈希，省去重新调用每个键的 `hashCode()`。不过，它仍要分配新表、扫描旧桶并调整节点链接，因此成本随旧容量与节点数量增长。负载因子固定且表较满时，可记为 O(n)。
+
+大 Map 扩容时，新旧数组短暂共存，会增加内存占用和单次操作延迟。已知条目数时，可以预估初始容量，减少重复扩容。容量预留过大则会浪费内存，并增加遍历空桶的成本。
 
 ## 6. 使用边界 {#使用边界}
 
-HashMap 的迭代成本与容量加 size 成正比。需要顺序时，使用 [LinkedHashMap](./linkedhashmap-lru.mdx) 或 [TreeMap 与 TreeSet](./treemap-treeset-ordered-query.mdx)。
+选择 HashMap 时，还要考虑遍历顺序和线程共享方式。它的迭代成本与容量加 `size` 成正比，遍历次序也没有保证。
 
-并发修改需要外部同步，或使用 [ConcurrentHashMap](./concurrenthashmap-atomic-compound-operations.mdx)。
+保留插入顺序可以使用 [LinkedHashMap](./linkedhashmap-lru.mdx)，按键排序则使用 [TreeMap 与 TreeSet](./treemap-treeset-ordered-query.mdx)。
+
+无同步的并发修改会带来丢失更新或读取不一致状态的风险，所以共享可变 HashMap 需要外部同步。并发 Map 的 `containsKey` 后再 `put` 也有竞态，应按需求使用 `putIfAbsent` 或 `compute` 等原子方法。
+
+复合操作的实现与边界见 [ConcurrentHashMap](./concurrenthashmap-atomic-compound-operations.mdx)。
 
 <ReviewCheckpoint plan={javaCollectionsReview} stepId="collections-hashmap" />
 
 ## 7. 预期条目数与初始容量 {#预期条目数与初始容量}
 
-`new HashMap<>(100)` 表达桶容量提示，未表达 100 条映射。OpenJDK 21 首次分配 128 个桶，默认阈值为 96。插入第 97 个不同键时，就会触发容量扩展。
+预估容量时，要把条目数换算为桶数。`new HashMap<>(100)` 传入的是桶容量提示，而非要容纳的条目数。OpenJDK 21 首次分配时会将容量取整到 128，再乘默认负载因子 0.75，得到阈值 96。因此，插入第 97 个不同键时就会扩容。
 
-Java 21 可用 `HashMap.newHashMap(expectedMappings)`。它根据预期条目数与默认负载因子估算容量。Java 17 可按条目数除以 0.75 预估，再考虑容量取整。
+Java 21 可用 `HashMap.newHashMap(expectedMappings)`，由它按预期条目数和默认负载因子估算容量。Java 17 可将条目数除以 0.75 后向上取整，再由构造器按 2 的幂调整容量。
 
 ## 8. 常见问题 {#常见问题}
 
 ### 8.1 hash 与 equals 的比较顺序 {#hash-与-equals-的比较顺序}
 
-哈希不同可直接排除。哈希相同再用键引用或 equals 确认，减少相等比较。
+哈希不同的键可以直接排除，省去一次相等比较。哈希相同仍可只是冲突，所以接下来要比较键引用，或调用 `equals` 确认。
 
 ### 8.2 遍历顺序的约定 {#遍历顺序的约定}
 
-HashMap 的遍历顺序未指定。扩容、键哈希和实现变化都会影响次序。
+HashMap 的遍历顺序未指定。相同键和运行环境下，结果有时看起来稳定，但扩容、键哈希或实现变化都会改变次序。因此，业务需要固定顺序时，应使用有顺序约定的 Map。
 
 ### 8.3 链表长度与树化条件 {#链表长度与树化条件}
 
-OpenJDK 21 的普通 put 在追加第 9 项时请求树化。表容量小于 64 时，改为扩容。
+OpenJDK 21 的普通 `put` 在向链表追加第 9 项时请求树化。此时还要检查桶数组容量：小于 64 就先扩容，达到 64 才转成树桶。
 
 ## 9. 面试题 {#面试题}
 
@@ -150,9 +166,11 @@ OpenJDK 21 的普通 put 在追加第 9 项时请求树化。表容量小于 64 
 <details>
 <summary>参考回答</summary>
 
-get 与 put 都先用扰动后的哈希定位桶。get 比较保存的哈希，再用键引用或 equals 确认匹配。
+**`get` 与 `put` 都先用扰动后的哈希定位桶，再在桶内确认键是否匹配。**
 
-put 命中已有键时覆盖旧值，缺失时插入新节点。新增映射超过扩容阈值后触发扩容。长链还会按当前表容量决定树化或扩容。
+桶内使用链表或红黑树组织节点，查找时先比较保存的哈希，再比较键引用或调用 `equals`。`get` 找到后返回值，找不到则返回 null。
+
+`put` 沿相同路径查找，命中已有键时覆盖旧值，缺失时插入新节点。新增映射使 `size` 超过阈值后会扩容。若桶内形成长链，还会按当前表容量决定树化或先扩容。平均 O(1) 依赖哈希分布与容量合理。
 
 </details>
 
@@ -177,9 +195,11 @@ put 命中已有键时覆盖旧值，缺失时插入新节点。新增映射超�
 <details>
 <summary>参考回答</summary>
 
-OpenJDK 21 的普通 put 在链表追加第 9 项时请求树化。`TREEIFY_THRESHOLD=8`，最小树化容量为 64。
+**OpenJDK 21 的普通 put 在链表追加第 9 项时请求树化。**
 
-小表先扩容，让更多哈希位参与桶定位。容量足够且冲突仍集中时，再承担树节点的维护成本。扩容拆分后，某侧不超过 6 项会退回链表。
+`TREEIFY_THRESHOLD=8`，最小树化容量为 64。
+
+小表出现长链时，原因可以只是桶数太少。扩容让更多哈希位参与定位，就有机会分散节点。容量足够且冲突仍集中时，再承担树节点的额外字段与维护成本。扩容拆分树桶后，某侧不超过 6 项会退回链表；这些阈值属于实现细节。
 
 </details>
 
@@ -202,7 +222,9 @@ OpenJDK 21 的普通 put 在链表追加第 9 项时请求树化。`TREEIFY_THRE
 <details>
 <summary>参考回答</summary>
 
-2 的幂容量可用 `hash & (capacity - 1)` 定位桶。翻倍时只新增一个定位位。该位为 0 的节点留在原索引，为 1 的移到原索引加旧容量。
+**容量取 2 的幂，可以用 `hash & (capacity - 1)` 定位桶，并简化扩容拆分。**
+
+因为 `capacity - 1` 的低位全为 1，按位与就能取出需要的哈希位。容量翻倍只增加一个定位位，该位为 0 的节点留在原索引，为 1 的移到原索引加旧容量。
 
 </details>
 
@@ -212,14 +234,18 @@ OpenJDK 21 的普通 put 在链表追加第 9 项时请求树化。`TREEIFY_THRE
 
 **出现公司**：暂无已核验的公开来源（本站自测）
 
-**考察重点**：桶容量、负载因子与条目数。
+**考察重点**：解释初始容量如何取整，以及负载因子怎样决定扩容前能容纳的条目数。
 
 **相关内容**：[预期条目数与初始容量](#预期条目数与初始容量)。
 
 <details>
 <summary>参考回答</summary>
 
-OpenJDK 21 首次分配 128 个桶，默认阈值为 96。第 97 个不同键会触发扩容。Java 21 可用 `HashMap.newHashMap(100)` 按条目数估算容量。Java 17 可按 100 除以 0.75 向上取整，传入容量 134。
+**会发生扩容，因为 OpenJDK 21 首次分配 128 个桶，默认阈值只有 96。**
+
+插入第 97 个不同键时，条目数就超过了阈值。
+
+Java 21 可用 `HashMap.newHashMap(100)` 按条目数估算容量。Java 17 可将 100 除以 0.75 后向上取整，传入容量 134，实际桶数再取整为 256。
 
 </details>
 

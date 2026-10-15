@@ -3,34 +3,38 @@ sidebar_position: 4
 knowledge:
   id: basic-knowledge.java.spring.bean-creation-lifecycle
   type: concept
+description: "Bean 生命周期覆盖实例化、依赖填充、初始化和销毁。本文讲解初始化与销毁回调、实例后处理器和生命周期的启停顺序。本文适合准备 Spring 面试的读者。读者可练习区分对象初始化和服务就绪，并通过日志核对执行过程。"
+keywords: ["Spring Bean 初始化", "BeanPostProcessor", "销毁回调", "SmartLifecycle"]
 ---
 
 # Bean 生命周期
 
-Bean 生命周期包括实例化、依赖填充、初始化和销毁。本文负责实例阶段与启动停止回调。定义阶段见 [BeanDefinition](./beandefinition-container-startup.mdx)。早期引用见 [Spring 循环依赖](./circular-dependencies-scopes-early-exposure.mdx)。
+Bean 生命周期描述 Spring 容器怎样创建、初始化、发布和销毁对象。本文从实例化与依赖注入入手，说明初始化回调和后处理器的执行顺序，再区分对象可用与服务就绪。最后介绍资源销毁，以及 `SmartLifecycle` 管理的启动和停止顺序。
 
 ## 1. 面试核心 {#core}
 
-- Bean 先实例化并填充依赖，再执行初始化前后处理器。[卡](#bean-lifecycle)
-- 初始化回调依次为 `@PostConstruct`、`afterPropertiesSet()` 和自定义方法。
-- `@PostConstruct` 由初始化前处理器执行，发生在最终代理发布前。
-- singleton 关闭时执行销毁回调，prototype 的清理由使用者负责。
-- `SmartLifecycle` 的 phase 越小，启动越早、停止越晚。[卡](#smart-lifecycle-phase)
+- **创建流程。** 普通 Bean 先实例化并填充依赖，再经过 Aware 回调、初始化前处理、初始化回调和初始化后处理。[卡](#bean-lifecycle)
+- **初始化方法顺序。** 同一 Bean 声明不同初始化方法时，容器依次调用 `@PostConstruct`、`afterPropertiesSet()` 和自定义初始化方法。
+- **初始化与代理。** `@PostConstruct` 由初始化前处理器执行，发生在最终代理发布前。
+- **销毁范围。** 容器正常关闭时会调用其管理的 singleton 的销毁方法，prototype 交付后的清理由使用者负责。
+- **启动停止顺序。** `SmartLifecycle` 的 phase 越小，启动越早、停止越晚。[卡](#smart-lifecycle-phase)
 
 ## 2. 实例化与依赖注入 {#实例化与依赖注入}
 
-普通 Bean 的主线如下：
+容器创建 Bean 时，要先得到对象，再让它具备工作所需的依赖。下面列出普通 Bean 的**六个创建阶段**，用于判断对象何时完成注入、何时交给调用方：
 
 1. 容器选择构造器或工厂方法，创建实例。
-2. 注入处理器填充字段与方法依赖。
-3. 容器调用 `BeanNameAware`、`BeanFactoryAware` 等回调。
-4. 初始化前处理器执行，包含 `@PostConstruct` 处理。
+2. 注入处理器解析 `@Autowired`、`@Value` 等注解，填充字段与方法依赖。
+3. 容器调用 `BeanNameAware`、`BeanFactoryAware` 等回调，把名称或工厂交给需要这些信息的组件。
+4. 初始化前处理器执行，其中包含对 `@PostConstruct` 方法的调用。
 5. 容器调用 `afterPropertiesSet()` 和自定义初始化方法。
-6. 初始化后处理器包装对象，容器发布最终引用。
+6. 初始化后处理器可以包装对象，容器随后把最终引用作为可用 Bean 交给调用方。
 
-`ApplicationContextAware` 由初始化前处理器回调。构造器依赖在实例化时解析，字段依赖在实例化后填充。不同 Aware 接口的执行位置需按实现区分。
+Aware 接口让组件接收容器信息，例如 Bean 名称、工厂或应用上下文。不同接口的执行位置有所区别：`ApplicationContextAware` 由初始化前处理器回调。构造器依赖则在实例化时解析，字段依赖要等实例创建后才填充。因此，在构造器中访问尚待字段注入的对象，会早于该依赖的注入时机。
 
 ## 3. 初始化回调 {#初始化回调}
+
+初始化回调用于在依赖注入完成后检查对象是否具备工作条件。下面的 `@PostConstruct` 方法检查超时参数：
 
 ```java
 @PostConstruct
@@ -41,33 +45,40 @@ void validateConfiguration() {
 }
 ```
 
-示例在启动时拒绝非正超时。初始化方法适合本地配置校验和必要资源准备。
+示例在初始化时拒绝零或负的超时，让配置错误尽早暴露。初始化方法适合本地配置校验和必要资源准备，耗时工作则要明确超时与完成条件。
 
-同时声明不同初始化方法时，顺序如下：
+同一个 Bean 声明不同初始化方法时，按以下**回调顺序**执行：
 
 1. `@PostConstruct` 方法先执行。
 2. `InitializingBean.afterPropertiesSet()` 随后执行。
 3. 自定义 `init-method` 最后执行。
 
-同一方法配置为多种生命周期方式时，只调用一次。Spring 6 使用 `jakarta.annotation.PostConstruct`。
+同一方法配置为多种生命周期方式时，只调用一次。Spring 6 使用 `jakarta.annotation.PostConstruct`。业务类可以优先选择该注解或自定义初始化方法，减少对 Spring 专用接口的依赖。
 
 ## 4. BeanPostProcessor {#beanpostprocessor}
 
-初始化前处理器支持生命周期注解等逻辑。初始化后处理器可返回包装对象。普通 AOP 创建路径在此发布代理；循环依赖还有早期代理路径。
+`BeanPostProcessor` 是处理 Bean 实例的扩展点，它在初始化前后参与处理。初始化前处理器支持生命周期注解等逻辑，初始化后处理器则可返回包装对象。普通 AOP 创建路径在初始化后发布代理，所以从容器取得的引用可以与原始实例不同。循环依赖还有早期代理路径，具体见 [Spring 循环依赖](./circular-dependencies-scopes-early-exposure.mdx)。
 
-初始化方法在原始对象上执行。自调用事务方法会绕过代理。需要代理调用的预热，可交给 Runner 调用另一个 Bean。
+初始化方法在原始对象上执行，所以在这里自调用事务方法会绕过代理。需要代理增强的预热任务，可以交给 Runner 调用另一个 Bean。Runner 是 Boot 在上下文刷新后执行的启动任务，调用时仍需使用容器交付的代理引用。
 
-`SmartInitializingSingleton` 在非懒加载单例创建后回调。它仍位于上下文刷新内，适合检查已创建的单例集合。
+`SmartInitializingSingleton` 在非懒加载单例创建后回调，适合检查已经创建的单例集合。这个回调仍位于上下文刷新内，与整个应用就绪是不同阶段。上下文刷新事件也可用于协调此时的工作，但任务仍要明确依赖和耗时。
 
 ## 5. 初始化与服务就绪 {#初始化与服务就绪}
 
-资源初始化与服务就绪分属不同阶段。必要连接可在初始化时建立，但应有明确超时。必须完成的业务预热可放在 Runner，完成后再接流量。
+对象初始化完成后，服务是否可以接收流量，还取决于连接和业务预热是否完成。构造器或 `@PostConstruct` 中的长任务会延长上下文刷新，也会让失败阶段难以区分。因此，可以按以下**四类工作**安排启动：
 
-非关键预热可交给受管理的后台执行器。任务需要停止协议和可观察状态。启动阶段分工见 [Spring Boot 启动](./spring-boot-startup.mdx#runner-与就绪)。
+- 本地配置校验在初始化回调中完成，尽早发现错误。
+- 必要资源在初始化阶段建立，并设置明确的连接超时。
+- 服务前必须完成的业务预热放在 Runner，完成后再允许接收流量。
+- 非关键预热交给受管理的后台执行器，并提供超时、指标和降级方式。
+
+后台任务还需要停止协议，确保应用关闭时能结束工作。Readiness 表达服务是否就绪，非关键预热失败时，应保留仍可提供的服务能力。
+
+启动阶段分工见 [Spring Boot 启动](./spring-boot-startup.mdx#runner-与就绪)。
 
 ## 6. 销毁回调 {#销毁回调}
 
-容器正常销毁 singleton 时，依次执行不同销毁方法：
+销毁回调用于释放 Bean 持有的资源。singleton 是由容器共享的单例，正常销毁时会按以下**清理顺序**调用不同方法：
 
 1. `@PreDestroy` 释放注解管理的资源。
 2. `DisposableBean.destroy()` 执行接口回调。
@@ -75,31 +86,37 @@ void validateConfiguration() {
 
 Spring 6 使用 `jakarta.annotation.PreDestroy`。同一方法配置多次时，只调用一次。
 
-prototype 交付后由使用者清理。它会经过初始化，但容器不会自动执行销毁回调。进程强制终止时，资源恢复应依靠外部持久状态。
+线程池、客户端连接和文件句柄都应由明确的所有者关闭。清理过程要有期限，否则某个组件一直等待，会阻塞整个应用的优雅关闭。
+
+prototype 指每次向容器请求时新建的实例，交付后由使用者清理。它会经过初始化，但容器不会自动执行销毁回调。进程强制终止或崩溃时，关键一致性和资源恢复还需依靠外部持久状态。
 
 ## 7. 生命周期日志 {#生命周期日志}
 
-记录 Bean 名称、阶段、耗时与异常根因。启动步骤和 JFR 可辅助定位耗时。诊断工具配置见 [Spring Boot Actuator](./actuator-health-startup-diagnostics.mdx#启动阶段分析)。
+排查启动慢或失败时，需要把异常和耗时对应到具体 Bean 及其生命周期阶段。日志应记录 Bean 名称、阶段、耗时和异常根因，再沿时间线查找等待发生的位置。
+
+启动步骤和 JFR 事件可以辅助分析。JFR 是 JVM 的事件记录工具，可把初始化耗时与类加载、分配和 GC 联系起来。按问题采集这些信息，能减少逐个 Bean 输出大量普通日志造成的噪声。
+
+诊断工具配置见 [Spring Boot Actuator](./actuator-health-startup-diagnostics.mdx#启动阶段分析)。
 
 ## 8. SmartLifecycle 启停顺序 {#smartlifecycle-启停顺序}
 
-`SmartLifecycle` 管理组件的启动与停止。`isAutoStartup()` 为 `true` 时，组件随上下文刷新启动。
+消息消费者等组件除了创建和销毁，还需要控制何时开始工作、何时停止接收任务。`SmartLifecycle` 管理的就是这类启动与停止过程。`isAutoStartup()` 为 `true` 时，组件随上下文刷新自动启动。
 
-phase 较小的组件先启动、后停止。假设连接组件 phase 为 0，消费者 phase 为 100。连接先启动，消费者后启动；关闭时消费者先停止。显式依赖关系优先于 phase 顺序。
+phase 是控制启停顺序的阶段值，数值越小，组件启动越早、停止越晚。假设连接组件 phase 为 0，消费者 phase 为 100。连接会先启动，消费者再开始工作；关闭时消费者先停，连接最后关闭。这样可以让消费者在停止过程中继续使用连接。显式依赖关系优先于 phase 顺序。
 
-异步停止通过 `stop(Runnable callback)` 完成。组件结束停止后，必须调用 `callback.run()`。生命周期处理器据此继续关闭流程。
+异步停止通过 `stop(Runnable callback)` 完成。组件结束停止后，必须调用 `callback.run()`，通知生命周期处理器当前组件已停。处理器收到通知后，才能继续后续关闭流程。
 
-`stop()` 管理运行状态，销毁回调释放最终资源。启动失败等异常关闭路径可直接销毁 Bean。销毁逻辑因此应能处理尚未启动的状态。
+`stop()` 管理组件是否仍在工作，销毁回调则负责最终释放资源。启动失败等异常关闭路径可以直接销毁 Bean，所以清理逻辑也要能处理组件尚未启动的状态。
 
 ## 9. 常见问题 {#常见问题}
 
-### 9.1 初始化回调中的事务调用 {#初始化回调中的事务调用}
+### 9.1 `@PostConstruct` 中调用自己的事务方法会生效吗？ {#初始化回调中的事务调用}
 
-`@PostConstruct` 中的自调用绕过事务代理。可用 `TransactionTemplate` 显式建立事务，或由 Runner 调用独立事务 Bean。
+自调用不会触发该方法上的事务增强。初始化发生在最终代理发布之前，`this` 调用也没有经过外部代理。可以用 `TransactionTemplate` 显式建立事务，或把工作交给 Runner，让它调用独立事务 Bean 的代理。
 
-### 9.2 销毁回调的执行条件 {#销毁回调的执行条件}
+### 9.2 `@PreDestroy` 一定会执行吗？ {#销毁回调的执行条件}
 
-正常关闭且处于容器销毁管理范围内时，回调才会执行。强制终止、进程崩溃和 prototype 交付后需另行处理资源。
+只有对象处于容器的销毁管理范围内，并正常走到销毁阶段，回调才会执行。强制终止或进程崩溃会跳过这类清理，prototype 交付后则由使用者负责。因此，关键一致性操作还需要持久化记录和恢复机制。
 
 ## 10. 面试题 {#面试题}
 
@@ -112,16 +129,20 @@ phase 较小的组件先启动、后停止。假设连接组件 phase 为 0，�
 
 **出现公司**：美团
 
-**考察重点**：理解实例创建、初始化回调与销毁顺序。
+**考察重点**：解释实例创建、依赖填充、Aware 和初始化前后处理的顺序，并说明代理发布与不同作用域的销毁边界。
 
 **相关内容**：[实例化与依赖注入](#实例化与依赖注入)至[销毁回调](#销毁回调)。
 
 <details>
 <summary>参考回答</summary>
 
-Bean 经实例化、依赖填充和初始化前后处理后发布。初始化顺序为 `@PostConstruct`、`afterPropertiesSet()`、自定义方法。初始化后处理器可返回代理。
+**Bean 先经过实例化、依赖注入和初始化，再发布给调用方，最后按容器管理范围执行销毁。**
 
-正常关闭时，singleton 执行 `@PreDestroy`、`destroy()` 和自定义销毁方法。prototype 的清理由使用者负责。
+容器按定义选择构造器或工厂方法，得到实例后填充字段和方法依赖。随后执行 Aware 回调，让需要容器信息的组件取得名称、工厂或上下文。
+
+初始化前处理器会调用 `@PostConstruct`，之后依次执行 `afterPropertiesSet()` 和自定义初始化方法。初始化后处理器可返回代理，所以容器发布的是处理后的引用。
+
+正常关闭时，容器为其管理的 singleton 执行销毁回调。顺序为 `@PreDestroy`、`DisposableBean.destroy()` 和自定义销毁方法。prototype 交付后的清理由使用者负责，强制退出也无法保证回调执行。
 
 </details>
 
@@ -131,14 +152,18 @@ Bean 经实例化、依赖填充和初始化前后处理后发布。初始化顺
 
 **出现公司**：暂无已核验的公开来源（本站自测）
 
-**考察重点**：phase、显式依赖与异步停止回调。
+**考察重点**：用 phase 和显式依赖安排消费者与连接的启停顺序，并解释异步停止为何要通知生命周期处理器。
 
 **相关内容**：[SmartLifecycle 启停顺序](#smartlifecycle-启停顺序)。
 
 <details>
 <summary>参考回答</summary>
 
-连接组件设置较小 phase，消费者设置较大 phase。连接先启动、后停止，消费者后启动、先停止。显式依赖关系优先于 phase。异步停止结束后必须调用 `callback.run()`。
+**应让连接先启动、后停止，消费者后启动、先停止。**
+
+可以把连接组件 phase 设为 0，消费者设为 100，让消费者启动和停止时都有可用连接。显式依赖关系优先于 phase，因此还要核对组件之间的依赖声明。
+
+异步停止结束后，组件必须调用 `callback.run()`，通知生命周期处理器继续关闭。销毁回调则负责最终释放资源，也要兼容组件尚未成功启动的情况。
 
 </details>
 

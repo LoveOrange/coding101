@@ -3,19 +3,21 @@ sidebar_position: 4
 knowledge:
   id: system-design.distributed-data.outbox-cdc-reliable-events
   type: concept
+description: "Transactional Outbox 将业务变化和事件一同提交。本文讲解双写窗口、发布任务、CDC、事件顺序与消费者幂等。本文适合准备后端面试的读者。读者可练习推演发布失败后的恢复。读者还可区分事件已发送和业务流程完成的状态。"
+keywords: ["事务发件箱", "CDC 变更捕获", "可靠事件", "双写一致性", "Outbox 模式"]
 ---
 
 # Transactional Outbox 与 CDC
 
-Transactional Outbox 让业务变化和事件共同提交。CDC 可从提交日志中提取事件。本文讲解双写窗口、发布恢复和事件顺序。流程补偿见[Saga](./saga-compensation-intermediate-state.mdx)。
+Transactional Outbox 让业务变化和事件共同提交。CDC 可从提交日志中提取事件。本文讲解双写窗口、发布恢复和事件顺序。
 
 ## 1. 面试核心 {#core}
 
-- Outbox 把业务状态与待发事件写进同一本地事务。[卡](#publish-after-commit)
-- relay 在发送后、记录结果前崩溃，会造成重复交付。
-- CDC 的恢复依赖提交日志和持久化消费位置。
-- 相同聚合键路由到同一分区，业务顺序仍需发布端串行约束。[卡](#outbox-event-order)
-- Inbox 去重记录与消费结果共同提交，可限制本地重复效果。
+- **本地原子提交。** Outbox 把业务状态与待发事件写进同一本地事务。[卡](#publish-after-commit)
+- **重复交付。** relay 在发送后、记录结果前崩溃，会造成重复交付。
+- **CDC 恢复位置。** CDC 的恢复依赖提交日志和持久化消费位置。
+- **聚合内顺序。** 相同聚合键路由到同一分区，业务顺序仍需发布端串行约束。[卡](#outbox-event-order)
+- **消费端去重。** Inbox 去重记录与消费结果共同提交，可限制本地重复效果。
 
 ## 2. 双写窗口 {#双写的问题}
 
@@ -119,7 +121,9 @@ Outbox 保护本地原子提交。发送响应丢失后，事件仍可重复。�
 <details>
 <summary>参考回答</summary>
 
-业务状态与 Outbox 记录应在同一事务提交。提交成功后，事件有持久来源。独立 relay 轮询或通过 CDC 发布，失败后继续恢复。
+**业务状态与 Outbox 记录应在同一事务提交。**
+
+提交成功后，事件有持久来源。独立 relay 轮询或通过 CDC 发布，失败后继续恢复。
 
 发送成功而确认丢失会导致重复。消费者用 Inbox 或业务幂等约束效果。聚合 key、发布顺序与版本共同处理乱序。监控最老事件、日志滞后和消费差异，以发现停滞。
 
@@ -138,7 +142,9 @@ Outbox 保护本地原子提交。发送响应丢失后，事件仍可重复。�
 <details>
 <summary>参考回答</summary>
 
-相同 key 控制分区路由，分区只保留实际追加顺序。两个 relay 仍可先发送版本 12，再发送 11。完整快照可按版本拒绝旧值。增量事件则需补齐缺口，避免漏算。发布端与消费端都需维护聚合内顺序。
+**相同 key 控制分区路由，分区只保留实际追加顺序。**
+
+两个 relay 仍可先发送版本 12，再发送 11。完整快照可按版本拒绝旧值。增量事件则需补齐缺口，避免漏算。发布端与消费端都需维护聚合内顺序。
 
 </details>
 

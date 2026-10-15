@@ -3,23 +3,25 @@ sidebar_position: 15
 knowledge:
   id: basic-knowledge.java.spring.auto-configuration-conditions
   type: concept
+description: "Spring Boot 自动配置根据条件注册默认组件对象。本文讲解候选发现、条件注解、用户配置优先和条件评估报告。本文适合准备 Spring 面试的读者。读者可练习推演配置生效与退让过程，并分析属性条件和启动副作用。"
+keywords: ["AutoConfiguration", "ConditionalOnMissingBean", "条件装配", "自动配置原理"]
 ---
 
 # Spring Boot 自动配置
 
-Spring Boot 自动配置按条件注册默认 Bean。本文以 Boot 3.5 为准，负责候选发现、条件与退让。Starter 模块设计见 [Spring Boot Starter](./custom-starter-boundaries.mdx)。
+Spring Boot 自动配置根据类路径、配置属性和已有 Bean，按条件注册默认组件。本文以 Boot 3.5 为准，从候选配置的发现过程入手，说明条件怎样控制注册、默认实现怎样为用户配置退让。最后介绍属性条件、条件报告和启动副作用，并补充 Boot 2.7 的登记方式。
 
 ## 1. 面试核心 {#core}
 
-- Boot 3.x 从 `AutoConfiguration.imports` 读取自动配置候选。[卡](#auto-configuration)
-- `@ConditionalOnMissingBean` 根据已处理的 Bean 定义决定退让。
-- `@ConditionalOnProperty` 默认匹配已存在且值不为 `false` 的属性。[卡](#property-condition-defaults)
-- 自动配置的 `before`、`after` 控制定义顺序，实例顺序由依赖决定。
-- `--debug` 输出条件报告，`conditions` 端点提供运行时查询。
+- **候选发现。** Boot 3.x 通过 `@EnableAutoConfiguration` 从 `AutoConfiguration.imports` 读取自动配置候选。[卡](#auto-configuration)
+- **默认 Bean 退让。** `@ConditionalOnMissingBean` 在已处理的定义中发现匹配 Bean 时，会跳过默认 Bean 的注册。
+- **属性条件。** `@ConditionalOnProperty` 默认匹配已存在且值不为 `false` 的属性。[卡](#property-condition-defaults)
+- **定义与实例顺序。** 自动配置的 `before`、`after` 控制定义处理顺序，Bean 实例的创建顺序由依赖等关系决定。
+- **条件诊断。** Boot 启动参数 `--debug` 输出条件评估报告，Actuator 的 `conditions` 端点提供运行时查询。
 
 ## 2. 候选自动配置类 {#候选自动配置类}
 
-自动配置候选登记在以下文件：
+Boot 需要先找到有哪些默认配置可供选择，再检查当前应用是否满足条件。自动配置候选登记在以下文件中：
 
 ```text
 META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports
@@ -31,11 +33,15 @@ META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports
 com.example.payment.autoconfigure.PaymentAutoConfiguration
 ```
 
-`@EnableAutoConfiguration` 通过导入选择器读取候选。候选经排除、排序和条件匹配后参与定义注册。自动配置类使用 `@AutoConfiguration` 声明。
+`@SpringBootApplication` 包含 `@EnableAutoConfiguration`，后者通过导入选择器读取候选。导入选择器负责决定哪些配置类进入容器处理流程。候选经排除、排序和条件匹配后，参与 BeanDefinition 注册，也就是注册组件的创建定义。自动配置类本身使用 `@AutoConfiguration` 声明。
 
-自动配置放在专用包中，通过 imports 导入。内部依赖用明确的 `@Import` 组织，避免宽泛组件扫描。可用 `@SpringBootApplication(exclude=...)` 排除候选。配置文件也支持 `spring.autoconfigure.exclude`。
+自动配置放在专用包中，通过 imports 文件导入。内部依赖用明确的 `@Import` 组织，避免宽泛组件扫描把无关类带入容器。这样，自动配置的生效范围就由登记文件和条件决定。
+
+应用可用 `@SpringBootApplication(exclude=...)` 排除候选，也可设置 `spring.autoconfigure.exclude`。排除用于明确停用某份默认配置，依赖冲突仍需检查依赖树并修复。
 
 ## 3. 条件注解 {#条件注解}
+
+条件注解决定候选配置在当前应用中是否适用。下面的支付配置同时检查客户端依赖和用户自定义的服务：
 
 ```java
 @AutoConfiguration
@@ -50,7 +56,9 @@ class PaymentAutoConfiguration {
 }
 ```
 
-示例要求类路径存在 `PaymentClient`。容器缺少 `PaymentService` 时，才注册默认实现。
+示例要求类路径中存在 `PaymentClient`，否则整组配置会跳过。条件成立后，再检查容器中是否已有 `PaymentService`。只有缺少该服务时，才注册默认实现，并使用绑定后的 `PaymentProperties` 提供参数。
+
+常用条件分别检查以下对象：
 
 | 注解 | 判断条件 |
 | --- | --- |
@@ -60,17 +68,31 @@ class PaymentAutoConfiguration {
 | `@ConditionalOnProperty` | 属性存在且值匹配 |
 | `@ConditionalOnWebApplication` | 应用属于指定 Web 类型 |
 
-类级条件控制整组配置，方法级条件控制该 Bean。缺失依赖的类型隔离见 [Spring Boot Starter](./custom-starter-boundaries.mdx#可选依赖隔离)。
+除表中条件外，还可以按资源是否存在或表达式结果决定配置是否适用。类级条件控制整组配置，方法级条件只控制对应 Bean。
+
+缺失依赖的类型隔离见 [Spring Boot Starter](./custom-starter-boundaries.mdx#可选依赖隔离)。
 
 ## 4. 用户配置优先 {#用户配置优先}
 
-`@ConditionalOnMissingBean` 在已有用户 Bean 时退让。例如用户声明 `PaymentService` 后，示例跳过默认实现。两份同名定义相互覆盖属于另一种机制。
+默认实现需要给用户自定义组件留下替换入口。`@ConditionalOnMissingBean` 发现已有用户 Bean 时，会跳过默认 Bean 的注册，这个行为称为退让。比如用户声明 `PaymentService` 后，上面的默认实现就会跳过。自定义 `ObjectMapper` 后让默认实现退让，也是相同用法。
 
-Bean 条件只看到评估时已处理的定义。自动配置在用户配置之后处理，便于按用户定义退让。自动配置之间可用 `before`、`after` 指定关系。
+退让发生在注册前，两份同名定义已经注册后再相互覆盖，则属于另一种机制。
 
-`@Bean` 方法返回类型需表达条件检查所需的类型。返回过宽的接口会丢失具体类型信息。实例创建顺序仍由依赖、`@DependsOn` 和懒加载设置决定。
+Bean 条件只看到评估时已处理的定义。自动配置在用户配置之后处理，便于按用户定义退让。自动配置之间可用 `before`、`after` 指定关系。需要让某个条件看到另一份定义时，应显式表达顺序，避免依赖文件名或偶然的扫描顺序。
+
+`@Bean` 方法返回类型需表达条件检查所需的类型。若只声明宽泛接口，条件评估时就难以识别实现类。公共扩展点也要明确类型、配置属性和自动配置顺序，用户才能稳定替换默认实现。
+
+定义的处理顺序确定后，实例创建仍由依赖关系、`@DependsOn` 和懒加载设置决定。`@DependsOn` 声明显式初始化依赖，懒加载则推迟对象创建，所以自动配置先处理并不意味着对象先创建。
 
 ## 5. 属性条件 {#属性条件}
+
+属性条件用配置值控制能力开关。设计时需要明确**缺失、匹配和错误值**分别怎样处理：
+
+- 属性缺失时，决定默认启用还是关闭。
+- 属性存在时，明确哪些值算匹配。
+- 属性值错误时，决定是否让启动失败，避免拼写错误静默改变行为。
+
+下面的配置要求调用方显式启用重试：
 
 ```java
 @Bean
@@ -89,14 +111,14 @@ RetryPolicy retryPolicy() {
 
 省略 `havingValue` 时，已存在且值不为 `false` 即匹配。因此 `enabled=foo` 也会命中默认规则。布尔开关应明确写 `havingValue="true"`。
 
-同一注解声明多个 `name` 时，所有属性都需匹配。集合下标属性应使用专门条件，避免将其当作普通键判断。参数范围用 `@ConfigurationProperties` 校验。
+同一注解声明多个 `name` 时，所有属性都需匹配。集合下标属性应使用专门条件，因为集合整体与某个下标是不同的属性键。超时范围等参数约束则交给 `@ConfigurationProperties` 绑定后的校验，发现错误时让启动明确失败。
 
 ## 6. 条件评估报告 {#条件评估报告}
 
-`--debug` 或 Actuator `conditions` 可展示条件结果。诊断时先找到目标自动配置，再查看未匹配条件。
+某个 Bean 缺失时，条件评估报告可以解释它为何没有注册。用 `--debug` 启动，或访问 Actuator 的 `conditions` 端点，都能查看匹配结果。先找到目标自动配置，再按以下**四类条件**查找原因：
 
 - 类条件失败时，检查运行时依赖树。
-- Bean 条件失败时，查看已有定义和返回类型。
+- Bean 条件失败时，查看已有定义、定义来源和返回类型，确认是否因用户 Bean 而退让。
 - 属性条件失败时，检查最终值与来源。
 - Web 条件失败时，确认应用类型。
 
@@ -104,19 +126,23 @@ RetryPolicy retryPolicy() {
 
 ## 7. 启动副作用 {#启动副作用}
 
-自动配置负责声明组件与装配关系。网络连接和后台任务应交给有生命周期的 Bean。
+自动配置的职责是声明组件及其装配关系，条件评估应保持可重复。若在类加载或配置解析期间访问网络、创建线程或写文件，启动就会等待外部环境。精简测试也会执行这些条件，因此副作用会增加测试成本，并让应用关闭时难以清理资源。
 
-类加载和条件评估时访问网络会增加启动耗时。条件还会用于精简测试，因此应保持评估过程可重复。
+确实需要连接外部系统时，应把动作交给有生命周期的 Bean。组件要设置连接超时、报告健康状态，并在停止时清理资源。还要明确连接失败是否阻止应用就绪，让接收流量的时机符合实际服务能力。
 
 ## 8. 常见问题 {#常见问题}
 
-### 8.1 自动配置注册的版本差异 {#自动配置注册的版本差异}
+### 8.1 `spring.factories` 还能登记自动配置吗？ {#自动配置注册的版本差异}
 
-Boot 2.7 引入 `AutoConfiguration.imports`，并兼容旧登记。Boot 3.0 移除了 `spring.factories` 的自动配置候选登记。初始化器等其他扩展仍可使用 `spring.factories`。
+Boot 2.7 仍兼容旧登记方式，同时引入了 `AutoConfiguration.imports`。Boot 3.0 移除了 `spring.factories` 中的自动配置候选登记，因此 Boot 3.x 应使用 imports 文件。初始化器等其他扩展仍可使用 `spring.factories`，两类用途要分别判断。
 
-### 8.2 MissingBean 条件诊断 {#missingbean-条件诊断}
+### 8.2 `@ConditionalOnMissingBean` 为什么没有退让？ {#missingbean-条件诊断}
 
-先确认条件检查的类型、名称和搜索范围。再查看用户定义是否已注册、返回类型是否准确。自动配置顺序也会影响条件可见的定义。
+条件没有退让，说明评估时未找到符合要求的 Bean 定义。可以检查以下**三个方面**：
+
+1. 核对条件指定的类型、名称，以及所用条件涉及的泛型信息，确认与用户 Bean 一致。
+2. 检查用户配置是否被扫描、定义是否已注册，以及 `@Bean` 返回类型是否足够准确。
+3. 检查父子容器的搜索范围和自动配置顺序，确认该定义在评估时可见。
 
 ## 9. 面试题 {#面试题}
 
@@ -128,16 +154,20 @@ Boot 2.7 引入 `AutoConfiguration.imports`，并兼容旧登记。Boot 3.0 移�
 
 **出现公司**：美团
 
-**考察重点**：理解候选发现、条件匹配与用户配置退让。
+**考察重点**：解释候选类怎样被发现、条件怎样决定注册，以及默认 Bean 怎样为用户配置退让。能用条件报告定位未生效的原因。
 
 **相关内容**：[候选自动配置类](#候选自动配置类)至[启动副作用](#启动副作用)。
 
 <details>
 <summary>参考回答</summary>
 
-Boot 3.x 通过 `@EnableAutoConfiguration` 导入候选。候选来自 `AutoConfiguration.imports`。类路径、Bean 和属性条件决定最终定义。
+**Spring Boot 先发现候选自动配置，再按类路径、已有 Bean 和属性等条件决定注册哪些定义。**
 
-`@ConditionalOnMissingBean` 让用户定义优先。`before`、`after` 控制自动配置顺序。结果异常时，用 `--debug` 或 `conditions` 检查具体条件。
+`@SpringBootApplication` 包含 `@EnableAutoConfiguration`，后者在 Boot 3.x 中读取 `AutoConfiguration.imports`。
+
+候选经过排除、排序和条件匹配后，才注册相应 BeanDefinition。`@ConditionalOnMissingBean` 在发现用户定义时跳过默认实现，因此用户可以替换默认组件。`before`、`after` 控制自动配置处理顺序，实例创建仍由依赖等关系决定。
+
+结果不符合预期时，用 `--debug` 或 Actuator 的 `conditions` 查看具体条件。再结合定义来源、最终属性值和应用类型，确认跳过的原因。
 
 </details>
 
@@ -147,14 +177,16 @@ Boot 3.x 通过 `@EnableAutoConfiguration` 导入候选。候选来自 `AutoConf
 
 **出现公司**：暂无已核验的公开来源（本站自测）
 
-**考察重点**：属性缺失、默认值匹配与布尔开关。
+**考察重点**：区分属性缺失与属性值不匹配，并解释布尔开关为何需要显式声明 `havingValue`。
 
 **相关内容**：[属性条件](#属性条件)。
 
 <details>
 <summary>参考回答</summary>
 
-默认要求属性存在且值不为 `false`。因此 `enabled=foo` 也会匹配。布尔开关可写 `havingValue="true"`。缺失时是否启用由 `matchIfMissing` 决定，默认是 `false`。
+**未指定 `havingValue` 时，默认要求属性存在且值不为 `false`。**
+
+所以，`enabled=foo` 也会匹配，条件并没有把它当作严格的布尔值校验。布尔开关应显式写 `havingValue="true"`。属性缺失时是否匹配由 `matchIfMissing` 决定，其默认值是 `false`。
 
 </details>
 

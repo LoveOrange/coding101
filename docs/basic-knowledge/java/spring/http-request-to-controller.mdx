@@ -3,45 +3,58 @@ sidebar_position: 9
 knowledge:
   id: basic-knowledge.java.spring.http-request-to-controller
   type: concept
+description: "Spring MVC 请求经过容器、过滤器和分派器到达控制器。本文讲解端到端顺序、返回值处理、异步续接与请求观测。本文适合准备 Spring 面试的读者。读者可练习沿调用链定位处理阶段。读者还可分析异步执行容量和日志指标的对应关系。"
+keywords: ["Spring MVC 流程", "Servlet 容器", "Controller 调用", "异步请求"]
 ---
 
 # Spring MVC 请求生命周期
 
-Spring MVC 请求从 Servlet 容器进入，再由框架调用 Controller。本文负责端到端顺序、返回值与异步续接。处理器策略见 [DispatcherServlet](./dispatcherservlet-handler-mapping.mdx)。参数绑定见 [Spring MVC 参数解析](./binding-validation-content-negotiation.mdx)。
+Spring MVC 请求生命周期描述一次 HTTP 请求怎样到达 Controller，再将结果写回客户端。本文从 Servlet 容器接收请求开始，沿过滤链和 MVC 分派介绍同步调用顺序，再说明异步续接与请求耗时。
 
 ## 1. 面试核心 {#core}
 
-- Servlet 容器接收 HTTP 请求，Filter 链随后调用 DispatcherServlet。
-- MVC 经处理器映射、参数解析和适配调用后，执行 Controller。[卡](#request-to-controller)
-- `@ResponseBody` 交给消息转换器，视图名交给 ViewResolver 解析。
-- MVC 异步释放初始线程，结果就绪后通过 ASYNC 派发续接。[卡](#async-redispatch)
-- 序列化发生在 Controller 返回后，也计入完整请求耗时。
+- **入口链路。** Servlet 容器接收 HTTP 请求，按映射让请求经过 Filter 链，再进入 DispatcherServlet。
+- **处理器调用。** DispatcherServlet 通过 HandlerMapping 找到处理器和拦截器，再由 HandlerAdapter 解析参数并调用 Controller。[卡](#request-to-controller)
+- **响应写出。** `@ResponseBody` 返回值由消息转换器按协商的媒体类型写出，视图名由 ViewResolver 解析后交给 View 渲染。
+- **异步派发。** MVC 异步释放初始请求线程，结果就绪后通过 ASYNC 派发继续处理返回值。[卡](#async-redispatch)
+- **完整请求耗时。** 序列化发生在 Controller 返回后，也计入完整请求耗时。
 
 ## 2. Servlet 容器 {#servlet-容器}
 
-Tomcat、Jetty 等服务器处理 HTTP 协议。Servlet 容器构造 request/response，并安排请求执行。
+请求到达 MVC 之前，服务器需要先处理连接和 HTTP 消息。Tomcat、Jetty 等服务器解析请求行和请求头，并提供读取请求体的入口。Servlet 容器据此构造 request/response 对象，再按线程模型安排请求执行。
 
-MVC 接收 Servlet API 对象，负责应用层分派。连接数、accept 队列与请求线程由服务器管理。应用数据库连接池和业务执行器需单独观察。
+MVC 接收这些 Servlet API 对象，负责应用层分派。TCP 连接与 HTTP 报文解析由服务器承担。排查慢请求时，应区分**服务器容量与应用容量**：
+
+- 连接数限制服务器同时维护多少连接。
+- accept 队列保存等待应用接受的连接，请求过多时会在入口等待。
+- 请求线程决定容器怎样安排请求执行，keep-alive 则决定连接能否继续复用。
+- 数据库连接池和业务执行器由应用配置，需要单独观察使用量与等待时间。
 
 ## 3. Filter 链 {#filter-链}
 
-Filter 按注册范围包装请求并控制是否继续，详见 [Spring 拦截机制](./filter-interceptor-aspect-boundaries.mdx#filter)。
+容器按照 URL 和派发类型选择 Filter，过滤器调用 `chain.doFilter()` 后，请求才会继续进入下一项。Spring Security 也通过 Servlet 过滤链接入，在请求进入 MVC 前执行安全检查。
+
+请求包装、拒绝响应和返回后的清理见 [Spring 拦截机制](./filter-interceptor-aspect-boundaries.mdx#filter)。
 
 ## 4. DispatcherServlet {#dispatcherservlet}
 
-同步成功路径按以下顺序执行：
+请求通过过滤链后，由 DispatcherServlet 协调 MVC 组件。handler 指实际处理请求的对象，adapter 则封装它的调用方式。下面按顺序说明一次**同步请求**怎样完成：
 
-1. 映射器查找处理器和拦截器。
-2. DispatcherServlet 选择匹配的适配器。
-3. 拦截器执行 `preHandle`。
-4. 适配器解析参数并调用 Controller。
-5. 返回值处理器写响应或准备视图。
-6. 拦截器执行 `postHandle`。
-7. 有视图时执行渲染，再调用 `afterCompletion`。
+1. HandlerMapping 根据请求查找处理器和匹配的拦截器。
+2. DispatcherServlet 选择支持该处理器的 HandlerAdapter。
+3. 拦截器执行 `preHandle`，决定是否继续调用。
+4. 适配器用参数解析器、数据绑定和消息转换器准备参数，再调用 Controller。
+5. 返回值处理器写出响应正文，或准备视图与模型数据。
+6. 拦截器执行 `postHandle`，处理同步调用的返回结果。
+7. 有视图时执行渲染，随后调用 `afterCompletion` 完成清理。
 
-异常发生时进入解析分支。各策略职责见 [DispatcherServlet](./dispatcherservlet-handler-mapping.mdx)。
+映射、参数解析或 Controller 调用等阶段抛出异常后，会进入 `HandlerExceptionResolver` 异常解析链。解析器会尝试将异常转换成错误响应。
+
+各策略组件的职责见 [DispatcherServlet](./dispatcherservlet-handler-mapping.mdx)。
 
 ## 5. 返回值处理 {#返回值处理}
+
+Controller 返回 Java 对象后，MVC 还需要把它转换成 HTTP 响应。以下方法在 `@RestController` 中返回订单对象，因此结果会被作为响应正文处理：
 
 ```java
 @RestController
@@ -53,50 +66,67 @@ class OrderController {
 }
 ```
 
-示例在 `@RestController` 中返回对象。返回值处理器选择消息转换器，将对象写为响应体。
+返回值处理器根据协商的媒体类型选择 `HttpMessageConverter`，也就是消息转换器。比如协商结果为 JSON 时，合适的转换器会将 `OrderResponse` 序列化为 JSON，再写入响应体。
 
-`@Controller` 方法返回 String 时，可将其解释为视图名。`@ResponseBody` 或 `@RestController` 则将 String 作为正文。`ResponseEntity` 还可指定状态与响应头。
+不同声明会改变返回值的含义，需要区分**视图名、响应正文和 ResponseEntity**：
 
-视图路径由 ViewResolver 解析，再由 View 渲染。JSON 序列化出错发生在 Controller 返回后。响应仍未提交时，可继续尝试 MVC 异常处理。
+- 普通 `@Controller` 方法返回 String 时，可将字符串解释为视图名。
+- 使用 `@ResponseBody` 或 `@RestController` 时，String 也作为正文写出。
+- 返回 `ResponseEntity` 时，除了正文，还可指定状态码和响应头。
+
+视图名交给 ViewResolver 解析，得到 View 后再渲染页面。JSON 序列化则发生在 Controller 返回之后，仍属于 MVC 返回值处理阶段。如果序列化失败且响应尚未提交，MVC 还能尝试通过异常解析器生成错误响应。
 
 ## 6. 异步请求 {#异步请求}
 
-`Callable` 与 `DeferredResult` 支持单次异步结果。
+Controller 需要等待耗时任务时，可以先返回一个异步结果对象，让初始请求线程退出。`Callable` 与 `DeferredResult` 都支持稍后提供单次结果，区别在于**由谁生产结果**：
 
 | 返回类型 | 结果生产方式 |
 | --- | --- |
 | `Callable` | MVC 将任务交给配置的 AsyncTaskExecutor |
 | `DeferredResult` | 应用从其他线程调用 `setResult` 或 `setErrorResult` |
 
-两者都会开启 Servlet async，释放初始请求线程。结果准备好后，MVC 发起 ASYNC 派发。框架重新定位 handler，但用已有结果继续返回值处理。Controller 方法无需再执行一次。
+两者都会开启 Servlet async，也就是 Servlet 的异步请求机制，让初始请求线程返回容器。结果准备好后，MVC 发起 ASYNC 派发，将同一请求再次交给容器处理。这次框架重新定位 handler，然后用已有结果继续返回值处理，Controller 方法无需再执行一次。
 
-初始线程执行 `afterConcurrentHandlingStarted`。此时跳过普通 `postHandle` 与 `afterCompletion`。最终派发再进入完成流程，超时还需相应异步回调。
+初始线程会调用异步拦截器的 `afterConcurrentHandlingStarted`，此时跳过普通的 `postHandle` 与 `afterCompletion`。最终派发再进入完成流程。发生超时时，还需要相应的异步回调处理超时结果。
 
-`Callable` 抛错或 `setErrorResult(exception)` 会进入 MVC 异常解析。独立 `@Async` 后台任务的失败则由其结果协议处理。
+由于请求会切换线程，清理逻辑需要覆盖每次线程退出。具体规则见 [Spring 拦截机制](./filter-interceptor-aspect-boundaries.mdx#异步与-threadlocal)。
+
+`Callable` 抛错，或应用调用 `setErrorResult(exception)` 后，异常会随异步派发进入 MVC 异常解析。独立 `@Async` 后台任务则通过 Future 等返回结果或异步异常处理器报告失败，需要调用方单独处理。
 
 ## 7. 请求日志与指标 {#请求日志与指标}
 
-请求日志记录 ID、方法、路径模板、状态与完整耗时。指标使用模板路径，避免用户 ID 形成高基数标签。
+请求日志需要说明哪个请求耗时、在哪里耗时。入口日志至少保留以下信息：
 
-完整耗时包含 Filter、参数读取、业务执行和响应序列化。异步请求还需包含等待结果的时间。Controller 方法计时只反映其中一段。
+- 请求 ID，用于关联同一请求的多条日志。
+- HTTP 方法和路径模板，用于确定接口。
+- 响应状态码，用于区分成功与失败。
+- 完整耗时与响应大小，用于判断处理和写出成本。
+
+指标应使用 `/users/{id}` 这样的路径模板。若直接把每个用户 ID 放进标签，就会产生大量不同标签值，这称为高基数，会增加指标存储与查询成本。
+
+服务端处理耗时包含 Filter、参数读取、业务执行和响应序列化，异步请求还要计入等待结果的时间。Controller 方法计时只反映其中一段。
+
+定位慢请求时，可通过调用追踪或性能分析区分各阶段耗时。数据库等待应单独观察，入口前的连接等待也要结合客户端与容器指标判断。这样才能区分业务执行慢、排队慢和响应写出慢。
 
 ## 8. 异步执行容量 {#异步执行容量}
 
-MVC 异步释放 Servlet 请求线程，工作仍需执行资源。`Callable` 的阻塞任务占用业务执行器线程。数据库请求继续占用连接。
+MVC 异步可以释放 Servlet 请求线程，但剩余工作仍要消耗资源。`Callable` 中的阻塞任务会占用执行器线程，正在执行的数据库操作也继续占用连接。因此，异步接口需要同时约束**执行器、超时与下游容量**。
 
-应配置 AsyncTaskExecutor 的容量与拒绝策略。还需设置异步超时，并处理超时后的任务结果。HTTP 超时结束响应时，后台任务仍需单独取消或收尾。
+AsyncTaskExecutor 是 MVC 执行异步任务的执行器，应配置线程和队列容量，以及任务过多时的拒绝策略。还需设置异步超时，并处理超时后才返回的任务结果。HTTP 超时结束响应时，后台任务仍需单独取消或收尾，才能释放其占用的资源。
 
-MVC 消息写出仍采用阻塞 I/O。WebFlux 的执行模型与此不同。虚拟线程可承载阻塞任务，但下游连接容量仍需限制。
+MVC 消息写出仍采用阻塞 I/O。WebFlux 使用不同的响应式执行模型，不经过这套 Servlet DispatcherServlet 调用链。Java 21 虚拟线程也可以承载传统 Servlet 同步代码和阻塞任务。选择时应结合阻塞特征与框架支持，下游数据库连接等容量仍需单独限制。
 
 ## 9. 常见问题 {#常见问题}
 
-### 9.1 Controller 与 Servlet {#controller-与-servlet}
+### 9.1 Controller 是 Servlet 吗？ {#controller-与-servlet}
 
-注解 Controller 是 Spring Bean，由适配器调用。DispatcherServlet 才是 Servlet 前端控制器。
+注解 Controller 是由适配器调用的 Spring Bean。DispatcherServlet 才是 Servlet 前端控制器，它负责接收容器分派的请求，再协调 Controller 调用。
 
-### 9.2 请求与多次派发 {#请求与多次派发}
+### 9.2 一个请求一定只执行一次 Filter 吗？ {#请求与多次派发}
 
-一个请求可经历 REQUEST、ASYNC 或 ERROR 等派发。Filter 是否再次执行，由注册方式与过滤器策略决定。
+一个请求可以经历多次派发，所以 Filter 也可以再次执行。初始请求使用 REQUEST，之后还可发生 ASYNC、ERROR 或 FORWARD 派发。FORWARD 表示服务端把请求转发给其他目标。
+
+Filter 是否参与每次派发，由注册方式与过滤器策略共同决定。`OncePerRequestFilter` 也提供异步和错误派发的控制钩子，具体见 [Spring 拦截机制](./filter-interceptor-aspect-boundaries.mdx#异步与-threadlocal)。
 
 ## 10. 面试题 {#面试题}
 
@@ -109,16 +139,20 @@ MVC 消息写出仍采用阻塞 I/O。WebFlux 的执行模型与此不同。虚�
 
 **出现公司**：滴滴、远景能源
 
-**考察重点**：理解容器、分派、参数解析与返回值处理。
+**考察重点**：按请求顺序说明容器与 MVC 组件的分工，并解释参数准备、返回值转换和异常解析发生在哪个阶段。
 
 **相关内容**：[Servlet 容器](#servlet-容器)至[返回值处理](#返回值处理)。
 
 <details>
 <summary>参考回答</summary>
 
-请求经 Servlet 容器与 Filter 链进入 DispatcherServlet。MVC 找到 handler，再由适配器解析参数并执行 Controller。返回值处理器随后写响应或准备视图。
+**请求由服务器解析，经 Servlet 容器安排执行，再通过 Filter 链进入 DispatcherServlet。**
 
-同步路径按顺序执行拦截器回调。异常进入 resolver 链，异步结果则通过后续派发续接。
+DispatcherServlet 用 HandlerMapping 找到 handler 和拦截器，再选择支持它的 HandlerAdapter。
+
+`preHandle` 放行后，适配器准备参数并调用 Controller。参数准备会用到参数解析器、数据绑定和消息转换器。方法返回后，返回值处理器写出正文或准备视图，随后执行后置回调、视图渲染和完成回调。
+
+异常进入解析器链，异步结果通过后续派发续接。参数读取和响应序列化都占用时间，所以完整请求耗时要覆盖 Controller 方法之外的阶段。
 
 </details>
 
@@ -128,14 +162,18 @@ MVC 消息写出仍采用阻塞 I/O。WebFlux 的执行模型与此不同。虚�
 
 **出现公司**：暂无已核验的公开来源（本站自测）
 
-**考察重点**：线程释放、结果生产与异步派发。
+**考察重点**：解释初始线程何时释放、结果由谁生成，以及异步派发怎样继续处理已有结果。
 
 **相关内容**：[异步请求](#异步请求)。
 
 <details>
 <summary>参考回答</summary>
 
-MVC 开启 Servlet async，并把 Callable 交给执行器。初始请求线程随后释放。结果就绪后发起 ASYNC 派发，使用已有结果继续处理。Controller 方法无需再次执行，异常仍进入 MVC resolver。
+**Callable 的结果通过 ASYNC 派发交回 MVC，Controller 方法无需再次执行。**
+
+MVC 开启 Servlet async 后，把 Callable 交给执行器，初始请求线程就可以返回容器。
+
+任务完成后，MVC 保存结果并发起 ASYNC 派发。框架重新找到 handler，再使用已有结果继续返回值转换和响应写出。如果 Callable 抛出异常，异常也通过这次派发交给 MVC 解析器。
 
 </details>
 
@@ -143,6 +181,6 @@ MVC 开启 Servlet async，并把 Callable 交给执行器。初始请求线程�
 
 - [Spring Framework：DispatcherServlet](https://docs.spring.io/spring-framework/reference/web/webmvc/mvc-servlet.html)
 - [Spring Framework：Spring MVC Processing Sequence](https://docs.spring.io/spring-framework/reference/web/webmvc/mvc-servlet/sequence.html)
-- [Jakarta Servlet Specification](https://jakarta.ee/specifications/servlet/6.1/)
+- [Jakarta Servlet Specification](https://jakarta.ee/specifications/servlet/6.0/)
 - [Spring Framework：Asynchronous Requests](https://docs.spring.io/spring-framework/reference/web/webmvc/mvc-ann-async.html)
 - [Spring Framework：Return Values](https://docs.spring.io/spring-framework/reference/web/webmvc/mvc-controller/ann-methods/return-types.html)

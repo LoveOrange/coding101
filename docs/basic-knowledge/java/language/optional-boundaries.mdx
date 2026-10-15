@@ -3,23 +3,25 @@ sidebar_position: 8
 knowledge:
   id: basic-knowledge.java.language.optional-boundaries
   type: concept
+description: "介绍 Optional 如何通过返回类型表达结果缺失，讲解默认值、异常、有值回调及映射和过滤操作。比较立即求值与延迟求值，说明参数、实体字段和集合中的使用边界，帮助准备 Java 面试的读者推演转换函数遇到空值时的结果，并选择合适的缺失处理方式。"
+keywords: ["Optional 用法", "orElse 与 orElseGet", "空值处理", "Optional flatMap"]
 ---
 
 # Optional
 
-`Optional<T>` 用容器表达结果存在或缺失。本文负责可选返回值、默认值求值和转换边界。Lambda 的延迟行为见 [Lambda 表达式](../functional/lambda-functional-interfaces-capture.mdx)。
+`Optional<T>` 是一个容器，用来表示存在一个非空的 `T` 值，或者没有结果。它主要用于方法返回值，让调用方从类型上看到缺失分支。本文从可选查询结果入手，讲解默认值与转换操作，再说明参数、字段和集合中的使用边界。
 
 ## 1. 面试核心 {#core}
 
-- `Optional` 在返回类型中显式表达结果缺失。[卡](#optional-usage)
-- `orElse` 先求参数值，`orElseGet` 只在缺失时调用供应函数。
-- `map` 将空映射结果变为空容器，`flatMap` 要求返回非空容器。[卡](#optional-null-mapping)
-- `Optional.empty()` 只表示无值，不携带缺失原因。
-- `Optional` 是基于值的类，应按内容比较而非对象身份。
+- **缺失分支。** 方法返回 `Optional<T>` 时，返回类型明确表达了结果存在或缺失这两种情况。[卡](#optional-usage)
+- **默认值求值。** `orElse` 在调用前计算默认值，`orElseGet` 只在结果缺失时调用生成默认值的函数。
+- **map 与 flatMap。** 映射函数返回 `null` 时，`map` 得到空 `Optional`，`flatMap` 则抛出 `NullPointerException`。[卡](#optional-null-mapping)
+- **缺失原因。** `Optional.empty()` 只表示无值，不携带缺失原因。
+- **容器相等性。** `Optional` 是基于值的类，比较两个容器的内容应使用 `equals`。
 
 ## 2. 可选结果 {#可选结果}
 
-下面的查询返回用户或空结果：
+查询用户时，查不到记录也可以是正常结果。下面用 `Optional<User>` 将这两种情况写进返回类型：
 
 ```java
 Optional<User> findUser(long userId) {
@@ -30,7 +32,7 @@ Optional<User> findUser(long userId) {
 
 返回 `User` 时，调用方无法从类型判断 `null` 是否是合法结果。返回 `Optional<User>` 后，缺失成为方法契约的一部分。
 
-创建 `Optional` 有三种常用方式：
+根据是否允许传入空值，可以选择以下**三种创建方式**：
 
 ```java
 Optional<String> present = Optional.of("Java");
@@ -50,9 +52,11 @@ Optional<String> uncertain = Optional.ofNullable(value);
 
 ## 3. Optional 结果处理 {#消费-optional}
 
-调用方根据缺失时的业务行为选择 API，避免先统一调用 `get()`。
+拿到 `Optional` 后，调用方需要决定结果缺失时做什么。直接调用 `get()` 会在缺失时抛出 `NoSuchElementException`，而下面的 API 可以明确表达各个分支。
 
 ### 3.1 缺失默认值 {#缺失时提供默认值}
+
+缺失属于正常情况时，可以用 `orElse` 提供默认值。比如，查不到用户时显示匿名名称：
 
 ```java
 String displayName = findUser(userId)
@@ -64,38 +68,47 @@ String displayName = findUser(userId)
 
 ### 3.2 默认值的延迟计算 {#延迟计算默认值}
 
-`orElse` 的参数会在方法调用前计算，无论 `Optional` 是否有值：
+默认值需要查询数据库时，要区分**立即求值和延迟求值**。`Supplier` 表示一个无参数、返回结果的函数，`orElseGet` 会在需要默认值时才调用它。
 
 ```java
-User user = cachedUser.orElse(loadFromDatabase());
+// 即使 cachedUser 有值，仍会执行数据库查询
+User eager = cachedUser.orElse(loadFromDatabase());
+// 只有 cachedUser 为空时，才执行数据库查询
+User lazy = cachedUser.orElseGet(this::loadFromDatabase);
 ```
 
-上面的 `loadFromDatabase()` 总会执行。只有为空时才需要加载，应使用接收 `Supplier` 的 `orElseGet`：
-
-```java
-User user = cachedUser.orElseGet(this::loadFromDatabase);
-```
+- `orElse` 接收计算好的默认值，所以 `loadFromDatabase()` 在进入 `orElse` 前就已执行。
+- `orElseGet` 接收函数，所以缓存有值时可以省去这次查询。
+- 默认值需要创建对象或执行有副作用的操作时，也应考虑延迟计算，避免无用工作。
 
 ### 3.3 缺失异常 {#缺失时抛出异常}
+
+当前业务要求用户必须存在时，可以用 `orElseThrow` 抛出业务异常：
 
 ```java
 User user = findUser(userId)
     .orElseThrow(() -> new UserNotFoundException(userId));
 ```
 
-查询层返回可选结果，业务层定义缺失时的行为。相同查询因此能用于不同业务场景。
+查询层只表达是否找到用户，业务层再决定缺失是否属于错误。因此，同一个查询既能用于显示匿名名称，也能用于要求用户存在的操作。
 
 ### 3.4 有值回调 {#执行副作用}
+
+只需要在有值时执行一个动作，可以使用 `ifPresent`。下面的代码只为查到的用户记录审计信息：
 
 ```java
 findUser(userId).ifPresent(user -> audit(user.id()));
 ```
 
-Java 9 起，可用 `ifPresentOrElse` 分别处理存在和缺失。分支包含多步业务时，普通 `if` 更容易调试。
+如果存在和缺失都要处理，可以用 `ifPresentOrElse` 指定两个分支。分支包含多步业务时，普通 `if` 更容易看清执行顺序，也便于调试。
 
 ## 4. map、flatMap 与 filter {#mapflatmap-与-filter}
 
+可选结果还可以继续转换或筛选。选择哪种操作，取决于下一步是返回普通值、返回另一个 `Optional`，还是判断一个条件。
+
 ### 4.1 map 值转换 {#map-值转换}
+
+`map` 在有值时执行转换，并把转换结果放进新的 `Optional`。比如，从查询结果中取出邮箱：
 
 ```java
 Optional<String> email = findUser(userId)
@@ -106,7 +119,7 @@ Optional<String> email = findUser(userId)
 
 ### 4.2 flatMap 容器展开 {#flatmap-容器展开}
 
-如果映射方法本身已经返回 `Optional`，使用 `flatMap`：
+如果转换方法本身已经返回 `Optional`，可以用 `flatMap` 直接接续这个结果。下面先查用户地址，再从地址中取出城市：
 
 ```java
 Optional<Address> findAddress(User user) {
@@ -122,6 +135,8 @@ Optional<String> city = findUser(userId)
 
 ### 4.3 filter 条件过滤 {#filter-条件过滤}
 
+`filter` 保留满足条件的值，条件不满足时返回空 `Optional`。下面只保留活跃用户：
+
 ```java
 Optional<User> activeUser = findUser(userId)
     .filter(User::active);
@@ -131,37 +146,45 @@ Optional<User> activeUser = findUser(userId)
 
 ## 5. 适用边界 {#适用边界}
 
+`Optional` 最适合在方法返回处表达缺失。把它用于参数、实体字段或集合外层时，还要判断额外的容器是否表达了业务需要的差异。
+
 ### 5.1 可选返回值 {#可选返回值}
 
-典型场景包括：
+以下**四类可选结果**适合使用 `Optional`：
 
 - 按键查询可能不存在的数据。
 - 从集合中查找第一个符合条件的元素。
 - 解析一个允许缺失、但格式错误需要单独处理的字段。
 - 在多个可选步骤之间建立简短转换链。
 
-可选返回值把缺失分支写进类型，也允许正常返回空结果。
+调用方看到返回类型，就知道需要处理查不到结果的情况。查询仍可正常返回空容器，无需把每次缺失都作为异常抛出。
 
 ### 5.2 方法参数 {#方法参数}
+
+参数可省略时，优先用重载、参数对象或明确允许 `null` 的约定表达。把参数改成 `Optional`，会让每个调用方都先包装一次：
 
 ```java
 // 不推荐：调用方还要先创建 Optional
 void send(Optional<String> subject) {}
 ```
 
-可省略参数可用重载、参数对象或明确的可空边界表达。`Optional` 参数要求调用方先包装，是否采用取决于接口语义。
-
-框架或 DSL 可以把 `Optional` 定义为输入协议。此时应明确包装的用途与缺失语义。
+如果包装只是把空值判断移到所有调用点，接口会更繁琐。框架或领域专用语言（DSL）也可以约定用 `Optional` 作为输入协议。采用这种约定时，应说明包装带来的用途，以及缺失的业务含义。
 
 ### 5.3 实体字段 {#实体字段}
 
-`Optional` 是基于值的类，主要用于方法返回值。JPA 和序列化框架对这种字段的支持需要单独确认。
+实体字段需要先确认框架能否正确读取和保存 `Optional`。JPA 实体、传输对象（DTO）和配置对象，都依赖框架识别属性。容器字段会影响属性发现、序列化格式或代理机制，所以采用前要确认原生支持情况。
 
-领域字段使用可选容器前，应确认框架支持。跨服务字段是否可选，应由 Schema 或序列化协议定义。
+跨服务传输时，用 JSON Schema、OpenAPI 或序列化协议声明字段是否可选。这些协议描述的是外部数据格式，接收方才能据此判断字段缺失的含义。
 
 ### 5.4 集合空值语义 {#集合空值语义}
 
-`Optional<List<Order>>` 往往有三种状态：没有列表、有空列表、有非空列表。如果“没有列表”和“列表为空”在业务上没有差异，直接返回空列表更简单：
+`Optional<List<Order>>` 会区分以下**三种状态**：
+
+- 空 `Optional` 表示没有列表。
+- 包含空列表的 `Optional` 表示存在列表，但列表没有元素。
+- 包含非空列表的 `Optional` 表示存在订单。
+
+如果前两种状态在业务上没有差异，直接返回空列表更简单：
 
 ```java
 List<Order> findOrders(long userId) {
@@ -173,7 +196,11 @@ List<Order> findOrders(long userId) {
 
 ## 6. Optional 的局限 {#optional-的局限}
 
+`Optional` 管理的是值的存在性。对象内部是否合法、失败原因是什么，仍由业务代码处理。
+
 ### 6.1 链路中的空指针 {#链路中的空指针}
+
+使用容器后，创建和转换过程仍会抛出异常。下面两处都需要留意：
 
 ```java
 Optional.of(user)              // user 为 null 时仍会抛异常
@@ -181,11 +208,11 @@ Optional.of(user)              // user 为 null 时仍会抛异常
     .map(Profile::name);
 ```
 
-`Optional` 只管理值的存在性。对象状态由业务校验，映射异常仍向外传播。
+`of(user)` 要求用户非空，而 `profile()` 内部也可以访问到空字段。因此，对象内部状态仍需业务校验，映射函数抛出的异常会向外传播。
 
 ### 6.2 缺失原因 {#缺失原因}
 
-空 `Optional` 只表示没有值。权限不足、超时与数据损坏需要不同处理。需要区分原因时，使用异常或带状态的结果类型。
+空 `Optional` 只表示没有值。数据不存在可以是正常缺失，而权限不足、远程服务超时或数据损坏需要各自处理。调用方需要区分原因时，应使用异常、带状态的结果类型或领域对象。
 
 ### 6.3 复杂链式代码 {#复杂链式代码}
 
@@ -193,11 +220,11 @@ Optional.of(user)              // user 为 null 时仍会抛异常
 
 ### 6.4 对象身份 {#对象身份}
 
-`Optional` 是基于值的类，调用方不应使用 `==` 判断两个 Optional，也不应把它作为同步锁。比较其中的值使用 `equals`，消费结果使用公开 API。
+`Optional` 是基于值的类，也就是内容相等的实例应当可以互换使用。因此，比较内容应使用 `equals`，判断是否有值应使用公开 API。`==` 比较的是容器身份，而把容器用作同步锁也依赖身份，两种用法都应避免。
 
 ## 7. 转换函数的空值边界 {#转换函数的空值边界}
 
-`map` 用 `ofNullable` 语义包装映射结果。`flatMap` 直接使用返回的容器，因此要求容器非 `null`。
+转换函数返回 `null` 时，`map` 和 `flatMap` 的行为不同。`map` 按 `ofNullable` 的规则包装普通值，所以会得到空容器。`flatMap` 直接使用返回的容器，所以要求容器引用本身非 `null`。
 
 ```java
 Optional<String> name = Optional.of("java");
@@ -205,11 +232,15 @@ System.out.println(name.map(v -> (String) null)); // Optional.empty
 // name.flatMap(v -> (Optional<String>) null); // NullPointerException
 ```
 
-映射函数抛出的异常会直接向外传播。Java 9 起，`Optional.stream()` 将有值结果转为单元素流。空容器对应空流，便于用 `flatMap(Optional::stream)` 展开。
+示例中，`map` 把空值转换为空结果，而执行注释中的 `flatMap` 会抛出 `NullPointerException`。如果转换函数自己抛出异常，两种操作都会将异常向外传播。
+
+`Optional.stream()` 可以把可选结果接入 Stream：有值时返回单元素流，缺失时返回空流。因此，处理一组可选结果时，可以用 `flatMap(Optional::stream)` 保留有值的元素。
 
 ## 8. 常见问题 {#常见问题}
 
-### 8.1 存在性检查与取值 {#存在性检查与取值}
+### 8.1 什么时候使用 `isPresent()` 后再 `get()`？ {#存在性检查与取值}
+
+分支包含多步操作时，可以先检查存在性再取值。下面的代码只转换名称，也可以直接用 `map` 表达：
 
 ```java
 if (user.isPresent()) {
@@ -217,19 +248,21 @@ if (user.isPresent()) {
 }
 ```
 
-示例手写了存在性判断。只需转换或默认值时，`map` 和 `orElse` 可直接表达结果。多步逻辑仍可使用分支。
+只需转换、默认值或缺失异常时，`map`、`orElse` 和 `orElseThrow` 能直接表达结果。这样把有值和缺失的处理放在一起，也更容易检查是否遗漏了分支。
 
-### 8.2 默认值求值时机 {#默认值求值时机}
+### 8.2 `orElse` 和 `orElseGet` 有什么区别？ {#默认值求值时机}
 
-`orElse` 的参数在调用前求值。`orElseGet` 只在缺失时调用供应函数。常量默认值可用前者，查询或创建对象可用后者。
+`orElse` 的参数在调用前求值。`orElseGet` 只在缺失时调用供应函数。常量默认值可用前者，查询、创建对象或有副作用的操作可用后者。
 
-### 8.3 可空接口的适配 {#可空接口的适配}
+### 8.3 `Optional.ofNullable(value).orElse(null)` 有意义吗？ {#可空接口的适配}
 
-它把结果重新转为可空引用。适配返回 `null` 的旧接口时可以使用，内部宜保持一致的表示。
+这段代码可以适配必须返回 `null` 的旧接口。它先包装可空值，又把空容器转回 `null`，所以调用方仍需原来的空值判断。内部逻辑应保持一种缺失表示，只在适配旧接口时转换。
 
-### 8.4 容器的性能成本 {#容器的性能成本}
+### 8.4 Optional 会带来多少性能开销？ {#容器的性能成本}
 
-容器与函数调用会增加开销，JIT 可消除部分短命分配。普通返回值先保证契约清楚。热点数值路径可比较专门类型与基本类型的基准结果。
+开销取决于调用频率和运行环境，需要通过分析与基准测试判断。容器和函数调用会增加工作，但即时编译器（JIT）可以消除部分短命对象的分配。
+
+普通业务返回值优先保证含义清楚。极热循环、数值路径和大批量对象处理，再比较实际开销。数值场景可以对比 `OptionalInt` 等专门类型与基本类型，选择满足性能要求的表示。
 
 ## 9. 面试题 {#面试题}
 
@@ -245,18 +278,22 @@ if (user.isPresent()) {
 
 **考察重点**
 
-- Optional 怎样把缺失写进返回类型。
-- `map`、`flatMap`、`orElseGet` 和 `orElseThrow` 的适用条件。
-- 为什么它不适合替代所有 `null` 或所有异常。
+- 解释 `Optional` 怎样让调用方从返回类型看到缺失分支。
+- 说明怎样根据转换结果和缺失含义，选择 `map`、`flatMap`、`orElseGet` 或 `orElseThrow`。
+- 说明容器能处理的空值，以及仍需异常或结果类型表达的失败原因。
 
 **相关内容**：[可选结果](#可选结果)、[Optional 结果处理](#消费-optional)、[适用边界](#适用边界)、[Optional 的局限](#optional-的局限)。
 
 <details>
 <summary>参考回答</summary>
 
-`Optional<T>` 用于显式表达返回结果缺失。有值时通过 `map` 或 `flatMap` 转换。缺失时选择默认值、延迟计算或抛异常。
+**`Optional<T>` 适合表示允许缺失的方法返回值，让调用方从类型上看到缺失分支。**
 
-映射函数仍会抛异常，空容器也只表达一种缺失状态。集合为空已足够时，直接返回集合。可选容器本身应始终返回非 `null` 对象。
+存在时，用 `map` 转换普通值，或用 `flatMap` 接续另一个可选结果。缺失时，用 `orElse` 提供默认值，用 `orElseGet` 延迟计算，或用 `orElseThrow` 抛出业务异常。
+
+容器只管理有没有值，映射函数内部仍会抛出空指针等异常。权限不足、超时等不同原因，也需要异常或结果类型来区分。
+
+用于参数时要考虑调用方的包装负担，用于实体字段时要确认框架支持。空集合已足够表达含义时，直接返回集合。返回 `Optional` 的方法则应始终返回非 `null` 容器。
 
 </details>
 
@@ -266,19 +303,21 @@ if (user.isPresent()) {
 
 **出现公司**：暂无已核验的公开来源（本站自测）
 
-**考察重点**：空映射结果与空容器引用。
+**考察重点**：区分转换后的值为 `null`，与转换函数本应返回的容器为 `null`。
 
 **相关内容**：[转换函数的空值边界](#转换函数的空值边界)。
 
 <details>
 <summary>参考回答</summary>
 
-`map` 返回空 `Optional`，`flatMap` 抛出 `NullPointerException`。前者包装映射值，后者要求映射函数直接返回有效容器。两者都会向外传播映射函数抛出的异常。
+**转换函数返回 `null` 时，`map` 返回空 `Optional`，`flatMap` 抛出 `NullPointerException`。**
+
+原因是 `map` 负责包装普通值，采用 `ofNullable` 的规则。`flatMap` 则直接使用转换函数提供的容器，要求这个容器引用非空。两者都会向外传播转换函数自己抛出的异常。
 
 </details>
 
 ## 10. 参考资料 {#参考资料}
 
-- [Java API：Optional](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/Optional.html)
-- [Java API：OptionalInt](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/OptionalInt.html)
-- [Java API：Supplier](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/function/Supplier.html)
+- [Java API：Optional](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/Optional.html)
+- [Java API：OptionalInt](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/OptionalInt.html)
+- [Java API：Supplier](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/function/Supplier.html)

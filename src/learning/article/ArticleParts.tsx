@@ -221,7 +221,7 @@ export function InterviewCards({article, headingId}: {article: ArticleIndex; hea
         <div className={styles.interviewHead}>
           <div className={styles.interviewIntro}>
             <span className={styles.interviewTitle}>先想答案，再翻面</span>
-            <span className={styles.interviewHint}>点任意一张进入翻卡，可左右切换，看完回到这里。公司标签对应公开面经，本站自测单独标记。</span>
+            <span className={styles.interviewHint}>先在心里答一遍，再点开卡片对照参考回答。卡片之间可以左右切换，看完会回到这里。</span>
           </div>
           {cards.length > 0 && (
             <Link className={styles.flipAll} to={reviewHref(article)}>

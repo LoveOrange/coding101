@@ -3,19 +3,21 @@ sidebar_position: 3
 knowledge:
   id: basic-knowledge.database.sql.aggregation
   type: concept
+description: "SQL 聚合操作将多行计算为计数、总额或平均值。本文讲解 MySQL 8.0 的分组、过滤、空值、条件聚合与去重统计。本文适合准备数据库面试的读者。读者可练习区分分组前后过滤，检查空输入结果和连接后的统计粒度。"
+keywords: ["GROUP BY", "HAVING", "COUNT", "条件聚合", "SQL 面试"]
 ---
 
 # SQL 聚合
 
-SQL 聚合将输入行计算为计数、总额或平均值。本文负责 MySQL 8.0 的分组、过滤、空值和统计粒度。连接产生的行数变化见 [SQL 连接](./joins.mdx)。
+SQL 聚合将输入行计算为计数、总额或平均值。本文负责 MySQL 8.0 的分组、过滤、空值和统计粒度。
 
 ## 1. 面试核心 {#core}
 
-- `COUNT(*)` 统计行数，`COUNT(column)` 统计该列非空的行数。[卡](#count-star-vs-column)
-- WHERE 过滤输入行，HAVING 过滤聚合后的组。[卡](#group-filter-empty)
-- 无 GROUP BY 的空输入聚合返回一行，COUNT 为 0，SUM 为 NULL。[卡](#group-filter-empty)
-- `COUNT(DISTINCT column)` 统计非空值的去重数量。[卡](#conditional-aggregation)
-- `ONLY_FULL_GROUP_BY` 要求非聚合列有分组或函数依赖等依据。[卡](#group-functional-dependency)
+- **行数与非空值计数。** `COUNT(*)` 统计行数，`COUNT(column)` 统计该列非空的行数。[卡](#count-star-vs-column)
+- **过滤阶段。** WHERE 过滤输入行，HAVING 过滤聚合后的组。[卡](#group-filter-empty)
+- **空输入。** 无 GROUP BY 的空输入聚合返回一行，COUNT 为 0，SUM 为 NULL。[卡](#group-filter-empty)
+- **去重计数。** `COUNT(DISTINCT column)` 统计非空值的去重数量。[卡](#conditional-aggregation)
+- **分组取列。** `ONLY_FULL_GROUP_BY` 要求非聚合列有分组或函数依赖等依据。[卡](#group-functional-dependency)
 
 ## 2. 分组与 NULL {#分组与-null}
 
@@ -114,7 +116,9 @@ LEFT JOIN 后，使用 `COUNT(右表非空主键)` 统计匹配数。连接补�
 <details>
 <summary>参考回答</summary>
 
-`COUNT(*)` 计入所有结果行，`COUNT(column)` 只计非空值。LEFT JOIN 的补空行也占一行。因此，应统计右表的非空主键。没有匹配记录的左行便得到 0。多表连接产生重复明细时，还需先修正统计粒度。
+**`COUNT(*)` 计入所有结果行，`COUNT(column)` 只计非空值。**
+
+LEFT JOIN 的补空行也占一行。因此，应统计右表的非空主键。没有匹配记录的左行便得到 0。多表连接产生重复明细时，还需先修正统计粒度。
 
 </details>
 
@@ -131,7 +135,9 @@ LEFT JOIN 后，使用 `COUNT(右表非空主键)` 统计匹配数。连接补�
 <details>
 <summary>参考回答</summary>
 
-WHERE 在分组前筛行，HAVING 在聚合后筛组。无 GROUP BY 的空输入聚合仍返回一行。COUNT 是 0，SUM 是 NULL。带 GROUP BY 时，空输入没有任何组，返回空结果集。
+**WHERE 在分组前筛行，HAVING 在聚合后筛组。**
+
+无 GROUP BY 的空输入聚合仍返回一行。COUNT 是 0，SUM 是 NULL。带 GROUP BY 时，空输入没有任何组，返回空结果集。
 
 </details>
 
@@ -148,7 +154,9 @@ WHERE 在分组前筛行，HAVING 在聚合后筛组。无 GROUP BY 的空输入
 <details>
 <summary>参考回答</summary>
 
-可用 `SUM(CASE WHEN 条件 THEN 1 ELSE 0 END)`。它将命中行累加为数量。COUNT 会计入 0，因此其未命中分支应返回 NULL。`COUNT(DISTINCT 列)` 则统计去重后的非空值数量。
+**可用 `SUM(CASE WHEN 条件 THEN 1 ELSE 0 END)`。**
+
+它将命中行累加为数量。COUNT 会计入 0，因此其未命中分支应返回 NULL。`COUNT(DISTINCT 列)` 则统计去重后的非空值数量。
 
 </details>
 
@@ -165,7 +173,9 @@ WHERE 在分组前筛行，HAVING 在聚合后筛组。无 GROUP BY 的空输入
 <details>
 <summary>参考回答</summary>
 
-同一组内的其他列可有多个值，需要明确选择依据。主键唯一确定一行，因此其余列依赖主键。MySQL 8.0 允许这种函数依赖。仅按 team 分组时，多行的 id 不唯一，默认模式会拒绝查询。
+**同一组内的其他列可有多个值，需要明确选择依据。**
+
+主键唯一确定一行，因此其余列依赖主键。MySQL 8.0 允许这种函数依赖。仅按 team 分组时，多行的 id 不唯一，默认模式会拒绝查询。
 
 </details>
 

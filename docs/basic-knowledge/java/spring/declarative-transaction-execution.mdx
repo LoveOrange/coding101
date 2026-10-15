@@ -3,21 +3,25 @@ sidebar_position: 8
 knowledge:
   id: basic-knowledge.java.spring.declarative-transaction-execution
   type: concept
+description: "Spring 事务通过拦截器和事务管理器控制资源提交。本文讲解 JDBC 本地事务的传播、隔离、回滚与提交后处理。本文适合准备 Spring 面试的读者。读者可练习沿代理调用推演连接上下文。读者还可分析事务边界和提交失败的结果。"
+keywords: ["Transactional", "事务传播", "事务回滚", "Spring 事务失效", "事务管理器"]
 ---
 
 # Spring 事务
 
-Spring 事务用拦截器和事务管理器控制资源提交。本文以 Spring 6.2 的 JDBC 本地事务为主。内容覆盖传播、回滚、隔离和提交后的处理。代理入口见 [Spring AOP](./aop-pointcut-interceptor-chain.mdx#代理边界)。
+Spring 事务通过拦截器和事务管理器，控制一组数据库操作何时提交或回滚。本文以 Spring 6.2 的 JDBC 本地事务为主，先沿代理调用说明连接怎样参与事务，再介绍传播、隔离与回滚规则。最后说明提交失败和提交后事件的处理边界。
 
 ## 1. 面试核心 {#core}
 
-- `TransactionInterceptor` 在调用前取得事务，退出时处理提交或回滚。[卡](#transactional-flow)
-- JDBC 事务按线程绑定连接，同一数据源的参与操作复用连接。
-- 默认回滚匹配 `RuntimeException` 与 `Error`，受检异常可用 `rollbackFor`。
-- `REQUIRES_NEW` 创建独立事务，`NESTED` 使用当前事务的保存点。[卡](#requires-new-vs-nested)
-- 内层 `REQUIRED` 标记 rollback-only 后，外层提交会抛 `UnexpectedRollbackException`。[卡](#unexpected-rollback)
+- **事务拦截。** `TransactionInterceptor` 在方法调用前开启或加入事务，方法退出时根据结果和回滚规则请求提交或回滚。[卡](#transactional-flow)
+- **线程绑定连接。** Spring JDBC 事务将连接绑定到当前线程，通过 Spring 获取同一数据源连接的操作会复用该连接。
+- **默认回滚规则。** 默认配置下，传出方法的 `RuntimeException` 与 `Error` 触发回滚，受检异常可用 `rollbackFor` 指定。
+- **独立事务与保存点。** `REQUIRES_NEW` 挂起外层并创建独立事务，`NESTED` 在已有 JDBC 事务中用保存点实现局部回滚。[卡](#requires-new-vs-nested)
+- **共享回滚标记。** 内层 `REQUIRED` 标记 rollback-only 后，外层提交会抛 `UnexpectedRollbackException`。[卡](#unexpected-rollback)
 
 ## 2. 事务注解与代理 {#事务注解与代理}
+
+在默认代理模式下，容器识别 `@Transactional` 后，为 Bean 创建包含事务拦截器的代理。外部调用进入这份代理时，注解声明的事务规则才参与执行：
 
 ```java
 @Transactional
@@ -28,11 +32,13 @@ public Order create(CreateOrder command) {
 }
 ```
 
-示例的两个 repository 使用同一受管数据源。外部调用进入事务代理后，两次写入参与同一事务。
+示例的两个 repository 使用同一受管数据源，并通过 Spring 获取连接。外部调用进入事务代理后，保存订单与预留库存两次写入会参与同一事务。
 
-注解可声明传播、隔离、超时、只读和回滚规则。事务管理器及底层资源决定具体支持范围。
+注解可以声明传播方式、隔离级别、超时、只读提示和回滚规则。事务管理器负责把这些声明转换为资源操作，因此具体支持范围还取决于管理器与数据库。
 
 ## 3. 事务拦截器 {#事务拦截器}
+
+事务拦截器把方法执行包在事务边界内。它先读取事务属性 `TransactionAttribute`，再交给事务管理器选择新建还是加入事务：
 
 ```text
 进入代理
@@ -45,74 +51,96 @@ public Order create(CreateOrder command) {
   → 清理事务上下文与资源
 ```
 
-新建事务的调用边界负责实际提交。加入已有事务时，内层方法返回只结束逻辑事务范围。
+新建事务的调用边界负责实际提交。如果内层加入的是已有事务，它返回时只结束自己的逻辑事务范围。这里的逻辑范围指当前方法的事务调用边界，底层数据库事务仍需等外层结束。
 
-`PlatformTransactionManager` 用于命令式事务。响应式事务使用 `ReactiveTransactionManager` 与 Reactor Context。本文的线程绑定描述适用于 JDBC 路径。
+`PlatformTransactionManager` 用于命令式事务，JDBC、JPA 和 JTA 使用相应实现。JTA 用于协调多个资源的全局事务。响应式事务则使用 `ReactiveTransactionManager`，由 Reactor Context 携带事务上下文。Reactor Context 是响应式订阅链传递上下文的机制，本文的线程绑定描述适用于 JDBC 路径。
 
 ## 4. 连接与事务上下文 {#连接与事务上下文}
 
-JDBC 事务管理器把连接关联到当前线程和数据源。`JdbcTemplate` 等组件通过 Spring 获取该连接。事务结束后，管理器提交或回滚并释放资源。
+两次数据库操作要参加同一 JDBC 事务，就需要取得同一条事务连接。JDBC 事务管理器把连接关联到当前线程和数据源，`JdbcTemplate` 等组件再通过 Spring 取得它。因此，同一线程内的参与操作能够复用连接。事务结束后，管理器提交或回滚，再将连接归还连接池。
 
-直接调用普通 `DataSource.getConnection()` 会绕开 Spring 的资源查找。需要底层连接时，可使用 `DataSourceUtils`。事务感知数据源代理也可协调获取。
+直接调用普通 `DataSource.getConnection()` 会绕开 Spring 的资源查找，取得的连接就可能属于另一项事务。需要操作底层连接时，可使用 `DataSourceUtils`；事务感知数据源代理也能协调获取已有连接。
 
-新线程有独立上下文，需通过事务入口建立自己的事务。多数据源可用 `@Transactional(transactionManager="ordersTxManager")` 明确选择。单个本地管理器只管理其负责的数据源。
+新线程有独立上下文，需要通过事务入口建立自己的事务。把任务交给另一个线程后，原线程的连接绑定不会自动跟随。
+
+多数据源场景可用 `@Transactional(transactionManager="ordersTxManager")` 明确选择管理器。单个本地管理器只管理其负责的数据源，因此独立数据源上的写入还需单独确定事务边界。
 
 ## 5. 提交失败 {#提交失败}
 
-目标方法正常返回后，事务仍需实际提交。JPA 的 flush、数据库约束或连接故障都可在此时失败。调用方应以事务代理的最终返回结果判断成功。
+目标方法正常返回，只说明业务代码执行完毕，事务仍需实际提交。数据库约束检查或连接故障都可让提交失败。使用 JPA 时，flush 会把尚未发送的持久化修改同步到数据库，也可能在提交前失败。因此，调用方应以事务代理的最终返回结果判断成功。
 
-远程调用与本地提交分属不同资源。需要可靠发送消息时，可在本地事务写入 Outbox。后台发布器再投递，并用幂等键处理重复。
+JTA 全局事务还可能在协调多个资源提交时失败，相关机制见 [2PC 与 TCC](../../../system-design/distributed-data/2pc-tcc-coordination-cost.mdx#2pc-提交阶段)。
+
+远程调用与本地提交分属不同资源，单个 JDBC 事务无法保证它们一起成功。需要可靠发送消息时，可把待发事件写入 Outbox，即与业务数据在同一本地事务中提交的事件表。后台发布器再读取并投递，接收方用幂等键处理重复消息。
+
+可靠消息机制见 [Transactional Outbox 与 CDC](../../../system-design/distributed-data/outbox-cdc-reliable-events.mdx)。
 
 ## 6. 事务边界 {#事务边界}
 
-一次应用服务调用可承载需要共同提交的数据库操作。过大的事务长期占用连接和锁，也增加回滚成本。
+事务边界应覆盖必须共同提交的数据库操作。边界过小，会把订单和库存等关联状态拆开；边界过大，则长期占用连接和锁，并增加回滚成本。
 
-耗时网络调用应移出本地事务。前后步骤通过可恢复状态连接，并明确重试和补偿责任。
+一次应用服务调用可以承载完整的数据库决策与更新，依次完成以下**三个阶段**：
+
+1. 读取作出业务决策所需的状态。
+2. 检查业务规则，执行需要共同提交的数据库更新。
+3. 提交事务，将结果返回调用方。
+
+耗时网络调用应移出本地事务，否则远程等待期间连接和锁仍被占用。前后步骤通过可恢复状态连接，并明确重试和补偿责任。
 
 ## 7. 编程式事务 {#编程式事务}
 
-逐批提交、局部事务或明确重试范围可使用 `TransactionTemplate`。
+需要在循环中逐批提交、限定重试范围，或绕开代理自调用限制时，可使用 `TransactionTemplate`。它通过回调明确标出哪些代码应在事务内执行：
 
 ```java
 return transactionTemplate.execute(status -> repository.save(order));
 ```
 
-回调返回后，模板按规则提交；异常退出时处理回滚。传播方式仍由模板设置决定。它让事务边界直接出现在代码中。
+回调返回后，模板按规则请求提交；异常退出时则处理回滚。传播方式仍由模板设置决定，因此加入已有事务时仍需等待外层提交。
+
+编程式事务让边界直接出现在代码中，代价是业务代码显式依赖 Spring 事务 API。选择声明式还是编程式，应看哪种方式能更清楚地表达提交范围。
 
 ## 8. 传播、隔离与回滚 {#传播隔离与回滚}
 
-传播决定怎样处理已有事务。隔离控制数据库并发可见性。回滚规则决定异常是否触发回滚。三者分别配置。
+理解事务结果时，需要区分**三类配置**：
+
+- 传播方式决定方法进入时怎样处理已有事务。
+- 隔离级别控制数据库并发读写时能看到哪些数据。
+- 回滚规则决定异常是否触发回滚。
+
+它们作用在不同环节，因此需要分别配置和验证。
 
 ### 8.1 `REQUIRED` {#required}
 
-`REQUIRED` 有事务时加入，无事务时新建。内外方法有各自的逻辑边界，但共享物理事务。
+`REQUIRED` 是默认传播方式，用于让多个方法共同完成一次数据库提交。有事务时加入，没有事务时新建。内外方法各有自己的逻辑边界，但共享同一个物理事务，也就是数据库中实际提交或回滚的那项事务。
 
-内层代理收到匹配回滚的异常，会将共享事务标为 rollback-only。外层捕获该异常也无法清除标记。外层请求提交时，管理器回滚并抛出 `UnexpectedRollbackException`。
+内层代理收到匹配回滚规则的异常时，会将共享事务标为 rollback-only，即只允许回滚。外层即使捕获异常，这个标记仍会保留。等外层请求提交时，管理器就会回滚，并抛出 `UnexpectedRollbackException`，让调用方知道提交实际失败。
 
 若异常在内层方法内部被捕获，拦截器只看到正常返回。没有其他回滚标记时，事务按正常路径提交。
 
 ### 8.2 `REQUIRES_NEW` {#requires_new}
 
-`REQUIRES_NEW` 挂起外层事务，再开启独立事务。
+需要让某次写入独立提交时，可以使用 `REQUIRES_NEW`。它挂起外层事务，再用另一条连接开启独立事务，例如记录必须独立保留的审计事件：
 
 ```java
 @Transactional(propagation = Propagation.REQUIRES_NEW)
 public void recordAudit(AuditEvent event) {}
 ```
 
-内层提交结果独立保留，外层回滚也会保留该记录。内层完成时释放自己的锁与连接。
+内层可以独立提交或回滚，完成后释放自己的锁与连接。如果内层已提交，外层随后回滚也会保留这条审计记录。因此，业务需要接受该记录单独存在，或安排后续补偿。
 
-外层挂起期间仍持有连接和锁。内层额外申请连接，并发时需预留池容量。若内层等待外层已持有的锁，还会形成跨事务等待。
+外层挂起期间仍持有连接和锁，内层还要额外申请连接。如果多个线程都持有外层连接、又等待内层连接，连接池耗尽就会阻塞所有参与线程。容量规划需要覆盖这部分额外需求。若内层等待外层已持有的锁，还会形成跨事务等待。
 
 ### 8.3 `NESTED` {#nested}
 
-`DataSourceTransactionManager` 可在已有 JDBC 事务中建立保存点。`NESTED` 内层失败时回滚到该保存点。外层处理异常后，可继续执行并尝试提交。
+需要局部撤销一段操作、但仍由外层统一提交时，可以使用 `NESTED`。`DataSourceTransactionManager` 会在已有 JDBC 事务中建立保存点，也就是供局部回滚使用的位置。内层失败时回滚到这个位置，外层处理异常后便可继续执行并尝试提交。
 
 外层最终回滚时，内层写入也被撤销。没有外层事务时，`NESTED` 按 `REQUIRED` 新建事务。
 
 保存点需 JDBC 驱动支持。JPA 持久化上下文中的对象状态还需单独考虑。应按具体事务管理器确认支持范围。
 
 ### 8.4 其他传播方式 {#其他传播方式}
+
+有些方法需要强制已有事务，或明确在事务外执行。以下传播方式分别约束方法在有事务和无事务时的行为：
 
 | 传播方式 | 已有事务 | 没有事务 |
 | --- | --- | --- |
@@ -121,33 +149,35 @@ public void recordAudit(AuditEvent event) {}
 | `NOT_SUPPORTED` | 挂起 | 非事务执行 |
 | `NEVER` | 抛异常 | 非事务执行 |
 
-挂起能力由事务管理器提供。非事务执行时，数据库写入仍需按连接的自动提交设置判断。
+挂起能力由事务管理器提供。非事务执行时，数据库写入仍需按连接的自动提交设置判断。传播方式组合复杂时，应通过集成测试验证实际提交和回滚结果。
 
 ### 8.5 隔离级别 {#隔离级别}
 
-`Isolation.DEFAULT` 沿用数据库默认隔离级别。显式隔离和超时应用于新建事务。加入已有事务时沿用外层设置。
+隔离级别决定数据库事务能看到哪些并发修改。`Isolation.DEFAULT` 沿用数据库默认值，显式声明的隔离和超时则应用于新建事务。加入已有事务时，内层沿用外层设置，因为双方仍在同一个物理事务中。
 
-`AbstractPlatformTransactionManager.setValidateExistingTransaction(true)` 开启严格校验。内层声明与外层隔离或只读状态冲突时，可提前拒绝参与。
+调用 `AbstractPlatformTransactionManager.setValidateExistingTransaction(true)` 可开启严格校验。内层声明的隔离级别与外层不一致时，管理器会拒绝参与。它也会拒绝让读写内层加入只读外层，便于提前发现不兼容的声明。
 
-`readOnly=true` 是资源优化提示。JDBC 管理器可用 `setEnforceReadOnly(true)` 加强只读执行。具体支持仍依赖数据库；权限约束应由数据库授权承担。
+`readOnly=true` 是资源优化提示。JDBC 管理器可用 `setEnforceReadOnly(true)` 加强只读执行。具体支持仍依赖数据库；权限约束应由数据库授权承担。隔离级别只控制数据库中的并发可见性，远程服务和缓存的一致性还需各自的协调机制。
 
 ### 8.6 回滚规则 {#回滚规则}
 
-默认对传出方法的 `RuntimeException` 和 `Error` 回滚。受检异常可显式声明：
+回滚规则用于把方法失败映射为事务结果。默认配置下，传出方法的 `RuntimeException` 和 `Error` 会触发回滚，受检异常则按正常提交处理。需要让业务受检异常也触发回滚时，可显式声明：
 
 ```java
 @Transactional(rollbackFor = PaymentException.class)
 ```
 
-异常必须到达拦截器，或由业务显式设置 rollback-only。类型规则支持子类，`noRollbackFor` 可声明提交例外。匹配多个规则时，继承距离更近的规则优先。
+示例将 `PaymentException` 及其子类纳入回滚范围。异常需要到达事务拦截器；如果目标方法内部已捕获异常，应重新抛出或显式设置 rollback-only。业务还要把失败结果传给调用方，避免让调用方误以为操作成功。
+
+`noRollbackFor` 可声明哪些异常按提交处理。多个规则同时匹配时，与异常类型继承距离更近的规则优先。
 
 Spring 6.2 可用 `@EnableTransactionManagement(rollbackOn=ALL_EXCEPTIONS)` 更改全局默认。该设置将受检异常也纳入默认回滚。局部规则仍可覆盖默认行为。
 
 ## 9. 提交后事件 {#提交后事件}
 
-`@TransactionalEventListener` 默认在 `AFTER_COMMIT` 执行。它适合在提交成功后触发后续处理。无事务发布事件时，默认跳过监听器。`fallbackExecution=true` 可允许无事务执行。
+有些后续操作需要等数据库提交成功后再执行，可以使用 `@TransactionalEventListener`。它默认在 `AFTER_COMMIT` 阶段触发，也就是事务提交完成之后。发布事件时若没有事务，默认跳过监听器；设置 `fallbackExecution=true` 则允许无事务执行。
 
-提交后仍能访问绑定资源，但原事务已经结束。此时新增写入应通过另一个代理开启 `REQUIRES_NEW`。
+监听器执行时仍能访问绑定资源，但原事务已经结束，继续使用它也不会再提交一次。若监听器需要写库，应通过另一个代理方法开启 `REQUIRES_NEW`，为新写入建立独立提交边界。
 
 普通事务事件保存在进程内存中。提交后进程崩溃会丢失尚未执行的通知。要求可靠投递时，应使用持久化 Outbox 等机制。
 
@@ -180,16 +210,20 @@ Spring 6.2 可用 `@EnableTransactionManagement(rollbackOn=ALL_EXCEPTIONS)` 更�
 
 **出现公司**：美团、阿里云
 
-**考察重点**：理解事务拦截、资源绑定与实际提交。
+**考察重点**：沿代理调用解释事务属性解析、连接复用和实际提交，并区分方法返回与事务成功。
 
 **相关内容**：[事务注解与代理](#事务注解与代理)至[事务边界](#事务边界)。
 
 <details>
 <summary>参考回答</summary>
 
-事务拦截器解析属性并选择事务管理器。管理器新建或加入事务，再执行目标方法。JDBC 路径按线程绑定连接，参与操作复用该资源。
+**调用进入事务代理后，拦截器先建立事务范围，再执行目标方法，最后按执行结果请求提交或回滚。**
 
-方法正常返回时请求提交，异常退出时按规则处理。实际提交仍会因约束或连接故障失败。事务结束后清理上下文并释放连接。
+它从 `@Transactional` 解析事务属性，并选择对应管理器。管理器新建或加入事务，JDBC 路径还会按线程绑定连接，供参与操作复用。
+
+方法正常返回时，拦截器请求提交；异常退出时，则按回滚规则处理。实际提交仍会因约束或连接故障失败，事务结束后再清理上下文并归还连接。加入已有事务的内层方法返回时，只结束逻辑范围，实际提交仍由外层负责。
+
+这条链路只覆盖管理器负责的资源。远程写入和消息发送需要额外的一致性机制，例如持久化事件与幂等处理。
 
 </details>
 
@@ -202,16 +236,20 @@ Spring 6.2 可用 `@EnableTransactionManagement(rollbackOn=ALL_EXCEPTIONS)` 更�
 
 **出现公司**：阿里云、美团
 
-**考察重点**：区分独立事务与保存点的回滚范围。
+**考察重点**：说明独立事务与保存点分别怎样处理内外层回滚，并判断连接池容量和驱动支持带来的限制。
 
 **相关内容**：[`REQUIRES_NEW`](#requires_new)和[`NESTED`](#nested)。
 
 <details>
 <summary>参考回答</summary>
 
-`REQUIRES_NEW` 创建独立物理事务，内层提交独立保留。`NESTED` 在已有 JDBC 事务中建立保存点。外层回滚会撤销整个事务的写入，包括内层变化。
+**`REQUIRES_NEW` 使用独立物理事务，`NESTED` 则在已有 JDBC 事务中使用保存点。**
 
-前者需额外连接，后者需事务管理器和驱动支持保存点。无外层事务时，两者都会新建事务。
+前者挂起外层后另取连接，内层可以独立提交或回滚，完成时释放自己的资源。内层已提交的结果会保留，即使外层后来回滚。
+
+`NESTED` 内层失败时可回到保存点，让外层决定是否继续。因为双方仍共享同一物理事务，外层最终回滚也会撤销内层的写入。
+
+`REQUIRES_NEW` 需要额外连接，应评估连接池耗尽风险。`NESTED` 则要求事务管理器和 JDBC 驱动支持保存点。无外层事务时，两者都会新建事务。
 
 </details>
 
@@ -221,14 +259,16 @@ Spring 6.2 可用 `@EnableTransactionManagement(rollbackOn=ALL_EXCEPTIONS)` 更�
 
 **出现公司**：暂无已核验的公开来源（本站自测）
 
-**考察重点**：共享物理事务与 rollback-only。
+**考察重点**：解释内外层为何共享回滚标记，以及捕获异常为何无法改变已经确定的回滚结果。
 
 **相关内容**：[`REQUIRED`](#required)。
 
 <details>
 <summary>参考回答</summary>
 
-内层事务拦截器已将共享事务标记为 rollback-only。外层捕获异常只改变控制流，回滚标记仍然保留。外层请求提交时，管理器回滚并抛出 `UnexpectedRollbackException`。
+**内层事务拦截器已将共享事务标记为 rollback-only。**
+
+外层捕获异常只改变控制流，回滚标记仍然保留。外层请求提交时，管理器回滚并抛出 `UnexpectedRollbackException`。
 
 </details>
 
@@ -238,14 +278,18 @@ Spring 6.2 可用 `@EnableTransactionManagement(rollbackOn=ALL_EXCEPTIONS)` 更�
 
 **出现公司**：暂无已核验的公开来源（本站自测）
 
-**考察重点**：提交后资源、独立事务与可靠事件。
+**考察重点**：说明提交后为何需要独立写入事务，并区分进程内通知与可恢复的持久化事件。
 
 **相关内容**：[提交后事件](#提交后事件)。
 
 <details>
 <summary>参考回答</summary>
 
-写入应通过代理方法开启 `REQUIRES_NEW`。监听器执行时原事务已提交，继续使用原资源不会再次提交。要求故障后仍能执行的通知，应先持久化事件。
+**提交后监听器的写入应通过另一个代理方法开启 `REQUIRES_NEW`。**
+
+监听器执行时原事务已提交，即使连接资源还可访问，继续使用它也不会再触发提交。因此，新写入需要自己的事务边界。
+
+普通事务事件只在进程内保存，提交后崩溃会丢失未执行的通知。要求故障后仍能继续处理时，应在原事务中持久化 Outbox 事件，再由后台发布器重试投递。
 
 </details>
 
@@ -253,7 +297,7 @@ Spring 6.2 可用 `@EnableTransactionManagement(rollbackOn=ALL_EXCEPTIONS)` 更�
 
 - [Spring Framework：Declarative Transaction Management](https://docs.spring.io/spring-framework/reference/data-access/transaction/declarative.html)
 - [Spring Framework：Transaction Abstraction](https://docs.spring.io/spring-framework/reference/data-access/transaction/strategies.html)
-- [Spring Framework：Transaction Propagation](https://docs.spring.io/spring-framework/reference/data-access/transaction/declarative/tx-propagation.html)
+- [Spring Framework：Transaction Propagation](https://docs.spring.io/spring-framework/reference/6.2/data-access/transaction/declarative/tx-propagation.html)
 - [Spring Framework：Rolling Back a Declarative Transaction](https://docs.spring.io/spring-framework/reference/data-access/transaction/declarative/rolling-back.html)
 - [Spring API：`@Transactional`](https://docs.spring.io/spring-framework/docs/current/javadoc-api/org/springframework/transaction/annotation/Transactional.html)
 - [Spring Framework：Transaction-bound Events](https://docs.spring.io/spring-framework/reference/data-access/transaction/event.html)

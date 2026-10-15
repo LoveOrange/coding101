@@ -4,19 +4,21 @@ draft: false
 knowledge:
   id: basic-knowledge.database.transaction
   type: concept
+description: "数据库事务为一组读写规定提交与失败边界。本文以 MySQL 8.0 讲解 ACID、隔离级别、并发异常与提交持久性。本文适合准备后端面试的读者。读者可练习分析条件更新、自动提交和结果确认，并区分不同隔离保证。"
+keywords: ["ACID", "事务隔离级别", "MySQL 事务", "丢失更新", "提交持久性"]
 ---
 
 # 数据库事务
 
-数据库事务把一组读写放进同一个提交边界。它规定失败恢复、并发可见性和提交后的持久性。本文以 MySQL 8.0 InnoDB 为例。内容包括 ACID、隔离级别、事务边界与提交持久性。版本可见性见 [MVCC](./mvcc-read-view-consistent-read.mdx)，记录与间隙的加锁规则见 [InnoDB 锁](./innodb-locking-ranges.mdx)。
+数据库事务把一组读写放进同一个提交边界。它规定失败恢复、并发可见性和提交后的持久性。本文以 MySQL 8.0 InnoDB 为例。内容包括 ACID、隔离级别、事务边界与提交持久性。
 
 ## 1. 面试核心 {#core}
 
-- ACID 描述原子性、一致性、隔离性和持久性。业务不变量通过约束、SQL 与事务边界维护。[卡](#acid-isolation-levels)
-- InnoDB 的 RC 为每次一致性读创建快照。RR 复用首次一致性读的快照。Serializable 要求结果等价于串行执行。[卡](#acid-isolation-levels)
-- `SET quantity = quantity - 1 WHERE quantity > 0` 根据当前记录判断库存并扣减。它避免用旧值覆盖写入而造成丢失更新。[卡](#lost-update)
-- `innodb_rollback_on_timeout=OFF` 时，锁等待超时回滚当前语句。死锁检测选中的受害事务整体回滚。[卡](#transaction-failure)
-- `innodb_flush_log_at_trx_commit=1` 和 `sync_binlog=1` 让 redo 与 binlog 在提交成功返回前刷盘。[卡](#commit-durability) [卡](#double-one-durability)
+- **ACID 与业务约束。** ACID 描述原子性、一致性、隔离性和持久性。业务不变量通过约束、SQL 与事务边界维护。[卡](#acid-isolation-levels)
+- **隔离级别。** InnoDB 的 RC 为每次一致性读创建快照。RR 复用首次一致性读的快照。Serializable 要求结果等价于串行执行。[卡](#acid-isolation-levels)
+- **原子条件更新。** `SET quantity = quantity - 1 WHERE quantity > 0` 根据当前记录判断库存并扣减。它避免用旧值覆盖写入而造成丢失更新。[卡](#lost-update)
+- **失败与回滚。** `innodb_rollback_on_timeout=OFF` 时，锁等待超时回滚当前语句。死锁检测选中的受害事务整体回滚。[卡](#transaction-failure)
+- **提交持久性。** `innodb_flush_log_at_trx_commit=1` 和 `sync_binlog=1` 让 redo 与 binlog 在提交成功返回前刷盘。[卡](#commit-durability) [卡](#double-one-durability)
 
 ## 2. 事务边界 {#1-事务保护一组相关状态变化}
 
@@ -204,9 +206,13 @@ RR 保证重复读取时的可见性稳定；跨行不变量仍需锁、约束�
 <details>
 <summary>参考回答</summary>
 
-原子性保证一组修改共同提交或回滚；一致性要求提交前后满足数据库约束和业务不变量；隔离性限制并发事务能够观察到的中间结果；持久性保证数据库确认提交后可以从故障中恢复。数据库机制提供边界，业务代码仍要正确表达约束。
+**ACID 定义事务提交的保证，隔离级别决定并发事务之间能够观察到哪些结果。**
 
-Read Uncommitted 允许脏读。Read Committed 每条语句只看已提交数据。Repeatable Read 让事务内重复读取保持稳定。Serializable 要求结果等价于串行执行。相同隔离级别在 MySQL 与 PostgreSQL 中的实现细节有差异。InnoDB 会结合 MVCC 与索引锁。应用还要处理丢失更新、写偏差、死锁和重试。事务应保持短小，避免包含不受控的远程调用。
+- **原子性**让一组修改共同提交或回滚；**一致性**要求满足数据库约束与业务不变量，业务代码仍需正确表达这些约束。
+- **隔离性**约束并发可见性；**持久性**要求确认提交后能够从故障中恢复，具体故障范围还取决于日志与存储配置。
+- **RU 允许脏读；RC 的一致性读按语句获取已提交快照；InnoDB RR 复用首次一致性读的快照；Serializable 要求结果等价于串行执行。** 同名隔离级别在不同数据库中的实现可能不同。
+
+InnoDB 结合 MVCC 与索引锁实现这些保证。应用仍需设计业务约束，并处理丢失更新、写偏差、死锁与重试。
 
 </details>
 
@@ -226,7 +232,9 @@ Read Uncommitted 允许脏读。Read Committed 每条语句只看已提交数据
 <details>
 <summary>参考回答</summary>
 
-两个事务把同一个旧库存 10 都写成 9，造成丢失更新；写锁将写入排队。但应用已经计算好的第二个 9 覆盖了前一次结果。使用 `quantity = quantity - 1`，并把库存约束写进 WHERE。这样就能根据当前记录执行修改。也可带版本号检测冲突。两种方案都必须检查影响行数，多行不变量还要纳入同一事务。
+**两个事务把同一个旧库存 10 都写成 9，造成丢失更新；写锁将写入排队。**
+
+但应用已经计算好的第二个 9 覆盖了前一次结果。使用 `quantity = quantity - 1`，并把库存约束写进 WHERE。这样就能根据当前记录执行修改。也可带版本号检测冲突。两种方案都必须检查影响行数，多行不变量还要纳入同一事务。
 
 </details>
 
@@ -246,7 +254,9 @@ Read Uncommitted 允许脏读。Read Committed 每条语句只看已提交数据
 <details>
 <summary>参考回答</summary>
 
-回滚范围取决于错误类型。普通重复键错误只回滚当前语句。`innodb_rollback_on_timeout=OFF` 下的锁等待超时也只回滚当前语句。死锁受害事务整体回滚。应用应按数据库结果和框架回滚标记结束失败的业务单元；`CREATE TABLE`、`ALTER TABLE` 等 DDL 还会隐式提交已有事务。
+**回滚范围取决于错误类型。**
+
+普通重复键错误只回滚当前语句。`innodb_rollback_on_timeout=OFF` 下的锁等待超时也只回滚当前语句。死锁受害事务整体回滚。应用应按数据库结果和框架回滚标记结束失败的业务单元；`CREATE TABLE`、`ALTER TABLE` 等 DDL 还会隐式提交已有事务。
 
 </details>
 
@@ -266,7 +276,11 @@ Read Uncommitted 允许脏读。Read Committed 每条语句只看已提交数据
 <details>
 <summary>参考回答</summary>
 
-`innodb_flush_log_at_trx_commit=1`、`sync_binlog=1` 配合可靠存储使用。它们保护提交成功后的本地日志持久性。异步副本落后和存储永久损毁仍需复制、备份策略处理。提交阶段断线时，数据库已提交但响应丢失也是一种结果。应用应以业务唯一标识查询并核对结果。再使用唯一约束防止重复执行，必要时进入对账流程。
+**提交成功后的数据能否恢复，取决于刷盘配置、存储可靠性和故障范围；提交时断线则意味着应用暂时无法确认结果。**
+
+`innodb_flush_log_at_trx_commit=1` 和 `sync_binlog=1` 配合可靠存储，保护已确认提交的本地日志。异步副本落后或存储永久损毁，还要靠复制与备份策略处理。
+
+断线时可能是数据库已提交、响应却丢失。应用应按业务唯一标识查询结果，再用唯一约束防止重复执行，必要时进入对账流程。
 
 </details>
 
@@ -283,7 +297,9 @@ Read Uncommitted 允许脏读。Read Committed 每条语句只看已提交数据
 <details>
 <summary>参考回答</summary>
 
-早期默认的 `binlog_format=STATEMENT` 依赖 SQL 重放。RR 的 next-key 锁约束并发插入。这有助于保持源库与副本的写入范围一致。因此，解释默认 RR 时常会提到这段兼容历史。MySQL 5.7.7 起默认格式改为 ROW，MySQL 8.0 仍默认 RR。当前的隔离级别选择应依据业务语义。
+**早期默认的 `binlog_format=STATEMENT` 依赖 SQL 重放。**
+
+RR 的 next-key 锁约束并发插入。这有助于保持源库与副本的写入范围一致。因此，解释默认 RR 时常会提到这段兼容历史。MySQL 5.7.7 起默认格式改为 ROW，MySQL 8.0 仍默认 RR。当前的隔离级别选择应依据业务语义。
 
 </details>
 
@@ -300,7 +316,9 @@ Read Uncommitted 允许脏读。Read Committed 每条语句只看已提交数据
 <details>
 <summary>参考回答</summary>
 
-`innodb_flush_log_at_trx_commit=1` 要求提交时刷盘 redo。`sync_binlog=1` 要求每组 binlog 提交同步磁盘。二者配合保护成功提交的日志持久性。组提交让多个事务共享同步开销。每个事务仍在相关同步完成后返回成功。实际保证以存储兑现刷盘为前提。
+**`innodb_flush_log_at_trx_commit=1` 要求提交时刷盘 redo。**
+
+`sync_binlog=1` 要求每组 binlog 提交同步磁盘。二者配合保护成功提交的日志持久性。组提交让多个事务共享同步开销。每个事务仍在相关同步完成后返回成功。实际保证以存储兑现刷盘为前提。
 
 </details>
 

@@ -118,6 +118,11 @@ a:focus-visible,button:focus-visible,summary:focus-visible,input:focus-visible,s
 .dropdown__menu{border:1px solid var(--c-border);box-shadow:0 12px 32px -12px rgba(var(--c-sh-rgb),.25);background:var(--c-card);padding:6px}
 .dropdown__link{font-size:14px;color:var(--c-body);border-radius:6px}
 
+/* ---- In-article links: underline so they stand out from body text ---- */
+.markdown a:is(:not([class]),[class=""]){font-weight:500;text-decoration:underline;text-decoration-color:var(--c-green-m);text-decoration-thickness:1px;text-underline-offset:3px;transition:color .15s,text-decoration-color .15s}
+.markdown a:is(:not([class]),[class=""]):hover{color:var(--c-accent);text-decoration-color:var(--c-accent-s)}
+.markdown a:is(:not([class]),[class=""]) code{color:inherit}
+
 /* ---- Doc footer: edit link, last updated, previous / next ---- */
 .theme-doc-footer{margin-top:48px;padding-top:16px;border-top:1px solid var(--c-border);font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--c-mute2)}
 .theme-doc-footer .row{align-items:center}

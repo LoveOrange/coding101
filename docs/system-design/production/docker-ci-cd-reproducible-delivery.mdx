@@ -3,19 +3,21 @@ sidebar_position: 2
 knowledge:
   id: system-design.production.docker-ci-cd-reproducible-delivery
   type: concept
+description: "可重复交付让同一份已验证产物逐级进入生产。本文讲解镜像标识、多阶段构建、CI/CD 晋升、数据库变更和发布策略。本文适合准备后端工程面试的读者。读者可练习分析构建缓存、终止信号与流水线故障，并检查交付证据。"
+keywords: ["Docker 镜像构建", "CI/CD", "产物晋升", "可重复构建", "容器发布"]
 ---
 
 # 可重复交付
 
-可重复交付让已验证的同一产物逐级进入生产。本文负责 Docker 镜像、CI/CD 晋升和交付证据。依赖与构建输入的管理见 [Maven](./maven-lifecycle-dependency-convergence.mdx)。
+可重复交付让已验证的同一产物逐级进入生产。本文负责 Docker 镜像、CI/CD 晋升和交付证据。
 
 ## 1. 面试核心 {#core}
 
-- 镜像 digest 标识内容，tag 可以被重新指向。[卡](#delivery-pipeline)
-- 多阶段构建将编译环境与最终运行环境分离。
-- CD 晋升同一个 digest，环境配置在部署时注入。
-- BuildKit secret mount 将构建凭据临时提供给指定步骤。[卡](#build-secrets-cache)
-- exec 形式的 ENTRYPOINT 让应用直接接收终止信号。[卡](#container-sigterm)
+- **产物标识。** 镜像 digest 标识内容，tag 可以被重新指向。[卡](#delivery-pipeline)
+- **构建与运行分离。** 多阶段构建将编译环境与最终运行环境分离。
+- **同一产物晋升。** CD 晋升同一个 digest，环境配置在部署时注入。
+- **构建凭据。** BuildKit secret mount 将构建凭据临时提供给指定步骤。[卡](#build-secrets-cache)
+- **终止信号。** 用 exec 形式的 `ENTRYPOINT` 直接启动应用，应用才能直接接收终止信号。若入口是脚本，脚本需通过 `exec` 启动应用。[卡](#container-sigterm)
 
 ## 2. 镜像与 digest {#镜像与-digest}
 
@@ -126,7 +128,9 @@ shell 形式会增加 `/bin/sh -c` 中间进程。该 shell 无义务自动转�
 <details>
 <summary>参考回答</summary>
 
-流水线构建一次镜像，再晋升经过验证的同一 digest。CI 固定提交与工具链，完成测试和镜像检查。产物附带 SBOM、构建来源与签名。CD 注入环境配置，并校验来源策略。
+**流水线构建一次镜像，再晋升经过验证的同一 digest。**
+
+CI 固定提交与工具链，完成测试和镜像检查。产物附带 SBOM、构建来源与签名。CD 注入环境配置，并校验来源策略。
 
 发布需验证就绪、信号处理和连接排空。数据变更保持兼容，镜像回退单独验证。部署记录连接源码、digest、配置和运行实例。
 
@@ -145,7 +149,9 @@ shell 形式会增加 `/bin/sh -c` 中间进程。该 shell 无义务自动转�
 <details>
 <summary>参考回答</summary>
 
-使用 BuildKit 的 `--secret` 与 secret mount 传入凭据。构建过程避免把内容写进产物或日志。密钥内容变化本身不会触发缓存失效。需要重新执行时，使用非敏感缓存版本参数。
+**使用 BuildKit 的 `--secret` 与 secret mount 传入凭据。**
+
+构建过程避免把内容写进产物或日志。密钥内容变化本身不会触发缓存失效。需要重新执行时，使用非敏感缓存版本参数。
 
 </details>
 
@@ -162,7 +168,9 @@ shell 形式会增加 `/bin/sh -c` 中间进程。该 shell 无义务自动转�
 <details>
 <summary>参考回答</summary>
 
-应检查 Java 是否收到信号，以及排空是否超时。shell 形式入口会增加中间进程。exec 形式 ENTRYPOINT 可让 Java 直接接收信号。关闭钩子还需在宽限期内完成工作，否则平台会强制结束。
+**应检查 Java 是否收到信号，以及排空是否超时。**
+
+shell 形式入口会增加中间进程。exec 形式 ENTRYPOINT 可让 Java 直接接收信号。关闭钩子还需在宽限期内完成工作，否则平台会强制结束。
 
 </details>
 

@@ -3,21 +3,25 @@ sidebar_position: 7
 knowledge:
   id: basic-knowledge.java.language.exceptions-error-boundaries
   type: concept
+description: "介绍 Java 异常的分类、抛出、声明和捕获规则，说明调用链中处理失败与记录日志的位置。围绕资源所有权、自动关闭、finally 返回值和抑制异常，帮助准备基础面试的读者推演关闭顺序及多个失败的传播结果，保留诊断需要的异常信息。"
+keywords: ["checked exception", "try-with-resources", "finally", "suppressed exception", "Java 异常面试"]
 ---
 
 # Java 异常
 
-Java 异常区分正常返回与失败传播。本文负责异常分类、处理边界和资源关闭。流的读写与编码见 [Java 流式 I/O](../io/byte-character-buffered-streams.mdx)。
+Java 异常用于表达方法执行失败，并沿调用链传播失败原因。本文从异常分类和捕获规则入手，再说明在哪一层处理失败。随后介绍资源关闭，以及 `finally` 和多个异常共同出现时的执行结果。
 
 ## 1. 面试核心 {#core}
 
-- `Error` 和 `RuntimeException` 及其子类属于非受检异常。[卡](#exception-hierarchy)
-- 受检异常在编译期要求捕获或声明。
-- 包装异常可通过 `cause` 保留原始失败原因。[卡](#exception-handling)
-- try-with-resources 按资源声明的逆序关闭资源。[卡](#try-with-resources)
-- 主体与关闭同时失败时，关闭异常进入主体异常的 `suppressed` 列表。
+- **异常分类。** `Error` 和 `RuntimeException` 及其子类属于非受检异常。[卡](#exception-hierarchy)
+- **受检要求。** 编译器要求受检异常被捕获或声明，异常能否恢复则取决于具体调用场景。
+- **捕获与转换。** 当前层有恢复或转换策略时才捕获异常，包装异常时通过 `cause` 保留原始失败原因。[卡](#exception-handling)
+- **资源关闭顺序。** try-with-resources 按资源声明的逆序关闭资源。[卡](#try-with-resources)
+- **多个失败的保留。** try 主体与资源关闭同时失败时，主体异常向外传播，关闭异常进入它的 `suppressed` 列表。
 
 ## 2. 异常体系 {#异常体系}
+
+Java 中可以抛出的对象都属于 `Throwable` 体系。先看继承关系，再判断编译器是否要求调用方处理异常：
 
 ```text
 Throwable
@@ -27,9 +31,9 @@ Throwable
     └── 其他受检异常
 ```
 
-`Error` 包含虚拟机、链接及严重资源错误，例如 `OutOfMemoryError`。业务恢复应针对具体错误，不宜统一捕获全部 Error。
+`Error` 包含虚拟机、链接及严重资源错误，例如 `OutOfMemoryError`。这类问题需要针对具体原因决定如何终止或恢复，统一捕获全部 `Error` 容易掩盖严重故障。
 
-`RuntimeException` 与 `Error` 的子类都是非受检异常。其余异常类受编译器检查，包括 `Throwable` 自身。
+`Exception` 是另一条常见分支，其中包含 `RuntimeException`。`RuntimeException`、`Error` 及其子类属于非受检异常。其余异常类受编译器检查，包括 `Throwable` 自身。
 
 ```java
 void load(Path path) throws IOException { // 受检异常需要声明或捕获
@@ -41,13 +45,17 @@ int parsePort(String value) {
 }
 ```
 
-受检异常要求调用方捕获或声明。API 可借此显式表达需要处理的失败。非受检异常也可表达参数、状态或编程错误。分类依据是继承关系，恢复策略取决于场景。
+上例的 `IOException` 是受检异常，因此 `load` 必须捕获或在签名中声明它。`parseInt` 抛出的 `NumberFormatException` 属于非受检异常，所以方法可以省略声明。
+
+设计 API 时，受检异常适合显式提醒调用方采取行动的失败。非受检异常可以表达参数、状态或编程错误，也适合避免调用链每层重复声明的失败。分类依据是继承关系，恢复策略仍取决于场景，而非异常名称或严重程度。
 
 ## 3. 抛出、声明与捕获 {#抛出声明与捕获}
 
+失败发生后，方法可以抛出异常，由当前层处理或继续传给调用方。这条传播路径涉及**三个关键字**：
+
 - `throw` 抛出一个具体异常对象。
 - `throws` 在方法签名中声明异常传播范围。
-- `catch` 只应该捕获当前层知道怎样处理的范围。
+- `catch` 捕获匹配的异常，让当前层执行恢复或转换逻辑。
 
 ```java
 Order loadOrder(long id) {
@@ -59,21 +67,35 @@ Order loadOrder(long id) {
 }
 ```
 
-这里的数据访问异常被转换为稳定的应用异常，同时保留原始原因。没有处理策略时，让异常继续传播比捕获后返回 `null` 或空结果更清楚。
+这里把数据库异常转换成应用定义的 `OrderStoreException`，让调用方依赖稳定的失败类型。构造器中的 `cause` 保存原始异常，排查时仍能看到数据库失败的原因。
+
+捕获异常前，要明确当前层能够执行哪种**处理策略**：
+
+- 对临时失败重试，并限定次数和总耗时。
+- 降级为业务允许的替代结果。
+- 清理当前层负责的资源或未完成操作。
+- 补充订单编号等信息，转换异常后继续传播。
+- 将内部异常映射成调用方需要的错误结果。
+
+当前层缺少处理策略时，应让异常继续传播。捕获后返回 `null` 或空结果，会让调用方把执行失败误认为没有数据。
 
 ### 3.1 错误边界 {#错误边界}
 
-Web、消息消费者和定时任务入口可作为错误边界。边界将异常映射为错误码、重试结果或任务状态。日志同时记录追踪标识。
+错误边界是决定如何结束本次请求或任务的位置。Web 请求、消息消费者和定时任务的入口都可以承担这个职责。
+
+异常到达边界后，入口把它转换为对外错误码、消息重试结果或任务状态。日志同时记录追踪标识，让一次失败能关联回对应请求。
 
 同一个异常不应在每一层重复打印完整堆栈。中间层负责补充语义并传播，边界层负责形成一次可诊断记录。
 
 ## 4. 常见处理规则 {#常见处理规则}
 
-- 不要使用空 `catch` 隐藏失败。
-- 转换异常时把原异常作为 `cause`。
-- 不要用异常控制预期的普通分支，例如循环结束或缓存未命中。
-- `finally` 中的 `return` 会覆盖此前的返回值或异常，应避免使用。
-- 捕获 `InterruptedException` 后，应继续传播或恢复中断标记。恢复使用 `Thread.currentThread().interrupt()`。
+异常处理需要保留失败信息，同时让正常分支保持清楚。实现时遵循以下**传播与清理规则**：
+
+- `catch` 中明确执行恢复、转换或传播，空 `catch` 会直接隐藏失败。
+- 转换异常时，把原异常作为 `cause` 保留下来。
+- 循环结束或缓存未命中属于预期分支，使用条件判断和正常返回值表达。
+- `finally` 用于清理资源并正常结束，在其中 `return` 会覆盖此前的返回值或异常。
+- 捕获 `InterruptedException` 后继续传播，或用 `Thread.currentThread().interrupt()` 恢复中断标记。
 
 ```java
 try {
@@ -84,9 +106,11 @@ try {
 }
 ```
 
+示例在结束当前操作前恢复中断标记，让外层代码仍能识别取消请求。直接吞掉中断会丢失这个信号。
+
 ## 5. try-with-resources 与资源关闭 {#try-with-resources-与资源关闭}
 
-实现 `AutoCloseable` 的资源可以放入 try-with-resources。无论 try 主体正常结束、返回还是抛异常，资源都会被关闭。
+try-with-resources 把资源使用和关闭放在同一个语法结构中。资源实现 `AutoCloseable` 接口后，就提供了可由该语法调用的 `close()` 方法。控制流因执行完毕、`return` 或异常离开 try 主体时，都会调用资源的关闭方法。
 
 ```java
 try (
@@ -97,11 +121,13 @@ try (
 }
 ```
 
-关闭规则包括：
+上例打开输入流和输出流，随后复制数据。离开这个代码块时，遵循以下**关闭规则**：
 
 1. 多个资源按声明的逆序关闭，这里先关闭 `output`，再关闭 `input`。
 2. 初始化中途失败时，已经成功创建的资源仍会关闭。
 3. 主体与 `close()` 同时失败时，保留主体异常。关闭异常通过 `getSuppressed()` 读取。
+
+这些关闭异常称为抑制异常，保存于主体异常的 `suppressed` 列表中。它们仍可用于诊断，只是由主体异常代表本次失败向外传播。
 
 ```java
 try {
@@ -115,11 +141,13 @@ try {
 
 ### 5.1 资源所有权 {#资源所有权}
 
-当前方法只关闭自己创建或明确接管的资源。借用的流应交回所有者管理。包装流也有关闭底层流的契约，API 应写明所有权。
+关闭资源前，要确定哪个方法负责它的生命周期。当前方法只关闭自己创建或明确接管的资源。
+
+调用方传入的流还可能用于后续操作，借用方应把关闭职责留给所有者。包装流还会按自身约定关闭底层流，因此 API 要写清传入资源是借用还是移交。
 
 ## 6. finally 与返回值 {#finally-与返回值}
 
-执行 `return` 时，先求出返回表达式的值。随后执行 `finally`，最后完成返回。修改局部变量不会改写已经求出的基本值。
+判断 `finally` 是否影响返回值，要看返回表达式在什么时候求值。执行 `return` 时，程序先算出表达式的值，再执行 `finally`，最后完成返回。因此，在 `finally` 中修改局部变量后，返回的仍是此前求出的基本类型值：
 
 ```java
 static int result() {
@@ -133,31 +161,33 @@ static int result() {
 System.out.println(result()); // 1
 ```
 
-若返回引用，`finally` 仍可修改所指对象。若 `finally` 自身执行 `return` 或抛异常，则覆盖此前结果。资源清理应保持正常结束，以保留原始失败。
+上例在进入 `finally` 前已经求出返回值 1。把局部变量改为 2 后，最终仍返回 1。
 
-多个 `catch` 按源码顺序匹配，应将子类异常放在父类前。多重捕获 `catch (A | B e)` 中，A 与 B 须无子类型关系。
+返回引用时，事先求出的是引用值，`finally` 仍可通过引用修改对象内容。如果 `finally` 自身执行 `return` 或抛出异常，就会覆盖此前的返回值或异常。因此，资源清理代码应正常结束，让原结果或原始失败继续传播。
+
+多个 `catch` 按源码顺序匹配，所以子类异常要放在父类异常前，否则会被前面的分支覆盖。多重捕获 `catch (A | B e)` 要求 A 与 B 没有子类型关系，因为其中一种已能覆盖另一种时就无需并列。
 
 ## 7. 多个资源的关闭失败 {#多个资源的关闭失败}
 
-资源按声明逆序关闭。主体正常结束时，最先发生的关闭异常成为主异常。其余关闭异常进入该异常的 `suppressed` 列表。
+多个资源都关闭失败时，程序需要保留一个向外传播的主异常，同时记录其余失败。try-with-resources 按声明逆序关闭资源。主体正常结束时，最先发生的关闭异常成为主异常，其余关闭异常进入它的 `suppressed` 列表。
 
-假设资源先声明 A，再声明 B。退出时先关 B，再关 A。若两者都抛异常，B 的异常为主，A 的异常被抑制。若主体已有异常，则 A、B 的关闭异常都附加到主体异常。
+例如，资源先声明 A，再声明 B。退出时先关 B，再关 A。两者都抛异常时，B 的异常先发生，因此成为主异常，A 的异常被附加进去。如果主体已经抛出异常，B 和 A 的关闭异常就都附加到主体异常中。
 
-try-with-resources 在 Java 7 引入。Java 9 起，可直接引用外部的 final 或有效 final 资源变量。
+try-with-resources 在 Java 7 引入。Java 9 起，可以直接引用外部的 `final` 或有效 `final` 资源变量。有效 `final` 指变量虽然省略了修饰符，但赋值后未再被重新赋值。这些用法在 Java 17 和 21 中都可使用。
 
 ## 8. 常见问题 {#常见问题}
 
-### 8.1 finally 的执行边界 {#finally-的执行边界}
+### 8.1 `finally` 一定会执行吗？ {#finally-的执行边界}
 
-正常离开 try/catch 时会执行 `finally`。进程终止、JVM 崩溃或断电会打断执行。
+控制流离开 try/catch 时会执行 `finally`，包括正常完成、返回和异常传播。进程被强制终止、JVM 崩溃或机器断电时，执行会被打断，因此无法保证完成清理。
 
-### 8.2 Throwable 的捕获范围 {#throwable-的捕获范围}
+### 8.2 普通业务代码应该捕获 Throwable 吗？ {#throwable-的捕获范围}
 
-`catch (Throwable)` 同时覆盖 `Error` 和 `Exception`。普通业务应捕获自己能够处理的类型。框架边界还需明确记录与终止策略。
+普通业务应捕获自己能够处理的具体类型。`catch (Throwable)` 同时覆盖 `Error` 和 `Exception`，容易把严重系统问题当成可恢复的业务失败。如果框架边界需要统一捕获，就要明确记录哪些信息，以及何时终止执行。
 
-### 8.3 异常日志的记录边界 {#异常日志的记录边界}
+### 8.3 同一个异常应该在哪一层记录日志？ {#异常日志的记录边界}
 
-完整堆栈在错误边界记录一次。中间层保留 `cause` 并补充语义，避免重复堆栈。
+完整堆栈在拥有请求或任务上下文的错误边界记录一次。中间层负责保留 `cause`、补充业务信息并继续传播。这样既能定位原始原因，也能避免同一失败产生多份重复堆栈。
 
 ## 9. 面试题 {#面试题}
 
@@ -173,15 +203,17 @@ try-with-resources 在 Java 7 引入。Java 9 起，可直接引用外部的 fin
 
 **考察重点**
 
-- `Throwable` 体系的层次关系。
-- 受检与非受检异常的编译规则。
+- 说明 `Error`、`Exception` 和 `RuntimeException` 在继承体系中的位置。
+- 根据继承关系判断异常是否需要捕获或声明。
 
 **相关内容**：[异常体系](#异常体系)。
 
 <details>
 <summary>参考回答</summary>
 
-`Error` 与 `RuntimeException` 及其子类属于非受检异常。其余异常类属于受检异常。`Throwable` 的常见分支是 `Error` 和 `Exception`。
+**`Error` 与 `RuntimeException` 及其子类属于非受检异常，其余异常类属于受检异常。**
+
+从继承关系看，`Throwable` 的常见分支是 `Error` 和 `Exception`，而 `RuntimeException` 继承自 `Exception`。
 
 受检异常必须捕获或声明，非受检异常没有该编译要求。失败能否恢复，仍由具体调用场景决定。
 
@@ -198,17 +230,19 @@ try-with-resources 在 Java 7 引入。Java 9 起，可直接引用外部的 fin
 
 **考察重点**
 
-- 捕获、转换和继续传播的条件。
-- 原始原因、日志和外部错误契约。
+- 根据当前层能采取的行动，选择捕获、转换或继续传播。
+- 说明怎样保留原始原因、记录日志，并形成稳定的对外错误结果。
 
 **相关内容**：[抛出、声明与捕获](#抛出声明与捕获)、[常见处理规则](#常见处理规则)。
 
 <details>
 <summary>参考回答</summary>
 
-当前层有明确处理策略时才捕获，否则向外传播。基础设施异常可转换为稳定的应用异常，并保留原始 `cause`。
+**当前层能够恢复、清理或转换失败时才捕获异常，否则继续向外传播。**
 
-入口统一映射对外结果，并记录包含追踪标识的日志。失败沿异常路径传播，正常返回值保留原有语义。
+例如，临时故障可以有限重试，业务允许时可以降级，未完成操作则由负责它的层清理。基础设施异常进入应用层时，可以补充业务信息并转换类型，同时保留原始 `cause`。
+
+Web、消息或任务入口统一映射对外结果，并记录一次包含追踪标识的完整日志。失败沿异常路径传播，避免被 `null` 或空结果隐藏。
 
 </details>
 
@@ -222,15 +256,17 @@ try-with-resources 在 Java 7 引入。Java 9 起，可直接引用外部的 fin
 
 **考察重点**
 
-- `AutoCloseable`、关闭顺序和初始化失败。
-- 主体异常与关闭异常怎样同时保留。
+- 解释 `AutoCloseable` 的作用，以及资源关闭顺序和初始化失败后的处理。
+- 说明主体异常与关闭异常怎样同时保留。
 
 **相关内容**：[try-with-resources 与资源关闭](#try-with-resources-与资源关闭)。
 
 <details>
 <summary>参考回答</summary>
 
-try-with-resources 接收 `AutoCloseable` 资源。控制流离开 try 时，资源按声明的逆序关闭；初始化中途失败时，已经创建的资源也会关闭。
+**try-with-resources 在控制流离开 try 时，自动按声明逆序调用 `AutoCloseable` 资源的 `close()`。**
+
+初始化中途失败时，已经成功创建的资源也会关闭。因此，即使输出流创建失败，之前打开的输入流仍能得到清理。
 
 主体与 `close` 同时失败时，主体异常优先。关闭异常放入 `suppressed`，调用方可同时诊断两次失败。
 
@@ -242,14 +278,16 @@ try-with-resources 接收 `AutoCloseable` 资源。控制流离开 try 时，资
 
 **出现公司**：暂无已核验的公开来源（本站自测）
 
-**考察重点**：返回表达式求值与突然完成。
+**考察重点**：解释返回表达式的求值时机，以及 `finally` 返回或抛异常怎样改变结果。
 
 **相关内容**：[finally 与返回值](#finally-与返回值)。
 
 <details>
 <summary>参考回答</summary>
 
-基本类型返回值已在进入 `finally` 前求出，因此示例仍返回 1。若 `finally` 自身返回或抛异常，则覆盖原返回或异常。返回引用时，所指对象仍可被修改。
+**基本类型的返回值在进入 `finally` 前已经求出，随后修改局部变量不会改变它。**
+
+例如，`try` 准备返回 1，`finally` 再把局部变量改成 2，仍会返回 1。若 `finally` 自身返回或抛异常，则会覆盖原返回或异常。返回的是引用时，引用值已确定，但它指向的对象仍可能被 `finally` 修改。
 
 </details>
 
@@ -259,21 +297,23 @@ try-with-resources 接收 `AutoCloseable` 资源。控制流离开 try 时，资
 
 **出现公司**：暂无已核验的公开来源（本站自测）
 
-**考察重点**：逆序关闭、主要异常与抑制异常。
+**考察重点**：按关闭顺序判断哪个异常向外传播，以及其余异常保存在哪里。
 
 **相关内容**：[多个资源的关闭失败](#多个资源的关闭失败)。
 
 <details>
 <summary>参考回答</summary>
 
-资源逆序关闭，最先发生的关闭异常向外传播。声明 A、B 时先关闭 B，因此 B 的异常为主。A 的关闭异常进入 B 异常的 `suppressed` 列表。
+**资源逆序关闭，最先发生的关闭异常向外传播。**
+
+声明 A、B 时先关闭 B，因此 B 的异常为主。A 的关闭异常进入 B 异常的 `suppressed` 列表。
 
 </details>
 
 ## 10. 参考资料 {#参考资料}
 
-- [Java Language Specification：Exceptions](https://docs.oracle.com/en/java/javase/26/docs/specs/jls/jls-11.html)
-- [Java API：Throwable](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/Throwable.html)
-- [Java Language Specification：try-with-resources](https://docs.oracle.com/en/java/javase/26/docs/specs/jls/jls-14.html#jls-14.20.3)
-- [Java API：AutoCloseable](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/AutoCloseable.html)
+- [Java Language Specification：Exceptions](https://docs.oracle.com/en/java/javase/21/docs/specs/jls/jls-11.html)
+- [Java API：Throwable](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/Throwable.html)
+- [Java Language Specification：try-with-resources](https://docs.oracle.com/en/java/javase/21/docs/specs/jls/jls-14.html#jls-14.20.3)
+- [Java API：AutoCloseable](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/AutoCloseable.html)
 - [dev.java：Using the try-with-resources Statement](https://dev.java/learn/exceptions/catching-handling/)

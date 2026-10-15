@@ -2,18 +2,20 @@
 knowledge:
   id: basic-knowledge.database.modeling.constraints
   type: concept
+description: "数据约束限定数据库允许保存的状态。本文讲解 MySQL 8.0 的唯一、非空、CHECK 与外键，覆盖空值、并发和引用完整性。本文适合准备后端面试的读者。读者可练习用表级规则表达业务要求，并分析检查时机和外键动作。"
+keywords: ["数据库约束", "UNIQUE", "CHECK", "外键约束", "NULL"]
 ---
 
 # 数据约束
 
-数据约束限制数据库允许保存的状态。本文负责 MySQL 8.0 InnoDB 的唯一、非空、CHECK 和外键。多条写入的原子提交见[数据库事务](../transaction/index.mdx)。
+数据约束限制数据库允许保存的状态。本文负责 MySQL 8.0 InnoDB 的唯一、非空、CHECK 和外键。
 
 ## 1. 面试核心 {#core}
 
-- 主键唯一且非空，普通唯一索引允许多个 NULL。[卡](#check-null)
-- 唯一约束在写入时处理并发冲突，应用预查仍有竞争窗口。[卡](#unique-constraint)
-- MySQL 8.0.16 起执行 CHECK，表达式为 TRUE 或 UNKNOWN 时通过。[卡](#check-null)
-- InnoDB 外键即时检查引用关系，`NO ACTION` 等价于 `RESTRICT`。[卡](#foreign-key-actions)
+- **主键与唯一性。** 主键唯一且非空，普通唯一索引允许多个 NULL。[卡](#check-null)
+- **并发约束。** 唯一约束在写入时拒绝重复值。应用预查与插入之间仍有并发窗口，因此预查不能替代数据库约束。[卡](#unique-constraint)
+- **CHECK 与 NULL。** MySQL 8.0.16 起执行 CHECK，表达式为 TRUE 或 UNKNOWN 时通过。[卡](#check-null)
+- **外键动作。** InnoDB 外键即时检查引用关系，`NO ACTION` 等价于 `RESTRICT`。[卡](#foreign-key-actions)
 
 ## 2. 表级规则 {#在表结构中表达规则}
 
@@ -89,7 +91,9 @@ CREATE TABLE account_items (
 <details>
 <summary>参考回答</summary>
 
-应用预查与插入之间存在并发窗口。两个请求可同时通过检查，再尝试写入相同邮箱。唯一约束在写入时拒绝重复值。邮箱必须有值时，还需 NOT NULL。文本比较则按列的排序规则进行。
+**应用预查与插入之间存在并发窗口。**
+
+两个请求可同时通过检查，再尝试写入相同邮箱。唯一约束在写入时拒绝重复值。邮箱必须有值时，还需 NOT NULL。文本比较则按列的排序规则进行。
 
 </details>
 
@@ -106,7 +110,9 @@ CREATE TABLE account_items (
 <details>
 <summary>参考回答</summary>
 
-CHECK 允许 UNKNOWN，因此空余额能通过该表达式。要拒绝 NULL，需另加 NOT NULL。MySQL 唯一索引允许多个 NULL。完整且唯一的业务值需要组合 UNIQUE 和 NOT NULL。
+**CHECK 允许 UNKNOWN，因此空余额能通过该表达式。**
+
+要拒绝 NULL，需另加 NOT NULL。MySQL 唯一索引允许多个 NULL。完整且唯一的业务值需要组合 UNIQUE 和 NOT NULL。
 
 </details>
 
@@ -123,7 +129,9 @@ CHECK 允许 UNKNOWN，因此空余额能通过该表达式。要拒绝 NULL，�
 <details>
 <summary>参考回答</summary>
 
-RESTRICT 拒绝仍被引用的父记录变更。CASCADE 将相应删除或更新传播到子表。SET NULL 将子表引用列置空，要求该列可空。InnoDB 即时检查外键，NO ACTION 与 RESTRICT 相同。
+**RESTRICT 拒绝仍被引用的父记录变更。**
+
+CASCADE 将相应删除或更新传播到子表。SET NULL 将子表引用列置空，要求该列可空。InnoDB 即时检查外键，NO ACTION 与 RESTRICT 相同。
 
 </details>
 

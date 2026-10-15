@@ -3,19 +3,21 @@ sidebar_position: 7
 knowledge:
   id: basic-knowledge.operating-system.io-multiplexing
   type: concept
+description: "I/O 多路复用让线程同时等待多个对象就绪。本文比较 Linux select、poll 与 epoll 接口，讲解水平触发、边缘触发和单次通知。本文适合准备网络服务面试的读者。读者可练习组织事件循环，并分析工作线程与读写处理的配合。"
+keywords: ["select", "poll", "epoll", "LT 与 ET", "事件循环"]
 ---
 
 # I/O 多路复用
 
-I/O 多路复用让线程同时等待多个对象的就绪状态。本文负责 Linux select、poll、epoll 与事件循环。读写返回值见 [I/O 模型](./io-models.mdx#读取结果与部分写入)。
+I/O 多路复用让线程同时等待多个对象的就绪状态。本文负责 Linux select、poll、epoll 与事件循环。
 
 ## 1. 面试核心 {#core}
 
-- select 和 poll 每次提交关注集合，epoll 将集合保存在内核。[卡](#epoll-vs-poll)
-- glibc 的 fd_set 固定支持小于 FD_SETSIZE 的 fd，默认值为 1024。[卡](#select-fd-limit)
-- epoll 默认水平触发，EPOLLET 启用边缘触发。
-- 边缘触发配合非阻塞读写，处理到 EAGAIN 后再等待。
-- EPOLLONESHOT 交付一次事件后停用通知，需要 MOD 重新启用。[卡](#epoll-oneshot-rearm)
+- **关注集合。** select 和 poll 每次提交关注集合，epoll 将集合保存在内核。[卡](#epoll-vs-poll)
+- **select 的编号限制。** glibc 的 fd_set 固定支持小于 FD_SETSIZE 的 fd，默认值为 1024。[卡](#select-fd-limit)
+- **触发方式。** epoll 默认水平触发，EPOLLET 启用边缘触发。
+- **边缘触发的处理。** 边缘触发配合非阻塞读写，处理到 EAGAIN 后再等待。
+- **单次通知。** EPOLLONESHOT 交付一次事件后停用通知，需要 MOD 重新启用。[卡](#epoll-oneshot-rearm)
 
 ## 2. 关注集合与就绪结果 {#关注集合与就绪结果}
 
@@ -68,7 +70,9 @@ EPOLLONESHOT 在交付事件后停用该对象的通知。工作线程处理完�
 <details>
 <summary>参考回答</summary>
 
-poll 每次传入并检查完整集合。epoll 在内核保留集合，并返回就绪项。边缘触发下，部分读取后未必会再有新通知。因此应用用非阻塞循环读到 EAGAIN。提前暂停时，应主动安排剩余处理。
+**poll 每次传入并检查完整集合。**
+
+epoll 在内核保留集合，并返回就绪项。边缘触发下，部分读取后未必会再有新通知。因此应用用非阻塞循环读到 EAGAIN。提前暂停时，应主动安排剩余处理。
 
 </details>
 
@@ -85,7 +89,9 @@ poll 每次传入并检查完整集合。epoll 在内核保留集合，并返回
 <details>
 <summary>参考回答</summary>
 
-glibc fd_set 要求 fd 小于 FD_SETSIZE，默认值为 1024。它约束编号范围，而非整台机器的连接总数。即使只监听一个 fd，其编号也必须落在该范围内。poll 和 epoll 使用其他集合表示。
+**glibc fd_set 要求 fd 小于 FD_SETSIZE，默认值为 1024。**
+
+它约束编号范围，而非整台机器的连接总数。即使只监听一个 fd，其编号也必须落在该范围内。poll 和 epoll 使用其他集合表示。
 
 </details>
 
@@ -102,7 +108,9 @@ glibc fd_set 要求 fd 小于 FD_SETSIZE，默认值为 1024。它约束编号�
 <details>
 <summary>参考回答</summary>
 
-EPOLLONESHOT 会在交付后停用该对象的通知。处理结束时需调用 EPOLL_CTL_MOD 重新启用。它便于把连接暂时交给一个工作者处理。应用仍要协调状态修改和关闭，避免并发误用。
+**EPOLLONESHOT 会在交付后停用该对象的通知。**
+
+处理结束时需调用 EPOLL_CTL_MOD 重新启用。它便于把连接暂时交给一个工作者处理。应用仍要协调状态修改和关闭，避免并发误用。
 
 </details>
 

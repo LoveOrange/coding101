@@ -3,18 +3,20 @@ sidebar_position: 5
 knowledge:
   id: basic-knowledge.operating-system.file-descriptors
   type: concept
+description: "文件描述符是进程引用已打开 I/O 对象的编号。本文以 Linux 讲解引用层次、生命周期、关闭责任、配额与继承。本文适合准备系统面试的读者。读者可练习区分描述符和打开文件状态。读者还可分析泄漏、共享偏移与容量耗尽。"
+keywords: ["Linux fd", "文件描述符泄漏", "打开文件表", "ulimit", "socket 描述符"]
 ---
 
 # 文件描述符
 
-文件描述符是进程引用已打开 I/O 对象的非负整数。Linux 文件、socket 和管道都可通过 fd 操作。本文负责引用关系、关闭责任和容量限制。读写返回值见 [I/O 模型](./io-models.mdx)。
+文件描述符是进程引用已打开 I/O 对象的非负整数。Linux 文件、socket 和管道都可通过 fd 操作。本文负责引用关系、关闭责任和容量限制。
 
 ## 1. 面试核心 {#core}
 
-- fd 是进程描述符表的索引，打开文件描述保存偏移和状态标志。
-- dup 和 fork 继承的 fd 共享原打开文件描述。[卡](#shared-file-offset)
-- close 释放一个描述符引用，之后其编号可被复用。
-- EMFILE 表示进程描述符超限，ENFILE 表示系统打开文件数超限。[卡](#fd-exhaustion)
+- **描述符与打开文件描述。** fd 是进程描述符表的索引，打开文件描述保存偏移和状态标志。
+- **共享偏移。** dup 和 fork 继承的 fd 共享原打开文件描述。[卡](#shared-file-offset)
+- **关闭与编号复用。** close 释放一个描述符引用，之后其编号可被复用。
+- **资源耗尽。** EMFILE 表示进程描述符超限，ENFILE 表示系统打开文件数超限。[卡](#fd-exhaustion)
 
 ## 2. 文件引用层次 {#描述符表与打开文件描述}
 
@@ -67,7 +69,9 @@ close 释放引用，文件内容的持久性由 fsync 等机制控制。标准�
 <details>
 <summary>参考回答</summary>
 
-dup 后两个 fd 指向同一打开文件描述，因此共享偏移。close 释放当前 fd 的引用。另一个引用仍有效时，仍能访问底层对象。两次独立 open 则分别保存文件偏移。
+**dup 后两个 fd 指向同一打开文件描述，因此共享偏移。**
+
+close 释放当前 fd 的引用。另一个引用仍有效时，仍能访问底层对象。两次独立 open 则分别保存文件偏移。
 
 </details>
 
@@ -84,7 +88,9 @@ dup 后两个 fd 指向同一打开文件描述，因此共享偏移。close 释
 <details>
 <summary>参考回答</summary>
 
-EMFILE 表示进程描述符超限。先核对 RLIMIT_NOFILE 和 /proc/PID/fd。再区分泄漏与正常连接容量。泄漏需要修复关闭路径，正常容量不足则调整限制。
+**EMFILE 表示进程描述符超限。**
+
+先核对 RLIMIT_NOFILE 和 /proc/PID/fd。再区分泄漏与正常连接容量。泄漏需要修复关闭路径，正常容量不足则调整限制。
 
 </details>
 
@@ -101,7 +107,9 @@ EMFILE 表示进程描述符超限。先核对 RLIMIT_NOFILE 和 /proc/PID/fd。
 <details>
 <summary>参考回答</summary>
 
-O_CLOEXEC 在 open 时原子设置关闭继承标志。先 open 再 fcntl 会留下竞争窗口。另一线程在窗口中 fork、exec，新程序就会继承该 fd。成功 exec 时，带标志的描述符自动关闭。
+**O_CLOEXEC 在 open 时原子设置关闭继承标志。**
+
+先 open 再 fcntl 会留下竞争窗口。另一线程在窗口中 fork、exec，新程序就会继承该 fd。成功 exec 时，带标志的描述符自动关闭。
 
 </details>
 

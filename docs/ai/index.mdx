@@ -1,66 +1,76 @@
 ---
 sidebar_position: 0
+description: "面向智能体、大模型应用开发及允许使用人工智能编码的面试，整理模型基础、上下文管理、检索增强生成和工具调用。提供任务状态、记忆、评估、安全与开发框架的原理文章及面试练习入口，帮助求职者按岗位要求确定复习顺序，解释机制并分析设计选择。"
+keywords: ["Agent 面试准备", "LLM 应用开发", "RAG 学习路线", "AI 编码面试"]
 ---
 
 # AI 应用与 Agent
 
-AI 应用与 Agent 覆盖模型调用、上下文、检索、工具执行、状态、评估和安全，面向 Agent 开发、LLM 应用开发和允许使用 AI 编码的面试。题目来自 2025-07 至 2026-09 公开的 167 篇候选人复盘，公司信息只说明候选人曾公开记录相关提问。
+AI 应用与 Agent 栏目介绍大模型应用和智能体开发的核心知识。它面向准备 Agent 开发、LLM 应用开发，以及允许使用 AI 编码的面试的读者。
+
+你可以在这里学习模型调用、上下文管理和检索，再了解工具执行、任务状态、评估与安全。各主题提供原理文章和面试练习，帮助你解释机制，并结合任务判断怎样设计应用。
+
+题目来自 2025-07 至 2026-09 公开的 167 篇候选人复盘。公司信息只说明候选人曾公开记录相关提问。
 
 :::info 阅读顺序
 
-先读[工作流与 Agent](./agents/workflow-vs-agent.mdx)和 [Agent 执行循环](./agents/agent-loop.mdx)，确定“模型提出动作、程序执行动作”这条主线；再按岗位补工具、上下文和评估。面试只考 AI 辅助编码时，从 [AI 辅助开发](./development/ai-assisted-development.mdx)开始。
+先理解模型怎样提出动作、程序怎样执行并返回结果，再按岗位要求补充工具、上下文和评估。
+
+建议从[工作流与 Agent](./agents/workflow-vs-agent.mdx)和 [Agent 执行循环](./agents/agent-loop.mdx)开始。
+
+面试只考 AI 辅助编码时，从 [AI 辅助开发](./development/ai-assisted-development.mdx)开始。
 
 :::
 
 ## 1. 大模型基础
 
-- [大语言模型基础](./llm/llm-basics.mdx)：Token、生成过程、采样参数与能力边界。
-- [Transformer 与注意力机制](./llm/transformer.mdx)：自注意力、KV Cache 与长上下文的局限。
-- [模型幻觉](./llm/hallucination.mdx)：类型、成因与分层缓解。
+- [大语言模型基础](./llm/llm-basics.mdx)：理解 Token、生成过程、采样参数与模型的能力边界。
+- [Transformer 与注意力机制](./llm/transformer.mdx)：理解自注意力、KV Cache，以及长上下文的局限。
+- [模型幻觉](./llm/hallucination.mdx)：区分幻觉类型，理解成因与分层缓解方法。
 
 ## 2. Agent 架构
 
-- [工作流与 Agent](./agents/workflow-vs-agent.mdx)：固定步骤与模型自主决策的选择条件。
-- [Agent 执行循环](./agents/agent-loop.mdx)：ReAct、观测、停止条件和预算。
-- [Agent Harness](./agents/harness.mdx)：模型之外的工具、上下文、状态、权限和验证。
-- [多 Agent 协作](./agents/multi-agent.mdx)：拆分依据、上下文隔离与结果汇总。
+- [工作流与 Agent](./agents/workflow-vs-agent.mdx)：判断何时使用固定步骤，何时让模型选择下一步。
+- [Agent 执行循环](./agents/agent-loop.mdx)：理解 ReAct 怎样利用观测推进任务，以及停止条件和预算怎样控制循环。
+- [Agent Harness](./agents/harness.mdx)：了解模型之外的工具、上下文、状态、权限和验证怎样配合。
+- [多 Agent 协作](./agents/multi-agent.mdx)：判断任务是否适合拆分，并学习上下文隔离与结果汇总。
 
 ## 3. 模型调用与提示
 
-- [提示词工程](./prompting/prompt-engineering.mdx)：任务、约束、示例和迭代方法。
-- [上下文管理](./prompting/context-management.mdx)：每一轮放入哪些信息，以及信任边界。
-- [上下文压缩](./prompting/context-compaction.mdx)：超出窗口时保留什么、丢弃什么。
+- [提示词工程](./prompting/prompt-engineering.mdx)：写清任务、约束和示例，再根据结果迭代。
+- [上下文管理](./prompting/context-management.mdx)：选择每轮放入的信息，并区分可信指令与外部内容。
+- [上下文压缩](./prompting/context-compaction.mdx)：理解窗口容量不足时，应保留什么、丢弃什么。
 
 ## 4. 工具调用与协议
 
-- [Function Calling](./tools/function-calling.mdx)：工具定义、调用链与错误回传。
-- [MCP](./tools/mcp.mdx)：Host、Client、Server 与传输方式。
-- [Agent Skills](./tools/agent-skills.mdx)：流程与资源的渐进加载。
+- [Function Calling](./tools/function-calling.mdx)：定义工具，理解调用链，以及错误怎样返回模型。
+- [MCP](./tools/mcp.mdx)：区分 Host、Client、Server 的职责，了解它们之间的传输方式。
+- [Agent Skills](./tools/agent-skills.mdx)：理解任务流程与资源怎样按需逐步加载。
 
 ## 5. RAG
 
-- [检索增强生成（RAG）](./rag/rag.mdx)：离线索引、在线检索与生成。
-- [文档解析与切分](./rag/chunking.mdx)：块大小、重叠、父子索引与元数据。
-- [Embedding 与向量检索](./rag/embedding-vector-search.mdx)：相似度、ANN 与 HNSW。
-- [混合检索与重排序](./rag/hybrid-search-rerank.mdx)：BM25、RRF 与 Rerank。
+- [检索增强生成（RAG）](./rag/rag.mdx)：串起离线建索引、在线检索和生成回答的过程。
+- [文档解析与切分](./rag/chunking.mdx)：理解块大小、重叠、父子索引与元数据怎样影响检索。
+- [Embedding 与向量检索](./rag/embedding-vector-search.mdx)：理解相似度计算，以及 ANN、HNSW 怎样查找相近向量。
+- [混合检索与重排序](./rag/hybrid-search-rerank.mdx)：理解 BM25、RRF 与 Rerank 在检索中的分工。
 
 ## 6. 状态与记忆
 
-- [Agent 状态与持久化执行](./state/durable-execution.mdx)：检查点、重试、恢复和人工介入。
-- [Agent 记忆](./state/memory.mdx)：短期、长期、写入、检索与遗忘。
+- [Agent 状态与持久化执行](./state/durable-execution.mdx)：用检查点保存进度，处理重试、恢复和人工介入。
+- [Agent 记忆](./state/memory.mdx)：区分短期与长期记忆，理解写入、检索和遗忘的过程。
 
 ## 7. 评估、安全与服务化
 
-- [Agent 评估](./evaluation/agent-evaluation.mdx)：评测集、指标、失败归因和回归。
-- [RAG 评估](./evaluation/rag-evaluation.mdx)：检索、证据和生成分层评估。
-- [提示注入](./safety/prompt-injection.mdx)：不可信材料中的指令与防护。
-- [工具授权与执行沙箱](./safety/tool-authorization-sandbox.mdx)：权限分级、审批和运行隔离。
-- [延迟、成本与服务扩展](./safety/latency-cost-scaling.mdx)：延迟拆解、Token 成本、并发限制与降级。
+- [Agent 评估](./evaluation/agent-evaluation.mdx)：准备评测集与指标，分析失败原因，并检查改动后是否退步。
+- [RAG 评估](./evaluation/rag-evaluation.mdx)：分别评估检索结果、引用证据和生成回答。
+- [提示注入](./safety/prompt-injection.mdx)：识别外部文档或工具结果中的恶意指令，并理解防护方法。
+- [工具授权与执行沙箱](./safety/tool-authorization-sandbox.mdx)：按风险分配权限、设置审批，并隔离执行环境。
+- [延迟、成本与服务扩展](./safety/latency-cost-scaling.mdx)：拆解延迟与 Token 成本，理解并发限制和降级方式。
 
 ## 8. 框架与 AI 辅助开发
 
-- [AI 辅助开发](./development/ai-assisted-development.mdx)：需求、代码库上下文、反馈迭代和验收。
-- [AI 代码调试](./development/ai-code-debugging.mdx)：复现、假设、根因与回归。
-- [仓库指令](./development/repository-instructions.mdx)：AGENTS.md 等规则文件的内容与维护。
-- [编码 Agent 评测](./development/coding-agent-evaluation.mdx)：任务集、成功率与真实效能。
-- [Agent 框架](./development/agent-frameworks.mdx)：LangChain、LangGraph、自研与常见框架的定位。
+- [AI 辅助开发](./development/ai-assisted-development.mdx)：说明需求、提供代码库上下文，再通过反馈迭代并验收。
+- [AI 代码调试](./development/ai-code-debugging.mdx)：复现问题、验证假设、定位根因，再做回归检查。
+- [仓库指令](./development/repository-instructions.mdx)：编写并维护 AGENTS.md 等规则文件。
+- [编码 Agent 评测](./development/coding-agent-evaluation.mdx)：通过任务集和成功率，评估实际开发效能。
+- [Agent 框架](./development/agent-frameworks.mdx)：了解 LangChain、LangGraph 等框架的定位，并比较框架与自研方案。

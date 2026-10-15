@@ -3,19 +3,21 @@ sidebar_position: 1
 knowledge:
   id: basic-knowledge.database.sql.query
   type: concept
+description: "SQL 查询通过声明式条件描述需要返回的数据。本文讲解 MySQL 8.0 的空值、去重、排序、游标分页与窗口排名。本文适合准备数据库面试的读者。读者可练习分析 NOT IN 遇到空值时的结果，并编写分页和分组前几名等常见查询。"
+keywords: ["SELECT", "NULL 处理", "游标分页", "窗口函数", "SQL 笔试"]
 ---
 
 # SQL 查询
 
-SQL 查询用声明式条件描述需要返回的数据。本文负责 MySQL 8.0 的过滤、空值、去重、排序和分页。连接语义见 [SQL 连接](./joins.mdx)，分组统计见 [SQL 聚合](./aggregation.mdx)。
+SQL 查询用声明式条件描述需要返回的数据。本文负责 MySQL 8.0 的过滤、空值、去重、排序和分页。
 
 ## 1. 面试核心 {#core}
 
-- WHERE 只保留 TRUE，普通等值比较遇到 NULL 会得到 UNKNOWN。[卡](#null-and-stable-sort)
-- DISTINCT 根据所选列组合去重，UNION ALL 保留合并后的重复行。[卡](#union-distinct)
-- 分页排序加入唯一决胜列，才能确定同值行的先后。[卡](#null-and-stable-sort)
-- NOT IN 集合含 NULL 时，未命中的比较得到 UNKNOWN。[卡](#not-in-null)
-- `ROW_NUMBER` 逐行编号，`RANK` 并列跳号，`DENSE_RANK` 并列连续。[卡](#window-top-n)
+- **三值逻辑。** WHERE 只保留 TRUE，普通等值比较遇到 NULL 会得到 UNKNOWN。[卡](#null-and-stable-sort)
+- **去重范围。** DISTINCT 根据所选列组合去重，UNION ALL 保留合并后的重复行。[卡](#union-distinct)
+- **分页顺序。** 分页排序加入唯一决胜列，才能确定同值行的先后。[卡](#null-and-stable-sort)
+- **NOT IN 与 NULL。** NOT IN 集合含 NULL 时，未命中的比较得到 UNKNOWN。[卡](#not-in-null)
+- **窗口排名。** `ROW_NUMBER` 逐行编号，`RANK` 并列跳号，`DENSE_RANK` 并列连续。[卡](#window-top-n)
 
 ## 2. 最小表与过滤 {#最小表与过滤}
 
@@ -132,7 +134,9 @@ AND 的优先级高于 OR。混合条件可用括号明确组合关系。字符�
 <details>
 <summary>参考回答</summary>
 
-`score=NULL` 得到 UNKNOWN，WHERE 只保留 TRUE。判断空值应使用 IS NULL。分页还需 ORDER BY，并用唯一列确定同分顺序。稳定排序确定单次结果，跨次查询的一致性需另行设计。
+**`score=NULL` 得到 UNKNOWN，WHERE 只保留 TRUE。**
+
+判断空值应使用 IS NULL。分页还需 ORDER BY，并用唯一列确定同分顺序。稳定排序确定单次结果，跨次查询的一致性需另行设计。
 
 </details>
 
@@ -149,7 +153,9 @@ AND 的优先级高于 OR。混合条件可用括号明确组合关系。字符�
 <details>
 <summary>参考回答</summary>
 
-未命中其他值时，与 NULL 的比较仍是 UNKNOWN。因此整个 NOT IN 条件无法得到 TRUE。可明确过滤子查询 NULL，或用 NOT EXISTS 表达无关联记录。外层字段可空时，还需定义它是否应进入结果。
+**未命中其他值时，与 NULL 的比较仍是 UNKNOWN。**
+
+因此整个 NOT IN 条件无法得到 TRUE。可明确过滤子查询 NULL，或用 NOT EXISTS 表达无关联记录。外层字段可空时，还需定义它是否应进入结果。
 
 </details>
 
@@ -166,7 +172,9 @@ AND 的优先级高于 OR。混合条件可用括号明确组合关系。字符�
 <details>
 <summary>参考回答</summary>
 
-下一页满足 `score<lastScore`，或同分且 `id>lastId`。ORDER BY 保持 `score DESC,id ASC`。该方式省去逐页增加的 OFFSET 跳过量。排序值改变仍会移动行，因此还需明确快照要求。
+**下一页满足 `score<lastScore`，或同分且 `id>lastId`。**
+
+ORDER BY 保持 `score DESC,id ASC`。该方式省去逐页增加的 OFFSET 跳过量。排序值改变仍会移动行，因此还需明确快照要求。
 
 </details>
 
@@ -183,7 +191,9 @@ AND 的优先级高于 OR。混合条件可用括号明确组合关系。字符�
 <details>
 <summary>参考回答</summary>
 
-UNION 对合并后的结果去重，UNION ALL 保留重复行。DISTINCT 对一条查询所选列的组合去重。三者都按输出列判断重复。需要保留重复明细时，应使用 UNION ALL。
+**UNION 对合并后的结果去重，UNION ALL 保留重复行。**
+
+DISTINCT 对一条查询所选列的组合去重。三者都按输出列判断重复。需要保留重复明细时，应使用 UNION ALL。
 
 </details>
 
@@ -200,7 +210,9 @@ UNION 对合并后的结果去重，UNION ALL 保留重复行。DISTINCT 对一�
 <details>
 <summary>参考回答</summary>
 
-固定最多 N 行可用 ROW_NUMBER，并加入唯一决胜列。需要保留同分名次时，用 RANK 或 DENSE_RANK。RANK 在并列后跳号，DENSE_RANK 连续编号。窗口结果应在外层查询中按名次过滤。
+**固定最多 N 行可用 ROW_NUMBER，并加入唯一决胜列。**
+
+需要保留同分名次时，用 RANK 或 DENSE_RANK。RANK 在并列后跳号，DENSE_RANK 连续编号。窗口结果应在外层查询中按名次过滤。
 
 </details>
 

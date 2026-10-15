@@ -30,6 +30,14 @@ M1 的原子考点评审见[知识点清单](./knowledge-tree/m1-knowledge-point
 
 岗位页由 `scripts/generate-campus-jobs.mjs` 生成，面经页由 `scripts/generate-interview-research.mjs` 生成。修改来源或归纳数据后重新生成，构建中的一致性检查会阻止旧页面发布。
 
+生成页的 `description` 和 `keywords` 也由对应脚本维护。修改这些文案时同步更新模板，再重新生成页面，避免下次生成覆盖已修改的文案：
+
+```sh
+node scripts/generate-campus-jobs.mjs
+node scripts/generate-interview-research.mjs
+npm run build
+```
+
 当前核心导读使用同一份路线和资源映射，题目答案维护在所属正文；“相关内容”使用真实章节链接。M1 按[内容模型](./content-model.md)整理知识点和独立卡片，使文章自测与闪卡练习引用同一份问答，并支持一张卡关联多篇文章。生成入口由 Docusaurus 检查链接，资源脚本检查前置图与题目锚点；卡片与岗位关系校验在 M1 补充。
 
 简历、项目与流程指南使用真实经历、技术选择和验证证据作为评价依据。JUnit 示例说明与 Money 示例保持一致；SQL 练习提供独立作答与核对条件。当前资料按静态资源使用，不保存个人进度。M2 的个人记录连接 M1 建立的稳定内容 ID，实施范围见[项目计划](./product-roadmap.md)。

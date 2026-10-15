@@ -3,23 +3,25 @@ sidebar_position: 3
 knowledge:
   id: basic-knowledge.java.data-access.n-plus-one-fetch-strategies
   type: concept
+description: "N+1 查询是在列表读取后逐项查询关联数据。本文讲解 SQL 证据、关联抓取、批量加载与 DTO 投影，分析集合分页。本文适合准备 Java 持久层面试的读者。读者可练习控制查询数量和结果规模，并通过回归测试验证优化。"
+keywords: ["N+1 问题", "Join Fetch", "EntityGraph", "Hibernate 查询优化"]
 ---
 
 # N+1 查询
 
-N+1 查询指列表查询后，又逐项查询关联数据。本文负责定位证据、抓取策略与关联分页。采用 Jakarta Persistence 3.2 和 Hibernate ORM 7.1。
-
-实体与懒加载边界见 [JPA](./jpa-entity-states-dirty-checking-lazy-loading.mdx)。游标条件见 [批处理与分页](./batching-pagination-data-access-tests.mdx)。
+N+1 查询指先查出 N 个主对象，再为每个对象分别查询关联数据，形成 1+N 次数据库往返。本文先说明怎样用 SQL 数量定位问题，再比较关联抓取策略，最后处理集合分页和回归验证。实现示例以 Hibernate 5.6 与 6.x 为范围，规范术语参照 Jakarta Persistence 3.1。
 
 ## 1. 面试核心 {#core}
 
-- N+1 的查询量随未加载关联增长，缓存与批抓取会改变实际次数。[卡](#n-plus-one)
-- EAGER 和 EntityGraph 声明加载要求，SQL 形态由提供者决定。[卡](#eager-query-count)
-- 同时 join 多个一对多集合，会产生集合基数的乘积行。[卡](#join-explosion)
-- 父 ID 分页后再抓取关联，可保持父对象页大小。[卡](#collection-pagination)
-- Hibernate 的 `@BatchSize(size=16)` 合批读取待加载关联。[卡](#batch-fetch-vs-jdbc-batch)
+- **逐项关联查询。** 列表中逐项读取未加载关联会形成 N+1 查询，关联复用、缓存和批量抓取会改变实际次数。[卡](#n-plus-one)
+- **加载策略与 SQL。** EAGER 和 EntityGraph 规定关联的加载要求，具体 SQL 形态由 JPA 实现决定。[卡](#eager-query-count)
+- **连接结果膨胀。** 同时 join 两个一对多集合时，每个父对象的结果行数会按两个集合的元素数相乘。[卡](#join-explosion)
+- **父对象分页。** 先分页查询父对象 ID，再按本页 ID 抓取关联，可以保持父对象的页大小。[卡](#collection-pagination)
+- **读取合批。** Hibernate 的 `@BatchSize(size=16)` 将待加载关联按每批最多 16 个合并读取，以减少查询往返。[卡](#batch-fetch-vs-jdbc-batch)
 
 ## 2. 列表访问与关联查询 {#1-一次列表访问怎样变成-n1}
+
+一次 Repository 调用返回列表后，访问对象属性仍会触发查询。比如，订单已经加载，但客户信息还没有加载：
 
 ```java
 List<Order> orders = orderRepository.findAll(); // 1 次
@@ -29,22 +31,26 @@ for (Order order : orders) {
 }
 ```
 
-假设首次查询仅加载 Order，customer 尚未初始化。循环访问不同 customer 时，Hibernate 继续发 SQL。关联越多，往返开销越大。
+首次查询只加载 Order，循环中的 `getCustomer().getName()` 再触发客户查询。若 N 个订单分别对应 N 个尚未加载的客户，就会再查询 N 次。
+
+少量数据下，这些查询的耗时不明显。页面变大或单次网络往返变慢后，逐项查询的成本就会放大。因此，定位问题时要用真实页面大小观察 SQL。
 
 循环内逐项调用 Mapper、RPC 或缓存，也会产生相同结构。
 
 ## 3. SQL 与指标证据 {#2-先用-sql-与指标确认问题}
 
-排查一条列表接口时，至少记录：
+排查列表接口时，需要确认增加了哪些查询，以及这些查询花费多少资源。至少记录以下**查询与连接指标**：
 
 - 一次请求的 SQL 总数和重复 SQL 模板。
 - 每条 SQL 的耗时、返回行数和扫描行数。
 - 数据库连接占用时间与等待时间。
 - 页面大小变化时，SQL 数量是否按比例增长。
 
-开发环境可用 SQL 日志定位。生产环境结合采样追踪、查询统计与慢查询。记录模板即可，敏感参数需脱敏。
+开发环境可用 SQL 日志定位重复查询。生产环境则结合低开销的查询统计、采样追踪和慢查询记录，避免日志本身增加过多负担。记录 SQL 模板即可，敏感参数需要脱敏，完整参数与敏感字段应避免长期写入日志。
 
 ## 4. Join Fetch 关联抓取 {#3-join-fetch-一次取回已知关联}
+
+接口确定需要某个关联时，可以用 join fetch 在查询主对象时一起加载它。下面的查询同时读取订单和客户：
 
 ```java
 select o
@@ -53,25 +59,34 @@ join fetch o.customer
 where o.status = :status
 ```
 
-join fetch 可在本次 SQL 中加载指定关联。to-one 每个父行最多对应一个目标。可空关联使用 left join fetch，可保留无关联的父行。
+to-one 指多对一或一对一关联，每个父行最多对应一个目标。这里客户数据随订单一起返回，后续访问客户就省去了额外查询。若关联允许为空，可以使用 `left join fetch` 保留没有关联对象的父行。
 
-to-many 会展开父行，同时抓取多个集合会放大行数。Hibernate 6 起自动去除 fetch join 的重复根实体。子行仍需传输与物化，distinct 无法消除这部分成本。
+to-many 指一对多或多对多集合，一个父行会与多个子行组合。多个集合同时 join 时，行数会相乘，所以选择前要估算关联数量与每行的列宽。
+
+Hibernate 6.x 会自动去除 fetch join 产生的重复根实体，也就是查询返回的父对象。5.6 中，需要去重父实体时可用 JPQL `distinct`。SQL 行去重和父实体去重是两个过程：子行内容不同，仍需要传输并转换为 Java 对象。这种转换称为物化，父对象去重后，这部分开销依然存在。
 
 ## 5. EntityGraph 加载范围 {#4-entitygraph-按用例选择加载范围}
 
-EntityGraph 为某次查询声明所需属性。可用 NamedEntityGraph 或动态创建图。不同接口因此可以指定不同的加载范围。
+EntityGraph 是描述本次查询需要加载哪些属性的图。可以使用 `@NamedEntityGraph` 预先定义，也可以动态创建。这样，同一实体就能为不同接口加载不同关联，同时保留实体原来的默认抓取设置。
 
-fetchgraph 中列出的属性按 EAGER 处理。其余属性按 LAZY 处理，提供者仍可额外加载。loadgraph 对图外属性保留映射中的抓取设置。两种图都需核对实际 SQL 数量。
+使用时，需要区分 **fetchgraph 与 loadgraph**：
+
+- fetchgraph 中列出的属性按 EAGER 处理，其余属性按 LAZY 处理，JPA 实现仍可额外加载。
+- loadgraph 中列出的属性按 EAGER 处理，图外属性保留实体映射中的抓取设置。
+
+图描述的是加载范围，具体 SQL 由 Hibernate 等实现决定。因此，两种方式都要核对实际查询数量和执行计划。
 
 ## 6. 关联批量抓取 {#5-批量抓取减少往返次数}
 
-Hibernate batch fetching 合并待加载实体或集合。它按关联主键组织 IN 查询，减少逐项往返。
+join 会产生很大的结果集，或暂时无法确定每个关联是否都会被访问时，可以使用批量抓取。Hibernate batch fetching 收集一批待加载实体或集合的关联键，通过 `where id in (...)` 等形式合并读取。这样，逐项查询就能变成若干次批量查询。
 
-这种方式适合 join 会放大结果集的用例。查询次数仍受批大小、缓存与访问顺序影响。手写查询也可收集外键，批量读取后按键回填。
+实际查询次数仍受批大小、缓存和访问顺序影响。批次变大后，IN 参数和返回行数也会增加。因此，压测时要同时检查 **IN 参数上限、执行计划和结果集大小**。
+
+手写数据访问也可以使用同样的方法：先收集外键，再批量读取关联，最后按键分组回填。
 
 ## 7. DTO 投影 {#6-dto-投影只读取接口需要的数据}
 
-列表接口若只显示订单号、客户名和金额，可以直接查询 DTO：
+DTO 是只保存接口所需字段的数据对象。列表接口若只显示订单号、客户名和金额，可以直接投影到 DTO，省去完整实体及其关联对象的构造：
 
 ```java
 select new com.example.OrderRow(o.id, c.name, o.amount)
@@ -80,33 +95,41 @@ join o.customer c
 where o.status = :status
 ```
 
-这个 DTO 只保存标量字段，序列化时无需继续抓取关联。结果服务于当前用例，修改 DTO 不会触发实体脏检查。
+查询结果是 `OrderRow`，其中只保存 ID、名称和金额等标量字段。序列化直接读取这些值，无需继续加载关联。代价是结果服务于当前用例，修改 DTO 不会像修改受管实体那样触发脏检查。
 
 ## 8. 集合抓取与父对象分页 {#7-集合抓取与分页要分两步考虑}
 
-to-many join fetch 会让同一父记录重复多次。按 SQL 行分页会切断集合；Hibernate 可退回内存分页。父对象分页可以分两阶段：
+分页接口需要限制父对象数量，而 to-many join fetch 会让同一父记录重复多次。若直接按 SQL 行分页，一个父对象的集合就会被截断，父对象页大小也会出错。Hibernate 对集合抓取采用内存分页时，还会先读取更多结果，再在内存中取当前页。
+
+要保持**父对象页大小与顺序**，可以分两阶段查询，再组装结果：
 
 1. 先按稳定排序分页查询父对象 ID。
 2. 再按这一页 ID 抓取详情和关联。
 3. 在内存中按第一页的顺序组装结果。
 
-两阶段限定父对象范围，关联仍可分批加载。IN 查询结果需恢复第一阶段的顺序，空 ID 页直接返回。两次读取的一致性取决于事务隔离与版本协议。
+两阶段限定的是父对象范围，关联仍可分批加载，所以最终 SQL 数量可以超过两条。IN 查询不会自动保留第一阶段顺序，需要组装时恢复；空 ID 页则直接返回。
+
+两次读取之间若发生并发修改，还要明确接口的一致性要求。可以接受第二次查询的最新数据，也可以依靠事务隔离维持快照，或使用版本校验发现变化。
 
 ## 9. 抓取范围与结果基数 {#抓取范围与结果基数}
 
-20 个订单都引用同一客户时，上下文可复用该客户。首次加载后，剩余访问无需再次查询。EAGER 也可通过次级查询实现，注解无法直接给出次数。
+判断抓取策略时，需要同时看 SQL 次数和结果行数。比如，20 个订单都引用同一客户时，持久化上下文可以复用该客户。首次加载后，其余访问无需再次查询，所以这里可以只有 2 次查询，而非 21 次。反过来，EAGER 也能通过次级查询实现，注解本身无法直接给出查询次数。
 
-一个订单有 10 个商品和 8 个标签。同时 join 两个集合时，该订单展开为 80 行。分别查询则按各集合规模读取。多个 bag 集合的同时抓取还会触发 Hibernate 的限制。
+一个订单有 10 个商品和 8 个标签，同时 join 两个集合就会展开为 80 行。若单独查询父对象，再分别抓取两个集合，关联部分只需读取 10+8 行。虽然多了往返，但传输量和对象构造开销更小。
 
-Hibernate 7.1 可设置：
+同时抓取多个 bag 集合还会触发 Hibernate 的限制。bag 是允许重复、又没有持久化位置索引的集合映射，Hibernate 会拒绝某些同时抓取组合。
+
+Hibernate 5.6 与 6.x 可设置：
 
 ```properties
 hibernate.query.fail_on_pagination_over_collection_fetch=true
 ```
 
-这样遇到集合抓取分页会直接失败。测试可尽早暴露内存分页，再改为两阶段查询。
+这样，触发集合抓取分页的查询会直接失败，测试就能尽早发现内存分页问题。发现后仍要改为合适的分页查询，并处理两次读取之间的数据变化。
 
 ## 10. 查询回归验证 {#8-防止问题再次出现}
+
+减少查询次数后，还要确认返回数据和分页结果正确。可以通过以下检查防止 **N+1 再次出现**：
 
 - 为关键接口添加 SQL 数量上限或查询统计断言。
 - 用真实页面大小测试，不只查一条数据。
@@ -116,11 +139,13 @@ hibernate.query.fail_on_pagination_over_collection_fetch=true
 
 ## 11. 批量抓取与写入合批 {#批量抓取与写入合批}
 
-Hibernate 7.1 可用 `@BatchSize(size=16)` 配置读取合批。注解可用于实体类型或集合属性。全局设置为 `hibernate.default_batch_fetch_size=16`。
+读取关联和批量写入使用不同配置，排查 N+1 时要先区分两者。Hibernate 5.6 与 6.x 可用 `@BatchSize(size=16)` 配置读取合批。注解可用于实体类型或集合属性。全局设置为 `hibernate.default_batch_fetch_size=16`。
 
-触发一次懒加载时，Hibernate 收集同上下文中的候选项。例如一批未初始化的同类实体代理，会被合并查询。候选数量不足、缓存命中或锁模式变化时，实际批次会变化。
+触发一次懒加载时，Hibernate 会收集同一上下文中尚未初始化的同类实体代理或集合。`size=16` 表示每批最多读取 16 个关联目标。若等待加载的目标不足、缓存已经命中，或锁模式改变，实际批次就会变化。
 
-`hibernate.jdbc.batch_size` 则控制写入语句合批。它不会消除逐条关联 SELECT。写入配置见 [批处理与分页](./batching-pagination-data-access-tests.mdx#hibernate-批次与提交频率)。
+`hibernate.jdbc.batch_size` 控制写入语句合批，对逐条关联 SELECT 不起作用。
+
+写入配置见 [批处理与分页](./batching-pagination-data-access-tests.mdx#hibernate-批次与提交频率)。
 
 ## 12. 面试题 {#9-面试题}
 
@@ -132,20 +157,20 @@ Hibernate 7.1 可用 `@BatchSize(size=16)` 配置读取合批。注解可用于�
 
 **出现公司**：字节跳动
 
-**考察重点**
-
-- 说明N+1 的触发结构与证据。
-- 说明join fetch、EntityGraph、批量抓取和 DTO 投影。
-- 说明to-many 分页与结果集膨胀。
+**考察重点**：说明 N+1 如何触发，并用 SQL 统计确认问题。能按关联规模选择 join fetch、EntityGraph、批量抓取或 DTO 投影，并处理集合分页。
 
 **相关内容**：[定位证据](#2-先用-sql-与指标确认问题)、[抓取范围](#抓取范围与结果基数)、[集合分页](#7-集合抓取与分页要分两步考虑)。
 
 <details>
 <summary>参考回答</summary>
 
-先统计单次请求的 SQL 模板、次数和返回行数。增加页面大小，观察查询量是否随关联增长。再定位懒加载访问或循环内查询。
+**先用 SQL 次数和重复模板确认逐项查询，再根据关联规模选择抓取方式。**
 
-基数可控时可用 join fetch。集合展开过大时，改用批抓取或 DTO 投影。关联分页先查父 ID，再抓详情并恢复顺序。修复后验证 SQL 次数、行数和页大小。
+统计单次请求的 SQL、返回行数和连接占用，增加页面大小，观察查询量是否随未加载关联增长。接着定位是懒加载访问，还是循环内的 Repository 或 Mapper 查询。
+
+已知且规模可控的关联可以使用 join fetch，也可通过 EntityGraph 声明加载范围后验证 SQL。join 会产生大量组合行时，改用批量抓取，或收集外键后统一查询。只读列表可直接投影为 DTO。
+
+关联分页先查询父 ID，再抓取详情并恢复顺序。修复后要在真实页大小下验证 SQL 次数、返回行数和分页结果，同时观察连接池等待与数据库负载。
 
 </details>
 
@@ -155,17 +180,18 @@ Hibernate 7.1 可用 `@BatchSize(size=16)` 配置读取合批。注解可用于�
 
 **出现公司**：暂无已核验的公开来源（本站自测）
 
-**考察重点**
-
-- 说明加载要求与 SQL 形态。
-- 说明缓存和不同关联数量。
+**考察重点**：区分加载要求与实际 SQL 形态，说明关联复用和缓存怎样改变查询次数。
 
 **相关内容**：[EntityGraph](#4-entitygraph-按用例选择加载范围)、[结果基数](#抓取范围与结果基数)。
 
 <details>
 <summary>参考回答</summary>
 
-两者都声明加载要求，提供者仍可发次级查询。应按真实页面大小检查 SQL 模板与次数。fetchgraph 控制图内属性，loadgraph 还保留图外默认设置。
+**改为 EAGER 或添加 EntityGraph，都无法保证消除 N+1。**
+
+它们规定关联需要怎样加载，Hibernate 仍可通过次级查询满足要求。fetchgraph 将图外属性按 LAZY 处理，loadgraph 则保留图外属性的默认抓取设置。查询次数还受不同关联的数量和缓存影响。
+
+因此，应使用真实页大小统计 SQL 模板与次数，再选择 join、批量抓取或 DTO 投影。
 
 </details>
 
@@ -175,17 +201,18 @@ Hibernate 7.1 可用 `@BatchSize(size=16)` 配置读取合批。注解可用于�
 
 **出现公司**：暂无已核验的公开来源（本站自测）
 
-**考察重点**
-
-- 说明笛卡尔放大。
-- 说明传输与物化成本。
+**考察重点**：解释两个集合为何产生乘积行，以及这些行怎样增加传输、物化和内存开销。
 
 **相关内容**：[Join Fetch](#3-join-fetch-一次取回已知关联)、[结果基数](#抓取范围与结果基数)。
 
 <details>
 <summary>参考回答</summary>
 
-两个一对多集合会展开为乘积行。父实体去重后，已发生的传输与物化成本仍存在。分别抓取可减少结果行数，但增加往返。应比较总行数、行宽与延迟。
+**两个集合同时 join 会产生乘积行，新增的传输和物化成本足以抵消减少往返的收益。**
+
+例如，一个订单有 10 个商品和 8 个标签，join 后会得到 80 行。父实体去重时，这些行已经传输并参与对象构造。分别抓取则让关联结果从乘积规模降为各集合规模之和，但会增加往返。
+
+所以应同时比较总行数、行宽、延迟和内存占用，再选择查询方式。
 
 </details>
 
@@ -195,19 +222,18 @@ Hibernate 7.1 可用 `@BatchSize(size=16)` 配置读取合批。注解可用于�
 
 **出现公司**：暂无已核验的公开来源（本站自测）
 
-**考察重点**
-
-- 说明父记录分页与关联展开。
-- 说明两次读取的一致性。
+**考察重点**：说明父记录分页与关联展开的区别，并处理两次读取的顺序和一致性。
 
 **相关内容**：[集合分页](#7-集合抓取与分页要分两步考虑)。
 
 <details>
 <summary>参考回答</summary>
 
-先按唯一顺序分页父 ID，再按本页 ID 抓取详情。组装时恢复第一阶段顺序，空页直接返回。
+**先按唯一且稳定的顺序分页查询父 ID，再按本页 ID 加载详情，最后恢复第一阶段的顺序。**
 
-Hibernate 7.1 可将集合抓取分页配置为失败。参数是 `hibernate.query.fail_on_pagination_over_collection_fetch=true`。两阶段之间的并发变化仍需事务或版本协议处理。
+这样，分页限制作用于父对象，关联展开就不会改变父对象页大小。空 ID 页直接返回，IN 查询的返回顺序则在组装时恢复。两次读取之间的数据变化，需要按接口要求通过事务隔离或版本校验处理。
+
+Hibernate 5.6 与 6.x 可配置 `hibernate.query.fail_on_pagination_over_collection_fetch=true`。它让集合抓取分页直接失败，便于测试发现内存分页问题。验证时还要检查父 ID 和排序，仅看去重后的 List 长度不足以证明分页正确。
 
 </details>
 
@@ -217,19 +243,23 @@ Hibernate 7.1 可将集合抓取分页配置为失败。参数是 `hibernate.que
 
 **出现公司**：暂无已核验的公开来源（本站自测）
 
-**考察重点**：读取抓取与写入批次。
+**考察重点**：区分关联读取合批与 JDBC 写入合批，说明各自的配置和作用范围。
 
 **相关内容**：[批量抓取与写入合批](#批量抓取与写入合批)。
 
 <details>
 <summary>参考回答</summary>
 
-jdbc.batch_size 控制写入合批，N+1 读取需单独配置。Hibernate 7.1 可用 `@BatchSize(size=16)`。全局配置为 `hibernate.default_batch_fetch_size=16`。实际查询数仍取决于候选关联、缓存和访问方式。
+**`hibernate.jdbc.batch_size` 控制写入合批，解决 N+1 读取应配置关联批量抓取。**
+
+Hibernate 5.6 与 6.x 可在实体类型或集合属性上使用 `@BatchSize(size=16)`。也可用 `hibernate.default_batch_fetch_size=16` 设置全局批大小。触发懒加载时，框架把同一上下文中的待加载目标合并查询。
+
+16 是每批目标数的上限，实际查询次数还受缓存、访问顺序和待加载关联数量影响。
 
 </details>
 
 ## 13. 参考资料 {#参考资料}
 
-- [Hibernate ORM：Association Fetching](https://docs.hibernate.org/orm/7.1/introduction/html_single/#association-fetching)
-- [Hibernate ORM User Guide：Dynamic Fetching](https://docs.hibernate.org/orm/7.1/userguide/html_single/Hibernate_User_Guide.html#fetching-strategies-dynamic-fetching)
-- [Jakarta Persistence：Entity Graphs](https://jakarta.ee/specifications/persistence/3.2/jakarta-persistence-spec-3.2.html#a2813)
+- [Hibernate ORM 5.6：Fetching](https://docs.hibernate.org/orm/5.6/userguide/html_single/Hibernate_User_Guide.html#fetching)
+- [Hibernate ORM User Guide：Dynamic Fetching](https://docs.hibernate.org/orm/6.6/userguide/html_single/Hibernate_User_Guide.html#fetching-strategies-dynamic-fetching)
+- [Jakarta Persistence：Entity Graphs](https://jakarta.ee/specifications/persistence/3.1/jakarta-persistence-spec-3.1.html)

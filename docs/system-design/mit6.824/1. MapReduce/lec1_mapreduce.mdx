@@ -4,19 +4,21 @@ draft: false
 knowledge:
   id: system-design.mit6-824.mapreduce.lecture
   type: concept
+description: "MapReduce 通过映射、分组与归约表达批量计算。本文整理论文和课程中的编程模型、执行流程、容错与性能优化。本文适合学习分布式系统的读者。读者可练习解释任务重执行和数据流转，并判断批处理模型的适用条件。"
+keywords: ["MapReduce 论文", "Map Shuffle Reduce", "分布式批处理", "任务重执行"]
 ---
 
 # Lec 1: MapReduce
 
-MapReduce 用 Map、分组和 Reduce 表达批量计算。本文是 2004 年论文与 MIT 课程的学习笔记。重点是执行过程、重执行语义和性能优化。任务状态与 RPC 实现见 [实验 1: MapReduce](./lab1_mapreduce.mdx)。
+MapReduce 用 Map、分组和 Reduce 表达批量计算。本文是 2004 年论文与 MIT 课程的学习笔记。重点是执行过程、重执行语义和性能优化。
 
 ## 1. 面试核心 {#core}
 
-- Map 输出键值对序列，框架按 key 分组后调用 Reduce。[卡](#mr-shuffle-partition)
-- Map 中间结果保存在本地，丢失后需重新计算。[卡](#mr-worker-reexecution)
-- 确定性函数与原子提交使重执行结果等价于顺序执行。[卡](#mr-worker-reexecution)
-- Combiner 的局部聚合需保持任意分组后的结果一致。[卡](#mr-combiner-average)
-- 备份任务缓解慢节点造成的长尾，数据倾斜需另行处理。[卡](#mr-straggler-skew)
+- **分组计算。** Map 输出键值对序列，框架按 key 分组后调用 Reduce。[卡](#mr-shuffle-partition)
+- **中间结果恢复。** Map 中间结果保存在本地，丢失后需重新计算。[卡](#mr-worker-reexecution)
+- **重执行语义。** 确定性函数与原子提交使重执行结果等价于顺序执行。[卡](#mr-worker-reexecution)
+- **局部聚合。** Combiner 的局部聚合需保持任意分组后的结果一致。[卡](#mr-combiner-average)
+- **长尾与倾斜。** 备份任务缓解慢节点造成的长尾，数据倾斜需另行处理。[卡](#mr-straggler-skew)
 
 ## 2. 论文介绍 {#论文介绍}
 
@@ -154,7 +156,9 @@ MapReduce 适合高吞吐离线批处理。多轮计算需反复写入中间结�
 <details>
 <summary>参考回答</summary>
 
-框架按 key 分区，把同组记录送到同一 Reduce。Map 本身输出的是键值对序列。
+**框架按 key 分区，把同组记录送到同一 Reduce。**
+
+Map 本身输出的是键值对序列。
 
 Reduce Worker 从各 Map 取得自己的分区，再排序分组。用户 reduce 函数接收 key 及其全部值。
 
@@ -173,7 +177,9 @@ Reduce Worker 从各 Map 取得自己的分区，再排序分组。用户 reduce
 <details>
 <summary>参考回答</summary>
 
-Map 中间文件在故障节点本地，丢失后需重算。已完成 Reduce 的文件在全局文件系统中，可以继续使用。
+**Map 中间文件在故障节点本地，丢失后需重算。**
+
+已完成 Reduce 的文件在全局文件系统中，可以继续使用。
 
 确定性函数保证重复执行得到同样结果。原子提交避免混合不同尝试的文件内容。外部副作用还需应用幂等处理。
 
@@ -192,9 +198,9 @@ Map 中间文件在故障节点本地，丢失后需重算。已完成 Reduce �
 <details>
 <summary>参考回答</summary>
 
-直接平均局部均值会丢失各组样本数。应在中间阶段传递 sum 与 count，最终再相除。
+**求平均值时，应让 Combiner 输出 `sum` 和 `count`，最后再相除。**
 
-`[1, 3]` 和 `[10]` 的局部均值再平均得到 6。整体均值为 `14/3`。使用总和与计数可以保留正确结果。
+直接平均局部均值会丢失各组样本数：`[1, 3]` 与 `[10]` 的局部均值再平均得到 6，而整体均值是 `14/3`。保留总和与计数，任意分组后仍能得到正确结果。
 
 </details>
 
@@ -211,7 +217,9 @@ Map 中间文件在故障节点本地，丢失后需重算。已完成 Reduce �
 <details>
 <summary>参考回答</summary>
 
-备份任务主要缓解慢节点，热点输入仍需处理同样的数据。重复调度无法消除 key 的数据倾斜。
+**备份任务主要缓解慢节点，热点输入仍需处理同样的数据。**
+
+重复调度无法消除 key 的数据倾斜。
 
 可合并的计数能加盐拆键，再做第二轮聚合。需要同组完整数据的操作，应重新设计处理边界。
 

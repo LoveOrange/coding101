@@ -3,19 +3,21 @@ sidebar_position: 2
 knowledge:
   id: basic-knowledge.database.sql.joins
   type: concept
+description: "SQL 连接操作按条件组合不同来源的行。本文讲解 MySQL 8.0 的匹配与补空、连接条件与结果过滤、存在性查询与多明细统计。本文适合准备数据库面试的读者。读者可练习推导连接行数，并分析过滤位置和连接算法的影响。"
+keywords: ["JOIN", "LEFT JOIN", "EXISTS", "反连接", "SQL 连接面试"]
 ---
 
 # SQL 连接
 
-SQL 连接根据条件组合不同来源的行。本文负责 MySQL 8.0 的匹配、补空、存在性和结果粒度。分组统计见 [SQL 聚合](./aggregation.mdx)，计划判断见[执行计划](../indices/execution-plan.mdx)。
+SQL 连接根据条件组合不同来源的行。本文负责 MySQL 8.0 的匹配、补空、存在性和结果粒度。
 
 ## 1. 面试核心 {#core}
 
-- INNER JOIN 只返回匹配行，LEFT JOIN 还返回补空后的未匹配左行。[卡](#left-join-where)
-- 一对多连接为每个匹配对输出一行，结果会重复出现左表主键。
-- WHERE 中拒绝 NULL 的右表条件会移除 LEFT JOIN 补空行。[卡](#left-join-where)
-- EXISTS 只判断是否存在匹配行，NOT EXISTS 选择没有匹配项的行。[卡](#exists-anti-join)
-- 多个明细表先按目标粒度聚合，可避免连接后重复求和。[卡](#join-fanout)
+- **连接结果。** INNER JOIN 只返回匹配行，LEFT JOIN 还返回补空后的未匹配左行。[卡](#left-join-where)
+- **一对多关系。** 一对多连接为每个匹配对输出一行，所以左表主键会重复出现。对左表金额等字段直接求和时，需要防止这些重复行放大结果。
+- **外连接过滤。** WHERE 中拒绝 NULL 的右表条件会移除 LEFT JOIN 补空行。[卡](#left-join-where)
+- **存在性判断。** EXISTS 只判断是否存在匹配行，NOT EXISTS 选择没有匹配项的行。[卡](#exists-anti-join)
+- **连接与聚合。** 多个明细表先按目标粒度聚合，可避免连接后重复求和。[卡](#join-fanout)
 
 ## 2. 匹配与补空 {#匹配与补空}
 
@@ -114,7 +116,9 @@ CROSS JOIN 无过滤时产生笛卡尔积。自连接则是同一张表使用不
 <details>
 <summary>参考回答</summary>
 
-拒绝 NULL 的右表条件会移除左侧未匹配行。LEFT JOIN 先补出右侧 NULL，WHERE 再过滤结果。普通大小比较对 NULL 得到 UNKNOWN。要保留所有左行，可将右表匹配条件放在 ON。`WHERE p.id IS NULL` 则有相反用途，可选择未匹配行。
+**拒绝 NULL 的右表条件会移除左侧未匹配行。**
+
+LEFT JOIN 先补出右侧 NULL，WHERE 再过滤结果。普通大小比较对 NULL 得到 UNKNOWN。要保留所有左行，可将右表匹配条件放在 ON。`WHERE p.id IS NULL` 则有相反用途，可选择未匹配行。
 
 </details>
 
@@ -131,7 +135,9 @@ CROSS JOIN 无过滤时产生笛卡尔积。自连接则是同一张表使用不
 <details>
 <summary>参考回答</summary>
 
-EXISTS 判断是否至少有一个匹配行。NOT EXISTS 判断是否完全没有匹配行。它们按客户筛选，多个订单也只保留一份客户行。用 LEFT JOIN 表达反连接时，应检查右表非空主键。
+**EXISTS 判断是否至少有一个匹配行。**
+
+NOT EXISTS 判断是否完全没有匹配行。它们按客户筛选，多个订单也只保留一份客户行。用 LEFT JOIN 表达反连接时，应检查右表非空主键。
 
 </details>
 
@@ -148,7 +154,9 @@ EXISTS 判断是否至少有一个匹配行。NOT EXISTS 判断是否完全没�
 <details>
 <summary>参考回答</summary>
 
-两个明细表会按客户产生匹配组合，重复订单金额。应先分别聚合到客户粒度，再连接结果。`SUM(DISTINCT amount)` 会合并金额相同的合法订单。因此，修复应针对行关系和统计粒度。
+**两个明细表会按客户产生匹配组合，重复订单金额。**
+
+应先分别聚合到客户粒度，再连接结果。`SUM(DISTINCT amount)` 会合并金额相同的合法订单。因此，修复应针对行关系和统计粒度。
 
 </details>
 
@@ -165,7 +173,9 @@ EXISTS 判断是否至少有一个匹配行。NOT EXISTS 判断是否完全没�
 <details>
 <summary>参考回答</summary>
 
-连接成本取决于过滤后行数和内层访问成本。嵌套循环需关注外层行数与每次索引探测。Hash join 则比较构建、探测及内存成本。MySQL 8.0 根据候选计划选算法，需用实际计划验证。
+**连接成本取决于过滤后行数和内层访问成本。**
+
+嵌套循环需关注外层行数与每次索引探测。Hash join 则比较构建、探测及内存成本。MySQL 8.0 根据候选计划选算法，需用实际计划验证。
 
 </details>
 

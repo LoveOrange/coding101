@@ -3,19 +3,21 @@ sidebar_position: 1
 knowledge:
   id: system-design.production.maven-lifecycle-dependency-convergence
   type: concept
+description: "Maven 用生命周期、插件和依赖图组织项目构建。本文讲解阶段、goal、Scope、依赖仲裁、BOM 与多模块执行。本文适合准备 Java 工程面试的读者。读者可练习分析依赖收敛和集成测试顺序。读者还可检查可重复构建所需的输入。"
+keywords: ["Maven 生命周期", "依赖冲突", "dependencyManagement", "BOM", "reactor"]
 ---
 
 # Maven
 
-Maven 用生命周期、插件和依赖图组织构建。本文以 Maven 3 为范围，讲解阶段执行与依赖收敛。产物晋升和容器发布见[可重复交付](./docker-ci-cd-reproducible-delivery.mdx)。
+Maven 用生命周期、插件和依赖图组织构建。本文以 Maven 3 为范围，讲解阶段执行与依赖收敛。
 
 ## 1. 面试核心 {#core}
 
-- phase 定义执行阶段，绑定的插件 goal 执行具体工作。
-- 未受显式管理时，依赖仲裁采用最近路径，同深度先声明者优先。[卡](#dependency-convergence)
-- `dependencyManagement` 管理版本，直接或传递依赖负责实际引入。
-- `mvn verify` 可执行 Failsafe 结果检查和此前的清理阶段。[卡](#failsafe-verify)
-- `mvn -pl app -am verify` 构建 app 及其 reactor 依赖。[卡](#reactor-parent-aggregation)
+- **生命周期与插件。** phase 定义执行阶段，绑定的插件 goal 执行具体工作。
+- **依赖仲裁。** 未受显式管理时，依赖仲裁采用最近路径，同深度先声明者优先。[卡](#dependency-convergence)
+- **版本管理与引入。** `dependencyManagement` 管理版本，直接或传递依赖负责实际引入。
+- **集成测试。** `mvn verify` 会执行集成测试及其后的 `post-integration-test` 清理阶段，再由 Failsafe 检查测试结果。[卡](#failsafe-verify)
+- **多模块构建。** `mvn -pl app -am verify` 构建 app 及其 reactor 依赖。[卡](#reactor-parent-aggregation)
 
 ## 2. 生命周期 {#生命周期}
 
@@ -134,7 +136,9 @@ package 生成 jar 或 war。install 还将产物与 POM 写入本地仓库。Re
 <details>
 <summary>参考回答</summary>
 
-Maven 对未受显式管理的冲突采用最近路径规则。同深度时，先声明者优先。用 `dependency:tree` 确定引入路径，再决定升级或管理版本。
+**Maven 对未受显式管理的冲突采用最近路径规则。**
+
+同深度时，先声明者优先。用 `dependency:tree` 确定引入路径，再决定升级或管理版本。
 
 父 POM 或 BOM 用 dependencyManagement 统一规则。依赖仍由直接声明或传递路径引入。Enforcer 的 `dependencyConvergence` 检查版本分叉。CI 同时固定工具链、插件和归档时间，并执行兼容性测试。
 
@@ -153,7 +157,9 @@ Maven 对未受显式管理的冲突采用最近路径规则。同深度时，�
 <details>
 <summary>参考回答</summary>
 
-聚合决定一起构建哪些模块，继承决定复用哪些配置。Maven 3 中可执行 `mvn -pl app -am verify`。它选择 app，并构建 app 依赖的 reactor 模块。实际依赖参与排序，管理项本身不参与排序。
+**聚合决定一起构建哪些模块，继承决定复用哪些配置。**
+
+Maven 3 中可执行 `mvn -pl app -am verify`。它选择 app，并构建 app 依赖的 reactor 模块。实际依赖参与排序，管理项本身不参与排序。
 
 </details>
 
@@ -170,7 +176,9 @@ Maven 对未受显式管理的冲突采用最近路径规则。同深度时，�
 <details>
 <summary>参考回答</summary>
 
-verify 会覆盖集成测试、后续清理和最终结果检查。Failsafe 将测试失败留到 verify 阶段报告。post-integration-test 因此能先清理环境。仅执行 integration-test 会跳过这些后续阶段。
+**verify 会覆盖集成测试、后续清理和最终结果检查。**
+
+Failsafe 将测试失败留到 verify 阶段报告。post-integration-test 因此能先清理环境。仅执行 integration-test 会跳过这些后续阶段。
 
 </details>
 

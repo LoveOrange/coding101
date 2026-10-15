@@ -2,6 +2,8 @@
 pagination_prev: null
 pagination_next: null
 sidebar_position: 0
+description: "面向 Java 后端面试整理集合复习顺序，先掌握容器选择、动态数组操作成本和哈希映射查找机制，再补有序容器与并发集合。提供核心阅读和深入专题入口，帮助求职者根据顺序、访问方式及线程共享需求选择范围，并通过题目检查原理和使用边界。"
+keywords: ["Java 集合复习", "容器选型", "ArrayList 与 HashMap", "并发集合"]
 ---
 
 import {ReviewGuide} from '@site/src/components/Review';
@@ -9,17 +11,17 @@ import {javaCollectionsReview} from '@site/src/data/reviewPlans/javaCollections'
 
 # Java 集合
 
-Java 集合用于组织对象、查找数据和表达取出规则。第一轮先掌握容器选择、ArrayList 的操作成本和 HashMap 的查找机制。
+Java 集合用于组织对象、查找数据，并按指定规则取出元素。本栏目面向 Java 后端面试准备，第一轮先学习容器选择，再掌握 ArrayList 的操作成本和 HashMap 的查找机制。
 
 <ReviewGuide plan={javaCollectionsReview} />
 
 ## 1. 关键结论
 
-- **先确定容器语义。** List 保留位置和重复元素，Set 表达唯一性，Map 保存键值关联；需要按规则取出元素时使用 Queue 或 Deque。顺序、去重和查找要求会影响实现选择，见[Java 集合框架](./collection-interface-selection.mdx)。
-- **数组存储决定 ArrayList 的主要成本。** 随机访问可以直接定位，尾部追加通常不需要移动已有元素；扩容和中间插入可能复制或搬移数据。要区分一次操作的成本与连续操作的摊销成本，见[ArrayList](./arraylist-growth-memory-locality.mdx)。
-- **HashMap 通过哈希缩小查找范围，再确认键是否相等。** 相同哈希不代表相等，自定义键的相等性字段需要保持稳定。平均查询性能依赖哈希分布，它也不保证顺序和无同步并发写的安全，见[HashMap](./hashmap-structure-lookup-path.mdx)。
+- **容器选择**：List 保留元素位置并允许重复，Set 用于去重，Map 保存键值关联。需要按规则取出元素时，可以使用 Queue 或 Deque。因此，选择前要明确顺序、去重和查找要求，见[Java 集合框架](./collection-interface-selection.mdx)。
+- **ArrayList 的操作成本**：数组支持按索引直接定位，容量足够时，尾部追加也无需移动已有元素。扩容要复制数组，中间插入则要搬移后续引用。所以，要区分单次操作的耗时和多次操作平均分摊的成本，见 [ArrayList](./arraylist-growth-memory-locality.mdx)。
+- **HashMap 的查找机制**：哈希先缩小候选范围，再通过相等性比较确认键。相同哈希可以对应不同键，自定义键中参与比较的字段也要保持稳定。平均查询性能依赖哈希分布，固定遍历顺序和并发写入则需要另选实现或增加同步，见 [HashMap](./hashmap-structure-lookup-path.mdx)。
 
-不熟悉数组、链表或哈希表时，先补充[数据结构](../../data-structures/index.mdx)；不能解释键的相等性时，回看[对象相等性](../language/equals-hashcode-object-identity.mdx)。
+如果还不熟悉数组、链表或哈希表，可以先补充[数据结构](../../data-structures/index.mdx)。需要理解键为什么相等时，回看[对象相等性](../language/equals-hashcode-object-identity.mdx)。
 
 ## 2. 后续复习
 
@@ -36,7 +38,13 @@ Java 集合用于组织对象、查找数据和表达取出规则。第一轮先
 <details>
 <summary>按场景补充：访问顺序与并发集合</summary>
 
-项目涉及访问顺序或 LRU 时，阅读 [LinkedHashMap](./linkedhashmap-lru.mdx)。需要多线程共享容器时，先学习[Java 并发编程](../concurrency/index.mdx)，再根据读写方式选择 [ConcurrentHashMap](./concurrenthashmap-atomic-compound-operations.mdx)、[CopyOnWrite 容器](./copy-on-write-cost-model.mdx)或 [BlockingQueue](./blockingqueue-producer-consumer.mdx)。
+项目需要按访问顺序遍历，或淘汰最久未访问的缓存条目时，阅读 [LinkedHashMap](./linkedhashmap-lru.mdx)。后者称为 LRU 淘汰策略。
+
+需要多线程共享容器时，先学习[Java 并发编程](../concurrency/index.mdx)，再按**读写需求**选择：
+
+- 需要并发查询和更新键值对时，阅读 [ConcurrentHashMap](./concurrenthashmap-atomic-compound-operations.mdx)。
+- 列表较小、读取远多于更新，且允许遍历旧快照时，阅读 [CopyOnWrite 容器](./copy-on-write-cost-model.mdx)。
+- 需要在线程间传递任务，并在队空或队满时等待，阅读 [BlockingQueue](./blockingqueue-producer-consumer.mdx)。
 
 </details>
 

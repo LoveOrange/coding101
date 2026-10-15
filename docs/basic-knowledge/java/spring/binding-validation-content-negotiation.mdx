@@ -3,21 +3,25 @@ sidebar_position: 12
 knowledge:
   id: basic-knowledge.java.spring.binding-validation-content-negotiation
   type: concept
+description: "Spring MVC 参数解析把 HTTP 输入转换为方法参数。本文讲解参数来源、绑定、校验、媒体类型和自定义解析器。本文适合准备 Spring 面试的读者。读者可练习区分绑定失败与校验失败。读者还可分析请求和响应的内容协商过程。"
+keywords: ["参数绑定", "Bean Validation", "HandlerMethodArgumentResolver", "内容协商"]
 ---
 
 # Spring MVC 参数解析
 
-Spring MVC 参数解析把 HTTP 输入转换为 Java 参数。本文以 Spring 6.2 为准，负责绑定、校验与媒体类型。错误响应结构见 [API 错误契约](./api-error-contract.mdx)。
+Spring MVC 参数解析把 HTTP 请求中的路径、参数、请求头和请求体转换为 Controller 方法参数。本文以 Spring 6.2 为准，先介绍各类输入怎样绑定为 Java 对象，再说明字段校验与方法校验。最后介绍请求和响应的格式选择，以及自定义参数解析器。
 
 ## 1. 面试核心 {#core}
 
-- `@RequestBody` 通过 `HttpMessageConverter` 读取请求体。[卡](#requestbody-binding)
-- 类型转换失败是绑定错误，违反字段约束是校验错误。
-- 不支持请求媒体类型返回 415，请求体解析失败返回 400。[卡](#body-media-errors)
-- `Accept` 无法匹配可生成的响应媒体类型时返回 406。
-- MVC 6.1 起内置方法校验，使用 `HandlerMethodValidationException` 表达失败。[卡](#mvc-method-validation)
+- **请求体转换与校验。** `@RequestBody` 通过 `HttpMessageConverter` 按目标类型和 `Content-Type` 读取请求体，再由 `@Valid` 触发对象校验。[卡](#requestbody-binding)
+- **绑定与约束错误。** 输入无法转换成目标类型时发生绑定错误，转换后的值违反字段约束时发生校验错误。
+- **请求格式错误。** Spring MVC 默认在请求媒体类型不受支持时返回 415，在请求体解析失败时返回 400。[卡](#body-media-errors)
+- **响应格式协商。** `Accept` 无法匹配可生成的响应媒体类型时返回 406。
+- **方法校验。** MVC 6.1 起内置方法校验，使用 `HandlerMethodValidationException` 表达失败。[卡](#mvc-method-validation)
 
 ## 2. 参数来源注解 {#参数来源注解}
+
+参数注解告诉 MVC 应从请求的哪个位置取值。明确输入来源后，API 文档和错误定位也更容易对应到具体字段：
 
 ```java
 @PostMapping(path = "/orders/{id}", consumes = "application/json")
@@ -30,13 +34,20 @@ OrderResponse update(
 }
 ```
 
-示例从路径读取 `id`，从请求参数读取 `dryRun`。版本来自请求头，更新数据来自 JSON 请求体。`@RequestParam` 也支持 Servlet 表单参数。
+示例使用了**四种参数来源**：
+
+- `@PathVariable` 从路径模板读取 `id`。
+- `@RequestParam` 读取 `dryRun`，缺省时使用 `false`，也支持 Servlet 表单参数。
+- `@RequestHeader` 从 `If-Match` 请求头读取版本。
+- `@RequestBody` 通过消息转换器读取 JSON 请求体，得到更新订单所需的对象。
+
+消息转换器就是 `HttpMessageConverter`，负责在 HTTP 消息体和 Java 对象之间转换。
 
 `@ModelAttribute` 通过数据绑定器组装对象，适合查询与表单。它与读取 JSON 的 `@RequestBody` 分属不同解析路径。
 
 ## 3. 绑定失败与校验失败 {#绑定失败与校验失败}
 
-`quantity=abc` 转整数失败，属于绑定错误。`quantity=-1` 能转整数，但违反 `@Positive` 约束。
+判断输入错误时，先看程序能否得到目标类型的值，再看这个值是否符合约束。比如 `quantity=abc` 无法转换为整数，属于绑定错误。`quantity=-1` 能转换为整数，但违反下面的 `@Positive` 正数约束，属于校验错误。
 
 ```java
 record UpdateOrderRequest(
@@ -44,19 +55,25 @@ record UpdateOrderRequest(
         @Positive int quantity) {}
 ```
 
-`@Valid @RequestBody` 会在对象读出后执行校验。项目需包含 Bean Validation 实现。
+Bean Validation 按注解检查对象的字段约束，项目需要引入它的实现。使用 `@Valid @RequestBody` 后，MVC 先读出对象，再执行校验。示例中的 `address` 还受 `@NotBlank` 约束，因此空值和全空白字符串都会校验失败。
 
-未触发方法校验时，对象参数单独校验。失败抛出 `MethodArgumentNotValidException`。若紧随参数声明 `BindingResult`，Controller 可自行检查错误。Controller 应先检查结果，再调用业务方法。
+未触发方法校验时，MVC 单独校验对象参数，失败会抛出 `MethodArgumentNotValidException`。如果在该参数后紧接着声明 `BindingResult`，Controller 就能自行读取错误。此时应先检查结果，通过后再调用业务方法。
+
+错误响应应区分转换失败与约束失败，并保留字段名、拒绝值的类型和稳定错误码。内部异常类名留在服务端，响应格式见 [API 错误契约](./api-error-contract.mdx#错误字段)。
 
 ## 4. 请求 DTO {#请求-dto}
 
-请求 DTO 只声明当前操作允许修改的字段。直接接收持久化实体会暴露 `ownerId` 等内部字段。service 仍需检查权限与业务状态。
+请求 DTO 是专门接收某项操作输入的数据对象，只声明客户端允许修改的字段。直接接收持久化实体，会暴露 `status`、`ownerId` 等内部字段。实体随数据库模型变化时，API 也会被牵连。因此，应在 service 中显式映射请求字段，并检查权限与业务状态。
 
-嵌套对象加 `@Valid` 才会继续级联校验。字符串、集合和金额应设置范围。对 `@ModelAttribute` 绑定，还可用 `allowedFields` 限制可写属性。
+设计请求 DTO 时，还要明确以下**字段边界**：
+
+- 嵌套对象需要加 `@Valid`，校验器才会继续检查其内部字段，这称为级联校验。
+- 字符串长度、集合大小和金额范围要设置上限，避免格式合法的输入消耗过多资源。
+- 使用 `@ModelAttribute` 时，可用 `allowedFields` 限制数据绑定器允许写入的属性。
 
 ## 5. 方法校验 {#方法校验}
 
-Spring MVC 6.1 起支持内置方法校验。参数直接声明 `@Min` 等约束时，按方法参数整体校验。失败抛出 `HandlerMethodValidationException`。
+除了检查 DTO 字段，Controller 还需要检查 `page` 这类直接声明在方法上的参数。Spring MVC 6.1 起支持内置方法校验。参数直接声明 `@Min` 等约束时，MVC 会整体校验方法参数，失败则抛出 `HandlerMethodValidationException`：
 
 ```java
 @GetMapping("/orders")
@@ -67,13 +84,15 @@ List<OrderResponse> list(@RequestParam @Min(1) int page) {
 
 `page=0` 触发方法输入校验，默认返回 400。返回值约束失败属于服务端问题，默认返回 500。
 
-Controller 类级 `@Validated` 会改走 AOP 方法校验。使用 MVC 内置路径时，应移除该类级注解。service 的方法校验仍可采用 `@Validated` 代理路径。
+Controller 类级 `@Validated` 会让方法校验改走 AOP 代理。要使用 MVC 内置校验，应移除这个类级注解；service 则仍可通过 `@Validated` 使用代理校验。由于对象校验和方法校验会产生不同异常，统一异常处理需要同时覆盖两条路径。
 
 `@Valid` 用于级联校验，本身没有非空约束。需要禁止空值时应加 `@NotNull`。`@Validated` 还可指定校验组。
 
 ## 6. `Content-Type` 与 `Accept` {#content-type-与-accept}
 
-`Content-Type` 声明请求体格式，`Accept` 声明可接受响应格式。映射条件和消息转换器共同决定能否处理。
+内容协商用于确定请求和响应使用什么媒体类型，例如 `application/json`。请求头 `Content-Type` 声明发送的请求体格式，`Accept` 声明客户端接受的响应格式。
+
+Controller 的 `consumes` 限定请求格式，`produces` 限定响应格式。MVC 再结合已注册的消息转换器，判断能否完成读取或写出。失败阶段不同，默认状态码也不同：
 
 | 请求或响应条件 | 默认结果 |
 | --- | --- |
@@ -82,23 +101,27 @@ Controller 类级 `@Validated` 会改走 AOP 方法校验。使用 MVC 内置路
 | 必需的请求体缺失 | 400 |
 | 响应类型与 `Accept` 无交集 | 406 |
 
-`HttpMessageNotReadableException` 对应读取失败。它与媒体类型不支持是两类错误。协商成功后再发生服务端序列化失败，应按写出错误处理。
+`HttpMessageNotReadableException` 表示消息转换器读取请求体失败，默认对应 400。415 则表示请求类型与映射条件或转换器的支持范围不匹配。格式协商已经成功后，服务端若在序列化时失败，应按写出错误处理。
+
+API 应明确支持的媒体类型和字符编码。响应格式依据声明的协商规则选择，避免让 URL 后缀或任意用户参数改变输出类型。
 
 ## 7. 自定义参数解析器 {#自定义参数解析器}
 
-`HandlerMethodArgumentResolver` 可解析当前用户、租户或分页对象。`supportsParameter()` 应匹配明确的注解或类型。`resolveArgument()` 执行取值与转换。
+多个接口重复获取当前用户、租户或分页对象时，可以用 `HandlerMethodArgumentResolver` 集中解析。这是 MVC 将请求转换为方法参数的扩展接口。`supportsParameter()` 判断当前参数是否由它处理，`resolveArgument()` 再执行取值与转换。
 
-解析器通过 `WebMvcConfigurer.addArgumentResolvers()` 注册。解析后的身份仍需来自可信认证上下文。
+匹配范围应限定为专用注解或类型。如果匹配所有 `String`，无关参数也会被这个解析器接管。解析失败时，应返回稳定的客户端错误，便于调用方修正请求。
+
+解析器通过 `WebMvcConfigurer.addArgumentResolvers()` 注册。当前用户和租户身份应从可信认证上下文取得，避免把请求中自报的身份直接当作认证结果。
 
 ## 8. 常见问题 {#常见问题}
 
 ### 8.1 校验组与操作 DTO {#校验组与操作-dto}
 
-`@Validated` 可指定创建或更新校验组。规则差异较大时，独立操作 DTO 更容易维护。
+`@Validated` 可指定创建或更新校验组，让同一个对象按不同规则校验。组层级过多时，读者很难判断某项操作实际执行了哪些约束。创建和更新规则差异较大时，拆成独立操作 DTO 更容易维护。
 
 ### 8.2 字段校验与业务授权 {#字段校验与业务授权}
 
-字段校验只检查数据约束。权限、资源归属和状态迁移仍由业务层校验。
+字段校验只确认结构与字段约束满足要求。比如金额是正数，只说明输入格式和值有效，付款权限和订单归属仍需检查。业务层还要维护状态迁移规则与业务不变量，并在对应入口处理防重放。
 
 ## 9. 面试题 {#面试题}
 
@@ -111,16 +134,20 @@ Controller 类级 `@Validated` 会改走 AOP 方法校验。使用 MVC 内置路
 
 **出现公司**：珍爱网、CVTE
 
-**考察重点**：区分请求体读取、字段校验与媒体类型错误。
+**考察重点**：说明参数解析器怎样选择消息转换器，并区分读取失败、字段校验失败与媒体类型不支持。理解 DTO 限制字段与业务授权各自负责什么。
 
 **相关内容**：[参数来源注解](#参数来源注解)至[`Content-Type` 与 `Accept`](#content-type-与-accept)。
 
 <details>
 <summary>参考回答</summary>
 
-`@RequestBody` 由消息转换器读取并生成 DTO。转换器按目标类型和 `Content-Type` 选择。`@Valid` 随后触发 Bean Validation。
+**MVC 先将请求体转换为 DTO，再按 `@Valid` 等校验配置检查字段约束。**
 
-JSON 读取失败返回 400，媒体类型不支持返回 415。校验失败交给 MVC 异常处理或参数后的 `BindingResult`。响应格式还需满足 `Accept`。
+`RequestMappingHandlerAdapter` 选择参数解析器，解析器再按目标类型和 `Content-Type` 选择消息转换器。转换完成后，Bean Validation 才有对象可供校验。
+
+JSON 读取失败默认返回 400，媒体类型不受支持则返回 415。对象校验失败交给 MVC 异常处理，或由紧随参数的 `BindingResult` 接收。ControllerAdvice 可把这些失败映射为稳定的错误响应，响应格式还需满足 `Accept`。
+
+请求 DTO 只暴露允许写入的字段。字段通过校验后，service 仍要确认调用者有权修改对应资源。
 
 </details>
 
@@ -130,14 +157,16 @@ JSON 读取失败返回 400，媒体类型不支持返回 415。校验失败交�
 
 **出现公司**：暂无已核验的公开来源（本站自测）
 
-**考察重点**：媒体类型支持与内容读取的区别。
+**考察重点**：解释选不到转换器与选中后读取失败的区别，并判断 400、415 和 406 分别对应哪个阶段。
 
 **相关内容**：[`Content-Type` 与 `Accept`](#content-type-与-accept)。
 
 <details>
 <summary>参考回答</summary>
 
-JSON 格式错误发生在已选中读取器之后，默认返回 400。415 表示请求媒体类型与映射或读取器不匹配。406 则表示服务端无法提供客户端接受的响应格式。
+**JSON 格式错误发生在已选中读取器之后，默认返回 400。**
+
+415 表示请求媒体类型与映射或读取器不匹配。406 则表示服务端无法提供客户端接受的响应格式。
 
 </details>
 
@@ -147,14 +176,18 @@ JSON 格式错误发生在已选中读取器之后，默认返回 400。415 表�
 
 **出现公司**：暂无已核验的公开来源（本站自测）
 
-**考察重点**：对象校验、方法校验与类级 Validated。
+**考察重点**：区分对象参数校验与方法参数整体校验，并说明类级 `@Validated` 怎样影响执行路径。
 
 **相关内容**：[方法校验](#方法校验)。
 
 <details>
 <summary>参考回答</summary>
 
-对象参数单独校验失败时，抛出 `MethodArgumentNotValidException`。方法参数直接声明约束时，走内置方法校验。失败抛出 `HandlerMethodValidationException`。使用该路径时应移除 Controller 类级 `@Validated`。
+**对象参数单独校验失败时，MVC 抛出 `MethodArgumentNotValidException`。**
+
+方法参数直接声明约束、触发内置方法校验时，失败则抛出 `HandlerMethodValidationException`。
+
+比如 `@Valid @RequestBody` 可触发 DTO 的对象校验，`@RequestParam @Min(1)` 则需要方法校验。使用 MVC 内置路径时，应移除 Controller 类级 `@Validated`，否则会转入 AOP 校验。方法输入校验失败默认返回 400，返回值约束失败则返回 500。
 
 </details>
 
@@ -163,6 +196,6 @@ JSON 格式错误发生在已选中读取器之后，默认返回 400。415 表�
 - [Spring Framework：Method Arguments](https://docs.spring.io/spring-framework/reference/web/webmvc/mvc-controller/ann-methods/arguments.html)
 - [Spring Framework：Validation](https://docs.spring.io/spring-framework/reference/web/webmvc/mvc-config/validation.html)
 - [Spring Framework：HTTP Message Conversion](https://docs.spring.io/spring-framework/reference/web/webmvc/message-converters.html)
-- [Spring Framework：Controller Validation](https://docs.spring.io/spring-framework/reference/web/webmvc/mvc-controller/ann-validation.html)
+- [Spring Framework：Controller Validation](https://docs.spring.io/spring-framework/reference/6.2/web/webmvc/mvc-controller/ann-validation.html)
 - [Spring Framework 6.2：DefaultHandlerExceptionResolver](https://docs.spring.io/spring-framework/docs/6.2.x/javadoc-api/org/springframework/web/servlet/mvc/support/DefaultHandlerExceptionResolver.html)
 - [Spring Framework：ModelAttribute](https://docs.spring.io/spring-framework/reference/web/webmvc/mvc-controller/ann-methods/modelattrib-method-args.html)

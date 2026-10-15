@@ -3,25 +3,29 @@ sidebar_position: 2
 knowledge:
   id: basic-knowledge.java.data-access.jpa-entity-states-dirty-checking-lazy-loading
   type: concept
+description: "JPA 通过持久化上下文管理实体身份和变化。本文讲解状态转换、merge、脏检查、懒加载与乐观锁，覆盖关联和批量更新。本文适合准备 Java 持久层面试的读者。读者可练习分析事务、上下文和数据库写入之间的关系。"
+keywords: ["实体生命周期", "持久化上下文", "脏检查", "Hibernate", "JPA 乐观锁"]
 ---
 
 # JPA
 
-JPA 通过持久化上下文管理实体身份与变化。本文负责状态转换、脏检查、关联写入和乐观锁。采用 Jakarta Persistence 3.2，示例实现为 Hibernate ORM 7.1。
+JPA 是 Java 对象持久化规范，规定实体怎样映射到数据库并参与读写。它通过持久化上下文管理实体，也就是记录哪些对象正在被跟踪、哪些字段发生了变化。
 
-抓取优化见 [N+1 查询](./n-plus-one-fetch-strategies.mdx)。批量执行与分页见 [批处理与分页](./batching-pagination-data-access-tests.mdx)。
+本文从实体身份和状态转换讲起，再解释脏检查、懒加载与事务边界，最后说明关联写入和乐观锁。内容面向 Spring Boot 2.7 与 3.x，分别对应常用的 Hibernate 5.6 与 6.x。规范术语以 Jakarta Persistence 3.1 为参照。
 
 ## 1. 面试核心 {#core}
 
-- managed 实体在 flush 时同步变化，事务在 commit 时提交。[卡](#dirty-checking)
-- merge 复制 detached 对象状态，返回受管实例，原对象仍脱管。[卡](#merge-identity)
-- LAZY 是加载提示，EAGER 是加载要求，均未指定 SQL 形态。[卡](#fetch-cascade)
-- `@Version` 通过版本校验检测并发覆盖。[卡](#bulk-version)
-- AUTO 模式确保查询考虑相关待写变化，COMMIT 模式的查询效果未指定。[卡](#flush-mode-query)
+- **脏检查与提交。** 受管实体的变化在 flush 时同步到数据库，事务在 commit 时提交。[卡](#dirty-checking)
+- **merge 的对象身份。** `merge` 将脱管对象的状态复制到受管实例并返回它，传入的脱管对象仍然脱管。[卡](#merge-identity)
+- **关联加载。** LAZY 提示按需加载关联，EAGER 要求加载关联，具体 SQL 形态由 JPA 实现决定。[卡](#fetch-cascade)
+- **乐观版本检查。** `@Version` 通过更新时校验版本，检测其他事务造成的并发覆盖。[卡](#bulk-version)
+- **查询与 flush 模式。** AUTO 要求查询考虑相关的待写变化，COMMIT 对提交前查询能否反映这些变化未作规定。[卡](#flush-mode-query)
 
 ## 2. 持久化上下文与实体身份 {#1-持久化上下文维护实体身份}
 
-EntityManager 关联持久化上下文。同一上下文中，一个持久化身份对应一个受管实例：
+同一条数据库记录被读取两次时，JPA 需要知道这两次读取得到的是同一个实体。EntityManager 是管理实体的接口，它关联一个持久化上下文。
+
+在同一上下文中，**实体类型与主键**共同确定持久化身份，同一身份对应唯一的受管对象：
 
 ```java
 Order first = entityManager.find(Order.class, 101L);
@@ -30,29 +34,44 @@ Order second = entityManager.find(Order.class, 101L);
 assert first == second;
 ```
 
-身份映射复用已加载实例，并支持脏检查。上下文结束后，原对象脱管。EntityManager 面向单线程使用，共享访问需避免。
+两次 `find` 返回同一个对象，所以 `first == second` 成立。这种身份映射减少重复加载，也让框架能跟踪对象变化和关联关系。它只在当前上下文中生效，上下文关闭后，原对象就会脱管。
+
+EntityManager 及其上下文面向单线程使用，应按一次业务工作管理，避免被多个线程同时访问。
 
 ## 3. 实体状态 {#2-实体有四种主要状态}
 
-- **new**：刚创建，尚未与持久化上下文关联。
-- **managed** 实体由当前上下文管理，变化在同步时写入数据库。
-- **detached**：有持久化身份，但已离开当前上下文。
-- **removed**：已标记删除，将在同步时执行删除。
+判断字段修改能否写入数据库，要先确认对象处于哪种状态。JPA 实体有以下**四种状态**：
 
-persist 让新实体进入 managed。find 或实体查询返回受管对象。detach、clear 或上下文关闭会让对象脱管。remove 把受管实体标记为 removed。
+- **new（新建）**：对象刚创建，尚未与持久化上下文关联。
+- **managed（受管）**：对象由当前上下文跟踪，字段变化会在 flush 时同步到数据库。
+- **detached（脱管）**：对象有持久化身份，但已离开管理它的上下文，修改只影响这个 Java 对象。
+- **removed（待删除）**：对象已被标记删除，删除操作在同步时执行。
+
+调用实体操作时，**受管与脱管状态**按以下规则转换：
+
+- `persist` 把新实体交给上下文管理，使它进入 managed 状态。
+- `find` 或实体查询返回 managed 对象，后续修改由上下文跟踪。
+- `detach` 让指定对象脱管，`clear` 或关闭上下文让其中的实体脱管。
+- `remove` 把受管实体标记为 removed，等待执行删除。
 
 ## 4. merge 的状态复制与返回值 {#3-merge-返回新的受管实例}
+
+脱管对象的修改需要重新交给上下文跟踪时，可以调用 `merge`。它返回的是接收这些状态的受管对象：
 
 ```java
 Order detached = previousOrder; // 来自已关闭的上下文
 Order managed = entityManager.merge(detached);
 ```
 
-merge 把 detached 状态复制到受管目标，并返回目标。原 detached 对象仍脱管，后续应修改返回对象。目标可复用上下文中的实例，也可由提供者新建。传入 managed 对象时，返回该受管对象。
+`merge` 根据持久化身份找到受管目标，再把传入对象的状态复制过去。目标可以是上下文已有的实例，也可以是 JPA 实现新建的受管副本。这里的 JPA 实现指 Hibernate 这类执行规范的框架。
 
-事务内修改受管实体，flush 时即可同步。每次 setter 后无需额外调用 merge。
+原来的 `detached` 仍然脱管，所以后续应修改返回的 `managed`。若传入对象本来就已受管，返回的就是该对象。也就是说，是否新建副本取决于对象状态与当前上下文。
+
+在同一个事务中读取并修改受管实体，flush 时就会同步变化，因此每次 setter 后都无需再调用 `save` 或 `merge`。
 
 ## 5. 脏检查与 flush {#4-脏检查在-flush-时同步变化}
+
+脏检查用于找出受管实体中发生变化的字段，flush 则把这些变化同步到数据库。所以下面的代码只修改对象，也能完成更新：
 
 ```java
 @Transactional
@@ -62,69 +81,93 @@ public void rename(long id, String name) {
 }
 ```
 
-提供者跟踪受管实体，flush 时检测变化并生成 SQL。Hibernate 可使用快照比较或字节码增强。
+`find` 得到的 `customer` 处于受管状态。事务提交前进行 flush 时，Hibernate 检测到名称变化，就会生成对应的更新 SQL。
 
-flush 把变化同步给数据库，事务仍可回滚。SQL 执行时间还受主键生成与查询模式影响。
+Hibernate 可以保存加载时的字段快照，在 flush 时比较新旧值。也可以使用字节码增强，在字段变化时记录修改。两种方式都用于发现变化，具体采用哪一种由实现和配置决定。
+
+flush 完成后，SQL 已同步给数据库，但事务仍可回滚。主键生成策略会影响插入 SQL 的执行时机；查询前是否同步则受 FlushMode 与查询类型影响。后面的 [FlushMode 与查询可见性](#flushmode-与查询可见性)会说明这一点。
 
 ## 6. 事务与上下文边界 {#5-事务边界决定状态管理范围}
 
-关闭 OSIV 且使用事务范围上下文时，事务结束后关闭上下文。实体随后成为 detached。扩展上下文则可跨越多个事务。
+确定对象能被跟踪多久，需要同时看事务和持久化上下文的生命周期。关闭 OSIV、且使用事务范围上下文时，Spring 会在事务结束后关闭上下文，实体随之脱管。OSIV 是把上下文保留到 Web 响应阶段的机制，后文会单独说明。扩展上下文则可以跨越多个事务。
 
-回滚后的 Java 字段没有自动恢复保证。重试需开启新事务，重新读取并执行业务判断。长期保存脱管实体，会让版本与关联加载难以管理。
+服务方法应在明确的事务内完成读取、校验和修改。事务回滚后，Java 字段没有自动恢复到数据库旧值的保证。所以重试时应开启新事务、重新读取实体，再执行完整业务判断。
+
+把实体长期保存到 HTTP Session、缓存或消息中，会让脱管对象进入其他请求或线程。这时，对象中的版本和关联状态都来自之前的上下文，版本冲突与关联加载就更难判断。
 
 ## 7. 懒加载与上下文 {#6-懒加载需要可用的持久化上下文}
 
-Hibernate 可用代理或持久化集合承载 LAZY 关联。访问尚未初始化的内容时触发加载：
+懒加载把关联查询推迟到真正访问关联数据时。Hibernate 用代理对象或持久化集合保存关联信息，访问尚未初始化的内容时再执行查询：
 
 ```java
 Order order = repository.findById(id).orElseThrow();
 return order.getItems().size();
 ```
 
-默认配置下，关闭 Session 后初始化代理会抛出异常。异常类型是 LazyInitializationException。已加载字段则可继续访问。
+这里的 `size()` 会访问订单明细集合。如果集合尚未加载，且 Hibernate Session 已关闭，默认配置下会抛出 `LazyInitializationException`。Hibernate Session 是 Hibernate 管理持久化上下文的接口，已加载的字段在关闭后仍可访问。
 
-服务层按用例抓取并映射 DTO，可固定查询边界。具体抓取方式见 [N+1 查询](./n-plus-one-fetch-strategies.mdx)。
+上下文仍可用时，直接序列化实体会让 getter 在生成响应时触发尚未加载的关联查询。双向关联若未配置序列化边界，还会引起递归访问。把所有关联设成 EAGER，又会扩大每次查询固定加载的数据量，并引入次级查询。
+
+服务层可以在事务内按用例加载所需数据，再映射为 DTO。DTO 是只保存响应所需字段的数据对象，这样查询位置和数量就更清楚。
+
+具体抓取方式见 [N+1 查询](./n-plus-one-fetch-strategies.mdx)。
 
 ## 8. OSIV 的上下文范围 {#7-osiv-延长的是上下文不是业务事务}
 
-OSIV 让持久化上下文覆盖 Web 响应阶段。序列化因此仍可触发懒加载，但原业务事务已结束。
+OSIV（Open EntityManager in View）让持久化上下文保留到 Web 响应阶段。因此，序列化访问未加载关联时，仍能执行查询，但原业务事务已经结束。
 
-API 服务可在服务事务内完成查询与 DTO 映射。测试应覆盖真实序列化过程，确认额外查询的位置和数量。
+额外查询发生在 Controller 或序列化阶段后，就需要单独考虑数据一致性和错误处理。它们分散在服务方法之外，也更难统计一次业务操作到底查询了多少次。
+
+是否启用 OSIV，要结合应用的响应方式决定。API 服务可以在服务事务内完成查询与 DTO 映射，让响应直接使用已准备的数据。测试还应覆盖真实序列化过程，确认额外查询的位置和数量。
 
 ## 9. 乐观锁与版本校验 {#8-乐观锁处理并发覆盖}
+
+两个事务同时读取同一实体时，后提交的修改会面临覆盖前一次修改的风险。`@Version` 用版本号识别这种冲突：
 
 ```java
 @Version
 private long version;
 ```
 
-`@Version` 让更新检查读取时的版本，并推进版本。版本不匹配时抛出乐观锁异常。脏检查负责发现变化，版本校验负责检测并发覆盖。
+更新 SQL 会把读取时的版本加入条件，更新成功后再递增版本。若其他事务已经修改了记录，旧版本条件就无法匹配，Hibernate 会报告乐观锁异常。脏检查负责发现本地变化，版本校验负责发现并发覆盖。
 
-重试应重新读取，并执行完整业务判断。
+发生冲突后，业务可以提示用户、重新合并修改，或重试。重试需要重新读取实体并执行完整业务判断，单独重发最后一条 update 会沿用过期判断。
 
 ## 10. 关联所有权、级联与抓取 {#关联所有权级联与抓取}
 
-双向关系由 owning side 决定关系写入。mappedBy 指向拥有方字段。只修改反向集合时，外键更新由拥有方状态决定。应用应同时维护两侧对象关系。
+关联关系涉及怎样写入、怎样加载，以及父子对象何时一起保存或删除。这些行为由不同配置控制，需要分别理解。
 
-cascade 控制 persist、merge、remove 等操作传播。fetch 控制关联加载要求，两者职责独立。
+双向关系的 owning side 称为拥有方，由它决定数据库中的关系写入。反向一侧用 `mappedBy` 指向拥有方的字段。只修改反向集合时，外键是否更新仍取决于拥有方状态。所以应用应同时维护两侧对象关系，让内存中的引用与数据库关系一致。
 
-Persistence 3.2 的 ManyToOne、OneToOne 默认 EAGER。OneToMany、ManyToMany 默认 LAZY。LAZY 允许提供者提前加载，EAGER 也可用次级查询实现。
+`cascade` 控制实体操作是否传播到关联对象，比如保存父对象时是否一起保存子对象。`fetch` 控制关联的加载要求，它们分别管理生命周期操作和读取时机。
 
-orphanRemoval 适用于 OneToOne 与 OneToMany。受管子实体移出关系后，会在 flush 时被删除。它适合父对象私有的子实体。共享对象的删除需单独定义生命周期。
+JPA 的**关联默认加载方式**如下：
+
+- `ManyToOne` 和 `OneToOne` 默认 EAGER，要求关联被加载。
+- `OneToMany` 和 `ManyToMany` 默认 LAZY，提示按需加载。
+- LAZY 允许实现提前加载，EAGER 也允许用额外的次级查询加载。因此，两者都未规定必须使用 join。
+
+`orphanRemoval` 适用于 `OneToOne` 与 `OneToMany`。受管子实体从关系中移除后，会在 flush 时被删除。它适合只属于父对象的子实体。共享对象应单独定义生命周期，随父对象级联 `REMOVE` 会影响其他引用它的对象。
 
 ## 11. 批量修改与上下文同步 {#批量修改与上下文同步}
 
-JPQL bulk DML 直接作用于数据库。已加载对象保持原状态，普通实体版本校验也被绕过。批量 SQL 需自行声明版本条件与版本递增。
+JPQL 是面向实体编写查询的语言，它的批量 update/delete 会直接修改数据库。因为批量语句绕过逐个实体的管理过程，已加载对象仍保持旧值，普通实体版本校验也被绕过。
 
-已有修改先 flush，再执行批量 DML，随后 clear 或 refresh。提前 clear 会丢弃待同步变化。
+若批量修改依赖版本来防止覆盖，就要在语句或业务逻辑中明确版本条件、版本递增和冲突检查。处理已有受管实体时，应按**同步、批量执行和刷新**的顺序进行：
 
-版本冲突可在 flush 或 commit 时暴露。异常后结束事务，在新上下文读取并重试。
+1. 先 flush，把需要保留的内存修改同步到数据库。
+2. 再执行批量 DML，也就是批量更新或删除语句。
+3. 执行后用 `clear` 清理上下文，或用 `refresh` 重新读取需要的实体。
+
+提前 clear 会丢弃尚未同步的修改。`@Version` 冲突则可以到 flush 或 commit 时才暴露，所以应以事务结束结果判断是否成功。出现冲突后，应结束当前事务，在新上下文中重新读取并判断。
 
 ## 12. FlushMode 与查询可见性 {#flushmode-与查询可见性}
 
-事务已加入上下文时，默认 AUTO 模式考虑相关待写变化。查询结果必须反映会影响它的受管实体更新。提供者可通过 flush 或其他方式满足要求。
+修改受管实体后立即查询，需要知道查询能否看到刚才的修改。FlushMode 控制同步时机，默认的 AUTO 会考虑影响查询结果的待写变化。
 
-COMMIT 模式在提交时 flush。提交前，内存修改对查询结果的影响未指定。提供者也允许在其他时机提前 flush。
+在事务内、且持久化上下文已加入事务时，AUTO 要求查询结果反映相关受管实体的更新。实现可以通过 flush，也可以通过其他方式满足要求。
+
+COMMIT 模式要求在提交时 flush，但允许实现提前同步。提交之前，内存修改对查询结果的影响未作规定。若代码需要一个明确的同步点，可以显式调用 flush：
 
 ```java
 entityManager.setFlushMode(FlushModeType.COMMIT);
@@ -132,7 +175,7 @@ customer.rename("new-name");
 entityManager.flush();
 ```
 
-显式 flush 让待写变化先同步到数据库。事务仍需 commit，且后续仍可回滚。
+假设 `customer` 已受管，上面的 flush 会先把新名称同步到数据库。事务仍需 commit 才算提交，在此之前仍可回滚。
 
 ## 13. 面试题 {#9-面试题}
 
@@ -145,20 +188,18 @@ entityManager.flush();
 
 **出现公司**：阿里巴巴、蔚来
 
-**考察重点**
-
-- 说明Persistence Context 与 managed 状态。
-- 说明脏检查、flush 和 commit 的区别。
-- 说明detached、merge 与懒加载边界。
+**考察重点**：说明持久化上下文怎样跟踪受管实体，并区分脏检查、flush 和 commit。能解释脱管、merge 与懒加载之间的关系。
 
 **相关内容**：[持久化上下文](#1-持久化上下文维护实体身份)、[实体状态](#2-实体有四种主要状态)、[脏检查](#4-脏检查在-flush-时同步变化)。
 
 <details>
 <summary>参考回答</summary>
 
-持久化上下文跟踪受管实体，flush 时检查变化并生成 SQL。Hibernate 可用快照或增强机制发现字段变化。
+**JPA 会跟踪受管实体的字段变化，在 flush 时通过脏检查生成更新 SQL，所以修改字段后可以自动更新。**
 
-flush 后事务仍可回滚。对象脱管后，字段变化需通过 merge 复制到受管实例。延迟加载则需要可用的上下文。
+通过 `find`、实体查询或 `persist` 得到的受管对象由持久化上下文管理。Hibernate 可以比较字段快照，也可以用字节码增强记录修改。flush 只把变化同步到数据库，事务随后仍可回滚。
+
+上下文关闭后，对象脱管，后续字段修改只影响 Java 对象。需要保存这些修改时，可以用 `merge` 将状态复制到受管实例，并继续使用返回对象。懒加载也依赖可用上下文，因此接口所需关联应在事务内加载，再转换为 DTO。
 
 </details>
 
@@ -168,17 +209,16 @@ flush 后事务仍可回滚。对象脱管后，字段变化需通过 merge 复�
 
 **出现公司**：暂无已核验的公开来源（本站自测）
 
-**考察重点**
-
-- 说明复制目标与对象身份。
-- 说明managed 与 detached。
+**考察重点**：说明 merge 把状态复制到哪个对象，并区分传入对象与返回对象是否受管。
 
 **相关内容**：[merge 的返回值](#3-merge-返回新的受管实例)。
 
 <details>
 <summary>参考回答</summary>
 
-merge 返回受管目标，传入的 detached 对象仍脱管。目标可复用已有实例，也可新建。传入 managed 对象时，返回该对象。后续修改应作用于返回值。
+**`merge` 返回接收状态的受管实例，传入的脱管对象仍然脱管。**
+
+框架根据实体身份选择复制目标：当前上下文已有该实体时复用它，否则创建受管副本。因此，返回值是否新建取决于上下文。若传入的本来就是受管对象，返回的仍是该对象。后续修改应作用于返回值，才能继续被上下文跟踪。
 
 </details>
 
@@ -188,19 +228,18 @@ merge 返回受管目标，传入的 detached 对象仍脱管。目标可复用�
 
 **出现公司**：暂无已核验的公开来源（本站自测）
 
-**考察重点**
-
-- 说明抓取与生命周期。
-- 说明关联所有权。
+**考察重点**：区分关联的加载要求、操作传播与关系所有权，说明各项配置怎样影响读写。
 
 **相关内容**：[懒加载](#6-懒加载需要可用的持久化上下文)、[关联边界](#关联所有权级联与抓取)、[OSIV](#7-osiv-延长的是上下文不是业务事务)。
 
 <details>
 <summary>参考回答</summary>
 
-EAGER、LAZY 控制加载要求，cascade 控制操作传播。mappedBy 指向关系拥有方字段。关系写入由 owning side 决定，应用需维护内存两侧。
+**EAGER、LAZY 控制关联的加载要求，cascade 控制实体操作传播，mappedBy 标出双向关系的拥有方字段。**
 
-OSIV 延长上下文寿命，原业务事务仍按服务边界结束。响应阶段的查询需独立考虑一致性。
+EAGER 要求关联被加载，实现仍可使用次级查询。LAZY 提示按需加载，也允许实现提前读取。cascade 决定 persist、merge、remove 等操作是否传播到关联对象。关系写入则由拥有方状态决定，应用要同时维护内存中的两侧引用。
+
+OSIV 让响应阶段仍可懒加载，但原业务事务按服务边界结束。因此，响应阶段新增的查询还要单独考虑一致性。
 
 </details>
 
@@ -210,19 +249,18 @@ OSIV 延长上下文寿命，原业务事务仍按服务边界结束。响应阶
 
 **出现公司**：暂无已核验的公开来源（本站自测）
 
-**考察重点**
-
-- 说明批量 DML 绕过上下文。
-- 说明flush、clear 与版本协议。
+**考察重点**：解释批量 DML 为什么绕过受管对象，以及怎样同步上下文并执行版本校验。
 
 **相关内容**：[批量修改](#批量修改与上下文同步)、[乐观锁](#8-乐观锁处理并发覆盖)。
 
 <details>
 <summary>参考回答</summary>
 
-已加载实体保持旧状态，普通版本校验也被绕过。批量 DML 需自行声明版本条件和递增。
+**JPQL 批量更新后，已加载实体和版本号都不会自动同步。**
 
-处理时先 flush 待写变化，再执行 DML，随后 clear 或 refresh。若检测到版本冲突，应结束事务后重新读取。
+批量 DML 直接修改数据库，绕过受管对象的逐项更新和普通版本校验。若需要防止并发覆盖，就要在批量语句或业务逻辑中明确版本条件、递增和冲突检查。
+
+执行前先 flush 需要保留的修改，执行后再 clear 或 refresh。提前 clear 会丢弃尚未同步的字段变化。发生版本冲突后，应结束当前事务，再用新上下文读取并重试。
 
 </details>
 
@@ -232,20 +270,24 @@ OSIV 延长上下文寿命，原业务事务仍按服务边界结束。响应阶
 
 **出现公司**：暂无已核验的公开来源（本站自测）
 
-**考察重点**：查询可见性与同步时机。
+**考察重点**：说明两种 FlushMode 对查询可见性和同步时机分别有哪些要求。
 
 **相关内容**：[FlushMode 与查询可见性](#flushmode-与查询可见性)。
 
 <details>
 <summary>参考回答</summary>
 
-AUTO 要求查询考虑相关待写变化，提供者可通过 flush 实现。COMMIT 在提交时同步，提交前的查询效果未指定。它也允许提前 flush。需要明确同步点时，可显式调用 flush。
+**两种模式都未要求每次查询前一定执行 flush，区别在于查询必须看到哪些变化。**
+
+事务内且上下文已加入事务时，AUTO 要求查询考虑影响结果的待写变化。实现可通过 flush，也可通过其他方式满足要求。COMMIT 要求提交时同步，但提交前的查询能否反映内存修改未作规定，框架也可提前 flush。
+
+需要明确同步点时，可以显式调用 `flush()`。这只把变化写到数据库，事务仍需提交。
 
 </details>
 
 ## 14. 参考资料 {#参考资料}
 
-- [Jakarta Persistence 3.2 Specification](https://jakarta.ee/specifications/persistence/3.2/jakarta-persistence-spec-3.2.html)
-- [Jakarta Persistence：EntityManager](https://jakarta.ee/specifications/persistence/3.2/apidocs/jakarta.persistence/jakarta/persistence/entitymanager)
-- [Hibernate ORM：Persistence Contexts](https://docs.hibernate.org/orm/7.1/userguide/html_single/Hibernate_User_Guide.html#pc)
-- [Spring：OpenEntityManagerInViewFilter](https://docs.spring.io/spring-framework/docs/current/javadoc-api/org/springframework/orm/jpa/support/OpenEntityManagerInViewFilter.html)
+- [Jakarta Persistence 3.1 Specification](https://jakarta.ee/specifications/persistence/3.1/jakarta-persistence-spec-3.1.html)
+- [Jakarta Persistence：EntityManager](https://jakarta.ee/specifications/persistence/3.1/apidocs/jakarta.persistence/jakarta/persistence/EntityManager.html)
+- [Hibernate ORM：Persistence Contexts](https://docs.hibernate.org/orm/6.6/userguide/html_single/Hibernate_User_Guide.html#pc)
+- [Spring：OpenEntityManagerInViewFilter](https://docs.spring.io/spring-framework/docs/6.1.14/javadoc-api/org/springframework/orm/jpa/support/OpenEntityManagerInViewFilter.html)

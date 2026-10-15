@@ -3,19 +3,21 @@ sidebar_position: 1
 knowledge:
   id: basic-knowledge.middleware.kafka-rabbitmq-queue-semantics
   type: concept
+description: "消息队列在生产者与消费者之间保存和传递工作。本文比较 Kafka 分区日志与 RabbitMQ 路由，讲解消费进度、保留和顺序。本文适合准备后端面试的读者。读者可练习按投递语义和业务需求选择队列。读者还可解释不同模型的使用边界。"
+keywords: ["Kafka 分区", "RabbitMQ 路由", "消息投递语义", "消息顺序", "队列选型"]
 ---
 
 # 消息队列
 
-消息队列在生产者与消费者之间保存并传递工作。本文比较 Kafka 4.1 普通消费者组与 RabbitMQ 4.1 队列。范围是日志、路由、保留与选型。确认和失败恢复见[消息可靠性](./message-ack-retry-dead-letter.mdx)。
+消息队列在生产者与消费者之间保存并传递工作。本文比较 Kafka 4.1 普通消费者组与 RabbitMQ 4.1 队列。范围是日志、路由、保留与选型。
 
 ## 1. 面试核心 {#core}
 
-- Kafka 按 partition 保存日志，普通消费组用 offset 管理进度。[卡](#kafka-vs-rabbitmq)
-- RabbitMQ exchange 根据 binding 将消息路由到 queue。
-- Kafka 的日志保留独立于消费进度，compact 按键保留最新状态。[卡](#retention-compaction)
-- 普通消费组内，一个 partition 同时分配给一个消费者。
-- 削峰依赖队列容量与消费余量，持续入流超出消费能力会积压。
+- **Kafka 日志模型。** Kafka 按 partition 保存日志，普通消费组用 offset 管理进度。[卡](#kafka-vs-rabbitmq)
+- **RabbitMQ 路由模型。** RabbitMQ exchange 根据 binding 将消息路由到 queue。
+- **保留与重放。** Kafka 的日志保留独立于消费进度，compact 按键保留最新状态。[卡](#retention-compaction)
+- **消费组分工。** 普通消费组内，一个 partition 同时分配给一个消费者。
+- **削峰容量。** 削峰依赖队列容量与消费余量，持续入流超出消费能力会积压。
 
 ## 2. 消息队列的作用 {#消息队列的作用}
 
@@ -116,7 +118,9 @@ Kafka 可通过分区、批量和顺序 I/O 扩展吞吐。RabbitMQ 便于表达
 <details>
 <summary>参考回答</summary>
 
-Kafka 保存分区日志，消费组用 offset 管理进度。记录可在保留范围内重放。RabbitMQ 用 exchange 和 binding 路由到队列，再逐条投递确认。
+**Kafka 保存分区日志，消费组用 offset 管理进度。**
+
+记录可在保留范围内重放。RabbitMQ 用 exchange 和 binding 路由到队列，再逐条投递确认。
 
 长期事件流和多个独立消费视图适合比较 Kafka。复杂路由和任务确认适合比较 RabbitMQ。选择还要考虑保留、顺序和恢复条件。外部业务副作用需独立设计幂等。
 
@@ -135,7 +139,9 @@ Kafka 保存分区日志，消费组用 offset 管理进度。记录可在保留
 <details>
 <summary>参考回答</summary>
 
-重放范围受日志保留和清理策略约束。delete 可删除过期 segment，即使消费者尚未读取。compact 清理同键旧记录，保留最新状态所需的数据。原 offset 保持不变，因此日志中会出现空洞。
+**重放范围受日志保留和清理策略约束。**
+
+delete 可删除过期 segment，即使消费者尚未读取。compact 清理同键旧记录，保留最新状态所需的数据。原 offset 保持不变，因此日志中会出现空洞。
 
 </details>
 

@@ -3,19 +3,21 @@ sidebar_position: 6
 knowledge:
   id: basic-knowledge.nosql.redis.distributed-lock-conditions-boundaries
   type: concept
+description: "分布式锁协调多个进程对共享资源的操作。本文以 Redis 6、7 讲解原子加锁、所有者校验、租约、续租和过期请求。本文适合准备后端面试的读者。读者可练习推演故障转移与锁失效，并分析 fencing token 和业务幂等的职责。"
+keywords: ["Redis 分布式锁", "SET NX PX", "锁续租", "fencing token", "租约"]
 ---
 
 # 分布式锁
 
-分布式锁协调多个进程对共享资源的并发操作。本文以 Redis 6、7 为基线，讲解所有者、租约与旧请求拒绝。复制故障边界见 [Redis 持久化、复制与集群](./persistence.mdx)。
+分布式锁协调多个进程对共享资源的并发操作。本文以 Redis 6、7 为基线，讲解所有者、租约与旧请求拒绝。
 
 ## 1. 面试核心 {#core}
 
-- `SET key token NX PX ttl` 原子完成锁占用与租约设置。
-- 释放锁时，Lua 原子比较所有者 token 后删除。
-- 租约到期后旧任务仍能运行，资源端需用 fencing token 拒绝旧编号。[卡](#lock-requirements-fencing)
-- 续租要原子校验 token，失去所有权后停止延期。[卡](#lease-renewal)
-- 异步复制会留下锁丢失窗口，业务幂等另行约束重复副作用。
+- **原子获取。** `SET key token NX PX ttl` 原子完成锁占用与租约设置。
+- **所有者校验。** 释放锁时，Lua 原子比较所有者 token 后删除。
+- **过期任务隔离。** 租约到期后旧任务仍能运行，资源端需用 fencing token 拒绝旧编号。[卡](#lock-requirements-fencing)
+- **安全续租。** 续租要原子校验 token，失去所有权后停止延期。[卡](#lease-renewal)
+- **复制与业务边界。** 异步复制会留下锁丢失窗口，业务幂等另行约束重复副作用。
 
 ## 2. 原子加锁与过期 {#原子加锁与过期}
 
@@ -136,7 +138,9 @@ watchdog 通过续租延长锁期限。进程崩溃或失联后，续租会停�
 <details>
 <summary>参考回答</summary>
 
-锁需原子获取、唯一所有者标识和有限租约。`SET key token NX PX ttl` 完成获取与过期设置。释放时用 Lua 原子比较 token 后删除。
+**锁需原子获取、唯一所有者标识和有限租约。**
+
+`SET key token NX PX ttl` 完成获取与过期设置。释放时用 Lua 原子比较 token 后删除。
 
 租约到期后，旧任务仍能恢复运行。资源端需原子拒绝小于当前水位的 fencing token。同一租约的请求可用相同编号，再按请求 ID 去重。编号生成器还需跨故障保持单调性。
 
@@ -155,7 +159,9 @@ watchdog 通过续租延长锁期限。进程崩溃或失联后，续租会停�
 <details>
 <summary>参考回答</summary>
 
-用 Lua 原子比较 token，匹配后才执行 PEXPIRE。返回 0 表示已经失去所有权。请求超时时，应按剩余租约停止发起新操作。旧任务和在途请求还需资源端 fencing 校验。
+**用 Lua 原子比较 token，匹配后才执行 PEXPIRE。**
+
+返回 0 表示已经失去所有权。请求超时时，应按剩余租约停止发起新操作。旧任务和在途请求还需资源端 fencing 校验。
 
 </details>
 

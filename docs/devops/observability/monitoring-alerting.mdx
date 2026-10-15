@@ -3,19 +3,21 @@ sidebar_position: 1
 knowledge:
   id: devops.observability.monitoring-alerting
   type: concept
+description: "监控采集系统状态，告警标识需要处理的事件。本文讲解 Prometheus、服务和资源指标、规则设计与速率计算。本文适合准备 SRE 面试的读者。读者可练习选择可行动的告警条件。读者还可分析分位数聚合、指标类型和统计范围。"
+keywords: ["Prometheus", "PromQL", "告警规则", "Histogram", "监控指标设计"]
 ---
 
 # 监控与告警
 
-监控采集系统状态，告警触发需要处理的事件。本文负责 Prometheus、指标设计和告警规则。信号关联见 [可观测性](../../system-design/production/logs-metrics-traces-correlation.mdx)。目标制定见 [服务等级目标（SLO）](../../system-design/availability/sli-slo-error-budget-capacity-headroom.mdx)。
+监控采集系统状态，告警触发需要处理的事件。本文负责 Prometheus、指标设计和告警规则。
 
 ## 1. 面试核心 {#core}
 
-- Prometheus 采集并计算规则，Alertmanager 管理通知。[卡](#prometheus-architecture)
-- 指标名称与完整标签集共同标识时间序列。
-- Counter 速率应先按序列计算，再跨实例求和。[卡](#histogram-aggregation)
-- 服务指标包含延迟、流量、错误与饱和度。[卡](#what-to-monitor)
-- `for` 约束持续触发时间，分组和抑制减少重复通知。[卡](#alert-design)
+- **采集与通知。** Prometheus 采集并计算规则，Alertmanager 管理通知。[卡](#prometheus-architecture)
+- **时间序列身份。** 指标名称与完整标签集共同标识时间序列。
+- **跨实例聚合。** Counter 速率应先按序列计算，再跨实例求和。[卡](#histogram-aggregation)
+- **服务指标。** 服务指标包含延迟、流量、错误与饱和度。[卡](#what-to-monitor)
+- **告警收敛。** `for` 约束持续触发时间，分组和抑制减少重复通知。[卡](#alert-design)
 
 ## 2. Prometheus 的组成 {#prometheus-的组成}
 
@@ -141,7 +143,9 @@ sum by (job) (rate(http_requests_total[5m]))
 <details>
 <summary>参考回答</summary>
 
-Prometheus Server 发现并抓取目标，存储时序并计算规则。应用埋点或 Exporter 提供指标。Alertmanager 管理分组、去重、静默、抑制与通知。
+**Prometheus Server 发现并抓取目标，存储时序并计算规则。**
+
+应用埋点或 Exporter 提供指标。Alertmanager 管理分组、去重、静默、抑制与通知。
 
 服务发现提供目标，relabel 筛选并改写标签。Operator 可用 ServiceMonitor 或 PodMonitor 描述采集。抓取失败会产生 up=0，目标消失还需缺失检测。
 
@@ -172,7 +176,9 @@ Zabbix 提供主机模板及主动、被动采集。Prometheus 用标签与 Prom
 <details>
 <summary>参考回答</summary>
 
-服务应覆盖延迟、流量、错误和饱和度。再用 USE 方法检查 CPU、内存、磁盘与网络。
+**服务应覆盖延迟、流量、错误和饱和度。**
+
+再用 USE 方法检查 CPU、内存、磁盘与网络。
 
 代理服务重点看上游分布、连接数与建立速率。还需检查 TLS 证书、文件描述符和超时。业务成功率与外部拨测用于验证用户实际结果。
 
@@ -203,7 +209,9 @@ Zabbix 提供主机模板及主动、被动采集。Prometheus 用标签与 Prom
 <details>
 <summary>参考回答</summary>
 
-告警应对应用户影响或需要处理的容量风险。阈值结合 SLO、基线与处置时限设定。
+**告警应对应用户影响或需要处理的容量风险。**
+
+阈值结合 SLO、基线与处置时限设定。
 
 瞬时尖峰可用 for 过滤。恢复抖动可用 keep_firing_for 缓解。双阈值迟滞需要额外状态逻辑，for 本身无法实现。
 
@@ -224,7 +232,11 @@ Alertmanager 按标签分组，并抑制关联衍生告警。静默用于计划�
 <details>
 <summary>参考回答</summary>
 
-实例 P99 的平均值无法表示整体 P99。经典 Histogram 应先 rate，再按 job 和 le 求和。最后用 histogram_quantile 计算。Summary 的分位数无法这样聚合，但 sum 和 count 可以。错误率应使用错误总速率除以请求总速率。
+**整体 P99 要从聚合后的 Histogram 计算，错误率要用错误总速率除以请求总速率。**
+
+直接平均各实例 P99 会丢失请求数量和延迟分布信息。
+
+经典 Histogram 先按序列计算 `rate`，再按 `job` 和 `le` 求和，最后用 `histogram_quantile` 计算分位数。Summary 的分位数无法这样合并，但 `sum` 和 `count` 可以聚合。
 
 </details>
 
@@ -241,7 +253,9 @@ Alertmanager 按标签分组，并抑制关联衍生告警。静默用于计划�
 <details>
 <summary>参考回答</summary>
 
-up=0 对应仍被发现但抓取失败的目标。目标被移除后，up 序列会消失。缺失检测需结合 absent_over_time 和预期目标信息。Pushgateway 则保留推送序列，直到显式删除。旧成功指标会掩盖任务停止，应检查完成时间。
+**up=0 对应仍被发现但抓取失败的目标。**
+
+目标被移除后，up 序列会消失。缺失检测需结合 absent_over_time 和预期目标信息。Pushgateway 则保留推送序列，直到显式删除。旧成功指标会掩盖任务停止，应检查完成时间。
 
 </details>
 

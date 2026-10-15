@@ -4,6 +4,8 @@ draft: false
 knowledge:
   id: system-design.distributed-system.primary-backup-replication
   type: concept
+description: "主备复制由主节点确定写入顺序并传播到备节点。本文讲解确认时机、日志追赶、快照、故障切换与读取新鲜度。本文适合准备分布式面试的读者。读者可练习推演复制延迟和节点恢复。读者可区分数据已写入、已复制与可读取的状态。"
+keywords: ["Primary Backup", "主从复制", "日志复制", "复制延迟", "快照恢复"]
 ---
 
 import stateTransferImg from './assets/primary_backup_replication/state_transfer.png';
@@ -11,15 +13,15 @@ import rsmImg from './assets/primary_backup_replication/rsm.png';
 
 # 主备复制
 
-主备复制由主节点确定写入顺序，再向备节点传播。本文负责确认时机、日志追赶、快照与读取新鲜度。选举与提交规则见[Raft](./raft-election-log-replication.mdx)。
+主备复制由主节点确定写入顺序，再向备节点传播。本文负责确认时机、日志追赶、快照与读取新鲜度。
 
 ## 1. 面试核心 {#core}
 
-- 主节点排序写入，备节点按日志顺序应用确定性变化。
-- 异步本地确认存在未复制窗口，永久失去主节点时会丢数据。
-- 副本收到、持久化和应用日志是三个不同阶段。[卡](#replication-ack-apply)
-- 新副本加载一致快照，再追赶快照位置之后的日志。
-- 安全切换需保留已确认写入，并隔离旧主的写入能力。[卡](#failover-without-loss)
+- **写入顺序。** 主节点排序写入，备节点按日志顺序应用确定性变化。
+- **异步确认窗口。** 异步本地确认存在未复制窗口，永久失去主节点时会丢数据。
+- **复制进度阶段。** 副本收到、持久化和应用日志是三个不同阶段。[卡](#replication-ack-apply)
+- **副本初始化。** 新副本加载一致快照，再追赶快照位置之后的日志。
+- **安全切换。** 安全切换需保留已确认写入，并隔离旧主的写入能力。[卡](#failover-without-loss)
 
 ## 2. 写入顺序 {#写入顺序}
 
@@ -124,9 +126,11 @@ PostgreSQL 18 配置同步备库后，synchronous_commit 有以下区别：
 <details>
 <summary>参考回答</summary>
 
-保留已确认写入，需要把确认条件与新主选择绑定。写入若只在旧主本地确认，异步副本提升就存在丢失窗口。共识复制通过安全提交与选举规则保留已提交前缀。
+**新主必须保留已确认写入，并隔离旧主的写入能力，才能同时避免数据丢失和双主修改。**
 
-新主接管前还需隔离旧写入权。副本通过快照与日志追平。切换后核对已确认请求、旧连接和业务状态。实际保证应按所用复制协议判断。
+写入确认条件必须与新主选择规则配套。只在旧主本地确认的异步复制存在丢失窗口；共识复制则通过安全提交和选举保留已提交前缀。
+
+副本通过快照与日志追平，新主接管前隔离旧写入权。切换后核对已确认请求、旧连接和业务状态，实际保证以所用复制协议为准。
 
 </details>
 
@@ -143,7 +147,9 @@ PostgreSQL 18 配置同步备库后，synchronous_commit 有以下区别：
 <details>
 <summary>参考回答</summary>
 
-同步确认可只等待日志持久化，备库尚未回放时仍会读到旧值。PostgreSQL 18 配置同步备库后，`synchronous_commit=on` 等待远端 WAL 持久化。`synchronous_commit=remote_apply` 还等待事务回放。读取其他异步副本时，仍需等待其追平。
+**同步确认可只等待日志持久化，备库尚未回放时仍会读到旧值。**
+
+PostgreSQL 18 配置同步备库后，`synchronous_commit=on` 等待远端 WAL 持久化。`synchronous_commit=remote_apply` 还等待事务回放。读取其他异步副本时，仍需等待其追平。
 
 </details>
 

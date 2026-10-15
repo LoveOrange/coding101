@@ -3,117 +3,152 @@ sidebar_position: 22
 knowledge:
   id: basic-knowledge.java.jvm.cpu-high-diagnosis
   type: concept
+description: "CPU 使用率反映进程消耗处理器时间的程度。本文讲解高 CPU 线程定位、连续线程栈、性能剖析与 GC 分配分析。本文适合准备 Java 排障面试的读者。读者可练习从进程定位到调用路径，并区分业务、编译和本地执行的开销。"
+keywords: ["Java CPU 飙高", "高 CPU 排查", "CPU profile", "热点线程"]
 ---
 
 # CPU 使用率
 
-CPU 使用率表示进程消耗处理器时间的程度。本文负责从进程、线程到调用路径定位高 CPU。诊断工具的选择见[JVM 诊断](./diagnostic-tools-evidence.mdx)。
+CPU 使用率表示进程消耗处理器时间的程度。本文先确认实例是否受到 CPU 限制，再从高 CPU 线程定位到调用路径。随后区分业务计算、GC、JIT 编译和本地代码的开销，最后说明如何验证修复。
 
 ## 1. 面试核心 {#core}
 
-- Linux 平台线程的 TID 对应线程转储中的十六进制 `nid`。[卡](#high-cpu-to-code)
-- CPU profile 的样本占比反映调用路径的 CPU 消耗分布。[卡](#high-cpu-no-loop)
-- cgroup v2 的 `cpu.max` 用配额与周期约束 CPU 带宽。[卡](#cpu-quota-throttling)
-- Java `RUNNABLE` 状态包括计算与部分 native I/O。
+- **线程标识对应。** 同一 PID 命名空间内，Linux 平台线程的十进制 TID 转为十六进制后，对应线程转储中的 `nid`。[卡](#high-cpu-to-code)
+- **CPU 采样。** CPU profile 通过一段时间内的采样占比，估计各调用路径消耗 CPU 的比例。[卡](#high-cpu-no-loop)
+- **容器配额。** cgroup v2 的 `cpu.max` 规定每个周期可用的 CPU 时间，容器用完配额后会被节流。[卡](#cpu-quota-throttling)
+- **状态与实际消耗。** Java `RUNNABLE` 状态包含实际计算和部分 native I/O，判断 CPU 消耗还需要线程 CPU 时间。
 
 ## 2. CPU 饱和程度 {#确认范围与饱和程度}
 
-先确认受影响实例、吞吐与延迟。再对照流量、发布和定时任务的时间。
+排查的第一步是确认 CPU 是否已经限制了服务处理能力。先对齐故障时间，再检查以下**范围与资源指标**：
 
-处理器指标要区分 user、system 与 iowait。容器还需结合 CPU 配额和 throttling。按单核计数时，100% 表示占用一个逻辑核。
+- 确认问题发生在单个实例，还是整个集群。
+- 比较 CPU 升高前后的吞吐和延迟，观察处理能力是否已经受限。
+- 对照流量、发布和定时任务的时间，寻找计算量变化的来源。
+- 区分 user、system 和 iowait。user 是用户态执行时间，system 是内核态执行时间，iowait 是 CPU 空闲且存在待完成 I/O 的时间。
+- 在容器中比较 CPU 使用量与配额，并检查 throttling，也就是配额用尽后的节流。
+
+按单核计数时，100% 表示占用一个逻辑核。对于只有 1 CPU 配额的容器，这已经用完可用带宽；对于多核主机，则仍需结合核数和运行队列判断。
 
 ### 2.1 容器配额与节流 {#容器配额与节流}
 
-Linux cgroup v2 的 `cpu.max` 格式为配额与周期。两个值以微秒计：
+容器会受到自己的 CPU 配额限制，即使主机还有空闲核也会被节流。Linux 用 cgroup 对进程分组并限制资源，cgroup v2 的 `cpu.max` 依次记录配额与周期。两个值都以微秒计：
 
 ```text
 200000 100000
 ```
 
-这表示每 100ms 最多使用 200ms CPU 时间。对应平均 2 个 CPU 的带宽。多个线程能提前用完配额，随后进入节流。
+这表示每 100ms 最多使用 200ms CPU 时间，对应平均 2 个 CPU 的带宽。多个线程并行运行时，可以在周期前段就用完配额。剩余时间要等待下个周期，因此请求会出现额外延迟。
 
-在目标 cgroup 目录读取 `cpu.stat`。比较 `nr_throttled` 与 `throttled_usec` 的区间增量。主机仍有空闲核时，容器也可因自身配额受限。
+在目标 cgroup 目录读取 `cpu.stat`，比较故障时间内两个计数的增量。`nr_throttled` 表示发生节流的次数，`throttled_usec` 记录节流时间。把增量与请求长尾对齐，可以判断配额是否影响了延迟。
 
-配额不足时应减少每请求 CPU，或评估扩容。增加业务线程会加剧配额竞争。
+配额不足时，应减少每个请求的计算量，或评估扩容。此时增加业务线程会让更多线程争用同一份配额，加剧等待。
 
 ## 3. 高 CPU 线程 {#定位高-cpu-线程}
 
-Linux 平台线程可用以下命令观察：
+确认进程 CPU 高后，需要找出实际消耗 CPU 的线程。Linux 平台线程可以用以下命令连续观察：
 
 ```bash
 top -H -p <pid>
 pidstat -t -p <pid> 1
 ```
 
-记录持续高 CPU 的 TID，再转换为十六进制：
+记录持续高 CPU 的线程 ID（TID），避免只根据一次瞬时排序作判断。再把十进制 TID 转为十六进制，并采集线程转储：
 
 ```bash
 printf '%x\n' <tid>
 jcmd <pid> Thread.print -l > threads.txt
 ```
 
-在转储中匹配 `nid=0x...`。TID 与转储需来自同一 PID 命名空间。还应在相近时间采集，避免线程退出或 ID 复用。
+在转储中查找对应的 `nid=0x...`，就能看到该线程的 Java 调用栈。TID 与转储需要来自同一 PID 命名空间，也就是使用同一套进程和线程编号。采集时间还要相近，避免线程退出或 ID 被复用后匹配错误。
 
-虚拟线程会在载体线程之间切换。一个 OS TID 无法固定对应一个虚拟线程。此时应结合支持虚拟线程的 JFR 与分析工具。
+Java 21 的虚拟线程由载体线程承载执行，并会在不同载体之间切换。因此，一个 OS TID 无法固定对应一个虚拟线程。此时要结合支持虚拟线程的 JFR 与分析工具，继续定位具体任务。
 
 ## 4. 多份线程栈 {#多份线程栈}
 
-间隔 3—10 秒采集数份线程栈。检查同一线程是否持续计算，或只偶然经过某方法。
+单份栈只能显示线程在采集瞬间执行到哪里。间隔 3—10 秒采集数份，可以继续判断它是长期计算，还是偶然经过某个方法。重点观察以下**线程行为**：
 
-相同栈帧反复出现是热点线索。持续计算也可在多个方法间推进。因此，确认 CPU 占比还需采样 profile。
+- 同一高 CPU 线程是否反复停在业务循环或正则匹配中。
+- 调用栈是否持续推进，但一直集中在同一算法或调用树。
+- 热点是否属于 GC Worker、CompilerThread 或 VM Thread。它们分别承担垃圾回收、JIT 编译或 JVM 内部工作。
+- 是否有大量可运行线程，伴随频繁的上下文切换。
 
-GC Worker、CompilerThread 与业务线程应分开统计。线程状态需与 OS 线程 CPU 一起解释。
+相同栈帧反复出现，可以作为死循环或重复计算的线索。栈不断变化也可能持续消耗 CPU，因此还需要用一段时间的采样统计占比。分析时将业务、GC 和编译线程分开，并对照 OS 线程 CPU 时间。
 
 ## 5. CPU profile {#cpu-profile}
 
-使用 async-profiler 采样 30 秒：
+CPU profile 在一段时间内反复采样正在执行的调用栈，用来估计 CPU 时间花在哪里。线程栈没有明显循环时，可以用 async-profiler 采样 30 秒：
 
 ```bash
 asprof -e cpu -d 30 -f cpu.html <pid>
 ```
 
-火焰图宽度表示采样占比。叶子表示采样时的执行位置，父节点包含子调用成本。应沿热点路径定位请求或任务入口。
+火焰图按调用关系展示样本，宽度表示采样占比。叶子是采样时的执行位置，父节点则包含子调用的成本。沿着宽的调用路径向上查找，可以把热点对应到请求、消息或定时任务入口。
 
-典型热点包括排序、压缩、序列化与正则回溯。异常堆栈填充和 CAS 重试也会消耗 CPU。CPU profile 的宽度不表示单次调用耗时。
+常见的**CPU 热点**包括：
+
+- 序列化、压缩、加密和大集合排序带来的计算。
+- 无终止循环或指数级算法造成的重复工作。
+- 正则表达式反复尝试匹配路径，产生灾难性回溯。
+- 大量异常构造与堆栈填充。
+- 竞争自旋与高频 CAS 重试。
+- JNI 本地调用或内核系统调用。
+
+CPU profile 的宽度不表示单次调用耗时。一个很短但被调用数百万次的方法，也能占据很宽的区域。
 
 ## 6. GC 与分配 {#gc-与分配}
 
-GC 线程消耗高时，应检查分配率与存活对象量：
+GC 线程消耗高，说明处理器时间花在回收上，还要继续查明回收工作为何增加。先检查分配率、存活对象量和堆配置，再用统计与 JFR 关联变化：
 
 ```bash
 jstat -gcutil <pid> 1000
 jcmd <pid> JFR.start name=cpu settings=profile duration=60s filename=cpu.jfr
 ```
 
-分配峰值会增加回收工作。无界保留则增加复制、标记与空间压力。阶段诊断见[GC 停顿分析](./gc-logs-jfr-pauses.mdx)。
+分配率表示单位时间创建对象的总量。分配峰值会更快消耗可用空间，增加回收频率。live set 是回收后仍存活的对象总量，无界保留会让它持续增长，增加复制、标记和空间压力。
+
+对照 GC 日志时，要检查回收频率、GC CPU、回收后堆占用与分配停滞。若压力来自大量临时对象或无界保留，应优先修复这些来源，再评估 GC 线程配置。
+
+各阶段的诊断方法见[GC 停顿分析](./gc-logs-jfr-pauses.mdx)。
 
 ## 7. JIT、类加载与 native 时间 {#jit类加载与-native-时间}
 
-发布后的预热会产生 JIT 和类加载工作。可用 JFR 编译事件与 `jcmd <pid> Compiler.queue` 核对。
+CPU 还会消耗在 JVM 和本地代码中。发布后需要加载类，并由 JIT 把热点字节码编译成本地机器码，所以预热期间 CPU 会升高。可以对照 JFR 的 Compilation、Class Load 事件，以及 `jcmd <pid> Compiler.queue` 的编译队列。
 
-system CPU 高时，继续检查系统调用与上下文切换。缺页、线程创建和 native 库也需纳入分析。async-profiler 的 native/kernel 栈依赖平台权限与符号。
+system CPU 高时，需要继续检查**内核与本地开销**：
 
-Java 栈中的一个 native 方法可包含大量本地工作。展开本地栈后，才能继续区分实际热点。
+- 线程创建和上下文切换是否频繁。
+- 网络或文件系统调用是否密集。
+- 是否存在缺页和内存压力。缺页指访问的页面尚未建立映射或尚未驻留，需要系统补充处理。
+- native 库或诊断 agent 是否消耗了大量 CPU。
+
+Java 栈中的一个 native 方法可以包含大量本地工作。使用 async-profiler 的 native/kernel 栈，或系统 `perf`，可以继续展开调用路径。能否采集和解析这些栈，取决于平台权限与可用符号。
 
 ## 8. 修复验证 {#修复验证}
 
-修复前后应使用相近流量与请求分布。比较每请求 CPU、吞吐、P99 和错误率。再检查分配率、GC CPU 与 throttling。
+修复需要证明同样的业务负载消耗了更少资源，且服务质量保持稳定。因此，前后应使用相近的流量和请求分布，比较以下**CPU 成本与服务质量指标**：
 
-若使用缓存减少计算，还需验证容量和一致性。仅瞬时 CPU 下降不足以证明修复有效。
+- 每请求 CPU 或每秒累计 CPU 时间是否下降。
+- 吞吐、P99、超时率和错误率是否改善。P99 是 99% 请求都不超过的响应时间。
+- 分配率和 GC CPU 是否变化。
+- 线程数、上下文切换和 throttling 是否下降。
+- 热点调用树占比是否符合预期。
+
+如果通过缓存减少计算，还需要验证内存容量和数据一致性。CPU 下降却显著增加延迟或内存占用时，应继续评估这次修改的代价。
 
 ## 9. 常见问题 {#常见问题}
 
 ### 9.1 Load Average 与 CPU 使用率 {#load-average-与-cpu-使用率}
 
-Linux Load Average 包含可运行与不可中断等待任务。高 Load 需结合 CPU、运行队列和 I/O 判断。
+Linux Load Average 统计可运行任务和不可中断等待任务，所以 I/O 等待也能让它升高。判断 CPU 是否饱和，需要结合 CPU 使用率、运行队列、iowait 和具体线程。
 
 ### 9.2 线程数量与 CPU 消耗 {#线程数量与-cpu-消耗}
 
-WAITING 线程主要占用栈等资源。大量可运行线程会增加调度与切换成本。应比较线程 CPU 时间和状态。
+处于 WAITING 的线程几乎不执行计算，但平台线程仍占用栈等资源。大量可运行线程则会增加调度和切换成本。因此，判断线程多是否造成高 CPU，要同时看线程状态和 CPU 时间。
 
 ### 9.3 RUNNABLE 与实际计算 {#runnable-与实际计算}
 
-Java RUNNABLE 包含部分 native I/O。需要结合 OS 线程 CPU 和调用栈判断。耗时路径还可通过 wall-clock profile 分析。
+Java RUNNABLE 包含部分 native I/O，所以看到这一状态还需要对照 OS 线程 CPU 和多份调用栈。若要分析请求的等待时间，可以使用 wall-clock profile。它采样经过的实际时间，包含线程等待和睡眠。
 
 ## 10. 面试题 {#面试题}
 
@@ -126,16 +161,23 @@ Java RUNNABLE 包含部分 native I/O。需要结合 OS 线程 CPU 和调用栈�
 
 **出现公司**：淘天、美团
 
-**考察重点**：关联容器配额、线程 CPU 与热点调用路径。
+**考察重点**：从容器和进程定位到线程，再用 TID、线程栈与 CPU profile 找到热点调用路径。
 
 **相关内容**：[CPU 饱和程度](#确认范围与饱和程度)至[JIT、类加载与 native 时间](#jit类加载与-native-时间)。
 
 <details>
 <summary>参考回答</summary>
 
-先确认配额、user/system 与 throttling。用 `top -H -p <pid>` 找持续高 CPU 的 TID。将 TID 转成十六进制，在转储中匹配 nid。
+**先确认 CPU 是否饱和，再定位持续高 CPU 的线程，最后用调用栈和采样把它对应到代码。**
 
-采集多份 `jcmd <pid> Thread.print -l`。再用 CPU profile 统计业务、GC、JIT 与 native 热点。修复后比较每请求 CPU、P99 和节流情况。
+具体可以沿着**进程、线程和调用路径**排查：
+
+1. 确认受影响实例、容器配额，以及 user、system 和 throttling 的变化。
+2. 用 `top -H -p <pid>` 或 `pidstat -t` 找持续高 CPU 的 TID。把它转为十六进制，在同一命名空间的转储中匹配 `nid`。
+3. 间隔采集多份 `jcmd <pid> Thread.print -l`，初步区分业务、GC、JIT 和 native 工作。
+4. 用短时 CPU profile 统计热点调用树，再与 GC、编译事件和发布时间线关联。
+
+修复后，在相近负载下比较每请求 CPU、P99、分配率和节流情况，确认收益能够持续。
 
 </details>
 
@@ -147,16 +189,18 @@ Java RUNNABLE 包含部分 native I/O。需要结合 OS 线程 CPU 和调用栈�
 
 **出现公司**：阿里巴巴
 
-**考察重点**：用采样占比区分业务、GC、JIT 与 native 热点。
+**考察重点**：解释线程快照为何难以反映 CPU 占比，并用采样区分业务、GC、JIT 和 native 热点。
 
 **相关内容**：[多份线程栈](#多份线程栈)至[JIT、类加载与 native 时间](#jit类加载与-native-时间)。
 
 <details>
 <summary>参考回答</summary>
 
-下一步采 CPU profile，统计热点调用树。线程在多个方法间推进时，快照难以反映时间占比。还需关联 GC、JIT 与类加载事件。
+**下一步采集 CPU profile，找出占比最高的调用树。**
 
-system CPU 高时，检查上下文切换和系统调用。native 热点需结合本地栈继续定位。
+线程可以一直在多个方法间推进，一份快照难以反映累计计算量。因此，需要把采样结果与 GC、JIT 和类加载事件关联，区分业务工作和 JVM 内部工作。
+
+若 system CPU 高，再检查上下文切换、系统调用和缺页。若热点集中在 native 方法中，则展开 native/kernel 栈，继续定位实际执行的函数。
 
 </details>
 
@@ -166,21 +210,25 @@ system CPU 高时，检查上下文切换和系统调用。native 热点需结�
 
 **出现公司**：暂无已核验的公开来源（本站自测）
 
-**考察重点**：cgroup v2 配额周期与区间统计。
+**考察重点**：解释配额如何被并发线程提前用完，并用节流增量验证请求长尾的原因。
 
 **相关内容**：[容器配额与节流](#容器配额与节流)。
 
 <details>
 <summary>参考回答</summary>
 
-容器可因自己的 CPU 配额用尽而被节流。`cpu.max` 为 `200000 100000` 时，平均带宽为 2 个 CPU。并发线程可在周期前段用完配额。应比较 `cpu.stat` 的节流增量与请求长尾。随后评估每请求计算量和配额容量。
+**容器会因自己的 CPU 配额用尽而被节流，与主机是否还有空闲核是两件事。**
+
+`cpu.max` 为 `200000 100000` 时，每 100ms 可用 200ms CPU 时间，平均带宽为 2 个 CPU。
+
+多个线程可以在周期前段用完这份配额，随后等待下一周期，导致请求长尾。可以将 `cpu.stat` 中 `nr_throttled` 和 `throttled_usec` 的增量与延迟对齐。确认关联后，再评估减少每请求计算量或增加配额。
 
 </details>
 
 ## 11. 参考资料 {#参考资料}
 
-- [Oracle：Troubleshoot Process Hangs and Loops](https://docs.oracle.com/en/java/javase/26/troubleshoot/troubleshoot-process-hangs-and-loops.html)
-- [Oracle：Diagnostic Tools](https://docs.oracle.com/en/java/javase/26/troubleshoot/diagnostic-tools.html)
+- [Oracle：Troubleshoot Process Hangs and Loops](https://docs.oracle.com/en/java/javase/21/troubleshoot/troubleshoot-process-hangs-and-loops.html)
+- [Oracle：Diagnostic Tools](https://docs.oracle.com/en/java/javase/21/troubleshoot/diagnostic-tools.html)
 - [async-profiler](https://github.com/async-profiler/async-profiler)
 - [Linux Kernel：Control Group v2 CPU](https://docs.kernel.org/admin-guide/cgroup-v2.html)
 - [async-profiler：Profiling Modes](https://github.com/async-profiler/async-profiler/blob/master/docs/ProfilingModes.md)

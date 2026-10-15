@@ -3,19 +3,21 @@ sidebar_position: 4
 knowledge:
   id: devops.linux.processes-signals
   type: concept
+description: "进程管理协调程序启动、停止与子进程回收。本文讲解用户态和内核态、进程状态、信号、后台运行及 systemd。本文适合准备 Linux 面试的读者。读者可练习分析父子关系和退出行为。读者还可检查服务依赖、重启策略与终止方式。"
+keywords: ["Linux 进程状态", "SIGTERM 与 SIGKILL", "systemd", "僵尸进程", "信号处理"]
 ---
 
 # 进程管理与信号
 
-进程管理协调程序启动、停止和子进程回收。本文负责特权状态、进程状态、信号与 systemd 托管。线程模型见 [进程与线程](../../basic-knowledge/operating-system/processes-threads.mdx)。Pod 停止过程见 [Pod：生命周期、探针与资源](../kubernetes/pods.mdx#优雅终止与流量排空)。
+进程管理协调程序启动、停止和子进程回收。本文负责特权状态、进程状态、信号与 systemd 托管。
 
 ## 1. 面试核心 {#core}
 
-- 系统调用、中断和异常都可使 CPU 进入内核执行路径。[卡](#user-kernel-mode)
-- 僵尸进程已退出，父进程通过 wait 系列接口回收状态。[卡](#zombie-orphan)
-- 孤儿进程由最近的 subreaper 或所在 PID 空间的 init 接管。[卡](#zombie-orphan)
-- SIGTERM 可捕获处理，SIGKILL 和 SIGSTOP 无法捕获、屏蔽或忽略。[卡](#signal-delivery)
-- systemd 的 After 指定顺序，Wants 声明弱依赖。[卡](#systemd-ordering)
+- **进入内核。** 系统调用、中断和异常都可使 CPU 进入内核执行路径。[卡](#user-kernel-mode)
+- **僵尸回收。** 僵尸进程已退出，父进程通过 wait 系列接口回收状态。[卡](#zombie-orphan)
+- **孤儿接管。** 孤儿进程由最近的 subreaper 或所在 PID 空间的 init 接管。[卡](#zombie-orphan)
+- **信号处理。** SIGTERM 可捕获处理，SIGKILL 和 SIGSTOP 无法捕获、屏蔽或忽略。[卡](#signal-delivery)
+- **服务依赖。** systemd 的 After 指定顺序，Wants 声明弱依赖。[卡](#systemd-ordering)
 
 ## 2. 用户态与内核态 {#用户态与内核态}
 
@@ -136,7 +138,9 @@ network-online.target 的效果取决于等待网络的实现。它只描述启�
 <details>
 <summary>参考回答</summary>
 
-用户态与内核态拥有不同的执行和访问权限。用户程序通过自己的虚拟地址空间访问数据。内核执行受特权保护的系统操作。
+**用户态与内核态拥有不同的执行和访问权限。**
+
+用户程序通过自己的虚拟地址空间访问数据。内核执行受特权保护的系统操作。
 
 系统调用、中断和异常可进入内核执行路径。进入内核涉及上下文保存，但未必发生线程切换。原线程完成系统调用后可直接继续运行。协程切换可由用户态运行时完成。它发起系统调用时仍会进入内核。
 
@@ -162,7 +166,9 @@ network-online.target 的效果取决于等待网络的实现。它只描述启�
 <details>
 <summary>参考回答</summary>
 
-僵尸已退出但尚未回收，孤儿的父进程先退出。wait 系列接口读取退出信息并完成回收。孤儿由最近的 subreaper 或 PID 空间的 init 接管。
+**僵尸已退出但尚未回收，孤儿的父进程先退出。**
+
+wait 系列接口读取退出信息并完成回收。孤儿由最近的 subreaper 或 PID 空间的 init 接管。
 
 僵尸已经结束执行，发送 SIGKILL 无法再次终止它。应定位父进程并修复回收逻辑。结束父进程后，仍需收养者执行回收。容器 PID 1 若缺少该能力，可使用轻量 init。
 
@@ -188,7 +194,9 @@ network-online.target 的效果取决于等待网络的实现。它只描述启�
 <details>
 <summary>参考回答</summary>
 
-长期服务适合由 systemd 监督运行。临时任务可用 nohup，交互任务可用 tmux。
+**长期服务适合由 systemd 监督运行。**
+
+临时任务可用 nohup，交互任务可用 tmux。
 
 `systemctl status app` 查看服务与主进程。`systemctl cat app` 查看 ExecStart 及覆盖配置。需要确认实际程序时，可进一步核对主进程信息。
 
@@ -209,7 +217,9 @@ network-online.target 的效果取决于等待网络的实现。它只描述启�
 <details>
 <summary>参考回答</summary>
 
-进程可处于尚未结束的内核等待，或已经变成僵尸。应先用 ps 确认状态，再检查等待点或父进程。普通 SIGCHLD 会合并多个待决通知。处理函数应循环调用 waitpid，直到没有可回收的子进程。
+**进程可处于尚未结束的内核等待，或已经变成僵尸。**
+
+应先用 ps 确认状态，再检查等待点或父进程。普通 SIGCHLD 会合并多个待决通知。处理函数应循环调用 waitpid，直到没有可回收的子进程。
 
 </details>
 
@@ -226,7 +236,9 @@ network-online.target 的效果取决于等待网络的实现。它只描述启�
 <details>
 <summary>参考回答</summary>
 
-After 只规定顺序，Wants 或 Requires 才声明依赖。需要依赖先启动时，应组合配置。daemon-reload 重读 systemd 单元文件。reload 则要求服务重读自己的配置。应用是否支持 reload 需查看单元定义。
+**After 只规定顺序，Wants 或 Requires 才声明依赖。**
+
+需要依赖先启动时，应组合配置。daemon-reload 重读 systemd 单元文件。reload 则要求服务重读自己的配置。应用是否支持 reload 需查看单元定义。
 
 </details>
 

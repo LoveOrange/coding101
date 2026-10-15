@@ -3,19 +3,21 @@ sidebar_position: 1
 knowledge:
   id: system-design.security.authentication-authorization-trust-boundaries
   type: concept
+description: "认证确定请求主体，授权判断资源访问权限。本文讲解信任边界、RBAC、ABAC、租户隔离与权限撤销。本文适合准备应用安全面试的读者。读者可练习划分网关和服务的检查职责。读者还可用审计信息解释身份、资源和操作之间的关系。"
+keywords: ["Authentication", "Authorization", "RBAC", "ABAC", "多租户授权"]
 ---
 
 # 认证与授权
 
-认证确认请求主体，授权判断资源访问权限。本文负责信任边界、权限模型和多租户隔离。登录协议见 [Session、JWT、OAuth 2.0 与 OIDC](./session-jwt-oauth-oidc.mdx)。
+认证确认请求主体，授权判断资源访问权限。本文负责信任边界、权限模型和多租户隔离。
 
 ## 1. 面试核心 {#core}
 
-- 认证确认主体身份，授权结合资源、动作和上下文判定权限。[卡](#horizontal-privilege-escalation)
-- RBAC 按角色分配权限，ABAC 按属性计算权限。
-- 资源服务通过可信租户和资源归属约束数据访问。
-- 权限缓存的撤销窗口由失效机制和 TTL 共同决定。[卡](#authorization-revocation)
-- ReBAC 根据用户、群组与资源之间的关系计算权限。[卡](#relationship-authorization)
+- **认证与授权。** 认证确认主体身份，授权结合资源、动作和上下文判定权限。[卡](#horizontal-privilege-escalation)
+- **角色与属性。** RBAC 按角色分配权限，ABAC 按属性计算权限。
+- **资源归属。** 资源服务通过可信租户和资源归属约束数据访问。
+- **权限撤销。** 权限缓存的撤销窗口由失效机制和 TTL 共同决定。[卡](#authorization-revocation)
+- **关系授权。** ReBAC 根据用户、群组与资源之间的关系计算权限。[卡](#relationship-authorization)
 
 ## 2. 信任边界 {#信任边界}
 
@@ -114,7 +116,9 @@ token 内固化的角色会持续到该 token 失效。令牌撤销机制见 [JW
 <details>
 <summary>参考回答</summary>
 
-网关的身份校验没有覆盖订单归属时，就会发生越权。攻击者修改订单 ID，服务若直接查询就会返回他人数据。
+**网关的身份校验没有覆盖订单归属时，就会发生越权。**
+
+攻击者修改订单 ID，服务若直接查询就会返回他人数据。
 
 领域服务应校验租户、所有者和具体动作。查询同时绑定可信 tenant 与资源标识。内部调用与异步消费也采用同一策略。
 
@@ -133,7 +137,9 @@ token 内固化的角色会持续到该 token 失效。令牌撤销机制见 [JW
 <details>
 <summary>参考回答</summary>
 
-文件夹继承和群组共享适合用 ReBAC 表达。角色可提供基础管理权限。ABAC 可追加设备、时间等属性条件。
+**文件夹继承和群组共享适合用 ReBAC 表达。**
+
+角色可提供基础管理权限。ABAC 可追加设备、时间等属性条件。
 
 关系变化后应使相关缓存失效。服务需明确继承规则、拒绝规则和可审计的授权路径。
 
@@ -152,7 +158,9 @@ token 内固化的角色会持续到该 token 失效。令牌撤销机制见 [JW
 <details>
 <summary>参考回答</summary>
 
-主动失效缩短撤销延迟，TTL 限定失效丢失后的窗口。缓存还需绑定策略版本和资源归属版本。
+**主动失效缩短撤销延迟，TTL 限定失效丢失后的窗口。**
+
+缓存还需绑定策略版本和资源归属版本。
 
 高风险操作实时核对撤销状态。策略服务不可用时拒绝这类操作。低风险读取仅在约定的有效缓存窗口内继续。
 

@@ -3,19 +3,21 @@ sidebar_position: 1
 knowledge:
   id: devops.kubernetes.architecture
   type: concept
+description: "Kubernetes 通过控制循环协调容器工作负载。本文讲解组件分工、Pod 创建、调度、etcd 与 API 访问。本文适合准备云平台和运维面试的读者。读者可练习追踪声明到运行的过程。读者可分析控制器协调以及集群状态存储的职责。"
+keywords: ["K8s 控制平面", "kube-apiserver", "etcd", "Pod 调度", "控制循环"]
 ---
 
 # Kubernetes 架构
 
-Kubernetes 通过控制循环协调容器工作负载。本文负责组件分工、创建链路、调度和 etcd。容器状态与探针见 [Pod：生命周期、探针与资源](./pods.mdx)。Service 转发见 [工作负载、Service 与集群网络](./workloads-networking.mdx)。
+Kubernetes 通过控制循环协调容器工作负载。本文负责组件分工、创建链路、调度和 etcd。
 
 ## 1. 面试核心 {#core}
 
-- apiserver 提供对象 API，etcd 保存集群对象的持久状态。[卡](#components)
-- 控制器通过 API 观察对象，并持续调整实际状态。[卡](#pod-creation-flow)
-- scheduler 选择节点，kubelet 通过 CRI 驱动本机容器。[卡](#pod-creation-flow)
-- etcd 的 Raft 提交需要多数成员确认。[卡](#etcd)
-- RBAC 约束 API 操作，Secret 静态加密保护落盘内容。[卡](#api-security)
+- **API 与持久状态。** apiserver 提供对象 API，etcd 保存集群对象的持久状态。[卡](#components)
+- **控制循环。** 控制器通过 API 观察对象，并持续调整实际状态。[卡](#pod-creation-flow)
+- **调度与运行。** scheduler 选择节点，kubelet 通过 CRI 驱动本机容器。[卡](#pod-creation-flow)
+- **多数派提交。** etcd 的 Raft 提交需要多数成员确认。[卡](#etcd)
+- **API 与存储安全。** RBAC 约束 API 操作，Secret 静态加密保护落盘内容。[卡](#api-security)
 
 ## 2. 组件 {#组件}
 
@@ -120,7 +122,9 @@ Secret 的 base64 是编码。默认存储行为仍需配置静态加密来保�
 <details>
 <summary>参考回答</summary>
 
-控制平面负责 API、状态存储、调度和协调。apiserver 是对象访问入口，etcd 保存对象。scheduler 选择节点，各控制器持续调整实际状态。
+**控制平面负责 API、状态存储、调度和协调。**
+
+apiserver 是对象访问入口，etcd 保存对象。scheduler 选择节点，各控制器持续调整实际状态。
 
 节点的 kubelet 管理 Pod，运行时执行容器操作。Service 转发由 kube-proxy 或替代组件承担。CNI、CoreDNS 和 CSI 分别提供网络、解析与存储接入。
 
@@ -150,7 +154,9 @@ Secret 的 base64 是编码。默认存储行为仍需配置静态加密来保�
 <details>
 <summary>参考回答</summary>
 
-Deployment 经 API 保存后，由控制器逐步创建 Pod。Deployment 控制器管理 ReplicaSet。ReplicaSet 控制器补足 Pod。scheduler 过滤并评分，然后提交节点绑定。
+**Deployment 经 API 保存后，由控制器逐步创建 Pod。**
+
+Deployment 控制器管理 ReplicaSet。ReplicaSet 控制器补足 Pod。scheduler 过滤并评分，然后提交节点绑定。
 
 目标 kubelet 准备卷并调用 CRI。运行时准备沙箱、网络、镜像与容器。kubelet 持续上报状态和探针结果。Service 数据面再根据端点条件选择后端。
 
@@ -181,7 +187,9 @@ Deployment 经 API 保存后，由控制器逐步创建 Pod。Deployment 控制�
 <details>
 <summary>参考回答</summary>
 
-etcd 持久保存 Kubernetes 的 API 对象。Raft 通过多数派提交维持一致性。3 个成员可容忍 1 个失效，5 个可容忍 2 个。
+**etcd 持久保存 Kubernetes 的 API 对象。**
+
+Raft 通过多数派提交维持一致性。3 个成员可容忍 1 个失效，5 个可容忍 2 个。
 
 etcd 故障会阻塞持久更新和相关控制循环。已有容器与转发规则可继续运行。故障期间发生的节点和后端变化会增加业务风险。
 
@@ -202,7 +210,9 @@ etcd 故障会阻塞持久更新和相关控制循环。已有容器与转发规
 <details>
 <summary>参考回答</summary>
 
-认证确认身份，RBAC 授权检查操作权限。准入检查或修改对象内容。Secret 的 base64 只改变表示方式。静态加密保护持久存储中的内容。API 读取权限与备份访问仍需分别约束。
+**认证确认身份，RBAC 授权检查操作权限。**
+
+准入检查或修改对象内容。Secret 的 base64 只改变表示方式。静态加密保护持久存储中的内容。API 读取权限与备份访问仍需分别约束。
 
 </details>
 

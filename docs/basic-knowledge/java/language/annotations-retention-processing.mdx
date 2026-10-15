@@ -3,23 +3,27 @@ sidebar_position: 10
 knowledge:
   id: basic-knowledge.java.language.annotations-retention-processing
   type: concept
+description: "介绍 Java 注解的定义、使用位置和保留策略，说明编译器、字节码工具与框架如何读取元数据并执行行为。覆盖元注解、自定义注解设计、默认值和重复注解的读取规则，帮助准备语言基础面试的读者判断注解何时可见，以及反射无法获取注解的原因。"
+keywords: ["Annotation", "Retention", "元注解", "运行时注解", "Java 注解面试"]
 ---
 
 # Java 注解
 
-Java 注解为程序元素附加结构化元数据。本文讲解注解定义、保留策略和反射读取规则。编译期生成机制见 [Java 注解处理器](./runtime-scanning-compile-time-generation.mdx)。
+Java 注解为类、方法和字段等程序元素附加结构化元数据。元数据就是描述这些元素的额外信息，例如方法要求的角色名称。编译器、字节码工具或框架读取这些信息后，才会执行对应行为。
+
+本文从注解的定义入手，依次说明使用位置、保留策略和处理阶段。最后介绍自定义注解的设计，以及重复注解的读取规则。
 
 ## 1. 面试核心 {#core}
 
-- 注解保存元数据，读取方负责执行对应行为。[卡](#custom-annotation-behavior)
-- `SOURCE` 只留在源码，`CLASS` 写入类文件，`RUNTIME` 支持反射读取。[卡](#retention-policies)
-- `@Retention` 默认取 `CLASS`，`@Target` 约束使用位置。
-- `@Inherited` 只支持类注解沿超类链查找。
-- `getAnnotationsByType` 可展开重复注解的容器。[卡](#repeatable-runtime)
+- **元数据与行为。** 注解保存程序元素的元数据，编译器、字节码工具或框架读取后执行对应行为。[卡](#custom-annotation-behavior)
+- **保留策略。** `SOURCE` 注解只保留在源码中，`CLASS` 注解写入类文件，`RUNTIME` 注解还支持运行时反射读取。[卡](#retention-policies)
+- **默认策略与使用位置。** `@Retention` 默认取 `CLASS`，`@Target` 约束使用位置。
+- **继承查找。** `@Inherited` 让类注解沿超类链被查找到，接口和成员注解遵循各自的查找规则。
+- **重复注解。** `getAnnotationsByType` 可展开重复注解的容器。[卡](#repeatable-runtime)
 
 ## 2. 注解定义 {#定义和使用注解}
 
-使用 `@interface` 定义注解类型：
+自定义注解需要先声明类型，再定义它能保存哪些配置。Java 使用 `@interface` 定义注解类型：
 
 ```java
 @Retention(RetentionPolicy.RUNTIME)
@@ -30,7 +34,7 @@ public @interface RequiresRole {
 }
 ```
 
-注解中的 `value()` 是注解元素。使用时为它提供值：
+注解中的 `value()` 是注解元素，用来声明配置项的名称和类型。这里的配置项类型为 `String`，使用注解时为它提供角色名称：
 
 ```java
 @RequiresRole("admin")
@@ -39,7 +43,9 @@ public void deleteUser(long userId) {
 }
 ```
 
-元素名为 `value`，且其他元素均有默认值时，可省略元素名。其他元素可以声明默认值：
+上例把 `"admin"` 保存到 `value` 元素中。元素名为 `value`，且其他元素均有默认值时，可以省略元素名。
+
+元素还可以声明默认值，让使用方只填写需要调整的配置：
 
 ```java
 public @interface Retry {
@@ -48,13 +54,17 @@ public @interface Retry {
 }
 ```
 
-注解元素支持基本类型、`String`、`Class`、枚举和注解。它还支持这些类型的一维数组。元素值及默认值都须为非 `null`。
+省略 `@Retry` 的配置时，`maxAttempts` 为 3，`delayMillis` 为 100。
+
+注解元素支持基本类型、`String`、`Class`、枚举和注解，也支持这些类型的一维数组。元素值和默认值都必须是非 `null` 值，因此可选配置需要用明确的默认值表达。
 
 ## 3. 元注解 {#元注解}
 
-用于描述注解类型的注解称为元注解。
+元注解用于描述注解类型本身。通过它们，编译器和读取工具能知道注解可以放在哪里、保留多久，以及如何处理重复声明。
 
 ### 3.1 `@Target` {#target}
+
+`@Target` 限制注解的使用位置，让编译器在发现误用时直接报错。例如：
 
 ```java
 @Target({ElementType.TYPE, ElementType.METHOD})
@@ -66,11 +76,13 @@ public @interface Retry {
 
 ### 3.2 `@Retention` {#retention}
 
+`@Retention` 决定注解保留到哪个阶段。需要在运行时读取的注解，可以这样声明：
+
 ```java
 @Retention(RetentionPolicy.RUNTIME)
 ```
 
-保留策略有三种：
+选择时需要区分以下**三种保留策略**：
 
 | 策略 | 源码中存在 | class 文件中存在 | 运行时反射可见 | 常见用途 |
 | --- | --- | --- | --- | --- |
@@ -80,7 +92,7 @@ public @interface Retry {
 
 没有声明 `@Retention` 时，默认策略是 `CLASS`。
 
-保留策略由读取阶段决定。只供当前编译使用时可选 `SOURCE`。需要反射读取时使用 `RUNTIME`。
+保留策略取决于谁在什么时候读取注解。只供当前编译使用时，`SOURCE` 已经足够。如果后续工具要分析类文件，就需要至少保留到 `CLASS`。框架通过反射读取时，则要使用 `RUNTIME`。
 
 ### 3.3 `@Documented` {#documented}
 
@@ -88,19 +100,20 @@ public @interface Retry {
 
 ### 3.4 `@Inherited` {#inherited}
 
-运行时类注解带有 `@Inherited` 时，`getAnnotation` 会沿超类链查找。
+`@Inherited` 用于让子类查询到父类上的类注解。注解同时保留到运行时时，`Class.getAnnotation` 会沿超类链查找。
 
-它有明确边界：
+使用时需要区分以下**查找范围**：
 
 - 只作用于类上的注解。
-- 接口、方法和字段的注解查找由各自规则控制。
+- 实现类上的查询会跳过接口注解，接口需要由框架另行搜索。
+- 父类方法或字段上的注解仍属于原成员，子类声明的对应成员需要单独处理。
 - 使用 `getDeclaredAnnotation` 时只检查当前类，不沿超类查找。
 
 框架合并接口、方法和组合注解时，需要实现自己的搜索规则。
 
 ### 3.5 `@Repeatable` {#repeatable}
 
-可重复注解需要一个容器注解：
+`@Repeatable` 允许在同一个程序元素上多次使用同一种注解。编译器用容器注解保存这些实例，因此需要同时定义两种注解：
 
 ```java
 @Retention(RetentionPolicy.RUNTIME)
@@ -125,11 +138,15 @@ final class DocumentService {}
 
 ## 4. 注解的处理阶段 {#注解的处理阶段}
 
-注解的能力来自读取它的工具。根据读取时间，可以分为三个阶段。
+同一个标记可以供不同工具使用，具体行为取决于读取它的工具。按读取时间，可以区分编译阶段、类文件处理阶段和运行阶段。
 
 ### 4.1 编译阶段 {#编译阶段}
 
-`@Override`、`@SuppressWarnings` 供编译器检查源码。处理器可读取程序元素、报告错误或生成文件。完整机制见 [Java 注解处理器](./runtime-scanning-compile-time-generation.mdx)。
+编译阶段可以根据注解检查源码，或提前生成运行时需要的代码。比如，`@Override` 让编译器检查方法是否正确重写，`@SuppressWarnings` 用于抑制指定警告。自定义处理器还可以读取程序元素，报告编译错误，或生成新的源码与资源文件。
+
+MapStruct 用注解处理器生成映射代码。Lombok 也参与编译过程，但它修改的是编译器内部的语法树，也就是编译器组织源码的结构。
+
+生成新文件与修改语法树的区别，见 [Java 注解处理器](./runtime-scanning-compile-time-generation.mdx#代码生成)。
 
 ```java
 @Retention(RetentionPolicy.SOURCE)
@@ -141,9 +158,9 @@ public @interface GenerateMapper {}
 
 ### 4.2 class 文件处理阶段 {#class-文件处理阶段}
 
-`CLASS` 注解写入类文件，供字节码工具读取。反射 API 只返回运行时可见的注解。
+`CLASS` 注解写入类文件，供后续字节码工具分析和修改代码。这个阶段适合静态分析、插桩和字节码变换。插桩指向已有字节码插入额外逻辑，例如记录方法耗时。
 
-字节码工具需解析对应注解属性，才会使用这些元数据。
+类文件分别保存运行时可见和不可见的注解属性。字节码工具需要解析对应属性，才能使用其中的元数据。反射 API 只返回运行时可见的注解，所以读取 `CLASS` 注解需要字节码工具支持。
 
 ### 4.3 运行阶段 {#运行阶段}
 
@@ -162,9 +179,11 @@ if (rule != null) {
 
 注解只提供角色名称，权限校验由框架调用 `authorization.check` 完成。如果没有任何代码读取注解，`@RequiresRole` 不会自动阻止方法执行。
 
+Spring 的 `@Transactional` 也由框架读取配置，在代理调用中控制事务。具体执行过程见 [Spring 事务](../spring/declarative-transaction-execution.mdx#事务注解与代理)。
+
 ## 5. 自定义注解设计 {#设计自定义注解}
 
-设计前先确定消费方和阶段：
+自定义注解要同时设计配置与读取逻辑。设计前需要明确以下**五个问题**：
 
 1. 谁读取这个注解：编译器插件、构建工具还是运行时框架？
 2. 标记放在哪些元素上？
@@ -176,16 +195,24 @@ if (rule != null) {
 
 ### 5.1 元数据与执行逻辑 {#元数据与执行逻辑}
 
+注解适合保存配置，读取方负责完成操作。例如，重试注解可以声明最大尝试次数和间隔：
+
 ```java
 @Retry(maxAttempts = 3, delayMillis = 200)
 void callPayment() {}
 ```
 
-拦截器读取重试配置，再捕获异常并执行重试。幂等、可重试异常和总超时仍需独立设计。
+拦截器或显式调用器读取配置后，捕获允许重试的异常。随后它等待指定间隔，再次调用原方法。
+
+要让重试安全，还需要明确以下**三项业务规则**：
+
+- 操作是否幂等，也就是重复调用是否会产生额外业务结果。
+- 哪些异常允许重试，例如临时连接失败和参数错误应区别处理。
+- 总超时是多少，等待和多次调用都要计入这个限制。
 
 ### 5.2 注解默认值 {#注解默认值}
 
-默认值影响所有省略该元素的使用点。修改默认值会改变这些使用点的配置。公开注解应记录默认语义，危险操作应要求显式配置。
+默认值会影响所有省略该元素的使用点。即使业务源码未改，读取方使用新的默认值后，行为也会改变。因此，公开注解应写清默认值的含义，危险操作则要求调用方显式配置。
 
 ## 6. 重复注解的运行时读取 {#重复注解的运行时读取}
 
@@ -200,21 +227,25 @@ System.out.println(roles.length); // 2
 
 ## 7. 常见问题 {#常见问题}
 
-### 7.1 反射读取的条件 {#反射读取的条件}
+### 7.1 为什么反射获取不到自定义注解？ {#反射读取的条件}
 
 先检查注解是否声明为 `RetentionPolicy.RUNTIME`，再检查读取的元素是否正确。类注解、方法注解和字段注解分别属于不同元素；父类、接口和重写方法也不会按照同一规则自动继承。
 
-### 7.2 注解类型与组合注解 {#注解类型与组合注解}
+### 7.2 注解可以继承另一个注解吗？ {#注解类型与组合注解}
 
-注解类型通过 `@interface` 声明，不支持普通接口继承。注解可以标注另一个注解。框架可据此实现组合注解的解析规则。
+注解类型通过 `@interface` 声明，不能用 `extends` 建立普通接口继承关系。另一种用法是把注解标在其他注解上，由框架递归读取这些标记。这就是组合注解的用法，具体解析规则由框架定义。
 
-### 7.3 注解配置的生效时机 {#注解配置的生效时机}
+### 7.3 修改注解值后，程序什么时候使用新配置？ {#注解配置的生效时机}
 
-读取方使用新配置后，行为才会改变。编译期生成需要重新编译。启动时缓存的配置需要重新加载。具体时机由读取方决定。
+读取方读取并使用新值后，程序才会按新配置执行。生效时机取决于注解在哪个阶段被读取：
 
-### 7.4 接口注解的查找规则 {#接口注解的查找规则}
+- 编译期处理器需要重新编译，才能生成使用新配置的代码。
+- 启动时扫描并缓存注解的框架，需要重启或重新扫描。
+- 每次调用时读取注解的代码，会使用当前加载的注解信息。
 
-`@Inherited` 的查询范围是类的超类链。接口注解的搜索和冲突处理由框架定义。
+### 7.4 `@Inherited` 为什么对接口无效？ {#接口注解的查找规则}
+
+`@Inherited` 的查询范围只包含类的超类链。类可以实现多个接口，接口也可以继承多个接口。如果要合并这些接口的注解，就要规定冲突时使用哪一个，以及按什么顺序搜索。这些规则由框架定义。
 
 ## 8. 面试题 {#面试题}
 
@@ -229,18 +260,20 @@ System.out.println(roles.length); // 2
 
 **考察重点**
 
-- 三种保留策略分别在哪个阶段可见。
-- 编译期处理、字节码处理和运行时反射怎样选择策略。
-- 默认保留策略是什么。
+- 说明三种保留策略分别在哪个阶段可见。
+- 根据编译期处理、字节码处理和反射读取的需要选择策略。
+- 解释省略 `@Retention` 时会采用什么策略。
 
 **相关内容**：[`@Retention`](#retention)、[注解的处理阶段](#注解的处理阶段)。
 
 <details>
 <summary>参考回答</summary>
 
-`SOURCE` 只留在源码，适合编译检查。`CLASS` 写入类文件，但反射不可见。`CLASS` 也是默认保留策略。`RUNTIME` 支持运行时反射读取。
+**`SOURCE` 只保留在源码中，`CLASS` 保留到类文件，`RUNTIME` 还支持运行时反射读取。**
 
-读取阶段决定保留策略。当前编译中生成代码可用 `SOURCE`。后续编译需读到依赖中的注解时，可用 `CLASS`。反射读取则使用 `RUNTIME`。
+`SOURCE` 适合编译检查和源码处理。`CLASS` 供字节码工具读取，也是省略 `@Retention` 时的默认策略。需要框架通过反射扫描注解时，应使用 `RUNTIME`。
+
+选择时还要区分当前编译和后续编译。当前编译中生成代码可用 `SOURCE`。如果后续编译还要读取依赖类中的注解，就需要把它保留到 `CLASS` 或 `RUNTIME`。
 
 </details>
 
@@ -256,18 +289,18 @@ System.out.println(roles.length); // 2
 
 **考察重点**
 
-- 注解元数据与消费方逻辑的分工。
-- 编译期处理器和运行时反射两条实现路径。
-- `@Target`、`@Retention` 与注解元素怎样设计。
+- 区分注解保存的配置与读取方执行的逻辑。
+- 说明编译期处理器和运行时反射分别怎样使用注解。
+- 根据读取方的需求设计 `@Target`、`@Retention` 和注解元素。
 
 **相关内容**：[注解定义](#定义和使用注解)、[注解的处理阶段](#注解的处理阶段)、[自定义注解设计](#设计自定义注解)。
 
 <details>
 <summary>参考回答</summary>
 
-读取方解释注解元数据，并执行对应行为。`@Target` 确定使用位置，`@Retention` 确定保留阶段。注解元素保存配置。
+**自定义注解由读取它的编译器工具或框架解释配置，再执行对应行为。**
 
-处理器在编译期校验程序或生成代码。运行时框架则读取 `RUNTIME` 注解，再执行权限或路由逻辑。
+定义时用 `@Target` 限制使用位置，用 `@Retention` 确定保留阶段，再用注解元素保存配置。编译期处理器可以据此校验程序或生成代码。运行时框架则通过反射读取 `RUNTIME` 注解，再执行权限、事务或路由逻辑。
 
 </details>
 
@@ -277,21 +310,25 @@ System.out.println(roles.length); // 2
 
 **出现公司**：暂无已核验的公开来源（本站自测）
 
-**考察重点**：容器注解、保留策略与读取 API。
+**考察重点**：解释容器怎样保存重复注解，并根据保留策略选择读取 API。
 
 **相关内容**：[重复注解的运行时读取](#重复注解的运行时读取)。
 
 <details>
 <summary>参考回答</summary>
 
-`getAnnotationsByType` 会展开容器中的重复注解。`getAnnotation` 只查单个目标注解。例中 `Role` 与 `Roles` 都使用 `RUNTIME`，因此返回两个角色。
+**`getAnnotationsByType` 会展开容器中的重复注解，因此可以统一读取单个和多个声明。**
+
+例中两个 `@Role` 被放进 `@Roles` 容器。`Role` 与 `Roles` 都保留到运行时，所以调用结果包含两个角色。`getAnnotation(Role.class)` 只查目标注解本身，不会自动展开容器。
 
 </details>
 
 ## 9. 参考资料 {#参考资料}
 
-- [Java Language Specification：Annotation Interfaces](https://docs.oracle.com/en/java/javase/26/docs/specs/jls/jls-9.html#jls-9.6)
-- [Java API：Retention](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/annotation/Retention.html)
-- [Java API：RetentionPolicy](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/annotation/RetentionPolicy.html)
-- [Java API：Target](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/annotation/Target.html)
-- [Java API：AnnotatedElement](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/lang/reflect/AnnotatedElement.html)
+- [Java Language Specification：Annotation Interfaces](https://docs.oracle.com/en/java/javase/21/docs/specs/jls/jls-9.html#jls-9.6)
+- [Java API：Retention](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/annotation/Retention.html)
+- [Java API：RetentionPolicy](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/annotation/RetentionPolicy.html)
+- [Java API：Target](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/annotation/Target.html)
+- [Java API：AnnotatedElement](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/reflect/AnnotatedElement.html)
+- [MapStruct：Reference Guide](https://mapstruct.org/documentation/stable/reference/html/)
+- [Lombok：Execution Path](https://projectlombok.org/contributing/lombok-execution-path)

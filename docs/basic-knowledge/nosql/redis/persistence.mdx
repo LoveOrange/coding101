@@ -4,19 +4,21 @@ draft: false
 knowledge:
   id: basic-knowledge.nosql.redis.persistence
   type: concept
+description: "Redis 持久化保存恢复数据，复制和集群提供副本与分片。本文讲解 快照、追加日志、哨兵、哈希槽及客户端重定向。本文适合准备缓存面试的读者。读者可结合 Redis 6、7 分析恢复点、复制确认、故障切换和网络分区的边界。"
+keywords: ["RDB 与 AOF", "Redis Sentinel", "Redis Cluster", "哈希槽", "MOVED 与 ASK"]
 ---
 
 # Redis 持久化、复制与集群
 
-Redis 持久化保存恢复数据，复制保留运行副本。Cluster 通过哈希槽将数据分布到多个主节点。本文以 Redis 6、7 为基线，负责恢复点、故障转移和分片边界。内存压力管理见 [Redis 内存淘汰](./eviction.mdx)。
+Redis 持久化保存恢复数据，复制保留运行副本。Cluster 通过哈希槽将数据分布到多个主节点。本文以 Redis 6、7 为基线，负责恢复点、故障转移和分片边界。
 
 ## 1. 面试核心 {#core}
 
-- RDB 保存时间点快照，AOF 记录恢复所需的写操作。[卡](#rdb-aof-replication-cluster)
-- `appendfsync everysec` 每秒同步 AOF，故障恢复依赖最近已持久化位置。[卡](#aof-rewrite)
-- Redis 7.0 起，AOF 使用基础文件、增量文件和 manifest。[卡](#aof-rewrite)
-- Sentinel 的 quorum 用于判定客观下线，故障转移授权还需多数票。[卡](#sentinel-quorum)
-- Cluster 有 16384 个槽，MOVED 更新路由，ASK 只临时转发本次请求。[卡](#cluster-redirects)
+- **持久化方式。** RDB 保存时间点快照，AOF 记录恢复所需的写操作。[卡](#rdb-aof-replication-cluster)
+- **AOF 同步。** `appendfsync everysec` 每秒同步 AOF，故障恢复依赖最近已持久化位置。[卡](#aof-rewrite)
+- **AOF 文件组织。** Redis 7.0 起，AOF 使用基础文件、增量文件和 manifest。[卡](#aof-rewrite)
+- **Sentinel 故障转移。** Sentinel 的 quorum 用于判定客观下线，故障转移授权还需多数票。[卡](#sentinel-quorum)
+- **Cluster 分片。** Cluster 有 16384 个槽，MOVED 更新路由，ASK 只临时转发本次请求。[卡](#cluster-redirects)
 
 ## 2. RDB {#rdb}
 
@@ -148,7 +150,9 @@ Cluster 的多键事务和脚本要求键在同一槽。hash tag 可控制共槽
 <details>
 <summary>参考回答</summary>
 
-RDB 保存时间点快照，AOF 保存恢复所需的写操作。复制保留运行副本，Sentinel 协调主从故障转移。Cluster 将 16384 个槽分给多个主节点，实现数据分片。
+**RDB 保存时间点快照，AOF 保存恢复所需的写操作。**
+
+复制保留运行副本，Sentinel 协调主从故障转移。Cluster 将 16384 个槽分给多个主节点，实现数据分片。
 
 持久化恢复点取决于有效文件和同步策略。故障转移还取决于副本已接收的进度。选择时应按 RPO、RTO 和分片需求配置并验证。
 
@@ -167,7 +171,9 @@ RDB 保存时间点快照，AOF 保存恢复所需的写操作。复制保留运
 <details>
 <summary>参考回答</summary>
 
-Redis 6 的父进程继续写旧 AOF，并保存增量。子进程生成新文件，补齐增量后替换旧文件。Redis 7.0 起改用基础文件、增量文件和 manifest。父进程写增量，子进程生成基础文件，完成后切换清单。
+**Redis 6 的父进程继续写旧 AOF，并保存增量。**
+
+子进程生成新文件，补齐增量后替换旧文件。Redis 7.0 起改用基础文件、增量文件和 manifest。父进程写增量，子进程生成基础文件，完成后切换清单。
 
 Redis 6、7 默认 `aof-use-rdb-preamble=yes`。基础数据采用 RDB 格式，增量采用 AOF 命令。恢复时加载基础，再重放增量命令。
 
@@ -186,11 +192,13 @@ Redis 6、7 默认 `aof-use-rdb-preamble=yes`。基础数据采用 RDB 格式，
 <details>
 <summary>参考回答</summary>
 
-WAIT 等待副本确认收到本连接此前的写入。Redis 7.2 的 WAITAOF 进一步等待指定节点同步 AOF。超时只结束等待，原写入不会自动撤销。客户端需检查实际确认数，并按故障模型处理结果。
+**WAIT 等待副本确认收到本连接此前的写入。**
+
+Redis 7.2 的 WAITAOF 进一步等待指定节点同步 AOF。超时只结束等待，原写入不会自动撤销。客户端需检查实际确认数，并按故障模型处理结果。
 
 </details>
 
-### 14.4 个 Sentinel、quorum=2 时，两个节点能完成自动故障转移吗？ {#sentinel-quorum}
+### 14.4 5 个 Sentinel、quorum=2 时，两个节点能完成自动故障转移吗？ {#sentinel-quorum}
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
@@ -203,7 +211,9 @@ WAIT 等待副本确认收到本连接此前的写入。Redis 7.2 的 WAITAOF �
 <details>
 <summary>参考回答</summary>
 
-两个 Sentinel 可共同判定主节点客观下线。但故障转移仍需至少 3 个 Sentinel 授权。因此只有两个能互通时，无法完成自动切换。quorum 与多数授权分别承担故障判定和切换协调。
+**5 个 Sentinel 中只有两个能互通时，无法完成自动故障转移。**
+
+`quorum=2` 允许这两个节点共同判定主节点客观下线，但切换仍需至少 3 个 Sentinel 的多数授权。quorum 负责故障判定，多数授权负责协调切换。
 
 </details>
 
@@ -220,7 +230,9 @@ WAIT 等待副本确认收到本连接此前的写入。Redis 7.2 的 WAITAOF �
 <details>
 <summary>参考回答</summary>
 
-MOVED 指示槽的当前负责人，客户端应更新槽映射。ASK 只临时转发本次请求。客户端在目标连接先执行 ASKING，再重发原命令。ASK 后仍保留原来的长期槽路由。
+**MOVED 指示槽的当前负责人，客户端应更新槽映射。**
+
+ASK 只临时转发本次请求。客户端在目标连接先执行 ASKING，再重发原命令。ASK 后仍保留原来的长期槽路由。
 
 </details>
 
@@ -237,7 +249,9 @@ MOVED 指示槽的当前负责人，客户端应更新槽映射。ASK 只临时�
 <details>
 <summary>参考回答</summary>
 
-复制历史必须匹配，backlog 还需覆盖副本缺失的偏移范围。满足时，PSYNC 只补发缺失命令。历史不匹配或缺口超出范围时，需要全量同步。backlog 应结合写入速率和允许断连时长规划。
+**复制历史必须匹配，backlog 还需覆盖副本缺失的偏移范围。**
+
+满足时，PSYNC 只补发缺失命令。历史不匹配或缺口超出范围时，需要全量同步。backlog 应结合写入速率和允许断连时长规划。
 
 </details>
 

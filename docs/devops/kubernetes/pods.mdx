@@ -3,19 +3,21 @@ sidebar_position: 2
 knowledge:
   id: devops.kubernetes.pods
   type: concept
+description: "Pod 把紧密协作的容器作为调度整体。本文讲解组成、生命周期、健康探针、资源配置、QoS 与优雅终止。本文适合准备 Kubernetes 面试的读者。读者可练习分析运行状态和伸缩条件。读者还可检查请求排空、调度约束及资源限制。"
+keywords: ["Pod 生命周期", "Readiness Probe", "Liveness Probe", "requests limits", "Pod QoS"]
 ---
 
 # Pod：生命周期、探针与资源
 
-Pod 将紧密协作的容器作为一个整体调度。本文负责组成、状态、探针、资源与终止过程。组件创建链路见 [Kubernetes 架构](./architecture.mdx)。工作负载管理见 [工作负载、Service 与集群网络](./workloads-networking.mdx)。
+Pod 将紧密协作的容器作为一个整体调度。本文负责组成、状态、探针、资源与终止过程。
 
 ## 1. 面试核心 {#core}
 
-- Pod 内容器共享网络空间，并可挂载同一卷。[卡](#why-pod)
-- CrashLoopBackOff 表示容器重启退避，Pending 是 Pod 阶段。[卡](#pod-troubleshooting)
-- readiness 影响接流量，liveness 失败触发容器重启处理。[卡](#probes)
-- requests 参与调度，CPU limit 通过配额实施限流。[卡](#scheduling-scaling)
-- `preStop` 与应用退出共用终止宽限期。[卡](#graceful-termination)
+- **共享资源。** Pod 内容器共享网络空间，并可挂载同一卷。[卡](#why-pod)
+- **状态与故障表现。** CrashLoopBackOff 表示容器重启退避，Pending 是 Pod 阶段。[卡](#pod-troubleshooting)
+- **探针职责。** readiness 影响接流量，liveness 失败触发容器重启处理。[卡](#probes)
+- **资源调度与限制。** requests 参与调度，CPU limit 通过配额实施限流。[卡](#scheduling-scaling)
+- **优雅终止。** `preStop` 与应用退出共用终止宽限期。[卡](#graceful-termination)
 
 ## 2. Pod 的组成 {#pod-的组成}
 
@@ -157,7 +159,9 @@ preStop 耗时计入同一个宽限期。应用应停止接收新请求，并完
 <details>
 <summary>参考回答</summary>
 
-Pod 把需要共享网络和卷的容器作为整体调度。它们共用网络空间，通过 localhost 通信。业务容器和日志 sidecar 也可挂载同一卷。
+**Pod 把需要共享网络和卷的容器作为整体调度。**
+
+它们共用网络空间，通过 localhost 通信。业务容器和日志 sidecar 也可挂载同一卷。
 
 Pod 内容器在同一节点运行，但各自管理进程生命周期。共享进程视图需额外配置。普通 init 容器先完成初始化。原生 sidecar 长期运行，并具有专门的停止顺序。Deployment 管理多个 Pod 副本。
 
@@ -184,7 +188,9 @@ Pod 内容器在同一节点运行，但各自管理进程生命周期。共享�
 <details>
 <summary>参考回答</summary>
 
-Pod phase 有 Pending、Running、Succeeded、Failed、Unknown。CrashLoopBackOff 是容器重启退避状态。
+**Pod phase 有 Pending、Running、Succeeded、Failed、Unknown。**
+
+CrashLoopBackOff 是容器重启退避状态。
 
 Pending 先查 `kubectl describe pod`。FailedScheduling 对应资源、污点、亲和性或卷约束。已调度时再查镜像、挂载和网络事件。缺少必需 Secret 会阻止容器创建。
 
@@ -212,7 +218,9 @@ CrashLoopBackOff 先查 `kubectl logs --previous`。再结合上次退出原因�
 <details>
 <summary>参考回答</summary>
 
-readiness 控制接流量，liveness 判断是否需要重启。startup 为慢启动提供独立的探测预算。startup 成功前，另外两类探针暂缓执行。
+**readiness 控制接流量，liveness 判断是否需要重启。**
+
+startup 为慢启动提供独立的探测预算。startup 成功前，另外两类探针暂缓执行。
 
 liveness 失败达到阈值后，kubelet 终止容器。后续重启受 restartPolicy 约束。readiness 失败只改变就绪状态，已有连接仍需处理。
 
@@ -242,11 +250,10 @@ liveness 应检查重启能修复的本地故障。共享依赖故障放入该�
 <details>
 <summary>参考回答</summary>
 
-requests 用于调度，limits 约束运行时资源。CPU 配额耗尽会限流。内存回收不足时可触发 OOM。
+**`requests` 决定调度时的资源需求，`limits` 约束运行时用量；驱逐和扩缩容还要结合节点状态与调度规则。**
 
-节点压力驱逐考虑超出 requests、Priority 和超出量。驱逐顺序并非固定的 QoS 排序。PDB 约束 Eviction API 发起的自愿驱逐。节点压力和节点故障仍能中断 Pod。
-
-硬性亲和筛选节点，软性亲和影响评分。容忍只允许通过对应污点检查。HPA 调整副本数，CPU 利用率按 requests 计算。节点不足时，还需节点扩容配合。
+- **资源与驱逐。** CPU 配额耗尽会限流，内存回收不足可触发 OOM。节点压力驱逐考虑是否超出 `requests`、Priority 和超出量，顺序并非固定的 QoS 排序。PDB 约束 Eviction API 发起的自愿驱逐，节点压力和故障仍可中断 Pod。
+- **放置与扩容。** 硬性亲和筛选节点，软性亲和影响评分；容忍只允许通过对应污点检查。HPA 调整副本数，CPU 利用率按 `requests` 计算。节点容量不足时还需配合节点扩容。
 
 </details>
 
@@ -263,7 +270,9 @@ requests 用于调度，limits 约束运行时资源。CPU 配额耗尽会限流
 <details>
 <summary>参考回答</summary>
 
-preStop 与应用退出共用终止宽限期。默认总宽限期为 30 秒。端点更新与本地停止并行进行。应用需等待流量摘除传播，并完成在途请求。宽限期应覆盖这两段工作。强制删除还需防止旧实例继续运行。
+**preStop 与应用退出共用终止宽限期。**
+
+默认总宽限期为 30 秒。端点更新与本地停止并行进行。应用需等待流量摘除传播，并完成在途请求。宽限期应覆盖这两段工作。强制删除还需防止旧实例继续运行。
 
 </details>
 
