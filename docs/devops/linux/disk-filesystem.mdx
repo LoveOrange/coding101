@@ -3,7 +3,7 @@ sidebar_position: 3
 knowledge:
   id: devops.linux.disk-filesystem
   type: concept
-description: "文件系统通过目录项、inode 和数据块组织文件。本文讲解磁盘容量、删除后占用、缓存写回与稀疏文件。本文适合准备 Linux 排障面试的读者。读者可练习解释 df 和 du 的差异，定位空间耗尽。读者还可分析持久化与缓存的关系。"
+description: "介绍 Linux 文件系统中的目录项、索引节点和数据块，围绕容量、文件删除与缓存写回讲解排查。结合空间统计差异、仍被打开的删除文件和稀疏文件，帮助准备运维面试的读者定位磁盘或节点耗尽，解释删除后空间未释放，并区分缓存、写回与持久化。"
 keywords: ["inode 耗尽", "df 与 du", "磁盘空间排查", "文件删除不释放", "buffer cache"]
 ---
 
