@@ -3,7 +3,7 @@ sidebar_position: 2
 knowledge:
   id: system-design.reliability.retry-backoff-jitter-storms
   type: concept
-description: "重试通过再次执行恢复短暂失败，同时增加下游负载。本文讲解错误分类、指数退避、抖动、尝试次数和重试预算。本文适合准备系统设计面试的读者。读者可练习处理写入结果未知和剩余时限。读者还可通过故障注入检查流量放大。"
+description: "介绍重试恢复短暂故障时增加下游负载的机制，讲解错误分类、指数退避、随机抖动和重试预算。结合写入结果未知、剩余时限与服务端等待提示，帮助准备系统设计面试的读者选择尝试次数，分析多层重试和并行备份请求，并用故障注入检查流量放大。"
 keywords: ["指数退避", "Jitter", "重试风暴", "重试预算", "Retry-After"]
 ---
 

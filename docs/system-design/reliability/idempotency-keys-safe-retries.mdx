@@ -3,7 +3,7 @@ sidebar_position: 5
 knowledge:
   id: system-design.reliability.idempotency-keys-safe-retries
   type: concept
-description: "幂等键标识同一次业务意图并约束重复副作用。本文讲解原子占用、事务范围、处理中状态、结果保留和恢复。本文适合准备系统设计面试的读者。读者可练习推演客户端重试与外部调用崩溃。读者可分析重复请求应等待还是返回已有结果。"
+description: "介绍幂等键如何标识同一次业务意图，讲解键作用域、原子占用、处理中状态和结果保留。结合事务边界、条件状态转换与外部调用崩溃窗口，帮助准备系统设计面试的读者推演重复请求应等待还是返回已有结果，分析客户端重试与业务结果恢复的条件。"
 keywords: ["Idempotency Key", "接口幂等", "重复请求", "幂等结果恢复", "安全重试"]
 ---
 

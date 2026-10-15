@@ -4,7 +4,7 @@ draft: false
 knowledge:
   id: system-design.distributed-system.primary-backup-replication
   type: concept
-description: "主备复制由主节点确定写入顺序并传播到备节点。本文讲解确认时机、日志追赶、快照、故障切换与读取新鲜度。本文适合准备分布式面试的读者。读者可练习推演复制延迟和节点恢复。读者可区分数据已写入、已复制与可读取的状态。"
+description: "介绍主备复制由主节点确定写入顺序并传播到备节点的过程，讲解确认时机、日志接收回放和快照恢复。结合复制延迟、故障切换与读取新鲜度，帮助准备分布式面试的读者区分数据写入、复制和应用状态，分析副本接管条件，并验证恢复后的业务结果。"
 keywords: ["Primary Backup", "主从复制", "日志复制", "复制延迟", "快照恢复"]
 ---
 

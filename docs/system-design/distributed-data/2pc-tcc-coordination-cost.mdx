@@ -3,7 +3,7 @@ sidebar_position: 2
 knowledge:
   id: system-design.distributed-data.2pc-tcc-coordination-cost
   type: concept
-description: "2PC 协调事务资源提交，TCC 协调业务预留。本文讲解准备与提交、Try、Confirm 和 Cancel，分析阻塞、幂等及乱序。本文适合准备分布式面试的读者。读者可练习推演空回滚和悬挂场景。读者还可比较资源支持要求与业务实现成本。"
+description: "比较两阶段提交与业务预留式事务的协调方式，讲解准备、提交、确认和取消的状态转换。结合资源管理器支持、幂等、空回滚和悬挂，帮助准备分布式面试的读者推演阻塞与乱序故障，分析分支并发处理，并根据资源能力和业务实现成本选择事务方案。"
 keywords: ["两阶段提交", "Try Confirm Cancel", "TCC 空回滚", "TCC 悬挂", "分布式事务"]
 ---
 

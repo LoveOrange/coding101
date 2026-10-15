@@ -3,7 +3,7 @@ sidebar_position: 4
 knowledge:
   id: system-design.distributed-data.outbox-cdc-reliable-events
   type: concept
-description: "Transactional Outbox 将业务变化和事件一同提交。本文讲解双写窗口、发布任务、CDC、事件顺序与消费者幂等。本文适合准备后端面试的读者。读者可练习推演发布失败后的恢复。读者还可区分事件已发送和业务流程完成的状态。"
+description: "介绍事务发件箱如何把业务变化与事件共同提交，说明变更数据捕获从提交日志中提取事件的方式。讲解双写窗口、发布恢复、按键顺序和版本缺口，帮助准备后端面试的读者推演消息重复与消费者幂等，区分发布成功和业务完成，并设计监控及结果核对。"
 keywords: ["事务发件箱", "CDC 变更捕获", "可靠事件", "双写一致性", "Outbox 模式"]
 ---
 

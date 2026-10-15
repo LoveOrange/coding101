@@ -3,7 +3,7 @@ sidebar_position: 5
 knowledge:
   id: system-design.distributed-system.consistency-models-quorum-linearizability
   type: concept
-description: "一致性模型规定并发操作允许观察的结果。本文比较线性、顺序、因果、会话和最终一致性，分析 Quorum 与领导权确认。本文适合准备分布式面试的读者。读者可练习按读写历史判断语义，并解释多数派交集的作用条件。"
+description: "比较线性、顺序、因果、会话和最终一致性对读写结果的约束，讲解多数派交集、版本选择与领导权确认。结合部分写入和读回退，帮助准备分布式面试的读者根据操作历史判断保证范围，区分原子操作与事务串行化，并解释多数派确认成立的条件。"
 keywords: ["Linearizability", "Quorum", "因果一致性", "顺序一致性", "会话保证"]
 ---
 

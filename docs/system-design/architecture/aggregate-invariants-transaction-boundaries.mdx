@@ -3,7 +3,7 @@ sidebar_position: 2
 knowledge:
   id: system-design.architecture.aggregate-invariants-transaction-boundaries
   type: concept
-description: "聚合通过聚合根维护一组对象的业务规则。本文讲解不变量、事务边界、对象引用与并发控制，分析规模和写入竞争。本文适合准备后端架构面试的读者。读者可练习确定需要共同提交的状态。读者还可判断规则分散和跨聚合协作的影响。"
+description: "介绍领域聚合如何通过聚合根维护一组对象的业务不变量，讲解实体、值对象、事务边界和跨聚合引用。结合聚合规模、写入竞争与版本冲突，帮助准备后端架构面试的读者确定共同提交的状态，分析命令重放与领域事件时机，并判断规则分散带来的风险。"
 keywords: ["DDD 聚合", "聚合根", "业务不变量", "事务边界", "聚合设计"]
 ---
 

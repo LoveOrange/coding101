@@ -3,7 +3,7 @@ sidebar_position: 6
 knowledge:
   id: system-design.distributed-system.raft-election-log-replication
   type: concept
-description: "Raft 通过选举和日志复制维护状态机执行顺序。本文讲解角色、任期、提交、线性读、快照与成员变更。本文适合准备分布式面试的读者。读者可练习推演领导者失效和客户端重试。读者可分析日志一致、多数派确认与读取安全的条件。"
+description: "介绍 Raft 的角色、任期与领导者选举，沿日志复制和多数派提交说明状态机如何保持确定顺序。覆盖旧任期条目、客户端重试、线性读取、快照和成员变更，帮助准备分布式面试的读者推演领导者失效，分析读取屏障和副本数量对安全及故障余量的影响。"
 keywords: ["Raft 选举", "日志复制", "多数派提交", "线性一致读", "共识协议"]
 ---
 
