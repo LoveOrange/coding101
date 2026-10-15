@@ -3,8 +3,8 @@ sidebar_position: 8
 knowledge:
   id: basic-knowledge.java.concurrency.cas-aba-versioning
   type: concept
-description: "CAS 通过比较预期值执行原子更新。本文讲解重试循环、函数副作用、ABA 与版本标记，区分强弱操作和进度保证。本文适合准备 Java 并发面试的读者。读者可练习判断原子变量更新与外部动作的边界，并分析版本号的用途。"
-keywords: ["Compare And Set", "ABA 问题", "AtomicStampedReference", "CAS 重试"]
+description: "介绍 CAS 的条件更新与失败重试过程，解释更新函数重复执行时的副作用和 ABA 问题。讲解版本标记、强弱操作、内存语义与进展保证，帮助准备 Java 并发面试的读者判断引用比较和内容比较的差异，区分原子变量更新与外部业务动作的保护范围。"
+keywords: ["Compare And Set", "ABA 问题", "AtomicStampedReference", "CAS 重试", "弱 CAS"]
 ---
 
 # CAS

@@ -3,7 +3,7 @@ sidebar_position: 7
 knowledge:
   id: basic-knowledge.java.concurrency.volatile-barriers-visibility
   type: concept
-description: "volatile 关键字为变量访问提供可见性和顺序约束。本文讲解标志发布、复合更新、内存屏障与 VarHandle 访问模式。本文适合准备 Java 并发面试的读者。读者可练习推导发布关系，并区分变量引用、数组元素和原子操作的保证。"
+description: "介绍 volatile 的可见性和顺序保证，通过标志发布与复合更新说明它能保护的操作范围。讲解内存屏障、引用与数组元素，以及不同变量访问模式，帮助准备 Java 并发面试的读者推导发布关系，判断递增和多字段状态何时仍需要原子操作或加锁。"
 keywords: ["volatile 原理", "内存屏障", "可见性与原子性", "VarHandle"]
 ---
 

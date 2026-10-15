@@ -3,7 +3,7 @@ sidebar_position: 14
 knowledge:
   id: basic-knowledge.java.jvm.g1-regions-rset-collection-set
   type: concept
-description: "G1 用内存区域 和疏散复制组织局部回收。本文讲解记忆集、回收集合、并发标记、混合回收与大对象，分析暂停目标。本文适合准备 JVM 面试的读者。读者可练习从回收日志理解阶段变化，并判断 整堆回收的触发和性能影响。"
+description: "介绍 G1 如何按区域组织堆并复制存活对象，讲解跨区域引用、记忆集、年轻代回收与混合回收。覆盖并发标记、大对象、暂停目标和整堆回收，帮助准备 Java 虚拟机面试的读者从日志识别阶段变化，分析空间余量及回收集合选择对停顿的影响。"
 keywords: ["G1 垃圾收集器", "Region", "Remembered Set", "Mixed GC", "G1 日志"]
 ---
 

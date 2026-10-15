@@ -3,8 +3,8 @@ sidebar_position: 22
 knowledge:
   id: basic-knowledge.java.jvm.cpu-high-diagnosis
   type: concept
-description: "CPU 使用率反映进程消耗处理器时间的程度。本文讲解高 CPU 线程定位、连续线程栈、性能剖析与 GC 分配分析。本文适合准备 Java 排障面试的读者。读者可练习从进程定位到调用路径，并区分业务、编译和本地执行的开销。"
-keywords: ["Java CPU 飙高", "高 CPU 排查", "CPU profile", "热点线程"]
+description: "介绍 Java 进程高 CPU 问题的排查顺序，从实例配额和节流定位到热点线程与调用路径。结合连续线程栈、性能剖析、垃圾回收及分配数据，帮助准备生产排障面试的读者区分业务计算、即时编译和本地代码开销，并通过相同负载验证修复效果。"
+keywords: ["Java CPU 飙高", "高 CPU 排查", "CPU profile", "热点线程", "容器节流"]
 ---
 
 # CPU 使用率

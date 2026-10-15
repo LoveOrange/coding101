@@ -3,7 +3,7 @@ sidebar_position: 10
 knowledge:
   id: basic-knowledge.java.concurrency.locks-vs-lock-free-cost
   type: concept
-description: "锁与无锁算法通过不同方式协调共享状态。本文比较阻塞等待、重试成本、进度保证与伪共享，并讨论降低竞争的方法。本文适合准备 Java 并发面试的读者。读者可练习根据负载和竞争曲线选择方案，解释吞吐与延迟的代价。"
+description: "比较锁与无锁算法协调共享状态的方式，分析阻塞等待、比较并交换重试和缓存竞争带来的成本。讲解降低竞争、伪共享与不同进展保证，帮助准备 Java 并发面试的读者结合负载曲线衡量吞吐和延迟，并解释自旋、锁粒度及公平策略的适用条件。"
 keywords: ["Lock-free", "CAS 重试成本", "锁性能比较", "伪共享", "并发进度保证"]
 ---
 

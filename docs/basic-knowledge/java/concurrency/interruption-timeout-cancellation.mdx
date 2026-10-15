@@ -3,8 +3,8 @@ sidebar_position: 15
 knowledge:
   id: basic-knowledge.java.concurrency.interruption-timeout-cancellation
   type: concept
-description: "任务取消协调等待期限、任务状态和资源退出。本文讲解截止时间、中断等待、FutureTask 取消及完成竞争。本文适合准备 Java 并发面试的读者。读者可练习沿调用链分配剩余预算。读者可分析失败清理和取消后仍在运行的任务。"
-keywords: ["Future 取消", "中断超时", "截止时间", "Java 任务清理"]
+description: "讲解 Java 任务取消中截止时间、中断请求和结果状态的不同职责，说明调用链如何传递剩余时间预算。结合可中断等待、后台任务清理与完成取消竞争，帮助准备并发面试的读者分析等待超时后的执行状态，设计协作退出和资源释放的处理方式。"
+keywords: ["Future 取消", "中断超时", "截止时间", "Java 任务清理", "FutureTask"]
 ---
 
 # 任务取消

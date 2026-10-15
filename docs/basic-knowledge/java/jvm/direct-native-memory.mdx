@@ -3,7 +3,7 @@ sidebar_position: 9
 knowledge:
   id: basic-knowledge.java.jvm.direct-native-memory
   type: concept
-description: "Java 直接内存在堆外保存 I/O 缓冲内容。本文讲解缓冲区生命周期、文件映射、本地内存跟踪与容器预算。本文适合准备 JVM 排障面试的读者。读者可练习区分堆内引用和本地分配。读者可定位直接缓冲区耗尽及进程内存增长。"
+description: "介绍 Java 直接内存的用途、容量上限和缓冲区生命周期，区分堆内引用、文件映射与其他本地分配。结合本地内存跟踪和系统指标定位进程增长，帮助准备虚拟机排障面试的读者分析直接缓冲区耗尽、释放时机及容器预算，判断堆转储能够提供哪些证据。"
 keywords: ["堆外内存", "DirectByteBuffer", "NMT", "Direct buffer OOM", "本地内存"]
 ---
 

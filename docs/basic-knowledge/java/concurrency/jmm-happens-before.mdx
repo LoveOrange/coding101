@@ -3,7 +3,7 @@ sidebar_position: 3
 knowledge:
   id: basic-knowledge.java.concurrency.jmm-happens-before
   type: concept
-description: "Java 内存模型规定跨线程读写允许观察的结果。本文讲解 先行发生关系、volatile 变量发布与并发组件的交接语义。本文适合准备 Java 面试的读者。读者可练习从同步关系推导可见性，并分析数据竞争和线程等待的边界。"
+description: "介绍 Java 内存模型对跨线程读写结果的约束，讲解先行发生规则、共享变量发布和并发组件的数据交接。通过同步关系推导可见性，帮助准备并发面试的读者区分数据竞争与顺序一致性，分析线程休眠和等待结束的边界，并判断读操作能够观察到哪些写入。"
 keywords: ["JMM", "happens-before", "内存可见性", "数据竞争", "顺序一致性"]
 ---
 

@@ -2,7 +2,7 @@
 knowledge:
   id: basic-knowledge.nosql.redis.eviction
   type: concept
-description: "Redis 内存淘汰在内存压力下选择删除对象。本文以 Redis 6、7 讲解策略、候选范围和内存观测，区分淘汰与按期清理。本文适合准备缓存面试的读者。读者可练习根据数据用途选择策略，并分析容量指标和淘汰行为的关系。"
+description: "以 Redis 6 和 7 介绍内存淘汰的触发条件、策略和候选范围，比较按访问时间、使用频率及过期键选择对象的方式。结合内存用量与观测指标，帮助准备缓存面试的读者根据数据用途选择策略，区分内存压力下的淘汰与到期清理，并分析容量限制的影响。"
 keywords: ["maxmemory-policy", "LRU", "LFU", "Redis 淘汰策略", "Redis 内存监控"]
 ---
 

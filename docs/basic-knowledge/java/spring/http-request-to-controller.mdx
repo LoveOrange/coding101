@@ -3,7 +3,7 @@ sidebar_position: 9
 knowledge:
   id: basic-knowledge.java.spring.http-request-to-controller
   type: concept
-description: "Spring MVC 请求经过容器、过滤器和分派器到达控制器。本文讲解端到端顺序、返回值处理、异步续接与请求观测。本文适合准备 Spring 面试的读者。读者可练习沿调用链定位处理阶段。读者还可分析异步执行容量和日志指标的对应关系。"
+description: "沿 Spring MVC 请求生命周期介绍容器接收、过滤链、请求分派、控制器调用和结果写回的顺序。比较同步处理与异步续接，说明请求日志、耗时指标和执行容量，帮助准备后端面试的读者定位处理阶段，分析线程切换及同一请求多次分派的行为。"
 keywords: ["Spring MVC 流程", "Servlet 容器", "Controller 调用", "异步请求"]
 ---
 

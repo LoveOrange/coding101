@@ -3,7 +3,7 @@ sidebar_position: 4
 knowledge:
   id: basic-knowledge.database.transaction.mvcc-read-view-consistent-read
   type: concept
-description: "MVCC 多版本并发控制通过历史版本支持并发读取。本文讲解 MySQL 8.0 的 undo 链、Read View 与 RC、RR 快照差异。本文适合准备数据库面试的读者。读者可通过双会话推演快照读、当前读和混合读写的可见性。读者还可分析长快照成本。"
+description: "以 MySQL 8.0 InnoDB 介绍 MVCC 的历史版本链和可见性判断，比较读已提交与可重复读中的快照创建时机。通过双会话推演快照读、当前读和混合读写，帮助准备数据库面试的读者解释同一事务的查询差异，分析长快照的版本保留成本与范围锁的分工。"
 keywords: ["多版本并发控制", "Read View", "undo log", "快照读", "RC 与 RR"]
 ---
 

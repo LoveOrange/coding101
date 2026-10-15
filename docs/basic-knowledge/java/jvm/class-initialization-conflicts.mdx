@@ -3,7 +3,7 @@ sidebar_position: 5
 knowledge:
   id: basic-knowledge.java.jvm.class-initialization-conflicts
   type: concept
-description: "类加载故障涉及类查找、链接和初始化阶段。本文讲解初始化锁、死锁、失败状态与二进制冲突，结合类来源定位问题。本文适合准备 JVM 排障面试的读者。读者可练习根据异常和线程栈选择证据，并分析加载器类型冲突。"
+description: "介绍类加载故障中的类查找失败、二进制不兼容和初始化等待，讲解初始化锁、死锁及失败后的类状态。结合异常消息、线程栈和实际类来源，帮助准备 Java 排障面试的读者区分依赖版本冲突与加载器类型冲突，并按启动或热部署现场组织排查证据。"
 keywords: ["ClassNotFoundException", "NoClassDefFoundError", "类初始化失败", "类版本冲突"]
 ---
 

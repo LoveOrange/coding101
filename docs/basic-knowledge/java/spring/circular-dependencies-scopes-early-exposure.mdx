@@ -3,7 +3,7 @@ sidebar_position: 5
 knowledge:
   id: basic-knowledge.java.spring.circular-dependencies-scopes-early-exposure
   type: concept
-description: "Spring 循环依赖是 Bean 依赖图中的环。本文讲解构造器与属性注入、早期引用、三级缓存及作用域限制。本文适合准备 Spring 面试的读者。读者可练习推演循环处理的成立条件。读者还可结合默认配置和职责拆分分析解决方式。"
+description: "介绍 Spring 循环依赖中的构造器注入与属性注入差异，讲解早期引用、三级缓存及代理一致性。以显式允许循环引用为前提说明部分单例循环的处理过程，帮助准备框架面试的读者判断作用域和默认配置的限制，并通过职责拆分消除不合理的对象依赖。"
 keywords: ["三级缓存", "Bean 早期引用", "构造器循环依赖", "Spring Boot 循环引用"]
 ---
 

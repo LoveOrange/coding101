@@ -3,7 +3,7 @@ sidebar_position: 17
 knowledge:
   id: basic-knowledge.java.concurrency.future-completablefuture-errors
   type: concept
-description: "CompletableFuture 用完成阶段表达异步依赖。本文讲解阶段组合、回调线程、异常恢复和超时取消，比较聚合完成条件。本文适合准备 Java 并发面试的读者。读者可练习推演结果与异常的传播路径，并判断底层任务的退出范围。"
+description: "介绍 CompletableFuture 如何用完成阶段组织异步结果，讲解依赖组合、回调线程、异常恢复与观察。比较超时、取消和聚合完成的条件，帮助准备 Java 并发面试的读者推演结果与异常的传播路径，判断回调失败及等待结束后底层任务是否继续运行。"
 keywords: ["CompletionStage", "异步编排", "CompletableFuture 异常", "allOf 与 anyOf"]
 ---
 

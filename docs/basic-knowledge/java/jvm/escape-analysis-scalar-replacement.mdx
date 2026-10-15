@@ -3,7 +3,7 @@ sidebar_position: 18
 knowledge:
   id: basic-knowledge.java.jvm.escape-analysis-scalar-replacement
   type: concept
-description: "逃逸分析判断对象的可见范围，为运行时优化提供依据。本文讲解 HotSpot C2 的标量替换、分配消除与锁消除。本文适合准备 JVM 面试的读者。读者可练习分析优化条件，区分相关内存概念。读者还可通过分配数据验证优化是否发生。"
+description: "以 HotSpot C2 讲解逃逸分析如何判断对象被哪些方法或线程访问，说明标量替换、分配消除与锁消除的条件。结合条件逃逸和分配数据验证优化，帮助准备 Java 虚拟机面试的读者区分对象可见范围、栈上分配和实际内存开销，并解释优化未发生的原因。"
 keywords: ["Escape Analysis", "标量替换优化", "分配消除", "HotSpot C2", "锁消除"]
 ---
 

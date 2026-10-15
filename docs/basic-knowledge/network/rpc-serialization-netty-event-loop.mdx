@@ -3,7 +3,7 @@ sidebar_position: 9
 knowledge:
   id: basic-knowledge.network.rpc-serialization-netty-event-loop
   type: concept
-description: "RPC 把远程请求封装为方法调用接口。本文讲解调用链、序列化、消息边界与 Netty 执行模型，覆盖截止时间和背压。本文适合准备后端面试的读者。读者可练习分析事件循环、缓冲区引用计数及远程调用中的失败传播。"
+description: "介绍 RPC 从方法调用接口到远程请求和结果返回的链路，讲解序列化、消息边界与事件循环。结合 Netty 的处理器链、缓冲区引用计数、截止时间和背压，帮助准备后端面试的读者分析连接与线程的关系，定位半包和粘包问题，并判断重试对业务副作用的影响。"
 keywords: ["远程过程调用", "Netty EventLoop", "序列化协议", "粘包半包", "RPC 超时"]
 ---
 

@@ -4,8 +4,8 @@ draft: false
 knowledge:
   id: basic-knowledge.nosql.redis.data-structure
   type: concept
-description: "Redis 数据类型规定命令语义，内部编码决定存储方式。本文以 Redis 6、7 讲解字符串、列表、集合与有序集合等结构。本文适合准备缓存面试的读者。读者可练习根据查询需求选类型。读者还可分析紧凑编码、渐进扩容和游标遍历成本。"
-keywords: ["Redis 底层结构", "ziplist", "listpack", "跳表", "渐进式 rehash"]
+description: "以 Redis 6 和 7 讲解字符串、列表、哈希、集合与有序集合的命令语义和内部编码，说明紧凑结构的版本差异。介绍字典渐进扩容、游标遍历与专用操作，帮助准备缓存面试的读者按访问需求选择类型，分析编码转换、元素规模和查询复杂度的关系。"
+keywords: ["Redis 底层结构", "ziplist", "listpack", "跳表", "渐进式 rehash", "SCAN"]
 ---
 
 # Redis 数据结构

@@ -3,7 +3,7 @@ sidebar_position: 4
 knowledge:
   id: basic-knowledge.java.data-access.connection-pool-capacity-timeout-leaks
   type: concept
-description: "数据库连接池复用物理连接并限制并发占用。本文以 HikariCP 讲解代理归还、容量、超时、生命周期与泄漏检测。本文适合准备 Java 后端面试的读者。读者可练习结合数据库承载能力确定池大小，并根据指标定位连接耗尽。"
+description: "以 HikariCP 介绍数据库连接池的借出、代理归还和物理连接复用，讲解容量、超时预算与生命周期配置。结合等待指标、慢查询和泄漏检测，帮助准备 Java 后端面试的读者判断连接耗尽原因，权衡扩池与数据库并发，并解释内部性能机制及连接轮换。"
 keywords: ["HikariCP", "连接池大小", "连接泄漏", "连接池超时", "数据库连接耗尽"]
 ---
 

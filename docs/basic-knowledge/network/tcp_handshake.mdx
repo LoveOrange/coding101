@@ -4,7 +4,7 @@ draft: false
 knowledge:
   id: basic-knowledge.network.tcp-handshake
   type: concept
-description: "TCP 连接通过握手同步状态，并分别关闭两个传输方向。本文讲解三次握手、四次挥手、监听队列及连接状态。本文适合准备网络面试的读者。读者可练习推演握手丢包、半关闭和复位，并分析 TIME_WAIT 与 CLOSE_WAIT 两种连接状态的成因。"
+description: "讲解 TCP 三次握手、初始序列号和双向关闭的状态变化，分析握手丢包、半关闭与连接复位。结合 Linux 监听队列和连接复用，帮助准备网络面试的读者推演半连接、等待关闭及超时等待的成因，定位连接堆积，并区分传输结束与业务处理完成。"
 keywords: ["TCP 三次握手", "TCP 四次挥手", "TIME_WAIT", "CLOSE_WAIT", "半连接队列"]
 ---
 

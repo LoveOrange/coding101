@@ -3,7 +3,7 @@ sidebar_position: 13
 knowledge:
   id: basic-knowledge.java.concurrency.readwritelock-stampedlock
   type: concept
-description: "读写锁支持共享读取和独占更新。本文比较读写锁与 StampedLock，讲解锁降级、模式转换和乐观读验证。本文适合准备 Java 并发面试的读者。读者可练习分析读多写少的适用条件。读者还可区分锁方案、不可变快照和并发容器。"
+description: "介绍读写锁如何协调共享读取与独占更新，讲解读锁、写锁、锁降级和模式转换。比较 StampedLock 的乐观读取与验证、不可变快照和并发容器，帮助准备 Java 并发面试的读者分析读多写少场景的成本，判断读到的数据何时有效及锁转换失败后的处理。"
 keywords: ["ReadWriteLock", "StampedLock", "锁降级", "乐观读", "读写锁面试"]
 ---
 

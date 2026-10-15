@@ -3,7 +3,7 @@ sidebar_position: 4
 knowledge:
   id: basic-knowledge.java.concurrency.safe-publication-escape-final
   type: concept
-description: "安全发布让其他线程取得已初始化的对象。本文讲解构造期间逸出、final 字段、双重检查与静态持有者。本文适合准备 Java 并发面试的读者。读者可练习从初始化和同步关系分析对象可见性。读者还可检查单例发布的正确条件。"
+description: "介绍安全发布如何让其他线程看到对象已经完成的初始化，分析未同步共享引用和构造期间对象逸出的风险。讲解最终字段的初始化保证、双重检查锁定与静态持有者，帮助准备 Java 并发面试的读者推导对象可见性，判断单例与不可变状态的正确发布条件。"
 keywords: ["对象安全发布", "this 逸出", "final 字段", "双重检查锁定", "DCL"]
 ---
 

@@ -3,7 +3,7 @@ sidebar_position: 24
 knowledge:
   id: basic-knowledge.java.jvm.heap-dumps-memory-leaks
   type: concept
-description: "堆转储保存采集时刻的对象和引用关系。本文讲解类直方图、支配树、采集成本与多时点对比，区分泄漏和分配峰值。本文适合准备 JVM 排障面试的读者。读者可练习沿持有关系定位大对象，并用回收与增长证据验证修复。"
+description: "介绍堆转储如何记录 Java 对象与引用关系，比较类直方图、支配树和多时点快照的分析用途。区分内存泄漏、正常容量需求与分配峰值，帮助准备生产排障面试的读者沿持有链定位缓存、队列和任务的保留原因，并评估采集成本及修复后的增长变化。"
 keywords: ["Heap Dump", "Dominator Tree", "Java 内存泄漏", "对象引用链"]
 ---
 

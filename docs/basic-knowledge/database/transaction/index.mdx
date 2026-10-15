@@ -4,7 +4,7 @@ draft: false
 knowledge:
   id: basic-knowledge.database.transaction
   type: concept
-description: "数据库事务为一组读写规定提交与失败边界。本文以 MySQL 8.0 讲解 ACID、隔离级别、并发异常与提交持久性。本文适合准备后端面试的读者。读者可练习分析条件更新、自动提交和结果确认，并区分不同隔离保证。"
+description: "以 MySQL 8.0 InnoDB 介绍数据库事务的原子性、一致性、隔离性和持久性，比较四种隔离级别与并发异常。讲解条件更新、自动提交、失败回滚和提交确认，帮助准备后端面试的读者推演丢失更新与事务边界，解释日志配置、组提交及断线后的结果判断。"
 keywords: ["ACID", "事务隔离级别", "MySQL 事务", "丢失更新", "提交持久性"]
 ---
 

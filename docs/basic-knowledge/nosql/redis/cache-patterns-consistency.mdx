@@ -3,7 +3,7 @@ sidebar_position: 4
 knowledge:
   id: basic-knowledge.nosql.redis.cache-patterns-consistency
   type: concept
-description: "缓存一致性处理缓存副本与权威数据的差异。本文讲解 Cache-aside、读写顺序、旧值回填、可靠失效和多级缓存。本文适合准备后端面试的读者。读者可练习推演并发更新与故障恢复。读者可分析版本水位、强一致读取和缓存指标。"
+description: "讲解缓存一致性中的旁路缓存、数据库更新与失效顺序，推演并发读取造成的旧值回填。介绍版本水位、可靠失效事件和多级缓存，帮助准备后端面试的读者比较直接更新、延迟删除与强一致读取的条件，结合监控和故障恢复分析缓存副本的有效范围。"
 keywords: ["Cache-aside", "缓存双写一致性", "延迟双删分析", "缓存失效", "旧值回填"]
 ---
 

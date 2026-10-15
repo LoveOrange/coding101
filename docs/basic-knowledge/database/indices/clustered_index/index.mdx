@@ -4,7 +4,7 @@ draft: false
 knowledge:
   id: basic-knowledge.database.indices.clustered-index
   type: concept
-description: "聚簇索引把行数据组织在索引叶子中。本文以 MySQL 8.0 InnoDB 讲解聚簇键选择、二级索引回表与主键维护。本文适合准备数据库面试的读者。读者可练习比较主键宽度、更新和范围访问对存储及查询成本的影响。"
+description: "以 MySQL 8.0 InnoDB 介绍聚簇索引如何组织行数据，说明没有显式主键时的选择规则。讲解二级索引、回表、覆盖查询和主键维护，帮助准备数据库面试的读者比较主键宽度、更新与范围访问的成本，并判断覆盖查询仍需访问聚簇记录的条件。"
 keywords: ["Clustered Index", "InnoDB 主键", "二级索引回表", "聚簇键选择"]
 ---
 

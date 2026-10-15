@@ -3,7 +3,7 @@ sidebar_position: 8
 knowledge:
   id: basic-knowledge.java.spring.declarative-transaction-execution
   type: concept
-description: "Spring 事务通过拦截器和事务管理器控制资源提交。本文讲解 JDBC 本地事务的传播、隔离、回滚与提交后处理。本文适合准备 Spring 面试的读者。读者可练习沿代理调用推演连接上下文。读者还可分析事务边界和提交失败的结果。"
+description: "以 Spring 6.2 的 JDBC 本地事务讲解代理、拦截器、事务管理器和连接上下文的协作过程。比较传播、隔离、回滚规则与提交后事件，帮助准备后端面试的读者推演事务边界，分析自调用、保存点、独立事务及提交失败对数据库操作结果的影响。"
 keywords: ["Transactional", "事务传播", "事务回滚", "Spring 事务失效", "事务管理器"]
 ---
 

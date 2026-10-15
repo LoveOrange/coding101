@@ -3,7 +3,7 @@ sidebar_position: 3
 knowledge:
   id: basic-knowledge.database.transaction.innodb-locking-ranges
   type: concept
-description: "InnoDB 锁通过索引记录与区间协调并发写入。本文讲解 MySQL 8.0 的记录锁、间隙锁、临键锁和扫描范围。本文适合准备数据库面试的读者。读者可使用双会话实验推演锁定区间。读者还可练习根据等待证据分析查询阻塞。"
+description: "以 MySQL 8.0 介绍 InnoDB 的记录锁、间隙锁、临键锁和插入意向锁，按索引路径与隔离级别推演加锁范围。通过唯一键和非唯一范围查询的双会话实验，帮助准备数据库面试的读者核对阻塞证据，区分死锁与超时，并选择立即失败或跳过锁定行的方式。"
 keywords: ["记录锁", "间隙锁", "Next-key lock", "插入意向锁", "MySQL 锁范围"]
 ---
 

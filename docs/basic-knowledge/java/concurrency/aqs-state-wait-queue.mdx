@@ -3,8 +3,8 @@ sidebar_position: 11
 knowledge:
   id: basic-knowledge.java.concurrency.aqs-state-wait-queue
   type: concept
-description: "AQS 用同步状态和等待队列组织阻塞同步器。本文讲解独占与共享获取、中断超时、取消及 Condition 队列。本文适合准备 Java 并发面试的读者。读者可练习解释状态获取和唤醒流程，并区分同步队列与条件等待队列。"
-keywords: ["AbstractQueuedSynchronizer", "AQS 原理", "同步队列", "Condition", "state"]
+description: "以 Java 17 和 21 介绍 AQS 的同步状态、等待队列及子类职责，比较独占获取和共享获取。讲解中断、超时、取消、条件队列与线程唤醒的关系，帮助准备并发面试的读者推演获取和释放流程，区分等待许可、条件通知与实际获得锁的时机。"
+keywords: ["AbstractQueuedSynchronizer", "AQS 原理", "同步队列", "Condition", "park 与 unpark"]
 ---
 
 # AQS

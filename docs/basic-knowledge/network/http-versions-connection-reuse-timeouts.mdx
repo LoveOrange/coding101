@@ -3,7 +3,7 @@ sidebar_position: 6
 knowledge:
   id: basic-knowledge.network.http-versions-connection-reuse-timeouts
   type: concept
-description: "HTTP 定义请求与响应的通信语义。本文比较不同协议版本的连接复用，讲解连接池、超时、重试和分段耗时。本文适合准备后端面试的读者。读者可练习分析多路复用与队头阻塞。读者还可根据调用阶段判断连接和请求的失败边界。"
+description: "比较 HTTP 各版本的持久连接、多路复用与队头阻塞，说明连接池如何影响请求并发和资源占用。讲解分阶段超时、调用截止时间、重试与耗时指标，帮助准备后端面试的读者分析连接和请求失败的边界，并根据业务副作用选择重试及连接复用方式。"
 keywords: ["HTTP/1.1", "HTTP/2", "HTTP/3", "QUIC", "连接复用", "HTTP 超时"]
 ---
 

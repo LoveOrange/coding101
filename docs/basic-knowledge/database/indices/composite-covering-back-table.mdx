@@ -3,7 +3,7 @@ sidebar_position: 4
 knowledge:
   id: basic-knowledge.database.indices.composite-covering-back-table
   type: concept
-description: "联合索引按列顺序组织键，覆盖索引提供查询所需的列。本文讲解 MySQL 8.0 的范围定位、回表、索引下推与排序。本文适合准备数据库面试的读者。读者可结合执行证据推演等值、范围和分页条件下的访问过程。"
+description: "以 MySQL 8.0 InnoDB 讲解联合索引的列顺序与覆盖索引的查询范围，区分范围定位、下推过滤和回表。结合等值、范围、排序与分页条件推演访问路径，帮助准备数据库面试的读者理解最左前缀的作用，比较扫描与取列成本，并通过执行证据验证判断。"
 keywords: ["最左前缀", "覆盖查询", "索引下推", "ICP", "MySQL 回表"]
 ---
 

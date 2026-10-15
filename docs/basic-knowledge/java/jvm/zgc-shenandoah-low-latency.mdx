@@ -3,7 +3,7 @@ sidebar_position: 15
 knowledge:
   id: basic-knowledge.java.jvm.zgc-shenandoah-low-latency
   type: concept
-description: "低延迟垃圾收集器通过并发标记和对象移动缩短暂停。本文比较 ZGC 与 Shenandoah，讲解分配余量和资源成本。本文适合准备 JVM 面试的读者。读者可练习根据延迟目标选择收集器。读者还可分别验证 GC 停顿与请求延迟的变化。"
+description: "比较 ZGC 与 Shenandoah 通过并发标记和移动对象缩短停顿的方式，介绍 Java 17 和 21 的相关配置。讲解引用屏障、分配余量和堆上限，帮助准备虚拟机面试的读者权衡处理器、吞吐与内存成本，并分别验证垃圾回收暂停和业务请求延迟的变化。"
 keywords: ["ZGC", "Shenandoah", "并发重定位", "低停顿 GC", "分配余量"]
 ---
 

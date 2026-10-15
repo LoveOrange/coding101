@@ -3,7 +3,7 @@ sidebar_position: 6
 knowledge:
   id: basic-knowledge.operating-system.io-models
   type: concept
-description: "I/O 模型描述等待数据和接收结果的方式。本文以 Linux socket 讲解阻塞、非阻塞、就绪与完成，覆盖读取结果和部分写入。本文适合准备系统面试的读者。读者可练习区分等待阶段与数据传输。读者还可分析系统调用返回后的处理责任。"
+description: "以 Linux 套接字讲解 I/O 模型中的等待数据、执行读取和接收结果，区分阻塞、非阻塞、同步与异步。分析就绪通知、读取返回值和部分写入，帮助准备系统面试的读者推演调用者何时等待，判断返回后仍需完成的读写工作，并处理数据尚未就绪和连接结束的情况。"
 keywords: ["阻塞 I/O", "非阻塞 I/O", "同步异步 I/O", "socket 读写"]
 ---
 

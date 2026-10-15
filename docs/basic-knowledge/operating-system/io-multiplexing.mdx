@@ -3,7 +3,7 @@ sidebar_position: 7
 knowledge:
   id: basic-knowledge.operating-system.io-multiplexing
   type: concept
-description: "I/O 多路复用让线程同时等待多个对象就绪。本文比较 Linux select、poll 与 epoll 接口，讲解水平触发、边缘触发和单次通知。本文适合准备网络服务面试的读者。读者可练习组织事件循环，并分析工作线程与读写处理的配合。"
+description: "介绍 I/O 多路复用如何让线程同时等待多个对象就绪，比较 Linux 的选择、轮询和事件通知接口。讲解水平触发、边缘触发与单次通知，帮助准备网络服务面试的读者组织事件循环，协调工作线程和非阻塞读写，并分析重复通知与未读完数据的处理条件。"
 keywords: ["select", "poll", "epoll", "LT 与 ET", "事件循环"]
 ---
 

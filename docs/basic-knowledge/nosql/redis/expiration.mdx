@@ -2,7 +2,7 @@
 knowledge:
   id: basic-knowledge.nosql.redis.expiration
   type: concept
-description: "Redis 过期通过 TTL 控制键的有效期。本文以 Redis 6、7 讲解期限设置、更新规则、惰性与主动清理，以及时钟影响。本文适合准备缓存面试的读者。读者可练习推演覆盖写入后的有效期。读者还可分析过期通知与任务调度的边界。"
+description: "以 Redis 6 和 7 讲解键的有效期设置、覆盖更新和过期清理，说明惰性删除、主动过期及系统时钟的影响。结合写入值与期限的操作顺序，帮助准备缓存面试的读者推演键何时失效，区分逻辑过期和实际清理，并判断过期通知用于任务调度的限制。"
 keywords: ["TTL", "EXPIRE", "Redis 过期删除", "惰性删除", "主动过期"]
 ---
 

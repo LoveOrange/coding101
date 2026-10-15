@@ -4,7 +4,7 @@ draft: false
 knowledge:
   id: basic-knowledge.nosql.redis.persistence
   type: concept
-description: "Redis 持久化保存恢复数据，复制和集群提供副本与分片。本文讲解 快照、追加日志、哨兵、哈希槽及客户端重定向。本文适合准备缓存面试的读者。读者可结合 Redis 6、7 分析恢复点、复制确认、故障切换和网络分区的边界。"
+description: "以 Redis 6 和 7 讲解快照、追加日志、主从复制与集群分片，说明日志重写、恢复顺序及哈希槽。结合哨兵切换、复制确认、客户端重定向和网络分区，帮助准备后端面试的读者分析数据恢复点，区分副本确认与落盘，并判断多键操作和故障转移的边界。"
 keywords: ["RDB 与 AOF", "Redis Sentinel", "Redis Cluster", "哈希槽", "MOVED 与 ASK"]
 ---
 

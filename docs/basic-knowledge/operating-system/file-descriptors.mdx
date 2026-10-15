@@ -3,7 +3,7 @@ sidebar_position: 5
 knowledge:
   id: basic-knowledge.operating-system.file-descriptors
   type: concept
-description: "文件描述符是进程引用已打开 I/O 对象的编号。本文以 Linux 讲解引用层次、生命周期、关闭责任、配额与继承。本文适合准备系统面试的读者。读者可练习区分描述符和打开文件状态。读者还可分析泄漏、共享偏移与容量耗尽。"
+description: "以 Linux 介绍文件描述符对文件、套接字和管道的引用方式，区分进程中的编号与已打开对象状态。讲解生命周期、共享偏移、关闭责任、配额及继承，帮助准备系统面试的读者分析资源泄漏和容量耗尽，解释描述符复制后为何仍可能共享同一读写位置。"
 keywords: ["Linux fd", "文件描述符泄漏", "打开文件表", "ulimit", "socket 描述符"]
 ---
 

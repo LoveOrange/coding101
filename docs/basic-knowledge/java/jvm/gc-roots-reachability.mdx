@@ -3,8 +3,8 @@ sidebar_position: 11
 knowledge:
   id: basic-knowledge.java.jvm.gc-roots-reachability
   type: concept
-description: "GC Roots 是垃圾回收遍历对象图的起点。本文讲解根对象来源、可达性、引用强度、引用队列和类卸载。本文适合准备 JVM 面试的读者。读者可练习分析循环引用和内存泄漏。读者还可根据堆中的持有链判断对象保留及清理边界。"
-keywords: ["可达性分析", "强软弱虚引用", "ReferenceQueue", "GC 根对象"]
+description: "介绍 GC Roots 与对象可达性分析，说明根的来源以及强、软、弱、虚引用的不同作用。结合循环引用、弱键反向持有、引用队列和资源清理，帮助准备 Java 虚拟机面试的读者沿引用链判断对象为何保留，区分可达对象泄漏与可回收对象，并理解类卸载条件。"
+keywords: ["可达性分析", "强软弱虚引用", "ReferenceQueue", "GC 根对象", "类卸载"]
 ---
 
 # GC Roots

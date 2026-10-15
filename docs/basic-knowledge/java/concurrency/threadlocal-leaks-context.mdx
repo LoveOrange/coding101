@@ -3,7 +3,7 @@ sidebar_position: 20
 knowledge:
   id: basic-knowledge.java.concurrency.threadlocal-leaks-context
   type: concept
-description: "ThreadLocal 为线程保存独立的值。本文讲解弱引用键、值保留、线程池复用和跨任务上下文。内容还覆盖嵌套恢复与清理。本文适合准备 Java 并发面试的读者。读者可练习分析内存泄漏的条件，并检查上下文传播和生命周期。"
+description: "介绍 ThreadLocal 在线程中保存独立值的结构，讲解弱引用键、值保留和线程池复用造成的内存与上下文问题。覆盖清理、跨线程传递、子线程继承和嵌套恢复，帮助准备 Java 并发面试的读者分析泄漏条件，判断上下文生命周期及虚拟线程中的使用成本。"
 keywords: ["ThreadLocal 内存泄漏", "ThreadLocalMap", "线程上下文", "remove 清理"]
 ---
 

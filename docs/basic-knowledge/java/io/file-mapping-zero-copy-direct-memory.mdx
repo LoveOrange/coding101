@@ -3,7 +3,7 @@ sidebar_position: 3
 knowledge:
   id: basic-knowledge.java.io.file-mapping-zero-copy-direct-memory
   type: concept
-description: "零拷贝通过减少数据搬运降低 I/O 成本。本文比较通道传输、文件映射与直接缓冲区。内容包括复制路径、释放时机和验证指标。本文适合准备 Java 性能面试的读者。读者可练习判断不同机制的适用场景，并分析内存与吞吐代价。"
+description: "介绍零拷贝如何减少文件传输中的数据副本，比较通道传输、内存映射和直接缓冲区的复制路径。讲解部分传输、平台差异、映射大小与释放时机，帮助准备 Java 性能面试的读者分析内存和吞吐代价，依据测量结果选择机制，并判断强制写回与事务提交的差异。"
 keywords: ["Zero Copy", "FileChannel.transferTo", "mmap", "DirectByteBuffer"]
 ---
 

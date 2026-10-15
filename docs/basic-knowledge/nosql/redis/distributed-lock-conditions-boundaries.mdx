@@ -3,7 +3,7 @@ sidebar_position: 6
 knowledge:
   id: basic-knowledge.nosql.redis.distributed-lock-conditions-boundaries
   type: concept
-description: "分布式锁协调多个进程对共享资源的操作。本文以 Redis 6、7 讲解原子加锁、所有者校验、租约、续租和过期请求。本文适合准备后端面试的读者。读者可练习推演故障转移与锁失效，并分析 fencing token 和业务幂等的职责。"
+description: "以 Redis 6 和 7 讲解分布式锁的原子加锁、所有者校验、租约和续租，分析锁过期后的旧请求及主从切换。结合资源端版本校验、多资源加锁和业务幂等，帮助准备后端面试的读者推演并发故障，明确互斥的成立条件，并判断重复操作需要哪些额外保护。"
 keywords: ["Redis 分布式锁", "SET NX PX", "锁续租", "fencing token", "租约"]
 ---
 

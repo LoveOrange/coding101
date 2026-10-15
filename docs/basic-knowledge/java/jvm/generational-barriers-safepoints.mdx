@@ -3,7 +3,7 @@ sidebar_position: 12
 knowledge:
   id: basic-knowledge.java.jvm.generational-barriers-safepoints
   type: concept
-description: "分代回收按对象寿命组织垃圾回收。本文讲解跨代引用、写屏障、并发标记与安全点，分析晋升和分配失败。本文适合准备 JVM 面试的读者。读者可练习解释对象图变化时的引用维护。读者还可结合日志区分暂停阶段和并发工作。"
+description: "介绍分代回收的对象寿命假设，讲解跨代引用、写屏障、并发标记和安全点如何配合。比较快照与增量更新，结合晋升和分配失败分析堆余量，帮助准备 Java 虚拟机面试的读者解释对象图变化时的引用维护，并从日志区分暂停阶段与并发工作。"
 keywords: ["分代垃圾回收", "写屏障", "安全点", "STW", "跨代引用"]
 ---
 

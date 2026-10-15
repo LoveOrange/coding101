@@ -3,7 +3,7 @@ sidebar_position: 5
 knowledge:
   id: basic-knowledge.database.transaction.deadlock-detection-timeout-retry
   type: concept
-description: "数据库死锁源于事务之间的循环等待。本文讲解 MySQL 8.0 的检测、超时、错误码和完整事务重试，提供双会话复现。本文适合准备后端面试的读者。读者可练习读取死锁日志，并分析锁顺序、回滚范围和外部副作用。"
+description: "以 MySQL 8.0 InnoDB 讲解数据库死锁的循环等待、检测机制和锁等待超时，通过双会话实验复现故障。比较错误码对应的回滚范围，帮助准备后端面试的读者读取死锁日志，分析锁顺序与完整事务重试，并处理事务外副作用和重复执行风险。"
 keywords: ["InnoDB 死锁", "锁等待超时", "事务重试", "死锁日志"]
 ---
 

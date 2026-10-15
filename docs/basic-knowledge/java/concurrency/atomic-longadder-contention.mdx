@@ -3,7 +3,7 @@ sidebar_position: 9
 knowledge:
   id: basic-knowledge.java.concurrency.atomic-longadder-contention
   type: concept
-description: "Java 原子类为独立状态提供原子读改写。本文比较 CAS 循环、精确计数和 LongAdder 分散累加，讲解求和与清零语义。本文适合准备并发面试的读者。读者可练习根据竞争和读取要求选择计数方案，并分析统计窗口的边界。"
+description: "介绍 Java 原子类如何完成独立状态的原子读改写，比较 AtomicLong 的精确更新与 LongAdder 的分散累加。讲解竞争重试、求和、清零和不可变多字段状态，帮助准备并发面试的读者按读取一致性与负载选择计数方案，分析统计窗口的边界。"
 keywords: ["AtomicLong", "LongAdder", "AtomicReference", "原子计数", "CAS 竞争"]
 ---
 

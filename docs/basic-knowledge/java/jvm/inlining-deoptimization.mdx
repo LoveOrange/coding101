@@ -3,7 +3,7 @@ sidebar_position: 17
 knowledge:
   id: basic-knowledge.java.jvm.inlining-deoptimization
   type: concept
-description: "方法内联把被调用代码纳入调用点，去优化恢复失效的投机执行。本文讲解内联条件、假设检查、状态恢复与编译日志。本文适合准备 JVM 面试的读者。读者可练习分析优化收益和触发边界，并解释运行时类型变化的影响。"
+description: "介绍方法内联如何把被调用代码纳入调用点，说明即时编译器跨方法优化的收益与限制。讲解投机内联、类型假设检查、栈帧和对象恢复，帮助准备 Java 虚拟机面试的读者分析去优化触发条件，结合编译日志解释运行时类型变化和性能波动。"
 keywords: ["JIT 内联", "Deoptimization", "投机优化", "uncommon trap"]
 ---
 

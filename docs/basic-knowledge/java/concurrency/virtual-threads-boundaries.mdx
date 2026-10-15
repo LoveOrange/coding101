@@ -3,7 +3,7 @@ sidebar_position: 18
 knowledge:
   id: basic-knowledge.java.concurrency.virtual-threads-boundaries
   type: concept
-description: "虚拟线程以较低线程成本承载阻塞任务。本文围绕 Java 21 讲解载体线程、pinning、上下文与容量边界。本文适合准备并发面试的读者。读者可练习判断阻塞场景的适用性。读者还可分析迁移后的资源限制、观测和退出行为。"
+description: "以 Java 21 讲解虚拟线程与载体线程的调度关系，说明大量阻塞任务中的适用条件和资源限制。覆盖阻塞绑定、线程上下文、迁移验证、观测与退出，帮助准备并发面试的读者分析使用成本，判断线程数量增加后数据库连接和外部服务仍需怎样限制并发。"
 keywords: ["Java 21 虚拟线程", "Virtual Threads", "carrier 线程", "pinning", "虚拟线程面试"]
 ---
 

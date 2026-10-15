@@ -3,7 +3,7 @@ sidebar_position: 21
 knowledge:
   id: basic-knowledge.java.concurrency.lock-contention-context-switch-benchmark
   type: concept
-description: "锁竞争增加线程排队和调度开销。本文讲解线程转储、JFR 等待事件、上下文切换与并发基准。本文还说明采样和阈值边界。本文适合准备 Java 性能面试的读者。读者可练习串联故障时间线，并使用测量结果验证降低竞争的效果。"
+description: "讲解锁竞争造成的排队、等待和调度成本，沿故障时间线结合线程转储与 JFR 定位争用位置和耗时。说明上下文切换、事件阈值与采样的边界，帮助准备 Java 性能面试的读者使用并发基准和服务压测验证优化，避免仅凭线程状态判断性能原因。"
 keywords: ["Java 锁竞争", "JFR", "线程转储", "上下文切换", "并发基准测试"]
 ---
 

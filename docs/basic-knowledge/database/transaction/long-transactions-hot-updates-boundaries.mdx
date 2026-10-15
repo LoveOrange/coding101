@@ -3,7 +3,7 @@ sidebar_position: 6
 knowledge:
   id: basic-knowledge.database.transaction.long-transactions-hot-updates-boundaries
   type: concept
-description: "长事务延长锁、连接和历史版本的占用时间。本文讲解 MySQL 8.0 的版本清理、元数据锁、远程调用与热点更新。本文适合准备后端面试的读者。读者可练习拆分批量任务，分析热点行竞争，并通过监控定位资源保留。"
+description: "以 MySQL 8.0 InnoDB 讲解长事务对锁、连接、历史版本和元数据锁的占用，分析远程调用与热点行更新的影响。结合批量任务拆分、进度恢复和监控证据，帮助准备后端面试的读者定位资源保留，解释只读事务的成本，并判断减少竞争与缩短事务的方案。"
 keywords: ["MySQL 长事务", "purge", "元数据锁", "热点行更新", "事务拆分"]
 ---
 
