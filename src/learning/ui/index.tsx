@@ -2,6 +2,7 @@ import {type ReactNode, useEffect, useRef} from 'react';
 import clsx from 'clsx';
 import Link from '@docusaurus/Link';
 
+import {useCompanies} from '../companies';
 import {CARD_STATUS_LABELS, type CardStatus, PRIORITY_LABELS, type TopicStatus} from '../content';
 import type {Block, Inline, Priority} from '../types';
 import styles from './styles.module.css';
@@ -25,8 +26,33 @@ export function PriorityDots({priority}: {priority?: Priority}) {
   );
 }
 
-export function Companies({names, selfTest = false, tone = 'fill'}: {names: string[]; selfTest?: boolean; tone?: 'fill' | 'paper'}) {
-  const labels = selfTest ? ['本站自测'] : names.length ? names : ['公司未核验'];
+/**
+ * Where a question was asked: names for Pro (fetched from the account service),
+ * a count teaser otherwise, and 本站自测 for site-authored questions.
+ */
+export function Companies({
+  cardId,
+  selfTest = false,
+  tone = 'fill',
+  limit,
+}: {
+  cardId: string;
+  selfTest?: boolean;
+  tone?: 'fill' | 'paper';
+  limit?: number;
+}) {
+  const info = useCompanies(cardId);
+  const labels = selfTest
+    ? ['本站自测']
+    : info.kind === 'names'
+      ? info.names.length
+        ? info.names.slice(0, limit)
+        : ['公司未核验']
+      : info.kind === 'count'
+        ? [info.count > 0 ? `${info.count} 家公司考过 · Pro` : '公司未核验']
+        : [];
+  // Not loaded (or no account service in this build): show nothing rather than guess.
+  if (!labels.length) return null;
   return (
     <span className={styles.companies}>
       {labels.map((name) => (

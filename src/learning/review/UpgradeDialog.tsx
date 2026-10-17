@@ -1,6 +1,6 @@
 import Link from '@docusaurus/Link';
 
-import {accessOf, PLAN_PRICES, useLearner} from '../store';
+import {accessOf, priceOf, useLearner} from '../store';
 import {Dialog} from '../ui';
 import styles from './review.module.css';
 
@@ -8,12 +8,10 @@ import styles from './review.module.css';
 export function UpgradeDialog({open, onClose}: {open: boolean; onClose: () => void}) {
   const learner = useLearner();
   const access = accessOf(learner);
-  const prices = PLAN_PRICES[learner.region];
   const expired = access === 'readonly';
-  const monthly = learner.region === 'cn' ? prices['code-monthly'] : prices.monthly;
-  const yearly = learner.region === 'cn' ? prices['code-yearly'] : prices.yearly;
-  // TODO(copy): per-month figure follows the design draft's yearly price.
-  const perMonth = learner.region === 'cn' ? '约 ¥8.25 / 月' : '约 $2.42 / 月';
+  const monthly = priceOf('monthly');
+  const yearly = priceOf('yearly');
+  const perMonth = `约 $${(Number(yearly.slice(1)) / 12).toFixed(2)} / 月`;
 
   return (
     <Dialog open={open} onClose={onClose} width={520} labelledBy="upgrade-title">

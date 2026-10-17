@@ -3,7 +3,8 @@ import clsx from 'clsx';
 import Link from '@docusaurus/Link';
 import {useHistory, useLocation} from '@docusaurus/router';
 
-import {daysBetween, learnerActions, PLAN_LABELS, PLAN_PRICES, today, useLearner} from '../store';
+import {ApiError} from '../api';
+import {daysBetween, isOffline, learnerActions, PLAN_LABELS, priceOf, today, useLearner} from '../store';
 import type {Subscription} from '../types';
 import {Dialog, formatDate} from '../ui';
 import styles from './account.module.css';
@@ -50,8 +51,7 @@ export function AccountLayout({active, children}: {active: Section; children: Re
           type="button"
           className={styles.signOut}
           onClick={() => {
-            learnerActions.signOut();
-            history.push('/');
+            void learnerActions.signOut().then(() => history.push('/'));
           }}>
           退出登录
         </button>
@@ -61,37 +61,133 @@ export function AccountLayout({active, children}: {active: Section; children: Re
   );
 }
 
-/** Mock sign-in: creates a local account; first sign-in starts the 7-day trial. */
+const RESEND_SECONDS = 60;
+
+function signInError(error: unknown, step: 'email' | 'code'): string {
+  if (!(error instanceof ApiError)) return '暂时连不上账户服务，请稍后再试。';
+  if (error.status === 429) return '尝试太频繁，请稍后再试。';
+  if (step === 'code' && (error.status === 400 || error.status === 401 || error.status === 403)) {
+    return '验证码不对或已过期，请重新获取。';
+  }
+  return '没能完成，请检查后重试。';
+}
+
+/**
+ * Passwordless sign-in: email a 6-digit code, then enter it. The first sign-in
+ * creates the account and starts the 7-day trial.
+ */
 function SignIn() {
   const history = useHistory();
   const next = new URLSearchParams(useLocation().search).get('next');
+  const [step, setStep] = useState<'email' | 'code'>('email');
   const [email, setEmail] = useState('');
-  const [name, setName] = useState('');
-  const valid = /^\S+@\S+\.\S+$/.test(email);
+  const [code, setCode] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | undefined>();
+  const [resendAt, setResendAt] = useState(0);
+  const offline = isOffline();
+  const validEmail = /^\S+@\S+\.\S+$/.test(email);
+
+  const run = async (action: () => Promise<void>, failedStep: 'email' | 'code') => {
+    setBusy(true);
+    setError(undefined);
+    try {
+      await action();
+    } catch (caught) {
+      setError(signInError(caught, failedStep));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const sendCode = () =>
+    run(async () => {
+      await learnerActions.sendCode(email);
+      setResendAt(Date.now() + RESEND_SECONDS * 1000);
+      setStep('code');
+    }, 'email');
+
+  const verify = () =>
+    run(async () => {
+      await learnerActions.verifyCode(email, code.trim());
+      if (next?.startsWith('/')) history.push(next);
+    }, 'code');
+
   return (
     <main className={styles.signInPage}>
       <form
         className={styles.signIn}
         onSubmit={(event) => {
           event.preventDefault();
-          if (!valid) return;
-          learnerActions.signIn({email, name: name.trim() || email.split('@')[0]});
-          if (next?.startsWith('/')) history.push(next);
+          if (busy) return;
+          if (offline) void verify();
+          else if (step === 'email') {
+            if (validEmail) void sendCode();
+          } else if (/^\d{6}$/.test(code.trim())) void verify();
         }}>
         <span className={styles.signInTitle}>登录 Coding101</span>
-        <span className={styles.signInText}>文章全文免费阅读，无需登录。注册即 7 天完整 Pro，不绑卡。</span>
-        <label className={styles.field}>
-          <span>邮箱</span>
-          <input type="email" required value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@example.com" />
-        </label>
-        <label className={styles.field}>
-          <span>称呼（可选）</span>
-          <input value={name} onChange={(event) => setName(event.target.value)} placeholder="林同学" />
-        </label>
-        <button type="submit" className={styles.primaryWide} disabled={!valid}>
-          登录 / 注册
+        <span className={styles.signInText}>
+          {step === 'code'
+            ? `验证码已发送到 ${email}，10 分钟内有效。`
+            : '文章全文免费阅读，无需登录。首次登录即 7 天完整 Pro，不绑卡。'}
+        </span>
+        {step === 'email' ? (
+          <label className={styles.field}>
+            <span>邮箱</span>
+            <input type="email" required autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@example.com" />
+          </label>
+        ) : (
+          <label className={styles.field}>
+            <span>验证码</span>
+            <input
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              maxLength={6}
+              required
+              value={code}
+              onChange={(event) => setCode(event.target.value.replace(/\D/g, ''))}
+              placeholder="6 位数字"
+            />
+          </label>
+        )}
+        {error && (
+          <span className={styles.error} role="alert">
+            <b>!</b>
+            {error}
+          </span>
+        )}
+        <button
+          type="submit"
+          className={styles.primaryWide}
+          disabled={busy || !validEmail || (step === 'code' && code.trim().length !== 6)}>
+          {busy ? '请稍候…' : offline ? '登录' : step === 'email' ? '发送验证码' : '登录'}
         </button>
-        <span className={styles.signInNote}>原型模式：账户只保存在当前浏览器，不发送验证邮件。</span>
+        {offline ? (
+          <span className={styles.signInNote}>预览模式：账户只保存在当前浏览器。</span>
+        ) : (
+          step === 'code' && (
+            <span className={styles.signInNote}>
+              <button
+                type="button"
+                className={styles.textButton}
+                disabled={busy || Date.now() < resendAt}
+                onClick={() => void sendCode()}>
+                重新发送
+              </button>
+              {' · '}
+              <button
+                type="button"
+                className={styles.textButton}
+                onClick={() => {
+                  setStep('email');
+                  setCode('');
+                  setError(undefined);
+                }}>
+                换个邮箱
+              </button>
+            </span>
+          )
+        )}
       </form>
     </main>
   );
@@ -107,7 +203,13 @@ export function SubscriptionCard({variant = 'account'}: {variant?: 'account' | '
   const learner = useLearner();
   const sub = learner.subscription;
   const [dialog, setDialog] = useState<'renew' | 'payment' | undefined>();
-  const price = (s: Extract<Subscription, {status: 'pro'}>) => PLAN_PRICES[learner.region][s.plan];
+  const [failed, setFailed] = useState(false);
+  const price = (s: Extract<Subscription, {status: 'pro'}>) =>
+    s.plan === 'monthly' || s.plan === 'yearly' ? priceOf(s.plan) : '';
+  const act = (action: () => Promise<void>) => {
+    setFailed(false);
+    void action().catch(() => setFailed(true));
+  };
   const day = today();
 
   let card: ReactNode;
@@ -216,7 +318,7 @@ export function SubscriptionCard({variant = 'account'}: {variant?: 'account' | '
                 关闭自动续费
               </button>
             ) : (
-              <button type="button" className={styles.btnPaper} onClick={() => learnerActions.setAutoRenew(true)}>
+              <button type="button" className={styles.btnPaper} onClick={() => act(() => learnerActions.setAutoRenew(true))}>
                 重新开启续费
               </button>
             ))}
@@ -233,6 +335,11 @@ export function SubscriptionCard({variant = 'account'}: {variant?: 'account' | '
   return (
     <>
       {card}
+      {failed && (
+        <span className={styles.error} role="alert">
+          <b>!</b>暂时没能完成操作，请稍后再试。
+        </span>
+      )}
       <Dialog open={dialog === 'renew'} onClose={() => setDialog(undefined)} labelledBy="renew-title">
         <span id="renew-title" className={styles.dialogTitle}>
           关闭自动续费？
@@ -253,7 +360,7 @@ export function SubscriptionCard({variant = 'account'}: {variant?: 'account' | '
             type="button"
             className={styles.btnOutlineMuted}
             onClick={() => {
-              learnerActions.setAutoRenew(false);
+              act(() => learnerActions.setAutoRenew(false));
               setDialog(undefined);
             }}>
             确认关闭
@@ -264,10 +371,21 @@ export function SubscriptionCard({variant = 'account'}: {variant?: 'account' | '
         <span id="payment-title" className={styles.dialogTitle}>
           支付方式
         </span>
-        <span className={styles.dialogText}>原型模式：还没有接入支付，支付方式管理和重试扣款会在接入后提供。</span>
-        <button type="button" className={styles.btnOutlineMuted} onClick={() => setDialog(undefined)}>
-          知道了
-        </button>
+        <span className={styles.dialogText}>支付方式、发票和重试扣款在 Lemon Squeezy 的账单页管理，处理完回到这里即可。</span>
+        <div className={styles.dialogActions}>
+          <button
+            type="button"
+            className={styles.btnGreen}
+            onClick={() => {
+              act(() => learnerActions.openPortal());
+              setDialog(undefined);
+            }}>
+            打开账单页
+          </button>
+          <button type="button" className={styles.btnOutlineMuted} onClick={() => setDialog(undefined)}>
+            取消
+          </button>
+        </div>
       </Dialog>
     </>
   );

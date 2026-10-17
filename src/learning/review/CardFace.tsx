@@ -49,7 +49,7 @@ export function CardMeta({card, showCompanies = true}: {card: CardDetail; showCo
       </span>
       <div className={styles.metaRight}>
         <PriorityDots priority={article.priority} />
-        {showCompanies && <Companies names={card.companies} selfTest={card.selfTest} />}
+        {showCompanies && <Companies cardId={card.id} selfTest={card.selfTest} />}
       </div>
     </div>
   );
