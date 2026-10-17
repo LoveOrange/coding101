@@ -3,7 +3,8 @@ import clsx from 'clsx';
 import Link from '@docusaurus/Link';
 import {useHistory, useLocation} from '@docusaurus/router';
 
-import {daysBetween, learnerActions, PLAN_LABELS, PLAN_PRICES, today, useLearner} from '../store';
+import {ApiError} from '../api';
+import {daysBetween, isOffline, learnerActions, PLAN_LABELS, priceOf, today, useLearner} from '../store';
 import type {Subscription} from '../types';
 import {Dialog, formatDate} from '../ui';
 import styles from './account.module.css';
@@ -50,8 +51,7 @@ export function AccountLayout({active, children}: {active: Section; children: Re
           type="button"
           className={styles.signOut}
           onClick={() => {
-            learnerActions.signOut();
-            history.push('/');
+            void learnerActions.signOut().then(() => history.push('/'));
           }}>
           退出登录
         </button>
@@ -61,37 +61,100 @@ export function AccountLayout({active, children}: {active: Section; children: Re
   );
 }
 
-/** Mock sign-in: creates a local account; first sign-in starts the 7-day trial. */
+const MIN_PASSWORD = 8;
+
+function signInError(error: unknown, mode: 'signIn' | 'signUp'): string {
+  if (!(error instanceof ApiError)) return '暂时连不上账户服务，请稍后再试。';
+  if (mode === 'signIn' && error.status === 401) return '邮箱或密码不正确。';
+  if (mode === 'signUp' && error.status === 422) return '这个邮箱已经注册，请直接登录。';
+  if (error.status === 429) return '尝试太频繁，请稍后再试。';
+  return '没能完成，请检查后重试。';
+}
+
+/** Sign in or sign up with email and password; a new account starts the 7-day trial. */
 function SignIn() {
   const history = useHistory();
   const next = new URLSearchParams(useLocation().search).get('next');
+  const [mode, setMode] = useState<'signIn' | 'signUp'>('signIn');
   const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [name, setName] = useState('');
-  const valid = /^\S+@\S+\.\S+$/.test(email);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | undefined>();
+  const offline = isOffline();
+  const valid = /^\S+@\S+\.\S+$/.test(email) && (offline || password.length >= MIN_PASSWORD);
+  const signUp = mode === 'signUp';
+
+  const submit = async () => {
+    if (!valid || busy) return;
+    setBusy(true);
+    setError(undefined);
+    try {
+      if (signUp) await learnerActions.signUp(email, password, name.trim() || email.split('@')[0]);
+      else await learnerActions.signIn(email, password);
+      if (next?.startsWith('/')) history.push(next);
+    } catch (caught) {
+      setError(signInError(caught, mode));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <main className={styles.signInPage}>
       <form
         className={styles.signIn}
         onSubmit={(event) => {
           event.preventDefault();
-          if (!valid) return;
-          learnerActions.signIn({email, name: name.trim() || email.split('@')[0]});
-          if (next?.startsWith('/')) history.push(next);
+          void submit();
         }}>
-        <span className={styles.signInTitle}>登录 Coding101</span>
+        <span className={styles.signInTitle}>{signUp ? '注册 Coding101' : '登录 Coding101'}</span>
         <span className={styles.signInText}>文章全文免费阅读，无需登录。注册即 7 天完整 Pro，不绑卡。</span>
         <label className={styles.field}>
           <span>邮箱</span>
-          <input type="email" required value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@example.com" />
+          <input type="email" required autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@example.com" />
         </label>
-        <label className={styles.field}>
-          <span>称呼（可选）</span>
-          <input value={name} onChange={(event) => setName(event.target.value)} placeholder="林同学" />
-        </label>
-        <button type="submit" className={styles.primaryWide} disabled={!valid}>
-          登录 / 注册
+        {!offline && (
+          <label className={styles.field}>
+            <span>密码{signUp ? `（至少 ${MIN_PASSWORD} 位）` : ''}</span>
+            <input
+              type="password"
+              required
+              minLength={MIN_PASSWORD}
+              autoComplete={signUp ? 'new-password' : 'current-password'}
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+            />
+          </label>
+        )}
+        {(signUp || offline) && (
+          <label className={styles.field}>
+            <span>称呼（可选）</span>
+            <input value={name} onChange={(event) => setName(event.target.value)} placeholder="林同学" />
+          </label>
+        )}
+        {error && (
+          <span className={styles.error} role="alert">
+            <b>!</b>
+            {error}
+          </span>
+        )}
+        <button type="submit" className={styles.primaryWide} disabled={!valid || busy}>
+          {busy ? '请稍候…' : signUp ? '注册并开始试用' : '登录'}
         </button>
-        <span className={styles.signInNote}>原型模式：账户只保存在当前浏览器，不发送验证邮件。</span>
+        {offline ? (
+          <span className={styles.signInNote}>预览模式：账户只保存在当前浏览器。</span>
+        ) : (
+          <button
+            type="button"
+            className={styles.textButton}
+            onClick={() => {
+              setMode(signUp ? 'signIn' : 'signUp');
+              setError(undefined);
+            }}>
+            {signUp ? '已有账户？去登录' : '还没有账户？注册'}
+          </button>
+        )}
       </form>
     </main>
   );
@@ -107,7 +170,13 @@ export function SubscriptionCard({variant = 'account'}: {variant?: 'account' | '
   const learner = useLearner();
   const sub = learner.subscription;
   const [dialog, setDialog] = useState<'renew' | 'payment' | undefined>();
-  const price = (s: Extract<Subscription, {status: 'pro'}>) => PLAN_PRICES[learner.region][s.plan];
+  const [failed, setFailed] = useState(false);
+  const price = (s: Extract<Subscription, {status: 'pro'}>) =>
+    s.plan === 'monthly' || s.plan === 'yearly' ? priceOf(s.plan) : '';
+  const act = (action: () => Promise<void>) => {
+    setFailed(false);
+    void action().catch(() => setFailed(true));
+  };
   const day = today();
 
   let card: ReactNode;
@@ -216,7 +285,7 @@ export function SubscriptionCard({variant = 'account'}: {variant?: 'account' | '
                 关闭自动续费
               </button>
             ) : (
-              <button type="button" className={styles.btnPaper} onClick={() => learnerActions.setAutoRenew(true)}>
+              <button type="button" className={styles.btnPaper} onClick={() => act(() => learnerActions.setAutoRenew(true))}>
                 重新开启续费
               </button>
             ))}
@@ -233,6 +302,11 @@ export function SubscriptionCard({variant = 'account'}: {variant?: 'account' | '
   return (
     <>
       {card}
+      {failed && (
+        <span className={styles.error} role="alert">
+          <b>!</b>暂时没能完成操作，请稍后再试。
+        </span>
+      )}
       <Dialog open={dialog === 'renew'} onClose={() => setDialog(undefined)} labelledBy="renew-title">
         <span id="renew-title" className={styles.dialogTitle}>
           关闭自动续费？
@@ -253,7 +327,7 @@ export function SubscriptionCard({variant = 'account'}: {variant?: 'account' | '
             type="button"
             className={styles.btnOutlineMuted}
             onClick={() => {
-              learnerActions.setAutoRenew(false);
+              act(() => learnerActions.setAutoRenew(false));
               setDialog(undefined);
             }}>
             确认关闭
@@ -264,10 +338,21 @@ export function SubscriptionCard({variant = 'account'}: {variant?: 'account' | '
         <span id="payment-title" className={styles.dialogTitle}>
           支付方式
         </span>
-        <span className={styles.dialogText}>原型模式：还没有接入支付，支付方式管理和重试扣款会在接入后提供。</span>
-        <button type="button" className={styles.btnOutlineMuted} onClick={() => setDialog(undefined)}>
-          知道了
-        </button>
+        <span className={styles.dialogText}>支付方式、发票和重试扣款在 Lemon Squeezy 的账单页管理，处理完回到这里即可。</span>
+        <div className={styles.dialogActions}>
+          <button
+            type="button"
+            className={styles.btnGreen}
+            onClick={() => {
+              act(() => learnerActions.openPortal());
+              setDialog(undefined);
+            }}>
+            打开账单页
+          </button>
+          <button type="button" className={styles.btnOutlineMuted} onClick={() => setDialog(undefined)}>
+            取消
+          </button>
+        </div>
       </Dialog>
     </>
   );
