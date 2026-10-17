@@ -61,44 +61,57 @@ export function AccountLayout({active, children}: {active: Section; children: Re
   );
 }
 
-const MIN_PASSWORD = 8;
+const RESEND_SECONDS = 60;
 
-function signInError(error: unknown, mode: 'signIn' | 'signUp'): string {
+function signInError(error: unknown, step: 'email' | 'code'): string {
   if (!(error instanceof ApiError)) return '暂时连不上账户服务，请稍后再试。';
-  if (mode === 'signIn' && error.status === 401) return '邮箱或密码不正确。';
-  if (mode === 'signUp' && error.status === 422) return '这个邮箱已经注册，请直接登录。';
   if (error.status === 429) return '尝试太频繁，请稍后再试。';
+  if (step === 'code' && (error.status === 400 || error.status === 401 || error.status === 403)) {
+    return '验证码不对或已过期，请重新获取。';
+  }
   return '没能完成，请检查后重试。';
 }
 
-/** Sign in or sign up with email and password; a new account starts the 7-day trial. */
+/**
+ * Passwordless sign-in: email a 6-digit code, then enter it. The first sign-in
+ * creates the account and starts the 7-day trial.
+ */
 function SignIn() {
   const history = useHistory();
   const next = new URLSearchParams(useLocation().search).get('next');
-  const [mode, setMode] = useState<'signIn' | 'signUp'>('signIn');
+  const [step, setStep] = useState<'email' | 'code'>('email');
   const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [name, setName] = useState('');
+  const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | undefined>();
+  const [resendAt, setResendAt] = useState(0);
   const offline = isOffline();
-  const valid = /^\S+@\S+\.\S+$/.test(email) && (offline || password.length >= MIN_PASSWORD);
-  const signUp = mode === 'signUp';
+  const validEmail = /^\S+@\S+\.\S+$/.test(email);
 
-  const submit = async () => {
-    if (!valid || busy) return;
+  const run = async (action: () => Promise<void>, failedStep: 'email' | 'code') => {
     setBusy(true);
     setError(undefined);
     try {
-      if (signUp) await learnerActions.signUp(email, password, name.trim() || email.split('@')[0]);
-      else await learnerActions.signIn(email, password);
-      if (next?.startsWith('/')) history.push(next);
+      await action();
     } catch (caught) {
-      setError(signInError(caught, mode));
+      setError(signInError(caught, failedStep));
     } finally {
       setBusy(false);
     }
   };
+
+  const sendCode = () =>
+    run(async () => {
+      await learnerActions.sendCode(email);
+      setResendAt(Date.now() + RESEND_SECONDS * 1000);
+      setStep('code');
+    }, 'email');
+
+  const verify = () =>
+    run(async () => {
+      await learnerActions.verifyCode(email, code.trim());
+      if (next?.startsWith('/')) history.push(next);
+    }, 'code');
 
   return (
     <main className={styles.signInPage}>
@@ -106,31 +119,35 @@ function SignIn() {
         className={styles.signIn}
         onSubmit={(event) => {
           event.preventDefault();
-          void submit();
+          if (busy) return;
+          if (offline) void verify();
+          else if (step === 'email') {
+            if (validEmail) void sendCode();
+          } else if (/^\d{6}$/.test(code.trim())) void verify();
         }}>
-        <span className={styles.signInTitle}>{signUp ? '注册 Coding101' : '登录 Coding101'}</span>
-        <span className={styles.signInText}>文章全文免费阅读，无需登录。注册即 7 天完整 Pro，不绑卡。</span>
-        <label className={styles.field}>
-          <span>邮箱</span>
-          <input type="email" required autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@example.com" />
-        </label>
-        {!offline && (
+        <span className={styles.signInTitle}>登录 Coding101</span>
+        <span className={styles.signInText}>
+          {step === 'code'
+            ? `验证码已发送到 ${email}，10 分钟内有效。`
+            : '文章全文免费阅读，无需登录。首次登录即 7 天完整 Pro，不绑卡。'}
+        </span>
+        {step === 'email' ? (
           <label className={styles.field}>
-            <span>密码{signUp ? `（至少 ${MIN_PASSWORD} 位）` : ''}</span>
-            <input
-              type="password"
-              required
-              minLength={MIN_PASSWORD}
-              autoComplete={signUp ? 'new-password' : 'current-password'}
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-            />
+            <span>邮箱</span>
+            <input type="email" required autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@example.com" />
           </label>
-        )}
-        {(signUp || offline) && (
+        ) : (
           <label className={styles.field}>
-            <span>称呼（可选）</span>
-            <input value={name} onChange={(event) => setName(event.target.value)} placeholder="林同学" />
+            <span>验证码</span>
+            <input
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              maxLength={6}
+              required
+              value={code}
+              onChange={(event) => setCode(event.target.value.replace(/\D/g, ''))}
+              placeholder="6 位数字"
+            />
           </label>
         )}
         {error && (
@@ -139,21 +156,37 @@ function SignIn() {
             {error}
           </span>
         )}
-        <button type="submit" className={styles.primaryWide} disabled={!valid || busy}>
-          {busy ? '请稍候…' : signUp ? '注册并开始试用' : '登录'}
+        <button
+          type="submit"
+          className={styles.primaryWide}
+          disabled={busy || !validEmail || (step === 'code' && code.trim().length !== 6)}>
+          {busy ? '请稍候…' : offline ? '登录' : step === 'email' ? '发送验证码' : '登录'}
         </button>
         {offline ? (
           <span className={styles.signInNote}>预览模式：账户只保存在当前浏览器。</span>
         ) : (
-          <button
-            type="button"
-            className={styles.textButton}
-            onClick={() => {
-              setMode(signUp ? 'signIn' : 'signUp');
-              setError(undefined);
-            }}>
-            {signUp ? '已有账户？去登录' : '还没有账户？注册'}
-          </button>
+          step === 'code' && (
+            <span className={styles.signInNote}>
+              <button
+                type="button"
+                className={styles.textButton}
+                disabled={busy || Date.now() < resendAt}
+                onClick={() => void sendCode()}>
+                重新发送
+              </button>
+              {' · '}
+              <button
+                type="button"
+                className={styles.textButton}
+                onClick={() => {
+                  setStep('email');
+                  setCode('');
+                  setError(undefined);
+                }}>
+                换个邮箱
+              </button>
+            </span>
+          )
         )}
       </form>
     </main>

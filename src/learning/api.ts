@@ -65,9 +65,9 @@ export type ServerBillingRecord =
 export type Redemption = {masked: string; accessDays: number; startsAt: string; endsAt: string; previousUntil: string | null};
 
 export const api = {
-  signUp: (email: string, password: string, name: string) =>
-    post<{user: ServerUser}>('/api/auth/sign-up/email', {email, password, name}),
-  signIn: (email: string, password: string) => post<{user: ServerUser}>('/api/auth/sign-in/email', {email, password}),
+  /** Email a one-time sign-in code; the first verified code creates the account. */
+  sendCode: (email: string) => post<unknown>('/api/auth/email-otp/send-verification-otp', {email, type: 'sign-in'}),
+  verifyCode: (email: string, otp: string) => post<{user: ServerUser}>('/api/auth/sign-in/email-otp', {email, otp}),
   signOut: () => post<unknown>('/api/auth/sign-out'),
 
   /** `user` is null for a guest (no session). */

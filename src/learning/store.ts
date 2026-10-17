@@ -454,13 +454,13 @@ export function normalizeCode(raw: string): string {
 /* ---- Actions ---- */
 
 /** Preview builds: a browser-only account whose first sign-in starts the trial. */
-function localSignIn(email: string, name?: string) {
+function localSignIn(email: string) {
   update((current) => {
     const sub = current.subscription;
     const startTrial = sub.status === 'free' && !sub.hadTrial;
     return {
       ...current,
-      account: {name: name?.trim() || email.split('@')[0], email, createdAt: current.account?.createdAt ?? today()},
+      account: {name: email.split('@')[0], email, createdAt: current.account?.createdAt ?? today()},
       subscription: startTrial ? {status: 'trial', endsAt: addDays(today(), 7)} : sub,
     };
   });
@@ -473,17 +473,18 @@ function id(prefix: string) {
 const nowIso = () => new Date().toISOString();
 
 export const learnerActions = {
-  /** Sign in with email and password; resolves once the account is loaded. */
-  async signIn(email: string, password: string) {
-    if (offline) return localSignIn(email);
-    await api.signIn(email, password);
-    await refresh();
+  /** Email a sign-in code (no-op in offline previews). */
+  async sendCode(email: string) {
+    if (!offline) await api.sendCode(email);
   },
 
-  /** Create an account and start the 7-day trial. */
-  async signUp(email: string, password: string, name: string) {
-    if (offline) return localSignIn(email, name);
-    await api.signUp(email, password, name);
+  /**
+   * Sign in with the emailed code. The first sign-in creates the account and
+   * starts the 7-day trial (the server grants it at most once per account).
+   */
+  async verifyCode(email: string, code: string) {
+    if (offline) return localSignIn(email);
+    await api.verifyCode(email, code);
     await api.startTrial().catch(() => undefined);
     await refresh();
   },
