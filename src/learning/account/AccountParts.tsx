@@ -66,6 +66,7 @@ const RESEND_SECONDS = 60;
 function signInError(error: unknown, step: 'email' | 'code'): string {
   if (!(error instanceof ApiError)) return '暂时连不上账户服务，请稍后再试。';
   if (error.status === 429) return '尝试太频繁，请稍后再试。';
+  if (error.code === 'email_send_failed') return '验证码邮件没能发出，请稍后重试，或换个邮箱。';
   if (step === 'code' && (error.status === 400 || error.status === 401 || error.status === 403)) {
     return '验证码不对或已过期，请重新获取。';
   }
