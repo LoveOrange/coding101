@@ -108,7 +108,9 @@ function RedeemPage() {
   const records = learner.billing.filter((record) => record.method === 'code');
   const current =
     sub.status === 'pro'
-      ? `当前：${PLAN_LABELS[sub.plan]}，有效期至 ${sub.endsAt}。兑换后在此日期上顺延。`
+      ? sub.autoRenew
+        ? `当前：${PLAN_LABELS[sub.plan]}，有效期至 ${sub.endsAt}。兑换的天数排在订阅期之后；订阅仍按原日期续费，不想继续扣款可以关闭自动续费。`
+        : `当前：${PLAN_LABELS[sub.plan]}，有效期至 ${sub.endsAt}。兑换后在此日期上顺延。`
       : sub.status === 'trial'
         ? `当前：试用中，${sub.endsAt} 结束。兑换后从今天起算，试用剩余天数不叠加。`
         : sub.status === 'expired'
