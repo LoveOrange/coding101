@@ -9,7 +9,7 @@
 ## A1. 收尾与上线当前改动
 
 - [x] Claude：提交工作区改动（about、contact、privacy、统计、文章广告位、删除示例 blog），两个构建配置都通过 → coding101 #7
-- [ ] 你：合并 coding101 #7（A1–A4 的站点改动都在这个 PR）
+- [x] 合并 coding101 #7（A1–A4 的站点改动）
 
 ## A2. 合规文本
 
@@ -23,24 +23,26 @@
 
 - [x] Claude：账户服务 `POST /api/product/account/delete`，仍在续费的订阅返回 409 → linsama-account #4
 - [x] Claude：站点 Worker 先删学习记录再转发；账户页“数据与隐私”提供删除，需输入邮箱确认 → coding101 #7
-- [ ] 你：合并 linsama-account #4
-- 已知缺口：删除后用同一邮箱重新注册会再得到一次 7 天试用
+- [x] 合并 linsama-account #4
+- [x] Claude：同一邮箱只给一次试用（删除时保留邮箱 HMAC）→ linsama-account #6；隐私与条款文案 → coding101 #8
+- [ ] 你：合并 linsama-account #6、coding101 #8（#6 部署前要先在 account_coding101 上跑迁移）
 
 ## A4. 验证码邮件
 
 - [x] Claude：发送失败时返回 502，前端提示“验证码邮件没能发出” → linsama-account #5；失败也会记入 Workers 日志
-- [ ] Claude：把这个修复同步到 project-skeleton（直接打补丁有冲突，需要手动移植）
-- [ ] 你：合并 linsama-account #5
+- [x] Claude：同步到 project-skeleton：上游原本没有邮箱验证码，连同整个功能一起推上去 → project-skeleton #10
+- [ ] 你：合并 project-skeleton #10
+- [x] 合并 linsama-account #5
 - [ ] 你：用 QQ、163、Gmail、Outlook 各收一次验证码，记录是否进垃圾箱、到达耗时
-- [ ] 你：确认 Resend 套餐（免费版每天 100 封、每月 3000 封；开放注册后可能不够）
+- [ ] 你：决定邮件服务：建议改用 Cloudflare Email Service（Workers Paid 每月含 3000 封，超出 $0.35/千封，没有每日上限）；Resend 免费版每天限 100 封
 - [ ] Claude：送达率不好时收紧 DMARC（当前 `p=none`），检查 SPF/DKIM 对齐
 
 ## A5. 数据与运维
 
 - [x] 公司数据已导入（生产库 402 行，与私有 JSON 一致）
-- [ ] 你：升级 Cloudflare Workers Paid（需要付款）
-- [ ] Codex：升级后设置预算提醒；确认 Neon 时间点恢复的保留期
-- [ ] Claude：升级后在两个 Worker 设置 `limits.cpu_ms`
+- [x] 你：升级 Cloudflare Workers Paid
+- [ ] Codex（你来启动）：设置用量提醒；查看 Neon、Cloudflare、Resend 的日志与备份保留期
+- [x] Claude：`limits.cpu_ms` 站点 200、账户 500 → 包含在 coding101 #8、linsama-account #6
 - [ ] 你：决定 `c101-beta.linsama.com` 保留为预发环境还是下线（它和正式站共用同一个 Worker 和数据库）
 
 ## A6. 开放
