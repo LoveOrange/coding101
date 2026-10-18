@@ -128,7 +128,7 @@ function SignIn() {
         <span className={styles.signInTitle}>登录 Coding101</span>
         <span className={styles.signInText}>
           {step === 'code'
-            ? `验证码已发送到 ${email}，10 分钟内有效。`
+            ? `验证码已发送到 ${email}，10 分钟内有效。没收到的话，先看看垃圾邮件或广告邮件文件夹，发件人是 noreply@linsama.com。`
             : '文章全文免费阅读，无需登录。首次登录即 7 天完整 Pro，不绑卡。'}
         </span>
         {step === 'email' ? (

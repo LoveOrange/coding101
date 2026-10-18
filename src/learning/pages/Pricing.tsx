@@ -47,7 +47,9 @@ function PricingPage() {
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState(false);
   const launch = today() <= LAUNCH_ENDS;
-  const checkoutOpen = Boolean(useDocusaurusContext().siteConfig.customFields?.checkoutOpen);
+  const {customFields} = useDocusaurusContext().siteConfig;
+  const checkoutOpen = Boolean(customFields?.checkoutOpen);
+  const adFree = Boolean(customFields?.adsenseClient);
 
   const choose = (tier: Tier) => {
     if (!tier.plan) {
@@ -107,7 +109,7 @@ function PricingPage() {
               </span>
             </div>
             <div className={styles.features}>
-              {tier.features.map((feature) => (
+              {(adFree && tier.id === 'month' ? [...tier.features, '无广告'] : tier.features).map((feature) => (
                 <span key={feature}>✓ {feature}</span>
               ))}
             </div>

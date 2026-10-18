@@ -357,8 +357,25 @@ async function push() {
   if (dirty) scheduleSync(0);
 }
 
+let accessKnown: Promise<void> | undefined;
+
+/**
+ * Resolves once this visit's first server refresh has settled who the reader
+ * is (at once when offline; with the cached state if the service is down).
+ */
+export function whenAccessKnown(): Promise<void> {
+  if (offline || typeof window === 'undefined') return Promise.resolve();
+  return accessKnown ?? refresh();
+}
+
 /** Pull account, access and records from the server and reconcile the cache. */
-export async function refresh(): Promise<void> {
+export function refresh(): Promise<void> {
+  const run = pull();
+  accessKnown ??= run;
+  return run;
+}
+
+async function pull(): Promise<void> {
   if (offline || typeof window === 'undefined') return;
   refreshedAt = Date.now();
   let me;
