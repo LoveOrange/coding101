@@ -180,6 +180,7 @@ const config: Config = {
             { label: "关于本站", to: "/about" },
             { label: "联系与纠错", to: "/contact" },
             { label: "隐私与 Cookie", href: "https://coding101.linsama.com/privacy/" },
+            { label: "服务条款", to: "/terms" },
             { label: "GitHub", href: "https://github.com/loveorange/coding101" },
           ],
         },
