@@ -104,18 +104,7 @@ capabilities 将 root 权限拆成独立能力。seccomp 按策略过滤系统�
 
 ### 7.1 容器和虚拟机有什么本质区别？ {#container-vs-vm}
 
-<!-- 面试来源：
-- 虾皮：https://www.nowcoder.com/discuss/830797687548084224 （“容器跟我们这个虚拟机……他们之间的实现，有什么本质上的一个区别?”）
-- 虾皮：https://www.nowcoder.com/discuss/353156139321860096 （“docker原理，与虚拟机区别”）
-- 矩阵起源：https://www.nowcoder.com/discuss/813179226554642432 （“Docker和虚拟机的区别是什么？”）
-- 亿联：https://www.nowcoder.com/discuss/353159450502569984 （“容器……和虚拟机区别”）
-- 持安科技：https://www.nowcoder.com/feed/main/detail/056bc97b850944a5a9ce98b45703cbed （“容器与虚拟机的区别”）
-- 波克城市：https://www.nowcoder.com/feed/main/detail/310e8864c0084121a964c5277255cd30 （“docker和虚拟机区别”）
-- 虾皮：https://www.nowcoder.com/feed/main/detail/93b661f8e1e64788850f3e8472b054c0 （“docker和虚拟机的区别”）
-- 京东：https://www.nowcoder.com/discuss/521405985047445504 （“容器和虚拟机区别”）
--->
 
-**出现公司**：虾皮、矩阵起源、亿联、持安科技、波克城市、京东
 
 **考察重点**
 
@@ -137,17 +126,7 @@ capabilities 将 root 权限拆成独立能力。seccomp 按策略过滤系统�
 
 ### 7.2 容器是怎样实现隔离和资源限制的？Namespace 和 Cgroups 分别解决什么问题？ {#namespace-cgroups}
 
-<!-- 面试来源：
-- 米哈游：https://www.nowcoder.com/feed/main/detail/be1ee2369e5b4536b4bc5e47c8463c9e （“Docker 底层的 cgroups 和 namespaces 在容器中分别解决什么问题？”）
-- 虾皮：https://www.nowcoder.com/discuss/830797687548084224 （“那 Docker 它是怎么实现隔离的？像你拉起了一个 MySQL 的话，你又拉起了一个 Redis……他们之间是怎么实现隔离的?”）
-- 网易互娱：https://www.nowcoder.com/discuss/353156915016441856 （“Docker 的实现原理”“多个 Cgroup 是否可以对同一个进程加以限制”）
-- 字节跳动：https://www.nowcoder.com/feed/main/detail/09f134235a7044f5a2b00107a2f5363e （“容器内存，CPU隔离怎么实现的”）
-- DaoCloud：https://www.nowcoder.com/feed/main/detail/55eef84d42ed422a8d4a1c22d888e929 （“容器是怎么实现隔离的”“Cgroups主要是限制哪些资源的，实机演示查看”）
-- 京东：https://www.nowcoder.com/discuss/521405985047445504 （“cgroup和namespace介绍”）
-- 京东：https://www.nowcoder.com/discuss/478505627115880448 （“Docker exec -it进入容器的原理是什么”）
--->
 
-**出现公司**：米哈游、虾皮、网易互娱、字节跳动、DaoCloud、京东
 
 **考察重点**
 
@@ -173,7 +152,6 @@ v1 可以有多个控制器层级，v2 使用统一层级。父级的资源上�
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
-**出现公司**：暂无已核验的公开来源（本站自测）
 
 **考察重点**：用户映射、权限与系统调用边界。
 

@@ -110,15 +110,7 @@ RAG 出错时，先检查正确证据是否进入最终上下文。即使粗召�
 
 ### 5.1 什么是大模型幻觉？有哪些方法可以减少或避免？ {#reduce-hallucination}
 
-<!-- 面试来源：
-- 阿里云：https://www.nowcoder.com/feed/main/detail/7e27cf4dedb142d9b643471ba31276ed （“什么叫大模型幻觉”“有什么方法减少或者避免大模型幻觉”）
-- 蚂蚁：https://www.nowcoder.com/discuss/888874988554448896 （“如何解决大模型幻觉？”）
-- 多家公司（5 年经验汇总）：https://www.nowcoder.com/feed/main/detail/129eaa1c20444651ac3b932e200d3da4 （“怎么规避大模型的幻觉？”）
-- 字节跳动：https://www.nowcoder.com/discuss/746382064101908480 （幻觉）
-- 未披露公司：https://www.linkedin.com/posts/sachin-khubchandani-a95012233_genai-aiml-activity-7446575893696917504-w_dI （hallucination）
--->
 
-**出现公司**：阿里云、蚂蚁、字节跳动
 
 **考察重点**：能解释不同幻觉的成因，并说明证据、输出约束和业务校验分别解决什么问题。
 
@@ -144,14 +136,7 @@ RAG 出错时，先检查正确证据是否进入最终上下文。即使粗召�
 
 ### 5.2 RAG 系统中的幻觉怎样处理？生成阶段怎样控制幻觉？ {#rag-hallucination}
 
-<!-- 面试来源：
-- 联想：https://www.nowcoder.com/discuss/869169098146537472 （“rag中的幻觉问题是这么处理的？”）
-- 阿里云：https://www.nowcoder.com/feed/main/detail/d577a09f95294565b464a8b0ce49a829 （“检索是怎么做的，生成怎么控制幻觉”）
-- 百度：https://www.nowcoder.com/feed/main/detail/0ee219e39f254208bef730ca1e928fcc （“RAG+Agent 场景，检索幻觉、无关文档召回的重排与过滤优化？”）
-- 未披露公司：https://medium.com/%40djoshi181001/my-genai-interview-experience-for-2-3-yoe-candidates-d61d1b06b56d （知识缺失时的处理）
--->
 
-**出现公司**：联想、阿里云、百度
 
 **考察重点**：能区分检索缺少证据与生成误用证据，并说明拒答、引用和忠实度检查的作用。
 
@@ -170,14 +155,7 @@ RAG 出错时，先检查正确证据是否进入最终上下文。即使粗召�
 
 ### 5.3 项目中遇到过幻觉吗？上线后幻觉导致业务出错，怎样兜底？置信度怎样判断，什么情况需要用户确认？ {#hallucination-fallback}
 
-<!-- 面试来源：
-- 美团：https://www.nowcoder.com/feed/main/detail/50bcdc47e7754aa7be59b6318fea514b （“长任务场景大模型容易产生幻觉，项目中是否遇到过？”“针对幻觉问题，你们采用什么方案解决？”“置信度通过什么规则、约束来判断，什么情况需要二次确认用户？”）
-- 百度：https://www.nowcoder.com/feed/main/detail/0ee219e39f254208bef730ca1e928fcc （“AI 工作流上线后，全链路监控、异常告警，模型幻觉导致业务出错的兜底方案？”）
-- 字节跳动：https://www.nowcoder.com/feed/main/detail/15af3788a038477bba99f2f9d94b2cef （“在项目中遇到过最大的 Bad Case 是什么？如何定位问题，并解决大模型幻觉问题？”）
-- 阿里淘天：https://www.nowcoder.com/feed/main/detail/d5d1f688dae5496abbce783aa28d6731 （“用户语义不明确，Agent使用默认参数填写，但与事实不符合，如何解决？”）
--->
 
-**出现公司**：美团、百度、字节跳动、阿里淘天
 
 **题型**：综合题
 
@@ -202,7 +180,6 @@ RAG 出错时，先检查正确证据是否进入最终上下文。即使粗召�
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
-**出现公司**：暂无已核验的公开来源（本站自测）
 
 **考察重点**：能解释依据过期或冲突时为何仍会答错，并说明怎样用独立证据核验。
 

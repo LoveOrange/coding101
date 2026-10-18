@@ -130,11 +130,7 @@ record Metric(long timestamp, double value, int status) {}
 
 ### 10.1 压缩对象指针解决什么问题 {#compressed-oops}
 
-<!-- 面试来源：
-- 字节跳动：https://www.nowcoder.com/discuss/353149262718509056
--->
 
-**出现公司**：字节跳动
 
 **考察重点**：解释压缩编码如何减少引用占用，以及对齐、堆放置和 JVM 配置怎样影响寻址范围。
 
@@ -155,7 +151,6 @@ record Metric(long timestamp, double value, int status) {}
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
-**出现公司**：暂无已核验的公开来源（本站自测）
 
 **考察重点**：区分浅大小、可达图大小与保留大小，并解释实例数量如何放大单个对象的成本。
 
@@ -178,7 +173,6 @@ record Metric(long timestamp, double value, int status) {}
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
-**出现公司**：暂无已核验的公开来源（本站自测）
 
 **考察重点**：说明对象引用和类指针指向什么，以及为何需要分别检查压缩状态。
 

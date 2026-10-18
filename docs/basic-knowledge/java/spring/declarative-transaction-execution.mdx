@@ -203,12 +203,7 @@ Spring 6.2 可用 `@EnableTransactionManagement(rollbackOn=ALL_EXCEPTIONS)` 更�
 
 ### 11.1 `@Transactional` 从调用到提交经历什么 {#transactional-flow}
 
-<!-- 面试来源：
-- 美团：https://www.nowcoder.com/discuss/624946712360001536
-- 阿里云：https://www.nowcoder.com/discuss/592128174994075648
--->
 
-**出现公司**：美团、阿里云
 
 **考察重点**：沿代理调用解释事务属性解析、连接复用和实际提交，并区分方法返回与事务成功。
 
@@ -229,12 +224,7 @@ Spring 6.2 可用 `@EnableTransactionManagement(rollbackOn=ALL_EXCEPTIONS)` 更�
 
 ### 11.2 `REQUIRES_NEW` 与 `NESTED` 有什么区别 {#requires-new-vs-nested}
 
-<!-- 面试来源：
-- 阿里云：https://www.nowcoder.com/discuss/592128174994075648
-- 美团：https://www.nowcoder.com/discuss/353158567966482432
--->
 
-**出现公司**：阿里云、美团
 
 **考察重点**：说明独立事务与保存点分别怎样处理内外层回滚，并判断连接池容量和驱动支持带来的限制。
 
@@ -257,7 +247,6 @@ Spring 6.2 可用 `@EnableTransactionManagement(rollbackOn=ALL_EXCEPTIONS)` 更�
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
-**出现公司**：暂无已核验的公开来源（本站自测）
 
 **考察重点**：解释内外层为何共享回滚标记，以及捕获异常为何无法改变已经确定的回滚结果。
 
@@ -276,7 +265,6 @@ Spring 6.2 可用 `@EnableTransactionManagement(rollbackOn=ALL_EXCEPTIONS)` 更�
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
-**出现公司**：暂无已核验的公开来源（本站自测）
 
 **考察重点**：说明提交后为何需要独立写入事务，并区分进程内通知与可恢复的持久化事件。
 

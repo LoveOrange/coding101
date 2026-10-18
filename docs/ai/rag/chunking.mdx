@@ -132,17 +132,7 @@ OCR 指从扫描件或图片中识别文字。识别后还要分析版面，区�
 
 ### 6.1 Chunk 的切分大小如何确定？重叠度如何设置？分块过大或过小会有什么问题？ {#chunk-size}
 
-<!-- 面试来源：
-- 字节跳动：https://www.nowcoder.com/feed/main/detail/15af3788a038477bba99f2f9d94b2cef （“Chunk 的切分大小如何确定？重叠度如何设置？是否尝试过不同参数，并进行过效果对比？”）
-- 浪潮：https://www.nowcoder.com/feed/main/detail/a8854ce3fa4b45cb8d73ec92c798a63b （“能详细讲讲你的分块策略吗，说说分块大和分块小会出现什么问题”）
-- 字节跳动：https://www.nowcoder.com/discuss/937314680270311424 （“文档具体怎样切分？如何处理切分边界和块大小？”）
-- 腾讯：https://www.nowcoder.com/feed/main/detail/427caf4cc5ec4192b64fdb6ea6698bef （“embedding是怎么分chunk的”“硬切分在实践中有哪些弊端吗”）
-- 联想：https://www.nowcoder.com/discuss/869169098146537472 （“rag文本分块策略”）
-- 阿里云：https://www.nowcoder.com/feed/main/detail/d1fd4cd344bc4d928e708c3e69c8f59c （“RAG的分块策略是什么”）
-- TCS：https://www.linkedin.com/posts/galgalepallavi_tcs-interviewexperience-genai-activity-7419624110521090048-Q3sC （“How can we handle large chunks in a RAG pipeline?”）
--->
 
-**出现公司**：字节跳动、浪潮、腾讯、联想、阿里云、TCS
 
 **考察重点**：解释块大小如何影响证据完整性与检索匹配，并用评测比较重叠带来的收益和重复成本。
 
@@ -161,13 +151,7 @@ OCR 指从扫描件或图片中识别文字。识别后还要分析版面，区�
 
 ### 6.2 RAG 为什么需要父子索引？检索小块、返回父文档解决什么问题？ {#parent-child-index}
 
-<!-- 面试来源：
-- 虾皮：https://www.nowcoder.com/feed/main/detail/79fe3fc8f8cb4c4d9beca478f4279e3a （“RAG系统为什么需要设计父子索引？检索较小文本块、返回完整父文档能够解决什么问题？”）
-- 浪潮：https://www.nowcoder.com/feed/main/detail/a8854ce3fa4b45cb8d73ec92c798a63b （父子切分和大小）
-- 快手：https://www.nowcoder.com/feed/main/detail/8ef62dcdde1340f987507d2d1e1433a8 （父子索引）
--->
 
-**出现公司**：虾皮、浪潮、快手
 
 **考察重点**：解释为什么用子块匹配、用父块回答，并说明父块去重、回取和预算控制的关系。
 
@@ -186,15 +170,7 @@ OCR 指从扫描件或图片中识别文字。识别后还要分析版面，区�
 
 ### 6.3 知识库中有制度文档、Excel 报表、PDF 等不同文件，应该怎么解析和切分？ {#heterogeneous-documents}
 
-<!-- 面试来源：
-- 药明康德：https://www.nowcoder.com/feed/main/detail/365904cd189149ffb52c36286ab23b37 （“如果搭建财务知识库，里面有制度文档、Excel报表表格，不同文件怎么做Chunking切分？”）
-- 浪潮：https://www.nowcoder.com/feed/main/detail/a8854ce3fa4b45cb8d73ec92c798a63b （“目前你的rag项目可以读哪些文件，可以读pdf和ppt吗”）
-- Deloitte：https://medium.com/%40kalladisreevathsa18/deloitte-india-interview-experience-generative-ai-agentic-ai-developer-consultant-role-b06c40e0424f （非文本资料处理）
-- 阿里云：https://www.nowcoder.com/feed/main/detail/d577a09f95294565b464a8b0ce49a829 （多源文档处理）
-- 未披露公司：https://www.nowcoder.com/feed/main/detail/10b2fcaf73d2401f8636bd0459e1cd08 （混合 PDF 分块）
--->
 
-**出现公司**：药明康德、浪潮、Deloitte、阿里云
 
 **考察重点**：按文件类型解释需要保留哪些结构，并区分文本证据检索与精确数值计算。
 
@@ -215,7 +191,6 @@ OCR 指从扫描件或图片中识别文字。识别后还要分析版面，区�
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
-**出现公司**：暂无已核验的公开来源（本站自测）
 
 **考察重点**：说明怎样保存跨块关联、补齐引用证据，并将每段证据定位到对应版本的原文。
 

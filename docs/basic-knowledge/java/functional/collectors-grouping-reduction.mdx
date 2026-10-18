@@ -313,11 +313,7 @@ Map<Department, List<User>> ordered = users.stream()
 
 ### 10.1 使用 Stream 把人员列表转换成 Map，重复姓名怎样处理 {#to-map-duplicates}
 
-<!-- 面试来源：
-- 飞猪：https://www.nowcoder.com/discuss/864543031494467584
--->
 
-**出现公司**：飞猪
 
 **考察重点**：解释键函数、值函数与合并函数各自做什么。能按业务决定重复姓名保留一人还是分组保存，并明确结果 Map 的遍历顺序。
 
@@ -336,11 +332,7 @@ Map<Department, List<User>> ordered = users.stream()
 
 ### 10.2 collect 和 reduce 应该怎样选择 {#collect-vs-reduce}
 
-<!-- 面试来源：
-- 经纬恒润：https://www.nowcoder.com/discuss/850635333283672064
--->
 
-**出现公司**：经纬恒润
 
 **考察重点**：区分不可变值归约与可变容器累积，说明单位元、累积函数和合并函数的契约。能解释共享容器为何在并行时出错。
 
@@ -361,7 +353,6 @@ Map<Department, List<User>> ordered = users.stream()
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
-**出现公司**：暂无已核验的公开来源（本站自测）
 
 **考察重点**：解释分区容器隔离怎样支持普通并行收集，以及归约单位元和并发特性分别约束什么。
 

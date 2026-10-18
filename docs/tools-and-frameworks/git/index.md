@@ -1,5 +1,7 @@
 ---
 sidebar_position: 1
+knowledge:
+  id: tools-and-frameworks.git.index
 tags:
   - git
   - tools
@@ -96,14 +98,9 @@ git merge feature/payment-timeout
 
 ## 9. 面试题
 
-### 9.1 `git merge` 和 `git rebase` 有什么区别，什么时候使用
+### 9.1 `git merge` 和 `git rebase` 有什么区别，什么时候使用 {#merge-vs-rebase}
 
-<!-- 面试来源：
-- 拼多多：https://www.nowcoder.com/discuss/353156241998422016
-- 百度：https://www.nowcoder.com/discuss/538309440781537280
--->
 
-**出现公司**：拼多多、百度
 
 **考察重点**
 

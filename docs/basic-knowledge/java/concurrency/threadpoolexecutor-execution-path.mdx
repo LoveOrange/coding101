@@ -191,12 +191,7 @@ if (!pool.awaitTermination(5, TimeUnit.SECONDS)) {
 
 ### 11.1 `ThreadPoolExecutor.execute` 的任务处理流程是什么 {#execute-flow}
 
-<!-- 面试来源：
-- 阿里巴巴：https://www.nowcoder.com/discuss/461925
-- 美团：https://www.nowcoder.com/discuss/639130444558045184
--->
 
-**出现公司**：阿里巴巴、美团
 
 **考察重点**
 
@@ -218,12 +213,7 @@ if (!pool.awaitTermination(5, TimeUnit.SECONDS)) {
 
 ### 11.2 怎样为 I/O 密集任务配置线程池大小 {#io-pool-size}
 
-<!-- 面试来源：
-- 美团：https://www.nowcoder.com/discuss/377447203734921216
-- 滴滴：https://www.nowcoder.com/discuss/363477877092876288
--->
 
-**出现公司**：美团、滴滴
 
 **考察重点**
 
@@ -245,12 +235,7 @@ if (!pool.awaitTermination(5, TimeUnit.SECONDS)) {
 
 ### 11.3 队列满或任务持续堆积时应该怎样处理 {#saturation-handling}
 
-<!-- 面试来源：
-- 美团：https://www.nowcoder.com/discuss/363477877092876288
-- 阿里巴巴：https://www.nowcoder.com/discuss/461925
--->
 
-**出现公司**：美团、阿里巴巴
 
 **考察重点**
 
@@ -274,7 +259,6 @@ if (!pool.awaitTermination(5, TimeUnit.SECONDS)) {
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
-**出现公司**：暂无已核验的公开来源（本站自测）
 
 **考察重点**：解释先入队后扩容的顺序，以及不同队列何时会触发新增 Worker。
 
@@ -295,7 +279,6 @@ if (!pool.awaitTermination(5, TimeUnit.SECONDS)) {
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
-**出现公司**：暂无已核验的公开来源（本站自测）
 
 **考察重点**：区分停止接收任务、处理中断和线程池真正终止，并说明排队任务由谁处理。
 
@@ -316,7 +299,6 @@ if (!pool.awaitTermination(5, TimeUnit.SECONDS)) {
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
-**出现公司**：暂无已核验的公开来源（本站自测）
 
 **考察重点**：解释任务被丢弃后，Future 为什么仍未完成，以及怎样让调用方结束等待。
 

@@ -136,12 +136,7 @@ FIFO 约束的是元素按入队顺序被取出。生产者和消费者线程谁
 
 ### 11.1 ConcurrentLinkedQueue 怎样用 CAS 完成入队和出队 {#cas-enqueue-dequeue}
 
-<!-- 面试来源：
-- 快手：https://www.nowcoder.com/discuss/179560
-- 蚂蚁集团：https://www.nowcoder.com/discuss/353157545105760256
--->
 
-**出现公司**：快手、蚂蚁集团
 
 **考察重点**
 
@@ -164,11 +159,7 @@ FIFO 约束的是元素按入队顺序被取出。生产者和消费者线程谁
 
 ### 11.2 ConcurrentLinkedQueue 与 LinkedBlockingQueue 怎样选择 {#clq-vs-lbq}
 
-<!-- 面试来源：
-- 快手：https://www.nowcoder.com/discuss/179560
--->
 
-**出现公司**：快手
 
 **考察重点**
 
@@ -195,7 +186,6 @@ ConcurrentLinkedQueue 是无界非阻塞队列，`poll` 在队空时返回 null�
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
-**出现公司**：暂无已核验的公开来源（本站自测）
 
 **考察重点**：解释无锁队列如何发布入队前的字段写入，以及入队后继续修改为何需要同步。
 

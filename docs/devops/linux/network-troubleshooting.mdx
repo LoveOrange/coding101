@@ -133,15 +133,7 @@ curl --resolve example.com:443:192.0.2.10 https://example.com/
 
 ### 8.1 怎样查看某个端口被哪个进程监听？怎样统计服务器上各状态（TIME_WAIT、ESTABLISHED 等）的连接数？ {#ports-connections}
 
-<!-- 面试来源：
-- 京东：https://www.nowcoder.com/discuss/478505627115880448 （“怎么查看监听在8080端口的是哪个进程”）
-- 吉比特：https://www.nowcoder.com/feed/main/detail/41b17c218ad64c9b85394a57e91169f1 （“Linux统计服务器上状态个数（time_wait, Established等）”）
-- 百度：https://www.nowcoder.com/feed/main/detail/da812a901bfb4b5d9872dea48e62b7be （“端口占用查看用什么命令”）
-- 矩阵起源：https://www.nowcoder.com/feed/main/detail/e297f923972f41d6860a0a6e58058772 （“Linux 系统上面有哪些网络端口在处于监听状态呢？”）
-- 京东：https://www.nowcoder.com/discuss/353155503322767360 （“df命令你都干啥用啊？为啥不用ss呢？”）
--->
 
-**出现公司**：京东、吉比特、百度、矩阵起源
 
 **考察重点**
 
@@ -163,16 +155,7 @@ curl --resolve example.com:443:192.0.2.10 https://example.com/
 
 ### 8.2 TIME_WAIT 和 CLOSE_WAIT 是什么？服务器上这两种状态过多分别是什么原因，怎样处理？ {#time-wait-close-wait}
 
-<!-- 面试来源：
-- BIGO：https://www.nowcoder.com/discuss/353156870250635264 （“CLOSE_WAIT和TIME_WAIT”“TIME_WAIT保留一段时间的原因”）
-- 虾皮：https://www.nowcoder.com/discuss/353157054686765056 （“time_wait,close_wait”）
-- 虾皮：https://www.nowcoder.com/discuss/622912438538694656 （“讲讲time_wait和close_wait”）
-- 虎牙：https://www.nowcoder.com/discuss/681082337408364544 （“TCP里面TIME_WAIT的状态是什么？具体说说”）
-- 吉比特：https://www.nowcoder.com/feed/main/detail/7d393840b53f4f86b2afdf6b47b2bd42 （“TIME_WAIT状态过多了，如何解决？”）
-- 触宝：https://www.nowcoder.com/feed/main/detail/347ad85d05e54e8ab9b3d9766f6a9d4c （“Nginx 实际上它的 time wait 的连接数量很多，那它可能是什么原因导致的呢？那我们可能应该用什么方法去处理呢？”）
--->
 
-**出现公司**：BIGO、虾皮、虎牙、吉比特、触宝
 
 **考察重点**
 
@@ -196,15 +179,7 @@ CLOSE_WAIT 持续堆积时，定位进程和对端。再检查关闭路径、异
 
 ### 8.3 能 ping 通对方 IP，是否说明业务端口一定是通的？ping 的原理是什么，怎样确认端口连通？ {#connectivity-check}
 
-<!-- 面试来源：
-- 青藤云：https://www.nowcoder.com/feed/main/detail/0b99f63bd74c4a52ad17159542e890ad （“能 ping 通 b 的 IP 地址，能保证我 A 连 B 的3389端口一定是通的吗,怎么确认我和他的业务端口通不通呢？”）
-- 京东：https://www.nowcoder.com/discuss/353155503322767360 （“你说一下ping命令返回的具体参数吧”）
-- 百度：https://www.nowcoder.com/discuss/376026509759315968 （“Ping讲一下”）
-- 多益网络：https://www.nowcoder.com/discuss/643390428145881088 （“知不知道ICMP”）
-- 字节跳动：https://www.nowcoder.com/feed/main/detail/10d17559d97f475da8011db31fb2b9d1 （“ping解决的问题”）
--->
 
-**出现公司**：青藤云、京东、百度、多益网络、字节跳动
 
 **考察重点**
 
@@ -226,14 +201,7 @@ ping 的 time 是往返时间，ttl 是剩余跳数。序号和最终统计帮�
 
 ### 8.4 用 tcpdump 抓 TCP 握手时会用哪些参数？抓包后关注哪些字段？ {#tcpdump}
 
-<!-- 面试来源：
-- 共济科技：https://www.nowcoder.com/discuss/908367488235110400 （“使用 tcpdump 抓 TCP 握手时会用哪些参数？关注哪些字段？”“Pod 之间网络不通的排查案例”）
-- 字节跳动：https://www.nowcoder.com/discuss/353156036565606400 （“tcpdump抓包过程，和命令”）
-- 华为：https://www.nowcoder.com/discuss/353158503860740096 （“tcp三次握手四次挥手？有没有用过看过抓包过？”）
-- 美团：https://www.nowcoder.com/feed/main/detail/f4004e8efde94cf1b7b44de667df1fed （“分析过TCP报文吗……有没有接触过TCP报文或者使用一些抓包工具”）
--->
 
-**出现公司**：共济科技、字节跳动、华为、美团
 
 **考察重点**
 
@@ -255,17 +223,7 @@ ping 的 time 是往返时间，ttl 是剩余跳数。序号和最终统计帮�
 
 ### 8.5 iptables 的原理是什么？有哪些表和链？工作在网络的哪一层？Kubernetes 中哪里用到了 DNAT？ {#iptables}
 
-<!-- 面试来源：
-- 虾皮：https://www.nowcoder.com/discuss/353156139321860096 （“iptables原理，工作在几层”）
-- 百度云：https://www.nowcoder.com/discuss/536273992093605888 （“防火墙的三表五链”）
-- 京东：https://www.nowcoder.com/discuss/478505627115880448 （“DNAT在哪里用到过，有什么场景”）
-- 米哈游：https://www.nowcoder.com/feed/main/detail/be1ee2369e5b4536b4bc5e47c8463c9e （“iptables、IPVS 和 Linux 路由表分别解决什么问题？”）
-- 青藤云：https://www.nowcoder.com/feed/main/detail/0b99f63bd74c4a52ad17159542e890ad （“防火墙主要关注哪些设置？”）
-- 上海银行：https://www.nowcoder.com/feed/main/detail/67ff310979144d98837bf08eb5417beb （“防火墙怎么实现的？”）
-- DaoCloud：https://www.nowcoder.com/feed/main/detail/55eef84d42ed422a8d4a1c22d888e929 （“清楚iptables吗”）
--->
 
-**出现公司**：虾皮、百度云、京东、米哈游、青藤云、上海银行、DaoCloud
 
 **考察重点**
 
@@ -291,7 +249,6 @@ Kubernetes 的 iptables 代理模式用 DNAT 转到端点。IPVS 等模式有各
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
-**出现公司**：暂无已核验的公开来源（本站自测）
 
 **考察重点**：累计时间差、SNI 与指定解析。
 

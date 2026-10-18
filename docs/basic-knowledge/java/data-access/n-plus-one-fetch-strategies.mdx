@@ -151,11 +151,7 @@ hibernate.query.fail_on_pagination_over_collection_fetch=true
 
 ### 12.1 怎样定位并解决 ORM 的 N+1 查询 {#n-plus-one}
 
-<!-- 面试来源：
-- 字节跳动：https://www.nowcoder.com/discuss/920379874269794304
--->
 
-**出现公司**：字节跳动
 
 **考察重点**：说明 N+1 如何触发，并用 SQL 统计确认问题。能按关联规模选择 join fetch、EntityGraph、批量抓取或 DTO 投影，并处理集合分页。
 
@@ -178,7 +174,6 @@ hibernate.query.fail_on_pagination_over_collection_fetch=true
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
-**出现公司**：暂无已核验的公开来源（本站自测）
 
 **考察重点**：区分加载要求与实际 SQL 形态，说明关联复用和缓存怎样改变查询次数。
 
@@ -199,7 +194,6 @@ hibernate.query.fail_on_pagination_over_collection_fetch=true
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
-**出现公司**：暂无已核验的公开来源（本站自测）
 
 **考察重点**：解释两个集合为何产生乘积行，以及这些行怎样增加传输、物化和内存开销。
 
@@ -220,7 +214,6 @@ hibernate.query.fail_on_pagination_over_collection_fetch=true
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
-**出现公司**：暂无已核验的公开来源（本站自测）
 
 **考察重点**：说明父记录分页与关联展开的区别，并处理两次读取的顺序和一致性。
 
@@ -241,7 +234,6 @@ Hibernate 5.6 与 6.x 可配置 `hibernate.query.fail_on_pagination_over_collect
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
-**出现公司**：暂无已核验的公开来源（本站自测）
 
 **考察重点**：区分关联读取合批与 JDBC 写入合批，说明各自的配置和作用范围。
 

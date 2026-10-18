@@ -135,15 +135,7 @@ Skill 的加载机制见 [Agent Skills](../tools/agent-skills.mdx)。
 
 ### 7.1 用户消息、系统提示词、Memory 等信息如何组装并发送给模型？ {#context-assembly}
 
-<!-- 面试来源：
-- 字节跳动：https://www.nowcoder.com/feed/main/detail/ed5e9d17f26e489da94afbf1241b885e （“用户消息、系统提示词、Memory 等信息如何组装并发送给模型？”）
-- 百度：https://www.nowcoder.com/feed/main/detail/b9521e2b51e04afeac0a3a32e13f4da9 （“讲一下你这个项目的上下文设计”）
-- 快手：https://www.nowcoder.com/feed/main/detail/daa06f995ea74445a13de42d67f66265 （“介绍一下上下文工程”）
-- 阿里淘天：https://www.nowcoder.com/feed/main/detail/d5d1f688dae5496abbce783aa28d6731 （“讲一下项目2的完整执行链路，上下文会如何变化？”）
-- 蚂蚁：https://www.nowcoder.com/feed/main/detail/4247388b1f0e4e51b00962227843b24b
--->
 
-**出现公司**：字节跳动、百度、快手、阿里淘天、蚂蚁
 
 **题型**：综合题
 
@@ -164,12 +156,7 @@ Skill 的加载机制见 [Agent Skills](../tools/agent-skills.mdx)。
 
 ### 7.2 Prompt 中静态内容和动态内容应该怎样排列，才能更好地利用前缀缓存？ {#prefix-cache-order}
 
-<!-- 面试来源：
-- 凌脉：https://www.nowcoder.com/feed/main/detail/76f5be8b8bd5420b94d32a66e26a7ad9 （“Prompt 中静态内容和动态内容应该怎样排列，才能更好地利用前缀缓存？”）
-- 新旦智能：https://www.nowcoder.com/feed/main/detail/299d356b23044bf39fb29e7f8569761d （LLM Cache；问法概括）
--->
 
-**出现公司**：凌脉、新旦智能
 
 **考察重点**：解释哪些输入变化会缩短共同前缀，以及怎样用缓存用量验证排列效果。
 
@@ -188,13 +175,7 @@ Skill 的加载机制见 [Agent Skills](../tools/agent-skills.mdx)。
 
 ### 7.3 文档读取结果如何使用渐进式披露，避免上下文快速膨胀？ {#progressive-disclosure}
 
-<!-- 面试来源：
-- 安软：https://www.nowcoder.com/feed/main/detail/40920533fad14136bff01c3928c7e953 （“文档读取结果如何使用渐进式披露，避免上下文快速膨胀？”）
-- 字节跳动：https://www.nowcoder.com/discuss/937314680270311424 （渐进披露）
-- 字节跳动：https://www.nowcoder.com/feed/main/detail/8a553bb6ea8445d0b0abe11e87614cea （大量工具及工具结果）
--->
 
-**出现公司**：安软、字节跳动
 
 **考察重点**：解释模型怎样从索引定位到原文，并比较减少输入与增加调用的代价。
 
@@ -215,7 +196,6 @@ Skill 的加载机制见 [Agent Skills](../tools/agent-skills.mdx)。
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
-**出现公司**：暂无已核验的公开来源（本站自测）
 
 **考察重点**：区分偏好、业务事实和授权冲突，说明各自应以哪一类信息为准。
 

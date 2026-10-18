@@ -96,15 +96,7 @@ PSI 描述压力造成的等待，利用率描述资源忙碌。两者结合请�
 
 ### 6.1 top 显示的 load average 三个数字是什么含义？怎样判断 CPU 处于高负载？负载高可能有哪些原因？ {#load-average}
 
-<!-- 面试来源：
-- 京东：https://www.nowcoder.com/discuss/478505627115880448 （“top命令中你关注的资源情况是什么（load average）”“load average中的三个数字代表什么，怎么得来的”）
-- 深圳客诺信息技术：https://www.nowcoder.com/feed/main/detail/c69efab193844cdb869bae81b8b576e7 （“执行 top 命令后右上角显示的 1/5/10 分别代表什么含义？如何依据该指标判断 CPU 处于高负载状态？”）
-- 百度：https://www.nowcoder.com/discuss/723877059239346176 （“CPU负载高可能是什么原因导致的”）
-- 触宝：https://www.nowcoder.com/feed/main/detail/347ad85d05e54e8ab9b3d9766f6a9d4c （“那 CPU 负载过高的话，那它可能会发生什么呢？”）
-- 字节跳动：https://www.nowcoder.com/feed/main/detail/72c1825cb2934f898e9fdb0e5716ad06 （“介绍下 Linux 的I/O模型和负载模型”）
--->
 
-**出现公司**：京东、百度、触宝、字节跳动
 
 **考察重点**
 
@@ -126,13 +118,7 @@ Linux 统计 R 和 D 状态任务，包含线程。因此，load average 与 CPU
 
 ### 6.2 发现某台机器 CPU 使用率很高、系统很卡，你怎样排查？ {#high-cpu}
 
-<!-- 面试来源：
-- 虾皮：https://www.nowcoder.com/feed/main/detail/1c948b727fef404ca86d187c20496e8c （“你提到了top，如果发现某台机器cpu占用率很高，怎么排查”）
-- 哔哩哔哩：https://www.nowcoder.com/feed/main/detail/5abdda781c524235b0e40b708bb04b73 （“如果系统内存和CPU使用率高，系统很卡，该怎么去排查”）
-- 持安科技：https://www.nowcoder.com/feed/main/detail/056bc97b850944a5a9ce98b45703cbed （“top命令有哪些输出，top命令输出进程的什么信息”）
--->
 
-**出现公司**：虾皮、哔哩哔哩、持安科技
 
 **考察重点**
 
@@ -154,14 +140,7 @@ us 高重点看计算、序列化和 GC。sy 高结合系统调用、切换和�
 
 ### 6.3 一台 Linux 服务器 CPU 占用不高，但接口访问很慢，你会怎样排查？ {#slow-but-idle}
 
-<!-- 面试来源：
-- 共济科技：https://www.nowcoder.com/discuss/908367488235110400 （“一台 Linux 服务器 CPU 占用不高，但访问接口很慢，你会怎么排查？”）
-- 美团：https://www.nowcoder.com/discuss/353155398272229376 （“iostat 用途，如何定位io使用率高的程序?”）
-- 字节跳动：https://www.nowcoder.com/discuss/353156036565606400 （“iotop iostat区别”）
-- 杭州观远数据：https://www.nowcoder.com/discuss/908191304679456768 （I/O 延迟排查经历）
--->
 
-**出现公司**：共济科技、美团、字节跳动、杭州观远数据
 
 **考察重点**
 
@@ -187,7 +166,6 @@ iostat 看设备延迟和队列，pidstat 或 iotop 关联任务。vmstat 的 si
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
-**出现公司**：暂无已核验的公开来源（本站自测）
 
 **考察重点**：配额、局部热点与受阻时间。
 

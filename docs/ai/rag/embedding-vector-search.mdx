@@ -119,15 +119,7 @@ pgvector 从 0.8.0 起支持迭代索引扫描，也就是候选不足时继续�
 
 ### 6.1 讲一下向量检索的原理。常用的相似度计算方法有哪些？ {#vector-search}
 
-<!-- 面试来源：
-- 百度：https://www.nowcoder.com/feed/main/detail/b9521e2b51e04afeac0a3a32e13f4da9 （“讲一下你说的向量检索的原理”）
-- 联想：https://www.nowcoder.com/discuss/869169098146537472 （“在rag中，有哪些相似度的计算方法”）
-- 未披露公司：https://www.nowcoder.com/feed/main/detail/10b2fcaf73d2401f8636bd0459e1cd08 （相似度）
-- 腾讯：https://www.nowcoder.com/feed/main/detail/427caf4cc5ec4192b64fdb6ea6698bef （“用的哪些embedding模型”）
-- 字节跳动：https://www.nowcoder.com/discuss/746382064101908480 （Embedding 召回）
--->
 
-**出现公司**：百度、联想、腾讯、字节跳动
 
 **考察重点**：解释文本如何进入兼容的向量空间，并说明三种度量的关系和近似搜索的取舍。
 
@@ -146,11 +138,7 @@ pgvector 从 0.8.0 起支持迭代索引扫描，也就是候选不足时继续�
 
 ### 6.2 HNSW 索引的原理是什么？关键参数如何影响效果？ {#hnsw}
 
-<!-- 面试来源：
-- 阿里云：https://www.nowcoder.com/feed/main/detail/d1fd4cd344bc4d928e708c3e69c8f59c （“HNSW索引原理”）
--->
 
-**出现公司**：阿里云
 
 **考察重点**：解释 HNSW 如何逐层接近目标，以及三个参数怎样影响召回、内存和计算量。
 
@@ -169,14 +157,7 @@ pgvector 从 0.8.0 起支持迭代索引扫描，也就是候选不足时继续�
 
 ### 6.3 常见的向量数据库有哪些？如何选型？ {#vector-database}
 
-<!-- 面试来源：
-- 联想：https://www.nowcoder.com/discuss/869169098146537472 （“你知道哪些向量数据库？”）
-- ZS：https://www.geeksforgeeks.org/interview-experiences/zs-llm-engineer-interview-experience/ （向量库）
-- Accenture：https://www.geeksforgeeks.org/interview-experiences/accenture-final-interview-experience-for-llm-operations-engineer-experienced-selected/ （向量库）
-- 淘宝闪购：https://www.nowcoder.com/feed/main/detail/c741b8f660b54db7bdbb77e4b81151bf （向量与数据库检索）
--->
 
-**出现公司**：联想、ZS、Accenture、淘宝闪购
 
 **考察重点**：根据数据规模、业务过滤和混合检索需求比较方案，并说明需要怎样验证性能与运维成本。
 
@@ -197,7 +178,6 @@ Milvus、Qdrant、Weaviate 可用于评估分布式向量管理。PostgreSQL + p
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
-**出现公司**：暂无已核验的公开来源（本站自测）
 
 **考察重点**：解释有限候选为何在过滤后不足 K 条，并比较迭代扫描、扩大搜索范围和先过滤后精确排序。
 

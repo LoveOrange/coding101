@@ -189,12 +189,7 @@ Hashtable 的常用操作围绕实例锁串行，所以不同键也要等待同�
 
 ### 12.1 JDK 8 之后 ConcurrentHashMap 怎样保证并发安全 {#chm-thread-safety}
 
-<!-- 面试来源：
-- 快手：https://www.nowcoder.com/discuss/179560
-- 阿里巴巴：https://www.nowcoder.com/discuss/353159278544494592
--->
 
-**出现公司**：快手、阿里巴巴
 
 **考察重点**
 
@@ -217,12 +212,7 @@ Hashtable 的常用操作围绕实例锁串行，所以不同键也要等待同�
 
 ### 12.2 ConcurrentHashMap 为什么不允许 null {#chm-no-null}
 
-<!-- 面试来源：
-- 阿里巴巴：https://www.nowcoder.com/discuss/353159278544494592
-- 快手：https://www.nowcoder.com/discuss/179560
--->
 
-**出现公司**：阿里巴巴、快手
 
 **考察重点**
 
@@ -247,7 +237,6 @@ null 也为并行归约提供明确的空结果标记。业务需要保存空结
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
-**出现公司**：暂无已核验的公开来源（本站自测）
 
 **考察重点**：说明回调返回 null 或抛异常时映射如何变化，以及返回的可变值为何需要独立同步。
 

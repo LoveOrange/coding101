@@ -90,13 +90,13 @@ function checkFile(file) {
       const title = card.split('\n')[0];
       const missing = [];
       if (!/\{#[a-z0-9-]+\}\s*$/.test(title)) missing.push('显式 ID');
-      if (!/^\*\*出现公司\*\*/m.test(card)) missing.push('出现公司');
       if (!/^\*\*考察重点\*\*/m.test(card)) missing.push('考察重点');
       if (!/^\*\*相关内容\*\*/m.test(card)) missing.push('相关内容');
       if (!/<summary>参考回答<\/summary>/.test(card)) missing.push('参考回答');
       if (missing.length) problems.push(`题目「${title.slice(0, 30)}」缺少${missing.join('、')}`);
-      const isSelfTest = /^\*\*出现公司\*\*[^\n]*本站自测/m.test(card) || /<!--[^>]*自测/.test(card);
-      if (isSelfTest && !card.includes(SELF_TEST_COMMENT)) {
+      const selfTestComments = [...card.matchAll(/<!--[\s\S]*?-->/g)]
+        .map(([comment]) => comment).filter((comment) => comment.includes('自测'));
+      if (selfTestComments.some((comment) => comment !== SELF_TEST_COMMENT)) {
         problems.push(`自测题缺少统一归属注释：${title.slice(0, 30)}`);
       }
     });

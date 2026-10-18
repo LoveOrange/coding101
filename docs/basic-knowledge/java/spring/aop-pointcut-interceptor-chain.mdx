@@ -182,12 +182,7 @@ public void saveOrder() {}
 
 ### 9.1 Spring AOP 的拦截链怎样执行 {#interceptor-chain}
 
-<!-- 面试来源：
-- 美团：https://www.nowcoder.com/discuss/614236533700194304
-- 美团：https://www.nowcoder.com/discuss/353158567966482432
--->
 
-**出现公司**：美团
 
 **考察重点**：解释代理怎样按切点选择拦截器，以及 `proceed()` 怎样形成嵌套调用。说明顺序为何会影响事务、重试和缓存。
 
@@ -208,12 +203,7 @@ public void saveOrder() {}
 
 ### 9.2 `@Transactional` 常见的失效原因有哪些 {#transactional-pitfalls}
 
-<!-- 面试来源：
-- 美团：https://www.nowcoder.com/discuss/353158567966482432
-- 浩鲸科技：https://www.nowcoder.com/discuss/729079221078757376
--->
 
-**出现公司**：美团、浩鲸科技
 
 **考察重点**：根据代理入口、方法范围和异常传播，判断事务增强是否执行。说明线程切换与事务管理器选择怎样影响资源参与范围。
 
@@ -237,7 +227,6 @@ public void saveOrder() {}
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
-**出现公司**：暂无已核验的公开来源（本站自测）
 
 **考察重点**：根据切面的嵌套顺序，判断每次重试是重新开启事务，还是继续使用原事务。
 
