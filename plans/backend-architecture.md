@@ -1,6 +1,6 @@
 # 后台架构与付费设计（草案）
 
-2026-10-17 起草并开始实施。本文确定账户、订阅、激活码和学习记录的服务形态、数据模型与付费边界；实施状态见第 7 节，上线前的外部准备见第 8 节。前端原型的数据结构见[学习数据原型](./learning-data-model.md)，订阅状态以设计稿 07s 为准。
+2026-10-17 起草并开始实施，2026-10-18 改为租户架构（2.3 节）。本文确定账户、订阅、激活码和学习记录的服务形态、数据模型与付费边界；实施状态见第 7 节，上线前的外部准备见第 8 节。前端原型的数据结构见[学习数据原型](./learning-data-model.md)，订阅状态以设计稿 07s 为准。
 
 ## 1. 已定决策
 
@@ -14,7 +14,9 @@
 | 国内版 | 备案完成后，用 `REGION=cn` 单独部署一份账户服务和 Coding101 服务，数据不互通 |
 | 付费内容 | 学习进度（含复习、薄弱点、进度图、模拟测试记录）、卡片关联公司、去广告 |
 | 服务形态 | 开源 skeleton 作上游，私有平台仓库部署模块化单体（2.1） |
-| 账户服务 | 统一部署在 `account.linsama.com`，所有个人项目共用账号、订阅与激活码 |
+| 账户服务 | 多租户：每个产品一个账户 Worker，用户池、数据库、密钥和价格各自独立（受众不同，以后也方便单独拆出）；不对外暴露域名 |
+| 产品后台 | Coding101 自己的数据（学习记录、卡片关联公司）放在 coding101 仓库的 `worker/`，独立 Neon 数据库 |
+| 托管 | Cloudflare Workers + Neon；页面是 Workers Static Assets，`/api/*` 才运行代码；有收入前尽量免费 |
 | 三个月冲刺 | 一次性购买 90 天，不自动续费 |
 | 公司数据 | 只保护今后新增和更新的数据，不重写历史 |
 | 开源时间 | `coding101.linsama.com` 对外提供付费访问之后再考虑 |
@@ -41,7 +43,7 @@ coding101.linsama.com（公开仓库，Docusaurus 静态站）
 ```
 
 - **模块化单体**：账户、计费、激活码和产品模块在同一个进程、同一个数据库里，按包划分边界。独立开发者阶段拆成多个服务只会增加部署、鉴权和事务成本；包边界清楚，以后需要时再拆。
-- **统一用户**：`account.linsama.com` 是所有个人项目的账户服务，共用 `users` 和权益表，SKU 用产品前缀区分（`coding101.pro`）。会话 cookie 设在 `.linsama.com`，`*.linsama.com` 下的产品自动共享登录。
+- **统一用户**（已被 2.3 节的租户方案取代）：原计划所有项目共用 `account.linsama.com` 的用户表，cookie 设在 `.linsama.com`。
 - **产品后台的位置**：需要服务端数据的产品，先以 `packages/<product>` 的形式放进同一个部署，路由为 `/api/<product>/*`；与账户服务共用事务和部署，周末可以做完。某个产品的负载或技术栈需要独立时，再拆成单独服务，用 JWKS 校验 JWT、调用 `/api/entitlements`，前端只改接口地址。
 - **账户页面**：`account.linsama.com` 只提供通用的登录、注册、找回密码页面。Coding101 的账户、兑换、订阅与账单页面沿用站内原型（设计稿 07 系列），调用账户服务的接口。
 - **开源边界**：通用能力（`auth`、`billing`、`redemption`）贡献回 skeleton；产品模块、目录价格、私有内容数据只留在私有仓库。skeleton 开源前需要整理：许可证、去掉 Reactive Book 等产品痕迹、扫描提交历史中的密钥。
@@ -60,11 +62,25 @@ apps/api（路由、请求解析、错误映射）
 - 产品策略（试用天数、宽限期、90 天保留、只读规则、复习间隔）写成不访问数据库的纯函数，放在 `packages/coding101/src/domain`，前端 `store.ts` 与后台共用同一份实现。
 - 路由层只做校验和错误映射，沿用 skeleton 的错误体系（`code` + HTTP 状态）。
 
-### 2.3 部署与访问
+### 2.3 部署与访问（2026-10-18 起）
 
-- 站点 `coding101.linsama.com`，账户服务 `account.linsama.com`（Railway + Neon，按 skeleton 的 `infra/DEPLOYMENT.md`）。两者同站，cookie 设在 `.linsama.com`、`SameSite=Lax`，前端请求带 `credentials: 'include'`，账户服务的 CORS 只允许 `*.linsama.com` 下登记过的来源；GitHub Pages 镜像 `linsama.me/coding101/` 只提供免费阅读。
-- 激活码买家都在大陆，需要实测从大陆访问站点与 API 的稳定性：`*.vercel.app` 与 `*.up.railway.app` 在大陆不可靠，只对外使用 `linsama.com` 下的域名；不稳定时再试 Cloudflare 代理或换托管。
-- 大陆用户无法使用 Google、GitHub 登录，第一版以邮箱加密码为主；找回密码需要邮件服务，并验证 QQ、163 邮箱的送达率。
+```
+coding101.linsama.com ── Worker coding101（coding101 仓库 worker/）
+  ├─ 页面、静态文件：Workers Static Assets，直接由 CDN 返回，不运行代码
+  ├─ /api/c101/*：学习记录、卡片关联公司 → Neon 数据库 coding101
+  └─ /api/auth|billing|redeem|product/*：经 Service Binding 转给
+       Worker account-coding101（linsama-account 仓库，wrangler env coding101）
+         └─ Neon 数据库 account_coding101：用户、会话、订阅、激活码、权益
+```
+
+- **一个对外域名**：用户只看到 `coding101.linsama.com`，会话 cookie 是这个域名自己的（host-only、HttpOnly），不需要 CORS。账户 Worker 没有公网路由。
+- **租户**：新产品在 `apps/worker/wrangler.jsonc` 里加一个 env，配自己的数据库、密钥和 `PRODUCT_*`。租户之间不共享用户。
+- **产品后台**：只做产品自己的数据；谁在请求、有没有权益，通过 Service Binding 问账户服务（`/api/product/me`，清理任务用 `/api/product/internal/access`）。
+- **登录**：邮箱验证码（Resend），不用密码：Workers 免费版每次请求只有 10 ms CPU，密码哈希放不下。
+- **防刷**：Cloudflare WAF 规则 `api-per-ip`，同一 IP 10 秒内超过 60 次 `/api/*` 请求返回 429（webhook 除外）。Workers 付费版没有硬性消费上限，升级后再设预算提醒和单次 CPU 上限。
+- **在线支付开关**：Lemon Squeezy 店铺激活前，账户服务 `PRODUCT_CHECKOUT=closed`、站点构建不设 `CHECKOUT_OPEN`，定价页显示「即将开通」。
+- GitHub Pages 镜像 `linsama.me/coding101/` 只提供免费阅读（`serverApi: false`）。
+- 大陆用户无法使用 Google、GitHub 登录；需要实测 QQ、163 邮箱的验证码送达率。
 - 海外投放广告（如 AdSense）需要面向欧盟用户的同意提示；付费用户不加载广告脚本。
 
 ## 3. project-skeleton 新增能力
@@ -131,7 +147,7 @@ apps/api（路由、请求解析、错误映射）
 
 ### 4.2 学习记录
 
-第一版按用户存一份带版本号的学习记录文档（`c101_learner_docs`），内容为卡片状态、阅读进度、会话、偏好和模拟测试设置。复习间隔等学习逻辑只在前端 `store.ts` 一处实现，服务端负责：
+第一版按用户存一份带版本号的学习记录文档（coding101 数据库的 `learner_docs`），内容为卡片状态、阅读进度、会话、偏好和模拟测试设置。复习间隔等学习逻辑只在前端 `store.ts` 一处实现，服务端负责：
 
 - 校验文档结构和大小（1 MB），丢弃账户、订阅、账单等不属于学习记录的字段；
 - 只允许试用和 Pro 写入，到期只读期间可读不可写；
@@ -200,28 +216,27 @@ apps/api（路由、请求解析、错误映射）
 
 **范围**：已发布的公司数据留在公开仓库的提交历史和搜索缓存里，不重写历史，只保护今后新增和更新的数据。公司名称目前可能带来“公司名 + 知识点 + 面试题”的搜索流量，移除后会损失这部分曝光。
 
-## 7. 实施顺序与状态（2026-10-17）
+## 7. 实施状态（2026-10-18）
 
 | 步骤 | 状态 |
 | --- | --- |
-| 1. skeleton：`access_grant`、权益计算、宽限期、订单 `accessDays` | 已合并（project-skeleton #5） |
-| 2. skeleton：`@org/redemption`（批次、兑换、限流、CLI） | 已合并（#6）；管理员 API 与 `users.role` 延后，先用 CLI |
-| 3. skeleton：`deferRenewal` 与 `syncRenewals` | 已合并（#7）；Lemon Squeezy 的做法需在测试店铺验证 |
-| 3a. skeleton：跨子域登录与 CORS、试用不推迟付费权益 | PR 待合并（#8、#9），私有仓库已合入 |
-| 4. 私有平台仓库 `linsama-account`：`packages/coding101` | 已完成并通过测试，待推送（需要 `workflow` 权限） |
-| 5. Coding101 前端接入 | 已完成，本地端到端验证通过（注册、试用、兑换、账单、多设备合并） |
-| 6. 公司数据迁移 | 256 张卡已导入私有仓库；构建产物已去掉公司名称；正文中的 `**出现公司**` 行与 `AGENTS.md` 写法待调整 |
-| 7. 部署验证 | 待外部资源（第 8 节） |
-| 8. skeleton 开源整理 | `coding101.linsama.com` 付费上线后 |
+| skeleton：`access_grant`、激活码、续费同步 | 已合并（project-skeleton #5–#7）；#8、#9 待合并 |
+| 平台仓库：Workers、租户、邮箱验证码、激活码重排、支付开关 | linsama-account PR #2 |
+| Coding101 后台 `worker/`：学习记录、公司标签、清理任务 | coding101 PR #4 |
+| 测试域名 `c101-beta.linsama.com` 端到端 | 已通过（登录、试用、兑换、同步、公司、账单、支付关闭、退出） |
+| 正式域名切换 | 进行中：需删除指向 Vercel 的 DNS 记录 |
+| 在线支付 | 待 Lemon Squeezy 店铺激活后换正式 variant 与 webhook，再打开开关 |
+| 公司数据迁移 | 已导入 256 张卡，构建产物不含公司名；正文的 `**出现公司**` 行与 `AGENTS.md` 写法待调整 |
+| 广告 | 未接入，待广告账号 |
 
-已知缺口：订阅时若仍有激活码或冲刺时段，剩余天数与第一个付费周期重叠（skeleton CLAUDE.md 已记录）；找回密码依赖邮件服务；广告位不在设计稿内，暂未接入。
+已知缺口：订阅时若仍有激活码或冲刺时段，剩余天数与第一个付费周期重叠；验证码邮件发送失败时接口仍返回成功（Better Auth 在后台发送），用户只能点「重新发送」。
 
 ## 8. 上线前需要准备的外部资源
 
-| 资源 | 用途 |
+| 资源 | 状态 |
 | --- | --- |
-| Lemon Squeezy 店铺（测试模式） | API key、webhook 密钥；月付、年付订阅和三个月冲刺一次性商品三个 variant；首发折扣到 2026-12-31 |
-| Railway 项目、Neon 数据库 | 部署 `account.linsama.com` |
-| Cloudflare DNS | `account.linsama.com` 记录（按 skeleton 部署文档使用 DNS-only） |
-| 邮件服务（如 Resend） | 找回密码、到期提醒；需要验证 `linsama.com` 发信域名 |
-| 广告账号（如 AdSense） | 审核需要数天到数周，代码先按开关接入 |
+| Lemon Squeezy 店铺 | 测试模式可用；正式收款需要店主完成店铺激活 |
+| Neon | 项目 long-pine-14026346：`account_coding101`、`coding101` 两个数据库 |
+| Resend | `linsama.com` 已验证；验证码邮件目前可能进垃圾箱，待配 DMARC |
+| Cloudflare | Workers 免费版；上线后升级 Workers Paid，设预算提醒与 `limits.cpu_ms` |
+| 广告账号（如 AdSense） | 未申请 |
