@@ -16,7 +16,7 @@ const NAV: {id: Section; label: string; href?: string}[] = [
   {id: 'billing', label: '订阅与账单', href: '/account/billing'},
   {id: 'redeem', label: '兑换激活码', href: '/account/redeem'},
   {id: 'preferences', label: '学习偏好', href: '/account'},
-  {id: 'privacy', label: '数据与隐私'},
+  {id: 'privacy', label: '数据与隐私', href: '/account/privacy'},
 ];
 
 export function AccountLayout({active, children}: {active: Section; children: ReactNode}) {
