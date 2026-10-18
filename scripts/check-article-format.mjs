@@ -95,7 +95,8 @@ function checkFile(file) {
       if (!/<summary>参考回答<\/summary>/.test(card)) missing.push('参考回答');
       if (missing.length) problems.push(`题目「${title.slice(0, 30)}」缺少${missing.join('、')}`);
       const selfTestComments = [...card.matchAll(/<!--[\s\S]*?-->/g)]
-        .map(([comment]) => comment).filter((comment) => comment.includes('自测'));
+        .map(([comment]) => comment)
+        .filter((comment) => comment.includes('自测'));
       if (selfTestComments.some((comment) => comment !== SELF_TEST_COMMENT)) {
         problems.push(`自测题缺少统一归属注释：${title.slice(0, 30)}`);
       }
