@@ -15,8 +15,11 @@
     "run_worker_first": ["/api/*"],
   },
   "services": [{ "binding": "ACCOUNT", "service": "account-coding101" }],
-  // Staging domain until go-live, then coding101.linsama.com.
-  "routes": [{ "pattern": "c101-beta.linsama.com", "custom_domain": true }],
+  // c101-beta stays as staging until it's retired.
+  "routes": [
+    { "pattern": "coding101.linsama.com", "custom_domain": true },
+    { "pattern": "c101-beta.linsama.com", "custom_domain": true },
+  ],
   "triggers": { "crons": ["0 19 * * *"] },
   "observability": { "enabled": true },
   // Secrets: DATABASE_URL (Neon, database coding101), INTERNAL_API_TOKEN (same

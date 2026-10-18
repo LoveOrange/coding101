@@ -53,6 +53,9 @@ const config: Config = {
     learnerFeatures,
     // The site's own API (worker/): accounts, billing, synced records.
     serverApi: true,
+    // Online payment; off until the Lemon Squeezy store is live (the account
+    // service's PRODUCT_CHECKOUT refuses checkouts until then as well).
+    checkoutOpen: process.env.CHECKOUT_OPEN === "true",
   },
 
   // Even if you don't use internationalization, you can use this field to set

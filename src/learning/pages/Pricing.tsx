@@ -2,6 +2,7 @@ import {useState} from 'react';
 import clsx from 'clsx';
 import Link from '@docusaurus/Link';
 import {useHistory} from '@docusaurus/router';
+import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
 
 import {LAUNCH_ENDS, learnerActions, PLAN_LABELS, PLAN_PRICES, priceOf, type PurchasablePlan, today, useLearner} from '../store';
 import {Dialog} from '../ui';
@@ -46,6 +47,7 @@ function PricingPage() {
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState(false);
   const launch = today() <= LAUNCH_ENDS;
+  const checkoutOpen = Boolean(useDocusaurusContext().siteConfig.customFields?.checkoutOpen);
 
   const choose = (tier: Tier) => {
     if (!tier.plan) {
@@ -109,14 +111,19 @@ function PricingPage() {
                 <span key={feature}>✓ {feature}</span>
               ))}
             </div>
-            <button type="button" className={clsx(styles.action, styles[`action_${tier.tone}`])} onClick={() => choose(tier)}>
-              {tier.action}
+            <button
+              type="button"
+              className={clsx(styles.action, styles[`action_${tier.tone}`])}
+              disabled={Boolean(tier.plan) && !checkoutOpen}
+              onClick={() => choose(tier)}>
+              {tier.plan && !checkoutOpen ? '即将开通' : tier.action}
             </button>
           </div>
         ))}
       </div>
 
       <div className={styles.foot}>
+        {!checkoutOpen && <span>在线支付即将开通，现在可以先免费试用 7 天，或用激活码开通 Pro</span>}
         <span>大陆用户可在小红书、抖音店铺购买激活码 · 到期后进度数据保留 90 天</span>
         <span>
           已有激活码？<Link to="/account/redeem">去兑换</Link>
