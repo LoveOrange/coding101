@@ -51,8 +51,8 @@ const config: Config = {
     // Local previews only: enables ?mock=<preset> sample learner states.
     learnerMocks: process.env.LEARNER_MOCKS === "true",
     learnerFeatures,
-    // The shared account service (accounts, subscriptions, synced records).
-    accountApi: process.env.ACCOUNT_API_URL ?? "https://account.linsama.com",
+    // The site's own API (worker/): accounts, billing, synced records.
+    serverApi: true,
   },
 
   // Even if you don't use internationalization, you can use this field to set

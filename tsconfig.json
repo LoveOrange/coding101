@@ -3,5 +3,7 @@
   "extends": "@docusaurus/tsconfig",
   "compilerOptions": {
     "baseUrl": "."
-  }
+  },
+  // worker/ is its own package (Cloudflare Workers types, own tsconfig).
+  "exclude": ["node_modules", "build", ".docusaurus", "worker"]
 }

@@ -3,23 +3,19 @@ import siteConfig from '@generated/docusaurus.config';
 import type {LearnerRecords} from './types';
 
 /**
- * Client for the shared account service (account.linsama.com). Requests carry
- * the session cookie, which is scoped to .linsama.com, so signing in there or
- * here is one login. Errors surface as `ApiError` with the server's code.
+ * Client for the site's own API (same origin, served by worker/). Accounts and
+ * billing are forwarded to the account service behind it; learning records and
+ * company tags are Coding101's. Requests carry the first-party session cookie.
+ * Errors surface as `ApiError` with the server's code.
  */
 
-export function apiBase(): string {
-  const base = siteConfig.customFields?.accountApi;
-  return typeof base === 'string' ? base.replace(/\/$/, '') : '';
-}
-
 /**
- * Whether this build talks to the account service: learner features on, a
- * service URL configured, and not a `LEARNER_MOCKS` preview (those run offline).
+ * Whether this build talks to the API: learner features on, the API enabled
+ * (not the GitHub Pages mirror), and not a `LEARNER_MOCKS` preview (offline).
  */
 export function serverEnabled(): boolean {
   const fields = siteConfig.customFields ?? {};
-  return Boolean(fields.learnerFeatures) && !fields.learnerMocks && Boolean(apiBase());
+  return Boolean(fields.learnerFeatures) && !fields.learnerMocks && Boolean(fields.serverApi);
 }
 
 export class ApiError extends Error {
@@ -33,9 +29,9 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const res = await fetch(`${apiBase()}${path}`, {
+  const res = await fetch(path, {
     ...init,
-    credentials: 'include',
+    credentials: 'same-origin',
     headers: {'Content-Type': 'application/json', ...init.headers},
   });
   const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
@@ -71,22 +67,22 @@ export const api = {
   signOut: () => post<unknown>('/api/auth/sign-out'),
 
   /** `user` is null for a guest (no session). */
-  me: () => request<{user: ServerUser; access: ServerAccess} | {user: null; access: null}>('/api/coding101/me'),
-  startTrial: () => post<{access: ServerAccess}>('/api/coding101/trial'),
+  me: () => request<{user: ServerUser; access: ServerAccess} | {user: null; access: null}>('/api/product/me'),
+  startTrial: () => post<{access: ServerAccess}>('/api/product/trial'),
 
   getRecords: () =>
-    request<{version: number; data: Partial<LearnerRecords> | null; writable: boolean}>('/api/coding101/learner'),
+    request<{version: number; data: Partial<LearnerRecords> | null; writable: boolean}>('/api/c101/learner'),
   /** Resolves with the new version, or rejects with ApiError 409 carrying `body.current`. */
   putRecords: (baseVersion: number, data: LearnerRecords) =>
-    request<{version: number}>('/api/coding101/learner', {method: 'PUT', body: JSON.stringify({baseVersion, data})}),
+    request<{version: number}>('/api/c101/learner', {method: 'PUT', body: JSON.stringify({baseVersion, data})}),
 
   redeem: (code: string) => post<{redemption: Redemption}>('/api/redeem', {code}),
-  billing: () => request<{records: ServerBillingRecord[]}>('/api/coding101/billing'),
-  checkout: (plan: 'monthly' | 'sprint' | 'yearly') => post<{url: string}>('/api/coding101/checkout', {plan}),
-  cancelAutoRenew: () => post<{ok: true}>('/api/coding101/subscription/cancel'),
-  portal: () => request<{url: string}>('/api/coding101/portal'),
+  billing: () => request<{records: ServerBillingRecord[]}>('/api/product/billing'),
+  checkout: (plan: 'monthly' | 'sprint' | 'yearly') => post<{url: string}>('/api/product/checkout', {plan}),
+  cancelAutoRenew: () => post<{ok: true}>('/api/product/subscription/cancel'),
+  portal: () => request<{url: string}>('/api/product/portal'),
 
   companies: (cardIds: string[]) =>
-    request<{companies: Record<string, string[]>}>(`/api/coding101/companies?cards=${encodeURIComponent(cardIds.join(','))}`),
-  companyCounts: () => request<{counts: Record<string, number>}>('/api/coding101/companies/counts'),
+    request<{companies: Record<string, string[]>}>(`/api/c101/companies?cards=${encodeURIComponent(cardIds.join(','))}`),
+  companyCounts: () => request<{counts: Record<string, number>}>('/api/c101/companies/counts'),
 };

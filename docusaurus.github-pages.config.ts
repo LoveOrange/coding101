@@ -9,7 +9,7 @@ const githubPagesConfig: Config = {
   trailingSlash: true,
   // linsama.me is not same-site with the account service's .linsama.com cookie,
   // so the mirror stays free reading: no account service calls.
-  customFields: {...baseConfig.customFields, accountApi: ''},
+  customFields: {...baseConfig.customFields, serverApi: false},
 };
 
 export default githubPagesConfig;
