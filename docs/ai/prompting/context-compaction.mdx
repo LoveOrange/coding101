@@ -124,18 +124,7 @@ orders.e2e 超时，原因未确认。
 
 ### 6.1 对话超过上下文窗口时，有哪些处理方案？滑动窗口和动态摘要各有什么优缺点？ {#overflow-strategies}
 
-<!-- 面试来源：
-- 虾皮：https://www.nowcoder.com/feed/main/detail/79fe3fc8f8cb4c4d9beca478f4279e3a （“当对话内容超过模型上下文窗口限制时，通常有哪些处理方案？滑动窗口和动态摘要分别有什么优缺点？”）
-- 字节跳动：https://www.nowcoder.com/feed/main/detail/ed5e9d17f26e489da94afbf1241b885e （“上下文超出长度限制时如何处理？”）
-- 阿里淘天：https://www.nowcoder.com/feed/main/detail/d5d1f688dae5496abbce783aa28d6731 （“Agent上下文溢出怎么处理？”）
-- 百度：https://www.nowcoder.com/feed/main/detail/2d033fd6daa04e2aaad2282b75531bbc （“持续对话导致上下文变长时如何处理”）
-- 未披露公司：https://www.nowcoder.com/feed/main/detail/2f4e4cde4e524a16aae5f55a89c49273 （“如果上下文过长（超过 Token 预算），有哪些具体的上下文压缩策略？”）
-- 字节跳动：https://www.nowcoder.com/discuss/925342611194286080 （“随着提问轮次的增加，上下文窗口会越来越大，该如何进行解决？”）
-- 去哪儿旅行：https://www.nowcoder.com/feed/main/detail/3a2bb6126e714ff3814b81ce092b5fbd
-- OPPO：https://www.nowcoder.com/feed/main/detail/09fd6466f3f64e7dbfb5a09ed9d660a4
--->
 
-**出现公司**：虾皮、字节跳动、阿里淘天、百度、去哪儿旅行、OPPO
 
 **考察重点**：说明不同方案怎样保留信息，并比较调用成本与实现复杂度。
 
@@ -154,16 +143,7 @@ orders.e2e 超时，原因未确认。
 
 ### 6.2 压缩和摘要怎样尽量保留任务信息？ {#minimize-loss}
 
-<!-- 面试来源：
-- 字节跳动：https://www.nowcoder.com/discuss/925342611194286080 （“压缩或者摘要肯定会丢失信息，如何使得这个信息丢失最小化？”）
-- 拼多多：https://www.nowcoder.com/feed/main/detail/2109cf8eb0254507911fbf86bcbf51e4 （“上下文压缩时怎么降低信息丢失的概率？”）
-- 安软：https://www.nowcoder.com/feed/main/detail/40920533fad14136bff01c3928c7e953 （“哪些信息必须长期保留，哪些内容可以摘要或淘汰？”）
-- 字节跳动：https://www.nowcoder.com/discuss/937314680270311424 （“压缩或丢弃信息时，怎样判断哪些信息无效？”）
-- 字节跳动：https://www.nowcoder.com/feed/main/detail/8a553bb6ea8445d0b0abe11e87614cea （压缩保留需求）
-- 腾讯：https://www.nowcoder.com/feed/main/detail/28edcddf0c204c08b6562a3e6e6b73ae （摘要质量）
--->
 
-**出现公司**：字节跳动、拼多多、安软、腾讯
 
 **考察重点**：说明哪些信息需要保留、摘要或移出窗口，以及怎样验证恢复后的任务。
 
@@ -182,13 +162,7 @@ orders.e2e 超时，原因未确认。
 
 ### 6.3 常见的压缩触发机制有哪些？旧摘要和新摘要应该合并还是分别保留？ {#compaction-trigger}
 
-<!-- 面试来源：
-- 快手：https://www.nowcoder.com/feed/main/detail/daa06f995ea74445a13de42d67f66265 （“介绍一下常见的压缩触发机制”“将之前摘要和新摘要合并还是分别进行保留，分别适用什么场景”）
-- 美团：https://www.nowcoder.com/feed/main/detail/ccf6c19be7424f139ea4d6b3c557764d （“codex和claude code压缩上下文原理”）
-- 百度：https://www.nowcoder.com/discuss/921590204903723008 （压缩实现）
--->
 
-**出现公司**：快手、美团、百度
 
 **考察重点**：解释触发时机怎样影响剩余预算，以及合并和分段保留各适合什么场景。
 
@@ -207,13 +181,7 @@ Token 阈值要给下一轮输入、工具结果和输出留出空间。按轮�
 
 ### 6.4 Tool Result 如何淘汰或压缩？ {#tool-result-compaction}
 
-<!-- 面试来源：
-- 字节跳动：https://www.nowcoder.com/feed/main/detail/ed5e9d17f26e489da94afbf1241b885e （“Tool Result 如何淘汰或压缩？”）
-- 字节跳动：https://www.nowcoder.com/feed/main/detail/7e8a821479a649fd914e449d312eeb95 （窗口淘汰）
-- 4399：https://www.nowcoder.com/feed/main/detail/b040e00a505344deac8f0d2b4968b171 （海量日志结果筛选）
--->
 
-**出现公司**：字节跳动、4399
 
 **考察重点**：说明怎样控制工具结果的长度，并在清理后保留有效调用记录、避免重复操作。
 
@@ -234,7 +202,6 @@ Token 阈值要给下一轮输入、工具结果和输出留出空间。按轮�
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
-**出现公司**：暂无已核验的公开来源（本站自测）
 
 **考察重点**：解释裁剪怎样破坏消息配对，以及重新执行工具为何会改变结果或造成重复操作。
 

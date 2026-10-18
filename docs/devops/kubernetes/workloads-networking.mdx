@@ -129,18 +129,7 @@ NetworkPolicy 按 Pod、命名空间和网段选择流量。网络插件必须�
 
 ### 6.1 Deployment、StatefulSet 和 DaemonSet 有什么区别？Deployment 和 ReplicaSet 是什么关系？ {#workload-types}
 
-<!-- 面试来源：
-- 矩阵起源：https://www.nowcoder.com/discuss/813179226554642432 （“Deployment和StatefulSet的区别？”“DaemonSet的作用是什么？”）
-- 莉莉丝：https://www.nowcoder.com/feed/main/detail/41883e388cc14abe97de11d46816e45d （“deployment和statefulset的区别在哪里”）
-- 虾皮：https://www.nowcoder.com/feed/main/detail/1c948b727fef404ca86d187c20496e8c （“k8s的deamonset和statefulset是什么”）
-- tap4fun：https://www.nowcoder.com/feed/main/detail/284f57aca3434eb3a412a85290623b5e （“Deployment和StatefulSet，Ingress和Service”）
-- 集度：https://www.nowcoder.com/discuss/543503771872096256 （“k8s的deployment和replicaset区别”）
-- 字节跳动：https://www.nowcoder.com/feed/main/detail/09f134235a7044f5a2b00107a2f5363e （“Deployment的yaml文件怎么写的，分为几个部分？”）
-- 钛动科技：https://www.nowcoder.com/feed/main/detail/79e648bbd5d44edb8088e6778c4c0837 （“deployment和deamonset的区别”）
-- 汇丰软件：https://www.nowcoder.com/feed/main/detail/469029a523214d29b5f86102a2592c1b （“k8s里deployment有什么用”）
--->
 
-**出现公司**：矩阵起源、莉莉丝、虾皮、tap4fun、集度、字节跳动、钛动科技、汇丰软件
 
 **考察重点**
 
@@ -162,19 +151,8 @@ ReplicaSet 维持数量，Deployment 管理模板版本。滚动更新受 maxSur
 
 ### 6.2 Service 有哪些类型？Service 是怎样把流量转发到 Pod 的？Ingress 和 Service、Nginx 是什么关系？ {#service-ingress}
 
-<!-- 面试来源：
-- 矩阵起源：https://www.nowcoder.com/discuss/813179226554642432 （“Service有哪些类型？”）
-- 共济科技：https://www.nowcoder.com/discuss/908367488235110400 （“ClusterIP、NodePort 等 Service 有什么区别？如何从本地临时访问 ClusterIP 服务？”）
-- 持安科技：https://www.nowcoder.com/feed/main/detail/056bc97b850944a5a9ce98b45703cbed （“service资源有哪几种类型”）
-- 汇丰软件：https://www.nowcoder.com/feed/main/detail/469029a523214d29b5f86102a2592c1b （“service分几种类型，每种代表什么”）
-- 莉莉丝：https://www.nowcoder.com/feed/main/detail/41883e388cc14abe97de11d46816e45d （“K8S里面的Ingress你了解吗？你怎么使用的”“Nginx和Ingress的关系是啥？”）
-- 德迩象网机器人：https://www.nowcoder.com/feed/main/detail/5c4019daef2f45559f7a8aad25a2e5e2 （“对公网开放时用 Ingress 还是直接暴露 Pod？HTTPS 链路怎么走？”）
-- 上海银行：https://www.nowcoder.com/feed/main/detail/67ff310979144d98837bf08eb5417beb （“k8s的内部网络架构？”）
--->
 
-**出现公司**：矩阵起源、共济科技、持安科技、汇丰软件
 
-**出现公司**：莉莉丝、德迩象网机器人、上海银行
 
 **考察重点**
 
@@ -196,16 +174,7 @@ Ingress 规则需要控制器执行；Gateway API 将网关与路由拆为独立
 
 ### 6.3 Kubernetes 中 Pod 之间怎样通信？跨节点通信是怎样实现的？Flannel、Calico 和 kube-proxy 有什么区别？ {#pod-networking}
 
-<!-- 面试来源：
-- 虾皮：https://www.nowcoder.com/discuss/353156139321860096 （“k8s网络通信原理（pod内，pod间）”“k8s架构+网络模型，描述通信过程；假如遇到问题怎么处理”）
-- 虾皮：https://www.nowcoder.com/discuss/622912438538694656 （“介绍一下flannel”“了解k8sCNI插件吗”“calico和flannel中的隧道和路由两种不同方式构建”）
-- 蘑菇车联：https://www.nowcoder.com/discuss/722060503672946688 （“CNI，Calico Flannel 区别”）
-- 共济科技：https://www.nowcoder.com/discuss/908367488235110400 （“除了 Flannel，你还知道哪些 CNI？各有什么特点？”“Flannel 的 VXLAN 是怎么实现的？”）
-- 持安科技：https://www.nowcoder.com/feed/main/detail/056bc97b850944a5a9ce98b45703cbed （“flannel和kube-proxy的区别”）
-- 杭州观远数据：https://www.nowcoder.com/discuss/908191304679456768 （“K8s 网络原理”）
--->
 
-**出现公司**：虾皮、蘑菇车联、共济科技、持安科技、杭州观远数据
 
 **考察重点**
 
@@ -231,7 +200,6 @@ Service 代理负责虚拟地址到后端的选择与转发。它可由 kube-pro
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
-**出现公司**：暂无已核验的公开来源（本站自测）
 
 **考察重点**：滚动参数、进展条件与配置传播。
 
@@ -250,7 +218,6 @@ Service 代理负责虚拟地址到后端的选择与转发。它可由 kube-pro
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
-**出现公司**：暂无已核验的公开来源（本站自测）
 
 **考察重点**：双向许可、默认隔离与策略并集。
 
@@ -269,7 +236,6 @@ Service 代理负责虚拟地址到后端的选择与转发。它可由 kube-pro
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
-**出现公司**：暂无已核验的公开来源（本站自测）
 
 **考察重点**：源地址、本地端点与节点负载。
 

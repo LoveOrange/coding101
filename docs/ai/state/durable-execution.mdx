@@ -129,16 +129,7 @@ Temporal 则保存事件历史，通过重放历史重建工作流状态。重�
 
 ### 6.1 Agent 执行中断后如何恢复？检查点和快照怎么持久化？ {#resume-after-interrupt}
 
-<!-- 面试来源：
-- 药明康德：https://www.nowcoder.com/feed/main/detail/365904cd189149ffb52c36286ab23b37 （“LangGraph里用到断点跑、快照存储，怎么实现快照持久化、HITL人工介入，中断之后如何恢复？”）
-- 新旦智能：https://www.nowcoder.com/feed/main/detail/299d356b23044bf39fb29e7f8569761d （“怎么保证plan正常执行下去（防止中途中断）？比如：执行过程报错，挂了”）
-- 阿里淘天：https://www.nowcoder.com/feed/main/detail/d5d1f688dae5496abbce783aa28d6731 （“Redis宕机会丢失状态，这个弊端怎么处理？”）
-- 字节跳动：https://www.nowcoder.com/discuss/937314680270311424 （“为什么要持久化任务、工具调用和执行过程数据？”）
-- 字节跳动：https://www.nowcoder.com/feed/main/detail/ccba40c7281f4d9197b01fe9c140b13d （检查点与工具失败）
-- 美团：https://www.nowcoder.com/feed/main/detail/50bcdc47e7754aa7be59b6318fea514b （长任务与异常保障）
--->
 
-**出现公司**：药明康德、新旦智能、阿里淘天、字节跳动、美团
 
 **考察重点**
 
@@ -162,16 +153,7 @@ LangGraph 通过 `thread_id` 定位检查点，内存 checkpointer 在进程重�
 
 ### 6.2 工具调用失败时如何处理？重试时怎样保证不会重复执行？ {#retry-idempotency}
 
-<!-- 面试来源：
-- 快手：https://www.nowcoder.com/feed/main/detail/ce1b038c57c44cc08464561a8cfa0434 （“工具调用失败了怎么处理？”）
-- 百度：https://www.nowcoder.com/feed/main/detail/0ee219e39f254208bef730ca1e928fcc （“状态幂等、防止任务重复执行的机制？”“状态机卡死悬停、死循环的排查与熔断机制？”）
-- 字节跳动：https://www.nowcoder.com/feed/main/detail/612a1c20eea744a288b142f5b43f57e1 （幂等防重复下单及续传）
-- 快手：https://www.nowcoder.com/feed/main/detail/631e9b79e433415ca3dea24642f94b4c （工具调用失败处理）
-- 未披露公司：https://www.nowcoder.com/feed/main/detail/6d52148d2e854ade92de493292f2e312 （“工具调用失败 怎么办”）
-- 阿里淘天：https://www.nowcoder.com/feed/main/detail/78d6c8c30f1741e6b0a1a02d7b4bbfab （fallback）
--->
 
-**出现公司**：快手、百度、字节跳动、阿里淘天
 
 **考察重点**
 
@@ -195,15 +177,7 @@ LangGraph 通过 `thread_id` 定位检查点，内存 checkpointer 在进程重�
 
 ### 6.3 Human-in-the-loop 如何实现？人工介入后任务怎样继续？ {#human-in-the-loop}
 
-<!-- 面试来源：
-- 药明康德：https://www.nowcoder.com/feed/main/detail/365904cd189149ffb52c36286ab23b37 （HITL 人工介入与恢复）
-- 未披露公司：https://www.nowcoder.com/discuss/930572525178748928 （HITL 加入 Workflow 的具体 Stage 和职责）
-- 凌脉：https://www.nowcoder.com/feed/main/detail/76f5be8b8bd5420b94d32a66e26a7ad9 （“删除、覆盖等危险操作是否需要人工审批？”）
-- 阿里淘宝闪购：https://www.nowcoder.com/discuss/879393838081597440 （人工中断）
-- 小红书、百度：https://www.nowcoder.com/feed/main/detail/e319aadc79a9479397a6661a7f5ca088 （失败重跑及人工介入）
--->
 
-**出现公司**：药明康德、凌脉、阿里淘宝闪购、小红书、百度
 
 **考察重点**
 
@@ -229,7 +203,6 @@ LangGraph 可以用 `interrupt()` 配合 checkpointer 实现暂停。恢复时�
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
-**出现公司**：暂无已核验的公开来源（本站自测）
 
 **考察重点**：能说明恢复的执行起点，以及节点重跑为什么会重复触发副作用。
 

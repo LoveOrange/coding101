@@ -141,13 +141,7 @@ preStop 耗时计入同一个宽限期。应用应停止接收新请求，并完
 
 ### 8.1 为什么 Kubernetes 的最小调度单位是 Pod 而不是容器？Pod 和容器是什么关系？ {#why-pod}
 
-<!-- 面试来源：
-- 京东：https://www.nowcoder.com/discuss/521405985047445504 （“容器和pod的区别，为什么有了容器还需要pod”）
-- 矩阵起源：https://www.nowcoder.com/discuss/813179226554642432 （“K8s中最小的调度单元是什么？”）
-- DevOps、K8s 运维开发实习：https://www.nowcoder.com/feed/main/detail/0266f163e800445cb8bd0be281f953fe （“k8s的deployment和pod的区别”）
--->
 
-**出现公司**：京东、矩阵起源
 
 **考察重点**
 
@@ -169,14 +163,7 @@ Pod 内容器在同一节点运行，但各自管理进程生命周期。共享�
 
 ### 8.2 Pod 有哪些状态？一个 Pod 一直 Pending 或反复 CrashLoopBackOff，你怎样排查？ {#pod-troubleshooting}
 
-<!-- 面试来源：
-- 虾皮：https://www.nowcoder.com/feed/main/detail/ca15e72d3c9145269f1136d353f723be （“一个pod一直处于崩溃，可能是什么原因？有碰到过这种情况吗”“k8s pod有什么状态”）
-- 某大厂外包：https://www.nowcoder.com/feed/main/detail/ab9a1575cf03444b89c655630e213e7d （“请说明一下pod有几种状态都是什么意思”）
-- 旷视科技：https://www.nowcoder.com/feed/main/detail/e2cbe7e87106489e882b95afac2b5419 （“如果发现这个状态呢是 Pending 了，这可能是什么原因”）
-- 塔斯汀：https://www.nowcoder.com/feed/main/detail/79548ed8c0ee4368bff9101e77b6634e （“一个烤炉Pod反复CrashLoopBackOff……排查思路？”）
--->
 
-**出现公司**：虾皮、旷视科技、塔斯汀
 
 **考察重点**
 
@@ -200,13 +187,7 @@ CrashLoopBackOff 先查 `kubectl logs --previous`。再结合上次退出原因�
 
 ### 8.3 Kubernetes 有哪三种探针？分别起什么作用，配置时要注意什么？ {#probes}
 
-<!-- 面试来源：
-- 嘉银科技：https://www.nowcoder.com/feed/main/detail/e2ac9948b87e4df283d6923893f51102 （“三种探针及其作用”）
-- 影石：https://www.nowcoder.com/feed/main/detail/5ed2ee165e8340a5b82c8c78eeaeb019 （“探针知不知道？”）
-- 共济科技：https://www.nowcoder.com/discuss/908367488235110400 （节点健康与 Pod 的 liveness/readiness 探针的区别）
--->
 
-**出现公司**：嘉银科技、影石、共济科技
 
 **考察重点**
 
@@ -230,15 +211,7 @@ liveness 应检查重启能修复的本地故障。共享依赖故障放入该�
 
 ### 8.4 资源的 requests 和 limits 有什么区别？什么情况下 Pod 会被驱逐？污点、亲和性和 HPA 怎样使用？ {#scheduling-scaling}
 
-<!-- 面试来源：
-- 字节跳动：https://www.nowcoder.com/feed/main/detail/09f134235a7044f5a2b00107a2f5363e （“Deployment里面是怎么去声明文件的使用跟限制啊？就是资源的使用跟限制。”）
-- 虾皮：https://www.nowcoder.com/discuss/622912438538694656 （“k8s中pod驱逐机制”）
-- 虎牙：https://www.nowcoder.com/discuss/681082337408364544 （“Kubernetes中反亲和概念是什么？”“Kubernetes中弹性伸缩的策略是什么？”）
-- 某大厂外包：https://www.nowcoder.com/feed/main/detail/ab9a1575cf03444b89c655630e213e7d （“污点有几种类型”）
-- 京东：https://www.nowcoder.com/feed/main/detail/cad9b0da6f5641adaf9d8e85129013e0 （“讲解 K8s 配置相关，如何实现高并发与弹性扩缩容”）
--->
 
-**出现公司**：字节跳动、虾皮、虎牙、京东
 
 **考察重点**
 
@@ -261,7 +234,6 @@ liveness 应检查重启能修复的本地故障。共享依赖故障放入该�
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
-**出现公司**：暂无已核验的公开来源（本站自测）
 
 **考察重点**：共享宽限期、端点传播和在途请求。
 

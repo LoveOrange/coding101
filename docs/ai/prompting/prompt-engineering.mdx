@@ -145,15 +145,7 @@ OpenAI Responses 可通过 `text.format` 指定 `json_schema`，并用 `strict: 
 
 ### 6.1 Agent 的提示词一般包含哪些部分？如何设计？ {#prompt-structure}
 
-<!-- 面试来源：
-- 未披露公司：https://www.nowcoder.com/discuss/930572525178748928 （“Agent 提示词大概包含什么，有多少行？”）
-- 未披露公司：https://www.nowcoder.com/feed/main/detail/6d52148d2e854ade92de493292f2e312 （“提示词怎么设计的 如何设计”）
-- Cognizant：https://www.reddit.com/r/Cognizant_benchers/comments/1wt9xgs/cognizant_ace_frontier_engineer_complete/ （结构化 Prompt 编写）
-- Infosys：https://medium.com/%40kalladisreevathsa18/infosys-interview-experience-associate-business-analyst-python-developer-generative-ai-f1fa542cb7cf （提示词类型）
-- 联想：https://www.nowcoder.com/discuss/869169098146537472 （“关于大模型提示词的经验”）
--->
 
-**出现公司**：Cognizant、Infosys、联想
 
 **题型**：综合题
 
@@ -174,15 +166,7 @@ OpenAI Responses 可通过 `text.format` 指定 `json_schema`，并用 `strict: 
 
 ### 6.2 系统 Prompt 如何调优？如何判断一个 Prompt 的质量？ {#prompt-tuning}
 
-<!-- 面试来源：
-- 百度：https://www.nowcoder.com/feed/main/detail/b9521e2b51e04afeac0a3a32e13f4da9 （“你的系统Prompt如何调优的”）
-- 腾讯：https://www.nowcoder.com/feed/main/detail/28edcddf0c204c08b6562a3e6e6b73ae （Prompt 质量）
-- 阿里淘天：https://www.nowcoder.com/feed/main/detail/78d6c8c30f1741e6b0a1a02d7b4bbfab （提示优化）
-- 韶音：https://www.nowcoder.com/feed/main/detail/11e40634018b47a7974bf5c96605024c （Prompt 迭代）
-- 字节跳动：https://www.nowcoder.com/discuss/746382064101908480 （Prompt 和项目效果）
--->
 
-**出现公司**：百度、腾讯、阿里淘天、韶音、字节跳动
 
 **考察重点**：解释怎样根据失败原因修改提示，并通过独立验收与重复运行判断效果。
 
@@ -201,13 +185,7 @@ OpenAI Responses 可通过 `text.format` 指定 `json_schema`，并用 `strict: 
 
 ### 6.3 CoT 和 Few-shot 分别适合什么场景？ {#cot-vs-few-shot}
 
-<!-- 面试来源：
-- 去哪儿旅行：https://www.nowcoder.com/feed/main/detail/505f5d9ae8104d0e93aa1bb99404087c （CoT 与 Few-shot 的适用场景）
-- 多家公司合并复盘：https://www.nowcoder.com/feed/main/detail/129eaa1c20444651ac3b932e200d3da4 （CoT）
-- Accenture：https://www.geeksforgeeks.org/interview-experiences/accenture-interview-experience-for-llm-operations-engineer-experienced/ （提示技术）
--->
 
-**出现公司**：去哪儿旅行、Accenture
 
 **考察重点**：说明两种技术分别解决什么问题，以及示例分布和显式推导如何影响效果与成本。
 
@@ -226,15 +204,7 @@ CoT 显式展示中间推导，会增加输出 Token、延迟和费用。推理�
 
 ### 6.4 想要模型按照固定结构输出，应该怎么做？ {#structured-output}
 
-<!-- 面试来源：
-- 未披露公司：https://www.nowcoder.com/feed/main/detail/6d52148d2e854ade92de493292f2e312 （“想要按照结构输出怎么办？”）
-- TCS：https://www.linkedin.com/posts/galgalepallavi_tcs-interviewexperience-genai-activity-7419624110521090048-Q3sC （固定输出格式）
-- 小红书：https://www.nowcoder.com/feed/main/detail/9f7361c709f4413396988b4f334a0d6f （结构化结果）
-- 拼多多：https://www.nowcoder.com/feed/main/detail/2109cf8eb0254507911fbf86bcbf51e4 （流式 JSON）
-- 字节跳动：https://www.nowcoder.com/feed/main/detail/0715f2653f414fa99da92b8db860ad78 （ToolCall 流式半 JSON 的方案选择）
--->
 
-**出现公司**：TCS、小红书、拼多多、字节跳动
 
 **考察重点**：区分提示格式、JSON 模式和严格 Schema，并说明业务校验、拒答与流式结果怎样处理。
 

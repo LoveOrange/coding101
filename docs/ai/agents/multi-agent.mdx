@@ -138,16 +138,7 @@ MCP Server 提供能力，Host 中的应用结合模型请求发起调用，具�
 
 ### 7.1 多 Agent 协作系统如何设计？Agent 之间的通信机制和状态共享如何实现？ {#multi-agent-design}
 
-<!-- 面试来源：
-- 字节跳动：https://www.nowcoder.com/feed/main/detail/15af3788a038477bba99f2f9d94b2cef （“多 Agent 协作系统如何设计？Agent 之间的通信机制和状态共享如何实现？”）
-- 字节跳动：https://www.nowcoder.com/discuss/937314680270311424 （“不同子 Agent 分别处理文档块之后，怎样汇总结果？”）
-- 快手：https://www.nowcoder.com/feed/main/detail/ef8b41f126664ff2879337d43889a4ee
-- 腾讯：https://www.nowcoder.com/feed/main/detail/28edcddf0c204c08b6562a3e6e6b73ae
-- 阿里云：https://www.nowcoder.com/feed/main/detail/42ba29ab006d4bb793112eb263d18f6a
-- 美团：https://www.nowcoder.com/feed/main/detail/6c36de1ad1354e17b3e6ab2d6b63167f
--->
 
-**出现公司**：字节跳动、快手、腾讯、阿里云、美团
 
 **考察重点**
 
@@ -169,14 +160,7 @@ MCP Server 提供能力，Host 中的应用结合模型请求发起调用，具�
 
 ### 7.2 为什么不默认使用多 Agent？拆分后有哪些风险？ {#multi-agent-risks}
 
-<!-- 面试来源：
-- 小红书：https://www.nowcoder.com/feed/main/detail/9f7361c709f4413396988b4f334a0d6f （“为什么项目里不考虑做多Agent？”“假如你做了多Agent拆分，会有哪些风险？”）
-- 美团：https://www.nowcoder.com/feed/main/detail/554bdcc695ae42f8b0d78e3c44dd17d5 （单 Agent 与多 Agent 选型）
-- 阿里淘天：https://www.nowcoder.com/feed/main/detail/566fa6594dcc446a82bd203f139c45c2
-- 美团：https://www.nowcoder.com/feed/main/detail/1cfa5a4035b14eb99599b3a97f663a5c （多智能体协作故障）
--->
 
-**出现公司**：小红书、美团、阿里淘天
 
 **考察重点**
 
@@ -205,13 +189,7 @@ MCP Server 提供能力，Host 中的应用结合模型请求发起调用，具�
 
 ### 7.3 多个 Agent 并发执行时会争抢哪些资源？如何隔离上下文和状态？ {#multi-agent-isolation}
 
-<!-- 面试来源：
-- 小红书：https://www.nowcoder.com/feed/main/detail/9f7361c709f4413396988b4f334a0d6f （“多 Agent 同时执行具体争抢哪些资源？”“多 Agent 怎么做的上下文和状态的隔离？”）
-- 小红书：https://www.nowcoder.com/feed/main/detail/f1ed02bfdae04730837753b62e0d58b9 （“多 Agent 并发有什么性能问题？”）
-- 字节跳动：https://www.nowcoder.com/feed/main/detail/8a553bb6ea8445d0b0abe11e87614cea （子任务通信和文件冲突）
--->
 
-**出现公司**：小红书、字节跳动
 
 **考察重点**
 
@@ -235,7 +213,6 @@ API 调用设置全局并发上限与令牌桶，模型调用还要分配子任�
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
-**出现公司**：暂无已核验的公开来源（本站自测）
 
 **考察重点**：根据任务依赖判断能否返回部分结果，并解释怎样识别过期结果与传播取消请求。
 

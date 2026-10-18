@@ -19,7 +19,6 @@ export type ParsedCard = {
   question: string;
   /** `**题型**：综合题` marks a question that combines several articles or sections. */
   composite: boolean;
-  companies: string[];
   selfTest: boolean;
   checkpoints: Inline[][];
   related: ParsedLink[];
@@ -36,6 +35,7 @@ export type ParsedDoc = {
 };
 
 const NUMBER_RE = /^(\d+(?:\.\d+)*)\.?\s+/;
+const SELF_TEST_COMMENT = '<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->';
 
 function plainHeading(text: string): string {
   return text
@@ -144,7 +144,7 @@ function parseList(lines: string[]): Inline[][] {
 
 /* ---- Document parsing ---- */
 
-// Counts only what a reader reads: hidden comments (interview sources), link
+// Counts only what a reader reads: hidden comments, link
 // URLs and the reference list are left out.
 function estimateMinutes(lines: string[]): number {
   const references = lines.findIndex((line) => /^##\s+(?:\d+\.\s*)?参考资料/.test(line));
@@ -158,10 +158,9 @@ function estimateMinutes(lines: string[]): number {
 }
 
 function parseCard(heading: ParsedHeading, lines: string[]): ParsedCard {
-  const companies: string[] = [];
   const related: ParsedLink[] = [];
   let composite = false;
-  let selfTest = false;
+  const selfTest = lines.join('\n').includes(SELF_TEST_COMMENT);
   const checkpointLines: string[] = [];
   const answerLines: string[] = [];
   let mode: 'none' | 'checkpoints' | 'answer' = 'none';
@@ -177,23 +176,6 @@ function parseCard(heading: ParsedHeading, lines: string[]): ParsedCard {
     }
     if (/<summary>\s*参考回答\s*<\/summary>/.test(line)) {
       mode = 'answer';
-      continue;
-    }
-    const company = /^\*\*出现公司\*\*[：:]\s*(.+)$/.exec(line);
-    if (company) {
-      selfTest = /本站.*自测/.test(company[1]);
-      // "暂无公开来源记录" and similar mean the question has no verified source.
-      if (/^暂无/.test(company[1].trim())) {
-        mode = 'none';
-        continue;
-      }
-      companies.push(
-        ...company[1]
-          .split(/[、，,]/)
-          .map((name) => name.trim())
-          .filter(Boolean),
-      );
-      mode = 'none';
       continue;
     }
     const focus = /^\*\*考察重点\*\*[：:]?\s*(.*)$/.exec(line);
@@ -229,7 +211,6 @@ function parseCard(heading: ParsedHeading, lines: string[]): ParsedCard {
     explicitId: heading.explicitId,
     question: heading.title,
     composite,
-    companies,
     selfTest,
     checkpoints: parseList(checkpointLines),
     related,

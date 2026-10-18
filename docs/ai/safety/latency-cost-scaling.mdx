@@ -133,15 +133,7 @@ Agent 服务的延迟与成本来自模型调用、工具执行和排队等待�
 
 ### 5.1 一个 Agent 推理链路包含 3 个工具，请求频率也高，整体延迟较高，你会怎样优化？ {#reduce-latency}
 
-<!-- 面试来源：
-- 阿里淘天：https://www.nowcoder.com/feed/main/detail/78d6c8c30f1741e6b0a1a02d7b4bbfab （“场景题：假如一个Agent 推理链路包含3个工具+高频请求，系统整体延迟较高，你会如何优化？”）
-- 多家公司（5 年经验汇总）：https://www.nowcoder.com/feed/main/detail/129eaa1c20444651ac3b932e200d3da4 （“端到端延迟如何优化的？”）
-- 阿里淘天：https://www.nowcoder.com/feed/main/detail/566fa6594dcc446a82bd203f139c45c2 （“那你们这个工作流延迟是不是很高啊？怎么解决的？”）
-- 字节跳动：https://www.nowcoder.com/feed/main/detail/15af3788a038477bba99f2f9d94b2cef （“如何优化 RAG 系统，降低整体延迟以及 LLM 调用成本？”）
-- 字节跳动：https://www.nowcoder.com/feed/main/detail/ed5e9d17f26e489da94afbf1241b885e （“如何利用可观测链路定位首 Token 延迟、工具调用错误等问题？”）
--->
 
-**出现公司**：阿里淘天、字节跳动
 
 **考察重点**
 
@@ -170,17 +162,7 @@ Agent 服务的延迟与成本来自模型调用、工具执行和排队等待�
 
 ### 5.2 在 Token 消耗上做过哪些成本控制？模型选型时怎样权衡能力和成本？ {#token-cost}
 
-<!-- 面试来源：
-- 字节跳动：https://www.nowcoder.com/feed/main/detail/7e8a821479a649fd914e449d312eeb95 （“在 Token 消耗上做过哪些具体的成本控制？”）
-- 百度：https://www.nowcoder.com/feed/main/detail/0ee219e39f254208bef730ca1e928fcc （“使用什么大模型？调用成本如何管控？”）
-- 安软：https://www.nowcoder.com/feed/main/detail/40920533fad14136bff01c3928c7e953 （“日常使用哪些模型？模型选型时如何权衡能力、稳定性和成本？”）
-- 字节跳动：https://www.nowcoder.com/feed/main/detail/8a553bb6ea8445d0b0abe11e87614cea （“为什么一些记忆管理、上下文压缩任务可以交给小模型完成？相比大模型有什么优势？”）
-- 药明康德：https://www.nowcoder.com/feed/main/detail/365904cd189149ffb52c36286ab23b37 （“从成本、准确率综合性价比看，中文场景下哪个模型效果比较好？”）
-- 汇川技术：https://www.nowcoder.com/feed/main/detail/28032c48a90c4f69827704deb3fae34c （“如果项目预算被严格卡死，只允许使用单 Agent 且不能调用两个模型，如何避免准确率大幅下滑？”）
-- 阿里淘天：https://www.nowcoder.com/feed/main/detail/566fa6594dcc446a82bd203f139c45c2 （“你写的减少token消耗，体现在哪里？”）
--->
 
-**出现公司**：字节跳动、百度、安软、药明康德、汇川技术、阿里淘天
 
 **考察重点**
 
@@ -204,16 +186,7 @@ Agent 服务的延迟与成本来自模型调用、工具执行和排队等待�
 
 ### 5.3 为什么要限制 Agent 的并发？LLM 服务并发太高、很多用户同时使用时怎样限流和降级？ {#concurrency-limits}
 
-<!-- 面试来源：
-- 百度：https://www.nowcoder.com/feed/main/detail/b9521e2b51e04afeac0a3a32e13f4da9 （“为什么需要限制 Agent 的并发数？”）
-- 小红书：https://www.nowcoder.com/feed/main/detail/f1ed02bfdae04730837753b62e0d58b9 （“多 Agent 并发有什么性能问题？”“你平时怎么控制 Agent 并发量？”）
-- 多家公司（5 年经验汇总）：https://www.nowcoder.com/feed/main/detail/129eaa1c20444651ac3b932e200d3da4 （“llm 服务并发太高了怎么办？”）
-- 小红书：https://www.nowcoder.com/feed/main/detail/6819d2a74f00489ea3e3913a5139346a （“如果很多员工同时用，会不会有一些限流或者降级策略？”）
-- 快手：https://www.nowcoder.com/feed/main/detail/ce1b038c57c44cc08464561a8cfa0434 （手撕：给 100 个任务 ID，控制最大并发数为 3 调用外部接口）
-- 字节跳动：https://www.nowcoder.com/feed/main/detail/612a1c20eea744a288b142f5b43f57e1 （“系统限流规则是什么？分别对哪些维度做限流？”）
--->
 
-**出现公司**：百度、小红书、快手、字节跳动
 
 **考察重点**
 
@@ -237,12 +210,7 @@ Agent 服务的延迟与成本来自模型调用、工具执行和排队等待�
 
 ### 5.4 一个长任务平时 5 分钟结束，这次运行了 15—20 分钟，你会怎样分析原因？ {#slow-task-analysis}
 
-<!-- 面试来源：
-- 字节跳动：https://www.nowcoder.com/discuss/925342611194286080 （“你的Agent里面运行了一个长程的任务，它假设平时只允许需要运行5分钟就能结束。然后你新运行了一次，它运行了15-20分钟……你会怎么分析这个延迟是什么导致的？”）
-- 字节跳动：https://www.nowcoder.com/feed/main/detail/ed5e9d17f26e489da94afbf1241b885e （“如何利用可观测链路定位首 Token 延迟、工具调用错误等问题？”）
--->
 
-**出现公司**：字节跳动
 
 **考察重点**
 
@@ -270,7 +238,6 @@ Agent 服务的延迟与成本来自模型调用、工具执行和排队等待�
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
-**出现公司**：暂无已核验的公开来源（本站自测）
 
 **考察重点**：能区分计算复用与答案复用，并说明身份、实体和时效怎样影响缓存有效性。
 

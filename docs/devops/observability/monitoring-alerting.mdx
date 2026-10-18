@@ -121,17 +121,7 @@ sum by (job) (rate(http_requests_total[5m]))
 
 ### 6.1 Prometheus 的架构是怎样的？它怎样发现和抓取目标？与 Zabbix 有什么区别？ {#prometheus-architecture}
 
-<!-- 面试来源：
-- 上海银行：https://www.nowcoder.com/feed/main/detail/67ff310979144d98837bf08eb5417beb （“prometheus架构是怎么样的？”）
-- 社招 SRE / 运维开发：https://www.nowcoder.com/discuss/353156007406804992 （“Prometheus的架构图”“openfalcon和Prometheus有什么区别？”）
-- DaoCloud：https://www.nowcoder.com/feed/main/detail/55eef84d42ed422a8d4a1c22d888e929 （“Prometheus怎么发现Target的”）
-- 影石：https://www.nowcoder.com/feed/main/detail/5ed2ee165e8340a5b82c8c78eeaeb019 （“prometheus有用什么抓取指标”“zabbix了解吗”）
-- 波克城市：https://www.nowcoder.com/feed/main/detail/310e8864c0084121a964c5277255cd30 （“普罗米修斯和zabbix区别各自优势”）
-- 网易互娱：https://www.nowcoder.com/discuss/353156915016441856 （“Prometheus 如何集成在项目中的”）
-- 小米：https://www.nowcoder.com/discuss/508626047940759552 （“如何设计一个运维监控系统，设计监控，预警，通知，报警等等”）
--->
 
-**出现公司**：上海银行、DaoCloud、影石、波克城市、网易互娱、小米
 
 **考察重点**
 
@@ -155,16 +145,7 @@ Zabbix 提供主机模板及主动、被动采集。Prometheus 用标签与 Prom
 
 ### 6.2 如果要监控一个生产环境的服务（例如一台代理服务器），你会监控哪些指标？ {#what-to-monitor}
 
-<!-- 面试来源：
-- 滴滴：https://www.nowcoder.com/discuss/677898695249006592 （“如果说你要监控一个生产环境的这个服务，那你大概会监控哪些东西？”“这里边的话你觉得这个指标细致一些，应该去监控哪些细致？”）
-- 百度：https://www.nowcoder.com/discuss/723877059239346176 （“监控一个代理服务器，你会监控哪些指标。”）
-- 杭州观远数据：https://www.nowcoder.com/discuss/908191304679456768 （“监控一般采集哪些指标？”）
-- 金山云：https://www.nowcoder.com/feed/main/detail/17ecb26845774a06aeb662cd03a4761b （“prometheus全链路监控都包括什么？”）
-- 德迩象网机器人：https://www.nowcoder.com/feed/main/detail/5c4019daef2f45559f7a8aad25a2e5e2 （“K8s 服务与节点健康监控、关键指标”）
-- 波克城市：https://www.nowcoder.com/feed/main/detail/310e8864c0084121a964c5277255cd30 （“我想要监控redis和mysql该如何监控呢”）
--->
 
-**出现公司**：滴滴、百度、杭州观远数据、金山云、德迩象网机器人、波克城市
 
 **考察重点**
 
@@ -188,16 +169,7 @@ Zabbix 提供主机模板及主动、被动采集。Prometheus 用标签与 Prom
 
 ### 6.3 告警怎样设置才合理？一个指标在阈值附近反复触发、一天告警几百次，怎样降下来？告警怎样收敛和升级？ {#alert-design}
 
-<!-- 面试来源：
-- 快手：https://www.nowcoder.com/discuss/676447175684952064 （“CPU超过了一个设定的阈值，然后一会儿恢复了……一天反复好几百次……你觉得有什么好办法去把它这种报警次数降下去吗？”“你是如何保持这个系统可用性的？”）
-- 蚂蚁金服：https://www.nowcoder.com/discuss/353156080794542080 （“报警收敛怎么做”）
-- 社招 SRE / 运维开发：https://www.nowcoder.com/discuss/353156007406804992 （“哪些维度适合做报警，是所有的维度都需要配报警吗？”“怎么保证这些报警是有用的”）
-- 莉莉丝：https://www.nowcoder.com/feed/main/detail/41883e388cc14abe97de11d46816e45d （“配置哪些告警策略，然后以及面对频繁告警怎么处理的”）
-- 哔哩哔哩：https://www.nowcoder.com/feed/main/detail/5abdda781c524235b0e40b708bb04b73 （“监控报警有没有做升级”）
-- 运维开发一面：https://www.nowcoder.com/discuss/862021700576083968 （“报警线设置多少合适，是以什么数据为标准”）
--->
 
-**出现公司**：快手、蚂蚁金服、莉莉丝、哔哩哔哩
 
 **考察重点**
 
@@ -223,7 +195,6 @@ Alertmanager 按标签分组，并抑制关联衍生告警。静默用于计划�
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
-**出现公司**：暂无已核验的公开来源（本站自测）
 
 **考察重点**：分布合并、计数重置与流量加权。
 
@@ -244,7 +215,6 @@ Alertmanager 按标签分组，并抑制关联衍生告警。静默用于计划�
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
-**出现公司**：暂无已核验的公开来源（本站自测）
 
 **考察重点**：目标缺失、旧序列与独立检测。
 

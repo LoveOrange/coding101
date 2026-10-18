@@ -95,22 +95,8 @@ Secret 的 base64 是编码。默认存储行为仍需配置静态加密来保�
 
 ### 7.1 Kubernetes 的控制平面和节点上分别有哪些组件？各自的作用是什么？ {#components}
 
-<!-- 面试来源：
-- 嘉银科技：https://www.nowcoder.com/feed/main/detail/e2ac9948b87e4df283d6923893f51102 （“k8smaster节点和node节点的所有组件和作用”）
-- DaoCloud：https://www.nowcoder.com/feed/main/detail/584e2795486c4d4d82f3ac53561a5036 （“讲k8s的master和node有什么组件及其作用”）
-- 波克城市：https://www.nowcoder.com/discuss/792889897148248064 （“K8s 控制平面由哪些组件？”）
-- 虾皮：https://www.nowcoder.com/feed/main/detail/1c948b727fef404ca86d187c20496e8c （“k8s控制平面有哪些构成”）
-- 矩阵起源：https://www.nowcoder.com/discuss/813179226554642432 （“K8s的核心组件有哪些，作用是什么？”）
-- 矩阵起源：https://www.nowcoder.com/feed/main/detail/e297f923972f41d6860a0a6e58058772 （“那你知道 kube-controller-manage 它是做什么的？”）
-- 字节跳动：https://www.nowcoder.com/feed/main/detail/e2a502f37ad04bbabdb760e5925a1716 （“K8s的架构和组件”）
-- 米哈游：https://www.nowcoder.com/feed/main/detail/be1ee2369e5b4536b4bc5e47c8463c9e （“一个 Kubernetes 集群的主要工作组件有哪些？”）
-- 哔哩哔哩：https://www.nowcoder.com/feed/main/detail/57152e86dc064444913e8c5f1d897b25 （“k8s架构”）
-- 蘑菇车联：https://www.nowcoder.com/discuss/722060503672946688 （“k8s架构和相关组件的用处”）
--->
 
-**出现公司**：嘉银科技、DaoCloud、波克城市、虾皮、矩阵起源
 
-**出现公司**：字节跳动、米哈游、哔哩哔哩、蘑菇车联
 
 **考察重点**
 
@@ -134,15 +120,7 @@ apiserver 是对象访问入口，etcd 保存对象。scheduler 选择节点，�
 
 ### 7.2 从 `kubectl apply` 一个 Deployment 到 Pod 运行起来，中间经历了哪些步骤？调度器怎样选择节点？ {#pod-creation-flow}
 
-<!-- 面试来源：
-- DaoCloud：https://www.nowcoder.com/feed/main/detail/55eef84d42ed422a8d4a1c22d888e929 （“Pod的启动流程”）
-- 字节跳动：https://www.nowcoder.com/feed/main/detail/09f134235a7044f5a2b00107a2f5363e （“Deployment嘛，它只是一个声明的一个文件嘛，对吧，那他是怎么启动pod的”）
-- 美团：https://www.nowcoder.com/feed/main/detail/ae374d27509b47fa95b1f1133a500266 （“pod的调度机制？”）
-- 地平线：https://www.nowcoder.com/feed/main/detail/8e57f41e83c3484c9fb4daf76676780c （“哪个组件去调度节点运行？”）
-- 虾皮：https://www.nowcoder.com/discuss/622912438538694656 （“K8S 对 Pod 的调度分布不均的话，知道怎么……”）
--->
 
-**出现公司**：DaoCloud、字节跳动、美团、地平线、虾皮
 
 **考察重点**
 
@@ -166,16 +144,7 @@ Deployment 控制器管理 ReplicaSet。ReplicaSet 控制器补足 Pod。schedul
 
 ### 7.3 etcd 在 Kubernetes 中起什么作用？它怎样保证多节点数据一致？etcd 出问题会有什么影响？ {#etcd}
 
-<!-- 面试来源：
-- 矩阵起源：https://www.nowcoder.com/feed/main/detail/e297f923972f41d6860a0a6e58058772 （“ETCD 在 K8S 里面起什么作用吗？”）
-- 字节跳动：https://www.nowcoder.com/feed/main/detail/09f134235a7044f5a2b00107a2f5363e （“etcd原理是什么？写数据怎么保证多节点数据一致性？”）
-- 滴滴：https://www.nowcoder.com/discuss/370951708929720320 （“k8s中etcd作用”）
-- 影石：https://www.nowcoder.com/feed/main/detail/5ed2ee165e8340a5b82c8c78eeaeb019 （“介绍etcd”）
-- DaoCloud：https://www.nowcoder.com/feed/main/detail/584e2795486c4d4d82f3ac53561a5036 （“etcd的启动方式，有了解过静态pod吗”）
-- 共济科技：https://www.nowcoder.com/discuss/908367488235110400 （“etcd 异常导致 Kubernetes 系统组件无法启动”）
--->
 
-**出现公司**：矩阵起源、字节跳动、滴滴、影石、DaoCloud、共济科技
 
 **考察重点**
 
@@ -201,7 +170,6 @@ etcd 故障会阻塞持久更新和相关控制循环。已有容器与转发规
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
-**出现公司**：暂无已核验的公开来源（本站自测）
 
 **考察重点**：身份、操作权限、对象约束和落盘保护。
 

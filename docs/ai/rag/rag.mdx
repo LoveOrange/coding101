@@ -153,19 +153,7 @@ RAG 的检索器也可以连接结构化数据源。因此，系统可以用文�
 
 ### 6.1 请完整介绍一下 RAG 的整体流程。 {#rag-pipeline}
 
-<!-- 面试来源：
-- 字节跳动：https://www.nowcoder.com/feed/main/detail/15af3788a038477bba99f2f9d94b2cef （“请完整介绍一下 RAG 的整体流程。”）
-- 字节跳动：https://www.nowcoder.com/discuss/925342611194286080 （“项目中的RAG知识用到了哪些？离线上传和在线问答环节如何进行？”）
-- 阿里云：https://www.nowcoder.com/feed/main/detail/7e27cf4dedb142d9b643471ba31276ed （“RAG是什么，一次完整的RAG包含哪些流程”）
-- 百度：https://www.nowcoder.com/discuss/921590204903723008 （“如果从零搭建一个团队内部的知识问答 RAG，完整流程是什么？”）
-- 浪潮：https://www.nowcoder.com/feed/main/detail/a8854ce3fa4b45cb8d73ec92c798a63b （“你能简单的介绍一下整个rag流程吗”）
-- 字节跳动：https://www.nowcoder.com/feed/main/detail/ed5e9d17f26e489da94afbf1241b885e （“请介绍完整的 RAG 流程。”）
-- TCS：https://www.linkedin.com/posts/galgalepallavi_tcs-interviewexperience-genai-activity-7419624110521090048-Q3sC （“Suppose an employee asks a question to a RAG system — how will you design the RAG?”）
-- 凌脉：https://www.nowcoder.com/feed/main/detail/76f5be8b8bd5420b94d32a66e26a7ad9 （“整套 RAG 链路是怎样设计的？”）
-- Accenture：https://www.geeksforgeeks.org/interview-experiences/accenture-final-interview-experience-for-llm-operations-engineer-experienced-selected/
--->
 
-**出现公司**：字节跳动、阿里云、百度、浪潮、TCS、凌脉、Accenture
 
 **考察重点**：按顺序解释离线和在线各环节的产出，并说明如何校验引用、区分检索与生成错误。
 
@@ -186,15 +174,7 @@ RAG 的检索器也可以连接结构化数据源。因此，系统可以用文�
 
 ### 6.2 RAG 和微调应该如何选择？实际项目中如何组合使用？ {#rag-vs-fine-tuning}
 
-<!-- 面试来源：
-- 字节跳动：https://www.nowcoder.com/feed/main/detail/15af3788a038477bba99f2f9d94b2cef （“RAG 和微调应该如何选择？在实际工程项目中如何组合使用？”）
-- 字节跳动、蚂蚁：https://www.nowcoder.com/discuss/904029765160497152 （“微调和RAG的区别与策略采用维度”）
-- 美团：https://www.nowcoder.com/feed/main/detail/554bdcc695ae42f8b0d78e3c44dd17d5 （微调和 RAG 选型）
-- 腾讯：https://www.nowcoder.com/feed/main/detail/427caf4cc5ec4192b64fdb6ea6698bef （“这些项目哪个更适合使用模型再训练，哪些适合用rag”）
-- 蚂蚁：https://www.nowcoder.com/discuss/800426409796624384 （RAG 与微调）
--->
 
-**出现公司**：字节跳动、蚂蚁、美团、腾讯
 
 **考察重点**：比较知识更新、来源追溯、权限和成本，并说明微调生成模型或检索模型怎样与 RAG 配合。
 
@@ -213,13 +193,7 @@ RAG 改变请求中的外部证据，文档更新后可以通过索引发布生�
 
 ### 6.3 RAG 有哪些局限？什么场景不适合用 RAG？ {#rag-limits}
 
-<!-- 面试来源：
-- 美团：https://www.nowcoder.com/feed/main/detail/1cfa5a4035b14eb99599b3a97f663a5c （“你对rag怎么看?rag的问题在哪里?rag适合的场景”）
-- 阿里淘天：https://www.nowcoder.com/feed/main/detail/d5d1f688dae5496abbce783aa28d6731 （“为什么选用数据库检索而不是直接使用rag？”）
-- 阿里云：https://www.nowcoder.com/feed/main/detail/d577a09f95294565b464a8b0ce49a829 （Agentic 与传统 RAG）
--->
 
-**出现公司**：美团、阿里淘天、阿里云
 
 **考察重点**：解释文本检索在精确查询、全量统计和多跳问题中的限制，并选择对应的数据处理方式。
 
@@ -240,16 +214,7 @@ RAG 改变请求中的外部证据，文档更新后可以通过索引发布生�
 
 ### 6.4 知识库更新时，怎样处理索引、缓存和旧文档召回？ {#index-updates}
 
-<!-- 面试来源：
-- 虾皮：https://www.nowcoder.com/feed/main/detail/79fe3fc8f8cb4c4d9beca478f4279e3a （“如果知识库内容持续更新，如何处理向量索引更新、缓存失效以及旧文档仍被召回的问题？”）
-- 药明康德：https://www.nowcoder.com/feed/main/detail/365904cd189149ffb52c36286ab23b37 （“如何规避新旧版本制度冲突导致回答错误？”）
-- 拼多多：https://www.nowcoder.com/feed/main/detail/2109cf8eb0254507911fbf86bcbf51e4 （“如果文档都做倒排或索引，怎么同时解决切分和权限问题？”）
-- 美团：https://www.nowcoder.com/feed/main/detail/50bcdc47e7754aa7be59b6318fea514b （知识更新）
-- 字节跳动：https://www.nowcoder.com/discuss/929731481189044224 （知识更新幂等）
-- 科大讯飞：https://www.nowcoder.com/feed/main/detail/671d2fa1d7c04322837ee1f5788dd69d （知识更新）
--->
 
-**出现公司**：虾皮、药明康德、拼多多、美团、字节跳动、科大讯飞
 
 **题型**：综合题
 
@@ -274,7 +239,6 @@ RAG 改变请求中的外部证据，文档更新后可以通过索引发布生�
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
-**出现公司**：暂无已核验的公开来源（本站自测）
 
 **考察重点**：解释改写要保留哪些查询条件，以及多跳检索如何记录事实、判断证据是否齐全并停止。
 

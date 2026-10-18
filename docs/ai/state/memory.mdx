@@ -137,17 +137,7 @@ Agent 记忆是在模型上下文之外保存信息，并在后续调用中按�
 
 ### 6.1 Agent 的短期记忆和长期记忆分别如何实现？哪些信息适合长期保存？ {#short-long-memory}
 
-<!-- 面试来源：
-- 虾皮：https://www.nowcoder.com/feed/main/detail/79fe3fc8f8cb4c4d9beca478f4279e3a （“Agent中的短期记忆和长期记忆分别如何实现？哪些用户信息或历史数据适合长期保存？”）
-- 小红书：https://www.nowcoder.com/feed/main/detail/f1ed02bfdae04730837753b62e0d58b9 （“讲一下长时记忆和短时记忆的底层实现方式？”）
-- 科大讯飞：https://www.nowcoder.com/feed/main/detail/671d2fa1d7c04322837ee1f5788dd69d （“短期记忆和长期记忆分别存储在哪里？”）
-- 快手：https://www.nowcoder.com/feed/main/detail/ce1b038c57c44cc08464561a8cfa0434 （“什么信息进长期记忆，什么信息只放短期？”）
-- 字节跳动：https://www.nowcoder.com/feed/main/detail/8a553bb6ea8445d0b0abe11e87614cea （“当前对话中的Context和长期Memory有什么区别？”）
-- 快手：https://www.nowcoder.com/discuss/904419777614049280 （“业界的主流的3层记忆系统是怎么样的？每一层分别存了什么东西？”）
-- 阿里巴巴：https://www.nowcoder.com/feed/main/detail/556b3a764a614931bc5bb8a96e4f5f3f
--->
 
-**出现公司**：虾皮、小红书、科大讯飞、快手、字节跳动、阿里巴巴
 
 **考察重点**
 
@@ -169,17 +159,7 @@ Agent 记忆是在模型上下文之外保存信息，并在后续调用中按�
 
 ### 6.2 一个完整的 Agent 记忆系统应该如何设计？Memory 如何提取、存储和检索？ {#memory-system}
 
-<!-- 面试来源：
-- 字节跳动：https://www.nowcoder.com/feed/main/detail/8a553bb6ea8445d0b0abe11e87614cea （“一个完整的Agent记忆系统应该如何设计？包括哪些模块？”“Agent中的Memory信息如何进行提取、存储和检索？”“为什么一些记忆管理、上下文压缩任务可以交给小模型完成？”）
-- 字节跳动：https://www.nowcoder.com/discuss/933023499399024640 （“Memory 你会怎么设计？”）
-- 未披露公司：https://www.nowcoder.com/feed/main/detail/2f4e4cde4e524a16aae5f55a89c49273 （“你们的 Agent 系统里有 Memory（记忆）相关的设计吗？具体是如何落地的？”）
-- 快手：https://www.nowcoder.com/feed/main/detail/daa06f995ea74445a13de42d67f66265 （“如果让你设计一个三层记忆机制，你会如何设计”）
-- 安软：https://www.nowcoder.com/feed/main/detail/40920533fad14136bff01c3928c7e953 （“三层 Memory 分别保存什么？”）
-- 蚂蚁：https://www.nowcoder.com/feed/main/detail/4247388b1f0e4e51b00962227843b24b （“记忆系统怎么实现”）
-- 新旦智能：https://www.nowcoder.com/feed/main/detail/299d356b23044bf39fb29e7f8569761d （“记忆按照md文档存储……怎么样处理，可以让检索精度更精确？”）
--->
 
-**出现公司**：字节跳动、快手、安软、蚂蚁、新旦智能
 
 **考察重点**
 
@@ -203,15 +183,7 @@ Agent 记忆是在模型上下文之外保存信息，并在后续调用中按�
 
 ### 6.3 短期记忆如何转为长期记忆？长期记忆如何去重、过期和处理冲突？ {#memory-lifecycle}
 
-<!-- 面试来源：
-- 快手：https://www.nowcoder.com/feed/main/detail/daa06f995ea74445a13de42d67f66265 （“短期记忆如何转为长期记忆，如何判断短期记忆应该变为长期记忆”）
-- 字节跳动：https://www.nowcoder.com/feed/main/detail/15af3788a038477bba99f2f9d94b2cef （“短期记忆和长期记忆在工程中如何进行存储、过期管理和去重？”）
-- 高德：https://www.nowcoder.com/discuss/797882589657792512 （记忆冲突）
-- 字节跳动：https://www.nowcoder.com/feed/main/detail/15af3788a038477bba99f2f9d94b2cef （记忆生命周期）
-- 百度：https://www.nowcoder.com/feed/main/detail/8a52d4f70093426fb8fc32e6825466e3 （记忆分层、存储与校验）
--->
 
-**出现公司**：快手、字节跳动、高德、百度
 
 **考察重点**
 
@@ -237,7 +209,6 @@ Agent 记忆是在模型上下文之外保存信息，并在后续调用中按�
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
-**出现公司**：暂无已核验的公开来源（本站自测）
 
 **考察重点**：能说明检索前的权限过滤，以及索引、摘要和后台写入对删除效果的影响。
 

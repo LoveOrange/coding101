@@ -117,16 +117,7 @@ cmd 2>&1 >out.log
 
 ### 7.1 怎样用 grep、awk 等命令统计日志？例如找出访问次数最多的 10 个 IP、打印文件第 10 行。 {#text-processing}
 
-<!-- 面试来源：
-- 蚂蚁金服：https://www.nowcoder.com/discuss/353156080794542080 （“写一个awk 打印出第10行”）
-- 美团：https://www.nowcoder.com/discuss/353155269590982656 （“了解sed awk吗”“grep了解吗 与egrep区别”）
-- 百度：https://www.nowcoder.com/discuss/376026509759315968 （“写一下 grep 查‘aaaa’在文件中的位置，返回第几行”）
-- 美团：https://www.nowcoder.com/discuss/391299604942270464 （“Linux各种命令：grep/egrep、top、ps、如何定时关闭进程”）
-- 虾皮：https://www.nowcoder.com/feed/main/detail/1c948b727fef404ca86d187c20496e8c （“说5-10个linux命令，再说3个网络相关的”）
-- 携程：https://www.nowcoder.com/discuss/353156832334127104 （“Linux 中自己常用的命令，说一下？”）
--->
 
-**出现公司**：蚂蚁金服、美团、百度、虾皮、携程
 
 **考察重点**
 
@@ -148,14 +139,7 @@ cmd 2>&1 >out.log
 
 ### 7.2 `ls -l` 的每一列是什么意思？目录的读、写、执行权限分别代表什么？两个用户都要操作同一个文件，应该怎样授权？ {#file-permissions}
 
-<!-- 面试来源：
-- 京东：https://www.nowcoder.com/discuss/478505627115880448 （“给了一个ls命令的截图问每一列什么意思”“进入一个目录需要什么权限”“对一个文件增删改查 需要什么权限”“软链接”）
-- 美团：https://www.nowcoder.com/discuss/353155269590982656 （“文件权限讲一下 一个文件 有两个用户 怎样使这两个用户可以操作这个文件”）
-- 共济科技：https://www.nowcoder.com/discuss/908367488235110400 （“如果要让普通用户访问某个子目录，所有父目录都要有权限吗？目录的执行权限代表什么？”）
-- 持安科技：https://www.nowcoder.com/feed/main/detail/056bc97b850944a5a9ce98b45703cbed （“rw权限，数字是什么”）
--->
 
-**出现公司**：京东、美团、共济科技、持安科技
 
 **考察重点**
 
@@ -182,7 +166,6 @@ cmd 2>&1 >out.log
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
-**出现公司**：暂无已核验的公开来源（本站自测）
 
 **考察重点**：创建 mode、按位屏蔽与 ACL mask。
 
@@ -203,7 +186,6 @@ ACL 中命名用户的 `rw` 还受 mask 限制。用 `getfacl` 查看 effective 
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
-**出现公司**：暂无已核验的公开来源（本站自测）
 
 **考察重点**：描述符复制顺序与 pipefail。
 

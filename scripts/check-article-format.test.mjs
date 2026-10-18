@@ -32,8 +32,6 @@ knowledge:
 
 ${selfTestComment}
 
-**出现公司**：暂无已核验的公开来源（本站自测）
-
 **考察重点**：连接的建立与归还。
 
 **相关内容**：[连接复用](#连接复用)。
@@ -64,6 +62,16 @@ test('complete article passes structural checks', (t) => {
   const result = check(t, article);
   assert.equal(result.status, 0, result.stdout + result.stderr);
   assert.match(result.stdout, /0 篇有结构问题，0 篇有文风提示/);
+});
+
+test('source-backed cards need no public company field or self-test comment', (t) => {
+  const result = check(t, article.replace(selfTestComment, ''));
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+});
+
+test('legacy company text does not identify a self-test', (t) => {
+  const result = check(t, article.replace(selfTestComment, '**出现公司**：暂无已核验的公开来源（本站自测）'));
+  assert.equal(result.status, 0, result.stdout + result.stderr);
 });
 
 const withStyleHints = article
@@ -104,14 +112,13 @@ const structuralCases = [
   ['references', '参考资料 {#参考资料}', '资料 {#参考资料}', /缺少参考资料/],
   ['questions section', '面试题 {#面试题}', '练习 {#面试题}', /缺少面试题/],
   ['card ID', ' {#connection-reuse}', '', /缺少显式 ID/],
-  ['company field', '**出现公司**', '**来源**', /缺少出现公司/],
   ['focus field', '**考察重点**', '**提示**', /缺少考察重点/],
   ['related content', '**相关内容**', '**扩展阅读**', /缺少相关内容/],
   ['answer summary', '<summary>参考回答</summary>', '<summary>提示</summary>', /缺少参考回答/],
   ['card link', '[卡](#connection-reuse)', '', /面试核心没有 \[卡\] 链接/],
   ['heading numbering', '## 2. 连接复用', '## 连接复用', /二级标题没有连续编号/],
-  ['missing attribution', selfTestComment, '', /自测题缺少统一归属注释/],
   ['nonstandard attribution', selfTestComment, '<!-- 本站自测。 -->', /自测题缺少统一归属注释/],
+  ['multiline attribution', selfTestComment, '<!--\n本站自测。\n-->', /自测题缺少统一归属注释/],
 ];
 
 for (const [name, original, replacement, diagnostic] of structuralCases) {

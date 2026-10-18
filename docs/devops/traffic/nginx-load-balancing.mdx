@@ -161,17 +161,7 @@ limit_conn 约束并发连接，与请求速率是不同维度。按 IP 限流�
 
 ### 8.1 Nginx 有什么作用？它为什么能支撑很高的并发？与 Apache 有什么区别？ {#nginx-architecture}
 
-<!-- 面试来源：
-- 虾皮：https://www.nowcoder.com/discuss/353156139321860096 （“nginx为什么比httpd快（epoll）”“四层、七层反向代理的区别”）
-- 春招运维岗：https://www.nowcoder.com/discuss/353156136763334656 （“nginx为什么有那么高得并发性，主要用Nginx干什么，反向代理，nginx负载均衡有哪些算法”）
-- 小米：https://www.nowcoder.com/discuss/353149507930103808 （“nginx作用”“Apache与nginx的异同”“Apache相对nginx有哪些优势”）
-- 美团：https://www.nowcoder.com/discuss/353155434620067840 （“nginx了解多少，有什么作用”）
-- BIGO：https://www.nowcoder.com/discuss/353155351883227136 （“Nginx可以用来干什么？”）
-- 网易游戏：https://www.nowcoder.com/discuss/353155633572683776 （“nginx和apache的区别”）
-- 运维工程师面经：https://www.nowcoder.com/discuss/353156473637249024 （“nginx动静分离如何实现的？”）
--->
 
-**出现公司**：虾皮、小米、美团、BIGO、网易游戏
 
 **考察重点**
 
@@ -195,18 +185,7 @@ Apache 各 MPM 的连接处理模型不同。比较时应明确 prefork、worker
 
 ### 8.2 四层负载均衡和七层负载均衡有什么区别？Nginx 和 LVS 怎样选择？LVS 有哪几种模式？ {#l4-vs-l7}
 
-<!-- 面试来源：
-- 小米：https://www.nowcoder.com/discuss/353154327936180224 （“LVS的四种模式（尤其是FULL-NAT模式，后端RS是如何获取真实客户端IP的），以及keepalived原理”“Nginx与LVS负载均衡的区别”）
-- 网易互娱：https://www.nowcoder.com/discuss/353155478203080704 （“LVS的三种模式”“RS的回应报文那些经过了LVS”“Keepalived介绍下你使用它做了什么，怎么实现的”）
-- 网易：https://www.nowcoder.com/discuss/353156198490906624 （“说一下Nginx的负载均衡”“Nginx和lvs有什么区别”“lvs的4种模式”）
-- 虾皮：https://www.nowcoder.com/discuss/353156139321860096 （“LVS的NAT、TUN、DR原理及区别”）
-- 虾皮：https://www.nowcoder.com/discuss/353159465337823232 （“nginx与lvs区别……除了ngnix还有了解其他负载均衡的中间件吗？”）
-- 美团：https://www.nowcoder.com/discuss/353155434620067840 （“怎么做的负载均衡，有没有用过什么负载均衡算法”）
-- BIGO：https://www.nowcoder.com/discuss/353155351883227136 （“Lvs有几种模型，dr模型的原理是什么”）
-- 社招 SRE / 运维开发：https://www.nowcoder.com/discuss/353156007406804992 （“nginx的调度算法？”“lvs了解吗？它有几种模式？dr和nat的区别有什么？”）
--->
 
-**出现公司**：小米、网易互娱、网易、虾皮、美团、BIGO
 
 **考察重点**
 
@@ -230,13 +209,7 @@ Nginx 支持加权轮询、最少连接和哈希。Keepalived 用 VRRP 协调 VI
 
 ### 8.3 Nginx 返回 502 和 504 分别是什么原因？怎样排查？和 500 有什么区别？ {#nginx-502-504}
 
-<!-- 面试来源：
-- 社招 SRE / 运维开发：https://www.nowcoder.com/discuss/353156007406804992 （“nginx出现502的报错，应该如何排查？”“504是什么问题？怎么看后端机器问题？”“500和502之间的差别？”）
-- 杭州观远数据：https://www.nowcoder.com/discuss/908191304679456768 （Nginx 反向代理与故障排查：502、504）
-- 美团：https://www.nowcoder.com/discuss/389817283013607424 （“http状态码 504 404”）
--->
 
-**出现公司**：杭州观远数据、美团
 
 **考察重点**
 
@@ -262,7 +235,6 @@ Nginx 支持加权轮询、最少连接和哈希。Keepalived 用 VRRP 协调 VI
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
-**出现公司**：暂无已核验的公开来源（本站自测）
 
 **考察重点**：双侧连接、文件描述符与空闲缓存。
 
@@ -281,7 +253,6 @@ Nginx 支持加权轮询、最少连接和哈希。Keepalived 用 VRRP 协调 VI
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
-**出现公司**：暂无已核验的公开来源（本站自测）
 
 **考察重点**：相邻读超时、重试窗口与幂等性。
 
@@ -300,7 +271,6 @@ Nginx 支持加权轮询、最少连接和哈希。Keepalived 用 VRRP 协调 VI
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
-**出现公司**：暂无已核验的公开来源（本站自测）
 
 **考察重点**：URI 替换规则与可信代理。
 
@@ -321,7 +291,6 @@ Nginx 支持加权轮询、最少连接和哈希。Keepalived 用 VRRP 协调 VI
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
-**出现公司**：暂无已核验的公开来源（本站自测）
 
 **考察重点**：平均速率、突发额度与拒绝行为。
 

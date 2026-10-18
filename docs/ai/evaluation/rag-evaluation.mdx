@@ -139,16 +139,7 @@ BM25 根据词项匹配给文档打分，可以补充向量检索对专有名称
 
 ### 5.1 RAG 系统如何评测？有哪些评测维度？ {#rag-metrics}
 
-<!-- 面试来源：
-- 快手：https://www.nowcoder.com/feed/main/detail/8ef62dcdde1340f987507d2d1e1433a8 （“RAG 系统如何评测？”“有哪些评测维度？”“评测数据集一般包括哪些内容？”）
-- 阿里淘天：https://www.nowcoder.com/feed/main/detail/78d6c8c30f1741e6b0a1a02d7b4bbfab （“如何评估一个RAG系统是否work的？”）
-- TCS：https://www.linkedin.com/posts/galgalepallavi_tcs-interviewexperience-genai-activity-7419624110521090048-Q3sC （“How will you evaluate the retrieved chunks before generation?”）
-- 蚂蚁：https://www.nowcoder.com/discuss/800426409796624384 （NDCG 等指标）
-- 顺丰：https://www.nowcoder.com/feed/main/detail/f78bce27d42f44e096061f183350f3c2 （召回与答案正确性评估）
-- 字节跳动：https://www.nowcoder.com/feed/main/detail/ed5e9d17f26e489da94afbf1241b885e （“如何通过 Benchmark 评估 Memory、RAG 和 Context 等模块？”）
--->
 
-**出现公司**：快手、阿里淘天、TCS、蚂蚁、顺丰、字节跳动
 
 **考察重点**：能说明检索、生成与端到端指标分别衡量什么，并解释它们需要哪些标注。
 
@@ -169,15 +160,7 @@ BM25 根据词项匹配给文档打分，可以补充向量检索对专有名称
 
 ### 5.2 文档中明明有目标内容，却召回失败，如何一步步排查？ {#recall-failure}
 
-<!-- 面试来源：
-- 韶音：https://www.nowcoder.com/feed/main/detail/11e40634018b47a7974bf5c96605024c （“如果 RAG 检索明明文档内存在目标内容，但召回失败，你会怎么一步步排查定位问题？”）
-- 字节跳动：https://www.nowcoder.com/feed/main/detail/15af3788a038477bba99f2f9d94b2cef （“当向量召回结果不准确时，通常优先排查哪些问题？”）
-- 阿里淘天：https://www.nowcoder.com/feed/main/detail/d5d1f688dae5496abbce783aa28d6731 （“使用全文索引检索，如果遇到召回不到的问题怎么处理？”）
-- 百度：https://www.nowcoder.com/feed/main/detail/0ee219e39f254208bef730ca1e928fcc （“RAG+Agent 场景，检索幻觉、无关文档召回的重排与过滤优化？”）
-- 字节跳动：https://www.nowcoder.com/feed/main/detail/ed5e9d17f26e489da94afbf1241b885e （“如何保证 RAG 召回结果的准确度？”）
--->
 
-**出现公司**：韶音、字节跳动、阿里淘天、百度
 
 **考察重点**：能沿解析、切分、查询与排序链路定位证据丢失的位置，并给出验证方法。
 
@@ -202,12 +185,7 @@ BM25 根据词项匹配给文档打分，可以补充向量检索对专有名称
 
 ### 5.3 RAG 评测集怎样构造？公开文档可能已进入模型预训练数据，这会怎样影响评测？ {#rag-eval-dataset}
 
-<!-- 面试来源：
-- 安软：https://www.nowcoder.com/feed/main/detail/40920533fad14136bff01c3928c7e953 （“RAG 评测集是怎样构造的？有多少文档和问题？”“公开技术文档可能已经进入模型预训练数据，这会怎样影响评测？”“哪些内容由人工标注，哪些内容由模型生成？”）
-- 快手：https://www.nowcoder.com/feed/main/detail/8ef62dcdde1340f987507d2d1e1433a8 （“评测数据集一般包括哪些内容？”）
--->
 
-**出现公司**：安软、快手
 
 **考察重点**：能构造问题与证据标注，并用无检索基线判断训练记忆是否掩盖检索问题。
 
@@ -226,13 +204,7 @@ BM25 根据词项匹配给文档打分，可以补充向量检索对专有名称
 
 ### 5.4 两个同事各开发了一套 RAG，你作为负责人如何选择？ {#compare-rag-systems}
 
-<!-- 面试来源：
-- 阿里云：https://www.nowcoder.com/feed/main/detail/7e27cf4dedb142d9b643471ba31276ed （“假设你是一个负责人，同事A和同事B都开发了一套RAG，你怎么选择，从哪些层面考虑”）
-- 阿里：https://www.nowcoder.com/feed/main/detail/dbadbb8ec25e421fb6274b54211a4f3f （有无图谱的对照评测）
-- 阿里云：https://www.nowcoder.com/feed/main/detail/d9c2d15c31ce4496abae2d38095bc330 （RAG baseline 与 bad case）
--->
 
-**出现公司**：阿里云、阿里
 
 **题型**：综合题
 
@@ -255,7 +227,6 @@ BM25 根据词项匹配给文档打分，可以补充向量检索对专有名称
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
-**出现公司**：暂无已核验的公开来源（本站自测）
 
 **考察重点**：能解释三组对照分别提供什么信息，以及为什么还需要重复验证和轨迹归因。
 

@@ -152,16 +152,7 @@ OpenAI 的 `parallel_tool_calls=false` 将同轮函数调用限制为零或一�
 
 ### 6.1 Function Calling 的完整调用链路是什么？为什么工具结果需要单独的 Tool Message？ {#call-flow}
 
-<!-- 面试来源：
-- 虾皮：https://www.nowcoder.com/feed/main/detail/79fe3fc8f8cb4c4d9beca478f4279e3a （“Agent调用工具后，工具返回结果时消息结构如何设计？为什么需要单独设计Tool Message？”）
-- TCS：https://www.linkedin.com/posts/galgalepallavi_tcs-interviewexperience-genai-activity-7419624110521090048-Q3sC （“What is function calling in LLMs? How does an LLM decide which function to call?”）
-- 快手：https://www.nowcoder.com/feed/main/detail/daa06f995ea74445a13de42d67f66265 （“聊聊你对 function call 的理解”）
-- 阿里淘天：https://www.nowcoder.com/feed/main/detail/ce768fff2ab241ea870562ec2155ccd2
-- 字节跳动：https://www.nowcoder.com/discuss/917561494512861184 （Tool Result 链路）
-- 字节跳动：https://www.nowcoder.com/feed/main/detail/b34f6902e8544fe2953696ed52e49dba （消息类型）
--->
 
-**出现公司**：虾皮、TCS、快手、阿里淘天、字节跳动
 
 **考察重点**
 
@@ -189,16 +180,7 @@ Anthropic Messages 用 `tool_result` 和 `tool_use_id` 回传。OpenAI Responses
 
 ### 6.2 如何保障工具调用的可靠性？模型传入错误或危险参数怎么办？ {#call-reliability}
 
-<!-- 面试来源：
-- 字节跳动：https://www.nowcoder.com/discuss/925342611194286080 （“这些工具都有固定地入参，需要模型结合上下文去提供……如何去保障工具调用的可靠性？”）
-- 凌脉：https://www.nowcoder.com/feed/main/detail/76f5be8b8bd5420b94d32a66e26a7ad9 （“工具调用前如何校验参数，避免模型传入错误或危险参数？”“如何识别并阻止 Agent 重复调用同一工具？”）
-- TCS：https://www.linkedin.com/posts/galgalepallavi_tcs-interviewexperience-genai-activity-7419624110521090048-Q3sC （“How do you validate and handle incorrect or partial function responses?”）
-- 快手：https://www.nowcoder.com/feed/main/detail/daa06f995ea74445a13de42d67f66265 （“如果想要减少工具调用幻觉你有什么好方法”）
-- 未披露公司：https://www.nowcoder.com/feed/main/detail/6d52148d2e854ade92de493292f2e312 （“工具调用失败 怎么办”）
-- 去哪儿旅行：https://www.nowcoder.com/feed/main/detail/3a2bb6126e714ff3814b81ce092b5fbd （调用链及参数错误处理）
--->
 
-**出现公司**：字节跳动、凌脉、TCS、快手、去哪儿旅行
 
 **考察重点**
 
@@ -228,13 +210,7 @@ Anthropic Messages 用 `tool_result` 和 `tool_use_id` 回传。OpenAI Responses
 
 ### 6.3 Tool 的设计原则是什么？如何设计参数 Schema 和错误码？ {#tool-design}
 
-<!-- 面试来源：
-- 字节跳动：https://www.nowcoder.com/feed/main/detail/15af3788a038477bba99f2f9d94b2cef （“Tool 的设计原则是什么？哪些能力适合抽象成 Tool？如何设计 Tool 的参数 Schema 和错误码？”）
-- 安软：https://www.nowcoder.com/feed/main/detail/40920533fad14136bff01c3928c7e953 （“工具如何注册？工具的参数、权限和作用范围如何描述？”）
-- 百度：https://www.nowcoder.com/feed/main/detail/b9521e2b51e04afeac0a3a32e13f4da9 （“你怎么设计的工具调用”）
--->
 
-**出现公司**：字节跳动、安软、百度
 
 **考察重点**
 
@@ -258,14 +234,7 @@ Anthropic Messages 用 `tool_result` 和 `tool_use_id` 回传。OpenAI Responses
 
 ### 6.4 工具扩展到几百上千个时，如何保证模型选中正确的工具？ {#many-tools}
 
-<!-- 面试来源：
-- 百度：https://www.nowcoder.com/feed/main/detail/2d033fd6daa04e2aaad2282b75531bbc （“当前约十个工具时如何识别正确 Tool”“扩展到几百或几千个工具时如何保证命中率”）
-- 深信服：https://www.nowcoder.com/feed/main/detail/14b2c379ae434062a009aefea9fc5df9 （“现在 100 多个工具，AI 想调用的时候，能找到自己想要的接口吗？怎么保障？”）
-- 字节跳动：https://www.nowcoder.com/feed/main/detail/8a553bb6ea8445d0b0abe11e87614cea （“当Agent拥有大量工具时，如何避免工具描述导致Prompt过长？”）
-- 元戎启行：https://www.nowcoder.com/discuss/787738075525812224 （注册能力检索）
--->
 
-**出现公司**：百度、深信服、字节跳动、元戎启行
 
 **考察重点**
 
@@ -289,7 +258,6 @@ Anthropic Messages 用 `tool_result` 和 `tool_use_id` 回传。OpenAI Responses
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
-**出现公司**：暂无已核验的公开来源（本站自测）
 
 **考察重点**：解释严格模式能约束什么，以及流式参数为何必须完整后再校验执行。
 

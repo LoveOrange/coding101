@@ -90,12 +90,7 @@ available 估算在不发生交换时还能提供多少内存。脏页需写回�
 
 ### 7.1 什么是 inode？文件系统由哪些部分组成？ {#inode}
 
-<!-- 面试来源：
-- 京东：https://www.nowcoder.com/discuss/478505627115880448 （“讲下inode”）
-- 虾皮：https://www.nowcoder.com/discuss/830797687548084224 （“Linux 的文件系统有了解吗？比如说文件系统它分成了哪些部分组成，以及那个 Inode 的概念?”）
--->
 
-**出现公司**：京东、虾皮
 
 **考察重点**
 
@@ -117,15 +112,7 @@ available 估算在不发生交换时还能提供多少内存。脏页需写回�
 
 ### 7.2 磁盘使用率很高甚至打满了，你怎样排查和处理？ {#disk-full}
 
-<!-- 面试来源：
-- 腾讯 IEG：https://www.nowcoder.com/feed/main/detail/bff085ef33e243e3adca46550dfa10ed （“如果磁盘打满了你怎么做，说一下你的排查思路”）
-- 触宝：https://www.nowcoder.com/feed/main/detail/347ad85d05e54e8ab9b3d9766f6a9d4c （“磁盘的使用量可能会比较高……这个时候你怎么去找到一些对应的大文件给删除的”）
-- 美团：https://www.nowcoder.com/discuss/353155269590982656 （“find指令相关 查找最大文件命令”）
-- 腾讯 CDG：https://www.nowcoder.com/feed/main/detail/9723c167139b4d34baa5562953f68c5a （“当一个路径下的文件数量大到ls无法显示时应该使用什么指令查找大文件”）
-- 顺丰：https://www.nowcoder.com/discuss/418141126723477504 （“怎么查看磁盘使用情况”）
--->
 
-**出现公司**：腾讯、触宝、美团、顺丰
 
 **考察重点**
 
@@ -147,13 +134,7 @@ available 估算在不发生交换时还能提供多少内存。脏页需写回�
 
 ### 7.3 删除了大文件但空间没有释放，或者 du 找不到大文件但 df 显示快满了，可能是什么原因？ {#space-not-released}
 
-<!-- 面试来源：
-- 京东：https://www.nowcoder.com/discuss/478505627115880448 （“删掉一个大文件，文件已经不在了，但是空间仍然被占用，为什么”）
-- 触宝：https://www.nowcoder.com/feed/main/detail/347ad85d05e54e8ab9b3d9766f6a9d4c （“如果说磁盘使用量高，但是我们通过 du 或者是 find 命令又没有找到这种很大的文件或者目录的话……我们还需要又做什么处理呢？”）
-- 腾讯 IEG：https://www.nowcoder.com/feed/main/detail/bff085ef33e243e3adca46550dfa10ed （“如果有一个文件夹叫data占用磁盘空间很多， 但是你cd进去后发现是空的，有哪些原因导致”）
--->
 
-**出现公司**：京东、触宝、腾讯
 
 **考察重点**
 
@@ -175,14 +156,7 @@ unlink 移除目录项，打开引用仍保留文件。du 遍历不到该名称�
 
 ### 7.4 buffer 和 cache 有什么区别？ {#buffer-vs-cache}
 
-<!-- 面试来源：
-- UCloud：https://www.nowcoder.com/feed/main/detail/417022d5313d4fa0b805218840d20e92 （“讲讲缓存，buffer和cache的区别，举例说明”）
-- 中国电信：https://www.nowcoder.com/feed/main/detail/b1caa4747f154412b18d467f3fc68781 （“讲一下cache和buffer的区别”）
-- 小米：https://www.nowcoder.com/feed/main/detail/f492ee8e90374d7eb37a62735c59ec8f （“buffer和cache的区别”）
-- 米哈游：https://www.nowcoder.com/discuss/395588525813403648 （“Linux内存中Cache和Buffer的区别”）
--->
 
-**出现公司**：UCloud、中国电信、小米、米哈游
 
 **考察重点**
 
@@ -206,7 +180,6 @@ free 的 buff/cache 还包含可回收 slab。脏页需要写回，缓存也有�
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
-**出现公司**：暂无已核验的公开来源（本站自测）
 
 **考察重点**：稀疏文件、缓存写入与目录同步。
 

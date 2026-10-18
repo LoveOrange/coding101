@@ -245,13 +245,7 @@ DPO 指直接偏好优化，它直接用偏好对调整模型的回答倾向。�
 
 ### 6.1 一次模型请求的 Token 用量怎样计算？中文和英文有什么差异？ {#token-usage}
 
-<!-- 面试来源：
-- 凌脉：https://www.nowcoder.com/feed/main/detail/76f5be8b8bd5420b94d32a66e26a7ad9 （“一次模型请求的 Token 用量如何计算？”“是否了解 Tokenizer？”“中文和英文的 Token 计算有什么差异？”）
-- 多家公司（5 年经验汇总）：https://www.nowcoder.com/feed/main/detail/129eaa1c20444651ac3b932e200d3da4 （“大模型分词器是什么？”）
-- 字节跳动：https://www.nowcoder.com/feed/main/detail/7e8a821479a649fd914e449d312eeb95 （“在 Token 消耗上做过哪些具体的成本控制？”）
--->
 
-**出现公司**：凌脉、字节跳动
 
 **考察重点**：解释分词器造成的中英文用量差异，以及历史增长对输入费用的影响。统计时区分输入、输出与已包含的缓存和推理明细。
 
@@ -272,13 +266,7 @@ DPO 指直接偏好优化，它直接用偏好对调整模型的回答倾向。�
 
 ### 6.2 完整描述一次大模型生成，底层发生了什么？ {#generation-flow}
 
-<!-- 面试来源：
-- 阿里云：https://www.nowcoder.com/feed/main/detail/d1fd4cd344bc4d928e708c3e69c8f59c （“完整描述一次大模型生成底层发生了什么”）
-- 多家公司（5 年经验汇总）：https://www.nowcoder.com/feed/main/detail/129eaa1c20444651ac3b932e200d3da4 （“大模型是怎么训练出来的？”）
-- 快手：https://www.yukibloom.app/post/kuai-shou-ai-quan-zhan-er-mian （模型基础与推理限制）
--->
 
-**出现公司**：阿里云、快手
 
 **考察重点**：按顺序解释各生成阶段，说明输入和输出长度怎样影响延迟。能根据结束状态判断结果是否完整。
 
@@ -299,15 +287,7 @@ DPO 指直接偏好优化，它直接用偏好对调整模型的回答倾向。�
 
 ### 6.3 temperature、top-p、top-k 分别是什么？不同场景应该怎样设置？ {#sampling-params}
 
-<!-- 面试来源：
-- 多家公司（5 年经验汇总）：https://www.nowcoder.com/feed/main/detail/129eaa1c20444651ac3b932e200d3da4 （“温度值/top-p/top-k 分别是什么？各个场景下的最佳设置是什么？”）
-- TCS：https://www.linkedin.com/posts/galgalepallavi_tcs-interviewexperience-genai-activity-7419624110521090048-Q3sC （“What is temperature in LLMs?”“What are Top-K and Top-P? Explain the difference and use cases”）
-- ZS：https://www.geeksforgeeks.org/interview-experiences/zs-llm-engineer-interview-experience/ （采样参数）
-- 快手：https://www.nowcoder.com/discuss/904419777614049280 （“如何让模型输出的更加稳定？”）
-- 蚂蚁：https://www.nowcoder.com/feed/main/detail/02718e9f48ff436f96d6ee8c6f11a47e （“Temperature、Top-k、Top-p都是什么”）
--->
 
-**出现公司**：TCS、ZS、快手、蚂蚁
 
 **考察重点**：解释三个参数怎样改变下一 Token 的选择，并按任务选择取值方向。理解模型快照、完整输入与输出校验对一致性的影响。
 
@@ -328,11 +308,7 @@ DPO 指直接偏好优化，它直接用偏好对调整模型的回答倾向。�
 
 ### 6.4 temperature 已经设为 0，为什么输出仍然不一致？ {#temperature-zero-nondeterminism}
 
-<!-- 面试来源：
-- 蚂蚁：https://www.nowcoder.com/feed/main/detail/02718e9f48ff436f96d6ee8c6f11a47e （“为什么Temperature调成0模型输出还是不完全一致”）
--->
 
-**出现公司**：蚂蚁
 
 **考察重点**：浮点加法、批次大小与候选 Token 排名的关系，以及前文变化对后续生成的影响。
 
@@ -351,11 +327,7 @@ DPO 指直接偏好优化，它直接用偏好对调整模型的回答倾向。�
 
 ### 6.5 如何让 LLM 每次输出的结果尽量一致？ {#output-consistency}
 
-<!-- 面试来源：
-- 快手：https://www.nowcoder.com/discuss/904419777614049280 （“如何让模型输出的更加稳定？”）
--->
 
-**出现公司**：快手
 
 **考察重点**：固定模型与输入、降低采样随机性、校验输出和缓存回答各能保证什么。
 
@@ -378,7 +350,6 @@ DPO 指直接偏好优化，它直接用偏好对调整模型的回答倾向。�
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
-**出现公司**：暂无已核验的公开来源（本站自测）
 
 **考察重点**：推理 Token、输出上限与未完成状态。
 

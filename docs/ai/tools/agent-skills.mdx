@@ -149,16 +149,7 @@ Skill 中的脚本仍通过宿主的命令工具执行，权限由宿主和沙�
 
 ### 6.1 Skill 和 Tool 有什么区别？什么情况下做成 Skill，什么情况下做成 Tool？ {#skill-vs-tool}
 
-<!-- 面试来源：
-- 小红书：https://www.nowcoder.com/feed/main/detail/e5e9311a623940eead6ec98c65e7f9e8 （“Skill 和 Tool 的区别？”“Skill 是知识库还是融合在 Agent 里？什么阶段 fetch？”）
-- 字节跳动：https://www.nowcoder.com/feed/main/detail/fe77496948f74b4091ab4bb6e8156c8b （“什么情况下会把某个能力做成skill?什么时候做成tool?”）
-- 深信服：https://www.nowcoder.com/feed/main/detail/14b2c379ae434062a009aefea9fc5df9 （Tools 与 Skills 区别）
-- 百度：https://www.nowcoder.com/feed/main/detail/2d033fd6daa04e2aaad2282b75531bbc （“散功能属于 Skill 还是 Tool”）
-- 小红书、百度：https://www.nowcoder.com/feed/main/detail/e319aadc79a9479397a6661a7f5ca088 （Skill 与 Prompt）
-- 联想：https://www.nowcoder.com/discuss/869169098146537472 （“谈谈对agent Skills的认识”）
--->
 
-**出现公司**：小红书、字节跳动、深信服、百度、联想
 
 **考察重点**
 
@@ -180,16 +171,7 @@ Tool 用参数 Schema 规定输入，调用后可以读取数据或改变外部�
 
 ### 6.2 Skill 的核心原理是什么？为什么能减少 Token 消耗？ {#skill-loading}
 
-<!-- 面试来源：
-- 快手：https://www.nowcoder.com/feed/main/detail/daa06f995ea74445a13de42d67f66265 （“是否了解skill，介绍一下核心原理”“聊聊如何实现渐进式披露”“skill 能否放在 agent 沙箱里面”）
-- 阿里云：https://www.nowcoder.com/feed/main/detail/d9c2d15c31ce4496abae2d38095bc330 （“skills 为什么能减少 token 消耗”）
-- 阿里巴巴：https://www.nowcoder.com/feed/main/detail/556b3a764a614931bc5bb8a96e4f5f3f （Skill 渐进式加载）
-- 快手：https://www.nowcoder.com/discuss/904419777614049280 （Skill 渐进加载）
-- 字节跳动：https://www.nowcoder.com/feed/main/detail/6506d4b4addf447c8e2c135b5088cdc8 （Skill 渐进披露）
-- 蚂蚁：https://www.nowcoder.com/feed/main/detail/4247388b1f0e4e51b00962227843b24b （Skill 机制）
--->
 
-**出现公司**：快手、阿里云、阿里巴巴、字节跳动、蚂蚁
 
 **考察重点**
 
@@ -211,13 +193,7 @@ Tool 用参数 Schema 规定输入，调用后可以读取数据或改变外部�
 
 ### 6.3 Agent 怎么选择要调用的 Skill？两个相似的 Skill 被调用错误怎么办？ {#skill-selection}
 
-<!-- 面试来源：
-- 百度：https://www.nowcoder.com/feed/main/detail/b9521e2b51e04afeac0a3a32e13f4da9 （“Agent 怎么选择要调用的 Skill？”“如果两个相似的Skills被调用错误怎么办？”“要是只有一个Skill但被错误执行呢？”“页面结构变化导致 Skill 失效怎么办？”）
-- 韶音：https://www.nowcoder.com/feed/main/detail/11e40634018b47a7974bf5c96605024c （“如果遇到现有skill无法解决的问题，agent会如何处理？”）
-- 滴滴：https://www.nowcoder.com/feed/main/detail/630bb86ca8224183ad3de301a69ec199 （Skill 质量）
--->
 
-**出现公司**：百度、韶音、滴滴
 
 **考察重点**
 
@@ -241,13 +217,7 @@ Tool 用参数 Schema 规定输入，调用后可以读取数据或改变外部�
 
 ### 6.4 MCP、CLI 和 Skill 分别适合什么场景？ {#mcp-cli-skill}
 
-<!-- 面试来源：
-- 字节跳动：https://www.nowcoder.com/discuss/937314680270311424 （“怎样理解 CLI 和 MCP Tool，它们有什么区别？”“什么场景使用 MCP，什么场景使用 CLI，什么场景需要 Skill？”“如果重点追求性能和低延迟，CLI、MCP、Skill 应怎样选型和设计？”）
-- OPPO：https://www.nowcoder.com/feed/main/detail/09fd6466f3f64e7dbfb5a09ed9d660a4 （MCP 与 Skills）
-- 字节跳动：https://www.nowcoder.com/feed/main/detail/ed5e9d17f26e489da94afbf1241b885e （“如何将多个 MCP 工具预先编排成一个 Skill？”）
--->
 
-**出现公司**：字节跳动、OPPO
 
 **考察重点**
 
@@ -271,7 +241,6 @@ Tool 用参数 Schema 规定输入，调用后可以读取数据或改变外部�
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
-**出现公司**：暂无已核验的公开来源（本站自测）
 
 **考察重点**：能用评测请求区分技能误选与执行失败，并分别检查触发边界和产物是否合格。
 

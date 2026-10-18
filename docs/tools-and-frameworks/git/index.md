@@ -1,5 +1,7 @@
 ---
 sidebar_position: 1
+knowledge:
+  id: tools-and-frameworks.git.index
 tags:
   - git
   - tools
@@ -9,6 +11,13 @@ keywords: ["Git 面试", "merge 与 rebase", "reset 与 revert", "Git 冲突", "
 # Git
 
 Git 通过提交保存项目快照，通过分支引用组织开发历史；日常命令都可以放回工作区、暂存区和仓库这三个位置理解。
+
+:::tip 面试核心
+
+- `merge` 保留已有提交；`rebase` 会重放提交，并改变提交标识。
+- 本地未共享的功能分支可以用 `rebase` 整理历史。已被他人依赖的共享分支优先使用 `merge`，避免改写他人的提交基础。[卡](#merge-vs-rebase)
+
+:::
 
 ## 1. Git 保存对象和引用
 
@@ -96,14 +105,9 @@ git merge feature/payment-timeout
 
 ## 9. 面试题
 
-### 9.1 `git merge` 和 `git rebase` 有什么区别，什么时候使用
+### 9.1 `git merge` 和 `git rebase` 有什么区别，什么时候使用 {#merge-vs-rebase}
 
-<!-- 面试来源：
-- 拼多多：https://www.nowcoder.com/discuss/353156241998422016
-- 百度：https://www.nowcoder.com/discuss/538309440781537280
--->
 
-**出现公司**：拼多多、百度
 
 **考察重点**
 
