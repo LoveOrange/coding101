@@ -5,6 +5,7 @@ import {useLocation} from '@docusaurus/router';
 
 import {reviewHref} from '../article/ArticleParts';
 import {cardStatus, type CardStatus, domainShortLabel, PRIORITY_LABELS, useLearningIndex} from '../content';
+import {loadedCompanyNames} from '../companies';
 import {summarize} from '../review/WeakList';
 import {learnerActions, toDay, useLearner} from '../store';
 import type {CardIndex, Priority} from '../types';
@@ -85,7 +86,7 @@ function QuestionsPage() {
         !needle ||
         card.question.toLowerCase().includes(needle) ||
         index.articles[card.articleId].title.toLowerCase().includes(needle) ||
-        card.companies.some((company) => company.toLowerCase().includes(needle)),
+        loadedCompanyNames(card.id).some((company) => company.toLowerCase().includes(needle)),
     );
   const sorted =
     sort === 'priority'
@@ -232,7 +233,7 @@ function QuestionsPage() {
                   <PriorityDots priority={article.priority} />
                 </span>
                 <span>
-                  <Companies names={card.companies.slice(0, 2)} selfTest={card.selfTest} />
+                  <Companies cardId={card.id} selfTest={card.selfTest} limit={2} />
                 </span>
                 {features && (
                   <span>

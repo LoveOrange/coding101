@@ -2,6 +2,7 @@ import { themes as prismThemes } from "prism-react-renderer";
 import type { Config } from "@docusaurus/types";
 import type * as Preset from "@docusaurus/preset-classic";
 import remarkArticleBlocks from "./plugins/remark-article-blocks";
+import remarkStripCompanies from "./plugins/remark-strip-companies";
 
 const enableAnalytics =
   process.env.NODE_ENV === "production" && process.env.LOCAL_PREVIEW !== "true";
@@ -50,6 +51,11 @@ const config: Config = {
     // Local previews only: enables ?mock=<preset> sample learner states.
     learnerMocks: process.env.LEARNER_MOCKS === "true",
     learnerFeatures,
+    // The site's own API (worker/): accounts, billing, synced records.
+    serverApi: true,
+    // Online payment; off until the Lemon Squeezy store is live (the account
+    // service's PRODUCT_CHECKOUT refuses checkouts until then as well).
+    checkoutOpen: process.env.CHECKOUT_OPEN === "true",
   },
 
   // Even if you don't use internationalization, you can use this field to set
@@ -70,7 +76,7 @@ const config: Config = {
           // Remove this to remove the "edit this page" links.
           editUrl: "https://github.com/loveorange/coding101/tree/main/",
           showLastUpdateTime: true,
-          remarkPlugins: [remarkArticleBlocks],
+          remarkPlugins: [remarkStripCompanies, remarkArticleBlocks],
         },
         blog: {
           showReadingTime: true,

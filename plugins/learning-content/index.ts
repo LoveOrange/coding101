@@ -234,7 +234,8 @@ export default function learningContentPlugin(context: LoadContext, options: {le
               anchor: card.anchor,
               question: card.question,
               label: card.composite ? '综合题' : (local ?? refs[0])?.title || doc.title,
-              companies: card.companies,
+              // Company names are paid data served by the account service; they
+              // never enter the build (see plans/backend-architecture.md §6).
               ...(card.selfTest ? {selfTest: true} : {}),
               checkpointCount: card.checkpoints.length,
               refs,

@@ -1,0 +1,27 @@
+{
+  // The whole site: static build + Coding101's API, with the account service
+  // (tenant coding101) behind a Service Binding. See src/index.ts.
+  // Deploy: `npm run build` at the repo root (LEARNER_FEATURES=true), then
+  // `npm run deploy` here.
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "coding101",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "assets": {
+    "directory": "../build",
+    "binding": "ASSETS",
+    "not_found_handling": "404-page",
+    // Only API calls run the Worker; pages and files come straight from the CDN.
+    "run_worker_first": ["/api/*"],
+  },
+  "services": [{ "binding": "ACCOUNT", "service": "account-coding101" }],
+  // c101-beta stays as staging until it's retired.
+  "routes": [
+    { "pattern": "coding101.linsama.com", "custom_domain": true },
+    { "pattern": "c101-beta.linsama.com", "custom_domain": true },
+  ],
+  "triggers": { "crons": ["0 19 * * *"] },
+  "observability": { "enabled": true },
+  // Secrets: DATABASE_URL (Neon, database coding101), INTERNAL_API_TOKEN (same
+  // value as the account-coding101 Worker's).
+}

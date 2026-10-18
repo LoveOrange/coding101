@@ -43,7 +43,7 @@ function RedeemPage() {
   const [state, setState] = useState<'idle' | 'checking'>('idle');
   const [result, setResult] = useState<RedeemResult | undefined>();
   const inputs = useRef<(HTMLInputElement | null)[]>([]);
-  const lockedUntil = result?.status === 'locked' ? result.until : learner.redeemFailures.lockedUntil;
+  const lockedUntil = result?.status === 'locked' ? result.until : undefined;
   const lockLeft = useCountdown(lockedUntil);
   const locked = lockLeft > 0;
   const code = groups.join('');
@@ -72,14 +72,16 @@ function RedeemPage() {
     inputs.current[Math.min(GROUPS - 1, Math.floor((position - 1) / GROUP_LENGTH))]?.focus();
   };
 
-  const submit = () => {
+  useEffect(() => {
+    learnerActions.loadBilling().catch(() => undefined);
+  }, []);
+
+  const submit = async () => {
     if (!complete || locked) return;
     setState('checking');
     setResult(undefined);
-    window.setTimeout(() => {
-      setResult(learnerActions.redeem(code));
-      setState('idle');
-    }, 600);
+    setResult(await learnerActions.redeem(code));
+    setState('idle');
   };
 
   const error =
@@ -91,7 +93,9 @@ function RedeemPage() {
           ? `这个激活码已于 ${result.date} 过期`
           : locked
             ? `尝试次数过多，${new Date(lockedUntil!).toLocaleTimeString('zh-CN', {hour: '2-digit', minute: '2-digit'})} 后可再试`
-            : undefined;
+            : result?.status === 'error'
+              ? '暂时没能兑换，请稍后再试'
+              : undefined;
   const hint =
     result?.status === 'not-found'
       ? '检查易混字符：0/O、1/I 不会出现在激活码中。'
@@ -104,7 +108,9 @@ function RedeemPage() {
   const records = learner.billing.filter((record) => record.method === 'code');
   const current =
     sub.status === 'pro'
-      ? `当前：${PLAN_LABELS[sub.plan]}，有效期至 ${sub.endsAt}。兑换后在此日期上顺延。`
+      ? sub.autoRenew
+        ? `当前：${PLAN_LABELS[sub.plan]}，有效期至 ${sub.endsAt}。兑换的天数排在订阅期之后；订阅仍按原日期续费，不想继续扣款可以关闭自动续费。`
+        : `当前：${PLAN_LABELS[sub.plan]}，有效期至 ${sub.endsAt}。兑换后在此日期上顺延。`
       : sub.status === 'trial'
         ? `当前：试用中，${sub.endsAt} 结束。兑换后从今天起算，试用剩余天数不叠加。`
         : sub.status === 'expired'
@@ -124,7 +130,7 @@ function RedeemPage() {
             <span className={styles.successMark}>✓</span>
             <span className={styles.successText}>
               <span className={styles.successLabel}>兑换成功</span>
-              <span className={styles.successTitle}>{PLAN_LABELS[result.plan]}已生效</span>
+              <span className={styles.successTitle}>Pro · {result.days} 天已生效</span>
               <span className={styles.successCode}>{result.code}</span>
             </span>
           </div>
@@ -159,7 +165,7 @@ function RedeemPage() {
           className={styles.redeemForm}
           onSubmit={(event) => {
             event.preventDefault();
-            submit();
+            void submit();
           }}>
           <div className={styles.codeRow}>
             {groups.map((group, i) => (

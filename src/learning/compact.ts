@@ -19,7 +19,6 @@ type CardTuple = [
   anchor: string,
   question: string,
   label: string,
-  companies: string[],
   checkpoints: number,
   refs: RefTuple[],
   composite?: 0 | 1,
@@ -64,7 +63,7 @@ export function compactIndex(index: LearningIndex): CompactIndex {
         }
         return ref.id === ref.section ? [ref.id, ref.number ?? '', section] : [ref.id, ref.number ?? '', section, ref.title];
       });
-      const tuple: CardTuple = [card.anchor, card.question, card.label, card.companies, card.checkpointCount, refs];
+      const tuple: CardTuple = [card.anchor, card.question, card.label, card.checkpointCount, refs];
       if (card.composite || card.selfTest) tuple.push(card.composite ? 1 : 0);
       if (card.selfTest) tuple.push(1);
       return tuple;
@@ -107,7 +106,7 @@ export function expandIndex(compact: CompactIndex): LearningIndex {
     const [title, permalink, domain, minutes, priority, roles, sectionTuples, knowledgeId, interviewAnchor, cardTuples] = tuple;
     const sections = sectionTuples.map(([sectionId, sectionTitle, number]) => ({id: sectionId, title: sectionTitle, number}));
     const articleKey = knowledgeId || id;
-    const cardIds = cardTuples.map(([anchor, question, label, companies, checkpointCount, refTuples, composite, selfTest]) => {
+    const cardIds = cardTuples.map(([anchor, question, label, checkpointCount, refTuples, composite, selfTest]) => {
       const cardId = cardIdOf(articleKey, anchor);
       const refs = refTuples.map((ref): CardRef => {
         if (ref.length === 6) {
@@ -118,7 +117,7 @@ export function expandIndex(compact: CompactIndex): LearningIndex {
         const parent = sections[section];
         return {articleId: id, id: refId, number: number || undefined, title: refTitle ?? parent?.title ?? '', section: parent?.id ?? refId};
       });
-      cards[cardId] = {id: cardId, articleId: id, anchor, question, label, companies, checkpointCount, refs, ...(composite ? {composite: true} : {}), ...(selfTest ? {selfTest: true} : {})};
+      cards[cardId] = {id: cardId, articleId: id, anchor, question, label, checkpointCount, refs, ...(composite ? {composite: true} : {}), ...(selfTest ? {selfTest: true} : {})};
       return cardId;
     });
     articles[id] = {

@@ -237,7 +237,7 @@ export function InterviewCards({article, headingId}: {article: ArticleIndex; hea
                 <PriorityDots priority={article.priority} />
               </div>
               <div className={styles.cardQuestion}>{card.question}</div>
-              <Companies names={card.companies} selfTest={card.selfTest} tone="paper" />
+              <Companies cardId={card.id} selfTest={card.selfTest} tone="paper" />
               <div className={styles.cardFoot}>
                 <span>
                   考察 {card.checkpointCount} 点

@@ -3,7 +3,8 @@
  *
  * Content types (Article*, Card*, Domain, Role) are produced at build time by
  * plugins/learning-content from the docs. Learner types (CardState, Account…)
- * live in the browser through src/learning/store.ts until a backend exists.
+ * live in src/learning/store.ts, cached in the browser and synced with the
+ * account service (see plans/backend-architecture.md).
  */
 
 export type Priority = 'must' | 'common' | 'optional';
@@ -66,8 +67,10 @@ export type CardIndex = {
   question: string;
   /** Short label taken from the first related section. */
   label: string;
-  companies: string[];
-  /** Explicitly marked as a site-authored self-test in the article. */
+  /**
+   * Explicitly marked as a site-authored self-test in the article. Company
+   * names are paid data served by the account service, not part of the build.
+   */
   selfTest?: boolean;
   checkpointCount: number;
   refs: CardRef[];
@@ -123,6 +126,8 @@ export type CardState = {
   /** Days between the last review and `due`. */
   interval: number;
   reviewedAt: string;
+  /** Last local change of any kind (rating, suspend, reread); merge key across devices. */
+  updatedAt?: string;
   reps: number;
   suspended?: boolean;
   /** Set when the learner opened the source section after missing points. */
@@ -140,7 +145,8 @@ export type ReadingState = {
   updatedAt: string;
 };
 
-export type Plan = 'monthly' | 'yearly' | 'pass' | 'code-monthly' | 'code-yearly';
+/** How Pro was obtained: a subscription, the 90-day sprint, or activation codes. */
+export type Plan = 'monthly' | 'yearly' | 'sprint' | 'code';
 
 export type Subscription =
   | {status: 'free'; hadTrial: boolean}
@@ -148,13 +154,11 @@ export type Subscription =
   | {status: 'pro'; plan: Plan; endsAt: string; autoRenew: boolean; renewalFailedAt?: string}
   | {status: 'expired'; endedAt: string; retainUntil: string};
 
-export type Region = 'cn' | 'intl';
-
 export type BillingRecord = {
   id: string;
   date: string;
   item: string;
-  method: 'code' | 'wechat' | 'card';
+  method: 'code' | 'card';
   amount?: string;
   effect: string;
   status: 'paid' | 'refunded' | 'applied';
@@ -162,6 +166,8 @@ export type BillingRecord = {
 };
 
 export type Account = {
+  /** Account-service user id; local records are cleared when it changes. */
+  id?: string;
   name: string;
   email: string;
   createdAt: string;
@@ -205,12 +211,15 @@ export type LearnerState = {
   version: 1;
   account?: Account;
   subscription: Subscription;
-  region: Region;
   preferences: Preferences;
   cards: Record<string, CardState>;
   reading: Record<string, ReadingState>;
   billing: BillingRecord[];
   sessions: ReviewSession[];
-  redeemFailures: {count: number; lockedUntil?: string};
   examSetup?: ExamSetup;
+  /** Server version of the synced records this cache was last reconciled with. */
+  syncVersion?: number;
 };
+
+/** The part of the learner state that syncs to the account service. */
+export type LearnerRecords = Pick<LearnerState, 'cards' | 'reading' | 'sessions' | 'preferences' | 'examSetup'>;
