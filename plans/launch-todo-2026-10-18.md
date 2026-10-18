@@ -49,7 +49,7 @@
 - [ ] Codex（你来启动）：设置用量提醒；查看 Neon、Cloudflare（含邮件服务）的日志与备份保留期
 - [ ] 你：GitHub Actions 因账单问题停跑（付款失败或花费上限），到 Billing & plans 处理
 - [x] Claude：`limits.cpu_ms` 站点 200、账户 500 → 包含在 coding101 #8、linsama-account #6
-- [ ] 你：决定 `c101-beta.linsama.com` 保留为预发环境还是下线（它和正式站共用同一个 Worker 和数据库）
+- [x] 下线 `c101-beta.linsama.com`：去掉站点 Worker 的自定义域名与账户服务的 `AUTH_TRUSTED_ORIGINS`
 
 ## A6. 开放
 
