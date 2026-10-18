@@ -22,6 +22,9 @@
   ],
   "triggers": { "crons": ["0 19 * * *"] },
   "observability": { "enabled": true },
+  // Workers Paid has no spend cap: bound each request (and the daily purge),
+  // which normally needs a few ms of CPU; database time is I/O, not CPU.
+  "limits": { "cpu_ms": 200 },
   // Secrets: DATABASE_URL (Neon, database coding101), INTERNAL_API_TOKEN (same
   // value as the account-coding101 Worker's).
 }
