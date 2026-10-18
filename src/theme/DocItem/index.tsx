@@ -36,6 +36,8 @@ export default function DocItemWrapper(props: Props): ReactNode {
     description: metadata.description,
     keywords: frontMatter.keywords,
     inLanguage: i18n.currentLocale,
+    author: {'@type': 'Person', name: 'Linsama', url: 'https://linsama.com/resume/'},
+    publisher: {'@type': 'Person', name: 'Linsama', url: 'https://linsama.com/'},
     isAccessibleForFree: true,
     isPartOf: website,
     ...(metadata.lastUpdatedAt ? {dateModified: new Date(metadata.lastUpdatedAt).toISOString()} : {}),

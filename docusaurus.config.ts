@@ -5,6 +5,7 @@ import remarkArticleBlocks from "./plugins/remark-article-blocks";
 
 const enableAnalytics =
   process.env.NODE_ENV === "production" && process.env.LOCAL_PREVIEW !== "true";
+const adsenseClient = process.env.ADSENSE_CLIENT || 'ca-pub-9495948352620553';
 
 // Accounts, subscriptions, spaced review and progress tracking are built but
 // held back until there are real users. LEARNER_FEATURES=true (or the mock
@@ -55,8 +56,10 @@ const config: Config = {
     // Online payment; off until the Lemon Squeezy store is live (the account
     // service's PRODUCT_CHECKOUT refuses checkouts until then as well).
     checkoutOpen: process.env.CHECKOUT_OPEN === "true",
-    // AdSense publisher id (ca-pub-…); unset = no ads. See plugins/adsense.
-    adsenseClient: process.env.ADSENSE_CLIENT || null,
+    analyticsId: enableAnalytics ? 'G-Q16V88YMHD' : null,
+    // Only the canonical production host displays the article ad unit.
+    adsenseClient: enableAnalytics && process.env.ADSENSE_ENABLED === 'true' ? adsenseClient : null,
+    adsenseSlot: '6787548357',
   },
 
   // Even if you don't use internationalization, you can use this field to set
@@ -88,14 +91,6 @@ const config: Config = {
         theme: {
           customCss: "./src/css/custom.css",
         },
-        ...(enableAnalytics
-          ? {
-              gtag: {
-                trackingID: "G-Q16V88YMHD",
-                anonymizeIP: true,
-              },
-            }
-          : {}),
       } satisfies Preset.Options,
     ],
   ],
@@ -148,7 +143,7 @@ const config: Config = {
             { to: "/docs/tags/interview-preparation", label: "面试准备" },
             { to: "/docs/tools-and-frameworks/git/", label: "工具与框架" },
             { to: "/docs/chatgpt-guide/", label: "ChatGPT 简明指南" },
-            { to: "/blog", label: "Blog" },
+            { to: "/about", label: "关于本站" },
             { href: "https://github.com/loveorange/coding101", label: "GitHub" },
           ],
         },
@@ -182,8 +177,11 @@ const config: Config = {
         {
           title: "项目",
           items: [
+            { label: "关于本站", to: "/about" },
+            { label: "联系与纠错", to: "/contact" },
+            { label: "隐私与 Cookie", href: "https://coding101.linsama.com/privacy/" },
+            { label: "服务条款", to: "/terms" },
             { label: "GitHub", href: "https://github.com/loveorange/coding101" },
-            { label: "Blog", to: "/blog" },
           ],
         },
       ],
@@ -207,7 +205,8 @@ const config: Config = {
   plugins: [
     ["./plugins/learning-content/index.ts", { learnerFeatures }],
     "./plugins/content-discovery/index.ts",
-    ["./plugins/adsense/index.ts", { client: process.env.ADSENSE_CLIENT }],
+    ["./plugins/adsense/index.ts", { client: adsenseClient }],
+    './plugins/analytics/index.ts',
     ...stylePreviewPlugins,
     // [
     //   "@docusaurus/plugin-ideal-image",

@@ -513,6 +513,13 @@ export const learnerActions = {
     write(initialState);
   },
 
+  /** Delete the account and its records on the server, then this browser's copy. */
+  async deleteAccount() {
+    window.clearTimeout(pushTimer);
+    if (!offline) await api.deleteAccount();
+    write(initialState);
+  },
+
   rate(cardId: string, rating: Rating, options: {hits?: number[]} = {}) {
     let previous: CardState | undefined;
     record((current) => {

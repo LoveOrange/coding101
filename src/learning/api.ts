@@ -81,6 +81,8 @@ export const api = {
   checkout: (plan: 'monthly' | 'sprint' | 'yearly') => post<{url: string}>('/api/product/checkout', {plan}),
   cancelAutoRenew: () => post<{ok: true}>('/api/product/subscription/cancel'),
   portal: () => request<{url: string}>('/api/product/portal'),
+  /** Deletes the learning records, then the account. 409 subscription_active while renewal is on. */
+  deleteAccount: () => post<{ok: true}>('/api/product/account/delete'),
 
   companies: (cardIds: string[]) =>
     request<{companies: Record<string, string[]>}>(`/api/c101/companies?cards=${encodeURIComponent(cardIds.join(','))}`),

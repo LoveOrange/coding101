@@ -31,3 +31,15 @@ npm run build
 ```
 
 `npm run build` 会先检查文档链接，再生成 Docusaurus 静态站点。
+
+## 广告与隐私
+
+生产域名为 `coding101.linsama.com`。构建生成 AdSense 验证标签和 `ads.txt`，发布商为 `ca-pub-9495948352620553`，文章末尾使用展示广告位 `6787548357`。
+
+广告请求默认关闭，验证标签与 `ads.txt` 始终保留。审核通过后，先在 AdSense 后台核实欧洲法规消息的隐私链接、拒绝选项和 Consent Mode，并关闭自动广告，再使用 `ADSENSE_ENABLED=true npm run build` 启用文章广告。
+
+启用后，广告仅在知识树技术文章中、读者接近文章末尾时请求。目录、题库和隐私说明不放置广告；本地与预览域名不请求广告。启用账号功能时，具有有效付费或试用权限的读者不加载广告。
+
+`static/privacy/index.html` 是独立的隐私说明页，不加载统计、广告或同意消息脚本。Google 同意消息的隐私链接应设为 `https://coding101.linsama.com/privacy/`。Analytics 在欧洲经济区、英国和瑞士默认拒绝存储；只有配置 Google CMP 的 Consent Mode 后才会更新同意状态。不将搜索参数和片段标识作为页面地址发送。
+
+部署到 Cloudflare：在仓库根目录运行 `npm run build` 与 `npm run check:discovery`，再到 `worker/` 运行 `npm run deploy`。GitHub Pages 镜像不启用广告。

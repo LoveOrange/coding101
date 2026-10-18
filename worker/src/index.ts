@@ -13,7 +13,7 @@
 import { type Caller, accessOf, hasAccess, isAccountRoute, whoIs } from "./account";
 import { MAX_CARDS_PER_REQUEST, companyCounts, getCompanies } from "./companies";
 import { type Db, neonDb } from "./db";
-import { getLearnerDoc, parseLearnerDoc, putLearnerDoc } from "./learner";
+import { deleteLearnerDocs, getLearnerDoc, parseLearnerDoc, putLearnerDoc } from "./learner";
 import { purgeExpiredRecords } from "./purge";
 
 export interface Env {
@@ -23,11 +23,13 @@ export interface Env {
   INTERNAL_API_TOKEN: string;
 }
 
+const ACCOUNT_DELETE = "/api/product/account/delete";
+
 const json = (body: unknown, status = 200, headers: HeadersInit = {}) =>
   Response.json(body, { status, headers });
 
 async function withCaller(
-  env: Env,
+  env: Pick<Env, "ACCOUNT">,
   request: Request,
   handler: (caller: Caller & { user: { id: string } }) => Promise<Response>,
 ): Promise<Response> {
@@ -73,6 +75,22 @@ async function companies(env: Env, db: Db, request: Request): Promise<Response> 
   });
 }
 
+/**
+ * Account deletion passes through here so the learning records go too: they
+ * are deleted first, then the call goes on to the account service. A plan that
+ * still renews is refused here as well, so records aren't lost for an account
+ * the account service would keep.
+ */
+export async function deleteAccount(env: Pick<Env, "ACCOUNT">, db: Db, request: Request): Promise<Response> {
+  return withCaller(env, request, async ({ user, access }) => {
+    if (access?.status === "pro" && access.autoRenew) {
+      return json({ error: "subscription_active" }, 409);
+    }
+    await deleteLearnerDocs(db, [user.id]);
+    return env.ACCOUNT.fetch(request);
+  });
+}
+
 /** Public and identical for everyone: served from the colo cache, so a hit skips the database. */
 async function counts(db: Db, request: Request, ctx: ExecutionContext): Promise<Response> {
   const key = new Request(new URL(request.url).toString());
@@ -88,6 +106,9 @@ async function counts(db: Db, request: Request, ctx: ExecutionContext): Promise<
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const { pathname } = new URL(request.url);
+    if (pathname === ACCOUNT_DELETE && request.method === "POST") {
+      return deleteAccount(env, neonDb(env.DATABASE_URL), request);
+    }
     if (isAccountRoute(pathname)) return env.ACCOUNT.fetch(request);
     if (!pathname.startsWith("/api/")) return env.ASSETS.fetch(request);
 

@@ -11,7 +11,7 @@ import { Green, Yellow, Blue, Red } from '@site/src/components/priority-tag';
 
 [Re：从零开始的力扣刷题生活](https://leetcode.cn/circle/discuss/E3yavq/) 是 LeetCode 中国官方整理的推荐刷题路径，适合 **考虑系统性地按各知识点刷题** 的扣友。
 
-本站计划不定期针对攻略中的题目，推出尽可能简单易懂的题解，以便帮助大家更轻松的刷题。
+本栏目保留已有题解，适合做题后核对实现、复杂度和边界。新的算法内容按[算法主题](../../basic-knowledge/algorithms/index.mdx)组织；准备面试时，先掌握方法的适用条件，再选择具体题目练习。
 
 ## 更新进度
 

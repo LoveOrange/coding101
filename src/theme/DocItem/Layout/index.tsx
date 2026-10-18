@@ -8,6 +8,7 @@ import {ArticleProvider, articleByPermalink} from '@site/src/learning/article/co
 import {useReadingTracker} from '@site/src/learning/article/useReadingTracker';
 import {useLearningIndex} from '@site/src/learning/content';
 import {useLearnerFeatures} from '@site/src/learning/features';
+import ArticleAd from '@site/src/components/ArticleAd';
 
 type Props = WrapperProps<typeof LayoutType>;
 
@@ -21,7 +22,10 @@ export default function LayoutWrapper(props: Props): ReactNode {
   return (
     <ArticleProvider article={article}>
       <div className={article ? 'c101-article' : undefined}>
-        <Layout {...props} />
+        <Layout {...props}>
+          {props.children}
+          {article && <ArticleAd key={pathname} permalink={pathname} />}
+        </Layout>
       </div>
     </ArticleProvider>
   );

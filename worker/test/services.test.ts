@@ -4,6 +4,7 @@ import { type Access, isAccountRoute } from "../src/account";
 import { companyCounts, getCompanies } from "../src/companies";
 import { type Db } from "../src/db";
 import { MAX_SESSIONS, getLearnerDoc, parseLearnerDoc, putLearnerDoc } from "../src/learner";
+import { deleteAccount } from "../src/index";
 import { purgeExpiredRecords } from "../src/purge";
 import { testDb } from "./helpers";
 
@@ -89,5 +90,39 @@ describe("retention purge", () => {
     expect((await getLearnerDoc(db, "p03")).data).toBeNull();
     expect((await getLearnerDoc(db, "p04")).version).toBe(1);
     expect((await getLearnerDoc(db, "u1")).version).toBe(2); // not reported: kept
+  });
+});
+
+describe("account deletion", () => {
+  const account = (access: Access | null, calls: string[]) =>
+    ({
+      fetch: async (input: RequestInfo | URL) => {
+        const path = new URL(input instanceof Request ? input.url : String(input)).pathname;
+        calls.push(path);
+        return path === "/api/product/me"
+          ? Response.json({ user: access ? { id: "del1" } : null, access })
+          : Response.json({ ok: true });
+      },
+    }) as unknown as Fetcher;
+  const request = () =>
+    new Request("https://coding101.test/api/product/account/delete", { method: "POST" });
+
+  it("deletes the records, then forwards to the account service", async () => {
+    await putLearnerDoc(db, "del1", 0, doc(1));
+    const calls: string[] = [];
+    const res = await deleteAccount({ ACCOUNT: account({ status: "trial", endsAt: "2026-10-25" }, calls) }, db, request());
+    expect(res.status).toBe(200);
+    expect(calls).toEqual(["/api/product/me", "/api/product/account/delete"]);
+    expect((await getLearnerDoc(db, "del1")).version).toBe(0);
+  });
+
+  it("keeps the records while a plan still renews, and refuses guests", async () => {
+    await putLearnerDoc(db, "del1", 0, doc(1));
+    const calls: string[] = [];
+    const pro: Access = { status: "pro", endsAt: "2026-11-18", autoRenew: true };
+    expect((await deleteAccount({ ACCOUNT: account(pro, calls) }, db, request())).status).toBe(409);
+    expect((await deleteAccount({ ACCOUNT: account(null, calls) }, db, request())).status).toBe(401);
+    expect(calls).not.toContain("/api/product/account/delete");
+    expect((await getLearnerDoc(db, "del1")).version).toBe(1);
   });
 });

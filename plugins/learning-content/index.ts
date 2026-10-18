@@ -38,6 +38,7 @@ const LEARNER_ROUTES: {path: string; component: string}[] = [
   {path: '/account', component: '@site/src/learning/pages/Account'},
   {path: '/account/redeem', component: '@site/src/learning/pages/Redeem'},
   {path: '/account/billing', component: '@site/src/learning/pages/Billing'},
+  {path: '/account/privacy', component: '@site/src/learning/pages/Privacy'},
   {path: '/cards', component: '@site/src/learning/pages/Cards'},
   {path: '/exam', component: '@site/src/learning/pages/Exam'},
   {path: '/exam/report', component: '@site/src/learning/pages/Report'},
