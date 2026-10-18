@@ -15,7 +15,7 @@
 
 - [x] Codex：隐私说明补账号部分（中英文）——收集的数据、处理方、保存期限、删除与导出
 - [x] Codex：新增服务条款页 `/terms`，页脚加链接
-- [ ] 你：提供隐私联系邮箱，替换两处 `PRIVACY_EMAIL_TODO`（隐私说明、服务条款）
+- [x] 隐私联系邮箱 `privacy@linsama.com`，经 Cloudflare Email Routing 转发到运营者邮箱
 - [ ] 你：审阅两份文本；确认邮件导出申请由谁、多久内处理
 - [ ] 待定：请求日志、邮件日志、数据库备份的保存期限（Cloudflare、Resend、Neon 的默认值），确认后补进隐私说明
 
@@ -34,7 +34,8 @@
 - [ ] 你：合并 project-skeleton #10
 - [x] 合并 linsama-account #5
 - [ ] 你：用 QQ、163、Gmail、Outlook 各收一次验证码，记录是否进垃圾箱、到达耗时
-- [ ] 你：决定邮件服务：建议改用 Cloudflare Email Service（Workers Paid 每月含 3000 封，超出 $0.35/千封，没有每日上限）；Resend 免费版每天限 100 封
+- [x] 邮件服务改用 Cloudflare Email Service → project-skeleton #11、linsama-account #7；隐私说明去掉 Resend → coding101 PR
+- [ ] Claude：`wrangler email sending enable linsama.com`，并建立 `privacy@` 转发规则（需要你先运行 `wrangler login` 补授权）
 - [ ] Claude：送达率不好时收紧 DMARC（当前 `p=none`），检查 SPF/DKIM 对齐
 
 ## A5. 数据与运维
