@@ -56,6 +56,8 @@ const config: Config = {
     // Online payment; off until the Lemon Squeezy store is live (the account
     // service's PRODUCT_CHECKOUT refuses checkouts until then as well).
     checkoutOpen: process.env.CHECKOUT_OPEN === "true",
+    // AdSense publisher id (ca-pub-…); unset = no ads. See plugins/adsense.
+    adsenseClient: process.env.ADSENSE_CLIENT || null,
   },
 
   // Even if you don't use internationalization, you can use this field to set
@@ -206,6 +208,7 @@ const config: Config = {
   plugins: [
     ["./plugins/learning-content/index.ts", { learnerFeatures }],
     "./plugins/content-discovery/index.ts",
+    ["./plugins/adsense/index.ts", { client: process.env.ADSENSE_CLIENT }],
     ...stylePreviewPlugins,
     // [
     //   "@docusaurus/plugin-ideal-image",
