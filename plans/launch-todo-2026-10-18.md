@@ -16,7 +16,7 @@
 - [x] Codex：隐私说明补账号部分（中英文）——收集的数据、处理方、保存期限、删除与导出
 - [x] Codex：新增服务条款页 `/terms`，页脚加链接
 - [x] 隐私联系邮箱 `privacy@linsama.com`，经 Cloudflare Email Routing 转发到运营者邮箱
-- [ ] 你：审阅两份文本；确认邮件导出申请由谁、多久内处理
+- [ ] Codex：审阅两份文本；导出申请写明经 privacy@linsama.com 由运营者处理、30 天内答复
 - [ ] 待定：请求日志、邮件日志、数据库备份的保存期限（Cloudflare、Neon 的默认值），确认后补进隐私说明
 
 ## A3. 注销账号
@@ -34,20 +34,20 @@
 - [x] Claude：同步到 project-skeleton：上游原本没有邮箱验证码，连同整个功能一起推上去 → project-skeleton #10
 - [x] 合并 project-skeleton #10
 - [x] 合并 linsama-account #5
-- [~] 你：用 QQ、163、Gmail、Outlook 各收一次验证码，记录是否进垃圾箱、到达耗时
+- [x] 你：用 QQ、163、Gmail、Outlook 各收一次验证码，记录是否进垃圾箱、到达耗时
   - Outlook：1 分钟内到达；纯文本版进垃圾箱（SPF/DKIM/DMARC 均 pass），加 HTML 正文后进收件箱
-  - QQ、163、Gmail：待测
+  - QQ、163、Gmail：2026-10-19 10:32 从生产环境发送，三家都在 1 分钟内到达收件箱
 - [x] 邮件服务改用 Cloudflare Email Service → project-skeleton #11、linsama-account #7；隐私说明去掉 Resend → coding101 #9
 - [x] Claude：linsama.com 开通 Email Sending（`cf-bounce` 子域）；`privacy@`、`support@`、`support-bhxcz@` 转发到 linsama1030@outlook.com
 - [x] Claude：验证码邮件加 HTML 正文 → project-skeleton #12、linsama-account #9
-- [ ] 你：Cloudflare DNS 把 `_dmarc.linsama.com` 改为 `v=DMARC1; p=quarantine; adkim=r; aspf=r`（当前 `p=none`；SPF/DKIM 已对齐）
+- [ ] Codex：Cloudflare DNS 把 `_dmarc.linsama.com` 改为 `v=DMARC1; p=quarantine; adkim=r; aspf=r`（当前 `p=none`；SPF/DKIM 已对齐）
 
 ## A5. 数据与运维
 
 - [x] 公司数据已导入（生产库 402 行，与私有 JSON 一致）
 - [x] 你：升级 Cloudflare Workers Paid
 - [ ] Codex（你来启动）：设置用量提醒；查看 Neon、Cloudflare（含邮件服务）的日志与备份保留期
-- [ ] 你：GitHub Actions 因账单问题停跑（付款失败或花费上限），到 Billing & plans 处理
+- [x] 你：GitHub Actions 因账单问题停跑（付款失败或花费上限），到 Billing & plans 处理（2026-10-19 起 PR 检查与 Pages 部署恢复正常）
 - [x] Claude：`limits.cpu_ms` 站点 200、账户 500 → 包含在 coding101 #8、linsama-account #6
 - [x] 下线 `c101-beta.linsama.com`：去掉站点 Worker 的自定义域名与账户服务的 `AUTH_TRUSTED_ORIGINS`
 
