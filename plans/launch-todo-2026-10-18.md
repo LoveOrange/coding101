@@ -40,7 +40,12 @@
 - [x] 邮件服务改用 Cloudflare Email Service → project-skeleton #11、linsama-account #7；隐私说明去掉 Resend → coding101 #9
 - [x] Claude：linsama.com 开通 Email Sending（`cf-bounce` 子域）；`privacy@`、`support@`、`support-bhxcz@` 转发到 linsama1030@outlook.com
 - [x] Claude：验证码邮件加 HTML 正文 → project-skeleton #12、linsama-account #9
-- [ ] Codex：Cloudflare DNS 把 `_dmarc.linsama.com` 改为 `v=DMARC1; p=quarantine; adkim=r; aspf=r`（当前 `p=none`；SPF/DKIM 已对齐）
+- [x] Codex：Cloudflare DNS 已将 `_dmarc.linsama.com` 的唯一 TXT 记录改为 `v=DMARC1; p=quarantine; adkim=r; aspf=r`，TTL 保持 Auto；本次只修改这条记录，未改 SPF、DKIM 或 `cf-bounce` 子域记录。
+  - 修改前：`dig +short TXT _dmarc.linsama.com` 返回 `"v=DMARC1; p=none;"`。后台 DMARC Management 显示 `Enable DMARC Management`，尚未启用；原记录没有 `rua`，本次未添加报告地址。
+  - 生效核验（北京时间 UTC+8）：2026-10-19 11:35:54，两台 Cloudflare 权威 DNS（`melany.ns.cloudflare.com`、`ethan.ns.cloudflare.com`）均返回新值；11:40:59，本机默认解析器的 `dig +short TXT _dmarc.linsama.com` 也返回 `"v=DMARC1; p=quarantine; adkim=r; aspf=r"`，同时复核两台权威 DNS，结果一致。
+  - Outlook：11:36 一封进了垃圾邮件；其后一封到达收件箱。DNS 复核 SPF（含 `cf-bounce`）与 DKIM（`cf2024-1`）均与 `linsama.com` 对齐，DMARC 通过的邮件不受 `quarantine` 影响，判断为 Outlook 对新发信域的偶发过滤，保留 `p=quarantine`。
+  - QQ、163、Gmail：`quarantine` 生效后于 11:43 再发一次，均在收件箱。
+  - 后续可选：DMARC 加 `rua` 收报告；删除遗留的 `resend._domainkey.linsama.com`；登录页提示“没收到请查看垃圾邮件”。
 
 ## A5. 数据与运维
 
