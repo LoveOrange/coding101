@@ -80,3 +80,13 @@
 - **面试题标题下的空行**：全站 227 个文件中，共有 401 道面试题的标题下方留有 3 个空行，像是批量删除公司注释时留下的。Markdown 渲染时会合并，读者看不到，可以批量清理成一个空行。
 - **题目标题的问号**：部分题目标题有问号，部分没有，例如「Java 是值传递还是引用传递」和「final 引用和数组 clone 能否隔离对象修改？」。可以统一。修改标题时保留 `{#id}` 不变。
 - **dev.java 链接**：dev.java 改过路径，旧链接通过 JS 跳转到新地址，读者仍能打开。可以顺手换成新地址，例如 `/learn/exceptions/catching-handling/` 改为 `/learn/language/annotations-exceptions/exceptions/catching-handling/`。
+
+## 复核（2026-10-19，PR #20）
+
+6 篇文章的问题已全部修复，Claude 校验列标为 ✅：
+
+- 全站 12 处 JLS 链接改到 `/javase/specs/jls/se21/html/`，新增的锚点 `jls-11.2.3`、`jls-4.12.4`、`jls-14.20`、`jls-15.29` 都能定位到对应章节。
+- 异常篇：catch 顺序改为编译错误，并移到第 3 节；8.1 补了 `System.exit`、`Runtime.halt` 和守护线程。
+- 包装类篇：补了其他包装类缓存范围的对照表，以及 `AutoBoxCacheMax` 的说明。用 JDK 21 加上 `-XX:AutoBoxCacheMax=1000` 实测：`Integer` 1000 共享对象，`Long` 1000 不共享，下限仍为 -128。
+- String 篇：`invokedynamic` 段落移回第 5 节，并补了 `final` 常量变量的折叠规则。
+- 对象相等性篇：「身份字段」统一改为「参与相等判断的字段」；面向对象篇统一为「重写」。
