@@ -9,7 +9,7 @@ import {Dialog} from '../ui';
 import {ClientPage} from '../ui/ClientOnly';
 import styles from './Pricing.module.css';
 
-// TODO(copy): the regular prices and the retention period still need confirming.
+// TODO(copy): the retention period still needs confirming.
 const PRO_FEATURES = ['包含免费版全部内容', '闪卡作答与要点核对', '面试自测模式', '薄弱点追踪与间隔复习', '阅读进度与全景进度图', '哪些公司考过这道题'];
 const FREE_FEATURES = ['全部主题文章与知识树', '题库搜索', '闪卡题目与参考答案（只读）'];
 
