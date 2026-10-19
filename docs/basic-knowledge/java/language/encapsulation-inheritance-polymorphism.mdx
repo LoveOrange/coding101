@@ -263,7 +263,7 @@ System.out.println(service.show(value)); // child-object
 <details>
 <summary>参考回答</summary>
 
-**实参声明为 `Object` 时，编译期选择 `show(Object)`；若接收对象实际为 `Child`，运行时再分派到它覆写的 `Child.show(Object)`。**
+**实参声明为 `Object` 时，编译期选择 `show(Object)`；若接收对象实际为 `Child`，运行时再分派到它重写的 `Child.show(Object)`。**
 
 实参中保存的是字符串，也不会让运行时重新选择 `show(String)`。重载由编译期的静态类型确定签名，重写只在已选签名内根据接收对象的实际类型选择实现。
 
@@ -273,6 +273,6 @@ System.out.println(service.show(value)); // child-object
 
 - [dev.java：Object-Oriented Programming Concepts](https://dev.java/learn/oop/)
 - [dev.java：Interfaces](https://dev.java/learn/interfaces/)
-- [Java Language Specification：Classes](https://docs.oracle.com/en/java/javase/21/docs/specs/jls/jls-8.html)
-- [Java Language Specification：Interfaces](https://docs.oracle.com/en/java/javase/21/docs/specs/jls/jls-9.html)
-- [Java Language Specification：Method Invocation Expressions](https://docs.oracle.com/en/java/javase/21/docs/specs/jls/jls-15.html#jls-15.12)
+- [Java Language Specification：Classes](https://docs.oracle.com/javase/specs/jls/se21/html/jls-8.html)
+- [Java Language Specification：Interfaces](https://docs.oracle.com/javase/specs/jls/se21/html/jls-9.html)
+- [Java Language Specification：Method Invocation Expressions](https://docs.oracle.com/javase/specs/jls/se21/html/jls-15.html#jls-15.12)

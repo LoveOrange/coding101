@@ -79,6 +79,10 @@ Order loadOrder(long id) {
 
 当前层缺少处理策略时，应让异常继续传播。捕获后返回 `null` 或空结果，会让调用方把执行失败误认为没有数据。
 
+多个 `catch` 按源码顺序匹配。子类异常的 `catch` 必须放在父类异常的 `catch` 前，否则是**编译错误**。因为父类分支已经能够捕获该子类的所有异常，后面的子类分支永远不会执行，编译器会拒绝这种写法。这条规则同时适用于受检异常和非受检异常。
+
+多重捕获 `catch (A | B e)` 用同一段逻辑处理两种异常。A 与 B 不能有子类型关系，否则也是编译错误。例如，`IOException` 已经覆盖其子类 `FileNotFoundException`，因此两者不能并列写在同一个多重捕获中。
+
 ### 3.1 错误边界 {#错误边界}
 
 错误边界是决定如何结束本次请求或任务的位置。Web 请求、消息消费者和定时任务的入口都可以承担这个职责。
@@ -165,8 +169,6 @@ System.out.println(result()); // 1
 
 返回引用时，事先求出的是引用值，`finally` 仍可通过引用修改对象内容。如果 `finally` 自身执行 `return` 或抛出异常，就会覆盖此前的返回值或异常。因此，资源清理代码应正常结束，让原结果或原始失败继续传播。
 
-多个 `catch` 按源码顺序匹配，所以子类异常要放在父类异常前，否则会被前面的分支覆盖。多重捕获 `catch (A | B e)` 要求 A 与 B 没有子类型关系，因为其中一种已能覆盖另一种时就无需并列。
-
 ## 7. 多个资源的关闭失败 {#多个资源的关闭失败}
 
 多个资源都关闭失败时，程序需要保留一个向外传播的主异常，同时记录其余失败。try-with-resources 按声明逆序关闭资源。主体正常结束时，最先发生的关闭异常成为主异常，其余关闭异常进入它的 `suppressed` 列表。
@@ -179,7 +181,11 @@ try-with-resources 在 Java 7 引入。Java 9 起，可以直接引用外部的 
 
 ### 8.1 `finally` 一定会执行吗？ {#finally-的执行边界}
 
-控制流离开 try/catch 时会执行 `finally`，包括正常完成、返回和异常传播。进程被强制终止、JVM 崩溃或机器断电时，执行会被打断，因此无法保证完成清理。
+不一定。控制流因正常完成、返回或异常传播离开 `try` / `catch` 时，会执行 `finally`。JVM 终止时，线程不能继续执行 Java 代码，因此不能依赖 `finally` 完成清理：
+
+- 在 `try` 或 `catch` 中调用 `System.exit(status)`，并成功启动 JVM 关闭流程时，调用不会返回，也不会进入包围它的 `finally`。`Runtime.getRuntime().halt(status)` 会直接终止 JVM，同样不会执行 `finally`。
+- 所有非守护线程结束后，JVM 会启动关闭流程。JVM 最终退出时，仍在运行的守护线程会被直接终止，其中尚未执行的 `finally` 也不会再执行。
+- 进程被强制终止、JVM 崩溃或机器断电时，清理可能来不及执行，或执行到一半就被打断。
 
 ### 8.2 普通业务代码应该捕获 Throwable 吗？ {#throwable-的捕获范围}
 
@@ -295,8 +301,12 @@ Web、消息或任务入口统一映射对外结果，并记录一次包含追�
 
 ## 10. 参考资料 {#参考资料}
 
-- [Java Language Specification：Exceptions](https://docs.oracle.com/en/java/javase/21/docs/specs/jls/jls-11.html)
+- [Java Language Specification：Exceptions](https://docs.oracle.com/javase/specs/jls/se21/html/jls-11.html)
+- [JLS 11.2.3：Exception Checking](https://docs.oracle.com/javase/specs/jls/se21/html/jls-11.html#jls-11.2.3)
+- [JLS 14.20：The try Statement](https://docs.oracle.com/javase/specs/jls/se21/html/jls-14.html#jls-14.20)
+- [Java API：Runtime 的 JVM 关闭与终止规则](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/Runtime.html)
+- [Java API：System.exit](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/System.html#exit(int))
 - [Java API：Throwable](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/Throwable.html)
-- [Java Language Specification：try-with-resources](https://docs.oracle.com/en/java/javase/21/docs/specs/jls/jls-14.html#jls-14.20.3)
+- [Java Language Specification：try-with-resources](https://docs.oracle.com/javase/specs/jls/se21/html/jls-14.html#jls-14.20.3)
 - [Java API：AutoCloseable](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/AutoCloseable.html)
 - [dev.java：Using the try-with-resources Statement](https://dev.java/learn/exceptions/catching-handling/)
