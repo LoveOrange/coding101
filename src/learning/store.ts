@@ -423,11 +423,12 @@ export type PurchasablePlan = Exclude<Plan, 'code'>;
 /** Launch prices run through this day; the regular price follows. */
 export const LAUNCH_ENDS = '2026-12-31';
 
-// TODO(copy): regular prices are "about double" the launch prices and still need confirming.
+// Display only; must match the Lemon Squeezy catalog (regular = list price,
+// launch = discount code). See plans/backend-architecture.md §4.3.
 export const PLAN_PRICES: Record<PurchasablePlan, {price: string; regular: string}> = {
-  monthly: {price: '$2.9', regular: '$5.9'},
-  sprint: {price: '$8.9', regular: '$17.9'},
-  yearly: {price: '$29.9', regular: '$59'},
+  monthly: {price: '$3.9', regular: '$7.9'},
+  sprint: {price: '$9.9', regular: '$19'},
+  yearly: {price: '$29', regular: '$59'},
 };
 
 /** The price charged now: the launch price through LAUNCH_ENDS. */
