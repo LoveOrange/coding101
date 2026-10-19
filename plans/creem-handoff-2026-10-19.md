@@ -21,7 +21,7 @@
 
 ## 待办
 
-- [ ] **运营者**：在 Cloudflare Email Routing 新增 `support@linsama.com`，转发到运营者邮箱，做法同 `privacy@`。support 处理账单、退款和扣款疑问，privacy 只处理隐私请求，不要混用。
+- [x] `support@linsama.com` 已经转发到运营者邮箱（见 [开放注册任务清单](./launch-todo-2026-10-18.md) A4）。support 处理账单、退款和扣款疑问，privacy 只处理隐私请求，不要混用。
 - [ ] **Codex**：在 `src/pages/terms.mdx` 补"订阅、续费、取消与退款"一节，替换第 21 行"本站当前不开放在线支付……"。要写清楚：
   - 由 Creem 作为收款主体代收，账单上显示的商户名可能不是 Coding 101
   - 月付和年付自动续费，可以在账户页关闭续费，当期结束后不再扣款
