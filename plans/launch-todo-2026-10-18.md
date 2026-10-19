@@ -46,7 +46,15 @@
 
 - [x] 公司数据已导入（生产库 402 行，与私有 JSON 一致）
 - [x] 你：升级 Cloudflare Workers Paid
-- [ ] Codex（你来启动）：设置用量提醒；查看 Neon、Cloudflare（含邮件服务）的日志与备份保留期
+- [!] Codex：设置用量提醒；查看 Neon、Cloudflare（含邮件服务）的日志与备份保留期（2026-10-19 核验；已完成项与阻塞项如下）
+  - [x] Cloudflare Workers 请求数提醒：已创建并启用 `Workers requests - 80% included usage`。阈值为每账单月 **8,000,000 次**（包含额度 10,000,000 次的 80%），收件人为 `linsama1030@outlook.com`。来源：[后台提醒](https://dash.cloudflare.com/b6e7aa700efbc27266aa5c45ecc55835/notifications/edit/265f26bb28464d8eaf7fa33e896635b1)、[Workers 定价](https://developers.cloudflare.com/workers/platform/pricing/#workers)。
+  - [x] Cloudflare Workers CPU 时间提醒：已创建并启用 `Workers CPU - 80% included usage`。阈值为每账单月 **24,000,000 CPU 毫秒**（包含额度 30,000,000 CPU 毫秒的 80%），收件人为 `linsama1030@outlook.com`。两条提醒均统计整个账户的 Workers Standard 用量，后台触发条件为超过阈值。来源：[后台提醒](https://dash.cloudflare.com/b6e7aa700efbc27266aa5c45ecc55835/notifications/edit/ec288b7d49c04c7e83ae177a4933ac37)、[Workers 定价](https://developers.cloudflare.com/workers/platform/pricing/#workers)。
+  - [!] Cloudflare Email Sending 用量提醒：目标为每账单月 **2,400 封**（包含额度 3,000 封的 80%）。后台 Usage based billing 产品列表未提供 Email Sending；邮件页面的 Add Budget Alert 只接受美元金额，无法按邮件数量设置此阈值，因此未创建替代金额提醒。来源：[提醒创建页](https://dash.cloudflare.com/b6e7aa700efbc27266aa5c45ecc55835/notifications/create/billing_usage_alert)、[Email Sending 后台](https://dash.cloudflare.com/b6e7aa700efbc27266aa5c45ecc55835/email-service/sending)、[邮件服务定价](https://developers.cloudflare.com/email-service/platform/pricing/)。
+  - [x] Cloudflare Workers Logs / Observability：Workers Paid 的日志保留期为 **7 天**。来源：[Workers Logs 定价与保留期](https://developers.cloudflare.com/workers/observability/logs/workers-logs/#pricing)。
+  - [x] Cloudflare Email Sending / Email Routing：发送和路由事件日志均保留 **31 天**；Activity log 使用同一批事件数据，后台预设时间范围最长为 30 天。来源：[事件数据集与保留期](https://developers.cloudflare.com/email-service/observability/metrics-analytics/)、[Activity log](https://developers.cloudflare.com/email-service/observability/logs/)。
+  - [x] Cloudflare 发送邮件正文预览：`linsama.com` 的 Email preview 已开启，正文预览保留 **约 7 天**，与事件日志的 31 天分开记录。来源：[后台设置](https://dash.cloudflare.com/b6e7aa700efbc27266aa5c45ecc55835/email-service/sending/8bf73c0ca16e72b2c5755a0349a7593f/bf3456d09eac4b3e9d19ea093d414f91/settings)、[Message preview](https://developers.cloudflare.com/email-service/observability/logs/#message-preview)。
+  - [!] Neon 计算与存储提醒：后台停在登录页，尚未核验当前套餐额度，因此未填写或设置 80% 阈值。官方的 Spending notifications 仅支持 Launch / Scale 套餐，按组织的美元消费阈值提醒，不能据此认定当前账户已具备按 CU-hours、存储量设置提醒的能力。待完成登录后检查 Billing 和项目用量页面。来源：[Neon 后台](https://console.neon.tech/)、[消费通知](https://neon.com/docs/introduction/spending-notifications)。
+  - [!] Neon PITR / history retention 与其他备份：项目 `long-pine-14026346` 承载 `account_coding101`、`coding101` 两个数据库；因后台尚未登录，当前实际恢复窗口、已有快照和备份计划均未核验，不能用套餐默认值代替。登录后检查 Settings → Postgres 的 History window 和 Backup & restore 的快照、计划及保留期。来源：[Neon 后台](https://console.neon.tech/)、[History window](https://neon.com/docs/postgres/backup-restore/history-window)、[Backup & restore](https://neon.com/docs/guides/backup-restore)。
 - [ ] 你：GitHub Actions 因账单问题停跑（付款失败或花费上限），到 Billing & plans 处理
 - [x] Claude：`limits.cpu_ms` 站点 200、账户 500 → 包含在 coding101 #8、linsama-account #6
 - [x] 下线 `c101-beta.linsama.com`：去掉站点 Worker 的自定义域名与账户服务的 `AUTH_TRUSTED_ORIGINS`
