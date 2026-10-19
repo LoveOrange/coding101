@@ -1,4 +1,5 @@
 import {useEffect, useState} from 'react';
+import Link from '@docusaurus/Link';
 import clsx from 'clsx';
 
 import {AccountLayout, SubscriptionCard} from '../account/AccountParts';
@@ -11,7 +12,7 @@ export default function Billing(): JSX.Element {
   return <ClientPage title="订阅与账单">{() => <BillingPage />}</ClientPage>;
 }
 
-const METHOD: Record<BillingRecord['method'], string> = {code: '激活码', card: 'Lemon Squeezy'};
+const METHOD: Record<BillingRecord['method'], string> = {code: '激活码', card: 'Creem'};
 const STATUS: Record<BillingRecord['status'], string> = {paid: '已支付', refunded: '已退款', applied: ''};
 
 function BillingPage() {
@@ -28,6 +29,7 @@ function BillingPage() {
   return (
     <AccountLayout active="billing">
       <SubscriptionCard variant="billing" />
+      <p className={styles.muted}>账单、取消续费或退款问题，请联系 <a href="mailto:support@linsama.com">support@linsama.com</a>。<Link to="/terms#退款">查看退款规则</Link></p>
       <section className={styles.records} aria-labelledby="billing-title">
         <div className={styles.recordsHead}>
           <h1 id="billing-title" className={styles.sectionTitle}>
