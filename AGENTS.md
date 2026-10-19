@@ -186,3 +186,7 @@ Coding 101 是一个面向技术岗位求职者的就业准备网站。第一优
 新增或修改知识树文章后，用 `node scripts/check-article-format.mjs --strict --list -- <文件...>` 检查本次修改的文章。面试核心、`[卡]` 链接、参考资料、面试题字段、显式卡片 ID、自测归属注释和标题编号属于结构检查，发现的问题必须修复。`npm run check:article-format` 检查全站，`npm run build` 也会执行这一检查。
 
 标题表达、长句、元叙述和参考资料空行等文风提示供通读判断，不影响退出码，也不要求提示清零。根据技术准确性、知识完整性和阅读连贯性决定是否修改，不为消除提示而删条件、拆散因果关系或添加套话。`--style-strict` 已弃用，兼容为 `--strict --list`，不再因文风提示失败。
+
+## 文章状态
+
+`plans/content-status.json` 记录每篇公开文章的生成、校验和翻译状态，`plans/content-status.md` 由它生成，不要手工编辑。新增、移动、删除文章或修改已校验的文章后，运行 `npm run content-status` 并提交这两个文件；`npm run build` 会检查它们是否最新。新文章写完后用 `npm run content-status -- mark codex done <docs 路径>` 标记生成完成。校验或翻译完成后，把对应列（`claude`、`lin`、`en`、`ja`）标为 `done`；发现问题待修改标 `changes`，不需要做的标 `skip`。每条状态记录当时的文章哈希，文章之后被修改，校验和翻译会显示为需要重新处理。
