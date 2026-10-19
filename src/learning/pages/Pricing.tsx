@@ -46,9 +46,10 @@ function PricingPage() {
   const [pending, setPending] = useState<Tier | undefined>();
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState(false);
-  const launch = today() <= LAUNCH_ENDS;
   const {customFields} = useDocusaurusContext().siteConfig;
   const checkoutOpen = Boolean(customFields?.checkoutOpen);
+  // The launch offer is a purchase deadline, so it only shows while checkout is open.
+  const launch = checkoutOpen && today() <= LAUNCH_ENDS;
   const adFree = Boolean(customFields?.adsenseClient);
 
   const choose = (tier: Tier) => {
@@ -58,6 +59,11 @@ function PricingPage() {
     }
     if (!learner.account) {
       history.push(`/account?next=${encodeURIComponent('/pricing')}`);
+      return;
+    }
+    // Until checkout opens, paid tiers lead to the sign-up trial or to redeeming a code.
+    if (!checkoutOpen) {
+      history.push('/account/redeem');
       return;
     }
     setFailed(false);
@@ -116,9 +122,8 @@ function PricingPage() {
             <button
               type="button"
               className={clsx(styles.action, styles[`action_${tier.tone}`])}
-              disabled={Boolean(tier.plan) && !checkoutOpen}
               onClick={() => choose(tier)}>
-              {tier.plan && !checkoutOpen ? '即将开通' : tier.action}
+              {tier.plan && !checkoutOpen ? (learner.account ? '兑换激活码' : '免费试用 7 天') : tier.action}
             </button>
           </div>
         ))}

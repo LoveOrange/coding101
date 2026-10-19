@@ -1,4 +1,6 @@
 import Link from '@docusaurus/Link';
+import {useLocation} from '@docusaurus/router';
+import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
 
 import {accessOf, priceOf, useLearner} from '../store';
 import {Dialog} from '../ui';
@@ -9,6 +11,15 @@ export function UpgradeDialog({open, onClose}: {open: boolean; onClose: () => vo
   const learner = useLearner();
   const access = accessOf(learner);
   const expired = access === 'readonly';
+  const location = useLocation();
+  const checkoutOpen = Boolean(useDocusaurusContext().siteConfig.customFields?.checkoutOpen);
+  // Until checkout opens, Pro comes from the sign-up trial or an activation code.
+  const next = encodeURIComponent(location.pathname + location.search);
+  const cta = checkoutOpen
+    ? {to: '/pricing', label: expired ? '续费 Pro' : '升级 Pro'}
+    : access === 'guest'
+      ? {to: `/account?next=${next}`, label: '免费试用 7 天'}
+      : {to: '/account/redeem', label: '兑换激活码'};
   const monthly = priceOf('monthly');
   const yearly = priceOf('yearly');
   const perMonth = `约 $${(Number(yearly.slice(1)) / 12).toFixed(2)} / 月`;
@@ -37,24 +48,26 @@ export function UpgradeDialog({open, onClose}: {open: boolean; onClose: () => vo
           <b>✓</b>全景进度图和闪卡库
         </span>
       </div>
-      <div className={styles.planPair}>
-        <span className={styles.planBox}>
-          <span className={styles.planName}>月付</span>
-          <span className={styles.planPrice}>{monthly}</span>
-        </span>
-        <span className={styles.planBoxActive}>
-          <span className={styles.planNameAccent}>年付 · {perMonth}</span>
-          <span className={styles.planPrice}>{yearly}</span>
-        </span>
-      </div>
-      <Link className={styles.upgradeButton} to="/pricing">
-        {expired ? '续费 Pro' : '升级 Pro'}
+      {checkoutOpen && (
+        <div className={styles.planPair}>
+          <span className={styles.planBox}>
+            <span className={styles.planName}>月付</span>
+            <span className={styles.planPrice}>{monthly}</span>
+          </span>
+          <span className={styles.planBoxActive}>
+            <span className={styles.planNameAccent}>年付 · {perMonth}</span>
+            <span className={styles.planPrice}>{yearly}</span>
+          </span>
+        </div>
+      )}
+      <Link className={styles.upgradeButton} to={cta.to}>
+        {cta.label}
       </Link>
       <div className={styles.dialogFoot}>
         <button type="button" className={styles.textButton} onClick={onClose}>
           继续阅读
         </button>
-        <Link to="/account/redeem">有激活码？</Link>
+        {cta.to === '/account/redeem' ? <Link to="/pricing">了解 Pro</Link> : <Link to="/account/redeem">有激活码？</Link>}
       </div>
     </Dialog>
   );
