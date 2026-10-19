@@ -34,13 +34,18 @@
 - [x] Claude：同步到 project-skeleton：上游原本没有邮箱验证码，连同整个功能一起推上去 → project-skeleton #10
 - [x] 合并 project-skeleton #10
 - [x] 合并 linsama-account #5
-- [~] 你：用 QQ、163、Gmail、Outlook 各收一次验证码，记录是否进垃圾箱、到达耗时
+- [x] 你：用 QQ、163、Gmail、Outlook 各收一次验证码，记录是否进垃圾箱、到达耗时
   - Outlook：1 分钟内到达；纯文本版进垃圾箱（SPF/DKIM/DMARC 均 pass），加 HTML 正文后进收件箱
-  - QQ、163、Gmail：待测
+  - QQ、163、Gmail：2026-10-19 10:32 从生产环境发送，三家都在 1 分钟内到达收件箱
 - [x] 邮件服务改用 Cloudflare Email Service → project-skeleton #11、linsama-account #7；隐私说明去掉 Resend → coding101 #9
 - [x] Claude：linsama.com 开通 Email Sending（`cf-bounce` 子域）；`privacy@`、`support@`、`support-bhxcz@` 转发到 linsama1030@outlook.com
 - [x] Claude：验证码邮件加 HTML 正文 → project-skeleton #12、linsama-account #9
-- [ ] 你：Cloudflare DNS 把 `_dmarc.linsama.com` 改为 `v=DMARC1; p=quarantine; adkim=r; aspf=r`（当前 `p=none`；SPF/DKIM 已对齐）
+- [x] Codex：Cloudflare DNS 已将 `_dmarc.linsama.com` 的唯一 TXT 记录改为 `v=DMARC1; p=quarantine; adkim=r; aspf=r`，TTL 保持 Auto；本次只修改这条记录，未改 SPF、DKIM 或 `cf-bounce` 子域记录。
+  - 修改前：`dig +short TXT _dmarc.linsama.com` 返回 `"v=DMARC1; p=none;"`。后台 DMARC Management 显示 `Enable DMARC Management`，尚未启用；原记录没有 `rua`，本次未添加报告地址。
+  - 生效核验（北京时间 UTC+8）：2026-10-19 11:35:54，两台 Cloudflare 权威 DNS（`melany.ns.cloudflare.com`、`ethan.ns.cloudflare.com`）均返回新值；11:40:59，本机默认解析器的 `dig +short TXT _dmarc.linsama.com` 也返回 `"v=DMARC1; p=quarantine; adkim=r; aspf=r"`，同时复核两台权威 DNS，结果一致。
+  - Outlook：11:36 一封进了垃圾邮件；其后一封到达收件箱。DNS 复核 SPF（含 `cf-bounce`）与 DKIM（`cf2024-1`）均与 `linsama.com` 对齐，DMARC 通过的邮件不受 `quarantine` 影响，判断为 Outlook 对新发信域的偶发过滤，保留 `p=quarantine`。
+  - QQ、163、Gmail：`quarantine` 生效后于 11:43 再发一次，均在收件箱。
+  - 后续可选：DMARC 加 `rua` 收报告；删除遗留的 `resend._domainkey.linsama.com`；登录页提示“没收到请查看垃圾邮件”。
 
 ## A5. 数据与运维
 
@@ -58,7 +63,7 @@
   - [x] Neon PITR / history retention：`production` 分支当前实际窗口为 **6 小时**；Backup & Restore 显示 `6 hour history window`，Settings → Postgres 的 History window 也设为 6h。Free 的历史记录另受 **1 GB** 上限约束。来源：[恢复后台](https://console.neon.tech/app/projects/long-pine-14026346/branches/br-aged-resonance-a19rahpt/restore)、[项目设置](https://console.neon.tech/app/projects/long-pine-14026346/settings/postgres)、[History window](https://neon.com/docs/postgres/backup-restore/history-window)。
   - [x] Neon 其他备份现状：`production` 的 Backup & Restore 显示 **No snapshots, no schedule set**，当前没有额外快照或定时快照计划。Free 支持 1 个手动快照，但当前未创建；手动快照未指定到期时间时不会自动过期。这里只记录 Neon 后台可见的备份状态，不据此判断是否存在外部导出。来源：[备份后台](https://console.neon.tech/app/projects/long-pine-14026346/branches/br-aged-resonance-a19rahpt/restore)、[快照额度](https://neon.com/docs/introduction/plans#snapshots)、[快照保留规则](https://neon.com/docs/guides/backup-restore#snapshot-retention)。
   - [!] Neon 自动备份计划：后台显示 **Upgrade for schedules**，需付费套餐才能启用；本次未升级或创建计划。来源：[备份后台](https://console.neon.tech/app/projects/long-pine-14026346/branches/br-aged-resonance-a19rahpt/restore)、[Backup & restore](https://neon.com/docs/guides/backup-restore)。
-- [ ] 你：GitHub Actions 因账单问题停跑（付款失败或花费上限），到 Billing & plans 处理
+- [x] 你：GitHub Actions 因账单问题停跑（付款失败或花费上限），到 Billing & plans 处理（2026-10-19 起 PR 检查与 Pages 部署恢复正常）
 - [x] Claude：`limits.cpu_ms` 站点 200、账户 500 → 包含在 coding101 #8、linsama-account #6
 - [x] 下线 `c101-beta.linsama.com`：去掉站点 Worker 的自定义域名与账户服务的 `AUTH_TRUSTED_ORIGINS`
 
