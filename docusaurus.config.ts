@@ -53,7 +53,7 @@ const config: Config = {
     learnerFeatures,
     // The site's own API (worker/): accounts, billing, synced records.
     serverApi: true,
-    // Online payment; off until the Lemon Squeezy store is live (the account
+    // Online payment; off until the Creem store is live (the account
     // service's PRODUCT_CHECKOUT refuses checkouts until then as well).
     checkoutOpen: process.env.CHECKOUT_OPEN === "true",
     analyticsId: enableAnalytics ? 'G-Q16V88YMHD' : null,

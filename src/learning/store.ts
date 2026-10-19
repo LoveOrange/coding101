@@ -420,20 +420,23 @@ export const PLAN_LABELS: Record<Plan, string> = {
 
 export type PurchasablePlan = Exclude<Plan, 'code'>;
 
-/** Launch prices run through this day; the regular price follows. */
+/** Purchase deadline in Asia/Shanghai; existing subscriptions keep their discount. */
 export const LAUNCH_ENDS = '2026-12-31';
 
-// Display only; must match the Lemon Squeezy catalog (regular = list price,
-// launch = discount code). See plans/backend-architecture.md §4.3.
+// Display only; Creem must apply the matching 50% discount at checkout.
 export const PLAN_PRICES: Record<PurchasablePlan, {price: string; regular: string}> = {
-  monthly: {price: '$3.9', regular: '$7.9'},
-  sprint: {price: '$9.9', regular: '$19'},
-  yearly: {price: '$29', regular: '$59'},
+  monthly: {price: '$3.90', regular: '$7.80'},
+  sprint: {price: '$9.90', regular: '$19.80'},
+  yearly: {price: '$29', regular: '$58'},
 };
 
-/** The price charged now: the launch price through LAUNCH_ENDS. */
-export function priceOf(plan: PurchasablePlan): string {
-  return today() <= LAUNCH_ENDS ? PLAN_PRICES[plan].price : PLAN_PRICES[plan].regular;
+export function isLaunchOfferActive(now = Date.now()): boolean {
+  return now <= Date.parse(`${LAUNCH_ENDS}T23:59:59.999+08:00`);
+}
+
+/** New-purchase price only. Renewal amounts belong to the existing subscription. */
+export function priceOf(plan: PurchasablePlan, now = Date.now()): string {
+  return isLaunchOfferActive(now) ? PLAN_PRICES[plan].price : PLAN_PRICES[plan].regular;
 }
 
 function toBillingRecords(records: ServerBillingRecord[]): BillingRecord[] {

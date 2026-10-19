@@ -4,8 +4,7 @@ import Link from '@docusaurus/Link';
 import {useHistory, useLocation} from '@docusaurus/router';
 
 import {ApiError} from '../api';
-import {daysBetween, isOffline, learnerActions, PLAN_LABELS, priceOf, today, useLearner} from '../store';
-import type {Subscription} from '../types';
+import {daysBetween, isOffline, learnerActions, PLAN_LABELS, today, useLearner} from '../store';
 import {Dialog, formatDate} from '../ui';
 import styles from './account.module.css';
 
@@ -205,8 +204,6 @@ export function SubscriptionCard({variant = 'account'}: {variant?: 'account' | '
   const sub = learner.subscription;
   const [dialog, setDialog] = useState<'renew' | 'payment' | undefined>();
   const [failed, setFailed] = useState(false);
-  const price = (s: Extract<Subscription, {status: 'pro'}>) =>
-    s.plan === 'monthly' || s.plan === 'yearly' ? priceOf(s.plan) : '';
   const act = (action: () => Promise<void>) => {
     setFailed(false);
     void action().catch(() => setFailed(true));
@@ -294,7 +291,7 @@ export function SubscriptionCard({variant = 'account'}: {variant?: 'account' | '
             {!renewable
               ? '到期不自动扣费，可以随时兑换激活码或续一段。'
               : sub.autoRenew
-                ? `到期按 ${price(sub)} 续费，可随时关闭`
+                ? '到期自动续费，可随时关闭；实际续费金额请在账单页查看。'
                 : '已关闭自动续费，到期后不再扣费。'}
           </span>
         </div>
@@ -372,7 +369,7 @@ export function SubscriptionCard({variant = 'account'}: {variant?: 'account' | '
         <span id="payment-title" className={styles.dialogTitle}>
           支付方式
         </span>
-        <span className={styles.dialogText}>支付方式、发票和重试扣款在 Lemon Squeezy 的账单页管理，处理完回到这里即可。</span>
+        <span className={styles.dialogText}>支付方式、发票和重试扣款在 Creem 的账单页管理，处理完回到这里即可。</span>
         <div className={styles.dialogActions}>
           <button
             type="button"

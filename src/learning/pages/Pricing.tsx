@@ -4,12 +4,11 @@ import Link from '@docusaurus/Link';
 import {useHistory} from '@docusaurus/router';
 import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
 
-import {LAUNCH_ENDS, learnerActions, PLAN_LABELS, PLAN_PRICES, priceOf, type PurchasablePlan, today, useLearner} from '../store';
+import {isLaunchOfferActive, LAUNCH_ENDS, learnerActions, PLAN_LABELS, PLAN_PRICES, priceOf, type PurchasablePlan, useLearner} from '../store';
 import {Dialog} from '../ui';
 import {ClientPage} from '../ui/ClientOnly';
 import styles from './Pricing.module.css';
 
-// TODO(copy): the retention period still needs confirming.
 const PRO_FEATURES = ['包含免费版全部内容', '闪卡作答与要点核对', '面试自测模式', '薄弱点追踪与间隔复习', '阅读进度与全景进度图', '哪些公司考过这道题'];
 const FREE_FEATURES = ['全部主题文章与知识树', '题库搜索', '闪卡题目与参考答案（只读）'];
 
@@ -19,7 +18,6 @@ type Tier = {
   tone: 'green' | 'accent' | 'dark';
   unit?: string;
   note: string;
-  badge?: string;
   features: string[];
   action: string;
   plan?: PurchasablePlan;
@@ -29,7 +27,7 @@ const TIERS: Tier[] = [
   {id: 'free', name: '免费', tone: 'green', note: '按主题学习', features: FREE_FEATURES, action: '开始学习'},
   {id: 'month', name: 'Pro 月付', tone: 'accent', unit: ' / 月', note: '自动续费 · 可随时关闭', features: PRO_FEATURES, action: '月付', plan: 'monthly'},
   {id: 'sprint', name: '冲刺 · 3 个月', tone: 'green', note: '一次付清 · 90 天 · 不自动续费 · 适合一轮面试周期', features: ['Pro 全部功能', '可随时续一段'], action: '购买冲刺', plan: 'sprint'},
-  {id: 'year', name: 'Pro 年付', tone: 'dark', badge: '5 折', unit: ' / 年', note: '自动续费', features: ['Pro 全部功能'], action: '年付', plan: 'yearly'},
+  {id: 'year', name: 'Pro 年付', tone: 'dark', unit: ' / 年', note: '自动续费', features: ['Pro 全部功能'], action: '年付', plan: 'yearly'},
 ];
 
 export default function Pricing(): JSX.Element {
@@ -48,8 +46,7 @@ function PricingPage() {
   const [failed, setFailed] = useState(false);
   const {customFields} = useDocusaurusContext().siteConfig;
   const checkoutOpen = Boolean(customFields?.checkoutOpen);
-  // The launch offer is a purchase deadline, so it only shows while checkout is open.
-  const launch = checkoutOpen && today() <= LAUNCH_ENDS;
+  const launch = isLaunchOfferActive();
   const adFree = Boolean(customFields?.adsenseClient);
 
   const choose = (tier: Tier) => {
@@ -87,10 +84,13 @@ function PricingPage() {
         <h1 className={styles.title}>Coding101 Pro</h1>
         <p className={styles.lead}>文章一直免费。Pro 会记下你每次作答的结果，并按时安排复习。</p>
         {launch && (
-          <div className={styles.offer}>
-            <span className={styles.offerBadge}>开业优惠</span>
-            <span>开业价，2026 年 12 月 31 日前购买有效</span>
-          </div>
+          <>
+            <div className={styles.offer}>
+              <span className={styles.offerBadge}>首发 5 折</span>
+              <span>{LAUNCH_ENDS}（北京时间）前购买有效</span>
+            </div>
+            <p className={styles.lead}>首发期内订阅，持续订阅期间按首发价续费。取消后重新订阅按当时价格。</p>
+          </>
         )}
       </div>
 
@@ -100,11 +100,13 @@ function PricingPage() {
             <div className={styles.tierHead}>
               <span className={clsx(styles.tierName, styles[`tone_${tier.tone}`])}>
                 <span>{tier.name}</span>
-                {tier.badge && launch && <span className={styles.tierBadge}>{tier.badge}</span>}
+                {tier.plan && launch && <span className={styles.tierBadge}>5 折</span>}
               </span>
-              <span className={clsx(styles.was, !(launch && tier.plan) && styles.wasHidden)}>
-                {tier.plan ? `${PLAN_PRICES[tier.plan].regular}${tier.unit ?? ''}` : '—'}
-              </span>
+              {launch && (
+                <span className={clsx(styles.was, !tier.plan && styles.wasHidden)} aria-hidden={!tier.plan}>
+                  {tier.plan ? `${PLAN_PRICES[tier.plan].regular}${tier.unit ?? ''}` : '—'}
+                </span>
+              )}
               <span className={styles.price}>
                 {tier.plan ? priceOf(tier.plan) : '$0'}
                 {tier.unit && <span className={styles.unit}>{tier.unit}</span>}
@@ -131,7 +133,10 @@ function PricingPage() {
 
       <div className={styles.foot}>
         {!checkoutOpen && <span>在线支付即将开通，现在可以先免费试用 7 天，或用激活码开通 Pro</span>}
-        <span>大陆用户可在小红书、抖音店铺购买激活码 · 到期后进度数据保留 90 天</span>
+        <span>以上价格以美元（USD）计价，税费及最终应付金额以支付页确认为准。</span>
+        <span>月付和年付自动续费，可在「账户 → 订阅与账单」关闭；冲刺计划一次付清，不自动续费。</span>
+        <span>在线支付开放后，首次购买 7 天内可申请全额退款，每个账号限一次；续费扣款后 7 天内可申请退还当期费用。<Link to="/terms#退款">查看退款规则</Link></span>
+        <span>账单与退款支持：<a href="mailto:support@linsama.com">support@linsama.com</a> · 到期后学习记录保留 90 天</span>
         <span>
           已有激活码？<Link to="/account/redeem">去兑换</Link>
         </span>
@@ -144,8 +149,13 @@ function PricingPage() {
         <span className={styles.dialogText}>
           {failed
             ? '暂时没能打开支付页，请稍后再试。'
-            : '将前往 Lemon Squeezy 完成支付。支付成功后自动开通，可以在「订阅与账单」里查看记录或关闭续费。'}
+            : '将前往 Creem 完成支付。支付成功后自动开通，可以在「订阅与账单」里查看记录或关闭续费。'}
         </span>
+        <span className={styles.dialogText}>
+          {pending?.plan === 'sprint' ? '一次付清，90 天 Pro，不自动续费。' : '自动续费，可在「订阅与账单」关闭，下个周期不再扣款。'}
+          <Link to="/terms#订阅续费与取消">订阅与取消规则</Link> · <Link to="/terms#退款">退款规则</Link>
+        </span>
+        {launch && pending?.plan !== 'sprint' && <span className={styles.dialogText}>本次订阅享首发 5 折，持续订阅期间按首发价续费；取消后重新订阅按当时价格。</span>}
         <div className={styles.dialogActions}>
           <button type="button" className={styles.dialogPrimary} disabled={busy} onClick={() => void confirm()}>
             {busy ? '正在打开…' : `前往支付 ${pending?.plan ? priceOf(pending.plan) : ''}`}

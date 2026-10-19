@@ -2,6 +2,12 @@
 
 交给 **Codex**：合规文案和 Creem 后台的商品与开户资料。账户服务里的 Creem 接入由 Claude 另做，不在本卡范围。
 
+## 最新执行状态（2026-10-19）
+
+用户已确认首发启用 5 折拉新。标价为月付 $7.80、90 天 $19.80、年付 $58；首发价对应 $3.90、$9.90、$29。购买截止时间为北京时间 2026-12-31 23:59:59，月付和年付持续订阅期间保持首发价，取消后重新订阅按当时价格。
+
+网站代码已同步首发价格、优惠规则、订阅与退款条款、支持邮箱、Creem 支付文案和中英文隐私说明。尚需部署并核验线上页面，支付仍关闭；Creem 商品及折扣配置、端到端支付测试与申请提交尚未完成。此前保存的申请草稿中的原价仍为 $7.90、$19、$59，提交前需同步为上述新价格。
+
 ## 背景
 
 - Lemon Squeezy 不接受中国大陆身份开店，已放弃。在线支付改走 **Creem**（收款主体，Merchant of Record）。
@@ -47,9 +53,9 @@
 
 | plan | Product Name | 类型 | 标价 |
 |---|---|---|---|
-| monthly | Coding 101 Pro · Monthly | 订阅，按月 | $7.90 |
-| yearly | Coding 101 Pro · Yearly | 订阅，按年 | $59 |
-| sprint | Coding 101 Sprint · 3 Months | 一次性付款 | $19 |
+| monthly | Coding 101 Pro · Monthly | 订阅，按月 | $7.80 |
+| yearly | Coding 101 Pro · Yearly | 订阅，按年 | $58 |
+| sprint | Coding 101 Sprint · 3 Months | 一次性付款 | $19.80 |
 
 商品描述里写上 `coding101.linsama.com`，方便用户认出账单上的扣款，减少拒付（每笔拒付收 $25）。上线前用测试卡买一次，确认账单上显示的商户名。
 
@@ -73,10 +79,10 @@
 >
 > **Free vs. paid:** All articles, interview questions and reference answers are free to read without an account. Pro adds interactive study tools: flashcard practice with answer checking, mock-interview self-tests, weak-spot tracking with spaced repetition, reading progress and a topic progress map, and the companies a question is known to have been asked at.
 >
-> **Plans** (USD; launch prices with 50% off until 2026-12-31):
-> - Pro Monthly: $7.90/month, auto-renewing, cancel anytime
-> - Pro Yearly: $59/year, auto-renewing
-> - Sprint (3 months): $19 one-time for 90 days of Pro, no auto-renewal
+> **Plans** (USD; standard prices below, with a 50% launch discount through December 31, 2026, Asia/Shanghai):
+> - Pro Monthly: $7.80/month ($3.90 at launch), auto-renewing, cancel anytime
+> - Pro Yearly: $58/year ($29 at launch), auto-renewing
+> - Sprint (3 months): $19.80 ($9.90 at launch), one-time for 90 days of Pro, no auto-renewal
 >
 > New accounts get a 7-day free trial without entering a card. Customers who buy during the launch period keep the launch price on renewals.
 >
