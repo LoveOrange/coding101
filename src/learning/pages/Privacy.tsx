@@ -46,12 +46,16 @@ function PrivacyPage() {
           数据与隐私
         </h1>
         <p className={styles.muted}>
-          账户保存你的邮箱、登录会话、试用与激活码记录，以及卡片复习状态、阅读进度和学习偏好。Pro 到期后，学习记录只读保留 90 天，期满自动删除。详见
+          账户保存你的邮箱、登录会话、试用与激活码记录，以及卡片复习状态、阅读进度、学习会话、偏好和模拟测试设置。Pro 或试用到期后，学习记录只读保留 90 天，期满后由每日清理任务删除。日志、邮件正文预览和数据库恢复历史的保存期限详见
           <a href="/privacy/">隐私与 Cookie</a>。
+        </p>
+        <p className={styles.muted}>
+          查询或导出账号数据和学习记录，请发送邮件至
+          <a href="mailto:privacy@linsama.com">privacy@linsama.com</a>，由运营者 Linsama 本人处理，并在收到申请后 30 天内答复。处理前可能需要核验邮箱归属，目前没有自助导出功能。
         </p>
         <div className={styles.prefRow}>
           <span className={styles.prefLabel}>删除账号</span>
-          <span>立即删除账号和全部学习记录，无法恢复。</span>
+          <span>删除账号及服务端学习记录，剩余权益作废。保留项见删除确认说明。</span>
           <button type="button" className={styles.prefEdit} onClick={() => setOpen(true)}>
             删除
           </button>
@@ -74,7 +78,9 @@ function PrivacyPage() {
           删除账号？
         </span>
         <div className={styles.dialogText}>
-          <span>账号、复习进度和激活码兑换记录都会被删除，剩余的 Pro 天数也会作废。</span>
+          <span>删除成功后，账号、会话、权益和学习记录从业务数据库移除。剩余权益作废，不能通过重新注册恢复。</span>
+          <span>已用激活码解除账号关联，仍不可复用。用过试用或 Pro 的邮箱保留带密钥哈希值（HMAC）以防止重复试用，未设自动到期时间。</span>
+          <span>日志、邮件正文预览和数据库恢复历史按<a href="/privacy/">隐私说明</a>中的期限保留。</span>
           <span>
             输入 <b>{email}</b> 确认：
           </span>

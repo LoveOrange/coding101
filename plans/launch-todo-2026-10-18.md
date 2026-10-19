@@ -16,8 +16,8 @@
 - [x] Codex：隐私说明补账号部分（中英文）——收集的数据、处理方、保存期限、删除与导出
 - [x] Codex：新增服务条款页 `/terms`，页脚加链接
 - [x] 隐私联系邮箱 `privacy@linsama.com`，经 Cloudflare Email Routing 转发到运营者邮箱
-- [ ] Codex：审阅两份文本；导出申请写明经 privacy@linsama.com 由运营者处理、30 天内答复
-- [ ] 待定：请求日志、邮件日志、数据库备份的保存期限（Cloudflare、Neon 的默认值），确认后补进隐私说明
+- [x] Codex：对照当前实现审阅中英文隐私说明、服务条款和站内摘要，修正账号删除、邮箱 HMAC、90 天只读期、邮件服务及支付状态；查询与导出统一通过 `privacy@linsama.com`，由运营者 Linsama 本人处理，收到申请后 30 天内答复 → coding101 #16
+- [x] Codex：按 A5 的核验结果（coding101 #15）补齐中英文保存期限及来源：Workers Logs 7 天，邮件发送与路由事件日志 31 天，发送邮件正文预览约 7 天，Neon PITR 6 小时（历史上限 1 GB）；注明生产分支当前无额外 Neon 快照或定时快照计划 → coding101 #16
 
 ## A3. 注销账号
 
@@ -51,7 +51,18 @@
 
 - [x] 公司数据已导入（生产库 402 行，与私有 JSON 一致）
 - [x] 你：升级 Cloudflare Workers Paid
-- [ ] Codex（你来启动）：设置用量提醒；查看 Neon、Cloudflare（含邮件服务）的日志与备份保留期
+- [!] Codex：设置用量提醒；查看 Neon、Cloudflare（含邮件服务）的日志与备份保留期（2026-10-19 核验；已完成项与阻塞项如下）
+  - [x] Cloudflare Workers 请求数提醒：已创建并启用 `Workers requests - 80% included usage`。阈值为每账单月 **8,000,000 次**（包含额度 10,000,000 次的 80%），收件人为 `linsama1030@outlook.com`。来源：[后台提醒](https://dash.cloudflare.com/b6e7aa700efbc27266aa5c45ecc55835/notifications/edit/265f26bb28464d8eaf7fa33e896635b1)、[Workers 定价](https://developers.cloudflare.com/workers/platform/pricing/#workers)。
+  - [x] Cloudflare Workers CPU 时间提醒：已创建并启用 `Workers CPU - 80% included usage`。阈值为每账单月 **24,000,000 CPU 毫秒**（包含额度 30,000,000 CPU 毫秒的 80%），收件人为 `linsama1030@outlook.com`。两条提醒均统计整个账户的 Workers Standard 用量，后台触发条件为超过阈值。来源：[后台提醒](https://dash.cloudflare.com/b6e7aa700efbc27266aa5c45ecc55835/notifications/edit/ec288b7d49c04c7e83ae177a4933ac37)、[Workers 定价](https://developers.cloudflare.com/workers/platform/pricing/#workers)。
+  - [!] Cloudflare Email Sending 用量提醒：目标为每账单月 **2,400 封**（包含额度 3,000 封的 80%）。后台 Usage based billing 产品列表未提供 Email Sending；邮件页面的 Add Budget Alert 只接受美元金额，无法按邮件数量设置此阈值，因此未创建替代金额提醒。来源：[提醒创建页](https://dash.cloudflare.com/b6e7aa700efbc27266aa5c45ecc55835/notifications/create/billing_usage_alert)、[Email Sending 后台](https://dash.cloudflare.com/b6e7aa700efbc27266aa5c45ecc55835/email-service/sending)、[邮件服务定价](https://developers.cloudflare.com/email-service/platform/pricing/)。
+  - [x] Cloudflare Workers Logs / Observability：Workers Paid 的日志保留期为 **7 天**。来源：[Workers Logs 定价与保留期](https://developers.cloudflare.com/workers/observability/logs/workers-logs/#pricing)。
+  - [x] Cloudflare Email Sending / Email Routing：发送和路由事件日志均保留 **31 天**；Activity log 使用同一批事件数据，后台预设时间范围最长为 30 天。来源：[事件数据集与保留期](https://developers.cloudflare.com/email-service/observability/metrics-analytics/)、[Activity log](https://developers.cloudflare.com/email-service/observability/logs/)。
+  - [x] Cloudflare 发送邮件正文预览：`linsama.com` 的 Email preview 已开启，正文预览保留 **约 7 天**，与事件日志的 31 天分开记录。来源：[后台设置](https://dash.cloudflare.com/b6e7aa700efbc27266aa5c45ecc55835/email-service/sending/8bf73c0ca16e72b2c5755a0349a7593f/bf3456d09eac4b3e9d19ea093d414f91/settings)、[Message preview](https://developers.cloudflare.com/email-service/observability/logs/#message-preview)。
+  - [x] Neon 当前套餐：组织 `LinsamaBuilds` 使用 **Free Plan**，每个项目包含 **100 CU-hours/月、1 GB 存储**。项目 `linsama-account`（`long-pine-14026346`）承载 `account_coding101`、`coding101` 两个数据库，额度按项目共享。来源：[Billing 后台](https://console.neon.tech/app/org-damp-sky-06976634/billing)、[项目概览](https://console.neon.tech/app/projects/long-pine-14026346/branches/br-aged-resonance-a19rahpt)、[套餐额度](https://neon.com/docs/introduction/plans)。
+  - [!] Neon 计算与存储提醒：80% 目标阈值分别为 **80 CU-hours/月、0.8 GB 存储**。已检查 Billing、项目概览和设置，未找到按计算时长或存储量自定义提醒的入口，因此未设置。官方 Spending notifications 仅支持 Launch / Scale 套餐，按组织的美元消费阈值提醒，不能替代这两项免费额度提醒。来源：[Billing 后台](https://console.neon.tech/app/org-damp-sky-06976634/billing)、[消费通知](https://neon.com/docs/introduction/spending-notifications)。
+  - [x] Neon PITR / history retention：`production` 分支当前实际窗口为 **6 小时**；Backup & Restore 显示 `6 hour history window`，Settings → Postgres 的 History window 也设为 6h。Free 的历史记录另受 **1 GB** 上限约束。来源：[恢复后台](https://console.neon.tech/app/projects/long-pine-14026346/branches/br-aged-resonance-a19rahpt/restore)、[项目设置](https://console.neon.tech/app/projects/long-pine-14026346/settings/postgres)、[History window](https://neon.com/docs/postgres/backup-restore/history-window)。
+  - [x] Neon 其他备份现状：`production` 的 Backup & Restore 显示 **No snapshots, no schedule set**，当前没有额外快照或定时快照计划。Free 支持 1 个手动快照，但当前未创建；手动快照未指定到期时间时不会自动过期。这里只记录 Neon 后台可见的备份状态，不据此判断是否存在外部导出。来源：[备份后台](https://console.neon.tech/app/projects/long-pine-14026346/branches/br-aged-resonance-a19rahpt/restore)、[快照额度](https://neon.com/docs/introduction/plans#snapshots)、[快照保留规则](https://neon.com/docs/guides/backup-restore#snapshot-retention)。
+  - [!] Neon 自动备份计划：后台显示 **Upgrade for schedules**，需付费套餐才能启用；本次未升级或创建计划。来源：[备份后台](https://console.neon.tech/app/projects/long-pine-14026346/branches/br-aged-resonance-a19rahpt/restore)、[Backup & restore](https://neon.com/docs/guides/backup-restore)。
 - [x] 你：GitHub Actions 因账单问题停跑（付款失败或花费上限），到 Billing & plans 处理（2026-10-19 起 PR 检查与 Pages 部署恢复正常）
 - [x] Claude：`limits.cpu_ms` 站点 200、账户 500 → 包含在 coding101 #8、linsama-account #6
 - [x] 下线 `c101-beta.linsama.com`：去掉站点 Worker 的自定义域名与账户服务的 `AUTH_TRUSTED_ORIGINS`
