@@ -130,6 +130,21 @@ Boolean enabled = null;
 
 `Integer.valueOf` 也保证缓存 -128 到 127 的对象，实现还可以扩展缓存范围。因此，范围外的值是否共享引用，取决于具体实现与配置。比较包装值时使用 `equals`，排序时使用 `compare`，或先处理空值再拆箱比较。
 
+其他包装类也要区分 API 保证的缓存与具体实现。下表针对接收基本类型参数的 `valueOf` 方法：
+
+| 包装类 | Java 21 API 的缓存保证 | OpenJDK 17、21 的实现 |
+| --- | --- | --- |
+| `Byte` | 缓存全部 `byte` 值，即 -128 到 127 | 缓存全部取值 |
+| `Short`、`Long` | 至少缓存 -128 到 127，允许缓存更多值 | 缓存 -128 到 127 |
+| `Integer` | 至少缓存 -128 到 127，允许缓存更多值 | 默认缓存 -128 到 127，上限可配置 |
+| `Character` | 至少缓存 0 到 127，允许缓存更多值 | 缓存 0 到 127 |
+| `Boolean` | 根据参数返回 `TRUE` 或 `FALSE` | 复用这两个常量 |
+| `Float`、`Double` | 没有规定必须缓存的范围，也没有保证每次创建新对象 | 不缓存，每次调用创建新对象 |
+
+例如，在 OpenJDK 17、21 中，`Double.valueOf(1.0) == Double.valueOf(1.0)` 返回 `false`。两次调用返回不同对象，因此引用比较不相等；这不影响它们表示相同数值。
+
+在 OpenJDK 17、21 的 HotSpot 中，`-XX:AutoBoxCacheMax=1000` 可以把 `Integer` 缓存上限扩展到 1000，下限仍为 -128。这个参数只调整 `Integer`，不会扩大 `Short`、`Long` 或 `Character` 的缓存。它属于实现配置，业务代码不应依赖调整后的引用相等结果。
+
 ### 4.1 `==` 比较 {#-比较}
 
 判断 `==` 的含义，需要先看两侧表达式在编译时的类型，也就是静态类型。两侧都是包装类型引用时，比较的是它们是否指向同一个对象：
@@ -298,9 +313,18 @@ System.out.println(Integer.valueOf(1).equals(Long.valueOf(1))); // false
 
 ## 9. 参考资料 {#参考资料}
 
-- [Java Language Specification：Boxing Conversion](https://docs.oracle.com/en/java/javase/21/docs/specs/jls/jls-5.html#jls-5.1.7)
-- [Java Language Specification：Unboxing Conversion](https://docs.oracle.com/en/java/javase/21/docs/specs/jls/jls-5.html#jls-5.1.8)
+- [Java Language Specification：Boxing Conversion](https://docs.oracle.com/javase/specs/jls/se21/html/jls-5.html#jls-5.1.7)
+- [Java Language Specification：Unboxing Conversion](https://docs.oracle.com/javase/specs/jls/se21/html/jls-5.html#jls-5.1.8)
 - [Java API：Integer](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/Integer.html)
-- [Java API：Boolean](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/Boolean.html)
-- [JLS：Conditional Operator](https://docs.oracle.com/en/java/javase/21/docs/specs/jls/jls-15.html#jls-15.25)
-- [JLS：Method Invocation](https://docs.oracle.com/en/java/javase/21/docs/specs/jls/jls-15.html#jls-15.12.2)
+- [Java API：Byte.valueOf](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/Byte.html#valueOf(byte))
+- [Java API：Short.valueOf](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/Short.html#valueOf(short))
+- [Java API：Long.valueOf](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/Long.html#valueOf(long))
+- [Java API：Character.valueOf](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/Character.html#valueOf(char))
+- [Java API：Boolean.valueOf](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/Boolean.html#valueOf(boolean))
+- [Java API：Float.valueOf](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/Float.html#valueOf(float))
+- [Java API：Double.valueOf](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/Double.html#valueOf(double))
+- [OpenJDK 21：Integer 缓存与 AutoBoxCacheMax](https://github.com/openjdk/jdk21u/blob/master/src/java.base/share/classes/java/lang/Integer.java)
+- [OpenJDK 21：Float.valueOf 实现](https://github.com/openjdk/jdk21u/blob/master/src/java.base/share/classes/java/lang/Float.java)
+- [OpenJDK 21：Double.valueOf 实现](https://github.com/openjdk/jdk21u/blob/master/src/java.base/share/classes/java/lang/Double.java)
+- [JLS：Conditional Operator](https://docs.oracle.com/javase/specs/jls/se21/html/jls-15.html#jls-15.25)
+- [JLS：Method Invocation](https://docs.oracle.com/javase/specs/jls/se21/html/jls-15.html#jls-15.12.2)

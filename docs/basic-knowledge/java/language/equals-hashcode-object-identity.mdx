@@ -57,10 +57,10 @@ record 会根据所有组件生成 `equals` 和 `hashCode`。组件就是声明�
 - **自反**：`x.equals(x)` 为 true。
 - **对称**：`x.equals(y)` 与 `y.equals(x)` 结果相同。
 - **传递**：x 等于 y、y 等于 z 时，x 也等于 z。
-- **一致**：身份字段未变化时，多次调用结果相同。
+- **一致**：参与相等判断的字段未变化时，多次调用结果相同。
 - **非空**：`x.equals(null)` 为 false。
 
-这里的身份字段指参与逻辑相等判断的字段。父类只比较自身字段、子类又加入额外字段时，双方会采用不同规则，从而破坏对称性或传递性。
+父类只比较自身字段、子类又加入额外字段时，双方会采用不同规则，从而破坏对称性或传递性。
 
 值对象可以用以下**三种方式**控制这种差异：
 
@@ -97,7 +97,7 @@ System.out.println(first.hashCode() == second.hashCode()); // true
 
 适合作为键的对象应满足以下**稳定性要求**：
 
-- 构造后不再修改身份字段。
+- 构造后不再修改参与相等判断的字段。
 - `equals` 和 `hashCode` 使用相同字段。
 - 字段本身也具有稳定的相等性。
 
@@ -182,7 +182,7 @@ System.out.println(Arrays.equals(first, second)); // true
 
 **可变对象可以作为键，前提是参与 `equals` 和 `hashCode` 的字段在作为键期间保持稳定。**
 
-写入时，集合按当时的哈希值保存条目。修改字段后，如果查询算出不同的哈希值，就可能找不到仍留在原位置的条目。因此，适合作为键的是构造后身份固定的值对象，并让相等与哈希使用同一组字段。
+写入时，集合按当时的哈希值保存条目。修改字段后，如果查询算出不同的哈希值，就可能找不到仍留在原位置的条目。因此，可以选择值对象作为键，让参与相等判断的字段在构造后保持不变。相等与哈希还应使用同一组字段。
 
 </details>
 
@@ -208,6 +208,6 @@ System.out.println(Arrays.equals(first, second)); // true
 
 - [Java API：Object](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/Object.html)
 - [Java API：Objects](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/Objects.html)
-- [Java Language Specification：Reference Equality Operators](https://docs.oracle.com/en/java/javase/21/docs/specs/jls/jls-15.html#jls-15.21.3)
+- [Java Language Specification：Reference Equality Operators](https://docs.oracle.com/javase/specs/jls/se21/html/jls-15.html#jls-15.21.3)
 - [Java API：System.identityHashCode](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/System.html#identityHashCode(java.lang.Object))
 - [Java API：Arrays](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/Arrays.html)
