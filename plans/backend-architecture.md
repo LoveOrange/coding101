@@ -78,7 +78,7 @@ coding101.linsama.com ── Worker coding101（coding101 仓库 worker/）
 - **产品后台**：只做产品自己的数据；谁在请求、有没有权益，通过 Service Binding 问账户服务（`/api/product/me`，清理任务用 `/api/product/internal/access`）。
 - **登录**：邮箱验证码（Resend），不用密码：Workers 免费版每次请求只有 10 ms CPU，密码哈希放不下。
 - **防刷**：Cloudflare WAF 规则 `api-per-ip`，同一 IP 10 秒内超过 60 次 `/api/*` 请求返回 429（webhook 除外）。Workers 付费版没有硬性消费上限，升级后再设预算提醒和单次 CPU 上限。
-- **在线支付开关**：Lemon Squeezy 店铺激活前，账户服务 `PRODUCT_CHECKOUT=closed`、站点构建不设 `CHECKOUT_OPEN`，定价页显示「即将开通」。
+- **在线支付开关**：Lemon Squeezy 店铺激活前，账户服务 `PRODUCT_CHECKOUT=closed`、站点构建不设 `CHECKOUT_OPEN`：定价页与升级弹窗不显示购买入口和开业优惠，付费档引导到免费试用（未登录）或兑换激活码。
 - GitHub Pages 镜像 `linsama.me/coding101/` 只提供免费阅读（`serverApi: false`）。
 - 大陆用户无法使用 Google、GitHub 登录；需要实测 QQ、163 邮箱的验证码送达率。
 - 海外投放广告（如 AdSense）需要面向欧盟用户的同意提示；付费用户不加载广告脚本。
