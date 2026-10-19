@@ -88,6 +88,8 @@ System.out.println(runtime.equals(literal)); // true
 - `prefix` 是非恒定变量，`runtime` 在运行时得到拼接结果，因此与 `literal` 指向不同对象。
 - 两种拼接的文本内容相同，所以内容比较都应使用 `equals`，而非依赖对象是否驻留。
 
+如果把上例的 `prefix` 声明改为 `final String prefix = "Coding"`，它就是由常量表达式初始化的常量变量。此时 `prefix + " 101"` 也会在编译期折叠，所以 `runtime == literal` 返回 `true`。仅加 `final` 还不够：如果初始化值来自方法调用，`prefix` 就不是常量变量。
+
 ### 3.2 `intern()` {#intern}
 
 运行时创建的字符串也可以通过 `intern()` 取得规范引用。池中已有相同内容时，它返回已有对象；否则将当前字符串加入池，并返回当前对象：
@@ -138,7 +140,7 @@ String message = "order " + orderId + " created";
 
 Java 规范允许编译器选择具体拼接实现，所以单个 `+` 表达式可以得到整体优化。编译结果并非固定使用 `StringBuilder`，使用者应依赖拼接后的文本结果。
 
-具体的编译机制见[字符串存储与字符计数](#字符串存储与字符计数)。
+Java 17、21 的 `javac` 在默认编译目标下，使用 `invokedynamic` 支持运行时字符串拼接。它让 JVM 在运行时连接具体的拼接实现，所以单个 `+` 表达式的实现取决于编译目标版本。循环拼接仍要关注反复生成中间字符串的成本。
 
 循环中的 `result = result + item` 会反复复制前面已经累积的文本。因此，逐步构建较长文本时，可以显式复用一个 `StringBuilder`：
 
@@ -174,8 +176,6 @@ System.out.println(face.codePointCount(0, face.length())); // 1
 这个表情由一对代理项表示，也就是两个配合表示一个码点的 UTF-16 代码单元。因此，`length()` 返回 2，`codePointCount()` 返回 1。需要遍历码点时，可以使用 `codePoints()`，避免把代理项拆开。
 
 多个码点还可以组合成一个用户看到的字符，这样的文本单位称为字素簇。因此，截断文本前要明确计数单位：按代码单元、按码点，还是按字素簇处理。
-
-Java 17、21 的 `javac` 在默认编译目标下，使用 `invokedynamic` 支持运行时字符串拼接。它让 JVM 在运行时连接具体的拼接实现，所以单个 `+` 表达式的实现取决于编译目标版本。循环拼接仍要关注反复生成中间字符串的成本。
 
 ## 7. 常见问题 {#常见问题}
 
@@ -274,6 +274,8 @@ final String name = "Java";
 - [Java API：String](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/String.html)
 - [Java API：StringBuilder](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/StringBuilder.html)
 - [Java API：StringBuffer](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/StringBuffer.html)
+- [Java Language Specification：final Variables](https://docs.oracle.com/javase/specs/jls/se21/html/jls-4.html#jls-4.12.4)
+- [Java Language Specification：Constant Expressions](https://docs.oracle.com/javase/specs/jls/se21/html/jls-15.html#jls-15.29)
 - [Java Language Specification：String Literals](https://docs.oracle.com/javase/specs/jls/se21/html/jls-3.html#jls-3.10.5)
 - [Java Language Specification：String Concatenation Operator](https://docs.oracle.com/javase/specs/jls/se21/html/jls-15.html#jls-15.18.1)
 - [OpenJDK 21：String 存储实现](https://github.com/openjdk/jdk/blob/jdk-21-ga/src/java.base/share/classes/java/lang/String.java)
