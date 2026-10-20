@@ -55,7 +55,10 @@ export function AccountLayout({active, children}: {active: Section; children: Re
           退出登录
         </button>
       </aside>
-      <div className={styles.content}>{children}</div>
+      <div className={styles.content}>
+        {children}
+        <p>付款与账户问题：<a href="mailto:support@linsama.com">support@linsama.com</a></p>
+      </div>
     </main>
   );
 }

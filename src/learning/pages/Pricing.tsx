@@ -149,11 +149,11 @@ function PricingPage() {
         <span className={styles.dialogText}>
           {failed
             ? '暂时没能打开支付页，请稍后再试。'
-            : '将前往 Creem 完成支付。支付成功后自动开通，可以在「订阅与账单」里查看记录或关闭续费。'}
+            : '将前往 Creem 完成支付，Creem 作为收款主体处理付款并开具收据或发票。支付成功后自动开通，可以在「订阅与账单」里查看记录或关闭续费。'}
         </span>
         <span className={styles.dialogText}>
           {pending?.plan === 'sprint' ? '一次付清，90 天 Pro，不自动续费。' : '自动续费，可在「订阅与账单」关闭，下个周期不再扣款。'}
-          <Link to="/terms#订阅续费与取消">订阅与取消规则</Link> · <Link to="/terms#退款">退款规则</Link>
+          <Link to="/terms#订阅续费与取消">订阅与取消规则</Link> · <Link to="/terms#退款">退款规则</Link> · <a href="https://www.creem.io/buyer-terms" target="_blank" rel="noreferrer">Creem 购买条款</a>
         </span>
         {launch && pending?.plan !== 'sprint' && <span className={styles.dialogText}>本次订阅享首发 5 折，持续订阅期间按首发价续费；取消后重新订阅按当时价格。</span>}
         <div className={styles.dialogActions}>
