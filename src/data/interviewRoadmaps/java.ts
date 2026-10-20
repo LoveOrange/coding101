@@ -11,7 +11,6 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
     text: '查看岗位要求与核心阅读边界，按自己的时间选择内容。日程和复习笔记由你自行安排。',
     links: [
       {label: '两周与一个月的阅读范围', href: '/docs/interview/java-campus-review', primary: true},
-      {label: '2027 校招岗位与投递', href: '/docs/interview/campus-2027/'},
       {label: '简历准备', href: '/docs/interview/resume'},
       {label: '代表题与练习', href: '/docs/interview/questions'},
     ],

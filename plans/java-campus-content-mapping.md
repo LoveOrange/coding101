@@ -28,12 +28,11 @@ M1 的原子考点评审见[知识点清单](./knowledge-tree/m1-knowledge-point
 
 ## 2. 页面与维护
 
-岗位页由 `scripts/generate-campus-jobs.mjs` 生成，面经页由 `scripts/generate-interview-research.mjs` 生成。修改来源或归纳数据后重新生成，构建中的一致性检查会阻止旧页面发布。
+岗位与投递栏目已于 2026-10-20 撤下，岗位生成脚本及构建检查同步移除。历史 JD 仅作为内部内容取舍的证据存档，不再维护开放状态或发布招聘列表。面经页由 `scripts/generate-interview-research.mjs` 生成。修改来源或归纳数据后重新生成，构建中的一致性检查会阻止旧页面发布。
 
 生成页的 `description` 和 `keywords` 也由对应脚本维护。修改这些文案时同步更新模板，再重新生成页面，避免下次生成覆盖已修改的文案：
 
 ```sh
-node scripts/generate-campus-jobs.mjs
 node scripts/generate-interview-research.mjs
 npm run build
 ```
@@ -46,4 +45,4 @@ npm run build
 
 优先补充近 18 个月的候选人原帖，核实未知年份，替换仅检索返回正文的两条历史记录。持续复核旧文章的公司归属和版本敏感技术结论；未找到可靠公司证据时标为本站自测，不删除仍有教学价值的问题。
 
-外部 JD 开放状态、来源可访问性及全部示例的运行情况需要持续维护。当前资源数量、构建和链接检查不能替代逐篇事实审校。
+面经来源可访问性及全部示例的运行情况需要持续维护。当前资源数量、构建和链接检查不能替代逐篇事实审校。

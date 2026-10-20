@@ -27,7 +27,7 @@ Coding 101 是一个面向技术岗位求职者的就业准备网站。它帮助
 
 ## 如何使用
 
-1. 校招读者先看 [2027 校招岗位与投递](./interview/campus-2027/index.mdx)，或从[岗位面试路线](/interview-roadmaps/)选择 Java 后端、AI Agent 开发或运维 / SRE 方向。
+1. 从[岗位面试路线](/interview-roadmaps/)选择 Java 后端、AI Agent 开发或运维 / SRE 方向；应届求职者也可以先看 [Java 校招复习范围](./interview/java-campus-review.mdx)。
 2. 第一轮只完成“必会”和每个主题的“核心阅读”。
 3. 能脱离文章回答自测问题后，再进入“常考”。
 4. “按岗选学”和深入阅读只根据 JD、简历项目与面试反馈补充。

@@ -6,7 +6,7 @@ Coding 101 当前以 Java 后端与共享技术基础为主要准备范围。本
 
 | 求职任务 | 当前内容入口 | 本轮安排与边界 |
 | --- | --- | --- |
-| 确定目标岗位 | [岗位资料](../docs/interview/campus-2027/index.mdx)、[路线目录](../src/data/interviewRoadmaps/outlineCatalog.ts) | M1 优先核定 Java 后端校招范围；其余岗位不能仅凭目录入口宣称可用 |
+| 确定目标岗位 | [路线目录](../src/data/interviewRoadmaps/outlineCatalog.ts) | M1 优先核定 Java 后端校招范围；其余岗位不能仅凭目录入口宣称可用 |
 | 按范围学习 | [Java 路线](../src/data/interviewRoadmaps/java.ts)、[通用基础](../docs/basic-knowledge/common/index.mdx) | M1 将知识点、文章章节、停止条件与卡片对应，补首批必会知识的解释和前置 |
 | 现场编码与 SQL | [编码与 SQL 练习](../docs/interview/coding-practice.mdx)、算法主题与现有题解 | 保留动手任务、自检条件和参考实现，不用回答卡片替代实现能力 |
 | 简历与项目表达 | [简历准备](../docs/interview/resume.mdx)、[项目准备](../docs/interview/project-preparation.mdx) | 已有指南继续维护；个人材料分析不属于 M1、M2 必交功能 |

@@ -1,6 +1,6 @@
 # 文章状态
 
-由 `scripts/content-status.mjs` 根据 `plans/content-status.json` 生成，不要手工编辑。共 363 篇公开文章。
+由 `scripts/content-status.mjs` 根据 `plans/content-status.json` 生成，不要手工编辑。共 351 篇公开文章。
 
 图例：✅ 完成 · 🔁 文章已改动，需要重新校验或翻译 · ⚠️ 校验发现问题，待修改 · · 未开始 · — 不适用
 
@@ -8,10 +8,10 @@
 
 | 状态 | Codex 生成 | Claude 校验 | Lin 校验 | English | 日本語 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| ✅ | 363 | 7 | 0 | 0 | 0 |
+| ✅ | 351 | 7 | 0 | 0 | 0 |
 | 🔁 | 0 | 0 | 0 | 0 | 0 |
 | ⚠️ | 0 | 0 | 0 | 0 | 0 |
-| · | 0 | 356 | 363 | 363 | 363 |
+| · | 0 | 344 | 351 | 351 | 351 |
 | — | 0 | 0 | 0 | 0 | 0 |
 
 ## ai
@@ -280,18 +280,6 @@
 
 | 文章 | Codex 生成 | Claude 校验 | Lin 校验 | English | 日本語 |
 | --- | :---: | :---: | :---: | :---: | :---: |
-| [阿里巴巴 2027 校招岗位](../docs/interview/campus-2027/alibaba.mdx) | ✅ | · | · | · | · |
-| [百度 2027 校招岗位](../docs/interview/campus-2027/baidu.mdx) | ✅ | · | · | · | · |
-| [哔哩哔哩 2027 校招岗位](../docs/interview/campus-2027/bilibili.mdx) | ✅ | · | · | · | · |
-| [字节跳动 2027 校招岗位](../docs/interview/campus-2027/bytedance.mdx) | ✅ | · | · | · | · |
-| [滴滴 2027 校招岗位](../docs/interview/campus-2027/didi.mdx) | ✅ | · | · | · | · |
-| [2027 校招岗位与投递](../docs/interview/campus-2027/index.mdx) | ✅ | · | · | · | · |
-| [京东 2027 校招岗位](../docs/interview/campus-2027/jd.mdx) | ✅ | · | · | · | · |
-| [快手 2027 校招岗位](../docs/interview/campus-2027/kuaishou.mdx) | ✅ | · | · | · | · |
-| [美团 2027 校招岗位](../docs/interview/campus-2027/meituan.mdx) | ✅ | · | · | · | · |
-| [腾讯 2027 校招岗位](../docs/interview/campus-2027/tencent.mdx) | ✅ | · | · | · | · |
-| [携程 2027 校招岗位](../docs/interview/campus-2027/trip.mdx) | ✅ | · | · | · | · |
-| [小红书 2027 校招岗位](../docs/interview/campus-2027/xiaohongshu.mdx) | ✅ | · | · | · | · |
 | [编码与 SQL 练习](../docs/interview/coding-practice.mdx) | ✅ | · | · | · | · |
 | [研发类面试复习指南](../docs/interview/develop-roadmap.mdx) | ✅ | · | · | · | · |
 | [面试准备](../docs/interview/index.mdx) | ✅ | · | · | · | · |
