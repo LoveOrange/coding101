@@ -139,7 +139,6 @@ const config: Config = {
           position: "left",
           items: [
             { to: "/interview-roadmaps/", label: "岗位路线" },
-            { to: "/docs/tags/campus-2027", label: "2027 校招季" },
             { to: "/docs/tags/interview-preparation", label: "面试准备" },
             { to: "/docs/tools-and-frameworks/git/", label: "工具与框架" },
             { to: "/docs/chatgpt-guide/", label: "ChatGPT 简明指南" },
@@ -167,7 +166,6 @@ const config: Config = {
         {
           title: "资料",
           items: [
-            { label: "2027 校招季", to: "/docs/tags/campus-2027" },
             { label: "面试准备", to: "/docs/tags/interview-preparation" },
             { label: "工具与框架", to: "/docs/tools-and-frameworks/git/" },
             { label: "文章目录", to: "/articles/" },
