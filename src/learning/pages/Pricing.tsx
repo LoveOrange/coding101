@@ -131,15 +131,17 @@ function PricingPage() {
         ))}
       </div>
 
+      <div className={styles.redeem}>
+        <span>已有激活码？兑换后立即开通 Pro。</span>
+        <Link className={styles.redeemLink} to="/account/redeem">兑换激活码</Link>
+      </div>
+
       <div className={styles.foot}>
         {!checkoutOpen && <span>在线支付即将开通。现在可以免费试用 7 天，或用激活码开通 Pro。</span>}
         <span>价格以美元（USD）计，税费和应付总额在支付页显示。</span>
         <span>月付和年付自动续费，可随时在「账户 → 订阅与账单」关闭；冲刺计划一次付清，不续费。</span>
         <span>首次购买 7 天内可全额退款，每个账号一次；续费扣款后 7 天内可退当期费用。<Link to="/terms#退款">退款规则</Link></span>
         <span>账单问题：<a href="mailto:support@linsama.com">support@linsama.com</a> · Pro 到期后学习记录保留 90 天</span>
-        <span>
-          已有激活码？<Link to="/account/redeem">去兑换</Link>
-        </span>
       </div>
 
       <Dialog open={Boolean(pending)} onClose={() => setPending(undefined)} width={480} labelledBy="checkout-title">
