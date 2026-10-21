@@ -29,7 +29,7 @@ function BillingPage() {
   return (
     <AccountLayout active="billing">
       <SubscriptionCard variant="billing" />
-      <p className={styles.muted}>账单、取消续费或退款问题，请联系 <a href="mailto:support@linsama.com">support@linsama.com</a>。<Link to="/terms#退款">查看退款规则</Link></p>
+      <p className={styles.muted}>账单、续费或退款问题，请发邮件到 <a href="mailto:support@linsama.com">support@linsama.com</a>。<Link to="/terms#退款">退款规则</Link></p>
       <section className={styles.records} aria-labelledby="billing-title">
         <div className={styles.recordsHead}>
           <h1 id="billing-title" className={styles.sectionTitle}>
