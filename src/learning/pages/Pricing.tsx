@@ -89,7 +89,7 @@ function PricingPage() {
               <span className={styles.offerBadge}>首发 5 折</span>
               <span>截至北京时间 {LAUNCH_ENDS}</span>
             </div>
-            <p className={styles.lead}>首发期内订阅月付或年付，之后续费也按首发价；取消后再订阅，按当时价格。</p>
+            <p className={styles.lead}>首发期内订阅月付或年付，之后续费也按首发价；取消后再订阅，按重新订阅时的价格。</p>
           </>
         )}
       </div>
@@ -155,7 +155,7 @@ function PricingPage() {
           {pending?.plan === 'sprint' ? '一次付清，90 天 Pro，到期不续费。' : '到期自动续费，可随时在「订阅与账单」关闭。'}
           <Link to="/terms#订阅续费与取消">订阅与取消规则</Link> · <Link to="/terms#退款">退款规则</Link> · <a href="https://www.creem.io/buyer-terms" target="_blank" rel="noreferrer">Creem 购买条款</a>
         </span>
-        {launch && pending?.plan !== 'sprint' && <span className={styles.dialogText}>本次订阅享首发 5 折，之后续费也按首发价；取消后再订阅，按当时价格。</span>}
+        {launch && pending?.plan !== 'sprint' && <span className={styles.dialogText}>本次订阅享首发 5 折，之后续费也按首发价；取消后再订阅，按重新订阅时的价格。</span>}
         <div className={styles.dialogActions}>
           <button type="button" className={styles.dialogPrimary} disabled={busy} onClick={() => void confirm()}>
             {busy ? '正在打开…' : `前往支付 ${pending?.plan ? priceOf(pending.plan) : ''}`}
