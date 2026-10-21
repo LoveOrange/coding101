@@ -87,9 +87,9 @@ function PricingPage() {
           <>
             <div className={styles.offer}>
               <span className={styles.offerBadge}>首发 5 折</span>
-              <span>{LAUNCH_ENDS}（北京时间）前购买有效</span>
+              <span>截至北京时间 {LAUNCH_ENDS}</span>
             </div>
-            <p className={styles.lead}>首发期内订阅，持续订阅期间按首发价续费。取消后重新订阅按当时价格。</p>
+            <p className={styles.lead}>首发期内订阅月付或年付，之后续费也按首发价；取消后再订阅，按当时价格。</p>
           </>
         )}
       </div>
@@ -132,11 +132,11 @@ function PricingPage() {
       </div>
 
       <div className={styles.foot}>
-        {!checkoutOpen && <span>在线支付即将开通，现在可以先免费试用 7 天，或用激活码开通 Pro</span>}
-        <span>以上价格以美元（USD）计价，税费及最终应付金额以支付页确认为准。</span>
-        <span>月付和年付自动续费，可在「账户 → 订阅与账单」关闭；冲刺计划一次付清，不自动续费。</span>
-        <span>在线支付开放后，首次购买 7 天内可申请全额退款，每个账号限一次；续费扣款后 7 天内可申请退还当期费用。<Link to="/terms#退款">查看退款规则</Link></span>
-        <span>账单与退款支持：<a href="mailto:support@linsama.com">support@linsama.com</a> · 到期后学习记录保留 90 天</span>
+        {!checkoutOpen && <span>在线支付即将开通。现在可以免费试用 7 天，或用激活码开通 Pro。</span>}
+        <span>价格以美元（USD）计，税费和应付总额在支付页显示。</span>
+        <span>月付和年付自动续费，可随时在「账户 → 订阅与账单」关闭；冲刺计划一次付清，不续费。</span>
+        <span>首次购买 7 天内可全额退款，每个账号一次；续费扣款后 7 天内可退当期费用。<Link to="/terms#退款">退款规则</Link></span>
+        <span>账单问题：<a href="mailto:support@linsama.com">support@linsama.com</a> · Pro 到期后学习记录保留 90 天</span>
         <span>
           已有激活码？<Link to="/account/redeem">去兑换</Link>
         </span>
@@ -149,13 +149,13 @@ function PricingPage() {
         <span className={styles.dialogText}>
           {failed
             ? '暂时没能打开支付页，请稍后再试。'
-            : '将前往 Creem 完成支付，Creem 作为收款主体处理付款并开具收据或发票。支付成功后自动开通，可以在「订阅与账单」里查看记录或关闭续费。'}
+            : '接下来在 Creem 的页面付款。Creem 是收款方，负责扣款和开具收据。付款成功后，Pro 会自动开通。'}
         </span>
         <span className={styles.dialogText}>
-          {pending?.plan === 'sprint' ? '一次付清，90 天 Pro，不自动续费。' : '自动续费，可在「订阅与账单」关闭，下个周期不再扣款。'}
+          {pending?.plan === 'sprint' ? '一次付清，90 天 Pro，到期不续费。' : '到期自动续费，可随时在「订阅与账单」关闭。'}
           <Link to="/terms#订阅续费与取消">订阅与取消规则</Link> · <Link to="/terms#退款">退款规则</Link> · <a href="https://www.creem.io/buyer-terms" target="_blank" rel="noreferrer">Creem 购买条款</a>
         </span>
-        {launch && pending?.plan !== 'sprint' && <span className={styles.dialogText}>本次订阅享首发 5 折，持续订阅期间按首发价续费；取消后重新订阅按当时价格。</span>}
+        {launch && pending?.plan !== 'sprint' && <span className={styles.dialogText}>本次订阅享首发 5 折，之后续费也按首发价；取消后再订阅，按当时价格。</span>}
         <div className={styles.dialogActions}>
           <button type="button" className={styles.dialogPrimary} disabled={busy} onClick={() => void confirm()}>
             {busy ? '正在打开…' : `前往支付 ${pending?.plan ? priceOf(pending.plan) : ''}`}
