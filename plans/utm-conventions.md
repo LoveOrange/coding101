@@ -70,7 +70,7 @@ https://coding101.linsama.com/topics?utm_source=wechat&utm_medium=social&utm_cam
 
 | 活动 | 来源 | 媒介 | 内容 | 目标页面 | 目标 | 状态 / 发布日期 | 公开内容链接 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `c101_202610_utm_validation_visit` | `qa` | `referral` | `text_topics_probe_v1` | `/topics` | 内部链路验证 | 2026-10-22 已访问；Google 脚本连接失败，待重试 | 未对外推广 |
+| `c101_202610_utm_validation_visit` | `qa` | `referral` | `text_topics_probe_v1` | `/topics` | 内部链路验证 | 2026-10-22 已访问；Google 脚本连接仍失败，按用户要求暂停 GA4 接收验证 | 未对外推广 |
 
 ## 4. Dashboard 与日报口径
 
