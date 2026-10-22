@@ -2,16 +2,17 @@
 
 由 `scripts/content-status.mjs` 根据 `plans/content-status.json` 生成，不要手工编辑。共 351 篇公开文章。
 
-图例：✅ 完成 · 🔁 文章已改动，需要重新校验或翻译 · ⚠️ 校验发现问题，待修改 · · 未开始 · — 不适用
+图例：✅ 完成 · 🔁 文章已改动，需要重新校验或翻译 · ⚠️ 校验发现问题，待修改 · 👀 审阅中 · · 未开始 · — 不适用
 
 ## 汇总
 
 | 状态 | Codex 生成 | Claude 校验 | Lin 校验 | English | 日本語 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| ✅ | 351 | 0 | 0 | 0 | 0 |
-| 🔁 | 0 | 7 | 1 | 0 | 0 |
+| ✅ | 351 | 7 | 0 | 0 | 0 |
+| 🔁 | 0 | 0 | 0 | 0 | 0 |
+| 👀 | 0 | 0 | 7 | 0 | 0 |
 | ⚠️ | 0 | 0 | 0 | 0 | 0 |
-| · | 0 | 344 | 350 | 351 | 351 |
+| · | 0 | 344 | 344 | 351 | 351 |
 | — | 0 | 0 | 0 | 0 | 0 |
 
 ## ai
@@ -177,18 +178,18 @@
 | [线程转储](../docs/basic-knowledge/java/jvm/thread-dumps-deadlocks-contention.mdx) | ✅ | · | · | · | · |
 | [低延迟垃圾收集器](../docs/basic-knowledge/java/jvm/zgc-shenandoah-low-latency.mdx) | ✅ | · | · | · | · |
 | [Java 注解](../docs/basic-knowledge/java/language/annotations-retention-processing.mdx) | ✅ | · | · | · | · |
-| [BigDecimal](../docs/basic-knowledge/java/language/bigdecimal-money.mdx) | ✅ | 🔁 | · | · | · |
-| [面向对象编程（Object-Oriented Programming）](../docs/basic-knowledge/java/language/encapsulation-inheritance-polymorphism.mdx) | ✅ | 🔁 | · | · | · |
-| [对象相等性](../docs/basic-knowledge/java/language/equals-hashcode-object-identity.mdx) | ✅ | 🔁 | · | · | · |
-| [Java 异常](../docs/basic-knowledge/java/language/exceptions-error-boundaries.mdx) | ✅ | 🔁 | · | · | · |
+| [BigDecimal](../docs/basic-knowledge/java/language/bigdecimal-money.mdx) | ✅ | ✅ | 👀 | · | · |
+| [面向对象编程（Object-Oriented Programming）](../docs/basic-knowledge/java/language/encapsulation-inheritance-polymorphism.mdx) | ✅ | ✅ | 👀 | · | · |
+| [对象相等性](../docs/basic-knowledge/java/language/equals-hashcode-object-identity.mdx) | ✅ | ✅ | 👀 | · | · |
+| [Java 异常](../docs/basic-knowledge/java/language/exceptions-error-boundaries.mdx) | ✅ | ✅ | 👀 | · | · |
 | [Java 泛型](../docs/basic-knowledge/java/language/generics.mdx) | ✅ | · | · | · | · |
 | [Java 语言](../docs/basic-knowledge/java/language/index.mdx) | ✅ | · | · | · | · |
 | [Optional](../docs/basic-knowledge/java/language/optional-boundaries.mdx) | ✅ | · | · | · | · |
 | [Java 反射](../docs/basic-knowledge/java/language/reflection-method-handles.mdx) | ✅ | · | · | · | · |
 | [Java 注解处理器](../docs/basic-knowledge/java/language/runtime-scanning-compile-time-generation.mdx) | ✅ | · | · | · | · |
-| [String](../docs/basic-knowledge/java/language/string-immutability-pool.mdx) | ✅ | 🔁 | · | · | · |
-| [Java 值传递](../docs/basic-knowledge/java/language/types-references-value-passing.mdx) | ✅ | 🔁 | 🔁 | · | · |
-| [包装类型](../docs/basic-knowledge/java/language/wrappers-boxing-cache.mdx) | ✅ | 🔁 | · | · | · |
+| [String](../docs/basic-knowledge/java/language/string-immutability-pool.mdx) | ✅ | ✅ | 👀 | · | · |
+| [Java 值传递](../docs/basic-knowledge/java/language/types-references-value-passing.mdx) | ✅ | ✅ | 👀 | · | · |
+| [包装类型](../docs/basic-knowledge/java/language/wrappers-boxing-cache.mdx) | ✅ | ✅ | 👀 | · | · |
 | [Java API 设计](../docs/basic-knowledge/java/quality/api-design-from-invariants.mdx) | ✅ | · | · | · | · |
 | [不可变对象](../docs/basic-knowledge/java/quality/immutable-objects-defensive-copying.mdx) | ✅ | · | · | · | · |
 | [Java API 与测试](../docs/basic-knowledge/java/quality/index.mdx) | ✅ | · | · | · | · |
