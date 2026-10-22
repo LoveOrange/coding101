@@ -42,4 +42,6 @@ npm run build
 
 `static/privacy/index.html` 是独立的隐私说明页，不加载统计、广告或同意消息脚本。Google 同意消息的隐私链接应设为 `https://coding101.linsama.com/privacy/`。Analytics 在欧洲经济区、英国和瑞士默认拒绝存储；只有配置 Google CMP 的 Consent Mode 后才会更新同意状态。不将搜索参数和片段标识作为页面地址发送。
 
-部署到 Cloudflare：在仓库根目录运行 `npm run build` 与 `npm run check:discovery`，再到 `worker/` 运行 `npm run deploy`。GitHub Pages 镜像不启用广告。
+部署到 Cloudflare：在仓库根目录运行 `npm run build:production` 与 `npm run check:discovery`，再到 `worker/` 运行 `npm run deploy`。正式构建启用账号功能和购买入口，广告仍由 `ADSENSE_ENABLED` 单独控制。GitHub Pages 镜像使用普通构建，不启用账号功能、购买入口或广告。
+
+购买入口还需要账户服务的 `PRODUCT_CHECKOUT=open`。暂停新订单时，先将账户服务的该变量改为 `closed` 并部署；付款回调继续接收，已购买用户的权益保持有效。若需要同时隐藏前端购买按钮，使用 `LEARNER_FEATURES=true CHECKOUT_OPEN=false npm run build` 构建后部署站点。
