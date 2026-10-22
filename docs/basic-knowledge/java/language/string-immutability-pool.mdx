@@ -7,6 +7,8 @@ description: "介绍 String 的不可变性与常量池复用，讲解常量折�
 keywords: ["String 常量池", "字符串不可变", "StringBuilder", "字符串拼接", "字符计数"]
 ---
 
+import StringPool from '@site/src/components/Diagram/StringPool';
+
 # String
 
 `String` 表示不可变的字符序列：对象创建后，其中的文本内容就不能修改。这让字符串可以安全共享，也决定了拼接时需要怎样处理新内容。本文说明不可变性、常量池和拼接方式，并区分字符串的内部存储与字符计数。
@@ -64,6 +66,8 @@ System.out.println(first.equals(created)); // true
 ```
 
 `first` 和 `second` 都来自字面量 `"Java"`，所以指向同一个对象，`first == second` 返回 `true`。`new String("Java")` 明确创建了新对象，因此 `first == created` 返回 `false`。
+
+<StringPool />
 
 三个字符串的内容相同，所以两次 `equals` 都返回 `true`。业务需要判断文本内容是否相同时，应使用 `equals`。
 

@@ -7,6 +7,8 @@ description: "讲解 Java 对象相等性中的引用身份与逻辑相等，说
 keywords: ["equals 契约", "hashCode 契约", "Java 对象比较", "可变哈希键"]
 ---
 
+import MutableHashKey from '@site/src/components/Diagram/MutableHashKey';
+
 # 对象相等性
 
 判断对象是否相等，需要区分两件事：两个引用是否指向同一个对象，以及两个对象是否在业务上表示相同的值。本文说明 `==`、`equals` 和 `hashCode` 的关系，再结合可变哈希键、数组和身份哈希，解释这些规则怎样影响比较与查找。
@@ -94,6 +96,8 @@ System.out.println(first.hashCode() == second.hashCode()); // true
 ## 5. 可变哈希键 {#可变对象作为哈希键}
 
 哈希集合保存条目时，用的是写入时的哈希值；后续查询时，会重新计算查询键的哈希值。如果修改字段让哈希值变了，查询就会按新的哈希值定位，而旧条目还留在原来的位置。因此，即使用原对象去查，也可能找不到它。
+
+<MutableHashKey />
 
 要让键保持稳定，需要注意三个条件：
 

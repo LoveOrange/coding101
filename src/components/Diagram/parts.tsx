@@ -28,8 +28,10 @@ export function Panel({height, label, children}: {height: number; label: string;
   );
 }
 
-export function Box({x, y, w, h, kind}: {x: number; y: number; w: number; h: number; kind: 'var' | 'obj'}): JSX.Element {
-  return <rect x={x} y={y} width={w} height={h} rx={8} className={kind === 'var' ? styles.varBox : styles.objBox} />;
+const BOX_CLASS = {var: styles.varBox, obj: styles.objBox, empty: styles.emptyBox};
+
+export function Box({x, y, w, h, kind}: {x: number; y: number; w: number; h: number; kind: keyof typeof BOX_CLASS}): JSX.Element {
+  return <rect x={x} y={y} width={w} height={h} rx={8} className={BOX_CLASS[kind]} />;
 }
 
 export function Arrow({d, marker, old}: {d: string; marker: string; old?: boolean}): JSX.Element {

@@ -7,6 +7,8 @@ description: "介绍 Java 异常的分类、抛出、声明和捕获规则，说
 keywords: ["checked exception", "try-with-resources", "finally", "suppressed exception", "Java 异常面试"]
 ---
 
+import TryWithResources from '@site/src/components/Diagram/TryWithResources';
+
 # Java 异常
 
 Java 异常表示方法执行失败，并把失败原因沿调用链传给调用方。处理异常时，需要知道哪些失败必须捕获或声明、当前层能采取什么行动，以及资源关闭时会发生什么。本文围绕这些问题，说明异常传播、`finally` 和多个异常同时出现时的执行结果。
@@ -130,6 +132,8 @@ try (
 1. 多个资源按声明的逆序关闭，这里先关闭 `output`，再关闭 `input`。
 2. 初始化中途失败时，已经成功创建的资源仍会关闭。
 3. 主体与 `close()` 同时失败时，保留主体异常。关闭异常通过 `getSuppressed()` 读取。
+
+<TryWithResources />
 
 这些附加的关闭异常称为**抑制异常**，保存在主体异常的 `suppressed` 列表中。向外传播的是主体异常，但关闭失败的信息也被保留下来，可以一起用于诊断：
 
