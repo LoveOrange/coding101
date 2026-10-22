@@ -16,6 +16,14 @@ Coding 101 是一个面向技术岗位求职者的免费就业准备网站。项
 - [用户故事地图](./plans/java-campus-user-story-map.md)：按主题学习与从问题出发复习。
 - [当前实现与目标对照](./plans/java-campus-gap-analysis.md)：已有能力与待建设内容。
 
+## 内容使用
+
+文章、题目和参考答案免费阅读。欢迎分享原文链接，也可以保存副本用于个人学习。
+
+本仓库公开可见，但未采用开源许可证或 Creative Commons 许可证。原创内容保留权利；全文转载、题库汇编分发、整站镜像或商业使用，请先联系相关权利人取得授权。第三方内容按其原有声明和许可证使用，法律允许的引用等权利及 GitHub 条款赋予的查看、Fork 权利不受影响。
+
+完整说明见 [LICENSE](./LICENSE) 和[服务条款](https://coding101.linsama.com/terms#内容与反馈)，授权联系：support@linsama.com。
+
 ## 本地开发
 
 ```bash

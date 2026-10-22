@@ -83,6 +83,8 @@ export default function contentDiscoveryPlugin(context: LoadContext): Plugin {
         '',
         '技术文章包含定义、执行机制、适用条件、版本边界、示例和参考资料。面试题是学习自测；公司名称仅表示题目曾见于公开复盘，不代表公司的固定题库。招聘资料和历史使用笔记以各页注明的范围为准。',
         '',
+        `内容免费阅读；引用请保留作者、标题和原文链接。内容使用说明：${absolute(sitePath('/terms'))}#内容与反馈。索引提供发现入口，不授予全文转载、镜像或商业使用许可。`,
+        '',
         '## 阅读入口',
         '',
         `- [站点首页](${root}): Coding 101 的内容与使用入口。`,
@@ -114,7 +116,16 @@ export default function contentDiscoveryPlugin(context: LoadContext): Plugin {
       // Keep any explicit robots policy supplied through static/ authoritative.
       const robots = path.join(outDir, 'robots.txt');
       try {
-        await fs.writeFile(robots, `User-agent: *\nAllow: /\n\nSitemap: ${absolute(sitePath('/sitemap.xml'))}\n`, {flag: 'wx'});
+        // Discovery policy only: private API data still requires server-side access checks.
+        await fs.writeFile(robots, [
+          `# Content use: ${absolute(sitePath('/terms'))}#内容与反馈`,
+          'User-agent: *',
+          'Allow: /',
+          `Disallow: ${sitePath('/api/')}`,
+          '',
+          `Sitemap: ${absolute(sitePath('/sitemap.xml'))}`,
+          '',
+        ].join('\n'), {flag: 'wx'});
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
       }

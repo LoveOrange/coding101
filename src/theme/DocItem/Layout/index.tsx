@@ -1,4 +1,5 @@
 import type {ReactNode} from 'react';
+import Link from '@docusaurus/Link';
 import {useLocation} from '@docusaurus/router';
 import Layout from '@theme-original/DocItem/Layout';
 import type LayoutType from '@theme/DocItem/Layout';
@@ -24,6 +25,11 @@ export default function LayoutWrapper(props: Props): ReactNode {
       <div className={article ? 'c101-article' : undefined}>
         <Layout {...props}>
           {props.children}
+          <p className="margin-top--lg text--small">
+            来源：<Link to={pathname}>Coding 101 原文</Link>
+            {' · 免费阅读，引用请保留出处。'}
+            <Link to="/terms#内容与反馈">内容使用说明</Link>
+          </p>
           {article && <ArticleAd key={pathname} permalink={pathname} />}
         </Layout>
       </div>
