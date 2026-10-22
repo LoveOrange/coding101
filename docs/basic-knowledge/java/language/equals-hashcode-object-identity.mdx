@@ -11,7 +11,7 @@ import MutableHashKey from '@site/src/components/Diagram/MutableHashKey';
 
 # 对象相等性
 
-说两个对象「相等」，可能是两件事：两个引用指向同一个对象，或者两个对象在业务上表示同一个值。本文先分清 `==` 和 `equals`，再讲 `equals` 和 `hashCode` 为什么要一起定义，最后说明可变哈希键、数组和身份哈希这几种容易出错的情况。
+说两个对象「相等」，可能是两件事：两个引用指向同一个对象，或者两个对象在业务上表示同一个值。Java 用 `==` 判断前者，用 `equals` 判断后者。对象放进 `HashMap`、`HashSet` 之后，这个区分直接决定能不能查到、会不会重复，所以 `equals` 和 `hashCode` 必须一起定义。
 
 ## 1. 面试核心 {#core}
 
