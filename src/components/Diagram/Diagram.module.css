@@ -1,0 +1,66 @@
+.figure {
+  margin: 8px 0 24px;
+  padding: 20px 16px 12px;
+  background: var(--c-card);
+  border-radius: 10px;
+}
+
+.panels {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px 32px;
+  justify-items: center;
+}
+
+.panel {
+  display: block;
+  width: 100%;
+  max-width: 420px;
+  height: auto;
+}
+
+.text {
+  font-family: 'Noto Sans SC', sans-serif;
+  font-size: 13px;
+  fill: var(--c-mute2);
+}
+
+.mono {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 14px;
+  fill: var(--c-ink);
+}
+
+.strong {
+  font-weight: 700;
+  fill: var(--c-green);
+}
+
+.varBox {
+  fill: var(--c-green-t);
+  stroke: var(--c-green);
+  stroke-width: 1.5;
+}
+
+.objBox {
+  fill: var(--c-fill);
+  stroke: var(--c-border3);
+  stroke-width: 1.5;
+}
+
+.arrow {
+  fill: none;
+  stroke: var(--c-body);
+  stroke-width: 1.6;
+}
+
+.arrowOld {
+  fill: none;
+  stroke: var(--c-mute3);
+  stroke-width: 1.4;
+  stroke-dasharray: 5 5;
+}
+
+.arrowHead {
+  fill: var(--c-body);
+}
