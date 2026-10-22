@@ -6,6 +6,7 @@
     "docusaurus": "docusaurus",
     "start": "docusaurus start",
     "build": "npm run check:doc-links && npm run check:review-resources && npm run check:article-format && npm run check:content-status && docusaurus build",
+    "build:production": "LEARNER_FEATURES=true CHECKOUT_OPEN=true npm run build",
     "swizzle": "docusaurus swizzle",
     "deploy": "docusaurus deploy",
     "clear": "docusaurus clear",
