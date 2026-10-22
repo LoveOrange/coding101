@@ -3,6 +3,9 @@
   "version": "0.0.0",
   "private": true,
   "scripts": {
+    "ops:collect": "node operations/collect.mjs",
+    "ops:dashboard": "node operations/serve.mjs",
+    "ops:test": "node --test operations/test/*.test.mjs",
     "docusaurus": "docusaurus",
     "start": "docusaurus start",
     "build": "npm run check:doc-links && npm run check:review-resources && npm run check:article-format && npm run check:content-status && docusaurus build",
