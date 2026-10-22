@@ -38,7 +38,7 @@ System.out.println(first.equals(second)); // true
 
 字符串字面量可以共享对象，但内容比较仍应使用 `equals`。具体共享规则见 [String](./string-immutability-pool.mdx#字符串常量池)。
 
-**值对象**靠字段的值表达业务含义，比如订单编号、金额。判断两个值对象是否相等，看的是字段的值，这叫**逻辑相等**。下面两个订单编号只要编号文本相同，就是同一个编号：
+**逻辑相等**是指按字段的值判断两个对象是否相等。**值对象**就按逻辑相等来比较，它靠字段的值表达业务含义，比如订单编号、金额。下面两个订单编号只要编号文本相同，就是同一个编号：
 
 ```java
 public record OrderId(String value) {
@@ -78,7 +78,7 @@ public record OrderId(String value) {
 
 > 如果两个对象通过 `equals` 判断相等，它们的 `hashCode` 必须相同。
 
-不同对象得到相同的哈希值，称为**哈希冲突**。`hashCode` 返回的是 32 位整数，结果数量有限，无法给所有对象分配唯一编号。因此，遇到相同哈希值时，集合还要用 `equals` 确认是不是相等的键。
+**哈希冲突**是指不同对象得到了相同的哈希值。`hashCode` 返回的是 32 位整数，结果数量有限，无法给所有对象分配唯一编号。因此，遇到相同哈希值时，集合还要用 `equals` 确认是不是相等的键。
 
 ```java
 OrderId first = new OrderId("ORDER-101");

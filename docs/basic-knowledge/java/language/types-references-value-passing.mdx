@@ -69,7 +69,7 @@ System.out.println(second.getName()); // Asuka
 
 `second = new User("Asuka")` 让 `second` 指向了一个新对象。`first` 里的引用没有变，指向的还是原来那个 `Lin`。
 
-方法调用也是同一个道理。这里先说明两个名词：调用时传进去的值叫**实参**（argument），方法声明里接收它的变量叫**形参**（parameter）。每次调用，Java 都会新建形参变量，再用实参当前的值去初始化它。看下面两个方法：
+方法调用也是同一个道理。这里先说明两个名词：**实参**（argument）是调用时传进去的值，**形参**（parameter）是方法声明里接收它的变量。每次调用，Java 都会新建形参变量，再用实参当前的值去初始化它。看下面两个方法：
 
 ```java
 static void rename(User user) {
@@ -144,7 +144,7 @@ System.out.println(first[0]); // AB
 
 `final` 管的是变量 `names` 能不能再指向别的列表，不限制列表里的内容。所以 `names.add("Lin")` 可以通过编译，注释掉的那行重新赋值才会编译报错。
 
-`first.clone()` 确实新建了一个数组，但新数组里的元素是从旧数组复制过来的引用，指向的还是同一个 `StringBuilder`。这种只复制外层容器、里面的对象仍然共享的复制，叫作**浅拷贝**。所以执行 `second[0].append("B")` 之后，`first[0]` 也变成了 `AB`。
+`first.clone()` 做的是**浅拷贝**，也就是只复制外层容器，里面的对象仍然共享。它确实新建了一个数组，但新数组里的元素是从旧数组复制过来的引用，指向的还是同一个 `StringBuilder`。所以执行 `second[0].append("B")` 之后，`first[0]` 也变成了 `AB`。
 
 <ShallowCopy />
 
