@@ -9,19 +9,19 @@ keywords: ["Iterator", "fail-fast", "ConcurrentModificationException", "不可�
 
 # 集合迭代器
 
-Iterator 是集合迭代器，它保存当前遍历位置，让不同集合提供统一的遍历接口。本文以 Java 21 为准，先解释遍历期间如何检测和执行修改，再区分只读视图、不可变副本与固定大小列表。
+**迭代器**（`Iterator`）是记住遍历位置、一次取出一个元素的对象，所有集合都通过它提供统一的遍历方式。遍历时最容易出错的是「一边遍历一边修改」：直接改集合会让迭代器记住的位置失效，于是 ArrayList 这类集合用 fail-fast 机制尽早抛出异常。和它相关的另一组问题是「不让别人改」：只读视图、不可变副本和固定大小列表分别挡住了哪些修改，又有哪些挡不住。下文以 Java 21 为准。
 
 ## 1. 面试核心 {#core}
 
-- **修改检测。** ArrayList 等集合用 `modCount` 记录结构修改，迭代器发现它与预期计数不一致时会抛出并发修改异常。[卡](#fail-fast)
-- **fail-fast 的边界。** fail-fast 只尽力检测遍历与修改的冲突，单线程也会触发，线程安全仍需同步机制保证。[卡](#fail-fast)
-- **迭代器删除。** 对支持删除的迭代器，每次 `next` 后至多调用一次 `remove` 来删除刚返回的元素。[卡](#iterator-remove-state)
-- **视图与副本。** `unmodifiableList` 返回随原列表变化的只读视图，`List.copyOf` 返回固定元素引用和顺序的不可修改副本。[卡](#unmodifiable-list)
-- **元素可变性。** 不可修改列表仍共享元素引用，元素字段的修改需要由元素自身控制。
+- ArrayList 等集合用 `modCount` 记录结构修改，迭代器**发现它和自己保存的预期计数不一致时，抛出 `ConcurrentModificationException`**。[卡](#fail-fast)
+- fail-fast **只是尽力检测**遍历与修改的冲突，单线程也会触发；它**不提供线程安全**，共享访问仍要靠同步。[卡](#fail-fast)
+- 对支持删除的迭代器，**每次 `next` 之后最多调用一次 `remove`**，删除的是刚返回的那个元素。[卡](#iterator-remove-state)
+- `Collections.unmodifiableList` 返回**跟随原列表变化的只读视图**，`List.copyOf` 返回**固定了元素引用和顺序的不可修改副本**。[卡](#unmodifiable-list)
+- 不可修改列表**仍然共享元素对象**，元素的字段能不能改，要由元素类型自己控制。
 
 ## 2. Iterable 与 Iterator {#iterable-与-iterator}
 
-Iterable 表示对象能够提供迭代器，Iterator 则负责一次具体的遍历。对集合使用增强 `for` 时，循环会调用 `Iterable.iterator()`。下面两种写法完成相同的遍历，实际使用时选择其中一种：
+`Iterable` 表示「这个对象能提供迭代器」，`Iterator` 负责执行一次具体的遍历。对集合使用增强 `for` 时，编译器会调用 `Iterable.iterator()` 拿到迭代器。下面两种写法做的是同一件事（二选一，放在一起只是为了对照）：
 
 ```java
 // 增强 for
@@ -37,11 +37,11 @@ while (iterator.hasNext()) {
 }
 ```
 
-这两段代码都会依次取出元素并调用 `consume`。Iterator 自己保存位置和遍历状态，因此集合即使没有索引，也能提供相同的遍历接口。比如，数组列表、链表、哈希表和树都可以按这种方式遍历。
+两段代码都依次取出元素交给 `consume`。遍历位置保存在迭代器里，而不是靠下标，所以没有索引的集合也能这样遍历：数组列表、链表、哈希表和树，用的都是同一套 `hasNext`、`next`。
 
 ## 3. 结构修改与 fail-fast {#结构修改与-fail-fast}
 
-迭代器需要根据已有结构找到下一个元素。如果直接通过集合增删元素，它记录的位置就会失效。下面的代码就在遍历期间绕过迭代器，调用列表本身的删除方法：
+迭代器要根据集合当前的结构找到下一个元素。如果绕过迭代器直接增删元素，它记住的位置就不再可靠。下面的代码在遍历中直接调用了列表的 `remove`：
 
 ```java
 for (User user : users) {
@@ -51,19 +51,19 @@ for (User user : users) {
 }
 ```
 
-ArrayList 用 `modCount` 记录结构修改，创建迭代器时将它保存为 `expectedModCount`。`next`、`remove` 等操作会比较两个计数，发现不一致时抛出 `ConcurrentModificationException`，简称 CME。这种尽早发现修改冲突的行为称为 **fail-fast**。
+ArrayList 防范这种错误的办法是计数。它用 `modCount` 记录结构修改的次数，创建迭代器时把当时的值存为 `expectedModCount`。之后每次 `next`、`remove` 都比较这两个数，不一致就抛出 `ConcurrentModificationException`，简称 CME。这种一发现冲突就立即失败的行为叫 **fail-fast**。上面的循环删除一个元素后，`modCount` 加一，下一次 `next` 就会抛出 CME。
 
-结构修改指改变元素数量，或影响遍历结构的操作。对 ArrayList 来说，增删元素和显式调整数组容量都属于这类操作，而 `set` 替换已有元素会保持结构计数。其他集合是否把某个操作计入，要看各自的约定。
+**结构修改**是指改变元素数量，或者会影响遍历结构的操作。对 ArrayList 来说，增删元素和显式调整数组容量都算；`set` 只是替换某个位置的元素，不改变 `modCount`。其他集合哪些操作算结构修改，要看各自的文档。
 
 ### 3.1 fail-fast 的检测范围 {#fail-fast-的检测范围}
 
-fail-fast 用来发现错误，异常应促使程序修正修改方式。它只尽力检查冲突，尤其在缺少同步的并发访问中，检测结果无法证明程序安全。
+fail-fast 是用来暴露错误的，看到 CME 应该去改代码，而不是捕获它继续跑。它只是尽力检查，不保证每次冲突都能发现。比如上面的循环如果删掉的恰好是倒数第二个元素，删除后 `hasNext` 判断已经到头，循环直接结束，既不抛异常，也漏掉了最后一个元素。
 
-`modCount` 的比较只检查计数，不会让其他线程的修改自动可见，也不会把多步操作变成原子操作。因此，程序应将集合限定在单线程内使用，或通过锁、并发容器保护共享访问。CME 应作为错误处理，避免依靠捕获它来控制正常业务流程。
+在没有同步的多线程访问中，它更不可靠。`modCount` 的比较只是比一个数，不会让其他线程的修改自动对当前线程可见，也不会把多步操作变成原子操作，所以没有抛异常并不能证明访问是安全的。普通集合要么只在一个线程里使用，要么用锁或并发容器来保护共享访问。
 
 ## 4. 遍历期间的元素删除 {#遍历中删除元素}
 
-遍历中删除当前元素时，可以让支持删除的迭代器执行操作。这样，它在删除后也能调整遍历位置和预期计数。下面对比**迭代器删除与条件删除**，实际使用时选择其中一种：
+遍历中要删除当前元素，应该让迭代器来删。迭代器删除后会同时调整自己的遍历位置和预期计数，下一次 `next` 就不会出错。下面是**迭代器删除与条件删除**两种做法（二选一）：
 
 ```java
 // 由迭代器删除当前元素
@@ -80,20 +80,53 @@ while (iterator.hasNext()) {
 users.removeIf(User::disabled);
 ```
 
-- `Iterator.remove` 删除当前禁用用户，并让当前迭代器继续访问后续元素。
-- `removeIf` 直接删除所有满足条件的元素，适合只需要按条件删除的情况。
+- `iterator.remove()` 删除刚取出的禁用用户，迭代器接着访问后面的元素。
+- `removeIf` 一次删掉所有满足条件的元素，只是按条件删除时写起来最简单。
 
-若还需要双向遍历、替换刚返回的元素或在游标处插入，可以使用 `ListIterator`。游标指遍历当前停留的位置，这些操作适用于 List 的局部编辑。
+如果还需要双向遍历、替换刚返回的元素，或者在当前位置插入，可以用 `ListIterator`，它是 List 专用的迭代器，适合做局部编辑。
 
-## 5. 并发集合的迭代语义 {#并发集合的迭代语义}
+### 4.1 迭代器的删除状态 {#迭代器的删除状态}
 
-并发集合需要允许遍历与更新同时进行，但不同实现看到的内容不同。ConcurrentHashMap 使用弱一致遍历，允许看到遍历期间的部分更新；CopyOnWrite 则固定创建迭代器时的数组快照。
+`remove` 不带参数，它删的是最近一次 `next` 返回的元素，所以能不能调用取决于前面有没有调用过 `next`。对支持删除的迭代器，**删除状态**有三种情况：
 
-弱一致遍历与快照的保证范围不同，Java API 也没有统一的 fail-safe 接口。具体差异见 [迭代一致性](./concurrent-collection-iteration-consistency.mdx)。
+- 第一次调用 `next` 之前，没有可删的元素，调用 `remove` 抛出 `IllegalStateException`。
+- 调用 `next` 之后，可以调用一次 `remove` 删除刚返回的元素。
+- 同一次 `next` 之后连续调用两次 `remove`，第二次抛出 `IllegalStateException`。
 
-## 6. 不可修改视图与不可变副本 {#不可修改视图与不可变副本}
+```java
+var values = new ArrayList<>(List.of("A", "B"));
+var it = values.iterator();
+it.next();
+it.remove();
+System.out.println(values); // [B]
+```
 
-向调用方提供只读列表时，需要先决定结果是否跟随原列表变化。`Collections.unmodifiableList` 返回共享原列表的只读视图，而 `List.copyOf` 可以固定当前列表内容：
+`it.next()` 返回 `A`，`it.remove()` 把它删掉，最后列表是 `[B]`。删除后，`it` 会更新自己的预期计数，可以继续遍历；但同一个列表上的其他迭代器还拿着旧计数，再用就会抛 CME，需要重新创建。只读集合的迭代器则直接拒绝 `remove`，抛出 `UnsupportedOperationException`。
+
+## 5. 同步包装的遍历 {#同步包装的遍历}
+
+`Collections.synchronizedList` 只给列表的每一次方法调用单独加锁。而一次遍历由很多次 `hasNext`、`next` 组成，其他线程可以在这些调用之间插进来修改列表。所以要在包装返回的那个 List 对象上，把整个遍历同步起来：
+
+```java
+List<String> values = Collections.synchronizedList(new ArrayList<>());
+synchronized (values) {
+    for (String value : values) {
+        consume(value);
+    }
+}
+```
+
+遍历期间一直持有 `values` 的锁，其他线程通过包装方法执行的更新要等遍历结束才能进行。这要求所有对底层列表的访问都经过包装对象；「先检查、再插入」这类复合操作也要放在同一把锁里。如果有代码锁的是原始的 ArrayList，两边用的不是同一把锁，就起不到互斥的作用。
+
+## 6. 并发集合的迭代语义 {#并发集合的迭代语义}
+
+并发集合允许遍历和更新同时进行，不会抛 CME，但不同实现能看到的内容不同。ConcurrentHashMap 的迭代器是弱一致的，遍历过程中可能看到一部分更新；CopyOnWriteArrayList 的迭代器则固定在创建时的数组快照上，之后的修改都看不到。
+
+这两种保证范围不同，Java API 里也没有一个统一的「fail-safe」接口来概括它们。具体差别见[迭代一致性](./concurrent-collection-iteration-consistency.mdx)。
+
+## 7. 不可修改视图与不可变副本 {#不可修改视图与不可变副本}
+
+给调用方返回一个只读列表之前，先想清楚：这个结果要不要跟着原列表变化。`Collections.unmodifiableList` 返回的是共享原列表的只读**视图**，`List.copyOf` 返回的是内容固定的**副本**：
 
 ```java
 // 只读视图
@@ -110,35 +143,35 @@ source.add("D");
 System.out.println(snapshot); // [A, B, C]
 ```
 
-- 视图共享原列表，所以 `source` 加入 `C` 后，`view` 也会显示它。
-- 副本固定创建时的元素引用，所以 `source` 后来加入 `D`，`snapshot` 仍保留 `[A, B, C]`。
+- `view` 和 `source` 共享数据，调用方不能通过 `view` 修改，但 `source` 加入 `C` 后，`view` 也能看到。
+- `snapshot` 在创建时复制了当时的元素引用，`source` 后来加入 `D`，`snapshot` 还是 `[A, B, C]`。
 
-输入已是合适的不可修改列表时，`List.copyOf` 可以复用实例。因此，调用方应依赖内容保持稳定的保证，不应假设它每次都创建新对象。
+如果传给 `List.copyOf` 的本来就是一个合适的不可修改列表，它可能直接返回这个实例，不再复制。所以调用方可以依赖「内容不会变」，但不要假设每次都得到一个新对象。
 
-Java 9 提供的 `List.of`、`Set.of`、`Map.of` 可以直接创建不可修改集合。使用这些**集合工厂方法**时，需要留意：
+Java 9 起，`List.of`、`Set.of`、`Map.of` 可以直接创建不可修改集合。使用这些**集合工厂方法**时要注意：
 
-- 三者都拒绝 null 元素、键或值。
-- `Set.of` 拒绝重复元素。
-- `Map.of` 拒绝重复键。
+- 三者都拒绝 null 元素、null 键或 null 值。
+- `Set.of` 遇到重复元素会抛异常。
+- `Map.of` 遇到重复键会抛异常。
 
-`List.copyOf` 自 Java 10 提供，适合根据已有集合创建稳定的列表结果。
+`List.copyOf` 从 Java 10 开始提供，适合根据已有集合生成一个稳定的列表结果。
 
-## 7. 浅层不可变 {#浅层不可变}
+## 8. 浅层不可变 {#浅层不可变}
 
-列表只读，约束的是增删元素和替换引用等操作。列表中的对象仍然共享，所以对象字段是否能改，要由元素类型决定。这称为**浅层不可变**：
+只读列表限制的是列表本身：不能增删元素，也不能把某个位置换成别的对象。但列表里的对象仍然是共享的，这些对象的字段能不能改，由元素类型自己决定。这种只管到容器这一层的不可变叫**浅层不可变**：
 
 ```java
 List<User> snapshot = List.copyOf(users);
 snapshot.get(0).rename("changed");
 ```
 
-若 `User` 提供可修改字段的 `rename` 方法，这段代码仍能改变用户名字。不可修改列表可以防止调用方意外改写列表，也让跨线程共享更容易管理；元素状态仍需要单独保护。
+如果 `User` 的 `rename` 会修改自己的字段，这段代码仍然能改掉用户的名字，而且 `users` 里的同一个 `User` 也跟着变了。不可修改列表能防止调用方意外增删列表，也让跨线程共享更容易管理，但元素的状态需要另外保护。
 
-要让完整结果保持稳定，可以使用不可变元素，或在返回时复制需要隔离的可变对象。这种防止外部修改影响内部状态的做法称为防御性复制，实现见 [不可变对象](../quality/immutable-objects-defensive-copying.mdx)。
+要让整个结果都不变，可以让元素本身不可变，或者在返回时把需要隔离的可变对象也复制一份。这种防止外部修改影响内部状态的做法叫防御性复制，实现见[不可变对象](../quality/immutable-objects-defensive-copying.mdx)。
 
-## 8. `Arrays.asList` 的固定大小列表 {#arraysaslist-的固定大小列表}
+## 9. `Arrays.asList` 的固定大小列表 {#arraysaslist-的固定大小列表}
 
-`Arrays.asList` 返回由原数组支持的固定大小列表：
+`Arrays.asList` 返回的是一个直接建在原数组上的**固定大小列表**：长度不能变，但元素可以替换，而且替换会写回原数组。
 
 ```java
 String[] array = {"A", "B"};
@@ -149,44 +182,11 @@ fixed.set(0, "X");       // 可以
 System.out.println(array[0]); // X
 ```
 
-示例中的 `set` 会把原数组的第一个槽位也改成 `X`，因为列表直接使用原数组。`Arrays.asList` 允许替换元素，但增删会抛出 `UnsupportedOperationException`。作为对照，`List.of` 连 `set` 也拒绝，创建后原数组槽位的替换也不会影响它。
+`fixed.set(0, "X")` 改的就是原数组的第一个槽位，所以 `array[0]` 也变成了 `X`。增删会改变长度，因此抛出 `UnsupportedOperationException`。作为对照，`List.of` 连 `set` 都不允许，而且它不依赖原数组，之后替换数组里的元素也不会影响它。
 
-## 9. 迭代器的删除状态 {#迭代器的删除状态}
+### 9.1 基本类型数组的列表转换 {#基本类型数组的列表转换}
 
-`remove` 需要知道本次要删除哪个元素，因此它依赖最近一次 `next` 的返回结果。对于支持删除的迭代器，**删除状态**有三种：
-
-- 首次调用 `next` 前，没有可删除元素，调用 `remove` 会抛出 `IllegalStateException`。
-- 调用 `next` 后，可以用一次 `remove` 删除刚返回的元素。
-- 同一次 `next` 后连续调用两次 `remove`，第二次会抛出 `IllegalStateException`。
-
-```java
-var values = new ArrayList<>(List.of("A", "B"));
-var it = values.iterator();
-it.next();
-it.remove();
-System.out.println(values); // [B]
-```
-
-示例先返回 `A`，再将它删除，因此最终列表是 `[B]`。删除后，当前迭代器会更新自己的预期计数。其他迭代器仍持有旧计数，需要重新创建；只读集合的迭代器则会拒绝 `remove`。
-
-## 10. 同步包装的遍历 {#同步包装的遍历}
-
-`Collections.synchronizedList` 为列表的单次方法调用加锁。一次遍历会多次调用迭代器，其他线程可在这些调用之间修改列表。因此，需要在包装返回的 List 对象上同步整个遍历：
-
-```java
-List<String> values = Collections.synchronizedList(new ArrayList<>());
-synchronized (values) {
-    for (String value : values) {
-        consume(value);
-    }
-}
-```
-
-这段代码会一直持有 `values` 的锁，其他通过包装方法执行的更新要等遍历结束。所有对底层列表的访问都应经过包装对象，检查后再插入等复合操作也需使用同一把锁。若只锁住原始列表，两边使用的锁不同，就无法相互排斥。
-
-## 11. 基本类型数组的列表转换 {#基本类型数组的列表转换}
-
-把基本类型数组交给 `Arrays.asList` 时，需要区分数组对象和其中的数值。该方法接收泛型可变参数，而泛型类型参数只能使用引用类型。`int[]` 本身是一个引用对象，所以整个数组会成为列表中的单个元素：
+把基本类型数组传给 `Arrays.asList`，结果和直觉不一样。这个方法的参数是泛型可变参数 `T...`，而泛型类型参数只能是引用类型，`T` 不可能是 `int`。`int[]` 本身是一个引用类型的对象，于是 `T` 被推断为 `int[]`，整个数组成了列表里的唯一一个元素：
 
 ```java
 int[] numbers = {1, 2};
@@ -196,39 +196,37 @@ System.out.println(one.size());   // 1
 System.out.println(boxed.size()); // 2
 ```
 
-因此，`one` 的大小是 1，其中保存整个 `int[]`。`boxed()` 把每个 `int` 转为 `Integer`，也就是逐项装箱，所以 `boxed` 列表的大小是 2。Java 16 起，`Stream.toList()` 返回不可修改列表；需要可变结果时，可以再传给 ArrayList 构造器。
+`one` 的大小是 1，里面保存的是整个 `int[]`。`boxed()` 把每个 `int` 转成 `Integer`，也就是逐项装箱，所以 `boxed` 的大小是 2。Java 16 起，`Stream.toList()` 返回的是不可修改列表；需要可修改的结果时，再传给 `ArrayList` 的构造器。
 
-## 12. 常见问题 {#常见问题}
+## 10. 常见问题 {#常见问题}
 
-### 12.1 单线程的修改冲突 {#单线程的修改冲突}
+### 10.1 单线程的修改冲突 {#单线程的修改冲突}
 
-单线程也会抛出 CME，因为绕过迭代器修改集合同样会造成计数不匹配。这里检测的是遍历与修改在时间上的冲突，异常名称中的 concurrent 无法用来判断线程数量。
+单线程也会抛 CME。只要绕过迭代器修改了集合，计数就对不上，和有几个线程无关。CME 检测的是遍历和修改在时间上交错，异常名里的 concurrent 并不表示一定有多个线程。
 
-### 12.2 索引循环的删除边界 {#索引循环的删除边界}
+### 10.2 索引循环的删除边界 {#索引循环的删除边界}
 
-索引循环省去了迭代器检查，但需要自行处理删除后的下标。列表删除元素后，后续元素会左移；这时若继续递增索引，就会跳过刚移来的元素。
+用下标循环不会触发迭代器检查，但删除后的下标要自己处理。列表删除一个元素后，后面的元素都左移一位；如果这时照常把下标加一，就会跳过刚移过来的那个元素。
 
-处理**遍历中的删除**时，可以按需要选择：
+处理**遍历中的删除**，可以按需要选择：
 
-- 使用倒序索引删除，让尚未访问的下标保持有效。
-- 使用支持删除的 Iterator，由它维护遍历位置。
-- 使用 `removeIf` 按条件删除，或把保留元素放入一个新集合。
+- 倒序按下标删除，这样还没访问到的下标不受影响。
+- 用支持删除的 `Iterator`，让它维护遍历位置。
+- 用 `removeIf` 按条件删除，或者把要保留的元素放进一个新集合。
 
-跨线程访问仍需要同步，修改循环形式只解决遍历方式的问题。
+这些写法只解决遍历方式的问题，跨线程访问仍然需要同步。
 
-### 12.3 只读视图与 API 返回值 {#只读视图与-api-返回值}
+### 10.3 只读视图与 API 返回值 {#只读视图与-api-返回值}
 
-API 允许调用方持续观察内部列表变化时，可以返回不可修改视图。若结果要求固定，原列表就应停止变化，或改用 `List.copyOf`。两种方式都要单独检查元素是否可变。
+如果 API 希望调用方持续看到内部列表的变化，可以返回不可修改视图。如果要求结果固定，要么原列表之后不再变化，要么改用 `List.copyOf`。两种方式都要另外检查元素是否可变。
 
-### 12.4 List.copyOf 的空值约束 {#list.copyof-的空值约束}
+### 10.4 List.copyOf 的空值约束 {#list.copyof-的空值约束}
 
-`List.copyOf` 拒绝 null 元素，遇到时会抛出 `NullPointerException`。ArrayList 允许 null，因此迁移前要明确 null 的业务含义，再决定拒绝、过滤还是转换它。
+`List.copyOf` 不接受 null 元素，遇到会抛出 `NullPointerException`。ArrayList 允许 null，所以从 ArrayList 改成 `List.copyOf` 之前，要先弄清 null 在业务里代表什么，再决定是拒绝、过滤还是转换它。
 
-## 13. 面试题 {#面试题}
+## 11. 面试题 {#面试题}
 
-### 13.1 fail-fast 怎样工作，它能保证线程安全吗 {#fail-fast}
-
-
+### 11.1 fail-fast 怎样工作，它能保证线程安全吗 {#fail-fast}
 
 **考察重点**
 
@@ -241,17 +239,15 @@ API 允许调用方持续观察内部列表变化时，可以返回不可修改�
 <details>
 <summary>参考回答</summary>
 
-**fail-fast 通过比较修改计数尽力检测冲突，线程安全仍需要同步机制保证。**
+**fail-fast 通过比较修改计数尽力检测冲突，不能保证线程安全，线程安全仍要靠同步。**
 
-ArrayList 的迭代器创建时保存预期计数，执行 `next` 等操作时再与集合的计数比较。发现不一致，就抛出 CME，帮助暴露绕过迭代器修改集合的错误。
+ArrayList 的迭代器在创建时保存一份预期计数，每次 `next` 等操作再和集合当前的 `modCount` 比较，不一致就抛出 CME。它的作用是暴露「绕过迭代器修改集合」这类错误。
 
-计数检查不会提供跨线程的可见性或原子性，所以未抛异常也无法证明访问安全。遍历中删除当前元素，可以使用支持删除的 `Iterator.remove`，条件删除则可用 `removeIf`。共享普通集合时，这些操作仍要放在约定的同步保护下。
+计数比较不提供跨线程的可见性和原子性，所以没抛异常也不能证明访问安全。遍历中要删除当前元素，用支持删除的 `Iterator.remove`；只是按条件删除，用 `removeIf`。普通集合被多个线程共享时，这些操作也要放在同步保护下。
 
 </details>
 
-### 13.2 怎样创建不会被调用方修改的 List {#unmodifiable-list}
-
-
+### 11.2 怎样创建不会被调用方修改的 List {#unmodifiable-list}
 
 **考察重点**
 
@@ -264,18 +260,17 @@ ArrayList 的迭代器创建时保存预期计数，执行 `next` 等操作时�
 <details>
 <summary>参考回答</summary>
 
-**可以返回 `List.copyOf` 的结果，或用 `List.of` 直接创建不可修改列表。**
+**返回 `List.copyOf` 的结果，或者用 `List.of` 直接创建不可修改列表。**
 
-若允许结果跟随原列表变化，也可以返回 `Collections.unmodifiableList` 视图。
+如果希望结果跟着内部列表变化，也可以返回 `Collections.unmodifiableList` 视图，调用方不能通过它修改，但能看到内部的变化。
 
-`final` 只固定变量引用，原列表仍能增删；`Arrays.asList` 只固定长度，仍能替换元素。这些方式都只约束列表，若还要保护元素字段，就需要不可变元素或防御性复制。
+另外两种常见做法挡不住修改：`final` 只固定变量的引用，列表本身仍能增删；`Arrays.asList` 只固定长度，仍能替换元素。上面这些方式都只约束列表这一层，要保护元素的字段，还需要不可变元素或防御性复制。
 
 </details>
 
-### 13.3 Iterator.remove 可以在 next 前调用或连续调用两次吗？ {#iterator-remove-state}
+### 11.3 Iterator.remove 可以在 next 前调用或连续调用两次吗？ {#iterator-remove-state}
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
-
 
 **考察重点**：解释 `remove` 如何依赖最近一次 `next`，以及哪些调用顺序会抛出异常。
 
@@ -284,16 +279,15 @@ ArrayList 的迭代器创建时保存预期计数，执行 `next` 等操作时�
 <details>
 <summary>参考回答</summary>
 
-**对于支持删除的迭代器，每次 `next` 后至多调用一次 `remove`。**
+**都不可以。对支持删除的迭代器，每次 `next` 之后最多调用一次 `remove`。**
 
-因为它删除的是最近返回的元素，首次 `next` 前调用，或同一次 `next` 后重复调用，都会抛出 `IllegalStateException`。只读迭代器则拒绝删除，会抛出 `UnsupportedOperationException`。
+`remove` 删除的是最近一次 `next` 返回的元素。第一次 `next` 之前没有这样的元素，同一次 `next` 之后它已经被删过了，所以这两种情况都会抛出 `IllegalStateException`。只读集合的迭代器则根本不支持删除，会抛出 `UnsupportedOperationException`。
 
 </details>
 
-### 13.4 synchronizedList 的遍历还需要加锁吗，应该锁哪个对象？ {#synchronized-list-iteration}
+### 11.4 synchronizedList 的遍历还需要加锁吗，应该锁哪个对象？ {#synchronized-list-iteration}
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
-
 
 **考察重点**：解释单次方法加锁为何无法保护整个遍历，并指出读写双方应使用的锁对象。
 
@@ -302,16 +296,15 @@ ArrayList 的迭代器创建时保存预期计数，执行 `next` 等操作时�
 <details>
 <summary>参考回答</summary>
 
-**需要在包装返回的 List 对象上同步整个遍历，因为一次遍历包含多次迭代器调用。**
+**需要，而且要锁包装返回的那个 List 对象，把整个遍历包起来。**
 
-只同步单个方法，会给其他线程留下中途修改的机会。其他读写也要通过包装对象，检查后插入等复合操作则放在同一把锁内。
+`synchronizedList` 只给每次方法调用单独加锁，而一次遍历包含多次迭代器调用，其他线程可以在两次调用之间修改列表。其他读写也必须通过同一个包装对象，「先检查、再插入」这类复合操作同样放在这把锁里。
 
 </details>
 
-### 13.5 `Arrays.asList(new int[]{1, 2})` 得到几个列表元素？ {#primitive-array-as-list}
+### 11.5 `Arrays.asList(new int[]{1, 2})` 得到几个列表元素？ {#primitive-array-as-list}
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
-
 
 **考察重点**：解释为什么基本类型数组会整体成为一个元素，以及逐项装箱如何得到整数列表。
 
@@ -320,13 +313,13 @@ ArrayList 的迭代器创建时保存预期计数，执行 `next` 等操作时�
 <details>
 <summary>参考回答</summary>
 
-**列表只有一个元素，这个元素的类型是 `int[]`。**
+**只有一个元素，它的类型是 `int[]`。**
 
-泛型实参无法直接使用基本类型 `int`，而数组本身是引用对象，所以数组作为整体传入。若要得到两个 `Integer` 元素，可以用 `Arrays.stream(numbers).boxed().toList()` 逐项装箱。
+`Arrays.asList` 的参数是泛型可变参数，泛型实参不能是基本类型 `int`，而数组本身是引用类型的对象，所以整个数组作为一个元素传了进去。要得到两个 `Integer` 元素，可以用 `Arrays.stream(numbers).boxed().toList()` 逐项装箱。
 
 </details>
 
-## 14. 参考资料 {#参考资料}
+## 12. 参考资料 {#参考资料}
 
 - [Java API：Iterator](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/Iterator.html)
 - [Java API：ConcurrentModificationException](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/ConcurrentModificationException.html)
