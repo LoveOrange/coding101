@@ -183,7 +183,7 @@ const config: Config = {
           ],
         },
       ],
-      copyright: `Copyright © ${new Date().getFullYear()} Coding 101.`,
+      copyright: `© ${new Date().getFullYear()} Coding 101 · Linsama Builds`,
     },
     prism: {
       theme: prismThemes.github,
