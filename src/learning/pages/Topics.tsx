@@ -2,6 +2,7 @@ import {useEffect, useMemo, useState} from 'react';
 import clsx from 'clsx';
 import Link from '@docusaurus/Link';
 import {useHistory, useLocation} from '@docusaurus/router';
+import {campaignParameters} from '../../analytics/utm';
 
 import {cardsInSection, outlineSections, PRIORITY_LABELS, sectionReadStatus, useLearningIndex} from '../content';
 import {learnerActions, useLearner} from '../store';
@@ -101,7 +102,7 @@ function TopicsPage() {
     topics[0];
 
   useEffect(() => {
-    const next = new URLSearchParams();
+    const next = campaignParameters(location.search);
     next.set('domain', domain.id);
     if (topic) next.set('topic', topic.id);
     const search = `?${next.toString()}`;
