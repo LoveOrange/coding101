@@ -13,11 +13,11 @@ Java 异常表示方法执行失败，并把失败原因沿调用链传给调用
 
 ## 1. 面试核心 {#core}
 
-- `Error`、`RuntimeException` 及其子类属于非受检异常。[卡](#exception-hierarchy)
-- 受检异常必须捕获或声明，这是编译器的要求。失败能否恢复，则要看具体的调用场景。
-- 当前层有恢复或转换策略时才捕获异常。需要包装异常时，通过 `cause` 保留原始失败原因。[卡](#exception-handling)
-- try-with-resources 会按资源声明的逆序关闭资源。[卡](#try-with-resources)
-- `try` 主体与资源关闭都失败时，向外传播的是主体异常，关闭异常保存在它的 `suppressed` 列表中。
+- `Error`、`RuntimeException` 及其子类属于**非受检异常**。[卡](#exception-hierarchy)
+- 受检异常**必须捕获或声明**，这是编译器的要求。失败能否恢复，则要看具体的调用场景。
+- 当前层**有恢复或转换策略时才捕获异常**。需要包装异常时，通过 `cause` 保留原始失败原因。[卡](#exception-handling)
+- try-with-resources 会**按资源声明的逆序**关闭资源。[卡](#try-with-resources)
+- `try` 主体与资源关闭都失败时，**向外传播的是主体异常**，关闭异常保存在它的 `suppressed` 列表中。
 
 ## 2. 异常体系 {#异常体系}
 
@@ -209,7 +209,7 @@ try-with-resources 从 Java 7 开始提供。Java 9 起，还可以直接引用�
 <details>
 <summary>参考回答</summary>
 
-`Error`、`RuntimeException` 及其子类属于非受检异常，其余异常类属于受检异常。
+**`Error`、`RuntimeException` 及其子类属于非受检异常，其余异常类属于受检异常。**
 
 从继承关系看，`Error` 和 `Exception` 都属于 `Throwable` 体系，`RuntimeException` 则继承自 `Exception`。
 
@@ -229,7 +229,7 @@ try-with-resources 从 Java 7 开始提供。Java 9 起，还可以直接引用�
 <details>
 <summary>参考回答</summary>
 
-当前层能够恢复、清理或转换失败时，才捕获异常；否则，让异常继续向外传播。
+**当前层能够恢复、清理或转换失败时，才捕获异常；否则，让异常继续向外传播。**
 
 例如，遇到临时故障可以有限重试，业务允许时可以降级，未完成的操作则由负责它的层清理。基础设施异常传到应用层时，可以补充业务信息、转换异常类型，同时保留原始 `cause`。
 
@@ -249,7 +249,7 @@ try-with-resources 从 Java 7 开始提供。Java 9 起，还可以直接引用�
 <details>
 <summary>参考回答</summary>
 
-控制流离开 `try` 时，try-with-resources 会按资源声明的逆序，自动调用各个 `AutoCloseable` 资源的 `close()`。
+**控制流离开 `try` 时，try-with-resources 会按资源声明的逆序，自动调用各个 `AutoCloseable` 资源的 `close()`。**
 
 初始化中途失败时，已经创建成功的资源也会关闭。例如，输出流创建失败，之前打开的输入流仍然会被清理。
 
@@ -268,7 +268,7 @@ try-with-resources 从 Java 7 开始提供。Java 9 起，还可以直接引用�
 <details>
 <summary>参考回答</summary>
 
-如果返回的是基本类型值，就不会改变。返回值在进入 `finally` 前已经算出，之后修改局部变量不会影响它。
+**如果返回的是基本类型值，就不会改变。返回值在进入 `finally` 前已经算出，之后修改局部变量不会影响它。**
 
 例如，`try` 准备返回 1，`finally` 再把局部变量改成 2，最终仍返回 1。如果 `finally` 自己返回或抛出异常，就会覆盖原来的返回值或异常。返回引用时，引用值已经确定，但它指向的对象仍可能被 `finally` 修改。
 
@@ -285,7 +285,7 @@ try-with-resources 从 Java 7 开始提供。Java 9 起，还可以直接引用�
 <details>
 <summary>参考回答</summary>
 
-资源按声明的逆序关闭，最先发生的关闭异常向外传播。
+**资源按声明的逆序关闭，最先发生的关闭异常向外传播。**
 
 如果先声明 A、再声明 B，就会先关闭 B。因此，B 的异常成为主异常，A 的关闭异常保存在它的 `suppressed` 列表中。
 

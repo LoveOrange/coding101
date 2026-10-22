@@ -13,10 +13,10 @@ keywords: ["equals 契约", "hashCode 契约", "Java 对象比较", "可变哈�
 
 ## 1. 面试核心 {#core}
 
-- 基本类型的 `==` 比较值，引用类型的 `==` 判断是否为同一个对象。`Object.equals` 默认也比较对象身份。[卡](#equals-hashcode)
-- 通过 `equals` 判断相等的对象，必须具有相同的 `hashCode`，哈希容器才能把它们放进同一个候选范围。反过来，哈希值相同不代表对象相等。
-- 哈希冲突是允许的，最终是否相等仍要通过 `equals` 判断。
-- 对象作为哈希键期间，参与 `equals` 和 `hashCode` 的字段需要保持稳定，否则可能影响查找。[卡](#mutable-map-keys)
+- 基本类型的 `==` **比较值**，引用类型的 `==` 判断**是否为同一个对象**。`Object.equals` 默认也比较对象身份。[卡](#equals-hashcode)
+- 通过 `equals` 判断相等的对象，**必须具有相同的 `hashCode`**，哈希容器才能把它们放进同一个候选范围。反过来，哈希值相同不代表对象相等。
+- 哈希冲突是允许的，**最终是否相等仍要通过 `equals` 判断**。
+- 对象作为哈希键期间，参与 `equals` 和 `hashCode` 的**字段需要保持稳定**，否则可能影响查找。[卡](#mutable-map-keys)
 
 ## 2. 对象身份与逻辑相等 {#对象身份与逻辑相等}
 
@@ -156,7 +156,7 @@ System.out.println(Arrays.equals(first, second)); // true
 <details>
 <summary>参考回答</summary>
 
-对引用类型来说，`==` 判断两个引用是否指向同一个对象。
+**对引用类型来说，`==` 判断两个引用是否指向同一个对象。**
 
 `Object.equals` 默认也比较对象身份，类可以通过重写它来定义逻辑相等。
 
@@ -176,7 +176,7 @@ System.out.println(Arrays.equals(first, second)); // true
 <details>
 <summary>参考回答</summary>
 
-可以，前提是对象作为键期间，参与 `equals` 和 `hashCode` 的字段保持稳定。
+**可以，前提是对象作为键期间，参与 `equals` 和 `hashCode` 的字段保持稳定。**
 
 集合按写入时的哈希值保存条目。如果修改字段后算出的哈希值变了，查询就可能找不到还在原位置的条目。可以选择值对象作为键，让参与相等判断的字段在构造后保持不变，并让 `equals` 和 `hashCode` 使用同一组字段。
 
@@ -193,7 +193,7 @@ System.out.println(Arrays.equals(first, second)); // true
 <details>
 <summary>参考回答</summary>
 
-因为数组继承的 `equals` 比较对象身份。两个独立数组即使内容相同，直接调用 `equals` 也会返回 `false`。
+**因为数组继承的 `equals` 比较对象身份。两个独立数组即使内容相同，直接调用 `equals` 也会返回 `false`。**
 
 比较一维数组的内容，用 `Arrays.equals`；比较嵌套数组，用 `Arrays.deepEquals`。如果把数组封装在业务对象中，并按数组内容定义相等性，也要按内容计算哈希值，保证相等规则与哈希规则一致。
 

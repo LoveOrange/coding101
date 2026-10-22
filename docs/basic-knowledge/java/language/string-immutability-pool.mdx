@@ -13,11 +13,11 @@ keywords: ["String 常量池", "字符串不可变", "StringBuilder", "字符串
 
 ## 1. 面试核心 {#core}
 
-- `String` 的字符序列不会改变，因此可以在线程间安全共享，也适合作为 `HashMap` 的键。
-- 内容相同的字符串字面量和字符串常量表达式，会共享常量池中的同一个对象。[卡](#string-pool)
-- `intern()` 返回常量池中内容相同的规范字符串引用。业务代码需要比较内容时，仍应使用 `equals`。
-- `StringBuilder` 适合在单线程中逐步构建文本。`StringBuffer` 的主要公开操作提供同步保证，但这个保证只覆盖单次调用。[卡](#string-builder-buffer)
-- `String.length()` 返回 UTF-16 代码单元数。一个 Unicode 码点可能占两个代码单元，因此返回的长度不一定等于码点数，也不一定等于读者看到的字符数。[卡](#string-unicode-length)
+- `String` 的**字符序列不会改变**，因此可以在线程间安全共享，也适合作为 `HashMap` 的键。
+- 内容相同的字符串字面量和字符串常量表达式，会**共享常量池中的同一个对象**。[卡](#string-pool)
+- `intern()` **返回常量池中内容相同的规范字符串引用**。业务代码需要比较内容时，仍应使用 `equals`。
+- `StringBuilder` 适合在单线程中逐步构建文本。`StringBuffer` 的主要公开操作提供同步保证，但这个保证**只覆盖单次调用**。[卡](#string-builder-buffer)
+- `String.length()` 返回 **UTF-16 代码单元数**。一个 Unicode 码点可能占两个代码单元，因此返回的长度不一定等于码点数，也不一定等于读者看到的字符数。[卡](#string-unicode-length)
 
 ## 2. String 的不可变性 {#string-的不可变性}
 
@@ -218,7 +218,7 @@ final String name = "Java";
 <details>
 <summary>参考回答</summary>
 
-`String` 的内容不可变，`StringBuilder` 和 `StringBuffer` 的内容可以修改。后两者的主要区别在于是否提供同步保证。
+**`String` 的内容不可变，`StringBuilder` 和 `StringBuffer` 的内容可以修改。后两者的主要区别在于是否提供同步保证。**
 
 `String` 要得到不同内容时，需要另一个字符串，因此适合保存和共享最终文本。两种构建器可以连续调用 `append`，在同一个对象中逐步构建文本。
 
@@ -239,7 +239,7 @@ final String name = "Java";
 <details>
 <summary>参考回答</summary>
 
-字符串常量池让内容相同的字面量复用同一个对象，减少重复对象。
+**字符串常量池让内容相同的字面量复用同一个对象，减少重复对象。**
 
 `String` 的内容不能修改，所以多个使用者可以安全地读取同一个字符串。编译期的字符串常量拼接也会折叠，并共享对应的驻留对象。
 
@@ -258,7 +258,7 @@ final String name = "Java";
 <details>
 <summary>参考回答</summary>
 
-因为 `length()` 统计的是 UTF-16 代码单元，示例中的表情需要一对代理项，也就是两个代码单元，所以结果是 2。
+**因为 `length()` 统计的是 UTF-16 代码单元，示例中的表情需要一对代理项，也就是两个代码单元，所以结果是 2。**
 
 这两个代码单元共同表示一个 Unicode 码点，因此 `codePointCount()` 返回 1。Java 17、21 在内部使用压缩存储，但公开 API 仍按 UTF-16 索引，内部改用 `byte[]` 不会改变这个计数结果。
 

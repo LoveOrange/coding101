@@ -13,11 +13,11 @@ keywords: ["自动装箱拆箱", "Integer 缓存", "包装类比较", "拆箱空
 
 ## 1. 面试核心 {#core}
 
-- 包装类型是引用类型，可以作为泛型参数，也可以用 `null` 表示未提供的值。
-- 自动拆箱会从包装对象中取出基本值。如果引用为 `null`，拆箱时就会抛出 `NullPointerException`。[卡](#autoboxing)
-- `Integer.valueOf` 保证缓存 -128 到 127 的对象。对这个范围内的相同值，返回的是相同引用。[卡](#integer-cache)
-- `Integer.equals` 同时检查类型和数值。只有对方也是 `Integer`，并且数值相同，才返回 `true`。
-- 数值三元表达式根据分支类型决定是否拆箱。即使最终赋值给包装类型，也可能先拆箱，并因空值抛出异常。[卡](#boxing-conditional-overload)
+- 包装类型是**引用类型**，可以作为泛型参数，也可以用 `null` 表示未提供的值。
+- 自动拆箱会从包装对象中取出基本值。如果引用为 `null`，**拆箱时就会抛出 `NullPointerException`**。[卡](#autoboxing)
+- `Integer.valueOf` **保证缓存 -128 到 127 的对象**。对这个范围内的相同值，返回的是相同引用。[卡](#integer-cache)
+- `Integer.equals` **同时检查类型和数值**。只有对方也是 `Integer`，并且数值相同，才返回 `true`。
+- 数值三元表达式根据分支类型决定是否拆箱。**即使最终赋值给包装类型，也可能先拆箱**，并因空值抛出异常。[卡](#boxing-conditional-overload)
 
 ## 2. 基本类型与包装类型 {#基本类型与包装类型}
 
@@ -170,7 +170,7 @@ System.out.println(boxed == primitive); // true
 
 ### 5.1 泛型与集合 {#泛型与集合}
 
-`List<Integer>`、`Map<Long, User>` 中的泛型参数都必须是引用类型。读写这类集合时，可以隐式发生装箱和拆箱：
+`List<Integer>`、`Map<Long, User>` 中的泛型参数都必须是引用类型。读写这类集合时，会隐式发生装箱和拆箱：
 
 ```java
 List<Integer> numbers = new ArrayList<>();
@@ -254,7 +254,7 @@ System.out.println(Integer.valueOf(1).equals(Long.valueOf(1))); // false
 <details>
 <summary>参考回答</summary>
 
-自动装箱把基本值转换为包装对象，自动拆箱则从包装对象中取出基本值。
+**自动装箱把基本值转换为包装对象，自动拆箱则从包装对象中取出基本值。**
 
 例如，整数装箱可以理解为调用 `Integer.valueOf`，拆箱可以理解为调用 `intValue`。赋值、方法调用、比较和算术运算中，都可能发生这些转换。
 
@@ -279,7 +279,7 @@ System.out.println(Integer.valueOf(1).equals(Long.valueOf(1))); // false
 <details>
 <summary>参考回答</summary>
 
-如果这两个 `Integer` 来自常量装箱或 `Integer.valueOf`，它们就会共享值为 127 的缓存对象。两个引用指向同一个对象，因此 `==` 返回 `true`。
+**如果这两个 `Integer` 来自常量装箱或 `Integer.valueOf`，它们就会共享值为 127 的缓存对象。两个引用指向同一个对象，因此 `==` 返回 `true`。**
 
 规范保证 -128 到 127 的整型常量装箱后共享引用，`Integer.valueOf` 也保证缓存这个范围。实现可以缓存更多值，但范围外是否共享对象，要看具体实现和配置。如果显式调用构造器创建新对象，即使数值相同，也不是同一个对象。
 
@@ -298,7 +298,7 @@ System.out.println(Integer.valueOf(1).equals(Long.valueOf(1))); // false
 <details>
 <summary>参考回答</summary>
 
-因为数值三元表达式需要先根据分支类型求值。即使接收变量是 `Integer`，求值过程中也可能先拆箱。
+**因为数值三元表达式需要先根据分支类型求值。即使接收变量是 `Integer`，求值过程中也可能先拆箱。**
 
 `useMissing ? missing : 0` 的结果类型是 `int`。选中值为 `null` 的 `missing` 时，会先拆箱并抛出异常，此时还没执行赋值所需的装箱。如果两个分支都是 `Integer`，表达式就保留引用，选中的 `null` 可以直接赋给接收变量。
 
