@@ -21,7 +21,7 @@ keywords: ["Java 金额计算", "RoundingMode", "BigDecimal 精度", "equals 与
 
 ## 2. double 的十进制误差 {#double-的十进制误差}
 
-`double` 使用二进制浮点数保存小数。十进制的 `0.1` 转成二进制后是无限循环小数，而存储空间有限，只能取最接近的可表示值。这种近似会影响后续计算：
+`double` 无法精确表示 `0.1` 这样的十进制小数，连续计算会出现误差。原因是 `double` 用二进制浮点数保存小数，十进制的 `0.1` 转成二进制后是无限循环小数，而存储空间有限，只能取最接近的可表示值。这种近似会影响后续计算：
 
 ```java
 double result = 0.1 + 0.2;
@@ -157,7 +157,7 @@ System.out.println(result); // 838.1
 
 ## 6. `equals` 与 `compareTo` {#equals-与-compareto}
 
-两个金额的数值可以相同，小数位数却不同。`equals` 和 `compareTo` 对此有不同的判断规则：
+`equals` 同时比较数值和小数位数，`compareTo` 只比较数值，所以数值相同、小数位数不同的两个金额，用它们比较会得到不同的结果：
 
 ```java
 BigDecimal first = new BigDecimal("2.0");
@@ -167,7 +167,7 @@ System.out.println(first.equals(second)); // false
 System.out.println(first.compareTo(second)); // 0
 ```
 
-`equals` 同时比较数值和 `scale`。`first` 的 `scale` 是 1，`second` 的 `scale` 是 2，所以 `equals` 返回 `false`。`compareTo` 只比较数值大小，因此两者的比较结果为 0。
+`first` 的 `scale` 是 1，`second` 的 `scale` 是 2，所以 `equals` 返回 `false`；两者的数值相同，所以 `compareTo` 返回 0。
 
 如果只需要判断金额数值是否相等，可以使用 `compareTo(...) == 0`。集合也要按这个区别来看：`HashMap` 和 `HashSet` 通过 `equals` 与 `hashCode` 识别元素，所以 `2.0` 和 `2.00` 会被当成两个不同的键；使用自然排序的 `TreeSet` 通过 `compareTo` 判重，两者只会保留一个。
 
@@ -207,7 +207,7 @@ long amountInCents = 1990;
 
 ## 8. 舍入方向与精确转换 {#舍入方向与精确转换}
 
-用负数可以看出不同舍入方向的差别。下面都把 `-1.25` 保留到一位小数，比较四种舍入模式的结果：
+舍入模式决定结果往哪个方向取，同一个数用不同模式可能得到不同结果。负数还能区分出「向零」和「向负无穷」这两种方向。下面都把 `-1.25` 保留到一位小数，比较四种舍入模式的结果：
 
 ```java
 BigDecimal value = new BigDecimal("-1.25");

@@ -136,7 +136,7 @@ String result = builder.toString();
 
 ## 5. 字符串拼接的选择 {#字符串拼接的选择}
 
-一次性拼接少量文本时，直接使用 `+` 比较直观：
+拼接字符串时，单个表达式直接用 `+`，在循环里逐步拼接则用 `StringBuilder`。一次性拼接少量文本时，`+` 最直观：
 
 ```java
 String message = "order " + orderId + " created";
