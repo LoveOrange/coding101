@@ -23,7 +23,7 @@ import TryWithResources from '@site/src/components/Diagram/TryWithResources';
 
 ## 2. 异常体系 {#异常体系}
 
-Java 里能被 `throw` 的对象都继承自 `Throwable`。一个异常要不要捕获或声明，看它在这棵继承树上的位置：
+**异常**是程序运行时打断正常流程的失败，比如要读的文件不存在、传入的数字格式不对。Java 用对象表示异常，所有能被 `throw` 的对象都继承自 `Throwable`。一个异常要不要捕获或声明，看它在这棵继承树上的位置：
 
 ```text
 Throwable
@@ -34,6 +34,8 @@ Throwable
 ```
 
 `Error` 表示虚拟机层面的严重问题，比如 `OutOfMemoryError` 和链接错误。遇到这类问题，要根据具体原因决定是终止还是尝试恢复；用一个 `catch` 把所有 `Error` 都接住，反而可能把严重故障藏起来。
+
+`Exception` 表示程序可以预料、通常也应该处理的失败，比如读文件时文件不存在、调用远程接口时连接超时。它又分成两类，区别在于编译器会不会强制你处理。
 
 **非受检异常**是指 `RuntimeException`、`Error` 以及它们的子类，编译器不要求捕获或声明。其中 `RuntimeException` 是 `Exception` 的子类。**受检异常**是除此之外的异常类，包括 `Throwable` 本身，编译器会检查调用方有没有处理：
 
@@ -101,6 +103,8 @@ try {
 ## 5. try-with-resources 与资源关闭 {#try-with-resources-与资源关闭}
 
 try-with-resources 保证文件、网络连接这类资源用完一定会关闭。它把使用和关闭写在一起：资源只要实现了 `AutoCloseable` 接口，不管 `try` 主体是正常执行完、中途 `return`，还是抛出了异常，离开时都会调用它的 `close()`。
+
+没有它的时候，要在 `finally` 里手动调用 `close()`：资源可能没打开成功，要先判断是否为 `null`；`close()` 自己也可能抛异常，要再套一层 `try`；有两个资源时，代码会嵌套好几层，很容易漏掉一个。try-with-resources 把这些步骤交给编译器生成：
 
 ```java
 try (
