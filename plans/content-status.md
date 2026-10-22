@@ -8,8 +8,8 @@
 
 | 状态 | Codex 生成 | Claude 校验 | Lin 校验 | English | 日本語 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| ✅ | 351 | 7 | 1 | 0 | 0 |
-| 🔁 | 0 | 0 | 0 | 0 | 0 |
+| ✅ | 351 | 7 | 0 | 0 | 0 |
+| 🔁 | 0 | 0 | 1 | 0 | 0 |
 | ⚠️ | 0 | 0 | 0 | 0 | 0 |
 | · | 0 | 344 | 350 | 351 | 351 |
 | — | 0 | 0 | 0 | 0 | 0 |
@@ -187,7 +187,7 @@
 | [Java 反射](../docs/basic-knowledge/java/language/reflection-method-handles.mdx) | ✅ | · | · | · | · |
 | [Java 注解处理器](../docs/basic-knowledge/java/language/runtime-scanning-compile-time-generation.mdx) | ✅ | · | · | · | · |
 | [String](../docs/basic-knowledge/java/language/string-immutability-pool.mdx) | ✅ | ✅ | · | · | · |
-| [Java 值传递](../docs/basic-knowledge/java/language/types-references-value-passing.mdx) | ✅ | ✅ | ✅ | · | · |
+| [Java 值传递](../docs/basic-knowledge/java/language/types-references-value-passing.mdx) | ✅ | ✅ | 🔁 | · | · |
 | [包装类型](../docs/basic-knowledge/java/language/wrappers-boxing-cache.mdx) | ✅ | ✅ | · | · | · |
 | [Java API 设计](../docs/basic-knowledge/java/quality/api-design-from-invariants.mdx) | ✅ | · | · | · | · |
 | [不可变对象](../docs/basic-knowledge/java/quality/immutable-objects-defensive-copying.mdx) | ✅ | · | · | · | · |
