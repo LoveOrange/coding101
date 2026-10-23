@@ -9,17 +9,19 @@ keywords: ["Deployment", "StatefulSet", "Kubernetes Service", "CNI", "NetworkPol
 
 # 工作负载、Service 与集群网络
 
-工作负载管理应用副本，Service 提供稳定的访问入口。本文负责工作负载选择、滚动更新和集群网络。
+Kubernetes 的工作负载对象负责管理应用副本，Service 负责在副本变化时提供稳定的发现和访问方式。理解应用怎样运行，需要把这两件事连起来：控制器创建和替换 Pod，Service 根据后端状态选择可用实例，网络实现再把请求送过去。这也是分析滚动更新、服务不可达和网络策略问题的基础。
 
 ## 1. 面试核心 {#core}
 
-- **副本与稳定身份。** Deployment 管理可替换副本，StatefulSet 管理稳定身份。[卡](#workload-types)
-- **节点代理。** DaemonSet 在符合条件的节点上维护 Pod 副本。[卡](#workload-types)
-- **Service 转发。** Service 数据面依据端点信息，把流量送到后端。[卡](#service-ingress)
-- **网络职责。** CNI 配置 Pod 网络，Service 代理实现虚拟地址转发。[卡](#pod-networking)
-- **网络访问策略。** NetworkPolicy 的允许规则按并集生效。[卡](#network-policy)
+- Deployment 管理**可相互替换的副本**，StatefulSet 保留副本的**稳定身份**；数据库复制和选主仍由应用承担。[卡](#workload-types)
+- DaemonSet 在**符合条件的节点上维护 Pod 副本**，适合日志采集、网络代理等随节点部署的组件。[卡](#workload-types)
+- Service 数据面依据 EndpointSlice 中的地址和就绪条件**选择后端并转发流量**，DNS 解析与后端转发由不同组件完成。[卡](#service-ingress)
+- CNI 网络实现建立 **Pod 之间的通信路径**，Service 代理实现虚拟地址到后端的选择和转发，两者职责不同。[卡](#pod-networking)
+- NetworkPolicy 的允许规则按**并集**生效，Pod 间的连接还要同时满足源端出站和目标端入站的限制。[卡](#network-policy)
 
 ## 2. 工作负载 {#工作负载}
+
+选择工作负载对象，要看副本是否需要稳定身份、是否跟随节点部署，以及任务是否会执行结束。不同对象由对应的控制器持续维护：
 
 | 对象 | 主要用途 |
 | --- | --- |
@@ -29,13 +31,15 @@ keywords: ["Deployment", "StatefulSet", "Kubernetes Service", "CNI", "NetworkPol
 | Job | 执行到完成的任务 |
 | CronJob | 按计划创建 Job |
 
-StatefulSet 默认使用 OrderedReady 管理顺序。Parallel 策略可并行创建和删除 Pod。稳定身份有助于应用识别成员。数据库复制、选主和一致性仍由应用承担。
+**Deployment** 适合副本可以相互替换的应用，**StatefulSet** 则为每个副本保留稳定的序号、网络身份和存储关联。稳定身份方便应用识别成员，但不会自动实现数据库复制、选主和一致性，这些仍需数据库或应用自己完成。
 
-PVC 通过 StorageClass 可触发动态供应 PV。实际存储还取决于供应器和访问模式。StatefulSet 的卷保留行为由 PVC 保留策略决定。数据保留与应用备份应分别设计。
+StatefulSet 默认采用 `OrderedReady`，按顺序管理 Pod 的创建和删除；`Parallel` 策略则允许并行创建和删除。选择顺序策略，要看应用成员之间是否有启动和退出方面的依赖。
+
+存储方面，**PVC** 是应用提出的持久卷申请，**PV** 表示可供绑定的持久卷资源。PVC 可以通过描述存储类别的 `StorageClass` 触发动态供应，再由供应器提供实际存储；能否挂载还取决于访问模式等条件。StatefulSet 的卷保留行为由 PVC 保留策略决定，但保留卷不等于完成备份，应用备份仍要单独设计。
 
 ### 2.1 滚动更新与回滚 {#滚动更新与回滚}
 
-ReplicaSet 维持副本数量。Deployment 在它之上管理 Pod 模板版本。修改模板会创建或复用对应的 ReplicaSet。
+**ReplicaSet** 负责维持指定数量的 Pod，Deployment 则在它之上管理 Pod 模板版本。修改模板时，Deployment 创建或复用对应的 ReplicaSet，再逐步增加新版副本、减少旧版副本。下面的配置希望保持 3 个副本：
 
 ```yaml
 apiVersion: apps/v1
@@ -63,19 +67,21 @@ spec:
             limits: {memory: 512Mi}
 ```
 
-3 个副本的 25% maxSurge 向上取整为 1。maxUnavailable 为 0，要求维持 3 个可用副本。新副本未就绪时，滚动更新会停住。终止中的 Pod 仍占资源，应额外预留容量。
+`maxSurge` 限制更新期间可比期望数量多出的副本，3 个副本的 25% 向上取整为 1。`maxUnavailable: 0` 则要求更新时保持至少 3 个可用副本。因此，新副本尚未就绪时，不能靠继续删除旧副本来推进更新，发布会停住。终止中的 Pod 仍可能占用资源，所以容量规划还要留出退出过程的余量。
 
-`kubectl rollout status deployment/web` 检查进展。`progressDeadlineSeconds` 超时会记录进展失败。Deployment 控制器不会因此自动回滚。`kubectl rollout undo deployment/web` 可恢复保留的模板版本。外部配置、数据库迁移和业务数据需单独恢复。
+用 `kubectl rollout status deployment/web` 可以检查进展。超过 `progressDeadlineSeconds` 后，Deployment 会记录进展失败，但不会自动回滚。需要先查新副本未就绪的原因，再决定修复还是执行 `kubectl rollout undo deployment/web` 恢复保留的模板版本。这个回滚只针对 Pod 模板，外部配置、数据库迁移和业务数据需要分别处理。
 
 ### 2.2 配置更新 {#配置更新}
 
-ConfigMap 保存普通配置，Secret 保存敏感配置。安全边界见 [Kubernetes 架构](./architecture.mdx#api-访问与-secret-加密)。
+**ConfigMap** 保存普通配置，**Secret** 保存敏感配置；Secret 的名称不代表数据默认已加密，安全边界见 [Kubernetes 架构](./architecture.mdx#api-访问与-secret-加密)。配置更新何时对应用生效，取决于应用怎样读取它。
 
-环境变量在容器启动时注入。更新对象后，已有进程的环境变量保持原值。卷投射文件会经 kubelet 更新传播。应用还需重新读取或重载配置。subPath 挂载不会接收此类自动更新。
+通过环境变量注入的配置在容器启动时确定，更新 ConfigMap 或 Secret 不会改变已有进程的环境变量。通过卷投射为文件的配置，会由 kubelet 传播更新，但应用还要重新读取或重载文件，才能使用新值。使用 `subPath` 挂载时，则不会收到这类自动更新。
 
-需要确定切换时点时，可使用版本化配置。修改 Pod 模板引用，再触发滚动更新。
+如果需要明确配置的切换时点，可以为配置创建新版本，修改 Pod 模板中的引用，再通过滚动更新切换。这样每个新副本使用哪一版配置就更明确。
 
 ## 3. Service 与流量入口 {#service-与流量入口}
+
+**Service** 为一组后端提供稳定的发现和访问方式，调用方不必随着 Pod 重建不断修改目标地址。不同类型或模式决定了这个入口怎样暴露：
 
 | 类型或模式 | 行为 |
 | --- | --- |
@@ -85,21 +91,23 @@ ConfigMap 保存普通配置，Secret 保存敏感配置。安全边界见 [Kube
 | ExternalName | DNS 返回配置的 CNAME |
 | Headless | `clusterIP: None`，通过 DNS 提供端点地址 |
 
-带选择器的 Service 由控制器维护 EndpointSlice。端点包含地址、端口和 ready 等条件。代理根据这些条件选择后端。无选择器的 Service 可由使用者维护端点。
+带选择器的 Service 通过标签匹配后端 Pod，控制器据此维护 **EndpointSlice**，记录端点地址、端口和 `ready` 等条件。代理再按这些条件选择后端、转发流量。无选择器的 Service 可以由使用者维护端点，因此不能把所有 Service 都理解为自动选择 Pod。
 
-CoreDNS 为 Service 提供名称解析。默认集群域为 `cluster.local`，部署可更改。`kubectl port-forward svc/web 8080:80` 选择后端 Pod 建立调试通道。它不经过 ClusterIP 的常规转发路径。
+CoreDNS 负责 Service 名称解析，默认集群域为 `cluster.local`，部署时可以更改。对于普通 ClusterIP Service，名称解析得到虚拟 IP，Service 代理再把流量送到后端；能解析出 IP，不代表后端转发一定正常。
 
-Ingress 描述 HTTP 域名和路径路由，需要控制器执行。Gateway API 用 GatewayClass、Gateway 和路由对象分工。Gateway API 同样需要具体实现。
+`kubectl port-forward svc/web 8080:80` 则会选择后端 Pod 建立调试通道，不经过 ClusterIP 的常规转发路径。所以它能连通，也不能单独证明 Service 网络没有问题。
+
+**Ingress** 描述 HTTP 域名和路径路由，需要 Ingress 控制器执行规则。Nginx 可以作为具体控制器使用的代理，但 Ingress 对象本身不会转发请求。Gateway API 进一步用 GatewayClass、Gateway 和路由对象区分实现类型、网关实例和路由规则，同样需要具体实现来执行。
 
 ### 3.1 外部流量策略 {#外部流量策略}
 
-`externalTrafficPolicy: Cluster` 可选择集群内后端。`Local` 只选择当前节点的本地后端。NodePort 等外部路径使用 Local 可保留客户端源 IP。
+`externalTrafficPolicy` 决定外部流量进入节点后，Service 可以选择哪些后端。设置为 `Cluster` 时可以选择集群内后端，设置为 `Local` 时只选择当前节点的本地后端。NodePort 等外部路径使用 `Local`，可以保留客户端源 IP。
 
-没有本地后端的节点无法按 Local 正常转发。外部负载均衡器需正确检查节点健康。副本分布不均时，各节点流量也会不均。Local 需要在源地址、可用性和分布之间取舍。
+代价是节点不能再把流量转交给其他节点的后端：没有本地后端时，就无法按 `Local` 正常承接请求。外部负载均衡器需要正确检查节点健康，副本分布也要配合，否则流量可能集中到少数节点或副本上。选择 `Local` 时，要同时考虑源地址保留、可用性和负载分布。
 
 ## 4. 集群网络 {#集群网络}
 
-普通 Pod 网络要求跨节点直接寻址。NetworkPolicy 可进一步限制允许的连接。hostNetwork Pod 则共享节点网络。
+Pod 网络负责让 Pod 地址在集群中可达，包括不同节点上的 Pod。NetworkPolicy 可以进一步限制哪些连接被允许；使用 `hostNetwork` 的 Pod 则共享节点网络。分析具体路径时，先分清通信双方的位置：
 
 | 路径 | 实现方式 |
 | --- | --- |
@@ -109,27 +117,25 @@ Ingress 描述 HTTP 域名和路径路由，需要控制器执行。Gateway API 
 | Service | 先选择后端，再经 Pod 网络送达 |
 | 外部入口 | 由负载均衡器和网关转入集群 |
 
-Flannel 支持 VXLAN 和 host-gw 等后端。Calico 支持路由以及 IPIP、VXLAN 等封装。Cilium 可用 eBPF 实现网络和 Service 转发。具体路径应以插件及部署模式为准。
+网络插件决定这些路径怎样实现。Flannel 支持 VXLAN 和 host-gw 等后端，Calico 支持路由以及 IPIP、VXLAN 等封装，Cilium 可以用 eBPF 实现网络和 Service 转发。因此，只知道插件名称还不够，排查前要确认它实际采用的部署模式。
 
-隧道要求节点间承载网络可达，并放行相应协议。封装额外占用 MTU。直接路由则要求底层能转发 Pod 网段。
+跨节点通信主要有隧道和直接路由两类方式。隧道把 Pod 数据包封装后交给节点间网络传输，需要节点间可达，并放行相应协议。**MTU** 是链路一次允许传输的最大数据包大小，封装会占用其中一部分，因此需要给内层报文留出空间。直接路由省去这层封装，但要求底层网络能够转发到 Pod 网段。
 
-Linux kube-proxy 可通过 iptables 或 IPVS 实现转发。IPVS 将 Service VIP 绑定到虚拟接口。因此，VIP 的具体落点取决于代理模式。
+Service 代理在 Pod 网络之上完成后端选择。Linux kube-proxy 可以通过 iptables 或 IPVS 实现转发，其中 IPVS 会将 Service 的虚拟 IP（VIP）绑定到虚拟接口。因此，不能只凭“在接口上有没有看到 VIP”判断 Service 是否正常，还要先确认代理模式。
 
-排查从源 Pod 路由开始，再看节点与目标 Pod。沿途检查策略、防火墙、隧道、MTU 和连接跟踪。两端抓包用于确认丢失位置。
+排查时从源 Pod 的路由开始，依次看源节点、跨节点网络和目标 Pod，沿途检查策略、防火墙、隧道、MTU 和连接跟踪。两端同时抓包，可以比较数据包在哪一段消失，再缩小检查范围。
 
 ## 5. NetworkPolicy {#networkpolicy}
 
-NetworkPolicy 按 Pod、命名空间和网段选择流量。网络插件必须支持策略执行。
+**NetworkPolicy** 描述哪些流量可以进入或离开选中的 Pod，可以按 Pod、命名空间和网段限定通信对象。规则需要支持它的网络插件执行，仅创建策略对象并不能保证流量已经受到限制。
 
-某方向没有选择该 Pod 的策略时，该方向默认放行。策略选中 Pod 并声明该方向后，该方向进入隔离。所有匹配策略允许的流量取并集。
+入站（ingress）和出站（egress）分别判断。如果某个方向没有策略选中该 Pod，这个方向默认不受 NetworkPolicy 限制。一旦策略选中 Pod 并声明该方向，就按所有匹配策略允许的流量取并集。例如，一条入站策略允许来源 A，另一条允许来源 B，最终 A 和 B 都被允许，不会因为后一条没写 A 就把 A 撤销。
 
-连接需同时满足源端 egress 和目标端 ingress 规则。允许出站 DNS 时，需按部署开放 UDP 和 TCP 53。策略控制连接边界，HTTP 路径授权需由应用或网关完成。
+Pod A 连接 Pod B 时，还要同时通过 A 的出站限制和 B 的入站限制；只在 B 上允许 A，不足以绕过 A 的出站限制。默认拒绝出站后，如果仍要使用集群 DNS，需要按部署放行 UDP 和 TCP 53。NetworkPolicy 控制连接边界，按 HTTP 路径授权仍需由应用或网关完成。
 
 ## 6. 面试题 {#面试题}
 
 ### 6.1 Deployment、StatefulSet 和 DaemonSet 有什么区别？Deployment 和 ReplicaSet 是什么关系？ {#workload-types}
-
-
 
 **考察重点**
 
@@ -141,18 +147,15 @@ NetworkPolicy 按 Pod、命名空间和网段选择流量。网络插件必须�
 <details>
 <summary>参考回答</summary>
 
-**Deployment 管理可替换副本，StatefulSet 保留稳定身份。**
+**Deployment 管理可替换副本，StatefulSet 保留稳定身份，DaemonSet 让副本随符合条件的节点部署。**
 
-StatefulSet 可按卷模板为副本配置独立 PVC。数据复制与选主仍由应用完成。DaemonSet 在符合条件的节点运行代理。
+StatefulSet 可以按卷模板为副本配置独立 PVC，但数据库复制和选主仍由应用完成。DaemonSet 则适合在各节点运行日志或网络代理。
 
-ReplicaSet 维持数量，Deployment 管理模板版本。滚动更新受 maxSurge 和 maxUnavailable 约束。回滚恢复历史 Pod 模板。外部配置和数据库数据需单独处理。
+ReplicaSet 维持副本数量，Deployment 管理模板版本，通过调整新旧 ReplicaSet 推进更新。滚动过程受 `maxSurge` 和 `maxUnavailable` 约束；回滚恢复历史 Pod 模板，外部配置和数据库数据需要单独处理。
 
 </details>
 
 ### 6.2 Service 有哪些类型？Service 是怎样把流量转发到 Pod 的？Ingress 和 Service、Nginx 是什么关系？ {#service-ingress}
-
-
-
 
 **考察重点**
 
@@ -164,17 +167,15 @@ ReplicaSet 维持数量，Deployment 管理模板版本。滚动更新受 maxSur
 <details>
 <summary>参考回答</summary>
 
-**Service 提供后端发现和访问方式，Ingress 定义七层路由，Nginx 可作为实现这些路由的控制器所使用的代理。**
+**Service 提供后端发现和访问方式，Ingress 描述 HTTP 路由规则，具体控制器可以使用 Nginx 执行这些规则。**
 
-Service 有 `ClusterIP`、`NodePort`、`LoadBalancer` 和 `ExternalName` 四种类型。Headless 模式不分配 ClusterIP，其 DNS 可返回端点地址。控制器维护 EndpointSlice，Service 代理按端点条件转发，CoreDNS 负责解析。
+Service 有 `ClusterIP`、`NodePort`、`LoadBalancer` 和 `ExternalName` 四种类型。Headless 模式不分配 ClusterIP，其 DNS 可以返回端点地址。对于带选择器的普通 Service，控制器维护 EndpointSlice，Service 代理按端点条件选择后端，CoreDNS 则负责名称解析。
 
-Ingress 规则需要控制器执行；Gateway API 将网关与路由拆为独立对象。`port-forward` 则经 API 通道访问选中的 Pod，不经过普通 Service 转发路径。
+Ingress 规则需要控制器执行，Gateway API 则把网关与路由拆为独立对象，也需要具体实现。`port-forward` 经 API 通道访问选中的 Pod，不经过普通 Service 转发路径，因此不能用它代替对 Service 数据路径的验证。
 
 </details>
 
 ### 6.3 Kubernetes 中 Pod 之间怎样通信？跨节点通信是怎样实现的？Flannel、Calico 和 kube-proxy 有什么区别？ {#pod-networking}
-
-
 
 **考察重点**
 
@@ -186,20 +187,19 @@ Ingress 规则需要控制器执行；Gateway API 将网关与路由拆为独立
 <details>
 <summary>参考回答</summary>
 
-**Pod 网络由 CNI 等网络实现建立。**
+**网络插件建立 Pod 间的通信路径，kube-proxy 等 Service 代理负责虚拟地址到后端的选择与转发。**
 
-Pod 内容器用 localhost 通信。同节点路径可用网桥、路由或 eBPF。跨节点路径可用隧道或直接路由。
+Pod 内容器通过共享网络空间用 `localhost` 通信，不同 Pod 在同节点上可以经网桥、路由或 eBPF 转发，跨节点则可以使用隧道或直接路由。
 
-Flannel 支持 VXLAN、host-gw 等模式。Calico 支持路由、IPIP 与 VXLAN。隧道要求承载网络可达，并需要合适的 MTU。直接路由要求底层能转发 Pod 网段。
+Flannel 支持 VXLAN、host-gw 等模式，Calico 支持路由、IPIP 和 VXLAN。隧道要求承载网络可达，并给封装预留 MTU；直接路由要求底层能够转发 Pod 网段。
 
-Service 代理负责虚拟地址到后端的选择与转发。它可由 kube-proxy 或网络插件实现。故障时按实际数据路径检查策略、路由和抓包。
+Service 转发可以由 kube-proxy 或具备相应能力的网络插件实现。排障时应确认实际模式，再沿数据路径检查策略、路由并抓包，不能只根据插件名称推断路径。
 
 </details>
 
 ### 6.4 Deployment 更新卡住会自动回滚吗？ConfigMap 更新何时生效？ {#rollout-config-update}
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
-
 
 **考察重点**：滚动参数、进展条件与配置传播。
 
@@ -210,14 +210,15 @@ Service 代理负责虚拟地址到后端的选择与转发。它可由 kube-pro
 
 **进展超时会记录失败条件，控制器不会自动回滚。**
 
-需修复原因或执行 rollout undo。环境变量在容器启动时固定。投射文件经 kubelet 更新后，应用仍需重新读取。subPath 挂载不会自动接收更新。回滚模板也不会撤销数据库迁移。
+需要检查新副本未就绪的原因，决定修复还是执行 `kubectl rollout undo deployment/web`。回滚恢复历史 Pod 模板，不会撤销数据库迁移。
+
+ConfigMap 通过环境变量注入时，已有进程保持原值；通过卷投射为文件时，kubelet 会传播更新，应用仍需重新读取。`subPath` 挂载不会自动接收此类更新。
 
 </details>
 
 ### 6.5 NetworkPolicy 如何决定 Pod 能否通信？多条策略怎样合并？ {#network-policy}
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
-
 
 **考察重点**：双向许可、默认隔离与策略并集。
 
@@ -228,14 +229,13 @@ Service 代理负责虚拟地址到后端的选择与转发。它可由 kube-pro
 
 **多条策略的允许规则取并集。**
 
-连接需满足源端 egress 和目标端 ingress。某方向被策略选中后，只放行规则允许的流量。策略生效还要求网络插件支持。默认拒绝出站后，还需按部署放行 DNS。
+对 Pod 间的连接，源端 egress 和目标端 ingress 都要允许。某方向未被策略隔离时默认放行；被隔离后，按所有匹配策略的允许规则取并集，不按先后顺序覆盖。策略生效还要求网络插件支持，默认拒绝出站后也要按部署放行所需 DNS 流量。
 
 </details>
 
 ### 6.6 externalTrafficPolicy 设置为 Local 有什么收益和代价？ {#external-traffic-local}
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
-
 
 **考察重点**：源地址、本地端点与节点负载。
 
@@ -246,7 +246,7 @@ Service 代理负责虚拟地址到后端的选择与转发。它可由 kube-pro
 
 **Local 只使用节点本地后端。**
 
-NodePort 等外部路径可因此保留客户端源 IP。没有本地后端的节点无法正常承接该流量。负载均衡器需检查节点健康，副本也要合理分布。
+NodePort 等外部路径可以因此保留客户端源 IP，但没有本地后端的节点无法正常承接请求，也不能转交其他节点处理。外部负载均衡器需要正确检查节点健康，副本也要合理分布，避免流量集中到少数节点或副本。
 
 </details>
 

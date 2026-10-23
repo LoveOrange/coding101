@@ -9,17 +9,19 @@ keywords: ["K8s 控制平面", "kube-apiserver", "etcd", "Pod 调度", "控制�
 
 # Kubernetes 架构
 
-Kubernetes 通过控制循环协调容器工作负载。本文负责组件分工、创建链路、调度和 etcd。
+**Kubernetes** 是管理容器工作负载的系统。使用者声明希望运行什么、保留多少副本，集群中的组件再持续检查并调整实际状态。理解它的架构，重点是分清谁保存目标、谁创建对象、谁选择节点，以及谁真正启动容器；这样才能解释一次发布怎样完成，也能判断某个组件故障会影响哪一步。
 
 ## 1. 面试核心 {#core}
 
-- **API 与持久状态。** apiserver 提供对象 API，etcd 保存集群对象的持久状态。[卡](#components)
-- **控制循环。** 控制器通过 API 观察对象，并持续调整实际状态。[卡](#pod-creation-flow)
-- **调度与运行。** scheduler 选择节点，kubelet 通过 CRI 驱动本机容器。[卡](#pod-creation-flow)
-- **多数派提交。** etcd 的 Raft 提交需要多数成员确认。[卡](#etcd)
-- **API 与存储安全。** RBAC 约束 API 操作，Secret 静态加密保护落盘内容。[卡](#api-security)
+- apiserver 提供对象访问 API，etcd **持久保存集群对象**；控制组件通过 API 读取和更新状态。[卡](#components)
+- 控制器持续比较目标与当前状态，**发现差异后继续协调**，失败的操作可以重试。[卡](#pod-creation-flow)
+- scheduler 负责**选择节点**，kubelet 再通过容器运行时接口 CRI 管理本机容器，两者职责不同。[卡](#pod-creation-flow)
+- etcd 使用 Raft，写入需要**多数投票成员确认**。失去多数派后，对象更新和相关控制循环会受阻。[卡](#etcd)
+- RBAC 限制**谁能通过 API 做什么**，Secret 静态加密保护持久存储中的内容；两者不能互相替代。[卡](#api-security)
 
 ## 2. 组件 {#组件}
+
+Kubernetes 把管理集群的组件放在**控制平面**，把运行应用的机器称为**工作节点**。Pod 是一组作为整体调度的容器：控制平面决定它应该运行在哪里，节点组件负责让它运行起来。
 
 | 位置 | 组件 | 职责 |
 | --- | --- | --- |
@@ -31,17 +33,19 @@ Kubernetes 通过控制循环协调容器工作负载。本文负责组件分工
 | 节点 | kubelet | 管理本机 Pod，执行探针并上报状态 |
 | 节点 | 容器运行时 | 通过 CRI 接收镜像和容器操作 |
 | 节点 | kube-proxy 或替代组件 | 实现 Service 数据转发 |
-| 插件 | CNI、CoreDNS、CSI | 提供网络、域名解析和存储接入 |
+| 插件 | CNI 网络插件、CoreDNS、CSI 存储驱动 | 提供网络、域名解析和存储接入 |
 
-核心控制组件通过 apiserver 协调对象状态。其他通信仍有直接调用。例如 kubelet 调用运行时，apiserver 访问 kubelet。日志、exec 和端口转发都涉及节点通信。
+表中的 CRI 是容器运行时接口，kubelet 通过它请求运行时拉取镜像、管理容器；CNI 和 CSI 分别提供网络、存储接入的接口规范，由对应插件或驱动完成具体工作。
 
-ReplicaSet 控制器观察到副本不足后，会创建 Pod。它持续校正差异，重试失败操作。控制器应按当前状态执行幂等协调。
+核心控制组件通过 apiserver 读取对象，并用 watch 订阅对象变化。这种协作方式不代表所有通信都必须绕经 apiserver：kubelet 会直接调用运行时，apiserver 也会为日志、`exec` 和端口转发等操作访问 kubelet。
 
-静态 Pod 由 kubelet 读取节点清单并管理。kubeadm 的清单目录默认是 `/etc/kubernetes/manifests`。本地 etcd 拓扑的控制平面可用静态 Pod 启动。API 中的镜像 Pod 用于展示状态。调度器无需参与这些 Pod 的创建。
+**控制循环**是反复观察当前状态、与目标比较并采取调整动作的过程。例如，负责维持副本数的 ReplicaSet 控制器要求 3 个 Pod，当前只有 2 个，就会补建 1 个。操作失败后可以重试，所以协调逻辑需要具备幂等性：重复执行时仍根据当前差异处理，不能每重试一次就无条件多建一个 Pod。
+
+**静态 Pod** 则由 kubelet 直接读取节点上的清单并管理，无需调度器参与。kubeadm 的清单目录默认是 `/etc/kubernetes/manifests`，采用本地 etcd 拓扑时，控制平面组件和 etcd 可以用这种方式启动。API 中对应的镜像 Pod（mirror Pod）用于展示状态，实际管理仍由节点上的 kubelet 完成。
 
 ## 3. Pod 创建链路 {#一个-pod-的创建链路}
 
-以提交 Deployment 为例：
+Deployment 描述应用的 Pod 模板和期望副本数。提交它之后，各组件逐步完成自己的部分，直到容器运行起来：
 
 1. kubectl 将清单发给 apiserver。
 2. API 请求通过认证、授权、准入和校验。
@@ -53,11 +57,13 @@ ReplicaSet 控制器观察到副本不足后，会创建 Pod。它持续校正�
 8. 运行时通过 CRI 接收操作，配置沙箱与网络。
 9. 容器启动后，kubelet 执行探针并上报状态。
 
-Linux CRI 运行时可调用 CNI 配置网络。pause 容器是保留沙箱 Namespace 的一种实现。卷准备、镜像拉取等步骤存在各自的重试流程。
+这里的沙箱是 Pod 共享的隔离环境。Linux CRI 运行时可以调用 CNI 插件配置网络，并用 pause 容器保留沙箱的 Namespace。卷准备、镜像拉取等步骤都有各自的重试流程，因此创建出 Pod 对象后，还需要检查它实际卡在哪一步。
 
-EndpointSlice 保存端点地址和就绪条件。未就绪端点也能出现在对象中。流量是否进入还取决于就绪状态和 Service 配置。数据路径见 [工作负载、Service 与集群网络](./workloads-networking.mdx#service-与流量入口)。
+容器启动也不代表马上就能接收流量。**EndpointSlice** 保存后端端点的地址和就绪条件，未就绪的端点也可能存在于其中。代理是否选用它，还要看就绪状态和 Service 配置。具体数据路径见 [工作负载、Service 与集群网络](./workloads-networking.mdx#service-与流量入口)。
 
 ## 4. 调度 {#调度}
+
+调度器先排除不满足条件的节点，再从可行节点中选择更合适的一个，最后写入绑定结果。这里的 `requests` 是 Pod 声明的资源需求，是资源检查的依据。
 
 | 阶段 | 主要依据 |
 | --- | --- |
@@ -65,38 +71,35 @@ EndpointSlice 保存端点地址和就绪条件。未就绪端点也能出现在
 | 打分 | 资源分布、首选亲和、拓扑和镜像位置 |
 | 绑定 | 将选择的节点写入 Pod 绑定结果 |
 
-资源过滤使用 requests 和节点可分配量。实时 CPU 用量不直接替代 requests。调度还包括亲和性、污点、卷等条件。
+资源过滤会检查节点的可分配量和已经分配的 `requests`，判断能否再容纳新 Pod。实时 CPU 使用率低，并不代表节点还有足够的可分配请求额度。资源够用后，还要检查亲和性、污点、卷和拓扑等条件。
 
-没有可行节点时，Pod 保持 Pending。`kubectl describe pod` 的事件会列出过滤原因。资源不足与硬约束冲突需要分别处理。
+如果所有节点都被排除，Pod 就保持 Pending。此时用 `kubectl describe pod` 查看调度事件，再根据原因处理：资源不足需要释放或增加相应容量，硬约束冲突则要检查节点标签、污点或存储条件。只看总体 CPU 使用率，无法解释这些调度失败。
 
-Pod 绑定后会留在所选节点。扩容节点不会自动重新分配旧 Pod。拓扑分布约束可改善新 Pod 的分布。重新平衡需要额外策略，并考虑驱逐代价。
+Pod 绑定后会留在选定节点，增加节点不会自动把已有 Pod 搬过去。因此，扩容后仍可能分布不均。拓扑分布约束可以改善新 Pod 的分布；要重新平衡已有副本，需要额外策略，并考虑驱逐和重建的代价。
 
 ## 5. etcd 存储 {#etcd-存储}
 
-etcd 保存 Pod、Service、Secret 等 API 对象。应用数据库内容、容器文件和业务日志由各自系统保存。
+**etcd** 是 Kubernetes 持久保存 API 对象的键值存储，保存的内容包括 Pod、Service、Secret 等集群状态。应用数据库、容器文件和业务日志由各自系统保存，因此备份 etcd 不等于备份了应用的全部数据。
 
-Raft 写入需多数成员确认。3 个成员可容忍 1 个失效，5 个可容忍 2 个。增加为偶数成员会提高多数派门槛。因此，成员规划常选择奇数规模。
+etcd 用 Raft 协调成员间的一致性，写入提交需要多数投票成员确认。3 个成员需要至少 2 个确认，可以容忍 1 个失效；5 个需要至少 3 个，可以容忍 2 个失效。从 3 个增加到 4 个时，多数派门槛升到 3 个，却仍只能容忍 1 个失效，所以成员规划会优先考虑奇数规模。
 
-磁盘持久化和成员间网络都会影响提交延迟。排查应关注成员健康、Leader 变化和磁盘延迟。Raft 机制详见 [Raft](../../system-design/distributed-system/raft-election-log-replication.mdx)。
+写入要经过成员间通信和磁盘持久化，网络或磁盘变慢都会影响提交延迟。排查时应一起看成员健康、Leader 变化和磁盘延迟，具体一致性机制见 [Raft](../../system-design/distributed-system/raft-election-log-replication.mdx)。
 
-etcd 不可用会阻塞对象持久更新。已有容器和已安装的转发规则可继续工作。后端变化、节点故障和控制循环却无法正常协调。因此，业务可用性还取决于故障期间的变化。
+etcd 不可用时，对象的持久更新会受阻，已有容器和已经安装的转发规则却可能继续工作。这不能保证业务一直正常：如果期间又发生节点故障或后端变化，控制循环无法正常更新状态，就不能按预期补建副本或调整后端。
 
-etcd 3.6 用 `etcdctl snapshot save` 保存在线快照。恢复使用 `etcdutl snapshot restore`。Kubernetes 恢复还需处理 revision 回退与 watch 缓存。快照演练应包含 revision bump 和 mark-compacted。恢复方案应保留数据，并避免新旧集群同时提供服务。
+以 etcd 3.6 为例，`etcdctl snapshot save` 保存在线快照，`etcdutl snapshot restore` 用于恢复。Kubernetes 场景还要处理 revision，也就是 etcd 的数据修订号：旧快照的修订号比故障前小，依赖 watch 的客户端缓存可能无法正确刷新。恢复演练应包含修订号提升（revision bump）和 `--mark-compacted`，使相关客户端缓存失效并重新同步。恢复时还要保留原始数据，避免新旧集群同时提供服务。
 
 ## 6. API 访问与 Secret 加密 {#api-访问与-secret-加密}
 
-认证确认请求者身份。授权判断该身份是否能执行目标操作。准入再修改或检查对象内容。
+API 请求的身份、权限和对象内容由不同环节检查。**认证**确认请求者是谁，**授权**判断他能否执行目标操作，**准入**再检查或修改对象内容。例如，能够证明自己的身份，不等于有权读取某个 Secret；有权创建 Pod，也不等于提交的对象一定符合准入规则。
 
-RBAC 的 Role 约束命名空间内的权限。ClusterRole 定义集群级或可复用的权限集合。RoleBinding 在命名空间内绑定权限。ClusterRoleBinding 将权限绑定到集群范围。
+**RBAC** 是按角色授予权限的授权方式。Role 定义命名空间内的权限，ClusterRole 定义集群级或可复用的权限集合；RoleBinding 在一个命名空间内把权限授予身份，ClusterRoleBinding 则在集群范围绑定权限。角色定义“可以做什么”，绑定决定“把这些权限给谁、在哪个范围生效”。
 
-Secret 的 base64 是编码。默认存储行为仍需配置静态加密来保护内容。读取 Secret 的 API 权限也要最小化。备份应按同等敏感程度管理。加密密钥的保存与恢复需和数据备份配套。
+Secret 使用的 base64 只是编码，可以还原出原内容。要保护持久存储中的敏感数据，还需配置**静态加密**，也就是让数据以加密形式落盘。加密不会阻止有权限的调用方通过 API 读取 Secret，因此 API 读取权限仍要最小化。备份也要按同等敏感程度管理，并让加密密钥的保存和恢复与数据备份配套。
 
 ## 7. 面试题 {#面试题}
 
 ### 7.1 Kubernetes 的控制平面和节点上分别有哪些组件？各自的作用是什么？ {#components}
-
-
-
 
 **考察重点**
 
@@ -108,19 +111,17 @@ Secret 的 base64 是编码。默认存储行为仍需配置静态加密来保�
 <details>
 <summary>参考回答</summary>
 
-**控制平面负责 API、状态存储、调度和协调。**
+**控制平面负责 API、状态存储、调度和协调，节点组件负责实际运行 Pod。**
 
-apiserver 是对象访问入口，etcd 保存对象。scheduler 选择节点，各控制器持续调整实际状态。
+apiserver 是对象访问入口，etcd 持久保存对象，scheduler 为 Pod 选择节点，各控制器则持续比较期望状态与当前状态并调整。
 
-节点的 kubelet 管理 Pod，运行时执行容器操作。Service 转发由 kube-proxy 或替代组件承担。CNI、CoreDNS 和 CSI 分别提供网络、解析与存储接入。
+节点上的 kubelet 管理 Pod，通过 CRI 请求运行时执行容器操作。Service 转发由 kube-proxy 或替代组件承担，CNI 网络插件、CoreDNS 和 CSI 存储驱动分别提供网络、解析与存储接入。
 
-对象协调主要通过 apiserver。kubelet 到运行时等路径仍使用直接调用。
+对象状态主要通过 apiserver 读取、更新和订阅变化，kubelet 到运行时等路径则使用直接调用。
 
 </details>
 
 ### 7.2 从 `kubectl apply` 一个 Deployment 到 Pod 运行起来，中间经历了哪些步骤？调度器怎样选择节点？ {#pod-creation-flow}
-
-
 
 **考察重点**
 
@@ -134,17 +135,15 @@ apiserver 是对象访问入口，etcd 保存对象。scheduler 选择节点，�
 
 **Deployment 经 API 保存后，由控制器逐步创建 Pod。**
 
-Deployment 控制器管理 ReplicaSet。ReplicaSet 控制器补足 Pod。scheduler 过滤并评分，然后提交节点绑定。
+请求先通过 apiserver 的认证、授权、准入和校验，再保存到 etcd。Deployment 控制器创建或调整 ReplicaSet，ReplicaSet 控制器补足 Pod；scheduler 过滤候选节点、评分，最后提交绑定结果。
 
-目标 kubelet 准备卷并调用 CRI。运行时准备沙箱、网络、镜像与容器。kubelet 持续上报状态和探针结果。Service 数据面再根据端点条件选择后端。
+目标节点的 kubelet 准备卷并调用 CRI，由运行时准备沙箱、网络、镜像与容器。容器启动后，kubelet 持续上报状态和探针结果，Service 数据面再根据端点条件选择后端。
 
-资源过滤使用 requests。污点、亲和性、卷和拓扑也参与选择。节点扩容后，已有 Pod 仍留在原节点。
+资源过滤使用 `requests`，还要检查污点、亲和性、卷和拓扑条件。调度完成后，Pod 留在选定节点，增加节点不会自动迁移已有 Pod。
 
 </details>
 
 ### 7.3 etcd 在 Kubernetes 中起什么作用？它怎样保证多节点数据一致？etcd 出问题会有什么影响？ {#etcd}
-
-
 
 **考察重点**
 
@@ -158,18 +157,17 @@ Deployment 控制器管理 ReplicaSet。ReplicaSet 控制器补足 Pod。schedul
 
 **etcd 持久保存 Kubernetes 的 API 对象。**
 
-Raft 通过多数派提交维持一致性。3 个成员可容忍 1 个失效，5 个可容忍 2 个。
+Raft 通过多数派提交维持一致性。3 个投票成员可容忍 1 个失效，5 个可容忍 2 个；从奇数增加到下一个偶数不会提高可容忍的失效数。
 
-etcd 故障会阻塞持久更新和相关控制循环。已有容器与转发规则可继续运行。故障期间发生的节点和后端变化会增加业务风险。
+etcd 故障会阻塞持久更新和相关控制循环。已有容器与转发规则可能继续运行，但故障期间发生节点或后端变化时，集群无法正常协调，业务仍可能受损。
 
-处理时先确认成员、网络和磁盘状态。灾难恢复使用已验证的快照方案。etcd 3.6 恢复工具是 `etcdutl`。Kubernetes 场景还需处理 revision 和 watch 缓存。
+处理时先确认成员、网络和磁盘状态，需要灾难恢复时再使用经过演练的快照方案。etcd 3.6 使用 `etcdutl` 恢复，Kubernetes 场景还需处理修订号回退及 watch 客户端缓存。
 
 </details>
 
 ### 7.4 认证、RBAC 和准入分别检查什么？Secret 为什么还要加密？ {#api-security}
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
-
 
 **考察重点**：身份、操作权限、对象约束和落盘保护。
 
@@ -180,7 +178,7 @@ etcd 故障会阻塞持久更新和相关控制循环。已有容器与转发规
 
 **认证确认身份，RBAC 授权检查操作权限。**
 
-准入检查或修改对象内容。Secret 的 base64 只改变表示方式。静态加密保护持久存储中的内容。API 读取权限与备份访问仍需分别约束。
+准入检查或修改对象内容。Secret 的 base64 只改变表示方式，不保护秘密；静态加密保护持久存储中的内容，但有权限的 API 调用方仍能读取。因此，还要分别限制 API 权限和备份访问。
 
 </details>
 
