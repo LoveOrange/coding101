@@ -9,36 +9,36 @@ keywords: ["BeanFactoryPostProcessor", "FactoryBean", "BeanFactory", "容器启�
 
 # BeanDefinition
 
-BeanDefinition 保存 Spring 创建 Bean 所需的配置元数据，也就是类型、依赖和初始化方式等信息。本文从定义注册入手，说明两类后处理器的执行时机，再介绍单例预实例化、FactoryBean 和配置类方法调用。区分定义与实例这两个阶段，才能判断扩展点何时生效，以及对象为何被提前创建。
+**BeanDefinition** 是 Spring 用来描述「怎样创建一个 Bean」的配置元数据，记录类型、依赖、作用域和初始化方式等信息。容器先注册定义，再按定义创建对象。区分这两个阶段，才能选对修改配置和处理实例的扩展点，也能解释为什么提前获取 Bean 可能让它错过 AOP 代理。
 
 ## 1. 面试核心 {#core}
 
-- **定义与实例。** `BeanDefinition` 描述 Bean 的类型、作用域、依赖和生命周期配置，容器据此创建对象。
-- **两类后处理器。** `BeanFactoryPostProcessor` 在普通 Bean 创建前处理定义，`BeanPostProcessor` 处理已创建的实例。
-- **应用上下文。** `ApplicationContext` 在 `BeanFactory` 基础上自动发现后处理器，并集成事件、资源和环境配置。[卡](#beanfactory-vs-applicationcontext)
-- **定义注册时机。** `BeanDefinitionRegistryPostProcessor` 可在普通工厂后处理前注册定义。[卡](#registry-postprocessor)
-- **FactoryBean 产品。** `getBean("name")` 获取 FactoryBean 产品，`getBean("&name")` 获取工厂。[卡](#factorybean-product)
+- `BeanDefinition` 描述 Bean 的**类型、作用域、依赖和生命周期配置**，容器按它创建对象。
+- `BeanFactoryPostProcessor` 在普通 Bean 创建前**处理定义**，`BeanPostProcessor` **处理已经创建的实例**。
+- `ApplicationContext` 在 `BeanFactory` 的基础上**自动发现并注册后处理器**，还集成了事件、资源和环境配置。[卡](#beanfactory-vs-applicationcontext)
+- `getBean("name")` 拿到的是 **FactoryBean 生产的产品**，`getBean("&name")` 拿到的才是工厂本身。[卡](#factorybean-product)
+- `BeanDefinitionRegistryPostProcessor` 能**在普通工厂后处理器之前注册新定义**，配置类解析就靠它完成。[卡](#registry-postprocessor)
 
 ## 2. BeanDefinition 注册 {#beandefinition-注册}
 
-容器先把不同配置转换为 BeanDefinition，后续才能用统一方式创建对象。定义主要来自以下**四类配置**：
+配置有很多种写法，容器先把它们统一转换成 BeanDefinition，后面才能用同一套流程创建对象。定义主要来自四个地方：
 
-- Java 配置通过 `@Bean` 方法声明组件。
-- 组件扫描发现 `@Component` 及其派生注解标记的类。
-- XML、程序化注册和框架导入提供额外定义。
-- Spring Boot 自动配置通过配置类解析形成定义。
+- Java 配置里的 `@Bean` 方法。
+- 组件扫描发现的 `@Component` 及其派生注解标记的类。
+- XML、程序化注册和框架导入。
+- Spring Boot 自动配置，它们也是通过解析配置类形成定义的。
 
-每份定义记录创建和管理对象所需的信息，包括以下**三组设置**：
+每份定义记录了三组信息：
 
-- Bean 类或工厂方法，以及构造参数和属性值，决定怎样创建并填充对象。
-- 作用域和懒加载标记，决定何时创建对象，以及哪些调用共享实例。
-- 初始化与销毁方法，决定对象创建后和容器关闭时执行哪些回调。
+- Bean 类或工厂方法，加上构造参数和属性值，决定对象怎样创建和填充。
+- 作用域和懒加载标记，决定对象什么时候创建、哪些调用共享同一个实例。
+- 初始化和销毁方法，决定对象创建后和容器关闭时执行哪些回调。
 
-定义注册完成后，容器才在后续阶段创建相应对象。因此，注册成功时仍可能尚未执行构造器。
+定义注册完成，只说明容器知道怎样创建这个对象，对象本身要到后面的阶段才创建。所以定义已经注册成功时，构造器可能一次都还没执行过。
 
 ## 3. `BeanFactoryPostProcessor` {#beanfactorypostprocessor}
 
-`BeanFactoryPostProcessor` 用于在普通 Bean 创建前修改定义。例如，容器可在这个阶段解析属性占位符，或调整某个 Bean 的配置值：
+**`BeanFactoryPostProcessor`** 是在普通 Bean 创建之前修改定义的扩展点。属性占位符的解析就发生在这个阶段；你也可以在这里调整某个 Bean 的配置值：
 
 ```java
 public final class ClientTimeoutProcessor
@@ -53,13 +53,13 @@ public final class ClientTimeoutProcessor
 }
 ```
 
-示例把 `paymentClient` 定义中的 `timeout` 属性设为 1 秒。容器随后创建对象时，才把这个值写入目标属性，所以目标类型需要提供可写的 `timeout` 属性。
+`ClientTimeoutProcessor` 只是在 `paymentClient` 的定义里记下「`timeout` 属性设为 1 秒」，这时还没有任何 `paymentClient` 对象。等容器之后创建对象时，才会把这个值写进去，所以目标类型要提供可写的 `timeout` 属性。
 
-如果在此阶段调用 `getBean()`，容器会提前创建对应对象及其依赖。这时，部分 BeanPostProcessor 尚未注册，对象就会错过预期的处理。比如自动代理创建器还未就绪，业务 Bean 就会缺少 AOP 代理。排查时应沿提前创建的依赖链查找入口。
+这个阶段应该只操作定义。如果在这里调用 `getBean()`，容器就可能提前创建对应对象和它的依赖。而此时部分实例后处理器（`BeanPostProcessor`）还没注册，这些对象就会错过后续处理。比如自动代理创建器还没就绪，提前创建的业务 Bean 就不会有 AOP 代理，事务等增强全部失效。遇到这种情况，要沿着提前创建的依赖链找到是谁触发了创建。
 
 ## 4. `BeanPostProcessor` {#beanpostprocessor}
 
-BeanPostProcessor 要先注册，才能参与普通 Bean 的创建。它们的具体实现可处理依赖注入、生命周期注解，也可在初始化后返回代理。容器按下面的顺序安排定义处理与实例创建：
+**`BeanPostProcessor`** 是处理 Bean 实例的扩展点，具体实现负责依赖注入、生命周期注解，或者在初始化后返回代理。它必须先注册，才能参与普通 Bean 的创建。容器刷新时按下面的顺序安排定义处理和实例创建：
 
 ```text
 注册初始定义
@@ -70,53 +70,53 @@ BeanPostProcessor 要先注册，才能参与普通 Bean 的创建。它们的�
   → 完成刷新
 ```
 
-处理器自身及其直接依赖会提前创建，所以处理器应只依赖必要的基础组件。若它提前依赖业务 Bean，日志可能提示该对象 `not eligible for auto-proxying`。这表示对象未能经过完整的自动代理处理。
+注册 `BeanPostProcessor` 时，处理器自身和它的直接依赖会被提前创建，所以处理器应该只依赖必要的基础组件。如果它依赖了某个业务 Bean，这个业务 Bean 就会在其他处理器就位前被创建出来，日志里可能出现 `not eligible for auto-proxying`，意思是这个对象没有经过完整的自动代理处理。
 
-实例处理过程见 [Bean 生命周期](./bean-creation-lifecycle.mdx#beanpostprocessor)。
+实例的具体处理过程见 [Bean 生命周期](./bean-creation-lifecycle.mdx#beanpostprocessor)。
 
 ## 5. BeanFactory 与 ApplicationContext {#beanfactory-与-applicationcontext}
 
-选择容器时，要区分核心对象管理与应用启动所需的配套能力。`BeanFactory` 提供定义管理、对象创建与依赖解析。`ApplicationContext` 在此基础上自动发现并注册后处理器，还集成环境、事件、资源加载、国际化和生命周期管理。
+`BeanFactory` 提供定义管理、对象创建和依赖解析等核心能力。`ApplicationContext` 在此基础上组织容器启动，自动发现并注册后处理器，还集成了环境、事件、资源加载、国际化和生命周期管理。
 
-直接使用 `DefaultListableBeanFactory` 时，调用者需要自行执行和注册相应处理器。仅仅注册业务 Bean 的定义，还不足以启用注解注入和 AOP。应用开发使用 `ApplicationContext`，就能复用这些启动步骤。
+直接用 `DefaultListableBeanFactory` 时，后处理器要调用者自己执行和注册。只注册业务 Bean 的定义，注解注入和 AOP 都不会生效，因为负责它们的处理器根本没有注册。应用开发用 `ApplicationContext`，这些启动步骤就都由它完成了。
 
 ## 6. 单例预实例化 {#单例预实例化}
 
-单例预实例化让容器在启动时尽早发现配置问题。ApplicationContext 刷新时会创建非懒加载单例，因此缺失依赖、构造异常和配置错误会直接导致启动失败。`@Lazy` 将创建推迟到首次获取，创建成本和错误也随之延后。
+**单例预实例化**是指 `ApplicationContext` 刷新时就创建所有非懒加载的单例。好处是问题暴露得早：缺少依赖、构造器抛异常、配置写错，都会让启动直接失败，而不是等到第一次请求。`@Lazy` 把创建推迟到第一次获取，创建成本和可能的错误也一起推后。
 
-若非懒加载单例直接依赖 lazy Bean，依赖解析仍会创建后者。注入点的 `@Lazy` 代理可继续推迟实际获取。
+不过，如果一个非懒加载单例直接依赖某个 lazy Bean，解析依赖时仍然会把后者创建出来。想继续推迟，可以在注入点上加 `@Lazy`，注入的是一个代理，第一次真正使用时才去获取目标 Bean。
 
-排查启动慢时，应分别测量以下**几类耗时**：
+排查启动慢时，要分别测量几段耗时：
 
-- 类路径扫描与定义解析花了多久。
-- 后处理器执行和 Bean 构造花了多久。
-- 外部连接、数据库迁移脚本和初始化任务分别等待了多久。
+- 类路径扫描和定义解析。
+- 后处理器执行和 Bean 构造。
+- 外部连接、数据库迁移脚本和初始化任务的等待。
 
-日志最后出现的 Bean 只说明程序执行到了哪里。结合各阶段耗时，才能判断实际卡在哪一步。
+日志里最后出现的 Bean 只说明程序执行到了哪里，不说明时间花在了哪里。结合各阶段的耗时，才能判断实际卡在哪一步。
 
 ## 7. `FactoryBean` 与 `BeanFactory` {#factorybean-与-beanfactory}
 
-这两个接口名称相近，但承担的职责不同。`BeanFactory` 是管理 Bean 的容器接口，`FactoryBean<T>` 则是容器管理的特殊 Bean，用来生产其他对象。
+这两个接口名字相近，职责完全不同。`BeanFactory` 是管理 Bean 的容器接口；**`FactoryBean<T>`** 则是容器里的一种特殊 Bean，它的作用是生产别的对象。
 
-假设工厂名为 `client`，`getBean("client")` 返回它通过 `getObject()` 生产的对象。名称加上 `&` 后，`getBean("&client")` 才返回工厂本身。按类型查找时，容器还会读取 `getObjectType()` 提供的产品类型。
+假设一个工厂 Bean 名叫 `client`。`getBean("client")` 返回的不是工厂，而是它通过 `getObject()` 生产的对象；名字前加上 `&`，`getBean("&client")` 才返回工厂本身。按类型查找时，容器通过 `getObjectType()` 得知产品的类型。
 
-`isSingleton()` 声明工厂是否提供共享产品。工厂自身为 singleton 且该值为 true 时，容器缓存产品。工厂定义的作用域与产品共享语义需分别判断。
+产品是否共享由 `isSingleton()` 声明。工厂自身是 singleton，并且 `isSingleton()` 返回 `true` 时，容器会缓存产品，之后每次获取都是同一个对象。所以工厂定义的作用域和产品是否共享，要分开判断。
 
-容器管理 FactoryBean 自身的销毁。产品资源需由工厂或其他明确所有者负责释放。
+容器负责销毁 FactoryBean 自身；产品持有的资源，要由工厂或其他明确的所有者负责释放。
 
 ## 8. 注册表后处理器 {#注册表后处理器}
 
-配置类解析会发现新的组件，因此容器需要一个能够继续注册定义的扩展点。`BeanDefinitionRegistryPostProcessor` 扩展了工厂后处理器接口。容器先调用它的 `postProcessBeanDefinitionRegistry()` 注册额外定义，再调用 `postProcessBeanFactory()` 处理工厂元数据。
+解析配置类时会不断发现新组件，所以容器需要一个能在处理过程中继续注册定义的扩展点。**`BeanDefinitionRegistryPostProcessor`** 就是这个扩展点，它扩展了 `BeanFactoryPostProcessor`。容器先调用它的 `postProcessBeanDefinitionRegistry()` 注册额外的定义，再调用 `postProcessBeanFactory()` 处理工厂元数据。
 
-`ConfigurationClassPostProcessor` 属于注册表后处理器。它解析 `@Configuration`、`@Bean`、扫描和导入关系。定义集合因此在处理过程中继续扩展。
+`ConfigurationClassPostProcessor` 就是一个注册表后处理器。它解析 `@Configuration`、`@Bean`、组件扫描和导入关系，把发现的组件加进定义集合。正因为它在普通工厂后处理器之前执行，后面的处理器才能看到这些新定义。
 
-通过 `@Bean` 声明这类处理器时，方法宜为 `static`。这样，容器调用工厂方法时就无需提前创建所属配置类。需要控制处理器顺序时，可实现 `PriorityOrdered` 或 `Ordered`。
+用 `@Bean` 声明这类处理器时，方法最好写成 `static`。这样容器调用工厂方法时不需要先创建它所在的配置类，避免配置类被过早实例化。需要控制处理器顺序时，可以实现 `PriorityOrdered` 或 `Ordered`。
 
 ## 9. 配置类的 Bean 方法调用 {#配置类的-bean-方法调用}
 
-配置方法互相调用时，需要判断取得的是受管 Bean，还是再次执行方法体创建的对象。`@Configuration` 默认使用 `proxyBeanMethods=true`。容器会增强配置类，拦截其中 `@Bean` 方法的相互调用，让被调用方法通过容器获取对应 Bean。
+`proxyBeanMethods` 决定配置类内部的 `@Bean` 方法调用是否经过容器。`@Configuration` 默认使用 `proxyBeanMethods=true`：容器会增强配置类，拦截这些相互调用，改为按 Bean 的作用域从容器获取对象。
 
-`proxyBeanMethods=false` 时，配置类保留普通 Java 调用语义。直接调用另一个 `@Bean` 方法，会再次执行方法体。若方法体执行 `new`，就会得到额外对象。
+`proxyBeanMethods=false` 时，配置类就是普通 Java 类。直接调用另一个 `@Bean` 方法会再执行一次方法体，方法体里有 `new` 的话，就会多出一个不受容器管理的对象。这时应该改用方法参数声明依赖：
 
 ```java
 @Configuration(proxyBeanMethods = false)
@@ -133,25 +133,23 @@ class ClientConfiguration {
 }
 ```
 
-示例通过方法参数声明依赖。容器先解析 `Client`，再传给工厂方法。即使关闭配置类代理，也能使用受管依赖。
+`clientService` 没有调用 `client()`，而是把 `Client` 写成参数。容器先解析出受管的 `Client`，再传进工厂方法，所以即使关闭了配置类代理，拿到的也是容器里的那一份。
 
-普通 `@Component` 中的 `@Bean` 方法也采用这种轻量模式。Bean 的注册与作用域仍由容器管理。变化的是配置方法之间的直接调用行为。
+普通 `@Component` 里的 `@Bean` 方法也是这种轻量模式。Bean 的注册和作用域仍由容器管理，变化的只是配置方法之间直接调用的行为。
 
 ## 10. 常见问题 {#常见问题}
 
-### 10.1 定义与实例的创建时机 {#定义与实例的创建时机}
+### 10.1 定义已经注册，为什么构造器还没执行？ {#定义与实例的创建时机}
 
-定义注册只说明容器已经知道怎样创建对象。非懒加载 singleton 会随上下文刷新创建，lazy 单例可推迟到首次获取。prototype 则在每次向容器获取时新建实例。
+注册定义只让容器知道怎样创建对象，并不立即执行构造器。普通非懒加载单例在上下文刷新时创建，懒加载单例在首次获取或被其他 Bean 依赖时创建，prototype 则在每次向容器获取时新建。
 
-### 10.2 两类后处理器的处理对象 {#两类后处理器的处理对象}
+### 10.2 要修改 Bean 的配置值，应该使用哪类后处理器？ {#两类后处理器的处理对象}
 
-`BeanFactoryPostProcessor` 处理定义元数据。`BeanPostProcessor` 处理实例，并能返回包装对象。
+如果要改变后续创建对象时使用的配置，使用 `BeanFactoryPostProcessor` 修改定义。如果要检查已经创建的实例，或返回包装对象替代它，则使用 `BeanPostProcessor`。选择依据是要处理定义还是实例。
 
 ## 11. 面试题 {#面试题}
 
 ### 11.1 BeanFactory 与 ApplicationContext 有什么区别 {#beanfactory-vs-applicationcontext}
-
-
 
 **考察重点**：说明对象管理与后处理器自动注册的区别，并解释预实例化为何还受 lazy 设置影响。
 
@@ -164,14 +162,13 @@ class ClientConfiguration {
 
 前者负责定义管理、创建对象、解析依赖和管理作用域。后者自动发现并注册后处理器，还集成环境、事件、资源加载、国际化和生命周期管理。
 
-单例是否预创建，取决于刷新过程与 lazy 设置。该行为只是一项差异，完整引导能力才是两者的主要分工。
+`ApplicationContext` 刷新时还会预先创建非懒加载单例。懒加载单例可以延后创建，所以不能简单地把两者概括成「一个立即创建，一个延迟创建」。
 
 </details>
 
 ### 11.2 配置类解析为什么使用 BeanDefinitionRegistryPostProcessor？ {#registry-postprocessor}
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
-
 
 **考察重点**：解释配置类解析为何会增加定义，以及注册表后处理器为何要早于普通工厂后处理器执行。
 
@@ -192,7 +189,6 @@ class ClientConfiguration {
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
-
 **考察重点**：说明普通名称与 `&` 前缀各取得什么对象，并判断产品何时被缓存、由谁清理。
 
 **相关内容**：[`FactoryBean` 与 `BeanFactory`](#factorybean-与-beanfactory)。
@@ -211,7 +207,6 @@ class ClientConfiguration {
 ### 11.4 proxyBeanMethods=false 后，直接调用另一个 Bean 方法会怎样？ {#configuration-bean-methods}
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
-
 
 **考察重点**：解释关闭配置类代理后的方法调用行为，并说明参数注入怎样取得受管依赖。
 
