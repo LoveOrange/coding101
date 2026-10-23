@@ -9,21 +9,21 @@ keywords: ["Collectors", "groupingBy", "toMap", "Stream 归约", "收集器结�
 
 # Collector
 
-`Collector` 是 Stream 的收集规则，用来定义容器怎样创建、元素怎样加入，以及最终怎样返回结果。`collect` 按这些规则，把流中的元素累积为列表、Map 或自定义对象。
+`Collector` 是 Stream 的收集规则：它规定容器怎样创建、元素怎样加入、最后返回什么结果。`collect` 按这套规则，把流里的元素累积成列表、Map 或自定义对象。
 
-本文先解释可变归约和 Collector 的组成，再说明列表收集、键冲突与分组统计。最后介绍单位元、结合律和并发收集，判断同一套规则在并行执行时是否仍然正确。
+平时写 `Collectors.toList()`、`groupingBy` 时，很少需要想这些规则；但遇到 `toMap` 抛出重复键异常、结果顺序不对、或者串行正确而并行出错时，就得回到规则本身。要讲清 Collector，抓住两件事：常用收集器在去重、顺序、键冲突和空值上各有什么约定；一套收集或归约规则要满足什么条件，才能在并行执行时得到同样的结果。
 
 ## 1. 面试核心 {#core}
 
-- **collect 与 reduce。** `collect` 适合把元素累积到可变容器，`reduce` 适合把元素合并成一个不可变值。[卡](#collect-vs-reduce)
-- **并行容器隔离。** 普通并行收集为各分区创建独立容器，再由 `combiner` 合并部分结果。
-- **键冲突。** 两参数 `toMap` 遇到重复键会抛出 `IllegalStateException`，合并函数决定键冲突时保留哪个值。[卡](#to-map-duplicates)
-- **下游收集器。** `groupingBy` 按分类键分组，下游收集器决定每组保存列表、计数还是其他统计结果。
-- **归约规则。** 归约的初始值须满足单位元要求，合并规则须满足结合律，才能让不同分区得到等价结果。[卡](#collector-identity-concurrency)
+- **`collect` 适合把元素累积到可变容器**，**`reduce` 适合把元素合并成一个不可变值**；用 `reduce` 修改共享的可变容器，并行时会出错。[卡](#collect-vs-reduce)
+- 两参数 `toMap` 遇到重复键会**抛出 `IllegalStateException`**，第三个参数（合并函数）决定冲突时保留哪个值。[卡](#to-map-duplicates)
+- `groupingBy` 按分类键分组，**下游收集器决定每组保存的是列表、计数还是其他统计结果**。
+- 归约的初始值必须是**单位元**，合并规则必须满足**结合律**，不同的分区方式才能得到等价结果。[卡](#collector-identity-concurrency)
+- 普通并行 `collect` **为每个分区创建独立容器**，再由 `combiner` 合并，所以可以用 `ArrayList` 这类非线程安全容器。
 
 ## 2. 可变归约 {#可变归约}
 
-可变归约指把元素逐个加入可修改的容器，最后返回累积结果。比如，要把活跃用户收集到列表，可以写成：
+**可变归约**是把元素逐个加入一个可修改的容器，最后返回这个容器（或由它转换出的结果）。比如要把活跃用户收集到列表：
 
 ```java
 List<User> activeUsers = users.stream()
@@ -31,17 +31,17 @@ List<User> activeUsers = users.stream()
     .collect(Collectors.toCollection(ArrayList::new));
 ```
 
-这段顺序流会按**创建、累积和返回**完成收集：
+顺序流执行时，收集过程分三步：
 
 1. 创建一个空 `ArrayList`。
-2. 遍历元素并调用 `add`。
+2. 遍历元素，逐个调用 `add`。
 3. 返回累积完成的列表。
 
-结果是一个只包含活跃用户的可修改 `ArrayList`。容器由收集过程创建和修改，调用方无需维护外部共享列表。并行执行时，输入会拆成多个分区，每个分区先使用自己的容器，再按 Collector 的规则合并。
+结果是一个只包含活跃用户、可以修改的 `ArrayList`。容器由收集过程自己创建和修改，调用方不用在外面维护一个共享列表。并行执行时，输入会被拆成多个分区，每个分区先用自己的容器累积，最后再按 Collector 的规则合并。
 
 ### 2.1 collect 与 reduce {#collect-与-reduce}
 
-选择 `collect` 还是 `reduce`，取决于累积时是否要修改容器。`reduce` 更适合把元素合成一个不可变值，比如计算订单金额总和：
+用 `collect` 还是 `reduce`，看累积时要不要修改容器。`reduce` 更适合把元素合成一个不可变的值，比如计算订单金额总和：
 
 ```java
 int total = orders.stream()
@@ -49,9 +49,9 @@ int total = orders.stream()
     .reduce(0, Integer::sum);
 ```
 
-上面从 0 开始累加每笔金额，得到整数总和，空流返回 0。初始值 0 称为 identity，也就是参与运算后不改变结果的单位元。
+这里从 0 开始累加每笔金额，空流直接返回 0。初始值 0 叫作 **identity**（单位元），也就是参与运算后不改变结果的值：`0 + x` 还是 `x`。
 
-若用同一套方式修改一个共享 `ArrayList`，并行归约就会出错：
+如果套用同样的写法去修改一个共享的 `ArrayList`，并行时就会出错：
 
 ```java
 // 错误示例：并行时多个任务可能共享并修改 identity
@@ -68,17 +68,17 @@ List<User> result = users.parallelStream().reduce(
 );
 ```
 
-上面的初始列表只有一个，多个并行任务会拿到同一引用并修改它。列表一旦变化，就失去了空列表作为初始值的作用，累积与合并还会互相干扰。收集可变容器时，应使用 `collect` 的供应函数为各分区创建独立容器。
+问题出在初始列表只有一个。`reduce` 会把同一个 identity 交给每个并行任务，于是所有任务都在往同一个 `ArrayList` 里 `add`。这个列表一旦被改动，就不再是「空列表」，失去了单位元的意义；多个线程同时修改 `ArrayList` 还可能丢数据，合并时 `addAll` 又会把同一批元素重复加入。收集可变容器应该用 `collect`，由它的供应函数为每个分区各自创建容器。
 
 ## 3. Collector 的组成 {#collector-的组成}
 
-理解自定义收集器，需要先区分输入元素、中间容器和最终结果。`Collector<T, A, R>` 用**三个类型参数**分别表示它们：
+自定义收集器之前，先要分清三样东西：输入元素、中间容器和最终结果。`Collector<T, A, R>` 用三个类型参数分别表示它们：
 
 - `T`：Stream 中的元素类型。
-- `A`：内部累积容器类型。
-- `R`：最终结果类型。
+- `A`：内部累积容器的类型。
+- `R`：最终结果的类型。
 
-收集器再用以下**五个组成部分**描述操作：
+然后用五个组成部分描述收集过程：
 
 | 组成部分 | 作用 |
 | --- | --- |
@@ -103,13 +103,13 @@ String names = users.stream()
     .collect(commaSeparated);
 ```
 
-这里 `T` 和 `R` 都是 `String`，中间容器 `A` 则是 `StringJoiner`。收集器把显示名加入拼接器，最后返回用逗号和空格分隔的字符串。并行时，`merge` 先合并各分区的拼接器，再转换为字符串。
+这里 `T` 和 `R` 都是 `String`，中间容器 `A` 是 `StringJoiner`。每个显示名通过 `add` 加入拼接器，最后 `toString` 返回用逗号和空格分隔的字符串。并行时，各分区先各自拼接，再用 `merge` 合并成一个拼接器，最后转换为字符串。
 
-串行收集无需合并分区，但 `combiner` 仍要满足正确的合并规则。否则，自定义 Collector 改成并行执行后，就会丢数据或产生错误顺序。
+即使你只打算串行使用，`combiner` 也要写对。串行时它确实不会被调用，但哪天有人把流改成并行，一个敷衍的 `combiner` 就会丢数据或打乱顺序。
 
 ## 4. List 与 Set 收集 {#收集到-list-与-set}
 
-收集到列表或集合时，要先决定是否去重、是否保持顺序，以及结果是否允许修改。下面集中展示**列表、集合和指定容器**的写法：
+收集到列表或集合时，要先想清楚三件事：要不要去重，要不要保持顺序，结果允不允许修改。下面把几种写法放在一起：
 
 ```java
 List<String> names = users.stream()
@@ -129,20 +129,31 @@ LinkedHashSet<String> orderedRoles = users.stream()
     .collect(Collectors.toCollection(LinkedHashSet::new));
 ```
 
-选择时，需要比较**去重、顺序和可修改性**：
+它们的区别：
 
-- `names` 收集所有显示名。`Collectors.toList()` 的契约未规定具体实现、可变性、线程安全性或可序列化性。
-- `roles` 用 Set 去重。`flatMap` 先展开每个用户的角色，再把角色收集到集合。
+- `names` 收集所有显示名。`Collectors.toList()` 的契约没有规定具体实现、可变性、线程安全性或可序列化性，所以不要依赖它返回的是可修改的 `ArrayList`。
+- `roles` 用 Set 去重。`flatMap` 先把每个用户的角色展开成一个流，再收集到集合里。
 - `immutableNames` 是不可修改列表，`toUnmodifiableList()` 遇到 null 元素会抛出异常。
-- `orderedRoles` 明确使用 `LinkedHashSet`，在去重的同时保留角色首次出现的顺序。
+- `orderedRoles` 明确指定了 `LinkedHashSet`，去重的同时保留角色第一次出现的顺序。
 
-需要明确的容器能力时，应像最后一例那样指定工厂。`Stream.toList()` 则明确返回不可修改列表，它与 `Collectors.toList()` 的契约不同。
+需要确定的容器能力时，就像最后一例那样用 `toCollection` 指定工厂。
+
+Java 16 起还有 `Stream.toList()`，它明确返回不可修改列表，契约和 `Collectors.toList()` 不同。几种列表结果对比如下：
+
+| 列表结果 | 可修改性 | null 与版本 |
+| --- | --- | --- |
+| `Stream.toList()` | 不可修改 | 支持 null，Java 16 起 |
+| `Collectors.toList()` | 无可修改性承诺 | 不宜依赖具体实现 |
+| `Collectors.toUnmodifiableList()` | 不可修改 | 拒绝 null，Java 10 起 |
+| `toCollection(ArrayList::new)` | 可修改 | 支持 null |
+
+「不可修改」限制的是列表的添加、删除和替换。如果列表里放的是可变对象，对象自己的字段仍然可以改，所以列表只读和元素不可变要分开判断。
 
 ## 5. toMap 与键冲突 {#tomap-与键冲突}
 
-把列表转成 Map 时，需要先决定键是什么，以及同一个键遇到多个值时怎样处理。`toMap` 用键函数和值函数完成转换，`Function.identity()` 表示直接使用输入对象作为值。
+把列表转成 Map，要先决定键是什么，以及同一个键对应多个值时怎么办。`toMap` 接收键函数和值函数，`Function.identity()` 表示直接把输入对象本身作为值。
 
-下面对比**唯一键、重复键和固定顺序**三种需求：
+下面对比三种需求：键唯一、键会重复、需要固定的遍历顺序：
 
 ```java
 Map<Long, User> usersById = users.stream()
@@ -166,19 +177,17 @@ Map<String, User> ordered = users.stream()
     ));
 ```
 
-对应的**映射结果与冲突规则**如下：
+- `usersById` 按用户 ID 建立映射。两参数版本要求键唯一，只要出现重复键就抛出 `IllegalStateException`，它不会替你随便选一个。
+- `latestByEmail` 按邮箱建立映射，第三个参数是**合并函数**：同一个邮箱出现两次时，保留更新时间较晚的用户；时间相同时，这个示例保留右值，也就是后遇到的那个。
+- `ordered` 用第四个参数指定 `LinkedHashMap`，键按第一次遇到的顺序遍历；重复邮箱的值由后遇到的用户替换。
 
-- `usersById` 按用户 ID 建立映射。两参数版本要求键唯一，遇到重复键就抛出 `IllegalStateException`。
-- `latestByEmail` 按邮箱建立映射，第三个参数选择更新时间较晚的用户。时间相同时，这个示例保留右值。
-- `ordered` 用第四个参数指定 `LinkedHashMap`。键按首次遇到的顺序遍历，重复邮箱的值则由后遇到的用户替换。
-
-合并函数决定遇到数据冲突时保留什么。选择左值、右值或合成新值，都应有明确的业务依据；若一个键本来就对应多人，可以使用下一节的分组方式。
+合并函数决定冲突时留下什么。选左值、右值还是合成一个新值，都要有明确的业务依据。如果一个键本来就对应多个对象，比如同名的多个人，就不该用合并函数丢掉其中一些，而应该用下一节的分组。
 
 ## 6. groupingBy 与下游 Collector {#groupingby-与下游-collector}
 
-`groupingBy` 先按分类函数得到的键分组，再处理各组元素。默认每组保存一个 List，传入下游 Collector 后，则由它决定每组的结果。
+`groupingBy` 先用分类函数算出每个元素的键，按键分组，再处理每组的元素。默认每组收集成一个 List；传入**下游 Collector** 后，由它决定每组的结果是什么。
 
-下面对比**分组列表、组内计数和角色去重**：
+下面三个例子都按部门分组，区别在于每组收集成什么：
 
 ```java
 Map<Department, List<User>> usersByDepartment = users.stream()
@@ -200,34 +209,32 @@ Map<Department, Set<String>> roleNames = users.stream()
     ));
 ```
 
-三个结果都以部门为键，每组的**值类型与内容**不同：
+- `usersByDepartment` 的每个值是该部门的用户列表，类型是 `List<User>`。
+- `counts` 用 `counting()` 统计每组的用户数，每个值是 `Long`。
+- `roleNames` 用 `flatMapping` 把组内用户的角色展开，再用 `toSet()` 去重，每个值是 `Set<String>`。
 
-- `usersByDepartment` 的每个值是该部门的用户列表，类型为 `List<User>`。
-- `counts` 用 `counting()` 统计组内用户数，每个值是 `Long`。
-- `roleNames` 用 `flatMapping` 展开组内用户的角色，再用 `toSet()` 去重，每个值是 `Set<String>`。
+其他常用的下游收集器：
 
-还可以按需要组合以下**下游收集器**：
-
-- `mapping` 先转换每个组内元素，再交给下游收集。
-- `filtering` 只收集组内满足条件的元素。已出现的分类键即使没有元素通过过滤，也会保留空组。
-- `summingInt` 与 `averagingLong` 分别计算组内数值总和与平均值。
-- `maxBy` 与 `minBy` 按比较器寻找组内最大值与最小值。
-- `collectingAndThen` 在下游收集完成后，再把结果转换为需要的类型。
+- `mapping`：先转换组内每个元素，再交给下游收集。
+- `filtering`：只收集组内满足条件的元素。注意，已经出现过的分类键即使没有元素通过过滤，也会保留为一个空组。
+- `summingInt`、`averagingLong`：计算组内数值的总和与平均值。
+- `maxBy`、`minBy`：按比较器找出组内的最大值和最小值。
+- `collectingAndThen`：下游收集完成后，再把结果转换成需要的类型。
 
 ### 6.1 partitioningBy {#partitioningby}
 
-按一个条件把元素分成两类时，可以使用 `partitioningBy`。比如，把用户分成活跃与非活跃两组：
+只按一个条件把元素分成两类时，用 `partitioningBy`。比如把用户分成活跃和非活跃两组：
 
 ```java
 Map<Boolean, List<User>> partition = users.stream()
     .collect(Collectors.partitioningBy(User::active));
 ```
 
-结果 Map 固定包含 `true` 和 `false` 两个键，对应活跃与非活跃用户列表。即使某一类没有用户，其列表也会保留为空。按部门等多个业务键分类时，则使用 `groupingBy`。
+结果 Map 固定有 `true` 和 `false` 两个键，分别对应活跃和非活跃用户的列表；即使某一类一个用户都没有，它的列表也会以空列表保留。这一点和 `groupingBy` 不同，`groupingBy` 只为实际出现过的键建组。按部门这类多值业务键分类时，用 `groupingBy`。
 
 ## 7. 结合律 {#结合律}
 
-并行归约会把数据拆到不同分区，改变括号分组和合并次序。要让这些执行方式得到等价结果，合并操作必须满足结合律，也就是改变括号分组后结果相同：
+并行归约会把数据拆到不同分区分别计算，再把部分结果合并起来，这相当于改变了运算的括号分组。要让不同的拆分方式得到相同结果，合并操作必须满足**结合律**，也就是换一种括号分组，结果不变：
 
 ```text
 (a op b) op c == a op (b op c)
@@ -240,45 +247,32 @@ int value = Stream.of(10, 3, 2)
     .reduce(0, (left, right) -> left - right);
 ```
 
-上面的顺序流算出 `((0-10)-3)-2=-15`。但 `(10-3)-2=5`，而 `10-(3-2)=9`，说明减法会因括号分组变化而改变结果。因此，这种减法归约不适合并行执行。
+顺序流算出的是 `((0-10)-3)-2=-15`。但 `(10-3)-2=5`，而 `10-(3-2)=9`，括号一换结果就变了。所以这种减法归约不能并行执行，并行时得到什么值取决于怎么拆分。
 
-浮点加法也受有限精度与舍入影响，不满足严格结合律。改变合并次序时，即使输入相同，结果仍会有数值差异。
+浮点加法也不满足严格的结合律，因为每一步都有舍入误差。合并次序变了，即使输入相同，结果也可能有微小差异。
 
-自定义 Collector 还要满足以下**归约契约**：
+自定义 Collector 还要满足这些契约：
 
-- 同一个输入在等价分区方式下得到等价结果。
-- `combiner` 能合并两个独立累积容器。
-- 声明 `CONCURRENT` 前，累积容器和累积操作确实支持并发。
+- 同一个输入，不管怎样分区，都得到等价的结果。
+- `combiner` 能正确合并两个独立的累积容器。
+- 声明 `CONCURRENT` 之前，确认累积容器和累积操作确实支持并发。
 - 声明 `IDENTITY_FINISH` 时，`A` 能直接作为 `R` 返回。
 
 ## 8. 归约单位元与并发收集 {#归约单位元与并发收集}
 
-结合律决定能否改变分组，单位元则决定初始值是否会改变结果。`reduce(identity, op)` 要求 `op(identity, x)` 等于 `x`。求和的单位元是 0；若使用 1，每个并行分区都会额外累计一次初始值。
+结合律决定能不能改变分组，单位元决定初始值会不会改变结果。`reduce(identity, op)` 要求 `op(identity, x)` 等于 `x`。求和的单位元是 0；如果写成 1，每个并行分区都会从 1 开始累加，分成 4 个分区，结果就多出 4。
 
-三参数 `reduce` 还要求累积函数与合并函数兼容。也就是说，直接把一个元素累积到当前结果，与先把该元素和单位元累积、再合并，必须得到相同结果。
+三参数 `reduce` 还要求累积函数和合并函数兼容：把一个元素直接累积到当前结果上，和先把它累积到单位元上、再合并到当前结果，两种做法必须得到相同的结果。
 
-普通 `collect` 用供应函数为各分区创建独立容器，各容器在累积时由单个线程使用。所以，非并发收集器可以使用 `ArrayList`，再由 `combiner` 合并结果，避免同时修改同一个列表。
+普通 `collect` 不存在共享容器的问题：供应函数为每个分区创建独立的容器，每个容器在累积时只被一个线程使用。所以非并发收集器可以放心用 `ArrayList`，最后由 `combiner` 把各分区的结果合起来。
 
-要让多个线程共享同一容器累积，收集器需声明 `CONCURRENT`，并真正支持并发写入。流还须无序，或收集器同时声明 `UNORDERED`，表示结果无需保留遇到顺序。`IDENTITY_FINISH` 则表示累积容器可以直接作为最终结果，框架能够省去转换。
-
-选择最终列表类型时，还要区分**可修改性与 null 支持**：
-
-| 列表结果 | 可修改性 | null 与版本 |
-| --- | --- | --- |
-| `Stream.toList()` | 不可修改 | 支持 null，Java 16 起 |
-| `Collectors.toList()` | 无可修改性承诺 | 不宜依赖具体实现 |
-| `Collectors.toUnmodifiableList()` | 不可修改 | 拒绝 null，Java 10 起 |
-| `toCollection(ArrayList::new)` | 可修改 | 支持 null |
-
-不可修改限制的是列表的添加、删除和替换操作。若列表中存放可变对象，仍可以修改对象自己的字段，所以列表只读与元素不可变要分别判断。
+如果想让多个线程往同一个容器里累积，收集器必须声明 `CONCURRENT`，并且容器真的支持并发写入（例如 `ConcurrentHashMap`）。此外，流本身要是无序的，或者收集器同时声明 `UNORDERED`，表示结果不需要保留遇到顺序；否则框架仍会按普通方式为分区创建独立容器。另一个特征 `IDENTITY_FINISH` 表示累积容器可以直接作为最终结果，框架可以省掉 `finisher` 这一步。
 
 ## 9. 常见问题 {#常见问题}
 
-选好收集器后，还需要确认顺序、并发收益和空值约束是否符合调用方要求。下面分别说明这些边界。
-
 ### 9.1 groupingBy 会保留输入顺序吗？ {#分组结果顺序}
 
-有序流配合 `toList` 下游时，组内列表保留遇到顺序，默认外层 Map 则没有键顺序承诺。若外层键需要按首次出现的顺序遍历，应指定 `LinkedHashMap`；需要按键排序时，则使用 `TreeMap`。
+组内会，外层 Map 不保证。有序流配合 `toList` 下游时，每组的列表保留遇到顺序；但默认的外层 Map 对键的顺序没有承诺。需要外层键按第一次出现的顺序遍历时，指定 `LinkedHashMap`；需要按键排序时，用 `TreeMap`。
 
 ```java
 Map<Department, List<User>> ordered = users.stream()
@@ -289,31 +283,29 @@ Map<Department, List<User>> ordered = users.stream()
     ));
 ```
 
-这个结果中，部门按首次出现的顺序遍历，每个部门内的用户也保留原有遇到顺序。
+这个结果里，部门按第一次出现的顺序遍历，每个部门内的用户也保持原来的遇到顺序。
 
 ### 9.2 groupingByConcurrent 一定更快吗？ {#并发分组的竞争成本}
 
-不一定，收益要看数据规模、键分布和下游收集的开销。`groupingByConcurrent` 返回 `ConcurrentMap`，采用无序收集语义，允许并发累积。它减少部分结果的合并工作，但大量元素集中到同一个热点键时，又会增加竞争。因此，应在接受无序结果的前提下，比较实际负载中的累积与合并成本。
+不一定，要看数据规模、键的分布和下游收集的开销。`groupingByConcurrent` 返回 `ConcurrentMap`，采用无序收集语义，多个线程往同一个 Map 里累积，省掉了合并部分结果的工作。但如果大量元素都落在同一个热点键上，线程会在这个键上互相竞争。所以前提是能接受无序结果，然后在实际负载下比较累积和合并的成本。
 
 ### 9.3 怎样同时计算多个统计值？ {#复合统计}
 
-可以用 `summarizingInt` 一次得到数量、总和、最小值、最大值和平均值。`teeing` 从 Java 12 起提供，在 Java 17 与 21 中也可使用。它让两个收集器处理同一批输入，再合并它们的结果。统计口径复杂时，可以定义有明确字段名的结果类型，让各项结果比嵌套 Map 更容易理解。
+数值统计可以用 `summarizingInt`，一次得到数量、总和、最小值、最大值和平均值。两个不相关的统计可以用 `teeing`（Java 12 起提供，Java 17 与 21 都可用）：它让两个收集器处理同一批输入，再用一个函数合并它们的结果。统计口径复杂时，定义一个字段名明确的结果类型，比嵌套 Map 更容易读懂。
 
 ### 9.4 收集结果可以包含 null 吗？ {#收集器的空值约束}
 
-是否支持 null，要看收集器与目标容器的具体契约。常见的**空值约束**如下：
+要看收集器和目标容器各自的契约，两者都允许才行。常见的约束：
 
-- OpenJDK 21 的 `toMap` 拒绝值映射函数返回 null，键能否为 null 还取决于 Map 实现。
-- `groupingBy` 拒绝分类函数返回 null，所以分组前要处理缺少分类键的元素。
-- `toUnmodifiableList` 与 `toUnmodifiableSet` 拒绝 null 元素，`toUnmodifiableMap` 拒绝 null 键和值。
+- OpenJDK 21 的 `toMap` 不接受值映射函数返回 null；键能不能为 null，还取决于具体的 Map 实现。
+- `groupingBy` 不接受分类函数返回 null，所以分组前要先处理缺少分类键的元素。
+- `toUnmodifiableList` 和 `toUnmodifiableSet` 拒绝 null 元素，`toUnmodifiableMap` 拒绝 null 键和值。
 
-某个容器允许 null，也需要同时满足上层收集器的要求。
+也就是说，即使目标容器（比如 `HashMap`）本身允许 null，上层收集器不允许，结果也一样会抛异常。
 
 ## 10. 面试题 {#面试题}
 
 ### 10.1 使用 Stream 把人员列表转换成 Map，重复姓名怎样处理 {#to-map-duplicates}
-
-
 
 **考察重点**：解释键函数、值函数与合并函数各自做什么。能按业务决定重复姓名保留一人还是分组保存，并明确结果 Map 的遍历顺序。
 
@@ -322,17 +314,15 @@ Map<Department, List<User>> ordered = users.stream()
 <details>
 <summary>参考回答</summary>
 
-**重复姓名可以用 `toMap` 的合并函数处理；若需要保留同名的所有人，则应按姓名分组。**
+**重复姓名可以用 `toMap` 的合并函数处理；如果同名的人都要保留，就应该按姓名分组。**
 
-具体可写成 `Collectors.toMap(Person::name, Function.identity(), mergeFunction)`。前两个参数分别选择姓名和人员对象，第三个参数决定同名时保留什么。两参数版本遇到重复键会抛出 `IllegalStateException`。
+写法是 `Collectors.toMap(Person::name, Function.identity(), mergeFunction)`：前两个参数分别取姓名和人员对象，第三个参数决定同名时保留什么。只用两参数版本的话，遇到重复键会抛出 `IllegalStateException`。
 
-若姓名本来就对应多人，`groupingBy(Person::name)` 能保留完整列表。业务只需要一条时，再按版本、更新时间或明确优先级选择。若还需要按键首次出现的顺序遍历，可通过第四个参数指定 `LinkedHashMap::new`。
+如果一个姓名本来就对应多人，用 `groupingBy(Person::name)` 保留完整列表。业务只需要一条时，再按版本、更新时间或明确的优先级选择。如果还要求按键第一次出现的顺序遍历，用第四个参数指定 `LinkedHashMap::new`。
 
 </details>
 
 ### 10.2 collect 和 reduce 应该怎样选择 {#collect-vs-reduce}
-
-
 
 **考察重点**：区分不可变值归约与可变容器累积，说明单位元、累积函数和合并函数的契约。能解释共享容器为何在并行时出错。
 
@@ -341,18 +331,17 @@ Map<Department, List<User>> ordered = users.stream()
 <details>
 <summary>参考回答</summary>
 
-**累积列表、Map 等可变容器时使用 `collect`，合成求和、最值等不可变结果时使用 `reduce`。**
+**累积到列表、Map 等可变容器时用 `collect`，合成求和、最值等不可变结果时用 `reduce`。**
 
-普通 `collect` 为各分区创建独立容器，再通过 combiner 合并。`reduce` 则用初始值与归约函数不断产生新结果，初始值必须满足单位元要求，累积与合并也要兼容。
+普通 `collect` 为每个分区创建独立容器，最后通过 combiner 合并。`reduce` 则从初始值出发，用归约函数不断产生新的结果，初始值必须是单位元，累积函数和合并函数也要兼容。
 
-两者在并行时都要求组合规则满足结合律。若 reduce 的初始值是同一个可变列表，各分区会修改同一引用，破坏单位元和独立累积的要求。因此，串行测试通过后，还要检查并行归约契约。
+两者在并行时都要求合并规则满足结合律。如果 reduce 的初始值是一个可变列表，所有分区都会修改同一个引用，既破坏了单位元，也破坏了各分区独立累积的前提。所以串行测试通过了，还要按并行归约的契约检查一遍。
 
 </details>
 
 ### 10.3 并行 collect 为什么可以使用 ArrayList，而 reduce 的初始值有额外约束？ {#collector-identity-concurrency}
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
-
 
 **考察重点**：解释分区容器隔离怎样支持普通并行收集，以及归约单位元和并发特性分别约束什么。
 
@@ -361,11 +350,11 @@ Map<Department, List<User>> ordered = users.stream()
 <details>
 <summary>参考回答</summary>
 
-**普通并行 `collect` 让各分区独立使用 ArrayList，再合并结果；`reduce` 的初始值则必须满足单位元要求。**
+**普通并行 `collect` 让每个分区独立使用一个 ArrayList，最后再合并；`reduce` 的初始值会被每个分区复用，所以必须是单位元。**
 
-分区容器在累积时由单个线程使用，所以 ArrayList 无需承受并发写入。reduce 若用 1 作为求和初值，每个分区都会额外加一次 1；若共享并修改同一个列表，初始值本身也会变化。
+分区容器在累积时只被一个线程使用，ArrayList 不会遇到并发写入。reduce 如果用 1 作为求和初值，每个分区都会多加一次 1；如果初始值是一个被修改的列表，初始值本身就变了。
 
-真正共享容器的并发收集，需要容器与累积操作支持并发，并声明 `CONCURRENT`。流还要无序，或收集器同时声明 `UNORDERED`。这与普通并行 collect 的容器隔离方式不同。
+真正让多个线程共享同一个容器的并发收集，需要容器和累积操作都支持并发，并声明 `CONCURRENT`；流还要是无序的，或者收集器同时声明 `UNORDERED`。这和普通并行 collect 的分区隔离是两种不同的方式。
 
 </details>
 
