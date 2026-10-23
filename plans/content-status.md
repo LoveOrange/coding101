@@ -406,7 +406,7 @@
 | 文章 | Codex 生成 | Claude 校验 | Lin 校验 | English | 日本語 |
 | --- | :---: | :---: | :---: | :---: | :---: |
 | [使用 Git 进行第一次提交](../docs/tools-and-frameworks/git/basic-usages/first-commit.mdx) | ✅ | · | · | · | · |
-| [2.1. Git 的安装与配置](../docs/tools-and-frameworks/git/basic-usages/git-installation.mdx) | ✅ | · | · | · | · |
+| [Git 的安装与配置](../docs/tools-and-frameworks/git/basic-usages/git-installation.mdx) | ✅ | · | · | · | · |
 | [2. Git 基本使用](../docs/tools-and-frameworks/git/basic-usages/index.mdx) | ✅ | · | · | · | · |
 | [Git](../docs/tools-and-frameworks/git/index.md) | ✅ | · | · | · | · |
-| [1. 版本控制简介](../docs/tools-and-frameworks/git/introduce.md) | ✅ | · | · | · | · |
+| [版本控制简介](../docs/tools-and-frameworks/git/introduce.md) | ✅ | · | · | · | · |
