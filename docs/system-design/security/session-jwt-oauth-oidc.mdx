@@ -9,35 +9,35 @@ keywords: ["Session 与 JWT", "OAuth2 授权", "OpenID Connect", "Refresh Token"
 
 # Session、JWT、OAuth 2.0 与 OIDC
 
-本文负责登录状态、令牌格式与委托授权协议。Session 保存会话，JWT 表达声明。OAuth 2.0 用于授权，OIDC 提供身份协议。
+Session 保存会话状态，JWT 是承载声明的令牌格式，OAuth 2.0 处理委托授权，OIDC 在此基础上提供身份认证。它们解决的问题不同，可以在同一套登录系统中配合使用。理解各自的职责后，才能说明登录状态存在哪里、API 应接受哪种令牌，以及撤销权限后旧令牌还能用多久。
 
 ## 1. 面试核心 {#core}
 
-- **Session 状态。** Session 通过随机 ID 关联服务端状态，撤销需使该状态失效。
-- **JWT 验签与可读性。** 签名型 JWT 可离线验签，payload 仍可被持有者读取。[卡](#jwt-revocation-refresh)
-- **刷新与撤销。** Refresh Token 撤销阻断后续刷新，已签发令牌另需失效机制。
-- **授权与登录。** OAuth 2.0 授权访问资源，OIDC 的 ID Token 面向登录客户端。
-- **授权流程绑定。** PKCE 绑定授权码兑换，state 关联回调，nonce 绑定认证请求。[卡](#pkce-state-nonce)
+- Session 通过随机 ID 关联服务端状态，登出时要**让服务端状态失效**。
+- 签名型 JWT 可以**离线验证签名，不能据此认为内容保密**；持有者仍可读取 payload。[卡](#jwt-revocation-refresh)
+- 离线验证看不到实时撤销状态；撤销 Refresh Token **只阻断后续刷新**，不会自动使已签发的 Access Token 失效。
+- OAuth 2.0 授权客户端访问资源，OIDC 的 **ID Token 面向登录客户端**，不能直接替代 API 所需的 Access Token。
+- PKCE 绑定**授权码兑换**，`state` 关联**授权回调**，`nonce` 绑定**认证请求与 ID Token**。[卡](#pkce-state-nonce)
 
 ## 2. Session {#session}
 
-登录后，服务端创建会话并返回随机 Session ID。浏览器通过 Cookie 携带该 ID。服务端读取会话状态并执行授权。
+**Session** 是服务端保存的会话状态。登录成功后，服务端创建会话并返回随机 Session ID；浏览器在后续请求中通过 Cookie 携带这个 ID，服务端据此找到会话、恢复身份，再执行授权。
 
-多实例可共享会话存储。粘性路由能保留单机状态，但故障恢复仍需另行设计。
+应用有多个实例时，可以共享会话存储，让请求落到任一实例都能恢复身份。也可以用粘性路由把同一会话的请求送回固定实例，但该实例故障后，会话怎样恢复仍需单独设计。
 
 Cookie 设置 `Secure`、`HttpOnly` 和合适的 `SameSite`。浏览器请求防护见 [XSS 与 CSRF](./injection-authorization-ssrf-deserialization.mdx#xss-与-csrf)。
 
 ### 2.1 会话固定与失效 {#会话固定与失效}
 
-登录成功和权限提升后，应更换 Session ID。旧 ID 随之失效，避免攻击者预先固定会话标识。
+登录成功和权限提升后，应更换 Session ID，并让旧 ID 失效。这样可以防止**会话固定攻击**：攻击者先让受害者使用一个自己已知的会话 ID，再等待受害者登录；如果登录后仍使用原 ID，攻击者就可能借它使用已登录的会话。
 
-服务端同时设置空闲超时与绝对有效期。登出要使服务端会话失效，并清除客户端 Cookie。分布式缓存的撤销传播需要满足业务时限。
+会话应同时设置空闲超时和绝对有效期，分别限制长时间不用的会话和持续活跃的会话。登出时要使服务端状态失效，并清除客户端 Cookie；只清除 Cookie，无法阻止别人重用已经取得的 ID。使用分布式缓存时，还要确认撤销能在业务要求的时间内传播。
 
 ## 3. JWT {#jwt}
 
-JWT 可用 JWS 签名，也可用 JWE 加密。本文主要讨论三段式 JWS。签名保护完整性，payload 采用可解码的编码。
+**JWT** 是用来传递声明的令牌格式，声明可以描述主体、发行者和有效期等信息。它可以用 JWS 签名，也可以用 JWE 加密。本文讨论三段式 JWS：签名用于检查内容是否被篡改，payload 只是编码后的内容，持有者仍然可以解码读取。
 
-资源服务应校验以下字段与约束：
+验签通过还不足以接受令牌，资源服务需要确认它由谁签发、发给谁使用、现在是否有效：
 
 - 算法来自服务端允许列表，签名验证通过。
 - `iss` 属于受信发行者。
@@ -45,21 +45,21 @@ JWT 可用 JWS 签名，也可用 JWE 加密。本文主要讨论三段式 JWS�
 - `exp`、`nbf` 满足时间要求与允许偏差。
 - token 类型与 scope 符合当前接口要求。
 
-API 使用为自身签发的 Access Token。ID Token 面向登录客户端，二者需分别验证。签名密钥管理见 [密钥轮换](./secrets-certificates-audit-supply-chain.mdx#密钥轮换)。
+**Access Token** 是客户端访问资源 API 时提交的访问令牌；API 应接受以自身为目标的令牌。**ID Token** 则向登录客户端提供认证结果，两者的用途和验证规则不同。签名密钥的管理见 [密钥轮换](./secrets-certificates-audit-supply-chain.mdx#密钥轮换)。
 
 ## 4. JWT 撤销 {#jwt-撤销}
 
-离线验签的资源服务看不到实时撤销状态。短期 Access Token 将风险窗口限制在剩余有效期内。
+只做离线验证的资源服务看不到实时撤销状态。即使用户已经被封禁，只要旧令牌仍满足签名和时间等校验，它就可能继续被接受。缩短 Access Token 有效期，可以把这个窗口限制在剩余有效期内。
 
-需要立即封禁时，可查询撤销表或会话版本。另一种选择是不透明 token 加 introspection。查询状态会引入延迟与服务依赖。
+需要立即封禁时，资源服务可以查询撤销表或会话版本。另一种方案是使用不透明令牌，并通过令牌自省接口（introspection）向授权服务器查询有效状态。这些方案都增加了状态查询，因此也引入延迟和服务依赖。
 
-撤销 Refresh Token 只阻断后续刷新。已签发 Access Token 仍需等待到期或实时撤销。
+**Refresh Token** 是交给授权服务器换取新访问令牌的凭据。撤销它只会阻断后续刷新，已经签发的 Access Token 仍需等待到期，或通过上述实时机制撤销。
 
 ## 5. OAuth 2.0 {#oauth-20}
 
-OAuth 包含用户、客户端、授权服务器与资源服务器。用户授权客户端，客户端取得 Access Token 后调用 API。
+**OAuth 2.0** 是委托授权协议，让用户允许客户端访问某些资源。流程中，授权服务器负责处理授权并签发 Access Token，资源服务器验证令牌并提供 API。
 
-RFC 9700 要求公共客户端的授权码流程使用 PKCE。机密客户端也推荐使用 PKCE。静态 client secret 在浏览器和原生应用中无法可靠保密。
+浏览器端应用和原生应用无法可靠地保管静态 `client secret`，属于公共客户端；能妥善保管凭据的服务端应用可以作为机密客户端。RFC 9700 要求公共客户端的授权码流程使用 PKCE，机密客户端也推荐使用。PKCE 用一次授权请求专用的随机值，约束谁能兑换授权码。
 
 授权码流程把用户交互和令牌兑换分开：
 
@@ -72,17 +72,17 @@ RFC 9700 要求公共客户端的授权码流程使用 PKCE。机密客户端也
 
 ### 5.1 PKCE、state 与 nonce {#pkcestate-与-nonce}
 
-PKCE 使用每次生成的随机 verifier。`S256` 方法发送其 SHA-256 challenge。兑换方必须提交匹配的 verifier。
+PKCE 把授权码的兑换与发起请求时生成的随机值 `verifier` 绑定。使用 `S256` 时，授权请求发送由 `verifier` 计算出的 SHA-256 challenge；兑换授权码时再提交 `verifier`，授权服务器检查两者是否匹配。
 
-`state` 绑定本地会话与授权回调。随机值需在回调时比对并一次性消费。
+`state` 用来把授权回调与本地发起的请求关联起来。客户端生成随机值并与本地会话关联，收到回调时比对，再将它标记为已使用，避免同一值被重复消费。
 
-OIDC 的 `nonce` 绑定认证请求与 ID Token。请求携带 nonce 后，客户端必须核对返回值。nonce 也应关联本次会话并防止重放。
+OIDC 的 `nonce` 把 ID Token 与本次认证请求绑定。请求中携带了 `nonce`，客户端就必须核对 ID Token 中的对应值，并关联本次会话、防止重放。
 
-三者保护的绑定关系不同。PKCE 约束授权码兑换，state 关联回调。nonce 将身份结果绑定到发起的认证请求。
+检查位置也因此不同：授权服务器在兑换时检查 PKCE，客户端在收到回调时检查 `state`，在验证 ID Token 时检查 `nonce`。
 
 ## 6. OIDC {#oidc}
 
-OIDC 在 OAuth 2.0 上增加 ID Token 和 UserInfo。ID Token 的 audience 是登录客户端。稳定用户标识使用 `iss + sub`。
+**OpenID Connect**（OIDC）在 OAuth 2.0 之上增加 ID Token 和获取用户信息的 UserInfo 接口，用来向客户端说明用户的认证结果。ID Token 的受众（audience）是登录客户端，稳定用户标识使用发行者 `iss` 与主体 `sub` 的组合。
 
 客户端按使用的流程验证签名、issuer、audience 与期限。请求携带 nonce 时，还需核对该 nonce。`auth_time` 在请求 `max_age` 等条件下必需。
 
@@ -90,33 +90,31 @@ OIDC 在 OAuth 2.0 上增加 ID Token 和 UserInfo。ID Token 的 audience 是�
 
 ## 7. Refresh Token {#refresh-token}
 
-Refresh Token 只交给授权服务器。公共客户端需使用发送方约束或轮换机制。平台安全存储可缩小凭据暴露面。
+Refresh Token 只交给授权服务器，不用于调用资源 API。公共客户端需要通过发送方约束，让凭据与特定发送方绑定，或通过轮换机制处理被盗用的风险。客户端还应使用平台提供的安全存储，减少凭据暴露。
 
-轮换在刷新成功后签发新 token，并使旧 token 失效。服务端保留所属令牌家族关系。发现旧令牌重用后，撤销该家族的活动刷新令牌。
+轮换是指刷新成功后签发新的 Refresh Token，并使旧的失效。服务端保留它们属于同一次授权的关联关系，也就是令牌家族。已经失效的旧令牌再次被使用，可能意味着凭据被复制；发现这种重用后，应撤销该家族仍然有效的刷新令牌。
 
-并发刷新也会触发旧令牌重用。客户端应合并刷新请求。服务端需明确重试语义，避免无界重放宽限。
+正常客户端并发刷新，也可能让多个请求提交同一个旧令牌。因此客户端应合并刷新请求，服务端明确刷新失败后的重试方式，不能为了兼容重试就无限允许旧令牌重复使用。
 
 ## 8. 方案选择 {#方案选择}
 
-浏览器到 BFF 可使用 Session Cookie。BFF 在服务端保存 OAuth token，再调用资源 API。
+**BFF** 是专门服务某类前端的后端。浏览器与 BFF 之间可以使用 Session Cookie，OAuth token 则保存在 BFF 服务端，由它调用资源 API。这个例子中，Session 和 OAuth 同时存在，各自负责一段交互。
 
 方案选择取决于撤销时限与离线验证需求。还需比较客户端存储能力和跨域边界。短期令牌、会话存储与身份协议可以共同使用。
 
 ## 9. 常见问题 {#常见问题}
 
-### 9.1 浏览器令牌存储 {#浏览器令牌存储}
+### 9.1 把令牌从 Local Storage 改存 Cookie 就安全吗？ {#浏览器令牌存储}
 
-Local Storage 中的 token 会暴露给成功执行的 XSS。HttpOnly Cookie 可限制脚本读取。Cookie 自动携带时，还需防护 CSRF。
+只能改变风险，不能省略防护。Local Storage 中的 token 可以被成功执行的 XSS 读取；`HttpOnly` Cookie 能限制脚本读取，但浏览器自动携带 Cookie 时，还需要防护 CSRF。
 
-### 9.2 state 与 nonce 的绑定对象 {#state-与-nonce-的绑定对象}
+### 9.2 已经检查 state，为什么还要核对 nonce？ {#state-与-nonce-的绑定对象}
 
-state 关联回调与本地会话。nonce 关联 ID Token 与认证请求。具体流程见 [PKCE、state 与 nonce](#pkcestate-与-nonce)。
+因为它们检查的对象不同。`state` 确认授权回调对应本地发起的请求；请求携带 `nonce` 时，还要用它核对收到的 ID Token 是否对应这次认证。具体流程见 [PKCE、state 与 nonce](#pkcestate-与-nonce)。
 
 ## 10. 面试题 {#面试题}
 
 ### 10.1 为什么使用 JWT，如何实现撤销和安全刷新？ {#jwt-revocation-refresh}
-
-
 
 **考察重点**：离线验签、撤销窗口与刷新轮换。
 
@@ -137,7 +135,6 @@ state 关联回调与本地会话。nonce 关联 ID Token 与认证请求。具�
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
-
 **考察重点**：授权码兑换、回调关联与认证结果绑定。
 
 **相关内容**：[PKCE、state 与 nonce](#pkcestate-与-nonce)。
@@ -145,18 +142,15 @@ state 关联回调与本地会话。nonce 关联 ID Token 与认证请求。具�
 <details>
 <summary>参考回答</summary>
 
-**PKCE 绑定授权码与 verifier，state 关联授权回调。**
+**PKCE 约束谁能兑换授权码，`state` 关联授权回调，`nonce` 将 ID Token 绑定到本次认证请求。**
 
-nonce 把 ID Token 绑定到本次认证请求。
-
-S256 发送 verifier 的哈希，兑换时验证原值。state 和 nonce 都应关联当前会话。返回后按各自位置核对，并避免重复消费。
+使用 `S256` 时，授权请求发送由 `verifier` 计算出的 challenge，兑换时再验证原值。`state` 和 `nonce` 都应与当前会话关联，分别在回调和 ID Token 中核对，并防止重复消费。
 
 </details>
 
 ### 10.3 登录成功后为什么要更换 Session ID？ {#session-fixation}
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
-
 
 **考察重点**：会话固定、权限提升与旧状态撤销。
 
