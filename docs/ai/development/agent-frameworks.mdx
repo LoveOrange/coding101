@@ -47,7 +47,7 @@ keywords: ["LangChain", "LangGraph", "Agent 框架选型", "State Reducer", "智
 
 两者的区别在于开发者直接控制哪一层：LangChain 提供高层 Agent 接口，LangGraph 让开发者直接定义图中的状态和执行路径。要理解今天两者的关系，得先从 LangChain 早期的“链”说起。
 
-LangChain 最初用**链**组织组件：前一个组件的输出成为下一个组件的输入。比如，提示模板生成输入，模型生成回答，输出解析器再提取字段。检索器也可以参与这条链路。预置链把多个步骤封装在一起，调试时就需要继续追踪内部调用。
+LangChain 最初用**链**组织组件：前一个组件的输出成为下一个组件的输入。比如，提示模板生成输入，模型生成回答，输出解析器再提取字段。检索器也可以参与这条链路。预置链把多个步骤封装在一起，用起来方便，但结果不对时，要深入链的内部查看每一步实际调用了什么。
 
 LangChain v1 改以 `create_agent` 为高层入口，底层运行在 LangGraph 上。**中间件**是在模型或工具调用前后插入自定义逻辑的扩展方式，可以用来做摘要、审批或重试。旧版链等接口迁入 `langchain-classic`，LangChain Core 仍保留可组合的基础抽象。
 
@@ -69,9 +69,9 @@ LangGraph 的执行模型借鉴了 Pregel，按**超步**（super-step）推进�
 
 LangGraph 可以单独使用，也可以在节点中调用 LangChain 组件。子图还能作为父图的节点，两者通过共享字段或输入输出转换传递数据。
 
-LangGraph 的检查点按线程（thread）保存状态，供恢复、回放和查看历史使用，生产环境需要持久存储。具体机制见[检查点与恢复](../state/durable-execution.mdx#检查点与恢复)。
+LangGraph 的检查点由 Checkpointer 按线程（thread）保存，调用时用 `thread_id` 指定线程，供恢复、回放和查看历史使用，生产环境需要持久存储。具体机制见[检查点与恢复](../state/durable-execution.mdx#检查点与恢复)。
 
-人工介入通过中断等待审批或补充信息，再用同一线程标识恢复。节点重跑的边界见 [LangGraph 中断节点重跑](../state/durable-execution.mdx#langgraph-中断节点重跑)。
+人工介入的做法是在节点里调用 `interrupt()` 暂停执行，等外部传入审批结果或补充信息后，用 `Command(resume=...)` 在同一个 `thread_id` 上恢复。恢复时，中断所在的节点会从头重新执行。节点重跑的边界见 [LangGraph 中断节点重跑](../state/durable-execution.mdx#langgraph-中断节点重跑)。
 
 ### 3.1 State 归并与并行更新 {#state-归并与并行更新}
 

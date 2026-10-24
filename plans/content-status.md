@@ -8,26 +8,26 @@
 
 | 状态 | Codex 生成 | Claude 校验 | Lin 校验 | English | 日本語 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| ✅ | 351 | 7 | 0 | 0 | 0 |
+| ✅ | 351 | 16 | 0 | 0 | 0 |
 | 🔁 | 0 | 0 | 0 | 0 | 0 |
 | 👀 | 0 | 0 | 7 | 0 | 0 |
 | ⚠️ | 0 | 0 | 0 | 0 | 0 |
-| · | 0 | 344 | 344 | 351 | 351 |
+| · | 0 | 335 | 344 | 351 | 351 |
 | — | 0 | 0 | 0 | 0 | 0 |
 
 ## ai
 
 | 文章 | Codex 生成 | Claude 校验 | Lin 校验 | English | 日本語 |
 | --- | :---: | :---: | :---: | :---: | :---: |
-| [Agent 执行循环](../docs/ai/agents/agent-loop.mdx) | ✅ | · | · | · | · |
-| [Agent Harness](../docs/ai/agents/harness.mdx) | ✅ | · | · | · | · |
-| [多 Agent 协作](../docs/ai/agents/multi-agent.mdx) | ✅ | · | · | · | · |
-| [工作流与 Agent](../docs/ai/agents/workflow-vs-agent.mdx) | ✅ | · | · | · | · |
-| [Agent 框架](../docs/ai/development/agent-frameworks.mdx) | ✅ | · | · | · | · |
-| [AI 辅助开发](../docs/ai/development/ai-assisted-development.mdx) | ✅ | · | · | · | · |
-| [AI 代码调试](../docs/ai/development/ai-code-debugging.mdx) | ✅ | · | · | · | · |
-| [编码 Agent 评测](../docs/ai/development/coding-agent-evaluation.mdx) | ✅ | · | · | · | · |
-| [仓库指令](../docs/ai/development/repository-instructions.mdx) | ✅ | · | · | · | · |
+| [Agent 执行循环](../docs/ai/agents/agent-loop.mdx) | ✅ | ✅ | · | · | · |
+| [Agent Harness](../docs/ai/agents/harness.mdx) | ✅ | ✅ | · | · | · |
+| [多 Agent 协作](../docs/ai/agents/multi-agent.mdx) | ✅ | ✅ | · | · | · |
+| [工作流与 Agent](../docs/ai/agents/workflow-vs-agent.mdx) | ✅ | ✅ | · | · | · |
+| [Agent 框架](../docs/ai/development/agent-frameworks.mdx) | ✅ | ✅ | · | · | · |
+| [AI 辅助开发](../docs/ai/development/ai-assisted-development.mdx) | ✅ | ✅ | · | · | · |
+| [AI 代码调试](../docs/ai/development/ai-code-debugging.mdx) | ✅ | ✅ | · | · | · |
+| [编码 Agent 评测](../docs/ai/development/coding-agent-evaluation.mdx) | ✅ | ✅ | · | · | · |
+| [仓库指令](../docs/ai/development/repository-instructions.mdx) | ✅ | ✅ | · | · | · |
 | [Agent 评估](../docs/ai/evaluation/agent-evaluation.mdx) | ✅ | · | · | · | · |
 | [RAG 评估](../docs/ai/evaluation/rag-evaluation.mdx) | ✅ | · | · | · | · |
 | [AI 应用与 Agent](../docs/ai/index.mdx) | ✅ | · | · | · | · |
