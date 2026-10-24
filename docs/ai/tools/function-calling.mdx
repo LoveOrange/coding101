@@ -53,7 +53,7 @@ if results:
 
 Messages 用 `tool_use_id` 把每个结果关联到原来的 `tool_use`。结果放在紧跟着的一条用户消息里，以 `tool_result` 块标识；虽然角色是 `user`，块类型已经说明这段内容来自工具。同一轮有多个调用时，结果一起回传，assistant 的原响应也要完整保留，否则下一次请求对不上。
 
-OpenAI 的写法不同：Responses 用 `function_call_output` 和 `call_id`，Chat Completions 用 `role: "tool"` 和 `tool_call_id`。接入哪个 API 就按哪个 API 的字段转换，不要混用。
+OpenAI 的写法不同：Responses 用 `function_call_output` 和 `call_id`，Chat Completions 用 `role: "tool"` 的工具消息（Tool Message）和 `tool_call_id`。接入哪个 API 就按哪个 API 的字段转换，不要混用。
 
 另外，调用时设置的输出预算（例如 1024 Token）只限制模型这一轮生成多长。工具执行的超时和整个任务的预算，要由应用另外控制。
 
