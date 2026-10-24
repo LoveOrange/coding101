@@ -11,7 +11,7 @@ keywords: ["Buffer", "Channel", "Selector", "NIO 事件循环", "非阻塞 I/O"]
 
 **Java NIO** 提供基于缓冲区和通道的 I/O API。`Buffer` 保存数据并记录读写位置，`Channel` 在缓冲区与文件、Socket 之间传输数据；处理多个非阻塞网络连接时，还可以用 `Selector` 集中等待就绪事件。
 
-NIO 是 Netty 等网络框架的基础。用好它要抓住两点：一是 `Buffer` 的位置状态怎样随读写变化，`flip`、`clear`、`compact` 各在什么时候调用；二是 `Selector` 只告诉你「可以试着读写了」，读到半条消息、只写出一部分数据都是正常结果，应用要为每个连接保存这些未完成的状态。
+NIO 是 Netty 等网络框架的基础。使用时需要理解 `Buffer` 的位置状态怎样随读写变化，知道 `flip`、`clear`、`compact` 各在什么时候调用。同时，`Selector` 只告诉你「可以试着读写了」，读到半条消息、只写出一部分数据都是正常结果，应用要为每个连接保存这些未完成的状态。
 
 ## 1. 面试核心 {#core}
 
