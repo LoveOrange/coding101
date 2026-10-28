@@ -140,8 +140,9 @@ const redirects = await fs.readFile(path.join(outDir, '_redirects'), 'utf8');
 for (const line of redirects.trim().split('\n').filter((line) => line && !line.startsWith('#'))) {
   const [from, to, status] = line.split(/\s+/);
   assert.equal(status, '301', `Article consolidation must use a permanent redirect: ${from}`);
-  await readPage(new URL(to, site));
-  assert(![...sitemap].some((url) => new URL(url).pathname.replace(/\/$/, '') === from.replace(/\/$/, '')), `Redirect source must not enter sitemap: ${from}`);
+  await readPage(new URL(to.replace(/^\//, ''), site));
+  const sourcePath = new URL(from.replace(/^\//, ''), site).pathname.replace(/\/$/, '');
+  assert(![...sitemap].some((url) => new URL(url).pathname.replace(/\/$/, '') === sourcePath), `Redirect source must not enter sitemap: ${from}`);
 }
 const robots = await fs.readFile(path.join(outDir, 'robots.txt'), 'utf8');
 assert(robots.includes(new URL('sitemap.xml', site).href), 'robots.txt must advertise this deployment’s sitemap');
