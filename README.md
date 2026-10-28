@@ -30,7 +30,7 @@ npm run typecheck
 npm run build
 ```
 
-`npm run build` 会先检查文档链接，再生成 Docusaurus 静态站点。
+`npm run build` 会检查文档链接、文章结构和内容状态，再生成 Docusaurus 静态站点。构建后运行 `npm run check:discovery`，核验公开内容、静态学习入口、规范链接和 sitemap。个人账号、学习记录及练习会话页面使用 `noindex`，不进入 sitemap；主题和题库在 JavaScript 不可用时仍提供文章与题目入口。
 
 ## 广告与隐私
 
@@ -42,4 +42,4 @@ npm run build
 
 `static/privacy/index.html` 是独立的隐私说明页，不加载统计、广告或同意消息脚本。Google 同意消息的隐私链接应设为 `https://coding101.linsama.com/privacy/`。Analytics 在欧洲经济区、英国和瑞士默认拒绝存储；只有配置 Google CMP 的 Consent Mode 后才会更新同意状态。不将搜索参数和片段标识作为页面地址发送。
 
-部署到 Cloudflare：在仓库根目录运行 `npm run build` 与 `npm run check:discovery`，再到 `worker/` 运行 `npm run deploy`。GitHub Pages 镜像不启用广告。
+部署到 Cloudflare：在仓库根目录运行 `LEARNER_FEATURES=true CHECKOUT_OPEN=true npm run build` 与 `npm run check:discovery`，再到 `worker/` 运行 `npm run deploy`。这两个构建参数保留生产站点已开放的账号和结账功能。广告仍保持关闭，待审核和隐私核验完成后才增加 `ADSENSE_ENABLED=true`。`static/_redirects` 维护已合并文章的永久跳转，由 Cloudflare 静态资源服务处理。GitHub Pages 镜像不启用广告。

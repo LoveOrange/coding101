@@ -109,6 +109,40 @@ for (const [, href] of llms.matchAll(/^- \[.*?\]\((https?:\/\/[^)]+)\):/gm)) {
 }
 const topics = await fs.readFile(path.join(outDir, 'topics/index.html'), 'utf8');
 assert(tags(topics, 'a').some((tag) => tag.href && new URL(tag.href, site).href === directoryUrl.href), 'Topics must expose the directory before JavaScript runs');
+const topicLinks = new Set(tags(topics, 'a').map((tag) => tag.href).filter(Boolean).map((href) => new URL(href, site).href));
+const questions = await readPage(new URL('questions', site));
+const questionLinks = tags(questions, 'a').filter((tag) => tag.href?.includes('#'))
+  .map((tag) => new URL(tag.href, site)).filter((url) => url.pathname.startsWith(`${site.pathname}docs/`));
+for (const [, , href, description] of entries) {
+  if (!sources.get(description).frontMatter.knowledge) continue;
+  assert(topicLinks.has(href), `Technical article missing from static topics: ${href}`);
+}
+assert(questionLinks.length > 0, 'Question catalog must link directly to article questions before JavaScript runs');
+for (const url of questionLinks) {
+  const html = await readPage(url);
+  assert(tags(html, 'h3').some((tag) => tag.id === decodeURIComponent(url.hash.slice(1))), `Question catalog has a broken anchor: ${url}`);
+}
+for (const route of ['topics', 'questions']) {
+  const html = await readPage(new URL(route, site));
+  assert(!/noindex/i.test(meta(html, 'robots') ?? ''), `Public catalog must be indexable: ${route}`);
+  assert(sitemap.has(canonical(html)), `Public catalog missing from sitemap: ${route}`);
+}
+for (const route of ['review', 'weak', 'progress', 'account', 'account/redeem', 'account/billing', 'account/privacy', 'cards', 'exam', 'exam/report']) {
+  const file = path.join(outDir, route, 'index.html');
+  try {await fs.access(file);} catch {continue;} // Optional learner routes may be absent.
+  const html = await fs.readFile(file, 'utf8');
+  assert(/noindex/i.test(meta(html, 'robots') ?? ''), `Personal view must be noindex: ${route}`);
+  assert(!sitemap.has(canonical(html)), `Personal view must not enter sitemap: ${route}`);
+}
+assert(![...sitemap].some((url) => url.includes('/markdown-page')), 'Template page must not be published');
+await assert.rejects(fs.access(path.join(outDir, 'markdown-page/index.html')), {code: 'ENOENT'});
+const redirects = await fs.readFile(path.join(outDir, '_redirects'), 'utf8');
+for (const line of redirects.trim().split('\n').filter((line) => line && !line.startsWith('#'))) {
+  const [from, to, status] = line.split(/\s+/);
+  assert.equal(status, '301', `Article consolidation must use a permanent redirect: ${from}`);
+  await readPage(new URL(to, site));
+  assert(![...sitemap].some((url) => new URL(url).pathname.replace(/\/$/, '') === from.replace(/\/$/, '')), `Redirect source must not enter sitemap: ${from}`);
+}
 const robots = await fs.readFile(path.join(outDir, 'robots.txt'), 'utf8');
 assert(robots.includes(new URL('sitemap.xml', site).href), 'robots.txt must advertise this deployment’s sitemap');
 assert(!(await fs.readFile('src/css/custom.css', 'utf8')).includes('h2.c101-interview ~ :not'), 'Question answers must not be hidden by the old CSS rule');

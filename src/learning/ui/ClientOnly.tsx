@@ -2,6 +2,7 @@ import {type ReactNode, useEffect, useRef} from 'react';
 import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
 import useIsBrowser from '@docusaurus/useIsBrowser';
 import Layout from '@theme/Layout';
+import Head from '@docusaurus/Head';
 
 import {useLearningIndex} from '../content';
 import {applyMock, type MockPreset} from '../mock';
@@ -28,18 +29,21 @@ function useMockPreset(isBrowser: boolean) {
 
 /**
  * Learner pages depend on localStorage and query parameters, neither of which
- * exists at build time. Render an empty shell during SSR and hydration.
+ * exists at build time. Public pages supply a readable static fallback;
+ * personal views stay out of search results and the sitemap.
  */
 export function ClientPage({
   title,
   description,
   noFooter = true,
+  noIndex = true,
   fallback,
   children,
 }: {
   title: string;
   description?: string;
   noFooter?: boolean;
+  noIndex?: boolean;
   fallback?: ReactNode;
   children: () => ReactNode;
 }) {
@@ -47,6 +51,7 @@ export function ClientPage({
   useMockPreset(isBrowser);
   return (
     <Layout title={title} description={description} noFooter={noFooter}>
+      {noIndex && <Head><meta name="robots" content="noindex,follow" /></Head>}
       {isBrowser ? children() : fallback ?? <main style={{minHeight: 'calc(100vh - var(--ifm-navbar-height))'}} />}
     </Layout>
   );

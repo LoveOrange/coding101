@@ -12,6 +12,7 @@ import type {CardIndex, Priority} from '../types';
 import {Companies, formatMonthDay, PriorityDots, StatusTag} from '../ui';
 import {useLearnerFeatures} from '../features';
 import {ClientPage} from '../ui/ClientOnly';
+import {PublicCatalog} from '../ui/PublicCatalog';
 import styles from './Questions.module.css';
 
 const PAGE = 50;
@@ -21,7 +22,8 @@ const RANK: Record<Priority, number> = {must: 0, common: 1, optional: 2};
 
 export default function Questions(): JSX.Element {
   return (
-    <ClientPage title="题库" description="按岗位、领域、考频和练习状态筛选面试题，点开即可翻卡自测。">
+    <ClientPage title="题库" description="按岗位、领域、考频和练习状态筛选面试题，点开即可翻卡自测。"
+      noIndex={false} fallback={<PublicCatalog questions />}>
       {() => <QuestionsPage />}
     </ClientPage>
   );

@@ -32,7 +32,8 @@ const TIERS: Tier[] = [
 
 export default function Pricing(): JSX.Element {
   return (
-    <ClientPage title="Coding101 Pro" description="文章一直免费。Pro 记下每次作答的结果，并按时安排复习。" noFooter={false}>
+    <ClientPage title="Coding101 Pro" description="文章一直免费。Pro 记下每次作答的结果，并按时安排复习。" noFooter={false}
+      noIndex={false} fallback={<PricingPage />}>
       {() => <PricingPage />}
     </ClientPage>
   );

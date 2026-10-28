@@ -7,9 +7,8 @@ const enableAnalytics =
   process.env.NODE_ENV === "production" && process.env.LOCAL_PREVIEW !== "true";
 const adsenseClient = process.env.ADSENSE_CLIENT || 'ca-pub-9495948352620553';
 
-// Accounts, subscriptions, spaced review and progress tracking are built but
-// held back until there are real users. LEARNER_FEATURES=true (or the mock
-// preview flag) turns them on for local work.
+// Production builds opt into accounts, subscriptions and progress tracking.
+// Lightweight public previews can omit LEARNER_FEATURES; mocks also enable it.
 const learnerFeatures =
   process.env.LEARNER_FEATURES === "true" || process.env.LEARNER_MOCKS === "true";
 
@@ -141,7 +140,7 @@ const config: Config = {
             { to: "/interview-roadmaps/", label: "岗位路线" },
             { to: "/docs/tags/interview-preparation", label: "面试准备" },
             { to: "/docs/tools-and-frameworks/git/", label: "工具与框架" },
-            { to: "/docs/chatgpt-guide/", label: "ChatGPT 简明指南" },
+            { to: "/docs/chatgpt-guide/", label: "ChatGPT 辅助面试复习" },
             { to: "/about", label: "关于本站" },
             { href: "https://github.com/loveorange/coding101", label: "GitHub" },
           ],

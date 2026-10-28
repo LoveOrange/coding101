@@ -1,6 +1,6 @@
 # 文章状态
 
-由 `scripts/content-status.mjs` 根据 `plans/content-status.json` 生成，不要手工编辑。共 351 篇公开文章。
+由 `scripts/content-status.mjs` 根据 `plans/content-status.json` 生成，不要手工编辑。共 349 篇公开文章。
 
 图例：✅ 完成 · 🔁 文章已改动，需要重新校验或翻译 · ⚠️ 校验发现问题，待修改 · · 未开始 · — 不适用
 
@@ -8,10 +8,10 @@
 
 | 状态 | Codex 生成 | Claude 校验 | Lin 校验 | English | 日本語 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| ✅ | 351 | 7 | 0 | 0 | 0 |
+| ✅ | 349 | 7 | 0 | 0 | 0 |
 | 🔁 | 0 | 0 | 0 | 0 | 0 |
 | ⚠️ | 0 | 0 | 0 | 0 | 0 |
-| · | 0 | 344 | 351 | 351 | 351 |
+| · | 0 | 342 | 349 | 349 | 349 |
 | — | 0 | 0 | 0 | 0 | 0 |
 
 ## ai
@@ -252,9 +252,7 @@
 
 | 文章 | Codex 生成 | Claude 校验 | Lin 校验 | English | 日本語 |
 | --- | :---: | :---: | :---: | :---: | :---: |
-| [ChatGPT 的注册与充值](../docs/chatgpt-guide/chatgpt-register.mdx) | ✅ | · | · | · | · |
-| [ChatGPT 简明指南](../docs/chatgpt-guide/index.md) | ✅ | · | · | · | · |
-| [大语言模型（LLM）](../docs/chatgpt-guide/principle.md) | ✅ | · | · | · | · |
+| [ChatGPT 辅助面试复习](../docs/chatgpt-guide/index.md) | ✅ | · | · | · | · |
 
 ## devops
 
