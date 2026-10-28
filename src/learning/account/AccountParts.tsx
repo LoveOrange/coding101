@@ -294,7 +294,7 @@ export function SubscriptionCard({variant = 'account'}: {variant?: 'account' | '
             {!renewable
               ? '到期不自动扣费，可以随时兑换激活码或续一段。'
               : sub.autoRenew
-                ? '到期自动续费，可随时关闭；实际续费金额请在账单页查看。'
+                ? '到期自动续费，可随时关闭。续费金额见账单页。'
                 : '已关闭自动续费，到期后不再扣费。'}
           </span>
         </div>

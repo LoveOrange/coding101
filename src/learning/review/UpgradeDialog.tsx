@@ -48,7 +48,7 @@ export function UpgradeDialog({open, onClose}: {open: boolean; onClose: () => vo
           <b>✓</b>全景进度图和闪卡库
         </span>
       </div>
-      {checkoutOpen && isLaunchOfferActive() && <span className={styles.dialogText}>首发 5 折 · 持续订阅期间按首发价续费，取消后重新订阅按当时价格。<Link to="/terms#首发优惠">查看优惠规则</Link></span>}
+      {checkoutOpen && isLaunchOfferActive() && <span className={styles.dialogText}>首发 5 折，之后续费也按首发价。<Link to="/terms#首发优惠">优惠规则</Link></span>}
       {checkoutOpen && (
         <div className={styles.planPair}>
           <span className={styles.planBox}>

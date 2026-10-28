@@ -55,6 +55,10 @@ async function readPage(url) {
   assert.fail(`Missing HTML: ${url}`);
 }
 
+const terms = await readPage(new URL('terms', site));
+const contentUseUrl = new URL('#内容与反馈', canonical(terms)).href;
+assert(tags(terms, 'h2').some((tag) => tag.id === '内容与反馈'), 'Content-use terms must have a stable destination');
+
 for (const [, escapedTitle, href, description] of entries) {
   const source = sources.get(description);
   assert(source, `Unknown or stale description: ${href}`);
@@ -82,6 +86,9 @@ for (const [, escapedTitle, href, description] of entries) {
     assert.deepEqual(data['@type'], ['TechArticle', 'LearningResource']);
     assert.equal(data.identifier, source.frontMatter.knowledge.id);
     assert.equal(data.mainEntityOfPage['@id'], href);
+    assert(tags(html, 'a').some((tag) => tag.href
+      && new URL(tag.href, directoryUrl).href === contentUseUrl),
+    `Missing article content-use link: ${href}`);
     const interview = /\n##\s+(?:\d+\.\s*)?面试题[^\n]*\n([\s\S]*?)(?=\n##\s|$)/.exec(source.content);
     if (interview) {
       const disclosure = tags(html, 'details').find((tag) => tag.class?.split(' ').includes('c101-question-list'));
@@ -146,5 +153,7 @@ for (const line of redirects.trim().split('\n').filter((line) => line && !line.s
 }
 const robots = await fs.readFile(path.join(outDir, 'robots.txt'), 'utf8');
 assert(robots.includes(new URL('sitemap.xml', site).href), 'robots.txt must advertise this deployment’s sitemap');
+assert(robots.includes(`Disallow: ${site.pathname}api/`), 'robots.txt must exclude API crawling with the deployment baseUrl');
+assert(/User-agent: \*\nAllow: \//.test(robots), 'Public reading must remain crawlable');
 assert(!(await fs.readFile('src/css/custom.css', 'utf8')).includes('h2.c101-interview ~ :not'), 'Question answers must not be hidden by the old CSS rule');
 console.log(`内容发现检查通过：${seen.size} 篇公开文章、${technical} 篇技术文章结构化数据、${questionAnchors} 个稳定题目锚点；目录、文本索引与 sitemap 一致。`);

@@ -9,3 +9,4 @@
 - 组件样式用 CSS Modules（`*.module.css`）。
 - 改完运行 `npm run build` 确认无报错。
 - 文章内容、文风和面试题结构以 `AGENTS.md` 为准；文章写作主要交给 Codex，Claude 专注功能与框架。需要改文案时同样遵守 `AGENTS.md`。
+- 正式站点发布遵守 `AGENTS.md` 的“正式站点发布”与 `plans/production-release.md`。先同步远端 `main` 的最新规则，只运行 `npm run release:production`；不从旧 worktree、临时源码副本或现有 `build/` 直接运行 Wrangler，不绕过发布锁和失败检查。
