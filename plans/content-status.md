@@ -8,11 +8,11 @@
 
 | 状态 | Codex 生成 | Claude 校验 | Lin 校验 | English | 日本語 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| ✅ | 349 | 274 | 0 | 0 | 0 |
+| ✅ | 349 | 292 | 0 | 0 | 0 |
 | 🔁 | 0 | 0 | 0 | 0 | 0 |
 | 👀 | 0 | 0 | 7 | 0 | 0 |
 | ⚠️ | 0 | 0 | 0 | 0 | 0 |
-| · | 0 | 75 | 342 | 349 | 349 |
+| · | 0 | 57 | 342 | 349 | 349 |
 | — | 0 | 0 | 0 | 0 | 0 |
 
 ## ai
@@ -332,18 +332,18 @@
 
 | 文章 | Codex 生成 | Claude 校验 | Lin 校验 | English | 日本語 |
 | --- | :---: | :---: | :---: | :---: | :---: |
-| [聚合](../docs/system-design/architecture/aggregate-invariants-transaction-boundaries.mdx) | ✅ | · | · | · | · |
-| [限界上下文](../docs/system-design/architecture/domain-bounded-context-ubiquitous-language.mdx) | ✅ | · | · | · | · |
-| [软件架构](../docs/system-design/architecture/index.mdx) | ✅ | · | · | · | · |
-| [微服务架构](../docs/system-design/architecture/microservice-splitting-benefits-costs.mdx) | ✅ | · | · | · | · |
-| [模块化单体](../docs/system-design/architecture/modular-monolith-dependency-constraints.mdx) | ✅ | · | · | · | · |
-| [绞杀者模式](../docs/system-design/architecture/strangler-migration-compatibility-rollback.mdx) | ✅ | · | · | · | · |
-| [故障转移](../docs/system-design/availability/failover-drills-recovery-validation.mdx) | ✅ | · | · | · | · |
-| [灾难恢复](../docs/system-design/availability/high-availability-backup-rto-rpo.mdx) | ✅ | · | · | · | · |
-| [可用性工程](../docs/system-design/availability/index.mdx) | ✅ | · | · | · | · |
-| [多租户](../docs/system-design/availability/multi-tenant-isolation-quotas-data-boundaries.mdx) | ✅ | · | · | · | · |
-| [成本归因](../docs/system-design/availability/performance-reliability-cost-attribution.mdx) | ✅ | · | · | · | · |
-| [服务等级目标（SLO）](../docs/system-design/availability/sli-slo-error-budget-capacity-headroom.mdx) | ✅ | · | · | · | · |
+| [聚合](../docs/system-design/architecture/aggregate-invariants-transaction-boundaries.mdx) | ✅ | ✅ | · | · | · |
+| [限界上下文](../docs/system-design/architecture/domain-bounded-context-ubiquitous-language.mdx) | ✅ | ✅ | · | · | · |
+| [软件架构](../docs/system-design/architecture/index.mdx) | ✅ | ✅ | · | · | · |
+| [微服务架构](../docs/system-design/architecture/microservice-splitting-benefits-costs.mdx) | ✅ | ✅ | · | · | · |
+| [模块化单体](../docs/system-design/architecture/modular-monolith-dependency-constraints.mdx) | ✅ | ✅ | · | · | · |
+| [绞杀者模式](../docs/system-design/architecture/strangler-migration-compatibility-rollback.mdx) | ✅ | ✅ | · | · | · |
+| [故障转移](../docs/system-design/availability/failover-drills-recovery-validation.mdx) | ✅ | ✅ | · | · | · |
+| [灾难恢复](../docs/system-design/availability/high-availability-backup-rto-rpo.mdx) | ✅ | ✅ | · | · | · |
+| [可用性工程](../docs/system-design/availability/index.mdx) | ✅ | ✅ | · | · | · |
+| [多租户](../docs/system-design/availability/multi-tenant-isolation-quotas-data-boundaries.mdx) | ✅ | ✅ | · | · | · |
+| [成本归因](../docs/system-design/availability/performance-reliability-cost-attribution.mdx) | ✅ | ✅ | · | · | · |
+| [服务等级目标（SLO）](../docs/system-design/availability/sli-slo-error-budget-capacity-headroom.mdx) | ✅ | ✅ | · | · | · |
 | [2PC 与 TCC](../docs/system-design/distributed-data/2pc-tcc-coordination-cost.mdx) | ✅ | ✅ | · | · | · |
 | [分布式流程恢复](../docs/system-design/distributed-data/idempotency-reconciliation-manual-repair.mdx) | ✅ | ✅ | · | · | · |
 | [分布式数据](../docs/system-design/distributed-data/index.mdx) | ✅ | ✅ | · | · | · |
@@ -357,12 +357,12 @@
 | [主备复制](../docs/system-design/distributed-system/primary_backup_replication.mdx) | ✅ | ✅ | · | · | · |
 | [Raft](../docs/system-design/distributed-system/raft-election-log-replication.mdx) | ✅ | ✅ | · | · | · |
 | [系统设计简介](../docs/system-design/index.mdx) | ✅ | ✅ | · | · | · |
-| [架构迁移](../docs/system-design/leadership/compatibility-migration-canary-exit-criteria.mdx) | ✅ | · | · | · | · |
-| [架构决策记录（ADR）](../docs/system-design/leadership/constraints-architecture-decision-records.mdx) | ✅ | · | · | · | · |
-| [设计评审](../docs/system-design/leadership/cross-team-design-review-disagreement.mdx) | ✅ | · | · | · | · |
-| [事故复盘](../docs/system-design/leadership/incident-review-failed-designs-organizational-learning.mdx) | ✅ | · | · | · | · |
-| [架构决策与演进](../docs/system-design/leadership/index.mdx) | ✅ | · | · | · | · |
-| [技术债](../docs/system-design/leadership/technical-debt-priority-business-value.mdx) | ✅ | · | · | · | · |
+| [架构迁移](../docs/system-design/leadership/compatibility-migration-canary-exit-criteria.mdx) | ✅ | ✅ | · | · | · |
+| [架构决策记录（ADR）](../docs/system-design/leadership/constraints-architecture-decision-records.mdx) | ✅ | ✅ | · | · | · |
+| [设计评审](../docs/system-design/leadership/cross-team-design-review-disagreement.mdx) | ✅ | ✅ | · | · | · |
+| [事故复盘](../docs/system-design/leadership/incident-review-failed-designs-organizational-learning.mdx) | ✅ | ✅ | · | · | · |
+| [架构决策与演进](../docs/system-design/leadership/index.mdx) | ✅ | ✅ | · | · | · |
+| [技术债](../docs/system-design/leadership/technical-debt-priority-business-value.mdx) | ✅ | ✅ | · | · | · |
 | [API 网关](../docs/system-design/microservices/api-gateway-routing.mdx) | ✅ | ✅ | · | · | · |
 | [灰度发布](../docs/system-design/microservices/canary-traffic-tagging-rollback.mdx) | ✅ | ✅ | · | · | · |
 | [配置中心](../docs/system-design/microservices/config-center-version-refresh.mdx) | ✅ | ✅ | · | · | · |
