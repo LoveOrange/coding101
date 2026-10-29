@@ -8,11 +8,11 @@
 
 | 状态 | Codex 生成 | Claude 校验 | Lin 校验 | English | 日本語 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| ✅ | 349 | 304 | 0 | 0 | 0 |
+| ✅ | 349 | 316 | 0 | 0 | 0 |
 | 🔁 | 0 | 0 | 0 | 0 | 0 |
 | 👀 | 0 | 0 | 7 | 0 | 0 |
 | ⚠️ | 0 | 0 | 0 | 0 | 0 |
-| · | 0 | 45 | 342 | 349 | 349 |
+| · | 0 | 33 | 342 | 349 | 349 |
 | — | 0 | 0 | 0 | 0 | 0 |
 
 ## ai
@@ -30,7 +30,7 @@
 | [仓库指令](../docs/ai/development/repository-instructions.mdx) | ✅ | ✅ | · | · | · |
 | [Agent 评估](../docs/ai/evaluation/agent-evaluation.mdx) | ✅ | ✅ | · | · | · |
 | [RAG 评估](../docs/ai/evaluation/rag-evaluation.mdx) | ✅ | ✅ | · | · | · |
-| [AI 应用与 Agent](../docs/ai/index.mdx) | ✅ | · | · | · | · |
+| [AI 应用与 Agent](../docs/ai/index.mdx) | ✅ | ✅ | · | · | · |
 | [模型幻觉](../docs/ai/llm/hallucination.mdx) | ✅ | ✅ | · | · | · |
 | [大语言模型基础](../docs/ai/llm/llm-basics.mdx) | ✅ | ✅ | · | · | · |
 | [Transformer 与注意力机制](../docs/ai/llm/transformer.mdx) | ✅ | ✅ | · | · | · |
@@ -253,7 +253,7 @@
 
 | 文章 | Codex 生成 | Claude 校验 | Lin 校验 | English | 日本語 |
 | --- | :---: | :---: | :---: | :---: | :---: |
-| [ChatGPT 辅助面试复习](../docs/chatgpt-guide/index.md) | ✅ | · | · | · | · |
+| [ChatGPT 辅助面试复习](../docs/chatgpt-guide/index.md) | ✅ | ✅ | · | · | · |
 
 ## devops
 
@@ -279,21 +279,21 @@
 
 | 文章 | Codex 生成 | Claude 校验 | Lin 校验 | English | 日本語 |
 | --- | :---: | :---: | :---: | :---: | :---: |
-| [编码与 SQL 练习](../docs/interview/coding-practice.mdx) | ✅ | · | · | · | · |
-| [研发类面试复习指南](../docs/interview/develop-roadmap.mdx) | ✅ | · | · | · | · |
-| [面试准备](../docs/interview/index.mdx) | ✅ | · | · | · | · |
-| [研发类面试流程](../docs/interview/interview-process.mdx) | ✅ | · | · | · | · |
-| [面经考点与来源](../docs/interview/interview-research.mdx) | ✅ | · | · | · | · |
-| [Java 校招复习范围](../docs/interview/java-campus-review.mdx) | ✅ | · | · | · | · |
-| [项目准备](../docs/interview/project-preparation.mdx) | ✅ | · | · | · | · |
-| [代表题与练习](../docs/interview/questions.mdx) | ✅ | · | · | · | · |
-| [简历准备](../docs/interview/resume.mdx) | ✅ | · | · | · | · |
+| [编码与 SQL 练习](../docs/interview/coding-practice.mdx) | ✅ | ✅ | · | · | · |
+| [研发类面试复习指南](../docs/interview/develop-roadmap.mdx) | ✅ | ✅ | · | · | · |
+| [面试准备](../docs/interview/index.mdx) | ✅ | ✅ | · | · | · |
+| [研发类面试流程](../docs/interview/interview-process.mdx) | ✅ | ✅ | · | · | · |
+| [面经考点与来源](../docs/interview/interview-research.mdx) | ✅ | ✅ | · | · | · |
+| [Java 校招复习范围](../docs/interview/java-campus-review.mdx) | ✅ | ✅ | · | · | · |
+| [项目准备](../docs/interview/project-preparation.mdx) | ✅ | ✅ | · | · | · |
+| [代表题与练习](../docs/interview/questions.mdx) | ✅ | ✅ | · | · | · |
+| [简历准备](../docs/interview/resume.mdx) | ✅ | ✅ | · | · | · |
 
 ## (根目录)
 
 | 文章 | Codex 生成 | Claude 校验 | Lin 校验 | English | 日本語 |
 | --- | :---: | :---: | :---: | :---: | :---: |
-| [Coding 101](../docs/intro.md) | ✅ | · | · | · | · |
+| [Coding 101](../docs/intro.md) | ✅ | ✅ | · | · | · |
 
 ## leetcode
 
