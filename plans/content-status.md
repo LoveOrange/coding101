@@ -8,11 +8,11 @@
 
 | 状态 | Codex 生成 | Claude 校验 | Lin 校验 | English | 日本語 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| ✅ | 349 | 103 | 0 | 0 | 0 |
+| ✅ | 349 | 115 | 0 | 0 | 0 |
 | 🔁 | 0 | 0 | 0 | 0 | 0 |
 | 👀 | 0 | 0 | 7 | 0 | 0 |
 | ⚠️ | 0 | 0 | 0 | 0 | 0 |
-| · | 0 | 246 | 342 | 349 | 349 |
+| · | 0 | 234 | 342 | 349 | 349 |
 | — | 0 | 0 | 0 | 0 | 0 |
 
 ## ai
@@ -139,18 +139,18 @@
 | [JPA](../docs/basic-knowledge/java/data-access/jpa-entity-states-dirty-checking-lazy-loading.mdx) | ✅ | · | · | · | · |
 | [MyBatis](../docs/basic-knowledge/java/data-access/mybatis-mapping-executor-plugins.mdx) | ✅ | · | · | · | · |
 | [N+1 查询](../docs/basic-knowledge/java/data-access/n-plus-one-fetch-strategies.mdx) | ✅ | · | · | · | · |
-| [Collector](../docs/basic-knowledge/java/functional/collectors-grouping-reduction.mdx) | ✅ | · | · | · | · |
-| [Java 函数式编程](../docs/basic-knowledge/java/functional/index.mdx) | ✅ | · | · | · | · |
-| [java.time](../docs/basic-knowledge/java/functional/java-time-time-zone-boundaries.mdx) | ✅ | · | · | · | · |
-| [Lambda 表达式](../docs/basic-knowledge/java/functional/lambda-functional-interfaces-capture.mdx) | ✅ | · | · | · | · |
-| [并行流](../docs/basic-knowledge/java/functional/parallel-stream-model-pitfalls.mdx) | ✅ | · | · | · | · |
-| [Stream](../docs/basic-knowledge/java/functional/stream-pipeline-lazy-evaluation.mdx) | ✅ | · | · | · | · |
-| [Java](../docs/basic-knowledge/java/index.mdx) | ✅ | · | · | · | · |
-| [Java NIO](../docs/basic-knowledge/java/io/buffer-channel-selector.mdx) | ✅ | · | · | · | · |
-| [Java 流式 I/O](../docs/basic-knowledge/java/io/byte-character-buffered-streams.mdx) | ✅ | · | · | · | · |
-| [零拷贝](../docs/basic-knowledge/java/io/file-mapping-zero-copy-direct-memory.mdx) | ✅ | · | · | · | · |
-| [Java I/O](../docs/basic-knowledge/java/io/index.mdx) | ✅ | · | · | · | · |
-| [Java 序列化](../docs/basic-knowledge/java/io/java-serialization-compatibility-security.mdx) | ✅ | · | · | · | · |
+| [Collector](../docs/basic-knowledge/java/functional/collectors-grouping-reduction.mdx) | ✅ | ✅ | · | · | · |
+| [Java 函数式编程](../docs/basic-knowledge/java/functional/index.mdx) | ✅ | ✅ | · | · | · |
+| [java.time](../docs/basic-knowledge/java/functional/java-time-time-zone-boundaries.mdx) | ✅ | ✅ | · | · | · |
+| [Lambda 表达式](../docs/basic-knowledge/java/functional/lambda-functional-interfaces-capture.mdx) | ✅ | ✅ | · | · | · |
+| [并行流](../docs/basic-knowledge/java/functional/parallel-stream-model-pitfalls.mdx) | ✅ | ✅ | · | · | · |
+| [Stream](../docs/basic-knowledge/java/functional/stream-pipeline-lazy-evaluation.mdx) | ✅ | ✅ | · | · | · |
+| [Java](../docs/basic-knowledge/java/index.mdx) | ✅ | ✅ | · | · | · |
+| [Java NIO](../docs/basic-knowledge/java/io/buffer-channel-selector.mdx) | ✅ | ✅ | · | · | · |
+| [Java 流式 I/O](../docs/basic-knowledge/java/io/byte-character-buffered-streams.mdx) | ✅ | ✅ | · | · | · |
+| [零拷贝](../docs/basic-knowledge/java/io/file-mapping-zero-copy-direct-memory.mdx) | ✅ | ✅ | · | · | · |
+| [Java I/O](../docs/basic-knowledge/java/io/index.mdx) | ✅ | ✅ | · | · | · |
+| [Java 序列化](../docs/basic-knowledge/java/io/java-serialization-compatibility-security.mdx) | ✅ | ✅ | · | · | · |
 | [Java 启动优化](../docs/basic-knowledge/java/jvm/aot-cds-native-image.mdx) | ✅ | ✅ | · | · | · |
 | [类加载故障](../docs/basic-knowledge/java/jvm/class-initialization-conflicts.mdx) | ✅ | ✅ | · | · | · |
 | [类加载](../docs/basic-knowledge/java/jvm/class-loading-stages.mdx) | ✅ | ✅ | · | · | · |
