@@ -172,7 +172,7 @@ Java 里有两种「相等」：`equals` 判断的对象相等，和比较器返
 
 最短路的结果还可以和任意一条已知可行的路径比较，答案不应比它长。但这只是一个上界检查，路径本身是否合法、距离是否最优仍要单独验证。
 
-还有两点容易忽略。同一个实例多调用几次，能暴露上次调用残留的状态。随机测试失败后，把输入缩小，保存成固定的回归用例；JUnit 5.13.1 的参数化测试可以让同一套断言跑多组边界输入。最后要记住，测试只能覆盖有限的输入，算法对所有输入都正确，仍要靠证明。
+还有两点容易忽略。同一个实例多调用几次，能暴露上次调用残留的状态。随机测试失败后，把输入缩小，保存成固定的回归用例；JUnit 5.13.4 的参数化测试可以让同一套断言跑多组边界输入。最后要记住，测试只能覆盖有限的输入，算法对所有输入都正确，仍要靠证明。
 
 ## 9. 修改后的复查 {#修改后的复查}
 
@@ -293,6 +293,6 @@ Java 里有两种「相等」：`equals` 判断的对象相等，和比较器返
 
 - [Java SE 21：Math.addExact](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/Math.html#addExact(int,int))
 - [Java SE 21：ArrayDeque](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/ArrayDeque.html)
-- [JUnit 5.13.1：User Guide](https://docs.junit.org/5.13.1/user-guide/index.html)
+- [JUnit 5.13.4：User Guide](https://docs.junit.org/5.13.4/user-guide/index.html)
 - [Java SE 21：Comparator](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/Comparator.html)
 - [Java SE 21：Random](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/Random.html)
