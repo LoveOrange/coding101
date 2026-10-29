@@ -8,11 +8,11 @@
 
 | 状态 | Codex 生成 | Claude 校验 | Lin 校验 | English | 日本語 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| ✅ | 349 | 127 | 0 | 0 | 0 |
+| ✅ | 349 | 133 | 0 | 0 | 0 |
 | 🔁 | 0 | 0 | 0 | 0 | 0 |
 | 👀 | 0 | 0 | 7 | 0 | 0 |
 | ⚠️ | 0 | 0 | 0 | 0 | 0 |
-| · | 0 | 222 | 342 | 349 | 349 |
+| · | 0 | 216 | 342 | 349 | 349 |
 | — | 0 | 0 | 0 | 0 | 0 |
 
 ## ai
@@ -92,12 +92,12 @@
 | [长事务](../docs/basic-knowledge/database/transaction/long-transactions-hot-updates-boundaries.mdx) | ✅ | · | · | · | · |
 | [MVCC](../docs/basic-knowledge/database/transaction/mvcc-read-view-consistent-read.mdx) | ✅ | · | · | · | · |
 | [基础知识](../docs/basic-knowledge/index.mdx) | ✅ | · | · | · | · |
-| [滑动窗口](../docs/basic-knowledge/java/algorithms/arrays-strings-sliding-window.mdx) | ✅ | · | · | · | · |
-| [算法复杂度](../docs/basic-knowledge/java/algorithms/complexity-constraints-java-cost.mdx) | ✅ | · | · | · | · |
-| [动态规划](../docs/basic-knowledge/java/algorithms/dynamic-programming-state-design.mdx) | ✅ | · | · | · | · |
-| [Java 算法](../docs/basic-knowledge/java/algorithms/index.mdx) | ✅ | · | · | · | · |
-| [算法正确性](../docs/basic-knowledge/java/algorithms/live-coding-counterexamples-tests.mdx) | ✅ | · | · | · | · |
-| [树与图搜索](../docs/basic-knowledge/java/algorithms/trees-graphs-search.mdx) | ✅ | · | · | · | · |
+| [滑动窗口](../docs/basic-knowledge/java/algorithms/arrays-strings-sliding-window.mdx) | ✅ | ✅ | · | · | · |
+| [算法复杂度](../docs/basic-knowledge/java/algorithms/complexity-constraints-java-cost.mdx) | ✅ | ✅ | · | · | · |
+| [动态规划](../docs/basic-knowledge/java/algorithms/dynamic-programming-state-design.mdx) | ✅ | ✅ | · | · | · |
+| [Java 算法](../docs/basic-knowledge/java/algorithms/index.mdx) | ✅ | ✅ | · | · | · |
+| [算法正确性](../docs/basic-knowledge/java/algorithms/live-coding-counterexamples-tests.mdx) | ✅ | ✅ | · | · | · |
+| [树与图搜索](../docs/basic-knowledge/java/algorithms/trees-graphs-search.mdx) | ✅ | ✅ | · | · | · |
 | [ArrayList](../docs/basic-knowledge/java/collections/arraylist-growth-memory-locality.mdx) | ✅ | ✅ | · | · | · |
 | [BlockingQueue](../docs/basic-knowledge/java/collections/blockingqueue-producer-consumer.mdx) | ✅ | ✅ | · | · | · |
 | [Java 集合框架](../docs/basic-knowledge/java/collections/collection-interface-selection.mdx) | ✅ | ✅ | · | · | · |
