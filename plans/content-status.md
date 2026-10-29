@@ -8,11 +8,11 @@
 
 | 状态 | Codex 生成 | Claude 校验 | Lin 校验 | English | 日本語 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| ✅ | 349 | 188 | 0 | 0 | 0 |
+| ✅ | 349 | 197 | 0 | 0 | 0 |
 | 🔁 | 0 | 0 | 0 | 0 | 0 |
 | 👀 | 0 | 0 | 7 | 0 | 0 |
 | ⚠️ | 0 | 0 | 0 | 0 | 0 |
-| · | 0 | 161 | 342 | 349 | 349 |
+| · | 0 | 152 | 342 | 349 | 349 |
 | — | 0 | 0 | 0 | 0 | 0 |
 
 ## ai
@@ -231,15 +231,15 @@
 | [TCP 连接](../docs/basic-knowledge/network/tcp_handshake.mdx) | ✅ | · | · | · | · |
 | [TCP 与 UDP](../docs/basic-knowledge/network/tcp_udp.mdx) | ✅ | · | · | · | · |
 | [TLS](../docs/basic-knowledge/network/tls.mdx) | ✅ | · | · | · | · |
-| [NoSQL 数据库](../docs/basic-knowledge/nosql/index.mdx) | ✅ | · | · | · | · |
-| [缓存一致性](../docs/basic-knowledge/nosql/redis/cache-patterns-consistency.mdx) | ✅ | · | · | · | · |
-| [缓存穿透、击穿、雪崩与热点 Key](../docs/basic-knowledge/nosql/redis/cache-penetration-stampede-avalanche-hotkeys.mdx) | ✅ | · | · | · | · |
-| [Redis 数据结构](../docs/basic-knowledge/nosql/redis/data_structure.mdx) | ✅ | · | · | · | · |
-| [分布式锁](../docs/basic-knowledge/nosql/redis/distributed-lock-conditions-boundaries.mdx) | ✅ | · | · | · | · |
-| [Redis 内存淘汰](../docs/basic-knowledge/nosql/redis/eviction.mdx) | ✅ | · | · | · | · |
-| [Redis 过期](../docs/basic-knowledge/nosql/redis/expiration.mdx) | ✅ | · | · | · | · |
-| [Redis](../docs/basic-knowledge/nosql/redis/index.mdx) | ✅ | · | · | · | · |
-| [Redis 持久化、复制与集群](../docs/basic-knowledge/nosql/redis/persistence.mdx) | ✅ | · | · | · | · |
+| [NoSQL 数据库](../docs/basic-knowledge/nosql/index.mdx) | ✅ | ✅ | · | · | · |
+| [缓存一致性](../docs/basic-knowledge/nosql/redis/cache-patterns-consistency.mdx) | ✅ | ✅ | · | · | · |
+| [缓存穿透、击穿、雪崩与热点 Key](../docs/basic-knowledge/nosql/redis/cache-penetration-stampede-avalanche-hotkeys.mdx) | ✅ | ✅ | · | · | · |
+| [Redis 数据结构](../docs/basic-knowledge/nosql/redis/data_structure.mdx) | ✅ | ✅ | · | · | · |
+| [分布式锁](../docs/basic-knowledge/nosql/redis/distributed-lock-conditions-boundaries.mdx) | ✅ | ✅ | · | · | · |
+| [Redis 内存淘汰](../docs/basic-knowledge/nosql/redis/eviction.mdx) | ✅ | ✅ | · | · | · |
+| [Redis 过期](../docs/basic-knowledge/nosql/redis/expiration.mdx) | ✅ | ✅ | · | · | · |
+| [Redis](../docs/basic-knowledge/nosql/redis/index.mdx) | ✅ | ✅ | · | · | · |
+| [Redis 持久化、复制与集群](../docs/basic-knowledge/nosql/redis/persistence.mdx) | ✅ | ✅ | · | · | · |
 | [死锁](../docs/basic-knowledge/operating-system/deadlock.mdx) | ✅ | · | · | · | · |
 | [文件描述符](../docs/basic-knowledge/operating-system/file-descriptors.mdx) | ✅ | · | · | · | · |
 | [操作系统](../docs/basic-knowledge/operating-system/index.mdx) | ✅ | · | · | · | · |
