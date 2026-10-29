@@ -9,34 +9,39 @@ keywords: ["Filter 与 Interceptor", "HandlerInterceptor", "AOP 对比", "拦截
 
 # Spring 拦截机制
 
-Filter、Interceptor 和 Spring AOP 都能在调用前后执行逻辑，但作用的层级不同。Filter 处理 Servlet 请求，Interceptor 围绕 MVC 处理器执行，AOP 围绕 Bean 方法调用执行。本文先比较它们能读取的信息和覆盖范围，再说明异常处理、异步线程清理与拦截器回调顺序。
+Filter、Interceptor 和 Spring AOP 都能在调用前后插入逻辑，区别在于它们包住的是什么：Filter 包住一次 Servlet 请求，Interceptor 包住一次 MVC 处理器调用，AOP 包住一次 Bean 方法调用。包住的东西不同，能读到的信息、能覆盖的范围和能处理的异常也就不同。
+
+选择时，先看这段逻辑需要什么信息。要包装请求和响应，或者覆盖 MVC 之外的请求，可以用 Filter，再配置相应的 URL 映射；要知道命中了哪个 Controller 方法，可以用 Interceptor；要围绕业务方法执行逻辑，可以用 AOP。面试中还需要结合调用顺序，说明异常由谁处理、线程上的请求信息由谁清理。
 
 ## 1. 面试核心 {#core}
 
-- **Filter 范围。** Filter 按 URL 与派发类型匹配 Servlet 请求，可包装原始请求和响应。[卡](#filter-interceptor-aop)
-- **MVC 拦截器。** `HandlerInterceptor` 在 MVC 找到处理器后执行，遇到 `HandlerMethod` 时可读取 Controller 方法和注解。
-- **正常回调顺序。** 同步请求正常完成时，拦截器的 `preHandle` 按注册顺序执行，`postHandle` 和 `afterCompletion` 逆序执行。[卡](#interceptor-callback-order)
-- **提前结束。** 某个拦截器的 `preHandle` 返回 false 时，只有此前返回 true 的拦截器收到 `afterCompletion` 回调。
-- **异步与错误派发。** `OncePerRequestFilter` 默认跳过后续 ASYNC 与 ERROR 派发。
+- Filter 按 URL 和派发类型匹配 **Servlet 请求**，可以包装原始请求和响应，覆盖范围不限于 MVC。[卡](#filter-interceptor-aop)
+- `HandlerInterceptor` 在 **MVC 找到处理器之后**执行，处理器是 `HandlerMethod` 时，可以读取 Controller 方法和它的注解。
+- Spring AOP 拦截**经过代理的 Bean 方法调用**，可以让 HTTP、消息和定时任务入口共用业务方法的增强逻辑。
+- `OncePerRequestFilter` **默认跳过后续的 ASYNC 和 ERROR 派发**，需要参与时要改钩子方法和注册设置。
+- 同步请求正常完成时，`preHandle` **按注册顺序**执行，`postHandle` 和 `afterCompletion` **按逆序**执行。[卡](#interceptor-callback-order)
+- 某个拦截器的 `preHandle` 返回 false 时，**只有此前返回 true 的拦截器**会收到 `afterCompletion`。
 
 ## 2. Filter {#filter}
 
-Filter 是 Servlet 规范中的过滤器，用于在目标 Servlet 前后处理请求。它可以访问或包装原始 request/response，覆盖多个 Servlet。实际范围由 URL 和 dispatcher type 决定，后者表示请求派发的类型。比如 REQUEST 表示初始请求，ASYNC 表示异步派发，ERROR 表示错误派发。
+**Filter** 是 Servlet 规范定义的过滤器，在请求到达目标 Servlet 之前和之后执行。它拿到的是原始的 request 和 response，可以读取、包装或直接写响应，而且一个 Filter 可以覆盖多个 Servlet。
 
-需要覆盖 **Servlet 请求入口**的功能适合放在这一层：
+Filter 作用于哪些请求，由两样东西决定：URL 映射和 **dispatcher type**（派发类型）。派发类型说明这次请求是怎么交给 Servlet 的：REQUEST 是客户端发来的初始请求，ASYNC 是异步处理完成后的再次派发，ERROR 是出错后转到错误页面的派发。同一个请求可能先后经历好几种派发，后面第 7 节会用到这一点。
+
+Filter 的执行靠 `chain.doFilter()` 往下推进：调用它，请求才进入下一个过滤器或 Servlet；不调用，直接写响应并返回，就等于拒绝了请求。`chain.doFilter()` 返回以后，过滤器还能做清理，但这时响应可能已经提交，状态码和响应头改不了了。
+
+需要覆盖**Servlet 请求入口**的功能适合放在这一层：
 
 - 安全过滤链处理认证授权，CORS 处理跨域访问，编码过滤器设置字符编码。
-- 请求体包装、响应头设置和响应压缩直接操作请求或响应。
-- 对其他 Servlet 或静态资源的过滤，可以覆盖 DispatcherServlet 之外的目标。
-- 请求日志可以在 MVC 查找处理器之前建立请求 ID。
+- 请求体包装、响应头设置和响应压缩，本身就要操作请求或响应。
+- 其他 Servlet 和静态资源也要过滤时，只有 Filter 能覆盖 DispatcherServlet 之外的目标。
+- 请求日志需要在 MVC 查找处理器之前就建立请求 ID。
 
-调用 `chain.doFilter()` 后，请求才进入下一过滤器或 Servlet。过滤器也可以直接写响应并返回，从而拒绝请求。后续调用返回后，过滤器可以清理资源，但这时响应已有可能提交。
-
-Filter 进入时尚未执行 MVC 的处理器映射，所以依赖 Controller 注解的逻辑应放在映射完成之后。
+反过来，Filter 执行时 MVC 还没做处理器映射，它不知道请求会落到哪个 Controller 方法，所以依赖 Controller 注解的逻辑不能放在这里。
 
 ## 3. HandlerInterceptor {#handlerinterceptor}
 
-HandlerInterceptor 是 Spring MVC 的处理器拦截器，在 HandlerMapping 找到处理器后执行。因此，它能基于路由和控制器方法的信息做判断。下面先确认处理器是方法，再读取租户要求注解：
+**HandlerInterceptor** 是 Spring MVC 的处理器拦截器，在 HandlerMapping 找到处理器之后执行。比 Filter 多知道的那一点，正是它的用处：它能拿到这次请求要调用的处理器，按路由和 Controller 方法的信息做判断。下面先确认处理器是一个方法，再读取方法上的租户注解：
 
 ```java
 if (handler instanceof HandlerMethod method) {
@@ -45,58 +50,62 @@ if (handler instanceof HandlerMethod method) {
 }
 ```
 
-`HandlerMethod` 表示一个控制器方法，示例通过它读取方法上的 `RequiredTenant` 注解。静态资源等 handler 使用其他类型，所以读取前要先检查类型。
+`HandlerMethod` 表示一个 Controller 方法，通过它可以读到方法上的 `RequiredTenant` 注解。静态资源等请求的 handler 是别的类型，所以读取之前要先检查类型，否则强转会失败。
 
-Interceptor 适合校验路由元数据、设置区域信息和记录轻量审计。请求未进入 DispatcherServlet，或尚未找到 handler 时，就不会走到这次拦截回调。
+Interceptor 适合校验路由元数据、设置区域信息、记录轻量审计。请求没进入 DispatcherServlet，或者 MVC 没找到 handler，就不会触发这些回调。
 
-因此，通用 Web 认证授权优先使用 Spring Security 过滤链，业务方法授权使用 Method Security。Method Security 在方法调用时检查权限。手写 Interceptor 或切面可补充明确的规则，并用测试覆盖错误派发与静态资源等边界。
+因此，通用的 Web 认证授权优先用 Spring Security 的过滤链，业务方法上的授权用 Method Security，它在方法被调用时检查权限。手写 Interceptor 或切面只用来补充明确的规则，并用测试覆盖错误派发、静态资源这些容易漏掉的路径。
 
 ## 4. AOP {#aop}
 
-AOP 用于给多个业务方法添加共有逻辑，例如事务或耗时记录。Spring AOP 拦截的是经过代理的 Bean 方法调用，调用入口可以来自 HTTP、消息消费或定时任务。
+**Spring AOP** 用来给一批业务方法加上共同的逻辑，比如事务或耗时记录。它拦截的是经过代理的 Bean 方法调用，和请求从哪来无关。同一个 service 方法无论由 HTTP 请求、消息消费者还是定时任务调用，只要经过代理并匹配切面，就会执行对应的增强。
 
-事务、方法级授权、重试和监控都可围绕业务方法实现。切面能观察方法参数、返回值和异常，但 Servlet 过滤链仍由 Filter 控制。若把 request/response 强行传入 service 切面，业务层就会依赖 Web 请求，其他入口也更难复用。
+切面能看到方法参数、返回值和抛出的异常，所以事务、方法级授权、重试和监控都适合围绕业务方法来做。它看不到的是 Servlet 层：过滤链仍然由 Filter 控制。如果为了在切面里读请求头，把 request 或 response 传进 service，业务层就依赖上了 Web 请求，消息和定时任务入口就没法复用这段代码。
 
-代理与拦截链机制见 [Spring AOP](./aop-pointcut-interceptor-chain.mdx)。
+代理和拦截链的机制见 [Spring AOP](./aop-pointcut-interceptor-chain.mdx)。
 
 ## 5. 分层协作 {#分层协作}
 
-一次请求经过多个层级时，可以让各层记录自己能看到的信息。以**请求追踪**为例，可以这样分工：
+三种机制不是三选一，同一个功能可以让每层记录自己最清楚的那部分。以**请求追踪**为例：
 
-- Filter 读取或生成请求 ID，放入受控上下文，并在继续执行前写入响应头。
-- Interceptor 添加路径模板和 handler 名称，标明命中了哪个接口。
-- AOP 或监控库记录关键 service 调用的耗时，形成追踪中的子调用记录。
-- 当前线程退出时，在 `finally` 中清理 MDC 等线程上下文。MDC 是日志框架保存请求 ID 等字段的诊断上下文。
+- Filter 读取或生成请求 ID，放进受控的上下文，并在继续执行之前写进响应头。
+- Interceptor 补上路径模板和 handler 名称，说明命中了哪个接口。
+- AOP 或监控库记录关键 service 调用的耗时，作为这次追踪里的子调用。
+- 当前线程退出时，在 `finally` 中清理 MDC 等线程上下文。MDC 是日志框架用来保存请求 ID 这类字段的诊断上下文。
 
-响应头需在响应提交前写入，过滤链返回后的 `finally` 则适合清理当前线程。此时应检查响应是否已提交，再决定还能修改哪些内容。各层按信息来源分工，也能避免重复记录同一份请求日志。
+请求 ID 的响应头要在继续执行之前写，因为过滤链返回时响应可能已经提交；过滤链返回后的 `finally` 则适合清理当前线程，这时如果还想改响应，要先检查它是否已提交。按信息来源分工，还有一个好处是同一份请求日志不会被几层重复记录。
 
 ## 6. 异常处理范围 {#异常处理范围}
 
-判断异常由谁处理，要看它发生在哪一层。Interceptor 的 `preHandle`、Controller 调用等 MVC 阶段抛错后，会进入异常解析器链。`@ControllerAdvice` 中的异常处理方法也通过这条链调用。
+异常由谁处理，看它在哪一层抛出。
 
-Filter 在进入 DispatcherServlet 前自身抛错，需要由过滤链或 Servlet 错误机制处理。AOP 则只能捕获其方法调用链内的异常。比如 JSON 序列化发生在 Controller 返回之后，已经超出该方法切面的范围。
+- **MVC 阶段**：Interceptor 的 `preHandle`、Controller 调用等阶段抛出的异常，会进入 MVC 的异常解析器链，`@ControllerAdvice` 里的异常处理方法也是通过这条链调用的。
+- **Filter**：Filter 在进入 DispatcherServlet 之前自己抛错，MVC 的解析器管不到，要由过滤链或 Servlet 容器的错误机制处理。
+- **AOP**：切面只能捕获它所包住的那次方法调用里的异常。比如 JSON 序列化发生在 Controller 返回之后，已经不在 Controller 方法切面的范围内。
 
-响应提交后，状态码和响应头已发给客户端，这时再进入错误处理也无法重写完整响应。
+还有一个时间上的限制：响应一旦提交，状态码和响应头已经发给客户端，这时再进入错误处理，也没法重新写出一份完整的错误响应。
 
-统一错误响应与处理范围见 [API 错误契约](./api-error-contract.mdx#controlleradvice-的处理范围)。
+统一错误响应和 `@ControllerAdvice` 的处理范围见 [API 错误契约](./api-error-contract.mdx#controlleradvice-的处理范围)。
 
 ## 7. 异步与 ThreadLocal {#异步与-threadlocal}
 
-异步请求会更换执行线程，所以请求上下文需要显式传递。Servlet 异步处理释放初始线程后，可通过 ASYNC 派发继续执行；`@Async` 也会把任务交给其他线程。
+异步请求可能由不同线程接续处理，所以绑在线程上的请求上下文要显式传递，并在每个线程结束本次处理时清理。
 
-`ThreadLocal` 将数据保存在当前线程中，后续线程需要重新建立请求 ID 等上下文。可以使用框架提供的上下文传播机制，并在每个线程的退出路径中清理。这样，线程被下一个请求复用时，才不会带上前一个请求的数据。
+**ThreadLocal** 用来保存当前线程自己的数据，不会把请求 ID 这类信息自动传给其他线程。Servlet 异步处理会先释放初始请求线程，结果就绪后再通过 ASYNC 派发继续处理；`@Async` 则把任务交给执行器。后续工作可能由其他线程执行，因此要借助框架提供的上下文传播机制等方式，重新建立所需的请求信息。
 
-`OncePerRequestFilter` 默认跳过后续 ASYNC 与 ERROR 派发。如果过滤器需要参与这些派发，要同时检查**过滤钩子与注册设置**：
+清理同样要落在每个线程的退出路径上。容器和执行器的线程是复用的，上一个请求留在 ThreadLocal 里的数据不清掉，下一个请求在这个线程上就会读到别人的请求 ID。
+
+`OncePerRequestFilter` 默认跳过后续的 ASYNC 和 ERROR 派发。如果过滤器需要参与这些派发，要同时检查**过滤钩子与注册设置**：
 
 - 参与 ASYNC 时，让 `shouldNotFilterAsyncDispatch()` 返回 false。
 - 参与 ERROR 时，让 `shouldNotFilterErrorDispatch()` 返回 false。
-- 注册时包含对应的 dispatcher type，使用异步请求时还要启用异步支持。
+- 注册过滤器时包含对应的 dispatcher type；使用异步请求时，还要启用异步支持。
 
-允许 ASYNC 后，后续派发可再次执行过滤逻辑，因此每次执行都需清理当前线程的数据。线程退出与整个请求完成是两个时刻，观察请求最终完成要使用异步完成回调。
+允许 ASYNC 之后，过滤逻辑会在后续派发里再执行一次，所以每次执行都要清理当前线程的数据。另外要分清两个时刻：一个线程退出，不代表整个请求完成。想观察请求最终完成，要用异步完成回调。
 
 ## 8. 拦截器回调顺序 {#拦截器回调顺序}
 
-回调顺序决定了哪里可以修改返回结果，以及哪里负责释放资源。同步请求正常完成时，A、B 按注册顺序进入，再按相反顺序退出：
+拦截器像一层层套起来：先进入的后退出。回调顺序决定了在哪里还能改返回结果、在哪里负责释放资源。同步请求正常完成时，A、B 两个拦截器按注册顺序进入，再按相反顺序退出：
 
 ```text
 A.preHandle → B.preHandle → handler
@@ -104,31 +113,27 @@ A.preHandle → B.preHandle → handler
 → 视图渲染 → B.afterCompletion → A.afterCompletion
 ```
 
-`@ResponseBody` 的正文在适配器内部写出，早于 `postHandle`。因此，修改响应体应使用 `ResponseBodyAdvice` 等返回值扩展点，它能在正文写出前介入。
+`postHandle` 看起来是改结果的好地方，但对 `@ResponseBody` 来说太晚了：正文在适配器内部就已经写出，早于 `postHandle`。要修改响应体，应该用 `ResponseBodyAdvice` 这类返回值扩展点，它在正文写出之前介入。
 
-若 B 的 `preHandle` 返回 false，请求就在 B 处结束，handler 与全部 `postHandle` 都跳过。只有已经返回 true 的 A 收到 `afterCompletion`。因此，B 需要自行完成拒绝响应，并释放刚取得的资源。
+请求在中途被拦下时，顺序会变。如果 B 的 `preHandle` 返回 false，请求就停在 B，handler 和所有 `postHandle` 都不执行，只有已经返回 true 的 A 会收到 `afterCompletion`。B 自己收不到完成回调，所以它要自己写出拒绝响应，并释放刚拿到的资源，否则这些资源就没人清理。
 
-handler 抛错时会跳过 `postHandle`，将异常交给解析器。此前 `preHandle` 返回 true 的拦截器仍会收到 `afterCompletion`。如果解析器已经处理异常，完成回调中的异常参数就可为 null。
+handler 抛出异常时，`postHandle` 被跳过，异常交给解析器；此前 `preHandle` 返回 true 的拦截器仍然会收到 `afterCompletion`。如果解析器已经处理了这个异常，完成回调拿到的异常参数可能是 null。
 
-开启 MVC 异步时，初始线程会调用异步拦截器的 `afterConcurrentHandlingStarted`，用于清理该线程的上下文。
-
-随后派发的回调过程见 [Spring MVC 请求生命周期](./http-request-to-controller.mdx#异步请求)。
+开启 MVC 异步时，初始线程上不会走普通的 `postHandle` 和 `afterCompletion`，而是调用异步拦截器的 `afterConcurrentHandlingStarted`，用来清理这个线程的上下文。之后的派发怎样续接，见 [Spring MVC 请求生命周期](./http-request-to-controller.mdx#异步请求)。
 
 ## 9. 常见问题 {#常见问题}
 
 ### 9.1 Controller 鉴权应该放在哪里？ {#入口认证与方法授权}
 
-入口认证交给 Spring Security 安全过滤链，业务方法授权交给 Method Security。若还需要基于路由元数据补充校验，可以放在 Interceptor 中，并测试其覆盖范围。
+入口认证交给 Spring Security 的安全过滤链，业务方法授权交给 Method Security。如果还需要根据路由元数据补充校验，可以放在 Interceptor 里，并用测试确认它覆盖了哪些请求。
 
 ### 9.2 Filter 能直接拿到 Controller 方法注解吗？ {#filter-与处理器注解}
 
-Filter 进入时尚未完成 MVC 映射，因此没有现成的目标方法可供读取。自行查询映射器会增加层级耦合，并重复匹配请求。需要读取处理器注解时，直接在 Interceptor 中检查 `HandlerMethod` 更合适。
+拿不到现成的。Filter 执行时 MVC 还没完成映射，没有目标方法可读。在 Filter 里自己去查映射器，等于把 MVC 的匹配再做一遍，还让两层耦合在一起。需要读处理器注解时，在 Interceptor 里检查 `HandlerMethod` 更直接。
 
 ## 10. 面试题 {#面试题}
 
 ### 10.1 Filter、Interceptor 和 AOP 应怎样区分 {#filter-interceptor-aop}
-
-
 
 **考察重点**：根据能读取的信息和覆盖范围区分三种机制，并解释异常处理与异步清理的边界。
 
@@ -139,18 +144,17 @@ Filter 进入时尚未完成 MVC 映射，因此没有现成的目标方法可�
 
 **Filter 拦截 Servlet 请求，Interceptor 拦截 MVC 处理器，AOP 拦截经过代理的 Bean 方法调用。**
 
-三者能读取的信息不同，所以应按功能需要选择。
+三者能读到的信息不同，所以按功能需要的信息来选。
 
-Filter 可以包装请求和响应，也能覆盖其他 Servlet，适合 CORS、请求 ID 和通用 Web 安全。Interceptor 在映射后获得处理器，适合路由和 Controller 元数据逻辑。AOP 与 HTTP 无关，适合事务和 service 方法监控。
+Filter 能包装请求和响应，也能覆盖其他 Servlet，适合 CORS、请求 ID 和通用 Web 安全。Interceptor 在映射完成后拿到处理器，适合依赖路由和 Controller 元数据的逻辑。AOP 和 HTTP 无关，适合事务和 service 方法监控。
 
-异常也要按发生位置处理：Filter 自身异常由过滤链或容器接手，MVC 异常进入解析器链。异步请求切换线程后，还要传递上下文，并在每次线程退出时清理。
+异常也按发生位置处理：Filter 自身的异常由过滤链或容器接手，MVC 阶段的异常进入解析器链。异步请求换线程后，要传递上下文，并在每次线程退出时清理。
 
 </details>
 
 ### 10.2 第二个拦截器 preHandle 返回 false 后，哪些回调会执行？ {#interceptor-callback-order}
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
-
 
 **考察重点**：说明请求被拒绝后哪些回调会跳过、哪些拦截器负责清理，并区分响应正文的写出时机。
 
@@ -159,11 +163,11 @@ Filter 可以包装请求和响应，也能覆盖其他 Servlet，适合 CORS、
 <details>
 <summary>参考回答</summary>
 
-**只有第一个拦截器收到 `afterCompletion`，handler 与全部 `postHandle` 都被跳过。**
+**只有第一个拦截器收到 `afterCompletion`，handler 和全部 `postHandle` 都被跳过。**
 
-因为完成回调只交给此前 `preHandle` 返回 true 的拦截器，第二个拦截器需要自行写出拒绝响应并清理资源。
+完成回调只交给此前 `preHandle` 返回 true 的拦截器，第二个拦截器收不到，所以它要自己写出拒绝响应并清理资源。
 
-正常返回正文时，`@ResponseBody` 已在适配器内部写出，所以修改正文应使用 `ResponseBodyAdvice`。
+另外，正常返回正文时，`@ResponseBody` 在适配器内部就已经写出，早于 `postHandle`，所以修改正文要用 `ResponseBodyAdvice`。
 
 </details>
 

@@ -9,21 +9,21 @@ keywords: ["Environment", "PropertySource", "配置优先级", "ConfigurationPro
 
 # Spring Boot 外部化配置
 
-Spring Boot 外部化配置让同一份应用代码在不同环境中使用不同配置。本文以 Boot 3.5 为例，从配置来源和覆盖顺序入手，再说明属性绑定、启动校验与配置诊断。最后介绍 List、Map 的覆盖规则，以及修改文件后的刷新边界。
+**外部化配置**是把端口、数据库地址、超时等运行参数放在代码之外，让同一份应用在不同环境中使用不同的值。Spring Boot 会统一读取配置文件、环境变量和启动参数，再按优先级决定最终取值。理解这些规则，才能解释为什么改了文件却没生效，以及属性已经改变时，客户端是否还在使用旧配置。本文以 Boot 3.5 为准。
 
 ## 1. 面试核心 {#core}
 
-- **属性来源。** Spring Boot 将配置来源放入 Environment，同名属性由优先级较高的 PropertySource 提供最终值。[卡](#config-precedence)
-- **常见优先级。** 在命令行、Java 系统属性、环境变量和配置数据这四类来源中，前者的优先级依次高于后者。
-- **文件覆盖。** 同一位置的 profile 专属文件覆盖默认文件，同时存在 properties 和 YAML 时，properties 的优先级更高。
-- **环境变量命名。** 属性名转换为环境变量名时，点改为下划线，连字符被删除，字母转为大写。
-- **集合绑定。** 从多个来源绑定配置时，高优先级 List 整体替换原列表，Map 则按键合并并覆盖同名键。[卡](#list-map-merge)
+- Spring Boot 将配置来源放入 `Environment`，同名属性取**优先级较高的 `PropertySource` 中的值**。[卡](#config-precedence)
+- 在命令行、Java 系统属性、环境变量和配置数据这四类来源中，**前者的优先级依次高于后者**。
+- 同一位置中，**profile 专属文件优先于默认文件**；对应配置同时有 properties 和 YAML 两种格式时，properties 优先。
+- 属性名转为环境变量名时，**点改成下划线、删除连字符、字母转为大写**，例如 `max-attempts` 对应 `MAXATTEMPTS`。
+- 多个来源共同绑定配置时，**List 整体替换，Map 按键合并**，Map 的同名键取高优先级值。[卡](#list-map-merge)
 
 ## 2. Environment 与 PropertySource {#environment-与-propertysource}
 
-`Environment` 是应用读取配置的统一入口。配置文件、环境变量等来源以 `PropertySource` 表示，按优先级排列。读取同名属性时，Environment 查找优先级最高的有效值，所以业务代码无需自己判断值来自哪里。
+**`Environment`** 是应用读取配置的统一入口，**`PropertySource`** 表示一份配置来源，例如环境变量或某个配置文件。容器将这些来源按优先级排列，读取属性时查找优先级最高的有效值。业务代码因此可以只关心属性名，不必自己决定先读文件还是先读环境变量。
 
-应用可以用以下三种方式读取配置。代码中的片段分别展示属性注入、直接查询和结构化绑定：
+读取配置主要有三种方式：注入单个属性、通过 `Environment` 查询，以及把一组属性绑定成对象。下面三个片段分别对应这三种用法：
 
 ```java
 @Value("${payment.timeout}")
@@ -39,13 +39,13 @@ public record PaymentProperties(URI endpoint, Duration timeout) {}
 - `Environment.getProperty` 按属性名直接查询，并将结果转换为指定类型。示例将超时值转换为 `Duration`。
 - `@ConfigurationProperties` 将一组相关属性绑定成对象。示例把 `payment` 下的地址与超时放进 `PaymentProperties`。
 
-结构化绑定支持宽松命名、类型转换和 Bean Validation 校验。宽松命名允许不同来源使用不同命名形式，例如环境变量 `SERVER_PORT` 对应 `server.port`。配合配置处理器，还能生成配置元数据，为编辑器提供属性名和类型提示。因此，相关配置集中在一个类中，比散落的字符串属性名更容易维护。
+`@ConfigurationProperties` 支持宽松命名、类型转换和 Bean Validation 校验。**宽松命名**允许不同来源用不同形式表达同一个属性，例如环境变量 `SERVER_PORT` 对应 `server.port`。配合配置处理器，还能生成供编辑器提示属性名和类型的元数据。把相关配置放在一个类中，也更容易看清这个组件需要哪些参数。
 
 上面的 record 属性类需通过 `@ConfigurationPropertiesScan` 扫描，或通过 `@EnableConfigurationProperties` 注册。完成注册后，Boot 才会创建对象并绑定配置。
 
 ## 3. 配置来源的优先级 {#配置来源的优先级}
 
-同一属性同时出现在文件和部署参数中时，需要比较来源优先级。以下是**常用配置来源**，按优先级从低到高排列，后面的同名值覆盖前面的值：
+同名属性以高优先级来源的值为准。下面列出排查时会用到的配置来源，按优先级从低到高排列，后面的值覆盖前面的同名值：
 
 1. `SpringApplication.setDefaultProperties` 设置默认值。
 2. `application.*` 等配置数据提供文件值。
@@ -65,18 +65,18 @@ java -jar order.jar --server.port=9000
 
 ## 4. 配置文件的加载顺序 {#配置文件的加载顺序}
 
-配置文件之间也会覆盖同名属性。profile 是一组按名称启用的环境配置，例如激活 `prod` 会加载 `application-prod.yaml`。默认加载的**四类配置文件**按以下顺序提高优先级：
+配置文件之间也会覆盖同名属性，文件位置和激活的 profile 都会影响结果。**profile** 是按名称启用的一组配置，例如激活 `prod` 会加载 `application-prod.yaml`。默认加载的四类文件按以下顺序提高优先级：
 
 1. JAR 内默认配置提供基础值。
 2. JAR 内 profile 配置覆盖内部默认值。
 3. JAR 外默认配置覆盖 JAR 内配置。
 4. JAR 外 profile 配置覆盖外部默认值。
 
-多个 profile 同时激活时，后声明的 profile 覆盖前面的同名值。同一位置同时存在两种格式时，properties 优先于 YAML。项目统一使用一种格式，可以减少同目录内不易察觉的覆盖。
+多个 profile 同时激活时，后声明的 profile 覆盖前面的同名值。同一位置的对应配置同时存在 properties 和 YAML 两种格式时，properties 优先。项目统一使用一种格式，可以减少同目录内不易察觉的覆盖。
 
 `spring.config.import` 导入的配置会在声明它的文档之后处理，因此可覆盖该文档中的值。列出多个导入位置时，后面位置的同名值优先。
 
-修改搜索路径时，需要区分**替换与追加**：`spring.config.location` 替换默认位置，`spring.config.additional-location` 追加位置。在位置前加 `optional:`，表示该资源缺失时仍允许启动。
+`spring.config.location` 会替换默认搜索位置，`spring.config.additional-location` 则追加位置。如果只是想增加一份外部配置，却误用了前者，原本依赖的默认位置就不会再被搜索。在位置前加 `optional:`，表示资源缺失时仍允许启动。
 
 ## 5. 环境变量的宽松绑定 {#环境变量的宽松绑定}
 
@@ -101,7 +101,7 @@ PAYMENT_RETRY_MAXATTEMPTS
 
 数据库密码、访问令牌和私钥应通过平台 Secret 或外部密钥服务提供，避免提交到仓库。Secret 是部署平台保存并向应用提供敏感配置的机制。
 
-平台也可以将密钥挂载成文件，再由配置树读取。配置树把目录中的文件名映射为属性名，把文件内容作为属性值。挂载目录可用 `spring.config.import=optional:configtree:/run/secrets/` 导入。
+平台也可以将密钥挂载成文件，再用配置树读取。**配置树**是把目录中的文件名作为属性名、文件内容作为属性值的一种配置来源。挂载目录可用 `spring.config.import=optional:configtree:/run/secrets/` 导入。
 
 环境变量和文件都需要访问控制。环境变量也会出现在进程诊断、部署清单或错误报告中，所以仅更换存放位置并不足以保护密钥。Actuator、日志和错误页应限制暴露范围，展示配置时只保留必要来源信息，并对敏感值脱敏。
 
@@ -131,7 +131,7 @@ public record PaymentProperties(
 
 ## 8. 配置来源诊断 {#排查步骤}
 
-配置已经修改，应用却仍使用旧值时，需要追踪**最终属性来源与绑定结果**。可以按下面的顺序排查：
+配置改了却没生效，要分别确认两个结果：`Environment` 最终读到了什么，组件绑定并使用的又是什么。可以按下面的顺序排查：
 
 1. 确认实际读取的规范属性名。
 2. 查看激活的 profile 与搜索位置。
@@ -142,7 +142,7 @@ public record PaymentProperties(
 
 ## 9. 集合覆盖与配置刷新 {#集合覆盖与配置刷新}
 
-覆盖集合配置时，需要分别判断 List 和 Map。高优先级 List 会整体替换低优先级列表，元素也按该来源重新绑定。Map 则可以按键合并。下面用同一份配置比较两种结果：
+List 按整个列表替换，Map 按键合并，所以高优先级配置没写出的部分，结果可能不同。下面用 `prod` 配置同时覆盖一个列表和一个 Map：
 
 ```yaml
 payment:
@@ -163,13 +163,11 @@ payment:
 
 假设 `servers` 绑定 List，`limits` 绑定 Map。激活 `prod` 后，列表变成 `[c]`，原来的 `a`、`b` 被整体替换。Map 中的 `read` 更新为 20，`write` 仍为 5。也就是说，相同键取高优先级值，其余键继续保留。
 
-普通 Boot 配置绑定在创建 Bean 时执行，所以修改磁盘文件不会自动更新已有 Bean。动态刷新需要额外机制，并明确哪些组件可以重新绑定或重建。比如超时值变了，使用旧值创建的客户端也需要相应更新。
+普通 Boot 配置在创建 Bean 时绑定，修改磁盘文件不会自动更新已有 Bean。动态刷新需要额外机制，还要明确哪些组件能重新绑定或重建。例如，客户端构造时复制了一份超时值，之后只更新 `PaymentProperties`，客户端保存的旧值仍然不会改变。
 
 ## 10. 面试题 {#面试题}
 
 ### 10.1 Spring Boot 配置的优先级怎样判断 {#config-precedence}
-
-
 
 **考察重点**：说明同名属性如何按来源优先级取值，再解释文件位置和 profile 怎样影响覆盖结果。
 
@@ -189,7 +187,6 @@ payment:
 ### 10.2 profile 覆盖 List 和 Map 时，未写出的项会保留吗？ {#list-map-merge}
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
-
 
 **考察重点**：解释 List 整体替换和 Map 按键合并的区别，并推导未声明项在最终结果中是否保留。
 

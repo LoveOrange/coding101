@@ -9,19 +9,19 @@ keywords: ["Dockerfile 指令", "Docker 构建缓存", "多阶段构建", "数�
 
 # Docker 镜像与 Dockerfile
 
-Docker 镜像保存文件系统层与运行配置。本文负责 Dockerfile、构建缓存和数据挂载。
+**Docker 镜像**保存应用所需的文件系统层和运行配置，**Dockerfile** 则描述怎样构建这些内容。理解两者的关系，才能解释为什么只改源码可以复用依赖缓存、删除文件后镜像未必变小，以及哪些数据应该放到容器之外保存。
 
 ## 1. 面试核心 {#core}
 
-- **镜像与容器。** 镜像保存只读层与元数据，容器另有独立可写层。[卡](#image-layers-storage)
-- **启动命令。** exec 格式的 `ENTRYPOINT` 指定程序，`CMD` 提供默认参数。[卡](#dockerfile-instructions)
-- **多阶段构建。** 多阶段构建只向运行阶段复制所需产物。[卡](#image-optimization)
-- **数据持久化。** 卷的生命周期独立于容器，可保存持久数据。[卡](#image-layers-storage)
-- **构建密钥。** BuildKit secret 挂载按构建步骤提供密钥。[卡](#build-secrets-digests)
+- exec 格式的 `ENTRYPOINT` 指定入口程序，与它组合的 `CMD` 提供**可在运行时替换的默认参数**。[卡](#dockerfile-instructions)
+- 镜像保存只读层与运行配置，容器另有**独立可写层**。分层可以复用相同内容，但后续层删除文件不会移除旧层中的数据。[卡](#image-layers-storage)
+- 多阶段构建只把所需产物复制到运行阶段，**编译工具和中间文件可以留在构建阶段**。[卡](#image-optimization)
+- 卷的生命周期**独立于容器**，适合保存需要在容器删除后继续保留的数据。[卡](#image-layers-storage)
+- tag 可以指向新内容，**digest 固定镜像内容**；构建密钥通过临时 secret 挂载提供，避免写入镜像配置或文件层。[卡](#build-secrets-digests)
 
 ## 2. 常用指令 {#常用指令}
 
-下面假设构建上下文已有 `target/app.jar`。
+Dockerfile 同时描述构建时做什么，以及容器启动时运行什么。**构建上下文**是提供给构建器的输入文件集合，下面假设其中已有编译好的 `target/app.jar`：
 
 ```dockerfile
 FROM eclipse-temurin:21-jre
@@ -34,7 +34,7 @@ ENTRYPOINT ["java", "-jar", "app.jar"]
 CMD ["--spring.profiles.active=prod"]
 ```
 
-容器以 UID 10001 启动 Java。应用需将写入目录授权给该用户。`docker run image --server.port=9090` 会替换默认参数。
+用这个镜像启动容器后，会以 UID 10001 执行 `java -jar app.jar --spring.profiles.active=prod`。应用需要写文件时，对应目录必须允许这个用户写入。执行 `docker run image --server.port=9090` 会保留 Java 入口程序，把 `CMD` 中的默认参数替换为 `--server.port=9090`。
 
 | 指令 | 行为 |
 | --- | --- |
@@ -50,15 +50,17 @@ CMD ["--spring.profiles.active=prod"]
 | `EXPOSE` | 声明容器服务端口 |
 | `HEALTHCHECK` | 声明运行时健康检查命令 |
 
-`CMD` 单独使用时可指定默认启动命令。与 exec 格式 `ENTRYPOINT` 组合时，它提供默认参数。`--entrypoint` 可替换入口程序。
+`CMD` 单独使用时，可以指定完整的默认启动命令；与 exec 格式的 `ENTRYPOINT` 组合时，则提供默认参数。运行容器时追加的参数覆盖 `CMD`，要替换 `ENTRYPOINT` 指定的程序，则使用 `--entrypoint`。
 
-exec 格式直接启动程序，便于接收停止信号。shell 格式经 `/bin/sh -c` 执行。入口脚本应使用 `exec` 交接给业务进程。信号处理与子进程回收见 [进程管理与信号](../linux/processes-signals.mdx#信号)。
+示例中的 JSON 数组写法是 **exec 格式**，它直接启动程序，便于应用接收停止信号。shell 格式则经 `/bin/sh -c` 执行，应用与停止信号之间可能多一层 shell。需要入口脚本做初始化时，应在最后用 `exec` 把执行交给业务进程。信号处理与子进程回收见 [进程管理与信号](../linux/processes-signals.mdx#信号)。
 
-`EXPOSE` 记录端口信息。`docker run -p` 才建立主机端口发布。健康检查命令所用的工具必须存在于镜像中。
+`EXPOSE 8080` 只记录服务端口，不会自动把它开放到宿主机；使用 `docker run -p` 才会建立主机端口发布。`HEALTHCHECK` 也只是定义检查命令，命令需要的工具仍必须存在于镜像中。
 
 ## 3. 分层与构建缓存 {#分层与构建缓存}
 
-构建缓存根据指令和输入判断能否复用。`COPY` 的输入改变后，依赖它的后续步骤需要重建。BuildKit 会按依赖图处理多阶段构建。无依赖的阶段可独立使用缓存。
+镜像的文件系统由多个只读层组成，运行容器时再加上独立的可写层。这样，不同镜像或容器可以共享相同的只读内容，拉取镜像时也能复用本地已有的层。
+
+构建缓存则根据指令和输入判断一个步骤能否复用。`COPY` 的输入改变后，依赖它的后续步骤需要重建，所以文件复制的顺序会影响缓存效果：
 
 ```dockerfile
 COPY package.json package-lock.json ./
@@ -67,15 +69,15 @@ COPY . .
 RUN npm run build
 ```
 
-只修改源码时，依赖安装步骤仍可命中缓存。锁文件变化后，`npm ci` 会重新执行。`COPY` 的缓存校验忽略单独的文件 mtime 变化。
+这里先复制依赖清单并执行 `npm ci`，再复制源码。只修改源码时，前面的依赖安装仍可命中缓存；如果 `package.json` 或 `package-lock.json` 改变，`npm ci` 就需要重新执行。`COPY` 的校验不使用文件的修改时间 `mtime`，因此只改变时间戳不会使缓存失效。多阶段构建中，构建器 BuildKit 按步骤之间的依赖关系处理缓存，无依赖的阶段可以独立复用。
 
-普通 `RUN` 缓存不会主动检测远程软件仓库更新。需要更新依赖时，应调整固定版本或显式使缓存失效。`docker history <image>` 可查看构建历史与大小。
+普通 `RUN` 缓存不会主动检查远程软件仓库是否更新。即使仓库里已经有新包，只要该步骤仍命中缓存，安装命令就不会重新执行。需要更新依赖时，应调整固定版本或显式使缓存失效，之后可用 `docker history <image>` 查看构建历史和各层大小。
 
-后续层删除早期层的文件，只会遮住旧内容。因此，安装与清理应在同一 `RUN` 中完成。具体机制见 [容器原理](./container-principles.mdx#联合文件系统)。
+分层也解释了为什么删文件后镜像未必变小：后续层只能遮住早期层的文件，旧内容仍留在镜像中。因此，下载、安装和清理临时文件应放在同一个 `RUN` 中，避免把无需保留的内容写入已完成的层。具体机制见 [容器原理](./container-principles.mdx#联合文件系统)。
 
 ## 4. 体积与构建速度优化 {#体积与构建速度优化}
 
-多阶段构建分离编译环境与运行环境。下面假设 Maven 将产物命名为 `app.jar`。
+**多阶段构建**把编译环境与运行环境分开，最终镜像只从构建阶段取出运行需要的文件。例如，编译 Java 应用需要 Maven，运行应用却不一定需要它。下面假设 Maven 将产物命名为 `app.jar`：
 
 ```dockerfile
 FROM maven:3.9-eclipse-temurin-21 AS build
@@ -92,7 +94,9 @@ USER 10001:10001
 ENTRYPOINT ["java", "-jar", "app.jar"]
 ```
 
-最终阶段只包含 JRE 和应用产物。示例跳过了测试，发布前仍需完成测试。
+`build` 阶段使用 Maven 编译，最终阶段以 JRE 镜像为基础，只复制 `app.jar`，不会把前一阶段的 Maven 和源码一并带进来。示例使用 `-DskipTests` 跳过了测试，发布前仍需在测试流程中完成验证。
+
+镜像体积与构建速度需要分别优化：多阶段构建主要减少最终保留的内容，缓存主要减少重复工作。
 
 | 方法 | 作用与条件 |
 | --- | --- |
@@ -105,23 +109,25 @@ ENTRYPOINT ["java", "-jar", "app.jar"]
 
 ## 5. 容器的数据存储 {#容器的数据存储}
 
+容器可写层会在停止容器后保留，但删除容器时会一起删除。需要独立于容器生命周期保存的数据，应使用卷或绑定挂载；只在容器运行期间使用的临时数据，可以考虑 tmpfs。
+
 | 方式 | 示例 | 生命周期 |
 | --- | --- | --- |
 | 命名卷 | `--mount type=volume,src=data,dst=/data` | 独立于容器，由 Docker 管理 |
 | 绑定挂载 | `--mount type=bind,src=/host/data,dst=/data` | 使用宿主路径中的数据 |
 | tmpfs | `--tmpfs /tmp` | 停止容器后数据消失 |
 
-tmpfs 使用内存，宿主配置允许时也可进入 swap。绑定挂载依赖宿主的目录布局和权限。只读配置可使用 `readonly` 挂载。
+命名卷由 Docker 管理，绑定挂载则直接使用指定的宿主路径，因此依赖宿主的目录布局和权限。只供读取的配置可以使用 `readonly` 挂载。tmpfs 使用内存，宿主配置允许时也可能进入 swap，不能据此假定数据绝不会落盘。
 
-多个容器可挂载同一卷。并发写入的协调由应用或文件系统承担。Docker 挂载本身没有提供业务事务。
+多个容器挂载同一卷后，可以访问同一份数据，但并发写入仍需由应用或文件系统协调。挂载本身不提供业务事务，不能因为两个容器看到了同一文件，就认为它们的更新不会冲突。
 
-Docker Engine 29.0 的全新安装使用 containerd 镜像存储。它与升级后沿用的经典存储布局不同。`data-root` 管理 Docker 数据目录。containerd 管理的镜像和快照还有独立目录。迁移存储前需确认实际后端。
+迁移 Docker 数据前，要先确认实际存储后端。经典存储布局与 containerd 镜像存储的目录安排不同：`data-root` 管理 Docker 数据目录，而 containerd 管理的镜像和快照还有独立目录。因此，不能只调整 `data-root` 就假定全部数据已经迁移。
 
 ## 6. 镜像标识与密钥 {#镜像标识与密钥}
 
-tag 是可移动的名称，digest 按内容定位镜像。`FROM image@sha256:...` 可固定基础镜像内容。应用依赖及远程下载内容也需固定，才能控制构建输入。
+**tag** 是可以重新指向其他内容的镜像名称，**digest** 则是按内容计算的摘要。同一个 tag 今天和下次构建时可能指向不同镜像；`FROM image@sha256:...` 才能固定所引用的基础镜像内容。要控制整个构建的输入，还需要固定应用依赖和远程下载内容。
 
-构建密钥应通过 BuildKit secret 挂载提供。下面假设构建阶段已经安装 curl。
+构建时需要凭据，可以用 BuildKit 的 **secret 挂载**，在指定步骤中临时提供密钥文件。下面假设构建阶段已经安装 curl：
 
 ```dockerfile
 # syntax=docker/dockerfile:1
@@ -129,15 +135,13 @@ RUN --mount=type=secret,id=token,required=true \
     curl --config /run/secrets/token https://example.com/artifact -o artifact
 ```
 
-构建时用 `--secret id=token,src=token.conf` 提供配置。挂载只对该步骤可见。命令仍需避免把密钥复制到产物或打印到日志。
+构建时用 `--secret id=token,src=token.conf` 提供 curl 配置，当前 `RUN` 步骤通过 `/run/secrets/token` 读取它。这个挂载只对该步骤可见，但命令仍可能主动把密钥写进产物或日志，因此还要检查命令本身的行为。
 
-`ARG` 与 `ENV` 会暴露构建或运行配置。它们不适合传递密钥。secret 内容变化本身也不会使构建缓存失效。需要重新拉取时，应显式调整缓存输入。
+`ARG` 和 `ENV` 可能把密钥暴露在构建信息或运行配置中，不适合用于传递密钥。另外，secret 的内容变化不会自动使构建缓存失效。如果更换凭据后需要重新拉取产物，还应显式调整缓存输入。
 
 ## 7. 面试题 {#面试题}
 
 ### 7.1 Dockerfile 有哪些常用指令？CMD 和 ENTRYPOINT、COPY 和 ADD 有什么区别？ {#dockerfile-instructions}
-
-
 
 **考察重点**
 
@@ -151,15 +155,13 @@ RUN --mount=type=secret,id=token,required=true \
 
 **Dockerfile 分别定义构建步骤、运行配置和启动命令；`COPY` 负责明确的文件复制，`ADD` 还提供远程来源和解包能力。**
 
-- **构建与配置。** `FROM` 指定基础镜像，`RUN` 执行构建命令。`WORKDIR`、`ENV`、`USER` 设置运行配置，`EXPOSE` 声明端口，`HEALTHCHECK` 定义检查命令。
-- **启动命令。** exec 格式的 `ENTRYPOINT` 指定程序，`CMD` 提供默认参数。运行时参数覆盖 `CMD`，`--entrypoint` 可替换入口程序。入口脚本用 `exec` 将信号接收交给应用。
-- **文件复制。** `COPY --from` 可从其他阶段或镜像复制。`ADD` 另支持远程来源和本地 tar 解包；普通复制使用 `COPY`，输入行为更明确。
+- `FROM` 指定基础镜像，`RUN` 执行构建命令；`WORKDIR`、`ENV`、`USER` 设置工作目录、环境变量和用户。`EXPOSE` 只声明端口，发布主机端口还需 `-p`；`HEALTHCHECK` 定义运行时检查命令。
+- `CMD` 单独使用时可以指定默认启动命令，与 exec 格式的 `ENTRYPOINT` 组合时提供默认参数。运行时参数覆盖 `CMD`，`--entrypoint` 可替换入口程序。入口脚本应使用 `exec`，让应用直接接收停止信号。
+- `COPY --from` 可从其他阶段或镜像复制文件。`ADD` 还支持远程来源和本地 tar 解包；普通复制使用 `COPY`，输入行为更明确。
 
 </details>
 
 ### 7.2 构建镜像时，怎样优化镜像体积和构建速度？ {#image-optimization}
-
-
 
 **考察重点**
 
@@ -173,15 +175,13 @@ RUN --mount=type=secret,id=token,required=true \
 
 **多阶段构建减少运行镜像内容，缓存复用缩短构建时间。**
 
-最终阶段只复制产物，使用满足运行要求的基础镜像。安装与清理放在同一步骤，避免旧层保留缓存。
+减小体积时，最终阶段使用满足运行要求的基础镜像，只复制所需产物；安装与清理放在同一步骤，避免旧层保留无需使用的缓存文件。
 
-先复制依赖清单，再安装依赖，最后复制源码。`.dockerignore` 排除无关输入。BuildKit cache 挂载复用依赖下载。CI 还可导入和导出远程缓存。`docker history` 用于检查优化后的镜像历史。
+缩短构建时间时，先复制依赖清单、安装依赖，再复制源码，让源码修改不影响依赖层缓存。用 `.dockerignore` 排除无关输入，用 BuildKit cache 挂载复用下载内容；不同 CI 执行器之间还可以共享远程缓存。优化后用 `docker history` 检查镜像历史和大小。
 
 </details>
 
 ### 7.3 镜像和容器有什么区别？镜像为什么要分层？两个容器怎样共享数据？ {#image-layers-storage}
-
-
 
 **考察重点**
 
@@ -205,7 +205,6 @@ RUN --mount=type=secret,id=token,required=true \
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
-
 **考察重点**：内容摘要、缓存与临时密钥挂载。
 
 **相关内容**：[镜像标识与密钥](#镜像标识与密钥)。
@@ -215,7 +214,7 @@ RUN --mount=type=secret,id=token,required=true \
 
 **tag 可指向新内容，digest 才固定所引用的镜像内容。**
 
-完整构建还需固定依赖和下载输入。密钥通过 BuildKit secret 挂载传入。ARG、ENV 和后续删除的文件都会留下暴露风险。密钥变化不会自动使缓存失效。需要重新执行时，应显式调整缓存输入。
+要控制完整构建，还需固定依赖版本和下载输入。密钥通过 BuildKit secret 挂载临时传入，避免使用 `ARG`、`ENV`，也不要先复制进镜像再删除，因为旧层仍可能保留密钥。更换 secret 不会自动使缓存失效，需要重新执行步骤时，应显式调整缓存输入。
 
 </details>
 

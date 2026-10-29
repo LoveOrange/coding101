@@ -2,52 +2,53 @@
 
 由 `scripts/content-status.mjs` 根据 `plans/content-status.json` 生成，不要手工编辑。共 349 篇公开文章。
 
-图例：✅ 完成 · 🔁 文章已改动，需要重新校验或翻译 · ⚠️ 校验发现问题，待修改 · · 未开始 · — 不适用
+图例：✅ 完成 · 🔁 文章已改动，需要重新校验或翻译 · ⚠️ 校验发现问题，待修改 · 👀 审阅中 · · 未开始 · — 不适用
 
 ## 汇总
 
 | 状态 | Codex 生成 | Claude 校验 | Lin 校验 | English | 日本語 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| ✅ | 349 | 7 | 0 | 0 | 0 |
-| 🔁 | 0 | 0 | 1 | 0 | 0 |
+| ✅ | 349 | 33 | 0 | 0 | 0 |
+| 🔁 | 0 | 3 | 0 | 0 | 0 |
+| 👀 | 0 | 0 | 7 | 0 | 0 |
 | ⚠️ | 0 | 0 | 0 | 0 | 0 |
-| · | 0 | 342 | 348 | 349 | 349 |
+| · | 0 | 313 | 342 | 349 | 349 |
 | — | 0 | 0 | 0 | 0 | 0 |
 
 ## ai
 
 | 文章 | Codex 生成 | Claude 校验 | Lin 校验 | English | 日本語 |
 | --- | :---: | :---: | :---: | :---: | :---: |
-| [Agent 执行循环](../docs/ai/agents/agent-loop.mdx) | ✅ | · | · | · | · |
-| [Agent Harness](../docs/ai/agents/harness.mdx) | ✅ | · | · | · | · |
-| [多 Agent 协作](../docs/ai/agents/multi-agent.mdx) | ✅ | · | · | · | · |
-| [工作流与 Agent](../docs/ai/agents/workflow-vs-agent.mdx) | ✅ | · | · | · | · |
-| [Agent 框架](../docs/ai/development/agent-frameworks.mdx) | ✅ | · | · | · | · |
-| [AI 辅助开发](../docs/ai/development/ai-assisted-development.mdx) | ✅ | · | · | · | · |
-| [AI 代码调试](../docs/ai/development/ai-code-debugging.mdx) | ✅ | · | · | · | · |
-| [编码 Agent 评测](../docs/ai/development/coding-agent-evaluation.mdx) | ✅ | · | · | · | · |
-| [仓库指令](../docs/ai/development/repository-instructions.mdx) | ✅ | · | · | · | · |
-| [Agent 评估](../docs/ai/evaluation/agent-evaluation.mdx) | ✅ | · | · | · | · |
-| [RAG 评估](../docs/ai/evaluation/rag-evaluation.mdx) | ✅ | · | · | · | · |
+| [Agent 执行循环](../docs/ai/agents/agent-loop.mdx) | ✅ | ✅ | · | · | · |
+| [Agent Harness](../docs/ai/agents/harness.mdx) | ✅ | ✅ | · | · | · |
+| [多 Agent 协作](../docs/ai/agents/multi-agent.mdx) | ✅ | ✅ | · | · | · |
+| [工作流与 Agent](../docs/ai/agents/workflow-vs-agent.mdx) | ✅ | ✅ | · | · | · |
+| [Agent 框架](../docs/ai/development/agent-frameworks.mdx) | ✅ | ✅ | · | · | · |
+| [AI 辅助开发](../docs/ai/development/ai-assisted-development.mdx) | ✅ | ✅ | · | · | · |
+| [AI 代码调试](../docs/ai/development/ai-code-debugging.mdx) | ✅ | ✅ | · | · | · |
+| [编码 Agent 评测](../docs/ai/development/coding-agent-evaluation.mdx) | ✅ | ✅ | · | · | · |
+| [仓库指令](../docs/ai/development/repository-instructions.mdx) | ✅ | ✅ | · | · | · |
+| [Agent 评估](../docs/ai/evaluation/agent-evaluation.mdx) | ✅ | ✅ | · | · | · |
+| [RAG 评估](../docs/ai/evaluation/rag-evaluation.mdx) | ✅ | 🔁 | · | · | · |
 | [AI 应用与 Agent](../docs/ai/index.mdx) | ✅ | · | · | · | · |
-| [模型幻觉](../docs/ai/llm/hallucination.mdx) | ✅ | · | · | · | · |
-| [大语言模型基础](../docs/ai/llm/llm-basics.mdx) | ✅ | · | · | · | · |
-| [Transformer 与注意力机制](../docs/ai/llm/transformer.mdx) | ✅ | · | · | · | · |
-| [上下文压缩](../docs/ai/prompting/context-compaction.mdx) | ✅ | · | · | · | · |
-| [上下文管理](../docs/ai/prompting/context-management.mdx) | ✅ | · | · | · | · |
-| [提示词工程](../docs/ai/prompting/prompt-engineering.mdx) | ✅ | · | · | · | · |
-| [文档解析与切分](../docs/ai/rag/chunking.mdx) | ✅ | · | · | · | · |
-| [Embedding 与向量检索](../docs/ai/rag/embedding-vector-search.mdx) | ✅ | · | · | · | · |
-| [混合检索与重排序](../docs/ai/rag/hybrid-search-rerank.mdx) | ✅ | · | · | · | · |
-| [检索增强生成（RAG）](../docs/ai/rag/rag.mdx) | ✅ | · | · | · | · |
-| [延迟、成本与服务扩展](../docs/ai/safety/latency-cost-scaling.mdx) | ✅ | · | · | · | · |
-| [提示注入](../docs/ai/safety/prompt-injection.mdx) | ✅ | · | · | · | · |
-| [工具授权与执行沙箱](../docs/ai/safety/tool-authorization-sandbox.mdx) | ✅ | · | · | · | · |
-| [Agent 状态与持久化执行](../docs/ai/state/durable-execution.mdx) | ✅ | · | · | · | · |
-| [Agent 记忆](../docs/ai/state/memory.mdx) | ✅ | · | · | · | · |
-| [Agent Skills](../docs/ai/tools/agent-skills.mdx) | ✅ | · | · | · | · |
-| [Function Calling](../docs/ai/tools/function-calling.mdx) | ✅ | · | · | · | · |
-| [MCP](../docs/ai/tools/mcp.mdx) | ✅ | · | · | · | · |
+| [模型幻觉](../docs/ai/llm/hallucination.mdx) | ✅ | ✅ | · | · | · |
+| [大语言模型基础](../docs/ai/llm/llm-basics.mdx) | ✅ | ✅ | · | · | · |
+| [Transformer 与注意力机制](../docs/ai/llm/transformer.mdx) | ✅ | ✅ | · | · | · |
+| [上下文压缩](../docs/ai/prompting/context-compaction.mdx) | ✅ | ✅ | · | · | · |
+| [上下文管理](../docs/ai/prompting/context-management.mdx) | ✅ | ✅ | · | · | · |
+| [提示词工程](../docs/ai/prompting/prompt-engineering.mdx) | ✅ | 🔁 | · | · | · |
+| [文档解析与切分](../docs/ai/rag/chunking.mdx) | ✅ | ✅ | · | · | · |
+| [Embedding 与向量检索](../docs/ai/rag/embedding-vector-search.mdx) | ✅ | ✅ | · | · | · |
+| [混合检索与重排序](../docs/ai/rag/hybrid-search-rerank.mdx) | ✅ | ✅ | · | · | · |
+| [检索增强生成（RAG）](../docs/ai/rag/rag.mdx) | ✅ | ✅ | · | · | · |
+| [延迟、成本与服务扩展](../docs/ai/safety/latency-cost-scaling.mdx) | ✅ | ✅ | · | · | · |
+| [提示注入](../docs/ai/safety/prompt-injection.mdx) | ✅ | ✅ | · | · | · |
+| [工具授权与执行沙箱](../docs/ai/safety/tool-authorization-sandbox.mdx) | ✅ | ✅ | · | · | · |
+| [Agent 状态与持久化执行](../docs/ai/state/durable-execution.mdx) | ✅ | ✅ | · | · | · |
+| [Agent 记忆](../docs/ai/state/memory.mdx) | ✅ | ✅ | · | · | · |
+| [Agent Skills](../docs/ai/tools/agent-skills.mdx) | ✅ | ✅ | · | · | · |
+| [Function Calling](../docs/ai/tools/function-calling.mdx) | ✅ | ✅ | · | · | · |
+| [MCP](../docs/ai/tools/mcp.mdx) | ✅ | ✅ | · | · | · |
 
 ## basic-knowledge
 
@@ -177,18 +178,18 @@
 | [线程转储](../docs/basic-knowledge/java/jvm/thread-dumps-deadlocks-contention.mdx) | ✅ | · | · | · | · |
 | [低延迟垃圾收集器](../docs/basic-knowledge/java/jvm/zgc-shenandoah-low-latency.mdx) | ✅ | · | · | · | · |
 | [Java 注解](../docs/basic-knowledge/java/language/annotations-retention-processing.mdx) | ✅ | · | · | · | · |
-| [BigDecimal](../docs/basic-knowledge/java/language/bigdecimal-money.mdx) | ✅ | ✅ | · | · | · |
-| [面向对象编程（Object-Oriented Programming）](../docs/basic-knowledge/java/language/encapsulation-inheritance-polymorphism.mdx) | ✅ | ✅ | · | · | · |
-| [对象相等性](../docs/basic-knowledge/java/language/equals-hashcode-object-identity.mdx) | ✅ | ✅ | · | · | · |
-| [Java 异常](../docs/basic-knowledge/java/language/exceptions-error-boundaries.mdx) | ✅ | ✅ | · | · | · |
+| [BigDecimal](../docs/basic-knowledge/java/language/bigdecimal-money.mdx) | ✅ | ✅ | 👀 | · | · |
+| [面向对象编程（Object-Oriented Programming）](../docs/basic-knowledge/java/language/encapsulation-inheritance-polymorphism.mdx) | ✅ | ✅ | 👀 | · | · |
+| [对象相等性](../docs/basic-knowledge/java/language/equals-hashcode-object-identity.mdx) | ✅ | ✅ | 👀 | · | · |
+| [Java 异常](../docs/basic-knowledge/java/language/exceptions-error-boundaries.mdx) | ✅ | ✅ | 👀 | · | · |
 | [Java 泛型](../docs/basic-knowledge/java/language/generics.mdx) | ✅ | · | · | · | · |
 | [Java 语言](../docs/basic-knowledge/java/language/index.mdx) | ✅ | · | · | · | · |
 | [Optional](../docs/basic-knowledge/java/language/optional-boundaries.mdx) | ✅ | · | · | · | · |
 | [Java 反射](../docs/basic-knowledge/java/language/reflection-method-handles.mdx) | ✅ | · | · | · | · |
 | [Java 注解处理器](../docs/basic-knowledge/java/language/runtime-scanning-compile-time-generation.mdx) | ✅ | · | · | · | · |
-| [String](../docs/basic-knowledge/java/language/string-immutability-pool.mdx) | ✅ | ✅ | · | · | · |
-| [Java 值传递](../docs/basic-knowledge/java/language/types-references-value-passing.mdx) | ✅ | ✅ | 🔁 | · | · |
-| [包装类型](../docs/basic-knowledge/java/language/wrappers-boxing-cache.mdx) | ✅ | ✅ | · | · | · |
+| [String](../docs/basic-knowledge/java/language/string-immutability-pool.mdx) | ✅ | ✅ | 👀 | · | · |
+| [Java 值传递](../docs/basic-knowledge/java/language/types-references-value-passing.mdx) | ✅ | ✅ | 👀 | · | · |
+| [包装类型](../docs/basic-knowledge/java/language/wrappers-boxing-cache.mdx) | ✅ | 🔁 | 👀 | · | · |
 | [Java API 设计](../docs/basic-knowledge/java/quality/api-design-from-invariants.mdx) | ✅ | · | · | · | · |
 | [不可变对象](../docs/basic-knowledge/java/quality/immutable-objects-defensive-copying.mdx) | ✅ | · | · | · | · |
 | [Java API 与测试](../docs/basic-knowledge/java/quality/index.mdx) | ✅ | · | · | · | · |
@@ -403,7 +404,7 @@
 | 文章 | Codex 生成 | Claude 校验 | Lin 校验 | English | 日本語 |
 | --- | :---: | :---: | :---: | :---: | :---: |
 | [使用 Git 进行第一次提交](../docs/tools-and-frameworks/git/basic-usages/first-commit.mdx) | ✅ | · | · | · | · |
-| [2.1. Git 的安装与配置](../docs/tools-and-frameworks/git/basic-usages/git-installation.mdx) | ✅ | · | · | · | · |
+| [Git 的安装与配置](../docs/tools-and-frameworks/git/basic-usages/git-installation.mdx) | ✅ | · | · | · | · |
 | [2. Git 基本使用](../docs/tools-and-frameworks/git/basic-usages/index.mdx) | ✅ | · | · | · | · |
 | [Git](../docs/tools-and-frameworks/git/index.md) | ✅ | · | · | · | · |
-| [1. 版本控制简介](../docs/tools-and-frameworks/git/introduce.md) | ✅ | · | · | · | · |
+| [版本控制简介](../docs/tools-and-frameworks/git/introduce.md) | ✅ | · | · | · | · |

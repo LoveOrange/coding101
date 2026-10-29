@@ -25,8 +25,8 @@ const STAGES = [
   {id: 'lin', label: 'Lin 校验'},
 ];
 const LANGUAGE_LABELS = {en: 'English', ja: '日本語'};
-const STATUSES = ['todo', 'done', 'changes', 'skip'];
-const CELL = {todo: '·', done: '✅', stale: '🔁', changes: '⚠️', skip: '—'};
+const STATUSES = ['todo', 'reviewing', 'done', 'changes', 'skip'];
+const CELL = {todo: '·', reviewing: '👀', done: '✅', stale: '🔁', changes: '⚠️', skip: '—'};
 
 const today = () => new Date().toLocaleDateString('sv-SE', {timeZone: 'Asia/Shanghai'});
 const hashOf = (text) => crypto.createHash('sha256').update(text).digest('hex').slice(0, 12);
@@ -101,14 +101,14 @@ function render(ledger, docs) {
     '',
     `由 \`scripts/content-status.mjs\` 根据 \`${LEDGER}\` 生成，不要手工编辑。共 ${rows.length} 篇公开文章。`,
     '',
-    `图例：${CELL.done} 完成 · ${CELL.stale} 文章已改动，需要重新校验或翻译 · ${CELL.changes} 校验发现问题，待修改 · ${CELL.todo} 未开始 · ${CELL.skip} 不适用`,
+    `图例：${CELL.done} 完成 · ${CELL.stale} 文章已改动，需要重新校验或翻译 · ${CELL.changes} 校验发现问题，待修改 · ${CELL.reviewing} 审阅中 · ${CELL.todo} 未开始 · ${CELL.skip} 不适用`,
     '',
     '## 汇总',
     '',
     '| 状态 | ' + columns.map((column) => column.label).join(' | ') + ' |',
     '| --- | ' + columns.map(() => '---:').join(' | ') + ' |',
   ];
-  for (const state of ['done', 'stale', 'changes', 'todo', 'skip']) {
+  for (const state of ['done', 'stale', 'reviewing', 'changes', 'todo', 'skip']) {
     const counts = columns.map((column) => rows.filter(([key, row]) => effective(column.id, row.status[column.id], hashes.get(key)) === state).length);
     lines.push(`| ${CELL[state]} | ${counts.join(' | ')} |`);
   }

@@ -18,13 +18,32 @@
   color: inherit;
 }
 
-/* 面试核心 */
+/* 面试核心: an inverted ink block in light mode; in dark mode the ink
+   token is cream, so it becomes a raised card instead of a bright slab. */
 .core {
+  --core-bg: var(--c-ink);
+  --core-edge: var(--c-ink);
+  --core-fg: var(--c-paper);
+  --core-title: var(--c-paper);
+  --core-rule: var(--c-body);
+  --core-code: var(--c-body);
+  --core-num: var(--c-accent-s);
   margin: 0 0 var(--ifm-leading);
-  background: var(--c-ink);
-  color: var(--c-paper);
+  background: var(--core-bg);
+  color: var(--core-fg);
+  border: 1px solid var(--core-edge);
   border-radius: 12px;
   padding: 24px 28px 14px;
+}
+
+:global([data-theme='dark']) .core {
+  --core-bg: var(--c-card);
+  --core-edge: var(--c-border2);
+  --core-fg: var(--c-body);
+  --core-title: var(--c-ink);
+  --core-rule: var(--c-border);
+  --core-code: var(--c-fill);
+  --core-num: var(--c-accent);
 }
 
 .coreHead {
@@ -39,6 +58,7 @@
   font-family: 'Noto Serif SC', serif;
   font-weight: 700;
   font-size: 20px;
+  color: var(--core-title);
 }
 
 .coreHint {
@@ -60,10 +80,10 @@
   position: relative;
   margin: 0;
   padding: 10px 0 10px 40px;
-  border-top: 1px solid var(--c-body);
+  border-top: 1px solid var(--core-rule);
   font-size: 15.5px;
   line-height: 1.7;
-  color: var(--c-paper);
+  color: var(--core-fg);
 }
 
 .coreBody li::before {
@@ -73,16 +93,20 @@
   top: 13px;
   font-family: 'JetBrains Mono', monospace;
   font-size: 12px;
-  color: var(--c-accent-s);
+  color: var(--core-num);
 }
 
 .coreBody p {
   margin: 0;
 }
 
+.coreBody strong {
+  color: var(--core-title);
+}
+
 .coreBody code {
-  background: var(--c-body);
-  color: var(--c-paper);
+  background: var(--core-code);
+  color: var(--core-fg);
   border: none;
 }
 
@@ -90,7 +114,7 @@
   margin: 0;
   font-size: 20px;
   line-height: 1.4;
-  color: var(--c-paper);
+  color: var(--core-title);
   scroll-margin-top: calc(var(--ifm-navbar-height) + 16px);
 }
 

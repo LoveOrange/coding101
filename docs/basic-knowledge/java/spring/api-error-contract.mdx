@@ -9,19 +9,21 @@ keywords: ["统一异常处理", "ControllerAdvice", "HTTP 错误码", "错误�
 
 # API 错误契约
 
-API 错误契约规定错误响应的状态和字段，让客户端稳定判断失败类型。本文从错误字段入手，介绍 Spring MVC 怎样映射异常，再说明 HTTP 状态、日志和异常处理的范围。最后用契约测试检查不同错误入口是否遵守同一约定。文中的 `ProblemDetail` 示例适用于 Spring 6，也就是 Boot 3.x 使用的框架版本。
+**API 错误契约**是服务端与客户端对失败响应的约定，包括 HTTP 状态、错误码和响应字段。客户端依靠这些稳定信息判断下一步该修改输入、重新登录，还是稍后重试。
+
+例如，订单已支付和服务暂时不可用，需要客户端采取不同动作，不能只返回一句“操作失败”。设计错误处理时，既要给出明确的失败分类，也要确认 Filter、MVC 和后台任务的异常分别由谁处理。文中的 `ProblemDetail` 示例适用于 Spring 6，也就是 Boot 3.x 使用的框架版本。
 
 ## 1. 面试核心 {#core}
 
-- **异常映射。** `@RestControllerAdvice` 配合 `@ExceptionHandler`，通过 MVC 异常解析链将异常集中映射为错误响应。[卡](#global-exception-handling)
-- **错误响应字段。** Spring 6 的 `ProblemDetail` 提供标准问题字段，并支持业务错误码和 trace ID 等扩展字段。
-- **处理器匹配。** 同一 Controller 或 Advice 内，Spring MVC 优先匹配顶层异常，再按继承距离选择更具体的类型。[卡](#exception-handler-selection)
-- **异步异常。** 通过 MVC 异步派发返回的异常，仍能交给 `@ExceptionHandler` 处理。
-- **响应提交边界。** 响应已提交后，错误处理器无法重新设置完整响应。
+- Spring 6 的 `ProblemDetail` 提供标准问题字段，客户端应按 **HTTP 状态、问题类型或稳定错误码**判断失败，避免解析提示文案。
+- `@RestControllerAdvice` 配合 `@ExceptionHandler`，通过 **MVC 异常解析链**把异常集中映射为错误响应。[卡](#global-exception-handling)
+- MVC 异步派发返回的异常**仍能交给 `@ExceptionHandler` 处理**，独立后台任务则需要自己的失败处理机制。
+- 响应已经提交后，错误处理器**无法重新设置完整响应**，只能记录失败并结束当前处理。
+- 同一 Controller 或 Advice 内，Spring MVC **先匹配顶层异常，再查找内部原因**；多个类型都匹配时，选择继承关系更近的类型。[卡](#exception-handler-selection)
 
 ## 2. 错误字段 {#错误字段}
 
-错误响应需要同时服务于程序判断和用户展示。Spring 6 的 `ProblemDetail` 用来表示 HTTP API 中的问题，本文按 RFC 9457 说明其**五个标准字段**：
+错误响应要把程序判断和用户展示分开：错误码供程序选择处理分支，文字说明帮助用户理解原因。Spring 6 的 `ProblemDetail` 是表示 HTTP API 错误的类型，按 RFC 9457 提供以下标准字段：
 
 - `type` 用 URI 标识问题类型。
 - `title` 提供该问题类型的简短描述。
@@ -49,7 +51,7 @@ API 错误契约规定错误响应的状态和字段，让客户端稳定判断�
 
 ## 3. 异常处理器 {#异常处理器}
 
-异常处理器把 Java 异常转换成客户端能理解的响应。`@RestControllerAdvice` 集中声明处理方法，`@ExceptionHandler` 指定方法接收哪些异常。
+**异常处理器**是把 Java 异常转换成客户端响应的方法。`@RestControllerAdvice` 把处理方法集中在一个类中，`@ExceptionHandler` 指定每个方法接收哪些异常：
 
 ```java
 @RestControllerAdvice
@@ -64,9 +66,9 @@ class ApiExceptionHandler {
 }
 ```
 
-示例把订单状态冲突映射为 HTTP 409，并返回稳定的 `code` 字段。异常类型承载失败分类，HTTP 状态告诉客户端和中间代理该怎样理解结果。
+MVC 处理请求时遇到 `OrderStateException`，会调用 `handle`。这个方法把错误映射为 HTTP 409，并返回 `ORDER_STATE_CONFLICT` 错误码。这样，客户端既能按状态码识别冲突，也能按业务错误码决定具体提示。
 
-应用应分别映射**五类失败**：
+不同失败需要客户端采取不同动作，因此要分别映射：
 
 - 输入错误说明请求结构或参数需要修改。
 - 认证授权错误说明身份凭证或访问权限有问题。
@@ -74,9 +76,7 @@ class ApiExceptionHandler {
 - 依赖失败说明外部服务调用未能完成。
 - 未知异常返回 500，并在服务端日志中保留根因。
 
-这样，客户端才能区分需要修改请求、重新认证或稍后重试的情况。
-
-`ResponseEntityExceptionHandler` 提供 MVC 标准异常处理基类。继承它可统一绑定错误、媒体类型错误等响应。
+`ResponseEntityExceptionHandler` 是 Spring 提供的 MVC 标准异常处理基类。继承它，可以统一参数绑定、媒体类型等框架异常的响应，不必只处理业务代码自己抛出的异常。
 
 ## 4. 状态码 {#状态码}
 
@@ -103,15 +103,15 @@ class ApiExceptionHandler {
 
 错误响应提供客户端处理失败所需的信息，服务端日志则保留排查依据。响应只包含公开字段，堆栈、SQL、文件路径和内部类名留在受控诊断范围，密钥等敏感值应脱敏。
 
-日志应记录 cause，也就是原始异常，以及 trace ID 和必要业务标识。路由可记录为 `/orders/{id}` 这类规范化模板，便于聚合同类请求。日志中的用户数据和敏感参数同样要脱敏。
+日志应记录 `cause`，也就是原始异常，以及 trace ID 和必要业务标识。路由可记录为 `/orders/{id}` 这类规范化模板，便于聚合同类请求。日志中的用户数据和敏感参数同样要脱敏。
 
 预期业务冲突可记录简要信息，未知异常则在处理边界记录一次完整堆栈。若 Controller 和 Advice 都记录同一异常，会产生重复日志，增加定位成本。
 
 ## 6. ControllerAdvice 的处理范围 {#controlleradvice-的处理范围}
 
-判断异常能否统一处理，要先看它从哪里抛出。`ControllerAdvice` 参与 `DispatcherServlet` 的异常解析链。链中的 `HandlerExceptionResolver` 负责寻找合适的方式，把异常转换成响应。
+`ControllerAdvice` 只能处理进入 MVC 异常解析流程的异常。`DispatcherServlet` 会把异常交给 `HandlerExceptionResolver` 解析链，由其中的解析器寻找处理方式，`@ExceptionHandler` 就在这个流程中被调用。判断异常能否统一处理，先看它有没有进入这条链。
 
-需要区分以下**三种异常路径**：
+下面三条路径的处理方式不同：
 
 - Filter 在进入 MVC 前抛出的异常，由过滤链或 Servlet 容器处理。安全过滤链可使用自己的错误处理器，容器也可发起 error dispatch，即错误派发。
 - MVC 的 `Callable` 抛错后，会触发异步派发，重新进入 MVC 处理流程。`DeferredResult.setErrorResult(exception)` 也会把异常交给 MVC resolver。
@@ -136,9 +136,9 @@ class ApiExceptionHandler {
 
 ## 8. 契约测试 {#契约测试}
 
-契约测试用于确认每个入口都返回约定的错误格式。对每类公开错误，检查 HTTP 状态、`Content-Type`、业务 `code` 和字段结构。再用敏感值作为输入，确认响应已省略这些值。
+**契约测试**是检查接口实际行为是否符合约定的测试。对错误响应，要逐类检查 HTTP 状态、`Content-Type`、业务 `code` 和字段结构。还可以用敏感值作为输入，确认失败响应没有把它原样带回来。
 
-测试应覆盖以下**错误入口与边界**：
+同一服务的错误可能来自不同入口，测试需要分别触发：
 
 - 路由不存在、请求方法错误和不可接受的媒体类型。
 - 参数校验失败和 Filter 拒绝请求。
@@ -149,17 +149,21 @@ class ApiExceptionHandler {
 
 ## 9. 异常处理器选择 {#异常处理器选择}
 
-多个方法都能处理同一个异常时，需要按查找范围和优先级判断。Controller 内的局部 `@ExceptionHandler` 优先于全局 Advice。多个 Advice 按 `Ordered` 或 `@Order` 排序。较小的值具有较高优先级。
+多个方法都能处理同一个异常时，先确定查找哪个类，再确定类里的哪个方法匹配。Controller 内的局部 `@ExceptionHandler` 优先于全局 Advice；多个 Advice 按 `Ordered` 或 `@Order` 排序，数值越小越早查找。
 
-同一 Controller 或 Advice 内，先匹配顶层异常。多个类型匹配时，选择继承距离更近的类型。顶层无匹配时再查 cause 链，也就是逐层查找包装在内部的原始异常。Spring 5.3 起支持任意深度的 cause，因此 Boot 2.7 和 3.x 都支持这条规则。
+**顶层异常**是当前向外抛出的异常。在同一个 Controller 或 Advice 内，Spring 先尝试匹配它。如果多个类型都能匹配，就选继承关系更近的类型。例如，抛出 `IllegalArgumentException` 时，接收它的处理器比接收 `Exception` 的处理器更具体。
 
-跨 Advice 时，优先级先决定查找顺序。高优先级 Advice 的 cause 匹配可先于低优先级的顶层匹配。所以，应将 `Exception` 兜底放在低优先级 Advice，避免提前截获本应由具体处理器处理的错误。方法在源码中的书写顺序不参与选择。
+顶层异常没有匹配方法时，才沿 `cause` 链查找，也就是逐层检查被包装在内部的异常。Spring 5.3 起支持任意深度的 `cause`，Boot 2.7 和 3.x 都支持这条规则。
+
+跨 Advice 时，要先遵守 Advice 的优先级。Spring 在高优先级 Advice 中找到 `cause` 的匹配后，就不会为了寻找顶层匹配而继续检查低优先级 Advice。
+
+因此，接收 `Exception` 的兜底处理器应放在低优先级 Advice 中，否则它可能提前接住所有异常，让后面的具体处理器没有机会执行。调整方法在源码中的书写顺序不会改变匹配结果。
 
 ## 10. 常见问题 {#常见问题}
 
 ### 10.1 所有响应都要使用统一包装吗？ {#成功响应与错误响应}
 
-成功响应可以直接返回资源，错误响应保持稳定结构即可。团队使用统一包装时，也要保留正确的 HTTP 状态。如果所有结果都返回 200，代理、监控和客户端就会把失败当作成功，影响告警与重试判断。
+不必。成功响应可以直接返回资源，错误响应保持稳定结构即可。团队使用统一包装时，也要保留正确的 HTTP 状态。如果所有结果都返回 200，按状态码工作的代理、监控和客户端就会把失败当作成功，影响告警与重试判断。
 
 ### 10.2 可以捕获 `Exception` 作为最后兜底吗？ {#未知异常兜底}
 
@@ -169,9 +173,7 @@ class ApiExceptionHandler {
 
 ### 11.1 Spring MVC 怎样实现统一异常处理 {#global-exception-handling}
 
-
-
-**考察重点**：解释异常如何经过 resolver 链映射为 HTTP 状态和稳定错误字段，并区分 Filter、异步和响应提交的边界。
+**考察重点**：解释异常如何经过 MVC 异常解析链映射为 HTTP 状态和稳定错误字段，并区分 Filter、异步和响应提交的边界。
 
 **相关内容**：[错误字段](#错误字段)至[契约测试](#契约测试)。
 
@@ -189,7 +191,6 @@ class ApiExceptionHandler {
 ### 11.2 多个异常处理器都能匹配时，Spring MVC 怎样选择？ {#exception-handler-selection}
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
-
 
 **考察重点**：按局部处理器、Advice 优先级和异常继承关系，推导顶层异常与 cause 最终会匹配哪个方法。
 

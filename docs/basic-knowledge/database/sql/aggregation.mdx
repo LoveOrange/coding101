@@ -9,19 +9,21 @@ keywords: ["GROUP BY", "HAVING", "COUNT", "条件聚合", "SQL 面试"]
 
 # SQL 聚合
 
-SQL 聚合将输入行计算为计数、总额或平均值。本文负责 MySQL 8.0 的分组、过滤、空值和统计粒度。
+**聚合**是把多行输入算成一个汇总值，比如行数、总额或平均值；配合 `GROUP BY`，就是每组算出一个汇总值。
+
+聚合查询的错误往往不报错，只是数字不对：少算了 NULL，多算了连接后重复的明细，或者把「没有数据」显示成了空白。写聚合查询时，先确定每个输出行代表什么粒度，再区分过滤发生在分组之前还是之后，并检查 NULL 和空输入会得到什么。下文以 MySQL 8.0 为准。
 
 ## 1. 面试核心 {#core}
 
-- **行数与非空值计数。** `COUNT(*)` 统计行数，`COUNT(column)` 统计该列非空的行数。[卡](#count-star-vs-column)
-- **过滤阶段。** WHERE 过滤输入行，HAVING 过滤聚合后的组。[卡](#group-filter-empty)
-- **空输入。** 无 GROUP BY 的空输入聚合返回一行，COUNT 为 0，SUM 为 NULL。[卡](#group-filter-empty)
-- **去重计数。** `COUNT(DISTINCT column)` 统计非空值的去重数量。[卡](#conditional-aggregation)
-- **分组取列。** `ONLY_FULL_GROUP_BY` 要求非聚合列有分组或函数依赖等依据。[卡](#group-functional-dependency)
+- `COUNT(*)` **统计行数**，`COUNT(column)` **只统计该列非空的行数**。[卡](#count-star-vs-column)
+- 非聚合的输出列**必须由分组键唯一确定**，MySQL 8.0 默认的 `ONLY_FULL_GROUP_BY` 会拒绝不满足的查询。[卡](#group-functional-dependency)
+- `WHERE` **在分组前过滤输入行**，`HAVING` **在聚合后过滤组**。[卡](#group-filter-empty)
+- 没有 `GROUP BY` 时，**空输入也返回一行**，`COUNT` 为 0，`SUM` 为 NULL；有 `GROUP BY` 时空输入返回空结果集。[卡](#group-filter-empty)
+- `COUNT(DISTINCT column)` **统计去重后的非空值个数**；用 `COUNT` 做条件计数时，未命中的分支要返回 NULL 而不是 0。[卡](#conditional-aggregation)
 
 ## 2. 分组与 NULL {#分组与-null}
 
-GROUP BY 指定每个结果组的粒度。
+`GROUP BY` 决定结果的粒度：分组键相同的输入行归为一组，每组输出一行。下面按团队统计销售记录，其中一条金额是 NULL：
 
 ```sql
 CREATE TABLE sales (
@@ -34,13 +36,13 @@ SELECT team, COUNT(*) AS rows_count,
 FROM sales GROUP BY team ORDER BY team;
 ```
 
-A 组得到 `(A,3,2,100)`，B 组得到 `(B,1,1,20)`。SUM 和 `COUNT(amount)` 忽略空金额。`COUNT(*)` 仍计入该行。A 组的 `AVG(amount)` 是 50，分母为两个非空值。
+A 组得到 `(A,3,2,100)`，B 组得到 `(B,1,1,20)`。A 组有三行，`COUNT(*)` 数的是行，所以是 3；`COUNT(amount)` 和 `SUM(amount)` 都跳过金额为 NULL 的那一行，分别得到 2 和 100。`AVG(amount)` 同样忽略 NULL，A 组的平均值是 100 除以 2，等于 50，而不是除以 3。
 
-多个 NULL 分组键归入同一组。结果组的展示顺序由 ORDER BY 明确指定。
+NULL 出现在分组键里时，所有 NULL 键归入同一组。另外，分组不保证结果的顺序，需要固定顺序就像示例这样写 `ORDER BY`。
 
 ## 3. 分组列与函数依赖 {#分组列与函数依赖}
 
-分组后的每个输出值都需有明确来源。聚合函数从组内多行计算结果。非聚合列则需由分组键唯一确定，或满足单值过滤条件。
+分组后每组只输出一行，所以每个输出值都要有明确的来源。聚合函数从组内多行算出一个值，没有问题；非聚合列就不同了，它必须由分组键唯一确定，或者被过滤条件限定为单一值，否则组内有好几个值，数据库不知道该输出哪个。
 
 ```sql
 SELECT id, team, SUM(amount) FROM sales GROUP BY id;
@@ -50,11 +52,13 @@ SELECT id, team, SUM(amount) FROM sales GROUP BY id;
 -- SELECT team, id, SUM(amount) FROM sales GROUP BY team;
 ```
 
-MySQL 8.0 默认 `ONLY_FULL_GROUP_BY` 会拒绝第二种查询。关闭该模式后，服务器可从组内任选一个 id。结果不再稳定，ORDER BY 也无法指定被选中的组内值。
+第一条按主键 `id` 分组，每组只有一行，`team` 由 `id` 唯一确定，这种关系叫**函数依赖**，MySQL 8.0 能识别并允许这个查询。第二条按 `team` 分组，A 组里有三个不同的 `id`，没有依据决定输出哪一个。
+
+MySQL 8.0 默认开启 `ONLY_FULL_GROUP_BY`，会拒绝第二条查询。关闭这个模式后查询能执行，但服务器会从组内任选一个 `id`，结果不稳定，`ORDER BY` 也没法控制选中的是哪个值。需要组内某个确定的值时，用 `MIN(id)`、`MAX(id)` 这样的聚合函数明确写出来。
 
 ## 4. 分组前后过滤 {#分组前后过滤}
 
-WHERE 决定哪些输入行参加统计。HAVING 再决定哪些组出现在结果中。
+`WHERE` 和 `HAVING` 都是过滤，区别在于执行时机：`WHERE` 在分组之前，决定哪些输入行参加统计；`HAVING` 在聚合之后，决定哪些组出现在结果里，所以它可以使用 `SUM(amount)` 这样的聚合结果。
 
 ```sql
 SELECT team, SUM(amount) AS total FROM sales
@@ -64,11 +68,13 @@ HAVING SUM(amount) >= 100
 ORDER BY team;
 ```
 
-WHERE 留下 A 的 30 和 70。聚合后总额为 100，满足 HAVING。最终结果只有 `(A,100)`。将行条件改为组条件，会改变参与统计的数据。
+`WHERE` 先去掉金额为 NULL 和 20 的行，A 组只剩 30 和 70，B 组没有行留下。A 组聚合后总额为 100，满足 `HAVING`，最终结果只有 `(A,100)`。
+
+两种条件不能随意互换。如果去掉 `WHERE amount >= 30`，B 组的 20 也会参与统计，B 组以总额 20 被 `HAVING` 过滤掉；结果碰巧相同，但参与统计的数据已经变了，换一组数据结论就可能不同。
 
 ## 5. 空输入与空值 {#空输入与空值}
 
-无 GROUP BY 时，整个输入视为一组。即使输入为空，也返回一行聚合结果。
+没有 `GROUP BY` 时，整个输入被视为一组，所以即使输入为空，也会返回一行聚合结果。有 `GROUP BY` 时则不同：
 
 ```sql
 SELECT COUNT(*) AS n, SUM(amount) AS total
@@ -76,13 +82,13 @@ FROM sales WHERE id < 0;
 SELECT team, COUNT(*) FROM sales WHERE id < 0 GROUP BY team;
 ```
 
-第一条返回 `(0,NULL)`，第二条返回空结果集。第二条没有输入行，因此也没有分组键。
+第一条返回 `(0,NULL)`：没有行可数，`COUNT` 是 0；没有值可加，`SUM` 是 NULL 而不是 0。第二条返回空结果集，因为没有输入行，也就产生不了任何分组键，自然没有组可以输出。
 
-需要将“没有金额”记为 0 时，可用 `COALESCE(SUM(amount),0)`。未知金额是否也应变成 0，要由业务定义。
+需要把「没有金额」显示为 0 时，可以写 `COALESCE(SUM(amount), 0)`。但要注意，它会把「没有记录」和「金额全为 NULL」都变成 0，未知金额是否也该算 0，要由业务来定义。
 
 ## 6. 条件聚合与去重计数 {#条件聚合与去重计数}
 
-CASE 可以在同一组内计算不同条件的统计值。
+**条件聚合**是在聚合函数里放一个 `CASE`，只让满足条件的行参与统计，这样一次分组就能算出多个不同条件的统计值：
 
 ```sql
 SELECT team,
@@ -91,22 +97,21 @@ SELECT team,
 FROM sales GROUP BY team ORDER BY team;
 ```
 
-结果为 `(A,1,2)`、`(B,0,1)`。CASE 将符合条件的行记为 1，其余记为 0。`COUNT(DISTINCT amount)` 对非空金额去重。
+结果为 `(A,1,2)`、`(B,0,1)`。`CASE` 把金额不低于 50 的行记为 1，其余记为 0，`SUM` 累加起来就是命中的行数：A 组只有 70 命中，B 组没有。金额为 NULL 的行在 `amount >= 50` 上得到 UNKNOWN，走 `ELSE` 分支记为 0。`COUNT(DISTINCT amount)` 对非空金额去重，A 组是 30 和 70 两个值。
 
-`COUNT(CASE WHEN amount>=50 THEN 1 ELSE 0 END)` 会统计所有行。原因是 0 也属于非空值。使用 COUNT 做条件计数时，应让未匹配分支返回 NULL。
+同样的写法换成 `COUNT` 就错了：`COUNT(CASE WHEN amount>=50 THEN 1 ELSE 0 END)` 会把所有行都算进去，因为 0 也是非空值，`COUNT` 只跳过 NULL。用 `COUNT` 做条件计数时，未命中的分支要返回 NULL，也就是去掉 `ELSE 0`。
 
 ## 7. 使用边界 {#使用边界}
 
-非聚合输出列需要明确的取值依据。具体检查规则见[分组列与函数依赖](#分组列与函数依赖)。
+聚合和连接一起用时，最容易算错粒度。`LEFT JOIN` 会给没有匹配的左表行补一行右表列全为 NULL 的记录，这时 `COUNT(*)` 会把它算成 1。要统计每个左表行匹配到多少右表记录，应该数右表的主键，例如 `COUNT(o.id)`，补出来的空行主键是 NULL，不会被计入，没有匹配的左表行就得到 0。
 
-LEFT JOIN 后，使用 `COUNT(右表非空主键)` 统计匹配数。连接补空与明细放大的机制见 [SQL 连接](./joins.mdx)。
+另一个问题是明细放大：一行左表记录连接到多行右表记录后，左表上的金额会重复出现，直接 `SUM` 就会重复累计。补空和放大的机制见 [SQL 连接](./joins.mdx)。
 
 ## 8. 面试题 {#面试题}
 
 ### 8.1 COUNT(*) 和 COUNT(column) 有什么区别，LEFT JOIN 后怎样统计右表记录数？ {#count-star-vs-column}
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
-
 
 **考察重点**：输入行粒度、NULL 处理与外连接补空行的计数。
 
@@ -115,16 +120,15 @@ LEFT JOIN 后，使用 `COUNT(右表非空主键)` 统计匹配数。连接补�
 <details>
 <summary>参考回答</summary>
 
-**`COUNT(*)` 计入所有结果行，`COUNT(column)` 只计非空值。**
+**`COUNT(*)` 计入所有结果行，`COUNT(column)` 只计该列非空的行。**
 
-LEFT JOIN 的补空行也占一行。因此，应统计右表的非空主键。没有匹配记录的左行便得到 0。多表连接产生重复明细时，还需先修正统计粒度。
+`LEFT JOIN` 给没有匹配的左表行补出的那一行也算一行，用 `COUNT(*)` 会得到 1。所以要统计右表记录数，应该数右表的主键这类非空列：补空行的右表主键是 NULL，不被计入，没有匹配的左表行就得到 0。连接了多张一对多的表时，明细会被放大，还要先修正统计粒度再计数。
 
 </details>
 
 ### 8.2 WHERE 与 HAVING 如何影响聚合，空输入会返回什么？ {#group-filter-empty}
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
-
 
 **考察重点**：行过滤、组过滤与空结果。
 
@@ -133,16 +137,15 @@ LEFT JOIN 的补空行也占一行。因此，应统计右表的非空主键。�
 <details>
 <summary>参考回答</summary>
 
-**WHERE 在分组前筛行，HAVING 在聚合后筛组。**
+**`WHERE` 在分组前筛选输入行，决定哪些行参与统计；`HAVING` 在聚合后筛选组，可以使用聚合结果。**
 
-无 GROUP BY 的空输入聚合仍返回一行。COUNT 是 0，SUM 是 NULL。带 GROUP BY 时，空输入没有任何组，返回空结果集。
+没有 `GROUP BY` 时，整个输入是一组，空输入仍返回一行，`COUNT` 是 0，`SUM` 是 NULL。带 `GROUP BY` 时，空输入产生不了任何分组键，返回空结果集。
 
 </details>
 
 ### 8.3 怎样统计每组满足条件的行数，COUNT 的 ELSE 0 为什么有问题？ {#conditional-aggregation}
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
-
 
 **考察重点**：CASE、非空计数和 DISTINCT。
 
@@ -151,16 +154,15 @@ LEFT JOIN 的补空行也占一行。因此，应统计右表的非空主键。�
 <details>
 <summary>参考回答</summary>
 
-**可用 `SUM(CASE WHEN 条件 THEN 1 ELSE 0 END)`。**
+**用 `SUM(CASE WHEN 条件 THEN 1 ELSE 0 END)`，把命中的行记为 1 再累加。**
 
-它将命中行累加为数量。COUNT 会计入 0，因此其未命中分支应返回 NULL。`COUNT(DISTINCT 列)` 则统计去重后的非空值数量。
+换成 `COUNT` 时，`ELSE 0` 会让每一行都返回非空值，`COUNT` 把所有行都计入，条件就失效了。用 `COUNT` 做条件计数，未命中的分支要返回 NULL。需要统计不同取值的个数时，用 `COUNT(DISTINCT 列)`，它统计的是去重后的非空值。
 
 </details>
 
 ### 8.4 GROUP BY 后为什么不能随意选择其他列，按主键分组有何不同？ {#group-functional-dependency}
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
-
 
 **考察重点**：结果确定性、函数依赖和 SQL 模式。
 
@@ -169,9 +171,9 @@ LEFT JOIN 的补空行也占一行。因此，应统计右表的非空主键。�
 <details>
 <summary>参考回答</summary>
 
-**同一组内的其他列可有多个值，需要明确选择依据。**
+**分组后每组只输出一行，组内的其他列可能有多个值，没有依据决定输出哪一个。**
 
-主键唯一确定一行，因此其余列依赖主键。MySQL 8.0 允许这种函数依赖。仅按 team 分组时，多行的 id 不唯一，默认模式会拒绝查询。
+按主键分组时，每组只有一行，其余列由主键唯一确定，这是函数依赖，MySQL 8.0 允许这样的查询。只按 `team` 分组时，组内有多个不同的 `id`，默认的 `ONLY_FULL_GROUP_BY` 会拒绝查询；关闭它后结果是组内任意一个值，不稳定。需要确定的值时，用 `MIN`、`MAX` 等聚合函数明确选择。
 
 </details>
 
