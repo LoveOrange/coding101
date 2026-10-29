@@ -38,7 +38,7 @@ Result awaitResult(long deadline)
 
 入口用 `System.nanoTime() + budgetNanos` 算出 `deadline`。每次等待之前，`awaitResult` 用它减去当前时间，得到剩余预算 `remaining`。预算已经用完就立即抛出 `TimeoutException`，否则把剩余时间交给 `future.get()`。这样每一层的等待消耗的都是同一份预算。
 
-这里用 `nanoTime()` 而不是系统时间，是因为它专门用来测量时间间隔，不受修改系统日期或时间校准的影响。另外，预算换算成纳秒时要限制在 `long` 能表示的合理范围内，否则超大的时长会溢出成负数。
+这里用 `nanoTime()` 而不是系统时间，是因为它专门用来测量时间间隔，不受修改系统日期或时间校准的影响。`nanoTime()` 的读数只有相减才有意义，而且相加时可能溢出：`TimeUnit` 把超大时长换算成纳秒会封顶为 `Long.MAX_VALUE`，再加上当前读数，`deadline` 就变成负数。所以判断是否超时要像示例这样看差值 `deadline - System.nanoTime()`，差值不受溢出影响；直接比较 `System.nanoTime() > deadline`，溢出后会把还没用完的预算误判为已经过期。
 
 ## 3. 中断与可中断等待 {#中断与可中断等待}
 
