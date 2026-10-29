@@ -8,11 +8,11 @@
 
 | 状态 | Codex 生成 | Claude 校验 | Lin 校验 | English | 日本語 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| ✅ | 349 | 263 | 0 | 0 | 0 |
+| ✅ | 349 | 274 | 0 | 0 | 0 |
 | 🔁 | 0 | 0 | 0 | 0 | 0 |
 | 👀 | 0 | 0 | 7 | 0 | 0 |
 | ⚠️ | 0 | 0 | 0 | 0 | 0 |
-| · | 0 | 86 | 342 | 349 | 349 |
+| · | 0 | 75 | 342 | 349 | 349 |
 | — | 0 | 0 | 0 | 0 | 0 |
 
 ## ai
@@ -374,23 +374,23 @@
 | [MIT 6.824](../docs/system-design/mit6.824/index.mdx) | ✅ | · | · | · | · |
 | [[WIP]面向对象程序设计](../docs/system-design/ood/index.mdx) | ✅ | · | · | · | · |
 | [SOLID 面向对象设计原则](../docs/system-design/ood/solid.mdx) | ✅ | · | · | · | · |
-| [可重复交付](../docs/system-design/production/docker-ci-cd-reproducible-delivery.mdx) | ✅ | · | · | · | · |
-| [生产工程](../docs/system-design/production/index.mdx) | ✅ | · | · | · | · |
-| [生产故障诊断](../docs/system-design/production/jvm-thread-sql-network-joint-diagnosis.mdx) | ✅ | · | · | · | · |
-| [可观测性](../docs/system-design/production/logs-metrics-traces-correlation.mdx) | ✅ | · | · | · | · |
-| [Maven](../docs/system-design/production/maven-lifecycle-dependency-convergence.mdx) | ✅ | · | · | · | · |
+| [可重复交付](../docs/system-design/production/docker-ci-cd-reproducible-delivery.mdx) | ✅ | ✅ | · | · | · |
+| [生产工程](../docs/system-design/production/index.mdx) | ✅ | ✅ | · | · | · |
+| [生产故障诊断](../docs/system-design/production/jvm-thread-sql-network-joint-diagnosis.mdx) | ✅ | ✅ | · | · | · |
+| [可观测性](../docs/system-design/production/logs-metrics-traces-correlation.mdx) | ✅ | ✅ | · | · | · |
+| [Maven](../docs/system-design/production/maven-lifecycle-dependency-convergence.mdx) | ✅ | ✅ | · | · | · |
 | [服务容错](../docs/system-design/reliability/circuit-breaker-degradation-bulkhead.mdx) | ✅ | ✅ | · | · | · |
 | [幂等键](../docs/system-design/reliability/idempotency-keys-safe-retries.mdx) | ✅ | ✅ | · | · | · |
 | [服务可靠性](../docs/system-design/reliability/index.mdx) | ✅ | ✅ | · | · | · |
 | [限流](../docs/system-design/reliability/rate-limiting-capacity-protection.mdx) | ✅ | ✅ | · | · | · |
 | [重试](../docs/system-design/reliability/retry-backoff-jitter-storms.mdx) | ✅ | ✅ | · | · | · |
 | [超时](../docs/system-design/reliability/timeout-budget-cancellation.mdx) | ✅ | ✅ | · | · | · |
-| [认证与授权](../docs/system-design/security/authentication-authorization-trust-boundaries.mdx) | ✅ | · | · | · | · |
-| [应用安全](../docs/system-design/security/index.mdx) | ✅ | · | · | · | · |
-| [Web 应用安全](../docs/system-design/security/injection-authorization-ssrf-deserialization.mdx) | ✅ | · | · | · | · |
-| [密钥、证书、审计与供应链安全](../docs/system-design/security/secrets-certificates-audit-supply-chain.mdx) | ✅ | · | · | · | · |
-| [Session、JWT、OAuth 2.0 与 OIDC](../docs/system-design/security/session-jwt-oauth-oidc.mdx) | ✅ | · | · | · | · |
-| [Spring Security](../docs/system-design/security/spring-security-filter-chain.mdx) | ✅ | · | · | · | · |
+| [认证与授权](../docs/system-design/security/authentication-authorization-trust-boundaries.mdx) | ✅ | ✅ | · | · | · |
+| [应用安全](../docs/system-design/security/index.mdx) | ✅ | ✅ | · | · | · |
+| [Web 应用安全](../docs/system-design/security/injection-authorization-ssrf-deserialization.mdx) | ✅ | ✅ | · | · | · |
+| [密钥、证书、审计与供应链安全](../docs/system-design/security/secrets-certificates-audit-supply-chain.mdx) | ✅ | ✅ | · | · | · |
+| [Session、JWT、OAuth 2.0 与 OIDC](../docs/system-design/security/session-jwt-oauth-oidc.mdx) | ✅ | ✅ | · | · | · |
+| [Spring Security](../docs/system-design/security/spring-security-filter-chain.mdx) | ✅ | ✅ | · | · | · |
 | [容量规划](../docs/system-design/system-design/capacity-slo-failure-model.mdx) | ✅ | · | · | · | · |
 | [系统设计](../docs/system-design/system-design/index.mdx) | ✅ | · | · | · | · |
 | [系统设计面试](../docs/system-design/system-design/interview-process.mdx) | ✅ | · | · | · | · |
