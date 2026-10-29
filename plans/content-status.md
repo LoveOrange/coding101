@@ -8,11 +8,11 @@
 
 | 状态 | Codex 生成 | Claude 校验 | Lin 校验 | English | 日本語 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| ✅ | 349 | 213 | 0 | 0 | 0 |
+| ✅ | 349 | 223 | 0 | 0 | 0 |
 | 🔁 | 0 | 0 | 0 | 0 | 0 |
 | 👀 | 0 | 0 | 7 | 0 | 0 |
 | ⚠️ | 0 | 0 | 0 | 0 | 0 |
-| · | 0 | 136 | 342 | 349 | 349 |
+| · | 0 | 126 | 342 | 349 | 349 |
 | — | 0 | 0 | 0 | 0 | 0 |
 
 ## ai
@@ -62,7 +62,7 @@
 | [递归](../docs/basic-knowledge/algorithms/recursion.mdx) | ✅ | ✅ | · | · | · |
 | [排序](../docs/basic-knowledge/algorithms/sorting.mdx) | ✅ | ✅ | · | · | · |
 | [双指针](../docs/basic-knowledge/algorithms/two-pointers.mdx) | ✅ | ✅ | · | · | · |
-| [通用基础复习](../docs/basic-knowledge/common/index.mdx) | ✅ | · | · | · | · |
+| [通用基础复习](../docs/basic-knowledge/common/index.mdx) | ✅ | ✅ | · | · | · |
 | [数组](../docs/basic-knowledge/data-structures/array.mdx) | ✅ | ✅ | · | · | · |
 | [二叉搜索树](../docs/basic-knowledge/data-structures/binary-search-tree.mdx) | ✅ | ✅ | · | · | · |
 | [二叉树](../docs/basic-knowledge/data-structures/binary-tree.mdx) | ✅ | ✅ | · | · | · |
@@ -91,7 +91,7 @@
 | [InnoDB 锁](../docs/basic-knowledge/database/transaction/innodb-locking-ranges.mdx) | ✅ | ✅ | · | · | · |
 | [长事务](../docs/basic-knowledge/database/transaction/long-transactions-hot-updates-boundaries.mdx) | ✅ | ✅ | · | · | · |
 | [MVCC](../docs/basic-knowledge/database/transaction/mvcc-read-view-consistent-read.mdx) | ✅ | ✅ | · | · | · |
-| [基础知识](../docs/basic-knowledge/index.mdx) | ✅ | · | · | · | · |
+| [基础知识](../docs/basic-knowledge/index.mdx) | ✅ | ✅ | · | · | · |
 | [滑动窗口](../docs/basic-knowledge/java/algorithms/arrays-strings-sliding-window.mdx) | ✅ | ✅ | · | · | · |
 | [算法复杂度](../docs/basic-knowledge/java/algorithms/complexity-constraints-java-cost.mdx) | ✅ | ✅ | · | · | · |
 | [动态规划](../docs/basic-knowledge/java/algorithms/dynamic-programming-state-design.mdx) | ✅ | ✅ | · | · | · |
@@ -240,14 +240,14 @@
 | [Redis 过期](../docs/basic-knowledge/nosql/redis/expiration.mdx) | ✅ | ✅ | · | · | · |
 | [Redis](../docs/basic-knowledge/nosql/redis/index.mdx) | ✅ | ✅ | · | · | · |
 | [Redis 持久化、复制与集群](../docs/basic-knowledge/nosql/redis/persistence.mdx) | ✅ | ✅ | · | · | · |
-| [死锁](../docs/basic-knowledge/operating-system/deadlock.mdx) | ✅ | · | · | · | · |
-| [文件描述符](../docs/basic-knowledge/operating-system/file-descriptors.mdx) | ✅ | · | · | · | · |
-| [操作系统](../docs/basic-knowledge/operating-system/index.mdx) | ✅ | · | · | · | · |
-| [I/O 模型](../docs/basic-knowledge/operating-system/io-models.mdx) | ✅ | · | · | · | · |
-| [I/O 多路复用](../docs/basic-knowledge/operating-system/io-multiplexing.mdx) | ✅ | · | · | · | · |
-| [进程与线程](../docs/basic-knowledge/operating-system/processes-threads.mdx) | ✅ | · | · | · | · |
-| [线程同步](../docs/basic-knowledge/operating-system/synchronization.mdx) | ✅ | · | · | · | · |
-| [虚拟内存](../docs/basic-knowledge/operating-system/virtual-memory.mdx) | ✅ | · | · | · | · |
+| [死锁](../docs/basic-knowledge/operating-system/deadlock.mdx) | ✅ | ✅ | · | · | · |
+| [文件描述符](../docs/basic-knowledge/operating-system/file-descriptors.mdx) | ✅ | ✅ | · | · | · |
+| [操作系统](../docs/basic-knowledge/operating-system/index.mdx) | ✅ | ✅ | · | · | · |
+| [I/O 模型](../docs/basic-knowledge/operating-system/io-models.mdx) | ✅ | ✅ | · | · | · |
+| [I/O 多路复用](../docs/basic-knowledge/operating-system/io-multiplexing.mdx) | ✅ | ✅ | · | · | · |
+| [进程与线程](../docs/basic-knowledge/operating-system/processes-threads.mdx) | ✅ | ✅ | · | · | · |
+| [线程同步](../docs/basic-knowledge/operating-system/synchronization.mdx) | ✅ | ✅ | · | · | · |
+| [虚拟内存](../docs/basic-knowledge/operating-system/virtual-memory.mdx) | ✅ | ✅ | · | · | · |
 
 ## chatgpt-guide
 
