@@ -8,11 +8,11 @@
 
 | 状态 | Codex 生成 | Claude 校验 | Lin 校验 | English | 日本語 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| ✅ | 349 | 203 | 0 | 0 | 0 |
+| ✅ | 349 | 213 | 0 | 0 | 0 |
 | 🔁 | 0 | 0 | 0 | 0 | 0 |
 | 👀 | 0 | 0 | 7 | 0 | 0 |
 | ⚠️ | 0 | 0 | 0 | 0 | 0 |
-| · | 0 | 146 | 342 | 349 | 349 |
+| · | 0 | 136 | 342 | 349 | 349 |
 | — | 0 | 0 | 0 | 0 | 0 |
 
 ## ai
@@ -221,16 +221,16 @@
 | [消息队列](../docs/basic-knowledge/middleware/kafka-rabbitmq-queue-semantics.mdx) | ✅ | ✅ | · | · | · |
 | [消息可靠性](../docs/basic-knowledge/middleware/message-ack-retry-dead-letter.mdx) | ✅ | ✅ | · | · | · |
 | [分布式任务调度](../docs/basic-knowledge/middleware/scheduled-tasks-sharding-recovery.mdx) | ✅ | ✅ | · | · | · |
-| [DNS](../docs/basic-knowledge/network/dns.mdx) | ✅ | · | · | · | · |
-| [HTTP 缓存](../docs/basic-knowledge/network/http-cache.mdx) | ✅ | · | · | · | · |
-| [HTTP](../docs/basic-knowledge/network/http-versions-connection-reuse-timeouts.mdx) | ✅ | · | · | · | · |
-| [计算机网络](../docs/basic-knowledge/network/index.mdx) | ✅ | · | · | · | · |
-| [IP](../docs/basic-knowledge/network/ip.mdx) | ✅ | · | · | · | · |
-| [网络模型](../docs/basic-knowledge/network/network-models.mdx) | ✅ | · | · | · | · |
-| [RPC](../docs/basic-knowledge/network/rpc-serialization-netty-event-loop.mdx) | ✅ | · | · | · | · |
-| [TCP 连接](../docs/basic-knowledge/network/tcp_handshake.mdx) | ✅ | · | · | · | · |
-| [TCP 与 UDP](../docs/basic-knowledge/network/tcp_udp.mdx) | ✅ | · | · | · | · |
-| [TLS](../docs/basic-knowledge/network/tls.mdx) | ✅ | · | · | · | · |
+| [DNS](../docs/basic-knowledge/network/dns.mdx) | ✅ | ✅ | · | · | · |
+| [HTTP 缓存](../docs/basic-knowledge/network/http-cache.mdx) | ✅ | ✅ | · | · | · |
+| [HTTP](../docs/basic-knowledge/network/http-versions-connection-reuse-timeouts.mdx) | ✅ | ✅ | · | · | · |
+| [计算机网络](../docs/basic-knowledge/network/index.mdx) | ✅ | ✅ | · | · | · |
+| [IP](../docs/basic-knowledge/network/ip.mdx) | ✅ | ✅ | · | · | · |
+| [网络模型](../docs/basic-knowledge/network/network-models.mdx) | ✅ | ✅ | · | · | · |
+| [RPC](../docs/basic-knowledge/network/rpc-serialization-netty-event-loop.mdx) | ✅ | ✅ | · | · | · |
+| [TCP 连接](../docs/basic-knowledge/network/tcp_handshake.mdx) | ✅ | ✅ | · | · | · |
+| [TCP 与 UDP](../docs/basic-knowledge/network/tcp_udp.mdx) | ✅ | ✅ | · | · | · |
+| [TLS](../docs/basic-knowledge/network/tls.mdx) | ✅ | ✅ | · | · | · |
 | [NoSQL 数据库](../docs/basic-knowledge/nosql/index.mdx) | ✅ | ✅ | · | · | · |
 | [缓存一致性](../docs/basic-knowledge/nosql/redis/cache-patterns-consistency.mdx) | ✅ | ✅ | · | · | · |
 | [缓存穿透、击穿、雪崩与热点 Key](../docs/basic-knowledge/nosql/redis/cache-penetration-stampede-avalanche-hotkeys.mdx) | ✅ | ✅ | · | · | · |

@@ -115,7 +115,7 @@ sequenceDiagram
 
 Linux 的 `net.ipv4.tcp_tw_reuse` 允许在协议安全条件下，为新连接复用 `TIME_WAIT` socket，主要用于主动发起连接的一端。相关检查涉及 TCP timestamps 和等待时间，具体条件及效果需要结合目标内核和实际网络路径验证。
 
-`tcp_tw_recycle` 的旧实现则依赖同一对端地址的时间戳单调递增。NAT 后的多台主机共用公网地址，时间戳却可能不同，因此会破坏这个假设。不能把它与 `tcp_tw_reuse` 当成同一种机制。另一个参数 `tcp_fin_timeout` 管理的是孤儿 `FIN_WAIT_2` 的等待，也就是应用已不再持有、但仍等待对端 FIN 的连接，不控制 `TIME_WAIT` 的计时。
+`tcp_tw_recycle` 的旧实现则依赖同一对端地址的时间戳单调递增。NAT 后的多台主机共用公网地址，时间戳却可能不同，因此会破坏这个假设。Linux 4.12 已经删除这个参数，新内核上设置它会报找不到 `/proc/sys/net/ipv4/tcp_tw_recycle`。不能把它与 `tcp_tw_reuse` 当成同一种机制。另一个参数 `tcp_fin_timeout` 管理的是孤儿 `FIN_WAIT_2` 的等待，也就是应用已不再持有、但仍等待对端 FIN 的连接，不控制 `TIME_WAIT` 的计时。
 
 ## 7. 握手丢包与半连接 {#握手丢包与半连接}
 
@@ -276,7 +276,7 @@ CLOSE_WAIT 表示已收到对端 FIN，但应用尚未关闭本地发送方向�
 
 **优先通过 keep-alive、HTTP/2 或连接池减少短连接。**
 
-先确认主动关闭端是否存在端口或内存压力，只有数量多不一定需要调参。`tcp_tw_reuse` 在协议安全条件下复用 `TIME_WAIT` socket，相关检查涉及时间戳和等待时间，具体行为需要按目标内核验证。`tcp_tw_recycle` 的旧机制依赖同一对端地址的时间戳单调递增，NAT 后多个主机的不同时间戳会破坏这个假设。
+先确认主动关闭端是否存在端口或内存压力，只有数量多不一定需要调参。`tcp_tw_reuse` 在协议安全条件下复用 `TIME_WAIT` socket，相关检查涉及时间戳和等待时间，具体行为需要按目标内核验证。`tcp_tw_recycle` 的旧机制依赖同一对端地址的时间戳单调递增，NAT 后多个主机的不同时间戳会破坏这个假设，Linux 4.12 起已删除该参数。
 
 </details>
 
