@@ -8,11 +8,11 @@
 
 | 状态 | Codex 生成 | Claude 校验 | Lin 校验 | English | 日本語 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| ✅ | 349 | 55 | 0 | 0 | 0 |
+| ✅ | 349 | 67 | 0 | 0 | 0 |
 | 🔁 | 0 | 0 | 0 | 0 | 0 |
 | 👀 | 0 | 0 | 7 | 0 | 0 |
 | ⚠️ | 0 | 0 | 0 | 0 | 0 |
-| · | 0 | 294 | 342 | 349 | 349 |
+| · | 0 | 282 | 342 | 349 | 349 |
 | — | 0 | 0 | 0 | 0 | 0 |
 
 ## ai
@@ -111,28 +111,28 @@
 | [LinkedHashMap](../docs/basic-knowledge/java/collections/linkedhashmap-lru.mdx) | ✅ | ✅ | · | · | · |
 | [LinkedList](../docs/basic-knowledge/java/collections/linkedlist-semantics-cost.mdx) | ✅ | ✅ | · | · | · |
 | [TreeMap 与 TreeSet](../docs/basic-knowledge/java/collections/treemap-treeset-ordered-query.mdx) | ✅ | ✅ | · | · | · |
-| [AQS](../docs/basic-knowledge/java/concurrency/aqs-state-wait-queue.mdx) | ✅ | · | · | · | · |
-| [Java 原子类](../docs/basic-knowledge/java/concurrency/atomic-longadder-contention.mdx) | ✅ | · | · | · | · |
-| [CAS](../docs/basic-knowledge/java/concurrency/cas-aba-versioning.mdx) | ✅ | · | · | · | · |
+| [AQS](../docs/basic-knowledge/java/concurrency/aqs-state-wait-queue.mdx) | ✅ | ✅ | · | · | · |
+| [Java 原子类](../docs/basic-knowledge/java/concurrency/atomic-longadder-contention.mdx) | ✅ | ✅ | · | · | · |
+| [CAS](../docs/basic-knowledge/java/concurrency/cas-aba-versioning.mdx) | ✅ | ✅ | · | · | · |
 | [CompletableFuture](../docs/basic-knowledge/java/concurrency/future-completablefuture-errors.mdx) | ✅ | · | · | · | · |
-| [Java 并发编程](../docs/basic-knowledge/java/concurrency/index.mdx) | ✅ | · | · | · | · |
+| [Java 并发编程](../docs/basic-knowledge/java/concurrency/index.mdx) | ✅ | ✅ | · | · | · |
 | [任务取消](../docs/basic-knowledge/java/concurrency/interruption-timeout-cancellation.mdx) | ✅ | · | · | · | · |
-| [Java 内存模型](../docs/basic-knowledge/java/concurrency/jmm-happens-before.mdx) | ✅ | · | · | · | · |
+| [Java 内存模型](../docs/basic-knowledge/java/concurrency/jmm-happens-before.mdx) | ✅ | ✅ | · | · | · |
 | [Java 并发同步器](../docs/basic-knowledge/java/concurrency/latch-barrier-semaphore.mdx) | ✅ | · | · | · | · |
 | [并发活跃性](../docs/basic-knowledge/java/concurrency/liveness-deadlock-livelock-starvation.mdx) | ✅ | · | · | · | · |
 | [锁竞争](../docs/basic-knowledge/java/concurrency/lock-contention-context-switch-benchmark.mdx) | ✅ | · | · | · | · |
-| [锁与无锁](../docs/basic-knowledge/java/concurrency/locks-vs-lock-free-cost.mdx) | ✅ | · | · | · | · |
+| [锁与无锁](../docs/basic-knowledge/java/concurrency/locks-vs-lock-free-cost.mdx) | ✅ | ✅ | · | · | · |
 | [读写锁](../docs/basic-knowledge/java/concurrency/readwritelock-stampedlock.mdx) | ✅ | · | · | · | · |
 | [ReentrantLock](../docs/basic-knowledge/java/concurrency/reentrantlock-fairness-condition.mdx) | ✅ | · | · | · | · |
-| [安全发布](../docs/basic-knowledge/java/concurrency/safe-publication-escape-final.mdx) | ✅ | · | · | · | · |
-| [消息传递](../docs/basic-knowledge/java/concurrency/shared-state-message-passing.mdx) | ✅ | · | · | · | · |
-| [synchronized](../docs/basic-knowledge/java/concurrency/synchronized-monitor-optimizations.mdx) | ✅ | · | · | · | · |
-| [Java 线程](../docs/basic-knowledge/java/concurrency/thread-lifecycle-interruption.mdx) | ✅ | · | · | · | · |
-| [线程安全](../docs/basic-knowledge/java/concurrency/thread-safety-race-conditions.mdx) | ✅ | · | · | · | · |
+| [安全发布](../docs/basic-knowledge/java/concurrency/safe-publication-escape-final.mdx) | ✅ | ✅ | · | · | · |
+| [消息传递](../docs/basic-knowledge/java/concurrency/shared-state-message-passing.mdx) | ✅ | ✅ | · | · | · |
+| [synchronized](../docs/basic-knowledge/java/concurrency/synchronized-monitor-optimizations.mdx) | ✅ | ✅ | · | · | · |
+| [Java 线程](../docs/basic-knowledge/java/concurrency/thread-lifecycle-interruption.mdx) | ✅ | ✅ | · | · | · |
+| [线程安全](../docs/basic-knowledge/java/concurrency/thread-safety-race-conditions.mdx) | ✅ | ✅ | · | · | · |
 | [ThreadLocal](../docs/basic-knowledge/java/concurrency/threadlocal-leaks-context.mdx) | ✅ | · | · | · | · |
 | [Java 线程池](../docs/basic-knowledge/java/concurrency/threadpoolexecutor-execution-path.mdx) | ✅ | · | · | · | · |
 | [虚拟线程](../docs/basic-knowledge/java/concurrency/virtual-threads-boundaries.mdx) | ✅ | · | · | · | · |
-| [volatile](../docs/basic-knowledge/java/concurrency/volatile-barriers-visibility.mdx) | ✅ | · | · | · | · |
+| [volatile](../docs/basic-knowledge/java/concurrency/volatile-barriers-visibility.mdx) | ✅ | ✅ | · | · | · |
 | [批处理与分页](../docs/basic-knowledge/java/data-access/batching-pagination-data-access-tests.mdx) | ✅ | · | · | · | · |
 | [数据库连接池](../docs/basic-knowledge/java/data-access/connection-pool-capacity-timeout-leaks.mdx) | ✅ | · | · | · | · |
 | [Java 数据访问](../docs/basic-knowledge/java/data-access/index.mdx) | ✅ | · | · | · | · |
