@@ -8,11 +8,11 @@
 
 | 状态 | Codex 生成 | Claude 校验 | Lin 校验 | English | 日本語 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| ✅ | 349 | 316 | 0 | 0 | 0 |
+| ✅ | 349 | 349 | 0 | 0 | 0 |
 | 🔁 | 0 | 0 | 0 | 0 | 0 |
 | 👀 | 0 | 0 | 7 | 0 | 0 |
 | ⚠️ | 0 | 0 | 0 | 0 | 0 |
-| · | 0 | 33 | 342 | 349 | 349 |
+| · | 0 | 0 | 342 | 349 | 349 |
 | — | 0 | 0 | 0 | 0 | 0 |
 
 ## ai
@@ -299,34 +299,34 @@
 
 | 文章 | Codex 生成 | Claude 校验 | Lin 校验 | English | 日本語 |
 | --- | :---: | :---: | :---: | :---: | :---: |
-| [LeetCode 101](../docs/leetcode/leetcoding101/index.md) | ✅ | · | · | · | · |
-| [134. 加油站](../docs/leetcode/others/leetcode-134.mdx) | ✅ | · | · | · | · |
-| [数组篇](../docs/leetcode/re-leetcode/arrays/index.mdx) | ✅ | · | · | · | · |
-| [189. 轮转数组](../docs/leetcode/re-leetcode/arrays/leetcode-189.mdx) | ✅ | · | · | · | · |
-| [238. 除自身以外数组的乘积](../docs/leetcode/re-leetcode/arrays/leetcode-238.mdx) | ✅ | · | · | · | · |
-| [283. 移动零](../docs/leetcode/re-leetcode/arrays/leetcode-283.mdx) | ✅ | · | · | · | · |
-| [289. 生命游戏](../docs/leetcode/re-leetcode/arrays/leetcode-289.mdx) | ✅ | · | · | · | · |
-| [304. 二维区域和检索 - 矩阵不可变](../docs/leetcode/re-leetcode/arrays/leetcode-304.mdx) | ✅ | · | · | · | · |
-| [396. 旋转函数](../docs/leetcode/re-leetcode/arrays/leetcode-396.mdx) | ✅ | · | · | · | · |
-| [41. 缺失的第一个正整数](../docs/leetcode/re-leetcode/arrays/leetcode-41.mdx) | ✅ | · | · | · | · |
-| [419. 棋盘上的战舰](../docs/leetcode/re-leetcode/arrays/leetcode-419.mdx) | ✅ | · | · | · | · |
-| [442. 数组中重复的数据](../docs/leetcode/re-leetcode/arrays/leetcode-442.mdx) | ✅ | · | · | · | · |
-| [448. 找到所有数组中消失的数字](../docs/leetcode/re-leetcode/arrays/leetcode-448.mdx) | ✅ | · | · | · | · |
-| [453. 最小操作次数使数组元素相等](../docs/leetcode/re-leetcode/arrays/leetcode-453.mdx) | ✅ | · | · | · | · |
-| [48. 旋转图像](../docs/leetcode/re-leetcode/arrays/leetcode-48.mdx) | ✅ | · | · | · | · |
-| [498. 对角线遍历](../docs/leetcode/re-leetcode/arrays/leetcode-498.mdx) | ✅ | · | · | · | · |
-| [54. 螺旋矩阵](../docs/leetcode/re-leetcode/arrays/leetcode-54.mdx) | ✅ | · | · | · | · |
-| [59. 螺旋矩阵 II](../docs/leetcode/re-leetcode/arrays/leetcode-59.mdx) | ✅ | · | · | · | · |
-| [645. 错误的集合](../docs/leetcode/re-leetcode/arrays/leetcode-645.mdx) | ✅ | · | · | · | · |
-| [665. 非递减数列](../docs/leetcode/re-leetcode/arrays/leetcode-665.mdx) | ✅ | · | · | · | · |
-| [697. 数组的度](../docs/leetcode/re-leetcode/arrays/leetcode-697.mdx) | ✅ | · | · | · | · |
-| [73. 矩阵置零](../docs/leetcode/re-leetcode/arrays/leetcode-73.mdx) | ✅ | · | · | · | · |
-| [哈希表篇](../docs/leetcode/re-leetcode/hashtable/index.mdx) | ✅ | · | · | · | · |
-| [Re：从零开始的力扣刷题生活](../docs/leetcode/re-leetcode/index.md) | ✅ | · | · | · | · |
-| [链表篇](../docs/leetcode/re-leetcode/lists/index.mdx) | ✅ | · | · | · | · |
-| [19. 删除链表的倒数第 N 个结点](../docs/leetcode/re-leetcode/lists/leetcode-19.mdx) | ✅ | · | · | · | · |
-| [237. 删除链表中的节点](../docs/leetcode/re-leetcode/lists/leetcode-237.mdx) | ✅ | · | · | · | · |
-| [707. 设计链表](../docs/leetcode/re-leetcode/lists/leetcode-707.mdx) | ✅ | · | · | · | · |
+| [LeetCode 101](../docs/leetcode/leetcoding101/index.md) | ✅ | ✅ | · | · | · |
+| [134. 加油站](../docs/leetcode/others/leetcode-134.mdx) | ✅ | ✅ | · | · | · |
+| [数组篇](../docs/leetcode/re-leetcode/arrays/index.mdx) | ✅ | ✅ | · | · | · |
+| [189. 轮转数组](../docs/leetcode/re-leetcode/arrays/leetcode-189.mdx) | ✅ | ✅ | · | · | · |
+| [238. 除自身以外数组的乘积](../docs/leetcode/re-leetcode/arrays/leetcode-238.mdx) | ✅ | ✅ | · | · | · |
+| [283. 移动零](../docs/leetcode/re-leetcode/arrays/leetcode-283.mdx) | ✅ | ✅ | · | · | · |
+| [289. 生命游戏](../docs/leetcode/re-leetcode/arrays/leetcode-289.mdx) | ✅ | ✅ | · | · | · |
+| [304. 二维区域和检索 - 矩阵不可变](../docs/leetcode/re-leetcode/arrays/leetcode-304.mdx) | ✅ | ✅ | · | · | · |
+| [396. 旋转函数](../docs/leetcode/re-leetcode/arrays/leetcode-396.mdx) | ✅ | ✅ | · | · | · |
+| [41. 缺失的第一个正整数](../docs/leetcode/re-leetcode/arrays/leetcode-41.mdx) | ✅ | ✅ | · | · | · |
+| [419. 棋盘上的战舰](../docs/leetcode/re-leetcode/arrays/leetcode-419.mdx) | ✅ | ✅ | · | · | · |
+| [442. 数组中重复的数据](../docs/leetcode/re-leetcode/arrays/leetcode-442.mdx) | ✅ | ✅ | · | · | · |
+| [448. 找到所有数组中消失的数字](../docs/leetcode/re-leetcode/arrays/leetcode-448.mdx) | ✅ | ✅ | · | · | · |
+| [453. 最小操作次数使数组元素相等](../docs/leetcode/re-leetcode/arrays/leetcode-453.mdx) | ✅ | ✅ | · | · | · |
+| [48. 旋转图像](../docs/leetcode/re-leetcode/arrays/leetcode-48.mdx) | ✅ | ✅ | · | · | · |
+| [498. 对角线遍历](../docs/leetcode/re-leetcode/arrays/leetcode-498.mdx) | ✅ | ✅ | · | · | · |
+| [54. 螺旋矩阵](../docs/leetcode/re-leetcode/arrays/leetcode-54.mdx) | ✅ | ✅ | · | · | · |
+| [59. 螺旋矩阵 II](../docs/leetcode/re-leetcode/arrays/leetcode-59.mdx) | ✅ | ✅ | · | · | · |
+| [645. 错误的集合](../docs/leetcode/re-leetcode/arrays/leetcode-645.mdx) | ✅ | ✅ | · | · | · |
+| [665. 非递减数列](../docs/leetcode/re-leetcode/arrays/leetcode-665.mdx) | ✅ | ✅ | · | · | · |
+| [697. 数组的度](../docs/leetcode/re-leetcode/arrays/leetcode-697.mdx) | ✅ | ✅ | · | · | · |
+| [73. 矩阵置零](../docs/leetcode/re-leetcode/arrays/leetcode-73.mdx) | ✅ | ✅ | · | · | · |
+| [哈希表篇](../docs/leetcode/re-leetcode/hashtable/index.mdx) | ✅ | ✅ | · | · | · |
+| [Re：从零开始的力扣刷题生活](../docs/leetcode/re-leetcode/index.md) | ✅ | ✅ | · | · | · |
+| [链表篇](../docs/leetcode/re-leetcode/lists/index.mdx) | ✅ | ✅ | · | · | · |
+| [19. 删除链表的倒数第 N 个结点](../docs/leetcode/re-leetcode/lists/leetcode-19.mdx) | ✅ | ✅ | · | · | · |
+| [237. 删除链表中的节点](../docs/leetcode/re-leetcode/lists/leetcode-237.mdx) | ✅ | ✅ | · | · | · |
+| [707. 设计链表](../docs/leetcode/re-leetcode/lists/leetcode-707.mdx) | ✅ | ✅ | · | · | · |
 
 ## system-design
 
@@ -403,8 +403,8 @@
 
 | 文章 | Codex 生成 | Claude 校验 | Lin 校验 | English | 日本語 |
 | --- | :---: | :---: | :---: | :---: | :---: |
-| [使用 Git 进行第一次提交](../docs/tools-and-frameworks/git/basic-usages/first-commit.mdx) | ✅ | · | · | · | · |
-| [Git 的安装与配置](../docs/tools-and-frameworks/git/basic-usages/git-installation.mdx) | ✅ | · | · | · | · |
-| [2. Git 基本使用](../docs/tools-and-frameworks/git/basic-usages/index.mdx) | ✅ | · | · | · | · |
-| [Git](../docs/tools-and-frameworks/git/index.md) | ✅ | · | · | · | · |
-| [版本控制简介](../docs/tools-and-frameworks/git/introduce.md) | ✅ | · | · | · | · |
+| [使用 Git 进行第一次提交](../docs/tools-and-frameworks/git/basic-usages/first-commit.mdx) | ✅ | ✅ | · | · | · |
+| [Git 的安装与配置](../docs/tools-and-frameworks/git/basic-usages/git-installation.mdx) | ✅ | ✅ | · | · | · |
+| [2. Git 基本使用](../docs/tools-and-frameworks/git/basic-usages/index.mdx) | ✅ | ✅ | · | · | · |
+| [Git](../docs/tools-and-frameworks/git/index.md) | ✅ | ✅ | · | · | · |
+| [版本控制简介](../docs/tools-and-frameworks/git/introduce.md) | ✅ | ✅ | · | · | · |
