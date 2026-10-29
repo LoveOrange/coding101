@@ -8,11 +8,11 @@
 
 | 状态 | Codex 生成 | Claude 校验 | Lin 校验 | English | 日本語 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| ✅ | 349 | 170 | 0 | 0 | 0 |
+| ✅ | 349 | 179 | 0 | 0 | 0 |
 | 🔁 | 0 | 0 | 0 | 0 | 0 |
 | 👀 | 0 | 0 | 7 | 0 | 0 |
 | ⚠️ | 0 | 0 | 0 | 0 | 0 |
-| · | 0 | 179 | 342 | 349 | 349 |
+| · | 0 | 170 | 342 | 349 | 349 |
 | — | 0 | 0 | 0 | 0 | 0 |
 
 ## ai
@@ -73,15 +73,15 @@
 | [链表](../docs/basic-knowledge/data-structures/linked-list.mdx) | ✅ | ✅ | · | · | · |
 | [队列](../docs/basic-knowledge/data-structures/queue.mdx) | ✅ | ✅ | · | · | · |
 | [栈](../docs/basic-knowledge/data-structures/stack.mdx) | ✅ | ✅ | · | · | · |
-| [关系型数据库](../docs/basic-knowledge/database/index.mdx) | ✅ | · | · | · | · |
-| [B+ 树](../docs/basic-knowledge/database/indices/b_plus_tree/index.mdx) | ✅ | · | · | · | · |
-| [聚簇索引](../docs/basic-knowledge/database/indices/clustered_index/index.mdx) | ✅ | · | · | · | · |
-| [联合索引与覆盖索引](../docs/basic-knowledge/database/indices/composite-covering-back-table.mdx) | ✅ | · | · | · | · |
-| [执行计划](../docs/basic-knowledge/database/indices/execution-plan.mdx) | ✅ | · | · | · | · |
-| [索引设计](../docs/basic-knowledge/database/indices/index-review.mdx) | ✅ | · | · | · | · |
-| [数据库索引](../docs/basic-knowledge/database/indices/index.mdx) | ✅ | · | · | · | · |
-| [数据约束](../docs/basic-knowledge/database/modeling/constraints.mdx) | ✅ | · | · | · | · |
-| [数据建模](../docs/basic-knowledge/database/modeling/index.mdx) | ✅ | · | · | · | · |
+| [关系型数据库](../docs/basic-knowledge/database/index.mdx) | ✅ | ✅ | · | · | · |
+| [B+ 树](../docs/basic-knowledge/database/indices/b_plus_tree/index.mdx) | ✅ | ✅ | · | · | · |
+| [聚簇索引](../docs/basic-knowledge/database/indices/clustered_index/index.mdx) | ✅ | ✅ | · | · | · |
+| [联合索引与覆盖索引](../docs/basic-knowledge/database/indices/composite-covering-back-table.mdx) | ✅ | ✅ | · | · | · |
+| [执行计划](../docs/basic-knowledge/database/indices/execution-plan.mdx) | ✅ | ✅ | · | · | · |
+| [索引设计](../docs/basic-knowledge/database/indices/index-review.mdx) | ✅ | ✅ | · | · | · |
+| [数据库索引](../docs/basic-knowledge/database/indices/index.mdx) | ✅ | ✅ | · | · | · |
+| [数据约束](../docs/basic-knowledge/database/modeling/constraints.mdx) | ✅ | ✅ | · | · | · |
+| [数据建模](../docs/basic-knowledge/database/modeling/index.mdx) | ✅ | ✅ | · | · | · |
 | [SQL 聚合](../docs/basic-knowledge/database/sql/aggregation.mdx) | ✅ | · | · | · | · |
 | [SQL](../docs/basic-knowledge/database/sql/index.mdx) | ✅ | · | · | · | · |
 | [SQL 连接](../docs/basic-knowledge/database/sql/joins.mdx) | ✅ | · | · | · | · |

@@ -16,11 +16,11 @@ InnoDB 使用聚簇索引组织行数据。本文讲解 MySQL 8.0 的聚簇键�
 
 ## 1. 面试核心 {#core}
 
-- **聚簇与二级索引。** InnoDB 聚簇索引叶子组织行数据，二级索引记录包含聚簇键。[卡](#clustered-vs-secondary)
-- **聚簇键选择。** InnoDB 优先用主键聚簇，其次选首个全列非空的唯一索引。[卡](#primary-key-choice)
-- **隐藏行 ID。** 缺少合适唯一键时，InnoDB 生成 6 字节隐藏行 ID。[卡](#primary-key-choice)
-- **覆盖与版本检查。** 覆盖索引满足取列需求，MVCC 检查仍可访问聚簇记录。[卡](#covering-mvcc)
-- **主键更新。** 更新主键需要维护聚簇记录和二级索引中的定位键。[卡](#primary-key-update)
+- InnoDB 的**聚簇索引叶子保存完整的行，二级索引记录保存聚簇键**，靠它找到行。[卡](#clustered-vs-secondary)
+- InnoDB **优先用主键做聚簇键，没有主键时选第一个所有列都非空的唯一索引**。[卡](#primary-key-choice)
+- 两者都没有时，InnoDB **生成 6 字节的隐藏行 ID** 作为聚簇键。[卡](#primary-key-choice)
+- 覆盖索引省掉的是取列的回表，**MVCC 判断可见性时仍可能访问聚簇记录**。[卡](#covering-mvcc)
+- 更新主键时，**聚簇记录和每个二级索引里的定位键都要跟着改**。[卡](#primary-key-update)
 
 ## 2. 聚簇索引 {#聚簇索引}
 
