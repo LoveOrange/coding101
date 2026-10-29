@@ -8,11 +8,11 @@
 
 | 状态 | Codex 生成 | Claude 校验 | Lin 校验 | English | 日本語 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| ✅ | 349 | 197 | 0 | 0 | 0 |
+| ✅ | 349 | 203 | 0 | 0 | 0 |
 | 🔁 | 0 | 0 | 0 | 0 | 0 |
 | 👀 | 0 | 0 | 7 | 0 | 0 |
 | ⚠️ | 0 | 0 | 0 | 0 | 0 |
-| · | 0 | 152 | 342 | 349 | 349 |
+| · | 0 | 146 | 342 | 349 | 349 |
 | — | 0 | 0 | 0 | 0 | 0 |
 
 ## ai
@@ -215,12 +215,12 @@
 | [IoC 容器](../docs/basic-knowledge/java/spring/ioc-container-purpose.mdx) | ✅ | ✅ | · | · | · |
 | [JDK 动态代理与 CGLIB](../docs/basic-knowledge/java/spring/jdk-proxy-cglib.mdx) | ✅ | ✅ | · | · | · |
 | [Spring Boot 启动](../docs/basic-knowledge/java/spring/spring-boot-startup.mdx) | ✅ | ✅ | · | · | · |
-| [Elasticsearch](../docs/basic-knowledge/middleware/elasticsearch-inverted-index-refresh-visibility.mdx) | ✅ | · | · | · | · |
-| [消息幂等性](../docs/basic-knowledge/middleware/idempotent-consumption-order-duplicates.mdx) | ✅ | · | · | · | · |
-| [消息与中间件](../docs/basic-knowledge/middleware/index.mdx) | ✅ | · | · | · | · |
-| [消息队列](../docs/basic-knowledge/middleware/kafka-rabbitmq-queue-semantics.mdx) | ✅ | · | · | · | · |
-| [消息可靠性](../docs/basic-knowledge/middleware/message-ack-retry-dead-letter.mdx) | ✅ | · | · | · | · |
-| [分布式任务调度](../docs/basic-knowledge/middleware/scheduled-tasks-sharding-recovery.mdx) | ✅ | · | · | · | · |
+| [Elasticsearch](../docs/basic-knowledge/middleware/elasticsearch-inverted-index-refresh-visibility.mdx) | ✅ | ✅ | · | · | · |
+| [消息幂等性](../docs/basic-knowledge/middleware/idempotent-consumption-order-duplicates.mdx) | ✅ | ✅ | · | · | · |
+| [消息与中间件](../docs/basic-knowledge/middleware/index.mdx) | ✅ | ✅ | · | · | · |
+| [消息队列](../docs/basic-knowledge/middleware/kafka-rabbitmq-queue-semantics.mdx) | ✅ | ✅ | · | · | · |
+| [消息可靠性](../docs/basic-knowledge/middleware/message-ack-retry-dead-letter.mdx) | ✅ | ✅ | · | · | · |
+| [分布式任务调度](../docs/basic-knowledge/middleware/scheduled-tasks-sharding-recovery.mdx) | ✅ | ✅ | · | · | · |
 | [DNS](../docs/basic-knowledge/network/dns.mdx) | ✅ | · | · | · | · |
 | [HTTP 缓存](../docs/basic-knowledge/network/http-cache.mdx) | ✅ | · | · | · | · |
 | [HTTP](../docs/basic-knowledge/network/http-versions-connection-reuse-timeouts.mdx) | ✅ | · | · | · | · |
