@@ -8,11 +8,11 @@
 
 | 状态 | Codex 生成 | Claude 校验 | Lin 校验 | English | 日本語 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| ✅ | 349 | 251 | 0 | 0 | 0 |
+| ✅ | 349 | 263 | 0 | 0 | 0 |
 | 🔁 | 0 | 0 | 0 | 0 | 0 |
 | 👀 | 0 | 0 | 7 | 0 | 0 |
 | ⚠️ | 0 | 0 | 0 | 0 | 0 |
-| · | 0 | 98 | 342 | 349 | 349 |
+| · | 0 | 86 | 342 | 349 | 349 |
 | — | 0 | 0 | 0 | 0 | 0 |
 
 ## ai
@@ -363,12 +363,12 @@
 | [事故复盘](../docs/system-design/leadership/incident-review-failed-designs-organizational-learning.mdx) | ✅ | · | · | · | · |
 | [架构决策与演进](../docs/system-design/leadership/index.mdx) | ✅ | · | · | · | · |
 | [技术债](../docs/system-design/leadership/technical-debt-priority-business-value.mdx) | ✅ | · | · | · | · |
-| [API 网关](../docs/system-design/microservices/api-gateway-routing.mdx) | ✅ | · | · | · | · |
-| [灰度发布](../docs/system-design/microservices/canary-traffic-tagging-rollback.mdx) | ✅ | · | · | · | · |
-| [配置中心](../docs/system-design/microservices/config-center-version-refresh.mdx) | ✅ | · | · | · | · |
-| [控制平面与数据平面](../docs/system-design/microservices/control-plane-data-plane-failures.mdx) | ✅ | · | · | · | · |
-| [微服务治理](../docs/system-design/microservices/index.mdx) | ✅ | · | · | · | · |
-| [服务发现](../docs/system-design/microservices/service-discovery-health-checks.mdx) | ✅ | · | · | · | · |
+| [API 网关](../docs/system-design/microservices/api-gateway-routing.mdx) | ✅ | ✅ | · | · | · |
+| [灰度发布](../docs/system-design/microservices/canary-traffic-tagging-rollback.mdx) | ✅ | ✅ | · | · | · |
+| [配置中心](../docs/system-design/microservices/config-center-version-refresh.mdx) | ✅ | ✅ | · | · | · |
+| [控制平面与数据平面](../docs/system-design/microservices/control-plane-data-plane-failures.mdx) | ✅ | ✅ | · | · | · |
+| [微服务治理](../docs/system-design/microservices/index.mdx) | ✅ | ✅ | · | · | · |
+| [服务发现](../docs/system-design/microservices/service-discovery-health-checks.mdx) | ✅ | ✅ | · | · | · |
 | [实验 1: MapReduce](../docs/system-design/mit6.824/1.%20MapReduce/lab1_mapreduce.mdx) | ✅ | · | · | · | · |
 | [Lec 1: MapReduce](../docs/system-design/mit6.824/1.%20MapReduce/lec1_mapreduce.mdx) | ✅ | · | · | · | · |
 | [MIT 6.824](../docs/system-design/mit6.824/index.mdx) | ✅ | · | · | · | · |
@@ -379,12 +379,12 @@
 | [生产故障诊断](../docs/system-design/production/jvm-thread-sql-network-joint-diagnosis.mdx) | ✅ | · | · | · | · |
 | [可观测性](../docs/system-design/production/logs-metrics-traces-correlation.mdx) | ✅ | · | · | · | · |
 | [Maven](../docs/system-design/production/maven-lifecycle-dependency-convergence.mdx) | ✅ | · | · | · | · |
-| [服务容错](../docs/system-design/reliability/circuit-breaker-degradation-bulkhead.mdx) | ✅ | · | · | · | · |
-| [幂等键](../docs/system-design/reliability/idempotency-keys-safe-retries.mdx) | ✅ | · | · | · | · |
-| [服务可靠性](../docs/system-design/reliability/index.mdx) | ✅ | · | · | · | · |
-| [限流](../docs/system-design/reliability/rate-limiting-capacity-protection.mdx) | ✅ | · | · | · | · |
-| [重试](../docs/system-design/reliability/retry-backoff-jitter-storms.mdx) | ✅ | · | · | · | · |
-| [超时](../docs/system-design/reliability/timeout-budget-cancellation.mdx) | ✅ | · | · | · | · |
+| [服务容错](../docs/system-design/reliability/circuit-breaker-degradation-bulkhead.mdx) | ✅ | ✅ | · | · | · |
+| [幂等键](../docs/system-design/reliability/idempotency-keys-safe-retries.mdx) | ✅ | ✅ | · | · | · |
+| [服务可靠性](../docs/system-design/reliability/index.mdx) | ✅ | ✅ | · | · | · |
+| [限流](../docs/system-design/reliability/rate-limiting-capacity-protection.mdx) | ✅ | ✅ | · | · | · |
+| [重试](../docs/system-design/reliability/retry-backoff-jitter-storms.mdx) | ✅ | ✅ | · | · | · |
+| [超时](../docs/system-design/reliability/timeout-budget-cancellation.mdx) | ✅ | ✅ | · | · | · |
 | [认证与授权](../docs/system-design/security/authentication-authorization-trust-boundaries.mdx) | ✅ | · | · | · | · |
 | [应用安全](../docs/system-design/security/index.mdx) | ✅ | · | · | · | · |
 | [Web 应用安全](../docs/system-design/security/injection-authorization-ssrf-deserialization.mdx) | ✅ | · | · | · | · |
