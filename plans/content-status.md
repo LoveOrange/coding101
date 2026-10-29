@@ -8,11 +8,11 @@
 
 | 状态 | Codex 生成 | Claude 校验 | Lin 校验 | English | 日本語 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| ✅ | 349 | 238 | 0 | 0 | 0 |
+| ✅ | 349 | 251 | 0 | 0 | 0 |
 | 🔁 | 0 | 0 | 0 | 0 | 0 |
 | 👀 | 0 | 0 | 7 | 0 | 0 |
 | ⚠️ | 0 | 0 | 0 | 0 | 0 |
-| · | 0 | 111 | 342 | 349 | 349 |
+| · | 0 | 98 | 342 | 349 | 349 |
 | — | 0 | 0 | 0 | 0 | 0 |
 
 ## ai
@@ -344,19 +344,19 @@
 | [多租户](../docs/system-design/availability/multi-tenant-isolation-quotas-data-boundaries.mdx) | ✅ | · | · | · | · |
 | [成本归因](../docs/system-design/availability/performance-reliability-cost-attribution.mdx) | ✅ | · | · | · | · |
 | [服务等级目标（SLO）](../docs/system-design/availability/sli-slo-error-budget-capacity-headroom.mdx) | ✅ | · | · | · | · |
-| [2PC 与 TCC](../docs/system-design/distributed-data/2pc-tcc-coordination-cost.mdx) | ✅ | · | · | · | · |
-| [分布式流程恢复](../docs/system-design/distributed-data/idempotency-reconciliation-manual-repair.mdx) | ✅ | · | · | · | · |
-| [分布式数据](../docs/system-design/distributed-data/index.mdx) | ✅ | · | · | · | · |
-| [分布式一致性](../docs/system-design/distributed-data/invariants-to-consistency-strategy.mdx) | ✅ | · | · | · | · |
-| [Transactional Outbox 与 CDC](../docs/system-design/distributed-data/outbox-cdc-reliable-events.mdx) | ✅ | · | · | · | · |
-| [Saga](../docs/system-design/distributed-data/saga-compensation-intermediate-state.mdx) | ✅ | · | · | · | · |
-| [CAP 理论](../docs/system-design/distributed-system/cap-theorem.mdx) | ✅ | · | · | · | · |
-| [一致性模型](../docs/system-design/distributed-system/consistency-models-quorum-linearizability.mdx) | ✅ | · | · | · | · |
-| [跨地域复制](../docs/system-design/distributed-system/cross-region-replication-latency-conflicts.mdx) | ✅ | · | · | · | · |
-| [分布式系统](../docs/system-design/distributed-system/index.mdx) | ✅ | · | · | · | · |
-| [主备复制](../docs/system-design/distributed-system/primary_backup_replication.mdx) | ✅ | · | · | · | · |
-| [Raft](../docs/system-design/distributed-system/raft-election-log-replication.mdx) | ✅ | · | · | · | · |
-| [系统设计简介](../docs/system-design/index.mdx) | ✅ | · | · | · | · |
+| [2PC 与 TCC](../docs/system-design/distributed-data/2pc-tcc-coordination-cost.mdx) | ✅ | ✅ | · | · | · |
+| [分布式流程恢复](../docs/system-design/distributed-data/idempotency-reconciliation-manual-repair.mdx) | ✅ | ✅ | · | · | · |
+| [分布式数据](../docs/system-design/distributed-data/index.mdx) | ✅ | ✅ | · | · | · |
+| [分布式一致性](../docs/system-design/distributed-data/invariants-to-consistency-strategy.mdx) | ✅ | ✅ | · | · | · |
+| [Transactional Outbox 与 CDC](../docs/system-design/distributed-data/outbox-cdc-reliable-events.mdx) | ✅ | ✅ | · | · | · |
+| [Saga](../docs/system-design/distributed-data/saga-compensation-intermediate-state.mdx) | ✅ | ✅ | · | · | · |
+| [CAP 理论](../docs/system-design/distributed-system/cap-theorem.mdx) | ✅ | ✅ | · | · | · |
+| [一致性模型](../docs/system-design/distributed-system/consistency-models-quorum-linearizability.mdx) | ✅ | ✅ | · | · | · |
+| [跨地域复制](../docs/system-design/distributed-system/cross-region-replication-latency-conflicts.mdx) | ✅ | ✅ | · | · | · |
+| [分布式系统](../docs/system-design/distributed-system/index.mdx) | ✅ | ✅ | · | · | · |
+| [主备复制](../docs/system-design/distributed-system/primary_backup_replication.mdx) | ✅ | ✅ | · | · | · |
+| [Raft](../docs/system-design/distributed-system/raft-election-log-replication.mdx) | ✅ | ✅ | · | · | · |
+| [系统设计简介](../docs/system-design/index.mdx) | ✅ | ✅ | · | · | · |
 | [架构迁移](../docs/system-design/leadership/compatibility-migration-canary-exit-criteria.mdx) | ✅ | · | · | · | · |
 | [架构决策记录（ADR）](../docs/system-design/leadership/constraints-architecture-decision-records.mdx) | ✅ | · | · | · | · |
 | [设计评审](../docs/system-design/leadership/cross-team-design-review-disagreement.mdx) | ✅ | · | · | · | · |
