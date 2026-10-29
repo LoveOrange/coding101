@@ -6,7 +6,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {request} from 'node:http';
 import {execFileSync} from 'node:child_process';
-import {change, windowFor, dailyReport} from '../core.mjs';
+import {change, windowFor, dailyReport, promotionReport} from '../core.mjs';
 import {collect, save} from '../collect.mjs';
 import {dashboardServer} from '../serve.mjs';
 import {accountQuery, learningQuery} from '../queries.mjs';
@@ -45,11 +45,14 @@ test('GA4 uses separate period deduplication, keeps report restrictions and reje
   const originalFetch = globalThis.fetch;
   const requests = [];
   let timeZone = 'Asia/Shanghai';
+  let failPromotion = false;
   globalThis.fetch = async (url, options) => {
     if (url.includes('oauth2')) return {ok: true, json: async () => ({access_token: 'TEST_TOKEN'})};
     const request = JSON.parse(options.body); requests.push(request);
+    if (failPromotion && request.dimensions.some(d => d.name === 'sessionManualAdContent')) return {ok: false, status: 403};
     return {ok: true, json: async () => ({
       dimensionHeaders: request.dimensions, metricHeaders: request.metrics,
+      rowCount: 25,
       metadata: {timeZone, subjectToThresholding: true},
       rows: [{dimensionValues: request.dimensions.map(d => ({value: d.name === 'date' ? '20261019' : 'fixture'})),
         metricValues: request.metrics.map(() => ({value: request.dimensions.length ? '1' : '5'}))}],
@@ -67,9 +70,50 @@ test('GA4 uses separate period deduplication, keeps report restrictions and reje
     assert.equal(requests[0].dimensionFilter.filter.stringFilter.value, 'coding101.linsama.com');
     assert(result.notes.some(n => n.includes('报告限制')));
     assert(!JSON.stringify(result).includes('TEST_TOKEN'));
+    const promotion = result.sources.ga.data.promotion;
+    assert.equal(promotion.yesterday.start, '2026-10-19');
+    assert.equal(promotion.previousWeek.end, '2026-10-12');
+    assert.equal(promotion.monthly.start, '2026-09-22');
+    assert.equal(promotion.monthly.views.sources.data.rows[0].totalUsers, 1);
+    assert.equal(promotion.monthly.views.contents.data.rowCount, 25);
+    const promotionRequests = requests.filter(r => r.dimensionFilter.andGroup);
+    assert.equal(promotionRequests.length, 9);
+    assert(promotionRequests.every(r => r.dimensionFilter.andGroup.expressions[0].filter.stringFilter.value === 'coding101.linsama.com'));
+    assert(promotionRequests.every(r => r.dimensionFilter.andGroup.expressions[1].notExpression.filter.inListFilter.values.includes('(not set)')));
+    assert(promotionRequests.some(r => r.dimensions.length === 4 && r.dateRanges[0].startDate === '2026-10-12' && r.dateRanges[0].endDate === '2026-10-12'));
+    failPromotion = true;
+    const partial = await collect(config, now);
+    assert.equal(partial.sources.ga.status, 'ok');
+    assert.equal(partial.sources.ga.data.promotion.yesterday.views.contents.status, 'error');
+    assert.equal(partial.sources.ga.data.promotion.yesterday.views.contents.data, null);
+    assert.equal(partial.sources.ga.data.promotion.yesterday.views.sources.status, 'ok');
+    assert(partial.notes.some(n => n.includes('推广统计采集失败')));
     timeZone = 'America/New_York';
     assert.equal((await collect(config, now)).sources.ga.status, 'error');
   } finally {globalThis.fetch = originalFetch; await rm(directory, {recursive: true, force: true});}
+});
+test('promotion reporting keeps group identity, missing baselines and truncation visible', () => {
+  const row = {sessionManualSource: 'zhihu', sessionManualMedium: 'social', sessionManualCampaignName: 'c101_202610_java_trial',
+    sessionManualAdContent: '<script>|post\n', sessions: 4, totalUsers: 3, screenPageViews: 8};
+  const ok = rows => ({status: 'ok', data: {rows, rowCount: 30, limit: 20, metadata: {subjectToThresholding: true}}});
+  const empty = {status: 'ok', data: {rows: [], rowCount: 0, limit: 20}};
+  const failed = {status: 'error', message: '数据服务返回 HTTP 403', data: null};
+  const report = {
+    yesterday: {start: '2026-10-21', end: '2026-10-21', views: {sources: ok([row]), campaigns: empty, contents: ok([row])}},
+    previousWeek: {start: '2026-10-14', end: '2026-10-14', views: {
+      sources: ok([{...row, sessions: 1}]), contents: ok([{...row, sessionManualSource: 'juejin', sessions: 10}]), campaigns: failed}},
+    monthly: {start: '2026-09-24', end: '2026-10-21', views: {sources: failed, campaigns: empty, contents: empty}},
+  };
+  const md = promotionReport(report).join('\n');
+  assert.match(md, /\| zhihu \/ social \| 4 \| 3 \| 8 \| \+3 \|/);
+  assert.match(md, /不可比较（基期失败或未返回该组）/);
+  assert.match(md, /&lt;script&gt;&#124;post/);
+  assert.doesNotMatch(md, /<script>/);
+  assert.match(md, /共 30 组/);
+  assert.match(md, /HTTP 403/);
+  assert.match(md, /本期未返回可识别活动/);
+  assert.match(md, /抽样限制/);
+  assert.match(promotionReport(null).join(''), /尚未采集/);
 });
 test('remote database transport fails closed without certificate verification', async () => {
   const result = await collect({graceDays: 3, accountDatabaseUrl: 'postgres://readonly:SECRET@invalid.example/db?sslmode=disable'});

@@ -16,7 +16,7 @@ const OTHER_GROUPS: Record<string, string> = {
   devops: '运维与 SRE 栏目',
   leetcode: '已有算法题解',
   'tools-and-frameworks': '工具与框架',
-  'chatgpt-guide': 'ChatGPT 入门与历史笔记',
+  'chatgpt-guide': 'ChatGPT 辅助面试复习',
 };
 
 const label = (text: string) => text.replace(/[\r\n]+/g, ' ').replace(/([\\[\]])/g, '\\$1');

@@ -1,5 +1,6 @@
 import siteConfig from '@generated/docusaurus.config';
 import type {ClientModule} from '@docusaurus/types';
+import {analyticsPageLocation} from '../../src/analytics/utm';
 
 type AnalyticsWindow = Window & {
   dataLayer?: unknown[];
@@ -12,6 +13,7 @@ const client: ClientModule = {
     const id = siteConfig.customFields?.analyticsId;
     if (typeof id !== 'string' || !id || /\/privacy\/?$/.test(location.pathname)) return;
     if (window.location.hostname !== new URL(siteConfig.url).hostname) return;
+    const pageLocation = analyticsPageLocation(window.location.origin, location.pathname, location.search);
     const browser = window as AnalyticsWindow;
     if (!installed) {
       installed = true;
@@ -25,7 +27,8 @@ const client: ClientModule = {
         wait_for_update: 500,
       });
       browser.gtag('js', new Date());
-      browser.gtag('config', id, {send_page_view: false, allow_google_signals: false, allow_ad_personalization_signals: false});
+      browser.gtag('config', id, {send_page_view: false, allow_google_signals: false, allow_ad_personalization_signals: false,
+        page_location: pageLocation});
       const script = document.createElement('script');
       script.async = true;
       script.src = `https://www.googletagmanager.com/gtag/js?id=${encodeURIComponent(id)}`;
@@ -33,8 +36,8 @@ const client: ClientModule = {
     }
     if (!previousLocation || location.pathname !== previousLocation.pathname) {
       window.setTimeout(() => browser.gtag?.('event', 'page_view', {
-        // Search text and fragment identifiers are not sent as page locations.
-        page_location: window.location.origin + location.pathname,
+        // Capture the route before an asynchronous Topic URL rewrite; forward only campaign labels.
+        page_location: pageLocation,
         page_title: document.title,
       }), 0);
     }

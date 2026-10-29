@@ -1,6 +1,6 @@
 # 文章状态
 
-由 `scripts/content-status.mjs` 根据 `plans/content-status.json` 生成，不要手工编辑。共 351 篇公开文章。
+由 `scripts/content-status.mjs` 根据 `plans/content-status.json` 生成，不要手工编辑。共 349 篇公开文章。
 
 图例：✅ 完成 · 🔁 文章已改动，需要重新校验或翻译 · ⚠️ 校验发现问题，待修改 · 👀 审阅中 · · 未开始 · — 不适用
 
@@ -8,11 +8,11 @@
 
 | 状态 | Codex 生成 | Claude 校验 | Lin 校验 | English | 日本語 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| ✅ | 351 | 36 | 0 | 0 | 0 |
-| 🔁 | 0 | 0 | 0 | 0 | 0 |
+| ✅ | 349 | 33 | 0 | 0 | 0 |
+| 🔁 | 0 | 3 | 0 | 0 | 0 |
 | 👀 | 0 | 0 | 7 | 0 | 0 |
 | ⚠️ | 0 | 0 | 0 | 0 | 0 |
-| · | 0 | 315 | 344 | 351 | 351 |
+| · | 0 | 313 | 342 | 349 | 349 |
 | — | 0 | 0 | 0 | 0 | 0 |
 
 ## ai
@@ -29,14 +29,14 @@
 | [编码 Agent 评测](../docs/ai/development/coding-agent-evaluation.mdx) | ✅ | ✅ | · | · | · |
 | [仓库指令](../docs/ai/development/repository-instructions.mdx) | ✅ | ✅ | · | · | · |
 | [Agent 评估](../docs/ai/evaluation/agent-evaluation.mdx) | ✅ | ✅ | · | · | · |
-| [RAG 评估](../docs/ai/evaluation/rag-evaluation.mdx) | ✅ | ✅ | · | · | · |
+| [RAG 评估](../docs/ai/evaluation/rag-evaluation.mdx) | ✅ | 🔁 | · | · | · |
 | [AI 应用与 Agent](../docs/ai/index.mdx) | ✅ | · | · | · | · |
 | [模型幻觉](../docs/ai/llm/hallucination.mdx) | ✅ | ✅ | · | · | · |
 | [大语言模型基础](../docs/ai/llm/llm-basics.mdx) | ✅ | ✅ | · | · | · |
 | [Transformer 与注意力机制](../docs/ai/llm/transformer.mdx) | ✅ | ✅ | · | · | · |
 | [上下文压缩](../docs/ai/prompting/context-compaction.mdx) | ✅ | ✅ | · | · | · |
 | [上下文管理](../docs/ai/prompting/context-management.mdx) | ✅ | ✅ | · | · | · |
-| [提示词工程](../docs/ai/prompting/prompt-engineering.mdx) | ✅ | ✅ | · | · | · |
+| [提示词工程](../docs/ai/prompting/prompt-engineering.mdx) | ✅ | 🔁 | · | · | · |
 | [文档解析与切分](../docs/ai/rag/chunking.mdx) | ✅ | ✅ | · | · | · |
 | [Embedding 与向量检索](../docs/ai/rag/embedding-vector-search.mdx) | ✅ | ✅ | · | · | · |
 | [混合检索与重排序](../docs/ai/rag/hybrid-search-rerank.mdx) | ✅ | ✅ | · | · | · |
@@ -189,7 +189,7 @@
 | [Java 注解处理器](../docs/basic-knowledge/java/language/runtime-scanning-compile-time-generation.mdx) | ✅ | · | · | · | · |
 | [String](../docs/basic-knowledge/java/language/string-immutability-pool.mdx) | ✅ | ✅ | 👀 | · | · |
 | [Java 值传递](../docs/basic-knowledge/java/language/types-references-value-passing.mdx) | ✅ | ✅ | 👀 | · | · |
-| [包装类型](../docs/basic-knowledge/java/language/wrappers-boxing-cache.mdx) | ✅ | ✅ | 👀 | · | · |
+| [包装类型](../docs/basic-knowledge/java/language/wrappers-boxing-cache.mdx) | ✅ | 🔁 | 👀 | · | · |
 | [Java API 设计](../docs/basic-knowledge/java/quality/api-design-from-invariants.mdx) | ✅ | · | · | · | · |
 | [不可变对象](../docs/basic-knowledge/java/quality/immutable-objects-defensive-copying.mdx) | ✅ | · | · | · | · |
 | [Java API 与测试](../docs/basic-knowledge/java/quality/index.mdx) | ✅ | · | · | · | · |
@@ -253,9 +253,7 @@
 
 | 文章 | Codex 生成 | Claude 校验 | Lin 校验 | English | 日本語 |
 | --- | :---: | :---: | :---: | :---: | :---: |
-| [ChatGPT 的注册与充值](../docs/chatgpt-guide/chatgpt-register.mdx) | ✅ | · | · | · | · |
-| [ChatGPT 简明指南](../docs/chatgpt-guide/index.md) | ✅ | · | · | · | · |
-| [大语言模型（LLM）](../docs/chatgpt-guide/principle.md) | ✅ | · | · | · | · |
+| [ChatGPT 辅助面试复习](../docs/chatgpt-guide/index.md) | ✅ | · | · | · | · |
 
 ## devops
 

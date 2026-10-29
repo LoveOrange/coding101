@@ -2,12 +2,14 @@ import {useEffect, useMemo, useState} from 'react';
 import clsx from 'clsx';
 import Link from '@docusaurus/Link';
 import {useHistory, useLocation} from '@docusaurus/router';
+import {campaignParameters} from '../../analytics/utm';
 
 import {cardsInSection, outlineSections, PRIORITY_LABELS, sectionReadStatus, useLearningIndex} from '../content';
 import {learnerActions, useLearner} from '../store';
 import type {ArticleIndex, Domain, LearnerState, Priority, Topic} from '../types';
 import {useLearnerFeatures} from '../features';
 import {ClientPage} from '../ui/ClientOnly';
+import {PublicCatalog} from '../ui/PublicCatalog';
 import styles from './Topics.module.css';
 
 type Progress = 'done' | 'reading' | 'none';
@@ -44,15 +46,10 @@ export default function Topics(): JSX.Element {
   // so render in the browser only to avoid hydration mismatches.
   return (
     <ClientPage
-      title="知识树"
+      title="技术主题"
       description="按目标岗位查看领域、主题和文章，并从上次读到的位置继续。"
-      fallback={
-        <main className="container padding-vert--lg">
-          <h1>技术主题</h1>
-          <p>按主题阅读技术原理与面试自测，也可以从岗位路线确定复习重点。</p>
-          <p><Link to="/articles/">浏览文章目录</Link> · <Link to="/interview-roadmaps/">选择岗位路线</Link></p>
-        </main>
-      }>
+      noIndex={false}
+      fallback={<PublicCatalog />}>
       {() => <TopicsPage />}
     </ClientPage>
   );
@@ -101,7 +98,7 @@ function TopicsPage() {
     topics[0];
 
   useEffect(() => {
-    const next = new URLSearchParams();
+    const next = campaignParameters(location.search);
     next.set('domain', domain.id);
     if (topic) next.set('topic', topic.id);
     const search = `?${next.toString()}`;
