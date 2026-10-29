@@ -14,11 +14,11 @@ keywords: ["ACID", "事务隔离级别", "MySQL 事务", "丢失更新", "提交
 
 ## 1. 面试核心 {#core}
 
-- **ACID 与业务约束。** ACID 描述原子性、一致性、隔离性和持久性。业务不变量通过约束、SQL 与事务边界维护。[卡](#acid-isolation-levels)
-- **隔离级别。** InnoDB 的 RC 为每次一致性读创建快照。RR 复用首次一致性读的快照。Serializable 要求结果等价于串行执行。[卡](#acid-isolation-levels)
-- **原子条件更新。** `SET quantity = quantity - 1 WHERE quantity > 0` 根据当前记录判断库存并扣减。它避免用旧值覆盖写入而造成丢失更新。[卡](#lost-update)
-- **失败与回滚。** `innodb_rollback_on_timeout=OFF` 时，锁等待超时回滚当前语句。死锁检测选中的受害事务整体回滚。[卡](#transaction-failure)
-- **提交持久性。** `innodb_flush_log_at_trx_commit=1` 和 `sync_binlog=1` 让 redo 与 binlog 在提交成功返回前刷盘。[卡](#commit-durability) [卡](#double-one-durability)
+- ACID 指原子性、一致性、隔离性和持久性，但**业务不变量要靠约束、SQL 写法和事务边界共同维护**，数据库不会自动替你保证。[卡](#acid-isolation-levels)
+- InnoDB 的 RC **每次一致性读都创建新快照**，RR **复用第一次一致性读的快照**，Serializable 要求结果**等价于某种串行执行**。[卡](#acid-isolation-levels)
+- `SET quantity = quantity - 1 WHERE quantity > 0` **按当前记录判断并扣减库存**，避免拿旧值覆盖写入造成丢失更新。[卡](#lost-update)
+- 默认 `innodb_rollback_on_timeout=OFF` 时，**锁等待超时只回滚当前语句**；死锁检测选中的受害事务则**整体回滚**。[卡](#transaction-failure)
+- `innodb_flush_log_at_trx_commit=1` 和 `sync_binlog=1` 让 **redo 与 binlog 在提交成功返回之前刷盘**。[卡](#commit-durability) [卡](#double-one-durability)
 
 ## 2. 事务边界 {#1-事务保护一组相关状态变化}
 
