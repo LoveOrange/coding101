@@ -87,7 +87,7 @@ public final class MapperProcessor extends AbstractProcessor {
 }
 ```
 
-`MapperProcessor` 用 `@SupportedAnnotationTypes` 声明自己处理哪个注解，用 `@SupportedSourceVersion` 声明支持的源码版本。每一轮，它从 `roundEnvironment` 取出被 `GenerateMapper` 标注的元素，交给 `generateMapper` 生成映射器，具体怎样生成文件见第 4 节。
+`MapperProcessor` 用 `@SupportedAnnotationTypes` 声明自己处理哪个注解，用 `@SupportedSourceVersion` 声明支持的源码版本。声明的版本低于编译用的 `-source` 时，`javac` 会给出警告，比如在 JDK 21 上编译 Java 21 源码；要同时支持 17 和 21，可以改为重写 `getSupportedSourceVersion()`，返回 `SourceVersion.latestSupported()`。每一轮，它从 `roundEnvironment` 取出被 `GenerateMapper` 标注的元素，交给 `generateMapper` 生成映射器，具体怎样生成文件见第 4 节。
 
 处理器由编译器调用，业务代码不会手动创建它的实例，用到的只是它生成的结果。所以构建时要把处理器和它的依赖交给编译器，配置注解处理器路径或显式指定处理器，第 8 节会具体说明。
 
@@ -102,7 +102,7 @@ public final class MapperProcessor extends AbstractProcessor {
 - 在最后一轮停止生成新类型。
 - 相同输入产生相同结果，方便增量构建和缓存。
 
-不遵守第一条，后面的轮次会再次为同一个元素创建同名文件，`Filer` 会抛出 `FilerException`。
+`getElementsAnnotatedWith` 每一轮只返回本轮新出现的元素，所以上面的 `UserMapper` 只在第一轮交给处理器，第二轮拿到的是新生成的 `UserMapperGenerated`。重复生成通常出在处理器自己身上：把元素留到后面的轮次再处理却没记下已经生成过，或者两个处理器、两个元素按命名规则生成了同一个类名。同一次编译中第二次创建同名文件时，`Filer` 会抛出 `FilerException`。
 
 ## 4. 代码生成 {#代码生成}
 
@@ -218,6 +218,8 @@ javac --processor-path processor.jar \
 
 `--processor-path` 给出处理器所在的路径，`-processor` 指定要运行的处理器类。`-d out` 是 class 文件的输出目录，`-s generated` 是生成源码的目录。
 
+Java 21 的 `javac` 在普通 classpath 上隐式发现处理器时，会输出一条提示，建议用 `-processor`、`--processor-path` 或 `-proc:full` 显式启用注解处理。所以在构建配置里显式写出处理器路径更稳妥，Maven 和 Gradle 都有对应的配置项。
+
 自动发现依靠服务配置：classpath 上用 `META-INF/services/javax.annotation.processing.Processor` 文件，内容是处理器的完整类名；模块中则用 `provides` 声明。
 
 `process` 的返回值决定其他处理器还能不能收到同一批注解。返回 `true` 表示认领传入的注解类型，后续处理器不再收到它们；返回 `false` 则让后续处理器继续处理。这个返回值和编译成功与否无关，编译错误要通过 `Messager` 报告。
@@ -307,7 +309,7 @@ IoC 指控制反转，也就是把对象创建与依赖装配交给容器管理�
 
 未指定处理器路径时，编译器会搜索普通 classpath。也可用 `-processor` 和 `--processor-path` 显式指定处理器与路径，用 `-proc:none` 禁用处理。
 
-认领后，后续处理器跳过这些注解类型；返回 `false` 则允许继续处理。返回值不表示编译是否成功，编译错误应通过 `Messager` 报告。新类型会进入后续轮次，因此要记录已生成类型，避免重复创建同名文件引发 `FilerException`。
+认领后，后续处理器跳过这些注解类型；返回 `false` 则允许继续处理。返回值不表示编译是否成功，编译错误应通过 `Messager` 报告。生成的新类型会进入后续轮次；处理器跨轮次延后处理元素时，要记录已生成的类型，避免同一次编译中重复创建同名文件引发 `FilerException`。
 
 </details>
 

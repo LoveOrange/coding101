@@ -8,11 +8,11 @@
 
 | 状态 | Codex 生成 | Claude 校验 | Lin 校验 | English | 日本語 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| ✅ | 349 | 40 | 0 | 0 | 0 |
+| ✅ | 349 | 55 | 0 | 0 | 0 |
 | 🔁 | 0 | 0 | 0 | 0 | 0 |
 | 👀 | 0 | 0 | 7 | 0 | 0 |
-| ⚠️ | 0 | 2 | 0 | 0 | 0 |
-| · | 0 | 307 | 342 | 349 | 349 |
+| ⚠️ | 0 | 0 | 0 | 0 | 0 |
+| · | 0 | 294 | 342 | 349 | 349 |
 | — | 0 | 0 | 0 | 0 | 0 |
 
 ## ai
@@ -98,19 +98,19 @@
 | [Java 算法](../docs/basic-knowledge/java/algorithms/index.mdx) | ✅ | · | · | · | · |
 | [算法正确性](../docs/basic-knowledge/java/algorithms/live-coding-counterexamples-tests.mdx) | ✅ | · | · | · | · |
 | [树与图搜索](../docs/basic-knowledge/java/algorithms/trees-graphs-search.mdx) | ✅ | · | · | · | · |
-| [ArrayList](../docs/basic-knowledge/java/collections/arraylist-growth-memory-locality.mdx) | ✅ | · | · | · | · |
-| [BlockingQueue](../docs/basic-knowledge/java/collections/blockingqueue-producer-consumer.mdx) | ✅ | · | · | · | · |
-| [Java 集合框架](../docs/basic-knowledge/java/collections/collection-interface-selection.mdx) | ✅ | · | · | · | · |
-| [迭代一致性](../docs/basic-knowledge/java/collections/concurrent-collection-iteration-consistency.mdx) | ✅ | · | · | · | · |
-| [ConcurrentHashMap](../docs/basic-knowledge/java/collections/concurrenthashmap-atomic-compound-operations.mdx) | ✅ | · | · | · | · |
-| [ConcurrentLinkedQueue](../docs/basic-knowledge/java/collections/concurrentlinkedqueue-lock-free-path.mdx) | ✅ | · | · | · | · |
-| [CopyOnWrite 容器](../docs/basic-knowledge/java/collections/copy-on-write-cost-model.mdx) | ✅ | · | · | · | · |
-| [HashMap](../docs/basic-knowledge/java/collections/hashmap-structure-lookup-path.mdx) | ✅ | · | · | · | · |
-| [Java 集合](../docs/basic-knowledge/java/collections/index.mdx) | ✅ | · | · | · | · |
-| [集合迭代器](../docs/basic-knowledge/java/collections/iterator-fail-fast-immutable.mdx) | ✅ | · | · | · | · |
-| [LinkedHashMap](../docs/basic-knowledge/java/collections/linkedhashmap-lru.mdx) | ✅ | · | · | · | · |
-| [LinkedList](../docs/basic-knowledge/java/collections/linkedlist-semantics-cost.mdx) | ✅ | · | · | · | · |
-| [TreeMap 与 TreeSet](../docs/basic-knowledge/java/collections/treemap-treeset-ordered-query.mdx) | ✅ | · | · | · | · |
+| [ArrayList](../docs/basic-knowledge/java/collections/arraylist-growth-memory-locality.mdx) | ✅ | ✅ | · | · | · |
+| [BlockingQueue](../docs/basic-knowledge/java/collections/blockingqueue-producer-consumer.mdx) | ✅ | ✅ | · | · | · |
+| [Java 集合框架](../docs/basic-knowledge/java/collections/collection-interface-selection.mdx) | ✅ | ✅ | · | · | · |
+| [迭代一致性](../docs/basic-knowledge/java/collections/concurrent-collection-iteration-consistency.mdx) | ✅ | ✅ | · | · | · |
+| [ConcurrentHashMap](../docs/basic-knowledge/java/collections/concurrenthashmap-atomic-compound-operations.mdx) | ✅ | ✅ | · | · | · |
+| [ConcurrentLinkedQueue](../docs/basic-knowledge/java/collections/concurrentlinkedqueue-lock-free-path.mdx) | ✅ | ✅ | · | · | · |
+| [CopyOnWrite 容器](../docs/basic-knowledge/java/collections/copy-on-write-cost-model.mdx) | ✅ | ✅ | · | · | · |
+| [HashMap](../docs/basic-knowledge/java/collections/hashmap-structure-lookup-path.mdx) | ✅ | ✅ | · | · | · |
+| [Java 集合](../docs/basic-knowledge/java/collections/index.mdx) | ✅ | ✅ | · | · | · |
+| [集合迭代器](../docs/basic-knowledge/java/collections/iterator-fail-fast-immutable.mdx) | ✅ | ✅ | · | · | · |
+| [LinkedHashMap](../docs/basic-knowledge/java/collections/linkedhashmap-lru.mdx) | ✅ | ✅ | · | · | · |
+| [LinkedList](../docs/basic-knowledge/java/collections/linkedlist-semantics-cost.mdx) | ✅ | ✅ | · | · | · |
+| [TreeMap 与 TreeSet](../docs/basic-knowledge/java/collections/treemap-treeset-ordered-query.mdx) | ✅ | ✅ | · | · | · |
 | [AQS](../docs/basic-knowledge/java/concurrency/aqs-state-wait-queue.mdx) | ✅ | · | · | · | · |
 | [Java 原子类](../docs/basic-knowledge/java/concurrency/atomic-longadder-contention.mdx) | ✅ | · | · | · | · |
 | [CAS](../docs/basic-knowledge/java/concurrency/cas-aba-versioning.mdx) | ✅ | · | · | · | · |
@@ -177,7 +177,7 @@
 | [Java 字节码](../docs/basic-knowledge/java/jvm/source-to-bytecode.mdx) | ✅ | · | · | · | · |
 | [线程转储](../docs/basic-knowledge/java/jvm/thread-dumps-deadlocks-contention.mdx) | ✅ | · | · | · | · |
 | [低延迟垃圾收集器](../docs/basic-knowledge/java/jvm/zgc-shenandoah-low-latency.mdx) | ✅ | · | · | · | · |
-| [Java 注解](../docs/basic-knowledge/java/language/annotations-retention-processing.mdx) | ✅ | ⚠️ | · | · | · |
+| [Java 注解](../docs/basic-knowledge/java/language/annotations-retention-processing.mdx) | ✅ | ✅ | · | · | · |
 | [BigDecimal](../docs/basic-knowledge/java/language/bigdecimal-money.mdx) | ✅ | ✅ | 👀 | · | · |
 | [面向对象编程（Object-Oriented Programming）](../docs/basic-knowledge/java/language/encapsulation-inheritance-polymorphism.mdx) | ✅ | ✅ | 👀 | · | · |
 | [对象相等性](../docs/basic-knowledge/java/language/equals-hashcode-object-identity.mdx) | ✅ | ✅ | 👀 | · | · |
@@ -186,7 +186,7 @@
 | [Java 语言](../docs/basic-knowledge/java/language/index.mdx) | ✅ | ✅ | · | · | · |
 | [Optional](../docs/basic-knowledge/java/language/optional-boundaries.mdx) | ✅ | ✅ | · | · | · |
 | [Java 反射](../docs/basic-knowledge/java/language/reflection-method-handles.mdx) | ✅ | ✅ | · | · | · |
-| [Java 注解处理器](../docs/basic-knowledge/java/language/runtime-scanning-compile-time-generation.mdx) | ✅ | ⚠️ | · | · | · |
+| [Java 注解处理器](../docs/basic-knowledge/java/language/runtime-scanning-compile-time-generation.mdx) | ✅ | ✅ | · | · | · |
 | [String](../docs/basic-knowledge/java/language/string-immutability-pool.mdx) | ✅ | ✅ | 👀 | · | · |
 | [Java 值传递](../docs/basic-knowledge/java/language/types-references-value-passing.mdx) | ✅ | ✅ | 👀 | · | · |
 | [包装类型](../docs/basic-knowledge/java/language/wrappers-boxing-cache.mdx) | ✅ | ✅ | 👀 | · | · |
