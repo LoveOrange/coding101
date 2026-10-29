@@ -8,11 +8,11 @@
 
 | 状态 | Codex 生成 | Claude 校验 | Lin 校验 | English | 日本語 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| ✅ | 349 | 223 | 0 | 0 | 0 |
+| ✅ | 349 | 238 | 0 | 0 | 0 |
 | 🔁 | 0 | 0 | 0 | 0 | 0 |
 | 👀 | 0 | 0 | 7 | 0 | 0 |
 | ⚠️ | 0 | 0 | 0 | 0 | 0 |
-| · | 0 | 126 | 342 | 349 | 349 |
+| · | 0 | 111 | 342 | 349 | 349 |
 | — | 0 | 0 | 0 | 0 | 0 |
 
 ## ai
@@ -259,21 +259,21 @@
 
 | 文章 | Codex 生成 | Claude 校验 | Lin 校验 | English | 日本語 |
 | --- | :---: | :---: | :---: | :---: | :---: |
-| [容器原理](../docs/devops/containers/container-principles.mdx) | ✅ | · | · | · | · |
-| [Docker 镜像与 Dockerfile](../docs/devops/containers/docker-images.mdx) | ✅ | · | · | · | · |
-| [故障响应与排查](../docs/devops/incidents/incident-response.mdx) | ✅ | · | · | · | · |
-| [SRE 的职责与工作方式](../docs/devops/incidents/sre-practice.mdx) | ✅ | · | · | · | · |
-| [运维与 SRE](../docs/devops/index.mdx) | ✅ | · | · | · | · |
-| [Kubernetes 架构](../docs/devops/kubernetes/architecture.mdx) | ✅ | · | · | · | · |
-| [Pod：生命周期、探针与资源](../docs/devops/kubernetes/pods.mdx) | ✅ | · | · | · | · |
-| [工作负载、Service 与集群网络](../docs/devops/kubernetes/workloads-networking.mdx) | ✅ | · | · | · | · |
-| [Linux 常用命令与文件权限](../docs/devops/linux/commands-permissions.mdx) | ✅ | · | · | · | · |
-| [磁盘与文件系统排查](../docs/devops/linux/disk-filesystem.mdx) | ✅ | · | · | · | · |
-| [Linux 网络排查](../docs/devops/linux/network-troubleshooting.mdx) | ✅ | · | · | · | · |
-| [Linux 性能排查](../docs/devops/linux/performance-troubleshooting.mdx) | ✅ | · | · | · | · |
-| [进程管理与信号](../docs/devops/linux/processes-signals.mdx) | ✅ | · | · | · | · |
-| [监控与告警](../docs/devops/observability/monitoring-alerting.mdx) | ✅ | · | · | · | · |
-| [Nginx 与负载均衡](../docs/devops/traffic/nginx-load-balancing.mdx) | ✅ | · | · | · | · |
+| [容器原理](../docs/devops/containers/container-principles.mdx) | ✅ | ✅ | · | · | · |
+| [Docker 镜像与 Dockerfile](../docs/devops/containers/docker-images.mdx) | ✅ | ✅ | · | · | · |
+| [故障响应与排查](../docs/devops/incidents/incident-response.mdx) | ✅ | ✅ | · | · | · |
+| [SRE 的职责与工作方式](../docs/devops/incidents/sre-practice.mdx) | ✅ | ✅ | · | · | · |
+| [运维与 SRE](../docs/devops/index.mdx) | ✅ | ✅ | · | · | · |
+| [Kubernetes 架构](../docs/devops/kubernetes/architecture.mdx) | ✅ | ✅ | · | · | · |
+| [Pod：生命周期、探针与资源](../docs/devops/kubernetes/pods.mdx) | ✅ | ✅ | · | · | · |
+| [工作负载、Service 与集群网络](../docs/devops/kubernetes/workloads-networking.mdx) | ✅ | ✅ | · | · | · |
+| [Linux 常用命令与文件权限](../docs/devops/linux/commands-permissions.mdx) | ✅ | ✅ | · | · | · |
+| [磁盘与文件系统排查](../docs/devops/linux/disk-filesystem.mdx) | ✅ | ✅ | · | · | · |
+| [Linux 网络排查](../docs/devops/linux/network-troubleshooting.mdx) | ✅ | ✅ | · | · | · |
+| [Linux 性能排查](../docs/devops/linux/performance-troubleshooting.mdx) | ✅ | ✅ | · | · | · |
+| [进程管理与信号](../docs/devops/linux/processes-signals.mdx) | ✅ | ✅ | · | · | · |
+| [监控与告警](../docs/devops/observability/monitoring-alerting.mdx) | ✅ | ✅ | · | · | · |
+| [Nginx 与负载均衡](../docs/devops/traffic/nginx-load-balancing.mdx) | ✅ | ✅ | · | · | · |
 
 ## interview
 
