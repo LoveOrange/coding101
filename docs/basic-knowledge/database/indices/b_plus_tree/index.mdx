@@ -16,11 +16,11 @@ B+ 树用多路导航和有序叶子支持索引查找。本文讲解树结构�
 
 ## 1. 面试核心 {#core}
 
-- **页结构。** B+ 树内部页保存导航键和子页指针，叶子页保存索引记录。[卡](#why-b-plus-tree)
-- **树高与 I/O。** 分支数和叶子容量决定树高，树高只代表根到叶子的导航层数。页面命中 Buffer Pool 时直接从内存读取，因此三层树不等于三次磁盘 I/O。[卡](#height-and-io)
-- **范围查询。** 范围查询定位首条记录后，沿有序叶子继续扫描。
-- **插入分布。** 随机键分散插入位置，递增键把新增记录集中到树的右端。[卡](#insert-cost)
-- **页合并。** InnoDB 默认页大小为 16KB，页合并默认阈值为 50%。删除后合并页面可腾出可复用空间，但不会直接缩小表文件。[卡](#page-merge)
+- B+ 树的**内部页只保存导航键和子页指针，索引记录都在叶子页**。[卡](#why-b-plus-tree)
+- 树高由分支数和叶子容量决定，它只代表根到叶子的导航层数。页面命中 Buffer Pool 时直接从内存读取，所以**三层树不等于三次磁盘 I/O**。[卡](#height-and-io)
+- 范围查询**定位到第一条记录后，沿有序叶子继续扫描**。
+- **随机键把插入分散到各处，递增键把新增记录集中到树的右端**。[卡](#insert-cost)
+- InnoDB 默认页大小为 16KB，页合并默认阈值为 50%。删除后合并页面能腾出可复用的空间，但**不会直接缩小表文件**。[卡](#page-merge)
 
 ## 2. B+ 树的结构 {#b-树的结构}
 
@@ -193,4 +193,4 @@ MySQL 8.0 默认 `MERGE_THRESHOLD=50`。合并需要相邻页有足够空间。�
 - [MySQL 8.0：The Physical Structure of an InnoDB Index](https://dev.mysql.com/doc/refman/8.0/en/innodb-physical-structure.html)
 - [MySQL 8.0：Clustered and Secondary Indexes](https://dev.mysql.com/doc/refman/8.0/en/innodb-index-types.html)
 - [MySQL 8.0：Index Page Merge Threshold](https://dev.mysql.com/doc/refman/8.0/en/index-page-merge-threshold.html)
-- [MySQL 8.0：Reclaiming Disk Space](https://dev.mysql.com/doc/refman/8.0/en/innodb-truncate-table-reclaim-space.html)
+- [MySQL 8.0：Reclaiming Disk Space with TRUNCATE TABLE](https://dev.mysql.com/doc/refman/8.0/en/innodb-truncate-table-reclaim-space.html)
