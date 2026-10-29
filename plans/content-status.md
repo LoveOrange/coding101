@@ -8,11 +8,11 @@
 
 | 状态 | Codex 生成 | Claude 校验 | Lin 校验 | English | 日本語 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| ✅ | 349 | 292 | 0 | 0 | 0 |
+| ✅ | 349 | 304 | 0 | 0 | 0 |
 | 🔁 | 0 | 0 | 0 | 0 | 0 |
 | 👀 | 0 | 0 | 7 | 0 | 0 |
 | ⚠️ | 0 | 0 | 0 | 0 | 0 |
-| · | 0 | 57 | 342 | 349 | 349 |
+| · | 0 | 45 | 342 | 349 | 349 |
 | — | 0 | 0 | 0 | 0 | 0 |
 
 ## ai
@@ -369,11 +369,11 @@
 | [控制平面与数据平面](../docs/system-design/microservices/control-plane-data-plane-failures.mdx) | ✅ | ✅ | · | · | · |
 | [微服务治理](../docs/system-design/microservices/index.mdx) | ✅ | ✅ | · | · | · |
 | [服务发现](../docs/system-design/microservices/service-discovery-health-checks.mdx) | ✅ | ✅ | · | · | · |
-| [实验 1: MapReduce](../docs/system-design/mit6.824/1.%20MapReduce/lab1_mapreduce.mdx) | ✅ | · | · | · | · |
-| [Lec 1: MapReduce](../docs/system-design/mit6.824/1.%20MapReduce/lec1_mapreduce.mdx) | ✅ | · | · | · | · |
-| [MIT 6.824](../docs/system-design/mit6.824/index.mdx) | ✅ | · | · | · | · |
-| [[WIP]面向对象程序设计](../docs/system-design/ood/index.mdx) | ✅ | · | · | · | · |
-| [SOLID 面向对象设计原则](../docs/system-design/ood/solid.mdx) | ✅ | · | · | · | · |
+| [实验 1: MapReduce](../docs/system-design/mit6.824/1.%20MapReduce/lab1_mapreduce.mdx) | ✅ | ✅ | · | · | · |
+| [Lec 1: MapReduce](../docs/system-design/mit6.824/1.%20MapReduce/lec1_mapreduce.mdx) | ✅ | ✅ | · | · | · |
+| [MIT 6.824](../docs/system-design/mit6.824/index.mdx) | ✅ | ✅ | · | · | · |
+| [面向对象程序设计](../docs/system-design/ood/index.mdx) | ✅ | ✅ | · | · | · |
+| [SOLID 面向对象设计原则](../docs/system-design/ood/solid.mdx) | ✅ | ✅ | · | · | · |
 | [可重复交付](../docs/system-design/production/docker-ci-cd-reproducible-delivery.mdx) | ✅ | ✅ | · | · | · |
 | [生产工程](../docs/system-design/production/index.mdx) | ✅ | ✅ | · | · | · |
 | [生产故障诊断](../docs/system-design/production/jvm-thread-sql-network-joint-diagnosis.mdx) | ✅ | ✅ | · | · | · |
@@ -391,13 +391,13 @@
 | [密钥、证书、审计与供应链安全](../docs/system-design/security/secrets-certificates-audit-supply-chain.mdx) | ✅ | ✅ | · | · | · |
 | [Session、JWT、OAuth 2.0 与 OIDC](../docs/system-design/security/session-jwt-oauth-oidc.mdx) | ✅ | ✅ | · | · | · |
 | [Spring Security](../docs/system-design/security/spring-security-filter-chain.mdx) | ✅ | ✅ | · | · | · |
-| [容量规划](../docs/system-design/system-design/capacity-slo-failure-model.mdx) | ✅ | · | · | · | · |
-| [系统设计](../docs/system-design/system-design/index.mdx) | ✅ | · | · | · | · |
-| [系统设计面试](../docs/system-design/system-design/interview-process.mdx) | ✅ | · | · | · | · |
-| [数据拆分](../docs/system-design/system-design/read-write-paths-hotspots-sharding.mdx) | ✅ | · | · | · | · |
-| [系统设计题](../docs/system-design/system-design/system-design-problems/index.mdx) | ✅ | · | · | · | · |
-| [设计网页爬虫](../docs/system-design/system-design/system-design-problems/web_crawler/index.mdx) | ✅ | · | · | · | · |
-| [系统架构](../docs/system-design/system-design/universe_architecture.mdx) | ✅ | · | · | · | · |
+| [容量规划](../docs/system-design/system-design/capacity-slo-failure-model.mdx) | ✅ | ✅ | · | · | · |
+| [系统设计](../docs/system-design/system-design/index.mdx) | ✅ | ✅ | · | · | · |
+| [系统设计面试](../docs/system-design/system-design/interview-process.mdx) | ✅ | ✅ | · | · | · |
+| [数据拆分](../docs/system-design/system-design/read-write-paths-hotspots-sharding.mdx) | ✅ | ✅ | · | · | · |
+| [系统设计题](../docs/system-design/system-design/system-design-problems/index.mdx) | ✅ | ✅ | · | · | · |
+| [设计网页爬虫](../docs/system-design/system-design/system-design-problems/web_crawler/index.mdx) | ✅ | ✅ | · | · | · |
+| [系统架构](../docs/system-design/system-design/universe_architecture.mdx) | ✅ | ✅ | · | · | · |
 
 ## tools-and-frameworks
 

@@ -1,5 +1,5 @@
 ---
-position: 3
+sidebar_position: 3
 draft: false
 knowledge:
   id: system-design.system-design.system-design-problems.web-crawler
@@ -14,11 +14,11 @@ keywords: ["Web Crawler", "爬虫架构设计", "URL 去重", "礼貌抓取", "�
 
 ## 1. 面试核心 {#core}
 
-- **URL 去重。** URL 规范化与原子去重共同约束待抓取任务。[卡](#crawler-dedup-leases)
-- **礼貌抓取。** 抓取调度按主机限制并发，并遵守 robots.txt。[卡](#crawler-politeness)
-- **任务重派。** 租约超时允许重派任务，输出幂等处理重复执行。[卡](#crawler-dedup-leases)
-- **条件抓取。** ETag 与 Last-Modified 支持条件抓取，304 可省去响应正文。[卡](#crawler-recrawl)
-- **索引恢复。** 搜索索引是派生数据，应能从已存网页版本重建。
+- **URL 规范化与原子去重**共同约束待抓取任务，避免同一页面重复入队。[卡](#crawler-dedup-leases)
+- 抓取调度**按主机限制并发与间隔**，并遵守 robots.txt。[卡](#crawler-politeness)
+- 租约超时允许重派任务，因此**输出必须幂等，能承受重复执行**。[卡](#crawler-dedup-leases)
+- ETag 与 Last-Modified 支持条件抓取，**页面未变时 304 可省去响应正文**。[卡](#crawler-recrawl)
+- 搜索索引是派生数据，**应能从已保存的网页版本重建**。
 
 ## 2. 需求 {#需求}
 
