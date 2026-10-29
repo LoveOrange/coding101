@@ -1,6 +1,6 @@
 ---
 sidebar_position: 1
-description: "介绍按知识点整理的 LeetCode 101 刷题资源，提供原始项目、电子文档和在线阅读入口，说明题解语言及适用读者。面向已有编程基础但缺少刷题经验的求职者，帮助选择代表性问题，按主题复习常见算法，再通过原始资料继续完成实现和思路对照。"
+description: "介绍按知识点整理的 LeetCode 101 刷题资源，说明原作者仓库已无法访问，提供仍可在线阅读的网页版入口及适用读者。面向已有编程基础但缺少刷题经验的求职者，帮助选择代表性问题，按主题复习常见算法，再通过网页版继续完成实现和思路对照。"
 keywords: ["力扣刷题资料", "LeetCode 101 攻略", "算法面试复习", "C++ Python 题解"]
 ---
 import { Green, Yellow, Blue, Red } from '@site/src/components/priority-tag';
@@ -9,15 +9,6 @@ import { Green, Yellow, Blue, Red } from '@site/src/components/priority-tag';
 
 ## 简介
 
-[LeetCode 101](https://github.com/changgyhub/leetcode_101) 是 GitHub 上由 [@changgyhub](https://github.com/changgyhub) 整理的刷题攻略，引用官方的介绍：
+**LeetCode 101** 是高畅（Chang Gao，GitHub 用户名 changgyhub）整理的刷题攻略，按知识点挑选代表性题目并给出题解，面向有一定编程基础、但缺少刷题经验的读者。相比力扣官方的分类路线，它的分类更精简，题目也更少，适合在面试前按主题回顾常见算法。
 
-> 一个面向有一定的编程基础，但缺乏刷题经验的读者的教科书和工具书。提供C++和Python双题解。
-
-官方的仓库中提供了 PDF 版本可供下载。
-
-另有第三方 （[@Yan-Ying Liao](https://github.com/noworneverev)） 整理的 [网页版](https://noworneverev.github.io/leetcode_101)，可以在线阅读。
-
-相比于官方的刷题路线，分类更加精简，题目数量也更少一些。但是选择的题目都十分具有代表性，非常适合作为面试前的复习。
-
-欢迎大家关注、Star 原始项目：[LeetCode 101](https://github.com/changgyhub/leetcode_101)。
-
+原作者的 GitHub 仓库目前已无法访问（2026-10 核对）。第三方（[@noworneverev](https://github.com/noworneverev)）维护的[网页版](https://noworneverev.github.io/leetcode_101)仍可在线阅读，内容以该站点为准。

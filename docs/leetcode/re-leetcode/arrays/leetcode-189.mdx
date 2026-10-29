@@ -61,22 +61,24 @@ keywords: ["LeetCode 189", "Rotate Array", "数组反转", "原地轮转", "Java
 ```java
 class Solution {
     public void rotate(int[] nums, int k) {
-        k %= nums.length;
-        reverse(nums, 0, nums.length - k);
-        reverse(nums, nums.length - k, nums.length - 1);
-        reverse(nums, 0, nums.length - 1);
+        int n = nums.length;
+        k %= n;
+        reverse(nums, 0, n - k - 1);
+        reverse(nums, n - k, n - 1);
+        reverse(nums, 0, n - 1);
     }
 
     private void reverse(int[] nums, int start, int end) {
-        int tmp = 0;
         while (start < end) {
-            tmp = nums[start];
-            nums[start++] = nums[--end];
-            nums[end] = tmp;
+            int tmp = nums[start];
+            nums[start++] = nums[end];
+            nums[end--] = tmp;
         }
     }
 }
 ```
+
+`reverse` 反转闭区间 `[start, end]`，三次调用分别对应前 `n - k` 个元素、后 `k` 个元素和整个数组。`k` 为 0 时，第二次调用的区间为空，`start < end` 不成立，不会改动数组。
 
 ## 4. 复杂度分析
 
