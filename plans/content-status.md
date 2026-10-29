@@ -8,11 +8,11 @@
 
 | 状态 | Codex 生成 | Claude 校验 | Lin 校验 | English | 日本語 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| ✅ | 349 | 152 | 0 | 0 | 0 |
+| ✅ | 349 | 170 | 0 | 0 | 0 |
 | 🔁 | 0 | 0 | 0 | 0 | 0 |
 | 👀 | 0 | 0 | 7 | 0 | 0 |
 | ⚠️ | 0 | 0 | 0 | 0 | 0 |
-| · | 0 | 197 | 342 | 349 | 349 |
+| · | 0 | 179 | 342 | 349 | 349 |
 | — | 0 | 0 | 0 | 0 | 0 |
 
 ## ai
@@ -54,25 +54,25 @@
 
 | 文章 | Codex 生成 | Claude 校验 | Lin 校验 | English | 日本語 |
 | --- | :---: | :---: | :---: | :---: | :---: |
-| [回溯](../docs/basic-knowledge/algorithms/backtracking.mdx) | ✅ | · | · | · | · |
-| [二分查找](../docs/basic-knowledge/algorithms/binary-search.mdx) | ✅ | · | · | · | · |
-| [贪心](../docs/basic-knowledge/algorithms/greedy.mdx) | ✅ | · | · | · | · |
-| [算法](../docs/basic-knowledge/algorithms/index.mdx) | ✅ | · | · | · | · |
-| [前缀和](../docs/basic-knowledge/algorithms/prefix-sum.mdx) | ✅ | · | · | · | · |
-| [递归](../docs/basic-knowledge/algorithms/recursion.mdx) | ✅ | · | · | · | · |
-| [排序](../docs/basic-knowledge/algorithms/sorting.mdx) | ✅ | · | · | · | · |
-| [双指针](../docs/basic-knowledge/algorithms/two-pointers.mdx) | ✅ | · | · | · | · |
+| [回溯](../docs/basic-knowledge/algorithms/backtracking.mdx) | ✅ | ✅ | · | · | · |
+| [二分查找](../docs/basic-knowledge/algorithms/binary-search.mdx) | ✅ | ✅ | · | · | · |
+| [贪心](../docs/basic-knowledge/algorithms/greedy.mdx) | ✅ | ✅ | · | · | · |
+| [算法](../docs/basic-knowledge/algorithms/index.mdx) | ✅ | ✅ | · | · | · |
+| [前缀和](../docs/basic-knowledge/algorithms/prefix-sum.mdx) | ✅ | ✅ | · | · | · |
+| [递归](../docs/basic-knowledge/algorithms/recursion.mdx) | ✅ | ✅ | · | · | · |
+| [排序](../docs/basic-knowledge/algorithms/sorting.mdx) | ✅ | ✅ | · | · | · |
+| [双指针](../docs/basic-knowledge/algorithms/two-pointers.mdx) | ✅ | ✅ | · | · | · |
 | [通用基础复习](../docs/basic-knowledge/common/index.mdx) | ✅ | · | · | · | · |
-| [数组](../docs/basic-knowledge/data-structures/array.mdx) | ✅ | · | · | · | · |
-| [二叉搜索树](../docs/basic-knowledge/data-structures/binary-search-tree.mdx) | ✅ | · | · | · | · |
-| [二叉树](../docs/basic-knowledge/data-structures/binary-tree.mdx) | ✅ | · | · | · | · |
-| [图](../docs/basic-knowledge/data-structures/graph.mdx) | ✅ | · | · | · | · |
-| [哈希表](../docs/basic-knowledge/data-structures/hash-table.mdx) | ✅ | · | · | · | · |
-| [堆](../docs/basic-knowledge/data-structures/heap.mdx) | ✅ | · | · | · | · |
-| [数据结构](../docs/basic-knowledge/data-structures/index.mdx) | ✅ | · | · | · | · |
-| [链表](../docs/basic-knowledge/data-structures/linked-list.mdx) | ✅ | · | · | · | · |
-| [队列](../docs/basic-knowledge/data-structures/queue.mdx) | ✅ | · | · | · | · |
-| [栈](../docs/basic-knowledge/data-structures/stack.mdx) | ✅ | · | · | · | · |
+| [数组](../docs/basic-knowledge/data-structures/array.mdx) | ✅ | ✅ | · | · | · |
+| [二叉搜索树](../docs/basic-knowledge/data-structures/binary-search-tree.mdx) | ✅ | ✅ | · | · | · |
+| [二叉树](../docs/basic-knowledge/data-structures/binary-tree.mdx) | ✅ | ✅ | · | · | · |
+| [图](../docs/basic-knowledge/data-structures/graph.mdx) | ✅ | ✅ | · | · | · |
+| [哈希表](../docs/basic-knowledge/data-structures/hash-table.mdx) | ✅ | ✅ | · | · | · |
+| [堆](../docs/basic-knowledge/data-structures/heap.mdx) | ✅ | ✅ | · | · | · |
+| [数据结构](../docs/basic-knowledge/data-structures/index.mdx) | ✅ | ✅ | · | · | · |
+| [链表](../docs/basic-knowledge/data-structures/linked-list.mdx) | ✅ | ✅ | · | · | · |
+| [队列](../docs/basic-knowledge/data-structures/queue.mdx) | ✅ | ✅ | · | · | · |
+| [栈](../docs/basic-knowledge/data-structures/stack.mdx) | ✅ | ✅ | · | · | · |
 | [关系型数据库](../docs/basic-knowledge/database/index.mdx) | ✅ | · | · | · | · |
 | [B+ 树](../docs/basic-knowledge/database/indices/b_plus_tree/index.mdx) | ✅ | · | · | · | · |
 | [聚簇索引](../docs/basic-knowledge/database/indices/clustered_index/index.mdx) | ✅ | · | · | · | · |
