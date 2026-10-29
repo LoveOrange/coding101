@@ -8,11 +8,11 @@
 
 | 状态 | Codex 生成 | Claude 校验 | Lin 校验 | English | 日本語 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| ✅ | 349 | 115 | 0 | 0 | 0 |
+| ✅ | 349 | 127 | 0 | 0 | 0 |
 | 🔁 | 0 | 0 | 0 | 0 | 0 |
 | 👀 | 0 | 0 | 7 | 0 | 0 |
 | ⚠️ | 0 | 0 | 0 | 0 | 0 |
-| · | 0 | 234 | 342 | 349 | 349 |
+| · | 0 | 222 | 342 | 349 | 349 |
 | — | 0 | 0 | 0 | 0 | 0 |
 
 ## ai
@@ -133,12 +133,12 @@
 | [Java 线程池](../docs/basic-knowledge/java/concurrency/threadpoolexecutor-execution-path.mdx) | ✅ | ✅ | · | · | · |
 | [虚拟线程](../docs/basic-knowledge/java/concurrency/virtual-threads-boundaries.mdx) | ✅ | ✅ | · | · | · |
 | [volatile](../docs/basic-knowledge/java/concurrency/volatile-barriers-visibility.mdx) | ✅ | ✅ | · | · | · |
-| [批处理与分页](../docs/basic-knowledge/java/data-access/batching-pagination-data-access-tests.mdx) | ✅ | · | · | · | · |
-| [数据库连接池](../docs/basic-knowledge/java/data-access/connection-pool-capacity-timeout-leaks.mdx) | ✅ | · | · | · | · |
-| [Java 数据访问](../docs/basic-knowledge/java/data-access/index.mdx) | ✅ | · | · | · | · |
-| [JPA](../docs/basic-knowledge/java/data-access/jpa-entity-states-dirty-checking-lazy-loading.mdx) | ✅ | · | · | · | · |
-| [MyBatis](../docs/basic-knowledge/java/data-access/mybatis-mapping-executor-plugins.mdx) | ✅ | · | · | · | · |
-| [N+1 查询](../docs/basic-knowledge/java/data-access/n-plus-one-fetch-strategies.mdx) | ✅ | · | · | · | · |
+| [批处理与分页](../docs/basic-knowledge/java/data-access/batching-pagination-data-access-tests.mdx) | ✅ | ✅ | · | · | · |
+| [数据库连接池](../docs/basic-knowledge/java/data-access/connection-pool-capacity-timeout-leaks.mdx) | ✅ | ✅ | · | · | · |
+| [Java 数据访问](../docs/basic-knowledge/java/data-access/index.mdx) | ✅ | ✅ | · | · | · |
+| [JPA](../docs/basic-knowledge/java/data-access/jpa-entity-states-dirty-checking-lazy-loading.mdx) | ✅ | ✅ | · | · | · |
+| [MyBatis](../docs/basic-knowledge/java/data-access/mybatis-mapping-executor-plugins.mdx) | ✅ | ✅ | · | · | · |
+| [N+1 查询](../docs/basic-knowledge/java/data-access/n-plus-one-fetch-strategies.mdx) | ✅ | ✅ | · | · | · |
 | [Collector](../docs/basic-knowledge/java/functional/collectors-grouping-reduction.mdx) | ✅ | ✅ | · | · | · |
 | [Java 函数式编程](../docs/basic-knowledge/java/functional/index.mdx) | ✅ | ✅ | · | · | · |
 | [java.time](../docs/basic-knowledge/java/functional/java-time-time-zone-boundaries.mdx) | ✅ | ✅ | · | · | · |
@@ -190,12 +190,12 @@
 | [String](../docs/basic-knowledge/java/language/string-immutability-pool.mdx) | ✅ | ✅ | 👀 | · | · |
 | [Java 值传递](../docs/basic-knowledge/java/language/types-references-value-passing.mdx) | ✅ | ✅ | 👀 | · | · |
 | [包装类型](../docs/basic-knowledge/java/language/wrappers-boxing-cache.mdx) | ✅ | ✅ | 👀 | · | · |
-| [Java API 设计](../docs/basic-knowledge/java/quality/api-design-from-invariants.mdx) | ✅ | · | · | · | · |
-| [不可变对象](../docs/basic-knowledge/java/quality/immutable-objects-defensive-copying.mdx) | ✅ | · | · | · | · |
-| [Java API 与测试](../docs/basic-knowledge/java/quality/index.mdx) | ✅ | · | · | · | · |
-| [JUnit](../docs/basic-knowledge/java/quality/junit-assertions-parameterized-tests.mdx) | ✅ | · | · | · | · |
-| [测试替身](../docs/basic-knowledge/java/quality/test-doubles-mock-stub-boundaries.mdx) | ✅ | · | · | · | · |
-| [测试金字塔](../docs/basic-knowledge/java/quality/test-pyramid-contract-regression.mdx) | ✅ | · | · | · | · |
+| [Java API 设计](../docs/basic-knowledge/java/quality/api-design-from-invariants.mdx) | ✅ | ✅ | · | · | · |
+| [不可变对象](../docs/basic-knowledge/java/quality/immutable-objects-defensive-copying.mdx) | ✅ | ✅ | · | · | · |
+| [Java API 与测试](../docs/basic-knowledge/java/quality/index.mdx) | ✅ | ✅ | · | · | · |
+| [JUnit](../docs/basic-knowledge/java/quality/junit-assertions-parameterized-tests.mdx) | ✅ | ✅ | · | · | · |
+| [测试替身](../docs/basic-knowledge/java/quality/test-doubles-mock-stub-boundaries.mdx) | ✅ | ✅ | · | · | · |
+| [测试金字塔](../docs/basic-knowledge/java/quality/test-pyramid-contract-regression.mdx) | ✅ | ✅ | · | · | · |
 | [Spring Boot Actuator](../docs/basic-knowledge/java/spring/actuator-health-startup-diagnostics.mdx) | ✅ | · | · | · | · |
 | [Spring AOP](../docs/basic-knowledge/java/spring/aop-pointcut-interceptor-chain.mdx) | ✅ | · | · | · | · |
 | [API 错误契约](../docs/basic-knowledge/java/spring/api-error-contract.mdx) | ✅ | · | · | · | · |

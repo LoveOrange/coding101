@@ -128,7 +128,8 @@ Offset 还有正确性问题：翻页期间有人插入或删除数据，后面�
 ```sql
 select id, created_at
 from orders
-where (created_at, id) < (:lastCreatedAt, :lastId)
+where created_at < :lastCreatedAt
+   or (created_at = :lastCreatedAt and id < :lastId)
 order by created_at desc, id desc
 limit 20;
 ```
@@ -149,11 +150,13 @@ Keyset 适合拿着上一页游标连续往后翻。它不擅长任意跳页和�
 
 游标解决的是从哪里接着读，至于读出来的结果完不完整，还取决于边界条件和数据变化。上一节的查询要求 `created_at` 和 `id` 都非空，并且组合排序唯一。倒序翻页时下一页用严格小于；如果游标只记时间，同一时刻还没返回的记录就会被漏掉。
 
-`(created_at, id) < (...)` 这种把多个字段作为一组比较的写法叫**元组比较**（行构造器比较）。MySQL 8.0 能不能用好索引，要看执行计划，也可以和下面的等价条件对比：
+上一节的条件也可以写成更短的**元组比较**（行构造器比较），把两个字段作为一组和游标比较：
 
 ```sql
-created_at < :t OR (created_at = :t AND id < :id)
+where (created_at, id) < (:lastCreatedAt, :lastId)
 ```
+
+两种写法语义相同，但 MySQL 对元组比较的优化有限，官方文档也建议改写成展开的形式。在 MySQL 8.4 上对 30 万行的表实测：展开写法走 `(created_at, id)` 索引的范围扫描，只读了 20 个索引项；元组写法变成从索引末尾倒序扫描、逐行过滤，读了 17 万多个索引项才凑够 20 行。越往后翻，要跳过的索引项越多，又回到了深 Offset 的问题。所以在 MySQL 上优先用展开写法，换数据库或升级版本时再用执行计划确认。
 
 Keyset 能避免前面插入数据导致的位置移动，但它不是数据库快照。记录的排序字段被更新，就可能跨过游标；删除也会改变后续结果，所以重复和遗漏仍然可能出现。
 
