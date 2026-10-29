@@ -18,7 +18,7 @@ keywords: ["AutoConfiguration", "ConditionalOnMissingBean", "条件装配", "自
 - Boot 3.x 由 `@EnableAutoConfiguration` **从 `AutoConfiguration.imports` 读取自动配置候选**，再经过排除、排序和条件匹配决定注册哪些定义。[卡](#auto-configuration)
 - `@ConditionalOnMissingBean` 在已处理的定义里找到匹配的 Bean 时，**跳过默认 Bean 的注册**，用户配置因此优先。
 - 自动配置的 `before`、`after` 只控制**定义的处理顺序**，Bean 实例什么时候创建仍由依赖关系等因素决定。
-- `@ConditionalOnProperty` 省略 `havingValue` 时，**属性存在且值不为 `false` 就算匹配**；布尔开关应显式写 `havingValue="true"`。[卡](#property-condition-defaults)
+- `@ConditionalOnProperty` 省略 `havingValue` 时，**属性存在且值不为 `false` 就算匹配**；布尔开关应显式写 `havingValue="true"`，Boot 3.5 也可以改用 `@ConditionalOnBooleanProperty`。[卡](#property-condition-defaults)
 - 用 `--debug` 启动可以打印**条件评估报告**，Actuator 的 `conditions` 端点可以在运行时查询同样的结果。
 
 ## 2. 候选自动配置类 {#候选自动配置类}
@@ -111,7 +111,7 @@ RetryPolicy retryPolicy() {
 
 只有 `payment.retry.enabled=true` 时才会注册 `RetryPolicy`。属性没写时，`matchIfMissing=false` 让条件不成立。
 
-如果省略 `havingValue`，规则就变成「属性存在且值不为 `false`」。这时 `enabled=foo` 也算匹配，条件并没有把值当严格的布尔值检查。所以布尔开关要明确写 `havingValue="true"`。
+如果省略 `havingValue`，规则就变成「属性存在且值不为 `false`」。这时 `enabled=foo` 也算匹配，条件并没有把值当严格的布尔值检查。所以布尔开关要明确写 `havingValue="true"`。Boot 3.5 起还可以用专门的 `@ConditionalOnBooleanProperty(prefix = "payment.retry", name = "enabled")`，它默认要求属性值为 `true`，缺失时不匹配，和上面的写法等价。
 
 一个注解里声明多个 `name` 时，这些属性都要匹配才算成立。集合下标形式的属性要用专门的条件判断，因为集合整体和某个下标是不同的属性键。超时范围这类取值约束不归条件管，交给 `@ConfigurationProperties` 绑定之后的校验，发现错误就让启动明确失败。
 

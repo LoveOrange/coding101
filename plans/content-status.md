@@ -8,11 +8,11 @@
 
 | 状态 | Codex 生成 | Claude 校验 | Lin 校验 | English | 日本語 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| ✅ | 349 | 142 | 0 | 0 | 0 |
+| ✅ | 349 | 152 | 0 | 0 | 0 |
 | 🔁 | 0 | 0 | 0 | 0 | 0 |
 | 👀 | 0 | 0 | 7 | 0 | 0 |
 | ⚠️ | 0 | 0 | 0 | 0 | 0 |
-| · | 0 | 207 | 342 | 349 | 349 |
+| · | 0 | 197 | 342 | 349 | 349 |
 | — | 0 | 0 | 0 | 0 | 0 |
 
 ## ai
@@ -196,25 +196,25 @@
 | [JUnit](../docs/basic-knowledge/java/quality/junit-assertions-parameterized-tests.mdx) | ✅ | ✅ | · | · | · |
 | [测试替身](../docs/basic-knowledge/java/quality/test-doubles-mock-stub-boundaries.mdx) | ✅ | ✅ | · | · | · |
 | [测试金字塔](../docs/basic-knowledge/java/quality/test-pyramid-contract-regression.mdx) | ✅ | ✅ | · | · | · |
-| [Spring Boot Actuator](../docs/basic-knowledge/java/spring/actuator-health-startup-diagnostics.mdx) | ✅ | · | · | · | · |
+| [Spring Boot Actuator](../docs/basic-knowledge/java/spring/actuator-health-startup-diagnostics.mdx) | ✅ | ✅ | · | · | · |
 | [Spring AOP](../docs/basic-knowledge/java/spring/aop-pointcut-interceptor-chain.mdx) | ✅ | ✅ | · | · | · |
-| [API 错误契约](../docs/basic-knowledge/java/spring/api-error-contract.mdx) | ✅ | · | · | · | · |
-| [Spring Boot 自动配置](../docs/basic-knowledge/java/spring/auto-configuration-conditions.mdx) | ✅ | · | · | · | · |
+| [API 错误契约](../docs/basic-knowledge/java/spring/api-error-contract.mdx) | ✅ | ✅ | · | · | · |
+| [Spring Boot 自动配置](../docs/basic-knowledge/java/spring/auto-configuration-conditions.mdx) | ✅ | ✅ | · | · | · |
 | [Bean 生命周期](../docs/basic-knowledge/java/spring/bean-creation-lifecycle.mdx) | ✅ | ✅ | · | · | · |
 | [BeanDefinition](../docs/basic-knowledge/java/spring/beandefinition-container-startup.mdx) | ✅ | ✅ | · | · | · |
-| [Spring MVC 参数解析](../docs/basic-knowledge/java/spring/binding-validation-content-negotiation.mdx) | ✅ | · | · | · | · |
+| [Spring MVC 参数解析](../docs/basic-knowledge/java/spring/binding-validation-content-negotiation.mdx) | ✅ | ✅ | · | · | · |
 | [Spring 循环依赖](../docs/basic-knowledge/java/spring/circular-dependencies-scopes-early-exposure.mdx) | ✅ | ✅ | · | · | · |
-| [Spring Boot Starter](../docs/basic-knowledge/java/spring/custom-starter-boundaries.mdx) | ✅ | · | · | · | · |
+| [Spring Boot Starter](../docs/basic-knowledge/java/spring/custom-starter-boundaries.mdx) | ✅ | ✅ | · | · | · |
 | [Spring 事务](../docs/basic-knowledge/java/spring/declarative-transaction-execution.mdx) | ✅ | ✅ | · | · | · |
 | [依赖注入](../docs/basic-knowledge/java/spring/dependency-injection-selection.mdx) | ✅ | ✅ | · | · | · |
-| [DispatcherServlet](../docs/basic-knowledge/java/spring/dispatcherservlet-handler-mapping.mdx) | ✅ | · | · | · | · |
-| [Spring Boot 外部化配置](../docs/basic-knowledge/java/spring/external-config-precedence.mdx) | ✅ | · | · | · | · |
-| [Spring 拦截机制](../docs/basic-knowledge/java/spring/filter-interceptor-aspect-boundaries.mdx) | ✅ | · | · | · | · |
-| [Spring MVC 请求生命周期](../docs/basic-knowledge/java/spring/http-request-to-controller.mdx) | ✅ | · | · | · | · |
+| [DispatcherServlet](../docs/basic-knowledge/java/spring/dispatcherservlet-handler-mapping.mdx) | ✅ | ✅ | · | · | · |
+| [Spring Boot 外部化配置](../docs/basic-knowledge/java/spring/external-config-precedence.mdx) | ✅ | ✅ | · | · | · |
+| [Spring 拦截机制](../docs/basic-knowledge/java/spring/filter-interceptor-aspect-boundaries.mdx) | ✅ | ✅ | · | · | · |
+| [Spring MVC 请求生命周期](../docs/basic-knowledge/java/spring/http-request-to-controller.mdx) | ✅ | ✅ | · | · | · |
 | [Spring 框架](../docs/basic-knowledge/java/spring/index.mdx) | ✅ | ✅ | · | · | · |
 | [IoC 容器](../docs/basic-knowledge/java/spring/ioc-container-purpose.mdx) | ✅ | ✅ | · | · | · |
 | [JDK 动态代理与 CGLIB](../docs/basic-knowledge/java/spring/jdk-proxy-cglib.mdx) | ✅ | ✅ | · | · | · |
-| [Spring Boot 启动](../docs/basic-knowledge/java/spring/spring-boot-startup.mdx) | ✅ | · | · | · | · |
+| [Spring Boot 启动](../docs/basic-knowledge/java/spring/spring-boot-startup.mdx) | ✅ | ✅ | · | · | · |
 | [Elasticsearch](../docs/basic-knowledge/middleware/elasticsearch-inverted-index-refresh-visibility.mdx) | ✅ | · | · | · | · |
 | [消息幂等性](../docs/basic-knowledge/middleware/idempotent-consumption-order-duplicates.mdx) | ✅ | · | · | · | · |
 | [消息与中间件](../docs/basic-knowledge/middleware/index.mdx) | ✅ | · | · | · | · |
