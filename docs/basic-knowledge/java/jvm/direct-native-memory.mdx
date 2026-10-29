@@ -53,7 +53,7 @@ for (BufferPoolMXBean pool :
 }
 ```
 
-输出里，`count` 是池中缓冲区的数量，`capacity` 是这些缓冲区总共能容纳的字节数，`used` 是对底层实际占用的估计。`used` 还受对齐和分配器的影响，所以可能和 `capacity` 不同。
+输出里，`count` 是池中缓冲区的数量，`capacity` 是这些缓冲区总共能容纳的字节数，`used` 是 JDK 为这些缓冲区记下的本地内存字节数。HotSpot JDK 21 默认按容量记账，`used` 和 `capacity` 基本相同，只有容量为 0 的缓冲区按 1 字节计。用 `-Dsun.nio.PageAlignDirectMemory=true` 要求页对齐时，每个缓冲区多记一页，`used` 才会明显大于 `capacity`。
 
 `slice()` 和 `duplicate()` 创建的视图与原缓冲区共享底层内容，不会按视图大小重新分配一块独立的区域。因此，即使视图很小，长期持有它也会让原来的整块区域无法释放。
 
@@ -218,14 +218,14 @@ JVM 会尽量让原生 I/O 直接访问它，减少堆和本地缓冲区之间�
 
 在 HotSpot JDK 21 中，没有显式设置时，这个上限取 `Runtime.maxMemory()`。
 
-JNI 分配和文件映射有各自的生命周期，要单独计入进程预算。另外，direct 池里的 `capacity` 和 `used` 也可能不同，后者还受对齐和分配器影响。
+JNI 分配和文件映射有各自的生命周期，要单独计入进程预算。另外，direct 池里的 `capacity` 和 `used` 也可能不同，开启页对齐时，每个缓冲区的 `used` 会多算一页。
 
 </details>
 
 ## 11. 参考资料 {#参考资料}
 
 - [Java API：`ByteBuffer`](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/nio/ByteBuffer.html)
-- [Oracle：Native Memory Tracking](https://docs.oracle.com/en/java/javase/21/troubleshoot/diagnostic-tools.html#GUID-70507484-EF25-4E2D-B62F-7A82AE849584)
+- [Oracle：Native Memory Tracking（故障排查指南）](https://docs.oracle.com/en/java/javase/21/troubleshoot/diagnostic-tools.html#GUID-1F53A50E-86FF-491D-A023-8EC4F1D1AC77)
 - [Java API：BufferPoolMXBean](https://docs.oracle.com/en/java/javase/21/docs/api/java.management/java/lang/management/BufferPoolMXBean.html)
 - [OpenJDK 21：Bits](https://github.com/openjdk/jdk/blob/jdk-21-ga/src/java.base/share/classes/java/nio/Bits.java)
 - [OpenJDK 21：VM](https://github.com/openjdk/jdk/blob/jdk-21-ga/src/java.base/share/classes/jdk/internal/misc/VM.java)

@@ -36,7 +36,7 @@ Java 对象的内存占用由对象头、字段和对齐填充组成。压缩指
 32 GiB 只是理解编码时的理论上限。实际能不能启用，还受堆放在内存中的位置、保留空间和 JVM 的实现策略影响，部署时要检查进程参数和启动日志。查看 Java 17、21 的相关选项：
 
 ```bash
-java -XX:+PrintFlagsFinal -version | rg 'UseCompressedOops|UseCompressedClassPointers|ObjectAlignmentInBytes'
+java -XX:+PrintFlagsFinal -version | grep -E 'UseCompressedOops|UseCompressedClassPointers|ObjectAlignmentInBytes'
 ```
 
 这条命令显示当前 JVM 的选项值。验证部署配置时，要带上实际使用的收集器和启动参数，因为它们会影响结果。ZGC 使用自己的引用编码，要按它的实现单独分析。

@@ -61,7 +61,7 @@ final class B {
 
 这里等待的是初始化结果。`<clinit>` 是编译器为静态字段赋值和静态代码块生成的类初始化方法。线程在执行 `<clinit>` 之前，已经把类标记为「正在由我初始化」并释放了初始化锁。两个线程各自都要等对方完成初始化，才能继续自己的初始化，因此形成了等待环。
 
-正因为不是普通的锁持有，常规的 Java monitor 死锁检测不一定会直接报告它。排查时要对照多个线程栈里的 `<clinit>` 帧和初始化等待，再结合类加载日志还原类之间的依赖。
+正因为不是普通的锁持有，常规的 Java monitor 死锁检测报告不了它。在 JDK 17、21 上，这两个线程的状态都显示为 `RUNNABLE`，`ThreadMXBean.findDeadlockedThreads()` 返回 `null`，线程转储里也没有死锁提示。能找到的线索在线程栈里：`<clinit>` 帧下面有一行 `waiting on the Class initialization monitor for B`，说明这个线程在等 `B` 完成初始化。排查时要对照多个线程栈里的这类等待，再结合类加载日志还原类之间的依赖。
 
 修复要消除循环依赖：去掉两个类之间双向的静态引用，或者把相互依赖的初始化移到显式的启动步骤里，按固定顺序执行。静态代码中启动线程再等待它结束，也要检查新线程是否反过来依赖当前类完成初始化。
 
@@ -84,7 +84,14 @@ Caused by: IllegalStateException: missing endpoint
 NoClassDefFoundError: Could not initialize class com.example.Config
 ```
 
-这里的 Class 文件可以仍然存在，错误来自此前失败的初始化。同一个 `Class` 的初始化不会自动重试，后续错误也就不能单独解释最初为什么失败。定位时要回到第一条初始化异常，沿 `Caused by` 找到最初抛错的位置。如果只保留了后面的 `NoClassDefFoundError`，就需要复现第一次初始化。
+这里的 Class 文件可以仍然存在，错误来自此前失败的初始化。同一个 `Class` 的初始化不会自动重试，后续错误要靠原因链才能说明最初为什么失败。JDK 21 和较新的 JDK 17 更新版本会把首次失败记录成 `NoClassDefFoundError` 的 cause：
+
+```text
+NoClassDefFoundError: Could not initialize class com.example.Config
+Caused by: ExceptionInInitializerError: Exception java.lang.IllegalStateException: missing endpoint [in thread "main"]
+```
+
+这条 cause 写明了首次失败的异常类型、消息和线程，还保留了当时的调用栈，所以只拿到后面的错误，也能沿 `Caused by` 找到最初抛错的位置。较早的 JDK 没有这条 cause，就要回到第一条初始化异常的日志，找不到时只能复现第一次初始化。
 
 `NoClassDefFoundError` 还要和 `ClassNotFoundException` 分开。`Class.forName`、`ClassLoader.loadClass` 这些 API 是代码主动按名字找类，找不到时抛受检异常 `ClassNotFoundException`。而 `NoClassDefFoundError` 是 JVM 在链接或执行时需要某个类定义却拿不到，运行时缺少依赖 JAR 会触发它，前面说的初始化失败也会触发它。所以看到 `NoClassDefFoundError`，要结合错误消息和首次异常一起判断是哪一种。
 
@@ -200,7 +207,7 @@ static void describe(Class<?> type) {
 
 前者是受检异常，通常来自 `Class.forName` 和 `ClassLoader.loadClass`。后者属于 `LinkageError`，运行时缺少依赖，或者这个类之前初始化失败，都会触发它。
 
-看到 `Could not initialize class` 时，要回到最早的初始化异常和完整原因链。再结合类加载日志确认类的来源，就能分清是缺少 Class 文件，还是类已经进入了错误状态。
+看到 `Could not initialize class` 时，要找到最早的初始化异常：JDK 21 会把它作为 cause 附在后续错误上，较早的 JDK 要回到第一次失败的日志。再结合类加载日志确认类的来源，就能分清是缺少 Class 文件，还是类已经进入了错误状态。
 
 </details>
 
