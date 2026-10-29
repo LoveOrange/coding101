@@ -8,11 +8,11 @@
 
 | 状态 | Codex 生成 | Claude 校验 | Lin 校验 | English | 日本語 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| ✅ | 349 | 90 | 0 | 0 | 0 |
+| ✅ | 349 | 103 | 0 | 0 | 0 |
 | 🔁 | 0 | 0 | 0 | 0 | 0 |
 | 👀 | 0 | 0 | 7 | 0 | 0 |
 | ⚠️ | 0 | 0 | 0 | 0 | 0 |
-| · | 0 | 259 | 342 | 349 | 349 |
+| · | 0 | 246 | 342 | 349 | 349 |
 | — | 0 | 0 | 0 | 0 | 0 |
 
 ## ai
@@ -151,32 +151,32 @@
 | [零拷贝](../docs/basic-knowledge/java/io/file-mapping-zero-copy-direct-memory.mdx) | ✅ | · | · | · | · |
 | [Java I/O](../docs/basic-knowledge/java/io/index.mdx) | ✅ | · | · | · | · |
 | [Java 序列化](../docs/basic-knowledge/java/io/java-serialization-compatibility-security.mdx) | ✅ | · | · | · | · |
-| [Java 启动优化](../docs/basic-knowledge/java/jvm/aot-cds-native-image.mdx) | ✅ | · | · | · | · |
+| [Java 启动优化](../docs/basic-knowledge/java/jvm/aot-cds-native-image.mdx) | ✅ | ✅ | · | · | · |
 | [类加载故障](../docs/basic-knowledge/java/jvm/class-initialization-conflicts.mdx) | ✅ | ✅ | · | · | · |
 | [类加载](../docs/basic-knowledge/java/jvm/class-loading-stages.mdx) | ✅ | ✅ | · | · | · |
 | [类加载器](../docs/basic-knowledge/java/jvm/classloaders-spi-isolation.mdx) | ✅ | ✅ | · | · | · |
 | [压缩指针与对象对齐](../docs/basic-knowledge/java/jvm/compressed-pointers-alignment.mdx) | ✅ | ✅ | · | · | · |
-| [CPU 使用率](../docs/basic-knowledge/java/jvm/cpu-high-diagnosis.mdx) | ✅ | · | · | · | · |
-| [JVM 诊断](../docs/basic-knowledge/java/jvm/diagnostic-tools-evidence.mdx) | ✅ | · | · | · | · |
+| [CPU 使用率](../docs/basic-knowledge/java/jvm/cpu-high-diagnosis.mdx) | ✅ | ✅ | · | · | · |
+| [JVM 诊断](../docs/basic-knowledge/java/jvm/diagnostic-tools-evidence.mdx) | ✅ | ✅ | · | · | · |
 | [Java 直接内存](../docs/basic-knowledge/java/jvm/direct-native-memory.mdx) | ✅ | ✅ | · | · | · |
-| [逃逸分析与标量替换](../docs/basic-knowledge/java/jvm/escape-analysis-scalar-replacement.mdx) | ✅ | · | · | · | · |
-| [G1](../docs/basic-knowledge/java/jvm/g1-regions-rset-collection-set.mdx) | ✅ | · | · | · | · |
-| [GC 停顿分析](../docs/basic-knowledge/java/jvm/gc-logs-jfr-pauses.mdx) | ✅ | · | · | · | · |
+| [逃逸分析与标量替换](../docs/basic-knowledge/java/jvm/escape-analysis-scalar-replacement.mdx) | ✅ | ✅ | · | · | · |
+| [G1](../docs/basic-knowledge/java/jvm/g1-regions-rset-collection-set.mdx) | ✅ | ✅ | · | · | · |
+| [GC 停顿分析](../docs/basic-knowledge/java/jvm/gc-logs-jfr-pauses.mdx) | ✅ | ✅ | · | · | · |
 | [GC Roots](../docs/basic-knowledge/java/jvm/gc-roots-reachability.mdx) | ✅ | ✅ | · | · | · |
 | [分代回收](../docs/basic-knowledge/java/jvm/generational-barriers-safepoints.mdx) | ✅ | ✅ | · | · | · |
-| [堆转储](../docs/basic-knowledge/java/jvm/heap-dumps-memory-leaks.mdx) | ✅ | · | · | · | · |
+| [堆转储](../docs/basic-knowledge/java/jvm/heap-dumps-memory-leaks.mdx) | ✅ | ✅ | · | · | · |
 | [JVM](../docs/basic-knowledge/java/jvm/index.mdx) | ✅ | ✅ | · | · | · |
-| [方法内联与去优化](../docs/basic-knowledge/java/jvm/inlining-deoptimization.mdx) | ✅ | · | · | · | · |
-| [分层编译](../docs/basic-knowledge/java/jvm/interpreter-tiered-compilation.mdx) | ✅ | · | · | · | · |
-| [JMH](../docs/basic-knowledge/java/jvm/jmh-correct-benchmarks.mdx) | ✅ | · | · | · | · |
+| [方法内联与去优化](../docs/basic-knowledge/java/jvm/inlining-deoptimization.mdx) | ✅ | ✅ | · | · | · |
+| [分层编译](../docs/basic-knowledge/java/jvm/interpreter-tiered-compilation.mdx) | ✅ | ✅ | · | · | · |
+| [JMH](../docs/basic-knowledge/java/jvm/jmh-correct-benchmarks.mdx) | ✅ | ✅ | · | · | · |
 | [Java 对象布局](../docs/basic-knowledge/java/jvm/object-creation-layout.mdx) | ✅ | ✅ | · | · | · |
 | [OutOfMemoryError 与 StackOverflowError](../docs/basic-knowledge/java/jvm/oom-stack-overflow.mdx) | ✅ | ✅ | · | · | · |
 | [双亲委派模型](../docs/basic-knowledge/java/jvm/parent-delegation.mdx) | ✅ | ✅ | · | · | · |
 | [JVM 运行时数据区域](../docs/basic-knowledge/java/jvm/runtime-data-areas.mdx) | ✅ | ✅ | · | · | · |
-| [Serial、Parallel 与 CMS](../docs/basic-knowledge/java/jvm/serial-parallel-cms.mdx) | ✅ | · | · | · | · |
+| [Serial、Parallel 与 CMS](../docs/basic-knowledge/java/jvm/serial-parallel-cms.mdx) | ✅ | ✅ | · | · | · |
 | [Java 字节码](../docs/basic-knowledge/java/jvm/source-to-bytecode.mdx) | ✅ | ✅ | · | · | · |
-| [线程转储](../docs/basic-knowledge/java/jvm/thread-dumps-deadlocks-contention.mdx) | ✅ | · | · | · | · |
-| [低延迟垃圾收集器](../docs/basic-knowledge/java/jvm/zgc-shenandoah-low-latency.mdx) | ✅ | · | · | · | · |
+| [线程转储](../docs/basic-knowledge/java/jvm/thread-dumps-deadlocks-contention.mdx) | ✅ | ✅ | · | · | · |
+| [低延迟垃圾收集器](../docs/basic-knowledge/java/jvm/zgc-shenandoah-low-latency.mdx) | ✅ | ✅ | · | · | · |
 | [Java 注解](../docs/basic-knowledge/java/language/annotations-retention-processing.mdx) | ✅ | ✅ | · | · | · |
 | [BigDecimal](../docs/basic-knowledge/java/language/bigdecimal-money.mdx) | ✅ | ✅ | 👀 | · | · |
 | [面向对象编程（Object-Oriented Programming）](../docs/basic-knowledge/java/language/encapsulation-inheritance-polymorphism.mdx) | ✅ | ✅ | 👀 | · | · |

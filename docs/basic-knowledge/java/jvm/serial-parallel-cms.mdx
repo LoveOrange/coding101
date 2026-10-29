@@ -96,7 +96,7 @@ Parallel 可以按目标自动调整。`-XX:MaxGCPauseMillis` 设置期望的停
 
 ## 5. CMS 的移除 {#cms-的移除}
 
-CMS 在 JDK 9 弃用，在 JDK 14 移除，Java 17、21 都已经无法用 `-XX:+UseConcMarkSweepGC` 选择它。
+CMS 在 JDK 9 弃用，在 JDK 14 移除，Java 17、21 都已经无法用 `-XX:+UseConcMarkSweepGC` 选择它。旧启动脚本里还留着这个参数时，JVM 会报 `Unrecognized VM option 'UseConcMarkSweepGC'` 并直接启动失败，不会退回默认收集器。
 
 迁移旧服务时，先清理 CMS、ParNew 等旧收集器的专用参数，永久代参数和分代比例也要按目标 JDK 重新核对。然后用 G1 的默认参数建立基线，观察堆占用、暂停分布和吞吐，再按目标调整，或者和其他收集器比较。
 

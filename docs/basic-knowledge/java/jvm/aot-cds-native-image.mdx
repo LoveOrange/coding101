@@ -25,7 +25,7 @@ Java 启动优化可以把一部分运行时工作提前完成：CDS 保存处�
 
 **CDS**（Class Data Sharing，类数据共享）把预处理后的类信息写进一个共享归档文件，HotSpot 启动时通过内存映射直接使用它，不用每次都重新解析这些类。
 
-每个 JVM 启动时都要加载 `java.lang.String`、`java.util.HashMap` 这样一大批基础类，而且每次处理的结果都一样。CDS 把这份结果存下来，启动时就省掉了重复的解析工作。归档里的只读部分映射进内存后，同一台机器上的多个 JVM 还能共享这些页面，节省内存。Oracle JDK 17、21 自带一份默认 CDS 归档，里面是一组核心类，不需要额外配置。
+每个 JVM 启动时都要加载 `java.lang.String`、`java.util.HashMap` 这样一大批基础类，而且每次处理的结果都一样。CDS 把这份结果存下来，启动时就省掉了重复的解析工作。归档里的只读部分映射进内存后，同一台机器上的多个 JVM 还能共享这些页面，节省内存。JDK 17、21 自带一份默认 CDS 归档（Oracle JDK 和 Temurin 等常见构建都在 `lib/server/classes.jsa`），里面是一组核心类，不需要额外配置。
 
 **AppCDS**（Application CDS）把应用自己的类也放进归档。Java 17、21 支持在应用退出时生成动态归档，供之后的启动使用：
 
@@ -42,7 +42,7 @@ CDS 不改变程序的运行方式：应用仍然由完整的 HotSpot JVM 运行
 
 CDS 归档和生成它的应用、JDK 是配套的，发布时要当作一个整体管理。生成和加载归档要用同一个 JDK 构建，操作系统和 CPU 架构也要兼容；应用 JAR、类路径或影响归档的 JVM 选项变了，就要重新生成。
 
-归档无法使用时，默认的 `-Xshare:auto` 允许 JVM 不使用归档继续启动。因此，应用能启动不代表归档生效了，还要看 `-Xlog:cds=info` 的日志。测试归档能否使用时，可以改用 `-Xshare:on`，让加载失败直接导致 JVM 退出。
+归档无法使用时，默认的 `-Xshare:auto` 允许 JVM 不使用归档继续启动。比如换了一个应用 JAR 后，JVM 只打印一条 `shared class paths mismatch` 警告，应用类照常从 JAR 加载。因此，应用能启动不代表归档生效了，还要看 `-Xlog:cds=info` 的日志。测试归档能否使用时，可以改用 `-Xshare:on`，让加载失败直接导致 JVM 退出。
 
 ## 4. CDS 与 JIT {#aot-cache-与-jit}
 

@@ -16,7 +16,7 @@ keywords: ["Java CPU 飙高", "高 CPU 排查", "CPU profile", "热点线程", "
 ## 1. 面试核心 {#core}
 
 - cgroup v2 的 `cpu.max` 规定了每个周期可用的 CPU 时间，**容器用完自己的配额就会被节流**，和主机还有没有空闲核无关。[卡](#cpu-quota-throttling)
-- 在同一个 PID 命名空间里，**Linux 平台线程的十进制 TID 转成十六进制，就对应线程转储里的 `nid`**。[卡](#high-cpu-to-code)
+- 在同一个 PID 命名空间里，**Linux 平台线程的 TID 就是线程转储里的 `nid`**：Java 21 直接用十进制输出，Java 17 输出十六进制，要先把 TID 转换一下。[卡](#high-cpu-to-code)
 - CPU profile **通过一段时间内的采样占比**，估计各条调用路径消耗 CPU 的比例，比单份线程栈更能反映累计的计算量。[卡](#high-cpu-no-loop)
 - Java 的 `RUNNABLE` 状态**既包括真正在计算，也包括部分 native I/O**，判断是否在消耗 CPU 还要看线程的 CPU 时间。
 
@@ -55,14 +55,13 @@ top -H -p <pid>
 pidstat -t -p <pid> 1
 ```
 
-记下持续高 CPU 的线程 ID（TID）。要看持续多次的结果，不要只凭某一次的瞬时排序下结论。然后把十进制 TID 转成十六进制，再采集线程转储：
+记下持续高 CPU 的线程 ID（TID）。要看持续多次的结果，不要只凭某一次的瞬时排序下结论。然后采集线程转储：
 
 ```bash
-printf '%x\n' <tid>
 jcmd <pid> Thread.print -l > threads.txt
 ```
 
-在转储里查找对应的 `nid=0x...`，就能看到这个线程的 Java 调用栈。比如 `top -H` 显示 TID 是 `12345`，转换后是 `3039`，就在转储里找 `nid=0x3039`。
+转储里每个平台线程的 `nid` 就是它的 TID，但不同版本的写法不同。Java 21 直接写十进制，线程名后面的方括号里也是同一个值：`top -H` 显示 TID 是 `12345`，就在转储里找 `nid=12345`。Java 17 写的是十六进制，要先用 `printf '%x\n' 12345` 转成 `3039`，再找 `nid=0x3039`。
 
 匹配时有两个前提。TID 和转储要来自同一个 PID 命名空间，也就是用的是同一套进程和线程编号；容器内外看到的编号可能不同。两者的采集时间也要接近，否则线程可能已经退出、ID 被别的线程复用，匹配到错误的线程。
 
@@ -167,7 +166,7 @@ native 库或诊断 agent 也可能消耗大量 CPU，但本地代码不等于�
 可以按进程、线程、调用路径的顺序排查：
 
 1. 确认受影响的实例、容器配额，以及 user、system 和 throttling 的变化。
-2. 用 `top -H -p <pid>` 或 `pidstat -t` 找出持续高 CPU 的 TID，转成十六进制后，在同一命名空间采集的转储里匹配 `nid`。
+2. 用 `top -H -p <pid>` 或 `pidstat -t` 找出持续高 CPU 的 TID，在同一命名空间采集的转储里匹配 `nid`。Java 21 的 `nid` 是十进制，Java 17 要先把 TID 转成十六进制。
 3. 间隔采集多份 `jcmd <pid> Thread.print -l`，初步区分业务、GC、JIT 和 native 工作。
 4. 用短时间的 CPU profile 统计热点调用树，再和 GC、编译事件以及发布时间线关联起来。
 
