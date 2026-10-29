@@ -8,11 +8,11 @@
 
 | 状态 | Codex 生成 | Claude 校验 | Lin 校验 | English | 日本語 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| ✅ | 349 | 179 | 0 | 0 | 0 |
+| ✅ | 349 | 188 | 0 | 0 | 0 |
 | 🔁 | 0 | 0 | 0 | 0 | 0 |
 | 👀 | 0 | 0 | 7 | 0 | 0 |
 | ⚠️ | 0 | 0 | 0 | 0 | 0 |
-| · | 0 | 170 | 342 | 349 | 349 |
+| · | 0 | 161 | 342 | 349 | 349 |
 | — | 0 | 0 | 0 | 0 | 0 |
 
 ## ai
@@ -82,15 +82,15 @@
 | [数据库索引](../docs/basic-knowledge/database/indices/index.mdx) | ✅ | ✅ | · | · | · |
 | [数据约束](../docs/basic-knowledge/database/modeling/constraints.mdx) | ✅ | ✅ | · | · | · |
 | [数据建模](../docs/basic-knowledge/database/modeling/index.mdx) | ✅ | ✅ | · | · | · |
-| [SQL 聚合](../docs/basic-knowledge/database/sql/aggregation.mdx) | ✅ | · | · | · | · |
-| [SQL](../docs/basic-knowledge/database/sql/index.mdx) | ✅ | · | · | · | · |
-| [SQL 连接](../docs/basic-knowledge/database/sql/joins.mdx) | ✅ | · | · | · | · |
-| [SQL 查询](../docs/basic-knowledge/database/sql/query.mdx) | ✅ | · | · | · | · |
-| [数据库死锁](../docs/basic-knowledge/database/transaction/deadlock-detection-timeout-retry.mdx) | ✅ | · | · | · | · |
-| [数据库事务](../docs/basic-knowledge/database/transaction/index.mdx) | ✅ | · | · | · | · |
-| [InnoDB 锁](../docs/basic-knowledge/database/transaction/innodb-locking-ranges.mdx) | ✅ | · | · | · | · |
-| [长事务](../docs/basic-knowledge/database/transaction/long-transactions-hot-updates-boundaries.mdx) | ✅ | · | · | · | · |
-| [MVCC](../docs/basic-knowledge/database/transaction/mvcc-read-view-consistent-read.mdx) | ✅ | · | · | · | · |
+| [SQL 聚合](../docs/basic-knowledge/database/sql/aggregation.mdx) | ✅ | ✅ | · | · | · |
+| [SQL](../docs/basic-knowledge/database/sql/index.mdx) | ✅ | ✅ | · | · | · |
+| [SQL 连接](../docs/basic-knowledge/database/sql/joins.mdx) | ✅ | ✅ | · | · | · |
+| [SQL 查询](../docs/basic-knowledge/database/sql/query.mdx) | ✅ | ✅ | · | · | · |
+| [数据库死锁](../docs/basic-knowledge/database/transaction/deadlock-detection-timeout-retry.mdx) | ✅ | ✅ | · | · | · |
+| [数据库事务](../docs/basic-knowledge/database/transaction/index.mdx) | ✅ | ✅ | · | · | · |
+| [InnoDB 锁](../docs/basic-knowledge/database/transaction/innodb-locking-ranges.mdx) | ✅ | ✅ | · | · | · |
+| [长事务](../docs/basic-knowledge/database/transaction/long-transactions-hot-updates-boundaries.mdx) | ✅ | ✅ | · | · | · |
+| [MVCC](../docs/basic-knowledge/database/transaction/mvcc-read-view-consistent-read.mdx) | ✅ | ✅ | · | · | · |
 | [基础知识](../docs/basic-knowledge/index.mdx) | ✅ | · | · | · | · |
 | [滑动窗口](../docs/basic-knowledge/java/algorithms/arrays-strings-sliding-window.mdx) | ✅ | ✅ | · | · | · |
 | [算法复杂度](../docs/basic-knowledge/java/algorithms/complexity-constraints-java-cost.mdx) | ✅ | ✅ | · | · | · |
