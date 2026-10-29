@@ -143,7 +143,7 @@ LinkedHashMap 沿顺序链遍历，成本是 O(size)，只和实际条目数有�
 
 ### 8.2 淘汰钩子的触发时机 {#淘汰钩子的触发时机}
 
-`removeEldestEntry` 只在 `put` 或 `putAll` 新增条目后被调用，时间流逝本身不会触发它。所以靠它实现不了 TTL：要让条目按时间过期，还得在读取时检查过期时间，或者增加定时清理。
+`removeEldestEntry` 只在新增条目之后被调用。Javadoc 写明的是 `put` 和 `putAll`；OpenJDK 21 中，`putIfAbsent`、`computeIfAbsent`、`compute` 和 `merge` 新增条目时同样会调用它，所以用 `computeIfAbsent` 加载缓存也会按上限淘汰。时间流逝本身不会触发它。所以靠它实现不了 TTL：要让条目按时间过期，还得在读取时检查过期时间，或者增加定时清理。
 
 ### 8.3 访问顺序与线程安全 {#访问顺序与线程安全}
 
