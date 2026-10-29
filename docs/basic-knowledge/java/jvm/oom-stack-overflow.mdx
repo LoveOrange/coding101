@@ -81,7 +81,7 @@ jcmd <pid> VM.metaspace
 
 ## 5. 直接内存与本地分配失败 {#直接内存与本地分配失败}
 
-**本地内存**是 JVM 或 native 库在 Java 堆之外申请的内存。这部分内存不足时，Java 堆即使还有空闲，也可能分配失败。直接缓冲区受到限制时，可以抛出 `Direct buffer memory`，需要检查缓冲区规模与释放时机：
+**本地内存**是 JVM 或 native 库在 Java 堆之外申请的内存。这部分内存不足时，Java 堆即使还有空闲，也可能分配失败。直接缓冲区的容量计数超过上限时，JDK 17、21 会抛出 `OutOfMemoryError`，消息形如 `Cannot reserve 1048576 bytes of direct buffer memory (allocated: …, limit: …)`。消息里有本次请求、已分配和上限三个数字，需要检查缓冲区规模与释放时机：
 
 - 缓冲区池没有容量上限，持续保留直接内存。
 - 单次申请的缓冲区过大。
@@ -143,7 +143,7 @@ static void recurse() {
 | --- | --- |
 | `Java heap space` | GC 日志、直方图、堆转储 |
 | `Metaspace` | 加载器统计、类卸载趋势 |
-| `Direct buffer memory` | BufferPool、NMT 与系统内存 |
+| `direct buffer memory` | BufferPool、NMT 与系统内存 |
 | `unable to create native thread` | 线程数、栈预算、OS 与 PID 配额 |
 | `StackOverflowError` | 重复调用栈帧 |
 | 操作系统 OOM Kill | 内核或容器事件、进程内存趋势 |
@@ -165,7 +165,7 @@ java -XX:+HeapDumpOnOutOfMemoryError \
 
 上线前应在受控环境验证路径可写，并按堆规模预留磁盘。堆转储需要遍历对象和写文件，会带来额外停顿，所以生产采集要评估业务能否承受。进程已经失稳时，反复触发 Full GC 或连续导出大堆会进一步拖慢服务。
 
-这个开关覆盖部分 HotSpot OOM 路径。应用手动抛出的 OOM、线程创建失败等情况不保证自动产出堆转储，需要保留其他证据。
+这个开关覆盖部分 HotSpot OOM 路径，比如堆和元空间分配失败。在 Java 代码里抛出的 OOM 不会触发它，这既包括应用自己抛出的，也包括 JDK 在直接缓冲区超限时抛出的；平台线程创建失败也不会留下堆转储。这些情况需要保留其他证据。
 
 ### 8.1 操作系统 OOM Kill {#操作系统-oom-kill}
 
@@ -210,7 +210,7 @@ OOM Kill 使用 SIGKILL，这是一种让进程立即终止的信号，JVM 来�
 
 - `Java heap space` 表示堆无法分配对象，检查 GC 趋势、对象直方图和堆转储。
 - `Metaspace` 表示类元数据分配失败，检查类加载器和类卸载情况。
-- `Direct buffer memory` 表示直接缓冲区受到限制，结合 BufferPool、NMT 和系统内存分析。
+- 消息里有 `direct buffer memory`，表示直接缓冲区的容量计数超过上限，结合 BufferPool、NMT 和系统内存分析。
 - `unable to create native thread` 表示平台线程创建失败，检查线程数量、栈预算和系统配额。
 
 堆 OOM 还需要区分无用对象滞留、正常容量不足和短时分配峰值，才能确定修复方式。

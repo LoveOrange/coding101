@@ -53,7 +53,7 @@ keywords: ["Parent Delegation", "双亲委派流程", "类加载器层次", "Jav
 
 假设 JVM 通过子加载器请求 `api.Service`，最后由父加载器定义该类。JVM 会把子加载器记录为这个类的发起加载器，父加载器则是定义加载器。调用 `Service.class.getClassLoader()`，得到的是父加载器。
 
-`findLoadedClass` 查询 JVM 记录的发起加载关系，所以也能返回经委派取得的类。判断类型身份时则要看定义加载器，不能只看请求从哪个加载器进入。
+`findLoadedClass` 查询 JVM 记录的发起加载关系，所以也能返回经委派取得的类。不过，只有 JVM 自己经这个加载器发起的加载才会留下记录，比如解析子加载器所定义类里的符号引用。Java 代码直接调用 `child.loadClass("api.Service")`、由父加载器完成定义后，HotSpot 不会记录这次关系，`child.findLoadedClass("api.Service")` 仍然返回 `null`。判断类型身份时则要看定义加载器，不能只看请求从哪个加载器进入。
 
 ## 4. 内置类加载器 {#内置类加载器}
 
@@ -176,7 +176,7 @@ child-first 可以只应用于插件私有包，平台类与共享接口继续�
 
 **不一定，它查询的是 JVM 记录的发起加载关系。**
 
-当前加载器可以通过委派取得一个由父加载器定义的类，`findLoadedClass` 也能返回这个类。
+当前加载器可以通过委派取得一个由父加载器定义的类。如果这次加载由 JVM 经当前加载器发起，JVM 会记下发起关系，`findLoadedClass` 也能返回这个类；Java 代码直接调用 `loadClass` 委派成功，则不会留下这条记录。
 
 `Class.getClassLoader()` 返回的才是定义加载器。判断运行时类型身份，应把定义加载器和类的二进制名称一起比较。
 
