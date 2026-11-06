@@ -5,7 +5,7 @@ import remarkArticleBlocks from "./plugins/remark-article-blocks";
 
 const enableAnalytics =
   process.env.NODE_ENV === "production" && process.env.LOCAL_PREVIEW !== "true";
-const adsenseClient = process.env.ADSENSE_CLIENT || 'ca-pub-9495948352620553';
+const adsenseClient = process.env.ADSENSE_CLIENT || 'ca-pub-4697439207371426';
 
 // Production builds opt into accounts, subscriptions and progress tracking.
 // Lightweight public previews can omit LEARNER_FEATURES; mocks also enable it.
@@ -58,7 +58,7 @@ const config: Config = {
     analyticsId: enableAnalytics ? 'G-Q16V88YMHD' : null,
     // Only the canonical production host displays the article ad unit.
     adsenseClient: enableAnalytics && process.env.ADSENSE_ENABLED === 'true' ? adsenseClient : null,
-    adsenseSlot: '6787548357',
+    adsenseSlot: '9606013308',
   },
 
   // Even if you don't use internationalization, you can use this field to set

@@ -44,9 +44,9 @@ npm run build
 
 ## 广告与隐私
 
-生产域名为 `coding101.linsama.com`。构建生成 AdSense 验证标签和 `ads.txt`，发布商为 `ca-pub-9495948352620553`，文章末尾使用展示广告位 `6787548357`。
+生产域名为 `coding101.linsama.com`。构建生成 AdSense 验证标签和 `ads.txt`，发布商为 `ca-pub-4697439207371426`，文章末尾使用展示广告位 `9606013308`。
 
-广告请求默认关闭，验证标签与 `ads.txt` 始终保留。审核通过后，先在 AdSense 后台核实欧洲法规消息的隐私链接、拒绝选项和 Consent Mode，并关闭自动广告，再将 `release/production.json` 的 `ADSENSE_ENABLED` 改为 `"true"`，提交并按统一发布流程上线。
+广告请求默认关闭，验证标签与 `ads.txt` 始终保留。当前发布商对应的网站仍待审核；广告单元为 `Coding101-Article-End`。审核通过后，先在 AdSense 后台核实欧洲法规消息的隐私链接、拒绝选项和 Consent Mode，并关闭自动广告，再将 `release/production.json` 的 `ADSENSE_ENABLED` 改为 `"true"`，提交并按统一发布流程上线。
 
 启用后，广告仅在知识树技术文章中、读者接近文章末尾时请求。目录、题库和隐私说明不放置广告；本地与预览域名不请求广告。启用账号功能时，具有有效付费或试用权限的读者不加载广告。
 
