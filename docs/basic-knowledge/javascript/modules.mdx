@@ -1,0 +1,465 @@
+---
+sidebar_position: 16
+knowledge:
+  id: basic-knowledge.javascript.modules
+  type: concept
+description: "解释 ES Module 的依赖连接与实时绑定、CommonJS 的导出对象、模块缓存和循环依赖，并区分语言规则与宿主加载方式。"
+keywords: ["ES Module", "CommonJS", "模块化", "实时绑定", "循环依赖", "import"]
+---
+
+# ES Module 与 CommonJS
+
+**模块**是具有独立作用域、通过明确接口与其他代码协作的代码单元。ES Module 使用语言内置的 `import`、`export` 描述依赖与导出；CommonJS 使用 `require()` 和 `module.exports` 在执行过程中加载与提供接口。
+
+两者的区别会直接影响共享状态、初始化顺序和循环依赖。回答时需要能解释具体代码为什么得到某个结果，尤其不能把它们简化为“一个传引用，一个复制值”。下面的 CommonJS 行为以 Node.js 为例；多文件示例分别保存到独立目录，按注释中的文件名拆开，再用 `node main.mjs` 或 `node main.cjs` 运行。
+
+## 1. 面试核心 {#core}
+
+- 模块通过作用域和显式接口组织代码。**它减少全局名称冲突，让依赖和职责可见；把文件拆小本身不等于建立了清晰边界**。[卡](#module-purpose)
+- ESM 的静态导入在执行模块正文前连接依赖与导出。**静态结构便于分析，模块中的业务语句仍在运行时求值**；不能把静态导入理解为所有工作都在编译时完成。[卡](#module-differences)
+- ESM 导入的是对导出绑定的只读访问。**导出方更新绑定，导入方再次读取能看到新值；导入方不能给该绑定重新赋值，但对象内容不因此冻结**。[卡](#live-bindings)
+- CommonJS 的 `require()` 返回目标模块当时的 `module.exports`。**对象可以共享，解构得到的普通变量不会自动跟随原属性更新**；`exports = value` 也不会替换 `module.exports`。[卡](#commonjs-exports)
+- 缓存避免正常情况下反复初始化同一个模块。**是否命中缓存取决于模块身份与加载环境，不能只看源代码是否相同或导入字符串是否相同**。[卡](#module-cache)
+- 循环依赖不一定立即报错。**ESM 要看读取时导出绑定是否已初始化，CommonJS 则可能拿到尚未构造完整的导出对象**。[卡](#module-cycles)
+- `import()` 在运行时发起导入，结果通过 Promise 提供模块命名空间。**它允许按条件加载，但是否拆成独立资源、何时下载，还取决于宿主与构建配置**。[卡](#dynamic-import)
+- 浏览器原生模块需要正确的脚本类型、地址和响应。**模块作用域、延后执行、CORS 与 JavaScript MIME 类型都是运行条件；浏览器不会直接提供 Node.js 的 require**。[卡](#browser-modules)
+- ESM 的静态结构有助于判断未使用代码。**能否删除还要考虑副作用和构建工具，写成 export 不代表一定减小产物**。[卡](#static-analysis)
+
+## 2. 模块边界与依赖 {#模块边界与依赖}
+
+独立作用域让不同模块可以使用相同的局部变量名，不需要把内部状态都挂到 `window`。导出接口则告诉调用方哪些功能可以使用，导入语句说明当前模块依赖谁。
+
+例如，价格计算模块导出 `calculateTotal`，内部的舍入函数可以留在模块内。页面只调用公开函数，就不必知道内部怎样拆分步骤。以后调整舍入实现，只要接口约定保持不变，调用方就不需要跟着改。
+
+这也让测试更容易建立输入和输出边界，但模块不是安全沙箱。模块仍能访问宿主允许使用的全局对象，也可能发请求或修改页面。把同一个混杂职责的文件拆成几个相互依赖的文件，不会自动改善设计；需要明确哪些状态由谁维护、哪些操作通过接口发生。
+
+ESM 自带严格模式，顶层 `this` 是 `undefined`。Node.js 的 CommonJS 会把文件放进函数包装中，提供 `require`、`module`、`exports` 等局部参数；它不会仅因是 CommonJS 就自动进入严格模式。模块作用域的声明也不能简单等同于浏览器经典脚本的全局声明。
+
+## 3. ES Module 的连接与求值 {#模块的连接与求值}
+
+ESM 把“建立模块之间的关系”和“运行模块正文”区分开来。可以按下面几个职责理解，而不必把实现内部阶段背成固定流水线：
+
+| 职责 | 需要完成的工作 |
+| --- | --- |
+| 找到并加载模块 | 根据模块说明符，例如 `"./counter.mjs"`，定位源码并读取；具体查找与获取方式由宿主决定 |
+| 解析与连接 | 识别静态依赖，检查导入名称能否对应导出，建立模块环境和绑定关系 |
+| 求值 | 按依赖关系执行正文，完成变量初始化与其他副作用；顶层 await 可以让求值过程等待异步结果 |
+
+静态 `import` 声明必须在模块顶层，模块说明符使用字符串字面量。它不是运行到那一行才调用的普通函数。对于没有循环和顶层 await 的依赖图，依赖模块正文先于导入它的模块正文求值。
+
+```js
+// dependency.mjs
+console.log("dependency");
+export const value = 7;
+
+// main.mjs
+console.log("main");
+import { value } from "./dependency.mjs";
+console.log(value);
+```
+
+运行输出依次为 `dependency`、`main`、`7`。虽然 `import` 写在日志后面，静态依赖仍在 `main.mjs` 正文执行前处理。实际代码把导入集中写在顶部，能让阅读顺序与这种依赖关系更一致。
+
+导入不存在的命名导出会导致模块连接失败，不能等到第一次使用该名称时才修复。相反，导出的函数内部发生的业务错误，要等函数实际被调用才出现。**能够提前确定依赖，并不意味着能够提前算出所有运行结果。**
+
+ESM 支持顶层 await。依赖它的模块需要等待相关求值完成，其他不依赖这条链的工作不必全部停下。顶层 await 的使用范围见 [async 与 await](./async-await.mdx#await-的使用位置)。
+
+## 4. 导出绑定与导入名称 {#导出绑定与导入名称}
+
+### 4.1 实时绑定 {#实时绑定}
+
+**实时绑定**（live binding）是指导入方读取的是导出绑定当前的值，而不是导入时给自己的普通变量复制一份值。读取通道是只读的，导出方仍可以按自己的声明规则更新绑定。
+
+```js
+// counter.mjs
+export let count = 0;
+export const settings = { step: 1 };
+export function increment() {
+  count += settings.step;
+}
+
+// main.mjs
+import { count, settings, increment } from "./counter.mjs";
+console.log(count); // 0
+increment();
+console.log(count); // 1
+settings.step = 2;
+increment();
+console.log(count); // 3
+// count = 10; // 执行到这里会抛出 TypeError，导入绑定不能重新赋值
+```
+
+`increment()` 修改了 `counter.mjs` 里的 `count`，后续读取能看到更新。`settings` 的导入绑定也不可重新赋值，但它指向的对象仍可修改，所以 `settings.step = 2` 有效。要限制对象内容的修改，需要另行设计接口或冻结策略。
+
+**模块命名空间对象**提供按导出名称访问模块接口的方式，可以通过 `import * as counter from "./counter.mjs"` 获得。读取 `counter.count` 也会反映绑定的当前值；不能把它当成可以随意添加、覆盖导出属性的普通配置对象。
+
+### 4.2 命名导出与默认导出 {#命名导出与默认导出}
+
+命名导出使用明确的导出名称，导入方可以用 `as` 改成本地名称。默认导出的导出名称是 `default`，导入方可以自行选择本地名称；它没有“只能导出对象”这样的限制。
+
+这里还要区分导出一个已有绑定，和计算一个表达式作为默认导出：
+
+```js
+// values.mjs
+let value = 1;
+export { value as current };
+export default value;
+export function update() {
+  value = 2;
+}
+
+// main.mjs
+import initial, { current, update } from "./values.mjs";
+console.log(initial, current); // 1 1
+update();
+console.log(initial, current); // 1 2
+```
+
+`current` 连接的是 `value` 这个可更新的绑定。`export default value` 则在执行时读取表达式 `value` 的结果，作为默认导出的值；后续给局部变量 `value` 赋值，不会更新这个默认导出。若改为 `export { value as default }`，默认导出也会连接到 `value` 的实时绑定。
+
+这不意味着“所有默认导出都是快照”。具名的默认函数或类声明也有对应的绑定规则，判断时要看具体语法，不能只看出现了 `default`。
+
+导出还可以转发其他模块的接口，例如 `export { increment } from "./counter.mjs"`。入口聚合能简化使用方式，但 `export * from` 不包含默认导出；多个来源出现同名且没有明确处理时，也不能假定工具会自动替你选择一个。
+
+## 5. CommonJS 的导出对象 {#导出对象}
+
+### 5.1 require 的返回值 {#require-的返回值}
+
+Node.js 执行 CommonJS 文件时，`module.exports` 是对外提供的值，初始为对象。`require()` 执行到加载位置时取得模块导出；目标 CommonJS 模块正常首次加载时，会先同步执行其正文，再返回导出结果。
+
+```js
+// counter.cjs
+module.exports = {
+  count: 0,
+  increment() {
+    module.exports.count += 1;
+  },
+};
+
+// main.cjs
+const counter = require("./counter.cjs");
+const { count } = require("./counter.cjs");
+counter.increment();
+console.log(counter.count, count); // 1 0
+console.log(counter === require("./counter.cjs")); // true
+```
+
+`counter` 持有导出对象的引用，再访问 `counter.count` 会读到修改后的属性。解构声明的 `count` 是读取当时属性值后建立的普通局部变量，值为 `0`，不会自动跟随后续属性变化。
+
+所以 CommonJS 也能共享对象变化，不会自动深拷贝导出值。区别在于它没有自动为解构变量建立 ESM 那样的导入绑定。若导出对象使用 getter，每次属性读取还会执行 getter；这些都遵循普通对象访问规则。
+
+### 5.2 exports 与 module.exports {#exports-与-module-exports}
+
+`exports` 最初与 `module.exports` 指向同一个对象，因此给 `exports.name` 赋值可以增加导出属性。给局部变量 `exports` 重新赋值，只会改变这个局部变量的指向。
+
+```js
+// api.cjs
+exports.first = 1;
+exports = { second: 2 };
+module.exports.third = 3;
+
+// main.cjs
+const api = require("./api.cjs");
+console.log(api.first, api.second, api.third); // 1 undefined 3
+```
+
+原导出对象增加了 `first` 和 `third`，`second` 留在重新赋给局部变量 `exports` 的另一个对象里。要整体替换导出，可以写 `module.exports = { second: 2 }`，也可以导出函数或其他值。
+
+替换之后，已经拿到旧对象的调用方不会被自动改指向新对象。尤其不要指望异步回调中重新赋值 `module.exports`，能更新此前所有 `require()` 返回值。异步初始化可以导出一个 Promise 或明确的初始化函数，由调用方等待约定结果。
+
+## 6. 缓存与模块身份 {#缓存与模块身份}
+
+正常情况下，同一个模块在同一个加载环境中成功求值后，再次导入会复用已有模块状态。缓存的是模块记录和状态，而不只是下载得到的源代码文本。
+
+```js
+// state.mjs
+console.log("initialize");
+export const state = { count: 0 };
+
+// main.mjs
+const first = await import("./state.mjs");
+first.state.count += 1;
+const second = await import("./state.mjs");
+console.log(first === second, second.state.count); // true 1
+```
+
+输出只有一次 `initialize`，随后是 `true 1`。第二次导入没有重新创建 `state`，也没有把它的 `count` 恢复成 `0`。如果每次业务操作都需要新状态，应导出工厂函数，而不是依赖重新导入。
+
+判断缓存是否相同，需要先看模块如何被解析：
+
+- Node.js 的 CommonJS 主要按解析后的文件名缓存。不同位置写同一个包名，可能找到不同的安装副本，不能保证得到同一对象。
+- Node.js 的 ESM 按 URL 加载和缓存，查询参数或片段不同可能形成不同模块身份。浏览器也按相应的模块映射管理记录，不能把网络缓存与模块状态缓存混为一谈。
+- 独立进程、Worker 或新的页面加载环境，不会自动与原环境共享同一个模块实例。
+
+删除 CommonJS 缓存项或人为改变 URL 可以影响再次加载，但旧引用和已经注册的副作用不会随之自动清理。反复给 URL 加时间戳也可能持续产生新模块记录，不适合作为没有资源边界的状态重置方案。
+
+## 7. 循环依赖与初始化顺序 {#循环依赖与初始化顺序}
+
+**循环依赖**是依赖链最终又回到自身，例如 `a → b → a`。它带来的关键问题是：一个模块读取另一个模块时，对方的初始化是否已经完成。
+
+### 7.1 ESM 的未初始化绑定 {#未初始化绑定}
+
+ESM 可以先建立相互引用的绑定，但 `let`、`const` 和类声明在实际初始化前仍处于暂时性死区。存在绑定，不代表已经能够读取它。
+
+下面保留会触发错误的读取为注释，以便先运行没有错误的版本：
+
+```js
+// a.mjs
+import { readA } from "./b.mjs";
+export const value = 1;
+export function inspect() {
+  return readA();
+}
+
+// b.mjs
+import { value } from "./a.mjs";
+// console.log(value); // 若取消注释，从 main.mjs 启动会抛出 ReferenceError
+export function readA() {
+  return value;
+}
+
+// main.mjs
+import { inspect } from "./a.mjs";
+console.log(inspect()); // 1
+```
+
+从 `main.mjs` 启动，`a.mjs` 的依赖 `b.mjs` 先求值。若 `b.mjs` 正文立即读取 `value`，此时 `a.mjs` 的 `const` 尚未初始化，会报错。当前版本只定义函数，等 `a.mjs` 初始化完成、`main.mjs` 再调用时，读取有效。
+
+函数声明可在模块环境初始化时建立函数值，但函数体里读取的其他绑定仍可能未初始化。因此“改成函数就一定安全”也不成立，最终还是看调用发生的时机与函数实际读取了什么。
+
+### 7.2 CommonJS 的部分导出 {#部分导出}
+
+CommonJS 加载循环中的模块时，可以返回已经登记但尚未执行完的导出对象，而不是无限重复进入同一个文件。
+
+```js
+// a.cjs
+exports.ready = false;
+const b = require("./b.cjs");
+exports.ready = true;
+exports.observed = b.observed;
+
+// b.cjs
+const a = require("./a.cjs");
+exports.observed = a.ready;
+
+// main.cjs
+const a = require("./a.cjs");
+console.log(a.ready, a.observed); // true false
+```
+
+`b.cjs` 执行时，`a.cjs` 还停在 `require("./b.cjs")`，所以 `b` 记录的是 `false`。后来 `a.ready` 变为 `true`，不会自动改写已经保存到 `b.observed` 的布尔值。
+
+若 `a.cjs` 最后整体替换 `module.exports`，`b.cjs` 已持有的旧对象还会继续存在。因此循环中不能只根据最终文件内容判断拿到的值。
+
+处理循环时，先检查职责是否可以调整：把共享类型或纯函数移入第三个模块，由上层协调两个模块，或把必须等待的操作改成显式初始化。延迟读取有时可以消除当前错误，但若依赖关系仍然混乱，调整入口就可能再次暴露问题。
+
+## 8. 动态导入与浏览器加载 {#动态导入与浏览器加载}
+
+### 8.1 import 表达式 {#import-表达式}
+
+`import()` 是运行时表达式，能放在函数或条件分支中，也能接收运行时计算得到的说明符。它返回 Promise：成功时兑现为模块命名空间，加载、连接或求值失败时拒绝。
+
+```js
+// formatter.mjs
+export function format(value) {
+  return `[${value}]`;
+}
+
+// main.mjs
+async function show(enabled) {
+  if (!enabled) return "disabled";
+  const { format } = await import("./formatter.mjs");
+  return format("ready");
+}
+console.log(await show(false)); // disabled
+console.log(await show(true));  // [ready]
+```
+
+只有进入启用分支时才调用 `import()`。在浏览器和构建工具中，它可以作为按需加载的入口；但工具可能内联模块、预加载资源或限制可分析的动态路径，因此“写了 import() 就一定产生一个新文件”不是语言承诺。
+
+动态导入同样会复用模块缓存。对已经加载的模块再调用 `import()`，仍通过 Promise 取得结果，不会变成直接同步返回命名空间的函数。
+
+### 8.2 浏览器原生模块 {#浏览器原生模块}
+
+浏览器用 `type="module"` 识别模块入口，再沿静态依赖加载其他模块。对于 HTML 解析器插入、没有 `async` 的模块脚本，依赖获取可以与解析并行，执行安排在文档解析完成之后，不需要再加 `defer`。
+
+```html
+<script type="module" src="./main.mjs"></script>
+<p id="status">正在加载</p>
+```
+
+这不表示模块执行发生在所有图片加载完成之后，也不表示顶层 await 的全部异步工作都会阻止 `DOMContentLoaded`。需要某个初始化完成时，应等待应用自己暴露的 Promise 或事件，而不是靠一个不对应其生命周期的页面事件猜测。
+
+本地验证应通过 HTTP 服务访问，而不是直接双击 `file://` 文件。服务器需要返回可接受的 JavaScript MIME 类型；跨源模块获取要通过 CORS 检查。相对导入基于导入模块的 URL 解析，不是相对于用户当前看到的所有页面地址随意拼接。
+
+浏览器原生环境也不会自动查找 `node_modules`。`import "some-package"` 这样的裸说明符，需要 import map 或构建工具等额外解析安排；`require` 则是 Node.js 等环境提供的机制，不是浏览器自带的全局函数。
+
+## 9. 静态分析与互操作边界 {#静态分析与互操作边界}
+
+ESM 的静态导入和导出让构建工具更容易识别哪些声明被使用。**Tree Shaking**根据依赖使用关系移除可以安全去掉的代码，但还需要判断求值是否产生副作用。例如一个没有使用任何导出的模块，仍可能注册事件或安装 polyfill；直接删掉它会改变行为。
+
+CommonJS 的 `require()` 是运行时调用，导出对象也能在执行中动态构造，静态分析更难。但这不等于构建工具完全不能处理 CommonJS；工具可以识别部分常见形式，具体能力和限制需要看产物与配置。
+
+Node.js 同时支持两种模块系统，互操作不宜背成一句“ESM 只能异步、CommonJS 只能加载 CommonJS”。Node.js 22.12 起默认启用了对满足条件的同步 ESM 的 `require()` 支持，模块及其依赖图不能包含顶层 await；其他版本、标志与导出适配规则仍需对应文档。`import` 一个 CommonJS 模块时，也不能假定推断得到的命名导出具有原生 ESM 的全部实时绑定行为。
+
+项目中先明确文件采用哪种格式，再确定消费方的加载方式。本文示例用 `.mjs` 和 `.cjs` 显式区分，避免把 `package.json` 的 `type`、打包器转换和语言规则混在一起。
+
+## 10. 面试题 {#面试题}
+
+### 10.1 JavaScript 为什么需要模块化？ {#module-purpose}
+
+**考察重点**：作用域、公开接口、依赖关系与职责边界。
+
+**相关内容**：[模块边界与依赖](#模块边界与依赖)。
+
+<details>
+<summary>参考回答</summary>
+
+**模块用独立作用域保存内部实现，用显式导入和导出描述协作接口。** 这样可以减少全局名称冲突，让调用方依赖公开约定，而不必访问内部变量，也更容易单独测试和替换实现。
+
+效果取决于边界是否合理。只拆文件却共享大量隐式全局状态，仍然难以维护；模块也不是隔离不可信代码的安全沙箱。
+
+</details>
+
+### 10.2 ES Module 与 CommonJS 的主要区别是什么？ {#module-differences}
+
+**考察重点**：依赖建立方式、导出语义、求值时机与宿主条件。
+
+**相关内容**：[模块的连接与求值](#模块的连接与求值)、[导出绑定与导入名称](#导出绑定与导入名称)、[导出对象](#导出对象)、[静态分析与互操作边界](#静态分析与互操作边界)。
+
+<details>
+<summary>参考回答</summary>
+
+**ESM 用静态声明建立依赖与导出绑定，CommonJS 用运行时 require 调用取得 module.exports。** ESM 的导入名称提供对导出绑定的只读实时访问；CommonJS 返回普通值，对象可共享，但解构后的局部变量不会自动追踪属性更新。
+
+ESM 自带严格模式，结构适合静态分析；CommonJS 的调用位置和导出形态可以在运行时决定。两者都有缓存和循环依赖问题，只是初始化行为不同。加载是否异步、如何互操作，还要说明浏览器或 Node.js 及版本，不能把这些条件都归为语言语法差异。
+
+</details>
+
+### 10.3 ESM 的实时绑定为什么既能变化，又不能由导入方赋值？ {#live-bindings}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：绑定所有权、读取行为与对象可变性。
+
+**相关内容**：[实时绑定](#实时绑定)、[命名导出与默认导出](#命名导出与默认导出)。
+
+<details>
+<summary>参考回答</summary>
+
+**导入方获得的是读取导出绑定的通道，修改绑定的权限仍在声明它的模块。** 导出方更新 `let` 绑定后，导入方再次读取会看到新值；导入方直接重新赋值则抛出 `TypeError`。
+
+这种只读不等于冻结对象。导出的值若是可变对象，调用方仍可修改其属性。默认导出也要看语法：`export default value` 读取表达式当时的值，`export { value as default }` 则连接已有绑定。
+
+</details>
+
+### 10.4 CommonJS 为什么不能简单说成导出值的拷贝？ {#commonjs-exports}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：对象共享、解构取值、导出对象替换与 exports 别名。
+
+**相关内容**：[require 的返回值](#require-的返回值)、[exports 与 module.exports](#exports-与-module-exports)。
+
+<details>
+<summary>参考回答</summary>
+
+**require 返回 module.exports 的值；若它是对象，多次加载可以拿到同一个对象引用。** 对同一对象的属性修改可被后续读取看到，解构保存的基本类型值则不会自动更新，因此不能说它总是深拷贝或完全不能共享变化。
+
+`exports` 初始只是同一对象的局部别名，`exports.x = value` 可以增加导出属性，`exports = value` 不能替换 `module.exports`。即使整体替换后者，先前已经返回的旧引用也不会自动改指向新对象。
+
+</details>
+
+### 10.5 同一个模块多次导入，为什么不一定都是同一个实例？ {#module-cache}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：解析结果、模块身份、加载环境与状态复用。
+
+**相关内容**：[缓存与模块身份](#缓存与模块身份)。
+
+<details>
+<summary>参考回答</summary>
+
+**复用的前提是在同一个加载环境中解析为同一个模块身份，并且没有人为改变相关缓存。** 同一身份正常成功求值后会复用状态，不会每次重新初始化。
+
+同一个包名可能解析到不同安装副本；ESM URL 的查询或片段差异也可能形成不同记录。进程、Worker 和新页面环境通常有各自的加载状态。需要每次产生新业务状态时，应导出工厂函数，而不是靠随机改路径绕过缓存。
+
+</details>
+
+### 10.6 ESM 与 CommonJS 遇到循环依赖时分别会发生什么？ {#module-cycles}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：绑定初始化、部分导出、实际读取时机与解耦。
+
+**相关内容**：[未初始化绑定](#未初始化绑定)、[部分导出](#部分导出)。
+
+<details>
+<summary>参考回答</summary>
+
+**ESM 可以先建立循环中的绑定，但过早读取未初始化的词法绑定会抛出 ReferenceError；CommonJS 可以返回尚未执行完成的导出对象。** 后者可能只包含部分属性，提前保存的值不会自动变成最终值，整体替换导出还会留下旧引用。
+
+是否失败要沿入口、执行顺序和读取位置推导。延后读取可能让当前例子有效，更稳妥的设计是抽取共享依赖、由上层协调，或使用明确的初始化接口，避免隐式依赖另一个模块的完成时机。
+
+</details>
+
+### 10.7 import() 与静态 import 有什么不同，是否一定产生代码分包？ {#dynamic-import}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：声明与表达式、Promise 结果、缓存及构建边界。
+
+**相关内容**：[模块的连接与求值](#模块的连接与求值)、[import 表达式](#import-表达式)。
+
+<details>
+<summary>参考回答</summary>
+
+**静态 import 在模块顶层声明依赖，import() 则在执行到表达式时发起导入并返回 Promise。** 动态形式可以放在条件或函数中，成功得到模块命名空间，失败通过拒绝处理，也会使用模块缓存。
+
+它为按需加载提供入口，但是否拆包、拆成多少资源、是否预加载取决于宿主和构建工具。已经缓存时也不能把返回值当作同步模块对象直接使用。
+
+</details>
+
+### 10.8 一段 ESM 代码在 Node.js 能运行，为什么在浏览器直接打开可能失败？ {#browser-modules}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：脚本类型、URL 解析、HTTP 响应、CORS 与宿主 API。
+
+**相关内容**：[浏览器原生模块](#浏览器原生模块)。
+
+<details>
+<summary>参考回答</summary>
+
+**语言语法相同，不代表宿主提供相同的加载规则和 API。** 浏览器入口需要 `type="module"`，模块应通过合适的 HTTP 响应加载；错误 MIME 类型或不满足 CORS 会阻止执行，直接用 `file://` 也不适合作为验证方式。
+
+浏览器不自动查找 `node_modules`，裸说明符需要 import map 或构建处理；Node.js 的 `require`、文件系统等接口也不会自动出现。应分别检查语法、模块地址和宿主能力。
+
+</details>
+
+### 10.9 为什么 ESM 有利于 Tree Shaking，但不能保证未使用模块都会被删除？ {#static-analysis}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：静态依赖、使用关系、模块求值副作用与工具配置。
+
+**相关内容**：[静态分析与互操作边界](#静态分析与互操作边界)。
+
+<details>
+<summary>参考回答</summary>
+
+**静态导入和导出便于工具识别使用关系，删除代码还必须保证不改变可观察行为。** 即使导出没有被引用，模块正文仍可能注册监听器、修改全局对象或安装 polyfill，这些副作用不能随意删除。
+
+最终结果还取决于构建配置、转换后的模块形态和优化器的分析能力。需要检查真实产物及运行行为，不能只看到 `export` 就认定模块会被裁剪。
+
+</details>
+
+## 11. 参考资料 {#参考资料}
+
+- [ECMAScript：Modules](https://tc39.es/ecma262/multipage/ecmascript-language-scripts-and-modules.html#sec-modules)
+- [ECMAScript：Module Environment Records](https://tc39.es/ecma262/multipage/executable-code-and-execution-contexts.html#sec-module-environment-records)
+- [Node.js 22：CommonJS modules](https://nodejs.org/docs/latest-v22.x/api/modules.html)
+- [Node.js 22：ECMAScript modules](https://nodejs.org/docs/latest-v22.x/api/esm.html)
+- [HTML Standard：The script element](https://html.spec.whatwg.org/multipage/scripting.html#the-script-element)
+- [webpack：Tree Shaking](https://webpack.js.org/guides/tree-shaking/)

@@ -1,0 +1,240 @@
+---
+sidebar_position: 3
+knowledge:
+  id: basic-knowledge.python.language.exceptions
+  type: concept
+description: "讲解 Python 异常传播、捕获范围、else 与 finally、异常链和重新抛出，区分资源清理与错误处理，避免把测试失败吞掉后报告成功。"
+keywords: [Python 异常, try, except, finally, raise]
+---
+
+# Python 异常处理
+
+异常会中断当前执行路径，并沿调用栈寻找能够处理它的 `except`。没有匹配处理器时，异常继续向外传播。捕获异常的目的，是在能够恢复、转换或补充信息的边界上采取明确动作；如果只是捕获后继续运行，失败可能被隐藏。
+
+测试脚本尤其需要保留这个区别：请求失败、解析失败和断言失败都不应该因为进入了 `except`，就自动变成一条成功结果。
+
+## 1. 面试核心 {#core}
+
+- `try` 中抛出异常后，**出错语句后面的普通语句不会继续执行**；Python 选择首个匹配的 `except`，没有匹配项就向调用方传播。[卡](#exception-flow)
+- `else` 只在 `try` 正常结束时运行，`finally` 用于离开这条执行路径前的清理。**成功处理与无论成功失败都要执行的清理，应放在不同位置**。[卡](#else-finally)
+- 异常类之间存在继承关系，**具体异常应放在宽泛异常之前**。`Exception` 不包含 `KeyboardInterrupt`、`SystemExit` 等直接属于 `BaseException` 分支的退出信号。[卡](#catch-boundary)
+- 在处理器中用 `raise` 可以重新抛出当前异常；转换为业务异常时，**`raise NewError(...) from exc` 显式保留原因链**，帮助定位底层失败。[卡](#exception-chaining)
+- `finally` 中的 `return` 或新异常可能覆盖原来的返回值或异常。**清理代码也会失败，必须明确希望保留哪一条失败证据**。[卡](#finally-return)
+
+## 2. 异常的传播 {#异常的传播}
+
+**异常**是执行中无法按当前正常路径继续时产生的对象。`raise` 主动抛出异常，内置操作也会因输入或状态不满足要求而抛出相应异常。
+
+```python
+def parse_count(text):
+    return int(text)
+
+def load_count(text):
+    value = parse_count(text)
+    return value + 1
+
+try:
+    result = load_count("bad")
+    print("loaded", result)
+except ValueError:
+    print("invalid count")
+```
+
+输出是 `invalid count`。`int("bad")` 抛出 `ValueError`，`parse_count` 没有处理，`load_count` 也没有处理，于是异常传播到外层 `except`。`return value + 1` 与 `print("loaded", result)` 都没有执行。
+
+如果传入 `"2"`，没有异常，`load_count` 返回 `3`，处理器就不会运行。异常传播不能理解为“发生错误后仍继续返回一个默认结果”，默认结果只有在代码明确构造时才存在。
+
+## 3. 捕获范围与类型 {#捕获范围与类型}
+
+`except` 根据异常类型及继承关系匹配，第一个匹配的处理器负责处理本次异常。因此较具体的类型应该放在前面：
+
+```python
+try:
+    int("bad")
+except ValueError as exc:
+    print(type(exc).__name__)  # ValueError
+except Exception:
+    print("another ordinary error")
+```
+
+`ValueError` 属于 `Exception` 的子类。如果先写 `except Exception`，后面的 `ValueError` 分支就无法处理这些异常。
+
+**捕获边界**是代码决定承担哪类失败的处理责任的位置。转换一个数字失败，可以在解析函数附近报告输入错误；数据库连接中断则不应该被当作数字错误吞掉。缩小 `try` 中的代码范围，有助于避免把不相关的异常误归类。
+
+不带类型的 `except:` 会匹配所有异常，包括用户中断和进程退出信号。通常的业务处理捕获具体异常；边界层需要统一记录普通错误时可以捕获 `Exception`，但仍应决定重新抛出、返回明确失败还是执行有边界的恢复。
+
+```python
+def parse_optional_count(text):
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+print(parse_optional_count("bad"))  # None
+```
+
+这里返回 `None` 是函数约定“输入不合法”的显式结果，调用方必须检查它。若业务不允许缺失，重新抛出异常比默默返回零更合适，因为零可能是一个正常值。
+
+## 4. else 与 finally {#else-与-finally}
+
+`else` 放只应在 `try` 正常完成后执行的代码。这样可以避免把成功路径里另一项操作抛出的异常，也误认为来自 `try` 中的原操作。
+
+`finally` 放需要收尾的操作，它会在正常结束、异常传播以及执行 `return` 等离开路径时运行。
+
+```python
+def inspect_count(text):
+    events = []
+    try:
+        value = int(text)
+    except ValueError:
+        events.append("invalid")
+    else:
+        events.append(f"accepted:{value}")
+    finally:
+        events.append("finished")
+    return events
+
+print(inspect_count("2"))    # ['accepted:2', 'finished']
+print(inspect_count("bad"))  # ['invalid', 'finished']
+```
+
+`finished` 只说明清理路径执行了，不说明业务成功。成功信息属于 `else`，失败信息属于具体异常分支。
+
+如果 `try` 在内部直接 `return`，`else` 不会执行，`finally` 仍会执行。`finally` 也不是抵御一切终止的保证：进程被强制杀死、机器掉电等，不能依赖 Python 代码继续完成清理。
+
+### 4.1 清理中的控制流 {#清理中的控制流}
+
+`finally` 中的返回会替换原本准备返回的结果，还会压住正在传播的异常：
+
+```python
+def hidden_failure():
+    try:
+        raise ValueError("invalid input")
+    finally:
+        return "finished"
+
+print(hidden_failure())  # finished
+```
+
+调用方收到了字符串，却没有看到失败。这里用返回值报告“清理完成”，反而破坏了错误传播。实际清理逻辑应完成收尾后让原控制流继续，避免在 `finally` 中添加改变结果的 `return`。
+
+清理操作自身也可能抛异常，例如关闭一个需要提交数据的资源时失败。新异常会改变调用方最终收到的异常，原异常通常仍可在异常上下文中查到；处理这种情况时应保留两段证据，不要只记录一句“执行失败”。
+
+## 5. 重新抛出与异常链 {#重新抛出与异常链}
+
+处理器中单独写 `raise`，表示重新抛出正在处理的异常。需要把底层异常转换为上层能理解的异常时，可以用 `from` 明确原因。
+
+```python
+class ConfigError(Exception):
+    pass
+
+def read_limit(text):
+    try:
+        return int(text)
+    except ValueError as exc:
+        raise ConfigError("limit must be an integer") from exc
+
+try:
+    read_limit("bad")
+except ConfigError as exc:
+    print(str(exc))                    # limit must be an integer
+    print(type(exc.__cause__).__name__)  # ValueError
+```
+
+调用方看到配置错误，排查时仍能找到数字转换失败的原始原因。相比只创建一个丢失原因的新异常，这样更容易把高层业务问题定位到具体操作。
+
+`raise ... from None` 会隐藏默认展示中的异常上下文，适用于确实需要简化对外错误表达的边界；它不表示底层故障已经恢复。内部诊断仍需保留足够信息，同时避免把凭据、完整请求内容等敏感数据直接写进错误消息。
+
+## 6. 面试题 {#面试题}
+
+### 6.1 函数内部抛出异常后，调用方怎样接收到它？ {#exception-flow}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：出错位置、后续语句、处理器匹配与跨函数传播。
+
+**相关内容**：[异常的传播](#异常的传播)。
+
+<details>
+<summary>参考回答</summary>
+
+**异常先寻找当前执行上下文中的匹配处理器，没有匹配项就沿调用栈向外传播。** 出错语句之后的正常路径不会继续执行，但离开途中相关 `finally` 仍会执行。
+
+调用方可以用包围函数调用的 `try/except` 处理异常。如果一直没有处理器，异常会交给更外层的运行环境处理，而不是自动转换为一个正常返回值。
+
+</details>
+
+### 6.2 try、except、else、finally 各自适合放什么代码？ {#else-finally}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：成功路径、失败路径、捕获范围与清理责任。
+
+**相关内容**：[else 与 finally](#else-与-finally)。
+
+<details>
+<summary>参考回答</summary>
+
+**`try` 放需要保护的操作，`except` 处理相应失败，`else` 放正常完成后的工作，`finally` 放离开路径前的清理。**
+
+`else` 中的异常不会被前面这个 `try` 对应的 `except` 捕获，可以避免扩大错误分类范围。`finally` 执行不代表业务成功；它不能代替成功结果判断，也不能保证在强制终止进程后继续运行。
+
+</details>
+
+### 6.3 为什么不宜在测试脚本外层捕获所有异常后继续报告成功？ {#catch-boundary}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：错误传播、失败信号与捕获类型的边界。
+
+**相关内容**：[捕获范围与类型](#捕获范围与类型)。
+
+<details>
+<summary>参考回答</summary>
+
+**这样会把请求、解析和断言等失败隐藏在正常结果中，调用方无法判断检查是否完成。** 应捕获能够处理的具体异常，恢复失败时保留明确失败结果或重新抛出。
+
+边界层即使统一捕获 `Exception` 记录产物，也要返回失败状态或继续传播。裸 `except:` 还会捕获中断和退出信号，通常不应把它们当成普通业务错误继续运行。
+
+</details>
+
+### 6.4 转换异常时怎样保留原始原因？ {#exception-chaining}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：重新抛出、业务边界与原因链。
+
+**相关内容**：[重新抛出与异常链](#重新抛出与异常链)。
+
+<details>
+<summary>参考回答</summary>
+
+**保留原类型时用处理器中的裸 `raise` 重新抛出，转换类型时用 `raise NewError(...) from exc`。** 后者明确建立原因链，上层可以处理业务异常，诊断时仍能定位底层失败。
+
+错误消息应补充当前操作的必要信息，不应只换一个名称，也不应包含敏感凭据。
+
+</details>
+
+### 6.5 finally 中 return 会对原异常产生什么影响？ {#finally-return}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：待传播异常和清理阶段的新控制流。
+
+**相关内容**：[清理中的控制流](#清理中的控制流)。
+
+<details>
+<summary>参考回答</summary>
+
+**`finally` 中的 `return` 会使函数返回该值，并丢弃原本正在传播的异常。** 如果此前已准备返回另一个值，也会被新返回值替换。
+
+因此清理代码通常只完成收尾，让原异常或返回继续；不要用 `return "finished"` 表示资源已经关闭。
+
+</details>
+
+## 7. 参考资料 {#参考资料}
+
+- [Python 3.12 教程：Errors and Exceptions](https://docs.python.org/3.12/tutorial/errors.html)
+- [Python 3.12：try 语句](https://docs.python.org/3.12/reference/compound_stmts.html#the-try-statement)
+- [Python 3.12：内置异常与异常上下文](https://docs.python.org/3.12/library/exceptions.html#exception-context)
+- [Python 3.12：raise 语句](https://docs.python.org/3.12/reference/simple_stmts.html#the-raise-statement)

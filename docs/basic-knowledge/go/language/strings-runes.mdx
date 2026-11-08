@@ -1,0 +1,507 @@
+---
+sidebar_position: 8
+knowledge:
+  id: basic-knowledge.go.language.strings-runes
+  type: concept
+description: "解释 Go 字符串的不可变性、byte/rune/UTF-8、range 与截取、无效编码、类型转换、Unicode 等价、拼接及子串内存保留。"
+keywords: ["Go 字符串", "rune", "UTF-8", "strings.Builder", "字符串截取", "字符串不可变"]
+---
+
+# Go 字符串与 rune
+
+Go 的 **`string`** 是不可变的字节序列，长度按字节计算；**`rune`** 是 `int32` 的别名，用于表示 Unicode 码点。两者解决的问题不同：字符串保存一串字节，rune 帮助程序解释其中的文本。
+
+处理中文、截取用户输入或转换网络数据时，需要先决定操作单位。按字节、按码点和按用户看到的字符处理，可能得到不同结果；字符串内容也不一定是有效 UTF-8。本文以 Go 1.22 为基线。
+
+## 1. 面试核心 {#core}
+
+- 字符串内容不可变，变量仍然可以重新赋值。**字符串传参复制的是字符串值，给形参重新赋值不会替换调用方变量**。[卡](#string-parameter)
+- Go 1.22 官方实现可以用**指向字节数据的引用和字节长度**理解字符串表示；它不包含切片的容量字段，也不是内部再保存一个完整的 `[]byte` 对象。[卡](#string-layout)
+- **`len(s)` 和 `s[i]` 按字节工作，`range` 按 UTF-8 解码得到 rune，但返回的下标仍是字节偏移**。[卡](#byte-rune)
+- `string` 可以包含无效 UTF-8。**解码失败与遇到合法的 U+FFFD 码点，不能只根据 rune 值区分**；需要检查解码宽度或先验证输入。[卡](#invalid-utf8)
+- `s[:n]` 按字节截取，可能切断 UTF-8 编码。**按码点截取要找到码点边界，并明确无效输入怎样处理**。[卡](#rune-prefix)
+- **普通的 `string` 与 `[]byte` 转换不允许后续修改破坏字符串内容**；实际复制和分配是否被优化，应与这种语义保证分开判断。[卡](#string-byte)
+- 一个用户感知的字符可以包含多个码点。**`[]rune` 不等于字素簇切分，字符串比较也不会自动执行 Unicode 正规化**。[卡](#unicode-equivalence)
+- `strings.Builder` 适合逐步构建字符串，**已经使用的 Builder 不得按值复制**。复制后的变量可能共享内部状态，违反其使用约定。[卡](#builder-copy)
+- **小子串可能保留较大的原始存储**。确认存在长期保留问题后，可以用 `strings.Clone` 建立独立副本，而不是无差别复制所有字符串。[卡](#substring-retention)
+
+## 2. 字符串值与不可变性 {#字符串值与不可变性}
+
+字符串的零值是空字符串 `""`，长度为零。它不是 nil，也没有可供业务代码扩展的容量；对字符串使用 `cap` 或直接修改 `s[i]` 都不合法。
+
+不可变的是字符串内容，不是保存它的变量。变量可以从一个字符串值改为另一个字符串值：
+
+```go
+package main
+
+import "fmt"
+
+func rename(name string) {
+    name = "Go"
+    fmt.Println("inside", name)
+}
+
+func main() {
+    name := "Lin"
+    rename(name)
+    fmt.Println("outside", name) // outside Lin
+    name = name + "!"
+    fmt.Println(name) // Lin!
+    // name[0] = 'G' // 编译错误：不能给字符串中的字节赋值
+}
+```
+
+`rename` 修改的是形参变量，调用方的 `name` 仍然是 `Lin`。拼接表达式产生结果，再赋给 `name`，也不是在原字符串中原地追加。这与普通值传递的规则一致，见[Go 类型与值传递](./types-value-passing.mdx#赋值与传参)。
+
+Go 1.22 官方运行时用数据指针和长度描述字符串。这里的指针指向字节数据，不是指向一个具有长度和容量字段的 `[]byte` 切片对象。字符串赋值可以共享不可变的数据，而不需要每次复制所有字节。
+
+这种表示是实现解释，不意味着业务程序应该依赖固定内存布局。字符串内容不可变，也不代表多个 goroutine 可以无同步地给同一个字符串变量反复赋值；变量本身仍可能发生读写竞争。
+
+## 3. 字节、码点与 UTF-8 {#字节码点与utf8}
+
+**字节**是 8 位数据，Go 的 `byte` 是 `uint8` 的别名。**码点**是 Unicode 码空间中的一个编号，例如“中”对应 U+4E2D；并不是每个码点都已经分配给字符。**Unicode 标量值**是排除代理码点 U+D800—U+DFFF 后的码点。**UTF-8** 把一个标量值编码为一到四个字节，因此码点编号和编码后的字节序列不是同一个东西。
+
+```go
+package main
+
+import (
+    "fmt"
+    "unicode/utf8"
+)
+
+func main() {
+    text := "Go中"
+    fmt.Println(len(text), utf8.RuneCountInString(text)) // 5 3
+    fmt.Printf("% X\n", []byte(text)) // 47 6F E4 B8 AD
+    fmt.Printf("%02X %U\n", text[2], '中') // E4 U+4E2D
+}
+```
+
+`text[2]` 取得的是“中”的第一个 UTF-8 字节 `E4`，不是整个码点。三个码点占用了五个字节：
+
+| 内容 | 码点 | UTF-8 字节 | 字节起始位置 |
+| --- | --- | --- | --- |
+| `G` | U+0047 | `47` | 0 |
+| `o` | U+006F | `6F` | 1 |
+| `中` | U+4E2D | `E4 B8 AD` | 2 |
+
+`rune` 是整数类型，并不自动保证其取值是合法的 Unicode 标量值。负数、UTF-16 代理码点范围以及超过 U+10FFFF 的整数，都不能作为有效 UTF-8 码点编码。需要判断时可以用 `utf8.ValidRune`。
+
+Go 源文件使用 UTF-8，不代表所有字符串值都有效。字符串可以来自二进制输入，也可以通过 `"\xff"` 这样的字节转义构造无效 UTF-8。
+
+## 4. 遍历与无效编码 {#遍历与无效编码}
+
+### 4.1 下标遍历与 range {#下标遍历与range}
+
+普通下标循环每次读取一个字节；`range` 则逐个解码 rune，并给出这个码点在原字符串中的字节起点。
+
+```go
+package main
+
+import "fmt"
+
+func main() {
+    text := "中A文"
+    for index := 0; index < len(text); index++ {
+        fmt.Printf("%d:%02X ", index, text[index])
+    }
+    fmt.Println()
+    for offset, value := range text {
+        fmt.Printf("%d:%U ", offset, value)
+    }
+    fmt.Println()
+}
+```
+
+两行输出分别为：
+
+```text
+0:E4 1:B8 2:AD 3:41 4:E6 5:96 6:87
+0:U+4E2D 3:U+0041 4:U+6587
+```
+
+第二行的下标是 0、3、4，不是第几个字符的序号。需要码点序号时，可以另外计数；需要原字符串的截取位置时，字节偏移恰好可以用来切分。
+
+### 4.2 解码失败与 U+FFFD {#解码失败与替代码点}
+
+`range` 遇到无效 UTF-8 时，返回 `utf8.RuneError`，数值为 U+FFFD，并向前移动一个字节。`utf8.DecodeRuneInString` 还会返回本次消耗的字节数，便于区分解码失败与字符串里本来就有这个合法码点。
+
+```go
+package main
+
+import (
+    "fmt"
+    "unicode/utf8"
+)
+
+func main() {
+    text := string([]byte{0xFF, 'A', 0xEF, 0xBF, 0xBD})
+    fmt.Println(utf8.ValidString(text)) // false
+    for offset := range text {
+        value, width := utf8.DecodeRuneInString(text[offset:])
+        fmt.Printf("%d %U %d\n", offset, value, width)
+    }
+}
+```
+
+循环输出为：
+
+```text
+0 U+FFFD 1
+1 U+0041 1
+2 U+FFFD 3
+```
+
+第一个 `FF` 是无效字节，解码结果宽度为 1。后面的 `EF BF BD` 则是 U+FFFD 自身的合法 UTF-8 编码，宽度为 3。示例用码点编号展示结果，避免把显示用的替代符号误认为源数据本来就如此。
+
+对空字符串解码时，`DecodeRuneInString` 返回 RuneError 和宽度 0，这与非空输入解码失败也不同。`utf8.RuneCountInString` 会把无效编码按逐字节的错误解码结果计数，因此它不是输入有效性的校验函数。
+
+## 5. 字符串截取 {#字符串截取}
+
+### 5.1 按字节截取 {#按字节截取}
+
+字符串的 `text[low:high]` 按字节截取，上界不能超过 `len(text)`。它只检查索引范围，不要求边界落在 UTF-8 码点之间。
+
+```go
+package main
+
+import (
+    "fmt"
+    "unicode/utf8"
+)
+
+func main() {
+    text := "中文"
+    part := text[:2]
+    fmt.Printf("% X\n", []byte(part)) // E4 B8
+    fmt.Println(utf8.ValidString(part)) // false
+    fmt.Println(text[:3]) // 中
+}
+```
+
+`text[:2]` 没有越过字节边界，但切断了“中”的三个字节，所以结果不是有效 UTF-8。不能用“每个中文都占固定字节数”的方式处理一般文本；其他文字、补充字符和组合序列的编码长度可能不同。
+
+### 5.2 按码点保留前缀 {#按码点保留前缀}
+
+按码点截取时，可以用 `range` 找到对应的字节边界，不必先构造整个 `[]rune`。下面定义的 `prefixRunes` 最多保留前 `limit` 个码点：负数限制或无效 UTF-8 返回错误，限制超过码点数时返回完整字符串。
+
+```go
+package main
+
+import (
+    "errors"
+    "unicode/utf8"
+)
+
+func prefixRunes(text string, limit int) (string, error) {
+    if limit < 0 {
+        return "", errors.New("negative limit")
+    }
+    if !utf8.ValidString(text) {
+        return "", errors.New("invalid UTF-8")
+    }
+    count := 0
+    for offset := range text {
+        if count == limit {
+            return text[:offset], nil
+        }
+        count++
+    }
+    return text, nil
+}
+```
+
+`prefixRunes("中A文", 2)` 返回 `"中A"`；限制为 0 时返回空字符串，限制为 5 时返回原字符串。有效性检查发生在截取之前，因此即使限制为 0，无效输入也按约定返回错误。
+
+这里的单位明确是码点。`prefixRunes("e\u0301", 1)` 只保留 `e`，会去掉后面的组合重音，因而不适合直接当作通用的用户字符截取函数。
+
+## 6. 字符串转换 {#字符串转换}
+
+### 6.1 string 与 byte 切片 {#string与byte切片}
+
+`[]byte(text)` 得到字符串中的字节，`string(data)` 根据字节切片生成字符串值。普通转换需要保持字符串不可变的语义：后续修改字节切片，不能改变已经生成的字符串。
+
+```go
+package main
+
+import "fmt"
+
+func main() {
+    data := []byte{'G', 'o'}
+    text := string(data)
+    data[0] = 'N'
+    fmt.Println(text, string(data)) // Go No
+
+    editable := []byte(text)
+    editable[1] = '!'
+    fmt.Println(text, string(editable)) // Go G!
+}
+```
+
+修改 `data` 或 `editable` 都没有改变 `text`。这说明可观察到的修改被隔离，而不是要求编译器在每个转换点都执行相同的堆分配步骤；编译器可以在不改变语义的情况下消除不必要的复制或分配。
+
+`[]byte` 适合读写缓冲和需要原地修改的字节数据，`string` 适合表达不可变字节内容并直接作比较、map 键。二者都不保证数据一定是有效 UTF-8。`string([]byte(nil))` 得到空字符串，而 `[]byte("")` 得到非 nil 的空切片。
+
+通过 `unsafe` 建立共享视图有额外的生命周期与不可修改约束，不能用来推翻普通转换的语义，也不应把某个临时零拷贝结果当作普遍契约。
+
+### 6.2 rune 切片与整数转换 {#rune切片与整数转换}
+
+`[]rune(text)` 按 UTF-8 解码字符串，`string(runes)` 再把码点编码为 UTF-8。无效 UTF-8 在解码时会变为 RuneError，因此经过 rune 往返后，不一定保留原始字节。需要原样保存协议或二进制内容时，应使用字节操作。
+
+把单个整数转换成字符串，同样是在解释码点，不是把整数格式化为十进制数字：
+
+```go
+package main
+
+import (
+    "fmt"
+    "strconv"
+    "unicode/utf8"
+)
+
+func main() {
+    fmt.Println(string(65), strconv.Itoa(65)) // A 65
+    invalid := rune(-1)
+    fmt.Println(utf8.ValidRune(invalid)) // false
+    fmt.Printf("% X\n", []byte(string(invalid))) // EF BF BD
+}
+```
+
+`string(65)` 得到 U+0041，也就是 `A`；`strconv.Itoa(65)` 才得到数字文本 `"65"`。将无效码点转换为字符串时，会生成 U+FFFD 的 UTF-8 编码，不会按整数的二进制内存布局直接塞入字节。
+
+## 7. 用户字符与 Unicode 等价 {#用户字符与unicode等价}
+
+**字素簇**是 Unicode 用于近似划分用户感知字符的文本单元，一个字素簇可以包含多个码点。例如 `e` 后面接组合重音，通常显示为一个带重音的字母，但程序中有两个 rune。
+
+```go
+package main
+
+import (
+    "fmt"
+    "unicode/utf8"
+)
+
+func main() {
+    composed := "\u00E9"
+    decomposed := "e\u0301"
+    fmt.Println(composed == decomposed) // false
+    fmt.Println(len(composed), len(decomposed)) // 2 3
+    fmt.Println(utf8.RuneCountInString(composed), utf8.RuneCountInString(decomposed)) // 1 2
+    fmt.Printf("%U\n", []rune(decomposed)) // [U+0065 U+0301]
+}
+```
+
+这两种写法在 Unicode 中规范等价，但字节不同，所以 Go 的 `==` 返回 false。字符串比较按字节内容进行，不会自动把等价编码统一起来，也不会自动执行大小写忽略或自然语言排序。
+
+**Unicode 正规化**是按约定把等价文本变为标准形式的过程。业务确实需要把这两种写法视为相同时，可以在明确的输入边界采用相同的正规化规则；不能只凭显示相似就认为所有字符都应该合并。大小写处理与正规化也不是同一个操作。
+
+昵称长度、光标移动和展示截断如果按用户字符定义，需要采用合适的字素簇分段规则。`range` 和 `[]rune` 只解决码点解码，不提供完整的字素簇切分。
+
+## 8. 拼接与存储成本 {#拼接与存储成本}
+
+### 8.1 拼接方式 {#拼接方式}
+
+少量固定片段使用 `+` 很直接；已经有字符串集合时可以用 `strings.Join`；逐步产生片段时，可以用 `strings.Builder` 累积结果。
+
+```go
+package main
+
+import (
+    "fmt"
+    "strings"
+)
+
+func main() {
+    parts := []string{"Go", "数据库", "网络"}
+    fmt.Println(strings.Join(parts, " / "))
+
+    var builder strings.Builder
+    builder.Grow(len("Go: 中文"))
+    builder.WriteString("Go: ")
+    builder.WriteString("中文")
+    first := builder.String()
+    builder.WriteByte('!')
+    fmt.Println(first) // Go: 中文
+    fmt.Println(builder.String()) // Go: 中文!
+    builder.Reset()
+    fmt.Println(builder.Len()) // 0
+}
+```
+
+Builder 的零值可以直接使用，`Grow` 的单位是字节。`first` 不会因为后续追加而变成带感叹号的新内容；已经取得的字符串仍保持不可变。
+
+循环中反复把增长中的结果与新片段相加，可能不断复制之前的前缀，增加累计工作量。选择 Builder 的目的在于按需累积并减少重复复制；不能据此断言每一次 `+` 都慢，也不能在没有测量的情况下承诺固定的加速倍数。
+
+### 8.2 Builder 的复制边界 {#builder的复制边界}
+
+已经使用的 `strings.Builder` 不得按值复制，需要传递时使用指针或传递最终字符串。Go 1.22 官方实现会在部分修改操作中检查这种非法复制，发现后触发 panic。
+
+复制 Builder 变量不是建立独立字符串构建器。独立构建应使用新的 Builder，再按需要写入已有内容。Builder 也没有内置的并发写同步，多个任务不能无同步地操作同一个实例。
+
+### 8.3 子串与存储保留 {#子串与存储保留}
+
+截取字符串可能共享原始字节存储。若长期保留一个大字符串中的小片段，原来的大块存储可能无法及时回收；不可变性不会消除这种可达关系。
+
+确认这类保留确实造成问题时，可以在保留边界使用 `strings.Clone(part)`。它为非空字符串建立新的分配并复制内容，空字符串直接返回空字符串。其他旧引用仍存在时，原存储也不会仅因为完成 Clone 就被释放。
+
+不需要给每次字符串赋值都加 Clone。复制本身有成本，应结合保留时间和实际内存证据选择位置；相似的存储关系可对照[Go 切片的截断与内存保留](../collections/slices.mdx#截断与内存保留)。
+
+## 9. 面试题 {#面试题}
+
+### 9.1 Go 字符串底层怎样表示，与切片表示有什么区别？ {#string-layout}
+
+**考察重点**：字节数据、长度、容量与不可变性。
+
+**相关内容**：[字符串值与不可变性](#字符串值与不可变性)。
+
+<details>
+<summary>参考回答</summary>
+
+**Go 1.22 官方实现用数据指针和字节长度描述字符串，切片还需要容量信息。** 字符串的指针指向字节数据，不是内部再指向一个完整的切片对象。
+
+字符串内容不可变，可以在赋值时共享数据；变量本身仍可重新赋值。具体内存布局是实现细节，业务判断应以字节长度、内容不可变等语言语义为准。
+
+</details>
+
+### 9.2 string 和 []byte 有什么区别，转换后修改切片会改变字符串吗？ {#string-byte}
+
+**考察重点**：内容可变性、普通转换的隔离语义和用途。
+
+**相关内容**：[string 与 byte 切片](#string与byte切片)。
+
+<details>
+<summary>参考回答</summary>
+
+**字符串内容不可变，字节切片的元素可以修改。** `string` 可以直接比较并作为 map 键；两个 `[]byte` 不能用 `==` 比较，切片也不能作为 map 键，但切片可以与 nil 比较。两者都可以包含无效 UTF-8。
+
+普通转换必须保持字符串内容稳定：把 `[]byte` 转为 string 后再修改源切片，或者修改从 string 转出的字节切片，都不能改变原字符串内容。具体复制和分配可能受编译器优化影响，不能把语义隔离等同于每次都发生一次堆分配。
+
+</details>
+
+### 9.3 函数接收 string 后重新赋值，为什么调用方没有变化？ {#string-parameter}
+
+**考察重点**：值传递、变量赋值与内容修改的区别。
+
+**相关内容**：[字符串值与不可变性](#字符串值与不可变性)。
+
+<details>
+<summary>参考回答</summary>
+
+**函数接收的是字符串值的副本，重新赋值只替换形参变量。** 它不会改变调用方变量，也没有原地修改字符串内容。
+
+需要让调用方使用新的文本时，可以返回新字符串，由调用方接收。字符串内容不可变与变量是否能够重新赋值，是两个不同层次。
+
+</details>
+
+### 9.4 len 和 range 为什么会得到不同数量，range 的下标是什么？ {#byte-rune}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：字节、UTF-8 码点和偏移单位。
+
+**相关内容**：[字节、码点与 UTF-8](#字节码点与utf8)、[下标遍历与 range](#下标遍历与range)。
+
+<details>
+<summary>参考回答</summary>
+
+**`len` 统计字节，`range` 按 UTF-8 解码得到 rune。** 一个码点可以占多个字节，所以数量不一定相同。`range` 返回的下标仍是该码点在原字符串中的字节起点。
+
+例如 `"中A文"` 有七个字节、三个码点，`range` 下标依次是 0、3、4。码点数量也不一定等于用户感知的字符数量。
+
+</details>
+
+### 9.5 解码得到 RuneError 就能证明输入无效吗？ {#invalid-utf8}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：错误标记、有效码点和解码宽度。
+
+**相关内容**：[解码失败与 U+FFFD](#解码失败与替代码点)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能只看 rune 值，因为 U+FFFD 本身也是合法码点。** 对非空输入，`utf8.DecodeRuneInString` 解码失败返回 RuneError、宽度 1；遇到合法的 U+FFFD 编码则返回相同码点、宽度 3。空输入的宽度为 0。
+
+需要判断整串是否有效时，用 `utf8.ValidString`。不要把 `RuneCountInString` 当作有效性检查，因为它也会对无效编码产生计数。
+
+</details>
+
+### 9.6 怎样保留前 N 个码点，同时拒绝无效 UTF-8？ {#rune-prefix}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：输入约定、字节边界和空值边界。
+
+**相关内容**：[按码点保留前缀](#按码点保留前缀)。
+
+<details>
+<summary>参考回答</summary>
+
+**先检查 N 和 UTF-8 有效性，再通过 range 找到第 N 个码点之后的字节边界。** 使用这个偏移截取原字符串，可以避免切断码点编码；不必先构造整个 rune 切片。
+
+需要明确空字符串、N 为零、负数以及 N 超过总码点数时的约定。正文实现对负数和无效编码返回错误，超过数量时返回原字符串。它只按码点处理，不承诺保留完整字素簇。
+
+</details>
+
+### 9.7 看起来相同的文本为什么可能不相等，转成 []rune 能解决吗？ {#unicode-equivalence}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：码点序列、字素簇、字节比较与正规化。
+
+**相关内容**：[用户字符与 Unicode 等价](#用户字符与unicode等价)。
+
+<details>
+<summary>参考回答</summary>
+
+**显示相同的文本可能使用不同的码点序列，而 Go 字符串按字节比较。** 例如 U+00E9 与 U+0065、U+0301 的组合规范等价，但原始字节不同，所以直接比较不相等。
+
+转成 `[]rune` 只完成解码，不会自动正规化，也不会把组合序列合成一个字素簇元素。需要文本等价或用户字符边界时，应分别选用相应的正规化与分段规则。
+
+</details>
+
+### 9.8 strings.Builder 用过后可以复制给另一个变量继续写吗？ {#builder-copy}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：Builder 的使用契约、共享状态与字符串稳定性。
+
+**相关内容**：[Builder 的复制边界](#builder的复制边界)。
+
+<details>
+<summary>参考回答</summary>
+
+**不可以，已经使用的 Builder 不得按值复制。** Go 1.22 官方实现会在部分修改操作中检测复制并 panic，不能把没有立即触发检查当作合法使用。
+
+需要共同操作一个构建器时传递指针，并自行处理并发同步；需要独立构建时使用新的 Builder；只需要已有结果时传递字符串。
+
+</details>
+
+### 9.9 为什么只保留一个很短的子串，仍可能占用较多内存？ {#substring-retention}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：共享存储、可达性和复制的代价。
+
+**相关内容**：[子串与存储保留](#子串与存储保留)。
+
+<details>
+<summary>参考回答</summary>
+
+**子串可能共享原字符串的字节存储，使原来的大块存储继续可达。** 字符串不可变不代表截取一定复制，也不代表保留成本只等于子串长度。
+
+确认问题后，可以在长期保留的位置使用 `strings.Clone` 创建独立副本，并释放不再需要的原始引用。不要无差别 Clone 所有字符串，复制也会增加分配和工作量。
+
+</details>
+
+## 10. 参考资料 {#参考资料}
+
+- [Go 1.22.12 语言规范：String types、range 与字符串转换](https://github.com/golang/go/blob/go1.22.12/doc/go_spec.html)
+- [Go Blog：Strings, bytes, runes and characters in Go](https://go.dev/blog/strings)
+- [Go 1.22.12 unicode/utf8](https://pkg.go.dev/unicode/utf8@go1.22.12)
+- [Go 1.22.12 runtime/string.go](https://github.com/golang/go/blob/go1.22.12/src/runtime/string.go)
+- [Go 1.22.12 strings.Builder](https://pkg.go.dev/strings@go1.22.12#Builder)
+- [Go 1.22.12 strings.Clone](https://pkg.go.dev/strings@go1.22.12#Clone)
+- [Unicode 15.0：Text Segmentation](https://www.unicode.org/reports/tr29/tr29-41.html)
+- [Unicode 15.0：Normalization Forms](https://www.unicode.org/reports/tr15/tr15-53.html)

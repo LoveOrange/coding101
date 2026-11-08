@@ -1,0 +1,325 @@
+---
+knowledge:
+  id: basic-knowledge.dart.concurrency
+  type: concept
+description: "解释 Dart 事件循环与微任务、Future/Stream、async/await、异步错误和取消，以及 Isolate 的消息与计算边界。"
+keywords: [Dart 并发, 事件循环, 微任务, Future, Stream, async await, Isolate]
+---
+
+# Dart 并发
+
+Dart 用事件循环处理异步结果，用 Isolate 隔离可以并发执行的代码和状态。`Future`、`Stream` 与 `await` 让程序在等待期间继续处理其他事件，但不会把同步计算自动移到另一个执行单元。对 Flutter 移动端来说，判断一段工作会不会阻塞界面，要看它在哪里执行，而不是只看函数是否写了 `async`。本文以 Dart 3 原生运行环境为主，Web 差异单独说明。
+
+## 1. 面试核心 {#core}
+
+- 同一 Isolate 中的普通 Dart 代码由事件循环逐段执行，**同步计算没有结束时，后面的事件不能凭 async 关键字插进来执行**。[卡](#thread-model)
+- 微任务优先于后续事件处理，**持续追加微任务可能让计时器和界面事件长期得不到机会**。[卡](#microtasks)
+- Future 表达一次结果或错误，`await` 挂起当前异步过程，**不会阻塞 Isolate 等待，也不会自动创建新的 Isolate**。[卡](#future-await)
+- 并发发起的独立操作可以用 `Future.wait` 汇总，**提前返回错误不等于取消其他操作**。[卡](#future-errors)
+- Stream 表达一串数据或错误事件，**单订阅、广播、暂停和取消需要按实际事件源管理**。[卡](#stream)
+- Isolate 有自己的隔离状态和事件循环，**发送普通可变对象不会让双方共享同一份可任意修改的对象**。[卡](#isolate)
+- 同一 Isolate 没有普通共享字段的同时执行，不代表没有业务竞态；**await 前后的状态仍可能被其他异步流程改变**。[卡](#async-race)
+
+## 2. 事件循环与微任务 {#事件循环与微任务}
+
+**事件循环**负责取出待处理事件并运行相应代码。一次同步执行段会先运行到结束或相应挂起位置，之后才能继续处理其他待运行工作。
+
+**微任务**用于需要优先处理的异步回调，例如通过 `scheduleMicrotask` 显式安排的工作。当前同步代码结束后，会优先处理微任务；微任务中新加的微任务也会继续排在后续事件之前。
+
+```dart
+import 'dart:async';
+
+void main() {
+  print('start');
+  Future<void>(() {
+    print('event');
+    scheduleMicrotask(() => print('after event'));
+  });
+  scheduleMicrotask(() {
+    print('micro 1');
+    scheduleMicrotask(() => print('micro 2'));
+  });
+  print('end');
+}
+```
+
+输出顺序是 `start`、`end`、`micro 1`、`micro 2`、`event`、`after event`。这里的普通 `Future` 构造函数通过事件方式安排计算；同步 `main` 先结束，再处理已经排入的微任务，然后才轮到事件中的计算。
+
+| API 或写法 | 需要区分的执行行为 |
+| --- | --- |
+| `scheduleMicrotask`、`Future.microtask` | 把相应计算安排为微任务 |
+| `Future(computation)` | 通过事件方式异步调用 computation |
+| `Future.sync(computation)` | 立即调用 computation，再把值、Future 或异常归一到 Future 结果 |
+| `Future.delayed` | 到达延迟条件后才有机会执行，不保证精确墙钟时刻 |
+| `future.then(...)` | 注册完成处理，具体时序还依赖 Future 是否完成及完成传播过程 |
+
+不要把所有 `then` 回调简单画成“每个都创建一个独立事件”，也不要认为每种 Future 构造函数都把计算推迟到同一个队列。推导输出时，应先标记同步执行，再按相应 API 的调度约定分析。
+
+微任务也不是性能优化的通用手段。若一个微任务每次执行都再注册自己，事件队列可能长期无法推进。需要长时间处理大量数据时，应考虑合理分批、让出事件机会或迁移计算，而不是无限提高优先级。
+
+## 3. Future 与 async/await {#future与async-await}
+
+**Future** 表达一个尚未取得的结果：它可以完成为一个值，也可以完成为错误；如果底层操作永远不完成，Future 也可能一直等待。**异步函数** `async` 返回 Future，`await` 让当前异步过程等待结果，同时允许事件循环处理其他工作。
+
+```dart
+Future<void> work() async {
+  print('before await');
+  await Future<void>.delayed(Duration.zero);
+  print('after await');
+}
+
+Future<void> main() async {
+  print('start');
+  final pending = work();
+  print('end');
+  await pending;
+}
+```
+
+输出 `start`、`before await`、`end`、`after await`。调用 `work()` 后，函数先执行到第一个等待点，调用方取得 Future 后可以继续；稍后等待结果可用，`work` 才恢复。
+
+若把一段耗时同步计算写在 `await` 前面，它仍然占用当前 Isolate。`await heavyCalculation()` 的参数表达式也要先求值；只在外面加一个 `await` 不能把本来同步的计算变成并行计算。
+
+多个独立异步操作可以先发起，再汇总等待：
+
+```dart
+Future<int> load(int id) async {
+  await Future<void>.delayed(Duration.zero);
+  if (id == 0) throw StateError('missing');
+  return id * 10;
+}
+
+Future<void> main() async {
+  final values = await Future.wait([load(1), load(2)]);
+  print(values); // [10, 20]
+  try {
+    await load(0);
+  } on StateError {
+    print('failed');
+  }
+}
+```
+
+`Future.wait` 按传入 Future 的顺序返回结果列表，而不是按完成顺序。上面两个 `load` 可以各自等待；若写成先 `await load(1)`，完成后才调用 `load(2)`，两者就形成顺序依赖。
+
+原生 I/O 可以由运行时、操作系统及其相应设施处理，再把完成结果送回事件循环。因此，“单个 Isolate 的 Dart 回调逐段运行”不能推出“没有真正异步 I/O”，也不能要求每个网络请求必须独占一条 VM 线程。
+
+## 4. 异步错误与取消 {#异步错误与取消}
+
+异步错误需要在 Future 链上处理。对 Future 使用 `await`，可以在周围用 `try/catch` 处理完成错误；只在调用一个异步函数的同步语句外面包 `try`，却不等待或接住返回链，不能保证捕获稍后才到来的错误。
+
+处理器应及时接入。先启动多个操作，等第一个结束后才给另一个可能已经失败的 Future 添加处理，可能出现未处理异步错误。独立工作可以尽早交给 `Future.wait` 或各自有完整错误处理的链；需要上报时同时保留错误与堆栈，而不是只打印一条泛化的失败文字。
+
+`Future.wait` 默认等全部输入完成后，以首个错误完成汇总结果；`eagerError: true` 可以让汇总更早报告首个错误，但不会自动停止其他工作。成功结果的资源若需要清理，还要按相应 API 契约安排清理过程。
+
+**Future 本身没有通用取消接口。** 停止网络请求、关闭订阅或终止计算，需要使用对应操作的取消能力；给 Future 加超时通常也只改变等待方看到的结果，不自动撤销底层工作。页面已退出却收到旧结果时，还应校验请求版本或当前状态，避免把失效结果提交到界面。
+
+单个 Isolate 中也可能出现异步业务竞态。例如两个流程都检查余额充足，然后各自 `await` 外部确认，恢复后都扣款。代码没有在同一瞬间修改字段，却沿用了已经过期的判断。可以等待后复查并同步提交、在等待前预留资源，或用状态机约束同一操作只能进行一次；方案要与外部副作用的可撤销性一致。
+
+## 5. Stream 与订阅 {#stream与订阅}
+
+**Stream** 表达一系列异步事件，每个事件可以是数据或错误，结束时发送完成信号。Future 适合一次请求结果，Stream 适合持续状态、数据块或连续输入。
+
+```dart
+Stream<int> numbers() async* {
+  try {
+    yield 1;
+    yield 2;
+  } finally {
+    print('closed');
+  }
+}
+
+Future<void> main() async {
+  await for (final value in numbers()) {
+    print(value); // 1
+    break;
+  }
+}
+```
+
+这个 `async*` 流在被消费后才执行，`await for` 提前退出会取消相应订阅，生成器的清理路径输出 `closed`。不能由此推断任意自定义事件源都会自动关闭全部外部资源；事件源仍需正确实现取消与清理。
+
+**单订阅流**在其生命周期内只允许一个监听者。**广播流**支持多个监听者，但普通广播控制器不会为了未来监听者保留无人订阅时的事件：
+
+```dart
+import 'dart:async';
+
+Future<void> main() async {
+  final controller = StreamController<int>.broadcast();
+  controller.add(1); // 此时没有监听者
+  final values = <int>[];
+  final subscription = controller.stream.listen(values.add);
+  controller.add(2);
+  await controller.close();
+  await subscription.cancel();
+  print(values); // [2]
+}
+```
+
+监听返回的 `StreamSubscription` 可以暂停、恢复和取消。暂停可能让上游暂缓，也可能让订阅侧缓冲，取决于事件源是否支持相应流量控制；不能认为 `pause()` 必然立即停止网络或传感器产生数据。
+
+使用 `listen` 时，要处理错误事件并保存需要取消的订阅；使用 `await for` 时，流错误会沿异步控制流传播，可由外部 `try/catch` 处理。`async*` 产生的新流与把同一个单订阅流重复监听，也不是同一件事。
+
+## 6. Isolate 与消息通信 {#isolate与消息通信}
+
+**Isolate** 是 Dart 的隔离执行单元，拥有自己的状态和事件循环。多个 Isolate 可以由运行时安排并行执行；它们不共享一份可以任意读写的普通 Dart 可变对象，通信依靠消息。
+
+一次性的 CPU 计算可以使用 `Isolate.run`：
+
+```dart
+import 'dart:isolate';
+
+Future<void> main() async {
+  final values = <int>[1, 2];
+  final count = await Isolate.run(() {
+    values.add(3);
+    return values.length;
+  });
+  print(count);  // 3
+  print(values); // [1, 2]
+}
+```
+
+新 Isolate 中的修改没有直接改动调用方的列表。这里为了观察隔离语义只处理三个元素，不是在建议为这种小工作启动 Isolate。真正使用时，需要让计算节省的主 Isolate 时间超过创建与通信成本。
+
+**SendPort** 用来发送消息，**ReceivePort** 接收消息并提供可监听的流。最小的一次响应可以这样写：
+
+```dart
+import 'dart:isolate';
+
+void worker(SendPort reply) {
+  reply.send(42);
+}
+
+Future<void> main() async {
+  final replies = ReceivePort();
+  try {
+    await Isolate.spawn(worker, replies.sendPort);
+    print(await replies.first); // 42
+  } finally {
+    replies.close();
+  }
+}
+```
+
+长期工作 Isolate 通常要交换命令端口，并为请求 ID、结果、错误、关闭与异常退出定义协议。接收端口不再使用时应关闭，否则可能继续持有资源或维持等待；工作异常时也要有错误和退出处理，不能永远等待一条不会到来的成功响应。
+
+消息能否发送由对象图和创建方式决定，不能任意发送带本地资源的对象或 `ReceivePort`。普通可变数据可能复制，可识别的不可变数据可以共享实现，部分退出返回或可转移数据机制还能转移所有权。因此“每条消息都把全部内容深复制一遍”也不准确。闭包还可能捕获超过预期的上下文，较大的对象图会增加复制成本或携带不可发送资源。
+
+Isolate 也不等于操作系统进程：同一进程中的不同 Isolate 可以共享运行时与代码等底层资源，隔离重点是 Dart 状态及其访问规则。不要把它与“为每个请求创建一个进程”或“所有对象共享的普通线程”直接画等号。
+
+Flutter 原生平台的 `compute` 可以把计算交给独立 Isolate；Web 上的 `compute` 则在当前事件循环执行，不能据此承诺获得同样的多核并行能力。选择方案前应明确目标平台、任务大小、传输数据和调用的 API 是否允许在工作 Isolate 中使用。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 Dart 是单线程还是多线程语言，它的执行模型是什么？ {#thread-model}
+
+**考察重点**：单 Isolate 事件循环、异步 I/O 与多 Isolate 并行。
+
+**相关内容**：[事件循环与微任务](#事件循环与微任务)、[Isolate 与消息通信](#isolate与消息通信)。
+
+<details>
+<summary>参考回答</summary>
+
+**单个 Isolate 中的普通 Dart 代码由自己的事件循环逐段执行，多个 Isolate 可以并行推进。** 同步段会占用当前执行机会，异步 I/O 则可以由运行时和操作系统处理，完成后送回事件。不能把“回调逐段执行”说成没有异步，也不能把每个 Future 都当作新线程或新 Isolate。
+
+</details>
+
+### 7.2 微任务和事件的处理顺序有什么区别？ {#microtasks}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：同步段、微任务排空与事件饥饿。
+
+**相关内容**：[事件循环与微任务](#事件循环与微任务)。
+
+<details>
+<summary>参考回答</summary>
+
+**当前同步执行结束后，微任务优先于后续事件处理；微任务中新加入的微任务也会继续得到处理。** 普通 Future 构造、microtask 构造和 sync 构造的计算时机不同，不能统称为同一种排队。递归追加微任务可能让计时器和 UI 事件长期无法执行。
+
+</details>
+
+### 7.3 Dart 的 Future、async 和 await 如何配合？ {#future-await}
+
+**考察重点**：结果表示、挂起恢复与事件循环。
+
+**相关内容**：[Future 与 async/await](#future与async-await)。
+
+<details>
+<summary>参考回答</summary>
+
+**Future 表达一次异步结果或错误，async 函数返回 Future，await 在等待结果时挂起当前异步过程，让事件循环继续处理其他工作。** 等待前的同步代码仍在当前 Isolate 执行，耗时计算不会仅因 async 就自动移走。独立操作可以先发起再汇总等待，有顺序依赖的操作则按依赖等待。
+
+</details>
+
+### 7.4 Future 报错、超时或提前返回后，其他工作会自动取消吗？ {#future-errors}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：结果传播与底层操作生命周期。
+
+**相关内容**：[异步错误与取消](#异步错误与取消)。
+
+<details>
+<summary>参考回答</summary>
+
+**不会自动保证，Future 没有通用取消接口，等待结果改变与底层操作停止是两件事。** `Future.wait` 的提前报错不撤销其他输入，超时包装也不自动取消原操作。应连接具体网络、订阅或计算的取消能力，并阻止已失效结果继续提交。
+
+</details>
+
+### 7.5 Future 与 Stream 有什么区别，订阅怎样结束？ {#stream}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：单次结果、连续事件、订阅类别与取消。
+
+**相关内容**：[Stream 与订阅](#stream与订阅)。
+
+<details>
+<summary>参考回答</summary>
+
+**Future 对应一次值或错误，Stream 对应一串数据或错误事件，并可以发出结束信号。** 单订阅流只允许一次监听，广播流可多监听但不默认重放无人监听时的事件。应保存并取消需要结束的订阅，处理错误和资源清理；暂停是否能让上游停止产生数据取决于事件源。
+
+</details>
+
+### 7.6 Isolate 是什么，什么时候适合使用？ {#isolate}
+
+**考察重点**：隔离状态、消息通信、计算与传输成本。
+
+**相关内容**：[Isolate 与消息通信](#isolate与消息通信)。
+
+<details>
+<summary>参考回答</summary>
+
+**Isolate 是拥有独立 Dart 状态和事件循环的执行单元，可用于把较重的 CPU 工作移出主 Isolate。** 双方通过消息交换数据，不能共享普通可变对象随意读写。需要考虑创建、复制或转移成本、对象是否可发送以及错误退出协议；轻量工作未必划算，Web 上的执行能力也要单独判断。
+
+</details>
+
+### 7.7 单个 Isolate 中没有同时写字段，为什么仍可能重复扣款？ {#async-race}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：await 交错、过期判断与业务不变量。
+
+**相关内容**：[异步错误与取消](#异步错误与取消)。
+
+<details>
+<summary>参考回答</summary>
+
+**检查与提交之间存在 await 时，其他异步流程可以先改变状态，原先的检查结果不再有效。** 这种问题是业务上的竞态，并不要求两个同步指令同时修改字段。可以重新校验并在无等待段提交、提前预留或使用请求状态机，但要同时处理已发生的外部副作用与失败补偿。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [Dart：Concurrency in Dart](https://dart.dev/language/concurrency)
+- [Dart API：scheduleMicrotask](https://api.dart.dev/dart-async/scheduleMicrotask.html)
+- [Dart API：Future constructor](https://api.dart.dev/dart-async/Future/Future.html)
+- [Dart API：Future.sync](https://api.dart.dev/dart-async/Future/Future.sync.html)
+- [Dart API：Future.wait](https://api.dart.dev/dart-async/Future/wait.html)
+- [Dart API：Stream](https://api.dart.dev/dart-async/Stream-class.html)
+- [Dart API：Isolate.run](https://api.dart.dev/dart-isolate/Isolate/run.html)
+- [Dart API：SendPort.send](https://api.dart.dev/dart-isolate/SendPort/send.html)
+- [Flutter API：compute](https://api.flutter.dev/flutter/foundation/compute.html)

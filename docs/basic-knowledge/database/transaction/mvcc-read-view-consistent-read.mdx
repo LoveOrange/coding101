@@ -20,6 +20,7 @@ keywords: ["多版本并发控制", "Read View", "undo log", "快照读", "RC �
 - RC **每次一致性读都创建新的 Read View**，RR **复用事务里第一次一致性读创建的 Read View**；`START TRANSACTION WITH CONSISTENT SNAPSHOT` 能让 RR 在事务开始时就建立快照。[卡](#snapshot-timing)
 - RR 的普通 `SELECT` **读旧快照**，`FOR UPDATE` 和 `UPDATE` **读当前最新的记录**；事务自己改过的行，后续普通 `SELECT` 也能看到。[卡](#snapshot-current-read) [卡](#rr-update-new-row)
 - 活跃的 Read View **需要的旧版本不能被 purge 清理**，长时间存活的快照会让 undo 历史持续增长；导出任务分批提交时，每批会换成新快照。[卡](#long-snapshot)
+- InnoDB 的普通 `COUNT(*)` 查询也遵守可见性规则，**统计当前事务能看到的行**。并发事务的可见行数可以不同，不能用一个全局精确行数回答所有快照。[卡](#count-mvcc)
 
 ## 2. 行版本与 undo 链 {#1-行版本通过事务信息连接}
 
@@ -138,6 +139,27 @@ INSERT INTO mvcc_demo VALUES (1, 100);
 
 整个过程中 Read View 并没有变。这一行出现，是因为 A 自己写了它。混合使用快照读和当前读时，这种现象也被称为幻读；如果事务只做快照读、自己不写，可见范围就一直不变。
 
+### 9.2 COUNT 与事务可见行数 {#count与事务可见行数}
+
+`COUNT(*)` 统计查询结果中的行数，普通一致性读的可见性规则仍然适用。它不会因为返回的是一个数字，就跳过 Read View 去统计所有物理记录或历史版本。
+
+创建独立的 InnoDB 表 `count_demo(id INT PRIMARY KEY)`，先提交一行 `id=1`。两个会话使用相同的 `SELECT COUNT(*) FROM count_demo;` 查询，B 保持自动提交，按下面顺序执行：
+
+| 步骤 | 会话 A | 会话 B | 计数结果 |
+| --- | --- | --- | --- |
+| 1 | 设为 RR，`START TRANSACTION` 后首次查询 | — | A 为 1，建立快照 |
+| 2 | — | 插入 `id=2` 并自动提交，再查询 | B 为 2 |
+| 3 | 再次查询 | — | A 仍为 1，看不到快照之后提交的 `id=2` |
+| 4 | 插入 `id=3`，暂不提交，再查询 | — | A 为 2，可见 `id=1,3` |
+| 5 | — | 再次查询 | B 为 2，可见 `id=1,2`，看不到 A 未提交的 `id=3` |
+| 6 | `COMMIT` 后再次查询 | — | A 为 3，旧快照已结束 |
+
+第 3 步中，A 和 B 对同一张表需要不同的计数结果；第 4、5 步中，两边虽然都得到 2，实际看到的行也不同。因此，即使保存一个“当前已经提交了多少行”的全局数字，也不能直接回答 A 的旧快照查询，更不能自动包含每个事务各自尚未提交的写入。这就是 InnoDB 不能用单一全局精确行数替代事务可见行数的原因。
+
+RC 的计数也不是脱离 MVCC 的全局值，只是每条一致性读会取得新快照。接着上例，A 改用 RC 开启新事务，第一次查询得到 3；B 插入并提交 `id=4` 后，A 在同一事务中的下一次查询就得到 4。
+
+这段推演说明的是可见性，不代表某一种固定的扫描代价。`COUNT(*)` 与 `COUNT(column)` 对空值的处理区别，见 [SQL 聚合](../sql/aggregation.mdx#count-star-vs-column)。
+
 ## 10. 常见问题 {#8-常见问题}
 
 ### 10.1 MVCC 与锁的分工 {#81-mvcc-是否完全不需要锁}
@@ -248,6 +270,21 @@ INSERT INTO mvcc_demo VALUES (1, 100);
 
 </details>
 
+### 11.6 InnoDB 的 COUNT(*) 与 MVCC 有什么关系？ {#count-mvcc}
+
+**考察重点**：事务可见性、快照时机、自身写入与精确计数的关系。
+
+**相关内容**：[COUNT 与事务可见行数](#count与事务可见行数)、[Read View 与版本可见性](#2-read-view-描述快照建立时的事务状态)。
+
+<details>
+<summary>参考回答</summary>
+
+**InnoDB 的普通 `COUNT(*)` 查询只统计当前事务可见的行，并发事务可能需要不同的精确结果，因此不能共用一个全局行数。**RR 复用旧快照，可能看不到其他事务刚提交的插入；RC 下一条一致性读取得新快照，就能看到此前已经提交的新行。
+
+本事务自己的写入也参与可见性判断。例如正文中，A 的旧快照只有 `id=1`，自己插入 `id=3` 后计数为 2，但仍看不到 B 在快照之后提交的 `id=2`。计数依据是当前事务看到的结果集，而不是简单读取表中已提交行的总量。
+
+</details>
+
 ## 12. 参考资料 {#参考资料}
 
 - [MySQL 8.0：Consistent Nonlocking Reads](https://dev.mysql.com/doc/refman/8.0/en/innodb-consistent-read.html)
@@ -255,4 +292,5 @@ INSERT INTO mvcc_demo VALUES (1, 100);
 - [MySQL 8.0：Locking Reads](https://dev.mysql.com/doc/refman/8.0/en/innodb-locking-reads.html)
 - [MySQL 8.0：InnoDB Multi-Versioning](https://dev.mysql.com/doc/refman/8.0/en/innodb-multi-versioning.html)
 - [MySQL 8.0：START TRANSACTION](https://dev.mysql.com/doc/refman/8.0/en/commit.html)
+- [MySQL 8.0：COUNT 与 InnoDB 事务可见性](https://dev.mysql.com/doc/refman/8.0/en/aggregate-functions.html#function_count)
 - [MySQL 8.0.43 源码：ReadView](https://github.com/mysql/mysql-server/blob/mysql-8.0.43/storage/innobase/include/read0types.h)

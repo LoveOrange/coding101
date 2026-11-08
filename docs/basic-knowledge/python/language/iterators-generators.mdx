@@ -1,0 +1,245 @@
+---
+sidebar_position: 5
+knowledge:
+  id: basic-knowledge.python.language.iterators-generators
+  type: concept
+description: "区分 Python 可迭代对象、迭代器与生成器，讲解 iter、next、yield、耗尽和惰性求值，说明流式处理的内存收益、错误时机及资源关闭责任。"
+keywords: [Python 迭代器, 生成器, yield, 惰性求值, StopIteration]
+---
+
+# Python 迭代器与生成器
+
+**迭代器**保存遍历进度，每次调用 `next()` 返回下一个元素。**生成器**是一种创建迭代器的方式：函数在 `yield` 处产出值并暂停，下次取值时再继续执行。
+
+它们能让日志和批量数据按需处理，但也带来一次性消费、延后发生的异常和资源持有问题。准备面试时，需要同时说明“什么时候计算”和“谁保存了遍历状态”。
+
+## 1. 面试核心 {#core}
+
+- **可迭代对象可以交给 `iter()` 得到迭代器；迭代器可以交给 `next()` 取值**。列表通常每次迭代都创建新的进度，已有迭代器则继续自身进度。[卡](#iterable-iterator-generator)
+- 迭代器通过 `StopIteration` 表示结束，`for` 会处理这个结束信号。**同一个迭代器耗尽后不会自动重置**。[卡](#iterator-exhaustion)
+- 调用生成器函数得到生成器对象，函数体在首次取值时才开始执行。**`yield` 暂停并保留局部状态，`return` 结束生成器**。[卡](#yield-return)
+- 惰性求值可以避免一次性保存全部结果，但**不保证所有内存占用都是常数，也不自动缩短完成全部工作所需的时间**。[卡](#lazy-boundaries)
+- 生成器可能在暂停期间持有文件或其他资源。**停止消费不等于显式关闭，资源生命周期仍需由 `with` 或明确关闭来管理**。[卡](#generator-resource)
+
+## 2. 可迭代对象与迭代器 {#可迭代对象与迭代器}
+
+**可迭代对象**是能通过 `iter(obj)` 取得迭代器的对象。列表、字典、集合与字符串都可迭代。迭代器实现 `__next__()` 提供下一项，且其 `__iter__()` 返回自身。
+
+```python
+values = [10, 20]
+first = iter(values)
+second = iter(values)
+
+print(next(first))   # 10
+print(next(first))   # 20
+print(next(second))  # 10
+print(iter(first) is first)  # True
+```
+
+两个列表迭代器有独立进度，所以 `first` 已经取完两项时，`second` 仍从第一项开始。对 `first` 再调用 `iter` 不会创建新遍历，它返回同一个迭代器。
+
+`for value in values` 会先取得迭代器，然后反复取值，直到遇到 `StopIteration`。这个结束信号由循环处理，不应被当作普通业务失败。
+
+```python
+iterator = iter([1])
+print(next(iterator))           # 1
+print(next(iterator, "end"))    # end
+print(list(iterator))           # []
+```
+
+第二次 `next` 指定了缺省值，因此耗尽时返回 `"end"`；没有缺省值就会抛出 `StopIteration`。`list(iterator)` 消费的也是剩余部分，不会自动从头恢复。
+
+## 3. 生成器的暂停与继续 {#生成器的暂停与继续}
+
+函数定义中包含 `yield`，调用它时会得到生成器对象。真正执行函数体要等到首次取值。
+
+```python
+def numbers(events):
+    events.append("started")
+    yield 1
+    events.append("continued")
+    yield 2
+    events.append("finished")
+
+events = []
+generator = numbers(events)
+print(events)          # []
+print(next(generator)) # 1
+print(events)          # ['started']
+print(list(generator)) # [2]
+print(events)          # ['started', 'continued', 'finished']
+```
+
+第一次 `next` 执行到 `yield 1` 后暂停；后面的语句还没有执行。`list(generator)` 继续消费剩余内容，经过第二次产出后再取值，最终使函数正常结束。
+
+`yield` 会保留当前局部变量与执行位置。普通函数的 `return` 则结束本次调用；生成器中的 `return` 同样终止迭代，不会作为普通元素再产出一次。不要主动 `raise StopIteration` 来结束生成器，直接 `return` 或运行到末尾即可。
+
+### 3.1 生成器表达式 {#生成器表达式}
+
+生成器表达式使用圆括号表达按需生成，列表推导式会立即构造完整列表。
+
+```python
+squares = (value * value for value in range(4))
+print(next(squares))  # 0
+print(list(squares))  # [1, 4, 9]
+print(list(squares))  # []
+```
+
+需要重复读取结果时，可以重新创建生成器，或者明确转成列表缓存。转为列表需要保存全部结果，不能同时声称已经实现完整结果缓存且不占结果内存。
+
+生成器表达式也并非把所有操作都延后：最左侧 `for` 的可迭代表达式会在创建时求值。表达式其余部分通常在消费时执行，因此排查异常时要分清创建与取值两个阶段。
+
+## 4. 惰性求值与流水处理 {#惰性求值与流水处理}
+
+**惰性求值**指结果在真正需要时才计算。它适合只消费部分结果，或者让各阶段逐条传递数据的任务。
+
+```python
+def valid_counts(lines):
+    for line in lines:
+        text = line.strip()
+        if text:
+            yield int(text)
+
+counts = valid_counts(["1", "", "2"])
+print(sum(counts))  # 3
+```
+
+`valid_counts` 不需要先建立转换后的完整列表，`sum` 可以边取值边累计。若输入来自文件迭代器，各阶段就能按行处理。
+
+这里仍有边界：示例中的输入列表已经占有内存，生成器还会保存局部状态；如果每行非常大，或处理逻辑把所有记录放入一个字典缓存，整体内存仍会增长。去重、分组与全局排序也可能要求保留额外状态。
+
+### 4.1 延后的异常 {#延后的异常}
+
+异常发生在相关语句实际执行时。创建生成器成功，不代表后续消费一定成功。
+
+```python
+def parse_values():
+    yield int("1")
+    yield int("bad")
+
+values = parse_values()
+print(next(values))  # 1
+try:
+    next(values)
+except ValueError:
+    print("parse failed")  # parse failed
+```
+
+只在 `values = parse_values()` 周围捕获异常，处理不到后面取值时的解析失败。应在消费边界决定停止、记录失败还是跳过不合法记录，不能因为错误延后发生就忽略它。
+
+## 5. 资源生命周期 {#资源生命周期}
+
+生成器暂停时，局部变量仍然存在，已打开的资源也可能仍被持有。提前退出 `for` 不会自动对任意迭代器执行关闭协议。
+
+资源由调用方持有时，关系更清楚：
+
+```python
+import io
+
+def nonempty_lines(stream):
+    for line in stream:
+        text = line.strip()
+        if text:
+            yield text
+
+with io.StringIO("first\nsecond\n") as stream:
+    lines = nonempty_lines(stream)
+    print(next(lines))  # first
+print(stream.closed)  # True
+```
+
+离开 `with` 时流已经关闭，即使 `lines` 还没有消费完。后面不应再继续读取这个生成器，因为它依赖的流已失效。
+
+生成器自身管理资源时，可以用 `try/finally` 清理，并在不再使用时显式调用 `close()`；生成器关闭会让暂停位置开始收尾。但正常业务仍应优先使用可看见的资源边界，不能依赖解释器何时回收最后一个引用。使用 `contextmanager` 表达进入与退出的完整协议，见 [Python 上下文管理器](./context-managers.mdx#生成器式上下文管理器)。
+
+## 6. 面试题 {#面试题}
+
+### 6.1 可迭代对象、迭代器与生成器有什么关系？ {#iterable-iterator-generator}
+
+**考察重点**：迭代协议、进度保存与生成器的实现角色。
+
+**相关内容**：[可迭代对象与迭代器](#可迭代对象与迭代器)、[生成器的暂停与继续](#生成器的暂停与继续)。
+
+<details>
+<summary>参考回答</summary>
+
+**可迭代对象能通过 `iter()` 提供迭代器，迭代器保存取值进度并通过 `next()` 提供下一项；生成器是迭代器的一种。**
+
+列表可以多次产生新的迭代器，每个都有独立进度。生成器通过 `yield` 暂停与继续，自动保存局部状态，无需手动编写完整的迭代器类。
+
+</details>
+
+### 6.2 对同一个生成器连续调用两次 list，为什么第二次通常为空？ {#iterator-exhaustion}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：消费剩余项、耗尽状态与重建结果。
+
+**相关内容**：[可迭代对象与迭代器](#可迭代对象与迭代器)、[生成器表达式](#生成器表达式)。
+
+<details>
+<summary>参考回答</summary>
+
+**第一次调用已经把生成器消费完，第二次读取的是同一迭代器的剩余部分。** 迭代器不会因为重新遍历就恢复进度。
+
+需要重复读取，可以重新调用生成器函数创建新对象，或第一次就缓存为列表；后者需要为全部结果付出存储成本。
+
+</details>
+
+### 6.3 生成器中的 yield 和 return 有什么区别？ {#yield-return}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：产出值、暂停状态和结束迭代。
+
+**相关内容**：[生成器的暂停与继续](#生成器的暂停与继续)。
+
+<details>
+<summary>参考回答</summary>
+
+**`yield` 产出一个值并暂停，下一次取值从暂停处继续；`return` 结束生成器。** 调用生成器函数本身只得到生成器对象，首次取值才开始运行函数体。
+
+`return` 的值不会被普通 `for` 当作下一个元素消费。结束生成器用 `return` 或运行到末尾，不主动抛 `StopIteration`。
+
+</details>
+
+### 6.4 使用生成器是否一定是 O(1) 内存，而且更快？ {#lazy-boundaries}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：按需执行、存储边界和完整工作量。
+
+**相关内容**：[惰性求值与流水处理](#惰性求值与流水处理)、[延后的异常](#延后的异常)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能这样保证。** 生成器避免一次保存全部输出，但输入、局部变量和去重或分组缓存仍可能占用大量内存。逐个产出并不免除计算每个结果的工作，还会有迭代开销。
+
+只需要前几个结果或希望逐行处理时，惰性执行可以减少不必要的计算和存储；要多次访问或排序全部结果时，需要考虑缓存与整体操作成本。错误也可能推迟到消费阶段才出现。
+
+</details>
+
+### 6.5 提前停止消费持有文件的生成器，文件会自动关闭吗？ {#generator-resource}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：暂停状态、资源所有权和关闭时机。
+
+**相关内容**：[资源生命周期](#资源生命周期)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能只靠停止消费保证及时关闭。** 生成器可能仍被引用并暂停在资源打开期间；`for` 的提前退出不会自动调用任意迭代器的关闭方法。
+
+可以让调用方用 `with` 管理文件，并限定生成器在该范围内消费；生成器自己管理资源时用 `try/finally`，在不再需要时显式关闭。不要依赖垃圾回收的时机完成业务资源释放。
+
+</details>
+
+## 7. 参考资料 {#参考资料}
+
+- [Python 3.12 教程：Iterators 与 Generators](https://docs.python.org/3.12/tutorial/classes.html#iterators)
+- [Python 3.12：Iterator Types](https://docs.python.org/3.12/library/stdtypes.html#iterator-types)
+- [Python 3.12：Yield expressions 与生成器方法](https://docs.python.org/3.12/reference/expressions.html#yield-expressions)
+- [Python 3.12：Generator expressions](https://docs.python.org/3.12/reference/expressions.html#generator-expressions)

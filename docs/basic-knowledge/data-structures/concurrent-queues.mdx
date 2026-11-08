@@ -1,0 +1,349 @@
+---
+sidebar_position: 5
+knowledge:
+  id: basic-knowledge.data-structures.concurrent-queues
+  type: concept
+description: "讲解并发队列的容量、线性化和数据发布，以加锁 MPMC 与 SPSC 环形队列说明槽位复用，再分析 MPMC 序号与无锁进展的边界。"
+keywords: ["并发队列", "环形队列", "SPSC", "MPMC", "线性化", "无锁", "槽位复用"]
+---
+
+# 并发队列
+
+**并发队列**允许多个执行者安全地交接元素。它不仅要避免两个消费者取走同一个元素，还要保证生产者写入的数据能被正确看到、槽位不会过早复用，以及入队和出队结果符合约定的顺序。
+
+“实现一个并发安全的环形无锁队列”还不足以确定算法。先要明确有几个生产者和消费者、空满时返回还是等待，以及“无锁”是否要求严格的进展保证。本文用 Go 1.22.12 展示加锁的 MPMC 基线和限定 SPSC 的原地环形实现，再讨论多生产者、多消费者增加的难点。
+
+## 1. 面试核心 {#core}
+
+- **SPSC 只有一个生产者和一个消费者，MPMC 则两端都可能有多个执行者**。单写者可以省掉一些位置竞争，不能把 SPSC 实现直接用于 MPMC。[卡](#queue-design)
+- **线性化要求每次操作像是在调用与返回之间的某个时刻生效，并尊重不重叠操作的先后关系**。FIFO 约束的是这份入队和出队顺序，不保证任务完成顺序。[卡](#linearizable-fifo)
+- 加锁实现要把容量判断、槽位访问和位置更新放在同一协议里。**把几个字段各自改成原子变量，不会自动让一次完整入队变成原子操作**。[卡](#queue-design)
+- SPSC 环形队列需要两个方向的交接：**生产者先写数据再发布尾位置，消费者先读取数据再发布头位置，允许槽位复用**。[卡](#spsc-publication)
+- **槽位序号可以区分“哪一轮可写、哪一轮可读”，但预占成功不等于已经发布数据**。还要分析持有预占位置的执行者暂停后，其他操作能否完成。[卡](#slot-progress)
+- **lock-free 是整体进展保证，wait-free 还要求每个操作的自身步数有界**。它们都不等于现实时间的延迟承诺，也不能用“有 CAS”或一次压测通过来证明。[卡](#slot-progress)
+
+## 2. 操作契约 {#操作契约}
+
+### 2.1 生产者、消费者与空满结果 {#生产者消费者与空满结果}
+
+**生产者**调用入队操作，**消费者**调用出队操作。按同时操作两端的执行者数量，可以区分下面几类：
+
+| 模型 | 生产者数量 | 消费者数量 | 主要差别 |
+| --- | --- | --- | --- |
+| SPSC | 一个 | 一个 | 两端各有唯一更新者 |
+| MPSC | 多个 | 一个 | 生产者之间还要协调入队位置 |
+| SPMC | 一个 | 多个 | 消费者之间还要协调领取位置 |
+| MPMC | 多个 | 多个 | 两端都要协调，且要处理槽位交接 |
+
+这里的“一个”是所有权约束，不是“多数时候只有一个线程”。即使两个生产者很少同时执行，也不能把它们直接接到没有多生产者保护的队列上。
+
+有界队列还要约定容量是元素上限，还是包括预留空槽在内的数组长度。下面的 `TryEnqueue(v)` 在满时返回 `false`，`TryDequeue()` 在空时返回 `(0, false)`，成功时用第二个返回值区分真实的零元素。二者不等待队列从满变为空、从空变为非空；但加锁版本仍可能等待获取互斥锁。
+
+需要生产者等空间、消费者等任务时，还要添加等待、唤醒、取消和关闭协议。Java 的相应接口见 [BlockingQueue](../java/collections/blockingqueue-producer-consumer.mdx#入队与出队方法)，Go 的任务通信也可以使用 [channel](../go/concurrency/channels.mdx)。进程内队列不会自动提供崩溃恢复或跨进程消息投递。
+
+### 2.2 线性化与 FIFO {#线性化与fifo}
+
+**线性化**把每次并发操作的效果放在它的调用与返回之间，仿佛这些操作按某个合法顺序逐个执行。被选作生效时刻的动作通常称为**线性化点**。
+
+如果 `Enqueue(A)` 已经返回，之后才开始 `Enqueue(B)`，就必须保留 A 在 B 前面的顺序。如果二者调用区间重叠，可能先发布 A，也可能先发布 B，不能仅凭哪个函数先开始就认定先入队。
+
+对于严格的队空结果，返回 `false` 也要能找到合理的生效时刻：调用期间队列确实可以被视为空。若一个入队已经成功返回、元素尚未被取走，后来开始的出队就不能无理由地返回空。某些接口允许“暂时取不到”的弱失败语义，但它与“队列为空”是不同契约，必须明说。
+
+FIFO 仍然只约束领取顺序。A 先出队、B 后出队，两个消费者并行处理时，B 可能先完成，见 [队列](./queue.mdx#使用边界)。
+
+## 3. 加锁的 MPMC 基线 {#加锁的mpmc基线}
+
+**一个覆盖完整队列状态的互斥锁，可以直接保护 MPMC 的容量与顺序不变量。** 以下实现维护 `head` 和 `size`，尾位置由二者计算，所有状态访问都在同一个锁内完成：
+
+```go
+package main
+
+import (
+    "fmt"
+    "sync"
+)
+
+type LockedQueue struct {
+    mu   sync.Mutex
+    data []int
+    head int
+    size int
+}
+
+func NewLockedQueue(capacity int) *LockedQueue {
+    if capacity <= 0 {
+        panic("capacity must be positive")
+    }
+    return &LockedQueue{data: make([]int, capacity)}
+}
+
+func (q *LockedQueue) TryEnqueue(value int) bool {
+    q.mu.Lock()
+    defer q.mu.Unlock()
+    if q.size == len(q.data) {
+        return false
+    }
+    tail := (q.head + q.size) % len(q.data)
+    q.data[tail] = value
+    q.size++
+    return true
+}
+
+func (q *LockedQueue) TryDequeue() (int, bool) {
+    q.mu.Lock()
+    defer q.mu.Unlock()
+    if q.size == 0 {
+        return 0, false
+    }
+    value := q.data[q.head]
+    q.data[q.head] = 0
+    q.head = (q.head + 1) % len(q.data)
+    q.size--
+    return value, true
+}
+
+func main() {
+    q := NewLockedQueue(2)
+    fmt.Println(q.TryEnqueue(0), q.TryEnqueue(2), q.TryEnqueue(3))
+    fmt.Println(q.TryDequeue())
+    fmt.Println(q.TryDequeue())
+    fmt.Println(q.TryDequeue())
+}
+```
+
+输出依次为 `true true false`、`0 true`、`2 true`、`0 false`。队列最多保留两个元素，零值也可以正常交接。使用时必须通过构造函数创建队列，之后不要复制包含锁的队列对象，应共享其指针。
+
+成功入队可以在锁内 `size++` 时生效，成功出队可以在 `size--` 时生效，失败结果则在锁内检查空满时生效。其他队列操作无法在临界区中途观察半完成的状态，解锁与后续加锁还建立数据可见性。
+
+代价是所有队列操作竞争同一个锁；持锁者暂停，其他执行者可能要等待。这个基线便于先验证容量、回绕、FIFO 和返回值，再讨论是否值得用更复杂的协议减少竞争。不要把“先检查 `size`，解锁后再写槽位”当成同一个原子操作。
+
+## 4. SPSC 环形队列 {#spsc环形队列}
+
+### 4.1 单写者与预留槽位 {#单写者与预留槽位}
+
+SPSC 可以把两个位置分给不同的所有者：生产者独自推进 `tail`，消费者独自推进 `head`。跨角色读取位置时仍需要同步，否则既可能判断错空满，也可能在数据尚未发布时读取槽位。
+
+这里采用 [队列的预留槽位规则](./queue.mdx#首尾位置与循环数组)：逻辑容量是 N，实际分配 N+1 个槽。`head == tail` 表示空，尾位置再前进一格就追上 `head` 表示满。位置只在数组范围内回绕，不依赖一个无限增长的计数器。
+
+下面的实现**只允许一个生产者调用入队、一个消费者调用出队**。使用 Go 的顺序一致原子操作发布位置；`data` 中的普通读写通过这些发布关系获得安全的先后顺序。
+
+```go
+package main
+
+import (
+    "fmt"
+    "runtime"
+    "sync/atomic"
+)
+
+type SPSCQueue struct {
+    data []int
+    head atomic.Uint64
+    tail atomic.Uint64
+}
+
+func NewSPSCQueue(capacity int) *SPSCQueue {
+    slots := capacity + 1
+    if capacity <= 0 || slots <= capacity {
+        panic("invalid capacity")
+    }
+    return &SPSCQueue{data: make([]int, slots)}
+}
+
+func (q *SPSCQueue) TryEnqueue(value int) bool {
+    tail := q.tail.Load()
+    next := (tail + 1) % uint64(len(q.data))
+    if next == q.head.Load() {
+        return false
+    }
+    q.data[tail] = value
+    q.tail.Store(next)
+    return true
+}
+
+func (q *SPSCQueue) TryDequeue() (int, bool) {
+    head := q.head.Load()
+    if head == q.tail.Load() {
+        return 0, false
+    }
+    value := q.data[head]
+    q.data[head] = 0
+    q.head.Store((head + 1) % uint64(len(q.data)))
+    return value, true
+}
+
+func main() {
+    q := NewSPSCQueue(2)
+    producerDone := make(chan struct{})
+    go func() {
+        defer close(producerDone)
+        for value := 0; value < 5; value++ {
+            for !q.TryEnqueue(value) {
+                runtime.Gosched()
+            }
+        }
+    }()
+    for received := 0; received < 5; {
+        if value, ok := q.TryDequeue(); ok {
+            fmt.Println(value)
+            received++
+        } else {
+            runtime.Gosched()
+        }
+    }
+    <-producerDone
+}
+```
+
+输出按顺序为 `0` 到 `4`。生产者写完五个元素后退出，主 goroutine 读取固定数量，并通过 `producerDone` 确认生产者结束。示例中的外层重试只用来演示交接；`Gosched` 不是数据发布机制，也没有提供超时、关闭或公平性保证。
+
+队列需要在共享前构造完成，使用后不能复制包含原子字段的对象。构造函数还拒绝非正容量和 `capacity + 1` 的整数溢出；很大的容量仍可能因资源不足而无法分配。
+
+### 4.2 发布数据与允许复用 {#发布数据与允许复用}
+
+生产者先执行 `q.data[tail] = value`，再用 `q.tail.Store(next)` 发布新尾位置。消费者观察到这个尾位置或之后的发布后，才知道相应槽位已经可读。若先推进 `tail` 再写 `data`，消费者可能读到旧值或与生产者发生数据竞争。
+
+反方向同样重要：消费者先读取并清空 `q.data[head]`，再推进 `head`。生产者看到空间已经腾出后，才能安全复用那个槽位。如果消费者先推进 `head`，再去读原槽位，生产者可能已经把下一轮数据覆盖上去。
+
+Go 的原子操作提供顺序一致语义，观察到另一原子操作的效果时会建立同步关系；具体规则见 [Go 原子操作](../go/concurrency/atomics.mdx#发布与多字段约束) 与 [Go 内存模型](../go/concurrency/memory-model.mdx#happens-before关系)。原子位置只是在发布边界上连接两端，槽位访问安全还依赖单生产者、单消费者和不提前复用这几个条件。
+
+成功入队在发布 `tail` 时生效，成功出队在发布 `head` 时生效。空满失败在读取对端位置并作出判断时生效。每次 `Try` 都是有限次检查和读写，没有内部竞争重试；在底层原子操作与普通内存访问能够完成的模型下，它具备 wait-free 的算法性质。现实执行仍可能被调度、GC 或硬件延迟暂停，不承诺固定微秒数返回。
+
+如果多加一个生产者，两者可能同时读取相同的 `tail`，写向同一个槽位。仅把最后的 `tail.Store` 改成 CAS 也不够：槽位可能已经在 CAS 前被覆盖；若改为先 CAS 预占，则又必须处理预占者尚未写完的状态。MPMC 需要完整的新协议。
+
+## 5. MPMC 的槽位协议 {#mpmc的槽位协议}
+
+### 5.1 预占、发布与轮次 {#预占发布与轮次}
+
+MPMC 中，**预占位置**只说明某个执行者取得了处理该位置的资格，**发布数据**才说明消费者可以读取。两者不能用一个“尾位置已增加”混为一谈。
+
+一种有界环形方案会给每个槽位附带序号，用来区分它属于哪一轮。设数组有 N 个槽，逻辑位置为 p，数组下标为 `p % N`。在一段尚未发生计数器溢出的执行中，可以这样理解状态：
+
+| 动作 | 该槽位的序号 | 含义 |
+| --- | --- | --- |
+| 生产者准备处理位置 p | p | 这一轮可以写入 |
+| 生产者写好数据后发布 | p+1 | 这一轮数据可读取 |
+| 消费者取走数据后发布 | p+N | 下次绕回这个槽位时可以复用 |
+
+多个生产者还要竞争取得不同的逻辑位置，多个消费者也要协调领取位置。序号的发布需要相应的内存顺序，不能只保证位置计数器的 CAS 原子。定宽计数器的回绕、容量条件和比较方式也要一起论证，不能只说“位数大，应该用不完”。
+
+Dmitry Vyukov 的有界 MPMC 示例采用了这一类序号协议，并明确区分“不用互斥锁”与严格的 lock-free 性质。它不是把前面的 SPSC 多加几个 CAS 就直接得到的通用保证。
+
+### 5.2 预占者暂停后的结果 {#预占者暂停后的结果}
+
+考虑两个槽位，生产者 P0、P1 和一个消费者 C：
+
+1. P0 取得位置 0，但在写入并发布之前暂停。
+2. P1 取得位置 1，写入 B，发布后成功返回。
+3. C 随后开始出队，发现队头位置 0 还没有发布。
+
+此时“位置 0 尚不可读”和“队列为空”是不同结论。如果 C 直接返回空，就无法满足前文的严格线性化空队列契约：B 的入队在 C 开始前已经完成，且没有任何出队取走它。即使把仍未完成的 P0 操作计入某个合法顺序，队列也不能因此变为空。
+
+如果 C 改为一直等 P0 发布，取出就依赖这个暂停的生产者。其他槽位用尽后，整个有效交接也可能停住。CAS 已经成功执行过，并不能消除这种依赖。
+
+可以另行定义“本次暂时取不到”的返回值，但这改变了接口语义，不能继续把它当成严格的队空结果。也可以设计协助完成、特殊空值或其他算法，让剩余执行者处理未完成状态；这些办法需要完整的线性化、回收和进展论证。不能只在循环里加一次 CAS，就宣称已经解决了所有 MPMC 问题。
+
+这也是 **lock-free 与单次原子更新的区别**：要看任意执行者暂停后，整体是否仍能持续完成符合契约的操作。单个执行者能否避免饥饿，则是更强的要求。锁与无锁的进展定义见 [锁与无锁](../java/concurrency/locks-vs-lock-free-cost.mdx#无锁算法的进度保证)。
+
+### 5.3 节点、槽位与回收 {#节点槽位与回收}
+
+环形队列复用的是固定槽位，链式队列还会面对节点移除与内存回收。某个节点从链表中摘除，不代表其他执行者已经停止读取它；手动释放或过早复用，可能产生悬空访问或 ABA 问题。
+
+有 GC 的语言减少了手动释放的负担，但主动把同一个对象放回池里、改写后重新发布，仍可能破坏算法的身份与生命周期约束。Michael–Scott 的原始队列算法也明确列出了分配器与回收前提，不能把这部分从伪代码中删掉后就当成完整实现。
+
+Java 的链式队列实现见 [ConcurrentLinkedQueue](../java/collections/concurrentlinkedqueue-lock-free-path.mdx#offer-入队)，它使用的发布与协助机制应按自己的算法理解，不直接套到固定槽位环形队列上。
+
+## 6. 实现与验证范围 {#实现与验证范围}
+
+准备并发队列题时，先给出操作契约和不变量，再实现对应的算法。前面的加锁基线支持 MPMC；SPSC 版本提供限定角色下的无锁交接，**不是对未给生产者、消费者条件的题目作了默认假设**。若进一步要求固定槽位、MPMC、严格 FIFO 和 lock-free，需要选择能同时满足这些条件的算法并说明证明，不能用这个 SPSC 版本直接交差。
+
+验证时至少要检查：
+
+- 容量为 1、空满、零元素，以及多次回绕后是否仍保持正确结果。
+- 每个成功入队的元素是否恰好被取走一次，适用角色下顺序是否正确。
+- 在发布与复用的关键步骤暂停执行者，观察是否会读到未发布数据或提前覆盖槽位。
+- 对小规模调用与返回历史，检查能否排列成符合真实先后关系的串行队列操作。
+- 使用竞争检测检查实际执行的路径，同时保留对线性化与进展的推导。
+
+压力运行没有报错，不是无锁或线性化的证明；竞争检测也不会自动发现“返回了错误的空队列结果”。性能比较还要在相同容量、生产消费比例和等待策略下进行。这里的实现用于解释交接机制，不提供它们一定比标准库容器或短临界区更快的结论。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 怎样实现并发安全的无锁队列，环形实现需要先明确哪些条件？ {#queue-design}
+
+**题型**：综合题
+
+**考察重点**：角色模型、容量和返回语义、完整操作的原子性，以及无锁方案的适用前提。
+
+**相关内容**：[操作契约](#操作契约)、[加锁的 MPMC 基线](#加锁的mpmc基线)、[SPSC 环形队列](#spsc环形队列)、[MPMC 的槽位协议](#mpmc的槽位协议)。
+
+<details>
+<summary>参考回答</summary>
+
+**先确认生产者、消费者数量，以及容量、空满处理、FIFO 和进展要求。** 环形数组只是存储形式，不足以决定并发算法。
+
+可以先用同一把锁保护容量判断、槽位读写与位置更新，得到正确的 MPMC 基线。如果明确只有一个生产者和一个消费者，可以用预留槽位和原子头尾位置交接：写完再发布尾位置，读完再发布头位置允许复用。
+
+若要求 MPMC，必须进一步解决位置竞争、数据发布、槽位轮次和暂停执行者的影响。使用 CAS 只证明某一步原子，不证明整个队列 lock-free；需要说明线性化点和进展前提。未披露角色约束时，不能把 SPSC 实现当成通用 MPMC 答案。
+
+</details>
+
+### 7.2 FIFO 并发队列为什么还需要线性化契约？ {#linearizable-fifo}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：并发调用的合法顺序、真实先后关系与失败结果。
+
+**相关内容**：[线性化与 FIFO](#线性化与fifo)。
+
+<details>
+<summary>参考回答</summary>
+
+**线性化说明并发操作如何对应到一份合法的串行 FIFO 历史。** 每个操作在自己的调用与返回之间生效，已经结束的操作必须先于之后才开始的操作；重叠的操作则可能有不同的合法顺序。
+
+空满失败也属于这个契约。如果一个元素已经成功入队且没有被取走，后来开始的出队不能直接报告队空。FIFO 保证的是取出顺序，消费者处理完成的顺序仍需业务另行协调。
+
+</details>
+
+### 7.3 SPSC 为什么既要“写完再发布”，也要“读完再允许复用”？ {#spsc-publication}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：两个同步方向、槽位所有权与内存可见性。
+
+**相关内容**：[发布数据与允许复用](#发布数据与允许复用)。
+
+<details>
+<summary>参考回答</summary>
+
+**尾位置把写好的数据交给消费者，头位置把读完的槽位交还给生产者。** 只保证其中一个方向，仍可能读到未发布数据或被下一轮写入覆盖。
+
+生产者先写 `data` 再原子更新 `tail`；消费者观察尾位置后读数据，完成读取和清理后才更新 `head`。安全性同时依赖单生产者、单消费者与正确的原子同步。增加第二个同角色执行者会破坏位置的独占更新，不能沿用原证明。
+
+</details>
+
+### 7.4 MPMC 队列用了 CAS 和槽位序号，就一定是 lock-free 吗？ {#slot-progress}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：预占与发布的区别、严格队空语义，以及整体进展。
+
+**相关内容**：[预占、发布与轮次](#预占发布与轮次)、[预占者暂停后的结果](#预占者暂停后的结果)。
+
+<details>
+<summary>参考回答</summary>
+
+**不一定。还要分析预占者暂停后，其他执行者能否完成符合契约的操作。** 序号可以区分槽位轮次，但不能让一个尚未写好的槽位自动变成可读。
+
+如果前面的生产者预占后暂停，后面的生产者已经发布成功，消费者在队头直接返回空，会破坏严格线性化的空队列契约；一直等待前者，又保留了对暂停执行者的依赖。需要更完整的协助或其他算法，或者明确接受较弱的接口语义。CAS 成功、没有互斥锁和真正 lock-free 是不同判断。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [Herlihy 与 Wing：Linearizability: A Correctness Condition for Concurrent Objects](https://cs.brown.edu/~mph/HerlihyW90/p463-herlihy.pdf)
+- [Go 1.22.12 sync/atomic：原子操作的顺序与可见性](https://github.com/golang/go/blob/go1.22.12/src/sync/atomic/doc.go)
+- [Go 1.22.12 内存模型](https://github.com/golang/go/blob/go1.22.12/doc/go_mem.html)
+- [Boost 1.85.0 SPSC Queue：单生产者、单消费者的环形交接实现](https://github.com/boostorg/lockfree/blob/boost-1.85.0/include/boost/lockfree/spsc_queue.hpp)
+- [Dmitry Vyukov：Bounded MPMC Queue](https://sites.google.com/site/1024cores/home/lock-free-algorithms/queues/bounded-mpmc-queue)
+- [Michael 与 Scott：并发队列算法及内存管理前提](https://www.cs.rochester.edu/research/synchronization/pseudocode/queues.html)

@@ -1,0 +1,241 @@
+---
+sidebar_position: 1
+knowledge:
+  id: basic-knowledge.python.runtime.memory-management
+  type: concept
+description: "解释 CPython 的引用计数与循环垃圾回收，区分名称删除、对象可达性、弱引用和进程内存，给出验证引用保留与定位增长来源的方法。"
+keywords: [Python 内存管理, CPython, 引用计数, 循环引用, weakref, tracemalloc]
+---
+
+# Python 内存管理
+
+Python 负责管理对象的内存，程序仍要负责对象和资源的使用范围。CPython 以引用计数为主要机制，并用循环垃圾回收处理仅靠计数无法释放的引用环。这里讲 CPython 的机制，不能把它的立即释放行为当作所有 Python 实现的语言保证。
+
+面试需要区分三个层次：一个名称是否还存在，一个对象是否仍被引用，以及进程是否把内存归还给操作系统。它们不会总在同一个时刻变化。
+
+## 1. 面试核心 {#core}
+
+- CPython 用引用计数跟踪对象引用，**新增或删除名称绑定只是引用变化的一部分**，容器、闭包和缓存也可能继续持有对象。[卡](#memory-mechanisms)
+- 互相引用的对象即使已经无法从程序外部访问，计数仍可能非零。**循环垃圾回收补充引用计数，识别不可达的引用环**。[卡](#reference-cycle)
+- `del` 删除名称或容器关系，不等于强制销毁对象。**对象仍可达时，调用 `gc.collect()` 也不会把它当作垃圾回收**。[卡](#reachable-retention)
+- 对象释放后，内存可能留在解释器分配器中供后续复用。**进程常驻内存没有立即下降，不足以单独证明对象仍然泄漏**。[卡](#rss-object-lifetime)
+- 弱引用不单独维持对象存活，适合不应拥有对象生命周期的索引或缓存。**资源关闭仍应使用明确的管理协议，不能依赖弱引用或垃圾回收时机**。[卡](#weak-reference)
+
+## 2. 引用计数 {#引用计数}
+
+**引用计数**记录指向某个对象的引用数量。CPython 在建立和解除引用关系时维护计数，通常在计数降为零时释放对象。
+
+```python
+import sys
+
+class Payload:
+    pass
+
+value = Payload()
+before = sys.getrefcount(value)
+alias = value
+after = sys.getrefcount(value)
+print(after - before)  # 1，常规 CPython 配置下新增了 alias 引用
+```
+
+`sys.getrefcount` 调用本身也会临时持有参数引用，因此不应拿它的某个绝对数字当作“程序里有几个变量”。示例只观察同样调用方式下新增一个引用后的变化，并使用普通自定义实例，避免整数等对象的缓存或特殊实现影响观察。
+
+引用还可能来自列表元素、字典值、对象属性、函数闭包以及异常 traceback 中保存的执行现场。删除一个名称，并不清空这些其他关系。
+
+```python
+import weakref
+
+class Payload:
+    pass
+
+value = Payload()
+reference = weakref.ref(value)
+cache = [value]
+del value
+print(reference() is not None)  # True，cache 仍持有对象
+cache.clear()
+print(reference() is None)      # True，常规 CPython 中对象已释放
+```
+
+这里使用弱引用观察对象，不会因为观察本身让对象一直存活。第二个输出依赖 CPython 对这个无引用环实例的释放行为；跨实现的资源管理不能依赖相同的立即回收时机。
+
+## 3. 循环引用与垃圾回收 {#循环引用与垃圾回收}
+
+**循环引用**指对象之间的引用形成环。一个对象引用自己也可以形成最简单的环。
+
+```python
+import gc
+import weakref
+
+class Node:
+    pass
+
+was_enabled = gc.isenabled()
+gc.disable()
+try:
+    node = Node()
+    node.next = node
+    reference = weakref.ref(node)
+    del node
+    print(reference() is not None)  # True，环中的引用仍在
+    gc.collect()
+    print(reference() is None)      # True，不可达环被回收
+finally:
+    if was_enabled:
+        gc.enable()
+```
+
+例子暂时关闭自动循环回收，避免观察过程中它提前运行；最后恢复原状态。`del node` 删除外部名称，但对象仍通过 `next` 引用自己，所以单看引用计数不能判定它已经没有用途。
+
+循环回收器追踪可能形成引用环的对象关系，识别这些对象是否仍能从外部存活对象到达。不可达的一组对象可以一起回收，而不是要求每个对象先独立降到零引用。
+
+CPython 还使用分代等策略减少每次检查的范围。具体代际、阈值与回收调度随实现版本变化，理解对象关系不需要背一组固定参数。`gc.disable()` 关闭的是自动循环回收，不会关闭引用计数本身。
+
+## 4. 可达但不再需要的对象 {#可达但不再需要的对象}
+
+垃圾回收器判断对象是否还能被访问，无法判断业务以后是否还需要它。全局缓存持续保存历史结果时，这些对象仍可达，即使业务上已经不再使用。
+
+```python
+cache = {}
+for case_id in range(3):
+    cache[case_id] = bytearray(1024)
+
+print(len(cache))  # 3
+cache.pop(0)
+print(len(cache))  # 2
+```
+
+如果任务无限增长而缓存从不移除，引用计数和循环回收都不会自动把这些结果删掉。解决办法是为缓存规定容量、过期或生命周期，而不是提高垃圾回收频率。
+
+闭包持有大对象、监听器未解除注册、长期保存异常对象，也会延长引用关系。排查时要找“谁还持有它”，不能只在局部函数里反复执行 `del`。
+
+## 5. 对象释放与进程内存 {#对象释放与进程内存}
+
+**对象释放**让相应存储不再属于该对象；**进程常驻内存**是操作系统观察到的进程驻留内存，两者不是同一个指标。
+
+CPython 的内存分配器可能保留已经释放的空间，供之后的对象复用。内存碎片、扩展模块自行分配的内存、线程栈与外部库缓存，也会影响进程指标。因此 RSS 暂时不下降，需要结合存活对象与分配来源判断。
+
+可以按以下顺序缩小范围：
+
+1. 固定一轮工作量，多次执行相同阶段，观察增长是否持续，还是预热后趋稳。
+2. 在相同生命周期位置比较 Python 分配快照，找出持续增长的代码位置与对象类型。
+3. 检查缓存、容器、闭包、任务和异常记录中的引用关系，确认是否有明确的释放责任。
+4. 如果 Python 跟踪的分配没有相应增长，但进程内存增长，再检查扩展模块和系统层资源。
+
+`tracemalloc` 可以记录启动跟踪之后的 Python 内存分配，并比较快照；它不是全部进程内存的完整视图。启动时机过晚，会漏掉此前的分配；只看总量也难以找到持有关系。
+
+## 6. 弱引用与资源边界 {#弱引用与资源边界}
+
+**弱引用**允许访问某个对象，但不会仅凭这条关系阻止对象回收。弱值字典等结构适合保存辅助索引，而不强行延长对象生命周期。
+
+```python
+import weakref
+
+class Payload:
+    pass
+
+cache = weakref.WeakValueDictionary()
+value = Payload()
+cache["current"] = value
+print("current" in cache)  # True
+
+del value
+print("current" in cache)  # False，常规 CPython 中最后强引用已解除
+```
+
+弱引用不是所有缓存的替代品。如果业务要求结果一定保留到下次使用，就需要相应强引用或持久化，而不能把对象随时消失当作正确缓存策略。也不是所有 Python 对象都支持弱引用，例如普通列表不能直接创建弱引用。
+
+文件、连接和锁还包含 Python 对象之外的资源责任。及时释放这些资源应依赖 `with`、`close` 或显式生命周期，而不是等待 `__del__` 或垃圾回收。对象什么时候不再可达，与业务什么时候必须归还资源可能相差很远。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 Python 怎样管理对象内存，CPython 使用哪些回收机制？ {#memory-mechanisms}
+
+**考察重点**：语言与实现边界、引用计数、引用环与存活关系。
+
+**相关内容**：[引用计数](#引用计数)、[循环引用与垃圾回收](#循环引用与垃圾回收)。
+
+<details>
+<summary>参考回答</summary>
+
+**Python 自动管理对象内存；CPython 主要使用引用计数，并用循环垃圾回收处理不可达的引用环。** 计数通常在对象引用归零时触发释放，但引用环里的对象可能互相维持非零计数，需要额外检查对象关系。
+
+名称、容器、属性和闭包都可以持有对象。删除一个名称不等于对象立刻无人引用，CPython 的回收时机也不能扩大成所有 Python 实现的保证。
+
+</details>
+
+### 7.2 引用计数为什么不能独自处理所有循环引用？ {#reference-cycle}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：外部可达性与环内部计数的区别。
+
+**相关内容**：[循环引用与垃圾回收](#循环引用与垃圾回收)。
+
+<details>
+<summary>参考回答</summary>
+
+**环中对象互相引用，即使外部已经无法访问，引用计数仍可能非零。** 自引用对象删除外部名称后，还能通过属性引用自己。
+
+循环回收需要识别这组对象是否仍从外部存活对象可达；已经不可达的一组对象才能一起处理。关闭自动循环回收不会同时关闭引用计数。
+
+</details>
+
+### 7.3 对象留在全局缓存里，gc.collect 为什么不能替业务删除它？ {#reachable-retention}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：可达性、业务需要与缓存生命周期。
+
+**相关内容**：[可达但不再需要的对象](#可达但不再需要的对象)。
+
+<details>
+<summary>参考回答</summary>
+
+**缓存仍持有对象，它对程序仍可达，所以不会被当作不可达垃圾删除。** 回收器不知道业务以后是否还要使用该值。
+
+应检查缓存容量、过期和清理时机，解除确实不再需要的引用。反复调用垃圾回收不能替代生命周期设计。
+
+</details>
+
+### 7.4 删除大对象后 RSS 没有立即下降，是否就是内存泄漏？ {#rss-object-lifetime}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：对象存活、分配器复用与进程指标的区别。
+
+**相关内容**：[对象释放与进程内存](#对象释放与进程内存)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能仅凭这个现象判断。** 对象释放后的内存可能被解释器留作复用，RSS 也包含扩展模块、线程栈与其他资源。
+
+应比较相同工作量和生命周期位置下的持续变化，用分配快照与对象引用证据判断是否存在无界保留。`tracemalloc` 可帮助定位 Python 分配，但不是全部进程内存的完整记录。
+
+</details>
+
+### 7.5 弱引用适合什么场景，能否代替文件关闭？ {#weak-reference}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：对象所有权与资源释放责任。
+
+**相关内容**：[弱引用与资源边界](#弱引用与资源边界)。
+
+<details>
+<summary>参考回答</summary>
+
+**弱引用适合不应单独延长对象存活的辅助索引或缓存。** 对象没有其他强引用时，可以回收并从弱容器移除。
+
+它不能代替文件或连接的明确关闭，也不能用于必须保证结果始终存在的缓存语义。资源应通过 `with` 或显式 `close` 及时释放，不依赖回收时机。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [Python 3.12 数据模型：对象生命周期](https://docs.python.org/3.12/reference/datamodel.html#objects-values-and-types)
+- [Python 3.12 gc：循环回收接口](https://docs.python.org/3.12/library/gc.html)
+- [Python 3.12 sys：getrefcount](https://docs.python.org/3.12/library/sys.html#sys.getrefcount)
+- [Python 3.12 weakref：弱引用](https://docs.python.org/3.12/library/weakref.html)
+- [Python 3.12 tracemalloc：分配跟踪](https://docs.python.org/3.12/library/tracemalloc.html)

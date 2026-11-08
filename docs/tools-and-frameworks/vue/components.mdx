@@ -1,0 +1,692 @@
+---
+sidebar_position: 3
+knowledge:
+  id: tools-and-frameworks.vue.components
+---
+
+# Vue 组件
+
+**组件**把一部分界面、状态和交互组织在一起，通过 props、事件和插槽与外部协作。一个按钮能否抽成组件不是难点；难点在于确定谁拥有数据、谁能修改它，以及组件离开页面后哪些工作应该停止。
+
+面试中的组件通信、生命周期、表格和分页设计，都可以沿着这几个问题展开。本文主要使用 Vue 3 的单文件组件与 Composition API，Vue 2 的 `data`、mixin 和 `v-model` 差异单独说明。
+
+## 1. 面试核心 {#core}
+
+- **props 把父组件的数据传给子组件，事件把子组件的修改意图交回父组件。** props 的绑定只读不等于对象内部全部只读；直接修改共享对象会模糊状态归属。[卡](#communication)
+- **组件 `v-model` 是 prop 与更新事件的约定。** Vue 3 默认使用 `modelValue` 与 `update:modelValue`，Vue 3.4 起可用 `defineModel` 声明，仍由双方约定决定谁持有状态。[卡](#component-model)
+- **插槽内容在提供者的作用域里定义，作用域插槽通过参数接收子组件的数据。** 普通 props 适合传数据，插槽适合让调用方决定一部分界面。[卡](#slots)
+- **`provide` / `inject` 连接祖先与后代，最近的同名提供者生效。** 提供 ref 可以保留响应式联系，修改入口放在状态拥有者一侧更容易追踪。[卡](#dependency-injection)
+- **挂载完成表示本组件与同步子组件的 DOM 已创建，普通异步请求不会自动阻塞挂载。** 请求数据、操作 DOM 和释放资源，应按依赖条件安排时机。[卡](#lifecycle)
+- **`KeepAlive` 缓存组件实例，切换时会停用和激活实例。** 局部状态可以保留，但缓存不等于数据永远新鲜，也不会自动清理任意计时器或外部订阅。[卡](#keep-alive)
+- **模板引用适合聚焦等命令式操作，`defineExpose` 明确暴露少量能力。** 它不应成为父组件任意修改子组件内部状态的入口。[卡](#template-ref)
+- **组合式函数复用有状态逻辑，每次调用可以创建独立状态。** 在组件上下文中使用生命周期清理监听，不能只考虑正常展示时的行为。[卡](#composables)
+- **可复用组件需要明确输入、输出、定制入口与边界。** 表格的行身份、分页的状态所有权和请求责任，都应在接口中说清楚。[卡](#table-design) [卡](#pagination-design)
+
+## 2. props 与组件事件 {#props与组件事件}
+
+### 2.1 数据由谁持有 {#数据由谁持有}
+
+**单向数据流**指父组件通过 props 向下传递数据，子组件通过事件请求外部修改。父组件重新渲染时，会把最新 prop 传给子组件；子组件不应把 prop 当成自己的可写变量。
+
+| 关系 | 合适的入口 | 需要保留的边界 |
+| --- | --- | --- |
+| 父组件给子组件传数据 | props | 子组件不直接给 prop 重新赋值 |
+| 子组件通知父组件 | `emit` 与事件监听 | 事件表达意图，父组件决定更新什么 |
+| 兄弟组件共享状态 | 提升到共同父组件，再传 props / 事件 | 不让两个本地副本互相同步 |
+| 祖先向较深后代提供上下文 | `provide` / `inject` | 说明状态的生命周期与修改入口 |
+| 多个远距离组件共享业务状态 | 合适的 store | 不因组件数量多就把所有局部状态全局化 |
+| 父组件触发聚焦等操作 | 模板引用与显式暴露的方法 | 不穿透组件修改内部数据 |
+
+props 的只读约束针对绑定本身。对象和数组仍可能与父组件共享引用，子组件修改嵌套字段会影响父组件。例如传入 `course` 后，给 `props.course` 重新赋值会受到限制；修改 `props.course.title` 却可能改变父组件的数据。允许这种修改需要双方有明确约定，否则优先发出事件。
+
+如果 prop 只用来提供初始值，可以用 `ref(props.initialCount)` 创建局部状态。它表达的是“复制初始化时的值”，之后不会自动跟随 `initialCount` 更新。需要持续派生的值应使用计算属性，不能把两种需求混在一起。
+
+### 2.2 一个可编辑的标题 {#一个可编辑的标题}
+
+下面的 `TitleInput.vue` 声明 `modelValue` prop 和 `update:modelValue` 事件，输入时把新值交给调用方：
+
+```vue
+<script setup>
+defineProps({ modelValue: { type: String, required: true } });
+const emit = defineEmits(['update:modelValue']);
+</script>
+
+<template>
+  <input
+    aria-label="课程标题"
+    :value="modelValue"
+    @input="emit('update:modelValue', $event.target.value)"
+  >
+</template>
+```
+
+`App.vue` 持有 `title`：
+
+```vue
+<script setup>
+import { ref } from 'vue';
+import TitleInput from './TitleInput.vue';
+const title = ref('React');
+</script>
+
+<template>
+  <TitleInput v-model="title" />
+  <p>{{ title }}</p>
+</template>
+```
+
+输入 `Vue` 后，父组件把 `title` 改为 `Vue`，段落与输入框都显示新值。这里的 `v-model` 相当于传入 `:model-value="title"`，再监听 `@update:model-value="title = $event"`。子组件本身没有给 prop 赋值。
+
+组件事件不沿组件树逐层冒泡。祖父组件如果需要处理孙组件的事件，中间组件必须转发，或另选共享状态方案。原生 DOM 事件与未声明监听器的透传可能让表面行为相似，不能据此认为所有 `emit` 都会冒泡。
+
+这个最小输入组件在每次 `input` 时更新值，没有实现中文输入法组合阶段的暂缓提交。真实表单若需要与原生 `v-model` 一致的行为，应处理组合事件，或使用下面的原生 `v-model` 写法。
+
+### 2.3 defineModel 与版本差异 {#definemodel与版本差异}
+
+**`defineModel`** 是 Vue 3.4 起提供的编译宏，把组件模型的 prop 和更新事件声明合在一起。它返回的 ref 可以在子组件中赋值，赋值会按模型约定通知父组件。
+
+把 `TitleInput.vue` 替换为：
+
+```vue
+<script setup>
+const title = defineModel({ type: String, required: true });
+</script>
+
+<template>
+  <input aria-label="课程标题" v-model="title">
+</template>
+```
+
+父组件保持不变，输入后的结果也一样。这里不是让任意 prop 变得可写，而是由编译结果连接 `modelValue` 和 `update:modelValue`。`defineModel('title')` 则对应 `title` 与 `update:title`，可以与父组件的 `v-model:title` 配合。
+
+Vue 2 的组件 `v-model` 默认是 `value` prop 与 `input` 事件，也可用 `model` 选项修改。Vue 3 改为 `modelValue` 与 `update:modelValue`，并支持多个具名模型。迁移时应核对两端的约定，不能只改模板指令。
+
+模型的默认值也有状态所有权问题：如果父组件传入 `undefined`，子组件 `defineModel({ default: 1 })` 的初值可以是 1，但父组件仍是 `undefined`。不要假定默认值会在挂载时自动写回父组件。
+
+## 3. 插槽与组件定制 {#插槽与组件定制}
+
+### 3.1 插槽的作用域 {#插槽的作用域}
+
+**插槽**让调用方提供一段界面，由子组件决定放在哪里。没有名字的是默认插槽；具名插槽适合区分标题、正文和操作区等位置。未提供插槽内容时，子组件可以显示后备内容。
+
+插槽内容使用调用方的变量作用域，不能直接读取子组件内部变量。**作用域插槽**通过插槽参数把子组件的数据交给调用方，调用方再决定怎样渲染。这相当于子组件在合适的位置调用一个由父组件提供的渲染函数。
+
+### 3.2 一个表格组件 {#一个表格组件}
+
+`DataTable.vue` 接收行、列与行主键字段，用默认插槽开放单元格，用具名插槽开放表格标题：
+
+```vue
+<script setup>
+defineProps({
+  rows: { type: Array, required: true },
+  columns: { type: Array, required: true },
+  rowKey: { type: String, default: 'id' }
+});
+</script>
+
+<template>
+  <table>
+    <caption><slot name="caption">课程列表</slot></caption>
+    <thead>
+      <tr><th v-for="column in columns" :key="column.key" scope="col">
+        {{ column.label }}
+      </th></tr>
+    </thead>
+    <tbody>
+      <tr v-for="row in rows" :key="row[rowKey]">
+        <td v-for="column in columns" :key="column.key">
+          <slot :row="row" :column="column" :value="row[column.key]">
+            {{ row[column.key] }}
+          </slot>
+        </td>
+      </tr>
+    </tbody>
+  </table>
+</template>
+```
+
+调用方 `App.vue` 决定标题与分数显示：
+
+```vue
+<script setup>
+import DataTable from './DataTable.vue';
+const rows = [{ id: 'vue', title: 'Vue', score: 90 }];
+const columns = [
+  { key: 'title', label: '课程' },
+  { key: 'score', label: '分数' }
+];
+const suffix = '分';
+</script>
+
+<template>
+  <DataTable :rows="rows" :columns="columns">
+    <template #caption>已完成课程</template>
+    <template #default="{ column, value }">
+      <strong v-if="column.key === 'score'">{{ value }}{{ suffix }}</strong>
+      <span v-else>{{ value }}</span>
+    </template>
+  </DataTable>
+</template>
+```
+
+标题显示“已完成课程”，分数单元格显示加粗的“90分”。`column` 与 `value` 来自子组件传出的插槽参数，`suffix` 来自父组件，二者的来源不同。
+
+这个接口要求每行有稳定且唯一的 `row[rowKey]`，列的 `key` 也不能重复。组件负责结构与渲染，调用方负责数据和业务展示；排序、选择、加载态、空态与大数据量虚拟化应按需求补充明确接口，不在最小表格里暗藏请求地址或业务权限。
+
+## 4. provide 与 inject {#provide与inject}
+
+**依赖注入**允许祖先提供一份值，后代按 key 获取，不必由每层组件转交 prop。Vue 按组件祖先链查找，最近的同名提供者优先。它不是任何组件都能任意访问的全局变量。
+
+共享的 `counter-context.js` 只导出 key：
+
+```js
+export const counterKey = Symbol('counter');
+```
+
+`CounterProvider.vue` 创建状态，并把只读视图与修改函数一起提供出去：
+
+```vue
+<script setup>
+import { provide, readonly, ref } from 'vue';
+import { counterKey } from './counter-context.js';
+
+const count = ref(0);
+function increment() { count.value += 1; }
+provide(counterKey, { count: readonly(count), increment });
+</script>
+
+<template><slot /></template>
+```
+
+`CounterButton.vue` 注入约定的接口：
+
+```vue
+<script setup>
+import { inject } from 'vue';
+import { counterKey } from './counter-context.js';
+
+const counter = inject(counterKey);
+if (!counter) throw new Error('CounterButton 需要 CounterProvider');
+const { count, increment } = counter;
+</script>
+
+<template><button @click="increment">{{ count }}</button></template>
+```
+
+`App.vue` 组合它们：
+
+```vue
+<script setup>
+import CounterProvider from './CounterProvider.vue';
+import CounterButton from './CounterButton.vue';
+</script>
+
+<template>
+  <CounterProvider>
+    <CounterButton />
+    <section><CounterButton /></section>
+  </CounterProvider>
+</template>
+```
+
+两个按钮初始都是 0，点击任意一个后都显示 1。`inject` 收到的是原来的 ref，不会自动解包成某个瞬间的数字；这里把它解构为模板顶层绑定，模板才按 ref 规则显示值。
+
+如果把提供的值改成 `count.value`，传出去的只是当时的数字，之后的变化不会自动通知后代。给不同组件子树分别创建 `CounterProvider`，则每个实例拥有独立计数。Symbol key 用来避免命名冲突，不承担安全隔离或权限校验。
+
+## 5. 生命周期与资源清理 {#生命周期与资源清理}
+
+### 5.1 创建、挂载、更新与卸载 {#创建挂载更新与卸载}
+
+**生命周期钩子**是在组件创建、DOM 更新和销毁过程中运行的回调。选择钩子首先看工作依赖什么，而不是把所有逻辑都塞进 `mounted`。
+
+| 阶段 | Options API | Composition API | 适合判断的条件 |
+| --- | --- | --- | --- |
+| 初始化状态与逻辑 | `beforeCreate`、`created` | `setup` / `<script setup>` 承担初始化逻辑 | 此时不能依赖已挂载 DOM |
+| 即将挂载 | `beforeMount` | `onBeforeMount` | 首次 DOM 还没有完成挂载 |
+| 挂载完成 | `mounted` | `onMounted` | 本组件及同步子组件已挂载，可访问模板引用 |
+| 即将更新 | `beforeUpdate` | `onBeforeUpdate` | 状态已变，对应 DOM 更新尚未完成 |
+| 更新完成 | `updated` | `onUpdated` | 当前组件 DOM 已更新，不在这里无条件修改状态 |
+| 即将卸载 | `beforeUnmount` | `onBeforeUnmount` | 实例仍可使用，开始释放外部资源 |
+| 卸载完成 | `unmounted` | `onUnmounted` | 子组件卸载、相关响应式作用已停止，可完成清理 |
+
+Vue 2 对应的卸载钩子叫 `beforeDestroy` 与 `destroyed`。Composition API 的 `setup` 在 Options API 的 `beforeCreate` 之前执行，并不是简单把每一个旧钩子改名。
+
+父子都是同步组件时，父组件开始初始化，子组件完成挂载，父组件再触发 `mounted`。父组件的 `mounted` 不保证异步组件或 `Suspense` 内部的异步依赖都已完成，也不保证元素位于可见区域、图片已加载或浏览器已经绘制。
+
+组合式生命周期钩子应在 `setup` 的同步执行期间登记。不要等一个任意网络请求完成后才调用 `onUnmounted`，否则可能已经失去当前组件上下文。
+
+### 5.2 异步请求不会自动推迟挂载 {#异步请求不会自动推迟挂载}
+
+在普通 `setup` 中启动请求，或把 `created` 写成 `async`，不会让 Vue 自动等待该 Promise 再挂载组件。状态应该明确区分加载、成功和失败，模板按状态展示占位或结果。
+
+数据请求不依赖 DOM 时，可以在初始化逻辑中启动；测量尺寸、聚焦输入框或初始化需要元素的库，则等到挂载。请求回来后如果还要读取由结果更新的 DOM，需要等待 Vue 的更新完成，具体见 [Vue 渲染机制](./rendering.mdx#数据变化与dom刷新)。
+
+Vue 3 的异步 `setup`、`<script setup>` 顶层 `await` 是另一种机制，需要相应的异步组件组织方式或框架支持。Vue 的 `Suspense` 仍标为实验功能，不能把普通请求、异步 `setup` 和服务端渲染混成一种“发请求就暂停页面”的行为。
+
+### 5.3 错误边界与卸载边界 {#错误边界与卸载边界}
+
+**`onErrorCaptured`** 捕获后代组件向上传播的错误，包括渲染、事件、生命周期和 `setup` 等 Vue 管理的执行过程。它不负责自动捕获应用中所有独立的 Promise 或计时器错误，也不代替业务请求的失败处理。
+
+回调返回 `false` 会阻止这次错误继续传到更高层的错误钩子与全局错误处理器。展示失败界面时，不应继续渲染同一个会抛错的子树，否则可能反复触发错误。
+
+组件卸载时，Vue 会停止与该实例关联的渲染和响应式作用，但任意 `setInterval`、原生监听、WebSocket 或外部订阅仍需要自己的清理。请求还应取消，或让过期结果失效，不能只删除界面就认为所有工作结束。
+
+## 6. KeepAlive {#keepalive}
+
+**`KeepAlive`** 缓存动态组件实例，使它被切换出去后仍能保留局部状态。停用时 DOM 离开当前展示位置；再次激活会复用实例，而不是重新执行一轮普通挂载来恢复全部状态。
+
+`CachedCounter.vue` 记录激活与停用，并保存局部计数：
+
+```vue
+<script setup>
+import { ref, onActivated, onDeactivated, onUnmounted } from 'vue';
+const props = defineProps({ name: { type: String, required: true } });
+const count = ref(0);
+onActivated(() => console.log('激活', props.name));
+onDeactivated(() => console.log('停用', props.name));
+onUnmounted(() => console.log('卸载', props.name));
+</script>
+
+<template><button @click="count++">{{ name }}：{{ count }}</button></template>
+```
+
+`App.vue` 用 key 区分两个实例：
+
+```vue
+<script setup>
+import { ref } from 'vue';
+import CachedCounter from './CachedCounter.vue';
+const current = ref('a');
+</script>
+
+<template>
+  <button @click="current = current === 'a' ? 'b' : 'a'">切换</button>
+  <KeepAlive :max="2">
+    <CachedCounter :key="current" :name="current" />
+  </KeepAlive>
+</template>
+```
+
+把 a 点到 1，切换到 b，再切回 a，仍显示 `a：1`。初次进入也会调用 `onActivated`，不是只在“第二次访问”时调用。切出去时调用 `onDeactivated`，被最终卸载时也会触发停用与卸载相关钩子。
+
+`max` 限制缓存实例数，超过后按最近最少使用策略淘汰。把示例的 `max` 改为 1，a 被 b 挤出缓存，再回到 a 就是新实例，计数回到 0。`include` / `exclude` 按组件名称匹配，不是直接按 URL 匹配。
+
+缓存页的数据是否刷新，需要业务策略：可以在激活时检查过期时间、路由参数或数据版本，再决定重取；正在展示的定时轮询可在激活时启动、停用时停止。不要仅因为实例还在缓存中，就认定其外部副作用都已暂停。
+
+## 7. 模板引用与 defineExpose {#模板引用与defineexpose}
+
+**模板引用**在挂载后提供 DOM 元素或子组件的访问入口。它适合聚焦、滚动、测量等命令式操作，初次渲染之前或被条件渲染移除后可能为空。
+
+`FocusInput.vue` 只暴露 `focus` 方法：
+
+```vue
+<script setup>
+import { ref } from 'vue';
+const input = ref(null);
+function focus() { input.value?.focus(); }
+defineExpose({ focus });
+</script>
+
+<template><input ref="input" aria-label="搜索课程"></template>
+```
+
+调用方 `App.vue`：
+
+```vue
+<script setup>
+import { ref } from 'vue';
+import FocusInput from './FocusInput.vue';
+const search = ref(null);
+</script>
+
+<template>
+  <FocusInput ref="search" />
+  <button @click="search?.focus()">聚焦搜索框</button>
+</template>
+```
+
+点击按钮后输入框获得焦点。`<script setup>` 组件默认不把内部绑定公开给父组件，`defineExpose` 把接口限定为 `focus`，父组件不需要知道子组件的 DOM 结构或 ref 名称。
+
+Vue 3.5 还提供 `useTemplateRef`，这里采用各 Vue 3 版本都能使用的普通 ref 写法。列表中的模板引用数组不保证与数据数组顺序一致，不能把数组索引当作稳定的行身份。
+
+## 8. 组合式函数与 mixin {#组合式函数与mixin}
+
+### 8.1 用函数组织有状态逻辑 {#用函数组织有状态逻辑}
+
+**组合式函数**是利用 Composition API 组织和复用有状态逻辑的函数，通常以 `use` 开头。它可以创建 ref、注册生命周期、返回值和操作函数，调用方能从参数与返回值看清依赖。
+
+`useWindowWidth.js` 在挂载后读取窗口宽度，并在卸载时移除监听：
+
+```js
+import { ref, onMounted, onUnmounted } from 'vue';
+
+export function useWindowWidth() {
+  const width = ref(0);
+  function update() { width.value = window.innerWidth; }
+  onMounted(() => {
+    update();
+    window.addEventListener('resize', update);
+  });
+  onUnmounted(() => window.removeEventListener('resize', update));
+  return { width };
+}
+```
+
+调用方组件：
+
+```vue
+<script setup>
+import { useWindowWidth } from './useWindowWidth.js';
+const { width } = useWindowWidth();
+</script>
+
+<template><p>窗口宽度：{{ width }}</p></template>
+```
+
+挂载后显示当前视口宽度，窗口改变时更新。初始化时的 0 是占位状态；`window` 只在客户端挂载回调里读取，因此模块与初始化逻辑不会因为服务端没有 `window` 而直接失败。
+
+每次调用都会创建自己的 `width` ref。两个组件都观察同一个窗口，所以显示结果相同，但它们不是同一个 ref。把 ref 移到模块顶层会改变状态生命周期，变成跨调用共享；服务端环境还必须考虑不同请求之间的隔离。
+
+### 8.2 data 工厂与 mixin 合并 {#data工厂与mixin合并}
+
+Vue 2 的组件 `data` 使用函数，为每个实例返回状态。这个函数不是深拷贝工具：每次返回新对象字面量可以隔离状态；如果函数反复返回同一个模块级对象，仍然共享它。
+
+**mixin** 把一组选项混入组件。下面是 Vue 2.7 的独立模块示例：
+
+```js
+import Vue from 'vue2';
+
+const shared = {
+  data() { return { label: '混入', count: 0 }; },
+  created() { console.log('混入钩子', this.label); },
+  methods: { describe() { return '混入方法'; } }
+};
+const Counter = Vue.extend({
+  mixins: [shared],
+  data() { return { label: '组件' }; },
+  created() { console.log('组件钩子', this.label); },
+  methods: { describe() { return '组件方法'; } }
+});
+const first = new Counter();
+const second = new Counter();
+first.count += 1;
+console.log(first.count, second.count, first.describe());
+```
+
+这里的 `vue2` 是安装到本地的 Vue 2.7 包别名；在普通 Vue 2 项目中从 `vue` 导入即可。每个实例都先输出“混入钩子 组件”，再输出“组件钩子 组件”，最后输出 `1 0 组件方法`。
+
+同名生命周期钩子合并为多个回调，mixin 的先运行；数据和方法的同名冲突则以组件自身选项为优先。这个规则是选项合并，不是父子组件的挂载顺序。
+
+组合式函数把使用哪些逻辑、接收哪些参数、暴露哪些值写在调用处，减少 mixin 的隐式成员来源与命名冲突。但它不保证代码天然清晰：函数如果返回大量互相依赖的状态，或暗中修改全局对象，仍然难以维护。
+
+## 9. 分页组件的接口 {#分页组件的接口}
+
+**受控分页组件**由父组件持有当前页，组件只显示页码并提出切换请求。数据请求留在父组件或业务数据层，这样同一个分页界面可以用于不同接口和不同页面。
+
+下面的 `Pagination.vue` 约定 `page` 和 `pageCount` 都是正整数，且当前页在范围内：
+
+```vue
+<script setup>
+const props = defineProps({
+  page: { type: Number, required: true },
+  pageCount: { type: Number, required: true }
+});
+const emit = defineEmits(['update:page']);
+function move(offset) {
+  const next = props.page + offset;
+  if (next >= 1 && next <= props.pageCount) emit('update:page', next);
+}
+</script>
+
+<template>
+  <nav aria-label="课程分页">
+    <button :disabled="page <= 1" @click="move(-1)">上一页</button>
+    <span aria-live="polite">第 {{ page }} / {{ pageCount }} 页</span>
+    <button :disabled="page >= pageCount" @click="move(1)">下一页</button>
+  </nav>
+</template>
+```
+
+`App.vue` 根据总数计算页数，筛选变化时重置当前页：
+
+```vue
+<script setup>
+import { computed, ref } from 'vue';
+import Pagination from './Pagination.vue';
+const total = ref(25);
+const pageSize = 10;
+const page = ref(1);
+const pageCount = computed(() => Math.max(1, Math.ceil(total.value / pageSize)));
+function filter() {
+  total.value = 7;
+  page.value = 1;
+}
+</script>
+
+<template>
+  <button @click="filter">筛选为 7 条</button>
+  <Pagination v-model:page="page" :page-count="pageCount" />
+</template>
+```
+
+初始共 3 页，可以从第 1 页进入第 3 页，到最后一页后“下一页”禁用。点击筛选后显示第 1 / 1 页，两个翻页按钮都禁用。空列表也显示 1 页是这个示例的约定；产品可以隐藏分页，但需要统一约定，避免出现第 1 / 0 页。
+
+真实接口还要处理加载状态、失败重试、请求乱序，以及后端返回总数变化后的页码修正。props 的类型声明与开发时告警不代替这些运行时校验，也不代替服务端权限和数据校验。
+
+## 10. 面试题 {#面试题}
+
+### 10.1 Vue 组件之间有哪些通信方式，怎样确定状态归属？ {#communication}
+
+**考察重点**：父子关系、共同拥有者、共享状态与命令式接口。
+
+**相关内容**：[props 与组件事件](#props与组件事件)、[provide 与 inject](#provide与inject)。
+
+<details>
+<summary>参考回答</summary>
+
+**先确定谁拥有状态，再按组件关系选择 props、事件、依赖注入或 store。** 父向子传 props，子向父发事件；兄弟共享状态可以提升到共同父组件；较深的组件子树可用 `provide` / `inject`；跨区域业务状态可放在合适的 store。
+
+组件事件不逐层冒泡。对象 prop 的嵌套修改可能影响父组件，因此只读绑定不意味着深层完全只读；通常由子组件发出修改意图，让拥有者更新。模板引用用于聚焦等必要操作，不作为任意修改内部状态的通道。
+
+</details>
+
+### 10.2 Vue 2 与 Vue 3 的组件 v-model 有什么差异，defineModel 做了什么？ {#component-model}
+
+**考察重点**：prop / 事件协议、具名模型与默认值边界。
+
+**相关内容**：[一个可编辑的标题](#一个可编辑的标题)、[defineModel 与版本差异](#definemodel与版本差异)。
+
+<details>
+<summary>参考回答</summary>
+
+**Vue 2 默认使用 `value` 与 `input`，Vue 3 默认使用 `modelValue` 与 `update:modelValue`。** Vue 3 可用具名 `v-model` 连接多个模型；Vue 3.4 的 `defineModel` 编译宏声明对应 prop 与更新事件，返回可按协议更新的 ref。
+
+它没有让所有 prop 都能随意赋值。父组件持有的值仍应有清楚的更新路径；子组件默认值也不会自动写回父组件中原本为 `undefined` 的状态。
+
+</details>
+
+### 10.3 默认插槽、具名插槽和作用域插槽分别解决什么问题？ {#slots}
+
+**考察重点**：界面定制位置、父级作用域与插槽参数。
+
+**相关内容**：[插槽与组件定制](#插槽与组件定制)。
+
+<details>
+<summary>参考回答</summary>
+
+**默认与具名插槽区分内容放在哪里，作用域插槽让调用方拿到子组件提供的数据。** 默认插槽用于主要内容，具名插槽区分标题、操作区等位置；子组件通过插槽参数把行、列、值等交给调用方。
+
+插槽内容在父组件作用域定义，因此可读取父组件的 `suffix`；子组件内部的 `column` 只有作为插槽参数传出来后才能使用。作用域插槽不是让父组件自动获得子组件全部状态。
+
+</details>
+
+### 10.4 provide / inject 能否保持响应式，嵌套提供者怎样选择？ {#dependency-injection}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：引用与快照、最近祖先、修改入口。
+
+**相关内容**：[provide 与 inject](#provide与inject)。
+
+<details>
+<summary>参考回答</summary>
+
+**传入 ref 或响应式对象可以保留响应式联系，传入当时的基本类型值只是快照。** 注入 ref 时收到的仍是 ref，不会自动变成数字。多个祖先提供同一个 key 时，最近的祖先优先。
+
+每个提供者可以创建独立状态。提供只读视图与明确修改函数，可以把变更集中到拥有者；Symbol key 降低名字冲突，不承担权限校验。
+
+</details>
+
+### 10.5 created 与 mounted 有什么区别，异步请求完成前组件是什么状态？ {#lifecycle}
+
+**考察重点**：DOM 可用时机、父子挂载与异步请求边界。
+
+**相关内容**：[生命周期与资源清理](#生命周期与资源清理)。
+
+<details>
+<summary>参考回答</summary>
+
+**`created` 时状态已初始化，但还不能依赖已挂载 DOM；`mounted` 时本组件及同步子组件已经挂载。** 不依赖 DOM 的请求可以提前启动，需要元素的测量或聚焦放在挂载之后。
+
+普通异步请求不会自动阻塞挂载，组件可以先显示加载状态，成功或失败后再更新。父组件挂载完成不保证异步组件、请求、图片或绘制全部完成；异步 `setup` 与普通请求也要分开讨论。
+
+</details>
+
+### 10.6 Vue 怎样捕获后代组件错误，错误界面有哪些限制？ {#error-capture}
+
+**考察重点**：捕获范围、错误传播与失败子树。
+
+**相关内容**：[错误边界与卸载边界](#错误边界与卸载边界)。
+
+<details>
+<summary>参考回答</summary>
+
+**Vue 3 可用 `onErrorCaptured`，Options API 可用 `errorCaptured` 捕获后代组件传播的错误。** 它覆盖 Vue 管理的渲染、事件、生命周期等过程，不能当作所有独立异步任务的总捕获器。
+
+返回 `false` 会停止继续向更高层与全局错误处理器传播。失败界面应替换出错子树，不能继续渲染同一个必然抛错的部分；业务请求仍应自行处理失败与重试。
+
+</details>
+
+### 10.7 KeepAlive 缓存了什么，切回缓存页时怎样更新数据？ {#keep-alive}
+
+**考察重点**：实例保留、激活停用、淘汰与数据新鲜度。
+
+**相关内容**：[KeepAlive](#keepalive)。
+
+<details>
+<summary>参考回答</summary>
+
+**`KeepAlive` 缓存组件实例，因此局部状态能在切换后保留。** 初次挂载和重新进入都会激活，离开会停用；超过 `max` 后按最近最少使用策略淘汰，被淘汰实例再次进入时需要重建。
+
+切回时是否请求数据取决于过期时间、参数或业务版本，可在激活钩子中判断。缓存不会自动停止任意轮询或外部订阅，应在停用与卸载边界清理，并避免旧请求覆盖新结果。
+
+</details>
+
+### 10.8 模板引用适合什么场景，script setup 组件怎样暴露方法？ {#template-ref}
+
+**考察重点**：挂载条件、命令式操作与封装边界。
+
+**相关内容**：[模板引用与 defineExpose](#模板引用与defineexpose)。
+
+<details>
+<summary>参考回答</summary>
+
+**模板引用适合聚焦、滚动和测量等需要实例或 DOM 的操作，`defineExpose` 可以暴露有限的方法。** 引用在挂载前或条件渲染移除后可能为空，应按生命周期与空值处理。
+
+`<script setup>` 内部绑定默认不全部公开。父组件调用公开的 `focus` 即可，不需要读取内部输入框 ref，更不应借引用随意改子组件状态。
+
+</details>
+
+### 10.9 Composition API 怎样复用逻辑，与 mixin 相比有什么取舍？ {#composables}
+
+**考察重点**：显式依赖、状态生命周期与资源清理。
+
+**相关内容**：[组合式函数与 mixin](#组合式函数与mixin)。
+
+<details>
+<summary>参考回答</summary>
+
+**组合式函数用参数与返回值明确逻辑依赖，调用方能看清状态和方法来自哪里。** 每次调用可以创建独立 ref，并在组件生命周期中注册和清理监听；是否共享状态取决于状态声明在哪里。
+
+mixin 通过选项合并把成员注入组件，可能出现同名冲突和隐式依赖。组合式函数减少这类隐式关系，但仍需控制接口范围、外部副作用和模块级共享状态，不能只把大块代码搬进一个 `use` 函数。
+
+</details>
+
+### 10.10 Vue 2 的 data 为什么是函数，它会深拷贝返回值吗？ {#data-factory}
+
+**考察重点**：组件实例隔离与对象身份。
+
+**相关内容**：[data 工厂与 mixin 合并](#data工厂与mixin合并)。
+
+<details>
+<summary>参考回答</summary>
+
+**组件的 `data` 函数可以为每个实例创建状态，但不会自动把共享对象深拷贝一份。** 每次返回新对象，实例可以持有独立状态；如果函数返回同一个模块级对象，或在新对象里放入同一个嵌套对象，对应部分仍会共享。
+
+关键是每次调用实际创建了哪些对象，而不是看语法上是否写了函数。
+
+</details>
+
+### 10.11 mixin 与组件有同名钩子、数据和方法时怎样合并？ {#mixin-merge}
+
+**考察重点**：生命周期合并与选项覆盖的区别。
+
+**相关内容**：[data 工厂与 mixin 合并](#data工厂与mixin合并)。
+
+<details>
+<summary>参考回答</summary>
+
+**Vue 2 的同名生命周期钩子都会执行，mixin 的钩子先运行；数据和方法冲突时，组件自身定义优先。** 因此不能把所有冲突概括为“组件覆盖 mixin”，也不能把 mixin 当作父组件解释执行顺序。
+
+排查时应先判断这个选项是生命周期、数据还是方法，再按对应合并规则分析。
+
+</details>
+
+### 10.12 怎样设计一个支持自定义单元格的 Vue 表格组件？ {#table-design}
+
+**题型**：综合题
+
+**考察重点**：数据接口、稳定行身份、插槽与职责边界。
+
+**相关内容**：[一个表格组件](#一个表格组件)、[数据由谁持有](#数据由谁持有)。
+
+<details>
+<summary>参考回答</summary>
+
+**用 props 描述行、列和稳定行主键，用作用域插槽让调用方定制单元格。** 表格负责表头、行列结构与遍历，插槽提供 `row`、`column` 和 `value`，调用方决定格式与操作。
+
+行主键和列 key 必须满足各自的唯一性要求。根据需求补充空态、加载态、排序或选择事件；请求地址与业务权限留在业务层。编码后至少检查默认内容、自定义内容、空行、重复 key 与更新后的行身份。
+
+</details>
+
+### 10.13 怎样设计可复用分页组件，页码和请求分别由谁管理？ {#pagination-design}
+
+**题型**：综合题
+
+**考察重点**：受控状态、边界页、总数变化与业务数据层。
+
+**相关内容**：[分页组件的接口](#分页组件的接口)、[数据由谁持有](#数据由谁持有)。
+
+<details>
+<summary>参考回答</summary>
+
+**由父组件持有当前页和数据请求，分页组件接收页码信息并发出切换意图。** 可以使用 `page`、`pageCount` 与 `update:page` 协议，第一页禁用上一页，最后一页禁用下一页，并拒绝越界切换。
+
+筛选和页大小变化时由父组件重置或修正页码。空列表的显示约定要一致；异步请求还需处理加载、失败和乱序，不能让一个纯分页界面暗中绑定某个业务接口。
+
+</details>
+
+## 11. 参考资料 {#参考资料}
+
+- [Vue：Props](https://vuejs.org/guide/components/props.html)
+- [Vue：Component Events](https://vuejs.org/guide/components/events.html)
+- [Vue：Component v-model](https://vuejs.org/guide/components/v-model.html)
+- [Vue：Slots](https://vuejs.org/guide/components/slots.html)
+- [Vue：Provide / Inject](https://vuejs.org/guide/components/provide-inject.html)
+- [Vue：Composition API Lifecycle Hooks](https://vuejs.org/api/composition-api-lifecycle.html)
+- [Vue：KeepAlive](https://vuejs.org/guide/built-ins/keep-alive.html)
+- [Vue：Template Refs](https://vuejs.org/guide/essentials/template-refs.html)
+- [Vue：Composables](https://vuejs.org/guide/reusability/composables.html)
+- [Vue：Suspense](https://vuejs.org/guide/built-ins/suspense.html)
+- [Vue 2：Mixins](https://v2.vuejs.org/v2/guide/mixins.html)
+- [Vue 2：Components Basics](https://v2.vuejs.org/v2/guide/components.html)

@@ -1,0 +1,456 @@
+---
+sidebar_position: 3
+knowledge:
+  id: tools-and-frameworks.react.reconciliation
+---
+
+# React 协调
+
+**协调**（reconciliation）是 React 根据新的界面描述，判断哪些组件和宿主节点可以继续使用、哪些需要更新或替换的过程。对 Web 页面来说，宿主节点主要就是浏览器 DOM 节点。
+
+它决定的不只是页面怎样更新，还包括输入框里的草稿是否跟着列表项移动、切换对象后表单是否清空，以及组件的状态是否保留。回答这些问题，要分清元素描述、组件身份、DOM 节点三个层次，不能把“组件执行了一次”直接等同于“整块 DOM 被重建”。
+
+下面的 JSX 示例可分别作为独立 App.jsx，使用[React 组件](./components.mdx#根节点与应用入口)中的 createRoot 入口运行。行为以 React 18、19 的公共规则为准。
+
+## 1. 面试核心 {#core}
+
+- **React 元素是界面描述，不是真实 DOM 节点**。创建 JSX 或调用 createElement，并不等于已经修改页面。[卡](#virtual-dom)
+- **渲染计算下一份界面，提交才把变化应用到宿主环境**。组件重新执行后，可能没有需要修改的 DOM。[卡](#render-commit)
+- **组件状态依附于 React 树中的身份**。相同父级下的类型、key 或位置关系影响是否复用，业务 props 相同并不保证同一身份。[卡](#state-reset)
+- **key 帮助 React 在同组兄弟中匹配同一个条目**。它应稳定、唯一，来自数据身份；它不是阻止组件重新渲染的开关。[卡](#key-identity)
+- **用索引作为可重排列表的 key，容易让状态跟着位置走**。输入框、选中状态和子组件本地状态可能因此对应错数据。[卡](#index-keys)
+- **改变 key 可以有意重建子树并重置状态**。先确定数据身份和重置范围，再把 key 放到对应边界。[卡](#state-reset)
+- **协调使用启发式匹配，不承诺任意树变化的全局最少操作**。类型变化、跨父级移动等情况有明确的复用边界。[卡](#diff-strategy)
+- **虚拟 DOM 不保证比手写 DOM 更快**。它帮助组织声明式更新，同时也有计算、分配和比较成本。[卡](#virtual-dom-performance)
+
+## 2. 元素、组件与 DOM {#元素组件与dom}
+
+### 2.1 元素描述什么 {#元素描述什么}
+
+**React 元素**描述要渲染的类型、输入和子内容。JSX 经构建工具转换后，会创建 React 能识别的元素；createElement 则可以直接创建这种描述：
+
+```jsx
+import { createElement } from 'react';
+
+export default function App() {
+  const element = createElement('p', { className: 'course' }, 'React');
+  console.log(element.type, element.props.children);
+  return element;
+}
+```
+
+日志中的类型和子内容分别是 `p`、`React`。页面上最终出现的 `<p>` 节点，由 React DOM 在挂载和提交过程中管理；element 自己没有浏览器节点的布局和焦点能力。
+
+“虚拟 DOM”通常用来概括这类以内存数据描述界面的方式。它不是浏览器 DOM 的完整镜像，也不要求每个组件都对应一个额外 DOM 节点。组件可以返回多个子节点、空内容或其他组件。
+
+创建新元素对象，也不意味着对应 DOM 一定要新建。React 会判断新描述是否对应已有身份。元素和 props 应当作为只读数据，不要直接改写 element.props 来尝试更新界面。
+
+### 2.2 三种身份不能混为一谈 {#三种身份不能混为一谈}
+
+| 对象 | 作用 | 更新时可能怎样变化 |
+| --- | --- | --- |
+| 元素描述 | 描述这次要显示的类型、props 和子内容 | 可以创建新的描述对象 |
+| 组件在树中的身份 | 关联 state、Hook 和子树 | 满足匹配条件时继续保留 |
+| DOM 节点 | 浏览器实际管理的元素或文本 | 可以原地改属性、移动、添加或移除 |
+
+协调主要根据 React 自己保存的树和新描述做判断，不是每次先扫描整个真实 DOM，再猜测页面发生了什么。React 管理的节点也不应由外部脚本随意删除、重排；如果需要接入第三方控件，应明确哪一段由谁管理。
+
+## 3. 渲染与提交 {#渲染与提交}
+
+### 3.1 从更新请求到页面变化 {#从更新请求到页面变化}
+
+一次常见更新可以分为：请求更新、计算组件输出、协调新旧身份与变化、提交到 DOM。浏览器之后还要根据结果进行样式计算、布局和绘制，React 的提交不是屏幕已经呈现的同义词。
+
+默认情况下，父组件重新渲染时，它返回的子组件也可能重新执行；子组件的本地状态仍可保留。下面的日志只用于观察函数执行：
+
+```jsx
+import { useState } from 'react';
+
+function Course() {
+  console.log('Course 渲染');
+  return <section><p>React</p><input aria-label="草稿" defaultValue="" /></section>;
+}
+export default function App() {
+  const [count, setCount] = useState(0);
+  return <>
+    <button onClick={() => setCount(value => value + 1)}>更新父组件</button>
+    <output>{count}</output>
+    <Course />
+  </>;
+}
+```
+
+先在输入框写入草稿，再点击按钮。Course 会重新执行，但输入框节点仍可复用，用户输入不会因为这次执行被自动清空。可见内容中只有 count 对应的文本变化，Course 没有被整段重建。React 对表单控件还会同步属性，节点复用不意味着所有底层属性写入都为零。
+
+memo、缓存相同 JSX 等方式可能跳过一部分子组件工作，组件自己的 state、context 更新也可能使它重新执行。这些是是否需要计算的问题，与 key 所表达的身份问题不同。
+
+### 3.2 为什么渲染必须保持纯粹 {#为什么渲染必须保持纯粹}
+
+渲染可能重复执行，也可能在支持并发工作的场景被中断、重新开始或放弃。没有提交的计算，不应该已经向用户发出请求、修改共享对象或直接改动页面。
+
+事件处理器负责对应的用户动作；提交后的外部同步交给 Effect。Effect 的 setup 和 cleanup 规则见[React Hooks](./hooks.mdx#建立连接与结束连接)。不能用“这次函数执行了”来证明对应 Effect 已建立，更不能据此统计真实页面更新次数。
+
+## 4. 类型与位置 {#类型与位置}
+
+### 4.1 props 变化不一定重置状态 {#props变化不一定重置状态}
+
+React 保留的是树中对应组件的状态，不是某一行 JSX 文本里的状态。同一位置前后都是同一个 Counter 类型，即使来自条件表达式的不同分支，也可以继续保留：
+
+```jsx
+import { useState } from 'react';
+
+function Counter({ name }) {
+  const [count, setCount] = useState(0);
+  return <button onClick={() => setCount(value => value + 1)}>{name}：{count}</button>;
+}
+export default function App() {
+  const [first, setFirst] = useState(true);
+  return <>
+    <button onClick={() => setFirst(value => !value)}>换人</button>
+    {first ? <Counter name="Lin" /> : <Counter name="Ada" />}
+  </>;
+}
+```
+
+给 Lin 加到 2，再换人，会显示 Ada：2。name 改变了，Counter 的身份仍然匹配。若需求是每个人独立的一份计数，必须明确身份或把各人的计数保存在上层；仅仅修改 name 不会自动建立按名字索引的状态表。
+
+### 4.2 类型改变会影响子树 {#类型改变会影响子树}
+
+同一位置从一种类型换成另一种类型，通常要替换对应子树。外层 DOM 类型改变，也可能让里面的组件一起被重新挂载：
+
+```jsx
+import { useState } from 'react';
+
+function Counter() {
+  const [count, setCount] = useState(0);
+  return <button onClick={() => setCount(value => value + 1)}>次数：{count}</button>;
+}
+export default function App() {
+  const [section, setSection] = useState(false);
+  const Wrapper = section ? 'section' : 'div';
+  return <>
+    <button onClick={() => setSection(value => !value)}>改变外层类型</button>
+    <Wrapper><Counter /></Wrapper>
+  </>;
+}
+```
+
+先递增 Counter，再把外层 div 换为 section，计数回到 0。虽然内层仍写着 Counter，但它所处的父级子树已经被替换。给 Counter 固定 key，也不会让它跨越这个被替换的父级继续保留。
+
+Fragment 不创建 DOM 包装节点，对单层无 key 包装的某些切换有特定的保留规则，因此不要把“任何 JSX 包装变化都必然重置”当成通则。这里验证的是实际 div 与 section 的类型替换。
+
+### 4.3 不要在渲染中重新定义组件类型 {#不要在渲染中重新定义组件类型}
+
+如果在 App 函数内部声明 Child 函数，App 每次执行都会创建新的函数对象。把它作为 `<Child />` 类型使用时，React 看到的类型可能每次都不同，导致子树重置。
+
+组件定义通常放在模块顶层，变化的数据通过 props 传进去。写在事件里的回调函数与“把新函数当作组件类型”不是同一件事，不能因此推出所有内联回调都会重挂载组件。
+
+## 5. 列表与 key {#列表与key}
+
+### 5.1 key 代表同组兄弟中的身份 {#key代表同组兄弟中的身份}
+
+**key** 是 React 用来匹配同一组兄弟节点的标识。没有显式 key 时，列表会按位置进行匹配；有稳定 key 后，条目改变顺序时仍可找到原来的对应项。
+
+key 应满足两个条件：同组兄弟之间唯一，同一个业务条目在多次渲染间保持稳定。数据库 ID、创建数据时生成并保存的 ID 通常适合；渲染时调用 Math.random 或重新生成 UUID，会让每次更新都变成新的身份。
+
+key 不是全局 ID。两个独立列表都可以有 key 为 `course-a` 的条目；把同一个 key 的组件从一个父级移到另一个父级，不代表它的本地状态也会自动搬过去。需要跨位置保留的数据，应由合适的上层状态或外部存储管理。
+
+### 5.2 索引为什么可能对应错状态 {#索引为什么可能对应错状态}
+
+下面并列展示 ID key 和索引 key。每一行有自己的草稿状态，两个列表各自独立：
+
+```jsx
+import { useState } from 'react';
+
+const initial = [{ id: 'a', name: '课程 A' }, { id: 'b', name: '课程 B' }];
+function Row({ course }) {
+  const [draft, setDraft] = useState('');
+  return <li data-id={course.id}>
+    <label>{course.name}
+      <input value={draft} onChange={event => setDraft(event.target.value)} />
+    </label>
+  </li>;
+}
+function CourseList({ indexKey }) {
+  const [courses, setCourses] = useState(initial);
+  return <section>
+    <h2>{indexKey ? '索引 key' : 'ID key'}</h2>
+    <button onClick={() => setCourses(value => [...value].reverse())}>反转</button>
+    <button disabled={courses.some(course => course.id === 'c')}
+      onClick={() => setCourses(value => [{ id: 'c', name: '课程 C' }, ...value])}>
+      头部添加
+    </button>
+    <ul>{courses.map((course, index) =>
+      <Row key={indexKey ? index : course.id} course={course} />
+    )}</ul>
+  </section>;
+}
+export default function App() {
+  return <><CourseList indexKey={false} /><CourseList indexKey={true} /></>;
+}
+```
+
+在两份列表的 A 中都输入“复习”，再分别反转：
+
+| key 方案 | 反转后第一行 B | 反转后第二行 A |
+| --- | --- | --- |
+| ID key | 空草稿 | 仍有“复习” |
+| 索引 key | 出现原来 A 的“复习” | 空草稿 |
+
+索引 0 仍然匹配原来第一行的 Row，所以草稿留在第一行，而该行的 course 已变成 B。受控 input 也不能避免这个问题，因为它绑定的是对应错身份的 Row state。头部插入、删除和排序同样可能改变位置关系。
+
+完全静态、不插入删除、不重排的列表，使用索引不一定产生这种错位。但判断前要检查列表未来的变化规则、子组件状态和 DOM 行为；有可靠的数据 ID 时，直接使用 ID 通常更明确。
+
+### 5.3 key 应放在哪一层 {#key应放在哪一层}
+
+key 要放在 map 直接返回的元素上。上例匹配的是 Row，所以 key 写在 `<Row>` 上；把 key 只写到 Row 内部的 li 上，不能替外部 Row 列表建立身份。
+
+一个条目需要输出多个相邻 DOM 节点时，可以使用带 key 的 Fragment：
+
+```jsx
+import { Fragment, useState } from 'react';
+
+export default function App() {
+  const [courses, setCourses] = useState([
+    { id: 'a', name: 'React', description: '组件与状态' },
+    { id: 'b', name: 'CSS', description: '布局与层叠' },
+  ]);
+  return <>
+    <button onClick={() => setCourses(value => [...value].reverse())}>反转</button>
+    <dl>{courses.map(course =>
+      <Fragment key={course.id}>
+        <dt>{course.name}</dt><dd>{course.description}</dd>
+      </Fragment>
+    )}</dl>
+  </>;
+}
+```
+
+dl 里只有 dt、dd，没有为 Fragment 多出一层 div。简写 `<>...</>` 无法直接指定 key，因此此处使用显式 Fragment。
+
+key 由 React 使用，不会作为普通 props.key 传给 Row。子组件需要业务 ID 时，应同时传 course 或 courseId。重复 key 的行为不受保证；开发警告应当修复，不能把一次看似正确的显示当成稳定语义。
+
+## 6. 状态重置与保留 {#状态重置与保留}
+
+### 6.1 用 key 表达表单属于谁 {#用key表达表单属于谁}
+
+改变 key 会让 React 把对应位置看作另一份组件身份。切换编辑对象时，可以用它有意清空子树状态：
+
+```jsx
+import { useState } from 'react';
+
+function Editor({ person }) {
+  const [draft, setDraft] = useState('');
+  return <label>给 {person.name} 的备注
+    <input value={draft} onChange={event => setDraft(event.target.value)} />
+  </label>;
+}
+export default function App() {
+  const [person, setPerson] = useState({ id: 'lin', name: 'Lin' });
+  return <>
+    <button onClick={() => setPerson(value => value.id === 'lin'
+      ? { id: 'ada', name: 'Ada' } : { id: 'lin', name: 'Lin' })}>换人</button>
+    <Editor key={person.id} person={person} />
+  </>;
+}
+```
+
+给 Lin 输入备注，再切换到 Ada，备注清空。再切回 Lin 也会重新开始，并不会自动找回 Lin 原来的备注，因为之前的 Editor 已被移除。若要求每个人的草稿都保留，应在上层按 person.id 保存，再传给 Editor。
+
+key 重置的是整段对应子树，包含本地 state、Effect 连接和 DOM 状态。不能为了重置一个字段就随意重建包含昂贵资源或用户未保存内容的大范围子树。
+
+### 6.2 隐藏与移除不同 {#隐藏与移除不同}
+
+通过 CSS 或 HTML hidden 属性隐藏节点，通常不会移除 React 树中的组件。条件渲染成 null 则会移除它，重新出现时是新的挂载：
+
+```jsx
+import { useState } from 'react';
+
+function Counter({ name }) {
+  const [count, setCount] = useState(0);
+  return <button onClick={() => setCount(value => value + 1)}>{name}：{count}</button>;
+}
+export default function App() {
+  const [visible, setVisible] = useState(true);
+  return <>
+    <button onClick={() => setVisible(value => !value)}>切换显示</button>
+    <div hidden={!visible}><Counter name="隐藏" /></div>
+    {visible && <Counter name="移除" />}
+  </>;
+}
+```
+
+分别把两个计数加到 1，隐藏再显示：前者仍是 1，后者回到 0。hidden 并不会自动停止组件的 Effect、请求或计时器。是否暂停外部工作，需要显式的业务规则，不能从“看不见”推出“已经卸载”。
+
+## 7. 协调算法的边界 {#协调算法的边界}
+
+### 7.1 启发式匹配做了什么取舍 {#启发式匹配做了什么取舍}
+
+React 不对任意两棵树求解所有可能的全局最优编辑方案。它利用元素类型和同级 key 等信息做匹配：类型兼容时继续处理输入与子节点；类型改变时替换对应部分；同级列表用 key 找到可以复用的条目。
+
+React 18 的旧版官方协调说明用基于类型与 key 假设的 O(n) 启发式，解释它与通用最小树编辑问题的取舍。这个复杂度描述不代表一次应用更新的总成本一定是 O(n)：组件计算、排序、用户代码、DOM 操作、布局与绘制都还有各自的成本。
+
+稳定 key 能帮助识别同一个条目，不代表任意重排都取得全局最少移动次数，也不把同一 key 变成跨父级寻址的标识。Vue 的具体节点比较与优化策略应按对应版本讲解，不能把一种框架的列表优化步骤直接当成 React 实现。
+
+Fiber 为 React 保存组件工作和更新信息，调度决定哪些工作先执行、是否可以让出执行权；协调关注身份与变化。它们有关联，但“Fiber 就是虚拟 DOM”或“换成 Fiber 就不需要比较”都不准确。
+
+### 7.2 虚拟 DOM 的收益与成本 {#虚拟dom的收益与成本}
+
+虚拟 DOM 的价值首先是把界面表达为状态的函数，让框架统一管理更新与复用。它可以避免一部分不必要的宿主修改，但创建描述、调用组件和协调本身也要消耗 CPU 与内存。
+
+如果只需修改一个已知文本节点，直接 DOM 操作可以很直接；使用 React 并不自动比它更快。复杂页面的优势还来自状态组织、组件组合和更新一致性，性能则应根据组件计算、DOM 数量、布局和交互延迟实测。
+
+即使只修改一个 DOM 属性，也可能触发昂贵的布局或绘制。React 中“DOM 修改少”和浏览器中“这一帧便宜”不是同一个结论，浏览器阶段见[浏览器渲染流程](../../frontend/browser/rendering.mdx#布局绘制与合成)。
+
+## 8. 常见问题 {#常见问题}
+
+### 8.1 key 相同就一定不会重新渲染吗？ {#key相同就一定不会重新渲染吗}
+
+不会。相同 key 参与身份匹配，让状态有机会保留；组件仍可能因为 props、state、context 或父级更新而执行。memo 等机制处理的是能否跳过计算，不能用随机 key 代替性能优化。
+
+### 8.2 useId 可以生成列表 key 吗？ {#useid可以生成列表key吗}
+
+不适合。列表身份应来自数据，且需要在调用列表项组件之前确定。useId 用于生成可访问性等关系所需的 ID，不是数据记录的主键。不要在 map 循环里调用 Hook 来给列表补 key。
+
+### 8.3 服务端 HTML 的水合也是普通首次挂载吗？ {#服务端html的水合也是普通首次挂载吗}
+
+不一样。水合通过 hydrateRoot 接管已经存在的服务端 HTML，并要求客户端初始输出与服务端结果匹配。普通 createRoot 首次挂载不应被拿来解释全部水合行为。key 也不能修复服务端与客户端初始内容不一致的问题。
+
+## 9. 面试题 {#面试题}
+
+### 9.1 虚拟 DOM 是什么，React 元素与真实 DOM 有什么区别？ {#virtual-dom}
+
+**考察重点**：界面描述、组件输出、宿主环境的实际节点。
+
+**相关内容**：[元素、组件与 DOM](#元素组件与dom)。
+
+<details>
+<summary>参考回答</summary>
+
+**虚拟 DOM 通常指用内存数据描述界面的方式，React 元素是真实 DOM 的描述而非节点本身。** 元素包含类型、props、子内容等，创建它不会直接修改页面；React 根据新描述协调已有树，再由 React DOM 管理实际节点。新元素对象可以对应旧 DOM，组件也不一定对应额外 DOM 包装节点。
+
+</details>
+
+### 9.2 state 更新后，React 怎样把变化显示到页面？重新渲染一定修改 DOM 吗？ {#render-commit}
+
+**考察重点**：更新请求、渲染计算、协调、提交与浏览器绘制。
+
+**相关内容**：[渲染与提交](#渲染与提交)。
+
+<details>
+<summary>参考回答</summary>
+
+**setter 请求更新，React 计算组件输出并协调变化，提交阶段再更新宿主节点；重新渲染不保证发生 DOM 修改。** 如果输出对应的属性、文本和结构没变，已有节点可以继续保留。提交之后浏览器还要处理样式、布局和绘制。渲染可能重复或被放弃，所以不能在其中执行依赖“只运行一次”的外部副作用。
+
+</details>
+
+### 9.3 React 的 Diff 依据什么复用节点，是否保证全局最少操作？ {#diff-strategy}
+
+**考察重点**：类型假设、同级 key、启发式算法与复杂度边界。
+
+**相关内容**：[启发式匹配做了什么取舍](#启发式匹配做了什么取舍)。
+
+<details>
+<summary>参考回答</summary>
+
+**React 根据类型、同级 key 或位置等信息做启发式匹配，不承诺任意树变化的全局最少操作。** 类型兼容时继续处理属性与子节点，类型变化时可能替换子树，同级 key 帮助识别重排后的条目。旧版官方 O(n) 说明针对这种协调取舍，不包含组件业务计算、浏览器布局等全部更新成本，也不保证跨父级保留状态。
+
+</details>
+
+### 9.4 React 列表中 key 有什么作用，应该怎样选择和放置？ {#key-identity}
+
+**考察重点**：同级身份、稳定性、唯一性、key 与 props 的分工。
+
+**相关内容**：[列表与 key](#列表与key)。
+
+<details>
+<summary>参考回答</summary>
+
+**key 帮助 React 在同组兄弟中识别同一个条目，应来自稳定的数据身份，并放在 map 直接返回的元素上。** 同组中必须唯一，不要求全局唯一。随机生成会破坏稳定性，重复值行为不受保证。一个条目有多个节点时可用带 key 的 Fragment。key 不作为普通 props.key 下传，业务 ID 要另传；它也不阻止正常重新渲染。
+
+</details>
+
+### 9.5 为什么使用索引 key 的列表在重排后可能把草稿显示到另一条数据上？ {#index-keys}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：位置匹配、子组件本地状态、受控输入的边界。
+
+**相关内容**：[索引为什么可能对应错状态](#索引为什么可能对应错状态)。
+
+<details>
+<summary>参考回答</summary>
+
+**索引 key 保留的是同一位置的组件身份，重排后该位置可能已经代表另一条数据。** 原来 A 行的 draft 留在索引 0 的 Row，但它的新 course 变成了 B，于是 B 显示 A 的草稿。受控 input 仍绑定这份错位的 Row state，不能自行修复。稳定数据 ID 能让状态跟随对应条目；静态列表是否可用索引，则要看是否会改变顺序和成员。
+
+</details>
+
+### 9.6 切换组件 props 为什么可能保留状态，怎样有意重置？ {#state-reset}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：组件身份、类型与位置、key 重置范围。
+
+**相关内容**：[类型与位置](#类型与位置)、[用 key 表达表单属于谁](#用key表达表单属于谁)。
+
+<details>
+<summary>参考回答</summary>
+
+**状态关联的是 React 树中匹配的组件身份，改变 props 本身不一定建立新身份。** 同一位置仍为同一 Counter 时，改 name 可以保留计数。需要重置时可在对应边界改变 key，或改变结构使旧组件移除；这会重建整段子树。若切换回来仍需旧草稿，就应在上层按业务 ID 保存，而不是期待 key 自带缓存。
+
+</details>
+
+### 9.7 虚拟 DOM 一定比直接操作 DOM 快吗？ {#virtual-dom-performance}
+
+**考察重点**：声明式更新的收益、协调成本、浏览器成本。
+
+**相关内容**：[虚拟 DOM 的收益与成本](#虚拟dom的收益与成本)。
+
+<details>
+<summary>参考回答</summary>
+
+**不一定。虚拟 DOM 使声明式界面与统一更新更容易组织，同时增加描述创建、组件计算和协调成本。** 对一个已知节点做简单修改，直接 DOM 操作可能更直接。性能要观察实际计算量、节点数量和布局绘制等成本，不能只按框架名或 DOM 操作次数判断；少量 DOM 改动也可能触发昂贵布局。
+
+</details>
+
+### 9.8 在父组件函数内部定义子组件，为什么输入状态可能不断重置？ {#nested-component}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：函数对象身份、组件类型、重新挂载。
+
+**相关内容**：[不要在渲染中重新定义组件类型](#不要在渲染中重新定义组件类型)。
+
+<details>
+<summary>参考回答</summary>
+
+**父组件每次执行都创建新的子组件函数对象，React 可能将其识别为新的组件类型并重建子树。** 应把组件定义放到模块顶层，变化数据通过 props 传入。普通内联事件回调变化可能影响缓存判断，但不会因为它本身是新函数就把所在组件重新挂载。
+
+</details>
+
+### 9.9 用 hidden 隐藏组件与条件渲染移除组件，有什么区别？ {#hidden-state}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：可见性、React 树、状态与 Effect 的生命周期。
+
+**相关内容**：[隐藏与移除不同](#隐藏与移除不同)。
+
+<details>
+<summary>参考回答</summary>
+
+**hidden 通常只改变可见性，组件仍在 React 树中，状态与 Effect 可以继续存在；条件渲染移除会卸载对应组件。** 再次显示隐藏节点可保留原状态，再次创建被移除的组件则重新初始化。隐藏不等于停止网络请求或计时器，需要按业务要求显式暂停。
+
+</details>
+
+## 10. 参考资料 {#参考资料}
+
+- [React：Preserving and Resetting State](https://react.dev/learn/preserving-and-resetting-state)
+- [React：Render and Commit](https://react.dev/learn/render-and-commit)
+- [React：Rendering Lists](https://react.dev/learn/rendering-lists)
+- [React：createElement](https://react.dev/reference/react/createElement)
+- [React：Fragment](https://react.dev/reference/react/Fragment)
+- [React：Special Props Warning](https://react.dev/warnings/special-props)
+- [React：useId](https://react.dev/reference/react/useId)
+- [React：hydrateRoot](https://react.dev/reference/react-dom/client/hydrateRoot)
+- [React 18 旧版文档：Reconciliation](https://legacy.reactjs.org/docs/reconciliation.html)

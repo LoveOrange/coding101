@@ -29,6 +29,7 @@ const KEY = 'coding101.learner.v1';
 const RETAIN_DAYS = 90;
 const SYNC_DELAY_MS = 2000;
 const RETRY_DELAY_MS = 30000;
+const RECONCILE_INTERVAL_MS = 60000;
 
 /* ---- Dates (local calendar days) ---- */
 
@@ -161,6 +162,7 @@ async function migrateCardIds() {
 }
 
 function write(next: LearnerState) {
+  loaded = true;
   state = next;
   try {
     storage()?.setItem(KEY, JSON.stringify(next));
@@ -183,27 +185,57 @@ function record(change: (current: LearnerState) => LearnerState) {
   scheduleSync();
 }
 
-let refreshedAt = 0;
+let stopBackgroundSync: (() => void) | undefined;
+
+function startBackgroundSync() {
+  const onStorage = (event: StorageEvent) => {
+    if (event.key !== KEY && event.key !== null) return;
+    const previous = load();
+    state = initialState;
+    loaded = false;
+    const current = load();
+    if (previous.account?.id !== current.account?.id) {
+      invalidateSync();
+      listeners.forEach(listener => listener());
+      void refresh();
+      return;
+    }
+    // Two tabs may have edited their in-memory copy before either storage
+    // event arrived. Merge those edits instead of replacing the current tab.
+    const merged = {...current, ...mergeRecords(recordsOf(previous), recordsOf(current)),
+      syncVersion: Math.max(previous.syncVersion ?? 0, current.syncVersion ?? 0)};
+    if (JSON.stringify(merged) !== JSON.stringify(current)) {
+      write(merged);
+      scheduleSync();
+    } else {
+      listeners.forEach(listener => listener());
+    }
+  };
+  const reconcile = () => { if (document.visibilityState !== 'hidden') void refresh(); };
+  window.addEventListener('storage', onStorage);
+  window.addEventListener('focus', reconcile);
+  window.addEventListener('online', reconcile);
+  document.addEventListener('visibilitychange', reconcile);
+  const timer = window.setInterval(reconcile, RECONCILE_INTERVAL_MS);
+  void refresh();
+  return () => {
+    window.removeEventListener('storage', onStorage);
+    window.removeEventListener('focus', reconcile);
+    window.removeEventListener('online', reconcile);
+    document.removeEventListener('visibilitychange', reconcile);
+    window.clearInterval(timer);
+  };
+}
 
 function subscribe(listener: () => void) {
   listeners.add(listener);
-  const onStorage = (event: StorageEvent) => {
-    if (event.key !== KEY) return;
-    loaded = false;
-    load();
-    listener();
-  };
-  // Reconcile with the server on the first render and when the tab regains focus.
-  const onFocus = () => {
-    if (Date.now() - refreshedAt > 60000) void refresh();
-  };
-  window.addEventListener('storage', onStorage);
-  window.addEventListener('focus', onFocus);
-  onFocus();
+  stopBackgroundSync ??= startBackgroundSync();
   return () => {
     listeners.delete(listener);
-    window.removeEventListener('storage', onStorage);
-    window.removeEventListener('focus', onFocus);
+    if (!listeners.size) {
+      stopBackgroundSync?.();
+      stopBackgroundSync = undefined;
+    }
   };
 }
 
@@ -254,7 +286,7 @@ const stamp = (card: CardState) => card.updatedAt ?? card.reviewedAt;
 /**
  * Merge two copies of the records (this device and another one) entry by entry:
  * the later card change wins, reading progress only moves forward, sessions are
- * united by id, and this device's preferences win.
+ * united by id, and the most recently edited settings win.
  */
 export function mergeRecords(local: LearnerRecords, remote: LearnerRecords): LearnerRecords {
   const cards = {...remote.cards};
@@ -288,8 +320,11 @@ export function mergeRecords(local: LearnerRecords, remote: LearnerRecords): Lea
     cards,
     reading,
     sessions: [...sessions.values()].sort((a, b) => b.startedAt.localeCompare(a.startedAt)).slice(0, 20),
-    preferences: {...remote.preferences, ...local.preferences},
-    ...((local.examSetup ?? remote.examSetup) ? {examSetup: local.examSetup ?? remote.examSetup} : {}),
+    preferences: (remote.preferences.updatedAt ?? '') > (local.preferences.updatedAt ?? '')
+      ? remote.preferences : local.preferences.updatedAt ? local.preferences : {...remote.preferences, ...local.preferences},
+    ...((local.examSetup ?? remote.examSetup) ? {examSetup:
+      (remote.examSetup?.updatedAt ?? '') > (local.examSetup?.updatedAt ?? '')
+        ? remote.examSetup : local.examSetup ?? remote.examSetup} : {}),
   };
 }
 
@@ -314,11 +349,31 @@ function toSubscription(access: ServerAccess): Subscription {
 }
 
 let pushTimer: number | undefined;
-let pushing = false;
 let dirty = false;
+let generation = 0;
+let confirmedUserId: string | undefined;
+let syncing: Promise<void> | undefined;
+let authChanging = false;
+
+/** Pending responses must never restore a signed-out or replaced account. */
+function invalidateSync() {
+  generation++;
+  confirmedUserId = undefined;
+  syncing = undefined;
+  dirty = false;
+  if (typeof window !== 'undefined') window.clearTimeout(pushTimer);
+}
+
+function runSync(task: (epoch: number) => Promise<void>): Promise<void> {
+  const run = task(generation).finally(() => {
+    if (syncing === run) syncing = undefined;
+  });
+  syncing = run;
+  return run;
+}
 
 function canSync(current: LearnerState): boolean {
-  return !offline && accessOf(current) === 'active';
+  return !offline && !authChanging && accessOf(current) === 'active';
 }
 
 function scheduleSync(delay = SYNC_DELAY_MS) {
@@ -329,32 +384,37 @@ function scheduleSync(delay = SYNC_DELAY_MS) {
 }
 
 async function push() {
-  if (pushing) return;
+  if (!dirty) return;
+  if (syncing) { scheduleSync(); return; }
   const current = load();
   if (!canSync(current)) return;
-  pushing = true;
-  dirty = false;
-  try {
-    const {version} = await api.putRecords(current.syncVersion ?? 0, recordsOf(current));
-    write({...load(), syncVersion: version});
-  } catch (error) {
-    if (error instanceof ApiError && error.status === 409) {
-      // Another device wrote first: merge its copy in and push the result.
-      const remote = error.body.current as {version: number; data: Partial<LearnerRecords> | null};
-      const latest = load();
-      write({...latest, ...mergeRecords(recordsOf(latest), normalizeRecords(remote.data)), syncVersion: remote.version});
-      dirty = true;
-    } else if (error instanceof ApiError && (error.status === 401 || error.status === 402)) {
-      void refresh();
-    } else {
-      pushing = false;
-      scheduleSync(RETRY_DELAY_MS);
+  const userId = current.account?.id;
+  // A cached account is enough to save locally, but not to choose the owner of
+  // a server write. Confirm the session and document owner first.
+  if (!userId || confirmedUserId !== userId) { await refresh(); return; }
+  return runSync(async epoch => {
+    dirty = false;
+    try {
+      const {version} = await api.putRecords(userId, current.syncVersion ?? 0, recordsOf(current));
+      if (epoch !== generation || load().account?.id !== userId) return;
+      write({...load(), syncVersion: version});
+    } catch (error) {
+      if (epoch !== generation || load().account?.id !== userId) return;
+      if (error instanceof ApiError && error.code === 'version_conflict') {
+        const remote = error.body.current as {version: number; data: Partial<LearnerRecords> | null};
+        const latest = load();
+        write({...latest, ...mergeRecords(recordsOf(latest), normalizeRecords(remote.data)), syncVersion: remote.version});
+        scheduleSync();
+      } else {
+        if (error instanceof ApiError && ['unauthenticated', 'access_required', 'account_changed'].includes(error.code)) {
+          confirmedUserId = undefined;
+        }
+        scheduleSync(RETRY_DELAY_MS);
+      }
       return;
     }
-  } finally {
-    pushing = false;
-  }
-  if (dirty) scheduleSync(0);
+    if (dirty) scheduleSync();
+  });
 }
 
 let accessKnown: Promise<void> | undefined;
@@ -370,42 +430,57 @@ export function whenAccessKnown(): Promise<void> {
 
 /** Pull account, access and records from the server and reconcile the cache. */
 export function refresh(): Promise<void> {
-  const run = pull();
+  if (offline || authChanging || typeof window === 'undefined') return Promise.resolve();
+  const run = syncing ?? runSync(pull);
   accessKnown ??= run;
   return run;
 }
 
-async function pull(): Promise<void> {
-  if (offline || typeof window === 'undefined') return;
-  refreshedAt = Date.now();
+async function pull(epoch: number): Promise<void> {
   let me;
   try {
     me = await api.me();
   } catch {
+    scheduleSync(RETRY_DELAY_MS);
     return; // Service unreachable: keep the cached state.
   }
+  if (epoch !== generation) return;
   if (!me.user) {
     // Signed out (here or elsewhere): drop the account and this browser's copy of its records.
-    if (load().account) write(initialState);
+    confirmedUserId = undefined;
+    if (load().account) { invalidateSync(); write(initialState); }
     return;
   }
   let current = load();
-  if (current.account?.id && current.account.id !== me.user.id) current = initialState;
+  const sameAccount = current.account?.id === me.user.id;
+  if (!sameAccount) { current = initialState; confirmedUserId = undefined; }
   const email = me.user.email ?? '';
-  let next: LearnerState = {
+  const next: LearnerState = {
     ...current,
     account: {id: me.user.id, name: me.user.name || email.split('@')[0], email, createdAt: isoDay(me.user.createdAt)},
     subscription: toSubscription(me.access),
   };
+  write(settle(next));
   try {
-    const remote = await api.getRecords();
+    const remote = await api.getRecords(me.user.id);
+    if (epoch !== generation || load().account?.id !== me.user.id) return;
+    if (remote.userId !== me.user.id) { confirmedUserId = undefined; scheduleSync(RETRY_DELAY_MS); return; }
+    confirmedUserId = me.user.id;
     const remoteRecords = normalizeRecords(remote.data);
-    const merged = remote.data ? mergeRecords(recordsOf(next), remoteRecords) : recordsOf(next);
-    next = {...next, ...merged, syncVersion: remote.version};
-    write(settle(next));
-    if (remote.writable && JSON.stringify(merged) !== JSON.stringify(remoteRecords)) scheduleSync(0);
+    const latest = load();
+    const local = recordsOf(latest);
+    // A fresh device's defaults must not replace the reader's saved settings.
+    const untouchedDefaults = latest.syncVersion === undefined &&
+      JSON.stringify(latest.preferences) === JSON.stringify(initialState.preferences);
+    if ((!sameAccount && latest.preferences === next.preferences) || untouchedDefaults) local.preferences = remoteRecords.preferences;
+    const merged = remote.data ? mergeRecords(local, remoteRecords) : local;
+    write(settle({...latest, ...merged, syncVersion: remote.version}));
+    dirty = JSON.stringify(merged) !== JSON.stringify(remoteRecords);
+    if (remote.writable && dirty) scheduleSync(0);
   } catch {
-    write(settle(next));
+    if (epoch !== generation) return;
+    confirmedUserId = undefined;
+    scheduleSync(RETRY_DELAY_MS);
   }
 }
 
@@ -505,23 +580,44 @@ export const learnerActions = {
    */
   async verifyCode(email: string, code: string) {
     if (offline) return localSignIn(email);
-    await api.verifyCode(email, code);
-    await api.startTrial().catch(() => undefined);
+    invalidateSync();
+    const epoch = generation;
+    authChanging = true;
+    try {
+      await api.verifyCode(email, code);
+      if (epoch !== generation) return;
+      await api.startTrial().catch(() => undefined);
+    } finally {
+      if (epoch === generation) authChanging = false;
+    }
+    if (epoch !== generation) return;
     await refresh();
   },
 
   /** Sign out and drop this browser's copy of the records (they stay on the server). */
   async signOut() {
-    window.clearTimeout(pushTimer);
-    if (!offline) await api.signOut().catch(() => undefined);
+    invalidateSync();
+    const epoch = generation;
+    authChanging = true;
     write(initialState);
+    try {
+      if (!offline) await api.signOut().catch(() => undefined);
+    } finally {
+      if (epoch === generation) authChanging = false;
+    }
   },
 
   /** Delete the account and its records on the server, then this browser's copy. */
   async deleteAccount() {
-    window.clearTimeout(pushTimer);
-    if (!offline) await api.deleteAccount();
-    write(initialState);
+    invalidateSync();
+    const epoch = generation;
+    authChanging = true;
+    try {
+      if (!offline) await api.deleteAccount();
+      if (epoch === generation) write(initialState);
+    } finally {
+      if (epoch === generation) authChanging = false;
+    }
   },
 
   rate(cardId: string, rating: Rating, options: {hits?: number[]} = {}) {
@@ -630,11 +726,11 @@ export const learnerActions = {
   },
 
   setPreferences(preferences: Partial<Preferences>) {
-    record((current) => ({...current, preferences: {...current.preferences, ...preferences}}));
+    record((current) => ({...current, preferences: {...current.preferences, ...preferences, updatedAt: nowIso()}}));
   },
 
   setExamSetup(setup: ExamSetup) {
-    record((current) => ({...current, examSetup: setup}));
+    record((current) => ({...current, examSetup: {...setup, updatedAt: nowIso()}}));
   },
 
   /** Go to the platform checkout for a plan (the page leaves the site). */
@@ -661,7 +757,10 @@ export const learnerActions = {
 
   async loadBilling() {
     if (offline) return;
+    const epoch = generation;
+    const userId = load().account?.id;
     const {records} = await api.billing();
+    if (epoch !== generation || load().account?.id !== userId) return;
     update((current) => ({...current, billing: toBillingRecords(records)}));
   },
 
@@ -738,13 +837,16 @@ export const learnerActions = {
   },
 
   reset() {
+    invalidateSync();
+    authChanging = false;
     write(initialState);
   },
 
   /** Replace the whole state for a local preview; the store then stays offline. */
   replace(next: LearnerState) {
     offline = true;
-    window.clearTimeout(pushTimer);
+    invalidateSync();
+    authChanging = false;
     write(settle(next));
   },
 };

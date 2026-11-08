@@ -1,0 +1,220 @@
+---
+knowledge:
+  id: basic-knowledge.swift.arc
+  type: concept
+description: "解释 Swift ARC 的强引用、弱引用、unowned、析构和闭包引用环，以及对象生命周期与并发安全的边界。"
+keywords: [Swift ARC, weak, unowned, 循环引用, deinit, 引用计数]
+---
+
+# Swift ARC
+
+**ARC**（Automatic Reference Counting，自动引用计数）通过管理引用的持有与释放，维持 Swift 类实例的生命周期。它能自动释放不再被强引用持有的对象，但不会替我们决定对象之间应该由谁拥有谁。面试分析内存泄漏时，关键是把引用方向和生命周期条件说清楚，而不是给所有回调加上 `weak`。
+
+## 1. 面试核心 {#core}
+
+- 强引用维持对象存活，**ARC 不会因为对象已经无法从业务入口访问，就自动拆掉对象之间的强引用环**。[卡](#arc-cycle)
+- `weak` 不维持对象存活，对象释放后会变为 `nil`；**`unowned` 也不延长生命周期，但要求访问时对象仍然有效**。[卡](#weak-unowned)
+- 闭包可以强捕获对象，**实例持有闭包、闭包又持有实例时才形成相应的引用环**。[卡](#closure-cycle)
+- 弱捕获之后解包得到的局部强引用会维持对象存活，**需要按整个操作的生命周期判断，而不是只看闭包开头是否写了 weak**。[卡](#weak-strong)
+- 析构适合释放对象拥有的资源，**外部观察到的精确释放时刻不应依赖未经保证的局部变量作用域推断**。
+- ARC 处理引用生命周期，**不自动保护对象字段的并发访问，也不替代取消订阅、结束任务等业务清理**。[卡](#arc-thread-safety)
+
+## 2. 强引用与析构 {#强引用与析构}
+
+**强引用**表示一个值持有对象，并要求对象在这段使用关系中保持有效。普通类属性、局部变量和闭包捕获默认可以建立这样的持有关系。编译器和运行时负责相应的引用管理，不需要手工在每次赋值旁边写 retain 或 release。
+
+```swift
+final class Resource {
+    deinit { print("released") }
+}
+
+var first: Resource? = Resource()
+var second = first
+first = nil
+print(second != nil) // true
+second = nil         // released
+```
+
+`first = nil` 只断开一条持有关系，`second` 仍然持有同一实例；最后一条强引用移除后，对象才可以销毁，并执行 `deinit`。
+
+这里讨论的是普通类实例的引用生命周期。结构体本身是值类型，但它可以包含类引用；数组、字符串等值类型也可能使用由引用管理的内部存储。因此，“值类型”不能推出其实现完全没有引用管理成本。
+
+析构前，实例必须已经完成相应初始化并满足语言要求。初始化器负责建立有效状态；析构器负责释放对象拥有的资源，不能依赖对象已经销毁后再做回调。若资源必须在某个业务时刻关闭，例如停止相机、移除观察或结束会话，应提供明确的停止操作，不把所有清理都寄托在 `deinit` 上。
+
+## 3. 对象引用环与弱引用 {#对象引用环与弱引用}
+
+**强引用环**是对象通过一条或多条强引用路径再次持有自身。外部变量全部清空后，环内仍存在强引用，单靠引用计数无法判断这组对象已经失去业务用途。
+
+例如父对象持有子对象，子对象只需要访问父对象时，可以让返回方向不参与所有权：
+
+```swift
+final class Parent {
+    var child: Child?
+    deinit { print("parent released") }
+}
+
+final class Child {
+    weak var parent: Parent?
+}
+
+var parent: Parent? = Parent()
+let child = Child()
+parent?.child = child
+child.parent = parent
+parent = nil
+print(child.parent == nil) // true
+```
+
+`Parent` 强持有 `Child`，`Child.parent` 是弱引用，外部的 `parent` 清空后没有强引用环。`child` 仍由局部变量保留，可以观察到弱引用已经变为 `nil`。如果把 `Child.parent` 改成普通强引用属性，这两条对象间关系就会组成环。
+
+**弱引用** `weak` 不维持对象存活，对象销毁后会被置为 `nil`。因此它必须有可空的状态，通常声明成可选类型的 `var`。弱引用不是“引用计数较少的强引用”，它的用途是表达“可以访问，但不拥有”。
+
+| 引用方式 | 是否维持对象存活 | 对象销毁后的处理 | 适用条件 |
+| --- | --- | --- | --- |
+| 强引用 | 是 | 对象仍被持有时不能销毁 | 当前关系确实拥有对象 |
+| `weak` | 否 | 自动变为 `nil` | 被引用对象可能先消失 |
+| `unowned` | 否 | 普通安全形式在访问失效对象时触发运行时错误 | 逻辑保证访问期间对象一直存在 |
+
+**无主引用** `unowned` 表达“不拥有，但使用时应仍然有效”。它不会在对象销毁时自动变成 `nil`；不要把它当成免解包的 `weak`。Swift 也允许可选的 `unowned`，但仍需要维护其有效性条件，不能因类型可选就期待自动清零。`unowned(unsafe)` 进一步放弃安全检查，不适合作为一般业务代码的默认选择。
+
+## 4. 闭包与引用环 {#闭包与引用环}
+
+闭包可以通过捕获保持对象存活。只有捕获和持有关系连成环时，这种保持才构成相应的循环引用。下面让对象保留一个读取自身的回调，弱捕获用于打断返回方向：
+
+```swift
+final class Screen {
+    let title = "Home"
+    var render: (() -> String)?
+
+    func configure() {
+        render = { [weak self] in self?.title ?? "closed" }
+    }
+
+    deinit { print("screen released") }
+}
+
+var screen: Screen? = Screen()
+screen?.configure()
+let render = screen?.render
+print(render?() ?? "missing") // Home
+screen = nil                 // screen released
+print(render?() ?? "missing") // closed
+```
+
+如果回调改为 `{ self.title }`，`Screen` 持有 `render`，`render` 又强持有 `Screen`，外部变量清空也不会拆环。使用 `[weak self]` 后，回调可以比页面更长寿；页面消失时回调得到 `nil`，并按当前业务选择返回 `"closed"`。
+
+短期闭包强捕获对象不一定是泄漏。一个请求需要保留其完成处理所需对象，到完成后释放闭包，这可能正是预期生命周期。反过来，即使没有闭合引用环，长期运行的任务或订阅也可能持续持有页面，造成业务上不需要的存活。要同时检查“是否有环”和“持有时间是否符合业务”。
+
+`[weak self]` 后执行 `guard let self else { return }`，会在解包后建立局部强引用。如果接下来进行长时间 `await`，这条强引用可能跨过挂起点继续维持对象存活。需要每轮都允许页面退出的长循环，应缩短强持有的范围，并安排任务取消；不能只凭捕获列表断言对象随时可以销毁。
+
+选择 `unowned` 则要求更强的生命周期证明：闭包每次执行时，对象都必须还存在。如果回调可能由定时器、网络层或其他长期对象保存，无法证明这一条件，就不应为了省去可选处理而使用它。
+
+## 5. 生命周期边界与排查 {#生命周期边界与排查}
+
+ARC 不承诺每个局部对象都恰好在右大括号处销毁。编译优化可以在语言允许的范围内调整引用的保留和释放；对象的最后一次使用、引用传递以及其他持有者都会影响观察结果。若调用底层接口时必须确保对象跨过某段操作仍然存活，可以明确使用 `withExtendedLifetime`：
+
+```swift
+final class Token {
+    deinit { print("token released") }
+}
+
+func useToken() {
+    let token = Token()
+    withExtendedLifetime(token) {
+        print("protected operation")
+    }
+}
+
+useToken()
+```
+
+`protected operation` 一定在 `token` 的这段受保护生命周期内执行。这个函数是表达生命周期约束的工具，不是延迟释放任意泄漏对象的办法。
+
+排查页面无法释放时，可以先用 `deinit` 日志确认实例是否销毁，再用 Xcode Memory Graph 查看持有路径。重点检查回调属性、代理关系、计时器、通知订阅和任务句柄。发现一条强引用还不够，需要继续追到它的拥有者以及结束条件；缓存有意保留对象，与无意形成的环也应分别处理。
+
+ARC 与追踪式垃圾回收解决同一类内存回收问题，但判定方式不同。引用计数依赖持有关系的增减，追踪式回收通常从根集合分析可达对象，因此能处理不可达的环。不能由此推出 GC 没有内存泄漏：被根持续持有但业务不再需要的对象，依然可能存活。
+
+引用管理的安全也不等于对象线程安全。两个任务同时修改同一个类实例的可变字段，仍可能产生数据竞争；需要同步或 [actor 隔离](./concurrency.mdx#actor隔离与重入)。ARC 只保证必要的生命周期机制，不替字段访问建立业务上的原子性。
+
+## 6. 面试题 {#面试题}
+
+### 6.1 ARC 为什么不能自动回收所有强引用环？ {#arc-cycle}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：引用计数、可达性与对象所有权。
+
+**相关内容**：[对象引用环与弱引用](#对象引用环与弱引用)。
+
+<details>
+<summary>参考回答</summary>
+
+**环内对象仍然互相强持有，外部引用消失不会让这些持有关系自动归零。** ARC 不会像追踪式回收那样仅凭整组对象不可达就收集它们。应根据实际所有权，让非拥有关系使用弱引用、在明确时机断开持有，或者调整对象关系，而不是任意选一条引用改弱。
+
+</details>
+
+### 6.2 weak 与 unowned 有什么区别？ {#weak-unowned}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：不拥有引用、自动清零与生命周期承诺。
+
+**相关内容**：[对象引用环与弱引用](#对象引用环与弱引用)。
+
+<details>
+<summary>参考回答</summary>
+
+**两者都不延长对象生命，weak 在对象销毁后变为 nil，unowned 则要求访问时对象仍然存在。** 普通安全的 `unowned` 访问失效对象会触发运行时错误，不是自动返回空值。被引用者可能先退出时用 `weak` 并处理缺失；只有生命周期关系能得到证明，才考虑 `unowned`。
+
+</details>
+
+### 6.3 闭包捕获 self 是否一定导致循环引用？ {#closure-cycle}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：闭包持有路径与业务生命周期。
+
+**相关内容**：[闭包与引用环](#闭包与引用环)。
+
+<details>
+<summary>参考回答</summary>
+
+**不一定，只有强持有路径回到对象自身才构成相应的环。** 对象保存闭包、闭包强捕获对象就是一例；短期执行后释放的闭包可能只是合理延长对象生命。还要检查任务是否永远不结束等情况，因为过长持有即使没有环，也可能不符合页面的业务生命周期。
+
+</details>
+
+### 6.4 使用 weak self 后，为什么对象仍可能跨过 await 保持存活？ {#weak-strong}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：可选解包后的强引用与异步操作范围。
+
+**相关内容**：[闭包与引用环](#闭包与引用环)。
+
+<details>
+<summary>参考回答</summary>
+
+**弱引用解包后得到的局部强引用仍会维持对象存活，它可能被异步操作保留到后续使用结束。** 若在长循环开始前一次性解包 `self`，再不断等待事件，弱捕获不保证页面能及时销毁。应限制每次强持有的范围，并让任务有明确的结束和取消条件。
+
+</details>
+
+### 6.5 ARC 是否保证类实例可以安全地被多个线程修改？ {#arc-thread-safety}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：内存生命周期与共享可变状态的区别。
+
+**相关内容**：[生命周期边界与排查](#生命周期边界与排查)。
+
+<details>
+<summary>参考回答</summary>
+
+**不保证，引用计数管理对象何时存活，字段并发访问需要独立的同步或隔离。** 即使对象不会提前释放，两个执行单元同时进行读改写仍可能丢失更新或产生数据竞争。应使用锁、串行化或 actor 等机制保护相应状态，不能用 ARC 替代它们。
+
+</details>
+
+## 7. 参考资料 {#参考资料}
+
+- [The Swift Programming Language：Automatic Reference Counting](https://github.com/swiftlang/swift-book/blob/16a2a4caa408c86fc85bde1e1dfff4745b6e454c/TSPL.docc/LanguageGuide/AutomaticReferenceCounting.md)
+- [Apple WWDC21：ARC in Swift — Basics and beyond](https://developer.apple.com/videos/play/wwdc2021/10216/)
+- [Swift 5.9 标准库：withExtendedLifetime](https://github.com/swiftlang/swift/blob/swift-5.9-RELEASE/stdlib/public/core/LifetimeManager.swift)

@@ -1,0 +1,325 @@
+---
+title: React Native 测试
+description: 区分 React Native 的逻辑、组件、原生与设备测试，验证异步状态、事件、替身契约和平台失败路径。
+knowledge:
+  id: mobile.react-native.testing
+---
+
+**React Native 测试**需要分别检查 JS 逻辑、组件行为、原生实现和设备上的完整流程。Jest 能发现状态与交互代码的问题，但通常没有启动 Android 或 iOS 的原生界面，不能用它的一次通过证明权限弹窗、原生布局或蓝牙已经正常工作。
+
+本文使用 React Native 0.76.9、React 18.3.1、Jest 29.7 和 React Native Testing Library 12.9 说明测试方法。重点是让断言对应可观察行为，并清楚记录测试替换了哪些依赖。
+
+## 1. 面试核心 {#core}
+
+- **测试层次由实际执行的代码决定**。逻辑测试、组件测试、原生测试和设备集成分别回答不同问题，工具名称不能代替执行范围。[卡](#layers)
+- **组件测试优先断言用户能观察的结果**。文本、角色、可操作状态与行为结果，比内部 state 名称或大快照更能说明需求是否满足。[卡](#queries)
+- **异步测试要控制触发和完成条件**。等待指定结果，不能靠固定休眠碰运气；`waitFor` 的回调可能多次执行，不应放入重复点击等副作用。[卡](#async)
+- **旧请求、失败和清理也属于行为**。成功显示一次标题，不能证明切换输入后不会被旧结果覆盖。[卡](#race)
+- **事件模拟的能力有边界**。`userEvent` 可以模拟更完整的 JS 交互序列，仍不等于设备上的触摸命中、键盘或无障碍实现已经通过。[卡](#events)
+- **替身需要明确契约，不能代替被替换的原生能力**。返回一个模拟的 granted，只验证 JS 的允许分支。[卡](#native-mock)
+- **计时器、监听和全局修改要在测试后恢复**。测试顺序影响结果时，应先找泄漏状态与未结束任务，再考虑重跑。[卡](#isolation)
+
+## 2. 测试范围与运行环境 {#测试范围与运行环境}
+
+### 2.1 哪一层代码真的执行了 {#实际执行的层次}
+
+| 层次 | 适合观察的内容 | 不能据此证明的内容 |
+| --- | --- | --- |
+| JS 逻辑测试 | 输入校验、转换、排序、请求状态与业务决策 | 原生 API、界面布局和设备能力 |
+| JS 组件测试 | 渲染描述、文本、交互回调与状态变化 | 实际原生视图、像素、触摸命中与系统 UI |
+| 原生实现测试 | Java、Kotlin、Swift 等实现及其可执行依赖 | 尚未接入运行时的完整跨语言调用 |
+| 设备集成与端到端测试 | 安装应用后的导航、平台接口与用户流程 | 未覆盖的系统、设备和硬件条件 |
+
+**React Native Testing Library**（RNTL）在 JS 测试环境中渲染并查询组件。这里使用的 12.9 版本基于 React 测试渲染器，并配合 RN 的测试替身；它不是在浏览器 DOM 中测试，也没有因此启动一棵真实 Android View 或 iOS UIView。
+
+TypeScript 和 Codegen 检查还能提前发现接口问题，但它们不执行真实业务。选择测试层次时，先说明要验证哪条因果链，再决定是否需要原生实现、设备或外部服务。
+
+### 2.2 根据状态与失败路径选择用例 {#根据状态与失败路径选择用例}
+
+一个远程标题组件至少有等待、成功和失败状态；如果输入可以改变，还要考虑旧请求晚到。支付、权限、连接等流程则需要根据各自状态安排用例，不能只覆盖最顺利的一条路径。
+
+状态与转移的整理方法见 [状态迁移测试](../../tools-and-frameworks/testing/state-transition-testing.mdx)。在 RN 中，应进一步标记每个状态由 JS、原生模块还是系统提供，避免用同一种替身替代整条链路。
+
+## 3. 从可观察结果编写组件测试 {#从结果编写组件测试}
+
+### 3.1 一个可控制加载结果的组件 {#可控制加载结果的组件}
+
+下面的 `RemoteTitle` 接收加载函数，便于分别控制完成、失败和结果顺序。文件名为 `RemoteTitle.tsx`：
+
+```tsx
+import React, {useEffect, useState} from 'react';
+import {Text} from 'react-native';
+
+type State =
+  | {kind: 'loading'}
+  | {kind: 'ready'; title: string}
+  | {kind: 'error'};
+
+export function RemoteTitle({load}: {load: () => Promise<string>}) {
+  const [state, setState] = useState<State>({kind: 'loading'});
+  useEffect(() => {
+    let current = true;
+    setState({kind: 'loading'});
+    async function run() {
+      try {
+        const title = await load();
+        if (current) setState({kind: 'ready', title});
+      } catch {
+        if (current) setState({kind: 'error'});
+      }
+    }
+    void run();
+    return () => { current = false; };
+  }, [load]);
+
+  if (state.kind === 'loading') return <Text>加载中</Text>;
+  if (state.kind === 'error') return <Text>加载失败</Text>;
+  return <Text>{state.title}</Text>;
+}
+```
+
+每次 `load` 变化都会建立一次新的 Effect；旧 Effect 清理后，不再把结果写入当前状态。`current` 只忽略旧结果，不会取消 `load` 内部的 HTTP 请求或原生任务，底层取消需要独立协议。
+
+调用者应让 `load` 的身份符合预期：无意中在每次父组件渲染时创建新函数，会让这个示例重新加载。真实产品还可以按需求选择保留旧内容或显示占位状态，测试应跟随明确的行为要求。
+
+### 3.2 等到指定结果，再断言界面 {#等到指定结果再断言}
+
+在 `RemoteTitle.test.tsx` 中控制 Promise 的完成时机：
+
+```tsx
+import React from 'react';
+import {act, render} from '@testing-library/react-native';
+import {RemoteTitle} from './RemoteTitle';
+
+test('加载完成后显示标题', async () => {
+  let complete!: (value: string) => void;
+  const pending = new Promise<string>(resolve => { complete = resolve; });
+  const load = jest.fn(() => pending);
+  const screen = render(<RemoteTitle load={load} />);
+
+  expect(screen.getByText('加载中')).toBeTruthy();
+  await act(async () => { complete('最新标题'); });
+
+  expect(screen.getByText('最新标题')).toBeTruthy();
+  expect(screen.queryByText('加载中')).toBeNull();
+});
+```
+
+这里的输入是可控加载函数，输出是用户能看到的文本。`act` 让测试在这一轮相关 React 更新处理后继续断言，不需要固定等待一秒；它也不代表所有网络、计时器或原生操作都已经结束。
+
+`getBy*` 适合应该立即存在的元素，找不到或匹配多个时会失败；`queryBy*` 适合检查不存在，单个查询找不到时返回 `null`；`findBy*` 用于等待异步出现的匹配结果。查询应表达需求，例如按钮角色与可访问名称，而不是优先依赖组件内部层级。
+
+## 4. 异步顺序与等待条件 {#异步顺序与等待条件}
+
+### 4.1 旧结果不能覆盖新状态 {#旧结果不能覆盖新状态}
+
+只检查成功路径，发现不了请求顺序问题。下面的测试与前一个测试独立，仍引用同一个 `RemoteTitle`：
+
+```tsx
+import React from 'react';
+import {act, render} from '@testing-library/react-native';
+import {RemoteTitle} from './RemoteTitle';
+
+function deferred() {
+  let resolve!: (value: string) => void;
+  const promise = new Promise<string>(done => { resolve = done; });
+  return {promise, resolve};
+}
+
+test('旧请求晚到不覆盖新标题', async () => {
+  const oldRequest = deferred();
+  const newRequest = deferred();
+  const loadOld = () => oldRequest.promise;
+  const loadNew = () => newRequest.promise;
+  const screen = render(<RemoteTitle load={loadOld} />);
+  screen.rerender(<RemoteTitle load={loadNew} />);
+
+  await act(async () => { newRequest.resolve('新标题'); });
+  await act(async () => { oldRequest.resolve('旧标题'); });
+
+  expect(screen.getByText('新标题')).toBeTruthy();
+  expect(screen.queryByText('旧标题')).toBeNull();
+});
+```
+
+这个测试让旧请求在新请求之后完成，直接观察是否发生覆盖。还应检查当前请求失败、旧请求晚到失败等路径，因为成功分支和异常分支可能各有遗漏的状态判断。
+
+不要把“没有打印卸载后的警告”作为清理正确的唯一证据。警告是否存在与版本有关，旧请求覆盖当前结果、重复订阅或任务没有释放等可观察行为更有判断价值。
+
+### 4.2 waitFor 等的是断言通过 {#waitfor的等待条件}
+
+**`waitFor`** 会在一段时间内重复执行断言回调，直到回调不再抛错，或超时失败。使用时需要 `await`；单纯返回 `false` 不表示继续等待，因为没有抛错仍会被当作成功。
+
+触发操作放在等待之外，等待内部只观察结果。若在 `waitFor` 里点击按钮，每轮重试都可能再次点击，测试就会在观察过程中不断改变被测对象。
+
+等待条件应该对应业务状态，而不是“再多等一点应该就好了”。如果 Promise 根本没有完成、订阅没有建立或模块没有注册，扩大超时只会延迟暴露问题。
+
+## 5. 交互、计时器与快照 {#交互计时器与快照}
+
+### 5.1 userEvent 与 fireEvent {#userevent与fireevent}
+
+**`userEvent`** 对支持的操作模拟一组 JS 交互事件，例如按压过程中的相关回调；使用时需要等待返回的 Promise。**`fireEvent`** 更适合触发特定处理函数，它可以沿组件树寻找处理器，通常不会自动构造完整用户操作过程。
+
+在这一基线中，支持的普通点击、输入等操作优先用 `userEvent`；需要某个特定事件或它不支持的交互时，再选择 `fireEvent`。二者都是 JS 层模拟，不能证明原生遮挡、触摸坐标、系统输入法或屏幕阅读器的实际行为。
+
+无障碍角色与名称能改善查询表达，但查询成功也不等于设备无障碍已经通过。重要流程还要在目标平台上检查焦点顺序、读屏内容与真实可操作性。
+
+### 5.2 虚拟时间与恢复 {#虚拟时间与恢复}
+
+**Jest 假计时器**让测试控制 `setTimeout` 等时间推进，适合防抖、延迟显示和有计时过程的事件模拟。使用 `jest.useFakeTimers()` 后，按需要推进相应时间；结束时恢复 `jest.useRealTimers()`，并处理测试创建的待执行计时器。
+
+推进计时器不等于所有 Promise 或外部 I/O 都已经完成。将一次 Promise 完成、一次 React 更新与一次计时器推进分开处理，才能看清失败停在哪个条件上。
+
+有递归计时器时，不应无条件运行全部计时器，否则可能进入无限执行。测试组件结束后还需要检查自身计时器是否已清理；不能只清空整个测试环境来掩盖被测代码的资源泄漏。
+
+### 5.3 快照的范围 {#快照的范围}
+
+组件树快照记录的是被序列化的结构，不是设备屏幕截图，也不是用户流程的结果。它适合保护规模可控、变化有意义的输出；大段快照可能把一个无关属性变化放大成难以阅读的差异。
+
+更新快照前，要确认变化是否符合需求。不能因为快照失败就全部接受，也不能用快照稳定代替异步、错误、导航和权限分支的行为断言。
+
+## 6. 原生替身与设备测试 {#原生替身与设备测试}
+
+### 6.1 替身究竟证明了什么 {#替身的证据范围}
+
+**测试替身**用可控制对象替换某个依赖。比如把相机权限请求设置为返回 `granted`，可以检查 JS 是否继续展示相机入口，但没有显示真正的系统弹窗，也没有获得摄像头。
+
+替身应符合实际接口，包括成功、拒绝、错误和必要的事件行为。只让每个方法都返回成功，会让接口不一致、清理遗漏或错误处理缺失难以暴露。原生接口的生成、实现和注册分工见 [React Native 原生模块](native-modules.mdx#模块找不到时逐层定位)。
+
+反过来，Jest 中模块缺失，也不一定是生产原生代码坏了。先确认测试运行环境是否提供这个原生模块，再检查替身边界、JS 适配层和实际设备集成，避免为了让测试通过而改坏生产注册。
+
+### 6.2 设备上验证跨层结果 {#设备上验证跨层结果}
+
+设备测试关注已经构建安装的应用：模块能否被运行时发现、导航与 Modal 能否关闭、键盘是否遮挡输入、权限拒绝后功能是否仍可理解，以及深链、后台恢复和设备连接是否符合预期。
+
+平台原生测试可以按需采用 [Android 测试](../android/testing.mdx)和 [iOS 测试](../ios/testing.mdx)中的方法。JS 组件测试发现问题后，通常可以把相关逻辑回归留在较快的层次；涉及原生接入和系统行为的路径仍保留对应的设备验证。
+
+测试记录要包含设备或模拟器、系统、构建模式、新旧架构、账号与数据条件，以及实际观察的 API 或界面结果。命令返回成功只证明命令被接受，不能代替应用已经收到正确授权或资源状态的证据。
+
+## 7. 隔离与失败诊断 {#隔离与失败诊断}
+
+每个测试应能独立建立所需状态。清理组件、监听、计时器、模块替身和修改过的全局值；重置调用次数、替换实现与恢复原方法是不同动作，需要按测试修改了什么选择。
+
+失败时先区分：断言结果不符合需求、异步条件未满足、测试替身与接口不一致，还是平台环境没有准备好。保存失败输出与触发条件，再缩小场景；重复运行偶尔成功，只能说明问题有条件，不能当作已经修复。
+
+Jest 测试耗时也不能直接当作应用帧耗时或启动时间。性能判断需要目标构建、设备和明确指标，测试隔离、虚拟时钟与替身都会改变执行条件。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 Jest 组件测试通过，能证明 React Native 原生页面正常吗？ {#layers}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：执行环境与测试证据范围。
+
+**相关内容**：[测试范围与运行环境](#测试范围与运行环境)
+
+<details>
+<summary>参考回答</summary>
+
+**不能，它主要证明被执行的 JS 组件逻辑与模拟交互符合断言。** 这一基线的 RNTL 使用测试渲染器和原生替身，没有因此执行真实视图、布局与系统 UI。原生实现和完整设备路径还需要对应测试。
+
+</details>
+
+### 8.2 组件测试为什么优先查询角色、文本和行为结果？ {#queries}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：需求表达、可观察性与实现耦合。
+
+**相关内容**：[等到指定结果，再断言界面](#等到指定结果再断言)、[快照的范围](#快照的范围)
+
+<details>
+<summary>参考回答</summary>
+
+**这些查询和断言更直接表达用户需要看到或完成的事情。** 内部 state 名称和组件层级改变不一定影响行为，而巨大快照可能让有意义的变化难以识别。仍要明确查询只反映 JS 测试树，不是原生显示和交互的完整证明。
+
+</details>
+
+### 8.3 异步组件测试中，act、findBy 和 waitFor 有什么作用？ {#async}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：React 更新、查询等待和断言重试。
+
+**相关内容**：[等到指定结果，再断言界面](#等到指定结果再断言)、[waitFor 等的是断言通过](#waitfor的等待条件)
+
+<details>
+<summary>参考回答</summary>
+
+**act 帮助处理相关 React 更新，findBy 等待元素匹配，waitFor 重试断言直到不再抛错。** 它们不能自动完成所有外部任务。等待需要 await，重试回调里不放点击等副作用，返回 false 也不会让 waitFor 继续等。
+
+</details>
+
+### 8.4 怎样检查旧请求不会覆盖新页面状态？ {#race}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：请求身份、完成顺序与失效结果。
+
+**相关内容**：[旧结果不能覆盖新状态](#旧结果不能覆盖新状态)
+
+<details>
+<summary>参考回答</summary>
+
+**控制两个请求的完成顺序，让新请求先完成，再让旧请求成功或失败，观察当前结果是否保持正确。** 这样直接验证过期结果处理。还要区分忽略结果与取消底层工作，不能仅靠没有警告来证明清理完成。
+
+</details>
+
+### 8.5 userEvent 和 fireEvent 模拟的点击能证明原生触摸正常吗？ {#events}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：事件序列、处理器与设备输入边界。
+
+**相关内容**：[userEvent 与 fireEvent](#userevent与fireevent)
+
+<details>
+<summary>参考回答</summary>
+
+**不能，二者主要在 JS 测试环境触发交互。** userEvent 对支持操作模拟更完整的事件序列，fireEvent 适合调用特定处理器；真实坐标、遮挡、输入法和无障碍行为仍需设备观察。
+
+</details>
+
+### 8.6 把权限模块 mock 成 granted，测试证明了什么？ {#native-mock}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：替身契约、分支覆盖与平台状态。
+
+**相关内容**：[替身究竟证明了什么](#替身的证据范围)、[设备上验证跨层结果](#设备上验证跨层结果)
+
+<details>
+<summary>参考回答</summary>
+
+**只证明 JS 在这个模拟结果下执行了预期分支。** 它没有显示系统弹窗或真正授权。还要检查拒绝、错误和清理，并通过原生或设备集成观察实际 API 与界面结果，不能把替身返回当作平台事实。
+
+</details>
+
+### 8.7 一个测试单独通过、一起运行失败，应该怎样排查？ {#isolation}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：共享状态、任务清理与可重复条件。
+
+**相关内容**：[虚拟时间与恢复](#虚拟时间与恢复)、[隔离与失败诊断](#隔离与失败诊断)
+
+<details>
+<summary>参考回答</summary>
+
+**先查测试之间泄漏的组件、监听、计时器、全局值与替身实现。** 固定触发顺序并保存失败输出，确认每个测试能独立准备和恢复环境。不要把重跑变绿当作修复，也不要清空所有状态来掩盖业务对象本应执行的清理。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+
+- [React Native 0.76：Testing](https://github.com/react/react-native-website/blob/1e510146b8d4d17877f8890acd9e5709796633cc/website/versioned_docs/version-0.76/testing-overview.md)
+- [RNTL 12：Testing Environment](https://oss.callstack.com/react-native-testing-library/12.x/docs/advanced/testing-env)
+- [RNTL 12：Queries](https://oss.callstack.com/react-native-testing-library/12.x/docs/api/queries)
+- [RNTL 12：Understanding Act](https://oss.callstack.com/react-native-testing-library/12.x/docs/advanced/understanding-act)
+- [RNTL 12：Async Utilities](https://oss.callstack.com/react-native-testing-library/12.x/docs/api/misc/async)
+- [RNTL 12：User Event](https://oss.callstack.com/react-native-testing-library/12.x/docs/api/events/user-event)
+- [RNTL 12：Fire Event](https://oss.callstack.com/react-native-testing-library/12.x/docs/api/events/fire-event)
+- [Jest 29.7：Timer Mocks](https://jestjs.io/docs/29.7/timer-mocks)
+- [Jest 29.7：Mock Function API](https://jestjs.io/docs/29.7/mock-function-api)
+- [Jest 29.7：Snapshot Testing](https://jestjs.io/docs/29.7/snapshot-testing)

@@ -1,0 +1,219 @@
+---
+knowledge:
+  id: basic-knowledge.swift.closures
+  type: concept
+description: "解释 Swift 闭包的函数类型、变量捕获、捕获列表、逃逸与非逃逸，以及自动闭包和对象生命周期。"
+keywords: [Swift 闭包, 捕获列表, escaping, autoclosure, 闭包捕获]
+---
+
+# Swift 闭包
+
+**闭包**是可以作为值传递的可执行代码，也能保留它使用的外部上下文。回调能在函数返回后继续访问局部状态，原因就在这里。理解 Swift 闭包时，需要分别判断它接收什么参数、捕获什么、保存多久，以及捕获是否改变对象的生命周期。
+
+## 1. 面试核心 {#core}
+
+- 函数类型描述输入和输出，**尾随闭包、参数缩写与类型推断只简化写法，不改变函数类型**。[卡](#closure-model)
+- 闭包可以保留局部变量的捕获上下文，**多个闭包可能共享同一份可变状态**，不是每次调用都重新创建变量。[卡](#capture-state)
+- 捕获列表在闭包创建时计算捕获值，**捕获类实例的引用仍然会共享该对象，并不深复制对象**。[卡](#capture-list)
+- 逃逸指闭包可能在接收它的函数返回后继续存在，**不等于异步执行，也不保证在其他线程运行**。[卡](#escaping)
+- 自动闭包把表达式包装成延迟执行的闭包，**表达式何时求值取决于函数何时调用这个闭包**。[卡](#autoclosure)
+- 闭包强捕获对象本身不一定形成引用环；是否需要弱捕获，要检查谁持有闭包以及对象是否可以先结束生命周期。
+
+## 2. 函数类型与调用 {#函数类型与调用}
+
+闭包表达式可以写出完整参数和返回类型，也可以让上下文帮助编译器推断。下面的两种写法都生成 `(Int) -> Int` 类型的值：
+
+```swift
+let double: (Int) -> Int = { (value: Int) -> Int in
+    value * 2
+}
+let shorter: (Int) -> Int = { $0 * 2 }
+print(double(3), shorter(3)) // 6 6
+
+let values = [3, 1, 2].sorted { $0 < $1 }
+print(values) // [1, 2, 3]
+```
+
+`in` 分开参数声明与闭包体，`$0` 表示第一个参数。`sorted` 的最后一个参数是闭包，因此可以使用尾随闭包语法。这里的比较器需要表达顺序关系；若把条件写成 `<=`，相同元素也被判断为“排在前面”，就破坏了排序比较器所需的严格顺序要求。
+
+命名函数也可以赋给函数类型变量，嵌套函数也可以捕获外部变量。闭包的重点不是“有没有名字”，而是代码能否作为值使用以及保留了什么上下文。
+
+## 3. 捕获与捕获列表 {#捕获与捕获列表}
+
+**捕获**让闭包继续使用定义处的变量。需要被多个闭包访问的可变局部状态可以保存在共享上下文中，不能把它理解成“函数返回时局部变量一定全部消失”。
+
+```swift
+func makeCounter() -> () -> Int {
+    var count = 0
+    return {
+        count += 1
+        return count
+    }
+}
+
+let next = makeCounter()
+let same = next
+print(next(), same(), next()) // 1 2 3
+print(makeCounter()())        // 1
+```
+
+`next` 与 `same` 使用同一份捕获状态；另一次调用 `makeCounter` 才创建另一份 `count`。这说明闭包虽然可以赋值，却不能据此认为它所保留的环境也会逐份独立复制。
+
+**捕获列表**写在闭包体前面，决定在闭包创建时保存哪些值以及怎样持有对象。对于值类型，显式保存当前值和默认访问可变变量有不同结果：
+
+```swift
+func demonstrateCapture() {
+    var count = 1
+    let current = { count }
+    let snapshot = { [count] in count }
+    count = 2
+    print(current(), snapshot()) // 2 1
+}
+demonstrateCapture()
+```
+
+`snapshot` 创建时保存了 `1`，`current` 访问随后变成 `2` 的变量。捕获列表也支持 `[saved = expression]`，在创建闭包时计算表达式并绑定到 `saved`。
+
+若捕获的是类引用，保存引用不等于复制整个对象：
+
+```swift
+final class Box {
+    var value = 1
+}
+
+let box = Box()
+let read = { [box] in box.value }
+box.value = 2
+print(read()) // 2
+```
+
+`read` 和外部的 `box` 仍然访问同一实例。需要对象快照时，必须明确复制哪些状态；给捕获列表加方括号本身不会完成深复制。
+
+## 4. 逃逸与非逃逸 {#逃逸与非逃逸}
+
+**逃逸闭包**可能在接收它的函数返回后继续存在。把闭包存到属性、放入长期保存的集合，或交给稍后执行的任务，都可能让它逃逸。普通函数参数位置的闭包默认非逃逸；若 API 需要保留它，就要用 `@escaping` 声明。
+
+```swift
+final class CallbackSlot {
+    var callback: (() -> Void)?
+
+    func save(_ action: @escaping () -> Void) {
+        callback = action
+    }
+}
+
+let slot = CallbackSlot()
+slot.save { print("later") }
+slot.callback?() // later
+```
+
+`save` 返回后，`callback` 仍持有传入的闭包，所以必须声明逃逸。如果移除 `@escaping`，把参数赋给这个可长期保存的属性会编译失败。注意这里没有创建线程，也没有异步调度；逃逸描述生命周期，执行时机由调用者决定。
+
+非逃逸约束让编译器知道闭包不会离开当前调用，因而有更多优化空间，但不能据此承诺“所有非逃逸闭包都在栈上、所有逃逸闭包都在堆上”。实际布局还受捕获内容和编译优化影响。
+
+在逃逸闭包里访问实例成员时，通常需要显式写出 `self`，让保留对象的关系更明显；捕获列表等语法存在允许省略的规则。是否写出 `self` 与是否形成强引用环不是同一件事。实例持有闭包、闭包又持有实例时，才需要进一步检查[Swift ARC](./arc.mdx#闭包与引用环)中的所有权关系。
+
+## 5. 自动闭包与求值时机 {#自动闭包与求值时机}
+
+**自动闭包** `@autoclosure` 让调用方传一个表达式，由编译器把它包装成无参数闭包。表达式不会仅因传参就立即执行，函数可以选择是否求值。
+
+```swift
+func expensiveMessage() -> String {
+    print("computed")
+    return "details"
+}
+
+func log(_ enabled: Bool, _ message: @autoclosure () -> String) {
+    if enabled { print(message()) }
+}
+
+log(false, expensiveMessage()) // 没有输出
+log(true, expensiveMessage())  // computed，随后 details
+```
+
+`log(false, ...)` 没有调用 `message`，所以没有执行 `expensiveMessage`。如果在实现里调用两次 `message()`，表达式通常也会执行两次；自动闭包不自动缓存结果。
+
+这种写法适合短路判断、断言、延迟日志等场景。若表达式有明显副作用，调用处却看不出它会延迟或重复执行，接口就容易让人误判。需要保存自动闭包时，还必须同时满足逃逸声明及其生命周期要求。
+
+闭包也不自动提供并发安全。两个任务并发修改同一捕获变量，仍然需要隔离或同步；`@Sendable` 约束属于[Swift 并发](./concurrency.mdx#可发送性与隔离边界)中的跨隔离边界检查，不能由 `@escaping` 替代。
+
+## 6. 面试题 {#面试题}
+
+### 6.1 Swift 闭包是什么？ {#closure-model}
+
+**考察重点**：函数值、上下文捕获与生命周期。
+
+**相关内容**：[函数类型与调用](#函数类型与调用)、[捕获与捕获列表](#捕获与捕获列表)。
+
+<details>
+<summary>参考回答</summary>
+
+**闭包是可以作为值传递的代码，它能捕获定义处的上下文，使外部变量在需要时继续可用。** 参数与返回值由函数类型约束；捕获状态可以在多次调用甚至多个闭包之间共享。函数返回不代表被逃逸闭包保留的上下文一定同时释放，需要继续看闭包由谁持有。
+
+</details>
+
+### 6.2 同一个计数闭包赋值给两个变量后，计数状态是否独立？ {#capture-state}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：闭包引用语义与捕获上下文。
+
+**相关内容**：[捕获与捕获列表](#捕获与捕获列表)。
+
+<details>
+<summary>参考回答</summary>
+
+**复制同一个闭包值不会因此创建独立的捕获环境。** 例子中的 `next` 与 `same` 访问同一个 `count`，调用结果依次递增。再次调用工厂函数 `makeCounter` 才会建立另一份局部状态。若改成捕获列表保存值，还要按那个具体闭包的捕获方式重新判断。
+
+</details>
+
+### 6.3 捕获列表能否保证获得对象的独立快照？ {#capture-list}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：创建时求值、值类型与类引用的复制差异。
+
+**相关内容**：[捕获与捕获列表](#捕获与捕获列表)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能一概保证；捕获列表保存的是表达式当时的值，类类型的值是引用。** 捕获一个整数可以保留当时的整数值，捕获类引用仍然可能与外部共享同一对象。需要独立快照时，应明确复制所需状态，并判断嵌套引用是否仍然共享。
+
+</details>
+
+### 6.4 逃逸闭包是否一定异步执行，是否一定在后台线程运行？ {#escaping}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：生命周期约束与调度行为的区别。
+
+**相关内容**：[逃逸与非逃逸](#逃逸与非逃逸)。
+
+<details>
+<summary>参考回答</summary>
+
+**都不一定。逃逸只表示闭包可能在接收函数返回后继续存在，既不指定线程，也不负责安排异步执行。** 把闭包保存到属性后，可以由当前线程同步调用，也可以稍后交给队列执行。`@escaping` 允许保留闭包，具体执行方式仍由 API 实现和调用方决定。
+
+</details>
+
+### 6.5 自动闭包何时求值，会自动缓存结果吗？ {#autoclosure}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：表达式包装、延迟执行与副作用。
+
+**相关内容**：[自动闭包与求值时机](#自动闭包与求值时机)。
+
+<details>
+<summary>参考回答</summary>
+
+**表达式在自动闭包被调用时求值，自动闭包本身不缓存结果。** 实现可以不调用、调用一次或多次，所以有副作用的表达式必须谨慎传入。若接口需要“一次求值后重复读取”，应显式保存第一次计算结果，而不是依靠 `@autoclosure`。
+
+</details>
+
+## 7. 参考资料 {#参考资料}
+
+- [The Swift Programming Language：Closures](https://github.com/swiftlang/swift-book/blob/16a2a4caa408c86fc85bde1e1dfff4745b6e454c/TSPL.docc/LanguageGuide/Closures.md)
+- [The Swift Programming Language：Automatic Reference Counting](https://github.com/swiftlang/swift-book/blob/16a2a4caa408c86fc85bde1e1dfff4745b6e454c/TSPL.docc/LanguageGuide/AutomaticReferenceCounting.md)
+- [Apple WWDC24：Explore Swift performance](https://developer.apple.com/videos/play/wwdc2024/10217/)

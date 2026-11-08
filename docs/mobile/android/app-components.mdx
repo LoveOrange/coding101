@@ -1,0 +1,183 @@
+---
+knowledge:
+  id: mobile.android.app-components
+  type: concept
+description: "解释 Android 四类应用组件、Intent、Context、Manifest，以及组件、进程和线程的边界。"
+keywords: [Android 应用组件, Activity, Service, BroadcastReceiver, ContentProvider, Intent, Context]
+---
+
+# Android 应用组件
+
+Android 应用组件是系统进入应用的入口。Activity 承接界面交互，Service 表达后台服务，BroadcastReceiver 接收广播，ContentProvider 提供受控的数据访问。它们各自有生命周期和调用约定，但都不是线程。面试中解释一个功能怎样运行，首先要分清系统调用了哪个入口、代码在哪个线程执行、状态由谁保存。
+
+## 1. 面试核心 {#core}
+
+- 四类组件按职责分工，**组件是系统可管理的入口，不能用普通对象或线程替代其含义**。[卡](#four-components)
+- Service 可以在没有界面的情况下工作，但**默认回调仍在所属进程的主线程，不会自动获得工作线程**。[卡](#service-thread)
+- Intent 描述一次组件操作，**显式 Intent 指定目标组件，隐式 Intent 由动作、数据和类别等条件参与匹配**。[卡](#intent)
+- Context 提供资源、系统服务和组件操作的环境，**选择它时既要考虑能力，也要考虑主题、窗口和生命周期**。[卡](#context)
+- 默认情况下，同一应用的组件共享进程与主线程，**组件销毁、进程终止和持久化数据删除是不同事件**。[卡](#component-process)
+- Manifest 和导出规则决定哪些入口对外可见，**能收到请求不代表应该信任请求参数或调用方**。
+
+## 2. 四类入口 {#四类入口}
+
+**应用组件**是由 Android 框架创建、连接或调度的功能入口。它们不要求都由启动页一步步调用：系统可以因为另一个应用请求数据而创建 Provider 所在进程，也可以因为服务请求进入应用。
+
+| 组件 | 主要职责 | 需要分清的边界 |
+| --- | --- | --- |
+| Activity | 承接用户交互，管理窗口中的界面 | 一个 Activity 可以容纳多个页面；它不等于整个应用 |
+| Service | 表达需要由系统管理的服务工作或绑定接口 | 无界面不等于在后台线程，也不保证永久存活 |
+| BroadcastReceiver | 接收系统或应用发出的广播事件 | 回调有时间限制，不适合直接承担长时间工作 |
+| ContentProvider | 通过统一接口提供数据访问与共享 | 不限于数据库；数据操作需要权限与并发设计 |
+
+例如一个笔记应用，可以用 Activity 展示编辑界面，用 Provider 暴露经过授权的笔记附件 URI，让其他应用读取。若有需要持续显示通知的特定用户任务，才考虑符合条件的前台服务；“上传数据”这个业务名字本身不能决定一定使用 Service，还要看任务能否延后、退出后是否必须继续和系统限制。
+
+**启动式 Service**由启动请求建立工作责任，通常需要在工作结束后停止；**绑定式 Service**向客户端提供连接和接口，纯绑定情形的存续与客户端绑定关系有关。一个 Service 可以同时被启动和绑定，此时解除最后一个绑定也不等于自动消除已经启动的责任。后台启动与前台服务还受系统版本、目标 SDK 和任务类别约束。
+
+BroadcastReceiver 的 `onReceive` 默认在主线程执行。`goAsync()` 可以让一次处理跨出回调返回继续完成，但仍有执行时限，必须结束相应 `PendingResult`；它不是永久后台执行许可。需要可靠延后执行的任务，应交给适合的调度机制。
+
+Provider 通过 `ContentResolver`、URI 和 CRUD 等方法建立访问接口。调用者不应直接假定它操作的是一个 SQLite 表；实现可以来自文件或其他数据来源。Provider 的部分数据操作可被多个线程并发调用，不能套用“所有组件方法都只在主线程”的说法。
+
+## 3. Intent 与入口声明 {#intent与入口声明}
+
+**Intent** 是描述组件操作的消息对象。显式 Intent 给出组件身份，适合应用内已知目的地；隐式 Intent 描述要做什么，由系统解析符合条件的接收组件。
+
+```kotlin
+import android.app.Activity
+import android.content.Intent
+
+class DetailActivity : Activity()
+
+fun openDetail(activity: Activity, noteId: Long) {
+    val intent = Intent(activity, DetailActivity::class.java)
+        .putExtra("note_id", noteId)
+    activity.startActivity(intent)
+}
+```
+
+这里传递的是笔记 ID，接收方再据此加载数据；它没有传递一个仍与原进程共享身份的业务对象。即使组件暂时位于同一进程，也不应依赖随意把大对象塞进 Intent 来替代明确的数据责任。跨进程传输、保存状态和系统事务均有成本与大小限制。
+
+下面是对应的 Manifest 片段，应用的命名空间需要与类所在包一致：
+
+```xml
+<activity
+    android:name=".DetailActivity"
+    android:exported="false" />
+```
+
+这表示该入口不直接导出给其他应用。启动页若带有 Launcher 的 intent-filter，则需要相应的导出配置。目标 Android 12（API 31）及以上时，带 intent-filter 的 Activity、Service 和 Receiver 必须明确声明 `android:exported`，不能依赖含糊的默认值。
+
+隐式 Intent 的 action、data/MIME type、category 参与过滤，extras 不用于决定目标匹配。一个过滤器里有 VIEW，并不代表所有 URI 都能匹配；scheme、host、类型等条件也可能限制它。发出隐式请求时还要处理没有可用接收者的情况。
+
+intent-filter 不是访问控制边界。外部调用者若能访问一个已导出的组件，可以使用显式 Intent 指向它；接收端仍要验证参数、权限以及请求的业务授权。读取外部传来的 URI 时，也要检查是否具有合适的访问权限。
+
+## 4. Context 与持有范围 {#context与持有范围}
+
+**Context** 提供访问应用环境的接口，例如读取资源、取得系统服务、访问应用文件和发起组件操作。它不是一个单纯的全局数据袋，也不只有一种实现。
+
+| 使用需求 | 通常需要考虑的 Context |
+| --- | --- |
+| 与当前页面主题和窗口有关的 UI | 当前 Activity 或适合该 UI 的主题/窗口 Context |
+| 应用级文件、数据库等长期对象 | 可以使用 applicationContext 的场景优先避免持有 Activity |
+| 创建局部主题的 View | 合适的 ContextThemeWrapper，明确主题来源 |
+| 从非 Activity 环境启动 Activity | 检查 NEW_TASK 等启动要求及当前是否允许启动 |
+
+Activity 的 Context 关联当前页面环境，页面销毁后，长期单例若仍持有它，就可能连带保留窗口、View 和其他对象。把一个仅需要应用文件目录的长期组件改为持有 applicationContext，可以去掉这种无必要的页面依赖。
+
+但不能因此把所有 Context 都替换成 applicationContext。某些 UI 操作依赖合适的主题和窗口；从非 Activity Context 启动界面还涉及任务栈要求。正确做法是先明确需要什么能力，再选择足够且生命周期合适的环境。
+
+也不能通过 `context as Activity` 假定任何 Context 都是 Activity。传入对象可能是 Application、Service 或包装对象，这种强转可能失败。需要宿主能力的接口应明确声明所需类型，或者通过回调传入具体行为。
+
+## 5. 组件、进程与线程 {#组件进程与线程}
+
+**进程**是应用运行时的系统隔离边界，**线程**负责具体执行。默认情况下，一个应用的组件运行在同一进程，Activity、Service 和普通 Receiver 的主要生命周期回调由主线程调用；组件类型并不为耗时工作自动分配线程。
+
+在 Service 的 `onStartCommand` 中直接执行耗时计算，仍可能阻塞主线程并影响界面响应。是否应换线程、是否需要结构化取消，与 Service 是否还应存活是两组问题，需要分别处理。
+
+Manifest 可以用 `android:process` 将部分组件放入另一进程。这样做之后，静态字段和普通单例不会自动跨进程共享；每个进程可能有自己的 Application 和初始化过程。跨进程调用还会带来序列化、死亡与并发边界，不能只是把一个类“搬出去”就认为原来的调用模型保持不变。
+
+Android 根据进程承载的工作和用户可见性等因素管理其重要性。组件对象留在内存中，不代表进程一定不会被回收；进程被终止后，也不能指望 Java 对象再收到一次可靠的清理通知。要恢复的界面状态和必须长期保存的业务数据，应使用各自的保存机制，见 [Activity 生命周期](./activity-lifecycle.mdx#状态保存与恢复)。
+
+## 6. 面试题 {#面试题}
+
+### 6.1 Android 四大组件分别负责什么？ {#four-components}
+
+**考察重点**：系统入口与组件职责。
+
+**相关内容**：[四类入口](#四类入口)。
+
+<details>
+<summary>参考回答</summary>
+
+**Activity 承接界面交互，Service 表达服务工作或绑定接口，BroadcastReceiver 接收广播，ContentProvider 提供受控数据访问。** 它们由系统按各自规则管理，生命周期不同。选择组件时应从入口和存续要求出发，不能把 Service 当线程，或把 Provider 限定成某一种数据库。
+
+</details>
+
+### 6.2 Service 会自动在工作线程执行吗？ {#service-thread}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：服务存续与执行线程的区别。
+
+**相关内容**：[组件、进程与线程](#组件进程与线程)。
+
+<details>
+<summary>参考回答</summary>
+
+**不会，Service 默认生命周期回调仍在所属进程的主线程。** 耗时计算或阻塞 I/O 需要合适的工作线程和取消机制；是否使用 Service 则取决于任务需要怎样被系统管理。前台服务和后台启动还要满足平台限制，不代表可以无限执行。
+
+</details>
+
+### 6.3 显式 Intent 与隐式 Intent 有什么区别？ {#intent}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：组件指定、过滤匹配与访问控制。
+
+**相关内容**：[Intent 与入口声明](#intent与入口声明)。
+
+<details>
+<summary>参考回答</summary>
+
+**显式 Intent 指定目标组件，隐式 Intent 描述动作与数据等条件，由系统解析合适的接收者。** extras 承载参数，不参与 intent-filter 匹配；没有接收者时需要处理失败。过滤器不等于权限控制，导出入口必须独立校验调用权限和业务参数。
+
+</details>
+
+### 6.4 为什么不能统一使用 applicationContext？ {#context}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：环境能力、主题、窗口与引用生命周期。
+
+**相关内容**：[Context 与持有范围](#context与持有范围)。
+
+<details>
+<summary>参考回答</summary>
+
+**applicationContext 适合不依赖当前页面的长期对象，但不自动具备当前 Activity 的主题和窗口条件。** 页面 UI 应使用合适的 UI Context，应用级数据对象则应避免无必要地持有 Activity。选择依据是实际能力与存续时间，不能只按“防泄漏”三个字替换全部调用。
+
+</details>
+
+### 6.5 一个 Activity 被销毁，是否意味着应用进程已经结束？ {#component-process}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：组件实例、进程与持久化状态的独立性。
+
+**相关内容**：[组件、进程与线程](#组件进程与线程)。
+
+<details>
+<summary>参考回答</summary>
+
+**不意味着，Activity 销毁只结束该实例的生命周期，进程可能仍承载其他组件或保留在后台。** 配置变化也可能在同一进程中重建 Activity。反过来进程被终止时，内存对象会整体消失，不能保证各个实例都先收到 onDestroy；持久化数据则按文件或数据库的规则保留。
+
+</details>
+
+## 7. 参考资料 {#参考资料}
+
+- [Android：Application fundamentals](https://developer.android.com/guide/components/fundamentals)
+- [Android：Intents and intent filters](https://developer.android.com/guide/components/intents-filters)
+- [Android：Services overview](https://developer.android.com/guide/components/services)
+- [Android：Processes and threads](https://developer.android.com/guide/components/processes-and-threads)
+- [Android API：Context](https://developer.android.com/reference/android/content/Context)
+- [Android：Broadcasts overview](https://developer.android.com/develop/background-work/background-tasks/broadcasts)

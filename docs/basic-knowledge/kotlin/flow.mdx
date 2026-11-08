@@ -1,0 +1,269 @@
+---
+knowledge:
+  id: basic-knowledge.kotlin.flow
+  type: concept
+description: "解释 Kotlin Flow 的收集、上下文、背压与异常，比较冷流、StateFlow 和 SharedFlow，并明确共享作用域与事件交付边界。"
+keywords: [Kotlin Flow, StateFlow, SharedFlow, 冷流 热流, flowOn, 背压]
+---
+
+# Kotlin Flow
+
+**Flow** 表达能够随时间产生多个值的异步数据流。`flow { ... }` 构建的冷流通常在收集时执行，而 `StateFlow`、`SharedFlow` 可以让多个观察者共享状态或发射值。选择时先问三个问题：工作由谁启动，慢消费者怎样处理，暂时没有订阅者时数据是否还需要保留。本文以 `kotlinx.coroutines` 1.8 为例。
+
+## 1. 面试核心 {#core}
+
+- 普通 `flow` 构建器创建冷流，**构造流不等于执行流，每次独立收集通常重新执行上游**。[卡](#cold-hot)
+- 默认流管道按顺序执行，`flowOn` 改变其上游相应操作的上下文，**不会把收集端一起搬到该调度器**。[卡](#flow-context)
+- `buffer` 暂存值，`conflate` 跳过中间值，`collectLatest` 取消旧的处理块，**这三种策略的丢弃与取消语义不同**。[卡](#backpressure)
+- `StateFlow` 保存当前状态、要求初值并按相等性合并更新，**慢订阅者不保证观察到每一个中间状态**。[卡](#state-shared)
+- `SharedFlow` 的重放和缓冲按配置决定，**默认没有订阅者时发射值不会为未来订阅者自动保存**。[卡](#event-delivery)
+- `catch` 处理其上游失败，**不会包住后续收集代码的异常，也不能把取消当成普通成功结果吞掉**。
+
+## 2. 冷流与收集 {#冷流与收集}
+
+**冷流**把产生数据的工作留到收集时执行。`map`、`filter` 等中间操作通常返回新的流描述，`collect`、`first`、`toList` 等终止操作才推动相应执行。
+
+```kotlin
+import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.*
+
+fun main() = runBlocking {
+    var runs = 0
+    val numbers = flow {
+        runs++
+        emit(1)
+        emit(2)
+    }
+    println(runs) // 0
+    println(numbers.toList()) // [1, 2]
+    println(numbers.toList()) // [1, 2]
+    println(runs) // 2
+}
+```
+
+两个 `toList()` 各执行一次构建器。上游若是网络请求、数据库查询或文件读取，重复收集就可能重复工作；不能因为保存的是同一个 `Flow` 变量，就认为它自动复用一次请求结果。
+
+**热流**有独立于某一次收集的共享状态或发射来源。`StateFlow` 和 `SharedFlow` 是热流；普通 `Flow` 接口本身不能单独说明实例是冷是热。需要把冷流共享时可以使用 `shareIn`，要共享当前状态时可以使用 `stateIn`，但同时必须选择所有者作用域和启动策略。
+
+收集属于协程执行，取消收集会按相应协程规则停止等待与处理。有限流可以自然完成；`StateFlow`、`SharedFlow` 的收集不会正常自行结束，测试时应使用 `take`、取消或明确的终止条件，不能无条件等它们收集完成。
+
+## 3. 上下文与错误边界 {#上下文与错误边界}
+
+默认情况下，上游发射和下游处理沿同一收集过程顺序执行。一个值处理完，才继续处理下一个值；需要并发边界时，要通过相应操作显式表达。
+
+```kotlin
+import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.*
+
+fun main() = runBlocking {
+    flow { emit(21) }
+        .map { it * 2 }
+        .flowOn(Dispatchers.Default)
+        .map { "value=$it" }
+        .collect { println(it) } // value=42
+}
+```
+
+`flowOn` 为前面的发射与乘法设置上下文，后面的字符串转换和收集仍使用下游上下文。改变调度器时，上下游可能通过内部通道形成执行边界。不能在普通 `flow` 块里随意 `withContext` 切换后从另一个上下文 `emit`；需要保持 Flow 的上下文约定，或在多来源并发发送场景使用适合的构建器。
+
+**异常透明性**要求流不要吞掉下游处理失败，再假装正常继续发射。`catch` 捕获它之前的上游异常，位置因此很重要：
+
+```kotlin
+import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.*
+
+fun main() = runBlocking {
+    flow {
+        emit(1)
+        error("load failed")
+    }.catch {
+        emit(-1)
+    }.collect {
+        println(it) // 依次输出 1、-1
+    }
+}
+```
+
+这里把上游失败转换为一个明确的值。实际业务通常使用包含错误状态的类型，避免用某个普通数字冒充所有失败。如果异常发生在 `collect` 的处理代码里，前面的 `catch` 不会接住它，需要在收集边界处理。
+
+`onCompletion` 可以观察完成或失败原因，但不是把所有异常恢复为成功。`retry` 或 `retryWhen` 会重新收集上游，意味着请求和副作用可能再次执行；必须限制重试条件，并考虑重复操作。用于取消流的异常需要保留取消语义，不应被自定义宽泛捕获吞掉。
+
+## 4. 背压与组合 {#背压与组合}
+
+**背压**是消费者跟不上生产速度时，对上游执行与缓冲施加的约束。顺序流中，慢处理会直接延后后续发射；引入缓冲或丢弃策略，则改变等待和数据保留关系。
+
+| 操作 | 主要行为 | 适用条件 |
+| --- | --- | --- |
+| `buffer` | 在边界暂存值，按容量与溢出策略协调上下游 | 允许一定内存占用，希望吸收速度波动 |
+| `conflate` | 慢消费者处理期间保留较新的值，跳过中间值 | 只关心最新状态，不要求处理全部中间状态 |
+| `collectLatest` | 新值到来时取消旧值对应的收集处理块 | 旧处理已经没有价值，且处理支持协作式取消 |
+
+它们不能随意用于必须逐条完成的保存、付款或审计操作。`collectLatest` 的取消也不是撤销已经发生的外部副作用，更不能强行中断不协作的 CPU 循环。
+
+组合多个流时，同样先确定业务关系：
+
+- `zip` 按对应位置配对，等待双方的下一项；`combine` 在各方有值后，使用各自最新值随变化计算结果。
+- `flatMapConcat` 按顺序收集内部流；`flatMapMerge` 允许多个内部流并发，结果顺序需要另行处理。
+- `flatMapLatest` 在新上游值到来时切换到新的内部流并取消旧内部流，适合旧查询结果已经失效的情况；涉及实验性标记的 API 应按所用库版本要求显式选择启用。
+
+搜索框输入变更后，旧查询可能已经没有显示价值；导入文件中的每一条记录却可能都必须处理。操作符相似的调用形式不能替代对丢弃、顺序和取消的判断。
+
+## 5. StateFlow 与 SharedFlow {#stateflow-与-sharedflow}
+
+**StateFlow** 表达“现在是什么状态”。它必须有初值，可通过 `value` 读取当前值，新订阅者会获得当前状态；更新根据 `equals` 合并，慢订阅者可能跳过快速变化的中间值。
+
+```kotlin
+import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.*
+
+fun main() = runBlocking {
+    val state = MutableStateFlow(0)
+    val observer = launch(start = CoroutineStart.UNDISPATCHED) {
+        state.take(2).collect { println(it) }
+    }
+    state.value = 1
+    observer.join() // 依次输出 0、1
+}
+```
+
+这里用 `UNDISPATCHED` 让收集先执行到挂起点，确保初值已被观察后再更新，避免靠睡眠猜测订阅时机。实际 UI 订阅不应依赖这种测试安排，而要遵守平台生命周期。
+
+`value` 的单次访问与设置有线程安全保证，但 `state.value = state.value + 1` 是分开的读取和写入，可能丢失并发更新。需要基于旧值更新时可以使用 `update`：
+
+```kotlin
+import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.*
+
+fun main() = runBlocking {
+    val state = MutableStateFlow(0)
+    coroutineScope {
+        repeat(100) {
+            launch(Dispatchers.Default) {
+                repeat(100) { state.update { current -> current + 1 } }
+            }
+        }
+    }
+    println(state.value) // 10000
+}
+```
+
+竞争时 `update` 的函数可能被多次求值，因此其中应保持无副作用。状态对象也应尽量以新的值替换；直接修改原列表后再把同一个引用赋回，可能因为相等性判断而没有新的通知。
+
+**SharedFlow** 表达共享发射的值，可配置向新订阅者重放多少项、额外缓冲以及慢订阅者下的溢出策略。它不要求初值，也不像 StateFlow 那样固定使用当前状态的相等性合并语义。
+
+```kotlin
+import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.*
+
+fun main() = runBlocking {
+    val events = MutableSharedFlow<Int>()
+    println(events.tryEmit(1)) // true：当前没有订阅者
+    println(events.replayCache) // []：没有为未来订阅者保存
+
+    val replayed = MutableSharedFlow<Int>(replay = 1)
+    replayed.emit(7)
+    println(replayed.first()) // 7
+}
+```
+
+默认 `MutableSharedFlow()` 没有重放缓存。没有订阅者时，发射可以立即成功而值被丢弃；`tryEmit` 返回成功不能推出有人收到。没有订阅者时，保留的是 replay 部分，额外缓冲容量不能充当无人订阅期间的持久队列。
+
+| 需求 | 应确认的语义 |
+| --- | --- |
+| 页面当前加载状态、选中项 | 初值、最新状态、相等性与重建后的读取 |
+| 短暂通知、多观察者广播 | 当前订阅者、重放是否会导致重复效果、缺席时能否丢失 |
+| 每个操作必须完成且可恢复 | 持久保存、确认、重试与幂等；单靠内存热流不足以保证 |
+
+SharedFlow 也不是自动的“恰好一次事件总线”。订阅重建、进程终止、发射与消费之间的取消，都可能影响交付。需要可靠完成的任务，应把完成状态和持久化边界建模清楚。
+
+## 6. 共享作用域与订阅生命周期 {#共享作用域与订阅生命周期}
+
+`shareIn`、`stateIn` 把上游工作交给指定作用域持有，还需要决定何时启动、何时停止。立即启动、首次订阅后启动、按订阅数量启停，适合的资源成本不同；停止上游与清除重放缓存也不是同一件事。
+
+如果作用域已经取消，新的订阅不会自动让这个失效的所有者重新工作。反过来，只取消一个页面的收集，也不必然停止由更长生命周期作用域持有的上游。因此要分别追踪生产者作用域、共享策略和订阅者任务。
+
+Flow 本身不知道 Activity、Fragment 或界面是否可见。平台集成层需要按生命周期开始与取消收集，避免离开页面后继续做无用工作；“协程会自动取消”只有在作用域和所有者关系已经正确建立时才成立。通用取消机制见[Kotlin 协程](./coroutines.mdx#取消与资源清理)。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 冷流和热流有什么区别，同一个冷流收集两次会怎样？ {#cold-hot}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：执行时机、重复工作与共享所有者。
+
+**相关内容**：[冷流与收集](#冷流与收集)、[共享作用域与订阅生命周期](#共享作用域与订阅生命周期)。
+
+<details>
+<summary>参考回答</summary>
+
+**冷流通常在每次收集时重新执行上游，热流则有独立于某次收集的共享状态或发射来源。** 同一个 flow 构建结果被收集两次，可能发起两次请求；保存 Flow 引用不等于缓存执行结果。需要共享时可使用 shareIn 或 stateIn，同时明确作用域、启动策略与重放行为。
+
+</details>
+
+### 7.2 flowOn 会把 collect 也切到指定线程吗？ {#flow-context}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：上下游上下文与执行边界。
+
+**相关内容**：[上下文与错误边界](#上下文与错误边界)。
+
+<details>
+<summary>参考回答</summary>
+
+**不会，flowOn 改变前面的相应上游操作，上下文不会泄漏到后续收集端。** 改变调度器时可能通过内部通道连接上下游；下游仍按自己的收集上下文运行。普通 flow 中也不能随意切换上下文后 emit，应遵守上下文约定或使用合适的并发发送构建器。
+
+</details>
+
+### 7.3 buffer、conflate 和 collectLatest 有什么区别？ {#backpressure}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：缓冲、丢弃中间值与取消旧处理。
+
+**相关内容**：[背压与组合](#背压与组合)。
+
+<details>
+<summary>参考回答</summary>
+
+**buffer 暂存待处理值，conflate 在消费者慢时跳过中间值，collectLatest 则取消旧值对应的处理块。** 选择取决于是否必须保留每一项、旧计算是否已失效，以及处理是否响应取消。取消不能撤销已经完成的外部副作用，必须逐项完成的工作不能随意套用丢弃策略。
+
+</details>
+
+### 7.4 StateFlow 和 SharedFlow 应该怎样选择？ {#state-shared}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：当前状态、重放与更新合并。
+
+**相关内容**：[StateFlow 与 SharedFlow](#stateflow-与-sharedflow)。
+
+<details>
+<summary>参考回答</summary>
+
+**需要始终可读的当前状态时倾向 StateFlow，需要按配置广播并重放发射值时考虑 SharedFlow。** StateFlow 要求初值，按 equals 合并更新，慢订阅者可能跳过中间状态；SharedFlow 的 replay、缓冲和溢出策略需要明确配置。两者都不是持久消息系统，也不会自动知道 UI 生命周期。
+
+</details>
+
+### 7.5 SharedFlow 的 tryEmit 返回 true，能证明事件已经被消费吗？ {#event-delivery}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：发射成功、订阅者存在与交付保证。
+
+**相关内容**：[StateFlow 与 SharedFlow](#stateflow-与-sharedflow)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能，它只表示本次发射按当前配置成功，不等于某个订阅者已经完成处理。** 默认无 replay 的 SharedFlow 在没有订阅者时也可返回 true，而值不会留给未来订阅者。需要可靠交付时，应另行设计持久化、确认和幂等，不能仅靠热流及一个布尔返回值。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [kotlinx.coroutines 1.8.0：Asynchronous Flow](https://github.com/Kotlin/kotlinx.coroutines/blob/1.8.0/docs/topics/flow.md)
+- [kotlinx.coroutines 1.8.0：StateFlow 文档与实现](https://github.com/Kotlin/kotlinx.coroutines/blob/1.8.0/kotlinx-coroutines-core/common/src/flow/StateFlow.kt)
+- [kotlinx.coroutines 1.8.0：SharedFlow 文档与实现](https://github.com/Kotlin/kotlinx.coroutines/blob/1.8.0/kotlinx-coroutines-core/common/src/flow/SharedFlow.kt)
+- [kotlinx.coroutines API：flowOn](https://kotlinlang.org/api/kotlinx.coroutines/kotlinx-coroutines-core/kotlinx.coroutines.flow/flow-on.html)

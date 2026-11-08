@@ -1,0 +1,248 @@
+---
+knowledge:
+  id: basic-knowledge.cpp.smart-pointers
+  type: concept
+description: "从资源所有权解释 unique_ptr、shared_ptr 与 weak_ptr，分析控制块、循环引用、线程安全和最小引用计数实现。"
+keywords: [unique_ptr, shared_ptr, weak_ptr, 控制块, 循环引用]
+---
+
+# C++ 智能指针
+
+**智能指针**是把指针访问和资源所有权规则封装在对象中的类型。`unique_ptr` 表达独占所有权，`shared_ptr` 表达共享所有权，`weak_ptr` 则观察共享对象而不负责保活。选择依据是“谁应该负责让对象活着”，而不是哪一种看起来更省事。本文以 C++17 为准。
+
+## 1. 面试核心 {#core}
+
+- `unique_ptr` 不能复制，可以移动，**让一个拥有者负责资源释放**；能确定唯一所有者时，不必引入共享计数。[卡](#ownership-selection)
+- 同一组 `shared_ptr` 通过控制块协调所有权，**最后一个强拥有者离开时销毁被管理对象**；控制块本身可能因弱引用继续存活。
+- 两个对象互相持有 `shared_ptr` 可能形成循环，**引用计数不会主动遍历并回收这个环**；非拥有关系应使用 `weak_ptr` 等方式表达。[卡](#shared-cycle)
+- 访问弱引用目标时使用 **`lock()` 一步取得暂时的强所有权**，不能先检查 `expired()` 就假定后续访问仍安全。
+- 共享控制块的计数协调，**不等于同一个智能指针变量或目标对象任意并发修改都安全**。[卡](#shared-thread-safety)
+- 手写最小引用计数需要处理空状态、复制、移动、自赋值和最后一次释放；**能演示计数不等于实现了标准库全部契约**。[卡](#minimal-shared-pointer)
+
+## 2. 独占所有权与转移 {#独占所有权与转移}
+
+**所有权**意味着承担资源最终释放的责任。裸指针既可能表示借用，也可能被代码约定为拥有，类型本身不够清楚；`unique_ptr` 则明确指定一个拥有者。
+
+```cpp
+#include <cassert>
+#include <memory>
+#include <utility>
+
+int main() {
+    auto first = std::make_unique<int>(7);
+    // auto copied = first;  // 编译错误：unique_ptr 不可复制
+    auto second = std::move(first);
+    assert(!first && *second == 7);
+}
+```
+
+移动后，`second` 接管资源，`first` 变为空。作用域结束时由 `second` 释放对象。`std::move` 表达允许转移的意图，真正的转移由 `unique_ptr` 的移动构造完成。
+
+`get()` 只返回用于访问的裸指针，不转移所有权；`release()` 放弃管理并返回裸指针，不销毁对象；`reset()` 替换管理对象并释放原来的资源。误把 `get()` 当所有权转移，可能让两处代码重复释放；忘记接管 `release()` 的结果则会泄漏。
+
+`unique_ptr` 还能配置删除器管理其他资源，但删除器必须与资源创建方式匹配。数组可用 `std::unique_ptr<T[]>`，其默认释放方式与单对象形式不同。
+
+## 3. 共享所有权与控制块 {#共享所有权与控制块}
+
+**控制块**保存一组共享拥有者的管理信息，例如强引用数量、弱引用相关状态、删除器和分配信息。复制 `shared_ptr` 共享同一份所有权，不会复制被管理对象。
+
+```cpp
+#include <cassert>
+#include <memory>
+
+int main() {
+    auto first = std::make_shared<int>(7);
+    std::weak_ptr<int> observer = first;
+    {
+        auto second = first;
+        assert(first.use_count() == 2);
+        *second = 9;
+        assert(*first == 9);
+    }
+    assert(first.use_count() == 1);
+    first.reset();
+    assert(observer.expired());
+    assert(!observer.lock());
+}
+```
+
+`second` 销毁后，强拥有者还剩 `first`。`first.reset()` 使最后一个强拥有者离开，被管理的 `int` 被销毁；`observer` 仍需要知道目标已经失效，因此控制块不会立即丢弃。`use_count()` 适合说明这个单线程例子的关系，不能在并发代码中用它作为排他访问的证明。
+
+`make_shared` 通常把控制块和对象放在一次分配中，减少分配次数。代价是对象销毁后，如果还有弱引用，承载控制块和对象的整块分配可能继续保留到弱引用结束。对象析构与底层分配释放是两个不同时间点。
+
+不要从同一个裸指针独立构造两组 `shared_ptr`：它们会分别创建控制块，各自认为自己负责释放。需要从已被共享管理的对象取得同一组所有权，可以按条件使用 `std::enable_shared_from_this`；不能在共享管理尚未建立的构造阶段随意调用 `shared_from_this()`，也不能用 `std::shared_ptr<T>(this)` 代替它。
+
+标准 `shared_ptr` 还支持别名构造：保存的访问指针和实际承担销毁责任的对象可以不同。因此控制块不能简化理解成“这个地址对应一个全局计数”。
+
+## 4. 循环引用与弱引用 {#循环引用与弱引用}
+
+如果父对象强持有子对象，子对象又强持有父对象，外部拥有者全部离开后，两者的强计数仍可能不为零。这种**循环引用**不会被单纯引用计数自动发现。
+
+```cpp
+#include <cassert>
+#include <memory>
+
+struct Child;
+struct Parent { std::shared_ptr<Child> child; };
+struct Child { std::weak_ptr<Parent> parent; };
+
+int main() {
+    auto child = std::make_shared<Child>();
+    {
+        auto parent = std::make_shared<Parent>();
+        parent->child = child;
+        child->parent = parent;
+        if (auto owner = child->parent.lock()) {
+            assert(owner->child == child);
+        }
+    }
+    assert(child->parent.expired());
+}
+```
+
+这里父对象拥有子对象，子对象的回指只观察父对象，因此使用弱引用。离开内层作用域后，父对象正常销毁，外层仍持有的 `child` 也能知道父对象已经不存在。
+
+`lock()` 成功时返回一个临时强拥有者，保证这段使用期间对象不会因最后一个其他拥有者离开而销毁；失败则返回空 `shared_ptr`。不要先用 `expired()` 判断，再通过另存的裸指针访问，因为检查与使用之间可能发生销毁。
+
+弱引用的选择来自真实所有权关系。若所有链接都改成弱引用，却没有任何强拥有者，目标会过早销毁；不能机械地“看到环就任意弱化一条边”而不说明谁负责维持对象生命。
+
+## 5. 并发边界 {#并发边界}
+
+共享计数、指针变量和目标对象是三个层次：
+
+| 操作 | 是否由共享所有权机制直接保障 |
+| --- | --- |
+| 不同 `shared_ptr` 对象共享控制块，各自复制或销毁 | 控制块协调计数，避免因此破坏所有权管理 |
+| 多线程同时修改同一个 `shared_ptr` 变量 | 需要锁或相应原子操作 |
+| 多线程通过各自指针修改同一个业务对象 | 需要业务对象自己的同步规则 |
+
+C++17 可以使用针对 `shared_ptr` 的原子自由函数或锁来同步同一个共享指针变量；C++20 提供 `std::atomic<std::shared_ptr<T>>`。无论采用哪一种，都不能自动保护 `pointer->field` 的业务更新。
+
+例如多个线程各有一个 `shared_ptr<Counter>`，对象不会仅因某一个指针销毁而过早释放，但 `++counter->value` 仍可能发生数据竞争。保活与互斥是不同问题。
+
+## 6. 最小引用计数实现 {#最小引用计数实现}
+
+下面的 `SharedInt` 只管理一个动态 `int`，用于演示控制块和特殊成员函数。它不支持线程安全、弱引用、删除器、数组、别名构造或 `enable_shared_from_this`，不能用于替代标准库。
+
+```cpp
+#include <cassert>
+#include <cstddef>
+#include <utility>
+
+class SharedInt {
+    struct Control {
+        int value;
+        std::size_t owners;
+    };
+    Control* control = nullptr;
+
+public:
+    SharedInt() = default;
+    explicit SharedInt(int value) : control(new Control{value, 1}) {}
+
+    SharedInt(const SharedInt& other) : control(other.control) {
+        if (control) ++control->owners;
+    }
+    SharedInt(SharedInt&& other) noexcept
+        : control(std::exchange(other.control, nullptr)) {}
+
+    SharedInt& operator=(SharedInt other) noexcept {
+        std::swap(control, other.control);
+        return *this;
+    }
+    ~SharedInt() {
+        if (control && --control->owners == 0) delete control;
+    }
+
+    std::size_t use_count() const {
+        return control ? control->owners : 0;
+    }
+    int& value() {
+        assert(control);
+        return control->value;
+    }
+};
+
+int main() {
+    SharedInt first(7);
+    SharedInt copied = first;
+    assert(first.use_count() == 2);
+    copied.value() = 9;
+    assert(first.value() == 9);
+
+    SharedInt moved = std::move(copied);
+    assert(copied.use_count() == 0 && moved.use_count() == 2);
+    first = first;
+    assert(first.use_count() == 2);
+    moved = SharedInt{};
+    assert(first.use_count() == 1 && moved.use_count() == 0);
+}
+```
+
+复制构造增加拥有者数量；移动构造转交控制块指针并清空来源，不增加计数。赋值先构造按值形参，再交换控制块，形参析构时释放旧所有权。自复制赋值会先增加再减少同一个计数，净结果不变。
+
+最后一个拥有者销毁时，控制块连同其中的 `int` 一起释放。这里将值直接放在控制块中是为了简化演示，标准 `shared_ptr` 还要分开处理对象销毁与弱引用控制块存续，不能把这份实现宣称为完整的 `shared_ptr`。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 unique_ptr、shared_ptr 与 weak_ptr 如何选择？ {#ownership-selection}
+
+**考察重点**：独占、共享、借用和所有权成本。
+
+**相关内容**：[独占所有权与转移](#独占所有权与转移)、[共享所有权与控制块](#共享所有权与控制块)。
+
+<details>
+<summary>参考回答</summary>
+
+**能确定唯一拥有者时使用 `unique_ptr`，确实需要共同维持对象生命时才使用 `shared_ptr`，不负责保活的关联使用 `weak_ptr`。** `unique_ptr` 通过移动转移责任；`shared_ptr` 共享控制块并在最后一个强拥有者离开时销毁对象；`weak_ptr` 通过 `lock()` 尝试取得临时强所有权。选择要跟随资源关系，不能靠全部改为共享指针来替代所有权设计。
+
+</details>
+
+### 7.2 shared_ptr 为什么会循环引用，weak_ptr 如何解决？ {#shared-cycle}
+
+**考察重点**：引用计数无法回收环、非拥有关系和安全访问。
+
+**相关内容**：[循环引用与弱引用](#循环引用与弱引用)。
+
+<details>
+<summary>参考回答</summary>
+
+**相互强持有会让强计数在外部引用消失后仍不为零，因此对象不能销毁。** 将实际不承担拥有责任的回指改为 `weak_ptr`，使它不增加强拥有者数量；访问时用 `lock()` 获取临时 `shared_ptr` 并检查是否成功。必须保留真正的强拥有者，不能任意弱化所有关系。
+
+</details>
+
+### 7.3 shared_ptr 是线程安全的吗？ {#shared-thread-safety}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：控制块、指针对象与业务数据的分层。
+
+**相关内容**：[并发边界](#并发边界)。
+
+<details>
+<summary>参考回答</summary>
+
+**共享控制块的计数协调，不等于全部访问都线程安全。** 不同 `shared_ptr` 对象可以在共享控制块的同时各自复制、销毁；并发修改同一个指针变量需要锁或相应原子接口。所指业务对象的数据仍要按自己的同步规则保护，原子地取得指针也不会自动保护字段修改。
+
+</details>
+
+### 7.4 手写共享指针时，复制、移动和析构分别维护什么？ {#minimal-shared-pointer}
+
+**考察重点**：控制块不变量、空状态、自赋值与释放责任。
+
+**相关内容**：[最小引用计数实现](#最小引用计数实现)、[共享所有权与控制块](#共享所有权与控制块)。
+
+<details>
+<summary>参考回答</summary>
+
+**复制增加共享拥有者，移动转移管理关系并清空来源，析构减少拥有者并在最后一次释放对象。** 赋值还要释放旧资源、接管新资源并正确处理自赋值和空状态。上面的 `SharedInt` 用按值形参加交换统一赋值，但只演示单线程强引用；完整 `shared_ptr` 还需弱引用控制块存续、删除器、异常安全、线程协调和别名等规则。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [C++17 草案 N4659：unique_ptr](https://timsong-cpp.github.io/cppwp/n4659/unique.ptr)
+- [C++17 草案 N4659：shared_ptr](https://timsong-cpp.github.io/cppwp/n4659/util.smartptr.shared)
+- [C++17 草案 N4659：weak_ptr](https://timsong-cpp.github.io/cppwp/n4659/util.smartptr.weak)
+- [C++17 草案 N4659：Shared pointer atomic access](https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2017/n4659.pdf)
+- [C++ Core Guidelines：R.21，优先使用独占所有权](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#Rr-unique)

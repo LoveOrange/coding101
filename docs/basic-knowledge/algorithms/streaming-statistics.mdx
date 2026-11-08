@@ -1,0 +1,354 @@
+---
+sidebar_position: 9
+knowledge:
+  id: basic-knowledge.algorithms.streaming-statistics
+  type: concept
+description: "解释在线中位数、双堆删除、分布式汇总和 KLL 分位数摘要，区分精确结果、秩误差、窗口过期与重复合并。"
+keywords: ["流式统计", "中位数", "双堆", "延迟删除", "分位数", "KLL"]
+---
+
+# 流式统计
+
+**流式统计**在数据不断到达时更新统计结果，不必每次重新处理全部历史数据。但“只读一遍”不等于“只用固定内存”：精确维护任意分数的中位数，与允许一定误差地估算中位数，需要保存的信息不同。
+
+面试中的关键是先说明统计对象：全部历史请求，还是最近一分钟的请求；结果必须精确，还是允许排序位置有误差；数据集中在一个进程，还是分散在多个节点。明确这些条件，才能判断双堆、计数表或分位数摘要是否合适。
+
+## 1. 面试核心 {#core}
+
+- 精确在线中位数可以用**大顶堆保存较小的一半、小顶堆保存较大的一半**。保持分区有序、有效数量平衡，就能从堆顶取得中间值。[卡](#median-delete)
+- 支持删除时，**延迟删除记录的是失效元素，有效数量不能直接使用堆数组长度**。埋在堆内的失效项还会占内存，需要清理策略。[卡](#median-delete)
+- 分布式中位数不能由各节点中位数简单平均得到，**局部中位数丢失了全局排序所需的分布信息**。有限离散值域可以汇总计数，一般值域可以按精度要求选择可合并摘要。[卡](#distributed-median)
+- KLL 保存带权样本并压缩状态，**误差约束针对秩，不是分数值的相对误差**。参数和置信条件属于算法契约，单次实验不能证明概率保证。[卡](#rank-error)
+- **合并摘要不会自动去重，也不能普遍撤销历史输入**。重试、累计快照和窗口过期都要有对应的状态管理方式。[卡](#merge-window)
+
+## 2. 中位数与统计范围 {#中位数与统计范围}
+
+**中位数**把有序数据分成数量接近的两部分。本文的精确中位数采用常见数值定义：奇数项取中间一项，偶数项取中间两项的平均值。例如 `[1,2,3]` 的中位数是 2，`[1,2,3,4]` 的中位数是 2.5。
+
+**分位数**描述排序位置对应的值，例如 P50 对应中间位置，P99 对应靠近末尾的位置。有限样本有不同的端点和插值约定；有些接口从输入值中选择一项，并不计算相邻两项的平均数。因此，“P50”和“中位数”在业务上指向相近目标，具体返回值仍要服从接口定义。
+
+先澄清以下条件，比立即写双堆更重要：
+
+| 条件 | 对方案的影响 |
+| --- | --- |
+| 全部历史或有限窗口 | 全部历史只需追加；窗口还要移除过期事件 |
+| 精确或近似 | 精确结果需要足够的顺序信息；近似结果要说明误差和置信条件 |
+| 分数是否来自小的离散值域 | 例如整数 0—100 可以用 101 个计数器；任意实数不能直接照搬 |
+| 删除按值还是按请求 ID | 相同分数可能出现多次；按 ID 删除需要保存 ID 与分数的对应关系 |
+| 本地或分布式 | 分布式还涉及合并、重复数据、失败恢复和结果延迟 |
+
+这里的 0—100 只是说明有限值域的例子，不是一般流式中位数题默认具有的条件。
+
+## 3. 精确在线中位数 {#精确在线中位数}
+
+双堆只维护中间位置附近的边界，不需要把全部数据排成一个数组。[堆](../data-structures/heap.mdx#数组位置与堆序)保证堆顶是当前最小值或最大值，但不保证堆数组整体有序。
+
+设 `low` 是大顶堆，保存较小的一半；`high` 是小顶堆，保存较大的一半。维护两个不变量：
+
+1. `low` 中每个有效值都不大于 `high` 中每个有效值。
+2. `low` 的有效数量等于 `high`，或者比 `high` 多 1。
+
+新值不大于 `low` 的有效堆顶时放进 `low`，否则放进 `high`。若数量失衡，就把较大一边的堆顶移到另一边。移动的是分区边界，因此数量变化后仍能保持顺序关系。
+
+只有插入时，每次调整涉及常数次堆操作，时间 O(log n)；查询中位数只读堆顶，时间 O(1)。两个堆仍保存 n 个输入值，空间 O(n)。它减少了重复排序的成本，没有把精确统计变成固定空间算法。
+
+### 3.1 删除与有效数量 {#删除与有效数量}
+
+**延迟删除**先记录某个值已经失效，等它到达堆顶时再真正弹出。这样无需扫描堆数组寻找目标，但要分别记录有效数量和失效计数。
+
+例如 `low` 保存了若干值，其中一个较小值过期了。它可能埋在堆内部，数组长度没有变化，但它已经不能参与数量平衡。若仍用 `len(low)` 决定从哪边搬元素，中间位置就会算错。
+
+重复值也必须按次数处理：删除一个 5 不意味着删除全部 5。如果两边都有 5，只要维护相同的多重集合，移除哪一个相同值不影响中位数；如果请求还有不同身份，则应在统计结构外先把请求 ID 转成对应分数。
+
+### 3.2 支持删除的参考实现 {#支持删除的参考实现}
+
+下面使用 Python 3.12 的 `heapq`。本实现明确约定：输入是整数；`remove(x)` 删除一个仍存在的 x，不存在时抛出 `KeyError`；空集合查询抛出 `ValueError`。方法按顺序调用，不提供并发访问保护。`Fraction` 保留偶数项平均值的精确结果，避免大整数先转换成浮点数。
+
+`low` 用相反数模拟大顶堆，`low_dead`、`high_dead` 分别记录两个堆中的失效项。`counts` 保存当前有效多重集合，既用于检查删除，也用于定期重建。
+
+```python
+from collections import Counter
+from fractions import Fraction
+import heapq
+
+
+class MedianStream:
+    def __init__(self):
+        self.low, self.high = [], []
+        self.low_dead, self.high_dead = Counter(), Counter()
+        self.counts = Counter()
+        self.low_size = self.high_size = 0
+
+    @staticmethod
+    def _prune(heap, dead, sign):
+        while heap and dead[sign * heap[0]]:
+            value = sign * heapq.heappop(heap)
+            dead[value] -= 1
+            if dead[value] == 0:
+                del dead[value]
+
+    def _clean(self):
+        self._prune(self.low, self.low_dead, -1)
+        self._prune(self.high, self.high_dead, 1)
+
+    def _balance(self):
+        self._clean()
+        while self.low_size > self.high_size + 1:
+            heapq.heappush(self.high, -heapq.heappop(self.low))
+            self.low_size -= 1
+            self.high_size += 1
+            self._clean()
+        while self.low_size < self.high_size:
+            heapq.heappush(self.low, -heapq.heappop(self.high))
+            self.high_size -= 1
+            self.low_size += 1
+            self._clean()
+
+    def _compact(self):
+        size = self.low_size + self.high_size
+        if size == 0 or len(self.low) + len(self.high) > 2 * size + 32:
+            values = sorted(self.counts.elements())
+            self.counts = Counter(values)
+            middle = (size + 1) // 2
+            self.low = [-x for x in values[:middle]]
+            self.high = values[middle:]
+            heapq.heapify(self.low)
+            heapq.heapify(self.high)
+            self.low_dead.clear()
+            self.high_dead.clear()
+            self.low_size, self.high_size = middle, size - middle
+
+    def add(self, value: int) -> None:
+        if type(value) is not int:
+            raise TypeError("integer score required")
+        self._clean()
+        self.counts[value] += 1
+        if not self.low or value <= -self.low[0]:
+            heapq.heappush(self.low, -value)
+            self.low_size += 1
+        else:
+            heapq.heappush(self.high, value)
+            self.high_size += 1
+        self._balance()
+
+    def remove(self, value: int) -> None:
+        if type(value) is not int:
+            raise TypeError("integer score required")
+        if not self.counts[value]:
+            raise KeyError(value)
+        self._clean()
+        self.counts[value] -= 1
+        if self.counts[value] == 0:
+            del self.counts[value]
+        if value <= -self.low[0]:
+            self.low_dead[value] += 1
+            self.low_size -= 1
+        else:
+            self.high_dead[value] += 1
+            self.high_size -= 1
+        self._balance()
+        self._compact()
+
+    def median(self) -> Fraction:
+        if self.low_size + self.high_size == 0:
+            raise ValueError("empty stream")
+        self._clean()
+        if self.low_size > self.high_size:
+            return Fraction(-self.low[0])
+        return Fraction(-self.low[0] + self.high[0], 2)
+
+
+stream = MedianStream()
+for score in [1, 5, 5, 9]:
+    stream.add(score)
+print(stream.median())
+stream.remove(5)
+print(stream.median())
+stream.remove(1)
+print(stream.median())
+```
+
+输出依次是 `5、5、7`。第一次删除后还剩一个 5；第二次删除后只剩 `[5,9]`，中位数是 7。两个失效计数器各自属于对应的堆，不会因为另一边出现相同值而随意扣掉那一边的数量。
+
+`_balance` 在搬动堆顶前清理失效值，在搬动后再次清理新露出的堆顶。`low_size` 和 `high_size` 只计算有效项；实际堆数组则可能同时包含有效项和等待清理的项。
+
+### 3.3 延迟删除的空间与耗时 {#延迟删除的空间与耗时}
+
+延迟删除本身不能保证空间始终随窗口大小增长。持续插入递增值、删除最旧的小值时，一些失效项会长期埋在大顶堆内部。窗口只有几百项，堆数组却可能持续膨胀。
+
+示例在堆数组总长度超过 `2 * 有效数量 + 32` 时，根据 `counts` 重建；空集合则直接清空。这个阈值是本文为了控制内存提出的实现选择。每次操作结束后，堆数组总长度不会超过这一界限，失效计数器随重建清理，`counts` 也重建为只保存当前项的新表。
+
+单次普通堆操作是 O(log H)，H 是物理堆长度。但一次 `remove` 可能清理多个失效项，也可能触发排序重建；示例重建 n 个有效值需要 O(n log n)，因此不能把本实现的每次删除都承诺为最坏 O(log n)。按保存的项数计，空间是 O(n)；这里不包含整数本身的位数成本，也不代表解释器会立即归还释放的内存。
+
+如果要求每次删除的耗时都有明确上界，可以使用保存元素位置的索引堆，或支持计数与顺序统计的平衡树。代价是维护位置、节点计数和旋转等额外逻辑。面试时应先确认需要均摊性能还是最坏性能，再选实现。
+
+## 4. 分布式汇总 {#分布式汇总}
+
+中位数不能像求和那样，仅用一个局部结果继续合并。节点 A 保存 `[1,100,101]`，中位数是 100；节点 B 保存 `[2,3,4]`，中位数是 3。平均两个局部中位数得到 51.5，全局排序后的中位数却是 `(3+4)/2=3.5`。
+
+加上节点数量也不够。把 A 改成 `[99,100,101]`，它的数量和中位数都没变，全局中位数却变成 `(4+99)/2=51.5`。可见“局部数量与中位数”没有保留足以区分这两组输入的信息。
+
+### 4.1 有限值域的精确计数 {#有限值域的精确计数}
+
+如果分数确实只可能是整数 0—100，每个节点可以维护 101 个计数器。汇总时逐项相加，再按分数从小到大累加计数，找到中间的一个或两个位置。
+
+这种直方图保存了每个可能值的出现次数，所以结果可以精确。每次更新 O(1)，直接扫描查询 O(U)，每个节点空间 O(U)，U 是值域大小；需要频繁查询时，可以进一步用树状数组维护前缀计数。删除也可以减计数，但必须确认对应事件尚未被删除，不能减出负数。
+
+若把任意实数粗分成若干区间，计数表只能定位中位数所在的区间，不能再声称知道区间内的精确中位数。区间宽度如何选，是新增的误差条件。
+
+### 4.2 可合并的分位数摘要 {#可合并的分位数摘要}
+
+**分位数摘要**保留比全部输入更小的统计状态，用它估算排序位置对应的值。**KLL** 是一种随机化的分位数摘要，名字来自提出它的 Karnin、Lang 和 Liberty。
+
+可以把它的压缩过程理解为分层保存带权样本：第 0 层的样本代表一条输入；某层需要压缩时，先按值排序，在需要压缩的偶数段中随机保留交错的一半，并把保留项送到上一层，权重翻倍。奇数剩余项需要单独保留。这样总权重仍对应输入数量，但部分具体值已经丢失。
+
+KLL 的容量分配和压缩时机决定精度与内存的关系，不是随意“每隔一项丢一项”就能得到相同保证。合并时要保留样本权重，必要时再次压缩；不能把两个摘要里的每个样本都当作一条原始请求。
+
+下面使用 Apache DataSketches Python 5.2.0；其构建固定使用 C++ 5.2.0。示例在一个本地进程内模拟两个分片，实际调用该库的序列化和合并接口。输入约定为有限浮点数，示例中的小整数都能被 `double` 精确表示。
+
+```python
+from datasketches import kll_doubles_sketch
+
+
+def summarize(values):
+    sketch = kll_doubles_sketch(k=200)
+    for value in values:
+        sketch.update(float(value))
+    return sketch
+
+
+left = summarize(range(0, 10000, 2))
+right = summarize(range(1, 10000, 2))
+merged = kll_doubles_sketch(k=200)
+for local in [left, right]:
+    restored = kll_doubles_sketch.deserialize(local.serialize())
+    merged.merge(restored)
+
+print(merged.n)
+print(merged.get_quantile(0.5, inclusive=True))
+print(merged.num_retained)
+print(round(merged.normalized_rank_error(False), 6))
+```
+
+`merged.n` 是 10000，误差接口返回约 `0.013295`；估算的 P50 与保留样本数应以本次运行结果为准，不要求不同运行得到相同摘要。原始数据的精确中位数是 4999.5，而该接口返回一个输入值，不会通过取平均生成 4999.5。
+
+`k` 控制精度与状态大小的取舍，`k=200` 不表示永远只保留 200 个值。摘要大小还受层数、输入数量及状态影响。若合入已经压缩过的较小 `k` 摘要，目标对象使用较大的 `k` 也不能恢复先前丢失的信息，应读取合并后对象的误差估计。本文只验证库在本地的计算行为，不把序列化后合并等同于已经实现分布式消息投递与故障恢复。
+
+## 5. 秩误差与接口约定 {#秩误差与接口约定}
+
+**归一化秩**描述某个值之前累计了多少比例的数据。使用严格小于的约定时，值 x 的秩是 `小于 x 的项数 / 总项数`；使用包含等值项的约定时，则是 `小于或等于 x 的项数 / 总项数`。有大量重复值时，这两者可能相差很大，必须与查询接口的定义保持一致。
+
+DataSketches Python 5.2.0 的 `inclusive` 默认是 `False`，本文显式传入 `True`。例如不发生压缩的 `[1,2,3,4]`：
+
+```python
+from datasketches import kll_doubles_sketch
+
+sketch = kll_doubles_sketch()
+for value in [1, 2, 3, 4]:
+    sketch.update(float(value))
+print(sketch.get_quantile(0.5, inclusive=True))
+print(sketch.get_quantile(0.5, inclusive=False))
+print(sketch.get_rank(2.0, inclusive=True))
+print(sketch.get_rank(2.0, inclusive=False))
+```
+
+输出是 `2.0、3.0、0.5、0.25`。前两个是不同端点约定下选择的输入值，都不是本文精确中位数定义中的 2.5。比较不同系统的结果时，要先排除定义差异，再讨论近似算法的误差。
+
+KLL 的误差 ε 是归一化秩上的绝对误差。例如 ε 为 0.01 时，中间排序位置允许约一个百分点的偏移；这不意味着分数值的相对误差只有 1%。如果排序中间相邻的值分别是 100 和 1000000，跨过少量位置就可能让结果值发生很大变化。
+
+在 DataSketches 5.2.0 中，`normalized_rank_error(False)` 对应分位数等查询使用的误差估计；`True` 对应直方图区间概率的误差，不能混用。固定源码说明其中常数来自多次试验中最大误差的第 99 百分位拟合。`k=200` 时前者约为 1.33%，应连同其统计置信条件一起解释，不能理解为每次、对任意查询序列都绝不越界的确定性上限。
+
+验证时可以把输入排序，计算返回值的真实位置；重复值则要考虑等值项占据的整个位置区间。同时记录输入、分片方式、库版本、参数和观测误差。一次结果接近精确中位数，只能说明这次观测；算法保证应依据算法分析与实现契约。
+
+## 6. 重复合并与窗口过期 {#重复合并与窗口过期}
+
+**可合并不等于可去重**。同一个含 100 条输入的摘要合并两次，会贡献 200 条输入的权重。相同值本来也可能来自不同请求，所以摘要仅凭分数无法判断哪些是重复投递。
+
+如果节点周期性上报“自窗口开始以来的累计摘要”，汇总节点不能把每次上报都追加进去。可按“分片、窗口、代次”保存最新快照，检查版本后替换，再从各分片的最新快照重建汇总；也可以传递互不重叠的增量批次，并持久保存已处理的批次标识。标识与业务变化如何共同提交，可以复用[幂等键](../../system-design/reliability/idempotency-keys-safe-retries.mdx#与业务结果一致)中的处理原则。
+
+KLL 也不能通过一次“负数更新”撤回某个分数。部分原始值已经在压缩时丢失，没有足够信息恢复任意删除后的精确状态；在本文使用的接口中也没有按值删除操作。
+
+滑动窗口可以按时间切成小段，每段维护独立摘要，查询时合并仍在窗口内的段，过期后丢弃整段。窗口边界若切在段内，保留整段会多算事件，丢弃整段会少算事件；要缩小时间段，或者为边界保留更细状态。**时间边界误差与 KLL 的秩误差是两种不同误差**，不能用一个 ε 混在一起说明。
+
+事件时间统计还要约定迟到多久的请求仍被接收、何时认为窗口完成、是否修正已输出结果。这些条件决定统计的是哪一批数据；摘要算法本身不会替系统作决定。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 在线中位数如何支持插入、查询和删除？ {#median-delete}
+
+**考察重点**：双堆分区不变量、重复值、有效数量、延迟删除与空间回收。
+
+**相关内容**：[精确在线中位数](#精确在线中位数)、[支持删除的参考实现](#支持删除的参考实现)、[延迟删除的空间与耗时](#延迟删除的空间与耗时)。
+
+<details>
+<summary>参考回答</summary>
+
+**用大顶堆保存较小的一半、小顶堆保存较大的一半，删除时同时维护有效数量与失效标记。** 先明确删除是按值移除一次，还是按请求 ID 移除；同值请求不能被一次全部删除。
+
+插入后平衡两边有效数量，使较小一半与较大一半等长或多一项。删除可以先标记，等失效项到堆顶时弹出；读堆顶和跨堆移动前必须清理。偶数项取两个有效堆顶的平均值，奇数项取较小一半的堆顶。
+
+延迟删除不能直接使用堆数组长度平衡，也不能承诺失效项会很快出堆。可以定期重建控制内存，但要说明单次重建成本；如果要求最坏删除时间有界，可以改用索引堆或带顺序统计信息的平衡树。
+
+</details>
+
+### 7.2 分布式请求流不断产生重要性分数，如何估算中位数？ {#distributed-median}
+
+**题型**：综合题
+
+**考察重点**：统计范围、可合并信息、精度与空间、消息重复和结果延迟。
+
+**相关内容**：[中位数与统计范围](#中位数与统计范围)、[分布式汇总](#分布式汇总)、[重复合并与窗口过期](#重复合并与窗口过期)。
+
+<details>
+<summary>参考回答</summary>
+
+**先确认值域、窗口和误差要求，再选择可合并的统计状态。** 各节点中位数的平均值不能代表全局中位数，因为它丢失了各节点内部的分布信息。
+
+如果分数来自已知的小离散值域，各分片维护计数表，汇总计数后寻找中间位置，可以精确计算。如果值域一般、数据量大且允许近似，可以各自维护 KLL 等分位数摘要，再合并查询 P50；需要说明分位数端点约定、秩误差、置信条件和内存参数。
+
+上报累计快照时保存各分片最新版本并重建汇总，避免重复累加；使用增量时需要去重标识与恢复策略。滑动窗口还要维护时间分段、边界和迟到处理。原题未给出这些参数时，应把它们列为需要澄清的条件，不能自行假设某个具体范围。
+
+</details>
+
+### 7.3 KLL 的秩误差是 1%，能否保证分数值误差也在 1% 内？ {#rank-error}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：排序位置与数值距离、统计置信条件、重复值和接口定义。
+
+**相关内容**：[秩误差与接口约定](#秩误差与接口约定)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能，秩误差限制的是排序位置的比例，不能直接换算成分数值的相对误差。** 若排序中间存在很大的数值间隙，位置只偏移一点，返回值就可能变化很多。
+
+还应说明 ε 对应的置信条件，不能把概率保证说成每次必定满足。验证结果时采用相同的分位数端点约定，有重复值时考虑等值项占据的位置区间，避免把定义差异误判成算法错误。
+
+</details>
+
+### 7.4 可合并摘要能否直接处理重复上报和滑动窗口删除？ {#merge-window}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：合并的多重集合语义、幂等、不可逆压缩和窗口边界。
+
+**相关内容**：[重复合并与窗口过期](#重复合并与窗口过期)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能。合并会累加输入权重，不会自动识别重复批次；KLL 压缩后也不支持任意撤销原始值。** 累计快照应按分片与版本替换，再重建汇总；增量批次则需要去重与恢复协议。
+
+滑动窗口可以保存分段摘要并丢弃完整过期段。但窗口边界可能只覆盖段的一部分，需要更细分段或额外状态控制多算、少算的事件。该时间边界误差应与摘要自身的秩误差分别说明。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [Python 3.12.13：heapq 与优先队列的删除处理](https://github.com/python/cpython/blob/v3.12.13/Doc/library/heapq.rst)
+- [Apache DataSketches Python 5.2.0：KLL 绑定与查询约定](https://github.com/apache/datasketches-python/blob/5.2.0/src/kll_wrapper.cpp)
+- [Apache DataSketches Python 5.2.0：C++ 依赖版本](https://github.com/apache/datasketches-python/blob/5.2.0/CMakeLists.txt)
+- [Apache DataSketches C++ 5.2.0：KLL 接口与误差说明](https://github.com/apache/datasketches-cpp/blob/5.2.0/kll/include/kll_sketch.hpp)
+- [Apache DataSketches C++ 5.2.0：KLL 压缩、合并与误差实现](https://github.com/apache/datasketches-cpp/blob/5.2.0/kll/include/kll_sketch_impl.hpp)
+- [Apache DataSketches：KLL 精度、大小与参数关系](https://datasketches.apache.org/docs/KLL/KLLAccuracyAndSize.html)

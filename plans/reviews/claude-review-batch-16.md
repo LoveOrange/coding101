@@ -18,7 +18,7 @@
 | [Redis 数据结构](../../docs/basic-knowledge/nosql/redis/data_structure.mdx) | ✅ 通过 | — |
 | [Redis 过期](../../docs/basic-knowledge/nosql/redis/expiration.mdx) | ✅ 通过 | — |
 | [Redis 内存淘汰](../../docs/basic-knowledge/nosql/redis/eviction.mdx) | ✅ 通过 | — |
-| [Redis 持久化、复制与集群](../../docs/basic-knowledge/nosql/redis/persistence.mdx) | ✅ 通过 | — |
+| [Redis 持久化](../../docs/basic-knowledge/nosql/redis/persistence.mdx) | ✅ 通过 | — |
 | [缓存一致性](../../docs/basic-knowledge/nosql/redis/cache-patterns-consistency.mdx) | ✅ 通过 | — |
 | [缓存穿透、击穿、雪崩与热点 Key](../../docs/basic-knowledge/nosql/redis/cache-penetration-stampede-avalanche-hotkeys.mdx) | ✅ 通过 | — |
 | [分布式锁](../../docs/basic-knowledge/nosql/redis/distributed-lock-conditions-boundaries.mdx) | ✅ 通过 | — |

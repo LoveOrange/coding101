@@ -1,0 +1,380 @@
+---
+title: Flutter 导航
+description: 理解 Navigator、Route、Page 与 Router 的职责，处理返回结果、页面状态、深链和嵌套导航。
+knowledge:
+  id: mobile.flutter.navigation
+---
+
+**Flutter 导航**把应用的页面状态映射为用户当前能看到和返回的界面。Navigator 管理 Route 栈；Router 负责把外部路由信息和应用状态协调起来，二者可以一起工作。
+
+跳转代码容易写，难点在于返回后应出现哪一页、异步结果是否仍有效，以及外部链接能否还原正确界面。本文以 Flutter 3.24.3 为基线，区分栈操作、声明式页面配置与平台返回，不把它们看成同一个 API 的不同名字。
+
+## 1. 面试核心 {#core}
+
+- **Navigator 管理 Route，Page 描述用于生成 Route 的配置**。push/pop 直接操作路由；pages 根据状态描述应存在的页面集合。[卡](#objects)
+- **push 返回的 Future 接收被推入路由的返回结果**，取消通常得到 null；类型应与 pop 的结果一致。结果完成不等于退出动画和资源销毁都已结束。[卡](#result)
+- **页面被覆盖不等于 State 被销毁，也不等于页面仍对用户可见**。路由保留、滚动位置保存与进程重启后的恢复是不同层次。[卡](#state)
+- **canPop、maybePop 和 pop 的语义不同**。尤其 maybePop 返回 true 表示请求已处理，可能只是阻止返回，并没有弹出路由。[卡](#back)
+- **PopScope 要提前声明是否允许返回**，结果回调报告已经处理的尝试，不能在回调最后返回一个布尔值来撤销已发生的 pop。[卡](#guard)
+- **声明式导航需要让路由退出与业务状态一致**。页面已经移除时仍保留对应 Page，下一次配置更新可能把它重新加入。[卡](#pages)
+- **深链先解析为经过校验的应用状态，再构造页面**。接收到链接不代表用户有权限访问其中的资源。[卡](#deep-link)
+- **嵌套 Navigator 有各自的栈**。context 所在位置决定默认操作哪个 Navigator，系统返回也要按当前活动分支协调。[卡](#nested)
+
+## 2. 路由栈与返回结果 {#路由栈与返回结果}
+
+### 2.1 Navigator、Route 与 Page {#NavigatorRoute与Page}
+
+**Navigator** 维护一组按栈规则组织的路由，并通过 Overlay 等机制显示、过渡这些界面。**Route** 是一段导航界面的运行对象，包含路由生命周期、转场和返回结果；它可以是全屏页面，也可以是对话框等弹出界面。
+
+**Page** 是声明式导航中的配置。Navigator 根据 pages 创建或更新 Route，类似 Widget 配置与其运行实例的关系。普通命令式 push 直接提供 Route，并不要求你先创建一个 Page。
+
+| 操作 | 主要含义 |
+| --- | --- |
+| push | 在当前栈上增加路由 |
+| pop | 请求当前路由处理弹出；路由也可能先消耗内部历史 |
+| pushReplacement | 推入新路由，并在相应转场后替换原路由 |
+| pushAndRemoveUntil | 推入新路由，再按条件移除旧路由 |
+| 更新 pages | 让当前路由集合与新的页面配置匹配 |
+
+替换、移除和正常 pop 的结果与通知时机不完全相同，尤其跨 Flutter 版本时不要假设所有移除操作都会以同一种方式完成旧 Future。业务流程需要明确保存结果，而不是依赖清空导航栈顺带完成数据提交。
+
+### 2.2 用结果表达选择或取消 {#用结果表达选择或取消}
+
+下面的 chooseColor 推入一个选择页，点击按钮后用字符串返回；chooseAndShow 在返回后检查原 context 是否仍有效，再显示反馈：
+
+```dart
+import 'package:flutter/material.dart';
+
+Future<String?> chooseColor(BuildContext context) {
+  return Navigator.of(context).push<String>(
+    MaterialPageRoute<String>(
+      builder: (routeContext) => Scaffold(
+        appBar: AppBar(title: const Text('选择颜色')),
+        body: Center(
+          child: TextButton(
+            onPressed: () => Navigator.of(routeContext).pop<String>('blue'),
+            child: const Text('蓝色'),
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
+Future<void> chooseAndShow(BuildContext context) async {
+  final color = await chooseColor(context);
+  if (!context.mounted || color == null) return;
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(content: Text('已选择 $color')),
+  );
+}
+```
+
+点击“蓝色”得到 `blue`；不带结果返回时得到 null。这里假定调用处位于具有 ScaffoldMessenger 和 Navigator 的 Material 应用内。`routeContext` 属于选择页，调用它的 Navigator 能返回这次推入的路由。
+
+`context.mounted` 只说明该 context 仍挂载，不保证它仍是当前可见页，也不保证某个业务请求仍是最新请求。用户重复触发跳转、账号切换或旧操作晚完成时，还需按业务状态判断结果是否有效。
+
+push 的 Future 与路由的出场动画不是同一个完成信号。普通 pop 可以先完成结果，再继续转场与最终 dispose；不要在收到结果的瞬间就断言旧页面所有资源已经释放。
+
+## 3. 页面状态与可见性 {#页面状态与可见性}
+
+### 3.1 被覆盖的页面可以继续存在 {#被覆盖的页面可以继续存在}
+
+MaterialPageRoute 默认维护被覆盖页面的状态。推入新页面后，旧页面的 State 因而可以保留，返回时无需重新初始化。若在这种情况下把一次网络请求放在 initState，就不应期待每次返回都会自动重新请求。
+
+需要观察被覆盖或重新显露，可以使用 RouteObserver 与 RouteAware，并在订阅对象或所属路由变化时更新订阅、离开时取消订阅。应用进入前后台又是另一套生命周期，不应只用路由变化推断整个应用是否活跃。
+
+把 maintainState 设为 false 只是允许框架在页面不可见时丢弃其 Widget 层次，不保证每次都会销毁。例如上面是透明弹出路由、下面仍然可见时，就不满足简单丢弃的条件。
+
+### 3.2 保留实例、保存位置与恢复应用 {#保留实例保存位置与恢复应用}
+
+三种需求应分别处理：
+
+| 需求 | 对应机制与边界 |
+| --- | --- |
+| 页面暂时被覆盖，回来仍保留本地 State | 路由保留、Tab 子树保留等内存内生命周期策略 |
+| 某个滚动组件被移除后重新创建，恢复位置 | PageStorage 与稳定、可区分的 PageStorageKey |
+| 系统销毁应用后恢复导航与可恢复状态 | restoration scope、可恢复路由及相应状态恢复配置 |
+
+PageStorage 不是持久化数据库，也不意味着任意字段都会自动保存。Navigator 设置 restorationScopeId 后，还需要按恢复机制提供可恢复的路由和数据；普通 push 不能仅因设置了一个 ID 就自动变成完整可恢复流程。
+
+重要草稿和已确认业务结果应该由适当的数据层保存。导航状态恢复解决“回到哪里”，并不能代替服务端事实和持久化数据的一致性。
+
+## 4. 返回请求与退出保护 {#返回请求与退出保护}
+
+### 4.1 canPop 不等于本次一定能返回 {#canPop不等于一定返回}
+
+`Navigator.canPop` 主要检查当前栈是否具备可弹出的结构或内部历史，不把所有外部退出限制都算进去。它返回 true，并不承诺随后一定能通过 PopScope 等规则。
+
+`maybePop` 会咨询路由的返回意愿。返回允许弹出时，它执行 pop；返回不允许时，它消费这次请求但不弹出；需要向外层继续处理时，它返回 false。
+
+因此，**maybePop 的 true 表示“这次请求已由当前层处理”，不是“弹出了一个页面”**。需要记录实际出栈，应观察对应路由结果或通知，而不是把这个布尔值当页面计数的变化。
+
+`pop` 是直接的程序操作，不能视作一次等价的系统返回请求。在 Flutter 3.24.3 的普通命令式 MaterialPageRoute 场景中，直接调用 pop 不会走 maybePop 的同一套 popDisposition 判断。退出保护需要统一业务入口，不能假设一个 PopScope 就能阻止任意代码移除页面。
+
+### 4.2 PopScope 的提前判断与结果通知 {#PopScope的提前判断与结果通知}
+
+**PopScope** 通过 canPop 提前表达当前路由是否允许相应返回操作，再通过 onPopInvokedWithResult 报告处理结果。`didPop` 为 false 说明这次没有成功弹出，不代表回调没执行。
+
+需要未保存提示时，可以先让 canPop 反映“当前不允许直接离开”，在受阻的返回尝试后显示确认；确认期间防止重复弹框，确认后检查页面仍有效，再按明确的授权路径离开。`didPop` 已经为 true 时不要再次 pop，否则可能误退下一层。
+
+Android 的预测性返回需要提前知道能否返回，不能等返回手势开始后再用任意异步决定去补救。iOS 的 Flutter Cupertino 路由边缘返回由 Flutter 实现；canPop 为 false 时可能根本不识别这段手势，也就不会产生同样的受阻回调。两个平台不能只按一个回调次数判断行为一致。
+
+PopScope 也不负责阻止应用直接改变声明式 pages 或路由状态。账户登出、权限变化和程序重置导航，需要由状态管理规则决定允许的结果。
+
+## 5. 声明式页面与 Router {#声明式页面与Router}
+
+### 5.1 页面配置必须跟随状态 {#页面配置必须跟随状态}
+
+声明式导航把“当前应有哪些页面”写成状态的函数。下面的 PageDemo 用 selectedId 决定是否存在详情页；onDidRemovePage 在详情路由离开后同步清除这份状态。
+
+```dart
+class PageDemo extends StatefulWidget {
+  const PageDemo({super.key});
+
+  @override
+  State<PageDemo> createState() => _PageDemoState();
+}
+
+class _PageDemoState extends State<PageDemo> {
+  int? selectedId;
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      builder: (context, child) => Navigator(
+        pages: [
+          MaterialPage<void>(
+            key: const ValueKey('home'),
+            child: Scaffold(
+              body: Center(
+                child: TextButton(
+                  onPressed: () => setState(() => selectedId = 42),
+                  child: const Text('打开文章'),
+                ),
+              ),
+            ),
+          ),
+          if (selectedId != null)
+            MaterialPage<void>(
+              key: ValueKey('article-$selectedId'),
+              child: Scaffold(
+                appBar: AppBar(title: Text('文章 $selectedId')),
+                body: const Text('文章内容'),
+              ),
+            ),
+        ],
+        onDidRemovePage: (page) {
+          if (selectedId != null && page.key == ValueKey('article-$selectedId')) {
+            setState(() => selectedId = null);
+          }
+        },
+      ),
+    );
+  }
+}
+```
+
+这个示例由 MaterialApp 的 builder 提供一个手动配置的 Navigator，演示 pages 与本地状态的同步；它没有配置 Router，因此不承诺自动处理 URL 或平台返回通知。点击详情页 AppBar 的返回按钮后，详情 Page 对应的状态也被清除，下一次构建就不会重新把它加入。
+
+Page 的 runtimeType 与 key 决定能否用新配置更新原路由。Key 应表达页面身份，而不是每次 build 都生成新的随机值。身份稳定也不等于页面数据永不更新，新的配置仍可以带来新的内容。
+
+### 5.2 Router 协调外部路由信息 {#Router协调外部路由信息}
+
+**Router** 接收初始路由、后续路由信息和返回请求，并把它们交给配置的解析及委托对象。它解决的是外部导航信息与应用页面状态如何对应，不是替代 Navigator 的全部显示和转场工作。
+
+| 参与者 | 主要职责 |
+| --- | --- |
+| RouteInformationProvider | 提供路由信息及变化 |
+| RouteInformationParser | 把 URI 等信息解析为应用能理解的配置 |
+| RouterDelegate | 根据配置和应用状态提供导航界面，并处理路由更新 |
+| BackButtonDispatcher | 分派返回请求，协调根级和子级 Router |
+| Navigator.pages | 根据页面配置维护实际 Route 集合 |
+
+简单栈式流程可以直接用 Navigator。需要复杂深链、多个导航分支或 Web 地址同步时，可以选择基于 Router 的路由方案，也可以自行实现 Parser 和 Delegate。仅创建 pages 列表不会自动补齐 URI 解析、浏览器历史和平台分派。
+
+声明式 Page 生成的路由与命令式加入的弹出路由可以共存。例如在详情页上打开对话框，对话框不一定有独立 Page；它依附的 Page 被移除时，相关无 Page 路由也会受影响。混合使用时必须知道哪部分状态负责重建页面，避免两个来源互相覆盖。
+
+## 6. 深链与嵌套导航 {#深链与嵌套导航}
+
+### 6.1 深链先转换为合法的应用状态 {#深链转换为合法状态}
+
+**深链**把外部地址映射到应用内部位置。完整链路包括平台把链接交给应用、应用解析地址、校验参数与权限、等待必要数据，再构造正确的页面状态。
+
+下面的解析函数只接受本站示例域名中一个正整数文章 ID。它不执行导航，也不把登录或资源权限藏在 URI 解析里：
+
+```dart
+int? articleIdFromUri(Uri uri) {
+  if (uri.scheme != 'https' ||
+      uri.host != 'learn.example.com' ||
+      uri.userInfo.isNotEmpty ||
+      uri.port != 443 ||
+      uri.query.isNotEmpty ||
+      uri.fragment.isNotEmpty) {
+    return null;
+  }
+  final segments = uri.pathSegments;
+  if (segments.length != 2 || segments[0] != 'articles') return null;
+  if (!RegExp(r'^[1-9][0-9]*$').hasMatch(segments[1])) return null;
+  return int.tryParse(segments[1]);
+}
+```
+
+`https://learn.example.com/articles/42` 得到 42，其他主机、额外路径、负数或非数字 ID 会被拒绝；超过 int 可解析范围的输入也得到 null。示例明确不支持查询参数和 fragment，产品需要支持时再定义它们的语义。原始字符串应先用 Uri.tryParse 等方式处理解析失败。
+
+校验出 ID 后仍要检查登录、资源存在性和访问权限。登录页可以保留合法的待访问目标，登录成功后重建合理的返回栈；不能从外部链接携带的“已登录”参数直接得出授权结论。
+
+冷启动时与已有页面运行时收到链接，应汇入相同的导航状态规则。还要处理重复链接和异步加载乱序，避免新链接已经打开，旧加载结果又把用户带回上一目标。平台关联域名、App Links 或 URL scheme 的注册是另一层配置，不会因 Dart 解析函数通过测试就自动完成。
+
+### 6.2 嵌套栈需要明确操作对象 {#嵌套栈需要明确操作对象}
+
+每个 Navigator 都有自己的栈。底部 Tab 可以各自保留导航历史，但此时 `Navigator.of(context)` 默认找到最近的 Navigator；`rootNavigator: true` 则选择最外层 Navigator。调用处 context 如果在嵌套 Navigator 上方，也不会凭意图自动选中它。
+
+弹出局部详情、全局对话框和登出重置可能需要不同的栈。不要只看当前屏幕显示什么就猜测 pop 会作用于哪个对象，可以通过明确的 NavigatorKey 或正确层级的 context 定位。
+
+返回请求通常应先交给当前活动分支，在它无法继续处理时再向外层传递。Flutter 3.24.3 可以使用 NavigatorPopHandler 的相应能力或 Router 的子级返回分派；隐藏 Tab 的栈不应抢先处理当前页面的返回。保留各 Tab 状态与分派返回是两个需要分别设计的行为。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 Navigator、Route、Page 与 Router 有什么区别？ {#objects}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：运行对象、声明式配置和外部路由协调。
+
+**相关内容**：[Navigator、Route 与 Page](#NavigatorRoute与Page)、[Router 协调外部路由信息](#Router协调外部路由信息)
+
+<details>
+<summary>参考回答</summary>
+
+**Navigator 管理 Route 栈，Route 表示实际导航界面，Page 是用于声明式创建或更新 Route 的配置，Router 协调外部路由信息与应用状态。** Navigator 可以独立用于简单栈式导航，也可以接收 Router 方案产生的页面配置；pages 本身不等于完整的 URL 路由系统。
+
+</details>
+
+### 7.2 等待 push 的结果后，为什么还要检查 context 和业务状态？ {#result}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：异步间隙、取消结果、挂载与可见性。
+
+**相关内容**：[用结果表达选择或取消](#用结果表达选择或取消)
+
+<details>
+<summary>参考回答</summary>
+
+**等待期间原调用者可能已经离开，结果也可能是取消或过时操作。** 先检查 context.mounted 和 null，再根据账号、请求版本等业务条件判断是否使用结果。mounted 不表示当前页可见，push 的结果完成也不意味着出场动画和 dispose 全部结束。
+
+</details>
+
+### 7.3 从新页面返回后，原页面一定重新执行 initState 吗？ {#state}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：路由保留、可见性与恢复范围。
+
+**相关内容**：[页面状态与可见性](#页面状态与可见性)
+
+<details>
+<summary>参考回答</summary>
+
+**不一定，MaterialPageRoute 默认可以保留被覆盖页面的 State，返回时无需重新初始化。** 需要刷新可观察路由重新显露或显式处理结果，不能依赖 initState 必定重跑。PageStorage 保存位置和系统状态恢复又是其他机制，重要业务数据要由数据层保存。
+
+</details>
+
+### 7.4 canPop 为 true，maybePop 也返回 true，页面为什么仍可能留在原处？ {#back}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：栈结构、返回意愿与请求是否被消费。
+
+**相关内容**：[canPop 不等于本次一定能返回](#canPop不等于一定返回)
+
+<details>
+<summary>参考回答</summary>
+
+**canPop 不包含全部退出限制，maybePop 的 true 只表示请求已处理。** 路由返回 doNotPop 时，maybePop 会消费请求但不执行弹出；需要向外传递时才返回 false。应检查实际路由通知或结果，不能把两个布尔值都解释成“已经出栈”。
+
+</details>
+
+### 7.5 PopScope 怎样支持未保存内容的退出确认？ {#guard}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：提前声明、结果回调、重复请求与平台差异。
+
+**相关内容**：[PopScope 的提前判断与结果通知](#PopScope的提前判断与结果通知)
+
+<details>
+<summary>参考回答</summary>
+
+**先让 canPop 表达不能直接退出，在受阻回调中按需确认，再由明确的业务路径离开。** 回调是处理后的通知，不能撤销已经成功的 pop；didPop 为 true 时也不要再退一层。确认期间防重入，确认后检查页面有效性，并单独验证 Android 与 Cupertino 边缘手势差异。
+
+</details>
+
+### 7.6 使用 pages 时，为什么还要在 onDidRemovePage 中更新状态？ {#pages}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：路由实例与声明式事实的一致性。
+
+**相关内容**：[页面配置必须跟随状态](#页面配置必须跟随状态)
+
+<details>
+<summary>参考回答</summary>
+
+**路由被移除后，产生 Page 的状态也必须反映它已离开。** 否则后续更新仍带着旧 Page，Navigator 可能重新把它作为页面加入。这个回调负责同步移除结果，稳定的类型与 Key 则帮助识别可以复用的页面配置。
+
+</details>
+
+### 7.7 深链拿到了合法文章 ID，是否就可以直接打开？ {#deep-link}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：输入解析、授权、异步状态与返回栈。
+
+**相关内容**：[深链先转换为合法的应用状态](#深链转换为合法状态)
+
+<details>
+<summary>参考回答</summary>
+
+**还要确认登录、资源存在性和权限，并按应用状态构造页面。** URI 格式合法不代表访问被授权；冷启动、运行中链接和登录后继续访问应汇入一致的状态规则。处理重复链接与旧异步结果，并验证平台链接配置和最终返回行为。
+
+</details>
+
+### 7.8 Tab 内有嵌套 Navigator 时，返回和全局弹框怎样定位？ {#nested}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：context 查找范围、独立历史与分派顺序。
+
+**相关内容**：[嵌套栈需要明确操作对象](#嵌套栈需要明确操作对象)
+
+<details>
+<summary>参考回答</summary>
+
+**先明确要操作当前分支还是根栈。** Navigator.of 默认取最近祖先，rootNavigator 或明确的 Key 可以定位根栈。系统返回先交给活动分支，无法处理再向外传递；隐藏 Tab 不应消费当前返回，全局弹框也要选择正确的 Navigator。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [Flutter：Navigation and routing](https://docs.flutter.dev/ui/navigation)
+- [Flutter：Navigator](https://api.flutter.dev/flutter/widgets/Navigator-class.html)
+- [Flutter：Router](https://api.flutter.dev/flutter/widgets/Router-class.html)
+- [Flutter：PopScope](https://api.flutter.dev/flutter/widgets/PopScope-class.html)
+- [Flutter：Navigator.maybePop](https://api.flutter.dev/flutter/widgets/Navigator/maybePop.html)
+- [Flutter：Navigator.canPop](https://api.flutter.dev/flutter/widgets/Navigator/canPop.html)
+- [Flutter：Navigator.of](https://api.flutter.dev/flutter/widgets/Navigator/of.html)
+- [Flutter：BuildContext.mounted](https://api.flutter.dev/flutter/widgets/BuildContext/mounted.html)
+- [Flutter：MaterialPageRoute.maintainState](https://api.flutter.dev/flutter/material/MaterialPageRoute/maintainState.html)
+- [Flutter：PageStorage](https://api.flutter.dev/flutter/widgets/PageStorage-class.html)
+- [Flutter：Navigator.restorationScopeId](https://api.flutter.dev/flutter/widgets/Navigator/restorationScopeId.html)
+- [Flutter：Page.canUpdate](https://api.flutter.dev/flutter/widgets/Page/canUpdate.html)
+- [Flutter：Navigator.onDidRemovePage](https://api.flutter.dev/flutter/widgets/Navigator/onDidRemovePage.html)
+- [Flutter：RouteObserver](https://api.flutter.dev/flutter/widgets/RouteObserver-class.html)
+- [Flutter：Deep linking](https://docs.flutter.dev/ui/navigation/deep-linking)
+- [Flutter：Android predictive back](https://docs.flutter.dev/release/breaking-changes/android-predictive-back)
+- [Flutter 3.24.3：navigator.dart](https://github.com/flutter/flutter/blob/3.24.3/packages/flutter/lib/src/widgets/navigator.dart)
+- [Flutter 3.24.3：router.dart](https://github.com/flutter/flutter/blob/3.24.3/packages/flutter/lib/src/widgets/router.dart)
+- [Flutter 3.24.3：pop_scope.dart](https://github.com/flutter/flutter/blob/3.24.3/packages/flutter/lib/src/widgets/pop_scope.dart)
+- [Flutter 3.24.3：navigator_pop_handler.dart](https://github.com/flutter/flutter/blob/3.24.3/packages/flutter/lib/src/widgets/navigator_pop_handler.dart)

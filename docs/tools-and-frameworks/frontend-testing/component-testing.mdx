@@ -1,0 +1,483 @@
+---
+sidebar_position: 1
+knowledge:
+  id: tools-and-frameworks.frontend-testing.component-testing
+---
+
+# 前端组件测试
+
+**前端组件测试**把组件放进可控环境，通过输入、点击等操作验证它展示什么、允许什么操作，以及怎样处理外部依赖的结果。组件内部调用了哪个函数可以成为证据，但用户最终是否看到正确结果，通常更接近要验证的行为。
+
+准备面试时，需要能选择值得测试的分支，解释异步更新、依赖替身和测试环境的边界。本文用 React 18、Vue 3、Vitest 3 和 Testing Library 展示这些机制；Jest 可以承担类似的测试运行职责，具体配置与 API 不能直接混用。
+
+## 1. 面试核心 {#core}
+
+- **按行为和风险选择测试层次。** 纯逻辑适合独立测试，组件交互适合组件测试，关键完整流程还需要浏览器与服务集成证据。[卡](#test-selection)
+- **测试运行器、组件工具和环境分别承担不同职责。** Vitest/Jest 管理用例与断言，Testing Library 帮助渲染和定位，jsdom 提供模拟 DOM。[卡](#testing-stack)
+- **优先按角色、名称和标签定位，断言可见结果与外部契约。** 不把内部状态变量或易变的 DOM 层级当作唯一依据。[卡](#semantic-query)
+- **异步操作需要等待明确结果。** getBy 用于当前已存在的元素，findBy 等待元素出现，queryBy 可用于检查不存在；waitFor 的回调应表达会失败的断言。[卡](#async-testing)
+- **替身让成功、失败和延迟可控，也缩小了被验证范围。** 替换保存函数后，测试不再证明真实 HTTP、鉴权或数据库已集成。[卡](#test-doubles)
+- **Vue 组件同样可以通过 DOM 与事件契约验证。** 不必把测试写成对内部响应式变量逐项赋值。[卡](#vue-testing)
+- **每条用例都应建立自己的状态，并清理 DOM、替身与时钟。** 独立执行和整组执行的结果应一致。[卡](#isolation)
+- **覆盖率描述哪些代码执行过，不说明断言一定有效。** 应结合关键分支、边界输入和故意引入错误后的失败验证判断测试质量。[卡](#coverage)
+- **项目验收要补齐组件环境不能代表的条件。** 真实接口、浏览器布局、弱网、权限与关键端到端流程应另有验证。[卡](#project-validation)
+
+## 2. 范围与工具 {#范围与工具}
+
+### 2.1 选择测试层次 {#选择测试层次}
+
+一个保存笔记功能可以分几层观察：
+
+| 范围 | 验证对象 | 适合的证据 |
+| --- | --- | --- |
+| 纯逻辑 | 字符串归一化、权限判断、数据转换 | 输入与返回值、错误和边界 |
+| 组件 | 表单、按钮、加载态、错误与重试 | 用户操作后的 DOM 和外部调用 |
+| 集成 | 请求格式、鉴权、真实服务返回 | HTTP 与服务契约、环境数据 |
+| 端到端 | 用户完成一条完整业务路径 | 浏览器操作及最终业务结果 |
+
+不要把每个细节都放进慢且依赖较多的完整流程，也不要只测试函数调用次数，却没有验证组件是否正确显示。关键流程的浏览器定位、等待和会话隔离见 [Web UI 自动化测试](../testing/ui-automation.mdx)。
+
+选择用例时，先看失败的影响和已有缺陷：校验条件、重复提交、请求失败、重试恢复、旧响应覆盖新状态等都可能值得验证。样式类名或内部函数名称如果不属于公开契约，重构时改变它们不应自动让全部测试失效。
+
+### 2.2 运行器、工具与环境 {#运行器工具与环境}
+
+**测试运行器**发现并执行用例，管理生命周期、断言、替身和报告。Vitest 与 Jest 都属于这一层；代码是否经过 Babel、SWC 或 Vite 转换，是测试工程配置的一部分。
+
+Testing Library 提供组件渲染、DOM 查询和交互辅助。它不会替你启动真实后端，也不等于测试运行器。React Testing Library 与 Vue Testing Library 负责各自框架的挂载和更新方式，但共享接近用户使用方式的查询思路。
+
+**jsdom** 在 Node.js 中实现一部分 DOM 与 Web API。它适合验证不少 DOM 交互，却不执行真实浏览器的布局和绘制；几何位置、真实导航和某些平台 API 不能仅凭这里的结果判断。需要这些行为时，应选择真实浏览器环境。
+
+## 3. React 表单示例 {#react表单示例}
+
+### 3.1 配置与清理 {#配置与清理}
+
+示例需要安装 React 18、react-dom、Vitest 3、jsdom、`@testing-library/react`、`@testing-library/dom`、`@testing-library/user-event` 和 `@testing-library/jest-dom`。后面的 Vue 示例另需 Vue 3 与 `@testing-library/vue`。
+
+保存 `vitest.config.mjs`：
+
+```js
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  esbuild: { jsx: 'automatic' },
+  test: {
+    environment: 'jsdom',
+    setupFiles: ['./test/setup.js'],
+    include: ['test/**/*.test.{js,jsx}'],
+  },
+});
+```
+
+自动 JSX 转换用于本例的 JSX 文件。jsdom 提供 DOM；测试只匹配 test 下的文件，不会因为项目里存在其他脚本就自动执行它们。
+
+保存 `test/setup.js`：
+
+```js
+import '@testing-library/jest-dom/vitest';
+import { afterEach, vi } from 'vitest';
+import { cleanup } from '@testing-library/react';
+
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
+```
+
+这里显式清理 React 挂载的 DOM，并恢复 spy 等替身。每条用例仍应创建自己的 mock 函数和数据；`restoreAllMocks` 不是清空所有外部状态、取消任意网络任务或重置整个服务的万能操作。
+
+### 3.2 组件契约 {#组件契约}
+
+`NoteForm` 接收一个 `saveNote(title)` 函数。它返回的 Promise 成功时展示保存结果，拒绝时展示错误；组件只负责调用该契约，不实现真实网络请求。
+
+保存 `src/NoteForm.jsx`：
+
+```jsx
+import { useId, useRef, useState } from 'react';
+
+export function NoteForm({ saveNote }) {
+  const inputId = useId();
+  const inFlight = useRef(false);
+  const [title, setTitle] = useState('');
+  const [pending, setPending] = useState(false);
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+
+  async function submit(event) {
+    event.preventDefault();
+    if (inFlight.current) return;
+    const value = title.trim();
+    if (!value) {
+      setError('标题不能为空');
+      return;
+    }
+
+    inFlight.current = true;
+    setPending(true);
+    setError('');
+    setMessage('');
+    try {
+      await saveNote(value);
+      setMessage(`已保存：${value}`);
+    } catch {
+      setError('保存失败，请重试');
+    } finally {
+      inFlight.current = false;
+      setPending(false);
+    }
+  }
+
+  return (
+    <form aria-label="笔记" onSubmit={submit}>
+      <label htmlFor={inputId}>标题</label>
+      <input
+        id={inputId}
+        value={title}
+        disabled={pending}
+        onChange={(event) => setTitle(event.target.value)}
+      />
+      <button type="submit" disabled={pending}>
+        {pending ? '保存中' : '保存'}
+      </button>
+      <p role="status">{message}</p>
+      {error && <p role="alert">{error}</p>}
+    </form>
+  );
+}
+```
+
+空标题不会调用保存函数。保存期间输入框与按钮禁用，inFlight 也阻止尚未结束时的再次提交。组件收到成功结果才显示“已保存”，不能在调用保存函数的一刻就提前宣告成功。
+
+此示例没有实现页面离开后的请求取消、服务器幂等或多条笔记之间的并发协调。需要这些约束时，应先补充契约，再增加对应测试，不能把前端按钮禁用解释成整个系统不会重复保存。
+
+### 3.3 正常、等待与失败分支 {#正常等待与失败分支}
+
+保存 `test/NoteForm.test.jsx`：
+
+```jsx
+import { test, expect, vi } from 'vitest';
+import { act, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { NoteForm } from '../src/NoteForm.jsx';
+
+test('空标题不提交，并说明原因', async () => {
+  const user = userEvent.setup();
+  const saveNote = vi.fn();
+  render(<NoteForm saveNote={saveNote} />);
+
+  await user.type(screen.getByLabelText('标题'), '   ');
+  await user.click(screen.getByRole('button', { name: '保存' }));
+
+  expect(screen.getByRole('alert')).toHaveTextContent('标题不能为空');
+  expect(saveNote).not.toHaveBeenCalled();
+});
+
+test('等待保存结果，期间不能重复点击提交', async () => {
+  const user = userEvent.setup();
+  let finish;
+  const pending = new Promise((resolve) => { finish = resolve; });
+  const saveNote = vi.fn(() => pending);
+  render(<NoteForm saveNote={saveNote} />);
+
+  await user.type(screen.getByLabelText('标题'), '  网络复习  ');
+  await user.click(screen.getByRole('button', { name: '保存' }));
+
+  const button = screen.getByRole('button', { name: '保存中' });
+  expect(button).toBeDisabled();
+  expect(screen.getByLabelText('标题')).toBeDisabled();
+  expect(screen.getByRole('status')).toBeEmptyDOMElement();
+  await user.click(button);
+  expect(saveNote).toHaveBeenCalledTimes(1);
+  expect(saveNote).toHaveBeenCalledWith('网络复习');
+
+  await act(async () => { finish(); });
+  await waitFor(() => {
+    expect(screen.getByRole('status')).toHaveTextContent('已保存：网络复习');
+  });
+  expect(screen.getByRole('button', { name: '保存' })).toBeEnabled();
+});
+
+test('失败后保留输入，并可以重试成功', async () => {
+  const user = userEvent.setup();
+  const saveNote = vi.fn()
+    .mockRejectedValueOnce(new Error('network unavailable'))
+    .mockResolvedValueOnce(undefined);
+  render(<NoteForm saveNote={saveNote} />);
+
+  await user.type(screen.getByLabelText('标题'), '事件循环');
+  await user.click(screen.getByRole('button', { name: '保存' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('保存失败，请重试');
+  expect(screen.getByLabelText('标题')).toHaveValue('事件循环');
+
+  await user.click(screen.getByRole('button', { name: '保存' }));
+  await waitFor(() => {
+    expect(screen.getByRole('status')).toHaveTextContent('已保存：事件循环');
+  });
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  expect(saveNote).toHaveBeenCalledTimes(2);
+});
+```
+
+运行器应报告这三条用例通过。第二条由测试控制 Promise 何时完成，因此能可靠观察等待状态；如果替身立刻成功，测试可能来不及看到中间状态。手动推进来自组件外部的更新时，用 act 让 React 完成相应更新，再验证 DOM。
+
+第三条同时检查错误提示、输入保留、再次调用和最终成功。只断言 `saveNote` 被调用两次，无法发现“请求成功了，但页面仍停留在错误状态”的缺陷。
+
+在使用 npm 且已安装依赖的目录中，可以运行：
+
+```sh
+npx vitest run
+```
+
+`run` 执行后退出，适合自动化检查；本地交互式 watch 模式与 CI 中的一次运行需要明确区分。
+
+## 4. 查询、等待与替身 {#查询等待与替身}
+
+### 4.1 按语义定位 {#按语义定位}
+
+`getByRole('button', { name: '保存' })` 依赖按钮角色与可访问名称，`getByLabelText('标题')` 依赖 label 关联。它们比“第三层 div 里的第一个按钮”更接近用户识别控件的方式，但仍需处理重复名称，例如先用 within 缩小到某一行或某个表单。
+
+| 查询 | 零个匹配 | 单个匹配 | 多个匹配 |
+| --- | --- | --- | --- |
+| getBy | 抛错 | 返回元素 | 抛错 |
+| queryBy | 返回 null | 返回元素 | 抛错 |
+| findBy | 重试后超时拒绝 | Promise 返回元素 | 无法满足唯一匹配时最终拒绝 |
+
+检查元素消失时不能直接用 getBy，因为找不到就会在断言之前抛错。多匹配也不应该随意取第一个来消除错误；先确认测试需要的对象是否明确。
+
+角色查询并不等于完整可访问性审计。标签、键盘访问和语义结构的基础见 [HTML 语义与可访问性](../../frontend/html/semantics-accessibility.mdx)。
+
+### 4.2 等待结果而不是等待时长 {#等待结果而不是等待时长}
+
+user-event 的操作通常返回 Promise，应 await。它模拟一组交互，而 fireEvent 更接近直接派发具体事件；特殊事件或需要直接构造某个条件时可以使用后者，但要清楚少模拟了哪些浏览器行为。
+
+waitFor 会在条件尚未满足时重试回调。回调应包含会抛错的断言；仅返回 false 并不表示“继续等到 true”。回调还应尽量只读取和断言，不把点击、发请求等副作用放进去，否则重试可能重复执行操作。
+
+findBy 等待元素满足查询，不代表其所有内容已更新。例如示例中的 status 从初始渲染起就存在，单独等待 `findByRole('status')` 不能证明保存成功；需要等待该区域出现正确文本。
+
+定时行为可以使用 fake timers 控制时间，但这会替换测试中的时钟。与 user-event 配合时要配置对应的 advanceTimers，并确认所用版本的交互 Promise 不会因尚未推进的计时器一直等待。只验证定时更新的独立用例，也可以直接派发所需事件，但这没有验证完整用户交互链路。结束前按用例需要处理待执行计时器并恢复真实时钟。推进计时器也不等于完成任意网络请求或清空所有 Promise 更新，仍需等待目标行为。
+
+### 4.3 替身的边界 {#替身的边界}
+
+**测试替身**代替被测对象依赖的某个协作者，使输入与故障可控。示例通过 props 注入保存函数；也可以在请求边界返回受控响应，而不是把组件内部的 state setter 全部 mock 掉。
+
+选择边界时，要保留本次真正想验证的链路。替换整个保存函数能检查组件状态分支，但检查不到 HTTP 方法、序列化和鉴权；如果要验证这些内容，就应把替身放到更外层，并保留真实请求封装参与测试。
+
+替身还需要遵守真实契约。真实接口可能返回空数据、业务错误或不同状态码；只写一个永远成功的固定对象，会把未知情况排除在测试之外。不要让替身自动复述当前实现，期望应来自业务规则和已确认契约。
+
+## 5. Vue 组件与测试隔离 {#vue组件与测试隔离}
+
+### 5.1 Props、展示与事件 {#props展示与事件}
+
+Vue 也可以从输入和公开事件观察组件。下面的 `src/ReviewCounter.js` 不使用 SFC 编译，便于独立运行；initial 只作为创建时的初值：
+
+```js
+import { defineComponent, h, ref } from 'vue';
+
+export const ReviewCounter = defineComponent({
+  props: { initial: { type: Number, default: 0 } },
+  emits: ['change'],
+  setup(props, { emit }) {
+    const count = ref(props.initial);
+    return () => h('button', {
+      type: 'button',
+      onClick() {
+        count.value += 1;
+        emit('change', count.value);
+      },
+    }, `复习次数：${count.value}`);
+  },
+});
+```
+
+保存 `test/ReviewCounter.test.js`：
+
+```js
+import { afterEach, expect, test, vi } from 'vitest';
+import { cleanup, render, screen } from '@testing-library/vue';
+import userEvent from '@testing-library/user-event';
+import { ReviewCounter } from '../src/ReviewCounter.js';
+
+afterEach(cleanup);
+
+test('使用初始次数，点击后显示新次数并通知外部', async () => {
+  const user = userEvent.setup();
+  const onChange = vi.fn();
+  render(ReviewCounter, { props: { initial: 2, onChange } });
+
+  await user.click(screen.getByRole('button', { name: '复习次数：2' }));
+
+  expect(await screen.findByRole('button', { name: '复习次数：3' }))
+    .toBeInTheDocument();
+  expect(onChange).toHaveBeenCalledWith(3);
+});
+```
+
+用例同时验证显示与对外通知。对于插槽、路由或状态库组件，也应先明确要观察的契约，再决定注入真实实现还是替身。测试 Vue SFC 时，还需配置相应转换插件；jsdom 本身不会编译 `.vue` 文件。
+
+### 5.2 用例之间保持独立 {#用例之间保持独立}
+
+每条测试都应创建所需 DOM、数据和替身，结束后清理。共享可变对象、模块级缓存、残留监听器、未恢复的时间和环境变量，都可能让“单独通过、整组失败”出现。
+
+清空 mock 调用历史、重置 mock 实现和恢复原函数是不同操作。以当前工具语义为准选择，不要把清空调用次数当作恢复真实实现。组件卸载也不等于服务端操作被撤销；若业务依赖取消行为，还要单独观察取消信号与后续结果。
+
+## 6. 覆盖率与项目验收 {#覆盖率与项目验收}
+
+### 6.1 覆盖率说明什么 {#覆盖率说明什么}
+
+**代码覆盖率**统计测试执行触达的语句、分支、函数等范围。Vitest 可以使用 V8 或 Istanbul 方案采集，需要安装与 Vitest 版本匹配的 provider，并设置合理的源码范围。
+
+安装对应的 `@vitest/coverage-v8` 后，可以运行：
+
+```sh
+npx vitest run --coverage --coverage.include='src/**'
+```
+
+报告能帮助发现未执行的错误分支，但执行过不等于有正确断言。一个测试可以调用保存流程却不检查结果，仍产生覆盖数据。过大的快照也可能因为被批量接受而失去审查价值；快照适合稳定且便于检查的结构，不能替代明确的行为断言。
+
+检验测试是否有效，可以临时引入一个确定违背契约的改动，例如让保存成功后显示错误标题，确认测试失败，再恢复实现。这不同于把期望值改成当前错误输出。覆盖率阈值也应服务于重要行为覆盖，不能靠忽略核心目录或添加无断言调用来满足数字。
+
+### 6.2 从组件到完整项目 {#从组件到完整项目}
+
+组件测试之外，项目验收还要考虑真实请求与权限、浏览器差异、弱网和超时、空数据、重复操作及回滚后的旧页面。AI 生成的代码也适用同样标准：先确定需求和断言，再检查实现，不应让同一段未经确认的实现同时决定测试期望。
+
+例如语音输入项目，组件测试可以验证“识别失败后显示重试”；它不能证明真实麦克风权限、噪声环境下的识别效果或浏览器媒体支持。应把各层证据和尚未验证的条件说清楚，而不是用“单测全过”覆盖整个项目。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 前端项目中，哪些内容值得写单元测试和组件测试？ {#test-selection}
+
+**考察重点**：业务风险、边界、测试层次与公开行为。
+
+**相关内容**：[选择测试层次](#选择测试层次)。
+
+<details>
+<summary>参考回答</summary>
+
+**优先覆盖影响结果的规则、易错边界和重要交互分支。** 纯转换与判断可以独立测试，组件则验证输入、加载、失败、重试和外部契约。关键完整流程还需真实环境证据；内部实现细节若不是契约，不宜成为大量脆弱断言。
+
+</details>
+
+### 7.2 Vitest、Jest、Testing Library 与 jsdom 分别承担什么职责？ {#testing-stack}
+
+**考察重点**：运行器、代码转换、组件工具与模拟环境。
+
+**相关内容**：[运行器、工具与环境](#运行器工具与环境)。
+
+<details>
+<summary>参考回答</summary>
+
+**Vitest 和 Jest 负责组织运行测试，Testing Library 帮助挂载组件并通过 DOM 交互，jsdom 提供模拟 Web 环境。** JSX、TS 或 Vue 文件还需相应转换配置。jsdom 不执行真实布局绘制，使用这些工具也不自动证明后端集成和真实浏览器行为。
+
+</details>
+
+### 7.3 为什么优先使用角色和标签定位，而不是组件内部状态？ {#semantic-query}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：公开契约、可访问名称、重构稳定性与定位范围。
+
+**相关内容**：[按语义定位](#按语义定位)。
+
+<details>
+<summary>参考回答</summary>
+
+**角色、名称和标签更接近用户识别和操作组件的方式，也减少对内部实现的依赖。** 状态变量改名或 DOM 包装层调整不一定改变用户行为。定位仍需保证对象明确，重复名称要缩小范围；语义查询不能替代完整可访问性审计。
+
+</details>
+
+### 7.4 异步表单测试怎样等待保存成功，为什么不能只等 status 元素出现？ {#async-testing}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：元素存在与内容完成、异步断言、可控 Promise。
+
+**相关内容**：[正常、等待与失败分支](#正常等待与失败分支)、[等待结果而不是等待时长](#等待结果而不是等待时长)。
+
+<details>
+<summary>参考回答</summary>
+
+**应等待状态区域出现预期的成功内容，而不只等待区域存在。** status 可能从初始渲染起就存在，可用 waitFor 包住文本断言；回调失败应抛错，不把点击等副作用放进重试回调。要验证加载态，可以由测试控制 Promise 何时完成，并等待用户操作和框架更新。
+
+</details>
+
+### 7.5 把请求函数 mock 掉后，测试通过证明了什么？ {#test-doubles}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：替身边界、契约与实际集成证据。
+
+**相关内容**：[替身的边界](#替身的边界)。
+
+<details>
+<summary>参考回答</summary>
+
+**只证明被保留的组件链路在替身提供的条件下满足断言。** 如果整个请求函数被替换，就不能声称真实序列化、鉴权或后端保存已经验证。应按目标选择替换边界，覆盖成功、失败和延迟等契约情况，再用集成或端到端检查补齐真实链路。
+
+</details>
+
+### 7.6 Vue 组件怎样做自动化测试？ {#vue-testing}
+
+**考察重点**：框架挂载、Props、DOM、事件与异步更新。
+
+**相关内容**：[Props、展示与事件](#props展示与事件)。
+
+<details>
+<summary>参考回答</summary>
+
+**使用 Vue 对应工具挂载组件，提供 Props 或必要依赖，再操作 DOM 并断言显示和对外事件。** 例如初值为 2 的计数器，点击后既显示 3，也向外发送 3。异步更新要等待，SFC 要有对应转换，布局和真实浏览器能力则需要其他环境验证。
+
+</details>
+
+### 7.7 为什么测试单独执行通过，整组执行却失败？ {#isolation}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：共享状态、清理、替身与时钟恢复。
+
+**相关内容**：[用例之间保持独立](#用例之间保持独立)。
+
+<details>
+<summary>参考回答</summary>
+
+**应先检查用例间是否泄漏了 DOM、共享数据、模块缓存、监听器、mock 或时钟状态。** 每条用例建立自身条件，结束时按工具语义清理；清空调用记录、重置实现和恢复原函数不能混为一谈。还要保留首次失败证据，不能只靠重试掩盖顺序依赖。
+
+</details>
+
+### 7.8 单测覆盖率怎样测量，高覆盖率为什么仍可能漏错？ {#coverage}
+
+**考察重点**：执行范围、分支与断言有效性。
+
+**相关内容**：[覆盖率说明什么](#覆盖率说明什么)。
+
+<details>
+<summary>参考回答</summary>
+
+**通过覆盖率工具采集语句、分支、函数等执行范围，并结合源码范围生成报告。** Vitest 可选择 V8 或 Istanbul provider。高覆盖率只说明代码被触达，缺少正确断言仍可能漏掉错误；应检查关键分支，并用已知错误验证测试是否会失败，而不是只追求比例。
+
+</details>
+
+### 7.9 怎样验收一个包含 AI 生成代码的前端项目？ {#project-validation}
+
+**题型**：综合题
+
+**考察重点**：需求依据、分层验证、真实环境与未验证边界。
+
+**相关内容**：[从组件到完整项目](#从组件到完整项目)、[选择测试层次](#选择测试层次)。
+
+<details>
+<summary>参考回答</summary>
+
+**先根据需求确定可观察结果和失败条件，再用不同层次的检查收集证据。** 组件层覆盖输入、状态和错误恢复，集成层核对真实接口与权限，关键流程在真实浏览器中验证，并补充弱网、空数据和目标设备等条件。AI 生成实现不能自动成为测试期望，尤其要检查自身未理解的代码和无法由模拟环境代表的能力。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [Vitest 3：Test Environment](https://v3.vitest.dev/guide/environment)
+- [Vitest 3：Coverage](https://v3.vitest.dev/guide/coverage)
+- [Testing Library：React Testing Library](https://testing-library.com/docs/react-testing-library/intro/)
+- [Testing Library：Vue Testing Library](https://testing-library.com/docs/vue-testing-library/intro/)
+- [Testing Library：About Queries](https://testing-library.com/docs/queries/about/)
+- [Testing Library：Async Methods](https://testing-library.com/docs/dom-testing-library/api-async/)
+- [Testing Library：user-event](https://testing-library.com/docs/user-event/intro/)
+- [Testing Library：Using Fake Timers](https://testing-library.com/docs/using-fake-timers/)
+- [jsdom：Unimplemented parts of the web platform](https://github.com/jsdom/jsdom#unimplemented-parts-of-the-web-platform)

@@ -1,0 +1,315 @@
+---
+title: Server-Sent Events
+knowledge:
+  id: basic-knowledge.network.server-sent-events
+---
+
+# Server-Sent Events
+
+**Server-Sent Events**（SSE）是在持续的 HTTP 响应中，按约定的文本格式向客户端发送事件的机制。服务端不必等所有结果生成完再返回，浏览器可以边接收、边更新页面。它适合通知、任务进度和逐步生成的回答；如果客户端也要持续、高频地发送消息，就需要比较其他通信方式。
+
+SSE 的难点不在于“保持一个连接”，而在于识别完整事件、恢复中断后的输出，以及让页面更新跟得上数据。网络读到的一块字节不等于一条事件，浏览器已经收到事件也不等于业务已经处理成功。
+
+## 1. 面试核心 {#core}
+
+- SSE 使用 **HTTP 响应和 `text/event-stream`**，方向是服务端向客户端推送；客户端提交问题或执行操作可以另走 HTTP 请求。[卡](#sse-pipeline)
+- **空行结束一个事件块，多行 `data` 用换行符拼接**。字节块可能拆开 UTF-8 字符、字段行或 JSON，不能读一块就解析一块 JSON。[卡](#incomplete-data)
+- 原生 **`EventSource` 负责事件解析和自动重连**，但不能自定义 POST 请求体或任意请求头。用 Fetch 读取流时，这些能力更灵活，解析和恢复也由应用负责。[卡](#eventsource-versus-fetch)
+- **`Last-Event-ID` 是浏览器事件流的续接信息，不是业务提交确认**。可靠恢复还需要服务端保留历史、定义游标，并处理重复、缺口和过期。[卡](#reconnect-and-order)
+- 注释心跳可以减少空闲超时，但**不能保证永不掉线，也不会触发 `message`**。响应缓冲、压缩和代理超时都会影响实际推送。[卡](#heartbeat-and-buffering)
+- **接收频率不必等于渲染频率**。先保留文本增量，再按帧或时间窗口合并更新；不能用只保留最后一次参数的防抖丢掉中间片段。[卡](#stream-rendering)
+
+## 2. 从请求到页面更新 {#从请求到页面更新}
+
+一次 SSE 交互仍然从 HTTP 请求开始。服务端校验身份和订阅权限，返回状态码 `200`、`Content-Type: text/event-stream`，然后持续写入事件，不立即结束响应。客户端解析完整事件，再更新应用状态和界面。
+
+以任务进度为例，客户端可以先用 POST 创建任务，取得任务 ID，再通过 GET 订阅该任务的事件。这个 GET 应只负责读取已有任务的输出，避免每次自动重连都重新创建任务。SSE 没有禁止客户端发请求，只是这条事件流本身不是双向消息通道。
+
+| 需求 | 合适的判断 |
+| --- | --- |
+| 服务端持续推送通知、进度或文本结果 | SSE 可沿用 HTTP 的路由和基础设施 |
+| 客户端偶尔提交命令，随后接收大量结果 | HTTP 命令接口加 SSE 订阅通常可以满足 |
+| 双方频繁、低延迟地交换消息或二进制数据 | 考虑 WebSocket，并设计应用消息协议 |
+| 更新很少且允许延迟 | 轮询可能更简单，不必维护持续响应 |
+
+SSE 与轮询、WebSocket 的交互差异见 [WebSocket](./websocket.mdx#全双工与-http-长连接)。HTTP/2 可以让多个请求流复用连接，但它不改变 SSE 的事件格式，也不提供业务层的自动补发。
+
+## 3. 事件流格式 {#事件流格式}
+
+SSE 事件流始终使用 UTF-8。服务端可以按 LF、CRLF 或 CR 分行；浏览器按行处理字段，遇到空行才尝试派发事件。下面每个事件块后都有一个空行，包括最后的 `done` 事件：
+
+```text
+: keepalive
+
+id: 41
+event: delta
+data: 第一行
+data: 第二行
+
+id: 42
+event: done
+data: 完成
+
+```
+
+这个响应派发两个事件：`delta` 的 `data` 是包含换行的“第一行”和“第二行”，`lastEventId` 为 `"41"`；`done` 的 `data` 是“完成”，ID 为 `"42"`。最前面的注释只产生网络活动，不派发业务事件。
+
+| 字段 | 含义与边界 |
+| --- | --- |
+| `data` | 事件数据；同一块中的多行用换行连接，最后添加的换行在派发前去掉 |
+| `event` | 事件类型；省略或为空时使用 `message` |
+| `id` | 更新续接 ID；未提供时继承已有 ID，空值会把它清空，含空字符的值被忽略 |
+| `retry` | 原生 EventSource 的重连等待时间，单位毫秒；值必须只包含 ASCII 数字，实际重连还可能进一步延迟 |
+| 以 `:` 开头的行 | 注释，可用于保活，不产生 `message` |
+
+字段名区分大小写，未知字段忽略。冒号后的一个空格会被移除，额外的空格仍属于值。没有冒号的 `data` 相当于值为空的 `data:`，所以它后面跟空行时，可以派发数据为空字符串的事件；只有注释、没有 `data` 的块则不派发消息。
+
+如果响应结束时最后一个事件还没有遇到空行，这个不完整事件会被丢弃。流结束本身不是事件分隔符，也不等于任务正常完成。应用可以约定带 `data` 的 `done` 事件，明确区分完成与中途断开。这里的 `done` 是应用约定，不是 SSE 内置控制指令。
+
+## 4. EventSource 与 Fetch {#eventsource-与-fetch}
+
+### 4.1 原生事件订阅 {#原生事件订阅}
+
+**`EventSource`** 是浏览器提供的 SSE 客户端。它发送 GET 请求、解析事件，并在符合重连条件时重新发起请求。`open` 表示流已建立，`error` 既可能表示正在重试，也可能表示连接终止，需要结合 `readyState` 判断。
+
+下面假设页面已有一个用于展示纯文本的 `output` 元素，服务端提供前面的 `delta`、`done` 事件。函数返回清理方法，组件卸载或用户取消时调用。
+
+```js
+export function subscribeText(url, output) {
+  const source = new EventSource(url);
+  let pending = "";
+  let frame = null;
+  const flush = () => {
+    frame = null;
+    if (pending) output.append(document.createTextNode(pending));
+    pending = "";
+  };
+  source.addEventListener("delta", (event) => {
+    pending += event.data;
+    if (frame === null) frame = requestAnimationFrame(flush);
+  });
+  const stop = () => {
+    source.close();
+    if (frame !== null) cancelAnimationFrame(frame);
+    flush();
+  };
+  source.addEventListener("done", stop);
+  return stop;
+}
+```
+
+`delta` 是自定义事件类型，所以使用 `addEventListener("delta", ...)`；只写 `onmessage` 不会接收它。收到 `done` 后调用 `close()`，否则服务端结束响应后，浏览器可能继续重新订阅。本例按顺序保存每次 `delta` 的内容，在下一次动画帧合并追加，并在停止时立即补上尚未渲染的内容。它只展示订阅与纯文本更新，不包含去重、历史回放和错误提示逻辑。
+
+`EventSource` 构造器没有请求方法、请求体和任意请求头配置。跨域订阅受 CORS 约束；需要跨域携带凭据时使用 `withCredentials: true`，服务端同时允许明确的来源和凭据，并受 Cookie 策略影响。与 WebSocket 不同，不能忽略 SSE 的 CORS 响应要求。
+
+### 4.2 手动读取响应流 {#手动读取响应流}
+
+Fetch 可以发送 POST 请求、设置允许的请求头，再读取响应体。**读取响应流不等于自动获得 EventSource 的全部行为**：需要检查状态码和内容类型、增量解码、按 SSE 规则组装事件，自己处理取消、重试与游标。
+
+下面的解析器展示这条链路。传入一个已取得的 `Response`；`onEvent` 必须同步处理且不抛异常，或者由调用者接受异常会终止本次读取。它支持标准换行、注释、多行数据和 ID 继承，把 CRLF 按一个换行计数，限制每个事件块最多 64 Ki 个 UTF-16 码元；不实现自动重连，`retry` 字段也不会改变任何定时器。
+
+```js
+export async function readSse(response, onEvent) {
+  const type = response.headers.get("content-type")?.split(";")[0].trim().toLowerCase();
+  if (response.status !== 200 || type !== "text/event-stream" || !response.body) {
+    throw new Error("invalid event stream response");
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  let line = "", data = "", eventType = "", lastId = "";
+  let afterCR = false, blockSize = 0, ended = false;
+
+  function processLine() {
+    if (line === "") {
+      if (data !== "") {
+        onEvent({ type: eventType || "message", data: data.slice(0, -1), lastEventId: lastId });
+      }
+      data = "";
+      eventType = "";
+      blockSize = 0;
+      return;
+    }
+    if (line.startsWith(":")) return;
+    const colon = line.indexOf(":");
+    const field = colon < 0 ? line : line.slice(0, colon);
+    let value = colon < 0 ? "" : line.slice(colon + 1);
+    if (value.startsWith(" ")) value = value.slice(1);
+    if (field === "data") data += value + "\n";
+    else if (field === "event") eventType = value;
+    else if (field === "id" && !value.includes("\0")) lastId = value;
+  }
+  function consume(text) {
+    for (let index = 0; index < text.length; index++) {
+      const char = text[index];
+      if (afterCR) {
+        afterCR = false;
+        if (char === "\n") continue;
+      }
+      if (++blockSize > 64 * 1024) throw new Error("event block too large");
+      if (char === "\r" || char === "\n") {
+        processLine();
+        line = "";
+        afterCR = char === "\r";
+      } else line += char;
+    }
+  }
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) { ended = true; break; }
+      consume(decoder.decode(value, { stream: true }));
+    }
+    consume(decoder.decode());
+    // 没有终止空行的残留事件不派发。
+  } finally {
+    if (!ended) await reader.cancel().catch(() => {});
+    reader.releaseLock();
+  }
+}
+```
+
+同一个 `TextDecoder` 配合 `{ stream: true }` 保留跨块的 UTF-8 解码状态，末尾的 `decode()` 刷出剩余状态。`line` 保留尚未结束的字段行，`data` 保留尚未结束的事件数据；只有完整事件才交给 `onEvent`。如果约定 `data` 是 JSON，在 `onEvent` 中再做 `JSON.parse(event.data)`，不能直接解析每次 `reader.read()` 返回的块。
+
+例如字符“中”的 UTF-8 字节为 `E4 B8 AD`。第一块只收到 `E4`，下一块才收到 `B8 AD`，两块单独解码会破坏字符；流式解码可以等后续字节补齐。反过来，一块数据也可能包含多条完整事件，解析器需要循环处理，不能只找第一条。
+
+这段函数只负责一次响应的事件解码。请求可用 `fetch(url, { method: "POST", body, signal })` 建立，取消由外部 `AbortController` 的 `signal` 传给 Fetch。业务若需要异步应用事件，应显式排队并按顺序提交，不能假定同步解析器会等待异步回调返回的 Promise。
+
+## 5. 自动重连与可靠恢复 {#自动重连与可靠恢复}
+
+### 5.1 浏览器记住的 ID {#浏览器记住的-id}
+
+原生 EventSource 在正常响应结束等可恢复条件下会重连；它保留已解析的最后事件 ID，并在重连请求中通过 `Last-Event-ID` 告诉服务端从哪里续接。服务端仍要识别这份游标，并提供对应的历史数据；只发送 `id` 不会让服务器自动保存或补发事件。
+
+`Last-Event-ID` 不是处理成功的确认。浏览器在派发事件前已经推进内部 ID，事件回调抛异常、异步处理失败或页面状态尚未持久化，都不会让它自动回退。甚至只有 `id`、没有 `data` 的完整块，也可以改变续接位置而不派发消息。
+
+需要严格恢复业务状态时，应另外记录“已成功应用”的游标，把它与状态变更一致地保存。必要时关闭原生连接，用应用游标重新订阅；原生 EventSource 不能任意设置 `Last-Event-ID` 请求头，可以使用服务端约定的查询参数，或选择手动管理请求的客户端。权限仍由服务端判断，游标不代表有权读取相应任务。
+
+调用 `close()` 会停止当前 EventSource 的请求与重试。服务端可用 `204 No Content` 明确结束订阅；跟随允许的重定向后，最终响应的状态不是 `200`，或内容类型错误，也会使原生 EventSource 失败并停止重连，不能笼统认为所有 HTTP 错误都会自动重试。重新创建对象也不会自动继承旧对象的 ID，刷新页面后的恢复需要应用自己保存信息。
+
+### 5.2 重复、缺口与业务顺序 {#重复缺口与业务顺序}
+
+**同一条有效 HTTP 响应中的字节按顺序到达，SSE 不会自行把事件打乱。** 所谓“分片乱序”需要先定位发生在哪一层：可能是后端多个任务并发产出、同时打开了多条流，也可能是前端异步处理后完成顺序不同。
+
+为同一任务分配稳定 ID 和序号，客户端先去重，再检查是否缺少前面的序号；不能仅因为更大的序号先处理完，就把它保存成“此前全部完成”的游标。序号检查的例子见 [WebSocket](./websocket.mdx#消息送达与已读)，它与具体传输协议无关。
+
+服务端恢复时，需要把历史回放与实时订阅接在同一个顺序中，避免切换间隙漏消息。历史已过期时，应返回一致的快照及其游标，或明确要求重新开始。对于生成任务，重连通常应订阅同一个任务的已有输出，不能无条件重新执行生成请求；否则会重复消耗资源，也可能生成与原来不同的结果。
+
+## 6. 心跳、代理与页面性能 {#心跳代理与页面性能}
+
+### 6.1 空闲保活与代理缓冲 {#空闲保活与代理缓冲}
+
+SSE 可以在无业务数据时定期发送注释，例如 `: keepalive\n\n`，让连接不至于一直没有字节流动。心跳周期要结合代理的空闲超时、网络和资源成本选择，不能保证所有网络环境都不断线。
+
+注释不会进入 EventSource 的 `message` 回调。若前端要展示最后一次业务响应时间，需要额外的可观察心跳事件，或根据业务进度设置超时，而不是用 `onmessage` 去等待注释。SSE 本身也没有 WebSocket 的协议 Ping/Pong 控制帧。
+
+服务端已经调用写入方法，浏览器却一次性收到大量内容时，先检查整条链路：应用是否及时刷新输出，压缩是否积攒数据，反向代理或 CDN 是否缓冲响应，客户端是否误用了等待完整响应的 `response.text()`。
+
+例如 Nginx 的 `proxy_buffering off` 可以关闭对应代理响应的缓冲，应用响应中的 `X-Accel-Buffering: no` 也可影响支持该约定的 Nginx 配置，但这一响应头不是 SSE 标准，也不是所有代理都认。`Cache-Control: no-cache` 处理缓存语义，不会自动关闭代理的输出缓冲。验证应观察事件在任务结束前是否已经到达，而不能只看最终内容是否正确。
+
+### 6.2 增量接收与批量渲染 {#增量接收与批量渲染}
+
+大量小片段到达时，逐片修改复杂组件树可能让解析、状态更新和布局占满主线程。接收阶段应保留每段文本及其顺序，渲染阶段再合并更新。前面的 `subscribeText()` 每帧最多安排一次刷新，并在结束时补刷，避免最后一段停留在缓冲区。
+
+这只是降低更新次数。长时间处于后台时，动画帧可能暂停，仍需限制累积内容大小；长对话应考虑分段存储、限制节点数量和虚拟列表。Markdown 渲染也不必每个字符都重新解析全部历史，可以按批次处理当前未完成段落，并复用已完成内容。
+
+纯文本通过文本节点输出，不能直接把服务端片段拼进 `innerHTML`。需要 Markdown 或 HTML 时，要处理链接和 HTML 安全策略。用户取消、组件卸载和任务完成后，还要释放流连接、定时器及尚未完成的渲染任务。取消网络读取不一定取消后端任务，是否继续生成要由任务接口和服务端资源策略明确。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 SSE 的工作过程是什么，数据如何逐步显示到页面？ {#sse-pipeline}
+
+**考察重点**：持续 HTTP 响应、事件解析、业务状态与页面更新。
+
+**相关内容**：[从请求到页面更新](#从请求到页面更新)、[事件流格式](#事件流格式)、[原生事件订阅](#原生事件订阅)。
+
+<details>
+<summary>参考回答</summary>
+
+**服务端返回 `200` 和 `text/event-stream`，持续写入以空行分隔的事件，客户端解析完整事件后再更新页面。** 可以先用 HTTP 接口创建任务，再订阅已有任务的输出；SSE 只负责这一条服务端到客户端的数据流。
+
+EventSource 自动解析，默认事件进入 `message`，命名事件需要按名称监听。页面把数据写入状态或文本缓冲，按合适的频率渲染；任务完成时由应用事件通知客户端关闭订阅。单向推送适合 SSE，频繁双向消息再考虑 WebSocket，低频更新也可以用轮询。
+
+</details>
+
+### 7.2 SSE 读到不完整 JSON 或被拆开的中文字符时怎么办？ {#incomplete-data}
+
+**考察重点**：字节块、字符、字段行和完整事件的不同边界。
+
+**相关内容**：[事件流格式](#事件流格式)、[手动读取响应流](#手动读取响应流)。
+
+<details>
+<summary>参考回答</summary>
+
+**先增量解码 UTF-8，再按 SSE 行和空行组装事件，最后解析完整 `data` 中的 JSON。** 使用同一个 TextDecoder 并设置 `{ stream: true }` 保留跨块字符状态；保留不完整行与未结束事件，一次读入含多个事件时逐个处理。
+
+原生 EventSource 已完成这些步骤，手工 Fetch 则需要解析器。不能对每个网络块直接 JSON.parse，也不能把响应结束当成最后一个事件的结束空行。还要限制缓冲大小，防止异常服务端无限发送未结束事件。
+
+</details>
+
+### 7.3 EventSource 和 Fetch 流式读取有什么区别？ {#eventsource-versus-fetch}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：原生能力、请求定制、手动解析和恢复职责。
+
+**相关内容**：[EventSource 与 Fetch](#eventsource-与-fetch)。
+
+<details>
+<summary>参考回答</summary>
+
+**EventSource 内置 GET 订阅、SSE 解析和符合条件时的重连；Fetch 更灵活，但这些事件流能力需要自己实现。** 原生 EventSource 不能自定义 POST 请求体或任意请求头。Fetch 可以配置方法、允许的头和取消信号，读取时要检查响应、解码、组装事件，并维护重试和游标。
+
+二者跨域都需要遵守 CORS。选择还要看接口能否采用“创建任务后 GET 订阅”的设计，而不是看到流式输出就断言必须改用某一种 API。
+
+</details>
+
+### 7.4 SSE 断线后怎样恢复，如何处理重复或乱序？ {#reconnect-and-order}
+
+**考察重点**：Last-Event-ID、业务游标、回放与异步处理顺序。
+
+**相关内容**：[自动重连与可靠恢复](#自动重连与可靠恢复)。
+
+<details>
+<summary>参考回答</summary>
+
+**EventSource 重连会携带已解析的 Last-Event-ID，但服务器必须实现历史回放，业务还要维护已成功应用的游标。** 浏览器 ID 不等待业务提交，回调失败也不回退，因此不能据此承诺消息恰好处理一次。恢复时按任务 ID 和序号去重、检查缺口，历史过期时用一致快照或明确重新开始。
+
+同一响应的字节有序，若页面表现乱序，应检查多个任务、多连接或异步处理竞争。重新订阅已有生成任务，避免自动重连重新创建任务；回放切换到实时推送时也要保证没有空隙。主动 `close()` 和服务端 `204` 可停止原生重连。
+
+</details>
+
+### 7.5 SSE 如何保活，服务端逐步发送但页面最后才显示时如何排查？ {#heartbeat-and-buffering}
+
+**考察重点**：注释心跳、空闲超时、代理缓冲和客户端读取方式。
+
+**相关内容**：[空闲保活与代理缓冲](#空闲保活与代理缓冲)。
+
+<details>
+<summary>参考回答</summary>
+
+**可以周期性发送注释心跳减少空闲超时，但要同时处理断线恢复。** 注释不会触发 message；需要前端可观察的心跳时另定义业务事件。
+
+延迟集中出现时，检查应用刷新、压缩、代理/CDN 缓冲及客户端是否等整个响应结束。Nginx 可按具体路由关闭 proxy_buffering；X-Accel-Buffering 是代理约定，不是 SSE 标准。no-cache 也不等于关闭输出缓冲。应验证每条事件在响应结束前实际到达。
+
+</details>
+
+### 7.6 SSE 聊天输出频繁更新导致页面卡顿，如何处理？ {#stream-rendering}
+
+**考察重点**：完整保留增量、合并渲染、结束刷新与资源释放。
+
+**相关内容**：[增量接收与批量渲染](#增量接收与批量渲染)、[原生事件订阅](#原生事件订阅)。
+
+<details>
+<summary>参考回答</summary>
+
+**接收时按顺序保存片段，渲染时按帧或时间窗口合并更新。** 不能只留下最后一次片段，任务结束时要把未渲染的尾部刷出。减少完整历史 Markdown 的重复解析，复用已完成内容；长列表再考虑虚拟化和节点数量限制。
+
+批量更新并不解决无限累积，应限制后台缓冲和历史内容大小。取消或卸载时关闭流并清理渲染任务；纯文本用文本节点，富文本另外处理安全策略。是否取消服务端生成任务需要单独的业务约定。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [WHATWG HTML：Server-Sent Events](https://html.spec.whatwg.org/multipage/server-sent-events.html)
+- [WHATWG Encoding：TextDecoder](https://encoding.spec.whatwg.org/#interface-textdecoder)
+- [Nginx：proxy_buffering](https://nginx.org/en/docs/http/ngx_http_proxy_module.html#proxy_buffering)

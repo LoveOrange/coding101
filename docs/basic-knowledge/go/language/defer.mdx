@@ -1,0 +1,507 @@
+---
+sidebar_position: 6
+knowledge:
+  id: basic-knowledge.go.language.defer
+  type: concept
+description: "解释 Go defer 的登记与执行、参数和接收者求值、具名返回值、资源释放、panic 边界及编译器实现。"
+keywords: ["Go defer", "延迟调用", "具名返回值", "资源释放", "open-coded defer"]
+---
+
+# defer
+
+**`defer`** 用于登记一个延迟调用，让它在当前函数返回前执行。文件关闭、锁释放和请求收尾可以紧跟在资源获取之后，不必分散到每一个返回分支。
+
+判断 `defer` 的行为，需要分清两件事：登记时保存了什么，执行时还能改变什么。函数值和实参会先求值，函数体则留到返回前运行；这既决定输出顺序，也影响返回结果和资源能否及时释放。本文以 Go 1.22 为基线。
+
+## 1. 面试核心 {#core}
+
+- 同一次函数调用登记的多个延迟调用，**按后登记先执行的顺序运行**。资源按依赖顺序获取后，可以反过来释放。[卡](#defer-order)
+- 执行到 `defer` 时，**函数值、实参以及方法接收者已经求值**。闭包体内读取的外层变量，则要等闭包执行时才读取；复制指针或切片不等于复制其引用的数据。[卡](#saved-call)
+- 正常返回时，**先计算返回表达式并设置结果，再执行延迟调用，最后把结果交给调用方**。延迟函数能修改具名结果，也可能通过共享引用改变返回对象的内容。[卡](#return-order)
+- `defer` 适合把资源获取与清理放在一起，**已经登记的清理可以覆盖提前返回和当前 goroutine 的 panic 展开路径**。它不会自动回滚业务操作，也不保证进程被直接终止时执行。[卡](#defer-purpose)
+- 延迟调用的作用域是当前函数，**离开循环体或普通代码块不会触发它**。逐项处理资源时，应让每一项拥有合适的函数边界，避免资源持续累积。[卡](#loop-resources)
+- 延迟函数的返回值会被丢弃，**需要报告关闭错误时必须显式处理**，并保留已经发生的业务错误。[卡](#cleanup-errors)
+- Go 1.22 官方编译器对部分函数使用 **open-coded defer，在函数出口生成相应调用代码**；其他情况可以使用运行时登记记录。不能把所有 `defer` 都理解成堆分配的链表节点。[卡](#defer-implementation)
+
+## 2. 登记与执行顺序 {#登记与执行顺序}
+
+执行 `defer` 语句时，程序登记的是一个调用。登记完成后，当前函数继续向下运行；正常返回或沿当前调用栈展开 panic 时，再执行已经登记的调用。
+
+```go
+package main
+
+import "fmt"
+
+func work() {
+    defer fmt.Println("first")
+    defer fmt.Println("second")
+    fmt.Println("body")
+}
+
+func main() { work() }
+```
+
+输出依次是 `body`、`second`、`first`。两个 `fmt.Println` 的执行顺序与登记顺序相反，这种顺序称为**后进先出**。
+
+反向执行适合处理有依赖的资源。例如，先打开文件，再创建依赖这个文件的缓冲写入器；收尾时要先刷新缓冲，再关闭文件。按照获取顺序登记清理，后进先出可以先处理较晚建立的依赖。不过，具体清理逻辑仍需要程序员写对；`defer` 不会判断哪一个资源依赖哪一个。
+
+只有实际执行到的语句才会登记调用。某个分支没有进入，或在到达 `defer` 前已经返回、发生 panic，就不会凭空执行那条清理。
+
+```go
+package main
+
+import "fmt"
+
+func work() {
+    if true {
+        defer fmt.Println("deferred")
+        fmt.Println("inside block")
+    }
+    fmt.Println("after block")
+}
+
+func main() { work() }
+```
+
+输出为 `inside block`、`after block`、`deferred`。普通代码块结束不是执行时机，当前函数 `work` 结束才是。
+
+`defer` 后面必须是函数或方法调用，不能直接写赋值语句，也不能只放一个没有调用的函数值。例如，`defer func() { ... }()` 末尾的 `()` 表示要登记这个闭包的调用。
+
+## 3. 函数值与实参求值 {#函数值与实参求值}
+
+登记时要先确定“稍后调用哪个函数、传入哪些值”。因此，函数表达式和实参中的计算会立即发生，只有目标函数体被推迟。
+
+### 3.1 返回函数的表达式 {#返回函数的表达式}
+
+```go
+package main
+
+import "fmt"
+
+func prepare() func(int) {
+    fmt.Println("prepare")
+    return func(value int) { fmt.Println("call", value) }
+}
+
+func argument() int {
+    fmt.Println("argument")
+    return 7
+}
+
+func work() {
+    defer prepare()(argument())
+    fmt.Println("body")
+}
+
+func main() { work() }
+```
+
+输出依次是 `prepare`、`argument`、`body`、`call 7`。`prepare()` 负责得到真正要延迟调用的函数值，所以它自己必须先执行；`argument()` 也要先算出实参。最后才推迟返回的匿名函数。
+
+登记后再修改保存函数的变量，也不会替换已经登记的函数值：
+
+```go
+package main
+
+import "fmt"
+
+func work() {
+    callback := func() { fmt.Println("old") }
+    defer callback()
+    callback = func() { fmt.Println("new") }
+    callback()
+}
+
+func main() { work() }
+```
+
+输出是 `new`、`old`。直接调用读取了 `callback` 的新值，延迟调用使用的是此前保存的旧值。
+
+闭包是另一种情况。`defer func() { callback() }()` 登记的是匿名函数，读取 `callback` 的操作位于匿名函数体内，要到执行时才发生。外层变量与显式传参的对照，见[Go 函数中的参数求值与延迟执行](./functions.mdx#参数求值与延迟执行)。
+
+### 3.2 方法接收者与共享数据 {#方法接收者与共享数据}
+
+方法接收者也参与登记时的求值。值接收者保存一份接收者值，指针接收者保存的是指针值；后者指向的对象仍可能变化。
+
+```go
+package main
+
+import "fmt"
+
+type Counter struct{ Value int }
+
+func (counter Counter) showValue() {
+    fmt.Println("value", counter.Value)
+}
+
+func (counter *Counter) showPointer() {
+    fmt.Println("pointer", counter.Value)
+}
+
+func work() {
+    counter := Counter{Value: 1}
+    defer counter.showValue()
+    defer counter.showPointer()
+    counter.Value = 2
+}
+
+func main() { work() }
+```
+
+输出是 `pointer 2`、`value 1`。`showValue` 保存了值为 1 的结构体副本；`showPointer` 保存了指向 `counter` 的指针，执行时读取到更新后的字段。方法调用中的自动取地址规则见[Go 结构体与方法集](./structs-method-sets.mdx#可寻址值的调用简写)。
+
+同样，提前保存切片值只固定了切片本身，不会复制底层数组。
+
+```go
+package main
+
+import "fmt"
+
+func work() {
+    values := []int{1, 2}
+    defer func(saved []int) {
+        fmt.Println(len(saved), saved[0])
+    }(values)
+
+    values[0] = 9
+    values = values[:1]
+}
+
+func main() { work() }
+```
+
+输出是 `2 9`。登记时保存的切片长度仍为 2，但它与 `values` 共享数组，因此能看到元素修改。需要独立快照时，要根据数据结构显式复制，不能依赖 `defer` 自动完成。
+
+### 3.3 nil 函数与求值失败 {#nil函数与求值失败}
+
+如果函数值本身为 nil，登记时不会仅因此 panic，真正执行延迟调用时才会 panic：
+
+```go
+package main
+
+import "fmt"
+
+func work() {
+    defer func() { fmt.Println("recovered", recover() != nil) }()
+    var callback func()
+    defer callback()
+    fmt.Println("registered")
+}
+
+func main() { work() }
+```
+
+输出是 `registered`、`recovered true`。较早登记的恢复函数最后运行，捕获了调用 nil 函数产生的 panic。
+
+但如果函数表达式、接收者或实参在求值时就失败，panic 会立即发生，那次目标调用尚未登记成功。例如实参需要访问一个越界的切片元素，程序不会等到函数返回时才发现越界。已经登记成功的其他延迟调用仍按正常的 panic 展开规则处理。
+
+## 4. 返回值与延迟调用 {#返回值与延迟调用}
+
+正常返回可以按下面的顺序理解：
+
+1. 计算 `return` 后面的表达式，把结果设置到函数的结果变量。
+2. 执行已经登记的延迟调用。
+3. 如果这些调用正常结束，把最终结果交给调用方。
+
+如果延迟调用产生未恢复的 panic、阻塞或直接退出进程，函数就不会按原计划正常返回。所以“执行了 `return`”不等于调用方已经拿到结果。
+
+### 4.1 普通局部变量与具名结果 {#普通局部变量与具名结果}
+
+**具名结果**是函数签名中有名字的结果变量。延迟闭包可以通过这个名字修改结果；修改另一个普通局部变量则不一定影响已设置的结果。
+
+```go
+package main
+
+import "fmt"
+
+func localValue() int {
+    value := 1
+    defer func() { value++ }()
+    return value
+}
+
+func namedValue() (result int) {
+    defer func() { result++ }()
+    return 1
+}
+
+func parameterCopy() (result int) {
+    defer func(saved int) { saved++ }(result)
+    return 1
+}
+
+func main() {
+    fmt.Println(localValue(), namedValue(), parameterCopy()) // 1 2 1
+}
+```
+
+`localValue` 在延迟调用前，已经把 `value` 的值 1 复制给结果；后续增加局部变量不改变这个结果。`namedValue` 先把结果设为 1，再通过闭包把同一个结果变量增加到 2。
+
+`parameterCopy` 登记时把 `result` 的零值复制给 `saved`，延迟函数只修改自己的参数。因此它既没有读到 `return 1` 后的结果，也没有修改结果变量。
+
+使用具名结果时仍然可以显式写 `return 1`，并不要求使用裸 `return`。关键在于延迟函数访问的是不是实际的结果变量。
+
+### 4.2 返回对象的共享内容 {#返回对象的共享内容}
+
+未命名的返回值，也可能包含指针、切片等共享引用。延迟函数如果通过共享引用修改数据，调用方可以观察到修改。
+
+```go
+package main
+
+import "fmt"
+
+func values() []int {
+    result := []int{1}
+    defer func() { result[0] = 9 }()
+    return result
+}
+
+func main() { fmt.Println(values()) } // [9]
+```
+
+`return` 设置的是切片值，底层数组仍被共享。延迟函数没有替换返回的切片，却修改了数组元素。因此，不能把“只有具名返回值才能被 defer 影响”当作通用结论。
+
+## 5. 资源生命周期与清理错误 {#资源生命周期与清理错误}
+
+资源获取成功后，尽早登记清理，可以让清理责任和资源的使用范围保持在一起。这里仍要判断三个条件：资源是否真的获取成功、应在什么时候释放、释放失败怎样处理。
+
+### 5.1 文件读取与关闭错误 {#文件读取与关闭错误}
+
+下面的 `readOne` 在文件打开成功后登记关闭，并同时保留读取错误和关闭错误：
+
+```go
+package main
+
+import (
+    "errors"
+    "io"
+    "os"
+)
+
+func readOne(path string) (data []byte, err error) {
+    file, err := os.Open(path)
+    if err != nil {
+        return nil, err
+    }
+    defer func() {
+        err = errors.Join(err, file.Close())
+    }()
+    return io.ReadAll(file)
+}
+```
+
+这段示例定义了 `readOne`，调用方传入文件路径。`io.ReadAll` 的结果先设置给 `data`、`err`，随后延迟函数关闭文件，并通过具名结果 `err` 返回最终错误。读取和关闭都成功时，`errors.Join(nil, nil)` 返回 nil；两个操作都失败时，可以保留两个原因。错误树的检查方式见[Go 错误处理中的多个错误与错误树](./errors.mdx#多个错误与错误树)。
+
+不能简单地在延迟函数里写 `err = file.Close()`：如果读取失败但关闭成功，原来的读取错误会被 nil 覆盖。也不能把 `defer file.Close()` 理解成“自动返回关闭错误”，因为延迟调用自身的返回值会被丢弃。
+
+先检查 `os.Open` 的错误，再登记关闭，也避免为没有成功获取的文件建立错误的清理流程。对于写入文件、缓冲刷新等操作，关闭或刷新失败尤其可能影响业务是否成功，应由接口明确返回或处理。
+
+### 5.2 循环中的资源释放 {#循环中的资源释放}
+
+在同一个函数的循环里反复打开文件并 `defer file.Close()`，关闭操作会累积到整个函数返回时执行。每次迭代结束并不会关闭文件，文件较多时可能占用过多描述符。
+
+可以让循环逐次调用前面的 `readOne`，每次调用拥有自己的资源边界：
+
+```go
+func readAll(paths []string) ([][]byte, error) {
+    var results [][]byte
+    for _, path := range paths {
+        data, err := readOne(path)
+        if err != nil {
+            return nil, err
+        }
+        results = append(results, data)
+    }
+    return results, nil
+}
+```
+
+每次 `readOne` 返回前都已尝试关闭文件，下一次迭代无需等待整个 `readAll` 结束。这个写法限制的是同时打开的文件数；返回的所有文件内容仍保存在内存中，并不适合不加限制地读取任意大文件集。
+
+同样的规则也适用于锁。在循环中加锁后登记 `Unlock`，如果下一轮又尝试获取同一把不可重入锁，可能在延迟解锁执行前就阻塞。应按真正的临界区决定函数边界，或在每轮结束时明确解锁。
+
+### 5.3 计时与异步收尾 {#计时与异步收尾}
+
+记录耗时时，要把“计算耗时”的操作留到延迟函数体中。`defer record(time.Since(start))` 会在登记时就计算耗时；`defer func() { record(time.Since(start)) }()` 才会在收尾时计算。
+
+延迟调用本身在当前 goroutine 中同步执行。它会延迟函数返回，不会自动成为后台任务。延迟函数内部如果再启动 goroutine，`defer` 只负责执行启动动作，不会自动等待新任务完成；需要等待时应另设同步机制。
+
+## 6. panic 与退出边界 {#panic与退出边界}
+
+`defer` 能参与当前 goroutine 的栈展开，但不是所有进程退出方式的统一钩子。
+
+| 执行路径 | 延迟调用的行为 |
+| --- | --- |
+| 当前函数正常返回或执行到函数体末尾 | 执行当前函数已登记的延迟调用 |
+| 当前 goroutine 发生 panic | 沿正在退出的调用栈执行已登记的延迟调用，直到恢复或程序终止 |
+| 调用 `runtime.Goexit` | 执行该 goroutine 的延迟调用后结束该 goroutine；它不是 panic，`recover` 无法取消这次退出 |
+| 调用 `os.Exit`，或由 `log.Fatal` 最终调用它 | 直接终止进程，不执行通常的延迟清理 |
+| `main` 函数正常返回 | 执行 `main` 自己的延迟调用，然后程序结束；不会等待其他 goroutine 的延迟调用 |
+| 进程被强制杀死，或遇到运行时致命错误 | 不能依赖延迟调用完成清理 |
+
+如果某个延迟函数恢复了 panic，比它更早登记、还没有执行的延迟调用仍会运行。恢复后，建立恢复边界的函数返回，不会回到原来的 panic 行继续执行。具体规则和 goroutine 边界见[Go 错误处理](./errors.mdx#panic与recover)。
+
+清理函数自己也可能产生 panic。这会改变正在进行的返回或异常传播，因此重要资源的清理应保持职责清楚，并处理可预期的失败。事务回滚、撤销外部操作等业务行为也必须显式实现，不能因为有 `defer` 就认为已经完成。
+
+## 7. 编译器与运行时实现 {#编译器与运行时实现}
+
+语言规则规定执行时机和可观察结果，并不要求所有延迟调用采用同一种内部结构。Go 1.22 官方实现主要有两条处理路径。
+
+| 路径 | 登记和退出时做什么 | 理解边界 |
+| --- | --- | --- |
+| 运行时记录 | 登记延迟调用的记录，按需要组织到当前 goroutine 的延迟调用链；退出时处理相应记录 | 记录可以由编译器放在栈上，也可能通过运行时分配；不能一概称为堆分配 |
+| open-coded defer | 编译器保存调用信息和是否已登记的标记，在函数出口生成执行相应调用的代码；panic 展开也有配套元数据 | 是否采用取决于函数形态、编译选项和实现限制，不是只要有 defer 就适用 |
+
+循环内可能动态登记多次延迟调用，这类情况通常需要运行时记录，不能简单地把每个源码位置看成只执行一次的固定槽位。反过来，一个没有循环的简单函数，也不代表所有编译配置下一定采用 open-coded defer。
+
+在 Go 1.22 官方工具链下，可以用编译诊断查看自己的包：
+
+```sh
+go build -gcflags='-d=defer' ./...
+```
+
+诊断中的 `open-coded defer`、`stack-allocated defer`、`heap-allocated defer` 可以帮助解释具体编译结果。这是实现诊断，不是跨版本稳定的业务接口，也不直接给出实际耗时。
+
+分析性能时还要看延迟调用本身做了多少工作、是否长期持有资源，以及是否改变对象的逃逸。不能仅凭使用 `defer` 就断言某段代码慢，也不能因存在编译优化就把开销说成永远为零。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 多个 defer 按什么顺序执行，后进先出有什么作用？ {#defer-order}
+
+**考察重点**：登记顺序、执行顺序和资源依赖。
+
+**相关内容**：[登记与执行顺序](#登记与执行顺序)。
+
+<details>
+<summary>参考回答</summary>
+
+**同一次函数调用中，后登记的延迟调用先执行。** 只计算实际执行到并成功登记的调用，不按源码中出现的所有 `defer` 排序。
+
+后进先出适合逆序释放相互依赖的资源。例如先打开文件、再建立缓冲写入器，退出时先刷新缓冲、再关闭文件。程序仍需正确安排清理动作，并检查刷新或关闭错误。
+
+</details>
+
+### 8.2 defer 和 return 谁先执行？具名返回值会受到什么影响？ {#return-order}
+
+**考察重点**：返回表达式、结果变量和实际返回的顺序。
+
+**相关内容**：[返回值与延迟调用](#返回值与延迟调用)。
+
+<details>
+<summary>参考回答</summary>
+
+**正常路径先计算返回表达式并设置结果，再执行延迟调用，最后返回给调用方。** 不能把整个 `return` 当成一个已经完成的动作，再笼统地说 defer 在它之前或之后。
+
+延迟闭包访问具名结果时，可以在交给调用方前修改它。修改另一个普通局部变量不一定影响已经复制的结果；但返回值包含共享引用时，延迟函数对对象内容的修改仍可能被调用方观察到。
+
+如果延迟调用发生未恢复的 panic，原来的正常返回会被中断。
+
+</details>
+
+### 8.3 修改函数变量或方法接收者后，已登记的 defer 会使用哪个值？ {#saved-call}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：函数值保存、接收者复制和共享引用。
+
+**相关内容**：[返回函数的表达式](#返回函数的表达式)、[方法接收者与共享数据](#方法接收者与共享数据)。
+
+<details>
+<summary>参考回答</summary>
+
+**直接登记的调用使用登记时保存的函数值和接收者值。** 后来给函数变量重新赋值，不会替换已保存的函数；如果登记的是闭包、由闭包稍后读取变量，则要按执行时的变量值判断。
+
+值接收者保存一份值，指针接收者保存指针。后者指向的对象可以变化，所以执行时仍能看到字段修改。切片和含有引用字段的结构体也要按实际复制深度分析，不能一概称为完整快照。
+
+</details>
+
+### 8.4 defer 有哪些用途，为什么不把清理代码全部写在函数末尾？ {#defer-purpose}
+
+**考察重点**：资源责任、提前返回和异常路径。
+
+**相关内容**：[资源生命周期与清理错误](#资源生命周期与清理错误)、[panic 与退出边界](#panic与退出边界)。
+
+<details>
+<summary>参考回答</summary>
+
+**`defer` 适合文件关闭、解锁和其他函数级收尾，让清理紧跟资源获取。** 它能覆盖登记之后的提前返回，以及当前 goroutine 的 panic 展开路径；单纯放在函数末尾的普通语句可能被这些路径跳过。
+
+使用前仍要检查资源获取是否成功，清理时间是否合适，以及清理错误是否需要返回。它不会自动处理业务回滚，也不能保证在 `os.Exit` 或进程被强制终止时执行。
+
+</details>
+
+### 8.5 为什么循环里 defer Close 可能耗尽文件描述符？怎样调整？ {#loop-resources}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：函数作用域、资源持有时间和迭代边界。
+
+**相关内容**：[循环中的资源释放](#循环中的资源释放)。
+
+<details>
+<summary>参考回答</summary>
+
+**延迟调用等到整个函数返回才执行，不会在每轮循环结束时执行。** 因而循环可能先打开大量文件，最后才统一关闭。
+
+可以把单个文件的处理提取成函数，在其中获取资源并登记关闭；每次调用结束就完成这一项的清理。也可以在每轮中显式关闭，但必须覆盖各个失败分支并处理关闭错误。只增加一层普通 `{}` 代码块不能缩短 defer 的作用域。
+
+</details>
+
+### 8.6 defer file.Close() 会自动返回关闭错误吗？ {#cleanup-errors}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：延迟调用的返回值、具名结果和错误保留。
+
+**相关内容**：[文件读取与关闭错误](#文件读取与关闭错误)。
+
+<details>
+<summary>参考回答</summary>
+
+**不会，延迟调用自己的返回值会被丢弃。** 需要把关闭失败报告给调用方时，可以在延迟闭包里更新具名错误结果，或者在合适的位置显式关闭并检查结果。
+
+更新错误结果时要保留已经发生的业务错误。例如用 `errors.Join(err, file.Close())` 合并两次操作的错误；直接把 `file.Close()` 赋给 `err`，可能用一次成功关闭返回的 nil 覆盖原错误。
+
+</details>
+
+### 8.7 defer 是否保证程序退出前一定执行？ {#exit-boundaries}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：函数退出、goroutine 退出与进程退出的区别。
+
+**相关内容**：[panic 与退出边界](#panic与退出边界)。
+
+<details>
+<summary>参考回答</summary>
+
+**不保证。** 正常函数返回和当前 goroutine 的 panic 展开会执行相应的延迟调用，但 `os.Exit` 直接终止进程；强制杀进程和运行时致命错误也不能依赖延迟清理。
+
+`main` 返回只完成它自身的延迟调用，不会等待其他 goroutine 收尾。`runtime.Goexit` 则会执行当前 goroutine 的延迟调用后结束它；因为这不是 panic，`recover` 不能阻止退出。
+
+</details>
+
+### 8.8 Go 的 defer 底层怎样实现？ {#defer-implementation}
+
+**考察重点**：语言语义与编译器实现、登记记录和编译优化。
+
+**相关内容**：[编译器与运行时实现](#编译器与运行时实现)。
+
+<details>
+<summary>参考回答</summary>
+
+**Go 1.22 官方实现既可以使用运行时登记记录，也可以对符合条件的函数使用 open-coded defer。** 运行时记录还可能放在栈上，不能把每次登记都等同于一次堆分配。
+
+open-coded defer 由编译器保存调用信息和登记标记，并在出口生成相应调用；panic 展开也有配套元数据。循环、函数形态和编译配置会影响选择。判断具体代码应固定工具链并检查编译结果，不能用某一条实现路径替代语言规则。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+
+- [Go 1.22.12 语言规范：Defer statements 与 Return statements](https://github.com/golang/go/blob/go1.22.12/doc/go_spec.html#L7162)
+- [Effective Go：Defer](https://go.dev/doc/effective_go#defer)
+- [Go 1.22.12 runtime/panic.go：延迟调用、panic 与 Goexit 实现](https://github.com/golang/go/blob/go1.22.12/src/runtime/panic.go)
+- [Go 1.22.12 编译器：defer 语句处理](https://github.com/golang/go/blob/go1.22.12/src/cmd/compile/internal/walk/stmt.go)
+- [Go 1.22.12 编译器：open-coded defer 与调用生成](https://github.com/golang/go/blob/go1.22.12/src/cmd/compile/internal/ssagen/ssa.go)
+- [Go 1.22.12 errors.Join](https://pkg.go.dev/errors@go1.22.12#Join)
+- [Go 1.22.12 os.Exit](https://pkg.go.dev/os@go1.22.12#Exit)

@@ -1,0 +1,308 @@
+---
+knowledge:
+  id: mobile.android.retrofit
+  type: concept
+description: "解释 Retrofit 的接口声明、运行时动态代理、注解解析、Converter、CallAdapter、协程调用、错误和取消。"
+keywords: [Retrofit, 动态代理, 注解, Converter, CallAdapter, OkHttp, suspend]
+---
+
+# Retrofit
+
+**Retrofit** 把 HTTP API 描述为 Java 或 Kotlin 接口，再把接口调用转换成请求和结果。它负责解释接口声明、转换数据与适配调用形式，实际网络交换通常交给 OkHttp。理解 Retrofit，重点是解释“一个没有手写实现类的接口，为什么能够发出请求”。
+
+本文以 Retrofit 2.9.0 为例。网络连接、缓存和传输恢复的机制见 [OkHttp](./okhttp.mdx)，这里聚焦接口调用这一层。
+
+## 1. 面试核心 {#core}
+
+- Retrofit 把接口、请求参数和结果类型组织成调用协议，**它通常委托 OkHttp 执行网络操作，不负责替代连接池与传输实现**。[卡](#role)
+- `create()` 通过 JDK 动态代理返回接口实现，**方法注解与参数主要在运行时解析，并缓存相应方法描述**。[卡](#proxy)
+- URL 和参数注解影响实际请求，**base URL 的路径、相对路径与前导斜杠必须按 URL 解析规则理解**。[卡](#request)
+- Converter 处理请求体与响应内容，CallAdapter 处理调用的暴露形式，**数据转换和调用适配是两种责任**。[卡](#adapters)
+- `Call.enqueue()` 的回调执行器与协程恢复上下文不是一回事，**suspend 调用的取消可以传到 Call，但不能撤销已发生的服务端操作**。[卡](#threads)
+- 网络失败、HTTP 失败、转换失败和空响应不同，**返回 `Response<T>` 与直接返回 `T` 的错误处理方式也不同**。[卡](#errors)
+- 原始 ResponseBody 有明确的消费和关闭责任，**`@Streaming` 避免默认完整缓冲，不会自动完成文件保存或资源管理**。[卡](#streaming)
+
+## 2. 接口与网络客户端的分工 {#接口与网络客户端的分工}
+
+下面使用返回纯文本的接口，避免把 JSON 序列化细节混入调用机制。`ScalarsConverterFactory` 负责把响应转换成字符串；实际项目使用 JSON 时，再选择匹配的数据转换器。
+
+```kotlin
+import okhttp3.HttpUrl
+import okhttp3.OkHttpClient
+import retrofit2.Call
+import retrofit2.Response
+import retrofit2.Retrofit
+import retrofit2.converter.scalars.ScalarsConverterFactory
+import retrofit2.http.GET
+import retrofit2.http.Query
+
+interface GreetingApi {
+    @GET("greeting")
+    fun greeting(@Query("name") name: String): Call<String>
+
+    @GET("greeting")
+    suspend fun greetingBody(@Query("name") name: String): String
+
+    @GET("greeting")
+    suspend fun greetingResponse(@Query("name") name: String): Response<String>
+}
+
+fun createGreetingApi(client: OkHttpClient, baseUrl: HttpUrl): GreetingApi =
+    Retrofit.Builder()
+        .baseUrl(baseUrl)
+        .client(client)
+        .addConverterFactory(ScalarsConverterFactory.create())
+        .build()
+        .create(GreetingApi::class.java)
+```
+
+传入的 `baseUrl` 应以 `/` 结束。若它是 `https://example.com/api/`，`greeting("Lin")` 对应的请求地址就是 `https://example.com/api/greeting?name=Lin`。
+
+调用返回 `Call<String>` 的 `greeting()` 时，得到的是可执行调用，尚不表示网络请求已经开始。随后调用 `execute()` 同步执行，或调用 `enqueue()` 异步执行。`greetingBody()` 和 `greetingResponse()` 则通过 Retrofit 的协程支持启动异步调用并挂起等待结果。
+
+| 对象 | 主要责任 |
+| --- | --- |
+| 接口注解与方法类型 | 描述 HTTP 方法、路径、参数和结果形式 |
+| Retrofit | 解析声明、生成请求描述、选择转换器和调用适配器 |
+| OkHttp | 调度和执行 HTTP 调用，管理连接、缓存与传输 |
+| Repository | 定义业务错误、缓存来源、重试与数据组合 |
+
+这层声明减少了手动拼接请求和重复转换代码，但接口是否正确仍要验证。注解写错、URL 合成错误、Converter 不匹配或服务端返回不符合约定的内容，都可能在运行时失败。
+
+## 3. 动态代理与方法解析 {#动态代理与方法解析}
+
+### 3.1 create 返回什么 {#create返回什么}
+
+`Retrofit.create(GreetingApi::class.java)` 使用 `Proxy.newProxyInstance()` 创建实现该接口的代理对象，并安装 `InvocationHandler`。调用接口方法时，代理把反射得到的 `Method` 和实参数组交给处理器。
+
+Retrofit 2.9.0 会校验声明是否是支持的接口，再针对普通 API 方法取得 `ServiceMethod`。`Object` 的方法和接口默认方法有另外的处理路径，不能简单说“代理对象的所有方法都会发送 HTTP 请求”。
+
+这属于运行时动态代理。Retrofit 核心不依赖 APT 在编译期为每个 API 接口生成一个普通实现类；给方法加注解，也不代表这些注解必然在编译期执行。相关语言机制见 [Java 反射](../../basic-knowledge/java/language/reflection-method-handles.mdx)、[Java 注解](../../basic-knowledge/java/language/annotations-retention-processing.mdx) 和 [JDK 动态代理与 CGLIB](../../basic-knowledge/java/spring/jdk-proxy-cglib.mdx)。
+
+### 3.2 方法描述与实际参数 {#方法描述与实际参数}
+
+**ServiceMethod** 是 Retrofit 为接口方法解析出的调用描述。它包含生成请求所需的规则，以及结果转换和调用适配所需的信息。
+
+解析过程中，`RequestFactory` 读取 `@GET`、`@POST`、`@Path`、`@Query`、`@Body` 等注解，建立参数处理方式；`HttpServiceMethod` 根据返回类型和注解选择 Converter 与 CallAdapter。调用时再把当前实参应用到这些规则，创建本次请求。
+
+同一个接口方法的注解不会因为参数从 `"Lin"` 换成 `"Lee"` 就改变，因此 Retrofit 会按 Method 缓存解析结果。缓存的是方法描述，不是所有参数组合的 HTTP 响应，也不是只能执行一次的 Call 对象。
+
+默认情况下，方法通常在首次调用时解析，因此一些接口错误要到调用时才暴露。`validateEagerly(true)` 可以把支持范围内的方法验证提前到创建接口时，但不会发真实请求，也不能证明服务器一定按约定返回。测试仍需覆盖请求和响应。
+
+## 4. URL 与参数生成 {#url与参数生成}
+
+Retrofit 按注解和实参构造请求，并使用 URL 规则解析路径。几个看起来相似的写法，结果可能不同：
+
+| base URL 与方法路径 | 实际路径 |
+| --- | --- |
+| `https://example.com/api/` + `@GET("users")` | `/api/users` |
+| `https://example.com/api/` + `@GET("/users")` | `/users` |
+| 动态完整 `@Url` | 按传入完整 URL 解析，可能改变主机 |
+
+前导 `/` 是从主机根路径开始，不是“给相对路径加一个好看的斜杠”。完整动态 URL 也可能改变请求目的地，若请求携带公共鉴权头，需要明确限制允许的来源，避免把凭据发送给任意输入地址。
+
+`@Path` 替换路径占位，`@Query` 添加查询参数，`@Header` 添加请求头，`@Body` 交给请求体 Converter。表单字段和 multipart 部件还有各自的注解与编码规则，不能把它们都当成等价的字符串拼接。
+
+通常把原始参数交给 Retrofit 编码即可。提前手工编码，再使用默认编码行为，可能造成重复编码；使用 `encoded = true` 则表示调用者承担相应编码正确性，不能靠它跳过输入边界判断。
+
+参数为 `null` 时的行为由注解决定。例如查询参数可以被省略，路径占位则不能直接用 `null`。同样，复杂返回类型需要保留足够的泛型信息，让 Converter 知道应转换成什么；并不是只取得原始 `List` 类就能知道元素类型，参见 [Java 泛型](../../basic-knowledge/java/language/generics.mdx)。
+
+## 5. Converter 与 CallAdapter {#converter与calladapter}
+
+**Converter** 负责数据表示之间的转换。例如把 `@Body` 对象编码成 RequestBody，或把 ResponseBody 的 JSON 转成业务对象。本文的 Scalars Converter 把响应体转换成字符串。
+
+**CallAdapter** 负责把 Retrofit 内部调用暴露为接口声明需要的调用形式。例如默认 `Call<T>`，或者通过额外适配器暴露成 RxJava 类型。它还会提供响应内容的目标类型，供 Retrofit 选择对应 Converter。
+
+| 问题 | 主要由谁负责 |
+| --- | --- |
+| 响应字节怎样变成 `User` | Converter |
+| API 返回 `Call<User>` 还是另一种调用形式 | CallAdapter 或 Retrofit 对该形式的专门支持 |
+| JSON 字段缺失怎样解释 | 具体转换器、数据模型与业务规则 |
+| socket、TLS 与 HTTP 交换怎样执行 | OkHttp |
+
+Retrofit 2.9.0 对 Kotlin `suspend` 方法有专门解析和等待桥接：识别方法末尾的 Continuation，区分返回响应体还是 `Response<T>`，再基于 Call 执行异步等待。不能把“加上一个 JSON Converter”解释成自动获得协程支持，也不需要把原生 suspend 声明写成 `suspend fun ...: Call<T>`。
+
+配置多个 Factory 时，顺序可能影响选择。一个过于宽泛的自定义 Factory 抢先接受所有类型，会遮住后续适配器；应让自己不负责的类型返回不支持，并在确有委托需求时使用相应查找机制。自定义 Converter 还必须正确处理响应体的消费与关闭。
+
+## 6. 执行线程、错误与取消 {#执行线程错误与取消}
+
+### 6.1 Call 回调与协程上下文 {#call回调与协程上下文}
+
+`Call.execute()` 在调用线程执行网络与转换，不能直接放在 Android 主线程。异步调用则先由底层 OkHttp 执行，转换结果，再按配置的回调机制通知调用者。
+
+Retrofit 2.9.0 在 Android 上使用默认 CallAdapter 时，默认 callback executor 会把 `Call.enqueue()` 的回调投递到主线程；JVM 默认行为及自定义执行器可以不同。这个结论不能照搬成“所有 Retrofit 工作都在主线程”，响应读取与转换并不因此全部搬到 UI 线程。
+
+`suspend` 调用使用可取消挂起桥接，并跳过普通 Call 回调执行器包装。协程恢复后继续在哪执行，由调用方协程上下文决定。原生 Retrofit 挂起请求不需要为了避免网络阻塞主线程而再包一层 `withContext(IO)`，但调用前后的同步计算或其他阻塞工作仍应合理调度。
+
+### 6.2 四类失败与返回形式 {#四类失败与返回形式}
+
+| 情况 | `Call<T>` | `suspend` 直接返回 `T` | `suspend` 返回 `Response<T>` |
+| --- | --- | --- | --- |
+| 连接或读写失败 | 同步抛异常；异步进入 `onFailure` | 抛相应异常 | 抛相应异常 |
+| HTTP 非 2xx | 返回响应；异步进入 `onResponse` | 抛 `HttpException` | 返回非成功 Response，由调用者检查 |
+| 成功状态但转换失败 | 同步抛异常；异步进入 `onFailure` | 抛转换异常 | 仍可能抛转换异常，不是都包装成 Response |
+| 204、205 无内容 | 成功 Response，`body()` 为 `null` | 非空响应体声明会出现空值问题 | 得到成功 Response，调用者处理空 body |
+
+`Response<T>` 中的 `T` 描述成功响应内容，不代表错误响应体也会被自动转换成同一个类型。需要解释错误 JSON 时，应从 `errorBody()` 按独立协议处理。
+
+对可能无内容的接口，不应仅因为 HTTP 状态成功就强行使用非空业务对象。在 2.9.0 的原生 suspend 解析中，也不能只把声明从 `T` 改成 `T?`，就假定已经获得完整的可空返回识别；明确使用 `Response<T>` 并处理空 body，能够直接表达这类响应边界。
+
+业务错误也未必等于 HTTP 失败。HTTP 200 中可能包含业务错误码，是否把它转换成领域错误，应由接口协议与业务层决定，而不是让所有 Converter 把任何非预期字段都当成“没有网络”。
+
+### 6.3 取消与重复执行 {#取消与重复执行}
+
+取消 Retrofit Call 会传递到实际 OkHttp Call；原生 suspend 调用的协程取消也会触发 Call 取消。业务层应让 `CancellationException` 正常传播，避免用捕获所有异常的逻辑把已经离开的页面请求又重试起来。
+
+取消不能撤销已到达服务端的修改。重复执行仍需要考虑幂等、请求体重放和结果是否过期。一个 Retrofit Call 只能执行一次，重试需要新调用或 clone；调用形式不同也不改变业务约束。
+
+## 7. 原始响应体与测试 {#原始响应体与测试}
+
+### 7.1 Streaming 与关闭责任 {#streaming与关闭责任}
+
+直接返回 ResponseBody 时，Retrofit 2.9.0 的内置转换器默认会完整缓冲成功响应体。大文件需要 `@Streaming`，让调用者按流消费：
+
+```kotlin
+import okhttp3.ResponseBody
+import retrofit2.Call
+import retrofit2.http.GET
+import retrofit2.http.Streaming
+import retrofit2.http.Url
+
+interface DownloadApi {
+    @Streaming
+    @GET
+    fun download(@Url url: String): Call<ResponseBody>
+}
+```
+
+这段接口只声明获取流。调用者仍应限制目标 URL，在后台读取并写入文件，正确关闭响应体和输出流，并处理取消、磁盘失败与临时文件。`@Streaming` 不会自动完成下载，也不会把任意读取代码自动切到后台线程。
+
+返回已经转换好的字符串或普通对象时，响应体通常由转换器消费；返回原始流时，关闭责任交给使用者。自定义 Converter 应明确自己的所有权，不能既关闭流，又把已经关闭的流作为结果交出去。
+
+### 7.2 验证请求和结果 {#验证请求和结果}
+
+接口声明测试应检查真实生成的请求，包括路径、查询编码、方法、头和请求体，而不是只验证“调用了某个 Repository 方法”。MockWebServer 可以提供本地 HTTP 响应，并记录收到的请求。
+
+一组有用的边界测试包括：
+
+1. base URL 带路径时，相对路径与根路径是否得到预期结果。
+2. 空格、中文和特殊字符是否只经过所需的一次编码，`null` 参数是否按约定处理。
+3. 2xx 正常内容、非 2xx 错误体、204 空体和无法解析内容分别进入哪个结果分支。
+4. 延迟响应时，取消是否传给底层 Call，页面是否忽略过期结果。
+5. 自定义 Converter、CallAdapter 和 callback executor 是否在预期位置生效。
+
+本地 HTTP 测试能验证声明与转换链路，但不能证明 Android 主线程回调、TLS、弱网或后台限制都符合预期。需要这些行为时，应增加对应环境下的验证。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 Retrofit 有什么作用和优点，怎样与 OkHttp 配合？ {#role}
+
+**考察重点**：声明式 API、数据转换、调用适配和实际传输的责任。
+
+**相关内容**：[接口与网络客户端的分工](#接口与网络客户端的分工)。
+
+<details>
+<summary>参考回答</summary>
+
+**Retrofit 把 HTTP 接口声明为带注解的方法，减少请求构造和结果转换的重复代码，并通常委托 OkHttp 执行实际网络交换。** 它解析方法、应用参数、选择 Converter 和调用适配方式；连接池、缓存和传输主要由 OkHttp 负责。声明更集中不代表请求或业务协议自动正确，仍需验证路径、编码、错误和响应内容。
+
+</details>
+
+### 8.2 Retrofit 怎样通过动态代理实现接口调用？ {#proxy}
+
+**考察重点**：运行时代理、反射 Method、注解解析与方法缓存。
+
+**相关内容**：[动态代理与方法解析](#动态代理与方法解析)。
+
+<details>
+<summary>参考回答</summary>
+
+**`create()` 用 JDK Proxy 创建接口代理，方法调用进入 InvocationHandler，再取得并执行解析后的 ServiceMethod。** 方法描述包含请求生成、转换与调用适配规则，调用时应用本次实参；解析结果按 Method 缓存。它是运行时机制，不是 Retrofit 核心通过 APT 为每个接口生成普通实现类。缓存的也不是 HTTP 响应或同一个 Call。
+
+</details>
+
+### 8.3 base URL 带有 /api/ 时，@GET("users") 与 @GET("/users") 有什么区别？ {#request}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：URL 解析、编码和动态目的地边界。
+
+**相关内容**：[URL 与参数生成](#url与参数生成)。
+
+<details>
+<summary>参考回答</summary>
+
+**相对路径保留 `/api/`，以 `/` 开头的路径从主机根目录开始。** 对应结果分别是 `/api/users` 和 `/users`。完整动态 URL 还可能改变主机，因此需要检查允许的来源。参数通常交给 Retrofit 编码，提前手工编码可能被再次编码，不能只看注解字符串判断最终请求。
+
+</details>
+
+### 8.4 Converter 与 CallAdapter 分别负责什么？ {#adapters}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：数据表示与调用形式的分离。
+
+**相关内容**：[Converter 与 CallAdapter](#converter与calladapter)。
+
+<details>
+<summary>参考回答</summary>
+
+**Converter 转换请求体或响应内容，CallAdapter 适配调用的暴露形式并提供响应类型。** JSON 到 User 属于转换，Call 到其他异步形式属于调用适配。2.9.0 的原生 suspend 还有专门解析和可取消等待桥接，不能把协程支持归因于 JSON Converter。多个 Factory 的匹配范围和顺序也会影响最终选择。
+
+</details>
+
+### 8.5 Retrofit 回调一定在主线程吗？协程取消后会发生什么？ {#threads}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：平台默认值、回调执行器、协程上下文与取消边界。
+
+**相关内容**：[Call 回调与协程上下文](#call回调与协程上下文)、[取消与重复执行](#取消与重复执行)。
+
+<details>
+<summary>参考回答</summary>
+
+**要看平台、调用形式与配置。** 2.9.0 Android 默认 CallAdapter 的 `enqueue()` 回调通过主线程执行器投递，但 JVM、自定义执行器和原生 suspend 不应套用同一个结论。挂起调用恢复后遵循协程上下文，取消会传到底层 Call；这只能停止本地工作，不能保证服务端没有执行修改。
+
+</details>
+
+### 8.6 HTTP 404、解析失败和 204，在不同 Retrofit 返回形式下怎样处理？ {#errors}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：HTTP 响应、转换异常、空体和返回类型的关系。
+
+**相关内容**：[四类失败与返回形式](#四类失败与返回形式)。
+
+<details>
+<summary>参考回答</summary>
+
+**404 是 HTTP 响应，解析失败是转换阶段异常，204 是成功但没有内容。** Call 异步请求的 404 进入 `onResponse`；suspend 直接返回 T 时非 2xx 抛 HttpException，返回 Response 时由调用者检查状态。转换失败仍可能抛异常，即使声明返回 Response。204 的 body 为 null，不能强行套用非空业务对象；错误体也不会自动按成功类型转换。
+
+</details>
+
+### 8.7 Retrofit 的 @Streaming 是否自动完成流式文件下载？ {#streaming}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：缓冲策略、线程与资源所有权。
+
+**相关内容**：[Streaming 与关闭责任](#streaming与关闭责任)。
+
+<details>
+<summary>参考回答</summary>
+
+**不会。它让原始响应体避免默认完整缓冲，实际读取、保存与关闭仍由调用者负责。** 下载应在合适线程执行，处理取消、磁盘失败和临时文件，并释放响应体与输出流。自定义转换器也要明确谁消费和关闭内容，不能把已经关闭的流返回给下游。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+
+- [Retrofit 2.9.0 发布源码包](https://repo.maven.apache.org/maven2/com/squareup/retrofit2/retrofit/2.9.0/retrofit-2.9.0-sources.jar)
+- [Retrofit 2.9.0：代理创建与 ServiceMethod 缓存](https://github.com/square/retrofit/blob/2.9.0/retrofit/src/main/java/retrofit2/Retrofit.java)
+- [Retrofit 2.9.0 RequestFactory](https://github.com/square/retrofit/blob/2.9.0/retrofit/src/main/java/retrofit2/RequestFactory.java)
+- [Retrofit 2.9.0 HttpServiceMethod](https://github.com/square/retrofit/blob/2.9.0/retrofit/src/main/java/retrofit2/HttpServiceMethod.java)
+- [Retrofit 2.9.0 OkHttpCall：响应解析与取消](https://github.com/square/retrofit/blob/2.9.0/retrofit/src/main/java/retrofit2/OkHttpCall.java)
+- [Retrofit 2.9.0 KotlinExtensions：可取消挂起](https://github.com/square/retrofit/blob/2.9.0/retrofit/src/main/java/retrofit2/KotlinExtensions.kt)
+- [Retrofit 2.9.0 Platform：平台回调执行器](https://github.com/square/retrofit/blob/2.9.0/retrofit/src/main/java/retrofit2/Platform.java)
+- [Retrofit 2.9.0 BuiltInConverters：原始响应体与 Streaming](https://github.com/square/retrofit/blob/2.9.0/retrofit/src/main/java/retrofit2/BuiltInConverters.java)

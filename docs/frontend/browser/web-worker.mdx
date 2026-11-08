@@ -1,0 +1,403 @@
+---
+sidebar_position: 7
+knowledge:
+  id: frontend.browser.web-worker
+---
+
+# Web Worker
+
+**Web Worker** 为网页提供独立于页面主线程的 JavaScript 执行环境。适合移出去的是不依赖 DOM 的计算，例如文件内容处理、较大的数据转换和搜索索引构建；页面仍负责接收输入、更新 DOM 和展示结果。
+
+把代码搬进 Worker，不会减少算法需要的工作，也不保证完成得更快。它首先解决的是长计算占用页面主线程的问题，代价包括启动、通信、数据处理和额外内存。
+
+## 1. 面试核心 {#core}
+
+- **Worker 有自己的全局环境与事件循环，不能直接访问页面的 window、document 和 DOM**。需要通过消息把结果交给页面，再由页面更新界面。[卡](#worker-environment)
+- **Promise 和 async/await 不会自动把计算放到 Worker**。同步计算仍会占用当前执行环境；Worker 才提供独立的执行环境。[卡](#async-vs-worker)
+- **默认消息通过结构化克隆传递，普通对象不是跨线程共享引用**。函数和 DOM 节点不能直接发送，收到的数据也需要验证。[卡](#worker-messages)
+- **转移 ArrayBuffer 会让发送方失去原缓冲区的使用权**。转移列表不是消息正文，接收方需要能从消息中找到被转移的数据。[卡](#transfer-buffer)
+- **SharedArrayBuffer 共享的是同一底层内存，不是所有权转移**。浏览器中的使用受安全上下文与跨源隔离等条件约束，并需要同步规则。[卡](#shared-memory)
+- **Worker 内部的长同步任务也会阻塞自己的消息处理**。发送“取消”消息不能立即打断它；可以分块让出执行机会，或由外部终止专用 Worker。[卡](#worker-cancel)
+- **是否使用 Worker 要比较主线程响应改善与启动、通信、内存成本**。不要为一次很小的计算创建大量 Worker，也不要把网络等待本身当作必须迁移的计算。[卡](#worker-choice)
+
+## 2. 执行环境与适用范围 {#执行环境与适用范围}
+
+### 2.1 与页面主线程的分工 {#与页面主线程的分工}
+
+页面主线程通常承担脚本执行、DOM 操作和相关渲染工作。长时间执行同步计算，会推迟输入事件、定时器与界面更新。Worker 的脚本在独立执行环境中运行，页面可以继续处理自己的任务。
+
+Worker 中的全局对象可通过 `self` 或 `globalThis` 访问，但没有页面的 `window` 和 `document`。它可以使用 Fetch、定时器和许多计算相关 API，也能使用 IndexedDB；并非所有 Window API 都可用，例如没有页面的 localStorage 接口。
+
+不要把 Worker 叫作“另一个页面”，也不要认为每个 Worker 必然对应一个新浏览器进程。浏览器的进程、线程和页面关系见 [浏览器进程模型](./process-model.mdx)。
+
+### 2.2 异步不等于把计算移走 {#异步不等于把计算移走}
+
+给同步计算套上 Promise 或 async 函数，不会改变它在哪个执行环境中运行：
+
+```js
+async function sumOnCurrentThread(values) {
+  let total = 0;
+  for (const value of values) total += value;
+  return total;
+}
+```
+
+调用这个函数时，循环仍在调用方当前的执行环境执行，只是结果通过 Promise 返回。把循环放进 `Promise.then` 也仍会在当前环境的微任务中执行。
+
+对于等待网络响应的普通 Fetch，浏览器已经能够异步等待，通常不需要只为“请求不阻塞”创建 Worker。真正值得评估的是请求之后的解析、计算或转换是否形成了长任务，以及搬运输入和输出是否划算。
+
+## 3. 专用 Worker 的最小流程 {#专用worker的最小流程}
+
+**专用 Worker**（Dedicated Worker）由一个创建方持有，页面通过 `worker.postMessage()` 发消息，Worker 通过自己的 `postMessage()` 回复。
+
+下面用三个文件展示模块 Worker。计算只是逐项求和，用于观察消息和错误处理；若问题可以直接用数学公式解决，应先优化算法，不必为了使用 Worker 保留多余计算。
+
+页面 `index.html`：
+
+```html
+<button id="cancel">取消计算</button>
+<output id="result">计算中</output>
+<script type="module">
+  const output = document.querySelector('#result');
+  const cancel = document.querySelector('#cancel');
+  const id = crypto.randomUUID();
+  const worker = new Worker(new URL('./compute-worker.js', import.meta.url), {
+    type: 'module',
+  });
+  let finished = false;
+  const timer = setTimeout(() => finish('等待超时'), 5000);
+
+  function finish(text) {
+    if (finished) return;
+    finished = true;
+    clearTimeout(timer);
+    output.textContent = text;
+    cancel.disabled = true;
+    worker.terminate();
+  }
+  worker.addEventListener('message', ({ data }) => {
+    if (!data || data.id !== id) return;
+    if (data.type === 'result' && Number.isFinite(data.total)) {
+      finish(`计算结果：${data.total}`);
+    } else if (data.type === 'job-error' && typeof data.message === 'string') {
+      finish(`计算失败：${data.message}`);
+    }
+  });
+  worker.addEventListener('error', () => finish('Worker 加载或执行失败'));
+  worker.addEventListener('messageerror', () => finish('消息反序列化失败'));
+  cancel.addEventListener('click', () => finish('已取消'));
+  try {
+    worker.postMessage({ id, type: 'sum', values: new Float64Array(100000).fill(2) });
+  } catch (error) {
+    finish(`消息发送失败：${error.name}`);
+  }
+</script>
+```
+
+Worker 入口 `compute-worker.js`：
+
+```js
+import { sum } from './sum.js';
+
+self.addEventListener('message', ({ data }) => {
+  if (!data || data.type !== 'sum' || typeof data.id !== 'string') return;
+  try {
+    const total = sum(data.values);
+    self.postMessage({ id: data.id, type: 'result', total });
+  } catch (error) {
+    self.postMessage({ id: data.id, type: 'job-error', message: error.message });
+  }
+});
+```
+
+纯计算模块 `sum.js`：
+
+```js
+export function sum(values) {
+  if (!(values instanceof Float64Array) || values.length > 10000000) {
+    throw new TypeError('需要长度不超过约定上限的 Float64Array');
+  }
+  let total = 0;
+  for (const value of values) {
+    if (!Number.isFinite(value)) throw new TypeError('输入必须是有限数字');
+    total += value;
+  }
+  if (!Number.isFinite(total)) throw new RangeError('结果超出有限数值范围');
+  return total;
+}
+```
+
+成功时页面显示 `计算结果：200000`。输入格式和计算异常由消息协议返回；脚本加载失败、未捕获异常和消息反序列化失败则通过对应事件处理。发送不可克隆的数据还可能直接在 `postMessage` 调用处抛错。
+
+这是单任务示例：完成、失败、取消或超时后都终止这个 Worker。复用 Worker 时，应保存待完成任务表，用任务 ID 匹配各自的结果，且在终止或页面卸载时明确结束所有等待。`terminate()` 不会自动替你拒绝外层自建的 Promise。
+
+`new Worker(...)` 本身也可能因 URL 或策略错误同步抛出；需要降级的页面还应在创建位置处理这种错误。部署时通过 HTTP(S) 服务加载文件，Worker 脚本使用正确的 JavaScript MIME 类型。
+
+## 4. 数据复制、转移与共享 {#数据复制转移与共享}
+
+### 4.1 默认的结构化克隆 {#默认的结构化克隆}
+
+**结构化克隆**是消息接口复制可传输数据的一套规则。普通对象、数组、Map、Set、ArrayBuffer 和类型化数组等可以按规则传递；循环引用也可以处理。它不是把对象转换成 JSON，因此能力与 JSON 序列化不同。
+
+假设 `echo-worker.js` 会把 `data.profile.name` 改成 `Worker`，再把消息发回来：
+
+```js
+const worker = new Worker('/echo-worker.js');
+const payload = { profile: { name: 'Page' } };
+worker.addEventListener('message', ({ data }) => {
+  console.log(payload.profile.name, data.profile.name);
+  worker.terminate();
+}, { once: true });
+worker.postMessage(payload);
+```
+
+页面输出 `Page Worker`，因为两边不是同一个普通对象。发送方在发送完成后修改自己的对象，也不会追溯改写对方已经收到的副本。
+
+函数、DOM 节点等不能直接作为可克隆消息。自定义类实例也不意味着接收方会保留完整的原型行为、属性描述符和私有状态；跨边界协议应传递清晰的数据结构，让接收方按需要重建行为。
+
+### 4.2 转移 ArrayBuffer {#转移arraybuffer}
+
+**转移**是把可转移资源的所有权交给接收方。对于较大的 ArrayBuffer，可以通过转移避免按普通复制方式传递缓冲区内容；但不要把它延伸成“所有消息都零成本”。
+
+假设 `buffer-worker.js` 对收到的 `bytes` 求和后回复：
+
+```js
+const worker = new Worker('/buffer-worker.js');
+const bytes = new Uint8Array([10, 20, 30]);
+const otherView = new Uint8Array(bytes.buffer);
+worker.addEventListener('message', ({ data }) => {
+  console.log(data.total); // 60
+  worker.terminate();
+}, { once: true });
+worker.postMessage({ bytes }, [bytes.buffer]);
+console.log(bytes.byteLength, otherView.byteLength); // 0 0
+```
+
+被转移的是 `bytes.buffer`，不是类型化数组视图本身。发送成功后，原缓冲区被分离，指向它的其他视图也失去原有数据。不能继续拿这份旧视图处理同一数据；接收方可以再把缓冲区转移回来，但会得到新的接收对象。
+
+转移列表只说明资源怎样传递，不会自动把它添加到消息对象。如果只在列表中放入缓冲区，却没有通过消息正文提供可访问的引用，接收方就无法按预期找到它，而发送方仍可能已经失去它。
+
+### 4.3 SharedArrayBuffer 与同步 {#sharedarraybuffer与同步}
+
+**SharedArrayBuffer** 让不同执行环境的对象指向同一块共享内存。它不会像 ArrayBuffer 转移那样让发送方失去使用权，也不应放进转移列表。共享内存还需要通信协议与同步操作，不能把“大家都能写”当作“结果一定正确”。
+
+浏览器中通常需要安全上下文和跨源隔离。常见配置组合是文档响应头 `Cross-Origin-Opener-Policy: same-origin` 与 `Cross-Origin-Embedder-Policy: require-corp`，并让嵌入资源满足对应规则。实际使用前检查 `crossOriginIsolated`，不要只检查某个响应头存在。
+
+页面代码：
+
+```js
+if (!crossOriginIsolated) throw new Error('当前页面未满足跨源隔离条件');
+const worker = new Worker('/counter-worker.js');
+const buffer = new SharedArrayBuffer(4);
+const counter = new Int32Array(buffer);
+worker.addEventListener('message', () => {
+  console.log(Atomics.load(counter, 0)); // 1
+  worker.terminate();
+}, { once: true });
+worker.postMessage({ buffer });
+```
+
+专用 Worker 文件 `counter-worker.js`：
+
+```js
+self.addEventListener('message', ({ data }) => {
+  const counter = new Int32Array(data.buffer);
+  Atomics.add(counter, 0, 1);
+  self.postMessage({ type: 'updated' });
+});
+```
+
+这里通过 `Atomics.add` 原子更新，再由页面读取同一块内存。对共享计数器直接执行 `counter[0]++` 是读、改、写的组合，多个执行方可能丢失更新。更复杂的数据结构还需要完整的同步设计，不能认为在任意位置插入一次 Atomics 就足够。
+
+共享内存属于按场景学习的内容。普通消息已经能满足需求时，不必为了减少一次复制引入隔离部署、同步和竞态管理成本。
+
+## 5. 调度、取消与生命周期 {#调度取消与生命周期}
+
+### 5.1 为什么取消消息不能打断死循环 {#为什么取消消息不能打断死循环}
+
+Worker 也按自己的事件循环处理任务。它正在执行很长的同步计算时，后来的消息处理函数无法立即运行，所以给它发送 `{ type: 'cancel' }` 不会自动打断当前函数。
+
+有三种不同的应对方式：
+
+- 专用 Worker 只承担当前任务时，由页面调用 `terminate()` 终止整个执行环境，再按需创建新的 Worker。
+- 需要复用时，把计算拆成有界的块，在块与块之间让出任务执行机会，接收取消消息并检查任务状态。
+- 已采用共享内存协议时，可以通过同步操作读取取消标志，但这需要额外部署和同步设计，不是默认方案。
+
+反复 `await Promise.resolve()` 只会让出到微任务，不能保证 Worker 有机会处理下一条消息任务。需要让出任务队列的机会，例如安排下一轮定时任务；分块大小应通过工作量和响应需求测量。
+
+`terminate()` 会直接停止 Worker，不保证执行其中的 finally 或完成未发出的消息。Worker 自己调用 `self.close()` 则表达结束其后续任务处理的意图，也不能代替应用保存必要结果。需要可靠落盘或外部操作确认时，先完成相应协议，再结束执行环境。
+
+### 5.2 任务身份和资源清理 {#任务身份和资源清理}
+
+取消并不是唯一的失效条件。用户切换文件、组件卸载、重新提交相同表单时，旧结果也可能不再适用。页面提交结果前应核对任务 ID 或版本，只处理当前任务。
+
+复用 Worker 时还要清理待完成任务表、事件监听和超时定时器。遇到脚本崩溃或主动终止，应让所有相关调用得到明确失败或取消结果，而不是永久保持 pending。
+
+使用 Blob URL 创建脚本时，还需要管理 Object URL 的释放；这不能解决任意远端脚本加载的信任问题。页面应只加载可信的 Worker 入口和依赖。
+
+## 6. 加载方式与选择条件 {#加载方式与选择条件}
+
+### 6.1 普通脚本与模块 Worker {#普通脚本与模块worker}
+
+`new Worker(url)` 默认创建普通脚本 Worker，`{ type: 'module' }` 创建模块 Worker。模块 Worker 使用 `import` 管理依赖；普通脚本 Worker 可以使用 `importScripts()`，不能把这两个加载方式混用。
+
+Worker 的入口 URL 需要满足创建页面的同源与策略要求；模块依赖的跨源获取需要满足模块的 CORS 规则。CSP 的 `worker-src` 也可能限制创建。前端构建工具通常可以识别 `new Worker(new URL('./worker.js', import.meta.url), { type: 'module' })` 这种明确的资源关系，但最终产物路径、MIME 和响应策略仍要检查。
+
+Worker 不是获得任意跨源网络权限的办法。Worker 中的浏览器 Fetch 仍需遵守相应网络安全规则，不能用它替代 CORS 配置。
+
+### 6.2 不同 Worker 的职责 {#不同worker的职责}
+
+| 类型 | 主要职责 | 需要区分的边界 |
+| --- | --- | --- |
+| Dedicated Worker | 为创建方执行独立计算或后台任务 | 通过 Worker 消息接口通信，生命周期由应用管理 |
+| SharedWorker | 在符合匹配和安全条件的多个同源上下文间共享执行环境 | 通过连接的 MessagePort 通信，不是共享 JavaScript 普通对象 |
+| Service Worker | 参与受控页面的请求处理、离线能力等 | 有注册、安装、激活与事件驱动生命周期，不是持续运行的计算线程 |
+
+SharedWorker 也不等于 SharedArrayBuffer：前者共享一个可连接的执行环境，后者共享底层内存。Service Worker 会被浏览器按生命周期启动或停止，不适合用来保证任意长时间计算一直运行。
+
+### 6.3 怎样判断迁移是否值得 {#怎样判断迁移是否值得}
+
+判断时至少比较三类成本：计算对主线程的占用、输入输出的通信成本、Worker 的启动与内存成本。应测量真实数据规模和用户操作时的响应，不以一个脱离页面的计算耗时决定全部方案。
+
+对于较大文件的内容处理，可以让 Worker 读取 File 或分块数据，在后台完成约定的计算，再返回摘要或小型结果。不要每轮都把整个大型对象复制过去，也不要过于频繁地发送进度消息，让主线程又被消息和渲染占满。
+
+算法优化、减少无用计算、适当分块可能已经足够。确实需要重复执行相似重任务时，可以复用少量 Worker；并发数不是越大越好，多个 Worker 会竞争 CPU 和内存。移动设备、后台页面和系统调度还会影响实际执行，不能保证 Worker 定时器永远准时。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 Web Worker 可以访问 document 吗，它有哪些能力？ {#worker-environment}
+
+**考察重点**：页面与 Worker 的全局环境、可用 API 和 DOM 分工。
+
+**相关内容**：[与页面主线程的分工](#与页面主线程的分工)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能直接访问页面的 document、window 或 DOM，Worker 有自己的全局环境和事件循环。** 它可以执行计算，使用 Fetch、定时器和 IndexedDB 等允许的 API，通过消息把结果交给页面。
+
+页面负责更新 DOM。Worker 不是拥有全部 Window API 的页面，也不能据此推断它必然对应一个新浏览器进程。
+
+</details>
+
+### 7.2 把计算写成 async 函数，是否就不阻塞页面了？ {#async-vs-worker}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：异步结果表示与执行环境的区别。
+
+**相关内容**：[异步不等于把计算移走](#异步不等于把计算移走)。
+
+<details>
+<summary>参考回答</summary>
+
+**不会，async 和 Promise 不自动创建独立执行环境，同步计算仍在当前环境运行。** 长循环放在 Promise 回调中，也仍可能占用页面主线程。
+
+要减少主线程上的计算，可以优化算法、分块让出任务执行机会，或把不依赖 DOM 的重任务放到 Worker。网络等待本身通常已经异步，不必只为等待网络创建 Worker。
+
+</details>
+
+### 7.3 如何创建 Web Worker 并与主线程交换数据？ {#worker-messages}
+
+**考察重点**：创建、消息、结构化克隆、结果关联与错误处理。
+
+**相关内容**：[专用 Worker 的最小流程](#专用worker的最小流程)、[默认的结构化克隆](#默认的结构化克隆)。
+
+<details>
+<summary>参考回答</summary>
+
+**页面通过 new Worker 创建可信脚本，用 postMessage 发送数据，两边通过 message 事件接收。** 模块 Worker 指定 `type: 'module'`，Worker 通过自己的 postMessage 回复。
+
+普通对象默认按结构化克隆规则复制，不是跨线程共享引用。协议需要任务 ID、输入校验和错误结果；还要处理加载异常、发送失败、取消与清理。页面收到有效结果后再更新 DOM。
+
+</details>
+
+### 7.4 传输大型二进制数据时，复制和转移有什么区别？ {#transfer-buffer}
+
+**考察重点**：ArrayBuffer 所有权、视图与消息正文。
+
+**相关内容**：[转移 ArrayBuffer](#转移arraybuffer)。
+
+<details>
+<summary>参考回答</summary>
+
+**默认克隆保留发送方数据，转移 ArrayBuffer 则把资源交给接收方，让发送方原缓冲区分离。** 指向同一缓冲区的其他视图也会失去原有数据。
+
+转移列表使用 buffer，而不是 Uint8Array 视图本身；消息正文中还要包含可访问的引用。它可以减少大缓冲区复制，但不等于启动和所有通信都没有成本。
+
+</details>
+
+### 7.5 SharedArrayBuffer 和普通 ArrayBuffer 转移有什么不同？ {#shared-memory}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：共享内存、原子操作与跨源隔离。
+
+**相关内容**：[SharedArrayBuffer 与同步](#sharedarraybuffer与同步)。
+
+<details>
+<summary>参考回答</summary>
+
+**SharedArrayBuffer 让双方访问同一底层内存，发送方不会因传递消息而失去使用权；ArrayBuffer 转移则改变所有权。** SharedArrayBuffer 不放进转移列表。
+
+共享数据需要同步协议，读改写操作不能假定自动原子。浏览器使用还受安全上下文和跨源隔离约束，应该检查 crossOriginIsolated；普通消息能满足需求时，不必引入共享内存的复杂度。
+
+</details>
+
+### 7.6 为什么发了取消消息，Worker 的长循环仍不停？ {#worker-cancel}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：Worker 自身事件循环、协作取消与直接终止。
+
+**相关内容**：[为什么取消消息不能打断死循环](#为什么取消消息不能打断死循环)、[任务身份和资源清理](#任务身份和资源清理)。
+
+<details>
+<summary>参考回答</summary>
+
+**长同步任务占用 Worker 自己的执行环境，取消消息要等它有机会处理后才生效。** 可以把计算分块并让出任务执行机会，或由页面终止只承担当前任务的专用 Worker。
+
+只 await 已兑现 Promise 不能保证消息任务得到执行。terminate 不保证 Worker 内的 finally，也不会自动结束页面自建的 Promise，页面需要清理并拒绝相关等待。
+
+</details>
+
+### 7.7 项目中什么任务适合放到 Web Worker，怎样判断收益？ {#worker-choice}
+
+**考察重点**：计算负载、响应改善、通信和生命周期成本。
+
+**相关内容**：[怎样判断迁移是否值得](#怎样判断迁移是否值得)。
+
+<details>
+<summary>参考回答</summary>
+
+**适合的是不依赖 DOM、确实占用主线程的计算任务，例如较大文件处理或数据转换。** 先测主线程长任务和交互响应，再比较启动、复制或转移、结果处理与内存成本。
+
+迁移可以改善页面响应，不保证总耗时更短。应优先去掉无用计算，合理分块或复用少量 Worker，并控制进度消息频率、取消和资源清理。
+
+</details>
+
+### 7.8 SharedWorker、Service Worker 和专用 Worker 是同一回事吗？ {#worker-types}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：计算、跨上下文连接与请求生命周期的分工。
+
+**相关内容**：[不同 Worker 的职责](#不同worker的职责)。
+
+<details>
+<summary>参考回答</summary>
+
+**不是，专用 Worker 服务于创建方，SharedWorker 可由符合条件的多个上下文通过 MessagePort 连接，Service Worker 参与请求处理和离线等事件。** Service Worker 有独立的注册和更新生命周期，不能当作永久运行的计算线程。
+
+SharedWorker 也不等于 SharedArrayBuffer：一个共享执行环境，一个共享底层内存。普通消息不会因此变成共享 JavaScript 对象。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [WHATWG HTML：Web workers](https://html.spec.whatwg.org/multipage/workers.html)
+- [MDN：Using Web Workers](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API/Using_web_workers)
+- [MDN：Worker 构造器](https://developer.mozilla.org/en-US/docs/Web/API/Worker/Worker)
+- [MDN：Transferable objects](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API/Transferable_objects)
+- [MDN：SharedArrayBuffer](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/SharedArrayBuffer)
+- [MDN：Worker.terminate](https://developer.mozilla.org/en-US/docs/Web/API/Worker/terminate)

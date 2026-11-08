@@ -1,9 +1,13 @@
-export type OutlineCatalogEntry = {
-  id: string;
+export type OutlineRoute = {
   label: string;
   href?: string;
   /** Published but still missing some articles. */
   status?: 'building';
+};
+
+export type OutlineCatalogEntry = OutlineRoute & {
+  id: string;
+  routes?: OutlineRoute[];
 };
 
 export const sharedFoundationOutlines: OutlineCatalogEntry[] = [
@@ -18,18 +22,18 @@ export const sharedFoundationOutlines: OutlineCatalogEntry[] = [
 ];
 
 export const roleOutlines: OutlineCatalogEntry[] = [
-  {id: 'R01', label: 'Java 后端开发', href: '/java-interview-roadmap/'},
-  {id: 'R02', label: 'Go 后端与云原生开发'},
-  {id: 'R03', label: 'Python 后端与 AI 服务开发'},
-  {id: 'R04', label: 'C++ 系统与基础设施开发'},
-  {id: 'R05', label: 'Web 前端开发'},
-  {id: 'R06', label: '移动端通用与跨平台开发'},
-  {id: 'R07', label: 'Android 开发'},
-  {id: 'R08', label: 'iOS 开发'},
-  {id: 'R09', label: '大数据与数据工程'},
-  {id: 'R10', label: '软件测试与测试开发'},
-  {id: 'R11', label: '运维、DevOps、SRE 与平台工程', href: '/sre-interview-roadmap/', status: 'building'},
-  {id: 'R12', label: '大模型算法、训练与推理'},
-  {id: 'R13', label: '大模型应用与 RAG 工程'},
-  {id: 'R14', label: 'AI Agent 工程', href: '/agent-interview-roadmap/'},
+  {id: 'R01', label: '后端开发', routes: [
+    {label: 'Java', href: '/java-interview-roadmap/'},
+    {label: 'Go', href: '/topics?role=go'},
+    {label: 'Python'},
+    {label: 'Node.js'},
+  ]},
+  {id: 'R02', label: '前端开发', href: '/topics?role=frontend-react'},
+  {id: 'R03', label: '移动端开发', href: '/topics?role=mobile-shared'},
+  {id: 'R04', label: '测试开发', href: '/topics?role=testing-python'},
+  {id: 'R05', label: '大数据开发'},
+  {id: 'R06', label: 'DevOps / SRE', href: '/sre-interview-roadmap/', status: 'building'},
+  {id: 'R07', label: 'AI 应用开发', routes: [
+    {label: 'AI Agent', href: '/agent-interview-roadmap/'},
+  ]},
 ];

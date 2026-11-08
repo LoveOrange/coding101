@@ -1,0 +1,321 @@
+---
+sidebar_position: 9
+knowledge:
+  id: basic-knowledge.javascript.iterators-generators
+  type: concept
+description: "解释可迭代对象、迭代器、生成器和 yield 的执行语义，比较一次性与可重复遍历，并说明提前结束时的清理和异步迭代边界。"
+keywords: ["迭代器", "生成器", "Symbol.iterator", "yield", "for of", "惰性执行"]
+---
+
+# 迭代器与生成器
+
+**迭代器**通过 `next()` 按次提供结果，**可迭代对象**则通过 `Symbol.iterator` 提供迭代器。`for...of`、数组展开和集合构造等语法或 API 依靠这套协议获取值，不要求输入必须是数组。
+
+**生成器**用 `function*` 和 `yield` 把带暂停点的函数写成迭代器。它适合按需产生数据、表达遍历状态和组织分步过程。需要区分的是：暂停不等于异步，惰性也不意味着每次计算都很便宜。
+
+## 1. 面试核心 {#core}
+
+- 可迭代对象负责提供迭代器，迭代器负责提供下一步结果。**具有 `next` 不等于具有 `Symbol.iterator`，具有 `length` 也不等于可迭代**。[卡](#iteration-protocols)
+- `next()` 返回结果对象，用 `done` 表示是否结束，用 `value` 表示本次值。**可重复遍历通常需要每次创建独立迭代器，而不是反复返回同一个已消耗对象**。[卡](#repeatable-iteration)
+- 调用生成器函数先得到生成器对象，第一次 `next()` 才进入函数体。**每次恢复同步运行到下一个 `yield`、返回或异常**。[卡](#generator-execution)
+- `yield` 向外提供值，下一次 `next(value)` 可以把值传回暂停处。**第一次 next 的参数没有可接收它的前一个 yield，生成器最终 return 值也不是普通迭代元素**。[卡](#yield-values)
+- 循环体提前 `break`、`return` 或抛错时，会尝试调用迭代器的 `return()` 进行关闭。**手动 next 后直接丢弃迭代器，不等于已经执行清理**。[卡](#iterator-cleanup)
+- 同步迭代提供同步结果，异步迭代提供可等待的下一步结果。**生成器本身不会开启线程或自动等待 Promise**。[卡](#async-iteration)
+
+## 2. 两套相关协议 {#两套相关协议}
+
+**迭代协议**约定对象有一个 `next` 方法，每次调用返回对象。结果里的 `done` 为真时表示完成；未完成时，`value` 是本次产出的元素。`next()` 直接返回一个数字或 `undefined`，不符合迭代结果的要求。
+
+**可迭代协议**约定对象的 `Symbol.iterator` 属性是方法，调用它得到迭代器。Array、Map、Set 和字符串都有对应实现，普通对象默认没有。
+
+```js
+const values = [10, 20];
+const iterator = values[Symbol.iterator]();
+console.log(iterator.next()); // { value: 10, done: false }
+console.log(iterator.next()); // { value: 20, done: false }
+console.log(iterator.next()); // { value: undefined, done: true }
+```
+
+数组是可迭代对象；取出的 `iterator` 保存这一次遍历走到哪里。数组迭代器本身也实现 `Symbol.iterator`，并返回自己，所以它同时满足两套协议。但这是对象的额外实现，不能仅凭它有 `next` 就推断一定能被 `for...of` 消费。
+
+### 2.1 可迭代、类数组与属性枚举 {#可迭代-类数组与属性枚举}
+
+**类数组对象**通常指具有索引属性和 `length` 的对象。`Array.from` 同时支持可迭代输入和类数组输入，数组展开则要求输入可迭代。
+
+```js
+const arrayLike = { 0: "a", 1: "b", length: 2 };
+console.log(Array.from(arrayLike)); // ["a", "b"]
+console.log(typeof arrayLike[Symbol.iterator]); // undefined
+// console.log([...arrayLike]); // 运行错误：对象不可迭代，抛 TypeError
+```
+
+`for...in` 走的是属性枚举规则，不是迭代协议；对象展开 `{ ...obj }` 也复制可枚举自有属性，不会因为 `obj` 定义了 `Symbol.iterator` 就改用它。数组展开 `[...obj]` 和对象展开的语法相似，数据入口却不同。
+
+字符串迭代按 Unicode 码点提供值，不是按 UTF-16 编码单元拆分。`"A\u{1F600}".length` 是 `3`，展开后却只有两个元素。码点仍不等于用户看到的完整字素：组合字符和某些 Emoji 序列可能由多个码点构成，不能把展开当作完整的文本分割方案。
+
+## 3. 独立的迭代状态 {#独立的迭代状态}
+
+要让同一数据范围可以重复遍历，每次调用 `Symbol.iterator` 时创建新的位置状态。下面的范围包括 `start`，不包括 `end`，输入约定为有限整数。
+
+```js
+function range(start, end) {
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end)) {
+    throw new TypeError("边界必须是安全整数");
+  }
+  return {
+    [Symbol.iterator]() {
+      let current = start;
+      return {
+        next() {
+          if (current >= end) return { value: undefined, done: true };
+          return { value: current++, done: false };
+        },
+        [Symbol.iterator]() { return this; },
+      };
+    },
+  };
+}
+
+const values = range(1, 4);
+const first = values[Symbol.iterator]();
+const second = values[Symbol.iterator]();
+console.log(first.next().value, first.next().value); // 1 2
+console.log(second.next().value);                   // 1
+console.log([...values]);                           // [1, 2, 3]
+console.log([...values]);                           // [1, 2, 3]
+```
+
+`current` 在创建迭代器时初始化，两个迭代器不会共享进度。若把它放在 `range` 外层返回对象的共享状态里，或总返回同一个迭代器，就会得到不同的遍历行为。
+
+可重复并不是可迭代协议的强制要求。文件游标、网络流和生成器对象通常更接近一次性消费；接口是否能重新开始，需要由具体对象说明。
+
+## 4. 生成器的暂停与恢复 {#生成器的暂停与恢复}
+
+`function*` 声明生成器函数，调用它返回生成器对象，函数体此时尚未执行。生成器对象既是迭代器，也是返回自身的可迭代对象。
+
+```js
+function* steps() {
+  console.log("start");
+  yield 1;
+  console.log("resume");
+  yield 2;
+}
+
+const iterator = steps();
+console.log("created");            // created
+console.log(iterator.next().value); // start，然后 1
+console.log(iterator.next().value); // resume，然后 2
+console.log(iterator.next().done);  // true
+```
+
+`yield` 保存当前执行位置及局部状态，把本次控制权交回调用方。下次 `next` 从暂停点继续，已经执行过的初始化不会重新执行。
+
+生成器函数可以调用多次来创建多次遍历；同一个生成器对象已经耗尽后，不会自动重置：
+
+```js
+function* numbers() { yield 1; yield 2; }
+const iterator = numbers();
+console.log([...iterator]); // [1, 2]
+console.log([...iterator]); // []
+console.log([...numbers()]); // [1, 2]
+```
+
+### 4.1 惰性与执行成本 {#惰性与执行成本}
+
+**惰性执行**是调用方需要下一项时才计算下一项，而不是先构造全部结果。它能减少不必要的提前计算和结果存储，也能描述很大甚至无限的序列。
+
+但每次 `next()` 到下一个暂停点之间的代码仍然同步执行。一个很慢的循环即使写在生成器里，也可能长时间占用主线程；把生成器展开成数组还会立即消费全部值。无限序列不能无条件使用展开或 `Array.from` 收集到底。
+
+## 5. yield 的双向值传递 {#yield-的双向值传递}
+
+`yield expression` 先把 `expression` 的结果交给外部；恢复时，这个 `yield` 表达式自身的值来自下一次 `next(value)` 的参数。
+
+```js
+function* conversation() {
+  const name = yield "name?";
+  yield "hello " + name;
+  return "finished";
+}
+
+const iterator = conversation();
+console.log(iterator.next("ignored")); // { value: "name?", done: false }
+console.log(iterator.next("Lin"));     // { value: "hello Lin", done: false }
+console.log(iterator.next());          // { value: "finished", done: true }
+console.log(iterator.next());          // { value: undefined, done: true }
+```
+
+第一次 `next` 是启动函数，尚没有一个暂停的 `yield` 接收参数，因此 `"ignored"` 不会赋给 `name`。第二次调用才让第一个 `yield` 求值得到 `"Lin"`。
+
+最终 `return` 产生的是 `done: true` 的完成结果，普通 `for...of` 或数组展开不会把这个最终值当作元素。想读取它，可以手动检查 `next()` 的结果。
+
+### 5.1 yield 委托 {#yield-委托}
+
+`yield* iterable` 把一段产出过程委托给另一个可迭代对象；被委托的生成器完成后，其返回值成为 `yield*` 表达式的结果。
+
+```js
+function* inner() {
+  yield 1;
+  return 2;
+}
+function* outer() {
+  const result = yield* inner();
+  yield result * 10;
+}
+console.log([...outer()]); // [1, 20]
+```
+
+`inner` 的 `return 2` 没有直接作为普通元素产出，而是赋给 `result`，再由外层显式产出 `20`。委托也有关闭和异常传播规则，不能把它无条件等同于复制几次 `yield`。
+
+## 6. 提前结束与清理 {#提前结束与清理}
+
+迭代器可以提供 `return` 方法，用于调用方提前结束消费时清理状态。`for...of` 在循环体 `break`、`return` 或抛异常时，会尝试调用它；正常遍历到 `done: true` 则不靠这一步完成。
+
+生成器的 `return()` 会请求结束执行，并经过相应的 `finally`：
+
+```js
+function* records() {
+  try {
+    yield "first";
+    yield "second";
+  } finally {
+    console.log("cleanup");
+  }
+}
+
+const iterator = records();
+for (const value of iterator) {
+  console.log(value); // first
+  break;             // 随后打印 cleanup
+}
+console.log(iterator.next().done); // true
+```
+
+如果生成器管理资源，可以把正常退出和提前退出都需要执行的动作放进 `finally`。但调用方只执行一次 `next()` 后遗忘迭代器，不代表自动调用了 `return`；垃圾回收也不是确定性的资源清理协议。
+
+生成器还有 `throw(error)`，可以在暂停的 `yield` 处注入异常，交给函数内部的 `try/catch/finally` 处理。`return` 或 `throw` 的具体结果仍受函数内部控制流影响，例如 `finally` 里再次 `yield` 就可能继续暂停，所以不能仅凭方法名推断所有清理已经立即完成。
+
+## 7. 同步与异步迭代 {#同步与异步迭代}
+
+**异步迭代器**的 `next()` 返回可等待的迭代结果，通常用于数据需要等待才能到达的场景。可异步迭代对象通过 `Symbol.asyncIterator` 提供它，`for await...of` 会等待每一步结果。
+
+| 形式 | 下一步结果 | 典型消费方式 |
+| --- | --- | --- |
+| 同步迭代器 | 立即返回结果对象 | `for...of`、数组展开 |
+| 普通生成器 `function*` | 立即返回结果对象，可把 Promise 当普通值产出 | `next()`、`for...of` |
+| 异步生成器 `async function*` | 返回 Promise，并允许等待异步步骤 | `for await...of` |
+
+Promise 表示将来完成的结果。普通生成器产出一个 Promise，不会自动启动一套“等待后把结果传回来”的调度；如果要这样做，需要外部驱动器，或者使用更直接的 `async`/`await`。
+
+`for await...of` 也能消费同步可迭代输入，但这不意味着生产者会自动并发执行，也不意味着已经发起的请求能够取消。流式处理还需要定义错误传播、提前关闭、取消和消费速度，迭代协议只是其中的接口基础。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 迭代器、可迭代对象和类数组对象分别是什么？ {#iteration-protocols}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：next、Symbol.iterator、长度属性与消费入口。
+
+**相关内容**：[两套相关协议](#两套相关协议)、[可迭代、类数组与属性枚举](#可迭代-类数组与属性枚举)。
+
+<details>
+<summary>参考回答</summary>
+
+**迭代器用 `next()` 提供 `{ value, done }` 结果，可迭代对象用 `Symbol.iterator` 返回迭代器，类数组对象主要具有索引和 `length`。** 三者可以重合，但不能互相推断。
+
+`for...of` 和数组展开要求可迭代输入；`Array.from` 也能处理类数组。`for...in` 和对象展开使用属性规则，不走同一套迭代入口。
+
+</details>
+
+### 8.2 怎样让一个范围对象可以重复遍历，为什么生成器对象第二次展开为空？ {#repeatable-iteration}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：独立进度、迭代器工厂与一次性消费。
+
+**相关内容**：[独立的迭代状态](#独立的迭代状态)、[生成器的暂停与恢复](#生成器的暂停与恢复)。
+
+<details>
+<summary>参考回答</summary>
+
+**每次调用范围对象的 `Symbol.iterator` 时创建新的位置状态，就能独立开始遍历。** 多个迭代器不应共享同一个可变游标，除非接口有意要求共享消费。
+
+生成器对象的 `Symbol.iterator` 返回自己，第一次展开已把它耗尽，第二次就没有元素。重新调用生成器函数会创建新的生成器对象。协议允许一次性消费，并不保证所有可迭代对象都能重置。
+
+</details>
+
+### 8.3 生成器什么时候执行，yield 是否会让代码变成异步？ {#generator-execution}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：创建、启动、暂停、恢复和执行成本。
+
+**相关内容**：[生成器的暂停与恢复](#生成器的暂停与恢复)、[惰性与执行成本](#惰性与执行成本)。
+
+<details>
+<summary>参考回答</summary>
+
+**调用生成器函数先创建对象，第一次 `next()` 才执行函数体，之后每次同步运行到下一处暂停、返回或异常。** `yield` 交回控制权并保存状态，本身不创建线程或异步任务。
+
+惰性意味着按需计算，可能减少提前构造结果的成本；单次恢复中的重计算仍可能阻塞，全部展开也会立即消费整个序列。
+
+</details>
+
+### 8.4 yield 与 next 的值怎样传递，生成器 return 值会进入遍历结果吗？ {#yield-values}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：双向传值、启动参数与完成结果。
+
+**相关内容**：[yield 的双向值传递](#yield-的双向值传递)、[yield 委托](#yield-委托)。
+
+<details>
+<summary>参考回答</summary>
+
+**`yield x` 向外产出 `x`，下一次 `next(value)` 把 `value` 交回当前暂停的 yield 表达式。** 第一次 next 只是启动，尚无前一个暂停点接收参数。
+
+最终 `return` 形成 `done: true` 的结果，不作为普通 `for...of` 元素；手动 next 可以读取它，`yield*` 也可以接收被委托生成器的完成值。
+
+</details>
+
+### 8.5 提前退出 for...of 时怎样清理资源，丢弃迭代器是否足够？ {#iterator-cleanup}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：迭代器关闭、finally 和确定性清理。
+
+**相关内容**：[提前结束与清理](#提前结束与清理)。
+
+<details>
+<summary>参考回答</summary>
+
+**循环体提前退出时会尝试调用迭代器的 `return()`，生成器可通过 `finally` 执行清理。** 正常耗尽与提前关闭是两种结束路径，资源管理要覆盖实际会发生的路径。
+
+手动 next 后直接丢弃迭代器不保证调用 return，垃圾回收也不保证及时释放外部资源。return 或 throw 还会经过内部控制流，不能忽略 finally 再次暂停等情况。
+
+</details>
+
+### 8.6 普通生成器与异步生成器有什么不同，for await...of 会自动并发吗？ {#async-iteration}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：同步结果、Promise、异步协议与调度边界。
+
+**相关内容**：[同步与异步迭代](#同步与异步迭代)。
+
+<details>
+<summary>参考回答</summary>
+
+**普通生成器的 next 同步返回结果，异步生成器的 next 返回 Promise；`for await...of` 等待每一步迭代结果。** 普通生成器即使产出 Promise，也不自动把等待后的结果送回暂停点。
+
+异步迭代不等于并发调度，不自动取消已发起任务。是否预取、允许多少并发、如何关闭和传播异常，仍要由生产者与消费逻辑决定。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+
+- [MDN：Iteration protocols](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Iteration_protocols)
+- [MDN：function*](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Statements/function*)
+- [MDN：yield](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Operators/yield)
+- [MDN：for await...of](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Statements/for-await...of)
+- [ECMAScript：Generator Objects](https://tc39.es/ecma262/multipage/control-abstraction-objects.html#sec-generator-objects)

@@ -18,6 +18,7 @@ keywords: ["OSI 七层模型", "TCP/IP 四层模型", "网络封装", "四层与
 
 - OSI 分为七层，TCP/IP 常分为四层；TCP/IP 的应用层涵盖 **OSI 应用、表示和会话三层的职责**，两种模型按职责近似对应。[卡](#osi-vs-tcpip)
 - 发送数据时，**TCP 段封装进 IP 包，IP 包再封装进链路帧**；接收端按相反方向解析。
+- 常规收包先由**网卡按配置过滤、DMA 写入主存，再由驱动和协议栈交给 socket**；网卡放行不等于应用已经取得数据。[卡](#nic-to-process)
 - IP 负责跨网络转发，链路层负责当前链路上的传输。**路由器会为下一跳重新封装链路帧**；没有 NAT 时，源和目标 IP 保持不变。[卡](#encapsulation-hop)
 - 四层负载均衡使用地址、端口等传输信息；七层负载均衡**解析应用协议**，因此能按 HTTP 路径选择后端。
 
@@ -97,6 +98,28 @@ HTTP 消息
 
 作者 en:User:Cburnett original work, colorization by en:User:Kbrose，CC BY-SA 3.0，https://commons.wikimedia.org/w/index.php?curid=1546338
 
+### 4.5 从网卡接收数据到 socket {#从网卡接收数据到socket}
+
+**网卡接收、写入主存和交给应用，是接收路径上的不同阶段。** 以下以常见以太网网卡和 Linux 常规协议栈为例，不把某一型号的内部电路或驱动细节当成所有设备的统一实现。
+
+网卡可以先依据驱动配置的接收规则过滤帧，包括本机的单播 MAC、广播以及需要接收的组播。这里的 MAC 地址判断可以由网卡硬件完成，不是只有进入内核软件后才能做。混杂模式会放宽接收范围；组播过滤能力、VLAN 过滤和虚拟化配置也会影响哪些帧交给主机。因此，“不是本机单播 MAC 就一定丢弃”并不成立，硬件放行也不代表最终会交给本机应用。
+
+**接收描述符**是驱动与网卡共享的接收管理记录，用来描述可写入的缓冲区，并让驱动识别设备完成的工作。常见接收路径如下：
+
+| 阶段 | 主要工作 |
+| --- | --- |
+| 驱动准备 | 在主存准备接收缓冲，建立设备可用的 DMA 映射，把缓冲地址等信息填入接收描述符，交给网卡使用 |
+| 网卡接收 | 接收并按配置过滤帧，将获准接收的数据通过 DMA 写入对应的主存缓冲，更新完成状态、长度等信息 |
+| 驱动处理完成 | CPU 运行驱动，检查完成描述符、同步并整理缓冲，处理错误，再把包交给内核网络接收路径，同时补充后续可用缓冲 |
+| 协议栈交付 | 解析链路类型与 IP、TCP 或 UDP 等头部，执行路由、协议状态和必要校验；属于本机且满足协议条件的数据才可能进入对应 socket 的接收队列 |
+| 应用读取 | 应用通过 `recv` 等接口取得数据；普通接收通常还涉及从内核到用户缓冲的交付，不等于网卡直接写好了应用对象 |
+
+描述符常组织成环形队列，但描述符本身和它指向的数据缓冲不是同一对象。网卡片内缓冲也不等于主存接收缓冲。DMA 地址由驱动通过相应接口取得，经过 IOMMU 时还可能需要地址转换，不能直接把应用的虚拟地址填给设备使用。
+
+Linux 的 **NAPI** 用于组织网络接收、发送完成等事件的处理。常见方式是中断通知后调度驱动的轮询函数，在预算范围内批量处理已接收的数据；它也支持不先经过一次设备中断的轮询方式。因此，不必每收到一个包就产生一次中断。DMA 负责数据搬运、CPU 负责驱动和协议处理的分工，见 [I/O 模型](../operating-system/io-models.mdx#cpu-dma与设备完成)，这里不再重复整套 I/O 分类。
+
+最后，目标 MAC 只帮助判断链路上的接收对象，不能定位应用进程。IP 层还要判断本地交付还是转发，传输层结合协议、地址、端口和连接状态查找 socket；不满足条件时可能丢弃或按协议返回错误。对于 TCP，应用读到的是整理后的字节流，一个 `recv` 与一个网卡收到的帧没有一一对应关系。设备卸载、XDP 或用户态网络路径会改变部分步骤，不能由这条常规路径推断固定复制次数或所有收包场景。
+
 ## 5. 逐跳处理与设备分工 {#逐跳处理与设备分工}
 
 二层交换机主要看帧中的目标 MAC 地址，按 MAC 转发表决定从哪个端口发出。路由器则取出 IP 包，根据目标 IP 选下一跳，再为下一段链路重新封装帧。
@@ -153,6 +176,21 @@ OSI 的传输层、网络层分别与 TCP/IP 的同名层近似对应。这是�
 
 </details>
 
+### 7.3 数据从网卡怎样到达应用，网卡如何判断是否接收？ {#nic-to-process}
+
+**考察重点**：接收过滤、描述符与缓冲、DMA、驱动和协议栈的职责。
+
+**相关内容**：[从网卡接收数据到 socket](#从网卡接收数据到socket)、[I/O 模型：CPU、DMA 与设备完成](../operating-system/io-models.mdx#cpu-dma与设备完成)。
+
+<details>
+<summary>参考回答</summary>
+
+**常见以太网网卡先按驱动配置的 MAC、组播等规则过滤，再通过 DMA 把数据写入主存接收缓冲；CPU 随后运行驱动和协议栈。** 混杂模式等配置会放宽过滤，不能只用“目标 MAC 是否等于本机单播地址”概括全部接收条件。
+
+驱动事先准备缓冲和描述符，完成后检查状态、处理错误并交给协议栈；NAPI 可以结合中断与批量轮询，不要求一个包一次中断。协议栈再根据地址、端口和协议状态交给 socket，应用调用读取接口取得数据。TCP 字节流和链路帧不一一对应，网卡接收成功也不代表某个进程已经读完。
+
+</details>
+
 ## 8. 参考资料 {#参考资料}
 
 - [RFC 1122：Requirements for Internet Hosts](https://www.rfc-editor.org/rfc/rfc1122)
@@ -160,3 +198,6 @@ OSI 的传输层、网络层分别与 TCP/IP 的同名层近似对应。这是�
 - [ITU-T X.200：OSI Basic Reference Model](https://www.itu.int/rec/T-REC-X.200-199407-I/en)
 - [NGINX：HTTP Load Balancing](https://docs.nginx.com/nginx/admin-guide/load-balancer/http-load-balancer/)
 - [NGINX：TCP and UDP Load Balancing](https://docs.nginx.com/nginx/admin-guide/load-balancer/tcp-udp-load-balancer/)
+- [Linux 6.6：NAPI，事件处理与轮询预算](https://docs.kernel.org/6.6/networking/napi.html)
+- [Linux 6.6：Dynamic DMA mapping Guide，设备地址与主存缓冲](https://docs.kernel.org/6.6/core-api/dma-api-howto.html)
+- [Linux 6.6：e1000 驱动，接收过滤、描述符和协议栈交付的一个实现](https://github.com/torvalds/linux/blob/v6.6/drivers/net/ethernet/intel/e1000/e1000_main.c)

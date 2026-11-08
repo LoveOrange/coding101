@@ -1,0 +1,444 @@
+---
+sidebar_position: 5
+knowledge:
+  id: frontend.performance.observability
+---
+
+# 前端监控
+
+前端监控需要回答用户是否完成了操作、页面在哪里失败，以及问题与哪个版本和环境有关。捕获异常只是其中一步：资源加载、异步拒绝、组件渲染、接口失败和页面不可用，需要不同的信号。
+
+有效的上报应提供足够定位问题的上下文，同时控制采集量和字段范围。不能因为安装了一个全局 error 监听器，就认为所有故障都已覆盖；也不能因为浏览器接受了一次上报，就认定服务端已经保存成功。
+
+## 1. 面试核心 {#core}
+
+- **脚本异常、资源错误与未处理 Promise 拒绝走不同入口**。全局监听是兜底，框架和业务层仍要补充明确的失败状态。[卡](#error-coverage)
+- **window.onerror 接收特殊的多参数回调，addEventListener 接收事件对象并支持多个监听器**。资源 error 不冒泡，统一监听资源失败通常使用捕获阶段。[卡](#onerror-listener)
+- **unhandledrejection 表示当前尚未被处理的拒绝，不一定永久无人处理**。之后补上处理器，可能产生 rejectionhandled；两条记录应关联同一个拒绝。[卡](#promise-rejection)
+- **异常定位要绑定发布版本、资源标识和位置，Source Map 必须对应实际部署产物**。拿错版本的映射可能给出错误源码位置。[卡](#source-map)
+- **采集、入队、浏览器接受发送、服务端确认是不同阶段**。sendBeacon 返回 true 只表示进入发送队列，不是业务确认。[卡](#delivery)
+- **去重应区分同一事件被重复发送与相同故障反复发生**。前者依靠稳定事件 ID，后者需要聚合次数，不能简单永久丢弃。[卡](#duplicate-events)
+- **白屏和 SSR 故障需要客户端、服务端与可用性信号结合**。FCP 有值不保证业务可用，没有错误上报也不代表页面正常。[卡](#blank-ssr)
+- **字段白名单、采样、队列上限和监控自身隔离都属于实现的一部分**。原始 URL、输入、请求正文和堆栈可能包含敏感信息，不应无条件上传。[卡](#report-design)
+
+## 2. 错误来源与采集入口 {#错误来源与采集入口}
+
+### 2.1 全局监听的覆盖范围 {#全局监听的覆盖范围}
+
+| 情况 | 主要入口 | 边界 |
+| --- | --- | --- |
+| 未捕获的脚本同步异常 | window 的 error / onerror | 已被业务捕获的异常不会自然到这里 |
+| 图片、脚本等资源加载失败 | 资源元素 error，捕获阶段统一监听 | 不等同于带堆栈的 ErrorEvent |
+| 未处理 Promise 拒绝 | unhandledrejection | 已处理拒绝不属于这个信号，跨源限制也可能减少可见信息 |
+| 框架组件渲染失败 | 框架错误处理入口 | 全局事件不替代组件降级与上下文 |
+| HTTP 或业务失败 | 请求封装与业务判断 | HTTP 500 不必然造成 fetch Promise 拒绝 |
+| Worker、iframe 中的错误 | 对应环境的监听与消息 | 不会自动成为主窗口的完整错误记录 |
+
+try/catch 只处理当前受保护执行中的异常，不能包住之后任意定时器或事件回调。await 的拒绝可以在对应 async 函数的 try/catch 中处理，但已经处理的业务失败是否需要上报，应由业务明确决定。
+
+HTTP 状态、网络拒绝与业务结果的区别见 [Fetch API](../browser/fetch.mdx#http失败与promise拒绝)。不要为了统一监控而把正常取消、无搜索结果和程序错误全部算成同一种故障。
+
+### 2.2 onerror 与事件监听器 {#onerror与事件监听器}
+
+window.onerror 是历史上具有特殊签名的属性处理器，脚本异常会传入 message、source、lineno、colno、error。addEventListener('error', listener) 则把一个事件对象传给 listener。
+
+下面只把受控示例的事件类型写到本地控制台，不做网络上报：
+
+```js
+const previousOnError = window.onerror;
+window.onerror = function (message, source, lineno, colno, error) {
+  console.log('onerror', arguments.length, error?.name ?? 'unknown');
+  return false;
+};
+function onErrorEvent(event) {
+  console.log('listener', event.constructor.name, event.target === window);
+}
+window.addEventListener('error', onErrorEvent, true);
+function stopErrorDemo() {
+  window.onerror = previousOnError;
+  window.removeEventListener('error', onErrorEvent, true);
+}
+```
+
+给 onerror 再次赋值会替换该属性处理器；addEventListener 可以同时注册不同回调。资源错误不会按普通冒泡方式传到 window，示例的 true 表示在捕获阶段观察路径上的资源 error。
+
+window.onerror 返回 true 可以取消浏览器默认的错误报告，这是它的特殊规则；在 addEventListener 回调中直接 return true 没有这种效果。取消默认报告也没有修复代码，更不应为了监控而无条件隐藏控制台错误。事件阶段见 [DOM 事件](../browser/dom-events.mdx#不冒泡事件)。
+
+### 2.3 未处理拒绝与延迟处理 {#未处理拒绝与延迟处理}
+
+Promise 拒绝后，如果在浏览器检查时还没有相应处理器，可以收到 unhandledrejection。之后才添加 catch，可能收到 rejectionhandled。可通过事件携带的 promise 关联它们，不应把后一条当作一次新的独立业务失败。
+
+reason 不保证是 Error，也可能是字符串、对象甚至循环引用。直接 JSON.stringify(reason) 可能失败，直接上传则可能泄露业务内容。跨源脚本引起的拒绝还受信息隔离约束，不能把缺少事件理解为没有故障。
+
+下面的采集器只保留受控类型、已知资源 ID 和位置，不上传原始 message、stack、URL 或 reason。assetIds 由构建清单提供，键是去掉查询与片段后的完整资源地址；route 和 release 也由应用传入固定标识。示例使用 crypto.randomUUID，运行环境需要 HTTPS 或 localhost 等安全上下文。
+
+```js
+function installErrorCapture(emit, { assetIds = new Map() } = {}) {
+  const promiseIds = new WeakMap();
+  const errorNames = new Set([
+    'Error', 'TypeError', 'RangeError', 'ReferenceError', 'SyntaxError',
+    'URIError', 'EvalError', 'AggregateError',
+  ]);
+  const classify = error => {
+    try { return errorNames.has(error?.name) ? error.name : 'OtherError'; }
+    catch { return 'OtherError'; }
+  };
+  const assetId = value => {
+    try {
+      const url = new URL(value, location.href);
+      return assetIds.get(url.origin + url.pathname) ?? 'unknown';
+    } catch { return 'unknown'; }
+  };
+  function record(fields) {
+    const event = { eventId: crypto.randomUUID(), time: Date.now(), ...fields };
+    try { Promise.resolve(emit(event)).catch(() => {}); }
+    catch { /* 监控出口失败不再抛回业务。 */ }
+    return event.eventId;
+  }
+  function onError(event) {
+    if (event instanceof ErrorEvent) {
+      record({
+        kind: 'script-error', errorName: classify(event.error),
+        asset: assetId(event.filename), line: event.lineno, column: event.colno,
+      });
+      return;
+    }
+    const target = event.target;
+    if (target instanceof HTMLImageElement || target instanceof HTMLScriptElement ||
+        target instanceof HTMLLinkElement) {
+      record({
+        kind: 'resource-error', tag: target.tagName,
+        asset: assetId(target.currentSrc || target.src || target.href),
+      });
+    }
+  }
+  function onUnhandled(event) {
+    const id = record({ kind: 'unhandled-rejection', errorName: classify(event.reason) });
+    promiseIds.set(event.promise, id);
+  }
+  function onHandled(event) {
+    const relatedId = promiseIds.get(event.promise);
+    if (relatedId) {
+      promiseIds.delete(event.promise);
+      record({ kind: 'rejection-handled', relatedId });
+    }
+  }
+  window.addEventListener('error', onError, true);
+  window.addEventListener('unhandledrejection', onUnhandled);
+  window.addEventListener('rejectionhandled', onHandled);
+  return () => {
+    window.removeEventListener('error', onError, true);
+    window.removeEventListener('unhandledrejection', onUnhandled);
+    window.removeEventListener('rejectionhandled', onHandled);
+  };
+}
+```
+
+WeakMap 用 Promise 本身关联延迟处理记录，不会仅为了关联而强持有所有 Promise。emit 同步抛错或返回拒绝 Promise 时都被隔离，避免监控出口失败再次触发未处理拒绝，形成循环上报。
+
+这是有限字段的采集示例，不是完整 SDK。跨源限制、框架已捕获异常和业务失败仍需单独接入；需要错误消息或堆栈时，应建立有明确允许范围和访问控制的诊断通道，而不是直接扩展成任意对象序列化。
+
+## 3. 组件、白屏与服务端渲染 {#组件白屏与服务端渲染}
+
+### 3.1 组件失败与降级 {#组件失败与降级}
+
+组件加载失败可能来自资源请求、模块求值或渲染本身，处理入口并不相同。动态 import 的拒绝需要处理等待和失败；组件渲染失败则要使用框架提供的错误处理机制，并给用户可恢复的界面。
+
+React 的错误边界可处理子树渲染等阶段的错误，但不能概括为捕获所有事件处理、任意异步回调或服务端渲染错误。Vue 3 的 app.config.errorHandler 则用于接收框架报告的应用错误。框架已经接管的错误不应只依赖 window 事件兜底。
+
+记录时补充稳定的页面、组件或功能标识，以及发布版本。相同错误同时经过局部上报、框架入口和全局入口时，应定义哪一层负责产生事件，避免每层都无条件记录一次。
+
+### 3.2 白屏是现象，不是单一异常 {#白屏是现象不是单一异常}
+
+页面空白可能因为关键脚本未加载、初始化失败、根节点为空、样式把内容遮住、接口一直等待，或路由状态不正确。浏览器没有抛出异常，也可能让用户无法操作。
+
+可以组合关键资源失败、应用初始化完成标记、业务容器状态、导航与渲染时间、超时和用户操作结果。采样检查 DOM 或截图只能作为辅助信号，要考虑合法空态、加载占位和页面类型，否则容易误报。
+
+FCP 只说明出现过符合定义的内容，不保证主要业务已经可用；页面标题或加载指示器也可能产生绘制。反过来，后台页面或测量范围变化也会影响指标，不应只用“超时没有 FCP”直接断言所有用户都白屏。性能口径见 [Web 性能指标](./metrics.mdx)。
+
+### 3.3 SSR 与客户端错误关联 {#ssr与客户端错误关联}
+
+SSR 在服务端发生，服务端渲染抛错应在服务端请求与渲染入口记录，并关联请求标识和版本。客户端不能通过 window.onerror 捕获服务器进程中的异常。
+
+客户端还需观察返回状态、关键资源、hydration 和可交互状态。HTML 返回 200 不保证组件都正确渲染，服务器有日志也不保证用户浏览器成功加载了同一版本。
+
+如果核心脚本完全没有执行，写在该脚本里的监控同样不会启动。需要结合更早加载的最小健康信号、独立拨测、CDN/服务端数据与版本发布验证，不能把“没有收到错误”当作成功率为 100%。
+
+## 4. Source Map 与版本定位 {#source-map与版本定位}
+
+**Source Map**描述生成代码位置与原始代码位置的映射，使压缩、打包或转译后的异常能够定位回原始文件。它不修复错误，也不是把任意压缩代码自动还原成原项目。
+
+例如原始模块包含：
+
+```js
+export function parseCourse(input) {
+  if (!input.name) {
+    throw new TypeError('missing course name');
+  }
+  return input.name.trim();
+}
+parseCourse({});
+```
+
+压缩后这段代码可能只占一行。需要用部署文件对应的映射，把生成位置还原到原始抛错位置。浏览器错误事件中的列号与映射工具使用的列号可能采用不同起点，应按接口规则转换，不能直接假定所有工具都从同一个数开始。
+
+发布时应一起保存版本、资源内容标识、构建产物和对应映射。源码路径、函数名及堆栈用于归组前，也要检查是否包含不应暴露的信息。
+
+Source Map 可能包含 sourcesContent，也可能引用原始源文件。若不希望公开源码，可以把映射上传到受控诊断平台，在服务端完成符号化；只移除 sourceMappingURL 注释，不等于部署目录中的 .map 文件已经不可访问。
+
+## 5. 上报、去重与容量 {#上报去重与容量}
+
+### 5.1 上报阶段与可靠性 {#上报阶段与可靠性}
+
+一次事件可能经历采集、内存入队、浏览器接受发送、网络传输和服务端保存。每一阶段都可能失败，接口的返回值只能证明它承诺的那一步。
+
+sendBeacon 适合少量数据的异步 POST，上层不能从它读取响应内容。返回 true 表示浏览器接受了发送安排；false 表示没有排进队列。它不是可靠消息队列，也不承诺页面退出前服务端一定确认。
+
+需要查看响应或使用更多请求选项时，可以使用 Fetch；页面生命周期中可按需要评估 keepalive，但它同样受容量与生命周期限制。visibilitychange 进入 hidden 是常用的补发机会，不能只依赖不一定发生的 unload 或 beforeunload。
+
+### 5.2 一个有界的批量出口 {#一个有界的批量出口}
+
+下面只演示同源、有限字段事件的内存队列。每条最多 1 KiB，最多保存 20 条，每批最多 10 条；队列满、记录无效或过大时返回 false。调用者要决定记录丢弃计数等处理方式。
+
+```js
+function createReporter({ release, route }) {
+  if (![release, route].every(v => typeof v === 'string' && v.length <= 64)) {
+    throw new TypeError('release 和 route 必须是有限长度的固定标识');
+  }
+  const queue = new Map();
+  let stopped = false;
+  function flush() {
+    if (stopped || queue.size === 0) return false;
+    const batch = [...queue.entries()].slice(0, 10);
+    const body = new Blob([JSON.stringify({
+      release, route, events: batch.map(([, text]) => JSON.parse(text)),
+    })], { type: 'application/json' });
+    let accepted = false;
+    try { accepted = navigator.sendBeacon('/telemetry', body); }
+    catch { return false; }
+    if (accepted) for (const [id] of batch) queue.delete(id);
+    return accepted;
+  }
+  function enqueue(event) {
+    if (stopped) return false;
+    let id;
+    let text;
+    try {
+      id = event?.eventId;
+      if (typeof id !== 'string' || id.length === 0 || id.length > 128) return false;
+      if (queue.has(id)) return true;
+      if (queue.size >= 20) return false;
+      text = JSON.stringify(event);
+      if (typeof text !== 'string') return false;
+      const copy = JSON.parse(text);
+      if (!copy || copy.eventId !== id) return false;
+    }
+    catch { return false; }
+    if (new Blob([text]).size > 1024) return false;
+    queue.set(id, text);
+    return true;
+  }
+  const onVisibility = () => {
+    if (document.visibilityState === 'hidden') flush();
+  };
+  document.addEventListener('visibilitychange', onVisibility);
+  return {
+    enqueue,
+    flush,
+    stop() {
+      stopped = true;
+      document.removeEventListener('visibilitychange', onVisibility);
+      queue.clear();
+    },
+  };
+}
+```
+
+enqueue 只表示进入本地队列，flush 才尝试发送。false 时保留这一批，以便调用者在合适时机再尝试；true 后删除本地记录，但仍没有服务端确认。本例不做持久化、自动重试与可靠送达承诺，页面退出可能丢失剩余事件。
+
+这个出口接收的是已经过字段审核的记录；限制字节数不等于完成脱敏。也不应为监控请求本身再无条件触发同一个网络错误上报，否则可能形成故障放大。
+
+把采集器接入队列：
+
+```js
+const reporter = createReporter({ release: 'demo-1', route: 'course-list' });
+const assetIds = new Map([
+  [new URL('/assets/app.js', location.href).href, 'app'],
+]);
+const stopCapture = installErrorCapture(event => reporter.enqueue(event), { assetIds });
+// 在应用选择的批次时机调用 reporter.flush()。
+function stopMonitoring() {
+  stopCapture();
+  reporter.stop();
+}
+```
+
+示例中出口失败会返回 false，生产代码可以增加独立的丢弃计数与受控诊断，但不应因为监控不可用而阻止用户操作。若增加重试，需要限制次数、退避、队列容量和存活时间，并继续使用原事件 ID。
+
+### 5.3 两类去重不能混淆 {#两类去重不能混淆}
+
+同一个事件在重试中发送多次，应使用同一个 eventId，服务端按合理保留期做幂等接收。本例只避免同一 ID 同时重复入队；记录离开队列后再次进入，仍可能再次发送，所以服务端去重不可省略。
+
+相同缺陷在不同用户、不同时间反复发生，是多个真实事件。可以按版本、归一化类型和源码位置等生成故障指纹，聚合次数和受影响会话数，而不是按错误消息永久删除后续记录。
+
+框架重复注册、页面初始化多次、多个监控入口同时记录，也会产生重复事件。应先修复重复采集，再评估传输重试；仅在网络层加防抖可能误吞真实的独立失败。
+
+### 5.4 采样与字段控制 {#采样与字段控制}
+
+采样需要先定义单位：按事件抽样、按会话保留整段行为，或对某类故障保留不同概率，会得到不同的数据。记录采样率和策略变化，计算错误率时确保分子与分母口径一致；不能拿抽样后的错误数直接除以全部页面访问数。
+
+字段优先使用固定功能名、路由模板、版本和资源 ID。删除 URL 查询参数仍不保证安全，路径中也可能有用户标识；错误消息、堆栈、请求头和表单内容同样可能带出凭据或业务数据。
+
+控制字段白名单、最大长度、采样与访问权限，并避免把用户 ID 或完整 URL 当成无限增长的聚合维度。保留多少上下文，要能说明它帮助解决哪类故障。
+
+## 6. 从采集到处理问题 {#从采集到处理问题}
+
+定位线上问题时，可以先按版本、页面和环境确认影响范围，再关联异常、资源失败、请求和性能记录。新发布后某个资源大量失败，与只有某个功能在特定输入下抛错，需要不同的处置。
+
+告警应基于用户影响与可采取的行动，例如关键流程失败率持续升高、某版本的初始化成功率明显下降。单个异常不必都即时通知，通知渠道也不应只依赖正在发生故障的页面本身。
+
+告警分组、抑制、持续时间与数据缺失等共享原则见 [监控与告警](../../devops/observability/monitoring-alerting.mdx#告警设计)。前端仍需给出可定位的版本、页面、错误分组和复现条件，让通知能转化为调查与修复。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 前端错误监控需要哪些入口，全局 error 能捕获所有错误吗？ {#error-coverage}
+
+**考察重点**：异常来源、框架与业务语义、运行环境边界。
+
+**相关内容**：[全局监听的覆盖范围](#全局监听的覆盖范围)、[组件失败与降级](#组件失败与降级)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能，脚本异常、资源 error、未处理拒绝、框架错误和请求业务失败需要分别接入。** 已捕获异常、HTTP 失败、Worker 或服务器内部错误，不会自动成为主窗口的一条完整 error 记录。
+
+全局监听用于兜底，业务与框架入口提供更明确的功能上下文和降级；同时要防止相同故障被多层重复采集。
+
+</details>
+
+### 7.2 window.onerror 与 addEventListener('error') 有什么区别？ {#onerror-listener}
+
+**考察重点**：签名、属性覆盖、多个监听器、捕获阶段与默认处理。
+
+**相关内容**：[onerror 与事件监听器](#onerror与事件监听器)。
+
+<details>
+<summary>参考回答</summary>
+
+**onerror 属性处理器使用特殊的五参数签名，再次赋值会替换；addEventListener 传入事件对象，可以保留多个不同回调。** 资源错误不冒泡，统一观察时可在捕获阶段监听并区分资源事件与 ErrorEvent。
+
+onerror 返回 true 可以取消默认错误报告，普通事件监听回调的返回值没有同样效果。取消默认报告不代表异常已经修复。
+
+</details>
+
+### 7.3 unhandledrejection 是否说明这个 Promise 永远不会被处理？ {#promise-rejection}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：宿主检查时机、延迟处理与拒绝原因类型。
+
+**相关内容**：[未处理拒绝与延迟处理](#未处理拒绝与延迟处理)。
+
+<details>
+<summary>参考回答</summary>
+
+**不说明永久无人处理，它表示宿主检查时尚未有相应处理器。** 之后添加处理器可能产生 rejectionhandled，可用 promise 本身关联之前的记录。
+
+reason 不一定是 Error，序列化和上报前需要限制字段；不能直接假设存在 message 与 stack，也不能把延迟处理事件当成新的独立失败。
+
+</details>
+
+### 7.4 压缩代码报错后，Source Map 怎样帮助定位，为什么需要发布版本？ {#source-map}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：生成位置、原始位置、构建对应关系与源码暴露。
+
+**相关内容**：[Source Map 与版本定位](#source-map与版本定位)。
+
+<details>
+<summary>参考回答</summary>
+
+**Source Map 把生成代码的位置映射到原始文件位置，必须使用对应部署产物的映射。** 版本或内容不匹配，可能定位到错误行，因此发布标识、资源与映射要一起保存，并核对位置接口的起点约定。
+
+映射可能包含源码，应按需要在受控平台符号化。删除引用注释本身不保证 .map 文件已经无法公开访问。
+
+</details>
+
+### 7.5 sendBeacon 返回 true，能说明服务端已保存数据吗？ {#delivery}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：本地队列、浏览器发送安排、网络与业务确认。
+
+**相关内容**：[上报阶段与可靠性](#上报阶段与可靠性)、[一个有界的批量出口](#一个有界的批量出口)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能，true 只说明浏览器接受了发送安排，不能读取服务端确认。** false 时可以在容量与生命周期约束下选择再次尝试或记录丢弃；不能无限积压或重试。
+
+需要更强确认时应设计带响应的传输和服务端幂等，页面生命周期与断网仍需考虑。visibilitychange 进入 hidden 是补发机会，也不是送达保证。
+
+</details>
+
+### 7.6 项目数据重复上报，应该怎样定位和处理？ {#duplicate-events}
+
+**考察重点**：重复采集、传输重试、事件身份与真实重复故障。
+
+**相关内容**：[两类去重不能混淆](#两类去重不能混淆)。
+
+<details>
+<summary>参考回答</summary>
+
+**先区分重复注册或多入口采集，与同一事件的网络重试。** 前者修复采集生命周期，后者保持稳定 eventId 并由服务端幂等接收。
+
+相同错误多次真实发生应聚合次数和影响范围，不能按消息永久去掉。错误指纹用于分组，事件 ID 用于同一次事件的去重，两者用途不同。
+
+</details>
+
+### 7.7 怎样监控白屏和 SSR 错误，只有客户端异常监听够吗？ {#blank-ssr}
+
+**题型**：综合题
+
+**考察重点**：业务可用性、服务端与客户端边界、监控盲区。
+
+**相关内容**：[白屏是现象，不是单一异常](#白屏是现象不是单一异常)、[SSR 与客户端错误关联](#ssr与客户端错误关联)、[全局监听的覆盖范围](#全局监听的覆盖范围)。
+
+<details>
+<summary>参考回答</summary>
+
+**不够，SSR 错误要在服务端记录，客户端还需检查初始化、关键资源、hydration 与业务可用状态。** 白屏可能没有异常，FCP 有值也可能只绘制了占位内容。
+
+通过版本与请求标识关联两端信息，并结合独立拨测或更早的健康信号。监控脚本本身未执行时，没有上报不能代表页面正常。
+
+</details>
+
+### 7.8 设计埋点上报模块时，除了发请求还要考虑什么？ {#report-design}
+
+**题型**：综合题
+
+**考察重点**：事件模型、字段范围、容量、采样、可靠性与故障隔离。
+
+**相关内容**：[一个有界的批量出口](#一个有界的批量出口)、[两类去重不能混淆](#两类去重不能混淆)、[采样与字段控制](#采样与字段控制)、[未处理拒绝与延迟处理](#未处理拒绝与延迟处理)。
+
+<details>
+<summary>参考回答</summary>
+
+**先定义事件、版本、页面与稳定 ID，再确定字段白名单、采样单位、队列和单次大小上限。** 发送时区分本地入队与服务端确认，重试要有限并保留原事件 ID。
+
+还要避免重复注册、无限增长的维度和敏感信息泄露，并隔离监控自己的异常。队列满或上报失败的处理规则应明确，不应让监控故障阻止用户操作。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [MDN：Window error event](https://developer.mozilla.org/en-US/docs/Web/API/Window/error_event)
+- [MDN：unhandledrejection](https://developer.mozilla.org/en-US/docs/Web/API/Window/unhandledrejection_event)
+- [MDN：rejectionhandled](https://developer.mozilla.org/en-US/docs/Web/API/Window/rejectionhandled_event)
+- [MDN：sendBeacon](https://developer.mozilla.org/en-US/docs/Web/API/Navigator/sendBeacon)
+- [MDN：visibilitychange](https://developer.mozilla.org/en-US/docs/Web/API/Document/visibilitychange_event)
+- [Chrome DevTools：Source Maps](https://developer.chrome.com/docs/devtools/javascript/source-maps)
+- [ECMA-426：Source map format](https://tc39.es/ecma426/)
+- [React：Error Boundaries](https://react.dev/reference/react/Component#catching-rendering-errors-with-an-error-boundary)
+- [Vue 3：app.config.errorHandler](https://vuejs.org/api/application.html#app-config-errorhandler)

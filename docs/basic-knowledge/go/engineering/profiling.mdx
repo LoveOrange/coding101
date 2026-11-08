@@ -1,0 +1,384 @@
+---
+sidebar_position: 4
+knowledge:
+  id: basic-knowledge.go.engineering.profiling
+  type: concept
+description: "讲解 Go 的 CPU、heap、goroutine profile 与执行 trace，区分 CPU 消耗、内存保留、分配压力和等待，并据此定位性能问题。"
+keywords: ["Go", "pprof", "性能分析", "heap profile", "CPU profile", "trace"]
+---
+
+# Go 性能分析
+
+**性能分析**是通过运行数据判断程序把时间和资源花在了哪里。Go 的 `pprof` 帮助我们按调用位置汇总 CPU、内存和等待等数据，执行 trace 则保留运行时事件的时间顺序。两者都需要结合具体负载理解：一个函数分配了很多对象，不等于它泄漏了内存；服务响应慢，也不一定是计算太慢。
+
+面试中解释排查过程，重点是说清楚“现在怀疑什么、收集哪种证据、结果能排除什么”。本文以 Go 1.22.12 为准，示例使用本地文件采集数据。
+
+## 1. 面试核心 {#core}
+
+- **CPU profile 用采样回答 CPU 时间主要花在哪里，不直接统计请求的完整等待时间**。先找热点调用链，再结合源码判断计算是否必要。[卡](#cpu-hotspot)
+- **`inuse_space` 看仍保留的堆对象大小，`alloc_space` 看累计分配大小**。后者增长而前者稳定，可能只是对象创建和回收频繁；两者都不能直接当成进程 RSS。[卡](#memory-growth)
+- profile 是特定条件下的运行证据。**比较时应对齐代码、输入、采样设置和运行阶段，并区分净保留变化与区间内的分配总量**。[卡](#profile-comparison)
+- **goroutine 数量包含等待中的任务，不能代表当前正在执行的数量**。看调用栈定位等待，再用 trace 观察阻塞、唤醒和调度之间的关系。[卡](#low-throughput)
+- **trace 记录事件顺序，profile 汇总事件的成本**。定位到可疑路径后，还需用可控制的负载验证修改后的正确性、吞吐和延迟。[卡](#profiling-tools)
+
+## 2. 先确定要解释的现象 {#先确定要解释的现象}
+
+**profile** 是按调用栈组织的一组统计数据。不同 profile 记录的对象不同，同一个 `top` 排名也可能分别表示 CPU 时间、字节数或等待时长。阅读前先确认类型和单位。
+
+| 现象 | 优先收集的证据 | 接下来要分清什么 |
+| --- | --- | --- |
+| CPU 使用率高 | CPU profile、请求量和进程 CPU 指标 | 业务计算、重复工作、GC 或其他运行时成本 |
+| 内存持续增加 | 多个时刻的 heap profile、堆与进程内存指标 | 存活对象增加、分配后尚未回收、运行时保留空间或 Go 堆以外的占用 |
+| goroutine 数量增加 | goroutine profile、请求和任务生命周期记录 | 正常并发、积压，还是本应退出的任务没有退出 |
+| CPU 不高但请求慢 | 调用栈、trace、下游延迟和队列指标 | 网络等待、锁等待、资源池限制或可运行任务等待调度 |
+
+先记录问题出现时的版本、负载、并发数、错误率、吞吐和延迟，再选择采集窗口。空闲时采到的 CPU profile，未必能解释高峰期的瓶颈；从进程启动累计的内存分配，也不能直接代表最近一分钟的行为。
+
+已有诊断 HTTP 服务可以使用 `net/http/pprof` 提供采集入口。导入包只会注册默认 mux 的处理器，不会启动服务器，自定义 mux 还需显式注册，见 [Go 并发诊断的采集说明](../concurrency/leaks-races.mdx#采集并阅读调用栈)。采集入口应限制访问范围，采样也要控制时长和开销；本文的独立实验不需要启动诊断服务。
+
+## 3. CPU profile {#cpu-profile}
+
+### 3.1 采样与调用链 {#采样与调用链}
+
+**CPU profile** 在采集期间周期性记录正在消耗 CPU 的调用栈，再把样本归到函数和源码位置。Go 1.22.12 的 `StartCPUProfile` 使用每秒 100 次的采样频率；这是该实现的采样设置，不代表每个函数都会被采到，也不提供精确的调用次数。
+
+处于 channel、网络或锁等待中的 goroutine，在等待期间通常不消耗业务 CPU 时间，因而可能不出现在 CPU 热点中。反过来，一个函数在多个线程上并行执行，累计 CPU 时间可能超过采集窗口的墙钟时间。不能把 profile 的 CPU 总量直接当成单个请求的耗时。
+
+`pprof` 的函数表中有两列需要区分：
+
+- **`flat` 是归到函数自身的样本成本**，不包含调用链中更深函数的成本。
+- **`cum` 是包含该函数及其后续调用的累计成本**。调用了昂贵子函数的入口，自身 `flat` 可能很小，`cum` 却很大。
+
+这些列可以用于不同类型的 profile；具体成本是什么，仍由当前样本类型决定。`cum` 已经包含下游成本，不能把一条调用链各层的 `cum` 再相加。
+
+### 3.2 从热点回到源码 {#从热点回到源码}
+
+下面用一个纯计算函数产生可观察的 CPU 负载。把代码保存为 `main.go`：
+
+```go
+package main
+
+import (
+    "fmt"
+    "os"
+    "runtime/pprof"
+    "time"
+)
+
+var result uint64
+
+//go:noinline
+func mix(x uint64) uint64 {
+    for i := 0; i < 100000; i++ {
+        x ^= x << 13
+        x ^= x >> 7
+        x ^= x << 17
+    }
+    return x
+}
+
+func main() {
+    f, err := os.Create("cpu.pprof")
+    if err != nil {
+        panic(err)
+    }
+    if err := pprof.StartCPUProfile(f); err != nil {
+        f.Close()
+        panic(err)
+    }
+    end := time.Now().Add(time.Second)
+    for time.Now().Before(end) {
+        result = mix(result + 1)
+    }
+    pprof.StopCPUProfile()
+    if err := f.Close(); err != nil {
+        panic(err)
+    }
+    fmt.Println("profile written")
+}
+```
+
+`mix` 的结果存入 `result`，保留实际计算；`//go:noinline` 让示例中的函数边界更容易辨认，不是业务优化建议。`StopCPUProfile` 会等待采样数据写完，再关闭文件。运行并查看：
+
+```bash
+go build -o cpu-demo main.go
+./cpu-demo
+go tool pprof -top ./cpu-demo cpu.pprof
+go tool pprof -top -cum ./cpu-demo cpu.pprof
+go tool pprof -list='main.mix' ./cpu-demo cpu.pprof
+```
+
+`top` 中可以找到 `main.mix` 的 CPU 消耗，`-list` 会把样本对应到函数源码。具体样本数和占比随机器、调度及采样变化，不应把某一次的百分比当成固定结果。保留对应的二进制和源码，有助于正确解析符号与源码行。
+
+发现热点后，还要问这段工作为什么多。例如 JSON 编解码多，可能是请求本身需要，也可能是重复转换；GC 占用多，要继续查看分配路径。优化方向来自调用条件和成本，而不是看到函数排名第一就把它替换掉。修改后在相同负载下重新观察，防止 CPU 降低的同时增加内存保留或尾延迟。
+
+## 4. heap profile {#heap-profile}
+
+### 4.1 保留量与分配量 {#保留量与分配量}
+
+**heap profile** 按分配时的调用栈记录 Go 堆对象的分配和存活统计。Go 1.22.12 的公开说明以最近完成 GC 的统计为基础，避免把刚分配、尚未来得及回收的对象都当成长期存活对象；底层统计发布也有 GC 周期相关的延迟，所以它不是逐次分配、逐次释放的即时账本。
+
+| 选项 | 含义 | 适合回答的问题 |
+| --- | --- | --- |
+| `-inuse_space` | 仍在使用的对象字节数，heap 默认视图 | 哪些分配路径留下的内存较多 |
+| `-inuse_objects` | 仍在使用的对象数量 | 是否保留了大量小对象 |
+| `-alloc_space` | 从进程启动累计分配的字节数，包含已回收部分 | 哪些路径制造了较大的分配量 |
+| `-alloc_objects` | 从进程启动累计分配的对象数量 | 哪些路径频繁创建对象 |
+
+`allocs` profile 与 heap 使用同一类数据，主要区别是默认展示累计分配量。对象被回收后，累计分配量不会因此减少。
+
+堆采样通常不是逐个对象完整记录。`runtime.MemProfileRate` 在 Go 1.22.12 中默认是 `512 * 1024`，表示平均每分配这么多字节采一个对象；工具据此估计总体成本，不能理解成“每个对象超过 512 KiB 才记录”。改变采样率应在程序早期只设置一次，前后对照也要使用一致的设置。
+
+### 4.2 对照保留与释放 {#对照保留与释放}
+
+下面的独立程序从两条路径分配内存：`hold` 保留 8 个 1 MiB 的切片，`discard` 临时创建 32 个同样大小的切片。把它单独保存为另一个目录中的 `main.go`：
+
+```go
+package main
+
+import (
+    "fmt"
+    "os"
+    "runtime"
+    "runtime/pprof"
+)
+
+var kept [8][]byte
+
+//go:noinline
+func hold() {
+    for i := range kept {
+        kept[i] = make([]byte, 1<<20)
+        kept[i][0] = byte(i)
+    }
+}
+
+//go:noinline
+func discard() {
+    for i := 0; i < 32; i++ {
+        b := make([]byte, 1<<20)
+        b[0] = byte(i)
+        runtime.KeepAlive(b)
+    }
+}
+
+func snapshot(name string) {
+    runtime.GC()
+    runtime.GC()
+    f, err := os.Create(name)
+    if err != nil {
+        panic(err)
+    }
+    if err := pprof.WriteHeapProfile(f); err != nil {
+        f.Close()
+        panic(err)
+    }
+    if err := f.Close(); err != nil {
+        panic(err)
+    }
+}
+
+func main() {
+    runtime.MemProfileRate = 1
+    snapshot("before.pprof")
+    hold()
+    discard()
+    snapshot("held.pprof")
+    kept = [8][]byte{}
+    snapshot("released.pprof")
+    fmt.Println("snapshots written")
+}
+```
+
+`MemProfileRate = 1` 用于让这个小实验记录每次堆分配；额外的开销不适合作为默认生产设置。`snapshot` 中两次显式 GC 用于让实验在回收和统计推进后观察结果，不表示排查服务时必须连续强制 GC。强制 GC 本身会改变运行状态，需要单独考虑其影响。
+
+```bash
+go build -o heap-demo main.go
+./heap-demo
+go tool pprof -top -inuse_space ./heap-demo held.pprof
+go tool pprof -top -alloc_space ./heap-demo held.pprof
+go tool pprof -top -inuse_space ./heap-demo released.pprof
+go tool pprof -top -alloc_space -base before.pprof ./heap-demo held.pprof
+```
+
+在 `held.pprof` 中，`hold` 对应约 8 MiB 的保留量，而 `discard` 的约 32 MiB 出现在累计分配视图中。在 `released.pprof` 中，清空 `kept` 后，`hold` 的这批对象不再计入保留量，但仍计入累计分配。报告还包含运行时和采集过程自身的分配，因此不能要求整个报告总量恰好等于业务切片的大小。
+
+`-base before.pprof` 会减去基线 profile。对同一进程的累计分配统计做差，可以观察两次采集之间的分配；对保留量做差，得到的是净变化，不能据此还原这段时间一共创建、回收了多少对象。比较不同进程或不同负载时，还要对齐运行阶段和工作量，不能只比较两个总数。
+
+### 4.3 从增长找到保留原因 {#从增长找到保留原因}
+
+内存泄漏排查关注的是**不再需要的对象为什么仍然被保留**。连续的可比较快照显示某条路径的保留量增长，是进一步检查的入口，不能单凭增长就认定泄漏：业务缓存、连接数或正在处理的数据规模也可能合理增加。
+
+heap profile 给出的是对象的分配位置，通常不会直接画出“哪个全局 map、哪个 goroutine 现在还引用着它”的完整引用关系。定位到分配路径后，需要结合代码检查缓存淘汰、容器清理、切片共享底层数组和任务生命周期。仍可达但已经没有业务用途的对象，GC 不会自动替我们释放，见 [Go 垃圾回收的保留边界](../runtime/garbage-collection.mdx#gc解决不了哪些保留问题)。
+
+如果 goroutine 长期不退出，它也可能通过栈上的有效引用保留对象，具体等待与退出协议见 [Go 并发诊断](../concurrency/leaks-races.mdx#生命周期与泄漏)。如果 heap 保留量已经下降而进程 RSS 没有同步下降，还要检查运行时保留的内存、栈、映射和 cgo 等开销；RSS 与 heap profile 统计的范围不同。
+
+## 5. goroutine profile 与执行 trace {#goroutine-profile与执行trace}
+
+### 5.1 数量与当前等待 {#数量与当前等待}
+
+`runtime.NumGoroutine()` 返回当前存在的 goroutine 数量，其中包括等待中的 goroutine。它既不是操作系统线程数，也不是此刻正在 CPU 上执行的任务数。数量上升可能表示并发增加、排队积压或泄漏，需要进一步区分。
+
+goroutine profile 可以按业务栈聚合这些任务；使用 `pprof.Lookup("goroutine").WriteTo(w, 2)` 则能直接阅读各任务的栈和状态。检查 `[chan receive]`、`[select]` 或 `[IO wait]` 后，应继续找到业务位置和它等待的条件，具体采集格式见 [goroutine 栈与故障定位](../concurrency/leaks-races.mdx#goroutine栈与故障定位)。单个快照无法还原完整的阻塞、唤醒和执行过程，更不能仅凭“它在等待”认定泄漏。
+
+block profile 和 mutex profile 可进一步汇总同步等待，分别通过 `runtime.SetBlockProfileRate` 和 `runtime.SetMutexProfileFraction` 启用。block 侧重等待发生的位置，mutex 侧重产生竞争的临界区释放位置；尚未结束的等待不能只靠累计统计判断。这些统计仍然不等于完整的事件时间线。
+
+### 5.2 用时间线解释等待 {#用时间线解释等待}
+
+**执行 trace** 是带时间戳的运行时事件记录，包含 goroutine 创建、阻塞、唤醒、系统调用以及 GC 等事件。它适合继续回答“什么时候开始等待、由什么事件变为可运行、之后何时实际开始执行”。可运行与正在运行是两个状态，唤醒后也可能还需等待调度。
+
+下面用一个明确的 channel 等待产生 trace，并给等待区间加上名字：
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "os"
+    "runtime/trace"
+    "time"
+)
+
+func main() {
+    f, err := os.Create("trace.out")
+    if err != nil {
+        panic(err)
+    }
+    if err := trace.Start(f); err != nil {
+        f.Close()
+        panic(err)
+    }
+    ready := make(chan struct{})
+    release := make(chan struct{})
+    done := make(chan struct{})
+    go func() {
+        defer close(done)
+        trace.WithRegion(context.Background(), "wait-input", func() {
+            close(ready)
+            <-release
+        })
+    }()
+    <-ready
+    time.Sleep(20 * time.Millisecond)
+    close(release)
+    <-done
+    trace.Stop()
+    if err := f.Close(); err != nil {
+        panic(err)
+    }
+    fmt.Println("worker stopped")
+}
+```
+
+`ready` 表示 worker 已经进入标记区间，`release` 解除等待，`done` 用于确认 worker 完成。这里的 20 ms 只用来制造可观察的等待，既不是精确调度承诺，也不能证明任意一次快照必定在某个状态。`wait-input` 区间包含等待时间，它的长度不是 CPU 消耗。
+
+```bash
+go run main.go
+go tool trace trace.out
+go tool trace -pprof=sync trace.out > sync.pprof
+go tool pprof -top sync.pprof
+```
+
+`go tool trace` 可以在浏览器中查看时间线；`-pprof=sync` 则把 trace 中的同步阻塞记录转换成供 pprof 汇总的格式。后者的数据来自 trace，不需要额外启用 block profile，二者也不能因都显示等待时长就当成同一份采样数据。
+
+真实服务中，trace 可以帮助关联请求慢的时间段与调度等待、GC 或网络事件，但它不会自动给出数据库慢查询或网络拥塞的全部原因。还要结合下游监控、连接池状态和必要的系统网络证据。采集、保存和解析 trace 都有开销，应选择能复现问题的有限时间窗口。
+
+## 6. 从证据验证改动 {#从证据验证改动}
+
+服务 QPS 上不去时，先确认压测端是否发出了足够请求、服务是否被错误或超时提前限制，以及当前请求的工作量是否与预期相同。CPU 低不代表服务有空闲处理能力：任务可能都在等一个锁、一个容量很小的连接池，或者一个慢下游。
+
+接着用证据逐步缩小范围：CPU 高时先看热点；CPU 不高而等待多时看业务栈和 trace；分配或 GC 成本高时对照 heap 的累计分配与保留量。只有确认大量任务已经可运行、CPU 并行度确实受到限制后，才讨论并行执行配置。直接增加 goroutine 数量，可能只是把更多请求堆到同一个等待点。
+
+完成修改后，在可比较的负载下重新测量吞吐、延迟、错误、CPU 和内存，并确认任务能正常退出。小范围代码成本可以用 [Go 测试与基准测试](./testing.mdx#基准测试) 做对照，但基准测试的 `ns/op` 不能替代整个服务的容量与尾延迟。诊断采样和 `-race` 都会影响运行成本，不能把带额外诊断开销的测量直接与普通运行作性能结论。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 Go 服务 CPU 使用率很高，怎样用 pprof 定位？ {#cpu-hotspot}
+
+**考察重点**：CPU 采样、调用链归因，以及热点和优化决策之间的关系。
+
+**相关内容**：[CPU profile](#cpu-profile)、[从证据验证改动](#从证据验证改动)。
+
+<details>
+<summary>参考回答</summary>
+
+**先在问题负载和时间窗口内采集 CPU profile，再沿热点调用链回到代码验证原因。** 同时记录请求量、并发和错误，确认高 CPU 是否与工作量变化有关。
+
+用 `top` 看自身成本，用 `-cum` 看包含下游调用的成本，再用 `-list` 对照源码。CPU profile 是采样统计，不是函数调用次数，也不包含请求的全部等待时间。发现编解码、业务计算或 GC 热点后，分别检查重复工作、算法和分配路径；修改后在相同负载下重新验证 CPU、吞吐和延迟。
+
+</details>
+
+### 7.2 Go 有 GC，为什么仍会内存泄漏？怎样区分保留量与分配压力？ {#memory-growth}
+
+**考察重点**：可达性与业务生命周期、heap 的统计维度及排查边界。
+
+**相关内容**：[保留量与分配量](#保留量与分配量)、[从增长找到保留原因](#从增长找到保留原因)。
+
+<details>
+<summary>参考回答</summary>
+
+**GC 只能回收不可达对象，不能判断一个仍被引用的对象是否还有业务用途。** 无界缓存、未清理的集合、共享底层数组的切片，以及未退出任务保留的引用，都可能导致不必要的长期保留。
+
+对齐负载与 GC 阶段采集多个 heap profile。`inuse_space` 看仍保留的字节数，`alloc_space` 看累计分配量；后者增加但前者稳定，可能主要是频繁创建和回收带来的压力。沿增长的分配栈检查实际引用者与清理条件，不能把分配栈直接当成完整引用关系。进程 RSS 还包括 heap profile 以外的内存，需另行对照。
+
+</details>
+
+### 7.3 两份 heap profile 做差，能说明哪些变化？ {#profile-comparison}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：累计量、净变化及比较条件。
+
+**相关内容**：[对照保留与释放](#对照保留与释放)。
+
+<details>
+<summary>参考回答</summary>
+
+**对同一进程的累计分配量做差，可以观察区间内的分配；对保留量做差，只能看到净变化。** 例如区间内创建后又回收了 32 MiB，保留量净变化可以很小，累计分配差值仍会反映这部分工作。
+
+比较要对齐采样率、代码和统计类型，并考虑 GC 统计更新以及采集自身的分配。不同进程之间还需对齐负载和运行阶段，不能把运行更久造成的累计值更大直接判断为回归。
+
+</details>
+
+### 7.4 Go 服务 QPS 上不去，能否根据 goroutine 数量决定增加并发？ {#low-throughput}
+
+**题型**：综合题
+
+**考察重点**：吞吐瓶颈、任务状态和证据选择。
+
+**相关内容**：[数量与当前等待](#数量与当前等待)、[用时间线解释等待](#用时间线解释等待)、[从证据验证改动](#从证据验证改动)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能，goroutine 数量包含等待任务，并不表示正在执行的并行度。** 先核对压测端、请求工作量、延迟和错误，再区分 CPU 消耗与各种等待。
+
+CPU 高时用 CPU profile 找热点；CPU 低时结合 goroutine 栈和 trace 查锁、channel、连接池、网络或下游等待。怀疑网络拥塞还要查看连接、重传、带宽和下游证据，不能只凭 goroutine 数量得出结论。只有确认限制来自可用的执行并行度或合理的任务并发上限，增加并发才有依据；否则可能加重积压。
+
+</details>
+
+### 7.5 Go 项目怎样分析性能，pprof 和 benchmark 分别有什么作用？ {#profiling-tools}
+
+**考察重点**：统计归因与可比较测量之间的关系。
+
+**相关内容**：[先确定要解释的现象](#先确定要解释的现象)、[用时间线解释等待](#用时间线解释等待)、[Go 测试与基准测试](./testing.mdx#基准测试)。
+
+<details>
+<summary>参考回答</summary>
+
+**pprof 帮助汇总资源成本的调用位置，benchmark 用可重复的工作测量代码成本。** CPU、heap 等 profile 的单位不同，读取时先确定是在看 CPU 时间、保留量还是累计分配量。
+
+先在问题负载中定位可疑调用路径，再用 benchmark 比较相关代码修改前后的耗时与分配。若需要解释阻塞与调度的事件顺序，可以补充 trace；任何单份结果都不能替代真实负载下的正确性和整体性能验证。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [Go 1.22.12 runtime/pprof：profile 类型、heap 统计与 CPU 采集](https://github.com/golang/go/blob/go1.22.12/src/runtime/pprof/pprof.go)
+- [Go 1.22.12 runtime：内存采样率与统计发布](https://github.com/golang/go/blob/go1.22.12/src/runtime/mprof.go)
+- [Go 1.22.12 pprof 工具：统计选项与排序](https://github.com/golang/go/blob/go1.22.12/src/cmd/vendor/github.com/google/pprof/internal/driver/commands.go)
+- [Go 1.22.12 pprof 工具：基线比较与命令行选项](https://github.com/golang/go/blob/go1.22.12/src/cmd/vendor/github.com/google/pprof/internal/driver/cli.go)
+- [Go 1.22.12 runtime/trace：运行时事件与区间标记](https://github.com/golang/go/blob/go1.22.12/src/runtime/trace/trace.go)
+- [Go 1.22.12 trace 工具：时间线与阻塞统计](https://github.com/golang/go/blob/go1.22.12/src/cmd/trace/doc.go)
+- [Go 1.22.12 net/http/pprof：诊断接口](https://github.com/golang/go/blob/go1.22.12/src/net/http/pprof/pprof.go)

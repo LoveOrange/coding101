@@ -157,6 +157,8 @@ MySQL 默认启用 autocommit，独立语句各自提交。需要多条 DML 共�
 
 redo 保存崩溃恢复信息。undo 支持回滚与历史版本。binlog 记录变更，用于复制和按时间点恢复。
 
+三者的记录对象、WAL 与内部提交协调见 [MySQL 事务日志](../storage/transaction-logs.mdx)。这里重点说明提交承诺依赖哪些配置，以及应用怎样确认结果。
+
 ### 10.1 双 1 配置 {#双-1-配置}
 
 “双 1”指 `innodb_flush_log_at_trx_commit=1` 和 `sync_binlog=1`。前者要求提交时写出并刷盘 redo。后者要求每组 binlog 提交在提交事务前同步到磁盘。组提交可以让多个事务共享一次同步。成功响应前，相应日志仍须完成持久化。

@@ -1,0 +1,337 @@
+---
+sidebar_position: 6
+knowledge:
+  id: frontend.css.animations
+---
+
+# CSS 动画
+
+**CSS 动画**让样式属性随时间变化。`transition` 为两个状态之间的变化添加过渡，`animation` 通过关键帧描述一段可重复的变化过程。悬停放大、面板进入和持续旋转都可以用它们实现，但触发条件和结束后的状态需要分别设计。
+
+面试中，除了写出语法，还要解释动画为什么开始、什么时候结束、被打断后怎样处理，以及它会让浏览器做哪些工作。视觉效果流畅并不只取决于选择 CSS 还是 JavaScript，也取决于变化的属性、页面负载和实际渲染路径。
+
+## 1. 面试核心 {#core}
+
+- **transition 依赖属性的状态变化，animation 依赖命名关键帧和时间配置**。前者适合悬停、展开等状态切换，后者适合多阶段和重复运动。[卡](#transition-animation)
+- **关键帧描述各时刻的属性值，浏览器根据插值规则和缓动计算中间值**。并非所有属性或任意两个值都能平滑插值，普通过渡也不会因为声明存在就自动开始。[卡](#keyframes)
+- **fill-mode 控制动画执行区间之外的呈现，不会把终态写成永久的基础样式**。最终取哪一帧还取决于方向和迭代次数。[卡](#fill-mode)
+- **暂停与移除动画不同**。暂停保留当前进度，移除动画效果后会重新按基础样式呈现；重复动画还需要提供适当的停止方式。[卡](#continuous-rotation)
+- **transform 和 opacity 有机会减少布局、绘制工作，但不保证所有场景都只走合成**。`will-change` 是有成本的提示，不是通用加速开关。[卡](#animation-performance)
+- **requestAnimationFrame 按浏览器的渲染节奏提供回调机会，不保证固定间隔或准时执行**。JavaScript 动画应按时间计算进度，避免按回调次数累加位移。[卡](#raf-timing)
+- **结束事件不是必然发生的业务回调**。取消、未产生过渡、元素消失或减少动态效果配置都可能改变事件序列；业务最终状态应独立于动画维护。[卡](#end-events)
+
+## 2. transition {#transition}
+
+### 2.1 状态变化与悬停放大 {#状态变化与悬停放大}
+
+**过渡**是在属性从一个计算后的状态变为另一个状态时，让中间值在一段时间内逐步变化。下面的按钮在鼠标悬停或键盘焦点可见时放大：
+
+```html
+<button class="scale-button">查看课程</button>
+<style>
+  .scale-button {
+    padding: 12px 20px;
+    transform: scale(1);
+    transition: transform 200ms ease;
+  }
+  .scale-button:hover,
+  .scale-button:focus-visible {
+    transform: scale(1.08);
+  }
+</style>
+```
+
+指针进入后，缩放从当前值向 `1.08` 变化；移出后，恢复到 `1`。`transition` 放在基础规则中，所以进入与离开状态都可以产生过渡。键盘用户也有可感知的状态变化，焦点轮廓不应被无理由移除。
+
+`transform` 改变视觉大小，不会让正常流中的相邻元素按放大后的尺寸重新排布，因此也可能发生视觉重叠。其布局边界见 [浏览器渲染流程](../browser/rendering.mdx#视觉移动与正常流)。
+
+### 2.2 时间与属性匹配 {#时间与属性匹配}
+
+`transition: transform 200ms ease 100ms` 依次指定属性、持续时间、缓动和延迟。出现两个时间值时，第一个是持续时间，第二个是延迟；持续时间不能为负，负延迟则可让过渡从已经经过一段时间的位置开始。
+
+**缓动函数**决定时间进度怎样映射为变化进度。`linear` 匀速推进，`ease` 改变推进速度，`steps()` 则分步跳变。缓动不改变设置的总时长，也不负责决定回调的实际调度精度。
+
+以下情况需要分别判断：
+
+- 没有不同的起止状态，就没有这次过渡。脚本在同一次样式更新前连续设置起点和终点，也可能只留下终态。
+- `transition-property` 没有匹配到变化属性，或有效时间条件不满足，不会产生预期动画。
+- 普通过渡并不能平滑插值任意值。例如 `height: auto` 与固定长度不能直接套用通常的数值过渡规则；相关新能力需要按目标浏览器明确采用。
+- `transition: all` 容易让以后新增的样式变化也参与过渡。只写需要变化的属性，行为更容易判断。
+
+过渡进行到一半又改变目标时，浏览器会按当前状态重新处理过渡；反向切换还有缩短反向过渡的规则，不能简单认为每次移入、移出都必须完整跑相同的 `200ms`。
+
+## 3. animation 与关键帧 {#animation与关键帧}
+
+### 3.1 关键帧和时间线 {#关键帧和时间线}
+
+**关键帧**是某个时间进度下的样式取值，使用 `@keyframes` 定义。百分比表示一次迭代中的进度，`from` 与 `to` 分别等价于 `0%` 与 `100%`。
+
+下面的圆点起初位于轨道中间，等待 `200ms` 后，用 `800ms` 移动到左侧并保留该位置：
+
+```html
+<div class="track"><div class="dot"></div></div>
+<style>
+  .track { width: 240px; height: 24px; background: #eee; }
+  .dot {
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: #1769aa;
+    transform: translateX(110px);
+    animation: slide-left 800ms linear 200ms 1 normal forwards;
+  }
+  @keyframes slide-left {
+    from { transform: translateX(110px); }
+    to { transform: translateX(0); }
+  }
+</style>
+```
+
+延迟期间位移为 `110px`；进入动画后，线性插值到 `0`。在活动区间中点，位移为 `55px`。`forwards` 让动画结束后继续呈现终态，但删除 `animation` 声明后，圆点会回到基础样式中的 `110px`。
+
+`animation-name` 选择关键帧，`duration` 指定单次时长，`iteration-count` 指定次数，`direction` 指定播放方向。只写 `@keyframes` 不会自动应用到元素；动画名称需要被相应样式引用。
+
+### 3.2 填充、方向与暂停 {#填充方向与暂停}
+
+**填充模式**控制动画在活动区间之外是否仍对样式产生影响。
+
+| `animation-fill-mode` | 活动区间之前 | 活动区间之后 |
+| --- | --- | --- |
+| `none` | 使用基础样式 | 使用基础样式 |
+| `backwards` | 在延迟阶段应用起始关键帧 | 使用基础样式 |
+| `forwards` | 使用基础样式 | 保留结束时的关键帧效果 |
+| `both` | 应用起始关键帧 | 保留结束时的效果 |
+
+起始与结束要结合方向理解：`reverse` 反向播放，`alternate` 让相邻迭代交替方向。例如两次完整的 `alternate` 动画，第二次会返回 `0%` 那一端，`forwards` 不能机械理解为“始终保留 `100%`”。
+
+`animation-play-state: paused` 暂停在当前进度，恢复 `running` 后继续。把 `animation-name` 改成 `none` 是移除动画效果，通常会回到基础样式；它不等于暂停。动画结束后若该位置代表持久的业务状态，应把最终状态维护在相应类名或应用状态中，避免它只依赖一个尚未移除的填充效果。
+
+### 3.3 持续旋转 {#持续旋转}
+
+持续旋转适合用线性、无限迭代的关键帧。下面的三角形提供暂停按钮，避免把“无限”写成用户无法控制的持续运动：
+
+```html
+<div class="spinner" aria-hidden="true"></div>
+<button id="pause-spin" aria-pressed="false">暂停旋转</button>
+<style>
+  .spinner {
+    width: 0;
+    height: 0;
+    border-left: 14px solid transparent;
+    border-right: 14px solid transparent;
+    border-bottom: 24px solid #1769aa;
+    animation: spin 1s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+<script>
+  const spinner = document.querySelector('.spinner');
+  const button = document.querySelector('#pause-spin');
+  button.addEventListener('click', () => {
+    const paused = button.getAttribute('aria-pressed') !== 'true';
+    button.setAttribute('aria-pressed', String(paused));
+    button.textContent = paused ? '继续旋转' : '暂停旋转';
+    spinner.style.animationPlayState = paused ? 'paused' : 'running';
+  });
+</script>
+```
+
+没有显式 `from` 时，浏览器使用相应的基础属性值作为起点。这里从未旋转状态到一整圈，`linear` 保持匀速，`infinite` 让下一次迭代继续。暂停按钮改变播放状态，不删除关键帧。
+
+如果旋转图形用于表示加载，加载状态还应有文字或适当的状态语义，不能只靠旋转传达。鼠标拖尾等效果则还需要输入事件和位置计算，不能把持续旋转的 CSS 直接当作跟随指针的完整实现。
+
+## 4. 渲染成本 {#渲染成本}
+
+变化的属性决定浏览器可能需要重新执行哪些渲染工作。修改宽高或参与布局的位置可能引发布局，修改背景等可能需要绘制，而 `transform`、`opacity` 在合适条件下可以复用已准备好的内容，由合成阶段完成变化。
+
+这不是“CSS 必定用 GPU，JavaScript 必定卡顿”。JavaScript 也可以只更新变换，CSS 动画也可能持续修改布局属性。元素尺寸、滤镜、裁剪、重叠、层的安排和浏览器实现都会影响实际代价。
+
+`will-change: transform` 只是提前提示浏览器准备相关变化。长期给大量元素设置它可能增加内存和管理成本，也可能提前产生相关层叠边界。先记录真实页面的 Performance 时间线，观察布局、绘制和长任务，再决定是否使用和何时移除；不要仅凭 `transform` 出现在代码里就宣称动画只走合成。
+
+## 5. JavaScript 动画与时间 {#javascript动画与时间}
+
+### 5.1 requestAnimationFrame {#requestanimationframe}
+
+`requestAnimationFrame` 在浏览器准备更新渲染时提供一次回调机会。它是一次性注册，需要在回调中再次请求下一次。主线程忙碌、页面可见性和设备刷新节奏都可能改变执行时机，不能承诺每 `16ms` 执行一次。
+
+下面按时间把一个元素从 `0` 移动到指定距离，并返回停止函数：
+
+```js
+function move(element, distance, duration) {
+  if (!Number.isFinite(distance) || !Number.isFinite(duration) || duration <= 0) {
+    throw new TypeError('Invalid movement');
+  }
+  let started;
+  let frameId;
+  let stopped = false;
+  function step(timestamp) {
+    if (stopped) return;
+    if (started === undefined) started = timestamp;
+    const progress = Math.min((timestamp - started) / duration, 1);
+    element.style.transform = `translateX(${distance * progress}px)`;
+    if (progress < 1) frameId = requestAnimationFrame(step);
+  }
+  frameId = requestAnimationFrame(step);
+  return () => {
+    stopped = true;
+    cancelAnimationFrame(frameId);
+  };
+}
+```
+
+例如 `move(element, 120, 600)` 以第一次回调的时间为起点，用 `600ms` 的进度移动到 `120px`。如果某次回调晚到，会按经过的时间推进，而不是只增加固定的几像素；这避免高刷新率设备因回调次数更多而移动更快。
+
+停止函数保留当前视觉位置，不恢复起点。这个最小实现独占元素的 `transform`，同一元素重复启动前应停止旧实例；原有缩放、旋转也不会被自动合并。它是基于时间的位置更新，不是保证每帧都能显示，也没有实现按后台停留时间暂停业务时钟。
+
+### 5.2 动画控制与业务状态 {#动画控制与业务状态}
+
+简单的状态过渡优先用 CSS，复杂的动态目标或输入跟随可以用 JavaScript。Web Animations API 还提供动画对象，用于播放、暂停、取消和读取进度；它与 `requestAnimationFrame` 手动逐次写样式的责任不同。
+
+无论选择哪种方式，都应把“业务已经展开”与“展开的视觉效果还在执行”分开。动画可以取消或被用户减少，业务状态不能因此永远停在半完成状态。
+
+## 6. 结束事件与减少动态效果 {#结束事件与减少动态效果}
+
+### 6.1 结束与取消 {#结束与取消}
+
+`transitionend` 表示某个属性的过渡正常结束，`animationend` 表示相应关键帧动画结束。多个属性同时过渡时，可以分别产生事件；子元素的事件还可能冒泡到父元素，因此应检查 `target`、`propertyName` 或 `animationName`。
+
+如果过渡被取消，会走取消事件而不再正常触发对应的结束事件。没有产生过渡、元素或动画被移除、无有效时长等情况，也不能指望始终收到一次 `end`。无限迭代动画不会因为完成一圈就触发整体结束；需要区分迭代事件和最终结束。
+
+例如关闭面板时，可以先进入“正在退出”的视觉状态，再按明确的动画完成或取消路径收尾。若减少动态效果使动画不再创建，应直接完成该收尾；组件卸载也需要独立清理，不能把释放资源的唯一机会押在 `transitionend` 上。
+
+### 6.2 用户偏好 {#用户偏好}
+
+**prefers-reduced-motion** 表示用户希望减少非必要动态效果。它不会自动改写应用全部动画，需要样式或脚本主动响应。
+
+把下面的规则放在前面示例的样式之后，可以关闭悬停缩放和装饰性旋转，同时让移动圆点直接处于终态：
+
+```css
+@media (prefers-reduced-motion: reduce) {
+  .scale-button { transition: none; }
+  .scale-button:hover,
+  .scale-button:focus-visible { transform: none; }
+  .dot { animation: none; transform: translateX(0); }
+  .spinner { animation: none; }
+}
+```
+
+减少运动不等于隐藏内容或删除必要反馈。使用 JavaScript 动画时，也应通过 `matchMedia` 读取并响应偏好变化；上述 CSS 不会自动停止 `move()` 持续写入内联变换。最终状态、加载文字和交互能力应继续可用。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 transition 与 animation 有什么区别，动画还可以怎样实现？ {#transition-animation}
+
+**考察重点**：触发方式、关键帧、重复和 JavaScript 控制。
+
+**相关内容**：[transition](#transition)、[animation 与关键帧](#animation与关键帧)、[JavaScript 动画与时间](#javascript动画与时间)。
+
+<details>
+<summary>参考回答</summary>
+
+**transition 为属性状态变化提供过渡，animation 按关键帧和时间配置执行，可以多阶段或重复播放。** 悬停、展开适合过渡，持续旋转适合关键帧动画。动态目标也可以用 `requestAnimationFrame` 计算更新，或用 Web Animations API 控制动画对象。选择时还要考虑变化属性、交互、取消和用户偏好。
+
+</details>
+
+### 7.2 怎样实现鼠标悬停时元素放大，移出后恢复？ {#hover-scale}
+
+**考察重点**：基础状态、触发规则和视觉变换。
+
+**相关内容**：[状态变化与悬停放大](#状态变化与悬停放大)。
+
+<details>
+<summary>参考回答</summary>
+
+**基础状态设 scale(1) 和 transform 的 transition，悬停状态改为 scale(1.08)。** 过渡放在基础规则，使进入和离开都能平滑变化；键盘交互可以补充 `:focus-visible`。变换不重新安排正常流占位，要检查重叠并响应减少运动偏好。
+
+</details>
+
+### 7.3 关键帧动画怎样让元素移动到左边并保持位置？ {#fill-mode}
+
+**考察重点**：关键帧、填充、方向和持久状态。
+
+**相关内容**：[关键帧和时间线](#关键帧和时间线)、[填充、方向与暂停](#填充方向与暂停)。
+
+<details>
+<summary>参考回答</summary>
+
+**定义起点和终点的变换，用单次正向 animation 执行，并用 forwards 保留结束效果。** 例如从 `translateX(110px)` 到 `translateX(0)`。`forwards` 保留的是本次播放结束位置，方向和次数改变时终点也可能不同；移除动画后效果会消失，持久业务状态应另有基础样式或状态维护。
+
+</details>
+
+### 7.4 怎样让一个三角形持续旋转，并允许暂停？ {#continuous-rotation}
+
+**考察重点**：旋转关键帧、线性迭代和播放状态。
+
+**相关内容**：[持续旋转](#持续旋转)。
+
+<details>
+<summary>参考回答</summary>
+
+**用从未旋转到 rotate(360deg) 的关键帧，配合 linear 与 infinite 持续播放。** 暂停使用 `animation-play-state: paused`，恢复改为 `running`。移除动画会丢掉效果，不等于暂停；非必要旋转还应响应减少运动偏好。
+
+</details>
+
+### 7.5 使用 transform 就一定不会重绘，也一定比 JavaScript 动画快吗？ {#animation-performance}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：属性影响、合成条件和测量证据。
+
+**相关内容**：[渲染成本](#渲染成本)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能保证。transform 有机会复用已准备好的内容并减少布局、绘制，但实际路径取决于页面和引擎安排。** CSS 与 JavaScript 都可能选择昂贵或便宜的属性。应记录布局、绘制、长任务和层的情况，再判断瓶颈；`will-change` 也有资源成本。
+
+</details>
+
+### 7.6 为什么用 requestAnimationFrame，为什么不每次固定移动一段距离？ {#raf-timing}
+
+**考察重点**：渲染机会、时间戳和刷新率。
+
+**相关内容**：[requestAnimationFrame](#requestanimationframe)。
+
+<details>
+<summary>参考回答</summary>
+
+**它让更新与浏览器的渲染节奏协调，但回调次数和间隔不固定，因此应按时间计算进度。** 固定每次移动几像素，会使高刷新率环境移动更快，也会在丢帧时整体变慢。用回调时间戳计算经过时间并限制终点；主线程阻塞和页面隐藏仍可能延迟或暂停回调。
+
+</details>
+
+### 7.7 为什么不能只在 transitionend 中完成关闭逻辑？ {#end-events}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：正常结束、取消、零动画与业务状态。
+
+**相关内容**：[结束与取消](#结束与取消)、[用户偏好](#用户偏好)。
+
+<details>
+<summary>参考回答</summary>
+
+**并不是每次关闭都会产生并正常结束一个过渡。** 取消、元素移除、没有属性变化或减少动态效果都可能使结束事件不按预期出现。还要区分不同属性和冒泡来源。业务关闭状态应独立维护，并覆盖完成、取消、无动画和组件卸载的清理路径。
+
+</details>
+
+### 7.8 CSS 中的 keyframes 是什么，定义后就会自动播放吗？ {#keyframes}
+
+**考察重点**：时间进度、属性值和动画应用。
+
+**相关内容**：[关键帧和时间线](#关键帧和时间线)。
+
+<details>
+<summary>参考回答</summary>
+
+**@keyframes 定义一次动画在不同进度下的属性值，不会独立触发播放。** 元素还要通过 `animation-name` 引用它，并配置时长等参数。浏览器按属性的插值规则和缓动计算中间状态，`from`、`to` 分别对应 `0%`、`100%`；播放方向和次数由动画配置决定。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [W3C：CSS Transitions Level 1](https://www.w3.org/TR/css-transitions-1/)
+- [W3C：CSS Animations Level 1](https://www.w3.org/TR/css-animations-1/)
+- [web.dev：High-performance CSS animations](https://web.dev/articles/animations-guide)
+- [MDN：requestAnimationFrame](https://developer.mozilla.org/en-US/docs/Web/API/Window/requestAnimationFrame)
+- [MDN：transitionend](https://developer.mozilla.org/en-US/docs/Web/API/Element/transitionend_event)
+- [MDN：prefers-reduced-motion](https://developer.mozilla.org/en-US/docs/Web/CSS/@media/prefers-reduced-motion)

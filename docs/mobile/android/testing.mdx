@@ -1,0 +1,291 @@
+---
+sidebar_position: 26
+knowledge:
+  id: mobile.android.testing
+  type: concept
+description: "区分 Android 本地、设备与界面测试，用可控依赖和协程测试验证异步行为，并覆盖生命周期、状态恢复、权限和网络边界。"
+keywords: [Android, 单元测试, Instrumentation, Espresso, ActivityScenario, 协程测试]
+---
+
+# Android 测试
+
+**Android 测试**验证应用逻辑与平台行为是否符合预期。一个仓库类在 JVM 上返回了正确数据，不代表界面旋转后仍然显示正确；模拟器上通过的相机流程，也不能证明目标手机的摄像头行为一致。
+
+测试设计要先说明希望得到什么保证，再选择执行环境和依赖。面试中除了能写断言，还应解释异步任务怎样稳定完成、生命周期怎样变化，以及某次测试没有覆盖哪些行为。
+
+## 1. 面试核心 {#core}
+
+- 本地测试运行在宿主 JVM，设备测试运行在 Android 环境；**执行环境与测试范围是两个维度**，不能把所有设备测试都叫作端到端测试。[卡](#levels)
+- 替身让输入、失败和完成顺序可控，**测试通过只证明被保留的真实部分与替身契约相符**，不证明被替换的网络或数据库实现正确。[卡](#doubles)
+- 协程测试需要可控调度，**同一测试中的测试调度器应共享 scheduler**；虚拟时间不会自动控制真实 I/O 和任意线程。[卡](#coroutines)
+- UI 测试应等待可观察的就绪条件，**固定休眠不是异步完成的证明**。[卡](#ui-synchronization)
+- Activity 重建与进程重建的状态来源不同，**`ActivityScenario.recreate()` 通过不能证明进程回收后恢复正确**。[卡](#recreation)
+- 权限、网络和持久化要覆盖失败与中断，**验证最终业务结果，也验证取消、重复操作及旧结果是否污染新页面**。[卡](#matrix)
+- 回归应选择实际发布配置与代表性设备，**测试报告必须保留环境、输入、失败证据和验证范围**。[卡](#release)
+
+## 2. 测试范围与执行环境 {#测试范围与执行环境}
+
+**本地测试**通常放在 `src/test`，由构建机的 JVM 执行。**设备测试**通常放在 `src/androidTest`，通过 Android instrumentation 环境在真机或模拟器执行。源码集与依赖配置见 [Android 构建](build.mdx#变体源码集与依赖)。
+
+| 测试对象 | 可以优先选择的环境 | 仍需补充的证据 |
+| --- | --- | --- |
+| 参数校验、排序、状态转换、数据组合 | 本地 JVM | 与实际 UI、数据库及系统的连接 |
+| Repository 与可控网络服务的协议交互 | JVM 或设备，取决于实现依赖 | TLS、系统网络约束、真实服务兼容性 |
+| Room 查询与迁移、平台组件行为 | Android 设备或适合的框架测试环境 | 实际目标版本与设备差异 |
+| 页面输入、展示与导航 | Espresso、Compose 测试等适用环境 | 硬件、系统交互和发布配置 |
+| 权限界面、跨应用操作、真实硬件 | 设备与相应自动化或人工流程 | 目标系统和硬件的代表性 |
+
+测试范围描述验证多少真实协作：一个类的行为、多个组件的集成，或完整业务流程。设备上也可以只测试一个数据库对象；本地 JVM 上也可以运行多个真实业务组件。因此“单元、集成、端到端”不应与“本地、设备”机械对应。
+
+Android SDK 提供给普通本地测试的 framework 方法，并不是完整系统实现。直接调用可能出现 `Method ... not mocked`。把它们全部改为返回默认值，可能让测试绕过真正需要验证的行为。可以把业务逻辑与平台访问分开，或选择 Robolectric 等提供模拟行为的环境；它们仍不能替代所有设备事实。
+
+## 3. 可控依赖与断言 {#可控依赖与断言}
+
+**测试替身**是测试中替换某项依赖的对象，用于提供可控结果或记录交互。假实现可以在内存里保存数据；stub 可以返回指定结果；mock 可以核对调用是否符合预期。名字不是重点，重要的是哪些行为是真实执行的。
+
+例如测试 Repository 对网络响应的处理，可以让替身分别返回正常内容、空内容和异常。这样不需要依赖公网状态，但它没有验证 URL、请求头、序列化器或真实服务。若要验证这些契约，可以让真实网络客户端连接本地 MockWebServer，并检查发出的请求与返回结果。
+
+断言应围绕外部可观察行为：显示了哪条数据、失败是否被正确表达、取消后是否停止更新、重复提交是否产生多次业务效果。只有调用次数本身是契约时，才把“调用一次”作为关键断言；否则内部重构可能让测试失败，而用户行为没有变化。
+
+测试还需控制初始数据并在结束后清理。共享单例、未关闭的服务器、遗留协程、全局主线程调度器或同名数据库，都会让后续测试依赖执行顺序。数据隔离的方法见[测试环境](../../tools-and-frameworks/testing/test-environments.mdx)。
+
+## 4. 协程与虚拟时间 {#协程与虚拟时间}
+
+### 4.1 注入调度器 {#注入调度器}
+
+`runTest` 为协程测试提供作用域和测试调度能力。要让被测工作也受同一调度器控制，通常需要注入 dispatcher，而不是在实现深处写死 `Dispatchers.IO`。
+
+下面的 `TitleRepository` 读取标题、去掉首尾空白，并拒绝空标题。示例使用 Kotlin 1.9 与 `kotlinx-coroutines-test` 1.8，测试采用 JUnit 4：
+
+```kotlin
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.withContext
+
+fun interface TitleSource {
+    suspend fun read(): String
+}
+
+class TitleRepository(
+    private val source: TitleSource,
+    private val dispatcher: CoroutineDispatcher
+) {
+    suspend fun title(): String = withContext(dispatcher) {
+        source.read().trim().also {
+            check(it.isNotEmpty()) { "empty title" }
+        }
+    }
+}
+```
+
+`TitleRepository` 没有吞掉取消或读取异常。调用方负责提供适合实际读取工作的 dispatcher；测试则可提供 `StandardTestDispatcher`，把执行与延迟交给测试 scheduler。
+
+### 4.2 驱动开始、等待与完成 {#驱动开始等待与完成}
+
+**虚拟时间**是测试调度器维护的时间，不要求测试真的等满业务中的延迟。下面检查读取尚未完成时不会提前返回，并在延迟结束后获得去掉空白的标题：
+
+```kotlin
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Test
+
+@OptIn(ExperimentalCoroutinesApi::class)
+class TitleRepositoryTest {
+    @Test
+    fun returnsTitleOnlyAfterReadCompletes() = runTest {
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val source = TitleSource {
+            delay(1_000)
+            "  Android  "
+        }
+        val repository = TitleRepository(source, dispatcher)
+        val result = async { repository.title() }
+
+        runCurrent()
+        assertFalse(result.isCompleted)
+        advanceTimeBy(999)
+        runCurrent()
+        assertFalse(result.isCompleted)
+        advanceTimeBy(1)
+        runCurrent()
+
+        assertEquals("Android", result.await())
+    }
+}
+```
+
+`runCurrent()` 执行当前虚拟时刻已排队的工作。`advanceTimeBy()` 推进时间，但恰好排在目标时刻的任务需要继续驱动，这里用 `runCurrent()` 明确执行。因此断言分别检查了未完成与完成后的状态，不需要 `Thread.sleep(1000)`。
+
+若只关心所有有限任务完成后的结果，可以使用 `advanceUntilIdle()`；若后台任务持续循环，就需要控制任务生命周期，不能期待它自行空闲。测试调度器应共享 `testScheduler`，否则推进一个 scheduler 可能无法驱动另一个中的延迟。
+
+### 4.3 虚拟时间的边界 {#虚拟时间的边界}
+
+虚拟时间只控制相应测试调度器上的协程任务。切换到真实 `Dispatchers.IO`、执行阻塞 I/O、调用 `Thread.sleep()`，或启动不受管理的线程，不会因此自动快进。`runTest` 的单线程可控调度也不能证明真实并发下不存在数据竞争。
+
+测试依赖 `Dispatchers.Main` 的代码时，本地环境可以用测试 API 设置 Main，并在结束后恢复；其他测试 dispatcher 应与它共享 scheduler。不要把修改全局 Main 的测试互相并行运行。`viewModelScope`、生命周期取消和 UI 观察的具体责任仍应依据 [Android ViewModel](viewmodel.mdx) 与相应生命周期进行验证。
+
+除成功路径，还应检查读取异常、空标题和取消。取消是工作停止的信号，不应被宽泛捕获后改成“读取成功但内容为空”。如果需要观察 `StateFlow`，还要考虑它会合并状态：只断言最终状态，与验证每一次中间状态，需要不同的收集与调度安排。
+
+## 5. UI 同步与平台状态 {#ui同步与平台状态}
+
+### 5.1 等待可观察的完成条件 {#等待可观察的完成条件}
+
+UI 自动化要在界面就绪后断言。Espresso 能同步它已知的 UI 工作，但不会自动理解任意网络请求或自建线程池。**Idling resource** 用于把相关异步工作是否空闲告知测试框架。
+
+若用计数方式表示正在进行的任务，开始时增加，成功、失败和取消结束时都应恰好减少一次；相关资源应在需要同步前注册，并在测试结束后注销。计数遗漏会让测试一直等待，过早报告空闲则可能让断言抢在结果之前。
+
+Compose 测试还可控制框架的测试时钟，但不意味着任意外部网络或后台任务都自动完成。跨应用或系统界面可考虑 UI Automator。无论工具是什么，都应依据稳定标识与语义定位元素，并等待业务或框架可识别的条件。显式等待与业务断言的思路也可参考 [Web UI 自动化测试](../../tools-and-frameworks/testing/ui-automation.mdx)，其中的浏览器定位与页面机制不直接套用到原生 View。
+
+### 5.2 重建与进程恢复 {#重建与进程恢复}
+
+`ActivityScenario` 可以推动 Activity 的生命周期并执行重建。测试应验证输入、导航与界面状态，而不只是“没有抛异常”。例如编辑页重建后，未提交文本是否保留，监听是否重复注册，旧 View 是否还会收到回调。
+
+`ActivityScenario.recreate()` 验证的是 Activity 重建。它不会把整个应用进程变成一个全新进程，进程内单例与其他内存状态仍可能存在。进程回收后的恢复需要另一组流程：让应用进入可保存状态的后台，模拟相应终止与重返，再确认状态来自保存机制或持久化存储，而不是旧对象。
+
+“不保留活动”选项同样不能完整模拟进程被回收。强行停止应用又有自己的平台语义，也不应被当作系统内存回收的完全等价替代。测试报告必须写明实际触发的方法，恢复机制见[Android ViewModel](viewmodel.mdx#savedstatehandle与恢复)。
+
+## 6. 失败、中断与设备矩阵 {#失败中断与设备矩阵}
+
+测试矩阵从功能依赖和曾经发生的缺陷出发，选择有区别的条件，而不是把所有设备与操作机械相乘。
+
+| 场景 | 需要验证的结果 |
+| --- | --- |
+| 首次拒绝权限、后续拒绝、从设置撤销 | 降级可用，重新进入时正确检查，不反复阻塞用户 |
+| 请求慢、超时、断开或返回错误格式 | 状态可解释，有界重试，资源释放 |
+| 快速搜索或多次刷新，响应顺序不同 | 旧结果不会覆盖当前查询，取消与状态一致 |
+| 页面旋转、退到后台、离开页面 | 状态恢复、订阅范围和回调目标正确 |
+| 进程重新创建 | 保存状态与持久化数据足以恢复承诺的内容 |
+| 数据库升级、写入失败、空间不足 | 事务与错误处理正确，不把失败当作成功 |
+| 发布构建、不同 API、屏幕与硬件 | 配置、优化、权限和设备能力满足实际要求 |
+
+本地服务器返回慢响应，可以验证客户端对慢响应的处理；它不能完整模拟无线信号切换、系统后台限制或真实 TLS 配置。权限授予规则可以简化成功路径，却不能代替拒绝路径测试。Room 迁移也需要从历史 schema 和数据出发，不能只验证新建数据库，见 [Room](room.mdx)。
+
+状态多的功能可以先画出允许的转换，再挑选转换与边界，方法见[状态迁移测试](../../tools-and-frameworks/testing/state-transition-testing.mdx)。需要真实服务、数据库、系统或硬件时，保留这些部分的集成测试，避免在每一层都替换掉关键行为。
+
+## 7. 发布回归与结果解释 {#发布回归与结果解释}
+
+测试应覆盖实际发布变体。混淆、资源裁剪、签名、Manifest、服务地址和依赖都可能与 debug 不同；只运行 debug 的 UI 流程不能证明 release 的序列化与动态引用正常。
+
+可以让快速逻辑测试覆盖大量业务边界，再用适量集成与 UI 测试验证重要连接，最后在代表性系统与真机上确认平台约束和硬件行为。数量比例由风险和执行成本决定，不需要套一个固定百分比。
+
+失败时保存断言、输入、设备与构建版本、日志及必要截图，区分产品错误、测试同步问题和环境故障。重跑成功不等于第一次失败没有价值；应检查共享状态、未等待完成、资源未清理与真实竞争。性能结论还需要单独的测量条件，见 [Android 性能诊断](performance-diagnostics.mdx#同条件回归)。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 Android 本地测试和设备测试有什么区别？ {#levels}
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：执行环境、framework 可用性与测试范围。
+
+**相关内容**：[测试范围与执行环境](#测试范围与执行环境)。
+
+<details>
+<summary>参考回答</summary>
+
+**本地测试在宿主 JVM 执行，设备测试在 Android 真机或模拟器的 instrumentation 环境执行。** 本地测试适合快速验证可分离逻辑，但普通 framework stub 不等于系统实现。设备测试能检查平台行为，但不一定是完整端到端测试。选择依据是需要验证的真实行为，而不是仅看测试名称。
+
+</details>
+
+### 8.2 Repository 使用假网络返回后测试通过，能说明哪些问题？ {#doubles}
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：替身覆盖范围与真实协议验证。
+
+**相关内容**：[可控依赖与断言](#可控依赖与断言)。
+
+<details>
+<summary>参考回答</summary>
+
+**它能证明 Repository 对这些指定返回的处理符合断言，不能证明真实网络契约正确。** URL、请求头、序列化、TLS 和服务行为需要相应真实部分参与。可以补充真实客户端连接本地服务器的协议测试，再按风险验证实际网络与平台条件；断言应围绕结果和业务承诺。
+
+</details>
+
+### 8.3 怎样稳定测试带 delay 的 Kotlin 协程代码？ {#coroutines}
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：调度器注入、虚拟时间、任务边界与取消。
+
+**相关内容**：[协程与虚拟时间](#协程与虚拟时间)。
+
+<details>
+<summary>参考回答</summary>
+
+**用 `runTest`，并让被测代码使用共享 scheduler 的测试 dispatcher。** 通过 `runCurrent()`、`advanceTimeBy()` 或 `advanceUntilIdle()` 驱动所需阶段，再断言未完成、完成或取消状态。真实 I/O 和不受测试调度器管理的线程不会自动快进；测试结束还要取消和清理剩余任务。
+
+</details>
+
+### 8.4 UI 测试为什么不宜用固定 sleep 等待网络完成？ {#ui-synchronization}
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：异步就绪条件、同步工具与测试稳定性。
+
+**相关内容**：[等待可观察的完成条件](#等待可观察的完成条件)。
+
+<details>
+<summary>参考回答</summary>
+
+**固定等待既可能不够，也可能白白延长测试，不能证明业务已经完成。** 应使用框架同步、注册相关 idling resource 或等待明确就绪条件，并给失败保留有界超时与诊断证据。开始、成功、失败和取消都要正确更新忙闲状态，不能让资源计数泄漏。
+
+</details>
+
+### 8.5 ActivityScenario.recreate 通过后，能否说明进程回收恢复已经正确？ {#recreation}
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：Activity、进程内状态与持久化恢复的不同保证。
+
+**相关内容**：[重建与进程恢复](#重建与进程恢复)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能，Activity 重建没有把整个进程和所有单例变成新的实例。** 进程恢复需要用相应后台、终止和返回流程验证，确认状态来自保存机制或磁盘。测试要明确实际触发方式；不保留活动与强行停止都有各自语义，不能直接当作系统内存回收的完整替代。
+
+</details>
+
+### 8.6 Android 页面应怎样安排失败和中断场景测试？ {#matrix}
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**题型**：综合题
+
+**考察重点**：功能依赖、状态转换、失败处理和过期工作。
+
+**相关内容**：[失败中断与设备矩阵](#失败中断与设备矩阵)、[可控依赖与断言](#可控依赖与断言)、[重建与进程恢复](#重建与进程恢复)。
+
+<details>
+<summary>参考回答</summary>
+
+**按功能依赖选择权限、网络、生命周期与存储边界，再验证最终状态及资源责任。** 例如请求乱序不能覆盖新查询，离开页面后不能更新旧 View，权限拒绝应有降级，数据库失败不能显示成功。替身用于控制输入，平台限制与真实持久化则需要相应集成环境。
+
+</details>
+
+### 8.7 debug 测试全部通过后，还需要哪些发布前验证？ {#release}
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：构建差异、代表性环境与结论范围。
+
+**相关内容**：[发布回归与结果解释](#发布回归与结果解释)。
+
+<details>
+<summary>参考回答</summary>
+
+**还需验证实际发布变体及代表性平台条件。** 检查混淆、资源裁剪、签名、Manifest、地址与依赖差异，覆盖关键真实流程及设备能力。报告保留版本、数据、环境与失败证据；测试重跑成功或模拟器通过都不能自动替代此前失败的原因分析和真机验证。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+
+- [Android：Fundamentals of testing](https://developer.android.com/training/testing/fundamentals)
+- [Android：Build local unit tests](https://developer.android.com/training/testing/local-tests)
+- [Android：Build instrumented tests](https://developer.android.com/training/testing/instrumented-tests)
+- [Android：Use test doubles](https://developer.android.com/training/testing/fundamentals/test-doubles)
+- [Android：Testing Kotlin coroutines](https://developer.android.com/kotlin/coroutines/test)
+- [kotlinx.coroutines 1.8.0：测试模块说明](https://github.com/Kotlin/kotlinx.coroutines/blob/1.8.0/kotlinx-coroutines-test/README.md)
+- [Android：Espresso idling resources](https://developer.android.com/training/testing/espresso/idling-resource)
+- [Android：Test your app's activities](https://developer.android.com/guide/components/activities/testing)
+- [Android：Compose testing synchronization](https://developer.android.com/develop/ui/compose/testing/synchronization)

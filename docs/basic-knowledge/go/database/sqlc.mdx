@@ -1,0 +1,312 @@
+---
+sidebar_position: 4
+knowledge:
+  id: basic-knowledge.go.database.sqlc
+  type: concept
+description: "讲解 go-zero CachedConn 的缓存读取、回源、空值缓存和写后删除，分析失效失败、并发回填及事务边界。"
+keywords: ["Go", "go-zero", "sqlc", "CachedConn", "缓存一致性", "空值缓存"]
+---
+
+# go-zero sqlc
+
+**go-zero sqlc** 是 `github.com/zeromicro/go-zero/core/stores/sqlc` 包，使用 `CachedConn` 在 SQL 访问外组织缓存读取、数据库回源和缓存失效。它属于运行时缓存访问层，与根据 SQL 生成调用代码的 sqlc-dev/sqlc 是不同项目。
+
+理解它的重点是沿着一次读写判断：什么时候访问 Redis，什么时候查数据库，哪些错误会返回，哪些只被记录并重试。本文使用 go-zero v1.7.3、Go 1.22.12、MySQL 8.0 InnoDB 与 Redis 7；底层会话和映射见 [go-zero sqlx](./sqlx.mdx)。
+
+## 1. 面试核心 {#core}
+
+- **`QueryRowCtx` 按缓存键读取，只有确定缓存缺失时才调用查询回调**。缓存命中后不重新执行 SQL，因此缓存键必须完整表达这份数据的身份。[卡](#read-path)
+- **不存在的数据可以写入短期空值缓存**，但数据库暂时失败不能被当成“不存在”。创建记录后也要失效原来的空值键。[卡](#negative-cache)
+- **`ExecCtx` 先执行写入回调，成功后删除调用方给出的缓存键**。它不解析 SQL 来自动找出所有受影响键，也不把数据库与 Redis 变成同一事务。[卡](#write-invalidation)
+- **失败行为要看具体缓存实现和版本**。本文版本默认节点读取 Redis 出错会直接返回；删除出错则记录并安排后台重试，可能仍向调用方返回 nil。[卡](#cache-errors)
+- **写后删除仍可能遇到旧查询晚回填**。TTL 和重试只能约束部分后果，不能据此宣称强一致。[卡](#stale-refill)
+- **不要把事务未提交的数据放入共享缓存**。`WithSession` 能关联事务会话，却不会让 Redis 写入随数据库回滚。[卡](#transaction-cache)
+
+## 2. 缓存键与 CachedConn {#缓存键与CachedConn}
+
+**缓存键**标识一次可复用的查询结果。下面假设 product ID 在这个目录业务中全局唯一，用业务前缀、数据类型和结构版本组成键：
+
+```go title="store.go"
+package catalog
+
+import (
+    "database/sql"
+    "fmt"
+    "time"
+
+    "github.com/zeromicro/go-zero/core/stores/cache"
+    "github.com/zeromicro/go-zero/core/stores/redis"
+    "github.com/zeromicro/go-zero/core/stores/sqlc"
+    "github.com/zeromicro/go-zero/core/stores/sqlx"
+)
+
+type Product struct {
+    ID    int64          `db:"id"`
+    Name  sql.NullString `db:"name"`
+    Stock int64          `db:"stock"`
+}
+
+func ProductKey(id int64) string {
+    return fmt.Sprintf("catalog:product:v1:%d", id)
+}
+
+func NewProductCache(conn sqlx.SqlConn, redisClient *redis.Redis) sqlc.CachedConn {
+    return sqlc.NewNodeConn(conn, redisClient,
+        cache.WithExpiry(10*time.Minute),
+        cache.WithNotFoundExpiry(30*time.Second))
+}
+```
+
+这里显式设置正常结果和空值结果的过期时间。默认缓存节点会给过期时间加入小幅扰动，以减少大量键同时到期；它不是精确到某个时刻的业务有效期，也不能替代业务中的有效性判断。
+
+若 ID 只在租户内唯一，键里还必须包含租户身份；同一记录若按权限、语言或字段集合返回不同结果，也不能无条件共用同一键。缓存不是权限检查，命中缓存后仍要满足当前请求的访问约束。
+
+不同 CachedConn 共用一个 Redis 时，需要统一命名和序列化约定。同名键会复用同一缓存值；本文版本 sqlc 的请求合并器也在进程内共享，不能只因为数据库连接不同就认为缓存空间天然隔离。
+
+## 3. 读取与回源 {#读取与回源}
+
+### 3.1 命中与缺失 {#命中与缺失}
+
+**回源**是在缓存没有可用结果时，从数据库读取真实数据。下面的回调只有在需要回源时才执行：
+
+```go title="read.go"
+package catalog
+
+import (
+    "context"
+
+    "github.com/zeromicro/go-zero/core/stores/sqlc"
+    "github.com/zeromicro/go-zero/core/stores/sqlx"
+)
+
+func LoadProduct(ctx context.Context, conn sqlc.CachedConn, id int64) (Product, error) {
+    var product Product
+    err := conn.QueryRowCtx(ctx, &product, ProductKey(id),
+        func(ctx context.Context, db sqlx.SqlConn, value any) error {
+            return db.QueryRowCtx(ctx, value,
+                "SELECT id, name, stock FROM products WHERE id = ?", id)
+        })
+    return product, err
+}
+```
+
+普通读取路径可以分为：
+
+1. Redis 命中正常缓存值时，反序列化到 Product，返回结果。
+2. Redis 确定没有这个键时，执行 SQL 查询回调。
+3. 查询成功后，把结果序列化并写入带过期时间的缓存，再返回数据。
+4. 查询明确返回 `sql.ErrNoRows` 时，记录短期的“不存在”，返回缺失错误。
+
+缓存中的结果是一次查询的快照，不会因数据库后来改变而自动更新。`QueryRowNoCacheCtx`、`QueryRowsNoCacheCtx` 则明确绕过缓存；后者不会替任意列表查询维护成员变化和分页失效关系。
+
+默认节点也会尝试删除无法反序列化的缓存值，再重新查询数据库。它能处理损坏或不兼容格式，但无法识别“格式完全合法、业务数据却已过时”的值，因此结构版本和失效协议仍然必要。
+
+### 3.2 空值与同时回源 {#空值与同时回源}
+
+**空值缓存**记录的是“数据库明确查无记录”。它让短时间内反复查询同一个不存在 ID 的请求不必每次都访问数据库，相关问题见[缓存穿透、击穿、雪崩与热点 Key](../../nosql/redis/cache-penetration-stampede-avalanche-hotkeys.mdx)。
+
+这与普通缓存未命中不同：未命中允许回源，命中“不存在”占位值则直接返回缺失错误。数据库断连、SQL 语法错误、超时等不应被转换成 ErrNotFound，否则暂时故障会被误缓存成业务不存在。
+
+创建记录后，要删除对应的空值键。否则数据库已经有了数据，读请求仍可能在空值缓存到期前报告不存在。空值 TTL 通常短于正常记录 TTL，但具体时长要由可接受的缺失窗口和查询压力决定。
+
+同一进程里，同一个键正在回源时，sqlc 使用 `syncx.SingleFlight` 合并重叠请求，共享这次结果或错误。它不是跨进程锁，也不是永久缓存；多个应用实例仍可能各自回源。键相同还意味着共享工作，不能把两种不同查询放在同一个键下。
+
+## 4. 写入与失效 {#写入与失效}
+
+### 4.1 写后删除 {#写后删除}
+
+**写后删除**先修改数据库，成功后删除旧缓存，让后续读取重新加载。下面只修改库存，并明确传入主键缓存键：
+
+```go title="stock.go"
+package catalog
+
+import (
+    "context"
+    "database/sql"
+    "errors"
+
+    "github.com/zeromicro/go-zero/core/stores/sqlc"
+    "github.com/zeromicro/go-zero/core/stores/sqlx"
+)
+
+func SetStock(ctx context.Context, conn sqlc.CachedConn, id, stock int64) (int64, error) {
+    if id <= 0 || stock < 0 {
+        return 0, errors.New("invalid stock update")
+    }
+    result, err := conn.ExecCtx(ctx,
+        func(ctx context.Context, db sqlx.SqlConn) (sql.Result, error) {
+            return db.ExecCtx(ctx,
+                "UPDATE products SET stock = ? WHERE id = ?", stock, id)
+        }, ProductKey(id))
+    if err != nil {
+        return 0, err
+    }
+    return result.RowsAffected()
+}
+```
+
+数据库写入失败时，不继续执行删除；写入成功后，删除列出的键。`ExecNoCacheCtx` 只执行 SQL，不会自动删除已有缓存，因此绕过缓存更新数据库后，下一次普通缓存读取仍可能拿到旧值。
+
+ExecCtx 不解析 UPDATE 涉及了哪些记录，也不会自动推断所有二级索引、列表和统计键。调用方漏传键，旧缓存就可能继续存在。对默认按实际变化行数计数的 MySQL 配置，RowsAffected 为零还可能只是值未改变，不能直接当成记录不存在。
+
+### 4.2 唯一索引缓存 {#唯一索引缓存}
+
+`QueryRowIndexCtx` 用于从唯一索引查到主键，再复用主键记录缓存。例如通过邮箱查用户，可以分别维护“邮箱到用户 ID”和“用户 ID 到记录”。索引未命中时需要从数据库得到对应记录与主键；命中索引后，还要取得主键记录。
+
+索引键不是任意查询结果缓存。它必须对应明确的唯一关系，主键表示与键生成函数也必须一致。用户修改邮箱时，除了主键记录键，还要考虑旧邮箱和新邮箱对应的索引键，以及新邮箱此前留下的空值键。
+
+默认实现给相关缓存设置过期时间并安排小的时间差，但这不替代正确的写入失效，也不构成跨 Redis 与数据库的原子更新。列表、非唯一索引和按条件统计需要自己的缓存设计，不直接套用单条记录接口。
+
+## 5. 失败与并发边界 {#失败与并发边界}
+
+### 5.1 Redis 失败 {#Redis失败}
+
+go-zero v1.7.3 默认 `cacheNode` 的失败行为并不统一：
+
+| 失败位置 | 默认节点的主要行为 | 调用方需要理解的后果 |
+| --- | --- | --- |
+| 读取 Redis 失败 | 返回错误，不继续回源 | Redis 故障不等同缓存未命中，避免流量直接冲向数据库 |
+| 数据库查询失败 | 返回查询错误 | 不把普通故障写成空值缓存 |
+| 查询成功，缓存写入失败 | 记录缓存错误，仍可返回查询结果 | 读成功不证明新缓存已经存在 |
+| 数据库写入成功，删除 Redis 失败 | 记录错误并安排后台清理，节点方法仍可返回 nil | 写成功不证明旧缓存已删除 |
+
+`CachedConn.ExecCtx` 会返回底层 Cache 的删除错误，但**默认节点会在自己的 DelCtx 中处理 Redis 删除错误并返回 nil**。因此不能只读 ExecCtx 的注释，就推断默认配置一定会把删除失败返回给业务。自定义 Cache 的实现可能不同，需要核对实际调用链。
+
+后台清理是进程内重试，有次数和进程生命周期的限制，不是持久化的补偿任务。需要更强的失效保障时，应把待失效事件纳入可恢复的记录与重放流程，并监控失败积压。也不能看到写调用返回错误就盲目重试非幂等写入：数据库可能已经完成，只是后续动作失败。
+
+### 5.2 旧查询晚回填 {#旧查询晚回填}
+
+先写数据库、再删除缓存，仍可能出现下面的交错：
+
+1. 读请求 R 发现缓存缺失，从数据库读到旧库存 5，暂时停在回填之前。
+2. 写请求 W 把数据库库存改为 9，并成功删除缓存。
+3. R 继续，把之前读到的 5 写进缓存。
+4. 后续请求命中缓存，读到 5，而数据库已经是 9。
+
+这个例子里删除并没有失败，所以单纯重试“失败的删除”无法解决它。进程内请求合并也只合并读取，不会自动把写入与回填串行化。
+
+是否接受这段旧值窗口，取决于业务一致性要求。可以结合较短 TTL、版本校验、更新事件或特定读写协调协议设计，但要逐一分析它们的条件；不能把“加一个延迟删除”当成所有调度和故障下的证明。共享原理见[缓存一致性](../../nosql/redis/cache-patterns-consistency.mdx)。
+
+## 6. 事务与共享缓存 {#事务与共享缓存}
+
+**数据库事务只能回滚数据库内的修改，不能回滚已经写进 Redis 的值。** `CachedConn.TransactCtx` 转交给底层 sqlx；`WithSession` 创建关联 Session 的 CachedConn，但沿用原缓存对象。
+
+假设事务把库存从 5 改为 2，随后用 WithSession 的缓存读取把未提交的 2 回填到 Redis，最后事务因其他错误回滚。数据库恢复为 5，Redis 却可能继续保留 2，其他请求就读到了从未提交的数据。
+
+事务内即使只读取缓存，也可能跳过事务连接和隔离视图，看到共享缓存里的旧结果。事务中的一致性判断应使用传入 Session 直接查询数据库，或使用明确的 NoCache 方法；不能把“带有 Session”理解成“所有读写都经过事务”。
+
+多步修改先在数据库事务内完成，确认提交后再组织失效。提交与删除之间仍存在故障窗口，要求可靠恢复时应记录可重放的失效事件。`TransactCtx` 对 context 和 panic 的版本行为也继承 [go-zero sqlx 的事务规则](./sqlx.mdx#context与版本边界)，缓存包装不会改变它。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 QueryRowCtx 命中、缺失和 Redis 失败时分别怎样执行？ {#read-path}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：缓存键、查询回调、缺失与故障的区别。
+
+**相关内容**：[命中与缺失](#命中与缺失)、[Redis 失败](#Redis失败)。
+
+<details>
+<summary>参考回答</summary>
+
+**命中正常缓存值时直接反序列化；确定未命中时才执行数据库查询回调。** 回源成功后尝试写缓存，明确查无记录则记录短期空值。
+
+本文版本的默认节点在 Redis 读取失败时返回错误，不自动把所有请求转发到数据库。缓存键必须表达同一数据身份，否则两段不同查询可能复用不相干的值。
+
+</details>
+
+### 7.2 空值缓存为什么要在创建记录后失效？ {#negative-cache}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：查无记录与普通未命中、空值窗口和错误分类。
+
+**相关内容**：[空值与同时回源](#空值与同时回源)。
+
+<details>
+<summary>参考回答</summary>
+
+**命中空值缓存会直接返回不存在，不再次查数据库。** 创建后不失效，读者可能在 TTL 到期前仍看不到新记录。
+
+只有数据库明确返回 ErrNoRows 才能写入不存在标记。断连、语法错误和超时是故障，不能吞掉后变成空值缓存，否则恢复后仍可能持续给出错误的业务结论。
+
+</details>
+
+### 7.3 ExecCtx 为什么需要显式传缓存键，ExecNoCacheCtx 又有什么区别？ {#write-invalidation}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：写后删除、受影响键集合与绕过缓存的含义。
+
+**相关内容**：[写后删除](#写后删除)、[唯一索引缓存](#唯一索引缓存)。
+
+<details>
+<summary>参考回答</summary>
+
+**ExecCtx 只在写入回调成功后删除传入的键，不分析 SQL 来推导失效范围。** 漏掉主键、旧索引、新索引或空值键，都可能继续返回旧结果。
+
+ExecNoCacheCtx 只执行数据库操作，不修改已有缓存。它适合明确由其他流程负责缓存一致性的场景，不能用它更新后再假定普通缓存查询会立即读到新值。
+
+</details>
+
+### 7.4 ExecCtx 返回 nil，能证明数据库和缓存都更新成功吗？ {#cache-errors}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：库层错误传递、默认 Cache 实现与补偿持久性。
+
+**相关内容**：[Redis 失败](#Redis失败)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能。本文版本的默认缓存节点可能在删除失败后记录错误、安排后台清理，再返回 nil。** ExecCtx 只能按底层 Cache 返回值继续传递，业务收到成功不证明旧键已经消失。
+
+后台重试不是持久化补偿，进程退出或持续失败仍会留下风险。对强失效要求，要有可恢复的事件、重放和监控；同时区分数据库写失败与写成功后的失效失败，避免盲目重试非幂等修改。
+
+</details>
+
+### 7.5 为什么写后删除成功，仍可能出现旧缓存？ {#stale-refill}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：读取快照、写入提交和回填时序。
+
+**相关内容**：[旧查询晚回填](#旧查询晚回填)。
+
+<details>
+<summary>参考回答</summary>
+
+**旧查询可能在删除之后才回填。** 读请求先取得旧值，写请求随后更新数据库并删除缓存，最后读请求再把旧值写回 Redis，就产生了新一轮过时缓存。
+
+这不是删除失败，重试失败删除并不能自动处理；读取的 SingleFlight 也没有协调写操作。需要根据允许的旧值窗口选择 TTL、版本或读写协调协议，并分析故障下的恢复行为。
+
+</details>
+
+### 7.6 WithSession 为什么不等于事务安全的共享缓存？ {#transaction-cache}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：未提交数据、数据库回滚与共享缓存的独立生命周期。
+
+**相关内容**：[事务与共享缓存](#事务与共享缓存)。
+
+<details>
+<summary>参考回答</summary>
+
+**WithSession 关联数据库会话，但仍使用共享缓存。** 把事务未提交的数据回填到 Redis 后，即使数据库回滚，缓存也不会自动恢复；命中缓存还可能绕过事务的隔离视图。
+
+事务内需要一致性判断时直接使用 Session 或 NoCache 查询。先完成数据库事务，再安排缓存失效；提交后的故障窗口需要可恢复的失效流程处理。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [go-zero v1.7.3 sqlc：CachedConn 读取、写入与 WithSession](https://github.com/zeromicro/go-zero/blob/v1.7.3/core/stores/sqlc/cachedsql.go)
+- [go-zero v1.7.3 cacheNode：命中、空值、失败与回填](https://github.com/zeromicro/go-zero/blob/v1.7.3/core/stores/cache/cachenode.go)
+- [go-zero v1.7.3 Cache：接口与缓存节点组织](https://github.com/zeromicro/go-zero/blob/v1.7.3/core/stores/cache/cache.go)
+- [go-zero v1.7.3 缓存选项](https://github.com/zeromicro/go-zero/blob/v1.7.3/core/stores/cache/cacheopt.go)
+- [go-zero v1.7.3 缓存清理重试](https://github.com/zeromicro/go-zero/blob/v1.7.3/core/stores/cache/cleaner.go)
+- [go-zero v1.7.3 syncx.SingleFlight](https://github.com/zeromicro/go-zero/blob/v1.7.3/core/syncx/singleflight.go)
+- [go-zero v1.7.3 sqlx：事务实现](https://github.com/zeromicro/go-zero/blob/v1.7.3/core/stores/sqlx/tx.go)

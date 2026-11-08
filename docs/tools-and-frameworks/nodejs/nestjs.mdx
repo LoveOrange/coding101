@@ -1,0 +1,448 @@
+---
+sidebar_position: 2
+knowledge:
+  id: tools-and-frameworks.nodejs.nestjs
+  type: concept
+description: "理解 NestJS 的模块、依赖注入、请求生命周期、运行时校验和测试边界，并用实际 HTTP 请求验证配置。"
+keywords: ["NestJS", "Node.js", "依赖注入", "Module", "Provider", "Guard", "Pipe", "Interceptor"]
+---
+
+# NestJS
+
+**NestJS** 是通过模块、依赖注入和请求处理组件组织 Node.js 服务端应用的框架。它可以使用 Express 或 Fastify 作为 HTTP 平台，在路由与中间件之上提供一致的应用结构。理解 NestJS，重点不在于记住多少装饰器，而在于说明对象由谁创建、依赖在哪个模块可见，以及请求为什么会在某一层被转换或拒绝。
+
+目标项目使用 NestJS 时，应能把一个接口从启动装配讲到返回响应，并通过测试区分业务逻辑、依赖装配和 HTTP 行为。本文以 NestJS 10.4.15、TypeScript 5.2.2 和 Node.js 22.16.0 为示例基线，使用默认 Express 适配器。
+
+## 1. 面试核心 {#core}
+
+- Module 描述应用装配关系。**`providers` 注册依赖，`exports` 暴露依赖，`imports` 引入其他模块公开的依赖，`controllers` 注册请求入口**。[卡](#module-visibility)
+- 依赖注入按运行时 token 找 Provider。**`@Injectable()` 不等于自动注册，TypeScript 接口也不会在运行时变成注入 token**。[卡](#injection-token)
+- 默认 Provider 通常由对应容器注册共享。**在多个模块重复注册同一个类可能得到不同实例；共享实例应通过模块导出与导入实现**。[卡](#provider-lifetime)
+- 请求通常经过中间件、Guard、Interceptor 前置部分、Pipe 和 Controller，再返回 Interceptor。**Guard 决定是否进入处理，Pipe 校验和转换输入，Interceptor 包裹执行与结果，Filter 处理未捕获异常**。[卡](#request-pipeline)
+- TypeScript 类型在运行时被擦除。**DTO 类型标注不能代替输入校验，`ValidationPipe` 需要可运行的校验规则**。[卡](#runtime-validation)
+- Controller 返回对象时，Nest 可以自动生成响应。**直接使用 `@Res()` 接管响应后，不能再假定普通返回值会自动发送**。[卡](#response-mode)
+- 直接调用方法和经过 HTTP 请求是两种验证范围。**单元测试证明方法行为，装配测试证明依赖关系，HTTP 测试证明路由与请求处理链**。[卡](#testing-boundary)
+
+## 2. 模块与请求入口 {#模块与请求入口}
+
+### 2.1 Module、Controller 与 Provider {#module-controller-与-provider}
+
+**Module** 是用元数据描述一组相关组件及其依赖边界的类。**Controller** 负责把请求映射到处理方法。**Provider** 是由 Nest 容器管理、能够作为依赖提供给其他组件的对象或值，业务服务是其中一种。
+
+下面的示例把课程查询逻辑与 HTTP 入口分开。为了方便阅读，相关类放在同一个文件；实际项目可以按职责拆文件，模块关系不因此改变。
+
+```ts
+// catalog.ts
+import {
+  Controller, Get, Injectable, Module, NotFoundException, Param, ParseIntPipe,
+} from '@nestjs/common';
+
+@Injectable()
+export class CatalogService {
+  findOne(id: number) {
+    return id === 1 ? { id: 1, title: 'Arrays' } : undefined;
+  }
+}
+
+@Controller('courses')
+export class CatalogController {
+  constructor(private readonly catalog: CatalogService) {}
+
+  @Get(':id')
+  findOne(@Param('id', ParseIntPipe) id: number) {
+    const course = this.catalog.findOne(id);
+    if (!course) throw new NotFoundException('course not found');
+    return course;
+  }
+}
+
+@Module({
+  controllers: [CatalogController],
+  providers: [CatalogService],
+  exports: [CatalogService],
+})
+export class CatalogModule {}
+```
+
+`GET /courses/1` 会先把路径参数通过 `ParseIntPipe` 转成整数，再调用 `findOne`。存在的课程返回对象，不存在的课程抛出 `NotFoundException`；`/courses/abc` 则在 Pipe 阶段被拒绝，不会进入业务方法。`id: number` 只是静态标注，实际转换来自 Pipe。
+
+```ts
+// app.ts
+import 'reflect-metadata';
+import { Module } from '@nestjs/common';
+import { NestFactory } from '@nestjs/core';
+import { CatalogModule } from './catalog';
+
+@Module({ imports: [CatalogModule] })
+export class AppModule {}
+
+export async function createApplication() {
+  return NestFactory.create(AppModule, { logger: false });
+}
+```
+
+调用 `createApplication()` 得到应用后，再调用 `app.listen(3000)` 就会开放 HTTP 入口。这里让创建和监听分开，测试可以选择临时端口，并在结束后 `await app.close()`。`logger: false` 仅让演示输出简洁，不是生产环境关闭观测的建议。
+
+### 2.2 模块可见性 {#模块可见性}
+
+一个模块默认只能注入自己注册的 Provider，以及它导入的模块明确导出的 Provider。文件里的 `export class CatalogService` 是 JavaScript 模块导出；Nest 的 `exports: [CatalogService]` 则是依赖容器的可见性声明，二者不是同一件事。
+
+如果另一个模块需要 `CatalogService`，应在自己的 `imports` 中加入 `CatalogModule`。只在 TypeScript 文件顶部 `import { CatalogService } ...`，不会把这个 Provider 自动加入 Nest 的可见依赖。
+
+`@Injectable()` 提供依赖注入所需的类元数据，但类仍要被注册。遇到“无法解析某个依赖”时，先检查 token、注册模块、导出与导入关系，再检查循环依赖；不应把每个缺失的服务都随手重复加进当前模块的 `providers`。
+
+## 3. 依赖注入与实例范围 {#依赖注入与实例范围}
+
+### 3.1 运行时 token {#运行时-token}
+
+**注入 token** 是容器查找依赖时使用的运行时标识，可以是类、字符串或 Symbol。使用类注入时，Nest 可以结合装饰器元数据知道构造函数需要哪一个类；使用接口描述依赖时，则要另外提供真实存在的 token。
+
+```ts
+// clock.ts
+import { Inject, Injectable, Module } from '@nestjs/common';
+
+export interface Clock {
+  now(): number;
+}
+
+export const CLOCK = Symbol('CLOCK');
+
+@Injectable()
+export class ReportService {
+  constructor(@Inject(CLOCK) private readonly clock: Clock) {}
+
+  createdAt() {
+    return this.clock.now();
+  }
+}
+
+@Module({
+  providers: [
+    { provide: CLOCK, useValue: { now: () => 123 } satisfies Clock },
+    ReportService,
+  ],
+  exports: [ReportService],
+})
+export class ReportModule {}
+```
+
+`Clock` 约束代码里的类型，运行时查找依赖使用的是 `CLOCK`。示例中注入固定时钟，所以 `createdAt()` 返回 `123`。测试可以用同一个 token 替换实现，而不必修改 `ReportService`。
+
+重新执行一次 `Symbol('CLOCK')` 会得到另一个 Symbol，即使描述字符串相同也不是同一个 token。应从共享文件导入同一个 `CLOCK`，而不是在注册处和注入处分别创建。
+
+| 注册方式 | 作用 | 要注意的边界 |
+| --- | --- | --- |
+| `useValue` | 直接提供对象或值 | 对象是否可变、是否会跨请求共享 |
+| `useClass` | 由容器创建指定类的实例 | 与另一个 token 注册的同类实例不必相同 |
+| `useFactory` | 调用工厂生成值，可通过 `inject` 声明依赖 | 异步工厂需要完成后依赖方才能使用 |
+| `useExisting` | 给已注册 Provider 增加别名 | 复用现有实例，不再创建一份 |
+
+手动 `new ReportService(...)` 可以用于独立测试，但该对象不是因为调用了 `new` 就自动获得容器的替换、范围与生命周期管理。
+
+### 3.2 单例、请求范围与瞬态范围 {#单例请求范围与瞬态范围}
+
+默认范围 `Scope.DEFAULT` 会复用对应注册的实例。多个模块通过导入同一个模块使用它导出的服务，可以共享实例；如果每个模块都独立把这个类注册为 Provider，就可能各有一份实例。单例也不跨进程、容器副本或独立 Nest 应用共享。
+
+`Scope.REQUEST` 为每个请求上下文创建实例；依赖请求范围 Provider 的组件也会受到范围传播的影响。它适合确实需要请求内状态的场景，但会增加实例创建工作，不能把所有服务都改成请求范围来代替合理的状态设计。
+
+`Scope.TRANSIENT` 为不同注入消费者提供独立实例，不代表每调用一次方法就创建一个实例。默认范围的消费者持有注入得到的瞬态依赖时，通常会继续使用这份依赖。
+
+共享服务可以保存连接池或按正确键管理的缓存，但不应在字段里保存“当前用户”。一次异步请求等待时，其他请求仍会进入同一个服务，覆盖这种临时状态。请求上下文应显式传递，或使用适合的请求范围与上下文机制。
+
+## 4. 请求处理组件 {#请求处理组件}
+
+### 4.1 请求经过哪些阶段 {#请求经过哪些阶段}
+
+一个正常 HTTP 请求通常按下面的顺序经过处理。发生拒绝、短路或异常时，后面的部分可能不会执行，不能把这张表理解成每个请求必经的完整流水线。
+
+| 阶段 | 主要职责 | 典型例子 |
+| --- | --- | --- |
+| Middleware | 基于原始请求和响应做通用处理 | 请求标识、前置解析 |
+| Guard | 根据执行上下文决定是否允许进入 | 登录与角色检查 |
+| Interceptor 前置部分 | 包裹后续执行 | 开始计时、缓存命中时直接返回 |
+| Pipe | 校验或转换处理方法的参数 | `ParseIntPipe`、DTO 校验 |
+| Controller 与 Service | 处理接口与业务调用 | 查询课程 |
+| Interceptor 返回部分 | 观察或转换结果 | 统一返回结构、记录耗时 |
+| Exception Filter | 处理尚未被捕获的异常 | 将业务异常转换为响应 |
+
+同类 Guard 一般按全局、Controller、路由级的顺序进入。Interceptor 进入时也是由外到内，结果返回时由内到外恢复。它通过 RxJS Observable 包裹后续执行，并不是 Express 的 `next()`；直接在 `next.handle()` 调用之后写代码，也不表示异步处理已经完成，应使用 Observable 的相应操作符观察结果或结束。
+
+Filter 不是每次成功返回都执行的步骤。异常若已被代码捕获并正常返回，就不会继续触发异常过滤；路由级 Filter 匹配并处理后，也不会再像普通中间件那样把同一个异常依次传给 Controller 级与全局 Filter。
+
+### 4.2 Guard、Pipe 与权限判断 {#guard-pipe-与权限判断}
+
+Guard 能读取当前 Controller、处理方法及其元数据，适合决定某条路由是否允许执行。中间件通常更早运行，并不具有同样的路由执行上下文。二者分工参见 [Node.js 中间件](./middleware.mdx)。
+
+Guard 在 Pipe 之前执行。因此，Guard 读取路径参数或请求体时，不能假定它们已经经过后面的转换与校验。需要用于授权的资源 ID，应在授权路径中先完成必要校验，或者把依赖资源状态的授权放到能够正确取得这些信息的业务层。
+
+Guard 返回 `false` 时，Nest 默认拒绝请求并返回 `403`。需要表达未认证等其他语义时，应抛出对应的异常，而不是把所有失败都写成同一个布尔值。角色检查也不能替代具体订单、文档等资源的归属判断。
+
+### 4.3 自动响应与手动响应 {#自动响应与手动响应}
+
+普通 Controller 可以直接返回对象、Promise 或可被框架处理的 Observable，Nest 负责等待或解析结果并生成响应。对象或数组会按标准处理方式序列化为 JSON；默认状态通常为 `200`，`POST` 默认使用 `201`，也可以通过 `@HttpCode` 明确指定。
+
+如果通过 `@Res()` 接管底层 Express 响应，当前路由就进入手动响应模式。此时只 `return { ... }` 可能让请求一直等待，因为框架认为你会自己调用发送方法。只想设置响应头或 Cookie，同时保留自动返回处理时，可以使用 `@Res({ passthrough: true })`。
+
+直接使用 Express 的请求与响应 API 会让这部分代码依赖适配器。切换 Fastify 时，需要检查这些调用和中间件兼容性，不能认为只更换一行启动参数就完成迁移。
+
+## 5. 运行时输入校验 {#运行时输入校验}
+
+**DTO**（Data Transfer Object）是描述数据传输结构的对象。TypeScript 接口和类型标注只参与静态检查，不能阻止客户端发来字段错误的 JSON。下面用 DTO 类与 `class-validator` 装饰器提供运行时规则。
+
+```ts
+// validation-app.ts
+import 'reflect-metadata';
+import { Body, Controller, Module, Post, ValidationPipe } from '@nestjs/common';
+import { NestFactory } from '@nestjs/core';
+import { IsString, Length, Matches } from 'class-validator';
+
+export class CourseDto {
+  @IsString()
+  @Length(1, 40)
+  @Matches(/\S/)
+  title!: string;
+}
+
+@Controller('drafts')
+export class DraftController {
+  @Post()
+  create(@Body() body: CourseDto) {
+    return { title: body.title };
+  }
+}
+
+@Module({ controllers: [DraftController] })
+export class ValidationModule {}
+
+export async function createValidationApplication() {
+  const app = await NestFactory.create(ValidationModule, { logger: false });
+  app.useGlobalPipes(new ValidationPipe({
+    transform: true,
+    whitelist: true,
+    forbidNonWhitelisted: true,
+  }));
+  return app;
+}
+```
+
+`POST /drafts` 发送 `{"title":"Arrays"}` 时返回 `201`；缺少标题、标题不是字符串、全是空白或长度超出规则时返回 `400`。这个示例只验证并返回输入，不创建持久化资源。
+
+`transform: true` 让处理函数收到转换后的 DTO 实例，但不意味着所有字符串都会按业务意图变成数字或布尔值。`whitelist: true` 根据校验装饰器识别允许的属性；再配合 `forbidNonWhitelisted: true`，多出的属性会被拒绝，而不只是静默删除。仅在类上声明字段、没有相应校验装饰器，并不会自动成为白名单字段。
+
+嵌套对象和数组需要相应的嵌套校验与转换规则。DTO 也不能替代数据库约束、权限检查或请求体大小限制；它解决的是当前入口的输入结构问题。
+
+上述 TypeScript 示例使用传统装饰器与反射元数据，编译配置如下。项目同时安装 Nest 相关包、`reflect-metadata`、`rxjs`、`class-validator` 和 `class-transformer`。
+
+```json
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "CommonJS",
+    "strict": true,
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "outDir": "dist"
+  },
+  "include": ["*.ts"]
+}
+```
+
+`experimentalDecorators` 与 `emitDecoratorMetadata` 是这组示例依赖的配置；不能把不兼容的装饰器编译方式直接替换进去。接口本身依然会被擦除，打开元数据也不会给任意接口生成一个运行时类。
+
+## 6. 测试与排查 {#测试与排查}
+
+### 6.1 三种验证范围 {#三种验证范围}
+
+直接创建 `CatalogService` 并调用 `findOne`，可以检查查询逻辑；通过 `Test.createTestingModule(...).compile()`，可以检查依赖是否能装配；创建测试应用并发出 HTTP 请求，才能同时经过路由、Pipe 和异常响应。
+
+下面的独立测试文件替换课程服务，验证 Controller 实际使用了替代实现。它采用 Node 的断言，无需固定使用某一种测试运行器。
+
+```ts
+// catalog-check.ts
+import 'reflect-metadata';
+import assert from 'node:assert/strict';
+import { Test } from '@nestjs/testing';
+import { CatalogModule, CatalogService } from './catalog';
+
+async function check() {
+  const calls: number[] = [];
+  const moduleRef = await Test.createTestingModule({ imports: [CatalogModule] })
+    .overrideProvider(CatalogService)
+    .useValue({
+      findOne(id: number) {
+        calls.push(id);
+        return { id, title: 'From test' };
+      },
+    })
+    .compile();
+  const app = moduleRef.createNestApplication();
+  try {
+    await app.listen(0, '127.0.0.1');
+    const response = await fetch(`${await app.getUrl()}/courses/7`);
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { id: 7, title: 'From test' });
+    assert.deepEqual(calls, [7]);
+    console.log('catalog check passed');
+  } finally {
+    await app.close();
+  }
+}
+
+check().catch(error => {
+  console.error(error);
+  process.exitCode = 1;
+});
+```
+
+通过 `tsc` 编译后运行 `node dist/catalog-check.js`，成功时输出 `catalog check passed`。这证明测试模块完成了装配，参数 `7` 实际经 HTTP 入口进入替代服务；它不证明真实数据库或远端服务可用。
+
+测试应用也必须使用需要验证的全局 Pipe、Guard、Filter 与适配器。只在生产入口调用 `useGlobalPipes()`，而测试另建应用时没有这一步，得到的是另一条处理链。可以让生产启动和测试复用同一份应用配置函数，避免两边逐渐偏离。
+
+### 6.2 常见故障的检查顺序 {#常见故障的检查顺序}
+
+| 现象 | 优先检查 |
+| --- | --- |
+| 无法解析构造函数依赖 | token 是否一致，Provider 是否注册，模块是否导出并被导入 |
+| 同一服务似乎出现多份状态 | 是否在不同模块重复注册，是否存在多个应用实例或进程 |
+| 输入类型声明正确却接受了错误 JSON | 是否启用运行时 Pipe，DTO 是否有运行时类与校验规则 |
+| Guard 读到字符串或未验证字段 | Guard 是否错误地依赖后面 Pipe 的处理结果 |
+| 接口方法返回了对象但请求未结束 | 是否使用 `@Res()` 接管响应却没有实际发送 |
+| 单元测试通过，HTTP 行为错误 | 测试是否绕过了路由、全局配置、Guard、Pipe 或适配器 |
+
+循环依赖也值得检查，但 `forwardRef()` 只是处理某些循环引用的工具，不会自动让职责清晰。能通过提取共同依赖或改变调用方向解除循环时，应先考虑这些结构调整。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 imports、providers、controllers 和 exports 分别有什么作用？ {#module-visibility}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：容器可见性与源文件导出的区别。
+
+**相关内容**：[Module、Controller 与 Provider](#module-controller-与-provider)、[模块可见性](#模块可见性)。
+
+<details>
+<summary>参考回答</summary>
+
+**`providers` 注册当前模块的依赖，`controllers` 注册请求入口，`exports` 声明可供其他模块使用的 Provider，`imports` 引入其他模块公开的能力。** 文件中的 TypeScript `import/export` 只解决代码引用，不会自动建立 Nest 容器可见性。
+
+注入失败时检查依赖 token、所属模块的注册和导出，以及消费模块的导入。不能只加 `@Injectable()` 就期待容器自动发现，也不应通过到处重复注册掩盖模块关系问题。
+
+</details>
+
+### 7.2 为什么接口不能直接作为 NestJS 的注入 token？ {#injection-token}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：类型擦除、运行时标识与实现替换。
+
+**相关内容**：[运行时 token](#运行时-token)。
+
+<details>
+<summary>参考回答</summary>
+
+**接口在编译后被擦除，而容器必须使用运行时存在的标识查找依赖。** 可以用类、字符串或共享 Symbol 作为 token，再通过 `@Inject(token)` 指定它；接口继续负责静态类型约束。
+
+两个独立创建的同名 Symbol 不是同一个 token。`useValue` 提供值，`useClass` 创建类实现，`useFactory` 生成依赖，`useExisting` 则复用已注册实例。
+
+</details>
+
+### 7.3 NestJS Provider 默认是单例，为什么还可能得到多个实例？ {#provider-lifetime}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：注册边界、实例范围与共享状态。
+
+**相关内容**：[单例、请求范围与瞬态范围](#单例请求范围与瞬态范围)。
+
+<details>
+<summary>参考回答</summary>
+
+**默认共享的是对应注册在容器中的实例，不是让同一个类在所有模块、应用和进程中只有一份。** 多个模块分别注册同一个类可能各建实例；通过导出该 Provider 并导入所属模块，可以复用同一份注册。
+
+请求范围按请求上下文创建，瞬态范围按注入消费者提供独立实例。共享服务不要把当前用户等请求临时状态放到普通实例字段里，否则异步请求之间会相互覆盖。
+
+</details>
+
+### 7.4 Middleware、Guard、Pipe、Interceptor 和 Filter 怎样分工？ {#request-pipeline}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：执行顺序、短路与异常传播。
+
+**相关内容**：[请求经过哪些阶段](#请求经过哪些阶段)、[Guard、Pipe 与权限判断](#guard-pipe-与权限判断)。
+
+<details>
+<summary>参考回答</summary>
+
+**中间件做通用请求处理，Guard 决定能否进入，Pipe 校验和转换参数，Interceptor 包裹执行与结果，Filter 处理未捕获异常。** 正常进入顺序是中间件、Guard、Interceptor 前置、Pipe、Controller，结果再经过 Interceptor 返回部分。
+
+Guard 在 Pipe 之前，不能依赖后面的转换结果。Interceptor 返回方向由内到外；Filter 只在异常未被处理时介入，也不是让同一异常依次经过所有级别的处理链。
+
+</details>
+
+### 7.5 DTO 和 ValidationPipe 各自解决什么问题？ {#runtime-validation}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：静态类型、运行时规则、转换与白名单。
+
+**相关内容**：[运行时输入校验](#运行时输入校验)。
+
+<details>
+<summary>参考回答</summary>
+
+**DTO 描述传输结构，`ValidationPipe` 根据运行时校验规则检查输入；TypeScript 类型本身不会过滤真实请求。** 使用 DTO 类和校验装饰器，才能让这里的 `class-validator` 校验路径知道需要检查什么。
+
+`transform: true` 返回转换后的实例；`whitelist` 按校验装饰器筛选属性，`forbidNonWhitelisted` 拒绝多余字段。嵌套对象、数字转换、大小限制和资源权限仍要有各自明确的规则。
+
+</details>
+
+### 7.6 Controller 已经 return 对象，为什么 HTTP 请求仍然没有结束？ {#response-mode}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：自动响应与底层响应对象的控制权。
+
+**相关内容**：[自动响应与手动响应](#自动响应与手动响应)。
+
+<details>
+<summary>参考回答</summary>
+
+**先检查是否使用了 `@Res()` 接管响应。** 在手动响应模式下，需要调用底层响应对象的发送方法，普通返回值不会继续按默认方式自动发送。
+
+只需要设置头或 Cookie 时，可以使用 `@Res({ passthrough: true })` 保留自动处理。还要排查未完成的 Promise、没有结束的 Observable 或被中间件截住的请求，不能只看方法最后一行。
+
+</details>
+
+### 7.7 怎样测试 NestJS 服务，才能发现依赖装配和请求链的问题？ {#testing-boundary}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：测试层次、依赖替换与实际 HTTP 行为。
+
+**相关内容**：[三种验证范围](#三种验证范围)、[常见故障的检查顺序](#常见故障的检查顺序)。
+
+<details>
+<summary>参考回答</summary>
+
+**把方法行为、模块装配和 HTTP 行为分别验证。** 单元测试直接调用业务方法；测试模块检查 token、导入与导出，并用 `overrideProvider()` 替换外部依赖；HTTP 测试经过实际路由和请求组件，检查状态码、校验失败和异常响应。
+
+测试应用必须带上目标全局配置和适配器，结束后关闭应用。直接调用 Controller 方法不会自动执行装饰器对应的 Guard 或 Pipe，不能用这种调用证明入口权限与校验正常。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [NestJS：Modules](https://docs.nestjs.com/modules)
+- [NestJS：Controllers](https://docs.nestjs.com/controllers)
+- [NestJS：Custom providers](https://docs.nestjs.com/fundamentals/custom-providers)
+- [NestJS：Injection scopes](https://docs.nestjs.com/fundamentals/injection-scopes)
+- [NestJS：Request lifecycle](https://docs.nestjs.com/faq/request-lifecycle)
+- [NestJS：Guards](https://docs.nestjs.com/guards)
+- [NestJS：Interceptors](https://docs.nestjs.com/interceptors)
+- [NestJS：Validation](https://docs.nestjs.com/application/validation)
+- [NestJS 10.4.15：ValidationPipe](https://github.com/nestjs/nest/blob/v10.4.15/packages/common/pipes/validation.pipe.ts)
+- [NestJS：Testing](https://docs.nestjs.com/fundamentals/testing)

@@ -18,7 +18,13 @@ keywords: ["Linked List", "链表反转", "环形链表", "快慢指针判环"]
 - 单链表的**随机访问和按值查找最坏都是 O(n)**，因为只能沿着链接逐个往前走。
 - 已知前驱节点时，单链表的插入和删除**只需修改少量链接，是 O(1)**；但找到前驱的成本要另算。
 - 反转单链表时，要**先保存后继，再修改当前节点的链接**。[卡](#reverse-list)
+- 分组修改要先确定**反转组内节点还是倒置整个组的顺序**，保存下一组后再改链接；不足一组的处理必须由题设约定。[卡](#reverse-k-group)
 - 快慢指针判环的时间是 **O(n)**，额外空间是 **O(1)**。[卡](#cycle-entry)
+- 无环链表找中点也可用快慢指针，但要先约定**偶数长度取前中点还是后中点**。[卡](#middle-node)
+- 链表插入排序逐个扩展**已经有序的前缀**。重接一个节点只要 O(1)，但寻找插入位置最坏要遍历前缀，因此总时间最坏为 O(n²)；相等时插到已有节点后面，才能保持稳定。[卡](#linked-list-insertion-sort)
+- 合并去重可以利用**有序输入让重复值连续出现**，但要明确结果新建还是复用节点。[卡](#merge-distinct-lists)
+- 链表逐位相加的空间结论依赖**位序、输入是否可改和是否计入输出**；低位在前时可边走边进位。[卡](#add-list-digits)
+- 递归返回时可以计算倒数位置，但**一次向后遍历仍可能需要 O(n) 调用栈**。[卡](#remove-kth-recursively)
 
 ## 2. 节点与链接 {#节点与链接}
 
@@ -58,6 +64,71 @@ static Node reverse(Node head) {
 
 输入 1→2→3，返回 3→2→1。空表时循环不执行，返回 `null`；原来的头节点最后会指向 `null`，成为新的尾。时间 O(n)，额外空间 O(1)。这个实现要求链表无环，并且会直接修改输入的链表。
 
+### 3.1 每 k 个节点反转 {#每k个节点反转}
+
+**分组反转只改变每组内部的节点顺序，组与组仍按原来的次序连接。** 先约定 `k` 必须为正数，末尾不足 `k` 个节点的一组保持原样。这个尾组约定与 LeetCode 25 一致；遇到没有写明尾组规则的题，应先确认，不能默认所有分组题都采用同一种处理方式。
+
+下面沿用 `Node`，输入必须无环，函数会修改原节点的链接，不交换节点值。与前文一样，Java 是参考实现的语言选择。空表返回 `null`；`k` 大于总长度时整表不变。
+
+```java
+static Node reverseKGroup(Node head, int k) {
+    if (k <= 0) throw new IllegalArgumentException("k must be positive");
+    Node dummy = new Node(0);
+    dummy.next = head;
+    Node groupPrevious = dummy;
+    while (true) {
+        Node kth = groupPrevious;
+        for (int i = 0; i < k && kth != null; i++) kth = kth.next;
+        if (kth == null) return dummy.next;
+        Node groupNext = kth.next;
+        Node previous = groupNext;
+        Node current = groupPrevious.next;
+        while (current != groupNext) {
+            Node next = current.next;
+            current.next = previous;
+            previous = current;
+            current = next;
+        }
+        Node oldHead = groupPrevious.next;
+        groupPrevious.next = kth;
+        groupPrevious = oldHead;
+    }
+}
+```
+
+每轮先从组前驱 `groupPrevious` 出发，确认能走到第 `k` 个节点 `kth`。只有整组存在时才开始修改，所以不足一组的尾部不会被反转一半。用 `groupNext` 保存下一组的起点，再把 `previous` 初始化为 `groupNext`：这样本组旧头第一次改链接时，就已经接好了反转后组尾与后续链表的关系。
+
+组内反转结束后，`kth` 成为新组头，把前一组接到它；旧头 `oldHead` 成为新组尾，也就是下一轮的组前驱。例如 `1 → 2 → 3 → 4 → 5` 在 `k=2` 时得到 `2 → 1 → 4 → 3 → 5`，这就是两两交换节点；`k=3` 时得到 `3 → 2 → 1 → 4 → 5`。`k=1` 不改变节点顺序。
+
+每个节点最多被组长度检查和反转各访问一次，时间 O(n)，辅助空间 O(1)。验证时除了输出数值，还应检查原节点恰好各出现一次、尾部走到 `null`，以及 `k=2` 时奇数末尾确实保留。只交换 `value` 得到相同数列，并不等于交换节点。
+
+### 3.2 按递增长度反转组顺序 {#按递增长度反转组顺序}
+
+**反转组顺序时，组内节点保持原来的次序，只把整组接到结果前面。** 例如按 1、2、3……个节点分组，输入为 `[1][2 3][4 5 6][7 8]`，结果应为 `[7 8][4 5 6][2 3][1]`。最后只有两个节点，也把它们作为一个完整的实际组处理。这与上一节的“组内反转”是两个不同的操作。
+
+```java
+static Node reverseGrowingGroups(Node head) {
+    Node result = null;
+    long groupSize = 1;
+    while (head != null) {
+        Node tail = head;
+        for (long i = 1; i < groupSize && tail.next != null; i++) {
+            tail = tail.next;
+        }
+        Node nextGroup = tail.next;
+        tail.next = result;
+        result = head;
+        head = nextGroup;
+        groupSize++;
+    }
+    return result;
+}
+```
+
+`tail` 找到当前组的实际末尾，`nextGroup` 先保存尚未处理的后半段。随后让 `tail.next` 指向已有结果，把当前组整体放在结果头部。组内其他链接没有变化，因此 7、8 的先后不会颠倒。若先覆盖 `tail.next` 再保存下一组，后半段就会丢失。
+
+输入必须无环，函数修改原链表并返回新头。空表返回 `null`；每个节点只用于确定一次组边界，时间 O(n)，辅助空间 O(1)。验证除了逐值比较，还要确认节点身份、组内顺序和不完整尾组的位置。
+
 ## 4. 快慢指针与环入口 {#快慢指针与环入口}
 
 判断链表有没有环，可以让两个指针从头出发，慢指针每次走一步，快指针每次走两步。如果快指针或它的后继变成 `null`，说明走到了尽头，链表无环。
@@ -68,6 +139,50 @@ static Node reverse(Node head) {
 
 这意味着：从相遇点再往前走 a 步，就相当于从入口一共走了 `b+a` 步，正好绕整圈回到入口。于是相遇后，把一个指针放回头部，两个指针都改为每次走一步。头部的指针走 a 步到达入口，环里的指针走 a 步也回到入口，它们相遇的地方就是环的入口。
 
+把上述两阶段写成函数，沿用前文的 `Node`：
+
+```java
+static Node cycleEntry(Node head) {
+    Node slow = head;
+    Node fast = head;
+    while (fast != null && fast.next != null) {
+        slow = slow.next;
+        fast = fast.next.next;
+        if (slow == fast) {
+            Node fromHead = head;
+            while (fromHead != slow) {
+                fromHead = fromHead.next;
+                slow = slow.next;
+            }
+            return fromHead;
+        }
+    }
+    return null;
+}
+```
+
+`cycleEntry` 在每次快慢推进之后判断引用是否相同，避免把起始时两个指针都在头部误当成有环。无环时返回 `null`；头节点就是入口或单节点自环时也能返回正确的节点。它不修改 `value` 或 `next`，比较的是节点身份，相同数值的两个节点不会被当成同一个节点。
+
+### 4.1 无环链表的中点 {#无环链表的中点}
+
+**找中点利用的是快慢指针走过的距离比例，不需要先数链表长度。** 以下约定输入无环，空表返回 `null`；偶数长度有两个中点时，返回后一个。
+
+```java
+static Node middle(Node head) {
+    Node slow = head;
+    Node fast = head;
+    while (fast != null && fast.next != null) {
+        slow = slow.next;
+        fast = fast.next.next;
+    }
+    return slow;
+}
+```
+
+快指针每次走两步，慢指针每次走一步。快指针到达末尾时，慢指针走过的步数是长度的一半向下取整，所以长度为 5 时停在下标 2，长度为 6 时停在下标 3，均以下标从 0 开始计算。时间 O(n)，额外空间 O(1)，输入链接不变。
+
+例如 `1 → 2 → 3 → 4` 返回节点 3。如果题目要前中点，先处理空表，再让 `fast` 从 `head.next` 开始，保留同样的循环条件，就会返回节点 2。要先确定这个约定，不能只说“快慢指针”而不说明偶数输入的结果。有环输入不会到达末尾，不属于这个函数的有效输入。
+
 ## 5. 使用边界 {#使用边界}
 
 链表代码容易在边界上出错：空表、删除头节点、更新尾引用，都要单独想清楚。在真正的头节点前面加一个**虚拟头节点**，删除原头节点和删除其他节点就能走同一套逻辑，不用特判。
@@ -75,6 +190,215 @@ static Node reverse(Node head) {
 单链表要删除一个已知节点，仍然需要它的前驱。有一个技巧是把后继节点的值复制过来，再删掉后继。但它不能用于尾节点（尾节点没有后继），而且实际删掉的是另一个节点，如果外部还持有那个节点的引用，就会出问题。
 
 判断两个无环链表是否相交、找第一个公共节点时，要比较节点引用，而不是比较值：两个独立的节点可能恰好存着相同的值，但它们并不是同一个节点。做法是让两个指针分别走完 A 再走 B、走完 B 再走 A，两条路径总长相同，所以会在公共后缀的起点对齐。相遇点就是第一个共享节点；如果没有交点，它们会同时走到 `null`。
+
+### 5.1 链表插入排序 {#链表插入排序}
+
+**插入排序**每次取一个尚未处理的元素，插到已经有序的部分中，让有序部分逐步扩大。在单链表上，不需要搬移数组元素，只需找到插入位置的前驱，再修改链接。
+
+下面沿用前文 Java 的 `Node`，按 `value` 升序排列。Java 只是参考实现的语言选择；算法依赖的是节点链接，不要求特定语言。输入必须无环，调用会改变原节点的 `next`，返回值可能是新的头节点。
+
+```java
+static Node insertionSort(Node head) {
+    if (head == null) return null;
+    Node dummy = new Node(0);
+    dummy.next = head;
+    Node lastSorted = head;
+    Node current = head.next;
+    while (current != null) {
+        if (lastSorted.value <= current.value) {
+            lastSorted = current;
+        } else {
+            Node previous = dummy;
+            while (previous.next.value <= current.value) {
+                previous = previous.next;
+            }
+            Node next = current.next;
+            lastSorted.next = next;
+            current.next = previous.next;
+            previous.next = current;
+        }
+        current = lastSorted.next;
+    }
+    return dummy.next;
+}
+```
+
+循环开始时，从 `dummy.next` 到 `lastSorted` 已经有序，`current` 是紧随其后的第一个未处理节点。如果 `current.value` 不小于有序部分的最后一个值，它已经在正确的位置，只需把 `lastSorted` 向前移一步。
+
+否则，从虚拟头节点开始寻找插入位置。扫描越过所有值小于或等于 `current.value` 的节点，停在第一个较大节点之前。由于这个分支已经知道 `lastSorted.value > current.value`，扫描一定会在有序前缀内部停下，不会越过尾端去访问空节点。`dummy` 的值没有参与比较，它只让插到最前面时也有一个前驱。
+
+重接时先保存 `current.next`，再让 `lastSorted.next` 跳过 `current`，最后把 `current` 接到 `previous` 后面。`lastSorted` 仍然是有序部分的末尾，下一轮从它的后继继续。不能先写 `previous.next = current` 再读取 `previous.next` 给 `current.next`，那样会让节点指向自己。
+
+例如输入 `3A → 1 → 3B → 2`，其中 A、B 只是用来区分两个值为 3 的节点。处理 1 后得到 `1 → 3A → 3B → 2`；3B 可以直接留在末尾；再把 2 插入 1 后面，得到 `1 → 2 → 3A → 3B`。整个过程复用原节点，没有通过交换 `value` 来假装完成节点排序。
+
+这个实现是稳定的：待插入节点来自原输入的后方，扫描时使用 `<=`，会把它放到已有相等节点之后。例如 `2A → 3 → 2B` 中，2B 应插到 2A 后面；如果扫描改为 `<`，就会把 2B 插到 2A 前面，虽然数值仍然有序，节点的相对次序却变了。稳定性的含义见 [排序](../algorithms/sorting.mdx#性质比较)。
+
+每次重接只修改常数条链接，但寻找前驱最坏需要遍历整个有序前缀，因此最坏时间是 O(n²)。已经升序的输入每次都走直接扩展分支，时间是 O(n)；虚拟头和少量引用占 O(1) 额外空间。验证时应同时检查值有序、输出包含且仅包含原节点、相等值的节点顺序不变，以及最后走到 `null`。只比较一串数值，发现不了丢失重复节点、替换节点或造环的问题。
+
+### 5.2 单链表的增删改查 {#单链表的增删改查}
+
+**按下标操作链表，要先定位节点，再修改值或链接。** 下面的 `IntList` 复用第 3 节的 Java `Node`，把节点封装在类内部；Java 是参考语言选择，不是对原题语言的限定。查询、更新和删除的下标范围是 `[0, size)`，插入允许 `[0, size]`，其中 `size` 表示追加到末尾。不存在的下标抛出 `IndexOutOfBoundsException`，不悄悄修改其他位置。
+
+```java
+static final class IntList {
+    private Node head;
+    private Node tail;
+    private int size;
+
+    int size() { return size; }
+
+    private Node nodeAt(int index) {
+        if (index < 0 || index >= size) {
+            throw new IndexOutOfBoundsException(index);
+        }
+        Node current = head;
+        for (int i = 0; i < index; i++) current = current.next;
+        return current;
+    }
+
+    int get(int index) { return nodeAt(index).value; }
+
+    void set(int index, int value) { nodeAt(index).value = value; }
+
+    void insert(int index, int value) {
+        if (index < 0 || index > size) {
+            throw new IndexOutOfBoundsException(index);
+        }
+        Node added = new Node(value);
+        if (index == 0) {
+            added.next = head;
+            head = added;
+        } else {
+            Node previous = index == size ? tail : nodeAt(index - 1);
+            added.next = previous.next;
+            previous.next = added;
+        }
+        if (index == size) tail = added;
+        size++;
+    }
+
+    int remove(int index) {
+        if (index < 0 || index >= size) {
+            throw new IndexOutOfBoundsException(index);
+        }
+        Node previous = index == 0 ? null : nodeAt(index - 1);
+        Node removed = previous == null ? head : previous.next;
+        if (previous == null) head = removed.next;
+        else previous.next = removed.next;
+        if (removed == tail) tail = previous;
+        removed.next = null;
+        size--;
+        return removed.value;
+    }
+}
+```
+
+`head`、`tail` 和 `size` 必须一起维护：空表时头尾都为 `null`；非空表的 `tail.next` 为 `null`，沿 `head` 恰好能访问 `size` 个节点。插入第一个节点同时建立头尾，删除最后一个节点同时清空头尾。删除尾节点时，新尾是它的前驱；因此即使保存了 `tail`，单链表删除尾节点仍需先找到前驱。
+
+例如从空表依次插入 10 和 30，再在下标 1 插入 20，得到 `10 → 20 → 30`；`set(1, 25)` 后为 `10 → 25 → 30`，`remove(2)` 返回 30，并让 25 所在节点成为新尾。`set` 更新的是指定节点的值，插入和删除改变的是节点之间的链接，两者不要混为一谈。
+
+头部插删和利用 `tail` 的尾部追加是 O(1)；按中间下标查、改、插、删，以及删除尾节点，最坏是 O(n)。这些操作除新插入节点外只使用 O(1) 辅助空间；整条链表自身占 O(n)。这个最小类没有并发控制，不能供多个线程无同步地同时修改。
+
+### 5.3 有序链表合并去重 {#有序链表合并去重}
+
+**两个非递减链表合并时，每次取当前较小的值；去重只需与结果末尾比较。** 因为输入已经有序，相同值会连续到达，不需要再用哈希集合保存所有见过的值。这里的去重约定是每种值保留一个，不是把出现过重复的值全部删除。
+
+下面选择新建结果节点，保持两个输入不变。输入必须无环且各自有序；两个输入可以共享后缀，甚至传入同一个头节点，因为函数只读取输入，不会把共享节点重接两次。
+
+```java
+static Node mergeDistinct(Node a, Node b) {
+    Node dummy = new Node(0);
+    Node tail = dummy;
+    while (a != null || b != null) {
+        int value;
+        if (b == null || (a != null && a.value <= b.value)) {
+            value = a.value;
+            a = a.next;
+        } else {
+            value = b.value;
+            b = b.next;
+        }
+        if (tail == dummy || tail.value != value) {
+            tail.next = new Node(value);
+            tail = tail.next;
+        }
+    }
+    return dummy.next;
+}
+```
+
+例如 `1 → 1 → 3` 与 `1 → 2 → 3` 合并后为 `1 → 2 → 3`。`tail == dummy` 表示结果还没有元素，不能用虚拟头的数值参与去重；因此第一个真实值即使是 0 或负数也不会丢失。任意一条链表为空时，继续读取另一条并去重；两条都为空时返回 `null`。
+
+长度分别为 m、n 时，沿两条输入链各向前走一遍，时间 O(m+n)。若不同值有 u 个，结果节点占 O(u)，除此之外的辅助空间为 O(1)。若题目要求复用原节点，应重新约定输入是否可能相交、是否允许修改，并处理重复节点的断开；不能把这份复制结果的代码称为“总空间 O(1)”。
+
+### 5.4 链表表示的逐位加法 {#链表表示的逐位加法}
+
+**链表表示大整数时，可以逐位相加，把进位带到下一位。** 但写代码前要明确位序和空间口径。下面采用低位在前的十进制模型，每个节点保存 0 到 9 的一位，结果也低位在前；新建输出节点，输入不变。这个模型与 LeetCode 2 的位序一致，并额外约定空表按 0 处理。
+
+```java
+static Node addDigits(Node a, Node b) {
+    Node dummy = new Node(0);
+    Node tail = dummy;
+    int carry = 0;
+    do {
+        int sum = carry;
+        if (a != null) {
+            if (a.value < 0 || a.value > 9) throw new IllegalArgumentException("digit");
+            sum += a.value;
+            a = a.next;
+        }
+        if (b != null) {
+            if (b.value < 0 || b.value > 9) throw new IllegalArgumentException("digit");
+            sum += b.value;
+            b = b.next;
+        }
+        tail.next = new Node(sum % 10);
+        tail = tail.next;
+        carry = sum / 10;
+    } while (a != null || b != null || carry != 0);
+    return dummy.next;
+}
+```
+
+例如 `2 → 4 → 3` 表示 342，`5 → 6 → 4` 表示 465，结果 `7 → 0 → 8` 表示 807。每轮把两边当前位和 `carry` 相加，用余数写当前位，用商保存下一位进位。较短一侧走完后按 0 参与，循环条件还保留 `carry != 0`，所以 `9 → 9` 加 `1` 能得到 `0 → 0 → 1`，不会丢掉最高位。
+
+单轮最大和是 9+9+1=19，不需要把整个大数转换成机器整数。两个空表返回单节点 0；遇到不在 0 到 9 的节点值则报错。输入需要无环，若要求规范表示，除数字 0 本身外不应含高位多余的 0；本实现按输入逐位生成，不额外裁剪这些 0。
+
+长度分别为 m、n 时，时间 O(max(m,n))，**不计新建输出节点的辅助空间为 O(1)**，输出自身占 O(max(m,n))。题目若只说“大数相加、O(1) 空间”，仍需确认是否排除输出、是否允许改输入、数字是否高位在前。高位在前时不能直接套用这个从头进位的函数；允许修改时可以讨论反转，不能修改时则要考虑其他存储或遍历策略及其代价。
+
+### 5.5 递归删除倒数节点 {#递归删除倒数节点}
+
+**不用快慢指针时，可以递归走到末尾，再在返回途中计算倒数位置。** 每个节点只向后递归一次，不先遍历求长度再从头定位；代价是调用栈随链表长度增长。
+
+以下删除倒数第 `k` 个节点，输入必须无环，`k` 从 1 开始。删除会改变原链表，调用方接收返回的新头。`k` 非正或超过长度时抛出异常，越界不会删除其他节点。
+
+```java
+static Node removeKthFromEnd(Node head, int k) {
+    if (k <= 0) throw new IllegalArgumentException("k must be positive");
+    Node dummy = new Node(0);
+    dummy.next = head;
+    long length = unlinkOnReturn(dummy, k) - 1;
+    if (k > length) throw new IllegalArgumentException("k exceeds length");
+    return dummy.next;
+}
+
+static long unlinkOnReturn(Node node, int k) {
+    if (node == null) return 0;
+    long suffixLength = unlinkOnReturn(node.next, k);
+    if (suffixLength == k) {
+        Node removed = node.next;
+        node.next = removed.next;
+        removed.next = null;
+    }
+    return suffixLength + 1;
+}
+```
+
+`unlinkOnReturn(node, k)` 返回从 `node` 开始的**原始后缀长度**。当递归返回的 `suffixLength` 等于 `k` 时，`node.next` 就是倒数第 `k` 个节点，当前 `node` 正好是它的前驱，令链接跳过它即可。即使已经删除了一个节点，向上返回的长度仍按原始链表计算，不能减一，否则更前面的节点可能再次满足删除条件。
+
+例如 `1 → 2 → 3 → 4` 删除倒数第 2 个节点：返回到节点 2 时，原后缀 `3 → 4` 长度为 2，于是把 2 直接接到 4。虚拟头让删除原头节点也走相同逻辑；删除唯一节点时返回 `null`。若 `k` 大于长度，没有任何前驱能满足条件，所有链接保持不变，最外层再报错。
+
+时间 O(n)，调用栈占 O(n)，所以“一次遍历”不代表“O(1) 空间”。Java 的深递归可能导致栈溢出，长链表不能据此承诺安全；若题目允许快慢指针，可以换成固定间距的迭代方法。验证应包括空表、删头、删尾、单节点、非法 `k`，并检查未删除节点的身份与顺序不变。
 
 ## 6. 面试题 {#面试题}
 
@@ -94,8 +418,6 @@ static Node reverse(Node head) {
 </details>
 
 ### 6.2 快慢指针相遇后，如何找到环入口？ {#cycle-entry}
-
-<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
 **考察重点**：路程差与环长的关系。
 
@@ -127,7 +449,134 @@ static Node reverse(Node head) {
 
 </details>
 
+### 6.4 如何实现链表插入排序，并保证节点完整与稳定性？ {#linked-list-insertion-sort}
+
+**考察重点**：有序前缀、节点重接、稳定插入与定位成本。
+
+**相关内容**：[链表插入排序](#链表插入排序)。
+
+<details>
+<summary>参考回答</summary>
+
+**维护一个已经有序的前缀，逐个把后续节点插到正确位置。** 用 `lastSorted` 标记前缀末尾；当前值不小于末尾值时直接扩展，否则从虚拟头开始找前驱，越过小于或等于当前值的节点。
+
+插入前保存后继，把当前节点从原位置摘下，再接到找到的前驱后面。相等时越过已有节点再插入，可以保持它们在输入中的先后顺序；只改链接，不替换原节点或交换节点值。
+
+最坏时间 O(n²)，已经升序时 O(n)，额外空间 O(1)。空表、单节点、重复值、头部插入都要验证，还要按节点身份检查无丢失、无新增和无环；调用方必须接收返回的新头节点。
+
+</details>
+
+### 6.5 怎样找到链表的中点，偶数长度时返回哪个节点？ {#middle-node}
+
+**考察重点**：快慢步长、终止条件和偶数长度约定。
+
+**相关内容**：[无环链表的中点](#无环链表的中点)。
+
+<details>
+<summary>参考回答</summary>
+
+**在无环链表中，让快指针每次走两步、慢指针每次走一步，快指针到末尾时慢指针就在中间。** 两者从头节点开始，并在 `fast` 和 `fast.next` 都非空时推进，会返回偶数长度的后中点。空表返回 `null`，不修改输入。
+
+若要求前中点，可以先处理空表，让快指针从 `head.next` 出发。两种约定都是 O(n) 时间、O(1) 额外空间，但应先向题目确认需要哪一种。
+
+</details>
+
+### 6.6 怎样实现单链表的增删改查，并处理头尾边界？ {#list-basic-operations}
+
+**考察重点**：定位成本、输入范围与头尾及长度不变量。
+
+**相关内容**：[单链表的增删改查](#单链表的增删改查)。
+
+<details>
+<summary>参考回答</summary>
+
+**先规定操作按下标还是按值，再把定位和修改分开。** 正文按下标实现：查询与更新找到目标节点；插入找到前驱后接入新节点；删除让前驱跳过目标，并处理头节点变化。
+
+空表第一次插入要同时设置头尾，删除唯一节点要同时清空头尾；删尾后把前驱设成新尾。越界立即报错。保存尾引用能让追加为 O(1)，但不能让随机访问或寻找尾节点前驱也变成 O(1)。
+
+</details>
+
+### 6.7 每 k 个节点反转怎样接回链表，两两交换有什么不同？ {#reverse-k-group}
+
+**考察重点**：整组确认、前后连接和不足一组的约定。
+
+**相关内容**：[每 k 个节点反转](#每k个节点反转)。
+
+<details>
+<summary>参考回答</summary>
+
+**先确认有完整的 k 个节点，再反转组内链接并接回前缀和下一组。** 用组前驱找到组尾，先保存下一组起点，让本组旧头反转后接向它，再把前缀接到本组新头。`k=2` 就是两两交换节点，不是交换值。
+
+正文约定不足 k 的尾组不动，空表返回空，非正 k 报错；时间 O(n)，辅助空间 O(1)。原题未明确尾组规则时应先确认。
+
+</details>
+
+### 6.8 按 1、2、3……个节点分组后，怎样倒置组顺序并保留组内顺序？ {#reverse-growing-groups}
+
+**考察重点**：整组截取、组内链接保留和尾组处理。
+
+**相关内容**：[按递增长度反转组顺序](#按递增长度反转组顺序)。
+
+<details>
+<summary>参考回答</summary>
+
+**依次找到每一组的尾节点，把整个组接到已有结果的前面。** 保存下一组起点后，只修改当前组尾的 `next`，组内顺序保持不变。
+
+`[1][2 3][4 5 6][7 8]` 变为 `[7 8][4 5 6][2 3][1]`，不足预定长度的尾组也参与重排。时间 O(n)，辅助空间 O(1)，会修改输入链表。
+
+</details>
+
+### 6.9 怎样合并两个有序链表，并让每种值只出现一次？ {#merge-distinct-lists}
+
+**考察重点**：有序选择、相等值处理与输入所有权。
+
+**相关内容**：[有序链表合并去重](#有序链表合并去重)。
+
+<details>
+<summary>参考回答</summary>
+
+**逐次取两表当前较小值，仅在它与结果末尾不同时追加。** 输入有序保证重复值连续出现，所以无需额外集合。空表可以与另一表直接按相同规则合并。
+
+正文新建结果节点，不修改输入，共享后缀也可处理；时间 O(m+n)，输出占 O(u)，其余辅助空间 O(1)。若要求原地复用节点，需另外说明输入是否相交和允许修改的范围。
+
+</details>
+
+### 6.10 链表表示的大数怎样相加，常数空间成立需要什么条件？ {#add-list-digits}
+
+**考察重点**：位序、逐位进位、长度不等与空间口径。
+
+**相关内容**：[链表表示的逐位加法](#链表表示的逐位加法)。
+
+<details>
+<summary>参考回答</summary>
+
+**先约定位序和输出空间，再逐位计算当前位与进位。** 低位在前时，从两表头部开始，用 `sum % 10` 生成一位，用 `sum / 10` 传递进位；较短一侧按 0 处理，最后仍有进位时再建一个节点。
+
+正文的输入和输出都低位在前，输入不变，新建结果；O(1) 仅指排除输出后的辅助空间。高位在前、不得修改输入或要求把输出也计入空间时，不能照搬这个复杂度结论，应先澄清题设。
+
+</details>
+
+### 6.11 只遍历一次且不能用快慢指针，怎样删除倒数第 k 个节点？ {#remove-kth-recursively}
+
+**考察重点**：递归回溯计数、删除前驱、头部边界与栈成本。
+
+**相关内容**：[递归删除倒数节点](#递归删除倒数节点)。
+
+<details>
+<summary>参考回答</summary>
+
+**递归到末尾，在返回途中计算原始后缀长度，找到目标的前驱后删除。** 前驱的后继链原长度为 k 时，后继就是倒数第 k 个节点；虚拟头统一处理删除头节点。删除后仍返回原始长度，避免前方再次触发删除。
+
+非正或超长的 k 报错且不修改输入；有效删除保持其他节点次序。时间 O(n)，但递归栈是 O(n)，深链可能栈溢出。这个方法满足不使用快慢指针的条件，不能把一次向后遍历解释为常数空间。
+
+</details>
+
 ## 7. 参考资料 {#参考资料}
 
 - [Open Data Structures：SLList](https://opendatastructures.org/ods-java/3_1_SLList_Singly_Linked_Li.html)
 - [CMU 15-122：Linked Lists](https://www.cs.cmu.edu/~15122-archive/n19/handouts/10-linkedlist.pdf)
+- [NIST：Insertion Sort](https://xlinux.nist.gov/dads/HTML/insertionSort.html)
+- [LeetCode：Middle of the Linked List，后中点约定](https://leetcode.com/problems/middle-of-the-linked-list/description/)
+- [LeetCode：Linked List Cycle II，返回入口且不修改链表](https://leetcode.com/problems/linked-list-cycle-ii/description/)
+- [LeetCode：Reverse Nodes in k-Group，组内反转与不足一组的约定](https://leetcode.com/problems/reverse-nodes-in-k-group/)
+- [LeetCode：Add Two Numbers，低位在前的数字表示](https://leetcode.com/problems/add-two-numbers/)

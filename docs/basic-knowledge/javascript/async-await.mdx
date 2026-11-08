@@ -1,0 +1,568 @@
+---
+sidebar_position: 13
+knowledge:
+  id: basic-knowledge.javascript.async-await
+  type: concept
+description: "解释 async 函数返回与 await 暂停恢复，比较串行和并发，处理 return await、取消信号、重复请求与过期结果，并用生成器演示异步流程推进。"
+keywords: ["async", "await", "异步函数", "AbortController", "串行", "并发", "过期响应"]
+---
+
+# async 与 await
+
+**async 函数**是调用后返回 Promise 的函数，**await 表达式**让当前异步函数等待一个结果，再从暂停处继续。成功结果成为表达式的值，拒绝原因则在等待处以异常形式交给当前函数处理。这样可以用顺序语句和 `try/catch` 组织异步流程，而不必层层嵌套回调。
+
+写法接近同步代码，并不意味着线程被阻塞，也不意味着任务自动并行。是否串行，取决于下一项操作何时启动；错误能否被当前 `catch` 接住，取决于当前函数是否在这里等待了那个结果。Promise 的状态和链式传播见 [Promise](./promise.mdx)，本文重点是流程怎样组织。
+
+## 1. 面试核心 {#core}
+
+- 调用 async 函数会得到 Promise。**普通返回值成为兑现值，未处理的异常成为拒绝原因；返回已有 Promise 会采纳其结果，但不保证返回同一个对象**。[卡](#async-mechanism)
+- async 函数在第一次暂停前仍执行同步代码。**await 暂停当前异步函数，不会暂停整个 JavaScript 线程，也不会把前面的重计算移到其他线程**。[卡](#async-mechanism)
+- `await` 会把拒绝在当前位置作为异常处理。**`return p` 与 `return await p` 在局部 try/catch/finally 中有区别**：前者直接交出结果，后者等到结果确定后再离开当前作用域。[卡](#await-error)
+- 串行是前一步结束后才启动下一步，并发是允许多个操作的等待时间重叠。**对独立操作应及时把全部结果接入组合处理，避免先启动多个操作却很晚才处理后一个的拒绝**。[卡](#serial-parallel)
+- 数组方法不会自动等待 async 回调。**`map` 得到 Promise 数组，`forEach` 不会把回调的 Promise 汇总成自己的返回值**。[卡](#async-array)
+- 链式任务接口先收集操作，再按队列执行。**方法返回接口对象以继续配置，独立的 done Promise 表示整体完成；优先任务和追加时机必须有明确约定**。[卡](#lazy-man)
+- 生成器的暂停、恢复加上 Promise 的结果衔接，可以演示 async/await 的控制流程。**这是理解转换过程的模型，不表示所有引擎都必须把 async 实现成 Generator**。[卡](#generator-runner)
+- 顶层 await 需要模块环境。**普通脚本和普通函数体不能任意使用 await；异步父函数也不会让内层普通回调自动获得 await 语法**。[卡](#top-level-await)
+- 取消依赖底层操作配合。**AbortController 通过 signal 通知取消，不会把 Promise 变成第四种状态，也不能回滚已经完成的服务端操作**。[卡](#cancellation)
+- 重复请求与过期响应需要按目标分别处理。**防抖减少触发，共享在途结果合并同键读取，取消减少无用工作，请求序号阻止旧结果覆盖新状态**。[卡](#duplicate-requests)
+- 判断一项调用是否需要异步处理，应依据接口契约。**普通函数也能返回 Promise，函数名字或构造器名字不能可靠表示所有异步行为**。[卡](#identify-async)
+
+## 2. 返回值与执行时机 {#返回值与执行时机}
+
+async 函数的外部结果总是 Promise。即使函数没有写 `await`，返回一个数，也需要通过 `.then` 或 `await` 取得最终值。
+
+```js
+async function answer() { return 42; }
+const result = answer();
+console.log(result instanceof Promise); // true
+result.then(value => console.log(value)); // 42
+```
+
+这里的 `instanceof` 只用于当前环境里这一个明确由 async 函数产生的值，不是通用的跨环境异步结果判断方法。
+
+返回另一个 Promise 时，会跟随它的结果，但返回对象本身不同：
+
+```js
+const original = Promise.resolve(7);
+async function forward() { return original; }
+const forwarded = forward();
+console.log(forwarded === original); // false
+forwarded.then(value => console.log(value)); // 7
+```
+
+因此 `async` 包装可能改变对象身份。如果调用方把 Promise 身份用作缓存键或去重依据，不能因为两者最终值相同，就认为它们是同一个 Promise。
+
+### 2.1 第一次 await 前的代码 {#第一次-await-前的代码}
+
+async 函数从被调用时开始执行，直到需要暂停的位置。普通值也可以被 await，恢复仍通过异步的 Promise 机制进行。
+
+```js
+async function work() {
+  console.log("inside");
+  const value = await 3;
+  console.log("resumed", value);
+}
+console.log("before");
+work();
+console.log("after");
+```
+
+输出是 `before`、`inside`、`after`、`resumed 3`。调用方在 `work` 暂停后继续打印 `after`，不需要阻塞在那里。微任务的具体入队规则见 [浏览器事件循环](./browser-event-loop.mdx#await-后的恢复)。
+
+如果把大循环放在第一个 await 前，调用仍会同步执行这段循环。把循环放在 await 后，也只是推迟执行，没有自动移到工作线程；反复等待已兑现 Promise 还可能持续占用微任务检查点。
+
+## 3. 异常与作用域退出 {#异常与作用域退出}
+
+await 遇到拒绝结果时，会在等待处抛出对应原因。因此当前函数的 `try/catch` 可以接住这个异步失败，执行恢复或继续抛出。
+
+```js
+async function load() {
+  try {
+    return await Promise.reject(new Error("unavailable"));
+  } catch (error) {
+    return "fallback: " + error.message;
+  }
+}
+load().then(value => console.log(value)); // fallback: unavailable
+```
+
+`catch` 返回替代结果，整个 `load()` 就以这个结果兑现；如果希望调用方知道失败，应重新抛出。失败原因不一定是 `Error` 对象，生产接口应明确错误类型，不能默认任意拒绝值都有 `message`。
+
+### 3.1 return 与 return await {#return-与-return-await}
+
+`return p` 把结果交给异步函数返回的 Promise 采纳，不在当前函数内等待 `p` 结束。`return await p` 则先等待，成功后返回值，失败时先经过当前函数的异常处理。
+
+```js
+async function forwardFailure() {
+  try {
+    return Promise.reject(new Error("forwarded"));
+  } catch {
+    return "caught";
+  }
+}
+async function catchFailure() {
+  try {
+    return await Promise.reject(new Error("awaited"));
+  } catch {
+    return "caught";
+  }
+}
+Promise.allSettled([forwardFailure(), catchFailure()]).then(results => {
+  console.log(results[0].status, results[0].reason.message);
+  console.log(results[1].status, results[1].value);
+});
+```
+
+输出是 `rejected forwarded`、`fulfilled caught`。第一个函数的 `catch` 没有参与以后结果的拒绝，第二个函数则在 await 处观察到失败并处理了它。
+
+`finally` 的时机也受这个区别影响。`try { return p; } finally { cleanup(); }` 在直接返回时就执行 `cleanup`；使用 `return await p`，会在等待结束后再执行清理。需要把资源保留到异步工作结束时，这个差别会直接影响正确性。
+
+不要把 `return await` 一概判为多余，也不要为了“多等一下”到处添加。先确认当前作用域是否需要处理拒绝、等待清理，以及向调用方呈现怎样的错误链路。
+
+## 4. 串行与并发 {#串行与并发}
+
+**串行执行**是在前一项完成后才启动下一项，适合存在数据依赖或必须保持副作用顺序的工作。**并发执行**允许多项操作在一段时间内都处于进行中，适合互相独立的 I/O 等待；它不要求多段 JavaScript 在同一线程同时执行。
+
+### 4.1 串行任务 {#串行任务}
+
+串行工具应接收任务函数，并在轮到这一项时调用。下面用 async/await 和 Promise 链分别实现相同的执行关系：
+
+```js
+async function runSerial(tasks) {
+  const results = [];
+  for (const task of tasks) results.push(await task());
+  return results;
+}
+function runSerialChain(tasks) {
+  const results = [];
+  let chain = Promise.resolve();
+  for (const task of tasks) {
+    chain = chain.then(() => task()).then(value => { results.push(value); });
+  }
+  return chain.then(() => results);
+}
+
+const tasks = [() => Promise.resolve(1), () => 2];
+runSerial(tasks).then(values => console.log("await", values.join(",")));
+runSerialChain(tasks).then(values => console.log("chain", values.join(",")));
+```
+
+两种工具分别得到 `await 1,2` 和 `chain 1,2`。每个工具内部都等第一项结束后才调用第二项；这两次工具调用彼此独立，不要求两条日志按书写顺序输出。
+
+示例约定输入为有限的、不会在运行中改变的任务函数数组。一项失败就停止后续任务，并把失败交给调用方；空输入返回空数组。如果输入已经是所有任务启动后的 Promise，逐个 await 只改变读取结果的顺序，不能把启动过程重新变成串行。
+
+两种实现都适用于这个数组契约，不宣称任意自定义迭代器的行为完全相同：async 版本随任务完成继续读取下一项，链式版本先遍历输入来建立整条链。如果允许输入迭代过程有副作用或抛错，还需要单独定义读取时机和错误接口。
+
+### 4.2 独立任务的并发 {#独立任务的并发}
+
+独立操作可以先启动，再用 `Promise.all` 同时接住它们的结果和失败。
+
+```js
+async function load(id) {
+  console.log("start", id);
+  await Promise.resolve();
+  console.log("end", id);
+  return id;
+}
+async function loadBoth() {
+  const values = await Promise.all([load(1), load(2)]);
+  console.log(values.join(","));
+}
+loadBoth();
+```
+
+输出是 `start 1`、`start 2`、`end 1`、`end 2`、`1,2`。两次 `load` 都在第一次恢复之前启动，等待可以重叠；`Promise.all` 仍按输入位置返回结果。
+
+如果先启动 `p1`、`p2`，再依次写 `await p1; await p2`，`p2` 可能在等待 `p1` 时已经拒绝，但还没有接入当前错误处理链。对独立工作使用组合方法，可以及时安装各项的处理关系，避免这个窗口。
+
+数量很大时，全部启动可能占用过多连接、内存或服务端资源。此时应限制任务函数的启动数量，具体实现见 [Promise 的有限并发](./promise.mdx#有限并发)。async/await 只是流程语法，不提供自动限流。
+
+### 4.3 数组的 async 回调 {#数组的-async-回调}
+
+`map` 会立即调用各项回调，把返回值收集为数组；async 回调返回的是 Promise，所以得到 Promise 数组。需要全部结果时，再交给组合方法：
+
+```js
+async function double(value) { return value * 2; }
+const pending = [1, 2].map(double);
+console.log(pending.every(value => value instanceof Promise)); // true
+Promise.all(pending).then(values => console.log(values.join(","))); // 2,4
+```
+
+`await pending` 也不会自动深入数组等待每一项；普通数组不是因此变成一个组合结果。`forEach(async () => ...)` 同样不会等待回调，`forEach` 自己返回 `undefined`，所以 `await forEach(...)` 不能表示全部完成。
+
+需要串行时用 `for...of` 配合 await；需要独立并发时用 `map` 配合 `Promise.all` 或 `allSettled`。`filter`、`some` 等同步数组方法也不会自动理解回调返回的 Promise，不能把 Promise 当成最终的布尔判断。
+
+### 4.4 链式任务队列 {#链式任务队列}
+
+链式接口可以先收集任务，再按指定顺序执行。实现 `LazyMan` 前需要明确调用契约，不能只根据名称猜功能。这里约定：`eat` 追加同步任务，`sleep` 追加延迟任务，`sleepFirst` 把延迟任务放到最前面，`done` 表示整体完成。
+
+为了允许同一条同步调用链配置顺序，队列在微任务中启动；启动后不再接受追加。多次 `sleepFirst` 按后调用的先执行，任一任务失败就拒绝 `done` 并停止后续任务。
+
+```js
+function lazyMan(name) {
+  const tasks = [() => console.log("Hi", name)];
+  let started = false;
+  function add(task, first = false) {
+    if (started) throw new Error("队列已启动");
+    if (first) tasks.unshift(task);
+    else tasks.push(task);
+    return api;
+  }
+  function delayTask(ms) {
+    if (!Number.isFinite(ms) || ms < 0 || ms > 2147483647) {
+      throw new RangeError("延迟超出支持范围");
+    }
+    return () => new Promise(resolve => setTimeout(resolve, ms))
+      .then(() => console.log("wait", ms));
+  }
+  const done = Promise.resolve().then(async () => {
+    started = true;
+    for (const task of tasks) await task();
+  });
+  const api = {
+    eat(food) { return add(() => console.log("eat", food)); },
+    sleep(ms) { return add(delayTask(ms)); },
+    sleepFirst(ms) { return add(delayTask(ms), true); },
+    done,
+  };
+  return api;
+}
+
+lazyMan("Lin").sleepFirst(0).eat("lunch").sleep(0).eat("dinner")
+  .done.then(() => console.log("done"));
+```
+
+输出是 `wait 0`、`Hi Lin`、`eat lunch`、`wait 0`、`eat dinner`、`done`。`sleepFirst` 在最初的问候任务前插入等待；后续 `sleep` 则保留在追加时的位置。零延迟也依赖定时器调度，不代表同步结束。
+
+返回 `api` 让方法能继续链式调用，`done` 则负责整个队列的完成与失败。两个返回职责不同。这个实现没有动态追加和取消功能；如果题目要求这些能力，应重新定义队列结束条件与资源清理，而不是只在数组上多做一次 push。
+
+## 5. 暂停与恢复的实现模型 {#暂停与恢复的实现模型}
+
+async/await 可以理解为：保存函数暂停位置，等待当前结果，再以成功值或异常恢复后续执行。生成器提供显式的 `yield`、`next` 和 `throw`，可以用来演示这种控制关系；相关协议见 [迭代器与生成器](./iterators-generators.mdx)。
+
+下面的 `runGenerator` 接收同步生成器函数。`yield` 给出本次等待的值，成功后调用 `next(value)`，失败后调用 `throw(error)`，让错误回到生成器内部的暂停位置。
+
+```js
+function runGenerator(makeIterator, ...args) {
+  return new Promise((resolve, reject) => {
+    const iterator = makeIterator(...args);
+    function advance(method, value) {
+      let result;
+      try { result = iterator[method](value); }
+      catch (error) { reject(error); return; }
+      if (result.done) { resolve(result.value); return; }
+      Promise.resolve(result.value).then(
+        value => advance("next", value),
+        error => advance("throw", error),
+      );
+    }
+    advance("next");
+  });
+}
+
+runGenerator(function* () {
+  const value = yield Promise.resolve(2);
+  try {
+    yield Promise.reject(new Error("bad"));
+  } catch (error) {
+    return value + error.message.length;
+  }
+}).then(value => console.log(value)); // 5
+```
+
+这里的 `catch` 在生成器内部，能接住通过 `throw` 恢复的失败。生成器正常结束时，返回值成为外层结果；内部未处理的异常则让外层拒绝。
+
+这个工具只演示同步生成器与 Promise 的衔接，不接受异步生成器，也没有取消或任意迭代器的完整校验。原生 async 函数由语言规范描述暂停和恢复，引擎可以直接实现相应机制；转译器使用生成器或状态机是实现途径，不能把某一种转译输出当作所有引擎的内部结构。
+
+## 6. await 的使用位置 {#await-的使用位置}
+
+await 可以出现在 async 函数体中，也可以出现在 ECMAScript 模块顶层；顶层 await 纳入了 ES2022，运行环境也需要支持这项能力。普通脚本顶层和普通函数体不因此获得 await 语法。
+
+```js
+async function outer() {
+  // [1, 2].forEach(value => { await value; }); // 语法错误：回调不是 async
+  const values = await Promise.all([1, 2].map(async value => value * 2));
+  return values;
+}
+outer().then(values => console.log(values.join(","))); // 2,4
+```
+
+await 的位置属于内层回调函数时，需要按该回调自身判断，不能因为外层函数有 `async` 就把语法资格传进去。
+
+浏览器中，`<script type="module">` 是模块入口的一种形式；Node.js 也需要按模块加载规则判断。开发工具控制台可能提供额外便利，不能用控制台里能执行作为普通脚本合法的依据。
+
+模块的顶层 await 会影响依赖它的模块何时继续求值。它不会阻塞整个主线程，但可能推迟依赖方的初始化；有循环依赖或永不完成的等待时，应检查实际依赖关系，不能把全局初始化无限制地写成互相等待。
+
+## 7. 取消与过期结果 {#取消与过期结果}
+
+**取消信号**是操作之间协商停止工作的通知。`AbortController` 创建并持有一个 `signal`，调用 `abort()` 后，支持该信号的操作负责停止工作并报告结果。Promise 自身仍只有原来的三种状态。
+
+### 7.1 配合 AbortSignal 的操作 {#配合-abortsignal-的操作}
+
+自定义可取消操作要处理三件事：开始前已经取消、运行中收到取消、正常结束时清理监听。下面给延迟操作加入这种能力：
+
+```js
+function wait(ms, { signal } = {}) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) { reject(signal.reason); return; }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    function onAbort() {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+      reject(signal.reason);
+    }
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+const controller = new AbortController();
+wait(100, { signal: controller.signal })
+  .catch(error => console.log(error.name));
+controller.abort(); // 默认取消原因的 name 为 AbortError
+```
+
+输出是 `AbortError`。这里的定时器是由操作自己清除的，不是 Promise 收到信号就会自动停止。正常完成时也移除监听，避免让已结束操作继续被信号引用。
+
+`fetch(url, { signal })` 等支持取消信号的 API 可以直接接收同样的 signal。取消原因可以由 `abort(reason)` 自定义，不能只靠错误的名字判断所有取消。一个已经取消的 signal 不会恢复，需要新操作时通常创建新的控制器。
+
+取消是尽力停止本地处理和支持取消的底层工作，不保证服务端尚未执行请求，更不能回滚已经提交的修改。超时也需要明确语义：停止等待、发出取消、拒绝显示过期结果，可能都需要分别处理。
+
+### 7.2 阻止旧结果覆盖新状态 {#阻止旧结果覆盖新状态}
+
+搜索条件快速变化时，旧请求可能后返回。即使尝试取消旧请求，也应在写入界面状态前确认结果仍然属于当前请求。
+
+```js
+function createLatestLoader(load, commit, report) {
+  let version = 0;
+  return async input => {
+    const current = ++version;
+    try {
+      const value = await load(input);
+      if (current === version) commit(value);
+    } catch (error) {
+      if (current === version) report(error);
+    }
+  };
+}
+
+const pending = new Map();
+const load = key => new Promise(resolve => pending.set(key, resolve));
+const shown = [];
+const search = createLatestLoader(load, value => shown.push(value), console.error);
+const oldRun = search("old");
+const newRun = search("new");
+pending.get("new")("new result");
+pending.get("old")("old result");
+Promise.all([oldRun, newRun]).then(() => console.log(shown.join(",")));
+```
+
+只输出 `new result`。每次调用增加序号，成功和失败写回前都检查序号，因此旧成功不会覆盖新结果，旧失败也不会显示成当前请求的错误。
+
+这个示例只控制结果写回，不会停止旧请求，也不处理组件卸载；卸载时还应使当前序号失效并清理相关资源。`commit`、`report` 是调用方提供的同步处理函数，实际界面逻辑还要明确这些处理自身出错时的责任。
+
+### 7.3 重复请求的处理目标 {#重复请求的处理目标}
+
+重复请求没有一个通用开关，不同办法解决的条件不同：
+
+| 目标 | 对应办法与条件 |
+| --- | --- |
+| 用户连续输入时减少调用次数 | 防抖，决定何时真正触发查询 |
+| 同一资源的读取正在进行，多个调用方都需要结果 | 以完整请求条件为键，共享在途 Promise，结束后清理记录 |
+| 近期相同读取可以复用旧结果 | 缓存，并明确有效期、权限维度和失效规则 |
+| 只关心最新条件的结果 | 取消不再需要的操作，并在写回前检查请求序号 |
+| 防止重复提交产生重复业务效果 | 还需要服务端的幂等约束，前端禁用按钮只减少触发机会 |
+
+共享在途结果时，键必须包含会改变结果的条件，不能把不同用户、权限或查询参数误合并。多个调用方共享一项工作后，其中一个调用方不再需要结果，也不一定有权把其他调用方仍在等待的工作整体取消。
+
+## 8. 常见问题 {#常见问题}
+
+### 8.1 怎样判断一个函数是不是异步函数？ {#怎样判断一个函数是不是异步函数}
+
+需要先明确是在识别 async 语法创建的函数，还是判断调用结果要不要等待。两者不同：普通函数也可以返回 Promise，带回调的 API 也可能不返回 Promise。
+
+通过 `constructor.name` 或对象标签识别 async 函数，会受到跨环境、包装函数、转译和属性伪装等条件影响。可维护的接口通常直接约定返回值和失败方式，而不是运行前猜函数的写法。
+
+如果接口约定“调用后得到普通值或 thenable”，可以统一包装调用：
+
+```js
+function invoke(fn, ...args) {
+  return Promise.resolve().then(() => fn(...args));
+}
+invoke(value => value + 1, 2).then(value => console.log(value)); // 3
+invoke(() => { throw new Error("failed"); })
+  .catch(error => console.log(error.message)); // failed
+```
+
+普通值、返回的 Promise 和同步抛错都进入结果链。代价是函数调用本身被推迟到微任务；如果必须保留同步调用时机，应显式使用 `try/catch` 包装立即调用，再归一化返回值。这个工具也不能把一个只接收回调、从不返回结果的 API 自动转换成 Promise。
+
+## 9. 面试题 {#面试题}
+
+### 9.1 async/await 与 Promise 是什么关系，await 会阻塞线程吗？ {#async-mechanism}
+
+**考察重点**：函数结果、暂停与恢复、宿主调度。
+
+**相关内容**：[返回值与执行时机](#返回值与执行时机)、[第一次 await 前的代码](#第一次-await-前的代码)。
+
+<details>
+<summary>参考回答</summary>
+
+**async/await 用顺序语句组织 Promise 结果，await 暂停当前异步函数，不会让整个线程等待。** async 函数返回 Promise，普通返回值用于兑现，未处理异常导致拒绝；第一次暂停前的代码仍同步运行。
+
+等待结束后从暂停处恢复，调用方可以先继续执行。重计算不会因加了 async 就自动移到其他线程，返回已有 Promise 也不意味着保持它的对象身份。
+
+</details>
+
+### 9.2 async/await 怎样处理错误，return await 为什么有时不能省略？ {#await-error}
+
+**考察重点**：局部异常处理和作用域退出时机。
+
+**相关内容**：[异常与作用域退出](#异常与作用域退出)、[return 与 return await](#return-与-return-await)。
+
+<details>
+<summary>参考回答</summary>
+
+**await 会在当前位置把拒绝表现为异常，当前 try/catch 可以处理它。** catch 返回替代值会恢复成功，重新抛出则让调用者继续处理失败。
+
+return p 直接返回等待结果，当前 catch 不负责以后 p 的拒绝；return await p 会先等待，所以局部 catch 能介入，finally 也等到等待结束后再执行。是否保留 await 要看这个作用域的错误和资源管理职责。
+
+</details>
+
+### 9.3 分别用 Promise 链和 async/await 实现串行任务，独立任务又怎样并发？ {#serial-parallel}
+
+**考察重点**：启动时机、结果依赖与及时处理拒绝。
+
+**相关内容**：[串行任务](#串行任务)、[独立任务的并发](#独立任务的并发)。
+
+<details>
+<summary>参考回答</summary>
+
+**串行要在前一步完成后才调用下一项任务函数。** async/await 可以在 for...of 中逐项等待；Promise 链可以把下一次调用放进前一步的 then，返回它的结果。
+
+互相独立的任务可以先启动并立即接入 Promise.all 或 allSettled，让等待重叠。不要把已经启动的 Promise 数组逐个 await 当作控制启动顺序，也要避免后启动的任务提前拒绝却迟迟没有处理。数量大时再用任务工厂限制并发。
+
+</details>
+
+### 9.4 await 数组或 await forEach(async ...) 能等待所有任务吗？ {#async-array}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：数组方法返回值与 Promise 组合。
+
+**相关内容**：[数组的 async 回调](#数组的-async-回调)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能，await 不会自动深入普通数组，forEach 也不会汇总 async 回调返回的 Promise。** map 可以得到 Promise 数组，再通过 Promise.all 或 allSettled 等待；串行则使用 for...of 配合 await。
+
+filter、some 等同步方法也不等待 Promise 形式的判断结果。应先取得需要的异步结果，再执行对应的同步筛选，或使用明确的异步遍历工具。
+
+</details>
+
+### 9.5 怎样用生成器与 Promise 演示 async/await 的暂停恢复？ {#generator-runner}
+
+**考察重点**：成功恢复、失败注入与最终结果。
+
+**相关内容**：[暂停与恢复的实现模型](#暂停与恢复的实现模型)。
+
+<details>
+<summary>参考回答</summary>
+
+**把 yield 的结果交给 Promise 处理，成功时 next(value)，失败时 throw(error)。** 生成器内部可以在暂停处用 try/catch 处理失败；结束时把返回值交给外层 resolve，未处理异常交给 reject。
+
+这能解释保存暂停位置与继续执行的关系，但只是实现模型。原生引擎可以直接实现 async 机制，不要求必须先转换成 Generator；示例也不覆盖取消或异步生成器。
+
+</details>
+
+### 9.6 await 可以写在函数外面吗？ {#top-level-await}
+
+**考察重点**：模块入口、语法作用域与初始化依赖。
+
+**相关内容**：[await 的使用位置](#await-的使用位置)。
+
+<details>
+<summary>参考回答</summary>
+
+**支持顶层 await 的 ECMAScript 模块可以，普通脚本顶层不可以；这项能力纳入了 ES2022。** 函数体内仍需是 async 函数；外层有 async 不会自动允许内层普通回调使用 await。
+
+模块顶层等待会影响依赖它的模块求值时机，但不阻塞整个线程。要检查模块加载方式和依赖关系，不能根据开发工具控制台的额外支持推断普通脚本行为。
+
+</details>
+
+### 9.7 AbortController 怎样取消异步操作，取消等于回滚吗？ {#cancellation}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：合作取消、资源清理与已发生副作用。
+
+**相关内容**：[配合 AbortSignal 的操作](#配合-abortsignal-的操作)。
+
+<details>
+<summary>参考回答</summary>
+
+**控制器通过 signal 发出通知，由支持它的操作停止工作并报告失败。** 自定义操作需要检查开始前已取消的情况，运行中响应通知，并在结束时清理定时器和监听。
+
+Promise 没有新增取消状态，已取消的 signal 不能恢复。取消不保证服务端还没处理，更不能回滚已经提交的修改；超时停止等待和实际取消也要分别实现。
+
+</details>
+
+### 9.8 怎样处理重复请求，避免旧响应覆盖新结果？ {#duplicate-requests}
+
+**题型**：综合题
+
+**考察重点**：触发控制、在途共享、取消与结果有效性。
+
+**相关内容**：[阻止旧结果覆盖新状态](#阻止旧结果覆盖新状态)、[重复请求的处理目标](#重复请求的处理目标)、[防抖与节流](../../frontend/performance/debounce-throttle.mdx#防抖与过期结果)。
+
+<details>
+<summary>参考回答</summary>
+
+**先区分减少触发、合并读取、取消旧工作和阻止过期写回这几个目标。** 防抖减少连续触发，相同完整请求键可以共享在途结果；只关心最新结果时，可尝试取消旧操作，并用请求序号检查成功和失败是否仍然有效。
+
+共享操作不能因一个调用方退出就随意取消全部等待者。涉及重复业务提交，还需要服务端幂等约束，前端防抖或禁用按钮无法单独保证。
+
+</details>
+
+### 9.9 怎样识别和统一处理异步函数？ {#identify-async}
+
+**考察重点**：语法身份、返回契约与结果归一化。
+
+**相关内容**：[怎样判断一个函数是不是异步函数？](#怎样判断一个函数是不是异步函数)。
+
+<details>
+<summary>参考回答</summary>
+
+**先依据接口契约判断是否返回可等待结果，不要仅凭函数名字推断异步行为。** 普通函数也能返回 Promise，async 函数的标签或构造器名字还可能受包装、跨环境和伪装影响。
+
+对返回普通值或 thenable 的接口，可以把调用接入 Promise 链，同时转换同步异常；要说明这是否改变调用时机。只接收回调的 API 仍需按其成功失败协议单独包装。
+
+</details>
+
+### 9.10 怎样实现支持 sleep、sleepFirst 和链式调用的 LazyMan？ {#lazy-man}
+
+**考察重点**：延迟启动、任务顺序、链式接口与完成结果。
+
+**相关内容**：[链式任务队列](#链式任务队列)。
+
+<details>
+<summary>参考回答</summary>
+
+**把每一步保存为尚未执行的任务函数，延迟启动队列，让同一条同步调用链先完成配置。** eat 和 sleep 追加到末尾，sleepFirst 按约定插入前部；执行时逐项等待，避免定时器等待期间后续任务抢先运行。
+
+配置方法返回同一个接口对象以支持链式调用，整体完成通过单独的 Promise 表达。还需约定多次 sleepFirst 的顺序、运行后能否追加、错误是否中断与是否支持取消；正文实现选择启动后关闭配置、失败即停止。
+
+</details>
+
+## 10. 参考资料 {#参考资料}
+
+- [ECMAScript：Async Functions](https://tc39.es/ecma262/multipage/control-abstraction-objects.html#sec-async-functions)
+- [ECMAScript：Await](https://tc39.es/ecma262/multipage/control-abstraction-objects.html#await)
+- [MDN：async function](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Statements/async_function)
+- [MDN：await](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Operators/await)
+- [MDN：AbortController.abort](https://developer.mozilla.org/en-US/docs/Web/API/AbortController/abort)
+- [MDN：AbortSignal](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal)
+- [DOM Standard：Aborting ongoing activities](https://dom.spec.whatwg.org/#aborting-ongoing-activities)
+- [TC39：Finished Proposals](https://github.com/tc39/proposals/blob/main/finished-proposals.md)

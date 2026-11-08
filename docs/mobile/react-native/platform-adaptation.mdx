@@ -1,0 +1,280 @@
+---
+title: React Native 平台适配
+description: 处理 React Native 的平台代码、返回、键盘、权限、生命周期、深链与原生构建差异。
+knowledge:
+  id: mobile.react-native.platform-adaptation
+---
+
+**React Native 平台适配**把共同的业务目标落实到不同平台的界面、系统能力和交互规则中。共享组件和业务逻辑可以减少重复，但系统返回、权限、键盘、应用生命周期以及原生构建仍然需要分别处理。
+
+本文以 React Native 0.76.9 为基线。适配的目标是让用户在目标平台上完成同一项任务，并保留合理的平台行为；只让两端代码编译通过，不能证明交互和系统状态都正确。
+
+## 1. 面试核心 {#core}
+
+- **少量平台差异可以分支，完整实现差异可以分文件**。`Platform` 与 `.android`、`.ios` 文件解决的组织问题不同，模块仍应提供一致的业务接口。[卡](#platform-code)
+- **布局要响应当前窗口、字体与安全区域**。设备名称和启动时的一次宽高，不能代表运行期间所有尺寸。[卡](#layout)
+- **Android 返回事件需要按当前可交互页面处理**。`BackHandler` 按订阅的逆序调用，返回 `true` 表示消费；页面保留在导航栈中不等于仍应拦截返回。[卡](#back)
+- **键盘行为与应用、页面状态需要分别观察**。键盘事件、窗口调整、前后台和导航焦点不是同一个状态。[卡](#lifecycle)
+- **权限声明、当前授权和请求结果是不同步骤**。拒绝与不再询问需要不同交互，授权也可能在后续改变。[卡](#permission)
+- **深链既有冷启动入口，也有运行中的事件入口**。外部链接要校验并等待导航与登录状态准备好。[卡](#links)
+- **JS bundle 不是可安装的原生应用**。平台代码、依赖、资源和签名仍由 Android 或 iOS 构建流程处理。[卡](#apk)
+
+## 2. 平台差异的组织 {#平台差异的组织}
+
+### 2.1 Platform 与平台文件 {#platform与平台文件}
+
+**Platform** 提供当前平台信息，适合处理一小段属性或行为差异。`Platform.OS` 在 Android、iOS 上分别为 `android`、`ios`；`Platform.select` 可以按平台选择值，并按配置使用 `native` 或 `default` 后备值。
+
+当整个组件或能力实现不同，可以维护 `Feature.android.ts` 和 `Feature.ios.ts`，由共同代码导入 `./Feature`。在常规 Metro 配置下，它会按构建目标选择平台文件；`.native.ts` 和通用文件还可以承担后备实现。
+
+保持两个实现的导出接口一致，把差异集中在有明确责任的边界。不要让业务代码到处检查系统版本，也不要为了共用一个函数，把完全不同的平台生命周期硬塞进相同流程。
+
+平台文件选择还受扩展名顺序和自定义解析配置影响。例如混用 `.js` 与 `.ios.ts` 时，不能只凭文件名断定平台文件必然优先。排查构建差异时查看实际 Metro 配置与解析结果。
+
+### 2.2 系统版本与能力检查 {#系统版本与能力检查}
+
+`Platform.Version` 的类型和含义也不同：Android 对应 API level，iOS 是系统版本字符串。不能统一当作普通数字比较，也不能按字符串字典序判断版本新旧。
+
+版本判断只说明系统可能支持某项能力，仍需要检查模块是否存在、设备是否具有相应硬件、用户是否授权以及当前状态是否允许操作。需要调用原生能力时，接口与注册的分工见 [React Native 原生模块](native-modules.mdx#接口与实现的连接)。
+
+## 3. 窗口、文本与键盘 {#窗口文本与键盘}
+
+### 3.1 根据当前空间布局 {#根据当前空间布局}
+
+窗口可能因旋转、分屏或其他系统变化而调整。组件内需要随尺寸更新时，可以使用 `useWindowDimensions`；不要把模块加载时读取的一次宽高永久作为页面布局依据。
+
+安全区域还涉及状态栏、刘海、底部系统区域及应用当前呈现方式。选择与项目相容的安全区域方案，并避免导航容器和页面同时重复添加同一份边距。平台文本测量、字体缩放与布局差异见 [React Native 渲染](rendering.mdx#布局与平台测量)。
+
+验证时至少检查窄窗口、长文本、大字体、旋转和内容滚动。一个固定高度的按钮在默认字体下正常，不代表大字体时文字仍可见或可点击。
+
+### 3.2 键盘出现不是简单增加固定高度 {#键盘与窗口调整}
+
+键盘可能遮挡输入区，也可能由系统先调整窗口。`KeyboardAvoidingView` 可以根据配置调整高度、位置或底部间距，但两端表现和所需配置并不完全相同；它不能替你判断导航栏、安全区域和系统窗口已经处理了哪些偏移。
+
+Android 还受 `windowSoftInputMode` 等原生配置影响。若系统已经缩小窗口，页面再增加一整份键盘高度，可能产生重复避让；若列表不能滚到当前输入项，只调整一个外层高度也可能不够。
+
+在这一基线下，Android 键盘事件主要是 `keyboardDidShow` 与 `keyboardDidHide`，不要依赖 iOS 的 `keyboardWillShow` 作为跨平台入口。事件可用性还受系统版本和窗口配置影响，键盘事件本身不等于最终输入框已经可见。
+
+## 4. 返回与页面焦点 {#返回与页面焦点}
+
+### 4.1 Android 返回事件的传播 {#android返回事件的传播}
+
+**BackHandler** 处理 Android 的系统返回事件。后注册的监听先执行；某个监听返回 `true` 后，更早注册的监听不再处理这次事件。全部未消费时，交给默认返回行为。
+
+下面的 Hook 适用于由调用者管理返回栈的 Android 页面。`focused` 表示当前页面正在接收交互，`canGoBack` 与 `goBack` 来自同一份路由状态：
+
+```ts
+import {useEffect} from 'react';
+import {BackHandler, Platform} from 'react-native';
+
+export function useAndroidBack(
+  focused: boolean,
+  canGoBack: boolean,
+  goBack: () => void,
+) {
+  useEffect(() => {
+    if (Platform.OS !== 'android' || !focused) return;
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (!canGoBack) return false;
+      goBack();
+      return true;
+    });
+    return () => subscription.remove();
+  }, [focused, canGoBack, goBack]);
+}
+```
+
+页面失去焦点或卸载时移除监听；路由状态变化时重新建立当前闭包，避免继续使用旧的 `canGoBack`。只有确实处理了返回，才返回 `true`；始终消费却没有导航动作，会让用户无法正常离开。
+
+使用已有导航库时，应接入它的焦点和返回扩展接口，避免两套处理器重复弹出页面。这里没有实现导航栈，也不替代库自身的路由机制。
+
+### 4.2 Modal 与平台返回方式 {#modal与平台返回方式}
+
+RN 的 `Modal` 打开时，普通 `BackHandler` 不发布返回事件；应按 `Modal` 的 `onRequestClose` 等接口处理关闭。页面内普通遮罩和真正的原生 Modal，也不一定具有相同的系统行为。
+
+iOS 的导航返回按钮、交互式返回手势与弹窗关闭也不由 Android `BackHandler` 管理。要检查导航栈、未保存状态和手势取消后的结果，而不是在 iOS 上等待同名硬件返回事件。
+
+## 5. 权限与应用状态 {#权限与应用状态}
+
+### 5.1 声明、检查与请求 {#声明检查与请求}
+
+**权限声明**告诉系统应用需要什么能力，**授权状态**表示当前用户与系统是否允许使用。Android Manifest 中的声明不等于已经获得运行时授权；iOS 也有对应能力的用途说明与授权流程。
+
+以下函数只处理 Android 相机权限，调用前应在 Manifest 中声明 `android.permission.CAMERA`，并由用户发起需要相机的操作：
+
+```ts
+import {PermissionsAndroid, Platform} from 'react-native';
+
+type CameraPermission = 'granted' | 'denied' | 'blocked';
+
+export async function requestAndroidCamera(): Promise<CameraPermission> {
+  if (Platform.OS !== 'android') {
+    throw new Error('此函数只处理 Android 相机权限');
+  }
+  const permission = PermissionsAndroid.PERMISSIONS.CAMERA;
+  if (await PermissionsAndroid.check(permission)) return 'granted';
+  const result = await PermissionsAndroid.request(permission);
+  switch (result) {
+    case PermissionsAndroid.RESULTS.GRANTED:
+      return 'granted';
+    case PermissionsAndroid.RESULTS.DENIED:
+      return 'denied';
+    case PermissionsAndroid.RESULTS.NEVER_ASK_AGAIN:
+      return 'blocked';
+    default:
+      throw new Error('未知的权限请求结果');
+  }
+}
+```
+
+`granted` 才允许继续尝试需要权限的操作，操作本身仍可能因设备不可用而失败。`denied` 表示本次没有获准；`blocked` 是示例对 `NEVER_ASK_AGAIN` 的业务命名，调用者应提供清楚说明和由用户主动选择的设置入口，不能立即循环请求。
+
+这个函数没有实现 iOS 相机授权，也没有处理相册有限访问、定位精度等其他能力的专门状态。跨平台接口可以统一业务表达，但不能丢掉影响功能的授权差异。平台机制分别见 [Android 应用沙箱与权限](../android/sandbox-permissions.mdx)和 [iOS 应用沙箱与权限](../ios/sandbox-permissions.mdx)。
+
+### 5.2 前后台、焦点与页面存活 {#前后台焦点与页面存活}
+
+**AppState** 描述应用前后台等状态，导航焦点描述当前页面是否在交互路径上。一个页面可能仍然挂载，却被下一页覆盖；应用也可能仍是 `active`，但用户正在 Android 通知抽屉中操作。
+
+Android 的 `AppState` 还有 `focus`、`blur` 事件，通知抽屉等场景可能触发 `blur` 而不改变前后台状态。不能只靠组件是否卸载或一个 `active` 值决定所有监听和资源行为。
+
+应用回到前台后，按需要重新检查权限与外部资源状态，恢复或刷新仍然有效的任务。不要假设离开前的授权、连接和账号状态永远保持，也不要把进入后台等同于允许 JS 长期持续运行。
+
+## 6. 深链入口与业务准备 {#深链入口与业务准备}
+
+**深链**把外部链接转换为应用中的目标页面或操作。`Linking.getInitialURL()` 用于取得启动应用的链接，应用已经运行时还需要监听 `url` 事件；只处理其中一种入口，会漏掉另一类路径。
+
+原生端仍要配置相应 Scheme、Android Intent Filter、App Links 或 iOS Universal Links 等接入条件。JS 注册监听不能让系统自动把任意域名交给应用。
+
+收到链接后，先校验协议、域名、路径和参数，再转换为内部目标。路由容器未准备好或用户尚未登录时，应保存受控的待处理目标，等待条件满足；还要处理重复投递、失效资源与无权限访问。
+
+外部链接不是可信的内部命令。最终访问权限应由业务和服务端继续判断，不能把 URL 中出现了某个资源 ID 当作允许访问的依据。
+
+## 7. 原生依赖与构建 {#原生依赖与构建}
+
+**Metro** 负责解析与打包 JS 等资源，Android 的 Gradle 和 iOS 的 Xcode 等工具负责对应的原生构建。React Native 的构建集成把这些部分连接起来，JS bundle 本身不是 APK、AAB 或 iOS 应用。
+
+新增原生依赖时，检查支持的平台、RN 版本、新架构兼容性、自动链接结果和平台最低要求。原生库、用途说明或权限配置变更后，需要相应的原生构建安装，不能只热刷新 JS。
+
+调试构建能从开发服务器加载脚本，不代表发布包已经带齐脚本和资源。发布前验证目标构建、资源、签名与设备运行条件，分别参考 [Android 构建](../android/build.mdx)和 [iOS 构建](../ios/build.mdx)。
+
+平台适配验证应覆盖实际业务路径，包括返回与 Modal、键盘遮挡、权限拒绝后继续操作、前后台切换以及深链冷启动和热启动。JS 替身能检查分支和清理；系统弹窗、原生路由、安装包和真机硬件还需要对应平台的集成观测。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 什么时候使用 Platform 分支，什么时候使用平台文件？ {#platform-code}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：差异规模、职责与解析配置。
+
+**相关内容**：[平台差异的组织](#平台差异的组织)
+
+<details>
+<summary>参考回答</summary>
+
+**小范围属性或行为差异可以分支，完整实现差异适合分文件并保持共同接口。** 平台文件由 Metro 按目标与配置解析，不能忽略扩展名顺序或自定义配置；平台版本也不能替代硬件、模块和权限检查。
+
+</details>
+
+### 8.2 页面在默认设备上正常，为什么仍需要检查窗口、字体和键盘？ {#layout}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：动态空间、文本测量与重复避让。
+
+**相关内容**：[窗口、文本与键盘](#窗口文本与键盘)
+
+<details>
+<summary>参考回答</summary>
+
+**运行期间可用空间和内容尺寸会改变，初始截图不能覆盖这些条件。** 检查旋转、分屏、大字体、长文本和输入项可见性；键盘可能已由系统调整窗口，页面再叠加偏移可能重复避让，事件支持也因平台和配置不同。
+
+</details>
+
+### 8.3 Android 返回监听为什么要考虑页面焦点与 Modal？ {#back}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：事件消费、订阅生命周期与系统容器。
+
+**相关内容**：[返回与页面焦点](#返回与页面焦点)
+
+<details>
+<summary>参考回答</summary>
+
+**仍挂载的旧页面不一定应处理当前返回，Modal 也有自己的关闭入口。** 只在应接收交互时订阅，结束时移除；`true` 消费事件，`false` 继续交给其他监听或默认行为。RN Modal 打开时不能依赖普通 BackHandler，应按其关闭接口处理。
+
+</details>
+
+### 8.4 AppState 为 active，就能认为当前页面仍应继续所有任务吗？ {#lifecycle}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：应用状态、导航焦点、挂载与资源归属。
+
+**相关内容**：[前后台、焦点与页面存活](#前后台焦点与页面存活)
+
+<details>
+<summary>参考回答</summary>
+
+**不能，应用前台、页面焦点和组件存活是不同条件。** 页面可能被覆盖但未卸载，Android 通知抽屉也可能让应用失去交互焦点而保持 active。任务应按实际所有者和业务条件暂停、恢复或取消，返回前台后重新确认必要的外部状态。
+
+</details>
+
+### 8.5 Android 权限返回 denied 和 never_ask_again，处理方式有什么不同？ {#permission}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：授权结果、用户操作与后续状态变化。
+
+**相关内容**：[声明、检查与请求](#声明检查与请求)
+
+<details>
+<summary>参考回答</summary>
+
+**两者都没有授予权限，但后者不能靠立即重复请求继续弹出同样的授权流程。** 拒绝后让功能保持可理解的降级；不再询问时说明原因，并由用户主动选择设置入口。返回应用后重新检查，不能把一次结果永久当作当前状态。
+
+</details>
+
+### 8.6 只监听 Linking 的 url 事件，为什么可能漏掉深链？ {#links}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：启动入口、运行中事件、初始化与输入校验。
+
+**相关内容**：[深链入口与业务准备](#深链入口与业务准备)
+
+<details>
+<summary>参考回答</summary>
+
+**应用可能由链接冷启动，启动链接需要通过 getInitialURL 等入口读取。** 同时监听运行中的 URL 事件，完成原生接入配置，并等待导航和登录状态就绪。两类入口都要校验外部输入、处理重复与失效目标。
+
+</details>
+
+### 8.7 React Native 应用可以打包成 APK 安装吗？ {#apk}
+
+**考察重点**：JS 打包与 Android 原生构建的关系。
+
+**相关内容**：[原生依赖与构建](#原生依赖与构建)
+
+<details>
+<summary>参考回答</summary>
+
+**可以，React Native Android 应用通过原生构建流程生成可安装的 APK。** Metro 提供 JS 打包等能力，Gradle 等工具把原生代码、库、脚本与资源整合进应用；发布还涉及签名和对应构建配置。单独生成 JS bundle 不等于已经得到可安装应用，iOS 则需要它自己的构建与签名流程。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+
+- [React Native 0.76：Platform-Specific Code](https://github.com/react/react-native-website/blob/1e510146b8d4d17877f8890acd9e5709796633cc/website/versioned_docs/version-0.76/platform-specific-code.md)
+- [Metro：Module Resolution](https://metrobundler.dev/docs/resolution/)
+- [React Native 0.76：useWindowDimensions](https://github.com/react/react-native-website/blob/1e510146b8d4d17877f8890acd9e5709796633cc/website/versioned_docs/version-0.76/usewindowdimensions.md)
+- [React Native 0.76：Keyboard](https://github.com/react/react-native-website/blob/1e510146b8d4d17877f8890acd9e5709796633cc/website/versioned_docs/version-0.76/keyboard.md)
+- [React Native 0.76：KeyboardAvoidingView](https://github.com/react/react-native-website/blob/1e510146b8d4d17877f8890acd9e5709796633cc/website/versioned_docs/version-0.76/keyboardavoidingview.md)
+- [React Native 0.76：BackHandler](https://github.com/react/react-native-website/blob/1e510146b8d4d17877f8890acd9e5709796633cc/website/versioned_docs/version-0.76/backhandler.md)
+- [React Native 0.76：Modal](https://github.com/react/react-native-website/blob/1e510146b8d4d17877f8890acd9e5709796633cc/website/versioned_docs/version-0.76/modal.md)
+- [React Native 0.76：PermissionsAndroid](https://github.com/react/react-native-website/blob/1e510146b8d4d17877f8890acd9e5709796633cc/website/versioned_docs/version-0.76/permissionsandroid.md)
+- [React Native 0.76：AppState](https://github.com/react/react-native-website/blob/1e510146b8d4d17877f8890acd9e5709796633cc/website/versioned_docs/version-0.76/appstate.md)
+- [React Native 0.76：Linking](https://github.com/react/react-native-website/blob/1e510146b8d4d17877f8890acd9e5709796633cc/website/versioned_docs/version-0.76/linking.md)
+- [React Native 0.76：React Native Gradle Plugin](https://github.com/react/react-native-website/blob/1e510146b8d4d17877f8890acd9e5709796633cc/website/versioned_docs/version-0.76/react-native-gradle-plugin.md)
+- [React Native 0.76：Publishing to Google Play Store](https://github.com/react/react-native-website/blob/1e510146b8d4d17877f8890acd9e5709796633cc/website/versioned_docs/version-0.76/signed-apk-android.md)

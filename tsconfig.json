@@ -5,5 +5,6 @@
     "baseUrl": "."
   },
   // worker/ is its own package (Cloudflare Workers types, own tsconfig).
-  "exclude": ["node_modules", "build", ".docusaurus", "worker"]
+  // output/ contains generated artifacts and independently checked example fixtures.
+  "exclude": ["node_modules", "build", ".docusaurus", "worker", "output"]
 }

@@ -1,0 +1,481 @@
+---
+sidebar_position: 4
+knowledge:
+  id: frontend.css.responsive-layout
+---
+
+# 响应式布局
+
+响应式布局让同一份内容根据可用空间和设备能力改变排列、尺寸与呈现方式。它不是把所有 `px` 换成 `rem`，也不是只在几种手机宽度上加媒体查询。真正要保证的是：内容放得下、操作仍可用、图片不失真，窗口或文字尺寸改变后仍能阅读。
+
+面试中介绍适配方案，先交代布局约束，再解释单位、断点和资源选择。一个可验证的回答应包含窄屏、宽屏、长内容和放大后的表现，而不只是说“项目用了 Flex 和媒体查询”。
+
+## 1. 面试核心 {#core}
+
+- **先建立流动布局，再在内容放不下时改变结构**。断点服务于内容约束，不应只按手机型号列表设计。[卡](#responsive-plan)
+- **CSS 像素与屏幕物理像素不是一一对应**。DPR 描述当前环境下两者的比例，布局仍主要按 CSS 像素计算。[卡](#pixel-density)
+- 移动页面通常使用 **`width=device-width, initial-scale=1`** 建立合适的布局视口；这不会自动修复固定宽度组件，也不应以禁止缩放代替适配。[卡](#viewport)
+- `em` 与 `rem` 都相对字体大小，但**`font-size` 上的 `em` 参考父级，其他一般长度属性上的 `em` 参考自身字体，`rem` 参考根字体**。[卡](#relative-units)
+- **`10vh` 是相关视口高度的十分之一**，不是屏幕物理高度的十分之一。移动浏览器工具栏、键盘和可视区域变化要分别判断。[卡](#viewport-units)
+- **rem 适配依赖根字体如何设置，转换工具只做数值换算**。`pxtorem` 并不会自动判断布局关系；整页随宽度等比缩放也不适合所有内容。[卡](#rem-scaling)
+- **媒体查询看环境，容器查询看组件所在容器的尺寸**。同一视口内，侧栏卡片与主区域卡片可以需要不同布局。
+- 响应式图片要同时处理显示尺寸与下载资源：**CSS 控制盒子，`srcset`/`sizes` 提供候选及预期显示宽度，`picture` 可以选择不同构图**。[卡](#responsive-images)
+- **细线方案必须说明目标密度和渲染条件**。`0.5px`、缩放伪元素等方式都不能脱离设备和浏览器保证恰好一个物理像素。[卡](#hairline)
+- 大屏适配要先区分重新排版与整张画布等比缩放；**保持比例、铺满屏幕和不裁剪三者可能需要取舍**。[卡](#large-screen)
+
+## 2. 像素与视口 {#像素与视口}
+
+### 2.1 CSS 像素与设备像素 {#像素密度}
+
+**CSS 像素**是页面布局使用的长度单位。**设备像素比**（device pixel ratio，DPR）描述当前显示环境中，设备像素与 CSS 像素的比例，可以通过 `window.devicePixelRatio` 读取。
+
+如果当前 DPR 为 2，一个宽 100 CSS px 的区域通常需要约 200 个设备像素来呈现宽度。它不会因此在 CSS 布局中变成 200px 宽。高密度图片需要更多像素来保持清晰，也不意味着所有元素都应按 DPR 放大布局尺寸。
+
+页面缩放可能改变 DPR，手势缩放则主要改变可视区域与放大比例，不能把某个设备的 DPR 当成永远不变的型号常量。布局断点通常比较 CSS 像素下的视口宽度，而不是显示面板标称的物理分辨率。
+
+### 2.2 布局视口与可视视口 {#视口设置}
+
+**布局视口**是页面进行布局所依据的视口，**可视视口**是用户当前实际看到的区域。手势缩放后，可视视口可以变小，但页面未必按这个新宽度重新布局。
+
+```html
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>职位列表</title>
+  </head>
+  <body><main>页面内容</main></body>
+</html>
+```
+
+这里的 `device-width` 不是让页面使用屏幕物理像素数，而是为移动布局设定合适的 CSS 像素宽度。缺少视口设置时，移动浏览器可能使用较宽的兼容布局视口，再把页面缩小显示，导致字体和点击目标看起来很小。
+
+视口声明不负责把一个固定 1000px 宽的组件变成流动布局。不要用 `user-scalable=no` 或过小的最大缩放限制来掩盖溢出；用户仍可能需要放大阅读。
+
+## 3. 相对单位 {#相对单位}
+
+### 3.1 em、rem 与百分比 {#字体相对单位}
+
+**`em`** 基于字体大小，**`rem`** 基于根元素的字体大小。它们不是“移动端专用单位”，也不会自动随窗口宽度变化。
+
+```html
+<style>
+  html { font-size: 16px; }
+  .outer { font-size: 20px; }
+  .inner { font-size: 1.5em; padding: 1em; width: 10rem; }
+</style>
+<div class="outer"><div class="inner">申请进度</div></div>
+```
+
+`.inner` 的字体是父级 20px 的 1.5 倍，即 30px；其 `padding: 1em` 再使用自身的 30px 字体，所以内边距为 30px。`width: 10rem` 则使用根字体 16px，内容宽为 160px。这三个计算没有使用同一个参照。
+
+| 单位 | 参照与适用条件 |
+| --- | --- |
+| `px` | CSS 像素，适合需要明确 CSS 尺寸的约束，不保证一个物理像素 |
+| `em` | 字体相对长度；嵌套设置字号时可能逐层相乘 |
+| `rem` | 根字体相对长度，适合统一的文字和间距比例 |
+| `%` | 参照由属性定义，不能统一解释为父元素的同方向尺寸 |
+| `vw`、`vh` | 相关视口宽高的百分之一 |
+| `vmin`、`vmax` | 相关视口宽高较小值、较大值的百分之一 |
+
+百分比尤其需要看属性。例如普通块的宽度百分比通常依赖包含块宽度；padding 的百分比也可能按包含块的内联尺寸计算，不能因为是 `padding-top` 就认为参考父高度。根元素自身 `font-size` 使用 `rem` 时有专门的初始字号规则，不能形成“自己的字体乘自己”的循环。
+
+### 3.2 视口单位与移动浏览器 {#视口相对单位}
+
+在高 800 CSS px 的相关视口中，`10vh` 对应 80 CSS px。视口单位适合表达与视口直接相关的区域，但不能代替内容最小尺寸和布局规则。
+
+移动浏览器的工具栏可能展开或收起，因而存在不同的视口高度参照。
+
+| 单位 | 高度参照 |
+| --- | --- |
+| `svh` | 小视口高度，按浏览器界面占据较多空间时的尺寸考虑 |
+| `lvh` | 大视口高度，按浏览器界面收起时的尺寸考虑 |
+| `dvh` | 动态视口高度，随相关界面变化调整 |
+| `vh` | 默认视口单位；现代规范把它与大视口单位对应，旧环境仍需验证 |
+
+```css
+.screen {
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+```
+
+支持动态单位的浏览器使用后面的声明，不支持时保留前面的 `100vh`。这里用最小高度，让内容多时仍可继续增长。`dvh` 也不承诺所有虚拟键盘出现时都按预期缩小：键盘可能只影响可视视口，具体还受浏览器和视口策略影响。
+
+横屏、地址栏变化、输入键盘弹出应分别测试。安全区域则是另一件事，可以在需要贴边的控件上补充环境变量。
+
+```css
+.bottom-actions {
+  padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+}
+```
+
+这条声明在正常 12px 间距之外，再加浏览器提供的底部安全区域值。它不会让控件自动适配键盘，也不意味着所有设备都会返回非零值。需要让页面扩展到屏幕边缘的布局，还应结合 `viewport-fit=cover` 与实际安全区域测试。
+
+### 3.3 rem 等比适配的原理 {#rem等比适配}
+
+rem 适配方案通常先根据布局宽度设置根字体，再把设计稿中的尺寸转换成 rem。把视口分成十份是一种约定，不是 rem 的语法规定。
+
+假设设计稿以 375 CSS px 为基准，约定根字号为 `375 / 10 = 37.5px`。设计稿中的 75px 元素转换成 `75 / 37.5 = 2rem`。当布局宽度变成 400px，根字号更新为 40px，这个元素就变成 80px，保持占宽度五分之一。
+
+```html
+<style>
+  body { font-size: 16px; }
+  .sample { width: 2rem; height: 1rem; background: #dbeafe; }
+</style>
+<div class="sample">比例盒</div>
+<script>
+  function updateRootSize() {
+    document.documentElement.style.fontSize =
+      `${document.documentElement.clientWidth / 10}px`;
+  }
+  updateRootSize();
+  window.addEventListener('resize', updateRootSize);
+</script>
+```
+
+这个最小示例只展示比例计算，不是完整适配库。页面销毁或组件卸载时，应按注册位置清理监听器。历史上的 Flexible 方案还包含其他兼容处理；理解旧项目时要看具体版本，不能把几行比例代码当作整个库。
+
+`pxtorem` 一类构建工具做的是“源尺寸除以约定基准”的换算，实际根字号仍需要与约定一致。若把 750px 设计稿当作 375px 基准直接换算，就可能整体大一倍。
+
+这类方案也有明确代价：字体和组件随视口无限变大，在宽屏上未必合理；仅改单位无法解决两栏应变一栏的问题。普通内容页面可以用流动宽度、最大宽度、Flex/Grid 和必要断点，文字尺寸按阅读需求单独约束，不必让整页等比缩放。
+
+微信小程序 WXSS 中的 `rpx` 则是宿主提供的比例单位，按页面总宽度的 `1/750` 表达尺寸；宽度为 375px 时，1rpx 对应约 0.5px，具体换算还可能取整。它不是浏览器标准 CSS 单位，不能把同样的值直接写进普通网页就期待生效。
+
+## 4. 根据内容调整布局 {#根据内容调整布局}
+
+### 4.1 流动宽度与断点 {#流动布局与断点}
+
+**媒体查询**根据视口或设备能力决定一组规则是否适用。断点应从内容约束得出：例如侧栏加正文已经放不下，就需要改变结构，而不是先假定每一种设备都有固定宽度。
+
+```html
+<style>
+  .page { width: min(100% - 32px, 70rem); margin-inline: auto; }
+  .layout { display: grid; gap: 16px; }
+  .content { min-width: 0; overflow-wrap: anywhere; }
+  @media (min-width: 48rem) {
+    .layout { grid-template-columns: 14rem minmax(0, 1fr); }
+  }
+</style>
+<div class="page layout">
+  <nav>职位分类</nav>
+  <main class="content">职位内容可以自然换行，并随可用空间调整。</main>
+</div>
+```
+
+基础规则先提供单列。达到断点后，导航与正文改成两栏；外层保留两侧各 16px 的空隙，并设置最大宽度，避免超宽屏上的阅读行过长。具体数值是本例设计约束，项目中应根据侧栏与正文所需空间调整。
+
+媒体查询里的 `em`、`rem` 使用基于初始字号的参照，不随页面作者对 `html` 字号的修改同步改变。不要一边用视口比例修改根字号，一边想当然地把媒体查询中的 rem 当作相同的动态比例。
+
+### 4.2 自动列数与组件容器 {#自动列数与容器}
+
+如果只需根据空间决定能放下几张卡片，Grid 可以直接表达最小卡片宽度。
+
+```html
+<style>
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr)); gap: 16px; }
+</style>
+<div class="cards"><article>职位一</article><article>职位二</article><article>职位三</article></div>
+```
+
+空间充足时增加列数，较窄时减少列数。内层的 `min(100%, 14rem)` 避免容器比 14rem 还窄时，最小轨道宽度继续强迫页面横向溢出。`auto-fit` 会折叠没有项目占据的重复轨道；`auto-fill` 则保留这类空轨道，最后的空间分配可能不同。
+
+**容器查询**依据组件所在查询容器的尺寸决定规则。一个卡片同时出现在侧栏和主内容区时，单纯看视口宽度可能无法区分它们的实际空间。
+
+```html
+<style>
+  .slot { container-type: inline-size; }
+  .card { display: grid; gap: 12px; }
+  @container (min-width: 30rem) {
+    .card { grid-template-columns: 1fr 1fr; }
+  }
+</style>
+<div class="slot"><article class="card"><div>职位信息</div><div>申请进度</div></article></div>
+```
+
+查询作用在 `.slot` 内部的 `.card` 上。改变 `.slot` 宽度，即使视口不变，卡片也能切换单双列。设置尺寸查询容器会引入相应的尺寸包含行为，组件需要从外部获得合理宽度，不能期待它再完全依赖被查询后代来决定自己的内联尺寸。
+
+### 4.3 文字与输入能力 {#文字与输入能力}
+
+响应式不只处理宽度。较大字体、长译文、键盘操作和触摸输入都会改变组件是否可用。字号可以用有上下限的流动值，避免无限随视口缩小或放大。
+
+```css
+.title { font-size: clamp(1.25rem, 1rem + 1vw, 2rem); }
+@media (hover: hover) and (pointer: fine) {
+  .button:hover { text-decoration: underline; }
+}
+```
+
+`clamp()` 在给定下限与上限之间选择中间表达式。悬停规则只在相应能力条件下提供补充反馈，核心操作仍应通过点击、触摸与键盘访问。`pointer: coarse` 也不能简单解释为“用户一定在用手机”，一台设备可以连接多种输入方式。
+
+## 5. 响应式图片与细线 {#响应式图片与细线}
+
+### 5.1 显示尺寸与资源尺寸 {#图片尺寸}
+
+CSS 可以让图片盒子适应父容器，但不会自动把下载的大图变成较小文件。显示宽度与资源选择要分别描述。
+
+```html
+<style>
+  body { margin: 0; }
+  .photo { display: block; width: min(100%, 600px); height: auto; }
+</style>
+<img class="photo" src="/office-960.png"
+     srcset="/office-480.png 480w, /office-960.png 960w, /office-1440.png 1440w"
+     sizes="(max-width: 600px) 100vw, 600px"
+     width="960" height="640" alt="办公区与会议室">
+```
+
+`srcset` 的 `w` 描述候选资源宽度，`sizes` 告诉浏览器图片预期占多宽的布局空间。这里 CSS 和 `sizes` 都描述“窄屏占视口宽，宽屏最多 600px”。如果真实布局还有外侧间距或侧栏，`sizes` 也要同步反映，而不是固定写 `100vw`。
+
+浏览器结合预期显示宽度、DPR 等条件选择候选，还可能考虑缓存或网络策略，不能保证每次都下载同一个精确文件。`width` 与 `height` 属性提供宽高比信息，配合 `height: auto` 保持比例，也有助于资源加载前预留空间。
+
+### 5.2 密度候选与不同构图 {#图片候选}
+
+显示尺寸固定时，可以用密度描述符表达不同清晰度的候选。
+
+```html
+<img src="/icon-64.png" srcset="/icon-64.png 1x, /icon-128.png 2x"
+     width="64" height="64" alt="公司标志">
+```
+
+这个图标仍显示为 64×64 CSS px，高密度环境可以选择 128×128 资源。同一候选列表不要混用 `w` 与 `x` 描述符；宽度候选需要结合 `sizes` 推导密度，密度候选则直接给出比例。
+
+如果手机与桌面需要不同裁剪、布局或构图，应使用 `picture` 的媒体条件选择来源，而不是只给同一构图增加像素。
+
+```html
+<picture>
+  <source media="(max-width: 600px)" srcset="/team-closeup.png">
+  <img src="/team-wide.png" width="960" height="640"
+       style="max-width: 100%; height: auto" alt="团队在办公区讨论方案">
+</picture>
+```
+
+这里窄屏使用主体更集中的图片，宽屏使用全景。示例候选保持相同宽高比；若构图同时改变比例，还应相应声明或安排比例，避免切换时预留空间不正确。替代文字描述图片传递的信息，不把每个分辨率文件名当作不同含义。
+
+### 5.3 高密度屏幕上的细线 {#细线}
+
+“1px 问题”通常是指希望得到一个设备像素左右的细线，而 `1px` CSS 边框在高 DPR 下可能占据多个设备像素。应先确认设计到底要求一个 CSS 像素还是更细的视觉线条。
+
+```html
+<style>
+  .row { position: relative; padding: 12px; }
+  .row::after {
+    content: ""; position: absolute; inset: auto 0 0;
+    height: 1px; background: #64748b;
+    transform: scaleY(0.5); transform-origin: bottom;
+    pointer-events: none;
+  }
+</style>
+<div class="row">分组信息</div>
+```
+
+伪元素占据 1 CSS px 高度，再在呈现时压缩成 0.5 CSS px。DPR 为 2、没有额外缩放且边界对齐合适时，它可以接近一个设备像素；DPR 为 3、页面缩放或子像素对齐不同，就不能继续宣称恰好一个物理像素。
+
+有的目标环境支持小数边框，也可以评估 `0.5px`；无论哪种方案，都要验证实际栅格化结果。不要为了细线改变整个页面的缩放和点击尺寸，也不要把浏览器模拟器的几何数值当作所有真机的显示证明。
+
+## 6. 大屏与验证 {#大屏与验证}
+
+### 6.1 大屏布局的两种目标 {#大屏布局}
+
+内容型大屏可以继续使用流动轨道和断点，让图表与信息块按可用空间重排。固定设计画布则可以等比缩放，但需要接受留白或裁剪的代价。
+
+若设计画布是 1920×1080，可用区域是 `W×H`，完整展示时缩放比例可取 `min(W/1920, H/1080)`。若取最大比例以铺满区域，就会在另一方向裁剪；横纵分别缩放虽然能铺满，却会让文字和图形变形。
+
+```html
+<style>
+  .viewport { position: relative; width: 100%; height: 100vh; overflow: hidden; }
+  .canvas { position: absolute; width: 1920px; height: 1080px; transform-origin: top left; background: #dbeafe; }
+</style>
+<div class="viewport"><div class="canvas">固定设计画布</div></div>
+<script>
+  const viewport = document.querySelector('.viewport');
+  const canvas = document.querySelector('.canvas');
+  const observer = new ResizeObserver(([entry]) => {
+    const { width, height } = entry.contentRect;
+    const scale = Math.min(width / 1920, height / 1080);
+    const left = (width - 1920 * scale) / 2;
+    const top = (height - 1080 * scale) / 2;
+    canvas.style.transform = `translate(${left}px, ${top}px) scale(${scale})`;
+  });
+  observer.observe(viewport);
+</script>
+```
+
+这里观察的是实际容器尺寸，不需要预先知道屏幕型号。子画布绝对定位，不反过来撑大被观察容器；容器改变时重新计算比例和居中留白。页面或组件卸载时应 `observer.disconnect()`。若内部还有 Canvas 图表，图表自身的绘制缓冲区与重绘策略也要处理，CSS 变换不会自动重新生成更高分辨率的图像。
+
+### 6.2 验证适配结果 {#验证适配结果}
+
+验证以内容和操作为准，不只看截图宽度。可以从以下变化开始：
+
+- 在断点两侧及中间宽度连续调整，检查是否出现横向溢出、挤压或突然跳变。
+- 加长标题和译文，放大文字或页面，检查信息、按钮名称和焦点是否仍完整可达。
+- 在不同 DPR 下检查图片候选及清晰度，不把 CSS 显示宽度与文件像素宽度混在一起。
+- 在真机测试旋转、浏览器工具栏、软键盘和安全区域，区分模拟器能验证的布局与真实宿主行为。
+
+只有横屏检测、使用某个 UI 库，或加了一条 `meta viewport`，都不足以说明页面已经完成适配。回答项目题时，可以展示哪一个内容约束迫使你改变布局，以及改动前后的实际结果。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 移动端与 PC 端如何采用同一套响应式布局？ {#responsive-plan}
+
+**考察重点**：流动约束、断点、内容与交互验证。
+
+**相关内容**：[流动宽度与断点](#流动布局与断点)、[自动列数与组件容器](#自动列数与容器)、[验证适配结果](#验证适配结果)。
+
+<details>
+<summary>参考回答</summary>
+
+**先让尺寸和排列能够随可用空间变化，再在内容放不下时改变结构。** 可以结合最大宽度、Flex/Grid 和内容驱动的断点，窄屏单列、宽屏多列。图片、长文本与操作区域要分别处理；同一组件放入不同宽度区域时可考虑容器查询。最后检查连续宽度、长译文、放大、输入方式和真实移动视口变化，不能只用横屏检测或某个 UI 库作为完成适配的证明。
+
+</details>
+
+### 7.2 CSS 的 1px 是否等于屏幕上的一个物理像素？ {#pixel-density}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：布局像素、DPR 与缩放。
+
+**相关内容**：[CSS 像素与设备像素](#像素密度)。
+
+<details>
+<summary>参考回答</summary>
+
+**不一定，CSS 像素是布局单位，DPR 描述当前环境中它与设备像素的比例。** DPR 为 2 时，100 CSS px 宽的区域通常由约 200 个设备像素呈现，但 CSS 布局宽度仍为 100px。页面缩放可能改变 DPR，手势缩放主要改变可视区域，因此不能直接用设备标称物理分辨率决定页面断点。
+
+</details>
+
+### 7.3 meta viewport 能解决什么问题，能否代替响应式 CSS？ {#viewport}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：布局视口、移动兼容布局和内容约束。
+
+**相关内容**：[布局视口与可视视口](#视口设置)。
+
+<details>
+<summary>参考回答</summary>
+
+**它为移动页面设定合适的布局视口，不能自动改写组件宽度和排列。** 常用配置是 `width=device-width, initial-scale=1`，避免页面先在较宽兼容视口布局后整体缩小。内部固定 1000px 组件仍可能溢出，需要流动布局与结构调整。禁止用户缩放也不是适配方案。
+
+</details>
+
+### 7.4 px、em、rem 与百分比分别相对什么？ {#relative-units}
+
+**考察重点**：单位参照、字号嵌套与属性条件。
+
+**相关内容**：[em、rem 与百分比](#字体相对单位)。
+
+<details>
+<summary>参考回答</summary>
+
+**`px` 是 CSS 像素，`em` 基于字体，`rem` 基于根字体，百分比参照由具体属性决定。** `font-size: 1.5em` 通常参考父字体，`padding: 1em` 则使用元素自身字体；嵌套字号可能逐层相乘。`rem` 不因普通祖先字号变化而逐层放大，但根字体变化仍会影响它。不能把所有百分比都解释成父元素的同方向尺寸。
+
+</details>
+
+### 7.5 10vh 是多高，移动端为什么还要区分 svh、lvh、dvh？ {#viewport-units}
+
+**考察重点**：视口参照、浏览器界面与可视区域。
+
+**相关内容**：[视口单位与移动浏览器](#视口相对单位)。
+
+<details>
+<summary>参考回答</summary>
+
+**`10vh` 是相关视口高度的 10%，不是设备物理高度的 10%。** 小视口、大视口和动态视口单位分别表达浏览器界面占据较多空间、界面收起以及动态变化下的尺寸。`dvh` 可随相关工具栏变化调整，但虚拟键盘不一定以同样方式改变布局视口，还需要看浏览器和视口策略。内容可增长时，最小高度通常比强行固定一屏更合适。
+
+</details>
+
+### 7.6 Flexible 和 pxtorem 的 rem 适配原理是什么？ {#rem-scaling}
+
+**考察重点**：根字号、设计基准、构建换算与方案边界。
+
+**相关内容**：[rem 等比适配的原理](#rem等比适配)。
+
+<details>
+<summary>参考回答</summary>
+
+**运行时根据布局宽度设置根字号，构建时把设计尺寸除以约定基准转换成 rem，两者必须使用一致约定。** 例如把宽度分成十份，375px 时根字号 37.5px，75px 转为 2rem；400px 时同一元素变成 80px。Flexible 的具体版本还包含其他兼容处理，不能等同于这一步换算。比例缩放不负责改变栏目结构，也未必适合字体和超宽屏，因此仍需结合内容约束与断点。
+
+</details>
+
+### 7.7 rpx 是浏览器标准单位吗，怎样理解它的尺寸？ {#rpx}
+
+**考察重点**：宿主样式单位与标准 CSS 的边界。
+
+**相关内容**：[rem 等比适配的原理](#rem等比适配)。
+
+<details>
+<summary>参考回答</summary>
+
+**rpx 是微信小程序 WXSS 支持的比例单位，不是普通浏览器标准 CSS 单位。** 它按页面总宽度的 `1/750` 表达尺寸，375px 宽时 1rpx 约为 0.5px，实际换算可能取整。它与浏览器的 `vw` 都可表达宽度比例，但不能直接假定相同语法在不同宿主中都有效，也不能只靠比例单位解决宽屏结构问题。
+
+</details>
+
+### 7.8 PC 与移动端怎样加载合适尺寸的图片？ {#responsive-images}
+
+**考察重点**：CSS 显示尺寸、资源候选、DPR 与构图。
+
+**相关内容**：[显示尺寸与资源尺寸](#图片尺寸)、[密度候选与不同构图](#图片候选)。
+
+<details>
+<summary>参考回答</summary>
+
+**先用 CSS 约束显示盒子，再向浏览器提供与布局一致的资源候选。** 流动宽度可用带 `w` 描述符的 `srcset` 配合 `sizes`，固定显示尺寸可用 `1x/2x` 密度候选；浏览器结合显示宽度、DPR 等条件选择。需要不同裁剪或构图时，用 `picture` 按媒体条件选择来源。还应声明宽高比预留空间，不能只把大图缩小显示就认为下载资源已优化。
+
+</details>
+
+### 7.9 高密度设备上的 1px 细线问题如何处理？ {#hairline}
+
+**考察重点**：CSS 尺寸、设备密度与实际栅格化。
+
+**相关内容**：[高密度屏幕上的细线](#细线)。
+
+<details>
+<summary>参考回答</summary>
+
+**先确认目标是一个 CSS 像素，还是接近一个设备像素的视觉细线。** 可以评估目标环境的小数边框支持，或用 1 CSS px 的伪元素配合 `scaleY(0.5)` 等方式压缩呈现。在 DPR 为 2、没有额外缩放且位置对齐合适时，后者可接近一个设备像素；其他密度和缩放条件需要重新验证。不能为了细线牺牲整页缩放和点击尺寸。
+
+</details>
+
+### 7.10 不预先知道大屏尺寸时，如何适配可视化页面？ {#large-screen}
+
+**考察重点**：容器观测、重排与缩放取舍。
+
+**相关内容**：[大屏布局的两种目标](#大屏布局)。
+
+<details>
+<summary>参考回答</summary>
+
+**先区分内容型重排和固定设计画布，再按实际容器尺寸更新。** 内容型页面可让 Flex/Grid 分配空间并在约束变化时调整结构；固定 1920×1080 画布可取 `min(W/1920, H/1080)` 等比缩放，完整展示但可能留白。取最大比例会裁剪，横纵分别缩放会变形。可以用 `ResizeObserver` 观测容器，不依赖屏幕型号列表；图表内部的绘制分辨率还需单独处理。
+
+</details>
+
+### 7.11 媒体查询与容器查询应该怎样选择？ {#container-query}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：环境条件与组件可用空间。
+
+**相关内容**：[流动宽度与断点](#流动布局与断点)、[自动列数与组件容器](#自动列数与容器)。
+
+<details>
+<summary>参考回答</summary>
+
+**页面级环境变化适合媒体查询，组件需要随所在容器空间变化时适合容器查询。** 同一个宽视口中，侧栏和主内容区可能给卡片不同宽度，容器查询可以分别调整内部布局。尺寸查询需要先建立合适的查询容器，规则作用于其后代，并理解尺寸包含带来的影响；不能只把 `@media` 机械改名成 `@container`。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [CSS Values and Units：相对长度与视口单位](https://www.w3.org/TR/css-values-4/)
+- [Media Queries：环境条件与查询单位](https://www.w3.org/TR/mediaqueries-4/)
+- [CSS Containment：容器查询](https://www.w3.org/TR/css-contain-3/#container-queries)
+- [HTML Standard：响应式图片](https://html.spec.whatwg.org/multipage/images.html)
+- [MDN：viewport 声明](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/meta/name/viewport)
+- [MDN：devicePixelRatio](https://developer.mozilla.org/en-US/docs/Web/API/Window/devicePixelRatio)
+- [Chrome Developers：布局视口、可视视口与软键盘](https://developer.chrome.com/blog/viewport-resize-behavior/)
+- [CSS Environment Variables：安全区域变量](https://www.w3.org/TR/css-env-1/)
+- [amfe-flexible：原始项目与版本说明](https://github.com/amfe/lib-flexible)
+- [amfe-flexible 2.0：根字号计算实现](https://github.com/amfe/lib-flexible/blob/2.0/index.js)
+- [微信小程序：WXSS 长度单位](https://developers.weixin.qq.com/miniprogram/dev/framework/view/wxss.html)

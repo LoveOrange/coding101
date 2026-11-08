@@ -5,6 +5,7 @@ import styles from '../account/account.module.css';
 import {useLearningIndex} from '../content';
 import {learnerActions, useLearner} from '../store';
 import {formatDate} from '../ui';
+import {RoleSelect} from '../ui/RoleSelect';
 import {ClientPage} from '../ui/ClientOnly';
 
 const LIMITS = [10, 20, 30, 50];
@@ -43,17 +44,8 @@ function AccountPage() {
           'role',
           '目标岗位',
           role?.label ?? '全部领域',
-          <select
-            className={styles.input}
-            value={prefs.roleId ?? ''}
-            onChange={(event) => learnerActions.setPreferences({roleId: event.target.value || undefined})}>
-            {index.roles.map((item) => (
-              <option key={item.id} value={item.id}>
-                {item.label}
-              </option>
-            ))}
-            <option value="">全部领域</option>
-          </select>,
+          <RoleSelect roles={index.roles} className={styles.input} value={prefs.roleId ?? ''}
+            onChange={roleId => learnerActions.setPreferences({roleId: roleId || undefined})} />,
         )}
         {row(
           'date',

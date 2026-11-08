@@ -1,0 +1,360 @@
+---
+sidebar_position: 10
+knowledge:
+  id: frontend.browser.jsbridge
+---
+
+# JSBridge
+
+**JSBridge** 是 JavaScript 与宿主代码之间的通信机制。在 WebView 应用中，网页通过它申请原生能力，宿主再把结果交回页面。例如页面展示分享按钮，真正打开系统分享界面的动作由 Android 或 iOS 应用完成。
+
+接口看起来可能只有一个 `postMessage` 或 `call`，但完整调用跨越了两套运行环境。要解释它的原理，需要区分消息怎样传输、异步结果怎样找到调用者，以及宿主为什么允许这次操作。本文围绕 WebView 中的 Web 与原生通信；React Native 的渲染体系和原生模块机制不能直接等同于 WebView JSBridge。
+
+## 1. 面试核心 {#core}
+
+- **JSBridge 由底层通信入口和上层调用协议共同组成**。注入对象、脚本消息处理器、消息端口等负责传输；方法名、参数、请求 ID 和错误约定负责表达业务调用。[卡](#bridge-mechanism)
+- **URL Scheme 可以用于唤起应用或被宿主拦截，但不等于完整的 JSBridge**。它没有自动解决调用结果、权限、参数校验和页面生命周期。[卡](#url-scheme)
+- **请求 ID 关联一次调用，会话 ID 区分一次页面会话**。回调函数留在当前 JavaScript 环境，通过标识找到它，不能把函数本身当作 JSON 传给原生。[卡](#callback-protocol)
+- **超时只表示调用方没有等到结果，不表示原生操作已取消**。重试有副作用的操作需要业务幂等；页面退出时还要清理待处理回调和旧会话。[卡](#timeout-retry)
+- **能力存在不代表调用者拥有权限**。宿主应验证来源、frame、当前会话、方法和参数，再执行系统权限及业务授权判断；页面自报的身份不可信。[卡](#trust-boundary)
+- **兼容与性能要围绕调用链处理**。明确能力协商、就绪时机、错误码和负载限制，再观察传输、排队、原生工作与返回各阶段，不能只归因于“桥慢”。[卡](#compatibility)
+
+## 2. 传输入口与业务协议 {#传输入口与业务协议}
+
+### 2.1 两个调用方向 {#两个调用方向}
+
+Web 调用原生时，JavaScript 把操作与参数交给宿主暴露的入口。宿主接到消息后解析、验证并分发，必要时切换到合适线程执行，再通过回复接口或页面回调返回结果。
+
+原生调用 Web 时，宿主可以执行固定的 JavaScript 入口，或向已建立的消息端口发送数据。这里应把代码与数据分开：不要把用户输入直接拼接成一段待执行脚本，也不要让页面传入任意原生类名和方法名后反射执行。
+
+| 平台入口 | 负责什么 | 不能据此推断什么 |
+| --- | --- | --- |
+| Android 的 `addJavascriptInterface` | 向 WebView 暴露受限定的对象方法 | 方法注解不等于来源验证；对象可能暴露给多个 frame |
+| AndroidX WebKit 的消息监听接口 | 按来源规则建立消息入口，并提供来源、主 frame 等上下文 | 仍需检查参数、业务权限及特性支持 |
+| WKWebView 的脚本消息处理器 | 把 JavaScript 消息交给原生处理器 | 处理器名称不是身份凭据 |
+| WKWebView 的带回复处理器 | 接收消息并向 JavaScript 返回异步结果 | 返回 Promise 不等于自动具备业务取消和幂等 |
+| 消息端口 | 在已建立的双方之间交换消息 | 端口持有者身份和授权仍由建立过程保证 |
+
+Android 的线程与来源检查见 [Android WebView](../../mobile/android/webview.mdx#javascript与原生交互)，iOS 的处理器与回复入口见 [WKWebView](../../mobile/ios/wkwebview.mdx#网页调用原生)。浏览器窗口的 `postMessage` 也可以用于通道初始化，但它本身不会让普通网页凭空获得原生能力，窗口验证规则见 [浏览器上下文通信](./cross-context-messaging.mdx#发送与接收检查)。
+
+### 2.2 URL Scheme 与环境识别 {#urlscheme与环境识别}
+
+**URL Scheme** 是 URL 中冒号前的协议部分。应用可以注册自定义 Scheme 处理唤起链接；WebView 宿主也可以拦截约定的导航，把其中的动作交给原生。这是传递调用意图的一种办法，不是跨平台通用的标准 RPC 协议。
+
+如果把参数编码到 URL 中，就要处理转义、长度、日志泄露和返回结果。拦截路径也不能承担所有资源请求的鉴权。唤起应用与 WebView 内调用还要分开：打开应用成功，不表示其中某项业务操作已经完成。
+
+`userAgent` 可以辅助选择界面适配，但它可变化、可伪装，也不能证明某个桥已安装。功能判断应检查约定入口及能力协商结果；安全判断必须由宿主根据可信上下文完成，不能根据页面的 `isApp: true` 决定授权。
+
+## 3. 消息协议与回调关联 {#消息协议与回调关联}
+
+### 3.1 请求与响应 {#请求与响应}
+
+**请求 ID** 标识一次调用，**会话 ID** 标识当前这次页面与宿主的连接。请求 ID 解决并发结果对应问题，会话 ID 帮助丢弃导航、重建之后的旧结果。二者都不是权限令牌。
+
+下面是一个应用自行约定的 JSON 协议，读取宿主当前主题：
+
+```json
+{
+  "version": 1,
+  "type": "request",
+  "session": "page-session-1",
+  "id": "request-1",
+  "method": "getTheme"
+}
+```
+
+成功响应携带同一会话与请求 ID：
+
+```json
+{
+  "version": 1,
+  "type": "response",
+  "session": "page-session-1",
+  "id": "request-1",
+  "ok": true,
+  "data": { "theme": "dark" }
+}
+```
+
+失败响应可以使用 `ok: false` 与稳定的 `error.code`，例如 `DENIED`、`UNSUPPORTED`、`FAILED`。错误码给调用方做分支判断，原生异常栈、文件路径或敏感状态不应直接暴露给网页。
+
+JSON 不是结构化克隆：函数、循环引用、`BigInt` 等不能直接按这个协议传递，`undefined` 或非有限数值也会发生丢失或转换。业务参数应先按方法的结构验证，再编码；大文件通常交付受控文件标识或流，而不是直接塞入巨大的 JSON 字符串。
+
+### 3.2 最小异步客户端 {#最小异步客户端}
+
+下面的客户端只提供 `readTheme()`，用来说明并发关联、超时、限额和清理。传输适配器的 `send(text)` 同步提交字符串或抛出错误；`subscribe(listener)` 接收字符串消息并返回取消订阅函数。适配器必须先完成可信通道建立，客户端才可使用。
+
+```js
+function createThemeClient(transport, { timeoutMs = 1000, maxPending = 16 } = {}) {
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 2 ** 31 - 1) {
+    throw new TypeError('Invalid timeout');
+  }
+  if (!Number.isSafeInteger(maxPending) || maxPending < 1) {
+    throw new TypeError('Invalid pending limit');
+  }
+  const session = crypto.randomUUID();
+  const pending = new Map();
+  let closed = false;
+
+  function finish(id, ok, value) {
+    const entry = pending.get(id);
+    if (!entry) return;
+    pending.delete(id);
+    clearTimeout(entry.timer);
+    if (ok) entry.resolve(value);
+    else entry.reject(value);
+  }
+
+  const unsubscribe = transport.subscribe((text) => {
+    if (closed || typeof text !== 'string' || text.length > 4096) return;
+    let message;
+    try { message = JSON.parse(text); } catch { return; }
+    if (!message || message.version !== 1 || message.type !== 'response') return;
+    if (message.session !== session || typeof message.id !== 'string') return;
+    if (message.ok === true && ['light', 'dark'].includes(message.data?.theme)) {
+      finish(message.id, true, message.data.theme);
+    } else if (message.ok === false &&
+      ['DENIED', 'UNSUPPORTED', 'FAILED'].includes(message.error?.code)) {
+      finish(message.id, false, new Error(message.error.code));
+    }
+  });
+
+  return {
+    readTheme() {
+      if (closed) return Promise.reject(new Error('DISPOSED'));
+      if (pending.size >= maxPending) return Promise.reject(new Error('BUSY'));
+      const id = crypto.randomUUID();
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => finish(id, false, new Error('TIMEOUT')), timeoutMs);
+        pending.set(id, { resolve, reject, timer });
+        try {
+          transport.send(JSON.stringify({ version: 1, type: 'request', session, id, method: 'getTheme' }));
+        } catch (error) {
+          finish(id, false, error);
+        }
+      });
+    },
+    dispose() {
+      if (closed) return;
+      closed = true;
+      try { unsubscribe(); } finally {
+        for (const id of pending.keys()) finish(id, false, new Error('DISPOSED'));
+      }
+    },
+  };
+}
+```
+
+`pending` 只保存在本地，保存的是 Promise 的处理函数和超时句柄。发出的字符串里只有标识和操作名。代码先登记 `pending` 再发送，所以即使适配器立刻回复，也能找到调用者。
+
+一条有效响应会先移除记录，再完成 Promise；重复或迟到的响应找不到记录，不会重复完成调用。错误格式、旧会话和未知 ID 都不会改变当前调用。没有有效响应的调用最终超时，名额也随之释放。
+
+### 3.3 用消息端口验证协议 {#用消息端口验证协议}
+
+下面在浏览器中用 `MessageChannel` 模拟两个通信端点。它是真实的异步消息传输，但宿主处理器仍是 JavaScript；它验证上面的协议逻辑，不代表已经调用了 Android 或 iOS API。
+
+```js
+async function runThemeDemo() {
+  const { port1, port2 } = new MessageChannel();
+  const transport = {
+    send(text) { port1.postMessage(text); },
+    subscribe(listener) {
+      const onMessage = (event) => listener(event.data);
+      port1.addEventListener('message', onMessage);
+      port1.start();
+      return () => port1.removeEventListener('message', onMessage);
+    },
+  };
+  port2.onmessage = ({ data }) => {
+    if (typeof data !== 'string' || data.length > 4096) return;
+    let request;
+    try { request = JSON.parse(data); } catch { return; }
+    if (!request || request.version !== 1 || request.type !== 'request') return;
+    if (typeof request.session !== 'string' || typeof request.id !== 'string') return;
+    if (request.method !== 'getTheme') return;
+    port2.postMessage(JSON.stringify({
+      version: 1, type: 'response', session: request.session, id: request.id,
+      ok: true, data: { theme: 'dark' },
+    }));
+  };
+  const client = createThemeClient(transport);
+  try {
+    console.log(await client.readTheme()); // dark
+  } finally {
+    client.dispose();
+    port1.close();
+    port2.close();
+  }
+}
+```
+
+在安全上下文或本地 HTTP 页面中定义两个函数，再调用 `runThemeDemo()`，会输出 `dark`。`crypto.randomUUID()` 也需要相应环境支持。
+
+示例端口只交给这两个受控端点，尚未实现原生来源验证、系统权限或业务授权。把 `transport` 换成真实平台入口时，不能只复制这个模拟处理器就认为权限问题已经解决。
+
+## 4. 生命周期、超时与取消 {#生命周期超时与取消}
+
+### 4.1 页面会话与就绪状态 {#页面会话与就绪状态}
+
+桥的全局对象存在，不代表宿主业务已经准备好。可以由宿主在注册处理器和能力准备完成后发送 `ready`，或者提供一个约定的能力查询。协议还应规定：重复就绪消息如何处理、旧页面会话何时失效，以及初始化失败时如何降级。
+
+导航或容器重建时，宿主要让旧会话失效，Web 端结束未完成调用。原生异步工作完成后，必须核对结果仍属于原来的会话，不能把旧页面的回复投给新加载的文档。Web 随机生成的会话 ID 只能帮助关联，宿主还必须绑定它与真实页面实例或导航代次的关系。
+
+`dispose()` 清理客户端的订阅、定时器和 Promise。它不自动销毁整个 WebView，也不应该关闭还被其他模块共享的底层连接；底层连接的所有者负责最终释放。页面缓存恢复等场景则应重新确认连接和状态，而不是盲目沿用旧回调表。
+
+### 4.2 超时与副作用 {#超时与副作用}
+
+一次请求可能已经送达，原生操作也已经成功，只是回复丢失或页面在等待期间退出。此时客户端超时，并不能推导出操作没有发生。
+
+读取主题这类无副作用操作可以按需要重试。支付、提交订单或写文件不能因为没收到响应就无限重发，应使用稳定的业务幂等键、结果查询或显式确认。请求 ID 通常用于一次传输调用；业务幂等键用于识别“这几次尝试是否属于同一个业务操作”，用途不同。
+
+取消也需要协议和宿主共同支持。Web 端移除回调只表示自己不再等待；发出取消消息也只能表达请求。宿主必须判断操作能否停止，必要时返回“已经完成”或“无法取消”，不能把 Promise 被拒绝等同于系统工作已回滚。
+
+## 5. 权限与信任边界 {#权限与信任边界}
+
+桥把网页调用提升到宿主能力范围，因此授权必须在宿主侧执行。前端参数校验可以减少错误输入，但不能代替宿主校验。
+
+| 检查层次 | 需要确认的内容 |
+| --- | --- |
+| 来源与 frame | 完整源是否允许，是否只允许主 frame，当前真实发送者是谁 |
+| 页面会话 | 请求是否属于仍有效的页面实例，页面导航后是否已经撤销 |
+| 方法白名单 | 是否公开这个具体动作，而不是允许任意方法反射、任意脚本执行 |
+| 参数范围 | 类型、长度、枚举、文件标识和 URL 目标是否符合这个动作的要求 |
+| 系统权限 | 相机、定位等权限是否授予，是否需要用户交互 |
+| 业务授权 | 当前账号是否有权操作这个对象，敏感操作是否需要再次确认 |
+
+来自网页 JSON 的 `origin`、`userId`、`isMainFrame` 都只是参数，不能当作平台提供的身份。平台接口若无法提供足够的来源保证，应收紧可加载内容和可暴露能力，或使用能验证来源的接口，不通过一层 JavaScript 包装假装完成认证。
+
+可信主页面还可能嵌入第三方 iframe，或加载有问题的脚本。即使请求来自允许的源，XSS 也可能以页面身份调用桥。因此方法范围、敏感操作确认和最小返回数据仍有意义，不能把“域名在白名单”理解为所有原生操作都安全。
+
+## 6. 兼容性与性能 {#兼容性与性能}
+
+**能力协商**是双方明确当前支持哪些操作及协议版本的过程。应用版本较旧、Web 页面较新时，Web 应按实际能力决定是否显示入口，不能只比较一个 UA 字符串就调用未安装的方法。
+
+协议可以规定向后兼容的可选字段、未知方法的稳定错误码、必填字段的验证规则。示例严格要求版本 `1`，没有实现跨版本协商；真正上线时，版本不兼容应有明确失败与降级路径，而不是让用户一直等待。
+
+性能问题可以按以下链路定位：
+
+1. Web 编码与提交消息的成本，是否反复传递大对象。
+2. 通道与宿主任务队列的等待时间，是否被大量小消息淹没。
+3. 原生实际工作耗时，是否错误地占用 UI 线程。
+4. 返回编码、JavaScript 回调和页面更新耗时。
+
+批量传递可以减少调用次数，但会增加单条负载、延迟和失败影响。应给消息大小、并发数与队列设置上限，记录请求 ID、方法、耗时和错误码；日志避免写入令牌和业务敏感数据。没有分段测量，就不能根据一次慢调用断定是序列化或跨进程通信造成的。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 H5 与原生怎样通过 JSBridge 通信？ {#bridge-mechanism}
+
+**考察重点**：平台入口、请求分发、异步响应与能力边界。
+
+**相关内容**：[传输入口与业务协议](#传输入口与业务协议)、[消息协议与回调关联](#消息协议与回调关联)。
+
+<details>
+<summary>参考回答</summary>
+
+**宿主暴露受控通信入口，Web 按约定发送方法和参数，宿主验证并执行后返回结果。** 底层可使用注入对象、脚本消息处理器或消息端口；上层协议负责请求关联、错误与生命周期。
+
+异步回调通常留在 Web 端，用请求 ID 对应返回结果。宿主还要核对来源、frame、当前会话和业务权限，通信成功不代表操作已获授权。
+
+</details>
+
+### 7.2 URL Scheme 和 JSBridge 有什么关系？ {#url-scheme}
+
+**考察重点**：应用唤起、导航拦截与完整调用协议的区别。
+
+**相关内容**：[URL Scheme 与环境识别](#urlscheme与环境识别)。
+
+<details>
+<summary>参考回答</summary>
+
+**URL Scheme 可以承载应用唤起或被宿主拦截的调用意图，但不是完整的 JSBridge 协议。** 若用它实现桥，还要处理参数编码、结果回传、权限、长度和页面生命周期。能打开应用，不表示指定业务已经完成；UA 也不能证明桥可用或调用者可信。
+
+</details>
+
+### 7.3 JSBridge 怎样让多个并发请求找到各自的回调？ {#callback-protocol}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：请求 ID、本地回调表、重复响应和会话区分。
+
+**相关内容**：[最小异步客户端](#最小异步客户端)、[页面会话与就绪状态](#页面会话与就绪状态)。
+
+<details>
+<summary>参考回答</summary>
+
+**每次调用生成请求 ID，把处理函数保存在本地表中，响应带回 ID 后查找并完成对应调用。** 先登记再发送，完成时移除记录并清理定时器。不同页面会话还需要会话标识和宿主侧生命周期绑定；重复、迟到和旧会话结果应被丢弃。
+
+</details>
+
+### 7.4 调用超时后可以直接重试吗？关闭页面是否会取消原生工作？ {#timeout-retry}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：等待超时、业务副作用、幂等和取消协议。
+
+**相关内容**：[超时与副作用](#超时与副作用)。
+
+<details>
+<summary>参考回答</summary>
+
+**超时不能证明操作失败，关闭页面也不自动取消或回滚原生工作。** 无副作用读取可以按需要重试；有副作用操作应依靠业务幂等键或查询结果。取消需要宿主支持，并明确已经执行或无法停止时的语义。Web 端仍应清理回调、定时器和旧会话。
+
+</details>
+
+### 7.5 主页面域名可信，为什么仍要限制桥的方法和参数？ {#trust-boundary}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：来源、frame、XSS 与系统及业务授权的分工。
+
+**相关内容**：[权限与信任边界](#权限与信任边界)。
+
+<details>
+<summary>参考回答</summary>
+
+**来源白名单只解决部分调用者识别问题，不能代替每个能力的授权。** 主页面可能含第三方 frame，也可能被注入脚本；某些旧接口还不能可靠区分 frame 来源。宿主必须限制方法、验证参数，核对有效会话，并执行系统权限及业务授权。页面自己传入的身份字段不可信。
+
+</details>
+
+### 7.6 Web 页面更新了，但用户的应用还是旧版本，应怎样处理？ {#compatibility}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：就绪状态、能力协商、协议版本和降级。
+
+**相关内容**：[兼容性与性能](#兼容性与性能)。
+
+<details>
+<summary>参考回答</summary>
+
+**根据宿主实际声明的能力和协议版本决定是否调用，并为不支持的能力提供明确降级。** 入口对象存在或 UA 包含应用名都不足以证明方法可用。约定稳定错误码、必填参数和向后兼容规则，避免将未知方法变成无反馈的无限等待。
+
+</details>
+
+### 7.7 JSBridge 调用较慢，怎样定位和优化？ {#bridge-performance}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**题型**：综合题
+
+**考察重点**：分段测量、队列、负载和线程。
+
+**相关内容**：[兼容性与性能](#兼容性与性能)、[最小异步客户端](#最小异步客户端)。
+
+<details>
+<summary>参考回答</summary>
+
+**先分开测量编码传输、排队、原生工作和回调更新，再针对占用时间的阶段优化。** 大数据可改为受控标识或流，小消息可按延迟要求适度批量化，同时限制并发与负载。原生耗时工作不能随意占用 UI 线程；一次慢调用不能直接证明跨环境传输是瓶颈。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [Android Developers：WebView native bridges](https://developer.android.com/privacy-and-security/risks/insecure-webview-native-bridges)
+- [Android Developers：WebView](https://developer.android.com/reference/android/webkit/WebView)
+- [Android Developers：WebViewCompat](https://developer.android.com/reference/androidx/webkit/WebViewCompat)
+- [Apple Developer：WKScriptMessageHandler](https://developer.apple.com/documentation/webkit/wkscriptmessagehandler)
+- [Apple Developer：WKScriptMessageHandlerWithReply](https://developer.apple.com/documentation/webkit/wkscriptmessagehandlerwithreply)
+- [HTML Standard：Channel messaging](https://html.spec.whatwg.org/multipage/web-messaging.html#channel-messaging)
+- [MDN：JSON.stringify](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/JSON/stringify)

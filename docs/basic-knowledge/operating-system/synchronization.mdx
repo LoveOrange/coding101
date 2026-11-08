@@ -16,6 +16,7 @@ keywords: ["Mutex", "Condition Variable", "Semaphore", "自旋锁", "临界区"]
 - 读改写操作需要**作为一个整体受保护**，只保证独立读取和写入，仍可能丢失更新。
 - 为维护同一个共享不变量，**读者和写者都要遵守同一套同步规则**，避免观察到修改一半的状态。
 - 条件变量的 `wait` 会**原子释放锁并等待，返回前重新获取锁**；唤醒后仍要循环检查条件。[卡](#thread-sync)
+- 有界队列要分别等待**非空与未满**；关闭时唤醒两类等待者，并约定已经入队的任务是否继续处理。[卡](#bounded-blocking-queue)
 - 条件变量**不保存无人接收的通知**，信号量会保存许可计数，二者不能互相套用。[卡](#condition-vs-semaphore)
 
 ## 2. 临界区与共享不变量 {#临界区与共享不变量}
@@ -46,13 +47,172 @@ unlock(mutex)
 
 有等待者时，`signal` 至少唤醒一个，`broadcast` 唤醒全部，但被唤醒的线程仍要竞争 `mutex`。如果通知时没有等待者，这次通知不会保存下来。真正决定消费者能否取元素的，是持锁检查到的队列状态。
 
+### 3.1 有界阻塞队列与关闭 {#有界阻塞队列与关闭}
+
+**有界阻塞队列**在容量固定的前提下，让生产者在满时等待、消费者在空时等待。两类等待者的条件不同：消费者等待 `notEmpty`，生产者等待 `notFull`，但它们检查和修改的是同一份队列状态，必须共用一把锁。
+
+下面用 Go 1.22 展示条件变量协议。这是参考实现的语言选择，不要求所有线程同步题都用 Go 回答。环形存储沿用[并发队列的加锁基线](../data-structures/concurrent-queues.mdx#加锁的mpmc基线)，这里增加等待与关闭，不另讨论无锁算法。将代码保存为 `queue.go`：
+
+```go
+package main
+
+import "sync"
+
+type BoundedQueue struct {
+	mu                sync.Mutex
+	notEmpty, notFull *sync.Cond
+	data              []int
+	head, size        int
+	closed            bool
+}
+
+func NewBoundedQueue(capacity int) *BoundedQueue {
+	if capacity <= 0 {
+		panic("capacity must be positive")
+	}
+	q := &BoundedQueue{data: make([]int, capacity)}
+	q.notEmpty = sync.NewCond(&q.mu)
+	q.notFull = sync.NewCond(&q.mu)
+	return q
+}
+
+// 调用者已持有 q.mu，且队列未满、未关闭。
+func (q *BoundedQueue) push(value int) {
+	q.data[(q.head+q.size)%len(q.data)] = value
+	q.size++
+	q.notEmpty.Signal()
+}
+
+func (q *BoundedQueue) Put(value int) bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	for q.size == len(q.data) && !q.closed {
+		q.notFull.Wait()
+	}
+	if q.closed {
+		return false
+	}
+	q.push(value)
+	return true
+}
+
+func (q *BoundedQueue) TryPut(value int) bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.closed || q.size == len(q.data) {
+		return false
+	}
+	q.push(value)
+	return true
+}
+
+func (q *BoundedQueue) Take() (int, bool) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	for q.size == 0 && !q.closed {
+		q.notEmpty.Wait()
+	}
+	if q.size == 0 {
+		return 0, false
+	}
+	value := q.data[q.head]
+	q.data[q.head] = 0
+	q.head = (q.head + 1) % len(q.data)
+	q.size--
+	q.notFull.Signal()
+	return value, true
+}
+
+func (q *BoundedQueue) Close() {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.closed = true
+	q.notEmpty.Broadcast()
+	q.notFull.Broadcast()
+}
+```
+
+`Put` 等待可用槽位，`Take` 等待元素；`TryPut` 在满时直接返回 `false`，但仍可能等待获取互斥锁，不能称为无锁操作。三个方法都在同一个临界区内检查条件并改变状态，保证 `size` 不超过容量、每个元素只被一个消费者取走。布尔返回值区分失败与数值 `0`，不能把零值当作队空。
+
+`Put` 成功后通知消费者，`Take` 成功后通知生产者。把两类等待者混在一个条件变量上却只用 `Signal`，可能叫醒条件仍不成立的一方，让真正能推进的另一方继续等待。分开通知目标，才能让通知与改变的条件对应。
+
+关闭约定是：**不再接收新元素，已接收的元素继续取出，关闭且排空才结束消费**。`Close` 必须广播两个条件变量，否则等空间的生产者或等任务的消费者可能一直睡下去。关闭与入队竞争时，谁先在锁内生效就决定该元素是否被接收；重复关闭允许发生。正常结束应先等所有生产者提交完，再关闭，然后等消费者退出。
+
+Go 的 `Cond.Wait` 不会像某些平台的条件变量那样无通知返回，但仍必须用循环：被通知后，其他消费者可能先拿走元素；广播也不保证每个人都有可用资源。队列必须通过构造函数创建并共享指针，使用后不能复制含锁的对象。这个最小实现没有单次操作超时、取消或公平性保证；需要这些能力时，必须把退出状态与唤醒安排纳入同一协议，不能在外面放一个计时器就认为等待已取消。
+
+### 3.2 有限座位与银行叫号 {#有限座位与银行叫号}
+
+银行叫号可以用同一队列表达：前台接收顾客，窗口从队列领取号码。先把题目条件说清楚：5 个窗口，每个顾客服务 5 秒，每秒到达一个顾客，大厅有 25 个等候座位。这里约定座位只计算等待者，不包含正在窗口办理的人；满时顾客本次不取号，也不在程序内继续等座位。若面试官把座位定义为大厅总人数，就要另外计算办理中的人数。
+
+满时“不再放号”对应 `TryPut`，不能换成会等待的 `Put`。由单个前台按顺序发号，只有入队成功才推进号码；窗口取号后就释放等候座位。办理和休眠必须在队列锁外，否则一个窗口会把其他窗口也挡住。下面的 `bank.go` 与前面的 `queue.go` 放在同一目录，通过 `go run queue.go bank.go` 运行：
+
+```go
+package main
+
+import (
+	"fmt"
+	"sync"
+	"time"
+)
+
+func runBank(total, seats, windows int, arrival, service time.Duration) (accepted, rejected int, finished []int) {
+	if total < 0 || windows <= 0 || arrival < 0 || service < 0 {
+		panic("invalid bank configuration")
+	}
+	q := NewBoundedQueue(seats)
+	var workers sync.WaitGroup
+	var resultMu sync.Mutex
+	for w := 0; w < windows; w++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for {
+				ticket, ok := q.Take()
+				if !ok {
+					return
+				}
+				time.Sleep(service)
+				resultMu.Lock()
+				finished = append(finished, ticket)
+				resultMu.Unlock()
+			}
+		}()
+	}
+	for customer := 0; customer < total; customer++ {
+		if customer > 0 {
+			time.Sleep(arrival)
+		}
+		if q.TryPut(accepted + 1) {
+			accepted++
+		} else {
+			rejected++
+		}
+	}
+	q.Close()
+	workers.Wait()
+	return
+}
+
+func main() {
+	// 演示把题目中的 1 秒缩为 10 毫秒，保留 1:5 的时间比例。
+	accepted, rejected, finished := runBank(40, 25, 5, 10*time.Millisecond, 50*time.Millisecond)
+	fmt.Printf("accepted=%d rejected=%d finished=%d\n", accepted, rejected, len(finished))
+}
+```
+
+为了让模拟能够结束，`total` 明确限定本次到达人数；原题没有给出的营业时长，也可以改用一个明确的停止到达信号。发完本次所有号码后，前台关闭队列，窗口处理完已经接收的顾客再退出，主 goroutine 用 `WaitGroup` 等它们结束。服务完成记录有单独的锁保护，不会占着队列锁办理业务。
+
+输出满足 `accepted + rejected == total`，且 `len(finished) == accepted`。完成的号码恰好是 `1` 到 `accepted`，但多个窗口的完成顺序可能不同，不能把完成日志顺序当作叫号顺序。比如只接收了号码 1、2，两个窗口都已取走，2 先完成也没有破坏队列 FIFO。
+
+`main` 把 1 秒缩成 10 毫秒，把 5 秒缩成 50 毫秒；恢复题目的时间单位只需改这两个参数。操作系统调度和 `Sleep` 不提供精确的实时到达保证，输出也不能用来证明长期吞吐或等待时间。验证满座时应单独制造突发到达或暂停办理，不能因一次均匀到达没有拒绝顾客，就认为满座分支已经验证过。
+
 ## 4. 信号量与许可 {#信号量与许可}
 
 **信号量**保存可用许可的计数：`sem_wait` 取得一份许可，计数为 0 时等待；`sem_post` 增加一份许可，也可以由另一个线程调用。与条件变量不同，即使当时没有等待者，增加的许可也会保留下来。
 
 例如最多允许 8 个任务同时执行，可以把信号量初值设为 8。每个任务先取得许可，结束时归还，异常退出路径也要归还。它限制的是并发数量：这 8 个任务如果共同修改同一个对象，仍需另行保护对象状态。
 
-互斥锁强调持有者，应由取得锁的线程解锁；信号量表达资源数量或通知计数，可以由不同线程增减许可。因此，保护一段共享状态和限制同时工作的任务数，是两种不同需求。
+POSIX 互斥锁要求由持有它的线程解锁；信号量表达资源数量或通知计数，可以由不同线程增减许可。其他语言或运行库对锁的持有者可能有不同约定，使用时需要核对具体 API。保护一段共享状态和限制同时工作的任务数，是两种不同需求。
 
 ## 5. 自旋与阻塞等待 {#自旋与阻塞等待}
 
@@ -103,6 +263,38 @@ unlock(mutex)
 
 </details>
 
+### 7.3 生产者与消费者怎样用条件变量实现有界阻塞队列？ {#bounded-blocking-queue}
+
+**考察重点**：共享锁、非空与未满谓词、循环等待和关闭协议。
+
+**相关内容**：[有界阻塞队列与关闭](#有界阻塞队列与关闭)。
+
+<details>
+<summary>参考回答</summary>
+
+**用一把锁保护容量、槽位与位置，两个条件变量分别等待非空和未满。** 入队后通知消费者，出队后通知生产者；等待返回后重新检查条件，而不是凭一次通知直接操作。
+
+关闭状态也由这把锁保护。停止接收新任务后，广播唤醒两类等待者；生产者返回失败，消费者继续排空已接收任务，队空且关闭后退出。这样既不会丢掉已经接收的元素，也不会把等待者永久留在条件变量上。是否支持取消或超时还要另行定义。
+
+</details>
+
+### 7.4 如何模拟 5 个窗口、25 个等候座位的银行叫号？ {#bank-numbering}
+
+**题型**：综合题
+
+**考察重点**：满座不放号、号码分配、并行办理与有限模拟的结束条件。
+
+**相关内容**：[临界区与共享不变量](#临界区与共享不变量)、[有限座位与银行叫号](#有限座位与银行叫号)。
+
+<details>
+<summary>参考回答</summary>
+
+**把等候座位作为容量为 25 的队列，5 个窗口作为消费者，前台按每秒一次的到达节奏尝试发号。** 先明确座位是否只统计等待者；这里不包含正在办理的顾客，队满时拒绝本次发号，不能阻塞前台等空位。
+
+单个前台在成功入队后才推进号码，窗口取号后在队列锁外服务 5 秒。增加有限到达人数或停止到达信号，之后关闭队列、排空已有顾客，再等待所有窗口退出。检查成功号码没有重复或遗漏、等待人数不超过 25，且不要要求多窗口完成顺序等于领取顺序。
+
+</details>
+
 ## 8. 参考资料 {#参考资料}
 
 - [OSTEP：Locks](https://pages.cs.wisc.edu/~remzi/OSTEP/threads-locks.pdf)
@@ -113,3 +305,6 @@ unlock(mutex)
 - [Linux man-pages：pthread_spin_lock(3)](https://man7.org/linux/man-pages/man3/pthread_spin_lock.3.html)
 - [GCC：Volatiles](https://gcc.gnu.org/onlinedocs/gcc/Volatiles.html)
 - [POSIX：pthread_cond_signal](https://pubs.opengroup.org/onlinepubs/9699919799/functions/pthread_cond_broadcast.html)
+- [POSIX Programmer's Manual：pthread_mutex_lock / pthread_mutex_unlock](https://man7.org/linux/man-pages/man3/pthread_mutex_lock.3p.html)
+- [Go 1.22.12：sync.Cond 的等待与通知语义](https://pkg.go.dev/sync@go1.22.12#Cond)
+- [Go 1.22.12：sync.WaitGroup](https://pkg.go.dev/sync@go1.22.12#WaitGroup)

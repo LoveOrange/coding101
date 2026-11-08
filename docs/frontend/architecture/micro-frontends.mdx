@@ -1,0 +1,472 @@
+---
+sidebar_position: 1
+knowledge:
+  id: frontend.architecture.micro-frontends
+---
+
+# 微前端
+
+**微前端** 是把前端应用按业务边界拆成可独立开发和交付的部分，再将它们组合成用户使用的产品。它主要解决发布与演进的耦合：例如课程模块需要替换旧框架，却不希望订单模块也同时重写、测试和发布。
+
+拆成几个仓库、在一页中使用 React 和 Vue，都不能单独证明获得了独立交付能力。准备微前端项目时，要能解释为什么拆、谁负责加载和导航、共享了什么，以及某个子应用失败后会影响谁。下面以 qiankun 2 与 Webpack 5 说明一种运行时接入方式；这些配置不代表所有微前端方案。
+
+## 1. 面试核心 {#core}
+
+- **微前端的主要收益是按业务边界独立演进与交付，代价是运行时集成和兼容性治理。** 如果每次变更仍要同步修改所有应用，独立仓库并没有消除耦合。[卡](#purpose)
+- **加载器、生命周期、路由与通信协议分别解决不同问题。** Module Federation 提供跨构建的模块加载和共享能力，不会自动完成整套应用治理。[卡](#integration-models)
+- **子应用卸载需要释放它创建的副作用，移除 DOM 不等于清理监听、定时器或异步任务。** 重新挂载时还要避免重复订阅。[卡](#lifecycle-cleanup)
+- **qiankun 2 的接入要同时对齐入口、容器、激活规则、生命周期导出与资源地址。** 初始脚本能加载，不代表动态 chunk 也会请求正确位置。[卡](#qiankun-integration)
+- **CSS 隔离、JavaScript 全局变量隔离和浏览器安全边界不是同一件事。** Proxy 沙箱和 Shadow DOM 主要控制同页集成时的相互干扰，不能把任意不可信脚本变成可信脚本。[卡](#isolation)
+- **iframe 创建独立文档与浏览上下文，跨源限制取决于同源策略和 sandbox 等配置。** 它有可用的隔离能力，也需要额外处理导航、布局、焦点和通信。[卡](#iframe)
+- **跨应用通信应有明确的数据身份、协议版本、所有者和清理方式。** 共享整个可变状态库会把发布和生命周期重新绑在一起。[卡](#communication)
+- **独立发布仍可能破坏整体产品，需要验证旧主应用与新子应用的组合，并保留可回退的入口和静态资源。** 故障影响范围要从实际共享关系推导。[卡](#release-impact)
+
+## 2. 业务边界与交付边界 {#业务边界与交付边界}
+
+考虑一个包含课程、订单和管理后台的产品。如果课程团队可以自己构建、测试和发布课程应用，主应用通过稳定入口加载它，而不必重新构建订单应用，这才形成了一项可观察的独立交付能力。
+
+判断是否值得拆分，可以从具体约束出发：
+
+- 不同业务有明确负责人和不同发布节奏，统一发布已经造成等待。
+- 旧系统需要分阶段替换，无法一次完成整体迁移。
+- 各部分能够通过较小、稳定的协议协作，而不是随时互读内部状态。
+
+收益必须与成本一起说明。拆分之后，入口不可用、依赖版本不兼容、资源缓存不一致、样式污染和跨应用排查都会成为新的故障来源。对于边界很小、由同一组人同步修改的应用，先使用组件、模块和普通代码分包，可能已经满足需求。
+
+“允许使用不同技术栈”是演进手段，不是必须让每个子应用使用不同框架。多份框架运行时会增加下载、执行和维护成本；强制全部共享一份框架，又可能限制各自升级。应根据真实兼容范围做选择。
+
+## 3. 组合方式与职责 {#组合方式与职责}
+
+### 3.1 构建时与运行时的组合 {#构建时与运行时的组合}
+
+| 方式 | 组合发生在哪里 | 需要承担的边界 |
+| --- | --- | --- |
+| 普通组件包或业务包 | 消费方构建时 | 更新包后通常需要重新构建和发布消费方 |
+| 不同页面或站点之间跳转 | 文档导航时 | 页面间状态、统一体验与登录流程 |
+| iframe | 一个页面嵌入另一个文档 | 尺寸、焦点、路由、权限与跨文档通信 |
+| 同页运行时应用加载 | 主应用运行时 | 容器、生命周期、共享环境与资源加载 |
+| 运行时远程模块 | 模块加载时 | 模块接口、依赖共享、版本与远程可用性 |
+
+这些方式可以组合。例如页面级应用由路由调度器决定何时挂载，内部组件再通过远程模块加载。不要把“能动态 import 一个文件”直接等同于已经具备独立发布、资源清理和故障恢复能力。
+
+### 3.2 主应用与子应用 {#主应用与子应用}
+
+**主应用**（host）负责组合入口，例如公共导航、激活规则、容器分配和加载失败界面。**子应用**负责自己业务范围内的页面与交互，并遵守挂载、卸载、通信和版本约定。
+
+应用生命周期至少需要区分这些阶段：
+
+| 阶段 | 要回答的问题 |
+| --- | --- |
+| 加载 | 从哪里取得代码，失败后怎样处理 |
+| 初始化 | 哪些准备只需做一次，哪些状态属于一次挂载 |
+| 挂载 | 渲染到哪个容器，创建了哪些订阅和资源 |
+| 更新 | 参数或业务输入变化时怎样同步 |
+| 卸载 | 怎样销毁实例、取消任务并释放资源 |
+
+在 single-spa 及基于它的 qiankun 2 中，`bootstrap`、`mount` 和 `unmount` 是明确的生命周期入口。一次代码加载可以经历多次挂载，因此“已经加载过”不意味着“仍在运行页面”。缓存模块也不等于保留上一次组件实例或表单状态。
+
+### 3.3 Module Federation {#module-federation}
+
+**Module Federation** 是 Webpack 5 提供的跨构建模块共享机制。一个构建可以暴露模块，另一个构建在运行时从远程容器加载它；共享依赖还需要协商可用版本和使用方式。
+
+它解决的是“怎样获取和共享代码”。谁拥有 URL、谁创建 React 根节点、何时卸载、怎样处理跨应用业务事件，仍然需要另外设计。配置 `singleton` 也不等于任意版本自动兼容；共享库的接口、上下文和状态语义仍然会影响运行结果。
+
+## 4. qiankun 接入与生命周期 {#qiankun接入与生命周期}
+
+### 4.1 主应用注册 {#主应用注册}
+
+下面的示例用两个 HTTP 服务：主应用在 `http://127.0.0.1:7100`，子应用资源在 `http://127.0.0.1:7101`。子应用服务需要允许主应用读取入口 HTML 和脚本资源；这是资源请求的跨源配置，不是业务接口授权。
+
+主应用 HTML 提供导航和容器，`host.js` 是主应用构建后的入口：
+
+```html
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>课程平台</title></head>
+<body>
+  <nav><a href="/courses">课程</a> <a href="/other">其他页面</a></nav>
+  <button id="select-course">选择 Vue 课程</button>
+  <p id="load-error" role="alert"></p>
+  <main id="micro-container" data-entry="http://127.0.0.1:7101/"></main>
+  <script src="/host.js"></script>
+</body>
+</html>
+```
+
+主应用源文件 `host.js` 注册一项应用。这里用 `EventTarget` 传递一个小型业务事件，不传整个状态库：
+
+```js
+import { registerMicroApps, start, addErrorHandler } from 'qiankun';
+
+const bus = new EventTarget();
+const container = document.querySelector('#micro-container');
+
+document.querySelector('nav').addEventListener('click', event => {
+  const link = event.target.closest('a');
+  if (!link || event.button !== 0 || event.ctrlKey || event.metaKey ||
+      event.shiftKey || event.altKey) return;
+  event.preventDefault();
+  history.pushState(null, '', link.getAttribute('href'));
+});
+document.querySelector('#select-course').addEventListener('click', () => {
+  bus.dispatchEvent(new CustomEvent('course-selected', {
+    detail: { version: 1, id: 'vue' }
+  }));
+});
+addErrorHandler(() => {
+  document.querySelector('#load-error').textContent = '课程模块暂时不可用';
+});
+registerMicroApps([{
+  name: 'course-app',
+  entry: container.dataset.entry,
+  container: '#micro-container',
+  activeRule: location => location.pathname === '/courses' ||
+    location.pathname.startsWith('/courses/'),
+  props: { bus }
+}]);
+start({ prefetch: false, sandbox: { experimentalStyleIsolation: true } });
+```
+
+进入 `/courses` 时加载并挂载，进入 `/other` 时卸载。激活条件区分路径边界，避免把 `/courses-other` 也识别成课程模块。示例关闭预取，便于观察首次激活的请求；实际是否预取，应结合用户路径与额外流量决定。
+
+主应用服务还需要把 `/courses/detail` 等页面导航交给主页面，并保留真实静态资源的 404。若子应用有自己的路由器，应明确 `/courses` 这段前缀由谁处理，避免两个路由器重复修改 URL 或误处理不属于自己的路径。导航机制见 [前端路由](../routing/client-routing.mdx)。
+
+### 4.2 子应用挂载与卸载 {#子应用挂载与卸载}
+
+子应用先在 `public-path.js` 中设置 Webpack 运行时的资源前缀：
+
+```js
+if (window.__POWERED_BY_QIANKUN__) {
+  __webpack_public_path__ = window.__INJECTED_PUBLIC_PATH_BY_QIANKUN__;
+}
+```
+
+`__webpack_public_path__` 是 Webpack 处理的特殊变量。它需要在加载动态 chunk 之前设置，不能把它当作普通全局变量交给任意浏览器脚本直接运行。
+
+`index.js` 导出生命周期，并在卸载时释放订阅。示例使用原生 DOM，以便只观察应用边界；使用 React 或 Vue 时，渲染和销毁换成对应框架的根实例 API。
+
+```js
+import './public-path.js';
+
+let dispose = null;
+
+export async function bootstrap() {}
+
+export async function mount({ container, bus }) {
+  if (dispose) throw new Error('course-app is already mounted');
+  const root = container.querySelector('[data-course-root]');
+  if (!root) throw new Error('Missing course root');
+  let active = true;
+  const title = document.createElement('h1');
+  title.className = 'course-title';
+  title.textContent = '请选择课程';
+  const button = document.createElement('button');
+  button.textContent = '加载说明';
+  const output = document.createElement('p');
+  root.replaceChildren(title, button, output);
+
+  const onSelected = event => {
+    const data = event.detail;
+    if (data?.version !== 1 || typeof data.id !== 'string') return;
+    title.textContent = `当前课程：${data.id}`;
+  };
+  const onClick = async () => {
+    button.disabled = true;
+    try {
+      const { label } = await import('./label.js');
+      if (active) output.textContent = label;
+    } catch {
+      if (active) output.textContent = '说明加载失败';
+    } finally {
+      if (active) button.disabled = false;
+    }
+  };
+  bus.addEventListener('course-selected', onSelected);
+  button.addEventListener('click', onClick);
+  dispose = () => {
+    active = false;
+    bus.removeEventListener('course-selected', onSelected);
+    button.removeEventListener('click', onClick);
+    root.replaceChildren();
+  };
+}
+
+export async function unmount() {
+  dispose?.();
+  dispose = null;
+}
+```
+
+动态模块 `label.js` 只有一项导出：
+
+```js
+export const label = '课程模块已加载';
+```
+
+点击主应用“选择 Vue 课程”后，子应用显示 `当前课程：vue`；点击“加载说明”后才读取动态 chunk。切到其他页面会移除子应用，并取消 `course-selected` 订阅，重新进入不会叠加监听器。
+
+`active` 防止卸载后的异步结果继续写入旧节点，但不会取消 `import()` 已发起的加载。可取消的 fetch 应结合 `AbortController`，定时器、全局事件和观察器也分别释放。业务事件发送时若子应用尚未挂载，这个事件不会自动保存；需要恢复当前选择时，应另外提供快照读取或挂载参数，不能把事件总线误当作持久化状态。
+
+### 4.3 构建输出与资源地址 {#构建输出与资源地址}
+
+子应用的 `webpack.config.cjs` 明确导出名称和 chunk 全局标识：
+
+```js
+const path = require('node:path');
+
+module.exports = {
+  mode: 'production',
+  entry: './index.js',
+  output: {
+    path: path.resolve(__dirname, 'dist'),
+    filename: 'course.js',
+    chunkFilename: '[name].[contenthash].js',
+    chunkLoadTimeout: 2000,
+    library: { name: 'courseApp', type: 'umd' },
+    globalObject: 'window',
+    uniqueName: 'course-app',
+    chunkLoadingGlobal: 'webpackChunk_course_app',
+    publicPath: ''
+  }
+};
+```
+
+把下面的 `index.html` 与构建产物一起放在子应用服务根目录：
+
+```html
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <style>.course-title { color: green; }</style>
+</head>
+<body>
+  <div data-course-root></div>
+  <script src="./course.js"></script>
+</body>
+</html>
+```
+
+UMD 导出让 qiankun 2 的这条接入链路取得生命周期；独立的 `chunkLoadingGlobal` 避免不同 Webpack 构建共用 chunk 注册数组。动态资源前缀则由 `public-path.js` 接受 qiankun 注入值，防止代码在主页面运行后错误请求主应用目录。示例把 `chunkLoadTimeout` 设为 2000 毫秒，使失败演示不必等待默认的较长超时；真实取值应按网络和资源规模确定。加载器可能先报告全局资源错误，再由 Webpack 超时使 `import()` 进入局部错误分支，不能假定所有失败都立即到达同一个回调。
+
+示例专用于被主应用挂载，没有另写独立运行入口。实际项目若同时支持独立打开，应明确区分独立启动与受控挂载，避免两条入口同时创建框架根实例。也不要把 Webpack 的 `jsonpFunction` 与 `chunkLoadingGlobal` 混用：前者对应 Webpack 4，本文配置以 Webpack 5 为准。
+
+### 4.4 HTML Entry 的加载链路 {#html-entry的加载链路}
+
+**HTML Entry** 指用 HTML 描述子应用的入口资源，而不是只配置一个 JavaScript 文件。以 qiankun 2 使用的 import-html-entry 为例，加载器读取 HTML，提取样式和脚本，处理资源地址，再在指定上下文执行脚本并取得生命周期导出。
+
+资源获取可以并行，但执行仍要遵守加载器为普通脚本、异步脚本和入口脚本定义的规则。不能把“已经拿到字符串”理解成“脚本已经执行”，也不能假设这种执行与浏览器原生加载任意 HTML 完全等价。CSP、脚本类型、第三方库对 `document.currentScript` 的依赖，以及动态资源路径，都可能影响兼容性。
+
+入口获取失败、脚本执行失败、生命周期抛错，发生在不同阶段。排查时先看实际请求与阶段，再检查导出、容器和依赖，不能仅凭白屏就判断为框架渲染错误。
+
+## 5. 隔离的范围 {#隔离的范围}
+
+### 5.1 样式隔离 {#样式隔离}
+
+样式隔离需要区分“减少名字冲突”和“建立作用域”。BEM、CSS Modules、Vue scoped 等手段约束命名或生成选择器，但全局规则、继承、动态挂载到 body 的弹层仍要单独处理。
+
+qiankun 2 的 `experimentalStyleIsolation` 通过给选择器增加容器约束来限制影响范围，不能假设所有 CSS 语法都会被重写。`strictStyleIsolation` 使用 Shadow DOM；它提供更明确的样式树边界，但也会改变查询、弹层挂载与外部样式的接入方式。
+
+下面的独立浏览器示例展示 Shadow DOM 的一个边界：普通页面选择器不直接匹配内部节点，但可继承属性与自定义属性仍可以从宿主传入。
+
+```js
+const host = document.createElement('div');
+host.style.color = 'rgb(0, 128, 0)';
+host.style.setProperty('--course-weight', '700');
+document.body.append(host);
+const shadow = host.attachShadow({ mode: 'open' });
+const style = document.createElement('style');
+style.textContent = '.label { font-weight: var(--course-weight); }';
+const label = document.createElement('span');
+label.className = 'label';
+label.textContent = '课程';
+shadow.append(style, label);
+const globalStyle = document.createElement('style');
+globalStyle.textContent = '.label { color: red; }';
+document.head.append(globalStyle);
+console.log(getComputedStyle(label).color);
+console.log(getComputedStyle(label).fontWeight);
+```
+
+结果是 `rgb(0, 128, 0)` 和 `700`。外部 `.label` 规则没有直接命中内部 span，span 仍继承宿主颜色，并读取传入的 CSS 自定义属性。Shadow DOM 并没有创建另一份 JavaScript 全局环境；`closed` 模式也不应被解释成运行不可信代码的安全边界。
+
+### 5.2 JavaScript 沙箱 {#javascript沙箱}
+
+qiankun 2 的 Proxy 沙箱使用代理对象承接部分全局属性读写，使子应用对代理 window 的赋值与主应用环境分开。旧式快照思路则记录进入前后的全局差异，在切换时恢复环境；这种恢复方式对多应用同时运行有明显限制。
+
+这不是创建新的浏览器源或进程。DOM、浏览器 API、共享对象和第三方代码的副作用仍需要具体处理；资源补丁也不等于能够识别并回收应用创建的所有外部资源。沙箱主要服务于受信任应用之间的兼容与隔离，不能用它替代对任意外部脚本的信任判断。
+
+例如两个子应用使用同一个可变对象，代理最外层 window 属性并不自动复制对象内部的状态。同样，把接口地址改为跨源，并不会让已经在主页面执行的脚本自动获得另一个源的执行权限边界。
+
+### 5.3 iframe 与浏览器边界 {#iframe与浏览器边界}
+
+iframe 有独立的文档、全局对象和浏览上下文，CSS 不会像同页普通 DOM 那样直接串用。跨源文档的脚本访问受到 [同源策略](../browser/same-origin-policy.mdx) 限制；同源且未受相应 sandbox 限制的父子页面，则可能直接访问对方。
+
+`sandbox` 用于限制脚本、导航等能力，具体能力由令牌组合决定。尤其不能给同源不可信内容同时开放 `allow-scripts` 与 `allow-same-origin` 后，就默认它已经被可靠隔离。还要考虑 Cookie、存储、弹窗和顶层导航等实际权限。
+
+iframe 不是“天然不安全”，也不是“完全隔离所有资源”。它需要额外处理高度、滚动、焦点、无障碍命名、页面历史和跨文档事件，是否采用取决于隔离需求与产品体验。跨文档消息使用 `postMessage` 时，发送方限定 `targetOrigin`，接收方同时验证 `event.origin`、`event.source` 与消息结构；只校验消息里自报的应用名称没有意义。
+
+## 6. 通信、依赖与发布 {#通信依赖与发布}
+
+### 6.1 小范围协议与状态所有权 {#小范围协议与状态所有权}
+
+通信首先要决定谁拥有事实。课程选择可以由主应用持有，子应用接收课程 ID；订单状态应由订单服务维护，不能依赖另一个子应用内部某个 store 对象的结构。
+
+为协议保留稳定字段，例如事件名、版本、业务 ID，以及必要的请求 ID。只传接收方需要的内容，并对输入做校验。同页函数调用和事件可以传对象引用，接收方修改对象可能影响发送方；需要副本时应明确复制边界。跨文档 postMessage 则按结构化克隆规则传输，不是共享普通对象引用。
+
+如果每次操作都需要多个应用同步改状态、一起升级协议，说明拆分边界可能过细。可以先把紧密相关的业务合在一起，而不是不断增加全局事件来弥补错误边界。
+
+### 6.2 共享依赖与性能 {#共享依赖与性能}
+
+独立打包可能下载多份框架，集中共享又会限制升级。共享时要明确版本范围、单例要求、提供者、加载顺序与失败处理；组件库依赖的 Context 或注入容器，也可能因为加载两份运行时而断开。
+
+性能要沿真实请求链分析：主页面启动后再取入口 HTML，再取入口脚本，再加载业务 chunk，可能形成串行等待。可以根据路径做预取、缓存不可变资源或减少入口依赖，但预取过多也会占用带宽。微前端本身不保证首屏更快。
+
+### 6.3 发布兼容与故障处理 {#发布兼容与故障处理}
+
+子应用独立发布仍会改变运行中的组合。至少要验证新子应用与当前主应用的协议、路由和共享依赖是否兼容，并覆盖加载失败、卸载后返回、深链接刷新与关键业务链路。
+
+入口与静态资源应按版本协调发布：先上传完整产物，再切换入口或清单；保留旧 hash 资源，避免仍打开旧页面的用户请求到已删除的 chunk。回退也要能指向完整的旧版本，而不是只恢复一个入口文件。
+
+主应用可以提供局部失败界面，让其他业务入口仍可使用，并记录应用名、版本、加载阶段与请求失败信息。但运行在同一页面的代码仍可能占满主线程、改写共享对象或破坏全局状态；一个错误边界不能保证所有故障都被局限在子应用容器内。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 微前端解决什么问题，什么情况下不值得引入？ {#purpose}
+
+**考察重点**：业务边界、独立交付、迁移需求与集成成本。
+
+**相关内容**：[业务边界与交付边界](#业务边界与交付边界)。
+
+<details>
+<summary>参考回答</summary>
+
+**微前端主要降低不同业务在开发、迁移和发布上的耦合。** 它适合存在明确业务边界、独立演进需求且能维护稳定协议的场景。小团队同步维护的小应用，或必须频繁互改内部状态的模块，可能用普通组件和模块更合适。收益应体现为可独立构建、验证和发布，不能只用仓库数或框架数证明。
+
+</details>
+
+### 7.2 Module Federation 能替代路由调度和应用生命周期吗？ {#integration-models}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：远程模块加载与应用组合的职责区别。
+
+**相关内容**：[构建时与运行时的组合](#构建时与运行时的组合)、[Module Federation](#module-federation)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能仅靠 Module Federation 完成路由、挂载和卸载治理。** 它使独立构建之间可以加载和共享模块，但应用何时启动、渲染到哪里、怎样通信与清理资源仍需约定。它可以与路由调度框架组合使用，共享依赖也仍要验证版本与状态兼容性。
+
+</details>
+
+### 7.3 子应用离开后再进入，为什么一次事件会执行多次？ {#lifecycle-cleanup}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：挂载次数、外部订阅、异步结果与资源所有权。
+
+**相关内容**：[子应用挂载与卸载](#子应用挂载与卸载)。
+
+<details>
+<summary>参考回答</summary>
+
+**可能是每次挂载都增加监听，而卸载只移除了 DOM，没有取消外部订阅。** 应用需要成对管理 add/remove、定时器、观察器和框架根实例，必要时取消请求，并忽略已经卸载的异步结果。验证时连续进入、退出多次，再触发一次事件，确认只有当前实例响应。
+
+</details>
+
+### 7.4 qiankun 接入需要哪些配置，为什么入口能加载而动态 chunk 失败？ {#qiankun-integration}
+
+**考察重点**：入口、生命周期导出、资源前缀、构建全局名与路由边界。
+
+**相关内容**：[主应用注册](#主应用注册)、[构建输出与资源地址](#构建输出与资源地址)。
+
+<details>
+<summary>参考回答</summary>
+
+**主应用配置唯一名称、入口、容器和激活规则，子应用按约定导出 bootstrap、mount、unmount，并处理自身资源路径。** 在本文 qiankun 2 与 Webpack 5 示例中，UMD 暴露生命周期，独立的 chunkLoadingGlobal 避免运行时冲突，注入 publicPath 让动态 chunk 指向子应用资源服务。入口脚本由加载器正确取得，并不证明 Webpack 后续计算出的 chunk URL 正确。
+
+</details>
+
+### 7.5 HTML Entry 怎样取得并执行子应用，资源下载完成就等于脚本执行了吗？ {#html-entry}
+
+**考察重点**：入口解析、资源获取、执行顺序与生命周期发现。
+
+**相关内容**：[HTML Entry 的加载链路](#html-entry的加载链路)。
+
+<details>
+<summary>参考回答</summary>
+
+**加载器先读取并解析 HTML 中的资源，再按规则获取和执行脚本，最后取得生命周期导出。** 下载与执行是不同阶段；普通脚本的依赖顺序、异步标记和入口识别需要遵循具体加载器实现。还应检查跨源读取、CSP、脚本类型和动态资源地址，不能把 HTML 字符串直接插入容器就当作完成应用加载。
+
+</details>
+
+### 7.6 qiankun 的 JavaScript 沙箱和样式隔离分别隔离了什么？ {#isolation}
+
+**考察重点**：代理全局对象、选择器作用域、Shadow DOM 与安全边界。
+
+**相关内容**：[样式隔离](#样式隔离)、[JavaScript 沙箱](#javascript沙箱)。
+
+<details>
+<summary>参考回答</summary>
+
+**JavaScript 沙箱控制部分全局属性访问，样式隔离限制 CSS 的作用范围，两者不能互相替代。** qiankun 2 可用 Proxy 承接全局读写，选择器改写或 Shadow DOM 处理样式。它们没有把代码移动到新的源或独立进程，不能保证隔离共享对象、全部浏览器副作用或恶意代码；继承、弹层和外部资源仍需检查。
+
+</details>
+
+### 7.7 iframe 可以用来做微前端吗，需要处理哪些隔离和通信条件？ {#iframe}
+
+**考察重点**：文档隔离、同源策略、sandbox、消息验证与体验成本。
+
+**相关内容**：[iframe 与浏览器边界](#iframe与浏览器边界)。
+
+<details>
+<summary>参考回答</summary>
+
+**可以，它提供独立文档和浏览上下文，但具体权限由源和 sandbox 等配置共同决定。** 同源父子页面可能互访，跨源访问受同源策略限制。postMessage 要限定 targetOrigin，并验证 origin、source 和数据结构。还需要处理尺寸、历史、焦点、无障碍与身份状态，不能一概说 iframe 不安全或完全没有代价。
+
+</details>
+
+### 7.8 子应用共享一个全局 store，有什么风险？ {#communication}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：状态所有权、对象引用、协议兼容和发布耦合。
+
+**相关内容**：[小范围协议与状态所有权](#小范围协议与状态所有权)、[共享依赖与性能](#共享依赖与性能)。
+
+<details>
+<summary>参考回答</summary>
+
+**全局 store 可能让多个应用依赖同一份内部结构和运行时，使独立发布重新耦合。** 一个应用修改对象或升级 store 接口，可能破坏其他应用。应先明确状态所有者，再通过小范围参数、查询接口或带版本的事件协作；确有共享需求时，同时约定依赖版本、生命周期和兼容策略。
+
+</details>
+
+### 7.9 单个子应用发布，会怎样影响整体产品，如何验证和回退？ {#release-impact}
+
+**题型**：综合题
+
+**考察重点**：运行时组合、协议兼容、缓存资源与故障范围。
+
+**相关内容**：[发布兼容与故障处理](#发布兼容与故障处理)、[构建时与运行时的组合](#构建时与运行时的组合)。
+
+<details>
+<summary>参考回答</summary>
+
+**影响取决于它与主应用、共享依赖和业务协议之间的关系，不能由“独立部署”推导“其他部分完全不受影响”。** 应验证新子应用与当前主应用的组合、关键链路和异常路径，先上传完整版本资源，再切换入口，保留旧 hash 文件和可回退的清单。加载失败可以提供局部降级，但共享主线程或全局状态导致的故障仍可能扩大。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [single-spa：Building applications](https://single-spa.js.org/docs/building-applications/)
+- [single-spa：The recommended setup](https://single-spa.js.org/docs/recommended-setup/)
+- [Webpack：Module Federation](https://webpack.js.org/concepts/module-federation/)
+- [qiankun：Getting Started](https://qiankun.umijs.org/guide/getting-started/)
+- [qiankun：API](https://qiankun.umijs.org/api/)
+- [qiankun 2.10.16：loader](https://github.com/umijs/qiankun/blob/v2.10.16/src/loader.ts)
+- [qiankun 2.10.16：ProxySandbox](https://github.com/umijs/qiankun/blob/v2.10.16/src/sandbox/proxySandbox.ts)
+- [import-html-entry 1.17.0：入口加载实现](https://github.com/kuitos/import-html-entry/blob/v1.17.0/src/index.js)
+- [MDN：Using shadow DOM](https://developer.mozilla.org/en-US/docs/Web/API/Web_components/Using_shadow_DOM)
+- [MDN：iframe](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/iframe)
+- [MDN：Window.postMessage](https://developer.mozilla.org/en-US/docs/Web/API/Window/postMessage)

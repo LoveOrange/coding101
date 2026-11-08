@@ -52,7 +52,9 @@ export const knowledgeTree: KnowledgeDomain[] = [
           `${BK}/data-structures/linked-list`,
           `${BK}/data-structures/stack`,
           `${BK}/data-structures/queue`,
+          `${BK}/data-structures/concurrent-queues`,
           `${BK}/data-structures/hash-table`,
+          `${BK}/data-structures/bloom-filter`,
         ],
       },
       {
@@ -74,6 +76,10 @@ export const knowledgeTree: KnowledgeDomain[] = [
           `${JAVA}/algorithms/arrays-strings-sliding-window`,
           `${BK}/algorithms/prefix-sum`,
           `${BK}/algorithms/sorting`,
+          `${BK}/algorithms/divide-and-conquer`,
+          `${BK}/algorithms/integer-arithmetic`,
+          `${BK}/algorithms/randomized-algorithms`,
+          `${BK}/algorithms/streaming-statistics`,
           `${JAVA}/algorithms/trees-graphs-search`,
           `${BK}/algorithms/backtracking`,
           `${BK}/algorithms/greedy`,
@@ -90,7 +96,7 @@ export const knowledgeTree: KnowledgeDomain[] = [
       {
         id: 'os/processes',
         label: '进程与线程',
-        articles: [`${BK}/operating-system/processes-threads`],
+        articles: [`${BK}/operating-system/processes-threads`, `${BK}/operating-system/system-calls`, `${BK}/operating-system/thread-pools`],
       },
       {
         id: 'os/synchronization',
@@ -110,6 +116,7 @@ export const knowledgeTree: KnowledgeDomain[] = [
           `${BK}/operating-system/io-models`,
           `${BK}/operating-system/io-multiplexing`,
           `${JAVA}/io/file-mapping-zero-copy-direct-memory`,
+          `${BK}/operating-system/disk-scheduling`,
         ],
       },
     ],
@@ -121,8 +128,8 @@ export const knowledgeTree: KnowledgeDomain[] = [
     topics: [
       {
         id: 'network/models',
-        label: '网络模型与 IP',
-        articles: [`${BK}/network/network-models`, `${BK}/network/ip`],
+        label: '网络模型与地址',
+        articles: [`${BK}/network/network-models`, `${BK}/network/ip`, `${BK}/network/arp`, `${BK}/network/dhcp`],
       },
       {
         id: 'network/tcp',
@@ -132,7 +139,11 @@ export const knowledgeTree: KnowledgeDomain[] = [
       {
         id: 'network/http',
         label: 'HTTP',
-        articles: [`${BK}/network/http-versions-connection-reuse-timeouts`, `${BK}/network/http-cache`],
+        articles: [
+          `${BK}/network/http-versions-connection-reuse-timeouts`,
+          `${BK}/network/http-cache`,
+          `${BK}/network/file-upload`,
+        ],
       },
       {
         id: 'network/tls-dns',
@@ -142,7 +153,34 @@ export const knowledgeTree: KnowledgeDomain[] = [
       {
         id: 'network/rpc',
         label: 'RPC',
-        articles: [`${BK}/network/rpc-serialization-netty-event-loop`],
+        articles: [`${BK}/network/rpc-serialization-netty-event-loop`, `${BK}/network/grpc`],
+      },
+      {
+        id: 'network/email',
+        label: '邮件协议',
+        articles: [`${BK}/network/email-protocols`],
+      },
+      {
+        id: 'network/realtime',
+        label: '实时通信',
+        articles: [
+          'basic-knowledge/network/websocket',
+          'basic-knowledge/network/server-sent-events',
+        ],
+      },
+      {
+        id: 'network/distribution',
+        label: '内容分发',
+        articles: [
+          'basic-knowledge/network/cdn',
+        ],
+      },
+      {
+        id: 'network/api',
+        label: 'API 协议',
+        articles: [
+          'basic-knowledge/network/graphql',
+        ],
       },
     ],
   },
@@ -159,7 +197,11 @@ export const knowledgeTree: KnowledgeDomain[] = [
       {
         id: 'database/modeling',
         label: '数据建模',
-        articles: [`${BK}/database/modeling/constraints`],
+        articles: [
+          `${BK}/database/modeling/index`,
+          `${BK}/database/modeling/constraints`,
+          `${BK}/database/modeling/data-types`,
+        ],
       },
       {
         id: 'database/indexes',
@@ -184,6 +226,27 @@ export const knowledgeTree: KnowledgeDomain[] = [
           `${BK}/database/transaction/long-transactions-hot-updates-boundaries`,
         ],
       },
+      {
+        id: 'database/storage',
+        label: '存储引擎与日志',
+        articles: [
+          `${BK}/database/storage/innodb`,
+          `${BK}/database/storage/transaction-logs`,
+          `${BK}/database/storage/lsm-tree`,
+        ],
+      },
+      {
+        id: 'database/replication',
+        label: '复制与扩展',
+        articles: [`${BK}/database/replication`, `${BK}/database/partitioning`],
+      },
+      {
+        id: 'database/sqlite',
+        label: 'SQLite',
+        articles: [
+          'basic-knowledge/database/sqlite',
+        ],
+      },
     ],
   },
   {
@@ -204,7 +267,7 @@ export const knowledgeTree: KnowledgeDomain[] = [
       {
         id: 'cache/availability',
         label: '持久化与高可用',
-        articles: [`${BK}/nosql/redis/persistence`],
+        articles: [`${BK}/nosql/redis/persistence`, `${BK}/nosql/redis/high-availability`],
       },
       {
         id: 'cache/design',
@@ -240,6 +303,8 @@ export const knowledgeTree: KnowledgeDomain[] = [
         label: '搜索与协调',
         articles: [
           `${BK}/middleware/elasticsearch-inverted-index-refresh-visibility`,
+          `${BK}/middleware/etcd`,
+          `${BK}/middleware/zookeeper`,
           `${BK}/middleware/scheduled-tasks-sharding-recovery`,
         ],
       },
@@ -263,7 +328,11 @@ export const knowledgeTree: KnowledgeDomain[] = [
       {
         id: 'system-design/scaling',
         label: '扩展与分片',
-        articles: [`${SD}/system-design/read-write-paths-hotspots-sharding`],
+        articles: [
+          `${SD}/system-design/read-write-paths-hotspots-sharding`,
+          `${BK}/data-structures/consistent-hashing`,
+          'system-design/distributed-data/distributed-identifiers',
+        ],
       },
       {
         id: 'system-design/distributed',
@@ -274,6 +343,7 @@ export const knowledgeTree: KnowledgeDomain[] = [
           `${SD}/distributed-system/primary_backup_replication`,
           `${SD}/distributed-system/raft-election-log-replication`,
           `${SD}/distributed-system/cross-region-replication-latency-conflicts`,
+          'system-design/distributed-system/paxos',
         ],
       },
       {
@@ -319,6 +389,7 @@ export const knowledgeTree: KnowledgeDomain[] = [
           `${SD}/microservices/config-center-version-refresh`,
           `${SD}/microservices/canary-traffic-tagging-rollback`,
           `${SD}/microservices/control-plane-data-plane-failures`,
+          'system-design/microservices/service-mesh',
         ],
       },
       {
@@ -342,7 +413,16 @@ export const knowledgeTree: KnowledgeDomain[] = [
         articles: [
           `${SD}/system-design/system-design-problems/pastebin/pastebin`,
           `${SD}/system-design/system-design-problems/web_crawler/index`,
+          'system-design/cases/short-links',
+          'system-design/cases/distributed-cache',
+          'system-design/cases/feed',
+          'system-design/cases/flash-sale',
         ],
+      },
+      {
+        id: 'system-design/concurrency',
+        label: '并发控制',
+        articles: ['system-design/distributed-data/optimistic-concurrency-control'],
       },
     ],
   },
@@ -362,12 +442,12 @@ export const knowledgeTree: KnowledgeDomain[] = [
       {
         id: 'security/web',
         label: 'Web 安全',
-        articles: [`${SD}/security/injection-authorization-ssrf-deserialization`],
+        articles: [`${SD}/security/injection-authorization-ssrf-deserialization`, 'system-design/security/cors', 'system-design/security/xss', 'system-design/security/csrf'],
       },
       {
         id: 'security/crypto',
         label: '密码学与密钥',
-        articles: [`${SD}/security/secrets-certificates-audit-supply-chain`],
+        articles: [`${SD}/security/secrets-certificates-audit-supply-chain`, 'system-design/security/cryptography'],
       },
     ],
   },
@@ -376,6 +456,11 @@ export const knowledgeTree: KnowledgeDomain[] = [
     label: '软件工程',
     topics: [
       {
+        id: 'engineering/git',
+        label: 'Git',
+        articles: ['tools-and-frameworks/git/index'],
+      },
+      {
         id: 'engineering/testing',
         label: '软件测试',
         articles: [`${JAVA}/quality/test-pyramid-contract-regression`, `${JAVA}/quality/test-doubles-mock-stub-boundaries`],
@@ -383,7 +468,17 @@ export const knowledgeTree: KnowledgeDomain[] = [
       {
         id: 'engineering/design-patterns',
         label: '设计原则与设计模式',
-        articles: [`${SD}/ood/solid`, `${SD}/ood/questions/milktea-store`],
+        articles: [
+          `${SD}/ood/solid`,
+          `${BK}/design-patterns/singleton`,
+          `${SD}/ood/questions/milktea-store`,
+          'basic-knowledge/design-patterns/observer',
+        ],
+      },
+      {
+        id: 'engineering/cli',
+        label: '命令行接口',
+        articles: ['tools-and-frameworks/command-line-interface'],
       },
     ],
   },
@@ -594,19 +689,393 @@ export const knowledgeTree: KnowledgeDomain[] = [
           `${SD}/production/maven-lifecycle-dependency-convergence`,
         ],
       },
+      {
+        id: 'java/reactive',
+        label: '响应式编程',
+        articles: [
+          'tools-and-frameworks/rxjava',
+        ],
+      },
     ],
   },
-  {id: 'go', label: 'Go', topics: []},
-  {id: 'python', label: 'Python', topics: []},
-  {id: 'javascript', label: 'JavaScript 与 TypeScript', topics: []},
-  {id: 'browser', label: '浏览器与前端基础', topics: []},
-  {id: 'frontend', label: '前端框架与工程化', topics: []},
-  {id: 'nodejs', label: 'Node.js', topics: []},
+  {
+    id: 'go',
+    label: 'Go',
+    overview: `${BK}/go/language/index`,
+    topics: [
+      {
+        id: 'go/language',
+        label: '语言基础',
+        articles: [
+          `${BK}/go/language/index`,
+          `${BK}/go/language/types-value-passing`,
+          `${BK}/go/language/functions`,
+          `${BK}/go/language/structs-method-sets`,
+          `${BK}/go/language/packages-initialization`,
+          `${BK}/go/language/interfaces`,
+          `${BK}/go/language/defer`,
+          `${BK}/go/language/errors`,
+          `${BK}/go/language/generics`,
+          `${BK}/go/language/reflection`,
+        ],
+      },
+      {
+        id: 'go/collections',
+        label: '集合与文本',
+        articles: [
+          `${BK}/go/collections/slices`,
+          `${BK}/go/collections/maps`,
+          `${BK}/go/language/strings-runes`,
+        ],
+      },
+      {
+        id: 'go/concurrency',
+        label: '并发',
+        articles: [
+          `${BK}/go/concurrency/goroutines`,
+          `${BK}/go/concurrency/channels`,
+          `${BK}/go/concurrency/select`,
+          `${BK}/go/concurrency/mutexes`,
+          `${BK}/go/concurrency/synchronization`,
+          `${BK}/go/concurrency/memory-model`,
+          `${BK}/go/concurrency/atomics`,
+          `${BK}/go/concurrency/sync-map`,
+          `${BK}/go/concurrency/sync-pool`,
+          `${BK}/go/concurrency/context`,
+          `${BK}/go/concurrency/task-coordination`,
+          `${BK}/go/concurrency/leaks-races`,
+          `${BK}/go/concurrency/singleflight`,
+        ],
+      },
+      {
+        id: 'go/runtime',
+        label: '运行时',
+        articles: [
+          `${BK}/go/runtime/index`,
+          `${BK}/go/runtime/scheduler`,
+          `${BK}/go/runtime/escape-analysis`,
+          `${BK}/go/runtime/memory-allocation`,
+          `${BK}/go/runtime/garbage-collection`,
+          `${BK}/go/runtime/network-poller`,
+        ],
+      },
+      {
+        id: 'go/web',
+        label: 'HTTP 与服务开发',
+        articles: [
+          `${BK}/go/web/http-server`,
+          `${BK}/go/web/http-client`,
+          `${BK}/go/web/gin`,
+          `${BK}/go/web/grpc-go`,
+          `${BK}/go/web/go-zero`,
+        ],
+      },
+      {
+        id: 'go/database',
+        label: '数据库访问',
+        articles: [
+          `${BK}/go/database/database-sql`,
+          `${BK}/go/database/gorm`,
+          `${BK}/go/database/sqlx`,
+          `${BK}/go/database/sqlc`,
+        ],
+      },
+      {
+        id: 'go/engineering',
+        label: '工程',
+        articles: [
+          `${BK}/go/engineering/modules`,
+          `${BK}/go/engineering/build`,
+          `${BK}/go/engineering/testing`,
+          `${BK}/go/engineering/profiling`,
+        ],
+      },
+      {
+        id: 'go/cloud-native',
+        label: '云原生开发',
+        articles: [`${BK}/go/cloud-native/client-go`],
+      },
+    ],
+  },
+  {
+    id: 'python',
+    label: 'Python',
+    topics: [
+      {
+        id: 'python/language',
+        label: '语言基础',
+        articles: [
+          'basic-knowledge/python/language/object-model',
+          'basic-knowledge/python/language/functions-scope',
+          'basic-knowledge/python/language/classes-instances',
+          'basic-knowledge/python/language/exceptions',
+          'basic-knowledge/python/language/context-managers',
+          'basic-knowledge/python/language/iterators-generators',
+          'basic-knowledge/python/language/closures-decorators',
+        ],
+      },
+      {
+        id: 'python/collections',
+        label: '集合',
+        articles: [
+          'basic-knowledge/python/collections/list-dict-set',
+        ],
+      },
+      {
+        id: 'python/concurrency',
+        label: '运行时与并发',
+        articles: [
+          'basic-knowledge/python/runtime/memory-management',
+          'basic-knowledge/python/concurrency/threads-processes-gil',
+          'basic-knowledge/python/concurrency/asyncio',
+        ],
+      },
+      {
+        id: 'python/engineering',
+        label: '环境与文件',
+        articles: [
+          'basic-knowledge/python/engineering/packages-environments',
+          'basic-knowledge/python/engineering/files-text-processing',
+        ],
+      },
+      {
+        id: 'python/testing',
+        label: 'Python 测试',
+        articles: [
+          'basic-knowledge/python/quality/pytest',
+        ],
+      },
+    ],
+  },
+  {
+    id: 'javascript',
+    label: 'JavaScript 与 TypeScript',
+    topics: [
+      {
+        id: 'javascript/language',
+        label: '语言基础',
+        articles: [
+          'basic-knowledge/javascript/types-conversion',
+          'basic-knowledge/javascript/scope-closures',
+          'basic-knowledge/javascript/this-binding',
+          'basic-knowledge/javascript/prototypes',
+          'basic-knowledge/javascript/copying',
+          'basic-knowledge/javascript/collections',
+          'basic-knowledge/javascript/proxy-reflect',
+          'basic-knowledge/javascript/iterators-generators',
+          'basic-knowledge/javascript/higher-order-functions',
+          'basic-knowledge/javascript/object-properties',
+          'basic-knowledge/javascript/regular-expressions',
+        ],
+      },
+      {
+        id: 'javascript/async-runtime',
+        label: '异步与运行时',
+        articles: [
+          'basic-knowledge/javascript/browser-event-loop',
+          'basic-knowledge/javascript/promise',
+          'basic-knowledge/javascript/async-await',
+          'basic-knowledge/javascript/memory-management',
+          'basic-knowledge/javascript/v8-execution',
+        ],
+      },
+      {
+        id: 'javascript/modules',
+        label: '模块化',
+        articles: [
+          'basic-knowledge/javascript/modules',
+          'basic-knowledge/javascript/tree-shaking',
+        ],
+      },
+      {
+        id: 'javascript/typescript',
+        label: 'TypeScript',
+        articles: [
+          'basic-knowledge/typescript/type-system',
+          'basic-knowledge/typescript/generics-utility-types',
+          'basic-knowledge/typescript/type-interface',
+          'basic-knowledge/typescript/declaration-files',
+        ],
+      },
+    ],
+  },
+  {
+    id: 'browser',
+    label: '浏览器与前端基础',
+    topics: [
+      {
+        id: 'browser/html-css',
+        label: 'HTML 与 CSS',
+        articles: [
+          'frontend/html/semantics-accessibility',
+          'frontend/css/box-model-formatting-contexts',
+          'frontend/css/layout',
+          'frontend/css/cascade',
+          'frontend/css/responsive-layout',
+          'frontend/css/stacking-context',
+          'frontend/css/animations',
+          'frontend/css/style-organization',
+          'frontend/html/forms',
+        ],
+      },
+      {
+        id: 'browser/principles',
+        label: '浏览器原理',
+        articles: [
+          'frontend/browser/rendering',
+          'frontend/browser/dom-events',
+          'frontend/browser/process-model',
+          'frontend/browser/storage',
+          'frontend/browser/same-origin-policy',
+          'frontend/browser/fetch',
+          'frontend/browser/web-worker',
+          'frontend/browser/service-worker',
+          'frontend/browser/debugging',
+          'frontend/browser/cross-context-messaging',
+          'frontend/browser/jsbridge',
+          'frontend/browser/media',
+          'frontend/browser/webassembly',
+        ],
+      },
+      {
+        id: 'browser/performance',
+        label: '前端性能',
+        articles: [
+          'frontend/performance/metrics',
+          'frontend/performance/resource-loading',
+          'frontend/performance/debounce-throttle',
+          'frontend/performance/virtual-list',
+          'frontend/performance/observability',
+        ],
+      },
+      {
+        id: 'browser/graphics',
+        label: '浏览器图形',
+        articles: [
+          'frontend/graphics/canvas',
+          'frontend/graphics/webgl',
+          'frontend/graphics/data-visualization',
+        ],
+      },
+    ],
+  },
+  {
+    id: 'frontend',
+    label: '前端框架与工程化',
+    topics: [
+      {
+        id: 'frontend/react',
+        label: 'React',
+        articles: [
+          'tools-and-frameworks/react/components',
+          'tools-and-frameworks/react/hooks',
+          'tools-and-frameworks/react/reconciliation',
+          'tools-and-frameworks/react/concurrent-rendering',
+          'tools-and-frameworks/react/performance',
+          'tools-and-frameworks/react/state-management',
+          'tools-and-frameworks/react/server-components',
+        ],
+      },
+      {
+        id: 'frontend/vue',
+        label: 'Vue',
+        articles: [
+          'tools-and-frameworks/vue/reactivity',
+          'tools-and-frameworks/vue/rendering',
+          'tools-and-frameworks/vue/components',
+          'tools-and-frameworks/vue/computed-watch',
+          'tools-and-frameworks/vue/state-management',
+        ],
+      },
+      {
+        id: 'frontend/routing-rendering',
+        label: '路由与渲染模式',
+        articles: [
+          'frontend/routing/client-routing',
+          'frontend/rendering/rendering-modes',
+          'tools-and-frameworks/vue/router',
+          'tools-and-frameworks/nextjs/index',
+          'tools-and-frameworks/nuxt/index',
+          'frontend/architecture/micro-frontends',
+          'frontend/rendering/template-engines',
+        ],
+      },
+      {
+        id: 'frontend/engineering',
+        label: '前端工程化',
+        articles: [
+          'tools-and-frameworks/frontend-build/build-pipeline',
+          'tools-and-frameworks/frontend-build/package-management',
+          'tools-and-frameworks/frontend-build/transpilation',
+          'tools-and-frameworks/frontend-build/code-checks',
+          'tools-and-frameworks/frontend-testing/component-testing',
+          'tools-and-frameworks/frontend-build/asset-release',
+        ],
+      },
+      {
+        id: 'frontend/interaction',
+        label: '前端交互',
+        articles: [
+          'frontend/interaction/text-editors',
+          'frontend/interaction/optimistic-updates',
+          'frontend/interaction/file-upload',
+        ],
+      },
+      {
+        id: 'frontend/component-architecture',
+        label: '组件与视图架构',
+        articles: [
+          'frontend/architecture/component-frameworks',
+          'frontend/architecture/view-models',
+        ],
+      },
+      {
+        id: 'frontend/platforms',
+        label: '跨平台前端',
+        articles: [
+          'frontend/platforms/mini-programs',
+        ],
+      },
+    ],
+  },
+  {
+    id: 'nodejs',
+    label: 'Node.js',
+    topics: [
+      {
+        id: 'nodejs/runtime',
+        label: '运行时',
+        articles: [
+          'basic-knowledge/nodejs/event-loop',
+          'basic-knowledge/nodejs/modules',
+          'basic-knowledge/nodejs/buffer-stream',
+          'basic-knowledge/nodejs/processes-workers',
+          'basic-knowledge/nodejs/profiling',
+        ],
+      },
+      {
+        id: 'nodejs/services',
+        label: '服务开发',
+        articles: [
+          'tools-and-frameworks/nodejs/middleware',
+          'system-design/patterns/backend-for-frontend',
+          'tools-and-frameworks/nodejs/nestjs',
+          'basic-knowledge/nodejs/service-lifecycle',
+          'tools-and-frameworks/nodejs/data-access',
+        ],
+      },
+    ],
+  },
   {
     id: 'ai',
     label: 'AI 应用与 Agent',
     overview: `${AI}/index`,
     topics: [
+      {
+        id: 'ai/models',
+        label: '模型基础',
+        articles: [`${AI}/models/convolutional-neural-networks`],
+      },
       {
         id: 'ai/llm',
         label: '大模型基础',
@@ -650,7 +1119,7 @@ export const knowledgeTree: KnowledgeDomain[] = [
       {
         id: 'ai/evaluation',
         label: '评估与观测',
-        articles: [`${AI}/evaluation/agent-evaluation`, `${AI}/evaluation/rag-evaluation`],
+        articles: [`${AI}/evaluation/model-evaluation`, `${AI}/evaluation/agent-evaluation`, `${AI}/evaluation/rag-evaluation`],
       },
       {
         id: 'ai/safety',
@@ -731,7 +1200,406 @@ export const knowledgeTree: KnowledgeDomain[] = [
         label: '流量与接入',
         articles: [`${OPS}/traffic/nginx-load-balancing`],
       },
+      {
+        id: 'devops/cloud',
+        label: '云计算',
+        articles: ['devops/cloud-computing'],
+      },
     ],
   },
-
+  {
+    id: 'storage',
+    label: '存储系统',
+    topics: [
+      {
+        id: 'storage/objects',
+        label: '对象存储',
+        articles: [`${BK}/storage/object-storage`],
+      },
+      {
+        id: 'storage/distributed',
+        label: '分布式存储',
+        articles: [`${BK}/storage/ceph`],
+      },
+    ],
+  },
+  {
+    id: 'computer-architecture',
+    label: '计算机组成',
+    topics: [
+      {
+        id: 'computer-architecture/foundations',
+        label: '指令与数据表示',
+        articles: [
+          'basic-knowledge/computer-architecture/data-representation',
+          'basic-knowledge/computer-architecture/instruction-execution',
+        ],
+      },
+      {
+        id: 'computer-architecture/encoding',
+        label: '数据编码',
+        articles: [
+          'basic-knowledge/encoding/base64',
+        ],
+      },
+    ],
+  },
+  {
+    id: 'cpp',
+    label: 'C++',
+    topics: [
+      {
+        id: 'cpp/types',
+        label: '类型与对象',
+        articles: [
+          'basic-knowledge/cpp/type-system',
+          'basic-knowledge/cpp/pointers-references',
+          'basic-knowledge/cpp/object-lifetime',
+          'basic-knowledge/cpp/copy-move',
+        ],
+      },
+      {
+        id: 'cpp/abstractions',
+        label: '抽象与资源管理',
+        articles: [
+          'basic-knowledge/cpp/polymorphism',
+          'basic-knowledge/cpp/smart-pointers',
+          'basic-knowledge/cpp/containers',
+        ],
+      },
+      {
+        id: 'cpp/build',
+        label: '编译与链接',
+        articles: [
+          'basic-knowledge/cpp/compilation-linking',
+        ],
+      },
+    ],
+  },
+  {
+    id: 'kotlin',
+    label: 'Kotlin',
+    topics: [
+      {
+        id: 'kotlin/language',
+        label: '语言基础',
+        articles: [
+          'basic-knowledge/kotlin/type-system',
+          'basic-knowledge/kotlin/null-safety',
+          'basic-knowledge/kotlin/functions',
+          'basic-knowledge/kotlin/classes-interfaces',
+          'basic-knowledge/kotlin/generics',
+        ],
+      },
+      {
+        id: 'kotlin/concurrency',
+        label: '协程与流',
+        articles: [
+          'basic-knowledge/kotlin/coroutines',
+          'basic-knowledge/kotlin/flow',
+        ],
+      },
+    ],
+  },
+  {
+    id: 'swift',
+    label: 'Swift',
+    topics: [
+      {
+        id: 'swift/language',
+        label: '语言基础',
+        articles: [
+          'basic-knowledge/swift/type-system',
+          'basic-knowledge/swift/optional',
+          'basic-knowledge/swift/closures',
+          'basic-knowledge/swift/protocols-generics',
+        ],
+      },
+      {
+        id: 'swift/memory-concurrency',
+        label: '内存与并发',
+        articles: [
+          'basic-knowledge/swift/arc',
+          'basic-knowledge/swift/concurrency',
+        ],
+      },
+    ],
+  },
+  {
+    id: 'objective-c',
+    label: 'Objective-C',
+    topics: [
+      {
+        id: 'objective-c/language',
+        label: '对象与 Block',
+        articles: [
+          'basic-knowledge/objective-c/object-model',
+          'basic-knowledge/objective-c/block',
+        ],
+      },
+      {
+        id: 'objective-c/runtime',
+        label: '运行时与内存',
+        articles: [
+          'basic-knowledge/objective-c/runtime',
+          'basic-knowledge/objective-c/memory-management',
+        ],
+      },
+    ],
+  },
+  {
+    id: 'dart',
+    label: 'Dart',
+    topics: [
+      {
+        id: 'dart/language',
+        label: '类型与并发',
+        articles: [
+          'basic-knowledge/dart/type-system',
+          'basic-knowledge/dart/concurrency',
+        ],
+      },
+    ],
+  },
+  {
+    id: 'mobile',
+    label: '移动端开发',
+    topics: [
+      {
+        id: 'mobile/data',
+        label: '客户端数据',
+        articles: [
+          'mobile/common/data-synchronization',
+          'mobile/common/image-loading',
+        ],
+      },
+      {
+        id: 'mobile/performance',
+        label: '移动端性能',
+        articles: [
+          'mobile/common/performance-metrics',
+        ],
+      },
+      {
+        id: 'mobile/graphics-media',
+        label: '图形与媒体',
+        articles: [
+          'mobile/common/rendering-pipeline',
+          'mobile/common/media-playback',
+        ],
+      },
+      {
+        id: 'mobile/android-lifecycle',
+        label: 'Android 组件与生命周期',
+        articles: [
+          'mobile/android/app-components',
+          'mobile/android/activity-lifecycle',
+          'mobile/android/fragment-lifecycle',
+          'mobile/android/task-back-stack',
+        ],
+      },
+      {
+        id: 'mobile/android-ui',
+        label: 'Android 界面',
+        articles: [
+          'mobile/android/view-layout-drawing',
+          'mobile/android/touch-events',
+          'mobile/android/recyclerview',
+          'mobile/android/jetpack-compose',
+        ],
+      },
+      {
+        id: 'mobile/android-runtime',
+        label: 'Android 运行机制',
+        articles: [
+          'mobile/android/handler-looper',
+          'mobile/android/binder',
+          'mobile/android/art',
+          'mobile/android/parcelable',
+          'mobile/android/jni',
+          'mobile/android/dynamic-loading',
+        ],
+      },
+      {
+        id: 'mobile/android-data',
+        label: 'Android 数据与网络',
+        articles: [
+          'mobile/android/viewmodel',
+          'mobile/android/preferences',
+          'mobile/android/datastore',
+          'mobile/android/room',
+          'mobile/android/okhttp',
+          'mobile/android/retrofit',
+        ],
+      },
+      {
+        id: 'mobile/android-platform',
+        label: 'Android 平台能力',
+        articles: [
+          'mobile/android/webview',
+          'mobile/android/sandbox-permissions',
+          'mobile/android/background-work',
+        ],
+      },
+      {
+        id: 'mobile/android-engineering',
+        label: 'Android 诊断与工程',
+        articles: [
+          'mobile/android/memory-leaks',
+          'mobile/android/anr',
+          'mobile/android/performance-diagnostics',
+          'mobile/android/build',
+          'mobile/android/testing',
+        ],
+      },
+      {
+        id: 'mobile/ios-ui',
+        label: 'iOS 生命周期与界面',
+        articles: [
+          'mobile/ios/app-lifecycle',
+          'mobile/ios/view-controller',
+          'mobile/ios/uikit-layout',
+          'mobile/ios/responder-chain',
+          'mobile/ios/list-views',
+          'mobile/ios/swiftui-state',
+        ],
+      },
+      {
+        id: 'mobile/ios-runtime',
+        label: 'iOS 运行机制',
+        articles: [
+          'mobile/ios/run-loop',
+          'mobile/ios/gcd',
+        ],
+      },
+      {
+        id: 'mobile/ios-data',
+        label: 'iOS 数据与网络',
+        articles: [
+          'mobile/ios/url-session',
+          'mobile/ios/persistence',
+        ],
+      },
+      {
+        id: 'mobile/ios-platform',
+        label: 'iOS 平台能力',
+        articles: [
+          'mobile/ios/wkwebview',
+          'mobile/ios/sandbox-permissions',
+          'mobile/ios/background-tasks',
+          'mobile/ios/deep-links',
+        ],
+      },
+      {
+        id: 'mobile/ios-engineering',
+        label: 'iOS 诊断与工程',
+        articles: [
+          'mobile/ios/performance-diagnostics',
+          'mobile/ios/crash-diagnostics',
+          'mobile/ios/build',
+          'mobile/ios/testing',
+        ],
+      },
+      {
+        id: 'mobile/flutter-ui',
+        label: 'Flutter 组件与界面',
+        articles: [
+          'mobile/flutter/widget-element-render-object',
+          'mobile/flutter/state-management',
+          'mobile/flutter/layout-rendering',
+          'mobile/flutter/gestures',
+          'mobile/flutter/navigation',
+        ],
+      },
+      {
+        id: 'mobile/flutter-engineering',
+        label: 'Flutter 平台与工程',
+        articles: [
+          'mobile/flutter/platform-channels',
+          'mobile/flutter/testing',
+          'mobile/flutter/performance-diagnostics',
+        ],
+      },
+      {
+        id: 'mobile/react-native-runtime',
+        label: 'React Native 渲染与平台',
+        articles: [
+          'mobile/react-native/rendering',
+          'mobile/react-native/native-modules',
+          'mobile/react-native/platform-adaptation',
+        ],
+      },
+      {
+        id: 'mobile/react-native-engineering',
+        label: 'React Native 测试与性能',
+        articles: [
+          'mobile/react-native/testing',
+          'mobile/react-native/performance-diagnostics',
+        ],
+      },
+    ],
+  },
+  {
+    id: 'testing',
+    label: '测试开发',
+    topics: [
+      {
+        id: 'testing/design',
+        label: '测试分析与设计',
+        articles: [
+          'tools-and-frameworks/testing/test-analysis',
+          'tools-and-frameworks/testing/equivalence-partitioning',
+          'tools-and-frameworks/testing/boundary-value-analysis',
+          'tools-and-frameworks/testing/decision-tables',
+          'tools-and-frameworks/testing/state-transition-testing',
+          'tools-and-frameworks/testing/combinatorial-testing',
+          'tools-and-frameworks/testing/exploratory-testing',
+        ],
+      },
+      {
+        id: 'testing/reporting',
+        label: '缺陷与质量报告',
+        articles: [
+          'tools-and-frameworks/testing/defect-management',
+          'tools-and-frameworks/testing/test-reporting',
+        ],
+      },
+      {
+        id: 'testing/api',
+        label: '接口、数据与环境',
+        articles: [
+          'tools-and-frameworks/testing/api-testing',
+          'tools-and-frameworks/testing/test-data-management',
+          'tools-and-frameworks/testing/test-environments',
+        ],
+      },
+      {
+        id: 'testing/automation',
+        label: '自动化与开发流程',
+        articles: [
+          'tools-and-frameworks/testing/ui-automation',
+          'tools-and-frameworks/testing/compatibility-testing',
+          'tools-and-frameworks/testing/test-driven-development',
+        ],
+      },
+      {
+        id: 'testing/reliability',
+        label: '性能与可靠性',
+        articles: [
+          'tools-and-frameworks/testing/performance-testing',
+          'tools-and-frameworks/testing/jmeter',
+          'tools-and-frameworks/testing/fault-injection-testing',
+        ],
+      },
+      {
+        id: 'testing/tools',
+        label: '测试平台与辅助工具',
+        articles: [
+          'tools-and-frameworks/testing/test-execution-platform',
+          'tools-and-frameworks/testing/fuzz-testing',
+          'tools-and-frameworks/testing/ai-assisted-testing',
+        ],
+      },
+    ],
+  },
 ];

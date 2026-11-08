@@ -13,6 +13,9 @@ keywords: ["Java 编码练习", "SQL 面试练习", "算法模式", "并发编�
 
 | 模式与原理 | 代表练习 | 迁移练习 | 自检条件 |
 | --- | --- | --- | --- |
+| [哈希表](../basic-knowledge/data-structures/hash-table.mdx) | 自编：统计 `[2,1,2,3,1,2]` 的元素次数 | 自编：返回首次出现且总次数为 1 的元素 | 计数为 `2→3、1→2、3→1`，唯一元素为 3；空输入、全部重复，不能依赖哈希遍历顺序表达原序 |
+| [栈](../basic-knowledge/data-structures/stack.mdx) | 自编：验证只含 `()` 的括号串是否匹配 | 自编：加入 `[]` 和 `{}`，解释为什么计数器不再够用 | 空串有效，`)(` 无效，`([)]` 无效；每次右括号必须匹配栈顶类型 |
+| [堆](../basic-knowledge/data-structures/heap.mdx) | 自编：返回 `[3,1,5,5,2]` 的第 2 大元素 | 自编：数据逐项到达，只保留最大的 k 个候选 | 结果为 5；说明重复值是否各占名次，拒绝 k 越界，解释为何选择最小堆 |
 | [二分查找](../basic-knowledge/algorithms/binary-search.mdx) | [704. 二分查找](https://leetcode.cn/problems/binary-search/) | [35. 搜索插入位置](https://leetcode.cn/problems/search-insert-position/) | 目标在两端、不存在、小于最小值和大于最大值；区分返回失败与返回插入点 |
 | [双指针](../basic-knowledge/algorithms/two-pointers.mdx) | [141. 环形链表](https://leetcode.cn/problems/linked-list-cycle/) | 将问题改为找到环入口，解释快慢指针距离关系 | 空链表、自环、无环、环不从头开始；比较节点身份，不比较值 |
 | [树与图搜索](../basic-knowledge/java/algorithms/trees-graphs-search.mdx) | [102. 二叉树的层序遍历](https://leetcode.cn/problems/binary-tree-level-order-traversal/) | [103. 二叉树的锯齿形层序遍历](https://leetcode.cn/problems/binary-tree-zigzag-level-order-traversal/) | 空树、单节点、深链；改变输出方向时保留正确的层边界 |
@@ -22,7 +25,13 @@ keywords: ["Java 编码练习", "SQL 面试练习", "算法模式", "并发编�
 | [回溯](../basic-knowledge/algorithms/backtracking.mdx) | 自编：枚举 `[1,2,3]` 的全部子集 | 自编：输入改为 `[1,1,2]`，输出不重复子集 | 前者 8 个，后者 6 个；保存结果时复制状态，撤销选择后原状态恢复 |
 | [动态规划](../basic-knowledge/java/algorithms/dynamic-programming-state-design.mdx) | 自编：每次走 1 或 2 级台阶，求到第 4 级的方案数 | 自编：第 2 级禁止落脚，重新定义状态与转移 | 无障碍时 5 种，有障碍时 1 种；约定第 0 级有一种空走法，解释初始化 |
 
+平面列表转树时，先确认 ID、父节点字段和根标记，再练习先建索引、后连接父子的两阶段处理。实现与边界见 [JavaScript 集合](../basic-knowledge/javascript/collections.mdx#平面列表与父子关系)；自检时打乱子节点与父节点的先后顺序，检查多根、空输入和输入是否保持不变。
+
 不把“看过答案”作为完成标准。修改一个条件后仍能说明不变量，并独立写出实现，才说明方法能够迁移。更多检查方法见[算法正确性](../basic-knowledge/java/algorithms/live-coding-counterexamples-tests.mdx)。
+
+数值题还要单独确认输入范围和精度。整数平方根可以转成“最大的 x 满足 x² 不超过 n”，再用二分的可行性判断；固定宽度整数中计算 `x*x` 可能溢出，判断正数 x 时可以比较 `x <= n/x`。位判断题则先明确是否允许负数或零：正整数 n 是 2 的整数次幂，当且仅当它只有一个二进制位为 1，因此需要同时满足 `n > 0` 和 `(n & (n - 1)) == 0`。不能省掉零的边界检查。
+
+题目没有交代完整约束时，先补输入、目标和重复值等规则，再写解法。表中的模式用于组织复习，不意味着所有数值或业务算法题都能直接套用一段模板。
 
 ## 2. Java 并发练习
 

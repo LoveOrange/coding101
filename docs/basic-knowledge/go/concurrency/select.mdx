@@ -1,0 +1,483 @@
+---
+sidebar_position: 3
+knowledge:
+  id: basic-knowledge.go.concurrency.select
+  type: concept
+description: "讲解 Go select 的分支就绪、随机选择、表达式求值和 default，结合 nil channel、关闭通道、超时与协作取消推导执行结果，区分退出 select、退出循环和任务真正结束。"
+keywords: ["Go", "select", "channel", "超时", "取消", "goroutine"]
+---
+
+# select
+
+**`select`** 是 Go 用来等待一组 channel 收发操作、从中执行一个分支的语句。它可以把「收到输入」「下游可以接收」「等待超时」「任务被取消」放在同一个等待点，让 goroutine 根据当前能够继续的操作前进。
+
+读这类代码时，要先判断哪些操作可以执行，再看选中的分支做什么。写在前面的 `case` 没有优先权，`default` 也不会保护已经关闭的发送通道。能解释这些边界，才能判断一段并发代码会继续、阻塞、空转，还是退出。
+
+## 1. 面试核心 {#core}
+
+- `select` 每次只执行一个分支。**多个通信操作同时就绪时，按均匀伪随机方式选择一个**；不是从上到下选择第一个，也不保证固定等待上限。[卡](#selection-rules)
+- **`nil` channel 的收发不能就绪，关闭且排空的 channel 则可以立即接收零值和 `false`。**发送到已关闭 channel 的分支仍可能被选中并触发 panic，不能靠 `default` 避免。[卡](#nil-closed)
+- 进入 `select` 时，各分支的 **channel 表达式和发送值按源码顺序各求值一次**，即使最后没有选中对应分支。接收赋值左侧的表达式要等选中并接收后才求值。[卡](#operand-evaluation)
+- `default` 表示当前没有通信可以进行时立即执行。**放进持续循环可能造成空转**，不等于提供了更高效的等待方式。[卡](#default-loop)
+- `break` 默认结束最内层的 `for`、`switch` 或 `select`。**在 `select` 分支里直接写 `break`，通常只退出这次选择**；退出外层循环需要标签，或用 `return` 退出函数。[卡](#break-scope)
+- 超时分支也是接收一个 channel。**计时器创建在循环外还是每轮创建，决定了计时起点是否重置**；超时就绪也不会强制终止正在执行的业务代码。[卡](#timeout-scope)
+- 取消需要任务主动观察信号，并让可能阻塞的收发都有退出路径。**发送取消信号与确认任务已结束是两步**。[卡](#cooperative-cancellation)
+- 取消分支与业务分支同时就绪时，业务分支仍可能执行。**把取消写在最前面，不能实现严格的取消优先级**。[卡](#cancel-priority)
+
+## 2. 就绪与分支选择 {#就绪与分支选择}
+
+**就绪**是指当前通信操作不用继续等待，就能执行下去。接收可以从缓冲区取值，也可以与发送者交接；发送可以放入尚有空间的缓冲区，也可以与接收者交接。单次收发的规则见 [channel 的缓冲、阻塞与顺序](./channels.mdx#缓冲阻塞与顺序)。
+
+下面只有一个接收分支可以执行：
+
+```go
+package main
+
+import "fmt"
+
+func main() {
+    jobs := make(chan int, 1)
+    jobs <- 7
+
+    select {
+    default:
+        fmt.Println("not ready")
+    case value := <-jobs:
+        fmt.Println(value)
+    }
+}
+```
+
+输出为 `7`。`default` 虽然写在前面，也只有在没有通信操作就绪时才执行。`select` 完成一次接收后就结束，不会自动接着检查其他分支。
+
+### 2.1 一个、多个与没有就绪操作 {#一个多个与没有就绪操作}
+
+| 当前情况 | `select` 的行为 |
+| --- | --- |
+| 只有一个通信操作就绪 | 执行该操作及对应分支 |
+| 多个通信操作就绪 | 从中均匀伪随机选择一个 |
+| 没有通信操作就绪，有 `default` | 执行 `default` |
+| 没有通信操作就绪，没有 `default` | 阻塞，等待某个操作能够进行 |
+
+这里选择的是就绪的通信分支，不是在所有 `case` 和 `default` 之间抽签。`default` 不会与已经就绪的通信竞争。
+
+均匀伪随机也不表示两条分支严格交替，更不表示观察十次就各选五次。若业务要求优先级、固定份额或最大等待时间，需要额外的调度规则，不能从 `case` 的排列位置推导。
+
+### 2.2 nil 与关闭状态 {#nil-与关闭状态}
+
+channel 的状态会直接改变就绪判断：
+
+| channel 状态与操作 | 放进 `select` 后的结果 |
+| --- | --- |
+| 从 `nil` channel 接收，或向它发送 | 该通信操作不能就绪 |
+| 从已关闭但仍有缓冲值的 channel 接收 | 继续取出值，`ok` 为 `true` |
+| 从已关闭且排空的 channel 接收 | 立即得到元素零值，`ok` 为 `false` |
+| 向已关闭 channel 发送 | 该发送分支可以被选中，执行时 panic |
+
+因此，`select { case ch <- value: default: }` 不能用于判断 `ch` 是否安全可写。`ch` 关闭后，发送分支可以直接触发 panic；发送与关闭的责任需要由整个程序安排，见 [channel 的关闭责任](./channels.mdx#谁安排关闭)。
+
+如果所有通信对象都是 `nil`，又没有 `default`，就没有任何操作可以唤醒这次选择。空的 `select {}` 也会永久阻塞当前 goroutine。某个 goroutine 阻塞不一定使整个进程退出；只有进程满足运行时的全局死锁条件时，才会出现相应错误。
+
+## 3. 表达式先于选择求值 {#表达式先于选择求值}
+
+`select` 要先知道候选 channel 和待发送的值，才能决定通信。因此，写在发送分支里的函数调用并不是「选中以后才调用」。
+
+```go
+package main
+
+import "fmt"
+
+func sendChannel() chan int {
+    fmt.Println("send channel")
+    return nil
+}
+
+func makeValue() int {
+    fmt.Println("send value")
+    return 7
+}
+
+func receiveChannel() chan int {
+    fmt.Println("receive channel")
+    return nil
+}
+
+func index() int {
+    fmt.Println("index")
+    return 0
+}
+
+func main() {
+    values := []int{0}
+    select {
+    case sendChannel() <- makeValue():
+        fmt.Println("sent")
+    case values[index()] = <-receiveChannel():
+        fmt.Println("received")
+    default:
+        fmt.Println("default")
+    }
+}
+```
+
+输出依次为 `send channel`、`send value`、`receive channel`、`default`。两个 channel 都是 `nil`，所以通信都不能执行，但 `makeValue` 已经被调用。`index` 没有执行，因为它属于接收赋值的左侧，要等该分支被选中并完成接收后才求值。
+
+每次进入这条 `select`，上述 channel 表达式和发送值各求值一次。阻塞等待期间不会因为某个分支还没有就绪，就不停重新调用这些函数；外层循环再次进入 `select` 时，才开始下一次求值。
+
+这也影响超时设计。若写成 `case out <- slowWork():`，`slowWork` 必须先返回，之后才能选择分支。即使另一个分支已经收到取消信号，或存在 `default`，也不能跳过这次求值；`slowWork` 自身的阻塞或副作用需要另行控制。
+
+## 4. 循环中的收取与退出 {#循环中的收取与退出}
+
+### 4.1 关闭后停用接收分支 {#关闭后停用接收分支}
+
+关闭并排空的 channel 会一直处于可接收状态。循环若只写 `value := <-ch`，就可能反复拿到零值，无法区分「生产者发送了零」和「已经没有后续值」。
+
+同时收取多个 channel 时，可以在读到 `ok == false` 后，把当前接收变量设为 `nil`，让这一分支不再参与后续选择：
+
+```go
+package main
+
+import (
+    "fmt"
+    "sort"
+)
+
+func main() {
+    a := make(chan int, 2)
+    b := make(chan int, 1)
+    a <- 0
+    a <- 1
+    b <- 2
+    close(a)
+    close(b)
+
+    values := []int{}
+    for a != nil || b != nil {
+        select {
+        case value, ok := <-a:
+            if !ok {
+                a = nil
+                continue
+            }
+            values = append(values, value)
+        case value, ok := <-b:
+            if !ok {
+                b = nil
+                continue
+            }
+            values = append(values, value)
+        }
+    }
+    sort.Ints(values)
+    fmt.Println(values)
+}
+```
+
+输出为 `[0 1 2]`。关闭不会丢掉缓冲区已有的值，`0` 也作为有效值保留下来。两路交错顺序没有固定保证，示例只为了稳定展示收取结果而排序。
+
+`a = nil` 改变的是当前变量，不会再次关闭底层 channel，也不会取消其他持有该 channel 的任务。循环条件同样重要：两路都变成 `nil` 后必须退出，否则下一轮会在没有可用通信的 `select` 中永久阻塞。
+
+### 4.2 default 与空转 {#default-与空转}
+
+`default` 适合明确需要「当前做不了就立即返回」的操作，例如尝试投递到一个有界队列，满了就报告拒绝。调用者要接受这种结果，不能把它解释为可靠送达。
+
+如果在 `for` 中反复执行带 `default` 的 `select`，而 `default` 又没有阻塞或有效工作，goroutine 就可能持续循环消耗 CPU。需要等待事件时，通常直接去掉 `default`；需要周期性工作时，应明确计时与停止条件。
+
+### 4.3 break 结束哪一层 {#break-结束哪一层}
+
+```go
+package main
+
+import "fmt"
+
+func main() {
+    done := make(chan struct{})
+    close(done)
+
+    for i := 0; i < 2; i++ {
+        select {
+        case <-done:
+            break
+        }
+        fmt.Println(i)
+    }
+}
+```
+
+输出为 `0`、`1`。每次都能收到关闭信号，但 `break` 只结束最内层的 `select`，随后仍执行 `fmt.Println(i)` 和下一轮循环。
+
+如果取消时应该结束整个函数，可以使用 `return`。如果外层循环结束后还要继续执行本函数的其他逻辑，可以给 `for` 加标签，并使用 `break 标签名`。选择哪种方式，取决于想结束的控制范围。
+
+## 5. 超时与计时范围 {#超时与计时范围}
+
+**超时分支**通常通过接收计时器 channel 实现。它只是增加了另一个候选事件，不会给 `select` 内外的所有操作自动加上期限。
+
+```go
+package main
+
+import (
+    "errors"
+    "fmt"
+    "time"
+)
+
+func wait(in <-chan int, timeout time.Duration) (int, error) {
+    timer := time.NewTimer(timeout)
+    defer timer.Stop()
+
+    select {
+    case value, ok := <-in:
+        if !ok {
+            return 0, errors.New("closed")
+        }
+        return value, nil
+    case <-timer.C:
+        return 0, errors.New("timeout")
+    }
+}
+
+func main() {
+    ready := make(chan int, 1)
+    ready <- 7
+    fmt.Println(wait(ready, time.Hour))
+    fmt.Println(wait(nil, 10*time.Millisecond))
+}
+```
+
+输出为 `7 <nil>` 和 `0 timeout`。第一次输入已经就绪；第二次输入是 `nil`，只能等计时器。这里的 10 毫秒是计时阈值，不是函数恰好在 10 毫秒返回的调度保证。
+
+若把同一条等待语句放进循环，需要先区分两种需求：
+
+| 需求 | 计时起点 |
+| --- | --- |
+| 整个收取过程共用一段等待预算 | 循环开始前创建计时器，后续各轮观察同一个计时器 |
+| 每轮等待下一条消息都有一段预算 | 每轮重新开始计时；持续收到消息时，总过程可能一直不结束 |
+
+在每轮 `select` 中调用 `time.After(d)`，会每轮创建新的计时器，不能据此承诺整个函数在 `d` 后结束。即使使用循环外计时器，若当前分支正在运行一个很慢的函数，也要等控制流再次观察超时；数据和超时同时就绪时，也没有固定的超时优先权。
+
+示例按 Go 1.22 运行，只使用一次计时器，函数返回后不再读取 `timer.C`。`Stop` 不会关闭该 channel；这里不复用计时器，所以没有后续读取误消费旧通知的问题。若要在同一个计时器上反复 `Reset`，需要按目标 Go 版本处理停止、旧通知和接收者的协调，不能直接把这个一次性示例当作重置协议。
+
+## 6. 协作取消 {#协作取消}
+
+### 6.1 每个阻塞点都要能退出 {#每个阻塞点都要能退出}
+
+**协作取消**是由一方发出停止信号，正在执行的任务在约定位置观察信号并自行返回。`context.Context` 的 `Done()` 就提供了这种 channel：任务应取消时关闭；永远不会取消的上下文可以返回 `nil`。
+
+下面先用显式的 `done` channel 看清退出路径：
+
+```go
+package main
+
+import "fmt"
+
+func forward(done <-chan struct{}, in <-chan int, out chan<- int) {
+    for {
+        select {
+        case <-done:
+            return
+        case value, ok := <-in:
+            if !ok {
+                return
+            }
+            select {
+            case out <- value:
+            case <-done:
+                return
+            }
+        }
+    }
+}
+
+func main() {
+    done := make(chan struct{})
+    in := make(chan int)
+    out := make(chan int)
+    finished := make(chan struct{})
+
+    go func() {
+        defer close(finished)
+        forward(done, in, out)
+    }()
+
+    in <- 7
+    close(done)
+    <-finished
+    fmt.Println("stopped")
+}
+```
+
+输出为 `stopped`。`in <- 7` 完成交接后，`forward` 需要向没有接收者的 `out` 发送。内层 `select` 仍能观察 `done`，所以可以放弃这次转发并退出；如果改成普通的 `out <- value`，外层取消分支就无法解救已经卡住的发送。
+
+`done` 由 `main` 关闭一次，`finished` 由工作 goroutine 在返回时关闭。`main` 等到 `finished`，才确认任务已经结束；这与 [goroutine 的取消和退出确认](./goroutines.mdx#取消后还要确认退出)是同一条责任边界。示例约定 `out` 在工作期间保持打开，没有用关闭业务通道来强行中断发送。
+
+`select` 也不能中断任意阻塞函数。调用网络或数据库操作时，需要把取消传到支持它的 API；处理 CPU 计算时，需要在适当位置检查停止条件。多个任务的错误汇总、取消传播和全部退出确认，还需要任务管理层配合。
+
+### 6.2 取消没有隐含优先权 {#取消没有隐含优先权}
+
+```go
+package main
+
+import "fmt"
+
+func main() {
+    done := make(chan struct{})
+    ready := make(chan int, 1)
+    close(done)
+    ready <- 7
+
+    select {
+    case <-done:
+        fmt.Println("canceled")
+    case value := <-ready:
+        fmt.Println(value)
+    }
+}
+```
+
+这段程序允许输出 `canceled`，也允许输出 `7`。进入 `select` 前两条接收都已经就绪，取消分支写在第一条也不会获得优先权。
+
+在业务操作前额外检查一次取消，可以减少已经取消后继续工作的机会，但不能形成严格保证：检查之后，取消仍可能与下一步操作同时发生。
+
+如果要求「停止确认后不能再产生新提交」，需要让停止和提交通过同一个有明确顺序的控制机制协调，并等待在途操作结束。只增加一个取消分支，既不能撤销已经发生的副作用，也不能替代这种业务约定。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 select 有什么作用，如何选择收发分支？ {#selection-rules}
+
+**考察重点**：候选通信、就绪条件、单次选择和阻塞规则。
+
+**相关内容**：[就绪与分支选择](#就绪与分支选择)。
+
+<details>
+<summary>参考回答</summary>
+
+**`select` 在一组 channel 收发中执行一个当前可以进行的操作。**只有一个就绪操作时选它；多个就绪时均匀伪随机选一个；没有就绪操作时，有 `default` 就执行它，否则阻塞等待。
+
+`case` 的源码顺序不是优先级，`default` 也不与就绪通信竞争。一次选择只执行一个分支，持续处理需要外层循环。
+
+</details>
+
+### 7.2 没有选中的发送分支，其发送值表达式会执行吗？ {#operand-evaluation}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：选择前的求值顺序、副作用和接收赋值左侧的不同时间。
+
+**相关内容**：[表达式先于选择求值](#表达式先于选择求值)。
+
+<details>
+<summary>参考回答</summary>
+
+**会。进入 `select` 时，各分支的 channel 表达式和发送值按源码顺序各求值一次，与最终选择结果无关。**因此，发送分支里的函数调用可能已经消耗时间或产生副作用，不能靠其他取消分支跳过它。
+
+接收赋值左侧则要等对应分支被选中并完成接收后才求值。`case values[index()] = <-ch:` 中，`index` 不属于选择前必然执行的部分。
+
+</details>
+
+### 7.3 nil channel 与已关闭 channel 放进 select，有什么不同？ {#nil-closed}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：就绪状态、缓冲排空、停用分支和关闭后的发送风险。
+
+**相关内容**：[nil 与关闭状态](#nil-与关闭状态)、[关闭后停用接收分支](#关闭后停用接收分支)。
+
+<details>
+<summary>参考回答</summary>
+
+**`nil` channel 的收发不能就绪；已关闭 channel 仍可接收，排空后立即返回零值和 `false`。**循环收取多路输入时，可以在 `ok == false` 后把当前变量设为 `nil`，并在所有输入都停用后退出循环。
+
+向已关闭 channel 发送会 panic，放进 `select` 也不改变这条规则；`default` 不能保护它。关闭责任必须另行协调。
+
+</details>
+
+### 7.4 for-select 中增加 default，就能避免阻塞并提高效率吗？ {#default-loop}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：非阻塞尝试与事件等待、忙循环和调用者约定。
+
+**相关内容**：[default 与空转](#default-与空转)。
+
+<details>
+<summary>参考回答</summary>
+
+**`default` 只让没有就绪通信时立即继续，持续循环可能因此空转消耗 CPU。**需要等待输入时通常不加它；需要尝试投递、失败立即返回时，才把 `default` 的拒绝结果纳入接口约定。
+
+表达式求值或分支内部的代码仍可能阻塞，不能把整个语句或函数都视为非阻塞。
+
+</details>
+
+### 7.5 每轮 select 都调用 time.After，能限制整个函数的总耗时吗？ {#timeout-scope}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：计时起点、循环预算、分支执行与同时就绪。
+
+**相关内容**：[超时与计时范围](#超时与计时范围)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能。每轮创建计时器会重新开始等待，持续收到消息时，总过程可能一直不结束。**整个过程共用预算时，应在循环外建立计时器或统一 deadline，后续等待使用同一预算。
+
+超时只提供可观察的事件，不会抢占正在执行的业务代码。超时与业务同时就绪也不自动优先，需要结合阻塞 API、取消检查和完成确认说明实际边界。
+
+</details>
+
+### 7.6 如何通过 channel 和 select，让等待中的 goroutine 响应取消？ {#cooperative-cancellation}
+
+**考察重点**：取消信号、多个阻塞点、协作退出和结束确认。
+
+**相关内容**：[每个阻塞点都要能退出](#每个阻塞点都要能退出)、[goroutine 的取消和退出确认](./goroutines.mdx#取消后还要确认退出)。
+
+<details>
+<summary>参考回答</summary>
+
+**把停止 channel 或 `ctx.Done()` 放进可能阻塞的收发选择中，收到取消后主动返回。**如果接收之后还会阻塞发送，发送位置也要观察取消，不能只在外层循环检查一次。
+
+取消方负责发出信号，工作任务负责退出；调用者还应通过完成 channel、等待组等确认任务结束。一个任务失败后取消其他任务，还需要保留错误并等待相关任务退出，`select` 本身不会替你完成这些管理工作。
+
+</details>
+
+### 7.7 把取消分支写在第一行，能保证取消后不再处理数据吗？ {#cancel-priority}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：同时就绪、检查与操作之间的竞态、业务提交顺序。
+
+**相关内容**：[取消没有隐含优先权](#取消没有隐含优先权)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能。取消和业务都就绪时，`select` 仍可能选择业务分支。**先检查一次取消只能缩小窗口，检查之后仍可能发生取消。
+
+要求停止确认后不再有新提交时，需要协调停止、提交和在途任务的顺序。取消信号不能自动撤销已经完成的业务操作。
+
+</details>
+
+### 7.8 在 select 的取消分支中写 break，会退出外层 for 吗？ {#break-scope}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：最内层控制语句、带标签退出与函数返回。
+
+**相关内容**：[break 结束哪一层](#break-结束哪一层)。
+
+<details>
+<summary>参考回答</summary>
+
+**通常不会，这里的 `break` 只结束最内层 `select`。**之后仍会执行循环体剩余代码并进入下一轮。
+
+需要结束外层 `for` 时使用对应标签的 `break`；需要结束函数时使用 `return`。先确定退出范围，再选择控制语句。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [Go 语言规范：Select statements](https://go.dev/ref/spec#Select_statements)、[Break statements](https://go.dev/ref/spec#Break_statements)
+- [Go 1.22.12 语言规范](https://github.com/golang/go/blob/go1.22.12/doc/go_spec.html)
+- [Go 1.22.12：time.Timer、NewTimer 与 Stop](https://pkg.go.dev/time@go1.22.12#Timer)
+- [Go 1.22.12：context.Context 的 Done 契约](https://pkg.go.dev/context@go1.22.12#Context)
+- [Go 官方博客：Pipelines and cancellation](https://go.dev/blog/pipelines)

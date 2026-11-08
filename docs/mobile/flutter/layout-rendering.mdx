@@ -1,0 +1,323 @@
+---
+title: Flutter 布局与渲染
+description: 沿约束、尺寸、位置和帧流水线理解 Flutter 布局，分析无限约束、列表按需构建与绘制边界。
+knowledge:
+  id: mobile.flutter.layout-rendering
+---
+
+**Flutter 布局**在父节点给定的约束内计算尺寸，再由父节点决定子节点的位置；**渲染**把这些几何和绘制信息继续组织成可提交的场景。给一个组件写下 `width: 300`，并不意味着它能无视父节点允许的范围。
+
+理解这条执行链路，才能解释 Row 溢出、列表高度无限和“组件重建了但没有重新绘制”等现象。本文使用 Flutter 3.24.3 的布局与帧机制，重点是根据实际约束推导结果，不把添加 Expanded、shrinkWrap 或 RepaintBoundary 当作通用修复。
+
+## 1. 面试核心 {#core}
+
+- **约束向下传递，尺寸向上返回，父节点设置位置**。子节点只能在接收到的有效范围内选择尺寸，最终结果需要结合祖先约束判断。[卡](#constraints)
+- **紧约束、松约束和有界约束描述不同维度**。松约束表示最小值为零，不表示最大值无限；无限最大值也不要求子节点选择无限尺寸。[卡](#constraint-types)
+- **Flex 布局要先区分非 flex 子节点与剩余空间分配**。Row 中长文本没有得到合适宽度约束时可能溢出，Expanded 只有在可分配空间有意义时才能工作。[卡](#flex)
+- **滚动视口和内容尺寸是不同对象的责任**。列表作为页面主体通常需要有限的视口高度；shrinkWrap 根据内容决定滚动方向尺寸，会增加重新计算成本。[卡](#viewport)
+- **ListView.builder 按需要创建子项**，避免先构建整个长列表；可见区域附近的缓存、保活和业务数据缓存各有职责，不能混为一种缓存。[卡](#lazy-list)
+- **一帧包含构建、布局、绘制与合成等阶段**。这些阶段分别处理脏 Element、RenderObject 和绘制层次，后续还需要引擎完成栅格化与显示。[卡](#frame)
+- **RepaintBoundary 限制绘制失效的传播范围**，不阻止内部 build 或 layout，也不保证一定进入像素缓存。[卡](#paint-boundary)
+- **定位性能问题先区分阶段和环境**。build 次数、绘制次数与最终帧耗时不能相互替代，优化要对应实际成本。[卡](#diagnosis)
+
+## 2. 盒布局的约束与尺寸 {#盒布局的约束与尺寸}
+
+### 2.1 BoxConstraints 描述允许范围 {#BoxConstraints描述允许范围}
+
+**BoxConstraints** 用最小宽度、最大宽度、最小高度和最大高度描述盒布局的允许范围。RenderBox 选择的尺寸需要满足这些上下限；正常化的约束也要求最小值不大于最大值。
+
+布局时，父 RenderObject 根据自身规则给子节点约束，子节点完成布局并得到几何结果，父节点再根据需要决定自己的尺寸和子节点位置。这里说的是渲染对象的布局机制，Widget 只是用于配置这些对象。
+
+| 条件 | 含义 | 示例 |
+| --- | --- | --- |
+| 某轴最小值等于最大值 | 紧约束，尺寸没有选择空间 | 宽度只能是 200 |
+| 某轴最小值为 0 | 松约束，允许更小尺寸 | 宽度在 0 到 200 之间 |
+| 某轴最大值有限 | 有界约束 | 最大高度 600 |
+| 某轴最大值为无穷大 | 无界约束 | 内容可以超过视口高度 |
+
+松约束与有界可以同时成立；宽和高也可以具有不同条件。无界最大值提供的是选择范围，不表示最终 RenderBox 可以随意把自己的尺寸设成无穷大。需要扩展到最大值的组件遇到无界轴时，必须有额外的尺寸规则。
+
+### 2.2 指定尺寸仍受父节点限制 {#指定尺寸仍受父节点限制}
+
+下面的组件在可用宽度至少为 200、高度至少为 40 的环境中，得到的蓝色区域为 200 × 40，而不是 300 × 40。
+
+```dart
+import 'package:flutter/widgets.dart';
+
+Widget constrainedPanel() {
+  return Center(
+    child: ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 200),
+      child: const SizedBox(
+        width: 300,
+        height: 40,
+        child: ColoredBox(color: Color(0xFF3366CC)),
+      ),
+    ),
+  );
+}
+```
+
+Center 允许子节点在可用范围内选择较小尺寸，ConstrainedBox 再收紧宽度上限。SizedBox 希望得到 300 宽，但仍要与传入约束协调，最终只能得到 200。若祖先只提供 120 宽，结果还会进一步受限为 120。
+
+如果去掉 Center，根节点的紧约束可能沿链路使组件占满可用空间；不是 ConstrainedBox 的名字保证它一定缩成某个宽度。排查时要看实际传入约束，而不是只读最里面一个 Widget 的参数。
+
+## 3. Flex 布局与溢出 {#Flex布局与溢出}
+
+### 3.1 Row 为什么放不下长文本 {#Row为什么放不下长文本}
+
+Row 的非 flex 子节点会先按相应规则布局，在主轴方向可能得到无界约束。长文本因此可能按很宽的自然尺寸布局，多个子节点的总宽度超过 Row 可用宽度时，就会溢出。把外层 Row 本身设为有限宽度，不等于每个非 flex 子节点自动得到剩余宽度。
+
+**Expanded** 用紧约束要求子节点占满分配的剩余空间；**Flexible** 可以采用松约束，允许子节点小于分配的上限。它们的 flex 比例分配的是扣除其他部分后的剩余空间，不是无条件按整屏比例分配。
+
+```dart
+Widget summaryRow(String title) {
+  return Directionality(
+    textDirection: TextDirection.ltr,
+    child: Row(
+      children: [
+        const SizedBox(width: 32, height: 32),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(title, maxLines: 2, overflow: TextOverflow.ellipsis),
+        ),
+      ],
+    ),
+  );
+}
+```
+
+在 Row 宽度为 200 时，前两个子节点占去 40，文本得到剩余的 160 宽。`maxLines` 和 `overflow` 决定空间不足时的文本显示规则；真正让文本知道可用宽度的是 flex 分配的约束。
+
+### 3.2 无限空间里没有可分配的有限剩余量 {#无限空间与剩余量}
+
+在主轴无界的 Flex 中要求 Expanded 占满剩余空间，会产生矛盾：剩余量没有有限上限，而子节点又被要求填满它。常见情形是在纵向滚动内容里放 Column，再给其中的子节点 Expanded。
+
+解决时先确定谁应该滚动、谁应该占据固定视口。可以让外层提供有限尺寸，把长内容交给一个滚动容器；也可以让内容自然收缩并取消不适用的扩展要求。不要只为消除报错在每一层增加 Expanded，它无法凭空制造有限约束。
+
+## 4. 滚动视口与按需布局 {#滚动视口与按需布局}
+
+### 4.1 视口有界，内容可以更长 {#视口有界内容可以更长}
+
+**视口**是当前观察滚动内容的窗口。一个 500 高的列表可以承载数千项内容，500 描述窗口尺寸，不是所有内容必须装进的总高度。
+
+Column 中直接放一个默认纵向 ListView 时，Column 对非 flex 子节点的测量可能提供无界高度，而 ListView 希望扩展到允许的最大高度，两者就无法确定有限视口。若列表是页面剩余区域的主体，可以在有界的 Column 中用 Expanded 分配剩余高度。
+
+**shrinkWrap** 让滚动视图根据内容决定滚动方向的尺寸。它适合确实需要内容包裹尺寸的场景，但滚动时内容范围变化可能要求重新计算尺寸，成本高于直接使用固定上限的视口。它也不等于给所有嵌套列表保留了原来的按需布局收益。
+
+布局需要多次预估尺寸时，还要注意 intrinsic 测量。IntrinsicHeight 等组件可能增加额外的预布局工作；长列表中逐层叠加这类测量，很容易破坏只处理必要内容的目标。
+
+### 4.2 Sliver 的滚动几何 {#Sliver的滚动几何}
+
+**Sliver** 使用面向滚动视口的布局协议，描述可滚动内容的一部分。其渲染对象接收 SliverConstraints，包括滚动偏移、剩余可绘制范围等信息，再返回 SliverGeometry，说明滚动范围、绘制范围和布局占用等结果。它与 RenderBox 的 BoxConstraints、Size 协议不同。
+
+视口可以组合不同类型的 Sliver，例如列表、网格和头部；Sliver 内部也可以继续布局普通盒子子项。ListView 封装了相应的滚动结构和子项委托，使用固定 itemExtent 时可以利用固定尺寸布局。需要多个滚动片段共享同一视口时，可以考虑 CustomScrollView 与相应 Sliver，而不是层层嵌套独立滚动列表。
+
+### 4.3 ListView.builder 按需要创建子项 {#ListViewbuilder按需创建子项}
+
+`ListView(children: [...])` 接收已经创建的 Widget 列表，而 `ListView.builder` 接收创建函数，在布局需要相应子项时调用。后者适合长列表，可以避免在开始时构造全部子项配置。
+
+```dart
+Widget articleList(List<String> titles) {
+  return Directionality(
+    textDirection: TextDirection.ltr,
+    child: ListView.builder(
+      itemCount: titles.length,
+      itemExtent: 48,
+      itemBuilder: (context, index) {
+        return Align(
+          alignment: Alignment.centerLeft,
+          child: Text(titles[index]),
+        );
+      },
+    ),
+  );
+}
+```
+
+这个列表需要放在有界视口中。每项固定为 48 高，布局可以利用已知高度估算位置；如果内容允许动态高度，就不能为了“优化”填写不符合实际的 itemExtent。`prototypeItem` 也是提供尺寸信息的另一种方式，不应与固定 itemExtent 同时配置。
+
+按需不等于只创建恰好在屏幕上的项目。视口还可能布局可见区域附近的缓存范围；滚动、重建、尺寸变化和身份匹配都会影响创建行为。不要假定 itemBuilder 对每个下标只调用一次，也不要在里面发起只能执行一次的业务副作用。
+
+### 4.4 子项保活与业务数据缓存 {#子项保活与业务数据缓存}
+
+普通离屏子项可能被移除，关联的 Element、State 和 RenderObject 随之结束；需要保留特定界面状态时，可以按需要使用 keep-alive 机制。列表默认提供相关包装，不代表所有项目都永久保活，消费者仍需按机制请求保留。
+
+保活项目越多，保留的状态与资源也越多。编辑内容、收藏状态等重要业务数据更适合由列表外的模型保存，而不是依赖某个离屏 State 一直存在。
+
+还应区分几种不同的“缓存”：视口附近预布局的子项、保活的状态子树、图片解码缓存，以及从接口获得的业务数据。改变其中一个，不会自动解决其他层的成本。
+
+使用 builder 的可重排列表时，稳定 Key 还需要结合子项到新下标的映射；`findChildIndexCallback` 可以帮助委托在顺序改变后找到原项目的位置。普通 Row 的兄弟 Key 匹配规则不能直接当作所有惰性列表的完整更新方案。
+
+## 5. 从构建到一帧场景 {#从构建到一帧场景}
+
+### 5.1 各阶段处理不同的失效信息 {#各阶段处理不同失效信息}
+
+框架根据动画、输入和状态变化安排帧工作。Flutter 3.24.3 中，与界面生成直接相关的主要阶段可以这样理解：
+
+| 阶段 | 处理对象 | 得到的主要结果 |
+| --- | --- | --- |
+| 构建 | 被标记为需要更新的 Element | 更新后的配置和树中关系 |
+| 布局 | 需要布局的 RenderObject | 尺寸及子节点几何安排 |
+| 合成信息更新 | 需要更新合成标记的渲染对象 | 绘制与合成所需的边界信息 |
+| 绘制 | 需要绘制的渲染对象 | 绘制记录与 Layer 树 |
+| 场景提交 | 绘制层次 | 交给引擎的 Scene |
+
+随后引擎执行相应的栅格化和平台显示工作。框架侧 paint 并不是“每执行一条 Dart 绘制调用，屏幕就立刻出现对应像素”。一帧还包含动画回调、语义更新和树的收尾等工作，表格强调的是布局与绘制相关职责。
+
+Widget、Element、State 与 RenderObject 的身份关系见 [Flutter Widget、Element 与 RenderObject](widget-element-render-object.mdx#配置实例与渲染对象)。build 返回新配置后，已有渲染对象仍可以保留；颜色改变和几何改变也可以导致不同的失效路径。
+
+### 5.2 Layer 与重绘边界 {#Layer与重绘边界}
+
+**Layer** 组织绘制与合成信息，例如某些变换、裁剪和独立绘制边界。它不等同于业务 Widget，也不是每个 RenderObject 都必须对应一个独立 Layer。
+
+**RepaintBoundary** 为子树建立独立的绘制边界，使子树与周围区域在不同时间变化时，有机会避免不必要的重复绘制。它作用于绘制失效传播和绘制遍历，不会把内部的布局或状态更新关闭。
+
+引擎可能根据内容复杂度和变化情况选择缓存栅格化结果，但不是每个 RepaintBoundary 都承诺生成一张永久缓存图片。增加边界也会增加对象和合成方面的成本；应放在确实存在不同绘制节奏的区域，并观察实际效果。
+
+## 6. 布局与渲染问题的定位 {#布局与渲染问题的定位}
+
+布局错误先从发生位置向上检查约束。记录当前轴的最小值、最大值、视口尺寸和 flex 条件，确认冲突是内容过大、没有有限上限，还是父节点强制了尺寸。只看子组件的 width 或 height 通常不足以解释结果。
+
+性能问题则先区分阶段：构建耗时高时检查不必要的重建和同步计算；布局耗时高时检查复杂约束、重复测量和列表范围；绘制或栅格化耗时高时，再检查复杂绘制、裁剪、图像和边界设置。
+
+使用接近目标环境的 profile 测量，并保留设备、构建方式、输入规模与操作路径。Debug 模式中的断言和调试成本会改变耗时；widget test 可以验证几何和重建行为，但不能替代真机 GPU、滚动流畅度或能耗测量。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 Flutter 布局中的约束、尺寸和位置如何传递？ {#constraints}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：父子职责、约束范围与指定尺寸的限制。
+
+**相关内容**：[盒布局的约束与尺寸](#盒布局的约束与尺寸)
+
+<details>
+<summary>参考回答</summary>
+
+**父节点向下给约束，子节点返回符合约束的尺寸，父节点再设置子节点位置。** 指定 width 只是组件参与布局的配置，不能越过父节点允许的范围。需要结合祖先约束和中间组件的转换规则，才能推出最终尺寸。
+
+</details>
+
+### 7.2 松约束与无界约束有什么区别？ {#constraint-types}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：最小值、最大值和最终尺寸。
+
+**相关内容**：[BoxConstraints 描述允许范围](#BoxConstraints描述允许范围)
+
+<details>
+<summary>参考回答</summary>
+
+**松约束指某轴最小值为零，无界指该轴最大值为无穷大。** 例如 0 到 200 同时是松约束和有界约束。无界最大值也不要求最终尺寸无限；希望占满最大值的组件需要得到额外的有限尺寸条件，否则可能无法布局。
+
+</details>
+
+### 7.3 Row 中的长文本为什么溢出，Expanded 应怎样使用？ {#flex}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：非 flex 测量、剩余空间与无界主轴。
+
+**相关内容**：[Flex 布局与溢出](#Flex布局与溢出)
+
+<details>
+<summary>参考回答</summary>
+
+**非 flex 长文本可能没有得到有限主轴宽度，先按很宽的尺寸布局后超过 Row 的空间。** 在有界 Row 中用 Expanded 或合适的 Flexible，让文本按分配的剩余宽度布局，再选择换行或省略策略。若 Flex 主轴本身无界，Expanded 不能凭空得到有限剩余量，应先确定视口与滚动结构。
+
+</details>
+
+### 7.4 ListView 的高度无限错误，能否一律用 shrinkWrap 修复？ {#viewport}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：视口、内容尺寸、布局契约和成本。
+
+**相关内容**：[视口有界，内容可以更长](#视口有界内容可以更长)
+
+<details>
+<summary>参考回答</summary>
+
+**不能一律使用，要先判断列表应该占有限视口还是按内容收缩。** 页面主体列表可以由有界父节点分配剩余高度；真正需要内容包裹尺寸时才选择 shrinkWrap。后者在滚动过程中可能反复计算尺寸，并可能扩大布局范围，不是没有代价的错误消除开关。
+
+</details>
+
+### 7.5 ListView.builder 相比直接提供子项列表，有什么性能特点？ {#lazy-list}
+
+**考察重点**：按需创建、可见附近缓存、固定尺寸与状态保留。
+
+**相关内容**：[ListView.builder 按需要创建子项](#ListViewbuilder按需创建子项)、[子项保活与业务数据缓存](#子项保活与业务数据缓存)
+
+<details>
+<summary>参考回答</summary>
+
+**builder 在需要时创建子项，避免预先创建整个长列表的 Widget。** 需要的范围可能包含可见区域附近缓存，不能保证只构建屏幕上的项目或每项只构建一次。已知真实固定高度时可提供 itemExtent；保活要按需要选择，重要业务状态放在列表外部。可重排惰性列表还要处理稳定 Key 与新下标映射。
+
+</details>
+
+### 7.6 Flutter 的界面渲染流程是什么？ {#frame}
+
+**考察重点**：构建、布局、绘制、Layer 与引擎提交。
+
+**相关内容**：[从构建到一帧场景](#从构建到一帧场景)
+
+<details>
+<summary>参考回答</summary>
+
+**框架先更新需要重建的 Element，再完成必要布局、合成信息和绘制，组织场景交给引擎。** 布局确定几何，绘制产生记录与 Layer 层次，场景提交后还需引擎栅格化和平台显示。各阶段处理不同失效信息，因此 Widget 重建不等于立即重新布局、重绘整屏。
+
+</details>
+
+### 7.7 RepaintBoundary 能否阻止子树重建，并保证缓存成图片？ {#paint-boundary}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：绘制边界与构建、布局、栅格缓存的区别。
+
+**相关内容**：[Layer 与重绘边界](#Layer与重绘边界)
+
+<details>
+<summary>参考回答</summary>
+
+**不能。它主要隔离绘制失效和绘制工作，不关闭子树的 build 或 layout。** 引擎是否缓存栅格结果还取决于具体内容和策略，不是无条件承诺。应在绘制节奏确实不同的区域评估收益，并考虑增加的边界和合成成本。
+
+</details>
+
+### 7.8 页面卡顿时，为什么不能只统计 build 次数？ {#diagnosis}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：阶段成本、测量环境和因果判断。
+
+**相关内容**：[布局与渲染问题的定位](#布局与渲染问题的定位)
+
+<details>
+<summary>参考回答</summary>
+
+**build 次数不能说明每次工作的成本，也不能代表布局、绘制和栅格化耗时。** 应根据 profile 数据区分阶段，再检查同步计算、重复测量、列表范围或复杂绘制等实际原因。在固定设备、输入和操作路径下比较，widget test 的几何验证不能替代真机帧耗时测量。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [Flutter：Understanding constraints](https://docs.flutter.dev/ui/layout/constraints)
+- [Flutter：BoxConstraints](https://api.flutter.dev/flutter/rendering/BoxConstraints-class.html)
+- [Flutter：WidgetsBinding.drawFrame](https://api.flutter.dev/flutter/widgets/WidgetsBinding/drawFrame.html)
+- [Flutter：ListView.builder](https://api.flutter.dev/flutter/widgets/ListView/ListView.builder.html)
+- [Flutter：RepaintBoundary](https://api.flutter.dev/flutter/widgets/RepaintBoundary-class.html)
+- [Flutter：ScrollView.shrinkWrap](https://api.flutter.dev/flutter/widgets/ScrollView/shrinkWrap.html)
+- [Flutter：Row](https://api.flutter.dev/flutter/widgets/Row-class.html)
+- [Flutter：Column](https://api.flutter.dev/flutter/widgets/Column-class.html)
+- [Flutter：Flexible](https://api.flutter.dev/flutter/widgets/Flexible-class.html)
+- [Flutter：Expanded](https://api.flutter.dev/flutter/widgets/Expanded-class.html)
+- [Flutter：RenderSliver](https://api.flutter.dev/flutter/rendering/RenderSliver-class.html)
+- [Flutter：ListView](https://api.flutter.dev/flutter/widgets/ListView-class.html)
+- [Flutter：IntrinsicHeight](https://api.flutter.dev/flutter/widgets/IntrinsicHeight-class.html)
+- [Flutter：SliverChildBuilderDelegate.findChildIndexCallback](https://api.flutter.dev/flutter/widgets/SliverChildBuilderDelegate/findChildIndexCallback.html)
+- [Flutter 3.24.3：widgets/binding.dart](https://github.com/flutter/flutter/blob/3.24.3/packages/flutter/lib/src/widgets/binding.dart)
+- [Flutter 3.24.3：rendering/binding.dart](https://github.com/flutter/flutter/blob/3.24.3/packages/flutter/lib/src/rendering/binding.dart)
+- [Flutter 3.24.3：scroll_view.dart](https://github.com/flutter/flutter/blob/3.24.3/packages/flutter/lib/src/widgets/scroll_view.dart)
+- [Flutter 3.24.3：viewport.dart](https://github.com/flutter/flutter/blob/3.24.3/packages/flutter/lib/src/rendering/viewport.dart)

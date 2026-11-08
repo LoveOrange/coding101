@@ -1,0 +1,227 @@
+---
+sidebar_position: 1
+knowledge:
+  id: basic-knowledge.python.concurrency.threads-processes-gil
+  type: concept
+description: "解释常规 CPython 中 GIL 对线程执行的影响，比较线程、进程与异步 I/O，使用可复现竞争与线程池、进程池例子说明同步、结果传播和关闭边界。"
+keywords: [Python 并发, GIL, 线程, 进程, ThreadPoolExecutor, ProcessPoolExecutor]
+---
+
+# Python 并发
+
+Python 可以用线程重叠 I/O 等待，用进程分担独立计算，也可以通过异步 I/O 在一个事件循环里协调大量等待任务。选择执行模型前，先判断时间主要花在等待还是计算，再考虑数据共享、通信成本与资源限制。
+
+常规带 GIL 的 CPython 中，同一个解释器里通常只有一个线程执行 Python 字节码。这会限制纯 Python 计算的线程并行，但不表示线程无法重叠等待，也不表示业务共享状态自动安全。本文以这类 CPython 配置为主；可禁用 GIL 的自由线程构建是不同配置，不能把两者结论混用。
+
+## 1. 面试核心 {#core}
+
+- **并发是多个任务在一段时间内交替或重叠推进，并行是同时执行**。线程、进程和异步 I/O 的区别不能只按 API 名称判断。[卡](#execution-model)
+- GIL 限制常规 CPython 中 Python 字节码的线程并行，**I/O 等待和主动释放 GIL 的扩展计算仍可让其他线程推进**。[卡](#gil-boundary)
+- GIL 不保证读取、计算和写回这一组业务操作不可分割，**共享不变量仍需锁、队列或明确的所有权设计**。[卡](#gil-race)
+- 进程拥有独立地址空间，跨进程传递结果常涉及序列化和通信。**计算收益必须覆盖启动、传输和结果合并成本**。[卡](#process-pool-boundary)
+- 任务提交不等于成功完成，**必须消费结果或检查 Future，才能观察任务异常**。等待超时也不代表正在执行的任务已被终止。[卡](#future-lifecycle)
+
+## 2. 执行模型 {#执行模型}
+
+| 模型 | 状态关系 | 适合先考虑的负载 | 主要代价 |
+| --- | --- | --- | --- |
+| 线程 | 同进程共享内存 | 网络、文件等 I/O 等待，或释放 GIL 的扩展计算 | 共享状态同步、线程数量与资源限制 |
+| 进程 | 各自地址空间 | 可拆分、计算量足够大的任务 | 创建、序列化、跨进程通信与内存 |
+| 异步 I/O | 任务通常在事件循环中协作推进 | 有异步接口的大量等待任务 | 阻塞调用会卡住循环，需管理取消与任务生命周期 |
+
+I/O 密集任务并非没有计算，而是主要耗时来自等待。CPU 密集任务则主要耗在计算。对于混合负载，可以分别测量等待和计算阶段，不必强行给整个系统只贴一个标签。
+
+异步函数也不会因为写了 `async` 就自动把阻塞操作放到其他线程。事件循环里的长时间同步计算会阻止其他协作任务推进，需要调整工作边界。协程、任务组、超时与取消的具体规则见 [asyncio](./asyncio.mdx)。
+
+## 3. GIL 的作用与边界 {#gil-的作用与边界}
+
+**全局解释器锁**（GIL）协调常规 CPython 中线程对解释器内部状态的访问。持有这把锁的线程可以执行相应 Python 代码，其他线程需要等待或在允许的边界获得执行机会。
+
+阻塞 I/O 会在相应实现中释放 GIL，让其他线程执行。某些数值计算扩展也会在不操作 Python 对象的计算阶段释放 GIL，因此“CPU 任务一定不能从线程获益”仍然过于绝对，需要看工作实际由谁完成。
+
+纯 Python 的紧密计算循环在常规 GIL 配置下，增加线程通常不能直接获得多核计算加速，还可能增加切换成本。要比较效果，应固定工作量与资源，测量吞吐、耗时和调度开销。
+
+自由线程 CPython 构建可以采用不同的 GIL 配置，但库是否兼容、运行时是否启用 GIL、对象访问如何同步仍需要确认。不能因为存在这种构建，就在面试中省略当前讨论的解释器和配置条件。
+
+## 4. 共享状态与同步 {#共享状态与同步}
+
+**数据竞争问题**可能发生在多个任务的操作交错破坏业务约束时。即使任意瞬间只有一个线程执行 Python 字节码，一组包含多步的操作仍然可能被另一个线程插入。
+
+下面用同步屏障固定交错顺序，让两个线程都先读旧值，再分别写回。屏障要求两个线程都到达后才继续。
+
+```python
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
+
+counter = {"value": 0}
+barrier = Barrier(2)
+
+def increment(_):
+    previous = counter["value"]
+    barrier.wait()
+    counter["value"] = previous + 1
+
+with ThreadPoolExecutor(max_workers=2) as pool:
+    list(pool.map(increment, range(2)))
+print(counter["value"])  # 1，两次更新读取了同一个旧值
+```
+
+程序执行了两次“加一”，结果却是 `1`。这里不依赖碰运气观察调度，也不把某个版本中一条表达式的字节码实现当作永久保证。
+
+需要保护的是整个读改写约束，可以使用同一把锁包围这段操作：
+
+```python
+from concurrent.futures import ThreadPoolExecutor
+from threading import Lock
+
+counter = {"value": 0}
+lock = Lock()
+
+def increment_many(_):
+    for _ in range(1000):
+        with lock:
+            counter["value"] += 1
+
+with ThreadPoolExecutor(max_workers=2) as pool:
+    list(pool.map(increment_many, range(2)))
+print(counter["value"])  # 2000
+```
+
+所有访问同一不变量的写操作都要遵守同步约定。只锁一处、其他路径仍无锁修改，并不能建立完整保护。通过线程安全队列移交任务或避免共享可变状态，也可以减少直接竞争。
+
+## 5. 线程池与任务结果 {#线程池与任务结果}
+
+线程池复用工作线程，限制同时执行的任务数量。`Future` 表示已提交任务的后续结果；任务失败会在读取结果时重新抛出相应异常。
+
+```python
+from concurrent.futures import ThreadPoolExecutor
+
+def parse(text):
+    return int(text)
+
+with ThreadPoolExecutor(max_workers=2) as pool:
+    future = pool.submit(parse, "bad")
+    try:
+        future.result()
+    except ValueError:
+        print("task failed")  # task failed
+```
+
+只调用 `submit` 后不检查结果，主流程可能没有观察到失败。`map` 也要实际消费返回的结果迭代器，才能在取对应结果时看到异常。
+
+`future.result(timeout=...)` 限制本次等待时间；超时后，后台任务可能仍在运行。`cancel()` 通常只能取消尚未开始的任务，不能保证强制终止已经执行的函数。请求本身还需要连接、读取等超时，长期任务则需要能合作停止的检查点。
+
+`with ThreadPoolExecutor(...)` 正常退出时会等待相应任务收尾。并发测试还需控制任务总量，避免工作线程有限但待执行队列持续堆积，最终把压力转移到内存和外部服务。
+
+## 6. 进程池与数据传递 {#进程池与数据传递}
+
+进程池把任务交给其他进程执行，能够让独立计算利用多个核心。不同进程不直接共享普通全局字典，参数与结果需要通过进程间机制传递。
+
+下面是完整脚本，应保存到 `.py` 文件执行：
+
+```python
+from concurrent.futures import ProcessPoolExecutor
+
+def square(value):
+    return value * value
+
+if __name__ == "__main__":
+    with ProcessPoolExecutor(max_workers=2) as pool:
+        print(list(pool.map(square, [2, 3, 4])))  # [4, 9, 16]
+```
+
+这个小计算用于说明接口与结果，不代表进程池处理它更快。实际任务要有足够计算量，才能摊薄进程启动与数据传输成本。
+
+工作函数和数据必须满足进程池的序列化及导入要求。把工作函数定义在模块顶层，并使用主程序保护，可以避免采用启动新解释器方式时，导入模块又递归创建进程。嵌套函数或 lambda 通常不适合直接作为这类进程池任务。
+
+需要共享结果时可以由父进程收集返回值，也可以按明确需求使用队列、共享内存或管理器。共享机制本身也有成本，不能把“用了进程”直接当成“无需同步”。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 Python 中线程、进程与异步 I/O 应怎样选择？ {#execution-model}
+
+**考察重点**：等待与计算、共享关系和执行成本。
+
+**相关内容**：[执行模型](#执行模型)、[进程池与数据传递](#进程池与数据传递)。
+
+<details>
+<summary>参考回答</summary>
+
+**先看主要瓶颈和接口形态。** 常规 CPython 中，I/O 等待任务可以考虑线程；有异步接口且并发量大时可以考虑异步 I/O；可拆分且计算量足够的纯 Python CPU 任务可以考虑进程。
+
+还要比较同步、序列化、启动、内存和外部资源成本。释放 GIL 的扩展计算可能从线程并行获益，不能只按“Python”这个语言名称判断。
+
+</details>
+
+### 7.2 GIL 是否意味着 Python 线程完全没有并发价值？ {#gil-boundary}
+
+**考察重点**：解释器配置、字节码执行与 I/O 或扩展行为。
+
+**相关内容**：[GIL 的作用与边界](#gil-的作用与边界)。
+
+<details>
+<summary>参考回答</summary>
+
+**不是。GIL 主要限制常规 CPython 中同一解释器里的 Python 字节码线程并行。** 阻塞 I/O 在相应实现中释放 GIL，其他线程仍能推进，某些扩展也会在计算阶段释放 GIL。
+
+纯 Python 的 CPU 密集循环通常不能简单靠增加线程利用多个核心。回答时要说明 CPython 与 GIL 配置，自由线程构建不能与常规配置混为一个结论。
+
+</details>
+
+### 7.3 有 GIL，为什么共享计数仍可能丢失更新？ {#gil-race}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：多步操作交错与业务不变量。
+
+**相关内容**：[共享状态与同步](#共享状态与同步)。
+
+<details>
+<summary>参考回答</summary>
+
+**GIL 没有把任意一组业务操作变成不可分割的整体。** 两个线程可以先后读取同一个旧值，再各自计算并写回相同的新值，造成一次更新被覆盖。
+
+应使用共同的锁保护完整读改写过程，或用队列和状态所有权减少共享。不能把某次运行没有复现竞争，当成已经证明线程安全。
+
+</details>
+
+### 7.4 进程池为什么不一定比线程池或顺序执行更快？ {#process-pool-boundary}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：计算粒度、启动和通信成本、序列化约束。
+
+**相关内容**：[进程池与数据传递](#进程池与数据传递)。
+
+<details>
+<summary>参考回答</summary>
+
+**进程池有进程启动、参数序列化、数据传输和结果合并成本。** 任务太小、共享数据太大或主要时间仍在等待时，这些成本可能超过并行收益。
+
+要把任务拆成合适粒度，使用可导入的工作函数与可传递数据，再用同样工作量测量。普通全局对象在进程间独立，确实需要共享时还要设计通信和同步。
+
+</details>
+
+### 7.5 Future 等待超时是否说明任务已经停止，怎样观察任务异常？ {#future-lifecycle}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：提交、执行、等待和取消的不同状态。
+
+**相关内容**：[线程池与任务结果](#线程池与任务结果)。
+
+<details>
+<summary>参考回答</summary>
+
+**等待超时只结束本次等待，不保证后台任务已停止。** 已经开始的任务通常不能靠 `cancel()` 强制终止，需要任务自身的超时和合作取消机制。
+
+用 `Future.result()` 或消费 `map` 的结果观察任务返回与异常。只提交而不检查结果，可能让主流程错过实际失败。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [Python 3.12 threading：GIL 与线程](https://docs.python.org/3.12/library/threading.html)
+- [Python 3.12 multiprocessing：进程与主程序保护](https://docs.python.org/3.12/library/multiprocessing.html)
+- [Python 3.12 concurrent.futures：执行器与结果](https://docs.python.org/3.12/library/concurrent.futures.html)
+- [Python：自由线程构建的配置边界](https://docs.python.org/3.14/howto/free-threading-python.html)

@@ -1,0 +1,275 @@
+---
+sidebar_position: 4
+knowledge:
+  id: basic-knowledge.python.language.context-managers
+  type: concept
+description: "解释 Python with 语句与上下文管理器协议，讲清进入失败、异常传播、异常抑制及生成器式清理，帮助为文件、锁和测试资源设计明确的生命周期。"
+keywords: [Python with, 上下文管理器, __enter__, __exit__, contextmanager]
+---
+
+# Python 上下文管理器
+
+**上下文管理器**把进入一段代码前的准备与离开时的收尾放在同一个对象里。`with` 使用这套协议管理文件、锁和临时状态，让正常返回与异常路径都能经过相应清理。
+
+它解决的是资源生命周期的组织问题。资源最终是否关闭、异常是否继续传播，仍然取决于管理器的实现。理解 `try/finally` 的基本行为后，再看这层封装会更清楚，相关前置见 [Python 异常处理](./exceptions.mdx#else-与-finally)。
+
+## 1. 面试核心 {#core}
+
+- `with manager as value` 先调用 `__enter__()`，**`value` 接收的是它的返回值**，不保证等于 `manager`。[卡](#context-protocol)
+- 进入成功后，离开代码块会调用 `__exit__()`；**如果 `__enter__()` 自身失败，当前管理器的 `__exit__()` 不会自动执行**，部分获取的资源要自行回收。[卡](#enter-failure)
+- 异常发生时，`__exit__` 接收异常类型、对象与 traceback；**返回真值会抑制该异常，返回假值通常让它继续传播**。做完清理不代表应该抑制异常。[卡](#exception-suppression)
+- `@contextmanager` 可以把准备、使用和清理写在一个生成器函数中。**只产出一次值，并用 `try/finally` 保护 `yield`**，才能覆盖块内失败时的清理。[卡](#generator-context)
+- 多个管理器按顺序进入、按相反顺序退出。**后一个进入失败时，已经进入成功的前一个仍会退出**，适合表达嵌套资源的依赖。[卡](#nested-resources)
+
+## 2. with 的执行过程 {#with-的执行过程}
+
+上下文管理器通常实现两个方法：`__enter__` 在进入时执行，`__exit__` 在退出时执行。下面用事件记录展示次序，不涉及外部文件或网络。
+
+```python
+class Session:
+    def __init__(self, events):
+        self.events = events
+
+    def __enter__(self):
+        self.events.append("enter")
+        return "active-session"
+
+    def __exit__(self, exc_type, exc, traceback):
+        self.events.append("exit")
+        return False
+
+events = []
+manager = Session(events)
+with manager as session:
+    events.append(session)
+print(events)  # ['enter', 'active-session', 'exit']
+```
+
+`session` 得到字符串，因为 `__enter__` 返回字符串；它没有被自动绑定为 `manager`。这里的 `self` 表示调用这些方法的实例，所以两个方法操作的是同一个 `events` 列表。
+
+执行 `with` 大致经过以下步骤：
+
+1. 求出管理器对象并准备上下文协议。
+2. 调用 `__enter__()`；有 `as` 时，把返回值绑定给目标。
+3. 执行代码块。
+4. 根据正常结束还是异常离开，调用 `__exit__()` 并决定是否继续传播异常。
+
+`with` 不创建新的函数作用域。代码块结束后，`as` 绑定的名称通常仍可访问，但名称引用的资源可能已经关闭，不能因此继续使用。
+
+## 3. 资源释放与异常传播 {#资源释放与异常传播}
+
+正常离开代码块时，`__exit__` 收到的三个参数都是 `None`。块内有异常时，三个参数分别是异常类型、异常对象和用于定位调用路径的 traceback。
+
+```python
+import io
+
+stream = io.StringIO("result")
+try:
+    with stream as current:
+        print(current.read())  # result
+        raise ValueError("invalid result")
+except ValueError:
+    print("failed")           # failed
+
+print(stream.closed)          # True
+```
+
+`StringIO` 的管理器在退出时关闭流，但没有吞掉 `ValueError`，因此外层处理器仍能得到失败。释放资源与处理业务错误可以同时成立，不需要在“关闭”和“报告错误”之间选一个。
+
+### 3.1 异常抑制 {#异常抑制}
+
+`__exit__` 返回真值，表示当前异常已被处理，`with` 之后的代码可以继续执行。只有管理器确实知道该异常可以忽略或已经恢复时，才应这样做。
+
+```python
+class IgnoreMissing:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return exc_type is not None and issubclass(exc_type, KeyError)
+
+with IgnoreMissing():
+    {}["missing"]
+print("continued")  # continued
+```
+
+这个管理器只抑制 `KeyError` 及其子类，其他异常继续传播。若简单地 `return True`，断言失败、类型错误乃至退出信号都可能被隐藏，测试代码尤其需要避免这种过宽行为。
+
+`__exit__` 自己抛出新异常时，调用方最终看到的是新异常，原来的异常通常保留在异常上下文中。因而返回假值能够继续原异常的前提，是清理过程本身没有用新失败打断它。
+
+### 3.2 进入失败 {#进入失败}
+
+当前管理器只有进入成功后，才有对应的自动退出责任。
+
+```python
+class BrokenEntry:
+    def __init__(self, events):
+        self.events = events
+
+    def __enter__(self):
+        self.events.append("enter")
+        raise RuntimeError("setup failed")
+
+    def __exit__(self, exc_type, exc, traceback):
+        self.events.append("exit")
+
+events = []
+try:
+    with BrokenEntry(events):
+        events.append("body")
+except RuntimeError:
+    pass
+print(events)  # ['enter']
+```
+
+代码块和 `__exit__` 都未执行。如果 `__enter__` 已经打开一个资源，随后验证另一项条件时失败，不能指望这个管理器自动调用 `__exit__` 收尾。应在获取步骤周围安排自己的清理，或把独立资源拆成多个上下文管理器。
+
+## 4. 生成器式上下文管理器 {#生成器式上下文管理器}
+
+`contextlib.contextmanager` 把一个只产出一次值的生成器函数包装成上下文管理器。**生成器**可以在 `yield` 暂停，之后从暂停点继续执行；这里用暂停点划分进入与退出。
+
+```python
+from contextlib import contextmanager
+
+@contextmanager
+def tracked_session(events):
+    events.append("acquire")
+    try:
+        yield "session"
+    finally:
+        events.append("release")
+
+events = []
+try:
+    with tracked_session(events) as session:
+        events.append(session)
+        raise ValueError("body failed")
+except ValueError:
+    events.append("caught")
+print(events)  # ['acquire', 'session', 'release', 'caught']
+```
+
+进入时执行到 `yield`，产出的值绑定给 `session`。代码块正常结束时，生成器从 `yield` 后继续；块内抛异常时，异常会在生成器暂停的 `yield` 位置重新抛入。因此必须用 `finally` 包围 `yield`，否则直接写在后面的清理可能被异常跳过。
+
+如果在生成器内部捕获异常只是为了记录，随后要重新 `raise`。捕获后不再抛出，会被视为管理器已经处理异常，导致外层看不到原失败。
+
+这个生成器必须只产出一次值。零次会让进入失败，多次则违反协议。`tracked_session(events)` 每次调用得到新的管理器，不能把一个已经耗尽的生成器式管理器当作可重复使用的对象。
+
+## 5. 多个资源的退出顺序 {#多个资源的退出顺序}
+
+多个管理器的使用等价于嵌套 `with`：先进入外层，再进入内层；离开时先退出内层，再退出外层。
+
+```python
+from contextlib import contextmanager
+
+@contextmanager
+def resource(name, events):
+    events.append("enter:" + name)
+    try:
+        yield name
+    finally:
+        events.append("exit:" + name)
+
+events = []
+with resource("A", events), resource("B", events):
+    events.append("body")
+print(events)
+# ['enter:A', 'enter:B', 'body', 'exit:B', 'exit:A']
+```
+
+如果 B 的进入过程抛异常，A 已经进入成功，会执行对应退出；B 自己没有进入成功，就没有自动退出。这个次序有助于处理依赖关系，例如先准备临时目录，再在目录内打开文件，退出时先关闭文件再删除目录。
+
+资源数量由运行时数据决定时，可以使用 `contextlib.ExitStack` 统一登记退出动作。固定一两个资源仍使用普通 `with`，不必为了统一形式引入额外层次。
+
+## 6. 面试题 {#面试题}
+
+### 6.1 with 语句依次调用什么，as 后的变量得到什么？ {#context-protocol}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：进入、绑定、代码块执行与退出协议。
+
+**相关内容**：[with 的执行过程](#with-的执行过程)。
+
+<details>
+<summary>参考回答</summary>
+
+**先调用 `__enter__`，把它的返回值交给 `as` 目标，再执行代码块，离开时调用 `__exit__`。** `as` 得到的值不保证是管理器本身，可以是管理器创建的其他对象。
+
+名称在块外仍可能存在，但资源是否还能使用取决于退出动作；文件等资源在退出后已经关闭。
+
+</details>
+
+### 6.2 __enter__ 抛异常时，__exit__ 会自动清理吗？ {#enter-failure}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：进入成功的边界与部分获取的资源责任。
+
+**相关内容**：[进入失败](#进入失败)。
+
+<details>
+<summary>参考回答</summary>
+
+**当前管理器的 `__enter__` 抛异常时，不会自动调用它的 `__exit__`。** 代码块也不会执行。
+
+如果进入过程中已经获取部分资源，进入逻辑需要自己处理失败清理，或者拆成多个嵌套管理器，让已经进入成功的外层负责退出。
+
+</details>
+
+### 6.3 __exit__ 返回 True 和 False 有什么区别？ {#exception-suppression}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：异常抑制与资源释放之间的独立关系。
+
+**相关内容**：[异常抑制](#异常抑制)。
+
+<details>
+<summary>参考回答</summary>
+
+**块内有异常时，返回真值抑制异常，返回假值让原异常继续传播，前提是 `__exit__` 自身没有抛出新异常。** 正常退出没有需要抑制的异常，返回值不会制造新的失败。
+
+完成清理通常不表示异常已恢复，因此清理完成后一般返回 `None` 或 `False`。只有明确可忽略的异常才按类型抑制。
+
+</details>
+
+### 6.4 为什么 contextmanager 中的 yield 通常要放在 try/finally 内？ {#generator-context}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：生成器暂停点与块内异常的重新抛入。
+
+**相关内容**：[生成器式上下文管理器](#生成器式上下文管理器)。
+
+<details>
+<summary>参考回答</summary>
+
+**块内异常会在生成器暂停的 `yield` 处重新抛出，`finally` 才能让正常和异常路径都经过清理。** 如果只把清理写在 `yield` 下一行，异常可能直接跳过它。
+
+生成器必须只产出一次值；若捕获异常只是记录，随后应重新抛出，否则会被视为已处理并隐藏外层失败。
+
+</details>
+
+### 6.5 多个上下文管理器如何进入和退出，后一个进入失败会怎样？ {#nested-resources}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：嵌套顺序与已建立资源的清理责任。
+
+**相关内容**：[多个资源的退出顺序](#多个资源的退出顺序)。
+
+<details>
+<summary>参考回答</summary>
+
+**按书写顺序进入，按相反顺序退出。** A 进入成功后，B 进入失败，A 会执行退出，B 自己的退出不会自动调用。
+
+因此资源依赖应按先获取基础资源、再获取依赖资源的顺序组织，让退出顺序自然反转。
+
+</details>
+
+## 7. 参考资料 {#参考资料}
+
+- [Python 3.12：with 语句](https://docs.python.org/3.12/reference/compound_stmts.html#the-with-statement)
+- [Python 3.12 数据模型：With Statement Context Managers](https://docs.python.org/3.12/reference/datamodel.html#with-statement-context-managers)
+- [Python 3.12 contextlib：contextmanager 与 ExitStack](https://docs.python.org/3.12/library/contextlib.html)

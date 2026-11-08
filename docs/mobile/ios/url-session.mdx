@@ -1,0 +1,382 @@
+---
+title: URLSession
+description: 理解 URLSession 的配置、会话、任务和代理，处理 HTTP 结果、取消、缓存、认证挑战与后台传输。
+knowledge:
+  id: mobile.ios.url-session
+---
+
+**URLSession** 是 Foundation 中协调网络传输任务的对象。一个会话可以创建多个任务，让它们共享配置和代理；任务负责一次具体传输，业务代码再解释响应内容。接到响应不等于业务成功，取消请求也不等于已经阻止旧结果更新界面，这些边界决定了网络层是否可靠。
+
+本文使用 Swift 5 语言模式，`async/await` 示例以 iOS 15 及以上为准。协议本身的连接复用与超时见 [HTTP](../../basic-knowledge/network/http-versions-connection-reuse-timeouts.mdx)，这里关注 iOS 如何组织和接收请求结果。
+
+## 1. 面试核心 {#core}
+
+- **配置决定策略，会话管理一组相关任务，任务代表具体传输**。会话复制创建时的配置，事后修改原配置不会改变既有会话。[卡](#session-reuse)
+- **传输成功、HTTP 成功和业务成功要分别判断**。收到 404、500 时不一定有传输错误；收到 200 后也可能解码失败或业务拒绝。[卡](#response-errors)
+- **回调任务创建后需要 `resume()`；`data(for:)` 等异步接口自行创建并启动任务**。完成回调运行在会话的 delegate queue，界面状态需要明确回到主线程或 MainActor。[卡](#callbacks)
+- **取消不是撤回已经发生的副作用，也不是旧结果绝不会到达的保证**。除了取消传输，还要用请求身份或版本判断结果是否仍属于当前界面。[卡](#cancellation)
+- **URLCache 保存 HTTP 响应，缓存能否使用还取决于请求策略和响应头**。它不能代替离线业务数据库，也不适合承诺永久保存文件。[卡](#cache)
+- **服务器信任默认交给系统校验**。自行处理认证挑战时，要检查认证类型、目标主机与证书信任，不能直接接受任何 `serverTrust`。[卡](#server-trust)
+- **断点续传需要客户端保存状态，也需要服务器支持和资源一致性**。下载的 resume data 可能不存在或失效，上传还需要服务端定义分片或偏移协议。[卡](#resuming)
+- **后台 URLSession 由系统进程承接传输，不是给应用一条永久运行的线程**。需要稳定标识符、代理回调和恢复处理；用户强退有单独的限制。[卡](#background)
+- **网络封装应保留错误、取消与任务身份的语义**，并让会话或传输接口可注入，才能验证失败、乱序和生命周期场景。[卡](#network-layer)
+
+## 2. 配置、会话与任务 {#配置会话与任务}
+
+### 2.1 三个对象各负责什么 {#三个对象各负责什么}
+
+`URLSessionConfiguration` 描述超时、缓存、Cookie、网络使用等策略；`URLSession` 按这些策略创建和管理传输；`URLSessionTask` 提供启动、取消和进度等能力。配置不是每次请求的业务数据，任务也不是会话的替代品。
+
+创建会话时系统会复制配置。因此，先创建 `URLSession`，再修改原配置的超时时间，并不会影响该会话。策略确实需要改变时，应创建配置合适的新会话，并处理旧会话中尚未结束的任务。
+
+| 配置或会话 | 适合的需求 | 需要注意的边界 |
+| --- | --- | --- |
+| `URLSession.shared` | 简单请求 | 定制能力有限，不适合承担所有账号、认证和后台策略 |
+| `.default` | 普通请求及可配置的缓存、Cookie、代理 | 按实际配置决定数据如何共享和持久化 |
+| `.ephemeral` | 不希望会话将缓存、Cookie、凭据持久化到磁盘 | 仍可使用内存状态，不等于匿名，也不约束应用自己写文件 |
+| `.background(withIdentifier:)` | 应用挂起期间仍需进行的文件传输 | 由系统调度，支持范围和回调方式受限制 |
+
+同类请求可以复用一个会话，减少重复配置，并让相关任务沿同一策略管理。没有“应用只能有一个 URLSession”的要求：前台 API、后台大文件和隔离账号状态可以有不同会话。即使创建了不同会话，也要检查是否仍显式使用同一个 Cookie 容器或缓存，不能只凭实例不同就认定数据已隔离。
+
+### 2.2 按数据去向选择任务 {#按数据去向选择任务}
+
+| 任务 | 主要用途 | 典型取舍 |
+| --- | --- | --- |
+| Data task | 收取内存中的数据，例如小型 JSON 响应 | 不宜把巨大文件整体装进内存 |
+| Download task | 将响应保存到临时文件 | 完成后及时读取或移动文件，不能长期保存临时路径 |
+| Upload task | 发送数据或文件 | 后台上传应使用文件作为来源 |
+| WebSocket task | WebSocket 双向消息 | 连接生命周期和消息协议需要另外管理 |
+
+用 `dataTask(with:completionHandler:)` 创建的任务初始为 suspended，需要调用 `resume()`。`await session.data(for: request)` 则已经封装了任务的创建、启动与等待，不需要再手动 `resume()`。这里的 `await` 暂停 Swift 任务，不应再加信号量把它改成阻塞主线程的调用。
+
+### 2.3 会话与代理何时释放 {#会话与代理何时释放}
+
+会话会强引用代理。若一个短期对象既保存会话，又成为其代理，不能只在自身 `deinit` 中处理释放，因为它可能正被会话持有，无法进入 `deinit`。
+
+会话的所有者应在职责结束时明确选择：`finishTasksAndInvalidate()` 让已有任务结束后失效，`invalidateAndCancel()` 取消已有任务并失效。失效后会话不能复用，系统也会在相应清理过程中解除对代理和回调对象的引用。不要在任意页面关闭时失效整个共享业务会话，以免取消其他页面的请求；对 `URLSession.shared` 调用这两个方法不起作用。
+
+## 3. 响应与错误 {#响应与错误}
+
+### 3.1 分三层判断结果 {#分三层判断结果}
+
+**传输错误**表示网络操作未正常完成，例如 DNS 失败、连接中断或 TLS 校验失败。**HTTP 状态码**是服务器返回的协议结果，例如 200、401、404、500。**业务结果**是接口协议表达的结果，例如账户冻结或库存不足。
+
+因此，`error == nil` 只说明没有通过这个错误参数报告传输失败。服务器完整返回一个 500 响应时，仍可能得到有效的 `HTTPURLResponse` 和响应体。异步接口也不会自动把所有非 2xx 响应转换成抛出的错误。
+
+下面用一个只接受 2xx 且要求 JSON 用户资料的接口说明分层处理。超时参数只是这个交互示例的策略，实际项目应按业务时限调整。
+
+```swift
+import Foundation
+
+struct Profile: Decodable, Sendable {
+    let id: Int
+    let name: String
+}
+
+enum ProfileAPIError: Error {
+    case nonHTTPResponse
+    case status(Int)
+}
+
+func makeProfileSession() -> URLSession {
+    let configuration = URLSessionConfiguration.default
+    configuration.timeoutIntervalForRequest = 15
+    configuration.timeoutIntervalForResource = 45
+    configuration.requestCachePolicy = .useProtocolCachePolicy
+    return URLSession(configuration: configuration)
+}
+
+struct ProfileAPI {
+    let session: URLSession
+
+    func fetch(from url: URL) async throws -> Profile {
+        let request = URLRequest(url: url)
+        let (data, response) = try await session.data(for: request)
+        try Task.checkCancellation()
+        guard let http = response as? HTTPURLResponse else {
+            throw ProfileAPIError.nonHTTPResponse
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            throw ProfileAPIError.status(http.statusCode)
+        }
+        return try JSONDecoder().decode(Profile.self, from: data)
+    }
+}
+```
+
+网络失败由 `data(for:)` 抛出；404、500 由 `ProfileAPIError.status` 表示；200 搭配错误 JSON 会产生解码错误。204 没有响应体，也无法满足这个“必须返回 Profile”的接口约定。若业务还在 JSON 中携带独立错误码，应解码对应响应结构，再按接口契约判断，不要把所有情况都归成“网络异常”。
+
+### 3.2 超时与重试并非一个开关 {#超时与重试并非一个开关}
+
+`timeoutIntervalForRequest` 约束等待后续数据的时间，收到新数据会重置相应计时；`timeoutIntervalForResource` 约束整个资源传输的总时限。把前者设成 15 秒，不能直接解释为“这个请求从开始到结束最多 15 秒”。
+
+`waitsForConnectivity` 控制建立连接时是否等待满足联网条件。它不是断线后的自动续传开关：连接已经建立后又中断，仍可能收到错误。后台会话会等待连接条件，该属性对它不起通常的开关作用。
+
+重试还必须判断请求是否可安全重复。查询失败可以在有限次数内退避重试；创建订单已经到达服务器、响应却丢失时，直接重复提交可能创建两笔订单。此时需要业务幂等标识或查询确认。认证失败、参数错误和确定的解码错误，也不应无条件循环重试。
+
+## 4. 回调、取消与界面生命周期 {#回调取消与界面生命周期}
+
+### 4.1 完成回调不默认在主线程 {#完成回调不默认在主线程}
+
+代理方法和 completion handler 在会话的 delegate queue 执行。创建会话时没有指定队列，系统会创建串行 OperationQueue；这不是“默认主队列”。自定义时也应保持代理事件处理有序，避免长时间阻塞这条队列。
+
+使用 completion handler 时，响应与数据通过该回调交付，不会再以同样的方式逐块交给数据代理；认证挑战等代理能力仍可能使用。业务层不能同时假设两套接收路径都会得到同一份完整数据。
+
+异步接口调用之后执行到哪里，还要根据调用方的 actor 隔离判断。不能把 delegate queue 的规则直接套到所有 `await` 后续代码上。界面模型明确使用 `@MainActor`，比根据某次日志猜测线程更可靠；相关规则见 [Swift 并发](../../basic-knowledge/swift/concurrency.mdx)。
+
+### 4.2 取消与结果有效性分别处理 {#取消与结果有效性分别处理}
+
+`URLSessionTask.cancel()` 发出取消请求后立即返回。取消得到确认之前仍可能有回调，已经传到服务器的数据和服务器副作用也不会被撤回。Swift 的 URLSession 异步接口会响应任务取消，但业务仍需要在接受结果时检查取消状态与当前请求身份。
+
+例如用户先请求 A，再请求 B；即使取消了 A，也应阻止 A 的旧结果覆盖 B。下面的界面模型用递增版本辨别请求，并在关闭时撤销当前版本。
+
+```swift
+import Foundation
+
+@MainActor
+final class ProfileScreenModel {
+    private(set) var profile: Profile?
+    private(set) var errorText: String?
+    private var generation = 0
+    private var requestTask: Task<Void, Never>?
+
+    func load(api: ProfileAPI, url: URL) {
+        generation += 1
+        let expected = generation
+        requestTask?.cancel()
+        profile = nil
+        errorText = nil
+        requestTask = Task { [weak self] in
+            do {
+                let value = try await api.fetch(from: url)
+                try Task.checkCancellation()
+                guard let self, self.generation == expected else { return }
+                self.profile = value
+            } catch {
+                guard !Task.isCancelled,
+                      let self, self.generation == expected else { return }
+                self.errorText = "加载失败，请重试"
+            }
+        }
+    }
+
+    func stop() {
+        generation += 1
+        requestTask?.cancel()
+        requestTask = nil
+    }
+
+    deinit { requestTask?.cancel() }
+}
+```
+
+`generation` 防止旧请求影响新状态，取消用于尽早停止无用工作；两者解决不同问题。任务只在处理结果时临时取得 `self`，不会在整个网络等待期间强持有模型。页面不再需要请求时调用 `stop()`，而不是假设退出页面一定立刻销毁模型。这个示例仅展示加载状态，真实界面可以按前面的错误分层决定登录引导、重试提示或错误上报。
+
+## 5. 缓存与认证 {#缓存与认证}
+
+### 5.1 URLCache 保存的是什么 {#URLCache保存的是什么}
+
+`URLCache` 按请求保存响应元数据和响应体，支持内存与磁盘容量。默认的 `.useProtocolCachePolicy` 按协议规则判断使用本地内容还是向服务器请求；`Cache-Control`、验证器与重新验证的具体语义见 [HTTP 缓存](../../basic-knowledge/network/http-cache.mdx)。
+
+显式选择 `.returnCacheDataElseLoad` 等策略，会改变是否优先接受已有缓存，必须先明确业务能否容忍旧数据。不能把“已有缓存”理解为“内容一定还新鲜”。用户退出登录时，还要检查 Cookie、凭据、响应缓存和业务本地数据分别如何清理，避免把上一个账号的内容交给下一个账号。
+
+HTTP 缓存可能被淘汰，磁盘数据也可能因空间压力清理。需要可靠保存的离线内容应由业务存储管理，包含版本和有效期；图片解码后的内存对象缓存则是另一层职责。
+
+### 5.2 认证挑战如何处理 {#认证挑战如何处理}
+
+**认证挑战**是 URL Loading System 要求应用提供或判断认证信息的回调。服务器信任挑战要求客户端确认服务端身份；它与“客户端向服务端提交账号密码”不是同一方向。
+
+普通 HTTPS 请求通常使用系统默认信任处理。确有自定义需求时，先匹配认证方式与准确的目标主机，再进行适合该主机的信任评估；没有自定义规则的挑战交给 `.performDefaultHandling`。不要用 `host.contains("example.com")` 作为可信域名判断，`example.com.attacker.test` 也可能满足这种字符串判断。
+
+证书或公钥固定是在既定安全策略上约束可接受的服务端身份，需要考虑证书轮换、备用密钥和失效恢复。直接拿到 `serverTrust` 就创建凭据并接受，会绕过应有的判断；全局关闭 ATS 也不是修复证书问题的方法。证书链与主机身份的原理见 [TLS](../../basic-knowledge/network/tls.mdx)。
+
+## 6. 文件传输与后台会话 {#文件传输与后台会话}
+
+### 6.1 临时文件与断点续传 {#临时文件与断点续传}
+
+下载代理 `urlSession(_:downloadTask:didFinishDownloadingTo:)` 得到临时文件 URL。需要保留文件时，应在代理方法返回前移动到应用管理的位置，并处理目标冲突、磁盘空间和文件操作失败。仅把 URL 放进一个稍后执行的异步闭包，不能保证那时临时文件仍在。
+
+`cancel(byProducingResumeData:)` 可以尝试生成下载恢复数据，再交给 `downloadTask(withResumeData:)`。返回值可为空：可恢复下载要求 GET、服务器支持字节范围、响应有 ETag 或 Last-Modified、资源未改变，而且临时文件仍然存在。恢复失败时应有重新下载的路径，不能把 resume data 当成永久有效的文件偏移。
+
+上传断点续传不能直接套用下载的 resume data。通用业务方案需要服务器提供上传标识、已接收的分片或偏移、分片校验及最终合并确认；客户端保存状态，重试时查询进度并保证重复分片可识别。只有客户端记住“已经发送了多少字节”，无法证明服务器已接收并持久保存这些字节。
+
+### 6.2 后台传输怎样交还结果 {#后台传输怎样交还结果}
+
+后台会话把传输交给应用进程之外的系统服务。应用挂起时可以继续传输；系统终止应用之后，也可以通过相同会话标识重新关联任务。它不是保证应用代码持续运行，也不承诺任务在某个精确时刻开始。
+
+典型恢复链路是：
+
+1. 用稳定且在应用内唯一的标识创建后台配置，并提供代理。
+2. 创建下载或基于文件的上传任务，调用 `resume()`；可延迟的大文件按需要设置 `isDiscretionary`。
+3. 系统把后台事件交回应用时，在 `application(_:handleEventsForBackgroundURLSession:completionHandler:)` 保存完成处理器，并确保对应会话已重建。
+4. 处理下载文件、失败与业务状态；事件交付完成并且应用所需处理已结束后，在主队列调用保存的完成处理器，并清除它，避免重复调用。
+
+后台会话只支持 HTTP/HTTPS，不支持自定义 URLProtocol；事件需要通过代理交付。应用退出后仍要完成的上传必须使用文件来源，不能依赖只存在于进程内的 Data 或流。
+
+用户从多任务界面强退应用时，系统会取消其后台传输，也不会为这些任务自动重新启动应用。这个条件与“系统因资源原因终止应用”不同，回答后台下载能力时必须说明。
+
+## 7. 网络层的职责 {#网络层的职责}
+
+网络层应统一组织传输策略，同时把业务必须作出的判断保留下来。一个可解释的分工是：
+
+- 请求构建负责 URL、参数、认证头和接口约定，避免各页面手工拼接。
+- 传输层负责会话、任务、取消和协议响应，不把所有失败抹平成 `nil`。
+- 解析层检查 HTTP 约定并解码模型，业务层再解释业务状态。
+- 页面根据当前请求身份接受结果，并在自己的生命周期结束时停止不再需要的工作。
+- 观测记录耗时、状态与错误阶段，排除令牌、密码等敏感内容；测试通过注入会话或传输接口控制响应。
+
+验证至少包括成功 JSON、非 2xx、畸形 JSON、传输失败、取消、先发后到和页面离开。URLProtocol 可以替换普通会话中的请求处理，适合确定地制造这些情况；它不能证明真实 TLS 握手、服务端幂等或后台守护进程行为，这些需要对应的集成环境。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 为什么同类请求通常复用 URLSession？一定只能创建一个吗？ {#session-reuse}
+
+**考察重点**：配置、会话、任务的责任与策略隔离。
+
+**相关内容**：[配置、会话与任务](#配置会话与任务)。
+
+<details>
+<summary>参考回答</summary>
+
+**复用会话能让相关任务共享一致策略和管理方式，但不是全应用只能有一个会话。** 前台 API、后台传输和需要隔离的账号状态可以分别配置。还应检查缓存、Cookie 等实际存储对象是否共享。会话复制创建时的配置，修改原配置不影响既有会话。
+
+</details>
+
+### 8.2 URLSession 没有返回 error，就说明接口成功了吗？ {#response-errors}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：传输、HTTP、解码和业务错误的分层。
+
+**相关内容**：[响应与错误](#响应与错误)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能。没有传输错误仍可能收到 404 或 500，2xx 也可能不满足业务或解码约定。** 先处理传输失败，再检查 `HTTPURLResponse.statusCode`，最后按接口协议解码与判断业务结果。`data(for:)` 不会自动将所有非 2xx 转成异常。
+
+</details>
+
+### 8.3 URLSession 的完成回调在哪个线程执行？async 接口还要 resume 吗？ {#callbacks}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：delegate queue、回调任务与 Swift 异步接口的区别。
+
+**相关内容**：[按数据去向选择任务](#按数据去向选择任务)、[完成回调不默认在主线程](#完成回调不默认在主线程)。
+
+<details>
+<summary>参考回答</summary>
+
+**completion handler 在会话的 delegate queue 执行，不默认在主线程。** 界面更新应明确切到主线程或 MainActor。手动创建的 data task 需要 `resume()`；`data(for:)` 自行创建并启动任务，直接 `await` 即可。异步函数恢复后的执行还应按调用方 actor 隔离理解。
+
+</details>
+
+### 8.4 取消上一次请求，为什么还需要判断请求身份？ {#cancellation}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：取消的异步性、乱序响应和界面生命周期。
+
+**相关内容**：[取消与结果有效性分别处理](#取消与结果有效性分别处理)。
+
+<details>
+<summary>参考回答</summary>
+
+**取消用于停止不再需要的工作，请求身份用于决定结果能否进入当前状态。** 取消确认前可能仍有回调，已经完成的服务器操作也不能撤回。新请求开始或页面停止时更新版本，处理结果时只接受匹配版本，并检查任务取消状态，避免旧请求覆盖新请求。
+
+</details>
+
+### 8.5 URLCache 能直接当成离线业务数据库吗？ {#cache}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：HTTP 响应缓存、新鲜度与业务持久化的边界。
+
+**相关内容**：[URLCache 保存的是什么](#URLCache保存的是什么)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能。URLCache 管理可淘汰的 HTTP 响应，不提供业务数据永久保存的承诺。** 是否可用由请求策略、响应头和缓存状态共同决定。离线业务需要明确模型、版本、账号归属及同步策略，重要文件也应移动到应用管理的位置。
+
+</details>
+
+### 8.6 iOS 中如何处理 HTTPS 的服务器证书校验？ {#server-trust}
+
+**考察重点**：服务器信任挑战、默认处理和自定义校验条件。
+
+**相关内容**：[认证挑战如何处理](#认证挑战如何处理)。
+
+<details>
+<summary>参考回答</summary>
+
+**通常交给系统默认信任处理；确有定制需求再处理服务器信任挑战。** 自定义时匹配认证类型和准确主机，验证对应信任策略，必要时增加证书或公钥固定并考虑轮换。不能直接接受任意 `serverTrust`，也不能靠关闭 ATS 修复证书错误。
+
+</details>
+
+### 8.7 上传和下载的断点续传分别需要哪些条件？ {#resuming}
+
+**考察重点**：客户端状态、服务器支持与资源一致性。
+
+**相关内容**：[临时文件与断点续传](#临时文件与断点续传)。
+
+<details>
+<summary>参考回答</summary>
+
+**下载可尝试使用 URLSession 的 resume data，上传通常需要服务端定义恢复协议。** 下载要求 GET、资源未变、ETag 或 Last-Modified、字节范围支持及可用临时文件，恢复数据可能为空或失效。上传应有上传标识、已确认分片或偏移、校验与幂等处理；本地“已发送字节数”不能证明服务端已持久接收。
+
+</details>
+
+### 8.8 后台 URLSession 能保证强退后继续下载吗？ {#background}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：系统承接传输、会话恢复及用户强退的区别。
+
+**相关内容**：[后台传输怎样交还结果](#后台传输怎样交还结果)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能。应用挂起或被系统正常终止时可由系统服务继续传输，用户强退会取消后台传输。** 正常恢复需要使用相同标识重建会话，通过代理处理文件与事件，再在主队列完成系统交付的处理器。后台传输不是永久运行应用代码的许可。
+
+</details>
+
+### 8.9 设计一个 iOS 网络层，需要考虑哪些职责？ {#network-layer}
+
+**题型**：综合题
+
+**考察重点**：请求构建、传输与业务的边界，失败与生命周期验证。
+
+**相关内容**：[网络层的职责](#网络层的职责)、[响应与错误](#响应与错误)、[回调、取消与界面生命周期](#回调取消与界面生命周期)。
+
+<details>
+<summary>参考回答</summary>
+
+**先划分请求构建、会话传输、协议解析和页面状态，再明确失败与取消如何贯穿这些层。** 配置应可复用，错误需要保留层次，重试依赖幂等与业务约束，页面按请求身份接受结果。注入会话或传输接口，验证非 2xx、解码失败、取消、乱序与页面离开；缓存、认证和后台文件传输再按产品需求加入。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+
+- [Apple：URLSession](https://developer.apple.com/documentation/foundation/urlsession)
+- [Apple：URLSessionConfiguration](https://developer.apple.com/documentation/foundation/urlsessionconfiguration)
+- [Apple：data(for:delegate:)](https://developer.apple.com/documentation/foundation/urlsession/data(for:delegate:))
+- [Apple：resume()](https://developer.apple.com/documentation/foundation/urlsessiontask/resume())
+- [Apple：cancel()](https://developer.apple.com/documentation/foundation/urlsessiontask/cancel())
+- [Apple：finishTasksAndInvalidate()](https://developer.apple.com/documentation/foundation/urlsession/finishtasksandinvalidate())
+- [Apple：invalidateAndCancel()](https://developer.apple.com/documentation/foundation/urlsession/invalidateandcancel())
+- [Apple：delegateQueue](https://developer.apple.com/documentation/foundation/urlsession/delegatequeue)
+- [Apple：Downloading files in the background](https://developer.apple.com/documentation/foundation/downloading-files-in-the-background)
+- [Apple：urlSession(_:downloadTask:didFinishDownloadingTo:)](https://developer.apple.com/documentation/foundation/urlsessiondownloaddelegate/urlsession(_:downloadtask:didfinishdownloadingto:))
+- [Apple：cancel(byProducingResumeData:)](https://developer.apple.com/documentation/foundation/urlsessiondownloadtask/cancel(byproducingresumedata:))
+- [Apple：Performing manual server trust authentication](https://developer.apple.com/documentation/foundation/performing-manual-server-trust-authentication)
+- [Apple：timeoutIntervalForRequest](https://developer.apple.com/documentation/foundation/urlsessionconfiguration/timeoutintervalforrequest)
+- [Apple：timeoutIntervalForResource](https://developer.apple.com/documentation/foundation/urlsessionconfiguration/timeoutintervalforresource)
+- [Apple：waitsForConnectivity](https://developer.apple.com/documentation/foundation/urlsessionconfiguration/waitsforconnectivity)
+- [Apple：URLCache](https://developer.apple.com/documentation/foundation/urlcache)
+- [Apple：dataTask(with:completionHandler:)](https://developer.apple.com/documentation/foundation/urlsession/datatask(with:completionhandler:)-52wk8)
+- [Apple：background(withIdentifier:)](https://developer.apple.com/documentation/foundation/urlsessionconfiguration/background(withidentifier:))
+- [Apple：init(configuration:delegate:delegateQueue:)](https://developer.apple.com/documentation/foundation/urlsession/init(configuration:delegate:delegatequeue:))
+- [Apple：Fetching website data into memory](https://developer.apple.com/documentation/foundation/fetching-website-data-into-memory)

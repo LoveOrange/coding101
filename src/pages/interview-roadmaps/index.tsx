@@ -26,6 +26,25 @@ function OutlineGroup({
       </header>
       <div className={styles.grid}>
         {entries.map((entry) => {
+          if (entry.routes) {
+            return (
+              <div key={entry.id} className={styles.card}>
+                <span>{entry.id}</span>
+                <div className={styles.cardBody}>
+                  <strong>{entry.label}</strong>
+                  <div className={styles.routeLinks}>
+                    {entry.routes.map((route) => route.href ? (
+                      <Link key={route.label} to={route.href}>
+                        {route.label}{route.status === 'building' ? ' · 建设中' : ''}
+                      </Link>
+                    ) : (
+                      <span key={route.label}>{route.label} · 规划中</span>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            );
+          }
           const content = (
             <>
               <span>{entry.id}</span>
@@ -53,7 +72,7 @@ export default function InterviewRoadmaps(): JSX.Element {
   return (
     <Layout
       title="岗位面试路线"
-      description="从 Java 后端、Agent 开发或运维 / SRE 路线开始复习，其他岗位方向仍在规划。">
+      description="围绕后端、前端、移动端、测试、大数据、DevOps / SRE 和 AI 应用七个方向，选择岗位与技术栈安排复习。">
       <main className={styles.page}>
         <header className={styles.intro}>
           <p>Interview Roadmaps</p>
@@ -61,7 +80,7 @@ export default function InterviewRoadmaps(): JSX.Element {
           <div>
             <strong>通用基础</strong>
             <span>+</span>
-            <strong>Java、Agent、SRE 路线可用</strong>
+            <strong>七个岗位方向</strong>
           </div>
           <p>
             先选择目标岗位，再按“必会、常考、按岗选学”完成复习。路线会说明每个主题需要回答到基础、原理还是场景分析，不要求把目录中的所有内容都读完。
@@ -75,7 +94,7 @@ export default function InterviewRoadmaps(): JSX.Element {
         />
         <OutlineGroup
           title="岗位路线"
-          description="当前可用的是 Java 后端、AI Agent 工程和运维 / SRE 三条路线，其中 SRE 路线部分主题仍在编写。其余方向为规划，尚未提供完整的岗位复习内容。"
+          description="按岗位选择方向，再选一条技术栈或平台主线。已有入口可以开始复习；标为规划中或建设中的内容会随文章补齐。"
           entries={roleOutlines}
         />
 

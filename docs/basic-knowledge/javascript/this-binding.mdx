@@ -1,0 +1,305 @@
+---
+sidebar_position: 3
+knowledge:
+  id: basic-knowledge.javascript.this-binding
+  type: concept
+description: "从调用形式解释 JavaScript 的 this，区分普通函数、箭头函数、call/apply/bind 与构造调用，并说明方法提取、回调绑定和手写 call 的边界。"
+keywords: ["JavaScript this", "箭头函数", "call apply bind", "函数调用", "手写 call"]
+---
+
+# this 绑定
+
+普通函数的 `this` 主要由调用方式决定；箭头函数没有自己的 `this`，而是沿定义处的外层环境读取它。函数放在某个对象属性里，并不会永久属于那个对象。
+
+这条区别能解释方法提取后为什么失去接收者、为什么 `bind` 改不了箭头函数的 `this`，以及回调里应该保存哪一个函数引用。推导代码前还要明确严格模式、脚本或模块环境，避免把宿主差异误认为绑定规则变了。
+
+## 1. 面试核心 {#core}
+
+- 对普通函数，**看实际调用表达式，不看它曾经存放在哪个对象里**。`obj.run()` 与提取后的 `run()` 可以得到不同的 `this`。[卡](#method-extraction)
+- 严格模式普通函数独立调用时 `this` 为 `undefined`；非严格模式会把 `null`/`undefined` 替换为全局对象，并装箱原始值。**严格性由被调用函数自身决定**。[卡](#strict-this)
+- 箭头函数**没有独立的 `this`、`arguments` 或构造能力**；其 `this` 取自外层环境。对象字面量不是新的 `this` 作用域。[卡](#arrow-functions)
+- `call` 和 `apply` 立即调用函数，区别是参数传递形式；`bind` 创建新函数并保存接收者及前置参数。**重复绑定不会替换第一次保存的接收者**。[卡](#call-apply-bind)
+- 原函数可构造时，绑定函数也可用于 `new`。**构造调用忽略绑定的 `thisArg`，但仍使用预绑定参数**。[卡](#bound-construction)
+- 手写调用辅助函数必须说明支持范围。**临时挂属性的教学实现会修改接收者，不能完整替代原生 `call`**。[卡](#implement-call)
+
+## 2. 调用形式与接收者 {#调用形式与接收者}
+
+**接收者**是一次方法调用中提供给函数的对象。例如 `account.read()` 的接收者是 `account`，`a.b.read()` 的接收者则是 `a.b`，不是最左侧的 `a`。
+
+```js
+"use strict";
+const first = {
+  name: "first",
+  read() { return this?.name; },
+};
+const second = { name: "second", read: first.read };
+const detached = first.read;
+
+console.log(first.read());  // first
+console.log(second.read()); // second
+console.log(detached());    // undefined
+```
+
+三个调用使用同一个函数对象，但调用形式不同。赋值 `const detached = first.read` 取出了函数值，没有把“以后都用 first 调用”一同保存下来。这里用可选链展示 `undefined`；若直接访问 `this.name`，第三次调用会抛 `TypeError`。
+
+下面的括号仍保留属性引用，因此不是方法提取：
+
+```js
+"use strict";
+const item = { read() { return this === item; } };
+console.log((item.read)()); // true
+```
+
+“看点号左边”可以帮助分析简单成员调用，但不是完整规则。显式绑定、箭头函数和构造调用都需要分别判断；函数作为回调交出去以后，还要看接收回调的 API 怎样调用它。
+
+## 3. 严格模式与运行环境 {#严格模式与运行环境}
+
+严格模式普通函数会保留调用时传入的 `this` 值，不会自动把空值替换成全局对象，也不会把数字等原始值装箱成对象。
+
+```js
+function strictReceiver() {
+  "use strict";
+  return this;
+}
+
+console.log(strictReceiver());           // undefined
+console.log(strictReceiver.call(null));  // null
+console.log(strictReceiver.call(7));     // 7
+```
+
+非严格模式普通函数会对 `this` 做替换或装箱。这个处理取决于函数自身是否为严格代码，不取决于调用方有没有写 `"use strict"`。为了让示例可复现，本文需要独立调用时都明确使用严格函数或严格脚本。
+
+顶层 `this` 还受宿主和源码类型影响：浏览器经典脚本顶层通常是全局对象，ES Module 顶层是 `undefined`，Node.js CommonJS 文件顶层则有模块包装的行为。不要只说“全局 this 永远是 window”，也不要拿开发者工具控制台的一次输出推断所有模块。
+
+类方法自动运行在严格模式。把实例方法提取出来再直接调用，同样不会自动绑定实例。
+
+## 4. 箭头函数的 this {#箭头函数的-this}
+
+**箭头函数**使用词法 `this`：它不建立自己的 `this` 绑定，而是使用定义时所在外层环境的 `this`。如果外层仍是箭头函数，就继续向外找。
+
+```js
+"use strict";
+function createReader() {
+  return () => this.name;
+}
+
+const read = createReader.call({ name: "owner" });
+console.log(read());                         // owner
+console.log(read.call({ name: "other" })); // owner
+```
+
+`createReader` 这次调用的 `this` 是 `owner` 对象。创建的箭头函数随后一直访问这次调用中的 `this`；对 `read` 使用 `call` 不会新增或替换一个本来不存在的独立绑定。
+
+对象字面量本身不形成新的 `this` 环境，所以把箭头函数写成对象属性，不会使它自动接收该对象：
+
+```js
+"use strict";
+function createObject() {
+  return {
+    name: "inner",
+    read: () => this.name,
+  };
+}
+
+const item = createObject.call({ name: "outer" });
+console.log(item.read()); // outer
+```
+
+箭头函数也没有自己的 `arguments`。它可以访问外层普通函数的 `arguments`，但新代码通常用剩余参数 `(...args)` 明确接收自己调用时的参数。
+
+箭头函数不能作为构造函数，因为它没有内部构造能力；不是先创建了实例、再到某个给 `this` 赋值的步骤才失败。给箭头函数手动添加一个名为 `prototype` 的属性，也不会使它获得构造能力。
+
+当回调需要沿用外层实例时，箭头函数很合适；当方法需要由调用方动态提供接收者，或者函数需要用于 `new`，就不能直接用箭头函数替代。
+
+## 5. call、apply 与 bind {#call-apply-与-bind}
+
+`call`、`apply` 都执行一次调用，`bind` 则返回一个以后再调用的新函数。
+
+```js
+"use strict";
+function format(prefix, suffix) {
+  return prefix + this.name + suffix;
+}
+
+const user = { name: "Lin" };
+console.log(format.call(user, "[", "]"));     // [Lin]
+console.log(format.apply(user, ["[", "]"]));  // [Lin]
+const bound = format.bind(user, "[");
+console.log(bound("]"));                      // [Lin]
+```
+
+`apply` 接收数组或类数组对象来提供参数；它与展开语法接收可迭代对象的要求不同。`Reflect.apply(fn, receiver, args)` 也能显式调用函数，适合函数自身的 `call`/`apply` 属性可能被覆盖的情况。
+
+绑定函数保存目标函数、接收者以及已绑定的前置参数。再次给绑定函数传入其他 `thisArg`，不会覆盖第一次保存的接收者，但后续绑定仍可继续追加前置参数。
+
+```js
+"use strict";
+function read() { return this.name; }
+const first = read.bind({ name: "first" });
+const second = first.bind({ name: "second" });
+console.log(second()); // first
+```
+
+`bind` 每次创建新函数，因此取消监听时要保留最初注册的那一个引用。`removeEventListener("click", handler.bind(owner))` 创建的是另一个函数，不能用来移除之前注册的绑定函数。
+
+## 6. 构造调用 {#构造调用}
+
+`new` 用于具有构造能力的函数。对普通构造函数，它会准备新对象、建立原型关系，并让构造函数体以新对象作为 `this` 执行。构造函数若显式返回对象，可以替代这个默认返回值。
+
+绑定函数的构造调用不使用预先保存的接收者：
+
+```js
+function User(name) {
+  this.name = name;
+}
+const receiver = {};
+const BoundUser = User.bind(receiver, "Lin");
+const user = new BoundUser();
+
+console.log(user.name);             // Lin
+console.log(receiver.name);         // undefined
+console.log(user instanceof User);  // true
+```
+
+`"Lin"` 仍作为预绑定参数传给构造函数，但写入的是新实例，而不是 `receiver`。如果目标函数本来不能构造，`bind` 不会把它变成构造函数。
+
+因此不要把所有情况压成一个脱离条件的“绑定优先级口诀”。先确认箭头还是普通函数，再确认是构造调用、绑定函数调用、显式调用还是普通成员/独立调用，能更准确地推导结果。
+
+## 7. 调用辅助函数的实现边界 {#调用辅助函数的实现边界}
+
+原生调用机制不要求先给接收者加属性。临时挂属性的方法只是利用 `receiver[key]()` 的成员调用语义，展示“接收者参与调用”这件事。
+
+下面的教学实现只支持**可以增加并删除属性的普通对象接收者**。目标函数须为可直接调用的函数，而且不能在执行期间冻结接收者、改变临时属性或利用 Proxy 拦截这些操作。它不修改 `Function.prototype`。
+
+```js
+function callOnObject(fn, receiver, ...args) {
+  if (typeof fn !== "function" || receiver === null ||
+      typeof receiver !== "object") {
+    throw new TypeError("需要函数与对象接收者");
+  }
+  const key = Symbol("temporary-call");
+  Object.defineProperty(receiver, key, {
+    value: fn,
+    configurable: true,
+  });
+  try {
+    return receiver[key](...args);
+  } finally {
+    Reflect.deleteProperty(receiver, key);
+  }
+}
+
+function add(amount) { return this.base + amount; }
+const state = { base: 10 };
+console.log(callOnObject(add, state, 2)); // 12
+console.log(Reflect.ownKeys(state));     // ["base"]
+```
+
+Symbol 减少键冲突，`finally` 保证正常返回和抛出异常时都尝试删除临时属性。但这仍不是完整 `call`：不可扩展对象不能挂新属性，原始值接收者和严格函数的 `null` 语义无法按这个方案直接保留，Proxy 也能观察或改变操作。箭头函数和已绑定函数仍然按自己的规则处理 `this`，不能因“挂到了对象上”就被强行改写。
+
+实际业务需要转发调用时，使用 `Reflect.apply` 或原生 `call`/`apply`。面试要求实现时，先与题目约定支持范围，再检查返回值、异常、参数顺序和清理，而不是用 `receiver || globalThis` 掩盖 `0`、`false`、`null` 等不同输入。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 为什么 obj.run() 与提取后的 run() 可能得到不同的 this？ {#method-extraction}
+
+**考察重点**：函数值与调用接收者之间的关系。
+
+**相关内容**：[调用形式与接收者](#调用形式与接收者)。
+
+<details>
+<summary>参考回答</summary>
+
+**普通函数的接收者由这一次调用提供，提取函数值不会自动保存原来的对象。** `obj.run()` 保留成员引用，以 `obj` 为接收者；`const run = obj.run` 后独立调用 `run()`，没有这个成员接收者。
+
+严格函数独立调用时 `this` 为 `undefined`。若希望提取后仍使用 `obj`，可以保存 `obj.run.bind(obj)`，或者用一个回调显式执行 `obj.run()`。两者还要考虑函数身份和对象方法是否可能被替换。
+
+</details>
+
+### 8.2 严格模式下的 this 与非严格模式有什么区别？ {#strict-this}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：空值替换、原始值装箱及被调用函数的严格性。
+
+**相关内容**：[严格模式与运行环境](#严格模式与运行环境)。
+
+<details>
+<summary>参考回答</summary>
+
+**严格普通函数保留传入的 `this`，不做全局对象替换或装箱。** 独立调用得到 `undefined`，用 `call(null)` 得到 `null`，用 `call(7)` 得到数字 `7`。
+
+非严格普通函数会把 `null`/`undefined` 换成其运行环境的全局对象，并把原始值装箱。该行为由函数自身决定；顶层还需区分浏览器经典脚本、ES Module 和 Node.js 等宿主模式。
+
+</details>
+
+### 8.3 箭头函数与普通函数有哪些差异，为什么不能改变它的 this 或用于 new？ {#arrow-functions}
+
+**考察重点**：词法 `this`、参数访问和内部构造能力。
+
+**相关内容**：[箭头函数的 this](#箭头函数的-this)。
+
+<details>
+<summary>参考回答</summary>
+
+**箭头函数不建立自己的 `this` 和 `arguments`，也没有构造能力。** 它从定义处外层环境访问 `this`，因此 `call`/`apply`/`bind` 传入的新接收者不会替换它；这些方法仍然可以传递或预绑定普通参数。
+
+`new` 要求目标具有构造能力，箭头函数不满足，所以会抛 `TypeError`。手动给它加 `prototype` 属性不能补出内部构造能力。需要动态接收者的方法或构造函数时不应直接换成箭头函数。
+
+</details>
+
+### 8.4 call、apply 与 bind 分别做什么，重复 bind 能改变 this 吗？ {#call-apply-bind}
+
+**考察重点**：立即调用、参数形式、绑定函数和接收者保存。
+
+**相关内容**：[call、apply 与 bind](#call-apply-与-bind)。
+
+<details>
+<summary>参考回答</summary>
+
+**`call` 和 `apply` 立即调用，`bind` 返回一个保存接收者和前置参数的新函数。** `call` 接收逐个参数，`apply` 接收数组或类数组参数列表。
+
+再次绑定同一个绑定函数不会覆盖最初的接收者，但可以继续追加前置参数。每次 `bind` 都返回新函数，需要取消订阅时保留最初注册的那个函数引用。
+
+</details>
+
+### 8.5 new 一个绑定函数时，this 指向绑定对象还是新实例？ {#bound-construction}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：绑定调用与构造调用的区别。
+
+**相关内容**：[构造调用](#构造调用)。
+
+<details>
+<summary>参考回答</summary>
+
+**当目标可构造时，构造调用忽略绑定的 `thisArg`，仍使用预绑定参数。** 对普通构造函数，函数体中的 `this` 是新实例，不是 `bind` 时传入的对象；构造函数显式返回对象时还要按返回值规则处理。
+
+绑定函数是否可构造取决于原目标，绑定箭头函数不会产生构造能力。
+
+</details>
+
+### 8.6 怎样用临时属性演示 call，并说明它与原生实现的差距？ {#implement-call}
+
+**考察重点**：成员调用、返回值、异常清理和输入支持范围。
+
+**相关内容**：[调用形式与接收者](#调用形式与接收者)、[调用辅助函数的实现边界](#调用辅助函数的实现边界)。
+
+<details>
+<summary>参考回答</summary>
+
+**可以在约定的可扩展普通对象上用 Symbol 临时保存函数，再通过成员调用传递参数，最后清理属性。** 实现应返回目标结果，并在 `finally` 中清理，以覆盖抛异常的路径。
+
+这种实现会修改接收者，不能完整支持冻结对象、原始值、严格函数的空接收者以及 Proxy 等情况；执行期间若接收者被冻结，清理也可能失败。它也改不了箭头或绑定函数已有的 `this` 规则。生产代码应使用原生调用机制，面试实现须先声明这些限制。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+
+- [MDN：this](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Operators/this)
+- [MDN：Arrow function expressions](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Functions/Arrow_functions)
+- [MDN：Function.prototype.call](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Function/call)
+- [MDN：Function.prototype.apply](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Function/apply)
+- [MDN：Function.prototype.bind](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Function/bind)
+- [ECMAScript：Bound Function Exotic Objects](https://tc39.es/ecma262/multipage/ordinary-and-exotic-objects-behaviours.html#sec-bound-function-exotic-objects)

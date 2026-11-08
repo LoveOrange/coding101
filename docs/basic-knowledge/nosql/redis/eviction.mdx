@@ -46,6 +46,8 @@ keywords: ["maxmemory-policy", "LRU", "LFU", "Redis 淘汰策略", "Redis 内存
 
 纯缓存实例可以从 `allkeys-lru` 和 `allkeys-lfu` 开始比较。**LRU**（Least Recently Used）按最近访问时间判断，优先淘汰很久没用过的键；**LFU**（Least Frequently Used）按使用频率判断，优先淘汰访问少的键。Redis 的实现是近似的，LFU 还会让旧计数随时间衰减，避免过去的热点一直受到保护。
 
+精确 LRU 的典型实现是哈希表加双向链表：哈希表定位节点，访问时把它移到最近使用端，容量不足时移除最久未访问端，具体关系见 [LinkedHashMap 与 LRU](../../java/collections/linkedhashmap-lru.mdx#哈希表与顺序链)。这可以解释手写缓存的设计，但 Redis 的近似采样淘汰不等同于为所有键维护同一条精确访问链。验证手写缓存还要覆盖命中后调序、更新已有键、容量为零或一、淘汰时同步删除索引，以及是否要求并发安全。
+
 `maxmemory-samples` 控制采样数量，Redis 6、7 默认值为 5。采样更多可以提高选择精度，也会增加 CPU 开销。LFU 还受 `lfu-log-factor` 和 `lfu-decay-time` 影响，分别控制计数增长和衰减。最终要用实际访问负载比较命中率，不能只按策略名称决定。
 
 不能丢失的权威业务状态，要与可重建的缓存分开规划。`noeviction` 只保证不因这项淘汰策略主动删键，内存不足时写入仍会失败；持久化和故障恢复也需要另外设计。

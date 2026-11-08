@@ -1,0 +1,373 @@
+---
+sidebar_position: 1
+knowledge:
+  id: frontend.html.semantics-accessibility
+---
+
+# HTML 语义与可访问性
+
+HTML 描述内容是什么，以及用户可以怎样操作它。标题、导航、链接和按钮都有各自的含义；把它们画成相同的样子，并不会让它们获得相同的行为。面试中解释语义化，重点是说明选用某个元素后，浏览器、辅助技术和后续维护者能够得到什么信息。
+
+**可访问性**是让不同能力、不同操作方式的用户都能理解和使用页面。对前端来说，一个可以开始检查的目标是：不用鼠标仍能完成操作，控件有清楚的名称，界面变化不会只通过颜色表达。语义元素是实现这些能力的起点。
+
+## 1. 面试核心 {#core}
+
+- HTML 描述结构和含义，CSS 控制呈现，JavaScript 实现程序行为；**它们分工不同，但会共同决定最终页面**。[卡](#html-css-javascript)
+- 语义化是**按内容用途选择元素**。`nav` 表示导航，`article` 表示可独立成立的内容，`header` 表示所属区域的介绍内容；它们不是带固定外观的 `div`。[卡](#semantic-elements)
+- 元素的语义和 CSS 布局是两个层面。**`display: block` 不会把 `span` 变成标题，也不会改变 HTML 的合法嵌套规则**。[卡](#semantic-display)
+- **跳转用链接，执行操作用按钮**。原生按钮已具备键盘激活和禁用等能力；`role="button"` 只补充角色，不会实现这些行为。[卡](#native-button)
+- **控件需要可访问名称，补充说明与名称分开**。输入框优先关联 `label`，提示用 `aria-describedby`，不要把占位文字当作完整标签方案。[卡](#control-name)
+- 键盘用户要能按合理顺序到达控件，并看见焦点。**`tabindex="-1"` 可用于程序移入焦点，正数不适合修补混乱的页面顺序**。[卡](#focus-order)
+- ARIA 描述角色和状态，**应用仍须同步维护实际行为与状态**。`aria-expanded` 不会展开内容，`aria-disabled` 也不会自动阻止操作。[卡](#disclosure-state)
+- `src`、`href` 的效果取决于所属元素；**不能仅凭属性名判断资源是否阻塞解析或渲染**。[卡](#src-href)
+
+## 2. 文档结构与语义 {#文档结构与语义}
+
+### 2.1 HTML、CSS 与 JavaScript 的分工 {#分工}
+
+HTML 让页面知道“这是标题、这是导航、这是一个按钮”。CSS 决定这些内容如何排列和显示。JavaScript 可以读取或修改 DOM、响应事件、请求数据；它修改内容后，浏览器还需要重新计算受影响的样式和布局。
+
+```html
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>职位列表</title>
+  </head>
+  <body>
+    <header><p>招聘信息</p></header>
+    <nav aria-label="主要导航"><a href="#jobs">查看职位</a></nav>
+    <main id="jobs">
+      <h1>前端开发职位</h1>
+      <article aria-labelledby="job-title">
+        <h2 id="job-title">前端开发实习生</h2>
+        <p>参与页面和组件开发。</p>
+      </article>
+    </main>
+    <footer><p>职位信息由招聘方提供。</p></footer>
+  </body>
+</html>
+```
+
+这个页面没有 JavaScript，链接仍能跳到职位区域；没有自定义 CSS，标题和段落也仍有结构。`lang` 说明文本语言，`title` 标识整个文档。`<!doctype html>` 让以 HTML 解析的普通文档使用标准模式，不能把它理解为“下载一个 HTML 版本定义文件”。
+
+### 2.2 按内容用途选择元素 {#选择语义元素}
+
+**语义化**是让元素所表达的意义与内容用途一致。选择时先看内容在页面中承担什么职责，再考虑样式。
+
+| 内容 | 合适的元素与边界 |
+| --- | --- |
+| 页面主要内容 | `main`；普通页面保留一个当前有效的主要内容区域 |
+| 主要导航 | `nav`；不是每组普通链接都需要包一层导航 |
+| 可独立理解、分发的内容 | `article`，例如一篇帖子或完整的职位介绍 |
+| 围绕一个主题的分组 | `section`，通常有描述该主题的标题；只为了布局包装时可以用 `div` |
+| 某区域的介绍或收尾 | `header`、`footer`；也能属于一篇文章，并不必然是页面全局页眉和页脚 |
+| 与主要内容有间接关系的补充 | `aside`；位置可以在侧边，但不能仅因位于侧边就使用它 |
+| 标题层级 | `h1` 到 `h6`；按内容的从属关系选级别，不为字号跳级 |
+| 项目列表 | `ul`、`ol`、`li`；顺序有意义时选有序列表 |
+
+这些元素有助于工具理解文档结构，也让阅读代码的人更容易辨认区域。辅助技术还可以根据合适的区域角色和标题导航。但它们不会自动修复错误的标题层级、模糊的按钮名称或不可操作的交互，也不保证搜索排名。
+
+### 2.3 语义与显示方式 {#语义与显示方式}
+
+HTML 的内容分类描述元素能够放在哪里、包含什么；CSS 的 `display` 描述盒子怎样参与布局。“行内元素、块级元素”通常是在讨论元素的默认显示方式，不能替代 HTML 的内容模型。
+
+```html
+<style>
+  .visual-block { display: block; }
+  .visual-inline { display: inline; }
+</style>
+<span class="visual-block">仍然是一段普通文字</span>
+<h2 class="visual-inline">仍然是二级标题</h2>
+```
+
+`span` 独占一行，并没有获得标题角色；`h2` 即使在行内显示，仍然表达二级标题。类似地，给 `div` 设置 `display: inline`，不会让它成为 `p` 内合法的措辞内容。用 HTML 字符串解析非法嵌套时，浏览器还可能自动关闭 `p`，实际 DOM 与写下的标签顺序不同。
+
+默认情况下，`div`、`p` 和标题参与块布局；`span`、`a`、`strong` 通常参与行内布局。普通非替换行内盒的 `width`、`height` 不像块盒那样决定其尺寸；图片、表单控件和 `inline-block` 有其他尺寸规则。遇到具体布局题，应先确认元素的实际 `display`，再讨论尺寸，不能只背标签列表。
+
+## 3. 链接、按钮与键盘操作 {#链接按钮与键盘操作}
+
+### 3.1 跳转与操作 {#跳转与操作}
+
+**链接**连接到另一个地址或文档内位置；**按钮**触发一项操作。外观可以由 CSS 调整，但元素选择要与行为一致。
+
+```html
+<a href="/jobs">查看所有职位</a>
+<button type="button" id="save">保存草稿</button>
+<script>
+  document.querySelector('#save').addEventListener('click', () => {
+    console.log('saved');
+  });
+</script>
+```
+
+链接保留地址、复制链接和在新标签页打开等浏览器能力。按钮可以通过鼠标、触摸及键盘激活；聚焦按钮后按 Enter 或空格，会触发这里的 `click` 处理器。显式写 `type="button"`，可以避免它被移入表单后意外承担提交行为。
+
+只给 `div` 添加 `onclick`，不会让它自动进入 Tab 顺序或支持键盘激活。即使再加 `role="button"` 和 `tabindex="0"`，键盘处理、禁用行为等仍须自行实现。没有特殊约束时，直接使用 `button` 可以少维护这些行为。
+
+### 3.2 焦点顺序与可见焦点 {#焦点顺序}
+
+**焦点**标识当前接收键盘输入的对象。Tab 通常用于向前移动焦点，Shift+Tab 用于向后移动；页面应让这个顺序与内容顺序一致。
+
+| `tabindex` | 含义与适用场景 |
+| --- | --- |
+| 未设置 | 使用元素自身的默认规则；链接和按钮通常已经可以参与顺序导航 |
+| `0` | 将合适的自定义控件加入正常的顺序导航；不能因此省略交互实现 |
+| `-1` | 通常不参与 Tab 顺序，但允许通过 `focus()` 移入焦点，例如错误摘要 |
+| 正数 | 建立优先于普通顺序的排序，多个值还要比较大小；页面变化后很难保持合理，不用于补救 DOM 顺序 |
+
+具体键盘导航还可能受浏览器和系统偏好影响，因此应在目标环境实测。普通页面先安排合理的 DOM 顺序，不要靠 CSS 视觉重排和一串正数 `tabindex` 维持两套阅读顺序。
+
+```html
+<style>
+  :focus-visible { outline: 3px solid #1d4ed8; outline-offset: 3px; }
+</style>
+<button type="button" id="show-errors">检查表单</button>
+<section id="errors" tabindex="-1" aria-labelledby="errors-title" hidden>
+  <h2 id="errors-title">请修改以下内容</h2>
+  <p>邮箱尚未填写。</p>
+</section>
+<script>
+  document.querySelector('#show-errors').addEventListener('click', () => {
+    const errors = document.querySelector('#errors');
+    errors.hidden = false;
+    errors.focus();
+  });
+</script>
+```
+
+触发按钮后，示例先显示 `errors`，再把焦点移到错误区域。`tabindex="-1"` 让它能接收程序焦点，又不额外占据每次 Tab 导航的位置。这里只演示焦点转移；真实表单还应让摘要中的错误能定位到相应输入项。
+
+不要直接删除焦点轮廓而不提供替代样式。模态对话框等复杂组件还需要处理内部焦点、关闭和返回触发位置；添加一个 `tabindex` 并不能完成这些要求。
+
+## 4. 可访问名称与内容关系 {#可访问名称与内容关系}
+
+### 4.1 输入框的标签与说明 {#输入框标签}
+
+**可访问名称**是辅助技术用来识别一个对象的名称，例如“邮箱”输入框或“保存草稿”按钮。名称应说明控件做什么；格式要求、错误原因等额外信息属于描述。
+
+```html
+<form>
+  <label for="email">邮箱</label>
+  <input id="email" name="email" type="email" autocomplete="email"
+         aria-describedby="email-help" required>
+  <p id="email-help">用于接收申请结果。</p>
+  <fieldset>
+    <legend>求职类型</legend>
+    <label><input type="radio" name="kind" value="intern" checked>实习</label>
+    <label><input type="radio" name="kind" value="graduate">应届全职</label>
+  </fieldset>
+  <button type="submit">提交申请</button>
+</form>
+```
+
+`label` 的 `for` 精确关联输入框的 `id`，让“邮箱”成为输入框的名称；点击标签也能激活关联控件。`name` 则是提交字段的名称，不能用它代替 `id` 建立这项关联。`aria-describedby` 将说明文字关联为描述，`fieldset` 与 `legend` 描述一组相关选项。
+
+占位文字会随着输入消失，也不能代替持久可见的标签。`required` 提供原生必填约束，仍应让用户从界面中看懂要求；前端校验也不能代替服务端校验。
+
+### 4.2 图标、图片与表格 {#图标图片与表格}
+
+只有图标的按钮仍需要名称。能提供可见文字时优先使用文字；图标用途已经清楚而设计确实只显示图标时，可以提供 `aria-label`。
+
+```html
+<button type="button" aria-label="关闭详情">
+  <span aria-hidden="true">×</span>
+</button>
+<p><img src="/images/meeting-room.jpg" alt="六人会议室，入口有一级台阶"></p>
+<p><img src="/images/divider.svg" alt="">申请记录</p>
+<table>
+  <caption>本周申请进度</caption>
+  <thead><tr><th scope="col">职位</th><th scope="col">状态</th></tr></thead>
+  <tbody><tr><td>前端实习生</td><td>待面试</td></tr></tbody>
+</table>
+```
+
+按钮名是“关闭详情”，装饰性的乘号不再参与名称。图片的 `alt` 取决于用途：这里会议室的台阶对读者有信息价值，分隔图则只作装饰，可以用空 `alt`。空 `alt` 与缺失 `alt` 不等价；链接或按钮中的图片还要说明所触发的用途，避免把控件的唯一名称清空。
+
+数据表格通过 `caption` 说明主题，`th` 和 `scope` 建立简单的表头关系。不要为实现页面布局而给普通网格套上表格语义。
+
+`aria-label`、`aria-labelledby` 可以改变控件名称。对于支持命名的对象，有效的 `aria-labelledby` 引用通常优先于 `aria-label`，后者又可能覆盖原生标签或文字内容。因此不要给已有清楚文字的按钮再随意加一个不同名称；用户看见“提交”，辅助技术却读出“确认购买”，会产生操作歧义。
+
+### 4.3 隐藏与不可操作 {#隐藏与不可操作}
+
+视觉上隐藏、辅助技术中隐藏、禁止交互是不同要求。
+
+| 方式 | 主要作用与边界 |
+| --- | --- |
+| 普通 `hidden` 或 `display: none` | 在通常样式下不显示内容，也不作为普通可访问对象暴露；不要把焦点留在被隐藏区域中 |
+| `aria-hidden="true"` | 从可访问性表示中隐藏内容，不会自动隐藏画面或阻止焦点与点击；不要放在可聚焦控件或其祖先上 |
+| `inert` | 使子树不参与用户交互和焦点导航，并从可访问性表示中排除；本身不要求视觉隐藏 |
+| 原生 `disabled` | 对支持它的表单控件禁用交互，通常移出 Tab 顺序，也影响表单提交 |
+| `aria-disabled="true"` | 声明不可用状态；仍需代码阻止操作，并按设计处理焦点 |
+
+表中的“隐藏”描述普通内容暴露。名称计算存在专门规则：被 `aria-labelledby` 等显式引用的隐藏文字仍可能参与名称，不能把“屏幕上看不见”简单等同于“名称里绝不会出现”。
+
+## 5. ARIA 状态与实际行为 {#状态与实际行为}
+
+**ARIA** 是一组用来补充可访问角色、属性和状态的标记。它描述界面是什么状态，不负责执行状态变化。一个展开面板既要切换显示，也要同步按钮上的状态。
+
+```html
+<button type="button" id="toggle" aria-expanded="false" aria-controls="extra">
+  补充要求
+</button>
+<div id="extra" hidden><p>每周可到岗三天。</p></div>
+<script>
+  const toggle = document.querySelector('#toggle');
+  const extra = document.querySelector('#extra');
+  toggle.addEventListener('click', () => {
+    const expanded = toggle.getAttribute('aria-expanded') === 'true';
+    toggle.setAttribute('aria-expanded', String(!expanded));
+    extra.hidden = expanded;
+  });
+</script>
+```
+
+第一次点击后，`aria-expanded` 变为 `true`，`extra.hidden` 变为 `false`。按钮仍保留焦点，用户可以再次激活以收起。`aria-controls` 指向被控制的元素，但它不会自动建立事件处理器，也不会移动焦点。
+
+这个例子从原生按钮开始，所以无须再补 Enter 和空格的激活代码。简单的原生折叠内容也可以使用 `details` 和 `summary`；只有需要额外行为或布局约束时，才承担自定义控件的实现责任。
+
+验证时先检查能否只用键盘完成操作，再检查浏览器可访问性树中的角色、名称和展开状态，最后在目标辅助技术上核对体验。自动化能发现部分错误，不能凭“属性存在”就证明整个页面已经可访问。
+
+## 6. 资源引用与链接 {#资源引用与链接}
+
+`src` 通常给嵌入或执行的资源指定来源，例如 `img` 的图片、`iframe` 的文档、`script` 的脚本。`href` 指定链接关系的目标，例如 `a` 的导航地址、`link` 的样式表地址。
+
+```html
+<a href="/guide">阅读申请指南</a>
+<img src="/images/office.jpg" alt="办公区全景">
+<link rel="stylesheet" href="/styles/jobs.css">
+<script src="/scripts/jobs.js" defer></script>
+```
+
+这里 `a` 表达导航，`img` 嵌入图片，`link` 加载样式，`script` 加载并执行脚本。是否阻塞解析、样式计算或首次渲染，还取决于元素、脚本类型、加载属性和所在位置。不能归纳为“`src` 总会阻塞，`href` 总不会阻塞”：样式表链接可能影响渲染，而带 `defer` 的外部经典脚本不会在下载期间阻塞 HTML 解析。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 HTML、CSS 和 JavaScript 分别负责什么？ {#html-css-javascript}
+
+**考察重点**：内容结构、显示与程序行为的关系。
+
+**相关内容**：[HTML、CSS 与 JavaScript 的分工](#分工)。
+
+<details>
+<summary>参考回答</summary>
+
+**HTML 描述内容结构和语义，CSS 决定呈现，JavaScript 实现程序行为。** 例如一个按钮由 HTML 表达其操作身份，CSS 决定外观，JavaScript 处理保存动作。JavaScript 修改 DOM 后，浏览器会根据新内容重新计算受影响的样式和布局；三者的分工不能理解成彼此完全独立。
+
+</details>
+
+### 7.2 为什么使用 header、nav、aside 等语义元素？ {#semantic-elements}
+
+**考察重点**：内容用途、结构表达与语义化的边界。
+
+**相关内容**：[按内容用途选择元素](#选择语义元素)。
+
+<details>
+<summary>参考回答</summary>
+
+**语义元素让文档明确表达区域和内容的用途。** `nav` 表示主要导航，`header` 表示所属区域的介绍内容，`aside` 表示与主体间接相关的补充。工具和维护者可以据此理解结构，辅助技术也能结合区域角色与标题帮助导航。选择依据是内容职责，不是元素在屏幕上的位置；语义化不自动补齐交互，也不保证搜索排名。
+
+</details>
+
+### 7.3 行内元素和块级元素有什么区别，display 能改变语义吗？ {#semantic-display}
+
+**考察重点**：默认显示方式、实际布局与内容模型的区别。
+
+**相关内容**：[语义与显示方式](#语义与显示方式)。
+
+<details>
+<summary>参考回答</summary>
+
+**行内和块级主要描述盒子的布局方式，`display` 改变布局，不改变元素语义。** 正常流中的块盒通常形成独立块，行内盒在行内格式化上下文中排列。普通非替换行内盒的宽高设置也不按块盒的方式决定尺寸，但图片和 `inline-block` 等有不同规则。把 `span` 设为块级显示不会使其成为标题，把 `div` 设为行内也不会改变 HTML 的合法嵌套规则。
+
+</details>
+
+### 7.4 为什么不直接用带 click 事件的 div 实现按钮？ {#native-button}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：原生交互、角色与键盘行为。
+
+**相关内容**：[跳转与操作](#跳转与操作)。
+
+<details>
+<summary>参考回答</summary>
+
+**原生 `button` 已提供按钮语义、焦点与键盘激活等基础行为。** `div` 上的 `click` 处理器主要解决事件响应，不能让它自动成为键盘可达的按钮；`role="button"` 也只声明角色。自定义实现还要补齐焦点、Enter/空格、禁用状态等行为，因此通常直接选择 `button`，非提交按钮显式设置 `type="button"`。
+
+</details>
+
+### 7.5 输入框为什么需要 label，placeholder 和 aria-describedby 能代替吗？ {#control-name}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：可访问名称、可见标签与描述的职责。
+
+**相关内容**：[输入框的标签与说明](#输入框标签)。
+
+<details>
+<summary>参考回答</summary>
+
+**`label` 用于明确控件身份，`aria-describedby` 提供补充说明，`placeholder` 不应作为完整的标签方案。** 显式标签通过 `for` 关联输入框的 `id`，同时提供可见文字和关联行为。占位文字输入后会消失，描述则应补充格式、用途或错误原因。如果必须使用其他命名方式，也应保证用户能持续看懂控件用途，并检查实际可访问名称。
+
+</details>
+
+### 7.6 tabindex 为 0、-1 和正数分别意味着什么？ {#focus-order}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：顺序导航、程序焦点与文档顺序。
+
+**相关内容**：[焦点顺序与可见焦点](#焦点顺序)。
+
+<details>
+<summary>参考回答</summary>
+
+**`0` 参与普通顺序导航，`-1` 通常跳过 Tab 顺序但允许程序聚焦，正数建立额外的优先排序。** 原生可交互元素通常无须再设置 `0`。错误摘要可以使用 `-1`，在显示后调用 `focus()`；不要用正数修补不合理的 DOM 顺序。还要保留可见焦点，并在目标浏览器和系统设置下测试真实导航。
+
+</details>
+
+### 7.7 展开按钮修改 aria-expanded 后，内容为什么没有自动显示？ {#disclosure-state}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：可访问状态与实际界面行为的同步。
+
+**相关内容**：[ARIA 状态与实际行为](#状态与实际行为)。
+
+<details>
+<summary>参考回答</summary>
+
+**`aria-expanded` 只描述展开状态，应用仍须修改内容的显示状态。** 处理器应同时更新 `aria-expanded` 与面板的 `hidden` 或其他显示逻辑，让语义和画面一致。`aria-controls` 只声明关联，也不绑定事件。使用原生按钮可以保留键盘激活能力，并在切换后检查焦点是否仍合理。
+
+</details>
+
+### 7.8 src 和 href 有什么区别？ {#src-href}
+
+**考察重点**：元素语义、资源加载与阻塞条件。
+
+**相关内容**：[资源引用与链接](#资源引用与链接)。
+
+<details>
+<summary>参考回答</summary>
+
+**`src` 通常指定嵌入或执行资源的来源，`href` 指定链接关系的目标，具体行为由元素决定。** `img src` 嵌入图片，`script src` 引用脚本，`a href` 导航，`link href` 则可加载样式表。阻塞行为不能只按属性名区分，还要结合资源类型及 `defer` 等加载条件。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [HTML Standard：文档语义与内容模型](https://html.spec.whatwg.org/multipage/dom.html#content-models)
+- [HTML Standard：文档区域](https://html.spec.whatwg.org/multipage/sections.html)
+- [HTML Standard：DOCTYPE](https://html.spec.whatwg.org/multipage/syntax.html#the-doctype)
+- [HTML Standard：按钮元素](https://html.spec.whatwg.org/multipage/form-elements.html#the-button-element)
+- [HTML Standard：焦点与 tabindex](https://html.spec.whatwg.org/multipage/interaction.html#the-tabindex-attribute)
+- [HTML Standard：链接](https://html.spec.whatwg.org/multipage/links.html#links-created-by-a-and-area-elements)
+- [WAI：表单标签](https://www.w3.org/WAI/tutorials/forms/labels/)
+- [WAI：图片替代文字](https://www.w3.org/WAI/tutorials/images/decision-tree/)
+- [WAI：简单表格的表头](https://www.w3.org/WAI/tutorials/tables/one-header/)
+- [WAI-ARIA APG：使用 ARIA 前的原则](https://www.w3.org/WAI/ARIA/apg/practices/read-me-first/)
+- [WAI-ARIA APG：按钮模式](https://www.w3.org/WAI/ARIA/apg/patterns/button/)
+- [WAI-ARIA APG：展开与收起模式](https://www.w3.org/WAI/ARIA/apg/patterns/disclosure/)
+- [Accessible Name and Description Computation：名称计算](https://www.w3.org/TR/accname-1.2/)

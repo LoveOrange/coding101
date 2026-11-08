@@ -41,12 +41,18 @@ async function withCaller(
 async function learner(env: Env, db: Db, request: Request): Promise<Response> {
   return withCaller(env, request, async ({ user, access }) => {
     if (request.method === "GET") {
-      return json({ ...(await getLearnerDoc(db, user.id)), writable: hasAccess(access) });
+      const expectedUserId = new URL(request.url).searchParams.get("userId");
+      if (expectedUserId !== null && expectedUserId !== user.id) return json({ error: "account_changed" }, 409);
+      return json({ ...(await getLearnerDoc(db, user.id)), userId: user.id, writable: hasAccess(access) });
     }
     const body = (await request.json().catch(() => null)) as {
       baseVersion?: unknown;
+      userId?: unknown;
       data?: unknown;
     } | null;
+    // Older clients omit userId. New clients pin writes to the cache owner so
+    // a cookie changed in another tab cannot send that cache to a new account.
+    if (body?.userId !== undefined && body.userId !== user.id) return json({ error: "account_changed" }, 409);
     const baseVersion = body?.baseVersion;
     if (typeof baseVersion !== "number" || !Number.isInteger(baseVersion) || baseVersion < 0) {
       return json({ error: "invalid_request" }, 400);

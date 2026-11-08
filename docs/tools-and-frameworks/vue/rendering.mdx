@@ -1,0 +1,440 @@
+---
+sidebar_position: 2
+knowledge:
+  id: tools-and-frameworks.vue.rendering
+---
+
+# Vue 渲染机制
+
+Vue 把模板编译成渲染函数，执行函数得到虚拟节点，再由渲染器创建或更新真实 DOM。响应式系统决定哪些计算需要重新执行，渲染器决定执行后哪些节点可以复用、哪些需要修改。
+
+面试中讲 Diff，不能只背“同层比较”。还需要解释列表身份、组件状态、编译器提供的优化信息，以及一次赋值到页面更新之间经过了什么。本文以 Vue 3 的虚拟 DOM 渲染链路为主，Vue 2 的比较流程单独注明。
+
+## 1. 面试核心 {#core}
+
+- **模板是渲染函数的输入，虚拟节点是渲染结果的描述，真实 DOM 才是浏览器维护的页面节点。** 虚拟 DOM 有声明式组合的价值，也有创建和比较成本。[卡](#virtual-dom)
+- **单文件组件编译会分别处理 script、template 和 style，再组成可由浏览器执行的模块。** 浏览器不会直接执行 `.vue` 文件，模板也不是每次状态更新都重新编译。[卡](#compilation)
+- **响应式变化先安排组件更新，渲染函数再生成新节点，patch 对比并修改 DOM。** 数据立即变化与 DOM 批量刷新是不同阶段。[卡](#render-pipeline)
+- **`key` 表示同一组兄弟节点中的稳定身份，节点类型也参与复用判断。** 索引表示位置，不能可靠地代表可插入、删除、排序的数据项。[卡](#keys)
+- **Vue 3 对有 key 的列表先同步公共头尾，再处理剩余区域，并在需要移动时利用最长递增子序列减少移动。** 这不是跨整棵树寻找全局最少编辑的算法。[卡](#keyed-diff)
+- **编译器可以缓存静态内容、标记动态更新类型，并记录块内动态节点。** 运行时据此跳过不必要的工作，但手写渲染函数不自动获得全部模板优化。[卡](#compiler-optimizations)
+- **`v-if` 控制创建与卸载，`v-show` 通常保留节点和组件实例，只切换显示。** 前者影响实例生命周期，后者不会因为隐藏就自动停止所有工作。[卡](#conditional-rendering)
+- **`nextTick` 等待 Vue 当前更新刷新，不承诺浏览器已经完成绘制。** 需要读新 DOM 时在状态修改后等待，不能把它当成任意延时器。[卡](#next-tick)
+- **`v-once` 和 `v-memo` 是显式跳过更新的约定。** 错误地漏掉依赖会显示旧内容，使用前要确认确实需要这层优化。[卡](#manual-memo)
+
+## 2. 模板、虚拟节点与 DOM {#模板虚拟节点与dom}
+
+### 2.1 虚拟节点描述什么 {#虚拟节点描述什么}
+
+**虚拟节点**（VNode）是描述某个元素、组件或其他渲染单元的 JavaScript 对象。类型、属性、子内容、key 等信息帮助渲染器创建和比较界面；它不是浏览器 DOM 节点的完整复制品。
+
+下面是一个 Vue 3 单文件组件：
+
+```vue
+<script setup>
+import { ref } from 'vue';
+const count = ref(0);
+</script>
+
+<template>
+  <button class="counter" @click="count++">{{ count }}</button>
+</template>
+```
+
+也可以直接写渲染函数。以下独立模块表达相近的界面行为，不是上一段的逐字编译产物：
+
+```js
+import { h, ref } from 'vue';
+
+export default {
+  setup() {
+    const count = ref(0);
+    return () => h('button', {
+      class: 'counter',
+      onClick: () => count.value++,
+    }, String(count.value));
+  },
+};
+```
+
+`h` 创建虚拟节点，渲染器才把它转换成按钮。两种写法都能点击计数；模板编译器还能根据模板结构附加优化信息，手写函数不能只因行为相似就被认定具有相同产物。
+
+### 2.2 虚拟 DOM 的价值与成本 {#虚拟dom的价值与成本}
+
+虚拟 DOM 让开发者描述目标界面，由渲染器统一处理创建、更新和卸载。组件可以组合动态结构，也能由不同宿主渲染器解释，不必在每个业务分支里手动同步所有 DOM 状态。
+
+它仍需要分配对象、执行渲染和比较。如果已经知道只需修改一个文本节点，直接修改 DOM 可能更直接。不能仅因为 JavaScript 对象比 DOM 轻，就推导出“虚拟 DOM 一定更快”。实际成本还取决于更新范围、编译优化、组件划分和浏览器布局。
+
+## 3. 编译与更新链路 {#编译与更新链路}
+
+### 3.1 单文件组件的编译 {#单文件组件的编译}
+
+`.vue` 单文件组件是开发时的组织形式。工具先解析各个块：script 形成组件逻辑，template 编译为渲染函数，style 交给样式处理；`<script setup>` 宏和模板引用也需要编译器处理。之后由构建工具组织导入、模块和产物。
+
+模板编译可以按“解析语法结构—转换和分析—生成代码”理解。生成的 JavaScript 引用 Vue 运行时的辅助函数，运行时不必再把这份模板从头解析一遍。
+
+下面在安装 Vue 3 配套的 `@vue/compiler-dom` 后，可用 Node.js 的 ES 模块查看生成代码：
+
+```js
+import { compile } from '@vue/compiler-dom';
+
+const { code } = compile('<p class="label">{{ title }}</p>', { mode: 'module' });
+console.log(code);
+```
+
+产物中可以看到创建节点、把 `title` 转成文本以及动态文本标记等逻辑。辅助函数名称和具体形式与编译器版本、配置有关，面试时需要解释它们的职责，不必逐字符背产物。
+
+也存在带运行时编译器的构建，可以在运行时接收模板；它与提前编译的单文件组件流程不同。状态变化后通常是再次执行已经得到的渲染函数，不是重新编译源模板。
+
+### 3.2 挂载与 patch {#挂载与patch}
+
+首次挂载时，Vue 执行组件渲染函数，取得虚拟节点并创建 DOM。这次执行同时读取响应式依赖；相应依赖变化后，Vue 安排组件更新，再得到新的节点描述。
+
+**patch** 根据新旧描述更新界面：同类型、相同身份的节点可以复用，属性和子内容按差异处理；类型或身份不适合复用时，旧节点卸载，新节点挂载。列表还涉及移动与插入。
+
+并不是每次父组件执行都意味着所有子组件无条件完整重建。组件更新判断、编译标记、静态缓存等都会参与。真实 DOM 节点是否被替换，应该由节点身份和更新过程判断，不能把“重新渲染”直接翻译成“重建整页”。
+
+依赖如何建立见 [Vue 响应式](./reactivity.mdx#依赖收集与触发)；本文从更新任务进入渲染器后继续解释。
+
+### 3.3 数据变化与 DOM 刷新 {#数据变化与dom刷新}
+
+```vue
+<script setup>
+import { ref, nextTick } from 'vue';
+const count = ref(0);
+const output = ref(null);
+async function change() {
+  count.value = 1;
+  count.value = 2;
+  console.log('同步读取', count.value, output.value.textContent);
+  await nextTick();
+  console.log('刷新后', output.value.textContent);
+}
+</script>
+
+<template>
+  <button @click="change">修改</button>
+  <output ref="output">{{ count }}</output>
+</template>
+```
+
+首次点击输出 `同步读取 2 0`，随后是 `刷新后 2`。数据已经是 2，DOM 仍等待这批刷新；`nextTick` 等待后才读到新的文本。这里的 `output` 是模板引用，挂载后指向对应 DOM 元素。
+
+`nextTick` 可以等待当前调度刷新所使用的 Promise；如果没有待刷新的任务，它也不会替你制造一次业务更新。它不等待任意网络请求，也不是浏览器已经绘制的证明。
+
+## 4. key 与列表身份 {#key与列表身份}
+
+### 4.1 状态应跟着数据项 {#状态应跟着数据项}
+
+key 帮助渲染器识别同一父级列表中的节点。对于带有本地状态的行，稳定身份决定状态应该跟着哪条数据保留。
+
+`CourseRow.vue` 把初始标题作为本地草稿，此后由用户编辑：
+
+```vue
+<script setup>
+import { ref } from 'vue';
+const props = defineProps({ item: { type: Object, required: true } });
+const draft = ref(props.item.title);
+</script>
+
+<template>
+  <li :data-id="item.id">
+    <span>{{ item.title }}</span>
+    <input v-model="draft" :aria-label="item.id + ' 草稿'" />
+  </li>
+</template>
+```
+
+`App.vue` 提供可重排的列表：
+
+```vue
+<script setup>
+import { ref } from 'vue';
+import CourseRow from './CourseRow.vue';
+const items = ref([
+  { id: 'a', title: 'React' },
+  { id: 'b', title: 'Vue' },
+  { id: 'c', title: 'CSS' },
+]);
+</script>
+
+<template>
+  <button @click="items.reverse()">反转</button>
+  <ul><CourseRow v-for="item in items" :key="item.id" :item="item" /></ul>
+</template>
+```
+
+把 a 行草稿改成“待复习”，再反转列表，a 行移动到底部，草稿仍跟着 a。这个草稿本来就是行自己的状态，没有设计成随每次 prop 变化重置。
+
+若把循环改成 `(item, index) in items`，并用 `:key="index"`，位置 0 的组件实例可能被复用来显示 c，原来的本地草稿却仍在这个实例里。问题不是文字一定不能更新，而是“数据项身份”和“位置身份”不一致。
+
+### 4.2 key 的其他边界 {#key的其他边界}
+
+- 同一组兄弟节点的 key 要唯一、稳定；随机数让每次更新都像换了一批身份。
+- key 相同也要结合节点类型判断，不能用一个 key 强迫不同组件共享同一个实例。
+- key 不是全局对象仓库。换到不同父级后，不能假设组件状态自动跨树保留。
+- 更改组件 key 可以表达“这是新实例”，用于重置局部状态；回来时也不会自动恢复已经卸载的旧实例。
+- `template v-for` 包含多个节点时，把 key 放在这层 `template` 上，标记的是这一组迭代结果。
+
+对于真正固定、不带内部状态且不重新排序的列表，按位置复用可能满足需求；但不能在数据会变动时，为了省一个业务 ID 就把索引当成稳定身份。
+
+## 5. 有 key 的列表比较 {#有key的列表比较}
+
+### 5.1 Vue 3 的处理顺序 {#vue3的处理顺序}
+
+以 Vue 3.5 的 `patchKeyedChildren` 为例，可以按以下顺序解释：
+
+1. 从头比较可复用节点，再从尾比较，先处理两端已确定的部分。
+2. 如果旧列表剩余部分耗尽，插入新节点；如果新列表耗尽，卸载旧节点。
+3. 对两边都有剩余的中间区域，建立新 key 到位置的映射，匹配旧节点，移除已不存在的节点。
+4. 记录新顺序中各节点对应的旧位置；确认需要移动时，求一个最长递增子序列。
+5. 从后向前处理插入和移动，借助已确定的后一个节点作为插入锚点。
+
+**最长递增子序列**在这里表示一组旧位置仍保持相对顺序的节点，可以保留而少做移动。新节点没有旧位置，不能混同为可保留节点。
+
+例如旧顺序是 `a b c d`，新顺序是 `a c b d`。头尾的 a、d 先确认，中间 c、b 的旧位置顺序颠倒；保留其中一个、移动另一个即可。节点可以复用，移动不等于重新创建它的组件状态。
+
+### 5.2 Vue 2 的差异 {#vue2的差异}
+
+Vue 2.7 的列表比较使用双端指针，比较旧头与新头、旧尾与新尾，以及旧头与新尾、旧尾与新头；无法直接匹配时，再按 key 查找旧节点并移动或新建。
+
+不能把“Vue Diff 是双端比较”和“Vue Diff 用最长递增子序列”脱离版本混在一起讲。两者都需要身份与类型判断，但具体减少比较和移动的策略不同。
+
+这些都是针对组件树和列表约束设计的比较策略，不是任意两棵树的全局最优编辑算法。key 帮助确定身份，正确性优先于追求某个固定移动次数。
+
+## 6. 编译器提供的优化信息 {#编译器提供的优化信息}
+
+### 6.1 静态内容与动态标记 {#静态内容与动态标记}
+
+编译器知道模板哪些部分固定、哪些部分依赖运行时值，可以在生成代码时留下信息，减少运行时猜测。
+
+```vue
+<script setup>
+import { ref } from 'vue';
+const title = ref('React');
+const active = ref(false);
+</script>
+
+<template>
+  <button @click="title = 'Vue'; active = !active">修改</button>
+  <section>
+    <h2>课程目录</h2>
+    <p class="description">选择需要复习的内容</p>
+    <span :class="{ active }">{{ title }}</span>
+  </section>
+</template>
+```
+
+标题和说明没有动态绑定，可以被缓存或通过静态内容处理；span 的文本和 class 会变化。**Patch Flag** 是编译产物中的动态更新标记，帮助运行时只处理已知会变化的部分，而不是每次完整比较所有属性。
+
+静态节点的缓存、提升或静态字符串处理方式会受版本和编译配置影响。需要记住的是“编译时识别，运行时减少工作”，不必把某一种生成代码当成永久格式。
+
+### 6.2 Block 与动态节点 {#block与动态节点}
+
+Vue 的 Block 会记录块内需要关注的动态子节点。对于结构稳定的区域，更新时可以直接访问这些节点，跳过大量静态层级。
+
+条件和循环会改变结构，因此需要相应的块边界。这里的 Block 不是浏览器 CSS 的块级盒子，也不是把所有动态节点都从 DOM 中移到同一层；实际页面结构保持原有关系，变化的是比较时可利用的信息。
+
+使用动态属性集合、手写渲染函数或无法静态分析的结构时，运行时可能需要更通用的处理。编译优化不是省略正确性检查的许可。
+
+## 7. 条件渲染与保留状态 {#条件渲染与保留状态}
+
+`v-if` 为假时不保留对应的普通渲染分支；已经存在的组件会卸载。`v-show` 一般保留节点与实例，通过 `display` 控制显示，重新显示后原状态仍在。
+
+`Panel.vue` 提供可观察的局部状态和生命周期日志：
+
+```vue
+<script setup>
+import { ref, onMounted, onUnmounted } from 'vue';
+const props = defineProps({ name: String });
+const count = ref(0);
+onMounted(() => console.log('挂载', props.name));
+onUnmounted(() => console.log('卸载', props.name));
+</script>
+
+<template>
+  <section :data-panel="name"><button @click="count++">{{ name }}：{{ count }}</button></section>
+</template>
+```
+
+另一个 `App.vue` 对照两种指令：
+
+```vue
+<script setup>
+import { ref } from 'vue';
+import Panel from './Panel.vue';
+const visible = ref(true);
+</script>
+
+<template>
+  <button @click="visible = !visible">切换</button>
+  <Panel v-if="visible" name="if" />
+  <Panel v-show="visible" name="show" />
+</template>
+```
+
+各点一次面板按钮，隐藏后再显示：if 面板重新挂载，显示 `if：0`；show 面板仍显示 `show：1`。隐藏期间 show 的节点仍存在，实例也没有因隐藏而执行卸载清理。
+
+| 情况 | 更需要考虑什么 |
+| --- | --- |
+| 初始为假、可能始终不展示 | `v-if` 可以避免首次创建该分支 |
+| 频繁显示隐藏、希望保留实例状态 | `v-show` 可以减少反复创建，但始终承担已创建实例的成本 |
+| 隐藏后应停止请求、计时器或订阅 | 要明确业务停止逻辑；`v-show` 不自动执行卸载清理 |
+
+Vue 3 中，同一元素同时写 `v-if` 和 `v-for` 时，`v-if` 优先，不能直接依赖尚未建立的循环变量。应先筛选数据，或用外层 `template v-for` 与内层条件明确结构。
+
+## 8. 显式跳过更新 {#显式跳过更新}
+
+`v-once` 表示只渲染一次并复用结果；`v-memo` 按明确给出的依赖数组决定是否复用子树。它们改变的是更新约定，遗漏依赖会产生旧界面。
+
+```vue
+<script setup>
+import { ref } from 'vue';
+const title = ref('React');
+const selected = ref(false);
+</script>
+
+<template>
+  <button @click="title = 'Vue'">改标题</button>
+  <button @click="selected = !selected">选择</button>
+  <p v-once>{{ title }}</p>
+  <p v-memo="[title, selected]">{{ title }} / {{ selected }}</p>
+</template>
+```
+
+修改标题后，第一段仍为 React，第二段变为 `Vue / false`。再切换选中状态，第二段显示 `Vue / true`。如果把 memo 依赖错误地缩成 `[selected]`，只改 title 时这段子树可以被复用，标题就会暂时保留旧值。
+
+优先让数据与组件更新正确，再根据测量决定是否手动跳过。`v-memo` 不能代替稳定 key，也不能用来掩盖不合理的大范围数据更新。
+
+## 9. 面试题 {#面试题}
+
+### 9.1 Vue 的虚拟 DOM 与浏览器 DOM 有什么关系，虚拟 DOM 一定更快吗？ {#virtual-dom}
+
+**考察重点**：描述对象、宿主节点、声明式组合与成本。
+
+**相关内容**：[模板、虚拟节点与 DOM](#模板虚拟节点与dom)。
+
+<details>
+<summary>参考回答</summary>
+
+**虚拟节点描述目标界面，渲染器据此创建或更新浏览器 DOM；它并不保证比直接 DOM 操作更快。** VNode 包含类型、属性、子内容和身份等信息，便于组件组合和统一更新，但也有分配、渲染与比较成本。实际性能要看更新范围、编译优化和布局等开销。
+
+</details>
+
+### 9.2 Vue 模板和单文件组件怎样变成浏览器可以运行的代码？ {#compilation}
+
+**考察重点**：解析、转换、代码生成、script/template/style 与构建工具。
+
+**相关内容**：[单文件组件的编译](#单文件组件的编译)。
+
+<details>
+<summary>参考回答</summary>
+
+**工具解析单文件组件的各个块，把模板编译成渲染函数，处理 script 与 style，再由构建工具组织模块产物。** 模板经历语法解析、转换分析和代码生成，生成代码调用 Vue 运行时辅助函数。提前编译后，状态变化主要是重新执行渲染函数，不是让浏览器反复编译 `.vue` 源文件。
+
+</details>
+
+### 9.3 修改一个响应式字段后，Vue 怎样更新页面？ {#render-pipeline}
+
+**考察重点**：依赖通知、调度、渲染函数与 patch。
+
+**相关内容**：[挂载与 patch](#挂载与patch)、[数据变化与 DOM 刷新](#数据变化与dom刷新)。
+
+<details>
+<summary>参考回答</summary>
+
+**写入先触发相关依赖，Vue 安排组件更新，执行渲染函数得到新 VNode，再 patch 新旧结果并修改 DOM。** 数据读取可以立即得到新值，DOM 通常按批次刷新。可复用的节点更新属性和子内容，身份或类型变化则可能卸载重建，不能概括成每次都重建整页。
+
+</details>
+
+### 9.4 v-for 的 key 有什么作用，为什么索引可能造成状态错位？ {#keys}
+
+**考察重点**：数据身份、位置、组件状态与节点复用。
+
+**相关内容**：[key 与列表身份](#key与列表身份)。
+
+<details>
+<summary>参考回答</summary>
+
+**key 帮助识别同一组兄弟节点中哪些项保持身份，让组件状态和 DOM 跟着正确的数据项复用。** 索引表示位置，插入删除或排序后，同一位置可能已经是另一条数据，本地草稿等状态就会留在错误实例里。使用稳定唯一的业务标识，同时注意类型也参与复用判断，随机 key 会造成不必要的重建。
+
+</details>
+
+### 9.5 Vue 3 怎样比较有 key 的列表，最长递增子序列起什么作用？ {#keyed-diff}
+
+**考察重点**：公共头尾、映射匹配、插入删除与减少移动。
+
+**相关内容**：[有 key 的列表比较](#有key的列表比较)。
+
+<details>
+<summary>参考回答</summary>
+
+**先处理可复用的公共头尾，再对剩余区域按 key 匹配，处理新增和删除，必要时利用旧位置序列减少移动。** 最长递增子序列表示仍保持相对顺序的一组节点，可以保留；其他节点再移动到合适锚点。Vue 2 的双端比较流程不同，不能混同；这些策略也不是任意整树的全局最优编辑算法。
+
+</details>
+
+### 9.6 Vue 3 的编译优化怎样减少运行时比较？ {#compiler-optimizations}
+
+**考察重点**：静态缓存、Patch Flag、Block 与适用边界。
+
+**相关内容**：[编译器提供的优化信息](#编译器提供的优化信息)。
+
+<details>
+<summary>参考回答</summary>
+
+**编译器提前识别静态结构与动态位置，把可复用内容和更新提示写进产物。** 静态内容可缓存，Patch Flag 标记文本、class 等动态更新类型，Block 记录块内动态节点，使运行时减少遍历。结构改变时仍需相应比较；手写渲染函数也不自动具备所有模板分析结果。
+
+</details>
+
+### 9.7 v-if 和 v-show 对节点、状态和清理有什么区别？ {#conditional-rendering}
+
+**考察重点**：创建卸载、显示切换、实例状态与生命周期成本。
+
+**相关内容**：[条件渲染与保留状态](#条件渲染与保留状态)。
+
+<details>
+<summary>参考回答</summary>
+
+**v-if 控制分支创建和卸载，v-show 通常保留节点与实例，只切换 display。** 因此重新显示时，普通 v-if 分支的局部状态重建，v-show 的状态仍在。v-if 可避免初始为假的创建成本，v-show 适合需要频繁切换和保留状态的情况；隐藏不代表自动停止订阅或计时器。
+
+</details>
+
+### 9.8 nextTick 能保证什么，为什么同步读取 DOM 可能仍是旧值？ {#next-tick}
+
+**考察重点**：数据赋值、调度刷新与浏览器绘制。
+
+**相关内容**：[数据变化与 DOM 刷新](#数据变化与dom刷新)。
+
+<details>
+<summary>参考回答</summary>
+
+**nextTick 等待 Vue 当前更新刷新完成，适合在状态修改后读取新的 DOM。** 数据赋值同步生效，但组件 DOM 更新通常排队并批处理，所以立即读取可能还是旧文本。它不等待任意异步业务，也不承诺浏览器已将结果绘制到屏幕。
+
+</details>
+
+### 9.9 v-once 和 v-memo 能随意加在更新频繁的区域吗？ {#manual-memo}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：跳过更新的契约、完整依赖与正确性。
+
+**相关内容**：[显式跳过更新](#显式跳过更新)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能；v-once 明确放弃后续更新，v-memo 依赖数组必须足以说明子树何时需要变化。** 漏掉 title 这样的实际依赖，会在只改标题时继续复用旧结果。应先确保正确性并测量瓶颈，再决定是否使用；它们不代替 key，也不自动修复状态设计问题。
+
+</details>
+
+## 10. 参考资料 {#参考资料}
+
+- [Vue：Rendering Mechanism](https://vuejs.org/guide/extras/rendering-mechanism.html)
+- [Vue：Render Functions and JSX](https://vuejs.org/guide/extras/render-function.html)
+- [Vue：Single-File Components](https://vuejs.org/guide/scaling-up/sfc.html)
+- [Vue：List Rendering](https://vuejs.org/guide/essentials/list.html)
+- [Vue：Conditional Rendering](https://vuejs.org/guide/essentials/conditional.html)
+- [Vue：Built-in Directives](https://vuejs.org/api/built-in-directives.html)
+- [Vue：nextTick](https://vuejs.org/api/general.html#nexttick)
+- [Vue 3.5.13：renderer.ts](https://github.com/vuejs/core/blob/v3.5.13/packages/runtime-core/src/renderer.ts)
+- [Vue 2.7.16：patch.ts](https://github.com/vuejs/vue/blob/v2.7.16/src/core/vdom/patch.ts)

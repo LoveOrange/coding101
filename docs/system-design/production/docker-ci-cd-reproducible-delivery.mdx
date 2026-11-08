@@ -17,6 +17,8 @@ keywords: ["Docker 镜像构建", "CI/CD", "产物晋升", "可重复构建", "�
 
 - 镜像 digest **按内容标识产物**，tag 则可以被重新指向，部署记录要能定位到准确内容。[卡](#delivery-pipeline)
 - 多阶段构建把**编译环境与最终运行环境分开**，运行镜像只保留必要产物和运行时。
+- Jenkins 把构建、测试、镜像推送和部署组织为**结果可检查的阶段**；推送到镜像仓库不等于完成部署。[卡](#jenkins-image-delivery)
+- 部署脚本需要**等待发布完成并核对目标镜像**，命令失败时保留现场，不能把 API 请求成功当成业务验收通过。[卡](#deployment-script-status)
 - 测试、预发和生产应**使用同一个已验证的 digest**，配置在部署时注入，避免上线前重新打包。
 - 构建凭据通过 BuildKit secret mount **临时提供给指定步骤**，构建命令仍要避免把它写进产物或日志。[卡](#build-secrets-cache)
 - exec 形式的 `ENTRYPOINT` 可以让应用**直接接收终止信号**；入口是脚本时，脚本需通过 `exec` 启动应用。[卡](#container-sigterm)
@@ -47,11 +49,65 @@ keywords: ["Docker 镜像构建", "CI/CD", "产物晋升", "可重复构建", "�
 
 签名只有被部署端验证才有作用。部署端需要检查签名身份和来源是否符合策略，而生产凭据只授予需要它的部署阶段。
 
+### 4.1 Jenkins 流水线 {#jenkins-流水线}
+
+**Jenkins Pipeline** 是用流水线代码组织构建、测试和部署任务的方式，`stage` 用来划分可以分别观察结果的阶段。以一个容器化应用为例，各阶段可以这样衔接：
+
+| 阶段 | 执行动作 | 下一阶段需要的结果 |
+| --- | --- | --- |
+| Checkout | 检出确定的源码提交，读取构建配置 | 提交 ID 与固定的构建输入 |
+| Build and Test | 编译并运行测试，失败则停止 | 通过验证的应用产物 |
+| Build Image | 使用 Dockerfile 构建镜像，给它标记提交 ID | 待验证的镜像 |
+| Verify Image | 对实际镜像运行检查与冒烟测试 | 该镜像的验证结果 |
+| Push | 登录目标镜像仓库并推送镜像 | 仓库中的镜像引用及 digest |
+| Deploy | 将已验证的 digest 交给目标环境，等待并检查结果 | 部署状态及提交、digest、配置版本记录 |
+
+例如，`registry.example.com/team/api:<提交ID>` 中，`registry.example.com` 是仓库地址，`team/api` 是镜像名称。执行 `docker push` 会把本地镜像上传到这个 registry。实际地址可以是组织自己的仓库或托管仓库，应以项目配置为准。**镜像仓库存放镜像，运行环境负责拉取并启动镜像**，推送成功只能说明产物已经可以被交付。
+
+Jenkins 的仓库凭据只提供给需要登录和推送的阶段，部署凭据只提供给部署阶段，例如通过 Jenkins Credentials 配合 `withCredentials` 注入。不要把明文密码写进 Jenkinsfile，也不要把凭据输出到日志。这里讲的是应用交付流程；安装 Jenkins 服务本身是另一项任务。
+
 ## 5. CD 晋升 {#cd-晋升}
 
 **产物晋升**是把已通过上一阶段验证的产物交给下一环境使用。持续交付（CD）负责后续交付流程：测试、预发和生产引用同一个 digest，配置、Secret 和资源声明在部署时注入。
 
 如果生产前重新打包，即使源码没变，也已经是另一份二进制，之前的镜像测试不能直接代表它。使用同一产物并记录配置版本，才能追溯部署内容；环境配置和外部依赖不同，各环境的集成行为仍然要验证。
+
+### 5.1 部署脚本与状态检查 {#部署脚本与状态检查}
+
+**部署脚本**把一次有明确输入和完成条件的发布操作自动执行，并用退出码把结果交回流水线。下面的教学示例只更新 Kubernetes 中一个已有 Deployment 的镜像：命名空间为 `staging`，Deployment 和容器都叫 `api`。这些名称是示例约定。
+
+运行前，Deployment 应已配置就绪探针、非零副本数，并处于未暂停状态；配置、Secret、Service 和拉取镜像的权限也已经准备好。调用方须确认集群 context、验证镜像来源，并对这个 Deployment 串行发布，期间没有其他操作者修改它。脚本不负责创建这些资源。
+
+```sh
+#!/bin/sh
+set -eu
+
+context=${1:?usage: deploy.sh CONTEXT IMAGE_AT_DIGEST}
+image=${2:?usage: deploy.sh CONTEXT IMAGE_AT_DIGEST}
+if ! printf '%s\n' "$image" | grep -Eq '^[^[:space:]@]+@sha256:[0-9a-f]{64}$'; then
+  echo 'expected image reference with sha256 digest' >&2
+  exit 2
+fi
+
+k() {
+  kubectl --context="$context" --namespace=staging --request-timeout=15s "$@"
+}
+
+k set image deployment/api "api=$image"
+k rollout status deployment/api --timeout=120s
+actual=$(k get deployment/api -o 'jsonpath={.spec.template.spec.containers[?(@.name=="api")].image}')
+if [ "$actual" != "$image" ]; then
+  echo 'deployment image differs from requested image' >&2
+  exit 1
+fi
+printf 'rollout completed for %s\n' "$image"
+```
+
+调用时传入明确的 context 和 `仓库/镜像@sha256:摘要`。校验只限制引用的基本形式，不证明镜像存在或签名可信。`set image` 提交目标镜像，`rollout status` 等待 Deployment 发布完成，最后读取目标模板中的镜像并与输入比较。这里的串行发布前提很重要：`rollout status` 默认跟踪最新的 rollout，出现并发更新时可能切换到另一轮发布。
+
+`set -e` 让本例的关键命令失败后停止，并把非零退出码交给 Jenkins；镜像不一致也会显式失败。API 超时不代表更新一定没有生效，等待超时也不代表系统已经回到旧版本。此时应保留日志，查看 Deployment、ReplicaSet、Pod 事件及当前镜像，确认已经更新到哪一步，再决定继续或回退。
+
+脚本成功表示，在上述前提下控制器已报告发布完成且目标模板符合输入。它仍不能代替业务冒烟测试。脚本失败也不自动执行 `rollout undo`：数据库或配置可能已变化，回退前仍需检查兼容性。
 
 ## 6. 无损替换 {#无损替换}
 
@@ -166,6 +222,36 @@ shell 形式入口会增加中间进程，需要检查信号是否传到 Java。
 
 </details>
 
+### 13.4 Jenkins 如何把应用构建为镜像并交付，镜像推到哪里？ {#jenkins-image-delivery}
+
+**考察重点**：流水线阶段、镜像仓库与运行环境的职责。
+
+**相关内容**：[Jenkins 流水线](#jenkins-流水线)。
+
+<details>
+<summary>参考回答</summary>
+
+**固定提交后依次构建、测试、构建并验证镜像，再推送到项目配置的镜像仓库。** Jenkins 可以用 `stage` 组织这些步骤，任一步骤失败就停止后续交付。
+
+镜像名称里的仓库地址决定推送目标，推送阶段使用受控凭据。保存推送后的 digest，再让部署阶段使用同一个已验证产物，并检查发布结果。仓库保存镜像，集群拉取和运行镜像，二者不能混为一步。
+
+</details>
+
+### 13.5 如何写一个自动部署脚本，并判断部署失败？ {#deployment-script-status}
+
+**考察重点**：部署输入、等待完成、状态核对和失败边界。
+
+**相关内容**：[部署脚本与状态检查](#部署脚本与状态检查)。
+
+<details>
+<summary>参考回答</summary>
+
+**先明确目标环境和镜像，再提交更新、等待发布完成，并核对实际目标状态。** 对已有 Kubernetes Deployment，可以使用 `kubectl set image` 和 `kubectl rollout status`，随后检查镜像引用。命令失败、等待超时或镜像不一致，都应让脚本非零退出。
+
+示例要求发布串行执行，资源、就绪探针和权限已准备好。超时可能发生在服务端接受更新以后，因此要保留现场并查询当前状态。控制器报告完成后还需要业务检查；失败时是否回退，要结合配置和数据库兼容性判断。
+
+</details>
+
 ## 14. 参考资料 {#参考资料}
 
 - [Docker：Multi-stage builds](https://docs.docker.com/build/building/multi-stage/)
@@ -175,3 +261,8 @@ shell 形式入口会增加中间进程，需要检查信号是否传到 Java。
 - [Docker：Build secrets](https://docs.docker.com/build/building/secrets/)
 - [Docker：Build cache invalidation](https://docs.docker.com/build/cache/invalidation/)
 - [Docker：Dockerfile reference](https://docs.docker.com/reference/dockerfile/)
+- [Jenkins：Pipeline](https://www.jenkins.io/doc/book/pipeline/)
+- [Jenkins：Using a Jenkinsfile](https://www.jenkins.io/doc/book/pipeline/jenkinsfile/)
+- [Docker：docker image push](https://docs.docker.com/reference/cli/docker/image/push/)
+- [Kubernetes：kubectl set image](https://kubernetes.io/docs/reference/kubectl/generated/kubectl_set/kubectl_set_image/)
+- [Kubernetes：kubectl rollout status](https://kubernetes.io/docs/reference/kubectl/generated/kubectl_rollout/kubectl_rollout_status/)

@@ -14,6 +14,8 @@ keywords: ["inode 耗尽", "df 与 du", "磁盘空间排查", "文件删除不�
 ## 1. 面试核心 {#core}
 
 - **文件名保存在目录项中，文件属性保存在 inode 中**，多个文件名可以指向同一个 inode。[卡](#inode)
+- 硬链接指向同一 inode，符号链接保存**目标路径**；删除原名称后，硬链接仍可访问文件，指向已不存在路径的符号链接则会悬空。[卡](#hard-symbolic-links)
+- VFS 在内核中提供**统一文件接口，再把操作交给具体文件系统**；统一接口不代表磁盘布局相同。[卡](#vfs)
 - 写入失败要区分**块空间耗尽和 inode 耗尽**，分别用 `df -h` 与 `df -i` 检查。[卡](#disk-full)
 - **`df` 统计文件系统空间，`du` 遍历文件并累计占用**。统计范围不同，两者的结果也可能不同。[卡](#space-not-released)
 - 删除最后一个文件名后，**只要还有打开引用，文件空间就会继续保留**。[卡](#space-not-released)
@@ -36,6 +38,36 @@ keywords: ["inode 耗尽", "df 与 du", "磁盘空间排查", "文件删除不�
 inode 本身也占用资源。ext4 在创建文件系统时配置 inode 容量，后续扩展文件系统可以增加块组和 inode。大量小文件可能先用完 inode，数据块却仍有剩余，因此不能只看磁盘空间百分比。其他文件系统的 inode 分配方式需要分别确认。
 
 `ls -i` 可以查看 inode 号，`stat file` 可以查看元数据。同一文件系统内，普通的重命名主要改变目录项；跨文件系统移动则需要先复制，再删除原文件。
+
+### 2.1 硬链接与符号链接 {#硬链接与符号链接}
+
+**符号链接**也叫软链接，是保存另一个路径的特殊文件。打开链接时，系统继续解析它保存的路径。它可以跨文件系统，也可以指向目录；目标路径不存在时，链接本身仍存在，只是无法通过它找到目标，这叫悬空链接。
+
+硬链接则是同一个文件的另一个名称。Linux 下普通文件的硬链接不能跨文件系统，通常也不能给目录创建硬链接。它没有“原件”和“快捷方式”的区别，两个名字的地位相同。
+
+在空的练习目录中可以这样观察：
+
+```bash
+printf 'sample\n' > original.txt
+ln original.txt hard.txt
+ln -s original.txt soft.txt
+ls -li original.txt hard.txt soft.txt
+rm original.txt
+cat hard.txt
+readlink soft.txt
+```
+
+`original.txt` 与 `hard.txt` 的 inode 号相同，`soft.txt` 有自己的 inode。删除 `original.txt` 后，`cat hard.txt` 仍输出 `sample`，`readlink soft.txt` 仍输出它保存的路径 `original.txt`，但 `cat soft.txt` 会因该路径不存在而失败。相对符号链接从链接所在目录解析目标路径，不从执行命令时的工作目录解析。
+
+### 2.2 VFS 与具体文件系统 {#vfs与具体文件系统}
+
+**VFS**（Virtual File System，虚拟文件系统）是 Linux 内核中的文件系统抽象层，让程序通过统一的 `open`、`read`、`write` 等接口访问不同文件系统。应用不需要为了读取 ext4 和另一种文件系统，分别编写两套系统调用。
+
+以打开并读取 `/data/report.txt` 为例，内核沿路径和挂载关系查找目标，用内存中的 **dentry** 对象关联路径名称与 inode；缓存不足时，再调用具体文件系统的查找操作。这里的 dentry 是内存对象，不等于文件系统保存到磁盘上的目录记录。
+
+打开文件时，内核建立打开文件对象 `struct file`；打开成功后，进程通过文件描述符引用它。后续 `read` 根据描述符找到这个对象，再进入对应的文件操作实现；具体文件系统可以复用通用缓存逻辑，也可以实现自身需要的处理。文件描述符、打开文件对象和 inode 的区别见[文件描述符](../../basic-knowledge/operating-system/file-descriptors.mdx#描述符表与打开文件描述)。
+
+因此，VFS 统一的是访问接口和内核对象的抽象，不要求所有文件系统使用相同的磁盘结构。ext4 可以把数据保存在块设备上，网络文件系统可能访问远端，伪文件系统还可以动态提供内核信息；不能把经过 VFS 的一次读取都理解成“从本地磁盘读一个块”。
 
 ## 3. 磁盘容量排查 {#磁盘满的排查}
 
@@ -191,8 +223,39 @@ ext4 还包含超级块、位图和 inode 表等管理结构。它的 inode 容�
 
 </details>
 
+### 7.6 硬链接和软链接有什么区别，删除原文件名后分别会怎样？ {#hard-symbolic-links}
+
+**考察重点**：目录项、inode、路径解析与悬空链接。
+
+**相关内容**：[硬链接与符号链接](#硬链接与符号链接)。
+
+<details>
+<summary>参考回答</summary>
+
+**硬链接是同一 inode 的另一个名称，软链接是保存目标路径的独立文件。** 删除一个硬链接名称不会影响其他名称访问同一文件；删除软链接指向的目标路径后，链接仍存在，但访问目标会失败。
+
+普通硬链接受同一文件系统限制，通常不能链接目录。软链接可以跨文件系统、指向目录，甚至指向暂时不存在的路径。相对路径以软链接所在目录为起点解析。
+
+</details>
+
+### 7.7 VFS 是什么，它和 inode、具体文件系统有什么关系？ {#vfs}
+
+**考察重点**：统一接口、路径解析和具体文件操作的分工。
+
+**相关内容**：[VFS 与具体文件系统](#vfs与具体文件系统)、[inode 与文件系统结构](#inode-与文件系统结构)。
+
+<details>
+<summary>参考回答</summary>
+
+**VFS 是内核提供统一文件接口的抽象层，具体存储和文件操作由对应文件系统实现。** 路径查找通过 dentry 和 inode 定位对象，必要时进入具体文件系统的查找逻辑；打开后，文件描述符引用打开文件对象，后续读写再通过它进入对应操作。
+
+inode 表达文件元数据，dentry 表达路径名称关联，打开文件对象保存一次打开相关的状态。VFS 使用这些抽象支持不同文件系统共存，不表示 ext4、网络文件系统和伪文件系统都使用相同磁盘布局。
+
+</details>
+
 ## 8. 参考资料 {#参考资料}
 
+- [man7：symlink(7)](https://man7.org/linux/man-pages/man7/symlink.7.html)
 - [Linux Kernel Documentation：ext4 Data Structures and Algorithms](https://docs.kernel.org/filesystems/ext4/index.html)
 - [man7：lsof(8)](https://man7.org/linux/man-pages/man8/lsof.8.html)
 - [man7：free(1)](https://man7.org/linux/man-pages/man1/free.1.html)
@@ -200,3 +263,4 @@ ext4 还包含超级块、位图和 inode 表等管理结构。它的 inode 容�
 - [Linux man-pages：truncate(2)](https://man7.org/linux/man-pages/man2/truncate.2.html)
 - [Linux man-pages：fsync(2)](https://man7.org/linux/man-pages/man2/fsync.2.html)
 - [GNU Coreutils：du](https://www.gnu.org/software/coreutils/manual/html_node/du-invocation.html)
+- [Linux Kernel Documentation：Overview of the Linux Virtual File System](https://docs.kernel.org/filesystems/vfs.html)

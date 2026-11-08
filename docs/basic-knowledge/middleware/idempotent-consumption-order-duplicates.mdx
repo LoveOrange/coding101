@@ -33,6 +33,8 @@ keywords: ["幂等消费", "消息去重", "消息乱序", "Exactly-once", "消�
 
 **幂等键**是用来识别同一业务动作的稳定标识，可以是 event ID 或 command ID。重试必须复用原键，否则消费者会把重试当成新动作；两次独立动作即使内容相同，也应使用不同的键。
 
+RocketMQ 的消费重试也需要这层业务去重。不能只因两条消息的 `msgId` 不同，就认定它们是不同业务动作：应用重新发送同一动作时，消息标识可能变化。应把稳定的业务动作标识放进消息，例如「订单 1001 的支付事件」，由消费者用它建立唯一约束；订单 ID 本身则未必够用，因为同一订单还可能发生退款等独立动作。
+
 去重记录要与业务更新放进同一事务。下面先登记记账事件，再执行对应的记账更新：
 
 ```sql
@@ -172,3 +174,4 @@ WHERE aggregate_id = ? AND version < 3;
 - [Kafka 4.1：Consumer Configs](https://kafka.apache.org/41/configuration/consumer-configs/)
 - [MySQL 8.0：InnoDB Error Handling](https://dev.mysql.com/doc/refman/8.0/en/innodb-error-handling.html)
 - [Debezium：Outbox Event Router](https://debezium.io/documentation/reference/stable/transformations/outbox-event-router.html)
+- [RocketMQ：Consumer Best Practices](https://rocketmq.apache.org/docs/bestPractice/01bestpractice/#the-consumption-process-is-idempotent)

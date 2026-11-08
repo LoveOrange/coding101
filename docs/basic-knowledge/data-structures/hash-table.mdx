@@ -18,6 +18,7 @@ O(1) 是有条件的。不同的键落到同一位置（冲突）时怎么办，
 - 哈希分布均匀、负载受控时，哈希表**查询的期望时间是 O(1)**；所有键挤在一起时，最坏会退化到 O(n)。[卡](#lookup-complexity)
 - 处理冲突有两种主要方式：**链地址法**把冲突的条目放在同一个桶里，**开放寻址**沿着预定的探测序列寻找其他空位。
 - 线性探测删除条目时，**不能直接把位置标空**，要用墓碑保留探测路径，或者重新整理后面的条目。[卡](#open-addressing-delete)
+- 手写链式哈希表时，**覆盖不增计数，扩容按新容量重新定位**；迁移节点前保存旧后继，才能保留碰撞链的所有条目。[卡](#implement-chained-map)
 - **相等的键必须有相同的哈希值**，而且参与哈希和相等判断的字段，在键存放期间**必须保持不变**。[卡](#mutable-hash-key)
 
 ## 2. 哈希函数与定位 {#哈希函数与定位}
@@ -28,7 +29,7 @@ O(1) 是有条件的。不同的键落到同一位置（冲突）时怎么办，
 index = compress(hash(key), capacity)
 ```
 
-对同一个键，哈希函数每次都必须给出相同的结果，否则存进去和查出来会去不同的位置。哈希值分布越均匀，每个位置上的条目越少，查询时需要比较或探测的次数也越少。
+在同一张表的存续期间，键的相等状态没有改变时，哈希结果应保持一致，否则存进去和查出来会去不同的位置。这不意味着不同进程或不同次运行必须得到相同哈希值。哈希值分布越均匀，每个位置上的条目越少，查询时需要比较或探测的次数也越少。
 
 由于数组的位置有限，而可能的键要多得多，总会有不同的键被映射到同一个位置，这叫**哈希冲突**。冲突是正常情况，哈希表的设计就是要妥善处理它。
 
@@ -56,9 +57,119 @@ index = compress(hash(key), capacity)
 
 ## 4. 负载因子与扩容 {#负载因子与扩容}
 
-**负载因子**是 `α=元素数量/槽位数量`，衡量表有多满。链地址法的桶能装多个条目，所以 α 可以大于 1；开放寻址的条目都在数组里，必须保留空位，否则探测找不到空位就无法结束。
+**负载因子**是 `α=元素数量/槽位数量`，衡量表有多满。链地址法的桶能装多个条目，所以 α 可以大于 1；开放寻址的条目都在数组里，α 不会超过 1。前面这种遇到空位才结束的查询，需要保留真正的空位；如果允许表满，就必须另外限制探测次数等，保证查找不存在的键时也能停止。实际实现会控制负载，避免探测接近扫描整张表。
 
 α 越高，冲突越多，桶越长或探测越远，所以哈希表会在 α 超过阈值时扩容。扩容不能只把旧数组复制过去：下标的计算用到了容量，容量一变，同一个键算出的位置也变了，所有条目都要按新容量重新定位。单次扩容是 O(n)，但和动态数组一样，容量倍增时累计的迁移成本平均到每次插入上是常数，可以按摊销来分析。
+
+### 4.1 最小链式哈希表实现 {#最小链式哈希表实现}
+
+**手写哈希表要把定位、键比较、链接修改和扩容接成一条完整的执行路径。** 下面用 Java 实现一张单线程的 `int → int` 表，冲突时使用单链表。键和值的类型是教学选择，不要求把生产容器的所有接口都实现出来。
+
+先约定返回值，避免用 0 同时表示“键不存在”和“值恰好为 0”：
+
+| 方法 | 返回约定 |
+| --- | --- |
+| `get(key)` | 返回当前值；不存在返回 `null` |
+| `put(key, value)` | 覆盖时返回旧值；新键返回 `null` |
+| `remove(key)` | 删除成功返回旧值；不存在返回 `null` |
+| `size()` | 返回当前键的数量，覆盖不增加数量 |
+
+方法返回 `Integer` 是为了容纳缺失标记 `null`，实际存储的值仍是 `int`，不接受空值。键按整数值相等判断，负数和整数两端也都是合法键。
+
+```java
+static final class IntMap {
+    private static final class Entry {
+        final int key;
+        int value;
+        Entry next;
+        Entry(int key, int value, Entry next) {
+            this.key = key;
+            this.value = value;
+            this.next = next;
+        }
+    }
+
+    private Entry[] buckets = new Entry[4];
+    private int size;
+
+    int size() { return size; }
+
+    private static int index(int key, int capacity) {
+        int hash = key ^ (key >>> 16);
+        return hash & (capacity - 1);
+    }
+
+    Integer get(int key) {
+        for (Entry e = buckets[index(key, buckets.length)]; e != null; e = e.next) {
+            if (e.key == key) return e.value;
+        }
+        return null;
+    }
+
+    Integer put(int key, int value) {
+        int i = index(key, buckets.length);
+        for (Entry e = buckets[i]; e != null; e = e.next) {
+            if (e.key == key) {
+                int previous = e.value;
+                e.value = value;
+                return previous;
+            }
+        }
+        if (size >= buckets.length - buckets.length / 4) {
+            grow();
+            i = index(key, buckets.length);
+        }
+        buckets[i] = new Entry(key, value, buckets[i]);
+        size++;
+        return null;
+    }
+
+    Integer remove(int key) {
+        int i = index(key, buckets.length);
+        Entry previous = null;
+        for (Entry e = buckets[i]; e != null; e = e.next) {
+            if (e.key == key) {
+                if (previous == null) buckets[i] = e.next;
+                else previous.next = e.next;
+                e.next = null;
+                size--;
+                return e.value;
+            }
+            previous = e;
+        }
+        return null;
+    }
+
+    private void grow() {
+        if (buckets.length == (1 << 30)) {
+            throw new IllegalStateException("capacity limit");
+        }
+        Entry[] expanded = new Entry[buckets.length * 2];
+        for (Entry head : buckets) {
+            for (Entry e = head; e != null; ) {
+                Entry next = e.next;
+                int i = index(e.key, expanded.length);
+                e.next = expanded[i];
+                expanded[i] = e;
+                e = next;
+            }
+        }
+        buckets = expanded;
+    }
+}
+```
+
+`buckets` 初始长度为 4，每次翻倍，所以容量一直是 2 的幂。`hash & (capacity - 1)` 保留对应的低位，得到合法的非负下标，不需要对负哈希取绝对值。`key ^ (key >>> 16)` 把部分高位信息混入低位，避免完全只看原键的最低几位；它并不能保证任意输入分布均匀，也不提供对恶意碰撞的保护。
+
+`put` 先沿桶比较键。找到旧键就只更新 `value`，不增加 `size`，也不因为覆盖而扩容。没找到才准备插入新节点。这里把最大负载设为 0.75：容量为 4 时已有 3 个键，插第 4 个之前先扩成 8；扩容后必须重新计算这个新键的下标，不能继续使用旧容量下的 `i`。
+
+`get` 和 `remove` 也必须比较完整键，不能认为落入同一桶就相等。例如依次插入键 0、4、8，在初始容量 4 时，它们都会进入桶 0，头插后形成 `8 → 4 → 0`。删除 4 只让 8 的 `next` 跳过 4，0 仍可访问；删除 8 则要更新桶头。删除不存在的键不改变链接和数量。链地址法不依赖“空槽结束后续探测”的规则，因此这里不需要开放寻址的墓碑。
+
+扩容时，`grow` 逐个把旧节点接入新桶，不创建另一套键值条目，也不改变 `size`。迁移前先保存 `next`，因为接入新桶会覆盖 `e.next`；忘记保存就会丢失旧链的剩余部分。以 0、4、8 为例，容量从 4 变成 8 后，4 移到桶 4，0 和 8 留在桶 0，不能只把原桶链表整体复制到新数组。
+
+扩容扫描旧桶和全部条目。由于本实现只在负载达到阈值、准备增加新键时扩容，此时容量与条目数同阶，一次迁移为 O(n)；倍增迁移的累计成本可以摊还到插入上。查询、覆盖和删除仍受桶长影响，所有键冲突时最坏 O(n)。固定的混合函数不等于随机哈希，不能脱离输入分布直接保证每次常数时间。
+
+这份实现不缩容，空间为 O(容量+n)；大量删除后，空桶数组仍会保留。容量到 `1 << 30` 后，下一次需要增长的插入会报错，防止翻倍发生整数溢出，这不是对可用内存的承诺，实际分配可能更早失败。它也没有迭代器、并发控制或树化桶。验证重点是每个键恰好出现一次、都在当前容量算出的桶中、链表无环、`size` 与节点数一致，以及多轮扩容后旧键值仍然可查。
 
 ## 5. 复杂度 {#复杂度}
 
@@ -145,6 +256,23 @@ index = compress(hash(key), capacity)
 
 </details>
 
+### 9.4 怎样实现一个支持查询、写入、删除和扩容的哈希表？ {#implement-chained-map}
+
+**考察重点**：桶定位、键比较、碰撞链修改、返回约定和扩容迁移。
+
+**相关内容**：[链地址法](#链地址法)、[最小链式哈希表实现](#最小链式哈希表实现)。
+
+<details>
+<summary>参考回答</summary>
+
+**用桶数组定位，用桶内链表区分冲突键，达到负载阈值时重新分配所有条目的位置。** 查询沿桶比较键；写入已有键时只覆盖值，新键才接入链并增加计数；删除时维护前驱，目标在链首则更新桶头。
+
+扩容改变了下标计算所用的容量，必须逐条迁移，并先保存旧后继再重接节点。迁移不改变键值和数量。正文使用整数键值、以 `null` 表示缺失，负载上限 0.75，不提供并发和缩容；这些是示例约定，不是所有哈希表的统一规范。
+
+边界验证应覆盖碰撞、覆盖已有值、缺失键、删除链首中尾、空表与整数极值，还要在多次扩容后检查所有键值和计数，不能只测没有冲突的插入。
+
+</details>
+
 ## 10. 参考资料 {#参考资料}
 
 - [Open Data Structures：Hash Tables](https://opendatastructures.org/ods-java/5_Hash_Tables.html)
@@ -153,3 +281,4 @@ index = compress(hash(key), capacity)
 - [Open Data Structures：LinearHashTable](https://opendatastructures.org/ods-java/5_2_LinearHashTable_Linear_.html)
 - [Java SE 21：HashMap](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/HashMap.html)
 - [Java SE 21：Object.hashCode](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/Object.html#hashCode())
+- [Open Data Structures：ChainedHashTable，桶内查找、删除与倍增迁移](https://opendatastructures.org/ods-java/5_1_ChainedHashTable_Hashin.html)

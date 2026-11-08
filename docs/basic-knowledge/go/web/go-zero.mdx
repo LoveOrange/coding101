@@ -1,0 +1,359 @@
+---
+sidebar_position: 5
+knowledge:
+  id: basic-knowledge.go.web.go-zero
+  type: concept
+description: "讲解 go-zero 的接口组织、请求解析、中间件、日志和 Redis 钩子，明确生成代码、请求 context 与服务关闭的职责。"
+keywords: ["Go", "go-zero", "httpx", "logx", "中间件", "Redis Hook"]
+---
+
+# go-zero
+
+**go-zero** 是 Go 服务开发框架，提供 HTTP、RPC、配置、日志和依赖访问等组件。理解一个 go-zero 项目，要能沿着请求找到路由、参数、业务逻辑和外部依赖，并说明失败时在哪里返回、超时后哪些工作还可能继续。
+
+本文以 Go 1.22.12、go-zero v1.7.3 为例。HTTP 的连接与关闭基础见 [Go HTTP 服务](./http-server.mdx)；这里只展开框架如何组织这些能力。
+
+## 1. 面试核心 {#core}
+
+- **`httpx` 是 HTTP 辅助包，Gin 是 Web 框架，二者不是同一层级的对象**。比较时要区分解析与响应工具、路由和整个服务框架。[卡](#httpx-gin)
+- **代码生成建立契约对应的结构，业务规则仍由开发者实现**。从零完成接口，需要把路由、输入校验、依赖调用、错误映射和测试接起来。[卡](#api-implementation)
+- **解析成功不等于业务有效，更不等于已经授权**。状态码与公开错误信息要按接口语义设计，不能把内部错误直接交给客户端。[卡](#parse-errors)
+- **中间件通过包装后续处理器形成调用链**。顺序决定覆盖范围，提前拒绝必须停止调用后续处理，共享可变状态仍要同步。[卡](#middleware-order)
+- **`logx.WithContext` 可以从已有 context 提取追踪信息，但不自动建立完整追踪系统**。字段、输出、采样和跨服务传播各有职责。[卡](#logging)
+- **Redis Hook 围绕命令执行加入耗时、追踪、熔断等逻辑**，不会替业务提供锁的唯一所有权或恰好一次执行。[卡](#redis-hooks)
+- **请求超时和服务退出都需要下游协作**。本文版本的 `Server.Stop()` 只关闭日志，HTTP 排空由进程关闭机制中的监听器执行。[卡](#shutdown-boundaries)
+
+## 2. 服务结构与代码生成 {#服务结构与代码生成}
+
+go-zero 的 HTTP 服务最终仍使用 `net/http` 的请求与响应接口。`rest.Server` 组织路由和中间件，`httpx` 处理参数解析及响应，业务代码再访问数据库、缓存或下游服务。
+
+| 部分 | 主要职责 | 不应承担的职责 |
+| --- | --- | --- |
+| `.api` 契约与生成工具 `goctl` | 描述接口，生成类型、路由与代码骨架 | 推断权限、事务规则或业务不变量 |
+| handler | 接收 HTTP 请求、解析输入、调用业务、返回响应 | 把全部业务和 SQL 堆在一个入口 |
+| logic | 按用例组织业务规则与依赖调用 | 依赖某个 HTTP 响应写入器 |
+| `ServiceContext` | 项目定义的共享依赖容器，例如配置和数据库客户端 | 保存每次请求的用户、响应对象或可变临时状态 |
+| 请求的 `context.Context` | 传递取消、deadline 和请求范围信息 | 代替依赖注入容器或任意业务参数列表 |
+
+`ServiceContext` 是生成项目中的结构体约定，与标准库 `context.Context` 的接口和生命周期不同。遇到项目自己定义的 context，要先看类型和调用链，不能只凭名字推断它的行为。
+
+生成器与运行时框架也要分开：生成器运行在开发阶段，线上服务执行的是生成并编译后的 Go 代码。修改接口后应检查生成差异；哪些文件可以重新生成、哪些文件由人维护，以所用模板的规则为准。
+
+`httpx.Parse` 对应解析这一环节，不能拿它与 Gin 的整个路由、中间件和请求上下文作直接比较。若比较框架，应该比较 go-zero 的 `rest.Server` 与 [Gin](./gin.mdx) 如何组织路由、绑定、错误处理和服务依赖，再结合项目需要选择；包的数量不代表性能或适用性。
+
+## 3. HTTP 接口 {#HTTP接口}
+
+### 3.1 参数与业务结果 {#参数与业务结果}
+
+下面用商品查询连接各个职责。`Lookup` 表示业务查询，接收请求的 context；HTTP 层不关心查询来自数据库还是其他服务。
+
+```go title="handler.go"
+package main
+
+import (
+    "context"
+    "errors"
+    "net/http"
+
+    "github.com/zeromicro/go-zero/core/logx"
+    "github.com/zeromicro/go-zero/rest/httpx"
+)
+
+var ErrNotFound = errors.New("product not found")
+
+type Product struct {
+    ID   int64  `json:"id"`
+    Name string `json:"name"`
+}
+
+type ProductRequest struct {
+    ID int64 `path:"id"`
+}
+
+func (r ProductRequest) Validate() error {
+    if r.ID <= 0 {
+        return errors.New("id must be positive")
+    }
+    return nil
+}
+
+type Lookup func(context.Context, int64) (Product, error)
+
+func ProductHandler(lookup Lookup) http.HandlerFunc {
+    return func(w http.ResponseWriter, r *http.Request) {
+        var req ProductRequest
+        if err := httpx.Parse(r, &req); err != nil {
+            httpx.WriteJsonCtx(r.Context(), w, http.StatusBadRequest,
+                map[string]string{"error": "invalid product id"})
+            return
+        }
+        product, err := lookup(r.Context(), req.ID)
+        if errors.Is(err, ErrNotFound) {
+            httpx.WriteJsonCtx(r.Context(), w, http.StatusNotFound,
+                map[string]string{"error": "product not found"})
+            return
+        }
+        if err != nil {
+            logx.WithContext(r.Context()).Errorw("product lookup failed",
+                logx.Field("product_id", req.ID))
+            httpx.WriteJsonCtx(r.Context(), w, http.StatusInternalServerError,
+                map[string]string{"error": "internal error"})
+            return
+        }
+        httpx.OkJsonCtx(r.Context(), w, product)
+    }
+}
+```
+
+`/products/2` 中的字符串先按 `path` 标签转成整数，再由 `Validate` 检查正数约束。非法整数或零值返回 400；查询不存在返回 404；其他查询错误只返回固定的 500 响应，不向客户端暴露底层错误文本。失败后立即 `return`，避免继续调用业务或重复写响应。
+
+本文版本的 `httpx.Parse` 依次解析路径、表单、请求头和 JSON，再调用对象实现的校验方法；标签与内容类型决定各部分如何读取。它不会自动理解“当前用户能否查看这个商品”。增加身份验证后，对象权限仍需在业务查询前检查。
+
+`httpx.ErrorCtx` 可以配合统一错误处理器使用，但本文版本未设置处理器时，普通 error 默认写成 400 并包含错误文本。不能因为函数叫 Error 就把数据库故障、权限拒绝和参数错误全部交给同一默认行为。统一处理器应在启动阶段配置，明确公开响应和内部诊断的边界。
+
+### 3.2 中间件 {#中间件}
+
+**中间件**接收后续处理器并返回新的处理器，使公共逻辑包在请求前后。下面记录处理器正常返回后的耗时：
+
+```go title="middleware.go"
+package main
+
+import (
+    "net/http"
+    "time"
+
+    "github.com/zeromicro/go-zero/core/logx"
+)
+
+func Timing(next http.HandlerFunc) http.HandlerFunc {
+    return func(w http.ResponseWriter, r *http.Request) {
+        start := time.Now()
+        next(w, r)
+        logx.WithContext(r.Context()).Infow("product handler completed",
+            logx.Field("elapsed_ms", time.Since(start).Milliseconds()))
+    }
+}
+```
+
+这里测到的是 `next` 包含的处理过程，不是客户端观察到的完整延迟，也没有包装响应状态或处理 panic。如果需要这些能力，应明确加入对应实现，不能把“调用了 next”解释为请求一定成功。
+
+`rest.WithMiddlewares([]rest.Middleware{A, B}, routes...)` 形成 `A(B(handler))`。入口经过 A、B，正常返回时反向展开；鉴权失败的中间件写完响应后不再调用 `next`。`Server.Use` 增加服务级中间件，原生链还可能包含超时、恢复、限流和观测组件，实际位置要看最终链的构建顺序。
+
+`WithChain` 会替换原生链，不是只追加一层。使用它时要重新确认超时、恢复等能力是否还存在。路由和中间件在开始接收请求前完成注册，不把注册方法当作可以无锁动态修改服务的接口。
+
+### 3.3 配置与启动 {#配置与启动}
+
+配置文件提供服务名、监听地址和请求超时。`Timeout` 的单位在本文版本中是毫秒：
+
+```yaml title="catalog.yaml"
+Name: catalog
+Host: 127.0.0.1
+Port: 8080
+Timeout: 1000
+Log:
+  Mode: console
+  Encoding: json
+```
+
+三个 Go 文件放在同一个 `main` 包中，依赖 `github.com/zeromicro/go-zero v1.7.3`。启动入口如下：
+
+```go title="main.go"
+package main
+
+import (
+    "context"
+    "flag"
+    "net/http"
+
+    "github.com/zeromicro/go-zero/core/conf"
+    "github.com/zeromicro/go-zero/rest"
+)
+
+func main() {
+    file := flag.String("f", "catalog.yaml", "config file")
+    flag.Parse()
+    var c rest.RestConf
+    conf.MustLoad(*file, &c)
+    server := rest.MustNewServer(c)
+    defer server.Stop()
+
+    lookup := func(ctx context.Context, id int64) (Product, error) {
+        if err := ctx.Err(); err != nil {
+            return Product{}, err
+        }
+        if id != 1 {
+            return Product{}, ErrNotFound
+        }
+        return Product{ID: 1, Name: "notebook"}, nil
+    }
+    server.AddRoutes(rest.WithMiddleware(Timing, rest.Route{
+        Method: http.MethodGet,
+        Path: "/products/:id",
+        Handler: ProductHandler(lookup),
+    }))
+    server.Start()
+}
+```
+
+加载配置会应用字段标签声明的默认值；仅写一个零值 `RestConf{}`，不会让 Go 自动执行这些标签。这个服务对 `/products/1` 返回商品，对 `/products/2` 返回 404，对 `/products/0` 返回 400。示例使用固定查询，真实依赖应在启动时建立、在请求中复用，并由明确的所有者关闭。
+
+## 4. 日志、追踪与 Redis 钩子 {#日志追踪与Redis钩子}
+
+### 4.1 logx {#logx}
+
+**`logx`** 提供日志级别、结构化字段、输出写入器和文件轮转等能力。配置决定日志写到哪里、如何编码；调用点提供当前发生的事情及必要上下文。
+
+`logx.WithContext(ctx)` 返回关联该 context 的日志对象。本文版本会从已有追踪上下文中提取 trace ID、span ID，也会添加通过相应日志 API 放入 context 的字段。它不会自动打印 context 中的所有值，也不会因为调用了一次 WithContext 就创建一条跨服务链路。
+
+链路关联需要入口建立或接收追踪上下文，下游按协议传播，并由相应配置采样和导出。日志中有 trace ID，只说明这些记录可按 ID 关联，不等于全部 span 已经送到后端。不要记录令牌、密码或完整请求体来换取方便；诊断需要哪些字段，就选择哪些字段。
+
+日志写入也有成本。高频逐条输出、大字段和慢输出目标都可能影响服务；不能把日志组件视为没有延迟、容量和丢失边界的旁路。
+
+### 4.2 Redis Hook {#RedisHook}
+
+**Hook** 是在操作执行前后插入公共逻辑的接口。go-zero 的 Redis 客户端基于 go-redis，本文版本在创建底层客户端时注册耗时钩子、熔断钩子及配置的附加钩子。
+
+耗时钩子围绕命令或 pipeline 执行记录耗时、指标与追踪；熔断钩子根据依赖健康情况决定是否继续调用。钩子链中的某层可以提前返回错误，因此调用方仍需检查 Redis 操作的结果。慢命令日志可能包含命令参数，也应考虑实际数据的敏感性。
+
+这里讨论的是 Redis **客户端调用路径**，不是 Redis 服务端的键空间通知，也不是 GORM 的模型生命周期回调。面试问到“Redis 钩子”时，先确认使用的版本和类型，再沿注册位置解释；不能把所有叫 Hook 的机制混成一种。
+
+钩子不自动提供分布式锁的正确性。锁的唯一令牌、过期、续约、释放条件和外部资源保护仍属于 [Redis 分布式锁](../../nosql/redis/distributed-lock-conditions-boundaries.mdx) 的问题。数据库访问与缓存封装分别见 [go-zero sqlx](../database/sqlx.mdx) 和 [go-zero sqlc](../database/sqlc.mdx)，不要仅凭包名推断职责。
+
+## 5. 超时与服务退出 {#超时与服务退出}
+
+请求超时首先约束等待和响应，不能强制杀掉任意业务 goroutine。把 `r.Context()` 传入查询与下游调用，并让它们检查取消；若处理器忽略取消，框架已经返回超时响应后，处理器仍可能继续运行。已经完成的写入不会因此自动回滚。
+
+本文版本的原生超时处理器在普通请求到期时默认返回 503，客户端取消对应另一条处理分支；统一错误处理器也会影响响应。WebSocket 升级和 SSE 有专门的绕过条件，因此不能把一个 REST 超时数值理解为所有连接形式的统一截止时间。
+
+服务退出则涉及另一套生命周期。`Start` 建立 HTTP 服务并注册进程关闭监听器；收到受支持的关闭信号后，监听器调用底层 `http.Server.Shutdown` 排空请求，进程关闭机制还管理强制退出预算。
+
+**v1.7.3 的 `Server.Stop()` 实现只调用 `logx.Close()`。** 示例中的 defer 负责该收尾步骤，不能单独用 `Stop()` 来证明监听端口已经关闭。需要在进程级测试中检查停止接收新请求、在途请求结束、依赖关闭与最终退出，不能仅检查某个方法返回了。
+
+共享客户端由服务生命周期管理，请求 context 随请求结束；自行启动的后台任务必须有独立的取消和等待机制。框架的 HTTP 排空不会自动管理应用创建的所有 goroutine。
+
+## 6. 面试题 {#面试题}
+
+### 6.1 go-zero 的 httpx 与 Gin 应该怎样比较？ {#httpx-gin}
+
+**考察重点**：辅助包、路由与框架的层级，以及实际选型依据。
+
+**相关内容**：[服务结构与代码生成](#服务结构与代码生成)。
+
+<details>
+<summary>参考回答</summary>
+
+**httpx 是参数与响应等 HTTP 辅助能力，Gin 是包含路由和中间件机制的 Web 框架。** 应先说清比较范围，不能只把二者当成可直接替换的同类对象。
+
+若讨论完整服务，比较 go-zero 的 `rest.Server` 与 Gin 怎样组织请求、依赖、错误处理及所需组件；性能结论需要相同负载和配置下的测量，不能从框架定位直接推导。
+
+</details>
+
+### 6.2 用 go-zero 从零实现一个接口，要完成哪些工作？ {#api-implementation}
+
+**题型**：综合题
+
+**考察重点**：契约、HTTP 入口、业务规则、共享依赖、失败路径与验收。
+
+**相关内容**：[服务结构与代码生成](#服务结构与代码生成)、[HTTP 接口](#HTTP接口)。
+
+<details>
+<summary>参考回答</summary>
+
+**先明确接口契约和业务不变量，再连接路由、参数校验、业务逻辑、依赖与响应。** 可以用 goctl 建立骨架，但生成器不会替我决定对象权限、事务和幂等规则。
+
+配置和客户端在启动阶段建立，请求 context 传到下游。检查正常结果、非法输入、对象不存在、依赖失败和取消，再验证实际启动与关闭。项目已有 `ServiceContext` 时用它承载共享依赖，避免把每次请求的状态保存在里面。
+
+</details>
+
+### 6.3 httpx.Parse 成功后，还需要做哪些检查？ {#parse-errors}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：语法和类型转换、业务约束、授权与错误映射。
+
+**相关内容**：[参数与业务结果](#参数与业务结果)。
+
+<details>
+<summary>参考回答</summary>
+
+**解析成功不证明业务合法或访问已授权。** 应校验取值范围、跨字段关系和对象权限，并按业务规则调用依赖。
+
+错误要映射为适当状态和公开响应；本文版本普通 error 交给默认 ErrorCtx 会得到 400 和错误文本，不适合直接处理全部内部故障。写完错误响应后立即返回，避免继续执行。
+
+</details>
+
+### 6.4 中间件顺序为什么会影响行为，WithChain 又有什么边界？ {#middleware-order}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：处理器包装、短路、原生链与共享状态。
+
+**相关内容**：[中间件](#中间件)。
+
+<details>
+<summary>参考回答</summary>
+
+**A 包住 B 时，入口先 A 后 B，正常返回时顺序相反。** 某层不调用 next，就阻止了后续业务；日志和鉴权放置的位置会改变它们观察到的范围。
+
+WithChain 替换原生链，使用后要确认超时、恢复等能力；并发请求共享的计数器、map 仍需同步。注册在服务启动前完成，不把注册过程当成运行期动态路由能力。
+
+</details>
+
+### 6.5 logx 怎样关联请求日志，它是否自动完成链路追踪？ {#logging}
+
+**考察重点**：结构化字段、context 中的追踪信息、输出与传播职责。
+
+**相关内容**：[logx](#logx)。
+
+<details>
+<summary>参考回答</summary>
+
+**WithContext 从已有上下文提取追踪标识，让日志可以关联到请求。** 输出位置和编码由配置及写入器负责，业务提供必要字段。
+
+它不自动创建完整追踪链路，也不复制 context 的所有值。入口、下游传播、采样和导出需要各自配置；日志还应控制敏感字段、频率和体积。
+
+</details>
+
+### 6.6 go-zero 的 Redis 钩子做什么，是否能保证分布式锁正确？ {#redis-hooks}
+
+**考察重点**：客户端执行链、耗时与熔断、业务一致性边界。
+
+**相关内容**：[Redis Hook](#RedisHook)。
+
+<details>
+<summary>参考回答</summary>
+
+**本文版本的钩子围绕 Redis 客户端命令和 pipeline 加入耗时、指标、追踪及熔断逻辑。** 它可以观察或短路执行，不是 Redis 服务端事件通知。
+
+钩子不会替锁完成所有权、过期、续约、条件释放和外部资源保护。应先确认具体客户端类型和版本，再解释注册顺序、错误传播，以及业务怎样处理失败。
+
+</details>
+
+### 6.7 为什么请求超时与调用 Server.Stop 都不能证明全部工作已经结束？ {#shutdown-boundaries}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：请求取消、HTTP 排空、日志关闭和后台任务生命周期。
+
+**相关内容**：[超时与服务退出](#超时与服务退出)。
+
+<details>
+<summary>参考回答</summary>
+
+**超时需要业务和下游协作，Stop 在 v1.7.3 中只关闭日志。** 忽略取消的业务可能继续执行，已提交副作用也不会自动撤销。
+
+HTTP 排空由进程关闭监听器调用底层 Shutdown 完成，还要结合强制退出预算。后台任务和共享依赖需要独立的取消、等待与关闭安排，并通过实际进程退出检查验证。
+
+</details>
+
+## 7. 参考资料 {#参考资料}
+
+- [go-zero v1.7.3：HTTP Server](https://github.com/zeromicro/go-zero/blob/v1.7.3/rest/server.go)
+- [go-zero v1.7.3：HTTP 执行链](https://github.com/zeromicro/go-zero/blob/v1.7.3/rest/engine.go)
+- [go-zero v1.7.3：请求解析](https://github.com/zeromicro/go-zero/blob/v1.7.3/rest/httpx/requests.go)
+- [go-zero v1.7.3：响应与错误处理](https://github.com/zeromicro/go-zero/blob/v1.7.3/rest/httpx/responses.go)
+- [go-zero v1.7.3：日志上下文](https://github.com/zeromicro/go-zero/blob/v1.7.3/core/logx/richlogger.go)
+- [go-zero v1.7.3：Redis 客户端钩子注册](https://github.com/zeromicro/go-zero/blob/v1.7.3/core/stores/redis/redisclientmanager.go)
+- [go-zero v1.7.3：Redis 耗时钩子](https://github.com/zeromicro/go-zero/blob/v1.7.3/core/stores/redis/durationhook.go)
+- [go-zero v1.7.3：Redis 熔断钩子](https://github.com/zeromicro/go-zero/blob/v1.7.3/core/stores/redis/breakerhook.go)
+- [go-zero v1.7.3：HTTP 启动与关闭监听器](https://github.com/zeromicro/go-zero/blob/v1.7.3/rest/internal/starter.go)

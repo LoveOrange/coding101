@@ -1,0 +1,236 @@
+---
+knowledge:
+  id: basic-knowledge.kotlin.functions
+  type: concept
+description: "解释 Kotlin 函数类型、Lambda 与闭包、扩展函数、作用域函数及 inline/noinline/crossinline，区分调用形式与真实执行行为。"
+keywords: [Kotlin 函数, Lambda, 闭包, 扩展函数, 作用域函数, inline, crossinline]
+---
+
+# Kotlin 函数
+
+Kotlin 的函数可以像值一样传递，也可以通过扩展函数和带接收者的 Lambda 改善调用表达。理解它们的关键是跟踪“谁被调用、捕获了什么、结果返回到哪里”：扩展函数不会改写原类，作用域函数不会创建异步任务，`inline` 也不保证所有代码都更快。
+
+## 1. 面试核心 {#core}
+
+- 函数类型描述参数和返回值，**高阶函数接收函数或返回函数，调用者通过行为参数改变处理逻辑**。
+- Lambda 可以捕获外部变量，**闭包保留的是后续执行所需的环境，可变变量的变化可能被共享观察**。[卡](#closure-capture)
+- 扩展函数按接收者的静态类型解析，**不会给原类增加真正的虚成员，也不会获得访问私有字段的权限**。[卡](#extension-dispatch)
+- 作用域函数主要区别在接收者形式与返回结果，**apply/also 返回原对象，let/run/with 返回代码块结果**。[卡](#scope-functions)
+- 内联允许把函数及符合条件的函数参数展开到调用位置，**可以减少部分调用和函数对象开销，但会增加代码体积**。[卡](#inline-noinline)
+- `noinline` 让某个函数参数作为普通函数值使用，`crossinline` 禁止该参数中的非局部返回，**两者解决的问题不同**。[卡](#crossinline-return)
+
+## 2. 函数类型与闭包 {#函数类型与闭包}
+
+**函数类型**用参数类型和返回类型描述可调用的值，例如 `(Int) -> String` 表示接收一个 `Int`、返回 `String`。**高阶函数**是接收函数参数或返回函数的函数。
+
+```kotlin
+fun render(value: Int, format: (Int) -> String): String = format(value)
+
+fun main() {
+    val formatter: (Int) -> String = { count -> "count=$count" }
+    println(render(3, formatter)) // count=3
+    println(render(4) { "[$it]" }) // [4]
+}
+```
+
+第二次调用把最后一个 Lambda 参数放到括号外；它只有一个参数，因此可以使用隐式名称 `it`。这种写法只是调用语法，不意味着稍后执行或切换线程。`format` 在 `render` 内被调用的时间，才决定 Lambda 什么时候执行。
+
+**闭包**由可执行的函数与其捕获的外部环境组成。它能在定义位置之外继续访问所需状态：
+
+```kotlin
+fun counter(): () -> Int {
+    var count = 0
+    return { ++count }
+}
+
+fun main() {
+    val next = counter()
+    println(next()) // 1
+    println(next()) // 2
+}
+```
+
+`counter()` 已经返回，`count` 的状态仍被返回的函数保存和使用。Kotlin/JVM 可为捕获的可变变量安排共享容器等表示，具体分配还受内联和优化影响，不能断言每个 Lambda 都创建一个新堆对象。
+
+闭包不会自动提供线程安全。多个线程调用同一个 `next` 时，`++count` 仍是需要同步的共享更新。回调捕获 Activity 等对象时，也可能延长其可达时间；应结合回调保存位置与取消、解绑时机判断生命周期。
+
+## 3. 扩展函数 {#扩展函数}
+
+**扩展函数**允许用接收者语法声明函数，例如 `fun String.lastIndexOrMinusOne()`。它没有修改 `String` 的类定义，只是在相应作用域内提供更方便的调用形式。
+
+```kotlin
+open class Parent
+class Child : Parent()
+
+fun Parent.kind(): String = "parent extension"
+fun Child.kind(): String = "child extension"
+
+fun main() {
+    val value: Parent = Child()
+    println(value.kind()) // parent extension
+    println(Child().kind()) // child extension
+}
+```
+
+第一行根据 `value` 的静态类型 `Parent` 选择扩展，运行时对象是 `Child` 也不会改选另一个扩展。这与可重写成员的动态分派不同。若存在名称和签名适用的真实成员，成员优先于扩展。
+
+扩展若声明为另一个类的成员，会同时出现两个接收者：拥有这个扩展的外层对象，以及点号前被扩展的对象。前者可以参与成员的动态分派，后者的扩展选择仍基于静态类型；不要把两个接收者的规则混为一谈。
+
+扩展函数仍受正常访问控制约束，不能因此访问接收者的私有成员。扩展属性也不能直接增加一个支持字段，需要通过 getter/setter 或现有状态计算结果。
+
+接收者还可以是可空类型，例如 `fun String?.display(): String = this ?: "missing"`。这类扩展能够在接收者为空时被调用，其内部必须自行处理 `this`；不要把点调用一律理解为对非空对象执行虚方法。
+
+## 4. 作用域函数 {#作用域函数}
+
+**作用域函数**在一个代码块里临时组织对象的使用，并按约定返回对象或计算结果。选择时先看返回什么，再看用 `this` 还是参数名表达对象。
+
+| 函数 | 对象在块内的形式 | 返回结果 | 典型用途 |
+| --- | --- | --- | --- |
+| `let` | 参数，默认 `it` | 块结果 | 转换结果、显式命名临时值 |
+| 扩展形式 `run` | 接收者 `this` | 块结果 | 围绕对象计算结果 |
+| `with` | 接收者 `this` | 块结果 | 已有对象的一组操作；本身不是扩展调用 |
+| `apply` | 接收者 `this` | 原对象 | 配置对象 |
+| `also` | 参数，默认 `it` | 原对象 | 记录或附加操作后继续传递对象 |
+
+```kotlin
+class Options {
+    var retries = 0
+}
+
+fun main() {
+    val options = Options().apply { retries = 2 }
+    val message = options.let { "retries=${it.retries}" }
+    val same = options.also { println(it.retries) } // 2
+    println(message) // retries=2
+    println(same === options) // true
+}
+```
+
+`apply` 返回配置后的 `Options`，`let` 返回字符串，`also` 打印后仍返回同一个对象。它们没有统一的“更高级”顺序，能让对象和结果清楚的写法就足够。
+
+`value.let { ... }` 即使 `value` 为 null 也会执行，只有 `value?.let { ... }` 才由安全调用跳过空值。另有不带接收者的顶层 `run { ... }`，用于组织一段计算。多层嵌套时 `this`、`it` 容易指向不同对象，可以改用命名参数或普通局部变量，不必强行串成一行。
+
+## 5. 内联与返回位置 {#内联与返回位置}
+
+**内联函数**用 `inline` 声明，编译器可以把函数体以及符合条件的 Lambda 参数展开到调用位置。这样能省去部分函数值表示和调用开销，也为具体化类型参数提供条件；后者见[Kotlin 泛型](./generics.mdx#类型擦除与具体化)。
+
+代价是调用点代码可能增大。大函数、调用点很多或没有可内联函数参数的简单函数，不应仅为“性能”一律添加 `inline`。最终效果还要结合编译输出与运行时优化判断。
+
+内联 Lambda 还可能允许**非局部返回**，即直接返回包含它的外层函数：
+
+```kotlin
+fun firstPositive(values: List<Int>): Int {
+    values.forEach {
+        if (it > 0) return it
+    }
+    return -1
+}
+
+fun main() {
+    println(firstPositive(listOf(-2, 0, 3, 4))) // 3
+}
+```
+
+标准库 `forEach` 的内联 Lambda 允许这里的 `return` 结束 `firstPositive`。如果写 `return@forEach`，结束的是当前 Lambda 执行，外层遍历仍会继续。普通非内联函数的 Lambda 不能随意使用同样的裸 `return` 返回外层函数。
+
+当函数参数需要被保存或作为普通值转交时，可以用 **`noinline`** 禁止该参数内联。某个参数仍希望内联，但会在另一个执行上下文中调用、不能允许跳回原外层函数时，可以用 **`crossinline`** 禁止非局部返回。
+
+```kotlin
+inline fun retain(noinline later: () -> Unit, before: () -> Unit): () -> Unit {
+    before()
+    return later
+}
+
+inline fun wrap(crossinline action: () -> Unit): Runnable = Runnable { action() }
+
+fun main() {
+    val later = retain({ println("later") }) { println("now") }
+    wrap { println("wrapped") }.run()
+    later()
+}
+```
+
+输出为 `now`、`wrapped`、`later`。`later` 可以被返回给调用方，`action` 则放入 `Runnable` 的执行体，因此不允许用裸 `return` 退出已经不一定在调用链上的外层函数。这里直接调用 `run()`，没有创建新线程；`crossinline` 本身也不调度线程。
+
+这些关键字都不自动防止闭包捕获对象，也不保证异步回调会被取消。判断内存与生命周期时仍要看函数值被谁保存、何时释放。
+
+## 6. 面试题 {#面试题}
+
+### 6.1 Lambda 捕获局部变量后，函数返回为什么仍能使用这个变量？ {#closure-capture}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：闭包环境、共享状态与生命周期。
+
+**相关内容**：[函数类型与闭包](#函数类型与闭包)。
+
+<details>
+<summary>参考回答</summary>
+
+**闭包保留执行所需的环境，所以变量状态不必随定义函数返回而消失。** 捕获的可变变量可由共享表示承接，后续调用继续观察和修改它；具体对象分配受编译器与内联优化影响。共享闭包仍可能发生数据竞争，也可能因捕获对象而延长其生命周期。
+
+</details>
+
+### 6.2 Kotlin 扩展函数会根据实际对象类型动态分派吗？ {#extension-dispatch}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：静态接收者类型与真实成员。
+
+**相关内容**：[扩展函数](#扩展函数)。
+
+<details>
+<summary>参考回答</summary>
+
+**普通扩展函数根据接收者的静态类型解析，不像可重写成员那样按实际对象类型选择实现。** 扩展没有修改原类，也不能访问它的私有成员；适用的真实成员优先。若扩展作为另一个类的成员声明，还需另外区分分发接收者，不能把两个接收者的规则混在一起。
+
+</details>
+
+### 6.3 let、run、with、apply 和 also 应该怎样选择？ {#scope-functions}
+
+**考察重点**：接收者表达与返回结果。
+
+**相关内容**：[作用域函数](#作用域函数)。
+
+<details>
+<summary>参考回答</summary>
+
+**先决定要返回原对象还是计算结果，再决定用 this 还是显式参数表达对象。** apply 和 also 返回原对象，分别使用 this 与参数；let、扩展 run 和 with 返回块结果，其中 let 使用参数，run/with 使用 this。空值跳过来自安全调用 `?.`，不是 let 自带的特殊规则；避免多层嵌套使对象指向难以判断。
+
+</details>
+
+### 6.4 inline 有什么作用，为什么还需要 noinline？ {#inline-noinline}
+
+**考察重点**：调用展开、函数值使用限制与成本。
+
+**相关内容**：[内联与返回位置](#内联与返回位置)。
+
+<details>
+<summary>参考回答</summary>
+
+**inline 允许把函数体和符合条件的函数参数展开到调用处，减少部分调用与函数对象开销，并支持相应的非局部返回和 reified。** 它可能增大代码体积，不保证总能提升性能。若某个函数参数需要被保存、返回或作为普通值使用，可以标记 noinline，让这个参数保留普通函数值语义。
+
+</details>
+
+### 6.5 crossinline 与 noinline 有什么区别？ {#crossinline-return}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：函数值保留与非局部返回限制。
+
+**相关内容**：[内联与返回位置](#内联与返回位置)。
+
+<details>
+<summary>参考回答</summary>
+
+**noinline 禁止该函数参数内联，crossinline 则允许内联但禁止其中的非局部返回。** 后者适用于参数会在另一 Lambda 或对象执行体中调用的情况，因为不能跳回原来包含调用的函数。两者都不会自动创建线程，是否异步执行仍由调用代码决定。
+
+</details>
+
+## 7. 参考资料 {#参考资料}
+
+- [Kotlin 文档：Functions](https://kotlinlang.org/docs/functions.html)
+- [Kotlin 文档：Higher-order functions and lambdas](https://kotlinlang.org/docs/lambdas.html)
+- [Kotlin 文档：Extensions](https://kotlinlang.org/docs/extensions.html)
+- [Kotlin 文档：Scope functions](https://kotlinlang.org/docs/scope-functions.html)
+- [Kotlin 文档：Inline functions](https://kotlinlang.org/docs/inline-functions.html)

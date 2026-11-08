@@ -29,7 +29,7 @@ type ArticleTuple = [
   permalink: string,
   domain: number,
   minutes: number,
-  priority: Priority | 0,
+  rolePriorities: Record<string, Priority>,
   roles: string[],
   sections: SectionTuple[],
   knowledgeId: string | 0,
@@ -73,7 +73,7 @@ export function compactIndex(index: LearningIndex): CompactIndex {
       article.permalink,
       domainIndex.get(article.domainId) ?? -1,
       article.minutes,
-      article.priority ?? 0,
+      article.rolePriorities,
       article.roles,
       article.sections.map(sectionTuple),
       article.knowledgeId ?? 0,
@@ -103,7 +103,7 @@ export function expandIndex(compact: CompactIndex): LearningIndex {
   const articles: Record<string, ArticleIndex> = {};
   const cards: Record<string, CardIndex> = {};
   for (const [id, tuple] of Object.entries(compact.a)) {
-    const [title, permalink, domain, minutes, priority, roles, sectionTuples, knowledgeId, interviewAnchor, cardTuples] = tuple;
+    const [title, permalink, domain, minutes, rolePriorities, roles, sectionTuples, knowledgeId, interviewAnchor, cardTuples] = tuple;
     const sections = sectionTuples.map(([sectionId, sectionTitle, number]) => ({id: sectionId, title: sectionTitle, number}));
     const articleKey = knowledgeId || id;
     const cardIds = cardTuples.map(([anchor, question, label, checkpointCount, refTuples, composite, selfTest]) => {
@@ -128,7 +128,7 @@ export function expandIndex(compact: CompactIndex): LearningIndex {
       domainId: compact.domains[domain]?.id ?? '',
       topicId: topicOf.get(id) ?? id,
       minutes,
-      priority: priority || undefined,
+      rolePriorities,
       roles,
       sections,
       cardIds,

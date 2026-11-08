@@ -1,0 +1,243 @@
+---
+sidebar_position: 16
+knowledge:
+  id: tools-and-frameworks.testing.jmeter
+  type: concept
+description: "用 JMeter 5.6 的测试计划说明线程组、采样器、关联、断言和计时器，给出本地服务与非 GUI 执行方案，并校验结果文件中的实际失败。"
+keywords: [JMeter, 线程组, 采样器, 参数化, 关联, JTL, 性能测试]
+---
+
+# JMeter
+
+**Apache JMeter**按照测试计划生成请求、执行检查并记录采样结果。它可以帮助实施接口和性能测试，但线程数、图表和绿色结果本身不会定义业务目标，也不会保证被测服务已经达到预期容量。
+
+准备 JMeter 项目时，应能把测试计划的配置与实际请求联系起来：每个用户做什么、数据怎样变化、如何判定成功，以及结果为什么可信。负载和指标的通用定义见[性能测试](performance-testing.mdx)。
+
+## 1. 面试核心 {#core}
+
+- 测试计划由线程组组织执行，采样器产生请求，配置、前后处理器、断言和计时器共同影响行为；**先用小流量确认完整业务结果，再增加负载**。[卡](#jmeter-plan)
+- 标准线程组控制并发线程与循环，**线程数、启动时间和循环次数都不能直接等同 RPS**。[卡](#jmeter-concurrency)
+- 参数化从数据源选择输入，关联从前序响应提取后续需要的动态值；**提取失败应明确失败，不能沿用旧值**。[卡](#parameterization-correlation)
+- 断言把协议成功与业务成功分开，**JMeter 进程正常结束不代表所有采样通过**，流水线还应检查结果文件。[卡](#result-gate)
+- 执行负载时使用非 GUI 模式，控制结果记录成本，**同时观察压测机和服务端**，避免把负载端瓶颈当成服务容量。[卡](#load-generator-limit)
+
+## 2. 测试计划中的职责 {#测试计划中的职责}
+
+JMeter 以树形测试计划组织组件。组件放在哪个作用域，决定它影响哪些采样器，因此除了“添加了什么”，还要检查“放在哪里”。
+
+| 组件 | 职责 | 例子 |
+| --- | --- | --- |
+| Thread Group | 线程数量、启动过程、循环和运行安排 | 2 个线程，各执行 3 轮 |
+| Sampler | 发起一次操作并产生采样结果 | HTTP Request |
+| Configuration Element | 提供共用设置或数据 | 请求默认值、Header、Cookie、CSV |
+| PreProcessor | 采样前准备 | 构造当前请求参数 |
+| PostProcessor | 采样后提取或处理 | 从 JSON 提取订单 ID |
+| Assertion | 判断结果是否符合约定 | 状态码、业务字段、必要内容 |
+| Timer | 在作用域内控制采样前等待 | 思考时间或吞吐调节 |
+| Listener | 保存或展示结果 | JTL 记录、调试结果树 |
+
+例如，把计时器放在线程组下面，可能影响组内多个采样器；只希望登录前等待，就应限定到对应采样器。断言范围也应明确，不能让检查订单 JSON 的断言作用到返回空正文的请求上。
+
+本文使用 JMeter 5.6 的标准组件，运行示例以 5.6.3 为准，不依赖第三方插件。
+
+## 3. 本地请求与断言示例 {#本地请求与断言示例}
+
+先建立一个仅监听本机的 HTTP 服务，用来验证测试计划执行与断言，不用它测量业务系统容量。将代码保存为 `local_service.py`：
+
+```python
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/ping":
+            code, body = 200, b'{"ok":true}'
+        else:
+            code, body = 404, b'{"ok":false}'
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format, *args):
+        pass
+
+
+if __name__ == "__main__":
+    server = ThreadingHTTPServer(("127.0.0.1", 8765), Handler)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+```
+
+运行 `python local_service.py` 后，在 JMeter GUI 中建立以下计划并保存为 `smoke.jmx`。这里只用 GUI 配置和调试，后续执行使用命令行。
+
+| 位置 | 组件与关键设置 |
+| --- | --- |
+| Test Plan 下 | Thread Group：Number of Threads 为 `2`，Ramp-up Period 为 `1`，Loop Count 为 `3` |
+| Thread Group 下 | HTTP Request：名称 `ping`，Protocol 为 `http`，Server 为 `127.0.0.1`，Port 为 `8765`，Method 为 `GET`，Path 为 `/ping` |
+| HTTP Request 的超时 | Connect Timeout 为 `1000`，Response Timeout 为 `2000`，单位毫秒 |
+| HTTP Request 下 | Response Assertion：字段选 Response Code，规则选 Equals，值为 `200` |
+| HTTP Request 下 | 另一条 Response Assertion：字段选 Text Response，规则选 Equals，值为 `{"ok":true}` |
+
+这个小示例每个线程每轮只有一个 HTTP 采样器，因此总共应有 `2 × 3 = 6` 条采样。两条断言分别检查状态和正文；实际业务 JSON 更适合提取字段后检查，避免把无关空白或字段顺序作为失败条件。
+
+在 `smoke.jmx` 所在目录执行，输出文件应使用本轮独立名称：
+
+```bash
+jmeter -n -t smoke.jmx -l results.jtl -j jmeter.log \
+  -Jjmeter.save.saveservice.output_format=csv \
+  -Jjmeter.save.saveservice.print_field_names=true \
+  -Jjmeter.save.saveservice.successful=true
+```
+
+`-n` 使用非 GUI 模式，`-t` 指定计划，`-l` 保存采样结果，`-j` 保存 JMeter 自身日志。这里显式使用带表头和 `success` 字段的 CSV 结果，方便程序核对。
+
+下面的脚本检查该示例是否恰好产生 6 条成功采样，保存为 `check_result.py` 后运行：
+
+```python
+import csv
+import sys
+
+with open("results.jtl", newline="", encoding="utf-8") as stream:
+    rows = list(csv.DictReader(stream))
+
+failed = [row for row in rows if row.get("success") != "true"]
+if len(rows) != 6 or failed:
+    print(f"samples={len(rows)}, failed={len(failed)}")
+    sys.exit(1)
+
+print("6 samples passed")
+```
+
+正常运行应输出 `6 samples passed`。将请求路径临时改为 `/missing` 后重新生成独立结果，6 条采样应失败，结果检查退出码为 1。这样可以确认错误响应确实被测试识别。
+
+JMeter 完成执行时的进程状态与采样是否成功是不同信息。流水线应同时检查命令执行、结果数量和业务阈值，不能只看程序是否正常退出。正式性能门槛还需加入延迟、吞吐和错误率，不能沿用此处仅适合 6 条冒烟采样的数量检查。
+
+## 4. 参数化、关联与会话 {#参数化关联与会话}
+
+**参数化**是把可变输入从固定脚本中分离出来，例如用 CSV 为不同线程提供账号或商品。需要明确读取、共享、耗尽和循环规则：数据复用可能让本应独立的用户同时修改同一条记录。
+
+**关联**是把前序响应中的动态值提取出来，供后续请求使用。例如创建订单后提取 `orderId`，再请求该订单状态。它与从文件取一行测试数据解决的是不同问题。
+
+关联时应检查提取结果确实存在且属于本次响应；提取不到就失败或停止当前业务流程，不要使用上一次循环留下的值。否则脚本可能始终查询一个旧订单，并错误报告通过。
+
+JMeter 变量通常用于线程自己的状态，共享属性则不是天然的用户隔离空间。Cookie Manager 可以帮助管理 HTTP 会话，但共享账号、服务端数据和配额仍需单独设计，见[测试数据管理](test-data-management.mdx#并行隔离与运行标识)。
+
+把认证值写进测试文件和结果正文会扩大暴露范围。计划可以引用测试环境凭证，产物则只保留定位失败所需的信息，避免保存不必要的完整响应和秘密。
+
+## 5. 线程、计时与业务负载 {#线程计时与业务负载}
+
+标准 Thread Group 的线程按流程执行采样器，线程通常等待本次请求结束才继续。Ramp-up 控制这些线程怎样逐渐启动，不是承诺某个请求速率；循环次数表示重复流程的次数。
+
+若一个业务流程包含 3 个请求，2 个线程循环 3 次会执行 6 轮流程，通常产生 18 条请求采样。引入控制器、失败退出或父事务采样后，结果数量还会变化，统计时必须明确对象。
+
+Constant Throughput Timer 尝试通过等待使采样速率接近设置，配置单位是每分钟样本数，还需核对按单线程还是共享线程计算。它不会创建额外线程，也无法让慢服务或不足的压测机凭空达到目标。
+
+同样，Throughput Controller 主要控制子项按次数或比例执行，不是限制每秒请求的计时器。组件名称相似不代表职责相同。
+
+并发人数应根据用户行为、目标流量和响应时间假设确定，再核对实际发出率与完成率。项目介绍中还要说明业务比例、热点数据、思考时间及重试行为，负载模型详见[性能测试](performance-testing.mdx#开放与封闭负载模型)。
+
+## 6. 结果成本与服务端观测 {#结果成本与服务端观测}
+
+压测机也消耗 CPU、内存、网络和文件写入资源。保留大量响应正文、复杂监听器和高成本脚本，可能使请求发送或结果处理成为瓶颈。
+
+因此负载执行使用 CLI 模式，关闭仅用于调试的 View Results Tree 等监听器，保存必要字段。需要分析图表时，可以在结束后从结果文件生成报告；报告生成本身也可能耗费资源。
+
+不能为了降低开销删除所有业务断言。应保留必要正确性检查，控制检查与记录成本，并确认服务端实际收到的负载。记录压测端资源、网络和实际采样速率，与服务端吞吐、延迟、错误、线程池和数据库等指标对照。
+
+增加压测机时，要核对数据分片、时钟、版本、总目标负载及结果汇总口径。多机并不自动保证负载准确，尤其不能每台都无意中重复完整目标或同一组写入数据。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 用 JMeter 实现一次接口测试，需要组织哪些组件？ {#jmeter-plan}
+
+**考察重点**：执行流程、输入、断言和结果。
+
+**相关内容**：[测试计划中的职责](#测试计划中的职责)、[本地请求与断言示例](#本地请求与断言示例)。
+
+<details>
+<summary>参考回答</summary>
+
+**用线程组安排执行，采样器发起操作，配置和处理器准备数据及动态关联，断言检查协议与业务结果，最后保存可追溯采样。** 计时器按业务负载表达等待或速率调节。
+
+先用少量请求确认请求、断言和数据清理有效，再使用非 GUI 模式执行负载。组件作用域要与目标采样器一致。
+
+</details>
+
+### 7.2 JMeter 的并发人数怎样确定，线程数为什么不等于吞吐量？ {#jmeter-concurrency}
+
+**考察重点**：业务假设、响应等待与实际速率。
+
+**相关内容**：[线程计时与业务负载](#线程计时与业务负载)。
+
+<details>
+<summary>参考回答</summary>
+
+**根据目标业务量、用户操作与思考时间、响应时间假设选择并发，再核对实际压力。** 标准线程会等待采样完成，服务变慢时同样线程数能发出的请求会减少。
+
+Ramp-up 只是线程启动安排，计时器也受线程和机器能力限制。需要独立到达模型时，应明确工具实现，并报告实际发出、完成和失败的数量。
+
+</details>
+
+### 7.3 参数化与关联有什么区别，关联失败后应怎样处理？ {#parameterization-correlation}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：输入来源、动态值与状态污染。
+
+**相关内容**：[参数化关联与会话](#参数化关联与会话)。
+
+<details>
+<summary>参考回答</summary>
+
+**参数化从数据源提供变化输入，关联从前序响应提取后续需要的动态值。** 例如 CSV 提供账号，创建响应提供订单 ID。
+
+关联失败应明确报错或终止当前业务流程，不能沿用旧值。还需检查变量作用域、数据共享与耗尽策略，避免线程或循环互相污染。
+
+</details>
+
+### 7.4 JMeter 进程正常结束，为什么流水线仍可能需要判失败？ {#result-gate}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：执行状态、采样成功与业务门槛。
+
+**相关内容**：[本地请求与断言示例](#本地请求与断言示例)。
+
+<details>
+<summary>参考回答</summary>
+
+**进程结束只说明测试执行过程完成，不代表所有采样满足断言或性能门槛。** 流水线需要读取结果，检查预期样本数量、失败和相关指标。
+
+空结果、采样错误、业务断言失败及延迟超标都应按约定判定。用故意错误的响应验证检查会失败，避免只有报告生成成功却没有有效门禁。
+
+</details>
+
+### 7.5 服务端资源很空闲但 JMeter 吞吐上不去，应该检查什么？ {#load-generator-limit}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：压测端资源、配置与实际负载。
+
+**相关内容**：[线程计时与业务负载](#线程计时与业务负载)、[结果成本与服务端观测](#结果成本与服务端观测)。
+
+<details>
+<summary>参考回答</summary>
+
+**先检查线程和计时配置、实际请求速率，再观察压测机 CPU、内存、网络、日志及监听器开销。** 可能是请求没有真正到达服务端，而非服务容量已经耗尽。
+
+使用非 GUI 模式、减少无关结果记录，并保持必要断言。多机执行时核对负载与数据分配，把客户端和服务端指标按时间对应起来。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [Apache JMeter：Getting Started](https://jmeter.apache.org/usermanual/get-started.html)
+- [Apache JMeter：Component Reference](https://jmeter.apache.org/usermanual/component_reference.html)
+- [Apache JMeter：Best Practices](https://jmeter.apache.org/usermanual/best-practices.html)
+- [Apache JMeter：Configuring JMeter](https://jmeter.apache.org/usermanual/properties_reference.html)

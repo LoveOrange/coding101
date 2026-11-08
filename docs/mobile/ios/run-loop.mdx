@@ -1,0 +1,315 @@
+---
+title: RunLoop
+description: 理解 RunLoop 与线程、事件源、运行模式、定时器和观察者的关系，分析定时器暂停、停止和循环引用。
+knowledge:
+  id: mobile.ios.run-loop
+---
+
+**RunLoop** 是与线程关联的事件处理机制：有合适的事件时执行处理，没有事件时等待，避免线程一直空转。它不创建线程，也不让一个线程同时执行多个回调。一个回调占用线程太久，后面的事件和定时器仍要等待。
+
+面试中需要把线程、RunLoop、运行模式和事件源分别说清楚。滚动时 Timer 暂停、子线程定时器不执行、停止定时器后线程仍不退出，都不能只用“RunLoop 没启动”解释。Foundation 的 Swift `RunLoop`、Objective-C 的 `NSRunLoop` 和 Core Foundation 的 `CFRunLoop` 提供相关层次的接口，本文使用 Swift 名称说明。
+
+## 1. 面试核心 {#core}
+
+- **RunLoop 在所属线程上处理事件并等待新事件**。它协调线程上的工作，不等于线程或线程池，也不保证主线程不会被耗时回调阻塞。[卡](#run-loop)
+- 每个线程可以取得自己的 RunLoop 对象，但**有对象不等于正在运行事件循环**。UIKit 管理主线程 RunLoop；普通工作线程是否运行它，要看使用的 API 和线程入口。[卡](#thread)
+- **mode 决定本次运行监听哪些源、Timer 和 Observer**。`common` 是一组模式的登记标记，不是“所有模式”或单独运行的模式。[卡](#mode)
+- **Source0 需要主动标记并按需要唤醒，基于端口的源由相应消息机制驱动**。Timer 表示到期工作，Observer 观察循环阶段，三者职责不同。[卡](#source)
+- **Timer 不是实时机制**。模式不匹配、线程忙或系统调度都可能推迟回调；重复 Timer 错过多个周期时不会逐次补齐所有回调。[卡](#timer-accuracy)
+- **`invalidate()` 停止 Timer，不等于终止线程或外层循环**。应在安装 Timer 的线程执行失效处理，并单独设计停止条件。[卡](#stop)
+- RunLoop 会持有已登记的 Timer，target 或 block 还可能持有业务对象。**弱引用只能处理一部分持有关系，仍要在合适的生命周期停止 Timer**。[卡](#timer-retain)
+- **RunLoop 的一次循环不等于屏幕的一帧**。显示同步由显示系统协调，`CADisplayLink` 也不保证每次回调都有一帧成功显示。[卡](#display)
+- Observer 可以观察进入、处理源前、等待前后和退出等阶段；**阶段通知不是某个业务回调已经执行的证明**。[卡](#observer)
+
+## 2. RunLoop 与线程 {#runloop与线程}
+
+### 2.1 为什么需要等待事件 {#为什么需要等待事件}
+
+线程可以直接执行一段任务后结束，也可以长期接收事件。后一种情况如果写成不断检查“有没有事”的空循环，就会持续消耗 CPU。RunLoop 把事件处理与等待结合起来：先处理可处理的工作，暂时没有工作时进入等待，被相应事件唤醒后继续。
+
+等待不等于卡死。线程在空闲时阻塞等待，是节省 CPU 的正常行为；主线程已经进入某个耗时计算或同步等待，则可能来不及处理后续 UI 事件。线程和调度的基础见 [进程与线程](../../basic-knowledge/operating-system/processes-threads.mdx)。
+
+一次激活的大致过程可以理解为：检查当前模式中的到期工作和输入源，执行相应回调，决定退出或进入等待，唤醒后再处理。实际流程还可能包含嵌套运行、内部事件和框架调度，不能把简图当成每次完全一致的固定调用序列。
+
+### 2.2 每个线程都有正在运行的 RunLoop 吗 {#每个线程都有正在运行的runloop吗}
+
+系统按需要为线程提供 RunLoop 对象，`RunLoop.current` 取得当前线程的对象。UIKit 在应用启动过程中管理主线程的事件循环，所以通常不需要自己在主线程调用 `run()`。
+
+普通工作线程可以完全不运行 RunLoop，例如计算一批数据后返回。需要使用依赖 RunLoop 的 Timer、端口或某些线程消息 API 时，才需要在那个线程上配置并运行它。仅在后台线程创建 `Timer.scheduledTimer`，然后让线程入口返回，定时器不会自动让这段线程代码变成一个长期事件循环。
+
+GCD 队列也不是某个固定线程上的 RunLoop。把任务提交到队列，不意味着队列上的所有任务都共享同一线程，更不能在一个临时工作任务里假定 `RunLoop.current` 会在任务返回后继续处理定时器。主队列与主 RunLoop 有框架集成，但它们仍是不同抽象。
+
+Foundation 的 `RunLoop` 一般不保证线程安全，应在所属线程中调用其操作。跨线程通知应使用相应支持的 Core Foundation 接口、线程消息或其他同步机制，不能拿到另一个线程的 `RunLoop` 对象后就任意修改它。
+
+## 3. 事件源与运行模式 {#事件源与运行模式}
+
+### 3.1 Source、Timer 和 Observer {#source-timer和observer}
+
+**输入源**负责把待处理的外部或自定义事件接入 RunLoop。面试中常说的 Source0 和 Source1，分别对应非端口与基于端口的两类 Core Foundation 输入源。
+
+| 对象 | 主要职责 | 需要区分的条件 |
+| --- | --- | --- |
+| Source0 | 处理应用主动标记的自定义工作 | `CFRunLoopSourceSignal` 标记待处理，本身不负责把休眠线程唤醒 |
+| 基于端口的源 | 接收端口相关事件 | 由端口消息与内核通知机制参与唤醒 |
+| Timer | 在时间条件满足后执行回调 | 仍受当前模式和线程是否可用影响 |
+| Observer | 在 RunLoop 阶段变化时收到通知 | 不是存放业务输入的队列，也不能单独当成保持循环运行的工作源 |
+
+对于自定义 Source0，生产者通常先把数据放入受正确同步保护的队列，标记源，再用 `CFRunLoopWakeUp` 唤醒对应循环。一次标记不是一条可靠消息的完整存储：多个标记可能合并，真正的待处理数据需要由自己的队列保存，回调再按规则消费。
+
+`CFRunLoopSourceSignal` 与 `CFRunLoopWakeUp` 的职责不同。前者表示这个源有事做，后者让循环不再继续睡；只唤醒却没有可处理工作，循环可能再次等待。
+
+### 3.2 mode 过滤的是登记对象 {#mode过滤的是登记对象}
+
+**运行模式**是一组需要监听的输入源、Timer 和 Observer 的集合。一次运行激活选择一个具体模式，只处理登记到该模式的相应对象。不同模式可以共享对象，切换模式也不代表切换线程。
+
+UIKit 的主 RunLoop 在常规处理时使用默认模式，在部分交互跟踪过程中会使用跟踪模式。只加到 `.default` 的 Timer，在不包含它的跟踪模式中就暂时不能回调。这是“滑动时定时器暂停”的一个典型原因，但主线程繁忙也会延迟 Timer，需要分别检查。
+
+**common modes** 是一组被标记为“常用”的模式。把 Timer 加到 `.common`，表示把它登记到这个集合中的具体模式；后续加入集合的模式也会得到相应关联。它不是让 Timer 无条件运行于所有自定义模式，更不能绕过主线程上的长任务。
+
+如果业务希望滑动期间也持续更新倒计时，可以按需要加入 common modes。若回调本身执行繁重工作，这样做反而可能影响交互，应把回调缩短，并考虑是否确实需要在跟踪期间运行。
+
+## 4. Timer 的时间与生命周期 {#timer的时间与生命周期}
+
+### 4.1 到期不等于立刻执行 {#到期不等于立刻执行}
+
+**Timer** 根据到期时间请求执行工作。只有所属 RunLoop 在合适模式下运行，并有机会处理它，回调才会执行。时间到了不代表系统会打断当前业务函数，插入 Timer 回调。
+
+重复 Timer 按原定时间基准安排后续周期，而不是简单用“上次实际执行时刻加间隔”不断推移。若线程忙到错过多个触发点，恢复处理时通常只对错过的这一段执行一次，再安排下一个计划触发点，不会连续补齐所有遗漏次数。
+
+因此，倒计时不应只在每次回调里把剩余秒数减一。更稳妥的办法是根据截止时间重新计算剩余时间，让 Timer 只负责触发界面更新。测量运行间隔应使用合适的单调时钟；面向现实世界的截止时刻还需要考虑系统时间变化的业务语义。
+
+`tolerance` 允许系统在计划时间之后适当合并唤醒，以减少能耗；它不会让 Timer 提前触发，也不是对最大实际延迟的承诺。线程繁忙等因素仍可能带来更长等待。设置为 0 同样不会把普通 Timer 变成硬实时定时器。
+
+### 4.2 安装与停止示例 {#安装与停止示例}
+
+下面用一个仅在主线程访问的对象演示安装、弱捕获和停止。示例按 Swift 5 语言模式编写；对象的创建、调用、读取和释放都限制在主线程，不靠属性包装器自动推导并发隔离。
+
+```swift
+import Foundation
+
+final class MainLoopTicker {
+    private var timer: Timer?
+    private(set) var ticks = 0
+
+    func start() {
+        precondition(Thread.isMainThread)
+        stop()
+        let timer = Timer(timeInterval: 1, repeats: true) { [weak self] timer in
+            guard let self else {
+                timer.invalidate()
+                return
+            }
+            self.ticks += 1
+        }
+        timer.tolerance = 0.1
+        RunLoop.current.add(timer, forMode: .common)
+        self.timer = timer
+    }
+
+    func stop() {
+        precondition(Thread.isMainThread)
+        timer?.invalidate()
+        timer = nil
+    }
+
+    deinit {
+        precondition(Thread.isMainThread)
+        timer?.invalidate()
+    }
+}
+```
+
+`start` 先停止旧 Timer，避免重复安装。block 弱引用 `MainLoopTicker`，对象又在明确的 `stop` 和释放时让 Timer 失效。调用方仍应在业务不再需要计时时主动 `stop`，而不是等待对象最终释放。
+
+`invalidate()` 会让 Timer 永久失效，并请求它从 RunLoop 移除；失效后的同一 Timer 不能重新启动，需要新建。停止操作应在安装它的线程执行。暂停与失效也不同：如果业务只是暂时不需要回调，可以停止并在需要时重建，或按明确规则管理触发时间。
+
+### 4.3 为什么只把 timer 设为 nil 不够 {#为什么只把timer设为nil不够}
+
+登记后的 Timer 被 RunLoop 持有，所以业务对象把自己的 Timer 属性设为 `nil`，不一定会销毁 Timer，也不会自动取消它。
+
+使用 target-selector 的 Timer 会持有 target；block Timer 会持有 block，block 又可能强引用业务对象。于是可能出现“业务对象持有 Timer，Timer 又通过 target 或 block 持有业务对象”的循环。只在业务对象 `deinit` 中停止此类强循环也不够，因为循环本身就可能阻止 `deinit` 发生。
+
+处理时需要同时考虑：用弱代理或合适的弱捕获打破回指；在明确的业务生命周期里调用 `invalidate`；把自己的 Timer 属性清空。弱引用解决对象保活问题，停止 Timer 解决无用周期工作，两者不能互相替代。
+
+## 5. 运行退出与 Observer {#运行退出与observer}
+
+### 5.1 一次运行返回不代表线程结束 {#一次运行返回不代表线程结束}
+
+`run(mode:before:)` 在指定模式下运行一次，直到处理输入源、到达截止时间或无法启动等条件。Timer 不被视为这里导致返回的输入源，因此它可能在一次调用期间触发多次。若模式中没有输入源和 Timer，方法可以立即返回；外面盲目套一层无退出条件的循环，会造成空转。
+
+`CFRunLoopRunInMode` 则通过返回值区分结束、超时、停止或处理了源等情况。`CFRunLoopStop` 停止当前激活；存在嵌套运行时，只退出最内层，并不会把线程栈上的所有循环一并终止。
+
+因此，移除一个 Timer 后，线程是否退出取决于其他源、运行调用和外层循环条件。对于自己管理的长期线程，应定义停止标志，在所属线程清理 Timer 和源，并按需要唤醒等待，让线程入口有机会返回。不能把 `Thread.cancel()` 或某次 Timer 失效理解成强制杀死线程。
+
+### 5.2 Observer 能观察什么 {#observer能观察什么}
+
+**RunLoop Observer** 在循环的特定阶段收到通知，例如进入循环、处理 Timer 前、处理源前、等待前、唤醒后和退出。它适合观察调度阶段或辅助分析主线程是否长时间停留在处理阶段。
+
+“即将处理 Timer”不代表此刻必然有某个业务 Timer 到期，“等待前”也不代表刚好完成了一帧绘制。Observer 的执行同样占用当前线程，不应在其中增加繁重工作，否则观察本身会改变被测行为。
+
+主线程卡顿监测可以把阶段信号与其他线程的时间观察、堆栈采集结合，但单次超时并不能直接解释卡顿原因，还需排除后台、调试和采样等条件。自动释放池与 RunLoop 的配合属于对象释放时机，详见 [Objective-C 内存管理](../../basic-knowledge/objective-c/memory-management.mdx)。
+
+## 6. RunLoop 与界面刷新 {#runloop与界面刷新}
+
+RunLoop 负责让线程处理输入、定时和其他事件；屏幕刷新则涉及布局、绘制、图层提交、渲染和显示时机。框架可以利用循环阶段协调提交，但不能据此说“RunLoop 每执行一次，屏幕就刷新一帧”。
+
+`CADisplayLink` 提供与显示更新相关的回调，也需要登记到 RunLoop 的模式。它适合按显示节奏驱动动画工作，但实际频率会受设备和系统策略影响，回调执行太慢仍会错过显示机会。不能用固定 60 次每秒解释所有设备，也不能把回调次数当成成功呈现帧数。
+
+一次触摸被 RunLoop 所在线程处理后，UIKit 还需要执行事件分发、命中和手势处理；具体交互关系见 [iOS 事件响应链](./responder-chain.mdx)。因此，回答“点击怎样触发”时，RunLoop 是线程处理事件的一层，不代替完整的 UIKit 交互链路。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 RunLoop 是什么，为什么需要它？ {#run-loop}
+
+**考察重点**：事件处理、等待和线程占用。
+
+**相关内容**：[为什么需要等待事件](#为什么需要等待事件)。
+
+<details>
+<summary>参考回答</summary>
+
+**RunLoop 是与线程关联的事件处理机制，在有合适事件时执行工作，没有工作时等待，避免持续空转。** 它协调输入源、Timer 和循环阶段通知，并不创建线程，也不让一个线程并行执行多个回调。
+
+主线程中的耗时任务仍会阻塞后续事件，因此“使用了 RunLoop”不能证明 UI 不会卡顿。
+
+</details>
+
+### 7.2 RunLoop 与线程是什么关系？ {#thread}
+
+**考察重点**：对象存在、循环运行和线程入口的区别。
+
+**相关内容**：[每个线程都有正在运行的 RunLoop 吗](#每个线程都有正在运行的runloop吗)。
+
+<details>
+<summary>参考回答</summary>
+
+**线程可以按需要取得自己的 RunLoop 对象，但对象存在不等于正在运行事件循环。** UIKit 管理主线程的循环；普通工作线程可以直接计算后退出，需要处理 RunLoop 型 API 时再自行运行。
+
+RunLoop 回调在所属线程执行。GCD 队列并不等于一个固定线程的 RunLoop，不能在临时队列任务里创建 Timer 后，就假定它会自动持续触发。
+
+</details>
+
+### 7.3 Timer 为什么会在滑动时暂停？common 是什么模式？ {#mode}
+
+**考察重点**：当前模式、登记集合与主线程繁忙的区别。
+
+**相关内容**：[mode 过滤的是登记对象](#mode过滤的是登记对象)。
+
+<details>
+<summary>参考回答</summary>
+
+**只登记在默认模式的 Timer，在 RunLoop 进入不包含它的交互跟踪模式时可能暂不执行。** 如果业务确实要求跟踪期间运行，可以把 Timer 登记到 common modes；同时还要检查是否因主线程繁忙而延迟。
+
+`common` 是一组常用模式的登记标记，不是单独运行的模式，也不包含所有自定义模式。把 Timer 加进去不能绕过主线程阻塞。
+
+</details>
+
+### 7.4 RunLoop 中的 Source 是什么？ {#source}
+
+**考察重点**：自定义源、端口源、标记与唤醒。
+
+**相关内容**：[Source、Timer 和 Observer](#source-timer和observer)。
+
+<details>
+<summary>参考回答</summary>
+
+**Source 是把待处理输入接入 RunLoop 的对象。** 非端口的 Source0 由应用主动标记，必要时再唤醒 RunLoop；端口相关源通过消息机制参与事件通知。
+
+标记 Source0 不等于保存了每一条业务消息，也不自动完成唤醒。业务数据应放在正确同步的队列里，源回调负责取出处理；Timer 和 Observer 分别负责到期工作与循环阶段通知，职责不同。
+
+</details>
+
+### 7.5 Timer 间隔一秒，能否保证每秒准点执行一次？ {#timer-accuracy}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：计划触发点、实际执行时间与错过周期。
+
+**相关内容**：[到期不等于立刻执行](#到期不等于立刻执行)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能，Timer 不是实时机制。** 它受 RunLoop 是否运行、当前模式、线程忙碌和系统调度影响，时间到后也不能抢占正在执行的回调。
+
+重复 Timer 按原定时间基准安排周期，错过多个周期时不会把所有回调逐次补齐。倒计时应根据截止时间计算剩余量，Timer 只负责触发更新；`tolerance` 也不是最大延迟保证。
+
+</details>
+
+### 7.6 怎样停止 Timer？invalidate 后 RunLoop 和线程一定退出吗？ {#stop}
+
+**考察重点**：Timer 失效、循环激活和线程生命周期。
+
+**相关内容**：[安装与停止示例](#安装与停止示例)、[一次运行返回不代表线程结束](#一次运行返回不代表线程结束)。
+
+<details>
+<summary>参考回答</summary>
+
+**应在安装 Timer 的线程调用 `invalidate()`，让它永久失效并请求从 RunLoop 移除；这不保证 RunLoop 或线程退出。** 其他输入源、Timer、嵌套激活和外层循环都可能让线程继续运行。
+
+自己管理长期线程时，需要明确停止条件、在所属线程清理资源，并唤醒等待，让线程入口正常返回。`CFRunLoopStop` 退出当前激活，也不等于终止整条线程。
+
+</details>
+
+### 7.7 NSTimer 怎样规避循环引用？ {#timer-retain}
+
+**考察重点**：RunLoop、Timer、target 或 block 的持有关系。
+
+**相关内容**：[为什么只把 timer 设为 nil 不够](#为什么只把timer设为nil不够)。
+
+<details>
+<summary>参考回答</summary>
+
+**先识别 Timer 对 target 或 block 的强持有，再用弱代理或合适的弱捕获打破回指，并在业务结束时主动失效 Timer。** 只在业务对象 `deinit` 中处理，可能因为循环导致 `deinit` 根本不执行。
+
+只把 Timer 属性设为 `nil` 也不够，RunLoop 仍可能持有已登记的 Timer。打破引用环和停止无用的周期工作是两个都要处理的问题。
+
+</details>
+
+### 7.8 RunLoop 和屏幕刷新是一一绑定的吗？ {#display}
+
+**考察重点**：事件循环、显示同步与实际呈现的区别。
+
+**相关内容**：[RunLoop 与界面刷新](#runloop与界面刷新)。
+
+<details>
+<summary>参考回答</summary>
+
+**不是，RunLoop 的一次循环不等于屏幕的一帧。** 框架利用循环处理输入和协调部分更新，但实际呈现还涉及布局、绘制、图层提交、渲染与显示时机。
+
+`CADisplayLink` 提供与显示更新有关的回调，不保证固定频率，更不保证每次回调都成功产生一帧。线程繁忙时仍可能错过显示机会。
+
+</details>
+
+### 7.9 RunLoop Observer 能证明一个 Timer 或一帧已经完成吗？ {#observer}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：阶段通知与具体业务执行的区别。
+
+**相关内容**：[Observer 能观察什么](#observer能观察什么)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能，Observer 通知的是循环阶段，不是某个业务动作的完成结果。** 例如处理 Timer 前的通知，不保证当前有业务 Timer 到期；等待前的通知也不等于一帧已经呈现。
+
+它可以作为监控和诊断的信号，但应结合时间、堆栈和应用状态分析，也要避免在 Observer 中增加耗时工作。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [Apple：Threading Programming Guide — Run Loops](https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/Multithreading/RunLoopManagement/RunLoopManagement.html)
+- [Apple：RunLoop](https://developer.apple.com/documentation/foundation/runloop)
+- [Apple：Timer](https://developer.apple.com/documentation/foundation/timer)
+- [Apple：Timer.invalidate()](https://developer.apple.com/documentation/foundation/timer/invalidate())
+- [Apple：Timer.tolerance](https://developer.apple.com/documentation/foundation/timer/tolerance)
+- [Apple：RunLoop.run(mode:before:)](https://developer.apple.com/documentation/foundation/runloop/run(mode:before:))
+- [Apple：CFRunLoopRunInMode](https://developer.apple.com/documentation/corefoundation/cfrunloopruninmode(_:_:_:))
+- [Apple：CFRunLoopSourceSignal](https://developer.apple.com/documentation/corefoundation/cfrunloopsourcesignal(_:))
+- [Apple：CFRunLoopWakeUp](https://developer.apple.com/documentation/corefoundation/cfrunloopwakeup(_:))
+- [Apple：CFRunLoopStop](https://developer.apple.com/documentation/corefoundation/cfrunloopstop(_:))
+- [Apple：CFRunLoopAddCommonMode](https://developer.apple.com/documentation/corefoundation/cfrunloopaddcommonmode(_:_:))
+- [Apple：CFRunLoopObserver](https://developer.apple.com/documentation/corefoundation/cfrunloopobserver)
+- [Apple：CADisplayLink](https://developer.apple.com/documentation/quartzcore/cadisplaylink)

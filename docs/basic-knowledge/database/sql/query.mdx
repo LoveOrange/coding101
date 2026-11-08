@@ -16,14 +16,16 @@ SQL 查询是**声明式**的：你描述想要哪些数据、按什么顺序返
 ## 1. 面试核心 {#core}
 
 - 普通比较遇到 NULL 得到 **UNKNOWN**，而 `WHERE` **只保留结果为 TRUE 的行**，所以查空值要用 `IS NULL`。[卡](#null-and-stable-sort)
+- 查询以“张”开头的姓名，使用 **`LIKE '张%'`**；`%` 匹配零个或多个字符，`_` 只匹配一个字符。[卡](#name-prefix-like)
 - `NOT IN` 的集合里有 NULL 时，**没命中其他值的比较结果是 UNKNOWN**，整个条件得不到 TRUE。[卡](#not-in-null)
 - `DISTINCT` **按所选列的组合去重**；分页排序要**加入唯一的决胜列**，同值行的先后才确定。[卡](#null-and-stable-sort)
 - `UNION` 对合并后的结果去重，`UNION ALL` **保留所有重复行**。[卡](#union-distinct)
 - `ROW_NUMBER` **逐行编号**，`RANK` **并列后跳号**，`DENSE_RANK` **并列后连续编号**。[卡](#window-top-n)
+- 连续日期先按用户和日期去重，再按日期编号；**连续日期减去连续行号，得到相同的分组标记**，可以据此统计最长连续登录。[卡](#consecutive-login)
 
 ## 2. 最小表与过滤 {#最小表与过滤}
 
-下文都用这张候选人表，其中 id=2 的成绩是 NULL，表示还没有录入：
+先用这张候选人表说明数值过滤，其中 id=2 的成绩是 NULL，表示还没有录入：
 
 ```sql
 CREATE TABLE candidates (
@@ -46,6 +48,39 @@ ORDER BY score DESC, id ASC;
 NULL 表示「值未知」。拿一个未知的值和 80 比较，没法说它大于等于 80，也没法说不是，结果是第三种值 **UNKNOWN**。SQL 的条件因此有 TRUE、FALSE、UNKNOWN 三种结果，这叫**三值逻辑**。`WHERE` 只保留结果为 TRUE 的行，UNKNOWN 和 FALSE 一样被去掉。
 
 同样的道理，想查没有成绩的人，写 `score = NULL` 是查不到的：和 NULL 做等值比较，结果仍然是 UNKNOWN。要写成 `WHERE score IS NULL`。
+
+### 2.1 姓名的前缀匹配 {#姓名的前缀匹配}
+
+**`LIKE` 按字符串模式筛选行**。如果用户表把完整姓名存放在 `name` 列，要找以“张”开头的姓名，可以写 `WHERE name LIKE '张%'`。这里约定姓名直接以姓氏开头，不带前置空格或称呼；若已有独立的姓氏列，直接按姓氏等值查询更明确。
+
+下面另建一个最小用户表，用单字、不同长度和空值说明匹配范围：
+
+```sql
+CREATE TABLE users (
+  id INTEGER PRIMARY KEY,
+  name VARCHAR(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_as_cs
+);
+INSERT INTO users VALUES
+  (1, '张'), (2, '张三'), (3, '张三丰'),
+  (4, '小张'), (5, '李张'), (6, NULL), (7, '');
+
+SELECT id, name FROM users
+WHERE name LIKE '张%'
+ORDER BY id;
+```
+
+结果是 `(1,张)、(2,张三)、(3,张三丰)`。`%` 可以匹配零个字符，所以单字“张”也符合模式；“小张”和“李张”虽然包含“张”，却不是以它开头。这里判断的是字符串前缀，不验证姓名是否完整或符合真实姓氏规则。
+
+| 条件 | 在这张表里返回的 id | 原因 |
+| --- | --- | --- |
+| `name LIKE '张%'` | 1、2、3 | “张”之后允许有零个或多个字符 |
+| `name LIKE '张_'` | 2 | “张”之后必须恰好有一个字符 |
+| `name LIKE '%张%'` | 1、2、3、4、5 | “张”前后都允许有其他字符，表示包含而非前缀 |
+| `name = '张'` | 1 | 按等值条件比较，不把 `%` 或 `_` 当作模式 |
+
+对非二进制字符串，`_` 按字符而不是 UTF-8 字节匹配，“三”虽然占多个字节，仍只占一个匹配位置。`NULL LIKE '张%'` 的结果仍是 NULL，放进 `WHERE` 后不会被保留；空字符串也不以“张”开头。
+
+匹配仍受字符集和排序规则影响。若要搜索的文本本身含 `%` 或 `_`，需要将它们作为字面字符转义，例如 `LIKE '张!%' ESCAPE '!'` 匹配字面字符串“张%”，不表示所有“张”开头的值。把模式作为参数传入时，这些通配符的语义仍然存在，不能把参数化与字面匹配混为一谈。
 
 ## 3. NOT IN 与 NULL {#not-in-与-null}
 
@@ -128,6 +163,49 @@ WHERE rn <= 1 ORDER BY id;
 - `DENSE_RANK` 也给并列的行相同名次，但名次连续，得到 1、1、2。
 
 每组恰好取 N 行，用 `ROW_NUMBER` 并加上决胜列；要把同分的人一起保留，用 `RANK` 或 `DENSE_RANK`。
+
+### 7.1 连续日期与区间分组 {#连续日期与区间分组}
+
+连续登录统计的是连续的业务日期，不是连续的日志行。同一天登录两次只能算一天，第一步要按用户和日期去重。假设 `login_date` 已经按约定的业务时区生成，数据如下：
+
+```sql
+CREATE TABLE login_events (
+  user_id INTEGER NOT NULL,
+  login_date DATE NOT NULL
+);
+INSERT INTO login_events VALUES
+  (1, '2026-01-01'), (1, '2026-01-01'),
+  (1, '2026-01-02'), (1, '2026-01-04'),
+  (2, '2026-01-02'), (2, '2026-01-03'), (2, '2026-01-04');
+
+WITH days AS (
+  SELECT DISTINCT user_id, login_date FROM login_events
+), numbered AS (
+  SELECT user_id, login_date,
+         ROW_NUMBER() OVER (
+           PARTITION BY user_id ORDER BY login_date
+         ) AS rn
+  FROM days
+), marked AS (
+  SELECT user_id, login_date,
+         DATE_SUB(login_date, INTERVAL rn DAY) AS group_date
+  FROM numbered
+), runs AS (
+  SELECT user_id, group_date, COUNT(*) AS days_count
+  FROM marked
+  GROUP BY user_id, group_date
+)
+SELECT user_id, MAX(days_count) AS longest_days
+FROM runs
+GROUP BY user_id
+ORDER BY user_id;
+```
+
+结果是 `(1,2)、(2,3)`。对用户 1，去重后的日期为 1 日、2 日、4 日，行号为 1、2、3。前两个日期减去行号天数都得到上一年的 12 月 31 日，属于同一段；4 日减 3 天得到 1 月 1 日，形成新段。连续时日期和行号一起增加，差保持不变；日期断开时，差才改变。
+
+`WITH` 声明的各段叫**公共表表达式**（CTE），在同一条查询中给中间结果命名。这里依次分开去重、编号、标记和聚合，方便核对每一步的行粒度。
+
+没有登录记录的用户不会进入结果。若要求其最长天数为 0，应从用户表 `LEFT JOIN` 最终结果并用 `COALESCE` 补零。原始字段若是时间戳，先明确业务时区再取日期；若题目要求“截至今天仍在持续的连续登录”，还要筛选结束日期为今天的区间，不能直接取历史最大值。
 
 ## 8. 使用边界 {#使用边界}
 
@@ -222,6 +300,36 @@ WHERE rn <= 1 ORDER BY id;
 
 </details>
 
+### 9.6 怎样查询每个用户的最长连续登录天数？ {#consecutive-login}
+
+**考察重点**：按业务日期去重、窗口编号、连续区间的不变量和统计范围。
+
+**相关内容**：[连续日期与区间分组](#连续日期与区间分组)。
+
+<details>
+<summary>参考回答</summary>
+
+**先按用户和日期去重，再用日期减行号识别连续段，最后求每个用户的最大段长。** 按用户分区、日期升序计算 `ROW_NUMBER`；用 `DATE_SUB(login_date, INTERVAL rn DAY)` 生成段标记。相邻日期连续时，日期与行号同步增加，标记保持相同。
+
+按用户和标记分组计数，再按用户取最大值。同日多次登录不能直接编号，否则会破坏这个不变量。还要明确时区、无登录用户是否补零，以及统计历史最长还是截至今天的连续天数。
+
+</details>
+
+### 9.7 怎样查询用户表中所有姓张的用户？ {#name-prefix-like}
+
+**考察重点**：前缀条件、`LIKE` 通配符和姓名存储约定。
+
+**相关内容**：[姓名的前缀匹配](#姓名的前缀匹配)。
+
+<details>
+<summary>参考回答</summary>
+
+**若完整姓名存放在 `users.name`，并约定姓名以姓氏开头，条件是 `WHERE name LIKE '张%'`。** 例如 `SELECT id, name FROM users WHERE name LIKE '张%' ORDER BY id;`。
+
+`%` 匹配零个或多个字符，所以“张”“张三”“张三丰”都符合；`'张_'` 只允许“张”之后再有一个字符，`'%张%'` 则会把“小张”也选出来。NULL 不满足这个筛选条件。若表中有独立姓氏列，应按该列等值查询，不必从完整姓名中推断。
+
+</details>
+
 ## 10. 参考资料 {#参考资料}
 
 - [MySQL：SELECT](https://dev.mysql.com/doc/refman/8.0/en/select.html)
@@ -230,3 +338,6 @@ WHERE rn <= 1 ORDER BY id;
 - [MySQL 8.0：UNION](https://dev.mysql.com/doc/refman/8.0/en/union.html)
 - [MySQL 8.0：Window Function Descriptions](https://dev.mysql.com/doc/refman/8.0/en/window-function-descriptions.html)
 - [MySQL 8.0：Window Function Concepts](https://dev.mysql.com/doc/refman/8.0/en/window-functions-usage.html)
+- [MySQL 8.0：Date and Time Functions](https://dev.mysql.com/doc/refman/8.0/en/date-and-time-functions.html)
+- [MySQL 8.0：WITH](https://dev.mysql.com/doc/refman/8.0/en/with.html)
+- [MySQL 8.0：LIKE](https://dev.mysql.com/doc/refman/8.0/en/string-comparison-functions.html#operator_like)

@@ -16,6 +16,11 @@ Git 通过提交保存项目快照，通过分支引用组织开发历史；日�
 
 - `merge` 保留已有提交；`rebase` 会重放提交，并改变提交标识。
 - 本地未共享的功能分支可以用 `rebase` 整理历史。已被他人依赖的共享分支优先使用 `merge`，避免改写他人的提交基础。[卡](#merge-vs-rebase)
+- `push` 发送**已提交的对象并更新远端引用**，不会上传尚未提交的工作区内容；`-u` 同时设置当前分支的上游关系。[卡](#first-push)
+
+- 多个 remote **分别获取和推送，不会自动同步**；远端名称与当前分支的上游关系需要分开看。[卡](#multiple-remotes)
+- stash **区分保存范围、暂存状态和恢复是否成功**，`pop` 发生冲突时保留记录。[卡](#stash-save-restore)
+- `checkout` 可以**切换分支或恢复路径**；`reset` 要区分**移动提交位置和只更新暂存区**，不能只凭命令名判断是否丢失修改。[卡](#reset-checkout-targets)
 
 :::
 
@@ -57,6 +62,43 @@ git merge feature/payment-timeout
 
 远程跟踪分支保存上次同步时看到的远程状态。`git fetch` 更新这些引用，不会直接修改当前工作区；`git pull` 通常等于 fetch 后再 merge 或 rebase，因此执行前要知道项目采用哪一种历史策略。
 
+### 3.1 本地提交与首次推送 {#本地提交与首次推送}
+
+推送前先确认当前分支、远端地址和准备交付的提交。克隆的仓库通常已经有名为 `origin` 的远端，不需要再次添加：
+
+```bash
+git status
+git remote -v
+git branch --show-current
+git log -1 --oneline
+git push -u origin feature/payment-timeout
+```
+
+这组命令假设本地已经创建 `feature/payment-timeout` 分支并完成提交。最后一行把该本地分支推到 `origin` 的同名分支，`-u` 设置上游关联，后续命令可以按这份配置判断与哪个远端分支同步。未 `commit` 的工作区修改不会随推送一起发送。
+
+若项目是本地新建的仓库，先在项目目录 `git init -b main`，检查并提交选定文件，再为已准备好的空远端设置地址。例如 `git remote add origin /path/to/remote.git` 可以连接本机的 bare 仓库；实际团队仓库则使用对应的 HTTPS 或 SSH 地址。确认后执行 `git push -u origin main`。
+
+远端若已有本地没有的提交，推送可能因非快进更新被拒绝。先 `fetch` 并检查两侧历史，再按团队约定整合和验证；不能为了让首次推送成功就覆盖已有远端历史。认证通过也不代表拥有目标分支的写入权限，受保护分支可能要求先走评审流程。
+
+### 3.2 多个远程仓库 {#多个远程仓库}
+
+**remote** 是本地为一个远程仓库保存的名称、地址和相关配置。同一项目可以配置多个 remote，分别获取和推送；`origin` 只是常用名称，没有“必须是唯一远端”的特殊含义。
+
+假设当前仓库已经有 `origin`，本地 `main` 已提交，另一个远端是已经准备好的空 bare 仓库：
+
+```bash
+git remote add backup /path/to/backup.git
+git remote -v
+git fetch origin
+git fetch backup
+git push -u origin main
+git push backup main
+```
+
+`origin/main` 和 `backup/main` 是两份不同的远程跟踪引用，分别记录本地最近获知的两个远端 `main` 的位置。`fetch origin` 不会替你同步 `backup`；向 `backup` 推送成功，也不代表 `origin` 收到了同一提交。如果其中一个远端包含本地没有的历史，应先获取、比较并按协作约定整合，不能把两个 remote 当作可以直接互相覆盖的副本。
+
+这段示例只在首次向 `origin` 推送时使用 `-u`，因此 `main` 的普通上游关系仍指向 `origin/main`。随后显式执行 `git push backup main`，不会把第二个远端自动加入这份关系。这里的“上游分支”也不等于必须有一个名叫 `upstream` 的 remote；可以用 `git branch -vv` 检查配置。无参数推送还可能受 `push.default` 等设置影响，多远端操作时明确写出远端和分支更容易核对。
+
 ## 4. Merge 和 rebase 生成不同历史
 
 `merge` 保留两条开发线，并在需要时创建合并提交。它不会改写已有提交，适合已经共享的历史。
@@ -86,6 +128,58 @@ git merge feature/payment-timeout
 - `git revert <commit>`：创建一个反向提交，不改写已有历史，适合撤销已经共享的提交。
 
 判断命令前先回答两个问题：要撤销的是工作区、暂存区还是提交；相关提交是否已经推送并被他人使用。
+
+### 6.1 临时保存修改 {#临时保存修改}
+
+**stash** 用来暂存尚未提交的工作，便于切换任务后再恢复。普通 `git stash push` 会保存已跟踪文件在工作区和暂存区的修改，并把这些位置恢复到 `HEAD`；默认不包含未跟踪文件，也不包含被忽略的文件。
+
+下面假设仓库已有提交、当前没有未解决冲突，准备暂存的内容已经用 `status` 和 diff 检查过。`-u` 让本次保存同时包含未跟踪文件，被忽略文件仍留在工作区：
+
+```bash
+git status
+git diff
+git diff --staged
+git stash push -u -m "WIP before switching tasks"
+git stash list
+git stash show -p -u 'stash@{0}'
+```
+
+`stash@{0}` 表示当前最新的一条记录，不是永久编号；创建或删除其他 stash 后，编号可能变化。切换任务并返回后，再次确认当前分支、工作区状态和要恢复的记录，执行：
+
+```bash
+git stash apply --index 'stash@{0}'
+git status
+git diff
+git diff --staged
+```
+
+`apply` 恢复修改但保留 stash 记录；`--index` 还会尝试恢复原来的暂存状态。未使用它且采用默认配置时，不能指望原来 staged 与 unstaged 的划分自动还原。恢复能否成功取决于当前内容是否兼容，`--index` 也不是强制覆盖冲突的开关。
+
+确认文件和测试结果正确、确实不再需要这份 stash 后，可以 `git stash drop 'stash@{0}'` 删除对应记录；删除前仍要检查编号。`git stash pop` 则把“恢复成功后删除记录”合成一步，但出现冲突时不会删除 stash。此时用 `git status` 查看冲突，按最终意图编辑并 `git add` 标记已解决，核对完成后再决定删除记录；不要对同一份已部分恢复的内容反复执行 `pop`。
+
+stash 是当前仓库的临时记录，普通分支推送不会顺带上传它。需要长期保存或交给同事的工作，仍应形成可解释的提交。
+
+### 6.2 checkout 与 reset {#checkout与reset}
+
+`checkout` 同时承担切换分支和恢复文件两类职责；前文使用的 `switch`、`restore` 将这两种意图分开。`reset` 则要看是否指定文件路径：提交模式可以改变当前提交位置，路径模式只更新对应的暂存内容。
+
+下表假设没有未解决冲突；提交模式下 `HEAD` 当前附着在某个分支，`target` 表示要选择的提交。切换分支一行以工作区和暂存区干净为前提：
+
+| 命令 | HEAD／分支 | 暂存区 | 工作区 |
+| --- | --- | --- | --- |
+| `git checkout other` | HEAD 转为指向已有分支 `other`；不移动原分支或 `other` 的提交位置 | 对应 `other` | 对应 `other` |
+| `git checkout -- file.txt` | 不变 | 不变 | 用暂存区版本覆盖该文件 |
+| `git checkout target -- file.txt` | 不变 | 该文件改为 `target` 的版本 | 同时改为 `target` 的版本 |
+| `git reset -- file.txt` | 不变 | 该文件改为 HEAD 的版本，撤销暂存 | 保留修改 |
+| `git reset --soft target` | 当前分支移到 `target`，HEAD 仍附着该分支 | 不变 | 不变 |
+| `git reset --mixed target` | 同上；省略模式时默认为 mixed | 改为 `target` | 保留修改 |
+| `git reset --hard target` | 同上 | 改为 `target` | 覆盖为 `target` 的跟踪内容，可能丢失未提交修改 |
+
+例如，`file.txt` 在 HEAD 中是 A，暂存区中是 B，工作区中是 C。执行 `git checkout -- file.txt` 后，暂存区和工作区都是 B；从同一初始状态执行 `git reset -- file.txt`，暂存区变回 A，工作区仍是 C。前者丢弃这份工作区修改，后者只是取消暂存。路径形式也可以显式指定来源提交，例如 `git reset target -- file.txt` 仍然只更新暂存区，不移动 HEAD。
+
+直接 `git checkout` 一个提交编号会进入**游离 HEAD**：HEAD 直接指向该提交，而不是附着某个分支；已有分支引用不因此移动。它与 `git reset --soft target` 移动当前分支是不同操作。
+
+普通分支切换遇到会覆盖本地修改的情况通常会拒绝，不能把它理解为无条件覆盖。路径恢复和 `reset --hard` 则可能直接丢弃修改；后者还可能移除阻挡目标跟踪路径的未跟踪文件。执行前先看 `status` 和两份 diff，确认目标与待保留内容。这里的命令比较不改变前文的建议：切换分支优先明确使用 `switch`，恢复文件用 `restore`；已共享历史的撤销仍需考虑协作者。
 
 ## 7. 团队协作需要可审查的提交
 
@@ -126,10 +220,75 @@ git merge feature/payment-timeout
 
 </details>
 
+### 9.2 怎样把本地代码首次推送到远程仓库？ {#first-push}
+
+**考察重点**：工作区与提交的区别、远端配置、上游关系及已有历史。
+
+**相关内容**：[本地提交与首次推送](#本地提交与首次推送)。
+
+<details>
+<summary>参考回答</summary>
+
+**先把需要交付的修改形成提交，确认分支和远端，再用 `git push -u origin 分支名` 推送并设置上游。** 新建本地仓库需要先初始化；没有远端配置时才使用 `git remote add`，克隆的仓库通常已经存在 `origin`。
+
+推送不包含未提交的修改。远端已有不同历史时，应获取并检查后整合，不能直接覆盖；还要满足认证和分支权限要求。
+
+</details>
+
+### 9.3 一个本地项目怎样关联两个远程仓库？ {#multiple-remotes}
+
+**考察重点**：远端命名、远程跟踪引用、显式推送与上游关系。
+
+**相关内容**：[多个远程仓库](#多个远程仓库)。
+
+<details>
+<summary>参考回答</summary>
+
+**给两个仓库配置不同 remote 名称，再分别 fetch 和 push。** 例如已有 `origin` 时，用 `git remote add backup 地址` 添加第二个远端，分别执行 `git fetch origin`、`git fetch backup`，推送时明确使用 `git push origin main` 或 `git push backup main`。
+
+两者对应 `origin/main`、`backup/main`，不会因为添加了第二个 remote 就自动保持同步。`git push -u origin main` 设置的上游仍是 `origin/main`，显式推送到 backup 不会额外形成第二份普通上游关系。远端历史不同时先比较并整合，不直接覆盖。
+
+</details>
+
+### 9.4 git stash 怎样保存和恢复工作，apply 与 pop 有什么区别？ {#stash-save-restore}
+
+**考察重点**：跟踪文件范围、暂存状态、恢复冲突与记录保留。
+
+**相关内容**：[临时保存修改](#临时保存修改)。
+
+<details>
+<summary>参考回答</summary>
+
+**`stash push` 临时保存修改，`apply` 恢复后保留记录，`pop` 仅在恢复成功后删除记录。** 默认保存已跟踪文件的工作区与暂存区修改，`-u` 再包含未跟踪文件，被忽略文件不在这个范围内。用 `list` 选择记录、用 `show -p -u` 检查内容，再恢复到合适的分支。
+
+需要还原 staged 状态时使用 `apply --index` 或 `pop --index`，但当前内容冲突时仍可能失败。`pop` 冲突会保留 stash，应检查并解决当前冲突，验证后再决定删除记录，不能假定恢复失败意味着工作区完全没有变化。
+
+</details>
+
+### 9.5 git reset 与 git checkout 有什么区别？ {#reset-checkout-targets}
+
+**考察重点**：分支切换、游离 HEAD、路径恢复，以及 HEAD、暂存区和工作区的不同变化。
+
+**相关内容**：[checkout 与 reset](#checkout与reset)。
+
+<details>
+<summary>参考回答</summary>
+
+**`checkout` 可以切换分支，也可以恢复路径；`reset` 的提交模式移动当前提交位置，路径模式只改暂存区。** 正常附着分支时，`reset --soft target` 移动当前分支而保留暂存区和工作区；mixed 再重置暂存区；hard 还覆盖工作区。`checkout other` 切换到已有分支，不移动两条分支本身；checkout 提交编号则进入游离 HEAD。
+
+对文件而言，`checkout -- file.txt` 从暂存区恢复工作区，`checkout target -- file.txt` 同时更新暂存区和工作区；`reset -- file.txt` 只把暂存区恢复为 HEAD 版本，工作区保留。判断影响必须看完整参数，尤其不能把路径恢复当成只取消暂存。
+
+</details>
+
 :::note 参考资料
 
-1. [Pro Git：Git Basics](https://git-scm.com/book/en/v2/Git-Basics-Recording-Changes-to-the-Repository)
-2. [Git：git-rebase](https://git-scm.com/docs/git-rebase)
-3. [Git：git-revert](https://git-scm.com/docs/git-revert)
+- [Git：git-push](https://git-scm.com/docs/git-push)
+- [Pro Git：Git Basics](https://git-scm.com/book/en/v2/Git-Basics-Recording-Changes-to-the-Repository)
+- [Git：git-rebase](https://git-scm.com/docs/git-rebase)
+- [Git：git-revert](https://git-scm.com/docs/git-revert)
+- [Git：git-remote](https://git-scm.com/docs/git-remote)
+- [Git：git-stash](https://git-scm.com/docs/git-stash)
+- [Git：git-checkout](https://git-scm.com/docs/git-checkout)
+- [Git：git-reset](https://git-scm.com/docs/git-reset)
 
 :::

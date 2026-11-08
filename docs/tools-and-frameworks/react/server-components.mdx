@@ -1,0 +1,385 @@
+---
+sidebar_position: 7
+knowledge:
+  id: tools-and-frameworks.react.server-components
+---
+
+# React Server Components
+
+**React Server Components**（RSC）让一部分组件在服务端环境执行，把渲染结果交给客户端，而不把这些组件的实现代码一起发送到浏览器。需要状态、事件处理和浏览器 API 的部分由客户端组件承担。
+
+RSC、服务端渲染和水合分别解决不同问题。理解它们的分工，才能判断代码在哪执行、哪些数据会跨网络，以及为什么写了 `'use client'` 仍可能遇到服务端没有 `window` 的错误。
+
+本文按 React 19 的模型解释，示例使用 Next.js App Router 提供构建和运行支持。普通 React 客户端项目不会仅因加入一条指令就具备 RSC；面试准备也不需要自行实现它的传输协议。
+
+## 1. 面试核心 {#core}
+
+- **RSC 决定哪些组件在服务端执行、哪些实现需要进入客户端；SSR 生成 HTML，水合让已有 HTML 接入客户端 React。** 三者可以组合，但不是同义词。[卡](#rsc-ssr-hydration)
+- **服务端组件适合读取数据和生成界面，客户端组件承载交互状态与事件。** 服务端组件可以是异步函数，也可以在构建时运行，不等于每次请求都运行。[卡](#execution-environment)
+- **`'use client'` 标记模块依赖边界，不是把渲染树里所有后代都改成客户端组件。** 通过 `children` 传入的服务端渲染结果可以保留原有分工。[卡](#client-boundary)
+- **跨边界的 props 必须能由 React 序列化，但支持范围不等于 JSON。** `Date`、`Map`、部分引用类型有专门支持，普通函数闭包和任意类实例不能直接传递。[卡](#serialization)
+- **客户端组件仍可能参与初始 HTML 的服务端预渲染。** 浏览器专属读取放在合适的客户端阶段，首轮输出要满足水合一致性。[卡](#browser-apis)
+- **服务端代码不发送到浏览器，不代表它返回的所有数据都保密。** HTML、RSC payload 和跨边界 props 都可能被客户端查看，权限判断与最小数据输出仍不可省略。[卡](#data-boundary)
+- **`'use server'` 标记可从客户端调用的服务端函数，不是服务端组件的声明。** 调用跨网络，参数不可信，修改数据前仍需校验身份与权限。[卡](#server-functions)
+- **RSC 的收益取决于代码体积、请求链路与缓存策略。** 它不会自动消除服务端瀑布、慢查询或数据过期问题。[卡](#tradeoffs)
+
+## 2. RSC、SSR 与水合 {#rsc-ssr与水合}
+
+### 2.1 三个问题 {#三个问题}
+
+| 机制 | 回答的问题 | 主要产物或行为 |
+| --- | --- | --- |
+| RSC | 哪些组件实现留在服务端，怎样与客户端组件组合 | 服务端组件结果、客户端模块引用及跨边界数据 |
+| SSR，服务端渲染 | 怎样在浏览器执行应用代码前就提供 HTML | 可以直接解析显示的 HTML |
+| 水合，hydration | 怎样让服务端提供的 HTML 接入客户端组件逻辑 | 关联已有 DOM、建立组件状态和事件处理 |
+
+没有 RSC，也能用 React 的服务端渲染 API 生成 HTML，再通过 `hydrateRoot` 水合。此时参与客户端交互的组件实现仍要交给浏览器。RSC 则允许部分组件只在服务端执行，客户端接收它们的结果。
+
+**RSC payload** 是描述渲染结果及跨边界信息的数据，不是另一个名称的 HTML。框架可以先生成 RSC 结果，再结合客户端组件生成首屏 HTML；浏览器用 HTML 显示页面，再利用相应数据和 JavaScript 接上交互。
+
+### 2.2 首次打开与后续更新 {#首次打开与后续更新}
+
+在 App Router 的初始访问中，HTML 可以先显示课程标题与按钮；按钮的客户端代码加载并完成水合后，React 事件处理才能工作。不是每个显示在页面上的组件都需要把自己的原始实现下载并重新执行。
+
+后续客户端导航可以请求新的 RSC 结果，再与已有界面组合，不一定重新加载完整 HTML 文档。是否预取、缓存、重新请求，以及哪些状态被保留，由框架路由、缓存和 React 身份共同决定，不能简单概括为“RSC 每次刷新整页”。
+
+## 3. 数据与交互的分工 {#数据与交互的分工}
+
+### 3.1 一个可运行的边界 {#一个可运行的边界}
+
+下面的文件放在启用 App Router 的 Next.js 项目中，使用 JavaScript。依赖包括 `next`、`react`、`react-dom`；`server-only` 是框架识别的服务端模块标记。示例用固定数据模拟异步读取，点赞只修改当前页面的本地状态，没有写入服务端。
+
+`lib/course.js` 保存服务端读取逻辑：
+
+```js
+import 'server-only';
+
+export async function getCourse() {
+  return {
+    id: 'react-basics',
+    title: 'React 基础',
+    likes: 3,
+    internalNote: '教师备课备注',
+  };
+}
+```
+
+`app/LikeButton.jsx` 负责交互：
+
+```jsx
+'use client';
+
+import { useState } from 'react';
+
+export default function LikeButton({ initialLikes }) {
+  const [likes, setLikes] = useState(initialLikes);
+  return <button onClick={() => setLikes(n => n + 1)}>点赞：{likes}</button>;
+}
+```
+
+`app/page.jsx` 读取数据，只把界面需要的值交给客户端组件：
+
+```jsx
+import { getCourse } from '../lib/course';
+import LikeButton from './LikeButton';
+
+export default async function Page() {
+  const course = await getCourse();
+  return <main>
+    <h1>{course.title}</h1>
+    <LikeButton initialLikes={course.likes} />
+  </main>;
+}
+```
+
+项目还需要根布局 `app/layout.jsx`：
+
+```jsx
+export default function RootLayout({ children }) {
+  return <html lang="zh-CN"><body>{children}</body></html>;
+}
+```
+
+运行项目后，页面显示“React 基础”和“点赞：3”，点击按钮变成“点赞：4”。`getCourse` 在服务端一侧执行，`LikeButton` 管理浏览器中的交互状态；`internalNote` 没有被放进返回的 JSX 或客户端 props。
+
+刷新后点赞回到初始值，因为这里没有持久化。客户端 state 变化也不会自动重新执行 `getCourse`；请求新数据需要相应的数据更新或导航机制。
+
+### 3.2 两侧各自能做什么 {#两侧各自能做什么}
+
+服务端组件可以靠近数据库、文件系统或内部 API 读取数据，并使用不必发送到客户端的依赖。它不能用 `useState` 保存浏览器交互状态，也不能依靠 `useEffect` 或 `onClick` 在浏览器执行逻辑。
+
+客户端组件使用 state、Effect 和事件处理。它们可接收服务端给出的初始值，但不因此获得数据库连接、服务端模块或权限判断的执行环境。
+
+`async` 不是组件归属标记。服务端组件可以是普通函数，也可以等待数据；React 19 的客户端组件不能照搬异步组件写法。是否在构建、请求或缓存更新时执行，取决于框架和页面配置。
+
+## 4. 模块边界与组件组合 {#模块边界与组件组合}
+
+### 4.1 指令标记的是依赖关系 {#指令标记的是依赖关系}
+
+`'use client'` 必须放在模块开头、导入之前。被它标记的模块及其普通传递依赖会进入客户端模块范围，因此不需要给每个下级文件重复加指令。
+
+一个没有服务端或客户端专属能力的纯格式化函数，可能分别被两侧导入，在两侧执行。反过来，把读取数据库的模块直接导入客户端组件，不会神奇地把调用变成远程请求。`server-only` 用于让这种错误在受支持的构建中暴露。
+
+### 4.2 客户端外壳接收服务端内容 {#客户端外壳接收服务端内容}
+
+客户端组件可以接收已经由服务端组织好的 `children`。下面的 `app/Disclosure.jsx` 只负责展开状态：
+
+```jsx
+'use client';
+
+import { useState } from 'react';
+
+export default function Disclosure({ children }) {
+  const [open, setOpen] = useState(false);
+  return <section>
+    <button aria-expanded={open} onClick={() => setOpen(v => !v)}>课程详情</button>
+    {open && <div>{children}</div>}
+  </section>;
+}
+```
+
+`app/composition/page.jsx` 在服务端组织内容：
+
+```jsx
+import { getCourse } from '../../lib/course';
+import Disclosure from '../Disclosure';
+
+async function CourseDetails() {
+  const course = await getCourse();
+  return <p>{course.title}</p>;
+}
+export default function Page() {
+  return <Disclosure><CourseDetails /></Disclosure>;
+}
+```
+
+打开 `/composition`，点击后显示“React 基础”。`Disclosure` 没有导入 `CourseDetails`；后者的服务端执行结果通过 `children` 传入，因此不会仅因视觉上位于客户端组件下面就变成客户端代码。
+
+初始折叠不表示内容等到点击才从服务端获取。服务端内容可以已经执行并随 payload 发送，只是暂时没有显示。把敏感内容藏在折叠面板后面，不构成权限控制。
+
+### 4.3 Context 的边界 {#context的边界}
+
+Context Provider 可以封装在客户端组件中，再由服务端布局渲染；其中的客户端消费者可以读取这个 Context。服务端组件不能因此读取客户端的 Context 状态，它的执行并不发生在客户端组件状态更新中。
+
+Provider 包住的服务端 `children` 也不必全部变成客户端模块。判断时同时看导入关系和数据传递，不能只看 JSX 缩进。
+
+## 5. 跨边界的数据 {#跨边界的数据}
+
+### 5.1 React 序列化不等于 JSON {#react序列化不等于json}
+
+两侧不能共享任意 JavaScript 闭包或对象身份，需要由 React 支持的表示跨越传输边界。
+
+| 值 | 跨服务端到客户端边界的判断 |
+| --- | --- |
+| 字符串、数字、布尔值、`null`、`undefined`、`bigint` | 支持 |
+| 普通对象、数组 | 其中的值也必须支持 |
+| `Date`、`Map`、`Set` 等受支持的内置类型 | 有相应支持，不必一律先变成 JSON 字符串 |
+| JSX、Promise、服务端函数引用 | React 有专门表示，不能用普通 JSON 的规则推断 |
+| 普通函数闭包、任意自定义类实例 | 不能直接按普通 props 传过去 |
+
+例如 `app/ValueInspector.jsx` 接收日期和映射：
+
+```jsx
+'use client';
+
+export default function ValueInspector({ createdAt, scores }) {
+  return <output>{createdAt.toISOString()} / {scores.get('react')}</output>;
+}
+```
+
+`app/serialization/page.jsx` 传入 React 支持的值：
+
+```jsx
+import ValueInspector from '../ValueInspector';
+
+export default function Page() {
+  return <ValueInspector
+    createdAt={new Date('2025-01-01T00:00:00.000Z')}
+    scores={new Map([['react', 90]])}
+  />;
+}
+```
+
+打开 `/serialization` 显示 `2025-01-01T00:00:00.000Z / 90`，接收方可以使用对应内置类型的方法。这不表示任意带方法的对象都合法；自定义类实例仍受限制。
+
+### 5.2 普通回调与服务端函数引用 {#普通回调与服务端函数引用}
+
+不能在服务端组件里创建一个普通 `onClick={() => ...}` 闭包，就让它原样进入客户端执行。浏览器事件处理应在客户端组件中定义，所需初始值通过 props 传入。
+
+`'use server'` 声明的异步服务端函数是另一种机制：框架把它转换成可调用的引用，客户端调用时发起网络请求，真正的函数仍在服务端执行。它不是把函数体下载过去，也不是本地同步调用。
+
+服务端函数传给 `action` 等属性，或在 Action 中调用时，属于 Server Action 的用法，通常用来修改服务端数据。参数由客户端控制，服务端仍需校验输入、登录身份和具体资源权限；按钮被隐藏或函数 ID 不容易猜，都不能代替授权。
+
+### 5.3 返回值仍需选择 {#返回值仍需选择}
+
+服务端组件能读取更多数据，不等于应把整个数据库记录交给客户端组件。只返回当前界面需要且当前用户有权查看的字段，避免顺手传出内部备注、令牌或其他用户的信息。
+
+`server-only` 防止错误的模块导入，但不会检查你是否把敏感值写进 HTML、传进 props 或返回给客户端。组件名称和代码所在目录也不能替代数据访问层的鉴权。
+
+## 6. 客户端组件与水合一致性 {#客户端组件与水合一致性}
+
+`'use client'` 不等于“只在浏览器运行”。在支持 SSR 的初始页面中，客户端组件也可能先被服务端执行，以生成 HTML，因此直接在渲染时读取 `window`、`localStorage` 会遇到环境问题。
+
+下面的 `app/BrowserInfo.jsx` 先给出一致的初始内容，再在 Effect 中读取浏览器信息：
+
+```jsx
+'use client';
+
+import { useEffect, useState } from 'react';
+
+export default function BrowserInfo() {
+  const [language, setLanguage] = useState('尚未读取');
+  useEffect(() => {
+    setLanguage(navigator.language);
+  }, []);
+  return <p>浏览器语言：{language}</p>;
+}
+```
+
+把它放进任一页面即可观察：服务端 HTML 和客户端首次渲染都是“尚未读取”，挂载后才显示浏览器语言。这里多一次客户端更新，是为了把依赖浏览器的读取放在正确阶段。
+
+如果渲染时用 `typeof window` 分支生成不同文本，虽然避开了引用错误，仍可能让两侧初始结果不一致。随机数、当前时间、时区和地区格式差异，也可能产生类似问题。优先传入一致的初始数据；`suppressHydrationWarning` 只是有限场景的例外处理，不是通用修复。
+
+## 7. 性能与适用条件 {#性能与适用条件}
+
+RSC 适合把数据读取、内容组织和较重的服务端依赖留在浏览器之外，让客户端保留必要的交互代码。它也能减少“先下载组件，再由 Effect 请求数据”的串行等待。
+
+但等待不会自动消失。如果服务端先等课程，再等互不依赖的作者请求，仍可能形成瀑布。能够并行的读取应按实际依赖启动；可流式呈现的区域可结合 Suspense，让慢区域不阻塞全部内容。相关边界见 [React 并发渲染](./concurrent-rendering.mdx#suspense与代码加载)。
+
+还要计算服务端执行成本、数据库延迟、payload 大小和客户端模块体积。把客户端边界放得过高，会把大量依赖带入客户端；返回非常庞大的结果，也可能增加传输成本。RSC 不承诺所有页面都更快。
+
+缓存与更新规则需要另外明确：用户身份是否影响结果、数据多久过期、写入后怎样刷新、失败如何处理。不能把“服务端组件”推导成“每次都读取最新数据”，也不能推导成“所有请求自动永久缓存”。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 RSC、SSR 和水合分别解决什么问题？ {#rsc-ssr-hydration}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：组件执行环境、HTML 与客户端接管的分工。
+
+**相关内容**：[RSC、SSR 与水合](#rsc-ssr与水合)。
+
+<details>
+<summary>参考回答</summary>
+
+**RSC 让部分组件实现在服务端执行并传出结果，SSR 生成可提前显示的 HTML，水合让已有 HTML 接入客户端 React 状态与事件。** 没有 RSC 也能 SSR；RSC payload 也不是 HTML。框架可以把三者组合，使服务端内容提前显示，并让需要交互的客户端部分接上逻辑。
+
+</details>
+
+### 8.2 服务端组件一定是 async，并且每次请求都会执行吗？ {#execution-environment}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：组件能力、执行时机与框架配置。
+
+**相关内容**：[两侧各自能做什么](#两侧各自能做什么)、[性能与适用条件](#性能与适用条件)。
+
+<details>
+<summary>参考回答</summary>
+
+**不一定；async 只是等待数据的写法，服务端组件也可以是普通函数。** 它可以在构建时运行，也可以随请求或缓存更新执行，具体由框架和页面配置决定。它不能用客户端 state 和 Effect 承担浏览器交互，是否拿到新数据也要看缓存与失效规则。
+
+</details>
+
+### 8.3 客户端组件包住服务端组件，会把后者变成客户端组件吗？ {#client-boundary}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：模块依赖树、渲染组合与 children。
+
+**相关内容**：[模块边界与组件组合](#模块边界与组件组合)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能只看 JSX 父子关系；`'use client'` 影响模块导入边界，服务端父级传入的 children 可以仍是服务端执行结果。** 如果客户端模块直接导入某个普通组件，该使用会进入客户端依赖范围；如果服务端父级先组织内容，再传给客户端外壳，则不需要把服务端组件实现一起下载。服务端专属模块不能借普通 import 变成远程调用。
+
+</details>
+
+### 8.4 服务端传给客户端的 props 必须都是 JSON 吗？ {#serialization}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：React 序列化范围与不可传递值。
+
+**相关内容**：[React 序列化不等于 JSON](#react序列化不等于json)。
+
+<details>
+<summary>参考回答</summary>
+
+**必须由 React 支持序列化，但不局限于 JSON。** 除普通数据外，React 还支持 `Date`、`Map`、`Set`、JSX、Promise 等特定值。普通函数闭包和任意自定义类实例不能直接传递；服务端函数引用是框架处理的专门机制，不能据此推断所有函数都可跨边界。
+
+</details>
+
+### 8.5 写了 use client，为什么渲染时读取 window 仍可能报错？ {#browser-apis}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：客户端组件的 SSR 阶段与水合一致性。
+
+**相关内容**：[客户端组件与水合一致性](#客户端组件与水合一致性)。
+
+<details>
+<summary>参考回答</summary>
+
+**客户端组件仍可能参与服务端预渲染，服务端没有浏览器的 window。** 浏览器专属读取可放到 Effect 或事件等合适阶段，首轮输出保持一致。仅用 `typeof window` 生成不同内容虽然避开引用错误，仍可能造成水合不匹配，应先明确两侧的初始数据。
+
+</details>
+
+### 8.6 服务端组件和 server-only 能自动防止敏感数据泄露吗？ {#data-boundary}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：代码边界、数据输出与权限校验。
+
+**相关内容**：[返回值仍需选择](#返回值仍需选择)、[客户端外壳接收服务端内容](#客户端外壳接收服务端内容)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能；服务端实现不下载，不代表返回的值不会到达客户端。** HTML、RSC payload 与 props 都可能包含数据，折叠或暂不显示也不构成保密。`server-only` 防止错误导入，读取数据前仍要鉴权，输出只保留当前用户和界面需要的字段。
+
+</details>
+
+### 8.7 use server 是服务端组件的标记吗？ {#server-functions}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：组件与服务端函数、网络调用与输入信任。
+
+**相关内容**：[普通回调与服务端函数引用](#普通回调与服务端函数引用)。
+
+<details>
+<summary>参考回答</summary>
+
+**不是；`'use server'` 标记可经框架从客户端调用的异步服务端函数。** 客户端拿到引用，调用时发起请求，函数体仍在服务端执行。服务端组件不需要靠它声明身份。函数参数来自客户端，执行修改前必须检查输入、身份与资源权限。
+
+</details>
+
+### 8.8 使用 RSC 后，首屏和数据请求一定更快吗？ {#tradeoffs}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：客户端体积、服务端成本、请求依赖与缓存。
+
+**相关内容**：[性能与适用条件](#性能与适用条件)。
+
+<details>
+<summary>参考回答</summary>
+
+**不一定；RSC 可以减少客户端代码和部分客户端请求瀑布，但收益取决于实际链路。** 服务端慢查询、串行读取、大 payload 和过大的客户端边界仍会拖慢页面。应按依赖并行读取、合理分流式边界，并明确缓存和写后更新规则，再结合测量判断收益。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+
+- [React：Server Components](https://react.dev/reference/rsc/server-components)
+- [React：use client](https://react.dev/reference/rsc/use-client)
+- [React：hydrateRoot](https://react.dev/reference/react-dom/client/hydrateRoot)
+- [React：useEffect](https://react.dev/reference/react/useEffect)
+- [React：Server Functions](https://react.dev/reference/rsc/server-functions)
+- [React：use server](https://react.dev/reference/rsc/use-server)
+- [Next.js：Server and Client Components](https://nextjs.org/docs/app/getting-started/server-and-client-components)
+- [Next.js：Data Security](https://nextjs.org/docs/app/guides/data-security)
+- [Next.js：Installation](https://nextjs.org/docs/app/getting-started/installation)

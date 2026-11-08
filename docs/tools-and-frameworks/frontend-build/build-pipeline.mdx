@@ -1,0 +1,503 @@
+---
+sidebar_position: 1
+knowledge:
+  id: tools-and-frameworks.frontend-build.build-pipeline
+---
+
+# 前端构建
+
+**前端构建** 是把源码、依赖与资源处理成目标环境可以加载和运行的产物。它包含依赖解析、代码转换、模块组织、资源输出等工作；“把所有文件压成一个 JavaScript”只是对其中少数步骤的简化描述。
+
+面试中解释构建工具，重点在于能顺着代码进入浏览器的路径说明每一步：为什么某个文件需要转换、什么时候发请求、改文件后谁通知浏览器，以及生产产物与开发服务有什么差别。本文以 Webpack 5 和 Vite 6 为基线，Vite 6 的默认生产构建使用 Rollup，不把这个实现推广到所有版本。
+
+## 1. 面试核心 {#core}
+
+- **构建从入口解析依赖，形成模块图，再按目标环境转换、组织和输出资源。** 浏览器支持 ESM，并不意味着它能直接执行 TS、JSX、Vue SFC 或任意包名导入。[卡](#build-flow)
+- **module 是依赖图中的代码单元，chunk 是构建中组织和加载模块的分组，bundle 通常指输出的打包文件。** 三者不是一一对应的源码文件别名。[卡](#module-chunk-bundle)
+- **loader 主要转换模块内容，plugin 通过构建钩子参与更广的流程。** 两者的职责不能仅按“哪个先执行”区分。[卡](#loader-plugin)
+- **动态 import 可以形成异步加载边界，但分包是否有效取决于其他引用和构建配置。** 拆得更多也可能增加请求与依赖等待。[卡](#code-splitting)
+- **Webpack 5 的典型开发链路先构建 bundle，Vite 6 主要按浏览器请求提供转换后的源码 ESM，并预构建部分依赖。** 比较速度要区分冷启动、首次页面请求、热更新与生产构建。[卡](#webpack-vite)
+- **Vite 6 依赖预构建主要处理 CommonJS/UMD 兼容和细碎依赖请求，不能等同于生产构建。** 缓存命中与失效也影响重复启动的观察结果。[卡](#dependency-prebundling)
+- **HMR 通过更新边界替换代码，不等于整个文档刷新，也不保证任意业务状态都会保留。** 被重新执行的模块需要处理旧副作用。[卡](#hmr)
+- **开发服务的按需处理与生产输出有不同钩子，插件必须按所处阶段工作。** 仅在生产输出时触发的钩子，不能承担开发请求必需的转换。[卡](#vite-plugin)
+- **开发代理是开发服务器转发请求，生产静态资源不会自带这台代理。** 构建成功也不等于类型、接口、运行环境和发布路径都正确。[卡](#dev-proxy)
+- **构建提速和页面提速是两类指标，迁移工具要用实际产物与行为验证兼容。** 不能只比较一次耗时就认定所有场景都更快。[卡](#build-performance) [卡](#migration)
+
+## 2. 从入口到产物 {#从入口到产物}
+
+### 2.1 解析与依赖图 {#解析与依赖图}
+
+**依赖图**记录模块之间的引用关系。构建工具从入口出发，解析 import、受支持的 require 和资源引用，再定位相应文件、加载内容、执行转换，并继续发现依赖。
+
+解析不仅是拼接文件路径。包的 exports、入口条件、扩展名、别名以及浏览器或服务器目标，都可能影响最终选中的实现。相同包名在不同目标下解析到不同文件，并不一定是缓存错误。
+
+转换也不只有压缩。TS 类型标注需要移除，JSX 和 Vue SFC 需要编译，某些语法要按目标环境转换，CSS 或图片需要变成可引用资源。浏览器原生 ESM 解决模块导入的一部分问题，不能代替这些工作。
+
+构建工具通常不会为了了解业务依赖而运行全部业务代码；它分析源码与构建约定。`import('./detail.js')` 的目标明确，任意拼出的远程字符串却未必能静态列举。动态路径能支持到什么范围，要看工具的分析规则，不能假设源码字符串出现在哪里，构建就会把整个目录都自动打包进去。
+
+### 2.2 module、chunk 与 bundle {#modulechunk与bundle}
+
+**module** 是构建系统识别的一项模块，例如一个 JS 文件，或经过 loader 处理后可被导入的文本资源。**chunk** 是构建过程中为了入口或异步加载而组织的一组模块。**bundle** 通常指最终生成的打包文件，具体工具对输出文件的命名也可能不同。
+
+一个 chunk 可以包含多个 module；共享依赖可能被抽到单独 chunk，一个模块也可能因不同入口和配置被重复放入多个产物。CSS 提取、source map、资源清单又会产生额外文件，所以不能按“几个源码文件就有几个 bundle”推断结果。
+
+多入口也不等同于动态分包。多个 HTML 页面可以有不同入口，公共依赖是否合并要看共享配置；一个页面里的 `import()` 则可以推迟某部分代码的请求。两者可以同时存在。
+
+## 3. Webpack 的转换与输出 {#webpack的转换与输出}
+
+### 3.1 一个异步模块 {#一个异步模块}
+
+下面的最小项目有 `src/main.js`、`src/detail.js` 和文本文件 `src/caption.txt`。`caption.txt` 的内容是 `复习计划`，它会由后面的 loader 变成可导入字符串。
+
+`src/main.js` 先显示按钮，在点击时才请求详情模块：
+
+```js
+import caption from './caption.txt';
+
+const button = document.createElement('button');
+button.textContent = caption.trim();
+const output = document.createElement('p');
+document.body.append(button, output);
+button.addEventListener('click', async () => {
+  button.disabled = true;
+  try {
+    const { detail } = await import('./detail.js');
+    output.textContent = detail;
+  } catch {
+    output.textContent = '详情加载失败';
+  } finally {
+    button.disabled = false;
+  }
+});
+```
+
+`src/detail.js` 提供详情：
+
+```js
+export const detail = '先复习模块，再复习构建';
+```
+
+在下面配置产生的页面中，首次加载主入口时不会请求详情 chunk；点击后显示 `先复习模块，再复习构建`。这里同时保留失败分支，因为异步代码也需要通过网络加载。
+
+若另一个同步依赖已经把详情代码带入首屏，或者配置把它合入入口，那么仅在某处写 `import()` 就不能证明实际减少了首屏资源。应查看产物和浏览器请求来确认。
+
+### 3.2 loader 的输入与输出 {#loader的输入与输出}
+
+**loader** 接收模块内容，返回后续构建步骤能够继续处理的内容。`text-loader.cjs` 将文本转换成一个 ES Module：
+
+```js
+module.exports = function textLoader(source) {
+  this.cacheable();
+  return `export default ${JSON.stringify(source)};`;
+};
+```
+
+`JSON.stringify` 保留换行并转义引号，避免文本中的字符破坏生成的 JavaScript。这个例子只演示转换契约，Webpack 5 实际处理纯文本也可以使用内置的 `asset/source`，不必为了这项功能另造 loader。
+
+同一个规则中的普通 loader 转换通常从右向左执行，右边的结果传给左边。例如先把预处理样式转成 CSS，再解析 CSS 依赖，最后注入样式或交给提取插件。pitch 阶段会改变执行路径，不能把“任何情况下都是右到左”当作完整规则。
+
+loader 若额外读取配置或模板文件，还要登记依赖，让监听和缓存知道这些输入变化会影响结果；异步处理则使用对应回调或异步接口。只缓存输出却遗漏真实输入，会让开发时出现“改了文件但结果没变”。
+
+### 3.3 plugin 与构建生命周期 {#plugin与构建生命周期}
+
+**plugin** 注册构建钩子，可以读取模块和产物信息、修改输出或加入额外文件。Webpack 的 **Compiler** 管理构建环境与流程，**Compilation** 表示一次编译工作；监听模式下同一个 Compiler 可以产生多次 Compilation。
+
+`AssetReportPlugin.cjs` 在产物处理阶段生成报告：
+
+```js
+module.exports = class AssetReportPlugin {
+  apply(compiler) {
+    const { Compilation, sources } = compiler.webpack;
+    compiler.hooks.thisCompilation.tap('AssetReportPlugin', compilation => {
+      compilation.hooks.processAssets.tap({
+        name: 'AssetReportPlugin',
+        stage: Compilation.PROCESS_ASSETS_STAGE_REPORT
+      }, () => {
+        const report = compilation.getAssets().map(({ name, source }) => ({
+          name,
+          bytes: source.size()
+        })).sort((a, b) => a.name.localeCompare(b.name));
+        compilation.emitAsset(
+          'assets-report.json',
+          new sources.RawSource(JSON.stringify(report, null, 2))
+        );
+      });
+    });
+  }
+};
+```
+
+报告列出执行该钩子时已有的产物及字节数，不包含随后才添加的报告自身。它描述一次构建结果，不是页面真实下载量：压缩传输、缓存命中和用户是否触发异步模块都会影响网络流量。
+
+### 3.4 配置与页面 {#配置与页面}
+
+项目根目录的 `webpack.config.cjs` 连接入口、loader 与 plugin：
+
+```js
+const path = require('node:path');
+const AssetReportPlugin = require('./AssetReportPlugin.cjs');
+
+module.exports = {
+  mode: 'production',
+  entry: './src/main.js',
+  output: {
+    path: path.resolve(__dirname, 'dist'),
+    filename: 'main.js',
+    chunkFilename: '[name].[contenthash].js',
+    publicPath: '/dist/',
+    chunkLoadTimeout: 2000
+  },
+  module: {
+    rules: [{ test: /\.txt$/, use: path.resolve(__dirname, 'text-loader.cjs') }]
+  },
+  plugins: [new AssetReportPlugin()]
+};
+```
+
+用 Webpack 5 构建后，将项目根目录作为静态服务目录，打开下面的 `index.html`：
+
+```html
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>构建示例</title></head>
+<body><script defer src="/dist/main.js"></script></body>
+</html>
+```
+
+输出包含主入口、异步 chunk 和 `assets-report.json`。`publicPath` 是浏览器请求资源时使用的前缀，`output.path` 是构建机器的输出目录，二者不能互换。示例固定主入口名称以便观察；正式发布还要处理入口缓存和版本资源的对应关系。
+
+`mode: 'production'` 启用相应优化，但不会自动完成所有兼容检查。代码转换不等于类型检查，语法可解析也不表示目标浏览器具备全部运行时 API。Tree Shaking 的保留与删除条件见 [Tree Shaking](../../basic-knowledge/javascript/tree-shaking.mdx)。
+
+## 4. 开发服务与生产构建 {#开发服务与生产构建}
+
+### 4.1 Webpack 5 与 Vite 6 {#webpack与vite}
+
+| 观察点 | Webpack 5 的典型方式 | Vite 6 的典型方式 |
+| --- | --- | --- |
+| 开发服务 | 编译依赖图，提供 bundle 与运行时代码 | 按请求转换源码模块，向浏览器提供 ESM |
+| 第三方依赖 | 进入相应编译与缓存流程 | 可用 esbuild 预构建依赖 |
+| 修改后的反馈 | 增量编译，再由 HMR 运行时处理更新 | 失效相关模块，并沿模块图寻找更新边界 |
+| 生产输出 | Webpack 完成分包和优化 | 默认由 Rollup 组织生产产物 |
+
+Vite 6 不必在启动时先把所有应用源码打成开发 bundle，这可以减少启动前的工作。但浏览器第一次访问某个页面时仍要请求、转换和执行所需模块。慢插件、复杂依赖和冷缓存也会拖慢它，因此要分别测启动时间和首次页面可用时间。
+
+Webpack 同样有增量编译和缓存，不能只用“Webpack 每次全量重建，Vite 什么都不构建”解释差异。生产阶段的比较更不能直接套用开发阶段的工作方式。
+
+### 4.2 依赖预构建 {#依赖预构建}
+
+Vite 6 的依赖预构建主要做两件事：把适用的 CommonJS、UMD 依赖转换成开发环境可使用的 ESM，以及合并具有大量细碎内部模块的依赖，减少浏览器需要处理的请求数量。
+
+应用源码与依赖采用不同处理策略，不代表依赖永远不会变化。锁文件、配置或相关优化输入变化后，预构建缓存可能失效；发现新的依赖也可能触发重新优化。链接包或特殊导入方式还需要检查是否进入预构建范围。
+
+预构建不是生产发布结果。把开发缓存目录上传出去，不能替代正常的生产构建；开发可用也不证明生产的依赖解析、插件和资源输出完全相同。
+
+### 4.3 开发代理与环境配置 {#开发代理与环境配置}
+
+开发代理让浏览器请求开发服务自己的 `/api` 路径，再由开发服务器转发到后端。浏览器面对的是同源开发入口，服务器之间的转发不受浏览器 CORS 读取规则限制。这不改变后端授权要求，也不意味着浏览器的同源策略被关闭。
+
+Webpack Dev Server 通常在 `devServer.proxy` 配置代理，Vite 在 `server.proxy` 配置。生产环境若只是静态文件托管，这两个开发配置不会启动代理；需要部署相应网关、反向代理或明确配置后端跨源访问。
+
+构建时注入到客户端的环境变量最终可能变成 JavaScript 字面量，不能用于保存秘密。变量名写成 TOKEN 或 SECRET，不会让它在浏览器下载的产物里自动隐藏。
+
+## 5. HMR 与插件边界 {#hmr与插件边界}
+
+### 5.1 文件修改后的更新链路 {#文件修改后的更新链路}
+
+**热模块替换**（Hot Module Replacement，HMR）是在应用运行时更新模块，而不重新加载整个文档。典型链路是文件监听发现变化、工具重新处理相关模块、开发服务通知浏览器、客户端加载新代码，再由接受更新的边界完成替换。
+
+Vite 6 使用 WebSocket 传递开发更新通知，模块代码仍通过 HTTP 请求获取。通知连接和模块请求有不同职责；看到 WebSocket 并不意味着所有源码都经由 WebSocket 推送。
+
+如果变化无法在可接受的边界内处理，开发工具可能退回整页刷新。React Fast Refresh、Vue SFC 热更新则在通用 HMR 之上处理框架的组件身份与状态，不是浏览器天然知道怎样替换任意组件。
+
+### 5.2 保留的状态取决于更新边界 {#保留的状态取决于更新边界}
+
+下面是另一个独立的 Vite 6 项目。`index.html` 把草稿输入框放在计数器外面：
+
+```html
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>HMR 示例</title></head>
+<body>
+  <label>草稿<input id="draft"></label>
+  <div id="counter"></div>
+  <script type="module" src="/main.js"></script>
+</body>
+</html>
+```
+
+`main.js` 接受 `counter.js` 的更新，并负责销毁旧实例：
+
+```js
+import './style.css';
+import { label } from 'virtual:build-label';
+import { mount } from './counter.js';
+
+document.title = label;
+const root = document.querySelector('#counter');
+let dispose = mount(root);
+if (import.meta.hot) {
+  import.meta.hot.accept('./counter.js', next => {
+    if (!next) return;
+    dispose();
+    dispose = next.mount(root);
+  });
+  import.meta.hot.dispose(() => dispose());
+}
+```
+
+`counter.js` 的状态属于每一次 mount：
+
+```js
+export function mount(root) {
+  let count = 0;
+  const button = document.createElement('button');
+  const render = () => { button.textContent = `复习次数：${count}`; };
+  const onClick = () => { count++; render(); };
+  render();
+  button.addEventListener('click', onClick);
+  root.replaceChildren(button);
+  return () => {
+    button.removeEventListener('click', onClick);
+    button.remove();
+  };
+}
+```
+
+`style.css` 提供可以独立修改的样式：
+
+```css
+#counter button { color: rgb(0, 128, 0); }
+```
+
+修改 `counter.js` 中的按钮文字后，`main.js` 接受新模块，调用旧 dispose，再挂载新实例。文档与外部草稿框保持不变，计数器却从 `0` 开始，因为它的 count 在 mount 中重新创建。这说明“不刷新页面”与“保留全部状态”不是同一个保证。
+
+仅修改这项 CSS 时，Vite 可以替换样式，计数器不需要重挂；若修改没有自接受边界的入口 `main.js`，则可能整页刷新，草稿也随文档重建。这里手写 HMR 只为解释机制，业务项目通常由框架插件处理相应边界。
+
+### 5.3 Vite 插件的开发与构建钩子 {#vite插件的开发与构建钩子}
+
+**虚拟模块**是不对应某个源码文件、由插件提供内容的模块。`vite.config.js` 为上面的 `virtual:build-label` 提供实现：
+
+```js
+import { defineConfig } from 'vite';
+
+function buildLabelPlugin() {
+  const id = '\0virtual:build-label';
+  let command;
+  return {
+    name: 'build-label',
+    configResolved(config) { command = config.command; },
+    resolveId(source) {
+      if (source === 'virtual:build-label') return id;
+    },
+    load(source) {
+      if (source === id) {
+        return `export const label = ${JSON.stringify(
+          command === 'serve' ? '开发演示' : '构建演示'
+        )};`;
+      }
+    },
+    generateBundle() {
+      this.emitFile({ type: 'asset', fileName: 'build-label.txt', source: '构建演示' });
+    }
+  };
+}
+
+export default defineConfig({ plugins: [buildLabelPlugin()] });
+```
+
+开发服务中的页面标题是 `开发演示`，生产构建后的标题是 `构建演示`，产物目录还包含 `build-label.txt`。`\0` 前缀是插件内部模块 ID 的约定，避免让其他解析步骤把它当普通文件路径。
+
+`configResolved` 取得最终配置；模块处理经过 `resolveId`、`load` 与可能的 `transform`。开发服务按请求处理模块，不会为每次页面访问执行完整产物生成，因此这里的 `generateBundle` 只在构建输出阶段生成报告文件。
+
+钩子顺序还受到插件排序、`enforce`、模块依赖和缓存影响。应先说明某个钩子属于配置、请求转换还是产物输出，再解释同一模块上的调用关系，不把整个项目的所有钩子背成一条固定串行列表。
+
+## 6. 性能与兼容验证 {#性能与兼容验证}
+
+### 6.1 构建速度与页面性能 {#构建速度与页面性能}
+
+构建速度衡量开发和 CI 的反馈时间，页面性能衡量用户等待、交互和运行开销。缓存编译结果可以减少构建时间，却不一定减少用户下载的 JavaScript；异步分包可以减少首屏执行，却也可能增加后续交互的等待。
+
+优化前分别记录冷启动、热启动、单文件更新、全量生产构建等阶段，再看耗时来自模块解析、代码转换、类型检查、压缩还是插件。可以缩小不必要的处理范围、正确使用缓存、减少重复转换和过宽导入，再评估并行化或替换工具。每一项措施都应说明解决了哪个已观测瓶颈。
+
+连续两次热更新也不能保证耗时相同或后一次一定更快。依赖图、缓存、失效范围和改动内容都可能不同；修改一个叶子模块与修改被大量模块引用的入口不是同一项实验。
+
+### 6.2 构建迁移的行为等价 {#构建迁移的行为等价}
+
+从 Webpack 迁移到 Vite 或 Rspack，需要检查现有 loader/plugin、模块解析、CSS、资源路径、环境变量、动态导入和开发代理等约定。新的实现兼容一部分 API，不代表所有插件和边界都等价。
+
+验证应覆盖开发服务与生产产物：关键页面能否打开，深链接和异步 chunk 是否正确，旧浏览器目标是否满足，错误与 source map 能否定位，SSR 或库产物是否保留原来的导出契约。比较耗时和体积时，也要使用同一源码、目标、模式与可解释的缓存条件。
+
+构建成功只证明工具完成了当前配置要求的工作。发布后资源 404、浏览器 API 缺失、类型错误或业务测试失败，都可能出现在“构建成功”之后，应由各自的验证环节负责。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 npm run dev 后，源码怎样成为浏览器运行的页面？ {#build-flow}
+
+**考察重点**：脚本入口、开发服务、依赖图、转换与浏览器加载。
+
+**相关内容**：[解析与依赖图](#解析与依赖图)、[开发服务与生产构建](#开发服务与生产构建)。
+
+<details>
+<summary>参考回答</summary>
+
+**npm 先执行 package.json 中对应脚本，脚本启动的工具再提供开发服务和模块处理能力。** 工具按入口与引用解析依赖，转换浏览器不能直接执行的源码，并提供 HTML、脚本、样式与资源。浏览器请求这些内容后才开始执行和渲染。Webpack 5 的典型开发 bundle 与 Vite 6 的按请求源码 ESM 方式不同，不能假设 dev 命令都先把全部源码输出到 dist。
+
+</details>
+
+### 7.2 module、chunk 和 bundle 有什么区别，多入口与异步分包有什么关系？ {#module-chunk-bundle}
+
+**考察重点**：源码单元、加载分组、输出文件与入口关系。
+
+**相关内容**：[module、chunk 与 bundle](#modulechunk与bundle)。
+
+<details>
+<summary>参考回答</summary>
+
+**module 是依赖图中的模块，chunk 是为构建和加载组织的一组模块，bundle 通常指输出的打包文件。** 一个 chunk 可包含多个 module，额外资源与 source map 也会形成文件，因此不是一一对应。多入口描述不同的构建起点，动态 import 描述运行时异步加载边界，两者可以同时使用。
+
+</details>
+
+### 7.3 Webpack 的 loader 和 plugin 有什么区别，怎样写一个最小实现？ {#loader-plugin}
+
+**考察重点**：模块转换、构建钩子、Compiler 与 Compilation。
+
+**相关内容**：[loader 的输入与输出](#loader的输入与输出)、[plugin 与构建生命周期](#plugin与构建生命周期)。
+
+<details>
+<summary>参考回答</summary>
+
+**loader 主要把模块内容转换成后续可处理的内容，plugin 则在构建钩子中参与更广的流程。** 例如 text-loader 将文本编码成导出字符串的 JavaScript，AssetReportPlugin 在每次 Compilation 的产物阶段生成报告。普通 loader 链通常从右向左转换，但 pitch 可能改变路径；plugin 的时机由注册的钩子决定，不能笼统说它一定在所有 loader 前面或后面。
+
+</details>
+
+### 7.4 CSS 是怎样进入构建产物的？ {#css-build}
+
+**考察重点**：样式转换、资源依赖、开发注入与生产提取。
+
+**相关内容**：[解析与依赖图](#解析与依赖图)、[loader 的输入与输出](#loader的输入与输出)、[保留的状态取决于更新边界](#保留的状态取决于更新边界)。
+
+<details>
+<summary>参考回答</summary>
+
+**构建工具需要处理 CSS 本身及其引用的资源，再决定怎样让浏览器加载它。** 在典型 Webpack loader 链中，可以先转换预处理语法，再解析 import 和 url，开发时注入 style，生产时由相应配置提取 CSS 文件。Vite 6 的开发样式可以通过 HMR 更新，生产构建会按配置输出样式资源。具体是否提取、怎样拆分和加载，应根据配置与产物判断。
+
+</details>
+
+### 7.5 动态 import 一定能减少首屏代码吗，怎样判断分包是否合理？ {#code-splitting}
+
+**考察重点**：异步边界、同步引用、请求链与实际收益。
+
+**相关内容**：[一个异步模块](#一个异步模块)、[构建速度与页面性能](#构建速度与页面性能)。
+
+<details>
+<summary>参考回答</summary>
+
+**不一定，实际产物还受到其他同步引用与分包配置影响。** 先确认该模块是否仍进入首屏，再看用户何时需要它、请求链是否变长、共享依赖是否重复。示例中详情只在点击后请求，是因为当前依赖图和配置保留了这个异步边界；拆出更多文件本身不是性能结论。
+
+</details>
+
+### 7.6 为什么 Vite 6 的开发启动可以更快，它与 Webpack 5 的生产构建也一样吗？ {#webpack-vite}
+
+**考察重点**：按需处理、开发 bundle、缓存和版本范围。
+
+**相关内容**：[Webpack 5 与 Vite 6](#webpack与vite)。
+
+<details>
+<summary>参考回答</summary>
+
+**Vite 6 开发时主要按请求提供源码 ESM，减少启动前先构建整个应用 bundle 的工作。** 依赖还可能经过预构建，首次访问与插件处理仍有成本。Webpack 5 也有增量编译和缓存，不能说每次都全量重建。Vite 6 默认生产构建使用 Rollup，与开发请求链不同，应单独比较生产构建耗时和产物。
+
+</details>
+
+### 7.7 Vite 依赖预构建解决什么问题，为什么不能当成生产构建？ {#dependency-prebundling}
+
+**考察重点**：CommonJS/UMD、请求数量、缓存与生产输出。
+
+**相关内容**：[依赖预构建](#依赖预构建)。
+
+<details>
+<summary>参考回答</summary>
+
+**Vite 6 预构建主要把适用依赖转成开发 ESM，并减少细碎模块带来的请求数量。** 它针对开发服务的依赖使用方式和缓存，并不是完成生产分包、资源输出与优化的最终产物。锁文件、配置或依赖变化也可能使缓存失效，因此启动测量需要区分冷暖条件。
+
+</details>
+
+### 7.8 HMR 从文件修改到页面更新经历哪些步骤，会保留所有状态吗？ {#hmr}
+
+**考察重点**：模块失效、通知连接、接受边界、副作用与刷新回退。
+
+**相关内容**：[文件修改后的更新链路](#文件修改后的更新链路)、[保留的状态取决于更新边界](#保留的状态取决于更新边界)。
+
+<details>
+<summary>参考回答</summary>
+
+**工具发现文件变化后重新处理相关模块，通知浏览器加载更新，再由接受边界应用新代码。** Vite 6 的通知可以经 WebSocket，代码仍通过 HTTP 获取。状态是否保留取决于哪些对象和模块被重建：示例保留外部草稿，却重置重新 mount 的计数器。旧监听等副作用需要清理，没有合适更新边界时可能退回整页刷新。
+
+</details>
+
+### 7.9 Vite 插件的 resolveId、load、transform 与 generateBundle 有什么区别？ {#vite-plugin}
+
+**考察重点**：模块解析、内容提供、源码转换与输出阶段。
+
+**相关内容**：[Vite 插件的开发与构建钩子](#vite插件的开发与构建钩子)。
+
+<details>
+<summary>参考回答</summary>
+
+**resolveId 确定模块身份，load 提供内容，transform 转换已加载内容，generateBundle 处理构建输出。** 开发服务按请求处理模块，不为每次请求生成完整 bundle，因此不能依赖 generateBundle 提供开发时必需的模块。示例通过 resolveId/load 提供虚拟模块，构建时再额外输出报告文件；具体顺序还要结合插件排序和模块处理阶段。
+
+</details>
+
+### 7.10 开发代理为什么能解决本地接口跨源读取，部署后为什么可能失效？ {#dev-proxy}
+
+**考察重点**：浏览器同源入口、服务器转发与部署职责。
+
+**相关内容**：[开发代理与环境配置](#开发代理与环境配置)。
+
+<details>
+<summary>参考回答</summary>
+
+**浏览器请求的是开发服务同源地址，开发服务器再转发到后端，因此浏览器不直接跨源读取该后端响应。** Webpack Dev Server 使用 devServer.proxy，Vite 使用 server.proxy。静态构建产物不包含运行中的开发代理，生产环境需要相应网关或后端跨源配置，且代理不会代替认证授权。
+
+</details>
+
+### 7.11 怎样优化构建速度，连续两次热更新一定同样快吗？ {#build-performance}
+
+**考察重点**：分阶段测量、缓存失效、依赖范围与实际瓶颈。
+
+**相关内容**：[构建速度与页面性能](#构建速度与页面性能)。
+
+<details>
+<summary>参考回答</summary>
+
+**先区分冷启动、首次页面访问、热更新和生产构建，再定位耗时阶段。** 根据证据缩小转换范围、修正缓存输入、减少重复工作或评估工具替换。连续两次热更新受改动内容、依赖图和缓存影响，既不能保证相同，也不能保证后一次更快。构建提速与页面体积、首屏时间需要分别验证。
+
+</details>
+
+### 7.12 从 Webpack 迁移到 Vite 或 Rspack，构建通过后还需要验证什么？ {#migration}
+
+**题型**：综合题
+
+**考察重点**：工具约定、运行时行为、产物与测量条件。
+
+**相关内容**：[构建迁移的行为等价](#构建迁移的行为等价)、[Webpack 5 与 Vite 6](#webpack与vite)。
+
+<details>
+<summary>参考回答</summary>
+
+**还要验证解析、转换、资源和运行行为是否保持预期，构建成功只是其中一步。** 检查现有插件、CSS、环境变量、动态导入、路径和代理，运行关键页面与业务测试，并单独检查生产产物、目标浏览器、SSR 或库导出等实际要求。性能比较使用相同源码、目标与明确的缓存条件，不能把一轮本地计时当作完整迁移收益。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [Webpack：Concepts](https://webpack.js.org/concepts/)
+- [Webpack：Loaders](https://webpack.js.org/concepts/loaders/)
+- [Webpack：Writing a Loader](https://webpack.js.org/contribute/writing-a-loader/)
+- [Webpack：Writing a Plugin](https://webpack.js.org/contribute/writing-a-plugin/)
+- [Webpack：Compilation Hooks](https://webpack.js.org/api/compilation-hooks/)
+- [Webpack：Hot Module Replacement](https://webpack.js.org/concepts/hot-module-replacement/)
+- [Vite 6：Why Vite](https://v6.vite.dev/guide/why)
+- [Vite 6：Dependency Pre-Bundling](https://v6.vite.dev/guide/dep-pre-bundling)
+- [Vite 6：HMR API](https://v6.vite.dev/guide/api-hmr)
+- [Vite 6：Plugin API](https://v6.vite.dev/guide/api-plugin)

@@ -1,0 +1,457 @@
+---
+sidebar_position: 2
+knowledge:
+  id: basic-knowledge.nodejs.modules
+  type: concept
+description: "解释 Node.js 如何识别和解析模块、使用包导出与缓存，以及 CommonJS 和 ES Module 的互操作边界。"
+keywords: ["Node.js", "模块解析", "CommonJS", "ES Module", "package.json", "exports"]
+---
+
+# Node.js 模块机制
+
+**Node.js 模块机制**把导入说明符转换为具体模块，再完成加载、初始化和接口交付。一个文件能否被加载，不仅取决于里面写了 `import` 还是 `require`，还取决于文件扩展名、包声明、入口配置和调用位置。
+
+定位“本地构建能过，Node.js 直接运行却找不到模块”这类问题时，需要分清语言语义与宿主规则。导出绑定、导出对象的基本差异见 [ES Module 与 CommonJS](../javascript/modules.mdx)；本文聚焦 Node.js 22.16.0 的解析、缓存和互操作，多文件示例按注释中的文件名拆开保存，各组放在独立目录。
+
+## 1. 面试核心 {#core}
+
+- `.mjs` 明确使用 ESM，`.cjs` 明确使用 CommonJS，`.js` 需要结合最近的包声明判断。**显式声明 `package.json` 的 `type`，可以避免依赖模糊输入的自动判定**。[卡](#module-system)
+- 相对路径基于导入它的模块解析，裸包名通常从调用方附近的 `node_modules` 查找。**模块解析不是统一从 `process.cwd()` 开始**，也不能照搬构建工具的别名与补扩展名规则。[卡](#resolution)
+- `main` 指定传统包入口，`exports` 指定公开入口及条件分支，`imports` 提供包内部映射。**`exports` 存在时优先决定包名导入的接口，磁盘上有文件也可能不允许按包子路径导入**。[卡](#package-fields)
+- CommonJS 正常加载时按解析后的文件名缓存模块。**先建立缓存记录，再执行模块正文，才能在循环依赖中返回已经开始初始化的模块**；缓存范围不等于所有进程共享。[卡](#initialization-cache)
+- 循环依赖应当结合初始化时机分析。**CommonJS 可能返回部分导出，ESM 可能在绑定初始化前读取时报错；不能只凭依赖图成环就断言一定失败**。[卡](#cycles)
+- ESM 导入 CommonJS 时，默认导入对应 `module.exports`；命名导入依赖静态识别。**CommonJS 的合成命名导出不具备 ESM 导出绑定的实时更新语义**。[卡](#interop)
+- Node.js 22.16.0 可以用 `require` 加载符合条件的同步 ESM。**整个依赖图不能包含顶层 `await`；需要异步求值时应使用 `import()`**，旧版本和禁用相应能力时不能套用这一结论。[卡](#require-esm)
+- `import()` 返回 Promise，可以按需加载和捕获加载失败。**动态加载不等于每次重新初始化，也不自动意味着网络下载或构建分包**。[卡](#dynamic-loading)
+- 内置模块、JavaScript 包和原生扩展有不同加载路径。**调用 `node:fs` 不等于每次导入都重新编译 C++，原生绑定与 JavaScript 模块接口也不是一一对应**。[卡](#native-modules)
+
+## 2. 模块类型的判定 {#模块类型的判定}
+
+**包作用域**由 `package.json` 所在目录及其适用的子目录构成；遇到另一个包声明或 `node_modules` 边界时，需要按对应包的规则重新判断。
+
+| 文件或入口 | 显式规则 |
+| --- | --- |
+| `.mjs` 文件 | 使用 ESM |
+| `.cjs` 文件 | 使用 CommonJS |
+| `.js`，最近的 `package.json` 为 `"type": "module"` | 使用 ESM |
+| `.js`，最近的 `package.json` 为 `"type": "commonjs"` | 使用 CommonJS |
+| 命令行字符串输入 | 可以用 `--input-type=module` 或 `--input-type=commonjs` 明确指定 |
+
+Node.js 22.7 起默认启用语法检测，对没有显式类型标记的模糊输入，可以根据 ESM 专有语法判定模块类型。这个兼容机制不值得作为项目约定；包作者应明确写出 `type`，避免默认值、版本或工具行为影响运行结果。动态 `import()` 在 CommonJS 中也合法，所以仅出现 `import()` 并不能证明文件就是 ESM。
+
+下面这个包默认把 `.js` 当成 ESM：
+
+```json
+{
+  "private": true,
+  "type": "module"
+}
+```
+
+包内仍然可以通过 `.cjs` 保留 CommonJS 文件：
+
+```js
+// value.js
+export const value = 7;
+
+// legacy.cjs
+module.exports = { value: 8 };
+
+// main.mjs
+import { value } from './value.js';
+import legacy from './legacy.cjs';
+console.log(value, legacy.value); // 7 8
+```
+
+运行 `node main.mjs` 得到 `7 8`。将 `legacy.cjs` 直接改成 `.js` 而不调整内容，会让 `module.exports` 出现在 ESM 环境中，执行时 `module` 不存在。扩展名和包声明共同决定如何解释文件，而不是根据调用方的偏好任意切换。
+
+## 3. 模块说明符与解析 {#模块说明符与解析}
+
+**模块说明符**就是导入时传入的名称或路径，例如 `node:fs`、`./value.js` 和 `campus-counter`。不同类型采用不同的解析规则。
+
+| 说明符 | Node.js 中的含义 |
+| --- | --- |
+| `node:fs` | 明确使用 Node.js 内置模块 |
+| `./value.js`、`../utils.cjs` | 相对于当前模块的位置 |
+| `campus-counter`、`campus-counter/format` | 包入口或包子路径，需要结合包查找和导出配置 |
+| `#state` | 当前包的 `imports` 内部映射 |
+| ESM 的 `file:` URL | 用 URL 表示的文件模块身份 |
+
+裸包名通常从导入方所在位置向上查找适用的 `node_modules`，不是从终端当前目录随意查找一个同名文件。更近的依赖副本可能使两个调用方解析到不同路径；包管理器的目录结构与依赖声明见 [JavaScript 包管理](../../tools-and-frameworks/frontend-build/package-management.mdx)。
+
+CommonJS 对相对文件路径有补 `.js`、`.json`、`.node` 等兼容查找，也支持传统目录入口。Node.js 原生 ESM 的相对文件导入要求明确扩展名，不会替 `import './utils'` 自动尝试 `utils.js`，也不会把 `import './utils/'` 自动改成 `utils/index.js`。裸包名能通过 `exports` 映射到文件，是另一条解析路径。
+
+可以先查询解析结果，再判断是否要执行模块。在上一组文件旁加入：
+
+```js
+// resolve.mjs
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+
+console.log(import.meta.resolve('./value.js').endsWith('/value.js'));
+console.log(require.resolve('./legacy.cjs').endsWith('/legacy.cjs'));
+console.log(typeof require('node:fs').readFile);
+```
+
+输出为 `true`、`true`、`function`。`createRequire(import.meta.url)` 创建以当前模块为基准的 `require`，适用于 ESM 中确实需要 CommonJS 加载接口的情况。它不会把当前文件本身变成 CommonJS。
+
+`require.resolve` 返回解析后的标识；`import.meta.resolve` 返回 URL 字符串。解析成功也不是完整加载成功的证明，例如 ESM 的相对 `file:` URL 解析可以得到一个尚不存在的路径，加载时仍会失败。读取相邻资源时可以使用 `new URL('./config.json', import.meta.url)`；不要把 `process.cwd()` 当成模块所在目录，后者会随启动位置变化。
+
+## 4. 包入口与导出边界 {#包入口与导出边界}
+
+### 4.1 main、exports 与 imports {#包入口字段}
+
+`main` 只描述传统主入口；`exports` 还能明确允许哪些子路径，以及不同导入条件使用哪个入口；`imports` 则用于包内部名称映射，键需要以 `#` 开头。
+
+以一个同时提供 ESM 和 CommonJS 接口的包为例，以下内容保存为包的 `package.json`：
+
+```json
+{
+  "name": "campus-counter",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "./cjs.cjs",
+  "exports": {
+    ".": {
+      "import": "./esm.mjs",
+      "require": "./cjs.cjs",
+      "default": "./esm.mjs"
+    },
+    "./format": "./format.mjs"
+  },
+  "imports": {
+    "#state": "./state.cjs"
+  }
+}
+```
+
+在支持 `exports` 的 Node.js 中，按包名加载时由 `exports` 决定入口，而不是先按 `main` 任意找一个可运行文件。`import` 与 `require` 条件由加载方式决定，条件名本身并不保证目标文件是什么模块格式；仍然需要正确的扩展名和 `type`。
+
+条件对象的键顺序有意义：前面匹配的条件优先，所以通用的 `default` 放在最后。`./format` 是公开子路径，调用方使用 `campus-counter/format`，不需要与磁盘文件名写成完全相同的字符串。
+
+### 4.2 两种入口与同一份状态 {#双入口与共享状态}
+
+双入口如果各自创建状态，就会产生两份计数器、连接池或类身份。为了让下面两个入口共享状态，可以把状态放在同一份 CommonJS 核心模块中：
+
+```js
+// state.cjs
+module.exports = { count: 0 };
+
+// cjs.cjs
+const state = require('#state');
+module.exports = {
+  state,
+  increment() { return ++state.count; }
+};
+
+// esm.mjs
+import api from './cjs.cjs';
+export const state = api.state;
+export const increment = api.increment;
+
+// format.mjs
+export function format(value) { return `count=${value}`; }
+```
+
+把这个包放到测试项目的 `node_modules/campus-counter/` 中，再运行以下消费者。真实包交付还需要验证打包内容和声明文件，不能只验证源码目录能访问。
+
+```js
+// consumer.mjs
+import { createRequire } from 'node:module';
+import { state, increment } from 'campus-counter';
+import { format } from 'campus-counter/format';
+const require = createRequire(import.meta.url);
+const cjs = require('campus-counter');
+
+console.log(increment());              // 1
+console.log(cjs.increment());          // 2
+console.log(state === cjs.state);      // true
+console.log(format(state.count));      // count=2
+```
+
+这里共享状态的原因是两个入口最终访问同一个已解析的 `state.cjs`，而不是 `exports` 自动合并了对象。如果安装了两个物理副本，或在另一个进程里加载，仍不能据此得到全局唯一状态。
+
+虽然包里存在 `state.cjs`，消费者执行 `require('campus-counter/state.cjs')` 会得到 `ERR_PACKAGE_PATH_NOT_EXPORTED`，因为没有声明这个公开子路径。`exports` 是包接口约束，不是操作系统级的安全沙箱：有权限直接访问绝对文件路径的代码，仍可绕过包名入口加载文件。`#state` 同样是包内映射，消费者不能直接借用另一个包的内部映射。
+
+## 5. CommonJS 加载与缓存 {#commonjs加载与缓存}
+
+### 5.1 包装函数与初始化 {#包装函数与初始化}
+
+Node.js 会为 CommonJS 文件提供函数包装，使模块正文能访问 `exports`、`require`、`module`、`__filename` 和 `__dirname`。这些是模块局部能力，不是每个文件共享的全局变量。
+
+对普通 JavaScript CommonJS 文件，可以按以下过程理解加载：
+
+1. 根据当前调用方解析目标文件。
+2. 查询缓存；正常命中时返回缓存模块的导出对象。
+3. 缓存未命中时创建模块记录，先放入缓存。
+4. 包装并执行模块正文，正文里的 `require` 可以递归加载依赖。
+5. 成功后标记加载完成并返回 `module.exports`；初始化抛错时，不保留这次失败模块的正常缓存项。
+
+缓存先于正文完成很关键。A 加载 B、B 又加载 A 时，第二次访问 A 可以拿到“已经开始但尚未结束初始化”的记录，不必无限递归地创建新 A。拿到的导出是否足够使用，要看 A 在此之前已经写入什么；具体行为见 [CommonJS 的部分导出](../javascript/modules.mdx#部分导出)。
+
+### 5.2 缓存身份与删除缓存 {#缓存身份与删除缓存}
+
+**CommonJS 缓存键**通常是解析后的文件名。同一进程里两次加载命中同一缓存项，会复用初始化结果：
+
+```js
+// cached.cjs
+console.log('load');
+module.exports = { count: 0 };
+
+// cache-main.cjs
+const first = require('./cached.cjs');
+first.count = 1;
+const second = require('./cached.cjs');
+console.log(first === second, second.count); // true 1
+
+const id = require.resolve('./cached.cjs');
+delete require.cache[id];
+const third = require('./cached.cjs');
+console.log(first === third, first.count, third.count); // false 1 0
+```
+
+输出依次为 `load`、`true 1`、`load`、`false 1 0`。删除缓存后再次加载创建了新对象，但 `first` 仍然引用旧对象。模块启动过的定时器、连接和监听器也不会因为删除缓存自动关闭，所以这不是完整的热更新方案。
+
+ESM 使用自己的模块加载缓存，不能用删除 `require.cache` 的方式普遍清除。ESM 以解析后的 URL 标识模块，给文件 URL 加不同查询字符串可能产生不同实例；用不断变化的查询参数“刷新模块”，也会带来重复初始化与内存保留问题。
+
+## 6. CommonJS 与 ESM 互操作 {#模块互操作}
+
+### 6.1 ESM 导入 CommonJS {#esm导入commonjs}
+
+ESM 默认导入 CommonJS 时，得到与 `module.exports` 对应的值。Node.js 还会静态分析部分 CommonJS 写法，尝试提供命名导出，但这种分析不能完整预测所有动态属性写入。
+
+```js
+// counter.cjs
+exports.count = 0;
+exports.increment = () => { exports.count++; };
+
+// interop.mjs
+import counter, { count, increment } from './counter.cjs';
+increment();
+console.log(count, counter.count); // 0 1
+```
+
+`count` 是 Node.js 为 CommonJS 合成的命名导出，不会跟随 `exports.count` 的后续变化；默认导入 `counter` 仍能通过对象属性读到 `1`。这不能反过来证明真正的 ESM 实时绑定无效，两者不是同一种导出机制。
+
+无法确定一个 CommonJS 包的命名导出能否被识别时，优先按它声明的接口使用默认导入，再访问对象属性，而不是依赖某个构建工具替你生成的互操作代码。
+
+### 6.2 require 加载同步 ESM {#require加载同步esm}
+
+在 Node.js 22.16.0 的默认配置下，`require` 可以同步加载符合条件的 ESM，并返回模块命名空间对象：
+
+```js
+// sync.mjs
+export const answer = 42;
+
+// read-sync.cjs
+const namespace = require('./sync.mjs');
+console.log(namespace.answer); // 42
+```
+
+这项能力要求整个依赖图都能同步完成求值。目标模块自己没有顶层 `await`，但依赖的另一个模块有，仍会导致 `ERR_REQUIRE_ASYNC_MODULE`。旧版本 Node.js 或禁用该能力时，也可能得到不同的加载错误，不能把 Node.js 22 的结果无条件推广过去。
+
+需要异步模块时，CommonJS 可以使用 `import()`：
+
+```js
+// async-module.mjs
+export const answer = await Promise.resolve(42);
+
+// read-async.cjs
+import('./async-module.mjs')
+  .then((namespace) => console.log(namespace.answer))
+  .catch((error) => {
+    console.error(error.message);
+    process.exitCode = 1;
+  });
+```
+
+输出为 `42`。这里没有把 CommonJS 文件改成 ESM，也没有把顶层 `await` 改成同步行为，而是等待模块求值完成后再使用结果。
+
+## 7. 动态加载与原生模块 {#动态加载与原生模块}
+
+### 7.1 受控的动态入口 {#受控的动态入口}
+
+`import()` 允许在运行时选择模块，但被加载模块会执行代码。用户提交的字符串不能未经约束直接变成任意本地路径或包名；可以先把允许的功能映射到固定导入入口：
+
+```js
+// report.mjs
+export function render() { return 'report'; }
+
+// choose.cjs
+const loaders = {
+  report: () => import('./report.mjs')
+};
+async function loadFeature(name) {
+  if (!Object.hasOwn(loaders, name)) {
+    throw new RangeError('unknown feature');
+  }
+  const namespace = await loaders[name]();
+  return namespace.render();
+}
+loadFeature('report').then(console.log).catch((error) => {
+  console.error(error.message);
+  process.exitCode = 1;
+});
+```
+
+输出为 `report`。未知功能先被拒绝，路径解析、文件缺失和模块求值异常通过 Promise 拒绝传到调用边界。同一模块身份的重复导入一般复用已有模块；是否重新初始化，不能只看是否又调用了一次 `import()`。
+
+这个例子由 Node.js 直接加载本地文件，不会因为写了 `import()` 就自行把代码发布成浏览器分包。构建工具如何处理动态入口，见 [前端构建](../../tools-and-frameworks/frontend-build/build-pipeline.mdx)。
+
+### 7.2 内置模块与原生扩展 {#内置模块与原生扩展}
+
+Node.js 的内置模块可以由 JavaScript 与 C/C++ 实现共同组成。`node:fs` 明确指定内置文件模块，调用其 API 后才会进入相应的 JavaScript 封装与原生能力；导入动作本身不意味着重新编译一次底层实现。
+
+第三方的 `.node` 文件则是已经编译好的原生扩展，通过相应的动态库加载机制接入。它需要匹配平台、架构及适用的接口约定；把 C++ 源文件路径交给普通 `require`，不会自动完成编译。需要深入开发扩展时再学习 Node-API、构建工具和跨版本兼容，普通前端或 BFF 岗位先解释清楚模块接口与底层执行的边界即可。
+
+JavaScript 层的模块缓存、原生扩展加载和某个 API 内部是否使用线程池，是不同问题。线程与 I/O 的运行时分工见 [Node.js 事件循环](./event-loop.mdx#运行时的分工)。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 Node.js 如何判断一个文件使用 ESM 还是 CommonJS？ {#module-system}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：扩展名、最近的包声明、命令行入口与语法检测。
+
+**相关内容**：[模块类型的判定](#模块类型的判定)。
+
+<details>
+<summary>参考回答</summary>
+
+**先看显式标记：`.mjs` 是 ESM，`.cjs` 是 CommonJS，`.js` 结合最近的 `package.json` 中 `type` 判断。** `"type": "module"` 让适用范围内的 `.js` 使用 ESM，`"type": "commonjs"` 明确使用 CommonJS。
+
+Node.js 22 还可能对未明确标记的输入进行语法检测，命令行字符串也能通过 `--input-type` 指定。工程中应优先明确声明，避免把动态 `import()` 的出现误当成 ESM 文件的证据。
+
+</details>
+
+### 8.2 require 或 import 是如何找到一个模块的？ {#resolution}
+
+**考察重点**：说明符类别、调用位置、路径与包入口解析。
+
+**相关内容**：[模块说明符与解析](#模块说明符与解析)、[包入口字段](#包入口字段)。
+
+<details>
+<summary>参考回答</summary>
+
+**先区分内置模块、相对路径和裸包名，再按调用方的位置及对应加载规则解析。** `node:` 明确指定内置模块；相对路径以当前模块为基准；裸包名通常沿调用方附近的 `node_modules` 查找，并读取包入口或 `exports`。
+
+CommonJS 支持部分补扩展名和目录入口规则，Node.js 原生 ESM 的相对文件导入要求明确扩展名。排查时可用 `require.resolve` 或 `import.meta.resolve` 查看结果，再检查文件类型与实际产物；不要默认所有路径都相对于 `process.cwd()`。
+
+</details>
+
+### 8.3 package.json 中哪些字段影响 Node.js 模块加载？ {#package-fields}
+
+**考察重点**：模块类型、包主入口、公开子路径和内部映射的区别。
+
+**相关内容**：[模块类型的判定](#模块类型的判定)、[包入口与导出边界](#包入口与导出边界)。
+
+<details>
+<summary>参考回答</summary>
+
+**`type` 决定适用 `.js` 文件的模块类型，`main` 描述传统主入口，`exports` 描述公开入口与条件，`imports` 描述包内部映射。** `exports` 存在时会优先约束包名导入，包括可以访问的子路径；条件对象里应把通用 `default` 放在具体条件之后。
+
+磁盘上存在内部文件，不等于该文件已经成为包的公开接口。但 `exports` 也不是安全沙箱，有权限直接访问绝对文件路径的代码仍可能加载它。
+
+</details>
+
+### 8.4 如何让一个模块只初始化一次，缓存应该放在哪一步？ {#initialization-cache}
+
+**考察重点**：模块身份、缓存建立时机、失败处理和缓存范围。
+
+**相关内容**：[CommonJS 加载与缓存](#commonjs加载与缓存)。
+
+<details>
+<summary>参考回答</summary>
+
+**先用规范的解析结果确定模块身份，再在执行正文前建立模块记录；后续相同身份的加载复用这条记录。** CommonJS 这样可以在循环依赖中返回已经开始初始化的模块，而不是无限创建新实例。初始化抛错时，还需要正确清理失败记录。
+
+“只初始化一次”有加载环境和缓存身份的前提。不同文件副本、另一个进程、主动清除缓存，都可能产生新实例。删除缓存也不会自动销毁旧实例持有的连接或监听器。
+
+</details>
+
+### 8.5 模块加载器如何处理循环依赖，发现环后一定要报错吗？ {#cycles}
+
+**考察重点**：依赖图中的环、正在初始化的模块记录与读取时机。
+
+**相关内容**：[包装函数与初始化](#包装函数与初始化)、[循环依赖与初始化顺序](../javascript/modules.mdx#循环依赖与初始化顺序)。
+
+<details>
+<summary>参考回答</summary>
+
+**不一定，环只表示依赖关系回到了已有节点，是否能执行还取决于模块语义和读取时机。** 构建或分析依赖图时，可以用访问状态或当前递归路径识别环；运行时还要区分未开始、正在初始化和已完成的模块。
+
+CommonJS 可以通过提前缓存的模块记录返回部分导出；ESM 则建立绑定关系，过早读取尚未初始化的绑定可能报错。设计上应减少依赖环，必要时提取共享模块或推迟读取，而不是仅靠发现环就断言所有加载都非法。
+
+</details>
+
+### 8.6 ESM 导入 CommonJS 的命名导出是实时绑定吗？ {#interop}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：CommonJS 合成命名导出与真正 ESM 导出绑定的区别。
+
+**相关内容**：[ESM 导入 CommonJS](#esm导入commonjs)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能按真正的 ESM 实时绑定理解。** Node.js 通过静态分析尝试识别 CommonJS 的命名导出，后续对 `module.exports` 属性的更新不会自动反映到这些合成命名导出中。
+
+默认导入对应 `module.exports` 的值。如果它是被共享的对象，继续通过对象属性读取，可以观察到该对象的属性变化。对于动态导出写法，还要确认命名导出是否能被 Node.js 识别。
+
+</details>
+
+### 8.7 CommonJS 能用 require 加载 ESM 吗？ {#require-esm}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：运行时版本、同步依赖图与顶层 await。
+
+**相关内容**：[require 加载同步 ESM](#require加载同步esm)。
+
+<details>
+<summary>参考回答</summary>
+
+**在 Node.js 22.16.0 默认配置下可以加载符合条件的同步 ESM，但整个依赖图不能包含顶层 `await`。** 正常情况下 `require` 同步返回模块命名空间；若依赖图需要异步求值，会得到 `ERR_REQUIRE_ASYNC_MODULE`。
+
+需要加载异步 ESM 时，CommonJS 可以使用 `import()` 并等待其 Promise。旧版本或不同启动配置必须按对应文档判断，不能简单回答“永远可以”或“永远不可以”。
+
+</details>
+
+### 8.8 怎样实现按需加载模块，并处理未知功能和加载失败？ {#dynamic-loading}
+
+**考察重点**：动态入口选择、Promise 错误边界、缓存与权限范围。
+
+**相关内容**：[受控的动态入口](#受控的动态入口)。
+
+<details>
+<summary>参考回答</summary>
+
+**把允许的功能映射到固定的 `import()` 入口，在调用边界等待结果并处理失败。** 先检查功能名是否允许，再执行动态导入，避免把未经约束的输入直接当成任意模块路径。文件缺失、解析或求值错误可以通过拒绝结果传回调用者。
+
+重复调用不意味着重复初始化，缓存仍由模块身份决定。Node.js 加载本地文件与浏览器构建分包是不同问题，不能仅凭 `import()` 推断网络请求和产物结构。
+
+</details>
+
+### 8.9 Node.js 的 JavaScript 模块与 C++ 层是什么关系？ {#native-modules}
+
+**考察重点**：模块接口、内置实现、原生扩展和加载职责。
+
+**相关内容**：[内置模块与原生扩展](#内置模块与原生扩展)、[运行时的分工](./event-loop.mdx#运行时的分工)。
+
+<details>
+<summary>参考回答</summary>
+
+**JavaScript 模块向调用方提供接口，部分 Node.js 内置能力通过原生绑定连接到底层实现；不是每个 JavaScript 模块都对应一个独立的 C++ 模块。** 导入 `node:fs` 不会每次重新编译文件系统实现，具体 API 调用才会进入相应执行路径。
+
+第三方 `.node` 文件是已经编译好的原生扩展，需要符合平台和接口约定。普通 `require` 负责加载适用的产物，不负责把任意 C++ 源文件即时编译为扩展。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+
+- [Node.js 22：Modules: CommonJS modules](https://nodejs.org/download/release/v22.16.0/docs/api/modules.html)
+- [Node.js 22：Modules: ECMAScript modules](https://nodejs.org/download/release/v22.16.0/docs/api/esm.html)
+- [Node.js 22：Modules: Packages](https://nodejs.org/download/release/v22.16.0/docs/api/packages.html)
+- [Node.js 22：module.createRequire](https://nodejs.org/download/release/v22.16.0/docs/api/module.html#modulecreaterequirefilename)

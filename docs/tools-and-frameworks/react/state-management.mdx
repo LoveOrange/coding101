@@ -1,0 +1,509 @@
+---
+sidebar_position: 6
+knowledge:
+  id: tools-and-frameworks.react.state-management
+---
+
+# React 状态管理
+
+React 状态管理决定数据由谁保存、谁能修改，以及变化后哪些界面需要更新。选库之前，先区分局部交互、跨组件共享数据和服务端数据，再确定状态的生命周期，通常比先把所有东西放进一个全局 store 更有帮助。
+
+`useReducer` 组织更新规则，Context 传递数据，外部 store 管理独立于组件的状态与订阅。它们可以组合，也各有边界。面试中的“Context 能不能替代 Redux”，应结合更新规模、订阅方式、异步流程和调试需求回答。
+
+React 示例兼容 18、19；项目对照使用 Redux Toolkit 2.x、React Redux 9.x 和 Zustand 5.x。示例是机制与选择条件的说明，不要求每个前端岗位同时使用这些库。
+
+## 1. 面试核心 {#core}
+
+- **状态放在真正拥有它的最小合适范围，派生值尽量直接计算**。共享不等于必须全局化，服务端数据还涉及缓存与新鲜度。[卡](#state-scope)
+- **Reducer 根据旧状态与 action 纯粹地计算下一状态**。请求、随机 ID、计时器和外部写入不应藏在 reducer 内。[卡](#reducer-purity)
+- **Context 负责跨层传值，本身不是存储或订阅选择器框架**。消费者读取上方最近 Provider 的值；Provider 值改变会推动相应消费者更新。[卡](#context)
+- **Context 与 `useReducer` 能组织共享状态，但不自动具备 Redux 的全部工具能力**。是否需要外部 store，应看实际约束。[卡](#context-redux)
+- **外部状态必须通过订阅把变化告诉 React，并提供稳定快照**。只修改模块变量，不会自动让组件更新。[卡](#external-store)
+- **Redux 通过 `dispatch`、reducer、store 和订阅形成更新链路**。React Redux 的 selector 进一步决定某个组件关心的结果是否改变。[卡](#redux-flow)
+- **中间件扩展 action 到达 reducer 之前的流程，异步工作仍在 reducer 外执行**。`next` 与 `dispatch` 的入口不同，返回值也应正确传递。[卡](#middleware)
+- **Zustand 使用 store、`set` 和选择器组织共享状态，仍要求正确的不可变更新与稳定选择结果**。精简 API 不会取消这些边界。[卡](#redux-zustand)
+- **TanStack Query 主要管理服务端数据的获取与缓存，Jotai 主要按 `atom` 组织状态依赖**。它们的职责不能仅用“都是全局状态库”概括。[卡](#server-client-state)
+
+## 2. 状态归属 {#状态归属}
+
+### 2.1 谁拥有数据 {#谁拥有数据}
+
+| 数据 | 常见归属 | 需要先确认什么 |
+| --- | --- | --- |
+| 一个输入框的草稿、弹层开关 | 局部组件 state | 移除组件后是否需要保留 |
+| 同一页面多个区域共同编辑的数据 | 公共父级、Context 或页面范围 store | 谁能修改，更新规则是否复杂 |
+| 多页面共享的客户端交互状态 | 合适范围的外部 store | 用户、会话与页面之间如何隔离 |
+| 筛选条件、页码、可分享的选中项 | URL 与相应界面状态 | 刷新、返回和分享是否应恢复 |
+| 服务端课程列表、订单状态 | 查询缓存与服务端 | 何时过期，何时重新获取，谁还能修改 |
+| 合计金额、已完成数量 | 由已有状态推导 | 是否真的需要独立保存 |
+
+例如数量 `quantity` 和单价 `unitPrice` 已经存在，合计可以直接计算。另存 `total`，再用 Effect 跟随更新，会多出一份需要保持一致的数据。
+
+共享状态也不等于跨所有页面、所有用户共享。普通浏览器单页示例可以使用模块级 store；服务端渲染则要考虑请求隔离，不能把不同用户的数据混在一个长期存在的实例里。
+
+### 2.2 先组合现有数据流 {#先组合现有数据流}
+
+父子之间优先使用 props 与回调，同级共享状态可以提升到合适的公共父级。跨越很多只负责传递的中间层时，再考虑 Context；更新关系复杂、订阅细粒度或工具需求明显时，再考虑外部 store。
+
+复制同一份业务数据到多个组件，并分别修改，通常比多传几层 props 更难维护。自定义 Hook 复用逻辑，不会仅因为函数名相同就让几次调用共享 state。
+
+## 3. Reducer 与更新规则 {#reducer与更新规则}
+
+**Reducer** 接收旧状态和 action，返回下一状态。**action** 描述发生了什么，更新规则集中在 reducer 中；`dispatch` 负责提交这次事件。
+
+下面的 `cartReducer.js` 只管理数量，并且数量不能小于零：
+
+```js
+export const initialCart = { quantity: 0, unitPrice: 100 };
+export function cartReducer(state, action) {
+  switch (action.type) {
+    case 'added':
+      return { ...state, quantity: state.quantity + 1 };
+    case 'removed':
+      return state.quantity === 0 ? state : { ...state, quantity: state.quantity - 1 };
+    default:
+      throw new Error(`未知购物车事件：${action.type}`);
+  }
+}
+```
+
+原 state 不被修改；数量已经为零时，removed 返回同一个 state，表示没有变化。本地封闭的事件集合把未知事件视为错误；这不是 Redux reducer 必须照搬的规则，Redux 需要让不关心的 action 返回原状态。
+
+`App.jsx` 用 `useReducer` 保存和更新它：
+
+```jsx
+import { useReducer } from 'react';
+import { cartReducer, initialCart } from './cartReducer.js';
+
+export default function App() {
+  const [cart, dispatch] = useReducer(cartReducer, initialCart);
+  return <>
+    <button onClick={() => dispatch({ type: 'added' })}>添加</button>
+    <button onClick={() => dispatch({ type: 'removed' })}>移除</button>
+    <output>{cart.quantity} 件 / {cart.quantity * cart.unitPrice} 元</output>
+  </>;
+}
+```
+
+连续添加两次显示“2 件 / 200 元”，移除不会降到负数。合计由数量与单价计算，不需要另一份 `total` state。
+
+Reducer 必须纯粹：同样输入得到同样输出，不修改传入对象，也不发请求、生成随机 ID 或写外部变量。需要随机 ID 时，在事件或请求处理阶段生成，再放进 action。`StrictMode` 开发检查可能重复调用 reducer，纯函数不会因此多扣一次数量。
+
+`useReducer` 的 `dispatch` 身份稳定，但调用它仍然是请求后续 React 更新，不会改写当前渲染闭包中的 cart。它与 Redux store 的同步基础 `dispatch` 不能只因名字相同就混为一谈。
+
+## 4. Context 与共享状态 {#context与共享状态}
+
+### 4.1 上方最近的 Provider {#上方最近的provider}
+
+**Context** 描述一类可以沿组件树提供和读取的数据。`createContext` 的默认值只是在找不到 Provider 时使用的后备值，不是可自动修改的全局状态。
+
+```jsx
+import { createContext, useContext } from 'react';
+
+const ThemeContext = createContext('default');
+function Label({ name }) {
+  const theme = useContext(ThemeContext);
+  return <p>{name}：{String(theme)}</p>;
+}
+export default function App() {
+  return <>
+    <Label name="外部" />
+    <ThemeContext.Provider value="light">
+      <Label name="页面" />
+      <ThemeContext.Provider value="dark"><Label name="局部" /></ThemeContext.Provider>
+    </ThemeContext.Provider>
+  </>;
+}
+```
+
+三个结果分别是 default、light、dark。消费者向上找最近的 Provider，不向下寻找自己将要返回的 Provider。即使 Provider 显式提供 `undefined`，也会读取 `undefined`，而不是退回 `createContext` 默认值。
+
+这里使用 React 18、19 都支持的 `Context.Provider` 写法。React 19 也支持直接把 Context 当作 Provider 标签，不能把这份写法差异误认为状态模型变了。
+
+### 4.2 Context 与 useReducer 组合 {#context与usereducer组合}
+
+Provider 可以用 `useReducer` 保存状态，再分别提供状态和 `dispatch`。继续复用 `cartReducer.js`：
+
+```jsx
+import { createContext, memo, useContext, useReducer } from 'react';
+import { cartReducer, initialCart } from './cartReducer.js';
+
+const CartContext = createContext(null);
+const DispatchContext = createContext(null);
+function CartProvider({ children }) {
+  const [cart, dispatch] = useReducer(cartReducer, initialCart);
+  return <CartContext.Provider value={cart}>
+    <DispatchContext.Provider value={dispatch}>{children}</DispatchContext.Provider>
+  </CartContext.Provider>;
+}
+function useCart() {
+  const cart = useContext(CartContext);
+  if (cart === null) throw new Error('缺少 CartProvider');
+  return cart;
+}
+function Summary() {
+  const cart = useCart();
+  return <output>{cart.quantity} 件 / {cart.quantity * cart.unitPrice} 元</output>;
+}
+const AddButton = memo(function AddButton() {
+  const dispatch = useContext(DispatchContext);
+  if (dispatch === null) throw new Error('缺少 CartProvider');
+  console.log('AddButton 渲染');
+  return <button onClick={() => dispatch({ type: 'added' })}>添加</button>;
+});
+function Cart() {
+  return <CartProvider><AddButton /><Summary /><Summary /></CartProvider>;
+}
+export default function App() {
+  return <><section><Cart /></section><section><Cart /></section></>;
+}
+```
+
+点击第一组按钮，它下面两个 `Summary` 同时变化，第二组不受影响。两次 `CartProvider` 各自拥有状态；共享范围由 Provider 的位置决定。
+
+状态与 `dispatch` 分开后，只读取稳定 `dispatch` 的 `AddButton` 不必因 `CartContext` 的值变化而接收新的状态。memo 用来跳过其他不必要的父级重渲染；不能由这个例子推出“所有子组件都绝不执行”。
+
+### 4.3 Context 的更新粒度 {#context的更新粒度}
+
+Provider 前后 `value` 用 `Object.is` 比较。值变了，使用这个 context 的消费者需要取得新值，memo 不能阻止这条传递。一个消费者只读取 value.theme，并不意味着 `useContext` 已自动订阅 `theme` 这个字段。
+
+可以按数据职责与变化频率拆分 Context，也可以避免每次构造无意义的新 `value` 对象。若要求大量组件只在各自选择的数据变化时更新，外部 store 的选择器订阅可能更合适。
+
+Context + `useReducer` 已经能组织很多页面状态，但不会自动附带跨组件的选择器订阅、Redux DevTools、中间件链、统一异步流程或服务端数据缓存。它能否替代 Redux，要看项目是否需要这些能力，以及愿意自己维护多少代码。
+
+## 5. 外部 store 与订阅 {#外部store与订阅}
+
+外部 store 的状态存在于 React 组件之外。React 要知道它变化，需要订阅；要判断是否仍读取同一版本的数据，需要快照。
+
+`useSyncExternalStore` 接收 `subscribe` 和 `getSnapshot`。前者注册通知并返回取消订阅函数，后者在数据没变时必须返回相同快照。下面用最小 store 说明关系：
+
+```jsx
+import { useSyncExternalStore } from 'react';
+
+export function createCounterStore() {
+  let snapshot = Object.freeze({ count: 0 });
+  const listeners = new Set();
+  return {
+    getSnapshot: () => snapshot,
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    increment() {
+      snapshot = Object.freeze({ count: snapshot.count + 1 });
+      for (const listener of [...listeners]) listener();
+    },
+  };
+}
+const counter = createCounterStore();
+function Count() {
+  const snapshot = useSyncExternalStore(counter.subscribe, counter.getSnapshot);
+  return <output>{snapshot.count}</output>;
+}
+export default function App() {
+  return <><button onClick={counter.increment}>添加</button><Count /><Count /></>;
+}
+```
+
+两个 Count 读取同一个 store，更新后一起显示 1。没有变化时 `getSnapshot` 返回同一个对象；更新时生成新快照并通知。若每次读取都返回一个新对象，即使内容相同，也会破坏稳定快照要求，甚至形成更新循环。
+
+这个示例只说明订阅和快照，不实现完整状态库。服务端渲染还需要合适的 `getServerSnapshot`，使服务端与客户端水合使用一致的初始数据；普通模块单例也需要按请求隔离。外部 store 在并发渲染期间变化时，React 会检查一致性，不能用任意 useEffect 订阅加 setState 就断言完全等价。
+
+## 6. Redux {#redux}
+
+### 6.1 从 action 到组件更新 {#从action到组件更新}
+
+Redux 的基础链路是：`dispatch` action，reducer 计算新状态，store 保存状态并通知订阅者，React 绑定层读取组件需要的数据。
+
+基础 store 的普通 action `dispatch` 是同步的，调用后 `getState` 可以取得计算后的状态；异步逻辑由中间件等外部机制扩展。store 通知过，不等于每个 React 组件都必须重新渲染。
+
+现代 Redux 示例使用 Redux Toolkit 创建 slice 和 store，React Redux 的 Provider 提供 store，`useSelector` 读取所需字段，`useDispatch` 提交 action。下面需要安装 @reduxjs/toolkit 2.x 与 react-redux 9.x：
+
+```jsx
+import { configureStore, createSlice } from '@reduxjs/toolkit';
+import { Provider, useDispatch, useSelector } from 'react-redux';
+
+const cartSlice = createSlice({
+  name: 'cart',
+  initialState: { quantity: 0, theme: 'light' },
+  reducers: {
+    added(state) { state.quantity += 1; },
+    themeChanged(state) { state.theme = state.theme === 'light' ? 'dark' : 'light'; },
+  },
+});
+export const store = configureStore({ reducer: { cart: cartSlice.reducer } });
+export const { added, themeChanged } = cartSlice.actions;
+function Quantity() {
+  const quantity = useSelector(state => state.cart.quantity);
+  console.log('Quantity 渲染', quantity);
+  return <output>{quantity}</output>;
+}
+function Controls() {
+  const dispatch = useDispatch();
+  const theme = useSelector(state => state.cart.theme);
+  return <>
+    <button onClick={() => dispatch(added())}>添加</button>
+    <button onClick={() => dispatch(themeChanged())}>主题：{theme}</button>
+  </>;
+}
+export default function App() {
+  return <Provider store={store}><Controls /><Quantity /></Provider>;
+}
+```
+
+改变主题时 `quantity` 没变，`Quantity` 的选择结果仍是原来的数字，不需要仅因为 store 的另一个字段变化而更新。
+
+`createSlice` 中的 `state.quantity += 1` 操作的是 Immer 管理的 draft，最终产生不可变更新；不能据此在普通 reducer 中直接改写旧 state。没有变化的分支也应保留可复用的引用，不能每次把整个状态深拷贝一遍。
+
+### 6.2 选择器与比较 {#选择器与比较}
+
+**选择器**（selector）从整体状态中取出或推导组件需要的数据。React Redux 9 的 `useSelector` 默认使用严格相等比较选择结果，不是自动对新对象做浅比较。
+
+如果每次都返回 `{ quantity: state.cart.quantity }` 这样的新对象，其他 action 也可能导致结果引用不同。可以分别选择原始字段，使用合适的记忆化选择器，或在确定需要浅比较时传入 `shallowEqual`。选择器必须纯粹，它可能被重复调用，不能在里面修改状态或发请求。
+
+Redux reducer 通常对不关心的 action 返回原状态。与前面的封闭购物车 reducer 不同，不应因为收到其他 slice 的 action 或初始化 action 就抛错。
+
+### 6.3 中间件与异步逻辑 {#中间件与异步逻辑}
+
+**中间件**在 action 到达 reducer 的链路上增加处理步骤。常见形式是 `store => next => action => result`：`next` 继续当前链，`store.dispatch` 从增强后的 `dispatch` 入口重新进入。无条件对同一 action 再 `dispatch` 会造成递归。
+
+下面是独立的 JavaScript 模块，使用 Redux Toolkit 默认 thunk 中间件，再追加日志中间件：
+
+```js
+import { configureStore, createSlice } from '@reduxjs/toolkit';
+
+const slice = createSlice({
+  name: 'counter',
+  initialState: { value: 0 },
+  reducers: { incremented(state) { state.value += 1; } },
+});
+const trace = api => next => action => {
+  console.log('前', action.type, api.getState().value);
+  const result = next(action);
+  console.log('后', action.type, api.getState().value);
+  return result;
+};
+const store = configureStore({
+  reducer: slice.reducer,
+  middleware: getDefaultMiddleware => getDefaultMiddleware().concat(trace),
+});
+const result = await store.dispatch(async (dispatch, getState) => {
+  await Promise.resolve();
+  dispatch(slice.actions.incremented());
+  return getState().value;
+});
+console.log('结果', result);
+```
+
+输出依次是 `前 counter/incremented 0`、`后 counter/incremented 1`、`结果 1`。thunk 处理函数形式的任务，在异步工作完成后再 `dispatch` 普通 action；reducer 本身仍同步计算。中间件返回 `next` 的结果，才能保留调用方依赖的返回值链路。
+
+真实数据请求还需要失败、取消、过期结果和缓存规则。Redux Toolkit 的 `createAsyncThunk`、listener middleware 与 RTK Query 各有职责；不要把“可以 `dispatch` async 函数”理解成这些问题已经自动解决。
+
+## 7. Zustand 与其他方案 {#zustand与其他方案}
+
+### 7.1 Zustand 的 store 与选择器 {#zustand的store与选择器}
+
+Zustand 的 `create` 可以创建带 React 订阅 Hook 的 store。更新函数调用 `set`，组件用选择器订阅需要的数据。下面使用 Zustand 5.x：
+
+```jsx
+import { create } from 'zustand';
+import { useShallow } from 'zustand/react/shallow';
+
+export const useCart = create(set => ({
+  quantity: 0,
+  theme: 'light',
+  add: () => set(state => ({ quantity: state.quantity + 1 })),
+  toggleTheme: () => set(state => ({ theme: state.theme === 'light' ? 'dark' : 'light' })),
+}));
+function Quantity() {
+  const { quantity, add } = useCart(useShallow(state => ({ quantity: state.quantity, add: state.add })));
+  console.log('Quantity 渲染', quantity);
+  return <button onClick={add}>数量：{quantity}</button>;
+}
+function Theme() {
+  const theme = useCart(state => state.theme);
+  const toggleTheme = useCart(state => state.toggleTheme);
+  return <button onClick={toggleTheme}>主题：{theme}</button>;
+}
+export default function App() {
+  return <><Quantity /><Theme /></>;
+}
+```
+
+主题变化不改变 `Quantity` 选出的数量与 add，`useShallow` 可以复用浅相等的选择结果。Zustand 5 要求选择器输出具有合适的稳定性；直接每次返回新对象或数组，不能只理解为“多渲染一次”，还可能造成更新循环。
+
+`set` 默认只合并顶层。嵌套对象仍需要明确创建更新路径；使用 `replace` 模式会替换整个状态，也可能把同放在 store 里的 action 函数移除。
+
+### 7.2 按职责比较 {#按职责比较}
+
+| 方案 | 主要职责 | 选择时要考虑 |
+| --- | --- | --- |
+| `useState` / `useReducer` | 组件或 Provider 所拥有的状态与更新规则 | 生命周期、局部性与规则复杂度 |
+| Context | 沿组件树提供数据 | Provider 范围、值身份、消费者更新粒度 |
+| Redux Toolkit + React Redux | 统一 action/reducer/store 流程、订阅和工具生态 | 团队约定、调试、复杂流程、选择器 |
+| Zustand | 简洁的外部 store、`set` 与选择器订阅 | 状态边界、不可变更新、选择结果稳定性 |
+| Jotai | 用 `atom` 及其依赖组织状态 | 状态拆分、派生关系、store 范围 |
+| TanStack Query / RTK Query | 服务端数据的获取、缓存、同步与失效 | 查询身份、新鲜度、重新获取和写后更新 |
+
+Redux 与 Zustand 都可以保存客户端共享数据，也都能扩展异步处理；差异在组织方式、默认约定和配套工具，不能仅凭代码行数判断谁适合所有项目。
+
+Jotai 的 `atom` 是状态配置与依赖描述，具体值由 store 保存。它也能表达异步依赖，但这不等于默认具备服务端查询缓存的全部策略。TanStack Query 则围绕远端数据的新鲜度、共享缓存和重新获取组织工作，与一个弹层是否展开这类本地交互状态的生命周期不同。
+
+### 7.3 服务端数据为何需要额外规则 {#服务端数据为何需要额外规则}
+
+服务器上的数据可能被其他用户修改，本地缓存只是某个时刻的结果。需要明确查询 key、什么时候过期、是否后台刷新、写入后怎样失效或更新缓存，以及错误和取消如何处理。
+
+把 `response.data` 复制进 Redux 或 Zustand，并不会自动得到这些规则；反过来，用查询库也不要求把所有客户端草稿都塞进查询缓存。应避免同一份远端数据在多个 store 中各自作为权威副本，除非有明确的编辑草稿、提交与同步关系。
+
+## 8. 常见问题 {#常见问题}
+
+### 8.1 状态放进 store 后，刷新页面就会保留吗？ {#状态放进store后刷新页面就会保留吗}
+
+不会自动保留。内存状态随页面环境结束而消失；持久化到 `localStorage`、`IndexedDB` 或服务端需要另外设计。还要决定哪些数据应该恢复、结构变化怎样迁移、用户退出后如何清理，不能只因为“全局”就认为它永久存在。
+
+### 8.2 Context 和 Redux 都有 Provider，是不是内部做的是同一件事？ {#context和redux都有provider是不是内部做的是同一件事}
+
+不是。React Redux 可以通过 Context 把 store 实例提供给组件，但实际状态由 store 管理，组件通过订阅与 selector 读取变化。一个 Provider 直接提供整个状态对象，与 Provider 提供稳定 store 实例，是不同的数据流。
+
+### 8.3 自己写一个发布订阅器能替代状态库吗？ {#自己写一个发布订阅器能替代状态库吗}
+
+它能说明通知机制，但完整方案还需要稳定快照、不可变更新、订阅清理、并发一致性、服务端初始数据以及调试能力。只有任务范围确实很小并且边界明确时，才值得自己维护；不能把“按钮点一下会刷新”当作完整等价证明。
+
+## 9. 面试题 {#面试题}
+
+### 9.1 跨组件共享数据时，怎样决定状态放在哪里？ {#state-scope}
+
+**考察重点**：状态所有者、生命周期、派生数据与共享范围。
+
+**相关内容**：[状态归属](#状态归属)。
+
+<details>
+<summary>参考回答</summary>
+
+**先确定谁拥有数据、哪些组件需要读写，以及离开页面后是否保留，再选择最小合适范围。** 局部交互留在组件，共同编辑可提升到父级，跨层传递可用 Context，复杂共享与订阅再考虑 store。派生结果尽量计算，服务端数据另需缓存和新鲜度规则。不要把所有 state 都默认全局化，也不要在多个地方维护同一权威副本。
+
+</details>
+
+### 9.2 Reducer 为什么必须是纯函数，Redux Toolkit 的修改语法是否违反这一点？ {#reducer-purity}
+
+**考察重点**：确定性、不可变输入、可重复计算与 Immer draft。
+
+**相关内容**：[Reducer 与更新规则](#reducer与更新规则)、[从 action 到组件更新](#从action到组件更新)。
+
+<details>
+<summary>参考回答</summary>
+
+**Reducer 应只根据 state、action 返回下一状态，使结果可预测且可重复计算，不修改外部对象或执行副作用。** 请求、随机 ID 和计时器放在外部，再通过 action 传结果。Redux Toolkit 的 `createSlice` 在 Immer draft 上记录修改并生成不可变结果，不意味着普通 reducer 可以直接改写旧状态。
+
+</details>
+
+### 9.3 Context 怎样跨层传值，值变化时哪些消费者会更新？ {#context}
+
+**考察重点**：最近 Provider、默认值、值身份与订阅粒度。
+
+**相关内容**：[Context 与共享状态](#context与共享状态)。
+
+<details>
+<summary>参考回答</summary>
+
+**消费者读取上方最近 Provider 的值，没有 Provider 才使用 `createContext` 默认值。** Provider 显式传 `undefined` 也不会退回默认。前后 `value` 用 `Object.is` 比较，变化时相应消费者需要新值，memo 不能阻止这条更新。`useContext` 不自动按读取的某个字段做选择器订阅，必要时按职责拆分 Context 或采用外部订阅方案。
+
+</details>
+
+### 9.4 Context 加 useReducer 能替代 Redux 吗？ {#context-redux}
+
+**考察重点**：传值、更新规则、订阅、工具与项目约束。
+
+**相关内容**：[Context 与 useReducer 组合](#context与usereducer组合)、[Context 的更新粒度](#context的更新粒度)。
+
+<details>
+<summary>参考回答</summary>
+
+**对于共享范围明确、更新规则可控的页面，Context 与 `useReducer` 可以满足需求；它们不自动提供 Redux 的全部能力。** Context 传值，reducer 管规则，Redux 另外提供 store 更新流程，并有 React 绑定、选择器、中间件和调试生态。应比较实际更新粒度、异步流程与维护需求，而不是仅按组件数量或“是否全局”决定。
+
+</details>
+
+### 9.5 外部 store 怎样让 React 更新，getSnapshot 为什么要稳定？ {#external-store}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：订阅、快照身份、不可变更新、清理与一致性。
+
+**相关内容**：[外部 store 与订阅](#外部store与订阅)。
+
+<details>
+<summary>参考回答</summary>
+
+**外部 store 更新后通知订阅者，React 重新读取快照，并判断是否需要渲染。** `useSyncExternalStore` 的 `subscribe` 要返回取消订阅函数，`getSnapshot` 在数据未变时返回同一快照，变化后返回新的不可变快照。每次读取都创建新对象会破坏稳定性。服务端渲染还要提供一致的初始快照，并隔离不同请求的数据。
+
+</details>
+
+### 9.6 Redux 怎样通过状态变化驱动 React 组件更新？ {#redux-flow}
+
+**考察重点**：`dispatch`、reducer、store、订阅与 selector。
+
+**相关内容**：[从 action 到组件更新](#从action到组件更新)、[选择器与比较](#选择器与比较)。
+
+<details>
+<summary>参考回答</summary>
+
+**`dispatch` 普通 action 后，reducer 同步计算下一状态，store 保存并通知，React Redux 再通过 selector 判断组件所需结果是否改变。** Provider 提供 store，`useDispatch` 用于提交事件，`useSelector` 读取并订阅。默认选择结果按严格相等比较，返回新对象可能产生额外更新；store 有通知不表示所有组件都要重新执行。
+
+</details>
+
+### 9.7 Redux 中间件有什么作用，异步逻辑为什么不写进 reducer？ {#middleware}
+
+**考察重点**：处理链、`next` 与 `dispatch`、返回值、副作用边界。
+
+**相关内容**：[中间件与异步逻辑](#中间件与异步逻辑)。
+
+<details>
+<summary>参考回答</summary>
+
+**中间件在 action 到达 reducer 的流程中增加日志、异步任务等处理，reducer 继续保持纯粹的同步计算。** `next` 进入链中下一步，`dispatch` 从增强入口重新进入。thunk 可以接收函数，在请求完成后再提交普通 action；返回 `next` 或任务结果，才能保留调用方等待结果的能力。错误、取消、乱序和缓存仍需明确设计。
+
+</details>
+
+### 9.8 Redux 与 Zustand 有什么区别，选择器需要注意什么？ {#redux-zustand}
+
+**考察重点**：更新组织方式、订阅、工具与稳定结果。
+
+**相关内容**：[Zustand 与其他方案](#zustand与其他方案)。
+
+<details>
+<summary>参考回答</summary>
+
+**Redux 强调 action、reducer、store 的统一流程，Zustand 以简洁的 store、`set` 和选择器 API 组织状态。** 两者都有订阅与扩展能力，应按团队约定、调试和流程复杂度选择。Zustand 默认只合并顶层，仍要不可变更新；Zustand 5 的选择结果要稳定，返回新对象时可按需使用 `useShallow`。不能把 API 少等同于不需要数据边界。
+
+</details>
+
+### 9.9 TanStack Query 和 Jotai 分别解决什么问题？ {#server-client-state}
+
+**考察重点**：远端数据生命周期、查询缓存、`atom` 与状态依赖。
+
+**相关内容**：[按职责比较](#按职责比较)、[服务端数据为何需要额外规则](#服务端数据为何需要额外规则)。
+
+<details>
+<summary>参考回答</summary>
+
+**TanStack Query 主要管理服务端数据的获取、缓存、同步与更新，Jotai 通过 `atom` 配置和依赖关系组织状态，具体值存在 store 中。** 远端数据需要查询身份、新鲜度、重新获取与写后失效，本地草稿和弹层则有自己的生命周期。Jotai 能表达异步依赖，但不等于自动替代全部查询缓存策略，两者可以按职责组合。
+
+</details>
+
+## 10. 参考资料 {#参考资料}
+
+- [React：useReducer](https://react.dev/reference/react/useReducer)
+- [React：useContext](https://react.dev/reference/react/useContext)
+- [React：Scaling Up with Reducer and Context](https://react.dev/learn/scaling-up-with-reducer-and-context)
+- [React：useSyncExternalStore](https://react.dev/reference/react/useSyncExternalStore)
+- [Redux：Getting Started](https://redux.js.org/introduction/getting-started)
+- [Redux：Store](https://redux.js.org/tutorials/fundamentals/part-4-store)
+- [React Redux：Hooks](https://redux.js.org/react-redux/api/hooks)
+- [Redux Toolkit：Writing Reducers with Immer](https://redux.js.org/toolkit/usage/immer-reducers)
+- [Redux：Middleware](https://redux.js.org/understanding/history-and-design/middleware)
+- [Redux：Side Effects Approaches](https://redux.js.org/usage/side-effects-approaches)
+- [Zustand 5.0.3：Introduction](https://github.com/pmndrs/zustand/blob/v5.0.3/docs/getting-started/introduction.md)
+- [Zustand 5.0.3：Immutable State and Merging](https://github.com/pmndrs/zustand/blob/v5.0.3/docs/guides/immutable-state-and-merging.md)
+- [Zustand 5.0.3：Migrating to v5](https://github.com/pmndrs/zustand/blob/v5.0.3/docs/migrations/migrating-to-v5.md)
+- [TanStack Query：Overview](https://tanstack.com/query/latest/docs/framework/react/overview)
+- [Jotai：atom](https://jotai.org/docs/core/atom)

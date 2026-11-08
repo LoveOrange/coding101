@@ -1,3 +1,4 @@
+import {withRole} from '../../learning/roles';
 import React, {useEffect, useMemo, useRef, useState} from 'react';
 import Link from '@docusaurus/Link';
 import {useHistory, useLocation} from '@docusaurus/router';
@@ -41,6 +42,8 @@ export type InterviewRoadmapData = {
   id: string;
   /** Short role name for the breadcrumb, e.g. “Java 后端”. */
   label: string;
+  /** Concrete stack/platform used by the question bank; defaults to id. */
+  questionRoleId?: string;
   title: string;
   /** Optional entry block above the outline (reading scope, jobs, resume). */
   start?: RoadmapStart;
@@ -120,8 +123,10 @@ function questionsFor(topic: RoadmapTopic, round: Round) {
 }
 export default function InterviewRoadmap({
   roadmap,
+  children,
 }: {
   roadmap: InterviewRoadmapData;
+  children?: React.ReactNode;
 }): JSX.Element {
   const topics = useMemo(
     () => roadmap.phases.flatMap((phase) => phase.topics),
@@ -173,7 +178,9 @@ export default function InterviewRoadmap({
 
   function changeRound(value: Round) {
     setRound(value);
-    history.replace({pathname, search: `?round=${value}`, hash: ''});
+    const params = new URLSearchParams(search);
+    params.set('round', value);
+    history.replace({pathname, search: `?${params.toString()}`, hash: ''});
   }
   function openTopic(topic: RoadmapTopic) {
     setSelectedTopic(topic);
@@ -186,7 +193,7 @@ export default function InterviewRoadmap({
           <li key={article.title}>
             <div>
               {article.href ? (
-                <Link to={article.core && !isDeepReview(selectedTopic, round) ? coreReadings[article.href]?.coreHref ?? article.href : article.href}>
+                <Link to={withRole(article.core && !isDeepReview(selectedTopic, round) ? coreReadings[article.href]?.coreHref ?? article.href : article.href, roadmap.questionRoleId ?? roadmap.id)}>
                   {article.title}
                 </Link>
               ) : (
@@ -211,7 +218,9 @@ export default function InterviewRoadmap({
           </div>
           <h1>{roadmap.title}</h1>
           <p>{roadmap.introduction}</p>
+          <p><Link to={`/questions?role=${encodeURIComponent(roadmap.questionRoleId ?? roadmap.id)}`}>进入本路线题库 →</Link></p>
         </header>
+        {children}
         <nav className={styles.rounds} aria-label="选择复习范围">
           {(Object.keys(ROUNDS) as Round[]).map((value) => (
             <button
@@ -366,7 +375,7 @@ export default function InterviewRoadmap({
                 {roadmap.questionsHref ? (
                   <Link to={`${roadmap.questionsHref}#${selectedTopic.id}`}>按主题查找代表题与练习</Link>
                 ) : (
-                  <Link to={`/questions?role=${roadmap.id}`}>在题库中练习本岗位的题目</Link>
+                  <Link to={`/questions?role=${encodeURIComponent(roadmap.questionRoleId ?? roadmap.id)}`}>在题库中练习本岗位的题目</Link>
                 )}
                 。
               </p>

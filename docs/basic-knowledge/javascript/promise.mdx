@@ -1,0 +1,661 @@
+---
+sidebar_position: 12
+knowledge:
+  id: basic-knowledge.javascript.promise
+  type: concept
+description: "解释 Promise 的状态、结果采纳、链式调用、错误传播与组合方法，并实现组合、有限并发和用于理解机制的 Promise 子集。"
+keywords: ["Promise", "then", "catch", "finally", "Promise.all", "并发控制", "thenable"]
+---
+
+# Promise
+
+**Promise** 是表示一次操作最终结果的对象。结果尚未确定时，可以先注册成功或失败后的处理；结果确定后，已注册和以后注册的处理都能沿着同一套规则工作。它把“这一步什么时候结束”和“结束后怎样继续”连接起来，让异步流程可以组合，也能统一传递错误。
+
+Promise 本身不创建工作线程，也不负责取消网络请求。理解它时，需要分清三个对象：当前 Promise、注册的回调，以及 `.then` 返回的新 Promise。状态不可逆说的是某一个 Promise；回调返回或抛错，决定的则是下一步的结果。
+
+## 1. 面试核心 {#core}
+
+- Promise 有 `pending`、`fulfilled`、`rejected` 三种状态。**一个 Promise 一旦兑现或拒绝，状态就不能再改变**；后续链上的拒绝不是把前一个 Promise 改成失败。[卡](#promise-states)
+- `resolve` 可以接收另一个 Promise 或 thenable。**已经调用 resolve，不一定已经兑现；采纳一个等待中的结果后，外部再次 reject 也不能抢先改写结果**。[卡](#resolution)
+- `.then` 每次返回新 Promise。**返回普通值会兑现下一步，抛错会拒绝下一步，返回 Promise 会让下一步采纳它的结果**；缺少对应处理函数时，原值或拒绝原因继续传递。[卡](#then-chain)
+- `catch` 可以把失败恢复为成功，也可以继续抛错。**同一个 then 的失败回调不会捕获它的成功回调里新抛出的异常**，那是返回的新 Promise 的拒绝。[卡](#error-propagation)
+- `finally` 用于清理，通常保留原结果。**清理函数抛错或返回拒绝的 Promise，会用新的失败替换原结果**；不能把它当作永远不影响结果的回调。[卡](#finally-result)
+- `all` 要全部成功，`allSettled` 收集全部结果，`race` 取最先确定的结果，`any` 取最先成功的结果。**组合方法不会自动取消剩余操作，也不限制已经启动的任务数量**。[卡](#combinators)
+- 组合实现要按输入位置保存结果、统计未完成项，并统一处理普通值。**空输入、拒绝、完成顺序与输入顺序不同、迭代器抛错，都属于实现边界**。[卡](#implement-all) [卡](#implement-all-settled)
+- 有限并发需要控制启动时机。**接收任务函数，只有获得空位时才调用它；接收已创建的 Promise 通常已来不及限制启动**。[卡](#concurrency-limit)
+- 包装异步 API 时，要在真正结束的位置调用 `resolve` 或 `reject`。**executor 的返回值没有兑现含义，异步回调中的异常也不会自动回到 executor 的同步捕获范围**。[卡](#promise-sleep)
+- 实现 Promise 的核心是状态保存、待处理回调、异步调度和结果采纳。**只写一个状态字段再直接调用回调，无法正确支持链式调用和 thenable**。[卡](#promise-implementation)
+
+## 2. 状态与结果 {#状态与结果}
+
+**待定**（pending）表示结果还没有确定。**兑现**（fulfilled）表示得到一个成功值。**拒绝**（rejected）表示得到一个失败原因。兑现和拒绝合称 **settled**，表示已经结束等待。
+
+| 当前状态 | 后续可以发生的变化 |
+| --- | --- |
+| `pending` | 兑现为一个值，或以一个原因拒绝 |
+| `fulfilled` | 保持兑现状态与原来的值 |
+| `rejected` | 保持拒绝状态与原来的原因 |
+
+```js
+const result = new Promise((resolve, reject) => {
+  console.log("executor");
+  resolve(1);
+  reject(new Error("ignored"));
+  resolve(2);
+  console.log("after resolve");
+});
+result.then(value => console.log(value));
+console.log("registered");
+```
+
+输出是 `executor`、`after resolve`、`registered`、`1`。executor 在构造时同步执行，第一次 `resolve(1)` 决定结果；后面的 `reject` 和 `resolve(2)` 不再生效。调用 `resolve` 不等于执行 `return`，因此还会打印 `after resolve`。
+
+`.then` 注册的处理不会在当前同步代码中直接执行。在浏览器中，它通过微任务调度；具体入队时机见 [浏览器事件循环](./browser-event-loop.mdx#promise-链中的入队时机)。
+
+状态不变也不等于结果对象被深度冻结。如果兑现值是一个可变对象，后来修改对象属性，读到的内容仍可能改变；Promise 保留的是同一个值，不负责建立不可变数据模型。
+
+### 2.1 resolve 与兑现的区别 {#resolve-与兑现的区别}
+
+`resolve(value)` 的意思是让当前 Promise 按 `value` 决定最终结果。如果 `value` 是普通值，就以它兑现；如果它代表另一个异步结果，就需要跟随那个结果。
+
+```js
+let finish;
+const inner = new Promise(resolve => { finish = resolve; });
+const outer = new Promise((resolve, reject) => {
+  resolve(inner);
+  reject(new Error("too late"));
+});
+outer.then(value => console.log(value));
+console.log("waiting");
+finish("ready");
+```
+
+输出是 `waiting`、`ready`。`outer` 在调用 `resolve(inner)` 后已经确定要采纳 `inner`，但在 `inner` 结束之前仍然待定；后面的 `reject` 不能改变这项决定。资料中的 **resolved** 可以表示这种“结果的归属已经确定”，不能直接当作 fulfilled 的同义词。
+
+### 2.2 thenable {#thenable}
+
+**thenable** 是具有可调用 `then` 属性的对象或函数。Promise 通过这项约定与其他异步结果协作，不要求对方必须通过当前环境的 `new Promise` 创建。
+
+```js
+const thenable = {
+  then(resolve, reject) {
+    console.log("thenable");
+    resolve(7);
+    reject(new Error("ignored"));
+  },
+};
+Promise.resolve(thenable).then(value => console.log(value));
+console.log("sync");
+```
+
+输出是 `sync`、`thenable`、`7`。Promise 会读取 `then`，并安排调用它来采纳结果；在这里，调用 `then` 的工作也是异步调度的。对方重复调用成功或失败函数时，只接受第一次有效决定。
+
+读取 `then` 属性本身可能触发 getter，因而可能同步产生副作用；getter 抛出的异常会使采纳结果拒绝。如果 `then` 不是函数，就把整个对象当作普通值。直接把一个 Promise 解析为它自己会拒绝并产生 `TypeError`，因为它无法靠等待自己得到结果。
+
+`Promise.resolve(p)` 在 `p` 已是同一构造器产生的 Promise 时可以直接返回 `p`；不要把它理解成必定创建一层新对象。`Promise.reject(reason)` 则把 `reason` 原样当作拒绝原因，不会像 `resolve` 一样等待它的成功结果。
+
+## 3. 链式调用 {#链式调用}
+
+`.then(onFulfilled, onRejected)` 返回一个新的 Promise。前一个 Promise 的状态决定调用哪一个处理函数，处理函数的行为再决定新 Promise 的结果。
+
+| 被调用的处理函数怎样结束 | 新 Promise 的结果 |
+| --- | --- |
+| 返回普通值 | 以这个值兑现 |
+| 没有写 `return` | 以 `undefined` 兑现 |
+| 抛出异常 | 以该异常拒绝 |
+| 返回 Promise 或 thenable | 采纳其最终结果 |
+| 对应参数不是函数或没有提供 | 原来的兑现值或拒绝原因继续向后传递 |
+
+```js
+Promise.resolve(2)
+  .then(value => value * 3)
+  .then()
+  .then(99)
+  .then(value => {
+    console.log(value); // 6
+  })
+  .then(value => console.log(value)); // undefined
+```
+
+`.then()` 和 `.then(99)` 都没有提供有效的成功处理函数，所以 `6` 继续向后传递。打印 `6` 的回调没有返回值，下一步得到的才是 `undefined`。传入一个数或另一个 Promise 对象，不会把它自动变成处理函数。
+
+### 3.1 返回异步结果 {#返回异步结果}
+
+链式调用中的 `return` 用于把下一项工作接入当前结果。没有返回它，外层链就不知道还有一项操作要等待。
+
+```js
+Promise.resolve("input")
+  .then(value => Promise.resolve(value.toUpperCase()))
+  .then(value => console.log(value)); // INPUT
+```
+
+第二步返回的 Promise 被链采纳，所以后续得到 `INPUT`。如果写成带花括号的函数却漏掉 `return`，内层工作仍可能运行，但外层会按 `undefined` 继续，它的失败也不会自然沿这条外层链传播。
+
+多个 `.then` 注册在同一个 Promise 上，则是多个分支：每个分支都从同一个原值开始，而不是后注册的分支接收先注册分支的返回值。每个分支产生的新 Promise 都需要有合适的错误处理。
+
+## 4. 错误传播与清理 {#错误传播与清理}
+
+`catch(onRejected)` 在通常使用中相当于 `then(undefined, onRejected)`。错误可以跳过没有失败处理函数的步骤，直到遇到处理它的回调。
+
+```js
+Promise.resolve(1)
+  .then(
+    () => { throw new Error("failed in success"); },
+    () => console.log("same then rejected"),
+  )
+  .catch(error => {
+    console.log(error.message);
+    return 10;
+  })
+  .then(value => console.log(value));
+```
+
+输出是 `failed in success`、`10`，不会输出 `same then rejected`。传给同一个 `.then` 的两个函数都用于处理前一个 Promise；成功函数中新抛出的错误，使 `.then` 返回的 Promise 拒绝，后面的 `catch` 才能接住。
+
+`catch` 返回 `10`，表示已经把这次失败处理为一个成功结果，所以下一步得到 `10`。如果只是记录日志然后继续失败，应重新抛出错误；如果日志后没有返回值也没有抛错，就会恢复为以 `undefined` 兑现。
+
+Promise 不会捕获任意位置的异常。executor 同步抛错会使 Promise 拒绝，then 回调抛错会拒绝下一步；定时器等以后调用的函数里抛错，需要在那个回调里捕获并调用 `reject`。未被处理的拒绝由宿主报告，不能把“控制台没有立刻报错”当作错误已经处理。
+
+### 4.1 finally 的结果 {#finally-的结果}
+
+`finally(onFinally)` 用于无论成功还是失败都要执行的清理，不接收前一步的成功值或失败原因。清理正常完成时，返回的新 Promise 保留前一步结果；如果清理返回一个等待中的 Promise，也会等待清理结束。
+
+```js
+Promise.resolve(3)
+  .finally(() => 99)
+  .then(value => console.log(value)); // 3
+
+Promise.resolve(3)
+  .finally(() => { throw new Error("cleanup failed"); })
+  .catch(error => console.log(error.message)); // cleanup failed
+```
+
+返回 `99` 不会把原值 `3` 替换掉，但抛错会使后续失败。返回一个拒绝的 Promise 也有同样的替换效果。两个示例是独立分支，不需要依赖它们之间的输出顺序。
+
+清理一般应保留主要操作的结果。如果清理自身也可能失败，需要决定哪个错误对调用者更重要，避免不经意地覆盖真正想排查的原因。
+
+## 5. 组合方法 {#组合方法}
+
+Promise 的组合方法接收可迭代对象，把其中各项按 Promise 结果处理。它们接收普通值、Promise 和 thenable，不会自动调用数组里的任务函数。
+
+| 方法 | 何时兑现 | 何时拒绝 | 空可迭代输入 |
+| --- | --- | --- | --- |
+| `Promise.all` | 全部兑现，返回按输入顺序排列的值数组 | 任一项拒绝，采用最先触发组合拒绝的原因 | 以 `[]` 兑现 |
+| `Promise.allSettled` | 全部确定后，返回按输入顺序排列的状态记录 | 某一项拒绝只记入结果；遍历等过程出错仍可拒绝 | 以 `[]` 兑现 |
+| `Promise.race` | 最先确定的项兑现时，采用其值 | 最先确定的项拒绝时，采用其原因 | 一直待定 |
+| `Promise.any` | 任一项先兑现，采用其值 | 全部拒绝，产生 `AggregateError`，其 `errors` 按输入顺序排列 | 以 `AggregateError` 拒绝 |
+
+空输入让 `all`、`allSettled` 的结果立即处于兑现状态，`any` 立即处于拒绝状态，但这些结果上的 `.then` 或 `.catch` 回调仍异步执行。非空输入即使全部是普通值，也不能让注册的后续处理同步运行。
+
+```js
+const slow = new Promise(resolve => setTimeout(resolve, 10, "slow"));
+const fast = Promise.resolve("fast");
+Promise.all([slow, fast, 3]).then(values => console.log(values.join(",")));
+```
+
+输出是 `slow,fast,3`。虽然 `fast` 先完成，结果仍按输入顺序存放，而不是按完成顺序追加。
+
+### 5.1 拒绝不等于取消 {#拒绝不等于取消}
+
+`Promise.all` 的结果可以在一项失败时提前拒绝，但其他操作不会因此停止。类似地，`race` 已经得到结果，也不代表其余输入被取消。
+
+```js
+const pendingWork = new Promise(resolve => {
+  setTimeout(() => {
+    console.log("work finished");
+    resolve("done");
+  }, 10);
+});
+Promise.all([Promise.reject(new Error("first failed")), pendingWork])
+  .catch(error => console.log(error.message));
+```
+
+先打印 `first failed`，以后仍会打印 `work finished`。组合方法负责决定组合结果，不知道如何撤销输入所代表的网络请求、定时器或其他副作用。
+
+用 `Promise.race` 组合“请求结果”和“超时拒绝”，可以让调用方在超时后停止等待，但请求仍可能继续。真正取消要调用底层 API 的取消机制；还要清理不再需要的超时定时器，并防止已经失效的结果覆盖新状态。
+
+### 5.2 方法选择 {#方法选择}
+
+页面必须拿齐用户信息和权限后才能继续，可以用 `all`；批量上传需要展示每个文件的成功或失败，用 `allSettled`；在操作与超时结果之间取先到者，可以用 `race`；多个备选来源中只要一个成功即可，用 `any`。
+
+选择时也要考虑一直不完成的输入。`allSettled` 会一直等它，`all` 在没有其他失败时也会等待；`any` 如果没有成功项，又有一项一直待定，也不能宣告“全部失败”。这些方法本身没有隐含超时。
+
+## 6. 组合方法的实现 {#组合方法的实现}
+
+实现练习的目标是解释结果汇总机制。下面使用原生 `Promise` 来归一化单项结果，不修改全局构造器，也不处理原生静态方法的子类构造器扩展语义。
+
+### 6.1 all 的结果收集 {#all-的结果收集}
+
+`allLike` 支持有限的同步可迭代输入。每取出一项就保留它的输入序号，处理成功后写回相同位置；所有项都完成才兑现。
+
+```js
+function allLike(iterable) {
+  return new Promise((resolve, reject) => {
+    const results = [];
+    let remaining = 1;
+    let index = 0;
+    for (const item of iterable) {
+      const position = index++;
+      remaining += 1;
+      Promise.resolve(item).then(value => {
+        results[position] = value;
+        remaining -= 1;
+        if (remaining === 0) resolve(results);
+      }, reject);
+    }
+    remaining -= 1;
+    if (remaining === 0) resolve(results);
+  });
+}
+
+allLike([Promise.resolve("a"), "b"]).then(values => console.log(values.join(",")));
+allLike([]).then(values => console.log(values.length));
+```
+
+两次结果分别为 `a,b` 和 `0`，两条独立链不要求按书写顺序输出。`remaining` 初始为 `1`，代表输入遍历还没结束；遍历结束时再减掉这一项，空输入也能直接得到 `[]`。
+
+拒绝处理交给外层 `reject`，第一次有效拒绝决定组合结果。以后其他项的处理可能继续运行，但不能改写外层结果。遍历器在 executor 中抛错，会被 Promise 构造过程转换成拒绝。数组的空槽经迭代得到 `undefined`，也应占据一个结果位置。
+
+### 6.2 allSettled 的状态记录 {#allsettled-的状态记录}
+
+`allSettled` 可以把每项的成功或失败变成一个普通状态记录，再收集这些记录。下面复用上一节的 `allLike`，两者放在同一作用域运行。
+
+```js
+function allSettledLike(iterable) {
+  return new Promise((resolve, reject) => {
+    const records = [];
+    for (const item of iterable) {
+      records.push(Promise.resolve(item).then(
+        value => ({ status: "fulfilled", value }),
+        reason => ({ status: "rejected", reason }),
+      ));
+    }
+    allLike(records).then(resolve, reject);
+  });
+}
+
+allSettledLike([1, Promise.reject("failed")]).then(records => {
+  console.log(records[0].status, records[0].value);
+  console.log(records[1].status, records[1].reason);
+});
+```
+
+输出是 `fulfilled 1`、`rejected failed`。单项拒绝被转换成成功返回的记录，所以不会让整个汇总提前失败；输入遍历本身抛错时，外层仍然拒绝。
+
+这里仍只接收有限的同步可迭代对象，不把类数组对象或异步迭代器自动转换成输入。与 `allLike` 一样，完整原生静态方法的构造器扩展语义不在这个实现范围内。
+
+### 6.3 race 的首次结果 {#race-的首次结果}
+
+`raceLike` 为每一项注册同一组结果处理函数，利用 Promise 只接受第一次有效决定的规则。
+
+```js
+function raceLike(iterable) {
+  return new Promise((resolve, reject) => {
+    for (const item of iterable) {
+      Promise.resolve(item).then(resolve, reject);
+    }
+  });
+}
+
+raceLike([Promise.resolve("first"), "second"])
+  .then(value => console.log(value)); // first
+```
+
+空输入没有任何一步调用 `resolve` 或 `reject`，所以保持待定。这个实现仍然没有取消逻辑，不会因为一项赢得竞速就终止其他项。
+
+`any` 的实现思路则是反过来：一项成功即可兑现，只有所有项都拒绝才创建 `AggregateError`；失败原因仍按输入序号保存，空输入直接得到聚合拒绝。它不能简单用 `race` 替代，因为单项失败不会立即决定 `any` 的结果。
+
+## 7. 有限并发 {#有限并发}
+
+**有限并发**是在任一时刻最多允许指定数量的操作处于进行中。控制点是调用任务函数的时机，因此输入应是 `() => Promise` 这样的任务工厂，而不是所有任务都已经启动后的 Promise 数组。
+
+下面的 `runLimited` 接收一个任务函数数组和正整数上限。结果按输入顺序排列；一项失败后拒绝整体并停止启动新任务，已经启动的任务继续运行，其结果仍会被处理。它不提供底层取消功能。
+
+```js
+function runLimited(tasks, limit) {
+  return new Promise((resolve, reject) => {
+    if (!Array.isArray(tasks) || !Number.isSafeInteger(limit) || limit < 1) {
+      throw new TypeError("需要任务数组与正整数并发上限");
+    }
+    const list = Array.from(tasks);
+    if (list.some(task => typeof task !== "function")) {
+      throw new TypeError("每项必须是任务函数");
+    }
+    const results = new Array(list.length);
+    if (list.length === 0) { resolve(results); return; }
+    let next = 0;
+    let active = 0;
+    let completed = 0;
+    let failed = false;
+    function launch() {
+      while (!failed && active < limit && next < list.length) {
+        const index = next++;
+        active += 1;
+        Promise.resolve().then(() => list[index]()).then(value => {
+          active -= 1;
+          if (failed) return;
+          results[index] = value;
+          completed += 1;
+          if (completed === list.length) resolve(results);
+          else launch();
+        }, error => {
+          active -= 1;
+          if (!failed) { failed = true; reject(error); }
+        });
+      }
+    }
+    launch();
+  });
+}
+
+runLimited([() => Promise.resolve("a"), () => "b", () => "c"], 2)
+  .then(values => console.log(values.join(","))); // a,b,c
+```
+
+`active` 记录已经安排但尚未结束的操作数量。每个位置完成后释放一个空位，再启动后续任务；序号 `index` 保证结果不随完成先后重新排序。`Promise.resolve().then(...)` 还把任务函数同步抛出的异常转换成拒绝。
+
+任务数组先复制并校验，避免运行中修改原数组改变待执行列表。稀疏数组的空槽会变成 `undefined` 并被拒绝，不会静默跳过一个任务。失败停止派发的时机是失败被回调观察到时；此前已经取得空位的任务属于已启动范围，不能保证一项刚失败时其他工作绝对没有开始。
+
+如果需求是“全部执行完，收集所有失败”，应改变失败策略并保存状态记录；如果需求是取消，还需把取消信号传进任务。并发上限、超时、重试和取消是不同策略，不应靠一个 `all` 或 `race` 自动推导出来。
+
+## 8. 异步 API 的包装 {#异步-api-的包装}
+
+包装回调 API 时，用 `new Promise` 把最终的成功和失败接到对应函数上。延迟工具是一个最小例子：
+
+```js
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+sleep(10).then(() => console.log("continued"));
+console.log("started");
+```
+
+先输出 `started`，定时器回调执行后输出 `continued`。它没有阻塞线程，也不保证恰好等待 10 毫秒；定时器限制见 [浏览器事件循环](./browser-event-loop.mdx#定时器)。
+
+executor 需要调用 `resolve` 或 `reject` 来报告结果，直接 `return value` 会被忽略。已经返回 Promise 的 API 通常可以直接链式处理，没有必要再套一层 `new Promise`。尤其不要随意使用 `async` executor：它返回的 Promise 会被构造器忽略，异步失败可能没有传给外层，甚至让外层一直待定。
+
+## 9. Promise 子集的实现 {#promise-子集的实现}
+
+理解实现时，先把职责拆开：构造器接收一次结果决定；结果采纳处理普通值和 thenable；状态确定后安排已注册回调；每个回调再决定新 Promise 的结果。
+
+下面的 `MiniPromise` 实现构造、`then`、`catch`、一次结果决定、微任务回调与 thenable 采纳。它使用现代 JavaScript 的私有字段和 `queueMicrotask`，不实现静态组合方法、子类构造器语义、原生品牌检查或宿主的未处理拒绝报告，不能作为完整的 Promise 替代品。
+
+```js
+class MiniPromise {
+  #state = "pending";
+  #value;
+  #reactions = [];
+
+  constructor(executor) {
+    if (typeof executor !== "function") throw new TypeError("executor 必须是函数");
+    let decided = false;
+    const resolve = value => {
+      if (decided) return;
+      decided = true;
+      this.#adopt(value);
+    };
+    const reject = reason => {
+      if (decided) return;
+      decided = true;
+      this.#settle("rejected", reason);
+    };
+    try { executor(resolve, reject); } catch (error) { reject(error); }
+  }
+
+  #settle(state, value) {
+    if (this.#state !== "pending") return;
+    this.#state = state;
+    this.#value = value;
+    const reactions = this.#reactions;
+    this.#reactions = [];
+    for (const reaction of reactions) queueMicrotask(reaction);
+  }
+
+  #adopt(value) {
+    if (value === this) {
+      this.#settle("rejected", new TypeError("不能解析为自身"));
+      return;
+    }
+    if (value !== null && (typeof value === "object" || typeof value === "function")) {
+      let then;
+      try { then = value.then; }
+      catch (error) { this.#settle("rejected", error); return; }
+      if (typeof then === "function") {
+        queueMicrotask(() => {
+          let called = false;
+          try {
+            Reflect.apply(then, value, [next => {
+              if (called) return;
+              called = true;
+              this.#adopt(next);
+            }, reason => {
+              if (called) return;
+              called = true;
+              this.#settle("rejected", reason);
+            }]);
+          } catch (error) {
+            if (!called) { called = true; this.#settle("rejected", error); }
+          }
+        });
+        return;
+      }
+    }
+    this.#settle("fulfilled", value);
+  }
+
+  then(onFulfilled, onRejected) {
+    return new MiniPromise((resolve, reject) => {
+      const reaction = () => {
+        try {
+          const handler = this.#state === "fulfilled" ? onFulfilled : onRejected;
+          if (typeof handler === "function") resolve(handler(this.#value));
+          else if (this.#state === "fulfilled") resolve(this.#value);
+          else reject(this.#value);
+        } catch (error) { reject(error); }
+      };
+      if (this.#state === "pending") this.#reactions.push(reaction);
+      else queueMicrotask(reaction);
+    });
+  }
+
+  catch(onRejected) { return this.then(undefined, onRejected); }
+}
+
+new MiniPromise(resolve => resolve(2))
+  .then(value => ({ then: resolve => resolve(value * 3) }))
+  .then(value => console.log(value)); // 6
+console.log("sync");
+```
+
+先输出 `sync`，后输出 `6`。`then` 返回新实例，回调的返回值交给这个新实例的 `resolve`，于是普通值、thenable 和异常都能继续沿链传递。
+
+`decided` 与 `#state` 分开保存，是为了处理“已经选择采纳另一个结果，但还处于 pending”的情况。如果只检查 `#state`，外部后来的 `reject` 就可能错误地抢先决定结果。thenable 的每次采纳还需要自己的 `called` 标志，防止同一个 thenable 重复报告。
+
+读取 `then` 只做一次，并保留原接收者调用；属性读取抛错、调用抛错、先成功再抛错，都要按第一次有效决定处理。检查直接自解析只能拒绝直接循环，不代表实现能识别任意相互依赖的等待环。面试中应先说明支持的边界，再通过反例检查机制，不能仅凭一次成功链就宣称完整实现了标准。
+
+## 10. 面试题 {#面试题}
+
+### 10.1 Promise 有哪些状态，fulfilled 能再变成 rejected 吗？ {#promise-states}
+
+**考察重点**：状态转换、单个对象与后续链的区别。
+
+**相关内容**：[状态与结果](#状态与结果)。
+
+<details>
+<summary>参考回答</summary>
+
+**Promise 从 pending 变为 fulfilled 或 rejected 后不能再改变状态。** 多次调用构造器提供的 resolve、reject，只接受第一次有效决定。
+
+成功回调里抛错，会让 then 返回的新 Promise 拒绝，不是把原 Promise 从成功改为失败。状态固定也不表示兑现的对象值被深度冻结。
+
+</details>
+
+### 10.2 调用 resolve 后，Promise 一定已经兑现吗？ {#resolution}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：结果采纳、resolved 与 fulfilled、一次决定。
+
+**相关内容**：[resolve 与兑现的区别](#resolve-与兑现的区别)、[thenable](#thenable)。
+
+<details>
+<summary>参考回答</summary>
+
+**不一定，resolve 可以让它采纳另一个仍在等待的结果。** 此时最终归属已经确定，外部后来的 reject 不再生效，但要等被采纳的结果结束，当前 Promise 才兑现或拒绝。
+
+采纳遵循 thenable 协议，不只接受原生 Promise。读取 then 抛错会拒绝，then 不可调用则把对象视为普通值，直接解析为自己会产生 TypeError。
+
+</details>
+
+### 10.3 Promise 为什么能链式调用，then 不传函数会怎样？ {#then-chain}
+
+**考察重点**：新 Promise、返回值、异常与结果透传。
+
+**相关内容**：[链式调用](#链式调用)、[返回异步结果](#返回异步结果)。
+
+<details>
+<summary>参考回答</summary>
+
+**每次 then 都返回新 Promise，其结果由被调用的处理函数决定。** 返回普通值则兑现，抛错则拒绝，返回 Promise 或 thenable 则采纳它；没有 return 时得到 undefined。
+
+如果没有提供对应函数，或传入了非函数，原兑现值或拒绝原因会传给下一步。要等待回调内部启动的异步工作，应把它的 Promise 返回；只启动而不返回会让外层链失去这项依赖。
+
+</details>
+
+### 10.4 then 的失败回调和后续 catch，能捕获的错误一样吗？ {#error-propagation}
+
+**考察重点**：输入 Promise 的状态与处理函数产生的新错误。
+
+**相关内容**：[错误传播与清理](#错误传播与清理)。
+
+<details>
+<summary>参考回答</summary>
+
+**不一样，同一个 then 的失败回调只处理输入 Promise 的拒绝，不处理其成功回调中新抛出的异常。** 新异常使 then 返回的 Promise 拒绝，要由后续 catch 或失败处理接住。
+
+catch 正常返回会恢复为成功；需要继续失败则重新抛错。定时器回调等独立调用里的异常不会自动沿当前链传播，需要在发生处捕获并报告。
+
+</details>
+
+### 10.5 finally 会改变 Promise 链的结果吗？ {#finally-result}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：清理等待、结果保留与错误覆盖。
+
+**相关内容**：[finally 的结果](#finally-的结果)。
+
+<details>
+<summary>参考回答</summary>
+
+**正常完成时保留原结果，抛错或返回拒绝结果时会使后续改为新的拒绝。** 返回普通值不会替换原兑现值；返回待定 Promise 会先等清理结束。
+
+finally 不接收原值或错误参数，适合释放资源、恢复界面状态等收尾。清理可能失败时，应明确是否允许它覆盖原错误。
+
+</details>
+
+### 10.6 all、allSettled、race、any 有什么区别，失败后其他操作会停止吗？ {#combinators}
+
+**考察重点**：成功条件、失败条件、空输入与取消边界。
+
+**相关内容**：[组合方法](#组合方法)、[拒绝不等于取消](#拒绝不等于取消)、[方法选择](#方法选择)。
+
+<details>
+<summary>参考回答</summary>
+
+**all 等全部成功，allSettled 等全部确定，race 取首个确定结果，any 取首个成功结果。** all 遇到失败可提前拒绝；any 只有全部失败才以 AggregateError 拒绝。
+
+all 和 allSettled 的结果按输入顺序排列；any 的错误列表同样按输入顺序。空输入时前两者得到空数组，race 一直待定，any 聚合拒绝。它们都不会自动取消其他输入，也没有隐含超时或并发上限。
+
+</details>
+
+### 10.7 实现 Promise.all 时，需要处理哪些边界？ {#implement-all}
+
+**考察重点**：按序收集、完成计数、归一化与失败。
+
+**相关内容**：[all 的结果收集](#all-的结果收集)。
+
+<details>
+<summary>参考回答</summary>
+
+**按输入序号保存结果，用剩余计数判断全部完成，并通过 Promise.resolve 处理普通值与 thenable。** 不能按完成顺序 push，也不能只处理数组非空的成功路径。
+
+空输入应兑现空数组，任一拒绝应使组合拒绝，迭代器抛错也应成为拒绝。数组空槽作为 undefined 参与迭代；一项失败不会取消其他操作。正文 allLike 给出了不含构造器扩展语义的参考实现。
+
+</details>
+
+### 10.8 怎样实现 Promise.allSettled，为什么单项失败不会提前结束？ {#implement-all-settled}
+
+**考察重点**：失败结果化与最终汇总。
+
+**相关内容**：[allSettled 的状态记录](#allsettled-的状态记录)。
+
+<details>
+<summary>参考回答</summary>
+
+**把每项成功和失败都转换成普通状态记录，再按输入顺序汇总。** 成功记录包含 status 和 value，失败记录包含 status 和 reason；单项失败已经被记录，不再作为组合的提前拒绝条件。
+
+仍需处理空输入和遍历异常。allSettled 不是永远不会拒绝，也没有超时：输入一直待定时，它也会一直等待。
+
+</details>
+
+### 10.9 怎样限制一组异步任务的并发数，同时保持结果顺序？ {#concurrency-limit}
+
+**题型**：综合题
+
+**考察重点**：任务启动、运行计数、结果位置与失败策略。
+
+**相关内容**：[有限并发](#有限并发)、[拒绝不等于取消](#拒绝不等于取消)。
+
+<details>
+<summary>参考回答</summary>
+
+**接收尚未启动的任务函数，空位充足时才调用，并按输入序号写结果。** 记录下一项位置和进行中数量，任务完成后释放空位并补充新任务。
+
+先明确失败策略：停止派发、全部收集还是尝试取消。正文 runLimited 在观察到失败后停止启动新项，已启动项仍继续并被处理；同步抛错也会变成拒绝。传入已启动的 Promise 数组，通常不能再限制启动并发。
+
+</details>
+
+### 10.10 怎样用 Promise 实现 sleep，它会阻塞线程吗？ {#promise-sleep}
+
+**考察重点**：回调 API 包装与完成时机。
+
+**相关内容**：[异步 API 的包装](#异步-api-的包装)。
+
+<details>
+<summary>参考回答</summary>
+
+**返回一个 Promise，在定时器回调中调用 resolve；它不会让当前线程停下来等待。** 调用方可以通过 then 或 await 组织之后的步骤，其他可执行工作仍能继续。
+
+等待时长遵循定时器调度条件，不保证精确到点。executor 的返回值不决定结果，异步回调的失败也要在回调中捕获并交给 reject。
+
+</details>
+
+### 10.11 实现 Promise 时，状态、回调队列和结果采纳分别负责什么？ {#promise-implementation}
+
+**考察重点**：一次决定、异步后续、新 Promise 与 thenable 边界。
+
+**相关内容**：[Promise 子集的实现](#promise-子集的实现)。
+
+<details>
+<summary>参考回答</summary>
+
+**状态保存结果，回调列表保存等待中的后续处理，结果采纳把普通值或 thenable 接入当前 Promise。** then 必须返回新 Promise，并让处理函数的返回或抛错决定新结果；已经确定状态后注册的处理也要异步执行。
+
+还要区分“已经调用 resolve 决定结果归属”和“已经兑现”，防止后来的 reject 改写采纳过程。then 属性读取、重复回调、回调后抛错、直接自解析都要处理。实现了这些核心机制，也不等于实现了原生构造器扩展、所有静态方法和宿主行为。
+
+</details>
+
+## 11. 参考资料 {#参考资料}
+
+- [ECMAScript：Promise Objects](https://tc39.es/ecma262/multipage/control-abstraction-objects.html#sec-promise-objects)
+- [ECMAScript：CreateResolvingFunctions](https://tc39.es/ecma262/multipage/control-abstraction-objects.html#sec-createresolvingfunctions)
+- [ECMAScript：NewPromiseResolveThenableJob](https://tc39.es/ecma262/multipage/control-abstraction-objects.html#sec-newpromiseresolvethenablejob)
+- [MDN：Promise](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise)
+- [MDN：Promise.prototype.then](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise/then)
+- [MDN：Promise.prototype.finally](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise/finally)
+- [MDN：Promise.all](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise/all)
+- [MDN：Promise.allSettled](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise/allSettled)
+- [MDN：Promise.race](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise/race)
+- [MDN：Promise.any](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise/any)

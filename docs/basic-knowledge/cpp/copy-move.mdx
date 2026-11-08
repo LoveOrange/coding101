@@ -1,0 +1,198 @@
+---
+knowledge:
+  id: basic-knowledge.cpp.copy-move
+  type: concept
+description: "区分 C++ 复制与移动构造、赋值和返回值消除，解释 std::move、const、资源所有权及 Rule of Zero/Five。"
+keywords: [C++ 移动语义, std::move, 复制构造, 右值引用, Rule of Five]
+---
+
+# C++ 复制与移动
+
+**复制**按照类型定义复制一个值；**移动**允许类型把可转移的资源交给新拥有者。移动不保证比复制快，也不自动发生在每一次 `std::move` 后：`std::move` 主要改变表达式的值类别，最终行为由重载选择和被调用类型决定。本文以 C++17 为准。
+
+## 1. 面试核心 {#core}
+
+- 构造创建新对象，赋值修改已存在对象，**复制构造和复制赋值承担的资源处理不同**。
+- `std::move` 不亲自搬运数据，**它把表达式转换为允许选择移动操作的形式**；没有合适的移动重载时，仍可能复制。[卡](#move-cast)
+- 移动后对象仍需要能够被正确销毁；标准库对象一般处于**有效但值未指定**的状态，除非具体类型另有保证。
+- 持有资源的成员若已能正确复制和移动，优先遵循 **Rule of Zero**；自己管理裸资源时，要一起检查析构、复制和移动操作。[卡](#special-members)
+- C++17 的部分纯右值初始化直接构造结果对象，**不能把所有按值返回都解释为先复制再移动**；命名返回值优化仍有独立条件。[卡](#return-elision)
+
+## 2. 构造与赋值 {#构造与赋值}
+
+`T second = first;` 是初始化一个新对象；`second = first;` 则是给已经存在的对象赋值。后者可能需要先处理 `second` 之前拥有的资源。
+
+```cpp
+#include <cassert>
+#include <vector>
+
+int main() {
+    std::vector<int> first{1, 2};
+    std::vector<int> copied = first;
+    copied[0] = 9;
+    assert(first[0] == 1);
+
+    std::vector<int> assigned{7};
+    assigned = first;
+    assert(assigned.size() == 2 && assigned[0] == 1);
+}
+```
+
+`vector<int>` 的复制会得到独立的元素存储，所以修改 `copied[0]` 不影响 `first`。但不能将所有类型的复制都理解成递归“深拷贝”：复制 `vector<shared_ptr<T>>` 会复制智能指针，仍然共享各自指向的 `T`；复制裸指针成员也只复制指针值。
+
+类型要自己定义复制语义。如果一个类有一个拥有资源的裸指针，默认按成员复制可能让两个对象都认为自己负责释放同一资源，最终重复释放。解决方式是明确禁止复制、实现真正的独立复制，或使用已表达正确所有权的成员类型。
+
+## 3. 值类别与 std::move {#值类别与-stdmove}
+
+**左值**通常标识一个可以继续使用的对象，例如变量名；**纯右值**产生用于初始化等操作的值；**将亡值**仍标识对象，但允许把它当作可复用资源的来源。右值包括纯右值和将亡值。值类别与“对象放在堆上还是栈上”没有直接对应关系。
+
+`std::move(item)` 将表达式转换为将亡值，不会销毁 `item`，也不会直接调用移动构造。看一个只记录重载选择的类型：
+
+```cpp
+#include <cassert>
+#include <utility>
+
+struct Item {
+    static int copies;
+    static int moves;
+    Item() = default;
+    Item(const Item&) { ++copies; }
+    Item(Item&&) noexcept { ++moves; }
+};
+int Item::copies = 0;
+int Item::moves = 0;
+
+int main() {
+    Item first;
+    Item copied(first);
+    Item moved(std::move(first));
+    const Item fixed;
+    Item from_const(std::move(fixed));
+    assert(Item::copies == 2 && Item::moves == 1);
+}
+```
+
+`first` 是左值，所以 `copied` 使用复制构造。`std::move(first)` 可以绑定到 `Item&&`，选择移动构造。`fixed` 是 `const`，`std::move(fixed)` 仍保留 `const`；普通 `Item&&` 不能绑定它，但 `const Item&` 可以，因此最后一次仍然复制。
+
+即使函数参数类型写成 `T&&`，参数名在函数体中也是左值表达式。转交其资源时，需要按接口意图再使用 `std::move`；泛型转发场景则需要区分转发引用和普通右值引用，不能把两者都用无条件移动替代。
+
+## 4. 资源转移与特殊成员函数 {#资源转移与特殊成员函数}
+
+移动的价值来自避免不必要的资源复制。例如一个独占缓冲区可以转移存储指针，让来源对象进入空状态；新对象取得释放责任，来源对象析构时不会再次释放同一块内存。
+
+但能使用标准成员时，不必自己写这一套：
+
+```cpp
+#include <cassert>
+#include <memory>
+#include <type_traits>
+#include <utility>
+
+struct Buffer {
+    std::unique_ptr<int[]> values;
+};
+
+int main() {
+    static_assert(!std::is_copy_constructible<Buffer>::value);
+    static_assert(std::is_move_constructible<Buffer>::value);
+    Buffer first{std::make_unique<int[]>(2)};
+    first.values[0] = 7;
+    Buffer second = std::move(first);
+    assert(!first.values && second.values[0] == 7);
+}
+```
+
+`Buffer` 不手写析构、复制或移动，成员 `unique_ptr` 已经表达了独占所有权；编译器据此使复制不可用，并提供可行的移动。这就是 **Rule of Zero**：尽量让成员管理资源，类本身不额外定义这些特殊成员函数。
+
+如果确实自己管理资源，则按 **Rule of Five** 一起审视五项：析构、复制构造、复制赋值、移动构造和移动赋值。这不等于必须把五项全部写一遍，可以显式 `= default` 或 `= delete`。用户声明析构函数等操作会影响隐式移动的生成，不能只补一个析构就假定其他操作仍然正确。
+
+移动赋值还要处理目标原来持有的资源，并考虑自移动。声明 `noexcept` 应有实现依据：若移动期间会抛异常，就不能靠加上关键字隐藏问题。容器为了维持异常保证，在可复制且移动可能抛异常时，可能选择复制旧元素；当元素不可复制时，又要按该操作的具体异常保证分析。
+
+### 4.1 移动后的对象还能使用吗？ {#移动后的对象还能使用吗}
+
+可以销毁，也可以执行其契约允许的操作，但不能凭经验猜它的值。许多标准库对象移动后有效但值未指定：对移动后的 `std::string` 调用 `empty()` 是允许的，直接假定它必为空则不可靠；访问 `text[0]` 前仍需确认长度。
+
+具体类型可以给出更强保证，例如 `unique_ptr` 的移动来源会变为空。自定义类型则需要明确自己的移动后不变量，至少不能让正常析构发生重复释放。
+
+## 5. 返回值与消除 {#返回值与消除}
+
+C++17 中，同类型纯右值初始化可以直接在最终结果位置构造对象，不需要先生成一个独立临时对象再复制过去：
+
+```cpp
+struct Token {
+    Token() = default;
+    Token(const Token&) = delete;
+    Token(Token&&) = delete;
+};
+
+Token make_token() { return Token{}; }
+
+int main() { Token token = make_token(); }
+```
+
+即使复制和移动都禁用，这段 C++17 代码仍可编译，因为 `return Token{};` 直接构造结果。它不同于 `Token token; return token;`：后者涉及命名返回值优化 NRVO，不能无条件依赖优化省掉所需的可用复制或移动操作。
+
+不要机械地写 `return std::move(local);` 来“帮助编译器移动”。对于可进行 NRVO 的局部对象，这样反而可能阻止相应消除。先让正常返回规则工作，确实需要转交成员、参数或其他对象时，再根据语言规则处理。
+
+## 6. 面试题 {#面试题}
+
+### 6.1 std::move 是否一定执行移动，const 对象会怎样？ {#move-cast}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：值类别转换、重载选择和 const 保留。
+
+**相关内容**：[值类别与 std::move](#值类别与-stdmove)。
+
+<details>
+<summary>参考回答</summary>
+
+**`std::move` 本身不移动资源，只把表达式转换成允许选择移动操作的形式。** 最终可能调用移动构造，也可能复制或编译失败。`const` 不会被去掉，因此普通 `T&&` 移动重载不能接收 `const T`；如果复制构造接收 `const T&`，这时可能转而复制。移动后的状态由具体类型契约决定。
+
+</details>
+
+### 6.2 自己管理裸资源的类，需要检查哪些复制与移动操作？ {#special-members}
+
+**考察重点**：所有权、默认成员行为和特殊成员函数。
+
+**相关内容**：[构造与赋值](#构造与赋值)、[资源转移与特殊成员函数](#资源转移与特殊成员函数)。
+
+<details>
+<summary>参考回答</summary>
+
+**需要一起检查析构、复制构造、复制赋值、移动构造与移动赋值。** 默认复制裸指针只复制地址信息，可能造成两个对象重复释放；复制应独立取得资源或被禁用，移动应转移所有权并让来源仍可安全销毁，赋值还需处理旧资源和自赋值。优先用容器、智能指针等成员实现 Rule of Zero，确需自管时再明确五项行为。
+
+</details>
+
+### 6.3 C++17 按值返回对象，是否一定发生复制或移动？ {#return-elision}
+
+**考察重点**：同类型纯右值初始化、NRVO 和不必要的 std::move。
+
+**相关内容**：[返回值与消除](#返回值与消除)。
+
+<details>
+<summary>参考回答</summary>
+
+**不一定，C++17 的同类型纯右值可以直接构造最终结果对象。** `return T{};` 与返回命名局部变量不同，后者的 NRVO 有独立条件，不能将其一律视为保证消除。对局部返回值机械使用 `std::move` 还可能阻止 NRVO，因此不能按“多写 move 就更快”判断。
+
+</details>
+
+### 6.4 左值引用与右值引用有什么区别？ {#lvalue-rvalue-reference}
+
+**考察重点**：引用绑定、表达式值类别和移动接口。
+
+**相关内容**：[值类别与 std::move](#值类别与-stdmove)、[资源转移与特殊成员函数](#资源转移与特殊成员函数)。
+
+<details>
+<summary>参考回答</summary>
+
+**左值引用通常绑定可标识的左值对象，右值引用可以绑定右值，并为资源转移提供可区分的接口。** `const T&` 也能绑定不少右值，因此仅看“能不能绑定临时值”不够。命名的 `T&&` 参数在函数体中仍是左值表达式；需要按意图再使用 `std::move` 转为将亡值。绑定右值引用本身不搬运资源，移动行为由类型的构造或赋值操作实现。
+
+</details>
+
+## 7. 参考资料 {#参考资料}
+
+- [C++17 草案 N4659：Copy/move constructors](https://timsong-cpp.github.io/cppwp/n4659/class.copy.ctor)
+- [C++17 草案 N4659：Copy/move assignment](https://timsong-cpp.github.io/cppwp/n4659/class.copy.assign)
+- [C++17 草案 N4659：Copy/move elision](https://timsong-cpp.github.io/cppwp/n4659/class.copy.elision)
+- [C++17 草案 N4659：值类别、特殊成员与初始化](https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2017/n4659.pdf)

@@ -1,0 +1,406 @@
+---
+sidebar_position: 7
+knowledge:
+  id: basic-knowledge.go.language.errors
+  type: concept
+description: "讲解 Go error、错误包装、errors.Is/As、多个错误合并，以及 panic/recover 的执行过程和 goroutine 边界，区分返回错误与异常控制流。"
+keywords: ["Go 错误处理", "errors.Is", "errors.As", "错误包装", "panic recover"]
+---
+
+# Go 错误处理
+
+Go 通常把可以交给调用方处理的失败表示为 `error` 返回值。调用方检查错误，再决定补充上下文、重试、转换为业务结果，还是向上返回。错误是否仍能被识别，取决于返回时有没有保留原来的错误关系，而不只是错误文字写得是否详细。
+
+`panic` 则会中断当前正常执行过程，沿当前 goroutine 的调用链执行延迟函数；`recover` 可以在符合条件的边界停止这个过程。它们不能代替普通错误返回，也不能跨 goroutine 兜住所有故障。本文以 Go 1.22 为基线。
+
+## 1. 面试核心 {#core}
+
+- `error` 是要求 `Error() string` 的接口，**错误返回属于正常返回流程，调用方需要显式处理**。表示成功时应返回 nil 接口，不能返回某个具体错误类型的 nil 指针。
+- `fmt.Errorf` 中，**`%w` 保留被包装错误的关系，`%v` 只把错误格式化到文本中**。错误消息相同也不意味着是同一个错误，不宜依赖字符串判断类别。[卡](#wrapping)
+- **`errors.Is` 判断错误是否匹配某个目标，`errors.As` 查找并提取满足类型条件的错误**。二者会检查包装关系，适合在补充上下文后继续处理原因或读取字段。[卡](#wrapped-error-handling)
+- Go 1.20 起，错误可以包装多个原因。**`errors.Join` 构成的关系需要按树理解，`errors.Unwrap` 本身只处理单错误的 Unwrap 方法**。[卡](#joined-errors)
+- **recover 必须由当前 goroutine 中正在执行的延迟函数直接调用**，才能恢复当前的 panic。恢复后，设置这层延迟函数的函数返回给调用方，不会回到 panic 语句后继续执行。[卡](#recover-rules) [卡](#recover-resume)
+- **未恢复的 goroutine panic 会导致程序终止，不只是结束这个 goroutine**。需要隔离某个任务时，应在任务所在 goroutine 的调用边界恢复，并明确报告失败、保存诊断信息和处理任务状态。[卡](#goroutine-panic)
+- Go 的 `error` 返回与 Java 的异常传播是不同的控制方式。**error 不会自动沿调用栈抛出，panic/recover 才涉及异常式控制转移**，不能把二者混成一套机制。[卡](#go-java-errors)
+
+## 2. error 是普通的接口值 {#error接口与返回值}
+
+**error** 是 Go 预声明的接口，要求实现 `Error() string`。这个方法提供错误描述；具体实现还可以保存操作名称、资源标识或其他供调用方判断的信息。
+
+```go
+package main
+
+import (
+    "errors"
+    "fmt"
+)
+
+func validateCount(count int) error {
+    if count < 0 {
+        return errors.New("count must be non-negative")
+    }
+    return nil
+}
+
+func main() {
+    fmt.Println(validateCount(2) == nil) // true
+    if err := validateCount(-1); err != nil {
+        fmt.Println(err) // count must be non-negative
+    }
+}
+```
+
+返回一个非 nil `error` 不会自动跳过调用方的后续语句。调用方需要检查结果；如果忽略返回值，编译器不会仅因这个结果是 `error` 就强制补上错误处理。
+
+返回多个结果时，还要说明发生错误后其他结果是否有效。有的 API 允许同时返回部分数据和错误，不能一律假设 `err != nil` 时其他返回值必须为零；调用方应遵守该 API 的约定。
+
+成功分支要返回 nil 接口。把 `var problem *Problem` 直接作为 `error` 返回，会保留动态类型，造成 `err != nil`；原理与示例见[Go 接口](./interfaces.mdx#error返回值中的nil)。
+
+## 3. 错误包装与上下文 {#错误包装与上下文}
+
+**错误包装**是在增加上下文的同时，保留对原错误的访问关系。调用方既能知道哪个操作失败，也能继续判断底层原因。
+
+**哨兵错误**是一个复用的、表示某种固定错误条件的值。它通常定义为包级变量，由产生错误的一方返回，调用方使用同一个值识别这种条件。
+
+```go
+package main
+
+import (
+    "errors"
+    "fmt"
+)
+
+var ErrNotFound = errors.New("not found")
+
+func main() {
+    wrapped := fmt.Errorf("load user: %w", ErrNotFound)
+    textOnly := fmt.Errorf("load user: %v", ErrNotFound)
+
+    fmt.Println(wrapped == ErrNotFound)             // false
+    fmt.Println(errors.Is(wrapped, ErrNotFound))    // true
+    fmt.Println(errors.Is(textOnly, ErrNotFound))   // false
+    fmt.Println(errors.New("not found") == ErrNotFound) // false
+}
+```
+
+`wrapped` 是新增的外层错误，所以直接比较不等于 `ErrNotFound`，但 `errors.Is` 可以沿包装关系找到它。`textOnly` 只保留文字，不再有同样的包装关系。再次调用 `errors.New` 得到的是另一个错误值，即使文字相同也不会与原值相等。
+
+包装应发生在确实有错误的时候：先判断 `err != nil`，再返回 `fmt.Errorf("操作说明: %w", err)`。不要无条件包装 nil；这样会制造一个非 nil 错误，而不是保留成功结果。
+
+### 3.1 哪些原因应该暴露给调用方 {#错误包装的接口边界}
+
+包装会使底层错误成为调用方能够检查的行为。一旦调用方依赖某个底层错误或类型，替换数据库、文件库等实现时，就需要考虑是否仍保持这个错误约定。
+
+如果底层细节不属于对外接口，可以在边界把它转换成稳定的业务错误，同时在合适的位置记录原始诊断信息。只把错误文字改得更笼统，却仍用 `%w` 暴露底层类型，不等于已经隐藏实现细节。
+
+## 4. Is、As 与自定义错误 {#is与as}
+
+`errors.Is(err, target)` 判断错误是否匹配目标；`errors.As(err, &value)` 则寻找符合类型条件的错误，并把找到的值写入 `value`。
+
+它们都会先检查当前错误，再检查被包装的原因。直接使用 `err == target` 或 `err.(*SomeError)`，只检查最外层，包装后往往不再满足条件。
+
+```go
+package main
+
+import (
+    "errors"
+    "fmt"
+)
+
+var ErrNotFound = errors.New("not found")
+
+type OpError struct {
+    Op  string
+    Key string
+    Err error
+}
+
+func (e *OpError) Error() string {
+    return fmt.Sprintf("%s %s: %v", e.Op, e.Key, e.Err)
+}
+func (e *OpError) Unwrap() error { return e.Err }
+
+func main() {
+    cause := &OpError{Op: "load", Key: "7", Err: ErrNotFound}
+    err := fmt.Errorf("request: %w", cause)
+
+    fmt.Println(errors.Is(err, ErrNotFound)) // true
+    _, direct := err.(*OpError)
+    fmt.Println(direct) // false
+
+    var operation *OpError
+    if errors.As(err, &operation) {
+        fmt.Println(operation.Op, operation.Key) // load 7
+    }
+}
+```
+
+`Unwrap() error` 让 `OpError` 暴露被包装的 `Err`。`Is` 用来判断“是否是未找到”，`As` 用来取出 `Op` 和 `Key` 等具体信息；二者解决的问题不同。
+
+### 4.1 As 的目标参数 {#as的目标参数}
+
+`As` 需要能够把结果写到调用方的变量中，所以传入的是目标变量的地址。上例的 `operation` 类型是 `*OpError`，`&operation` 的类型是 `**OpError`，这正是让函数写入一个 `*OpError` 所需的参数。
+
+对非 nil 错误调用 `As` 时，目标必须是非 nil 指针，且它指向的类型实现 `error`，或者是接口类型。不符合条件会 panic。例如把 nil 的 `operation` 自身传进去，而不是传 `&operation`，就没有可写入的目标位置。
+
+目标也可以是描述某种行为的接口，例如寻找具有特定分类方法的错误。`Is` 和 `As` 还支持错误类型自定义匹配方法；这类方法负责本层匹配，不应自行重复遍历整个包装关系。
+
+## 5. 多个错误与错误树 {#多个错误与错误树}
+
+一个操作可能同时得到多个需要保留的错误，例如主体操作失败，清理资源时也失败。Go 1.20 起可以使用 `errors.Join` 合并这些原因，Go 1.22 已包含这项能力。
+
+```go
+package main
+
+import (
+    "errors"
+    "fmt"
+)
+
+func main() {
+    writeErr := errors.New("write failed")
+    closeErr := errors.New("close failed")
+    err := errors.Join(writeErr, closeErr, nil)
+
+    fmt.Println(errors.Is(err, writeErr), errors.Is(err, closeErr)) // true true
+    fmt.Println(errors.Unwrap(err) == nil) // true
+    fmt.Println(errors.Join(nil, nil) == nil) // true
+}
+```
+
+`Join` 忽略 nil 参数；所有参数都是 nil 时返回 nil。非 nil 结果通过 `Unwrap() []error` 暴露多个原因，所以不再只是单条错误链。`Is`、`As` 会先检查当前节点，再按深度优先方式检查子错误；`As` 返回第一个匹配项。
+
+`errors.Unwrap` 只调用 `Unwrap() error`，不处理 `Unwrap() []error`，因此上例得到 nil 不代表内部没有原因。通常应直接使用 `Is`、`As`，不要假设循环调用 `errors.Unwrap` 一定能遍历所有错误。
+
+Go 1.22 的 `fmt.Errorf` 也支持多个 `%w`，会保留对应的多个错误。无论用哪种形式，都不能让后发生的清理错误覆盖已经得到的主体错误。
+
+## 6. panic 与 recover {#panic与recover}
+
+**panic** 会停止当前函数的正常执行，开始沿当前 goroutine 的调用链退出，依次执行已经登记的延迟函数。**recover** 可以在这个退出过程中取得 panic 的值，并在符合条件时停止继续传播。
+
+```go
+package main
+
+import "fmt"
+
+func work() {
+    defer fmt.Println("work cleanup")
+    panic("broken")
+}
+
+func boundary() {
+    defer func() {
+        if value := recover(); value != nil {
+            fmt.Println("recovered", value)
+        }
+    }()
+    work()
+    fmt.Println("after work")
+}
+
+func main() {
+    boundary()
+    fmt.Println("main continues")
+}
+```
+
+输出为：
+
+```text
+work cleanup
+recovered broken
+main continues
+```
+
+`work` 先执行自己的延迟调用，然后继续退出到 `boundary`。`boundary` 的延迟函数恢复了 panic，之后 `boundary` 返回给 `main`；不会回到 `work`，也不会继续执行 `boundary` 中的 `after work`。
+
+延迟调用的参数求值和后进先出顺序，见[Go 函数](./functions.mdx#参数求值与延迟执行)。恢复点只是控制流边界，不会自动撤销已经完成的字段赋值、文件写入或外部请求。
+
+### 6.1 recover 的有效调用位置 {#recover的有效调用位置}
+
+要恢复正在传播的 panic，`recover` 必须由同一个 goroutine 中正在执行的延迟函数直接调用。典型形式是 `defer func() { value := recover(); ... }()`。
+
+在普通执行路径调用 `recover`，或让延迟函数再调用一个普通辅助函数、由辅助函数调用 `recover`，都不能恢复当前 panic。单独写 `defer recover()` 也不等同于在延迟函数体中直接调用。
+
+如果没有 panic，`recover` 返回 nil。使用 Go 1.22 工具链、模块的 `go` 指令为 `1.22`，且未启用 `GODEBUG=panicnil=1` 兼容设置时，`panic(nil)` 会得到非 nil 的 `*runtime.PanicNilError`；不能照搬 Go 1.21 以前“recover 得到 nil 就无法观察到 panic(nil)”的结论。
+
+### 6.2 recover 不能替代故障处理 {#recover的使用边界}
+
+恢复 panic 后，应判断当前操作能否安全结束、哪些资源需要清理，以及如何把失败传给调用方。必要时在恢复点记录 `runtime/debug.Stack()`，保留发生错误时的调用栈；仅把 panic 值格式化成文字，不会自动保留堆栈。
+
+`recover` 也不能恢复所有进程终止。`os.Exit` 会直接退出且不执行延迟函数；运行时发现某些致命问题，例如并发 map 写入，也可能直接终止程序。需要防止这类问题，应修复相应的并发或生命周期设计。
+
+## 7. goroutine 的 panic 边界 {#goroutine的panic边界}
+
+一个 goroutine 中未恢复的 panic 最终会终止程序。启动它的 goroutine 中即使设置了 `defer recover`，也不会成为它的异常处理栈；兄弟 goroutine 也不会自动帮它恢复。
+
+如果任务边界允许把 panic 转成任务失败，应在执行任务的 goroutine 内建立恢复边界，再把结果显式传回：
+
+```go
+package main
+
+import "fmt"
+
+func runTask(task func()) (err error) {
+    defer func() {
+        if value := recover(); value != nil {
+            switch cause := value.(type) {
+            case error:
+                err = fmt.Errorf("task panic: %w", cause)
+            default:
+                err = fmt.Errorf("task panic: %v", cause)
+            }
+        }
+    }()
+    task()
+    return nil
+}
+
+func main() {
+    done := make(chan error, 1)
+    go func() {
+        done <- runTask(func() { panic("broken") })
+    }()
+    fmt.Println(<-done) // task panic: broken
+}
+```
+
+`runTask` 与 `task` 在同一个 goroutine 中执行，恢复时通过具名结果 `err` 报告失败。如果 panic 值本身是 `error`，示例使用 `%w` 保留它；其他值只作描述。`main` 等待结果，任务不会因为进程提前结束而来不及报告。
+
+这是一个任务错误传递示例，不承诺恢复后共享状态仍然正确。实际任务还需要定义日志、资源释放、取消和失败重试的规则；已经部分执行的非幂等操作，不能因为捕获了 panic 就直接再执行一次。
+
+## 8. 与 Java 异常处理的区别 {#与java异常处理的区别}
+
+Go 的 `error` 是显式返回值，Java 的异常则会把控制权从抛出位置转移到匹配的异常处理器。二者都能携带错误信息，但传播方式不同。
+
+| 对比项 | Go 的 error 返回 | Java 的异常处理 |
+| --- | --- | --- |
+| 传播方式 | 函数正常返回，调用方检查后决定是否继续返回错误 | `throw` 或运行时抛出后，沿当前线程调用栈寻找处理器 |
+| 调用方处理 | 检查 `err`，返回、包装或转换 | 使用匹配的 `catch`，或让异常继续传播 |
+| 编译期要求 | 不会仅因返回值是 error 就强制检查它 | 受检异常有捕获或声明要求，非受检异常没有同样要求 |
+
+Go 也有会改变控制流的 `panic/recover`，但普通的文件不存在、请求失败等可预期情况通常通过 `error` 返回。不能把每个非 nil `error` 都转成 panic，也不能因为使用 Go 就认为没有栈退出式的异常控制流。
+
+## 9. 面试题 {#面试题}
+
+### 9.1 fmt.Errorf 中的 %w 和 %v 有什么区别？ {#wrapping}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：错误包装关系、上下文与错误值身份。
+
+**相关内容**：[错误包装与上下文](#错误包装与上下文)。
+
+<details>
+<summary>参考回答</summary>
+
+**`%w` 在增加上下文时保留原错误的包装关系，`%v` 只保留格式化后的描述。** 调用方需要继续用 `errors.Is`、`errors.As` 判断原因时，应根据接口约定保留这种关系。
+
+不要用相同文字代替错误身份判断，也不要无条件包装 nil。包装是否对外暴露底层错误，是错误接口的一部分，需要明确设计。
+
+</details>
+
+### 9.2 封装错误后，调用方怎样判断原因并采取不同处理？ {#wrapped-error-handling}
+
+**考察重点**：上下文、包装、类别判断与类型信息提取。
+
+**相关内容**：[错误包装与上下文](#错误包装与上下文)、[Is、As 与自定义错误](#is与as)。
+
+<details>
+<summary>参考回答</summary>
+
+**先定义需要对外暴露的错误约定，再使用包装保留原因；类别判断用 `errors.Is`，提取具体错误信息用 `errors.As`。** 自定义错误可以保存操作和资源字段，并通过 `Unwrap` 暴露原因。
+
+`Is` 可用于判断是否匹配固定错误，`As` 可沿包装关系取出具体错误或满足某种行为的接口。不要依赖错误字符串，也不要只断言最外层类型。`As` 需要传目标变量的地址，例如目标是 `*OpError` 时使用 `&operation`。
+
+</details>
+
+### 9.3 errors.Join 后，为什么 errors.Unwrap 可能返回 nil？ {#joined-errors}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：单错误与多错误包装、错误树和匹配遍历。
+
+**相关内容**：[多个错误与错误树](#多个错误与错误树)。
+
+<details>
+<summary>参考回答</summary>
+
+**因为 `errors.Unwrap` 只处理 `Unwrap() error`，而 `Join` 的非 nil 结果提供 `Unwrap() []error`。** 返回 nil 不表示没有内部原因。
+
+`errors.Is` 和 `errors.As` 支持这两种包装关系，会检查当前错误并深度优先遍历子错误。`Join` 忽略 nil 参数，所有参数都是 nil 时才返回 nil。
+
+</details>
+
+### 9.4 recover 应该怎样使用，哪些调用位置无效？ {#recover-rules}
+
+**考察重点**：延迟调用、直接调用条件与当前 goroutine。
+
+**相关内容**：[panic 与 recover](#panic与recover)、[recover 的有效调用位置](#recover的有效调用位置)。
+
+<details>
+<summary>参考回答</summary>
+
+**应在当前 goroutine 的延迟函数中直接调用 recover，并检查是否取得了 panic 值。** 没有 panic 时返回 nil；恢复成功后可以记录信息、设置错误结果或完成必要清理。
+
+普通调用、通过辅助函数间接调用、单独 `defer recover()` 都不能等同于这个形式。它也不会跨 goroutine 捕获 panic，不能恢复 `os.Exit` 或所有运行时致命错误。
+
+</details>
+
+### 9.5 recover 成功后，会从 panic 的下一行继续执行吗？ {#recover-resume}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：栈退出、延迟调用与恢复后的返回位置。
+
+**相关内容**：[panic 与 recover](#panic与recover)。
+
+<details>
+<summary>参考回答</summary>
+
+**不会。设置恢复用延迟函数的那层函数会完成剩余延迟调用，然后返回给调用方。** 已经退出的调用不会恢复，panic 语句后的普通代码也不会接着执行。
+
+恢复只是停止继续传播 panic，不会自动回滚已修改的内存和外部状态。需要向调用方报告失败时，应明确设置返回结果或通过任务通道传递。
+
+</details>
+
+### 9.6 工作 goroutine 发生 panic，其他 goroutine 会怎样，应该如何处理？ {#goroutine-panic}
+
+**考察重点**：程序终止、goroutine 调用栈边界与任务失败传递。
+
+**相关内容**：[goroutine 的 panic 边界](#goroutine的panic边界)、[recover 的使用边界](#recover的使用边界)。
+
+<details>
+<summary>参考回答</summary>
+
+**如果 panic 没有在该 goroutine 中恢复，最终会终止整个程序，不能认为只退出这一个任务。** 启动它的 goroutine 中的恢复逻辑不在它的调用栈上，无法跨 goroutine 捕获。
+
+对于允许隔离失败的任务，在执行任务的 goroutine 内设置明确的恢复边界，记录 panic 和必要堆栈，再把失败传给调度方。还要检查资源、共享状态和重试条件，不能只恢复后忽略失败。
+
+</details>
+
+### 9.7 Go 的错误处理与 Java 的异常处理有什么区别？ {#go-java-errors}
+
+**考察重点**：返回值、异常传播、编译期检查和 panic 的定位。
+
+**相关内容**：[error 接口与返回值](#error接口与返回值)、[与 Java 异常处理的区别](#与java异常处理的区别)。
+
+<details>
+<summary>参考回答</summary>
+
+**Go 的普通错误以 error 返回值显式传递；Java 异常会转移控制流，沿当前线程的调用栈寻找匹配处理器。** Go 调用方需要检查、包装或转换错误，Java 使用 `try/catch` 等机制处理异常。
+
+Java 的受检异常还有捕获或声明要求，Go 不会仅因返回值是 `error` 就强制处理。Go 同时提供 `panic/recover`，但它们不应替代日常可预期失败的错误返回。
+
+</details>
+
+## 10. 参考资料 {#参考资料}
+
+- [Go 1.22.12 语言规范：Errors 与 Handling panics](https://github.com/golang/go/blob/go1.22.12/doc/go_spec.html)
+- [Go 1.22.12 errors：Is、As、Join 与 Unwrap](https://pkg.go.dev/errors@go1.22.12)
+- [Go 1.22.12 fmt.Errorf](https://pkg.go.dev/fmt@go1.22.12#Errorf)
+- [Go Blog：Working with Errors in Go 1.13](https://go.dev/blog/go1.13-errors)
+- [Go 1.22.12 runtime：PanicNilError 与 panicnil 兼容行为](https://github.com/golang/go/blob/go1.22.12/src/runtime/panic.go)
+- [Go 1.22.12 os.Exit：直接退出与延迟调用](https://pkg.go.dev/os@go1.22.12#Exit)
+- [Go 1.22.12 runtime：map 并发写的致命错误检查](https://github.com/golang/go/blob/go1.22.12/src/runtime/map.go)
+- [Java SE 17 语言规范：异常处理](https://docs.oracle.com/javase/specs/jls/se17/html/jls-11.html)

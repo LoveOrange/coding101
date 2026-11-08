@@ -1,0 +1,513 @@
+---
+sidebar_position: 2
+knowledge:
+  id: frontend.html.forms
+---
+
+# HTML 表单
+
+**HTML 表单**把有名称的输入控件组织成一次提交。浏览器提供标签关联、键盘提交、输入类型和约束验证，应用再补充异步检查、错误展示与提交状态。表单设计的目标是让用户知道要填什么、哪里有问题，以及提交是否已经完成。
+
+前端校验帮助用户及时纠错，但请求可以绕过页面直接发送，服务端仍要验证数据、权限和业务约束。面试回答需要把这两层分清，并处理请求等待期间的重复操作、旧结果覆盖新输入和失败后的恢复。
+
+## 1. 面试核心 {#core}
+
+- **label、name、type 和提交语义分别承担不同责任**。标签说明控件用途，`name` 决定提交字段名，输入类型和约束帮助浏览器提供正确交互。[卡](#form-controls)
+- **FormData 按可提交控件构造条目，可以包含同名字段**。禁用控件和未勾选的复选框不会按普通已选字段提交，`id` 也不能代替 `name`。[卡](#form-data)
+- **浏览器约束验证、运行时结构校验和服务端业务校验互相补充**。TypeScript 类型不会自动验证实际输入，异步预检查也不能保证提交时业务条件仍成立。[卡](#validation-design)
+- **requestSubmit 按提交交互执行验证并触发 submit，submit 方法会绕过这两步**。直接派发一个事件也不能当成浏览器原生提交的等价替代。[卡](#submit-methods)
+- **异步检查要绑定当前输入或请求版本**。取消旧请求可以减少浪费，版本判断才能阻止不响应取消的旧任务覆盖新状态。[卡](#async-results)
+- **提交状态应覆盖等待、成功和失败，并保留可重试的输入**。禁用按钮只能降低重复操作，业务防重仍需要服务端保证。[卡](#submission-state)
+- **草稿的保存位置取决于需要跨越哪种生命周期**。组件缓存、应用状态和浏览器存储各有范围，敏感字段与过期数据不能无条件持久化。[卡](#draft-state)
+
+## 2. 控件与提交 {#控件与提交}
+
+### 2.1 原生语义 {#原生语义}
+
+`<label for="username">` 通过 `id` 关联控件，让文本成为可理解的名称；`name="username"` 则用于构造提交字段。占位文字会随着输入消失，不能代替标签。
+
+`type="email"` 提供邮箱相关交互和格式检查，但不能证明邮箱存在或属于当前用户。`autocomplete` 可以提示浏览器如何自动填写，`inputmode` 主要提示适合的输入键盘，不能当作格式校验。
+
+下面是一个简化的账号资料表单。它先检查用户名可用性，再提交当前快照。页面需要由 HTTP 服务提供，并实现说明中的两个本地 API。
+
+```html
+<form id="profile">
+  <fieldset id="fields">
+    <legend>账号资料</legend>
+    <label for="username">用户名</label>
+    <input id="username" name="username" required minlength="2" maxlength="20"
+      pattern="[A-Za-z][A-Za-z0-9_]{1,19}" autocomplete="username">
+    <label for="email">邮箱</label>
+    <input id="email" name="email" type="email" required autocomplete="email">
+    <button type="submit">保存</button>
+  </fieldset>
+  <p id="save-status" role="status"></p>
+</form>
+<script>
+  const form = document.querySelector('#profile');
+  const fields = document.querySelector('#fields');
+  const username = document.querySelector('#username');
+  const status = document.querySelector('#save-status');
+  let submitting = false;
+  username.addEventListener('input', () => username.setCustomValidity(''));
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if (submitting) return;
+    const data = new FormData(form);
+    const payload = { username: data.get('username'), email: data.get('email') };
+    submitting = true;
+    fields.disabled = true;
+    form.setAttribute('aria-busy', 'true');
+    status.textContent = '正在保存';
+    try {
+      const check = await fetch('/api/username?value=' + encodeURIComponent(payload.username));
+      if (!check.ok) throw new Error('用户名检查失败，请重试');
+      const availability = await check.json();
+      if (!availability || typeof availability.available !== 'boolean') throw new Error('检查结果格式错误');
+      if (!availability.available) {
+        username.setCustomValidity('用户名已被占用');
+        throw new Error('用户名已被占用');
+      }
+      const response = await fetch('/api/profile', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (response.status === 409) {
+        username.setCustomValidity('用户名已被占用');
+        throw new Error('用户名已被占用');
+      }
+      if (!response.ok) throw new Error('保存失败，请重试');
+      status.textContent = '已保存';
+    } catch (error) {
+      status.textContent = error.message;
+    } finally {
+      submitting = false;
+      fields.disabled = false;
+      form.setAttribute('aria-busy', 'false');
+      if (!username.validity.valid) username.reportValidity();
+    }
+  });
+</script>
+```
+
+正常点击保存时，浏览器先执行约束验证，验证通过才触发 `submit`。代码在禁用 `fieldset` 之前读取 `FormData`，因此可以得到当前输入；提交期间锁住控件，避免把正在修改的值与已发送的快照混为一谈。失败后恢复控件并保留原值。
+
+`GET /api/username` 返回包含布尔字段 `available` 的 JSON；`POST /api/profile` 成功时返回成功状态，用户名冲突返回 `409`。预检查通过之后，其他请求仍可能抢先占用名字，所以保存接口必须再次检查并依靠数据库等业务约束保证一致性。
+
+示例只演示校验与提交状态，不构成完整账号系统。实际应用还要补充认证、授权、请求超时、容器卸载时的取消和必要的防重机制；失败后是否能重试，应结合操作是否可能已经生效判断。
+
+### 2.2 FormData 的条目 {#formdata的条目}
+
+**FormData** 是一组名称与值的条目，不要求每个名称唯一。下面的例子只用于观察收集规则：
+
+```html
+<form id="choices">
+  <input name="account" value="alice" readonly>
+  <input name="ignored" value="hidden-value" disabled>
+  <input id="only-id" value="no-name">
+  <input type="checkbox" name="topic" value="js" checked>
+  <input type="checkbox" name="topic" value="css" checked>
+  <input type="checkbox" name="topic" value="vue">
+</form>
+<script>
+  const data = new FormData(document.querySelector('#choices'));
+  console.log(data.get('account')); // alice
+  console.log(data.getAll('topic')); // ['js', 'css']
+  console.log(data.has('ignored'), data.has('only-id')); // false false
+</script>
+```
+
+`readonly` 输入仍参与提交，`disabled` 控件不参与。只有 `id` 而没有 `name` 的输入也不产生普通命名条目。多个同名复选框使用 `getAll()` 读取；直接 `Object.fromEntries(data)` 会覆盖重复名称，不能无条件用于多选表单。
+
+文件字段可以保存 `File`。用 `fetch` 发送 `FormData` 时，不要手写缺少 boundary 的 `multipart/form-data` 请求头，浏览器会生成所需编码信息。若选择 JSON 接口，就像前例那样明确构造字段和类型，而不是假定所有控件值已经符合服务端模型。
+
+## 3. 验证层次 {#验证层次}
+
+### 3.1 浏览器约束 {#浏览器约束}
+
+**约束验证**是浏览器根据 `required`、输入类型、`pattern`、长度和范围等规则判断控件是否有效的机制。`validity` 提供具体状态，`checkValidity()` 返回是否有效并触发相应验证事件，`reportValidity()` 还会请求浏览器显示提示。
+
+`setCustomValidity('错误说明')` 设置自定义错误；只有再传入空字符串，才会清除这项错误。输入值变了，不代表先前设置的自定义错误自动消失，因此前例在输入时清理旧的用户名冲突状态。
+
+以下条件容易影响判断：
+
+- 没有 `required` 的可选字段，空值不一定因为有 `pattern` 就被拒绝。
+- `disabled` 控件不参加约束验证；支持 `readonly` 的只读输入也有相应的验证排除规则，不能把它们当作仍在正常编辑的控件。
+- 部分长度约束针对用户输入，脚本赋值与用户编辑不完全等价。测试时既要检查程序赋值，也要检查真实输入行为。
+- 浏览器只理解声明的规则。跨字段关系、账号是否存在、余额和权限等需要其他层验证。
+
+### 3.2 运行时结构校验 {#运行时结构校验}
+
+**运行时结构校验**检查实际拿到的数据是否符合约定结构。TypeScript 类型在运行时不会自动存在，来自输入、网络或存储的数据仍需要验证。
+
+下面使用 Zod 3 校验用户名与邮箱，并拒绝多余字段：
+
+```js
+import { z } from 'zod';
+
+const profileSchema = z.object({
+  username: z.string().regex(/^[A-Za-z][A-Za-z0-9_]{1,19}$/),
+  email: z.string().email(),
+}).strict();
+
+const result = profileSchema.safeParse({ username: 'alice', email: 'alice@example.com' });
+if (result.success) {
+  console.log(result.data.username); // alice
+} else {
+  console.log(result.error.issues.map((issue) => issue.path.join('.')));
+}
+```
+
+`safeParse` 返回成功数据或错误信息，适合把错误关联到字段；它不会自动把控件、焦点、错误文案和提交状态管理好。是否裁剪空白、转换类型或拒绝未知字段，需要明确约定，不能让转换默默改变业务含义。
+
+前后端可以共享部分结构规则，服务端仍必须独立执行验证。数据库唯一约束、访问权限和操作时的业务条件也不是一个前端 schema 就能证明的。
+
+## 4. 异步检查与输入提示 {#异步检查与输入提示}
+
+### 4.1 取消与版本 {#取消与版本}
+
+用户先输入 `a`，再输入 `ab`，两个异步请求可能按相反顺序返回。即使第二次请求先发出取消信号，第一个任务也可能已经完成，或者根本不支持取消。因此需要同时判断结果是否属于当前输入。
+
+下面的函数只允许最后一次任务更新界面。它既可以服务输入提示，也可以服务输入过程中的异步字段检查：
+
+```js
+function createLatestTask(work, onValue, onError) {
+  let version = 0;
+  let controller;
+  let closed = false;
+  function clear() {
+    version += 1;
+    controller?.abort();
+    controller = undefined;
+  }
+  return {
+    async run(value) {
+      if (closed) return;
+      clear();
+      const current = version;
+      const own = new AbortController();
+      controller = own;
+      try {
+        const result = await work(value, own.signal);
+        if (!closed && current === version) onValue(result, value);
+      } catch (error) {
+        if (!closed && current === version && !own.signal.aborted) onError(error, value);
+      }
+    },
+    clear,
+    dispose() { closed = true; clear(); },
+  };
+}
+```
+
+`clear()` 既取消当前请求，也让它的版本失效；即使旧 `work` 忽略取消并返回，版本检查仍会阻止它更新界面。组件卸载时调用 `dispose()`，结果不再写回已失效的页面状态。这个函数不包含防抖和超时，频繁输入时可按实际需求组合这些机制。
+
+若用于实时用户名校验，状态应至少区分未检查、检查中、通过、冲突和检查失败。提交时要确认检查对应当前字段，不能把旧值的“通过”标志沿用到新值；保存接口仍是最终判断。
+
+### 4.2 可点击的输入提示 {#可点击的输入提示}
+
+下面接着使用 `createLatestTask`。API 返回字符串数组，页面把候选项显示成按钮，点击后补全输入：
+
+```html
+<label for="search">搜索课程</label>
+<input id="search" type="search" autocomplete="off">
+<p id="search-status" role="status"></p>
+<ul id="suggestions"></ul>
+<script>
+  const search = document.querySelector('#search');
+  const list = document.querySelector('#suggestions');
+  const searchStatus = document.querySelector('#search-status');
+  let composing = false;
+  const task = createLatestTask(async (query, signal) => {
+    const response = await fetch('/api/suggestions?q=' + encodeURIComponent(query), { signal });
+    if (!response.ok) throw new Error('暂时无法获取候选项');
+    const values = await response.json();
+    if (!Array.isArray(values) || values.length > 10 ||
+      !values.every((value) => typeof value === 'string' && value.length <= 80)) {
+      throw new Error('候选项格式错误');
+    }
+    return values;
+  }, (values) => {
+    list.replaceChildren();
+    searchStatus.textContent = `找到 ${values.length} 个候选项`;
+    for (const value of values) {
+      const item = document.createElement('li');
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = value;
+      button.addEventListener('click', () => {
+        task.clear();
+        search.value = value;
+        list.replaceChildren();
+        searchStatus.textContent = '已选择';
+        search.focus();
+      });
+      item.append(button);
+      list.append(item);
+    }
+  }, (error) => { searchStatus.textContent = error.message; });
+
+  function updateSuggestions() {
+    task.clear();
+    list.replaceChildren();
+    searchStatus.textContent = '';
+    const query = search.value.trim();
+    if (!composing && query) {
+      searchStatus.textContent = '正在查找';
+      task.run(query);
+    }
+  }
+  search.addEventListener('input', updateSuggestions);
+  search.addEventListener('compositionstart', () => { composing = true; updateSuggestions(); });
+  search.addEventListener('compositionend', () => { composing = false; updateSuggestions(); });
+</script>
+```
+
+输入后，`GET /api/suggestions` 返回例如 `['JavaScript', 'Java']`，页面显示可点击、可通过 Tab 聚焦的按钮。使用 `textContent` 显示候选值，不把服务端字符串当作 HTML 执行。
+
+这是普通输入框加候选按钮列表，没有假装实现完整的弹出式 combobox。如果产品需要方向键切换、Escape 关闭和活动项管理，应按相应可访问性交互模式补齐。框架中的受控输入还要同步更新状态；程序给 `value` 赋值不会自动触发一次用户 `input` 事件。
+
+**输入法组合过程**是输入法正在拼写、选择候选文字的阶段。示例在组合过程中清空旧结果并暂停查询，组合结束后再查询。不同输入环境可能继续发出 `input`，应容忍重复更新，并在需要时配合防抖；不能只测试英文键盘就认为所有输入法行为都相同。
+
+## 5. 提交方式与状态 {#提交方式与状态}
+
+### 5.1 原生提交入口 {#原生提交入口}
+
+| 入口 | 约束验证 | `submit` 事件 |
+| --- | --- | --- |
+| 用户激活提交按钮 | 默认执行，受 `novalidate` 等配置影响 | 验证允许提交后触发 |
+| `form.requestSubmit(button)` | 按提交过程执行 | 触发，并携带相应提交者 |
+| `form.submit()` | 跳过 | 不触发 |
+| `dispatchEvent(new Event('submit'))` | 不自动执行原生约束验证 | 只是派发事件，不能据此当成原生提交 |
+
+按钮默认类型可能是提交，表单中的辅助按钮应显式设置 `type="button"`。`SubmitEvent.submitter` 可以区分保存、发布等不同提交按钮，构造包含提交按钮条目的 `FormData` 时也要按需要指定提交者。一个名为 `submit` 的控件还可能遮蔽表单的同名方法，命名时应避免这种冲突。
+
+### 5.2 重复提交与错误恢复 {#重复提交与错误恢复}
+
+示例中的 `submitting` 防止同一页面并发提交，禁用控件给用户明确反馈。但刷新、多个标签页、网络重试或直接请求都可以绕过这个页面状态，因此它不提供服务端的业务幂等。
+
+错误应区分字段错误、业务冲突和请求失败。字段错误关联具体输入，系统错误提供可理解的恢复路径；不要失败就清空整个表单。成功后是否清空或跳转，也应根据业务目的决定。
+
+`form.reset()` 恢复控件的默认值，不保证清除应用状态、错误对象、异步请求或 `setCustomValidity`。框架组件还要同步清理受控状态，避免 DOM 显示和应用模型相互覆盖。
+
+### 5.3 框架中的输入状态 {#框架中的输入状态}
+
+框架表单仍使用 HTML 的提交和验证语义，只是把当前输入映射到组件状态。下面以 Vue 2.7 展示一个登录表单片段；它用于支持模块导入的构建工程，页面还需要提供 `/api/login`。
+
+```html
+<div id="login">
+  <form @submit.prevent="save">
+    <fieldset :disabled="submitting">
+      <legend>登录</legend>
+      <label for="login-name">用户名</label>
+      <input id="login-name" v-model.trim="username" name="username" required autocomplete="username">
+      <label for="login-password">密码</label>
+      <input id="login-password" v-model="password" name="password" type="password"
+        required minlength="8" autocomplete="current-password">
+      <button type="submit">{{ submitting ? '正在登录' : '登录' }}</button>
+    </fieldset>
+    <p role="status">{{ message }}</p>
+  </form>
+</div>
+<script type="module">
+  import Vue from 'vue/dist/vue.esm.js';
+  const login = new Vue({
+    el: '#login',
+    data() { return { username: '', password: '', submitting: false, message: '' }; },
+    methods: {
+      async save() {
+        if (this.submitting) return;
+        const payload = { username: this.username, password: this.password };
+        this.submitting = true;
+        this.message = '';
+        try {
+          const response = await fetch('/api/login', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          });
+          if (!response.ok) throw new Error(response.status === 401 ? '用户名或密码不正确' : '暂时无法登录');
+          this.password = '';
+          this.message = '登录成功';
+        } catch (error) {
+          this.message = error.message;
+        } finally {
+          this.submitting = false;
+        }
+      },
+    },
+  });
+</script>
+```
+
+`v-model` 把输入变化同步到 `username`、`password`，`save()` 使用提交时的值构造快照。密码不使用 `.trim`，避免擅自修改用户凭据。成功后清理组件中的密码，失败后显示统一的认证错误；界面状态由响应式数据控制，不另外手工修改按钮的 DOM。
+
+这里仅展示表单端交互，不能把 `response.ok` 当成已实现服务端认证、会话管理或登录安全。Vue 3 或 React 中可以使用对应的状态机制，但原生验证、请求快照、并发和错误恢复的判断仍相同。
+
+## 6. 草稿与页面生命周期 {#草稿与页面生命周期}
+
+表单离开再回来是否保留，取决于值存在哪一层。
+
+| 保存位置 | 适合的保留范围 | 需要处理的边界 |
+| --- | --- | --- |
+| 组件内部状态 | 组件实例仍存在 | 卸载后通常丢失；缓存组件不等于数据永不过期 |
+| 路由外的应用状态 | 同一次应用运行中的页面切换 | 按表单、用户或业务对象区分键，避免串用 |
+| `sessionStorage` | 相应会话范围的刷新与恢复 | 序列化、配额、版本、清理和敏感数据 |
+| 服务端草稿 | 跨设备或较长时间恢复 | 身份、权限、冲突与有效期 |
+
+返回页面时恢复草稿后，仍应重新检查过期的业务条件。密码、令牌等不应为了“方便恢复”随意写入浏览器存储；多用户切换也要清理或隔离旧草稿。路由与组件缓存的分工见 [前端路由](../routing/client-routing.mdx)。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 表单的 label、id、name 和 type 分别有什么作用？ {#form-controls}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：标签关联、字段名和原生输入语义。
+
+**相关内容**：[原生语义](#原生语义)。
+
+<details>
+<summary>参考回答</summary>
+
+**label 与 id 建立可理解的控件关联，name 决定普通提交条目的名称，type 影响输入交互和相关验证。** 占位文字不能代替标签，只有 `id` 不会自动成为提交字段。`inputmode` 主要提示键盘，也不能替代格式或服务端校验。
+
+</details>
+
+### 7.2 为什么有些输入没有进入 FormData，同名复选框怎样读取？ {#form-data}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：命名条目、禁用状态和重复字段。
+
+**相关内容**：[FormData 的条目](#formdata的条目)。
+
+<details>
+<summary>参考回答</summary>
+
+**FormData 按可提交控件收集条目，禁用、未勾选或没有字段名等情况会影响收集。** `readonly` 控件仍可提交，`disabled` 控件不参与。多个同名选择项应使用 `getAll()`；直接转普通对象可能覆盖重复键。应在禁用整个字段组之前获取需要提交的快照。
+
+</details>
+
+### 7.3 怎样设计表单校验，为什么前端校验通过后服务端还要检查？ {#validation-design}
+
+**题型**：综合题
+
+**考察重点**：原生约束、结构规则、异步业务条件和可信边界。
+
+**相关内容**：[验证层次](#验证层次)、[原生语义](#原生语义)。
+
+<details>
+<summary>参考回答</summary>
+
+**用浏览器和前端规则及时反馈输入问题，再由服务端独立验证结构、权限及当前业务条件。** 前端可以检查必填、格式、跨字段关系，并异步提示用户名是否可用，但请求能绕过页面，预检查结果也可能过期。保存时还需最终校验，唯一性等由相应数据约束保证。错误应关联字段，失败后保留可修正的输入。
+
+</details>
+
+### 7.4 requestSubmit 与 submit 方法有什么区别？ {#submit-methods}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：约束验证、提交事件和提交者。
+
+**相关内容**：[原生提交入口](#原生提交入口)。
+
+<details>
+<summary>参考回答</summary>
+
+**requestSubmit 按提交交互执行约束验证并触发 submit，submit 方法则跳过验证且不触发该事件。** 前者可以指定提交按钮，按该按钮的配置执行。手工派发普通事件不是完整的原生提交过程；还要注意控件名可能遮蔽同名方法。
+
+</details>
+
+### 7.5 怎样避免异步校验的旧结果覆盖新输入？ {#async-results}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：请求版本、取消、当前输入和清理。
+
+**相关内容**：[取消与版本](#取消与版本)。
+
+<details>
+<summary>参考回答</summary>
+
+**每次输入变化使旧任务失效，返回时只接受当前版本对应的结果，并尽量取消旧请求。** 取消不保证所有工作都立即停止，因此版本判断仍有必要。清空输入、开始输入法组合或组件卸载时也要让旧任务失效；提交不能沿用旧值的通过标志。
+
+</details>
+
+### 7.6 怎样处理提交中状态，禁用按钮能防止所有重复提交吗？ {#submission-state}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：页面并发、请求快照、失败恢复和业务防重。
+
+**相关内容**：[原生语义](#原生语义)、[重复提交与错误恢复](#重复提交与错误恢复)。
+
+<details>
+<summary>参考回答</summary>
+
+**页面用提交状态限制重复操作，并在成功或失败后恢复界面，但这不能替代服务端幂等。** 先读取提交快照，再禁用相关控件；失败后保留输入和错误信息。多个标签页、重试或直接请求都不受单页按钮状态约束，有副作用操作需要服务端识别重复业务请求。
+
+</details>
+
+### 7.7 从表单页面切到另一个路由，返回后怎样保留输入？ {#draft-state}
+
+**考察重点**：组件实例、应用状态与持久草稿。
+
+**相关内容**：[草稿与页面生命周期](#草稿与页面生命周期)。
+
+<details>
+<summary>参考回答</summary>
+
+**先确定需要跨越的生命周期，再选择组件缓存、路由外状态、会话存储或服务端草稿。** 只要同次路由切换保留，可把草稿放在不会随该页面卸载的状态中；需要刷新或跨设备恢复则使用对应存储。按用户和业务对象区分草稿键，处理过期、清理和敏感字段，返回后重新验证可能变化的业务条件。
+
+</details>
+
+### 7.8 怎样实现搜索输入提示，点击候选项后补全输入？ {#suggestions}
+
+**考察重点**：输入事件、候选渲染、结果顺序和交互。
+
+**相关内容**：[可点击的输入提示](#可点击的输入提示)。
+
+<details>
+<summary>参考回答</summary>
+
+**根据当前输入请求或筛选候选项，只渲染当前请求的结果，点击候选后更新输入并关闭列表。** 处理空输入、失败、输入法组合、取消和旧结果；候选文字按文本显示。键盘与辅助技术交互需要一起设计，框架受控输入还要同步更新状态，不能只改 DOM 的 `value`。
+
+</details>
+
+### 7.9 已经使用 TypeScript，为什么还需要 Zod 一类运行时校验？ {#runtime-schema}
+
+**考察重点**：静态类型与实际输入的区别。
+
+**相关内容**：[运行时结构校验](#运行时结构校验)。
+
+<details>
+<summary>参考回答</summary>
+
+**TypeScript 检查代码中的类型关系，不会自动验证运行时进入系统的数据。** 表单、网络和存储值可能不符合声明，schema 校验可以返回经过验证的数据或结构化错误。它仍不能替代界面状态管理、服务端授权和实时业务约束。
+
+</details>
+
+### 7.10 用 Vue 实现登录页面时，怎样组织输入和提交状态？ {#vue-login}
+
+**考察重点**：原生表单、受控状态、请求快照与恢复。
+
+**相关内容**：[框架中的输入状态](#框架中的输入状态)、[重复提交与错误恢复](#重复提交与错误恢复)。
+
+<details>
+<summary>参考回答</summary>
+
+**用组件状态保存当前输入，以原生 form 承担提交语义，再管理独立的提交中状态和结果。** Vue 可以用 `v-model` 绑定字段，提交时读取快照并阻止重复并发，结束后恢复控件。密码不应随意裁剪或持久化；客户端校验和成功提示不能替代服务端认证与会话处理。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [HTML Standard：Form control infrastructure](https://html.spec.whatwg.org/multipage/form-control-infrastructure.html)
+- [MDN：Constraint validation](https://developer.mozilla.org/en-US/docs/Web/HTML/Guides/Constraint_validation)
+- [MDN：FormData](https://developer.mozilla.org/en-US/docs/Web/API/FormData)
+- [MDN：HTMLFormElement.requestSubmit](https://developer.mozilla.org/en-US/docs/Web/API/HTMLFormElement/requestSubmit)
+- [MDN：HTMLInputElement.setCustomValidity](https://developer.mozilla.org/en-US/docs/Web/API/HTMLInputElement/setCustomValidity)
+- [MDN：compositionend](https://developer.mozilla.org/en-US/docs/Web/API/Element/compositionend_event)
+- [Vue 2：Form Input Bindings](https://v2.vuejs.org/v2/guide/forms.html)
+- [Zod 3 Documentation](https://v3.zod.dev/)

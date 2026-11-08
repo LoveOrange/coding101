@@ -1,0 +1,375 @@
+---
+knowledge:
+  id: basic-knowledge.swift.concurrency
+  type: concept
+description: "解释 Swift async/await、结构化任务、协作取消、actor 重入、MainActor 与 Sendable 的隔离边界。"
+keywords: [Swift 并发, async await, Task, actor, MainActor, Sendable, 结构化并发]
+---
+
+# Swift 并发
+
+Swift 并发用任务表达异步工作，用 actor 保护共享状态。`async` 和 `await` 让等待过程可以挂起，任务结构决定工作何时结束，隔离规则决定哪些状态可以被访问。它们解决不同问题：代码能通过并发检查，不代表跨越挂起点的业务操作已经具有事务性。
+
+本文讲解 Swift 5.9 与 Swift 6 项目共用的基本机制。示例使用 Swift 6 语言模式、非隔离的默认设置，并显式声明 actor 隔离；编译器版本、默认 actor 隔离与并发相关设置可能改变诊断和部分执行规则，不能只凭 `async` 推断一段代码运行在哪个线程。
+
+## 1. 面试核心 {#core}
+
+- `async` 表示函数允许挂起，`await` 标记可能的挂起点，**顺序写两个 await 仍然是先后等待，不会自动并行**。[卡](#async-await)
+- `async let` 和任务组建立结构化子任务，**作用域退出前会等待子任务结束；取消请求不等于子任务已经停止**。[卡](#structured-tasks)
+- `Task {}` 创建非结构化任务，可以继承创建处的 actor 上下文，**它不会仅因写在某个函数内部就变成该函数的结构化子任务**。[卡](#task-detached)
+- 取消是协作式的，**任务需要检查取消或调用响应取消的 API，运行时不会强制打断任意业务代码**。[卡](#cancellation)
+- actor 隔离保护状态访问，**await 前后仍可能插入其他任务，先前成立的业务条件需要重新确认**。[卡](#actor-reentrancy)
+- `MainActor` 表达主 actor 隔离，**它不把耗时同步计算自动转移到后台**。[卡](#main-actor)
+- `Sendable` 表达值能够安全跨越并发隔离边界，**给类型加标记不会自动给内部状态加锁**。[卡](#sendable)
+- continuation 把回调结果接回异步调用，**每条完成路径都必须恰好恢复一次，并另行设计取消传播**。[卡](#continuation)
+
+## 2. 异步函数与任务 {#异步函数与任务}
+
+**异步函数**允许在执行过程中挂起，再于之后继续。挂起期间不需要占着原来的线程等待；恢复时也不应假设仍在同一条普通工作线程上。`await` 表示这里可能发生挂起，并不保证每次都会真的挂起。
+
+```swift
+func load(_ value: Int) async -> Int {
+    await Task.yield()
+    return value
+}
+
+@main
+struct Demo {
+    static func main() async {
+        let first = await load(1)
+        let second = await load(2)
+        print(first + second) // 3
+
+        async let left = load(1)
+        async let right = load(2)
+        let sum = await left + right
+        print(sum) // 3
+    }
+}
+```
+
+前一组要等 `load(1)` 返回后才调用 `load(2)`。后一组的两个 `async let` 建立子任务，允许它们并发推进；仍然不能保证两者在不同 CPU 核心上同时运行。`Task.yield()` 在这个示例里提供一次让出执行机会的请求，不是用于精确排序的同步工具。
+
+**任务**是 Swift 并发中承载异步工作的执行单元，不等同于一条独占线程。任务可能等待、恢复或在隔离域之间切换。把同步阻塞调用放进异步函数，不会自动变成非阻塞操作；长时间占用协作执行线程或主 actor，会影响其他工作继续推进。
+
+## 3. 结构化任务与非结构化任务 {#结构化任务与非结构化任务}
+
+**结构化并发**把子任务的生命周期绑定到词法作用域。固定数量的并发操作可以用 `async let`；任务数量随输入变化时，可以用任务组。
+
+```swift
+func sumOfSquares(_ values: [Int]) async -> Int {
+    await withTaskGroup(of: Int.self) { group in
+        for value in values {
+            group.addTask { value * value }
+        }
+        var total = 0
+        for await result in group {
+            total += result
+        }
+        return total
+    }
+}
+
+@main
+struct Demo {
+    static func main() async {
+        print(await sumOfSquares([1, 2, 3])) // 14
+    }
+}
+```
+
+任务组按完成情况提供结果，不保证与 `addTask` 的添加顺序一致。这里累加整数不依赖结果顺序；若需要按输入顺序显示，就让子任务返回索引与结果，再按索引整理。对于大量输入，还应限制同时在途的任务数量，不要把任务组理解成自动提供无限并发的资源池。
+
+退出结构化作用域前，所有子任务都必须结束。异常退出会触发相应取消传播，但取消是请求，作用域仍然要等待子任务配合结束。一个忽略取消并永久等待的子任务，会妨碍作用域退出。
+
+| 创建方式 | 生命周期关系 | 需要特别判断的内容 |
+| --- | --- | --- |
+| `async let` | 当前作用域的结构化子任务 | 使用结果与离开作用域时的等待、取消 |
+| `withTaskGroup` | 组内结构化子任务 | 结果顺序、错误处理、并发数量 |
+| `Task {}` | 非结构化任务 | 句柄由谁保存、何时取消、继承的上下文 |
+| `Task.detached {}` | 独立的非结构化任务 | 不继承创建处的 actor 上下文和任务局部值，显式安排优先级与生命周期 |
+
+`Task {}` 可以继承创建位置的 actor 隔离、任务局部值以及适用的优先级信息，但不会自动建立结构化的父子取消关系。丢弃任务句柄也不等于取消任务。`Task.detached` 则主动脱离这些继承关系，不应该仅为了“后台执行”就随处使用它。
+
+任务组的抛错子任务，需要通过读取结果等方式传播错误；不能把所有模型概括为“任意子任务一抛错，所有兄弟任务立即停止”。要看错误是否离开组作用域、是否调用取消，以及其他任务是否响应。
+
+## 4. 协作取消与错误 {#协作取消与错误}
+
+**协作取消**表示任务接收一个取消状态，并在合适位置主动结束工作。`Task.isCancelled` 用于查询，`Task.checkCancellation()` 会在已取消时抛出 `CancellationError`。`Task.sleep` 等支持取消的 API 也会响应取消。
+
+```swift
+@main
+struct Demo {
+    static func main() async {
+        let task = Task {
+            try await Task.sleep(nanoseconds: 1_000_000_000)
+            try Task.checkCancellation()
+            return 42
+        }
+        task.cancel()
+
+        do {
+            print(try await task.value)
+        } catch is CancellationError {
+            print("cancelled")
+        } catch {
+            print("other error")
+        }
+    }
+}
+```
+
+取消发生在睡眠开始前或等待期间，都能被取消检查路径观察到，示例输出 `cancelled`。如果任务只是进行长时间同步循环且从不检查取消，`cancel()` 不会强行终止它；可以在合理的批次边界检查，避免每处理一个极小元素都额外判断。
+
+业务错误与取消也应区别处理。下载失败可能需要重试或提示，用户离开页面导致的取消通常不应再展示“请求失败”。不要用一个空的 `catch` 把所有错误全部吞掉，也不要在捕获取消后继续提交已失效的结果。
+
+取消底层请求需要明确连接。如果一个异步包装只等待旧回调，任务被取消并不自动取消那条旧请求。可以用取消处理器协调请求句柄，但取消处理器与完成回调之间可能并发发生，仍需确保状态同步以及结果只完成一次。
+
+## 5. actor 隔离与重入 {#actor隔离与重入}
+
+**actor** 是通过隔离保护其状态访问的引用类型。外部不能随意同步读写 actor 的可变状态，跨隔离调用通常需要 `await`。actor 的执行器一次处理一段隔离工作，使同一份状态不会被多个任务同时无保护地访问。
+
+```swift
+actor Counter {
+    private var value = 0
+    func increment() { value += 1 }
+    func snapshot() -> Int { value }
+}
+
+@main
+struct Demo {
+    static func main() async {
+        let counter = Counter()
+        await withTaskGroup(of: Void.self) { group in
+            for _ in 0..<100 {
+                group.addTask { await counter.increment() }
+            }
+        }
+        print(await counter.snapshot()) // 100
+    }
+}
+```
+
+`increment` 内部没有挂起点，读取、加一、写回属于同一段 actor 隔离执行。外部用 100 个任务请求增加，不会因为无保护的读改写而丢失更新。
+
+**actor 重入**表示某个 actor 方法挂起时，其他任务可以进入这个 actor 执行。它提高了等待期间的利用率，却意味着整个异步方法不是一笔不可分割的事务。
+
+假设库存只有 1 件：任务 A 检查库存后等待付款授权；等待期间，任务 B 也检查到 1 件并完成扣减；A 恢复后若直接沿用先前的判断，就可能再次扣减。整个过程中没有两个任务同时读写库存，仍然出现业务上的竞态。
+
+处理方式取决于业务约束：可以在等待前预留库存、失败时补偿；也可以等待后重新检查，并在同一段无挂起的执行中检查与扣减；或者记录请求版本，只接纳仍然有效的结果。等待后的检查必须覆盖真正影响提交的条件，不能仅为了“加一次判断”就认为安全。
+
+因此，读代码时应把每个 `await` 当作重新审视状态的边界：挂起期间谁能修改状态，恢复后哪些判断还成立，失败时已完成的副作用怎样处理。actor 的串行隔离不能替代这一层业务设计。
+
+## 6. 主 actor 与界面状态 {#主actor与界面状态}
+
+**MainActor** 是全局 actor，用于隔离需要在主执行环境处理的状态；在 Apple 平台上，它与主线程执行环境关联。界面模型可以整体声明为 `@MainActor`，让状态更新约束体现在类型上。
+
+```swift
+@MainActor
+final class ScreenModel {
+    private(set) var title = "Loading"
+    func show(_ text: String) { title = text }
+}
+
+@main
+struct Demo {
+    static func main() async {
+        let model = await MainActor.run { ScreenModel() }
+        await MainActor.run {
+            model.show("Ready")
+            print(model.title) // Ready
+        }
+    }
+}
+```
+
+`MainActor.run` 在主 actor 上执行这个同步闭包，并让调用方等待其完成。`Task { @MainActor in ... }` 则创建另一个任务；是否等待、错误如何传回以及何时结束，都还需要单独处理，不能把它们无条件互换。
+
+在 `@MainActor` 方法里启动 `Task {}`，任务可以继承主 actor 隔离。如果里面执行大量同步解码或图片处理，仍可能阻塞界面。应把耗时工作放到具有明确隔离边界的计算服务中，只让结果更新回到主 actor；具体执行规则需要与项目语言模式、默认隔离和启用的并发特性一致。
+
+同步调用一个隔离方法也不是“运行时自动包一层派发”的通用保证。严格并发检查要求调用方遵守隔离规则；与旧 Objective-C 回调或未检查代码衔接时，要在入口明确建立正确的隔离边界。
+
+## 7. 可发送性与隔离边界 {#可发送性与隔离边界}
+
+**Sendable** 表示一个类型的值适合安全地跨越并发隔离边界。包含可发送成员的普通值类型容易满足这一条件；共享可变类实例则需要不可变性、内部同步或其他明确的安全设计，不能单靠“声明遵守”解决。
+
+```swift
+struct Request: Sendable {
+    let id: Int
+    let path: String
+}
+
+func makeReader(_ request: Request) -> @Sendable () -> Int {
+    { request.id }
+}
+
+let read = makeReader(Request(id: 7, path: "/items"))
+print(read()) // 7
+```
+
+**`@Sendable` 闭包**对可跨并发边界使用的函数值施加检查，包括其捕获的状态。例子捕获不可变的 `Request`，成员也可以安全传递。把它改成捕获并修改一个无保护的共享可变变量，在严格检查下就会遇到诊断；仅加 `@escaping` 不会获得这一层检查。
+
+`@unchecked Sendable` 表示由开发者承担证明责任，编译器不再验证相应内部安全条件。它适合确有同步机制、但编译器无法表达或识别的类型，不能作为消除报错的默认修复。
+
+Swift 6 的严格并发检查比 Swift 5 语言模式更强，但诊断还受具体编译设置影响。分析旧代码迁移时，应先确认共享状态由谁拥有、在哪个隔离域访问，再选择 actor、不可变值、同步包装或明确的一次性转移方案，而不是批量增加忽略标记。
+
+## 8. 回调桥接与 continuation {#回调桥接与continuation}
+
+**continuation** 保存当前异步调用继续执行所需的恢复入口。旧接口通过回调返回结果时，可以用 `withCheckedContinuation` 或抛错版本把回调接回 `await`。
+
+```swift
+func legacyRead(_ completion: (Int) -> Void) {
+    completion(7)
+}
+
+func read() async -> Int {
+    await withCheckedContinuation { continuation in
+        legacyRead { value in
+            continuation.resume(returning: value)
+        }
+    }
+}
+
+@main
+struct Demo {
+    static func main() async {
+        print(await read()) // 7
+    }
+}
+```
+
+这个最小接口同步调用回调，桥接也成立；continuation 既可以在挂起前恢复，也可以在之后恢复。真正异步的旧接口则通常需要允许回调逃逸。
+
+关键约束是恰好恢复一次。漏掉某条失败或取消路径，会使等待无法正常完成；重复完成会违反 continuation 契约，checked 版本能帮助诊断。它检查的是恢复使用方式，不负责自动取消旧请求，也不保证旧 API 永远回调。
+
+桥接代码应枚举成功、失败、取消以及回调竞态，并为“谁先完成”建立受保护的状态转换。对于本身已有异步 API 的接口，直接使用它通常比自行再包一层 continuation 更容易保持生命周期正确。
+
+## 9. 面试题 {#面试题}
+
+### 9.1 async 和 await 是否会自动创建并行任务？ {#async-await}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：挂起能力、顺序依赖与任务创建。
+
+**相关内容**：[异步函数与任务](#异步函数与任务)。
+
+<details>
+<summary>参考回答</summary>
+
+**不会，async 表示允许挂起，await 标记可能的挂起点，顺序调用仍然保持先后依赖。** 要让独立操作并发推进，可以使用 `async let` 或任务组。并发还不等于在不同核心上同时执行，实际运行受执行器、资源和调度影响。
+
+</details>
+
+### 9.2 结构化任务作用域收到取消后，能否立即结束而不等待子任务？ {#structured-tasks}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：父子生命周期、取消传播与结束条件。
+
+**相关内容**：[结构化任务与非结构化任务](#结构化任务与非结构化任务)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能把取消当成已经结束，结构化作用域退出前仍需等待子任务完成。** 取消会通知相关任务停止，但子任务要检查状态或调用能响应取消的 API。如果子任务永远不响应且无法完成，等待它的作用域也不能正常退出。
+
+</details>
+
+### 9.3 Task 与 Task.detached 有什么区别？ {#task-detached}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：非结构化生命周期、上下文继承与隔离。
+
+**相关内容**：[结构化任务与非结构化任务](#结构化任务与非结构化任务)。
+
+<details>
+<summary>参考回答</summary>
+
+**两者都创建非结构化任务，但 Task 可以继承创建处的 actor 上下文、任务局部值等信息，detached 主动脱离这些继承。** 两者都需要明确由谁保存句柄、等待结果和取消，不能只因写在某个异步函数内部就认为有结构化父子关系。选择 detached 应有隔离和生命周期上的理由，不能仅把它当成“后台线程”。
+
+</details>
+
+### 9.4 调用 cancel 后，任务为什么还可能继续执行？ {#cancellation}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：协作取消、检查位置与底层资源。
+
+**相关内容**：[协作取消与错误](#协作取消与错误)。
+
+<details>
+<summary>参考回答</summary>
+
+**cancel 设置取消请求，不强制终止任意代码。** 任务要通过 `Task.checkCancellation()`、`Task.isCancelled` 或支持取消的 API 响应。若还持有旧网络请求、订阅或回调等待，需要明确把取消传给底层，并保证结果提交与清理不会重复执行。
+
+</details>
+
+### 9.5 actor 能否保证一个异步方法里的检查和扣减构成原子操作？ {#actor-reentrancy}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：数据竞争与业务竞态、挂起点、重入与状态提交。
+
+**相关内容**：[actor 隔离与重入](#actor隔离与重入)。
+
+<details>
+<summary>参考回答</summary>
+
+**如果检查和扣减之间存在 await，就不能仅靠 actor 保证它们不可分割。** 方法挂起期间，其他任务可以修改同一 actor 的状态。可以等待后重新校验并在无挂起段完成提交，或提前预留资源并设计失败补偿；具体方案取决于外部副作用是否已发生。
+
+</details>
+
+### 9.6 在 MainActor 方法里创建 Task，是否能把耗时工作移到后台？ {#main-actor}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：actor 上下文继承与界面响应。
+
+**相关内容**：[主 actor 与界面状态](#主actor与界面状态)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能据此保证，Task 可以继承主 actor 隔离，里面的耗时同步代码仍可能占用主执行环境。** 应明确计算服务的隔离与执行方式，把界面状态更新保留在主 actor。`async`、`Task` 和后台线程不是同义词，结论还需要符合项目的语言模式与并发设置。
+
+</details>
+
+### 9.7 Sendable 和 @Sendable 分别约束什么？ {#sendable}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：值的安全传递、闭包捕获与开发者责任。
+
+**相关内容**：[可发送性与隔离边界](#可发送性与隔离边界)。
+
+<details>
+<summary>参考回答</summary>
+
+**Sendable 描述类型的值能安全跨越并发隔离边界，@Sendable 对相应函数值及其捕获施加并发安全约束。** 它们不会自动给共享可变字段加锁。使用 `@unchecked Sendable` 是主动承担内部安全证明，应有实际不可变性或同步机制支持。
+
+</details>
+
+### 9.8 用 continuation 包装回调时，需要保证哪些完成条件？ {#continuation}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：恰好一次恢复、取消连接与完成竞态。
+
+**相关内容**：[回调桥接与 continuation](#回调桥接与continuation)。
+
+<details>
+<summary>参考回答</summary>
+
+**每个调用都必须恰好恢复一次，成功、失败与取消不能漏恢复或重复恢复。** checked continuation 帮助诊断错误使用，但不会自动取消旧请求。若取消与回调可能并发到达，需要同步保护完成状态，让只有一个路径恢复并妥善释放底层资源。
+
+</details>
+
+## 10. 参考资料 {#参考资料}
+
+- [The Swift Programming Language：Concurrency](https://github.com/swiftlang/swift-book/blob/16a2a4caa408c86fc85bde1e1dfff4745b6e454c/TSPL.docc/LanguageGuide/Concurrency.md)
+- [Swift Evolution：Structured concurrency](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0304-structured-concurrency.md)
+- [Swift Evolution：Actors](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0306-actors.md)
+- [Swift Evolution：Sendable and @Sendable closures](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0302-concurrent-value-and-concurrent-closures.md)
+- [Swift Evolution：Clarify the Execution of Non-Actor-Isolated Async Functions](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0338-clarify-execution-non-actor-async.md)

@@ -1,0 +1,251 @@
+---
+sidebar_position: 7
+knowledge:
+  id: basic-knowledge.python.language.classes-instances
+  type: concept
+description: "讲解 Python 类与实例的状态归属、类属性共享、方法绑定、继承和多态，区分实例方法、类方法和静态方法，帮助发现测试对象之间的状态污染。"
+keywords: [Python 类, 实例属性, 类属性, self, classmethod, 多态]
+---
+
+# Python 类与实例
+
+**类**定义一类对象支持的行为，**实例**保存某个具体对象的状态。类本身也是对象，可以持有属性；实例访问到的属性，可能来自实例自身，也可能来自类或父类。
+
+测试代码里的状态污染往往就发生在这里：本应属于每个用例的列表被放成类属性，多个实例实际修改的是同一个列表。准备这一主题时，要把“属性写在哪里”和“查找时找到哪个对象”连起来解释。
+
+## 1. 面试核心 {#core}
+
+- 实例属性通常通过 `self.name = value` 建立，类属性写在类体或类对象上。**类属性引用的可变对象会被没有同名实例属性的实例共同访问**。[卡](#class-instance-state)
+- 对普通数据属性，实例中存在的同名属性会遮蔽类属性。**`obj.name = value` 通常建立实例绑定，不等于修改 `Class.name`**；属性描述符等机制需要另行判断。[卡](#attribute-shadowing)
+- 通过实例取得普通函数形式的方法时，会绑定实例。**`obj.method(arg)` 中的 `self` 来自调用对象**，不是 Python 自动创建的全局变量。[卡](#method-binding)
+- 实例方法接收实例，类方法接收类，静态方法不自动接收二者。**选择哪一种取决于实现需要哪一层状态**。[卡](#method-kinds)
+- 子类可以重写行为，调用方也可以依赖共同协议使用不同类型。**多态不要求所有对象都继承同一个显式业务基类**。[卡](#inheritance-polymorphism)
+
+## 2. 对象创建与实例状态 {#对象创建与实例状态}
+
+类体执行后产生类对象，调用类通常会创建并初始化实例。`__init__` 负责初始化已经创建好的实例，不应把它理解为返回新对象的普通工厂函数。
+
+```python
+class TestCase:
+    def __init__(self, name):
+        self.name = name
+        self.results = []
+
+    def record(self, result):
+        self.results.append(result)
+
+first = TestCase("login")
+second = TestCase("logout")
+first.record("passed")
+
+print(first.name, first.results)    # login ['passed']
+print(second.name, second.results)  # logout []
+```
+
+每次执行 `__init__` 都创建新列表，再绑定到相应实例的 `results` 属性，因此两个实例的记录彼此独立。`self` 是当前实例的惯用形参名，显式写在方法声明里；调用时则由实例方法绑定机制传入。
+
+`__new__` 负责创建对象，`__init__` 在合适条件下初始化实例。一般业务类实现 `__init__` 就够了，不需要为了掌握类与实例先自定义对象分配过程。
+
+## 3. 类属性与共享对象 {#类属性与共享对象}
+
+**类属性**保存在类上，适合表示这类对象共同使用的配置或常量。把可变列表放在类体中，就会让多个实例通过类查找访问同一个列表。
+
+```python
+class SharedCase:
+    results = []
+
+first = SharedCase()
+second = SharedCase()
+first.results.append("passed")
+
+print(second.results)             # ['passed']
+print(first.results is second.results)  # True
+```
+
+`first` 没有自己的 `results` 属性，于是找到 `SharedCase.results`。`append` 修改这个共享列表，没有给 `first` 创建新属性。把列表放进 `__init__` 并执行 `self.results = []`，才能明确地为每个实例分配列表。
+
+### 3.1 同名属性的遮蔽 {#同名属性的遮蔽}
+
+普通数据属性可以在实例层建立同名绑定，从而遮蔽类属性。
+
+```python
+class Limits:
+    timeout = 3
+
+first = Limits()
+second = Limits()
+first.timeout = 1
+Limits.timeout = 5
+
+print(first.timeout)   # 1
+print(second.timeout)  # 5
+print(Limits.timeout)  # 5
+```
+
+`first.timeout = 1` 形成实例属性，此后类上改成 `5`，`first` 仍读取自己的 `1`；`second` 没有同名实例属性，所以继续读取类上的值。
+
+这个“实例优先”的说明限定于普通数据属性。`property` 等数据描述符可以优先处理访问或赋值，类也能自定义属性访问过程，不能把简化的查找顺序当作覆盖所有对象的规则。
+
+## 4. 方法绑定 {#方法绑定}
+
+普通函数存放在类中，通过实例取得时，会形成绑定方法，把实例作为调用的第一个参数。
+
+```python
+class Counter:
+    def __init__(self):
+        self.value = 0
+
+    def add(self, amount):
+        self.value += amount
+        return self.value
+
+counter = Counter()
+print(counter.add(2))         # 2
+print(Counter.add(counter, 3))  # 5
+```
+
+在这个例子中，`counter.add(2)` 与显式调用 `Counter.add(counter, 2)` 具有相应的参数绑定关系。`self` 不是一个固定指向所有对象的名称，而是每次调用时收到的实例。
+
+### 4.1 实例方法、类方法与静态方法 {#实例方法类方法与静态方法}
+
+| 方法形式 | 隐式接收的对象 | 合适的职责 |
+| --- | --- | --- |
+| 普通实例方法 | 实例，通常命名为 `self` | 读写当前实例状态 |
+| `@classmethod` | 类，通常命名为 `cls` | 根据当前类构造实例、处理类级行为 |
+| `@staticmethod` | 无 | 与该类主题相关但不需要实例或类状态的函数 |
+
+```python
+class Endpoint:
+    def __init__(self, host):
+        self.host = host
+
+    @classmethod
+    def from_text(cls, text):
+        return cls(text.strip())
+
+    @staticmethod
+    def valid_port(port):
+        return 1 <= port <= 65535
+
+endpoint = Endpoint.from_text(" example.test ")
+print(endpoint.host)          # example.test
+print(Endpoint.valid_port(443))  # True
+```
+
+`from_text` 使用 `cls(...)`，所以子类调用这个方法时，可以构造对应子类；如果硬编码 `Endpoint(...)`，就固定了返回类型。`valid_port` 只使用传入值，放在模块级也可以，选择静态方法主要是组织方式，不会额外获得实例状态。
+
+## 5. 继承与多态 {#继承与多态}
+
+**继承**让子类复用和扩展已有行为，**多态**让调用方通过相同操作使用不同对象。
+
+```python
+class Checker:
+    def check(self, value):
+        return value is not None
+
+class PositiveChecker(Checker):
+    def check(self, value):
+        return super().check(value) and value > 0
+
+for checker in [Checker(), PositiveChecker()]:
+    print(checker.check(0))
+# True
+# False
+```
+
+调用方都执行 `check(0)`，实际行为随对象类型变化。子类中的 `super()` 按方法解析顺序继续查找后续实现；单继承时通常就是父类，多继承时不能简单理解成“固定调用写在括号里的第一个父类”。
+
+Python 也可以按对象实际支持的操作使用它，而不要求显式继承 `Checker`。只要另一个对象提供兼容的 `check(value)` 行为，就能参与相同调用。这种方式通常称为鸭子类型；它要求调用契约一致，不表示任何同名方法都具有相同业务含义。
+
+对象的可测试性也不依赖复杂继承体系。把依赖作为参数传入、让替代实现遵守同一行为约定，通常已经足够构建测试替身。
+
+## 6. 面试题 {#面试题}
+
+### 6.1 Python 类变量和实例变量有什么区别，怎样避免多个实例共享列表？ {#class-instance-state}
+
+**考察重点**：属性归属、查找过程与可变对象共享。
+
+**相关内容**：[对象创建与实例状态](#对象创建与实例状态)、[类属性与共享对象](#类属性与共享对象)。
+
+<details>
+<summary>参考回答</summary>
+
+**类属性在类上，实例属性属于具体实例。** 当实例没有同名属性时，访问可以找到类属性，所以类属性中的列表会被多个实例共同修改。
+
+需要独立列表时，在 `__init__` 中执行 `self.results = []`，让每个实例得到新的列表。是否共享取决于对象创建和绑定位置，不能因为通过 `first.results` 访问，就认定该列表属于 `first` 自己。
+
+</details>
+
+### 6.2 给实例的普通属性赋值，为什么不一定改变类上的同名属性？ {#attribute-shadowing}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：实例绑定、类绑定与普通属性的遮蔽。
+
+**相关内容**：[同名属性的遮蔽](#同名属性的遮蔽)。
+
+<details>
+<summary>参考回答</summary>
+
+**普通属性赋值通常在实例上建立同名属性，遮蔽类属性，而不是更新类上的绑定。** 例如 `first.timeout = 1` 之后再改 `Limits.timeout`，`first` 仍可以读取自己的值，其他没有实例属性的对象则读取新的类值。
+
+若属性使用 `property` 或其他数据描述符，赋值可能由描述符处理，需要按其实现判断。
+
+</details>
+
+### 6.3 调用 obj.method 时，self 从哪里来？ {#method-binding}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：类中的函数、绑定方法与调用参数。
+
+**相关内容**：[方法绑定](#方法绑定)。
+
+<details>
+<summary>参考回答</summary>
+
+**通过实例访问类中的普通函数时，会得到绑定方法，调用时自动把该实例作为第一个参数传入。** 方法声明里的 `self` 用来接收它。
+
+`self` 是惯用名称，语义来自绑定规则。`Counter.add(counter, 3)` 显式传入实例，与 `counter.add(3)` 对应，而不是通过某个全局 `self` 寻找当前对象。
+
+</details>
+
+### 6.4 实例方法、类方法和静态方法怎样选择？ {#method-kinds}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：方法需要的状态与隐式参数。
+
+**相关内容**：[实例方法、类方法与静态方法](#实例方法类方法与静态方法)。
+
+<details>
+<summary>参考回答</summary>
+
+**需要当前对象状态用实例方法，需要当前类用类方法，不需要二者的相关函数可以用静态方法或模块函数。**
+
+类方法接收 `cls`，适合用 `cls(...)` 实现能够跟随子类的替代构造入口；静态方法不自动接收实例或类，不会因为写在类里就获得它们的状态。
+
+</details>
+
+### 6.5 Python 如何通过继承和多态使用不同实现？ {#inheritance-polymorphism}
+
+**考察重点**：重写、运行时对象、方法解析顺序与行为契约。
+
+**相关内容**：[继承与多态](#继承与多态)。
+
+<details>
+<summary>参考回答</summary>
+
+**子类可以重写父类方法，调用同一操作时执行哪个实现取决于对象及其属性查找过程。** 需要延续继承链中的实现时，可以使用 `super()` 按方法解析顺序继续查找。
+
+Python 也支持按对象提供的协议使用它：不同类型只要实现兼容操作，就不一定必须继承同一个业务基类。调用方仍需明确参数、返回和异常约定，不能只看方法名字相同。
+
+</details>
+
+## 7. 参考资料 {#参考资料}
+
+- [Python 3.12 教程：Classes](https://docs.python.org/3.12/tutorial/classes.html)
+- [Python 3.12 数据模型：Custom classes 与实例属性](https://docs.python.org/3.12/reference/datamodel.html#custom-classes)
+- [Python 3.12：classmethod](https://docs.python.org/3.12/library/functions.html#classmethod)
+- [Python 3.12：staticmethod](https://docs.python.org/3.12/library/functions.html#staticmethod)
+- [Python 3.12：super](https://docs.python.org/3.12/library/functions.html#super)

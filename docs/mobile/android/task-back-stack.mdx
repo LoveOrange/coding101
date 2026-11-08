@@ -1,0 +1,217 @@
+---
+knowledge:
+  id: mobile.android.task-back-stack
+  type: concept
+description: "解释 Android task 与 Activity 返回栈、启动模式、Intent flags、onNewIntent 和返回导航的边界。"
+keywords: [Android 任务栈, launchMode, singleTop, singleTask, onNewIntent, CLEAR_TOP]
+---
+
+# Android 任务栈
+
+Android 的 task 组织用户完成一项操作时经过的 Activity，返回栈记录这些 Activity 实例的顺序。启动一个页面不总是创建新实例，也不总是进入调用方当前的 task。判断结果时，要同时看目标 Activity 的启动模式、这次 Intent 的 flags、现有任务和实例位置。
+
+## 1. 面试核心 {#core}
+
+- task 是用户导航的组织单位，**不等于应用包、进程或线程**。[卡](#task-process)
+- standard 通常新建实例，singleTop 只在目标已经位于相应栈顶时复用，**singleTop 不是全栈唯一**。[卡](#launch-modes)
+- singleTask 等模式还会影响任务查找和上方实例清理，**不能只把所有 single 开头的模式都解释成单例**。[卡](#launch-modes)
+- 复用实例通过 `onNewIntent` 接收请求，**不会因为输入变了就自动重新执行 onCreate**。[卡](#new-intent)
+- `CLEAR_TOP`、`SINGLE_TOP`、`NEW_TASK` 的职责不同，**CLEAR_TOP 不无条件保证目标实例自身也被保留**。[卡](#clear-top)
+- Back、Home 和 Up 表达不同导航意图，**返回到任务根部也有系统版本差异，不能承诺每次返回都销毁应用**。[卡](#navigation-actions)
+
+## 2. task 与返回栈 {#task与返回栈}
+
+**task** 是一组与用户操作相关的 Activity。**返回栈**按启动关系组织其中的实例，普通导航中后打开的实例位于更靠近栈顶的位置，返回时结束当前实例并露出前一个。
+
+用 `A₁ → B₁ → C₁` 表示从栈底到栈顶的三个实例。这里下标标记对象身份：同一个 Activity 类可以有多个实例，必须区分 `B₁` 和 `B₂`，否则无法解释“页面看起来相同，但返回要按两次”的现象。
+
+task 不等于应用：一个流程可以启动其他应用允许访问的 Activity；同一应用也可以参与多个 task。task 也不是进程，一项导航关系可以在系统中保留，而应用进程已经被终止。恢复时创建的新实例，需要按 [Activity 生命周期](./activity-lifecycle.mdx#配置变化与进程重建)恢复状态。
+
+**task affinity** 是系统选择某些任务关系时使用的关联信息，默认通常与应用包有关。它不是让所有相同 affinity 的 Activity 永远汇入同一个 task 的强制规则；启动模式、flags、文档任务和现有任务共同影响选择。
+
+## 3. 启动模式 {#启动模式}
+
+Activity 可以在 Manifest 中声明 `launchMode`。下面先按没有其他特殊 flags、常规任务关系的情形解释，再分析单次请求怎样修改行为。
+
+| 模式 | 核心行为 | 常见判断错误 |
+| --- | --- | --- |
+| `standard` | 通常创建新的实例并加入启动它的任务 | 把同一类误当成同一对象 |
+| `singleTop` | 目标若已在相应任务栈顶，则复用并调用 onNewIntent；否则仍可新建 | 认为栈内任何位置存在就能复用 |
+| `singleTask` | 按任务与 affinity 等规则查找可复用实例或建立任务关系；复用时清理该实例上方的 Activity | 认为只减少一次创建，不改变导航历史 |
+| `singleInstance` | 实例独占所在 task；它启动的其他 Activity 不进入这个独占 task | 认为它与 singleTask 完全一样 |
+| `singleInstancePerTask` | Android 12（API 31）起可用，实例位于 task 根部，每个 task 内该模式实例唯一；特定 flags 可允许不同 task 有多个实例 | 将其解释为整个系统绝对只能存在一个实例 |
+
+例如任务为 `A₁ → B₁ → C₁`，若 B 是 singleTop，从 C 再启动 B，结果仍可成为 `A₁ → B₁ → C₁ → B₂`，因为原 B 不在栈顶。若当前栈顶就是 B，则交给该实例处理新 Intent。
+
+singleTask 的影响更大：系统若选中已有 B 实例，会结束其上方的 C，再把新请求交给 B。若匹配任务原先在后台，还可能将整个任务带到前台。因此它会改变用户返回时看到的历史，不能只为“避免重复打开”就随意套给所有页面。
+
+启动模式不是业务对象的单例模式。即使 Activity 被复用，它收到的每次业务请求仍需要独立校验；进程重建也会产生新的对象。
+
+## 4. Intent flags 与操作推演 {#intent-flags与操作推演}
+
+**Intent flags** 控制这一次启动请求。它们可以与 Manifest 配合，不能只读 `launchMode` 就推断所有导航结果。
+
+| flag | 作用 |
+| --- | --- |
+| `FLAG_ACTIVITY_SINGLE_TOP` | 本次请求允许栈顶实例复用 |
+| `FLAG_ACTIVITY_CLEAR_TOP` | 目标在选定任务内存在时，清除其上方实例；目标自身如何处理还取决于启动模式和其他 flags |
+| `FLAG_ACTIVITY_NEW_TASK` | 按新任务相关规则选择已有任务或建立任务；不是每次都无条件新建一个空 task |
+| `FLAG_ACTIVITY_CLEAR_TASK` | 与 NEW_TASK 配合，清除将要关联的现有任务，再使目标成为其新根部 |
+
+以同一任务中的 `A₁ → B₁ → C₁` 为前提，这次从 C 启动 B：
+
+| B 与本次请求 | 结果 |
+| --- | --- |
+| standard，无额外 flags | `A₁ → B₁ → C₁ → B₂` |
+| singleTop，无额外 flags | `A₁ → B₁ → C₁ → B₂`，原 B 不在栈顶 |
+| standard + CLEAR_TOP | 清除 C，原 B 通常也结束，由新 B 接收请求：`A₁ → B₂` |
+| standard + CLEAR_TOP + SINGLE_TOP | 清除 C，保留 B 并向它发送新 Intent：`A₁ → B₁` |
+
+最后两行说明 CLEAR_TOP 清掉“上面的页面”，并不自动保证目标自己的身份不变。回答时同时给出实例数量、保留的身份和新请求接收方式，比只说“清栈”更清楚。
+
+```kotlin
+import android.app.Activity
+import android.content.Intent
+
+class HomeActivity : Activity()
+
+fun returnToHome(activity: Activity) {
+    val intent = Intent(activity, HomeActivity::class.java)
+        .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+    activity.startActivity(intent)
+}
+```
+
+在同一选定任务中已有 HomeActivity 的前提下，这段代码请求清理其上方的实例并复用它；若没有符合条件的实例，仍然需要创建。它不是“清除所有进程”或“清除所有任务”的 API。
+
+非 Activity Context 启动 Activity 通常要求 NEW_TASK，但这只解决任务关联要求；后台启动界面还受平台限制。加一个 flag 不代表系统必须允许任何后台场景弹出界面。
+
+## 5. 实例复用与新请求 {#实例复用与新请求}
+
+**`onNewIntent`** 把新请求交给被复用的 Activity。`onCreate` 不会因此重来，所以只在 `onCreate` 读取参数的页面，可能继续显示上一次请求的数据。
+
+```kotlin
+import android.app.Activity
+import android.content.Intent
+import android.os.Bundle
+import android.widget.TextView
+
+class DetailActivity : Activity() {
+    private lateinit var label: TextView
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        label = TextView(this)
+        setContentView(label)
+        showRequest(intent)
+    }
+
+    override fun onNewIntent(newIntent: Intent) {
+        super.onNewIntent(newIntent)
+        setIntent(newIntent)
+        showRequest(newIntent)
+    }
+
+    private fun showRequest(request: Intent) {
+        val noteId = request.getLongExtra("note_id", -1)
+        label.text = if (noteId >= 0) "note=$noteId" else "missing note"
+    }
+}
+```
+
+代码在首次创建和实例复用时都处理输入，并通过 `setIntent` 更新之后 `getIntent()` 读取的对象。传进 `onNewIntent` 的参数不会自动让任意旧字段变成新状态；真实页面还要取消旧加载、避免旧结果覆盖新记录，并决定之前的未提交输入怎样处理。
+
+当一个 resumed Activity 被复用时，框架会让新 Intent 在适当的生命周期边界送达；它会先暂停，并在后续恢复前调用 `onNewIntent`。若原实例处于 stopped 等其他状态，外围回调序列则不同。能稳定依赖的是新请求经该入口送达，不能把 `onPause → onNewIntent → onResume` 当作所有复用场景的唯一序列。
+
+复用同一个实例不会自动为“旧参数状态”再压一层返回栈。例如同一个详情页从笔记 1 切到笔记 2，Back 是否应该回到笔记 1，需要业务导航明确设计，不能依赖 Activity 对象的输入历史自动实现。
+
+## 6. Back、Home 与 Up {#back-home与up}
+
+**Back** 表示回退当前导航，**Home** 表示离开到桌面，**Up** 表示应用内的层级导航。它们在某些简单页面上看起来结果相似，但对 task、历史和外部入口的处理并不总是一致。
+
+普通的非根 Activity 执行默认 Back，通常结束当前实例并露出前一个。Home 则通常让任务进入后台，不要求逐层销毁。Android 12（API 31）及以上，对声明 MAIN 和 LAUNCHER 的根 Activity，默认 Back 会把任务移到后台，而不是沿用所有旧版本的根实例结束行为。
+
+因此，“按返回键就一定调用 onDestroy”“回到桌面就表示退出进程”都不能作为通用结论。用户明确完成页面的业务逻辑可以调用 finish 等 API，但进程何时退出仍由更广的系统条件决定。
+
+通知和深链接可能从应用外部进入中间页面，需要规划用户 Back 后应该看到哪里，以及 Up 是否要回到应用自己的层级入口。清理返回栈也只改变导航：用户退出登录后，还必须撤销或清除会话、限制旧数据访问，不能只靠 CLEAR_TASK 当作鉴权实现。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 task 与应用进程是一一对应的吗？ {#task-process}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：导航组织、实例身份与执行边界。
+
+**相关内容**：[task 与返回栈](#task与返回栈)。
+
+<details>
+<summary>参考回答</summary>
+
+**不是，task 组织用户导航中的 Activity，进程承载代码和内存。** 一个任务可以涉及不同应用，同一应用也可以有多个任务；进程被终止后，系统仍可能保留任务记录并在返回时重建实例。不能用进程数量推导返回栈，也不能用任务存在推断原对象还活着。
+
+</details>
+
+### 7.2 Activity 的启动模式有哪些区别？ {#launch-modes}
+
+**考察重点**：新建、栈顶复用、任务关联和实例清理。
+
+**相关内容**：[启动模式](#启动模式)。
+
+<details>
+<summary>参考回答</summary>
+
+**standard 通常新建，singleTop 只复用相应栈顶目标；singleTask 按任务规则复用目标并清理其上方实例，singleInstance 还要求目标独占 task。** Android 12 起的 singleInstancePerTask 要求目标作为任务根部，每个任务内唯一，特定 flags 可允许不同任务中的多个实例。实际结果还要结合 Intent flags、已有任务和 affinity 判断。
+
+</details>
+
+### 7.3 栈顶 Activity 被复用时，会调用哪些生命周期入口？ {#new-intent}
+
+**考察重点**：onNewIntent、参数更新和生命周期前提。
+
+**相关内容**：[实例复用与新请求](#实例复用与新请求)。
+
+<details>
+<summary>参考回答</summary>
+
+**通过 onNewIntent 接收，不能等待 onCreate 再读一次参数。** 如果后续还要通过 getIntent 读取新请求，需要调用 setIntent；页面字段和加载任务也要按新输入更新。resumed 实例通常先暂停再收到新 Intent，随后恢复；其他原始状态的外围回调不同，不能无条件背同一序列。
+
+</details>
+
+### 7.4 CLEAR_TOP 为什么不一定保留目标 Activity 自身？ {#clear-top}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：flags 组合与目标实例身份。
+
+**相关内容**：[Intent flags 与操作推演](#intent-flags与操作推演)。
+
+<details>
+<summary>参考回答</summary>
+
+**它主要请求清除目标上方实例，目标是否复用还依赖启动模式和其他 flags。** standard 目标仅配 CLEAR_TOP 时，原目标也可能结束后重建；再配 SINGLE_TOP，可以在清理后复用目标并通过 onNewIntent 送达请求。应明确所选任务和既有实例，不能只看“清栈”两个字。
+
+</details>
+
+### 7.5 Back、Home 和 Up 的含义是否相同？ {#navigation-actions}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：返回历史、后台任务与层级导航。
+
+**相关内容**：[Back、Home 与 Up](#back-home与up)。
+
+<details>
+<summary>参考回答</summary>
+
+**不同，Back 回退当前导航，Home 回到桌面，Up 按应用层级向上导航。** 默认 Back 通常结束非根 Activity，但 Android 12 起根 Launcher Activity 的默认 Back 会把任务移到后台。外部深链接和通知入口还需要单独规划历史；这些操作都不能被笼统解释成退出进程。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [Android：Tasks and the back stack](https://developer.android.com/guide/components/activities/tasks-and-back-stack)
+- [Android API：Intent](https://developer.android.com/reference/android/content/Intent)
+- [Android API：Activity.onNewIntent](https://developer.android.com/reference/android/app/Activity#onNewIntent(android.content.Intent))
+- [Android：activity manifest element](https://developer.android.com/guide/topics/manifest/activity-element)
+- [Android：Principles of navigation](https://developer.android.com/guide/navigation/principles)

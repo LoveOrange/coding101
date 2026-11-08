@@ -1,0 +1,257 @@
+---
+knowledge:
+  id: basic-knowledge.swift.protocols-generics
+  type: concept
+description: "解释 Swift 协议要求与扩展、关联类型、泛型约束、some 和 any，以及类型擦除的用途和成本。"
+keywords: [Swift 协议, Swift 泛型, associatedtype, some any, 类型擦除, 协议扩展]
+---
+
+# Swift 协议与泛型
+
+**协议**声明一个类型必须提供的能力，**泛型**让代码在保留类型关系的同时使用这些能力。两者结合后，既能避免给每种类型重复写处理逻辑，也能让编译器检查“这两个值必须同类型”“元素必须能比较”等要求。`some`、`any` 和手工类型擦除则分别决定哪些具体类型信息需要保留、隐藏或在运行时承接。
+
+## 1. 面试核心 {#core}
+
+- 协议要求描述调用契约，**属性要求不指定必须使用存储属性，也可以由计算属性实现**。
+- 协议要求与仅出现在扩展中的方法不同，**通过协议类型访问时，扩展里的额外方法不会自动按具体类型的同名方法重写**。[卡](#protocol-extension)
+- 泛型参数和 `where` 表达类型关系，**泛型函数只能依赖约束已经保证的能力**。[卡](#generic-constraints)
+- `associatedtype` 表达遵守协议的类型需要选定的相关类型，**不能把每个遵守者的关联类型都当作相同类型**。
+- 作为返回类型时，`some P` 隐藏但保留具体类型身份，`any P` 可容纳不同遵守类型，**隐藏一个确定类型和容纳多种类型是不同需求**。[卡](#some-any)
+- 类型擦除用统一包装暴露所需能力，**会放弃部分具体类型关系，并可能引入间接调用与存储成本**。[卡](#type-erasure)
+- Swift 泛型依靠声明约束检查能力，也可被编译器特化优化，**不能用“泛型都擦除”或“模板都只复制源码”概括 Swift 与 C++ 的差别**。[卡](#swift-cpp-generics)
+
+## 2. 协议要求与默认实现 {#协议要求与默认实现}
+
+协议可以要求方法、属性、初始化器等。类型通过明确声明遵守协议并提供所需实现，建立相应契约；有一个同名方法本身不等于已经声明遵守协议。
+
+```swift
+protocol Named {
+    var name: String { get }
+}
+
+struct User: Named {
+    let first: String
+    let last: String
+    var name: String { first + " " + last }
+}
+
+func display<T: Named>(_ value: T) {
+    print(value.name)
+}
+
+display(User(first: "Lin", last: "Jiang")) // Lin Jiang
+```
+
+`Named` 只要求可读取 `name`，没有要求具体存储。若协议要求 `{ get set }`，实现就必须同时提供写入能力。值类型的方法需要修改自身时，还要按协议约定使用 `mutating`。
+
+**协议扩展**可以提供要求的默认实现，也可以添加不属于协议要求的便利方法。它们的派发意义不同：
+
+```swift
+protocol Describing {
+    func requiredText() -> String
+}
+
+extension Describing {
+    func requiredText() -> String { "default required" }
+    func helper() -> String { "default helper" }
+}
+
+struct Item: Describing {
+    func requiredText() -> String { "item required" }
+    func helper() -> String { "item helper" }
+}
+
+let item = Item()
+let abstract: any Describing = item
+print(abstract.requiredText()) // item required
+print(abstract.helper())       // default helper
+print(item.helper())           // item helper
+```
+
+`requiredText` 在协议中声明，遵守关系提供相应实现。`helper` 只在扩展里出现，通过协议类型调用时选择扩展的便利方法，并不会因为实际值有同名方法就形成同样的重写关系。需要多态替换的能力，应进入协议要求，而不只写在扩展中。
+
+## 3. 类型参数、关联类型与约束 {#类型参数关联类型与约束}
+
+**类型参数**让调用者在约束范围内选择具体类型。约束可以要求遵守协议，也可以规定两个关联类型相同。泛型实现只能调用约束已经保证的成员，不能凭某个调用点恰好传入字符串，就在无约束函数里直接使用字符串专有方法。
+
+**关联类型** `associatedtype` 是协议中需要由遵守类型确定的类型位置。例如数据源的元素类型，应由具体数据源决定：
+
+```swift
+protocol Source {
+    associatedtype Element
+    func first() -> Element?
+}
+
+struct Names: Source {
+    let values: [String]
+    func first() -> String? { values.first }
+}
+
+func firstUppercased<S: Source>(_ source: S) -> String?
+where S.Element == String {
+    source.first()?.uppercased()
+}
+
+print(firstUppercased(Names(values: ["Lin"])) ?? "empty") // LIN
+```
+
+`Names.Element` 可由实现推断为 `String`，`where` 让泛型函数明确依赖这个关系。另一个 `Source` 完全可以选择 `Int`，不能只因两个对象都遵守 `Source` 就把它们的元素混用。
+
+若要比较两个值，约束不仅要说明它们“都可比较”，还要说明比较运算要求的类型关系。例如同一个 `T: Equatable` 可以保证两参数使用同一种相等性规则；两个任意的 `any Equatable` 可能分别保存整数和字符串，不能自动当作同一个 `Self`。
+
+## 4. 不透明类型与存在类型 {#不透明类型与存在类型}
+
+**不透明返回类型** `some P` 让实现方选择一个符合协议的具体类型，调用方只看到协议能力，但编译器仍保留其类型身份。对同一个函数的同一泛型实例化，所有返回分支要符合一致的底层类型要求。
+
+**存在类型** `any P` 则允许在一个值中容纳某个遵守协议的具体实例，并在运行时携带使用相应能力所需的信息。本文示例使用 Swift 5.7 及以后支持的显式 `any` 写法。
+
+```swift
+protocol Labeling {
+    var label: String { get }
+}
+
+struct TextLabel: Labeling {
+    let label: String
+}
+
+struct CountLabel: Labeling {
+    let count: Int
+    var label: String { "count=\(count)" }
+}
+
+func makeLabel() -> some Labeling {
+    TextLabel(label: "ready")
+}
+
+func selectLabel(_ useCount: Bool) -> any Labeling {
+    if useCount { return CountLabel(count: 3) }
+    return TextLabel(label: "ready")
+}
+
+let labels: [any Labeling] = [makeLabel(), selectLabel(true)]
+print(labels.map { $0.label }) // ["ready", "count=3"]
+```
+
+`makeLabel` 返回一个隐藏的确定类型，`selectLabel` 可以根据输入返回不同类型。若把 `selectLabel` 的返回类型直接改成 `some Labeling`，当前两个具体类型不同的返回分支就不能满足要求。
+
+`some` 用在参数位置时是另一种表达：它是匿名泛型参数，由调用者提供满足约束的具体值，不要直接套用返回位置“由实现方选择类型”的解释。
+
+存在类型提供运行时灵活性，但会隐藏一些类型关系；带关联类型或 `Self` 约束的操作并非都能直接调用。现代 Swift 可以在部分泛型调用中打开存在类型来使用其具体类型信息，因此也不能笼统地说“any 永远不能传给泛型函数”。
+
+性能取决于具体存储、间接派发与编译优化。小值可能使用容器内存储，某些情况需要额外分配；不应一概把 `any` 写成“每次都堆分配”，也不应只凭 `some` 关键字宣称零成本。
+
+## 5. 类型擦除与实现边界 {#类型擦除与实现边界}
+
+**类型擦除**用一个统一外观隐藏具体实现，只保留调用者需要的能力。它可以通过闭包或包装对象完成；与 JVM 泛型实现中的“擦除类型参数”不是同一个讨论层次。
+
+```swift
+protocol Named {
+    var name: String { get }
+}
+
+struct User: Named {
+    let name: String
+}
+
+struct AnyNamed: Named {
+    private let readName: () -> String
+    init<T: Named>(_ value: T) {
+        readName = { value.name }
+    }
+    var name: String { readName() }
+}
+
+let erased = AnyNamed(User(name: "Lin"))
+print(erased.name) // Lin
+```
+
+`AnyNamed` 对外提供统一类型，内部闭包保留读取具体值的能力。对于这里简单的协议，直接使用 `any Named` 就可能够用；这个最小包装用于说明机制，不是建议所有协议再包一层。
+
+当 API 需要固定包装类型、保留某些关联类型约束，或需要兼容既有接口时，手工擦除才有具体价值。代价可能包括间接调用、捕获存储与更弱的静态关系。若捕获的是类实例，包装还会影响其引用生命周期，详见[Swift 闭包](./closures.mdx#捕获与捕获列表)。
+
+Swift 泛型与 C++17 模板也应按机制比较。Swift 的泛型体根据声明的协议和类型约束接受检查，运行时可以借助类型元数据与遵守信息支持未完全特化的代码，优化器也能针对具体类型生成特化实现。C++ 模板则在模板定义与实例化阶段按其规则检查，其中依赖具体类型的操作需要在相应实例化时确定，还支持模板特化等机制。
+
+两者都服务于复用和静态检查，但不能把 Swift 泛型一律等同于 JVM 擦除，也不能把 C++ 模板仅解释为文本替换。做语言选型或回答性能追问时，应继续看约束表达、编译产物和实际调用，而不是只比较语法里的尖括号。
+
+## 6. 面试题 {#面试题}
+
+### 6.1 协议要求的默认实现与扩展中的额外方法有什么区别？ {#protocol-extension}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：遵守契约与协议类型上的方法选择。
+
+**相关内容**：[协议要求与默认实现](#协议要求与默认实现)。
+
+<details>
+<summary>参考回答</summary>
+
+**协议要求进入遵守关系，可以由遵守类型提供对应实现；只在扩展中添加的方法不自动成为同样的多态要求。** 通过协议类型调用扩展额外方法时，不会仅因实际值有同名方法就选中那个方法。需要按遵守类型替换的能力应明确写入协议，而不是只依靠扩展中的同名便利方法。
+
+</details>
+
+### 6.2 Swift 泛型参数与关联类型有什么关系？ {#generic-constraints}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：调用者类型选择、遵守者类型关系与 where 约束。
+
+**相关内容**：[类型参数、关联类型与约束](#类型参数关联类型与约束)。
+
+<details>
+<summary>参考回答</summary>
+
+**泛型参数由调用或实例化选择，关联类型描述协议遵守者需要确定的相关类型，两者可用约束连接。** 例如 `S` 遵守 `Source`，`S.Element` 是它的元素类型，`where S.Element == String` 才允许按字符串能力处理。都遵守同一个协议，不代表各自的关联类型或 `Self` 必然相同。
+
+</details>
+
+### 6.3 返回 some Protocol 和 any Protocol 有什么区别？ {#some-any}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：隐藏的确定类型、运行时容器与类型关系。
+
+**相关内容**：[不透明类型与存在类型](#不透明类型与存在类型)。
+
+<details>
+<summary>参考回答</summary>
+
+**some 隐藏实现方选择的确定底层类型并保留身份，any 可以容纳不同的协议遵守类型。** 对同一个泛型实例化，不透明返回的各分支需要满足一致底层类型要求；存在类型适合运行时选择或异构存储，但会隐藏部分类型关系。不能据此直接断言某一写法总是零分配或总是堆分配。
+
+</details>
+
+### 6.4 Swift 的类型擦除解决什么问题，有什么代价？ {#type-erasure}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：统一 API、能力保留与信息隐藏。
+
+**相关内容**：[类型擦除与实现边界](#类型擦除与实现边界)。
+
+<details>
+<summary>参考回答</summary>
+
+**类型擦除以统一包装隐藏具体类型，只暴露调用者需要的能力，便于稳定接口或特定存储要求。** 可以用闭包或包装对象转发操作，但可能增加间接调用、捕获和分配成本，并放弃部分静态类型关系。简单协议已能用 any 满足时，不必再手工包装；它也不等同于 JVM 的泛型实参擦除机制。
+
+</details>
+
+### 6.5 Swift 泛型与 C++ 模板有什么区别？ {#swift-cpp-generics}
+
+**考察重点**：约束检查、实例化与实现优化。
+
+**相关内容**：[类型擦除与实现边界](#类型擦除与实现边界)。
+
+<details>
+<summary>参考回答</summary>
+
+**Swift 泛型依据声明的协议与类型约束检查实现，C++ 模板还需要在实例化阶段确定依赖具体类型的操作，并提供模板特化等机制。** Swift 可以用类型元数据与遵守信息支持通用实现，也可以被优化为具体类型的特化代码；不能把它简单当成 JVM 擦除。C++ 模板也不是无类型检查的文本替换，实际成本仍要看生成代码和调用方式。
+
+</details>
+
+## 7. 参考资料 {#参考资料}
+
+- [The Swift Programming Language：Protocols](https://github.com/swiftlang/swift-book/blob/16a2a4caa408c86fc85bde1e1dfff4745b6e454c/TSPL.docc/LanguageGuide/Protocols.md)
+- [The Swift Programming Language：Generics](https://github.com/swiftlang/swift-book/blob/16a2a4caa408c86fc85bde1e1dfff4745b6e454c/TSPL.docc/LanguageGuide/Generics.md)
+- [The Swift Programming Language：Opaque and Boxed Protocol Types](https://github.com/swiftlang/swift-book/blob/16a2a4caa408c86fc85bde1e1dfff4745b6e454c/TSPL.docc/LanguageGuide/OpaqueTypes.md)
+- [Apple WWDC24：Explore Swift performance](https://developer.apple.com/videos/play/wwdc2024/10217/)
+- [C++17 草案 N4659：Name resolution in templates](https://timsong-cpp.github.io/cppwp/n4659/temp.res)

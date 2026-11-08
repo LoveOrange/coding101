@@ -1,0 +1,355 @@
+---
+knowledge:
+  id: mobile.android.background-work
+  type: concept
+description: "解释 Android 协程、Service、前台服务、WorkManager 与 AlarmManager 的选择，及任务重试、取消和幂等。"
+keywords: [Android, 后台任务, Service, WorkManager, AlarmManager, 前台服务]
+---
+
+# Android 后台任务
+
+Android 后台任务首先是一个存续问题：用户离开页面后，这件事还要不要做；进程被回收或设备重启后，还能不能重新执行。把工作放到线程里，只解决部分执行位置问题，并没有让系统记住这项工作。
+
+本文以 WorkManager 2.9.0 说明持久任务机制；平台限制按相关 Android 版本就近标明。组件本身的职责见 [Android 应用组件](./app-components.mdx#四类入口)。
+
+## 1. 面试核心 {#core}
+
+- 后台线程和后台应用是不同概念，**协程或线程不会自动获得跨进程死亡的存续能力**。[卡](#selection)
+- Service 默认不创建工作线程，**前台服务也不保证进程永不被回收，`START_STICKY` 只是特定重建语义**。[卡](#restart)
+- WorkManager 保存任务描述并结合系统调度，**约束满足与最小延迟到达不代表任务会在精确时刻运行**。[卡](#workmanager)
+- WorkManager 的唯一工作解决同名任务编排，**不能替代服务端或本地业务操作的幂等**。[卡](#idempotency)
+- 任务可能因约束变化、取消或执行期限停止，**工作代码需要响应取消，区分重试错误和最终失败**。[卡](#cancellation)
+- AlarmManager 适合有时间语义的提醒，**准确的用户提醒与可延后的数据同步应采用不同安排**。[卡](#reminder)
+- 系统根据进程重要性与资源压力回收进程，**可靠任务应能够恢复，不以永久保活作为正确性前提**。[卡](#process)
+
+## 2. 执行位置与任务存续 {#执行位置与任务存续}
+
+**后台线程**指相对于主线程的工作线程；**应用处于后台**指应用当前没有相应的可见或前台交互状态。前台页面可以使用后台线程，后台 Service 的生命周期回调也可能运行在主线程，二者不能混用。
+
+先回答任务的约束，再选择 API：
+
+| 任务需要 | 常见选择 | 主要边界 |
+| --- | --- | --- |
+| 页面离开后可以取消的加载或计算 | 受生命周期管理的协程、线程池 | 进程退出后不能继续；协程不自动把阻塞调用移到合适线程 |
+| 必须最终尝试完成、可延后的同步或清理 | WorkManager | 受约束、系统调度与电源策略影响，不提供精确时刻保证 |
+| 用户正在感知的持续工作，如合适的媒体播放 | 对应平台 API，必要时使用合规前台服务 | 需要可见告知，并满足服务类别、权限和启动条件 |
+| 用户设定的特定时刻提醒 | 合适的 AlarmManager API | 精确闹钟存在访问限制，触发回调也不是无限执行许可 |
+| 客户端需要绑定并调用的服务接口 | 绑定式 Service | 生命周期与绑定、启动责任相关；不自动持久保存业务进度 |
+
+例如页面搜索可以随页面取消；一份用户已经确认提交、需要在网络恢复后继续发送的操作，需要先持久保存业务记录，再安排可恢复的发送工作。即使后者内部也使用协程，两种任务的持久责任仍不同。
+
+`Handler.postDelayed()` 和普通 Timer 只存在于当前进程。进程死亡后，它们不能在第二天重新唤醒应用；设备休眠、线程拥塞也会影响回调时机。它们适合进程内延后操作，不适合直接承担跨重启的提醒保证。
+
+## 3. Service 与进程回收 {#service与进程回收}
+
+### 3.1 Service 的执行环境 {#service的执行环境}
+
+Service 是系统管理的组件入口，默认回调仍在所属进程的主线程。因此耗时 I/O 和计算应明确调度，不能因为类名是 Service 就直接阻塞回调。
+
+前台服务用通知等方式让用户知道持续任务，并向系统表达相应的重要性。它适合用户感知的合规任务，不是“任何任务都能永远运行”的开关。
+
+需要区分运行系统与目标 SDK 的规则：
+
+- Android 8.0（API 26）引入相应后台服务限制；使用 `startForegroundService()` 后，需要在系统规定的短时间内调用 `startForeground()` 完成提升，不能等耗时初始化结束再处理。
+- Android 12（API 31）上，目标 API 31 及以上的应用从后台启动前台服务受到限制，只有符合规定例外的场景才允许。
+- Android 14（API 34）上，目标 API 34 及以上应用需要满足前台服务类型和相应权限要求。使用期间权限还会限制后台创建相关服务，不能仅凭一次 `checkSelfPermission()` 成功就断言当前启动合法。
+
+### 3.2 START_STICKY 的含义 {#start-sticky的含义}
+
+启动式 Service 的 `onStartCommand()` 返回值告诉系统如何对待被杀后的启动责任。它不承诺具体何时重建，也不替应用保存任意内存状态。
+
+| 返回值 | 关键含义 |
+| --- | --- |
+| `START_NOT_STICKY` | 若没有待处理启动请求，不因这次被杀而重新创建服务 |
+| `START_STICKY` | 保留启动状态，系统之后尝试重建；没有待交付启动请求时，可能收到 `null` Intent |
+| `START_REDELIVER_INTENT` | 在相应条件下重建并重新交付未完成的启动 Intent |
+
+所以使用 `START_STICKY` 的代码不能假定重建时一定带着原始 Intent，也不能把上传进度只放在服务字段中。使用重新交付模式时还要处理同一输入被再次执行的情况。
+
+用户强制停止应用、显式停止服务和系统因资源压力杀进程，不是同一种事件。不能用“返回 sticky”保证任意情况下自动复活；还需遵守当前后台启动与运行约束。
+
+### 3.3 用恢复能力承受回收 {#用恢复能力承受回收}
+
+系统会根据组件状态、用户可见性、绑定关系等评估进程重要性。正在承接关键交互的进程与缓存进程的回收优先级不同；具体重要性会随着运行情况变化，不是创建进程时永久贴好的标签。
+
+从常见重要性类别看，可以先按下面的顺序理解，再考虑组件之间的依赖与具体系统策略：
+
+| 类别 | 典型情况与回收关系 |
+| --- | --- |
+| 前台进程 | 正在承接用户交互，或执行系统认为关键的组件回调，优先保留 |
+| 可见进程 | 界面仍对用户可见，或有相应用户感知的重要工作，通常高于普通服务进程 |
+| 服务进程 | 运行已启动的普通服务，对用户仍可能有用，但不直接对应当前可见交互 |
+| 缓存进程 | 暂无上述活动责任，保留用于较快重新进入，资源不足时更容易回收 |
+
+同一进程有多种责任时按较高重要性评估；绑定和依赖关系也可能提升重要性。没有活动组件的空进程属于可回收缓存的一类，不需要单独背成一个永远固定的第五级。
+
+低内存时，系统可以终止进程以回收资源，应用不应期待一定收到 `onDestroy()`。业务进度应该在合适的提交点持久保存，而不是等销毁回调再补写。
+
+减少无用内存、及时结束工作和选择正确组件，有助于资源管理；但不能把相互拉起服务、无限循环或隐藏通知当作任务可靠性的基础。真正需要可靠的操作，应能在之后获得执行机会时继续或安全重试。
+
+## 4. WorkManager 的执行模型 {#workmanager的执行模型}
+
+### 4.1 保存任务描述 {#保存任务描述}
+
+**WorkRequest** 描述要运行的 Worker、输入、约束、延迟和重试策略。WorkManager 将任务信息保存在自己的数据库中，再结合当前系统支持的调度机制安排执行。
+
+保存下来的是可以重新构造工作的描述，不是一个悬挂在内存里的协程栈。进程重建后会创建新的 Worker，所以输入应使用稳定 ID、必要参数和持久业务状态；不能依赖捕获的 Activity、打开的文件句柄或某个全局对象仍保持旧内容。
+
+WorkManager 支持进程退出和设备重启后的任务重新调度，但仍遵守系统行为。强制停止、卸载、清除数据和长期不满足约束，都不能被概括成“保证马上恢复执行”。强制停止后要等应用有机会重新启动、由 WorkManager 恢复调度；卸载或清除应用数据也会影响任务记录。
+
+### 4.2 约束与状态 {#约束与状态}
+
+网络、充电、电量和存储等约束，描述任务在什么条件下适合执行。所有所需约束满足后，任务才具备执行资格；系统实际安排仍可能延迟。
+
+一次性任务的主要状态可以这样理解：
+
+| 状态 | 含义 |
+| --- | --- |
+| `ENQUEUED` | 等待执行机会，不等于正在运行 |
+| `RUNNING` | Worker 正在执行 |
+| `SUCCEEDED` | 本次工作成功结束 |
+| `FAILED` | 最终失败，依赖它的后续工作不能按成功链路继续 |
+| `CANCELLED` | 任务已取消，正在执行的代码需要响应停止 |
+| `BLOCKED` | 等待前置任务满足依赖条件 |
+
+`Result.retry()` 会请求之后重试，不表示这次已经完成；`Result.failure()` 表示终止失败。周期任务完成一次后继续下一周期，不能套用一次性任务“成功后永久结束”的模型。
+
+WorkManager 2.9.0 的周期任务最小周期为 15 分钟，实际时间还受系统与约束影响。初始延迟表示至少等待多久，不是一个精确定时器；需要每天某个用户选定时刻提醒，应另行考虑闹钟语义。
+
+### 4.3 一个可重复执行的清理任务 {#一个可重复执行的清理任务}
+
+下面清理应用自己维护的预览缓存子目录。约定这个目录中的过期文件可以删除，业务不再读取或改写这些文件；需要边使用边清理的缓存，还要另外设计引用、锁或版本规则。
+
+```kotlin
+import android.content.Context
+import androidx.work.CoroutineWorker
+import androidx.work.WorkerParameters
+import java.io.File
+import java.io.IOException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withContext
+
+suspend fun removeExpiredPreviews(directory: File, cutoffMillis: Long) =
+    withContext(Dispatchers.IO) {
+        if (!directory.exists()) return@withContext
+        val files = directory.listFiles() ?: throw IOException("Cannot list previews")
+        for (file in files) {
+            ensureActive()
+            if (file.isFile && file.lastModified() < cutoffMillis) {
+                if (!file.delete() && file.exists()) {
+                    throw IOException("Cannot remove expired preview")
+                }
+            }
+        }
+    }
+
+class PreviewCleanupWorker(context: Context, params: WorkerParameters) :
+    CoroutineWorker(context, params) {
+    override suspend fun doWork(): Result {
+        val cutoff = inputData.getLong("cutoff_ms", -1L)
+        if (cutoff < 0) return Result.failure()
+        return try {
+            removeExpiredPreviews(
+                File(applicationContext.cacheDir, "generated-previews"), cutoff
+            )
+            Result.success()
+        } catch (_: IOException) {
+            if (runAttemptCount < 3) Result.retry() else Result.failure()
+        }
+    }
+}
+```
+
+已经删除的文件再次执行时会自然跳过，因此重复执行不会把同一份清理变成额外业务写入。代码检查取消，并只把 I/O 失败映射为有限重试；没有把 `CancellationException` 吞掉当成普通失败。
+
+`CoroutineWorker` 2.9.0 默认在 `Dispatchers.Default` 上执行 `doWork()`，示例把阻塞文件操作放到 `Dispatchers.IO`。挂起函数的名字不会自动决定所有内部调用都不阻塞。
+
+```kotlin
+import android.content.Context
+import androidx.work.BackoffPolicy
+import androidx.work.Constraints
+import androidx.work.ExistingWorkPolicy
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
+import androidx.work.workDataOf
+import java.util.concurrent.TimeUnit
+
+fun enqueuePreviewCleanup(context: Context, cutoffMillis: Long) {
+    val request = OneTimeWorkRequestBuilder<PreviewCleanupWorker>()
+        .setInputData(workDataOf("cutoff_ms" to cutoffMillis))
+        .setConstraints(Constraints.Builder().setRequiresCharging(true).build())
+        .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
+        .build()
+    WorkManager.getInstance(context).enqueueUniqueWork(
+        "preview-cleanup", ExistingWorkPolicy.KEEP, request
+    )
+}
+```
+
+这个请求等待充电条件，使用同一个工作名称避免重复排入尚未结束的清理。`KEEP` 会保留已有未完成工作，因此第二次传入的新 cutoff 不会自动更新旧请求；需要更新策略时必须明确选择相应编排。
+
+这里基础重试间隔设为 30 秒。指数退避会随重试次数增加等待时间，并受到 WorkManager 的上限约束；实际执行还可能晚于计算出的最早时刻。示例最多允许初次尝试后的 3 次重试，不是无限重试。
+
+## 5. 重复、取消与业务一致性 {#重复取消与业务一致性}
+
+### 5.1 唯一工作不等于恰好执行一次 {#唯一工作不等于恰好执行一次}
+
+`enqueueUniqueWork()` 控制同名任务如何共存。`KEEP` 保留未完成的旧工作，`REPLACE` 取消旧工作再安排新工作；这解决任务编排，不保证远端业务只发生一次。
+
+设想上传请求已经被服务器接收，但进程在保存成功结果前被杀。恢复后 Worker 无法只凭本地状态断言服务器是否执行过，再次发送可能产生重复。取消旧任务也不能撤销已经提交的服务器操作。
+
+因此需要按业务设计幂等键、去重记录、状态查询或可重复提交的更新方式。任务 ID 可以参与追踪，但是否适合作为业务幂等键，还取决于“重新创建请求”是否代表同一业务操作。任务数据库和服务器事务并没有自动成为一个原子事务。
+
+### 5.2 停止与错误分类 {#停止与错误分类}
+
+WorkManager 可以因为取消、约束不再满足或执行期限到达而停止工作。普通 Worker 的 `doWork()` 默认在配置的后台执行器上同步工作，应检查停止信号；CoroutineWorker 可以通过协程取消协作停止，但内部阻塞操作是否响应取消还取决于具体 API。
+
+WorkManager 2.9.0 的普通工作执行窗口有限，不能把一次 `doWork()` 当作无限运行的服务。长时间工作有前台运行等专门机制，同时仍受对应系统限制。任务能切成可恢复的小段时，应保存检查点并避免长期持有 UI 对象。
+
+| 情况 | 处理方向 |
+| --- | --- |
+| 暂时断网、可恢复服务失败 | 有界重试与退避，保留可恢复状态 |
+| 无效输入、业务永久拒绝 | 最终失败，记录可理解的原因 |
+| 用户取消或系统停止 | 协作停止并释放资源，不盲目映射成立即重试 |
+| 服务端可能已执行，本地结果未知 | 查询状态或幂等重放，不能直接断言“没有发生” |
+
+## 6. 特定时刻提醒 {#特定时刻提醒}
+
+“每天 9 点打卡提醒”首先需要定义时区、日期变化、是否必须精确，以及用户是否允许通知。只写一个 24 小时循环，既没有处理进程死亡，也可能忽略夏令时或用户改变时区后的本地时间含义。
+
+需要精确的用户提醒时，应评估合适的 AlarmManager 精确闹钟能力与访问条件；可以接受偏差时，使用更节能的非精确安排。Android 12 起的相应精确闹钟访问要求，以及不同 API、目标版本与用户授权，必须按所用方式检查，不能假定 Manifest 声明后永远可用。
+
+闹钟触发后，Receiver 只适合快速处理必要事项；需要较长工作时交给合适的任务机制。设备重启后的重新安排、提醒开关、时间变化、通知是否允许和重复提醒去重，都属于完整方案。
+
+WorkManager 适合“条件允许时同步打卡记录”这类工作，而不是用周期任务保证每天 9:00:00 恰好出现提醒。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 页面协程、WorkManager、前台服务和 AlarmManager 怎样选择？ {#selection}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：任务存续、可延后性、时间语义与用户可见性。
+
+**相关内容**：[执行位置与任务存续](#执行位置与任务存续)。
+
+<details>
+<summary>参考回答</summary>
+
+**先判断任务是否需要跨页面、跨进程死亡恢复，是否允许延后，以及是否有精确时间要求。** 页面离开即可取消的任务用受生命周期管理的协程；需要可靠恢复且可延后的任务用 WorkManager；合适的用户感知持续任务使用对应平台能力或前台服务；特定时刻提醒评估 AlarmManager。
+
+这些机制仍可组合，例如 Worker 内部使用协程。线程只决定执行位置，不替代持久记录、后台限制和业务恢复设计。
+
+</details>
+
+### 7.2 Service 被意外杀死后怎样恢复？START_STICKY 保证什么？ {#restart}
+
+**考察重点**：系统重建语义、Intent 和状态持久化。
+
+**相关内容**：[START_STICKY 的含义](#start-sticky的含义)。
+
+<details>
+<summary>参考回答</summary>
+
+**`START_STICKY` 保留服务的启动状态，系统之后尝试重建，但不保证立即或永久存活。** 重建时可能收到 `null` Intent，原来保存在字段里的业务状态也已丢失。
+
+需要重送输入时可以理解 `START_REDELIVER_INTENT` 的语义，并处理重复执行；可靠业务进度应持久保存。强制停止、显式停止和资源回收不同，不能用 sticky 规避所有后台约束。
+
+</details>
+
+### 7.3 WorkManager 为什么能在进程重建后继续工作？延迟和周期是否精确？ {#workmanager}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：任务描述持久化、调度条件与实际执行时间。
+
+**相关内容**：[WorkManager 的执行模型](#workmanager的执行模型)。
+
+<details>
+<summary>参考回答</summary>
+
+**WorkManager 持久保存任务描述，并在获得系统执行机会时重新构造和运行 Worker。** 它不是保存原来线程或协程的运行栈，因此任务输入与业务状态也要能够恢复。
+
+延迟是最小等待，约束满足仅代表具备执行资格，实际时间受系统调度影响。2.9.0 周期任务最小周期为 15 分钟，也不适合保证精确时刻。强制停止、卸载和清除数据等行为还有各自边界。
+
+</details>
+
+### 7.4 已使用唯一工作名称，为什么上传仍需要幂等？ {#idempotency}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：本地任务状态与远端提交之间的不确定窗口。
+
+**相关内容**：[唯一工作不等于恰好执行一次](#唯一工作不等于恰好执行一次)。
+
+<details>
+<summary>参考回答</summary>
+
+**唯一工作控制本地同名任务的编排，不提供跨服务器的恰好一次事务。** 服务端可能已经提交成功，而进程在记录结果前退出，恢复后的重试就可能重复发送。
+
+应使用与业务操作稳定关联的幂等键、去重或状态查询。取消或替换 Worker 也不能撤销已经发生的远端操作。
+
+</details>
+
+### 7.5 Worker 应怎样处理重试和取消？ {#cancellation}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：可恢复错误、退避、停止信号和资源释放。
+
+**相关内容**：[停止与错误分类](#停止与错误分类)、[一个可重复执行的清理任务](#一个可重复执行的清理任务)。
+
+<details>
+<summary>参考回答</summary>
+
+**暂时性错误使用有界退避重试，永久错误终止失败，取消则协作停止并释放资源。** 不应把所有异常都转换为 `Result.retry()`，尤其不能吞掉协程取消异常。
+
+长任务保存检查点，并确认内部阻塞操作的停止方式。重试前还要保证已执行部分能够安全重复，不能把重新运行等同于从未执行过。
+
+</details>
+
+### 7.6 怎样实现每天 9 点打卡提醒？ {#reminder}
+
+**题型**：综合题
+
+**考察重点**：时间语义、系统调度、通知和恢复。
+
+**相关内容**：[特定时刻提醒](#特定时刻提醒)、[WorkManager 的执行模型](#workmanager的执行模型)、[重复、取消与业务一致性](#重复取消与业务一致性)。
+
+<details>
+<summary>参考回答</summary>
+
+**先明确当地时间、精度和通知需求，再选择合适的闹钟安排。** 需要精确提醒时核对精确闹钟访问条件；可以接受时间窗口时选择非精确方式。
+
+还要处理重启、时区或时间变化、用户关闭提醒、通知权限和重复提醒。触发回调只做必要短操作，后续同步可交给 WorkManager；不靠进程内 Timer 或 24 小时周期循环保证每天本地 9 点。
+
+</details>
+
+### 7.7 内存不足时系统怎样考虑进程回收？后台工作应怎样应对？ {#process}
+
+**考察重点**：动态重要性、资源回收与恢复能力。
+
+**相关内容**：[用恢复能力承受回收](#用恢复能力承受回收)。
+
+<details>
+<summary>参考回答</summary>
+
+**系统结合组件状态、用户可见性、依赖关系等评估重要性，缓存等低重要性进程更可能被回收。** 这个判断会变化，前台服务也不等于不可回收。
+
+应用减少不必要资源占用，并把关键进度及时持久化，保证之后能够恢复或安全重试。不要等 `onDestroy()` 才保存，也不要以隐藏保活或相互拉起作为业务正确性的基础。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [Android Developers：Service](https://developer.android.com/reference/android/app/Service)
+- [Android Developers：进程与应用生命周期](https://developer.android.com/guide/components/activities/process-lifecycle)
+- [Android Developers：WorkManager](https://developer.android.com/develop/background-work/background-tasks/persistent)
+- [Android Developers：定义工作请求](https://developer.android.com/develop/background-work/background-tasks/persistent/getting-started/define-work)
+- [Android Developers：管理工作](https://developer.android.com/develop/background-work/background-tasks/persistent/how-to/manage-work)
+- [AndroidX WorkManager 2.9.0：官方源码包](https://dl.google.com/dl/android/maven2/androidx/work/work-runtime/2.9.0/work-runtime-2.9.0-sources.jar)
+- [AndroidX WorkManager KTX 2.9.0：官方源码包](https://dl.google.com/dl/android/maven2/androidx/work/work-runtime-ktx/2.9.0/work-runtime-ktx-2.9.0-sources.jar)
+- [Android Developers：后台启动前台服务限制](https://developer.android.com/develop/background-work/services/fgs/restrictions-bg-start)
+- [Android Developers：前台服务类型](https://developer.android.com/develop/background-work/services/fgs/service-types)
+- [Android Developers：安排闹钟](https://developer.android.com/develop/background-work/services/alarms/schedule)

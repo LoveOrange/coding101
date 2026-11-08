@@ -1,0 +1,458 @@
+---
+sidebar_position: 8
+knowledge:
+  id: frontend.browser.service-worker
+---
+
+# Service Worker
+
+**Service Worker** 是浏览器按事件启动的后台脚本，可以参与受控页面的请求处理，并配合 Cache Storage 提供离线资源和网络失败后的替代响应。它不能直接操作 DOM，也不是一直运行的后台线程。
+
+理解它的关键是生命周期：脚本注册成功，不代表新版本已经激活；已经激活，也不代表当前页面正在由它控制。缓存和更新方案只有把这些状态区分清楚，才能解释为什么首次访问未离线可用、旧页面仍在使用旧资源，或者刷新后才出现新版本。
+
+## 1. 面试核心 {#core}
+
+- **Service Worker 通过作用域和控制关系参与页面请求，不是所有页面请求的全局代理**。它适合离线资源、请求策略等需求，不适合保证持续运行的长计算。[卡](#service-worker-purpose)
+- **注册、安装、等待、激活和控制页面是不同状态**。初次安装后，现有页面通常还未被控制；`ready` 得到注册也不等于当前 `controller` 非空。[卡](#registration-control)
+- **install 的 waitUntil 可以让必要资源准备成为安装条件**。安装失败的新版本不会替换仍在服务的旧版本，但应用产生的所有副作用并不会自动回滚。[卡](#installation-failure)
+- **respondWith 要在 fetch 事件分发时同步调用，可以传入异步产生 Response 的 Promise**。它决定响应；waitUntil 则延长事件相关异步工作的生命周期。[卡](#event-lifetime)
+- **Cache Storage 与 HTTP 缓存是两套机制**。显式写入的 Cache 条目不会自动按 Cache-Control 过期，需要自己规定缓存对象、版本和清理规则。[卡](#cache-boundary)
+- **skipWaiting 推进新版本激活，clients.claim 争取控制符合条件的页面，二者不是同一动作**。提前切换要处理旧页面与新资源混用、未保存内容和其他标签页。[卡](#update-activation)
+- **离线策略应按资源用途选择**。静态版本资源可以优先缓存，导航可以网络失败后返回离线页，用户私有数据不能被一个宽泛的缓存规则顺手保存。[卡](#cache-strategy)
+- **PWA 不是 Service Worker 的别名**。Manifest 描述应用元信息，安装体验与平台有关，Service Worker 主要提供请求与离线等能力。[卡](#pwa-components)
+
+## 2. 运行模型与作用域 {#运行模型与作用域}
+
+### 2.1 事件驱动的执行环境 {#事件驱动的执行环境}
+
+Service Worker 没有页面 DOM。浏览器可以在请求、消息或其他受支持事件到来时启动它，也可以在空闲后停止它。全局变量不会因为曾经赋过值，就可靠地保留到下一次事件。
+
+需要持久化的状态应放到合适的存储中。Cache Storage 保存请求和响应；结构化业务记录可使用 IndexedDB。两者的用途见 [浏览器存储](./storage.mdx)。定时器和一个持续 pending 的 Promise 都不是无限续命机制。
+
+普通 Web Worker 主要为创建方处理独立计算；Service Worker 有注册、控制范围和更新生命周期。不要因为二者都不能直接操作 DOM，就用 Service Worker 承诺持续执行大型后台计算。计算任务的边界见 [Web Worker](./web-worker.mdx)。
+
+### 2.2 安全上下文与作用域 {#安全上下文与作用域}
+
+Service Worker 需要安全上下文，生产站点通常通过 HTTPS 提供；本地开发的 localhost、回环地址等受信任环境有相应例外。脚本和注册页面需要满足同源要求，并使用正确的 JavaScript MIME 类型。
+
+**作用域**（scope）限定一个注册可以控制的页面 URL 范围。默认范围通常是脚本所在目录。例如 `/demo/sw.js` 默认覆盖 `/demo/` 下的页面，不是整个站点。显式扩大到父目录还需要服务器的 `Service-Worker-Allowed` 等条件，不能只改前端参数就任意接管。
+
+作用域判断的是客户端页面，不是简单地给所有资源 URL 加一个前缀过滤器。一个受控页面发出的子资源请求也可以经过它的 Service Worker；实际代码应继续判断请求方法、来源和用途，决定哪些请求由自己处理。
+
+下面是在页面模块中注册 `/demo/` 的示例：
+
+```js
+if (!('serviceWorker' in navigator)) throw new Error('当前环境不支持 Service Worker');
+const registration = await navigator.serviceWorker.register('/demo/sw.js', {
+  scope: '/demo/',
+  updateViaCache: 'none',
+});
+console.log(registration.scope);
+console.log(Boolean(navigator.serviceWorker.controller));
+```
+
+`updateViaCache: 'none'` 用于控制更新检查时是否使用 HTTP 缓存读取 Service Worker 脚本及其导入脚本，不会关闭页面资源的 HTTP 缓存，也不会清除 Cache Storage。
+
+同一 scope 再次调用注册通常会复用并检查相应注册，不应该每次页面打开都换一个随机 scope。稳定的脚本 URL 和清晰的资源版本更便于理解更新。
+
+## 3. 安装、激活与控制关系 {#安装激活与控制关系}
+
+### 3.1 生命周期的几个阶段 {#生命周期的几个阶段}
+
+| 阶段 | 主要动作 | 容易误判的地方 |
+| --- | --- | --- |
+| 注册与下载 | 建立或更新注册，获取并执行脚本 | 注册 Promise 兑现不等于资源准备完成 |
+| installing | 执行 install 事件及其必要异步工作 | 安装失败的新版本不能成为有效替代版本 |
+| installed / waiting | 新版本已准备好，但可能等旧版本退出 | 新脚本下载成功不代表页面已经使用它 |
+| activating | 执行 activate，处理版本相关准备 | 不应依赖旧页面一定已经刷新 |
+| activated | 可以处理符合条件的事件 | 当前页面仍可能没有 controller |
+| redundant | 被替代或失败等原因不再有效 | 不能继续把它当作当前服务版本 |
+
+旧版本仍控制页面时，新版本默认可以进入等待状态，以减少页面执行到一半突然切换脚本和资源版本。关闭使用旧版本的页面通常有助于新版本接管；只刷新一个标签页，不应被当成所有情况下都能结束等待的办法。
+
+### 3.2 ready 与 controller 的区别 {#ready与controller的区别}
+
+`navigator.serviceWorker.ready` 等待当前页面关联的注册具有非空的 active Worker。它返回时 Worker 仍可能处于 activating，不应把它当作所有激活工作已经完成的保证。它也不表示当前页面已经受控，更不是会因一次安装失败就自动拒绝的通用错误 Promise。
+
+判断当前页面由谁控制，应查看 `navigator.serviceWorker.controller`；控制关系变化时可以监听 `controllerchange`。初次访问时，页面本身可能已经加载完才安装 Service Worker。没有主动接管时，后续导航到作用域内的页面才会被控制。
+
+`clients.claim()` 可以让活动 Worker 争取控制其作用域内符合条件的页面，因此有机会让首次加载的页面也受控。是否这么做，应取决于页面和资源是否兼容，不能仅为使第一次打印的 controller 非空而添加它。
+
+## 4. 公共资源与离线页示例 {#公共资源与离线页示例}
+
+这个示例只负责 `/demo/` 的公共静态演示页，不缓存登录后的 HTML 或 API 数据。准备三个确实存在的公开资源：`/demo/app.v1.js`、`/demo/style.v1.css`、`/demo/offline.html`。离线页本身应能在网络不可用时显示必要说明。
+
+`/demo/sw.js`：
+
+```js
+const CACHE_PREFIX = 'campus-sw-demo-';
+const CACHE_NAME = CACHE_PREFIX + 'v1';
+const PRECACHE = [
+  '/demo/app.v1.js',
+  '/demo/style.v1.css',
+  '/demo/offline.html',
+];
+
+self.addEventListener('install', event => {
+  event.waitUntil((async () => {
+    const cache = await caches.open(CACHE_NAME);
+    await cache.addAll(PRECACHE.map(url => new Request(url, { cache: 'reload' })));
+  })());
+});
+
+self.addEventListener('activate', event => {
+  event.waitUntil((async () => {
+    const names = await caches.keys();
+    await Promise.all(names
+      .filter(name => name.startsWith(CACHE_PREFIX) && name !== CACHE_NAME)
+      .map(name => caches.delete(name)));
+  })());
+});
+
+self.addEventListener('fetch', event => {
+  const request = event.request;
+  const url = new URL(request.url);
+  if (request.method !== 'GET' || url.origin !== self.location.origin) return;
+
+  if (request.mode === 'navigate') {
+    event.respondWith((async () => {
+      try {
+        return await fetch(request);
+      } catch {
+        const cache = await caches.open(CACHE_NAME);
+        return await cache.match('/demo/offline.html') || new Response('当前离线', {
+          status: 503,
+          headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+        });
+      }
+    })());
+    return;
+  }
+
+  if (PRECACHE.includes(url.pathname) && url.search === '') {
+    event.respondWith((async () => {
+      const cache = await caches.open(CACHE_NAME);
+      return await cache.match(request) || fetch(request);
+    })());
+  }
+});
+```
+
+### 4.1 安装要等待必要资源 {#安装要等待必要资源}
+
+`install` 把 `cache.addAll` 的完成交给 `waitUntil`。必要资源请求失败或返回不符合 `addAll` 要求的响应时，新 Worker 的安装失败，而不是带着缺失的离线页继续成为新版本。
+
+这不代表所有副作用自动回滚：例如提前 `caches.open` 创建的缓存名称可能仍存在。版本命名和后续清理仍由应用负责。发布新版本时，应使用新的缓存版本，并保证必要资源在安装时已经可用。
+
+示例通过明确的资源列表排除普通 API。服务器也必须保证这些 URL 真的是公共静态内容；如果错误地把登录页以 HTTP 200 返回，浏览器不会自动知道它不该作为某个脚本或离线页保存。
+
+### 4.2 请求处理的边界 {#请求处理的边界}
+
+`respondWith` 在 fetch 监听函数执行期间直接调用，但传入的 Promise 可以异步生成响应。不能先任意 `await` 一段工作，等事件分发结束后再决定调用它。
+
+不调用 `respondWith` 的请求继续走浏览器的默认处理。示例不接管跨源请求和非 GET 请求；静态资源只有精确匹配预缓存路径且没有查询参数时才优先取缓存。
+
+导航采用“先网络，网络失败再离线页”。HTTP 404、500 是已经收到的响应，`fetch()` 不会只因这些状态进入 catch，所以会原样返回。若产品希望部分服务端错误也回退，需要明确写出状态规则，不能假定 catch 自动覆盖它们。
+
+这里没有给网络等待设置短超时。弱网下“仍在等待”与“已经失败”不同；需要限制等待时，应另行设计取消、超时与回退边界。
+
+### 4.3 响应消费与缓存写入 {#响应消费与缓存写入}
+
+Cache 存储的是 Request 与 Response 的对应关系。`cache.add`、`addAll` 会主动获取资源；`cache.put` 可以保存已有响应。一个 Response 的正文通常只能消费一次，若既要返回给页面又要写入缓存，需要在消费前建立克隆分支。
+
+对于额外的后台缓存更新工作，可以通过 `event.waitUntil(...)` 告诉浏览器事件还关联着异步任务；`respondWith` 则负责本次请求的响应。两者职责不同，不能把延长工作寿命理解为已经向页面返回内容。
+
+示例只在安装时预缓存。若某条缓存之后被删除，静态请求会尝试网络，但不会自动补写回来。这是明确的简单策略，不是具备所有缓存修复与淘汰功能的框架。
+
+## 5. 缓存策略与失效 {#缓存策略与失效}
+
+### 5.1 Cache Storage 与 HTTP 缓存 {#cache-storage与http缓存}
+
+Cache Storage 是脚本显式管理的响应存储，HTTP 缓存则按 HTTP 规则选择和验证响应。一个请求可能涉及两者，但它们不是同一个开关。
+
+Cache API 不会仅根据响应的 Cache-Control 自动删除或过期条目。即使浏览器的 HTTP 缓存不应保存某个响应，也不能假定应用显式 `cache.put` 后它一定不在 Cache Storage 中。敏感响应应从应用缓存策略中明确排除。
+
+缓存还会受到存储配额、浏览器清理和用户清理影响。离线能力要有缺失回退，重要用户数据应有持久化与恢复方案。HTTP 缓存规则见 [HTTP 缓存](../../basic-knowledge/network/http-cache.mdx)。
+
+### 5.2 按资源选择策略 {#按资源选择策略}
+
+| 策略 | 执行方式 | 适用条件与代价 |
+| --- | --- | --- |
+| 缓存优先 | 命中直接返回，未命中再请求网络 | 适合 URL 带内容版本的静态资源，需要失效与容量管理 |
+| 网络优先 | 先请求网络，失败后使用已知替代结果 | 适合更看重新鲜度的内容，需明确等待期限和错误范围 |
+| 先旧后新 | 返回已有缓存，同时后台请求更新 | 更快展示但可能短暂过时，界面与业务必须接受这种语义 |
+| 仅网络 | 按正常网络语义访问，不保存应用缓存 | 适合不该被离线复用的私有或强时效数据 |
+
+“先旧后新”通常称为 stale-while-revalidate 策略。Service Worker 中自己实现的同名策略，与 HTTP 响应头中的相关指令仍属于不同层次，不能把二者的有效期与处理过程混为一谈。
+
+私有数据不仅要判断 URL，还要考虑用户身份、权限和退出登录后的清理。缓存键遗漏身份，会造成不同用户看到同一份旧数据。一个简单的 `fetch` 监听器不应默认缓存所有成功响应。
+
+## 6. 更新与版本一致性 {#更新与版本一致性}
+
+### 6.1 等待新版本与提前激活 {#等待新版本与提前激活}
+
+浏览器发现 Worker 脚本或相关更新内容变化后，可以安装新版本。安装成功后，如果旧版本仍在控制页面，新版本通常等待。`registration.update()` 可以请求执行更新检查，不等于强制新版本立即接管。
+
+**`skipWaiting()`** 让安装完成的新 Worker 不再继续等待旧版本退出，推进激活；**`clients.claim()`** 则由活动 Worker 控制符合条件的客户端。前者不是清缓存，后者不是下载新版本，也不意味着之前所有加载过的资源会重新请求。
+
+提前激活会影响仍打开的页面，不只是点击更新按钮的那个标签页。旧 JavaScript 可能随后请求新资源；若立即删除所有旧资源，也可能让旧页面运行失败。生产应用需要版本兼容、保留必要旧资源或协调页面刷新，不能把两句 API 调用当作完整的无感更新方案。
+
+### 6.2 用户确认后切换的最小流程 {#用户确认后切换的最小流程}
+
+对于没有未保存编辑状态的演示页，可以发现等待版本后显示按钮，再让用户明确触发激活。页面增加：
+
+```html
+<button id="apply-update" hidden>更新并重新加载</button>
+```
+
+以下代码接在前面的注册代码后，仍在同一个页面模块里使用 `registration`：
+
+```js
+const updateButton = document.querySelector('#apply-update');
+let acceptedUpdate = false;
+let reloading = false;
+
+function refreshUpdateButton() {
+  updateButton.hidden = !registration.waiting;
+}
+function watchInstalling() {
+  const installing = registration.installing;
+  installing?.addEventListener('statechange', refreshUpdateButton);
+}
+registration.addEventListener('updatefound', watchInstalling);
+watchInstalling();
+refreshUpdateButton();
+
+navigator.serviceWorker.addEventListener('controllerchange', () => {
+  if (acceptedUpdate && !reloading) {
+    reloading = true;
+    location.reload();
+  }
+});
+updateButton.addEventListener('click', () => {
+  const waiting = registration.waiting;
+  if (!waiting) return;
+  acceptedUpdate = true;
+  waiting.postMessage({ type: 'ACTIVATE_UPDATE' });
+});
+```
+
+Worker 文件末尾增加消息处理：
+
+```js
+self.addEventListener('message', event => {
+  if (event.data?.type === 'ACTIVATE_UPDATE') {
+    event.waitUntil(self.skipWaiting());
+  }
+});
+```
+
+这个演示只在已知更新请求之后重新加载当前页面，避免每次控制关系变化都无条件刷新。它没有调用 `clients.claim`，也没有处理复杂多标签页编辑协调；这些是产品需要额外确定的更新协议。
+
+有表单草稿、长任务或多页面协作时，先保存状态、协调其他客户端，再决定何时切换。还应保证用户点击的等待版本尚未被其他更新替代，并对激活失败或等待过久提供反馈。
+
+### 6.3 注销与清理不是同一步 {#注销与清理不是同一步}
+
+`unregister()` 注销注册，不会自动删除 Cache Storage 中的所有数据，也不等于当前已受控页面立即失去控制。故障恢复或移除离线能力时，要分别管理注册、已打开客户端和应用缓存。
+
+下面只清理这个演示自己的注册与缓存，不影响同源的其他应用：
+
+```js
+async function removeDemoOfflineSupport() {
+  const scope = new URL('/demo/', location.origin).href;
+  const registrations = await navigator.serviceWorker.getRegistrations();
+  for (const item of registrations) {
+    if (item.scope === scope) await item.unregister();
+  }
+  const names = await caches.keys();
+  await Promise.all(names
+    .filter(name => name.startsWith('campus-sw-demo-'))
+    .map(name => caches.delete(name)));
+}
+```
+
+清理后还要让旧客户端结束或重新导航，并确保页面代码不再立刻注册回来。不要为了排查一个应用就删除同源所有注册和缓存。
+
+## 7. PWA 与排查思路 {#pwa与排查思路}
+
+**PWA**（Progressive Web App）是一类借助 Web 平台能力提供更接近应用体验的网站。Manifest 描述名称、图标、启动 URL 和显示方式等元信息；Service Worker 可以支撑离线和请求策略。安装条件与入口会随浏览器和平台变化，不能用“有 Service Worker 就一定能安装”作为定义。
+
+Service Worker 也不天然让整个应用离线可用。静态资源、页面导航、数据来源、登录状态和写操作都需要自己的离线方案。安装了 Worker 但没有缓存目标资源，离线后仍然可能失败。
+
+调试时先沿着状态和请求路径检查：
+
+1. 注册是否成功，脚本 URL、MIME、作用域和安全上下文是否符合要求。
+2. 新版本处于 installing、waiting 还是 active，install 的异步准备是否失败。
+3. 当前页面的 controller 是谁，是否只是有注册但没有受控。
+4. fetch 处理器是否匹配当前方法、URL 和请求类型，实际返回网络还是 Cache Storage。
+5. 缓存是否缺失或过期，更新是否混用了页面和资源版本。
+
+开发工具中的绕过网络处理、强制更新或注销选项会改变测试条件。验证离线时，应使用正常注册和控制关系再断开网络，不能只看开发工具里有一条 active 记录就宣称离线功能完成。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 项目为什么使用 Service Worker，它适合解决什么问题？ {#service-worker-purpose}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：请求处理、离线能力、受控页面与事件生命周期。
+
+**相关内容**：[事件驱动的执行环境](#事件驱动的执行环境)、[公共资源与离线页示例](#公共资源与离线页示例)。
+
+<details>
+<summary>参考回答</summary>
+
+**它适合为受控页面提供明确的请求策略，例如缓存公共静态资源、网络失败时返回离线页。** 应说明具体缓存了什么、失败如何回退以及新版本怎样生效，而不只是说“项目用了 PWA”。
+
+它不能直接操作 DOM，也不保证一直运行。数据持久化和长期计算要分别选择合适机制，不能依赖全局变量或无限定时器。
+
+</details>
+
+### 8.2 注册成功和 ready 已完成，为什么当前页面还没有 controller？ {#registration-control}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：注册、活动 Worker 与页面控制关系。
+
+**相关内容**：[ready 与 controller 的区别](#ready与controller的区别)。
+
+<details>
+<summary>参考回答</summary>
+
+**因为有活动注册不等于当前页面已经由它控制。** 初次访问可以先加载页面，随后安装激活 Worker；没有主动接管时，后续进入作用域的导航才会受控。
+
+当前控制关系看 `navigator.serviceWorker.controller`，变化看 `controllerchange`。`clients.claim` 可以争取控制符合条件的页面，但是否采用应取决于兼容与更新设计。
+
+</details>
+
+### 8.3 新版本预缓存失败，会把旧版本一起替换掉吗？ {#installation-failure}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：install、waitUntil、旧版本服务与副作用清理。
+
+**相关内容**：[安装要等待必要资源](#安装要等待必要资源)。
+
+<details>
+<summary>参考回答</summary>
+
+**不会因新安装失败就把仍在服务的旧版本换成失败版本。** 将必要资源准备交给 install 的 `waitUntil`，可以让失败阻止新 Worker 安装成功。
+
+但缓存名称创建等副作用不一定自动回滚。仍要采用清晰版本命名与清理规则，并保证安装依赖资源先发布到位。
+
+</details>
+
+### 8.4 respondWith 和 waitUntil 分别做什么？ {#event-lifetime}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：响应选择与事件异步工作寿命。
+
+**相关内容**：[请求处理的边界](#请求处理的边界)、[响应消费与缓存写入](#响应消费与缓存写入)。
+
+<details>
+<summary>参考回答</summary>
+
+**respondWith 决定本次 fetch 事件的响应，waitUntil 把异步工作关联到可延长的事件生命周期。** respondWith 要在事件分发期间同步调用，但可以传入一个稍后产生 Response 的 Promise。
+
+安装资源准备和激活清理适合使用 waitUntil；返回页面的响应和后台缓存更新可能分别需要这两种机制。它们都不是让 Worker 永久运行的接口。
+
+</details>
+
+### 8.5 Cache Storage 会按照 Cache-Control 自动过期吗？ {#cache-boundary}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：应用缓存与 HTTP 缓存、失效与敏感数据边界。
+
+**相关内容**：[Cache Storage 与 HTTP 缓存](#cache-storage与http缓存)。
+
+<details>
+<summary>参考回答</summary>
+
+**不会仅依靠 Cache-Control 自动管理 Cache API 显式保存的条目，两者是不同机制。** 应用需要决定缓存哪些响应、如何命名版本、何时失效和清理。
+
+私有或敏感响应应在应用规则中明确排除；存储也可能受配额或清理影响，离线请求仍需处理缓存缺失。
+
+</details>
+
+### 8.6 skipWaiting 和 clients.claim 有什么区别，为什么不总是一起调用？ {#update-activation}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：新版本激活、页面接管与版本一致性。
+
+**相关内容**：[等待新版本与提前激活](#等待新版本与提前激活)。
+
+<details>
+<summary>参考回答</summary>
+
+**skipWaiting 推进已安装新 Worker 的激活，clients.claim 由活动 Worker 控制符合条件的客户端。** 它们不负责重新下载页面，也不自动协调页面状态。
+
+提前切换可能让旧页面代码遇到新资源，删除旧缓存还可能影响其他标签页。需要先确定兼容、状态保存和刷新协议，不能无条件把两句调用视为完整更新方案。
+
+</details>
+
+### 8.7 静态资源、页面导航和私有接口应该使用同一种缓存策略吗？ {#cache-strategy}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：新鲜度、可恢复性、身份隔离和错误范围。
+
+**相关内容**：[按资源选择策略](#按资源选择策略)。
+
+<details>
+<summary>参考回答</summary>
+
+**不应该，策略要由资源是否可复用、能否接受过时和是否含私有数据决定。** 带版本的静态资源可以缓存优先，导航可以在网络失败时返回离线页，私有接口则应采用明确的身份和失效规则，或不进入应用缓存。
+
+HTTP 500 不会自动成为 Fetch 的 catch，网络优先还要定义等待和状态回退规则。离线能力也必须处理缓存被清理的情况。
+
+</details>
+
+### 8.8 注销 Service Worker 后，缓存和当前页面会立刻恢复原状吗？ {#unregister-cleanup}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：注册、受控客户端与持久化缓存的独立生命周期。
+
+**相关内容**：[注销与清理不是同一步](#注销与清理不是同一步)。
+
+<details>
+<summary>参考回答</summary>
+
+**不会，注销注册、结束已有控制关系和删除应用缓存是不同操作。** unregister 不自动清掉 Cache Storage，旧页面也不一定立即失去控制。
+
+应只删除自己的注册和缓存命名空间，让旧客户端结束或重新导航，并避免页面代码马上注册回来。
+
+</details>
+
+### 8.9 PWA 和 Service Worker 是什么关系？ {#pwa-components}
+
+**考察重点**：应用元信息、安装体验、请求策略与离线范围。
+
+**相关内容**：[PWA 与排查思路](#pwa与排查思路)。
+
+<details>
+<summary>参考回答</summary>
+
+**PWA 是应用体验的整体方向，Service Worker 是其中可用于请求处理和离线能力的技术。** Manifest 描述名称、图标、启动地址等信息；安装体验取决于浏览器和平台，不能简单等同于注册了 Worker。
+
+是否离线可用还取决于资源、导航、数据和写操作方案。只安装一个不处理目标资源的 Worker，不会让整个应用自动离线运行。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+
+- [W3C：Service Workers](https://w3c.github.io/ServiceWorker/)
+- [MDN：Using Service Workers](https://developer.mozilla.org/en-US/docs/Web/API/Service_Worker_API/Using_Service_Workers)
+- [web.dev：The service worker lifecycle](https://web.dev/articles/service-worker-lifecycle)
+- [MDN：ServiceWorkerContainer.register](https://developer.mozilla.org/en-US/docs/Web/API/ServiceWorkerContainer/register)
+- [MDN：ServiceWorkerContainer.ready](https://developer.mozilla.org/en-US/docs/Web/API/ServiceWorkerContainer/ready)
+- [MDN：FetchEvent.respondWith](https://developer.mozilla.org/en-US/docs/Web/API/FetchEvent/respondWith)
+- [MDN：ExtendableEvent.waitUntil](https://developer.mozilla.org/en-US/docs/Web/API/ExtendableEvent/waitUntil)
+- [MDN：Cache](https://developer.mozilla.org/en-US/docs/Web/API/Cache)
+- [MDN：skipWaiting](https://developer.mozilla.org/en-US/docs/Web/API/ServiceWorkerGlobalScope/skipWaiting)
+- [MDN：Clients.claim](https://developer.mozilla.org/en-US/docs/Web/API/Clients/claim)
+- [MDN：ServiceWorkerRegistration.unregister](https://developer.mozilla.org/en-US/docs/Web/API/ServiceWorkerRegistration/unregister)
+- [MDN：Making PWAs installable](https://developer.mozilla.org/en-US/docs/Web/Progressive_web_apps/Guides/Making_PWAs_installable)

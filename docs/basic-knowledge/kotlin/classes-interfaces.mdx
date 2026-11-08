@@ -1,0 +1,275 @@
+---
+knowledge:
+  id: basic-knowledge.kotlin.classes-interfaces
+  type: concept
+description: "解释 Kotlin 构造与属性、继承和接口、数据类、密封层次、object 与 companion object，以及接口和属性委托。"
+keywords: [Kotlin 类, Kotlin 初始化, data class, sealed, object, companion object, 委托]
+---
+
+# Kotlin 类与接口
+
+Kotlin 用类组织对象的状态与行为，用接口描述可以提供的能力。简洁的声明背后仍然有初始化顺序、动态调用和共享状态：`data class` 不等于深复制，`object` 的安全初始化也不等于其所有操作都线程安全。理解这些边界，才能说明一个对象何时可用、哪些方法允许扩展，以及生成代码实际替你完成了什么。
+
+## 1. 面试核心 {#core}
+
+- 主构造参数只有标记 `val` 或 `var` 才声明对应属性，**属性初始化器与 init 块按类体中的顺序执行**；次构造函数体在相应初始化之后执行。[卡](#initialization-order)
+- 类和普通成员默认不可继承或重写，**open 允许扩展，override 明确实现重写**；构造期间不要调用依赖派生状态的可重写成员。
+- `data class` 按主构造函数中的属性生成相关行为，**copy 是浅复制，类体属性不自动参与生成的 equals 与 copy**。[卡](#data-class-copy)
+- 密封类和密封接口限制直接子类型的声明范围，**适合用穷尽分支表达一组已知状态**，不代表所有后代都禁止扩展。
+- `object` 声明提供一个实例，伴生对象属于所在类的访问入口，**伴生成员仍是对象成员，单例状态也可能发生数据竞争**。[卡](#object-companion)
+- 可见性由声明位置与修饰符共同决定，**internal 是模块范围，不是 Java 的包可见性**。[卡](#visibility)
+- `by` 可以委托接口实现或属性访问，**委托对象内部调用不会自动转回外层包装对象**。[卡](#delegation)
+
+## 2. 构造、属性与初始化 {#构造属性与初始化}
+
+**主构造函数**写在类头部，参数可用于属性初始化器和 `init` 块；**次构造函数**提供另一种创建入口。存在主构造函数时，次构造函数需要直接或间接委托给它。
+
+```kotlin
+class Profile(name: String) {
+    val displayName = name.also { println("property: $it") }
+    init { println("init: $displayName") }
+
+    constructor() : this("guest") {
+        println("secondary")
+    }
+}
+
+fun main() {
+    val profile = Profile()
+    println(profile.displayName)
+    // println(profile.name) // 编译错误：name 只是构造参数，不是属性
+}
+```
+
+输出依次为 `property: guest`、`init: guest`、`secondary`、`guest`。`Profile()` 先委托给主构造路径，执行属性初始化和 `init`，再进入次构造函数体。若写成 `class Profile(val name: String)`，`name` 才同时成为属性。
+
+**属性**提供 getter，并可按声明提供 setter，不一定对应一个独立存储字段。例如 `val length get() = displayName.length` 每次计算结果；需要保存数据时才涉及支持属性存储的字段。`val` 属性没有 setter，但自定义 getter 仍可能返回变化的结果，不能仅凭 `val` 判断对象不可变。
+
+有继承关系时，要先完成基类的相应初始化，再完成派生类自身的初始化。基类构造期间调用 `open` 成员可能动态分派到派生实现，此时派生属性尚未准备好。应在构造过程中使用已经确定的参数与自身状态，避免提前依赖重写行为。
+
+## 3. 继承、接口与可见性 {#继承接口与可见性}
+
+Kotlin 的普通类默认是 `final`，成员也默认不可重写。允许继承的类或成员用 `open` 标记；抽象类与抽象成员表达必须由子类完成的部分，不需要重复写 `open`。
+
+**接口**声明调用方可以依赖的成员，可以包含默认实现，但不能直接用支持字段保存实例状态。类可以继承一个类并实现多个接口。
+
+```kotlin
+interface Formatter {
+    fun format(value: String): String
+}
+
+open class PrefixFormatter(private val prefix: String) : Formatter {
+    override fun format(value: String): String = prefix + value
+}
+
+class UpperFormatter : PrefixFormatter("[app] ") {
+    override fun format(value: String): String = super.format(value.uppercase())
+}
+
+fun main() {
+    val formatter: Formatter = UpperFormatter()
+    println(formatter.format("ready")) // [app] READY
+}
+```
+
+接口类型的变量调用到实际对象的重写实现。已经 `override` 的成员通常仍可继续重写，需要停止扩展时可声明为 `final override`。扩展函数不会改变这一虚调用层次，详见[Kotlin 函数](./functions.mdx#扩展函数)。
+
+可见性也不能直接照搬 Java：
+
+| 修饰符 | 顶层声明 | 类成员 |
+| --- | --- | --- |
+| `public` | 在所属声明可见的范围中公开，默认值 | 在类可见的范围中公开 |
+| `private` | 当前文件内 | 当前类内部 |
+| `protected` | 不适用 | 当前类及子类，不额外授予同包代码访问权 |
+| `internal` | 同一编译模块内 | 类可见时，同一编译模块内 |
+
+模块通常对应一起编译的一组源文件，具体边界由构建配置决定。它不是包名，也不是跨进程的安全边界。设计公开 API 时，应以语言访问控制和构建边界为依据，不把 `internal` 当成加密或反射防护。
+
+## 4. 数据类与密封层次 {#数据类与密封层次}
+
+**数据类**用 `data class` 声明，编译器依据主构造函数中的属性生成 `equals`、`hashCode`、`toString`、`componentN` 与 `copy` 等行为。显式实现或继承关系会影响部分成员的生成，不能认为任何数据类都会强制覆盖已有相等性逻辑。
+
+```kotlin
+data class User(val name: String, val tags: MutableList<String>) {
+    var visits: Int = 0
+}
+
+fun main() {
+    val original = User("Lin", mutableListOf("Android"))
+    original.visits = 3
+    val copied = original.copy()
+    println(original == copied) // true：visits 不在主构造函数中
+    println(copied.visits)       // 0：新实例按默认初始化
+    copied.tags.add("iOS")
+    println(original.tags)      // [Android, iOS]
+}
+```
+
+`copy()` 创建了新的 `User`，但传给新对象的 `tags` 仍是原列表引用，因此两个用户共享列表。需要独立列表时要明确复制列表；如果元素本身可变，还要继续判断元素是否也需要复制。把所有字段都改为 `val` 也不会改变这份共享关系。
+
+**密封类**和**密封接口**用 `sealed` 限制直接子类型的定义范围。以 Kotlin/JVM 1.9 为例，直接子类型需在同一模块和包中，并满足命名等要求；多平台源集还有额外约束。
+
+```kotlin
+sealed interface LoadState
+object Loading : LoadState
+data class Loaded(val count: Int) : LoadState
+data class Failed(val message: String) : LoadState
+
+fun label(state: LoadState): String = when (state) {
+    Loading -> "loading"
+    is Loaded -> "count=${state.count}"
+    is Failed -> "error=${state.message}"
+}
+
+fun main() {
+    println(label(Loaded(3))) // count=3
+}
+```
+
+`when` 覆盖了所有直接分支，因此不需要兜底 `else`；新增状态时，编译器能指出哪些表达式需要补充处理。这比用几个互相独立的布尔字段更容易避免无意义组合。
+
+密封层次不等于每个状态只有一个实例。`Loaded` 可以有不同 `count` 的多个实例；枚举则定义固定枚举实例集合。此外，如果某个直接子类允许继续继承，其后代仍可能扩展，不能把限制直接子类的位置误解为封死全部继承。
+
+## 5. object、伴生对象与共享状态 {#object伴生对象与共享状态}
+
+**对象声明** `object` 同时声明类型和一个实例，适合表达有明确生命周期的共享对象。Kotlin/JVM 的普通对象声明在首次需要时初始化，初始化过程有线程安全保证；其后对可变字段的操作仍需单独同步。
+
+**伴生对象** `companion object` 是类中可通过类名访问的对象。它可以实现接口、作为值传递，不等价于“把内部所有函数都变成 Java 静态方法”。需要 Java 静态入口时，再按互操作要求使用 `@JvmStatic` 等机制。
+
+```kotlin
+interface Factory<T> {
+    fun create(): T
+}
+
+class Session private constructor(val label: String) {
+    companion object : Factory<Session> {
+        override fun create(): Session = Session("guest")
+    }
+}
+
+object SessionRegistry {
+    var opened: Int = 0
+}
+
+fun main() {
+    val factory: Factory<Session> = Session
+    println(factory.create().label) // guest
+    println(SessionRegistry === SessionRegistry) // true
+}
+```
+
+`Session` 在赋值位置引用伴生对象，因此可以作为 `Factory<Session>` 使用。`SessionRegistry` 只有一个普通访问入口，但 `opened++` 是复合操作，多线程调用并不会因为它属于 `object` 就变成原子操作。
+
+JVM 上的实例还受类加载器边界影响，不能把语言层对象声明当成跨进程、跨类加载器的全局唯一性保证。伴生对象与所在类的初始化有关，也不要把普通对象声明、伴生对象和每次执行都创建匿名对象的 `object : Interface { ... }` 表达式混成同一种初始化时机。
+
+## 6. 接口委托与属性委托 {#接口委托与属性委托}
+
+**接口委托**让一个类通过 `by` 把接口成员转交给另一个对象实现，减少重复转发代码。外层类仍可显式重写其中的成员。
+
+```kotlin
+interface Counter {
+    fun next(): Int
+}
+
+class IncreasingCounter : Counter {
+    private var value = 0
+    override fun next(): Int = ++value
+}
+
+class CounterView(delegate: Counter) : Counter by delegate
+
+fun main() {
+    val view = CounterView(IncreasingCounter())
+    println(view.next()) // 1
+    println(view.next()) // 2
+}
+```
+
+`CounterView.next()` 转发到被保存的 `IncreasingCounter`，状态属于后者。如果委托对象内部另一个方法调用它自己的 `next()`，调用仍发生在委托对象上，不会自动跳回包装对象的重写方法。要改变这条调用关系，需设计明确的回调或组合接口。
+
+**属性委托**把属性的读取或写入交给提供约定操作的对象，例如 `val config by lazy { loadConfig() }`。`lazy` 在首次读取时计算并缓存成功结果；JVM 上默认采用同步模式，另有不同并发保证的模式，不能省略模式条件概括所有 `lazy`。
+
+委托不提供任意业务操作的线程安全。缓存初始化一次、保存一个接口实现、同步一次属性读取，都不能推出多个字段更新构成一个原子操作。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 Kotlin 实例的初始化顺序是怎样的？ {#initialization-order}
+
+**考察重点**：构造委托、继承与属性初始化。
+
+**相关内容**：[构造、属性与初始化](#构造属性与初始化)。
+
+<details>
+<summary>参考回答</summary>
+
+**先完成相应的基类初始化，再按类体顺序执行本类属性初始化器和 init 块，次构造函数体在其委托的初始化路径之后执行。** 主构造参数不都自动成为属性，需要 val 或 var。构造期间调用 open 成员可能进入尚未初始化完成的派生实现，因此应避免依赖这种动态分派。
+
+</details>
+
+### 7.2 数据类的 copy 是深复制吗，哪些属性参与生成行为？ {#data-class-copy}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：生成规则、引用共享与类体属性。
+
+**相关内容**：[数据类与密封层次](#数据类与密封层次)。
+
+<details>
+<summary>参考回答</summary>
+
+**copy 是浅复制，生成行为主要依据主构造函数中的属性。** 引用属性默认仍指向原对象；类体中额外声明的属性不会自动纳入生成的 equals 或 copy 参数，复制得到的新实例会按自己的初始化逻辑设置它们。是否需要继续复制容器和元素，取决于要求隔离到哪一层。
+
+</details>
+
+### 7.3 Kotlin 的 object 如何实现单例，什么时候初始化？ {#object-companion}
+
+**考察重点**：实例入口、JVM 初始化与共享状态。
+
+**相关内容**：[object、伴生对象与共享状态](#object伴生对象与共享状态)。
+
+<details>
+<summary>参考回答</summary>
+
+**普通 object 声明提供一个实例，并在首次需要时初始化；Kotlin/JVM 借助相应类初始化机制保证初始化安全，无需为这一创建过程手写双重检查。** 它的可变字段操作仍需单独同步，类加载器和进程也形成实例边界。这里讨论普通对象声明，伴生对象与匿名对象表达式有不同的使用及初始化关系，不能把所有 object 写法都归成同一种时机。
+
+</details>
+
+### 7.4 Kotlin 的可见性与 Java 有什么不同？ {#visibility}
+
+**考察重点**：文件、类、模块和包的边界。
+
+**相关内容**：[继承、接口与可见性](#继承接口与可见性)。
+
+<details>
+<summary>参考回答</summary>
+
+**Kotlin 默认 public，internal 限制在同一编译模块，不能等同于 Java 的包可见性。** 顶层 private 限制在文件内，成员 private 限制在类内部；protected 给当前类和子类使用，不额外开放给同包代码，也不能用于顶层声明。判断可见性要同时看声明位置与构建模块边界。
+
+</details>
+
+### 7.5 by 委托会改变对象的继承和调用关系吗？ {#delegation}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：接口转发、委托对象与包装对象。
+
+**相关内容**：[接口委托与属性委托](#接口委托与属性委托)。
+
+<details>
+<summary>参考回答</summary>
+
+**接口委托生成转发，让外层类通过另一个对象完成接口能力，不会把两者变成同一个对象。** 外层可以重写某些成员，但委托对象内部对自己成员的调用不会自动转回外层。属性委托则转交属性访问规则，两者都不自动保证整个对象的并发安全。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [Kotlin 文档：Classes](https://kotlinlang.org/docs/classes.html)
+- [Kotlin 文档：Inheritance](https://kotlinlang.org/docs/inheritance.html)
+- [Kotlin 文档：Properties](https://kotlinlang.org/docs/properties.html)
+- [Kotlin 文档：Visibility modifiers](https://kotlinlang.org/docs/visibility-modifiers.html)
+- [Kotlin 文档：Data classes](https://kotlinlang.org/docs/data-classes.html)
+- [Kotlin 文档：Sealed classes and interfaces](https://kotlinlang.org/docs/sealed-classes.html)
+- [Kotlin 文档：Object declarations and expressions](https://kotlinlang.org/docs/object-declarations.html)
+- [Kotlin 文档：Delegation](https://kotlinlang.org/docs/delegation.html)
+- [Kotlin 文档：Delegated properties，Lazy properties](https://kotlinlang.org/docs/delegated-properties.html#lazy-properties)

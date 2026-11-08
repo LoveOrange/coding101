@@ -1,0 +1,202 @@
+---
+knowledge:
+  id: basic-knowledge.kotlin.type-system
+  type: concept
+description: "理解 Kotlin 的静态类型、val 与 var、Any/Unit/Nothing、数值转换与相等性，并区分语言类型和 JVM 装箱。"
+keywords: [Kotlin 类型, val var, Any Unit Nothing, Kotlin 装箱, Kotlin 相等性]
+---
+
+# Kotlin 类型系统
+
+Kotlin 在编译时检查类型，省略类型声明只是让编译器推断，不会把变量变成可以随意改变类型的容器。准备 Kotlin 面试时，需要把几组边界分开：`val` 限制赋值，类型限制可执行操作，可空性说明能否缺值，而 JVM 上是否装箱则属于具体表示方式。本文使用 Kotlin 1.9 的稳定语法，以 JVM 为运行平台。
+
+## 1. 面试核心 {#core}
+
+- 类型推断仍产生确定的静态类型，**var 允许重新赋值，不允许任意换类型**；数值变量之间的转换要明确表达。
+- `val` 对局部变量限制重新赋值，**不会把引用的对象变为深度不可变**；只读集合接口也不保证底层内容永远不变。[卡](#val-immutability)
+- `Any` 是非空类型的共同超类型，`Unit` 表示没有有意义的返回结果，`Nothing` 没有实例，**无结果返回和根本不会正常返回是两件事**。[卡](#any-unit-nothing)
+- `is` 检查可以为后续操作提供类型信息，**智能转换依赖编译器能够证明该值在使用前稳定**。
+- `==` 根据相等性规则判断值，`===` 判断引用身份，**普通类不会自动得到按所有字段比较的 equals**；数组内容要使用对应比较方法。[卡](#equality)
+- JVM 可以用基本类型表示部分 Kotlin 数值，也会在可空和泛型等场景装箱，**语言中的 Int 不等于每次都创建一个 Integer 对象**。[卡](#kotlin-java-types)
+
+## 2. 类型推断与数值转换 {#类型推断与数值转换}
+
+**静态类型**是在编译阶段确定的类型，它决定编译器允许调用哪些成员和传递哪些参数。类型推断减少的是重复书写，不是类型约束。
+
+```kotlin
+fun main() {
+    var count = 3
+    count = 4
+    // count = "four" // 编译错误：count 的类型是 Int
+
+    val total: Long = count.toLong()
+    // val wrong: Long = count // 编译错误：Int 不会在赋值时自动转为 Long
+    println(total) // 4
+}
+```
+
+整数常量 `3` 使 `count` 推断为 `Int`。`var` 允许把它改成另一个 `Int`，但不能改成 `String`。`toLong()` 则明确表示数值转换。
+
+Kotlin 的有符号整数包括 8 位 `Byte`、16 位 `Short`、32 位 `Int` 和 64 位 `Long`；浮点数包括 `Float` 和 `Double`。整数类型不是按位宽形成的继承链，`Int` 不是 `Long` 的子类型。数值运算允许的混合类型组合，也不能直接推广为任意赋值、参数传递都支持隐式扩宽。
+
+转换前还要考虑取值范围。把较大的 `Long` 转为 `Int` 不会因为语法写得明确就自动安全；需要按业务约束检查能否表示。补码、溢出和浮点精度的共同基础见[二进制数据表示](../computer-architecture/data-representation.mdx)。
+
+## 3. 只读变量与可变对象 {#只读变量与可变对象}
+
+局部 `val` 变量初始化后不能重新赋值，但它保存的引用仍然可以指向一个可变对象。`val` 属性则提供只读访问，不提供 setter；如果属性有自定义 getter，多次读取的结果也未必相同。
+
+```kotlin
+fun main() {
+    val names = mutableListOf("Lin")
+    val view: List<String> = names
+    names.add("Kai")
+    println(view) // [Lin, Kai]
+    // names = mutableListOf("New") // 编译错误：val 不能重新赋值
+    // view.add("New") // 编译错误：List 接口不提供 add
+}
+```
+
+`names` 没有换成另一个列表，变化发生在原列表内部。`view` 与 `names` 观察同一个列表；`List` 只是不提供修改操作，并没有复制内容，也没有禁止其他引用修改它。
+
+需要稳定快照时，可以在边界处创建副本，再控制是否暴露可变引用。但浅复制列表仍可能共享其中的可变元素，不能把容器复制当作整个对象图的深度不可变。并发共享状态时同样需要同步，`val` 本身不提供复合操作的原子性。
+
+## 4. Any、Unit、Nothing 与智能转换 {#anyunitnothing-与智能转换}
+
+这三个类型分别描述“能接收什么值”和“函数怎样结束”，用途不同。
+
+| 类型 | 含义 | 典型用途 |
+| --- | --- | --- |
+| `Any` | 所有非空 Kotlin 类型的共同超类型 | 接收任意非空值，提供 `equals`、`hashCode`、`toString` |
+| `Any?` | 也允许 `null` 的超类型 | 允许缺值的通用入口 |
+| `Unit` | 只有一个值 `Unit` 的类型 | 函数正常完成，但不提供有意义的业务结果 |
+| `Nothing` | 没有实例的类型 | 总是抛异常或不会正常返回的表达式 |
+
+```kotlin
+fun stop(message: String): Nothing = throw IllegalArgumentException(message)
+
+fun printName(name: String): Unit {
+    println(name)
+}
+
+fun main() {
+    val input: Any? = "Lin"
+    val name: String = if (input is String) input else stop("name required")
+    val result: Unit = printName(name) // 输出 Lin
+    println(result == Unit)           // true
+}
+```
+
+`stop` 分支不会产生一个需要赋给 `name` 的值，所以整个条件表达式仍能得到 `String`。`printName` 则会正常返回，其结果是 `Unit`。这比笼统地说“两者都没有返回值”更准确。
+
+**智能转换**是编译器根据前面的类型检查和控制流，在安全位置把值当作更具体的类型使用。上例中 `input is String` 成立后，分支里的 `input` 可以按 `String` 使用，不需要再写强制转换。
+
+这里的关键是同一个值。如果属性可被其他代码修改，或每次调用 getter 都可能返回不同对象，前一次检查就不能证明后一次读取的类型。可把一次读取保存到局部 `val` 后再检查；这解决的是该局部值的稳定性，不会顺便让它引用的对象线程安全。空值检查的具体边界见[Kotlin 空安全](./null-safety.mdx#智能转换与稳定值)。
+
+## 5. 相等性与 JVM 表示 {#相等性与-jvm-表示}
+
+**结构相等性**通过 `==` 表达，通常按可空安全的 `equals` 调用处理；**引用相等性**通过 `===` 表达，判断是否引用同一个对象。结构相等不等于编译器自动遍历所有字段：普通类继承的默认 `equals` 仍按身份判断，数据类则会为主构造函数中的属性生成相等性逻辑。
+
+```kotlin
+data class Point(val x: Int, val y: Int)
+
+fun main() {
+    val a = Point(1, 2)
+    val b = Point(1, 2)
+    println(a == b)  // true：生成的 equals 比较 x、y
+    println(a === b) // false：两个不同对象
+
+    val first = intArrayOf(1, 2)
+    val second = intArrayOf(1, 2)
+    println(first == second)             // false
+    println(first.contentEquals(second)) // true
+}
+```
+
+数组内容比较必须明确使用 `contentEquals`；嵌套数组需要考虑深层比较。自定义 `equals` 时，还要保持与 `hashCode` 的一致性，否则放入哈希集合后会出现查找行为与相等判断不匹配的问题。
+
+在 Kotlin/JVM 中，编译器可以把非空 `Int` 局部值和相关运算编译成 JVM 的 `int` 操作。需要作为对象使用的地方，例如 `Int?`、`Any` 或泛型集合元素，则会涉及装箱。运行时与优化器还可能消除部分分配，不能根据源码中出现一个类型名就统计对象数量。
+
+```kotlin
+fun main() {
+    val count: Int = 7
+    val boxed: Any = count
+    val values: List<Int> = listOf(count)
+    val raw: IntArray = intArrayOf(count)
+    println(boxed is Int)      // true
+    println(values[0] == raw[0]) // true
+}
+```
+
+`List<Int>` 的泛型元素和 `IntArray` 的专门化存储不是同一种表示。数值比较使用 `==`，不要依赖装箱缓存去预测 `===`；那会把值的语义与对象身份混在一起。
+
+浮点数还有一个需要注明的边界：静态类型已知为 `Float` 或 `Double` 时，比较遵循相应 IEEE 754 规则；通过 `Any` 等通用类型比较时可能采用装箱对象的 `equals` 规则。讨论 NaN 或正负零时，要把表达式的静态类型一起给出来。
+
+## 6. 面试题 {#面试题}
+
+### 6.1 val 和只读 List 能保证对象不可变吗？ {#val-immutability}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：赋值限制、接口能力与共享对象。
+
+**相关内容**：[只读变量与可变对象](#只读变量与可变对象)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能，val 限制重新赋值，List 只限制通过该接口调用修改操作。** 它们都不保证底层对象不被其他引用修改。局部 val 指向的可变列表仍能增删元素，只读视图也会观察到这些变化；需要稳定数据时，应明确复制深度、暴露接口和可变元素的所有权。
+
+</details>
+
+### 6.2 Any、Unit 和 Nothing 有什么区别？ {#any-unit-nothing}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：类型的取值集合与控制流。
+
+**相关内容**：[Any、Unit、Nothing 与智能转换](#anyunitnothing-与智能转换)。
+
+<details>
+<summary>参考回答</summary>
+
+**Any 接收非空值，Unit 表示正常完成但没有有意义的业务返回结果，Nothing 表示不存在能够正常返回的值。** `Any?` 才包含 null；Unit 有唯一值；Nothing 可用于总是抛异常的函数，让编译器知道该分支不会继续。它们不能统称为 Java void 的替代写法。
+
+</details>
+
+### 6.3 ==、=== 和数组内容比较有什么区别？ {#equality}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：equals、对象身份与专门比较接口。
+
+**相关内容**：[相等性与 JVM 表示](#相等性与-jvm-表示)。
+
+<details>
+<summary>参考回答</summary>
+
+**== 表达值的相等性规则，=== 检查引用身份，数组内容比较使用 contentEquals 等专门方法。** 普通类若没有重写 equals，默认仍按对象身份；数据类的生成规则只覆盖规定的属性。自定义 equals 要同步考虑 hashCode，数值也不应通过装箱对象的身份判断是否相等。
+
+</details>
+
+### 6.4 Kotlin 与 Java 的类型使用有哪些区别？ {#kotlin-java-types}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：静态类型、可空性、数值转换与 JVM 互操作。
+
+**相关内容**：[类型推断与数值转换](#类型推断与数值转换)、[相等性与 JVM 表示](#相等性与-jvm-表示)、[Kotlin 空安全](./null-safety.mdx#java-平台类型)。
+
+<details>
+<summary>参考回答</summary>
+
+**Kotlin 同样使用静态类型，但把可空性纳入类型，并用类型推断减少声明；数值赋值和参数传递也不能直接套用 Java 的隐式扩宽规则。** Kotlin/JVM 可将非空数值编译为基本类型表示，在可空、泛型等场景涉及装箱。调用缺少明确空值约束的 Java API 时会遇到平台类型，需要主动处理边界，不能认为混合项目天然不会出现空指针。
+
+</details>
+
+## 7. 参考资料 {#参考资料}
+
+- [Kotlin 语言规范 1.9：Built-in types and their semantics](https://kotlinlang.org/spec/built-in-types-and-their-semantics.html)
+- [Kotlin 文档：Numbers](https://kotlinlang.org/docs/numbers.html)
+- [Kotlin 文档：Equality](https://kotlinlang.org/docs/equality.html)
+- [Kotlin 文档：Type checks and casts](https://kotlinlang.org/docs/typecasts.html)
+- [Kotlin 文档：Calling Java from Kotlin](https://kotlinlang.org/docs/java-interop.html)

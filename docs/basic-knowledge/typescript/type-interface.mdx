@@ -1,0 +1,331 @@
+---
+sidebar_position: 3
+knowledge:
+  id: basic-knowledge.typescript.type-interface
+  type: concept
+description: "比较 interface 与 type 的对象建模、扩展、声明合并和类型表达能力，解释冲突检查、结构兼容与 implements 的边界。"
+keywords: ["TypeScript", "interface", "type", "声明合并", "交叉类型", "implements"]
+---
+
+# interface 与 type
+
+`interface` 用来声明对象的结构，`type` 用来给一个类型表达式命名。两者都能描述对象、函数和泛型结构，也都参与 TypeScript 的静态检查；主要差别在于能表达哪些类型，以及定义能怎样扩展和组合。
+
+普通业务对象往往可以任选一种。需要联合、类型计算或基本类型别名时使用 `type`；需要设计可通过声明合并补充的对象接口时，`interface` 有对应能力。判断应落在实际模型上，不必把一种语法规定为所有场景的唯一答案。
+
+## 1. 面试核心 {#core}
+
+- 两者都可以描述对象和可调用结构。**interface 不是只能给 class 使用，type 也不是只能声明基本类型**。[卡](#differences)
+- `type` 能直接命名联合、元组、基本类型和条件类型等表达式。**interface 主要声明对象结构，不能直接替代任意类型表达式**。[卡](#expressive-power)
+- `interface` 可以用 `extends` 扩展已知成员的对象类型，`type` 可以用交叉类型组合约束。**继承冲突和交叉冲突的表现不同，交叉也不代表后者覆盖前者**。[卡](#extension-conflicts)
+- 同一声明空间中的同名接口可以合并。**非函数同名成员必须符合合并规则，类型别名则不能靠重复声明追加字段**。[卡](#declaration-merging)
+- 两者主要按结构判断兼容。**换一个类型名称不会自动建立不同的运行时身份，也不会把两个相同结构变成互不兼容的名义类型**。[卡](#structural-identity)
+- `implements` 检查类的实例结构是否满足约定。**它不生成成员、不复制实现，也不自动为类方法参数补上类型注解**。[卡](#implements)
+- 选择首先取决于需要表达的关系。**对象协议、有限状态、派生类型和第三方扩展有不同要求；普通对象场景再遵循项目一致的约定**。[卡](#selection)
+
+## 2. 相同的对象与调用结构 {#相同的对象与调用结构}
+
+下面两种声明表达相同的对象要求：
+
+```ts
+interface UserInterface {
+  id: number;
+  name: string;
+}
+type UserAlias = {
+  id: number;
+  name: string;
+};
+const first: UserInterface = { id: 1, name: "Lin" };
+const second: UserAlias = first;
+console.log(second.name); // Lin
+```
+
+赋值成立，是因为 `first` 满足 `UserAlias` 需要的结构。两种声明都可以有可选属性、只读属性、索引签名和类型参数；编译之后也不会各自生成一个名为 `UserInterface` 或 `UserAlias` 的运行时对象。
+
+接口还可以描述函数这样的可调用对象：
+
+```ts
+interface Formatter {
+  (value: number): string;
+  label: string;
+}
+type FormatterAlias = {
+  (value: number): string;
+  label: string;
+};
+const format: Formatter = Object.assign(
+  (value: number) => value.toFixed(1),
+  { label: "decimal" },
+);
+const alias: FormatterAlias = format;
+console.log(alias(2), alias.label); // 2.0 decimal
+```
+
+调用签名和属性可以同时出现，说明一个值既可调用，又带有 `label`。纯函数类型还可以写成 `type Formatter = (value: number) => string`；接口也能通过构造签名描述可被 `new` 的值。它们的能力不能只用“interface 写对象，type 写函数”划分。
+
+## 3. 类型表达能力 {#类型表达能力}
+
+**类型别名**可以为任意适用的类型表达式命名，不要求右侧一定是对象字面量。
+
+```ts
+type UserId = string;
+type State = "idle" | "loading" | "ready";
+type Pair = readonly [string, number];
+type Result<T> = { ok: true; data: T } | { ok: false; error: string };
+const state: State = "ready";
+const pair: Pair = ["Lin", 1];
+const result: Result<number> = { ok: true, data: 7 };
+console.log(state, pair[0], result.data); // ready Lin 7
+```
+
+`interface` 不能直接把自己声明成字符串或几个互斥对象的联合。它可以定义各个对象分支，再由 `type` 把这些分支组合起来；这是一种分工，不需要全部转换成同一种写法。
+
+映射类型和条件类型也通常通过 `type` 命名，例如 `type Optional<T> = { [K in keyof T]?: T[K] }`。这些表达式的计算规则见 [TypeScript 泛型与工具类型](./generics-utility-types.mdx#映射类型与常用工具)。
+
+## 4. 扩展与交叉 {#扩展与交叉}
+
+### 4.1 扩展已知对象成员 {#扩展已知对象成员}
+
+`interface extends` 可以扩展接口，也可以扩展具有已知成员的对象类型别名。交叉类型 `&` 则要求一个值同时满足各部分约束。
+
+```ts
+type Identified = { id: number };
+interface Named extends Identified {
+  name: string;
+}
+type ActiveUser = Named & { active: boolean };
+const user: ActiveUser = { id: 1, name: "Lin", active: true };
+console.log(user.id, user.name, user.active); // 1 Lin true
+```
+
+因此“interface 只能继承 interface”不成立。类的 `implements` 同样可以检查一个满足条件的对象类型别名，关键是结构是否明确。
+
+联合类型表示多种可能，不能直接作为接口扩展的统一成员集合。例如 `type Either = { a: number } | { b: string }`，`interface Both extends Either` 不会自动获得可选的 `a` 和 `b`，也不能把联合悄悄变成交叉。应先明确业务需要“二选一”还是“两者同时存在”。
+
+### 4.2 同名成员冲突 {#同名成员冲突}
+
+接口扩展要求派生类型仍满足基础约束；不兼容的属性改写会在扩展声明处被拒绝。交叉类型会保留同时满足的要求，可能形成无法提供实际值的属性。
+
+```ts
+interface Base {
+  value: string;
+}
+interface Ready extends Base {
+  value: "ready";
+}
+// interface Invalid extends Base { value: number; } // 编译错误：number 不满足 string
+type Impossible = Base & { value: number };
+const ready: Ready = { value: "ready" };
+console.log(ready.value); // ready
+// const invalid: Impossible = { value: "ready" }; // 编译错误：value 的约束变成 never
+```
+
+`"ready"` 是 `string` 允许的一个值，因此这个收窄可以满足基础约束。`number` 则不满足。交叉中的 `value` 同时要求 `string` 和 `number`，结果是 `never`，不会由后写的 `number` 覆盖前者。
+
+使用多个接口作为基础时，同名成员也必须兼容相应规则。若合并行为本来就应该以某一侧为准，应显式先省略或重建相关属性类型，而不是把 `&` 当作运行时对象展开。
+
+## 5. 声明合并 {#声明合并}
+
+**声明合并**是编译器把同一声明空间中多个兼容的同名声明组成一个定义。接口支持这种能力，类型别名不能通过重复同名定义来追加内容。
+
+```ts
+interface PluginOptions {
+  enabled: boolean;
+}
+interface PluginOptions {
+  label: string;
+}
+const options: PluginOptions = { enabled: true, label: "demo" };
+console.log(options.enabled, options.label); // true demo
+// interface PluginOptions { enabled: string; } // 编译错误：同名非函数成员类型冲突
+```
+
+合并后，`PluginOptions` 同时需要 `enabled` 和 `label`。非函数的同名成员不能随意换成不同类型，可选性等修饰也必须符合规则；方法成员则有重载合并规则，不能简单理解成后写覆盖前写。
+
+这适合库设计明确提供的扩展点，例如某个插件为已存在的接口补充字段。也可能带来意外：没有模块边界的文件把声明放进全局空间，通用名称就可能与其他文件或环境类型相遇。
+
+“同名”必须结合声明所在的空间看。两个普通模块各自定义并导出的 `Options`，不会仅因名字相同就自动跨模块合并。要补充第三方模块或全局接口，需要使用对应的声明增强方式，并确保运行时也真的提供了新增能力。
+
+类型别名一旦建立，不能再写第二个同名 `type` 来改变它。需要新结构时，应命名一个新的组合类型；但这不代表类型别名描述的对象会自动封闭，额外属性仍遵循结构兼容和字面量检查规则。
+
+## 6. 类型名称与结构身份 {#类型名称与结构身份}
+
+不同类型名称不会自动产生业务隔离。两个接口结构相同，或两个类型别名都指向 `string`，它们仍可能互相赋值。
+
+```ts
+type UserId = string;
+type OrderId = string;
+const userId: UserId = "u-1";
+const orderId: OrderId = userId;
+console.log(orderId); // u-1
+```
+
+名称能帮助阅读，但不能仅靠改名字阻止把用户 ID 当成订单 ID。若业务确实需要静态区分，可以设计带独立标记的类型和受控构造入口；标记也不会自动验证外部字符串，依然需要运行时边界。
+
+普通对象的兼容规则在 [TypeScript 类型系统](./type-system.mdx#结构化类型关系) 中展开。`interface` 与 `type` 都不是 JavaScript 的构造函数，不能直接拿它们做 `instanceof`；需要运行时身份时，必须有实际存在的值和相应检查。
+
+## 7. implements 的检查边界 {#implements-的检查边界}
+
+`implements` 检查一个类的实例结构是否满足指定对象类型，不会把接口里的成员实现复制到类中，也不会改变类原本的推断方式。
+
+```ts
+type Greeter = { greet(name: string): string };
+class Greeting implements Greeter {
+  greet(name: string): string {
+    return `Hello ${name}`;
+  }
+}
+console.log(new Greeting().greet("Lin")); // Hello Lin
+// class Missing implements Greeter {} // 编译错误：没有实现 greet
+// class Implicit implements Greeter { greet(name) { return String(name); } } // 编译错误：strict 下 name 是隐式 any
+```
+
+`Greeting` 实现的是类型别名，依然可以接受检查。`Missing` 不会自动获得 `greet`；`Implicit` 的方法参数也不会仅因写了 `implements Greeter` 就自动获得 `string` 注解。
+
+`implements` 主要检查实例侧，不能拿它直接要求类的构造器或静态成员满足另一个实例接口。要约束构造函数，可以单独声明构造签名，并在使用类这个值的地方检查。联合类型也不能直接作为一个类必须实现的固定成员集合。
+
+接口中的可选属性不会因 `implements` 自动出现在类实例类型上。类是否声明、创建了该成员，仍然由类本身的代码决定。
+
+## 8. 选择条件 {#选择条件}
+
+需要表达什么，比“哪个关键字更好”更有判断价值：
+
+| 需要 | 合适的考虑方向 |
+| --- | --- |
+| 普通业务对象、组件参数或函数协议 | 两者通常都可以，优先保持项目约定与结构清晰 |
+| 字符串状态、互斥结果、元组别名、条件类型 | 使用能够直接表达这些关系的 `type` |
+| 对象继承层次，希望在扩展处检查成员兼容 | 可以用 `interface extends` |
+| 库明确允许用户追加成员的接口 | 使用接口及受控声明合并，说明对应运行时要求 |
+| 从现有类型选字段、调整修饰或推导结果 | 使用类型表达式与工具类型，不复制大量相同字段 |
+
+不要为了统一关键字，把互斥状态改成一个有很多可选属性的接口；这会丢失字段之间的关系。也不要因为接口可以合并，就把所有内部数据结构都设计成开放扩展点。
+
+声明合并是否需要、冲突应在何处暴露、模型是对象结构还是联合计算，都是可以说明的理由。单纯以运行速度区分两者则不合适，因为这些类型声明本身不会生成对象访问的另一种运行实现。
+
+## 9. 面试题 {#面试题}
+
+### 9.1 interface 与 type 的主要区别是什么？ {#differences}
+
+**考察重点**：共同建模能力、类型表达范围、扩展与声明合并。
+
+**相关内容**：[相同的对象与调用结构](#相同的对象与调用结构)、[类型表达能力](#类型表达能力)、[声明合并](#声明合并)。
+
+<details>
+<summary>参考回答</summary>
+
+**两者都能描述对象和可调用结构，type 能直接命名更多类型表达式，interface 支持对象接口的声明合并。** 联合、基本类型别名、元组和条件类型等通常由 `type` 表达；对象扩展可以用 `interface extends`，也可以用交叉类型组合约束。
+
+扩展与交叉对冲突的表现不同，重复同名 `type` 也不能追加字段。普通对象场景通常都能使用，按是否需要这些能力和项目约定选择。
+
+</details>
+
+### 9.2 interface 只能描述普通对象，type 才能描述函数吗？ {#expressive-power}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：调用签名、构造签名、成员结构与表达式别名。
+
+**相关内容**：[相同的对象与调用结构](#相同的对象与调用结构)、[类型表达能力](#类型表达能力)。
+
+<details>
+<summary>参考回答</summary>
+
+**不是，接口可以有调用签名、构造签名和属性，类型别名也可以描述同样的对象结构。** 函数本来就是可调用对象，可以同时具有业务属性。
+
+真正的表达范围差异是 `type` 能命名联合、基本类型、元组和条件类型等表达式，接口不能直接把自身声明成任意这些形式。
+
+</details>
+
+### 9.3 interface extends 与交叉类型遇到同名属性冲突时有什么区别？ {#extension-conflicts}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：基础约束、派生兼容与交叉的不可能属性。
+
+**相关内容**：[扩展已知对象成员](#扩展已知对象成员)、[同名成员冲突](#同名成员冲突)。
+
+<details>
+<summary>参考回答</summary>
+
+**接口扩展会要求派生成员满足基础约束，不兼容改写会在声明处报错；交叉则保留同时满足的要求，可能产生 never 属性。** `string` 与 `number` 相交不是后一种覆盖前一种。
+
+接口也可以扩展具有已知成员的对象类型别名，不能直接扩展联合来猜测统一成员。需要覆盖某个字段时，应显式重建类型关系。
+
+</details>
+
+### 9.4 接口的声明合并有什么用途和限制？ {#declaration-merging}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：声明空间、成员兼容、模块边界与扩展点。
+
+**相关内容**：[声明合并](#声明合并)。
+
+<details>
+<summary>参考回答</summary>
+
+**同一声明空间里的兼容同名接口可以合成一个定义，适合库明确提供的类型扩展点。** 非函数同名成员不能随意换成不同类型，方法有相应重载合并规则，类型别名不能通过同名重复声明追加字段。
+
+两个独立模块的同名接口不会自动混在一起。全局和模块增强要使用正确的声明方式，新增类型能力也必须有真实运行时实现支撑。
+
+</details>
+
+### 9.5 不同名字的 interface 或 type 会自动成为不同业务身份吗？ {#structural-identity}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：结构兼容、类型别名与运行时身份。
+
+**相关内容**：[类型名称与结构身份](#类型名称与结构身份)。
+
+<details>
+<summary>参考回答</summary>
+
+**不会，两者主要按结构判断兼容，单独换名称不自动建立名义隔离。** `type UserId = string` 和 `type OrderId = string` 仍然都是字符串别名，可以互相赋值。
+
+需要静态区分时，应设计明确标记与构造边界；需要验证外部值时，还必须运行实际检查。接口和类型别名本身也不是可用于 `instanceof` 的运行时构造函数。
+
+</details>
+
+### 9.6 类 implements 接口后，会自动获得成员实现和参数类型吗？ {#implements}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：实例结构检查、实现责任、类型推断与静态侧。
+
+**相关内容**：[implements 的检查边界](#implements-的检查边界)。
+
+<details>
+<summary>参考回答</summary>
+
+**不会，implements 只是检查类实例是否满足约定，不生成成员，也不自动为方法参数补注解。** 类仍要自己声明和实现字段、方法，严格模式下遗漏参数类型可能报隐式 `any`。
+
+它也可以检查符合条件的对象类型别名。构造器和静态侧需要另外约束，可选属性不会仅因出现在接口里就自动加入类实例。
+
+</details>
+
+### 9.7 项目里应该怎样选择 interface 与 type？ {#selection}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：模型关系、开放扩展、类型计算与项目一致性。
+
+**相关内容**：[选择条件](#选择条件)。
+
+<details>
+<summary>参考回答</summary>
+
+**先看模型是否需要某种特有能力，再让普通对象场景遵循项目约定。** 联合状态、基本类型别名和条件计算使用 `type`；明确需要声明合并的对象扩展点使用接口，对象继承也可用 `extends` 表达。
+
+不要为了统一写法丢失互斥状态与字段之间的关系，也不要把所有内部模型都开放给合并。选择理由应围绕表达能力与维护边界，而不是声称某个关键字让运行时对象访问更快。
+
+</details>
+
+## 10. 参考资料 {#参考资料}
+
+- [TypeScript Handbook：Type Aliases 与 Interfaces](https://www.typescriptlang.org/docs/handbook/2/everyday-types.html#differences-between-type-aliases-and-interfaces)
+- [TypeScript Handbook：Object Types](https://www.typescriptlang.org/docs/handbook/2/objects.html)
+- [TypeScript Handbook：Declaration Merging](https://www.typescriptlang.org/docs/handbook/declaration-merging.html)
+- [TypeScript Handbook：Classes 的 implements](https://www.typescriptlang.org/docs/handbook/2/classes.html#implements-clauses)
+- [TypeScript Handbook：Type Compatibility](https://www.typescriptlang.org/docs/handbook/type-compatibility.html)

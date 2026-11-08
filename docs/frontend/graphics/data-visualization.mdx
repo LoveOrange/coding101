@@ -1,0 +1,411 @@
+---
+sidebar_position: 3
+knowledge:
+  id: frontend.graphics.data-visualization
+---
+
+# 数据可视化
+
+**数据可视化**是把数据映射为位置、长度、颜色等视觉表达，帮助读者比较数量、观察变化和发现关系。图表库能完成绘制，但不会替业务确认指标口径、单位、缺失值或更新顺序。
+
+一个可以解释清楚的可视化项目，需要从原始数据讲到图表选择、坐标映射和用户操作，再说明数据变化、容器变化与资源释放。本文用 ECharts 5.6 演示这些关系；重点是数据和界面是否表达同一个意思，而不是记住所有配置项。
+
+## 1. 面试核心 {#core}
+
+- **先确定要回答的问题，再选择图表和数据范围**。比较分类数量、观察时间趋势和查看分布，不应机械使用同一种图形。[卡](#chart-choice)
+- **零、缺失和无效数据不是同一种状态**。单位、聚合、时间范围和排序应在进入图表前确定，不能靠颜色或提示框补救错误口径。[卡](#data-contract)
+- ECharts 的 dataset 管理数据，series 描述图形系列，encode 描述维度映射。**数据字段存在，不等于已经映射到正确的坐标轴**。[卡](#dataset-encode)
+- **setOption 默认合并配置，不等于整体替换**。动态增删系列时应维护稳定身份，并明确选择合并、replaceMerge 或重建选项。[卡](#update-merge)
+- 图表需要有尺寸的容器，**容器变化要触发 resize，组件卸载要解除观察与事件并 dispose**。隐藏与销毁也应分别处理。[卡](#chart-lifecycle)
+- **视觉交互不能只依赖颜色和鼠标悬停**。说明、表格和可操作的 HTML 控件能补充图形的含义与入口。
+- 大数据量需要同时控制数据处理、绘制和更新成本。**先减少无用数据与无用更新，再按证据选择采样、聚合或渲染方式**。[卡](#large-data)
+- **介绍 ECharts 项目要说明自己的数据转换、交互和故障处理**，不能仅说调用了 init 和 setOption。[卡](#visualization-project)
+
+## 2. 数据问题与视觉表达 {#数据问题与视觉表达}
+
+### 2.1 图表选择 {#图表选择}
+
+**视觉编码**是把数据值转换成位置、长度、颜色或大小等视觉属性的规则。例如柱形长度表示金额，横轴位置表示月份。
+
+| 读者要判断什么 | 可考虑的表达 | 需要交代的条件 |
+| --- | --- | --- |
+| 不同分类谁多谁少 | 柱形图或条形图 | 单位一致，分类顺序有意义，长度比较通常从零开始 |
+| 数值随时间怎样变化 | 折线图 | 时间顺序、采样间隔与缺失区间 |
+| 两个数值是否存在关系 | 散点图 | 两条轴的含义、单位与异常点 |
+| 一组数值怎样分布 | 直方图等分布图 | 分桶边界、样本量与统计范围 |
+| 同一整体由哪些部分组成 | 堆叠图或少量分类的占比图 | 分母相同，是否互斥且覆盖整体 |
+
+图表适合回答的问题不相同。把每月收入画成柱形，读者比较的是同一单位的金额；把请求数和平均延迟直接堆在一起，长度就没有统一含义。双轴虽然能显示不同单位，也容易让读者误判变化关系，必须明确各自的轴与比例。
+
+截断柱形图纵轴会放大长度差异；折线图为了观察小幅变化可以使用更窄范围，但应清楚标出范围。这里的目标是让表达与问题一致，而不是规定所有数值轴只能从零开始。
+
+### 2.2 数据契约 {#数据契约}
+
+**数据契约**约定每个字段的含义、类型、单位与缺失表示。前端需要知道接口返回的是累计量还是增量、金额是元还是分、时间属于哪个时区，才能构造正确图形。
+
+零表示已经观测到数值为零，`null` 可以约定为缺失；字符串、`NaN` 或无穷值则需要按契约拒绝或处理。把所有假值都写成 `value || 0`，会把缺失混进真实零值。
+
+聚合也会改变问题。每分钟数据合成每小时数据时，计数可能求和，温度可能求平均，延迟则需要明确分布或加权口径。不能对每类指标都取平均，更不能把分组平均值不加权再平均当成整体平均。
+
+时间轴要区分“每个观测点等距排列”和“按真实时间差排列”。分类轴适合明确的月度分类；不规则到达的时间点若仍等距摆放，会隐藏间隔差异。跨天、跨月和时区转换应使用明确的时间语义。
+
+## 3. ECharts 的数据映射 {#echarts的数据映射}
+
+ECharts 的 **option** 是图表配置，描述数据、坐标系、系列和交互等内容。几个常用对象的责任如下：
+
+| 对象 | 责任 |
+| --- | --- |
+| dataset | 提供可被多个系列使用的数据与维度 |
+| xAxis / yAxis | 指定分类、数值或时间等坐标轴 |
+| series | 指定一组图形，例如收入柱形和成本柱形 |
+| encode | 将数据维度映射到轴、名称和提示内容等用途 |
+| legend | 表达系列含义并管理可见选择 |
+| tooltip | 按交互展示当前位置的数据 |
+
+`dataset` 不是数据库，也不会自动完成业务校验、权限控制和时间聚合。它把一份数据组织成可供图表读取的输入；`encode` 再明确“哪个字段对应哪个视觉位置”。
+
+以下例子先把金额从分转换为元，保留缺失值，然后让同一份数据分别驱动收入和成本两个系列。稳定的系列 `id` 用于更新时对应同一个系列，显示名称则可以面向读者命名。
+
+## 4. 月度金额图表示例 {#月度金额图表示例}
+
+示例使用 ECharts 5.6.0 的完整浏览器包。安装 `echarts@5.6.0` 后，把 `node_modules/echarts/dist/echarts.min.js` 复制到示例页面旁，保存下列 HTML，并将后续 JavaScript 依次放在页面末尾的脚本中，通过本地 HTTP 服务访问。
+
+```html
+<script src="./echarts.min.js"></script>
+<div id="sales-chart" style="width:100%;height:320px"></div>
+<table>
+  <caption>月度金额，单位：元；缺失表示尚无数据</caption>
+  <thead><tr><th>月份</th><th>收入</th><th>成本</th></tr></thead>
+  <tbody id="sales-rows"></tbody>
+</table>
+<p id="sales-status" role="status"></p>
+```
+
+### 4.1 校验与规范化 {#校验与规范化}
+
+下面约定月份格式为 `YYYY-MM`，同月只能出现一次；收入与成本是非负安全整数分，或表示缺失的 `null`。退款等允许负值的业务应使用自己的契约，不能直接沿用这个限制。
+
+```js
+function normalizeSales(rows) {
+  if (!Array.isArray(rows)) throw new TypeError('rows 必须是数组');
+  const seen = new Set();
+  const money = value => {
+    if (value === null) return null;
+    if (!Number.isSafeInteger(value) || value < 0) {
+      throw new TypeError('金额必须是非负安全整数分或 null');
+    }
+    return value / 100;
+  };
+  return rows.map(row => {
+    if (!row || typeof row.month !== 'string' ||
+        !/^[1-9]\d{3}-(0[1-9]|1[0-2])$/.test(row.month) || seen.has(row.month)) {
+      throw new TypeError('月份无效或重复');
+    }
+    seen.add(row.month);
+    return {
+      month: row.month,
+      revenue: money(row.revenueCents),
+      cost: money(row.costCents)
+    };
+  }).sort((a, b) => a.month.localeCompare(b.month));
+}
+
+console.log(normalizeSales([
+  { month: '2025-02', revenueCents: 0, costCents: null },
+  { month: '2025-01', revenueCents: 125000, costCents: 80000 }
+]));
+```
+
+输出按月份排序的两行：一月收入 `1250`、成本 `800`，二月收入 `0`、成本 `null`。原数组与原对象没有被排序或改写。重复月份被拒绝，因为这个示例没有自行决定“重复就累加”还是“后值覆盖”的业务权力。
+
+这里的元值用于图表展示，金额计算仍应遵循业务自己的精度与舍入规则。把分除以 100 得到图表数值，不等于建立了一套财务计算实现。
+
+### 4.2 选项与系列身份 {#选项与系列身份}
+
+```js
+function buildSalesOption(source, showCost = true) {
+  const series = [{
+    id: 'revenue', name: '收入', type: 'bar',
+    encode: { x: 'month', y: 'revenue', itemName: 'month' }
+  }];
+  if (showCost) series.push({
+    id: 'cost', name: '成本', type: 'bar',
+    encode: { x: 'month', y: 'cost', itemName: 'month' }
+  });
+  return {
+    animation: false,
+    color: ['#2563eb', '#15803d'],
+    aria: {
+      enabled: true,
+      label: { description: '每月收入与成本，单位为元。详细数值和月份操作见下方表格。' },
+      decal: { show: true }
+    },
+    legend: {},
+    tooltip: { trigger: 'axis', renderMode: 'richText' },
+    grid: { left: 20, right: 20, top: 50, bottom: 25, containLabel: true },
+    dataset: { id: 'sales', dimensions: ['month', 'revenue', 'cost'], source },
+    xAxis: { type: 'category' },
+    yAxis: { type: 'value', min: 0, name: '元' },
+    series
+  };
+}
+```
+
+收入与成本共用月份轴和金额单位，`encode` 明确每个系列读取哪个字段。缺失成本不会被人为补成零；表格还会明确显示“缺失”，避免只看没有柱子时分不清零值与缺失。
+
+`aria.enabled` 和纹理填充用于补充说明与颜色区分；下方表格提供可读取的数值和键盘可操作的月份按钮。它们不等于完整可访问性验收，还需结合实际页面和读屏工具检查。按需导入 ECharts 时，需要另外注册实际使用的图表、组件和渲染器；完整包不能代表按需包自动具备相同注册。
+
+### 4.3 更新、交互与卸载 {#更新交互与卸载}
+
+```js
+function mountSalesChart(root, tbody, status) {
+  if (root.clientWidth === 0 || root.clientHeight === 0) {
+    throw new Error('图表容器需要可用尺寸');
+  }
+  if (echarts.getInstanceByDom(root)) throw new Error('容器已有图表实例');
+  const chart = echarts.init(root, null, { renderer: 'svg' });
+  let disposed = false;
+  let months = new Set();
+  function select(month) {
+    if (!disposed && months.has(month)) status.textContent = '已选择 ' + month;
+  }
+  function onChartClick(params) { select(params.name); }
+  function onTableClick(event) {
+    const button = event.target.closest?.('button[data-month]');
+    if (button && tbody.contains(button)) select(button.dataset.month);
+  }
+  chart.on('click', 'series.bar', onChartClick);
+  tbody.addEventListener('click', onTableClick);
+  const observer = new ResizeObserver(() => {
+    if (!disposed && root.clientWidth > 0 && root.clientHeight > 0) chart.resize();
+  });
+  observer.observe(root);
+  return {
+    update(rows, showCost = true) {
+      if (disposed) return false;
+      const source = normalizeSales(rows);
+      const fragment = document.createDocumentFragment();
+      for (const row of source) {
+        const tr = document.createElement('tr');
+        const monthCell = document.createElement('th');
+        monthCell.scope = 'row';
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.dataset.month = row.month;
+        button.textContent = row.month;
+        monthCell.append(button);
+        tr.append(monthCell);
+        for (const value of [row.revenue, row.cost]) {
+          const td = document.createElement('td');
+          td.textContent = value === null ? '缺失' : value.toFixed(2);
+          tr.append(td);
+        }
+        fragment.append(tr);
+      }
+      chart.setOption(buildSalesOption(source, showCost), { replaceMerge: ['series'] });
+      tbody.replaceChildren(fragment);
+      months = new Set(source.map(row => row.month));
+      status.textContent = source.length ? '已更新 ' + source.length + ' 个月' : '暂无数据';
+      return true;
+    },
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      observer.disconnect();
+      tbody.removeEventListener('click', onTableClick);
+      chart.off('click', onChartClick);
+      chart.dispose();
+      months.clear();
+    }
+  };
+}
+
+const salesView = mountSalesChart(
+  document.querySelector('#sales-chart'), document.querySelector('#sales-rows'),
+  document.querySelector('#sales-status')
+);
+salesView.update([
+  { month: '2025-01', revenueCents: 125000, costCents: 80000 },
+  { month: '2025-02', revenueCents: 0, costCents: null },
+  { month: '2025-03', revenueCents: 150000, costCents: 90000 }
+]);
+// 组件卸载时调用 salesView.dispose()。
+```
+
+页面显示三个月的收入与成本，二月的真实零收入和缺失成本在表格中分别显示为 `0.00` 与“缺失”。点击柱子或月份按钮会更新同一状态区域；这里只展示选择行为，没有发起真实的业务明细请求。
+
+一次更新先完成所有输入校验，再修改图表和表格。无效月份或金额会抛错，已有显示保留；调用方需要给用户适当的错误提示。`showCost = false` 只移除成本图形，表格仍保留完整数据，便于核对。
+
+示例用 `ResizeObserver` 观察容器本身，不只观察窗口。隐藏期间尺寸为零时跳过 resize，重新显示后按新的有效尺寸更新；如果一开始就隐藏，调用方应等待可用尺寸后再挂载。卸载清理实例和订阅，宿主负责移除对应 DOM。
+
+## 5. 动态更新与异步数据 {#动态更新与异步数据}
+
+### 5.1 合并与删除 {#合并与删除}
+
+`setOption` 默认把新配置合并到已有配置。省略一个旧系列，并不必然表示删除它；如果本来有收入与成本，下一次只传收入，旧成本仍可能保留。
+
+| 更新方式 | 含义 | 适用条件 |
+| --- | --- | --- |
+| 默认合并 | 将提供的配置合并进当前图表 | 保持现有结构，更新数据或少量配置 |
+| `replaceMerge: ['series']` | 对 series 使用替换合并，按明确身份保留匹配项并移除未匹配旧项 | 本次输入描述完整的目标系列集合 |
+| `notMerge: true` | 用新配置建立新的选项状态 | 确实要整体重置，并能接受相关交互状态重置 |
+
+稳定 `id` 说明“这是上次的收入系列”。显示名称相同、数组位置相同与业务身份相同不是一回事，系列重排、增删或重命名时尤其需要区分。
+
+示例每次提供完整目标系列，因此使用 `replaceMerge`。它不自动替换所有其他组件，也不会保留所有用户状态；图例选择、缩放范围和高亮等应按产品需求确认。不要每次更新都先 `dispose` 再 `init`，也不要把 `getOption()` 中所有内部补全结果改一遍后回传。
+
+### 5.2 请求归属与页面状态 {#请求归属与页面状态}
+
+用户把时间范围从一年切到一个月，两次请求可能反序返回。`setOption` 只负责应用收到的数据，不知道哪次响应属于当前筛选条件；调用方需要检查请求版本或取消旧请求，见 [async 与 await](../../basic-knowledge/javascript/async-await.mdx#阻止旧结果覆盖新状态)。
+
+加载、空结果、请求失败与局部缺失应分别显示。请求失败时是保留旧图并注明，还是清空旧图，属于明确的界面规则；不能让用户把旧数据当成新查询的结果。`showLoading` 与 `hideLoading` 只管理相应提示，不代替数据正确性和错误处理。
+
+图例选择是图形交互状态，不一定代表改变后端查询。下钻则通常需要稳定业务标识、范围与权限；不要仅凭可见序号查询明细，也不要把提示框字符串当作可信 HTML 拼进页面。示例使用固定字段和文本节点，实际业务仍需控制标签与 formatter 的输入。
+
+## 6. 数据量与性能 {#数据量与性能}
+
+### 6.1 控制数据和更新规模 {#控制数据和更新规模}
+
+像素宽度有限，一张几百像素宽的折线图不能让用户分别辨认无限多个点。应先明确需要保留的是总量、趋势、峰值还是异常，再决定怎样减少展示数据。
+
+| 手段 | 减少什么 | 需要说明的代价 |
+| --- | --- | --- |
+| 服务端过滤与聚合 | 传输量和前端处理量 | 聚合粒度会影响可见细节 |
+| 可见范围查询或分页 | 当前无需展示的数据 | 缩放、拖动与缓存策略更复杂 |
+| 采样与降采样 | 绘制点数 | 简单等间隔抽点可能漏掉峰值 |
+| 合并短时间内的更新 | 重复 setOption 和布局绘制 | 展示存在一定延迟，增量必须正确合并 |
+| 减少标签、动画和复杂效果 | 额外文本与绘制工作 | 可能降低信息密度或动态反馈 |
+
+快照数据可以按业务约定只显示最新一份；增量计数和流式片段则不能随意只保留最后一个。Web Worker 可以搬走部分数据计算，但消息复制、结果合并和主线程绘图仍有成本，见 [Web Worker](../browser/web-worker.mdx)。
+
+### 6.2 渲染器与测量 {#渲染器与测量}
+
+ECharts 可选 Canvas 或 SVG 渲染器。SVG 以矢量图形组织输出，Canvas 以绘图表面承载结果；数据量、元素数量、更新频率、效果和设备条件都会影响选择。不能把“超过某个固定点数就必须换 Canvas”当成通用定律。
+
+先区分数据请求、解析转换、`setOption` 处理和浏览器绘制，再用相同数据与交互比较。只计时 `setOption` 返回，不能完整说明用户何时看到了结果；只看平均帧率，也可能漏掉第一次加载和筛选切换的长任务。
+
+检查多轮更新后是否还残留旧系列、事件是否重复触发、离开页面后是否继续请求和重绘。更换渲染器无法修复错误的聚合、无界缓存或没有清理的订阅。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 怎样根据业务问题选择图表，为什么柱形和折线不能随意互换？ {#chart-choice}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：比较目标、视觉编码、坐标范围与数据关系。
+
+**相关内容**：[图表选择](#图表选择)。
+
+<details>
+<summary>参考回答</summary>
+
+**先明确读者要比较分类大小、观察时间变化、查看分布还是判断变量关系。** 柱形适合按统一单位比较长度，折线强调有顺序的数据变化；把无序分类连成线，可能暗示不存在的连续关系。单位、坐标范围、时间间隔和占比分母都应明确，不能只看哪种图更美观。
+
+</details>
+
+### 7.2 接口返回零值、缺失值和重复月份，前端应该怎样处理？ {#data-contract}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：数据契约、单位、缺失与聚合规则。
+
+**相关内容**：[数据契约](#数据契约)、[校验与规范化](#校验与规范化)。
+
+<details>
+<summary>参考回答</summary>
+
+**按约定分别处理，不能统一变成零或自行决定重复项累加。** 零是观测值，缺失应保留缺失语义，无效类型应拒绝或报告。重复月份需要明确合并规则，没有规则时先报错；同时核对金额单位、时间范围与排序。校验完成后再更新图表，避免只更新一半的数据。
+
+</details>
+
+### 7.3 dataset、series 和 encode 分别负责什么？ {#dataset-encode}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：数据组织、图形系列与维度映射。
+
+**相关内容**：[ECharts 的数据映射](#echarts的数据映射)、[选项与系列身份](#选项与系列身份)。
+
+<details>
+<summary>参考回答</summary>
+
+**dataset 提供可复用的数据，series 描述一组图形，encode 决定字段映射到哪个轴或显示用途。** 同一份月份、收入和成本数据可以驱动两个柱形系列，分别将收入和成本映射到纵轴。dataset 不代替业务校验或聚合，字段顺序变化时也不能继续依赖错误的默认映射。
+
+</details>
+
+### 7.4 setOption 只传一个系列，为什么旧的另一个系列还在？ {#update-merge}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：默认合并、稳定身份和目标集合。
+
+**相关内容**：[合并与删除](#合并与删除)。
+
+<details>
+<summary>参考回答</summary>
+
+**默认是合并更新，省略旧系列不等于发出删除指令。** 若本次配置描述完整的系列集合，可以给系列稳定 `id` 并使用 `replaceMerge: ['series']`；需要整体重置时再考虑 `notMerge: true`。还要检查图例、缩放等状态的保留需求，不能每次都销毁重建来掩盖身份和更新规则不清的问题。
+
+</details>
+
+### 7.5 图表放在可切换标签页里，怎样处理尺寸和生命周期？ {#chart-lifecycle}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：有效尺寸、隐藏、实例复用与清理。
+
+**相关内容**：[更新、交互与卸载](#更新交互与卸载)。
+
+<details>
+<summary>参考回答</summary>
+
+**先在容器有可用尺寸时初始化，显示或容器变化后按需要 resize，真正卸载时再清理实例。** 仅隐藏的图表可以保留实例，但要处理重新显示后的尺寸；DOM 被销毁时，解除观察器与事件、取消外部更新并 dispose。不要在同一节点重复 init，也不要以为 window.resize 能覆盖所有容器变化。
+
+</details>
+
+### 7.6 大量数据持续更新导致图表卡顿，怎样分析和优化？ {#large-data}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**题型**：综合题
+
+**考察重点**：指标语义、处理规模、绘制成本、更新合并与验证。
+
+**相关内容**：[数据契约](#数据契约)、[控制数据和更新规模](#控制数据和更新规模)、[渲染器与测量](#渲染器与测量)。
+
+<details>
+<summary>参考回答</summary>
+
+**先分开测请求、转换、更新和绘制，再根据需要保留的信息减少数据与重复工作。** 可采用范围查询、聚合或保留关键特征的采样，减少标签和动画，并按业务语义合并更新；增量不能直接丢掉中间值。
+
+同样的数据、画面和设备下比较调整效果，确认峰值或异常没有被错误抹平。最后检查旧系列、事件、缓存与离开页面后的清理，而不是只更换渲染器或只展示一次计时。
+
+</details>
+
+### 7.7 介绍 ECharts 可视化项目时，应该说明哪些实现细节？ {#visualization-project}
+
+**题型**：综合题
+
+**考察重点**：业务问题、数据映射、交互更新和职责边界。
+
+**相关内容**：[数据问题与视觉表达](#数据问题与视觉表达)、[ECharts 的数据映射](#echarts的数据映射)、[动态更新与异步数据](#动态更新与异步数据)、[数据量与性能](#数据量与性能)。
+
+<details>
+<summary>参考回答</summary>
+
+**从图表要回答的业务问题讲起，再说明数据怎样转换成坐标和系列，以及用户操作怎样改变结果。** 交代指标单位、缺失处理、选择图形的理由、加载与失败状态、更新合并和尺寸清理。
+
+区分图表库提供的绘制能力与自己实现的数据、交互和故障处理。确有性能问题时说明测量与取舍；没有做过底层绘制，就不要把使用 ECharts 等同于实现了 Canvas 或 WebGL 引擎。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [Apache ECharts：Dataset](https://echarts.apache.org/handbook/en/concepts/dataset/)
+- [Apache ECharts：Chart Container and Size](https://echarts.apache.org/handbook/en/concepts/chart-size/)
+- [Apache ECharts：Asynchronous Data Loading and Dynamic Update](https://echarts.apache.org/handbook/en/how-to/data/dynamic-data/)
+- [Apache ECharts 5.6.0：配置合并实现](https://github.com/apache/echarts/blob/5.6.0/src/model/Global.ts)
+- [Apache ECharts：Event and Action](https://echarts.apache.org/handbook/en/concepts/event/)
+- [Apache ECharts：Web Accessibility](https://echarts.apache.org/handbook/en/best-practices/aria/)
+- [Apache ECharts 5.6.0：ARIA 配置兼容](https://github.com/apache/echarts/blob/5.6.0/src/component/aria/preprocessor.ts)
+- [Apache ECharts：Render with SVG or Canvas](https://echarts.apache.org/handbook/en/best-practices/canvas-vs-svg/)

@@ -1,0 +1,298 @@
+---
+sidebar_position: 3
+knowledge:
+  id: frontend.browser.process-model
+---
+
+# 浏览器进程模型
+
+现代浏览器把界面管理、页面内容、网络和图形等工作分配给不同进程与线程，以控制故障影响、限制权限并利用并行能力。“JavaScript 单线程”只描述某个执行环境中的关键执行约束，不表示整个浏览器只有一条线程。
+
+理解进程模型后，才能判断页面卡住时哪些工作也会受影响，为什么一个标签页可能涉及多个渲染进程，以及 Worker 为什么能处理后台计算却不能直接修改页面 DOM。本文以 Chromium 的职责划分为主要例子，具体进程数量和合并策略属于实现选择。
+
+## 1. 面试核心 {#core}
+
+- **进程提供资源与隔离边界，线程承载执行，同一进程可以有多条线程**。浏览器可以让不同职责并行工作，也需要承担内存、调度与通信成本。[卡](#multi-process)
+- **浏览器进程管理界面、导航与其他进程，渲染进程处理网页内容**；网络、图形等还可能由独立服务或进程协作完成。不要把所有工作都放进“JS 线程”。[卡](#browser-execution)
+- **标签页、文档、iframe、渲染进程不是一一对应**。一个标签页可以包含处于不同进程的子框架，相关页面也可能按策略共享进程。[卡](#tab-processes)
+- **站点隔离与同源策略处于不同层面**。前者利用进程边界限制攻击或故障影响，后者约束页面可以访问哪些数据；不能从同进程推出可以跨源读 DOM。[卡](#site-isolation)
+- 在普通页面环境中，**同一主线程上的 JavaScript 与许多 DOM、样式和布局工作会争用执行时间**。异步 I/O 可以在其他组件推进，但回调仍需要等相应执行机会。[卡](#single-thread)
+- **JavaScript 引擎负责语言执行，浏览器宿主提供 DOM 等 Web API**。V8 不是整个浏览器内核，也不单独负责完整页面渲染。[卡](#browser-engines)
+- **Window、Document 和 DOM 描述页面可访问的对象与结构，不是操作系统进程对象**。同一页面中的 iframe 有自己的全局环境与文档；浏览器相关 API 也不全都能在 Worker 使用。[卡](#dom-bom)
+- **Worker 具有独立的脚本执行环境，通过消息与页面合作，不能直接访问页面 DOM**。创建 Worker 不等于标准保证创建一个独立操作系统进程。[卡](#worker-boundary)
+
+## 2. 进程与线程的职责 {#进程与线程的职责}
+
+**进程**是程序运行时的资源与隔离单位之一，通常有自己的虚拟地址空间；**线程**是在进程内执行代码的单位，同一进程的线程能够共享相应资源。线程的共享与同步、进程间通信的基础见 [进程与线程](../../basic-knowledge/operating-system/processes-threads.mdx)。
+
+浏览器处理的页面可能包含复杂脚本、第三方嵌入内容、媒体解码和图形操作。把所有内容放在一个不受限制的执行空间里，一处错误就容易影响整个应用。拆分进程可以让浏览器在部分内容出错时继续管理其他页面，并为内容进程施加更小的权限范围。
+
+以 Chromium 为例，可以按职责理解以下组成，而不是背“启动浏览器必定有几个进程”：
+
+| 组成 | 主要职责 | 不应混淆的部分 |
+| --- | --- | --- |
+| 浏览器进程 | 浏览器界面、导航协调、权限和进程生命周期等 | 它不是当前网页的 JavaScript 全局对象 `window` |
+| 渲染进程 | 文档、脚本、样式、布局以及相关内容处理 | “渲染”不只表示画图，也包含许多页面脚本工作 |
+| 网络服务 | 管理网络请求、连接及相关网络状态 | 页面中的 Fetch 调用不代表脚本直接取得任意系统网络权限 |
+| 图形与合成相关进程、线程 | 图形资源、绘制结果处理和合成等 | 使用 GPU 不表示所有网页工作都离开 CPU 或主线程 |
+| 其他服务 | 解码、存储、扩展等按需要隔离的职责 | 具体拆分随平台、配置和实现变化 |
+
+**进程间通信**（IPC）让这些组成交换经过定义的消息或数据。页面发起导航、请求资源、提交绘制结果，都可能跨越这样的边界；这不等同于它们随意读写彼此的普通内存对象。
+
+多进程也有代价：进程本身占用资源，数据传递与同步需要成本，合成多个页面或子框架的结果需要协调。它改善故障隔离与安全边界，不承诺任何单个 JavaScript 循环都运行得更快。
+
+## 3. 页面与进程分配 {#页面与进程分配}
+
+### 3.1 标签页和框架 {#标签页与框架}
+
+**标签页**是浏览器界面中的页面容器，**文档**是当前加载的内容对象，`iframe` 则在页面中建立嵌套浏览内容。它们与操作系统进程属于不同层次。
+
+一个页面可以包含来自不同站点的 iframe。桌面 Chromium 的站点隔离可以让跨站子框架运行在不同渲染进程中，再由浏览器协调输入、导航和显示结果。因此，“一个标签页只有一个渲染进程”不是可靠结论。
+
+反过来，多个页面也不必永远各占一个进程。具有同步访问关系的相关页面、相应站点的内容以及资源约束下的策略，都可能影响复用；一次导航也可能更换承担新文档的渲染进程。进程数量应从实际浏览器的诊断信息读取，不能通过数标签页或 `window` 对象推算。
+
+### 3.2 站点隔离与同源限制 {#站点隔离与同源限制}
+
+**站点隔离**把不同站点的敏感内容尽量放入受到约束的不同渲染进程，减少一个内容进程被攻破后能够接触的数据。沙箱则限制内容进程直接访问操作系统资源的能力，这些边界与页面层的访问检查相互配合。
+
+这里的“站点”不等同于“源”。源通常由协议、主机和端口组成；站点相关分组还涉及协议和可注册域等概念。实际隔离策略也可能更加细化，不能用“同域名”三个字代替全部规则。
+
+同源策略仍然决定页面能否读取另一个文档或某项跨源响应。即使两个页面因实现策略进入同一进程，也不会因此自动获得彼此的访问权限；跨源消息通信同样不能说明两个页面必定处在不同进程。页面 API 语义与进程布置应分别判断。
+
+进程隔离也不是“某个页面再怎么占资源，都绝不会影响其他页面”。机器的 CPU、内存和图形资源仍然有限，浏览器主进程或公共服务也可能成为共同瓶颈。它控制的是影响范围和权限，不是消除全部资源竞争。
+
+## 4. 主线程与异步工作 {#主线程与异步工作}
+
+### 4.1 页面主线程 {#页面主线程}
+
+**主线程**在普通页面执行环境中承担 JavaScript 执行、DOM 处理和许多样式、布局等工作。一个长时间不返回的脚本任务，会延迟同一线程上后续任务、事件回调以及需要它参与的页面更新。
+
+合成、栅格化、网络或部分编译与垃圾回收工作可以由其他线程或进程协作完成，因此主线程繁忙不等于浏览器所有活动全部停止。例如某些已经准备好的合成动画或滚动仍可能推进，但需要新的 JavaScript 和布局结果的交互会受影响。渲染分工见 [浏览器渲染流程](./rendering.mdx#布局绘制与合成)。
+
+不要把这种模型背成所有浏览器都有固定数量的“GUI 线程、JS 线程、定时器线程、HTTP 线程”。这些名称可以提示职责，但并不是 Web 标准对线程数量和一一对应关系的要求。定时器登记一个到期后可排队的任务，不表示每个计时器独占一条新线程。
+
+### 4.2 JavaScript 单线程的范围 {#单线程的范围}
+
+“JavaScript 单线程”在页面面试语境里，通常指同一个 JavaScript 执行环境中的任务按相应事件循环和执行栈顺序运行，不能让两个普通页面回调随意并行修改同一份 DOM。
+
+这让一次同步执行期间的状态推导更直接，但不能推广为“整个 JavaScript 世界永远只用一个线程”。Worker 有独立执行环境，引擎内部也可能使用后台线程；共享内存与原子操作更有专门约束。
+
+异步请求也不是把后面的 JavaScript 自动放进新线程。网络工作可以由宿主推进，结果准备好后，对应回调仍要等所属执行环境处理。`Promise`、`async/await` 改变的是组织和恢复方式，不会把其中的普通计算自动变成并行计算。事件循环的具体顺序见 [浏览器事件循环](../../basic-knowledge/javascript/browser-event-loop.mdx#同步执行与异步等待)。
+
+## 5. 引擎与页面对象 {#引擎与页面对象}
+
+### 5.1 渲染引擎与 JavaScript 引擎 {#引擎分工}
+
+**JavaScript 引擎**负责解析、编译或解释执行语言代码，并参与对象内存管理。**渲染引擎**负责文档和样式等网页内容的处理。二者通过浏览器提供的接口协作，不能因为开发时都用 JavaScript 调用，就把它们视为一个对象。
+
+Chromium 的 Blink 负责网页内容的相关机制，V8 执行 JavaScript 和 WebAssembly。V8 也能嵌入 Node.js 等其他宿主，说明语言引擎本身不等于 DOM、地址栏或完整网络和渲染系统。语言执行机制见 [V8 执行过程](../../basic-knowledge/javascript/v8-execution.mdx)。
+
+“浏览器内核”是容易含混的说法。回答项目使用环境时，应说明具体浏览器或 WebView、平台，以及所指的是网页引擎还是 JavaScript 引擎。Firefox 的 Gecko、WebKit 等实现也有各自的多进程体系，不能把 Chromium 的内部进程名称当作所有浏览器都必须具有的标准接口。
+
+### 5.2 Window、Document、DOM 与 BOM {#页面对象}
+
+**Window** 是文档所在浏览环境暴露给页面的全局接口，**Document** 表示该文档及其相关状态，**DOM** 是访问和修改文档节点的对象模型。`document` 可以从页面全局访问，但它不是整个浏览器应用。
+
+```js
+console.log(window === globalThis);
+console.log(window.document === document);
+console.log(document.defaultView === window);
+```
+
+在普通页面脚本中，三项均为 `true`。严格地说，页面对 `window` 等的访问还涉及浏览器维护的 `WindowProxy`：它让导航前后对浏览上下文的引用，与当前文档的具体全局对象区分开来。面试基础回答只需清楚“浏览环境”与“当前文档”不同，不必把它误讲成进程句柄。
+
+**BOM**（Browser Object Model）是对 `location`、`history`、`navigator` 等浏览器环境接口的传统统称，并不是一个独立且统一的标准对象。现代相关接口分别由 HTML 和其他 Web 标准定义。说“DOM 操作文档，BOM 操作浏览环境”可以作为入口，但仍要落到具体 API 的权限和行为。
+
+例如，同一页面中的 iframe 也有自己的文档和全局环境：
+
+```html
+<iframe id="child" srcdoc="<p>子文档</p>"></iframe>
+<script>
+  const child = document.querySelector('#child');
+  child.addEventListener('load', () => {
+    console.log(child.contentWindow === window);
+    console.log(child.contentDocument === document);
+    console.log(child.contentWindow.document === child.contentDocument);
+  });
+</script>
+```
+
+在这个未设置沙箱、同源的 `srcdoc` 示例中，输出 `false`、`false`、`true`。它证明不同文档有不同环境，并不能据此证明它们用了不同操作系统进程。若 iframe 导航到跨源文档，外部读取其 DOM 的能力会受同源策略限制，不能继续照搬最后一行读取。
+
+## 6. Worker 的执行边界 {#worker的执行边界}
+
+**Worker** 是页面可以创建的独立后台脚本执行环境，能够通过消息与创建方合作。它没有页面的 `window` 和 `document`，因此后台计算完成后需要把结果传回，让页面一侧更新 DOM。
+
+以下两个文件展示这个边界。它们由同一 HTTP 服务提供，页面先准备好输出节点，再启动一个专用 Worker：
+
+```html
+<output id="result"></output>
+<script>
+  const worker = new Worker('/worker.js');
+  worker.addEventListener('message', event => {
+    document.querySelector('#result').textContent = JSON.stringify(event.data);
+    worker.terminate();
+  }, { once: true });
+  worker.addEventListener('error', () => {
+    document.querySelector('#result').textContent = 'Worker 执行失败';
+    worker.terminate();
+  }, { once: true });
+  worker.postMessage(6);
+</script>
+```
+
+```js
+// worker.js
+self.addEventListener('message', event => {
+  self.postMessage({
+    doubled: event.data * 2,
+    documentType: typeof document,
+    windowType: typeof window,
+  });
+});
+```
+
+页面显示 `{"doubled":12,"documentType":"undefined","windowType":"undefined"}`。修改输出节点的代码运行在页面侧，Worker 只处理输入并发送结果。使用 `self` 或 `globalThis` 也不会把页面的全局对象带进 Worker。
+
+Worker 的执行独立性不要求 Web 标准为每个实例规定一个专属操作系统进程。通信通常还涉及数据复制或显式转移，启动和保留执行环境也有成本，所以不应为了一个简单加法创建大量 Worker。这个例子只验证环境和通信边界，不是性能建议。
+
+需要在多个环境共享数据时，还必须考虑协议、所有权或共享内存同步，不能直接拿页面里的 DOM 引用发过去并要求它在后台操作。共享对象和多个线程的并发约束，也不能用“JavaScript 单线程所以没有竞争”一笔带过。
+
+## 7. 诊断时观察什么 {#诊断时观察什么}
+
+页面卡顿、网络慢和内容进程崩溃是不同现象。判断前先确定观察层次：
+
+| 现象 | 先收集的证据 | 不能立即推出的结论 |
+| --- | --- | --- |
+| 点击无响应 | 主线程任务、脚本调用栈、布局与绘制记录 | 网络一定堵住了，或整个浏览器进程已经死锁 |
+| 请求长时间等待 | 网络阶段、连接、服务端响应、主线程回调时间 | 等待时间全部花在 JavaScript 执行上 |
+| 某些页面内容失效 | 对应渲染进程或页面错误、浏览器诊断信息 | 所有其他标签页都必然不受影响或都必然崩溃 |
+| 内存占用高 | 进程级占用、页面堆与其他资源的不同统计 | JavaScript 堆大小就是整个浏览器的全部内存 |
+
+浏览器任务管理器或自身诊断工具可以观察实际进程，开发者工具中的 Performance 记录可以分析页面执行。两个面板解决的问题不同；仅从控制台看到一个 Worker 对象或两个 iframe，就断言创建了几个系统进程，证据是不够的。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 浏览器为什么使用多进程，这样有什么代价？ {#multi-process}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：资源隔离、故障影响、权限限制与通信成本。
+
+**相关内容**：[进程与线程的职责](#进程与线程的职责)。
+
+<details>
+<summary>参考回答</summary>
+
+**多进程让不同职责和内容具有更明确的故障与权限边界，并允许独立执行。** 一个内容进程出错时，浏览器仍有机会管理其他内容；沙箱和站点隔离还限制该进程可接触的资源。代价是更多内存、调度、通信和协调工作，因此不能把多进程等同于所有计算都更快，也不能假设共享系统资源不存在竞争。
+
+</details>
+
+### 8.2 JavaScript 在浏览器中怎样与其他组成协作？ {#browser-execution}
+
+**考察重点**：语言引擎、渲染进程、主线程、宿主 API 与任务恢复。
+
+**相关内容**：[进程与线程的职责](#进程与线程的职责)、[主线程与异步工作](#主线程与异步工作)。
+
+<details>
+<summary>参考回答</summary>
+
+**页面 JavaScript 由语言引擎执行，借助浏览器宿主接口访问 DOM、发起请求并登记后续工作。** 在 Chromium 的普通页面中，脚本与许多文档、样式和布局工作使用渲染主线程；浏览器进程管理导航和生命周期，网络与图形等组件协作推进其他任务。异步结果就绪不代表回调立即执行，它仍要等待所属环境获得执行机会。
+
+</details>
+
+### 8.3 一个标签页一定对应一个渲染进程吗？ {#tab-processes}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：界面容器、文档框架与进程分配策略。
+
+**相关内容**：[标签页和框架](#标签页与框架)。
+
+<details>
+<summary>参考回答</summary>
+
+**不一定，标签页和渲染进程不是一一对应。** 一个标签页的跨站 iframe 可以分布在多个渲染进程，多个相关页面又可能按策略共享进程，导航也可能更换进程。实际分配与浏览器、平台、隔离策略及资源约束有关，需要诊断证据，不能从标签页或 window 对象数量直接推算。
+
+</details>
+
+### 8.4 站点隔离是否可以替代同源策略？ {#site-isolation}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：实现层隔离、Web 访问规则和站点与源的差别。
+
+**相关内容**：[站点隔离与同源限制](#站点隔离与同源限制)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能，站点隔离利用进程边界控制可接触的数据，同源策略规定页面层面的访问权限。** 两者相互配合，站点和源也不完全相同。即使内容共享了进程，也不会自动允许跨源读取 DOM；跨源通信 API 的存在同样不能反推参与方的进程布置。
+
+</details>
+
+### 8.5 JavaScript 单线程为什么不等于整个浏览器单线程？ {#single-thread}
+
+**考察重点**：页面执行环境、并行宿主工作、Worker 与渲染竞争。
+
+**相关内容**：[主线程与异步工作](#主线程与异步工作)。
+
+<details>
+<summary>参考回答</summary>
+
+**单线程通常描述同一页面执行环境的任务顺序，不限制浏览器的所有进程和线程。** 网络、图形、部分引擎内部工作可在其他组成中推进，Worker 也有独立脚本环境。但同一主线程上的长任务仍会延迟事件回调和需要该线程的页面更新。Promise、async/await 不会把普通计算自动分配到后台线程，定时器也不是每个各建一条线程。
+
+</details>
+
+### 8.6 浏览器内核与 JavaScript 引擎是什么关系？ {#browser-engines}
+
+**考察重点**：网页处理、语言执行、宿主接口与具体实现。
+
+**相关内容**：[渲染引擎与 JavaScript 引擎](#引擎分工)。
+
+<details>
+<summary>参考回答</summary>
+
+**JavaScript 引擎执行语言代码，网页引擎和浏览器宿主还负责文档、样式、页面 API 及其他系统功能。** Chromium 使用 Blink 处理相关网页机制、V8 执行 JavaScript；V8 也可用于 Node.js，因此不自带完整浏览器和页面 DOM。“内核”含义不够精确，回答开发环境时应说明浏览器或 WebView、平台及对应引擎，不能只列一个名称后把所有职责都归给它。
+
+</details>
+
+### 8.7 Window、Document、DOM 和 BOM 分别表示什么？ {#dom-bom}
+
+**考察重点**：浏览环境、当前文档、节点模型与传统接口统称。
+
+**相关内容**：[Window、Document、DOM 与 BOM](#页面对象)。
+
+<details>
+<summary>参考回答</summary>
+
+**Window 是文档浏览环境的全局接口，Document 表示当前文档，DOM 提供文档节点的访问与修改模型，BOM 是浏览环境相关接口的传统统称。** location、history、navigator 等具体接口有各自规范和限制。iframe 可以有自己的环境和文档，这不等于每个都独占一个系统进程；Worker 也没有页面的 window/document，不能把所有全局环境视为同一种对象。
+
+</details>
+
+### 8.8 Worker 可以直接操作 DOM 吗，是否等于新建一个进程？ {#worker-boundary}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：独立环境、消息通信与实现映射。
+
+**相关内容**：[Worker 的执行边界](#worker的执行边界)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能直接操作页面 DOM，Web 标准也不保证每个 Worker 对应一个独立操作系统进程。** Worker 在独立脚本环境中工作，通过消息把结果交给页面，由页面更新 DOM。启动、通信与数据传递有成本；需要并行处理较重计算时应评估收益，不能为简单操作无限创建 Worker。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+
+- [Chromium：Multi-process Architecture](https://www.chromium.org/developers/design-documents/multi-process-architecture/)
+- [Chromium：Site Isolation Design Document](https://www.chromium.org/developers/design-documents/site-isolation/)
+- [Chrome：Inside look at modern web browser, part 1](https://developer.chrome.com/blog/inside-browser-part1)
+- [Chromium：RenderingNG architecture](https://developer.chrome.com/docs/chromium/renderingng-architecture)
+- [V8：Documentation](https://v8.dev/docs)
+- [Firefox：Process Model](https://firefox-source-docs.mozilla.org/dom/ipc/process_model.html)
+- [WebKit：WebKit2 Architecture](https://docs.webkit.org/Deep%20Dive/Architecture/WebKit2.html)
+- [WHATWG HTML：Window and WindowProxy](https://html.spec.whatwg.org/multipage/nav-history-apis.html#the-window-object)
+- [WHATWG HTML：Web workers](https://html.spec.whatwg.org/multipage/workers.html#workers)

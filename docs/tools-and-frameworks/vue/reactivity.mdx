@@ -1,0 +1,509 @@
+---
+sidebar_position: 1
+knowledge:
+  id: tools-and-frameworks.vue.reactivity
+---
+
+# Vue 响应式
+
+**响应式**让依赖某份数据的计算在数据变化后重新执行。Vue 不会持续扫描所有变量；它在响应式读取时记录依赖，在写入时通知相关计算，再安排组件更新。
+
+理解这条链路，才能解释 `ref` 为什么有 `.value`、解构为什么可能断开联系，以及数据已经变了而 DOM 还没更新的原因。本文以 Vue 3 为主，Vue 2 的属性与数组限制单独说明。
+
+## 1. 面试核心 {#core}
+
+- **响应式依赖在计算执行、读取数据时建立，写入再通知对应依赖。** 条件分支变化后要更新依赖集合，不能让不再读取的字段一直触发原计算。[卡](#dependency-tracking)
+- **`ref` 用稳定的容器承载值，`reactive` 返回对象的响应式代理。** `ref` 能承载基本类型与对象，`reactive` 适用于可代理的对象；对象 ref 默认也有深层响应式。[卡](#ref-reactive)
+- **代理与原对象不是同一个引用，通过原对象写入会绕开代理通知。** 相同原对象的重复 `reactive` 调用会复用代理，不需要反复包装。[卡](#proxy-raw)
+- **解构出的基本类型只是当时的值，`toRef`、`toRefs` 可以保留与源属性的联系。** 解构得到的嵌套代理仍可响应，但不会自动跟随父属性整体替换。[卡](#destructuring)
+- **模板中的 ref 解包有范围，不能推广成任何位置都不需要 `.value`。** 普通响应式对象属性、数组元素、集合和模板表达式要分别判断。[卡](#unwrapping)
+- **`shallowRef` 只追踪 `.value` 层，适合由外部管理内部结构的数据。** 深层修改不会自动触发它，需替换根值或明确通知。[卡](#shallow)
+- **Vue 2 主要通过已有属性的 getter/setter 收集与通知，数组方法另作处理；Vue 3 用 Proxy 扩大可拦截的操作范围。** Vue 2 的新增、删除、索引与长度限制不能套到 Vue 3。[卡](#vue2-vue3)
+- **响应式是数据到计算的更新机制，`v-model` 另外连接输入事件与状态赋值。** 数据绑定不等于所有数据流都是双向的。[卡](#two-way-binding)
+- **最小实现也要处理依赖登记、清理和停止。** 能演示一次更新，不代表实现了 Vue 的深层代理、集合、调度和组件生命周期。[卡](#minimal-system)
+
+## 2. ref 与 reactive {#ref与reactive}
+
+### 2.1 用 ref 保存一个值 {#用ref保存一个值}
+
+**ref** 是带有响应式 `.value` 属性的对象。普通局部变量的赋值无法被运行时统一拦截，把读写集中到属性上，Vue 才能记录和通知。
+
+下面是可直接用作 Vue 3 项目 `App.vue` 的单文件组件。`<script setup>` 中声明的变量可用于模板，按钮的 `@click` 表示点击事件：
+
+```vue
+<script setup>
+import { ref } from 'vue';
+
+const count = ref(0);
+function increment() {
+  count.value += 1;
+}
+</script>
+
+<template>
+  <button @click="increment">{{ count }}</button>
+</template>
+```
+
+初始显示 0，点击后显示 1。JavaScript 里访问 `count.value`；模板中这个顶层 ref 可以直接写 `count`，由 Vue 处理解包。`const` 限制的是 `count` 这个绑定被重新赋值，不妨碍修改其 `.value`。
+
+### 2.2 用 reactive 代理对象 {#用reactive代理对象}
+
+**reactive** 为对象提供响应式代理，属性读写经过 Proxy 拦截。它不为基本类型提供容器；数字、字符串等需要使用 ref。
+
+```js
+import { reactive, ref, isReactive } from 'vue';
+
+const cart = reactive({ quantity: 1, detail: { title: 'React' } });
+const selected = ref({ title: 'Vue' });
+cart.quantity += 1;
+cart.detail.title = 'CSS';
+selected.value.title = 'TypeScript';
+console.log(cart.quantity, cart.detail.title, selected.value.title);
+console.log(isReactive(cart.detail), isReactive(selected.value));
+```
+
+输出 `2 CSS TypeScript`，随后是 `true true`。默认情况下，嵌套对象也会通过代理访问；对象 ref 的 `.value` 同样可以是响应式对象。不能把区别概括成“ref 只能放基本类型，reactive 才能放对象”。
+
+如果一份数据经常整体替换，ref 的 `.value` 提供了稳定入口；如果围绕一个对象持续修改多个字段，reactive 可以减少 `.value` 的访问。选择应服从数据的使用方式，而不是按字段数量硬性划线。
+
+### 2.3 原对象与代理身份 {#原对象与代理身份}
+
+```js
+import { reactive, toRaw } from 'vue';
+
+const raw = { count: 0 };
+const state = reactive(raw);
+console.log(state === raw);
+console.log(reactive(raw) === state, reactive(state) === state);
+console.log(toRaw(state) === raw);
+```
+
+依次输出 `false`、`true true`、`true`。Vue 缓存同一原对象对应的代理，`toRaw` 可以取回原对象，但不应把它当成日常写入入口。
+
+例如执行 `raw.count = 1`，之后读取 `state.count` 也会得到 1，因为底层对象确实变了；但这次写入没有经过代理，依赖它的计算不会因此收到通知。这里是“数据变了而没有触发”，不是两个对象保存了互不相关的副本。
+
+## 3. 依赖收集与触发 {#依赖收集与触发}
+
+### 3.1 读取时建立关系 {#读取时建立关系}
+
+**响应式计算**是执行时会读取响应式数据、并需要随依赖变化重新执行的工作。组件渲染、计算属性和侦听都利用这个机制，但它们的执行时机和用途不同。
+
+收集依赖时，需要知道“当前正在执行哪个计算”和“它读了哪个对象的哪个属性”。写入相应属性后，Vue 找到订阅它的计算，标记或安排重新执行。没有正在收集依赖的计算时，普通读取并不会建立一个永久订阅。
+
+下面用 `watchEffect` 观察实际读取；它立即执行一次，并跟踪执行期间读到的响应式依赖。`nextTick` 用来等待这一批更新处理完成：
+
+```js
+import { reactive, watchEffect, nextTick } from 'vue';
+
+const state = reactive({ primary: true, left: 1, right: 20 });
+const values = [];
+const stop = watchEffect(() => values.push(state.primary ? state.left : state.right));
+state.left = 2;
+await nextTick();
+state.primary = false;
+await nextTick();
+state.left = 3;
+await nextTick();
+state.right = 21;
+await nextTick();
+stop();
+state.right = 22;
+await nextTick();
+console.log(values);
+```
+
+输出 `[1, 2, 20, 21]`。初次读取 `primary` 和 `left`；切到另一分支后改为依赖 `primary` 和 `right`。此后修改 `left` 不再触发，停止后修改 `right` 也不再执行。
+
+这解释了旧依赖清理的必要性：如果只加不删，每个曾经走过的分支都会永久留下订阅，造成无关重算，也让停止和释放更难实现。
+
+### 3.2 数据更新与 DOM 更新 {#数据更新与dom更新}
+
+响应式属性赋值后，读取数据可以立刻得到新值，但组件 DOM 更新通常进入批处理队列。一次同步操作连续修改多个字段，不需要每改一次就完整更新一次组件。
+
+需要读取更新后的 DOM 时，应在修改后等待 `nextTick`。它等待 Vue 的更新刷新，不承诺浏览器已经把结果绘制到屏幕。属性追踪、组件调度、虚拟节点比较和浏览器布局是相邻步骤，不能只用“Proxy 自动更新 DOM”跳过中间过程。
+
+## 4. 解构与替换 {#解构与替换}
+
+### 4.1 解构复制的是当前值 {#解构复制的是当前值}
+
+```js
+import { reactive } from 'vue';
+
+const state = reactive({ count: 0, detail: { title: 'React' } });
+const { count, detail } = state;
+state.count = 1;
+state.detail.title = 'CSS';
+console.log(count, detail.title);
+state.detail = { title: 'Vue' };
+console.log(detail.title, state.detail.title);
+```
+
+先输出 `0 CSS`，再输出 `CSS Vue`。`count` 是解构时的数字，不会继续读取 `state.count`；`detail` 是当时拿到的嵌套代理，其字段修改仍可响应，但它不会跟随 `state.detail` 指向另一个对象。
+
+因此，“解构一定完全丢失响应式”也不准确。要判断解构得到的是基本值、ref 还是代理对象，以及之后修改的是内部字段还是父属性引用。
+
+### 4.2 用 toRef 和 toRefs 保留属性入口 {#用toref和torefs保留属性入口}
+
+`toRef(state, 'count')` 创建与源属性相连的 ref；读写它的 `.value` 就会读写对应属性。`toRefs` 对对象当前可枚举属性批量建立这种联系。
+
+```js
+import { reactive, toRef, toRefs } from 'vue';
+
+const state = reactive({ count: 0, detail: { title: 'React' } });
+const { count, detail } = toRefs(state);
+count.value = 2;
+state.detail = { title: 'Vue' };
+const optional = toRef(state, 'optional');
+optional.value = '已设置';
+console.log(state.count, detail.value.title, state.optional);
+```
+
+输出 `2 Vue 已设置`。这里的 `detail.value` 每次通过源属性取得当前对象，所以能跟随替换。对于创建时还不存在的属性，使用 `toRef` 明确指定；不能期待 `toRefs` 预先生成未来所有属性。
+
+Vue 3.5 对 `<script setup>` 中直接解构 `defineProps` 提供了专门的编译转换，使同一块代码中的相应访问保持响应性。这是编译器处理 props 的特定场景，不是普通 JavaScript 解构规则发生了变化。
+
+### 4.3 整体替换需要稳定入口 {#整体替换需要稳定入口}
+
+```js
+import { reactive, ref, watchEffect, nextTick } from 'vue';
+
+let state = reactive({ count: 0 });
+const oldValues = [];
+const stopOld = watchEffect(() => oldValues.push(state.count));
+state = reactive({ count: 1 });
+state.count = 2;
+await nextTick();
+stopOld();
+
+const holder = ref({ count: 0 });
+const newValues = [];
+const stopNew = watchEffect(() => newValues.push(holder.value.count));
+holder.value = { count: 2 };
+await nextTick();
+stopNew();
+console.log(oldValues, newValues);
+```
+
+输出 `[0] [0, 2]`。第一组改变普通局部变量 `state` 的绑定，没有通知依赖旧对象的计算；新对象字段变化也没有对应订阅。第二组通过被追踪的 `holder.value` 替换，能够触发重新读取。
+
+这不表示“新 reactive 对象不可用”，而是引用替换本身需要响应式入口。也可以保留原代理、按业务规则修改字段，但 `Object.assign` 不会自动删除新数据中缺失的旧字段，不能把它当成所有整体替换的等价操作。
+
+## 5. ref 解包 {#ref解包}
+
+### 5.1 对象、数组与集合 {#对象数组与集合}
+
+```js
+import { reactive, ref } from 'vue';
+
+const count = ref(1);
+const object = reactive({ count });
+const list = reactive([count]);
+const map = reactive(new Map([['count', count]]));
+console.log(object.count, list[0].value, map.get('count').value);
+object.count = 2;
+console.log(count.value);
+object.count = ref(3);
+console.log(object.count, count.value);
+```
+
+依次输出 `1 1 1`、`2`、`3 2`。普通深层响应式对象的 ref 属性会解包；给它赋普通值可更新原 ref，赋新 ref 则替换关联。响应式数组元素和 `Map` 的 ref 值不按这个规则自动解包，需要明确访问 `.value`。
+
+### 5.2 模板表达式的范围 {#模板表达式的范围}
+
+```vue
+<script setup>
+import { ref } from 'vue';
+const count = ref(1);
+const box = { id: ref(1) };
+</script>
+
+<template>
+  <p>{{ count + 1 }} / {{ box.id + 1 }} / {{ box.id }} / {{ box.id.value + 1 }}</p>
+</template>
+```
+
+显示 `2 / [object Object]1 / 1 / 2`。`count` 是模板上下文的顶层 ref，会解包；普通对象 `box` 内的 `id` 不会在任意表达式里自动变成数字。单独文本插值 `{{ box.id }}` 有最终值解包的便利处理，所以它又能显示 1。
+
+这种差异需要按位置解释，不能只记“模板不用 value”。实际代码中也可以先把 `id` 提取成顶层 ref，再用于模板表达式。
+
+## 6. 深浅响应式与外部对象 {#深浅响应式与外部对象}
+
+`shallowRef` 保留内部值原样，只让 `.value` 的读取与替换具备响应式。它适合大型不可变数据、外部状态容器或不希望被深层代理的实例。
+
+```js
+import { shallowRef, watchEffect, nextTick, triggerRef } from 'vue';
+
+const state = shallowRef({ count: 0 });
+const values = [];
+const stop = watchEffect(() => values.push(state.value.count));
+state.value.count = 1;
+await nextTick();
+console.log(values);
+triggerRef(state);
+await nextTick();
+state.value = { count: 2 };
+await nextTick();
+stop();
+console.log(values);
+```
+
+第一次输出 `[0]`；明确通知后记录 1，替换 `.value` 后记录 2，最后是 `[0, 1, 2]`。浅响应式不是“先不响应、等下自动补上”，使用者要明确根值替换或通知的责任。
+
+`shallowReactive` 只处理对象根层属性；`markRaw` 标记对象不被代理。它们解决特定集成与性能问题，不应在不清楚后果时混入深层状态树。原对象与代理混用还可能带来身份比较差异。
+
+`readonly` 限制通过只读代理写入，但不代表底层数据永远不会变，也不是权限安全边界；其他持有可写引用的代码仍可能修改源数据。
+
+## 7. Vue 2 的实现与限制 {#vue2的实现与限制}
+
+Vue 2 在初始化时遍历已有属性，通过 `Object.defineProperty` 安装 getter/setter，读取时收集 watcher，写入时通知。数组的变更方法另外包装，以便执行通知和处理新增元素。
+
+| 操作 | Vue 2 的处理 | Vue 3 的代理对象 |
+| --- | --- | --- |
+| 修改已声明属性 | getter/setter 参与通知 | Proxy 拦截 |
+| 新增或删除对象属性 | 直接操作不能按普通已声明属性通知；嵌套对象使用 `Vue.set` / `Vue.delete` 等 | 支持相应代理操作 |
+| 数组索引直接赋值、修改 length | 不能按预期触发对应更新，使用 `Vue.set`、`splice` 等 | 支持索引和长度变化追踪 |
+| `Map`、`Set` | 没有 Vue 3 这种集合响应式支持 | 通过集合操作的专门处理支持 |
+
+下面是使用 Vue 2.7 的独立 JavaScript 示例，运行时不能换成 Vue 3 的 API：
+
+```js
+import Vue from 'vue';
+
+const vm = new Vue({ data: () => ({ items: ['a', 'b'], detail: {} }) });
+const seen = [];
+const stop = vm.$watch(() => vm.items.join(','), value => seen.push(value));
+vm.items[0] = 'x';
+await Vue.nextTick();
+console.log(seen);
+vm.items.splice(1, 1, 'y');
+Vue.set(vm.detail, 'title', 'Vue');
+await Vue.nextTick();
+console.log(seen, vm.detail.title);
+stop();
+vm.$destroy();
+```
+
+先输出 `[]`，再输出 `['x,y'] Vue`。索引赋值实际改变了数组，但没有触发这次侦听；后续 `splice` 发出通知，重新读取时才看到了此前的 `x`。
+
+Vue 2 还要求提前声明实例根级数据，不能把“嵌套对象可以用 Vue.set 新增”推广成任意根级属性都能动态添加。
+
+Proxy 能拦截更多操作，是 Vue 3 实现变化的重要原因，但不是“使用 Proxy 就等于写完响应式”。依赖结构、数组和集合行为、去重调度、停止清理仍由框架实现。JavaScript 拦截机制本身见 [Proxy 与 Reflect](../../basic-knowledge/javascript/proxy-reflect.mdx)。
+
+## 8. 响应式与双向绑定 {#响应式与双向绑定}
+
+响应式解决“数据变化后，依赖它的计算怎样更新”。表单的 `v-model` 还连接了另一个方向：用户输入触发事件，再把新值赋给状态。
+
+例如文本框可理解为状态驱动 `value`，`input` 事件再更新状态；不同原生控件有各自的属性和事件细节。组件 `v-model` 则通过约定的 prop 与更新事件连接父子，不意味着子组件可以随意修改父级数据。
+
+把依赖追踪直接称为“双向绑定实现”会漏掉输入事件和赋值这一步。Vue 组件之间仍遵循明确的数据所有者、props 和事件约定。
+
+## 9. 最小响应式模型 {#最小响应式模型}
+
+下面的 `mini-reactivity.js` 用普通对象属性演示同步收集、通知、分支清理和停止。它只处理浅层属性读取与赋值，不实现 Vue 的数组、集合、删除与遍历追踪、调度或组件生命周期。
+
+```js
+const dependencies = new WeakMap();
+let activeJob;
+
+function cleanup(job) {
+  for (const set of job.deps) set.delete(job);
+  job.deps.clear();
+}
+export function observe(fn) {
+  const job = {
+    active: true,
+    deps: new Set(),
+    run() {
+      if (!job.active) return;
+      cleanup(job);
+      const previous = activeJob;
+      activeJob = job;
+      try { fn(); } finally { activeJob = previous; }
+    },
+  };
+  job.run();
+  return () => { job.active = false; cleanup(job); };
+}
+export function observable(target) {
+  return new Proxy(target, {
+    get(target, key, receiver) {
+      if (activeJob) {
+        let fields = dependencies.get(target);
+        if (!fields) dependencies.set(target, fields = new Map());
+        let set = fields.get(key);
+        if (!set) fields.set(key, set = new Set());
+        set.add(activeJob);
+        activeJob.deps.add(set);
+      }
+      return Reflect.get(target, key, receiver);
+    },
+    set(target, key, value, receiver) {
+      const old = Reflect.get(target, key, receiver);
+      const success = Reflect.set(target, key, value, receiver);
+      if (success && !Object.is(old, value)) {
+        const jobs = new Set(dependencies.get(target)?.get(key));
+        for (const job of jobs) if (job !== activeJob) job.run();
+      }
+      return success;
+    },
+  });
+}
+```
+
+`WeakMap` 按原对象查找依赖，下一层按属性区分订阅者。每次执行先移除旧关系，再依据实际读取重新建立。通知时复制订阅集合，避免执行中的删除、重新加入影响当前遍历。
+
+使用另一个模块验证条件分支和停止：
+
+```js
+import { observable, observe } from './mini-reactivity.js';
+
+const state = observable({ primary: true, left: 1, right: 20 });
+const values = [];
+const stop = observe(() => values.push(state.primary ? state.left : state.right));
+state.left = 2;
+state.primary = false;
+state.left = 3;
+state.right = 21;
+stop();
+state.right = 22;
+console.log(values);
+```
+
+输出 `[1, 2, 20, 21]`。它说明了依赖关系的变化，但同步执行次数不能用来推断 Vue 的组件刷新时机。真实框架还需要处理嵌套工作、错误后的生命周期、循环更新、代理缓存与大量对象类型的边界。
+
+## 10. 面试题 {#面试题}
+
+### 10.1 Vue 怎样收集依赖，条件分支变化后为什么要清理旧依赖？ {#dependency-tracking}
+
+**考察重点**：当前计算、属性订阅、触发与分支变化。
+
+**相关内容**：[依赖收集与触发](#依赖收集与触发)。
+
+<details>
+<summary>参考回答</summary>
+
+**计算执行时，响应式读取把当前计算与相应属性关联，写入再通知这些依赖。** 条件分支切换后，实际读取的字段可能变化，应移除不再使用的依赖并建立新关系，否则无关字段也会造成重算。组件 DOM 更新通常由调度批处理，不能把每次赋值等同于一次同步 DOM 更新。
+
+</details>
+
+### 10.2 ref 与 reactive 有什么区别，ref 可以保存对象吗？ {#ref-reactive}
+
+**考察重点**：容器、代理、基本类型、深层响应式与整体替换。
+
+**相关内容**：[ref 与 reactive](#ref与reactive)、[整体替换需要稳定入口](#整体替换需要稳定入口)。
+
+<details>
+<summary>参考回答</summary>
+
+**ref 通过 `.value` 容器承载任意值，reactive 为可代理对象提供响应式访问。** ref 可以保存对象，默认会把其中可代理的对象转为深层响应式。基本类型用 ref；需要经常整体替换时，ref 也提供稳定入口。reactive 适合持续通过同一代理修改字段，普通变量重新绑定不会自动通知旧依赖。
+
+</details>
+
+### 10.3 通过原对象修改属性，代理读得到新值却没有更新，为什么？ {#proxy-raw}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：代理身份、底层对象与通知入口。
+
+**相关内容**：[原对象与代理身份](#原对象与代理身份)。
+
+<details>
+<summary>参考回答</summary>
+
+**原对象与代理共享底层数据，但直接写原对象绕开了代理的通知逻辑。** 所以之后读代理可以取得新值，却不代表先前的写入触发了依赖。日常读写应通过代理；`toRaw` 是特殊场景的逃生入口，不应与代理长期混用来修改状态。
+
+</details>
+
+### 10.4 解构 reactive 对象一定会完全失去响应式吗？ {#destructuring}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：值复制、嵌套代理、属性引用与编译例外。
+
+**相关内容**：[解构与替换](#解构与替换)。
+
+<details>
+<summary>参考回答</summary>
+
+**要看解构出的值；基本类型成为当时的快照，嵌套代理仍可响应内部修改，但不会自动跟随父属性替换。** `toRef`、`toRefs` 可以保留与源属性的联系。Vue 3.5 的 defineProps 解构有专门编译支持，不能把这个例外推广成所有 JavaScript 解构都保持响应。
+
+</details>
+
+### 10.5 为什么模板里有时不用 value，有时仍需要明确访问？ {#unwrapping}
+
+**考察重点**：顶层模板变量、文本插值、对象属性与集合元素。
+
+**相关内容**：[ref 解包](#ref解包)。
+
+<details>
+<summary>参考回答</summary>
+
+**解包取决于访问位置，不是模板里出现 ref 就统一递归解包。** 模板上下文的顶层 ref 可以直接用；普通对象里的嵌套 ref 在运算表达式中需要注意，最终文本插值另有便利处理。深层 reactive 对象属性会解包，但数组元素和 Map 中的 ref 不按相同规则自动解包。
+
+</details>
+
+### 10.6 shallowRef 内部对象变化后，为什么界面可能不更新？ {#shallow}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：根层追踪、外部数据与明确通知。
+
+**相关内容**：[深浅响应式与外部对象](#深浅响应式与外部对象)。
+
+<details>
+<summary>参考回答</summary>
+
+**shallowRef 只追踪 `.value` 层，不会把内部值自动深层代理。** 修改内部普通属性不会自动通知，替换 `.value` 或调用 `triggerRef` 才能触发相应依赖。它适合大型不可变数据或外部管理的对象，但使用者需要承担更新入口的责任。
+
+</details>
+
+### 10.7 Vue 2 与 Vue 3 的响应式实现有什么区别？ {#vue2-vue3}
+
+**考察重点**：getter/setter、Proxy、属性和数组边界。
+
+**相关内容**：[Vue 2 的实现与限制](#vue2的实现与限制)。
+
+<details>
+<summary>参考回答</summary>
+
+**Vue 2 主要改造已有属性的 getter/setter，并包装数组变更方法；Vue 3 主要用 Proxy 代理对象，ref 则通过 value 访问器承载值。** Vue 2 不能直接感知新增删除属性、数组索引赋值和长度修改等操作，需使用相应 API；Vue 3 能处理这些代理操作，并为集合提供支持。两者都还需要依赖收集、通知与调度，不能把 Proxy 本身等同于完整框架。
+
+</details>
+
+### 10.8 响应式原理就是 v-model 的双向绑定原理吗？ {#two-way-binding}
+
+**考察重点**：数据驱动更新、输入事件与组件数据流。
+
+**相关内容**：[响应式与双向绑定](#响应式与双向绑定)。
+
+<details>
+<summary>参考回答</summary>
+
+**响应式负责数据变化后的依赖更新，v-model 还连接了输入事件到状态赋值的方向。** 文本框可按 value 和 input 理解，但不同控件有各自规则；组件 v-model 使用 prop 与更新事件约定。不能因此认为所有组件数据都能任意双向修改。
+
+</details>
+
+### 10.9 怎样设计一个最小响应式系统，需要保留哪些边界？ {#minimal-system}
+
+**考察重点**：对象属性到计算的映射、清理、停止与实现范围。
+
+**相关内容**：[最小响应式模型](#最小响应式模型)。
+
+<details>
+<summary>参考回答</summary>
+
+**需要记录当前计算，用对象和属性定位订阅集合，读取时登记、写入时通知，并在重跑或停止时清理关系。** 通知时应避免依赖集合的重入修改影响遍历，还要明确同步执行还是调度执行。最小实现可只支持浅层属性，但必须说明没有覆盖数组、集合、删除、遍历、嵌套生命周期和组件更新，不能把演示实现称为完整 Vue 响应式。
+
+</details>
+
+## 11. 参考资料 {#参考资料}
+
+- [Vue：Reactivity Fundamentals](https://vuejs.org/guide/essentials/reactivity-fundamentals.html)
+- [Vue：Reactivity in Depth](https://vuejs.org/guide/extras/reactivity-in-depth.html)
+- [Vue：Reactivity API — Core](https://vuejs.org/api/reactivity-core.html)
+- [Vue：Reactivity API — Utilities](https://vuejs.org/api/reactivity-utilities.html)
+- [Vue：Reactivity API — Advanced](https://vuejs.org/api/reactivity-advanced.html)
+- [Vue：script setup](https://vuejs.org/api/sfc-script-setup.html)
+- [Vue：Form Input Bindings](https://vuejs.org/guide/essentials/forms.html)
+- [Vue 2：Reactivity in Depth](https://v2.vuejs.org/v2/guide/reactivity.html)

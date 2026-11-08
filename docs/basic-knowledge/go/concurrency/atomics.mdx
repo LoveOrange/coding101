@@ -1,0 +1,382 @@
+---
+sidebar_position: 9
+knowledge:
+  id: basic-knowledge.go.concurrency.atomics
+  type: concept
+description: "讲解 Go 原子类型的加载、存储、交换与 CAS，区分单次原子访问、复合业务约束、指针发布、Value 类型约束和 ABA。"
+keywords: ["Go", "sync/atomic", "CAS", "atomic.Pointer", "atomic.Value", "ABA"]
+---
+
+# Go 原子操作
+
+**原子操作**是其他并发访问无法观察到中间状态的一次操作。Go 的 `sync/atomic` 可以原子地读取、替换一个值，或者把比较与修改合成一步；它适合计数、状态转换和对象入口的发布，但不会自动保护一段函数里的所有操作。
+
+判断原子代码是否正确，首先要说清楚需要一起生效的是什么：一个计数值、一次带条件的更新，还是多个字段之间的约束。本文以 Go 1.22.12 为准，使用带类型的原子对象解释这些边界。
+
+## 1. 面试核心 {#core}
+
+- `atomic.Int64`、`atomic.Bool` 和 `atomic.Pointer[T]` 等类型把原子访问封装成方法。**零值可以使用，首次使用后不能复制**；包含这些字段的结构体也要避免按值复制。
+- `Add` 返回新值，`Swap` 返回旧值，`CompareAndSwap` 返回是否更新成功。**先 Load 再 Store 是两次操作，不能代替一次 Add**；没有数据竞争也可能丢失更新。[卡](#atomic-composition)
+- **CAS 把“当前值仍等于预期值”和“写入新值”合成一次原子操作**。失败后是否重试由调用者决定；重试需要重新读取、重新检查条件，不能沿用已经失效的计算结果。[卡](#conditional-update)
+- Go 原子操作具有顺序一致性。**原子发布指针能发布此前构造好的状态，但不保护对象发布之后的修改**；多个关联字段要由同一次状态更新或同一把锁保护。[卡](#pointer-boundary)
+- `atomic.Value` 可以保存统一动态类型的值，**不能存入 nil 接口，也不能中途更换动态类型**。保存切片或 map 不会复制其底层数据，使用 CAS 还需要考虑值是否可比较。[卡](#value-types)
+- **CAS 只比较当前值，不检查变化历史**。值经过 A → B → A 后，旧的预期值仍可能匹配；是否需要版本信息，取决于算法是否依赖中间没有发生变化。[卡](#aba-history)
+- **使用原子操作不等于整个算法无锁，也不保证某个 goroutine 能在有限次数内成功**。单点竞争、重试、分配和外部动作都需要独立判断。[卡](#progress-and-effects)
+
+## 2. 原子类型与操作 {#原子类型与操作}
+
+### 2.1 类型与零值 {#类型与零值}
+
+带类型的原子对象把存储位置和访问方法放在一起，调用方不直接读写其内部字段：
+
+| 类型 | 保存的值 | 零值 |
+| --- | --- | --- |
+| `atomic.Bool` | 布尔状态 | `false` |
+| `atomic.Int32`、`atomic.Int64` | 有符号整数 | `0` |
+| `atomic.Uint32`、`atomic.Uint64`、`atomic.Uintptr` | 无符号整数 | `0` |
+| `atomic.Pointer[T]` | `*T` 指针 | nil 指针 |
+| `atomic.Value` | 动态类型一致的值 | `Load()` 返回 nil 接口 |
+
+前四类提供 `Load`、`Store`、`Swap` 和 `CompareAndSwap`，整数类型还提供 `Add`。`Value` 的类型检查发生在运行时，后文单独说明。
+
+原子对象首次使用后不能复制。例如，把已经使用过的 `atomic.Int64` 作为参数按值传递，或复制包含它的结构体，都违反使用约定。通常通过指针共享同一个对象；复制出一个数值快照则应调用 `Load()`。
+
+包级函数 `atomic.LoadInt64(&n)` 等仍然可用，但必须正确管理同一存储位置的所有访问。不能一边原子写 `n`，另一边无保护地普通读取 `n`。在 ARM、386 和 32 位 MIPS 等平台，包级 64 位原子函数还要求调用方保证对齐；`atomic.Int64`、`atomic.Uint64` 自行保证所需对齐。
+
+### 2.2 返回值与原子范围 {#返回值与原子范围}
+
+```go
+package main
+
+import (
+    "fmt"
+    "sync/atomic"
+)
+
+func main() {
+    var count atomic.Int64
+    fmt.Println(count.Load())
+    fmt.Println(count.Add(3))
+    fmt.Println(count.Swap(8))
+    fmt.Println(count.CompareAndSwap(3, 10), count.Load())
+    fmt.Println(count.CompareAndSwap(8, 10), count.Load())
+}
+```
+
+依次输出 `0`、`3`、`3`、`false 8`、`true 10`。`Add(3)` 返回增加后的值，`Swap(8)` 返回替换前的 `3`；第一次 CAS 预期值不匹配，没有修改，第二次匹配才写入 `10`。这里没有其他 goroutine 修改 `count`，因此随后 `Load()` 的值可以确定。
+
+**CAS**（compare-and-swap，比较并交换）在一个原子步骤内检查当前值是否等于 `old`，匹配才写入 `new`。它不会在返回 `false` 后自动重新执行业务判断，也不会把相邻的其他变量纳入保护。
+
+`Add` 不会检查业务上下限。计数表示库存、额度或长度时，需要另外判断是否允许增加或减少；整数的溢出规则也不会因为使用了原子方法而变成自动报错。
+
+## 3. 多步操作与条件更新 {#多步操作与条件更新}
+
+### 3.1 两次原子操作仍会丢失更新 {#两次原子操作仍会丢失更新}
+
+下面让两个 goroutine 都完成读取，再允许它们写回。所有对 `count` 的访问都使用原子方法：
+
+```go
+package main
+
+import (
+    "fmt"
+    "sync"
+    "sync/atomic"
+)
+
+func main() {
+    var count atomic.Int64
+    loaded := make(chan struct{}, 2)
+    write := make(chan struct{})
+    var wg sync.WaitGroup
+
+    for i := 0; i < 2; i++ {
+        wg.Add(1)
+        go func() {
+            defer wg.Done()
+            old := count.Load()
+            loaded <- struct{}{}
+            <-write
+            count.Store(old + 1)
+        }()
+    }
+    <-loaded
+    <-loaded
+    close(write)
+    wg.Wait()
+    fmt.Println(count.Load())
+}
+```
+
+输出确定为 `1`。两个 goroutine 都读到 `0`，之后分别写入 `1`；同步通道只是让这次交错明确发生，没有替它们合并读改写操作。如果需要每次调用都增加一次，应使用 `count.Add(1)`，两次完成后结果才是 `2`。
+
+这段程序没有数据竞争，却没有实现预期的累计效果。`-race` 不会替我们检查这种业务错误；数据竞争的判断条件见 [Go 内存模型](./memory-model.mdx#共享访问与数据竞争)。
+
+### 3.2 用 CAS 保留判断条件 {#用cas保留判断条件}
+
+假设一个进程内有一组名额，要求一次领取 `n` 个，且不能把剩余数量减成负数。只有当前数量仍等于读取时的数量，才能提交这次扣减：
+
+```go
+package main
+
+import (
+    "fmt"
+    "sync/atomic"
+)
+
+func reserve(remaining *atomic.Int64, n int64) bool {
+    if n <= 0 {
+        return false
+    }
+    for {
+        old := remaining.Load()
+        if old < n {
+            return false
+        }
+        if remaining.CompareAndSwap(old, old-n) {
+            return true
+        }
+    }
+}
+
+func main() {
+    var remaining atomic.Int64
+    remaining.Store(5)
+    fmt.Println(reserve(&remaining, 3), remaining.Load())
+    fmt.Println(reserve(&remaining, 3), remaining.Load())
+    fmt.Println(reserve(&remaining, 0), remaining.Load())
+}
+```
+
+输出 `true 2`、`false 2`、`false 2`。假设初始值非负，且其他访问也遵守名额更新协议，成功的 CAS 保证检查依据与扣减生效时的值相同。因为 `n > 0` 且 `old >= n`，本次减法不会得到负数。
+
+并发领取时，两个调用者可能都读到 `5`。其中一个先扣成 `2`，另一个的 CAS 就会失败；它必须重新读取 `2` 并重新检查是否足够，不能直接沿用 `5-3`。成功的 CAS 是一次成功领取的**线性化点**，也就是可以把这次操作视为瞬间生效的位置。
+
+循环里的计算可能执行多次，所以这里只做读取、条件判断和候选值计算。发消息、扣款等外部动作不能跟着每次重试执行。即使放到 CAS 成功之后，内存扣减和外部动作之间仍可能失败，需要业务自己的幂等、补偿或持久化协议。
+
+`reserve` 只管理当前进程中的一个计数，不提供持久化，也不是跨进程库存方案。
+
+## 4. 原子指针与复合状态 {#原子指针与复合状态}
+
+### 4.1 指针身份与对象内容 {#指针身份与对象内容}
+
+`atomic.Pointer[T]` 原子地保存一个 `*T`。它的 CAS 比较是否指向同一个对象，不会按结构体字段逐个比较：
+
+```go
+package main
+
+import (
+    "fmt"
+    "sync/atomic"
+)
+
+type Config struct {
+    Limit int
+}
+
+func main() {
+    a := &Config{Limit: 10}
+    b := &Config{Limit: 10}
+    var current atomic.Pointer[Config]
+    current.Store(a)
+
+    fmt.Println(current.CompareAndSwap(b, nil))
+    old := current.Swap(nil)
+    fmt.Println(old == a, current.Load() == nil)
+}
+```
+
+输出 `false` 和 `true true`。`a` 与 `b` 内容相同，但指向两个不同的非零大小对象，所以 CAS 不匹配。`Swap(nil)` 则把入口清空，并返回原来的 `a`。
+
+清空入口不会撤销其他 goroutine 已经取得的指针，也不会等待它们结束使用。即使 Go 的垃圾回收仍能维持对象内存有效，对象关联的文件、连接等资源能否关闭，也要由使用协议决定。原子替换入口不能代替资源使用者的退出与回收协调。
+
+### 4.2 发布与多字段约束 {#发布与多字段约束}
+
+Go 原子操作具有顺序一致性：可以把它们理解为按某个保持各 goroutine 内顺序的总顺序执行。观察到一次原子写入效果的原子读取，还建立了相应的同步关系，能发布写入前完成的普通字段初始化。完整推导与不可变快照示例见 [Go 内存模型](./memory-model.mdx#原子指针与不可变快照)。
+
+如果 `min`、`max` 必须共同满足 `min <= max`，分别给它们套上 `atomic.Int64` 并不能让两次更新一起生效。读取方仍可能在两次写入之间看到组合状态。可以选择：
+
+- 把完整检查和修改放在同一把锁保护的临界区中。
+- 构造包含两个字段的不可变状态，再原子替换一个指针；读取方一次 `Load` 取得状态后，始终读取这一份对象。
+
+第二种方式仍要处理多写入者。多个写入者都根据旧状态计算，然后直接 `Store`，可能覆盖彼此的修改；需要累积修改时，应使用锁，或用 CAS 检查旧状态后重试。替换整个配置而非累积修改时，则应明确哪个写入者有最终发布权。
+
+**不可变必须覆盖实际共享的数据。** 状态里有 map、切片或指针时，浅复制结构体不会自动得到独立的数据。发布后继续通过旧别名修改这些内容，仍可能与读取者竞争。
+
+## 5. atomic.Value 的类型约束 {#value的类型约束}
+
+`atomic.Value` 通过 `any` 保存和加载值。它适合需要原子替换整个值、但不使用 `atomic.Pointer[T]` 表达的场景；调用者需要遵守统一动态类型的约定：
+
+```go
+package main
+
+import (
+    "fmt"
+    "sync/atomic"
+)
+
+func main() {
+    var data atomic.Value
+    fmt.Println(data.Load() == nil)
+    data.Store([]int{1, 2})
+    fmt.Println(data.Load().([]int)[1])
+
+    var pointer *int
+    var optional atomic.Value
+    optional.Store(pointer)
+    fmt.Println(optional.Load() == nil, optional.Load().(*int) == nil)
+}
+```
+
+输出 `true`、`2`、`false true`。尚未存储的 `Value.Load()` 返回 nil 接口；带类型的 nil 指针可以存入，因为该接口值具有动态类型 `*int`。接口与带类型 nil 的区别见 [Go 接口](../language/interfaces.mdx#nil接口与带类型nil)。
+
+需要分别检查以下条件：
+
+| 操作 | 条件与结果 |
+| --- | --- |
+| `Store(nil)`、`Swap(nil)`、`CompareAndSwap(old, nil)` | 新值是 nil 接口，发生 panic |
+| 首次保存 `[]int`，之后保存 `int` | 动态类型不一致，发生 panic；两个不同的定义类型也不能混用 |
+| `Swap(new)` | 返回旧值；尚未保存过值时返回 nil |
+| `CompareAndSwap(old, new)` | 比较当前值与 `old`；类型要一致，比较还要满足可比较性要求 |
+| 对空 `Value` 调用 `CompareAndSwap(nil, new)` | `new` 合法时可以完成首次初始化 |
+
+`Value` 可以 `Store` 切片或 map，但它们不可比较，不能因此照搬到已存有这种值的 CAS 比较中。可比较结构体按字段比较；结构体中的接口字段若实际装有切片，比较仍可能 panic。类型关系见 [Go map 的键类型与相等性](../collections/maps.mdx#键类型与相等性)。
+
+`Store` 不会深拷贝值，`Load` 也不会为每个读取者生成独立的底层对象。使用 `Value` 发布 map 时，应在发布后停止修改该 map，更新时另建所需状态并发布，或采用能够同步内部修改的协议。
+
+## 6. ABA、进展与成本 {#aba进展与成本}
+
+### 6.1 当前值不能说明变化历史 {#当前值不能说明变化历史}
+
+**ABA** 是值从 A 变成 B 又变回 A 的过程。CAS 只检查当前值，因此下面的比较仍能成功：
+
+| 顺序 | goroutine 甲 | goroutine 乙 | 当前值 |
+| --- | --- | --- | --- |
+| 1 | 读取 `old = 0` | | `0` |
+| 2 | | 从 `0` 改成 `1` | `1` |
+| 3 | | 从 `1` 改回 `0` | `0` |
+| 4 | `CompareAndSwap(old, 2)` 成功 | | `2` |
+
+普通计数若只关心当前数量，这段历史未必有影响；如果 `0` 表示“这个任务从未开始”，中间已经启动又重置的事实就不能被忽略。指针也可能出现同一对象被移除后重新放回的情况，Go 有垃圾回收并不能排除这种逻辑复用。
+
+需要检测历史时，可以把版本和值作为同一份状态，一起参与原子比较与更新；把版本单独放在另一个原子变量里，仍不能自动保证二者来自同一版本。也可以每次发布新的不可变状态对象，并约束旧状态不会重新发布。有限位数版本还要考虑回绕，不能把“加了版本”当成完整正确性证明。节点复用的具体交错见 [CAS](../../java/concurrency/cas-aba-versioning.mdx#aba-问题)。
+
+### 6.2 重试与外部动作 {#重试与外部动作}
+
+CAS 循环可能因持续竞争反复失败。一个 goroutine 总是输给其他更新者，仍不违反原子方法的契约；原子操作没有承诺公平性或每个调用者的重试次数上限。
+
+无锁算法的进展保证需要针对完整算法分析。循环中如果包含互斥锁、可能阻塞的回调或其他外部等待，就不能仅凭用了 CAS 宣称整体无锁。队列还必须正确处理槽位发布、读取、容量与复用，单独原子更新一个索引不足以证明整个队列正确；具体交接及预占停顿的例子见[并发队列](../../data-structures/concurrent-queues.mdx#mpmc的槽位协议)。
+
+性能也取决于访问方式。大量 goroutine 更新同一个原子计数仍会竞争同一存储位置；CAS 失败还会增加重复计算。应结合实际负载比较原子方案与锁方案，而不是由“没有显式 Lock”推导出一定更快。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 Load 和 Store 都是原子的，为什么递增仍可能丢失？ {#atomic-composition}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：单次访问、读改写整体与业务正确性的区别。
+
+**相关内容**：[两次原子操作仍会丢失更新](#两次原子操作仍会丢失更新)
+
+<details>
+<summary>参考回答</summary>
+
+**两次操作之间允许其他 goroutine 插入访问，原子 Load 和 Store 不会自动合成一次递增。** 两个调用者都读到 `0` 后分别写 `1`，最终就只有 `1`，即使每次访问都没有数据竞争。
+
+单纯累计应使用 `Add(1)`；需要判断后更新时，使用正确的 CAS 循环或锁保护完整操作。`Add` 返回新值，`Swap` 返回旧值，不能混淆返回值的含义。
+
+</details>
+
+### 7.2 如何原子地领取名额，并保证剩余数量不为负？ {#conditional-update}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：输入边界、条件更新、失败重读与线性化点。
+
+**相关内容**：[用 CAS 保留判断条件](#用cas保留判断条件)
+
+<details>
+<summary>参考回答</summary>
+
+**在初始数量非负、其他更新遵守同一协议的前提下，先拒绝非正领取量，再用 CAS 同时保留余额判断和扣减。** 读取 `old`，不足则失败；足够时尝试把 `old` 改成 `old-n`。
+
+CAS 成功才算领取生效。失败时重新读取并检查，不能继续使用旧余额；成功的 CAS 是线性化点。这个协议只保护当前进程的计数，不会同时提交订单、消息或外部扣款。
+
+</details>
+
+### 7.3 用 atomic.Pointer 保存配置后，能否直接并发修改其中的 map？ {#pointer-boundary}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：入口原子性、对象发布、深层别名与复合状态。
+
+**相关内容**：[发布与多字段约束](#发布与多字段约束)、[指针身份与对象内容](#指针身份与对象内容)
+
+<details>
+<summary>参考回答</summary>
+
+**不能仅凭指针是原子的，就无保护地并发修改所指对象里的 map。** 原子方法保护入口的读取、替换与发布，不会递归保护对象内部。
+
+可以发布完整构造、之后不再修改的状态，读取方一次加载后使用同一份状态；需要更新 map 时另建数据，并按写入者协议替换入口。也可以用锁协调内部访问。浅复制结构体和清空入口都不能让旧使用者的可变别名消失。
+
+</details>
+
+### 7.4 atomic.Value 能保存切片、nil 和不同类型的值吗？ {#value-types}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：动态类型一致性、nil 接口与可比较性。
+
+**相关内容**：[atomic.Value 的类型约束](#value的类型约束)
+
+<details>
+<summary>参考回答</summary>
+
+**可以保存切片，但后续必须保持动态类型一致，不能存入 nil 接口。** 保存 `[]int` 后改存 `int` 会 panic；带类型的 nil 指针可以保存，加载得到的接口本身并不是 nil。
+
+`Store` 接受某个值，不代表该值适合 CAS。对已存有切片或 map 的值执行需要比较它们的 CAS，会因不可比较而 panic。`Value` 也不深拷贝底层数据，发布后的共享修改仍需要同步。
+
+</details>
+
+### 7.5 Go 有垃圾回收，为什么仍可能遇到 ABA？ {#aba-history}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：值相等、变化历史、对象复用与版本协议。
+
+**相关内容**：[当前值不能说明变化历史](#当前值不能说明变化历史)
+
+<details>
+<summary>参考回答</summary>
+
+**垃圾回收不会阻止业务把数值或同一个对象重新放回原位置，CAS 仍只看到当前值。** A → B → A 之后，旧的预期值 A 可以再次匹配。
+
+只依赖当前数值时未必需要处理；依赖“中间未变化”或旧节点关系时，需要共同比较版本和值，或限制旧状态复用。版本回绕、对象发布与生命周期还需要按完整协议检查。
+
+</details>
+
+### 7.6 用 CAS 循环更新状态，就能保证无锁、快速且外部动作只执行一次吗？ {#progress-and-effects}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：原子方法与完整算法、重试副作用、进展和成本。
+
+**相关内容**：[用 CAS 保留判断条件](#用cas保留判断条件)、[重试与外部动作](#重试与外部动作)
+
+<details>
+<summary>参考回答</summary>
+
+**这些结论都不能只由使用了 CAS 推出。** 重试中的外部动作可能重复执行；移到成功之后，也仍存在状态已更新而外部动作失败的窗口。
+
+整体是否无锁要检查完整路径，某个 goroutine 也可能持续重试而得不到公平进展。原子热点、重试和候选对象分配都有成本，需要实际负载验证性能；外部动作的幂等与恢复由业务协议负责。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [Go 1.22.12 sync/atomic API](https://pkg.go.dev/sync/atomic@go1.22.12)
+- [Go 1.22.12 原子操作与内存顺序说明](https://github.com/golang/go/blob/go1.22.12/src/sync/atomic/doc.go)
+- [Go 1.22.12 原子类型](https://github.com/golang/go/blob/go1.22.12/src/sync/atomic/type.go)
+- [Go 1.22.12 atomic.Value](https://github.com/golang/go/blob/go1.22.12/src/sync/atomic/value.go)
+- [Go 1.22.12 内存模型](https://github.com/golang/go/blob/go1.22.12/doc/go_mem.html)

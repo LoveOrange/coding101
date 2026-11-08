@@ -20,6 +20,7 @@ keywords: ["GROUP BY", "HAVING", "COUNT", "条件聚合", "SQL 面试"]
 - `WHERE` **在分组前过滤输入行**，`HAVING` **在聚合后过滤组**。[卡](#group-filter-empty)
 - 没有 `GROUP BY` 时，**空输入也返回一行**，`COUNT` 为 0，`SUM` 为 NULL；有 `GROUP BY` 时空输入返回空结果集。[卡](#group-filter-empty)
 - `COUNT(DISTINCT column)` **统计去重后的非空值个数**；用 `COUNT` 做条件计数时，未命中的分支要返回 NULL 而不是 0。[卡](#conditional-aggregation)
+- 「全部满足」可以转成**不满足条件的记录数为 0**，同时明确 NULL、没有记录和缺课各算什么。[卡](#all-courses-pass)
 
 ## 2. 分组与 NULL {#分组与-null}
 
@@ -101,6 +102,55 @@ FROM sales GROUP BY team ORDER BY team;
 
 同样的写法换成 `COUNT` 就错了：`COUNT(CASE WHEN amount>=50 THEN 1 ELSE 0 END)` 会把所有行都算进去，因为 0 也是非空值，`COUNT` 只跳过 NULL。用 `COUNT` 做条件计数时，未命中的分支要返回 NULL，也就是去掉 `ELSE 0`。
 
+### 6.1 全部课程及格的学生 {#全部课程及格的学生}
+
+查询「每门课程都不低于 60 分的学生」，可以转成**按学生分组，筛出不满足及格条件的记录数为 0 的组**。不能先用 `WHERE score >= 60` 删除不及格记录，否则一个有不及格课程的学生也可能凭剩下的及格记录入选。
+
+先约定这个示例的含义：「每门课程」指该学生**已经记录的课程**，学生至少有一条成绩记录，NULL 表示成绩未知，不能证明及格。每个学生每门课只有一行；重修取哪次成绩、是否必须修齐指定课程，需要另外确认。下面的表结构和这些规则都是示例约定：
+
+```sql
+CREATE TABLE students (
+  id INT PRIMARY KEY,
+  name VARCHAR(20) NOT NULL
+);
+CREATE TABLE course_scores (
+  student_id INT NOT NULL,
+  course_id INT NOT NULL,
+  score INT,
+  PRIMARY KEY (student_id, course_id),
+  FOREIGN KEY (student_id) REFERENCES students(id)
+);
+INSERT INTO students VALUES
+  (1,'小林'), (2,'小周'), (3,'小李'), (4,'小王'),
+  (5,'小林'), (6,'小赵'), (7,'小陈');
+INSERT INTO course_scores VALUES
+  (1,101,60), (1,102,90),
+  (2,101,59), (2,102,95),
+  (3,101,70), (3,102,NULL),
+  (5,101,80), (6,101,NULL), (7,101,60);
+```
+
+按学生身份分组，保留姓名用于输出：
+
+```sql
+SELECT s.id, s.name
+FROM students AS s
+JOIN course_scores AS c ON c.student_id = s.id
+GROUP BY s.id, s.name
+HAVING SUM(CASE WHEN c.score >= 60 THEN 0 ELSE 1 END) = 0
+ORDER BY s.id;
+```
+
+结果是 `(1,小林)`、`(5,小林)`、`(7,小陈)`。`CASE` 只在 `score >= 60` 为 TRUE 时返回 0；低于 60 或为 NULL 都走 `ELSE`，记为一条不满足条件的记录。`HAVING` 要求这类记录数为 0。查询中的内连接使没有成绩记录的小王不产生分组。
+
+输出 `id` 是为了区分两个同名学生；只要姓名时，可以从 `SELECT` 列表中去掉 `s.id`，分组仍按学生身份进行。不能只按姓名分组，否则不同学生的成绩会混在一起。小赵只有 NULL，不能入选；小李虽然有 70 分，也因另一门成绩未知而不能入选。小陈的 60 分恰好满足边界。
+
+这里也不能直接用 `MIN(score) >= 60` 代替：`MIN` 会忽略 NULL，小李的最小已知成绩为 70，反而被选中。把条件写成 `CASE WHEN score < 60 THEN 1 ELSE 0 END` 也不够，因为 NULL 与 60 比较得到 UNKNOWN，会走 `ELSE 0`，漏掉未知成绩。
+
+同一个要求还可以表达为「存在成绩记录，并且不存在低于 60 或为 NULL 的成绩」，见 [SQL 连接的存在性与反连接](./joins.mdx#存在性与反连接)。只写「不存在坏成绩」而不检查至少有一条成绩，会让没有成绩的学生也满足条件。
+
+学生 5 只记录了课程 101，因此按本例约定可以入选。如果题目要求「指定的每一门必修课都及格」，就必须有必修课集合或选课关系，并检查每门要求的课都有及格成绩。仅统计已有记录中的坏成绩无法识别缺课；例如要求同时完成 101、102 时，上面的结果应只剩学生 1。
+
 ## 7. 使用边界 {#使用边界}
 
 聚合和连接一起用时，最容易算错粒度。`LEFT JOIN` 会给没有匹配的左表行补一行右表列全为 NULL 的记录，这时 `COUNT(*)` 会把它算成 1。要统计每个左表行匹配到多少右表记录，应该数右表的主键，例如 `COUNT(o.id)`，补出来的空行主键是 NULL，不会被计入，没有匹配的左表行就得到 0。
@@ -177,8 +227,26 @@ FROM sales GROUP BY team ORDER BY team;
 
 </details>
 
+### 8.5 怎样查询每门课程得分都不低于 60 分的学生姓名？ {#all-courses-pass}
+
+**考察重点**：全称条件、学生身份分组与未知成绩的处理。
+
+**相关内容**：[全部课程及格的学生](#全部课程及格的学生)、[分组前后过滤](#分组前后过滤)、[空输入与空值](#空输入与空值)。
+
+<details>
+<summary>参考回答</summary>
+
+**先明确课程范围，再按学生分组，要求不满足及格条件的记录数为 0。**
+
+若按正文约定，只检查已经记录的课程、要求至少一条成绩且 NULL 不算及格，可以将学生表与成绩表内连接，按 `s.id, s.name` 分组，用 `HAVING SUM(CASE WHEN c.score >= 60 THEN 0 ELSE 1 END) = 0` 筛选，再输出姓名。
+
+不能先用 `WHERE score >= 60` 过滤，因为这会隐藏不及格记录。也不能只检查 `MIN(score) >= 60`，因为它会忽略 NULL。若要求修齐指定课程，还要对照必修课或选课集合检查完整性；没有成绩时是否入选，也应先明确，不能仅凭「不存在不及格记录」推断。
+
+</details>
+
 ## 9. 参考资料 {#参考资料}
 
 - [MySQL：Aggregate Functions](https://dev.mysql.com/doc/refman/8.0/en/aggregate-functions.html)
 - [MySQL：GROUP BY Handling](https://dev.mysql.com/doc/refman/8.0/en/group-by-handling.html)
 - [MySQL 8.0：Flow Control Functions](https://dev.mysql.com/doc/refman/8.0/en/flow-control-functions.html)
+- [MySQL 8.0：Subqueries with EXISTS or NOT EXISTS](https://dev.mysql.com/doc/refman/8.0/en/exists-and-not-exists-subqueries.html)

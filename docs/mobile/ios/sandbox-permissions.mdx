@@ -1,0 +1,316 @@
+---
+title: iOS 应用沙箱与权限
+description: 理解 iOS 容器目录、文件保护、系统授权状态、有限照片访问和设备标识，处理权限拒绝与功能降级。
+knowledge:
+  id: mobile.ios.sandbox-permissions
+---
+
+**应用沙箱**限制应用能够访问的文件和系统资源，使各应用的数据与执行环境保持隔离。相机、照片等用户数据的访问还受到独立授权控制：有自己的存储目录，不代表能读取整个系统；在配置文件中声明用途，也不代表用户已经同意访问。
+
+准备这部分面试，需要能说明数据放在哪里、权限何时请求、用户拒绝后怎样继续，以及为什么不能把设备标识当成永久账号。本文讲 iOS 通用容器机制，以 iOS 14 引入的有限照片访问和 iOS 14.5 起的 ATT 基础行为说明授权边界，不展开新版本的地区性提示界面差异。
+
+## 1. 面试核心 {#core}
+
+- **应用包放随版本分发的资源，数据容器放运行时数据**。Documents、Application Support、Caches 和 tmp 的用途、备份与清理预期不同。[卡](#directories)
+- **沙箱、用途说明、系统授权与业务授权分别解决不同问题**。声明用途不能自动取得权限，用户允许相机也不等于已允许麦克风或照片库。[卡](#permission-layers)
+- **授权状态需要覆盖未决定、允许、拒绝和受限制等分支**。拒绝后提供可用的替代路径，返回前台时重新确认状态，不能假定授权永久不变。[卡](#permission-state)
+- **有限照片访问是一种有效授权**，应用只看到用户选择的资源。只需要用户挑选几个素材时，可以使用系统照片选择器，避免先申请整库访问。[卡](#limited-photos)
+- **文件位于沙箱中，不等于锁屏时一定可读，也不等于可随意记录秘密**。文件保护等级应与前台、后台访问需求匹配；凭据使用合适的 Keychain 策略。[卡](#file-protection)
+- **App Groups 提供经过授权的共享容器**，不能靠知道另一个应用的目录或手写 group 名称获得访问；共享后仍要处理并发一致性。[卡](#app-groups)
+- **ATT 请求需要合适的时机、用途说明和状态判断**。调用请求方法不保证出现弹窗，不能把同意跟踪作为使用应用功能的前提。[卡](#tracking-prompt)
+- **IDFA、IDFV、安装标识和账号 ID 有不同含义与生命周期**。需要稳定识别登录用户时使用业务账号体系，不承诺一个永久、跨安装且不受权限影响的设备标识。[卡](#identifiers)
+
+## 2. 应用容器与目录 {#应用容器与目录}
+
+### 2.1 应用包和数据容器 {#应用包和数据容器}
+
+应用包包含可执行代码和随版本分发的图片、配置等资源，运行时应视为只读。用户生成的内容和需要修改的数据放在数据容器中，通过系统 API 查找目录，不硬编码某次安装得到的绝对根路径。
+
+| 位置 | 适合保存 | 保存与清理预期 |
+| --- | --- | --- |
+| App bundle | 随版本分发的资源、初始模板 | 由安装和更新管理，不能当运行时可写目录 |
+| Documents | 用户文档、需要保留的创作内容 | 默认参与备份；不能当缓存随意删除 |
+| Library/Application Support | 应用运行所需的持久数据，如数据库与草稿索引 | 默认参与备份；可重建内容按需要排除备份 |
+| Library/Caches | 可重新下载或计算的缓存 | 不依赖它永久存在；系统可能清理 |
+| tmp | 一次操作中的中间文件 | 使用完主动删除；不能承诺下次启动仍在 |
+
+“文件存在于 Caches”只描述存储策略，不表示系统保证在某个时间删除它。应用仍应管理容量和过期内容，读取时也要处理缓存已被清理的情况。对下载到持久目录但可重新获取的大文件，按用途设置不参与备份，避免把可重建资源当成重要用户数据。
+
+### 2.2 使用系统目录 API {#使用系统目录API}
+
+```swift
+import Foundation
+
+struct ReaderStorage {
+    let documents: URL
+    let support: URL
+    let cache: URL
+    let temporary: URL
+}
+
+func prepareReaderStorage(fileManager: FileManager = .default) throws -> ReaderStorage {
+    let documents = try fileManager.url(for: .documentDirectory, in: .userDomainMask,
+                                       appropriateFor: nil, create: true)
+    let support = try fileManager.url(for: .applicationSupportDirectory, in: .userDomainMask,
+                                     appropriateFor: nil, create: true)
+        .appendingPathComponent("Reader", isDirectory: true)
+    let cache = try fileManager.url(for: .cachesDirectory, in: .userDomainMask,
+                                   appropriateFor: nil, create: true)
+        .appendingPathComponent("Reader", isDirectory: true)
+    for directory in [support, cache] {
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+    }
+    return ReaderStorage(documents: documents, support: support, cache: cache,
+                         temporary: fileManager.temporaryDirectory)
+}
+
+func writeProtectedDraft(_ data: Data, to url: URL) throws {
+    try data.write(to: url, options: [.atomic, .completeFileProtection])
+}
+```
+
+`support` 和 `cache` 是应用自己管理的子目录，适合再按账号或内容类别组织。写草稿前调用方要保证父目录存在；函数会把写入失败交给调用方处理。不要把接口收到的任意路径直接拼进目录后就读写，应验证文件名或内容标识，确保最终操作仍在预期范围内。
+
+这里的原子写入处理文件替换，`.completeFileProtection` 处理文件访问保护，两者各有职责。序列化、事务和存储选择见 [iOS 数据持久化](./persistence.mdx)，不应仅按文件扩展名判断数据安全性。
+
+## 3. 权限的几个层次 {#权限的几个层次}
+
+### 3.1 用途说明、能力与用户决定 {#用途说明能力与用户决定}
+
+**用途说明**是应用告诉用户“为什么需要访问”的文字，通常通过 Info.plist 中的相应键配置。相机使用 `NSCameraUsageDescription`，麦克风使用 `NSMicrophoneUsageDescription`，读取照片库使用 `NSPhotoLibraryUsageDescription`；仅添加照片使用相应的 add-only 说明与访问级别。
+
+这些文字不是权限凭据。应用还要调用框架接口获取授权状态，并在必要时请求用户决定。缺少框架要求的用途说明时，访问可能被系统直接终止，不能把它当作普通的“用户拒绝”来捕获。
+
+**Entitlement** 是签名授权中的能力声明，例如应用组访问。它与用途说明、运行时弹窗是不同机制，具体能力按平台和框架要求配置。不要把 macOS 的 App Sandbox 网络或相机 entitlement 原样套成 iOS 必需配置。
+
+即使系统授权允许，业务仍可能不允许执行某个操作，例如用户未登录、没有访问该项目的权限；设备也可能没有可用摄像头。功能可用性需要这些条件同时成立。
+
+### 3.2 授权状态如何驱动界面 {#授权状态如何驱动界面}
+
+| 状态 | 含义 | 应用的处理 |
+| --- | --- | --- |
+| 未决定 | 用户尚未作出该项决定 | 用户触发相关功能时解释用途并请求 |
+| 已允许 | 系统允许所请求的访问 | 执行仍需检查资源、业务和错误条件 |
+| 已拒绝 | 用户没有允许访问 | 提供替代路径，必要时提供设置入口 |
+| 受限制 | 家长控制、管理策略等限制 | 说明当前不可用，不承诺用户点一下就能解除 |
+| 有限访问 | 某些框架允许部分资源 | 按实际可访问集合工作，不等同于拒绝 |
+
+不是每个权限 API 都有完全相同的枚举，应按具体框架处理。相机、麦克风、定位与照片是不同权限，也可能有各自的访问级别，不能用一个 `hasPermission` 布尔值代表所有能力。
+
+系统会记住权限决定，不能靠循环调用请求 API 强迫弹窗重新出现。需要设置入口时使用 `UIApplication.openSettingsURLString`，由用户自己选择。应用回到前台后重新读取状态，再更新界面；旧的本地缓存值不能作为最终依据。
+
+## 4. 照片授权与有限访问 {#照片授权与有限访问}
+
+### 4.1 先确定是否需要直接访问照片库 {#先确定是否需要直接访问照片库}
+
+如果功能只是让用户选择一张头像，系统的 `PHPickerViewController` 可以让用户明确选择要交给应用的素材，无需先获得读取整个照片库的权限。选中之后，应用也要处理加载素材失败、用户取消和资源尚需下载等情况。
+
+需要自己查询和管理照片库时，才使用 PhotoKit 相应访问级别。只有保存图片的功能应评估 `.addOnly`，不要顺带要求读取全部照片。需要读取时通过 `.readWrite` 查询授权状态，才能正确识别 iOS 14 起的 `.limited`；旧的不带访问级别的接口不能表达这一区别。
+
+### 4.2 把有限访问保留为独立结果 {#把有限访问保留为独立结果}
+
+```swift
+import Photos
+
+enum PhotoReadAccess {
+    case full, selectedOnly, denied, restricted, pending
+}
+
+@MainActor
+func requestPhotoReadAccess() async -> PhotoReadAccess {
+    var status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+    if status == .notDetermined {
+        status = await PHPhotoLibrary.requestAuthorization(for: .readWrite)
+    }
+    switch status {
+    case .authorized: return .full
+    case .limited: return .selectedOnly
+    case .denied: return .denied
+    case .restricted: return .restricted
+    case .notDetermined: return .pending
+    @unknown default: return .denied
+    }
+}
+```
+
+使用这段代码前，应用需要设置 `NSPhotoLibraryUsageDescription`，例如“选择你要加入笔记的照片”。函数应由相关用户操作触发，而不是启动后自动打断用户。返回 `.selectedOnly` 时，只展示当前允许访问的资源，并按需要提供管理选择的入口。
+
+用户之后可能调整选择或撤销权限。应用应观察相应变化并重新查询，不把之前拿到的资源列表当成永久授权。`.pending` 表示尚未取得明确结果，也不应在同一操作里无休止重复请求。
+
+## 5. 文件保护与应用组 {#文件保护与应用组}
+
+### 5.1 沙箱位置不决定锁屏访问 {#沙箱位置不决定锁屏访问}
+
+**文件保护等级**决定设备锁定等状态下文件是否可访问。`FileProtectionType.complete` 对应的文件在设备锁定或启动阶段不可读写；如果后台任务此时需要读它，就必须处理失败，或者重新评估保护等级与业务执行时机。
+
+不能因为文件在 Documents 中，就推断它锁屏时一定可用；也不能因为需要后台运行，就随意降低全部文件的保护。敏感凭据的 Keychain 可访问等级是另一套相关机制，具体存取与失效处理见 [iOS 数据持久化](./persistence.mdx#keychain)。
+
+模拟器上的一次成功读写不能证明真机锁屏后的保护行为，文件保护、首次解锁和备份恢复需要在相应设备条件下验证。
+
+### 5.2 App Groups 共享的是授权容器 {#AppGroups共享的是授权容器}
+
+**App Groups** 让具备对应授权的应用或扩展访问共享容器。配置相同 group 后，使用 `containerURL(forSecurityApplicationGroupIdentifier:)` 获取位置，并处理返回为空或配置错误的情况。
+
+共享范围由能力与签名配置决定，不是传入任何 group 字符串都能获得目录。Widget 与主应用共享数据时，也不能直接假设普通应用数据容器互通。
+
+共享容器解决访问范围，不自动解决一致性。两个进程同时改同一个 JSON 文件，仍可能覆盖彼此；应使用合适的文件协调、数据库事务或明确的单写者策略。单个进程里的 actor 不能串行化另一个扩展进程的写入。
+
+## 6. ATT 与标识符 {#ATT与标识符}
+
+### 6.1 请求跟踪授权的条件 {#请求跟踪授权的条件}
+
+**App Tracking Transparency（ATT）**提供请求用户跟踪授权的接口。iOS 14.5 起，获取可用 IDFA 需要相应授权；应用还应按照平台定义判断数据使用是否属于跟踪，不能只看有没有调用 IDFA。
+
+请求时提供 `NSUserTrackingUsageDescription`，在应用 active 且用户能够理解用途的时机调用 `requestTrackingAuthorization`，并处理返回状态。受限制、系统禁止请求、已有请求正在等待或应用不活跃等条件下，调用 API 不保证显示提示。
+
+用途说明应解释实际使用场景，不能把同意跟踪作为使用应用功能的前提。授权改变后重新判断状态，不缓存一个过去的允许结果。ATT 与相机、照片等资源授权相互独立，也不代替其他数据使用约束。
+
+### 6.2 标识符不等于永久设备身份 {#标识符不等于永久设备身份}
+
+| 标识 | 表达的范围 | 不能承诺的能力 |
+| --- | --- | --- |
+| IDFA | 广告相关设备标识，受授权与环境限制 | 未授权仍可使用、模拟器也能得到真实标识、永久不变 |
+| IDFV | 同一设备上同一 vendor 的应用范围 | 跨 vendor 统一身份、删除全部该 vendor 应用后仍不变 |
+| 应用生成的安装标识 | 应用自己定义的一次安装或本地状态 | 不依赖存储、重装后永久恢复 |
+| 业务账号 ID | 服务端定义的登录用户 | 自动等同于某一台设备或某一次安装 |
+
+IDFA 在未获得必要授权等情况下返回全零，模拟器中也返回全零，不能把这个值用作所有用户共享的业务主键。IDFV 可能暂时为空；用户删除该 vendor 的全部应用后再安装，值会改变，测试安装方式也可能影响它。
+
+如果面试题问“怎样唯一标识设备”，先明确要识别账号、安装实例、设备上的本应用，还是广告场景。再解释允许的标识及变化条件。把随机值存入 Keychain，也不会得到一个系统承诺的永久硬件身份，卸载保留边界见 [iOS 数据持久化](./persistence.mdx#凭据生命周期由业务完成)。
+
+不能通过拼接硬件、网络等信号来规避授权并生成设备指纹。需要跨设备识别登录用户时，用账号体系和明确的认证流程；本地状态丢失或标识变化时，按业务语义恢复。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 iOS 有哪些存储目录，各自适合保存什么？ {#directories}
+
+**考察重点**：目录用途、备份、可重建性与清理预期。
+
+**相关内容**：[应用容器与目录](#应用容器与目录)。
+
+<details>
+<summary>参考回答</summary>
+
+**Documents 保存用户文档，Application Support 保存应用需要保留的支持数据，Caches 保存可重建缓存，tmp 保存短期中间文件。** 前两者默认参与备份，可重建大文件按需要排除；缓存和临时文件可能被清理，应用应能恢复。通过系统 API 获取位置，不硬编码沙箱根路径。
+
+</details>
+
+### 7.2 写了相机用途说明，为什么还不能直接使用相机？ {#permission-layers}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：用途声明、用户授权与实际功能条件。
+
+**相关内容**：[用途说明、能力与用户决定](#用途说明能力与用户决定)。
+
+<details>
+<summary>参考回答</summary>
+
+**用途说明只解释访问原因，不代表用户已授权。** 还要查询和请求对应权限，处理拒绝或受限制，并确认设备资源可用。相机、麦克风、照片库分别授权，业务本身也可能有独立权限要求。
+
+</details>
+
+### 7.3 用户拒绝权限后，怎样避免功能进入死路？ {#permission-state}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：授权状态、降级路径与设置返回后的重新判断。
+
+**相关内容**：[授权状态如何驱动界面](#授权状态如何驱动界面)。
+
+<details>
+<summary>参考回答</summary>
+
+**停止依赖该权限的操作，解释当前限制，并保留替代功能或设置入口。** 不循环请求试图强制弹窗；受限制状态也不能承诺用户一定能解除。回到前台后重新读取实际状态，权限恢复才重启对应操作。
+
+</details>
+
+### 7.4 有限照片访问和拒绝访问有什么区别？ {#limited-photos}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：部分资源授权、访问级别与系统选择器。
+
+**相关内容**：[照片授权与有限访问](#照片授权与有限访问)。
+
+<details>
+<summary>参考回答</summary>
+
+**有限访问允许应用使用用户选定的资源，不是完全拒绝。** 使用带 `.readWrite` 访问级别的 PhotoKit API 识别 `.limited`，按授权集合工作并响应选择变化。只需用户选择少量素材时，可以采用系统照片选择器，无需先索要整库读取权限。
+
+</details>
+
+### 7.5 文件在应用沙箱内，为什么锁屏后台任务仍可能读取失败？ {#file-protection}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：文件位置、保护等级与执行时机。
+
+**相关内容**：[沙箱位置不决定锁屏访问](#沙箱位置不决定锁屏访问)。
+
+<details>
+<summary>参考回答</summary>
+
+**沙箱控制访问范围，文件保护还限制设备锁定等状态下的读写。** 例如 complete 保护的文件锁屏时不可读写。后台任务需要处理不可用状态，并依据数据敏感性选择执行时机或保护策略，不能仅因为需要后台访问就降低全部文件保护。
+
+</details>
+
+### 7.6 主应用和 Widget 用相同目录名，能共享数据吗？ {#app-groups}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：容器隔离、应用组授权与跨进程一致性。
+
+**相关内容**：[App Groups 共享的是授权容器](#AppGroups共享的是授权容器)。
+
+<details>
+<summary>参考回答</summary>
+
+**普通数据容器不因目录同名而互通，需要配置对应 App Group 并获取共享容器。** 相同 group 字符串本身不提供授权。共享后还要解决两个进程同时更新的冲突，进程内锁或 actor 不能代替跨进程一致性机制。
+
+</details>
+
+### 7.7 ATT 授权提示应该在什么时候请求？ {#tracking-prompt}
+
+**考察重点**：用途说明、应用状态、请求条件与拒绝处理。
+
+**相关内容**：[请求跟踪授权的条件](#请求跟踪授权的条件)。
+
+<details>
+<summary>参考回答</summary>
+
+**在用户能理解用途、应用 active 且确实需要相应授权时请求，并根据状态决定后续行为。** 需要配置用途说明；受限制、禁止请求、已有请求或应用不活跃等情况下，API 不保证展示提示。拒绝后保留不依赖跟踪的功能，不能假设调用完成就获得 IDFA。
+
+</details>
+
+### 7.8 IDFA 有什么用途？识别设备时还有哪些标识选择？ {#identifiers}
+
+**考察重点**：标识的范围、权限与变化条件，账号和设备的区别。
+
+**相关内容**：[标识符不等于永久设备身份](#标识符不等于永久设备身份)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能先假设存在一个永不变化的设备标识，应先确定要识别的对象。** IDFA 受广告授权与环境限制，IDFV 限定 vendor 且可能变化，本地标识依赖自己的保存与恢复策略。稳定识别登录用户应使用业务账号；Keychain 不是永久硬件身份服务，也不能用设备指纹规避授权。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [Apple：File System Basics](https://developer.apple.com/library/archive/documentation/FileManagement/Conceptual/FileSystemProgrammingGuide/FileSystemOverview/FileSystemOverview.html)
+- [Apple：url(for:in:appropriateFor:create:)](https://developer.apple.com/documentation/foundation/filemanager/url(for:in:appropriatefor:create:))
+- [Apple：isExcludedFromBackup](https://developer.apple.com/documentation/foundation/urlresourcevalues/isexcludedfrombackup)
+- [Apple：complete](https://developer.apple.com/documentation/foundation/fileprotectiontype/complete)
+- [Apple：containerURL(forSecurityApplicationGroupIdentifier:)](https://developer.apple.com/documentation/foundation/filemanager/containerurl(forsecurityapplicationgroupidentifier:))
+- [Apple：Delivering an Enhanced Privacy Experience in Your Photos App](https://developer.apple.com/documentation/photokit/delivering-an-enhanced-privacy-experience-in-your-photos-app)
+- [Apple：requestAuthorization(for:handler:)](https://developer.apple.com/documentation/photos/phphotolibrary/requestauthorization(for:handler:))
+- [Apple：PHAuthorizationStatus](https://developer.apple.com/documentation/photos/phauthorizationstatus)
+- [Apple：PHPickerViewController](https://developer.apple.com/documentation/photosui/phpickerviewcontroller)
+- [Apple：Requesting authorization to capture and save media](https://developer.apple.com/documentation/avfoundation/requesting-authorization-to-capture-and-save-media)
+- [Apple：requestTrackingAuthorization(completionHandler:)](https://developer.apple.com/documentation/apptrackingtransparency/attrackingmanager/requesttrackingauthorization(completionhandler:))
+- [Apple：advertisingIdentifier](https://developer.apple.com/documentation/adsupport/asidentifiermanager/advertisingidentifier)
+- [Apple：identifierForVendor](https://developer.apple.com/documentation/uikit/uidevice/identifierforvendor)
+- [Apple：NSUserTrackingUsageDescription](https://developer.apple.com/documentation/bundleresources/information-property-list/nsusertrackingusagedescription)
+- [Apple：openSettingsURLString](https://developer.apple.com/documentation/uikit/uiapplication/opensettingsurlstring)
+- [Apple：Explore App Tracking Transparency（WWDC22）](https://developer.apple.com/videos/play/wwdc2022/10166/)

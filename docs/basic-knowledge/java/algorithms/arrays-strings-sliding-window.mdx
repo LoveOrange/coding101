@@ -16,7 +16,10 @@ keywords: ["Sliding Window", "最长无重复子串", "最小覆盖子串", "窗
 ## 1. 面试核心 {#core}
 
 - 固定长度窗口每次加入一项、移除一项，**不依赖单调性，所以含负数的数组也能用**。[卡](#sliding-window-conditions)
+- 查找全部字母异位词时，窗口长度固定为模式长度，**比较完整频次并保留重叠的匹配起点**。[卡](#all-anagram-starts)
 - 求最长无重复子串时，用哈希表记录字符最近一次出现的位置，**左端只向前跳**，期望时间复杂度为 O(n)。[卡](#longest-unique-substring)
+- 要返回最长片段，应**只保存最优边界，最后截取一次**；按码点计数时，截取前先换成 UTF-16 偏移。[卡](#longest-unique-text)
+- 正数数组求和达标的最短区间，要**在达标时反复记录并收缩**，无解返回 0。[卡](#minimum-sum-window)
 - 求最小覆盖子串时，要按频次判断覆盖，**窗口满足要求时先记录答案，再收缩左端**。[卡](#minimum-cover-counts)
 - 单调队列只保留还没过期、仍可能成为最大值的下标，**所有窗口的最大值总共 O(n) 时间求出**。[卡](#window-maximum-deque)
 - Java `String` 的下标按 **UTF-16 编码单元**（code unit）计数，一个码点（code point）可能占两个 `char`。
@@ -80,6 +83,34 @@ static long maxWindowSum(int[] values, int k) {
 
 每个元素最多进入、离开窗口各一次，时间是 O(n)；只用了几个变量，额外空间是 O(1)。
 
+### 4.1 全部字母异位词的起点 {#全部字母异位词的起点}
+
+**字母异位词**是字符种类与次数相同、排列顺序可以不同的字符串。查找模式 `pattern` 在 `text` 中的全部异位词时，只需比较长度等于 `pattern.length()` 的窗口。下面按原题 LC438 的小写英文字母条件使用 26 项数组，延续本文的 Java 参考实现；这不表示相关面试都指定了 Java。
+
+```java
+static java.util.List<Integer> anagramStarts(String text, String pattern) {
+    if (pattern.isEmpty()) throw new IllegalArgumentException("empty pattern");
+    int[] need = new int[26], have = new int[26];
+    for (int i = 0; i < pattern.length(); i++) need[pattern.charAt(i) - 'a']++;
+    java.util.List<Integer> result = new java.util.ArrayList<>();
+    int k = pattern.length();
+    for (int right = 0; right < text.length(); right++) {
+        have[text.charAt(right) - 'a']++;
+        if (right >= k) have[text.charAt(right - k) - 'a']--;
+        if (right >= k - 1 && java.util.Arrays.equals(need, have)) {
+            result.add(right - k + 1);
+        }
+    }
+    return result;
+}
+```
+
+每轮先加入 `text[right]`，长度超过 `k` 时移除 `text[right-k]`，再比较频次。只有窗口凑够 `k` 项才检查，`need` 与 `have` 的 26 项全相等时，起点是 `right-k+1`。相等次数不是集合判断，`pattern="aab"` 不能匹配 `"abb"`。
+
+`anagramStarts("cbaebabacd", "abc")` 返回 `[0,6]`；`anagramStarts("abab", "ab")` 返回 `[0,1,2]`，说明相邻答案可以重叠。不能找到一次后直接跳过整个模式长度，否则会漏掉后两项。文本为空或比模式短时返回空列表；模式为空不在这里的接口约定内，直接抛异常。两个输入都必须非 `null`，且只含小写英文字母，函数不负责通用 Unicode 计数。
+
+每次比较固定 26 项，时间为 O(text.length + pattern.length)，不含输出列表的额外空间为 O(1)。输出本身最多与文本长度同阶；不应把存储所有答案的空间也称为常数。
+
 ## 5. 可变窗口 {#可变窗口}
 
 最长无重复子串的窗口长度不固定：遇到重复字符，左端就要往前收。如果记下每个字符最近一次出现的位置，左端可以一步跳到旧位置之后，不用一格一格地挪。
@@ -107,6 +138,66 @@ static int longestUniqueSubstring(String value) {
 这段代码的不变量是：闭区间 `[left,position]` 里没有重复码点。遇到重复字符时，如果它的旧位置还在窗口内，`left` 就跳到旧位置之后；如果旧位置已经在窗口外，`left` 保持不动，否则会把已经排除的字符又放回窗口。代码用 `previous >= left` 做这个判断，写成 `Math.max(left, previous + 1)` 效果相同。以 `abba` 为例，处理最后一个 `a` 时 `left` 已经是 2，而 `a` 的旧位置是 0，`left` 不能退回 1。
 
 两个边界都只向前走。哈希操作期望 O(1) 时，总时间是 O(n)，这里的 n 是码点数。哈希表为每种出现过的字符存一个位置，空间取决于字符种类数。
+
+### 5.1 返回最长片段 {#返回最长片段}
+
+求长度和返回子串只差一份最优边界，但不能把码点下标直接传给 `substring`。下面保留前面的无重复窗口，把最长时的 `left` 和码点长度记下来。并列时选择最早出现的片段，空串返回空串，输入要求非 `null`。
+
+```java
+static String longestUniqueText(String value) {
+    java.util.Map<Integer, Integer> lastSeen = new java.util.HashMap<>();
+    int left = 0, position = 0, bestLeft = 0, bestLength = 0;
+    for (int offset = 0; offset < value.length();) {
+        int codePoint = value.codePointAt(offset);
+        Integer previous = lastSeen.put(codePoint, position);
+        if (previous != null && previous >= left) left = previous + 1;
+        int length = position - left + 1;
+        if (length > bestLength) {
+            bestLeft = left;
+            bestLength = length;
+        }
+        offset += Character.charCount(codePoint);
+        position++;
+    }
+    int start = value.offsetByCodePoints(0, bestLeft);
+    int end = value.offsetByCodePoints(start, bestLength);
+    return value.substring(start, end);
+}
+```
+
+只在 `length > bestLength` 时更新，所以 `"abba"` 返回最早的 `"ab"`，不会被同长的 `"ba"` 替换。循环结束后，`offsetByCodePoints` 把最优起点与长度转换成原字符串的 UTF-16 偏移，再调用一次 `substring`。`"😀A😀B"` 返回 `"A😀B"`，起点不是把码点下标 1 直接当成 UTF-16 下标 1，否则会切进第一个 emoji 的代理对内部。
+
+哈希访问期望 O(1) 时，遍历和最终边界换算总计 O(n)，n 为码点数；没有在每轮创建窗口字符串。哈希表仍按不同码点保存最近位置，返回字符串另外占用与答案长度相应的空间。这里不把组合重音或多个码点组成的 emoji 序列当作一个字素簇，也不做 Unicode 归一化，计数规则不能与用户视觉字符混用。
+
+### 5.2 正数数组的最短达标区间 {#正数数组的最短达标区间}
+
+正数数组中，加入右端会增加区间和，移走左端会减少区间和。因此窗口一旦达到正数目标 `target`，就可以记录长度并继续收缩，直到和不再达标。下面按 LC209 的正数条件实现，无解返回 0，并允许空数组作为补充边界：
+
+```java
+static int minLengthAtLeast(int target, int[] values) {
+    if (target <= 0) throw new IllegalArgumentException("target must be positive");
+    for (int value : values) {
+        if (value <= 0) throw new IllegalArgumentException("values must be positive");
+    }
+    long sum = 0;
+    int left = 0, best = 0;
+    for (int right = 0; right < values.length; right++) {
+        sum += values[right];
+        while (sum >= target) {
+            int length = right - left + 1;
+            if (best == 0 || length < best) best = length;
+            sum -= values[left++];
+        }
+    }
+    return best;
+}
+```
+
+`target=7`、`values=[2,3,1,2,4,3]` 时返回 2，对应 `[4,3]`；`target=4`、`values=[1,4,4]` 返回 1；数组总和仍不足目标或数组为空时返回 0。一次新元素加入后，可能有多个达标窗口，所以必须用 `while` 反复收缩，不能只移走一次左端。
+
+`sum` 用 `long`，避免多个 `int` 相加溢出。例如 `target = Integer.MAX_VALUE`，`values` 包含两个 `Integer.MAX_VALUE-1` 时，单项不达标，两项之和已超出 `int`，正确答案是 2。数组长度和每项都是 Java `int` 范围时，正数总和可由 `long` 保存。校验与两个边界的累计移动都为 O(n)，额外空间 O(1)，函数不修改输入。
+
+这里明确拒绝非正目标和含零或负数的输入，不将正数实现伪装成所有整数都适用的算法。比如 `[1,-1,3]`、目标 3，机械套用达标才收缩的过程，第一次达标记下长度 3，移走 1 后又变成 2，就可能漏掉独立的 `[3]`。含负数的另一个算法方向见[负数与窗口条件](#负数与窗口条件)。
 
 ## 6. Java String 的索引单位 {#java-string-的索引单位}
 
@@ -259,6 +350,51 @@ System.out.println(value.codePointCount(0, value.length())); // 3
 
 </details>
 
+### 12.5 怎样找出字符串中全部字母异位词的起点？ {#all-anagram-starts}
+
+**考察重点**：固定长度、完整频次、重叠答案与结果空间。
+
+**相关内容**：[全部字母异位词的起点](#全部字母异位词的起点)。
+
+<details>
+<summary>参考回答</summary>
+
+**保持长度等于模式长度的窗口，记录模式与窗口每个字母的频次；频次完全相同就保存当前起点。** 每轮加入新字母，超过长度后移除旧字母，窗口凑满后再比较。
+
+匹配之间可能重叠，例如 `abab` 对 `ab` 的答案是 `[0,1,2]`，不能匹配一次后跳过整个模式。正文限定非空小写英文模式，用 26 项数组比较；这使每轮比较为常数成本，但保存全部答案仍需要输出空间。
+
+</details>
+
+### 12.6 怎样输出无重复字符的最长子串，而不只是长度？ {#longest-unique-text}
+
+**考察重点**：最优边界、并列规则与码点到 UTF-16 的换算。
+
+**相关内容**：[返回最长片段](#返回最长片段)、[Java String 的索引单位](#java-string-的索引单位)。
+
+<details>
+<summary>参考回答</summary>
+
+**维持原来的无重复窗口，发现更长答案时记录起点与长度，结束后只截取一次。** 并列时不更新，就保留最早的片段。
+
+若窗口位置按码点计算，先用 `offsetByCodePoints` 换成 UTF-16 边界，再调用 `substring`，避免切进代理对。空串返回空串；这里按码点区分重复，不额外合并字素簇，也不在每轮复制当前子串。
+
+</details>
+
+### 12.7 正数数组中，怎样求和至少达到目标的最短连续子数组？ {#minimum-sum-window}
+
+**考察重点**：正数单调性、达标后的重复收缩、无解与累加类型。
+
+**相关内容**：[正数数组的最短达标区间](#正数数组的最短达标区间)。
+
+<details>
+<summary>参考回答</summary>
+
+**右端加入元素，区间和达标时先更新最短长度，再移除左端，直到不达标后继续扩张。** 正数条件保证舍弃起点后不会漏掉更短答案，两端总计只移动 O(n) 次。
+
+正文使用 `long` 保存总和，无解返回 0，并拒绝非正目标或非正元素。不能仅用一次 `if` 收缩，也不能把这个实现直接用于有负数的数组。
+
+</details>
+
 ## 13. 参考资料 {#参考资料}
 
 - [Java SE 21：String](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/String.html)
@@ -266,3 +402,5 @@ System.out.println(value.codePointCount(0, value.length())); // 3
 - [Java SE 21：HashMap](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/HashMap.html)
 - [Antti Laaksonen：Competitive Programmer’s Handbook](https://cses.fi/book/book.pdf)
 - [OpenJDK 21：StringUTF16 源码](https://github.com/openjdk/jdk/blob/jdk-21-ga/src/java.base/share/classes/java/lang/StringUTF16.java)
+- [LeetCode：Find All Anagrams in a String](https://leetcode.com/problems/find-all-anagrams-in-a-string/description/)
+- [LeetCode：Minimum Size Subarray Sum](https://leetcode.com/problems/minimum-size-subarray-sum/description/)

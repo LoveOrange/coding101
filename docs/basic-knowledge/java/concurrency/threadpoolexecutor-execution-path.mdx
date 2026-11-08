@@ -15,6 +15,7 @@ Java 线程池是一组可复用的工作线程，加上一个存放待执行任
 
 - 运行中的线程池**先按核心线程数创建 Worker，再尝试入队，入队失败后才按最大线程数扩容**。[卡](#execute-flow)
 - 无界队列在核心 Worker 创建后会持续接收任务，**过载表现为队列和等待时间不断增长**，线程数不会超过核心数。[卡](#queue-expansion-policy)
+- 运行期可用 setter 调整线程数和空闲策略，但**缩容不会强行停止正在执行的任务**；队列也不能通过 setter 任意替换。[卡](#dynamic-pool-parameters)
 - I/O 线程数**由任务的等待比例和目标吞吐决定，并受下游并发容量与内存限制**。[卡](#io-pool-size)
 - 池已关闭，或线程和队列都已耗尽时，**由拒绝策略决定新任务的结果**。[卡](#saturation-handling)
 - `shutdownNow()` **停止从队列取任务，尝试中断正在执行的任务，并返回尚未执行的排队任务**。[卡](#pool-shutdown-states)
@@ -70,6 +71,35 @@ Worker 执行完第一个任务后不会退出，而是继续从队列取任务�
 `submit` 把任务包装成 `FutureTask`，异常被 `FutureTask` 捕获并保存起来，Worker 本身不会退出，也不会打印任何东西。调用方执行 `Future.get()` 时，才会收到包装了原始异常的 `ExecutionException`。所以用 `submit` 提交、又把返回的 Future 丢掉，任务失败就悄无声息。
 
 `afterExecute` 是任务执行后调用的扩展方法，它的 `Throwable` 参数也受这层包装影响：异常已经被 `FutureTask` 捕获，这个参数就是 null。所以基于 `afterExecute` 做监控时，还要检查已完成的 Future，才能发现里面的任务失败。
+
+### 3.2 运行期参数调整 {#运行期参数调整}
+
+**`ThreadPoolExecutor` 的部分参数可以在运行期间修改。** 调用者需要持有具体的 `ThreadPoolExecutor` 对象；`ExecutorService` 接口本身不提供这些调参方法，工厂方法返回的包装对象也不一定能转换成它。
+
+| 方法 | 生效方式与限制 |
+| --- | --- |
+| `setCorePoolSize` | 增大后，会按需要启动 Worker 处理已排队任务；减小后，多余线程在空闲时退出，不强停当前任务 |
+| `setMaximumPoolSize` | 修改线程上限；增大上限不等于立即创建更多线程，任务仍先尝试入队；减小时，多余线程在不再执行当前任务后退出 |
+| `setKeepAliveTime`、`allowCoreThreadTimeOut` | 修改空闲回收规则；允许核心线程超时时，存活时间必须大于 0 |
+| `setThreadFactory` | 影响之后创建的线程，不重命名或替换已经存在的线程 |
+| `setRejectedExecutionHandler` | 替换后续拒绝处理使用的策略；不补救此前已被丢弃的任务 |
+
+线程数需要满足 `0 <= corePoolSize <= maximumPoolSize`，且 `maximumPoolSize > 0`。一次调整两个值时，每一步也必须合法。例如只有一个管理者修改参数，当前配置为 `core=2`、`max=4`：
+
+```java
+// 原配置为 core=2、max=4；扩到 core=6、max=12。
+pool.setMaximumPoolSize(12);
+pool.setCorePoolSize(6);
+// 再缩回 core=2、max=4。
+pool.setCorePoolSize(2);
+pool.setMaximumPoolSize(4);
+```
+
+扩容时先调大上限，避免先把核心数设成 6、却仍受旧上限 4 限制；缩容时先把核心数降下来，避免上限先降到核心数以下。JDK 会拒绝这些不合法的中间状态。两个 setter 不是一次原子配置更新；若多个管理入口能同时修改，应在管理层串行协调，不能只靠调用顺序避免相互干扰。
+
+这些方法改变的是后续调度和回收条件，不保证调用返回时实际线程数已经等于目标。比如一个 Worker 正在处理任务，另一个任务排在无界队列里，只增大 `maximumPoolSize` 不会让排队任务立即运行；增大核心数则可以为排队任务补建 Worker。降低上限也不会抢走正在执行任务的线程，实际收缩仍取决于任务何时结束。
+
+`workQueue` 在构造时确定，`ThreadPoolExecutor` 没有替换队列的 setter；标准 `ArrayBlockingQueue` 的容量也不能动态修改。不要通过反射更换队列，或把 `getQueue()` 当成重新分配任务的通用接口。需要改变队列类型或容量时，应安排新池接流量、旧池完成已接收任务的迁移过程，并处理在途任务和拒绝结果。
 
 ## 4. 线程池容量 {#线程池容量}
 
@@ -303,6 +333,21 @@ if (!pool.awaitTermination(5, TimeUnit.SECONDS)) {
 因此，`submit` 返回的 Future 一直未完成，`get()` 就会持续等待。
 
 可以用 `AbortPolicy` 抛出拒绝异常，让提交方立即发现失败。也可以在自定义拒绝处理器中取消被丢弃的 Future，使等待方收到取消结果。
+
+</details>
+
+### 11.7 线程池参数可以动态调整吗，通过什么方法调整？ {#dynamic-pool-parameters}
+
+**考察重点**：可变参数、合法中间状态、调度与线程回收的生效时机。
+
+**相关内容**：[运行期参数调整](#运行期参数调整)、[execute 接收流程](#execute-的处理流程)。
+
+<details>
+<summary>参考回答</summary>
+
+**可以通过 `ThreadPoolExecutor` 的 setter 修改核心数、最大数、空闲时间、线程工厂和拒绝策略等，但不是所有构造参数都能直接换。** `setCorePoolSize`、`setMaximumPoolSize` 每次调用都检查范围；同时扩容时先调大最大数，缩容时先调小核心数。
+
+增大最大数仍受先入队后扩容的顺序影响；降低线程数不会中断正在执行的任务。`setThreadFactory` 只影响新线程，允许核心线程超时需要正的空闲时间。队列没有替换 setter，标准固定容量队列也不能直接扩容；需要换队列时应协调新旧池与已接收任务。
 
 </details>
 

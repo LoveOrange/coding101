@@ -1,0 +1,222 @@
+---
+sidebar_position: 6
+knowledge:
+  id: basic-knowledge.go.runtime.network-poller
+  type: concept
+description: "讲解 Go 网络轮询如何把非阻塞网络 I/O、就绪通知与 goroutine 调度连接起来，并区分普通文件、截止时间、关闭和取消的边界。"
+keywords: ["Go", "netpoll", "网络轮询", "epoll", "kqueue", "goroutine", "deadline"]
+---
+
+# Go 网络轮询
+
+**网络轮询**是 Go 运行时把 I/O 就绪通知接入 goroutine 调度的机制。业务代码可以顺序调用 `conn.Read`，等待数据时挂起的是当前 goroutine，不必为每个空闲网络连接保留一个阻塞线程。底层就绪后，运行时再让等待任务获得继续执行的机会。
+
+这也是解释 Go 网络模型时需要讲清楚的连接：同步调用的写法、非阻塞的描述符，以及运行时的等待和唤醒。本文按 Go 1.22.12 的 Unix 实现说明，Linux 对应 epoll，macOS 对应 kqueue；其他平台的后端不必与这条实现路径相同。
+
+## 1. 面试核心 {#core}
+
+- **调用方顺序等待 `Read` 的结果，不代表底层一直用阻塞系统调用占着线程**。对受 netpoll 管理的连接，暂时没有数据时可以挂起 G，让执行资源处理其他工作。[卡](#netpoll-flow)
+- **就绪通知表示应该再次尝试 I/O，不保证一次读满缓冲区，也不保证收到完整业务消息**。数据、EOF 和错误仍由具体读写结果决定。[卡](#readiness-result)
+- Go 1.22.12 在 Linux 上用边缘触发，**每次 `Read` 先尝试读取，遇到 `EAGAIN` 才等待通知**。成功读取可以提前返回，不要求一次 Go `Read` 把连接读空。[卡](#readiness-result)
+- **网络等待与普通磁盘文件读取可能走不同路径**。普通文件的系统调用可能阻塞 M；P 的交接由调度器处理，不能把所有 I/O 都解释成 netpoll。[卡](#network-disk)
+- **deadline 是绝对时间，会影响待完成和后续的相应 I/O**。超时、关闭和 context 取消是不同机制，超时也不意味着远端业务已经回滚。[卡](#deadline-cancellation)
+
+## 2. 同步调用与非阻塞描述符 {#同步调用与非阻塞描述符}
+
+`conn.Read(buf)` 在当前 goroutine 中返回读取结果，调用方可以按顺序处理数据，不需要自己组织回调。这里说的是 API 的使用方式。
+
+**非阻塞描述符**则是操作系统层面的设置：一次读取如果暂时没有数据，系统调用可以返回 `EAGAIN`，而不是一直阻塞调用它的线程。Go 标准网络库与运行时在内部处理这个结果，业务代码通常不会直接收到这个临时状态，而是继续等待数据、deadline 或关闭等结果。
+
+两层配合后的过程是：系统调用先快速尝试，不能继续时把 G 登记为等待；之后当前 M 可以去执行别的 G。G、M、P 的基本职责见 [Go 调度器](./scheduler.mdx#core)。这不表示进程只有一个线程，也不表示任何 `io.Reader` 的 `Read` 都有同样的行为；接口允许不同实现。
+
+Go 1.22.12 的标准网络描述符在初始化时接入运行时轮询器。Linux 后端通过 epoll 注册读、写和关闭相关事件，使用 `EPOLLET`；macOS 后端通过 kqueue 注册读、写事件，使用 `EV_CLEAR`。这些平台机制负责交付就绪信息，如何等待与调度 G 仍由 Go 运行时负责。多路复用的通用语义见 [I/O 多路复用](../../operating-system/io-multiplexing.mdx)。
+
+## 3. 读取与唤醒 {#读取与唤醒}
+
+### 3.1 从 Read 到等待 {#从read到等待}
+
+对标准 TCP 连接，Go 1.22.12 的 Unix 读取路径可以概括为以下步骤：
+
+1. `net.Conn.Read` 经网络描述符进入 `internal/poll.FD.Read`，检查状态并准备读取。
+2. 先执行非阻塞读取。如果已经得到数据、EOF 或其他终止结果，就返回给上层。
+3. 如果返回 `EAGAIN` 且描述符受轮询器管理，就调用读等待逻辑。运行时记录这个描述符上等待读取的 G，并在需要时挂起它。
+4. 底层报告就绪后，运行时更新对应的就绪状态，并把等待的 G 交给调度器安排。G 变为可运行，不等于立刻在 CPU 上执行。
+5. G 再次运行后重试读取。若仍然暂时不能读取，就继续走等待判断；若超时或关闭，则返回对应错误。
+
+这里的“轮询”不要求每个连接都运行一个忙等循环。调度路径可以执行非阻塞的就绪检查，也可以在没有其他工作时等待事件；不能把它固定理解成每个连接一条线程，或一个由业务代码创建的 goroutine 不停扫描所有连接。
+
+### 3.2 就绪与挂起之间的竞争 {#就绪与挂起之间的竞争}
+
+事件可能在 G 真正挂起前到达，所以运行时不能只保存一个“当前等待者”的指针。否则数据已经到达，但当时没有登记等待者，之后 G 再睡下去，就可能错过这次通知。
+
+Go 1.22.12 的 `pollDesc` 分别维护读、写方向的等待与就绪状态。已经收到的就绪通知可以先被记住；G 准备挂起时再次检查状态，如果已经就绪，就不必真正睡下去。挂起提交、就绪更新、超时和关闭之间通过原子状态转换与重新检查协调。
+
+这一机制要保证的是不会因登记等待与通知交错而简单丢失唤醒。它不保证收到就绪的 G 有调度优先权，也不保证整个业务请求已经成功。
+
+### 3.3 边缘触发与部分读取 {#边缘触发与部分读取}
+
+边缘触发下，不能读了一部分就直接等一个可能不再出现的新事件；但这不要求 Go 的一次 `Read` 持续读取直到 `EAGAIN`。
+
+例如对端发送了 100 字节，调用方先用 10 字节的 `buf` 读取。第一次 `Read` 可以返回这 10 字节；下一次调用会先尝试系统读取，继续取走已在缓冲区里的数据。只有系统读取发现当前已经没有数据、返回 `EAGAIN` 时，Go 才进入等待。它不会因为下一次调用缺少新的边缘通知，就跳过已有数据直接挂起。
+
+同样，`Read` 不承诺填满 `buf`。对端只发送一个字节时，即使 `buf` 长度是 8，也可以返回 `n == 1`。需要固定长度时由上层使用 `io.ReadFull` 等方式继续读取；需要业务消息时还要定义长度、分隔符或其他协议边界。TCP 是字节流，就绪通知不会替应用定义消息。
+
+读方向的就绪也可能对应 EOF 或错误，写方向就绪通常只说明可以尝试向本地发送缓冲区写入。写入成功不等于对端应用已经消费数据，更不等于业务提交成功。遇到同时返回 `n > 0` 和错误的读写接口时，也要按接口契约处理已经完成的部分，不能只看错误而忽略字节数。
+
+## 4. 截止时间、关闭与取消 {#截止时间关闭与取消}
+
+### 4.1 deadline 的作用范围 {#deadline的作用范围}
+
+**deadline** 是 I/O 的绝对截止时刻。`SetReadDeadline` 影响当前正在等待和之后的读取，`SetWriteDeadline` 影响写入，`SetDeadline` 同时设置两者。它不是只对下一次调用有效的相对时长，也不会在一次操作成功后自动续期。
+
+截止后返回的错误可以用 `errors.Is(err, os.ErrDeadlineExceeded)` 判断。运行时通过 deadline 状态和计时器解除相应等待，G 仍要获得调度机会才能继续执行，所以不能把设置的时刻当成业务代码精确返回的时刻。
+
+下面在回环地址创建一对 TCP 连接，先读超时，再清除截止时间并继续使用同一个连接：
+
+```go
+package main
+
+import (
+    "errors"
+    "fmt"
+    "net"
+    "os"
+    "time"
+)
+
+func must(err error) {
+    if err != nil {
+        panic(err)
+    }
+}
+
+func main() {
+    listener, err := net.Listen("tcp", "127.0.0.1:0")
+    must(err)
+    defer listener.Close()
+    client, err := net.DialTimeout("tcp", listener.Addr().String(), time.Second)
+    must(err)
+    defer client.Close()
+    server, err := listener.Accept()
+    must(err)
+    defer server.Close()
+
+    must(server.SetReadDeadline(time.Now().Add(20 * time.Millisecond)))
+    var buf [8]byte
+    n, err := server.Read(buf[:])
+    fmt.Println(n, errors.Is(err, os.ErrDeadlineExceeded))
+
+    must(server.SetReadDeadline(time.Time{}))
+    _, err = client.Write([]byte("x"))
+    must(err)
+    n, err = server.Read(buf[:])
+    must(err)
+    fmt.Println(n, string(buf[:n]))
+}
+```
+
+输出为 `0 true` 和 `1 x`。第一轮对端没有发送数据，因此读取因 deadline 返回；清除 deadline 后仍可接收数据，说明这个超时本身没有关闭连接。第二次读取也没有因为 `buf` 有 8 字节就等满 8 字节。
+
+`time.Time{}` 表示取消这一方向的截止时间。要做“连续空闲超过一段时间才超时”，需要在成功读写后按协议重新延长 deadline。是否允许超时后继续复用连接，还要看协议状态，例如此前写入是否只完成了一部分、请求与响应是否还能正确对应；示例中没有待确认的业务请求。
+
+### 4.2 关闭与 context 的边界 {#关闭与context的边界}
+
+`net.Conn.Close` 会解除该连接上阻塞的读写并使其返回错误。关闭的是连接资源，既不等待对端应用完成某项业务，也不自动撤销已经发出的业务请求。
+
+普通 `net.Conn.Read` 不接收 context。仅调用某个 `cancel()`，不会自动给已建立连接上的读取加 deadline 或关闭连接。`DialContext` 的 context 控制建立连接的过程；连接成功建立后，原 context 的取消不会自动影响这个连接。
+
+如果业务要求取消时停止 I/O，需要把取消落实为适合该资源的 deadline、关闭或更高层 API 支持的取消操作，并等待任务真正退出。共享连接尤其要明确所有权：为了取消一个操作而关闭连接，可能影响其他使用者。取消通知与退出确认的通用问题见 [Go 并发诊断](../concurrency/leaks-races.mdx#取消与退出确认)。
+
+## 5. 网络与普通文件 {#网络与普通文件}
+
+**是否走网络轮询，取决于具体描述符、平台和库的实现，不能只看方法是否叫 `Read`。** 普通磁盘文件在 Go 1.22.12 的常见 Unix 路径中不会像 TCP 连接一样由 netpoll 等待数据就绪。文件读取系统调用可能快速完成，也可能等待存储；等待时可能连同 M 一起阻塞。
+
+这时调度器需要处理 P 的可用性，让其他 M 有机会继续执行 Go 代码。它不意味着每次磁盘读取都会立即新建线程，也不意味着其他 goroutine 一定全部停住。系统调用入口、P 的收回和返回后的重新调度见 [Go 调度器](./scheduler.mdx#网络等待与系统调用)。
+
+| 对象或调用 | Go 1.22.12 中需要区分的路径 |
+| --- | --- |
+| 标准 TCP 连接 | 非阻塞描述符与轮询器配合，暂时不能读写时可挂起 G |
+| 普通磁盘文件 | 一般走文件系统调用，不能套用 TCP 的就绪等待模型 |
+| 管道等其他 `os.File` | 部分平台与创建方式下可以接入轮询器，不能因类型是 `os.File` 就断定全部阻塞线程 |
+| 自己调用原始系统调用或自行包装的 Reader | 是否非阻塞、是否接入 netpoll，以及取消方式，需要单独核对 |
+
+`os.File` 的 deadline 也不是对所有文件都有效：官方契约只承诺部分文件类型支持，普通文件通常不支持，适合先检查 `SetDeadline` 的返回错误。本文实际本地验证中，macOS 上的普通文件返回 `os.ErrNoDeadline`，而 `os.Pipe` 创建的管道可以设置读取 deadline；这不把所有平台、所有命名管道或所有文件包装方式都归为同一行为。
+
+排查时，goroutine 栈里的 `[IO wait]` 和 `internal/poll.runtime_pollWait` 可以帮助识别标准轮询等待，trace 可以继续观察网络阻塞、变为可运行和实际运行的时序。它们不能单独证明外部网络拥塞，也不能把一次快速的普通文件读取当成磁盘永远不阻塞的证据。采集方法见 [Go 性能分析](../engineering/profiling.mdx#goroutine-profile与执行trace)。
+
+## 6. 面试题 {#面试题}
+
+### 6.1 Go 的网络模型怎样把 I/O 等待与 goroutine 调度结合起来？ {#netpoll-flow}
+
+**考察重点**：同步风格 API、非阻塞描述符、就绪等待与调度之间的关系。
+
+**相关内容**：[同步调用与非阻塞描述符](#同步调用与非阻塞描述符)、[读取与唤醒](#读取与唤醒)。
+
+<details>
+<summary>参考回答</summary>
+
+**标准网络连接用非阻塞描述符尝试读写，暂时不能完成时通过 netpoll 挂起 G，事件就绪后再安排它继续执行。** 调用方仍按顺序调用 `Read`、`Write`，不需要自己处理回调。
+
+以 Go 1.22.12 的 Unix 读取为例，先尝试系统读取，遇到 `EAGAIN` 才等待；就绪、deadline 或关闭等事件可以改变等待状态，G 再次获得执行机会后重试或返回错误。Linux 使用 epoll，macOS 使用 kqueue。等待网络数据不必为每个连接保留一条阻塞线程，但不代表整个进程只有一条线程。
+
+</details>
+
+### 6.2 goroutine 执行网络 I/O 和普通磁盘文件 I/O，有什么区别？ {#network-disk}
+
+**考察重点**：描述符能力、G 与 M 的等待，以及系统调用期间 P 的处理。
+
+**相关内容**：[网络与普通文件](#网络与普通文件)、[Go 调度器](./scheduler.mdx#网络等待与系统调用)。
+
+<details>
+<summary>参考回答</summary>
+
+**标准网络连接通常由非阻塞 I/O 和 netpoll 配合，等待时挂起 G；普通磁盘文件的读取则可能在系统调用中连同 M 一起阻塞。** 后一种情况由调度器处理 P 的交接与返回后的执行安排，不是把所有 goroutine 都停住。
+
+不能把所有 `os.File` 都等同于普通磁盘文件，部分管道也可以接入轮询；也不能把每次文件读取都说成一定阻塞或一定创建新线程。具体结果取决于平台、描述符及调用路径。
+
+</details>
+
+### 6.3 Go 使用边缘触发，为什么一次 Read 可以只返回部分数据？ {#readiness-result}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：就绪语义、先尝试后等待及字节流边界。
+
+**相关内容**：[边缘触发与部分读取](#边缘触发与部分读取)。
+
+<details>
+<summary>参考回答</summary>
+
+**因为每次 `Read` 都先尝试读取，只有遇到 `EAGAIN` 才进入等待，成功读取后可以把已有结果返回。** 剩余数据留在接收缓冲区时，下一次 `Read` 仍会先尝试取走，不会直接跳过读取去等待新的边缘通知。
+
+就绪不承诺读满缓冲区或得到完整消息，也可能对应 EOF 或错误。固定长度读取和业务消息边界由上层协议处理，不由 epoll 或一次 `Read` 自动完成。
+
+</details>
+
+### 6.4 Read 超时后连接一定关闭吗？取消 DialContext 的 context 会停止后续读取吗？ {#deadline-cancellation}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：deadline 的作用范围、资源关闭及取消责任。
+
+**相关内容**：[截止时间、关闭与取消](#截止时间关闭与取消)。
+
+<details>
+<summary>参考回答</summary>
+
+**读取 deadline 超时本身不关闭连接；连接建立后，原 DialContext 的 context 取消也不会自动停止后续读取。** 普通 `Read` 不接收 context，需要通过适用的 deadline、关闭或上层 API 把取消落实到 I/O。
+
+deadline 是绝对时间，会影响当前和后续的相应操作；可以重新设为未来时间，或用 `time.Time{}` 清除。连接是否适合继续复用还要判断协议状态，特别是部分写入或响应归属。超时和关闭都不等于远端业务回滚，调用方还需确认本地任务退出。
+
+</details>
+
+## 7. 参考资料 {#参考资料}
+
+- [Go 1.22.12 net.Conn：读写、关闭与 deadline 契约](https://github.com/golang/go/blob/go1.22.12/src/net/net.go)
+- [Go 1.22.12 internal/poll：Unix 读写路径](https://github.com/golang/go/blob/go1.22.12/src/internal/poll/fd_unix.go)
+- [Go 1.22.12 runtime：等待、就绪、关闭与超时状态](https://github.com/golang/go/blob/go1.22.12/src/runtime/netpoll.go)
+- [Go 1.22.12 runtime：Linux epoll 后端](https://github.com/golang/go/blob/go1.22.12/src/runtime/netpoll_epoll.go)
+- [Go 1.22.12 runtime：kqueue 后端](https://github.com/golang/go/blob/go1.22.12/src/runtime/netpoll_kqueue.go)
+- [Go 1.22.12 net.Dialer：连接建立与 context 边界](https://github.com/golang/go/blob/go1.22.12/src/net/dial.go)
+- [Go 1.22.12 os：Unix 文件初始化与轮询条件](https://github.com/golang/go/blob/go1.22.12/src/os/file_unix.go)
+- [Go 1.22.12 os.File：deadline 支持范围](https://github.com/golang/go/blob/go1.22.12/src/os/file.go)

@@ -1,0 +1,313 @@
+---
+knowledge:
+  id: mobile.ios.view-controller
+  type: concept
+description: "解释 UIViewController 的视图加载、出现与消失、布局、导航和容器关系，以及页面任务与对象释放。"
+keywords: [UIViewController, loadView, viewDidLoad, viewWillAppear, UINavigationController, 容器控制器]
+---
+
+# UIViewController
+
+**UIViewController** 管理一组视图及其交互，并协调页面与其他控制器、系统环境之间的关系。理解它时，需要分别跟踪控制器对象是否存在、视图是否已经加载，以及页面是否正在显示。三者并不同时发生，也不同时结束。
+
+一个页面 push 到下一页后，原控制器通常仍在导航栈里；一个控制器提前加载了视图，也可能还没出现在屏幕上。生命周期回调正是这些变化的通知，适合用来安排界面配置和页面任务，不能直接当作对象创建、销毁的替代信号。
+
+## 1. 面试核心 {#core}
+
+- 控制器可以先创建、后加载视图，**loadView 负责建立根视图，viewDidLoad 负责视图加载后的配置**。不要直接调用 `loadView()`。[卡](#loading)
+- 出现与消失回调描述显示过渡，**push 后再次返回，通常会再次出现，但不需要重新加载同一份视图**。[卡](#lifecycle)
+- 布局可能重复发生，**viewDidLayoutSubviews 不能当作只调用一次的初始化入口，也不表示整棵子视图树完成了全部布局**。[卡](#layout)
+- push/pop 与 present/dismiss 管理不同关系，**页面是否收到消失通知还受呈现样式和容器行为影响**。[卡](#presentation)
+- 自定义容器需要同时建立控制器关系和视图层级，**只 addSubview 不等于 addChild**。[卡](#containment)
+- 页面消失不等于控制器释放，**导航栈、呈现关系、闭包和外部持有都可能延长对象存续**。[卡](#release)
+- 页面任务应按可见性、业务身份或对象存续分别管理，**取消请求后仍要防止旧结果更新新的页面状态**。[卡](#tasks)
+
+## 2. 控制器与视图加载 {#控制器与视图加载}
+
+### 2.1 创建对象不等于加载视图 {#创建对象不等于加载视图}
+
+控制器拥有根 `view`，根视图再组织子视图。创建控制器时，UIKit 可以暂不加载这棵视图；访问 `view` 或显式调用 `loadViewIfNeeded()`，可能触发加载。
+
+`isViewLoaded` 用来判断视图是否已加载，`viewIfLoaded` 可以读取已加载的视图而不主动触发加载。如果只是检查状态，却直接访问 `view`，可能提前执行界面构建和 `viewDidLoad()`，改变原本预期的时机。
+
+`loadView()` 由 UIKit 在需要根视图时调用。采用 Storyboard 或 nib 的工程通常由 UIKit 加载界面；纯代码实现可以重写该方法，创建并赋值自己的根视图。完全自建视图时不调用 `super.loadView()`，也不能在实现里通过读取尚未设置的 `self.view` 再次触发加载。
+
+### 2.2 viewDidLoad 的职责 {#viewdidload的职责}
+
+`viewDidLoad()` 表示控制器的视图已经加载，可以配置控件、建立一次性的绑定和初始界面。它不表示页面已经显示，也不保证此时布局尺寸就是最终值。
+
+```swift
+import UIKit
+
+@MainActor
+class SummaryViewController: UIViewController {
+    private let summaryLabel = UILabel()
+
+    var summary: String = "" {
+        didSet {
+            if isViewLoaded {
+                summaryLabel.text = summary
+            }
+        }
+    }
+
+    override func loadView() {
+        view = summaryLabel
+    }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        summaryLabel.numberOfLines = 0
+        summaryLabel.textAlignment = .center
+        summaryLabel.backgroundColor = .systemBackground
+        summaryLabel.text = summary
+    }
+}
+```
+
+可以先设置 `summary`，再展示控制器；属性观察器不会为了更新文本主动加载视图。真正加载后，`viewDidLoad()` 读取当前 `summary`。之后修改 `summary`，才直接更新已经加载的 UILabel。
+
+通常同一份视图加载后会被重复使用，因此不能每次返回页面都等待 `viewDidLoad()` 刷新数据。反过来，也不要把“通常加载一次”提升成控制器整个生命期绝不可能再次加载的规则：如果应用显式丢弃并重新建立视图，加载过程会再次发生。
+
+## 3. 出现、消失与导航 {#出现消失与导航}
+
+### 3.1 显示回调反映过渡 {#显示回调反映过渡}
+
+| 回调 | 表达的变化 | 典型用途 |
+| --- | --- | --- |
+| `viewWillAppear(_:)` | 页面即将出现 | 配置显示前状态，准备需要随出现更新的内容 |
+| `viewDidAppear(_:)` | 出现过渡已经完成 | 开始依赖页面已出现的交互 |
+| `viewWillDisappear(_:)` | 页面即将消失 | 暂停对应交互，配合过渡处理 |
+| `viewDidDisappear(_:)` | 页面已经消失 | 停止只对当前显示有意义的工作 |
+
+重写这些方法时应按 API 要求调用 `super`。`animated` 表示该次过渡是否采用动画，不表示页面是否真正有数据，也不等于首帧已经满足产品的可用条件。
+
+页面可见性回调与 [iOS 应用生命周期](./app-lifecycle.mdx) 不在同一层。页面之间切换时 Scene 可以一直活跃；进入后台也不能简单等同于导航 pop。需要根据页面显示和 Scene 激活状态共同决定的任务，应明确两个条件，而不是任选一个回调猜测。
+
+### 3.2 push 与 pop {#push与pop}
+
+**UINavigationController** 管理一组控制器构成的导航栈。push 将新的控制器加入栈，pop 从栈中移除顶部控制器，并重新显示下方页面。
+
+在标准导航流程中，A 页面 push B，A 经历消失过渡，B 经历出现过渡；pop B 返回 A，A 再次经历出现过渡。A 通常一直保留在导航栈中，其已加载视图可以继续使用，不需要重新执行 `viewDidLoad()`。
+
+面试回答应先说明这个因果关系，再按具体条件给出回调。不要把两个控制器之间某次日志观察到的所有回调交错顺序都当作跨版本协议，尤其是布局、交互式转场和自定义容器参与时。
+
+交互式返回可能被取消。已经收到某个 `will` 回调，不代表最终导航一定成功完成。需要在转场完成后提交的行为，应结合 transition coordinator 等提供的完成和取消信息，不在 `viewWillDisappear()` 中不可逆地删除用户状态。
+
+### 3.3 present 与 dismiss {#present与dismiss}
+
+**模态呈现**建立 presenting 与 presented 控制器之间的关系，不是向原来的导航栈执行一次 push。一个 presented 控制器本身也可以是 UINavigationController，在模态流程内部继续 push。
+
+呈现样式影响底层界面是否仍保留在显示层级。`.fullScreen` 通常在转场完成后移除底层视图，`.overFullScreen` 允许底层视图保留；sheet 等样式还会根据环境自适应。不能假定调用任意 `present()`，原页面都会经历与全屏导航相同的消失过程。
+
+`show(_:sender:)` 可以让容器决定合适的显示方式，例如导航容器可以选择 push。处理返回时，应分清目标是 pop 当前导航页，还是 dismiss 整个模态流程，避免只根据“屏幕上有返回按钮”推断关系。
+
+## 4. 布局时机与尺寸 {#布局时机与尺寸}
+
+`viewWillLayoutSubviews()` 与 `viewDidLayoutSubviews()` 围绕根视图的布局过程调用。尺寸、约束或环境变化可以引起再次布局，因此布局回调要能重复执行。
+
+`viewDidLayoutSubviews()` 表示根视图完成了它对子视图位置的布局处理，不保证每个子视图内部的布局都已分别完成。需要某个具体视图按当前约束完成布局时，应在合适的层级请求布局，而不是把一次控制器回调理解为整棵树永久稳定。
+
+可以在这里根据当前几何信息调整确实依赖尺寸的内容，但不要每次都重复添加相同约束、重复创建观察者或重新发起网络请求。否则旋转、窗口尺寸变化或其他正常布局过程都可能产生重复副作用。
+
+根视图的尺寸也不等于可用内容区域。导航栏、安全区域、键盘和容器装饰会影响布局约束；这些由视图布局负责，不能在 `viewDidLoad()` 中用一次屏幕宽高计算替代后续适配。
+
+## 5. 容器控制器 {#容器控制器}
+
+### 5.1 控制器关系与视图关系 {#控制器关系与视图关系}
+
+**容器控制器**管理子控制器及其界面，UINavigationController 和 UITabBarController 都属于这种角色。自定义容器也必须通知 UIKit 父子关系，才能协调生命周期和系统信息传递。
+
+下面的容器一次只嵌入一个子控制器，不包含动画。它同时维护父子关系、子视图和约束：
+
+```swift
+import UIKit
+
+@MainActor
+final class ContentHostController: UIViewController {
+    private var content: UIViewController?
+    private var contentConstraints: [NSLayoutConstraint] = []
+
+    func install(_ child: UIViewController) {
+        precondition(content == nil)
+        precondition(child.parent == nil)
+        loadViewIfNeeded()
+
+        addChild(child)
+        child.view.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(child.view)
+        contentConstraints = [
+            child.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            child.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            child.view.topAnchor.constraint(equalTo: view.topAnchor),
+            child.view.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        ]
+        NSLayoutConstraint.activate(contentConstraints)
+        child.didMove(toParent: self)
+        content = child
+    }
+
+    func removeContent() {
+        guard let child = content else { return }
+        child.willMove(toParent: nil)
+        NSLayoutConstraint.deactivate(contentConstraints)
+        contentConstraints.removeAll()
+        child.view.removeFromSuperview()
+        child.removeFromParent()
+        content = nil
+    }
+}
+```
+
+`addChild()` 会触发加入前的 `willMove(toParent:)`，因此这里不手工重复调用；添加视图并完成约束后，调用 `didMove(toParent:)`。移除时先调用 `willMove(toParent: nil)`，再移除视图和父子关系；`removeFromParent()` 会完成相应的 `didMove` 通知。
+
+只把 `child.view` 加进父视图，会遗漏控制器关系；只调用 `addChild()` 又不会自动替你把子视图放到正确位置。这两个层次需要一致。
+
+### 5.2 显示转场仍需正确转发 {#显示转场仍需正确转发}
+
+标准容器会管理子控制器的显示通知。自定义容器如果改变自动转发行为，或自行组织子页面的显示转场，需要使用 `beginAppearanceTransition(_:animated:)` 与 `endAppearanceTransition()` 等接口成对协调，而不是直接调用子控制器的 `viewWillAppear()` 或 `viewDidDisappear()`。
+
+上面的示例只展示无动画的嵌入与移除关系。若要在已经显示的容器里实现复杂切换，还要设计显示状态转发、转场取消、安全区域和状态栏等行为，不能把这段安装代码视为完整导航框架。
+
+## 6. 页面任务、释放与恢复 {#页面任务释放与恢复}
+
+### 6.1 消失不等于释放 {#消失不等于释放}
+
+`viewDidDisappear()` 不是析构通知。push 后旧控制器仍在栈里；模态流程可能仍持有相关控制器；外部缓存、代理关系、闭包或未结束任务也可能持有对象。
+
+即使 pop 已完成，也只能说明导航栈移除了该控制器，不能保证所有其他强引用已经消失。应通过 [Swift ARC](../../basic-knowledge/swift/arc.mdx) 的引用关系判断释放，排查时结合对象图与实际 `deinit` 观察，不能只看一次页面回调。
+
+`isMovingFromParent`、`isBeingDismissed` 等状态可以帮助判断当前过渡，但嵌套容器和转场取消会影响判断条件。它们不是替代资源所有权设计的通用销毁信号。
+
+### 6.2 任务按真实用途管理 {#任务按真实用途管理}
+
+只在用户观看时有意义的预览、动画或轮询，适合随对应显示条件暂停；文档保存、已经提交的业务请求则可能需要离开页面后继续，由更合适的 Repository 或服务持有。
+
+取消异步任务不等于它从未执行，也不保证完成回调不会再到达。更新页面前还需要核对请求身份、当前展示的数据 ID 和任务代次，防止旧结果覆盖新页面。Swift 的协作式取消规则见 [Swift 并发](../../basic-knowledge/swift/concurrency.mdx)。
+
+恢复页面时，应保存能重新取得内容的业务 ID、选择位置和必要的轻量状态，再通过路由重新建立控制器。恢复不能假设旧控制器对象还在内存，也不能绕过当前登录状态和访问权限。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 loadView 与 viewDidLoad 有什么区别？可以直接调用 loadView 吗？ {#loading}
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：懒加载、根视图建立和加载后配置。
+
+**相关内容**：[控制器与视图加载](#控制器与视图加载)。
+
+<details>
+<summary>参考回答</summary>
+
+**loadView 建立并赋值根视图，viewDidLoad 在视图加载后执行配置。** 不应直接调用 `loadView()`，需要主动确保加载时使用 `loadViewIfNeeded()`。纯代码完全重写 `loadView()` 时设置自己的根视图，不调用 `super`；Storyboard 或 nib 场景通常由 UIKit 负责加载。
+
+</details>
+
+### 7.2 UIViewController 的生命周期是什么？ {#lifecycle}
+
+**考察重点**：对象存在、视图加载、出现消失与布局的不同阶段。
+
+**相关内容**：[控制器与视图加载](#控制器与视图加载)、[出现、消失与导航](#出现消失与导航)。
+
+<details>
+<summary>参考回答</summary>
+
+**先区分控制器创建、视图加载和页面显示。** 视图需要时由 `loadView` 建立，随后 `viewDidLoad` 配置；页面出现和消失分别有 will/did 回调，布局也可能重复发生。控制器被导航栈保留时可以多次出现而不重载视图，消失更不等于 `deinit`。
+
+</details>
+
+### 7.3 A 页面 push B，生命周期有什么变化？ {#push-pop}
+
+**考察重点**：导航栈持有、重复出现和视图复用。
+
+**相关内容**：[push 与 pop](#push与pop)。
+
+<details>
+<summary>参考回答</summary>
+
+**标准导航流程中，push 时 A 消失、B 出现，pop 时 B 消失、A 再次出现。** A 通常仍在导航栈中，所以回到 A 不需要重新执行同一份视图的 `viewDidLoad()`。B 被移出栈后是否释放，还要看其他引用。交互式转场被取消时，不能按一次 will 回调认定导航已经完成。
+
+</details>
+
+### 7.4 可以在 viewDidLayoutSubviews 中只执行一次页面初始化吗？ {#layout}
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：重复布局、尺寸依赖与副作用。
+
+**相关内容**：[布局时机与尺寸](#布局时机与尺寸)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能把该回调当作只发生一次的初始化通知。** 尺寸和约束变化都可能触发再次布局；适合处理依赖当前几何信息且可重复执行的工作，不适合重复注册观察者、追加相同约束或重新发起请求。它也不保证所有子视图内部布局都已结束。
+
+</details>
+
+### 7.5 present 和 push 有什么区别？present 后原页面一定消失吗？ {#presentation}
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：导航栈、模态关系和呈现样式。
+
+**相关内容**：[present 与 dismiss](#present与dismiss)。
+
+<details>
+<summary>参考回答</summary>
+
+**push 修改导航栈，present 建立模态呈现关系。** 模态页面内部仍可以包含导航控制器。原页面是否从显示层级移除、是否经历相应消失回调，受 fullScreen、overFullScreen、sheet 和容器适配等条件影响，不能对所有 present 使用同一个结论。
+
+</details>
+
+### 7.6 自定义容器为什么不能只添加 child.view？ {#containment}
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：控制器父子关系、视图层级与通知顺序。
+
+**相关内容**：[容器控制器](#容器控制器)。
+
+<details>
+<summary>参考回答</summary>
+
+**只添加视图没有建立 UIKit 所需的控制器父子关系。** 添加时先 `addChild`，再接入根视图与布局，最后通知 `didMove`；移除时先通知 `willMove(nil)`，再移除视图和父子关系。自定义显示转场还需要正确转发 appearance，不能直接伪造生命周期方法调用。
+
+</details>
+
+### 7.7 viewDidDisappear 后没有执行 deinit，是否一定是内存泄漏？ {#release}
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：显示状态与强引用存续的不同含义。
+
+**相关内容**：[消失不等于释放](#消失不等于释放)。
+
+<details>
+<summary>参考回答</summary>
+
+**不一定，控制器可能仍被导航栈、呈现关系或有意保留的业务对象持有。** 应先判断它是否按设计应当结束，再检查实际强引用链。即使 pop 完成，也不能只据导航关系消失就断言对象应立即释放。
+
+</details>
+
+### 7.8 页面离开时取消请求，是否就能避免旧结果更新界面？ {#tasks}
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：协作式取消、请求身份与任务所有权。
+
+**相关内容**：[任务按真实用途管理](#任务按真实用途管理)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能只靠取消，还要在应用结果前检查它是否属于当前页面状态。** 取消可能发生在请求已经执行或回调已排队之后。应按任务用途决定由页面还是共享服务持有，并核对请求代次、业务 ID 和当前显示条件，避免旧结果覆盖新数据。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [Apple：UIViewController](https://developer.apple.com/documentation/uikit/uiviewcontroller)
+- [Apple：loadView](https://developer.apple.com/documentation/uikit/uiviewcontroller/loadview())
+- [Apple：viewDidLoad](https://developer.apple.com/documentation/uikit/uiviewcontroller/viewdidload())
+- [Apple：viewWillAppear](https://developer.apple.com/documentation/uikit/uiviewcontroller/viewwillappear(_:))
+- [Apple：viewDidLayoutSubviews](https://developer.apple.com/documentation/uikit/uiviewcontroller/viewdidlayoutsubviews())
+- [Apple：UINavigationController](https://developer.apple.com/documentation/uikit/uinavigationcontroller)
+- [Apple：创建自定义容器控制器](https://developer.apple.com/documentation/uikit/creating-a-custom-container-view-controller)
+- [Apple：didMove(toParent:)](https://developer.apple.com/documentation/uikit/uiviewcontroller/didmove(toparent:))
+- [Apple：beginAppearanceTransition](https://developer.apple.com/documentation/uikit/uiviewcontroller/beginappearancetransition(_:animated:))
+- [Apple：呈现控制器](https://developer.apple.com/library/archive/featuredarticles/ViewControllerPGforiPhoneOS/PresentingaViewController.html)

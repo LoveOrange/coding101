@@ -1,0 +1,294 @@
+---
+knowledge:
+  id: mobile.android.datastore
+  type: concept
+description: "解释 Android DataStore 的 Preferences 与类型化存储、原子读改写、持久化完成语义、实例约束、错误处理和迁移。"
+keywords: [DataStore, Preferences, updateData, edit, Flow, Proto, SharedPreferencesMigration]
+---
+
+# Android DataStore
+
+**DataStore** 是适合保存少量设置和应用状态的 Jetpack 持久化组件。它通过协程执行更新，通过 Flow 提供数据，并把一次更新中的读取、修改和写入组织成原子操作。它适合回答“怎样可靠地修改一份设置”，不提供关系数据库的查询、外键和跨记录局部更新能力。
+
+本文以 DataStore 1.1.1 为例。需要重点区分的是：Preferences 与类型化数据的表达方式、更新函数的提交边界，以及同一文件应由谁管理。
+
+## 1. 面试核心 {#core}
+
+- Preferences DataStore 使用带类型的 key 访问键值，类型化 DataStore 保存一个约定类型，**两者都需要稳定的数据约定，Preferences 也不能随意更改同名 key 的类型**。[卡](#forms)
+- `edit` 和 `updateData` 把读取当前值与写回新值放进同一次更新，**先在外部读出再写入，仍可能覆盖并发更新**。[卡](#atomic-update)
+- 更新成功返回表示这次结果已按 DataStore 的持久化契约写入，**不是只把新值放进内存或提交了后台任务**。[卡](#completion)
+- 同一进程、同一文件应只有一个活跃 DataStore，**应用单例不能自动解决多个进程的并发访问**。[卡](#instances)
+- 读失败、写失败和内容损坏需要分别处理，**返回默认显示值不等于修好了文件，也不等于更新成功**。[卡](#errors)
+- 迁移在正常数据访问前执行，**迁移逻辑应可重试，切换后不能继续让旧存储独立写入同一份业务状态**。[卡](#migration)
+- DataStore 更新整份数据，**不提供 SQL 查询、关系约束和多个文件之间的共同事务**。[卡](#scope)
+
+## 2. 两种数据表达方式 {#两种数据表达方式}
+
+### 2.1 Preferences DataStore {#preferences-datastore}
+
+**Preferences DataStore** 保存键值集合，不要求先定义一个包含全部字段的 schema。读取时通过 `booleanPreferencesKey`、`intPreferencesKey` 等创建的 key 指定期望类型。
+
+带类型的 key 让调用代码能知道返回类型，但不能保证所有开发者都为同一个名称选择相同类型。若一处把 `launch_count` 当作整数，另一处把同名 key 当作字符串，仍可能在运行时发生类型错误。应集中定义 key，改变已有存储类型时设计迁移。
+
+下面使用顶层属性委托创建实例，读取启动计数，并在一次 `edit` 中增加计数：
+
+```kotlin
+import android.content.Context
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.preferencesDataStore
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
+
+val Context.settingsStore: DataStore<Preferences> by preferencesDataStore(name = "settings")
+val LAUNCH_COUNT = intPreferencesKey("launch_count")
+
+class SettingsRepository(private val store: DataStore<Preferences>) {
+    val launchCount: Flow<Int> = store.data.map { it[LAUNCH_COUNT] ?: 0 }
+
+    suspend fun recordLaunch() {
+        store.edit { settings ->
+            val current = settings[LAUNCH_COUNT] ?: 0
+            check(current < Int.MAX_VALUE) { "启动计数已达到整数上限" }
+            settings[LAUNCH_COUNT] = current + 1
+        }
+    }
+}
+```
+
+`recordLaunch()` 在更新内部读取当前计数，再写入加一结果。不存在该 key 时按 `0` 处理；达到整数上限时，`check` 抛出异常，避免加一后溢出为负数。调用者应把失败反馈给相应业务流程，而不是把函数启动视为保存成功。
+
+顶层委托应只定义一份，再通过依赖注入或 Repository 共享。不要在每个 Activity 中重新创建管理同一文件的 DataStore。`edit` 中的 `MutablePreferences` 也不应被保留到外部继续修改。
+
+### 2.2 类型化 DataStore 与序列化 {#类型化datastore与序列化}
+
+**类型化 DataStore** 使用 `DataStore<T>` 保存一份类型为 `T` 的不可变数据。常见选择是根据 Protocol Buffers schema 生成消息类型，也可以使用合适的其他编码方式；DataStore 不会仅因为出现一个 data class，就自动知道文件格式。
+
+**Serializer** 规定三个部分：文件尚不存在时的 `defaultValue`、从输入流解析对象的 `readFrom`，以及把对象写入输出流的 `writeTo`。使用 Proto 时，生成的消息负责解析和编码，Serializer 把这些操作接入 DataStore。
+
+类型化更新可以写成下面这样。这里假定传入的 DataStore 已配置与 `UiSettings` 对应的 Serializer；代码只展示更新逻辑。
+
+```kotlin
+import androidx.datastore.core.DataStore
+
+data class UiSettings(val darkTheme: Boolean = false)
+
+suspend fun setDarkTheme(store: DataStore<UiSettings>, enabled: Boolean) {
+    store.updateData { current -> current.copy(darkTheme = enabled) }
+}
+```
+
+更新返回新的 `UiSettings`。若字段里还有可变集合，仅把外层声明为 `data class` 并不足以满足不可变要求：别处修改同一集合，会绕过 DataStore 的更新与一致性机制。应让整份被保存的数据满足所需的不可变约束。
+
+Proto 的字段编号属于持久化格式的一部分，删除字段后不能随意把旧编号分配给另一种含义。默认值、缺失字段和新增字段兼容性也要按编码协议设计。类型检查减少的是调用错误，不会自动保证历史文件能按新的业务含义解析。
+
+## 3. 原子更新与完成语义 {#原子更新与完成语义}
+
+### 3.1 读改写必须位于更新内部 {#读改写必须位于更新内部}
+
+**原子读改写**是把读取当前状态、计算新状态和提交新状态作为一次不可分割的更新。DataStore 会串行处理相应更新，后一次更新基于它取得的当前状态计算。
+
+假设两个协程都要把计数加一。正确方式是分别执行 `edit { count = currentCount + 1 }`：第二次更新会接着第一次的结果计算。若两者先在外部通过 `data.first()` 都读到 `5`，再各自写入 `6`，即使每次写入本身是原子的，最终仍然可能是 `6`。
+
+问题在于读和写被拆开，而不是写函数缺少互斥。`data.first()` 适合取得一次状态快照，不适合充当稍后更新一定基于的最新值。需要检查后修改的业务条件，也应尽量与修改放进同一次更新。
+
+更新函数可以挂起，但耗时网络或长时间等待会拖住后续更新。若要调用外部服务，应先确定业务协议，避免把 DataStore 的串行更新当作跨系统事务。不要在同一个实例的 `updateData` 中再次调用它自己的 `updateData`；DataStore 1.1.1 会拒绝这种嵌套更新。
+
+### 3.2 成功、失败与取消 {#成功失败与取消}
+
+`edit` 基于 `updateData` 实现。按 DataStore 契约，更新正常完成时，新状态已经持久化，随后 `data` 反映相应更新；如果转换或写入失败，操作会抛出异常，而不是把这次新值当作成功提交。
+
+这与“更新内存后立即返回，磁盘稍后再写”的接口语义不同。UI 可以先展示乐观状态，但应同时定义失败后的提示或回退方式，不能把乐观显示与持久化确认混为一谈。
+
+持久化成功也不是无限制的业务保证。它不等于已经同步到服务端，不保证另一份文件也同时更新，更不能推导设备损坏后数据一定能恢复。DataStore 的范围是它所管理的这份数据及其存储实现。
+
+协程取消还需要结合提交阶段判断。调用方在竞争时刻没有拿到成功结果，不足以证明文件一定没有变化。对重复执行有副作用的业务操作，应设计可识别的操作状态或幂等规则，不能无条件重复“加一”来确认成功。
+
+## 4. 数据流与实例范围 {#数据流与实例范围}
+
+### 4.1 data 提供状态，不提供每次操作的日志 {#data提供状态不提供每次操作的日志}
+
+`data` 是获取当前持久化状态及后续变化的 Flow。DataStore 自己管理必要缓存，业务层不应再维护一份可独立写入的“权威缓存”，否则容易出现磁盘、DataStore 与缓存彼此不一致。
+
+UI 可以把数据映射成显示状态，并按 Android 生命周期收集；这不意味着必须每次显示都自行打开和解析文件。读取一次快照使用 `first()`，持续观察则收集 Flow。
+
+状态相等和中间更新的合并意味着，不能把每次收集结果解释成一条独立写入记录。需要可靠记录“用户做过哪几次操作”时，应选择明确的日志模型；仅观察最终设置值不够。
+
+### 4.2 单进程与多进程 {#单进程与多进程}
+
+同一进程中，同一个文件应由一个活跃 DataStore 实例管理。重复创建实例可能触发异常；给两个实例分别加锁，也不能替代组件自身的文件协调规则。
+
+DataStore 1.1.1 提供多进程支持。多个应用进程确实要共享文件时，应按 `MultiProcessDataStoreFactory` 等相应 API 创建，并遵守每进程的实例约束。不能让单进程与多进程实现混用同一个文件。
+
+“Repository 是单例”通常只说明当前进程内只有一份。Android 中另一个进程有自己的内存和单例实例，因此还需要文件层面的跨进程协调。也不能绕开 DataStore，直接修改它管理的文件后期待缓存与观察仍然可靠。
+
+## 5. 错误处理与迁移 {#错误处理与迁移}
+
+### 5.1 读取失败不等于内容损坏 {#读取失败不等于内容损坏}
+
+读取可能因为 IO 失败，也可能因为字节不符合约定格式。**CorruptionException** 用来表示内容损坏或无法按约定解析，不能把任意权限、磁盘或业务异常都转换成“文件坏了”。
+
+`data` 遇到读取异常时会向收集者抛出；再次收集可以重新尝试。使用 Flow 的 `catch` 提供默认显示值是一种业务降级，但只改变下游看到的结果，不会修复原文件，也不会自动建立持续重试。
+
+尤其不要把所有异常都吞掉并返回空设置。这样可能把“读取失败”展示成“用户从未设置过”，随后又用默认值覆盖原数据。取消异常也应正常传播，不能被当成普通失败无限重试。
+
+`ReplaceFileCorruptionHandler` 可以按产品规则用一份替代数据处理损坏。替代意味着接受原内容丢失，应明确适用的数据类型；无法从其他来源恢复的用户记录，不能仅为了避免报错而重置。
+
+写入错误则在 `edit` 或 `updateData` 调用处处理。只给读取 Flow 加 `catch`，不会自动处理另一次写入的异常。
+
+### 5.2 SharedPreferences 迁移 {#sharedpreferences迁移}
+
+`SharedPreferencesMigration` 可以在正常访问 DataStore 数据之前，把旧 SharedPreferences 的指定键迁移过来。Preferences 版本提供同名键值迁移；若需要重命名、类型转换或合并业务状态，应明确编写对应迁移规则。
+
+下面声明另一个用于迁移示例的设置文件。它可以替代旧存储入口，不能与第一段委托同时指向同一文件。
+
+```kotlin
+import android.content.Context
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.SharedPreferencesMigration
+import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.preferencesDataStore
+
+val Context.migratedSettings: DataStore<Preferences> by preferencesDataStore(
+    name = "migrated_settings",
+    produceMigrations = { context ->
+        listOf(SharedPreferencesMigration(context, "legacy_settings"))
+    }
+)
+```
+
+在 DataStore 1.1.1 的 Preferences 迁移实现中，新存储已经存在的同名 key 不会被旧值覆盖。应通过测试确认这符合业务预期，并检查旧键类型、默认值和缺失键的情况。
+
+迁移可能因为失败而再次执行，因此应设计成幂等：重复运行不应重复扣减、重复追加或破坏已经迁好的值。迁移完成后还涉及旧键清理；失败处理不能假定整个迁移过程中只会调用一次迁移函数。
+
+完成切换后，读写应统一走新入口。若仍有旧页面继续更新 SharedPreferences，DataStore 不会自动持续同步这些后续变化。迁移是切换存储格式和入口的过程，不是两套存储的永久双向同步。
+
+迁移测试至少覆盖旧值保留、新值优先、缺失键、类型转换、重复执行、迁移或清理失败后的重试，以及切换后所有调用方是否使用新入口。
+
+## 6. 适用范围 {#适用范围}
+
+DataStore 适合主题、排序偏好、引导完成标记等小型状态。一次 `edit` 可以修改多个 key，并作为同一次更新提交，但底层处理的是整份持久化数据，不是关系数据库中的局部列更新。
+
+大量记录、按条件分页、关联关系、外键和复杂事务更适合 [Room](./room.mdx)。例如用户的主题偏好可以放入 DataStore，数万条离线消息则需要单独设计数据库表、索引和同步策略。
+
+DataStore 1.1.1 本身不代表加密存储。文件访问限制与数据加密是不同机制，保存敏感凭据时还需按实际威胁和平台能力设计保护。也不能把多个 DataStore 文件上的两次成功更新当成跨文件原子事务。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 Preferences DataStore 与类型化 DataStore 有什么区别？ {#forms}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：键值约定、类型模型、不可变性与序列化。
+
+**相关内容**：[两种数据表达方式](#两种数据表达方式)。
+
+<details>
+<summary>参考回答</summary>
+
+**Preferences 按 key 保存键值，类型化 DataStore 保存一份约定类型的数据，并通过 Serializer 编码。** Preferences 的 key 有泛型类型，但不能阻止不同代码给同名 key 选择冲突类型。类型化存储需要不可变数据模型和兼容的编码协议，常用 Proto；data class 本身不负责持久化格式，也不保证内部集合不可变。
+
+</details>
+
+### 7.2 两个协程同时增加计数，为什么要在 edit 内部读取当前值？ {#atomic-update}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：原子读改写与拆分读取造成的覆盖。
+
+**相关内容**：[读改写必须位于更新内部](#读改写必须位于更新内部)。
+
+<details>
+<summary>参考回答</summary>
+
+**只有把读取、计算和写回放在同一次串行更新中，后一次才能基于前一次的结果计算。** 若两者先在外部都读到 `5`，再分别写入 `6`，最终会少一次增加。每次写入原子不代表之前那次外部读取也包含在事务里。`data.first()` 返回快照，不能保证稍后修改时仍然最新。
+
+</details>
+
+### 7.3 updateData 正常返回意味着什么？取消后能否直接重试？ {#completion}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：持久化确认、失败传播与提交阶段竞争。
+
+**相关内容**：[成功、失败与取消](#成功失败与取消)。
+
+<details>
+<summary>参考回答</summary>
+
+**正常完成表示这次结果已按 DataStore 契约持久化，转换或写入失败会抛异常。** 这不代表服务端或其他文件也提交了。取消与提交可能发生竞争，没有收到成功结果不能单独证明数据未变；对“加一”这类重复执行会产生额外效果的操作，需根据业务设计幂等标识或状态检查，不能盲目重试。
+
+</details>
+
+### 7.4 为什么不能创建两个 DataStore 管理同一文件？多进程怎么办？ {#instances}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：实例范围、缓存一致性与文件协调。
+
+**相关内容**：[单进程与多进程](#单进程与多进程)。
+
+<details>
+<summary>参考回答</summary>
+
+**同一进程、同一文件必须遵守单个活跃实例的管理约束，否则会破坏协调并可能抛异常。** 多进程拥有不同内存，普通单例只能约束当前进程。确需共享文件时，应使用对应多进程 API，保持每进程实例约束，并且不能让单进程与多进程实现混用该文件，也不能绕过 DataStore 直接写文件。
+
+</details>
+
+### 7.5 读取失败时返回默认值，是否就恢复了 DataStore？ {#errors}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：显示降级、重新读取、内容损坏和写入失败的区别。
+
+**相关内容**：[读取失败不等于内容损坏](#读取失败不等于内容损坏)。
+
+<details>
+<summary>参考回答</summary>
+
+**没有。默认值可能只是下游显示降级，不会修复文件，也不会自动持续重试。** 应区分 IO 错误、解析损坏和取消；损坏替换需要明确接受数据丢失，不能吞掉所有异常。再次收集可以重新尝试读取，写入失败则需要在 `edit` 或 `updateData` 的调用处处理。
+
+</details>
+
+### 7.6 从 SharedPreferences 迁移到 DataStore，需要处理哪些边界？ {#migration}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：迁移时机、覆盖规则、重试与统一读写入口。
+
+**相关内容**：[SharedPreferences 迁移](#sharedpreferences迁移)。
+
+<details>
+<summary>参考回答</summary>
+
+**应明确迁移哪些键、同名新旧值谁优先、类型如何转换，并保证失败后可以安全重试。** 迁移在正常访问前执行，可能不止运行一次；Preferences 1.1.1 的同名迁移保留新存储已有值。还需验证旧键清理和异常路径。切换后统一使用新入口，继续写旧 SharedPreferences 不会自动同步进 DataStore。
+
+</details>
+
+### 7.7 DataStore 的事务能否替代 Room，或保证两个文件一起更新？ {#scope}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：事务对象、数据规模和存储能力。
+
+**相关内容**：[适用范围](#适用范围)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能。DataStore 的原子更新围绕自己管理的一份数据，不提供关系查询或跨文件共同事务。** 它适合少量设置，修改时持久化整份状态；大量记录、分页、外键和复杂查询应考虑 Room。两个文件分别更新成功，不能保证中间失败时自动一起回滚。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [DataStore 1.1.1 版本说明](https://developer.android.com/jetpack/androidx/releases/datastore#1.1.1)
+- [DataStore API：原子更新与持久化契约](https://developer.android.com/reference/kotlin/androidx/datastore/core/DataStore)
+- [DataStore 1.1.1 core JVM 源码](https://dl.google.com/dl/android/maven2/androidx/datastore/datastore-core-jvm/1.1.1/datastore-core-jvm-1.1.1-sources.jar)
+- [DataStore 1.1.1 Preferences core 源码](https://dl.google.com/dl/android/maven2/androidx/datastore/datastore-preferences-core-jvm/1.1.1/datastore-preferences-core-jvm-1.1.1-sources.jar)
+- [DataStore 1.1.1 Preferences Android 迁移源码](https://dl.google.com/dl/android/maven2/androidx/datastore/datastore-preferences-android/1.1.1/datastore-preferences-android-1.1.1-sources.jar)
+- [DataStore 1.1.1 Android core 与多进程源码](https://dl.google.com/dl/android/maven2/androidx/datastore/datastore-core-android/1.1.1/datastore-core-android-1.1.1-sources.jar)
+- [Serializer API](https://developer.android.com/reference/kotlin/androidx/datastore/core/Serializer)
+- [Protocol Buffers：更新消息类型](https://protobuf.dev/programming-guides/proto3/#updating)

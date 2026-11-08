@@ -1,0 +1,399 @@
+---
+title: iOS 数据持久化
+description: 根据数据的大小、结构和敏感性选择文件、UserDefaults、Keychain 或 Core Data，理解并发上下文、保存、迁移与失败恢复。
+knowledge:
+  id: mobile.ios.persistence
+---
+
+**数据持久化**是把运行时的数据保存到进程结束后仍可读取的存储中。在 iOS 中，文件、UserDefaults、Keychain 和 Core Data 分别解决不同问题：草稿需要可靠保存，偏好设置需要方便读取，登录凭据需要访问保护，结构化记录需要查询和关系管理。
+
+面试准备需要解释存储选择的依据、保存生效的时机，以及其他执行环境怎样读取数据。写入或升级失败时，还要说明如何保护已有数据。本文示例使用 Swift 5 语言模式，Core Data 的异步 `perform` 示例以 iOS 15 及以上为准。
+
+## 1. 面试核心 {#core}
+
+- **按数据性质选存储**：文件适合文档与大块内容，UserDefaults 适合少量非敏感设置，Keychain 适合小型秘密，Core Data 适合有模型、关系与查询需求的记录。[卡](#choices)
+- **UserDefaults 支持属性列表类型和 Data，不直接保存任意对象实例**。线程安全不等于多个读写步骤构成原子事务。[卡](#defaults-types)
+- **序列化保存的是对象的表示，不是进程中的指针或执行状态**。编码格式应有升级策略，文件原子替换也不等于多文件事务。[卡](#serialization)
+- **Keychain 的查询条件决定操作哪些条目**。按类别、service、account 等定位目标，检查 OSStatus，并区分没有条目与无法访问。[卡](#keychain)
+- **Keychain 中存在凭据，不代表服务端仍接受它**。退出登录需要清理对应条目，失效凭据需要重新认证；卸载后的保留行为不应当成永久契约。[卡](#credential-lifecycle)
+- **Core Data 管理对象图和变更，不只是 SQLite 的另一种 SQL 写法**。上下文是对象工作的环境，保存把变更交给上一级，子上下文保存不直接保证落到持久化存储。[卡](#context-save)
+- **托管对象和上下文遵守队列约束**。通过 `perform` 访问私有队列上下文，跨上下文传 object ID 或值副本，不直接传托管对象。[卡](#concurrency)
+- **模型升级必须考虑旧数据**。轻量迁移只适用于能够推断的结构变更，复杂转换需要明确迁移过程和失败恢复，不能默认删库重建。[卡](#migration)
+
+## 2. 存储选择 {#存储选择}
+
+### 2.1 先看数据用途 {#先看数据用途}
+
+| 数据 | 合适的起点 | 选择原因 |
+| --- | --- | --- |
+| 阅读字号、列表排序方式 | UserDefaults | 少量非敏感键值设置，读取简单 |
+| 登录令牌、私密密钥材料 | Keychain | 小型秘密需要系统访问保护 |
+| 导出的文档、图片、音视频、草稿文件 | 文件 | 内容以整体或流式读写，不必全部塞入数据库字段 |
+| 笔记列表、分类关系、筛选与排序 | Core Data 或 SQLite | 需要结构化查询、索引、关系或事务 |
+| 可重新下载的响应、缩略图 | 可淘汰缓存 | 丢失后能重建，应有容量与清理策略 |
+
+“存在本地”不等于“永不丢失”。用户删除、存储空间不足、文件损坏和升级失败都需要处理；缓存尤其不能承载唯一一份用户数据。图片文件与数据库也可以配合：数据库记录标识、相对路径和元数据，文件保存内容，同时设计清理与一致性修复。
+
+若需要自己控制 SQL、事务与查询计划，可以使用 [SQLite](../../basic-knowledge/database/sqlite.mdx)。Core Data 的 SQLite 存储文件应由 Core Data 管理，不应绕开它直接修改内部表，否则内存对象、模型和存储可能失去一致性。
+
+### 2.2 格式、位置与保护分别决定 {#格式位置与保护分别决定}
+
+JSON、属性列表和归档描述“怎样编码”；文件目录描述“放在哪里”；文件保护和 Keychain 可访问性描述“什么条件下允许读取”。这三个维度不能混为一谈。把 JSON 换成二进制，也不会自然得到加密保护。
+
+文件路径应通过系统目录 API 获取，再组合应用自己的相对路径。重要草稿与可清理缓存的目录、备份和清理规则应分开；不要把缓存路径当成可靠文档位置，也不要持久保存某次安装中的沙箱绝对根路径。
+
+## 3. UserDefaults {#userdefaults}
+
+### 3.1 保存设置与注册默认值 {#保存设置与注册默认值}
+
+**UserDefaults** 是访问应用和系统设置的键值接口。它支持字符串、数值、布尔、日期、Data 及由合法类型组成的数组、字典等；URL 可通过对应 API 存取。数组能存进去，不代表数组中的任意自定义类都能直接存进去。
+
+```swift
+import Foundation
+
+func configureReaderDefaults(_ defaults: UserDefaults) {
+    defaults.register(defaults: ["reader.fontSize": 16])
+}
+
+func updateReaderFontSize(_ size: Int, defaults: UserDefaults) {
+    defaults.set(size, forKey: "reader.fontSize")
+}
+```
+
+注册默认字号后，没有用户设置时读到 16；用户保存 20 后读到 20。`register(defaults:)` 提供查找时的后备值，不覆盖已有设置，也不把注册域当作持久化数据写入，所以应用每次启动都应注册。
+
+读取布尔或整数时，缺失值可能表现为 `false` 或 0。业务需要区分“没设置”和“明确设置为零”时，先通过 `object(forKey:)` 判断是否存在，或者用注册默认值建立清楚的约定。
+
+### 3.2 线程安全不等于事务 {#线程安全不等于事务}
+
+UserDefaults 的单次 API 调用可在多线程或任务中使用，但“读出计数、加一、写回”是三个步骤。两个调用方都读到 3，再分别写入 4，最终仍然是 4。需要整体一致的更新时，应由统一的串行所有者管理；如果数据已经需要多条记录和事务，重新评估存储选择。
+
+设置值会立即更新内存中的表示，再异步写入磁盘。不要每写一个设置都调用 `synchronize()`，官方明确说明它没有必要且不应使用。对重要业务记录，应采用能表达写入失败和一致性要求的存储方案。
+
+UserDefaults 不适合密码、访问令牌等秘密，也不适合把大批图片或完整数据库序列化后反复整体写入。它在磁盘上的设置表示不是一个加密凭据仓库。
+
+## 4. 文件与序列化 {#文件与序列化}
+
+### 4.1 保存可恢复的数据表示 {#保存可恢复的数据表示}
+
+**序列化**是把对象的有效数据转换成可保存或传输的形式。Swift 值类型可以使用 `Codable` 编解码；Objective-C 对象归档则按适用条件使用 `NSSecureCoding` 和安全解档。无论选择哪种形式，都不能把对象的内存地址当成下次启动还能使用的对象。
+
+下面用一个 actor 串行管理同一草稿文件，保存前编码，写入时使用原子替换。
+
+```swift
+import Foundation
+
+struct Draft: Codable, Equatable {
+    let schemaVersion: Int
+    let text: String
+}
+
+actor DraftFile {
+    let url: URL
+    init(url: URL) { self.url = url }
+
+    func save(_ draft: Draft) throws {
+        let data = try JSONEncoder().encode(draft)
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try data.write(to: url, options: .atomic)
+    }
+
+    func load() throws -> Draft {
+        try JSONDecoder().decode(Draft.self, from: Data(contentsOf: url))
+    }
+}
+```
+
+读取结果与写入的 `Draft` 具有相同字段值，但重新解码会生成新的值，保留的是字段内容。文件不存在、编码不兼容或文件损坏都会抛出错误，调用方应分别处理；示例中的 `schemaVersion` 只是版本字段，真正的升级还需要按版本实现转换。
+
+`.atomic` 先写辅助文件，再在写入完成后替换目标文件。它降低直接覆盖到一半留下残缺目标文件的风险，但不等于多个文件同时提交，也不保证“读、改、写”跨调用方原子。actor 只串行化同一个实例的访问；其他实例或进程同时操作相同文件，仍需要额外协调。
+
+### 4.2 自定义对象不一定要整对象归档 {#自定义对象不一定要整对象归档}
+
+例如保存位置数据，可以保存经纬度、精度和时间等业务需要的字段，再重建所需值；也可以在对象支持安全编码且适合该用途时归档。选择依据是将来需要恢复什么，以及旧数据怎样兼容，不是对象里有什么就全部保存。
+
+对不可信归档使用允许类型约束，避免把“能解出任意对象”当成便利功能。图片和视频也应先决定保存原始内容、处理后的版本还是可重建缓存，再决定序列化方式。
+
+## 5. Keychain {#keychain}
+
+### 5.1 条目的身份与访问条件 {#条目的身份与访问条件}
+
+**Keychain** 是系统提供的加密秘密存储，适合保存令牌、密码或密钥等小型数据。通用密码条目可以通过类别、`service` 与 `account` 等属性定位；同一组标识不应被多个业务随意复用。
+
+访问条件也属于设计的一部分。`kSecAttrAccessibleWhenUnlockedThisDeviceOnly` 表示条目只在设备解锁时可读，并且不迁移到另一台设备。需要锁屏后台访问时，应依据实际需求选择适当的保护等级，不能为了访问方便统一放宽。
+
+同开发者的应用也不是天然共享全部 Keychain。跨应用共享需要相应 access group 与签名授权；查询中的 service 名称只是条目属性，不是访问权限。
+
+### 5.2 检查每次操作结果 {#检查每次操作结果}
+
+以下示例限定在当前应用可访问的通用密码条目中，按 service、account 精确操作。actor 串行化同一实例的调用；它不会把多个 Keychain API 变成跨进程事务。
+
+```swift
+import Foundation
+import Security
+
+enum TokenStoreError: Error {
+    case status(OSStatus)
+    case unexpectedData
+}
+
+actor TokenStore {
+    private let service: String
+    init(service: String) { self.service = service }
+
+    private func query(_ account: String) -> [String: Any] {
+        [kSecClass as String: kSecClassGenericPassword,
+         kSecAttrService as String: service,
+         kSecAttrAccount as String: account]
+    }
+
+    func save(_ token: Data, account: String) throws {
+        let attributes: [String: Any] = [
+            kSecValueData as String: token,
+            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+        ]
+        let add = query(account).merging(attributes) { _, new in new }
+        let status = SecItemAdd(add as CFDictionary, nil)
+        if status == errSecDuplicateItem {
+            let updated = SecItemUpdate(query(account) as CFDictionary,
+                                        attributes as CFDictionary)
+            guard updated == errSecSuccess else { throw TokenStoreError.status(updated) }
+        } else if status != errSecSuccess {
+            throw TokenStoreError.status(status)
+        }
+    }
+
+    func load(account: String) throws -> Data? {
+        var search = query(account)
+        search[kSecReturnData as String] = true
+        search[kSecMatchLimit as String] = kSecMatchLimitOne
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(search as CFDictionary, &result)
+        if status == errSecItemNotFound { return nil }
+        guard status == errSecSuccess else { throw TokenStoreError.status(status) }
+        guard let data = result as? Data else { throw TokenStoreError.unexpectedData }
+        return data
+    }
+
+    func remove(account: String) throws {
+        let status = SecItemDelete(query(account) as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw TokenStoreError.status(status)
+        }
+    }
+}
+```
+
+第一次保存调用 `SecItemAdd`；相同条目已存在时改用 `SecItemUpdate`。读取明确区分“不存在”与其他访问失败；删除只匹配指定账号和 service，不会因为退出一个账号就清空所有条目。生产使用还应依据共享、同步和认证策略补充查询范围，并处理其他进程并发修改造成的失败。
+
+### 5.3 凭据生命周期由业务完成 {#凭据生命周期由业务完成}
+
+Keychain 保护凭据的本地保存，不保证凭据在服务端永久有效。服务器撤销令牌、账号封禁或用户改密后，本地仍可能有旧条目；请求层要识别失效，清理或更新相应凭据，并进入重新认证流程。
+
+退出登录时显式删除对应条目，并按账号清理需要隔离的业务状态。不要把卸载应用当成可靠的凭据删除步骤，也不要承诺重装一定能找回原条目。Apple DTS 对卸载保留行为的说明将其界定为实现细节；应用必须同时能处理“读到旧条目”和“没有条目”，服务端状态仍是认证判断的一部分。
+
+## 6. Core Data {#core-data}
+
+### 6.1 对象、上下文与存储 {#对象上下文与存储}
+
+**Core Data** 管理对象图、属性、关系和变更，并可以把对象保存到持久化存储。`NSManagedObjectModel` 描述实体与关系，`NSManagedObjectContext` 保存当前工作中的托管对象与待提交修改，持久化存储协调器负责连接底层存储。`NSPersistentContainer` 将这些常用对象组织起来。
+
+可以把上下文理解为一次有独立状态的编辑环境：修改对象后，当前上下文看得到变化，但其他上下文未必已经看见。调用 `save()` 是把当前变更提交给上一级，不是“任意对象一修改就同步写盘”。
+
+如果上下文直接连接协调器，成功保存会提交到相应持久化存储；如果它有父上下文，保存只把变更推给父上下文，还要沿父链保存才能抵达底层。内存存储也属于存储类型，因此“save 成功”还必须结合使用的存储判断是否需要跨进程保留。
+
+Core Data 可以使用 SQLite 作为底层存储，但对象状态、关系、撤销、查询与迁移由 Core Data 抽象管理。不能只拿 SQLite 的线程模式回答 Core Data 是否能跨线程访问。
+
+### 6.2 在上下文的队列上访问对象 {#在上下文的队列上访问对象}
+
+主队列上下文服务界面，私有队列上下文适合导入和后台处理。私有上下文通过 `perform` 或 `performAndWait` 调度访问；对象从哪个上下文取得，就应在该上下文允许的执行环境中使用。
+
+下面假定模型已有 `Note` 实体和必填字符串属性 `title`，持久化存储已加载。插入和读取都通过各自上下文的 `perform` 执行，调用方只传递 object ID。
+
+```swift
+import CoreData
+
+func insertNote(title: String, in context: NSManagedObjectContext) async throws
+    -> NSManagedObjectID {
+    try await context.perform {
+        let note = NSEntityDescription.insertNewObject(forEntityName: "Note", into: context)
+        note.setValue(title, forKey: "title")
+        if context.hasChanges { try context.save() }
+        return note.objectID
+    }
+}
+
+func readNoteTitle(id: NSManagedObjectID, in context: NSManagedObjectContext) async throws
+    -> String? {
+    try await context.perform {
+        let note = try context.existingObject(with: id)
+        return note.value(forKey: "title") as? String
+    }
+}
+```
+
+如果写入上下文直接连接同一持久化存储，保存成功后，可以把永久 ID 交给另一个上下文重新获取它自己的对象。新插入对象最初可能只有临时 ID；即使提前获取永久 ID，也不代表其他上下文已经能读取尚未保存的数据。对象已经删除时，目标上下文的获取也可能失败，必须处理错误。
+
+`NSManagedObjectID` 传递的是身份，不是把对象变成线程安全，也不是让同一个 `NSManagedObject` 穿过队列边界。只需要界面展示的数据时，返回字符串、结构体等值副本也可以。
+
+### 6.3 合并与冲突分别处理 {#合并与冲突分别处理}
+
+后台上下文保存后，界面上下文需要接收相应变更。可以依据架构配置 `automaticallyMergesChangesFromParent`，或者显式合并保存通知。重新执行一次查询，也不应被当成所有已登记对象自动丢弃本地状态的通用保证。
+
+**合并策略**决定不同层保存着不一致状态时如何处理，例如保留内存修改、采用存储值，或者报告冲突。它不是“最后一个请求一定正确”的业务规则。两端修改同一个标题时，应先决定用户预期是什么，再配置策略并处理保存错误。
+
+保存还可能因模型验证、唯一性约束、磁盘或迁移问题失败。不要用 `try?` 把用户重要编辑的失败吞掉；保留可重试状态，给出明确结果，必要时回滚当前上下文，避免界面误以为数据已经可靠保存。
+
+## 7. 模型升级与 SwiftData {#模型升级与SwiftData}
+
+### 7.1 迁移保护的是已有数据 {#迁移保护的是已有数据}
+
+**迁移**把旧版本数据转换成新模型能够正确解释的形式。Core Data 的轻量迁移根据源模型和目标模型推断映射，适合可推断的结构变化，例如增加可选属性、把必填属性改为可选，或者通过 renaming identifier 表达重命名。
+
+把旧可选字段改成必填字段时，需要明确旧空值用什么填充；需要拆分、合并或重新解释业务数据时，可能需要自定义迁移。保留旧模型、验证映射、测试实际旧库，是升级的一部分。开发环境中删除数据库后运行正常，不能证明用户设备升级成功。
+
+验证要覆盖直接升级、跨版本升级、旧空值和损坏数据，并检查数量、关键字段及关系。失败时保留原始数据和可诊断信息；只有明确允许丢弃并可重新获取的缓存，才可以按既定策略重建。
+
+### 7.2 SwiftData 改变接口，不取消数据约束 {#SwiftData改变接口不取消数据约束}
+
+SwiftData 从 iOS 17 开始提供基于 Swift 模型的持久化接口，例如 `@Model`、`ModelContainer`、`ModelContext`，并与 SwiftUI 查询更新配合。它适合系统版本和项目模型符合要求的应用。
+
+选择 SwiftData 后，仍然需要考虑上下文隔离、保存失败、模型升级和数据所有权。把一个类标成 `@Model`，并不会自动解决离线同步冲突，也不代表可以在任意任务里共享同一个模型实例。已有 Core Data 项目与新 SwiftData 项目按实际技术栈准备，不必把二者的 API 混背成同一套。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 iOS 有哪些持久化方式，应怎样选择？ {#choices}
+
+**考察重点**：数据结构、规模、敏感性与存储责任。
+
+**相关内容**：[存储选择](#存储选择)。
+
+<details>
+<summary>参考回答</summary>
+
+**少量非敏感设置用 UserDefaults，小型秘密用 Keychain，文档和大块内容用文件，结构化记录按需求选择 Core Data 或 SQLite。** 还要区分唯一用户数据与可重建缓存，明确容量、清理、备份、访问保护和失败恢复。不同方式可以配合，而不是必须全应用只选一种。
+
+</details>
+
+### 8.2 UserDefaults 能存整数、Data、数组和字典吗？ {#defaults-types}
+
+**考察重点**：支持的值类型、嵌套内容与持久化边界。
+
+**相关内容**：[UserDefaults](#userdefaults)。
+
+<details>
+<summary>参考回答</summary>
+
+**能，但数组和字典中的内容也必须是受支持的类型。** 任意自定义对象不能直接放进去，需要先转换为合法表示或 Data；不应因此把大文件和复杂数据库都塞进设置。单次调用线程安全，多步读改写不自动成为事务，设置写盘也不是同步完成。
+
+</details>
+
+### 8.3 CLLocation 这样的对象可以怎样持久化？ {#serialization}
+
+**考察重点**：对象表示、必要字段、安全编码与格式升级。
+
+**相关内容**：[文件与序列化](#文件与序列化)。
+
+<details>
+<summary>参考回答</summary>
+
+**可以保存业务需要的经纬度、精度、时间等字段，也可以在支持的条件下使用安全归档。** 恢复的是数据表示，不是原对象的内存地址。应考虑旧格式兼容、解码失败和允许类型；不必为保存位置而把整个运行时对象图全部持久化。
+
+</details>
+
+### 8.4 Keychain 如何区分并存取不同账号的凭据？ {#keychain}
+
+**考察重点**：条目属性、查询范围和错误处理。
+
+**相关内容**：[条目的身份与访问条件](#条目的身份与访问条件)、[检查每次操作结果](#检查每次操作结果)。
+
+<details>
+<summary>参考回答</summary>
+
+**用类别、service、account 等明确定位条目，再调用 SecItemAdd、SecItemCopyMatching、SecItemUpdate 和 SecItemDelete。** 每次检查 OSStatus，区分没有条目与访问失败；更新和删除只作用于目标范围。访问等级和共享 access group 决定哪些条件下、哪些应用能够使用条目，service 本身不是权限。
+
+</details>
+
+### 8.5 App 卸载后 Keychain 一定保留吗？保存的账号失效后怎么办？ {#credential-lifecycle}
+
+**考察重点**：实现行为、本地存储与服务端认证状态。
+
+**相关内容**：[凭据生命周期由业务完成](#凭据生命周期由业务完成)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能把卸载后的保留行为当作永久保证，本地有凭据也不代表服务端继续接受。** 读取不到时走重新认证；读到已撤销凭据时按服务端错误清理或更新。用户主动退出登录应显式删除对应条目和隔离状态，不能依赖卸载替业务完成清理。
+
+</details>
+
+### 8.6 Core Data 的子上下文调用 save 后，数据已经写入数据库了吗？ {#context-save}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：上下文、父上下文与持久化存储的提交关系。
+
+**相关内容**：[对象、上下文与存储](#对象上下文与存储)。
+
+<details>
+<summary>参考回答</summary>
+
+**不一定。子上下文保存只是把修改提交给父上下文。** 还要沿父链保存，直到连接持久化存储协调器的上下文成功提交；同时要确认使用的是磁盘存储还是内存存储。每次保存都可能失败，不能只看内存对象已经变化。
+
+</details>
+
+### 8.7 Core Data 是线程安全的吗？后台对象怎样交给界面？ {#concurrency}
+
+**考察重点**：上下文队列约束、托管对象与 object ID。
+
+**相关内容**：[在上下文的队列上访问对象](#在上下文的队列上访问对象)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能把所有 Core Data 对象当成可任意跨线程共享。** 托管对象按所属上下文的队列约束访问，私有上下文使用 `perform`。跨上下文传永久 object ID，在目标上下文重新取对象，或传值副本；还要确保源修改已保存，并处理目标对象已删除。后台保存后，界面上下文需要合并相应变更。
+
+</details>
+
+### 8.8 模型增加字段后，为什么不能遇到旧库打不开就删库？ {#migration}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：轻量迁移的条件、旧数据保护和升级验证。
+
+**相关内容**：[迁移保护的是已有数据](#迁移保护的是已有数据)。
+
+<details>
+<summary>参考回答</summary>
+
+**删库会丢失用户原有数据，开发环境能重建不能代表线上可以丢弃。** 可推断的结构变化使用轻量迁移，重命名、必填默认值和复杂转换按模型明确处理。用真实旧版本数据验证直接和跨版本升级，失败时保留原始数据；只有可重建且允许丢弃的缓存才按策略重建。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+
+- [Apple：UserDefaults](https://developer.apple.com/documentation/foundation/userdefaults)
+- [Apple：register(defaults:)](https://developer.apple.com/documentation/foundation/userdefaults/register(defaults:))
+- [Apple：synchronize()](https://developer.apple.com/documentation/foundation/userdefaults/synchronize())
+- [Apple：atomic](https://developer.apple.com/documentation/foundation/nsdata/writingoptions/atomic)
+- [Apple：Keychain services](https://developer.apple.com/documentation/security/keychain-services)
+- [Apple：Adding a password to the keychain](https://developer.apple.com/documentation/security/adding-a-password-to-the-keychain)
+- [Apple：Searching for keychain items](https://developer.apple.com/documentation/security/searching-for-keychain-items)
+- [Apple：Updating and deleting keychain items](https://developer.apple.com/documentation/security/updating-and-deleting-keychain-items)
+- [Apple：kSecAttrAccessibleWhenUnlockedThisDeviceOnly](https://developer.apple.com/documentation/security/ksecattraccessiblewhenunlockedthisdeviceonly)
+- [Apple：Core Data](https://developer.apple.com/documentation/coredata)
+- [Apple：Using Core Data in the background](https://developer.apple.com/documentation/coredata/using-core-data-in-the-background)
+- [Apple：save()](https://developer.apple.com/documentation/coredata/nsmanagedobjectcontext/save())
+- [Apple：isTemporaryID](https://developer.apple.com/documentation/coredata/nsmanagedobjectid/istemporaryid)
+- [Apple：existingObject(with:)](https://developer.apple.com/documentation/coredata/nsmanagedobjectcontext/existingobject(with:))
+- [Apple：Migrating your data model automatically](https://developer.apple.com/documentation/coredata/migrating-your-data-model-automatically)
+- [Apple：automaticallyMergesChangesFromParent](https://developer.apple.com/documentation/coredata/nsmanagedobjectcontext/automaticallymergeschangesfromparent)
+- [Apple：SwiftData](https://developer.apple.com/documentation/swiftdata)
+- [Apple：NSMergePolicy](https://developer.apple.com/documentation/coredata/nsmergepolicy)
+- [Apple：DTS：卸载后的 Keychain 行为](https://developer.apple.com/forums/thread/36442)
+- [Apple：Sharing access to keychain items among a collection of apps](https://developer.apple.com/documentation/security/sharing-access-to-keychain-items-among-a-collection-of-apps)
+- [Apple：NSSecureCoding](https://developer.apple.com/documentation/foundation/nssecurecoding)
+- [Apple：CLLocation](https://developer.apple.com/documentation/corelocation/cllocation)

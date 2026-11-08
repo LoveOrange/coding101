@@ -1,0 +1,437 @@
+---
+sidebar_position: 3
+knowledge:
+  id: basic-knowledge.go.engineering.testing
+  type: concept
+description: "讲解 Go 的表驱动测试、子测试、资源清理、HTTP 测试、覆盖率与缓存，以及基准测试和模糊测试的使用边界。"
+keywords: ["Go", "testing", "go test", "httptest", "覆盖率", "benchmark", "fuzz"]
+---
+
+# Go 测试与基准测试
+
+Go 的 `testing` 包与 `go test` 命令共同支持功能测试、基准测试和模糊测试。**功能测试**检查行为是否满足约定，**基准测试**测量指定条件下的执行成本，**模糊测试**通过不断变化输入寻找违反约定的情况。三者可以共用被测代码，但提供的证据不同。
+
+准备面试时，需要能写出检查正常结果与失败边界的用例，也要能解释一个测试为什么有效。覆盖率高、执行次数多或输出 `PASS`，都不能单独说明程序正确。本文使用 Go 1.22.12，示例模块的 `go.mod` 声明 `go 1.22`。
+
+## 1. 面试核心 {#core}
+
+- **测试要断言可观察的结果和边界，不能只调用函数而不检查返回值**。`go test` 能发现多少问题，取决于选中的代码、输入和断言；覆盖率只说明执行范围。[卡](#test-and-coverage)
+- **表驱动测试用一张数据表表达同类用例，`t.Run` 为每个用例提供名称和独立结果**。输入与期望来自行为约定，不能把实现逻辑复制进测试来计算所谓正确答案。[卡](#table-subtests)
+- **并行子测试在父测试函数返回后才继续执行**。共享资源要有清晰的生命周期，父测试中的 `defer` 可能过早关闭资源，`t.Cleanup` 会等待该测试及其子测试完成。[卡](#parallel-cleanup)
+- **`httptest.NewRecorder` 直接检查 Handler 的响应，`httptest.NewServer` 则启动本地 HTTP 服务，经过真实客户端与服务端交互**。两种范围都不能自动代表完整生产环境。[卡](#http-test-boundary)
+- **基准测试必须明确测量对象、输入规模和计时范围**。`ns/op`、`B/op` 和 `allocs/op` 描述这次测量条件下的成本，不能直接当作线上吞吐或延迟。[卡](#benchmark-boundary)
+- **fuzz 需要可重现的失败条件和有效的判定规则**。普通 `go test` 会运行种子与回归语料，持续生成新输入需要显式启用 `-fuzz`；未发现失败不等于证明正确。[卡](#fuzz-regression)
+
+## 2. 测试入口与表驱动测试 {#测试入口与表驱动测试}
+
+### 2.1 文件与函数 {#文件与函数}
+
+测试代码放在以 `_test.go` 结尾的文件中。功能测试采用 `func TestXxx(t *testing.T)` 形式，其中名称在 `Test` 后的第一个字符不能是小写字母；测试函数不返回值。`go test` 构建测试程序并执行被选中的测试，普通 `go build` 不编译这些测试文件。
+
+测试文件可以声明与被测代码相同的包名，从而访问未导出成员；也可以声明 `包名_test`，通过导入被测包来测试公开接口。选择取决于验证目标，不需要为测试所有内部细节而把它们全部导出。
+
+下面的 `ports.go` 解析一个十进制端口整数。约定有效范围是 `1` 到 `65535`，解析失败或越界都返回 `ErrPort`，此时结果值为 `0`。
+
+```go title="ports.go"
+package ports
+
+import (
+    "errors"
+    "strconv"
+)
+
+var ErrPort = errors.New("invalid port")
+
+func ParsePort(text string) (int, error) {
+    port, err := strconv.Atoi(text)
+    if err != nil || port < 1 || port > 65535 {
+        return 0, ErrPort
+    }
+    return port, nil
+}
+```
+
+`ParsePort("443")` 返回 `443, nil`，`ParsePort("0")` 与 `ParsePort("abc")` 返回 `0, ErrPort`。这里沿用 `strconv.Atoi` 对字符串形式的接受规则，例如正号可以被解析；如果业务要求只允许无符号十进制字符，还需要把这条格式约定加入实现和测试。
+
+### 2.2 用例名称与断言 {#用例名称与断言}
+
+**表驱动测试**把输入和期望集中列出，再复用同一套执行与断言过程。它适合相同规则的多种边界，不要求把准备步骤完全不同的场景硬塞进一个大表。
+
+```go title="ports_test.go"
+package ports
+
+import (
+    "errors"
+    "testing"
+)
+
+func TestParsePort(t *testing.T) {
+    cases := []struct {
+        name    string
+        input   string
+        want    int
+        wantErr error
+    }{
+        {"minimum", "1", 1, nil},
+        {"https", "443", 443, nil},
+        {"maximum", "65535", 65535, nil},
+        {"zero", "0", 0, ErrPort},
+        {"too-large", "65536", 0, ErrPort},
+        {"negative", "-1", 0, ErrPort},
+        {"not-number", "abc", 0, ErrPort},
+        {"empty", "", 0, ErrPort},
+    }
+    for _, tc := range cases {
+        t.Run(tc.name, func(t *testing.T) {
+            got, err := ParsePort(tc.input)
+            if got != tc.want || !errors.Is(err, tc.wantErr) {
+                t.Fatalf("ParsePort(%q) = (%d, %v), want (%d, %v)",
+                    tc.input, got, err, tc.want, tc.wantErr)
+            }
+        })
+    }
+}
+```
+
+运行后得到八个带名称的子测试结果。边界值直接写在表中，测试没有调用另一个相同公式来生成期望；错误也通过 `errors.Is` 检查约定的错误身份，而非比较随时可能变化的完整报错文本。
+
+可以只运行一部分测试：
+
+```sh
+go test -v ./...
+go test -run '^TestParsePort$/^maximum$' -count=1 .
+```
+
+第二条只选择 `TestParsePort/maximum`，`-run` 是正则筛选，不是证明其他用例已通过。报告结果时，要明确本次是完整测试集还是局部定位。
+
+### 2.3 失败与辅助函数 {#失败与辅助函数}
+
+`t.Errorf` 记录失败并继续当前测试，适合检查仍可安全执行的其他断言；`t.Fatalf` 记录失败并终止当前测试 goroutine，适合前置条件已经不成立的情况。不要在拿到错误或空响应后继续读取结果，让后续 panic 掩盖真正原因。
+
+`Fatal`、`FailNow` 必须由运行该测试的 goroutine 调用。测试自己启动的 goroutine 应把结果或错误传回来，由测试 goroutine 判断，并等待后台工作结束。测试失败不会自动停止所有自行启动的 goroutine。
+
+把重复断言提取为辅助函数时，可以先调用 `t.Helper()`，让失败位置更容易指向用例的调用处。辅助函数应隐藏重复操作，不要隐藏输入、预期结果和决定成败的业务条件。
+
+## 3. 资源与并行子测试 {#资源与并行子测试}
+
+### 3.1 清理时机 {#清理时机}
+
+`t.Cleanup` 注册的函数会在当前测试及其所有子测试完成后执行，多次注册按后注册先执行。`t.TempDir()` 创建独立临时目录，并在这个生命周期结束时清理。它们适合管理测试文件、服务和其他需要可靠释放的资源。
+
+`defer` 则跟随当前 Go 函数返回。一个父测试启动调用了 `t.Parallel()` 的子测试后，父测试函数可以先返回，其 `defer` 随之执行，子测试之后才恢复运行。因此，如果并行子测试要共用父测试创建的服务，父测试中的 `defer server.Close()` 可能把服务关早；应使用与整个测试生命周期匹配的清理方式。
+
+这不意味着测试中不能使用 `defer`。在当前测试函数内部使用、且不交给延后执行的子测试使用的响应体，可以直接 `defer resp.Body.Close()`。关键是资源需要存活到哪个时刻。
+
+### 3.2 并行与隔离 {#并行与隔离}
+
+`t.Parallel()` 表示当前测试可以与其他并行测试一起运行，并受 `go test -parallel` 限制。它不是让所有子测试立刻同时开始；父子测试的等待关系和其他测试仍会影响执行时机。
+
+在本文的 `go 1.22` 模块中，`for _, tc := range cases` 使用 `:=` 声明的每轮变量独立，适合被子测试闭包捕获。旧的语言版本需要显式复制每轮变量，不能只根据本机装了新工具链，就忽略模块的语言版本条件。
+
+变量独立也不等于资源独立。并行用例共享同一张数据库表、同一个文件名或全局可变对象时，仍可能互相污染。`t.Setenv` 会修改整个进程的环境，因此不能在并行测试或具有并行祖先的测试中使用。需要环境差异时，应采用串行测试、参数注入或独立进程等合适的隔离方式。
+
+`-race` 能帮助发现实际执行路径中的数据竞争，但它不检查所有业务顺序，也不会自动发现被锁保护的错误结果。测试应通过明确的信号控制关键先后关系，避免把“睡一会儿应该完成了”当成同步手段。
+
+## 4. HTTP 测试 {#HTTP测试}
+
+`httptest.NewRecorder` 提供一个记录响应的 `ResponseWriter`，可以不监听端口就调用 Handler。`httptest.NewServer` 启动本地测试服务器，适合检查客户端与服务端实际经过 HTTP 的交互。
+
+下面的 `hello_test.go` 可以独立运行，示例 Handler 只接受 `GET`，成功时返回固定文本：
+
+```go title="hello_test.go"
+package hello
+
+import (
+    "io"
+    "net/http"
+    "net/http/httptest"
+    "strings"
+    "testing"
+    "time"
+)
+
+func hello(w http.ResponseWriter, r *http.Request) {
+    if r.Method != http.MethodGet {
+        w.Header().Set("Allow", http.MethodGet)
+        http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+        return
+    }
+    w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+    io.WriteString(w, "hello\n")
+}
+
+func TestHelloRecorder(t *testing.T) {
+    req := httptest.NewRequest(http.MethodPost, "/hello", nil)
+    recorder := httptest.NewRecorder()
+    hello(recorder, req)
+    response := recorder.Result()
+    defer response.Body.Close()
+    body, err := io.ReadAll(response.Body)
+    if err != nil {
+        t.Fatal(err)
+    }
+    if response.StatusCode != http.StatusMethodNotAllowed ||
+        response.Header.Get("Allow") != http.MethodGet ||
+        !strings.Contains(string(body), "method not allowed") {
+        t.Fatalf("unexpected response: status=%d header=%v body=%q",
+            response.StatusCode, response.Header, body)
+    }
+}
+
+func TestHelloServer(t *testing.T) {
+    server := httptest.NewServer(http.HandlerFunc(hello))
+    t.Cleanup(server.Close)
+    client := server.Client()
+    client.Timeout = time.Second
+    response, err := client.Get(server.URL + "/hello")
+    if err != nil {
+        t.Fatal(err)
+    }
+    defer response.Body.Close()
+    body, err := io.ReadAll(response.Body)
+    if err != nil {
+        t.Fatal(err)
+    }
+    if response.StatusCode != http.StatusOK ||
+        response.Header.Get("Content-Type") != "text/plain; charset=utf-8" ||
+        string(body) != "hello\n" {
+        t.Fatalf("unexpected response: status=%d header=%v body=%q",
+            response.StatusCode, response.Header, body)
+    }
+}
+```
+
+第一个用例直接验证拒绝 `POST` 时的状态码、响应头与响应内容。第二个用例经过本地监听和客户端请求，验证 `GET` 的响应，并在结束时关闭响应体与测试服务器。
+
+Recorder 没有建立真实连接，不能用它证明连接复用、网络断开或 TLS 行为。NewServer 虽然使用真实网络栈，仍不是完整生产部署，也没有自动覆盖反向代理、数据库与跨服务依赖。测试范围的安排见 [测试金字塔](../../java/quality/test-pyramid-contract-regression.mdx#测试范围)。
+
+## 5. 覆盖率与执行记录 {#覆盖率与执行记录}
+
+### 5.1 覆盖率说明什么 {#覆盖率说明什么}
+
+Go 工具报告的覆盖率主要是语句覆盖情况。它不等于完整的分支、条件组合或输入空间覆盖率，也不能说明执行结果已被有效断言。比如一个函数被调用了，但返回值完全没有被检查，仍可能增加覆盖率。
+
+```sh
+go test -count=1 -coverprofile=coverage.out ./...
+go tool cover -func=coverage.out
+go tool cover -html=coverage.out -o coverage.html
+```
+
+第一条收集覆盖信息，第二条查看函数维度的结果，第三条生成可查看未覆盖位置的 HTML。默认收集各包自身的覆盖信息；需要观察测试执行到的其他包时，可以按目标设置 `-coverpkg`，同时记录统计范围，避免拿不同分母的数字直接比较。
+
+覆盖率门槛应服务于具体风险。先检查关键分支是否有行为断言，再看正常、边界、错误和取消路径是否缺失。没有适用于所有 Go 项目的统一百分比，不能为了提高数字添加没有断言的调用，或把难测的业务路径从统计中排除。
+
+### 5.2 缓存与测试选择 {#缓存与测试选择}
+
+在显式包列表模式下，`go test` 可以复用满足缓存条件的成功测试结果，输出中会出现 `(cached)`。这表示使用了此前的结果，不是刚刚重新执行了测试函数；运行当前目录且不显式提供包参数的模式有不同的缓存行为。
+
+定位外部状态相关问题或要求本次实际执行时，可以用 `-count=1`。它让测试重新运行，但不会自动重建数据库状态，也不会让时间、网络和共享资源变得确定。
+
+`-run`、构建标签、`-short` 和被测包范围都可能改变实际执行集合。`-short` 只是设置短测试模式，需要用例主动根据 `testing.Short()` 跳过对应工作，不会替我们识别所有慢测试。持续集成报告应保留命令、工具链、失败输出与必要的执行环境，不能只留下一个总的 `PASS`。
+
+## 6. 基准测试 {#基准测试}
+
+### 6.1 计时循环 {#计时循环}
+
+基准测试采用 `func BenchmarkXxx(b *testing.B)`。在本文版本中，工具会调整 `b.N`，让基准代码执行足够多次以测量成本；被测操作应放入按 `b.N` 循环的部分。
+
+下面的 `ports_bench_test.go` 与前面的 `ports.go` 放在同一个包中，测量固定成功输入的解析成本：
+
+```go title="ports_bench_test.go"
+package ports
+
+import "testing"
+
+var portSink int
+
+func BenchmarkParsePort(b *testing.B) {
+    if got, err := ParsePort("8080"); err != nil || got != 8080 {
+        b.Fatalf("unexpected precondition: %d, %v", got, err)
+    }
+    b.ReportAllocs()
+    b.ResetTimer()
+    var result int
+    for i := 0; i < b.N; i++ {
+        result, _ = ParsePort("8080")
+    }
+    portSink = result
+}
+```
+
+前置断言确认示例输入的行为，`ResetTimer` 把之前的准备工作排除出测量；`portSink` 保留计算结果，减少结果未使用导致优化失真的可能。测量仍包含循环和赋值等成本，不是一个脱离实际代码的纯函数理论耗时。
+
+```sh
+go test -run '^$' -bench '^BenchmarkParsePort$' -benchmem -count=3 .
+```
+
+`-run '^$'` 跳过普通功能测试，`-bench` 选择基准。输出的 `ns/op` 是每次操作耗时，`B/op` 和 `allocs/op` 是每次操作的平均分配字节数与分配次数。这里的一次操作定义为解析一个固定字符串，不是一次完整 HTTP 请求。
+
+### 6.2 测量条件 {#测量条件}
+
+比较实现时，保持工具链、机器、输入规模和构建条件一致，并重复测量观察波动。初始化、日志、随机数据生成或数据库准备是否计入，都要由问题决定，不能在比较双方使用不同范围。
+
+`RunParallel` 用于并发执行基准工作，每个工作函数通过 `pb.Next()` 获取迭代机会。它的结果通常表达总墙钟时间分摊到所有操作后的成本，不是请求延迟分布；并行共享状态也需要正确同步。
+
+基准测试不自动验证结果正确，固定成功输入也没有测量错误路径。竞态检测会改变执行成本，`-race` 适合找竞争，不应把带检测开销的结果与普通构建直接比较。涉及 CPU、分配或阻塞原因时，还需要配合相应 profile，而不是只根据一个数字猜测瓶颈。
+
+## 7. 模糊测试 {#模糊测试}
+
+### 7.1 种子与判定规则 {#种子与判定规则}
+
+Go 的 fuzz 测试使用 `func FuzzXxx(f *testing.F)`。先通过 `f.Add` 提供种子，再通过 `f.Fuzz` 定义对输入执行的操作与检查。工具会利用覆盖反馈生成更多输入；种子参数类型必须与 fuzz 目标一致。
+
+下面的 `ports_fuzz_test.go` 继续测试 `ParsePort`。它检查成功结果的范围，以及把成功值转换成标准十进制字符串后再次解析是否一致。
+
+```go title="ports_fuzz_test.go"
+package ports
+
+import (
+    "strconv"
+    "testing"
+)
+
+func FuzzParsePort(f *testing.F) {
+    for _, seed := range []string{"1", "443", "65535", "0", "65536", "", "abc"} {
+        f.Add(seed)
+    }
+    f.Fuzz(func(t *testing.T, text string) {
+        port, err := ParsePort(text)
+        if err != nil {
+            if port != 0 {
+                t.Fatalf("error with nonzero result: %q -> %d", text, port)
+            }
+            return
+        }
+        if port < 1 || port > 65535 {
+            t.Fatalf("accepted out-of-range port: %q -> %d", text, port)
+        }
+        again, err := ParsePort(strconv.Itoa(port))
+        if err != nil || again != port {
+            t.Fatalf("canonical round trip failed: %d -> %d, %v", port, again, err)
+        }
+    })
+}
+```
+
+这些性质能发现部分错误，但不是完整规格。例如把所有输入都错误地拒绝，这个 fuzz 目标仍可能通过，因为成功分支从未进入；前面的功能测试会用 `"443"` 等明确样例补上这个缺口。随机生成输入不能替代有效的判定规则。
+
+### 7.2 执行与失败回归 {#执行与失败回归}
+
+普通 `go test` 会运行种子与保存在 `testdata/fuzz/FuzzXxx` 中的失败回归语料；持续生成新输入需要显式指定目标：
+
+```sh
+go test -run '^$' -fuzz '^FuzzParsePort$' -fuzztime=3s -parallel=2 .
+```
+
+这条命令给本地实验设置三秒 fuzz 预算与两个工作进程的并发限制，具体执行次数会随机器和输入变化。时间预算不是业务代码的单次超时保证，也不是“测试三秒就足够”的质量标准。
+
+发现失败后，工具会尝试缩减输入并记录可重现的语料。应保留输入、工具链和失败条件，修复后把对应语料纳入回归；普通测试就能继续检查它，不必等待随机过程再次碰到同一输入。
+
+fuzz 目标应尽量快速、确定且相互独立，避免依赖上一轮留下的全局状态或外部服务。失败如何判定、如何控制输入与执行预算，见 [模糊测试](../../../tools-and-frameworks/testing/fuzz-testing.mdx#测试入口与失败判定)。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 Go 项目怎样编写测试，怎样判断代码覆盖率是否足够？ {#test-and-coverage}
+
+**考察重点**：go test 使用、用例与断言、覆盖率的含义和风险范围。
+
+**相关内容**：[测试入口与表驱动测试](#测试入口与表驱动测试)、[覆盖率与执行记录](#覆盖率与执行记录)。
+
+<details>
+<summary>参考回答</summary>
+
+**在 `_test.go` 中用 `TestXxx` 编写能够检查行为的测试，通过 `go test` 执行；覆盖率用于找遗漏，不能单独证明测试充分。**
+
+针对正常、边界和失败场景检查返回值、错误或可观察状态，用 `-coverprofile` 收集语句覆盖，再检查关键路径是否有有效断言。门槛结合业务风险与统计范围决定，没有通用的统一百分比；也要说明本次的包范围、测试选择与是否使用缓存。
+
+</details>
+
+### 8.2 表驱动测试和子测试分别解决什么问题？ {#table-subtests}
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：用例组织、独立定位、期望值来源与选择运行。
+
+**相关内容**：[用例名称与断言](#用例名称与断言)。
+
+<details>
+<summary>参考回答</summary>
+
+**表驱动测试复用同类输入的执行与断言，子测试提供清晰名称、独立结果和选择运行的能力。** 输入与期望应来自行为约定，不能复制实现来生成答案。
+
+不同场景需要完全不同准备步骤时，可以拆开测试，避免为了统一表格引入大量条件。只用 `-run` 选中一个子测试通过，也不能代表整个测试集通过。
+
+</details>
+
+### 8.3 并行子测试为什么可能遇到已经关闭的父测试资源？ {#parallel-cleanup}
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：t.Parallel、父函数返回与 Cleanup 生命周期。
+
+**相关内容**：[资源与并行子测试](#资源与并行子测试)。
+
+<details>
+<summary>参考回答</summary>
+
+**并行子测试先暂停等待父测试函数返回，父函数的 `defer` 却会在返回时执行，所以可能提前释放共享资源。**
+
+父级资源可以通过 `t.Cleanup` 在本测试及所有子测试结束后清理。同时仍需隔离并行用例的数据，不能认为延后关闭就解决了共享可变状态的冲突。
+
+</details>
+
+### 8.4 httptest 的 Recorder 与 Server 各能验证什么？ {#http-test-boundary}
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：直接调用 Handler 与真实 HTTP 交互的验证范围。
+
+**相关内容**：[HTTP 测试](#HTTP测试)。
+
+<details>
+<summary>参考回答</summary>
+
+**Recorder 记录 Handler 写出的状态、头部和响应体；Server 启动本地服务，允许真实客户端经过 HTTP 调用。**
+
+Recorder 不建立连接，不能证明网络或 TLS 行为。Server 仍是局部测试环境，不自动包含生产代理与外部依赖。应检查需要的响应和失败行为，并关闭响应体、服务器及测试自己启动的工作。
+
+</details>
+
+### 8.5 基准测试中的 ns/op、B/op 和 allocs/op 能说明什么？ {#benchmark-boundary}
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：操作定义、计时范围、分配和性能结论的边界。
+
+**相关内容**：[基准测试](#基准测试)。
+
+<details>
+<summary>参考回答</summary>
+
+**它们分别表示每次被测操作的耗时、平均分配字节数和平均分配次数，意义取决于“一次操作”实际执行了什么。**
+
+要明确输入、循环与准备工作的计时范围，避免结果未使用、日志或环境差异扭曲比较。保持条件一致并重复测量；微基准不直接代表线上吞吐、请求延迟分布或错误路径成本。
+
+</details>
+
+### 8.6 fuzz 没有发现失败，是否可以替代功能测试？ {#fuzz-regression}
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：生成输入、判定规则、种子运行与失败回归。
+
+**相关内容**：[模糊测试](#模糊测试)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能。fuzz 只检查实际生成的输入和目标中写出的性质，缺少断言或性质不完整时，错误仍可能通过。**
+
+功能测试应保留已知正常与边界样例。持续生成输入需要 `-fuzz`，普通 `go test` 运行种子与回归语料；发现失败后应保存最小化输入和条件，修复后继续作为回归运行。执行预算耗尽且没有失败，不是正确性证明。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+
+- [Go 1.22.12：testing](https://pkg.go.dev/testing@go1.22.12)
+- [Go 1.22.12：go test 命令与测试参数](https://pkg.go.dev/cmd/go@go1.22.12#hdr-Test_packages)
+- [Go 1.22.12：httptest 服务实现](https://github.com/golang/go/blob/go1.22.12/src/net/http/httptest/server.go)
+- [Go 1.22.12：ResponseRecorder](https://github.com/golang/go/blob/go1.22.12/src/net/http/httptest/recorder.go)
+- [Go：模糊测试](https://go.dev/doc/security/fuzz/)
+- [Go：子测试与子基准测试](https://go.dev/blog/subtests)
+- [Go 1.22：循环变量](https://go.dev/doc/go1.22#language)

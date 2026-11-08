@@ -1,0 +1,237 @@
+---
+knowledge:
+  id: mobile.ios.app-lifecycle
+  type: concept
+description: "解释 iOS 应用、Scene 与页面生命周期的分工，前后台切换、挂起、终止及状态恢复的边界。"
+keywords: [UIApplicationDelegate, UISceneDelegate, UIWindowScene, UISceneSession, 生命周期, 状态恢复]
+---
+
+# iOS 应用生命周期
+
+**iOS 应用生命周期**描述应用启动、参与交互、进入后台、暂停执行和终止等状态变化。回调提供的是调整行为的时机：什么时候建立界面、暂停交互相关工作、保存状态和释放资源。它不是一张保证从头到尾按固定顺序执行的函数表。
+
+iOS 13 起，启用 Scene 支持的应用还要区分进程级的 App 与每个界面实例的 Scene。一个 Scene 进入后台，不意味着其他窗口都离开前台；某个页面消失，也不意味着整个应用已进入后台。
+
+## 1. 面试核心 {#core}
+
+- 应用启动、Scene 状态和页面出现是不同层次，**AppDelegate 处理应用共享行为，SceneDelegate 处理各个 Scene 的界面生命周期**。[卡](#app-lifecycle)
+- 前台不活跃、后台和挂起含义不同，**暂时不能交互不等于已经进入后台，后台也不等于可以无限执行**。[卡](#inactive)
+- 多个 Scene 可以处于不同状态，**窗口专属的导航与界面状态不能只用一个进程级变量代表**。[卡](#multiple-scenes)
+- Scene 断开连接不等于其会话永远被丢弃，**清理内存资源与删除用户的持久状态需要分别决定**。[卡](#disconnect)
+- 挂起后应用不继续执行普通代码，**不能依赖 Timer、Task 或一个后台线程保证持续工作**。[卡](#background)
+- 系统终止进程前不保证提供最后一次回调，**关键数据要随业务进展可靠保存，恢复时从可持久化状态重建**。[卡](#termination)
+
+## 2. App、Scene 与页面 {#appscene与页面}
+
+### 2.1 三个层次的责任 {#三个层次的责任}
+
+**UIApplication** 是应用与系统交互的进程级入口。**AppDelegate** 管理应用共享行为，例如启动初始化、配置 Scene、注册推送相关服务，以及处理不属于某个界面的系统事件。
+
+**Scene** 表示应用的一个界面实例。常见的 `UIWindowScene` 管理该实例关联的窗口；每个 Scene 有自己的激活状态和 SceneDelegate。**UISceneSession** 保存会话身份与配置等信息，不等于当前内存中的 Scene 对象。
+
+**UIViewController** 管理具体页面或界面容器。同一个 Scene 里可以进行多次 push、present 和页面切换，应用进程与 Scene 并不因此重新启动。页面的加载、出现和消失应由控制器生命周期管理，具体见 [UIViewController](./view-controller.mdx)。不能用应用前后台回调替代页面回调。
+
+| 层次 | 典型责任 | 不应据此推断 |
+| --- | --- | --- |
+| App | 初始化共享服务、配置 Scene、处理进程级事件 | 每次页面显示都会重新启动应用 |
+| Scene | 为一个界面实例建立窗口、响应前后台变化 | 一个窗口的状态代表全部窗口 |
+| 页面 | 建立视图、响应出现与消失、管理页面任务 | 页面消失就一定销毁或退出应用 |
+
+iOS 12 及以前的应用使用 AppDelegate 处理相应应用前后台生命周期。iOS 13 及以后，启用 Scene 支持时，对应界面状态通过 SceneDelegate 管理；AppDelegate 仍然存在并负责共享行为。不能把旧工程和 Scene 工程的同名语义回调重复注册后，假定它们都会执行同一套流程。
+
+### 2.2 建立 Scene 的界面 {#建立scene的界面}
+
+在启用 Scene 的 UIKit 工程中，`scene(_:willConnectTo:options:)` 用于建立或恢复一个界面实例。使用纯代码窗口时，可以这样关联 Scene、窗口与根控制器：
+
+```swift
+import UIKit
+
+@MainActor
+class SceneDelegate: UIResponder, UIWindowSceneDelegate {
+    var window: UIWindow?
+
+    func scene(_ scene: UIScene,
+               willConnectTo session: UISceneSession,
+               options connectionOptions: UIScene.ConnectionOptions) {
+        guard let windowScene = scene as? UIWindowScene else { return }
+
+        let root = UIViewController()
+        root.view.backgroundColor = .systemBackground
+
+        let window = UIWindow(windowScene: windowScene)
+        window.rootViewController = root
+        self.window = window
+        window.makeKeyAndVisible()
+    }
+}
+```
+
+这里的 `window` 归属于传入的 `UIWindowScene`，并由 SceneDelegate 保留。工程还需要在 Scene 配置中指定该 delegate；这段代码本身不是完整的应用入口或 Info.plist 配置。
+
+`connectionOptions` 可能携带创建界面的原因，例如 URL 或用户活动。冷启动时的入口处理不能只依赖已经运行时才收到的另一个回调；应先准备好窗口、路由和业务数据，再按入口信息恢复或导航。
+
+不要从 `connectedScenes` 里随意取第一个 Scene 作为所有操作的目标。多窗口环境中，应从当前视图所在窗口、明确的会话或调用上下文确定目标，否则可能把弹窗或导航送到另一窗口。
+
+## 3. 前台、后台与挂起 {#前台后台与挂起}
+
+### 3.1 状态的含义 {#状态的含义}
+
+| 状态 | 含义与应对 |
+| --- | --- |
+| 前台活跃 | 界面可以参与当前交互，恢复必要的界面工作 |
+| 前台不活跃 | 界面处于过渡或临时失去交互的状态，暂停必须依赖交互的工作 |
+| 后台 | 该界面不在前台，减少不必要工作，保存恢复信息并处理受限的收尾任务 |
+| 挂起 | 应用暂时不执行普通代码，不能继续依靠自身定时器推进任务 |
+| 终止 | 进程结束，内存对象不再作为下次启动的状态来源 |
+
+这里的挂起和终止描述执行状态，不是所有状态查询 API 都有同名枚举。`UIApplication.State` 只有 active、inactive 和 background；`UIScene.ActivationState` 也不提供一个可以等待回调的 suspended 枚举。
+
+失去活跃状态可能来自临时打断或系统界面，也可能是进入后台的过渡。`sceneWillResignActive(_:)` 后可以直接重新活跃，不保证一定接着进入后台。因此暂停预览、敏感内容遮挡、保存进度等行为，要按真正需求选择时机。
+
+### 3.2 Scene 的主要回调 {#scene的主要回调}
+
+| 回调 | 适合承担的工作 |
+| --- | --- |
+| `scene(_:willConnectTo:options:)` | 建立窗口与初始界面，读取该会话恢复信息 |
+| `sceneWillEnterForeground(_:)` | 准备重新显示，更新可能过期的界面状态 |
+| `sceneDidBecomeActive(_:)` | 恢复需要活跃交互的工作 |
+| `sceneWillResignActive(_:)` | 暂停交互相关任务，处理临时失活 |
+| `sceneDidEnterBackground(_:)` | 保存恢复信息、降低资源占用、处理必要收尾 |
+| `sceneDidDisconnect(_:)` | 释放与当前 Scene 实例关联的资源 |
+
+一次普通的前台启动，通常经历应用启动、Scene 连接、进入前台和变为活跃；从前台切到其他应用，通常经历失去活跃和进入后台；重新打开后，再进入前台和活跃。启动原因、Scene 配置和系统中断会改变路径，不能把这条常见顺序当成每次必经的完整协议。
+
+进入后台的回调需要尽快返回。不要在主线程等待网络保存、遍历大文件或用锁阻塞其他任务；这既延迟系统完成切换，也可能触发超时终止。需要较长收尾工作时，应使用对应的后台执行机制并处理到期。
+
+## 4. 多窗口与会话恢复 {#多窗口与会话恢复}
+
+### 4.1 共享业务与窗口状态分开 {#共享业务与窗口状态分开}
+
+两个窗口可以同时打开不同文档。登录状态、共享数据仓库可以由应用统一管理，但当前文档 ID、导航位置和未提交的页面编辑状态，应有明确的窗口或会话归属。
+
+一个窗口进入后台时，不能无条件关闭另一个窗口仍在使用的共享服务。可以区分每个 Scene 的资源需求，再决定应用级资源是否仍需保留；用户退出登录这类全局事件则需要通知全部相关界面。
+
+多窗口带来的问题首先是状态所有权，而不是“给所有数据加一把锁”。即使所有回调都在主线程串行执行，如果两个窗口共用同一个“当前页面”字段，也可能在逻辑上覆盖彼此。
+
+### 4.2 断开连接与丢弃会话 {#断开连接与丢弃会话}
+
+Scene 断开连接表示 UIKit 不再把这个 Scene 实例连接到应用。系统可能为了回收资源断开后台 Scene；用户明确关闭界面也可能导致断开。仅切换到另一个应用，并不意味着一定马上触发 `sceneDidDisconnect(_:)`。
+
+断开时应释放该实例占用的文件、观察者和其他资源，但不能只根据这一个回调判断用户永远不要这个窗口。会话仍可能用于以后恢复；AppDelegate 的 `application(_:didDiscardSceneSessions:)` 用于处理系统通知的会话丢弃。两者不能混成一个“删除所有草稿”的入口。
+
+恢复信息应表达业务身份，例如文档 ID、选中条目和可验证的导航状态，而不是保存 UIViewController 指针或整个内存对象图。可以通过 `NSUserActivity` 和 Scene 会话恢复接口提供所需状态。重新连接时，还要处理文档被删除、权限变化或用户已退出登录等情况。
+
+## 5. 后台执行与数据保存 {#后台执行与数据保存}
+
+### 5.1 后台线程不等于后台执行资格 {#后台线程不等于后台执行资格}
+
+创建 DispatchQueue、Thread 或 Swift Task，只是在应用获得执行时间时安排工作。应用被挂起后，这些普通任务不会因为叫“后台线程”就继续运行。
+
+`beginBackgroundTask(withName:expirationHandler:)` 可以请求有限时间完成重要收尾，但不是长期运行许可。开始任务前就应考虑申请，完成或到期时配对结束，并确保到期处理能取消或收束工作。不能把某个观测到的时长当作所有设备和状态下的固定配额。
+
+长时间下载、系统择机调度或音频等场景有各自的机制和适用条件。选择依据是任务性质与平台契约，不是给普通循环加一个后台标志。恢复执行后还要检查任务是否完成、取消或需要重试。
+
+### 5.2 不依赖最后一次回调保存数据 {#不依赖最后一次回调保存数据}
+
+`applicationWillTerminate(_:)` 不是所有退出路径都会调用。应用在挂起状态下被系统结束，或遭遇崩溃等情况时，不能依赖这个回调执行最后一次保存；同样不能保证对象的 `deinit` 在进程结束前完成业务清理。
+
+重要编辑应按业务节奏持久化，例如在确认操作、事务提交或适当的草稿保存点记录。进入后台时再保存恢复位置、刷新必要状态，但不把全部未保存业务数据积压到最后。
+
+进程恢复后要区分“本地已持久化”“请求已发出”和“服务器已确认”。如果操作可能在中断前已经成功，直接重放可能产生重复结果，需要业务幂等与结果核对。生命周期回调提供处理时机，不提供跨网络事务保证。
+
+## 6. 面试题 {#面试题}
+
+### 6.1 iOS App 的生命周期是什么？ {#app-lifecycle}
+
+**考察重点**：启动、前后台与执行状态，以及 App 和 Scene 的责任划分。
+
+**相关内容**：[App、Scene 与页面](#appscene与页面)、[前台、后台与挂起](#前台后台与挂起)。
+
+<details>
+<summary>参考回答</summary>
+
+**应用会经历启动、参与前台交互、进入后台、可能被挂起或终止等状态变化。** iOS 13 起启用 Scene 时，AppDelegate 管理启动与共享行为，SceneDelegate 分别处理界面实例的连接和激活变化。进入后台应减少工作并保存必要状态，普通线程不能保证在挂起后继续运行，也不能依赖终止前必有回调。
+
+</details>
+
+### 6.2 sceneWillResignActive 之后，一定会进入后台吗？ {#inactive}
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：临时失活、状态过渡与业务暂停条件。
+
+**相关内容**：[状态的含义](#状态的含义)、[Scene 的主要回调](#scene的主要回调)。
+
+<details>
+<summary>参考回答</summary>
+
+**不一定，失活也可能只是临时中断，随后直接重新活跃。** 应按工作是否依赖交互来暂停或恢复，不把失活等同于离开前台。只有适合在实际进入后台时执行的收尾，才依赖相应后台回调。
+
+</details>
+
+### 6.3 多个 Scene 能共用一个“当前文档”变量吗？ {#multiple-scenes}
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：共享数据、窗口状态和会话身份。
+
+**相关内容**：[共享业务与窗口状态分开](#共享业务与窗口状态分开)。
+
+<details>
+<summary>参考回答</summary>
+
+**如果每个窗口可以打开不同文档，就不能用一个全局变量代表它们各自的当前文档。** 共享仓库可以统一管理，选中文档、导航与编辑状态应绑定对应 Scene 或会话。一个 Scene 进入后台时，也不能无条件释放其他 Scene 仍需要的共享服务。
+
+</details>
+
+### 6.4 sceneDidDisconnect 表示应该删除该窗口的所有持久状态吗？ {#disconnect}
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：Scene 实例、会话丢弃与恢复信息的区别。
+
+**相关内容**：[断开连接与丢弃会话](#断开连接与丢弃会话)。
+
+<details>
+<summary>参考回答</summary>
+
+**不表示，系统也可能为了回收资源断开一个仍可恢复的 Scene。** 应释放实例资源，同时按业务需要保留恢复信息；会话丢弃另有对应通知。持久业务数据更不能仅凭 Scene 断开就删除。
+
+</details>
+
+### 6.5 把任务放进后台线程，应用进入后台后就能一直执行吗？ {#background}
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：线程调度与系统给予执行时间的不同层次。
+
+**相关内容**：[后台线程不等于后台执行资格](#后台线程不等于后台执行资格)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能，应用挂起后普通线程、队列和 Task 都不能据此继续推进。** 需要按任务类型使用有限后台收尾、后台传输或系统调度等机制，并处理到期、取消和恢复。`beginBackgroundTask` 也不是无限执行许可。
+
+</details>
+
+### 6.6 为什么不能只在 applicationWillTerminate 中保存用户编辑？ {#termination}
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：非保证回调、业务持久化与恢复边界。
+
+**相关内容**：[不依赖最后一次回调保存数据](#不依赖最后一次回调保存数据)。
+
+<details>
+<summary>参考回答</summary>
+
+**该回调并不覆盖所有终止路径，挂起后被结束或崩溃时可能没有机会执行保存。** 应随重要业务进展持久化数据，后台切换时补充必要恢复状态，重新启动时从可靠记录恢复并校验。`deinit` 也不能替代这种持久化协议。
+
+</details>
+
+## 7. 参考资料 {#参考资料}
+
+- [Apple：Managing your app’s life cycle](https://developer.apple.com/documentation/uikit/managing-your-app-s-life-cycle)
+- [Apple：UIApplicationDelegate](https://developer.apple.com/documentation/uikit/uiapplicationdelegate)
+- [Apple：UISceneDelegate](https://developer.apple.com/documentation/uikit/uiscenedelegate)
+- [Apple：Scene 连接](https://developer.apple.com/documentation/uikit/uiscenedelegate/scene(_:willconnectto:options:))
+- [Apple：Scene 断开](https://developer.apple.com/documentation/uikit/uiscenedelegate/scenediddisconnect(_:))
+- [Apple：应用终止回调](https://developer.apple.com/documentation/uikit/uiapplicationdelegate/applicationwillterminate(_:))
+- [Apple：有限后台执行时间](https://developer.apple.com/documentation/uikit/extending-your-app-s-background-execution-time)
+- [Apple：恢复应用界面](https://developer.apple.com/documentation/uikit/restoring-your-app-s-state)
+- [Apple：UIScene 激活状态](https://developer.apple.com/documentation/uikit/uiscene/activationstate-swift.enum)

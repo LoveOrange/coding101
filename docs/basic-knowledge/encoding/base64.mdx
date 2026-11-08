@@ -1,0 +1,203 @@
+---
+title: Base64
+knowledge:
+  id: basic-knowledge.encoding.base64
+---
+
+# Base64
+
+**Base64** 是把任意字节转换成一组可打印字符的编码方式，适合需要用文本携带二进制数据的场景。它不隐藏内容，也不会压缩数据：知道编码规则就能还原，编码后的长度通常还会增加。
+
+前端会在接口字段、图片内联和令牌中遇到 Base64。理解它的关键是分清三件事：原始字节是什么、文本使用什么字符编码，以及接收方约定哪种 Base64 格式。字符串能解码，并不意味着内容可信或格式符合业务要求。
+
+## 1. 面试核心 {#core}
+
+- Base64 将 **3 个字节的 24 位拆成 4 组，每组 6 位映射为一个字符**。末组不足时补位，并按格式约定添加 `=`。[卡](#base64-mechanism)
+- 带填充的标准 Base64 长度为 **`4 * Math.ceil(n / 3)`**，其中 `n` 是原始字节数；大数据约增加三分之一，短数据的比例可能更高。[卡](#base64-mechanism)
+- **Base64 处理字节，UTF-8 处理文字与字节的转换**。浏览器的 `btoa()` 不会自动把中文转成 UTF-8。[卡](#unicode-base64)
+- **Base64url 用 `-`、`_` 替代 `+`、`/`**；是否保留 `=` 要看具体协议，不能把所有 Base64 格式混用。[卡](#base64url-format)
+- **Base64、Data URL、Blob 和对象 URL 不是同一种东西**。需要传文件或做本地预览时，不必先转换成 Base64。[卡](#base64-file-choice)
+
+## 2. 位分组与长度 {#位分组与长度}
+
+标准 Base64 使用 `A–Z`、`a–z`、`0–9`、`+`、`/` 共 64 个字符表示数值 0 到 63。每个字符承载 6 位信息，因为 `2 ** 6 = 64`；`=` 用来标记末尾填充，不是第 65 个数据字符。
+
+以 ASCII 文本 `Man` 为例，它的字节是十六进制 `4D 61 6E`：
+
+| 步骤 | 内容 |
+| --- | --- |
+| 按字节写成二进制 | `01001101 01100001 01101110` |
+| 从左到右分为 6 位一组 | `010011 010110 000101 101110` |
+| 每组对应的十进制值 | `19 22 5 46` |
+| 查标准字母表 | `T W F u` |
+
+因此结果是 `TWFu`。解码时按相反顺序恢复位，再重新组成字节；这整个过程没有密钥。
+
+最后一组可能不满 3 个字节。编码器在不足 6 位的位置补零，再用 `=` 将带填充格式补到 4 个字符：
+
+| 原始文本 | 字节数 | Base64 | 末尾填充 |
+| --- | ---: | --- | --- |
+| 空字符串 | 0 | 空字符串 | 无 |
+| `M` | 1 | `TQ==` | 两个 `=` |
+| `Ma` | 2 | `TWE=` | 一个 `=` |
+| `Man` | 3 | `TWFu` | 无 |
+
+这些补零位不属于原数据，解码后也不会多出零字节。没有换行、带标准填充时，编码长度为 `4 * Math.ceil(n / 3)`。例如 1 字节变成 4 个字符，3 字节变成 4 个字符；300 字节则变成 400 个字符。
+
+这里算的是 Base64 文本长度。用 UTF-8 传输这些 ASCII 字符时，一个字符占一个字节，但还没计入 JSON、Data URL 前缀等外层内容。如果传输时又做压缩，最终网络字节数要另外测量，不能把三分之一当成所有请求的固定增幅。JavaScript 字符串在内存中的实际占用也由引擎实现决定。
+
+Base64 不提供保密性、完整性校验或身份认证。把密码编码后放在 URL 中，别人仍能还原；把令牌内容解码出来，也不能据此证明签名有效。加密、摘要和签名解决的是另外的问题。
+
+## 3. 文字、字节与浏览器 API {#文字字节与浏览器api}
+
+**字符编码**规定文字怎样转换为字节，Base64 则把已经确定的字节转换为文本。例如“中”的 UTF-8 字节是 `E4 B8 AD`，这三个字节的 Base64 是 `5Lit`。先选择 UTF-8，才有这组确定的结果。
+
+浏览器的 `btoa()` 接收一种“每个字符表示一个字节”的字符串，字符值必须在 0 到 255 之间。它不会把任意 JavaScript 字符串自动编码为 UTF-8：`btoa("中")` 会抛出 `InvalidCharacterError`。`atob()` 返回的也只是这种字节字符串，不是已经完成 UTF-8 解码的中文。
+
+下面把字节转换和文字转换分开，使用浏览器已有的 `btoa()`、`atob()`、`TextEncoder` 与 `TextDecoder`：
+
+```js
+function bytesToBase64(bytes) {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
+function base64ToBytes(base64) {
+  const binary = atob(base64);
+  return Uint8Array.from(binary, char => char.charCodeAt(0));
+}
+
+const text = "中🙂";
+const bytes = new TextEncoder().encode(text);
+const encoded = bytesToBase64(bytes);
+const decoded = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true })
+  .decode(base64ToBytes(encoded));
+
+console.log(bytes.length, encoded, decoded);
+```
+
+输出为 `7 5Lit8J+Zgg== 中🙂`。`TextEncoder` 先得到 7 个 UTF-8 字节，Base64 编码后得到 12 个字符；解码按相反方向进行。`fatal: true` 让不合法的 UTF-8 字节触发异常，避免把解码失败悄悄当成正常文字。`ignoreBOM: true` 则保留开头的 `U+FEFF` 字符，不把它当作字节顺序标记移除。
+
+`bytesToBase64()` 的输入约定为 `Uint8Array`，适合这里的小数据演示；它会创建中间字符串，不是大文件流式编码器。图片、压缩包等任意二进制数据也不应经过 `TextDecoder`，它们直接保留为字节即可。
+
+正常 Unicode 文本可以按这个流程往返；如果输入是包含孤立代理项的 JavaScript 字符串，`TextEncoder` 会先把它转换为替代字符，不能承诺保留每一个原始 UTF-16 代码单元。这与 Base64 是否可逆是两件事：Base64 保留的是交给它的字节。
+
+## 4. Base64url 与解码约定 {#base64url-与解码约定}
+
+**Base64url** 是采用 URL 和文件名安全字母表的变体，将标准 Base64 中的 `+` 换成 `-`，`/` 换成 `_`，其他 62 个数据字符不变。
+
+这解决的是字母表适配问题。例如表单查询串中，原样写入的 `+` 可能被解释为空格。标准 Base64 也可以通过正确的 URL 编码放入参数，不能因此说它绝对不能出现在 URL 中。
+
+`=` 是否省略由使用它的协议决定。RFC 4648 的一般规则要求适当填充，引用该规范的协议可以另外约定无填充形式。下面的函数明确输出**无填充 Base64url**，前提是接收方也使用这个约定：
+
+```js
+function bytesToBase64url(bytes) {
+  return bytesToBase64(bytes)
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+}
+
+console.log(bytesToBase64(new Uint8Array([251, 255])));
+console.log(bytesToBase64url(new Uint8Array([251, 255])));
+```
+
+依次输出 `+/8=` 和 `-_8`。第二个函数沿用前一节的 `bytesToBase64()`；它只是按约定改变编码形式，不会加密数据，也不检查接收方协议。
+
+解码时不能只做字符替换就忽略格式：要核对允许的字母表、填充位置、是否允许省略填充、长度与补零位。无填充编码长度除以 4 的余数可以是 0、2 或 3，不可能是 1。
+
+浏览器的 `atob()` 使用宽松解码规则，会接受部分省略填充的形式并忽略 ASCII 空白，但不是 Base64url 解码器。能被某个库成功解码，不代表输入已经符合你选择的严格格式。例如有些不同文本会因为末尾未使用位被忽略而解出相同字节；如果系统把编码文本本身作为唯一标识，就应明确采用规范编码并检查一致性，不能一处比较原文、一处只比较解码结果。
+
+## 5. 文件表示与使用场景 {#文件表示与使用场景}
+
+**Data URL** 是直接在 URL 中携带数据的形式，例如 `data:text/plain;base64,TWFu`。这里 `data:`、媒体类型和 `;base64,` 是外层格式，只有逗号后面的 `TWFu` 是 Base64 数据。Data URL 也可以不用 Base64，例如 `data:text/plain,hello`。
+
+`FileReader.readAsDataURL(blob)` 读取文件后返回完整 Data URL，不能把整串直接交给 `atob()`。处理已知来自该 API 的 Base64 结果时，先分离头部与数据；面对任意外部 Data URL，还要检查媒体类型、编码标记和业务允许范围，不能一律假定逗号后面都是 Base64。
+
+| 表示 | 保存什么 | 适合的用途 |
+| --- | --- | --- |
+| `Blob` / `File` | 字节数据；`File` 额外有名称等信息 | 读取、分片、作为请求体或加入 `FormData` |
+| Base64 字符串 | 字节的文本表示 | 接口明确要求用文本字段携带小段二进制数据 |
+| Data URL | 媒体类型等信息与内联数据 | 内联少量资源或保存完整数据表示 |
+| 对象 URL | 浏览器为 `Blob` 建立的临时引用 | 本地预览；不再使用时释放 |
+
+如果只想预览用户刚选择的图片，对象 URL 可以直接引用 `Blob`，无需先生成一份 Base64 长字符串；释放时机见[浏览器文件上传](../../frontend/interaction/file-upload.mdx#选择校验与本地预览)。对象 URL 不能当作已经上传到服务器、可长期分享的文件地址。
+
+把小资源内联进 HTML 或 CSS 可以减少单独请求，但会增大宿主文件；资源也失去了作为独立 HTTP 资源缓存和更新的机会。内联是否更合适，要看资源大小、复用次数、缓存与加载时机，不能仅凭“少一个请求”判断更快。普通文件上传支持二进制请求体或 `FormData`，没有必要为了上传而统一转成 Base64。
+
+## 6. 面试题 {#面试题}
+
+### 6.1 Base64 编码怎样工作，编码后为什么通常变长？ {#base64-mechanism}
+
+**考察重点**：字节分组、字符映射、填充、长度与安全边界。
+
+**相关内容**：[位分组与长度](#位分组与长度)。
+
+<details>
+<summary>参考回答</summary>
+
+**Base64 把每 3 个字节的 24 位分成 4 组，每组 6 位映射为一个可打印字符。** 标准字母表有 64 个数据字符，末组不足时补零，并用 `=` 标记带填充格式的末尾。
+
+带填充、无换行时，`n` 个字节得到 `4 * Math.ceil(n / 3)` 个字符。较大输入约增加三分之一，短输入的比例可能更高，外层 JSON 等开销另算。它没有密钥，可按规则直接还原，所以是编码，不是加密或压缩。
+
+</details>
+
+### 6.2 为什么 btoa 不能直接编码中文，怎样正确往返？ {#unicode-base64}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：字符编码、字节字符串和 UTF-8 解码。
+
+**相关内容**：[文字、字节与浏览器 API](#文字字节与浏览器api)。
+
+<details>
+<summary>参考回答</summary>
+
+**`btoa()` 把每个输入字符当作一个字节，不会自动将中文编码为 UTF-8。** 中文超出 0 到 255 的范围时会抛出异常。可以先用 `TextEncoder` 得到 UTF-8 字节，再进行 Base64 编码。
+
+还原时先将 Base64 解成字节，再用 `TextDecoder` 按 UTF-8 解码。图片等任意字节不应强行当作 UTF-8；如果要求保留孤立代理项等任意 UTF-16 代码单元，也不能承诺 `TextEncoder` 流程逐单元无损。
+
+</details>
+
+### 6.3 Base64url 与 Base64 有什么区别，可以随意去掉等号吗？ {#base64url-format}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：字母表、协议约定、填充与宽松解码。
+
+**相关内容**：[Base64url 与解码约定](#base64url-与解码约定)。
+
+<details>
+<summary>参考回答</summary>
+
+**Base64url 把 `+`、`/` 换成 `-`、`_`，是否省略 `=` 必须按协议约定。** 字母表替换和填充规则是不同问题，不能默认所有接收方都接受无填充文本。
+
+解码器还要按约定处理非法字符、长度和填充位置。浏览器 `atob()` 接受某些宽松形式，但不直接支持 Base64url；解码成功也不等于文本符合严格规范或内容可信。
+
+</details>
+
+### 6.4 文件上传和图片预览一定要转成 Base64 吗？ {#base64-file-choice}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：数据表示、文本开销、对象 URL 与资源生命周期。
+
+**相关内容**：[文件表示与使用场景](#文件表示与使用场景)。
+
+<details>
+<summary>参考回答</summary>
+
+**不需要，`Blob` / `File` 可以直接用于二进制请求体或 `FormData`，本地预览也可以使用对象 URL。** 对象 URL 是临时引用，需要在不再使用时释放，不是可长期分享的服务器地址。
+
+Base64 适合接口明确要求文本的场景，但会增加长度和转换成本。Data URL 还包含媒体类型等前缀，并不等于纯 Base64。资源内联可以减少独立请求，也会影响宿主文件大小和独立缓存，应结合实际使用方式选择。
+
+</details>
+
+## 7. 参考资料 {#参考资料}
+
+- [RFC 4648：Base16、Base32 与 Base64](https://www.rfc-editor.org/rfc/rfc4648.html)
+- [WHATWG HTML：Base64 utility methods](https://html.spec.whatwg.org/multipage/webappapis.html#base64-utility-methods)
+- [WHATWG Encoding：TextEncoder 与 TextDecoder](https://encoding.spec.whatwg.org/#api)
+- [RFC 2397：Data URL](https://www.rfc-editor.org/rfc/rfc2397.html)
+- [W3C File API：FileReader 与 Blob URL](https://w3c.github.io/FileAPI/)

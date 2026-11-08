@@ -1,0 +1,452 @@
+---
+sidebar_position: 4
+knowledge:
+  id: basic-knowledge.nodejs.processes-workers
+  type: concept
+description: "比较 Node.js Worker、子进程和多服务进程，解释消息复制、转移、共享内存、退出与故障恢复的边界。"
+keywords: ["Node.js", "worker_threads", "child_process", "cluster", "IPC", "进程", "线程"]
+---
+
+# Node.js 进程与线程
+
+Node.js 可以用 **Worker 线程**在同一进程里执行另一份 JavaScript，也可以用**子进程**运行独立程序。前者适合分担可拆分的 JavaScript 计算，后者适合外部命令、独立运行时和更明确的进程隔离。选择时要同时考虑任务成本、数据传递、并发上限和失败后的状态。
+
+普通异步 I/O 已经由 Node.js 运行时协调，不需要为每个请求再创建一个 Worker。本文以 Node.js 22.16.0 为示例环境；操作系统的地址空间与调度基础见 [进程与线程](../operating-system/processes-threads.mdx)。
+
+## 1. 面试核心 {#core}
+
+- Worker 有自己的 JavaScript 执行环境，可以与主线程并行执行计算。**Worker 与主线程属于同一进程，但普通 JavaScript 对象不会因此自动共享**。[卡](#choose-worker)
+- libuv 线程池执行特定底层任务，`worker_threads` 执行显式安排的 JavaScript。**增加 Worker 不等于扩容 libuv 线程池，也不会让每个 I/O 请求自动变快**。
+- Worker 消息通常采用结构化克隆，ArrayBuffer 可以显式转移，SharedArrayBuffer 可以共享。**复制、转移和共享是三种不同的数据所有权约定**。[卡](#message-transfer)
+- 共享内存减少复制，但要求正确同步。**跨线程的读改写需要 `Atomics` 等协议，单个线程里的普通表达式不会自动成为原子操作**。[卡](#shared-memory)
+- `spawn` 启动程序并提供流式标准输入输出，`exec` 默认经过 shell，`execFile` 默认直接执行文件，`fork` 启动带 IPC 的 Node.js 子进程。**Node.js 的 `fork` 不会复制当前 JavaScript 进程状态**。[卡](#child-process-apis) [卡](#fork-ipc)
+- 多个服务进程可以分摊请求，Worker 池可以分摊计算。**并发数量与等待队列都要有界，创建一个 Worker 处理每个短任务可能得不偿失**。[卡](#request-concurrency)
+- Worker 错误、退出、子进程关闭和取消都需要终态处理。**发出终止信号不等于已经退出，关闭 IPC 也不等于杀掉进程**。[卡](#termination)
+- 发生未捕获异常后不能假定应用仍处于一致状态。**记录故障、结束不可靠实例并由独立监督机制恢复，同时约束重试和副作用**。[卡](#crash-recovery)
+
+## 2. 执行单元的选择 {#执行单元的选择}
+
+| 机制 | 主要职责 | 隔离与代价 |
+| --- | --- | --- |
+| 主线程的事件循环 | 接收请求、调度回调与异步 I/O | 长 JavaScript 计算会拖慢同线程其他回调 |
+| libuv 线程池 | 处理异步文件、部分 DNS、加密和压缩等底层任务 | 属于运行时机制，不直接执行任意业务 JavaScript |
+| `worker_threads` | 在其他线程执行 JavaScript 计算 | 有独立 V8 执行环境；存在创建、传递数据与同步成本 |
+| `child_process` | 启动独立程序或另一份 Node.js 进程 | 地址空间独立，启动、内存和进程间通信成本通常更明显 |
+| 多服务进程或 `cluster` | 让多个服务实例处理请求 | 每个实例有自己的内存状态，需要协调入口、会话和恢复 |
+
+操作系统允许同进程线程共享地址空间，但 Node.js 为不同 Worker 建立独立的 V8 执行环境，所以一个 Worker 不能直接使用主线程里的普通对象引用。需要通过消息或明确的共享内存机制协作。
+
+Worker 也不是强安全沙箱。它仍属于同一进程，可以使用被允许的 Node.js 能力；严重的原生故障或进程级内存耗尽仍可能影响整个进程。`resourceLimits` 约束的是 Worker 的 JavaScript 引擎资源，不是覆盖 ArrayBuffer、原生内存等所有资源的硬性总上限。
+
+## 3. Worker 的计算与生命周期 {#worker的计算与生命周期}
+
+### 3.1 结果与退出 {#结果与退出}
+
+一个任务既要有结果，也要明确执行单元怎样结束。下面的辅助函数用于“返回一次结果然后退出”的短生命周期 Worker：
+
+```js
+// run-worker.mjs
+import { Worker } from 'node:worker_threads';
+export function runWorker(url, options) {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(url, options);
+    let received = false;
+    let result;
+    worker.once('message', (message) => {
+      received = true;
+      result = message;
+    });
+    worker.once('error', reject);
+    worker.once('exit', (code) => {
+      if (code !== 0) reject(new Error(`worker exited with code ${code}`));
+      else if (!received) reject(new Error('worker exited without a result'));
+      else resolve(result);
+    });
+  });
+}
+```
+
+这个例子等待正常退出后才交付结果，避免把“发过一条消息”直接当作任务已成功结束。Worker 内的未捕获异常会触发 `error`，退出会触发 `exit`；没有结果就退出也必须给等待者一个失败结果。
+
+辅助函数只说明一次结果与退出的关系，不是完整线程池。它没有排队、超时和取消接口，不能直接用来承接无限请求；后面的任务管理会说明这些边界。
+
+### 3.2 同进程的独立计算线程 {#独立计算线程}
+
+在同一目录添加求和 Worker 和调用方：
+
+```js
+// sum-worker.mjs
+import { parentPort, workerData, threadId } from 'node:worker_threads';
+const { limit } = workerData;
+if (!Number.isInteger(limit) || limit < 0 || limit > 10_000_000) {
+  throw new RangeError('invalid limit');
+}
+let sum = 0;
+for (let i = 0; i < limit; i++) sum += i;
+parentPort.postMessage({ sum, pid: process.pid, threadId });
+
+// main.mjs
+import { runWorker } from './run-worker.mjs';
+const result = runWorker(new URL('./sum-worker.mjs', import.meta.url), {
+  workerData: { limit: 1_000_000 }
+});
+setImmediate(() => console.log('main can continue'));
+const data = await result;
+console.log(data.sum);                 // 499999500000
+console.log(data.pid === process.pid); // true
+console.log(data.threadId > 0);        // true
+```
+
+求和在 Worker 中执行，主线程仍能调度自己的回调。`pid` 相同表示它们属于同一个进程，`threadId` 表示 Node.js 中的 Worker 线程身份。示例限制输入范围，也保证此处整数求和结果仍能由 `Number` 精确表示。
+
+能并行不代表这段短求和一定比主线程更快。创建 Worker、启动执行环境、传递参数和接收结果都有成本；示例用来说明执行位置，不能据此推导性能收益。适合移交的任务通常是成本足够高、输入输出边界明确的计算。
+
+## 4. 消息、转移与共享 {#消息转移与共享}
+
+### 4.1 结构化克隆与转移 {#结构化克隆与转移}
+
+**结构化克隆**按照支持的类型复制数据，让接收方得到自己的值。普通对象修改不会直接影响发送方；函数不能作为普通消息数据复制，类实例的原型和访问器也不会按原来的运行时行为完整保留。Node.js Buffer 到达接收方时可能表现为普通 Uint8Array，不能只凭原发送类型调用 Buffer 专有方法。
+
+**转移**把可转移资源的使用权交给接收方。对普通 ArrayBuffer，发送方的原缓冲区会分离，已有视图也随之失去原字节范围：
+
+```js
+// transfer-worker.mjs
+import { parentPort, workerData } from 'node:worker_threads';
+workerData.payload.count = 2;
+const sum = workerData.bytes.reduce((total, value) => total + value, 0);
+parentPort.postMessage({ sum, count: workerData.payload.count });
+
+// transfer-main.mjs
+import { runWorker } from './run-worker.mjs';
+const payload = { count: 1 };
+const bytes = new Uint8Array([1, 2, 3, 4]);
+const pending = runWorker(new URL('./transfer-worker.mjs', import.meta.url), {
+  workerData: { payload, bytes },
+  transferList: [bytes.buffer]
+});
+console.log(bytes.byteLength); // 0
+const result = await pending;
+console.log(payload.count, result.count, result.sum); // 1 2 10
+```
+
+`payload` 被复制，所以主线程里的 `count` 仍是 `1`；`bytes.buffer` 被转移，所以主线程不再持有原来的四字节视图。去掉 `transferList` 后，普通 ArrayBuffer 会被复制，发送方仍可使用自己的内容。
+
+不要随意转移一个 Buffer 的 `.buffer`。Buffer 可能只是内存池中的视图，其底层 ArrayBuffer 不一定专属于这个 Buffer，也不一定允许转移。需要明确所有权与范围，再决定复制还是转移；偏移和底层范围见 [Buffer 与 Stream](./buffer-stream.mdx#复制与共享视图)。
+
+### 4.2 SharedArrayBuffer 与同步 {#共享内存与同步}
+
+**SharedArrayBuffer** 让多个执行环境访问同一份字节，发送时不会像普通 ArrayBuffer 转移那样使发送方失去访问能力。共享状态必须有同步规则：
+
+```js
+// shared-worker.mjs
+import { parentPort, workerData } from 'node:worker_threads';
+const counter = new Int32Array(workerData);
+for (let i = 0; i < 10_000; i++) Atomics.add(counter, 0, 1);
+parentPort.postMessage('done');
+
+// shared-main.mjs
+import { runWorker } from './run-worker.mjs';
+const shared = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT);
+const counter = new Int32Array(shared);
+await Promise.all([
+  runWorker(new URL('./shared-worker.mjs', import.meta.url), { workerData: shared }),
+  runWorker(new URL('./shared-worker.mjs', import.meta.url), { workerData: shared })
+]);
+console.log(Atomics.load(counter, 0)); // 20000
+```
+
+两个 Worker 各增加一万次，最终结果为 `20000`。`Atomics.add` 把读取旧值、相加和写回组成原子操作；普通 `counter[0]++` 是读改写过程，线程交错时可能丢失更新。
+
+共享内存只是提供底层能力，不会自动构造正确队列或锁。还需要设计谁可以读写、什么状态表示数据可用、任务结束后谁释放引用。阻塞式等待也不能随意放在主事件循环上，否则会让服务停止处理其他回调。
+
+## 5. 子进程与 IPC {#子进程与ipc}
+
+### 5.1 spawn、exec、execFile 与 fork {#子进程创建api}
+
+| API | 主要特点 | 需要注意的条件 |
+| --- | --- | --- |
+| `spawn` | 启动程序，标准输入输出通常作为流处理 | 必须处理输出、错误和退出；不能无限堆积输出 |
+| `exec` | 默认把命令字符串交给 shell，回调中返回缓冲的输出 | 拼接不可信输入会引入 shell 解释风险，输出受 `maxBuffer` 限制 |
+| `execFile` | 默认直接执行指定文件，参数单独传递，回调中返回缓冲输出 | 仍要校验程序和参数的业务权限，也受输出缓冲限制 |
+| `fork` | 启动一个新的 Node.js 进程，并建立 IPC 通道 | 不是复制当前 JS 堆或从当前语句继续执行 |
+
+启动一个独立脚本时，可以把程序和参数分开传递：
+
+```js
+// echo.cjs
+console.log(JSON.stringify({ pid: process.pid, argument: process.argv[2] }));
+
+// spawn-main.mjs
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+const child = spawn(process.execPath, [
+  fileURLToPath(new URL('./echo.cjs', import.meta.url)),
+  'hello; still one argument'
+], { shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
+child.stdout.pipe(process.stdout);
+child.stderr.pipe(process.stderr);
+child.once('error', (error) => {
+  console.error(error.message);
+  process.exitCode = 1;
+});
+child.once('close', (code, signal) => {
+  if (code !== 0 || signal !== null) process.exitCode = 1;
+});
+```
+
+输出中的 `argument` 完整保留 `hello; still one argument`，分号不会被当作 shell 命令分隔符。子进程有自己的 `pid`，不能直接读取父进程的 JavaScript 局部变量。
+
+这里选择 `close` 检查结束，是因为它发生在进程退出并且相关标准输入输出关闭之后；`exit` 时标准流可能还没关闭。大量输出适合按流处理，若改成不断拼接字符串，仍会重新造成内存积累。同步版本的进程 API 会阻塞调用线程，不适合直接放在持续服务请求的主线程路径上。
+
+### 5.2 fork 的消息通道 {#fork的消息通道}
+
+**IPC** 是进程间通信。`fork` 为 Node.js 父子进程提供 `send` 与 `message`，双方通过消息交换任务和结果，而不是共享普通对象：
+
+```js
+// ipc-child.cjs
+process.once('message', (message) => {
+  process.send({ id: message.id, value: message.value + 1, pid: process.pid }, (error) => {
+    if (error) process.exitCode = 1;
+    if (process.connected) process.disconnect();
+  });
+});
+
+// ipc-main.mjs
+import { fork } from 'node:child_process';
+const child = fork(new URL('./ipc-child.cjs', import.meta.url), [], {
+  stdio: ['ignore', 'ignore', 'inherit', 'ipc']
+});
+let received = false;
+child.once('message', (message) => {
+  received = true;
+  console.log(message.id, message.value, message.pid !== process.pid); // job-1 8 true
+});
+child.once('error', (error) => {
+  console.error(error.message);
+  process.exitCode = 1;
+});
+child.once('exit', (code) => {
+  if (code !== 0 || !received) process.exitCode = 1;
+});
+child.send({ id: 'job-1', value: 7 }, (error) => {
+  if (error) {
+    console.error(error.message);
+    process.exitCode = 1;
+    child.kill();
+  }
+});
+```
+
+结果为 `job-1 8 true`。子进程发送结果后关闭 IPC，没有其他工作时便可以退出。`disconnect()` 只关闭通道；如果子进程还持有定时器、监听中的服务器等资源，它仍可能继续存活。
+
+`fork` 默认采用 JSON 形式的序列化语义，不等同于 Worker 的结构化克隆；需要 Map、BigInt 等支持时，可以评估 `serialization: 'advanced'` 并验证双方约定。`send` 的回调或返回值也不代表业务任务已经完成，必须用任务 ID 和明确的结果消息确认。
+
+示例只传一个可信的固定任务。接收外部请求时，还需要校验消息类型、参数范围和任务 ID，并处理重复结果、未知结果和进程退出后仍在等待的请求。
+
+## 6. 并发上限与服务请求 {#并发上限与服务请求}
+
+### 6.1 Worker 池与有界队列 {#worker池与有界队列}
+
+**Worker 池**让固定或受控数量的 Worker 反复处理任务，减少频繁创建执行环境的成本。线程池的任务、领取和队列基础见 [线程池](../operating-system/thread-pools.mdx)；在 Node.js 中，还要把这些约束落实到消息协议和事件回调里。
+
+一个最小可用的任务管理方案至少要回答：
+
+- 空闲 Worker 从哪里领取任务，每个 Worker 同时最多执行几个任务。
+- 队列最多容纳多少任务，满了以后拒绝、等待还是降级。
+- 请求截止时间是否包含排队时间，过期任务还未开始时怎样移除。
+- Worker 崩溃后，怎样让对应任务得到失败终态，是否补充新 Worker。
+- 结果按任务 ID 关联；提交顺序不能代替完成顺序。
+- 服务关闭时是否停止接收、等待已接受任务，并在期限到达后清理。
+
+没有队列上限，仅限制 Worker 数量，仍可能让等待任务及其输入积压在主进程内存里。对于会写数据库、扣减库存或发送外部请求的任务，失败后也不能无条件重跑，必须考虑幂等性和已经发生的副作用。
+
+Worker 数量要根据 CPU 配额、任务耗时和其他进程负载选择。线程越多，调度和内存成本也会增加；短小工作可能直接执行更划算，主要等待 I/O 的任务通常优先使用原生异步 API。
+
+### 6.2 多进程接收请求 {#多进程接收请求}
+
+把一个 HTTP 服务扩展到多个进程，与把一个计算任务移到 Worker 是不同的工作。前者让不同服务实例各自运行事件循环，分担不同连接或请求；后者把主服务中的某一段工作交给计算线程。
+
+Node.js `cluster` 通过多个 Node.js 工作进程共享服务端口并协调连接，具体分发还与平台和调度策略有关。也可以由外部负载均衡器分发给多个服务实例。不能据此承诺每个进程永远得到相同数量的请求。
+
+每个服务进程都有自己的模块缓存和普通内存状态。把会话、计数或任务表放在某个进程的全局变量里，不会自动让其他实例看到；需要按业务要求使用共享存储、外部服务或明确的通信协议。长连接还要结合连接分配和重连行为设计，不能只增加进程数就假定状态问题已解决。
+
+## 7. 取消、退出与故障恢复 {#取消退出与故障恢复}
+
+### 7.1 合作取消与强制终止 {#合作取消与强制终止}
+
+**合作取消**要求任务主动检查取消条件，在合适边界停止并清理。给一个持续同步计算的 Worker 发 `cancel` 消息，并不能保证它马上收到：它的 JavaScript 线程仍被计算占用，消息回调要等执行机会。
+
+可以让可拆分任务在批次之间处理取消，或通过共享的原子标记定期检查状态。必须强制结束时，`worker.terminate()` 会停止 Worker，并返回等待退出的 Promise。
+
+下面的 Worker 故意持续计算一段时间，必须与控制端一起运行，用来观察强制终止：
+
+```js
+// busy-worker.mjs
+import { parentPort } from 'node:worker_threads';
+parentPort.postMessage('started');
+const end = performance.now() + 5_000;
+while (performance.now() < end) { /* 模拟持续计算 */ }
+
+// terminate-main.mjs
+import { Worker } from 'node:worker_threads';
+import { once } from 'node:events';
+const worker = new Worker(new URL('./busy-worker.mjs', import.meta.url));
+try {
+  await once(worker, 'message', { signal: AbortSignal.timeout(2_000) });
+  const code = await worker.terminate();
+  console.log(code); // 本例在任务完成前终止，退出码为 1
+} finally {
+  await worker.terminate();
+}
+```
+
+强制终止可以阻止后续计算，但不能保证任意 JavaScript `finally` 都得到执行，也不会撤销之前写入文件或发出的请求。需要可靠清理的资源，应由控制端保留必要信息，或优先设计合作式关闭。
+
+对子进程，`kill()` 主要表示发送信号，`child.killed` 也不能证明它已经退出。应等待 `exit` 或 `close` 确认；如果启动了 shell 及其子孙进程，还需要单独设计进程树清理，不能默认杀掉 shell 就清理了全部后台程序。
+
+### 7.2 崩溃后的恢复边界 {#崩溃后的恢复边界}
+
+Worker 内的未捕获异常会让 Worker 失败，父线程应接收错误并结束对应任务的等待。父线程若没有正确处理自己的异常或 `error` 事件，也可能连带退出；“用了 Worker”不等于所有错误都已隔离。
+
+Node.js 主进程发生未捕获异常时，应用状态可能已经不一致。`uncaughtException` 适合在退出前进行必要的同步清理和记录，不适合把异常吞掉后继续正常接收请求。用独立进程或运行平台监督失败实例并恢复，通常比让失效实例自救更可靠。
+
+恢复还需要限制频率和范围：记录退出原因、识别持续启动失败，设置退避与重启上限；对正在处理的请求明确失败或重试策略；避免在数据库不可用等公共故障期间无限扩容和重启。优雅关闭则应停止接收新任务，给正在执行的工作有限时间，超过期限再升级终止方式。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 Node.js 的 CPU 密集任务怎样使用多线程处理？ {#choose-worker}
+
+**考察重点**：Worker 的执行环境、适用工作和运行时线程池的区别。
+
+**相关内容**：[执行单元的选择](#执行单元的选择)、[Worker 的计算与生命周期](#worker的计算与生命周期)。
+
+<details>
+<summary>参考回答</summary>
+
+**可以把输入输出明确、成本足够高的 JavaScript 计算移到 `worker_threads`，让主线程继续处理其他回调。** Worker 与主线程在同一进程中，但各有 V8 执行环境，普通对象需要通过消息传递。
+
+Worker 不是 libuv 线程池，不会自动加速所有 I/O。要衡量启动、复制或转移数据的成本，持续任务通常使用有界 Worker 池，而不是每次请求都新建线程。
+
+</details>
+
+### 8.2 Worker 消息中的复制、转移和共享有什么区别？ {#message-transfer}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：结构化克隆、ArrayBuffer 所有权与 SharedArrayBuffer。
+
+**相关内容**：[结构化克隆与转移](#结构化克隆与转移)、[共享内存与同步](#共享内存与同步)。
+
+<details>
+<summary>参考回答</summary>
+
+**复制让两端持有各自的数据，转移让接收方接管资源，共享让两端访问同一份内存。** 普通对象通常按结构化克隆传递；把普通 ArrayBuffer 放进转移列表后，发送方的原缓冲区会分离；SharedArrayBuffer 则继续由双方访问。
+
+共享需要同步，转移需要明确所有权和所有相关视图。Buffer 的底层内存可能来自池，不能不检查就转移 `.buffer`；函数、类实例等也不能假定完整保留原行为。
+
+</details>
+
+### 8.3 SharedArrayBuffer 中的 counter[0]++ 是原子操作吗？ {#shared-memory}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：共享数据与读改写操作的同步。
+
+**相关内容**：[共享内存与同步](#共享内存与同步)。
+
+<details>
+<summary>参考回答</summary>
+
+**不是，普通自增包含读取、计算和写回，多个线程交错时可能丢失更新。** 对适用的整数共享视图，可以用 `Atomics.add` 完成原子的读改写，用相应的原子操作和状态协议协调其他访问。
+
+有原子操作也不代表整个业务协议自动正确，还要定义状态、数据可用条件、结束与清理方式。
+
+</details>
+
+### 8.4 spawn、exec、execFile 和 fork 怎样选择？ {#child-process-apis}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：程序启动、shell 解释、输出形式与 IPC。
+
+**相关内容**：[子进程创建 API](#子进程创建api)。
+
+<details>
+<summary>参考回答</summary>
+
+**流式处理外部程序输出可以选 `spawn`，需要回调收集有限输出时可选 `execFile`，需要 shell 语法时才考虑 `exec`，Node.js 父子进程任务通信可以使用 `fork`。** `exec` 默认经过 shell，不能把不可信输入直接拼进命令字符串；`execFile` 默认直接执行文件，参数也仍需业务校验。
+
+`exec` 与 `execFile` 的输出缓冲受 `maxBuffer` 约束。`fork` 启动新的 Node.js 进程并建立 IPC，不会复制当前 JavaScript 堆。
+
+</details>
+
+### 8.5 fork 后的父子进程怎样传数据，disconnect 会让子进程退出吗？ {#fork-ipc}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：IPC、序列化、任务确认与进程存活。
+
+**相关内容**：[fork 的消息通道](#fork的消息通道)。
+
+<details>
+<summary>参考回答</summary>
+
+**通过 `send` 与 `message` 交换消息，`disconnect` 只关闭 IPC 通道，不直接杀掉子进程。** 如果还存在定时器或监听中的服务器，子进程仍可继续存活。
+
+默认序列化不等同于 Worker 的结构化克隆，特殊类型应明确选择并验证序列化方式。业务上用任务 ID 对应结果，发送成功不代表任务完成；退出后仍在等待的任务需要得到失败终态。
+
+</details>
+
+### 8.6 Node.js 怎样利用多个执行单元处理服务请求？ {#request-concurrency}
+
+**考察重点**：异步 I/O、计算线程与多服务进程的不同职责。
+
+**相关内容**：[并发上限与服务请求](#并发上限与服务请求)。
+
+<details>
+<summary>参考回答</summary>
+
+**先区分整个服务的请求分摊和单个请求内的计算分摊。** 多服务进程可以各自运行事件循环，通过 `cluster` 或外部入口分配连接；请求中的重计算可以交给受控 Worker 池；普通 I/O 优先使用已有异步 API。
+
+Worker 数量和排队容量都要有界，任务需要截止时间、取消和失败处理。多进程之间的普通内存状态不共享，因此会话、计数和任务状态还要设计适当的共享或通信方式。
+
+</details>
+
+### 8.7 给 Worker 发取消消息，为什么它可能一直不处理？ {#termination}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：同步计算、消息调度、合作取消与终止确认。
+
+**相关内容**：[合作取消与强制终止](#合作取消与强制终止)。
+
+<details>
+<summary>参考回答</summary>
+
+**它可能一直在运行同步计算，没有机会执行消息回调。** 可拆分任务应在批次之间处理取消，或定期检查共享原子标记；必须强制终止时，可以调用并等待 `worker.terminate()`。
+
+强制停止不保证业务清理和副作用回滚。对子进程发送 `kill` 信号也不等于已经退出，需要等待退出或关闭事件，并处理可能存在的子孙进程。
+
+</details>
+
+### 8.8 Node.js 进程崩溃后怎样恢复？ {#crash-recovery}
+
+**考察重点**：不一致状态、故障证据、外部监督与重试副作用。
+
+**相关内容**：[崩溃后的恢复边界](#崩溃后的恢复边界)。
+
+<details>
+<summary>参考回答</summary>
+
+**先记录故障并结束不可靠实例，由独立监督机制恢复，不把未捕获异常吞掉后继续正常服务。** 未捕获异常后应用状态可能已不一致，退出前的处理应限于必要的清理和记录。
+
+恢复策略需要退避、重启上限及健康检查，还要让未完成请求得到明确结果。重试可能重复已经发生的副作用，所以写操作应结合幂等性、任务状态或对账机制设计，不能把重新启动当成自动恢复全部业务状态。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+
+- [Node.js 22：Worker threads](https://nodejs.org/download/release/v22.16.0/docs/api/worker_threads.html)
+- [Node.js 22：Child process](https://nodejs.org/download/release/v22.16.0/docs/api/child_process.html)
+- [Node.js 22：Cluster](https://nodejs.org/download/release/v22.16.0/docs/api/cluster.html)
+- [Node.js 22：uncaughtException](https://nodejs.org/download/release/v22.16.0/docs/api/process.html#warning-using-uncaughtexception-correctly)

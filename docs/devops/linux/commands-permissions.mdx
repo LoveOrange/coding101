@@ -13,8 +13,13 @@ Linux 命令可以通过管道组合，把查找、筛选和统计连成一项�
 
 ## 1. 面试核心 {#core}
 
+- 只取文件末尾若干行用 **`tail -n`**；文件末尾不一定等于日志时间最新。[卡](#tail-last-lines)
+- **复制内容并保留属性，与只复制属性是两种任务**；`cp -p` 和 `cp --attributes-only --preserve=…` 分别对应它们，权限和文件系统决定属性能否保留。[卡](#copy-file-metadata)
+- `mkdir -p` 能补齐缺失父目录，**不能绕过权限、只读挂载或同名普通文件**。[卡](#mkdir-parents-failure)
 - 文本处理按任务选择工具：**`grep` 筛选行，`sed` 编辑文本，`awk` 按字段处理和统计**。[卡](#text-processing)
+- 查看错误前后文用 **`grep -C`**；`-A` 只取后文，`-B` 只取前文，重叠上下文会合并。[卡](#grep-context)
 - `uniq` **只合并相邻的重复行**，所以统计日志中的重复值时，要先让相同值排在一起。[卡](#text-processing)
+- 统计“流量”先明确是**请求次数还是字节总量**。不同 IP 很多时，内存哈希聚合可能放不下，需要外部排序后逐组累加。[卡](#log-traffic-top-k)
 - 目录的 **r 控制列出名称，x 控制路径搜索，w 控制目录项修改**。它们与普通文件上的同名权限含义不同。[卡](#file-permissions)
 - `umask` **屏蔽创建时申请的权限位**，不会主动添加权限；有默认 ACL 时，还要按继承规则判断。[卡](#umask-acl)
 - Shell **从左到右处理重定向**，`2>&1` 复制的是执行到这一步时标准输出的目标。[卡](#shell-redirection)
@@ -38,6 +43,59 @@ Linux 命令可以通过管道组合，把查找、筛选和统计连成一项�
 
 `crontab` 用五个时间字段安排周期任务，依次是分、时、日、月、周。定时任务的环境与交互 Shell 不同，因此脚本要明确工作目录、`PATH` 和日志输出位置，避免手动执行成功，定时执行却找不到命令或文件。
 
+只需要文件最后 100 行时，使用 `tail -n 100 app.log`；文件不足 100 行就输出全部内容。`tail -n +100 app.log` 的含义不同，它从第 100 行一直输出到末尾。若还要持续跟踪，可用 `tail -n 100 -F app.log`，先显示末尾再按名称跟踪。这里的“最后”按文件中的位置决定，日志乱序写入时，不能据此保证取到时间戳最新的 100 条。
+
+### 2.1 归档、传输与后台任务 {#归档传输与后台任务}
+
+归档、压缩和传输是不同操作。`tar` 把多个文件组织为归档，`-z` 让它同时使用 gzip 压缩；解压前可以先查看内容，选择独立目录承接输出：
+
+```bash
+tar -czf logs.tar.gz logs/
+tar -tzf logs.tar.gz
+mkdir extracted
+tar -xzf logs.tar.gz -C extracted
+```
+
+`-c` 创建，`-t` 列出，`-x` 提取，`-f` 后面指定归档名。相同目录下已有同名文件时，提取可能覆盖它们，所以先确认归档内容和目标目录。
+
+远程传输可以使用 `scp report.json user@host:/srv/reports/`，通过 SSH 认证把文件发往目标路径；需要反复同步目录时，可以使用 `rsync -av ./reports/ user@host:/srv/reports/`。这里源目录末尾的 `/` 表示同步目录内容。实际执行前需要目标可达、身份认证和目录写权限，传输后还要核对目标文件，命令启动不等于传输成功。
+
+临时后台任务可以使用 `nohup command > job.log 2>&1 < /dev/null &`。`&` 让 Shell 不等待该命令完成；`nohup` 让命令忽略挂断信号，重定向明确日志和输入来源。它不提供失败重启、健康检查或开机启动；需要这些能力的长期服务应交给服务管理器。启动后的 PID 可通过 `$!` 取得，后续仍要检查退出状态或实际产物。
+
+### 2.2 复制内容与文件属性 {#复制内容与文件属性}
+
+文件的**元数据**描述内容之外的属性，例如权限、属主、属组和时间。先确认题目是要求“复制文件时保留属性”，还是“保留目标内容，只更新属性”。下面采用 GNU `cp`：
+
+```bash
+cp -p -- source.txt copy.txt
+cp --attributes-only --preserve=mode,ownership,timestamps -- source.txt target.txt
+```
+
+第一条复制内容，并尝试保留权限、属主属组、访问时间和修改时间。第二条只复制指定属性；`target.txt` 已存在时，它的内容保持原样。`-p` 等价于 `--preserve=mode,ownership,timestamps`，不是“保留所有能想到的属性”。inode 编号、状态变更时间 ctime 等也不能靠普通复制原样继承。
+
+复制目录树且希望保留链接关系时，可用 `cp -a -- source-dir copied-dir`。GNU 的 `-a` 包含递归、把源软链接作为链接复制，并尽量保留属性；它不是快照或完整备份保证。扩展属性、ACL 和安全上下文还取决于源、目标文件系统及工具支持，`-a` 对部分扩展属性或安全上下文的保留失败不会改变退出状态。
+
+**普通用户不能任意把目标文件改成别人的属主。** 保留属组也受用户所属组等权限限制；复制内容成功，不代表每一项元数据都成功保留。GNU `cp` 会容忍普通用户因权限不足而无法保留属主的情况，因此退出码为 0、没有错误输出，也不保证目标 UID 与源一致。检查命令状态和诊断后，还应按任务要求用 `stat` 比较权限、UID/GID 和时间；涉及 ACL、扩展属性时再检查对应属性。`cp -p` 不会绕过源读取权限、目标写权限或目录搜索权限，目标只读也不会因为“保留属性”而变得可写。
+
+### 2.3 创建多级目录与失败原因 {#创建多级目录与失败原因}
+
+`mkdir -p` 会依次创建缺失的父目录，目标已经是目录时也可成功；它不会把现有普通文件变成目录，也不会修改已有父目录的权限。
+
+```bash
+mkdir -p -- work/a/b/c
+```
+
+如果普通 `mkdir work/a/b/c` 因父目录不存在失败，补 `-p` 就能解决这一类问题。若仍失败，要根据错误区分：
+
+| 现象或错误 | 应检查的条件 |
+| --- | --- |
+| `Permission denied` | 沿途目录是否允许搜索；需要创建子目录的父目录是否有写和搜索权限；ACL 是否额外限制 |
+| `Not a directory` 或同名对象冲突 | 路径某一段是否实际是普通文件，目标是否已被其他类型对象占用 |
+| `Read-only file system` | 目标所在文件系统是否只读；修改普通权限位不能解决只读挂载 |
+| `No space left on device` 或配额错误 | 可用块、inode 和用户配额是否耗尽 |
+
+命令失败时，中间某些目录可能已经创建，因此也要检查实际留下的路径，不能假设整条操作自动回滚。需要改变权限时，应先确认目录归属和授权范围，而不是直接把所有目录改成 777。
+
 ## 3. grep、sed 与 awk {#grepsed-与-awk}
 
 `grep` 根据条件选出行，`sed` 按规则输出或修改文本，`awk` 则适合提取字段并做统计。比如查错误日志、替换配置和提取用户名，可以分别这样写：
@@ -56,6 +114,22 @@ awk 'NR==10' file
 
 示例中的 `sed -i.bak` 会修改原文件，并保留 `.bak` 备份；这一写法适用于 GNU sed。`awk -F:` 则把冒号设为字段分隔符，`$1` 取出 `/etc/passwd` 的第一列。
 
+### 3.1 匹配行的前后文 {#匹配行的前后文}
+
+GNU `grep` 的 `-B` 输出匹配行之前的上下文，`-A` 输出之后的上下文，`-C` 同时输出两侧。查找包含固定文本 `Error` 的行及其前后各 10 行，可以这样写：
+
+```bash
+grep -n -F -C 10 -- 'Error' app.log
+grep -n -F -B 10 -- 'Error' app.log
+grep -n -F -A 10 -- 'Error' app.log
+```
+
+三条命令分别显示前后各 10 行、前 10 行、后 10 行，并包含匹配行本身。`-n` 加行号，`-F` 把搜索内容当固定字符串；默认区分大小写，所以 `ERROR` 不等于 `Error`，需要忽略大小写时再加 `-i`。
+
+靠近文件边界时，不一定能凑足 10 行。多个匹配的上下文重叠时，GNU `grep` 会合并输出，不重复打印同一行；不相连的组之间默认用 `--` 分隔。带行号时，匹配行的行号后是 `:`，纯上下文行用 `-`，因此输出总行数不能直接当成错误次数。
+
+### 3.2 请求次数与字节流量 {#请求次数与字节流量}
+
 统计日志前，要先确认字段位置。假设 `access.log` 使用标准 Nginx combined 格式，第一列是客户端地址，第九列是状态码：
 
 ```bash
@@ -73,6 +147,43 @@ awk '{c[$1]++} END {for (ip in c) print c[ip], ip}' access.log |
 ```
 
 这样只需排序不同 IP 的计数结果，不必排序每一条访问记录。代价是 `awk` 要在内存中保存计数，内存占用会随不同 IP 的数量增长。
+
+**请求最多的 IP，不一定是传输字节最多的 IP。** 例如 A 请求 3 次，每次 10 字节；B 只请求 1 次，但响应为 1000 字节，按次数是 A，按字节就是 B。还要确认统计请求体、响应体还是包含响应头的发送量。Nginx 的 `$body_bytes_sent` 不包含响应头，不能拿它直接表示双向网络总流量。
+
+下面假设日志已按实际格式解析、校验并归一化成 `traffic.log`：每行两列，第一列为 IP，第二列为非负整数响应体字节数。带引号的请求、JSON 日志、缺失字段和错误记录应在这一步按格式处理，不应直接把任意日志的第几列当字节数。
+
+```bash
+awk '{bytes[$1]+=$2} END {for (ip in bytes) printf "%.0f %s\n", bytes[ip], ip}' traffic.log |
+  LC_ALL=C sort -k1,1nr -k2,2 | sed -n '1,10p'
+```
+
+这里累加第二列，按总字节数降序、相同总量时按 IP 文本升序排列。`sed -n '1,10p'` 只显示前十条，但仍读完输入；这也避免了下游提前退出使上游写入断管，干扰启用 `pipefail` 的脚本。示例采用普通 `awk` 数值运算，要求单个 IP 的整数总量不超过常见双精度实现能精确表示的范围 `2^53`；更大的精确整数统计需要支持大整数的工具，不能只调整输出格式。
+
+### 3.3 大文件与高基数聚合 {#大文件与高基数聚合}
+
+是否放得进内存，不能只看日志文件有多大。100GB 日志若只有少量 IP，内存中的计数表仍可能很小；较小的文件若包含大量不同 IP，计数表也可能耗尽内存。**基数**就是这里不同 IP 的数量，哈希聚合的主要状态会随基数增长。
+
+可以先按 IP 外部排序，让同一 IP 的记录连续出现，再逐组累加。聚合器只保存当前 IP 和总量，不需要同时保存所有 IP。下面继续使用已校验的两列输入，以及同样的数值范围假设：
+
+```bash
+set -o pipefail
+export LC_ALL=C
+sort_tmp=$(mktemp -d) || exit 1
+trap 'rm -rf -- "$sort_tmp"' EXIT
+sort -S 64M --parallel=1 -T "$sort_tmp" -k1,1 traffic.log |
+  awk 'NR==1 {ip=$1}
+       $1!=ip {printf "%.0f %s\n", total, ip; ip=$1; total=0}
+       {total+=$2}
+       END {if (NR) printf "%.0f %s\n", total, ip}' |
+  sort -S 64M --parallel=1 -T "$sort_tmp" -k1,1nr -k2,2 |
+  sed -n '1,10p'
+```
+
+第一次排序按 IP 聚集记录，`awk` 只在 IP 改变或到达末尾时输出一组总量，第二次排序才按总量取前十。GNU `sort` 可以把中间有序段放进 `-T` 指定的临时目录再归并；`-S 64M` 控制初始排序缓冲，并不是整个进程的硬内存上限，超长行也可能让缓冲继续增长。两个排序进程可能同时运行，所以总内存还要算上两份缓冲、进程开销和管道；临时磁盘、I/O、退出状态也要检查。这里是一个独立脚本片段，`trap` 仅清理它自己创建的目录；嵌入已有脚本时要合并其清理逻辑。
+
+若不想对所有 IP 总量再排序，也可以把逐组结果送入大小为 K 的最小堆，维护当前最大的 K 组，见 [堆](../../basic-knowledge/data-structures/heap.mdx#top-k-候选集合)。但不能先对每个输入分块只保留本块 Top K 再合并：一个在每块都没进入前 K 的 IP，跨块累加后可能成为全局第一。必须先按 IP 合并全量贡献，再选全局 Top K。
+
+另一种方式是按 IP 的固定哈希把记录分桶，使同一 IP 总落在同一桶，再逐桶聚合；如果某桶仍然放不下，还需继续分桶或改为外部排序。不能只按“输入平均大小除以桶数”承诺内存足够，因为 IP 分布、哈希偏斜和桶内不同 IP 数都会影响结果。
 
 ## 4. 文件权限 {#文件权限}
 
@@ -204,8 +315,87 @@ ACL 中命名用户的 `rw` 还受 `mask` 限制。如果 `mask` 不含写权限
 
 </details>
 
+### 7.5 怎样查找包含 Error 的日志及其前后各 10 行？ {#grep-context}
+
+**考察重点**：固定文本、前后文范围和重叠输出。
+
+**相关内容**：[匹配行的前后文](#匹配行的前后文)。
+
+<details>
+<summary>参考回答</summary>
+
+**使用 `grep -n -F -C 10 -- 'Error' app.log`。** `-C 10` 表示匹配行的前后各 10 行，`-B 10` 只取前文，`-A 10` 只取后文；匹配行本身也会输出。
+
+默认区分大小写，文件边界可能不足 10 行。重叠上下文会合并，不连续组默认用 `--` 分隔，所以不能把输出行数直接当作匹配次数。
+
+</details>
+
+### 7.6 Shell 怎样复制文件元数据，权限不足时会怎样？ {#copy-file-metadata}
+
+**考察重点**：内容与属性、属性范围、权限和结果核验。
+
+**相关内容**：[复制内容与文件属性](#复制内容与文件属性)。
+
+<details>
+<summary>参考回答</summary>
+
+**先区分是否复制内容。** GNU `cp -p -- source.txt copy.txt` 复制内容并保留权限、属主属组及访问和修改时间；若已有目标内容不能变，使用 `cp --attributes-only --preserve=mode,ownership,timestamps -- source.txt target.txt`。
+
+复制目录树可以考虑 `cp -a`，但普通用户不能任意保留别人的属主，ACL 和扩展属性也受文件系统支持限制。GNU `cp` 可能容忍普通用户无法设置属主的情况，`-a` 对部分扩展属性失败也会放宽诊断与退出状态，所以除了退出码和错误输出，还要核对目标实际属性。
+
+</details>
+
+### 7.7 怎样统计流量最大的 IP，日志超过 100GB 时要改变什么？ {#log-traffic-top-k}
+
+**考察重点**：统计口径、字段解析、基数与外部聚合。
+
+**相关内容**：[请求次数与字节流量](#请求次数与字节流量)、[大文件与高基数聚合](#大文件与高基数聚合)。
+
+<details>
+<summary>参考回答</summary>
+
+**先确认流量是请求次数还是字节量，再按 IP 聚合对应字段。** 请求次数是每条记录加一，字节量是累加已确认含义的字节字段，二者的 Top K 可以不同。
+
+不同 IP 足够少时可用 `awk` 哈希聚合；高基数导致内存不足时，先按 IP 外部排序，再用常量组状态累加，最后按总量排序或用 K 大小的堆选候选。分块的局部 Top K 不能代替按 IP 汇总所有贡献。
+
+还要预算临时磁盘与多轮 I/O，检查排序和聚合的退出状态、字段合法性和数值精度。`sort -S` 不是进程硬内存上限，不能由这个参数断言任意 100GB 日志都能在固定内存内完成。
+
+</details>
+
+### 7.8 怎样查看文件最后 100 行？ {#tail-last-lines}
+
+**考察重点**：末尾行数、起始行号与持续跟踪。
+
+**相关内容**：[常用命令分类](#按用途分组的常用命令)。
+
+<details>
+<summary>参考回答</summary>
+
+**使用 `tail -n 100 app.log`。** 不足 100 行就全部输出；`tail -n +100` 则是从第 100 行开始，一直输出到末尾。
+
+如果要先看末尾再持续跟踪文件名，可用 `tail -n 100 -F app.log`。它依据文件位置，不能替乱序日志完成按时间排序。
+
+</details>
+
+### 7.9 mkdir 创建多级目录失败，什么时候加 -p 就能解决？ {#mkdir-parents-failure}
+
+**考察重点**：缺失父目录、路径类型与访问条件。
+
+**相关内容**：[创建多级目录与失败原因](#创建多级目录与失败原因)。
+
+<details>
+<summary>参考回答</summary>
+
+**缺失父目录时，可以用 `mkdir -p -- work/a/b/c` 自动创建。** 已有目录也能继续使用，但已有普通文件不会被当成目录，原父目录权限也不会因此改变。
+
+仍失败时，检查沿途目录搜索权限、创建位置的写权限、ACL、只读挂载、磁盘与 inode、配额以及路径中的同名对象。`-p` 只解决父目录创建，不提供越权访问；失败后也可能留下已经创建的中间目录。
+
+</details>
+
 ## 8. 参考资料 {#参考资料}
 
+- [OpenSSH：scp(1)](https://man.openbsd.org/scp)
+- [rsync：Manual](https://download.samba.org/pub/rsync/rsync.1)
 - [GNU Awk User's Guide](https://www.gnu.org/software/gawk/manual/gawk.html)
 - [man7：chmod(1)](https://man7.org/linux/man-pages/man1/chmod.1.html)
 - [man7：path_resolution(7)](https://man7.org/linux/man-pages/man7/path_resolution.7.html)
@@ -215,3 +405,11 @@ ACL 中命名用户的 `rw` 还受 `mask` 限制。如果 `mask` 不含写权限
 - [GNU Bash：Redirections](https://www.gnu.org/s/bash/manual/html_node/Redirections.html)
 - [GNU Bash：Pipelines](https://www.gnu.org/software/bash/manual/html_node/Pipelines.html)
 - [GNU Findutils：Age Ranges](https://www.gnu.org/software/findutils/manual/html_node/Age-Ranges.html)
+- [GNU Grep：Context Line Control](https://www.gnu.org/s/grep/manual/html_node/Context-Line-Control.html)
+- [GNU Coreutils：cp](https://www.gnu.org/s/coreutils/manual/html_node/cp-invocation.html)
+- [GNU Coreutils 9.7：属主保留与权限失败处理](https://github.com/coreutils/coreutils/blob/v9.7/src/copy.c)
+- [GNU Coreutils：mkdir](https://www.gnu.org/software/coreutils/manual/html_node/mkdir-invocation.html)
+- [GNU Coreutils：tail](https://www.gnu.org/software/coreutils/manual/html_node/tail-invocation.html)
+- [GNU Coreutils：sort](https://www.gnu.org/software/coreutils/manual/html_node/sort-invocation.html)
+- [Linux man-pages：mkdir 的错误条件](https://man7.org/linux/man-pages/man2/mkdir.2.html)
+- [Nginx：Embedded Variables](https://nginx.org/en/docs/http/ngx_http_core_module.html#variables)

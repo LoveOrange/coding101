@@ -1,0 +1,496 @@
+---
+sidebar_position: 2
+knowledge:
+  id: frontend.browser.dom-events
+---
+
+# DOM 事件
+
+DOM 事件让不同对象对一次交互或状态变化作出响应。点击按钮时，执行的不一定只有按钮自己的监听器：事件会沿确定的路径传播，祖先也可能处理它，浏览器还可能执行链接跳转、表单提交等默认行为。
+
+理解事件要把三个问题分开：谁收到通知、通知是否继续传播、默认行为是否取消。事件委托、弹窗关闭、输入同步和监听器清理，都建立在这些规则之上。
+
+## 1. 面试核心 {#core}
+
+- **事件沿路径经历捕获、目标和可能的冒泡阶段**。`capture` 决定监听器在哪一轮参与，`eventPhase` 表示当前阶段；目标上的捕获与非捕获监听器都属于目标阶段。[卡](#event-flow)
+- **target 是当前观察到的事件目标，currentTarget 是正在调用监听器的对象**。点击按钮内部图标时，二者可能不同；跨 Shadow DOM 还要考虑目标重定向。[卡](#event-targets)
+- **stopPropagation、stopImmediatePropagation 和 preventDefault 分别控制传播、当前监听器调用及默认行为**，不能互相替代。[卡](#propagation-control)
+- **事件委托用稳定祖先处理后代事件，需要识别真正的操作元素并限定归属范围**。它可以支持动态子节点，但不意味着所有事件都能直接靠冒泡处理。[卡](#delegation)
+- **不冒泡不等于完全没有祖先监听机会**。例如 `focus` 可以用捕获监听，或改用会冒泡的 `focusin`；应核对具体事件。[卡](#non-bubbling)
+- **监听器由目标、类型、回调身份与 capture 等条件定位**。清理时需要保留同一个回调引用，`once`、`signal` 和 `passive` 各有不同用途。[卡](#listener-options)
+- **once 在开始调用该监听器前移除它**，限制的是调用次数，不是异步业务成功次数，也不能代替重复提交控制。[卡](#once-listener)
+- **input 适合跟随用户编辑同步值，change 表示相应控件的提交式变化**。程序赋值不会自动模拟用户输入事件，输入法组合过程也应单独考虑。[卡](#input-sync)
+- 高频指针事件可以先记录位置，再按渲染机会更新视觉；**控制事件处理工作量、坐标系和清理，比给每次移动创建新节点更重要**。[卡](#pointer-effects)
+- **dispatchEvent 同步调用相应监听器，不会自动等待它们返回的 Promise**。自定义事件要显式声明冒泡、可取消及跨 Shadow DOM 边界的需求。[卡](#custom-events)
+
+## 2. 事件路径与阶段 {#事件路径与阶段}
+
+**事件目标**是这次分发的起点。浏览器根据目标和相关树结构建立事件路径，再沿路径调用符合条件的监听器。对于普通文档中的点击，可以先按从祖先到目标、再从目标向祖先的方向理解。
+
+| 阶段 | 典型处理方向 | `eventPhase` |
+| --- | --- | --- |
+| 捕获 | 外层祖先向目标靠近 | `1`，`CAPTURING_PHASE` |
+| 目标 | 调用目标上的适用监听器 | `2`，`AT_TARGET` |
+| 冒泡 | 目标向外层祖先返回，需要事件允许冒泡 | `3`，`BUBBLING_PHASE` |
+| 未分发 | 不在事件分发过程中 | `0`，`NONE` |
+
+```html
+<div id="outer"><button id="button" type="button">操作</button></div>
+<script>
+  const outer = document.querySelector('#outer');
+  const button = document.querySelector('#button');
+  outer.addEventListener('click', event => console.log('outer capture', event.eventPhase), true);
+  button.addEventListener('click', event => console.log('button capture', event.eventPhase), true);
+  button.addEventListener('click', event => console.log('button bubble', event.eventPhase));
+  outer.addEventListener('click', event => console.log('outer bubble', event.eventPhase));
+  button.click();
+</script>
+```
+
+输出依次为 `outer capture 1`、`button capture 2`、`button bubble 2`、`outer bubble 3`。这里“button bubble”只是为区分非捕获监听器而写的日志名称，它在目标上执行时，阶段仍是 `AT_TARGET`。
+
+路径不是每调用一个监听器就重新读取一次当前父节点链。监听器在传播中移动或删除节点，不会简单地把已经确定的本次路径换成新 DOM 的祖先链。需要依赖当前结构时，应主动检查节点是否还在预期容器中。
+
+DOM 事件传播与 JavaScript 事件循环也不是同一件事。前者说明一次事件分发如何调用监听器，后者说明任务和微任务如何获得执行机会；相关异步规则见 [浏览器事件循环](../../basic-knowledge/javascript/browser-event-loop.mdx#任务与微任务)。
+
+## 3. 目标与监听器位置 {#目标与监听器位置}
+
+`event.target` 表示当前监听器所观察到的事件目标，`event.currentTarget` 表示这次调用发生在哪个监听对象上。委托监听中，两者通常承担不同职责。
+
+```html
+<div id="list"><button id="remove" type="button"><span id="icon">删除</span></button></div>
+<script>
+  document.querySelector('#list').addEventListener('click', event => {
+    console.log(event.target.id, event.currentTarget.id);
+  });
+  document.querySelector('#icon').click();
+</script>
+```
+
+输出 `icon list`。用户点到按钮中的文字、图标或其他后代时，不能假设 `target` 本身就是按钮。
+
+`currentTarget` 只在对应监听器调用期间表示该对象，分发结束后会清空。若异步代码还需要它，应在同步阶段保存需要的值或引用：
+
+```js
+button.addEventListener('click', event => {
+  const owner = event.currentTarget;
+  setTimeout(() => console.log(owner === button, event.currentTarget), 0);
+});
+```
+
+假设 `button` 是已存在的按钮，触发后输出 `true null`。保存 DOM 引用也可能延长对象存活时间，所以长时间任务仍需结合组件生命周期清理，而不是把整个事件对象永久保存下来。
+
+普通函数监听器中的 `this` 通常与 `currentTarget` 一致；箭头函数则保留外层 `this`。这属于函数调用规则，不要靠更换监听目标来改变箭头函数的 `this`，详见 [this 绑定](../../basic-knowledge/javascript/this-binding.mdx#箭头函数的-this)。
+
+## 4. 传播与默认行为 {#传播与默认行为}
+
+### 4.1 停止传播 {#停止传播}
+
+`stopPropagation()` 阻止事件继续进入后续的传播步骤，但不会像 `stopImmediatePropagation()` 一样中断当前这轮监听器列表中尚未执行的其他监听器。两者都不会撤销已经执行过的监听器。
+
+```html
+<div id="outer"><button id="button" type="button">操作</button></div>
+<script>
+  const outer = document.querySelector('#outer');
+  const button = document.querySelector('#button');
+  button.addEventListener('click', event => {
+    console.log('first');
+    event.stopPropagation();
+  });
+  button.addEventListener('click', () => console.log('second'));
+  outer.addEventListener('click', () => console.log('outer'));
+  button.click();
+</script>
+```
+
+输出 `first`、`second`，不会输出 `outer`。把方法改成 `stopImmediatePropagation()` 后，只输出 `first`。
+
+这不能扩展成“stopPropagation 永远不影响同一元素上的其他监听器”。捕获与非捕获是不同轮次：如果在目标的捕获监听器中停止传播，后续目标非捕获监听器也可能被跳过。若在外层捕获阶段就停止，事件甚至不会继续到达内部目标。分析时先确定当前处于哪个调用步骤。
+
+### 4.2 取消默认行为 {#取消默认行为}
+
+**默认行为**是平台与某种事件关联的行为，例如激活链接后的导航。`preventDefault()` 用于请求取消可取消事件的默认行为，不负责停止传播。
+
+| 操作 | 影响 | 不自动解决的问题 |
+| --- | --- | --- |
+| `stopPropagation()` | 阻止后续传播步骤 | 不取消链接跳转等默认行为，不打断当前这轮剩余监听器 |
+| `stopImmediatePropagation()` | 同时阻止后续传播和当前这轮剩余监听器 | 不取消默认行为 |
+| `preventDefault()` | 在允许取消的条件下设置取消状态 | 不阻止其他监听器继续接收事件 |
+
+```html
+<div id="outer"><a id="link" href="#destination">跳转</a></div>
+<script>
+  document.querySelector('#link').addEventListener('click', event => event.preventDefault());
+  document.querySelector('#outer').addEventListener('click', event => {
+    console.log(event.defaultPrevented);
+  });
+</script>
+```
+
+点击链接时，外层仍输出 `true`，但这次点击的片段跳转被取消。若改成只调用 `stopPropagation()`，外层不再输出，链接的默认导航仍然可以发生。
+
+取消还需要事件 `cancelable` 为真，并且当前监听器不是 `passive`。对 `addEventListener` 注册的监听器，单纯 `return false` 没有上述效果；内联事件属性和某些框架的返回值约定不能直接套到这里。
+
+不要把取消操作拖到不确定何时恢复的异步工作之后。平台不会为了一个 `async` 监听器等待它的 Promise；如果要先询问服务器再决定跳转，应该同步取消这次默认行为，在确认后显式执行业务需要的下一步。
+
+## 5. 事件委托 {#事件委托}
+
+**事件委托**是在祖先处监听事件，再根据目标决定由哪项业务处理。对于会冒泡的点击，一份监听器可以覆盖多个后代，也可以接住稍后插入的按钮。
+
+```html
+<ul id="tasks">
+  <li><button type="button" data-action="remove"><span>删除</span></button></li>
+</ul>
+<script>
+  const tasks = document.querySelector('#tasks');
+  tasks.addEventListener('click', event => {
+    if (!(event.target instanceof Element)) return;
+    const button = event.target.closest('button[data-action="remove"]');
+    if (!button || !tasks.contains(button)) return;
+    const row = button.closest('li');
+    if (!row || row.parentElement !== tasks) return;
+    row.remove();
+  });
+</script>
+```
+
+点击 `span` 时，`closest()` 向上找到对应按钮。`contains()` 将操作限定在当前容器，`row.parentElement === tasks` 进一步限制为这份列表的直接行，避免嵌套列表的行被误处理。新增同结构的 `li` 后也不需要重新绑定监听器。
+
+委托把监听器数量转化成路径识别和选择器判断，收益取决于节点数量、事件频率与业务结构。只有少量独立按钮时，直接监听可能更清楚；组件内部已经调用停止传播时，外部委托也可能收不到事件。不要为了让委托工作就全局改成捕获，而不检查执行顺序是否符合业务。
+
+### 5.1 不冒泡的事件 {#不冒泡事件}
+
+不是所有事件都冒泡。`focus`、`blur` 和 `mouseenter`、`mouseleave` 等事件，不能直接按点击的普通冒泡委托方式使用。
+
+```html
+<div id="fields"><input aria-label="姓名"><input aria-label="邮箱"></div>
+<script>
+  const fields = document.querySelector('#fields');
+  fields.addEventListener('focus', event => console.log('capture', event.target.getAttribute('aria-label')), true);
+  fields.addEventListener('focus', () => console.log('ordinary focus'));
+  fields.addEventListener('focusin', event => console.log('focusin', event.target.getAttribute('aria-label')));
+</script>
+```
+
+第一个输入框获得焦点时，会看到 `capture 姓名` 与 `focusin 姓名`，普通祖先 `focus` 监听器不会因为这个子元素获得焦点而执行。具体事件的组合顺序可能存在实现差异，不要依赖多个焦点事件在所有浏览器里完全一致的先后。
+
+鼠标进入委托可以考虑 `mouseover`，但它在进入不同后代时也可能触发，需要使用 `relatedTarget` 判断是否只是同一业务区域内的移动。`scroll`、资源 `load` 等也有各自目标与传播规则，不能只记“所有事件都有冒泡阶段”。
+
+## 6. 注册选项与清理 {#注册选项与清理}
+
+`addEventListener(type, callback, options)` 的第三个参数可以是表示 `capture` 的布尔值，也可以是选项对象。
+
+| 选项 | 含义 | 常见边界 |
+| --- | --- | --- |
+| `capture` | 是否在捕获轮次接收 | 清理监听器时需要匹配 |
+| `once` | 监听器调用一次后不再保留 | 不是等异步业务成功后才移除 |
+| `passive` | 声明该监听器不会取消默认行为 | 其中调用 preventDefault 不生效，常用于允许滚动等行为无需等待取消判断的场景 |
+| `signal` | 信号中止时移除监听器 | 需要为当前生命周期创建合适的控制器，已中止信号不会重新变成可用信号 |
+
+不同浏览器对某些根目标上的触摸或滚轮监听可能使用默认被动策略。确实需要取消默认滚动时，应检查具体事件与目标，并显式说明合适的 `passive` 设置；不需要取消时，也不要为了习惯默认阻塞滚动。
+
+### 6.1 回调身份与 capture {#监听器身份}
+
+同一目标上的重复监听由事件类型、同一个回调对象和 `capture` 区分。重新写一个内容相同的箭头函数，仍然是另一个函数对象。
+
+```js
+const button = document.querySelector('#button');
+function handleClick() { console.log('clicked'); }
+
+button.addEventListener('click', handleClick, true);
+button.removeEventListener('click', handleClick); // capture 不匹配，尚未移除
+button.click();
+button.removeEventListener('click', handleClick, true);
+button.click();
+```
+
+假设页面中存在这个按钮，只会输出一次 `clicked`。清理时不是要求传入原来同一个选项对象，而是要求匹配回调身份和 `capture`；`passive`、`once` 并不是 `removeEventListener` 的匹配键。
+
+同样的类型、回调和 `capture` 再次注册时，不会因此新增第二份监听器，也不会自动把已有监听器改成新的 `once/passive` 配置。需要变更时先明确移除再注册。
+
+### 6.2 单次监听与统一清理 {#单次监听与统一清理}
+
+```js
+const button = document.querySelector('#button');
+button.addEventListener('click', () => console.log('once'), { once: true });
+button.click();
+button.click();
+```
+
+输出一次 `once`。监听器在开始调用前就被移除，因此它不是“调用完成以后才检查要不要删除”。不过，用户触发一次就移除也意味着请求失败后不会自动恢复按钮逻辑；提交业务更适合显式维护进行中状态和失败重试策略。
+
+一组监听器属于同一次组件挂载时，可以用信号统一管理：
+
+```js
+function mount(button) {
+  const controller = new AbortController();
+  button.addEventListener('click', () => console.log('click'), { signal: controller.signal });
+  window.addEventListener('keydown', event => {
+    if (event.key === 'Escape') console.log('escape');
+  }, { signal: controller.signal });
+  return () => controller.abort();
+}
+
+const dispose = mount(document.querySelector('#button'));
+// 组件离开页面时调用 dispose()。
+```
+
+`dispose()` 会移除这两份监听器。它不自动取消已经启动的计时器、网络请求或动画回调；这些资源需要各自的清理或共享合适的取消信号。把 DOM 移出文档也不等于所有外部注册的监听器已经解除。
+
+## 7. 输入与指针交互 {#输入与指针交互}
+
+### 7.1 输入值同步 {#输入值同步}
+
+`input` 表示用户编辑导致的输入变化，适合即时更新预览。对于文本输入框，`change` 通常在内容改变并提交该编辑时触发，例如失去焦点；不同控件的提交时机不同，不能把它都理解成每次按键。
+
+```html
+<label for="name">姓名</label>
+<input id="name">
+<p id="preview"></p>
+<script>
+  const input = document.querySelector('#name');
+  const preview = document.querySelector('#preview');
+  const synchronize = () => { preview.textContent = input.value; };
+  input.addEventListener('input', synchronize);
+  synchronize();
+</script>
+```
+
+键盘输入、粘贴等用户编辑可以通过 `input` 更新预览，不必分别监听每种按键。使用 `textContent` 是因为这里展示普通文本，不能让用户输入被当成 HTML 解析。
+
+直接执行 `input.value = 'Lin'` 不会自动触发一次用户 `input` 事件。程序主动修改值时，可以同时调用相应同步逻辑；如果要向其他订阅者发送事件，应明确分发自定义需要的通知，而不是假定浏览器已经替你模拟了用户行为。
+
+输入法可能先经历组合过程，期间的临时字符串并不是最终提交文本。展示预览可以跟随输入，但搜索请求、格式校验或快捷键处理要考虑 `compositionstart`、`compositionend` 和 `InputEvent.isComposing`；`beforeinput` 还可用于观察或在允许时阻止部分编辑操作，但不能假设所有输入类型都可取消。
+
+### 7.2 指针位置与更新频率 {#指针位置与更新频率}
+
+指针跟随效果可以拆成“记录当前位置”和“更新视觉”两件事。先使用与视觉元素匹配的坐标系：`clientX/clientY` 相对视口，适合配合普通页面中的固定定位标记；`pageX/pageY` 则包含页面滚动偏移。
+
+```js
+function mountPointerMarker() {
+  const marker = document.createElement('span');
+  marker.style.cssText = 'position:fixed;left:0;top:0;width:8px;height:8px;border-radius:50%;background:#2563eb;pointer-events:none;display:none';
+  document.body.append(marker);
+  const controller = new AbortController();
+  let x = 0, y = 0, frame = null;
+  document.addEventListener('pointermove', event => {
+    x = event.clientX;
+    y = event.clientY;
+    if (frame !== null) return;
+    frame = requestAnimationFrame(() => {
+      frame = null;
+      marker.style.display = 'block';
+      marker.style.transform = `translate(${x}px, ${y}px)`;
+    });
+  }, { signal: controller.signal });
+  return () => {
+    controller.abort();
+    if (frame !== null) cancelAnimationFrame(frame);
+    marker.remove();
+  };
+}
+
+const dispose = mountPointerMarker();
+```
+
+这段代码只做一个位置标记：一次待处理的动画回调读取最新坐标，不为每个指针事件创建新节点，也不把回调数量无限积累。`pointer-events: none` 避免标记挡住下面元素的指针命中，清理函数同时解除监听、取消待处理回调并移除标记。
+
+拖尾效果还需要保留一小段位置历史或让后一段逐步追随前一段，可以使用固定数量的标记，更新位置和透明度并回收过期状态；不能每次移动都追加永不清理的元素。动画插值与帧间时间属于动画机制，这里的事件职责只是稳定获取输入并交给更新逻辑。
+
+拖拽则还有按下、移动、释放和取消的状态。需要让指针离开元素后继续把事件交给它时，可以使用指针捕获，并处理 `pointercancel`、`lostpointercapture` 与释放；它不等于 DOM 事件的捕获阶段。触摸手势还应结合 `touch-action` 决定浏览器滚动等行为，不能只靠一次鼠标移动样例推出完整移动端拖拽方案。
+
+## 8. 自定义事件与组件边界 {#自定义事件与组件边界}
+
+### 8.1 同步分发与取消 {#自定义事件分发}
+
+`dispatchEvent()` 同步执行这次分发所调用的监听器，然后返回事件是否未被取消。普通 `Event` 构造器默认不会开启冒泡、可取消和跨 Shadow DOM 传播，需要按协议显式设置。
+
+```js
+const target = new EventTarget();
+target.addEventListener('before-save', event => {
+  console.log(event.detail.name);
+  event.preventDefault();
+});
+
+console.log('before');
+const accepted = target.dispatchEvent(new CustomEvent('before-save', {
+  detail: { name: 'Lin' },
+  cancelable: true,
+}));
+console.log('after', accepted);
+```
+
+输出 `before`、`Lin`、`after false`。这里取消的是自定义协议：调用方拿到 `false` 后决定不保存。自定义事件本身不会凭名字自动产生网络保存行为。
+
+监听器抛出的异常会按事件回调的异常报告机制处理，不是自动从 `dispatchEvent()` 重新抛给调用者；监听器返回的 Promise 也不会被这个布尔返回值等待。需要收集异步处理结果时，应设计显式的 Promise 接口，而不是把事件分发当成异步调用聚合器。
+
+### 8.2 Shadow DOM 的传播 {#影子树边界}
+
+Shadow DOM 为组件提供独立的内部树。事件能否跨越这条边界，与 `composed` 有关；是否向祖先冒泡，与 `bubbles` 有关，两个属性不能互相替代。
+
+跨越影子树时，外部观察到的 `target` 可能被重定向为宿主，而不是内部按钮。`composedPath()` 提供当前可观察的传播路径，但关闭模式的内部节点不会因此向外完整公开，也不能拿它绕过组件边界假设。
+
+组件希望向外表达“选中项目”时，可以由宿主分发含业务数据的 `CustomEvent`，明确约定 `detail`、`bubbles`、`composed` 和是否可取消。这样外部依赖的是业务协议，而不是内部第几层按钮；是否需要这些选项仍由事件的接收范围决定。
+
+`isTrusted` 可以区分事件是否由平台可信分发，但它不是业务授权凭据。`dispatchEvent()` 和脚本 `.click()` 不能被当作真实用户操作的完整替代，也不会自动赋予所有需要用户激活的 API 权限。测试既要检查事件逻辑，也要在需要时通过真实输入路径验证默认行为。
+
+## 9. 面试题 {#面试题}
+
+### 9.1 事件捕获、目标阶段和冒泡有什么区别？ {#event-flow}
+
+**考察重点**：事件路径、监听器选项与当前阶段的关系。
+
+**相关内容**：[事件路径与阶段](#事件路径与阶段)。
+
+<details>
+<summary>参考回答</summary>
+
+**捕获沿祖先向目标推进，目标阶段调用目标上的监听器，允许冒泡的事件再向祖先返回。** capture 选项决定监听器参加哪一轮，但目标上的捕获与非捕获监听器执行时，eventPhase 都是 AT_TARGET。事件的路径与事件循环不是同一概念，不能把冒泡说成一组逐个排队的异步任务。
+
+</details>
+
+### 9.2 target 和 currentTarget 有什么区别？ {#event-targets}
+
+**考察重点**：实际点击后代、委托监听位置与事件对象生命周期。
+
+**相关内容**：[目标与监听器位置](#目标与监听器位置)、[Shadow DOM 的传播](#影子树边界)。
+
+<details>
+<summary>参考回答</summary>
+
+**target 是当前看到的事件目标，currentTarget 是正在执行这份监听器的对象。** 点到按钮内图标时，目标可能是图标，委托监听的 currentTarget 则是列表容器。分发结束后 currentTarget 会清空，异步代码需要时应提前保存所需值。跨 Shadow DOM 时目标还可能重定向，不能把 target 永远理解为最深层内部节点。
+
+</details>
+
+### 9.3 stopPropagation、stopImmediatePropagation 与 preventDefault 有什么区别？ {#propagation-control}
+
+**考察重点**：后续传播、当前轮次监听器与平台默认行为。
+
+**相关内容**：[停止传播](#停止传播)、[取消默认行为](#取消默认行为)。
+
+<details>
+<summary>参考回答</summary>
+
+**stopPropagation 阻止后续传播步骤，stopImmediatePropagation 还停止当前这轮剩余监听器，preventDefault 取消允许取消的默认行为。** 前两者不会自动阻止链接导航，后者不会自动停止冒泡。capture 阶段停止传播还可能阻止到达目标或目标的后续非捕获轮次；preventDefault 是否有效要检查 cancelable 和 passive，addEventListener 回调直接 return false 不能替代它们。
+
+</details>
+
+### 9.4 怎样实现事件委托，动态插入的按钮为何也能响应？ {#delegation}
+
+**考察重点**：祖先监听、closest、归属范围与动态节点。
+
+**相关内容**：[事件委托](#事件委托)。
+
+<details>
+<summary>参考回答</summary>
+
+**在稳定祖先上监听可到达它的事件，找到对应操作元素，再确认该元素属于当前业务容器。** 点击可能落在图标上，所以可以从 target 使用 closest 找按钮，并检查 contains 或直接父行等范围条件。新按钮沿同一祖先路径传播，不需要单独重新绑定；但不冒泡事件、停止传播和 Shadow DOM 边界需要另行处理，不能无条件假设祖先一定收到。
+
+</details>
+
+### 9.5 哪些事件不冒泡，是否就不能使用事件委托？ {#non-bubbling}
+
+**考察重点**：事件类型差异、捕获监听与替代事件。
+
+**相关内容**：[不冒泡的事件](#不冒泡事件)。
+
+<details>
+<summary>参考回答</summary>
+
+**focus、blur、mouseenter、mouseleave 等不按普通点击方式冒泡，但不等于所有祖先观察方式都不可用。** focus 可以在祖先使用捕获监听，或使用会冒泡的 focusin。用 mouseover 替代进入事件时要检查 relatedTarget，避免把后代之间移动误判为进入整个区域。应按具体事件的传播和边界规则选择，不能只把监听器统一搬到 document。
+
+</details>
+
+### 9.6 addEventListener 的第三个参数有哪些作用，怎样正确移除监听器？ {#listener-options}
+
+**考察重点**：capture、once、passive、signal 以及监听器身份。
+
+**相关内容**：[注册选项与清理](#注册选项与清理)。
+
+<details>
+<summary>参考回答</summary>
+
+**第三个参数可以是 capture 布尔值，也可以指定 capture、once、passive 和 signal。** 它们分别控制捕获参与、单次调用、不取消默认行为与信号清理。移除时要使用同一回调对象并匹配 capture，不要求是同一个 options 对象；重新写箭头函数无法移除原函数。同类型、回调、capture 的重复注册也不会自动更新已有 once/passive 配置。
+
+</details>
+
+### 9.7 怎样绑定只执行一次的点击事件，能否用它防止重复提交？ {#once-listener}
+
+**考察重点**：once 的移除时机与业务状态的区别。
+
+**相关内容**：[单次监听与统一清理](#单次监听与统一清理)。
+
+<details>
+<summary>参考回答</summary>
+
+**注册时使用 once: true 即可让这份监听器只调用一次，但它不代表提交成功一次。** 监听器在调用前移除，异步请求是否失败不影响这次移除，也不会自动恢复重试。重复提交应结合进行中状态、交互禁用与服务端幂等要求处理，不能只用一次性监听替代整个业务约束。
+
+</details>
+
+### 9.8 如何用原生事件让输入框内容同步显示到段落？ {#input-sync}
+
+**考察重点**：input、普通文本写入、程序赋值与输入法边界。
+
+**相关内容**：[输入值同步](#输入值同步)。
+
+<details>
+<summary>参考回答</summary>
+
+**监听 input，把 input.value 赋给段落的 textContent，并在初始化时同步一次。** 这样不只覆盖某个按键，也能响应粘贴等用户编辑。程序直接赋 value 不会自动触发 input，需要主动同步；如果同步结果还用于搜索或校验，应考虑输入法组合中间状态，不能把每次编辑事件都当成最终文本。
+
+</details>
+
+### 9.9 鼠标跟随或拖尾效果怎样组织事件与页面更新？ {#pointer-effects}
+
+**题型**：综合题
+
+**考察重点**：坐标系、高频输入、渲染更新、状态上限与清理。
+
+**相关内容**：[指针位置与更新频率](#指针位置与更新频率)、[单次监听与统一清理](#单次监听与统一清理)。
+
+<details>
+<summary>参考回答</summary>
+
+**先记录与展示坐标系匹配的位置，再在合适的渲染机会更新有限数量的视觉对象。** 固定定位标记可使用 clientX/clientY，并设置 pointer-events:none 避免挡住命中。一次等待中的动画回调可读取最新位置，拖尾额外维护有上限的位置历史或固定标记池，按时间衰减并回收。卸载时解除监听、取消待处理动画并移除标记，不能让移动事件无限创建节点。
+
+</details>
+
+### 9.10 dispatchEvent 会等到 async 监听器完成后才返回吗？ {#custom-events}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：同步分发、取消结果与异步处理协议。
+
+**相关内容**：[同步分发与取消](#自定义事件分发)。
+
+<details>
+<summary>参考回答</summary>
+
+**不会，它同步执行监听器的当前调用并返回取消状态，不等待返回的 Promise。** CustomEvent 的 detail 可以携带业务数据，但取消需要 cancelable，冒泡和跨影子树也要分别声明。需要等待多个异步处理结果时应采用显式 Promise 协议；事件回调异常也不是自动从 dispatchEvent 重新抛出的普通函数调用异常。
+
+</details>
+
+### 9.11 Shadow DOM 内部事件为什么可能在外部看到宿主作为 target？ {#shadow-events}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：目标重定向、composed 与 bubbles、可观察路径。
+
+**相关内容**：[Shadow DOM 的传播](#影子树边界)。
+
+<details>
+<summary>参考回答</summary>
+
+**事件跨组件边界时可能重定向目标，让外部观察宿主而非内部实现节点。** composed 控制能否跨影子树，bubbles 控制相应冒泡行为；composedPath 只提供当前可观察路径，关闭影子树的内部节点不会向外完整公开。组件对外更适合提供明确业务事件与 detail，让使用者不依赖内部节点结构。
+
+</details>
+
+## 10. 参考资料 {#参考资料}
+
+- [WHATWG DOM：Events](https://dom.spec.whatwg.org/#events)
+- [WHATWG DOM：EventTarget](https://dom.spec.whatwg.org/#interface-eventtarget)
+- [WHATWG DOM：Dispatching events](https://dom.spec.whatwg.org/#dispatching-events)
+- [WHATWG HTML：Activation behavior](https://html.spec.whatwg.org/multipage/interaction.html#activation-behavior)
+- [W3C：UI Events](https://www.w3.org/TR/uievents/)
+- [W3C：Input Events Level 2](https://www.w3.org/TR/input-events-2/)
+- [W3C：Pointer Events](https://www.w3.org/TR/pointerevents3/)

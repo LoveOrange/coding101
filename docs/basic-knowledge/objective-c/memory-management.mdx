@@ -1,0 +1,286 @@
+---
+knowledge:
+  id: basic-knowledge.objective-c.memory-management
+  type: concept
+description: "解释 Objective-C ARC 与 MRC 的所有权规则、弱引用清零、自动释放池、Core Foundation 桥接，以及 atomic 的线程安全边界。"
+keywords: [Objective-C ARC, MRC, weak, autoreleasepool, Core Foundation 桥接, atomic]
+---
+
+# Objective-C 内存管理
+
+Objective-C 的引用计数以内存所有权为基础：需要继续使用对象的关系持有它，不再需要时解除持有。MRC 由开发者显式管理，ARC 则由编译器依据规则生成相应操作。两者都不能替业务决定对象应该活多久，也不能自动处理任意强引用环。本文以 Apple 平台的 ARC 为主，MRC 示例会明确标注。
+
+## 1. 面试核心 {#core}
+
+- ARC 与 MRC 都使用引用计数，**区别主要在于谁负责插入和维护相应所有权操作，ARC 不是周期扫描对象的垃圾回收器**。[卡](#arc-mrc)
+- 强引用维持对象生命，弱引用不拥有对象，**weak 的自动清零需要运行时登记和对象销毁过程配合**。[卡](#strong-weak) [卡](#weak-zeroing)
+- `autorelease` 表达延后的释放，**自动释放池只处理登记给它的释放操作，不会收集作用域内的所有对象**。[卡](#autorelease-pool)
+- 池排空不等于对象一定销毁，**如果仍有其他强引用，对象会继续存活**。
+- Core Foundation 桥接需要同时判断类型兼容与所有权，**__bridge 不转移所有权，retained 与 transfer 则承担不同方向的释放责任**。[卡](#bridging)
+- `atomic` 只约束相应访问器的单次操作，**不保证 count++、多字段一致性或对象内部可变内容的线程安全**。[卡](#atomic)
+- 引用环需要调整所有权或明确断开，**不应靠观察 retainCount 数值判断对象能否正确释放**。[卡](#cycles)
+
+## 2. 所有权与 ARC {#所有权与arc}
+
+**拥有关系**表示当前代码有责任保持对象有效，并在不再需要时交回这份责任。MRC 下，使用 `alloc`、`new`、`copy`、`mutableCopy` 等方法族取得的对象通常带有拥有权，显式 `retain` 也增加持有，之后要与适当的 `release` 或延后的 `autorelease` 平衡。
+
+方法族按语言规定识别，不是名称中任意出现 `new` 或 `copy` 字母就成立；接口也可以通过相应属性标注所有权。查看一个方法返回结果时，应按完整契约判断，不能只凭它看起来像工厂函数。
+
+下面是明确使用 MRC 的示例：
+
+```objectivec
+// 本示例使用 MRC：以 -fno-objc-arc 编译。
+#import <Foundation/Foundation.h>
+
+@interface Token : NSObject
+@end
+@implementation Token
+- (void)dealloc {
+    printf("released\n");
+    [super dealloc];
+}
+@end
+
+int main(void) {
+    @autoreleasepool {
+        Token *token = [[Token alloc] init];
+        Token *alias = [token retain];
+        [token release];
+        printf("%s\n", [NSStringFromClass([alias class]) UTF8String]); // Token
+        [alias release]; // released
+    }
+}
+```
+
+`token` 创建与 `alias` 的显式保留形成两份拥有责任，第一次释放不销毁对象，最后一次释放才执行 `dealloc`。这里不会因为两个 C 变量都写着同一指针，就自动产生或消除 MRC 持有。
+
+**ARC** 根据变量的所有权限定、方法族、参数与返回约定，在编译过程中安排相应的持有和释放。优化器可以消除冗余操作，运行时还提供弱引用、返回值优化等支持，所以不能把 ARC 简化成“每行变量出现都插一次 retain/release”。
+
+ARC 代码不能直接调用 `retain`、`release`、`autorelease` 或 `[super dealloc]`。需要释放文件、C 缓冲区等非 ARC 管理的资源时，仍然要遵守相应 API 的规则；ARC 不等于所有资源都自动关闭。
+
+`dealloc` 用来释放对象负责的资源，但外部逻辑不应手工调用其他对象的 `dealloc`。页面离开时应停止的任务、观察或会话，最好有明确的结束接口；如果对象正因为某个长期任务而无法销毁，等待 `dealloc` 才取消任务就可能形成错误的生命周期依赖。
+
+## 3. 强弱引用与清零 {#强弱引用与清零}
+
+**`__strong` 引用**持有对象。**`__weak` 引用**不维持对象生命，目标进入销毁流程后，相关弱存储会被清空。`__unsafe_unretained` 也不拥有对象，但不会自动清零，目标消失后继续使用可能访问失效内存。
+
+```objectivec
+#import <Foundation/Foundation.h>
+
+int main(void) {
+    @autoreleasepool {
+        __weak NSObject *probe;
+        @autoreleasepool {
+            NSObject *owner = [NSObject new];
+            probe = owner;
+            printf("%d\n", probe == owner); // 1
+        }
+        printf("%d\n", probe == nil); // 1
+    }
+}
+```
+
+内层的 `owner` 提供强持有，`probe` 只用于观察。退出内层后，拥有关系与临时引用结束，弱引用不会阻止对象销毁。
+
+弱引用的清零不是定期扫描整个进程，也不是把对象自己的地址改成零。以 Apple 开源 `objc4-906.2` 为例，可以沿以下关系理解：
+
+1. 初始化或赋值弱引用时，运行时把弱存储位置登记到目标对象对应的记录中；重新赋值时要移除旧关系，再建立新关系。
+2. 相关弱表按对象查到引用它的弱存储位置。记录的是需要更新的槽位，才能在对象销毁时找到这些变量。
+3. 销毁过程清理登记的弱槽位，将其置为 `nil`，再移除相应记录。注册、读取和销毁之间需要同步，避免读到正在失效的目标。
+
+具体表结构、分片方式和布局是运行时实现细节。普通业务依赖的保证是正确的弱引用语义，而不是某个哈希桶数量或固定偏移。
+
+读取弱引用时，运行时需要保证读出的对象不会在当前需要的使用过程中突然失效。若回调里会多次访问它，常见做法是先读取成局部强引用，再检查非空并完成这段工作。该局部引用的使用范围越长，维持对象生命的范围也越长；具体回调示例见 [Objective-C Block](./block.mdx#引用环与回调生命周期)。
+
+## 4. 自动释放池 {#自动释放池}
+
+**自动释放池**收集需要延后执行的释放操作，在退出相应池边界时处理。`autorelease` 不表示立刻销毁对象，也不表示把对象永久交给某个垃圾回收器。
+
+为了直接观察登记与排空，下面同样明确使用 MRC：
+
+```objectivec
+// 本示例使用 MRC：以 -fno-objc-arc 编译。
+#import <Foundation/Foundation.h>
+
+@interface Token : NSObject
+@end
+@implementation Token
+- (void)dealloc {
+    printf("released\n");
+    [super dealloc];
+}
+@end
+
+int main(void) {
+    @autoreleasepool {
+        @autoreleasepool {
+            Token *token = [[[Token alloc] init] autorelease];
+            printf("inside %s\n", [NSStringFromClass([token class]) UTF8String]);
+        }
+        printf("outside\n");
+    }
+}
+```
+
+输出依次为 `inside Token`、`released`、`outside`。创建取得的拥有权通过一次延后释放平衡，内层池排空时才执行它。如果其他地方还保留着一份拥有权，这次释放并不会让对象销毁。
+
+ARC 仍然会与返回值约定、框架内部临时对象和 autorelease 机制配合，因此仍然需要自动释放池。一个对象写在 `@autoreleasepool` 花括号内部，不代表它一定登记进池；普通强变量的释放与池中待执行的释放，也不是同一种来源。
+
+在 `objc4-906.2` 实现中，自动释放记录可以放入按线程管理的页结构，并通过边界标记区分嵌套池。退出池时从当前记录位置回退到相应边界，执行积累的释放，再处理不再需要的页。页容量、压缩和返回值优化会随实现变化，面试回答应先讲登记、边界与排空，不把固定页大小当作机制本身。
+
+UIKit 的事件处理通常已经有池边界，但一次很长的处理循环可能在同一轮事件内积累大量临时对象。可以按合适批次建立内层池，以降低峰值内存；需要跨批次保留的结果则必须有独立强引用。自建线程和没有 UI 框架的命令行入口，也要明确池的建立与排空，不能假定每条线程都自动拥有同样的框架边界。
+
+## 5. Core Foundation 桥接 {#core-foundation桥接}
+
+**桥接转换**在兼容的 Objective-C 与 Core Foundation 类型之间转换引用，并表达相应的所有权处理。类型可以桥接，不等于所有名字相似的 Foundation 与 CF 类型都兼容。
+
+| 转换 | 所有权变化 | 调用方责任 |
+| --- | --- | --- |
+| `__bridge` | 不转移拥有权 | 保证原有拥有者在使用期间保持对象有效 |
+| `__bridge_retained` / `CFBridgingRetain` | 获得交给 CF 一侧管理的拥有权 | 后续用相应 CF 释放规则平衡 |
+| `__bridge_transfer` / `CFBridgingRelease` | 将已经拥有的 CF 引用交给 ARC 管理 | 不再为同一份拥有权重复调用 `CFRelease` |
+
+```objectivec
+#import <Foundation/Foundation.h>
+
+int main(void) {
+    @autoreleasepool {
+        CFStringRef created = CFStringCreateWithCString(NULL, "Lin", kCFStringEncodingUTF8);
+        NSString *managed = CFBridgingRelease(created);
+        printf("%s\n", managed.UTF8String); // Lin
+
+        CFStringRef owned = (__bridge_retained CFStringRef)managed;
+        printf("%ld\n", (long)CFStringGetLength(owned)); // 3
+        CFRelease(owned);
+    }
+}
+```
+
+`CFStringCreateWithCString` 按 Create 规则返回拥有的引用，`CFBridgingRelease` 把这份责任交给 ARC。之后的 `__bridge_retained` 又取得一份独立的 CF 侧责任，因此对应一次 `CFRelease(owned)`。两次转换不能抵消着看，要逐份计算当前代码拿到和交出的拥有权。
+
+把一个借用的 CF 引用误交给 `__bridge_transfer`，可能导致多释放；拿到拥有引用却只 `__bridge` 而永不释放，则可能泄漏。桥接关键字也不会把不兼容的类型变兼容，仍需核对具体 API 的类型与所有权契约。
+
+## 6. 属性原子性与线程安全 {#属性原子性与线程安全}
+
+**`atomic` 属性**约定合成 getter、setter 的单次访问具备相应原子性。它不把多个访问拼成事务，也不保护属性指向对象的所有内部操作。
+
+例如 `counter.count += 1` 通常包含读取、计算和写入；即使 getter 和 setter 都分别原子，两个线程仍可能都读到 `1`，各自写回 `2`，丢失一次更新。类似地，分别原子地写 `firstName` 和 `lastName`，不保证读者看到的两字段来自同一次业务更新。
+
+若属性是一个可变数组，原子地取得数组引用也不意味着随后对数组执行添加、删除和遍历就是安全的。需要保护整个读改写过程或多字段不变量时，应使用合适的锁、串行队列或不可变快照；所有参与者还必须遵守同一套访问规则。
+
+直接访问 ivar 会绕过访问器，手写 getter、setter 也必须自行履行声明的同步语义。`nonatomic` 适用于访问已经由外部隔离、或接口明确不支持并发的情形，但不能仅为减少开销就忽略真实并发访问。
+
+## 7. 引用环与诊断 {#引用环与诊断}
+
+**强引用环**使一组对象在失去外部用途后仍然互相拥有，引用计数无法仅凭“业务已经不使用”自动打破它。父对象与子对象、页面与回调、宿主与关联值都可能形成这样的关系。
+
+处理时应先画出真正的拥有路径，再决定哪个方向只需要访问而不应拥有。弱委托、弱捕获、结束时清空回调或取消订阅都可能合适，但它们要对应具体生命周期，不是任意找一条边改弱。若对象本就应该由当前操作持有到完成，提前改弱还可能让工作丢失。
+
+排查可以从 `dealloc` 是否发生、内存图中的持有路径以及临时对象峰值入手。`retainCount` 的观测会受框架、临时引用和优化影响，不能作为可靠的释放条件，也不能通过手工多调一次 release 来“试着修好”。
+
+泄漏、峰值内存和悬垂引用是不同问题：泄漏需要解释为什么还被持有，峰值内存可能需要缩短批次或池边界，悬垂引用则要修正缺失的拥有关系与失效访问。定位原因后再选择措施，才能避免修复一种问题时制造另一种。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 ARC 与 MRC 有什么区别？ {#arc-mrc}
+
+**考察重点**：所有权规则、编译器插入与运行时配合。
+
+**相关内容**：[所有权与 ARC](#所有权与arc)。
+
+<details>
+<summary>参考回答</summary>
+
+**两者都基于引用计数，MRC 要求开发者显式平衡拥有与释放，ARC 由编译器按所有权规则生成并优化相关操作。** ARC 还依赖运行时支持，但不是定期追踪不可达对象的 GC。它不自动解决强引用环，也不代替非对象资源的关闭；ARC 代码不能直接调用 retain、release 或 super dealloc。
+
+</details>
+
+### 8.2 strong 与 weak 有什么区别？ {#strong-weak}
+
+**考察重点**：拥有关系、对象存活与释放后状态。
+
+**相关内容**：[强弱引用与清零](#强弱引用与清零)。
+
+<details>
+<summary>参考回答</summary>
+
+**strong 维持对象存活，weak 不拥有对象，并在目标销毁时被清零。** 弱引用适合可以先消失的非拥有关系，使用时要处理 `nil`；需要在一段操作内保持有效，可以先读取为局部强引用。`assign` 或 `__unsafe_unretained` 不具有同样的自动清零保证。
+
+</details>
+
+### 8.3 weak 引用是怎样自动变成 nil 的？ {#weak-zeroing}
+
+**考察重点**：弱存储登记、销毁清理与同步。
+
+**相关内容**：[强弱引用与清零](#强弱引用与清零)。
+
+<details>
+<summary>参考回答</summary>
+
+**运行时登记目标对象对应的弱存储位置，在对象销毁过程中清理并将这些槽位置 nil。** 重新赋值需要维护旧关系与新关系，读取与销毁之间也需要协调，不能简单地把弱变量当作随时解引用的裸指针。具体哈希表和分片布局是版本实现细节，自动清零语义才是业务代码依赖的契约。
+
+</details>
+
+### 8.4 autorelease pool 的作用与原理是什么？ {#autorelease-pool}
+
+**考察重点**：延后释放、线程与嵌套边界、峰值内存。
+
+**相关内容**：[自动释放池](#自动释放池)。
+
+<details>
+<summary>参考回答</summary>
+
+**池记录需要延后执行的释放，在对应边界退出时排空；它不负责回收花括号内创建的所有对象。** Apple 运行时可用按线程管理的页和边界记录实现嵌套，排空时回退并执行释放。仍有强持有的对象不会因此销毁。ARC 仍会产生或接触 autorelease 对象，长循环可以按批次增加内层池降低临时对象峰值。
+
+</details>
+
+### 8.5 __bridge、__bridge_retained 和 __bridge_transfer 有什么区别？ {#bridging}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：兼容类型转换与两侧拥有责任。
+
+**相关内容**：[Core Foundation 桥接](#core-foundation桥接)。
+
+<details>
+<summary>参考回答</summary>
+
+**__bridge 只转换引用而不转移所有权，retained 取得交给 CF 一侧管理的拥有权，transfer 则把已有的 CF 拥有权交给 ARC。** retained 的结果之后需要相应 CF 释放，transfer 后不能再为同一份责任重复释放。还要先确认类型支持桥接，关键字不会修复类型不兼容或错误的借用关系。
+
+</details>
+
+### 8.6 atomic 是否保证对象线程安全？ {#atomic}
+
+**考察重点**：单次访问器、复合操作与对象内部状态。
+
+**相关内容**：[属性原子性与线程安全](#属性原子性与线程安全)。
+
+<details>
+<summary>参考回答</summary>
+
+**不保证，它主要约束对应访问器的单次原子操作，不把整个对象或多个访问变成事务。** `count += 1` 仍可丢失更新，多字段仍可观察到不一致组合，可变对象内容也需要独立保护。需要让整个读改写或业务不变量受同一套锁、队列或快照机制保护。
+
+</details>
+
+### 8.7 引用计数为什么会产生循环引用，通常怎样处理？ {#cycles}
+
+**考察重点**：对象图、非拥有关系与主动结束。
+
+**相关内容**：[引用环与诊断](#引用环与诊断)。
+
+<details>
+<summary>参考回答</summary>
+
+**对象互相强持有时，即使外部不再使用，环内拥有关系仍然存在。** 应根据实际所有权设置弱关系，或在完成、取消等明确时刻断开回调与订阅。不能只看变量名或 retainCount，也不能任意改弱；需要证明对象在使用期间有效，在不需要时能够结束。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+
+- [Apple：Memory Management Policy](https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/MemoryMgmt/Articles/mmRules.html)
+- [Clang：Objective-C Automatic Reference Counting](https://clang.llvm.org/docs/AutomaticReferenceCounting.html)
+- [Apple：Using Autorelease Pool Blocks](https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/MemoryMgmt/Articles/mmAutoreleasePools.html)
+- [Apple：Toll-Free Bridged Types](https://developer.apple.com/library/archive/documentation/CoreFoundation/Conceptual/CFDesignConcepts/Articles/tollFreeBridgedTypes.html)
+- [Apple objc4-906.2：NSObject.mm](https://github.com/apple-oss-distributions/objc4/blob/objc4-906.2/runtime/NSObject.mm)
+- [Apple objc4-906.2：objc-weak.mm](https://github.com/apple-oss-distributions/objc4/blob/objc4-906.2/runtime/objc-weak.mm)
+- [Apple：Declared Properties](https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/ObjectiveC/Chapters/ocProperties.html)

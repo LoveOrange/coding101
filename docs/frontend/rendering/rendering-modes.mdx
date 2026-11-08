@@ -1,0 +1,429 @@
+---
+sidebar_position: 1
+knowledge:
+  id: frontend.rendering.rendering-modes
+---
+
+# Web 渲染模式
+
+CSR、SSR 和 SSG 描述页面内容在哪里、什么时候生成。浏览器最终都要解析 HTML、计算样式并绘制像素；这些模式改变的是浏览器拿到内容之前的工作分配。
+
+面试中比较它们，应该沿着一次请求解释：响应里有没有正文，数据在什么时候读取，JavaScript 到达后还要做什么，内容更新后旧页面怎样失效。这几件事决定首屏、搜索可见性、服务器成本和交互体验，不能用“SSR 更快”概括。
+
+## 1. 面试核心 {#core}
+
+- **CSR 主要在浏览器生成界面，SSR 在处理请求时生成 HTML，SSG 提前生成可复用的 HTML。** 三者都可能包含客户端交互代码。[卡](#rendering-differences)
+- **SSR 返回的 HTML 可以先展示内容，但 React 的事件处理和状态更新仍需要 hydration。** HTML 字符串不会携带可执行的事件函数。[卡](#server-rendering)
+- **Hydration 要让浏览器首次渲染与服务器输出一致，通常需要共享同一份初始数据快照。** 重新请求变化后的数据、随机数、时区和无效 HTML 嵌套都可能打破一致性。[卡](#state-transfer) [卡](#hydration-mismatch)
+- **SSG 的内容新鲜度取决于重新生成与缓存失效，客户端交互不会自动更新所有访问者拿到的 HTML。** 增量再生成也要明确触发条件与旧内容的服务规则。[卡](#ssg-updates)
+- **流式 SSR 可以先发送已经就绪的部分，减少等待全部内容的时间。** 它不等于完成 hydration，响应开始发送后也不能再修改 HTTP 状态码。[卡](#streaming)
+- **SSR 将一部分等待与计算移到服务器，并没有消除这些成本。** 首屏内容、交互延迟、服务器耗时与缓存命中需要分别验证。[卡](#mode-selection)
+- **SEO 需要内容可获取、链接可发现、元信息与状态正确；SSR 只是实现这些条件的一种方式。** Google 可以执行 JavaScript，不能把所有爬虫都当成同一种运行环境。[卡](#seo)
+
+## 2. 内容生成与浏览器渲染 {#内容生成与浏览器渲染}
+
+### 2.1 三种生成时机 {#三种生成时机}
+
+**客户端渲染**（Client-Side Rendering，CSR）主要由浏览器运行 JavaScript，再产生页面内容。一个纯 CSR 入口的 HTML 可以只有应用容器、加载提示与脚本地址；正文要等脚本执行，有时还要等后续数据请求。
+
+**服务端渲染**（Server-Side Rendering，SSR）在处理页面请求时执行渲染逻辑，把产生的 HTML 发给浏览器。这里的“服务端”也可以是靠近用户的边缘运行环境，不限定为某台 Node.js 服务器。
+
+**静态站点生成**（Static Site Generation，SSG）在构建或预生成阶段产生 HTML，访问时复用产物。它减少了每次访问重新生成内容的工作，但产物代表生成时的快照。
+
+| 比较项 | CSR | 请求时 SSR | SSG |
+| --- | --- | --- | --- |
+| 主要内容生成位置 | 浏览器 | 服务端运行环境 | 构建或预生成环境 |
+| 首次响应中的正文 | 纯 CSR 通常没有完整正文 | 可以包含当前请求生成的正文 | 可以包含生成时的正文 |
+| 初始数据来源 | 浏览器请求或已有数据 | 当前请求读取，再传给客户端 | 生成阶段读取并写入产物 |
+| 访问时主要成本 | 脚本、数据请求、客户端执行 | 数据读取、渲染与传输，随后可能 hydration | 产物传输，随后可能 hydration |
+| 内容更新方式 | 更新数据源，客户端重新读取 | 后续请求读取新数据，仍受缓存影响 | 重建、重新生成或补充客户端请求 |
+
+这个表比较的是生成策略，不是互斥的产品类型。一个站点可以把文档用 SSG 生成、登录后台用 CSR 展示，把需要请求上下文的页面做成 SSR。同一页也可以先返回公开内容，再在浏览器请求个人收藏状态。
+
+### 2.2 SPA 与 SSR 是不同维度 {#spa与ssr是不同维度}
+
+**单页应用**（SPA）强调应用内导航主要在同一文档中完成。它不要求首次访问一定是 CSR：首次请求可以得到 SSR HTML，之后通过客户端路由切换页面。相反，每次导航都请求新文档的多页站点，也可以在每个页面里运行交互组件。
+
+无论正文在哪里生成，样式、布局与绘制都由浏览器处理。因此，SSR 不能替代 [浏览器渲染流程](../browser/rendering.mdx) 中的样式计算和布局，也不会自动修复布局抖动或过大的图片。
+
+## 3. 同一个组件的两种入口 {#同一个组件的两种入口}
+
+### 3.1 共享组件与 HTML 生成 {#共享组件与html生成}
+
+下面使用 React 18/19 的稳定 API，观察同一课程页面的 CSR、SSR 与 SSG。`App.js` 同时供服务器与客户端调用，使用 `createElement` 省去 JSX 转换：
+
+```js
+import { createElement as h, useState } from 'react';
+
+export default function App({ course }) {
+  const [likes, setLikes] = useState(course.likes);
+  return h('main', null,
+    h('h1', null, course.title),
+    h('button', { onClick: () => setLikes(n => n + 1) }, `赞 ${likes}`)
+  );
+}
+```
+
+数据为 `{ title: '浏览器基础', likes: 3 }` 时，页面应显示课程标题与“赞 3”。按钮点击后的变化是浏览器中的组件状态，没有保存到服务器。
+
+`render-page.mjs` 决定是否提前生成正文，并把需要在浏览器恢复的数据写入文档：
+
+```js
+import { createElement as h } from 'react';
+import { renderToString } from 'react-dom/server';
+import App from './App.js';
+
+export function renderPage(course, clientRendering = false) {
+  const content = clientRendering
+    ? '<p>正在加载课程</p>'
+    : renderToString(h(App, { course }));
+  const seed = clientRendering
+    ? ''
+    : JSON.stringify(course).replace(/</g, '\\u003c');
+  return `<!doctype html><html lang="zh-CN">
+    <head><meta charset="utf-8"><title>课程示例</title></head>
+    <body>
+      <div id="root" data-mode="${clientRendering ? 'csr' : 'hydrate'}">${content}</div>
+      <script id="initial-data" type="application/json">${seed}</script>
+      <script src="/assets/main.js" defer></script>
+    </body></html>`;
+}
+```
+
+`renderPage(course)` 的响应包含真实 `h1` 与 `button`；`renderPage(null, true)` 只包含加载提示。服务器渲染的是 HTML 结构和文字，`onClick` 函数不会变成 HTML 里的一个可恢复函数。
+
+这里显式挑选了公开课程字段。嵌入文档的数据对访问者可见，不能把完整数据库对象或密钥一并传进去。`application/json` 不执行脚本，但 HTML 解析器仍会识别结束标签，所以把 JSON 中的 `<` 转义，避免数据中的 `</script>` 提前结束这个元素；客户端 `JSON.parse` 后仍能恢复原字符串。复杂类型、循环引用与更多序列化规则应交给明确的协议或框架处理。
+
+`renderToString` 适合展示“组件变成 HTML”的机制。它同步返回字符串，不会等待组件里的任意异步任务；本例先准备数据，再调用渲染。需要等待 Suspense 内容或分段发送时，应选择相应的服务端渲染 API。
+
+### 3.2 创建 DOM 与接管已有 DOM {#创建dom与接管已有dom}
+
+**Hydration**，也称水合，是客户端框架根据已有 HTML 与初始数据恢复组件管理和交互能力的过程。它不只是扫描 `onclick` 属性，也不意味着应该把整棵 DOM 删除重建。
+
+`client.js` 根据页面入口选择创建界面或接管已有界面：
+
+```js
+import { createElement as h } from 'react';
+import { createRoot, hydrateRoot } from 'react-dom/client';
+import App from './App.js';
+
+const container = document.getElementById('root');
+if (container.dataset.mode === 'csr') {
+  fetch('/api/course')
+    .then(response => {
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return response.json();
+    })
+    .then(course => createRoot(container).render(h(App, { course })))
+    .catch(() => { container.textContent = '课程加载失败'; });
+} else {
+  const course = JSON.parse(document.getElementById('initial-data').textContent);
+  hydrateRoot(container, h(App, { course }), {
+    onRecoverableError: error => console.error('hydration', error)
+  });
+}
+```
+
+CSR 等请求返回后用 `createRoot` 创建界面。SSR 入口从文档读取与服务器相同的数据，调用 `hydrateRoot`；匹配成功后，原有按钮可以保留，点击从“赞 3”变成“赞 4”。这里输出错误只用于演示，项目中应带上发布版本等信息接入错误采集。
+
+暂时禁用 JavaScript，SSR 仍能显示标题和“赞 3”，但这个 React 点击处理不会运行。HTML 自身的链接、原生表单等能力不必依赖 React，所以“没有 hydration 就完全不能交互”也过于绝对。
+
+### 3.3 请求时生成与构建时生成 {#请求时生成与构建时生成}
+
+将这些文件放在声明了 `"type": "module"` 的项目中，安装 React 与 React DOM，并用项目构建工具把 `client.js` 打包为 `dist/main.js`。新建 `course.json`，内容为 `{"title":"浏览器基础","likes":3}`。下面的 `server.mjs` 提供三个页面入口：
+
+```js
+import http from 'node:http';
+import { readFile } from 'node:fs/promises';
+import { renderPage } from './render-page.mjs';
+
+const readCourse = async () => JSON.parse(await readFile('course.json', 'utf8'));
+const server = http.createServer(async (request, response) => {
+  const path = new URL(request.url, 'http://localhost').pathname;
+  try {
+    let body;
+    let type = 'text/html; charset=utf-8';
+    if (path === '/csr') body = renderPage(null, true);
+    else if (path === '/ssr') body = renderPage(await readCourse());
+    else if (path === '/ssg') body = await readFile('dist/static.html');
+    else if (path === '/api/course') {
+      type = 'application/json';
+      body = JSON.stringify(await readCourse());
+    } else if (path === '/assets/main.js') {
+      type = 'text/javascript';
+      body = await readFile('dist/main.js');
+    } else {
+      response.writeHead(404);
+      response.end('Not found');
+      return;
+    }
+    response.writeHead(200, { 'content-type': type, 'cache-control': 'no-store' });
+    response.end(body);
+  } catch {
+    response.writeHead(500);
+    response.end('Render failed');
+  }
+});
+server.listen(Number(process.env.DEMO_PORT ?? 3000), '127.0.0.1', () => {
+  console.log(`http://127.0.0.1:${server.address().port}`);
+});
+```
+
+`/ssr` 在每次请求时读取数据并渲染；`/csr` 先返回外壳，再由浏览器读取 API；`/ssg` 直接读取生成产物。示例用 `no-store` 排除 HTTP 缓存对观察的干扰，不代表生产环境应该关闭缓存。它只演示页面生成，不是完整的生产 HTTP 服务。
+
+在运行服务器前，先执行 `generate.mjs` 生成 `/ssg` 对应的文件：
+
+```js
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { renderPage } from './render-page.mjs';
+
+const course = JSON.parse(await readFile('course.json', 'utf8'));
+await mkdir('dist', { recursive: true });
+await writeFile('dist/static.html', renderPage(course));
+```
+
+运行 `node generate.mjs` 后，再运行 `node server.mjs`。打开三个地址都能得到“浏览器基础”，区别在它们何时获得内容。把 `course.json` 的标题改为“浏览器进阶”，刷新 `/ssr` 和 `/csr` 会读到新标题，刷新 `/ssg` 仍是“浏览器基础”。重新执行生成脚本后，`/ssg` 才更新。
+
+这里的 SSG 页面仍包含脚本，可以 hydration 并响应按钮。**静态产物是预先生成的，不等于页面没有 JavaScript 或没有交互。**
+
+## 4. 初始状态与一致性 {#初始状态与一致性}
+
+### 4.1 初次恢复使用同一份快照 {#初次恢复使用同一份快照}
+
+服务器与浏览器是两个执行环境，不能共享一个运行中的组件对象。它们共享代码与可传输的数据，再各自建立运行状态。上一节将服务器渲染所用的 `course` 同时写入文档，使浏览器第一次渲染能得到同样的标题和点赞数。
+
+如果浏览器在 hydration 前重新请求课程，而请求结果已经变化，服务器的“赞 3”就可能遇到客户端的“赞 4”。更合适的顺序是先用快照恢复，再按照产品要求重新验证数据；框架的数据缓存可以帮助避免不必要的重复请求。
+
+这里的同步是初始状态对齐，不是实时同步协议。此后点赞是否写回、其他用户的修改何时可见，还需要 API、缓存失效或订阅机制。服务器上的用户状态也不能放进跨请求共享的可变单例；按请求创建应用与状态容器，避免用户 A 的数据被用户 B 复用。
+
+### 4.2 不匹配的常见来源 {#不匹配的常见来源}
+
+**Hydration mismatch** 是客户端期待的初始输出与已有 DOM 不一致。排查时同时比较服务器响应、浏览器解析后的 DOM 和客户端第一次渲染的输入，不能只对比最后看到的页面。
+
+| 来源 | 为什么会不同 | 修正方向 |
+| --- | --- | --- |
+| 两端分别使用随机数或当前时间 | 两次计算没有相同输入 | 传输确定的初始值，或在恢复后显示客户端值 |
+| 时区、语言环境不同 | 同一时间可能格式化成不同文字 | 明确格式化条件，或先使用一致的占位 |
+| 无效 HTML 嵌套 | 浏览器解析会调整结构 | 修正 HTML 结构，不把原始字符串当成最终 DOM |
+| 渲染时读取窗口宽度或本地存储 | 服务端缺少相同环境与值 | 首次输出一致，客户端挂载后再更新 |
+| HTML、脚本或数据来自不同发布版本 | 两端运行了不同协议或组件 | 保持产物与数据版本匹配，正确更新缓存 |
+
+不要把抑制警告当成通用修复。React 不保证修补所有属性差异；遇到某些不匹配还可能放弃对应服务端内容并重新客户端渲染，增加工作量。只有明确不可避免且范围很小的差异，才按框架的规则处理。
+
+### 4.3 浏览器专属信息 {#浏览器专属信息}
+
+需要窗口宽度时，可以先输出一致的占位，再在客户端 Effect 中读取。下面的 `BrowserInfo.js` 不在服务器访问 `window`：
+
+```js
+import { createElement as h, useEffect, useState } from 'react';
+
+export default function BrowserInfo() {
+  const [width, setWidth] = useState(null);
+  useEffect(() => { setWidth(window.innerWidth); }, []);
+  return h('p', null, width === null ? '窗口宽度待获取' : `窗口宽度 ${width}`);
+}
+```
+
+服务器输出与客户端第一次渲染都是“窗口宽度待获取”，Effect 只在客户端执行，随后更新。这个示例读取的是挂载时宽度，没有实现持续的 resize 订阅。仅在渲染里加 `typeof window !== 'undefined'` 可以避免访问错误，却不能保证两端输出一致。
+
+Vue SSR 也有相同的环境边界，浏览器 API 通常放在 `onMounted` 中使用。不要在服务端组件初始化时创建依赖客户端卸载钩子清理的定时器：服务端并不会经历同样的挂载、卸载过程。
+
+## 5. 流式返回与缓存更新 {#流式返回与缓存更新}
+
+### 5.1 流式 SSR {#流式ssr}
+
+**流式 SSR** 将就绪的 HTML 分批发送。页面外壳与慢内容可以分开完成，不必让整个响应都等最慢的数据。以下 `stream.mjs` 用延迟模块演示 React Suspense 边界，不模拟数据库缓存协议：
+
+```js
+import { createElement as h, lazy, Suspense } from 'react';
+import { renderToPipeableStream } from 'react-dom/server';
+
+export function streamPage(response) {
+  const Details = lazy(() => new Promise(resolve => {
+    setTimeout(() => resolve({ default: () => h('p', null, '课程详情已就绪') }), 80);
+  }));
+  let failed = false;
+  const { pipe, abort } = renderToPipeableStream(
+    h('html', { lang: 'zh-CN' }, h('body', null,
+      h('h1', null, '课程页'),
+      h(Suspense, { fallback: h('p', null, '正在加载详情') }, h(Details))
+    )), {
+      onShellReady() {
+        response.writeHead(failed ? 500 : 200, { 'content-type': 'text/html; charset=utf-8' });
+        pipe(response);
+      },
+      onShellError() {
+        response.writeHead(500);
+        response.end('Page failed');
+      },
+      onError(error) { failed = true; console.error(error); }
+    }
+  );
+  response.on('close', abort);
+}
+```
+
+在 Node HTTP 处理器中把 `response` 传入 `streamPage`，会先收到标题和加载提示，稍后再收到详情及替换提示所需的脚本。生产代理或压缩层可能缓冲数据，服务端分段写出不保证浏览器立即展示每一段。
+
+这个例子没有加载客户端 React，也没有 hydration 或组件交互。它演示的是分段内容传输。React 的流式替换脚本与应用的 hydration 是不同工作，前者也需要浏览器允许相应脚本执行。
+
+使用 `onShellReady` 可以尽早发送；等 `onAllReady` 再发送，则等所有服务端内容就绪。响应头已经发出后，后续错误不能再把已发出的 `200` 改成 `500`。需要在 HTTP 层判断的权限、重定向、关键资源是否存在，应在合适的发送边界前完成。
+
+### 5.2 静态产物与增量更新 {#静态产物与增量更新}
+
+SSG 适合可提前枚举、允许在一定时间内复用的内容，例如文档与公开介绍页。大量路径会增加构建工作，更新频繁的内容则需要明确何时重建，不能只讨论静态文件访问快。
+
+**增量静态再生成**（ISR）在保留预生成与缓存收益的同时，按约定重新生成部分页面。以 Next.js 的时间再验证机制为例，过期后的首次访问可以仍收到旧页，并触发后台再生成，后续访问才获得更新结果。它不是“每隔固定秒数所有页面一定已经刷新”的承诺。
+
+设计时应明确：哪些页面共享产物，旧数据最多能接受多久，更新由请求还是事件触发，生成失败如何保留可用版本，CDN 与应用缓存是否同时失效。价格、库存、权限等实时决策不能仅凭旧 HTML 中的展示值执行。
+
+## 6. 性能与 SEO {#性能与seo}
+
+### 6.1 根据等待链路选择 {#根据等待链路选择}
+
+SSR 可以减少“下载入口脚本—执行—请求首屏数据—产生内容”的串行等待，但服务器仍要读取数据和执行渲染。如果慢查询阻塞整个响应，TTFB 可能变长；如果客户端包很大，内容虽然出现，初始化与后续交互仍可能很慢。
+
+选择时先列约束，再定位成本：
+
+- 内容以公开阅读为主，更新频率允许预生成，可以优先考虑 SSG 与缓存。
+- 首屏需要按当前请求生成内容，可以考虑 SSR，并控制数据依赖、缓存范围与服务器耗时。
+- 登录后的工具界面主要依赖个人操作，公开索引价值有限，CSR 可以满足需求；仍需优化加载与交互。
+- 一页同时有稳定公开内容和频繁变化的个人信息，可以分开读取和渲染，避免把个人响应误存进共享缓存。
+
+这些是约束下的选择，不是性能排名。用 [Web 性能指标](../performance/metrics.mdx#不同指标回答不同问题) 分别观察首屏内容与交互；对照服务器时间、网络瀑布、主线程工作和缓存命中，才能证明模式变化是否改善了目标体验。
+
+### 6.2 搜索可见性 {#搜索可见性}
+
+**SEO** 是让搜索引擎更容易发现、理解并展示站点内容的一组工作。Google 会抓取页面、运行 JavaScript 并处理渲染结果；渲染可能排队，受资源可访问性等条件影响，其他机器人也未必执行相同的脚本。预先提供正文可以减少这些依赖，但不保证收录或排名。
+
+页面还要具备可发现的正常链接、描述内容的标题与说明、合理的规范 URL，以及正确的状态与索引指令。返回 `200` 的错误页、被禁止抓取的关键资源、错误的 `noindex`，不会因为用了 SSR 就自动修复。公开内容路由应具有可直接访问的 URL，不依赖一次用户点击才产生全部内容。
+
+实际核验时，先查看 HTTP 响应与状态，再查看执行脚本后的 DOM，并使用目标搜索平台的检查工具确认它看到的结果。禁用 JavaScript 是检查初始内容的辅助方法，不能模拟所有搜索引擎，更不能据此预测排名。
+
+### 6.3 SSR 与 React Server Components {#ssr与react-server-components}
+
+SSR 解决的是 HTML 的生成与返回；React Server Components 还规定组件在哪个环境执行、哪些模块进入客户端依赖，以及如何传递组件结果。两者可以组合，但不能互相替代解释。
+
+例如，Client Component 可以参与服务端 HTML 预渲染，然后在浏览器 hydration；名字中的 Client 并不直接说明首次 HTML 必须为空。模块边界与可传输数据的规则见 [React Server Components](../../tools-and-frameworks/react/server-components.mdx)。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 CSR、SSR 和 SSG 有什么区别，响应中的 HTML 有什么不同？ {#rendering-differences}
+
+**考察重点**：内容生成的位置与时机、初始响应、交互代码与更新方式。
+
+**相关内容**：[三种生成时机](#三种生成时机)、[请求时生成与构建时生成](#请求时生成与构建时生成)。
+
+<details>
+<summary>参考回答</summary>
+
+**CSR 主要在浏览器生成内容，SSR 在请求时生成 HTML，SSG 提前生成 HTML 并复用产物。** 纯 CSR 响应通常只有容器、提示与脚本；SSR 和 SSG 可以直接带正文，但数据分别来自请求时与生成时。三者都能运行客户端交互代码，SSG 更新数据后还要重新生成或通过客户端补充读取。
+
+</details>
+
+### 7.2 React 服务端渲染做了什么，返回 HTML 后为什么还需要 hydration？ {#server-rendering}
+
+**考察重点**：组件执行、HTML 生成、事件处理与客户端状态。
+
+**相关内容**：[共享组件与 HTML 生成](#共享组件与html生成)、[创建 DOM 与接管已有 DOM](#创建dom与接管已有dom)。
+
+<details>
+<summary>参考回答</summary>
+
+**服务端执行组件并生成 HTML，hydration 在浏览器恢复组件管理和交互能力。** `renderToString` 不会把事件函数序列化进 HTML，也不等待任意异步取数。浏览器可以先展示内容，再用相同初始数据调用 `hydrateRoot`；由 React 处理的按钮点击和状态更新依赖客户端代码就绪。
+
+</details>
+
+### 7.3 SSR 怎样实现服务端与客户端的数据同步？ {#state-transfer}
+
+**考察重点**：初始快照、序列化、重复请求、请求间隔离。
+
+**相关内容**：[初次恢复使用同一份快照](#初次恢复使用同一份快照)、[共享组件与 HTML 生成](#共享组件与html生成)。
+
+<details>
+<summary>参考回答</summary>
+
+**把服务器渲染所用的必要数据安全地传给浏览器，用同一份快照完成首次恢复。** 两端各自建立组件状态，并没有共享运行中的对象。恢复后可以再验证数据；不应在首次 hydration 前换成不一致的新结果。只传公开必要字段，处理序列化与 HTML 转义，并隔离各请求的用户状态。后续实时更新仍需要另外的数据同步机制。
+
+</details>
+
+### 7.4 服务端与客户端渲染结果不一致，应该怎样排查？ {#hydration-mismatch}
+
+**考察重点**：输入一致性、HTML 解析、平台差异与发布缓存。
+
+**相关内容**：[不匹配的常见来源](#不匹配的常见来源)、[浏览器专属信息](#浏览器专属信息)。
+
+<details>
+<summary>参考回答</summary>
+
+**先对照服务器响应、浏览器实际 DOM 和客户端初始输入，找出第一次分歧。** 检查随机数、时间和格式化环境、重复请求的新数据、无效 HTML 嵌套、窗口与本地存储分支，以及脚本和 HTML 是否来自同一版本。浏览器专属值可在一致占位恢复后更新，不用全局抑制警告掩盖结构或数据问题。
+
+</details>
+
+### 7.5 SSG 页面能交互吗，数据更新后怎样让页面变新？ {#ssg-updates}
+
+**考察重点**：生成产物与运行能力、内容新鲜度与再生成。
+
+**相关内容**：[请求时生成与构建时生成](#请求时生成与构建时生成)、[静态产物与增量更新](#静态产物与增量更新)。
+
+<details>
+<summary>参考回答</summary>
+
+**SSG 页面可以加载 JavaScript 并交互，但预生成 HTML 不会自动随数据源变化。** 可以重建页面、按约定增量再生成，或在浏览器补充新数据。需要说明更新触发条件与缓存失效；时间再验证可能先服务旧页再后台更新，不能承诺到点即全局最新。涉及库存或权限的操作仍要在服务端重新判断。
+
+</details>
+
+### 7.6 流式 SSR 解决什么问题，什么时候不能再改响应状态？ {#streaming}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：外壳与慢内容、响应发送边界、内容传输与交互初始化。
+
+**相关内容**：[流式 SSR](#流式ssr)。
+
+<details>
+<summary>参考回答</summary>
+
+**流式 SSR 先发送就绪的内容，减少等待整页完成的时间；响应头发出后不能再修改 HTTP 状态。** React 可以在 `onShellReady` 开始发送，并逐步补充 Suspense 内容。后续错误需要记录并按边界恢复，权限和关键状态应在适当的发送边界前判断。收到内容不等于 hydration 完成，代理缓冲也会影响实际展示时机。
+
+</details>
+
+### 7.7 SSR 一定比 CSR 快吗，项目中怎样选择？ {#mode-selection}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**题型**：综合题
+
+**考察重点**：数据新鲜度、公开索引、服务器成本、首屏与交互指标。
+
+**相关内容**：[根据等待链路选择](#根据等待链路选择)、[静态产物与增量更新](#静态产物与增量更新)。
+
+<details>
+<summary>参考回答</summary>
+
+**不一定，要判断等待链路以及目标页面需要什么。** SSR 可以减少浏览器取数前的脚本等待，也可能被慢查询和服务器渲染拖慢；客户端脚本与 hydration 成本仍存在。公开稳定内容可预生成，按请求生成的内容可用 SSR，交互工具可用 CSR，再按路由或页面区域组合。通过 TTFB、首屏内容、交互表现与服务器负载验证选择。
+
+</details>
+
+### 7.8 前端怎样改善 SEO，使用 SSR 是否足够？ {#seo}
+
+**考察重点**：内容获取、链接发现、元信息、状态语义与搜索平台能力。
+
+**相关内容**：[搜索可见性](#搜索可见性)。
+
+<details>
+<summary>参考回答</summary>
+
+**SSR 可以提前提供内容，但 SEO 还需要可发现的链接、正确的元信息、状态码与索引规则。** Google 能执行 JavaScript，不能简单断言 CSR 无法索引；脚本与资源加载仍增加依赖，其他机器人能力也不同。应核对 HTTP 响应、渲染结果与搜索平台实际看到的内容，不能把采用某种框架当成收录或排名保证。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [Vue：Server-Side Rendering](https://vuejs.org/guide/scaling-up/ssr.html)
+- [React：renderToString](https://react.dev/reference/react-dom/server/renderToString)
+- [React：hydrateRoot](https://react.dev/reference/react-dom/client/hydrateRoot)
+- [React：useEffect](https://react.dev/reference/react/useEffect)
+- [React：renderToPipeableStream](https://react.dev/reference/react-dom/server/renderToPipeableStream)
+- [Next.js：Incremental Static Regeneration](https://nextjs.org/docs/app/guides/incremental-static-regeneration)
+- [Google Search Central：JavaScript SEO basics](https://developers.google.com/search/docs/crawling-indexing/javascript/javascript-seo-basics)

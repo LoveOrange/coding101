@@ -1,0 +1,262 @@
+---
+knowledge:
+  id: basic-knowledge.kotlin.coroutines
+  type: concept
+description: "解释 Kotlin 挂起、状态保存、调度器、结构化并发、取消与异常传播，明确协程和线程、非阻塞与并发安全的区别。"
+keywords: [Kotlin 协程, suspend, 结构化并发, 协程取消, Dispatcher, SupervisorJob]
+---
+
+# Kotlin 协程
+
+**协程**是能够挂起并在之后继续执行的计算。Kotlin 用 `suspend` 表达可挂起调用，`kotlinx.coroutines` 则提供任务、调度、取消与组合工具。在 JVM 上执行代码的仍然是线程；协程的价值在于更清楚地组织等待和任务生命周期，而不是把所有操作自动变成后台、非阻塞或线程安全。本文示例使用 Kotlin 1.9 与 `kotlinx-coroutines-core` 1.8。
+
+## 1. 面试核心 {#core}
+
+- 挂起保存继续执行所需状态，把当前执行机会交回调用与调度机制，**阻塞则占住当前线程等待，两者不能混同**。[卡](#suspend-blocking)
+- `suspend` 不创建协程、不切换线程，也不保证一定发生挂起；**函数内部调用阻塞 API 时仍可能阻塞线程**。
+- Kotlin 协程通过 continuation 与状态机等方式保存跨挂起点的状态，**无栈协程不意味着局部变量和执行位置不需要保存**。[卡](#stackless-state)
+- 作用域和父子 `Job` 组织生命周期，**结构化并发让父任务等待子任务，并按规则传播取消与失败**。
+- 取消通常是协作式请求，**cancel 不会强行终止任意计算或阻塞调用，任务需检查状态或经过支持取消的挂起点**。[卡](#cooperative-cancellation)
+- 普通父子任务中，非取消异常通常会取消父任务及其他子任务，**async 保存异常不等于它的失败不会传播给父任务**。[卡](#exception-propagation)
+- 协程可并行访问共享变量，**suspend、单例或 volatile 都不能自动把复合更新变为原子操作**。[卡](#shared-state)
+
+## 2. 挂起、线程与状态保存 {#挂起线程与状态保存}
+
+**挂起函数**用 `suspend` 声明，允许调用其他挂起函数。一次调用可以直接返回，也可以在等待条件满足后再继续，所以“可挂起”不是“每次调用都暂停”。
+
+```kotlin
+import kotlinx.coroutines.*
+
+suspend fun greeting(): String {
+    delay(1)
+    return "ready"
+}
+
+fun main() = runBlocking {
+    println(greeting()) // ready
+}
+```
+
+`delay` 等待期间不占着线程睡眠；运行时在条件满足后安排后续执行。`runBlocking` 则明确阻塞调用线程，用于这个命令行示例把协程接到普通入口。它不是 Android 主线程请求数据的推荐入口，也不能因为名字里有 coroutine 就认为不会阻塞。
+
+把 `delay` 换成 `Thread.sleep`，后者仍会阻塞当前线程；外层函数写了 `suspend` 不会改写第三方 API 的行为。CPU 密集循环同样需要实际执行资源，不会因为位于协程内就免费让出线程。
+
+**Continuation** 可以理解为“恢复这次计算所需的后续执行信息”。Kotlin 编译器会把需要跨挂起点保存的局部值、当前阶段和恢复入口组织成相应状态；JVM 上可观察到额外的 continuation 参数与生成的状态机代码。
+
+因此，**无栈协程**不为每个协程保留一整套可任意暂停的独立线程调用栈，但仍要保存恢复所需的信息。真正运行一段代码时仍使用执行线程的栈。挂起之后由哪个线程恢复，则取决于上下文、调度器和被调用 API，不能从“同一个协程”推出“永远同一个线程”。
+
+## 3. 上下文与结构化并发 {#上下文与结构化并发}
+
+**协程上下文**是与执行相关的一组元素，例如 `Job`、调度器和协程名。**调度器**决定代码在哪里获得执行机会，`Job` 负责任务状态与父子关系；两者职责不同。
+
+| 调度器或入口 | 主要用途 | 必须保留的边界 |
+| --- | --- | --- |
+| `Dispatchers.Default` | CPU 计算 | 仍受线程数量、竞争和工作量限制 |
+| `Dispatchers.IO` | 适合移出调用线程的阻塞 I/O | 不是把阻塞 API 变成可取消的异步 API |
+| `Dispatchers.Main` | 对应平台的 UI 线程调度 | 需要相应平台支持，不能做长时间阻塞工作 |
+| `withContext(...)` | 在指定上下文执行并等待结果 | 不保证每次调用都换一条物理线程 |
+| `runBlocking` | 同步入口等待协程结束 | 阻塞调用线程，不能套用到任意 UI 回调 |
+
+**结构化并发**让并发任务处在明确的生命周期树中。`coroutineScope` 创建子作用域，只有其代码和所有子任务完成后才正常返回；`launch` 返回 `Job`，`async` 返回带结果的 `Deferred`。
+
+```kotlin
+import kotlinx.coroutines.*
+
+suspend fun summary(): String = coroutineScope {
+    val name = async { delay(1); "Lin" }
+    val count = async { delay(1); 7 }
+    "${name.await()}:${count.await()}"
+}
+
+fun main() = runBlocking {
+    println(summary()) // Lin:7
+}
+```
+
+两个 `async` 都先创建，再等待结果，表达了并发关系；如果先创建一个就立即 `await`，再创建第二个，通常就回到了串行顺序。并发是否在不同 CPU 核上并行，仍由调度环境决定。
+
+作用域必须有所有者。例如一个页面发起的工作应该在页面或状态持有者对应的作用域内管理，离开有效范围后按约定取消。临时新建一个无人管理的作用域，或把所有工作放进全局作用域，会让取消和错误处理脱离调用者；`suspend` 函数签名本身不会替你建立正确的所有权。
+
+## 4. 取消与资源清理 {#取消与资源清理}
+
+**协作式取消**意味着任务需要在可观察取消的地方停止。`cancel()` 发出取消请求，`join()` 等待任务结束，`cancelAndJoin()` 组合二者。发出请求与完成清理是不同时间点。
+
+```kotlin
+import kotlinx.coroutines.*
+
+fun main() = runBlocking {
+    val started = CompletableDeferred<Unit>()
+    val job = launch {
+        try {
+            started.complete(Unit)
+            awaitCancellation()
+        } finally {
+            println("cleanup")
+        }
+    }
+    started.await()
+    job.cancelAndJoin()
+    println("${job.isCancelled},${job.isCompleted}")
+}
+```
+
+输出 `cleanup`，再输出 `true,true`。`started` 确保子任务进入执行后才取消；`finally` 完成后，等待方才能把任务视为已经结束。
+
+`delay`、`await` 等支持取消的挂起点会检查相应状态。长时间计算循环需要主动调用 `ensureActive()`、检查 `isActive`，或在合适位置 `yield()`。如果子任务完全不协作，父任务发出取消也可能仍要等它退出；若循环占满唯一执行线程，甚至会延迟发出取消请求的代码获得执行机会。
+
+捕获异常时应保留取消语义。`CancellationException` 通常表示任务不再需要继续，不应被宽泛的 `catch (Exception)` 转成“成功默认值”后吞掉；处理其他业务错误时，可以先单独重抛取消异常。
+
+资源清理使用 `finally`。取消后再调用普通可取消挂起函数可能立即失败；确需挂起完成必要清理时，可在有限范围内使用 `withContext(NonCancellable)`。它不适合包住整个业务任务，否则会破坏调用者的取消预期。
+
+阻塞 API 是另一条边界。把它放到 `Dispatchers.IO` 只是调整执行位置，不会自动使其响应取消；应优先使用可取消接口，或在 API 确实响应线程中断时考虑 `runInterruptible`。超时同样依赖取消协作，不能当成任何底层操作已经在截止时刻停止的证明。
+
+## 5. 异常传播与监督 {#异常传播与监督}
+
+在普通结构化父子关系中，子任务的非取消异常通常使父任务失败，并取消其他子任务。`async` 会把异常保存在 `Deferred`，但作为普通子任务时仍会传播失败，不需要等到有人调用 `await()` 才影响父任务。
+
+```kotlin
+import kotlinx.coroutines.*
+
+fun main() = runBlocking<Unit> {
+    try {
+        coroutineScope {
+            val result = async<Int> { error("request failed") }
+            result.await()
+        }
+    } catch (error: IllegalStateException) {
+        println(error.message) // request failed
+    }
+}
+```
+
+这里在 `coroutineScope` 边界外捕获整体失败。如果只在一个已经被子任务失败取消的普通作用域内部包住 `await()`，捕获异常不代表父任务恢复为正常状态。
+
+**监督关系**通过 `SupervisorJob` 或 `supervisorScope` 改变子任务失败向父任务传播的规则，使一个子任务的失败不自动取消其兄弟任务。父任务主动取消仍会向下传播，监督也不会自动处理每个异常。
+
+```kotlin
+import kotlinx.coroutines.*
+
+fun main() = runBlocking {
+    supervisorScope {
+        val failed = async<Int> { error("failed") }
+        try {
+            failed.await()
+        } catch (error: IllegalStateException) {
+            println(error.message) // failed
+        }
+        println(async { 7 }.await()) // 7：监督作用域仍可正常工作
+    }
+}
+```
+
+`CoroutineExceptionHandler` 用于相应未捕获异常的最后处理，例如记录日志，不是能在失败原位置继续执行的恢复机制。普通子协程会沿父子链传播异常；`async` 的结果则要通过 `await` 等方式处理。不能通过给所有 `launch` 随手加一个 handler，就替代作用域边界的错误设计。
+
+## 6. 共享状态与原子操作 {#共享状态与原子操作}
+
+协程可以在多线程调度器上并行运行。两个协程同时执行 `count++`，仍可能覆盖彼此的更新；`volatile` 也只解决相应可见性与顺序约束，不把读、加、写组合成一个原子操作。
+
+```kotlin
+import kotlinx.coroutines.*
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+
+fun main() = runBlocking {
+    var count = 0
+    val mutex = Mutex()
+    coroutineScope {
+        repeat(100) {
+            launch(Dispatchers.Default) {
+                repeat(100) {
+                    mutex.withLock { count++ }
+                }
+            }
+        }
+    }
+    println(count) // 10000
+}
+```
+
+`Mutex` 保护同一段更新，不同协程不能同时进入；等待锁的协程可以挂起，不必按普通阻塞锁的方式占住线程等待。简单计数也可以选合适的原子类型；更复杂状态可以集中到单一所有者，但在挂起点之间仍要维护不变量。
+
+`Mutex` 不是可重入锁，不应在持有同一个锁时递归尝试获取它。临界区内执行慢操作还会延长其他任务的等待，选择同步方式时要同时考虑状态完整性、取消和持锁范围。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 协程的挂起与线程阻塞有什么区别，suspend 会切换线程吗？ {#suspend-blocking}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：执行资源、挂起能力与调度责任。
+
+**相关内容**：[挂起、线程与状态保存](#挂起线程与状态保存)、[上下文与结构化并发](#上下文与结构化并发)。
+
+<details>
+<summary>参考回答</summary>
+
+**挂起保留后续执行状态并交回执行机会，阻塞则让当前线程等待；suspend 本身不会创建任务或切换线程。** 函数可能直接返回，也可能调用支持挂起的 API。内部调用 Thread.sleep 或阻塞 I/O 仍会阻塞当前线程，执行位置由上下文与调度器安排，恢复后也不保证永远是同一线程。
+
+</details>
+
+### 7.2 Kotlin 的无栈协程怎样保存局部变量与执行位置？ {#stackless-state}
+
+**考察重点**：continuation、状态机与线程调用栈。
+
+**相关内容**：[挂起、线程与状态保存](#挂起线程与状态保存)。
+
+<details>
+<summary>参考回答</summary>
+
+**编译器把跨挂起点需要保留的值和执行阶段组织到 continuation 与生成的状态机中，恢复时从对应阶段继续。** 无栈指不为每个协程保存一整套独立的可暂停调用栈，不是没有状态或不使用线程栈。正在执行的代码仍运行在线程上，挂起后的恢复线程取决于调度上下文。
+
+</details>
+
+### 7.3 cancel 之后任务会立刻停止吗，父协程取消时会怎样？ {#cooperative-cancellation}
+
+**考察重点**：取消请求、协作检查、父子生命周期与清理。
+
+**相关内容**：[取消与资源清理](#取消与资源清理)。
+
+<details>
+<summary>参考回答</summary>
+
+**不会强行终止任意代码；取消通常向子任务传播请求，任务需经过支持取消的挂起点或主动检查状态。** 不协作的计算、阻塞调用可能继续占用资源，父任务也可能要等待子任务退出。用 finally 清理资源，并通过 join 或 cancelAndJoin 确认完成；不要吞掉 CancellationException，也不能把超时当成底层操作已立即停止。
+
+</details>
+
+### 7.4 async 的异常只有调用 await 才会影响其他协程吗？ {#exception-propagation}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：结果异常与父子传播规则。
+
+**相关内容**：[异常传播与监督](#异常传播与监督)。
+
+<details>
+<summary>参考回答</summary>
+
+**不是，普通子 async 的非取消异常仍会按父子关系传播，并可能取消父任务及兄弟任务。** await 是取得结果或再次抛出所保存异常的入口，不能据此认为不 await 就没有传播。监督关系可以隔离子任务失败，但仍需处理每个任务结果与未捕获异常；handler 也不能把失败任务从原位置恢复。
+
+</details>
+
+### 7.5 协程之间会发生共享变量冲突吗？ {#shared-state}
+
+**考察重点**：并行访问、原子性与同步边界。
+
+**相关内容**：[共享状态与原子操作](#共享状态与原子操作)。
+
+<details>
+<summary>参考回答</summary>
+
+**会，协程可以在不同线程并行执行，普通共享变量更新仍可能竞争。** count++ 包含读取、计算和写回，volatile 也不能使它整体原子。根据操作选择原子类型、Mutex 或明确的状态所有者，保证所有访问遵守同一同步规则；单线程执行也要考虑挂起点之间状态可能被其他任务改变。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [Kotlin 语言规范 1.9：Asynchronous programming with coroutines](https://kotlinlang.org/spec/asynchronous-programming-with-coroutines.html)
+- [Kotlin 文档：Coroutines basics](https://kotlinlang.org/docs/coroutines-basics.html)
+- [Kotlin 文档：Coroutine context and dispatchers](https://kotlinlang.org/docs/coroutine-context-and-dispatchers.html)
+- [kotlinx.coroutines 1.8.0：Cancellation and timeouts](https://github.com/Kotlin/kotlinx.coroutines/blob/1.8.0/docs/topics/cancellation-and-timeouts.md)
+- [Kotlin 文档：Coroutine exceptions handling](https://kotlinlang.org/docs/exception-handling.html)
+- [kotlinx.coroutines 1.8.0：Shared mutable state and concurrency](https://github.com/Kotlin/kotlinx.coroutines/blob/1.8.0/docs/topics/shared-mutable-state-and-concurrency.md)
+- [kotlinx.coroutines API：runInterruptible](https://kotlinlang.org/api/kotlinx.coroutines/kotlinx-coroutines-core/kotlinx.coroutines/run-interruptible.html)

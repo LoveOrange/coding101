@@ -1,0 +1,311 @@
+---
+title: Flutter 手势
+description: 区分 Flutter 的指针分发、命中测试与手势竞技场，解释父子点击、点击与滚动竞争以及取消处理。
+knowledge:
+  id: mobile.flutter.gestures
+---
+
+Flutter 的**指针事件**描述按下、移动、抬起等原始输入，**手势**则把一段输入识别为点击、拖动或缩放。同一次按下可以让多个对象收到指针事件，但不意味着它们都能成功识别同一种手势。
+
+排查“父组件为什么没有点击回调”或“列表为什么滚不动”时，需要分别回答两件事：哪些对象进入了命中路径，哪些识别器赢得了竞争。本文以 Flutter 3.24.3 为基线，讨论触摸输入的主要机制。
+
+## 1. 面试核心 {#core}
+
+- **命中测试确定接收指针事件的路径，手势竞技场解决识别器之间的竞争**。两层职责不同，收到按下事件不代表最终获得点击。[卡](#layers)
+- 对一次触摸序列，**按下时得到的命中路径会用于后续移动、抬起或取消事件**。手指移出原组件，不表示后续事件改送到当前位置下面的新组件。[卡](#pointer-path)
+- **GestureDetector 根据非空回调配置手势识别器**；Listener 直接观察原始事件，不会因为添加一个监听就获得点击语义。[卡](#layers)
+- **父子 GestureDetector 的点击竞争不能用 opaque 或 translucent 强制改变胜负**。behavior 控制命中测试，父子识别器仍可能一起进入竞技场。[卡](#nested-tap)
+- **onTapDown 不是点击已经成功的通知**。它可能先发生，随后识别器输掉竞争并收到 onTapCancel；临时按压状态要有取消清理路径。[卡](#cancel)
+- **拖动方向、识别条件和参与范围决定滚动冲突**。列表子项用过于宽泛的拖动识别器，可能与列表争抢同一方向的输入。[卡](#scroll)
+- **IgnorePointer 与 AbsorbPointer 都能阻止子树收到指针输入，但对后方对象的命中影响不同**；它们不是删除 Widget，也不等同于完整的业务禁用状态。[卡](#blocking)
+- **自定义手势仍要处理生命周期、取消和可访问性**。先使用现有按钮或识别器，只有输入规则确实不同才扩展底层机制。[卡](#custom)
+
+## 2. 指针事件与命中路径 {#指针事件与命中路径}
+
+### 2.1 按下后保留这次输入的接收路径 {#按下后保留接收路径}
+
+**命中测试**（hit test）根据坐标和渲染对象的命中规则，确定哪些对象应该接收这次输入。它不是遍历所有 Widget 并调用它们的点击函数。
+
+收到 PointerDownEvent 时，框架进行命中测试并保存结果。随后同一 pointer 的移动事件沿已保存的路径分发，抬起或取消时使用并清除这条路径。这样，拖动过程中即使手指离开原组件，它仍可以处理同一次拖动的后续输入。
+
+路径通常包含命中的内层目标及其祖先。对已进入路径的目标，指针分发没有类似 DOM `stopPropagation()` 的通用“停止向上发送”操作。这个结论只针对指针分发，不表示所有目标都能赢得手势竞争。
+
+鼠标悬停、滚轮信号等输入有自己的处理方式，不能把“按下后复用路径”套到所有 PointerEvent。坐标也要区分屏幕范围的 `position` 与接收者局部坐标 `localPosition`，经过变换的区域不能只按屏幕坐标直接计算局部偏移。
+
+### 2.2 Listener 观察输入，GestureDetector 识别动作 {#观察输入与识别动作}
+
+**Listener** 把原始指针事件交给回调，适合确实需要记录轨迹或处理低层输入的区域。**GestureDetector** 根据配置的回调创建相应识别器，处理点击、长按、拖动等语义。
+
+下面的组件同时观察父子两层的按下事件，并为两层配置点击识别器：
+
+```dart
+import 'package:flutter/widgets.dart';
+
+Widget nestedTapProbe(List<String> events) {
+  return Center(
+    child: Listener(
+      onPointerDown: (_) => events.add('parent-down'),
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () => events.add('parent-tap'),
+        child: SizedBox(
+          width: 160,
+          height: 160,
+          child: Center(
+            child: Listener(
+              onPointerDown: (_) => events.add('child-down'),
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: () => events.add('child-tap'),
+                child: const SizedBox(width: 80, height: 80),
+              ),
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+}
+```
+
+点击中间 80 × 80 的子区域时，两个 Listener 都能观察到按下，但普通父子点击竞争由子识别器获胜，只有 `child-tap`。点击父区域内、子区域外的位置时，子识别器没有进入这次命中路径，父组件可以得到 `parent-tap`。
+
+如果需要记录“用户按下了页面”，Listener 可以提供原始观察，但不要把每次 onPointerDown 都计成一次业务点击。按下之后还可能滚动、取消，或者在别处抬起。
+
+## 3. 手势竞技场 {#手势竞技场}
+
+### 3.1 识别器逐步判断输入意图 {#识别器逐步判断输入意图}
+
+**手势识别器**根据一段输入判断某种动作是否成立，例如 TapGestureRecognizer 判断点击，VerticalDragGestureRecognizer 判断纵向拖动。多个识别器可能在开始时都认为自己有机会，框架通过**手势竞技场**（gesture arena）协调竞争。
+
+对某个 pointer，识别器先加入竞技场，再根据移动距离、方向和时间等条件接受或拒绝。基本规则是首先接受的成员，或最后一个没有拒绝的成员获胜；关闭加入、延迟裁决和抬起后的清理也参与这一过程。不要把它简化成“所有手势都由最内层组件获胜”。
+
+普通父子点击的例子里，子识别器先进入竞争，最终获得点击；但列表的拖动识别器可以在手指明显移动后接受拖动，让子项的点击识别器失败。前者是特定竞争结果，不是渲染树层级决定全部手势的规则。
+
+### 3.2 按压反馈需要处理取消 {#按压反馈需要处理取消}
+
+`onTapDown` 表示存在可能形成点击的按下。识别器可能在短暂等待后调用它，也可能因为已经获胜而调用它；回调发生时不一定已经完成整个点击。
+
+若随后滚动识别器获胜，点击识别器会取消这次点击。界面应撤销临时按压高亮，而不是执行跳转或提交。真正的点击动作放在 onTap；onTapCancel 用于清理未成功的点击状态。
+
+**手势取消和原始指针取消不是一回事。** 子项的 onTapCancel 可以因为列表拖动获胜而发生，此时原始指针仍在正常移动，最后也可能正常抬起。PointerCancelEvent 则表示这次指针输入被取消；两者都需要处理，但不能互相代替。
+
+同时支持单击和双击时，识别器还要等待区分两种意图，单击响应可能因此延后。不要为“更快”在 onTapDown 中提前执行不可撤销的点击业务。
+
+## 4. 命中行为与遮挡 {#命中行为与遮挡}
+
+### 4.1 behavior 控制命中，不承诺赢得手势 {#behavior控制命中}
+
+HitTestBehavior 控制目标如何参与其范围内的命中测试：
+
+| 取值 | 主要作用 |
+| --- | --- |
+| deferToChild | 子节点命中时，当前目标才参与 |
+| opaque | 当前范围本身可以命中，并阻挡视觉后方目标的命中 |
+| translucent | 当前范围可以加入命中结果，同时允许命中测试继续考虑后方目标 |
+
+这里的 opaque 与 translucent 描述命中行为，不是颜色透明度。一个不可见的 SizedBox 也可以通过 opaque 形成点击区域。命中区域仍受实际布局尺寸和祖先命中规则限制，不会无限扩大。
+
+translucent 也不是“强制所有后方组件收到事件”。后方是否继续命中，要结合父容器的遍历和子节点返回结果判断。Flutter 3.24.3 的 RenderProxyBoxWithHitTestBehavior 在子节点已经命中时仍返回命中；Stack 等父容器因此可能不再访问更下层的兄弟节点。
+
+对父子 GestureDetector，把 behavior 改成 opaque 或 translucent，不会让父组件绕过竞技场直接获得 onTap。应先确认是未进入命中路径，还是进入后输掉了识别竞争。
+
+### 4.2 IgnorePointer 与 AbsorbPointer {#IgnorePointer与AbsorbPointer}
+
+`IgnorePointer(ignoring: true)` 使自身与子树不参与指针命中，父容器可以继续寻找后方目标。`AbsorbPointer(absorbing: true)` 在自身范围内吸收命中，阻止子树接收输入，也可能挡住后方兄弟节点；祖先仍可能属于接收路径。
+
+两者都会照常占据布局空间并绘制子树。它们不等于隐藏界面，也不代替请求去重、权限检查或按钮的业务状态。需要一个禁用按钮时，应优先使用按钮本身的禁用能力，使视觉、语义和交互状态保持一致。
+
+在 Flutter 3.24.3 中，这两种阻止指针输入的方式会影响相关语义动作，但不应据此推断整个子树的说明文字都被删除。可访问性还需要按实际控件和语义配置检查。
+
+## 5. 列表滚动与自定义拖动 {#列表滚动与自定义拖动}
+
+### 5.1 点击子项与纵向滚动可以竞争 {#点击子项与纵向滚动}
+
+纵向 ListView 的滚动结构会参与纵向拖动识别，子项可以同时参与点击识别。手指短按并抬起时可以形成点击；出现足够的纵向移动后，滚动识别器可能获胜，点击被取消，后续移动更新滚动位置。
+
+滚动位置变化后，视口再按需要布局新的子项。输入识别与子项缓存是两个相接但不同的机制：手势不会直接把全部列表项目创建出来。可见附近的预布局、保活和业务缓存见 [Flutter 布局与渲染](layout-rendering.mdx#子项保活与业务数据缓存)。
+
+### 5.2 为子项声明实际需要的方向 {#为子项声明实际需要的方向}
+
+如果列表子项需要横向滑动操作，可以先声明横向拖动，而不是用覆盖所有方向的 pan 识别：
+
+```dart
+Widget horizontalAction({
+  required VoidCallback onTap,
+  required ValueChanged<double> onHorizontalDelta,
+}) {
+  return GestureDetector(
+    behavior: HitTestBehavior.opaque,
+    onTap: onTap,
+    onHorizontalDragUpdate: (details) {
+      onHorizontalDelta(details.delta.dx);
+    },
+    child: const SizedBox(width: 200, height: 64),
+  );
+}
+```
+
+将 horizontalAction 放入纵向列表后，横向和纵向识别器可以按方向竞争。这里的 `details.delta.dx` 是该次更新的横向位移，不是从按下开始的总位移；识别成立前的移动与拖动起点还受 dragStartBehavior 影响。
+
+这个示例只表达输入职责。完整侧滑组件还要管理可见偏移、边界、松手后的归位或提交，以及取消清理。斜向手势和不同设备的容差也需要测试，不能宣称两个方向在所有输入下都互不影响。
+
+同一个 GestureDetector 不应同时配置互相冗余的 pan 与横纵方向拖动组合；框架会对部分冲突配置进行断言。嵌套同方向滚动还需要明确哪一层滚动、何时转交，单改 behavior 不能完成这类协调。
+
+## 6. 自定义识别与排查 {#自定义识别与排查}
+
+**RawGestureDetector** 允许配置更底层的识别器工厂，用于现成 GestureDetector 无法表达的规则。自定义识别器需要管理 pointer 跟踪、接受与拒绝、取消和 dispose；不能只写“移动超过某个值就调用回调”，却让其他竞争者一直等待。
+
+GestureArenaTeam 可以让一组识别器作为团队参与竞争，它有自己的成员与 captain 规则，不是把普通父子 GestureDetector 自动改成“所有回调都成功”。只有确实需要组合识别策略时才使用。
+
+排查交互时可以按顺序观察：
+
+1. 确认实际尺寸、坐标、遮挡、IgnorePointer 和 AbsorbPointer，判断目标是否进入命中路径。
+2. 用 Listener 观察对应 pointer 的输入，确认没有把业务回调缺失误认为原始输入丢失。
+3. 在调试环境开启 `debugPrintGestureArenaDiagnostics`，检查参与者与裁决，分别记录 down、成功和 cancel。
+4. 对短按、拖动、移出范围、系统取消和多指等实际需要支持的情况做测试，并检查临时状态是否清理。
+
+普通按钮优先使用平台风格的按钮组件。需要 Material 水波纹时可以使用 InkWell，并保证存在 Material 祖先；水波纹不可见也可能是中间不透明绘制遮住了它，不应先归因于手势未识别。自绘触摸区域还要提供清楚的语义、焦点与键盘操作能力，不能只验证手指能点击。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 Listener、GestureDetector 与命中测试分别做什么？ {#layers}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：原始输入、语义识别与接收路径。
+
+**相关内容**：[指针事件与命中路径](#指针事件与命中路径)
+
+<details>
+<summary>参考回答</summary>
+
+**命中测试决定哪些目标接收输入，Listener 观察原始事件，GestureDetector 通过识别器判断点击或拖动等动作。** 多个目标可以收到同一次按下，但识别器还需参与竞争。记录了 onPointerDown 不能直接认定发生一次业务点击。
+
+</details>
+
+### 7.2 手指按下后移到另一个组件，后续移动事件会改送到新组件吗？ {#pointer-path}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：一次触摸序列的路径与取消边界。
+
+**相关内容**：[按下后保留这次输入的接收路径](#按下后保留接收路径)
+
+<details>
+<summary>参考回答</summary>
+
+**普通触摸序列复用按下时的命中路径，不会因为当前坐标进入别处就自动改送。** 原目标可以继续接收移动，并在抬起或取消时收尾。是否仍构成点击由识别器判断；鼠标悬停、滚轮信号等输入不能直接套用这条规则。
+
+</details>
+
+### 7.3 父子都有 onTap，为什么通常只有子组件响应？改成 opaque 有用吗？ {#nested-tap}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：父子参与顺序、竞技场与命中行为。
+
+**相关内容**：[手势竞技场](#手势竞技场)、[behavior 控制命中，不承诺赢得手势](#behavior控制命中)
+
+<details>
+<summary>参考回答</summary>
+
+**普通父子点击场景中，两者都参与竞争，子识别器先加入并获得点击。** opaque 控制命中范围及后方目标，不改变父子识别器仍需裁决的事实。先判断父组件有没有进入路径，再判断是否输掉竞争；不要把这条点击结果推广为所有手势永远由子组件获胜。
+
+</details>
+
+### 7.4 onTapDown 后收到 onTapCancel，是否说明系统取消了指针？ {#cancel}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：暂定反馈、竞争失败与原始取消。
+
+**相关内容**：[按压反馈需要处理取消](#按压反馈需要处理取消)
+
+<details>
+<summary>参考回答</summary>
+
+**不一定，点击识别器输给滚动等竞争者也会取消点击，此时指针仍可正常移动和抬起。** onTapDown 适合临时反馈，onTapCancel 清理反馈，真正点击业务放在 onTap。PointerCancelEvent 是原始输入取消，两种取消需要分别处理。
+
+</details>
+
+### 7.5 Flutter 中滑动 ListView 时，事件处理与组件缓存怎样协作？ {#scroll}
+
+**题型**：综合题
+
+**考察重点**：拖动与点击竞争、滚动位置、视口及缓存边界。
+
+**相关内容**：[列表滚动与自定义拖动](#列表滚动与自定义拖动)、[子项保活与业务数据缓存](layout-rendering.mdx#子项保活与业务数据缓存)
+
+<details>
+<summary>参考回答</summary>
+
+**输入先参与手势识别，拖动成立后更新滚动位置，视口再根据新位置布局必要子项。** 子项点击和滚动可以同时参与竞争，滚动获胜后取消点击。builder 可以按需要创建子项，范围可能包含可见附近缓存；保活状态、图片缓存和业务数据缓存各有职责，不能把它们当成同一个缓存层。
+
+</details>
+
+### 7.6 IgnorePointer 与 AbsorbPointer 对后方按钮有什么不同影响？ {#blocking}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：子树禁用、命中返回值与布局绘制。
+
+**相关内容**：[IgnorePointer 与 AbsorbPointer](#IgnorePointer与AbsorbPointer)
+
+<details>
+<summary>参考回答</summary>
+
+**IgnorePointer 使自身与子树跳过指针命中，后方按钮可能继续被命中；AbsorbPointer 在自身范围吸收命中，可能挡住后方按钮。** 两者仍照常布局和绘制，祖先也可能接收输入。业务禁用还应由实际控件和模型保证，不能只依赖遮挡。
+
+</details>
+
+### 7.7 translucent 能保证 Stack 中上下两个 GestureDetector 都收到 onTap 吗？ {#translucent}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：命中结果、父容器遍历与手势竞争。
+
+**相关内容**：[behavior 控制命中，不承诺赢得手势](#behavior控制命中)
+
+<details>
+<summary>参考回答</summary>
+
+**不能。它允许当前目标加入命中结果并让后方有机会参与，但具体路径仍受子节点与父容器的命中规则影响。** 即使两个识别器都进入路径，也仍需竞技场裁决，不保证两次 onTap。应分开验证指针接收与最终手势结果。
+
+</details>
+
+### 7.8 自定义手势识别器除了识别成功，还要处理什么？ {#custom}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：竞争协议、资源生命周期与交互完整性。
+
+**相关内容**：[自定义识别与排查](#自定义识别与排查)
+
+<details>
+<summary>参考回答</summary>
+
+**还要处理跟踪与释放、拒绝和取消、竞争结束后的状态，以及组件销毁时的清理。** 明确支持哪些设备和多指组合，测试未完成或失去竞争的输入，并提供适当语义与其他操作方式。现有识别器能表达需求时，应优先复用。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [Flutter：Taps, drags, and other gestures](https://docs.flutter.dev/ui/interactivity/gestures)
+- [Flutter：GestureDetector](https://api.flutter.dev/flutter/widgets/GestureDetector-class.html)
+- [Flutter：GestureArenaManager](https://api.flutter.dev/flutter/gestures/GestureArenaManager-class.html)
+- [Flutter：HitTestBehavior](https://api.flutter.dev/flutter/rendering/HitTestBehavior.html)
+- [Flutter：Listener](https://api.flutter.dev/flutter/widgets/Listener-class.html)
+- [Flutter：AbsorbPointer](https://api.flutter.dev/flutter/widgets/AbsorbPointer-class.html)
+- [Flutter：IgnorePointer](https://api.flutter.dev/flutter/widgets/IgnorePointer-class.html)
+- [Flutter：onTapCancel](https://api.flutter.dev/flutter/widgets/GestureDetector/onTapCancel.html)
+- [Flutter：onTapDown](https://api.flutter.dev/flutter/widgets/GestureDetector/onTapDown.html)
+- [Flutter：dragStartBehavior](https://api.flutter.dev/flutter/gestures/DragGestureRecognizer/dragStartBehavior.html)
+- [Flutter：RawGestureDetector](https://api.flutter.dev/flutter/widgets/RawGestureDetector-class.html)
+- [Flutter：GestureArenaTeam](https://api.flutter.dev/flutter/gestures/GestureArenaTeam-class.html)
+- [Flutter：InkWell](https://api.flutter.dev/flutter/material/InkWell-class.html)
+- [Flutter 3.24.3：gestures/binding.dart](https://github.com/flutter/flutter/blob/3.24.3/packages/flutter/lib/src/gestures/binding.dart)
+- [Flutter 3.24.3：arena.dart](https://github.com/flutter/flutter/blob/3.24.3/packages/flutter/lib/src/gestures/arena.dart)
+- [Flutter 3.24.3：proxy_box.dart](https://github.com/flutter/flutter/blob/3.24.3/packages/flutter/lib/src/rendering/proxy_box.dart)
+- [Flutter 3.24.3：gesture_detector.dart](https://github.com/flutter/flutter/blob/3.24.3/packages/flutter/lib/src/widgets/gesture_detector.dart)
+- [Flutter 3.24.3：scrollable.dart](https://github.com/flutter/flutter/blob/3.24.3/packages/flutter/lib/src/widgets/scrollable.dart)

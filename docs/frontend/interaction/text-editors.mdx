@@ -1,0 +1,438 @@
+---
+sidebar_position: 1
+knowledge:
+  id: frontend.interaction.text-editors
+---
+
+# 文本编辑器
+
+**文本编辑器**管理可修改的文档，以及输入、选区、格式和撤销等操作。富文本编辑器还要维持段落、列表、链接等结构；多人同时编辑时，要让各端对并发修改得到一致的结果。一个 `contenteditable` 元素提供了输入表面，却没有替应用决定这些规则。
+
+编辑器项目的重点是说清文档怎样表示、一次操作怎样改变它，以及输入、历史记录和协作怎样共同遵守这个模型。本文用 ProseMirror 1.x 解释富文本机制，用 Marked 解释 Markdown 预览，再用 Yjs 13 展示协作与本地撤销。
+
+## 1. 面试核心 {#core}
+
+- **文档模型、编辑视图和存储格式各有职责**。富文本可以用节点和标记表示结构，Markdown 也可以直接作为编辑源；选型要依据格式、扩展和协作需求。[卡](#editor-choice)
+- ProseMirror 的 **`anchor`、`head` 保留选择方向，`from`、`to` 表示主范围的有序边界**。它们是文档位置，不是 DOM 文本节点的偏移。[卡](#selection-fields)
+- **事务记录文档修改，并让选区、插件和历史跟着更新**。直接替换编辑区的 HTML 会绕开这些关系；旧位置也要经过后续修改的映射。[卡](#position-mapping)
+- 撤销需要定义操作分组和归属。**协作中的“撤销我的输入”不能用整篇旧快照覆盖别人的修改**。[卡](#undo-scope)
+- **Marked 把 Markdown 解析成 token，再生成 HTML，不负责完整的富文本编辑交互，也不净化输出 HTML**。预览需要独立的内容安全边界。[卡](#markdown-pipeline)
+- **OT 调整并发操作，CRDT 通过数据结构和合并规则处理并发**。两者都需要明确适用条件；WebSocket 本身不提供冲突合并。[卡](#ot-crdt)
+- 协作文档还需要权限、持久化、重连同步和在线状态。**合并后收敛只说明各端结果一致，不表示结果一定满足业务意图**。[卡](#collaboration-design)
+
+## 2. 文档模型与编辑视图 {#文档模型与编辑视图}
+
+**文档模型**是应用用来表示内容和结构的数据。例如，一段文字可以属于一个段落，其中几个字符带有粗体标记。DOM 负责显示这些内容、接收浏览器输入；保存到服务端的格式则可以是结构化 JSON、Markdown 或受控 HTML。
+
+这几种表示可以相互转换，但不保证任意往返都无损。Markdown 没有统一表示任意字体、复杂嵌套表格和自定义组件的方式；HTML 也不会自然保留应用的批注 ID、协作身份和历史信息。
+
+| 需求 | 主要编辑对象 | 需要验证的边界 |
+| --- | --- | --- |
+| Markdown 源码编辑与预览 | Markdown 字符串 | 语法扩展、预览安全、源码和预览定位 |
+| 所见即所得的富文本 | 有结构约束的文档 | 格式、粘贴转换、选区、输入法、撤销 |
+| 代码编辑 | 文本及语言服务 | 缩进、语法高亮、诊断、补全、大文件 |
+| 协作富文本 | 文档模型与并发操作 | 合并、光标映射、本地撤销、重连和权限 |
+
+ProseMirror 的 **schema** 规定允许哪些节点、标记和嵌套关系。段落和标题属于节点，粗体、强调等通常属于附着在行内内容上的 **mark**。文档状态采用不可变数据，修改产生新状态，未改变的部分可以共享。不能直接改旧节点的属性后期待编辑器自动感知。
+
+Tiptap 在 ProseMirror 之上提供扩展与命令等接口；Quill 使用 Delta 表示内容和变化。选用哪一个，应具体比较目标格式、已有扩展、粘贴效果、协作方案、许可和维护成本。不能仅凭“功能更多”决定，更不能把 Marked 这种解析器当成已经包含选区和撤销的编辑器。
+
+## 3. 选区与文档位置 {#选区与文档位置}
+
+**选区**描述当前光标或选中的内容。浏览器有 DOM Selection，ProseMirror 的 `EditorState.selection` 则用文档模型的位置表示；Tiptap 可以通过 `editor.state.selection` 访问这一层。
+
+| 字段 | 含义 |
+| --- | --- |
+| `anchor` | 开始选择时固定的一端 |
+| `head` | 选择过程中移动的一端 |
+| `from`、`to` | 主范围的较小、较大位置 |
+| `$anchor`、`$head` | 带父节点、深度等上下文的已解析位置 |
+| `$from`、`$to` | 主范围两端的已解析位置 |
+| `empty` | 是否没有选中内容；普通文本选区中两端相等时为空 |
+
+例如，从右向左选中 `abc` 中的 `bc`，`anchor` 大于 `head`，但 `from` 仍小于 `to`。工具栏判断范围时通常使用后两者，恢复选择方向时则不能丢掉前两者。
+
+ProseMirror 的位置计数包含节点结构。一个普通段落的内容开始于位置 `1`，段落前的位置 `0` 不等同于第一个字符的文本光标。文本长度按 JavaScript 字符串的 UTF-16 代码单元计算；一个 emoji 可能占两个代码单元，组合字符还可能更复杂。不能把“第几个可见字符”直接当作模型位置。
+
+`TextSelection` 表示文本选区，`NodeSelection` 可以选中整张图片等节点，`AllSelection` 表示整篇文档。处理工具栏时要确认选区类型和命令适用范围，而不是假设任何选区都是一段纯文本。
+
+### 3.1 修改后的选区映射 {#修改后的选区映射}
+
+**位置映射**记录一次修改怎样移动原有位置。假设选中了 `abc` 中的 `bc`，然后在段首插入 `Z`；继续使用旧数字会指向错误内容，经过映射后仍能找到 `bc`。
+
+下面使用 `prosemirror-state` 1.4.3 和 `prosemirror-markdown` 1.13.2 提供的 schema：
+
+```js
+import { EditorState, TextSelection } from 'prosemirror-state';
+import { defaultMarkdownParser } from 'prosemirror-markdown';
+
+const doc = defaultMarkdownParser.parse('abc');
+const selection = TextSelection.create(doc, 4, 2);
+const state = EditorState.create({ doc, selection });
+const tr = state.tr.insertText('Z', 1);
+const mapped = selection.map(tr.doc, tr.mapping);
+const next = state.apply(tr.setSelection(mapped));
+
+console.log(state.doc.textContent); // abc
+console.log(next.doc.textContent); // Zabc
+console.log(next.selection.anchor, next.selection.head); // 5 3
+console.log(next.selection.from, next.selection.to); // 3 5
+console.log(next.doc.textBetween(3, 5)); // bc
+```
+
+旧 `state` 保持不变，`next` 的文档和选区属于同一版本。事务会随文档步骤映射自身维护的选区，但具体编辑方法还可能主动调整选区。例如这里的 `insertText` 会把非空选区收拢到映射后的末端；显式调用 `map` 再 `setSelection`，才能保留原来选中 `bc` 的范围和方向。
+
+如果异步任务期间发生了多次修改，就要映射经过这段时间的全部相关步骤，或者使用协作库提供的相对位置。被选内容已经删除时，映射只能找到合理的剩余位置，不能替产品决定是否仍应插入批注。应校验任务对应的文档、版本和目标内容，必要时取消操作。
+
+## 4. 事务与编辑生命周期 {#事务与编辑生命周期}
+
+**事务**把一次编辑引起的文档步骤、选区和元信息放在一起。视图分发事务，应用从旧状态计算新状态，再更新视图。这样历史插件和其他插件才有机会同步处理变化。
+
+下面是一个支持粗体、撤销和 Markdown 导出的最小编辑器。模块中的裸包名需要通过构建工具解析，页面加载的是构建得到的 `editor.js`；还需引入 `prosemirror-view/style/prosemirror.css`，保留编辑器所需的基础样式。
+
+```html
+<div role="group" aria-label="文本格式">
+  <button id="bold" type="button">粗体</button>
+  <button id="undo" type="button">撤销</button>
+  <button id="redo" type="button">重做</button>
+</div>
+<div id="editor"></div>
+<p id="selection-status"></p>
+<script type="module" src="./editor.js"></script>
+```
+
+```js
+import { EditorState } from 'prosemirror-state';
+import { EditorView } from 'prosemirror-view';
+import { history, undo, redo } from 'prosemirror-history';
+import { keymap } from 'prosemirror-keymap';
+import { baseKeymap, toggleMark } from 'prosemirror-commands';
+import {
+  defaultMarkdownParser,
+  defaultMarkdownSerializer,
+} from 'prosemirror-markdown';
+
+export function mountEditor(host, controls, status) {
+  const listeners = new AbortController();
+  const state = EditorState.create({
+    doc: defaultMarkdownParser.parse('Hello **world**'),
+    plugins: [
+      history(),
+      keymap({ 'Mod-z': undo, 'Mod-Shift-z': redo }),
+      keymap(baseKeymap),
+    ],
+  });
+  const view = new EditorView(host, {
+    state,
+    attributes: { role: 'textbox', 'aria-label': '文档',
+      'aria-multiline': 'true' },
+    dispatchTransaction(tr) {
+      view.updateState(view.state.apply(tr));
+      describeSelection();
+    },
+  });
+  function describeSelection() {
+    const { anchor, head, from, to } = view.state.selection;
+    status.textContent = `anchor=${anchor}, head=${head}, 范围=${from}–${to}`;
+  }
+  const commands = {
+    bold: toggleMark(state.schema.marks.strong),
+    undo,
+    redo,
+  };
+  for (const [name, button] of Object.entries(controls)) {
+    button.addEventListener('pointerdown', event => {
+      if (event.button === 0) event.preventDefault();
+    }, { signal: listeners.signal });
+    button.addEventListener('click', () => {
+      commands[name](view.state, view.dispatch, view);
+      view.focus();
+    }, { signal: listeners.signal });
+  }
+  describeSelection();
+  let destroyed = false;
+  return {
+    view,
+    markdown: () => defaultMarkdownSerializer.serialize(view.state.doc),
+    destroy() {
+      if (destroyed) return;
+      destroyed = true;
+      listeners.abort();
+      view.destroy();
+    },
+  };
+}
+
+export const editor = mountEditor(
+  document.querySelector('#editor'),
+  Object.fromEntries(['bold', 'undo', 'redo'].map(
+    name => [name, document.querySelector(`#${name}`)],
+  )),
+  document.querySelector('#selection-status'),
+);
+```
+
+初始内容显示为 `Hello world`，其中 `world` 为粗体。选中文字后点“粗体”，命令根据当前选区生成修改；撤销则通过历史插件还原这次操作。`markdown()` 从文档模型导出，格式可能被规范化，不承诺还原最初输入的空格和标记写法。
+
+鼠标或触笔按下工具栏时，阻止该次主按钮的默认焦点转移可以保留编辑区的 DOM 选区；键盘仍通过原生按钮触发 `click`，命令读取编辑器状态中的选区后把焦点交回编辑区。完整产品还要显示当前格式、不可用命令和保存状态。
+
+输入法组合期间，浏览器可能先展示尚未确认的文字，再提交最终结果。框架层不应在每次 `input` 后重新赋值整块 `innerHTML`，也不应把每个中间组合事件都当成独立提交。让编辑器处理输入和 DOM 同步，应用通过事务与扩展接入；涉及中文输入、移动端和粘贴的自定义扩展，需要在目标浏览器和输入法上单独验收。
+
+组件卸载时调用 `destroy()`，解除自己添加的工具栏监听并销毁视图；协作连接、观察器和定时任务也由创建它们的那一层释放。把编辑器实例重复挂到同一个容器，或者组件卸载后继续分发事务，都不属于这个最小示例支持的用法。
+
+## 5. 撤销与历史分组 {#撤销与历史分组}
+
+**撤销历史**记录可逆的编辑操作及其分组。它需要回答“这一步撤销哪些修改”，而不只是保存一个数组游标。连续输入通常适合合成一步，粘贴整段文字、一次格式调整则可以是另一步。
+
+ProseMirror history 会结合时间和变化是否相邻等条件分组，默认 `newGroupDelay` 为 `500` 毫秒。需要明确开始新分组时，可以给事务使用 `closeHistory`。`addToHistory: false` 可以让事务不进入用户撤销记录，但不等于忽略它对文档位置的影响。
+
+协作时还多了一层归属：甲输入 `X` 后，乙输入 `Y`，甲按撤销应该撤销自己的 `X`，而不是把文档还原到没有 `Y` 的旧快照。实现可以通过操作逆变换与映射，或者协作库支持的选择性撤销完成。引入协作插件时，要按该绑定方案配置历史，不能随意叠加两套彼此不知道的撤销栈。
+
+## 6. Markdown 解析与预览 {#markdown解析与预览}
+
+**Markdown 解析器**把源字符串变成可供渲染的语法表示。Marked 的 lexer/tokenizer 识别块级和行内语法，产生有嵌套关系的 token；parser 再调用 renderer 生成 HTML。扩展可以增加语法、遍历 token 或改变渲染结果。
+
+这条链路没有自动提供光标、富文本选择、输入法和撤销。源码编辑器可以保存 Markdown，再调用解析器更新只读预览；富文本编辑器则可以使用自己的文档模型，通过 Markdown parser/serializer 导入导出。两者的内容源和编辑操作不同。
+
+**解析成功也不表示 HTML 可以直接插入页面**。Markdown 可以包含原始 HTML，链接也有协议和目标限制。下面用独立 Marked 实例生成预览，再由 DOMPurify 净化；只允许这个预览确实需要的标签和属性。
+
+```js
+import { Marked } from 'marked';
+import DOMPurify from 'dompurify';
+
+const markdown = new Marked({ async: false, gfm: true });
+
+export function renderPreview(source, target) {
+  if (typeof source !== 'string') throw new TypeError('需要 Markdown 字符串');
+  const html = markdown.parse(source);
+  const fragment = DOMPurify.sanitize(html, {
+    ALLOWED_TAGS: ['p', 'br', 'strong', 'em', 'code', 'pre',
+      'blockquote', 'ul', 'ol', 'li', 'h1', 'h2', 'h3', 'a'],
+    ALLOWED_ATTR: ['href', 'title'],
+    ALLOW_DATA_ATTR: false,
+    ALLOW_ARIA_ATTR: false,
+    RETURN_DOM_FRAGMENT: true,
+  });
+  target.replaceChildren(fragment);
+}
+```
+
+`**ready**` 显示为粗体，事件属性和脚本不进入预览。这份允许列表也会移除图片和表格，属于产品范围选择；支持它们时需要再定义图片来源、资源加载和表格结构的策略。净化之后再拼接未经处理的 HTML，仍会破坏这个边界。服务端保存与再次展示内容时也要执行相应的校验和输出策略，不能只相信某个客户端曾净化过。
+
+长文档应先测量解析、净化和 DOM 更新各自的成本。只读预览可以合并频繁请求，必要时在 Worker 里解析，并用版本号丢弃过时结果；依赖 DOM 的净化和呈现要安排在适合的环境。编辑区自己的输入与选区更新不能为了减小预览开销而随意丢弃。
+
+## 7. 并发编辑与协作同步 {#并发编辑与协作同步}
+
+两个人都基于 `AB` 在 `A` 后插入文字：甲插入 `X`，乙插入 `Y`。如果只发送“在下标 `1` 插入”，各端先应用自己的修改，再原样应用对方的修改，会分别得到 `AYXB` 和 `AXYB`。消息送达了，文档仍然不一致。
+
+### 7.1 OT 与 CRDT {#ot与crdt}
+
+**操作转换**（Operational Transformation，OT）根据已发生的并发操作调整另一个操作，使它适用于新的文档上下文。假设约定同位置插入时甲排在乙前面：甲先插入后，乙的插入位置要由 `1` 调整为 `2`；乙先插入后，甲仍插在 `1`。两条执行路径最终都得到 `AXYB`。
+
+这只是两次插入的例子。真实算法还要处理删除、格式、嵌套结构、多步并发和操作基于哪个版本，不能靠“下标加一”实现完整 OT。ShareDB 采用 OT 类型插件处理并发文档操作。ProseMirror 自带的协作方案则由中心权威确定步骤顺序，客户端将尚未确认的步骤重放到新版本之上；采用 Tiptap 不代表已经选定某一种协作算法。
+
+**无冲突复制数据类型**（Conflict-free Replicated Data Type，CRDT）通过受约束的数据表示和合并规则，让副本在满足同步条件后收敛。序列类实现通常需要标识内容及其相对关系，不能只记录当前显示下标。CRDT 有不同设计，不能笼统地说任何消息都可以随意丢失，或者所有实现都没有传输前提。
+
+以 Yjs 为例，文档更新允许乱序和重复应用；各端收到全部相关更新后会同步。它仍需要保存并传送这些更新。服务器可以负责连接、权限和持久化，使用 CRDT 并不等于产品不需要服务器。
+
+### 7.2 两个副本与本地撤销 {#两个副本与本地撤销}
+
+下面只在一个进程中模拟两个独立副本，没有连接外部协作服务。两端先共享 `AB`，断开同步后分别插入 `X`、`Y`，再交换更新。
+
+```js
+import * as Y from 'yjs';
+
+export function collaborationExample() {
+  const a = new Y.Doc();
+  const b = new Y.Doc();
+  const left = a.getText('body');
+  const right = b.getText('body');
+  left.insert(0, 'AB');
+  Y.applyUpdate(b, Y.encodeStateAsUpdate(a));
+  const local = new Y.UndoManager(left, {
+    trackedOrigins: new Set(['local']),
+  });
+  try {
+    a.transact(() => left.insert(1, 'X'), 'local');
+    b.transact(() => right.insert(1, 'Y'), 'local');
+    const updateA = Y.encodeStateAsUpdate(a);
+    const updateB = Y.encodeStateAsUpdate(b);
+    Y.applyUpdate(a, updateB, 'remote');
+    Y.applyUpdate(b, updateA, 'remote');
+    Y.applyUpdate(b, updateA, 'remote');
+    const merged = [left.toString(), right.toString()];
+
+    local.undo();
+    Y.applyUpdate(b, Y.encodeStateAsUpdate(a), 'remote');
+    return { merged, undone: [left.toString(), right.toString()] };
+  } finally {
+    local.destroy();
+    a.destroy();
+    b.destroy();
+  }
+}
+
+console.log(collaborationExample());
+```
+
+`merged` 的两个字符串相等，都是 `AXYB` 或都是 `AYXB`，具体顺序由该次副本标识与算法的排序决定，不能把某次输出当成业务优先级。重复应用 `updateA` 不会再次插入 `X`。`undone` 为两个 `AYB`：甲只撤销了自己标记为 `local` 的插入，乙的 `Y` 被保留。
+
+`origin` 是本地应用用来区分操作来源的标记，不是从网络数据自动推导的可信用户身份。客户端修改它不能获得权限；服务端仍需验证当前用户是否有权写入目标文档。把 Yjs 接到可编辑页面还需要编辑器绑定，使事务和共享类型对应；这段例子没有完成富文本绑定。
+
+### 7.3 协作产品还需要什么 {#协作产品还需要什么}
+
+**同步通道**负责把更新送到对方，合并算法负责解释这些更新。可以用 WebSocket，也可以经其他通道传送；断线后要按状态向量或版本补齐缺失修改，而不是简单覆盖本地全文。
+
+工程设计至少要说明以下关系：
+
+1. 文档 ID 与权限绑定，连接鉴权和每次写入的授权保持一致。被撤销权限的离线修改如何处理，需要服务端规则。
+2. 持久化保存可恢复的状态或更新，明确何时向用户显示“已保存”。连接可用、操作已广播和持久化成功是不同状态。
+3. 光标、在线状态等临时信息有超时和清理机制，不必全部进入永久文档。光标也要用能随并发修改移动的位置表示。
+4. 结构合并以后仍校验业务约束。例如多人同时更改同一审批结论，各端得到同一个值，也不代表这个值已获得审批权限。
+5. 限制文档、单次更新和附件的大小，测量编辑、同步和恢复成本；不能用一个极小样例证明任意长文档都流畅。
+
+## 8. 常见问题 {#常见问题}
+
+### 8.1 保存 HTML 就能恢复所有编辑状态吗？ {#保存html就能恢复所有编辑状态吗}
+
+不能。受控 HTML 可以保存一部分内容与格式，但通常不包含历史、选区、协作标识和自定义节点的全部元信息。选择存储格式时，先说明需要恢复内容、恢复会话还是继续协作，再设计版本与迁移。
+
+### 8.2 每次输入后重新创建 EditorState 可以吗？ {#每次输入后重新创建editorstate可以吗}
+
+不能把它当作普通更新方式。重新创建状态会丢掉未显式迁移的插件状态、选区和历史，还可能干扰输入法。正常编辑沿事务更新；加载另一篇文档或重建配置时，再明确决定哪些状态保留、哪些重置。
+
+### 8.3 CRDT 会自动消除用户之间的矛盾吗？ {#crdt会自动消除用户之间的矛盾吗}
+
+不会。算法解决的是定义好的数据合并与收敛问题，不能决定两个人的审批意见谁正确，也不能保证自动合并后的句子仍然通顺。必要时保留修改记录、显示冲突或让用户确认。
+
+## 9. 面试题 {#面试题}
+
+### 9.1 富文本编辑器为什么选择 Quill、Tiptap 或其他方案？ {#editor-choice}
+
+**题型**：综合题
+
+**考察重点**：从内容模型和产品约束说明选型，而非罗列库名。
+
+**相关内容**：[文档模型与编辑视图](#文档模型与编辑视图)、[事务与编辑生命周期](#事务与编辑生命周期)、[协作产品还需要什么](#协作产品还需要什么)。
+
+<details>
+<summary>参考回答</summary>
+
+**先说明项目必须支持的文档结构和交互，再比较方案能否满足这些约束。** 例如批改页面可能需要批注、选区恢复和受控格式；协作文档还需要协作绑定和本地撤销。
+
+回答时给出自己实际验证过的扩展、粘贴和输入法效果，以及内容导入导出、已有技术栈、许可和维护成本。Tiptap 基于 ProseMirror 的节点与标记模型，Quill 使用 Delta；这些差异要联系项目需求，不能据此直接断言其中一个总是更好。
+
+</details>
+
+### 9.2 Tiptap 的 selection 中 anchor、head、from、to 有什么区别？ {#selection-fields}
+
+**考察重点**：选择方向、范围边界、已解析位置与选区类型。
+
+**相关内容**：[选区与文档位置](#选区与文档位置)。
+
+<details>
+<summary>参考回答</summary>
+
+**`anchor` 是固定端，`head` 是移动端；`from`、`to` 是主范围的有序边界。** 向左选择时 `anchor` 可以大于 `head`，但 `from` 不大于 `to`。
+
+`$anchor`、`$head` 等字段提供父节点、深度等已解析上下文。这里的数字属于 ProseMirror 文档模型，不能直接当作 DOM offset；还应区分文本、节点和全文选区。
+
+</details>
+
+### 9.3 异步操作保存了选区位置，返回后为什么可能插错地方？ {#position-mapping}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：文档版本与位置映射，以及目标被删除的边界。
+
+**相关内容**：[修改后的选区映射](#修改后的选区映射)。
+
+<details>
+<summary>参考回答</summary>
+
+**保存的数字只对应当时的文档，后续插入和删除会改变它所指的内容。** 应让位置经过期间的全部相关映射，或使用协作绑定支持的相对位置。
+
+返回后还要确认文档身份和目标内容。目标已经删除、文档已经切换时，应取消或按明确规则重新定位，不能仅把旧数字截断到当前长度。
+
+</details>
+
+### 9.4 协作编辑中如何只撤销自己的输入？ {#undo-scope}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：历史分组、操作归属与选择性撤销。
+
+**相关内容**：[撤销与历史分组](#撤销与历史分组)、[两个副本与本地撤销](#两个副本与本地撤销)。
+
+<details>
+<summary>参考回答</summary>
+
+**记录并撤销自己的操作，让逆操作适应当前文档，而不是恢复整篇旧快照。** 否则会覆盖自己输入之后其他人的修改。
+
+例如 Yjs 的 `UndoManager` 可限制共享类型与 `trackedOrigins`，只跟踪约定的本地操作；撤销产生的更新仍需要同步给其他副本。还要定义连续输入如何分组，并使用与编辑器协作绑定兼容的历史方案。
+
+</details>
+
+### 9.5 Marked 怎样实现 Markdown 渲染？它等于富文本编辑器吗？ {#markdown-pipeline}
+
+**考察重点**：解析与渲染链路、编辑器职责和 HTML 安全边界。
+
+**相关内容**：[Markdown 解析与预览](#markdown解析与预览)。
+
+<details>
+<summary>参考回答</summary>
+
+**Marked 识别 Markdown 语法形成 token，再由 parser 和 renderer 生成 HTML；它不是完整的富文本编辑器。** 自定义 tokenizer、renderer 等扩展可以改变识别和输出方式。
+
+它不提供完整的选区、输入法和撤销管理，也不净化输出 HTML。预览不可信内容时，应对输出执行适合业务的净化与资源策略；不能因为输入叫 Markdown 就直接信任。
+
+</details>
+
+### 9.6 OT 与 CRDT 怎样处理并发编辑，有什么区别？ {#ot-crdt}
+
+**考察重点**：并发操作的上下文、转换与合并规则、收敛条件。
+
+**相关内容**：[OT 与 CRDT](#ot与crdt)、[两个副本与本地撤销](#两个副本与本地撤销)。
+
+<details>
+<summary>参考回答</summary>
+
+**OT 按并发操作调整操作的含义，CRDT 用受约束的数据表示和合并规则实现收敛。** 比如两个人在同一位置插入文字，OT 需要按确定规则转换位置；序列 CRDT 则结合内容标识及相对关系决定合并顺序。
+
+比较时要指明具体实现的同步前提、元数据、存储和服务端职责。Yjs 更新可以乱序、重复应用，但仍需补齐相关更新；不能把 CRDT 说成无需同步或无需权限控制。
+
+</details>
+
+### 9.7 一个支持断线重连的协作文档需要设计哪些部分？ {#collaboration-design}
+
+**题型**：综合题
+
+**考察重点**：文档与操作、通信、恢复、权限和编辑状态之间的关系。
+
+**相关内容**：[文档模型与编辑视图](#文档模型与编辑视图)、[撤销与历史分组](#撤销与历史分组)、[并发编辑与协作同步](#并发编辑与协作同步)。
+
+<details>
+<summary>参考回答</summary>
+
+**先确定文档模型和并发合并方案，再设计更新传输、持久化和重连补齐。** WebSocket 只解决其中的通信部分，不能让两份全文自动合并。
+
+每个文档需要权限校验，离线修改回来后仍受当前权限约束；保存确认要对应明确的持久化状态。编辑器绑定负责让本地事务、远端更新和选区一致，撤销应保留他人的修改。光标与在线状态要有失效规则，恢复流程还应测试重复更新、缺失更新、权限撤销和大文档。
+
+</details>
+
+## 10. 参考资料 {#参考资料}
+
+- [ProseMirror：文档模型](https://github.com/ProseMirror/website/blob/master/markdown/guide/doc.md)
+- [ProseMirror：变换与映射](https://github.com/ProseMirror/website/blob/master/markdown/guide/transform.md)
+- [ProseMirror State 1.4.3：Selection](https://github.com/ProseMirror/prosemirror-state/blob/1.4.3/src/selection.ts)
+- [ProseMirror State 1.4.3：事务与插入后的选区](https://github.com/ProseMirror/prosemirror-state/blob/1.4.3/src/transaction.ts)
+- [ProseMirror History 1.4.1：历史分组与配置](https://github.com/ProseMirror/prosemirror-history/blob/1.4.1/src/history.ts)
+- [Tiptap：ProseMirror](https://tiptap.dev/docs/editor/core-concepts/prosemirror)
+- [Marked 15：解析与扩展链路](https://github.com/markedjs/marked/blob/v15.0.12/docs/USING_PRO.md)
+- [Marked：输出 HTML 的安全边界](https://marked.js.org/#usage)
+- [DOMPurify 3.4.17：配置与使用](https://github.com/cure53/DOMPurify/tree/3.4.17)
+- [Quill：Delta 文档与变化格式](https://quilljs.com/docs/delta)
+- [ProseMirror：中心协调的协作方案](https://github.com/ProseMirror/website/blob/master/markdown/guide/collab.md)
+- [ShareDB：OT 协作文档](https://share.github.io/sharedb/)
+- [Yjs：Document Updates](https://docs.yjs.dev/api/document-updates)
+- [Yjs：UndoManager](https://docs.yjs.dev/api/undo-manager)

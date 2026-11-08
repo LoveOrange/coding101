@@ -1,0 +1,306 @@
+---
+sidebar_position: 5
+knowledge:
+  id: frontend.css.stacking-context
+---
+
+# 层叠上下文
+
+层叠上下文规定一组元素如何作为整体参与前后绘制。子元素的 `z-index` 再大，也只能在它所参与的上下文中排序，不能直接越过祖先所在的整体层级。这是弹层、下拉菜单和角标设置了巨大数值却仍被遮挡的一个重要原因。
+
+排查遮挡时，先沿祖先链找出上下文边界，再比较相关边界的顺序。裁剪、定位参照和合成优化也会影响结果，但它们不是同一条规则，不能都用增加 `z-index` 处理。
+
+## 1. 面试核心 {#core}
+
+- **层叠上下文作为整体参与外部排序，内部子元素不能用巨大 `z-index` 跨越这道边界**。先比较祖先上下文，再看内部顺序。[卡](#stacking-context)
+- `position: relative/absolute` 配合非 `auto` 的 `z-index` 可以建立上下文；**`fixed`、`sticky`、小于 1 的 opacity、非 none 的 transform 等也可能直接形成边界**。[卡](#context-triggers)
+- **`z-index: auto` 与 `0` 不总是等价**。对于普通相对定位盒，`auto` 不因该声明建立上下文，`0` 会建立新的上下文。[卡](#auto-zero)
+- `z-index` 并不只适用于设置定位的元素：**Flex 和 Grid 项目的非 auto `z-index` 也能生效并建立上下文**。[卡](#flex-grid-index)
+- 在同一上下文中，负值、普通流内容、定位内容和正值有相应绘制顺序；**负 `z-index` 不表示可以无条件躲到所有祖先背景后面**。[卡](#negative-index)
+- **裁剪不能靠提高 `z-index` 解除**。先确认是前面有别的盒子，还是内容已经被祖先的溢出区域裁掉。[卡](#clipping)
+- 浏览器顶层用于模态对话框等特定机制，**不与普通文档中的巨大 `z-index` 直接竞争**；进入顶层需要相应 API 或状态。[卡](#top-layer)
+- **层叠上下文是绘制规则，合成层是浏览器实现和优化安排**，二者不是一一对应，也不能把增加层级当作通用性能优化。
+
+## 2. 整体排序的边界 {#整体排序的边界}
+
+**层叠上下文**（stacking context）是一组按内部规则绘制、再作为整体参与父级排序的内容。可以嵌套上下文，但子上下文不会把自己的数字直接加到父上下文的数字上。
+
+```html
+<style>
+  .first { position: relative; z-index: 1; }
+  .popup { position: absolute; left: 0; top: 0; width: 160px; height: 100px; background: #ef4444; z-index: 9999; }
+  .second { position: relative; z-index: 2; width: 160px; height: 100px; background: #2563eb; }
+</style>
+<div class="first"><div class="popup">内部弹层</div></div>
+<div class="second">外部内容</div>
+```
+
+`.first` 的高度没有被绝对定位的 `.popup` 撑开，所以两个有色区域在这个例子中重叠。蓝色 `.second` 仍盖住红色 `.popup`。
+
+| 盒子 | 参与哪一级比较 | 本级数值 |
+| --- | --- | --- |
+| `.first` | 外部上下文 | 1 |
+| `.popup` | `.first` 内部 | 9999 |
+| `.second` | 外部上下文 | 2 |
+
+外部先比较 `.first` 与 `.second`，1 低于 2，`.first` 及其内部内容作为整体位于后面。把 `.popup` 改成 999999，外部比较仍没有改变。可以根据设计提高 `.first` 的外部层级，或调整弹层所在位置与结构；具体选择取决于这个区域是否整体都应覆盖其他内容。
+
+CSS 声明层叠决定某个 `z-index` 属性最终取什么值，层叠上下文则使用最终值安排绘制。前一种规则见 [CSS 层叠](./cascade.mdx#声明的竞争)，不能因为两者都包含“层叠”就混为一谈。
+
+## 3. 上下文怎样建立 {#上下文的建立}
+
+### 3.1 常见建立条件 {#建立条件}
+
+根元素建立根层叠上下文。其他元素也可能因为定位、透明度或变换等规则建立上下文，以下是排查页面时值得先检查的条件，并非所有 CSS 特性的完整列表。
+
+| 条件 | 需要注意的边界 |
+| --- | --- |
+| `position: relative/absolute` 且 `z-index` 非 `auto` | 单独设置相对定位不一定建立上下文 |
+| `position: fixed/sticky` | 即使 `z-index: auto`，也会建立上下文 |
+| Flex 或 Grid 项目的 `z-index` 非 `auto` | 不要求先给项目设置 `position: relative` |
+| `opacity` 小于 1 | 整组内容按透明度处理，子元素不能独立越过该组的外部顺序 |
+| `transform` 非 `none` | 即使变换看起来没有移动内容，也可能建立上下文，并改变定位包含块 |
+| `isolation: isolate` | 明确建立独立的层叠上下文 |
+
+滤镜、混合、包含和部分 `will-change` 值等也可能引入边界，应按具体属性检查。不要为了修复一个遮挡问题，随意添加没有业务含义的透明度或 3D 变换。
+
+### 3.2 auto 与 0 {#auto与零}
+
+`z-index: auto` 让元素使用相应的自动绘制规则。对没有其他建立上下文条件的普通相对定位盒，它不会像 `z-index: 0` 一样隔离内部层级。
+
+```html
+<style>
+  .parent { position: relative; z-index: auto; }
+  .child { position: absolute; width: 160px; height: 100px; z-index: 10; background: #ef4444; }
+  .sibling { position: relative; width: 160px; height: 100px; z-index: 1; background: #2563eb; }
+</style>
+<div class="parent"><div class="child">子元素</div></div>
+<div class="sibling">兄弟区域</div>
+```
+
+在这个例子中，`.parent` 不建立独立上下文，红色 `.child` 可以在共同外层中以 10 盖住层级为 1 的蓝色区域。把 `.parent` 的 `z-index` 改成 0 后，它建立上下文，内部 10 就被限制在这个整体内，蓝色区域重新覆盖红色。
+
+如果 `.parent` 已经有 `opacity: 0.9` 或非 `none` 的变换，那么即使 `z-index: auto`，它也可能已经形成上下文。不能仅查看 `z-index` 一个属性就判断是否存在边界。
+
+### 3.3 Flex 与 Grid 项目 {#布局项目的层级}
+
+Flex 和 Grid 项目可以直接使用非 `auto` 的 `z-index` 调整相应绘制顺序。以下两个 Grid 项目占据同一个网格区域。
+
+```html
+<style>
+  .grid { display: grid; width: 160px; height: 100px; }
+  .item { grid-area: 1 / 1; }
+  .front { z-index: 2; background: #ef4444; }
+  .back { z-index: 1; background: #2563eb; }
+</style>
+<div class="grid"><div class="item front">前方</div><div class="item back">后方</div></div>
+```
+
+两项都没有设置定位，前面的 `.front` 仍因为更高层级覆盖后写的 `.back`。普通非定位块盒不能据此类推成“任何元素都能直接用 z-index”；这里的关键条件是它们是 Grid 项目。
+
+## 4. 上下文内部的绘制 {#内部绘制}
+
+### 4.1 常见顺序 {#绘制顺序}
+
+一个上下文先画自己的背景和边框，再按规则处理内部内容。对常见二维页面，可以先把以下顺序作为排查入口：
+
+1. 上下文自身的背景与边框。
+2. 负层级的后代上下文，数值更小的更早绘制。
+3. 普通流中的块背景、浮动与行内内容等各自的绘制阶段。
+4. 自动或零层级的相关定位内容与上下文。
+5. 正层级的后代上下文，数值更大的更晚绘制。
+
+这是对主要阶段的概括，不代替表格、行内盒、轮廓和 3D 变换等完整绘制规则。同级并且前置排序条件相同时，还会按相应树顺序处理；Flex/Grid 等布局的绘制顺序也有自己的规定。
+
+因此，“后写的元素总在上面”和“定位元素总在所有普通元素上面”都不够准确。先找它们所在的上下文和绘制阶段，才知道是否已经能比较某个数值或源码顺序。
+
+### 4.2 负值与背景 {#负值与背景}
+
+负 `z-index` 仍在当前上下文中排序。它可以位于该上下文中的普通内容后面，但不能越过当前上下文自身背景这个阶段。
+
+```html
+<style>
+  .card { position: relative; z-index: 0; width: 160px; height: 100px; background: #facc15; }
+  .decoration { position: absolute; inset: 0; z-index: -1; background: #ef4444; }
+</style>
+<div class="card"><div class="decoration"></div><span>正文</span></div>
+```
+
+`.card` 的 `z-index: 0` 建立上下文。红色装饰在黄色背景之后绘制、在普通正文之前绘制，因此它可见，正文仍在前方。若去掉 `.card` 的上下文边界，负层级装饰会参与更外层的排序，可能被 `.card` 的普通背景盖住。
+
+使用负值前应说明希望它位于哪一组内容后面。把装饰设成负值并不断调小数值，可能只是让它跑到更外层的背景之后。
+
+## 5. 遮挡、裁剪与顶层 {#遮挡裁剪与顶层}
+
+### 5.1 裁剪不属于层级竞争 {#裁剪}
+
+**裁剪**限制某个区域之外的内容是否可见。裁剪后不存在一块完整图像等待更高 `z-index` 把它搬到前面，因此提高层级不能解除这条边界。
+
+```html
+<style>
+  .clip { position: relative; width: 160px; height: 60px; overflow: hidden; }
+  .menu { position: absolute; top: 40px; left: 0; width: 120px; height: 100px; z-index: 9999; background: #ef4444; }
+</style>
+<div class="clip"><div class="menu">菜单</div></div>
+```
+
+这里菜单的定位包含块就是 `.clip`，所以菜单超出父区域的部分会被裁掉。把 `z-index` 再加大也不会显示完整菜单。可以重新安排溢出策略，或将需要越界显示的弹层放到合适的位置，再处理其定位与交互。
+
+不要把结论推广成“任何后代都必然被任意 overflow 祖先裁剪”，定位包含块和具体裁剪规则仍会影响关系。排查当前结构时，先确认谁在裁剪，再决定是否修改那条约束。
+
+建立 BFC 也不等于建立层叠上下文。`display: flow-root` 可以改变浮动与外边距的布局关系，但不会仅因此限制所有后代的 `z-index`。这两个问题分别见 [CSS 盒模型与格式化上下文](./box-model-formatting-contexts.mdx#bfc边界) 与本文的上下文边界。
+
+### 5.2 浏览器顶层 {#浏览器顶层}
+
+**顶层**（top layer）是浏览器为模态对话框、特定弹出机制和全屏元素等维护的特殊绘制位置。顶层内容处于普通文档层级之外，不需要靠一个无限大的 `z-index` 战胜普通页面元素。
+
+```html
+<style>
+  .cover { position: fixed; inset: 0; z-index: 2147483647; background: #2563eb; }
+  .clip { height: 20px; overflow: hidden; transform: translateZ(0); }
+  dialog { width: 180px; border: 0; background: white; }
+  dialog::backdrop { background: rgb(0 0 0 / 40%); }
+</style>
+<div class="cover">普通页面的高层级遮罩</div>
+<div class="clip">
+  <dialog aria-label="确认申请">
+    <p>确认提交申请？</p>
+    <button type="button" onclick="this.closest('dialog').close()">关闭</button>
+  </dialog>
+</div>
+<script>document.querySelector('dialog').showModal();</script>
+```
+
+`showModal()` 让这个对话框进入顶层，因此它能出现在蓝色普通遮罩之上，也不按普通后代方式被 `.clip` 的裁剪和变换约束。它仍保留 DOM 中的位置；顶层改变的是绘制与相应交互规则，不等于把 DOM 节点移动到了 `body`。
+
+只给 `dialog` 设置 `open`，或用 `show()` 打开非模态对话框，不会得到同样的模态顶层行为。多个顶层内容还遵循顶层自身的顺序，不能依赖普通 `z-index` 任意调整。使用顶层也要处理关闭、焦点和滚动，布局不能替代完整交互。
+
+## 6. 排查与性能边界 {#排查与性能边界}
+
+排查遮挡时，可以沿这一条顺序收集证据：
+
+1. 查看目标盒的实际尺寸与位置，确认不是定位到了别处。
+2. 检查是否被 `overflow`、裁剪路径等规则限制可见范围。
+3. 沿两侧祖先链找上下文，找到它们第一次参与共同外部比较的边界。
+4. 比较这一层级的值和绘制顺序，再决定调整上下文、组件结构或顶层机制。
+
+不要把给祖先加 `transform: translateZ(0)` 当作无副作用的性能操作。它可能同时改变定位包含块和层叠上下文，从而影响固定按钮或弹层。
+
+**合成层**是浏览器为了绘制、缓存和合成安排的实现对象。一个层叠上下文不一定独占 GPU 合成层，浏览器也可能出于其他原因创建或调整合成层。过多层可能增加内存与管理成本；性能结论应来自具体页面的渲染证据，而不是“层越多越快”。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 什么是层叠上下文，为什么子元素的大 z-index 仍可能被遮挡？ {#stacking-context}
+
+**考察重点**：独立绘制组、祖先边界与局部排序。
+
+**相关内容**：[整体排序的边界](#整体排序的边界)。
+
+<details>
+<summary>参考回答</summary>
+
+**层叠上下文让内部内容排序后作为整体参与外部比较，子元素不能用自己的数字直接越过祖先上下文。** 如果父上下文是 1，外部兄弟是 2，那么内部子元素即使为 9999，整个父区域仍在兄弟后面。应找出共同外部比较的边界，再决定调整父层级、弹层位置或结构，不是无限增大子元素数值。
+
+</details>
+
+### 7.2 哪些条件可能建立层叠上下文？ {#context-triggers}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：定位、布局项目、透明度与变换的边界。
+
+**相关内容**：[常见建立条件](#建立条件)。
+
+<details>
+<summary>参考回答</summary>
+
+**根元素、带非 auto z-index 的相对/绝对定位盒，以及 fixed、sticky、非 auto z-index 的 Flex/Grid 项目等都会建立上下文。** 小于 1 的 `opacity`、非 `none` 的 `transform` 和 `isolation: isolate` 也可以建立；其他滤镜、包含或 `will-change` 条件需按具体属性核对。排查要看整个祖先链，不能只找有数字 `z-index` 的元素。
+
+</details>
+
+### 7.3 相对定位元素的 z-index: auto 与 0 等价吗？ {#auto-zero}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：自动层级与上下文建立的差异。
+
+**相关内容**：[auto 与 0](#auto与零)。
+
+<details>
+<summary>参考回答</summary>
+
+**不等价，在没有其他触发条件时，auto 不让普通相对定位盒建立上下文，0 会建立。** 前者内部定位后代可以参与更外层上下文，后者把它们限制在新上下文内。如果元素已经因为透明度或变换形成上下文，auto 也不会消除那条边界，所以必须结合其他计算样式判断。
+
+</details>
+
+### 7.4 不设置 position 的元素能使用 z-index 吗？ {#flex-grid-index}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：布局项目与普通非定位盒的区别。
+
+**相关内容**：[Flex 与 Grid 项目](#布局项目的层级)。
+
+<details>
+<summary>参考回答</summary>
+
+**Flex 和 Grid 项目可以使用非 auto 的 z-index，并建立层叠上下文，不必先设置 position。** 示例中两个 Grid 项目重叠在同一网格区域，数值为 2 的项目覆盖数值为 1 的项目。这个条件不能推广到任意普通非定位块盒。
+
+</details>
+
+### 7.5 z-index 为负数的子元素一定在父背景后面吗？ {#negative-index}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：上下文背景与负层级后代的绘制顺序。
+
+**相关内容**：[负值与背景](#负值与背景)。
+
+<details>
+<summary>参考回答</summary>
+
+**不一定，要看父元素是否形成当前上下文。** 当前上下文先绘制自己的背景和边框，再绘制负层级后代，因此父元素建立上下文时，负值装饰仍可在父背景上方、普通正文下方。父元素不形成上下文时，装饰可能参与更外层的负层级阶段，随后被父元素的普通背景盖住。
+
+</details>
+
+### 7.6 菜单被 overflow 裁剪时，提高 z-index 为什么没有效果？ {#clipping}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：可见区域与前后顺序的区别。
+
+**相关内容**：[裁剪不属于层级竞争](#裁剪)。
+
+<details>
+<summary>参考回答</summary>
+
+**裁剪决定区域之外的内容是否可见，z-index 决定已有内容的前后顺序，二者职责不同。** 当菜单确实受对应祖先的溢出裁剪时，增加数值不能解除裁剪。应确认实际裁剪元素与定位包含块，再考虑改变溢出策略、调整弹层结构，或使用适合需求的顶层机制。
+
+</details>
+
+### 7.7 模态 dialog 为什么能显示在普通页面的大 z-index 元素上方？ {#top-layer}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：浏览器顶层、DOM 位置与模态行为。
+
+**相关内容**：[浏览器顶层](#浏览器顶层)。
+
+<details>
+<summary>参考回答</summary>
+
+**`showModal()` 让对话框进入浏览器顶层，不再与普通文档的 z-index 按同一层级直接竞争。** 它保留 DOM 位置，但绘制和相应交互遵循顶层规则。仅设置 `open` 或调用 `show()` 不等价。顶层仍需要正确的关闭、焦点与滚动处理，也不是用来任意调高所有普通组件的属性。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [CSS 2.2：层叠上下文绘制顺序](https://www.w3.org/TR/CSS22/zindex.html)
+- [CSS Positioned Layout：定位元素的绘制](https://www.w3.org/TR/css-position-3/#painting-order)
+- [CSS Color：组透明度](https://www.w3.org/TR/css-color-4/#transparency)
+- [CSS Transforms：变换与绘制](https://www.w3.org/TR/css-transforms-1/#transform-rendering)
+- [CSS Positioned Layout Level 4：顶层](https://www.w3.org/TR/css-position-4/#top-layer)
+- [Compositing and Blending：isolation](https://www.w3.org/TR/compositing-1/#isolation)
+- [CSS Flexible Box Layout：项目绘制与层级](https://www.w3.org/TR/css-flexbox-1/#painting)
+- [CSS Grid Layout：项目层级](https://www.w3.org/TR/css-grid-1/#z-order)
+- [HTML Standard：dialog](https://html.spec.whatwg.org/multipage/interactive-elements.html#the-dialog-element)

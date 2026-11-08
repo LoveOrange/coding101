@@ -1,0 +1,297 @@
+---
+sidebar_position: 10
+knowledge:
+  id: basic-knowledge.javascript.higher-order-functions
+  type: concept
+description: "解释高阶函数、纯函数、柯里化、部分应用和函数组合，区分链式调用与 Promise 链，并给出参数边界明确的分组收参实现。"
+keywords: ["高阶函数", "柯里化", "纯函数", "部分应用", "函数组合", "链式调用"]
+---
+
+# 高阶函数与柯里化
+
+**高阶函数**接收函数作为参数，或把函数作为返回值。JavaScript 的函数可以像其他值一样传递，因此可以把“执行什么操作”从“怎样组织流程”中分离出来。`map` 接收转换函数，函数工厂返回带配置的函数，都是这种能力的应用。
+
+**柯里化**把接收多个参数的函数改写成逐个接收参数的一系列函数，例如把 `add(a, b)` 变成 `add(a)(b)`。它调整的是参数提供方式；纯函数讨论可观察行为，函数组合讨论结果怎样衔接，Promise 链讨论异步结果和错误传播。这些概念可以配合使用，但不能互相替代。
+
+## 1. 面试核心 {#core}
+
+- 函数可以接收或返回另一个函数。**高阶描述的是函数的输入输出关系，不要求异步，也不要求纯函数**。[卡](#higher-order)
+- 纯函数对相同输入产生相同结果，并且没有外部可观察的副作用。**不修改参数只是其中一个条件，读取时间、随机数或可变外部状态也会影响纯度**。[卡](#pure-functions)
+- 柯里化把多参数调用变成分步收参，部分应用先固定一部分参数。**二者都能产生专用函数，但参数组织方式不同**。[卡](#currying-use)
+- 通用收参工具必须明确何时执行、额外参数、空调用和接收者。**`fn.length` 不是业务需要的完整参数数量，默认参数和剩余参数会改变它**。[卡](#curry-implementation)
+- 组合把一个函数的输出交给下一个函数。**简单同步组合不会自动等待 Promise，也不会自动把多参数函数改成单参数函数**。[卡](#composition)
+- 链式调用依赖每一步返回的值支持下一步操作。**返回 this、返回新包装对象、返回新 Promise 是不同的链式语义**。[卡](#method-chain)
+
+## 2. 函数作为参数与结果 {#函数作为参数与结果}
+
+**一等函数**表示函数可以像其他值一样赋值、传参和返回。“一等”是语言对函数值的支持，“高阶”则描述某个函数怎样使用其他函数。
+
+```js
+function applyTwice(transform, value) {
+  return transform(transform(value));
+}
+function multiplyBy(factor) {
+  return value => value * factor;
+}
+
+const double = multiplyBy(2);
+console.log(applyTwice(double, 3)); // 12
+```
+
+`applyTwice` 负责重复应用一个操作，不需要知道操作是乘法还是其他转换。`multiplyBy` 通过闭包保留 `factor`，返回一个只接收当前值的函数；闭包的绑定机制见 [作用域与闭包](./scope-closures.mdx)。
+
+传入的函数也可以修改外部状态或发起请求，所以“使用高阶函数”不代表程序自动变成纯函数式。数组回调的具体参数和返回规则见 [JavaScript 集合](./collections.mdx#数组遍历与回调)。
+
+## 3. 纯函数与副作用 {#纯函数与副作用}
+
+**纯函数**只根据输入和稳定的依赖计算结果，不产生外部可观察的副作用。**副作用**是返回值以外的可观察影响，例如修改传入对象、改变外部变量、写日志、操作 DOM 或发起网络请求。
+
+```js
+function increase(record) {
+  return { ...record, count: record.count + 1 };
+}
+
+const original = { count: 1 };
+const changed = increase(original);
+console.log(original.count, changed.count); // 1 2
+console.log(original === changed);         // false
+```
+
+在这个普通数据对象的例子里，`increase` 根据输入产生结果，没有修改调用方的 `original`。如果传入对象有带副作用的 getter，读取属性也可能带来其他行为，因此判断纯度时需要明确输入模型。
+
+即使没有写入参数，使用 `Date.now()`、`Math.random()` 或可变外部配置也可能让相同输入得到不同结果。相反，在函数内部创建数组并修改它，只要没有影响外部可达状态，也不必因此判为不纯。
+
+纯函数更容易单独测试和组合，满足条件时也适合缓存结果。但把对象引用作为缓存键时，如果对象随后被修改，缓存可能失效；不能只因“是函数调用”就认为记忆化一定正确。实际程序仍需要输入输出，可以把计算逻辑与这些副作用边界分开组织。
+
+## 4. 柯里化与部分应用 {#柯里化与部分应用}
+
+柯里化把多参数关系改写成连续的单参数函数，让某些参数先提供，其余参数以后再提供。
+
+```js
+const format = prefix => name => prefix + name;
+const greet = format("hello ");
+console.log(greet("Lin")); // hello Lin
+console.log(format("welcome ")("Kai")); // welcome Kai
+```
+
+`greet` 保存了固定前缀，之后每次只需传当前名字。相同方式可以先固定校验规则、比较字段或转换配置，再把得到的函数交给后续流程。参数顺序会影响便利程度：变化较少的配置放前面，经常变化的数据放后面，通常更容易复用。
+
+**部分应用**先固定原函数的一部分参数，返回处理剩余参数的函数；剩余参数不要求逐个提供。
+
+```js
+function volume(width, height, depth) {
+  return width * height * depth;
+}
+const fixedWidth = (height, depth) => volume(2, height, depth);
+console.log(fixedWidth(3, 4)); // 24
+```
+
+这里固定 `width` 后，一次仍接收两个参数，所以是部分应用。`bind` 也能固定接收者和前置参数，但是否需要固定 `this` 是另一项决策，不能把所有参数预置都叫作绑定接收者。
+
+### 4.1 柯里化与 Promise 链 {#柯里化与-promise-链}
+
+柯里化只决定参数怎样逐步进入函数，本身没有等待或调度语义。`format("hello ")("Lin")` 完全可以同步完成。
+
+Promise 的 `.then` 则注册后续处理，返回新 Promise，并按回调的返回值或异常决定后续状态。即使前一个 Promise 已经兑现，处理函数也不会在当前这次注册调用内同步执行。两者写法可能都包含多次调用，但解决的问题不同。
+
+可以先用柯里化生成带配置的处理函数，再把它作为 `.then` 回调；这时“先固定参数”和“等待前一步结果”各自负责自己的部分。柯里化不负责把失败传给下一步，Promise 链也不负责自动收齐业务函数的所有参数。
+
+## 5. 分组收参的实现 {#分组收参的实现}
+
+面试中也会把允许 `fn(1)(2, 3)` 这类分组输入的工具称为柯里化工具。它比严格的逐个单参数形式更宽松，需要先约定执行条件。
+
+下面的 `curryN` 使用明确的非负整数 `arity` 指定参数总数。参数恰好齐全时执行；多传或在未收齐时空调用会抛错；不支持占位符。接收者由创建时的 `thisArg` 指定，不从某一层调用隐式猜测。
+
+```js
+function curryN(fn, arity, thisArg = undefined) {
+  if (typeof fn !== "function" || !Number.isSafeInteger(arity) || arity < 0) {
+    throw new TypeError("需要可调用函数与非负安全整数 arity");
+  }
+  function collect(previous) {
+    return (...next) => {
+      if (next.length === 0 && previous.length < arity) {
+        throw new RangeError("参数未收齐时不接受空调用");
+      }
+      const args = previous.concat(next);
+      if (args.length > arity) throw new RangeError("参数过多");
+      return args.length === arity
+        ? Reflect.apply(fn, thisArg, args)
+        : collect(args);
+    };
+  }
+  return collect([]);
+}
+
+const sum = curryN((a, b, c) => a + b + c, 3);
+const withOne = sum(1);
+console.log(withOne(2)(3)); // 6
+console.log(withOne(4, 5)); // 10
+console.log(sum(1, 2, 3));  // 6
+```
+
+每一层用新的 `args` 数组保存已收集参数，没有修改 `previous`。因此复用 `withOne` 不会把上次调用的 `2`、`3` 混进下一次调用。函数本身仍需满足可调用条件；给类构造器加这层包装不会使它能够普通调用。
+
+不要默认使用 `fn.length` 推导业务参数总数：
+
+```js
+function withDefault(a, b = 2, c) {}
+function withRest(...items) {}
+console.log(withDefault.length); // 1
+console.log(withRest.length);    // 0
+```
+
+`length` 只统计第一个默认参数之前的形参数量，剩余参数不计入。带默认值、可选参数、占位符或任意参数数量的函数，需要不同的结束规则。比如没有总参数数目时，可约定显式的终止调用，不能让工具凭空知道调用方还会不会继续传参。
+
+## 6. 函数组合 {#函数组合}
+
+**函数组合**把前一步结果作为后一步输入。对于单输入、单输出的同步函数，`pipe(f, g)` 按从左到右的顺序处理，数学式组合 `compose(g, f)` 表达同样的 `g(f(value))`。
+
+```js
+function pipe(...functions) {
+  if (!functions.every(fn => typeof fn === "function")) {
+    throw new TypeError("每一步必须是函数");
+  }
+  return value => functions.reduce((result, fn) => fn(result), value);
+}
+
+const normalize = pipe(
+  text => text.trim(),
+  text => text.toLowerCase(),
+);
+console.log(normalize("  CODE  ")); // code
+console.log(pipe()(7));              // 7
+```
+
+这里的每一步都接收一个值，不隐式传递多参数或接收者。若某一步抛异常，调用立即向外传播；若某一步返回 Promise，下一步拿到的也是 Promise，而不是自动等待后的值。
+
+组合的好处是让转换步骤及其输入输出关系明确。步骤类型对不上、夹杂时序副作用，或为了少写变量而堆很多匿名函数，都可能降低可读性。是否组合应由真实的复用和表达需求决定。
+
+## 7. 链式调用 {#链式调用}
+
+**链式调用**依赖一次调用的返回值继续提供下一次操作，例如 `builder.set(...).set(...).build()`。一种实现是修改当前对象并返回 `this`：
+
+```js
+class TextBuilder {
+  constructor() { this.parts = []; }
+  add(text) {
+    this.parts.push(text);
+    return this;
+  }
+  build() { return this.parts.join(""); }
+}
+
+const builder = new TextBuilder();
+console.log(builder.add("hello ").add("Lin").build()); // hello Lin
+console.log(builder.parts.length); // 2
+```
+
+这里两次 `add` 操作同一个实例，有明确的状态修改。另一种设计是每次返回新的不可变包装对象，旧对象保持原值；数组的 `filter(...).map(...)` 则是前一个结果数组继续提供数组方法。
+
+Promise 链每次 `.then` 返回新 Promise，后续状态由回调结果决定，不是简单返回原来的 `this`。因此看到连续点号时，应检查每一步实际返回什么、是否修改状态、错误怎样传播，而不是只背“返回 this 就叫链式调用”。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 什么是高阶函数，它与闭包、异步和纯函数有什么关系？ {#higher-order}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：函数值、输入输出关系与独立的行为属性。
+
+**相关内容**：[函数作为参数与结果](#函数作为参数与结果)、[纯函数与副作用](#纯函数与副作用)。
+
+<details>
+<summary>参考回答</summary>
+
+**高阶函数接收函数或返回函数，描述的是参数和结果的关系。** 返回的函数可以通过闭包保留配置，但不是每个高阶函数都必须依赖可变闭包。
+
+它可以同步执行，也可以组织异步操作；是否纯取决于输入依赖和副作用。接收一个会修改外部状态的回调，不会因为使用高阶函数就自动消除副作用。
+
+</details>
+
+### 8.2 怎样判断纯函数，函数式编程为什么重视纯函数与不可变数据？ {#pure-functions}
+
+**考察重点**：确定性、副作用、测试与组合条件。
+
+**相关内容**：[纯函数与副作用](#纯函数与副作用)。
+
+<details>
+<summary>参考回答</summary>
+
+**纯函数在相同输入下产生相同结果，并且没有外部可观察的副作用。** 不修改参数还不够，时间、随机数和可变外部状态也可能改变结果；内部局部修改只要不影响外部，也不一定破坏纯度。
+
+纯计算和不可变约定能减少对调用时机的隐含依赖，便于测试、推导和组合。实际程序仍需要 I/O，可以把这些边界与计算逻辑分开；缓存还必须考虑输入是否会变化，不能只靠“函数式”这个名称保证正确。
+
+</details>
+
+### 8.3 柯里化有哪些使用场景，与部分应用和 Promise.then 有什么区别？ {#currying-use}
+
+**考察重点**：参数组织、配置复用与异步结果衔接。
+
+**相关内容**：[柯里化与部分应用](#柯里化与部分应用)、[柯里化与 Promise 链](#柯里化与-promise-链)。
+
+<details>
+<summary>参考回答</summary>
+
+**柯里化把多个参数改成分步提供，适合先固定规则或配置，再处理不断变化的数据。** 部分应用也固定部分参数，但剩余参数不必逐个接收。
+
+柯里化本身可以完全同步，不负责等待结果和传播异步失败；`.then` 注册 Promise 后续处理，返回新 Promise，并根据回调结果衔接状态。可以把柯里化产生的函数作为 then 回调使用，但两者职责不同。
+
+</details>
+
+### 8.4 实现分组收参函数时，怎样确定执行时机并避免不同调用互相污染？ {#curry-implementation}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：参数数量、闭包状态、结束规则和接收者。
+
+**相关内容**：[分组收参的实现](#分组收参的实现)。
+
+<details>
+<summary>参考回答</summary>
+
+**先明确参数总数或显式结束条件，再由每一层闭包保存独立的已收集参数。** 通过新数组累积，避免复用部分函数时修改共享参数列表。
+
+还要约定多传、空调用、占位符和 this 的处理。`fn.length` 不总等于业务参数数目，因为默认参数后的形参与剩余参数不按直觉计数；需要明确数量时直接传 arity。
+
+</details>
+
+### 8.5 简单的同步 pipe 能自动组合多参数函数或等待 Promise 吗？ {#composition}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：步骤契约、输入输出与异常传播。
+
+**相关内容**：[函数组合](#函数组合)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能，简单同步 pipe 只是把前一步的返回值直接交给下一步。** 每步接收几个参数、是否展开结果和是否等待 Promise，都需要另行定义。
+
+同步步骤抛错会立即中断调用，返回 Promise 则会把 Promise 传给下一步。异步流水线需要显式等待或 Promise 链；接口不匹配时应先适配，而不是认为“组合”会自动处理差异。
+
+</details>
+
+### 8.6 链式调用怎样实现，是否一定要返回 this？ {#method-chain}
+
+**考察重点**：返回值契约、可变状态和后续操作。
+
+**相关内容**：[链式调用](#链式调用)。
+
+<details>
+<summary>参考回答</summary>
+
+**关键是前一步返回的值支持下一步操作，不一定返回 this。** 可变构建器可以修改自身后返回 this，不可变接口可以返回新对象，数组方法可以返回新数组。
+
+Promise.then 返回新 Promise，状态由回调的结果或异常决定。设计链式接口时要说明对象身份、状态是否修改、终止操作返回什么，以及失败怎样传递。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+
+- [MDN：First-class function](https://developer.mozilla.org/en-US/docs/Glossary/First-class_Function)
+- [MDN：Functions](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Functions)
+- [MDN：Function.length](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Function/length)
+- [MDN：Rest parameters](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Functions/rest_parameters)
+- [Ramda：函数式设计说明](https://ramdajs.com/)
+- [Ramda：curry 与 curryN](https://ramdajs.com/docs/#curry)

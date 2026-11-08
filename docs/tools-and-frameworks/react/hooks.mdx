@@ -1,0 +1,644 @@
+---
+sidebar_position: 2
+knowledge:
+  id: tools-and-frameworks.react.hooks
+---
+
+# React Hooks
+
+**Hook** 是在函数组件中使用状态、同步外部系统等 React 能力的函数。它让组件能够按一项功能组织状态与副作用，也让多个组件复用这段逻辑。复用一个 Hook，并不意味着多个组件共享同一份状态。
+
+理解 Hooks 的关键是分清三件事：渲染时读取的状态快照、跨渲染保存的可变信息，以及提交后需要建立和清理的外部连接。定时器、订阅和请求一旦涉及这三者，单纯记住 API 名称就不够了。
+
+本文按 React 18、19 共有的 API 讲解。示例中的 App.jsx 可使用[React 组件](./components.mdx#根节点与应用入口)中的 createRoot 入口运行；请求示例另外需要约定的 HTTP 接口。
+
+## 1. 面试核心 {#core}
+
+- useState、useEffect 等普通 Hook 必须在**函数组件或自定义 Hook 顶层、条件返回之前调用**。不能让某次渲染跳过其中一次调用。[卡](#hook-rules)
+- **state 参与渲染，ref 保存不驱动渲染的可变信息**。修改 ref.current 不会请求更新，也不要在渲染时把它当作状态读取和修改。[卡](#state-ref)
+- **Effect 用来同步外部系统，依赖变化时先清理旧连接，再建立新连接**。卸载也会清理；空依赖不等于所有环境下只执行一次。[卡](#effect-cleanup)
+- **依赖数组由 Effect 读取的响应式值决定，逐项按 Object.is 比较**。删掉依赖不能让闭包自动取得新值。[卡](#effect-closure)
+- **useLayoutEffect 在浏览器绘制前运行，会阻塞绘制**。需要测量并纠正布局时才优先考虑它；useEffect 不能被概括为绝对在绘制之后。[卡](#layout-effect)
+- **自定义 Hook 复用有状态逻辑，每次调用保留独立的状态与 Effect**。防抖值需要清理上一个定时器，请求需要处理失效结果。[卡](#custom-debounce)
+- **取消请求与拒绝旧结果是两层保护**。服务不支持取消、响应已经完成时，清理标记仍要阻止旧结果覆盖新状态。[卡](#request-hook)
+- **计时结果应来自时间差，定时器只负责刷新界面**。暂停要保存已累计时长，恢复要重新记录起点。[卡](#pause-timer)
+- **“上一次值”需要先约定含义**。上一不同输入、上一提交值、事件发生前的值并不是同一件事。[卡](#previous-value)
+- **ref 适合提供聚焦等命令式能力，普通数据流仍优先使用 props 和回调**。useImperativeHandle 可以限制父组件能调用的方法。[卡](#imperative-handle)
+
+## 2. 调用规则与状态归属 {#调用规则与状态归属}
+
+### 2.1 为什么不能按条件调用 {#为什么不能按条件调用}
+
+React 需要把一次次渲染中的 Hook 调用与组件保存的信息对应起来。普通 Hook 的调用顺序必须稳定，否则某次渲染中的“第二个状态”就可能变成下一次渲染中的“第一个状态”。
+
+条件应放在 Hook 内部，而不是包住 Hook 调用。例如下面无论 enabled 是否为 true，都会调用同一个 useEffect；只有建立事件监听器这一步有条件：
+
+```jsx
+import { useEffect, useState } from 'react';
+
+export default function App() {
+  const [enabled, setEnabled] = useState(true);
+  const [presses, setPresses] = useState(0);
+  useEffect(() => {
+    if (!enabled) return;
+    const handleKey = event => {
+      if (event.key === 'ArrowRight') setPresses(value => value + 1);
+    };
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
+  }, [enabled]);
+  return <>
+    <button onClick={() => setEnabled(value => !value)}>
+      {enabled ? '暂停监听' : '恢复监听'}
+    </button>
+    <output>{presses}</output>
+  </>;
+}
+```
+
+开启时按右方向键会递增，暂停后不再响应；恢复时重新注册。清理和注册使用同一个 handleKey 引用，函数式更新则不需要读取 presses，因此依赖中不需要 presses。
+
+不要在循环、条件、事件处理器、类组件方法或 useEffect 回调里调用 useState 等 Hook。自定义 Hook 也遵守这些规则，并以 use 开头命名。可以配合 eslint-plugin-react-hooks 检查调用规则和依赖，不能通过关闭检查来修复数据关系。
+
+React 19 的 use API 对条件和循环有专门规则，不能把这个例外推给 useState、useEffect。这里讨论的普通 Hook 仍然要求稳定调用顺序。内部存储细节会随版本变化，校招回答应先说明组件归属和调用顺序，不必把某个版本的链表实现当成 API 契约。
+
+### 2.2 state、普通变量与 ref {#state普通变量与ref}
+
+| 保存方式 | 下一次渲染 | 修改后是否请求渲染 | 适合保存什么 |
+| --- | --- | --- | --- |
+| 函数组件中的普通局部变量 | 重新执行初始化代码 | 否 | 本次渲染的计算结果 |
+| useState | 由 React 保存状态 | setter 请求更新，可能按相同值跳过 | 输入内容、展开状态、请求结果 |
+| useRef | 返回同一个 ref 对象 | 否 | DOM 节点、定时器编号、事件使用的可变记录 |
+
+ref 的 current 可以在事件和 Effect 中读写。下面用它累计操作次数，只有点击“显示”才把记录交给 state：
+
+```jsx
+import { useRef, useState } from 'react';
+
+export default function App() {
+  const presses = useRef(0);
+  const [shown, setShown] = useState(0);
+  return <>
+    <button onClick={() => { presses.current += 1; }}>记录</button>
+    <button onClick={() => setShown(presses.current)}>显示</button>
+    <output>{shown}</output>
+  </>;
+}
+```
+
+点击两次“记录”，页面仍显示 0；再点击“显示”才显示 2。这里 JSX 读取的是 shown。不要改成在 JSX 中读取 presses.current，并期待其他更新顺便把它显示出来：渲染应依赖 props、state 和 context，而不是在渲染期间读写可变 ref。可预测的首次初始化是另一个有明确条件的用法。
+
+## 3. Effect 的依赖与清理 {#effect的依赖与清理}
+
+### 3.1 建立连接与结束连接 {#建立连接与结束连接}
+
+**Effect** 描述组件提交后，怎样把某个外部系统与当前输入同步。外部系统可以是浏览器事件、计时器、网络连接或第三方控件。它不是“凡是计算都放进去”的容器。
+
+| 依赖写法 | 正常提交后的同步行为 |
+| --- | --- |
+| 不写依赖数组 | 每次组件提交后重新执行 |
+| `[]` | 不因 props、state 的变化重新同步 |
+| `[roomId]` | roomId 与上次按 Object.is 比较不同时重新同步 |
+
+首次建立连接时运行 setup。依赖变化并提交后，先运行上次 setup 返回的 cleanup，再运行新的 setup；卸载时也运行 cleanup。未提交、被丢弃的渲染不会因此建立一份 Effect 连接。
+
+```jsx
+import { useEffect, useState } from 'react';
+
+function Room({ roomId }) {
+  useEffect(() => {
+    console.log('连接', roomId);
+    const handleMessage = event => console.log(roomId, event.detail);
+    window.addEventListener('course-message', handleMessage);
+    return () => {
+      window.removeEventListener('course-message', handleMessage);
+      console.log('断开', roomId);
+    };
+  }, [roomId]);
+  return <p>{roomId}</p>;
+}
+export default function App() {
+  const [roomId, setRoomId] = useState('A');
+  const [visible, setVisible] = useState(true);
+  return <>
+    <button onClick={() => setRoomId(value => value === 'A' ? 'B' : 'A')}>
+      换房间
+    </button>
+    <button onClick={() => setVisible(value => !value)}>切换显示</button>
+    <button onClick={() => window.dispatchEvent(
+      new CustomEvent('course-message', { detail: '更新课程' })
+    )}>发送消息</button>
+    {visible && <Room roomId={roomId} />}
+  </>;
+}
+```
+
+没有开启 StrictMode 时，首次输出“连接 A”；换房间输出“断开 A”“连接 B”；隐藏 Room 输出“断开 B”。隐藏后发送消息没有 Room 监听器响应。cleanup 闭包保存的是那次连接的 roomId，因此能够清理 A，而不会误以为自己正在清理 B。
+
+根节点启用 StrictMode 后，开发环境会额外检查一次 setup → cleanup → setup。正确的清理应让最终只留下一个有效连接。不要用“已经运行过”的 ref 标志跳过第二次 setup，这会掩盖清理缺失，也可能使重新挂载后不再连接。生产行为与开发检查需要分开回答。
+
+### 3.2 闭包为什么读到旧值 {#闭包为什么读到旧值}
+
+Effect 和事件回调都属于创建它们的那次渲染。后续 state 变了，旧函数捕获的变量不会被改写。
+
+```jsx
+import { useEffect, useState } from 'react';
+
+export default function App() {
+  const [count, setCount] = useState(0);
+  const [snapshot, setSnapshot] = useState(null);
+  useEffect(() => {
+    const id = setTimeout(() => setSnapshot(count), 300);
+    setCount(5);
+    return () => clearTimeout(id);
+  }, []);
+  return <output>{count} / {String(snapshot)}</output>;
+}
+```
+
+示例特意保留缺失依赖的写法，供推导而非作为项目写法。第一次 Effect 捕获 count = 0；setCount(5) 请求新渲染，但旧 timeout 仍然读取 0。等待后显示 `5 / 0`。这里返回的函数才是 cleanup，单独写一个箭头函数而不返回它没有清理作用。
+
+如果需求是“count 最后一次变化 300 毫秒后显示它”，依赖应是 `[count]`。count 从 0 变成 5 后，旧定时器被清理，新定时器捕获 5，最终显示 `5 / 5`。真实业务中不要为演示这种关系而在 Effect 中强制 setCount(5)。
+
+函数式更新 `setCount(value => value + 1)` 解决的是依赖前一个 state 计算新 state；它不会自动更新同一闭包里所有其他变量。想让连接随输入变化，就完整声明依赖；想在事件中读取最新的非渲染记录，可以用 ref。两者不能仅凭“消除闭包问题”互换。
+
+### 3.3 哪些值属于依赖 {#哪些值属于依赖}
+
+Effect 用到的 props、state，以及组件函数内部声明的函数和变量，属于需要检查的响应式值。React 对数组中各项使用 Object.is，不会递归比较对象内容。
+
+每次渲染都创建的对象或函数，即使内容看起来相同，引用也可能不同，从而导致重新同步。优先考虑把只供 Effect 使用的对象或函数移进 Effect，再依赖真正的输入；确实需要跨组件传递稳定引用时，再考虑 useMemo、useCallback。它们是缓存工具，不能作为遗漏依赖的补丁。
+
+setter 和 useRef 返回的对象有稳定身份，在它们是组件中直接声明的稳定值时通常不需要额外依赖。ref.current 的变化本身不会通知 React，所以把它放进数组不能建立响应式订阅。外部数据会主动变化时，应使用事件订阅，或在适合的场景使用 useSyncExternalStore。
+
+## 4. 布局测量与副作用时机 {#布局测量与副作用时机}
+
+useLayoutEffect 在 DOM 提交后、浏览器绘制前运行。它适合读取布局，再同步修正会影响这一帧显示的状态。下面根据实际元素宽度显示测量结果：
+
+```jsx
+import { useLayoutEffect, useRef, useState } from 'react';
+
+export default function App() {
+  const box = useRef(null);
+  const [wide, setWide] = useState(false);
+  const [width, setWidth] = useState(0);
+  useLayoutEffect(() => {
+    setWidth(box.current.getBoundingClientRect().width);
+  }, [wide]);
+  return <>
+    <button onClick={() => setWide(value => !value)}>改变宽度</button>
+    <div ref={box} style={{ width: wide ? 240 : 120 }}>课程</div>
+    <output>{width}</output>
+  </>;
+}
+```
+
+初次提交后测得 120，点击后测得 240。useLayoutEffect 中的测量和它引起的更新会阻塞浏览器绘制，因此不要把网络请求、昂贵计算一并塞进去。这里只同步 wide 引起的尺寸变化；字体、父容器和窗口变化也可能改变布局，持续监听尺寸应考虑 ResizeObserver。
+
+useEffect 通常允许浏览器先绘制，但交互导致的 Effect 可能在绘制前运行；useLayoutEffect 中的更新也可能使其他 Effect 提前执行。不要把两者区别背成“一个同步、一个永远在下一帧异步”。可靠的选择条件是：这段工作是否必须在用户看到当前画面前完成，以及它会阻塞多少工作。
+
+Effect 只在客户端运行。服务端没有浏览器布局，不能依赖 useLayoutEffect 计算首屏 HTML 的尺寸。
+
+## 5. 自定义 Hook 与异步任务 {#自定义hook与异步任务}
+
+### 5.1 防抖值 {#防抖值}
+
+**自定义 Hook** 用普通函数组合其他 Hook，复用的是逻辑，每次调用仍有自己的状态。下面约定初次立即返回初始值，以后输入停止变化 delay 毫秒才更新：
+
+```jsx
+import { useEffect, useState } from 'react';
+
+export function useDebouncedValue(value, delay) {
+  const [settled, setSettled] = useState(() => value);
+  useEffect(() => {
+    const id = setTimeout(() => setSettled(() => value), delay);
+    return () => clearTimeout(id);
+  }, [value, delay]);
+  return settled;
+}
+function SearchBox({ label }) {
+  const [query, setQuery] = useState('');
+  const settled = useDebouncedValue(query, 200);
+  return <label>{label}
+    <input value={query} onChange={event => setQuery(event.target.value)} />
+    <output>{settled}</output>
+  </label>;
+}
+export default function App() {
+  return <><SearchBox label="课程" /><SearchBox label="作者" /></>;
+}
+```
+
+持续输入会清理前一个 timeout，只保留最近值。两个 SearchBox 互不影响；卸载时也会清理。两处 `() => value` 还保证 value 本身是函数时，保存的是函数值，而不是把它当作初始化器或 updater 执行。此处约定 delay 是定时器有效范围内的非负毫秒数。项目组件还应按输入契约处理参数校验、输入法合成和是否立即清空结果，相关行为见[防抖与节流](../../frontend/performance/debounce-throttle.mdx#防抖与过期结果)。
+
+### 5.2 请求状态与竞态 {#请求状态与竞态}
+
+请求 Hook 要同时回答“当前请求属于哪组输入”和“这次结果现在还有效吗”。只保存 data、loading 两个状态，没有处理旧请求返回顺序，仍然会把 A 的结果显示到 B 下。
+
+下面 useRequest 自动按 requestKey 发起请求，refreshRequest 请求重试当前输入。refreshTimes 统计刷新操作次数，不代表 HTTP 成功次数，也不代表开发环境实际发出的请求数量。Request 暴露原请求函数，直接调用它不会更新 Hook 状态。
+
+```jsx
+import { useCallback, useEffect, useState } from 'react';
+
+export function useRequest(request, requestKey) {
+  const [revision, setRevision] = useState(0);
+  const [result, setResult] = useState(null);
+  const refreshRequest = useCallback(() => setRevision(value => value + 1), []);
+  useEffect(() => {
+    let active = true;
+    const controller = new AbortController();
+    const context = { request, requestKey, revision };
+    setResult({ ...context, status: 'loading', data: null, error: null });
+    Promise.resolve()
+      .then(() => request(requestKey, { signal: controller.signal }))
+      .then(data => {
+        if (active) setResult({ ...context, status: 'success', data, error: null });
+      }, error => {
+        if (active) setResult({ ...context, status: 'error', data: null, error });
+      });
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, [request, requestKey, revision]);
+  const current = result?.request === request &&
+    Object.is(result.requestKey, requestKey) && result.revision === revision;
+  const status = current ? result.status : 'loading';
+  return {
+    Request: request,
+    refreshRequest,
+    refreshTimes: revision,
+    isLoading: status === 'loading',
+    isSuccess: status === 'success',
+    data: current ? result.data : null,
+    error: current ? result.error : null,
+  };
+}
+async function fetchCourse(id, { signal }) {
+  const response = await fetch(`/api/courses/${encodeURIComponent(id)}`, { signal });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.json();
+}
+export default function App() {
+  const [id, setId] = useState('A');
+  const result = useRequest(fetchCourse, id);
+  return <>
+    <select value={id} onChange={event => setId(event.target.value)}>
+      <option>A</option><option>B</option>
+    </select>
+    <button onClick={result.refreshRequest}>重试</button>
+    <output>{result.isLoading ? '加载中' : result.error ? '加载失败' : result.data.name}</output>
+    <p>刷新 {result.refreshTimes} 次</p>
+  </>;
+}
+```
+
+接口成功时返回 `{"name":"课程 A"}` 这样的 JSON。切换到 B 时，返回值先识别旧结果不属于当前输入，不会先渲染 A 的数据；Effect 随后清理 A 并启动 B。即使 A 不理会 AbortSignal、晚于 B 返回，active 也已被设为 false，旧结果不能回写。
+
+Promise.resolve().then 让 request 的同步抛错和异步拒绝进入同一条错误分支。Effect 本身没有标记 async，因为 React 需要它返回清理函数或 undefined，而不是 Promise。
+
+request 函数应有稳定且正确的身份。示例把 fetchCourse 放在组件外；若请求函数依赖组件输入，就需要正确的依赖关系，不能在每次渲染中创建新函数又把它直接当作依赖，否则结果更新也会继续触发请求。useCallback 缓存 refreshRequest 的函数身份，不会让请求结果自动缓存。
+
+这个最小 Hook 没有跨组件缓存、请求去重、自动重试或服务端数据加载。多次刷新在同一批更新中可能合并为一次最新请求；有副作用的写请求也不能假定“前端取消了，服务器就没执行”。这些能力需要单独的契约和实现。
+
+## 6. 计时与历史值 {#计时与历史值}
+
+### 6.1 可暂停计时器 {#可暂停计时器}
+
+setInterval 的回调可能延迟。每次回调简单加 50 毫秒，会把调度误差累积到计时结果里。下面用 performance.now 记录单调时间差，用 interval 触发界面刷新：
+
+```jsx
+import { useEffect, useRef, useState } from 'react';
+
+export function useStopwatch() {
+  const saved = useRef(0);
+  const started = useRef(null);
+  const [running, setRunning] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    if (!running) return;
+    const id = setInterval(() => {
+      if (started.current !== null) {
+        setElapsed(saved.current + performance.now() - started.current);
+      }
+    }, 50);
+    return () => clearInterval(id);
+  }, [running]);
+  function start() {
+    if (started.current !== null) return;
+    started.current = performance.now();
+    setRunning(true);
+  }
+  function pause() {
+    if (started.current === null) return;
+    saved.current += performance.now() - started.current;
+    started.current = null;
+    setElapsed(saved.current);
+    setRunning(false);
+  }
+  function reset() {
+    saved.current = 0;
+    started.current = null;
+    setElapsed(0);
+    setRunning(false);
+  }
+  return { elapsed, running, start, pause, reset };
+}
+export default function App() {
+  const timer = useStopwatch();
+  return <>
+    <button onClick={timer.start}>开始</button>
+    <button onClick={timer.pause}>暂停</button>
+    <button onClick={timer.reset}>归零</button>
+    <output>{Math.floor(timer.elapsed)} ms / {timer.running ? '运行' : '暂停'}</output>
+  </>;
+}
+```
+
+开始时只记录起点；暂停时把本段时间加到 saved，恢复后计算新的这一段。重复点击开始不会创建多个逻辑计时段，暂停时间也不会计入 elapsed。卸载会清除 interval。
+
+后台标签页仍可能延迟刷新。再次执行回调时，显示值按时间差追上进度，但这不保证后台画面每 50 毫秒刷新，也不是跨设备休眠、系统重启和服务端统一时钟的方案。
+
+### 6.2 信号灯的阶段计算 {#信号灯的阶段计算}
+
+信号灯可以由同一个 elapsed 推导，不需要为红、黄、绿各开一个计时器。先约定周期为红 20 秒、黄 10 秒、绿 20 秒，并且每个阶段最后 5 秒按半秒间隔闪烁：
+
+```js
+export function getSignal(elapsed) {
+  if (!Number.isFinite(elapsed) || elapsed < 0) {
+    throw new RangeError('elapsed 必须是非负有限毫秒数');
+  }
+  const position = elapsed % 50000;
+  const [color, start, end] = position < 20000
+    ? ['red', 0, 20000]
+    : position < 30000 ? ['yellow', 20000, 30000] : ['green', 30000, 50000];
+  const remaining = end - position;
+  const blinking = remaining <= 5000;
+  const visible = !blinking || Math.floor((position - start) / 500) % 2 === 0;
+  return { color, remaining, visible };
+}
+```
+
+0 毫秒属于红灯，20000 属于黄灯，30000 属于绿灯，50000 回到红灯。把上一节的计时器示例保存为 timer.jsx，阶段函数保存为 signal.js，App.jsx 可以组合两者：
+
+```jsx
+import { useStopwatch } from './timer.jsx';
+import { getSignal } from './signal.js';
+
+export default function App() {
+  const timer = useStopwatch();
+  const signal = getSignal(timer.elapsed);
+  const name = { red: '红', yellow: '黄', green: '绿' }[signal.color];
+  return <>
+    <button onClick={timer.start}>开始</button>
+    <button onClick={timer.pause}>暂停</button>
+    <button onClick={timer.reset}>归零</button>
+    <span aria-hidden="true" style={{ display: 'inline-block', width: 24, height: 24,
+      borderRadius: '50%', backgroundColor: signal.color, opacity: signal.visible ? 1 : 0 }} />
+    <output>{name}灯 / {Math.ceil(signal.remaining / 1000)} 秒</output>
+  </>;
+}
+```
+
+阶段与剩余时间都是派生值，文本提示不会随圆灯一起闪烁。若题目中的“最后 5 秒”只指某一种灯，应先确认再调整规则，不能把不明确的描述当作唯一需求。
+
+### 6.3 上一次不同的输入 {#上一次不同的输入}
+
+“上一次”可能是上一不同输入，也可能是上一提交时的输入。先明确这个差异，才知道应该保存什么。
+
+下面 usePreviousValue 的契约是：第一次返回 undefined，值按 Object.is 发生变化后返回上一不同输入；无关的重新渲染不会推进历史。它使用受保护的同组件状态调整，不在渲染中读写 ref：
+
+```jsx
+import { useState } from 'react';
+
+export function usePreviousValue(value) {
+  const [history, setHistory] = useState({ current: value, previous: undefined });
+  if (!Object.is(history.current, value)) {
+    setHistory({ current: value, previous: history.current });
+    return history.current;
+  }
+  return history.previous;
+}
+export default function App() {
+  const [count, setCount] = useState(0);
+  const [extra, setExtra] = useState(0);
+  const previous = usePreviousValue(count);
+  return <>
+    <button onClick={() => setCount(value => value + 1)}>递增</button>
+    <button onClick={() => setExtra(value => value + 1)}>无关更新</button>
+    <output>{count} / {String(previous)} / {extra}</output>
+  </>;
+}
+```
+
+初始显示 `0 / undefined / 0`；递增后显示 `1 / 0 / 0`；无关更新后是 `1 / 0 / 1`。React 会在渲染子组件前重试当前组件，Object.is 条件使调整在新输入已保存后停止。不要去掉条件，也不能在这里更新另一个组件的状态。
+
+这是有明确必要时使用的状态调整方式。若本来就拥有“递增”事件，也可以直接在一次事件更新中保存 current 和 previous，通常更易理解。
+
+若需求是“Effect 中比较当前值与上一提交值”，可以让 ref 在 Effect 内保存上一次提交的记录：先在 Effect 内比较，再更新 ref.current。它不需要把 ref.current 返回给渲染过程。历史对象还需要只读更新；把同一个对象原地修改后再次传入，Object.is 无法识别内容变化。以上都不是完整的撤销栈，也不能代替提交日志。
+
+## 7. 命令式引用 {#命令式引用}
+
+父组件需要聚焦子组件中的输入框时，可以通过 ref 请求一个命令。useImperativeHandle 让子组件只公开自己承诺支持的操作：
+
+```jsx
+import { forwardRef, useImperativeHandle, useRef, useState } from 'react';
+
+const SearchInput = forwardRef(function SearchInput(props, ref) {
+  const input = useRef(null);
+  useImperativeHandle(ref, () => ({
+    focus() { input.current?.focus(); },
+  }), []);
+  return <input ref={input} aria-label="课程搜索" />;
+});
+export default function App() {
+  const search = useRef(null);
+  const [visible, setVisible] = useState(true);
+  return <>
+    <button onClick={() => search.current?.focus()}>聚焦</button>
+    <button onClick={() => setVisible(value => !value)}>切换显示</button>
+    {visible && <SearchInput ref={search} />}
+  </>;
+}
+```
+
+子组件挂载后，“聚焦”可以操作输入框；移除后引用被清空，父组件用可选链处理不存在的情况。父组件拿到的只有 focus 方法，而不是整个 DOM 对象。
+
+这份写法兼容 React 18、19。React 19 也可以直接把 ref 作为 prop 接收，不再要求 forwardRef；维护 React 18 项目时仍需要对应的转发方式。createHandle 若读取会变化的 props 或 state，也要声明相应依赖。
+
+是否显示、输入内容是什么，仍然适合通过 props、state 和回调表达。不要因为能调用子组件方法，就把所有状态变化都改成命令式调用。
+
+## 8. 常见问题 {#常见问题}
+
+### 8.1 useEffect 等于三个类生命周期的合并吗？ {#useeffect等于三个类生命周期的合并吗}
+
+不完全等同。两者都能处理挂载、更新和清理，但 Effect 围绕一项外部同步关系组织。一个组件可以按不同依赖拆分多个 Effect，同一个 Effect 的 cleanup 也会在依赖变化时执行，不能只把它记成卸载回调。
+
+### 8.2 多次调用同一个自定义 Hook 会共享状态吗？ {#多次调用同一个自定义hook会共享状态吗}
+
+不会自动共享。两次 useDebouncedValue 各自持有 settled 和 timeout。只有显式使用共同的 Context、外部 store 或模块变量时，才引入对应的共享关系；模块可变变量还要额外考虑订阅与多实例隔离。
+
+### 8.3 能把所有逻辑都放进 Effect 吗？ {#能把所有逻辑都放进effect吗}
+
+不应该。根据当前列表和筛选条件计算结果，可以直接在渲染中计算；点击购买发起的操作，应该由相应事件处理器发起。Effect 用于组件输入与外部系统的同步。把派生状态、用户动作和外部连接混在一起，会引入额外更新、重复请求和难以判断的依赖。
+
+## 9. 面试题 {#面试题}
+
+### 9.1 Hooks 为什么不能在条件或循环中调用？ {#hook-rules}
+
+**考察重点**：组件归属、调用顺序、条件应放置的位置。
+
+**相关内容**：[为什么不能按条件调用](#为什么不能按条件调用)。
+
+<details>
+<summary>参考回答</summary>
+
+**useState、useEffect 等普通 Hook 依赖稳定的调用顺序，把每次调用与组件保存的信息对应起来。** 条件或循环使调用次数变化时，这种对应就会错位。应在函数组件或自定义 Hook 顶层、条件返回前调用，把是否执行外部工作的判断放进回调，或拆出独立组件。React 19 的 use API 有专门例外，不能套到所有 Hook 上。
+
+</details>
+
+### 9.2 useState 和 useRef 有什么区别？ {#state-ref}
+
+**考察重点**：渲染输入、可变记录、状态快照与 ref 身份。
+
+**相关内容**：[state、普通变量与 ref](#state普通变量与ref)。
+
+<details>
+<summary>参考回答</summary>
+
+**state 用于描述界面，setter 请求更新；ref 用于跨渲染保存可变信息，修改 current 不会触发渲染。** ref 对象的身份稳定，适合保存 DOM、计时器编号等。需要显示的值应进入 state；事件与 Effect 可以读写 ref，不能在渲染时依靠可变 ref 代替状态快照。
+
+</details>
+
+### 9.3 useEffect 的清理函数在什么时候执行？空依赖是否只运行一次？ {#effect-cleanup}
+
+**考察重点**：依赖比较、旧闭包、卸载、开发检查。
+
+**相关内容**：[建立连接与结束连接](#建立连接与结束连接)。
+
+<details>
+<summary>参考回答</summary>
+
+**依赖变化并提交后，React 先运行旧 cleanup，再运行新 setup；组件卸载时也运行 cleanup。** cleanup 捕获旧连接的输入，适合移除监听器、清除定时器和结束连接。空依赖表示不因响应式输入变化重新同步，不保证整个应用生命周期只执行一次；重新挂载会执行，根 StrictMode 的开发检查也会额外验证 setup → cleanup → setup。
+
+</details>
+
+### 9.4 Effect 中先启动定时器再更新 state，定时器为什么可能读到旧值？ {#effect-closure}
+
+**考察重点**：闭包对应的渲染、依赖数组、函数式更新的适用范围。
+
+**相关内容**：[闭包为什么读到旧值](#闭包为什么读到旧值)。
+
+<details>
+<summary>参考回答</summary>
+
+**定时器读取创建它时那次渲染的变量，后续 setter 不会改写旧闭包。** 示例中空依赖 Effect 捕获 count = 0，即使随后界面更新为 5，定时器仍写入 0。若要求随 count 变化重新开始延迟，应声明 count 依赖并清理旧 timer；若计算的是某个 state 的下一值，可以用函数式更新，但它不会让其他闭包变量自动变新。
+
+</details>
+
+### 9.5 useEffect 与 useLayoutEffect 应如何选择？ {#layout-effect}
+
+**考察重点**：提交与绘制、布局测量、阻塞成本。
+
+**相关内容**：[布局测量与副作用时机](#布局测量与副作用时机)。
+
+<details>
+<summary>参考回答</summary>
+
+**默认使用 useEffect；必须在绘制前测量并修正布局，避免用户看到中间画面时，考虑 useLayoutEffect。** 后者在 DOM 提交后、绘制前执行，会阻塞绘制。useEffect 通常允许先绘制，但交互等条件下也可能提前执行，不能承诺永远在下一帧。网络请求不需要为此放进 useLayoutEffect，服务端也没有可测量的浏览器布局。
+
+</details>
+
+### 9.6 怎样实现输入值的防抖 Hook？多个组件调用时会互相影响吗？ {#custom-debounce}
+
+**考察重点**：独立状态、依赖变化、计时器清理。
+
+**相关内容**：[防抖值](#防抖值)。
+
+<details>
+<summary>参考回答</summary>
+
+**用 state 保存已经稳定的值，在依赖 value、delay 的 Effect 中启动 timeout，并在 cleanup 中清除旧 timeout。** 连续变化会取消旧任务，卸载也会清理。每次调用 Hook 都有独立的 state 和 Effect，不会自动共享计时器。还要明确初次值、清空输入、输入法合成和延迟参数的契约；防抖本身不解决请求竞态。
+
+</details>
+
+### 9.7 怎样封装包含加载状态、结果和刷新能力的请求 Hook？ {#request-hook}
+
+**题型**：综合题
+
+**考察重点**：状态归属、错误分支、请求身份、清理与过期响应。
+
+**相关内容**：[请求状态与竞态](#请求状态与竞态)、[建立连接与结束连接](#建立连接与结束连接)。
+
+<details>
+<summary>参考回答</summary>
+
+**先定义触发请求的输入和刷新规则，再让每次结果带上对应的输入身份，并拒绝失效任务回写。** 本文用 request、requestKey、revision 标识请求，区分 loading、success、error。cleanup 同时设置 active = false 并 abort；即使底层不支持取消，旧结果也不能覆盖当前结果。Effect 返回清理函数，内部再运行 Promise。刷新次数统计操作，不等同网络次数；缓存、去重、重试需要另外设计。
+
+</details>
+
+### 9.8 怎样实现可以暂停和恢复的 React 计时器？ {#pause-timer}
+
+**考察重点**：累计时长、单调时钟、可变记录与渲染状态。
+
+**相关内容**：[可暂停计时器](#可暂停计时器)。
+
+<details>
+<summary>参考回答</summary>
+
+**保存已经累计的时长和当前这一段的起点，显示值由时间差计算，interval 只触发刷新。** 暂停时累计本段时间并清空起点；恢复时重新记录起点，暂停期间不计入。重复开始要幂等，归零要清空累计值，Effect 清理负责取消 interval。不能按回调次数推断准确时长，因为调度会延迟。
+
+</details>
+
+### 9.9 怎样用 React 实现按时切换并在末尾闪烁的信号灯？ {#signal-light}
+
+**题型**：综合题
+
+**考察重点**：周期边界、派生状态、刷新与计时分离。
+
+**相关内容**：[信号灯的阶段计算](#信号灯的阶段计算)、[可暂停计时器](#可暂停计时器)、[建立连接与结束连接](#建立连接与结束连接)。
+
+<details>
+<summary>参考回答</summary>
+
+**使用一个已运行时长，根据周期内的位置推导当前颜色、剩余时间和可见性。** 红 20 秒、黄 10 秒、绿 20 秒对应 50 秒周期，边界按半开区间划分；当前阶段剩余不超过 5 秒时，再按半秒奇偶切换可见性。暂停和刷新复用计时器，避免为每个颜色维护互相同步的计时器。先确认闪烁适用阶段和间隔，并保留文本提示。
+
+</details>
+
+### 9.10 自定义 Hook 怎样保存上一次 state 的值？ {#previous-value}
+
+**考察重点**：历史语义、状态调整、提交与 ref 的使用位置。
+
+**相关内容**：[上一次不同的输入](#上一次不同的输入)。
+
+<details>
+<summary>参考回答</summary>
+
+**先确定“上一次”指上一不同输入、上一提交值，还是事件前的值。** 上一不同输入可以用带 Object.is 条件的 history 状态保存，无关渲染不推进历史；有现成事件时也可以在该事件中一起更新 current、previous。若只在 Effect 中比较上一提交值，可在 Effect 内读写 ref。不要在渲染中读写 ref 再宣称它等价于可靠的状态历史，也不要把同一对象的原地修改当成新输入。
+
+</details>
+
+### 9.11 父组件怎样调用子组件中的聚焦方法？ {#imperative-handle}
+
+**考察重点**：ref 转发、公开接口、挂载与卸载边界。
+
+**相关内容**：[命令式引用](#命令式引用)。
+
+<details>
+<summary>参考回答</summary>
+
+**父组件持有 ref，子组件通过 useImperativeHandle 公开 focus 等有限方法。** React 18 使用 forwardRef 接收转发引用；React 19 也支持直接接收 ref prop。方法在事件中访问内部 DOM ref，父组件处理尚未挂载或已经移除时的 null。显示状态和业务数据仍优先用 props、回调表达，避免把全部数据流变成命令调用。
+
+</details>
+
+## 10. 参考资料 {#参考资料}
+
+- [React：Rules of Hooks](https://react.dev/reference/rules/rules-of-hooks)
+- [React：useState](https://react.dev/reference/react/useState)
+- [React：useRef](https://react.dev/reference/react/useRef)
+- [React：useEffect](https://react.dev/reference/react/useEffect)
+- [React：useLayoutEffect](https://react.dev/reference/react/useLayoutEffect)
+- [React：Reusing Logic with Custom Hooks](https://react.dev/learn/reusing-logic-with-custom-hooks)
+- [React：You Might Not Need an Effect](https://react.dev/learn/you-might-not-need-an-effect)
+- [React：useImperativeHandle](https://react.dev/reference/react/useImperativeHandle)
+- [React：StrictMode](https://react.dev/reference/react/StrictMode)
+- [W3C：High Resolution Time](https://www.w3.org/TR/hr-time/)

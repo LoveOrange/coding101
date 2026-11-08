@@ -1,0 +1,230 @@
+---
+knowledge:
+  id: basic-knowledge.kotlin.generics
+  type: concept
+description: "通过读写能力理解 Kotlin 泛型的不变、协变、逆变、类型投影与星投影，并明确 JVM 擦除和 reified 的边界。"
+keywords: [Kotlin 泛型, in out, 型变, 星投影, 类型擦除, reified]
+---
+
+# Kotlin 泛型
+
+**泛型**让类和函数用类型参数表达一组相关类型，同时保留编译期检查。Kotlin 的 `in`、`out` 进一步描述哪些替换是安全的：能产生字符串的对象可以按“产生任意对象”使用，能接收任意对象的消费者也能接收字符串。理解这个读写关系，比只记“生产者 out、消费者 in”更能应对变形题。
+
+## 1. 面试核心 {#core}
+
+- 泛型默认不变，**String 是 Any 的子类型，不代表可读可写的 `Box<String>` 是 `Box<Any>` 的子类型**。
+- `out T` 描述协变输出，`in T` 描述逆变输入，**型变以限制不安全操作换取更灵活的类型替换**。[卡](#variance)
+- 使用处投影约束当前引用的能力，**限制通过某个类型读写，不代表复制对象或冻结对象**。
+- `*` 表示不知道具体类型实参，**按上界安全读取，不能假定可以写入任意值**。[卡](#star-projection)
+- JVM 上普通泛型实参会擦除，**运行时看到一个 List，不等于知道并验证其中每个元素类型**。[卡](#erasure)
+- `inline reified` 让调用处具体类型参与某些检查，**不能恢复任意嵌套泛型对象已经擦除的元素信息**。[卡](#reified-limits)
+
+## 2. 类型参数与约束 {#类型参数与约束}
+
+类型参数写在声明中，类型实参则是在使用时选定的类型。下面的 `T` 是参数，调用时推断出的 `String` 或 `Int` 是实参：
+
+```kotlin
+fun <T> chooseFirst(first: T, second: T): T = first
+
+fun <T : Comparable<T>> larger(first: T, second: T): T =
+    if (first >= second) first else second
+
+fun main() {
+    println(chooseFirst("Lin", "Kai")) // Lin
+    println(larger(3, 7))             // 7
+}
+```
+
+无约束的 `T` 默认上界是 `Any?`，可能包含可空类型。`T : Any` 可以要求非空；`T : Comparable<T>` 让函数能够调用比较能力。需要多个上界时使用 `where`，并要求实参同时满足所有约束，不是从中任选一个。
+
+类型推断也不保证多个实参必须具有完全相同的最具体类型。编译器可以寻找满足约束的共同类型，所以分析函数调用时要看最终推断结果，不能仅从泛型参数写成一个 `T` 就断言两个对象运行时类型相同。
+
+## 3. 不变、协变与逆变 {#不变协变与逆变}
+
+**不变**表示不同类型实参形成的泛型类型，不会自动继承这些实参之间的子类型关系。可读可写的盒子需要这个限制：
+
+```kotlin
+class Box<T>(var value: T)
+
+fun main() {
+    val text = Box("Lin")
+    // val anything: Box<Any> = text // 编译错误：Box 默认不变
+    println(text.value) // Lin
+}
+```
+
+如果允许把 `text` 当作 `Box<Any>`，就能通过另一个引用放入整数；原调用方再把 `text.value` 当作字符串读取时，类型保证已经被破坏。限制来自读写能力，不是因为编译器无法理解继承。
+
+**协变**保留子类型方向：输出 `String` 的来源可以当作输出 `Any` 的来源。**逆变**反转方向：能够接收 `Any` 的消费者可以当作只需要接收 `String` 的消费者。
+
+```kotlin
+interface Source<out T> {
+    fun get(): T
+}
+
+interface Sink<in T> {
+    fun put(value: T)
+}
+
+fun main() {
+    val texts: Source<String> = object : Source<String> {
+        override fun get(): String = "Lin"
+    }
+    val objects: Source<Any> = texts
+    println(objects.get()) // Lin
+
+    val anything: Sink<Any> = object : Sink<Any> {
+        override fun put(value: Any) { println(value) }
+    }
+    val names: Sink<String> = anything
+    names.put("Kai") // Kai
+}
+```
+
+`Source<out T>` 不能把 `T` 放到不安全的输入位置，`Sink<in T>` 也不能直接承诺输出一个可作为 `T` 使用的结果。实际声明可能包含函数类型等嵌套位置，分析时应沿每层输入输出关系判断，而不只是搜索 `T` 是否出现在参数列表里。
+
+这叫**声明处型变**：类型声明本身规定替换关系。标准库只读 `List<out E>` 可以协变，可读可写的 `MutableList<E>` 则保持不变；只读不等于深度不可变，见[Kotlin 类型系统](./type-system.mdx#只读变量与可变对象)。
+
+## 4. 类型投影与星投影 {#类型投影与星投影}
+
+**类型投影**在使用一个类型时限制当前引用的能力。例如数组既要读又要写，不能把 `Array<T>` 整体声明为仅输出，但某个函数只读取时可以接收 `Array<out Any>`。
+
+```kotlin
+fun first(source: Array<out Any>): Any = source[0]
+
+fun setName(target: Array<in String>) {
+    target[0] = "Lin"
+}
+
+fun main() {
+    val words = arrayOf("first", "second")
+    println(first(words)) // first
+    val values = arrayOf<Any>(1, 2)
+    setName(values)
+    println(values[0]) // Lin
+}
+```
+
+示例约定数组非空。`first` 可以安全读取 `Any`，但不能随意给 `source` 写入整数；实际数组可能只接受字符串。`setName` 能写入字符串，却不能把读取的元素直接承诺为字符串，因为实际数组也可能保留其他类型值。
+
+投影没有复制数组。其他拥有完整类型信息的引用仍可能修改原对象，当前调用方只是放弃了部分操作能力。
+
+**星投影** `*` 表示具体类型实参未知，仍然按照类型上界提供安全访问。它不是 `Any?` 的另一种拼写：
+
+```kotlin
+fun show(values: MutableList<*>) {
+    val first: Any? = values.firstOrNull()
+    println(first)
+    // values.add("Lin") // 编译错误：不知道实际列表接受哪种元素
+    // values.add(null)  // 编译错误：实际元素类型也可能非空
+}
+
+fun main() {
+    show(mutableListOf(3)) // 3
+}
+```
+
+对 `MutableList<*>`，可以按 `Any?` 读取，但不能调用需要提供未知元素类型值的写入操作。若类型参数有更窄上界，安全读取类型也按相应上界判断。某些不需要元素值的操作仍可能存在，因此“星投影等于对象完全只读”也不准确。
+
+## 5. 类型擦除与具体化 {#类型擦除与具体化}
+
+**类型擦除**是 Kotlin/JVM 泛型实现的重要边界：普通对象在运行时通常不携带可直接验证的完整类型实参。`List<String>` 与 `List<Int>` 不能仅凭普通 `is` 检查就区分。
+
+```kotlin
+fun describe(value: Any): String = when (value) {
+    is List<*> -> "list size=${value.size}"
+    else -> "other"
+}
+
+fun main() {
+    println(describe(listOf(1, 2))) // list size=2
+    // if (listOf(1) is List<String>) { } // 编译错误：不能检查已擦除类型实参
+}
+```
+
+检查为 `List<*>` 只确认外层集合类别；若业务需要字符串列表，可以逐项检查并构造新的结果，或依靠可信的序列化与类型约定。把未知值强转成 `List<String>` 并不能顺便验证所有元素，后续读取时仍可能失败。
+
+**具体化类型参数**用 `inline` 与 `reified` 配合，让编译器在调用点展开时使用具体类型，因而可以写某些普通 `T` 无法完成的检查：
+
+```kotlin
+inline fun <reified T> matches(value: Any?): Boolean = value is T
+
+fun main() {
+    println(matches<String>("Lin"))       // true
+    println(matches<String>(3))           // false
+    println(matches<List<String>>(listOf(3))) // true：没有验证元素为 String
+}
+```
+
+第三行暴露了边界：调用处知道要求 `List<String>`，不代表运行时列表重新获得了每个元素的泛型信息。外层 `List` 检查可以通过，嵌套实参仍受擦除影响。`reified` 也不能写在任意普通类的类型参数上，用它作为理由宣称 JVM 泛型已经不擦除并不成立。
+
+部分类型信息可以保留在类、父类或方法的泛型签名元数据中，反射或类型令牌可读取这些声明信息。它们描述的是声明契约，不自动证明一个可变集合里的运行时元素全部符合契约。Java 的共同擦除机制见[Java 泛型](../java/language/generics.mdx)。
+
+与 Java 互操作时，还需区分 Kotlin 的声明处型变与 Java 使用处通配符。编译器会按位置生成相应签名，特殊 API 才需要 `@JvmWildcard`、`@JvmSuppressWildcards` 等调整；应查看实际生成的签名，不机械地把每个 `out` 都翻译为所有位置上的 `? extends`。
+
+## 6. 面试题 {#面试题}
+
+### 6.1 Kotlin 的协变、逆变和 in、out 应该怎样理解？ {#variance}
+
+**考察重点**：替换关系与安全读写能力。
+
+**相关内容**：[不变、协变与逆变](#不变协变与逆变)、[类型投影与星投影](#类型投影与星投影)。
+
+<details>
+<summary>参考回答</summary>
+
+**out 表达协变输出，in 表达逆变输入；选择依据是调用方能安全读取或写入什么。** 产生 String 的来源可以当作产生 Any 的来源，接收 Any 的消费者可以当作接收 String 的消费者。可读可写的容器通常保持不变，否则可能通过较宽类型引用写入不匹配元素。声明处型变影响整个类型的替换关系，使用处投影则限制某个引用的操作能力。
+
+</details>
+
+### 6.2 `List<*>` 和 `List<Any?>` 有什么区别？ {#star-projection}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：未知类型实参与明确元素类型。
+
+**相关内容**：[类型投影与星投影](#类型投影与星投影)。
+
+<details>
+<summary>参考回答</summary>
+
+**星投影表示具体元素类型未知，Any? 则是一个明确的元素类型。** 对只读 List，两者都可以按 Any? 读取，因此表面操作接近；在 MutableList 中差异更明显，`MutableList<Any?>` 可以写入任意可空值，`MutableList<*>` 不能安全写入某个元素值，因为实际容器可能只允许非空字符串。投影不会冻结底层对象。
+
+</details>
+
+### 6.3 泛型擦除后还能获得类型信息吗？ {#erasure}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：运行时对象信息、声明元数据与验证边界。
+
+**相关内容**：[类型擦除与具体化](#类型擦除与具体化)。
+
+<details>
+<summary>参考回答</summary>
+
+**普通泛型对象不能直接提供完整、可验证的实参，但部分泛型声明信息可以保留在签名元数据中。** 可通过反射、类型令牌等表达和读取声明类型，Kotlin 的 inline reified 也能让调用处类型参与特定检查。它们都不能自动证明未知可变容器的所有元素符合某个嵌套泛型契约，需要区分“知道声明类型”和“验证实际内容”。
+
+</details>
+
+### 6.4 reified 能检查一个 List 的所有元素都是 String 吗？ {#reified-limits}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：内联具体化与嵌套泛型擦除。
+
+**相关内容**：[类型擦除与具体化](#类型擦除与具体化)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能仅凭 value is T 完成这个保证，T 为 `List<String>` 时仍可能只检查到外层 List。** reified 让调用点具体类型参与代码生成，却不能恢复对象中已经擦除的嵌套元素实参。需要验证未知列表时，应逐项检查或转换，并考虑检查之后集合是否还会被其他代码修改。
+
+</details>
+
+## 7. 参考资料 {#参考资料}
+
+- [Kotlin 文档：Generics，in、out、where](https://kotlinlang.org/docs/generics.html)
+- [Kotlin 文档：Inline functions，Reified type parameters](https://kotlinlang.org/docs/inline-functions.html#reified-type-parameters)
+- [Kotlin 语言规范 1.9：Type system](https://kotlinlang.org/spec/type-system.html)
+- [Kotlin 文档：Calling Kotlin from Java，Variant generics](https://kotlinlang.org/docs/java-to-kotlin-interop.html#variant-generics)

@@ -88,6 +88,60 @@ try {
 
 `Semaphore` 不记录许可是哪个线程拿的，所以许可可以由另一个线程归还。这也带来风险：多调用一次 `release()` 就会凭空多出一个许可，总数甚至可以超过初始的 20，限流就失效了。所以业务要明确每个许可由谁释放，并保证只还一次。
 
+### 4.1 用许可交接执行顺序 {#用许可交接执行顺序}
+
+信号量也可以表示「轮到谁执行」，这时许可不是资源容量，而是交给下一方的执行信号。让 A 先拿到一个许可，B 从零个许可开始，每一方输出后都释放对方的许可，就能交替输出：
+
+```java
+static void printTurns(String text, int rounds,
+                       Semaphore mine, Semaphore next)
+        throws InterruptedException {
+    for (int i = 0; i < rounds; i++) {
+        mine.acquire();
+        System.out.print(text);
+        next.release();
+    }
+}
+
+static void alternate(int rounds) throws InterruptedException {
+    if (rounds < 0) {
+        throw new IllegalArgumentException("negative rounds");
+    }
+    Semaphore a = new Semaphore(1);
+    Semaphore b = new Semaphore(0);
+    Thread[] pair = new Thread[2];
+    pair[0] = new Thread(() -> {
+        try {
+            printTurns("A", rounds, a, b);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            pair[1].interrupt();
+        }
+    });
+    pair[1] = new Thread(() -> {
+        try {
+            printTurns("B", rounds, b, a);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            pair[0].interrupt();
+        }
+    });
+    pair[0].start();
+    pair[1].start();
+    try {
+        pair[0].join();
+        pair[1].join();
+    } finally {
+        pair[0].interrupt();
+        pair[1].interrupt();
+    }
+}
+```
+
+正常完成 `alternate(3)` 会输出 `ABABAB`。每次 A 输出后给 B 一个许可，B 输出后再把机会交回 A，所以顺序来自许可交接，与线程先被调度到的顺序无关。`rounds=0` 不输出，负数在启动线程前拒绝。
+
+这里用 `join()` 等待两个线程结束；等待方被中断时，会同时中断两个工作线程，避免一方退出后另一方永久等待许可。示例的输出操作使用 `System.out.print`，没有推广为任意可能失败的业务回调；换成业务任务后，还要把业务失败也纳入成对取消和结果收集。取消后的输出可能只是一个前缀，不能继续声称已经完成所有轮次。
+
 ## 5. 三者的选择 {#三者的选择}
 
 选同步器，先问线程在等什么：

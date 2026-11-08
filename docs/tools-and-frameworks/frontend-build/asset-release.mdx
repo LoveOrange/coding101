@@ -1,0 +1,321 @@
+---
+sidebar_position: 5
+knowledge:
+  id: tools-and-frameworks.frontend-build.asset-release
+---
+
+# 前端资源发布
+
+**前端资源发布**把构建产物交给用户访问，并维持 HTML、脚本、样式和异步分包之间的版本关系。服务器已经换成新版本时，用户打开的旧页面仍可能继续运行，并在几分钟后才请求一个旧分包。
+
+因此，发布不能只理解成覆盖目录。需要让新资源先可用，再切换入口，同时为旧页面和回滚保留所需产物。内容哈希、缓存策略与发布顺序共同决定用户能否稳定加载一套相互兼容的文件。
+
+## 1. 面试核心 {#core}
+
+- **HTML 是资源关系的入口，已经打开的页面不会因为服务器更新而自动替换执行代码。** 新旧页面并存是资源发布要处理的基本条件。[卡](#release-flow)
+- **内容哈希把资源内容的变化反映到 URL 上，但不会自行设置缓存头。** 同一带哈希 URL 应持续表示同一份内容。[卡](#content-hash)
+- **入口与不可变静态资源通常采用不同缓存策略。** HTML 可以要求重新验证，带内容哈希的公开资源可以使用较长新鲜期。[卡](#cache-policy)
+- **先准备资源，再切换入口，旧资源按兼容窗口保留。** 新 HTML 指向不存在的文件，或者旧页面迟加载的分包被删除，都可能导致失败。[卡](#old-page-chunk)
+- **资源加载失败需要区分缺失、网络、路径和执行错误。** 刷新可以取得新入口，但不能保证解决所有问题，也可能丢失用户输入。[卡](#load-failure)
+- **回滚需要保存完整产物与配置关系，而不只是把 Git 指针移回去。** 前端回退也不自动撤销后端接口和数据变化。[卡](#rollback)
+- **灰度与上线验收应观察实际用户路径和版本证据。** 首页返回 200 不足以证明异步路由、接口与旧页面都可用。[卡](#release-validation)
+
+## 2. 资源关系与内容哈希 {#资源关系与内容哈希}
+
+### 2.1 入口、运行时代码与分包 {#入口运行时代码与分包}
+
+用户取得 HTML 后，浏览器根据其中的地址加载入口脚本。入口与构建运行时代码还可能记录异步分包地址，后者直到访问某个页面或点击某个按钮才真正请求。
+
+这意味着旧页面即使没有继续请求旧 HTML，也仍然保留旧分包的引用。仅清理浏览器缓存不能改写已经运行的代码；清理 CDN 也不能让旧页面自动获得新的模块关系。
+
+发布时需要维护的是完整关系：某一版 HTML 指向哪些入口，入口会加载哪些分包，相关样式与接口协议是否兼容。构建产物的模块与分包关系见 [前端构建](./build-pipeline.mdx#modulechunk与bundle)。
+
+### 2.2 哈希命名 {#哈希命名}
+
+**内容哈希**是根据产物内容生成的标识。Webpack 5 的 `[contenthash]` 可以放入输出文件名；内容改变后，相关资源的 URL 随之变化，浏览器就能把它当作新资源请求。
+
+下面的独立示例在 package.json 中设置 `"type": "module"`，源码按 ESM 处理，构建脚本保留 `.cjs` 扩展名。`webpack.config.cjs` 为入口和异步分包都设置内容哈希：
+
+```js
+const path = require('node:path');
+const webpack = require('webpack');
+const release = process.env.DEMO_RELEASE || 'A';
+
+if (!/^[A-Za-z0-9_-]+$/.test(release)) {
+  throw new Error('发布标识只能包含字母、数字、下划线和连字符');
+}
+
+module.exports = {
+  mode: 'production',
+  context: __dirname,
+  entry: { main: './src/app.js' },
+  output: {
+    path: path.resolve(__dirname, 'dist'),
+    filename: '[name].[contenthash:16].js',
+    chunkFilename: '[name].[contenthash:16].js',
+    publicPath: '/assets/',
+    clean: true,
+  },
+  plugins: [new webpack.DefinePlugin({
+    APP_RELEASE: JSON.stringify(release),
+  })],
+};
+```
+
+这里的 clean 只清理本地构建输出目录。不能据此把线上共享资源目录也每次清空：构建目录可以重建，线上目录还承担旧页面的加载需求。
+
+内容哈希不等于业务版本号。改变一个分包后，引用它地址的运行时代码也可能改变，进一步影响入口哈希；不能承诺“只改一个源文件，就永远只变化一个输出文件”。哈希同样不是缓存策略本身，响应仍需要正确的缓存头。
+
+## 3. 可运行的分包示例 {#可运行的分包示例}
+
+### 3.1 入口与异步模块 {#入口与异步模块}
+
+保存 `src/app.js`：
+
+```js
+const status = document.querySelector('#status');
+const load = document.querySelector('#load');
+const refresh = document.querySelector('#refresh');
+status.textContent = `版本 ${APP_RELEASE}`;
+
+refresh.addEventListener('click', () => location.reload());
+load.addEventListener('click', async () => {
+  load.disabled = true;
+  try {
+    const { detail } = await import(/* webpackChunkName: "detail" */ './detail.js');
+    status.textContent = detail;
+    refresh.hidden = true;
+  } catch {
+    status.textContent = '资源加载失败，请保存草稿后刷新';
+    refresh.hidden = false;
+  } finally {
+    load.disabled = false;
+  }
+});
+```
+
+APP_RELEASE 由构建配置替换成当前发布标识。点击“查看详情”才加载对应分包，失败时给出提示和手动刷新入口；这里没有自动保存草稿，刷新前仍需用户处理未保存内容。
+
+保存 `src/detail.js`：
+
+```js
+export const detail = '详情 A';
+```
+
+构建 B 版本时，可以把该字符串改为 `详情 B`，并设置 DEMO_RELEASE 为 B，观察入口和分包地址的变化。
+
+### 3.2 HTML 与构建记录 {#html与构建记录}
+
+HTML 应引用本次构建实际生成的文件名，而不是手写一个猜测的哈希。安装 Webpack 5 后，保存 `build.cjs`：
+
+```js
+const fs = require('node:fs');
+const path = require('node:path');
+const webpack = require('webpack');
+const config = require('./webpack.config.cjs');
+const compiler = webpack(config);
+
+compiler.run((error, stats) => {
+  compiler.close((closeError) => {
+    if (error || closeError || stats.hasErrors()) {
+      console.error(error || closeError || stats.toString({ all: false, errors: true }));
+      process.exitCode = 1;
+      return;
+    }
+    const release = process.env.DEMO_RELEASE || 'A';
+    const entry = stats.compilation.entrypoints.get('main').getFiles()
+      .find((name) => name.endsWith('.js'));
+    const files = Object.keys(stats.compilation.assets);
+    const html = `<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><title>资源发布示例</title>
+<label for="draft">草稿</label><input id="draft">
+<button id="load">查看详情</button>
+<button id="refresh" hidden>刷新页面</button>
+<p id="status" role="status"></p>
+<script defer src="/assets/${entry}"></script></html>`;
+    fs.writeFileSync(path.join(config.output.path, 'index.html'), html);
+    fs.writeFileSync(path.join(config.output.path, 'release.json'),
+      JSON.stringify({ release, entry, files }, null, 2));
+  });
+});
+```
+
+执行 `node build.cjs` 会生成 HTML、带哈希的入口与分包，以及用于定位本次产物的 release.json。这个最小配置只有一个入口脚本；真实构建如果拆出 runtime、CSS 或多个初始 chunk，生成 HTML 时需要包含完整的初始资源集合，不能照抄这里的第一个 js 文件逻辑。
+
+构建记录还应关联源码提交、工具与锁文件、配置和验证结果。浏览器里的公开配置不能包含秘密；如果环境变量在构建时替换进 JavaScript，不同配置就可能形成不同产物，需要分别识别和验证。构建、产物与配置的通用关系见 [可重复交付](../../system-design/production/docker-ci-cd-reproducible-delivery.mdx)。
+
+## 4. 缓存策略与发布顺序 {#缓存策略与发布顺序}
+
+### 4.1 入口与资源分开处理 {#入口与资源分开处理}
+
+对公开、非个性化的 HTML，可以采用重新验证的策略：
+
+```http
+Cache-Control: no-cache
+ETag: "html-release-a"
+```
+
+no-cache 允许存储，但再次使用前需要验证。ETag 与当前内容匹配时，服务器可以返回 304；内容改变时返回新的 HTML。这里的 ETag 只是示意标识，服务器必须保证它随表示变化，不能永久固定成同一个字符串。
+
+内容已由 URL 标识的公开静态资源，可以采用长新鲜期，例如：
+
+```http
+Cache-Control: public, max-age=31536000, immutable
+```
+
+这一策略要求同一 URL 下的内容保持不变。更新内容应使用新 URL，而不是覆盖旧文件并期待所有客户端同时清缓存。immutable 表达新鲜期内不变，不意味着缓存永不淘汰，也不代表到期之后永远不验证。
+
+个性化 HTML、凭据相关响应不能直接照搬公开共享缓存配置。浏览器、CDN、源站和 Service Worker 也可能分别缓存内容；各层键与策略需一致考虑。HTTP 指令的完整含义见 [HTTP 缓存](../../basic-knowledge/network/http-cache.mdx#存储与新鲜度)，Service Worker 自行管理的缓存见 [Service Worker](../../frontend/browser/service-worker.mdx)。
+
+### 4.2 先资源后入口 {#先资源后入口}
+
+发布 B 版本时，可以按以下顺序操作：
+
+1. 构建并验证 B 的完整产物，保存构建记录。
+2. 上传 B 的脚本、样式和异步分包，确认实际服务地址可访问、内容与类型正确。
+3. 切换 HTML 或入口版本指针，让新进入的用户开始引用 B。
+4. 观察错误与业务结果，同时保留 A 及其他仍在兼容窗口内的资源。
+5. 根据旧页面存活、资源访问、回滚窗口和产品约束，决定何时回收旧产物。
+
+先切换 HTML，再慢慢上传资源，会让访问新入口的用户请求尚不存在的文件。单机文件系统可以通过写临时文件再重命名来避免读取半份 HTML，但多节点、对象存储和 CDN 的传播并不因此获得全局瞬时切换；发布方案仍需处理各处看到新旧入口的时间差。
+
+保留旧资源的时间不能只凭“浏览器缓存一年”决定。旧页面可能从未下载某个分包，也可能已经把缓存淘汰；只有服务器仍能提供它，迟加载才有机会成功。实际回收需要结合允许的页面存活期、更新提示和回滚要求。
+
+### 4.3 路由回退与资源缺失 {#路由回退与资源缺失}
+
+SPA 的合法页面路径可能需要回退到 HTML，但找不到的 js、css 和图片不应无条件回退为 HTML。否则请求得到 200，却因为 MIME 不符或内容其实是 HTML 而无法执行，排查时反而更容易误判。
+
+资源缺失应返回正确状态，并检查是否被 CDN 的错误缓存策略延长影响。恢复文件后还要确认错误响应没有继续被复用；不能仅以源站上文件已经存在来判断用户已经恢复。
+
+## 5. 失败、回滚与验证 {#失败回滚与验证}
+
+### 5.1 旧页面分包失败 {#旧页面分包失败}
+
+一个可复现的故障过程是：用户先打开 A 页面，但尚未查看详情；服务器发布 B 并删除 A 分包；用户随后点击按钮，A 的运行时代码仍请求 A 分包，于是失败。
+
+上面的 catch 可以显示提示。Vite 6 也提供 `vite:preloadError` 事件供处理相应动态导入加载错误。但具体失败还可能来自离线、错误 publicPath、CDN、权限、模块执行异常等原因，不能把所有加载错误都解释成“用户缓存太旧”。
+
+如果确认新入口可用，可以提示用户处理未保存输入后刷新。不要无限自动刷新：入口本身仍不可用、网络仍断开或同一错误继续存在时，刷新循环会掩盖问题并破坏用户操作。恢复策略还需要记录发生错误的版本和资源 URL。
+
+### 5.2 回滚与新旧兼容 {#回滚与新旧兼容}
+
+回滚前端入口需要对应旧资源仍然存在。若只保存旧 HTML，却已经删除它引用的文件，切回入口不会得到可运行的旧页面。现场重新从旧源码构建也可能受到依赖与环境变化影响，不能自动视为原先那份验证产物。
+
+入口回滚后，已经打开的 B 页面仍可能继续运行，所以 B 资源也不能立即删除。后端还需允许预期时间内的新旧前端共同调用；接口字段、配置和数据迁移不能因为前端回退就自动恢复。
+
+Git revert、reset 和资源发布回滚也属于不同操作。撤销源码变更需要经过新的构建与验证；指向已保存旧产物则是部署选择。应根据实际问题和交付规则明确操作对象，不能把“回滚”一词当作所有层面都恢复了的保证。
+
+### 5.3 灰度与上线验收 {#灰度与上线验收}
+
+**灰度发布**让一部分流量先使用新版本，并根据观察结果决定继续、停止或回退。前端除了入口分流，还需关注资源和接口的对应关系；如果每个资源请求随机选择 A 或 B，而相同 URL 的内容又不同，就可能把用户拼成一套混合版本。
+
+验证至少应包含新入口、异步分包、关键路由刷新、接口与登录态，以及已经打开的旧页面。监控记录应能关联发布标识、错误资源和关键指标，具体采集机制见 [前端监控](../../frontend/performance/observability.mdx)。
+
+上线前的测试验证预期行为，上线后的观察确认真实流量与环境。两者都不能被一次首页 200 代替。构建工具迁移尤其应比较实际产物、资源路径和运行行为，而不仅比较编译耗时。
+
+## 6. 面试题 {#面试题}
+
+### 6.1 一个前端页面从构建到上线，需要注意哪些步骤？ {#release-flow}
+
+**考察重点**：产物验证、资源关系、发布顺序与观察。
+
+**相关内容**：[HTML 与构建记录](#html与构建记录)、[先资源后入口](#先资源后入口)。
+
+<details>
+<summary>参考回答</summary>
+
+**先生成并验证完整产物，再让资源可用，最后切换入口并观察结果。** 记录源码、依赖、配置与产物标识，确认缓存头和资源路径，验证异步加载与关键业务流程。同时保留旧页面需要的资源和回滚产物，不能只把本地 dist 覆盖到线上后清空旧文件。
+
+</details>
+
+### 6.2 Webpack 的 contenthash 文件名有什么作用？ {#content-hash}
+
+**考察重点**：内容与 URL、缓存策略及引用变化。
+
+**相关内容**：[哈希命名](#哈希命名)。
+
+<details>
+<summary>参考回答</summary>
+
+**contenthash 让产物内容变化反映到文件名，从而让客户端通过新 URL 请求新资源。** 同一 URL 应持续表示同一内容，缓存头还需另外配置。某个分包变化可能影响记录其地址的运行时代码，所以不能保证只改变一个输出文件。
+
+</details>
+
+### 6.3 HTML 和带内容哈希的静态资源，为什么通常采用不同缓存策略？ {#cache-policy}
+
+**考察重点**：入口更新、不可变内容、新鲜度与缓存层次。
+
+**相关内容**：[入口与资源分开处理](#入口与资源分开处理)。
+
+<details>
+<summary>参考回答</summary>
+
+**HTML 需要引导用户取得当前资源关系，带内容哈希的资源则可以通过新 URL 表达变化。** 对适合公开缓存的页面，可让 HTML 使用 no-cache 配合验证器；不可变静态资源可用长 max-age 与 immutable。个性化内容、CDN 和 Service Worker 需按各自范围处理，不能把 no-cache 说成禁止存储。
+
+</details>
+
+### 6.4 为什么发布后，旧页面首次打开某个功能会出现分包 404？ {#old-page-chunk}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：页面存活、延迟加载、资源保留与发布顺序。
+
+**相关内容**：[入口、运行时代码与分包](#入口运行时代码与分包)、[旧页面分包失败](#旧页面分包失败)。
+
+<details>
+<summary>参考回答</summary>
+
+**旧页面仍保存旧分包地址，而发布过程可能已经删除了该文件。** 分包此前未下载，或缓存已淘汰时，就只能请求服务器。应先上传新资源、再切入口，并按旧页面与回滚窗口保留旧资源；不能假设浏览器一定缓存了整套应用。
+
+</details>
+
+### 6.5 资源加载失败时，自动刷新为什么不是通用解决方案？ {#load-failure}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：故障类型、恢复条件、用户状态与失败证据。
+
+**相关内容**：[旧页面分包失败](#旧页面分包失败)、[路由回退与资源缺失](#路由回退与资源缺失)。
+
+<details>
+<summary>参考回答</summary>
+
+**刷新只有在新入口及其资源可用时才可能恢复，而且可能丢失用户输入。** 加载失败也可能由断网、路径、权限或代码执行异常造成。应记录版本和 URL，判断原因，提供明确恢复方式并限制重复刷新；资源 404 也不应被 HTML 回退伪装成成功。
+
+</details>
+
+### 6.6 前端上线出问题时，怎样判断能否回滚？ {#rollback}
+
+**考察重点**：完整产物、配置、旧资源与接口兼容。
+
+**相关内容**：[回滚与新旧兼容](#回滚与新旧兼容)。
+
+<details>
+<summary>参考回答</summary>
+
+**先确认要回退的完整产物与配置仍可用，并检查它能否使用当前接口和数据。** 切回旧 HTML 不会恢复已删除资源，也不会撤销后端变更。回退后仍有已打开的新页面，因此新资源也要保留；源码撤销与部署选择应分别验证。
+
+</details>
+
+### 6.7 构建工具迁移或灰度上线后，怎样验证发布没有破坏现有功能？ {#release-validation}
+
+**题型**：综合题
+
+**考察重点**：实际产物、分流一致性、关键流程与监控。
+
+**相关内容**：[灰度与上线验收](#灰度与上线验收)、[先资源后入口](#先资源后入口)。
+
+<details>
+<summary>参考回答</summary>
+
+**验证实际服务的入口、资源和关键流程，并把结果关联到明确发布版本。** 包括异步路由、深链刷新、缓存、登录与接口，还要保留旧页面继续操作的检查。灰度保持资源与接口关系可解释，观察错误和业务指标并准备停止、回退条件，不能只看编译成功或首页返回 200。
+
+</details>
+
+## 7. 参考资料 {#参考资料}
+
+- [Webpack：Caching](https://webpack.js.org/guides/caching/)
+- [Webpack：Output](https://webpack.js.org/configuration/output/)
+- [Vite 6：Load Error Handling](https://v6.vite.dev/guide/build#load-error-handling)
+- [RFC 9111：HTTP Caching](https://www.rfc-editor.org/rfc/rfc9111.html)
+- [RFC 8246：HTTP Immutable Responses](https://www.rfc-editor.org/rfc/rfc8246.html)

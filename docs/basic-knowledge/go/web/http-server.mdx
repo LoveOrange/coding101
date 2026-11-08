@@ -1,0 +1,362 @@
+---
+sidebar_position: 1
+knowledge:
+  id: basic-knowledge.go.web.http-server
+  type: concept
+description: "讲解 Go HTTP 服务的 Handler、路由、请求与响应生命周期、中间件、超时控制和优雅关闭。"
+keywords: ["Go", "net/http", "Handler", "ServeMux", "HTTP 服务", "Shutdown"]
+---
+
+# Go HTTP 服务
+
+Go 的 `net/http` 包负责监听连接、解析 HTTP 请求，并调用业务提供的 `Handler` 生成响应。业务代码通常不需要自己处理 TCP 字节流，但仍然要决定请求能占用多少资源、何时停止工作，以及服务退出时怎样处理尚未完成的请求。
+
+理解这条执行链路，才能解释为什么写了超时配置，请求里的计算仍可能继续；为什么已经返回了响应，后台 goroutine 却还在使用失效的对象。本文使用 Go 1.22.12，示例模块声明 `go 1.22`，路由采用 Go 1.22 的匹配规则。
+
+## 1. 面试核心 {#core}
+
+- **`Server` 管连接和 HTTP 协议，`Handler` 负责处理一次请求，`ServeMux` 根据规则选择 Handler**。同一个 Handler 可以被不同请求并发调用，共享状态仍需要同步。[卡](#request-lifecycle)
+- **`ServeHTTP` 返回就表示这次请求处理结束**。不能把 `ResponseWriter` 留给后台 goroutine，在返回后继续写响应；需要读取的请求体也要在处理期间完成读取。[卡](#response-lifetime)
+- **响应头和最终状态码要在写响应体之前确定**。第一次 `Write` 会在尚未设置状态码时隐式提交 `200`，之后不能再把它改成另一种最终状态。[卡](#response-lifetime)
+- **请求体大小、网络读写时间和业务执行期限需要分别控制**。`MaxHeaderBytes` 不限制请求体，`WriteTimeout` 也不会强行终止正在执行的 Handler。[卡](#timeout-boundaries)
+- **中间件通过包装 Handler 组合行为，取消通知必须继续传给实际工作**。设置 `context` 超时不会自动生成 HTTP 错误响应，也不会撤销已经提交的事务。[卡](#middleware-context)
+- **优雅关闭要停止接收新连接，并等待已有请求结束**。`Shutdown` 到期返回错误后，如需强制关闭普通连接，要由调用方执行 `Close`；程序还要等待关闭流程完成。[卡](#graceful-shutdown)
+
+## 2. 请求处理链路 {#请求处理链路}
+
+### 2.1 Server、Handler 与 ServeMux {#Server与Handler}
+
+**`http.Server`** 是 HTTP 服务的配置与运行对象。`ListenAndServe` 根据地址创建监听器并开始服务；已有 `net.Listener` 时，可以交给 `Serve`。这两个方法会持续服务，直到监听发生错误或服务被关闭，而不是完成一个请求就返回。
+
+**`http.Handler`** 是具有 `ServeHTTP(http.ResponseWriter, *http.Request)` 方法的接口。`Server.Handler` 指定请求入口；没有指定时，使用全局 `DefaultServeMux`。显式创建自己的入口有助于看清服务注册了哪些路由，也方便测试时隔离配置。
+
+**`http.ServeMux`** 是标准库的路由器，本身也实现 `Handler`。它根据方法、主机名和路径等匹配条件，把请求转给对应的 Handler。`http.HandlerFunc` 则把签名合适的普通函数转换成 `Handler`，无需为了一个处理函数另外定义结构体。
+
+以一个普通 HTTP/1.1 请求为例，执行关系是：
+
+1. `Server` 从监听器接受 TCP 连接；使用 TLS 时还要进行相应的握手。
+2. 服务端读取并解析请求行与请求头，构造 `Request` 和本次响应使用的 `ResponseWriter`。请求体通常在 Handler 读取 `r.Body` 时继续读取，不要求先把整个请求体装进内存。
+3. 入口 Handler 执行；如果入口是中间件包裹的 `ServeMux`，请求会沿着包装关系进入路由和业务处理。
+4. 业务读取参数或请求体、执行操作，通过 `ResponseWriter` 设置响应，并返回。
+5. 服务端完成必要的响应收尾，根据协议、错误和连接配置决定关闭连接，还是等待后续请求。
+
+HTTP/1.1 持久连接可以先后处理多个请求，因此“一次请求就是一次 TCP 连接”不成立。Go 的 HTTP/1 服务在同一连接上依次处理请求，不会为该连接上尚未完成的多个请求同时调用业务 Handler。HTTP/2 使用多个流，不能把 HTTP/1 的处理方式直接套过去；协议关系见 [HTTP](../../network/http-versions-connection-reuse-timeouts.mdx)。
+
+### 2.2 并发与共享状态 {#并发与共享状态}
+
+同一个路由处理函数可能同时服务多个连接上的请求。`Request` 与 `ResponseWriter` 属于本次调用，但 Handler 捕获的 map、计数器、缓存或结构体字段可能被所有请求共享。
+
+例如，把库存存在一个普通 map 里，再分别执行“读库存”和“减库存”，不会因为代码位于 HTTP Handler 中就自动变成原子操作。进程内的共享内存需要采用适当的[Go 同步原语](../concurrency/synchronization.mdx)，数据库中的条件更新与事务则由数据库保证。两种资源的正确性要分别处理。
+
+服务器会恢复直接发生在 Handler 调用链中的 panic，记录日志，并关闭 HTTP/1 连接或重置 HTTP/2 流。**这不等于自动返回格式统一的 `500` JSON 响应**。如果需要统一错误格式，应在响应尚未提交时处理错误；已经发出去的状态码和响应内容无法撤回。Handler 自行启动的其他 goroutine 中的 panic，也不在这条恢复链中。
+
+## 3. 路由匹配 {#路由匹配}
+
+Go 1.22 的 `ServeMux` 支持方法与路径通配符。下面的代码可以作为独立的 `routes.go` 文件：
+
+```go title="routes.go"
+package web
+
+import (
+    "fmt"
+    "net/http"
+)
+
+func NewMux() *http.ServeMux {
+    mux := http.NewServeMux()
+    mux.HandleFunc("GET /items/{id}", func(w http.ResponseWriter, r *http.Request) {
+        w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+        fmt.Fprintf(w, "item=%s\n", r.PathValue("id"))
+    })
+    mux.HandleFunc("GET /items/latest", func(w http.ResponseWriter, r *http.Request) {
+        w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+        fmt.Fprintln(w, "latest")
+    })
+    return mux
+}
+```
+
+`GET /items/42` 得到 `item=42`，其中 `42` 来自 `PathValue("id")`。`GET /items/latest` 则进入更具体的固定路径，得到 `latest`，选择不依赖注册先后顺序。
+
+这里的 `GET` 模式也接受 `HEAD`。经过真实 HTTP 服务时，`HEAD` 会执行匹配的 Handler，但不会向客户端发送响应体。`POST /items/42` 在没有其他匹配路由时得到 `405`，`Allow` 响应头说明允许的方法；完全不匹配的路径得到 `404`。
+
+匹配规则中的“更具体”指它能匹配的请求集合是另一个模式的严格子集，不是单纯比较字符串长度。若两个模式有交集，却无法按规则确定优先级，注册时会 panic。例如 `GET /` 与 `/items/42` 都匹配 `GET /items/42`，前者还匹配其他 GET 路径，后者还匹配其他方法，两者发生冲突。带主机名模式另有兼容性优先规则，应按 `ServeMux` 的约定判断。
+
+末尾的斜杠也有含义：`/files/` 匹配该子树，`/{$}` 才只匹配根路径。不要把业务上不同的请求都交给一个宽泛的 `/`，再依赖每个分支自行检查路径和方法。
+
+旧版 Go 的 `ServeMux` 不具备相同的方法与通配符语义。使用 `GODEBUG=httpmuxgo121=1` 兼容设置时，也不能套用上面的路由结果。
+
+## 4. 请求体与响应生命周期 {#请求体与响应生命周期}
+
+### 4.1 请求体的大小限制 {#请求体的大小限制}
+
+`Request.Body` 是一个可读取并关闭的数据流。服务端会负责关闭收到的请求体，业务代码仍应避免无边界地 `io.ReadAll`，因为客户端可以发送很大的内容。`ContentLength` 可能未知，单独检查这个字段不能替代实际读取限制。
+
+下面的 `Echo` 最多读取 1024 字节，成功时原样返回；它可以注册在 `POST /echo` 上：
+
+```go title="body.go"
+package web
+
+import (
+    "errors"
+    "io"
+    "net/http"
+)
+
+func Echo(w http.ResponseWriter, r *http.Request) {
+    body := http.MaxBytesReader(w, r.Body, 1024)
+    defer body.Close()
+    data, err := io.ReadAll(body)
+    if err != nil {
+        var tooLarge *http.MaxBytesError
+        if errors.As(err, &tooLarge) {
+            http.Error(w, "body too large", http.StatusRequestEntityTooLarge)
+        } else {
+            http.Error(w, "invalid body", http.StatusBadRequest)
+        }
+        return
+    }
+    w.Header().Set("Content-Type", "application/octet-stream")
+    w.Write(data)
+}
+```
+
+1024 字节的请求可以成功，读取第 1025 字节时会得到超限错误并返回 `413`。分块传输的请求即使没有已知的 `ContentLength`，也受到实际读取字节数的限制。其他读取错误在这个示例中统一返回 `400`；实际业务可以按错误种类记录必要的诊断信息。
+
+这里限制的是被 `MaxBytesReader` 包裹的流。若业务还需要解压、解析复杂格式或读取上传文件，要继续考虑解压后的体积和处理成本，不能只凭一个原始字节数上限保证所有资源消耗都有限。限制大小也不限制发送速度，慢速上传还需要读期限等策略。
+
+### 4.2 响应何时确定 {#响应何时确定}
+
+`w.Header()` 用于准备响应头，`w.WriteHeader(status)` 设置状态码，`w.Write(data)` 写响应体。对于通常的最终响应，顺序应该是先确定头和状态，再写正文。
+
+如果先调用 `Write`，标准库会在尚未设置最终状态时隐式使用 `200`。随后再调用 `WriteHeader(500)` 不能把它改成失败响应；同样，写出响应后再添加普通响应头也不会生效。`1xx` 信息响应与预先声明的 trailer 有特殊规则，不属于这里讨论的最终响应头修改。
+
+“已经提交响应”与“字节已经抵达客户端”也不同。服务器、TLS、操作系统和网络都可能有缓冲。`Write` 返回成功，只说明本次写入被接受；即使业务稍后发现错误，也不能因此回到最初重新选一个状态码。需要流式输出时，应明确处理 `Flush`、断开连接和部分结果，而不是把普通 JSON 响应逻辑直接改成多次写入。
+
+### 4.3 返回与取消 {#返回与取消}
+
+`ServeHTTP` 返回后，不能再使用该次调用的 `ResponseWriter`，也不能继续读取该请求的 `Body`。因此，“启动 goroutine 写响应，然后 Handler 立即返回”不是异步响应的正确实现。需要并行处理时，应在 Handler 内等待工作完成，再由有明确所有权的路径写响应。
+
+传入请求的 `r.Context()` 会在客户端连接关闭、HTTP/2 请求被取消，或 `ServeHTTP` 返回时取消。它适合传给数据库查询、下游 HTTP 请求和其他支持取消的操作。取消通知与工作实际结束有时间差，具体机制见 [context](../concurrency/context.mdx#取消通知与退出确认)。
+
+如果业务确实要在响应结束后继续执行任务，需要另外定义任务的所有权、重试和服务退出时的处理规则。不能仅把请求 context 换成 `context.Background()`，就认为任务已经可靠交付。
+
+## 5. 中间件与超时 {#中间件与超时}
+
+### 5.1 Handler 的包装关系 {#Handler的包装关系}
+
+**中间件**接收一个 Handler，返回一个增加了行为的 Handler。外层可以在调用 `next.ServeHTTP` 之前处理请求，在返回之后记录结果，也可以因为鉴权失败等原因直接响应，不再调用下游。
+
+`A(B(handler))` 的正常执行顺序是 `A` 前置、`B` 前置、业务处理、`B` 后置、`A` 后置。包装顺序因此会影响鉴权、日志、错误恢复等行为，不能只看注册时写了哪些中间件名称。
+
+下面的中间件为下游设置执行期限：
+
+```go title="budget.go"
+package web
+
+import (
+    "context"
+    "net/http"
+    "time"
+)
+
+func WithBudget(next http.Handler, budget time.Duration) http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        ctx, cancel := context.WithTimeout(r.Context(), budget)
+        defer cancel()
+        next.ServeHTTP(w, r.WithContext(ctx))
+    })
+}
+```
+
+`r.WithContext(ctx)` 创建带有新 context 的请求浅拷贝，原请求本身不被替换。下游如果等到 `ctx.Done()`，就能观察到期限已到；如果下游一直执行不检查 context 的计算，`WithBudget` 仍会等待它返回。
+
+这段代码**不会自动返回 `504` 或 `503`**。应由业务错误处理规则决定如何响应，而且必须在响应尚未提交时作出决定。超时也不等于“操作一定没有发生”：下游事务可能已提交，只是结果没有及时传回来，重试仍需要幂等性等业务保证。
+
+包装 `ResponseWriter` 来记录状态码时，还要保留或正确转发下游需要的能力。标准响应对象支持的 `Flusher` 等接口，经过只实现三个基本方法的包装后可能丢失；不能假设嵌入 `http.ResponseWriter` 就自动保留所有可选接口。
+
+### 5.2 不同期限限制什么 {#不同期限限制什么}
+
+`http.Server` 的超时主要限制网络阶段，业务 context 则让支持取消的工作观察截止时间。它们可以组合使用，但不能互相代替。
+
+| 控制项 | 限制范围 | 需要区分的边界 |
+| --- | --- | --- |
+| `ReadHeaderTimeout` | 读取请求头的时间 | 不单独限制后续整个请求体的读取；为零时回退到 `ReadTimeout` |
+| `ReadTimeout` | 读取整个请求的时间，包括请求体 | 适合明确的读取预算；统一的短值可能不适合大文件上传 |
+| `WriteTimeout` | 响应写入的期限 | 新请求头被读取时重设；不是强行结束 Handler 的计时器 |
+| `IdleTimeout` | 持久连接等待下一个请求的时间 | 为零时回退到 `ReadTimeout`，与业务执行时间不同 |
+| 请求 context 的 deadline | 支持该 context 的业务及下游操作 | 工作必须配合观察取消；不会自动写 HTTP 错误响应 |
+| `MaxHeaderBytes` | 请求行和请求头大小 | 不限制请求体 |
+| `MaxBytesReader` | 被包装请求体的读取字节数 | 不限制业务执行时间，也不自动限制解压后的资源消耗 |
+
+`ReadTimeout`、`WriteTimeout` 为零或负数表示不设置相应期限。`ReadHeaderTimeout`、`IdleTimeout` 的零值则有上述回退规则，不能把所有零值都统一解释成“使用安全的默认超时”。配置值应来自实际接口、上传和下游预算，不能给所有服务机械套用同一组秒数。
+
+在普通 HTTP/1 连接上，`WriteTimeout` 到期后，实际网络写入会失败，但缓冲可能使某次较小的 `Write` 暂时返回成功。处理函数本身仍可能执行到结束。因此，客户端得到空响应或连接错误时，要同时检查写期限、业务 context 和实际退出位置。
+
+### 5.3 TimeoutHandler 的边界 {#TimeoutHandler的边界}
+
+`http.TimeoutHandler` 是另一种包装：它在内部执行 Handler，并缓冲响应。在其期限到达时，外层返回 `503 Service Unavailable`；超时后，内部 Handler 继续向该包装对象写入会得到 `http.ErrHandlerTimeout`。
+
+缓冲使它能在正常结果尚未提交给客户端时选择超时响应，但它**不能杀死不配合取消的内部 goroutine**。因此，客户端已经收到 `503`，内部工作仍可能占用资源。使用它仍需让数据库、下游调用和等待过程正确处理请求 context。
+
+它不支持 `Flusher`、`Hijacker`，因此不适合需要这些能力的流式输出或连接接管场景。选择它之前，应先明确接口是否允许缓冲整个结果，而不是把它当成适用于所有 Handler 的通用超时开关。
+
+## 6. 优雅关闭 {#优雅关闭}
+
+### 6.1 停止接收与等待完成 {#停止接收与等待完成}
+
+**优雅关闭**是在停止接收新工作之后，给已有工作留出结束机会。`Server.Shutdown(ctx)` 会关闭监听器和空闲连接，并等待活跃连接变为空闲后关闭；传入的 context 用来限制这个等待过程。
+
+调用 `Shutdown` 后，`Serve` 等服务方法会很快返回 `http.ErrServerClosed`。这只是服务入口已经停止，**不表示活跃请求已经完成**。如果主 goroutine 此时直接返回，进程会退出，正在关闭中的请求也无法继续完成。
+
+下面的 `ServeUntil` 接管传入的监听器，并统一负责 `srv` 的关闭，直到 `stop` 被取消后开始关闭。调用方通过取消 `stop` 请求停止，不再另外并发调用 `Shutdown`，并等待 `ServeUntil` 返回；`grace` 是正的关闭宽限期。
+
+```go title="shutdown.go"
+package web
+
+import (
+    "context"
+    "errors"
+    "net"
+    "net/http"
+    "time"
+)
+
+func ServeUntil(stop context.Context, srv *http.Server, ln net.Listener,
+    grace time.Duration) error {
+    served := make(chan error, 1)
+    go func() { served <- srv.Serve(ln) }()
+
+    select {
+    case err := <-served:
+        closeErr := srv.Close()
+        if errors.Is(err, http.ErrServerClosed) {
+            err = nil
+        }
+        return errors.Join(err, closeErr)
+    case <-stop.Done():
+    }
+
+    shutdownCtx, cancel := context.WithTimeout(context.Background(), grace)
+    defer cancel()
+    shutdownErr := srv.Shutdown(shutdownCtx)
+    var closeErr error
+    if shutdownErr != nil {
+        closeErr = srv.Close()
+    }
+    serveErr := <-served
+    if errors.Is(serveErr, http.ErrServerClosed) {
+        serveErr = nil
+    }
+    return errors.Join(shutdownErr, closeErr, serveErr)
+}
+```
+
+`served` 使用容量为一的通道，让服务 goroutine 可以交付唯一结果。停止信号到来后，代码先等待 `Shutdown`；只有关闭失败或到期，才进一步 `Close` 普通连接。最后读取服务方法的返回值，避免把 `ErrServerClosed` 当成异常启动失败。
+
+这里使用新的 `context.Background()` 派生关闭期限，因为 `stop` 已经被取消。如果直接从 `stop` 派生，关闭 context 会立即取消，已有请求得不到预期的宽限期。在实际入口中，停止信号可以由 `signal.NotifyContext` 产生；收到信号后的关闭规则保持相同。
+
+### 6.2 超时与额外资源 {#超时与额外资源}
+
+`Shutdown` 的 context 到期后，它返回 context 错误，**不会因此自动强制关闭仍活跃的连接**。需要强制断开时由调用方执行 `Close`。`Close` 也不是“等待所有业务 goroutine 结束”的接口；不配合取消的计算、独立任务仍需要各自的退出和等待机制。
+
+`Shutdown` 不负责等待或关闭已经被接管的连接，例如通过 Hijacker 接管的 WebSocket。`RegisterOnShutdown` 可用于发出相应协议的关闭通知，但回调是异步启动的，不能把注册回调等同于已经等待它执行完。长连接与任务执行器应有明确的关闭通知和完成确认。
+
+已有请求还依赖数据库或其他客户端时，应先让这些请求完成，再关闭其依赖。若提前取消所有请求共用的基础 context，或者先关闭数据库池，也会破坏原本想保留的宽限期。一次优雅关闭需要按实际依赖顺序组织，不能只在入口调用一次 `Shutdown` 就算完成。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 Go HTTP 服务怎样建立并处理一次请求？ {#request-lifecycle}
+
+**考察重点**：连接接收、协议解析、路由与业务处理的分工，以及请求和连接的区别。
+
+**相关内容**：[请求处理链路](#请求处理链路)、[路由匹配](#路由匹配)。
+
+<details>
+<summary>参考回答</summary>
+
+**`Server` 接受连接并解析 HTTP 请求，调用入口 Handler，业务通过 `ResponseWriter` 生成响应，返回后由服务端完成收尾。** 路由器 `ServeMux` 也是 Handler，负责根据匹配规则选择具体的处理函数；请求体可以在 Handler 中继续流式读取。
+
+HTTP/1.1 持久连接能先后处理多个请求，请求不必与 TCP 连接一一对应。不同连接上的请求可以并发调用同一个 Handler，因此处理函数使用的共享状态仍需要同步。HTTP/2 还支持同一连接上的多个流，不能用 HTTP/1 的连接处理方式概括所有协议。
+
+</details>
+
+### 7.2 为什么不能先写响应体，再设置失败状态，或在 Handler 返回后继续写响应？ {#response-lifetime}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：最终响应的提交时机与 ResponseWriter 的有效生命周期。
+
+**相关内容**：[响应何时确定](#响应何时确定)、[返回与取消](#返回与取消)。
+
+<details>
+<summary>参考回答</summary>
+
+**第一次 `Write` 会在尚未设置最终状态时隐式提交 `200`，而 `ServeHTTP` 返回就结束了该次响应对象的有效使用期。** 因此，应先确定普通响应头与最终状态，再写正文；之后的失败不能通过另一次 `WriteHeader` 撤回原状态。
+
+后台 goroutine 不能在 Handler 返回后继续使用该 `ResponseWriter` 或读取请求体。需要并行计算时，应在 Handler 内等待结果，再完成响应；确实需要独立执行的任务，应有独立的任务生命周期与完成机制。
+
+</details>
+
+### 7.3 请求体很大、上传很慢、业务执行很久，应该分别控制什么？ {#timeout-boundaries}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：大小、网络时间、业务期限的区别，以及取消与强制终止的边界。
+
+**相关内容**：[请求体的大小限制](#请求体的大小限制)、[不同期限限制什么](#不同期限限制什么)、[TimeoutHandler 的边界](#TimeoutHandler的边界)。
+
+<details>
+<summary>参考回答</summary>
+
+**请求体大小可用 `MaxBytesReader` 限制，网络读取需要合适的读期限，业务工作需要传递并处理 context 的期限。** `MaxHeaderBytes` 只限制请求行与请求头，`ReadHeaderTimeout` 也不单独限制后续整个请求体。
+
+`WriteTimeout` 限制响应写入，不强制停止 Handler。设置业务 context 后，下游仍要配合观察取消。`TimeoutHandler` 可以在自己的期限到达时返回 `503`，但它也不能停止不配合的内部计算，并且不适合依赖 `Flusher`、`Hijacker` 的接口。
+
+</details>
+
+### 7.4 中间件设置了 context 超时，是否就能保证返回超时响应且操作未执行？ {#middleware-context}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：Handler 包装、取消传播、响应决策与业务结果的关系。
+
+**相关内容**：[Handler 的包装关系](#Handler的包装关系)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能。context 只提供期限与取消通知，不自动生成 HTTP 响应，也不撤销已发生的操作。** 中间件需要通过 `r.WithContext(ctx)` 把新 context 交给下游，数据库、HTTP 调用或等待过程再配合使用它。
+
+下游错误应由明确的响应规则处理，且最终响应提交后不能再改状态。一次超时可能发生在事务提交之后，因此调用方若要重试，还需要幂等性或结果查询等业务设计，不能把超时直接解释成“服务端什么都没做”。
+
+</details>
+
+### 7.5 服务停止时，为什么不能只等 ListenAndServe 返回？ {#graceful-shutdown}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：停止接收、活跃请求、关闭期限和额外资源的处理顺序。
+
+**相关内容**：[优雅关闭](#优雅关闭)。
+
+<details>
+<summary>参考回答</summary>
+
+**调用 `Shutdown` 后，`ListenAndServe` 会很快返回 `ErrServerClosed`，但已有请求可能仍在运行。** 主 goroutine 应等待 `Shutdown` 的结果，再决定是否需要 `Close` 强制关闭普通连接，并继续处理其他任务和依赖的退出。
+
+关闭 context 应保留独立的宽限期，不能从已经取消的停止 context 直接派生。`Shutdown` 到期返回错误不会自动强制关闭活跃连接，也不等待被接管的长连接；这些资源需要明确的通知、关闭和完成确认机制。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [Go 1.22.12 net/http：Handler 与 ResponseWriter](https://pkg.go.dev/net/http@go1.22.12#Handler)
+- [Go 1.22.12 net/http：ServeMux](https://pkg.go.dev/net/http@go1.22.12#ServeMux)
+- [Go 1.22.12 net/http：Server](https://pkg.go.dev/net/http@go1.22.12#Server)
+- [Go 1.22.12 net/http：Request.Context](https://pkg.go.dev/net/http@go1.22.12#Request.Context)
+- [Go 1.22.12 net/http：MaxBytesReader](https://pkg.go.dev/net/http@go1.22.12#MaxBytesReader)
+- [Go 1.22.12 net/http：TimeoutHandler](https://pkg.go.dev/net/http@go1.22.12#TimeoutHandler)
+- [Go 1.22.12 net/http：Server.Shutdown](https://pkg.go.dev/net/http@go1.22.12#Server.Shutdown)
+- [Go 1.22.12 net/http 实现](https://github.com/golang/go/blob/go1.22.12/src/net/http/server.go)
+- [Go 1.22.12 HTTP/2 服务端实现](https://github.com/golang/go/blob/go1.22.12/src/net/http/h2_bundle.go)

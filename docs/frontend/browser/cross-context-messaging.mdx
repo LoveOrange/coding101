@@ -1,0 +1,319 @@
+---
+sidebar_position: 9
+knowledge:
+  id: frontend.browser.cross-context-messaging
+---
+
+# 浏览器上下文通信
+
+**浏览器上下文通信**是页面、iframe、其他窗口或 Worker 之间传递消息的方式。它们可以属于同一个应用，却不共享同一个 JavaScript 全局对象；跨源页面还受到同源策略限制，不能直接读取对方的 DOM。
+
+选择通信方式时，先看双方是否有窗口引用、是否同源，以及消息是否需要保留。父页面通知 iframe 适合 `postMessage`，同源标签页间的即时通知适合 `BroadcastChannel`，已经使用 `localStorage` 保存的状态可以通过 `storage` 事件通知其他页面。面试回答还要说明接收者如何验证消息，以及页面尚未准备好、刷新或关闭后会发生什么。
+
+## 1. 面试核心 {#core}
+
+- **跨源窗口不能随意读取对方，但可以通过窗口引用调用 postMessage**。发送方限制 `targetOrigin`，接收方检查 `origin`、`source` 和消息结构，这三层检查各自解决不同的问题。[卡](#post-message)
+- **postMessage 异步投递结构化克隆后的消息，不是调用对方函数**。发送成功不等于对方已经执行，函数和 DOM 节点也不能作为普通消息传递。[卡](#delivery-clone)
+- **BroadcastChannel 按通道名连接同源且处于同一存储分区的上下文**，不要求保存窗口引用；发送消息的那个通道对象不会收到自己的消息。[卡](#channel-choice)
+- **storage 事件发给共享同一存储区域的其他文档，不会发给执行写入的文档**。`localStorage` 可以跨同源标签页，`sessionStorage` 的这一范围限于同一顶层页面中的同源文档。[卡](#storage-event)
+- **MessageChannel 提供一对可转移的端口**，适合在可信的初始化之后建立独立会话。端口交给谁，谁就获得向另一端发消息的能力。[卡](#message-port)
+- **通知不等于可靠队列，也不等于分布式锁**。页面可能晚加入、暂停或关闭，需要保留的状态应有独立来源，并处理初始化、确认、重复和资源清理。[卡](#single-player)
+
+## 2. 窗口引用与通信范围 {#窗口引用与通信范围}
+
+**浏览上下文**是能够承载文档的环境，例如一个标签页或 iframe。每个文档有自己的 `window`。同源页面即使能够访问对方的对象，也不意味着各自的全局变量自动同步。
+
+父页面可以用 `iframe.contentWindow` 获得 iframe 的窗口引用，子页面可以用 `window.parent` 引用父页面。`window.open()` 成功打开窗口时也可以返回引用，但弹窗拦截可能使它返回 `null`，`noopener` 或浏览上下文隔离策略也可能切断打开者关系。
+
+跨源引用只开放有限操作。能拿到 `contentWindow`，不代表能读取 `contentWindow.document`；`postMessage` 正是允许双方显式交换消息的入口。源由协议、主机和端口共同决定，具体规则见 [同源策略](./same-origin-policy.mdx)。
+
+| 方式 | 寻找接收者 | 主要范围 | 是否保留历史消息 |
+| --- | --- | --- | --- |
+| `window.postMessage` | 已持有的窗口引用 | 可跨源，受目标源检查约束 | 否 |
+| `BroadcastChannel` | 通道名称 | 同源且同一存储分区的上下文 | 否 |
+| `storage` 事件 | 共享存储区域 | 其他符合条件的文档 | 事件不保留；存储中的当前值可保留 |
+| `MessageChannel` | 成对的 `MessagePort` | 已获得端口的一方 | 不是持久化队列 |
+
+## 3. postMessage {#postmessage}
+
+### 3.1 发送与接收检查 {#发送与接收检查}
+
+`targetWindow.postMessage(message, targetOrigin)` 把消息交给目标窗口。**targetOrigin 是消息允许投递到的目标源**，不是发送方的源，也不是接收方信任发送方的证明。
+
+下面用两个本地 HTTP 页面演示：父页面位于 `http://127.0.0.1:8200/parent.html`，子页面位于 `http://127.0.0.1:8201/child.html`。两个端口不同，因此跨源。父页面设置主题，子页面应用后回复。
+
+```html
+<!-- parent.html，由 8200 端口提供 -->
+<iframe id="preview" title="主题预览"></iframe>
+<output id="result">等待预览</output>
+<script>
+  const childOrigin = 'http://127.0.0.1:8201';
+  const frame = document.querySelector('#preview');
+  const result = document.querySelector('#result');
+
+  function onMessage(event) {
+    if (event.origin !== childOrigin || event.source !== frame.contentWindow) return;
+    const message = event.data;
+    if (!message || message.version !== 1 || message.type !== 'theme-applied') return;
+    if (message.theme !== 'light' && message.theme !== 'dark') return;
+    result.textContent = `已应用：${message.theme}`;
+  }
+
+  window.addEventListener('message', onMessage);
+  frame.addEventListener('load', () => {
+    frame.contentWindow.postMessage(
+      { version: 1, type: 'set-theme', theme: 'dark' }, childOrigin,
+    );
+  });
+  frame.src = childOrigin + '/child.html';
+</script>
+```
+
+```html
+<!-- child.html，由 8201 端口提供 -->
+<p>主题预览</p>
+<script>
+  const parentOrigin = 'http://127.0.0.1:8200';
+  window.addEventListener('message', (event) => {
+    if (event.origin !== parentOrigin || event.source !== window.parent) return;
+    const message = event.data;
+    if (!message || message.version !== 1 || message.type !== 'set-theme') return;
+    if (message.theme !== 'light' && message.theme !== 'dark') return;
+
+    document.documentElement.dataset.theme = message.theme;
+    event.source.postMessage(
+      { version: 1, type: 'theme-applied', theme: message.theme }, parentOrigin,
+    );
+  });
+</script>
+```
+
+两个服务启动后，访问父页面，`output` 变成“已应用：dark”。子页面把主题写入 `data-theme`；真实项目再用对应 CSS 呈现主题。`textContent` 用于输出文字，不把接收到的字符串当作 HTML 执行。
+
+接收方的检查分别回答三个问题：
+
+- `origin`：发送消息时，发送方文档属于哪个源？使用完整源比较，不能用包含某段字符串代替白名单。
+- `source`：消息是否来自本次预期的窗口？同一个源可以有多个窗口，仅检查源无法区分它们。
+- 消息结构：协议版本、操作名和参数是否允许？可信页面也可能有程序错误，或被注入脚本。
+
+这里子页面的监听器在同步脚本中安装，父页面等待 `load` 再发送。若子应用还要异步初始化，应该让它在完成初始化后发送 `ready`，父页面收到后才发送业务消息。仅等待 `load` 不保证任意框架和业务初始化都已完成。
+
+### 3.2 异步投递与数据边界 {#异步投递与数据边界}
+
+`postMessage` 不会同步进入接收方的回调。当前任务结束后，浏览器再按事件循环调度消息。调用返回只能说明发送步骤完成，不能说明对方接受了消息或完成了业务操作。
+
+消息使用结构化克隆，支持对象、数组、`Map` 等类型，也支持循环引用；接收方拿到的普通对象不是发送方对象的同一个引用。函数、DOM 节点不能直接克隆，会导致 `DataCloneError`。转移列表可以转移 `ArrayBuffer`、`MessagePort` 等可转移对象的所有权，相关数据边界见 [Web Worker](./web-worker.mdx)。
+
+窗口引用也不代表一个永久不变的文档。iframe 导航后，原窗口引用可以对应新的文档。因此发送敏感数据时应指定准确的目标源；`'*'` 放弃了这一限制。接收事件中的 `origin` 表示发送时的源，不能保证发送窗口此刻仍停留在原页面。
+
+## 4. BroadcastChannel {#broadcastchannel}
+
+**BroadcastChannel** 是按名字订阅的广播通道。下面的封装让同源播放器在收到其他播放器的播放通知时暂停：
+
+```js
+function createPlaybackChannel(playerId, pause) {
+  const channel = new BroadcastChannel('coding101-playback-v1');
+  channel.addEventListener('message', ({ data }) => {
+    if (!data || data.version !== 1 || data.type !== 'play') return;
+    if (typeof data.playerId !== 'string' || data.playerId === playerId) return;
+    pause();
+  });
+  return {
+    announcePlay() {
+      channel.postMessage({ version: 1, type: 'play', playerId });
+    },
+    close() {
+      channel.close();
+    },
+  };
+}
+```
+
+各标签页用独立的 `crypto.randomUUID()` 作为 `playerId`，传入自己的暂停函数；本页开始播放时调用 `announcePlay()`，组件卸载时调用 `close()`。发送的那个 `BroadcastChannel` 对象不会收到自身消息，但同一文档中另一个同名通道对象仍可能收到，因此不能把这一规则说成“当前页面绝不会收到”。
+
+通道不保存历史：新打开的页面不会收到它加入之前的播放通知。关闭后的通道不能继续发送，业务重新挂载时需要创建新的对象。
+
+范围也不只是“域名一样”。除了同源，还要处于同一存储分区。例如 `a.example` 页面中嵌入的 `b.example` iframe，与独立打开的 `b.example` 页面，可能因顶层站点分区而不能通过这个通道通信。通道名只是路由约定，不是访问令牌；同一信任范围内的其他脚本可以加入这个名字。
+
+## 5. storage 事件 {#storage事件}
+
+**storage 事件**通知其他文档：它们共同使用的某个存储区域发生了变化。它适合让其他标签页重新读取状态，而不是替代所有消息传输。
+
+下面用 `localStorage` 保存最后一次播放通知。每次写入新的 `requestId`，使同一播放器连续发送两次时，字符串值也会发生变化。
+
+```js
+function createPlaybackStorage(playerId, pause) {
+  const key = 'coding101-playback-v1';
+  function onStorage(event) {
+    if (event.storageArea !== localStorage || event.key !== key || event.newValue === null) return;
+    let data;
+    try { data = JSON.parse(event.newValue); } catch { return; }
+    if (!data || data.version !== 1 || data.type !== 'play') return;
+    if (typeof data.playerId !== 'string' || data.playerId === playerId) return;
+    if (typeof data.requestId !== 'string') return;
+    pause();
+  }
+  window.addEventListener('storage', onStorage);
+  return {
+    announcePlay() {
+      localStorage.setItem(key, JSON.stringify({
+        version: 1, type: 'play', playerId, requestId: crypto.randomUUID(),
+      }));
+    },
+    close() {
+      window.removeEventListener('storage', onStorage);
+    },
+  };
+}
+```
+
+写入页自行更新本地播放状态，其他共享该存储区域的页面收到事件后暂停。实际调用还应处理存储不可用、配额不足等异常；这时不能把一次失败的 `setItem` 当作已经通知成功。
+
+以下边界决定它能否用于需求：
+
+| 操作或场景 | 事件行为 |
+| --- | --- |
+| 当前文档调用 `setItem` | 当前文档不收到自己的 `storage` 事件 |
+| 写入与原值完全相同的字符串 | 存储值未变化，不产生这次变更事件 |
+| 删除存在的键 | 其他符合条件的文档收到事件，`newValue` 为 `null` |
+| 清空非空区域 | 其他符合条件的文档收到事件，`key`、`newValue` 为 `null` |
+| 使用 `sessionStorage` | 通知同一顶层页面中共享它的同源文档，不能据此通知另一个标签页 |
+| 页面晚加入 | 不补发旧事件；可主动读取当前存储值 |
+
+示例忽略删除和清空事件，因为它们不代表新的播放请求。保留的值也可能指向已经关闭的播放器；需要知道“现在谁在播放”时，不能只读取最后一次通知就下结论。存储容量与同步访问成本见 [浏览器存储](./storage.mdx)。
+
+## 6. MessageChannel {#messagechannel}
+
+**MessageChannel** 创建相互连接的两个端口 `port1` 和 `port2`。消息通过端口发送，不再靠窗口的全局 `message` 事件区分所有业务。
+
+```js
+const channel = new MessageChannel();
+channel.port1.addEventListener('message', ({ data }) => {
+  console.log(data); // pong
+  channel.port1.close();
+  channel.port2.close();
+});
+channel.port1.start();
+channel.port2.onmessage = ({ data }) => {
+  if (data === 'ping') channel.port2.postMessage('pong');
+};
+channel.port1.postMessage('ping');
+```
+
+这里 `port1` 的消息交给 `port2`，回复再回到 `port1`。通过 `addEventListener` 注册端口监听器后，需要调用 `start()` 开始分发；设置 `onmessage` 会隐式开启端口。
+
+跨窗口时，可以在已经验证身份的 `postMessage` 初始化中转移一个端口，例如把 `port2` 放入转移列表，让接收方从 `event.ports` 取出它。端口本身相当于通信能力，不能随便交给不可信页面。端口消息也不是每次携带一个可用于认证的窗口源；身份检查要在建立通道时完成，之后继续验证协议和参数。
+
+## 7. 生命周期与一致性 {#生命周期与一致性}
+
+通信机制解决“消息怎样到达另一个环境”，业务还要决定收到消息后允许发生什么。
+
+- **初始化**：先安装监听器，再声明就绪；需要当前状态时主动读取或请求快照，不依赖错过的广播。
+- **确认**：用请求 ID 关联结果，设置超时。超时只表示调用方没等到结果，不能证明接收方没有执行。
+- **重复与乱序**：重试可能重复执行。切歌、保存等操作要定义版本、幂等键或过期结果处理；不能假定多个发送者之间存在满足业务要求的统一顺序。
+- **销毁与恢复**：组件卸载时移除监听器、关闭通道或端口；从页面缓存恢复后按生命周期重建连接并刷新状态。不要仅依赖关闭页面时的一条“离线”消息。
+
+“新标签页播放、旧标签页暂停”可以用前面的通知实现。但若两个页面几乎同时点击播放，它们可能都收到对方通知并暂停，或者在暂停执行前短暂重叠。要保证严格的单播放器，应增加集中协调或独占锁，并规定持有者崩溃、页面冻结和恢复后的行为；`localStorage` 的读后写也不是跨页面的原子锁。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 postMessage 怎样实现跨源窗口通信？ {#post-message}
+
+**考察重点**：窗口引用、目标源、接收方验证和同源限制。
+
+**相关内容**：[窗口引用与通信范围](#窗口引用与通信范围)、[发送与接收检查](#发送与接收检查)。
+
+<details>
+<summary>参考回答</summary>
+
+**发送方持有目标窗口引用并调用 postMessage，接收方监听 message 事件。** 它是浏览器提供的显式通信机制，不赋予读取跨源 DOM 的权限。
+
+发送时用准确的 `targetOrigin` 限制接收文档的源。接收时验证 `event.origin`、预期的 `event.source`，再检查消息版本、操作名和参数。若接收应用异步初始化，还要先完成就绪握手。
+
+</details>
+
+### 8.2 postMessage 返回后，对方是否已经收到？能否传一个回调函数？ {#delivery-clone}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：异步调度、结构化克隆与结果确认。
+
+**相关内容**：[异步投递与数据边界](#异步投递与数据边界)。
+
+<details>
+<summary>参考回答</summary>
+
+**返回不表示对方已经接收或执行，普通消息也不能直接克隆回调函数。** 消息异步分发，函数会导致 `DataCloneError`。需要返回结果时，发送请求 ID，在本地保存回调或 Promise 的处理函数，再用另一条结果消息关联它。
+
+</details>
+
+### 8.3 同源标签页没有窗口引用，适合用哪种通信方式？ {#channel-choice}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：广播范围、分区和历史消息。
+
+**相关内容**：[BroadcastChannel](#broadcastchannel)、[storage 事件](#storage事件)。
+
+<details>
+<summary>参考回答</summary>
+
+**即时通知可以使用同名 BroadcastChannel；持久状态变化可以结合 localStorage 和 storage 事件。** 前者要求同源且同一存储分区，无需窗口引用，也不保存历史消息。后者保存的是当前字符串值，事件本身不补发。新页面仍应主动加载当前状态。
+
+</details>
+
+### 8.4 storage 事件会在写入页面触发吗？sessionStorage 能跨标签页通知吗？ {#storage-event}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：存储区域、事件接收者和无变化写入。
+
+**相关内容**：[storage 事件](#storage事件)。
+
+<details>
+<summary>参考回答</summary>
+
+**写入文档不会收到自己的 storage 事件，sessionStorage 的事件也不能用来通知另一个标签页。** `localStorage` 的变更可以通知其他共享该区域的同源文档；`sessionStorage` 还要求位于同一顶层浏览上下文。写入相同字符串不产生新的变更事件，因此反复发送同一通知需要独立标识，或者改用消息通道。
+
+</details>
+
+### 8.5 MessageChannel 与直接向窗口发送消息有什么区别？ {#message-port}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：端口、能力交付和会话清理。
+
+**相关内容**：[MessageChannel](#messagechannel)。
+
+<details>
+<summary>参考回答</summary>
+
+**MessageChannel 提供相连的两个端口，可把一个端口交给另一环境，形成独立消息会话。** 它避免所有业务都依赖窗口全局消息入口。建立通道时要验证接收者，之后仍要验证消息内容；结束时关闭端口。它不自动提供身份认证、业务成功确认或持久化。
+
+</details>
+
+### 8.6 新标签页播放音乐时，怎样让原来的标签页停止播放？ {#single-player}
+
+**题型**：综合题
+
+**考察重点**：跨标签页通知、同页状态更新和并发边界。
+
+**相关内容**：[BroadcastChannel](#broadcastchannel)、[storage 事件](#storage事件)、[生命周期与一致性](#生命周期与一致性)。
+
+<details>
+<summary>参考回答</summary>
+
+**在同源且通信范围允许的页面之间，新播放器开始播放时发送通知，其他播放器收到后暂停。** 可以使用 `BroadcastChannel`，也可以写入包含播放器 ID 和唯一请求 ID 的 `localStorage` 值，由其他页面监听 `storage` 事件。写入页自行更新本地状态。
+
+这只能实现通知式协调。若要求并发点击时也严格只有一个播放器，需要独占协调，并处理持有者关闭、冻结和恢复。通知不会自动补发，最后一条存储记录也不能证明对应播放器仍在运行。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+
+- [HTML Standard：Web messaging](https://html.spec.whatwg.org/multipage/web-messaging.html)
+- [HTML Standard：Web storage](https://html.spec.whatwg.org/multipage/webstorage.html)
+- [MDN：Window.postMessage](https://developer.mozilla.org/en-US/docs/Web/API/Window/postMessage)
+- [MDN：Broadcast Channel API](https://developer.mozilla.org/en-US/docs/Web/API/Broadcast_Channel_API)
+- [MDN：Window storage event](https://developer.mozilla.org/en-US/docs/Web/API/Window/storage_event)
+- [MDN：MessagePort.start](https://developer.mozilla.org/en-US/docs/Web/API/MessagePort/start)

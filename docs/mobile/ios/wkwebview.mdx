@@ -1,0 +1,351 @@
+---
+title: WKWebView
+description: 理解 WKWebView 的配置、导航代理、脚本消息、来源校验、数据存储和内容进程，处理网页与 iOS 原生能力的交互。
+knowledge:
+  id: mobile.ios.wkwebview
+---
+
+**WKWebView** 是 WebKit 提供的网页容器。它把网页加载、脚本执行和渲染接入 iOS 界面，并通过代理与脚本消息让原生代码参与交互。理解它需要同时看两边：网页有自己的文档和 JavaScript 执行环境，应用负责容器、导航决策和开放哪些原生能力。
+
+网页发来一个消息，并不等于它获得了调用任意原生接口的权限。来源、frame、参数、页面生命周期与异步结果都需要判断。本文示例以 iOS 14 及以上、Swift 5 语言模式为准，关注 WebKit 平台机制。
+
+## 1. 面试核心 {#core}
+
+- **WKWebView 的配置在创建时确定**，导航、网页 UI 请求和脚本交互由不同接口负责。不能把所有代理方法都当成“页面加载完成”。[卡](#configuration)
+- **网页可通过注册的脚本消息处理器调用原生入口**。带回复的处理器能把结果或错误异步交还 JavaScript，但每个入口仍需要明确的能力与参数约定。[卡](#native-call)
+- **校验消息实际发送 frame 的来源，不能只看最外层网页 URL**。桥接入口可以出现在子 frame 中，主 frame 可信不代表每个 iframe 都可信。[卡](#origin)
+- **WKContentWorld 隔离 JavaScript 变量命名空间，不隔离同一文档的 DOM**，也不替代原生能力授权。[卡](#content-world)
+- **原生执行 JavaScript 是异步操作**。优先通过参数传值，处理脚本错误和页面已切换；不要把用户输入直接拼成可执行代码。[卡](#javascript)
+- **消息处理器的注册有生命周期**。避免控制器经由 WebView 和处理器形成引用环，页面职责结束后撤销入口并拒绝迟到消息。[卡](#lifecycle)
+- **Cookie 和其他站点数据由 WKWebsiteDataStore 管理**。不能假设 URLSession 的登录态自动同步给 WKWebView，也不能仅靠换一个 WebView 实例完成账号隔离。[卡](#cookies)
+- **网页内容由独立进程管理和渲染**。进程终止可能造成页面无法继续使用，需要恢复入口与状态判断，不应直接等同于整个应用崩溃。[卡](#process)
+
+## 2. 容器配置与导航 {#容器配置与导航}
+
+### 2.1 各接口的责任 {#各接口的责任}
+
+`WKWebViewConfiguration` 用于创建前的配置，包括站点数据存储、脚本控制器和媒体策略。WebView 创建后，修改最初那份配置并不是动态重新配置已存在 WebView 的方法；需要变化的能力应使用相应运行时 API，或者重新创建适合的容器。
+
+| 对象或协议 | 主要责任 |
+| --- | --- |
+| `WKWebView` | 加载内容、前进后退、执行脚本和显示网页 |
+| `WKNavigationDelegate` | 导航允许或取消、加载阶段、错误、认证挑战 |
+| `WKUIDelegate` | 网页要求的窗口和 JavaScript 对话框等界面行为 |
+| `WKUserContentController` | 注册脚本消息处理器、管理注入脚本 |
+| `WKWebsiteDataStore` | 管理 Cookie、缓存和其他站点数据 |
+
+`didStartProvisionalNavigation`、`didCommit`、`didFinish` 分别对应不同导航阶段。一次失败可能发生在内容开始提交之前，也可能发生在之后；原生加载指示器和错误页要处理两种失败路径。`didFinish` 不表示单页应用已经完成所有后续请求，更不表示业务数据已经就绪。
+
+### 2.2 允许导航不等于允许原生能力 {#允许导航不等于允许原生能力}
+
+导航代理可以按解析后的 URL 决定允许或取消。判断应检查 scheme、准确 host 和允许的端口，不能用字符串是否包含某个域名来代替。重定向、外部链接、新窗口请求和自定义 scheme 都应按产品规则处理，不能把未知地址直接交给高权限原生动作。
+
+实现 `decidePolicyFor` 后，必须在每条路径上完成一次 `decisionHandler`，否则导航会一直等待。异步询问用户时，也要保证拒绝、页面关闭等分支会结束这次决策。
+
+导航控制只说明哪些页面能够打开。脚本消息是否允许执行，还要在收到消息时根据发送者和请求内容判断。尤其是允许打开任意外部网页的浏览器式容器，不应同时给所有页面暴露业务桥接能力。
+
+## 3. 网页调用原生 {#网页调用原生}
+
+### 3.1 消息怎样到达应用 {#消息怎样到达应用}
+
+**脚本消息处理器**是应用注册给 JavaScript 的原生入口。注册名称为 `native` 后，网页可调用 `window.webkit.messageHandlers.native.postMessage(...)`，WebKit 把消息包装成 `WKScriptMessage` 再交给原生处理器。
+
+普通 `WKScriptMessageHandler` 负责接收消息；`WKScriptMessageHandlerWithReply` 还带有回复处理器，JavaScript 一侧可以等待返回的 Promise。跨端通信仍需要约定支持的动作、输入和错误语义，但无须把消息当成任意方法名再动态执行。
+
+请求与响应的通用约定见 [JSBridge](../../frontend/browser/jsbridge.mdx#消息协议与回调关联)。平台提供回复入口后，业务仍需处理页面切换、超时与取消；具体责任见其中的[生命周期、超时与取消](../../frontend/browser/jsbridge.mdx#生命周期超时与取消)。
+
+下面的处理器只允许指定 HTTPS 来源的主 frame 调用一个回显动作，并限制输入长度。它不持有 WebView 或页面控制器。
+
+```swift
+import WebKit
+
+@MainActor
+final class EchoBridge: NSObject, WKScriptMessageHandlerWithReply {
+    let allowedHost: String
+    private var active = true
+
+    init(allowedHost: String) { self.allowedHost = allowedHost }
+    func close() { active = false }
+
+    func userContentController(
+        _ userContentController: WKUserContentController,
+        didReceive message: WKScriptMessage,
+        replyHandler: @escaping (Any?, String?) -> Void
+    ) {
+        let origin = message.frameInfo.securityOrigin
+        guard active,
+              message.frameInfo.isMainFrame,
+              origin.protocol == "https",
+              origin.host == allowedHost,
+              origin.port == 0 || origin.port == 443 else {
+            replyHandler(nil, "Source is not allowed")
+            return
+        }
+        guard let body = message.body as? [String: Any],
+              body["method"] as? String == "echo",
+              let text = body["text"] as? String,
+              text.utf8.count <= 1000 else {
+            replyHandler(nil, "Invalid message")
+            return
+        }
+        replyHandler(["text": text], nil)
+    }
+}
+
+@MainActor
+func makeEchoWebView(bridge: EchoBridge) -> WKWebView {
+    let content = WKUserContentController()
+    content.addScriptMessageHandler(bridge, contentWorld: .page, name: "native")
+    let configuration = WKWebViewConfiguration()
+    configuration.userContentController = content
+    configuration.websiteDataStore = .nonPersistent()
+    return WKWebView(frame: .zero, configuration: configuration)
+}
+
+@MainActor
+func closeEchoWebView(_ webView: WKWebView, bridge: EchoBridge) {
+    bridge.close()
+    webView.configuration.userContentController.removeScriptMessageHandler(
+        forName: "native", contentWorld: .page
+    )
+    webView.stopLoading()
+}
+```
+
+指定主机应来自应用配置，而不是网页消息。这里接受默认 HTTPS 端口的表示，拒绝其他端口；用 `securityOrigin` 获取发送 frame 的来源，不信任消息 body 自报的 URL。`close()` 先让处理器失效，再移除注册，避免把已经排队的消息当成仍有权执行的请求。
+
+在允许的页面中，可以这样使用入口：
+
+```javascript
+async function echoText(text) {
+  const result = await window.webkit.messageHandlers.native.postMessage({
+    method: "echo",
+    text,
+  });
+  return result.text;
+}
+```
+
+合法字符串会原样返回；动作名、类型或长度不符时 Promise 拒绝，调用方应捕获错误。真实业务动作还需要检查用户授权和业务状态。例如来自可信页面的删除请求，仍不能绕过原生侧的确认规则。
+
+### 3.2 为什么不能只检查 WebView 的 URL {#为什么不能只检查WebView的URL}
+
+一个主页面可以包含多个 iframe，注册的处理器会提供给指定 content world 中的各个 frame。只判断 `webView.url`，可能把主页面的信任错误地授予某个子页面。应根据 `message.frameInfo` 检查实际发送者；只支持主 frame 的能力，明确拒绝子 frame。
+
+准确来源也不能解决同源页面自身的 XSS。若被信任的页面执行了攻击者脚本，来源仍可能合法。因此，原生入口仍应只开放必要动作，验证参数与当前账号状态，敏感操作保留独立的授权判断。
+
+不要把任意原生对象、文件路径或令牌直接交给网页。回复只使用桥接支持的数据类型，也要有大小和生命周期约束。页面已经导航离开时，之前异步任务的结果不应自然获得新页面的权限。
+
+## 4. 原生调用 JavaScript {#原生调用JavaScript}
+
+### 4.1 参数与代码分开 {#参数与代码分开}
+
+`evaluateJavaScript` 执行脚本字符串，通过完成回调交付结果或错误；它不是同步取值函数。`callAsyncJavaScript` 把字符串作为异步函数体执行，可以传入命名参数，也可以等待函数内部的 Promise。
+
+```swift
+import WebKit
+
+@MainActor
+func setPageHeading(_ text: String, in webView: WKWebView,
+                    completion: @escaping @MainActor @Sendable (Result<Any, Error>) -> Void) {
+    webView.callAsyncJavaScript(
+        "document.getElementById('heading').textContent = text; return text;",
+        arguments: ["text": text],
+        in: nil,
+        in: .page,
+        completionHandler: completion
+    )
+}
+```
+
+示例要求页面已有 `id="heading"` 的元素。`text` 通过参数传入，所以引号、换行和看似 JavaScript 的内容仍然只是字符串；`textContent` 按文本写入，不会把它解析为 HTML。元素不存在或页面已经变化时可能失败，需要处理 `Result.failure`。
+
+如果把字符串直接拼成 `document... = '\(text)'`，输入中的引号就可能改变代码结构。即使业务只想“设置文字”，也应从接口上分开数据与代码。
+
+### 4.2 异步结果属于哪一次页面 {#异步结果属于哪一次页面}
+
+脚本执行、网络请求和原生动作都可能晚于导航发生。应用需要用自己的页面或导航身份判断结果是否仍有效；关闭页面时取消可取消的任务，并拒绝无效结果。
+
+`callAsyncJavaScript` 的 `in: nil` 指向主 frame。指定的 frame 已经无效时会返回相应错误，不能把这个 frame 当成可以永久保存的执行目标。`didFinish` 后立刻执行一次成功，也不意味着下一次执行时 DOM 仍然相同。
+
+## 5. Content World 与生命周期 {#ContentWorld与生命周期}
+
+### 5.1 隔离变量不隔离文档 {#隔离变量不隔离文档}
+
+**WKContentWorld** 定义 JavaScript 的执行命名空间。页面 world 和应用自定义 world 可以各自拥有同名变量，避免脚本互相覆盖；同一个 world 对象也不会把不同 WebView 的变量变成共享变量。
+
+但同一页面的 DOM 仍然共享。一个 world 修改元素文字，另一个 world 能观察到文档变化。因此，content world 适合隔离脚本变量与桥接实现，不能当成完全独立的网页沙箱，更不能替代来源检查。
+
+前面的桥接注册在 `.page`，页面自己的 JavaScript 能直接调用它。如果注册到隔离 world，页面 world 不会自动得到那个入口；需要按实际架构设计通信，而不是只换一个 world 就认为权限问题全部解决。
+
+### 5.2 处理器为何可能形成引用环 {#处理器为何可能形成引用环}
+
+`WKUserContentController` 保存注册的消息处理器。如果页面控制器自己充当处理器，又强持有 WebView，就可能形成“控制器 → WebView → user content controller → 控制器”的环。仅在控制器 `deinit` 中移除处理器，可能永远等不到释放发生。
+
+可以让独立处理器弱引用业务接收者，或者像示例那样让处理器不持有页面对象，并在明确结束页面职责时解除注册。只有页面确实结束才关闭桥接，不应把每次暂时被其他界面覆盖都当成永久销毁。
+
+处理器之外，还要检查原生异步任务、观察者和闭包。把消息处理器改成弱转发，并不自动取消已经启动的业务操作；关闭时的有效性标记与任务收尾仍有意义。
+
+## 6. 站点数据、文件与内容进程 {#站点数据文件与内容进程}
+
+### 6.1 Cookie 通过数据存储管理 {#Cookie通过数据存储管理}
+
+`WKWebsiteDataStore.default()` 保存持久化站点数据；`nonPersistent()` 使用不持久化到磁盘的数据存储。需要隔离临时页面时，可以给它独立的非持久化存储；同一个存储对象被多个 WebView 使用时，也要考虑它们共享的状态。
+
+Cookie 通过 `websiteDataStore.httpCookieStore` 读写。设置、查询和删除是异步接口；如果首个请求必须携带某个 Cookie，应在设置完成后再加载，不能先发请求再假设 Cookie 立刻生效。退出登录时，按账号与站点范围清理 Cookie 以及相关站点和业务数据。
+
+URLSession 与 WKWebView 有各自的存储接口，不能假设一个修改登录 Cookie 后，另一个立即自动同步。`HttpOnly` Cookie 也不应通过拼 JavaScript 的方式管理；客户端需按站点协议和原生 API 明确交接。
+
+### 6.2 本地文件只开放需要的范围 {#本地文件只开放需要的范围}
+
+`loadFileURL(_:allowingReadAccessTo:)` 接收网页文件和允许读取的文件或目录。只需单文件时将读取范围限制为该文件；需要相关脚本、样式和图片时，指定对应资源目录，不要把整个应用容器交给网页读取。
+
+本地资源内容仍可能运行脚本。不能因为 URL 是 `file:` 就自动信任其中所有内容，也不能让来自网络的任意路径决定文件访问范围。前面的 HTTPS 桥接示例会拒绝本地文件来源，需要支持本地内容时应单独设计它的信任边界。
+
+### 6.3 内容进程退出怎样恢复 {#内容进程退出怎样恢复}
+
+WebKit 使用独立进程管理和渲染网页内容，但不应承诺每个 WebView 永远对应独占、固定的进程。收到 `webViewWebContentProcessDidTerminate` 时，应用本身可能仍正常运行；应停止原有加载状态，保留必要的页面身份，并提供重载或重建入口。
+
+恢复不能无条件重复副作用。展示页面可以重新加载，表单提交和支付动作则要先确认服务器状态或请求幂等性。反复自动重载还可能形成失败循环，因此需要次数限制、可见错误和用户操作路径。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 WKWebView 的配置和几个代理分别负责什么？ {#configuration}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：创建配置、导航决策、网页 UI 与脚本消息的边界。
+
+**相关内容**：[容器配置与导航](#容器配置与导航)。
+
+<details>
+<summary>参考回答</summary>
+
+**配置在创建时指定数据存储和脚本等策略；导航代理处理允许、阶段和错误；UI 代理处理窗口、对话框等界面请求。** 脚本消息由 user content controller 注册的处理器接收。`didFinish` 是导航完成，不保证网页业务的全部异步工作结束；实现导航决策后要完成处理器。
+
+</details>
+
+### 7.2 H5 怎样调用 iOS 原生能力？ {#native-call}
+
+**考察重点**：网页消息入口、原生处理、异步结果与权限判断。
+
+**相关内容**：[网页调用原生](#网页调用原生)。
+
+<details>
+<summary>参考回答</summary>
+
+**在 WKWebView 中，可以注册脚本消息处理器，让网页通过 `window.webkit.messageHandlers` 发送消息。** 原生收到后校验发送 frame、来源、动作、参数与业务授权，再调用允许的能力。带回复的处理器可异步返回结果或错误；页面关闭和导航后还要判断请求是否有效，不能把网页参数直接当成任意原生方法执行。
+
+</details>
+
+### 7.3 主页面是可信域名，为什么还要检查消息来源？ {#origin}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：frame 与顶层页面、准确来源与能力授权。
+
+**相关内容**：[为什么不能只检查 WebView 的 URL](#为什么不能只检查WebView的URL)。
+
+<details>
+<summary>参考回答</summary>
+
+**消息可能来自子 frame，顶层 URL 不能代表实际发送者。** 使用 `frameInfo.securityOrigin` 检查协议、主机与端口，按能力要求检查 `isMainFrame`。同源页面若发生 XSS，来源仍可合法，所以原生侧还要限制动作、校验参数并执行独立授权。
+
+</details>
+
+### 7.4 WKContentWorld 能隔离 DOM 和所有安全风险吗？ {#content-world}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：JavaScript 命名空间与共享文档的区别。
+
+**相关内容**：[隔离变量不隔离文档](#隔离变量不隔离文档)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能。它隔离 JavaScript 环境变量，同一文档的 DOM 变化仍对各 world 可见。** 它能减少脚本变量冲突，但不能代替消息来源、参数和业务权限判断。注册在隔离 world 的处理器也不会自动出现在页面 world。
+
+</details>
+
+### 7.5 原生设置网页文字，为什么不直接拼接 JavaScript 字符串？ {#javascript}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：代码与数据、异步结果和 DOM 生命周期。
+
+**相关内容**：[原生调用 JavaScript](#原生调用JavaScript)。
+
+<details>
+<summary>参考回答</summary>
+
+**直接拼接会让引号等输入改变代码结构，应通过命名参数传值，并使用符合用途的 DOM API。** `callAsyncJavaScript` 可以传入参数并异步等待结果；设置纯文字用 `textContent`。还要处理脚本失败、元素不存在和页面已经切换，不能把返回值当成同步结果。
+
+</details>
+
+### 7.6 页面退出后 WKWebView 相关对象不释放，先检查什么？ {#lifecycle}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：消息注册的持有关系与职责结束时的清理。
+
+**相关内容**：[处理器为何可能形成引用环](#处理器为何可能形成引用环)。
+
+<details>
+<summary>参考回答</summary>
+
+**先检查控制器是否既持有 WebView，又被注册为消息处理器，形成引用环。** 使用独立处理器或弱转发，并在页面职责真正结束时解除注册；不能只等待 `deinit`。同时检查未结束任务、闭包和观察者，关闭后的迟到消息也要拒绝。
+
+</details>
+
+### 7.7 URLSession 登录后，WKWebView 会自动得到相同 Cookie 吗？ {#cookies}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：数据存储、Cookie 异步操作与账号隔离。
+
+**相关内容**：[Cookie 通过数据存储管理](#Cookie通过数据存储管理)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能这样假设，要按站点协议通过 WKHTTPCookieStore 明确管理。** 首次加载依赖某个 Cookie 时等待设置完成；账号退出按范围清理相关数据。换 WebView 实例不等于隔离，因为它们可能仍使用相同数据存储；临时会话可以按需求使用独立非持久化存储。
+
+</details>
+
+### 7.8 网页内容进程终止后，应用应该怎样处理？ {#process}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：应用与内容进程的边界、恢复与副作用。
+
+**相关内容**：[内容进程退出怎样恢复](#内容进程退出怎样恢复)。
+
+<details>
+<summary>参考回答</summary>
+
+**在内容进程终止回调中结束旧状态，并提供受控的重载或重建路径。** 这不等于应用进程也崩溃。恢复前判断页面与任务是否仍有效；涉及提交、支付等副作用时先确认状态或幂等性，避免无条件重放，同时防止无限重载。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [Apple：WKWebView](https://developer.apple.com/documentation/webkit/wkwebview)
+- [Apple：WKWebViewConfiguration](https://developer.apple.com/documentation/webkit/wkwebviewconfiguration)
+- [Apple：WKNavigationDelegate](https://developer.apple.com/documentation/webkit/wknavigationdelegate)
+- [Apple：WKScriptMessageHandlerWithReply](https://developer.apple.com/documentation/webkit/wkscriptmessagehandlerwithreply)
+- [Apple：frameInfo](https://developer.apple.com/documentation/webkit/wkscriptmessage/frameinfo)
+- [Apple：securityOrigin](https://developer.apple.com/documentation/webkit/wkframeinfo/securityorigin)
+- [Apple：WKSecurityOrigin](https://developer.apple.com/documentation/webkit/wksecurityorigin)
+- [Apple：WKContentWorld](https://developer.apple.com/documentation/webkit/wkcontentworld)
+- [Apple：callAsyncJavaScript(_:arguments:in:in:completionHandler:)](https://developer.apple.com/documentation/webkit/wkwebview/callasyncjavascript(_:arguments:in:in:completionhandler:))
+- [Apple：evaluateJavaScript(_:completionHandler:)](https://developer.apple.com/documentation/webkit/wkwebview/evaluatejavascript(_:completionhandler:))
+- [Apple：WKWebsiteDataStore](https://developer.apple.com/documentation/webkit/wkwebsitedatastore)
+- [Apple：WKHTTPCookieStore](https://developer.apple.com/documentation/webkit/wkhttpcookiestore)
+- [Apple：removeScriptMessageHandler(forName:contentWorld:)](https://developer.apple.com/documentation/webkit/wkusercontentcontroller/removescriptmessagehandler(forname:contentworld:))
+- [Apple：loadFileURL(_:allowingReadAccessTo:)](https://developer.apple.com/documentation/webkit/wkwebview/loadfileurl(_:allowingreadaccessto:))
+- [Apple：webViewWebContentProcessDidTerminate(_:)](https://developer.apple.com/documentation/webkit/wknavigationdelegate/webviewwebcontentprocessdidterminate(_:))
+- [Apple：webView(_:decidePolicyFor:decisionHandler:)](https://developer.apple.com/documentation/webkit/wknavigationdelegate/webview(_:decidepolicyfor:decisionhandler:)-2ni62)
+- [Apple：addScriptMessageHandler(_:contentWorld:name:)](https://developer.apple.com/documentation/webkit/wkusercontentcontroller/addscriptmessagehandler(_:contentworld:name:))
+- [Apple：userContentController(_:didReceive:replyHandler:)](https://developer.apple.com/documentation/webkit/wkscriptmessagehandlerwithreply/usercontentcontroller(_:didreceive:replyhandler:))
+- [Apple：delete(_:completionHandler:)](https://developer.apple.com/documentation/webkit/wkhttpcookiestore/delete(_:completionhandler:))

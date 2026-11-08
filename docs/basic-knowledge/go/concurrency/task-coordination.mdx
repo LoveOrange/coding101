@@ -1,0 +1,515 @@
+---
+sidebar_position: 10
+knowledge:
+  id: basic-knowledge.go.concurrency.task-coordination
+  type: concept
+description: "讲解 Go 并发任务的派发、汇聚、失败传播与背压，用固定 worker、errgroup 和 channel 实现有限任务批次、并发下载、交替输出与依赖执行。"
+keywords: ["Go", "并发任务", "errgroup", "worker", "有界队列", "背压", "结果汇聚"]
+---
+
+# Go 并发任务管理
+
+**并发任务管理**是在启动 goroutine 之外，为一组工作安排接收、执行、结果交付、失败处理和退出责任。任务能并发运行，只完成了其中一部分；如果提交者、工作者或结果接收者提前结束，其他部分也要有明确的后续行为。
+
+面试中的并发下载、生产者消费者、交替输出和任务依赖，都可以沿着这些责任分析。本文以 Go 1.22.12 和 `golang.org/x/sync` v0.10.0 为准，先掌握 [context 的取消与退出边界](./context.mdx#取消通知与退出确认)。
+
+## 1. 面试核心 {#core}
+
+- 任务数、活跃任务数和排队任务数是不同的量。**固定 worker 数量限制执行并发，有界队列限制已入队的积压**；先启动所有 goroutine 再等待名额，仍可能留下大量等待者。[卡](#bounded-tasks)
+- **背压让下游处理能力反过来影响上游提交**。队列满时可以等待、超时或拒绝，不能一边声称容量有界，一边把任务转移到无限增长的 goroutine 或列表中。[卡](#producer-backpressure)
+- `errgroup` 把任务等待、首个非 nil 错误和共同取消联系起来。**Wait 仍要等所有登记函数返回；派生 context 在首错或 Wait 返回时取消，成功后的后续操作也不能继续依赖它**。[卡](#errgroup-lifecycle)
+- **取消需要抵达每个可能阻塞的位置**。生产者发送、worker 接收、下游调用和结果交付都要考虑退出；不响应取消的函数仍可能让等待无法结束。[卡](#uncooperative-task)
+- 并发完成的顺序不等于输入顺序。**结果可以按原下标存放，或交给单独的汇聚者；同一输出的写入责任必须明确**。[卡](#ordered-downloads)
+- **交替执行依赖明确的交接信号，不能依赖 Sleep 或 goroutine 的启动顺序**。最后一个输出之后是否还需要交接，是正常退出的关键条件。[卡](#alternating-output)
+- 有依赖的任务应在前置结果就绪后再获得执行机会。**不要让所有有限 worker 都占着名额等待尚未获准执行的依赖任务**。[卡](#task-dependencies)
+- **FIFO 队列不保证多个 worker 按领取顺序开始或完成，也不会自动保护共享状态**。按键串行只能保护确实经过同一串行路径的操作。[卡](#fifo-races)
+
+## 2. 一批任务的约定 {#一批任务的约定}
+
+先明确任务管理器要保证什么，再选择工具。以“一批有限任务全部成功才交付结果”为例，需要回答：
+
+| 问题 | 一种明确的约定 |
+| --- | --- |
+| 输入何时结束 | 调用时已经给出有限任务列表 |
+| 同时运行多少项 | 最多 `workers` 个工作者执行任务 |
+| 还能排队多少项 | channel 容量为 `queueSize`，满时提交者等待 |
+| 某项失败怎么办 | 记录首个错误，通知同批任务取消，等待它们退出 |
+| 成功结果怎样读取 | 完成等待后，由调用方汇总各项结果 |
+| 部分副作用能否撤销 | 不由任务管理器自动保证 |
+
+这些是参考实现的约定。现场只说“实现消息队列”或“并发下载”时，还要确认容量、顺序、取消和交付要求；进程内 channel 队列没有自动获得持久化、重试、消费者确认或跨进程传输能力。
+
+**背压**是下游处理不动时，让上游提交也受到约束。容量为 8 的队列可以暂存 8 个未被领取的任务，但任务已被 worker 取走后，就不再占这个排队位置。通用的任务、队列和接收策略见 [线程池](../../operating-system/thread-pools.mdx#队列容量与拒绝)。Go 的 worker 通常是 goroutine，不代表同样数量的操作系统线程。
+
+有限并发也不自动限制全部内存。调用方预先创建的任务列表、闭包捕获的对象、已完成结果、网络缓冲和等待提交的调用者，都可能继续占用内存。分析容量时，要把它们一起纳入，而不能只看 channel 的 `cap`。
+
+## 3. errgroup {#errgroup}
+
+### 3.1 等待、错误与取消 {#等待错误与取消}
+
+**`errgroup.Group`** 是管理一组返回 `error` 的 goroutine 的工具，位于扩展包 `golang.org/x/sync/errgroup`。它在完成等待之外，保存首个记录到的非 nil 错误；使用 `WithContext` 创建时，还能通知其他任务取消。
+
+| 操作 | v0.10.0 的行为 |
+| --- | --- |
+| 零值 `Group` | 可以使用，不限制活跃 goroutine 数，也不在失败时提供共同取消 |
+| `WithContext(parent)` | 返回 group 和派生 context；首个任务错误或 `Wait` 返回时取消派生 context |
+| `Go(fn)` | 登记并启动任务；配置并发上限后，可能先等待名额 |
+| `Wait()` | 等所有登记函数返回，再返回首个非 nil 错误；都成功则返回 nil |
+| `SetLimit(n)` | 设置活跃任务上限；负数表示不限制，零表示没有可用名额 |
+| `TryGo(fn)` | 当前有名额才启动，返回是否启动；未启动的任务仍由调用方处理 |
+
+“首个错误”不是输入下标最小的错误，也不是收集所有错误。并发失败时，哪个错误先被 group 记录取决于执行顺序。若业务要求保留每一项结果，应另行存储；不能从一个 `Wait` 返回值恢复全部失败。
+
+父 context 被取消，也不意味着 `Wait()` 必然返回取消错误：如果所有登记函数忽略取消并返回 nil，`Wait()` 仍可返回 nil。函数必须正确返回自己的错误，协调层还可以按约定检查父 context 的状态。
+
+`Wait()` 返回时，即便所有任务成功，派生 context 也已经取消。后续独立操作应使用仍然有效的上游 context，或由新的操作范围派生，不能继续拿已完成 group 的 context 发请求。
+
+### 3.2 并发上限与阻塞提交 {#并发上限与阻塞提交}
+
+`SetLimit` 应在启动任务前设置，不能在还有活跃任务时修改。`Go` 等待名额的过程没有 context 参数；派生 context 取消，不会直接让这个等待名额的调用返回。
+
+也要先完成本批任务的提交，再把 `Wait` 返回当作批次结束。如果还有外部提交者可能继续调用 `Go`，只等待当前已登记的任务，就不能代表这些未来任务也已经结束。
+
+假设上限为 1，唯一的任务内部又调用同一个 group 的 `Go` 提交子任务，就可能先卡在提交：父任务占着唯一名额，要等子任务进入；子任务要等父任务释放名额。把上限调大不能从结构上消除这种依赖环。
+
+`TryGo` 可以让提交者立即知道当前没有启动任务，但随后应该等待其他调度机会、明确拒绝或采取约定的降级方式。反复在紧循环里调用 `TryGo`，只是把阻塞等待变成忙等。
+
+该版本的 `errgroup` 不会把任意任务 panic 转成 `Wait` 返回的 `error`。如果应用确有恢复策略，需要在任务所在 goroutine 内处理；调用方不能用自己外层的 `recover` 接住另一条执行流程的 panic，见 [Go 错误处理](../language/errors.mdx#panic与recover)。
+
+## 4. 固定 worker 与有界派发 {#固定worker与有界派发}
+
+### 4.1 参考实现 {#参考实现}
+
+下面让一个生产者提交有限列表，固定数量的 worker 领取任务。`errgroup` 负责等待和首错取消；队列负责派发。这里不再对同一个 group 使用 `SetLimit`，避免让生产者和 worker 为运行所需的名额互相等待。
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+
+    "golang.org/x/sync/errgroup"
+)
+
+type Task func(context.Context) error
+
+func runAll(parent context.Context, tasks []Task, workers, queueSize int) error {
+    if workers <= 0 || queueSize < 0 {
+        return fmt.Errorf("invalid worker or queue size")
+    }
+    for i, task := range tasks {
+        if task == nil {
+            return fmt.Errorf("task %d is nil", i)
+        }
+    }
+    if err := parent.Err(); err != nil {
+        return err
+    }
+
+    group, ctx := errgroup.WithContext(parent)
+    queue := make(chan Task, queueSize)
+    group.Go(func() error {
+        defer close(queue)
+        for _, task := range tasks {
+            select {
+            case <-ctx.Done():
+                return ctx.Err()
+            case queue <- task:
+            }
+        }
+        return nil
+    })
+
+    for worker := 0; worker < min(workers, len(tasks)); worker++ {
+        group.Go(func() error {
+            for {
+                select {
+                case <-ctx.Done():
+                    return ctx.Err()
+                case task, ok := <-queue:
+                    if !ok {
+                        return nil
+                    }
+                    if err := ctx.Err(); err != nil {
+                        return err
+                    }
+                    if err := task(ctx); err != nil {
+                        return err
+                    }
+                }
+            }
+        })
+    }
+
+    if err := group.Wait(); err != nil {
+        return err
+    }
+    return parent.Err()
+}
+
+func main() {
+    input := []int{1, 2, 3}
+    results := make([]int, len(input))
+    tasks := make([]Task, len(input))
+    for i, value := range input {
+        i, value := i, value
+        tasks[i] = func(ctx context.Context) error {
+            if err := ctx.Err(); err != nil {
+                return err
+            }
+            results[i] = value * 2
+            return nil
+        }
+    }
+    if err := runAll(context.Background(), tasks, 2, 1); err != nil {
+        fmt.Println(err)
+        return
+    }
+    fmt.Println(results)
+}
+```
+
+输出 `[2 4 6]`，不依赖三项任务按什么顺序完成。每个任务只写自己的 `results[i]`，主 goroutine 在 `runAll` 完成等待后读取结果，没有并发修改切片长度或同一元素。这里显式捕获下标和值，让任务和位置的关系直接可见。
+
+队列容量为 1、worker 数量最多为 2，派发路径最多保留 1 项已排队任务和 2 项已领取任务；生产者还可能正准备提交下一项。整个 `tasks` 列表和 `results` 数组本来就已存在，因此这不是“进程总共只占三项任务的内存”的保证。
+
+### 4.2 退出路径 {#退出路径}
+
+生产者是唯一的队列关闭者，它完成提交或观察取消后都会关闭队列。worker 既可以因队列关闭而结束，也可以因共同取消而返回；任一任务报错时，group 取消其他参与者，然后等待它们真正退出。
+
+生产者的发送也要观察 `ctx.Done()`。否则 worker 因错误停止后，生产者仍可能卡在向已无人接收的队列发送，`Wait()` 就无法结束。结果通道同样如此：如果接收者可能提前返回，发送者必须能停止，或由明确的所有者继续排空结果。
+
+worker 在取出任务后再次检查取消，可以避免一部分已经不需要执行的工作，但不能给取消提供严格优先权。检查之后仍可能发生取消，任务本身也必须正确处理其阻塞点；参考实现不承诺“取消调用之后绝不再开始任何副作用”。
+
+如果 `task(ctx)` 忽略 context 并永久阻塞，`runAll` 也会一直等它。这是合作取消的边界，不能通过提前返回一个错误、让 goroutine 无人管理来掩盖。有限计算可以在循环中检查取消；不可中断的外部调用则需要它自身提供可控的生命周期。
+
+## 5. 结果汇聚与并发下载 {#结果汇聚与并发下载}
+
+### 5.1 并发处理，顺序交付 {#并发处理顺序交付}
+
+多个任务可以并发获取数据，再由一个汇聚者按约定顺序写入同一个文件。这样可以把网络等待并发化，同时明确输出顺序和写入责任。
+
+下面在同一包新增一个文件，沿用前一节的 `Task` 和 `runAll`。示例约定输入 URL 数量有限，按输入顺序合并，每个响应体最多 1 MiB，全部下载成功后才开始写入；这些是示例的条件，并非所有下载题共有的要求。
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "io"
+    "net/http"
+)
+
+func mergeURLs(ctx context.Context, client *http.Client, urls []string,
+    dst io.Writer, workers, queueSize int) error {
+    const maxBody = 1 << 20
+    chunks := make([][]byte, len(urls))
+    tasks := make([]Task, len(urls))
+    for i, url := range urls {
+        i, url := i, url
+        tasks[i] = func(taskCtx context.Context) error {
+            request, err := http.NewRequestWithContext(taskCtx, http.MethodGet, url, nil)
+            if err != nil {
+                return err
+            }
+            response, err := client.Do(request)
+            if err != nil {
+                return err
+            }
+            defer response.Body.Close()
+            if response.StatusCode < 200 || response.StatusCode >= 300 {
+                return fmt.Errorf("download %d: status %d", i, response.StatusCode)
+            }
+            body, err := io.ReadAll(io.LimitReader(response.Body, maxBody+1))
+            if err != nil {
+                return err
+            }
+            if len(body) > maxBody {
+                return fmt.Errorf("download %d: body too large", i)
+            }
+            chunks[i] = body
+            return nil
+        }
+    }
+    if err := runAll(ctx, tasks, workers, queueSize); err != nil {
+        return err
+    }
+    for _, chunk := range chunks {
+        if err := ctx.Err(); err != nil {
+            return err
+        }
+        n, err := dst.Write(chunk)
+        if err != nil {
+            return err
+        }
+        if n != len(chunk) {
+            return io.ErrShortWrite
+        }
+    }
+    return ctx.Err()
+}
+```
+
+假设两个本地 URL 分别返回 `A` 和 `B`，即便 `B` 先完成，合并输出仍是 `AB`。`chunks[i]` 保存输入位置，`runAll` 等下载任务都结束后，调用方才依次写入。`dst` 可以是由调用方管理的文件，文件关闭和提交仍由调用方负责。
+
+请求使用任务的 context，响应体在该任务返回前关闭；HTTP 非成功状态也要显式转成错误，因为 `Client.Do` 不会仅因 404 或 500 自动返回错误。多读一字节用于区分“恰好达到上限”和“实际超过上限”，不能仅截断后就把响应当成完整数据。
+
+### 5.2 输出与内存的限制 {#输出与内存的限制}
+
+这个实现为每个输入保留一块结果，总结果内容最多是输入数量乘以单响应上限，另外还有分配、队列和网络等开销。大量 URL 或大文件需要分批处理、临时文件或其他有界汇聚方案，不能把有限下载并发当成总内存上限。
+
+按输入顺序输出还会受到最慢的前置结果影响。后面的任务先完成，也要等前面的内容；若全部缓存起来，慢任务可能让大量后续结果留在内存中。可以限制在途窗口，或者使用磁盘保存已完成块，但都需要明确额外存储成本。
+
+下载失败时，示例还没有开始写 `dst`；进入写入阶段后，写入错误或取消可能留下部分输出，写完后观察到取消也可能返回错误。任意 `io.Writer` 也不保证支持 context：如果 `Write` 本身阻塞，外层检查不能中断它。需要“最终文件要么完整替换、要么原文件不变”时，应另外设计临时文件、成功校验和提交过程，不能从并发管理器推导出原子提交。
+
+## 6. 顺序与依赖 {#顺序与依赖}
+
+### 6.1 两个 goroutine 交替输出 {#两个goroutine交替输出}
+
+交替输出可以通过交接“下一次执行资格”来实现。下面约定输出整数 `1` 到 `n`，两个 goroutine 分别负责奇数和偶数；`n` 不大于零时没有输出。
+
+```go
+package main
+
+import (
+    "fmt"
+    "sync"
+)
+
+func alternate(n int) []int {
+    if n <= 0 {
+        return nil
+    }
+    result := make([]int, 0, n)
+    turn := [2]chan struct{}{make(chan struct{}), make(chan struct{})}
+    var group sync.WaitGroup
+    group.Add(2)
+    for id := 0; id < 2; id++ {
+        go func(id int) {
+            defer group.Done()
+            for value := id + 1; value <= n; value += 2 {
+                <-turn[id]
+                result = append(result, value)
+                if value < n {
+                    turn[1-id] <- struct{}{}
+                }
+            }
+        }(id)
+    }
+    turn[0] <- struct{}{}
+    group.Wait()
+    return result
+}
+
+func main() {
+    fmt.Println(alternate(10))
+}
+```
+
+输出 `[1 2 3 4 5 6 7 8 9 10]`。只有持有执行资格的 goroutine 会修改 `result`，追加完成后才交给另一方，所以没有同时追加切片。channel 交接提供操作之间的同步关系，`WaitGroup` 保证最后读取发生在两个任务结束后。
+
+最后一次输出之后不再交接，因为另一方已经没有下一项工作。这个条件同时覆盖奇数和偶数个输出，不能无条件在每次输出后发送，再期待无人接收的最后一次发送自行结束。
+
+字母和数字交替时，也要先确认每次输出几个字符、两边长度是否相同、某一方结束后另一方怎么办。上面的程序处理的是指定的有限整数序列，没有推断其他题目的输出格式。它按 `n` 保留结果，适合有限现场示例，不用于无限输出或无界内存负载。
+
+### 6.2 前置任务完成后再派发 {#前置任务完成后再派发}
+
+**任务依赖**表示某项工作开始前，必须先取得另一项工作的结果。例如这里自行约定 A、B 可以独立执行，D 需要 A 和 B 都成功。只说“几个方法有依赖”时，必须先补齐方向、失败策略和是否存在环，不能根据字母顺序猜测。
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+
+    "golang.org/x/sync/errgroup"
+)
+
+func prepare(ctx context.Context) (int, error) {
+    group, taskCtx := errgroup.WithContext(ctx)
+    values := [2]int{}
+    for i := range values {
+        i := i
+        group.Go(func() error {
+            if err := taskCtx.Err(); err != nil {
+                return err
+            }
+            values[i] = i + 2
+            return nil
+        })
+    }
+    if err := group.Wait(); err != nil {
+        return 0, err
+    }
+    if err := ctx.Err(); err != nil {
+        return 0, err
+    }
+    return values[0] + values[1], nil
+}
+
+func main() {
+    fmt.Println(prepare(context.Background()))
+}
+```
+
+输出 `5 <nil>`。两个任务分别准备 A、B 的结果，求和代表依赖它们的 D。D 在成功等待后执行，并检查上游 `ctx`；此时 `taskCtx` 已因 `group.Wait()` 返回而取消，不能继续拿它代表 D 的有效工作范围。
+
+更大的依赖图可以由协调者维护每个任务尚未完成的前置数量，只派发依赖满足的任务。失败后按约定取消后代或整个批次，并处理永远无法就绪的任务；存在依赖环时，不能只等下去。worker 应执行已经可以运行的工作，尽量不占着有限名额等待同一执行器中尚未启动的前置任务。
+
+### 6.3 FIFO 与按键串行 {#fifo与按键串行}
+
+FIFO 约束的是队列中的取出顺序，不保证不同 worker 的业务执行和完成顺序。任务 A 先被取出后等待网络，B 后被取出却先完成，是正常的并发结果；它们访问同一个账户或对象时，仍可能发生状态覆盖、乱序通知或数据竞争。
+
+按键路由到固定队列，并让同一个键的任务只由一个串行消费者执行，可以为这条路径建立顺序。但如果其他代码绕过队列直接访问对象、任务内部又启动异步写入，或者扩缩容时改变路由而没有交接，这个串行保证就不完整。
+
+不同键也可能共享全局状态，例如两个账户之间的转账。各自按键串行，不能自动保证跨键不变量。FIFO、串行化与共享状态同步是不同层面的约束，必须结合实际业务访问路径判断。
+
+## 7. 并发数量与外部约束 {#并发数量与外部约束}
+
+并发上限应根据任务的计算量、等待时间、单项内存、连接或下游容量来选择。CPU 密集型任务增加 goroutine，并不等于增加可用 CPU；I/O 等待型任务可以让多个等待重叠，但过多在途请求会增加内存、连接和远端压力。没有对所有任务都合适的固定倍数。
+
+例如，一个比较接口接收候选字节序列 `key`：当它按字节字典序不大于未知的 `maxKey` 时返回 `key`，否则返回 nil，每次调用固定等待 10 毫秒。要恢复这个未知的 256 字节序列，应先分析哪些比较可以独立发出、哪些必须依赖上一轮得到的前缀，再安排分批并发。复制每个候选输入可以避免并发修改同一个字节切片，但候选数量、复制内存和结果汇聚同样有成本。
+
+假设某一轮有 `m` 个独立比较、最多允许 `c` 个同时在途，且每次恰好耗时 10 毫秒、不考虑任何额外成本，这一轮至少需要 `ceil(m/c)` 批。真实结果还受依赖轮数、计算、调度和接口容量影响。这个理想化估算不能证明某份枚举代码是全局最快；“多核多线程”也没有规定无限并发或无限资源。
+
+对于持续运行的服务，还要观察队列等待时间、活跃任务、完成速率、错误和下游余量。把容量调大，只能吸收更多暂时积压；长期到达速率高于处理速率时，仍要让等待、拒绝或限流策略真正生效。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 怎样组织一批 Go 并发任务，并控制它们的并发度？ {#bounded-tasks}
+
+**考察重点**：任务数、执行并发、排队和等待者数量，以及整体完成的责任。
+
+**相关内容**：[一批任务的约定](#一批任务的约定)、[参考实现](#参考实现)、[并发数量与外部约束](#并发数量与外部约束)
+
+<details>
+<summary>参考回答</summary>
+
+**可以用固定 worker 消费有界队列，或在启动任务之前取得名额，并安排统一等待和错误处理。** 任务数、worker 数、队列容量和结果内存分别衡量不同资源，不能只限制其中一个就宣称全部有界。
+
+正文 `runAll` 使用固定 worker、有界队列和 `errgroup`，首错通知取消并等待所有参与者结束。上限应结合 CPU、等待时间、单项资源和下游容量确定；先为全部任务创建 goroutine 再等待名额，仍会产生大量等待者。
+
+</details>
+
+### 8.2 怎样实现生产者消费者，并分析 channel 缓冲区、goroutine 数量和局部变量的内存开销？ {#producer-backpressure}
+
+**考察重点**：背压、积压位置、内存持有与关闭责任。
+
+**相关内容**：[一批任务的约定](#一批任务的约定)、[退出路径](#退出路径)
+
+<details>
+<summary>参考回答</summary>
+
+**队列容量限制已入队积压，worker 数限制执行并发；满队列必须让上游等待、超时或明确拒绝。** 不应再启动无界 goroutine 等待入队，否则积压只是换了位置。
+
+消费者提前退出时，生产者的发送必须能取消；生产结束时，由能确认不再发送的一方关闭队列。还要检查闭包、输入列表、结果和底层存储保留的内存，调大缓冲区不会消除过载，也不能保证对象立即被回收。
+
+</details>
+
+### 8.3 并发读取多个 URL 并合并到同一文件，怎样处理顺序和失败？ {#ordered-downloads}
+
+**题型**：综合题
+
+**考察重点**：有限下载并发、结果位置、单一写入责任和部分输出。
+
+**相关内容**：[固定 worker 与有界派发](#固定worker与有界派发)、[并发处理，顺序交付](#并发处理顺序交付)、[输出与内存的限制](#输出与内存的限制)
+
+<details>
+<summary>参考回答</summary>
+
+**先明确输出按输入顺序还是完成顺序，再把并发下载和写入责任分开。** 正文方案按输入下标保存结果，限制下载并发和单响应大小，全部成功后由一个写入者依次输出，并关闭每个响应体。
+
+任一下载失败会取消同批工作并等待退出；示例此时还没有写文件。写入阶段仍可能留下部分输出，原子替换需要额外的文件提交协议。数据量大时还要限制在途窗口或使用临时存储，不能无限缓存后续结果等待前面的慢任务。
+
+</details>
+
+### 8.4 两个 goroutine 怎样交替输出，并在最后一次输出后正常结束？ {#alternating-output}
+
+**考察重点**：执行资格交接、共享结果的同步关系和终止条件。
+
+**相关内容**：[两个 goroutine 交替输出](#两个goroutine交替输出)
+
+<details>
+<summary>参考回答</summary>
+
+**用两个方向的信号明确交接执行资格，完成本次输出后才允许另一方继续。** 正文让奇数和偶数任务通过 channel 交替取得资格，最后通过 `WaitGroup` 等待两者结束。
+
+最后一项之后不再发送无用的交接信号，避免等待已经退出的接收者。字母数字等变式还要明确每轮输出量和双方结束规则，不能依赖 `Sleep`、启动顺序或打印函数碰巧串行。
+
+</details>
+
+### 8.5 有依赖关系的异步任务，怎样安排执行和完成通知？ {#task-dependencies}
+
+**考察重点**：依赖方向、就绪派发、结果发布和失败后的后继状态。
+
+**相关内容**：[前置任务完成后再派发](#前置任务完成后再派发)
+
+<details>
+<summary>参考回答</summary>
+
+**先明确依赖图，只派发前置条件已经满足的任务。** 简单的 A、B 到 D，可以并发完成 A、B，等待成功后再执行 D；大图可以由协调者维护尚未完成的前置数量并提交就绪任务。
+
+前置失败后应按约定取消或跳过后继，并报告终态；依赖有环时需要识别而不是永久等待。不能让有限 worker 都占着执行名额等待尚未运行的依赖。完成通知同时要建立结果可见性的同步关系。
+
+</details>
+
+### 8.6 使用 FIFO 协程池就能避免竞态吗，按键路由还有哪些条件？ {#fifo-races}
+
+**考察重点**：队列顺序、执行顺序、按键串行与业务不变量。
+
+**相关内容**：[FIFO 与按键串行](#fifo与按键串行)
+
+<details>
+<summary>参考回答</summary>
+
+**不能只靠 FIFO；多个 worker 的执行和完成仍可能交错，共享状态仍需要保护。** 这可能导致旧状态覆盖新状态、顺序要求被破坏，或出现数据竞争。
+
+按键串行需要同一键稳定路由到同一串行消费者，所有相关访问都经过这条路径，任务内部也不留下未协调的异步修改。路由变化和跨键状态还要单独处理，不能从局部顺序推导全局安全。
+
+</details>
+
+### 8.7 errgroup 的 Wait、取消和 SetLimit 分别保证什么？ {#errgroup-lifecycle}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：任务返回、错误记录、派生 context 生命周期和名额等待。
+
+**相关内容**：[等待、错误与取消](#等待错误与取消)、[并发上限与阻塞提交](#并发上限与阻塞提交)
+
+<details>
+<summary>参考回答</summary>
+
+**`Wait` 等所有登记函数返回，并给出首个非 nil 错误；`WithContext` 的派生 context 在首错或 Wait 返回时取消。** 成功等待后也不能继续用这个派生 context 开始后续独立操作。
+
+`SetLimit` 限制活跃任务，`Go` 可能阻塞等待名额，这个等待不会仅因 context 取消而自动结束。`TryGo` 不等待但可能没有启动任务。配置在任务活跃期间不能修改，同组嵌套提交和依赖等待还可能形成死锁。
+
+</details>
+
+### 8.8 任务忽略取消而一直不返回，管理器能否安全地立即返回并释放资源？ {#uncooperative-task}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：协作式取消、工作所有权与实际退出确认。
+
+**相关内容**：[退出路径](#退出路径)、[context 的取消通知与退出确认](./context.mdx#取消通知与退出确认)
+
+<details>
+<summary>参考回答</summary>
+
+**不能把立即返回当作任务已经停止；仍在运行的任务可能继续使用这些资源。** 应让计算循环检查取消，让阻塞调用采用可取消或有期限的接口，并在确认退出后清理其依赖资源。
+
+如果底层工作不可中断，就需要承认它的完成期限无法由外层 context 保证，并明确谁继续等待和负责资源。`errgroup` 不会强制终止它，随意遗留 goroutine 也不是完整的取消方案。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+
+- [golang.org/x/sync v0.10.0 errgroup API](https://pkg.go.dev/golang.org/x/sync@v0.10.0/errgroup)
+- [errgroup v0.10.0 实现](https://github.com/golang/sync/blob/v0.10.0/errgroup/errgroup.go)
+- [errgroup v0.10.0 的 context 取消实现](https://github.com/golang/sync/blob/v0.10.0/errgroup/go120.go)
+- [Go 1.22.12 context](https://pkg.go.dev/context@go1.22.12)
+- [Go 1.22.12 net/http 客户端](https://pkg.go.dev/net/http@go1.22.12#Client.Do)
+- [Go 1.22.12 io.Reader 与 io.Writer](https://pkg.go.dev/io@go1.22.12)

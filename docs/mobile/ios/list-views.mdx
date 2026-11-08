@@ -1,0 +1,352 @@
+---
+title: iOS 列表视图
+description: 理解 UITableView、UICollectionView 的复用、数据身份、增量更新、自适应高度与异步图片，定位滚动中的状态错误和性能问题。
+knowledge:
+  id: mobile.ios.list-views
+---
+
+**列表视图**用少量可复用的单元视图展示大量数据。`UITableView` 以行和分区组织内容，`UICollectionView` 通过布局对象支持网格、列表和更复杂的排列。复用降低了视图创建与持有成本，却也意味着同一个 Cell 会先后代表不同数据。
+
+准备列表相关面试时，除了说明复用池，还要能解释：旧图片为什么会出现在新行、列表插入一行后为什么不能继续依赖旧 `IndexPath`、同一项内容变化为什么不一定触发刷新，以及滚动卡顿究竟发生在哪一步。本文示例使用 UIKit，Diffable Data Source 以 iOS 13 起的机制为基础，`reconfigureItems` 示例要求 iOS 15 及以上。
+
+## 1. 面试核心 {#core}
+
+- **数据项数量不等于 Cell 对象数量**。列表按需要获取、配置和复用 Cell，复用标识区分可兼容的视图类型；不能承诺始终只创建“屏幕可见行数加固定几个”。[卡](#reuse)
+- **每次配置都要完整覆盖内容状态**。`prepareForReuse` 适合清理上一轮任务和临时状态，不能代替配置方法；重新配置已有 Cell 时可能根本不调用它。[卡](#reconfigure)
+- **稳定 ID 表示数据身份，`IndexPath` 表示当前快照中的位置**。Diffable Data Source 用 ID 比较增删移动，内容修改还需显式标记重新配置或重载。[卡](#identity)
+- **异步图片完成时要校验当前绑定关系和请求代次**。取消可以减少无用工作，却不能替代结果校验；同一 ID 的图片发生变化时，只比较 ID 也不够。[卡](#async-image)
+- **自适应高度依赖确定的宽度和完整的纵向约束关系**。估算高度把部分测量成本延后，估算不准则可能影响滚动位置和指示器的稳定性。[卡](#estimated-height)
+- **滚动优化应先测量主线程工作、布局与渲染、图片处理和分配成本**，再针对瓶颈采取复用、缓存、预取或缩减更新范围等措施。[卡](#scroll-performance)
+- 设计复用机制时，可以按类型维护可用对象集合，并记录当前显示项；**复用对象的生命周期和业务数据身份必须分开管理**。[卡](#reuse-pool)
+
+## 2. Cell 复用的工作过程 {#cell复用的工作过程}
+
+### 2.1 复用的是视图对象 {#复用的是视图对象}
+
+**Cell** 是列表中展示一项内容的视图对象。列表有一万条数据，并不需要同时创建一万个 Cell。滚动到新的位置时，列表获取一个适合该位置的 Cell，用当前数据重新配置它；离开显示范围的 Cell 后续可以再次利用。
+
+`reuseIdentifier` 用来区分可兼容的 Cell 类型。例如普通文章和广告使用不同的结构，就应有相应的注册与复用类型。它不是某篇文章的业务 ID；为每条数据创建一个不同的复用标识，会破坏共享复用的目的。
+
+对于 `UITableView`，先注册类或 nib，再在数据源请求 Cell 时调用 `dequeueReusableCell(withIdentifier:for:)`。有可用对象时复用，没有时按注册信息创建。不要为了计算高度而随意从正式列表额外 dequeue Cell，也不要缓存“某个 ID 永远对应的 Cell”来绕过数据源。
+
+`UICollectionView` 也遵循注册、获取和配置的过程。iOS 14 起可以使用 `UICollectionView.CellRegistration` 和 `dequeueConfiguredReusableCell`。注册对象应在合适的稳定位置创建并复用，不能在每次 cell provider 回调中重新创建，否则会影响注册关联的复用行为。
+
+### 2.2 为什么复用后容易残留状态 {#为什么复用后容易残留状态}
+
+复用后的 Cell 保留着上一次配置产生的对象状态。如果配置方法只在“有副标题”时设置文字，却没有处理“无副标题”，旧副标题就会留下；图片、勾选标记、隐藏状态和回调闭包也有同样的问题。
+
+正确的配置方法要从当前数据出发，把每个相关状态都设到正确值，包括空内容和默认状态。`prepareForReuse()` 被调用时应先调用 `super`，再清理上一轮异步任务、临时标识等。它不是内容初始化的唯一入口：iOS 15 起的重新配置可以保留原 Cell，并且不调用 `prepareForReuse`。
+
+Cell 离屏、开始复用和被释放也是不同事件。离屏后需要暂停视频等工作，可以结合显示回调处理；需要取消图片消费时，还应考虑同一请求是否被其他 Cell 或预取任务共享，不能直接停止所有使用者的下载。
+
+## 3. 数据身份与增量更新 {#数据身份与增量更新}
+
+### 3.1 IndexPath 为什么不能长期代表一条数据 {#indexpath为什么不能长期代表一条数据}
+
+`IndexPath(section: 0, row: 3)` 表示某一时刻的位置。在它前面插入一行后，同一条业务数据可能变成第 4 行，原来的第 3 行已经是另一条数据。
+
+因此，异步回调、选中状态和页面跳转应尽量围绕稳定 ID 找当前模型。需要位置时，再根据当前数据源查找。仅在回调里判断旧 `IndexPath` 仍然可见，并不能证明那里展示的还是原数据。
+
+**快照**描述列表某一状态下的分区 ID、数据项 ID 及其顺序。Diffable Data Source 比较当前快照与新快照，为插入、删除和移动生成相应更新。快照中的 ID 必须唯一，类型要满足 `Hashable`；相等对象的哈希必须相同，但哈希相同并不意味着 ID 相等。
+
+推荐用稳定的业务 ID 做标识，把标题、图片等内容放在单独的模型存储中。把包含可变标题的整个结构体当 ID，可能让一次改标题被当成删除旧项、插入新项，连带影响选中状态和动画。
+
+### 3.2 内容更新不等于身份变化 {#内容更新不等于身份变化}
+
+Diffable Data Source 不会自动观察业务模型的属性变化。新旧快照里都只有 ID `article-7` 时，数据源不能仅凭 ID 判断标题已经改变。
+
+内容变化且 Cell 类型仍兼容时，可以在快照中调用 `reconfigureItems`，再应用快照。它保留已有 Cell，重新执行配置；需要更换 Cell 类型或按重载语义更新时，考虑 `reloadItems`。后面的示例用同一套 ID 存储模型、检测内容变化并请求重新配置。
+
+传统数据源使用 `performBatchUpdates` 时，模型数量和插入、删除、移动操作必须描述同一次状态变化。删除位置按更新前的状态解释，插入位置按更新后的状态解释。不要同时让一套手工批量操作和另一套快照更新各自管理同一列表，否则容易出现行数不一致或位置错乱。
+
+## 4. 异步图片与重新配置 {#异步图片与重新配置}
+
+### 4.1 取消任务之后仍要校验结果 {#取消任务之后仍要校验结果}
+
+图片任务完成时，Cell 可能已经代表另一项，也可能仍代表同一项但图片版本变了。可以同时记录业务 ID 和本次配置的请求代次，每次重新配置先取消旧任务，再生成新代次。
+
+下面的 `ImageLoading` 只约定异步获取图片。实际实现需要自行处理网络、缓存、解码和共享请求，不能因为方法标记为 `async`，就把耗时解码直接放在主线程。Swift 任务取消是协作式的，详见 [Swift 并发](../../basic-knowledge/swift/concurrency.mdx)。
+
+```swift
+import UIKit
+
+struct ArticleRow: Equatable {
+    let id: String
+    var title: String
+    let imageKey: String?
+}
+
+@MainActor
+protocol ImageLoading: AnyObject {
+    func image(for key: String) async throws -> UIImage
+}
+
+@MainActor
+final class ArticleCell: UITableViewCell {
+    private var imageTask: Task<Void, Never>?
+    private var representedID: String?
+    private var requestToken = UUID()
+
+    func configure(_ row: ArticleRow, images: any ImageLoading) {
+        imageTask?.cancel()
+        let token = UUID()
+        requestToken = token
+        representedID = row.id
+
+        var content = defaultContentConfiguration()
+        content.text = row.title
+        content.textProperties.numberOfLines = 0
+        content.image = UIImage(systemName: "photo")
+        content.imageProperties.maximumSize = CGSize(width: 44, height: 44)
+        contentConfiguration = content
+        guard let key = row.imageKey else { return }
+
+        imageTask = Task { [weak self] in
+            do {
+                let image = try await images.image(for: key)
+                guard !Task.isCancelled,
+                      let self,
+                      self.representedID == row.id,
+                      self.requestToken == token else { return }
+                content.image = image
+                self.contentConfiguration = content
+            } catch {
+                // 本例保留占位图；生产代码可按当前请求状态展示重试入口。
+            }
+        }
+    }
+
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        imageTask?.cancel()
+        imageTask = nil
+        representedID = nil
+        requestToken = UUID()
+    }
+
+    deinit {
+        imageTask?.cancel()
+    }
+}
+```
+
+`configure` 每次都会覆盖文字和占位图，并在启动新任务前取消旧任务。因此即使不经过 `prepareForReuse`，重新配置也能建立新的绑定关系。完成时检查 `requestToken`，可以排除“同一文章先请求旧图、再请求新图，旧图最后才到”的情况。
+
+闭包在等待期间只弱引用 Cell；获取图片后才临时取得强引用来更新。结果更新位于主 actor。这个例子只解决 Cell 绑定问题，没有实现磁盘缓存、图片缩略解码或下载去重，也没有承诺取消能立即终止底层 I/O。
+
+### 4.2 将 ID、模型和快照连起来 {#将id模型和快照连起来}
+
+下面的对象由页面持有，负责注册 Cell、提供模型和应用快照。`replace` 先更新模型存储，再应用包含新顺序的快照，并只对新旧快照中都存在且内容变化的 ID 请求重新配置。
+
+```swift
+import UIKit
+
+@MainActor
+final class ArticleListModel {
+    private var rows: [String: ArticleRow] = [:]
+    private let images: any ImageLoading
+    private(set) var dataSource: UITableViewDiffableDataSource<Int, String>!
+
+    init(tableView: UITableView, images: any ImageLoading) {
+        self.images = images
+        tableView.register(ArticleCell.self, forCellReuseIdentifier: "article")
+        tableView.rowHeight = UITableView.automaticDimension
+        tableView.estimatedRowHeight = 80
+        dataSource = UITableViewDiffableDataSource<Int, String>(
+            tableView: tableView
+        ) { [weak self] table, indexPath, id in
+            guard let self, let row = self.rows[id] else { return nil }
+            let cell = table.dequeueReusableCell(
+                withIdentifier: "article", for: indexPath
+            ) as! ArticleCell
+            cell.configure(row, images: self.images)
+            return cell
+        }
+    }
+
+    func replace(_ newRows: [ArticleRow]) {
+        let ids = newRows.map(\.id)
+        precondition(Set(ids).count == ids.count, "列表 ID 必须唯一")
+        let previousIDs = Set(dataSource.snapshot().itemIdentifiers)
+        let changed = newRows.filter {
+            previousIDs.contains($0.id) && rows[$0.id] != $0
+        }.map(\.id)
+        rows = Dictionary(uniqueKeysWithValues: newRows.map { ($0.id, $0) })
+
+        var snapshot = NSDiffableDataSourceSnapshot<Int, String>()
+        snapshot.appendSections([0])
+        snapshot.appendItems(ids, toSection: 0)
+        snapshot.reconfigureItems(changed)
+        dataSource.apply(snapshot, animatingDifferences: false)
+    }
+}
+```
+
+如果顺序从 `[A, B]` 变成 `[B, A]`，快照表达的是两个稳定 ID 的移动；如果 A 的标题变化，`changed` 包含 A，cell provider 会用当前模型重新配置。传入重复 ID 属于调用方错误，示例明确拒绝它。
+
+页面必须持有 `ArticleListModel`，由它持有数据源；UIKit 的数据源关系本身不能代替业务对象的生命周期管理。这里统一在主 actor 更新模型和列表。真实项目还应根据数据来源合并过密更新，并通过完成回调或自己的更新调度协调有顺序要求的后续操作。
+
+## 5. 自适应高度与滚动成本 {#自适应高度与滚动成本}
+
+### 5.1 自适应高度需要哪些条件 {#自适应高度需要哪些条件}
+
+`UITableView.automaticDimension` 允许列表根据 Cell 内容求得高度。对于自定义 Cell，内容应放在 `contentView` 内，横向约束确定文本可用宽度，纵向约束能够从顶部连到最底部内容。多行标签还需要允许换行；仅设置一个“自动高度”常量，不能补足缺失的约束。
+
+宽度决定文字换行，换行又影响高度。因此缓存高度时，除了 ID 和内容版本，还要考虑可用宽度、字体与 Dynamic Type 设置。旋转屏幕或字体变化后继续复用旧高度，可能造成截断和空白。约束优先级与内容尺寸见 [UIKit 布局](./uikit-layout.mdx#内容自然尺寸与抗拉伸抗压缩)。
+
+### 5.2 估算高度节省了什么 {#估算高度节省了什么}
+
+`estimatedRowHeight` 让列表先用估计值完成部分几何安排，把一部分实际测量成本从加载时延后到滚动过程中。它不是预先创建所有 Cell，也不是保证每行最终都是估计高度。
+
+例如一千行内容的高度不同，全部精确测量可能拖慢首次展示。先给出接近实际内容的估计值，列表可以按需要逐步得到真实高度。估计与实际差距过大时，内容范围和滚动表现可能不断修正；不同类型差异很大时，可以按类型提供更合理的估计。
+
+使用自适应 Cell 时，估算高度不能设为 0；0 表示关闭高度估算，会使列表请求实际高度。也不要依赖仍受估算影响的 `contentSize` 做一次性、永久正确的几何判断。
+
+### 5.3 滚动卡顿怎样定位 {#滚动卡顿怎样定位}
+
+先在接近实际内容、设备和滚动速度的条件下测量，再判断慢在哪一段。复用只能减少部分创建成本，无法自动消除每次配置中的同步磁盘读取、复杂排版或大图解码。
+
+| 观察到的成本 | 优先检查 | 可采取的措施 |
+| --- | --- | --- |
+| 主线程长时间执行 | 配置方法、数据转换、文件读取、同步等待 | 提前准备模型，把合适的耗时工作移出主线程 |
+| 布局反复求解 | 重复添加约束、缺少稳定宽度、整表刷新 | 一次创建结构，更新常量或配置，缩小刷新范围 |
+| 图片出现时掉帧 | 大尺寸图片解码、缩放、纹理上传 | 按显示尺寸准备图片，控制并发和缓存成本 |
+| 内存不断上涨 | 多余 Cell、图片缓存、任务和闭包持有 | 检查对象释放及缓存上限，取消无用消费 |
+| 滚动方向变化后请求拥堵 | 重复下载、过度预取、低价值任务未取消 | 合并请求、提高当前可见项优先级，管理预取生命周期 |
+
+**预取**是在内容可能即将出现时提前准备数据。`UITableViewDataSourcePrefetching` 提供预取和取消预取回调，但不能保证每一项都先得到预取通知；cell provider 仍必须能处理数据尚未就绪的情况。预取回调也不适合执行同步重活，否则只是把卡顿提前。
+
+不要把所有阴影、圆角或透明效果都视为必须删除的对象。是否产生额外渲染开销、开销是否构成瓶颈，要结合实际效果和测量判断，参见 [UIKit 布局中的离屏渲染](./uikit-layout.mdx#布局与渲染成本)。
+
+## 6. 面试题 {#面试题}
+
+### 6.1 UITableViewCell 怎样复用？会创建多少个 Cell？ {#reuse}
+
+**考察重点**：对象复用、类型标识和显示需求的关系。
+
+**相关内容**：[复用的是视图对象](#复用的是视图对象)。
+
+<details>
+<summary>参考回答</summary>
+
+**列表按需要获取兼容的 Cell，用当前数据重新配置；有可用对象时复用，没有时按注册信息创建。** `reuseIdentifier` 区分可复用的结构类型，不能用每条业务数据的 ID 替代它。
+
+Cell 数量受可见范围、布局、预取和系统管理策略影响，不能承诺固定为可见行数加某个常数。业务数据可以很多，仍只需按当前显示和准备需求持有有限数量的视图。
+
+</details>
+
+### 6.2 为什么不能只在 prepareForReuse 中清空旧内容？ {#reconfigure}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：配置完整性与重新配置保留 Cell 的语义。
+
+**相关内容**：[为什么复用后容易残留状态](#为什么复用后容易残留状态)。
+
+<details>
+<summary>参考回答</summary>
+
+**内容配置必须独立地覆盖所有相关状态，因为重新配置已有 Cell 时可能不调用 `prepareForReuse`。** 有文字和无文字、有图片和无图片等分支都要明确赋值，不能让新数据继承旧内容。
+
+`prepareForReuse` 调用 `super` 后适合清理任务和临时状态。配置方法本身也要处理上一轮任务，才能兼容原地重新配置。
+
+</details>
+
+### 6.3 Diffable Data Source 为什么需要稳定 ID？改标题后怎样刷新？ {#identity}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：身份、位置、内容三者的区别。
+
+**相关内容**：[数据身份与增量更新](#数据身份与增量更新)。
+
+<details>
+<summary>参考回答</summary>
+
+**稳定 ID 让数据源在位置变化时仍能识别同一项，`IndexPath` 只能描述当前的位置。** 快照比较 ID 和顺序来确定增删移动，业务内容变化需要应用主动通知。
+
+改标题时先更新模型，再对仍在快照中的 ID 调用 `reconfigureItems` 或合适的重载方法，并应用快照。不要把会随标题变化的整个对象当作身份，否则可能被视为删除旧项、插入新项。
+
+</details>
+
+### 6.4 UITableView、UICollectionView 加载图片需要注意什么？ {#async-image}
+
+**考察重点**：异步结果归属、取消、缓存和主线程成本。
+
+**相关内容**：[异步图片与重新配置](#异步图片与重新配置)、[滚动卡顿怎样定位](#滚动卡顿怎样定位)。
+
+<details>
+<summary>参考回答</summary>
+
+**先保证图片结果属于 Cell 当前展示的数据和本次请求，再控制加载、解码和缓存成本。** 配置时重置占位图、取消旧消费；完成时检查稳定 ID 与请求代次，避免复用后串图，也避免同一 ID 的旧图片覆盖新图片。
+
+不能只依赖取消成功或旧 `IndexPath`。图片处理应避免阻塞主线程，UI 更新回到主线程；缓存和预取需要限制内存、合并重复请求，并区分共享下载和单个 Cell 的消费生命周期。
+
+</details>
+
+### 6.5 为什么要预估 Cell 高度？ {#estimated-height}
+
+**考察重点**：首次加载成本、自适应测量与几何修正。
+
+**相关内容**：[估算高度节省了什么](#估算高度节省了什么)。
+
+<details>
+<summary>参考回答</summary>
+
+**估算高度让列表先进行部分几何安排，把部分精确测量成本从加载阶段延后到滚动阶段。** 对大量变高行，这可以避免首次展示前就计算所有真实高度。
+
+估算值越偏离实际，后续几何修正越明显，因此应根据内容给出合理估计。自适应高度仍要依靠完整约束和确定宽度；使用自适应 Cell 时，`estimatedRowHeight` 不能设为 0。
+
+</details>
+
+### 6.6 怎样优化 UITableView 的滚动性能和内存占用？ {#scroll-performance}
+
+**题型**：综合题
+
+**考察重点**：按证据区分配置、布局、图片、渲染和持有成本。
+
+**相关内容**：[滚动卡顿怎样定位](#滚动卡顿怎样定位)、[Cell 复用的工作过程](#cell复用的工作过程)、[异步图片与重新配置](#异步图片与重新配置)。
+
+<details>
+<summary>参考回答</summary>
+
+**先测量，再对实际瓶颈处理。** 检查主线程是否在做同步 I/O、图片解码、复杂模型转换或重复布局；检查是否反复创建结构、整表刷新，以及图片缓存和异步任务是否造成过多持有。
+
+根据结果复用 Cell 和约束、准备合适尺寸的图片、控制缓存与任务并发、做必要预取，并减少无关数据的刷新。优化后在相同场景复测帧表现和内存，不能把“用了复用”当成所有性能问题已经解决。
+
+</details>
+
+### 6.7 自己设计列表复用机制，可以怎样组织数据结构？ {#reuse-pool}
+
+**题型**：综合题
+
+**考察重点**：对象池、类型兼容、显示集合和业务身份。
+
+**相关内容**：[Cell 复用的工作过程](#cell复用的工作过程)、[数据身份与增量更新](#数据身份与增量更新)。
+
+<details>
+<summary>参考回答</summary>
+
+**可以用“复用类型到可用对象集合”的映射维护对象池，另用集合或映射记录当前显示项与视图。** 新位置需要视图时，先从对应类型池取出，没有再创建；旧项离开使用范围后，按策略清理临时状态并回收到兼容池。
+
+业务 ID、当前位置和 Cell 对象应分别管理。重新绑定时覆盖全部内容，并使旧异步结果失效。这是可解释的设计方案，不等于声明 UIKit 内部固定使用某一种容器或固定大小的复用池。
+
+</details>
+
+## 7. 参考资料 {#参考资料}
+
+- [Apple：UITableViewCell.prepareForReuse()](https://developer.apple.com/documentation/uikit/uitableviewcell/prepareforreuse())
+- [Apple：dequeueReusableCell(withIdentifier:for:)](https://developer.apple.com/documentation/uikit/uitableview/dequeuereusablecell(withidentifier:for:))
+- [Apple：UICollectionReusableView.prepareForReuse()](https://developer.apple.com/documentation/uikit/uicollectionreusableview/prepareforreuse())
+- [Apple：Updating collection views using diffable data sources](https://developer.apple.com/documentation/uikit/updating-collection-views-using-diffable-data-sources)
+- [Apple：NSDiffableDataSourceSnapshot](https://developer.apple.com/documentation/uikit/nsdiffabledatasourcesnapshot-swift.struct)
+- [Apple：reconfigureRows(at:)](https://developer.apple.com/documentation/uikit/uitableview/reconfigurerows(at:))
+- [Apple：reconfigureItems(_:)](https://developer.apple.com/documentation/uikit/nsdiffabledatasourcesnapshot-swift.struct/reconfigureitems(_:))
+- [Apple：estimatedRowHeight](https://developer.apple.com/documentation/uikit/uitableview/estimatedrowheight)
+- [Apple：rowHeight](https://developer.apple.com/documentation/uikit/uitableview/rowheight)
+- [Apple：Asynchronously loading images into table and collection views](https://developer.apple.com/documentation/uikit/asynchronously-loading-images-into-table-and-collection-views)
+- [Apple：UITableViewDataSourcePrefetching](https://developer.apple.com/documentation/uikit/uitableviewdatasourceprefetching)
+- [Apple：performBatchUpdates(_:completion:)](https://developer.apple.com/documentation/uikit/uitableview/performbatchupdates(_:completion:))
+- [Apple：UICollectionView.CellRegistration](https://developer.apple.com/documentation/uikit/uicollectionview/cellregistration)
+- [Apple：dequeueConfiguredReusableCell(using:for:item:)](https://developer.apple.com/documentation/uikit/uicollectionview/dequeueconfiguredreusablecell(using:for:item:))
+- [Apple：Working with Self-Sizing Table View Cells](https://developer.apple.com/library/archive/documentation/UserExperience/Conceptual/AutolayoutPG/WorkingwithSelf-SizingTableViewCells.html)

@@ -1,0 +1,325 @@
+---
+title: Flutter 性能诊断
+description: 根据构建模式、UI 与 raster 帧、内存和时间线定位 Flutter 卡顿，建立可比较的测量与优化证据。
+knowledge:
+  id: mobile.flutter.performance-diagnostics
+---
+
+**Flutter 性能诊断**根据可重复的操作与测量结果，找出界面延迟、帧超时或内存增长发生在哪个阶段。减少 `build` 次数、添加 `const` 或扩大缓存都只是可能的手段，是否有效要由对应阶段的证据判断。
+
+一次卡顿可能发生在 Dart 构建、布局、栅格化、平台调用或资源加载中。本文以 Flutter 3.24.3 为基线，重点是区分指标、定位原因并比较修改前后的结果，不把调试环境的顺畅程度当作发布性能。
+
+## 1. 面试核心 {#core}
+
+- **性能比较先固定构建模式和运行条件**。移动端通常用真机 profile 定位，再在目标发布条件下验证；debug 的检查与执行方式会改变耗时。[卡](#environment)
+- **UI 与 raster 耗时描述不同阶段**。UI 侧生成界面与场景，raster 侧处理栅格化相关工作；raster 指标不等于独立的 GPU 完整耗时。[卡](#stages)
+- **帧预算随目标刷新率变化**。60 Hz 约为 16.67 ms，120 Hz 约为 8.33 ms；还要区分处理吞吐、总延迟和最终显示结果。[卡](#budget)
+- **帧统计需要样本范围、分位数和异常比例**。平均值可能掩盖少量长帧，收集过程也不能反过来制造大量日志和内存压力。[卡](#measurement)
+- **重建、布局、绘制与栅格化不能互相替代**。先看具体阶段和时间线，再决定缩小状态更新、减少测量或简化绘制。[卡](#stages)
+- **长列表优化围绕按需创建、尺寸信息和状态保存**。缓存与保活会增加内存，不能把所有子项常驻当作通用优化。[卡](#list)
+- **图片解码内存与下载文件大小不同**。显示尺寸、解码尺寸、像素比例与缓存生命周期需要一起检查。[卡](#images)
+- **优化结论需要相同条件下的前后比较**。保留操作路径、原始时间线和副作用指标，不能用一次更快或删除功能来证明方案更好。[卡](#evidence)
+
+## 2. 建立可比较的测量条件 {#建立可比较的测量条件}
+
+### 2.1 构建模式改变测量对象 {#构建模式改变测量对象}
+
+移动端 debug 模式保留断言和调试能力，Dart 执行也采用适合开发的方式；profile 与 release 在移动端采用预编译执行，profile 额外保留性能分析能力。它们不是只相差一个日志开关。
+
+定位卡顿通常使用物理 Android 或 iOS 设备上的 profile 构建，例如 `flutter run --profile`。模拟器与真机的 CPU、GPU、存储和系统调度不同，模拟器里快或慢都不能直接代表目标用户设备。
+
+同时固定应用版本、Flutter 与插件版本、设备、系统、屏幕模式、数据规模和操作路径。首次进入与缓存命中后的再次进入应分别记录，不能把一次冷启动与另一次已经预热的运行混在一起比较。
+
+### 2.2 先定义要改善的行为 {#先定义要改善的行为}
+
+“页面更快”需要转换为可观察指标。是启动到首个可用界面、点击到结果出现、连续滚动中的慢帧，还是多次进入退出后的内存增长？这些目标可能互相影响。
+
+预加载可以减少下一次等待，却增加启动时间、网络和内存成本；扩大图片缓存可能减少重复解码，却使常驻内存更高。先明确目标场景与允许代价，才能判断优化是否值得保留。
+
+## 3. UI、raster 与帧预算 {#UIraster与帧预算}
+
+### 3.1 不同阶段对应不同排查方向 {#不同阶段对应不同排查方向}
+
+**UI 阶段**包括应用与框架在主 Dart isolate 上生成界面的工作，例如构建、布局、绘制记录与场景组织。**Raster 阶段**由引擎处理场景的栅格化相关工作，并与 GPU 协作。
+
+DevTools 中 raster 一栏测量的是相应栅格阶段，不是把独立 GPU 上的全部执行时间完整呈现出来。平台主线程上的插件工作也需要结合原生工具观察；不能因为 Dart 时间线不长就断言整个应用没有阻塞。
+
+| 观察 | 排查起点 |
+| --- | --- |
+| UI 阶段明显变长 | 同步 Dart 计算、状态更新范围、布局与绘制记录 |
+| raster 阶段明显变长 | 复杂场景、图像、裁剪、透明度和离屏绘制等实际路径 |
+| 点击后很久才出现下一帧 | 请求等待、排队、平台调用与状态更新时机 |
+| 重复操作后内存持续增加 | 对象保留、订阅、图片与原生资源生命周期 |
+
+具体构建、布局与绘制分工见 [Flutter 布局与渲染](layout-rendering.mdx#从构建到一帧场景)。减少其中一个阶段的计数，不保证其他阶段的时间或整体延迟同时下降。
+
+### 3.2 吞吐与延迟不能只看一个数 {#吞吐与延迟}
+
+刷新周期可以按 `1000 / 刷新率` 毫秒估算：60 Hz 约为 16.67 ms，120 Hz 约为 8.33 ms。实际预算还受设备显示模式和调度条件影响，不能让所有设备永久共用“16 ms 即流畅”的规则。
+
+`FrameTiming` 的 `buildDuration` 表示 UI 侧构建该帧的持续时间，`rasterDuration` 表示栅格化持续时间，`totalSpan` 从 vsync 开始到栅格化结束。`totalSpan` 还包含阶段之间的等待，不应简单写成两个阶段耗时相加。
+
+引擎可以流水线处理不同帧，因此某帧 UI 与 raster 的合计超过一个周期，不一定等于每个周期都无法产出一帧；但端到端延迟可能增加。判断体验时要同时观察阶段预算、排队与总延迟，必要时再结合平台呈现证据。
+
+## 4. 收集与解释帧样本 {#收集与解释帧样本}
+
+### 4.1 有界样本窗口 {#有界样本窗口}
+
+**`FrameTiming`** 是引擎报告的一帧时间信息。应用使用 `SchedulerBinding.addTimingsCallback` 接收批量样本，结束时通过 `removeTimingsCallback` 注销；不必覆盖只允许一个处理器的底层报告入口。
+
+下面的 `FrameWindow` 保留最近 `maxSamples` 个样本，分别统计两个阶段超过预算的数量和 P90。P90 使用排序后向上取整的最近秩定义；没有样本时分位数返回 null。
+
+```dart
+import 'dart:collection';
+import 'dart:ui';
+
+class FrameWindow {
+  FrameWindow({required this.budget, this.maxSamples = 600}) {
+    if (budget <= Duration.zero || maxSamples <= 0) {
+      throw ArgumentError('预算和样本上限必须为正');
+    }
+  }
+
+  final Duration budget;
+  final int maxSamples;
+  final Queue<FrameTiming> _frames = Queue<FrameTiming>();
+
+  void add(List<FrameTiming> batch) {
+    for (final frame in batch) {
+      _frames.addLast(frame);
+      if (_frames.length > maxSamples) _frames.removeFirst();
+    }
+  }
+
+  Map<String, int?> summary() {
+    int? p90(List<int> values) {
+      if (values.isEmpty) return null;
+      values.sort();
+      return values[(values.length * 0.9).ceil() - 1];
+    }
+
+    return {
+      'count': _frames.length,
+      'uiOverBudget': _frames.where((f) => f.buildDuration > budget).length,
+      'rasterOverBudget': _frames.where((f) => f.rasterDuration > budget).length,
+      'uiP90Us': p90(_frames.map((f) => f.buildDuration.inMicroseconds).toList()),
+      'rasterP90Us': p90(_frames.map((f) => f.rasterDuration.inMicroseconds).toList()),
+      'totalP90Us': p90(_frames.map((f) => f.totalSpan.inMicroseconds).toList()),
+    };
+  }
+}
+```
+
+超过预算的计数使用严格大于，单位为微秒的分位数用 `Us` 标明。600 只是示例的有界容量，不是所有业务必须采用的统计窗口；容量满后旧样本离开，因此结果描述最近窗口，不能当作整个运行期间的累计数量。
+
+假设人工构造 10 个 UI 耗时为 1、2、3、4、5、6、7、8、9、30 ms 的样本，这个定义得到 P90 为 9 ms，最大值却是 30 ms。这个数值例子用于说明统计口径，不是真机测量结果；分位数也不能代替对异常样本的查看。
+
+### 4.2 注册与停止收集 {#注册与停止收集}
+
+`FrameRecorder` 防止同一个实例重复注册，并在 `stop` 时释放回调：
+
+```dart
+import 'package:flutter/scheduler.dart';
+
+class FrameRecorder {
+  FrameRecorder(this.window);
+
+  final FrameWindow window;
+  late final TimingsCallback _callback = window.add;
+  bool _started = false;
+
+  void start() {
+    if (_started) return;
+    SchedulerBinding.instance.addTimingsCallback(_callback);
+    _started = true;
+  }
+
+  void stop() {
+    if (!_started) return;
+    SchedulerBinding.instance.removeTimingsCallback(_callback);
+    _started = false;
+  }
+}
+```
+
+调用前应已初始化 Flutter binding。窗口由调用者持有，`stop` 只停止接收，保留已有样本供导出或分析；需要新的测量阶段时创建新的窗口，避免把不同场景混在一起。
+
+回调可能一次带来多帧，不应按“每次回调等于一帧”计数。不要在每帧回调中同步写大文件或逐条打印完整对象；先做有界收集，在测量区间结束后处理输出，降低观测本身的干扰。
+
+这些统计帮助定位阶段压力，但并未包含所有输入、平台与显示链路。仅凭 `uiOverBudget` 和 `rasterOverBudget` 也不能还原系统最终展示了哪些帧，结论要与实际观测范围一致。
+
+## 5. 从时间线定位可改变的工作 {#从时间线定位工作}
+
+### 5.1 构建与布局成本 {#构建与布局成本}
+
+UI 阶段偏长时，先检查对应帧的时间线。大对象解析、排序或其他同步计算可能占用主 isolate；使用 `async` 关键字本身不会把计算移动到另一个 isolate。
+
+计算是否适合移到 isolate，要考虑任务规模、传输数据和建立通信的成本。对于频繁的小任务，额外调度可能比计算本身更贵；对于已经异步的网络等待，也不能仅为“异步”再创建 isolate。
+
+状态更新范围过大时，可以把变化放在更小的组件或模型监听范围内。`const`、稳定子 Widget 和 `ListenableBuilder` 的不变 `child` 等方式可能减少重复工作，但不应该把“使用了 `const`”当作性能结论。
+
+布局成本则要看真实约束和测量次数。长列表中的重复 intrinsic 测量、不必要的嵌套收缩与复杂布局，可能比构建次数更有影响。不要为了减少 `build` 统计，却引入更昂贵的布局。
+
+### 5.2 绘制与栅格化成本 {#绘制与栅格化成本}
+
+Raster 阶段偏长时，检查同一操作中的图像规模、复杂绘制、透明度组合、裁剪、阴影和离屏绘制。`saveLayer` 等操作可能带来额外工作，但不是每次裁剪或每个透明组件都无条件产生同样成本。
+
+`RepaintBoundary` 可以在子树绘制节奏不同的地方减少重复绘制，但也会增加边界与合成相关成本。它不关闭 `build` 和 `layout`，也不保证引擎缓存成永久图片；应观察实际重绘范围与测量变化。
+
+Shader 或渲染后端相关结论依赖目标平台、Flutter 版本和后端配置。不要把某个旧环境的首次编译现象，直接当作所有使用 Skia 或 Impeller 的版本都具有的同一种瓶颈。
+
+DevTools 的构建、布局、绘制详细跟踪能帮助定位对象，但增强跟踪也可能改变耗时。可以用它解释原因，再在一致的观测开销下比较最终指标。
+
+## 6. 长列表与图片内存 {#长列表与图片内存}
+
+### 6.1 按需工作与保留状态的代价 {#按需工作与保留状态}
+
+长列表先使用合适的按需构建方式，避免提前创建全部子项。项目真实固定高度时可以提供 `itemExtent` 等尺寸信息；内容实际会换行或随字体缩放变化时，不应填写错误固定高度来换取表面更快。
+
+优化还包括把重复计算与一次性副作用移出 `itemBuilder`、缩小局部更新、使用稳定身份，并把重要业务状态放到合适的模型。列表状态保活和业务数据缓存不同，缓存范围与保活数量也会改变内存使用。
+
+增加预布局范围可能减少快速滑动时的临时工作，却提高预先构建与内存成本。应在代表性滑动路径、数据量和设备上比较，不以“缓存越大越快”作为设计依据。
+
+### 6.2 解码后的图片可能远大于文件 {#解码图片内存}
+
+**解码图片内存**取决于像素尺寸和像素格式，而不是下载文件的压缩大小。按每像素 4 字节粗估，一张 4000 × 3000 图片需要 48,000,000 字节，约 45.8 MiB；实际还可能有缓存、临时缓冲或引擎资源，不能把这个估算当作进程总占用。
+
+缩略图显示不需要总是解码完整原图。可以根据实际目标尺寸和设备像素比例选择合适资源，并按平台能力使用 `cacheWidth`、`cacheHeight` 或 `ResizeImage` 等解码尺寸提示。逻辑宽度 100 不等于物理像素宽度必定为 100；不同像素比例会影响需要的清晰度。
+
+`Image.network` 的网络获取、解码后缓存和 Widget 生命周期也是不同层次。`ImageCache` 维护待处理、保留缓存和仍有监听的 live 图像等状态；从一个缓存集合清除记录，不保证所有仍被引用或监听的图像立即释放。
+
+排查增长时，比较反复进入退出前后的内存快照，检查保留路径、图片尺寸、监听器和原生资源。一次 GC 后内存没有立刻回到初始值，不足以单独证明泄漏；持续增长及无法解释的保留关系才需要进一步追踪。
+
+## 7. 前后对照与面试表达 {#前后对照与面试表达}
+
+一个可评估的优化结论应包含：具体操作、基线数据、定位证据、修改原因，以及相同条件下的新结果。报告样本量、分位数、异常情况和运行条件，并说明是否预热、是否包含网络等待。
+
+可以使用 `Timeline` 或 `TimelineTask` 为自己关心的同步、异步业务阶段添加标记，连接“点击开始”“数据准备完成”和相关帧。标记能帮助建立时序，但不能仅因两个事件相邻就认定其中一个是瓶颈。
+
+修改后还要检查正确性与代价：减少图像尺寸是否模糊，关闭效果是否改变产品要求，缓存增长是否增加内存，后台计算是否导致结果乱序。保留原始时间线和可重复步骤，避免只留下一个没有环境说明的百分比。
+
+Widget 测试可以验证重建、尺寸、监听和统计计算；人工 `FrameTiming` 样本可以验证指标口径。这些都不能替代真机 profile 记录，也不能据此宣布已经降低某个应用的慢帧率。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 为什么不能直接用 debug 模式或模拟器判断发布性能？ {#environment}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：构建、硬件与测量条件。
+
+**相关内容**：[建立可比较的测量条件](#建立可比较的测量条件)
+
+<details>
+<summary>参考回答</summary>
+
+**debug 保留额外检查并采用适合开发的执行方式，模拟器硬件与调度也不同于目标真机。** 移动端通常用真机 profile 定位，再验证目标发布条件。前后比较还要固定数据、操作、设备和预热状态，不能只比较两次肉眼感受。
+
+</details>
+
+### 8.2 UI 和 raster 都可能造成卡顿，怎样区分排查方向？ {#stages}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：阶段职责、具体工作与观测边界。
+
+**相关内容**：[UI、raster 与帧预算](#UIraster与帧预算)、[从时间线定位可改变的工作](#从时间线定位工作)
+
+<details>
+<summary>参考回答</summary>
+
+**UI 偏长先看同步 Dart 工作、状态更新和布局；raster 偏长先看复杂场景、图像及绘制效果。** 结合对应帧时间线确认原因，不能只看 `build` 次数。raster 指标不是完整独立 GPU 计时，平台主线程问题还要结合原生工具。
+
+</details>
+
+### 8.3 120 Hz 设备还能直接用 16 ms 作为唯一帧判断标准吗？ {#budget}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：刷新周期、流水线吞吐与总延迟。
+
+**相关内容**：[吞吐与延迟不能只看一个数](#吞吐与延迟)
+
+<details>
+<summary>参考回答</summary>
+
+**不能，120 Hz 的周期约为 8.33 ms，需要结合实际显示模式设定预算。** 同时分别看 UI、raster 和 `totalSpan`；流水线可能保持产出节奏却增加延迟，两个阶段简单相加也不能直接等同于最终显示结果。
+
+</details>
+
+### 8.4 收集 FrameTiming 时，为什么要保留窗口和统计口径？ {#measurement}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：批量样本、分位数、超预算计数与观测成本。
+
+**相关内容**：[收集与解释帧样本](#收集与解释帧样本)
+
+<details>
+<summary>参考回答</summary>
+
+**样本窗口决定结果代表哪段运行，统计口径决定数字怎样比较。** 回调可批量带来多帧，不能按回调计帧；平均值、P90 和异常数量也描述不同情况。收集要有界并正确注销，避免每帧大量日志反而增加负担。
+
+</details>
+
+### 8.5 ListView 还有哪些优化手段，代价是什么？ {#list}
+
+**考察重点**：按需构建、尺寸、更新范围与缓存成本。
+
+**相关内容**：[按需工作与保留状态的代价](#按需工作与保留状态)
+
+<details>
+<summary>参考回答</summary>
+
+**根据列表特征减少不必要工作，再测量对应代价。** 按需创建子项，真实固定尺寸时提供尺寸信息，避免 `itemBuilder` 重复计算和副作用，缩小状态更新并处理稳定身份。缓存和保活可以减少部分重建，却增加内存，不能无条件扩大。
+
+</details>
+
+### 8.6 Image.network 为什么可能造成明显内存压力？ {#images}
+
+**考察重点**：压缩大小、解码像素与缓存生命周期。
+
+**相关内容**：[解码后的图片可能远大于文件](#解码图片内存)
+
+<details>
+<summary>参考回答</summary>
+
+**下载文件较小不代表解码后占用小，内存主要受像素尺寸、格式和同时保留数量影响。** 按显示需求选择合适资源与解码尺寸，结合设备像素比例，检查缓存和仍在监听的图像。清缓存不保证所有引用立即释放，还要通过快照与保留路径定位增长。
+
+</details>
+
+### 8.7 怎样证明一次性能优化确实有效？ {#evidence}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：基线、因果依据、可重复比较与副作用。
+
+**相关内容**：[前后对照与面试表达](#前后对照与面试表达)
+
+<details>
+<summary>参考回答</summary>
+
+**在相同设备、构建、输入与操作条件下比较，并用时间线解释改动减少了哪部分工作。** 同时报告样本量、尾部耗时和异常，检查正确性、内存、网络或画质代价。一次更快和人工样本计算都不足以证明真实应用性能已经改善。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+
+- [Flutter：Performance profiling](https://docs.flutter.dev/perf/ui-performance)
+- [Flutter：DevTools Performance view](https://docs.flutter.dev/tools/devtools/performance)
+- [Flutter：FrameTiming](https://api.flutter.dev/flutter/dart-ui/FrameTiming-class.html)
+- [Flutter：addTimingsCallback](https://api.flutter.dev/flutter/scheduler/SchedulerBinding/addTimingsCallback.html)
+- [Flutter：removeTimingsCallback](https://api.flutter.dev/flutter/scheduler/SchedulerBinding/removeTimingsCallback.html)
+- [Flutter：Performance best practices](https://docs.flutter.dev/perf/best-practices)
+- [Flutter：DevTools Memory view](https://docs.flutter.dev/tools/devtools/memory)
+- [Flutter：ImageCache](https://api.flutter.dev/flutter/painting/ImageCache-class.html)
+- [Flutter：Image.network](https://api.flutter.dev/flutter/widgets/Image/Image.network.html)
+- [Flutter：ResizeImage](https://api.flutter.dev/flutter/painting/ResizeImage-class.html)
+- [Flutter：RepaintBoundary](https://api.flutter.dev/flutter/widgets/RepaintBoundary-class.html)
+- [Flutter：ListView.builder](https://api.flutter.dev/flutter/widgets/ListView/ListView.builder.html)
+- [Flutter：Isolates](https://docs.flutter.dev/perf/isolates)
+- [Dart：TimelineTask](https://api.dart.dev/dart-developer/TimelineTask-class.html)
+- [Flutter：Build modes](https://docs.flutter.dev/testing/build-modes)
+- [Flutter 3.24.3：scheduler/binding.dart](https://github.com/flutter/flutter/blob/3.24.3/packages/flutter/lib/src/scheduler/binding.dart)
+- [Flutter 3.24.3：image_cache.dart](https://github.com/flutter/flutter/blob/3.24.3/packages/flutter/lib/src/painting/image_cache.dart)
+- [Flutter 3.24.3：image.dart](https://github.com/flutter/flutter/blob/3.24.3/packages/flutter/lib/src/widgets/image.dart)

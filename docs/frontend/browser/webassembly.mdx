@@ -1,0 +1,303 @@
+---
+sidebar_position: 13
+knowledge:
+  id: frontend.browser.webassembly
+---
+
+# WebAssembly
+
+**WebAssembly**（Wasm）是一种可移植的低级代码格式及其执行模型，适合作为 C、C++、Rust 等语言的编译目标。浏览器可以加载 Wasm 模块，让它与 JavaScript 相互调用；它不是某种 CPU 的原生指令文件，也不是 JavaScript 的替代品。
+
+对前端求职者，重点是解释为什么某段计算适合放进 Wasm，以及模块加载、数据传递、内存和线程仍然有哪些成本。把计算改成 Wasm，不会自动加快网络、DOM 更新或所有 JavaScript 逻辑。
+
+## 1. 面试核心 {#core}
+
+- **Wasm 是可编译、可实例化的模块格式，JavaScript 是它在浏览器中的宿主接口之一**。计算模块与页面交互可以分工，但 Wasm 没有绕过浏览器权限的特殊能力。[卡](#wasm-role)
+- **Module 表示已编译代码，Instance 是一次带有具体导入和运行状态的实例**。同一模块可以创建多个实例，状态是否共享取决于内存等资源怎样定义和传入。[卡](#module-instance)
+- **跨边界调用需要约定类型与数据布局**。基本数值可以直接传递，字符串、数组和复杂对象通常需要工具链生成的绑定或明确的内存协议。[卡](#data-boundary)
+- **线性内存是一段按字节寻址的区域，越界访问会触发运行时错误**。普通非共享内存增长后，旧 ArrayBuffer 会失效，要重新取得视图。[卡](#memory-growth)
+- **异步加载不等于异步执行计算**。从主线程同步调用一个耗时 Wasm 函数，仍会阻塞主线程；Worker 是另一层执行环境。[卡](#main-thread)
+- **是否更快需要测量整个链路**。下载与编译、数据转换、复制和调用次数，可能抵消计算收益；优先处理已测出的计算热点。[卡](#performance-choice)
+
+## 2. 模块、宿主与应用场景 {#模块宿主与应用场景}
+
+### 2.1 代码格式与执行 {#代码格式与执行}
+
+Wasm 二进制描述函数、类型、导入、导出和内存等内容。执行引擎先检查模块是否符合规则，再把它编译为可执行形式；具体编译层次和优化策略由实现决定，不应把某个引擎的内部策略当成所有 Wasm 的固定流程。
+
+**WAT** 是 WebAssembly 的文本表示，方便展示低级指令与模块结构。实际项目通常用语言工具链生成 `.wasm`，不要求业务开发者手写大量 WAT。
+
+浏览器中的代码不能凭空访问 `document`、磁盘或网络。Wasm 需要通过导入的宿主函数或工具链绑定使用外部能力；这些调用仍受宿主环境的安全限制。浏览器之外的 Wasm 运行时则可以提供不同的宿主接口。
+
+### 2.2 适合承接的工作 {#适合承接的工作}
+
+Wasm 可以用于图像或音频处理、压缩、数学计算，以及复用已有的计算库。价值可能来自稳定的计算性能，也可能来自避免重写已经验证的原生库。
+
+一个主要等待接口、操作 DOM 的表单页面，通常没有理由仅因为“Wasm 更底层”就整体迁移。先判断时间花在计算、网络、布局还是业务等待，再决定是否引入新的构建和调试链路。
+
+## 3. 从文本模块到 JavaScript 调用 {#从文本模块到javascript调用}
+
+### 3.1 导入、导出与线性内存 {#导入导出与线性内存}
+
+**导入**是模块要求宿主提供的对象，**导出**是模块向宿主开放的对象。下面把两个整数相加，并通过宿主的 `report` 报告结果：
+
+```wat
+(module
+  (import "env" "report" (func $report (param i32)))
+  (memory (export "memory") 1 2)
+  (func (export "add") (param $a i32) (param $b i32) (result i32)
+    (local $sum i32)
+    local.get $a
+    local.get $b
+    i32.add
+    local.tee $sum
+    call $report
+    local.get $sum)
+  (func (export "readByte") (param $offset i32) (result i32)
+    local.get $offset
+    i32.load8_u))
+```
+
+`i32` 是 32 位整数类型。`local.get` 取局部值，`i32.add` 相加，`local.tee` 保存和并留下一个值供 `report` 使用，最后再取出 `sum` 返回。`readByte` 从线性内存读取一个字节并按无符号值返回。
+
+这里的普通 32 位线性内存初始为一页、最大两页，每页 65,536 字节。`offset` 是这块内存中的字节偏移，不是可随意访问浏览器进程的地址。
+
+使用 WABT 的 `wat2wasm` 工具，把上述内容保存为 `demo.wat` 后转换：
+
+```bash
+wat2wasm demo.wat -o demo.wasm
+```
+
+命令成功会生成 `demo.wasm`。WAT 用于解释模块边界；部署时提供二进制文件，页面不会自动把一段 WAT 当作 Wasm 执行。
+
+### 3.2 获取、编译与实例化 {#获取编译与实例化}
+
+**WebAssembly.Module** 是编译后的模块对象；**WebAssembly.Instance** 绑定具体导入，并持有本次实例化产生的状态。加载示例在浏览器模块脚本中执行：
+
+```js
+const response = await fetch('./demo.wasm');
+if (!response.ok) throw new Error(`HTTP ${response.status}`);
+const imports = {
+  env: { report: value => console.log('sum', value) }
+};
+const { module, instance } = await WebAssembly.instantiateStreaming(
+  response, imports
+);
+console.log(instance.exports.add(20, 22));
+```
+
+输出先是 `sum 42`，然后是 `42`。Wasm 同步调用了导入的 JavaScript 函数，再把结果返回给调用方。服务端应把 `.wasm` 作为 `application/wasm` 返回，流式接口可以在接收数据的过程中开始处理，而不是先要求业务代码收齐 ArrayBuffer。
+
+传入二进制数据的 `WebAssembly.instantiate(bytes, imports)` 返回包含 `module` 与 `instance` 的结果对象；传入已经编译好的 `Module` 时，返回的是 `Instance`。不要把两种重载的返回值混用。
+
+### 3.3 一个模块的多个实例 {#一个模块的多个实例}
+
+继续使用前例的 `module` 和 `imports`：
+
+```js
+const second = await WebAssembly.instantiate(module, imports);
+new Uint8Array(instance.exports.memory.buffer)[0] = 9;
+console.log(instance.exports.readByte(0)); // 9
+console.log(second.exports.readByte(0));   // 0
+```
+
+这个模块在内部定义内存，所以两个实例各有一块内存。若模块改为导入内存，并把同一个 `WebAssembly.Memory` 提供给多个实例，状态就可能共享。复用编译代码与共享运行状态，是两个不同决定。
+
+## 4. 数据类型与内存边界 {#数据类型与内存边界}
+
+### 4.1 数值转换与协议 {#数值转换与协议}
+
+Wasm 导出函数有明确的类型签名。本例的 `i32` 参数会按接口规则转换为 32 位整数；它并不等价于 JavaScript `Number` 的所有取值。整数宽度、浮点精度和溢出规则必须与业务要求一致，不能把整数运算直接当作任意精度计算。
+
+字符串和对象也不会因为传给一个参数，就自动变成任意 C/C++ 数据结构。工具链通常会生成绑定代码，或者约定“字节偏移、字节长度、编码和释放函数”。例如字符串可以编码为 UTF-8 后放入线性内存，由计算函数按约定读取。
+
+这里讨论基础数值与线性内存接口。Wasm 也存在引用类型等能力；具体绑定支持什么，要按工具链和目标环境确认，不能把“所有数据必须复制到线性内存”当成不变规则。
+
+### 4.2 共享字节与越界检查 {#共享字节与越界检查}
+
+JavaScript 可以通过 TypedArray 或 DataView 访问导出的内存。继续使用前例的 `instance`：
+
+```js
+const bytes = new Uint8Array(instance.exports.memory.buffer);
+bytes[0] = 255;
+console.log(instance.exports.readByte(0)); // 255
+try {
+  instance.exports.readByte(65536);
+} catch (error) {
+  console.log(error.name); // RuntimeError
+}
+```
+
+JavaScript 写入的第一个字节被 Wasm 直接读到，说明双方观察同一块线性内存。一页内存的合法字节偏移是 `0` 到 `65535`，读取 `65536` 越界，因此触发 trap，并在 JavaScript 侧表现为 `WebAssembly.RuntimeError`。
+
+边界检查保护的是线性内存边界，不会自动知道 C/C++ 中每个数组的逻辑长度。如果两个缓冲区都位于同一线性内存中，错误偏移仍可能破坏另一个缓冲区的数据。因此，宿主侧和模块侧都要校验输入范围与所有权。
+
+### 4.3 内存增长后的视图 {#内存增长后的视图}
+
+对于本例这种普通、非共享内存，增长后必须重新获取视图：
+
+```js
+const memory = instance.exports.memory;
+const oldView = new Uint8Array(memory.buffer);
+oldView[0] = 7;
+console.log(memory.grow(1));      // 1：增长前的页数
+console.log(oldView.byteLength); // 0：旧 ArrayBuffer 已失效
+const currentView = new Uint8Array(memory.buffer);
+console.log(currentView.byteLength, currentView[0]); // 131072 7
+try {
+  memory.grow(1);
+} catch (error) {
+  console.log(error.name); // RangeError：超过声明的最大页数
+}
+```
+
+增长保留已有数据，但旧的 JavaScript 视图不能继续代表当前内存。即使应用没有直接调用 `grow()`，工具链内部的分配也可能引发增长，所以不能无条件长期缓存视图。
+
+共享内存的旧 buffer 不按这个例子脱离，而是仍然覆盖原来的范围；访问增长后的范围仍要重新获取 buffer 和视图。共享内存还涉及线程同步和浏览器隔离条件，不能只把普通内存换成共享内存就认为并发安全。
+
+## 5. 加载错误与运行错误 {#加载错误与运行错误}
+
+加载失败要按发生阶段区分。HTTP 失败、响应类型错误、二进制不合法、导入不匹配和执行越界不是同一类问题。
+
+| 阶段 | 典型检查 |
+| --- | --- |
+| 获取资源 | HTTP 状态、地址、跨源策略、资源版本 |
+| 编译和校验 | 文件是否是合法 Wasm、目标特性是否支持 |
+| 连接导入 | 命名空间、名称、对象种类与签名是否匹配 |
+| 执行 | 是否越界、除零或主动陷阱，宿主函数是否抛错 |
+
+`CompileError` 指向编译或校验失败，`LinkError` 指向导入连接等问题，`RuntimeError` 常用于执行陷阱；参数结构错误也可能是 `TypeError`。宿主函数自己抛出的异常也可以传播出来，不能只捕获一种错误名。
+
+如果确实需要兼容不支持流式接口或 MIME 配置尚未正确的环境，可以明确选择非流式路径：
+
+```js
+async function loadWasm(url, imports = {}) {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  const type = (response.headers.get('Content-Type') || '')
+    .split(';', 1)[0].trim().toLowerCase();
+  if (WebAssembly.instantiateStreaming && type === 'application/wasm') {
+    return WebAssembly.instantiateStreaming(response, imports);
+  }
+  return WebAssembly.instantiate(await response.arrayBuffer(), imports);
+}
+```
+
+这个函数只根据能力和响应类型选择路径，不会在任意异常后重新下载并重试实例化。无条件重试可能重复执行初始化时的宿主副作用，也会把导入错误隐藏成“流式加载失败”。正式部署仍应修正 MIME 配置；回退不是绕过 CORS、权限或内容安全策略。
+
+## 6. 线程、性能与选择 {#线程性能与选择}
+
+`instantiateStreaming()` 返回 Promise，说明加载和编译通过异步接口交付结果；之后普通导出函数的调用仍然可以是同步的。主线程调用一个持续计算两秒的 Wasm 函数，这两秒内仍不能正常处理页面交互。
+
+把计算放入 [Web Worker](./web-worker.mdx) 可以隔离主线程上的执行，但仍需考虑 Worker 启动、通信、数据传递和取消策略。Wasm 格式与 Worker 执行位置解决不同问题，使用一个不自动获得另一个的能力。
+
+比较方案时，应在代表性输入和目标设备上分别记录：
+
+- 资源大小、下载、编译与首次调用开销。
+- 稳态计算耗时，以及输入规模变化后的表现。
+- 字符串编码、内存分配、复制和跨边界调用次数。
+- 内存峰值、页面响应和错误恢复。
+- 构建、调试与长期维护的额外成本。
+
+例如把每个像素都单独传一次，可能产生大量调用；把一批数据放入约定的缓冲区后处理，才有机会减少边界成本。但最终是否更快，应由同一任务的端到端测量支持，而不是拿加法示例宣布倍数提升。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 WebAssembly 是什么，与 JavaScript 有什么关系？ {#wasm-role}
+
+**考察重点**：代码格式、编译目标、宿主与应用分工。
+
+**相关内容**：[模块、宿主与应用场景](#模块宿主与应用场景)。
+
+<details>
+<summary>参考回答</summary>
+
+**WebAssembly 是可移植的低级代码格式及执行模型，可以作为多种语言的编译目标，与 JavaScript 通过导入导出等接口协作。** 它适合计算密集工作或已有库复用，但不是某种 CPU 的原生指令，也不会自动替代 DOM 和网络逻辑。访问外部能力仍依赖宿主接口和权限。
+
+</details>
+
+### 7.2 Module 与 Instance 有什么区别，多个实例一定共享内存吗？ {#module-instance}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：编译代码、实例状态与导入资源。
+
+**相关内容**：[获取、编译与实例化](#获取编译与实例化)、[一个模块的多个实例](#一个模块的多个实例)。
+
+<details>
+<summary>参考回答</summary>
+
+**Module 表示编译后的模块，Instance 是绑定导入并创建运行状态的一次实例化结果。** 模块内部定义的内存通常随实例分别创建；如果导入同一个 Memory 对象，多个实例可以共享它。因此复用代码不等于必然共享状态。
+
+</details>
+
+### 7.3 JavaScript 把字符串交给 Wasm，为什么可能需要额外处理？ {#data-boundary}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：类型签名、编码、数据布局与所有权。
+
+**相关内容**：[数值转换与协议](#数值转换与协议)。
+
+<details>
+<summary>参考回答</summary>
+
+**两侧的数据表示和函数签名不同，需要绑定代码或明确协议完成转换。** 例如把字符串编码为 UTF-8 写入线性内存，再传偏移与长度，并约定分配和释放责任。转换、复制和频繁调用都有成本；具体工具链也可能支持引用等其他方式，不能把一种方式当成所有接口的唯一规则。
+
+</details>
+
+### 7.4 Wasm 内存增长后，为什么旧 TypedArray 不能继续使用？ {#memory-growth}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：线性内存、buffer 与视图生命周期。
+
+**相关内容**：[内存增长后的视图](#内存增长后的视图)。
+
+<details>
+<summary>参考回答</summary>
+
+**普通非共享 Memory 增长会使旧 ArrayBuffer 脱离，旧视图不再覆盖当前内存。** 应重新获取 memory.buffer 并创建视图，内部分配也可能触发增长。共享内存的旧 buffer 不脱离，但不自动覆盖新增范围，仍需重新取得更大的视图。
+
+</details>
+
+### 7.5 把耗时计算改成 Wasm，就不会阻塞页面了吗？ {#main-thread}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：代码形式、调用同步性与执行线程。
+
+**相关内容**：[线程、性能与选择](#线程性能与选择)。
+
+<details>
+<summary>参考回答</summary>
+
+**仍可能阻塞，普通 Wasm 导出函数在主线程被同步调用时，会占用该线程直到返回。** 异步加载接口不代表后续计算自动异步。需要隔离主线程时，可把计算放入 Worker，再处理通信、数据成本与取消。
+
+</details>
+
+### 7.6 什么时候值得把 JavaScript 计算迁移到 Wasm？ {#performance-choice}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：瓶颈证据、边界成本与端到端收益。
+
+**相关内容**：[适合承接的工作](#适合承接的工作)、[线程、性能与选择](#线程性能与选择)。
+
+<details>
+<summary>参考回答</summary>
+
+**当实际瓶颈是可批量处理的计算，或需要复用成熟计算库时，Wasm 才是值得验证的方案。** 测量下载编译、首次调用、计算、转换复制和内存，并比较目标设备上的整体响应。DOM 或网络等待占主导、边界调用非常细碎时，迁移未必有收益。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [WebAssembly：High-Level Goals](https://webassembly.org/docs/high-level-goals/)
+- [WebAssembly：Web Embedding](https://webassembly.org/docs/web/)
+- [WebAssembly：Security](https://webassembly.org/docs/security/)
+- [W3C：WebAssembly Core Specification 1.0](https://www.w3.org/TR/wasm-core-1/)
+- [W3C：WebAssembly JavaScript Interface](https://webassembly.github.io/spec/js-api/)
+- [WABT：WebAssembly Binary Toolkit](https://github.com/WebAssembly/wabt)
+- [MDN：instantiateStreaming()](https://developer.mozilla.org/en-US/docs/WebAssembly/Reference/JavaScript_interface/instantiateStreaming_static)
+- [MDN：Memory.grow()](https://developer.mozilla.org/en-US/docs/WebAssembly/Reference/JavaScript_interface/Memory/grow)

@@ -1,0 +1,412 @@
+---
+sidebar_position: 4
+knowledge:
+  id: tools-and-frameworks.react.concurrent-rendering
+---
+
+# React 并发渲染
+
+**并发渲染**让 React 能够根据更新的重要程度安排工作，在适当位置暂停尚未完成的渲染，先处理更紧急的更新，再继续或放弃旧工作。它改善的是响应顺序，不是把浏览器主线程上的 JavaScript 自动改成多线程并行。
+
+输入框需要及时显示刚输入的字符，复杂列表则可以稍后更新。Transition 和 useDeferredValue 表达这种区别；Suspense 则决定一部分内容暂时无法完成渲染时显示什么。面试深入到 Fiber 时，还要解释 React 把执行进度保存在哪里，以及哪些工作实际上不能被中断。
+
+公开 API 示例以 React 18、19 共有行为为主，使用 createRoot。内部数据结构和调度示例明确以 React 18.3.1 源码为参照，不把内部字段和时间参数当作跨版本契约。
+
+## 1. 面试核心 {#core}
+
+- **并发渲染允许交错安排工作，不等于同时执行多个组件函数**。React 在可让出的工作边界暂停，不能任意打断一个正在执行的长函数。[卡](#interruptible-render)
+- **Fiber 保存组件工作的身份、状态、树关系和更新信息**。它使执行进度能够留在数据结构里，而不是只能依赖一口气走完的调用栈。[卡](#fiber)
+- **渲染可以暂停或重试，提交不能把半完成的界面当作最终结果展示**。渲染函数因此需要保持纯粹。[卡](#interruptible-render)
+- **Transition 标记可以等待的状态更新，输入框当前值仍要及时更新**。startTransition 的回调立即执行，并不会把里面的耗时计算自动推迟。[卡](#transition)
+- **useDeferredValue 让部分界面暂时使用旧值，再尝试更新到新值**。它没有固定防抖延迟，也不会自动减少网络请求。[卡](#deferred-value)
+- **Suspense 处理能够在渲染时暂停的内容，例如 lazy 组件**。普通 Effect 中发起的请求或计时器不会自动触发它。[卡](#suspense)
+- **已经显示的内容因 Transition 再次等待时，可以保留旧界面并显示 pending 提示**。首次进入的边界、错误处理和请求取消仍有各自规则。[卡](#suspense-transition)
+- **优先级与过期机制用于安排工作、缓解饥饿，不提供业务完成时限**。Scheduler 的任务优先级与 React 的 lanes 不是同一份枚举。[卡](#scheduler)
+
+## 2. 可中断工作的边界 {#可中断工作的边界}
+
+### 2.1 并发与并行 {#并发与并行}
+
+**并发**强调多项工作在一段时间内交错推进；**并行**强调同一时刻实际执行多项工作。在普通 React DOM 页面中，组件代码仍主要运行在浏览器主线程。React 可以把一部分渲染工作分段，给输入、绘制等任务留下机会。
+
+可以把一次列表更新理解成：先计算一部分组件，检查是否应该让出，交还主线程，随后再继续。若期间来了更重要的更新，React 可以先处理它；旧渲染已经不再有用时，也可以丢弃后重新计算。
+
+但 React 不能在任意 JavaScript 语句之间抢占执行。一个组件函数里连续运行的大循环、一次同步 JSON.parse 或一次巨大排序，仍要等这段调用返回。长任务要通过减少计算、拆分工作、虚拟列表或 [Web Worker](../../frontend/browser/web-worker.mdx#与页面主线程的分工)等方式处理，不能只在外面套一层 startTransition。
+
+### 2.2 渲染与提交的分工 {#渲染与提交的分工}
+
+渲染阶段计算下一份界面，协调决定需要哪些变化，提交阶段才把完成的变化应用到宿主环境。React 不会因为某个工作片段算完，就把半份新界面随意替换到当前页面。
+
+这不意味着应用只有一个永远不可拆分的更新整体：不同边界可以分别完成，Suspense 也可以显示后备内容。需要区分“有意设计的加载状态”和“尚未算完就把内部中间状态暴露出来”。
+
+已经开始的一段提交工作也不是任意时间切片的计算。大量 DOM 修改和布局 Effect 仍会占用主线程。并发能力不会取消[渲染与提交](./reconciliation.mdx#渲染与提交)各自的成本，也不会使组件副作用在被放弃的渲染中变得安全。
+
+## 3. Fiber 与更新调度 {#fiber与更新调度}
+
+### 3.1 Fiber 保存哪些信息 {#fiber保存哪些信息}
+
+**Fiber** 是 React 内部表示一份组件工作的对象。以下字段分组来自 React 18.3.1，用来理解职责即可：
+
+| 信息 | 字段示例 | 用途 |
+| --- | --- | --- |
+| 节点身份 | tag、key、type | 判断节点种类与组件类型 |
+| 树关系 | return、child、sibling | 指向父节点、第一个子节点和下一个兄弟 |
+| 输入与状态 | pendingProps、memoizedProps、memoizedState、updateQueue | 保存待处理输入、已有结果和更新 |
+| 后续需要的操作 | flags、subtreeFlags、deletions | 记录提交等阶段需要处理的信息 |
+| 更新集合 | lanes、childLanes | 标记本节点与子树有哪些更新 |
+| 对应工作副本 | alternate | 关联当前树和正在准备的对应节点 |
+
+这里的 return 是对象字段名，不是 JavaScript return 语句。Fiber 不是一条普通单向链表；child、sibling、return 把树关系显式保存在对象中，使遍历可以在一个工作单元结束后记录位置。
+
+当前已提交的树与正在准备的树可以通过对应节点关联。准备新结果不要求立刻覆盖当前界面；完成后再切换到合适的结果。不要把 alternate 理解成“每次更新都深拷贝所有节点”，也不要把 Fiber 和 JSX 元素对象视为同一种数据。
+
+### 3.2 React 在哪里决定让出 {#react在哪里决定让出}
+
+React 18.3.1 的 workLoopConcurrent 在还有工作、且 shouldYield 尚未要求让出时，持续执行 performUnitOfWork。判断发生在工作单元之间；beginWork 调用某个组件时，不能从该组件的一段同步计算中间直接跳出去。
+
+有了可恢复的树结构，还需要调度器决定什么时候继续。这个版本的浏览器 Scheduler 在可用时通过 MessageChannel 安排后续任务；在不同宿主环境还会选择其他入口。MessageChannel 的消息任务提供再次进入 JavaScript 的机会，本身不负责截断当前执行。
+
+因此，“React 使用 requestIdleCallback 实现全部 Fiber 调度”不准确。requestIdleCallback 是浏览器提供的空闲回调 API，React 的调度有自己的优先级与让出判断，也不承诺每次工作都恰好对应一个固定长度的屏幕帧。
+
+### 3.3 lanes、优先级与饥饿 {#lanes优先级与饥饿}
+
+**lane** 可以理解为 React 内部标记一类更新的位；多个 lane 可以组成一个待处理集合。React 18.3.1 区分同步、连续输入、默认、Transition、重试、空闲等更新，并结合待处理、暂停和已恢复的状态选择下一组工作。
+
+Scheduler 另有 Immediate、UserBlocking、Normal、Low、Idle 等任务优先级。React 的更新集合最终需要安排成宿主任务，但不能把一个 lane 简单当作一个 Scheduler 优先级名称。
+
+低优先级工作长期得不到执行，称为**饥饿**。该版本会为适用的待处理更新计算过期时间，标记已过期工作，并在相应路径不再继续时间切片，以推动完成。并非所有 lane 都有相同过期规则，等待外部资源的工作也不能因为过期就凭空取得数据。
+
+面试回答应先讲清“优先级选择—让出与恢复—过期防饥饿”这条关系。内部毫秒常量不是接口 SLA；页面长任务、资源加载和系统调度仍可能使用户等待更久。
+
+## 4. Transition 更新 {#transition更新}
+
+### 4.1 分离输入与结果更新 {#分离输入与结果更新}
+
+**Transition** 表达一组可以稍后完成的状态更新。输入框的 query 及时更新，结果区使用的 resultQuery 则可以标记为 Transition。
+
+先把下面的列表保存为 CourseList.jsx。memo 使 query 未变化时能够跳过这部分计算，让紧急输入更新不必重新计算同样的列表：
+
+```jsx
+import { memo } from 'react';
+
+const courses = Array.from({ length: 1000 }, (_, index) => ({
+  id: index,
+  name: `课程 ${index}`,
+}));
+const CourseList = memo(function CourseList({ query }) {
+  const matches = courses.filter(course => course.name.includes(query));
+  return <section>
+    <p>结果关键词：{query}</p>
+    <output>{matches.length}</output>
+    <ul>{matches.map(course => <li key={course.id}>{course.name}</li>)}</ul>
+  </section>;
+});
+export default CourseList;
+```
+
+App.jsx 负责区分两种更新：
+
+```jsx
+import { useState, useTransition } from 'react';
+import CourseList from './CourseList.jsx';
+
+export default function App() {
+  const [query, setQuery] = useState('');
+  const [resultQuery, setResultQuery] = useState('');
+  const [isPending, startTransition] = useTransition();
+  function change(event) {
+    const next = event.target.value;
+    setQuery(next);
+    startTransition(() => setResultQuery(next));
+  }
+  return <>
+    <label>搜索<input value={query} onChange={change} /></label>
+    <p role="status">{isPending ? '正在更新结果' : '就绪'}</p>
+    <CourseList query={resultQuery} />
+  </>;
+}
+```
+
+输入 `99` 后，最终有 19 个匹配项。输入框使用 query，不等待 resultQuery；新的输入到来时，旧结果更新可以被后续工作替代。数据量小、设备快时，pending 状态可能很短，不能用“肉眼没看到加载文字”证明没有 Transition。
+
+不要把控制 input.value 的 setQuery 放进 Transition。也不要在回调里先执行一个耗时筛选，再把筛选结果交给 setter：回调中的筛选仍会立即占用主线程。把工作安排成 React 可以调度的渲染，也仍需考虑单次组件计算是否过大。
+
+### 4.2 startTransition 的回调立即执行 {#starttransition的回调立即执行}
+
+startTransition 标记更新，不像 setTimeout 那样延后运行整个回调：
+
+```jsx
+import { startTransition, useState } from 'react';
+
+export default function App() {
+  const [count, setCount] = useState(0);
+  function update() {
+    console.log('开始');
+    startTransition(() => {
+      console.log('回调');
+      setCount(value => value + 1);
+    });
+    console.log('结束', count);
+  }
+  return <button onClick={update}>{count}</button>;
+}
+```
+
+初次点击依次输出“开始”“回调”“结束 0”，页面之后显示 1。count 仍遵守当前渲染快照，Transition 不会改写旧闭包。独立的 startTransition 可用于组件外能够触发更新的地方；需要 isPending 时使用 useTransition。
+
+### 4.3 异步边界与版本 {#异步边界与版本}
+
+React 18 中，应把需要标记的 setter 放在 startTransition 的同步调用范围内。await 或 setTimeout 之后才调用 setter，不能因为外层曾包过一次就认为仍然被标记。兼容写法是等待数据完成后，再对更新调用 startTransition。
+
+React 19 增加对异步 Action 的支持，useTransition 可以把等待异步工作的 pending 状态纳入管理；它不等同于 React 18 的行为。React 19 中 await 之后的状态更新仍需按官方要求再包一层 startTransition，不能假定异步上下文自动保留。
+
+Transition 也不解决响应乱序、网络取消或重复写入。多个请求谁有权更新界面，仍需要请求身份与失效判断，见[React Hooks](./hooks.mdx#请求状态与竞态)。
+
+## 5. useDeferredValue {#usedeferredvalue}
+
+useDeferredValue 接收一个已经存在的值，为部分界面保留它的延后版本。它适合“我能读取这个输入，但不方便决定它的 setter 是否包 Transition”的场景，例如输入来自父组件。
+
+继续复用 CourseList.jsx，把 App.jsx 换成：
+
+```jsx
+import { useDeferredValue, useState } from 'react';
+import CourseList from './CourseList.jsx';
+
+export default function App() {
+  const [query, setQuery] = useState('');
+  const deferredQuery = useDeferredValue(query);
+  const stale = query !== deferredQuery;
+  return <>
+    <label>搜索<input value={query} onChange={event => setQuery(event.target.value)} /></label>
+    <p role="status">{stale ? '仍显示上一次结果' : '结果已更新'}</p>
+    <div style={{ opacity: stale ? 0.6 : 1 }}>
+      <CourseList query={deferredQuery} />
+    </div>
+  </>;
+}
+```
+
+query 更新后，React 可以先提交输入与旧 deferredQuery，再尝试渲染新结果。若又有输入，新一轮工作可以替代旧结果的准备。memo 在这里仍有作用：旧 query 对列表来说没变时，可以跳过列表计算。
+
+| 机制 | 表达什么 | 不保证什么 |
+| --- | --- | --- |
+| Transition | 哪些状态更新可以等待 | 不把同步代码搬到其他线程 |
+| useDeferredValue | 哪个值可以暂时沿用旧版本 | 不提供固定延迟，不自动减少请求 |
+| 防抖 | 输入停止变化一段时间后再触发 | 不自动降低 React 渲染优先级 |
+| 节流 | 按约定限制触发频率 | 不自动解决过期结果与渲染长任务 |
+
+不要在每次渲染中随手新建对象再立即传给 useDeferredValue。对象引用一直变化，可能产生不必要的后台更新。优先传递稳定的原始值或有正确身份的数据。
+
+## 6. Suspense 与代码加载 {#suspense与代码加载}
+
+### 6.1 等待、失败与边界 {#等待失败与边界}
+
+**Suspense** 为暂时无法完成渲染的子树提供 fallback。**lazy** 则声明一个按需加载的组件，加载函数返回 Promise，成功结果的 default 是组件类型。
+
+把下面内容保存为 Report.jsx：
+
+```jsx
+export default function Report() {
+  return <h2>课程报告</h2>;
+}
+```
+
+App.jsx 同时提供普通切换和 Transition 切换，便于观察已经显示内容的处理方式：
+
+```jsx
+import { Component, lazy, Suspense, useState, useTransition } from 'react';
+
+const Report = lazy(() => import('./Report.jsx'));
+class ReportBoundary extends Component {
+  state = { failed: false };
+  static getDerivedStateFromError() { return { failed: true }; }
+  componentDidCatch(error) { console.error('报告加载或渲染失败', error); }
+  render() {
+    return this.state.failed ? <p role="alert">报告暂时无法显示</p> : this.props.children;
+  }
+}
+export default function App() {
+  const [page, setPage] = useState('home');
+  const [note, setNote] = useState('');
+  const [isPending, startTransition] = useTransition();
+  return <>
+    <label>备注<input value={note} onChange={event => setNote(event.target.value)} /></label>
+    <button onClick={() => setPage('report')}>普通切换</button>
+    <button onClick={() => startTransition(() => setPage('report'))}>过渡切换</button>
+    <button onClick={() => setPage('home')}>返回首页</button>
+    <p role="status">{isPending ? '正在准备报告' : '就绪'}</p>
+    <ReportBoundary>
+      <Suspense fallback={<p role="status">正在加载报告模块</p>}>
+        {page === 'home' ? <h2>首页</h2> : <Report />}
+      </Suspense>
+    </ReportBoundary>
+  </>;
+}
+```
+
+构建工具需要支持动态 import 的代码分割。首次访问时 React 尚未加载 Report；点击切换才尝试渲染它并开始加载。加载较慢时，两种切换可以观察到区别：
+
+- 普通切换可以让 Suspense 显示“正在加载报告模块”。
+- Transition 切换可以保留已经显示的首页，并通过 isPending 提示报告仍在准备；完成后再显示报告。
+
+比较时应在尚未加载模块的新页面分别尝试。lazy 会缓存加载 Promise 与成功结果，加载过一次后再切换，不会为了展示效果重复请求。
+
+Report 要在模块顶层声明，不能在 App 每次执行时重新 lazy。Promise 拒绝属于错误，会交给最近的错误边界处理；Suspense 的 fallback 不是通用异常兜底。示例中的 ReportBoundary 负责显示失败内容，不代表它能捕获所有事件回调和异步任务里的错误。
+
+### 6.2 已显示内容与首次等待 {#已显示内容与首次等待}
+
+保留旧内容的前提，是相应边界已经有可显示的内容。首次挂载的边界没有旧界面可保留，仍可能显示 fallback。嵌套 Suspense 可以让页面不同部分按各自边界呈现，不必全部等到最后一起出现。
+
+等待中的 Transition 可以被新的用户选择取代。例如报告模块还没返回时点击“返回首页”，最终不应因为旧加载完成就强制跳到报告。放弃旧渲染不等于取消模块网络请求，已经开始的加载仍可能完成并进入缓存。
+
+Suspense 不是“所有等待都触发一次卸载”。未完成首次挂载的树没有可保留的已挂载状态；已有内容被暂时隐藏时也有相应的 Effect 处理规则。不要把 fallback、隐藏、真正卸载和 key 改变简单等同。
+
+### 6.3 普通异步任务不会自动触发 Suspense {#普通异步任务不会自动触发suspense}
+
+Suspense 需要渲染过程能够向 React 表达“这里暂时不能完成”。普通 Effect 里启动的任务，在渲染时已经返回了正常内容，因此不会自动触发 fallback：
+
+```jsx
+import { Suspense, useEffect, useState } from 'react';
+
+function Message() {
+  const [text, setText] = useState('组件自己显示等待状态');
+  useEffect(() => {
+    const id = setTimeout(() => setText('异步工作完成'), 300);
+    return () => clearTimeout(id);
+  }, []);
+  return <p>{text}</p>;
+}
+export default function App() {
+  return <Suspense fallback={<p>Suspense 后备内容</p>}><Message /></Suspense>;
+}
+```
+
+页面先显示“组件自己显示等待状态”，之后显示“异步工作完成”；不会因为 timeout 尚未执行就显示 Suspense 后备内容。把 timeout 换成普通 Effect 请求也不会自动改变这个关系。
+
+实际数据加载应使用明确支持 Suspense 的框架或数据方案。不要把“在 render 中临时创建 Promise 并抛出”当作完整生产方案；缓存、身份、错误、重试和服务端行为都需要定义。本文用稳定的 lazy 代码加载说明边界，不另造数据缓存框架。
+
+## 7. 常见问题 {#常见问题}
+
+### 7.1 换成 createRoot 后，所有更新都会自动变成可中断的吗？ {#换成createroot后所有更新都会自动变成可中断的吗}
+
+不会。createRoot 是使用现代渲染能力的入口，具体更新仍受优先级、更新类型和所用特性的影响。用户输入等紧急更新不能一律当作后台任务。自动批处理减少某些提交次数，与 Transition 表达非紧急更新也不是同一个机制。
+
+### 7.2 有了 Transition，还需要减少列表工作量吗？ {#有了transition还需要减少列表工作量吗}
+
+需要。调度改变顺序，不会消除计算与 DOM 成本。一个组件内巨大同步循环不能任意被切断；一次提交大量节点也仍然昂贵。应先减少不必要的计算和节点，再用合适的优先级处理剩余工作。
+
+### 7.3 Suspense 加载失败后，改 key 就能重新下载吗？ {#suspense加载失败后改key就能重新下载吗}
+
+不能这样保证。lazy 缓存加载 Promise 和结果；仅仅重置错误边界或改变组件 key，不等于清空 lazy 与构建工具的模块缓存。重试策略需要明确处理加载器、缓存和错误边界，不能用每次 render 都重新 lazy 来掩盖问题。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 React Fiber 是什么，为什么能支持可恢复的渲染工作？ {#fiber}
+
+**考察重点**：工作节点、树关系、状态与当前/待提交结果。
+
+**相关内容**：[Fiber 保存哪些信息](#fiber保存哪些信息)。
+
+<details>
+<summary>参考回答</summary>
+
+**Fiber 是 React 内部保存组件工作信息的对象，使树关系和执行进度能保存在数据结构中。** React 18.3.1 中，child、sibling、return 连接树，输入、状态、更新队列和 lanes 描述待处理工作，alternate 关联对应的当前节点与工作节点。React 因而能在工作单元之间记录位置、继续或重新准备结果。它不是普通单链表，也不等同 JSX 元素或浏览器 DOM。
+
+</details>
+
+### 8.2 React 如何中断渲染，能中断一个组件里的长循环吗？ {#interruptible-render}
+
+**考察重点**：协作式让出、工作单元、主线程、渲染与提交。
+
+**相关内容**：[可中断工作的边界](#可中断工作的边界)、[React 在哪里决定让出](#react在哪里决定让出)。
+
+<details>
+<summary>参考回答</summary>
+
+**React 在可让出的工作单元边界检查是否继续，暂停后再安排后续任务，不是在任意 JavaScript 指令处抢占。** 正在执行的组件长循环仍会阻塞主线程。可中断渲染可以优先处理新输入并放弃过时计算，提交则应用准备好的结果。减少计算、拆分工作或使用 Worker 仍有必要，渲染副作用也必须避免。
+
+</details>
+
+### 8.3 React Scheduler 怎样安排优先级，低优先级工作长期得不到执行怎么办？ {#scheduler}
+
+**考察重点**：lane 与宿主任务、再次调度、过期与饥饿。
+
+**相关内容**：[React 在哪里决定让出](#react在哪里决定让出)、[lanes、优先级与饥饿](#lanes优先级与饥饿)。
+
+<details>
+<summary>参考回答</summary>
+
+**React 根据待处理更新的优先级与状态选择工作，再通过 Scheduler 安排执行、让出和继续。** React 18.3.1 的浏览器路径可使用 MessageChannel，不是把所有工作交给 requestIdleCallback。适用的更新可被标记过期，过期后相应路径不再继续时间切片，以缓解饥饿。lanes 与 Scheduler 的五类任务优先级不同，过期规则也不等于业务完成时限。
+
+</details>
+
+### 8.4 useTransition 怎样改善输入体验，回调里的耗时计算会被延迟吗？ {#transition}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：紧急输入、非紧急结果、同步回调与版本边界。
+
+**相关内容**：[Transition 更新](#transition更新)。
+
+<details>
+<summary>参考回答</summary>
+
+**把输入当前值作为及时更新，把可以稍后显示的结果更新标为 Transition；回调本身立即执行。** 因此不能在回调里先做巨大同步筛选并期待它自动延后。useTransition 提供 isPending，独立 startTransition 只负责标记更新。React 18 的同步范围与 React 19 异步 Action 行为需要分开，await 后的 setter 仍应按规则重新包裹。
+
+</details>
+
+### 8.5 useDeferredValue 与防抖、Transition 有什么区别？ {#deferred-value}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：延后值、更新标记、时间窗口与请求频率。
+
+**相关内容**：[useDeferredValue](#usedeferredvalue)。
+
+<details>
+<summary>参考回答</summary>
+
+**useDeferredValue 为部分界面保留旧值并尝试后台更新，Transition 标记 setter 触发的非紧急更新，防抖则按时间窗口限制触发。** useDeferredValue 没有固定等待毫秒数，也不自动减少请求。列表需要能在旧值未变时跳过昂贵计算；新对象身份不断变化可能导致额外后台工作。
+
+</details>
+
+### 8.6 Suspense 怎样配合 lazy 工作，加载失败由谁处理？ {#suspense}
+
+**考察重点**：渲染时等待、加载 Promise、后备内容与错误边界。
+
+**相关内容**：[等待、失败与边界](#等待失败与边界)、[普通异步任务不会自动触发 Suspense](#普通异步任务不会自动触发suspense)。
+
+<details>
+<summary>参考回答</summary>
+
+**lazy 在首次尝试渲染时调用加载器，尚未完成时让渲染暂停，Suspense 显示或协调相应后备内容。** 成功结果的 default 作为组件渲染，Promise 和结果会被缓存。拒绝属于错误，交给错误边界，而不是把 Suspense 当异常捕获器。普通 Effect 请求没有在渲染阶段暂停，因此不会自动触发 fallback。
+
+</details>
+
+### 8.7 Transition 更新遇到 Suspense 时，为什么可能继续显示旧页面？ {#suspense-transition}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：已经显示的边界、pending、首次挂载与过时工作。
+
+**相关内容**：[已显示内容与首次等待](#已显示内容与首次等待)。
+
+<details>
+<summary>参考回答</summary>
+
+**Transition 表达这份更新可以等待，React 可以保留相应边界已经显示的内容，等新内容准备好再切换。** 用户可通过 isPending 看到正在更新。首次边界没有旧内容时仍可能出现 fallback；新的选择可以取代等待中的渲染，但不会自动取消已经开始的网络请求。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+
+- [React 18 发布说明](https://react.dev/blog/2022/03/29/react-v18)
+- [React 19 发布说明](https://react.dev/blog/2024/12/05/react-19)
+- [React：useTransition](https://react.dev/reference/react/useTransition)
+- [React：useDeferredValue](https://react.dev/reference/react/useDeferredValue)
+- [React：Suspense](https://react.dev/reference/react/Suspense)
+- [React：lazy](https://react.dev/reference/react/lazy)
+- [React 18.3.1：Fiber 数据结构](https://github.com/facebook/react/blob/v18.3.1/packages/react-reconciler/src/ReactFiber.new.js)
+- [React 18.3.1：工作循环](https://github.com/facebook/react/blob/v18.3.1/packages/react-reconciler/src/ReactFiberWorkLoop.new.js)
+- [React 18.3.1：更新 lanes](https://github.com/facebook/react/blob/v18.3.1/packages/react-reconciler/src/ReactFiberLane.new.js)
+- [React 18.3.1：Scheduler](https://github.com/facebook/react/blob/v18.3.1/packages/scheduler/src/forks/Scheduler.js)

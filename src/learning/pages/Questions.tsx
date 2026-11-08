@@ -1,10 +1,10 @@
 import {useEffect, useMemo, useRef, useState} from 'react';
 import clsx from 'clsx';
 import Link from '@docusaurus/Link';
-import {useLocation} from '@docusaurus/router';
+import {useHistory, useLocation} from '@docusaurus/router';
 
 import {reviewHref} from '../article/ArticleParts';
-import {cardStatus, type CardStatus, domainShortLabel, PRIORITY_LABELS, useLearningIndex} from '../content';
+import {cardStatus, type CardStatus, domainShortLabel, PRIORITY_LABELS, priorityForRole, useActiveRoleId, useLearningIndex} from '../content';
 import {loadedCompanyNames} from '../companies';
 import {summarize} from '../review/WeakList';
 import {learnerActions, toDay, useLearner} from '../store';
@@ -13,6 +13,7 @@ import {Companies, formatMonthDay, PriorityDots, StatusTag} from '../ui';
 import {useLearnerFeatures} from '../features';
 import {ClientPage} from '../ui/ClientOnly';
 import {PublicCatalog} from '../ui/PublicCatalog';
+import {RoleSelect} from '../ui/RoleSelect';
 import styles from './Questions.module.css';
 
 const PAGE = 50;
@@ -22,7 +23,7 @@ const RANK: Record<Priority, number> = {must: 0, common: 1, optional: 2};
 
 export default function Questions(): JSX.Element {
   return (
-    <ClientPage title="题库" description="按岗位、领域、考频和练习状态筛选面试题，点开即可翻卡自测。"
+    <ClientPage title="题库" description="按岗位、领域、复习优先级和练习状态筛选面试题，点开即可翻卡自测。"
       noIndex={false} fallback={<PublicCatalog questions />}>
       {() => <QuestionsPage />}
     </ClientPage>
@@ -37,16 +38,30 @@ function QuestionsPage() {
   const index = useLearningIndex();
   const learner = useLearner();
   const features = useLearnerFeatures();
-  const params = new URLSearchParams(useLocation().search);
-  const initialQuery = params.get('q') ?? '';
-  const [roleId, setRoleId] = useState(params.get('role') ?? learner.preferences.roleId ?? '');
+  const location = useLocation();
+  const history = useHistory();
+  const params = new URLSearchParams(location.search);
+  const roleId = useActiveRoleId();
+  const query = params.get('q') ?? '';
+  const topic = index.domains.flatMap(domain => domain.topics).find(item => item.id === params.get('topic'));
+  const updateSearch = (key: string, value: string, replace = false) => {
+    const next = new URLSearchParams(location.search);
+    if (key === 'role') next.delete('topic');
+    next.set(key, value);
+    history[replace ? 'replace' : 'push']({search: `?${next.toString()}`});
+  };
   const [group, setGroup] = useState<string>('');
   const [priorities, setPriorities] = useState<Priority[]>([]);
   const [statuses, setStatuses] = useState<CardStatus[]>([]);
-  const [query, setQuery] = useState(initialQuery);
   const [sort, setSort] = useState<'priority' | 'order'>('priority');
   const [limit, setLimit] = useState(PAGE);
   const search = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    setGroup('');
+    setPriorities([]);
+    setLimit(PAGE);
+  }, [roleId, topic?.id]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -70,18 +85,18 @@ function QuestionsPage() {
     return domain ? domainShortLabel(domain.label) : '';
   };
 
-  const roleCards = ordered.filter(inRole);
+  const roleCards = ordered.filter(inRole).filter(card => !topic || index.articles[card.articleId].topicId === topic.id);
   const groups = useMemo(() => {
     const counts = new Map<string, number>();
     for (const card of roleCards) counts.set(groupOf(card), (counts.get(groupOf(card)) ?? 0) + 1);
     return [...counts.entries()];
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [roleId, index]);
+  }, [roleId, topic?.id, index]);
 
   const needle = query.trim().toLowerCase();
   const filtered = roleCards
     .filter((card) => !group || groupOf(card) === group)
-    .filter((card) => !priorities.length || priorities.includes(index.articles[card.articleId].priority ?? 'optional'))
+    .filter((card) => !roleId || !priorities.length || priorities.includes(priorityForRole(index.articles[card.articleId], roleId) ?? 'optional'))
     .filter((card) => !statuses.length || statuses.includes(cardStatus(card, learner.cards[card.id])))
     .filter(
       (card) =>
@@ -91,9 +106,9 @@ function QuestionsPage() {
         loadedCompanyNames(card.id).some((company) => company.toLowerCase().includes(needle)),
     );
   const sorted =
-    sort === 'priority'
+    sort === 'priority' && roleId
       ? [...filtered].sort(
-          (a, b) => RANK[index.articles[a.articleId].priority ?? 'optional'] - RANK[index.articles[b.articleId].priority ?? 'optional'],
+          (a, b) => RANK[priorityForRole(index.articles[a.articleId], roleId) ?? 'optional'] - RANK[priorityForRole(index.articles[b.articleId], roleId) ?? 'optional'],
         )
       : filtered;
 
@@ -110,22 +125,14 @@ function QuestionsPage() {
       count: learner.examSetup?.count ?? 20,
       timed: learner.examSetup?.timed ?? false,
     });
-    if (roleId !== learner.preferences.roleId) learnerActions.setPreferences({roleId: roleId || undefined});
   };
 
   return (
     <main className={styles.page}>
       <aside className={styles.filters}>
         <div className={styles.filterGroup}>
-          <span className={styles.filterLabel}>目标岗位</span>
-          <select className={styles.select} value={roleId} onChange={(event) => setRoleId(event.target.value)}>
-            {index.roles.map((item) => (
-              <option key={item.id} value={item.id}>
-                {item.label}
-              </option>
-            ))}
-            <option value="">全部岗位</option>
-          </select>
+          <span className={styles.filterLabel}>浏览岗位</span>
+          <RoleSelect roles={index.roles} className={styles.select} value={roleId} onChange={id => updateSearch('role', id)} />
         </div>
         <div className={styles.filterGroup}>
           <span className={styles.filterLabel}>领域</span>
@@ -141,12 +148,14 @@ function QuestionsPage() {
           ))}
         </div>
         <div className={styles.filterGroup}>
-          <span className={styles.filterLabel}>考频</span>
+          <span className={styles.filterLabel}>复习优先级</span>
+          {!roleId && <span className={styles.filterLabel}>选择岗位后可筛选</span>}
           <div className={styles.chips}>
             {PRIORITIES.map((priority) => (
               <button
                 key={priority}
                 type="button"
+                disabled={!roleId}
                 aria-pressed={priorities.includes(priority)}
                 className={clsx(styles.chip, priorities.includes(priority) && styles.chipOn)}
                 onClick={() => setPriorities(toggle(priorities, priority))}>
@@ -175,6 +184,14 @@ function QuestionsPage() {
       </aside>
 
       <section className={styles.main}>
+        <header className={styles.catalogHeader}>
+          <h1>{role ? `${role.label}题库` : '面试题库'}</h1>
+          <Link to={`/topics?${new URLSearchParams({role: roleId, ...(topic ? {topic: topic.id} : {})})}`}>按主题学习 →</Link>
+        </header>
+        {topic && <div className={styles.topicScope}>
+          <span>当前主题：{topic.label}</span>
+          <button type="button" onClick={() => updateSearch('topic', '')}>显示全部主题</button>
+        </div>}
         {features && (
         <div className={styles.banner}>
           <div className={styles.bannerText}>
@@ -188,7 +205,7 @@ function QuestionsPage() {
               </span>
             )}
           </div>
-          <Link className={styles.bannerButton} to="/exam" onClick={prepareExam}>
+          <Link className={styles.bannerButton} to={`/exam?${new URLSearchParams({role: roleId})}`} onClick={prepareExam}>
             设置并开始 →
           </Link>
         </div>
@@ -202,15 +219,15 @@ function QuestionsPage() {
               value={query}
               placeholder="搜索问题，例如「HTTPS 握手过程」"
               onChange={(event) => {
-                setQuery(event.target.value);
+                updateSearch('q', event.target.value, true);
                 setLimit(PAGE);
               }}
             />
           </label>
           <label className={styles.sort}>
             排序：
-            <select value={sort} onChange={(event) => setSort(event.target.value as 'priority' | 'order')}>
-              <option value="priority">考频</option>
+            <select aria-label="题目排序" value={roleId ? sort : 'order'} onChange={(event) => setSort(event.target.value as 'priority' | 'order')}>
+              <option value="priority" disabled={!roleId}>复习优先级</option>
               <option value="order">知识树顺序</option>
             </select>
           </label>
@@ -221,18 +238,18 @@ function QuestionsPage() {
           <div className={styles.headRow} role="row">
             <span role="columnheader">题目</span>
             <span role="columnheader">主题</span>
-            <span role="columnheader">考频</span>
+            <span role="columnheader">复习优先级</span>
             <span role="columnheader">公司</span>
             {features && <span role="columnheader">我的状态</span>}
           </div>
           {sorted.slice(0, limit).map((card) => {
             const article = index.articles[card.articleId];
             return (
-              <Link key={card.id} role="row" className={styles.row} to={reviewHref(article, card)}>
+              <Link key={card.id} role="row" className={styles.row} to={reviewHref(article, card, roleId, topic?.id)}>
                 <span className={styles.question}>{card.question}</span>
                 <span className={styles.topic}>{article.title}</span>
                 <span>
-                  <PriorityDots priority={article.priority} />
+                  <PriorityDots priority={priorityForRole(article, roleId)} />
                 </span>
                 <span>
                   <Companies cardId={card.id} selfTest={card.selfTest} limit={2} />

@@ -1,0 +1,285 @@
+---
+sidebar_position: 1
+knowledge:
+  id: basic-knowledge.python.quality.pytest
+  type: concept
+description: "讲解 pytest 的测试发现、断言、参数化与 fixture 生命周期，通过可运行测试验证隔离和清理，说明标记、失败产物与退出码的边界。"
+keywords: [pytest, fixture, 参数化测试, 测试隔离, 断言, 测试退出码]
+---
+
+# pytest
+
+**pytest** 是 Python 测试框架，负责发现测试、准备依赖、执行检查并报告结果。测试函数中的断言定义“什么算通过”，fixture 管理环境和数据，参数化让同一规则覆盖多组输入。
+
+使用框架的关键是让失败可观察、用例可独立运行、资源能正确释放。本文以 pytest 8.4 的机制为准；测试设计和替身的共同原则分别见 [测试金字塔](../../java/quality/test-pyramid-contract-regression.mdx)与[测试替身](../../java/quality/test-doubles-mock-stub-boundaries.mdx)。
+
+## 1. 面试核心 {#core}
+
+- pytest 根据命名和配置发现测试，**测试函数没有被收集就没有执行**。在预期存在测试的任务里，零测试不能当成“全部通过”。[卡](#pytest-workflow)
+- 使用明确断言核对结果，并用 `pytest.raises` 表达期望异常。**没有抛错不等于已经验证业务结果**。[卡](#assertion-contract)
+- fixture 通过名称声明依赖，默认 `function` 作用域。**作用域决定复用范围，不保证共享的可变状态对每个测试都自动重置**。[卡](#fixture-scope)
+- `yield` fixture 把准备和清理分开，**测试失败后仍会清理已经成功建立的 fixture；准备在 yield 前失败时，需要处理自己的部分资源**。[卡](#fixture-cleanup)
+- 参数化会生成不同测试项，但**参数对象不会自动深拷贝**。修改共享参数可能污染后续执行。[卡](#parametrization-isolation)
+- `skip`、`xfail` 和正常通过含义不同。**报告必须保留这些状态，并通过退出码把失败传递给持续集成**。[卡](#result-status)
+
+## 2. 发现与执行 {#发现与执行}
+
+默认规则会收集 `test_*.py` 或 `*_test.py` 文件中的测试函数等对象。初学时先用独立的 `test_` 函数，避免把测试发现和复杂类初始化混在一起。
+
+将下面的内容保存为 `test_counts.py`：
+
+```python
+import pytest
+
+def positive_count(text):
+    count = int(text)
+    if count <= 0:
+        raise ValueError("count must be positive")
+    return count
+
+def test_positive_count():
+    assert positive_count("2") == 2
+
+def test_zero_is_rejected():
+    with pytest.raises(ValueError, match="positive"):
+        positive_count("0")
+```
+
+在已经安装 pytest 的目标环境中运行：
+
+```bash
+python -m pytest -q test_counts.py
+```
+
+结果应为两项通过。`python -m pytest` 使用当前指定的解释器加载框架，依赖和运行环境的关系见 [Python 包管理与虚拟环境](../engineering/packages-environments.mdx#依赖安装与环境重建)。
+
+可以先用 `--collect-only` 检查发现了哪些测试，用 `-k` 选择名称表达式匹配的测试，或直接指定节点 `test_counts.py::test_zero_is_rejected`。选择条件可能把测试全部过滤掉，持续集成需要保留收集数量和退出状态。
+
+## 3. 断言与失败证据 {#断言与失败证据}
+
+**断言**把观察结果与期望规则进行比较。pytest 能对测试中的普通 `assert` 提供较详细的失败信息，但期望结果是否正确仍取决于测试设计。
+
+`assert positive_count("2") == 2` 同时指定输入和结果。只调用函数而不检查返回值，只能说明这次调用没有向外抛出未处理异常，无法验证函数是否返回正确数字。
+
+接口测试先按契约确定检查目标，再用 `assert` 表达实际与期望的比较；业务维度见[接口测试](../../../tools-and-frameworks/testing/api-testing.mdx#多层断言)。断言不要简单从当前输出复制期望值，否则错误实现和错误期望可能一起通过。
+
+`pytest.raises` 应只包住预期抛异常的最小操作。把大量准备和验证都放进去，可能因为准备代码意外抛出同类异常而得到错误的通过结果。
+
+可以主动验证失败路径：把示例中 `positive_count("2")` 的期望值临时改为 `3`，应出现断言失败并返回非零退出码。这个检查证明框架能传递失败，但不代替对所有业务边界的测试。
+
+## 4. fixture 与依赖 {#fixture-与依赖}
+
+**fixture** 是提供测试依赖并管理其生命周期的函数。测试通过参数名称请求它，pytest 决定何时建立、复用和清理。
+
+```python
+import pytest
+
+@pytest.fixture
+def sample_file(tmp_path):
+    path = tmp_path / "result.txt"
+    path.write_text("ready", encoding="utf-8")
+    try:
+        yield path
+    finally:
+        path.unlink(missing_ok=True)
+
+def test_read_sample(sample_file):
+    assert sample_file.read_text(encoding="utf-8") == "ready"
+
+def test_change_sample(sample_file):
+    sample_file.write_text("changed", encoding="utf-8")
+    assert sample_file.read_text(encoding="utf-8") == "changed"
+```
+
+`sample_file` 依赖内置 `tmp_path`，每个测试默认得到自己的临时路径和文件。改变一个测试里的内容不会影响另一个测试；这种隔离来自 fixture 的创建策略，不是因为测试函数名字不同就自动隔离。
+
+共享 fixture 可以放在适用目录的 `conftest.py`，测试文件不需要手动导入它。不要把所有准备都设成自动使用的 `autouse` fixture，隐藏依赖会让单个测试需要什么难以判断。
+
+### 4.1 作用域 {#fixture-作用域}
+
+| scope | 典型复用范围 | 需要考虑 |
+| --- | --- | --- |
+| `function` | 一个测试项 | 隔离直接，创建可能重复 |
+| `class` | 一个测试类 | 类内测试共享实例或资源时要清理状态 |
+| `module` | 一个测试模块 | 数据变化可能影响同模块后续测试 |
+| `package` | 一个测试包 | 需要明确包范围与依赖关系 |
+| `session` | 当前测试会话 | 创建少，但共享状态和长期资源风险更大 |
+
+同一测试内多次请求同一个 fixture，通常复用该次准备的结果，不会每次重新调用创建函数。参数化和不同作用域会影响实例何时更换，不能把“session”简单理解成整个系统永久只有一个实例。
+
+宽作用域 fixture 不能直接依赖更窄作用域 fixture，否则生命周期不相容。并行执行插件还有工作进程边界，单个进程中的 session 复用不等于跨进程只创建一次。
+
+### 4.2 准备与清理失败 {#fixture-准备与清理失败}
+
+代码执行到 `yield` 后，测试开始使用依赖；测试结束时继续执行后面的清理。测试断言失败不会跳过已经成功准备好的 fixture 清理。
+
+如果 fixture 在 `yield` 之前抛异常，它还没有完成准备，不能依赖 `yield` 后的普通代码回收部分资源。可以在获取单个资源后立即用 `try/finally` 保护，或把独立资源拆成多个 fixture，使每个成功步骤都有对应收尾。
+
+清理失败会单独影响测试结果。报告里需要区分测试断言失败、准备错误和清理错误，不能把全部情况都归为“业务接口失败”。
+
+## 5. 参数化 {#参数化}
+
+**参数化测试**把同一条检查规则应用于多组明确输入，每组形成独立测试项。
+
+```python
+import pytest
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [("0", 0), ("12", 12), ("-2", -2)],
+    ids=["zero", "positive", "negative"],
+)
+def test_integer_conversion(text, expected):
+    assert int(text) == expected
+```
+
+这里会收集三项测试，失败时可以定位到对应参数 ID。参数应来自输入划分或约束，不能只为了增加数量重复相同风险。
+
+参数值按原对象传入，不会自动复制。如果多个参数项引用同一个列表，而测试修改了它，后续项可能看到变化。需要独立可变数据时，使用 fixture 工厂创建新对象，或者按数据结构显式复制。
+
+多重参数化会组合参数集合，数量可能快速增长。对业务上非法或没有价值的组合，应依据约束选择有效输入，而不是把全部组合都机械执行。
+
+## 6. 替换依赖与执行结果 {#替换依赖与执行结果}
+
+测试需要临时调整环境变量或函数依赖时，可以使用 `monkeypatch`，让替换在测试结束后恢复。替换的位置应是被测代码实际查找依赖的位置，不能只改另一个模块里不再使用的原始名称。
+
+```python
+import os
+
+def current_mode():
+    return os.getenv("CODING101_TEST_MODE", "normal")
+
+def test_environment_mode(monkeypatch):
+    monkeypatch.setenv("CODING101_TEST_MODE", "test")
+    assert current_mode() == "test"
+```
+
+这个例子验证环境读取的逻辑，不能据此证明真实外部服务可用。测试替身仍需要与真实集成证据配合，不能因为替换后测试稳定就断定系统集成正确。
+
+执行状态也有不同含义：
+
+| 状态 | 表示什么 | 处理要求 |
+| --- | --- | --- |
+| passed | 已执行检查且未失败 | 仍只覆盖实际断言范围 |
+| failed / error | 断言或相应执行阶段失败 | 保留输入、环境和失败产物 |
+| skipped | 当前条件下没有执行 | 说明原因，不计作验证通过 |
+| xfailed | 已执行且按已知问题预期失败 | 保留已知问题与退出条件 |
+| xpassed | 预期失败的测试意外通过 | 检查问题是否已修复；可用 strict 策略让它失败以促使更新 |
+
+使用 `xfail(strict=True)` 可以在意外通过时让该项报告失败，避免已知问题标记一直留存。自定义标记应在配置中注册，并可使用严格标记检查减少拼写错误。
+
+持续集成应读取进程退出码。pytest 的退出码 `0` 表示收集并执行的测试成功，`1` 表示测试失败，`5` 表示没有收集到测试；其他错误也有独立退出码。报告文件只是结果载体，生成了报告并不意味着执行成功。
+
+```bash
+python -m pytest -q --junitxml=report.xml
+```
+
+这条命令生成可供持续集成读取的 JUnit XML。任务仍应依据退出码决定结果，并保存失败日志和必要输入，而不是只检查 `report.xml` 是否存在。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 怎样用 pytest 组织一套可重复运行的测试？ {#pytest-workflow}
+
+**考察重点**：发现、准备、执行、结果和环境的一致性。
+
+**相关内容**：[发现与执行](#发现与执行)、[fixture 与依赖](#fixture-与依赖)、[替换依赖与执行结果](#替换依赖与执行结果)。
+
+<details>
+<summary>参考回答</summary>
+
+**先让测试能被稳定收集，再把准备与清理放进明确的 fixture，用断言定义通过条件。** 参数化组织不同输入，确保可变数据按测试隔离；运行时固定解释器、依赖和必要配置。
+
+执行后检查收集数量、通过失败状态与退出码，并保留失败产物。没有执行到测试、跳过和正常通过应分别报告，不能只看生成了一份报告。
+
+</details>
+
+### 7.2 pytest 怎样实现接口断言并将失败传递给测试框架？ {#assertion-contract}
+
+**考察重点**：普通断言、期望异常、失败信号与执行结果。
+
+**相关内容**：[断言与失败证据](#断言与失败证据)。
+
+<details>
+<summary>参考回答</summary>
+
+**用普通 `assert` 比较响应中的实际值与契约期望，让断言失败直接交给 pytest 记录。** 不要捕获失败后只打印日志，否则框架可能将测试判为通过。
+
+HTTP 错误响应使用相应状态与字段断言；只有代码按约定抛异常时才使用 `pytest.raises`，并只包住目标调用。主动改变一个期望值，确认测试失败且退出码为 `1`，可以核验失败信号是否有效。
+
+</details>
+
+### 7.3 fixture 的 scope 有哪些，扩大作用域会带来什么变化？ {#fixture-scope}
+
+**考察重点**：生命周期、依赖兼容性和共享状态。
+
+**相关内容**：[fixture 作用域](#fixture-作用域)。
+
+<details>
+<summary>参考回答</summary>
+
+**常见作用域是 function、class、module、package 和 session，默认 function。** 扩大作用域可以减少昂贵准备的重复执行，但更多测试会复用同一对象或资源。
+
+共享可变状态需要明确重置，不会因为换了测试函数就自动清空。宽作用域不能依赖更窄作用域；使用并行工作进程时还要考虑每个进程的会话边界。
+
+</details>
+
+### 7.4 测试失败或 fixture 准备失败时，yield 后的清理都会执行吗？ {#fixture-cleanup}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：准备完成的边界、测试失败与部分资源收尾。
+
+**相关内容**：[fixture 准备与清理失败](#fixture-准备与清理失败)。
+
+<details>
+<summary>参考回答</summary>
+
+**测试失败后，已经成功执行到 `yield` 的 fixture 仍会清理；在 `yield` 之前准备失败的 fixture，不能依赖后面的普通代码收尾。**
+
+对获取了一部分资源后可能失败的准备过程，应立即用 `try/finally` 保护已获取资源，或拆分 fixture。清理本身失败也要在结果中保留，不能只看测试函数的断言状态。
+
+</details>
+
+### 7.5 参数化测试会自动复制每组列表或字典参数吗？ {#parametrization-isolation}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：测试项独立与对象状态独立的区别。
+
+**相关内容**：[参数化](#参数化)。
+
+<details>
+<summary>参考回答</summary>
+
+**不会自动深拷贝，参数对象按原样传入。** 多组参数如果共享同一可变对象，前一个测试的修改可能影响后面的测试。
+
+可以用 fixture 工厂为每项创建独立数据，或按结构显式复制。增加参数 ID 只能帮助定位测试项，不会改变对象共享关系。
+
+</details>
+
+### 7.6 skip、xfail 与通过有什么区别，持续集成应怎样判断结果？ {#result-status}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：执行覆盖、已知缺陷和进程级失败信号。
+
+**相关内容**：[替换依赖与执行结果](#替换依赖与执行结果)。
+
+<details>
+<summary>参考回答</summary>
+
+**skip 表示没有执行，xfail 表示按已知问题预期失败，通过表示已执行的检查没有失败。** 三者不能合并成同一个“成功覆盖”数量。
+
+持续集成应读取退出码并保留报告。退出码 `5` 表示没有收集到测试；已知缺陷可以用严格 xfail 策略促使意外通过时更新标记。报告存在只证明生成了文件，不证明测试完成且通过。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [pytest 8.4：测试调用与选择](https://docs.pytest.org/en/8.4.x/how-to/usage.html)
+- [pytest 8.4：断言与异常](https://docs.pytest.org/en/8.4.x/how-to/assert.html)
+- [pytest 8.4：fixtures](https://docs.pytest.org/en/8.4.x/how-to/fixtures.html)
+- [pytest 8.4：参数化](https://docs.pytest.org/en/8.4.x/how-to/parametrize.html)
+- [pytest 8.4：monkeypatch](https://docs.pytest.org/en/8.4.x/how-to/monkeypatch.html)
+- [pytest 8.4：skip 与 xfail](https://docs.pytest.org/en/8.4.x/how-to/skipping.html)
+- [pytest 8.4：退出码](https://docs.pytest.org/en/8.4.x/reference/exit-codes.html)

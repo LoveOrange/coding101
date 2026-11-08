@@ -1,0 +1,312 @@
+---
+sidebar_position: 8
+knowledge:
+  id: basic-knowledge.javascript.proxy-reflect
+  type: concept
+description: "解释 Proxy 对对象操作的拦截、Reflect 的转发语义、receiver、代理不变量与身份边界，为响应式实现建立语言基础。"
+keywords: ["Proxy", "Reflect", "receiver", "JavaScript 代理", "响应式前置"]
+---
+
+# Proxy 与 Reflect
+
+**Proxy** 创建一个代理对象，让代码能够拦截经过它的属性读取、赋值、删除和列键等操作。**Reflect** 提供与这些对象操作对应的方法，适合在拦截后继续执行原有语义。代理是新的对象，直接访问原目标不会自动经过代理。
+
+两者一起使用时，重点是保留接收者、正确报告操作结果，并遵守目标对象不可配置属性等约束。它们提供响应式、校验和访问控制的基础能力，但不会自动完成依赖管理，也不是任意对象的透明包装器。
+
+## 1. 面试核心 {#core}
+
+- Proxy 拦截的是**经过代理对象的操作**，不是给原对象安装一套无处不在的监听器。代理与目标具有不同身份，嵌套对象也不会自动变成代理。[卡](#proxy-operations)
+- `get`、`set`、`has`、`deleteProperty`、`ownKeys` 等处理不同操作。**属性赋值与属性定义不是同一入口**，只实现 `set` 不等于能记录所有变化。[卡](#access-interception)
+- `Reflect.get`/`Reflect.set` 的 `receiver` 关系到访问器的 `this` 和最终写入位置。**默认转发时保留 receiver，才能保留继承与访问器语义**。[卡](#receiver)
+- `set` 等拦截器要正确报告成功或失败。**返回 `true` 不等于已经写入，返回 `false` 在严格模式赋值中会导致异常**。[卡](#trap-result)
+- Proxy 不能任意伪造目标状态。**不可配置属性、不可扩展对象等约束仍然要成立，违背不变量会抛 `TypeError`**。[卡](#invariants)
+- Map 内部状态和类私有字段不会复制到代理上。**改变接收者来适配特殊对象，是明确的语义选择，不能当作所有代理的通用修复**。[卡](#proxy-boundaries)
+
+## 2. 代理与对象操作 {#代理与对象操作}
+
+`new Proxy(target, handler)` 接收目标对象和处理器对象。处理器里的拦截函数也称 **trap**，它们在对应操作发生时执行；未定义的拦截通常转发给目标。
+
+| 外部操作 | 对应的主要拦截器 | 说明 |
+| --- | --- | --- |
+| `proxy.key` | `get` | 读取属性 |
+| `proxy.key = value` | `set` | 赋值，可能继续涉及属性定义 |
+| `"key" in proxy` | `has` | 判断属性存在性 |
+| `delete proxy.key` | `deleteProperty` | 删除自有属性 |
+| `Reflect.ownKeys(proxy)` | `ownKeys` | 列出全部自有键 |
+| `Object.defineProperty(proxy, key, descriptor)` | `defineProperty` | 定义或调整自有属性 |
+| `proxy(...args)` / `new proxy(...args)` | `apply` / `construct` | 目标本身还必须具有调用或构造能力 |
+
+一个高层操作可能触发多个拦截器。例如 `Object.keys` 不只需要键列表，还会检查属性是否可枚举；不能简单把每个 API 和某个 trap 一一等同。
+
+```js
+const target = { count: 1 };
+const seen = [];
+const proxy = new Proxy(target, {
+  get(target, key, receiver) {
+    seen.push(key);
+    return Reflect.get(target, key, receiver);
+  },
+});
+
+console.log(proxy.count); // 1
+console.log(target.count); // 1
+console.log(seen); // ["count"]
+console.log(proxy === target); // false
+```
+
+读取 `target.count` 没有经过代理，因此没有第二条记录。引用相等、Map 键和 WeakMap 键都会区分 `proxy` 与 `target`。需要稳定身份的系统，通常要维护“同一目标返回同一代理”的缓存，而不是每次读取都创建一个新代理。
+
+## 3. Reflect 与默认转发 {#reflect-与默认转发}
+
+Reflect 把对象内部操作暴露为普通函数。它不是只能配合 Proxy 使用，也不是让操作“跳过代理”的特殊通道：把代理作为 Reflect 的目标，仍然会触发对应拦截。
+
+在 `get` 中读取 `receiver[key]`，可能再次进入同一个 `get`，形成递归；常见的默认转发方式是 `Reflect.get(target, key, receiver)`，目标使用传入的 `target`，接收者保持 `receiver`。
+
+### 3.1 receiver 与 getter {#receiver-与-getter}
+
+`Reflect.get(target, key, receiver)` 沿 `target` 查找属性；如果遇到 getter，则以 `receiver` 作为 getter 的 `this`。直接写 `target[key]` 会让接收者变成 `target`，可能绕开代理里的其他读取。
+
+```js
+const target = {
+  name: "Lin",
+  get label() { return this.name; },
+};
+const keys = [];
+const proxy = new Proxy(target, {
+  get(target, key, receiver) {
+    keys.push(key);
+    return Reflect.get(target, key, receiver);
+  },
+});
+
+console.log(proxy.label); // Lin
+console.log(keys);        // ["label", "name"]
+```
+
+读取 `label` 后，getter 的 `this` 是 `proxy`，所以 `this.name` 再次经过代理。如果改成 `return target[key]`，getter 中的 `this` 就是原对象，`name` 的读取不会经过该代理。这会影响基于读取记录依赖的系统。
+
+### 3.2 receiver 与 setter、继承赋值 {#receiver-与-setter-继承赋值}
+
+`Reflect.set` 也保留赋值时的接收者。它会按目标及其原型上的描述符决定如何写入：遇到 setter 时以 `receiver` 调用；按数据属性规则建立属性时，通常写到接收者上。
+
+```js
+const base = { count: 1 };
+const child = Object.create(base);
+console.log(Reflect.set(base, "count", 2, child)); // true
+console.log(base.count, child.count);             // 1 2
+console.log(Object.hasOwn(child, "count"));        // true
+```
+
+这个例子解释了为什么不能总把 `target[key] = value` 当成等价转发：它会直接修改 `base`，而正确保留接收者时，赋值在 `child` 上建立自有属性。写入是否成功仍受可写性、setter 和可扩展性限制。
+
+## 4. 读取与写入拦截 {#读取与写入拦截}
+
+对于简单校验，可以在 `set` 中检查输入，再把操作转发给目标。下面只校验通过赋值入口设置的 `score`，其他写入入口不在这个示例的承诺范围内。
+
+```js
+"use strict";
+const target = { score: 0 };
+const record = new Proxy(target, {
+  get(target, key, receiver) {
+    return Reflect.get(target, key, receiver);
+  },
+  set(target, key, value, receiver) {
+    if (key === "score" && !Number.isFinite(value)) return false;
+    return Reflect.set(target, key, value, receiver);
+  },
+});
+
+record.score = 80;
+console.log(record.score, target.score); // 80 80
+try { record.score = NaN; }
+catch (error) { console.log(error.name); } // TypeError
+```
+
+`set` 的结果会按布尔值解释；失败在严格模式赋值中表现为 `TypeError`。在非严格模式下通常静默失败，调用方不应靠它得到明确的校验反馈。实际业务也可以主动抛出更具体的错误。
+
+拦截器返回 `true` 只是报告操作成功，Proxy 不会随后替它补做赋值。默认转发应返回 `Reflect.set` 的真实结果；目标的 setter、其他代理等逻辑仍可能抛错，所以 Reflect 方法也不保证把所有异常都转换成 `false`。
+
+`Object.defineProperty(record, "score", ...)` 走的是属性定义入口，直接写 `target.score` 又会绕过代理。若要建立强制约束，必须控制这些入口或采用更明确的封装。反过来，`Reflect.set(target, key, value, receiver)` 的接收者若是代理，又可能继续触发 `defineProperty`；同时记录多个 trap 时要避免把一次逻辑更新重复通知。
+
+与描述符的分工见 [JavaScript 对象属性](./object-properties.mdx#属性定义与对象代理)。描述符 getter/setter 只定义对应属性的行为，Proxy 可以代理更多操作，但它不会自动产生依赖图和更新调度。
+
+## 5. 代理不变量 {#代理不变量}
+
+**不变量**是代理仍必须遵守的对象约束，用来保证不可配置属性和不可扩展状态等基础语义不会被任意伪造。
+
+例如，目标存在不可配置、不可写的自有数据属性时，`get` 不能报告不同的值：
+
+```js
+const target = {};
+Object.defineProperty(target, "id", { value: 1 });
+const proxy = new Proxy(target, {
+  get() { return 2; },
+});
+
+try { console.log(proxy.id); }
+catch (error) { console.log(error.name); } // TypeError
+```
+
+`id` 省略的 `writable` 和 `configurable` 默认都是 `false`，代理返回 `2` 与受保护的数据值冲突。类似地，`ownKeys` 不能漏掉不可配置的自有键；目标不可扩展时，返回的键集合也必须与目标自有键保持一致，不能添加不存在的键或隐藏已有键。
+
+这些检查发生在拦截器结果返回之后，所以“我的 trap 正常返回了”不代表整个对象操作一定成功。需要过滤字段时，应明确数据接口或产生新的投影对象，而不是假定任何原对象都能被代理伪装成另一种结构。
+
+## 6. 嵌套、内部状态与撤销 {#嵌套-内部状态与撤销}
+
+### 6.1 嵌套对象不自动代理 {#嵌套对象不自动代理}
+
+代理只包装传入的那个对象。读取嵌套字段时，如果返回的是原来的子对象，后续对这个子对象的操作就不会经过外层代理。
+
+```js
+const target = { nested: { count: 1 } };
+const keys = [];
+const proxy = new Proxy(target, {
+  get(target, key, receiver) {
+    keys.push(key);
+    return Reflect.get(target, key, receiver);
+  },
+});
+proxy.nested.count = 2;
+console.log(keys);                // ["nested"]
+console.log(target.nested.count); // 2
+```
+
+这里没有拦截到子对象的 `count` 写入。深层响应式通常需要在读取嵌套对象时继续包装，并用缓存维持代理身份。只对外层 `new Proxy` 一次，不会自动解决深层访问、循环结构或重复包装。
+
+### 6.2 内置对象与私有字段 {#内置对象与私有字段}
+
+代理与目标不是同一个对象，目标的内部状态也不会自动复制到代理上。Map 的 `size`、方法以及类私有字段，可能要求接收者具有特定内部状态。
+
+```js
+const map = new Map([["key", 1]]);
+const proxy = new Proxy(map, {});
+try { console.log(proxy.size); }
+catch (error) { console.log(error.name); } // TypeError
+```
+
+`Map.prototype` 上的 `size` getter 接收的是代理，而代理自身没有 Map 条目使用的内部状态。类的方法通过 `this.#field` 访问私有字段时，也可能因为 `this` 是代理而失败。
+
+有些专用包装器会让 getter 或方法使用原目标作为接收者，但这会改变默认 receiver 语义，也可能使方法内部访问绕过代理。把所有函数都临时 `bind(target)` 还会产生新的函数身份。应该按对象类型设计适配，不把这种做法当成通用响应式实现。
+
+### 6.3 可撤销代理 {#可撤销代理}
+
+`Proxy.revocable` 返回代理和撤销函数。撤销后，经由该代理执行需要转发的对象操作会抛 `TypeError`；原目标仍然存在，直接持有它的代码不会因此失去访问能力。
+
+```js
+const target = { value: 1 };
+const { proxy, revoke } = Proxy.revocable(target, {});
+console.log(proxy.value); // 1
+revoke();
+try { console.log(proxy.value); }
+catch (error) { console.log(error.name); } // TypeError
+console.log(target.value); // 1
+```
+
+撤销适合结束通过某个入口提供的访问能力。它不是销毁对象或清除所有引用，也不负责释放对象关联的外部资源。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 Proxy 能拦截哪些操作，原对象与嵌套对象会自动受到拦截吗？ {#proxy-operations}
+
+**考察重点**：操作入口、对象身份和代理范围。
+
+**相关内容**：[代理与对象操作](#代理与对象操作)、[嵌套对象不自动代理](#嵌套对象不自动代理)。
+
+<details>
+<summary>参考回答</summary>
+
+**Proxy 可以拦截经过代理的读取、赋值、删除、属性存在性、列键等对象操作。** 它与目标是不同对象，直接访问目标不经过这套拦截。
+
+嵌套对象若原样返回，后续访问也不会自动被外层代理拦截。深层响应式需要继续代理嵌套值并管理稳定身份，还需要依赖收集和更新调度，单独一个 Proxy 不是完整响应式系统。
+
+</details>
+
+### 7.2 怎样用 Proxy 实现属性读写拦截，并在写入时校验值？ {#access-interception}
+
+**考察重点**：get/set、校验时机、默认转发和输入入口。
+
+**相关内容**：[读取与写入拦截](#读取与写入拦截)、[Reflect 与默认转发](#reflect-与默认转发)。
+
+<details>
+<summary>参考回答</summary>
+
+**在 `get` 中记录或处理读取后，用 `Reflect.get` 转发；在 `set` 中校验输入，再返回 `Reflect.set` 的操作结果。** 不合法输入可以返回失败或抛出明确异常，默认转发时保留 receiver。
+
+只设置 `set` 不能约束直接操作原对象或调用属性定义 API 的路径。若业务要求强制校验，必须控制这些入口，不能把一段读写日志示例当成完整访问控制。
+
+</details>
+
+### 7.3 为什么 Reflect.get 和 Reflect.set 转发时需要保留 receiver？ {#receiver}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：属性查找目标与实际接收者的区别。
+
+**相关内容**：[receiver 与 getter](#receiver-与-getter)、[receiver 与 setter、继承赋值](#receiver-与-setter-继承赋值)。
+
+<details>
+<summary>参考回答</summary>
+
+**receiver 决定访问器调用的 `this`，并影响数据属性最终写到哪个对象上。** 查找从 target 开始，不代表所有行为都应使用 target 作为接收者。
+
+读取 getter 时保留代理接收者，getter 内部的属性读取才能继续经过代理；继承赋值时，保留子对象接收者才能避免错误修改原型对象。直接用 `target[key]` 或给 target 赋值可能改变这些语义。
+
+</details>
+
+### 7.4 set 拦截器返回 true 或 false 分别意味着什么？ {#trap-result}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：报告结果、实际写入、严格模式和异常传播。
+
+**相关内容**：[读取与写入拦截](#读取与写入拦截)。
+
+<details>
+<summary>参考回答</summary>
+
+**返回 `true` 表示拦截器报告成功，并不会让 Proxy 自动补做赋值；返回 `false` 表示失败，严格模式赋值会抛 `TypeError`。** 默认转发时应返回 `Reflect.set` 的真实结果。
+
+目标访问器或代理逻辑仍可能抛错，Reflect 不是统一吞掉异常的包装层。返回成功也不能违反目标的不可写、不可配置属性等不变量。
+
+</details>
+
+### 7.5 Proxy 为什么不能任意隐藏属性或伪造读取结果？ {#invariants}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：不可配置属性、不可扩展状态和代理不变量。
+
+**相关内容**：[代理不变量](#代理不变量)。
+
+<details>
+<summary>参考回答</summary>
+
+**代理仍必须遵守目标对象的关键约束，违背不变量会抛 `TypeError`。** 例如不可配置且不可写的自有数据属性，`get` 不能返回不同值；`ownKeys` 不能漏掉不可配置自有键。
+
+目标不可扩展时，列出的自有键集合还必须与目标一致。需要对外提供不同字段结构时，可以明确构造投影对象，而不是承诺任意代理都能隐藏或改写全部状态。
+
+</details>
+
+### 7.6 为什么空处理器代理也可能无法正常使用 Map 或类私有字段？ {#proxy-boundaries}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：代理身份、内部状态、接收者适配与代价。
+
+**相关内容**：[内置对象与私有字段](#内置对象与私有字段)。
+
+<details>
+<summary>参考回答</summary>
+
+**代理是另一个对象，不自动拥有原目标的内部槽或私有字段。** 某些内置 getter、方法或私有字段访问要求接收者具有对应状态，以代理作为 `this` 就会失败。
+
+专用包装器可以按需把接收者恢复为目标，但会改变默认语义，可能绕开方法内部访问的代理拦截，也需要处理函数身份。不能把“所有方法都 bind 原对象”当作透明代理的通用方案。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [MDN：Proxy](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Proxy)
+- [MDN：Reflect.get](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Reflect/get)
+- [MDN：Reflect.set](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Reflect/set)
+- [ECMAScript：Proxy Object Internal Methods and Internal Slots](https://tc39.es/ecma262/multipage/ordinary-and-exotic-objects-behaviours.html#sec-proxy-object-internal-methods-and-internal-slots)

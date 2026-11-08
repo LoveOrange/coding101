@@ -1,0 +1,361 @@
+---
+sidebar_position: 6
+knowledge:
+  id: basic-knowledge.nodejs.service-lifecycle
+  type: concept
+description: "说明 Node.js 服务的启动就绪、流量排空、资源清理、退出时限与异常恢复，并验证信号和连接关闭的边界。"
+keywords: ["Node.js", "服务生命周期", "readiness", "SIGTERM", "优雅退出", "连接排空", "未捕获异常"]
+---
+
+# Node.js 服务生命周期
+
+**服务生命周期**是一个实例从初始化、开始接收请求，到停止接收新工作、完成清理并退出的过程。Node.js 能监听端口，不代表业务依赖已经可用；收到终止信号，也不代表所有请求、后台任务和连接都已经结束。
+
+服务发布时要避免把流量交给未准备好的实例，下线时要尽量完成已经接收的工作，同时给等待设置上限。本文以 Node.js 22 的 HTTP 服务为例，区分正常排空、强制终止和异常崩溃；平台上的实例发现与探针配置参见 [服务发现](../../system-design/microservices/service-discovery-health-checks.mdx#liveness-与-readiness)。
+
+## 1. 面试核心 {#core}
+
+- 启动需要完成必要配置、资源初始化和可服务条件检查。**端口已经监听，只证明入口存在，不能代替就绪状态**。[卡](#startup-readiness)
+- readiness 回答能否接流量，liveness 回答实例是否需要被重启。**共享依赖暂时故障不一定应该触发所有实例一起重启**。[卡](#health-checks)
+- 正常下线先停止接收新工作，再排空在途工作，最后关闭依赖。**先关闭数据库连接池，再等待仍在使用它的请求，会主动制造失败**。[卡](#shutdown-order)
+- `server.close()` 停止接受新连接并等待 HTTP 连接关闭。**它不会自动关闭数据库、取消所有后台任务或处理升级后的 WebSocket 连接**。[卡](#connection-drain)
+- 清理必须有总时限。**JavaScript 定时器只能在事件循环能够运行时触发，外部监督机制仍要负责最终强制终止**。[卡](#shutdown-deadline)
+- `process.exitCode` 设置自然退出时使用的状态；`process.exit()` 立即终止。**立即退出不会等待未完成的异步 I/O，`exit` 监听器也不能用来等待异步清理**。[卡](#exit-behavior)
+- 未捕获异常后不能假定进程状态可靠。**记录最小故障信息并由外部监督机制替换实例，不能只装一个异常监听器就继续正常服务**。[卡](#fatal-error)
+
+## 2. 启动与健康状态 {#启动与健康状态}
+
+### 2.1 初始化与就绪 {#初始化与就绪}
+
+初始化先建立服务运行所需的条件，例如读取并校验配置、建立必要连接、检查关键资源。配置缺失或必要依赖初始化失败时，应报告失败并清理已创建的资源，不能仍然把实例标为就绪。
+
+启动可以先完成初始化再监听业务端口，也可以先开放健康检查入口、在初始化完成前拒绝业务请求。后一种方式方便平台区分“正在启动”和“进程没有响应”，但必须让就绪状态真实反映初始化结果。
+
+并不是每个依赖都必须决定整个实例是否就绪。核心查询依赖不可用时，实例可能无法完成主要职责；可选推荐服务不可用时，应用也可能继续提供降级功能。标准取决于接口承诺，不应让一个可选依赖把所有实例同时移出流量池。
+
+### 2.2 存活与就绪的分工 {#存活与就绪的分工}
+
+**存活检查**用于发现需要重启才能恢复的实例问题；**就绪检查**用于决定当前是否适合接收请求。数据库短暂故障时，把所有实例的存活检查都判失败，会导致重启与重新建连一起发生，反而放大故障。
+
+健康检查也不是绕过真实工作能力的装饰。主事件循环被长计算阻塞时，同一线程上的 HTTP 健康检查也可能无法及时响应；外部探测需要自己的超时和失败阈值。过深的探测则会产生额外负载，应围绕关键能力选择检查项。
+
+## 3. 正常下线顺序 {#正常下线顺序}
+
+正常下线的目标是停止新增工作，让已接收的工作在限定时间内完成。一个可解释的顺序是：
+
+1. 将实例标为未就绪，通知流量入口停止选择它，并停止主动领取新任务。
+2. 关闭业务入口或拒绝新的业务请求，处理端点更新尚未传播的时间差。
+3. 等待已经接收的请求和需要完成的后台工作，按协议通知长连接结束或重连。
+4. 关闭数据库连接池、消息连接、客户端连接池、定时器等资源。
+5. 在资源释放后自然退出；超过总时限时记录原因并执行有损终止。
+
+实例从服务发现列表消失，不会自动断开已有连接。HTTP keep-alive 连接还可能继续发送请求，因此应用也需要检查自身状态。平台摘流与应用拒绝新工作配合，才能覆盖传播延迟；具体配置参见 [上下线与连接排空](../../system-design/microservices/service-discovery-health-checks.mdx#上下线与连接排空)。
+
+依赖关闭顺序应与使用关系一致。请求还要访问数据库时，不能先关闭连接池；消息处理任务还没确认结果时，不能先切断用于确认的通道。清理方法还要可以应对重复调用，避免同时释放同一资源。
+
+## 4. HTTP 排空与工作排空 {#http-排空与工作排空}
+
+### 4.1 就绪状态与在途任务 {#就绪状态与在途任务}
+
+下面的最小服务先处于 `starting` 状态，明确就绪后才接受业务请求。业务用四十毫秒的异步等待模拟；任务集合用于说明 HTTP 连接之外还可能存在未结束的工作。
+
+```js
+// service-http.mjs
+import { createServer } from 'node:http';
+import { setTimeout as delay } from 'node:timers/promises';
+
+let state = 'starting';
+const tasks = new Set();
+
+export function markReady() {
+  if (state === 'starting') state = 'ready';
+}
+
+export function markUnready() {
+  state = 'draining';
+}
+
+export async function waitForWork() {
+  await Promise.allSettled([...tasks]);
+}
+
+export const server = createServer((req, res) => {
+  if (state === 'draining') res.setHeader('Connection', 'close');
+  res.once('finish', () => {
+    if (state === 'draining') server.closeIdleConnections();
+  });
+  if (req.url === '/readyz') {
+    res.writeHead(state === 'ready' ? 200 : 503).end(state);
+    return;
+  }
+  if (state !== 'ready') {
+    res.writeHead(503, { Connection: 'close' }).end('unavailable');
+    return;
+  }
+  const task = delay(40).then(() => {
+    if (!res.destroyed) {
+      if (state === 'draining') res.setHeader('Connection', 'close');
+      res.end('ok');
+    }
+  }).catch(error => {
+    res.destroy(error);
+  }).finally(() => tasks.delete(task));
+  tasks.add(task);
+});
+```
+
+初始化完成后调用 `markReady()`，普通请求才得到 `ok`。进入 `draining` 后再调用 `markReady()` 不会重新开放业务入口，避免初始化晚完成时覆盖已经开始的下线状态。
+
+客户端断开后，示例里的异步等待仍会继续，直到任务自己结束。因此，关闭 HTTP 连接不等于所有业务工作结束。真实下游调用应尽可能接收取消信号；确实必须完成的工作则要纳入排空管理。需要跨进程退出仍继续执行的任务，应进入可靠任务系统，不能只留在一个未等待的 Promise 中。
+
+`waitForWork()` 等待集合快照，所以调用前必须已经停止新增工作。若还在接收请求，一次快照无法代表之后新加入的任务。
+
+### 4.2 server.close 的边界 {#server-close-的边界}
+
+Node.js 22 的 `server.close()` 停止接受新连接，并关闭空闲 HTTP 连接；已有活动连接会继续等待。回调触发说明服务器相关连接已关闭，不表示任意 JavaScript 任务或其他客户端连接池也已经关闭。
+
+还要处理关服开始时仍在活动、稍后才变为空闲的连接。Node.js 22.16.0 的 `close()` 在调用时回收空闲连接，原本活动的响应完成后仍可能保持 keep-alive；示例因此在响应 `finish` 时再次调用 `closeIdleConnections()`，只回收已经空闲的 HTTP 连接。尚未发出的响应头同时设置 `Connection: close`，告知客户端不要复用这条连接；已经发出的响应头则无法修改。不能把“调用时关闭空闲连接”理解成所有后续连接状态都已自动处理。
+
+`server.closeAllConnections()` 会强制关闭 HTTP 连接，包括正在处理请求的连接，因此可能让客户端只收到部分响应。与 `server.close()` 配合时，应先停止接受新连接，再强制关闭现有连接，避免两次操作之间又接入新连接。
+
+升级后的 WebSocket 等连接不由 `closeAllConnections()` 统一处理。它们需要单独跟踪，按协议发送关闭通知，并在期限到达后终止。HTTP/2 也有自己的会话与流排空机制，不能直接套用这个 HTTP/1 示例。
+
+## 5. 有期限的退出 {#有期限的退出}
+
+### 5.1 共享一次清理过程 {#共享一次清理过程}
+
+下面的函数把正常下线集中到一个 Promise 中。多次收到信号时复用同一个清理过程，避免重复关闭连接池。示例约定服务器已经监听，初始化结果也已经可用；启动失败时应由启动流程清理它已经创建的资源。
+
+```js
+// shutdown.mjs
+import { writeSync } from 'node:fs';
+
+export function createShutdown({
+  server, markUnready, waitForWork, closeResources, timeoutMs = 1000,
+}) {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 60_000) {
+    throw new RangeError('invalid shutdown timeout');
+  }
+  let completion;
+  return function shutdown() {
+    if (completion) return completion;
+    completion = (async () => {
+      markUnready();
+      const timer = setTimeout(() => {
+        writeSync(2, 'shutdown deadline exceeded\n');
+        server.closeAllConnections();
+        process.exit(1);
+      }, timeoutMs);
+      try {
+        await new Promise((resolve, reject) => {
+          server.close(error => error ? reject(error) : resolve());
+        });
+        await waitForWork();
+        await closeResources();
+        process.exitCode = 0;
+      } catch {
+        writeSync(2, 'shutdown failed\n');
+        server.closeAllConnections();
+        process.exit(1);
+      } finally {
+        clearTimeout(timer);
+      }
+    })();
+    return completion;
+  };
+}
+```
+
+正常路径会先等 HTTP 关闭，再等被跟踪的工作，最后释放业务资源。定时器覆盖整个等待和清理过程，不能把三个阶段各自的一秒相加后还宣称总时限是一秒。
+
+超时或清理失败时，这个示例选择非零退出。`process.exit(1)` 是明确的有损兜底，会终止尚未完成的工作；它不是正常排空的第一步。实际系统还需记录阶段与未完成数量，决定哪些操作需要幂等恢复或补偿。
+
+示例使用同步方式写出最小退出原因，避免刚发起异步日志就立刻退出。生产日志应按数据权限处理，不把敏感请求内容或凭据直接写进故障输出。
+
+### 5.2 信号与外部终止时限 {#信号与外部终止时限}
+
+在启动入口中，将 `SIGTERM` 和 `SIGINT` 连接到同一个 `shutdown` 函数即可。下面用短暂等待表示已经初始化的资源关闭，不假装实现了真实数据库连接池。
+
+```js
+// main.mjs
+import { setTimeout as delay } from 'node:timers/promises';
+import { server, markReady, markUnready, waitForWork } from './service-http.mjs';
+import { createShutdown } from './shutdown.mjs';
+
+// 此处已经完成真实应用需要的初始化；示例没有外部资源。
+markReady();
+server.listen(Number(process.env.PORT ?? 3000), '127.0.0.1');
+const shutdown = createShutdown({
+  server, markUnready, waitForWork,
+  closeResources: () => delay(10),
+});
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);
+```
+
+示例默认监听本机 `3000` 端口；测试可以通过 `PORT=0` 使用系统分配的临时端口。POSIX 环境中，注册这些信号的监听器后，默认退出行为会被替换；应用需要自己完成关闭或退出，不能认为“收到信号后总会自动结束”。`SIGKILL` 无法捕获，进程没有机会执行清理。不同操作系统对信号的支持不同，示例按 POSIX 行为讨论。
+
+清理定时器也运行在事件循环中。主线程一直执行死循环时，超时回调和信号监听器都可能无法及时运行。外部进程管理器或部署平台必须有最终终止期限，并让应用内部预算短于外部期限，为资源释放和日志交付留出余量。
+
+这里的处理器适合正常终止信号，不适合在任意未捕获异常后启动一大套异步业务清理。后者可能已经破坏了应用状态，应按异常退出策略处理。
+
+## 6. 退出事件与异常恢复 {#退出事件与异常恢复}
+
+### 6.1 exitCode、exit 与 beforeExit {#exitcode-exit-与-beforeexit}
+
+`process.exitCode` 只设置进程最终的退出码，不会关闭服务端口、连接或定时器。它们仍然保持活动时，进程会继续运行。先完成资源关闭，再让事件循环自然结束，才能兼顾退出状态和剩余 I/O。
+
+`process.exit()` 会立即终止进程，不等待异步文件、网络或标准输出写完。`exit` 事件的监听器只能进行同步操作；其中创建的 Promise 或定时器不会让退出暂停。
+
+`beforeExit` 在事件循环没有更多工作、即将自然退出时触发，可以安排新的异步工作。但一个仍监听端口的服务不会因为想下线就自动进入这个事件；显式 `process.exit()` 或未捕获异常等情况也不能依赖它完成清理。服务下线应从明确的信号或管理动作开始。
+
+### 6.2 未捕获异常与重启 {#未捕获异常与重启}
+
+未捕获异常意味着错误没有在预期边界内得到处理。Node.js 默认会输出错误并以非零状态退出；给 `uncaughtException` 增加监听器会改变默认处理，不能只记录日志后继续接受请求。
+
+只需要观测而不改变默认退出行为时，可以使用 `uncaughtExceptionMonitor`。例如下面的独立程序用于观察异常退出，运行后仍然会失败：
+
+```js
+// fatal-monitor.mjs
+import { writeSync } from 'node:fs';
+
+process.on('uncaughtExceptionMonitor', (error, origin) => {
+  writeSync(2, `fatal origin=${origin}; type=${error.name}\n`);
+});
+
+setImmediate(() => {
+  throw new Error('demo failure');
+});
+```
+
+它会先写出最小观测信息，再按默认行为输出异常并退出，不会恢复服务。在 Node.js 22 默认未处理拒绝策略下，没有得到处理的 Promise 拒绝也可能进入异常退出流程；行为还受相关启动参数与监听器影响，不能把加上 `unhandledRejection` 监听器等同于修复错误。
+
+独立监督机制可以启动替代实例，但需要退避、告警与健康判断，避免错误配置导致无限高速重启。进程重启不等于业务操作回滚：已经提交的写入、发出的消息与客户端重试仍需要幂等和恢复策略。进程隔离与故障范围参见 [Node.js 进程与线程](./processes-workers.mdx)。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 Node.js 已经监听端口，为什么仍然不能标记服务就绪？ {#startup-readiness}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：入口可达与业务可服务的区别。
+
+**相关内容**：[初始化与就绪](#初始化与就绪)、[就绪状态与在途任务](#就绪状态与在途任务)。
+
+<details>
+<summary>参考回答</summary>
+
+**监听端口只说明入口已建立，必要配置、连接和关键资源可能仍未准备好。** 应在核心能力满足接口承诺后再标记就绪；初始化失败时清理已创建资源并报告失败。
+
+可以先初始化再监听，也可以先提供健康入口、在启动期间拒绝业务请求。若下线已经开始，迟到的初始化结果不能把状态重新改回就绪。
+
+</details>
+
+### 7.2 readiness 和 liveness 为什么不能直接使用同一套判断？ {#health-checks}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：流量选择、重启策略和依赖故障放大。
+
+**相关内容**：[存活与就绪的分工](#存活与就绪的分工)。
+
+<details>
+<summary>参考回答</summary>
+
+**readiness 判断能否接流量，liveness 判断是否需要通过重启处理实例故障。** 某个共享依赖暂时不可用，可能影响就绪，但重启所有实例通常不能修复那个依赖，还会增加重连压力。
+
+应按关键能力设计就绪条件，按可恢复方式设计存活条件，并结合启动阶段、探测超时和失败阈值，避免偶发抖动触发大范围重启。
+
+</details>
+
+### 7.3 服务收到 SIGTERM 后，应该按什么顺序关闭？ {#shutdown-order}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：停止新增工作、在途工作与依赖释放顺序。
+
+**相关内容**：[正常下线顺序](#正常下线顺序)、[共享一次清理过程](#共享一次清理过程)。
+
+<details>
+<summary>参考回答</summary>
+
+**先标记未就绪并停止新工作，再等待在途请求和必要任务，随后关闭它们依赖的连接与资源，最后退出。** 多次终止信号应共享同一次清理过程，整个过程有共同的时限。
+
+不能先关闭请求仍要使用的数据库池，也不能只从服务发现摘除实例却忽略已有长连接。超过时限后执行明确的有损终止，并保留必要恢复信息。
+
+</details>
+
+### 7.4 server.close 回调执行后，是否代表所有工作都结束了？ {#connection-drain}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：HTTP 连接、异步任务与其他资源的独立生命周期。
+
+**相关内容**：[就绪状态与在途任务](#就绪状态与在途任务)、[server.close 的边界](#server-close-的边界)。
+
+<details>
+<summary>参考回答</summary>
+
+**不是，它表示相关 HTTP 连接已经关闭，不表示数据库、后台任务和所有协议连接都结束。** 客户端断开后，应用中发起的异步工作仍可能继续，因此需要取消或跟踪它们。
+
+Node.js 22 的 `server.close()` 会处理空闲 HTTP 连接；`closeAllConnections()` 会有损关闭活动 HTTP 连接，但不会替你处理升级后的 WebSocket。不同资源需要各自的关闭协议。
+
+</details>
+
+### 7.5 清理过程设置一个超时定时器，是否就能保证按时退出？ {#shutdown-deadline}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：事件循环调度、应用预算与外部监督。
+
+**相关内容**：[共享一次清理过程](#共享一次清理过程)、[信号与外部终止时限](#信号与外部终止时限)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能，JavaScript 定时器依赖事件循环能够继续运行。** 主线程被死循环或长同步工作占住时，定时器和信号回调都可能无法执行。
+
+应用内部仍应设置覆盖排空与清理的总预算，外部监督机制再设置最终终止期限。内部预算应短于外部期限；强制退出会损失未完成工作，因此还要考虑幂等恢复与补偿。
+
+</details>
+
+### 7.6 process.exitCode、process.exit 和 exit 事件有哪些区别？ {#exit-behavior}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：自然退出、活动句柄与异步清理。
+
+**相关内容**：[exitCode、exit 与 beforeExit](#exitcode-exit-与-beforeexit)。
+
+<details>
+<summary>参考回答</summary>
+
+**`exitCode` 设置自然退出的状态但不释放资源，`process.exit()` 立即终止且不等待异步 I/O，`exit` 事件只能执行同步收尾。** 正常下线应先关闭入口与资源，再设置退出码并允许自然退出。
+
+`beforeExit` 在事件循环空闲、即将自然退出时触发，不是长期监听服务的通用关闭入口。不要把连接池关闭等异步步骤放到 `exit` 监听器里等待。
+
+</details>
+
+### 7.7 捕获 uncaughtException 后记录日志，再继续服务是否可靠？ {#fatal-error}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：进程状态可信度、异常观测与恢复责任。
+
+**相关内容**：[未捕获异常与重启](#未捕获异常与重启)。
+
+<details>
+<summary>参考回答</summary>
+
+**不可靠，未捕获异常后不能假定应用仍处于一致状态。** 只增加监听器会改变默认退出行为，却没有修复造成错误的状态或逻辑。
+
+可以用 `uncaughtExceptionMonitor` 记录最小信息而保留默认崩溃行为，由独立监督机制恢复实例。重启要有退避与告警，业务侧还要处理已经发生的写入、消息和重试，不能把重启当成事务回滚。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [Node.js 22.16.0：HTTP server.close 与连接关闭 API](https://nodejs.org/download/release/v22.16.0/docs/api/http.html)
+- [Node.js 22.16.0：HTTP server.close 与响应完成实现](https://github.com/nodejs/node/blob/v22.16.0/lib/_http_server.js)
+- [Node.js 22.16.0：Process signals、exit 与 uncaughtException](https://nodejs.org/download/release/v22.16.0/docs/api/process.html)
+- [Node.js 22.16.0：Timers](https://nodejs.org/download/release/v22.16.0/docs/api/timers.html)

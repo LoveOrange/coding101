@@ -38,7 +38,8 @@ export type ArticleIndex = {
   domainId: string;
   topicId: string;
   minutes: number;
-  priority?: Priority;
+  /** Priority belongs to a concrete role, never to the article globally. */
+  rolePriorities: Record<string, Priority>;
   /** Roadmap ids that list this article. */
   roles: string[];
   /** Level-2 sections in document order. */
@@ -106,7 +107,23 @@ export type Role = {
   id: string;
   label: string;
   href: string;
+  group?: string;
 };
+
+/** Reading order and interview expectations, loaded only by the topics page. */
+export type StudyGuide = {
+  id: string;
+  title: string;
+  phase: string;
+  priority: Priority;
+  depth: 'foundation' | 'mechanism' | 'scenario';
+  outcomes: string[];
+  questions: string[];
+  further?: {outcomes: string[]; questions: string[]};
+  readings: {articleId: string; core: boolean; href: string; scope?: string}[];
+};
+
+export type RoleGuides = Record<string, StudyGuide[]>;
 
 export type LearningIndex = {
   domains: Domain[];
@@ -174,6 +191,8 @@ export type Account = {
 };
 
 export type Preferences = {
+  /** Last explicit settings change; absent in older saved records. */
+  updatedAt?: string;
   roleId?: string;
   interviewDate?: string;
   dailyLimit: number;
@@ -201,6 +220,7 @@ export type ReviewSession = {
 };
 
 export type ExamSetup = {
+  updatedAt?: string;
   scope: 'role' | 'domains' | 'weak';
   domainIds: string[];
   count: number;

@@ -14,6 +14,17 @@ Java 并发编程介绍多个线程怎样安全地共享数据、协调执行，
 
 需要按问题回查时，可使用[代表题与练习](../../../interview/questions.mdx#java-concurrency)。
 
+其他语言岗位若只涉及 Java 并发对比，可以按具体问题选择以下内容，不必先学完整个栏目：
+
+| 追问 | 对应内容 |
+| --- | --- |
+| 用信号量协调线程顺序 | [Java 并发同步器](./latch-barrier-semaphore.mdx#用许可交接执行顺序) |
+| `volatile` 能保证什么 | [volatile](./volatile-barriers-visibility.mdx) |
+| 实例同步方法、静态同步方法和同步块锁谁 | [synchronized](./synchronized-monitor-optimizations.mdx#同步方法与同步代码块) |
+| ConcurrentHashMap 的分段锁与现有实现 | [ConcurrentHashMap](../collections/concurrenthashmap-atomic-compound-operations.mdx#jdk-8-之后的结构) |
+| 线程池怎样关闭，任务是否一定停止 | [Java 线程池](./threadpoolexecutor-execution-path.mdx#线程池关闭与终止) |
+| Java 与 Go 的并发机制怎样比较 | [Java 线程](./thread-lifecycle-interruption.mdx)、[虚拟线程](./virtual-threads-boundaries.mdx#虚拟线程与-carrier-线程)、[Go 调度器](../../go/runtime/scheduler.mdx#gmp) |
+
 ## 内容
 
 - [线程安全](./thread-safety-race-conditions.mdx)

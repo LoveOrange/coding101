@@ -63,6 +63,8 @@ import rsmImg from './assets/primary_backup_replication/rsm.png';
 
 日志位置用于发现缺口和重复；发现冲突分支后，要按具体协议修复。已经提交的日志前缀，则由提交与切换规则保证不会丢失。
 
+MySQL 复制中，源库发送 binlog，副本先把事件写入 relay log，再由应用线程执行；接收、日志落盘和查询可见仍是不同阶段。GTID、半同步和读写分离的具体边界见 [MySQL 复制](../../basic-knowledge/database/replication.mdx)。
+
 ## 5. 快照 {#快照}
 
 **快照**保存某个日志位置对应的完整状态。新副本先加载这份状态，就不必从最早的日志重新执行：

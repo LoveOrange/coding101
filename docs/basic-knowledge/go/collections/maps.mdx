@@ -1,0 +1,584 @@
+---
+sidebar_position: 2
+knowledge:
+  id: basic-knowledge.go.collections.maps
+  type: concept
+description: "解释 Go map 的初始化、键相等性、值复制、遍历与并发访问，按 Go 1.22 说明哈希桶、冲突与渐进扩容，并区分 Go 1.24 的 Swiss Table 实现。"
+keywords: ["Go map", "哈希表", "map 扩容", "map 并发安全", "nil map", "map 遍历"]
+---
+
+# Go map
+
+**`map[K]V`** 是 Go 内置的键值映射类型，用键查找、更新或删除对应的值。它不保证遍历顺序；普通 map 也不自动协调多个 goroutine 的读写。
+
+使用 map 时，需要分清三个问题：这个键能否比较，多个变量是否操作同一份映射，以及一次更新是否需要同步。底层机制以 Go 1.22 官方实现为基线；Go 1.24 已换用 Swiss Table，旧版的桶结构和扩容规则不能当作所有版本的语言保证。
+
+## 1. 面试核心 {#core}
+
+- map 的零值是 nil。使用合法键时，**nil map 可以查询、遍历、删除和清空，但不能写入元素**；写入前用 `make` 或字面量初始化。[卡](#map-initialization)
+- **键类型必须可比较，匹配依赖键的相等性，不是只比较哈希值**。接口键还要检查动态类型，NaN 则需要注意它与自身也不相等。[卡](#map-keys)
+- **赋值和传参不会复制整份 map 内容**。多个变量可以操作同一份映射；复制条目时，指针、切片等值中的共享关系也不会自动消失。[卡](#map-copy)
+- map 元素不可寻址。**结构体值需要取出、修改后写回，不能直接修改 `m[key].Field`**；使用指针值时，又需要承担对象共享与同步的责任。[卡](#map-element)
+- **`range` 的顺序未指定，也不保证多次相同**。需要按键排序时，先收集键再排序；插入顺序要由额外结构记录。[卡](#map-order)
+- 遍历过程中，**尚未访问就被删除的条目不会再出现，新增条目可能出现，也可能不出现**。这是单 goroutine 内的规则，不是并发写入许可。[卡](#map-iteration-mutation)
+- Go 1.22 使用**主桶、桶内哈希摘要和溢出桶**定位条目，最终仍比较完整键；它不会在冲突多时自动变成 Java HashMap 的红黑树。[卡](#map-layout)
+- Go 1.22 的增长分为**增加桶数与同规模整理**，搬迁由后续修改操作逐步推进。预估元素数能帮助分配，但不是容量上限。[卡](#map-growth)
+- **安全发布后的纯并发读取可以不加锁；并发写入或读写交错需要同步**。运行时的冲突检测不是锁，未报错也不能证明没有竞争。[卡](#map-concurrency)
+- **普通 map 加锁便于保护类型和复合操作，`sync.Map` 适合其专门优化的访问模式**。单个方法并发安全，不代表多个方法组合后就成为原子操作。[卡](#map-sync-choice)
+
+## 2. 初始化与基本操作 {#初始化与基本操作}
+
+### 2.1 nil map 与空 map {#nil-map与空map}
+
+`var scores map[string]int` 只声明变量，初始值是 nil；`make(map[string]int)` 和 `map[string]int{}` 则创建可写的空 map。
+
+```go
+package main
+
+import "fmt"
+
+func main() {
+    var scores map[string]int
+    value, ok := scores["Lin"]
+    fmt.Println(scores == nil, len(scores), value, ok)
+    delete(scores, "Lin")
+    clear(scores)
+    // scores["Lin"] = 90 // 运行时 panic：向 nil map 写入
+
+    scores = make(map[string]int, 4)
+    scores["Lin"] = 0
+    value, ok = scores["Lin"]
+    fmt.Println(scores == nil, len(scores), value, ok)
+    delete(scores, "Lin")
+    fmt.Println(len(scores))
+}
+```
+
+输出依次是 `true 0 0 false`、`false 1 0 true`、`0`。缺失键和已保存的零值都可能让单值查询得到 0，第二个返回值 `ok` 才能区分它们。
+
+对于类型和取值合法的键，nil map 的行为如下：
+
+| 操作 | 结果 |
+| --- | --- |
+| `len(m)` | 0 |
+| `value, ok := m[key]` | 元素类型的零值、false |
+| `range m` | 不执行循环体 |
+| `delete(m, key)`、`clear(m)` | 不改变任何内容 |
+| `m[key] = value` | 运行时 panic |
+
+`make(map[string]int, 4)` 中的 4 是预计元素数，不是已经存在四个元素，也不是最多只能存四项。map 没有 `cap` 操作，继续插入可以超过这个提示值。
+
+### 2.2 赋值、更新与清空 {#赋值更新与清空}
+
+给相等的键赋值会更新对应条目，不增加长度。`delete` 删除指定键，键不存在时不改变映射；`clear` 删除全部条目，但不会把非 nil map 变量变成 nil。
+
+```go
+package main
+
+import "fmt"
+
+func main() {
+    scores := map[string]int{"Lin": 80}
+    alias := scores
+    scores["Lin"] = 90
+    scores["May"] = 85
+    fmt.Println(len(scores), alias["Lin"]) // 2 90
+    clear(scores)
+    fmt.Println(scores == nil, len(alias)) // false 0
+}
+```
+
+`alias` 与 `scores` 访问同一份映射，所以能看到更新和清空。`len` 变成零不代表底层存储已经归还；Go 1.22 的 `clear` 会保留可复用的桶存储。需要放弃一份大 map 时，可以让所有旧引用都不再可达，再由垃圾回收器处理；给其中一个变量重新赋值，不会清除其他变量持有的引用。
+
+## 3. 键类型与相等性 {#键类型与相等性}
+
+### 3.1 哪些类型可以作键 {#哪些类型可以作键}
+
+键类型必须支持相等比较。字符串、整数、布尔值、指针，以及元素或字段都可比较的数组、结构体，都可以作键；切片、map 和函数不能作键。
+
+```go
+package main
+
+import "fmt"
+
+type Key struct {
+    Tenant string
+    ID     int
+}
+
+func main() {
+    counts := map[Key]int{}
+    counts[Key{"team-a", 42}] = 1
+    counts[Key{"team-a", 42}] = 2
+    counts[Key{"team-b", 42}] = 3
+    fmt.Println(len(counts), counts[Key{"team-a", 42}]) // 2 2
+
+    // var invalid map[[]int]string // 编译错误：切片不可比较
+}
+```
+
+前两次写入的 `Key` 字段都相等，所以更新同一条记录；第三次的 `Tenant` 不同，是另一个键。哈希碰撞只说明两个键可能落到相同候选位置，运行时仍要检查键是否相等，不能因为哈希值相同就覆盖不同键。
+
+指针键按指针相等性比较，不按所指对象的字段比较。两个内容相同但相互独立的非零大小对象，其指针仍可以成为两个不同的键。若业务希望按 `Tenant` 和 `ID` 匹配，就应把这些值组成键，而不是依赖对象内容恰好相同。
+
+### 3.2 接口键的运行时限制 {#接口键的运行时限制}
+
+`map[any]V` 可以声明，但放入的动态值仍必须可比较。把一个切片装进 `any`，不会让它变得可比较：
+
+```go
+package main
+
+import "fmt"
+
+func main() {
+    labels := map[any]string{
+        int(1):   "int",
+        int64(1): "int64",
+        nil:      "nil",
+    }
+    fmt.Println(len(labels), labels[1], labels[int64(1)], labels[nil])
+    // labels[[]int{1}] = "slice" // 运行时 panic：动态键不可哈希
+}
+```
+
+输出是 `3 int int64 nil`。接口相等还包含动态类型，因此 `int(1)` 与 `int64(1)` 是不同键。不可比较的动态键也不能拿来查询或删除；不能把 nil map 的正常查询规则理解为任何接口键都不会报错。相关类型关系见[Go 接口](../language/interfaces.mdx)。
+
+### 3.3 NaN 为什么特殊 {#nan为什么特殊}
+
+浮点数可以作键，但 NaN 不满足自反性，也就是 `nan == nan` 为 false。同一个 NaN 变量反复赋值，不会通过相等比较找到先前的条目。
+
+```go
+package main
+
+import (
+    "fmt"
+    "math"
+)
+
+func main() {
+    nan := math.NaN()
+    values := map[float64]string{}
+    values[nan] = "first"
+    values[nan] = "second"
+    _, ok := values[nan]
+    delete(values, nan)
+    fmt.Println(nan == nan, len(values), ok) // false 2 false
+    clear(values)
+    fmt.Println(len(values)) // 0
+}
+```
+
+这不是哈希表把相等键存了两次，而是这些键并不相等。按这个 NaN 查询或删除都无法匹配，但 `range` 可以枚举条目，`clear` 可以清空它们。业务需要稳定定位记录时，应拒绝这种键或先定义明确的规范化规则。
+
+## 4. map 值与元素复制 {#map值与元素复制}
+
+### 4.1 赋值和传参不会复制所有条目 {#赋值和传参不会复制所有条目}
+
+map 赋值与传参仍然复制值，但复制后的 map 值可以访问同一份底层映射。函数修改条目会影响调用方看到的内容；只把形参改为另一份 map，则不会替换调用方变量。
+
+```go
+package main
+
+import "fmt"
+
+func change(scores map[string]int) {
+    scores["Lin"] = 90
+    scores = map[string]int{"May": 85}
+    fmt.Println(scores["May"]) // 85
+}
+
+func main() {
+    scores := map[string]int{"Lin": 80}
+    change(scores)
+    fmt.Println(scores["Lin"], len(scores)) // 90 1
+}
+```
+
+`scores["Lin"] = 90` 修改共享映射；随后对形参 `scores` 的赋值只替换局部变量。这与[Go 类型与值传递](../language/types-value-passing.mdx#赋值与传参)的规则一致。
+
+需要独立的键值映射时，可以逐条复制或用 `maps.Clone`。但它只复制键和值，不递归复制它们指向的对象：
+
+```go
+package main
+
+import (
+    "fmt"
+    "maps"
+)
+
+func main() {
+    original := map[string][]int{"scores": {80, 90}}
+    copied := maps.Clone(original)
+    copied["scores"][0] = 100
+    copied["extra"] = []int{1}
+    fmt.Println(original["scores"][0], len(original), len(copied)) // 100 1 2
+}
+```
+
+`copied` 的条目集合独立，新增 `extra` 不影响 `original`；已有切片值却仍共享数组，因此第一个分数变成 100。需要隔离到哪一层，就复制到相应层，不要把“复制了 map”当作所有对象已经独立。
+
+### 4.2 结构体元素的修改 {#结构体元素的修改}
+
+map 索引表达式可以出现在赋值左侧，但 map 元素本身不可寻址，不能取得 `&users[id]`，也不能直接给结构体元素的字段赋值。
+
+```go
+package main
+
+import "fmt"
+
+type User struct{ Score int }
+
+func main() {
+    users := map[int]User{1: {Score: 80}}
+    user := users[1]
+    user.Score = 90
+    fmt.Println(users[1].Score) // 80
+    users[1] = user
+    fmt.Println(users[1].Score) // 90
+    // users[1].Score = 100 // 编译错误：map 中的结构体值不可寻址
+
+    pointers := map[int]*User{1: {Score: 80}}
+    pointers[1].Score = 100
+    fmt.Println(pointers[1].Score) // 100
+}
+```
+
+`user` 是读取出来的结构体副本，需要写回才能改变对应条目。`pointers[1]` 则取得一个指针，可以经它修改对象；如果键缺失或值为 nil，解引用仍会 panic。
+
+不可寻址是语言规则，不要只解释成“目前实现扩容会搬家”。使用指针值也不意味着对象自动并发安全，map 的访问锁和对象字段的同步范围需要一起设计。
+
+## 5. 遍历与顺序 {#遍历与顺序}
+
+### 5.1 按键排序 {#按键排序}
+
+map 的 `range` 顺序未指定，不保证与插入顺序相同，也不保证连续两次遍历相同。偶然观察到固定顺序，并不能建立可依赖的契约。
+
+需要按键输出时，先收集键再排序：
+
+```go
+package main
+
+import (
+    "fmt"
+    "slices"
+)
+
+func main() {
+    scores := map[string]int{"May": 85, "Lin": 90}
+    keys := make([]string, 0, len(scores))
+    for key := range scores {
+        keys = append(keys, key)
+    }
+    slices.Sort(keys)
+    for _, key := range keys {
+        fmt.Println(key, scores[key])
+    }
+}
+```
+
+输出按键依次是 `Lin 90`、`May 85`。收集和排序 `n` 个键需要额外空间以及排序成本；若要求保持插入顺序，可以另用切片或链表记录顺序，同时维护删除和重复插入规则。
+
+Go 1.22 的实现会随机选择遍历的起始桶和桶内偏移，以减少程序对某种固定顺序的依赖。这不等于每个排列都等概率，也不能用于均匀随机抽样。若其他 goroutine 可能修改 map，收集键和读取对应值也需要受同步保护；键列表本身不是一份一致快照。
+
+### 5.2 遍历中删除与新增 {#遍历中删除与新增}
+
+在同一个 goroutine 中，遍历 map 时可以删除条目。尚未访问就被删除的条目不会在后续迭代中产生；遍历期间新增的条目则可能产生，也可能被跳过。
+
+```go
+package main
+
+import "fmt"
+
+func main() {
+    pending := map[int]bool{1: true, 2: true, 3: true}
+    for key := range pending {
+        delete(pending, key)
+    }
+    fmt.Println(len(pending)) // 0
+}
+```
+
+这段代码删除本次访问到的条目，最终清空映射。若目的是直接清空，使用 `clear` 更清楚。需要“处理开始时已有的全部条目”时，应先定义快照或任务队列，不能让循环中新增条目的处理结果依赖不保证的遍历行为。
+
+遍历读取出来的值同样是值副本。把循环变量重新赋值，不会直接更新对应条目；如果副本含有指针、切片等共享值，则仍可能经它修改共享对象。
+
+## 6. Go 1.22 的哈希实现 {#go122的哈希实现}
+
+### 6.1 桶、哈希摘要与冲突 {#桶哈希摘要与冲突}
+
+Go 1.22 的官方 map 实现是哈希表，主要信息保存在运行时的 `hmap` 中。理解执行过程时，关注以下职责即可：
+
+| 信息 | 作用 |
+| --- | --- |
+| `count` | 当前条目数，供 `len` 使用 |
+| `B` | 主桶数量为 `2^B` |
+| `hash0` | 当前 map 的哈希种子 |
+| `buckets` | 当前桶数组 |
+| `oldbuckets`、`nevacuate` | 增长期间的旧桶与搬迁进度 |
+
+每个桶最多容纳 8 组键值，并保存对应的 `tophash`。**tophash** 是哈希高位生成的短摘要，用来先排除明显不匹配的槽位；部分取值还用于表示空位和搬迁状态。桶内布局把键集中排列、值集中排列，末尾连接溢出桶，不是每个键值都单独挂一个链表节点。
+
+一次查询大致沿下面的路径进行：
+
+1. 用键和当前 map 的种子计算哈希，以低位选择主桶。
+2. 检查候选槽位的 tophash，跳过摘要不符的槽位。
+3. 对摘要相符的候选比较完整键，只有键相等才返回值。
+4. 必要时继续检查溢出桶；增长期间还要根据旧桶是否已搬迁选择正确位置。
+
+**溢出桶**用于容纳映射到同一主桶、但主桶已放不下的额外条目。冲突多时需要检查更多候选，哈希计算本身也有成本，因此不能把所有输入下的查询都说成严格固定时间。
+
+这里没有 Java HashMap 的“链表超过阈值转红黑树”规则。哈希表的一般冲突处理可对照[哈希表](../../data-structures/hash-table.mdx#冲突处理)，具体实现仍以对应语言版本为准。
+
+### 6.2 增加桶数与同规模整理 {#增加桶数与同规模整理}
+
+Go 1.22 插入新条目时，会检查平均负载和溢出桶数量；当前已经在增长时，先沿现有增长过程推进，不再同时启动另一轮。
+
+- **负载过高**：主桶数增为原来的两倍。旧实现以每桶平均约 6.5 个条目作为负载判断，同时对小 map 有超过 8 项的条件，不是第 7 个元素就必然扩容。
+- **溢出桶过多而负载未超限**：主桶数不变，重新组织条目，尽量整理反复增删后稀疏的溢出桶。这通常称为等量扩容，但并没有把可见的元素数或主桶数量翻倍。
+
+桶数翻倍时，决定桶位置的低位多使用一位。原来落在旧桶 `i` 的键，会分到新桶 `i` 或 `i + 旧桶数`，具体取决于这一位。相同哈希碰撞不会因为扩容就神奇地消失。
+
+**渐进搬迁**是把旧桶到新桶的复制分摊到后续修改操作中。Go 1.22 的写入和删除会推进相关旧桶及后续桶的搬迁；查询需要识别旧桶是否已迁移，但普通读取本身不负责推动搬迁。它不是另外启动一个后台 goroutine，一次写入的成本也不只剩“增加一个条目”。
+
+删除条目不会自动按当前长度把 map 缩成更小的桶数组。容量提示可以减少部分增长工作，但不能代替对生命周期、峰值和保留引用的判断。
+
+### 6.3 Go 1.24 的变化 {#go124的变化}
+
+Go 1.24 官方实现改为基于 Swiss Table 的哈希表：用控制信息筛选一组槽位，并通过开放寻址的探测序列处理冲突。它仍实现同一个 map 语言接口，但不能继续套用上面的溢出桶链和 `hmap` 搬迁细节。
+
+回答底层问题时，先说明所讲版本。键的相等性、nil map 行为、遍历顺序未指定和普通 map 需要并发同步等语言与使用约束，并不会因为底层更换就消失。
+
+## 7. 并发访问 {#并发访问}
+
+### 7.1 纯读取与共享写入 {#纯读取与共享写入}
+
+map 初始化完成、通过同步机制安全地交给其他 goroutine，并且之后没有修改时，多个 goroutine 可以同时读取。若存在并发写入，或者读取、遍历与写入交错，就需要锁或其他同步方案。
+
+写入不同键也不能绕过这一要求，因为操作仍可能修改共享的桶、条目数或增长状态。并发 `delete`、`clear` 也属于修改。
+
+Go 1.22 对部分重叠操作会检测并报告 `concurrent map writes` 或 `concurrent map read and map write`。这是运行时致命错误，不能像普通 panic 一样依靠 `recover` 恢复。检测并不覆盖全部竞争情形，不能用“跑了几次没报错”证明安全；应使用正确的同步，并用 `go test -race` 等工具辅助发现实际执行路径上的竞争。
+
+### 7.2 用锁保护完整操作 {#用锁保护完整操作}
+
+读后修改再写回是一个整体。例如计数器的 `counts[key]++`，不能把读和写分成两个各自加锁的步骤，否则仍可能丢失更新。
+
+```go
+package main
+
+import (
+    "fmt"
+    "sync"
+)
+
+type Counter struct {
+    mu     sync.Mutex
+    counts map[string]int
+}
+
+func (c *Counter) Add(key string) {
+    c.mu.Lock()
+    defer c.mu.Unlock()
+    c.counts[key]++
+}
+
+func (c *Counter) Get(key string) int {
+    c.mu.Lock()
+    defer c.mu.Unlock()
+    return c.counts[key]
+}
+
+func main() {
+    counter := &Counter{counts: make(map[string]int)}
+    var tasks sync.WaitGroup
+    for worker := 0; worker < 4; worker++ {
+        tasks.Add(1)
+        go func() {
+            defer tasks.Done()
+            for i := 0; i < 1000; i++ {
+                counter.Add("requests")
+            }
+        }()
+    }
+    tasks.Wait()
+    fmt.Println(counter.Get("requests")) // 4000
+}
+```
+
+所有访问都使用同一把锁，`Add` 的读改写也处在一次临界区内，所以不会丢失计数。`Counter` 通过指针使用，初始化时创建内部 map；使用过的锁不能按值复制。
+
+需要并行读取时，可以考虑 `sync.RWMutex`，但不能仅凭“读多”就断定它更快。锁竞争、临界区长度和调度开销都需要实际测量。返回指针或切片值时，还要考虑锁释放后调用者对共享对象的修改，不能只保护查表动作。
+
+### 7.3 普通 map 与 sync.Map {#普通map与syncmap}
+
+普通 map 配合锁，可以保留具体的键值类型，也容易在同一临界区内维护多个键或其他字段的不变量。`sync.Map` 提供并发安全的方法，适合其专门优化的访问模式，例如键写入后反复读取，或多个 goroutine 主要访问不同的键集合。
+
+`sync.Map` 不应被理解为普通 map 的默认替代品，也不保证任意负载下都更快。`Load` 后再 `Store` 仍是两次操作；要求“仅不存在时建立”时应考虑 `LoadOrStore` 等对应原子方法，多键约束还需要额外协调。其内部实现和使用边界需要单独分析，不能用容器安全替代业务操作的原子性。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 怎样创建 map，nil map 和空 map 的操作有什么区别？ {#map-initialization}
+
+**考察重点**：零值、初始化、容量提示和缺失键。
+
+**相关内容**：[nil map 与空 map](#nil-map与空map)。
+
+<details>
+<summary>参考回答</summary>
+
+**用 `make(map[K]V)` 或 map 字面量创建可写映射，单独声明的 map 变量初始为 nil。** 使用合法键时，nil map 可以读、遍历、删除和清空，写入会 panic。
+
+读取缺失键得到元素零值；要区分缺失与实际保存的零值，使用 `value, ok := m[key]`。`make` 的数量参数只是容量提示，不会生成这些条目，也不是存储上限。
+
+</details>
+
+### 8.2 map 为什么按键更新，键类型和键相等性有什么限制？ {#map-keys}
+
+**考察重点**：可比较类型、完整键比较、接口动态类型和 NaN。
+
+**相关内容**：[键类型与相等性](#键类型与相等性)。
+
+<details>
+<summary>参考回答</summary>
+
+**map 先用哈希筛选候选，再按键相等性匹配；相等键的赋值更新已有条目。** 哈希碰撞并不代表键相等。
+
+键类型必须可比较，切片、map 和函数不能作键。接口键的动态值也必须可比较，否则相关操作会 panic。NaN 与自身不相等，所以不能把“键唯一”理解为同一个 NaN 变量重复写入也一定覆盖。
+
+</details>
+
+### 8.3 赋值、传参和 maps.Clone 分别复制了什么？ {#map-copy}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：map 值、条目集合和内部引用的不同层次。
+
+**相关内容**：[赋值和传参不会复制所有条目](#赋值和传参不会复制所有条目)。
+
+<details>
+<summary>参考回答</summary>
+
+**普通赋值和传参复制 map 值，多个值仍可访问同一份映射。** 修改条目会被其他引用看到，但替换局部变量不会替换调用方变量。
+
+`maps.Clone` 建立独立的条目集合，并按赋值语义复制键和值；值中含有切片或指针时，所指数据仍可能共享。需要深层隔离时，要按实际数据模型继续复制。
+
+</details>
+
+### 8.4 为什么不能直接修改 map 中结构体值的字段？ {#map-element}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：map 元素不可寻址、结构体副本与指针值。
+
+**相关内容**：[结构体元素的修改](#结构体元素的修改)。
+
+<details>
+<summary>参考回答</summary>
+
+**map 元素不可寻址，所以不能直接给 `m[key].Field` 赋值或取得 `&m[key]`。** 可以取出结构体副本、修改后写回。
+
+也可以保存指针，再修改指针所指对象，但要处理键缺失、nil 和对象共享的同步问题。不可寻址是语言规则，不依赖是否刚好发生扩容。
+
+</details>
+
+### 8.5 map 为什么不能依赖遍历顺序，怎样实现有序访问？ {#map-order}
+
+**考察重点**：语言契约、运行时遍历策略与额外顺序结构。
+
+**相关内容**：[按键排序](#按键排序)。
+
+<details>
+<summary>参考回答</summary>
+
+**语言没有指定 map 的遍历顺序，也不保证多次相同。** Go 1.22 的遍历起点包含随机选择，但这不是均匀随机抽样保证。
+
+按键排序可以先收集键并排序，再取对应值；需要插入顺序则另外维护切片或链表。若同时存在修改，还要同步保护收集和读取，不能把一份键列表当成一致快照。
+
+</details>
+
+### 8.6 遍历 map 时删除或新增条目，哪些结果有保证？ {#map-iteration-mutation}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：尚未访问的删除、新增条目的不确定性与并发边界。
+
+**相关内容**：[遍历中删除与新增](#遍历中删除与新增)。
+
+<details>
+<summary>参考回答</summary>
+
+**尚未访问就被删除的条目不会再产生，遍历期间新增的条目可能产生，也可能被跳过。** 不应依赖某次实跑恰好访问了新增键。
+
+这些规则描述同一个 goroutine 内的迭代修改，不允许另一个 goroutine 无同步地同时写入。需要固定处理集合时，应先定义快照或队列。
+
+</details>
+
+### 8.7 Go map 怎样查找键并处理哈希冲突？ {#map-layout}
+
+**考察重点**：哈希筛选、键相等性、桶与版本边界。
+
+**相关内容**：[桶、哈希摘要与冲突](#桶哈希摘要与冲突)、[Go 1.24 的变化](#go124的变化)。
+
+<details>
+<summary>参考回答</summary>
+
+**Go 1.22 官方实现用哈希低位选择主桶，以 tophash 筛选槽位，再比较完整键。** 每个桶最多容纳 8 组键值，主桶放不下时连接溢出桶；增长期间还要检查旧桶的迁移状态。
+
+它没有 Java HashMap 的红黑树转换规则。Go 1.24 已改为基于 Swiss Table 的开放寻址实现，所以回答底层机制必须说明版本，不能把旧桶结构当作语言规定。
+
+</details>
+
+### 8.8 Go 1.22 map 在什么情况下增长，怎样搬迁旧数据？ {#map-growth}
+
+**考察重点**：平均负载、溢出桶整理、渐进搬迁和读取边界。
+
+**相关内容**：[增加桶数与同规模整理](#增加桶数与同规模整理)。
+
+<details>
+<summary>参考回答</summary>
+
+**负载过高会增加一倍主桶数；溢出桶过多而负载未超限时，可以保持主桶数进行整理。** 插入新条目时检查条件，不能把“桶最多 8 项”理解为第 9 项一定直接增长全部桶。
+
+旧数据通过后续写入、删除逐步搬迁，读取根据迁移状态查找新旧桶，但不负责推进搬迁。过程没有额外后台 goroutine，也不是每次插入都只做固定的一次写入。
+
+</details>
+
+### 8.9 普通 map 能否被多个 goroutine 同时访问，recover 能解决冲突吗？ {#map-concurrency}
+
+**考察重点**：安全发布、纯读取、共享写入和致命错误。
+
+**相关内容**：[纯读取与共享写入](#纯读取与共享写入)、[用锁保护完整操作](#用锁保护完整操作)。
+
+<details>
+<summary>参考回答</summary>
+
+**安全发布且不再修改的 map 可以并发读取；并发写入或读写交错需要同步，即使写入不同键也是如此。** 可用同一把锁保护所有相关访问，或通过其他明确的所有权与同步方案协调。
+
+读改写需要放在一个完整临界区内。运行时检测到的并发 map 致命错误不能用 `recover` 兜底，没有报错也不代表不存在数据竞争。
+
+</details>
+
+### 8.10 sync.Map 与普通 map 加锁怎样选择？ {#map-sync-choice}
+
+**考察重点**：访问模式、类型约束、复合操作与同步范围。
+
+**相关内容**：[普通 map 与 sync.Map](#普通map与syncmap)。
+
+<details>
+<summary>参考回答</summary>
+
+**普通 map 加锁更容易保留类型并保护跨条目的复合约束；`sync.Map` 用于适合其设计的并发访问模式。** 例如写入后反复读取，或多个 goroutine 操作不同键集合，可以作为评估它的起点，但不能直接承诺更快。
+
+`Load` 再 `Store` 不会自动组成原子操作，应按需求使用 `LoadOrStore` 等方法或额外协调。选择依据包括操作组合、同步范围和实际测量，不能只看是否用了一个“并发安全容器”。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+
+- [Go 1.22.12 语言规范：Map types、Index expressions、range、delete 与 clear](https://github.com/golang/go/blob/go1.22.12/doc/go_spec.html)
+- [Go Blog：Go maps in action](https://go.dev/blog/maps)
+- [Go 1.22.12 runtime/map.go](https://github.com/golang/go/blob/go1.22.12/src/runtime/map.go)
+- [Go 1.22.12 maps.Clone](https://pkg.go.dev/maps@go1.22.12#Clone)
+- [Go 1.22.12 sync.Map](https://pkg.go.dev/sync@go1.22.12#Map)
+- [Go Blog：Faster Go maps with Swiss Tables](https://go.dev/blog/swisstable)
+- [Go 1.24 发布说明：Runtime](https://go.dev/doc/go1.24#runtime)
+- [Go Race Detector](https://go.dev/doc/articles/race_detector)

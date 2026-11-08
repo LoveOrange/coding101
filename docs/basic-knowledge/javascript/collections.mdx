@@ -1,0 +1,480 @@
+---
+sidebar_position: 7
+knowledge:
+  id: basic-knowledge.javascript.collections
+  type: concept
+description: "比较 Array、Object、Map、Set 和弱集合，解释数组遍历、空槽、修改行为，并实现有明确边界的 map、reduce、flat 与 flatMap。"
+keywords: ["JavaScript 集合", "数组方法", "Map", "Set", "WeakMap", "reduce", "flatMap"]
+---
+
+# JavaScript 集合
+
+JavaScript 的集合要按操作目标选择：Array 表达按索引排列的序列，Object 表达带字段的记录，Map 保存键值映射，Set 保存不重复的成员。WeakMap 和 WeakSet 则适合不希望因集合记录而延长对象生命周期的关联信息。
+
+这些类型的差别不只是 API 名称。键是否会转成字符串、比较的是内容还是对象身份、能否遍历、是否修改原集合，以及空槽怎样处理，都会改变程序结果。现场实现数组方法时，也要把这些行为写进支持范围。
+
+## 1. 面试核心 {#core}
+
+- Array、Object、Map 和 Set 服务于不同的数据关系。**Map 的键可以是任意值，Set 只记录成员是否存在；对象属性键则是字符串或 Symbol**。[卡](#collection-choice)
+- Map 和 Set 使用 SameValueZero 比较，`NaN` 能与自身匹配，`+0` 与 `-0` 视为相同。**对象按身份比较，不按字段内容去重**。[卡](#collection-choice)
+- 平面列表可以**先按 ID 建立 Map 索引，再连接父子节点**，这样不要求父节点先出现在输入中。实现前要明确根标记、有效森林前提和是否修改输入。
+- 数组方法要区分返回值和原地修改。**`slice` 取出片段，`splice` 修改原数组；`delete array[i]` 只删除属性，不移动后续元素或缩短长度**。[卡](#array-mutation)
+- `map` 生成映射结果，`forEach` 用于逐项执行操作，`reduce` 累积结果。**回调参数、空槽和初始值都是方法语义的一部分**。[卡](#array-iteration)
+- 实现 `map` 要保留索引和空槽，不能只把结果依次 `push`。**无初始值的 `reduce` 从第一个存在的元素开始，全空输入必须抛错**。[卡](#implement-map) [卡](#implement-reduce)
+- `flat` 按深度展开数组，`flatMap` 将每个回调结果展开一层。**“展开一层”不等于递归展开所有嵌套数组**。[卡](#flattening)
+- WeakMap 不对键建立强引用，且没有键枚举和 `size`。**弱引用不承诺回收时机，也不能替代需要计数、遍历或显式淘汰的 Map**。[卡](#weak-collections)
+
+## 2. 集合类型与键语义 {#集合类型与键语义}
+
+| 类型 | 适合表达 | 键或成员 | 遍历与数量 |
+| --- | --- | --- | --- |
+| Array | 按索引访问的序列 | 元素可以是任意值，索引是属性键的一部分 | 可迭代，`length` 表示索引范围，可能包含空槽 |
+| Object | 字段含义明确的记录 | 字符串或 Symbol 属性键 | 使用属性 API，数量需按选定属性范围计算 |
+| Map | 动态键值映射 | 任意类型的键 | 按条目插入顺序迭代，`size` 是条目数 |
+| Set | 唯一成员集合 | 任意类型的成员 | 按成员插入顺序迭代，`size` 是成员数 |
+| WeakMap/WeakSet | 不延长键或成员生命周期的关联 | 对象，以及规范支持的非注册 Symbol | 不可枚举，无 `size` |
+
+### 2.1 Object 与 Map {#object-与-map}
+
+Object 的属性键只能是字符串或 Symbol。把普通对象放进方括号当键时，会执行属性键转换，不会保存它的对象身份；Map 则直接保存键值。
+
+```js
+const first = { id: 1 };
+const second = { id: 2 };
+const record = {};
+record[first] = "first";
+record[second] = "second";
+console.log(Object.keys(record)); // ["[object Object]"]
+
+const map = new Map([[first, "first"], [second, "second"]]);
+console.log(map.size, map.get(first)); // 2 first
+console.log(map.get({ id: 1 }));       // undefined
+```
+
+最后一个新对象与 `first` 字段相同，却不是同一个对象，所以不能用它取回 `first` 对应的值。`map[key] = value` 也不等于 `map.set(key, value)`：前者给 Map 对象增加普通属性，后者才操作 Map 条目。
+
+Map 的 `get` 返回 `undefined` 时，要用 `has` 区分“没有这个键”和“存储的值就是 undefined”。更新已有键不会改变它在迭代中的位置，删除后重新插入则会移到新的插入位置。
+
+普通对象有原型上的属性，也有自己的枚举顺序规则。用对象作为字典时，可以采用 `Object.create(null)` 和 `Object.hasOwn`，但键仍然是字符串或 Symbol。属性范围见 [JavaScript 对象属性](./object-properties.mdx#属性枚举与存在性)。
+
+### 2.2 Set 与相等判断 {#set-与相等判断}
+
+Set 保存不同成员，Map 保存不同键对应的值；两者默认都采用 SameValueZero 比较：`NaN` 与 `NaN` 相同，正负零相同，对象按身份区分。
+
+```js
+const shared = { id: 1 };
+const set = new Set([NaN, NaN, 0, -0, shared, shared, { id: 1 }]);
+console.log(set.size);       // 4
+console.log(set.has(NaN));   // true
+console.log(set.has({ id: 1 })); // false
+console.log([...new Set([3, 1, 3, 2])]); // [3, 1, 2]
+```
+
+若业务要求“按 id 去重”，需要自己选取 id 作为键，而不是期待 Set 深度比较对象。基础相等规则见 [JavaScript 数据类型与类型转换](./types-conversion.mdx)。
+
+规范要求 Map 的访问平均耗时相对条目数是次线性的，没有规定所有引擎必须采用同一种哈希表，也没有保证每次操作严格 `O(1)`。讨论某个算法时可以说明采用的复杂度假设，但不要把一种实现当成语言保证。
+
+### 2.3 平面列表与父子关系 {#平面列表与父子关系}
+
+**平面列表建树**是按每条记录的 `id` 与 `parentId`，把同一列表里的记录组织成父子关系。列表顺序不一定与层级一致：子节点可能先于父节点出现。可以先用 Map 建立完整的 `id → 新节点` 索引，再遍历一次连接父子，避免每连接一个节点都重新扫描列表找父节点。
+
+下面采用教学约定：输入是普通数据记录组成的数组，`id` 是唯一的字符串或整数；`parentId === null` 表示根，否则必须对应列表中某个 `id`，且类型一致。父子关系无环，因此输入表示一棵树或多棵互不相连的树（森林）。返回根节点数组，每个新节点都有独立的 `children` 数组，叶子的 `children` 为空数组。这些约定需要在动手前确认；若题目用 `0` 表示根、要求虚拟根或使用其他字段名，应相应调整输入输出。
+
+```js
+function buildForest(items) {
+  const nodes = new Map();
+  const roots = [];
+  for (const item of items) {
+    nodes.set(item.id, { ...item, children: [] });
+  }
+  for (const item of items) {
+    const node = nodes.get(item.id);
+    if (item.parentId === null) {
+      roots.push(node);
+    } else {
+      nodes.get(item.parentId).children.push(node);
+    }
+  }
+  return roots;
+}
+
+const items = [
+  { id: 2, parentId: 1 },
+  { id: 3, parentId: null },
+  { id: 1, parentId: null },
+];
+const roots = buildForest(items);
+console.log(roots.map(node => node.id)); // [3, 1]
+console.log(roots[1].children[0].id);    // 2
+console.log(buildForest([]));           // []
+console.log("children" in items[0]);    // false
+```
+
+第二轮开始时，所有节点已经存在，所以先遇到 `id: 2` 也能找到父节点 `id: 1`。Map 和 `children` 保存的是同一批新节点的引用；一个节点即使先被挂到父节点下，之后再为它添加孩子也不会丢失。根节点和同一父节点下的孩子都保留各自在输入中的相对顺序。
+
+函数不修改输入数组或输入记录：对象展开复制记录的字段，`children` 则重新创建。但这是浅拷贝，其他字段如果存着对象，仍会共享引用，见 [JavaScript 对象拷贝](./copying.mdx)。代码依赖前面的有效森林约定，不负责检查重复 ID、缺失父节点或环。
+
+设记录数为 `n`、每条记录的字段数有界。在 Map 操作平均 `O(1)`、数组尾部追加摊还 `O(1)` 的假设下，两轮处理的时间为 `O(n)`；索引占 `O(n)` 额外空间，输出节点和子节点数组合计也占 `O(n)`。这里的常数访问是假设，不是 ECMAScript 对所有 Map 实现的保证。
+
+## 3. 数组的修改与空槽 {#数组的修改与空槽}
+
+数组的 `length` 不等于“已经存了多少个值”。**空槽**是索引范围内没有对应元素属性的位置，它与显式存储 `undefined` 不同。
+
+```js
+const values = [10, 20, 30];
+delete values[1];
+console.log(values.length, 1 in values); // 3 false
+values[1] = undefined;
+console.log(values.length, 1 in values); // 3 true
+```
+
+需要删除一项并使后续项前移时，使用 `splice` 或产生过滤后的新数组。不要用 `delete` 期待它压缩索引。
+
+| 操作 | 修改原数组 | 主要结果 |
+| --- | --- | --- |
+| `push` / `unshift` | 是 | 尾部/头部插入，返回新长度 |
+| `pop` / `shift` | 是 | 尾部/头部移除，返回移除的值 |
+| `splice(start, count, ...items)` | 是 | 删除或插入，返回被删除元素组成的数组 |
+| `sort` / `reverse` | 是 | 排序或反转，返回原数组引用 |
+| `slice(start, end)` | 否 | 返回片段，结束索引不包含在内 |
+| `concat` / 数组展开 | 否 | 构造合并后的数组，但空槽等细节不同 |
+| `map` / `filter` / `flat` | 方法本身不原地改输入 | 构造结果数组，回调仍可能自行修改输入 |
+
+```js
+const source = [1, 2, 3];
+console.log(source.slice(1, 2)); // [2]
+console.log(source);            // [1, 2, 3]
+console.log(source.splice(1, 1, 9)); // [2]
+console.log(source);            // [1, 9, 3]
+```
+
+这些复制或选取操作不是深拷贝。元素是对象时，结果通常仍共享相应引用。数组合并可用 `first.concat(second)` 或 `[...first, ...second]`；后者按迭代取值，空槽通常变成实际的 `undefined` 元素。
+
+字符串也能按序处理，但不是可变数组。合并数组元素成为字符串可用 `join`，重复字符串可用 `text.repeat(count)`，例如 `"ab".repeat(3)` 得到 `"ababab"`。这些操作返回新字符串，不会改变原字符串。
+
+### 3.1 排序比较器 {#排序比较器}
+
+`sort()` 默认按转换后的字符串比较，不是数值大小。数字升序可使用 `(a, b) => a - b`，比较器应以负数、零、正数表达次序，并满足一致的比较关系。
+
+```js
+const values = [2, 10, 1];
+console.log(values.slice().sort());            // [1, 10, 2]
+console.log(values.slice().sort((a, b) => a - b)); // [1, 2, 10]
+console.log(values);                          // [2, 10, 1]
+```
+
+ES2019 起要求排序稳定，即比较器认为相等的项保留原相对顺序。但稳定性不能补救一个前后矛盾的比较器，`sort(() => Math.random() - 0.5)` 也不能保证均匀洗牌。需要均匀打乱时，应采用有明确概率分析的洗牌算法。
+
+## 4. 数组遍历与回调 {#数组遍历与回调}
+
+`map`、`forEach` 和 `reduce` 都按索引访问元素，但用途和结果不同：
+
+| 方法 | 回调参数 | 返回值与用途 |
+| --- | --- | --- |
+| `map` | `value, index, array` | 回调结果组成的新数组，保留相应索引位置 |
+| `forEach` | `value, index, array` | 返回 `undefined`，用于逐项执行操作 |
+| `filter` | `value, index, array` | 条件为真的元素组成新数组，结果索引紧凑 |
+| `reduce` | `accumulator, value, index, array` | 返回最终累积结果，类型由回调与初始值决定 |
+| `some` / `every` | `value, index, array` | 可以提前结束的布尔判断 |
+| `find` / `findIndex` | `value, index, array` | 返回第一个匹配元素或其索引，未匹配分别为 `undefined` / `-1` |
+
+按值检查成员时，`includes` 返回布尔值，`indexOf` 返回索引或 `-1`。两者的相等规则不同：`[NaN].includes(NaN)` 为 `true`，`[NaN].indexOf(NaN)` 为 `-1`。若数组允许实际存储 `undefined`，`find` 返回 `undefined` 不能单独证明没有命中，需要用索引或其他标记区分。
+
+这些方法中的 `map`、`forEach`、`filter`、`reduce` 会跳过没有属性的索引位置。普通稀疏数组在 `map` 后仍可保留空槽，`filter` 则只收集通过条件的实际元素。数组的值迭代器、展开和 `for...of` 会读取每个索引位置，把未找到的值表现为 `undefined`。
+
+```js
+const values = [1, , 3];
+const mapped = values.map(value => value * 2);
+console.log(mapped.length, 1 in mapped); // 3 false
+console.log([...values]);                // [1, undefined, 3]
+console.log(values.reduce((sum, value) => sum + value, 0)); // 4
+```
+
+这里说“跳过空槽”对应的是属性是否存在；若原型链上恰好存在那个数字属性，它也可能被访问。因此教学实现应使用 `index in array` 表达原生方法的这一步，而不是只检查 `array[index] !== undefined`。
+
+`for...in` 枚举字符串属性键，还可能包含继承属性和数组上自定义的非索引属性，不适合被当作普通数组值遍历。需要索引与值时可用 `array.entries()`，需要提前 `break` 时可用普通循环或 `for...of`。
+
+### 4.1 回调不等于异步调度 {#回调不等于异步调度}
+
+数组的 `forEach` 不会等待异步回调返回的 Promise，`map(async ...)` 则返回 Promise 数组，不会自动聚合成最终值。要并发等待全部结果，需要再进行 Promise 聚合；要串行等待，使用能逐项 `await` 的循环。
+
+回调参数也会影响函数复用。`["1", "2", "3"].map(parseInt)` 会把索引作为 `parseInt` 的第二个进制参数，得到 `[1, NaN, NaN]`。写成 `.map(value => parseInt(value, 10))` 才明确规定十进制转换。
+
+对 `map`、`forEach`、`reduce` 等方法，处理范围通常在开始时由长度确定。执行期间追加到原长度之外的项不参与本次回调；尚未访问的项被修改，会读取修改后的值；尚未访问的属性被删除，则可能被跳过。为了便于推导，转换回调应尽量避免同时改变输入集合。
+
+## 5. map 与 reduce 的实现 {#map-与-reduce-的实现}
+
+下面的实现面向普通数组，不实现任意类数组对象、数组子类的结果类型定制等完整规范行为，也不修改内置原型。先约定这一点，再检查回调、长度、空槽和初始值。
+
+### 5.1 用 reduce 实现 map {#用-reduce-实现-map}
+
+`map` 的结果长度与开始时的数组长度相同，已访问索引的回调结果放回对应位置。使用 `push` 会压缩空槽，所以这里先创建指定长度的结果数组。
+
+```js
+function mapWithReduce(array, callback, thisArg) {
+  if (!Array.isArray(array) || typeof callback !== "function") {
+    throw new TypeError("需要数组与回调函数");
+  }
+  return Array.prototype.reduce.call(array, (result, value, index) => {
+    result[index] = Reflect.apply(callback, thisArg, [value, index, array]);
+    return result;
+  }, new Array(array.length));
+}
+
+const result = mapWithReduce([1, , 3], value => value * 2);
+console.log(result[0], result[2], result.length); // 2 6 3
+console.log(1 in result);                        // false
+```
+
+即使输入为空，也先检查 `callback` 是否是函数，不能等调用时才发现无效参数。若题目不允许借用 `reduce`，核心是保存初始长度、循环检查 `index in array`，再把回调结果写到结果的同一索引。
+
+### 5.2 reduce 的初始值 {#reduce-的初始值}
+
+`reduce` 有初始值时从它开始累积；没有初始值时，取第一个存在的元素作为累积值，回调从下一个存在的元素开始。空数组或全为空槽的数组没有可用初始元素，必须抛 `TypeError`。
+
+```js
+function reduceArray(array, callback, ...initial) {
+  if (!Array.isArray(array) || typeof callback !== "function") {
+    throw new TypeError("需要数组与回调函数");
+  }
+  const length = array.length;
+  let index = 0;
+  let accumulator;
+  if (initial.length > 0) {
+    accumulator = initial[0];
+  } else {
+    while (index < length && !(index in array)) index++;
+    if (index === length) throw new TypeError("空输入缺少初始值");
+    accumulator = array[index++];
+  }
+  for (; index < length; index++) {
+    if (index in array) {
+      accumulator = Reflect.apply(callback, undefined,
+        [accumulator, array[index], index, array]);
+    }
+  }
+  return accumulator;
+}
+
+console.log(reduceArray([1, , 3], (sum, value) => sum + value, 0)); // 4
+console.log(reduceArray([], (sum, value) => sum + value, 0));      // 0
+console.log(reduceArray([, 3], (sum, value) => sum + value));      // 3
+```
+
+“没有传初始值”与“明确传入 undefined”不同。上面的剩余参数长度保留了这一区别，不能用 `initialValue === undefined` 或真值判断来替代。原生 `reduce` 没有额外的 `thisArg` 参数，这个实现也没有添加。
+
+## 6. flat 与 flatMap {#flat-与-flatmap}
+
+`flat(depth)` 按指定深度展开嵌套数组，默认深度为 `1`；`flatMap(callback)` 先对元素执行回调，并把每个回调结果中的数组展开一层。回调也可以返回空数组来丢弃元素，或返回多个元素来扩展结果。
+
+```js
+console.log([1, [2, [3]]].flat());         // [1, 2, [3]]
+console.log([1, [2, [3]]].flat(Infinity)); // [1, 2, 3]
+console.log([1, 2].flatMap(value => [value, value * 10])); // [1, 10, 2, 20]
+console.log([1].flatMap(value => [[value]]));             // [[1]]
+```
+
+### 6.1 按深度扁平化 {#按深度扁平化}
+
+扁平化的核心是决定当前值是否为数组，以及还剩多少展开深度。下面支持普通、无环的嵌套数组，深度只接收非负整数或 `Infinity`，不复现原生参数强制转换和结果类型定制。
+
+```js
+function flatArray(array, depth = 1) {
+  if (!Array.isArray(array)) throw new TypeError("需要数组");
+  if (!(depth === Infinity || Number.isInteger(depth) && depth >= 0)) {
+    throw new RangeError("depth 必须是非负整数或 Infinity");
+  }
+  const result = [];
+  const stack = [{ array, index: 0, length: array.length, depth }];
+  while (stack.length > 0) {
+    const frame = stack[stack.length - 1];
+    if (frame.index >= frame.length) { stack.pop(); continue; }
+    const index = frame.index++;
+    if (!(index in frame.array)) continue;
+    const value = frame.array[index];
+    if (frame.depth > 0 && Array.isArray(value)) {
+      stack.push({ array: value, index: 0, length: value.length,
+        depth: frame.depth === Infinity ? Infinity : frame.depth - 1 });
+    } else {
+      result.push(value);
+    }
+  }
+  return result;
+}
+
+console.log(flatArray([1, , [2, [3]]], 1));        // [1, 2, [3]]
+console.log(flatArray([1, , [2, [3]]], Infinity)); // [1, 2, 3]
+```
+
+工作栈保存每层数组的当前位置，所以能够保留从左到右的结果顺序，也不会因嵌套很深而增加函数调用栈。展开到的数组层会跳过空槽，尚未展开的嵌套数组则原样保留。循环数组不满足输入约定，不能对它无限展开。
+
+### 6.2 逐项映射与一层展开 {#逐项映射与一层展开}
+
+`flatMap` 要在每次回调后展开这一项的结果。纯函数场景可以理解为 `map(...).flat(1)`；若回调会修改先前返回的数组，两种写法的读取时机可能不同，因此实现时保持逐项处理更清楚。
+
+```js
+function flatMapArray(array, callback, thisArg) {
+  if (!Array.isArray(array) || typeof callback !== "function") {
+    throw new TypeError("需要数组与回调函数");
+  }
+  const result = [];
+  const length = array.length;
+  for (let index = 0; index < length; index++) {
+    if (!(index in array)) continue;
+    const value = Reflect.apply(callback, thisArg, [array[index], index, array]);
+    if (Array.isArray(value)) {
+      const innerLength = value.length;
+      for (let inner = 0; inner < innerLength; inner++) {
+        if (inner in value) result.push(value[inner]);
+      }
+    } else {
+      result.push(value);
+    }
+  }
+  return result;
+}
+
+console.log(flatMapArray([1, , 2], value => [value, value * 10]));
+// [1, 10, 2, 20]
+```
+
+回调返回的是数组才展开，普通对象和类数组不会仅因有 `length` 就被展开。内层嵌套数组也不会继续递归。与前面的实现相同，这里只承诺普通数组范围，不是完整原生方法的兼容实现。
+
+## 7. WeakMap 与 WeakSet {#weakmap-与-weakset}
+
+**WeakMap** 保存不会因键关联而阻止键被回收的键值关系，**WeakSet** 保存同样不阻止成员回收的集合关系。对象是主要使用场景；现行规范也允许非注册 Symbol，`Symbol.for` 得到的注册 Symbol 不属于这一范围。目标旧运行环境是否支持 Symbol 弱键，应单独核对，常规面试示例用对象即可。
+
+```js
+const metadata = new WeakMap();
+const node = { name: "button" };
+metadata.set(node, { visits: 1 });
+console.log(metadata.get(node).visits); // 1
+console.log(metadata.has({ name: "button" })); // false
+metadata.delete(node);
+console.log(metadata.has(node)); // false
+```
+
+WeakMap 适合给对象附加外部元信息，WeakSet 适合标记某个对象是否已访问。仍然需要知道那个键或成员才能查询；它们没有 `keys`、`entries`、`size` 这类枚举能力，因为回收状态不应成为可依赖的遍历结果。
+
+如果外部还强引用着键，对应关系仍可能保留；即使外部引用消失，也不保证立即回收。弱键只避免集合本身让键持续存活，不会替你关闭连接、取消监听或按容量淘汰条目。需要列出缓存内容、限制大小、统计命中或执行 LRU 时，通常仍用 Map 配合明确的淘汰策略。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 Array、Object、Map 与 Set 怎样选择，Map 和 Set 怎样判断相同元素？ {#collection-choice}
+
+**考察重点**：序列、记录、映射、集合以及键身份。
+
+**相关内容**：[集合类型与键语义](#集合类型与键语义)、[Set 与相等判断](#set-与相等判断)。
+
+<details>
+<summary>参考回答</summary>
+
+**按索引排列的序列用 Array，字段含义明确的记录用 Object，动态键值关系用 Map，唯一成员集合用 Set。** Object 的键是字符串或 Symbol，Map 的键可以是任意值。
+
+Map 和 Set 使用 SameValueZero：`NaN` 与自身相同，正负零相同，对象按身份区分。字段相同的两个对象仍是不同键或成员；按业务字段去重时，需要自行提取对应键。
+
+</details>
+
+### 8.2 slice、splice 与 delete 删除数组元素有什么区别？ {#array-mutation}
+
+**考察重点**：原地修改、返回值、数组长度和空槽。
+
+**相关内容**：[数组的修改与空槽](#数组的修改与空槽)。
+
+<details>
+<summary>参考回答</summary>
+
+**`slice` 返回片段而不删除原元素，`splice` 原地删除或插入并调整后续索引，`delete` 只删除指定索引属性。** `splice` 返回被删除的元素数组，`slice` 的结束索引不包含在片段内。
+
+`delete array[i]` 不自动缩短 `length`，会留下空槽；空槽与显式存储 `undefined` 在属性存在性和部分遍历方法中不同。需要紧凑删除时用 `splice`，需要保留旧数组时构造过滤后的结果。
+
+</details>
+
+### 8.3 map、forEach 和 reduce 有什么区别，能用 forEach 等待异步任务吗？ {#array-iteration}
+
+**考察重点**：回调参数、返回结果、空槽与异步控制。
+
+**相关内容**：[数组遍历与回调](#数组遍历与回调)、[回调不等于异步调度](#回调不等于异步调度)。
+
+<details>
+<summary>参考回答</summary>
+
+**`map` 返回映射结果数组，`forEach` 返回 `undefined`，`reduce` 返回累积结果。** `map`/`forEach` 的回调接收值、索引和原数组，`reduce` 还在前面接收累积值。
+
+这些方法跳过不存在的索引，`map` 保留相应空槽。`forEach` 不会等待异步回调，`map(async ...)` 得到 Promise 数组；并发需要聚合等待，串行需要逐项 `await` 的循环。
+
+</details>
+
+### 8.4 怎样用 reduce 实现 map，为什么只 push 结果不够？ {#implement-map}
+
+**考察重点**：索引保留、空槽、回调校验与参数传递。
+
+**相关内容**：[用 reduce 实现 map](#用-reduce-实现-map)。
+
+<details>
+<summary>参考回答</summary>
+
+**先创建与输入初始长度相同的数组，再把每次回调结果写到对应索引。** `reduce` 会跳过不存在的索引，预分配结果就能保留这些空槽；连续 `push` 会把位置压缩，改变 `map` 的语义。
+
+还需提前校验回调为函数，并传入值、索引、原数组及约定的 `thisArg`。不借助 `reduce` 时，保存初始长度并按索引检查属性是否存在即可；数组子类和任意类数组属于额外兼容范围。
+
+</details>
+
+### 8.5 实现 reduce 时，怎样处理未传初始值、空数组和空槽？ {#implement-reduce}
+
+**考察重点**：累积起点、参数存在性与回调边界。
+
+**相关内容**：[reduce 的初始值](#reduce-的初始值)。
+
+<details>
+<summary>参考回答</summary>
+
+**传入初始值时从它开始；没有传入时，用第一个存在的元素作为初始累积值。** 后者的回调从下一个存在的索引开始，全空输入找不到初值时抛 `TypeError`。
+
+明确传入 `undefined` 仍然算有初始值，不能与缺省混为一谈。遍历时保留初始长度、跳过不存在的索引，并给回调传入累积值、元素、索引和原数组。
+
+</details>
+
+### 8.6 怎样实现 flat 和 flatMap，它们怎样处理深度与回调结果？ {#flattening}
+
+**考察重点**：嵌套遍历、展开深度、顺序和数组识别。
+
+**相关内容**：[flat 与 flatMap](#flat-与-flatmap)、[按深度扁平化](#按深度扁平化)、[逐项映射与一层展开](#逐项映射与一层展开)。
+
+<details>
+<summary>参考回答</summary>
+
+**`flat` 遇到数组且仍有深度时继续展开，否则保留当前值；`flatMap` 对每个映射结果只展开一层。** 数组以外的对象不因有 `length` 就自动展开。
+
+实现应保留从左到右的顺序，正确跳过展开层的空槽，并明确深度和循环输入边界。深层嵌套可以用显式工作栈处理；`flatMap` 逐项回调后立即展开结果，避免把可观察的处理时机随意改成两轮遍历。
+
+</details>
+
+### 8.7 WeakMap 与 Map 有什么区别，为什么 WeakMap 不能遍历？ {#weak-collections}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：对象可达性、弱关联与可观察性。
+
+**相关内容**：[WeakMap 与 WeakSet](#weakmap-与-weakset)。
+
+<details>
+<summary>参考回答</summary>
+
+**WeakMap 不因键关联而阻止键被回收，Map 会保存普通的强关联。** WeakMap 的键受可弱引用类型限制，常用对象；Map 的键可以是任意值。
+
+WeakMap 不提供键枚举或 `size`，避免把不可预测的垃圾回收状态变成遍历结果。它适合对象元信息，不能保证立即释放资源，也不能直接承担需要计数、遍历和容量淘汰的缓存。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+
+- [MDN：Array](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array)
+- [MDN：Array.prototype.reduce](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/reduce)
+- [MDN：Array.prototype.flatMap](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/flatMap)
+- [MDN：Array.prototype.sort](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/sort)
+- [MDN：Map](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Map)
+- [MDN：Set](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Set)
+- [MDN：WeakMap](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/WeakMap)
+- [ECMAScript：Indexed Collections](https://tc39.es/ecma262/multipage/indexed-collections.html)
+- [ECMAScript：Keyed Collections](https://tc39.es/ecma262/multipage/keyed-collections.html)

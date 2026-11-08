@@ -1,0 +1,272 @@
+---
+title: iOS 崩溃诊断
+description: 读取 iOS 崩溃与系统终止报告，核对 dSYM UUID，区分语言异常、内存访问错误、Swift 运行时错误、看门狗与 jetsam。
+knowledge:
+  id: mobile.ios.crash-diagnostics
+---
+
+**iOS 崩溃诊断**是根据终止原因、线程栈、构建符号和复现条件，找出应用为什么退出。用户看到的“闪退”可能来自错误内存访问、未处理的语言异常、Swift 运行时检查，也可能是系统因无响应或内存压力终止应用；这些情况不能都按同一种异常处理。
+
+面试时，能背出 `EXC_BAD_ACCESS` 还不够。需要说明先看哪些字段、怎样找到匹配符号、为什么栈顶可能不是根因，以及用什么实验验证修改。
+
+## 1. 面试核心 {#core}
+
+- **先看报告类型和终止原因，再阅读对应线程栈**。异常类型、终止说明、触发线程和语言异常栈提供不同线索。[卡](#reading-order)
+- **符号化要匹配二进制的 UUID 和架构**。相同版本号、相同源码甚至重新编译，都不能代替构建身份核对。[卡](#symbols)
+- **栈顶是停止时的位置，不一定是最早出错的位置**。内存可能更早被写坏，等待也可能由其他线程造成。[卡](#top-frame)
+- **`EXC_BAD_ACCESS` 表示非法内存访问的线索，不直接等于某一种引用环或野指针**。结合地址、指令、对象生命周期与诊断工具继续缩小原因。[卡](#bad-access)
+- **Swift `Error`、Objective-C 异常和进程终止不是一回事**。`do-catch` 不能把强制解包失败、越界或任意崩溃变成可恢复错误。[卡](#error-types)
+- **看门狗关注响应与执行时限，jetsam 关注内存压力和进程占用**。两者需要对应的系统记录，不能只靠有没有普通崩溃栈判断。[卡](#system-termination)
+- **诊断工具有适用范围与运行成本**。ASan、TSan、Zombies 等用于验证不同假设，工具没有报警不表示所有输入都安全。[卡](#diagnostic-tools)
+- **修复需要能触发问题的回归条件和后续观察**。说明已验证的行为，保留尚未解释的失败，不把一次没复现当作根因已消失。[卡](#project-crash)
+
+## 2. 读取报告的顺序 {#读取报告的顺序}
+
+### 2.1 先确认环境和报告类型 {#先确认环境和报告类型}
+
+保留完整报告，先核对应用构建、系统版本、设备、发生时间和用户操作。只有栈顶几行截图时，通常还缺少终止原因、其他线程与二进制信息，不能据此做完整判断。
+
+较新的系统使用 `.ips` 文件保存报告。iOS 15 起的崩溃报告可包含首行元数据 JSON 和后续报告 JSON，不能假定整个文件就是一个 JSON 对象；同时也不能仅凭 `.ips` 扩展名断定它一定是普通崩溃报告。应核对具体日志类型和内容。
+
+Xcode 或其他工具可能把原始 JSON 转换成便于阅读的字段。下面这些名称描述的语义比界面位置更重要：
+
+| 信息 | 用途 |
+| --- | --- |
+| 应用、构建、系统与设备 | 确定影响范围和复现环境 |
+| Exception Type、Subtype、Codes | 了解进程停止的机制与地址等线索 |
+| Termination Reason、Description | 检查系统终止、配置或资源问题的说明 |
+| Crashed Thread / Triggered by Thread | 找到触发停止的线程 |
+| Last Exception Backtrace | 若存在，检查语言异常抛出时的调用链 |
+| 其他线程与寄存器 | 分析等待关系、指令与内存访问 |
+| Binary Images / `usedImages` | 匹配模块、加载地址、架构与 UUID |
+
+并不是每份报告都有所有字段。尤其要区分 Mach 异常信息和语言异常：报告写着 Exception Type，不等于业务代码执行了一个可被 Swift `catch` 捕获的 `throw`。
+
+### 2.2 先分类，再提出可验证的假设 {#先分类再提出假设}
+
+| 现象或类型 | 可以优先调查 | 不能直接下的结论 |
+| --- | --- | --- |
+| `EXC_BAD_ACCESS`，伴随 `SIGSEGV` 或 `SIGBUS` 等 | 无效地址、释放后使用、越界、竞态造成的内存破坏 | 一定是循环引用，或一定是当前栈顶方法写坏内存 |
+| `EXC_CRASH (SIGABRT)` | 中止原因、诊断文本、未处理的语言异常等 | 所有 `SIGABRT` 都是数组越界 |
+| Swift 运行时陷阱，如 `SIGTRAP` / `SIGILL` | 强制解包、强制转换、索引和显式失败等 | `do-catch` 能统一兜住 |
+| 看门狗终止 | 启动、主线程响应、任务时限与等待关系 | 必须是 CPU 占用高 |
+| Jetsam 记录 | 进程内存、终止原因与系统压力 | 一定会有普通线程崩溃栈 |
+
+异常类型会受架构和具体触发机制影响。先利用它缩小范围，再结合终止说明和代码；不要把“某个信号对应某一行固定修法”当成诊断规则。
+
+## 3. 符号化与构建身份 {#符号化与构建身份}
+
+### 3.1 为什么必须匹配 UUID {#为什么必须匹配UUID}
+
+**符号化**是把机器地址还原成函数名、文件和行号等可读信息。**dSYM** 保存某次构建对应的调试符号；它内部的 UUID 用于与报告中的二进制映像匹配。
+
+发布时保留相应的 Xcode Archive、可执行文件和 dSYM。分析应用自己的栈帧时，找到该帧所在的模块，再核对报告、二进制和 dSYM 的 UUID 与架构。动态框架也有自己的构建身份，不能拿主应用的 dSYM 解析所有模块。
+
+下面的路径和地址只是命令格式示例，使用时替换为当前报告对应的实际构建产物：
+
+```bash
+xcrun dwarfdump --uuid Reader.app/Reader
+xcrun dwarfdump --uuid Reader.app.dSYM
+xcrun atos -arch arm64 \
+  -o Reader.app.dSYM/Contents/Resources/DWARF/Reader \
+  -l 0x104000000 0x104001234
+```
+
+前两条命令用于比较构建 UUID。`atos` 的 `-o` 指向 dSYM 包中的 DWARF 文件；`-l` 是报告中该映像实际加载地址，最后是待解析的运行时地址。ASLR 会改变运行时加载位置，不能拿另一次启动的加载地址凑进去。
+
+相同版本号不代表相同二进制。用不匹配的 dSYM 得到一个看似合理的函数名，也不能把它作为定位依据；优先让 Xcode 使用匹配 Archive 完成整体符号化，单个地址再按需使用命令行工具。
+
+### 3.2 符号化仍有信息边界 {#符号化仍有信息边界}
+
+优化构建可能内联函数、合并代码或改变变量保留情况，行号不一定等同于源码逐句执行轨迹。系统框架的符号也依赖对应系统版本和可用符号资料。
+
+因此，符号化得到的是可分析的执行证据，不是自动生成的根因。要回到当时的代码、参数、线程和生命周期，确定哪个条件导致错误。
+
+## 4. 内存访问与语言错误 {#内存访问与语言错误}
+
+### 4.1 栈顶为什么可能离根因很远 {#栈顶为什么可能离根因很远}
+
+一个缓冲区在更早的操作中越界写入，可能直到稍后读取对象字段或释放内存时才触发异常。栈顶显示系统的释放函数，不代表系统释放函数本身有缺陷。相似地，主线程停在等待函数，真正阻止它继续的工作可能在另一个线程。
+
+处理 `EXC_BAD_ACCESS` 时，查看访问地址属于什么区域、程序计数器指向什么指令、当前操作是读取、写入还是执行，再检查相关对象的创建、持有与释放过程。若不同报告的停止位置散布在无关代码中，也要考虑更早发生的内存破坏或数据竞争。
+
+诊断工具应贴合假设：ASan 用于寻找越界和释放后使用等访问错误；Zombies 可以帮助调查向已经释放的 Objective-C 对象发消息；存在并发写入时再考虑 TSan。普通强引用环更直接表现为对象不释放，和非法内存访问不是同一类问题，见 [Swift ARC](../../basic-knowledge/swift/arc.mdx)。
+
+### 4.2 Swift Error 不是所有失败的统一入口 {#SwiftError不是所有失败的统一入口}
+
+Swift `throws` 与 `do-catch` 用于语言规定的错误传播，例如文件读取或解析失败。强制解包 `nil`、失败的 `as!`、数组越界或 `fatalError` 等运行时失败，不会因此变成可以正常 `catch` 后继续的业务错误。
+
+Objective-C 的 `NSException` 也不同于 Swift 的 `Error`。排查未处理的语言异常时，结合异常名、原因和 Last Exception Backtrace；在可复现场景中设置相应异常断点，尽量停在抛出位置。
+
+修复应针对违反的前置条件：检查输入、状态和生命周期，或改成合理的可失败接口。用全局捕获和继续运行掩盖已经损坏的进程状态，不能替代修复。
+
+## 5. 系统终止 {#系统终止}
+
+### 5.1 看门狗关注是否及时响应 {#看门狗关注是否及时响应}
+
+**看门狗**是系统用来监控启动和响应等时限的机制。主线程长时间计算、同步网络或文件读取、锁等待，都可能使应用不能及时完成要求的工作。
+
+报告可能带有 `0x8badf00d`、WatchdogEvent 和超时阶段等信息。要按当前报告解释，不能把一个固定秒数套到所有系统版本、应用状态和任务类型上。
+
+终止时的线程栈只显示那个时刻正在做什么，未必包含此前已经消耗了大量时间的操作。结合 CPU 时间、墙钟时间和过程记录判断：墙钟时间很长但 CPU 时间不高，值得调查等待；CPU 时间高则进一步定位计算。详细性能分析见 [iOS 性能诊断](./performance-diagnostics.mdx)。
+
+### 5.2 Jetsam 不等于一次普通崩溃 {#Jetsam不等于一次普通崩溃}
+
+**Jetsam** 是系统为应对内存条件而终止进程的机制。相关报告记录各进程内存与终止原因，通常不提供普通崩溃报告中的线程执行栈。
+
+先在报告中找到自己的进程，检查 `reason`、页面数量、`pageSize` 等字段，按照该报告的单位计算占用，不要把页数直接当字节。系统压力、进程优先级与应用限制等条件都会影响终止，不存在对所有设备都通用的固定“安全内存上限”。
+
+随后回到能触发峰值的场景，用 Allocations、Memory Graph 等检查图片解码、批量对象、缓存和未释放资源。用户说“切回来重新启动”，也不足以证明发生 jetsam；仍需对应记录或可验证证据。
+
+## 6. 诊断与回归验证 {#诊断与回归验证}
+
+| 工具 | 适合验证 | 需要知道的边界 |
+| --- | --- | --- |
+| Address Sanitizer | 越界、释放后使用等非法访问 | 需要执行到相关路径；不等于检查所有泄漏 |
+| Thread Sanitizer | 竞争读写及相关线程错误 | Apple 平台的 iOS 应用使用模拟器等受支持环境，不能直接把真机运行当作 TSan 验证 |
+| Zombies | 向已释放 Objective-C 对象发消息 | 改变对象回收和内存使用，不能拿它的内存曲线当正常运行结果 |
+| 异常断点与调试器 | 语言异常抛出位置、状态和调用链 | 需要复现；调试运行条件可能与线上不同 |
+| 崩溃与系统报告 | 真实终止现场与影响范围 | 是当时的记录，不包含全部历史操作 |
+
+复现后先构造能暴露原问题的条件，再修改代码。例如错误只发生在页面退出与异步回调竞争时，验证就要覆盖退出前完成、退出后完成、取消后仍收到结果等时序；不能只测试正常打开页面。
+
+修复后重跑相同触发条件，检查业务结果、资源释放和工具报告，并观察后续版本中同类报告的变化。没有复现的偶发问题应保留假设、失败记录和仍缺的证据，不能因为一次运行正常就宣称已经修复。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 拿到一份 iOS 崩溃报告，你会按什么顺序阅读？ {#reading-order}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：环境、终止分类、符号与线程证据之间的关系。
+
+**相关内容**：[读取报告的顺序](#读取报告的顺序)。
+
+<details>
+<summary>参考回答</summary>
+
+**先确认报告类型、构建与环境，再看异常和终止说明，随后阅读匹配符号后的相关线程栈。** 有语言异常时检查 Last Exception Backtrace，等待或内存问题还需其他线程、寄存器与映像信息。按这些证据形成可验证的假设，不只截取栈顶一行。
+
+</details>
+
+### 7.2 为什么相同版本号的 dSYM 仍可能不能用于符号化？ {#symbols}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：构建身份、架构、模块和运行时加载地址。
+
+**相关内容**：[符号化与构建身份](#符号化与构建身份)。
+
+<details>
+<summary>参考回答</summary>
+
+**版本号不是二进制身份，必须核对报告中对应映像与 dSYM 的 UUID 和架构。** 不同构建可能使用同一个版本号，各框架也有自己的符号。手工解析地址还需对应映像的实际加载地址，不能混用另一次启动或另一个模块的数据。
+
+</details>
+
+### 7.3 栈顶在系统库中，能直接认定是系统 bug 吗？ {#top-frame}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：停止位置与错误起因、跨线程依赖和延迟暴露。
+
+**相关内容**：[栈顶为什么可能离根因很远](#栈顶为什么可能离根因很远)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能，系统库可能只是最终访问或释放了此前被应用写坏的数据。** 还要检查调用参数、对象生命周期、其他线程和更早操作。栈顶给出现场线索，原因需要结合复现与工具证据确认。
+
+</details>
+
+### 7.4 `EXC_BAD_ACCESS` 应怎样继续排查？ {#bad-access}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：非法访问的条件、对象生命周期与不同诊断工具。
+
+**相关内容**：[内存访问与语言错误](#内存访问与语言错误)。
+
+<details>
+<summary>参考回答</summary>
+
+**先结合子类型、访问地址、指令和调用栈判断访问发生在哪里，再检查相关内存的分配、持有和释放过程。** 越界或释放后使用可用 ASan，已释放 Objective-C 对象消息可用 Zombies，并发破坏可考虑 TSan。不要把所有访问错误都归为同一种野指针，也不要把强引用环等同于非法访问。
+
+</details>
+
+### 7.5 Swift `do-catch` 能统一捕获数组越界和强制解包失败吗？ {#error-types}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：可传播错误、运行时陷阱和语言异常的区别。
+
+**相关内容**：[Swift Error 不是所有失败的统一入口](#SwiftError不是所有失败的统一入口)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能，`do-catch` 处理 `throws` 传播的 Swift 错误，这些运行时失败不走同一条错误传播路径。** 应修复索引、可选值或转换的前置条件。Objective-C 异常也需要按其异常信息与抛出栈分析，不能把它和 Swift `Error` 混为一谈。
+
+</details>
+
+### 7.6 看门狗终止与 jetsam 分别重点看什么？ {#system-termination}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：响应时限、内存条件和报告类型的差异。
+
+**相关内容**：[系统终止](#系统终止)。
+
+<details>
+<summary>参考回答</summary>
+
+**看门狗重点看超时阶段、终止说明、CPU 与墙钟时间和线程依赖；jetsam 重点看进程内存与系统给出的终止原因。** Jetsam 通常没有普通线程崩溃栈，页数要结合报告的 `pageSize` 解释。不能给所有应用套同一个超时秒数或固定内存上限。
+
+</details>
+
+### 7.7 ASan、TSan 和 Zombies 能互相替代吗？ {#diagnostic-tools}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：工具检测对象、支持环境和运行覆盖。
+
+**相关内容**：[诊断与回归验证](#诊断与回归验证)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能，它们分别面向不同假设。** ASan 关注非法内存访问，TSan 关注竞争读写，Zombies 帮助定位向已释放 Objective-C 对象发消息。工具有环境限制与运行成本，还需要执行到实际触发路径；没有报警不能证明所有条件都正确。
+
+</details>
+
+### 7.8 项目里遇到过哪些崩溃，你会怎样介绍处理过程？ {#project-crash}
+
+**题型**：综合题
+
+**考察重点**：真实触发条件、报告证据、原因验证与修复效果。
+
+**相关内容**：[读取报告的顺序](#读取报告的顺序)、[诊断与回归验证](#诊断与回归验证)。
+
+<details>
+<summary>参考回答</summary>
+
+**选一个真实处理过的问题，说明触发操作、报告类型、定位证据、修改和回归结果。** 区分最初猜测与最终证实的原因，交代是否核对符号、用什么工具复现，以及还有哪些边界未覆盖。没有实际处理经验时可以说明练习过程，不编造线上故障或修复数据。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+- [Apple：Diagnosing issues using crash reports and device logs](https://developer.apple.com/documentation/xcode/diagnosing-issues-using-crash-reports-and-device-logs)
+- [Apple：Adding identifiable symbol names to a crash report](https://developer.apple.com/documentation/xcode/adding-identifiable-symbol-names-to-a-crash-report)
+- [Apple：Interpreting the JSON format of a crash report](https://developer.apple.com/documentation/xcode/interpreting-the-json-format-of-a-crash-report)
+- [Apple：Examining the fields in a crash report](https://developer.apple.com/documentation/xcode/examining-the-fields-in-a-crash-report)
+- [Apple：Identifying the cause of common crashes](https://developer.apple.com/documentation/xcode/identifying-the-cause-of-common-crashes)
+- [Apple：Investigating memory access crashes](https://developer.apple.com/documentation/xcode/investigating-memory-access-crashes)
+- [Apple：Addressing crashes from Swift runtime errors](https://developer.apple.com/documentation/xcode/addressing-crashes-from-swift-runtime-errors)
+- [Apple：Diagnosing memory, thread, and crash issues early](https://developer.apple.com/documentation/xcode/diagnosing-memory-thread-and-crash-issues-early)
+- [Apple：Identifying high-memory use with jetsam event reports](https://developer.apple.com/documentation/xcode/identifying-high-memory-use-with-jetsam-event-reports)
+- [Apple：Addressing watchdog terminations](https://developer.apple.com/documentation/xcode/addressing-watchdog-terminations)
+- [Apple：Analyzing a crash report](https://developer.apple.com/documentation/xcode/analyzing-a-crash-report)
+- [Apple：Understanding the exception types in a crash report](https://developer.apple.com/documentation/xcode/understanding-the-exception-types-in-a-crash-report)
+- [Apple：Building your app to include debugging information](https://developer.apple.com/documentation/xcode/building-your-app-to-include-debugging-information)
+- [Apple：Addressing language exception crashes](https://developer.apple.com/documentation/xcode/addressing-language-exception-crashes)
+- [Apple：Investigating crashes for zombie objects](https://developer.apple.com/documentation/xcode/investigating-crashes-for-zombie-objects)

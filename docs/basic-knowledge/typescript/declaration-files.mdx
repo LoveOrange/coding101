@@ -1,0 +1,359 @@
+---
+sidebar_position: 4
+knowledge:
+  id: basic-knowledge.typescript.declaration-files
+  type: concept
+description: "解释声明文件如何描述 JavaScript 接口，区分模块声明、全局增强与模块增强，并说明类型生成、发布入口和运行时一致性验证。"
+keywords: ["TypeScript", "声明文件", "d.ts", "declare", "模块增强", "类型发布"]
+---
+
+# TypeScript 声明文件
+
+**声明文件**用类型描述已有 JavaScript 代码或运行环境提供的接口，通常以 `.d.ts` 结尾。编译器据此检查调用并提供提示，但声明文件本身不提供函数实现，也不负责把对应库加载到运行环境。
+
+项目接入没有类型的库、为浏览器全局变量补充类型，或发布供他人使用的包时，需要同时核对声明和实际实现。本文按 TypeScript 5 的常用机制说明；基础类型与声明合并分别见 [TypeScript 类型系统](./type-system.mdx) 和 [interface 与 type](./type-interface.mdx#声明合并)。
+
+## 1. 面试核心 {#core}
+
+- 声明描述值与接口，实际能力仍由 JavaScript 提供。**写了 declare 不会创建变量、实现函数或安装依赖；声明错误可以让编译通过的代码在运行时失败**。[卡](#declaration-runtime)
+- 声明应匹配模块真正的导出形式。**命名导出、默认导出和 CommonJS 整体导出不能只凭导入语法偏好互换**。[卡](#module-shape)
+- 声明所在的文件和作用域会改变含义。**没有顶层导入导出的声明脚本可以提供环境模块声明，模块文件中的同名结构可能是在增强已有模块**。[卡](#ambient-augmentation)
+- 全局增强与模块增强是不同入口。**declare global 补充全局类型，declare module 的增强补充指定模块；两者都不会自动补齐运行时成员**。[卡](#global-types)
+- 第三方类型可能随包提供，也可能来自 `@types` 或项目自己的声明。**必须与消费到的版本、文件路径和模块解析方式对应，不能用任意 any 声明掩盖真实缺口**。[卡](#missing-types)
+- 类型可以从 TypeScript 源码生成并随包发布。**声明入口和 JavaScript 入口都要指向实际发布的文件，生成声明不代表同时生成了运行实现**。[卡](#publishing)
+- 验证应站在消费方看。**既检查正确与错误调用，也运行实际导入；只在库自己的源码工程中通过检查，不能证明发布包可用**。[卡](#declaration-validation)
+
+## 2. declare 与运行时实现 {#declare-与运行时实现}
+
+**环境声明**告诉编译器某个值由其他代码或环境提供。`declare` 是这种描述方式之一，它不会生成赋值或函数体。
+
+```ts
+declare const lessonVersion: string;
+console.log(typeof lessonVersion); // undefined
+try {
+  console.log(lessonVersion);
+} catch (error) {
+  console.log(error instanceof ReferenceError); // true
+}
+```
+
+这个独立示例没有任何代码创建 `lessonVersion`。类型检查可以接受访问，但生成的 JavaScript 仍然只是读取一个不存在的标识符。`typeof` 对未声明标识符有特殊处理，直接读取则抛出 `ReferenceError`。
+
+`.d.ts` 中通常只有声明，没有用于业务执行的函数体或普通赋值。声明一个函数返回字符串，不会把实际返回的数字转换成字符串；声明 Promise，也不会把同步实现自动变成异步实现。
+
+因此，声明准确性至少包括参数、返回值、可选性、同步与异步方式、导出形态和运行环境。它是调用约定，不能作为数据校验器。
+
+## 3. 为已有模块提供声明 {#为已有模块提供声明}
+
+为 JavaScript 模块补类型时，先看运行时到底导出了什么。下面的 CommonJS 模块导出对象上的 `multiply` 函数：
+
+```js
+// math.js
+exports.multiply = function multiply(value, options = {}) {
+  return value * (options.factor ?? 2);
+};
+```
+
+在相邻的 `math.d.ts` 中描述命名导出，消费方就能检查调用。下面的文件分别保存，按 CommonJS 方式编译 `main.ts`，并保留相邻的 `math.js`：
+
+```ts
+// math.d.ts
+export interface MultiplyOptions {
+  factor?: number;
+}
+export declare function multiply(value: number, options?: MultiplyOptions): number;
+
+// main.ts
+import { multiply } from "./math";
+import type { MultiplyOptions } from "./math";
+const options: MultiplyOptions = { factor: 3 };
+console.log(multiply(7, options)); // 21
+// multiply("7"); // 编译错误：第一个参数需要 number
+```
+
+`MultiplyOptions` 只用于类型位置，`import type` 明确表示它不应该成为运行时导入；`multiply` 则必须真正从 JavaScript 模块取得。声明里的命名函数与 `exports.multiply` 相对应。
+
+如果实际模块是 `module.exports = function ...`，它导出的是整个可调用值，而不是自动拥有一个名为 `default` 的 ESM 导出。相应声明可以使用 `export =` 等适合 CommonJS 形状的形式；消费方式还受模块配置与互操作选项影响。`esModuleInterop` 等设置不能修复任意虚假的 API 描述。
+
+ESM 与 CommonJS 的身份还会影响声明文件的解释。`.d.mts`、`.d.cts` 可明确对应相应模块格式，普通 `.d.ts` 则需要结合包环境和解析模式判断。发布双模块入口时，不能只因两个实现的业务函数相同，就假定同一条声明路径在所有入口下都适用。
+
+## 4. 环境模块声明与作用域 {#环境模块声明与作用域}
+
+**环境模块声明**可以描述一个按名字导入、但编译器暂时找不到类型的模块。下面的 `legacy.d.ts` 没有顶层 `import` 或 `export`，声明脚本中的 `declare module` 为指定名称提供接口：
+
+```ts
+// legacy.d.ts
+declare module "lesson-legacy" {
+  export function normalize(value: string): string;
+}
+
+// main.ts
+import { normalize } from "lesson-legacy";
+console.log(normalize(" Hi ")); // 假定实际库按约定去空格并转小写，输出 hi
+// normalize(1); // 编译错误：参数需要 string
+```
+
+声明文件必须进入项目的类型输入范围，运行时也必须能加载一个真正提供 `normalize` 的包。这里只写声明，`node_modules` 不会自动多出依赖；返回类型也没有证明具体实现完成了去空格或转小写，这些行为仍由实际库约定。
+
+如果在声明文件顶层加入 `import` 或 `export`，文件成为模块，再写同名 `declare module` 就可能被解释为对已有模块的增强，而不是创建一个全新的环境模块声明。补第三方类型时，盲目添加 `export {}` 可能改变原本想表达的含义。
+
+同样，直接写 `declare module "lesson-legacy";` 虽然可以快速让缺少声明的错误消失，却会把很多使用放宽为 `any`。这应被视为有明确范围的临时兼容措施，而不是已经建立了可信类型接口。
+
+## 5. 全局增强与模块增强 {#全局增强与模块增强}
+
+### 5.1 全局增强 {#全局增强}
+
+**全局增强**补充已有全局类型，例如浏览器的 `Window`。在模块文件中使用 `declare global` 可以明确说明哪些声明要进入全局空间。
+
+```ts
+// browser-globals.d.ts
+export {};
+declare global {
+  interface Window {
+    lessonVersion: string;
+  }
+}
+
+// main.ts
+window.lessonVersion = "1.0";
+console.log(window.lessonVersion); // 1.0
+```
+
+`export {}` 让声明文件成为模块，`declare global` 再有意增强全局接口。`Window` 的合并只让编译器允许这个属性，实际赋值仍由 `main.ts` 完成；删除赋值不会凭空出现版本字符串。
+
+若这个值只在某个脚本加载完成后才存在，类型就应该表达该生命周期，例如可选属性并在使用前检查，而不是无条件声称它总是字符串。增加全局类型也会影响整个项目，应使用清晰、受控的名称，避免把只在一个局部功能中成立的条件推广到所有代码。
+
+### 5.2 模块增强 {#模块增强}
+
+**模块增强**补充一个已能被解析的模块中的可合并声明。下面已有 `FeatureFlags` 接口，另一个声明文件为它补上 `tracking`：
+
+```ts
+// config.ts
+export interface FeatureFlags {
+  dark: boolean;
+}
+
+// plugin.d.ts
+import "./config";
+declare module "./config" {
+  interface FeatureFlags {
+    tracking: boolean;
+  }
+}
+
+// main.ts
+import type { FeatureFlags } from "./config";
+const flags: FeatureFlags = { dark: true, tracking: false };
+console.log(flags.dark, flags.tracking); // true false
+```
+
+顶层导入确保这是模块文件，并引用要增强的既有模块。增强后的类型要求两个字段都存在，但真正的对象仍由 `main.ts` 创建。若增强的是类的方法，除了声明，还必须在实现中提供相应方法；只补类型会留下运行时缺口。
+
+模块增强不是替换整个第三方模块，也不能任意创造新的顶层导出。它依赖原声明能合并，类型别名不能像接口那样重新打开；默认导出的增强也不能按普通具名接口的方式直接套用。需要补充的能力若没有合适扩展点，包装现有接口通常更清楚。
+
+## 6. 第三方类型与解析排查 {#第三方类型与解析排查}
+
+接入第三方依赖时，先确认包本身是否已经提供声明。没有时，再检查是否有与版本匹配的 `@types` 包；若仍然缺少，可以为实际使用的 API 写局部声明，不需要一开始猜测整个库的全部接口。
+
+发现“找不到声明”或提示与运行行为不一致时，可以按以下顺序核对：
+
+1. 查看实际安装版本和消费入口，确认不是重复版本或导入了不同子路径。
+2. 查看包的 `types`、`exports` 和实际发布文件，确认声明入口存在、模块格式匹配。
+3. 查看项目 `include`、`files`、`types`、`typeRoots` 等配置与声明作用域，确认自己的声明被纳入且没有意外变成另一种声明形式。
+4. 使用 `tsc -p 路径 --traceResolution` 查看解析过程，定位编译器究竟选择了哪个声明。
+
+这些配置职责不同。`types` 主要限制自动加入全局环境的类型包，不等于禁止显式导入模块的类型；`exclude` 也不是阻止所有依赖进入类型程序的安全边界，被导入的文件仍可能需要参与检查。
+
+`skipLibCheck` 可以跳过声明文件的一些检查，但不会修改其公开类型。错误声明仍会影响调用方推断，不能把关闭检查当作声明与实现已经一致。
+
+## 7. 声明生成与发布 {#声明生成与发布}
+
+使用 TypeScript 编写的库，可以由编译器根据源码生成声明，减少手写声明与实现逐渐偏离的机会。例如源码如下：
+
+```ts
+// src/index.ts
+export interface Options {
+  factor?: number;
+}
+export function multiply(value: number, options: Options = {}): number {
+  return value * (options.factor ?? 2);
+}
+```
+
+只生成声明的独立配置可以写成：
+
+```json
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "CommonJS",
+    "strict": true,
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "rootDir": "src",
+    "outDir": "dist"
+  },
+  "include": ["src/**/*.ts"]
+}
+```
+
+运行 `tsc -p tsconfig.json` 后，`dist/index.d.ts` 会保留导出的接口与函数签名，不包含 `multiply` 函数体。`emitDeclarationOnly` 明确表示这一步只输出声明，JavaScript 必须由另一个构建步骤生成；若希望 `tsc` 同时输出 JavaScript 与声明，就不启用该选项。
+
+简单 CommonJS 包的入口字段可以对应如下文件：
+
+```json
+{
+  "name": "lesson-math",
+  "version": "1.0.0",
+  "type": "commonjs",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": ["dist"]
+}
+```
+
+`main` 指向运行实现，`types` 指向声明。两者都必须真实存在于发布内容中，不能只在源码目录里能找到。带 `exports` 的包还要让相应公开子路径与条件解析到匹配的类型和实现，不能仅修改一个顶层 `types` 字段就假定所有子路径都已配置。
+
+如果公开声明引用了其他包的类型，消费方也必须能够解析这些引用。依赖是否随包可达、应由谁安装，要按实际公开契约安排，不能因为本地开发环境已有依赖就忽略发布后的缺失。
+
+声明生成也不会自动决定哪些内部类型适合成为公共 API。需要检查导出面，避免暴露无法解析的私有路径或把内部实现细节变成调用方必须依赖的约定。
+
+## 8. 消费方验证 {#消费方验证}
+
+声明的验证目标，是让真实消费者既能正确检查，也能正确运行。应使用独立的最小消费项目，从准备发布的文件集合中导入，而不是只引用库内部的源码路径。
+
+至少验证正确参数能够通过、错误参数确实失败、返回值与导出方式符合实际实现。再测试需要支持的模块方式和子路径；若包声称支持多个入口，分别消费这些入口，不能只用一种导入写法代表全部。
+
+全局增强还要验证初始化顺序，模块增强要验证对应运行实现确实存在。仅生成一个 `.d.ts`、让编辑器不报红，并不等于完成了这些验证。
+
+## 9. 面试题 {#面试题}
+
+### 9.1 声明文件与 declare 有什么作用，会生成运行时变量或函数吗？ {#declaration-runtime}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：环境声明、类型检查、实现与运行时错误。
+
+**相关内容**：[declare 与运行时实现](#declare-与运行时实现)。
+
+<details>
+<summary>参考回答</summary>
+
+**声明文件描述已有接口，declare 告诉编译器某个值由其他实现或环境提供，它们不生成对应实现。** 因此声明一个变量存在，并不让它在运行时自动出现。
+
+声明错误可能让调用通过检查，却在运行时遇到缺失变量、错误返回值或加载失败。必须同时检查真实实现，不能把声明当作转换或验证数据的代码。
+
+</details>
+
+### 9.2 给 JavaScript 库写声明时，为什么要先确认导出形式？ {#module-shape}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：命名导出、默认导出、CommonJS 与声明模块身份。
+
+**相关内容**：[为已有模块提供声明](#为已有模块提供声明)。
+
+<details>
+<summary>参考回答</summary>
+
+**消费方在运行时取得什么值，声明就应准确描述什么形状。** `exports.multiply`、ESM 默认导出和 `module.exports = function` 并不是任意可互换的同一种接口。
+
+还要结合解析方式判断声明格式，必要时使用对应的 `.d.mts`、`.d.cts`。互操作选项能处理某些模块兼容关系，但不能修复虚假的函数、字段或返回类型。
+
+</details>
+
+### 9.3 环境模块声明与模块增强有什么区别，为什么加一个 export 可能改变含义？ {#ambient-augmentation}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：脚本与模块作用域、已有模块解析与可合并声明。
+
+**相关内容**：[环境模块声明与作用域](#环境模块声明与作用域)、[模块增强](#模块增强)。
+
+<details>
+<summary>参考回答</summary>
+
+**声明脚本中的 declare module 可以为命名模块提供接口，模块文件中的相应结构则可用于增强已经存在的模块。** 顶层 `import` 或 `export` 会让文件成为模块，因此可能改变声明含义。
+
+增强需要模块可解析、目标声明可合并，不是重新定义任意新库或替换全部导出。实际新增能力仍要由运行时实现提供。
+
+</details>
+
+### 9.4 怎样为 Window 补充属性类型，为什么还需要初始化代码？ {#global-types}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：declare global、接口合并、实际属性与生命周期。
+
+**相关内容**：[全局增强](#全局增强)。
+
+<details>
+<summary>参考回答</summary>
+
+**在模块文件中用 declare global 合并 Window 接口，可以让编译器认识新增属性，但实际属性仍需要赋值创建。** 声明不会等待脚本加载，也不会提供默认值。
+
+若属性只在初始化后存在，类型与使用代码都应表达这个条件，例如声明为可选并先检查。全局增强影响面较大，不能把局部假设扩展为整个环境的永久保证。
+
+</details>
+
+### 9.5 第三方包缺少类型声明时应该怎样处理和排查？ {#missing-types}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：类型来源、版本入口、输入范围与解析证据。
+
+**相关内容**：[第三方类型与解析排查](#第三方类型与解析排查)。
+
+<details>
+<summary>参考回答</summary>
+
+**先确认包是否自带类型，再检查匹配的 @types；确实缺少时，为实际使用的 API 编写准确声明。** 同时核对安装版本、导入子路径、`types` 或 `exports` 指向的文件，以及自己的声明是否进入正确作用域。
+
+必要时使用 `--traceResolution` 查看实际解析结果。空的 `declare module` 会放宽为 `any`，`skipLibCheck` 也不会修复错误接口，不能仅以错误提示消失作为完成标准。
+
+</details>
+
+### 9.6 TypeScript 库怎样生成并发布声明文件？ {#publishing}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：declaration、独立输出、包入口与可达依赖。
+
+**相关内容**：[声明生成与发布](#声明生成与发布)。
+
+<details>
+<summary>参考回答</summary>
+
+**启用 declaration 生成公开类型描述，用包入口字段把消费方导向真实发布的声明与 JavaScript。** `emitDeclarationOnly` 只输出声明，运行实现需要其他构建步骤，不能把它当作完整可执行产物。
+
+简单包可用 `types` 指向声明，带条件或子路径导出的包还要匹配 `exports`。检查发布文件列表、公开声明引用的依赖和内部路径，避免本地可用但消费项目解析失败。
+
+</details>
+
+### 9.7 怎样验证声明文件准确，而不只是让编辑器不报错？ {#declaration-validation}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**题型**：综合题
+
+**考察重点**：消费边界、正反例、实际导入与发布内容。
+
+**相关内容**：[消费方验证](#消费方验证)、[声明生成与发布](#声明生成与发布)。
+
+<details>
+<summary>参考回答</summary>
+
+**建立最小消费项目，从待发布文件导入，验证正确调用通过、错误调用失败，并实际运行对应 JavaScript。** 检查返回值、导出形式、模块入口和子路径，不只在库自身源码工程里检查。
+
+全局或模块增强还要核对初始化顺序与实现存在性。声明文件提供的是契约，编译器不能替你证明手写契约与真实代码完全一致。
+
+</details>
+
+## 10. 参考资料 {#参考资料}
+
+- [TypeScript：Declaration Files Introduction](https://www.typescriptlang.org/docs/handbook/declaration-files/introduction.html)
+- [TypeScript：Declaration Reference](https://www.typescriptlang.org/docs/handbook/declaration-files/by-example.html)
+- [TypeScript：Modules .d.ts](https://www.typescriptlang.org/docs/handbook/declaration-files/templates/module-d-ts.html)
+- [TypeScript：Declaration Merging 与 Module Augmentation](https://www.typescriptlang.org/docs/handbook/declaration-merging.html#module-augmentation)
+- [TypeScript：Publishing Declaration Files](https://www.typescriptlang.org/docs/handbook/declaration-files/publishing.html)
+- [TypeScript：Module Resolution Reference](https://www.typescriptlang.org/docs/handbook/modules/reference.html)

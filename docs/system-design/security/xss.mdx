@@ -1,0 +1,253 @@
+---
+title: XSS
+knowledge:
+  id: system-design.security.xss
+---
+
+# XSS
+
+**XSS**（Cross-Site Scripting，跨站脚本）是应用把不可信内容当作页面代码执行，导致攻击者的脚本进入受害网站上下文的漏洞。问题不在于输入中出现了某几个特殊字符，而在于数据进入了可以解释 HTML、JavaScript 等内容的位置。
+
+例如，评论本来只应显示文字，却被拼进 `innerHTML`，其中的事件处理代码就可能执行。面试中需要说明数据从哪里来、在哪一步变成代码，以及这个位置应使用文本输出、上下文编码还是 HTML 净化。
+
+## 1. 面试核心 {#core}
+
+- XSS 的关键是**不可信数据进入可执行的输出位置**。存储型和反射型描述数据怎样到达页面，DOM 型强调浏览器端的不安全处理，这些维度可以重叠。[卡](#xss-mechanism)
+- **防护方法取决于输出上下文**。普通文本用 `textContent`，URL 要检查协议和业务允许的目标；HTML 转义不能代替 JavaScript、URL 或 CSS 的检查。[卡](#xss-prevention)
+- 确实需要富文本时，使用维护中的 HTML 净化库并限制允许的标签、属性。**净化后再次拼入不可信 HTML，会破坏原来的安全边界**。[卡](#xss-prevention)
+- 服务端推送、流式响应和数据库内容也可能不可信。**分块传输不改变最终输出的要求**；纯文本逐块追加文本节点，富文本要在最终渲染链路净化。[卡](#streaming-xss)
+- **`JSON.stringify()` 只解决 JSON 序列化，不保证嵌入 HTML 安全**。内嵌数据仍受 HTML 解析器影响，不能忽略 `</script>` 等结构边界。[卡](#json-script-context)
+- **CSP 和 HttpOnly 是补充防线**。CSP 限制脚本执行，HttpOnly 限制脚本读取 Cookie；它们都不能替代正确的输出处理。[卡](#csp-httponly)
+
+## 2. 数据怎样变成脚本 {#数据怎样变成脚本}
+
+一个完整的分析应连起三个位置：**输入来源**是不可信数据进入应用的地方，**处理链路**是它经过的存储、解析和转换，**输出位置**则是浏览器最终怎样使用它。安全分析中也会把来源和输出位置称为 source 和 sink。
+
+来源不只有表单。URL 查询参数、地址片段、`postMessage` 消息、接口响应、第三方数据和数据库中的历史内容，都可能包含其他人控制的值。数据经过自己的服务器，并不自动获得“可以当代码执行”的权限。
+
+| 分类 | 典型链路 | 判断重点 |
+| --- | --- | --- |
+| 存储型 XSS | 用户提交评论，服务器保存，其他人打开页面时触发 | 恶意内容被持久保存，后续读取时进入危险输出 |
+| 反射型 XSS | 搜索参数被服务器直接拼进当次返回的 HTML | 请求里的内容在响应中被不安全地输出 |
+| DOM 型 XSS | 浏览器脚本读取地址片段，再写入 `innerHTML` | 不安全的解析或写入发生在客户端，未必经过服务器 |
+
+存储型、反射型与 DOM 型并不互斥。数据库返回的恶意评论如果由客户端写入 `innerHTML`，既有存储特征，也存在客户端的 DOM 注入。
+
+脚本一旦在页面上下文运行，就可能读取页面内容、修改界面、调用当前用户可访问的接口。它并不会因此自动获得操作系统权限，也不会让浏览器放弃所有跨源隔离。危险在于应用原本信任的页面内，出现了攻击者控制的执行逻辑。
+
+## 3. 输出上下文与安全接口 {#输出上下文与安全接口}
+
+**输出上下文**是浏览器当前按哪一种语法解释数据。相同字符串放在段落、URL、事件处理属性和脚本中，含义不同，因此不存在适合所有位置的通用 `escape()`。
+
+| 输出位置 | 合适的处理方式 | 不能忽略的边界 |
+| --- | --- | --- |
+| 普通元素中的文字 | DOM 使用 `textContent`；服务器模板使用 HTML 文本上下文编码 | 不要再把结果拿去当 HTML 解析 |
+| 固定的普通文本属性，如 `title` | DOM 直接设置固定属性；服务器模板使用带引号的属性及对应编码 | `onclick`、`srcdoc` 不是普通文本属性 |
+| 链接地址 | 用 URL 解析器处理，再限制协议与业务允许的目标 | 设置 `href` 不会自动拒绝 `javascript:` |
+| JavaScript 代码位置 | 避免拼接不可信代码，改为数据传递 | `eval()`、`new Function()` 不是 JSON 解析器 |
+| CSS | 固定属性名，按该属性限制允许值 | 任意 CSS 文本或能加载资源的 URL 仍需单独约束 |
+| 允许格式的 HTML | 使用 HTML 净化库及明确的允许策略 | 不能只删除 `<script>` 或依赖正则匹配 |
+
+下面的浏览器函数把标签当文字显示，并只接受 HTTPS 外链。这里假设 `host` 是应用自己创建的普通容器，例如 `div`，`label` 和 `rawUrl` 是字符串。
+
+```js
+export function renderLink(host, label, rawUrl) {
+  const url = new URL(rawUrl, location.href);
+  if (url.protocol !== 'https:') {
+    throw new Error('只允许 HTTPS 链接');
+  }
+
+  const link = document.createElement('a');
+  link.textContent = label;
+  link.href = url.href;
+  host.replaceChildren(link);
+}
+```
+
+`label` 即使包含 `<img ...>`，也只成为链接里的文字；`javascript:` 和 `data:` 会被协议检查拒绝。这个例子允许任意 HTTPS 目标，如果产品只允许自家域名，还要比较 `url.origin` 或准确的主机允许列表。HTTPS 只说明使用的协议，不说明目标网站可信。
+
+`textContent` 的结论限定在普通文本容器。给 `script` 元素设置文本后再插入页面，仍可能执行脚本。也不要让用户任意决定标签名、属性名或 `innerHTML` 的内容，再以“用了 DOM API”为由认为安全。
+
+### 3.1 编码应靠近实际输出 {#编码应靠近实际输出}
+
+**输出编码**把当前语法中的特殊字符表示为普通数据。例如服务器输出 HTML 文本时，将 `<` 编码为 `&lt;`，浏览器显示的是小于号，而不是开始一个标签。应使用模板引擎或成熟编码器对应的上下文能力，避免手写一套替换规则后用于所有位置。
+
+把姓名入库前统一做 HTML 编码，会让同一份数据进入 JSON、短信或 DOM 文本接口时出现多余的 `&lt;`，也不能保护后来进入脚本的场景。输入端仍要检查长度、类型等业务规则，但输出端必须根据实际用途处理。
+
+属性也有二次解释的情况。HTML 解析器会先处理属性中的实体；如果这个属性是 `onclick`，得到的值之后还会被当作 JavaScript。把引号做 HTML 编码，并不能让任意事件处理代码变成安全文本。应使用应用编写的事件函数，把用户值作为数据传入。
+
+## 4. 富文本与净化 {#富文本与净化}
+
+**HTML 净化**是解析输入中的 HTML，只保留策略允许的结构和属性。它与把所有标签显示为文字不同：读者可以保留加粗、段落等格式，但不能自行加入事件处理器或任意可执行内容。
+
+下面使用浏览器中的 DOMPurify 3.4.17。裸包名由构建工具解析，`host` 是应用控制的普通 `div`。这里只允许少量排版标签，不允许链接、图片或样式。
+
+```js
+import DOMPurify from 'dompurify';
+
+export function renderRichText(host, html) {
+  if (!DOMPurify.isSupported) {
+    throw new Error('当前环境不支持安全的富文本渲染');
+  }
+  const fragment = DOMPurify.sanitize(html, {
+    ALLOWED_TAGS: ['p', 'strong', 'em', 'br'],
+    ALLOWED_ATTR: [],
+    ALLOW_DATA_ATTR: false,
+    ALLOW_ARIA_ATTR: false,
+    RETURN_DOM_FRAGMENT: true,
+  });
+  host.replaceChildren(fragment);
+}
+```
+
+输入中的 `strong` 可以保留，`onclick` 等属性会被移除，`img` 和 `script` 不在允许范围内。允许列表要从产品需求出发；如果以后开放链接或图片，协议、目标、加载行为也要重新评估，不能只把标签名加进去。
+
+净化应位于不可信内容进入页面之前。净化完成后，如果插件又拼接未处理的 HTML、给元素添加事件处理属性，或者把结果放进另一种解析上下文，先前的保证就不再适用。净化库也需要维护更新，不能把某个版本当作永久安全证明。
+
+Markdown 解析通常会生成 HTML，这一步并不等于净化。预览应在 Markdown 转换之后处理最终 HTML，具体链路见[文本编辑器](../../frontend/interaction/text-editors.mdx#markdown解析与预览)。服务端使用 DOMPurify 还需要受支持的 DOM 实现，不能把上面的浏览器代码原样放进没有 DOM 的 Node.js 环境。
+
+## 5. 推送数据与内嵌状态 {#推送数据与内嵌状态}
+
+### 5.1 流式内容仍然要经过输出边界 {#流式内容仍然要经过输出边界}
+
+**流式传输只改变数据到达的时间，不改变它的可信程度。** SSE、WebSocket 或分块 HTTP 收到的字符串，都不能因为来自自己的接口就直接拼进 `innerHTML`。
+
+如果产品只需要显示文字，可以先在普通容器中建立一个 `Text` 节点，再对每次解码得到的字符串调用 `appendData(chunk)`。一个标签即使跨越多个 chunk，也一直是文字，不会因为最后一块到达而变成 HTML。字节到字符串的流式解码还应保留 UTF-8 的跨块状态，不能把半个字符分别独立解码。
+
+如果需要 Markdown 或富文本，应按完整的当前内容解析，并净化本次准备插入的结果。可以合并短时间内的更新，降低重复解析成本；性能优化不能跳过最后一次净化。不能把“逐块检查过”当成“拼接后仍然安全”的证明：标签、属性和实体都可能跨块，后续转换还可能改变结构。
+
+使用 Next.js 等服务端渲染框架时，要沿着实际链路检查：服务端怎样序列化数据，浏览器怎样读取，以及组件最后怎样显示。框架提供的普通文本插值与手动写入原始 HTML 是两条路径；项目自行接管 HTML 拼接、`dangerouslySetInnerHTML` 等原始 HTML 接口或推送后的 DOM 更新时，需要承担对应的输出处理。不能只回答“框架有转义”，就忽略自写代码的入口。
+
+### 5.2 JSON 与 HTML 是两层语法 {#json-与-html-是两层语法}
+
+**合法 JSON 不一定适合原样嵌入 HTML。** `JSON.stringify()` 会处理 JSON 字符串中的引号和反斜杠，但不会默认把 `<` 编码掉。假如一个字段包含 `</script>`，HTML 解析器可能先结束当前脚本元素，根本不会等 JSON 或 JavaScript 解析器判断它是不是字符串。
+
+独立 JSON 接口使用正确的 `Content-Type: application/json`，客户端通过 JSON 解析读取数据，可以避免把这份响应当 HTML 片段拼接。若必须把 JSON 放进 HTML 的 `script type="application/json"` 数据块，可使用框架专门提供的安全序列化能力。下面只演示这个具体位置的处理：
+
+```js
+export function serializeHtmlJson(value) {
+  const json = JSON.stringify(value);
+  if (json === undefined) {
+    throw new TypeError('需要可序列化的 JSON 值');
+  }
+  return json.replace(/</g, '\\u003c');
+}
+```
+
+服务端把返回值放进应用自己编写的、固定 ID 的 `script type="application/json"` 元素内容中；客户端读取该元素的 `textContent`，再调用 `JSON.parse()`。`<` 变成 JSON 转义序列 `\u003c`，因此输入无法提供结束标签中的字面量 `<`；JSON 解析后又恢复原来的字符。
+
+这里没有把用户值当代码执行，也没有向 HTML 属性、普通正文或事件处理器提供通用编码器。循环引用、BigInt 等仍遵守 `JSON.stringify()` 自己的限制。取回的数据若之后又交给 `innerHTML`，仍要经过富文本净化；序列化安全不等于后续用途都安全。
+
+## 6. CSP 与 Cookie 防线 {#csp-与-cookie-防线}
+
+**CSP**（Content Security Policy，内容安全策略）是浏览器按页面声明限制资源加载和脚本执行的机制。服务器通常通过 `Content-Security-Policy` 响应头发送策略，限制哪些脚本有资格运行。
+
+对于需要内联脚本的页面，可以由服务器为每次响应生成不可预测的随机 nonce，在策略的 `script-src 'nonce-随机值'` 与允许执行的 `script` 元素 `nonce` 属性中使用同一个值。不要硬编码或跨响应复用，也不要给所有拼入的脚本自动补 nonce；否则攻击者注入的脚本也会得到许可。
+
+静态脚本还可以使用内容 hash 授权，脚本内容变化时相应更新 hash。部署时应明确所需资源，配合 `object-src 'none'`、`base-uri 'none'` 等限制；避免为了消除报错就宽泛开放 `unsafe-inline` 或 `unsafe-eval`。
+
+`Content-Security-Policy-Report-Only` 用于观察违反策略的情况，不会按该策略阻止执行。可以先用它了解兼容性影响，再部署真正执行的策略，但不能把只上报的阶段当成已拦截攻击。
+
+**HttpOnly** 限制脚本通过 `document.cookie` 读取指定 Cookie。即使登录 Cookie 无法被直接读取，已经运行在同源页面中的恶意脚本仍可能调用接口，让浏览器按 Cookie 规则自动携带它。因此，HttpOnly 降低直接窃取凭据的机会，并不修复 XSS。客户端存储选择与边界见[Session、JWT、OAuth 2.0 与 OIDC](./session-jwt-oauth-oidc.mdx#浏览器令牌存储)。
+
+CSP 也只是一层限制：被允许的脚本如果把不可信内容当代码处理，或策略本身过宽，风险仍然存在。修复时应先找到危险输出位置，再用 CSP 和 Cookie 属性缩小漏网问题的影响。
+
+## 7. 常见问题 {#常见问题}
+
+### 7.1 删除所有 script 标签就安全了吗？ {#删除所有-script-标签就安全了吗}
+
+不安全。事件处理属性、危险 URL 和不同解析上下文都可能带来执行路径。即使通过 `innerHTML` 插入的某个 `script` 没有执行，也不能推出所有插入内容都不会执行。普通文字改用文本接口，富文本使用支持当前环境、持续维护的净化器及明确策略。
+
+### 7.2 数据已经在数据库里，还要检查吗？ {#数据已经在数据库里还要检查吗}
+
+要。数据库只说明内容被保存过，不说明它适合在哪种位置输出。旧数据、导入数据、第三方同步内容和不同版本写入的内容，都可能到达新的页面。读取后仍按最终输出上下文处理。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 什么是 XSS？存储型、反射型和 DOM 型有什么区别？ {#xss-mechanism}
+
+**考察重点**：不可信数据变成代码的链路，以及数据到达方式与执行位置的区别。
+
+**相关内容**：[数据怎样变成脚本](#数据怎样变成脚本)。
+
+<details>
+<summary>参考回答</summary>
+
+**XSS 是不可信内容被页面当作代码执行，使攻击者的脚本在受害网站上下文运行。** 存储型的内容先被保存，后续访问时触发；反射型的内容随当前请求进入响应；DOM 型强调客户端把不可信数据交给危险的解析或写入位置。
+
+这些分类可以重叠。例如保存的评论由客户端写入 `innerHTML`，同时具有存储特征和 DOM 注入链路。分析时应指出具体来源、转换和输出位置，而不只背三个名称。
+
+</details>
+
+### 8.2 页面怎样防范 XSS？为什么不能统一做一次 HTML 转义？ {#xss-prevention}
+
+**考察重点**：输出上下文、安全 DOM 接口、URL 校验与富文本净化的分工。
+
+**相关内容**：[输出上下文与安全接口](#输出上下文与安全接口)、[富文本与净化](#富文本与净化)。
+
+<details>
+<summary>参考回答</summary>
+
+**按最终输出位置处理数据，优先让数据始终作为数据使用。** 普通元素显示文字用 `textContent`，服务端模板使用对应的上下文编码；URL 要限制协议和业务允许的目标，不拼接用户提供的 JavaScript 或任意事件处理器。
+
+确实需要 HTML 时，使用净化库和允许策略，并避免净化后再次加入不可信结构。HTML 编码只服务于特定 HTML 上下文，不能替代 URL 校验或脚本上下文处理；统一入库前编码还可能造成重复编码和显示错误。CSP 与 HttpOnly 可以补充防护，但不能替代这些措施。
+
+</details>
+
+### 8.3 Next.js 向前端推送数据时，怎样防止 XSS？ {#streaming-xss}
+
+**考察重点**：传输、序列化与渲染的不同边界，逐块到达的数据如何安全输出。
+
+**相关内容**：[流式内容仍然要经过输出边界](#流式内容仍然要经过输出边界)、[JSON 与 HTML 是两层语法](#json-与-html-是两层语法)。
+
+<details>
+<summary>参考回答</summary>
+
+**沿实际数据链路检查，推送通道本身不会让内容安全。** 纯文本使用普通元素中的文本节点或框架的文本插值；分块到达时追加文本，避免把收到的字符串直接拼进 `innerHTML`。
+
+需要富文本或 Markdown 时，在解析完成、准备渲染的位置净化当前输出，不能只检查单个 chunk。服务端内嵌状态还要使用适用于 HTML 数据块的序列化方式，避免字段中的 `</script>` 提前结束元素。框架管理的安全路径和项目自行拼接原始 HTML 的路径要分别确认，再以 CSP 等措施补充防护。
+
+</details>
+
+### 8.4 JSON.stringify 后的值为什么还可能在页面里造成注入？ {#json-script-context}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：JSON 字符串规则与 HTML 元素边界之间的先后关系。
+
+**相关内容**：[JSON 与 HTML 是两层语法](#json-与-html-是两层语法)。
+
+<details>
+<summary>参考回答</summary>
+
+**JSON 序列化不负责保护外层 HTML 结构。** 字符串中的 `</script>` 可以在 JSON 解析之前被 HTML 解析器识别为结束标签。应优先使用独立 JSON 接口或框架提供的安全内嵌序列化；在本文的固定 JSON 数据块场景中，把 `<` 表示成 `\u003c`，再从 `textContent` 读取并用 `JSON.parse()` 还原。
+
+这个处理只保护当前嵌入位置。还原后的值若要作为 HTML 显示，仍需净化。
+
+</details>
+
+### 8.5 配置 CSP 和 HttpOnly 后，还需要修复危险的 innerHTML 吗？ {#csp-httponly}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：脚本执行限制、Cookie 可读性和同源接口调用之间的关系。
+
+**相关内容**：[CSP 与 Cookie 防线](#csp-与-cookie-防线)。
+
+<details>
+<summary>参考回答</summary>
+
+**需要，危险输出位置仍是必须修复的原因。** CSP 依赖实际策略和被允许脚本的行为，只配置 Report-Only 也不会拦截；HttpOnly 只是阻止脚本直接读取指定 Cookie，已执行的同源脚本仍可能通过请求使用当前登录状态。
+
+应先根据内容用途改用文本接口或净化 HTML，再以合理的 CSP 与 Cookie 属性提供额外防线。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+
+- [OWASP：Cross Site Scripting Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Cross_Site_Scripting_Prevention_Cheat_Sheet.html)
+- [DOMPurify：使用方式、配置与安全边界](https://github.com/cure53/DOMPurify)
+- [WHATWG HTML：Restrictions for contents of script elements](https://html.spec.whatwg.org/multipage/scripting.html#restrictions-for-contents-of-script-elements)
+- [W3C：Content Security Policy，策略发送与 nonce 安全考虑](https://www.w3.org/TR/CSP3/)
+- [Next.js：JSON-LD 的内嵌序列化与 XSS 边界](https://nextjs.org/docs/app/guides/json-ld)
+- [React：Dangerously setting the inner HTML](https://react.dev/reference/react-dom/components/common#dangerously-setting-the-inner-html)

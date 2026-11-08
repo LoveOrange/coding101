@@ -1,0 +1,490 @@
+---
+sidebar_position: 1
+knowledge:
+  id: frontend.routing.client-routing
+---
+
+# 前端路由
+
+**前端路由**根据浏览器中的位置选择要显示的界面，并把应用内导航与浏览器历史记录连接起来。修改 URL 只是其中一步；路由还要处理匹配、参数、组件更新、返回前进和直接访问。
+
+Hash 与 History 的区别首先在于 URL 的哪一部分参与导航，以及刷新时服务器会收到什么。理解这条边界，才能解释“页面内点击正常，刷新却 404”，也能区分路由守卫、组件缓存和服务端授权各自负责什么。
+
+## 1. 面试核心 {#core}
+
+- **Hash 路由把应用路径放在片段中，片段不会随 HTTP 请求发送给服务器。** History 路由使用正常路径，刷新和直接访问时需要服务器支持这些路径。[卡](#hash-history)
+- **`pushState` 新增历史条目，`replaceState` 替换当前条目，二者都不会自动发请求或触发 popstate。** 应用主动导航后自己更新界面，返回前进时再处理相应事件。[卡](#history-events)
+- **前端路由包括位置读取、路由匹配和视图更新，不能只监听 URL 变化。** 原生实现还要保留链接的打开新标签页等行为，并处理未知路径。[卡](#native-router)
+- **History 刷新的回退应返回应用文档，同时保留 API 和静态资源自己的错误语义。** 客户端显示 404 与服务器返回 HTTP 404 是不同层次。[卡](#refresh-fallback)
+- **路径参数改变可能复用同一个组件实例，不保证重新挂载。** 数据与草稿应按参数更新，不能只在 mounted 中读取一次。[卡](#route-params)
+- **路由守卫控制客户端导航，服务端仍需对每次受保护请求鉴权。** 隐藏菜单、移除路由或在浏览器保存角色，都不能构成服务端权限边界。[卡](#navigation-guards)
+- **动态路由修改匹配表，路由懒加载延迟加载实现代码，二者不是一回事。** 加入匹配表不一定立即改变当前视图，加载失败也需要处理。[卡](#dynamic-lazy)
+- **表单保留要先确定保留范围：组件实例、当前会话、刷新之后，还是跨设备。** 浏览器历史位置本身不保证应用组件状态被保存。[卡](#draft-state)
+
+## 2. URL 与历史条目 {#url与历史条目}
+
+### 2.1 路径、查询与片段 {#路径查询与片段}
+
+一个 URL 中的路径、查询参数和片段可以承担不同职责：
+
+```js
+const url = new URL('https://example.com/courses/vue?page=2#notes');
+console.log(url.pathname);
+console.log(url.searchParams.get('page'));
+console.log(url.hash);
+```
+
+输出 `/courses/vue`、`2` 和 `#notes`。路径通常表示资源或界面身份，查询参数适合筛选、分页等可分享状态，片段可用于文档内定位，也可被 Hash 路由约定为应用路径。
+
+直接访问这个地址时，服务器收到路径和查询部分，不收到 `#notes`。不要把完整地址栏文本都当成 HTTP 请求目标。
+
+### 2.2 push 与 replace {#push与replace}
+
+**会话历史条目**记录当前浏览上下文中的导航位置及关联状态。`pushState` 新增条目，返回时可以回到此前条目；`replaceState` 修改当前条目，不增加一个需要再退回的位置。
+
+| 操作 | 改变什么 | 应用需要注意的事 |
+| --- | --- | --- |
+| `history.pushState(state, '', url)` | 新增同源历史条目 | 不加载该 URL，也不自动触发 `popstate` |
+| `history.replaceState(state, '', url)` | 替换当前条目 | 适合规范化参数或不应留下中间页的跳转 |
+| 返回、前进、`history.go()` | 遍历已有条目 | 同文档历史遍历时处理 `popstate` |
+| 给 `location.hash` 赋不同片段 | 片段导航 | 片段变化可触发 `hashchange` |
+| `location.assign(url)` | 正常文档导航 | 可能请求并加载新文档 |
+
+`pushState` 即使只改片段，也不会因此触发 `hashchange`。仅监听 `popstate` 或 `hashchange`，都不能代替应用主动调用后的渲染逻辑。
+
+新的 History URL 必须与当前页面同源。关联的 `state` 必须可被序列化，不能放函数或 DOM 节点；它不出现在可复制的 URL 中，也不适合充当共享状态库。需要别人打开链接后重现的筛选条件，应进入 URL 或其他明确的数据来源。
+
+## 3. Hash 路由 {#hash路由}
+
+**Hash 路由**把应用路径编码在 `#` 后面，例如 `/index.html#/courses`。服务器始终先提供 `/index.html`，浏览器再根据片段选择界面。
+
+把下面内容保存为 `hash.html`，通过本地 HTTP 服务打开：
+
+```html
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<title>Hash 路由</title>
+<nav aria-label="示例导航">
+  <a href="#/courses">课程</a>
+  <a href="#/about">关于</a>
+</nav>
+<main><h1></h1></main>
+<script>
+  const pages = new Map([
+    ['/courses', '课程列表'],
+    ['/about', '关于课程']
+  ]);
+  function render() {
+    const path = location.hash.slice(1) || '/courses';
+    const title = pages.get(path) ?? '页面不存在';
+    document.querySelector('h1').textContent = title;
+    document.title = title;
+  }
+  addEventListener('hashchange', render);
+  render();
+</script>
+</html>
+```
+
+点击“关于”后，地址变成 `#/about`，标题显示“关于课程”；返回可恢复课程页。刷新仍请求 `hash.html`，片段由重新启动的客户端代码读取，因此不要求服务器为 `/about` 配一个页面路径。
+
+这个最小实现只演示两个静态映射，没有查询参数、嵌套路由和焦点恢复。Hash 模式还占用了通常用于文档锚点的片段空间，外部工具、页面索引与可分享地址的处理也需要考虑，不能只用“有没有井号”评价它。
+
+## 4. History 路由与原生实现 {#history路由与原生实现}
+
+**History 路由**通过 History API 修改正常路径，并在当前文档中更新界面。主动导航调用 `pushState` 后自行渲染，返回前进时监听 `popstate`。
+
+下面保存为 `index.html`。它只接管带 `data-route` 的普通同源链接，不接管修改键点击、新标签页、下载链接与外链：
+
+```html
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<title>History 路由</title>
+<nav aria-label="示例导航">
+  <a data-route href="/courses">课程</a>
+  <a data-route href="/about">关于</a>
+</nav>
+<main tabindex="-1"><h1></h1></main>
+<script>
+  const pages = new Map([
+    ['/courses', '课程列表'],
+    ['/about', '关于课程']
+  ]);
+  function render(moveFocus = false) {
+    const path = location.pathname === '/' ? '/courses' : location.pathname;
+    const title = pages.get(path) ?? '页面不存在';
+    document.querySelector('h1').textContent = title;
+    document.title = title;
+    if (moveFocus) document.querySelector('main').focus();
+  }
+  document.addEventListener('click', event => {
+    if (event.defaultPrevented || event.button !== 0 ||
+        event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    if (!(event.target instanceof Element)) return;
+    const link = event.target.closest('a[data-route]');
+    if (!link || link.hasAttribute('download') ||
+        (link.target && link.target !== '_self')) return;
+    const url = new URL(link.href);
+    if (url.origin !== location.origin) return;
+    event.preventDefault();
+    if (url.href !== location.href) history.pushState(null, '', url);
+    render(true);
+  });
+  addEventListener('popstate', () => render(true));
+  render();
+</script>
+</html>
+```
+
+页面内点击“关于”，路径变为 `/about`，标题和主内容一起更新，但没有重新请求文档。代码同时更新 `document.title`，并把普通导航后的焦点移到主区域，让键盘与辅助技术用户知道内容已切换。
+
+它没有实现嵌套匹配、滚动位置恢复、数据加载、离开确认与生命周期清理。真实应用应使用路由库管理这些关系；这个例子用于解释 History API 与视图更新之间的连接，不是完整路由库。
+
+## 5. 刷新回退与服务器边界 {#刷新回退与服务器边界}
+
+### 5.1 点击正常，刷新却失败 {#点击正常刷新却失败}
+
+页面内的 `pushState` 不发文档请求，因此即使服务器不知道 `/about`，当前应用也能显示它。刷新或直接打开 `/about` 时，浏览器真正请求这个路径；服务器若按静态文件查找，就可能返回 404。
+
+**文档回退**让属于应用导航的请求返回同一个入口 HTML，再由客户端解析路径。它不能无差别覆盖 API、脚本、样式或其他资源的错误，否则缺失的 JavaScript 可能收到 HTML，引发 MIME 或解析错误。
+
+下面的 `server.mjs` 与 `index.html` 放在同一目录，可用 `node server.mjs` 运行：
+
+```js
+import http from 'node:http';
+import { readFile } from 'node:fs/promises';
+
+const document = await readFile(new URL('./index.html', import.meta.url));
+const server = http.createServer((request, response) => {
+  const url = new URL(request.url, 'http://localhost');
+  const isDocument = ['GET', 'HEAD'].includes(request.method) &&
+    (request.headers.accept ?? '').includes('text/html');
+  if (url.pathname.startsWith('/api/')) {
+    response.writeHead(404, { 'Content-Type': 'application/json' });
+    response.end(JSON.stringify({ error: 'API not found' }));
+  } else if (url.pathname.startsWith('/assets/') || url.pathname === '/favicon.ico') {
+    response.writeHead(404, { 'Content-Type': 'text/plain' });
+    response.end('Resource not found');
+  } else if (isDocument) {
+    response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    response.end(request.method === 'HEAD' ? undefined : document);
+  } else {
+    response.writeHead(404, { 'Content-Type': 'text/plain' });
+    response.end('Not found');
+  }
+});
+server.listen(Number(process.env.DEMO_PORT ?? 3000), '127.0.0.1', () => {
+  console.log('http://127.0.0.1:' + server.address().port);
+});
+```
+
+直接打开 `/about` 可以得到入口文档并显示“关于课程”。`/api/missing` 返回 JSON 404，`/assets/missing.js` 返回资源 404，不会被伪装成成功的 HTML。
+
+这个服务器只演示回退条件，不承担真实静态资源、缓存或 API 服务。未知文档路径仍返回 HTTP 200，由客户端显示“页面不存在”；需要正确 HTTP 404 时，服务端也要知道哪些路由有效，或由支持服务端渲染的框架给出状态码。
+
+### 5.2 子目录与资源路径 {#子目录与资源路径}
+
+部署在 `/app/` 子目录时，路由基路径、构建资源基路径和服务器回退范围要一致。只修改其中一处，可能出现导航跳到站点根目录，或刷新深层路径时资源请求地址错误。
+
+例如文档位于 `/courses/vue`，相对脚本地址 `assets/main.js` 会相对当前 URL 解析，不一定指向你预期的根目录资源。构建配置和资源地址应明确基准，不能靠首页恰好能打开来判断部署正确。
+
+## 6. 框架路由与参数变化 {#框架路由与参数变化}
+
+### 6.1 路由库各部分的职责 {#路由库各部分的职责}
+
+路由库在浏览器机制之上，维护路由记录、匹配结果和界面出口。以 Vue Router 4 与 React Router 6 的常用声明方式为例：
+
+| 职责 | Vue Router 4 | React Router 6 |
+| --- | --- | --- |
+| 连接 History 或 Hash | `createWebHistory` / `createWebHashHistory` | `BrowserRouter` / `HashRouter` |
+| 声明路径与界面关系 | `createRouter({ routes })` | `Routes` 与 `Route`，或数据路由配置 |
+| 渲染匹配的子界面 | `RouterView` | 父路由中的 `Outlet` |
+| 保留链接语义的应用导航 | `RouterLink` | `Link` / `NavLink` |
+| 程序触发导航 | `router.push` / `router.replace` | `useNavigate` 返回的函数 |
+| 读取当前路由参数 | `useRoute` | `useParams`、`useLocation` 等 |
+
+这些名称不是浏览器 API。路由库负责把位置变化转换成框架状态，再由 Vue 或 React 更新界面；它不能改变 History 刷新时仍需服务器支持的事实。
+
+### 6.2 参数路由与组件复用 {#参数路由与组件复用}
+
+**路径参数**让一条路由匹配一组具体地址，例如 `/courses/:id` 同时匹配 `/courses/vue` 和 `/courses/react`。从一个参数切到另一个时，路由库可以复用同一个组件实例，不能依赖重新挂载来处理新参数。
+
+下面的 `CourseView.vue` 接收路由参数，参数变化时明确清空这份局部草稿：
+
+```vue
+<script setup>
+import { ref, watch } from 'vue';
+const props = defineProps({ id: { type: String, required: true } });
+const draft = ref('');
+watch(() => props.id, () => { draft.value = ''; });
+</script>
+
+<template>
+  <h1>课程 {{ id }}</h1>
+  <input v-model="draft" aria-label="当前课程草稿">
+</template>
+```
+
+`main.js` 创建路由并提供导航：
+
+```js
+import { createApp, h } from 'vue';
+import { createRouter, createWebHistory, RouterLink, RouterView } from 'vue-router';
+
+const Home = { render: () => h('h1', '课程首页') };
+const Missing = { render: () => h('h1', '页面不存在') };
+const router = createRouter({
+  history: createWebHistory(),
+  routes: [
+    { path: '/', component: Home },
+    { path: '/courses/:id', component: () => import('./CourseView.vue'), props: true },
+    { path: '/:pathMatch(.*)*', component: Missing }
+  ]
+});
+const App = {
+  render: () => h('main', [
+    h('nav', [
+      h(RouterLink, { to: '/courses/vue' }, () => 'Vue'),
+      h(RouterLink, { to: '/courses/react' }, () => 'React')
+    ]),
+    h(RouterView)
+  ])
+};
+const app = createApp(App).use(router);
+await router.isReady();
+app.mount('#app');
+```
+
+在 Vue 3 与 Vue Router 4 项目中使用这两个文件，并提供 `#app` 元素。进入 Vue 课程写入草稿，再切到 React，标题变为“课程 react”，草稿被侦听逻辑清空。输入框和组件可以复用，清空不是卸载带来的偶然结果。
+
+如果要按课程保留草稿，应改为按 `id` 存取草稿，而不是无条件清空。请求数据也应侦听相关参数，并处理旧请求失效，不能只在 `mounted` 里发一次请求。
+
+## 7. 路由守卫与权限显示 {#路由守卫与权限显示}
+
+### 7.1 导航决策 {#导航决策}
+
+**路由守卫**在导航过程中决定放行、取消或重定向。Vue Router 4 提供全局、路由记录和组件级守卫，分别适合公共登录检查、某段路由的进入条件，以及组件离开或参数更新等场景。
+
+下面的函数为已有 router 安装登录导航规则。约定存在名为 `login` 的公开路由，受保护记录通过 `meta.requiresAuth` 标记；`loadSession` 异步返回当前会话或 `null`：
+
+```js
+export function installAuthGuard(router, loadSession) {
+  return router.beforeEach(async to => {
+    if (!to.meta.requiresAuth || to.name === 'login') return true;
+    const session = await loadSession();
+    if (!session) {
+      return { name: 'login', query: { redirect: to.fullPath }, replace: true };
+    }
+    return true;
+  });
+}
+```
+
+未登录时跳到登录页，并保存原来的应用内目标；公开页直接放行。`replace: true` 让登录页替换当前历史条目，而不是再新增一条；是否保留来路应按产品的返回行为选择。加载会话失败会使导航出错，应由应用的路由错误处理展示重试或失败状态，不能无条件当作成功登录。
+
+Vue Router 4 的返回 `false` 表示取消，返回目标表示重定向，返回 `true` 或 `undefined` 表示放行。旧式第三参数 `next` 在该版本中也可使用，但同一次逻辑路径必须恰好调用一次；不能一边调用它，一边又让分支重复放行。
+
+`beforeEnter` 不覆盖所有参数或查询变化；复用组件的更新逻辑应关注对应参数或更新守卫。`afterEach` 适合导航后的记录、标题等工作，不用于阻止已经完成的导航。
+
+### 7.2 客户端守卫的权限边界 {#客户端守卫的权限边界}
+
+守卫、菜单和动态路由只决定浏览器如何呈现界面。攻击者可以绕过它们直接请求 API，因此服务端必须验证身份、资源归属与操作权限，不能相信前端传来的角色或“已经通过守卫”的标记。
+
+登录完成后的 `redirect` 参数也属于输入。虽然示例最初放入的是内部 `to.fullPath`，用户仍能改 URL；真正执行跳转时应校验目标属于允许的应用内路径，避免把任意外部地址当作可信返回位置。
+
+## 8. 动态路由、懒加载与界面状态 {#动态路由懒加载与界面状态}
+
+### 8.1 动态匹配表与延迟代码 {#动态匹配表与延迟代码}
+
+**动态路由**在运行时增删路由记录；**路由懒加载**在需要进入某个路由时才加载其组件实现。前者改变“什么地址可以匹配”，后者改变“代码什么时候取得”。
+
+前文的 `() => import('./CourseView.vue')` 让构建工具形成可延迟加载的模块。首次进入时路由器等待该组件，之后可以复用已加载模块；模块缓存不等于组件实例或表单状态缓存。加载失败需要错误处理，预取则可能让代码提前到达浏览器。
+
+下面的函数给已有 router 添加一条记录，并重新匹配当前地址：
+
+```js
+export async function registerCurrentRoute(router, record) {
+  const remove = router.addRoute(record);
+  await router.replace(router.currentRoute.value.fullPath);
+  return remove;
+}
+```
+
+如果当前 `/reports` 原先匹配了兜底页，添加具体 `/reports` 记录后，`replace` 让当前地址重新匹配并显示它。返回的函数可移除这条记录。移除记录不会自动解决当前正在显示的受限界面，权限变化时还应导航到合适页面并清理相关数据。
+
+在导航守卫内部添加路由时，应返回新的目标触发重新匹配，并保证下一轮条件已经满足，避免无限重定向。不要把“后端返回了菜单树”直接等同于已经建立正确的路由和权限体系。
+
+### 8.2 路由切换后的表单保留 {#路由切换后的表单保留}
+
+保存表单先明确需要跨越哪种边界：
+
+| 需要保留到什么时候 | 可以采用的方式 | 需要处理的条件 |
+| --- | --- | --- |
+| 同一实例的参数变化 | 按业务 ID 管理草稿 | 区分不同实体，避免上一人的内容留给下一人 |
+| 离开后再返回，但不要求刷新保留 | 父级/store 中的草稿，或合适的组件缓存 | 重置、缓存淘汰、内存与失效策略 |
+| 当前标签页刷新后 | 合适的会话存储与恢复 | 字段校验、版本、敏感内容与写入成本 |
+| 跨设备继续编辑 | 服务端草稿 | 登录权限、保存冲突与失败重试 |
+
+Vue 的 `KeepAlive` 可以缓存组件实例，但其激活、停用与淘汰需要单独管理，见 [Vue 组件](../../tools-and-frameworks/vue/components.mdx#keepalive)。React 中则需根据组件身份与状态位置设计保留；浏览器返回操作不会自动替应用恢复任意已卸载组件的 state。
+
+**离开确认**用于提醒尚未保存的工作，不能代替保存本身。页面关闭等场景也不能保证异步保存一定完成，应在编辑过程中按业务策略保存，而不是把最后一次机会全部押在离开事件上。
+
+## 9. 面试题 {#面试题}
+
+### 9.1 Hash 路由与 History 路由的原理和部署差异是什么？ {#hash-history}
+
+**考察重点**：片段、同文档导航与服务器收到的路径。
+
+**相关内容**：[Hash 路由](#hash路由)、[History 路由与原生实现](#history路由与原生实现)。
+
+<details>
+<summary>参考回答</summary>
+
+**Hash 把应用路径放在片段中，History 使用正常路径并通过 History API 操作历史。** 片段不会随 HTTP 请求发送，Hash 刷新通常仍请求同一个入口；History 刷新会请求当前正常路径，需要服务端回退或对应页面支持。
+
+两种模式都需要客户端把位置映射成视图。部署时还要考虑基路径、资源地址、文档锚点与页面索引，不能只比较地址有没有井号。
+
+</details>
+
+### 9.2 pushState、replaceState、popstate 和 hashchange 有什么关系？ {#history-events}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：主动修改与历史遍历的不同通知机制。
+
+**相关内容**：[push 与 replace](#push与replace)。
+
+<details>
+<summary>参考回答</summary>
+
+**push 新增条目，replace 替换当前条目，二者都不会自动触发 popstate。** 同文档历史遍历时通过 popstate 处理位置变化；主动调用后应用需要自己渲染。
+
+普通片段导航可触发 hashchange，但 pushState 即使修改片段也不会触发它。History API 不会立即加载新 URL，URL 需同源，state 也需满足序列化限制。
+
+</details>
+
+### 9.3 不用路由库，怎样用原生 History 实现最小路由？ {#native-router}
+
+**考察重点**：链接接管、匹配、主动渲染与历史遍历。
+
+**相关内容**：[History 路由与原生实现](#history路由与原生实现)。
+
+<details>
+<summary>参考回答</summary>
+
+**读取当前路径匹配视图，普通应用内导航时 pushState 后主动渲染，返回前进时监听 popstate。** 初次加载也要匹配，未知路径有兜底；链接接管应保留新标签页、修改键、下载和外链的浏览器行为。
+
+还要更新标题、焦点并设计滚动恢复。最小实现只连接位置与界面，完整路由库还管理嵌套匹配、组件生命周期、加载、守卫和错误。
+
+</details>
+
+### 9.4 为什么 History 路由点击正常，刷新却 404？ {#refresh-fallback}
+
+**考察重点**：客户端切换与文档请求、资源回退边界。
+
+**相关内容**：[刷新回退与服务器边界](#刷新回退与服务器边界)。
+
+<details>
+<summary>参考回答</summary>
+
+**页面内切换没有请求新文档，刷新却会把当前路径发给服务器。** 服务器不知道该页面路径时返回 404，需要让应用导航请求获得入口 HTML，再交给客户端匹配。
+
+API 和缺失静态资源不能都回退成 HTML；子目录部署还要统一路由基路径与资源基路径。客户端显示兜底页不自动改变服务器的 HTTP 状态码。
+
+</details>
+
+### 9.5 参数从一个课程 ID 变成另一个时，组件一定会重新挂载吗？ {#route-params}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：实例身份、参数变化与数据生命周期。
+
+**相关内容**：[参数路由与组件复用](#参数路由与组件复用)。
+
+<details>
+<summary>参考回答</summary>
+
+**不一定，匹配同一个组件的参数变化可以复用实例。** 应侦听相关参数或使用路由更新机制来请求新数据、重置或切换草稿，并防止旧请求覆盖新参数的结果。
+
+强行按完整 URL 更换 key 会重建实例，但也可能丢失本应保留的状态。应按业务身份选择重用、按键保存或重置，而不是把重新挂载作为通用修复。
+
+</details>
+
+### 9.6 路由守卫有哪些用途，能否保证接口权限？ {#navigation-guards}
+
+**考察重点**：导航阶段、重定向与服务端授权。
+
+**相关内容**：[路由守卫与权限显示](#路由守卫与权限显示)。
+
+<details>
+<summary>参考回答</summary>
+
+**守卫可以检查进入条件、取消导航、重定向或提示未保存修改，但不能保证接口权限。** 全局守卫处理公共规则，路由记录守卫处理特定进入条件，组件守卫处理离开或复用更新；后置钩子用于导航后的工作。
+
+浏览器控制可以被绕过，服务端必须独立校验请求身份与资源权限。异步守卫还要处理失败，重定向条件要避免循环，登录返回目标也需校验。
+
+</details>
+
+### 9.7 动态路由和路由懒加载有什么区别？ {#dynamic-lazy}
+
+**考察重点**：匹配表、代码加载、重新匹配与实例缓存。
+
+**相关内容**：[动态匹配表与延迟代码](#动态匹配表与延迟代码)。
+
+<details>
+<summary>参考回答</summary>
+
+**动态路由增删运行时匹配记录，懒加载延迟获取路由组件代码。** addRoute 后当前地址不一定自动重新显示新组件，可以在合适位置重新导航匹配；守卫内添加则应返回目标并避免重复循环。
+
+懒加载通常由动态 import 与构建分包配合，首次进入等待模块，后续可复用模块缓存。模块缓存不等于组件实例、草稿或数据缓存，失败也需要独立处理。
+
+</details>
+
+### 9.8 从表单页跳到另一页再返回，怎样保留填写内容？ {#draft-state}
+
+**题型**：综合题
+
+**考察重点**：保存范围、组件身份、草稿归属与失效。
+
+**相关内容**：[路由切换后的表单保留](#路由切换后的表单保留)、[参数路由与组件复用](#参数路由与组件复用)。
+
+<details>
+<summary>参考回答</summary>
+
+**先确定是否只跨一次页面切换，还是还要跨刷新和设备，再选择保存位置。** 当前会话可把草稿提升到父级/store，或在合适场景缓存实例；跨刷新可用经过校验的持久化，跨设备则通常需要服务端草稿。
+
+按业务 ID 区分不同表单，定义清空、提交成功和缓存淘汰条件。浏览器历史只记录导航关系，不保证已卸载组件的局部状态恢复；离开确认也不能代替保存。
+
+</details>
+
+### 9.9 React Router 的路由容器、Route、Link 和 Outlet 分别负责什么？ {#react-router-parts}
+
+**考察重点**：历史连接、匹配、导航入口与嵌套出口。
+
+**相关内容**：[路由库各部分的职责](#路由库各部分的职责)。
+
+<details>
+<summary>参考回答</summary>
+
+**以 React Router 6 为例，BrowserRouter 或 HashRouter 连接位置与历史，Routes / Route 声明和匹配界面，Link 提供应用导航，Outlet 渲染匹配的子路由。** NavLink 适合显示活动导航状态，useNavigate 用于程序触发导航。
+
+它们是库提供的界面和状态组织方式，底层仍受浏览器 History、Hash 和服务器直接访问规则约束。数据路由还提供另一套配置入口，不能把所有用法都等同于单个 Route 组件。
+
+</details>
+
+## 10. 参考资料 {#参考资料}
+
+- [MDN：History.pushState](https://developer.mozilla.org/en-US/docs/Web/API/History/pushState)
+- [MDN：popstate](https://developer.mozilla.org/en-US/docs/Web/API/Window/popstate_event)
+- [Vue Router：Different History Modes](https://router.vuejs.org/guide/essentials/history-mode.html)
+- [Vue Router：Dynamic Route Matching](https://router.vuejs.org/guide/essentials/dynamic-matching.html)
+- [Vue Router：Navigation Guards](https://router.vuejs.org/guide/advanced/navigation-guards.html)
+- [Vue Router：Dynamic Routing](https://router.vuejs.org/guide/advanced/dynamic-routing.html)
+- [Vue Router：Lazy Loading Routes](https://router.vuejs.org/guide/advanced/lazy-loading.html)
+- [React Router 6：BrowserRouter](https://reactrouter.com/6.30.1/router-components/browser-router)
+- [React Router 6：Routes](https://reactrouter.com/6.30.1/components/routes)
+- [React Router 6：Link](https://reactrouter.com/6.30.1/components/link)
+- [React Router 6：Outlet](https://reactrouter.com/6.30.1/components/outlet)
+- [React Router 6：useNavigate](https://reactrouter.com/6.30.1/hooks/use-navigate)

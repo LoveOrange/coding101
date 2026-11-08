@@ -187,8 +187,9 @@
       - 大量缓存同时失效时怎样保护数据库？〔候选闪卡〕 <!-- kp:cache.avalanche -->
       - 热点 key 与大 key 的性能风险有什么区别？〔候选闪卡〕 <!-- kp:cache.hot-big-key -->
       - 布隆过滤器的误判如何影响缓存穿透防护？〔候选闪卡〕〔原覆盖评估：补充〕 <!-- kp:cache.bloom -->
-    - [Redis 持久化、复制与集群](../../docs/basic-knowledge/nosql/redis/persistence.mdx)（正文待核验）
+    - [Redis 持久化](../../docs/basic-knowledge/nosql/redis/persistence.mdx)（正文待核验）
       - RDB 与 AOF 的恢复窗口和运行成本有什么区别？〔候选闪卡〕 <!-- kp:cache.persistence -->
+    - [Redis 高可用](../../docs/basic-knowledge/nosql/redis/high-availability.mdx)（正文待核验）
       - Redis 主从故障转移为什么可能丢失已确认写入？〔候选闪卡〕 <!-- kp:cache.failover -->
       - Sentinel 与 Cluster 分别解决什么问题？〔候选闪卡〕 <!-- kp:cache.cluster -->
     - [分布式锁](../../docs/basic-knowledge/nosql/redis/distributed-lock-conditions-boundaries.mdx)（正文待核验）
@@ -236,9 +237,9 @@
     - [项目准备](../../docs/interview/project-preparation.mdx)（正文待核验）
       - 使用 AI 生成代码后怎样验证输出？〔候选闪卡〕；关联阅读：[算法正确性](../../docs/basic-knowledge/java/algorithms/live-coding-counterexamples-tests.mdx)、[JUnit](../../docs/basic-knowledge/java/quality/junit-assertions-parameterized-tests.mdx) <!-- kp:engineering.ai-validation -->
     - [使用 Git 进行第一次提交](../../docs/tools-and-frameworks/git/basic-usages/first-commit.mdx)（正文待核验）
-    - [2.1. Git 的安装与配置](../../docs/tools-and-frameworks/git/basic-usages/git-installation.mdx)（正文待核验）
+    - [Git 的安装与配置](../../docs/tools-and-frameworks/git/basic-usages/git-installation.mdx)（正文待核验）
     - [2. Git 基本使用](../../docs/tools-and-frameworks/git/basic-usages/index.mdx)（正文待核验）
-    - [1. 版本控制简介](../../docs/tools-and-frameworks/git/introduce.md)（正文待核验）
+    - [版本控制简介](../../docs/tools-and-frameworks/git/introduce.md)（正文待核验）
   - 认证与应用安全
     - [认证与授权](../../docs/system-design/security/authentication-authorization-trust-boundaries.mdx)（正文待核验）
       - 认证成功为什么不代表可以访问任意资源？〔候选闪卡〕 <!-- kp:security.authn-authz -->

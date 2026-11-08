@@ -10,6 +10,17 @@ keywords: ["Java 基础复习", "Java 类型系统", "Java 语法面试", "对�
 
 复习时，可以先从值传递和对象模型入手，再学习字符串、异常与泛型。掌握这些基础后，继续阅读注解、反射与注解处理器，理解框架怎样发现类型和生成代码。
 
+如果主要准备其他语言岗位，只在简历、项目或目标面试涉及 Java 时补充对应内容，不必把整个栏目作为共同前置。遇到跨主题追问，可以按下面的关系定位：
+
+| 追问 | 对应内容 |
+| --- | --- |
+| `private`、`static`、`final` 与重载、重写 | [面向对象编程（Object-Oriented Programming）](./encapsulation-inheritance-polymorphism.mdx#不参与运行时多态的成员)、[Java 值传递](./types-references-value-passing.mdx#final-引用与浅拷贝) |
+| `final` 是否保证线程安全 | [安全发布](../concurrency/safe-publication-escape-final.mdx#final-字段的初始化安全) |
+| `finally` 与 `finalize` | [Java 异常](./exceptions-error-boundaries.mdx#finally-与返回值)、[GC Roots](../jvm/gc-roots-reachability.mdx#finalize-与资源释放) |
+| `equals`、`hashCode` 与集合查找 | [对象相等性](./equals-hashcode-object-identity.mdx#hashcode-契约) |
+| 字节码与平台无关性 | [Java 字节码](../jvm/source-to-bytecode.mdx#class-版本与目标平台) |
+| 静态字段、堆栈与内存上限 | [JVM 运行时数据区域](../jvm/runtime-data-areas.mdx)、[GC Roots](../jvm/gc-roots-reachability.mdx#gc-roots-的来源) |
+
 ## 内容
 
 - [Java 值传递](./types-references-value-passing.mdx)

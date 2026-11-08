@@ -1,0 +1,455 @@
+---
+sidebar_position: 11
+knowledge:
+  id: basic-knowledge.javascript.browser-event-loop
+  type: concept
+description: "解释浏览器中的执行栈、任务、微任务检查点、定时器与渲染机会，推导 Promise 和 await 的执行顺序，并处理异步异常与主线程阻塞。"
+keywords: ["事件循环", "微任务", "宏任务", "setTimeout", "requestAnimationFrame", "执行栈"]
+---
+
+# 浏览器事件循环
+
+**事件循环**是浏览器协调任务执行、微任务处理和渲染更新的机制。发起请求、注册定时器之后，JavaScript 可以继续执行；等结果可用，再由相应的调度机制安排后续处理。异步让程序不用一直等待外部结果，但不会让同一条主线程上的两段 JavaScript 同时运行。
+
+解释输出顺序时，关键是找出每个回调**什么时候具备执行条件、什么时候进入队列**。分析页面卡顿时，还要考虑当前代码和微任务是否迟迟不结束，以及浏览器何时获得渲染机会。只记“同步、微任务、宏任务”三个词，无法回答这些追问。
+
+## 1. 面试核心 {#core}
+
+- 同一 JavaScript 执行线程上的普通同步代码会连续执行。**定时器到时或网络完成，不会抢占正在执行的代码**；异步也不等于把回调放到另一条线程运行。[卡](#single-thread-async)
+- 浏览器有不同的任务来源，微任务使用单独的队列。**不同任务来源之间没有一个可随意套用的全局先进先出顺序**；`queueMicrotask`、Promise 后续处理和 MutationObserver 通知都可以产生微任务。[卡](#tasks-microtasks)
+- 微任务在检查点按入队顺序执行，执行中新增的微任务也继续处理。**Promise executor 同步运行，then 回调在对应状态就绪后才会排入微任务**。[卡](#output-order)
+- `await` 暂停的是当前异步函数的后续部分。**即使等待普通值，后续代码也不会在当前这次调用中直接继续执行**，调用方仍能向下运行。[卡](#await-order)
+- 定时器的延迟表示调度条件，**不保证到点立即执行**。主线程忙、微任务过多、嵌套定时器限制和后台节流都可能影响实际时间。[卡](#timer-delay)
+- `requestAnimationFrame` 为渲染更新安排回调。**它不是固定 16.7 毫秒定时器，也不保证与零延迟定时器的固定先后顺序**；回调中的长计算仍会阻碍页面响应。[卡](#animation-frame)
+- DOM 修改可以立即被 JavaScript 读取，显示到屏幕还需后续渲染。**等待一个已兑现的 Promise，不能保证用户已经看到刚修改的内容**。[卡](#dom-paint)
+- 微任务不会自动给输入和渲染让路。**持续补充微任务可以让检查点一直无法结束**；长计算需要拆成有界任务，或移到适合的 Worker 中。[卡](#microtask-starvation)
+- 异步回调有自己的调用时机。**注册定时器时外层的 try/catch，不能捕获以后回调里抛出的异常**；清除定时器也不能撤销已经执行的操作。[卡](#async-catch) [卡](#cancel-timer)
+
+## 2. 同步执行与异步等待 {#同步执行与异步等待}
+
+**执行栈**记录当前正在进行的函数调用。函数调用进入栈，返回后退出；普通同步调用会在当前调用链里完成，不会因为旁边有一个到时的定时器就被它打断。
+
+```js
+console.log("start");
+setTimeout(() => console.log("timer"), 0);
+console.log("end");
+```
+
+输出是 `start`、`end`、`timer`。`setTimeout` 注册后续回调，并不立即调用它；即使等待条件已经满足，回调也要等浏览器有机会处理相应任务。
+
+浏览器可以在 JavaScript 之外处理网络、计时等工作。请求等待响应期间，主线程不必一直执行一个“检查响应是否到达”的循环。结果可用后，再通过宿主规定的任务或微任务步骤通知 JavaScript。比如 `fetch` 涉及网络处理，而通过 `.then` 注册的结果处理使用 Promise 的微任务机制，不能把“网络操作”和“then 回调”当成同一层调度。
+
+“JavaScript 单线程”也不等于整个浏览器只有一条线程。页面主线程之外还有其他工作线程，Web Worker 也有独立的 JavaScript 执行环境和事件循环。另一方面，两个 Promise 都已开始等待，不代表它们的回调会在同一主线程上并行执行。
+
+### 2.1 回调函数不一定异步 {#回调函数不一定异步}
+
+是否异步取决于调用回调的 API。数组的 `forEach` 会同步调用回调，`dispatchEvent` 也会在返回前同步分发事件：
+
+```js
+const target = new EventTarget();
+target.addEventListener("demo", () => {
+  console.log("listener");
+  queueMicrotask(() => console.log("microtask"));
+});
+console.log("before");
+target.dispatchEvent(new Event("demo"));
+console.log("after");
+```
+
+输出是 `before`、`listener`、`after`、`microtask`。监听器运行时，调用 `dispatchEvent` 的代码还没有结束；监听器里排入的微任务不会插到 `after` 前面。用户真实操作引发的事件调度与代码主动调用 `dispatchEvent` 不同，不能把所有事件回调一律当作“以后执行的宏任务”。
+
+## 3. 任务与微任务 {#任务与微任务}
+
+**任务**（task）是浏览器调度的一组工作，例如执行一个定时器回调、处理一次用户输入。面试中使用的“宏任务”通常指这种 task，HTML 规范使用的是 task 这个名称。
+
+**微任务**（microtask）是在规定的检查点处理的工作，例如 Promise 后续处理。它有自己的队列，不是另一个普通任务队列。**微任务检查点**就是浏览器按规则持续取出微任务执行，直到队列清空的处理过程。
+
+| 行为 | 需要区分的执行方式 |
+| --- | --- |
+| `setTimeout`、`setInterval` 的回调 | 等计时条件满足后，通过定时器任务来源安排执行 |
+| 用户交互引发的事件处理 | 使用相应的任务来源，不能与主动同步分发混为一谈 |
+| `new Promise(executor)` | `executor` 在构造调用中同步执行 |
+| Promise 的 `then`、`catch`、`finally` 后续处理 | 对应 Promise 状态就绪后，按 Promise 规则安排微任务 |
+| `queueMicrotask(callback)` | 直接把 `callback` 排入微任务队列 |
+| MutationObserver 通知 | 通过微任务通知 DOM 变化；多个变化可以合并通知 |
+| `requestAnimationFrame` 回调 | 在浏览器的渲染更新过程中执行，不能套用普通定时器顺序 |
+
+浏览器可以为不同任务来源安排不同任务队列，并在可运行任务之间调度。来自同一任务来源的工作需要遵守相应顺序，不同来源之间则不能仅按“谁先写在代码里”推导全局顺序。例如消息、用户输入和定时器，不是全部塞进一个只按注册时间排序的列表。
+
+### 3.1 微任务检查点 {#微任务检查点}
+
+对于一个普通脚本片段，可以先执行同步部分，再在检查点处理已经排入的微任务。一个任务结束后会有检查点，宿主清理脚本调用、执行栈已空时也可能触发检查点，所以不能把它限定为“每个宏任务末尾恰好一次”。
+
+检查点会持续取出最早入队的微任务。如果某个微任务又排入新微任务，新微任务也在这次检查点继续执行，直到队列清空。普通函数的每次返回并不会自动触发检查点；如果上层 JavaScript 调用仍未结束，就不能据此插入微任务。
+
+```js
+console.log("A");
+setTimeout(() => console.log("T"), 0);
+new Promise(resolve => {
+  console.log("B");
+  resolve();
+}).then(() => console.log("C"));
+queueMicrotask(() => {
+  console.log("D");
+  queueMicrotask(() => console.log("E"));
+});
+console.log("F");
+```
+
+输出是 `A B F C D E T`。同步部分先打印 `A`、executor 中的 `B` 和最后的 `F`。进入检查点时，队列已有 `C`、`D`；执行 `D` 又把 `E` 放到队尾，因此 `E` 也在定时器 `T` 之前执行。
+
+| 时刻 | 尚未执行的微任务 |
+| --- | --- |
+| 同步代码结束 | `C`、`D` |
+| `C` 执行后 | `D` |
+| `D` 执行后 | `E` |
+| `E` 执行后 | 空 |
+
+### 3.2 Promise 链中的入队时机 {#promise-链中的入队时机}
+
+`.then` 注册回调，不代表每一个回调都立即入队。后一个 `.then` 要等前一步返回的新 Promise 有了可处理的状态。
+
+```js
+Promise.resolve()
+  .then(() => {
+    console.log("first");
+    return 1;
+  })
+  .then(() => console.log("second"));
+queueMicrotask(() => console.log("queued"));
+```
+
+输出是 `first`、`queued`、`second`。同步部分结束时，`first` 与 `queued` 已经排队；`first` 返回 `1` 后，前一个 `.then` 返回的 Promise 才兑现，继而把 `second` 加到队尾。
+
+如果回调返回另一个 Promise 或带 `then` 方法的对象，还涉及结果采纳的步骤，不能把上面的例子推广成“每写一个 then 就固定增加一步”。先判断依赖结果什么时候可用，再分析调度顺序。
+
+### 3.3 await 后的恢复 {#await-后的恢复}
+
+`async` 函数从调用开始同步执行到需要暂停的位置。`await` 会等待所给值对应的结果，并把恢复执行交给异步的 Promise 处理过程；它不阻塞调用方继续执行。
+
+```js
+async function run() {
+  console.log("before await");
+  await 0;
+  console.log("after await");
+}
+console.log("start");
+run();
+queueMicrotask(() => console.log("queued"));
+console.log("end");
+```
+
+输出是 `start`、`before await`、`end`、`after await`、`queued`。这里 `await 0` 不需要等待外部 I/O，但函数后半段仍不会同步接着执行。恢复任务先于后面的 `queueMicrotask` 入队，所以 `after await` 在 `queued` 前面。
+
+这个结论依赖示例等待的是普通值。换成尚未完成的 Promise，就要先确认它何时完成，不能只比较 `await` 与 `queueMicrotask` 的代码位置。
+
+## 4. 定时器 {#定时器}
+
+**定时器**让浏览器在等待条件满足后安排回调，不提供实时执行保证。`setTimeout(fn, 100)` 不能承诺 `fn` 恰好在 100 毫秒后开始，也不会暂停当前代码 100 毫秒。
+
+影响实际时间的因素包括：
+
+- 当前同步代码仍在运行，或检查点还有微任务没有处理完。
+- 有其他可运行任务，浏览器需要调度；页面所处状态也会影响计时与执行。
+- 连续嵌套的定时器受到最小延迟限制。HTML 的具体规则是在定时器嵌套层级大于 5、请求延迟小于 4 毫秒时，把延迟调整为 4 毫秒；不是每个定时器都至少等 4 毫秒。
+- 后台页面可能被节流，页面暂停或恢复也会使实际时间与最初预期不同。
+
+`setTimeout(fn, 0)` 表示尽早安排以后的一次回调，不是立即调用 `fn`。定时器等待不会抢占同步代码，也不能跳过已经开始的微任务检查点。
+
+### 4.1 周期工作与时间误差 {#周期工作与时间误差}
+
+周期逻辑应根据实际时间计算进度，不要把“回调执行了几次”直接当作经过的秒数。倒计时可以保存目标时间，每次更新计算剩余时间；动画可以使用 `requestAnimationFrame` 提供的时间戳计算位移。
+
+`setInterval` 不会等待回调返回的 Promise。如果回调发起请求后很快返回，而请求还没完成，下次回调仍可能继续发起请求，形成多个在途操作。同一主线程上的 JavaScript 没有并行执行，并不排除网络请求重叠。需要前一次结束后再启动下一次时，可以在完成或失败处理后重新安排 `setTimeout`。
+
+用目标时间修正下一次等待，可以减少累计误差，但不能保证浏览器在指定时刻执行。涉及资格截止、订单过期等业务，应由可信的服务端规则决定，页面倒计时只负责展示。
+
+### 4.2 取消与资源清理 {#取消与资源清理}
+
+`setTimeout` 和 `setInterval` 返回定时器标识。保存这个标识，在不再需要回调时使用对应的清除方法。
+
+```js
+const timer = setTimeout(() => console.log("cancelled callback"), 0);
+clearTimeout(timer);
+setTimeout((name, count) => console.log(name, count), 0, "task", 2);
+console.log("scheduled");
+```
+
+输出是 `scheduled`、`task 2`，被清除的回调没有执行。额外参数会传给回调，不需要为了传参把代码拼成字符串。
+
+清除标识阻止的是尚未执行的定时器回调或后续周期调度，不能倒退已经开始的回调，也不能自动取消回调此前发起的请求。组件卸载、页面逻辑切换时，除了清除定时器，还应按实际资源处理事件监听、请求取消和过期结果。
+
+## 5. 渲染机会与动画回调 {#渲染机会与动画回调}
+
+**渲染机会**是浏览器根据显示设备、页面可见性和调度状态等条件决定可以更新画面的时机。事件循环处理任务，不代表每处理完一个任务就一定绘制一帧；当前 HTML 模型通过渲染任务来源安排渲染更新，其中包含动画回调等步骤。
+
+`requestAnimationFrame` 请求浏览器在后续渲染更新时调用一次函数，适合在画面更新前调整动画状态。它只安排一次；连续动画需要在回调里再次注册，并根据时间戳计算进度。
+
+```js
+const label = document.createElement("span");
+document.body.append(label);
+label.textContent = "ready";
+console.log(label.textContent);
+requestAnimationFrame(timestamp => {
+  label.textContent = "frame";
+  console.log(label.textContent, Number.isFinite(timestamp));
+  label.remove();
+});
+```
+
+在页面获得渲染机会、回调执行的前提下，先输出 `ready`，后输出 `frame true`。`ready` 可以立即从 DOM 中读到，但这不保证用户先看见了一帧 `ready`，也不保证动画回调恰好在 16.7 毫秒后执行。
+
+刷新率不同、主线程繁忙、后台节流都可能影响回调时机。动画回调里的 JavaScript 仍在主线程执行，长计算照样会延迟其他处理。`requestAnimationFrame` 适合协调画面更新，不能把任意重计算变成无阻塞操作。
+
+### 5.1 DOM 状态与屏幕显示 {#dom-状态与屏幕显示}
+
+修改 DOM 与把结果显示到屏幕是不同阶段。下面的代码能读到刚设置的内容，但没有给出任何“已经绘制”的保证：
+
+```js
+const label = document.createElement("span");
+document.body.append(label);
+label.textContent = "loading";
+Promise.resolve().then(() => {
+  console.log(label.textContent); // loading
+  label.textContent = "done";
+  label.remove();
+});
+```
+
+微任务可能在渲染更新前就把内容改成 `done`，甚至移除节点。`await Promise.resolve()` 同样只等待微任务恢复，不能充当“等浏览器画完”的接口。
+
+`requestAnimationFrame` 的回调也发生在相应画面呈现之前。它适合安排本次视觉更新，但不是“像素已经显示”的确认。连续安排两个动画帧有时用于跨越渲染更新步骤，仍不应把它表述为任何页面状态下都可靠的屏幕呈现回执。
+
+### 5.2 动画回调与定时器的顺序 {#动画回调与定时器的顺序}
+
+不能只根据下面两行的注册顺序，给 `frame` 和 `timer` 排出所有场景都相同的先后关系：
+
+```js
+requestAnimationFrame(() => console.log("frame"));
+setTimeout(() => console.log("timer"), 0);
+console.log("sync");
+```
+
+`sync` 在两种异步回调前。之后要看定时器何时可运行、浏览器何时安排渲染更新，以及调度选择；某次运行得到的顺序不是跨页面状态的保证。如果两个操作有明确依赖，应在同一条逻辑链中安排它们，而不是用两个不同 API 猜先后。
+
+## 6. 微任务与主线程阻塞 {#微任务与主线程阻塞}
+
+微任务的优势是能在当前同步工作之后、后续普通任务之前处理收尾或合并更新。相应的代价是：检查点没有结束，后续任务就无法继续推进。
+
+```js
+let count = 0;
+function step() {
+  count += 1;
+  console.log(count);
+  if (count < 3) queueMicrotask(step);
+}
+queueMicrotask(step);
+setTimeout(() => console.log("timer"), 0);
+```
+
+输出是 `1 2 3 timer`。每次 `step` 都把下一次加入当前检查点，直到第三次停止。如果去掉终止条件，就可能持续占用检查点，让输入处理、定时器和渲染更新无法及时进行。
+
+把长循环改成反复 `await Promise.resolve()`，仍可能只是在不断补充微任务。它让异步函数暂停了，却未必让浏览器有机会处理普通任务或绘制。
+
+处理大量工作时，可以把计算拆成每段耗时可控的任务，在段与段之间把控制权交还浏览器；使用定时器分段也要接受调度延迟，不能要求每段精确定时。适合脱离 DOM 的计算可以放到 Worker，再通过消息传结果。动画回调适合短小的视觉更新，不适合塞入一整段重计算。
+
+## 7. 常见问题 {#常见问题}
+
+### 7.1 外层 try/catch 能捕获定时器回调的异常吗？ {#外层-trycatch-能捕获定时器回调的异常吗}
+
+不能捕获以后那次调用里抛出的异常。外层 `try` 只覆盖当前同步调用链，注册回调后它就执行结束了。应在回调内部处理异常，或让异步操作通过 Promise 的拒绝状态表达失败。
+
+```js
+try {
+  setTimeout(() => {
+    try {
+      throw new Error("later");
+    } catch (error) {
+      console.log("inner", error.message);
+    }
+  }, 0);
+} catch {
+  console.log("outer");
+}
+console.log("scheduled");
+```
+
+输出是 `scheduled`、`inner later`。如果删除内层 `try/catch`，错误会成为该定时器回调的未捕获异常，外层也不会接住它。仅仅把 `setTimeout` 放进 `new Promise` 的 executor 同样不够，需要在回调里捕获后调用 `reject`。
+
+还要区分 `queueMicrotask` 与 `.then`：前者的回调抛错会按宿主的异常报告机制处理；后者的回调抛错会让 `.then` 返回的 Promise 拒绝。都在微任务中执行，不代表错误传播方式相同。
+
+### 7.2 浏览器的顺序能直接用于 Node.js 吗？ {#浏览器的顺序能直接用于-nodejs-吗}
+
+不能完整照搬。两者都执行 JavaScript 和 Promise，但宿主调度不同。Node.js 有自己的事件循环阶段以及 `process.nextTick`、`setImmediate` 等机制；浏览器的页面渲染与 `requestAnimationFrame` 也不是 Node.js 的同一套流程。
+
+推导题目时先确认环境、入口是普通脚本还是模块、有哪些 I/O 或计时条件。仅在 Node.js 中跑通一个示例，不能据此验证浏览器渲染相关的结论。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 JavaScript 单线程为什么仍能处理异步请求？ {#single-thread-async}
+
+**考察重点**：JavaScript 执行、宿主能力与回调调度的分工。
+
+**相关内容**：[同步执行与异步等待](#同步执行与异步等待)。
+
+<details>
+<summary>参考回答</summary>
+
+**单线程描述同一执行线程上的 JavaScript 调用，异步等待可以由浏览器的其他机制处理。** 发起请求后，主线程继续执行；结果可用，再由宿主安排后续处理。
+
+回调仍不能抢占当前同步代码，多个异步操作的等待可以重叠，但其 JavaScript 回调不会因此在同一主线程并行执行。Worker 能提供独立执行环境，也不能因此说整个页面的所有逻辑共享一个任意并行的调用栈。
+
+</details>
+
+### 8.2 任务和微任务有什么区别，除了 Promise 还能怎样产生微任务？ {#tasks-microtasks}
+
+**考察重点**：任务来源、检查点、入队顺序与常见 API。
+
+**相关内容**：[任务与微任务](#任务与微任务)、[微任务检查点](#微任务检查点)。
+
+<details>
+<summary>参考回答</summary>
+
+**普通任务由浏览器按任务来源调度，微任务在检查点持续处理到队列清空。** 不能把不同任务来源假设为一个全局先进先出队列，也不能把每次函数返回都当作检查点。
+
+除了 Promise 后续处理，可以用 `queueMicrotask` 主动排入微任务，MutationObserver 也通过微任务通知变化。微任务里新增的微任务会继续处理，因此应避免无限补充；`new Promise` 的 executor 本身同步执行。
+
+</details>
+
+### 8.3 怎样推导混合 Promise、queueMicrotask 和定时器的输出顺序？ {#output-order}
+
+**考察重点**：同步 executor、微任务入队时机与链式依赖。
+
+**相关内容**：[微任务检查点](#微任务检查点)、[Promise 链中的入队时机](#promise-链中的入队时机)。
+
+<details>
+<summary>参考回答</summary>
+
+**先执行同步代码，再按真实入队顺序处理微任务，最后结合任务来源分析后续任务。** executor 立即执行；已兑现 Promise 上注册的处理可以进入微任务队列，等待中的 Promise 则要等结果就绪。
+
+正文例子输出 `A B F C D E T`：同步部分是 `A B F`，队列先有 `C D`，`D` 再追加 `E`。链式 then 的后续处理还要等前一步结果，不能在读到所有 then 时一次性把它们全放进队列。
+
+</details>
+
+### 8.4 await 一个普通值时，后续代码会同步执行吗？ {#await-order}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：异步函数暂停、调用方继续与恢复顺序。
+
+**相关内容**：[await 后的恢复](#await-后的恢复)。
+
+<details>
+<summary>参考回答</summary>
+
+**不会，await 后的恢复仍通过异步的 Promise 处理进行。** 当前异步函数在等待处暂停，调用方继续执行；等待普通值不需要外部 I/O，也不等于直接同步继续。
+
+正文例子中恢复处理先于后面的 queueMicrotask 入队，所以先输出 `after await`，再输出 `queued`。如果换成未完成的 Promise，需要根据其完成时机重新分析，不能机械沿用这个顺序。
+
+</details>
+
+### 8.5 setTimeout 为什么不准时，怎样处理倒计时和周期工作的误差？ {#timer-delay}
+
+**考察重点**：调度延迟、嵌套限制、后台状态与时间模型。
+
+**相关内容**：[定时器](#定时器)、[周期工作与时间误差](#周期工作与时间误差)。
+
+<details>
+<summary>参考回答</summary>
+
+**定时器只安排等待条件满足后的执行，不保证到点抢占主线程。** 同步工作、微任务、其他任务调度、嵌套最小延迟和后台节流都可能带来额外等待。
+
+倒计时应根据目标时间计算剩余量，周期进度根据实际时间计算；需要上一轮请求结束再启动下一轮时，可在结束处理后重新安排定时器。修正等待能减少累计误差，却不能把浏览器变成实时调度系统。
+
+</details>
+
+### 8.6 requestAnimationFrame 是否一定准时，为什么它也可能造成卡顿？ {#animation-frame}
+
+**考察重点**：渲染机会、一次性回调、时间戳与执行成本。
+
+**相关内容**：[渲染机会与动画回调](#渲染机会与动画回调)、[动画回调与定时器的顺序](#动画回调与定时器的顺序)。
+
+<details>
+<summary>参考回答</summary>
+
+**它随渲染更新安排回调，不保证固定间隔，也不保证始终先于或后于零延迟定时器。** 刷新率、页面可见性、主线程负载等会影响执行时机；连续动画需要继续注册并根据时间戳计算状态。
+
+回调中的代码仍占用主线程，长计算照样阻碍后续处理。它适合短小的视觉更新，不是把任意计算移出主线程的接口。
+
+</details>
+
+### 8.7 修改 DOM 后 await Promise.resolve()，能保证用户看见中间状态吗？ {#dom-paint}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：DOM 可读状态、微任务与画面呈现的区别。
+
+**相关内容**：[DOM 状态与屏幕显示](#dom-状态与屏幕显示)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能，它只等待微任务恢复，不等待画面显示完成。** DOM 修改可以立即被代码读取，微任务却可能在渲染之前又改掉内容，使中间状态从未呈现。
+
+requestAnimationFrame 用于安排渲染更新前的工作，同样不是像素已经显示的确认。应根据具体交互设计更新流程，不能把微任务或动画回调直接等同于“绘制完成”。
+
+</details>
+
+### 8.8 把大循环改成不断 await Promise.resolve()，能避免页面卡顿吗？ {#microtask-starvation}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：微任务检查点终止条件与工作拆分。
+
+**相关内容**：[微任务与主线程阻塞](#微任务与主线程阻塞)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能保证，因为恢复执行又在微任务中继续，可能不断补充同一个检查点。** 当前异步函数暂停，不代表事件循环已经有机会处理输入或渲染。
+
+可以把工作拆成耗时可控的普通任务，让每一段结束后交还控制权；适合脱离 DOM 的计算可移到 Worker。微任务和动画回调都应控制工作量。
+
+</details>
+
+### 8.9 try 中注册的定时器以后抛出异常，外层 catch 能捕获吗？ {#async-catch}
+
+**考察重点**：调用栈边界与异步错误传播。
+
+**相关内容**：[外层 try/catch 能捕获定时器回调的异常吗？](#外层-trycatch-能捕获定时器回调的异常吗)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能，外层 try/catch 已经结束，不在以后那次回调的调用链上。** 应在回调内部捕获，或通过 reject 把失败传给 Promise 链上的处理者。
+
+把 setTimeout 写在 Promise executor 里，不会自动把定时器异常转为拒绝；需要在回调里完成这种转换。queueMicrotask 回调抛错与 then 回调抛错的传播方式也不同。
+
+</details>
+
+### 8.10 怎样清除定时器？ {#cancel-timer}
+
+**考察重点**：定时器标识与资源生命周期。
+
+**相关内容**：[取消与资源清理](#取消与资源清理)。
+
+<details>
+<summary>参考回答</summary>
+
+**保存定时器返回的标识，使用 clearTimeout 或 clearInterval 清除；已经执行的操作不能因此撤销。** 组件卸载或逻辑失效时，应及时清理不再需要的定时器。
+
+如果回调此前已经发起网络请求，需要请求自己的取消机制或过期结果判断。清除定时器与取消请求是不同资源的生命周期处理。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+
+- [HTML Standard：Event loops](https://html.spec.whatwg.org/multipage/webappapis.html#event-loops)
+- [HTML Standard：Clean up after running script](https://html.spec.whatwg.org/multipage/webappapis.html#clean-up-after-running-script)
+- [HTML Standard：Timers](https://html.spec.whatwg.org/multipage/timers-and-user-prompts.html#timers)
+- [HTML Standard：Microtask queuing](https://html.spec.whatwg.org/multipage/timers-and-user-prompts.html#microtask-queuing)
+- [DOM Standard：EventTarget.dispatchEvent](https://dom.spec.whatwg.org/#dom-eventtarget-dispatchevent)
+- [ECMAScript：Promise Objects](https://tc39.es/ecma262/multipage/control-abstraction-objects.html#sec-promise-objects)
+- [ECMAScript：Await](https://tc39.es/ecma262/multipage/control-abstraction-objects.html#await)
+- [MDN：Using microtasks in JavaScript with queueMicrotask](https://developer.mozilla.org/en-US/docs/Web/API/HTML_DOM_API/Microtask_guide)
+- [MDN：Window.requestAnimationFrame](https://developer.mozilla.org/en-US/docs/Web/API/Window/requestAnimationFrame)

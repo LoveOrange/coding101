@@ -164,7 +164,7 @@ System.out.println(first[0]); // AB
 record Range(int min, int max) {}
 ```
 
-方法里写 `return new Range(min, max)`，调用方再用 `min()` 和 `max()` 取出来。这样就不需要通过参数传出结果。按照值传递的规则，Java 也做不到这一点。
+方法里写 `return new Range(min, max)`，调用方再用 `min()` 和 `max()` 取出来。Java 不能通过给形参重新赋值来替换调用方变量，但可以修改双方共享的数组或结果对象，把多个值交给调用方。直接返回结果对象通常更容易说明这次调用产生了什么。
 
 ### 6.3 引用值就是内存地址吗？ {#引用与内存地址}
 

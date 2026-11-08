@@ -18,6 +18,7 @@ Session 保存会话状态，JWT 是承载声明的令牌格式，OAuth 2.0 处�
 - 离线验证看不到实时撤销状态；撤销 Refresh Token **只阻断后续刷新**，不会自动使已签发的 Access Token 失效。
 - OAuth 2.0 授权客户端访问资源，OIDC 的 **ID Token 面向登录客户端**，不能直接替代 API 所需的 Access Token。
 - PKCE 绑定**授权码兑换**，`state` 关联**授权回调**，`nonce` 绑定**认证请求与 ID Token**。[卡](#pkce-state-nonce)
+- 单点登录复用**身份提供方的登录状态**，各应用仍要验证认证结果、建立自身会话，并独立检查权限。[卡](#sso-idp-local-sessions)
 
 ## 2. Session {#session}
 
@@ -87,6 +88,22 @@ OIDC 的 `nonce` 把 ID Token 与本次认证请求绑定。请求中携带了 `
 客户端按使用的流程验证签名、issuer、audience 与期限。请求携带 nonce 时，还需核对该 nonce。`auth_time` 在请求 `max_age` 等条件下必需。
 
 邮箱和展示名会变化，应用宜使用稳定主体标识。API 则独立验证 Access Token。
+
+### 6.1 单点登录 {#单点登录}
+
+**单点登录**（SSO）让用户完成一次认证后，在一组信任同一身份提供方的应用中减少重复登录。**身份提供方**（IdP）负责认证用户；使用 OIDC 时，它对应 OpenID Provider。应用 A、应用 B 分别是登录客户端，各自建立自己的应用会话。
+
+以两个带服务端的 Web 应用使用 OIDC 授权码流程为例：
+
+1. 用户访问 A，A 发现没有本地会话，让浏览器跳转到 IdP，发起绑定本次请求的认证流程。
+2. IdP 完成认证，建立自己域下的登录会话，并把授权码返回 A 登记的回调地址。
+3. A 的服务端核对回调、兑换授权码并验证 ID Token，确认发行者、受众、期限以及本次请求绑定。成功后建立 A 的本地会话，浏览器后续用 A 的 Session Cookie 访问 A。
+4. 用户再访问 B，B 没有自己的会话，仍需发起一次指向 IdP 的认证请求。浏览器访问 IdP 时，IdP 可以识别已有登录会话；会话有效且认证策略允许时，用户不必再次输入凭据，但仍可能需要授权确认或重新认证。
+5. IdP 为 B 返回相应的授权码，B 独立兑换并验证面向自己的认证结果，再建立 B 的本地会话。
+
+因此，复用的是 IdP 已确认的登录状态，不是让不同域的应用任意读取同一份 Cookie，也不是把 A 的 ID Token 直接交给 B 使用。授权码流程中的 PKCE、回调 `state` 和 ID Token 的 `nonce` 仍按各自规则检查，见 [PKCE、state 与 nonce](#pkcestate-与-nonce)。
+
+应用建立会话后，前端可以进入业务页面；后续 API 仍须根据应用会话恢复身份并检查权限，页面跳转本身不能证明用户有访问权。A、B 的权限可以不同，退出 A 也不会自动让 IdP 和 B 的会话全部失效；全局退出需要另有会话协调机制。
 
 ## 7. Refresh Token {#refresh-token}
 
@@ -167,10 +184,26 @@ Refresh Token 只交给授权服务器，不用于调用资源 API。公共客�
 
 </details>
 
+### 10.4 单点登录怎样让用户访问另一个应用时不必重复输入凭据？ {#sso-idp-local-sessions}
+
+**考察重点**：IdP 登录会话、应用本地会话与回调验证、权限检查的分工。
+
+**相关内容**：[单点登录](#单点登录)。
+
+<details>
+<summary>参考回答</summary>
+
+**两个应用分别向同一 IdP 发起认证，IdP 可以复用已有登录会话，各应用仍独立验证结果并建立自己的会话。** 例如用户先在 A 登录，再访问 B，B 仍重定向到 IdP；既有会话有效且策略允许时，IdP 无需再次要求用户输入凭据，就能完成面向 B 的认证流程。
+
+B 要检查回调绑定、兑换自己的授权码并验证 ID Token，不能直接信任 A 的令牌或跨域读取 A 的 Cookie。前端跳转后，后端仍要检查应用会话与权限。单点登录也不保证退出一个应用就自动退出所有应用。
+
+</details>
+
 ## 11. 参考资料 {#参考资料}
 
 - [RFC 9700：OAuth 2.0 Security](https://www.rfc-editor.org/rfc/rfc9700.html)
 - [OpenID Connect Core 1.0](https://openid.net/specs/openid-connect-core-1_0.html)
+- [OpenID Connect Session Management：应用会话的建立](https://openid.net/specs/openid-connect-session-1_0.html#CreatingUpdatingSessions)
 - [RFC 7519：JSON Web Token](https://www.rfc-editor.org/rfc/rfc7519.html)
 - [RFC 8725：JWT Best Current Practices](https://www.rfc-editor.org/rfc/rfc8725.html)
 - [RFC 7636：PKCE](https://www.rfc-editor.org/rfc/rfc7636.html)

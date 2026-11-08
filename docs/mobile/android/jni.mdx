@@ -1,0 +1,317 @@
+---
+knowledge:
+  id: mobile.android.jni
+  type: concept
+description: "解释 JNI 的方法注册、线程关联、引用生命周期、字符串与数组访问，以及 Java 和 C++ 异常边界。"
+keywords: [JNI, JNIEnv, JavaVM, RegisterNatives, JNI_OnLoad, NDK, 全局引用]
+---
+
+# JNI
+
+**JNI**（Java Native Interface）规定托管代码与本地代码怎样互相调用。在 Android 上，Java、Kotlin 编译后的代码通过这套接口与 C/C++ 交互；NDK 则提供编译 Android 本地代码所需的工具和库。
+
+JNI 本身不会让计算自动变快。它增加了类型转换、数据访问和生命周期管理责任，适合复用已有本地库、接入本地接口，或处理经过测量确认适合本地实现的工作。面试中的关键是说明调用怎样匹配，以及线程、对象和异常由谁管理。
+
+## 1. 面试核心 {#core}
+
+- NDK 提供 Android 本地代码的工具与库，**JNI 规定托管代码与本地代码的交互方式，两者不是同一个层次**。[卡](#ndk)
+- 本地方法需要匹配类、方法名和 JVM 描述符，**符号查找与 RegisterNatives 都必须遵守同一份调用约定**。[卡](#registration)
+- `JNIEnv*` 属于当前线程，**不能把一个线程的 JNIEnv 直接交给另一个线程**。本地创建的线程需要关联虚拟机，并在适当时机解除关联。[卡](#threads)
+- 局部引用、全局引用和弱全局引用有不同生命周期，**全局引用必须显式删除，弱全局引用也必须先安全提升后使用**。[卡](#references)
+- 字符串和数组访问可能复制数据，**取得元素指针不等于取得永久稳定的对象内存地址**，释放规则不依赖是否发生了复制。[卡](#buffers)
+- Java 异常不会像 C++ 异常那样自动展开本地栈，**调用后需要检查待处理异常，并完成允许的资源清理**。[卡](#exceptions)
+- JNI 调用有跨边界成本，**应控制调用频率、传输规模和资源所有权，再用真实场景测量收益**。[卡](#cost)
+
+## 2. 方法声明与注册 {#方法声明与注册}
+
+### 2.1 类名、方法名和描述符 {#类名方法名和描述符}
+
+Java 用 `native` 声明本地方法，Kotlin 使用 `external`。虚拟机需要把这个声明与共享库中的某个函数关联。Android 的 `System.loadLibrary("campus")` 按平台规则加载 `libcampus.so`，参数不是完整文件名或任意网络地址。
+
+下面用 Java 声明两个静态方法，避免 Kotlin 伴生对象、名称修饰等额外因素干扰调用关系：
+
+```java
+package com.example;
+
+public final class NativeMath {
+    static {
+        System.loadLibrary("campus");
+    }
+
+    private NativeMath() {}
+
+    public static native long add(int a, int b);
+    public static native long sum(int[] values);
+}
+```
+
+**方法描述符**用紧凑的字符串表示参数和返回类型。`add(int, int): long` 的描述符是 `(II)J`，`sum(int[]): long` 是 `([I)J`：括号里是参数，后面是返回类型。
+
+| Java 类型 | 描述符示例 |
+| --- | --- |
+| `int`、`long`、`boolean`、`void` | `I`、`J`、`Z`、`V`，`V` 用于返回值 |
+| `String` | `Ljava/lang/String;` |
+| `int[]` | `[I` |
+| `String[]` | `[Ljava/lang/String;` |
+
+类查找使用 `com/example/NativeMath` 这类内部名称。应通过 `javap -s` 等工具确认编译后的签名，尤其是 Kotlin 属性、伴生对象或生成桥接方法涉及的接口。
+
+### 2.2 RegisterNatives 与 JNI_OnLoad {#registernatives与jni-onload}
+
+**RegisterNatives** 显式登记“Java 方法名、描述符、本地函数地址”的对应关系。Android 官方建议在适合的场景中集中登记，便于加载时暴露签名错误。另一种方式是按 `Java_包名_类名_方法名` 等规定导出符号，由虚拟机查找；重载和特殊字符也有命名规则，不能只简单拼接字符串。
+
+下面的 C++ 实现同时展示注册和数组读取：
+
+```cpp
+#include <jni.h>
+#include <algorithm>
+
+static jlong Add(JNIEnv*, jclass, jint a, jint b) {
+    return static_cast<jlong>(a) + static_cast<jlong>(b);
+}
+
+static jlong Sum(JNIEnv* env, jclass, jintArray values) {
+    if (values == nullptr) {
+        jclass error = env->FindClass("java/lang/IllegalArgumentException");
+        if (error != nullptr) {
+            env->ThrowNew(error, "values must not be null");
+            env->DeleteLocalRef(error);
+        }
+        return 0;
+    }
+
+    const jsize length = env->GetArrayLength(values);
+    jlong total = 0;
+    jint buffer[64];
+    for (jsize offset = 0; offset < length;) {
+        const jsize count = std::min<jsize>(64, length - offset);
+        env->GetIntArrayRegion(values, offset, count, buffer);
+        if (env->ExceptionCheck()) return 0;
+        for (jsize i = 0; i < count; ++i) total += buffer[i];
+        offset += count;
+    }
+    return total;
+}
+
+extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void*) {
+    JNIEnv* env = nullptr;
+    if (vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) != JNI_OK) {
+        return JNI_ERR;
+    }
+    jclass type = env->FindClass("com/example/NativeMath");
+    if (type == nullptr) return JNI_ERR;
+
+    JNINativeMethod methods[] = {
+        {const_cast<char*>("add"), const_cast<char*>("(II)J"),
+         reinterpret_cast<void*>(Add)},
+        {const_cast<char*>("sum"), const_cast<char*>("([I)J"),
+         reinterpret_cast<void*>(Sum)}
+    };
+    const jint result = env->RegisterNatives(type, methods, 2);
+    env->DeleteLocalRef(type);
+    return result == JNI_OK ? JNI_VERSION_1_6 : JNI_ERR;
+}
+```
+
+静态方法的第二个参数是 `jclass`；实例方法对应 `jobject`，表示接收对象。`Add()` 先提升到 `jlong` 再相加，避免先在有符号 `jint` 上溢出。`Sum()` 按固定大小分批复制数组内容，空数组返回 `0`，空引用引发 Java 异常。
+
+`GetIntArrayRegion()` 写进调用者提供的缓冲区，因此没有需要通过 `ReleaseIntArrayElements()` 释放的借用指针。它不能保证其他 Java 线程不同时修改数组：如果业务需要一致快照，应在上层约定调用期间不修改，或者先做受控复制。
+
+`JNI_OnLoad` 在库加载时提供初始化入口。它返回支持的 JNI 版本；注册失败时不能假装初始化成功。这里返回 `JNI_VERSION_1_6` 表示采用的 JNI 接口版本，与 Java 语言版本、Android API level 不属于同一编号体系。
+
+### 2.3 类加载与发布构建 {#类加载与发布构建}
+
+`FindClass()` 的查找环境与调用位置有关。在 Android 的 `JNI_OnLoad` 中，查找可以使用加载共享库的类加载器；一个刚由 C++ 创建并关联的线程，未必具有应用方法调用栈对应的类加载环境。不能假定任意线程都能按名称找到应用类。
+
+需要缓存类时，应保存适当的全局引用，并约定释放时机；`jmethodID`、`jfieldID` 属于成员标识，不是 `jobject` 引用，不应传给 `NewGlobalRef()`。它们的有效性与定义类的存续有关。
+
+R8 无法从任意本地字符串自动推断所有 Java 访问。JNI 按名称查找的方法、字段和类，需要与相应保留规则配合，具体见 [Android 构建](./build.mdx)。排查 `UnsatisfiedLinkError` 时，应分别检查库是否存在、ABI 和依赖是否匹配、库是否加载成功，以及注册或符号签名是否一致。
+
+## 3. 线程关联 {#线程关联}
+
+**JavaVM** 提供进程中虚拟机的访问入口；Android 每个进程只有一个 JavaVM。**JNIEnv** 提供当前线程执行 JNI 操作的接口。它包含线程相关状态，所以不能保存一个线程的 `JNIEnv*`，然后在另一个线程直接使用。
+
+Java 创建的线程进入本地方法时，虚拟机会传入该线程对应的 JNIEnv。本地创建的线程若要调用 Java，通常需要：
+
+1. 通过保存的 `JavaVM*` 调用 `GetEnv()`，判断当前线程是否已经关联。
+2. 尚未关联时调用 `AttachCurrentThread()`，并记录关联是由自己完成的。
+3. 使用当前线程取得的 JNIEnv 执行调用，并检查异常。
+4. 在线程退出前，对自己建立的关联调用 `DetachCurrentThread()`。
+
+不能把一个原本由 Java 管理、已经关联的线程无条件解除关联。关联线程也不意味着可以更新 Android UI；调用仍在当前线程上执行，需要按 UI 框架要求切回主线程。
+
+从本地线程回调 Java 时，还要协调对象引用、回调取消和线程退出。页面关闭后不能只删除全局引用却让工作线程继续访问它；应先结束或取消相应工作，再按同步协议释放引用。引用跨线程有效，不代表对象业务操作自动线程安全。
+
+## 4. JNI 引用的生命周期 {#jni引用的生命周期}
+
+### 4.1 局部、全局与弱全局引用 {#局部全局与弱全局引用}
+
+JNI 的 `jobject` 等值是虚拟机管理的引用句柄，不能按普通 C++ 对象指针解引用。两个句柄可能指向同一个 Java 对象，比较对象身份应使用 `IsSameObject()`，不能依赖句柄数值相等。
+
+| 引用 | 保持对象存活 | 作用范围和释放责任 |
+| --- | --- | --- |
+| 局部引用 | 是 | 当前线程的局部引用作用范围；通常在本地方法返回时清理，也可 `DeleteLocalRef` |
+| 全局引用 | 是 | 可跨调用、跨已关联线程使用；必须 `DeleteGlobalRef` |
+| 弱全局引用 | 否 | 可在对象回收后失效；句柄本身仍需 `DeleteWeakGlobalRef` |
+
+长循环里反复创建局部引用，即使方法最终返回会清理，也可能在返回前积累过多引用。应及时删除，或使用 `PushLocalFrame()`、`PopLocalFrame()` 管理批次。本地创建且长期关联的线程，也不能指望每次普通 C++ 函数返回都会清空 JNI 局部引用。
+
+全局引用常用于异步回调对象。它会阻止对象回收，因此若该对象间接持有 Activity，就可能造成界面泄漏。释放 native 缓冲区和删除 Java 全局引用是两项不同责任，两者都需要明确所有者。
+
+### 4.2 弱全局引用需要安全提升 {#弱全局引用需要安全提升}
+
+弱全局引用可能在检查之后、使用之前被回收。不能先用 `IsSameObject(weak, nullptr)` 判断存在，再把 `weak` 当稳定强引用继续操作。
+
+需要使用时，调用 `NewLocalRef(weak)` 尝试获得局部强引用。若返回非空，这份局部引用会在使用期间保持对象存活；使用完后删除。若返回空，应按对象已消失或创建引用失败处理，并按接口情况检查待处理异常。
+
+这种提升只处理对象回收竞争。另一个线程若同时删除弱引用句柄本身，仍然需要额外同步，不能让 `NewLocalRef()` 操作一个已经被删除的句柄。
+
+## 5. 字符串与数组访问 {#字符串与数组访问}
+
+### 5.1 JNI 字符串不是任意 UTF-8 字节 {#jni字符串不是任意utf-8字节}
+
+Java `String` 以 UTF-16 代码单元表达内容。`GetStringChars()` 提供 `jchar` 序列，长度使用 `GetStringLength()` 取得，不能按 C 字符串遇到零就结束。
+
+名称含 `UTF` 的传统 JNI 接口使用 **Modified UTF-8**。它与标准 UTF-8 在零字符和补充平面字符等编码上有区别。不能把任意网络 UTF-8 字节直接交给 `NewStringUTF()` 并假定都合法；应明确解码方式，例如在 Java 层用指定字符集建立 String，再传入。
+
+`GetStringChars()`、`GetStringUTFChars()` 返回的指针有对应释放接口。即使 `isCopy` 表示没有复制，也不能跳过 Release；指针的有效期由 JNI 契约决定，不是永久地址。
+
+### 5.2 数组借用、复制与临界区 {#数组借用复制与临界区}
+
+`GetIntArrayElements()` 等接口可能返回副本，也可能提供受虚拟机管理的直接访问。调用者必须配对释放，并理解 mode：
+
+- `0`：必要时复制修改结果回数组，并结束这次访问。
+- `JNI_COMMIT`：提交副本中的修改，但不释放该副本；仍需后续释放。
+- `JNI_ABORT`：不把副本改动复制回去，并结束访问。若取得的是直接访问，已经写入原数组的修改不会因此撤销。
+
+所以 `JNI_ABORT` 不能当作通用事务回滚。只读访问仍需 Release；不能把取得的元素指针保存到异步任务，在释放后继续使用。
+
+只需要复制部分数据时，Region 系列接口可简化资源管理。需要使用 `GetPrimitiveArrayCritical()` 等临界访问时，应把范围保持很短，不在期间调用任意 JNI 接口、等待锁或执行长时间阻塞操作。它不是“永远零拷贝”的性能保证。
+
+## 6. 异常与资源清理 {#异常与资源清理}
+
+**待处理异常**是虚拟机记录的、等待返回 Java 调用路径后传播的异常。`ThrowNew()` 或一次 Java 方法调用产生异常后，C++ 函数不会自动像执行了 C++ `throw` 那样跳过后续语句。
+
+本地代码需要检查 `ExceptionCheck()` 等结果，并只执行契约允许的异常查询和清理操作，例如释放已经取得的字符串、数组访问或删除引用，然后返回。不能带着异常继续任意查找类、调用 Java 业务方法，或随手清除异常后报告成功。
+
+反过来，C++ 异常也不能越过 JNI 边界任意传播。可能抛异常的本地实现应在边界捕获，完成 [C++ 对象生命周期](../../basic-knowledge/cpp/object-lifetime.mdx#raii-与异常路径) 中的 RAII 清理，再按约定转换成 Java 异常或错误结果。`std::bad_alloc`、库异常和已有 Java 异常还需要避免互相覆盖。
+
+Java 对象受到 GC 管理，不表示 native 分配会自动释放。`new`、文件描述符、库句柄和全局引用都需要成对管理。崩溃排查应结合符号化 native 栈、Java 调用栈和资源所有权；Android 的 CheckJNI 能帮助发现非法引用、错误线程和部分签名问题，但不能替代所有内存错误检测。
+
+## 7. 调用成本与适用范围 {#调用成本与适用范围}
+
+跨 JNI 的成本包括进入本地方法、字段或方法查找、数据转换和复制等。把每个像素都通过一次 Java 回调读取，可能比把一块像素数据一次传入更昂贵；一次传入过大的数据又可能增加复制与峰值内存。
+
+设计时应先明确一批工作的边界，让 JNI 接口尽量窄，数据格式和所有权清楚。异步流程尽量由一侧统筹，避免 Java 和 C++ 各自维护线程池，再互相细粒度回调。若需要 native 工作线程，就把取消、回调次数和对象释放纳入接口契约。
+
+最终使用相同输入、设备和构建条件测量端到端耗时、内存与响应性。本地代码仍可能阻塞主线程、发生数据竞争或内存泄漏，不能把“用了 NDK”当作优化已经完成。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 NDK 是什么？ {#ndk}
+
+**考察重点**：Android 本地开发工具与语言交互接口的分工。
+
+**相关内容**：[方法声明与注册](#方法声明与注册)、[调用成本与适用范围](#调用成本与适用范围)。
+
+<details>
+<summary>参考回答</summary>
+
+**NDK 提供编译和使用 Android 本地 C/C++ 代码所需的工具与库。** 需要与 Java、Kotlin 代码交互时，可通过 JNI 声明和注册方法，并管理线程、引用和异常。它适合复用本地库或处理经测量适合本地实现的任务，但需要额外处理 ABI、构建和资源生命周期，不能仅凭使用 NDK 判断性能更好。
+
+</details>
+
+### 8.2 Java 的 native 方法怎样关联到 C++ 函数？ {#registration}
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：库加载、描述符、注册与符号查找。
+
+**相关内容**：[方法声明与注册](#方法声明与注册)。
+
+<details>
+<summary>参考回答</summary>
+
+**加载共享库后，可以按 JNI 导出命名规则查找，也可以通过 RegisterNatives 显式登记。** 登记需要类、方法名、描述符和函数地址一致，例如两个 int 返回 long 使用 `(II)J`。本地函数还要正确接收 JNIEnv，以及静态方法的 jclass 或实例方法的 jobject；发布构建的名称保留和 ABI 也要一致。
+
+</details>
+
+### 8.3 可以把 JNIEnv 缓存起来给工作线程使用吗？ {#threads}
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：线程关联、JavaVM 与解除关联责任。
+
+**相关内容**：[线程关联](#线程关联)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能跨线程复用 JNIEnv。** 可以保存 JavaVM，让工作线程取得自己的 JNIEnv；尚未关联时调用 AttachCurrentThread，并在线程退出前解除自己建立的关联。关联不改变线程身份，也不赋予后台线程操作 UI 的权限。回调对象还需要正确引用和取消协议。
+
+</details>
+
+### 8.4 局部引用、全局引用和弱全局引用有什么区别？ {#references}
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：作用范围、对象存活、释放及弱引用竞争。
+
+**相关内容**：[JNI 引用的生命周期](#jni引用的生命周期)。
+
+<details>
+<summary>参考回答</summary>
+
+**局部和全局引用保持对象存活，弱全局引用不保持；三者的范围和清理方式不同。** 局部引用受当前线程和局部作用范围约束，全局引用可跨调用使用但需要显式删除。使用弱全局引用前应尝试建立局部强引用，不能先检查再直接使用；句柄删除本身还需要同步。
+
+</details>
+
+### 8.5 GetIntArrayElements 没有复制数据时，还需要 Release 吗？JNI_ABORT 能回滚吗？ {#buffers}
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：访问期、复制条件与释放 mode。
+
+**相关内容**：[数组借用、复制与临界区](#数组借用复制与临界区)。
+
+<details>
+<summary>参考回答</summary>
+
+**仍需要配对 Release；JNI_ABORT 也不是通用回滚。** 有副本时它不复制修改回数组；直接访问原数组时，已经发生的修改不会自动撤销。`JNI_COMMIT` 提交副本但不释放副本，还需要后续释放。只读访问同样遵守释放责任。
+
+</details>
+
+### 8.6 本地代码调用 Java 方法后发生异常，可以继续执行普通 JNI 调用吗？ {#exceptions}
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：待处理异常与 C++ 栈展开的区别，边界清理。
+
+**相关内容**：[异常与资源清理](#异常与资源清理)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能把待处理异常当成没有发生，继续任意 JNI 调用。** 应检查异常、执行允许的清理并返回，让异常向 Java 传播；确需处理时遵守明确协议。Java 异常不会自动展开 C++ 栈，C++ 异常也不能任意越过 JNI 边界，应在边界转换并保证资源释放。
+
+</details>
+
+### 8.7 把一段 Java 计算改成 C++，一定能提高性能吗？ {#cost}
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：跨边界成本、批处理、数据复制和测量口径。
+
+**相关内容**：[调用成本与适用范围](#调用成本与适用范围)。
+
+<details>
+<summary>参考回答</summary>
+
+**不一定，收益要覆盖 JNI 转换、复制和调用成本。** 需要确定计算瓶颈，控制调用粒度和资源生命周期，再在一致条件下测量端到端表现。高频细小调用、反复回调 Java 或多次复制大对象，都可能抵消本地计算的收益。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+
+- [Android：JNI tips](https://developer.android.com/ndk/guides/jni-tips)
+- [Java 17 JNI 规范：设计概览](https://docs.oracle.com/en/java/javase/17/docs/specs/jni/design.html)
+- [Java 17 JNI 规范：类型与描述符](https://docs.oracle.com/en/java/javase/17/docs/specs/jni/types.html)
+- [Java 17 JNI 规范：接口函数](https://docs.oracle.com/en/java/javase/17/docs/specs/jni/functions.html)
+- [Java 17 JNI 规范：Invocation API](https://docs.oracle.com/en/java/javase/17/docs/specs/jni/invocation.html)
+- [Android：NDK 概览](https://developer.android.com/ndk/guides)
+- [Android：ABI](https://developer.android.com/ndk/guides/abis)
+- [Android：JNI 保留规则](https://developer.android.com/topic/performance/app-optimization/keep-rule-examples)

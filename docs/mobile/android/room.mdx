@@ -1,0 +1,358 @@
+---
+knowledge:
+  id: mobile.android.room
+  type: concept
+description: "解释 Room 的实体与 DAO、编译期 SQL 检查、线程调度、事务、Flow 观察和数据库迁移。"
+keywords: [Room, SQLite, DAO, Entity, Transaction, Flow, Migration]
+---
+
+# Room
+
+**Room** 是 AndroidX 提供的 SQLite 持久化库。它根据实体、SQL 和数据库声明生成访问代码，帮助我们检查查询、转换结果和管理数据库版本。它没有替换 SQLite 的存储引擎，也不会自动解决慢查询、业务冲突和数据升级问题。
+
+本文以 Room 2.6.1 为例。理解 Room 时，重点是把“编译时生成了什么”“运行时在哪执行”“哪些操作必须一起成功”分开。
+
+## 1. 面试核心 {#core}
+
+- Entity 描述表映射，DAO 声明访问操作，Database 组织数据库，**Room 生成访问代码，SQLite 执行 SQL**。[卡](#components)
+- 编译期检查能发现已知表上的列名、参数和映射问题，**不能证明业务正确，也不能保证运行时没有约束错误**。[卡](#validation)
+- 同步 DAO 调用不会自动切线程，**Room 默认禁止主线程数据库访问；挂起 DAO 的调度来自生成代码与运行库**。[卡](#threads)
+- 多个操作需要共同成功时，要声明共同事务，**分别调用两个带事务的 DAO 方法，不等于两个方法处于同一事务**。[卡](#transaction)
+- 查询 Flow 观察相关表失效后重新查询，**结果未变也可能重新执行，不能把每次发射当成一条写入事件**。[卡](#flow)
+- 数据库版本变化需要可执行的迁移路径，**新安装与旧版本升级应得到兼容的 schema，并保留业务需要的数据**。[卡](#migration)
+- 迁移测试同时检查结构与数据，**破坏性重建会丢失相应数据，不能当成通用修复方案**。[卡](#migration-test)
+- 存储选型从数据关系、查询和一致性需求出发，**Room 适合结构化本地数据，少量设置不一定需要关系数据库**。[卡](#choice)
+
+## 2. 实体、DAO 与数据库 {#实体dao与数据库}
+
+**Entity** 是映射到数据库表的类，字段对应列，主键标识一行。**DAO**（Data Access Object，数据访问对象）声明允许执行的查询和修改。**RoomDatabase** 汇总实体、版本和 DAO 入口，Room 根据这些声明生成实现。
+
+下面把三个声明放进 `RoomModel.java` 的嵌套类型中，便于看到完整关系。项目中也可以拆成独立文件。
+
+```java
+package sample;
+
+import androidx.annotation.NonNull;
+import androidx.room.ColumnInfo;
+import androidx.room.Dao;
+import androidx.room.Database;
+import androidx.room.Entity;
+import androidx.room.Insert;
+import androidx.room.PrimaryKey;
+import androidx.room.Query;
+import androidx.room.RoomDatabase;
+import androidx.room.Transaction;
+import java.util.List;
+
+public final class RoomModel {
+    @Entity(tableName = "task")
+    public static class Task {
+        @PrimaryKey public long id;
+        @NonNull public String title = "";
+        @ColumnInfo(defaultValue = "0") public int completed;
+    }
+
+    @Dao
+    public abstract static class TaskDao {
+        @Query("SELECT * FROM task ORDER BY id")
+        public abstract List<Task> all();
+
+        @Query("DELETE FROM task")
+        public abstract void deleteAll();
+
+        @Insert
+        public abstract void insertAll(List<Task> tasks);
+
+        @Transaction
+        public void replaceAll(List<Task> tasks) {
+            deleteAll();
+            insertAll(tasks);
+        }
+    }
+
+    @Database(entities = {Task.class}, version = 2, exportSchema = true)
+    public abstract static class AppDb extends RoomDatabase {
+        public abstract TaskDao tasks();
+    }
+}
+```
+
+Room 为 `AppDb` 和 `TaskDao` 生成实现。调用 `all()` 时，生成代码执行 SQL、读取结果并构造 `Task`；`@Insert` 对应的生成代码负责绑定字段和执行插入，而不是把 Java 对象整体写成一个不透明文件。
+
+`completed` 是整型列，约定 `0` 表示未完成。`@ColumnInfo(defaultValue = "0")` 声明数据库层默认值；Java 字段初始化与 SQL 默认值是不同的事。Room 插入实体时通常会绑定字段值，不能期待默认值覆盖显式传入的值。
+
+生成过程需要配置 `room-compiler`。Room 2.6.1 的 Java 工程可以使用 `annotationProcessor`，Kotlin 工程可以使用相匹配的 KSP 或 KAPT；启用 `exportSchema` 后还应配置 schema 输出目录并保存版本历史。只添加运行库而没有执行处理器，不能得到完整 DAO 实现。
+
+数据库实例通常按应用进程和数据库文件复用，构建时使用合适的应用级 Context。反复为每次查询创建实例会增加资源和管理成本；复用实例也不代表所有操作自动变成一个事务。
+
+## 3. 查询检查与数据映射 {#查询检查与数据映射}
+
+### 3.1 编译时能发现什么 {#编译时能发现什么}
+
+Room 的处理器会结合已声明的 schema 分析 `@Query`。例如把 `title` 写成不存在的 `titel`，或者 SQL 引用了方法没有提供的参数，可以在编译时失败。查询投影与返回对象不匹配时，也会产生相应错误或警告，具体取决于映射方式。
+
+这项检查有边界。数据库里是否已有相同主键、磁盘是否足够、当前操作是否符合业务规则，要到运行时才能知道。动态 SQL、`@RawQuery` 等也不能获得与静态 `@Query` 完全相同的检查范围。
+
+查询条件应通过绑定参数传值，不能把用户输入拼进 SQL。参数绑定解决值的传递，不会自动替任意表名、列名或排序表达式建立可信规则；需要动态选择这些结构时，应从允许的集合中选择。
+
+### 3.2 关系与类型转换 {#关系与类型转换}
+
+Room 仍然使用关系模型。订单与商品之间的关系可以通过外键、关联查询或 `@Relation` 等方式表达；给对象增加一个 `List` 字段，不会自动得到完整、可靠的关系存储。
+
+**TypeConverter** 负责把 Room 不能直接存储的类型转换成可存储类型。例如日期可以转换成约定单位的整数。单位、时区或编码格式一旦影响已有数据，就属于数据协议，不能随意改变。
+
+把整个对象转成 JSON 存入一列虽然方便，却可能失去对子字段的直接查询、约束和索引能力。选这种方式前，应确认这些字段是否需要参与查询和关系约束。
+
+`@Relation` 可能通过多次查询组装结果。需要父子数据来自一致读取范围时，应在相应查询上使用 `@Transaction`；它不等于自动建立数据库外键，也不代表关联一定由一条 JOIN 完成。
+
+索引、约束、参数绑定和锁的底层规则仍由 [SQLite](../../basic-knowledge/database/sqlite.mdx) 决定。Room 把 SQL 写进注解后，查询性能并不会因此自动改善。
+
+## 4. 线程与事务 {#线程与事务}
+
+### 4.1 同步调用与挂起调用 {#同步调用与挂起调用}
+
+上面的 `all()` 是同步方法。调用者在哪个线程调用，它就在那里执行相应数据库访问；Room 默认检查并拒绝主线程查询，以免磁盘操作阻塞界面。`allowMainThreadQueries()` 只是关闭检查，不会降低实际耗时。
+
+Room 2.6.1 可以通过 `room-ktx` 配合挂起 DAO 和 Flow，把数据库工作交给相应执行环境。下面是同一张表的另一种访问声明；实际使用时，应把该 DAO 作为数据库的一个访问入口。
+
+```kotlin
+package sample
+
+import androidx.room.Dao
+import androidx.room.Insert
+import androidx.room.Query
+import kotlinx.coroutines.flow.Flow
+
+@Dao
+interface WatchDao {
+    @Query("SELECT * FROM task WHERE completed = 0 ORDER BY id")
+    fun observePending(): Flow<List<RoomModel.Task>>
+
+    @Insert
+    suspend fun insert(task: RoomModel.Task)
+}
+```
+
+调用生成的 `insert()` 挂起方法时，Room 运行库会根据事务上下文和执行器安排操作。不能据此推导“给任意函数加 `suspend` 就会切到 IO 线程”；普通挂起函数没有这个自动保证，参见 [Kotlin 协程](../../basic-knowledge/kotlin/coroutines.mdx)。
+
+Room 负责数据库访问的执行安排，调用后自己的图片解码、大集合计算或其他阻塞操作仍要单独处理。取消协程也不能简单解释为“数据库肯定没有发生写入”：事务是否已经提交，需要按实际执行阶段判断。
+
+### 4.2 把业务操作放进同一事务 {#把业务操作放进同一事务}
+
+`replaceAll()` 的要求是“删除旧任务并插入新任务一起成功”。如果先调用 `deleteAll()`，事务结束后再调用 `insertAll()`，第二步失败时，删除可能已经提交。
+
+示例把两个操作放进 `@Transaction` 方法。通过 Room 生成的 DAO 调用它时，生成实现会包住整个方法：正常完成才标记成功，异常向外传播则按事务规则回滚。例如新列表有重复主键，默认冲突策略导致插入异常时，不应只留下空表。
+
+`@Insert`、`@Update`、`@Delete` 自己有事务保证，但它们各自成功不等于跨方法的业务操作具备原子性。跨 DAO 的协程操作可以使用 `withTransaction` 组织共同事务；同步操作可以使用 `runInTransaction`。
+
+不要在事务内长时间等待网络。事务占用数据库资源，SQLite 的并发写入仍有限制；网络失败也不能由本地数据库替远端回滚。应先明确本地提交与远端同步的业务协议，再划分边界。
+
+异常处理同样会改变结果。如果在事务内部捕获插入失败后继续正常返回，外层可能认为业务成功。只有确实能够修复并满足原子性要求时才应吞掉异常，否则应让失败传播。
+
+冲突策略也不能随意替换。SQLite 的 `REPLACE` 可能先删除冲突行再插入，可能影响关联数据和行标识；它不等于普通更新。应根据业务选择更新、插入、Upsert 或拒绝冲突，并检查受影响行数。
+
+## 5. Flow 与表失效通知 {#flow与表失效通知}
+
+Room 查询返回的 Flow 用来持续取得查询结果。开始收集后执行查询，相关表发生失效通知时重新查询，再向收集者提供结果；停止收集后，这一轮观察也会结束。
+
+这里观察的是表的变化线索，不是逐行比较业务结果。例如 `observePending()` 只返回 `completed = 0` 的任务，但同一张表中一条已完成任务的标题改变，也可能触发查询重新执行。
+
+可以对结果流使用 `distinctUntilChanged()`，让相等结果不继续通知下游。不过它发生在查询结果产生之后，不能据此声称数据库没有重新查询。相等判断还取决于结果类型：示例 Java `Task` 没有实现值相等，若每次查询创建新对象，直接比较列表未必能去掉业务上相同的结果；可以映射为具有合适相等语义的不可变 UI 模型。
+
+Room 2.6.1 的协程实现会合并待处理的失效信号。因此，快速发生多次写入时，不能承诺下游逐次看到每个中间状态。需要审计日志或可靠事件消费时，应显式保存事件记录和消费进度，不能用 UI 查询 Flow 代替。
+
+UI 收集还要匹配生命周期。Fragment 可以使用 `repeatOnLifecycle`，具体做法见 [Android ViewModel](./viewmodel.mdx#fragment的view生命周期)。Flow 能通知结果变化，不负责替 View 持有者解决泄漏或页面不可见后的工作策略。
+
+## 6. 数据库版本与迁移 {#数据库版本与迁移}
+
+### 6.1 结构变化与默认值 {#结构变化与默认值}
+
+**数据库迁移**是把已经存在的旧数据库转换成新版本所需的结构和数据。修改实体类并增加 `version` 只是声明目标；旧设备上的文件不会因为 Java 字段变了，就自动拥有相应列。
+
+假设版本 1 的 `task` 只有 `id`、`title`，版本 2 增加 `completed`。上面的实体已经声明数据库默认值 `0`，迁移也要让旧行获得兼容值：
+
+```kotlin
+import android.content.Context
+import androidx.room.Room
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
+import sample.RoomModel
+
+val MIGRATION_1_2 = object : Migration(1, 2) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE task ADD COLUMN completed INTEGER NOT NULL DEFAULT 0")
+    }
+}
+
+fun openTasks(context: Context): RoomModel.AppDb =
+    Room.databaseBuilder(context.applicationContext, RoomModel.AppDb::class.java, "tasks.db")
+        .addMigrations(MIGRATION_1_2)
+        .build()
+```
+
+旧行迁移后 `completed` 为 `0`，与新安装数据库的目标列定义对应。若只在迁移 SQL 中添加默认值，却没有在实体的数据库定义中声明，可能造成新安装与升级后的 schema 不一致。Kotlin 或 Java 属性的初始值不能代替 SQL schema 中的默认值。
+
+迁移应使用稳定、明确的 SQL，不要引用以后可能变化的业务查询常量。表拆分、编码转换或需要按业务规则填充的数据，通常需要显式迁移逻辑。
+
+### 6.2 迁移路径与失败策略 {#迁移路径与失败策略}
+
+用户可能从版本 1 直接升级到版本 3。应用需要覆盖支持的旧版本到当前版本的路径，例如依次执行 `1 → 2 → 3`，也可以提供经过验证的直达迁移。只测试“上一个版本到新版本”会漏掉长期未升级的设备。
+
+Room 支持自动迁移，但它依赖 schema 历史，遇到删表、重命名等歧义需要额外说明；自动生成 SQL 也不能决定数据拆分的业务含义。手工迁移和自动迁移都应进入测试。
+
+默认情况下，缺失所需迁移路径会导致打开数据库失败。`fallbackToDestructiveMigration()` 可以在相应条件下重建数据库，但会丢失被重建表的数据。它只适合可以接受丢失并重新取得的数据，不能为了消除崩溃用于用户唯一的草稿或记录。
+
+降级也是单独的路径和产品决策。应用版本回退不代表数据库自动恢复成旧 schema，更不能只把版本号改小。应明确支持的降级方式，以及是否允许重建。
+
+### 6.3 迁移测试 {#迁移测试}
+
+Room 的 `MigrationTestHelper` 可以根据保存的 schema 创建旧数据库、运行指定迁移并验证目标结构。结构验证之外，还必须检查数据是否按业务规则保存或转换。
+
+对本例，应至少验证：
+
+1. 用版本 1 schema 建库，插入几条不同 `id` 的旧任务，再执行 `MIGRATION_1_2`。
+2. 验证目标列的类型、非空、主键和默认值符合版本 2 schema。
+3. 查询旧任务，确认 `id`、`title` 保留，`completed` 为 `0`。
+4. 从空文件直接创建版本 2，比较其结构与升级结果，并通过 DAO 读写。
+5. 覆盖支持的跨版本路径以及约束、索引、外键和业务转换的边界数据。
+
+只执行一条 `ALTER TABLE` 没报错，不能代替完整迁移验证。测试应在与目标 Android 数据库环境相符的条件下执行；桌面 SQLite 的 SQL 检查能提供辅助证据，但不能代替 Android 上的 Room 打开与 schema 校验。
+
+## 7. 存储选择 {#存储选择}
+
+有结构化列表、条件查询、排序、关联和多步原子修改时，Room 可以减少 SQLite 访问中的重复代码，并保留 SQL 的表达能力。选它仍需要设计表、索引、迁移和错误处理。
+
+少量开关或用户偏好更适合设置存储；图片、视频等大文件通常存为文件，再在数据库中记录必要元信息。对比其他持久化框架时，应看查询能力、线程模型、迁移支持、可测试性和团队维护成本，而不是只比较注解多少。
+
+数据库也不自动成为服务端状态的镜像。离线修改、重试、去重、远端版本冲突和同步顺序需要另外设计。本地事务只保证本地数据库范围内的操作关系。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 Room 的 Entity、DAO 和 Database 分别负责什么？ {#components}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：声明、生成代码和存储引擎之间的责任。
+
+**相关内容**：[实体、DAO 与数据库](#实体dao与数据库)。
+
+<details>
+<summary>参考回答</summary>
+
+**Entity 描述表映射，DAO 声明数据操作，Database 汇总实体、版本和 DAO 入口。** Room 在编译期生成访问实现，负责参数绑定、结果映射等工作，运行时仍由 SQLite 执行 SQL 和管理底层存储。Room 不是另一种替换 SQLite 的数据库引擎。
+
+</details>
+
+### 8.2 Room 的编译期检查能保证数据库操作一定成功吗？ {#validation}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：静态 SQL 检查与运行时约束、业务正确性的区别。
+
+**相关内容**：[查询检查与数据映射](#查询检查与数据映射)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能。** 静态 `@Query` 可以结合声明的 schema 检查列名、参数和结果映射，但重复主键、外键冲突、磁盘失败和业务规则需要运行时处理。动态 SQL 的检查能力也有边界。查询通过编译，不代表执行计划高效或业务条件正确。
+
+</details>
+
+### 8.3 为什么同步 DAO 不能直接放在主线程？suspend 又提供了什么？ {#threads}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：同步执行、主线程检查与 Room 的协程集成。
+
+**相关内容**：[同步调用与挂起调用](#同步调用与挂起调用)。
+
+<details>
+<summary>参考回答</summary>
+
+**同步 DAO 会在调用线程执行访问，磁盘等待可能阻塞 UI，Room 默认禁止主线程数据库访问。** 关闭检查不会消除耗时。Room 生成的挂起 DAO 通过运行库和执行器安排数据库操作；这一保证来自 Room 的实现，不是 `suspend` 关键字本身。调用者后续的阻塞或计算工作仍需正确调度。
+
+</details>
+
+### 8.4 先删除旧数据再插入新数据，怎样避免插入失败后只剩空表？ {#transaction}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：共同事务、异常传播与业务原子性。
+
+**相关内容**：[把业务操作放进同一事务](#把业务操作放进同一事务)。
+
+<details>
+<summary>参考回答</summary>
+
+**把删除与插入放进同一个事务，并让不能恢复的失败传播。** 可以使用生成 DAO 上的 `@Transaction` 方法，或使用数据库的事务 API。两个 DAO 方法各自带事务，不等于它们共同原子；若删除已经提交，后续插入失败无法替它回滚。事务内吞掉异常后正常返回，也可能破坏预期语义。
+
+</details>
+
+### 8.5 Room 查询 Flow 为什么会在结果没变化时重新查询？ {#flow}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：表级失效、结果相等与状态流的边界。
+
+**相关内容**：[Flow 与表失效通知](#flow与表失效通知)。
+
+<details>
+<summary>参考回答</summary>
+
+**它根据相关表失效重新查询，不会预先判断某一行是否影响最终结果。** `distinctUntilChanged()` 可以按相等规则减少下游重复通知，但不会撤销已经执行的查询；返回对象还需要合适的值相等语义。失效信号可以合并，因此查询 Flow 不能保证逐次展示每次写入的中间状态，也不适合作为审计事件日志。
+
+</details>
+
+### 8.6 增加一个非空列时，为什么只修改 Entity 和版本号不够？ {#migration}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：已存在的文件、旧行补值与新旧 schema 一致性。
+
+**相关内容**：[结构变化与默认值](#结构变化与默认值)、[迁移路径与失败策略](#迁移路径与失败策略)。
+
+<details>
+<summary>参考回答</summary>
+
+**声明新结构不会自动改造旧文件，必须提供相应迁移并为旧行确定合法值。** 本例增加 `completed INTEGER NOT NULL DEFAULT 0`，同时在 Entity 的数据库列定义中声明默认值。属性初始化不等于 SQL 默认值。还应覆盖支持的旧版本到当前版本路径，不能只考虑新安装或最近一次升级。
+
+</details>
+
+### 8.7 怎样验证 Room 迁移？能否用破坏性重建解决迁移失败？ {#migration-test}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：结构与数据验证、跨版本路径和数据丢失边界。
+
+**相关内容**：[迁移测试](#迁移测试)、[迁移路径与失败策略](#迁移路径与失败策略)。
+
+<details>
+<summary>参考回答</summary>
+
+**从真实旧 schema 建库并写入边界数据，执行迁移后同时检查目标结构和业务数据。** 可以用 `MigrationTestHelper` 验证 schema，再查询数据确认保留、转换和约束结果，并比较新安装路径。破坏性重建会丢失相应数据，只能用于明确允许丢失并可恢复的数据，不能用来掩盖用户数据迁移错误。
+
+</details>
+
+### 8.8 项目选择 Room 时，应与其他存储方案比较哪些条件？ {#choice}
+
+**考察重点**：数据模型、查询需求、一致性、迁移和维护成本。
+
+**相关内容**：[存储选择](#存储选择)。
+
+<details>
+<summary>参考回答</summary>
+
+**先比较业务是否需要结构化查询、关系约束和事务，再比较实现与维护成本。** Room 适合本地结构化数据，提供 SQL 检查和访问代码生成；少量设置可以使用设置存储，大文件通常采用文件加元信息。选择其他持久化框架时，还要评估线程与观察模型、迁移能力和测试支持。Room 不能自动解决离线同步或远端版本冲突。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+
+- [Room 2.6.1 版本说明与处理器配置](https://developer.android.com/jetpack/androidx/releases/room#2.6.1)
+- [Room 2.6.1 runtime 源码：RoomDatabase、InvalidationTracker、Migration](https://dl.google.com/dl/android/maven2/androidx/room/room-runtime/2.6.1/room-runtime-2.6.1-sources.jar)
+- [Room 2.6.1 common 源码：Entity、Query、Transaction、OnConflictStrategy](https://dl.google.com/dl/android/maven2/androidx/room/room-common/2.6.1/room-common-2.6.1-sources.jar)
+- [Room 2.6.1 KTX 源码：CoroutinesRoom 与事务支持](https://dl.google.com/dl/android/maven2/androidx/room/room-ktx/2.6.1/room-ktx-2.6.1-sources.jar)
+- [Room 2.x Query API](https://developer.android.com/reference/androidx/room/Query)
+- [Room 2.x Transaction API](https://developer.android.com/reference/androidx/room/Transaction)
+- [Room 2.x MigrationTestHelper API](https://developer.android.com/reference/androidx/room/testing/MigrationTestHelper)
+- [SQLite 冲突处理](https://www.sqlite.org/lang_conflict.html)

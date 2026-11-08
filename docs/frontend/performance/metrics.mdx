@@ -1,0 +1,519 @@
+---
+sidebar_position: 1
+knowledge:
+  id: frontend.performance.metrics
+---
+
+# Web 性能指标
+
+Web 性能指标把用户体验拆成可以观察的问题：内容多久出现、交互多久得到视觉反馈、页面是否意外跳动。指标选错了，即使数字变好，也可能没有改善用户真正遇到的问题。
+
+FCP 和 LCP 主要描述加载过程，INP 描述交互响应，CLS 描述视觉稳定性。面试中除了定义，还需要说清起点、终点、采集方式和比较条件；“包小了”“接口快了”只是可能的原因，不能直接替代体验结果。
+
+## 1. 面试核心 {#core}
+
+- **FCP 是首次内容绘制，不是 DOMContentLoaded，也不是业务数据全部可用**。普通文档导航中，从导航开始计时，可通过 Paint Timing 观察。[卡](#fcp-measurement)
+- **LCP 关注视口内最大合格内容元素的呈现时间**，不是全部资源下载完成。候选元素可能变化，包体积与 LCP 没有固定比例关系。[卡](#lcp-bundle)
+- **INP 关注交互开始到下一次呈现的延迟**，包含输入等待、处理和呈现等待，不只计算事件回调耗时。[卡](#inp-breakdown)
+- **CLS 衡量意外布局偏移，按最严重的会话窗口累计**，不是把页面整个生命周期的所有位移简单相加。[卡](#cls-session)
+- **Core Web Vitals 使用 LCP、INP、CLS 衡量三个维度**；通常以真实访问的第 75 百分位判断，并区分移动端和桌面端，不用平均值代替分布。[卡](#percentiles)
+- **实验室测试适合复现和定位，真实用户数据反映实际分布**。设备、网络、缓存、交互和页面生命周期不同，结果可以不同。[卡](#lab-field)
+- **性能上报要保留指标 ID、名称、数值和必要的页面版本信息**。同一次指标可能多次更新，服务端要按语义合并，不能重复计为多个用户。[卡](#metric-reporting)
+- **优化效果需要可比较的样本和因果链路**。保持场景和口径一致，再解释改动影响了哪段时间，而不是只报一个百分比。[卡](#optimization-evidence)
+- **FPS 与每帧耗时描述动画或滚动连续性，不等于点击响应指标**。rAF 回调次数也不直接证明实际呈现了同样多的帧。[卡](#fps-meaning)
+
+## 2. 指标与用户体验 {#指标与用户体验}
+
+### 2.1 不同指标回答不同问题 {#不同指标回答不同问题}
+
+| 指标 | 主要回答的问题 | 不能直接代表什么 |
+| --- | --- | --- |
+| TTFB | 从导航开始，到首个响应字节到达等了多久 | 不只是服务端业务处理耗时 |
+| FCP | 页面第一次出现内容是什么时候 | 不保证主要内容已经出现 |
+| LCP | 视口内最大的合格内容何时呈现 | 不等于全部页面资源加载完 |
+| INP | 页面交互到下一次呈现是否及时 | 不只是监听函数执行时间 |
+| CLS | 页面内容是否发生意外的位置变化 | 不是所有动画或滚动距离 |
+| FPS、帧耗时 | 动画和滚动是否连续、是否掉帧 | 不等于整个访问过程的交互体验 |
+| 业务自定义耗时 | 搜索结果可用、编辑器初始化等流程何时完成 | 需要自行定义起止点，不能冒充标准指标 |
+
+**TTFB**（Time to First Byte）包含导航过程中连接建立、网络往返和服务端响应等时间。`responseStart - requestStart` 与从导航起点计算的 TTFB 不是同一范围，也不能把任何一个值无条件解释成纯服务端执行时间。
+
+标准指标用于共同的体验维度，业务指标用于具体流程。例如页面先画出一个加载提示，FCP 已经发生，但列表接口可能仍在等待。需要衡量“用户能看到查询结果”时，应另外定义业务事件。
+
+### 2.2 Core Web Vitals 的阈值 {#core-web-vitals的阈值}
+
+Core Web Vitals 的三个指标与推荐阈值如下。LCP 和 INP 是时间，CLS 是无单位的分数。
+
+| 指标 | 良好 | 需要改进 | 较差 |
+| --- | --- | --- | --- |
+| LCP | 不超过 2.5 秒 | 超过 2.5 秒且不超过 4 秒 | 超过 4 秒 |
+| INP | 不超过 200 毫秒 | 超过 200 毫秒且不超过 500 毫秒 | 超过 500 毫秒 |
+| CLS | 不超过 0.1 | 超过 0.1 且不超过 0.25 | 超过 0.25 |
+
+这些阈值适合结合真实访问分布使用。通常按移动端和桌面端分别观察第 75 百分位，并分别判断三个指标；不能把三个分数求平均后宣布“全部达标”。
+
+**第 75 百分位**（p75）表示大约 75% 的观察值不高于该位置的值。它与平均值不同：少数极慢访问会明显拉高均值，而大量较快访问也可能掩盖一部分用户持续偏慢的问题。聚合时还要确认页面粒度、采样范围、统计窗口和样本量。
+
+## 3. FCP 与 LCP {#fcp与lcp}
+
+### 3.1 FCP 的起止与采集 {#fcp的起止与采集}
+
+**FCP**（First Contentful Paint）记录首次呈现文本、图片或其他符合条件内容的时间。对普通文档导航，起点是导航开始，不是组件 mounted、DOMContentLoaded 或监控脚本开始执行。
+
+下面的观察器可以读取当前文档的原始 FCP 条目：
+
+```js
+if (PerformanceObserver.supportedEntryTypes.includes('paint')) {
+  const observer = new PerformanceObserver(list => {
+    for (const entry of list.getEntries()) {
+      if (entry.name === 'first-contentful-paint') {
+        console.log('FCP', entry.startTime);
+        observer.disconnect();
+      }
+    }
+  });
+  observer.observe({ type: 'paint', buffered: true });
+}
+```
+
+`startTime` 是相对当前性能时间起点的毫秒数。`buffered: true` 让观察器有机会收到注册之前已经记录的条目，不需要为了测量而把监控脚本放在所有内容之前。
+
+这段代码用于理解原始浏览器条目。真实指标采集还要考虑初始后台状态、往返缓存恢复等页面生命周期，不能只装一个观察器就认为所有场景都处理完整。
+
+### 3.2 导航时间不能当作绘制时间 {#导航时间不能当作绘制时间}
+
+Navigation Timing 可以帮助定位导航过程，但各字段与绘制事件不同。例如读取响应开始、DOMContentLoaded 和 load 的时间：
+
+```js
+function reportNavigation() {
+  const [navigation] = performance.getEntriesByType('navigation');
+  if (!navigation) return;
+  console.log({
+    responseStart: navigation.responseStart,
+    domContentLoaded: navigation.domContentLoadedEventEnd,
+    loadEnd: navigation.loadEventEnd,
+  });
+}
+if (document.readyState === 'complete') reportNavigation();
+else window.addEventListener('load', () => setTimeout(reportNavigation, 0), { once: true });
+```
+
+在 load 回调里再安排一个任务，是为了让本次 load 事件处理结束后读取相应结束时间。页面仍在加载时，有些尚未发生的结束字段可能为 0。
+
+这些数据可以解释耗时分布，但 FCP 仍应使用绘制条目。某些页面在 DOMContentLoaded 前已经呈现内容，另一些页面在它之后还在等待业务渲染，不能把事件名直接替换成“首屏”。
+
+### 3.3 LCP 的候选与结束边界 {#lcp的候选与结束边界}
+
+**LCP**（Largest Contentful Paint）记录视口内最大合格内容元素的呈现时间。图片和文本块等可以成为候选，并不是任意一个尺寸最大的 DOM 容器都算。
+
+页面加载过程中，先出现的文本可能是候选，稍后出现的大图又成为新的候选，因此观察器可能收到多条记录：
+
+```js
+if (PerformanceObserver.supportedEntryTypes.includes('largest-contentful-paint')) {
+  const observer = new PerformanceObserver(list => {
+    for (const entry of list.getEntries()) {
+      console.log('LCP candidate', {
+        startTime: entry.startTime,
+        size: entry.size,
+        tag: entry.element?.tagName ?? null,
+      });
+    }
+  });
+  observer.observe({ type: 'largest-contentful-paint', buffered: true });
+}
+```
+
+这些日志是候选变化，不应每条都作为一次完整页面访问的最终 LCP。用户交互、页面隐藏和恢复等情况会影响报告边界，正式统计应使用符合指标定义的采集实现。
+
+LCP 可能受文档响应、资源发现时机、资源下载和元素呈现延迟共同影响。减少 JavaScript 包体积，可能减少下载、解析执行或渲染阻塞，但并不保证 LCP 按相同比例变化；若瓶颈在首字节、大图或资源发现，包体积变化可能不是主要原因。
+
+## 4. INP 与交互响应 {#inp与交互响应}
+
+### 4.1 一次交互包含哪些时间 {#一次交互包含哪些时间}
+
+**INP**（Interaction to Next Paint）用页面访问期间的交互延迟反映整体响应性，关注点击、触摸和键盘等符合条件的交互。从用户输入到下一次呈现，可以分成：
+
+1. **输入延迟**：事件已经发生，但主线程忙于其他任务，处理函数还没有开始。
+2. **处理时长**：相关事件回调实际执行的时间。
+3. **呈现延迟**：回调结束后，到下一次视觉呈现之间的等待与渲染工作。
+
+只把点击回调从 80 毫秒缩短到 10 毫秒，并不能证明整个交互只有 10 毫秒。如果点击前还有长任务，或回调后需要处理大量布局工作，用户仍可能等待。
+
+INP 不是首个输入的延迟，也不是所有点击的平均值。交互较少时，通常由最慢交互代表；交互很多时会按定义排除少量最极端值，每 50 次交互允许忽略一个最高值。不要把单个事件的最大 duration 直接当作完整 INP 实现。
+
+### 4.2 用事件时间定位问题 {#用事件时间定位问题}
+
+Event Timing 可以帮助查看具体交互的等待与处理。下面只记录带交互标识的原始事件条目：
+
+```js
+if (PerformanceObserver.supportedEntryTypes.includes('event')) {
+  const observer = new PerformanceObserver(list => {
+    for (const entry of list.getEntries()) {
+      if (!entry.interactionId) continue;
+      console.log('interaction event', {
+        name: entry.name,
+        interactionId: entry.interactionId,
+        duration: entry.duration,
+        inputDelay: entry.processingStart - entry.startTime,
+        processingTime: entry.processingEnd - entry.processingStart,
+      });
+    }
+  });
+  observer.observe({ type: 'event', buffered: true, durationThreshold: 16 });
+}
+```
+
+浏览器会对部分时间值做精度限制，一次交互也可能产生多个相关事件。这个观察器用于定位，不负责交互分组、代表值选择或页面生命周期统计。
+
+输入等待偏长，先找此前的长任务；处理时长偏长，查看回调计算、同步状态更新和第三方逻辑；呈现延迟偏长，再看布局、样式和绘制负担。把不依赖 DOM 的重计算移到 Worker，可能减少主线程占用，但仍要计入消息与结果处理成本。
+
+## 5. CLS 与布局稳定性 {#cls与布局稳定性}
+
+### 5.1 位移分数与会话窗口 {#位移分数与会话窗口}
+
+**CLS**（Cumulative Layout Shift）衡量非预期布局偏移。单次偏移分数由影响面积比例和移动距离比例共同决定。例如影响比例为 0.5、距离比例为 0.1，这次分数就是 0.05；它不是像素数，也不是毫秒数。
+
+CLS 取最严重的一段会话窗口：相邻偏移间隔小于 1 秒，窗口跨度小于 5 秒。发生在符合条件的离散用户输入后 500 毫秒内、`hadRecentInput` 为 true 的条目会被排除；滚动等连续操作不能直接按同样规则排除。
+
+下面仅用已按时间排序的原始条目演示窗口累计规则：
+
+```js
+function largestShiftWindow(entries) {
+  let maximum = 0;
+  let total = 0;
+  let first = 0;
+  let last = 0;
+  let hasWindow = false;
+  for (const entry of entries) {
+    if (entry.hadRecentInput) continue;
+    const time = entry.startTime;
+    if (total > 0 && hasWindow && time - last < 1000 && time - first < 5000) {
+      total += entry.value;
+    } else {
+      first = time;
+      total = entry.value;
+      hasWindow = true;
+    }
+    last = time;
+    maximum = Math.max(maximum, total);
+  }
+  return maximum;
+}
+console.log(largestShiftWindow([
+  { startTime: 100, value: 0.04, hadRecentInput: false },
+  { startTime: 500, value: 0.06, hadRecentInput: false },
+  { startTime: 2200, value: 0.08, hadRecentInput: false },
+])); // 0.1
+```
+
+前两个条目在一个窗口里合计 0.1，第三个另起窗口，所以结果不是 0.18。完整采集还要处理页面恢复、可见性和最终报告等条件，生产统计应使用专门实现。
+
+### 5.2 典型原因与判断边界 {#典型原因与判断边界}
+
+未预留空间的图片、晚插入的广告或提示、字体替换，都可能让已有内容意外移动。为图片提供尺寸或宽高比、为异步区域预留合理空间，可以减少这一类偏移。
+
+并不是所有视觉运动都算布局偏移。使用 transform 的位移动画不会按普通布局移动同样计算 CLS，但仍可能影响视觉体验；CLS 良好也不证明所有动画都舒适。优化时要回看具体偏移源，不只盯住总分。
+
+## 6. 实验室测量与真实用户数据 {#实验室测量与真实用户数据}
+
+### 6.1 两类数据为什么不同 {#两类数据为什么不同}
+
+**实验室数据**是在受控条件下运行得到的结果，适合固定设备模拟、网络限制和操作步骤来复现问题。**真实用户数据**来自实际访问，涵盖设备性能、地区、网络、缓存、交互次数和页面停留等差异。
+
+一个仅加载页面的实验室测试，可能没有用户交互，因此无法代表真实 INP。加载后继续出现的布局变化，也可能不在短时间测试窗口内。Lighthouse 分数、Total Blocking Time 等诊断结果有价值，但不能直接改名成线上 INP。
+
+真实用户数据也不是天然没有偏差。采样、上报丢失、浏览器 API 支持和访问分布都会影响结果。不能只拿高速网络的少量样本，对全部移动用户作结论。
+
+### 6.2 使用 web-vitals 采集 {#使用web-vitals采集}
+
+正式采集可以使用 `web-vitals` 等按指标定义处理页面生命周期的实现。下面以库的 5.x API 为例，保留必要字段，并发送到本应用自己的 `/metrics` 接口：
+
+```js
+import { onFCP, onLCP, onINP, onCLS } from 'web-vitals';
+
+function report(metric) {
+  const payload = {
+    id: metric.id,
+    name: metric.name,
+    value: metric.value,
+    delta: metric.delta,
+    rating: metric.rating,
+    navigationType: metric.navigationType,
+    page: 'search',
+    release: 'demo-1',
+  };
+  const accepted = navigator.sendBeacon('/metrics', new Blob(
+    [JSON.stringify(payload)], { type: 'application/json' },
+  ));
+  if (!accepted) console.warn('指标未进入发送队列');
+}
+onFCP(report);
+onLCP(report, { reportAllChanges: true });
+onINP(report, { reportAllChanges: true });
+onCLS(report, { reportAllChanges: true });
+```
+
+`reportAllChanges` 允许在指标变化时多次报告。同一个 ID 对应的后续 `value` 可能更新，`delta` 表示相对上次报告的变化。服务端应按 ID 和指标语义合并，不能把每次回调都当作新的访问，也不能把累计 value 再求和。
+
+`sendBeacon` 返回 true 只表示数据进入发送队列，不证明服务器已经持久化。接口仍要验证字段、限制体积，并考虑采样和丢失；同源上报接口也不应让匿名客户端提交任意内容成为可信业务记录。
+
+示例只发送固定的页面类别和发布版本，不把完整查询 URL、输入文本或 DOM 内容当作性能字段。多路由应用、往返缓存恢复和软导航需要采用一致的口径，不能无条件把一次文档导航的指标当作每次前端路由切换的指标。
+
+## 7. 耗时、帧率与优化证据 {#耗时帧率与优化证据}
+
+### 7.1 代码耗时的几种工具 {#代码耗时的几种工具}
+
+测量一段同步代码可以使用 `performance.now()` 差值、`console.time/timeEnd`，也可以使用 `Date.now()` 差值。它们的性质不同：前者使用单调性能时钟，Date.now 跟随墙上时钟，console 工具则适合本地调试。
+
+```js
+function sum(values) {
+  let total = 0;
+  for (const value of values) total += value;
+  return total;
+}
+const values = new Float64Array(100000).fill(2);
+const start = performance.now();
+const total = sum(values);
+console.log(total, performance.now() - start);
+
+console.time('sum-demo');
+sum(values);
+console.timeEnd('sum-demo');
+```
+
+第一次输出的结果是 200000，耗时取决于环境，可能非常短。后一次执行还可能受 JIT、缓存和前一次运行影响，不能拿两个相邻测量值直接证明某种 API 更快。
+
+需要让自定义阶段出现在性能时间线中，可以使用 User Timing：
+
+```js
+performance.mark('prepare-start');
+const items = Array.from({ length: 1000 }, (_, index) => ({ id: index }));
+performance.mark('prepare-end');
+const measure = performance.measure('prepare-items', 'prepare-start', 'prepare-end');
+console.log(items.length, measure.duration);
+performance.clearMarks('prepare-start');
+performance.clearMarks('prepare-end');
+performance.clearMeasures('prepare-items');
+```
+
+这个示例测同步准备阶段。若起止点包围了 `await`，时长还会包括等待，并不等于 CPU 执行时间。并发操作使用标记时需要独立名称或关联信息，避免相互覆盖。
+
+### 7.2 FPS 与帧预算 {#fps与帧预算}
+
+**FPS**（Frames Per Second）是每秒呈现帧数。60 FPS 对应平均约 16.7 毫秒一帧，120 FPS 对应约 8.3 毫秒；这个时间还要分给脚本、样式、布局、绘制等工作，不能全部当作 JavaScript 的可用预算。
+
+平均帧率可能掩盖偶发长帧。例如多数帧很快，但偶尔停顿很久，用户仍能感到卡顿。应结合帧耗时分布、掉帧和操作场景判断。
+
+rAF 的调用与浏览器的渲染调度有关，后台页面还可能暂停或降频。统计回调次数可以提供线索，但不直接证明屏幕实际呈现了同样多的不同帧；INP、FPS 和长任务也不应相互替代。
+
+### 7.3 从性能面板形成因果解释 {#从性能面板形成因果解释}
+
+先固定复现条件，再录制具体加载或交互过程。根据现象查看对应链路：加载慢看文档响应、资源发现和主线程阻塞；点击慢看输入等待、回调和呈现；跳动看布局偏移及相关元素。
+
+如果要解释“包体积缩小 40%，LCP 下降一半”，至少应确认：测的是压缩传输大小还是构建文件大小；LCP 元素是否相同；网络、设备和缓存是否一致；瓶颈是否确实被这次改动改变。资源压缩后的时间比例还受带宽、并发、缓存、解析与执行影响，不是简单的字节比例。
+
+报告优化结果时，应保留优化前后的样本数量、统计方法、页面版本和条件；可以通过重复实验、分组对照或线上分布观察来评估。若同时改了图片、加载顺序和代码拆分，就不能把全部收益归给其中一个动作。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 页面性能有哪些指标，分别衡量什么？ {#metric-dimensions}
+
+**考察重点**：加载、响应、稳定性和业务流程的区分。
+
+**相关内容**：[不同指标回答不同问题](#不同指标回答不同问题)。
+
+<details>
+<summary>参考回答</summary>
+
+**加载看 TTFB、FCP 和 LCP，交互响应看 INP，视觉稳定性看 CLS，动画和滚动还可看帧耗时与 FPS。** 具体业务流程需要另外定义起止点，例如查询结果可用或编辑器初始化完成。
+
+这些指标不能相互代替：先出现加载文字可以让 FCP 很早，但主要内容仍可能迟到；请求快也不保证交互后的呈现及时。
+
+</details>
+
+### 8.2 FCP 从什么时候开始算，使用什么 API 测量？ {#fcp-measurement}
+
+**考察重点**：导航起点、绘制条目与页面事件的区别。
+
+**相关内容**：[FCP 的起止与采集](#fcp的起止与采集)、[导航时间不能当作绘制时间](#导航时间不能当作绘制时间)。
+
+<details>
+<summary>参考回答</summary>
+
+**普通文档导航中，FCP 从导航开始计算到首次合格内容绘制，使用 Paint Timing 的 first-contentful-paint 条目。** 可以通过 PerformanceObserver 订阅 paint，并启用 buffered 读取已记录条目。
+
+不能把 mounted、DOMContentLoaded 或 load 的时间直接当成 FCP。正式采集还要处理页面可见性、恢复等生命周期条件。
+
+</details>
+
+### 8.3 为什么包体积缩小的比例与 LCP 改善比例不同？ {#lcp-bundle}
+
+**考察重点**：LCP 候选、关键路径、资源与执行成本。
+
+**相关内容**：[LCP 的候选与结束边界](#lcp的候选与结束边界)、[从性能面板形成因果解释](#从性能面板形成因果解释)。
+
+<details>
+<summary>参考回答</summary>
+
+**LCP 取决于最大合格内容何时呈现，不只取决于 JavaScript 字节数。** 文档响应、资源发现、下载、解析执行和渲染等待都可能形成瓶颈，包体积减少只影响其中部分环节。
+
+要确认 LCP 元素与测试条件一致，说明减少的是传输大小还是构建大小，再用时间线验证哪段成本变化。不能仅凭两个百分比就断定因果。
+
+</details>
+
+### 8.4 如何定位和改善 INP，事件回调变快是否就足够？ {#inp-breakdown}
+
+**考察重点**：输入延迟、处理时长、呈现延迟与交互分组。
+
+**相关内容**：[一次交互包含哪些时间](#一次交互包含哪些时间)、[用事件时间定位问题](#用事件时间定位问题)。
+
+<details>
+<summary>参考回答</summary>
+
+**要分开定位输入等待、事件处理和下一次呈现，回调变快只改善其中一段。** 之前的长任务可能推迟处理，之后的大量样式与布局工作也会推迟反馈。
+
+使用性能面板和 Event Timing 观察具体交互，再针对计算、任务拆分、渲染负担或 Worker 迁移做选择。INP 不是单个事件的最大 duration，也不是所有点击的平均值。
+
+</details>
+
+### 8.5 CLS 是把页面的所有布局偏移分数累加吗？ {#cls-session}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：位移分数、会话窗口和近期输入排除。
+
+**相关内容**：[位移分数与会话窗口](#位移分数与会话窗口)。
+
+<details>
+<summary>参考回答</summary>
+
+**不是，CLS 取最严重的会话窗口累计值，并排除符合近期用户输入条件的偏移。** 窗口内相邻偏移间隔小于 1 秒，窗口跨度小于 5 秒，不把整个访问的所有分数简单相加。
+
+单次分数与影响面积和移动距离有关，没有时间单位。滚动等连续操作不自动符合离散输入后的 500 毫秒排除条件。
+
+</details>
+
+### 8.6 Core Web Vitals 应该看平均值还是第 75 百分位？ {#percentiles}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：用户分布、阈值、样本划分和聚合口径。
+
+**相关内容**：[Core Web Vitals 的阈值](#core-web-vitals的阈值)。
+
+<details>
+<summary>参考回答</summary>
+
+**通常按真实访问的第 75 百分位判断，并分别观察移动端和桌面端。** 良好阈值为 LCP 不超过 2.5 秒、INP 不超过 200 毫秒、CLS 不超过 0.1，三个维度分别判断。
+
+均值不能代替分布，也不能混合不同页面、版本或样本条件后直接宣称体验改善。样本量和统计窗口必须明确。
+
+</details>
+
+### 8.7 为什么 Lighthouse 很好，真实用户性能仍可能较差？ {#lab-field}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：受控测量与真实访问、页面生命周期和交互范围。
+
+**相关内容**：[两类数据为什么不同](#两类数据为什么不同)。
+
+<details>
+<summary>参考回答</summary>
+
+**两者的设备、网络、缓存、页面停留和交互条件可能不同。** 实验室单次加载适合定位问题，可能没有覆盖实际用户的后续交互、长时间布局变化或低端设备。
+
+应在可比条件下复现线上问题，再结合真实分布验证。Lighthouse 分数和 Total Blocking Time 有诊断价值，但不能直接当作线上 INP。
+
+</details>
+
+### 8.8 FCP 等性能指标怎样上报，重复回调如何处理？ {#metric-reporting}
+
+**考察重点**：采集实现、指标身份、更新语义与上报可靠性。
+
+**相关内容**：[使用 web-vitals 采集](#使用web-vitals采集)。
+
+<details>
+<summary>参考回答</summary>
+
+**使用符合指标定义的采集实现，保留 id、name、value 和必要的页面版本等信息，再发送到自己的采集接口。** 同一指标可能持续更新，服务端按 ID 和语义合并，不能把每次回调都当作新的访问。
+
+value 是当前值，delta 是相对上次报告的变化，不能把累计值重复相加。sendBeacon 返回 true 只代表进入发送队列，还要考虑采样、丢失和字段验证。
+
+</details>
+
+### 8.9 如何证明性能优化有效，而不只是本地感觉变快？ {#optimization-evidence}
+
+**考察重点**：指标选择、可比条件、统计方法与因果解释。
+
+**相关内容**：[从性能面板形成因果解释](#从性能面板形成因果解释)。
+
+<details>
+<summary>参考回答</summary>
+
+**先定义要改善的体验和指标，再在相同或可分组比较的条件下收集前后样本。** 保留页面版本、设备、网络、缓存条件、操作步骤、样本量和统计方法。
+
+用时间线解释改动缩短了哪段成本，再用重复实验或真实用户分布验证。多项改动同时上线时，不能把全部收益未经验证归给其中一项。
+
+</details>
+
+### 8.10 FPS 是什么，60 FPS 是否说明页面所有操作都流畅？ {#fps-meaning}
+
+**考察重点**：呈现帧率、帧预算、长帧与交互指标。
+
+**相关内容**：[FPS 与帧预算](#fps与帧预算)。
+
+<details>
+<summary>参考回答</summary>
+
+**FPS 是每秒呈现帧数，60 FPS 平均约 16.7 毫秒一帧，但不能证明所有操作都流畅。** 平均值可能掩盖长帧；页面点击响应与后续呈现还需要按交互链路观察。
+
+帧时间需要分给脚本和渲染等工作，不能全部当作 JavaScript 预算。rAF 回调次数只是调度线索，不直接等于实际呈现帧数。
+
+</details>
+
+### 8.11 JavaScript 中如何测量一段代码的执行时间？ {#code-timing}
+
+**考察重点**：性能时钟、调试计时、起止点与测量误差。
+
+**相关内容**：[代码耗时的几种工具](#代码耗时的几种工具)。
+
+<details>
+<summary>参考回答</summary>
+
+**可以使用 performance.now 的差值、console.time/timeEnd，或 Date.now 的差值；需要时间线标记时使用 performance.mark/measure。** performance.now 是单调性能时钟，Date.now 跟随墙上时钟，二者性质不同。
+
+要说明测的是同步执行还是包括异步等待，并考虑 JIT、GC、设备负载和时钟精度。不要凭一次很短的测量断言方案优劣。
+
+</details>
+
+### 8.12 性能面板应该怎样使用，先看哪些指标和事件？ {#performance-panel}
+
+**考察重点**：问题复现、加载与交互链路、从证据到改动。
+
+**相关内容**：[从性能面板形成因果解释](#从性能面板形成因果解释)。
+
+<details>
+<summary>参考回答</summary>
+
+**先固定复现步骤，再按现象查看对应链路。** 加载慢看文档与资源、LCP 元素和主线程阻塞；交互慢看输入等待、事件处理和呈现；跳动看布局偏移及其来源。
+
+找到可解释的瓶颈后再改动，并用相同条件复测。不能只看总分或最长的一条记录，就断定所有慢体验来自它。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+
+- [web.dev：Web Vitals](https://web.dev/articles/vitals)
+- [web.dev：FCP](https://web.dev/articles/fcp)
+- [web.dev：LCP](https://web.dev/articles/lcp)
+- [web.dev：INP](https://web.dev/articles/inp)
+- [web.dev：CLS](https://web.dev/articles/cls)
+- [web.dev：TTFB](https://web.dev/articles/ttfb)
+- [web.dev：Why lab and field data can be different](https://web.dev/articles/lab-and-field-data-differences)
+- [GoogleChrome：web-vitals](https://github.com/GoogleChrome/web-vitals)
+- [MDN：PerformanceObserver.observe](https://developer.mozilla.org/en-US/docs/Web/API/PerformanceObserver/observe)
+- [MDN：PerformanceEventTiming](https://developer.mozilla.org/en-US/docs/Web/API/PerformanceEventTiming)
+- [MDN：performance.now](https://developer.mozilla.org/en-US/docs/Web/API/Performance/now)
+- [MDN：performance.mark](https://developer.mozilla.org/en-US/docs/Web/API/Performance/mark)
+- [MDN：requestAnimationFrame](https://developer.mozilla.org/en-US/docs/Web/API/Window/requestAnimationFrame)

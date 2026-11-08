@@ -18,6 +18,8 @@ keywords: ["Redis 分布式锁", "SET NX PX", "锁续租", "fencing token", "租
 - 续租也要**原子校验 token**，只延长本次获取的锁；结果未知时按剩余有效期决定何时停止新操作。[卡](#lease-renewal)
 - **租约到期不会终止旧任务**。资源端可用递增的 fencing token 拒绝落后的请求，编号生成器还要跨故障保持单调性。[卡](#lock-requirements-fencing)
 - 异步复制可能在故障转移时**丢失已经取得的锁**；超时重试造成的重复业务操作，还需要幂等机制处理。
+- 同一热点资源的临界区仍然**串行执行**。减少无效轮询可以降低争用开销，提升业务吞吐则要缩短临界区，或在不破坏共同约束的前提下改变协调方式。[卡](#lock-contention)
+- Go 调用应区分**未取得锁与调用错误**，为网络调用设置期限，并用独立的短期限执行条件释放；取消请求不会自动撤销 Redis 已执行的命令。[卡](#go-lock-call)
 
 ## 2. 原子加锁与过期 {#原子加锁与过期}
 
@@ -83,7 +85,7 @@ return 0
 
 ## 7. 主从故障转移 {#主从故障转移}
 
-异步复制可能让两个客户端都认为自己持有锁：A 在主节点上加锁成功，但锁还没复制出去，主节点就故障了。落后的副本被提升后看不到这把锁，B 就可能再次加锁成功。复制与恢复机制见 [主从复制](./persistence.mdx#主从复制)。
+异步复制可能让两个客户端都认为自己持有锁：A 在主节点上加锁成功，但锁还没复制出去，主节点就故障了。落后的副本被提升后看不到这把锁，B 就可能再次加锁成功。复制与接管机制见 [故障与数据丢失](./high-availability.mdx#故障与数据丢失)。
 
 **Redlock** 通过在多个独立节点上取得多数锁来获取租约。获取总耗时必须小于有效期，还要扣除时钟漂移余量。这些条件仍依赖对故障和时间的假设，也没有消除进程暂停后恢复执行的问题。
 
@@ -106,19 +108,145 @@ return 0
 
 如果 A 先锁资源 1 再等资源 2，B 先锁资源 2 再等资源 1，就形成了循环等待。租约只能让锁最终到期，不能让这次操作顺利完成。多个资源还要求一起成功或一起失败时，需要事务或明确的协调协议。
 
-## 10. 常见问题 {#常见问题}
+## 10. 争用为什么会拖慢业务 {#争用为什么会拖慢业务}
 
-### 10.1 可以用线程 ID 作为所有者 token 吗？ {#所有者-token-的唯一性}
+**锁竞争同时消耗网络资源和业务等待时间**。获取失败后立即再发 `SET NX`，每次都要经过连接、网络往返和 Redis 命令处理；请求多时，还会增加客户端连接池与服务端的排队。它不是只在本地检查一个变量的轻量自旋。
+
+更根本的限制是同一资源的临界区不能并行执行。假设每次持锁工作平均需要 20 毫秒，在持续有请求等待、没有其他开销的理想条件下，这个资源最多完成约 `1 / 0.02 = 50` 次每秒。增加到一百个争抢者不会把它变成五千次每秒，只会让更多请求等待和重试。这个推算描述串行服务时间，不是 Redis 的性能测试结果。
+
+改进时先区分哪些操作必须共享同一个约束：
+
+| 方法 | 能减少什么 | 成立条件与代价 |
+| --- | --- | --- |
+| 有界退避并加入随机抖动，或有界排队 | 密集轮询和同一时刻集中重试 | 设总期限、次数和队列长度；等待延迟可能增加，不能提高同一临界区的服务速率，也不保证公平 |
+| 缩短临界区 | 持锁时间和后续等待 | 把无共享依赖的计算、准备工作移出去；基于旧状态做的准备，进入临界区后仍要重新校验 |
+| 按独立资源分锁，例如每个订单一把 | 无关资源之间的误串行化 | 订单确实独立才成立；若还共同扣减同一库存或账户，不能仅按订单拆锁就宣称约束受到保护 |
+| 用单条原子操作或条件更新 | 获取、释放与重试锁的往返 | Redis 中的独立计数可用 `INCR`；权威数据在数据库时，可用带状态、版本或库存谓词的 `UPDATE`，并检查受影响行数 |
+
+原子命令或条件更新只能保护它实际检查和修改的状态，不能顺带保证其他系统中的扣款、发货或消息投递也只发生一次。数据库方案可见 [乐观并发控制](../../../system-design/distributed-data/optimistic-concurrency-control.mdx#数据库版本列)。多资源需要共同保持约束时，仍要按前面的统一顺序、事务或协调协议处理，不能为了降低竞争把一条不可拆的约束拆掉。
+
+## 11. Go 客户端的最小调用 {#go客户端的最小调用}
+
+**一次获取要分别判断 `acquired` 和 `err`**。以下使用 Go 1.22 与 `go-redis/v9` 的 9.7.0 版本，固定操作 `lock:order:42`，只展示单次尝试，不做自动续租或重试。`handle` 是订单处理函数，必须遵守传入的 context，并在权威资源上实施必要的状态校验。
+
+下面的 `releaseLua` 与[按 token 释放](#按-token-释放)中的脚本相同。`tryOrder` 的 `acquired=true` 只表示本次调用曾确认取得租约，不表示函数返回时锁还存在，也不表示业务一定成功。
+
+```go
+package main
+
+import (
+    "context"
+    "crypto/rand"
+    "encoding/hex"
+    "errors"
+    "fmt"
+    "os"
+    "time"
+
+    "github.com/redis/go-redis/v9"
+)
+
+const releaseLua = `if redis.call('get', KEYS[1]) == ARGV[1] then
+  return redis.call('del', KEYS[1])
+end
+return 0
+`
+
+func tryOrder(ctx context.Context, client *redis.Client,
+    handle func(context.Context) error) (acquired bool, err error) {
+    const key = "lock:order:42"
+    const ttl = 2 * time.Second
+    var random [16]byte
+    if _, err = rand.Read(random[:]); err != nil {
+        return false, err
+    }
+    token := hex.EncodeToString(random[:])
+    started := time.Now()
+    callCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+    acquired, err = client.SetNX(callCtx, key, token, ttl).Result()
+    cancel()
+    if err != nil {
+        return false, fmt.Errorf("获取结果未确认: %w", err)
+    }
+    if !acquired {
+        return false, nil
+    }
+
+    defer func() {
+        releaseCtx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+        defer cancel()
+        n, releaseErr := client.Eval(releaseCtx, releaseLua, []string{key}, token).Int64()
+        if releaseErr != nil {
+            err = errors.Join(err, fmt.Errorf("释放结果未确认: %w", releaseErr))
+        } else if n == 0 {
+            err = errors.Join(err, errors.New("释放时已不再持有本次锁"))
+        }
+    }()
+
+    workCtx, cancel := context.WithDeadline(ctx, started.Add(ttl-200*time.Millisecond))
+    defer cancel()
+    if err = workCtx.Err(); err != nil {
+        return true, err
+    }
+    err = handle(workCtx)
+    return true, errors.Join(err, workCtx.Err())
+}
+```
+
+这里生成 128 位随机所有者标识，每次获取都重新生成。`SetNX` 带正租约参数时，客户端把条件写入和有效期放在同一条 `SET` 命令中；方法名不代表发出一条不带有效期的裸 `SETNX`。租约是两秒，业务期限从请求发出前开始计算，并预留 200 毫秒。这个余量只是示例预算，不能保证进程暂停、调度延迟或时钟异常一定小于它。
+
+调用时还要配置客户端的网络超时和重试行为：
+
+```go
+func main() {
+    client := redis.NewClient(&redis.Options{
+        Addr:                  os.Getenv("REDIS_ADDR"),
+        Protocol:              2,
+        MaxRetries:            -1,
+        ContextTimeoutEnabled: true,
+        DialTimeout:           200 * time.Millisecond,
+        ReadTimeout:           200 * time.Millisecond,
+        WriteTimeout:          200 * time.Millisecond,
+    })
+    defer client.Close()
+    ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+    defer cancel()
+    acquired, err := tryOrder(ctx, client, func(ctx context.Context) error {
+        fmt.Println("进入订单 42 的处理")
+        return ctx.Err()
+    })
+    switch {
+    case err != nil:
+        fmt.Println("需要按错误和业务记录核对结果:", err)
+    case !acquired:
+        fmt.Println("本次没有取得锁")
+    default:
+        fmt.Println("示例处理和条件释放完成")
+    }
+}
+```
+
+两个代码块放在同一个 `main.go` 中，安装上述版本的客户端，并把 `REDIS_ADDR` 设置为专用实验 Redis 的地址即可运行。示例回调只打印一行，实际处理逻辑放在 `handle` 中。`MaxRetries: -1` 在这个版本里表示禁用客户端自动重试，`0` 会使用默认重试次数；`ContextTimeoutEnabled: true` 让命令读写使用 context 的期限，网络超时则为底层调用提供另一个上限。
+
+获取时 `false, nil` 表示收到明确的未取得结果；错误分支不进入 `handle`。若请求已送达但响应丢失，Redis 里仍可能存在本次 token 对应的锁。这个最小示例不再次获取、不执行临界区，等待短租约自行释放；不能把超时报错理解成锁一定没有写入。
+
+释放使用一个独立的 200 毫秒 context，因此业务 context 已取消后仍能尝试清理；它没有授权继续执行业务。释放返回 0 说明此时没有本次所有权，返回错误则可能是释放结果未知，都不能用无条件 `DEL` 补救。业务执行失败、取消和释放失败可以同时发生，因此代码合并保留错误，而不把它们覆盖成单一「锁失败」。
+
+**context 取消是合作式通知，不会强制停止 `handle`，也不会撤销 Redis 或外部系统已经执行的命令。** 这个客户端版本对在途网络 I/O 的约束依赖读写期限，不能把取消等同于立即中断所有 I/O。即使回调开始前检查了期限，也可能紧接着发生长暂停；所以这段代码不能代替资源端 fencing、条件更新与幂等，更不构成一个跨故障完整锁库。
+
+## 12. 常见问题 {#常见问题}
+
+### 12.1 可以用线程 ID 作为所有者 token 吗？ {#所有者-token-的唯一性}
 
 不够。线程 ID 会在不同进程中重复。同一线程后续获取的锁也需与旧任务区分。因此，每次获取都应生成独立且难碰撞的 token。
 
-### 10.2 有 watchdog 自动续租，就不会失去锁了吗？ {#watchdog-与租约}
+### 12.2 有 watchdog 自动续租，就不会失去锁了吗？ {#watchdog-与租约}
 
 仍然可能失去锁。**watchdog** 是定期为持有者续租的机制，进程崩溃或失联后就无法继续延期，锁最终会因 TTL 到期而释放。任务暂停超过 TTL 后再恢复，仍需由资源端的 fencing 校验拒绝落后的请求。
 
-## 11. 面试题 {#面试题}
+## 13. 面试题 {#面试题}
 
-### 11.1 Redis 分布式锁需要满足哪些条件，为什么还需要 fencing token {#lock-requirements-fencing}
+### 13.1 Redis 分布式锁需要满足哪些条件，为什么还需要 fencing token {#lock-requirements-fencing}
 
 
 
@@ -141,7 +269,7 @@ return 0
 
 </details>
 
-### 11.2 Redis 锁怎样安全续租，续租失败后应如何处理？ {#lease-renewal}
+### 13.2 Redis 锁怎样安全续租，续租失败后应如何处理？ {#lease-renewal}
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
@@ -159,9 +287,43 @@ return 0
 
 </details>
 
-## 12. 参考资料 {#参考资料}
+### 13.3 获取分布式锁失败后不断重试，为什么会降低并发性能，怎样改进？ {#lock-contention}
+
+**考察重点**：网络轮询、临界区串行时间、资源粒度与替代操作的约束。
+
+**相关内容**：[争用为什么会拖慢业务](#争用为什么会拖慢业务)。
+
+<details>
+<summary>参考回答</summary>
+
+**不断轮询会增加网络、连接池和 Redis 命令处理开销，而同一资源的临界区仍只能串行完成。** 有界退避、随机抖动或有界排队可以降低无效争抢，不能直接提高临界区本身的服务速率。
+
+应把无共享依赖的准备工作移出临界区，在真正独立的资源之间分锁。若业务只是 Redis 原子计数或数据库中的条件修改，可以直接用原子命令或条件 `UPDATE` 保护对应状态，检查执行结果。涉及同一库存、账户或跨系统动作时，要保留它们共同的约束和幂等机制，不能为减少竞争随意拆锁。
+
+</details>
+
+### 13.4 Go 调用 Redis 分布式锁时，怎样处理获取结果、期限和释放？ {#go-lock-call}
+
+**考察重点**：获取失败与错误、唯一所有者标识、调用期限和未知结果。
+
+**相关内容**：[Go 客户端的最小调用](#go客户端的最小调用)、[锁过期与 fencing token](#锁过期与-fencing-token)。
+
+<details>
+<summary>参考回答</summary>
+
+**用带正租约的 `SetNX` 原子获取，区分 `false, nil` 与调用错误；每次获取生成独立随机 token，释放时用 Lua 原子比较再删除。** 客户端需要配置读写超时和 context 期限，并明确自动重试策略。业务预算从发起获取前开始扣除，不能收到成功后又重新算一整段 TTL。
+
+获取超时可能已经写入锁，未确认就不进入业务；业务取消后可用独立短期限尝试条件释放。释放返回 0 或报错都不能补一个无条件 `DEL`。取消不会强制终止业务和在途请求，租约过期也不会阻止旧任务恢复，所以还要靠资源端条件或 fencing 与业务幂等处理。
+
+</details>
+
+## 14. 参考资料 {#参考资料}
 
 - [Redis：Distributed Locks with Redis](https://redis.io/docs/latest/develop/clients/patterns/distributed-locks/)
 - [Redis：Replication](https://redis.io/docs/latest/operate/oss_and_stack/management/replication/)
 - [etcd：Revision and Lock API](https://etcd.io/docs/v3.5/learning/api/)
 - [Redis：INCR](https://redis.io/docs/latest/commands/incr/)
+- [go-redis 9.7.0：客户端选项](https://github.com/redis/go-redis/blob/v9.7.0/options.go)
+- [go-redis 9.7.0：SetNX 命令构造](https://github.com/redis/go-redis/blob/v9.7.0/string_commands.go)
+- [go-redis 9.7.0：命令执行与 context](https://github.com/redis/go-redis/blob/v9.7.0/redis.go)
+- [Go 1.22：context](https://github.com/golang/go/blob/go1.22.12/src/context/context.go)

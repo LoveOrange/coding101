@@ -1,0 +1,306 @@
+---
+sidebar_position: 4
+knowledge:
+  id: tools-and-frameworks.frontend-build.code-checks
+---
+
+# 前端代码检查
+
+**前端代码检查**通过类型分析、静态规则和格式检查，在运行应用之前发现一部分问题，并让团队使用一致的提交与验证方式。TypeScript、ESLint 和 Prettier 各有职责：类型正确、规则通过、排版一致，不能互相代替。
+
+求职时，重点是能解释项目里检查了什么、检查覆盖哪些文件、失败如何阻止交付，以及这些工具发现不了什么。本文使用 ESLint 9 的 flat config、Prettier 3 和 TypeScript 5 展示一个最小检查流程。
+
+## 1. 面试核心 {#core}
+
+- **TypeScript 检查类型关系，ESLint 检查配置的静态规则，Prettier 统一代码格式。** 三者的交集不意味着可以只留其中一个。[卡](#tool-responsibilities)
+- **规则只有匹配到文件并实际启用，才会提供检查。** 需要同时核对命令范围、files、ignores、解析器和环境配置。[卡](#configuration-scope)
+- **检查与修复是不同操作。** Prettier 的 check 不改文件，write 会写回；ESLint 的 fix 也只能自动处理部分问题。[卡](#check-fix)
+- **本地提交钩子提供及时反馈，CI 对提交后的完整验证结果负责。** 本地工具未安装、被跳过或只检查暂存文件时，不能替代合入检查。[卡](#hooks-ci)
+- **退出码才是自动化流程的重要依据之一，warning 是否阻止交付取决于命令配置。** 不能只看终端没有红色文字就认为检查通过。[卡](#exit-status)
+- **静态检查通过不证明业务行为正确。** 类型断言、运行时输入、交互时序与环境差异仍需要测试和审查。[卡](#verification-boundary)
+
+## 2. 工具职责 {#工具职责}
+
+### 2.1 类型、规则与格式 {#类型规则与格式}
+
+| 工具 | 主要回答的问题 | 不能据此保证什么 |
+| --- | --- | --- |
+| TypeScript | 代码是否满足所配置的类型规则 | 外部数据一定符合声明、业务流程正确 |
+| ESLint | 代码是否违反已启用的静态规则 | 所有缺陷都会被规则覆盖 |
+| Prettier | 源码格式是否符合统一打印结果 | 变量已声明、类型正确或计算结果符合需求 |
+| 测试 | 给定条件下实际行为是否符合断言 | 未覆盖路径也一定正确 |
+
+**lint** 是依据静态规则分析代码的过程。ESLint 的规则可以发现未使用变量、错误用法和约定违例，某些插件还会使用类型信息。它并非永远“只看语法”；是否进行类型感知分析，取决于解析器、插件和项目配置。
+
+Prettier 根据语法结构重新输出格式，主要处理缩进、引号、换行等排版。它能因为语法无法解析而失败，但不是 JavaScript 类型检查器，也不会替你判断业务条件该不该成立。
+
+### 2.2 统一格式与规则冲突 {#统一格式与规则冲突}
+
+同一个项目不宜让格式化工具要求单引号，而 lint 规则又强制双引号。双方反复改回对方的结果，只会制造没有业务价值的差异。
+
+可以把排版交给 Prettier，把代码质量规则交给 ESLint。已有规则集包含冲突的排版规则时，可以检查并关闭冲突项，或使用适合该配置方式的 eslint-config-prettier。这个配置负责关闭冲突规则，不等于替你安装或运行 Prettier。
+
+## 3. 一个最小检查项目 {#一个最小检查项目}
+
+### 3.1 命令与依赖 {#命令与依赖}
+
+下面的 `package.json` 给每类检查保留独立入口，再用 `check` 串起来：
+
+```json
+{
+  "name": "review-checks",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src --max-warnings 0",
+    "format:check": "prettier \"src/**/*.{js,ts}\" --check",
+    "format:write": "prettier \"src/**/*.{js,ts}\" --write",
+    "check": "npm run typecheck && npm run lint && npm run format:check"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.23.0",
+    "eslint": "9.23.0",
+    "prettier": "3.5.3",
+    "typescript": "5.2.2"
+  }
+}
+```
+
+这些版本用于复现示例。实际项目应提交锁文件，并按统一工具版本安装，见 [JavaScript 包管理](./package-management.mdx#安装与复现)。`&&` 让前一步失败时停止后面的命令，最终仍以失败退出；如果只把几个命令依次写在脚本里却丢掉失败状态，就可能出现日志报错、CI 仍显示成功的情况。
+
+### 3.2 ESLint 的范围与规则 {#eslint的范围与规则}
+
+保存 `eslint.config.mjs`：
+
+```js
+import js from '@eslint/js';
+
+export default [
+  { ignores: ['dist/**', 'coverage/**'] },
+  {
+    files: ['src/**/*.js'],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: 'module',
+    },
+    rules: {
+      ...js.configs.recommended.rules,
+      eqeqeq: ['error', 'always'],
+      'prefer-const': 'warn',
+    },
+  },
+];
+```
+
+这个配置只为 `src` 中的 JavaScript 文件启用示例规则。`dist` 和 coverage 是生成目录，独立的 ignores 对象把它们排除在相应检查之外。项目另有源码目录时，需要纳入范围；不能因为命令成功，就假定仓库里所有语言和所有文件都已检查。
+
+`ecmaVersion` 影响解析的语言语法，`sourceType` 说明模块形式，但不会自动声明浏览器或 Node.js 的全局变量。如果源码使用 `window`、`document` 或 Node 专属全局，应按文件所属环境配置；把所有全局一律放开，可能掩盖本应发现的名称错误。
+
+本例不使用 ESLint 检查 TypeScript 文件，它们由下一节的 TypeScript 配置负责。真实 TS 项目如果还要 lint TS，需要接入支持 TS 的解析器与规则；普通 JavaScript 解析器不会因为文件后缀改成 ts，就自动理解类型语法。
+
+### 3.3 类型检查范围 {#类型检查范围}
+
+保存 `tsconfig.json`：
+
+```json
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "ESNext",
+    "strict": true,
+    "noEmit": true,
+    "types": []
+  },
+  "include": ["src/**/*.ts"]
+}
+```
+
+`strict` 启用严格类型检查，`noEmit` 不生成运行产物，`include` 声明本例的入口范围。`types: []` 限制自动包含的环境类型包；需要 Node 或其他环境类型的项目应明确配置相应依赖。
+
+`include` 不是防止一切外部文件进入程序的隔离墙：被源码导入的文件、引用的声明等仍可能成为输入。类型检查范围有疑问时，应查看实际展开的配置与文件列表，而不是不断增加 exclude 直到不报错。
+
+保存 `src/review.ts`：
+
+```ts
+export function remaining(total: number, done: number): number {
+  return total - done;
+}
+
+// const invalid: number = '3'; // 编译错误：string 不能赋给 number
+```
+
+合法部分可通过类型检查，`remaining(5, 2)` 的结果应为 `3`。注释中的反例若单独启用，会产生类型错误；Prettier 即使把该语句排版好，也不会让错误赋值变得合法。
+
+## 4. 检查与修复 {#检查与修复}
+
+### 4.1 格式检查 {#格式检查}
+
+保存 `.prettierrc.json`：
+
+```json
+{
+  "singleQuote": true,
+  "semi": true,
+  "trailingComma": "all"
+}
+```
+
+下面的 `src/review.js` 是合法 JavaScript，但故意保留了格式问题和静态规则问题：
+
+```js
+export function isReady(count){let expected=3;return count==expected}
+```
+
+它能被 JavaScript 解析，但 `isReady('3')` 也会返回 true，因为 `==` 进行了类型转换。是否允许这种行为需要按业务契约判断；本例规则明确要求使用严格相等。
+
+执行 `npm run format:check` 会报告格式不一致并以非零状态退出，文件内容不变。执行 `npm run format:write` 会写回统一排版，之后格式检查可以通过，但 `==` 和可以改为 const 的声明仍可能被 ESLint 报告。
+
+### 4.2 静态规则与自动修复 {#静态规则与自动修复}
+
+执行 `npm run lint`，`eqeqeq` 会产生 error，`prefer-const` 会产生 warning。两者等级不同，但命令中的 `--max-warnings 0` 要求警告数也为零，因此只有 warning 时仍会失败。
+
+ESLint 的 `--fix` 可以应用规则提供的自动修复，但不是所有发现都有可自动执行的修复。某些修改可能需要开发者明确业务含义，不能为了让命令成功而不看差异地接受所有变化。
+
+本例确认 count 应与数字 3 比较后，可以改为：
+
+```js
+export function isReady(count) {
+  const expected = 3;
+  return count === expected;
+}
+```
+
+`isReady(3)` 返回 true，`isReady('3')` 返回 false；格式与示例 lint 规则均可通过。修改解决了本例约束，但并没有为函数增加完整输入验证：是否接受负数、无穷大或对象，仍要由调用契约与业务代码决定。
+
+## 5. 提交检查与 CI {#提交检查与ci}
+
+### 5.1 本地反馈与合入验证 {#本地反馈与合入验证}
+
+**提交钩子**是在 Git 的特定操作前后执行的脚本。本地 pre-commit 可以提前发现问题，配合暂存文件检查减少等待时间；它服务于开发反馈，不能作为远端合入时唯一可信的验证结果。
+
+本地钩子可能没有安装，也可以被跳过。只检查暂存文件还可能遗漏共享配置变更、跨文件类型关系和其他受影响代码。类型检查命令尤其不宜简单地改成“把本次修改文件逐个传给 tsc”，因为这可能绕过项目配置或失去完整程序上下文。
+
+CI 应对待合入的提交运行项目定义的必要检查，并让失败阻止合入。对上面的示例，首次安装生成并提交锁文件后，CI 可以执行：
+
+```sh
+npm ci
+npm run check
+```
+
+执行环境还应在任一步失败时结束任务。例如 CI 平台可以把两条命令放在各自的步骤中，并按失败状态停止后续步骤；不能用忽略退出码的包装把失败变成成功。测试和构建属于真实项目的额外必要步骤，这个最小示例的 check 并不包含它们。
+
+### 5.2 稳定且可解释的规则 {#稳定且可解释的规则}
+
+新增规则前，应能说明它防止什么错误或减少什么成本。对存量代码，可以先盘点影响，再按文件范围逐步修正；不要为了让新代码过检查，长期把有价值的规则全局关闭。
+
+需要局部例外时，把范围缩到具体代码并说明原因。规则结果异常时，先确认实际生效配置、工具版本、工作目录、文件匹配和缓存，再判断是代码问题还是配置问题。排查缓存可以临时绕过缓存，但不能把“清缓存后偶然通过”当作完整解释。
+
+## 6. 检查的边界 {#检查的边界}
+
+静态分析只能依据源码、声明和启用规则推理。下面几类问题通常仍需要其他证据：
+
+- 网络返回值与声明不一致，需要运行时校验和异常处理。
+- 搜索请求先发后到、组件卸载后更新等时序问题，需要针对行为验证。
+- CSS 布局、键盘访问和真实浏览器差异，需要相应环境检查。
+- 规则没有覆盖的业务计算，即使类型与格式都正确，也可能算错结果。
+
+因此，面试中不要把“我们有 ESLint”当作质量保证的完整回答。更有信息量的是说明命令覆盖范围、失败处理、发现过的问题，以及测试、审查和运行观察怎样补足静态检查。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 ESLint、Prettier 与 TypeScript 检查分别解决什么问题？ {#tool-responsibilities}
+
+**考察重点**：静态规则、类型、格式的分工和交集。
+
+**相关内容**：[工具职责](#工具职责)。
+
+<details>
+<summary>参考回答</summary>
+
+**ESLint 检查启用的静态规则，Prettier 统一格式，TypeScript 检查类型关系。** 格式一致不证明类型和逻辑正确，类型通过也不代表满足所有代码约定。部分 ESLint 插件会使用类型信息，但是否具备这种能力取决于配置，不能一概说 lint 只检查语法。
+
+</details>
+
+### 7.2 项目里的代码检查配置，应该说明哪些内容？ {#configuration-scope}
+
+**考察重点**：检查范围、环境、规则选择、命令与失败处理。
+
+**相关内容**：[一个最小检查项目](#一个最小检查项目)、[稳定且可解释的规则](#稳定且可解释的规则)。
+
+<details>
+<summary>参考回答</summary>
+
+**先说明哪些文件由哪些工具检查，再解释规则与失败如何进入交付流程。** 需要覆盖命令入口、files/ignores 或 TS 输入、语言与运行环境、重点规则、格式冲突处理和 CI 退出状态。还应举出规则实际发现的问题；只列安装过的插件名称，不能证明检查确实覆盖项目。
+
+</details>
+
+### 7.3 prettier --check、prettier --write 和 eslint --fix 有什么区别？ {#check-fix}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：只读检查、写回修改与自动修复能力。
+
+**相关内容**：[检查与修复](#检查与修复)。
+
+<details>
+<summary>参考回答</summary>
+
+**Prettier 的 check 检查格式并返回状态，write 写回格式，ESLint 的 fix 应用规则支持的自动修复。** 格式修复不会自动解决业务逻辑或类型错误，lint 发现也不是都能自动修复。开发时可以先修复并审阅差异，CI 通常检查提交结果是否已经符合要求。
+
+</details>
+
+### 7.4 已经有 pre-commit 检查，为什么 CI 还要再执行？ {#hooks-ci}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：本地反馈、提交范围与远端合入条件。
+
+**相关内容**：[本地反馈与合入验证](#本地反馈与合入验证)。
+
+<details>
+<summary>参考回答</summary>
+
+**本地钩子帮助尽早发现问题，CI 验证的是待合入提交及统一流程。** 钩子可能未安装或被跳过，暂存文件检查也可能遗漏配置和跨文件影响。CI 应安装锁定依赖、运行必要项目检查并让失败阻止合入，不能只相信开发者机器上的一次成功。
+
+</details>
+
+### 7.5 ESLint 只有 warning 时，CI 一定成功吗？ {#exit-status}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：规则等级、警告阈值与退出码传递。
+
+**相关内容**：[静态规则与自动修复](#静态规则与自动修复)、[命令与依赖](#命令与依赖)。
+
+<details>
+<summary>参考回答</summary>
+
+**不一定，命令可以限制允许的 warning 数。** 例如 --max-warnings 0 会让存在警告的检查失败；配置错误等情况也可能失败。CI 还必须保留实际退出状态，不能只检查是否打印 error 字样，或让后续成功命令覆盖前面的失败。
+
+</details>
+
+### 7.6 类型、lint 和格式检查都通过，为什么还需要测试？ {#verification-boundary}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：静态信息限制、运行时输入与行为断言。
+
+**相关内容**：[检查的边界](#检查的边界)。
+
+<details>
+<summary>参考回答</summary>
+
+**静态检查只证明代码满足已配置的规则，不能覆盖全部运行行为。** 外部数据可能违背声明，异步时序、浏览器布局和业务公式也可能出错。需要用测试验证重要输入与行为，再结合审查、真实环境检查和运行观察补足证据。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [ESLint 9：Configuration Files](https://eslint.org/docs/v9.x/use/configure/configuration-files)
+- [ESLint 9：Command Line Interface](https://eslint.org/docs/v9.x/use/command-line-interface)
+- [Prettier：Prettier vs. Linters](https://prettier.io/docs/comparison)
+- [Prettier：CLI](https://prettier.io/docs/cli)
+- [Prettier：Integrating with Linters](https://prettier.io/docs/integrating-with-linters)
+- [TypeScript：noEmit](https://www.typescriptlang.org/tsconfig/noEmit.html)
+- [Git：githooks](https://git-scm.com/docs/githooks)

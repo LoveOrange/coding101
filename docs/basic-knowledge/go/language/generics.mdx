@@ -1,0 +1,527 @@
+---
+sidebar_position: 9
+knowledge:
+  id: basic-knowledge.go.language.generics
+  type: concept
+description: "讲解 Go 泛型的类型参数、约束与类型集，解释 comparable、类型推断、泛型方法和命名切片的边界，并说明泛型与普通接口的分工。"
+keywords: ["Go 泛型", "类型参数", "类型约束", "类型集", "comparable"]
+---
+
+# Go 泛型
+
+**泛型**允许函数和类型声明使用类型参数，让同一套实现适用于满足条件的多种类型。例如，取切片首元素的步骤与元素是整数还是字符串无关，但返回值应该保留元素类型。泛型可以同时表达这两件事。
+
+Go 从 1.18 开始支持泛型。本文以 Go 1.22 为基线，重点是根据约束判断代码能做什么，以及如何在复用实现时保留类型关系。面试中除了说明语法，还需要能解释为什么某段代码不能编译，以及为什么通过 `comparable` 检查的比较仍可能在运行时失败。
+
+## 1. 面试核心 {#core}
+
+- 泛型把类型作为参数，**复用实现时仍保留输入、输出和容器元素之间的静态类型关系**。类型参数实例化后，得到可以使用的具体函数或类型。[卡](#generics-purpose)
+- 类型约束用接口表达。**`int` 表示这个类型本身，`~int` 包含底层类型为 `int` 的类型**；`|` 表示并集，接口中不同元素的要求要同时满足。[卡](#constraint-type-set)
+- 泛型函数体按约束检查，**`T any` 不允许随意对 `T` 做加法、排序或相等比较**。实际调用只传整数，也不能补救定义处缺少的约束。[卡](#constraint-operations)
+- `comparable` 允许使用 `==` 和 `!=`。但从 Go 1.20 起，`any` 也能满足这一约束，**接口中的动态值不可比较时，比较仍可能 panic**。[卡](#comparable-boundary)
+- 泛型类型的方法可以使用接收者的类型参数，**方法不能再声明自己独立的一组类型参数**。不同类型实参得到的泛型类型也不会自动互相转换。[卡](#generic-methods)
+- 需要返回调用方的命名切片类型时，可以使用 **`S ~[]E` 同时描述切片类型和元素类型**；只返回 `[]E` 会丢失命名切片类型及其方法。[卡](#preserve-named-type)
+- **算法依赖类型关系时考虑泛型，调用方只依赖行为时考虑普通接口**。选择依据是代码需要表达的约束，不能仅凭使用泛型就断言性能更好。[卡](#generic-interface-choice)
+- 类型推断只在语言规定的上下文中进行。**接收函数调用结果的变量类型，不能单独决定调用中的类型实参**；带目标函数类型的函数值赋值则可以帮助推断。[卡](#type-inference)
+- 类型参数值不能直接做类型断言或类型分支。转换成 `any` 后可以检查动态类型，但 **`~int` 不会把命名类型自动变成 `int`**。[卡](#type-assertion)
+
+## 2. 类型参数与实例化 {#类型参数与实例化}
+
+**类型参数**是在函数或类型声明中代表某个类型的名字。下面的 `T` 出现在切片元素和返回值的位置，表示它们使用同一个类型；`any` 是约束，在这里允许任意类型。
+
+`First` 的实现只需要检查长度并访问元素，无需知道元素有什么字段和方法：
+
+```go
+package main
+
+import "fmt"
+
+func First[T any](values []T) (T, bool) {
+    if len(values) == 0 {
+        var zero T
+        return zero, false
+    }
+    return values[0], true
+}
+
+func main() {
+    fmt.Println(First[int]([]int{8, 9})) // 8 true
+    fmt.Println(First([]string{"Go"}))  // Go true
+
+    var pointers []*int
+    fmt.Println(First(pointers)) // <nil> false
+
+    firstInt := First[int]
+    fmt.Println(firstInt([]int{3})) // 3 true
+    // First(nil) // 编译错误：无法从没有类型的 nil 推断 T
+}
+```
+
+**类型实参**是使用泛型时提供的具体类型，例如 `First[int]` 中的 `int`。**实例化**是把类型实参代入类型参数并检查约束的过程。`First[int]` 得到的函数类型是 `func([]int) (int, bool)`，因此可以赋给 `firstInt`，随后像普通函数一样调用。
+
+`First([]string{"Go"})` 没有显式写 `[string]`，编译器可以从参数推断 `T`。`pointers` 虽然是 nil 切片，但它的静态类型是 `[]*int`，所以能推断 `T` 为 `*int`。单独的 `nil` 没有提供这层信息。
+
+`var zero T` 得到 `T` 的零值。`T` 是整数时，`zero` 是零；`T` 是指针时，`zero` 是 nil。返回的 `bool` 区分“没有元素”和“首元素本身就是零值”，调用方不需要通过猜测返回值判断成功与否。
+
+这里的 `T any` 也不表示参数和返回值都变成了 `any` 接口。`First[int]` 的返回值仍是 `int`，调用方可以直接进行整数运算，无需类型断言。
+
+## 3. 类型约束与类型集 {#类型约束与类型集}
+
+**类型约束**是类型参数必须满足的条件，Go 使用接口来声明它。**类型集**描述一个接口所允许的类型范围；泛型函数可使用的操作，需要根据约束和语言规则在定义时确定。
+
+### 3.1 精确类型、底层类型与并集 {#精确类型底层类型与并集}
+
+约束中的 `int` 只包含 `int` 本身。`~int` 表示所有底层类型为 `int` 的类型，因此也包含 `type Count int` 定义的 `Count`。
+
+下面只为三种底层数值类型提供求和，不表示覆盖 Go 的全部数值类型：
+
+```go
+package main
+
+import "fmt"
+
+type Number interface {
+    ~int | ~int64 | ~float64
+}
+
+type Count int
+type IntAlias = int
+
+func Sum[T Number](values []T) T {
+    var total T
+    for _, value := range values {
+        total += value
+    }
+    return total
+}
+
+func Exact[T int](value T) T { return value }
+
+func main() {
+    total := Sum([]Count{2, 3})
+    fmt.Printf("%T %v\n", total, total) // main.Count 5
+    fmt.Println(Sum([]float64{1.5, 2})) // 3.5
+    fmt.Println(Sum([]int(nil)))        // 0
+    fmt.Println(Exact(IntAlias(7)))     // 7
+    // Exact(Count(7)) // 编译错误：Count 不满足只包含 int 的约束
+    // Sum([]string{"a"}) // 编译错误：string 不满足 Number
+}
+```
+
+`|` 连接的是类型集合的并集：满足任意一项即可。`Number` 中的所有类型都支持加法，因此 `total += value` 能通过检查。实例化为 `Sum[Count]` 后，累加结果仍是 `Count`；`~int` 没有执行类型转换。
+
+`IntAlias` 是 `int` 的别名，两者是同一个类型，所以它满足 `int` 约束。`Count` 则是新定义的类型，需要 `~int` 这样的约束才能被接纳。类型定义与别名的差异见 [Go 类型与值传递](./types-value-passing.mdx#定义类型与类型别名)。
+
+`~` 后面的类型也有限制：这里可以写 `~int`，不能用 `~Count` 表示“所有与 Count 底层类型相同的类型”。`Count` 的底层类型是 `int`，不是 `Count` 自己，`~Count` 会导致编译错误。
+
+### 3.2 同时要求类型范围与方法 {#类型范围与方法}
+
+接口中分开声明的要求取交集，也就是必须同时满足。下面既要求底层类型是 `int`，又要求提供 `String() string`：
+
+```go
+package main
+
+import "fmt"
+
+type PrintableInt interface {
+    ~int
+    String() string
+}
+
+type Count int
+
+func (c Count) String() string { return fmt.Sprintf("count=%d", int(c)) }
+
+func Describe[T PrintableInt](value T) string { return value.String() }
+
+func main() {
+    fmt.Println(Describe(Count(3))) // count=3
+    // Describe(3) // 编译错误：int 没有 String 方法
+}
+```
+
+`Count` 同时满足两项要求，而 `int` 没有 `String` 方法。调用 `Describe` 时不会因为 `int` 满足其中一项，就忽略另一项。
+
+| 约束元素 | 表达的范围 |
+| --- | --- |
+| `int` | `int` 本身，包括它的别名 |
+| `~int` | 底层类型为 `int` 的类型 |
+| `~int \| ~string` | 两种底层类型范围的并集 |
+| 分别写 `~int` 和 `String() string` | 同时满足底层类型与方法要求 |
+
+使用非接口类型组成并集时，各项不能重叠。例如 `~int | int` 中的 `int` 已经包含在 `~int` 内，声明本身就不能编译。也不要把分行写出的两个条件当成“二选一”：分别嵌入 `int` 和 `string` 会得到空类型集，没有具体类型能同时满足。
+
+### 3.3 约束决定函数体可以使用的操作 {#约束与可用操作}
+
+泛型函数定义时就要通过类型检查。若 `T` 的约束是 `any`，编译器不能假设它一定是整数：`a + b`、`a < b` 和两个 `T` 值之间的 `a == b` 都不能直接使用。只在某处调用时传入 `int`，不会使这样的定义变得合法。
+
+可以根据需要收紧约束，例如让数值求和使用 `Number`，让按行为处理对象的函数要求某个方法。若算法需要排序但元素本身没有统一的顺序操作，也可以接收 `less func(T, T) bool`，由调用方说明比较规则。
+
+只按方法描述行为的接口可以作为普通变量类型，也可以作为约束。包含 `~int`、具体类型项等限制的接口属于只能用于约束的接口。例如 `Number` 可以用于 `Sum[T Number]`，不能声明 `var value Number` 来存储整数或浮点数。普通接口值的使用见 [Go 接口](./interfaces.mdx#隐式实现与接口组合)。
+
+## 4. comparable 与运行时比较 {#comparable与运行时比较}
+
+`comparable` 是预声明的约束接口，可以让泛型函数使用 `==` 和 `!=`。整数、字符串、指针，以及字段或元素满足要求的结构体和数组，都可以用于这类比较；切片、map 和函数不能作为满足 `comparable` 的具体类型实参。
+
+```go
+package main
+
+import "fmt"
+
+func Equal[T comparable](a, b T) bool { return a == b }
+
+func tryEqual(a, b any) {
+    defer func() {
+        fmt.Println("panic", recover() != nil)
+    }()
+    fmt.Println(Equal[any](a, b))
+}
+
+func main() {
+    fmt.Println(Equal(3, 3))         // true
+    fmt.Println(Equal("Go", "go"))   // false
+    fmt.Println(Equal[any](3, 3))    // true
+    tryEqual([]int{1}, []int{1})     // panic true
+    // Equal([]int{1}, []int{1}) // 编译错误：[]int 不满足 comparable
+}
+```
+
+这里要区分两层规则：
+
+1. `comparable` 的类型集包含**严格可比较类型**：整数、字符串、指针等可以比较的非接口类型，以及每个字段或元素也严格可比较的结构体、数组。接口不在这个集合中。这些类型的比较不会因为接口中的动态值不可比较而 panic。
+2. 从 Go 1.20 起，满足约束有一项例外：对于 `comparable` 与普通方法接口组合成的约束，只要类型本身可比较，并满足其中的方法要求，就可以作为类型实参。`any` 因此可以满足单独的 `comparable` 约束。
+
+所以 `Equal[any]` 能编译，但运行时仍按接口比较规则执行。两个接口都保存 `[]int` 时，动态类型相同，却不能比较内部切片，于是 panic。具体规则见 [Go 接口](./interfaces.mdx#接口比较与map键)。
+
+这也说明“允许比较”不等于“所有业务上的相等判断都合适”。例如浮点数 `NaN` 与自身比较仍为 false，指针比较检查的是指针是否相等，不会递归比较所指对象。泛型不会改变这些类型原有的语义。
+
+## 5. 泛型类型与方法 {#泛型类型与方法}
+
+泛型类型可以把元素类型保留在容器中。下面的 `Stack[T]` 使用 `[]T` 保存元素，`Push` 和 `Pop` 都沿用接收者中的 `T`：
+
+```go
+package main
+
+import "fmt"
+
+type Stack[T any] struct {
+    items []T
+}
+
+func (s *Stack[T]) Push(value T) {
+    s.items = append(s.items, value)
+}
+
+func (s *Stack[T]) Pop() (T, bool) {
+    var zero T
+    if len(s.items) == 0 {
+        return zero, false
+    }
+    last := len(s.items) - 1
+    value := s.items[last]
+    s.items[last] = zero
+    s.items = s.items[:last]
+    return value, true
+}
+
+func main() {
+    var stack Stack[int]
+    stack.Push(1)
+    stack.Push(2)
+    fmt.Println(stack.Pop()) // 2 true
+    fmt.Println(stack.Pop()) // 1 true
+    fmt.Println(stack.Pop()) // 0 false
+}
+```
+
+`Stack[int]` 的零值可以使用，因为 nil 切片可以直接 `append`。`Pop` 在缩短长度前清空移除位置，避免 `T` 是指针等类型时，底层数组继续保留已移除元素的引用。这里只保证这个容器不再通过该位置保留引用，不保证对象立即被垃圾回收。切片尾部清理见 [Go 切片](../collections/slices.mdx#删除元素与尾部清理)。
+
+方法接收者中的 `[T]` 声明了该方法可使用的接收者类型参数，它的约束来自 `Stack`。Go 1.22 不允许方法额外声明独立的类型参数，因此不能写 `func (s *Stack[T]) Map[U any](...)`。若操作需要独立的输出类型 `U`，可以改为普通泛型函数，让它接收 `Stack[T]` 和转换函数。
+
+泛型类型使用时必须给出类型实参，例如 `Stack[int]`；不能通过 `Stack{}` 的使用上下文推断元素类型。`Stack[int]` 和 `Stack[any]` 也是不同类型，即使一个 `int` 值能赋给 `any`，整个容器也不能直接赋值或转换。
+
+## 6. 保留命名切片类型 {#保留命名切片类型}
+
+只用 `[]E` 表达参数和返回值，可以保留元素类型，却不能保留调用方给切片定义的类型。如果还需要返回这个命名类型，应增加切片类型参数 `S`，使用 `S ~[]E` 描述它与元素类型的关系。
+
+```go
+package main
+
+import "fmt"
+
+type Scores []int
+
+func (s Scores) String() string { return fmt.Sprintf("scores=%v", []int(s)) }
+
+func ClonePlain[E any](values []E) []E {
+    result := make([]E, len(values))
+    copy(result, values)
+    return result
+}
+
+func Clone[S ~[]E, E any](values S) S {
+    if values == nil {
+        return nil
+    }
+    result := make(S, len(values))
+    copy(result, values)
+    return result
+}
+
+func main() {
+    original := Scores{1, 2}
+    plain := ClonePlain(original)
+    cloned := Clone(original)
+    cloned[0] = 9
+
+    fmt.Printf("%T %T\n", plain, cloned) // []int main.Scores
+    fmt.Println(original.String())      // scores=[1 2]
+    fmt.Println(cloned.String())        // scores=[9 2]
+    // plain.String() // 编译错误：[]int 没有 String 方法
+}
+```
+
+调用 `Clone(original)` 时，编译器先得到 `S` 为 `Scores`，再根据 `S ~[]E` 推断 `E` 为 `int`。返回类型写的是 `S`，因此 `cloned` 仍有 `Scores.String` 方法。`ClonePlain` 虽然也能接收 `Scores`，返回类型却明确写成了 `[]E`，得到的 `plain` 就是 `[]int`。
+
+这个 `Clone` 还保留 nil 与非 nil 空切片的区别：nil 输入直接返回 nil；非 nil 空切片会经过 `make`，返回非 nil 空切片。对于非空输入，复制后的元素存储与原切片分离。
+
+复制仍然是浅复制。元素是指针时，复制的是指针值，两个切片中的指针可以继续指向同一个对象；类型参数不会自动生成递归复制逻辑。`copy` 的具体语义见 [Go 切片](../collections/slices.mdx#copy与重叠复制)。
+
+## 7. 泛型与普通接口的分工 {#泛型与普通接口的分工}
+
+选择泛型还是普通接口，要看函数依赖什么。如果它只需要调用 `Read`，让参数使用 `io.Reader` 就已经能表达需求。如果它要返回与输入相同的元素类型，或让容器中的值始终保持同一个类型，类型参数更适合表达这种关系。
+
+| 代码需要表达的关系 | 可以采用的方式 |
+| --- | --- |
+| 同一套切片、集合或算法实现适用于多种元素类型 | 类型参数与必要约束 |
+| 多个实现都提供 `Read`、`Close` 等行为 | 普通接口 |
+| 同一个集合中保存不同具体类型的读取器 | `[]io.Reader`，各元素分别保存自己的动态类型和值 |
+| 编译期不知道完整数据形状，需要运行时检查 | 根据边界选择接口、类型分支或反射 |
+| 只处理明确的一种业务类型 | 直接使用该类型 |
+
+泛型与普通接口也可以配合使用：接口描述行为，类型参数保留具体类型之间的关系。只是把一个接收 `io.Reader` 的函数机械地改成 `T io.Reader`，而输入、输出之间并没有新增类型关系，通常不会让接口更清楚。
+
+性能需要结合具体实现测量。语言没有承诺每个类型实参都生成一份完全独立的机器码，也没有承诺使用泛型就消除分配或一定比接口调用快。面试讨论优化时，应先说明算法、数据结构和调用方式，再结合编译结果与基准测试判断。
+
+## 8. 常见问题 {#常见问题}
+
+### 8.1 为什么接收返回值的类型确定了，仍然无法推断类型参数？ {#返回值与类型推断}
+
+函数调用的类型推断不会仅根据接收返回值的变量类型进行。下面 `Zero` 没有参数，调用 `Zero()` 时就没有足够信息决定 `T`，需要显式写出类型实参。
+
+这与把泛型函数作为函数值赋给一个明确的函数类型，是两种不同上下文：
+
+```go
+package main
+
+import "fmt"
+
+func Zero[T any]() T {
+    var zero T
+    return zero
+}
+
+func Identity[T any](value T) T { return value }
+
+func main() {
+    var n int = Zero[int]()
+    var zeroInt func() int = Zero
+    var identityInt func(int) int = Identity
+    fmt.Println(n, zeroInt(), identityInt(3)) // 0 0 3
+    // var bad int = Zero() // 编译错误：调用时无法推断 T
+    // f := Identity // 编译错误：没有目标函数类型，无法推断 T
+}
+```
+
+Go 1.21 起，给有明确函数类型的变量赋值时，可以根据目标函数类型推断泛型函数的类型实参。本文的 Go 1.22 基线支持这个行为，所以 `zeroInt` 和 `identityInt` 可以省略方括号中的类型。
+
+### 8.2 为什么泛型中不能直接用类型分支区分 T？ {#类型参数与类型分支}
+
+类型断言和类型分支要求被检查的表达式是接口值，类型参数值不能直接用于这两种语法。可以先转换为 `any`，再检查动态类型：
+
+```go
+package main
+
+import "fmt"
+
+type Count int
+
+func Kind[T ~int](value T) string {
+    switch any(value).(type) {
+    case int:
+        return "int"
+    default:
+        return fmt.Sprintf("%T", value)
+    }
+}
+
+func main() {
+    fmt.Println(Kind(1))        // int
+    fmt.Println(Kind(Count(1))) // main.Count
+}
+```
+
+不能把 `switch any(value).(type)` 改为 `switch value.(type)`，否则编译失败。转换成 `any` 后，`Count` 仍是 `Count`，不会因为约束包含 `~int` 就匹配 `case int`。
+
+如果函数需要为每种类型分别写一套逻辑，可以重新检查抽象是否合适：所需的行为能否由方法接口或显式传入的函数表达。类型分支适合确实需要识别运行时类型的边界，不应替代本来已经能由约束表达的操作。
+
+## 9. 面试题 {#面试题}
+
+### 9.1 Go 泛型解决什么问题，类型参数和类型实参有什么区别？ {#generics-purpose}
+
+**考察重点**：泛型复用实现的目的、输入输出的类型关系、实例化与零值。
+
+**相关内容**：[类型参数与实例化](#类型参数与实例化)
+
+<details>
+<summary>参考回答</summary>
+
+**泛型允许同一套函数或类型实现用于多种类型，同时保留静态类型关系。** 例如 `First[T any]([]T) (T, bool)` 可以处理不同元素类型的切片，并返回对应的元素类型。
+
+`T` 是声明中的类型参数，`First[int]` 中的 `int` 是使用时提供的类型实参。实例化会代入类型实参并检查约束；部分函数调用可以从参数推断类型实参。`var zero T` 可以得到对应类型的零值，但是否成功仍应按函数契约单独表达，例如用 `bool` 区分空切片与零值元素。
+
+</details>
+
+### 9.2 约束中的 int、~int 和竖线分别表示什么？多个接口元素如何组合？ {#constraint-type-set}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：类型身份、底层类型、类型集的并集与交集。
+
+**相关内容**：[精确类型、底层类型与并集](#精确类型底层类型与并集)、[同时要求类型范围与方法](#类型范围与方法)
+
+<details>
+<summary>参考回答</summary>
+
+**`int` 只包含这个类型，`~int` 包含底层类型为 `int` 的类型，`|` 表示并集；分开声明的接口元素需要同时满足。**
+
+例如 `type Count int` 得到的新类型满足 `~int`，不满足只包含 `int` 的约束。若接口同时声明 `~int` 和 `String() string`，`Count` 还必须提供对应方法。`type Alias = int` 只是别名，仍满足 `int`。非接口类型组成并集时，各项不能重叠，因此 `~int | int` 不能编译。
+
+</details>
+
+### 9.3 为什么 T any 不能直接使用加法，即使所有调用都传入整数？ {#constraint-operations}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：泛型定义处的类型检查、约束与可用操作的关系。
+
+**相关内容**：[约束决定函数体可以使用的操作](#约束与可用操作)
+
+<details>
+<summary>参考回答</summary>
+
+**泛型函数体按约束在定义时检查，`any` 没有保证加法操作可用。** 它也允许结构体、切片等类型，因此不能把某处调用传入的整数类型作为函数定义合法的依据。
+
+可以把 `T` 约束为支持所需加法的类型范围，例如 `~int | ~int64 | ~float64`。如果不同类型需要不同的处理逻辑，可以用方法约束或传入操作函数来表达。
+
+</details>
+
+### 9.4 使用 comparable 约束后，相等比较还可能 panic 吗？ {#comparable-boundary}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：严格可比较、Go 1.20 起的约束满足例外、接口动态值。
+
+**相关内容**：[comparable 与运行时比较](#comparable与运行时比较)
+
+<details>
+<summary>参考回答</summary>
+
+**可能。Go 1.20 起，`any` 可以满足 `comparable` 约束，但接口值之间的比较仍受动态类型限制。**
+
+`Equal[any](3, 3)` 可以返回 true；两个参数都保存 `[]int` 时，动态类型相同而内部值不可比较，会 panic。直接把 `[]int` 作为 `T` 则在编译期就会被拒绝。约束允许使用 `==`，不表示接口内部可能出现的所有值都能安全比较。
+
+</details>
+
+### 9.5 泛型类型的方法能否声明新的类型参数？不同实例化类型能否直接赋值？ {#generic-methods}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：接收者类型参数、泛型方法的限制、实例化类型的身份。
+
+**相关内容**：[泛型类型与方法](#泛型类型与方法)
+
+<details>
+<summary>参考回答</summary>
+
+**Go 1.22 的方法可以使用接收者的类型参数，但不能再声明独立的类型参数。** `func (s *Stack[T]) Push(value T)` 合法；额外引入 `Map[U any]` 这样的独立方法类型参数不合法。需要输出类型 `U` 时，可以使用独立的泛型函数。
+
+`Stack[int]` 和 `Stack[any]` 是不同的实例化类型。元素可以赋给接口，不会让整个容器自动兼容；需要转换内容时，应根据目标容器的契约逐个处理元素。
+
+</details>
+
+### 9.6 泛型复制函数怎样保留命名切片类型及其方法？ {#preserve-named-type}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：切片类型与元素类型的关系、返回类型、浅复制。
+
+**相关内容**：[保留命名切片类型](#保留命名切片类型)
+
+<details>
+<summary>参考回答</summary>
+
+**使用 `S ~[]E, E any`，让参数和返回值都使用 `S`。** `S` 保留命名切片类型，`E` 描述元素类型，函数可以据此创建目标切片并复制元素。
+
+若只写 `func ClonePlain[E any]([]E) []E`，传入 `Scores` 后返回的仍是 `[]int`，不会保留 `Scores` 的方法。保留类型不等于深复制：元素中的指针、切片或 map 等仍按它们自身的值复制规则处理。
+
+</details>
+
+### 9.7 什么时候使用泛型，什么时候使用普通接口？ {#generic-interface-choice}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：算法与类型关系、行为抽象、异构集合与性能判断。
+
+**相关内容**：[泛型与普通接口的分工](#泛型与普通接口的分工)
+
+<details>
+<summary>参考回答</summary>
+
+**需要复用算法并保留具体类型关系时考虑泛型，只依赖一组行为时考虑普通接口。** 泛型适合切片算法和类型化容器；只读取内容的函数可以接收 `io.Reader`。
+
+需要在一个集合中保存多种读取器时，`[]io.Reader` 能表达每个元素各自的动态类型。不能仅凭使用泛型就断言更快或没有分配，性能仍要根据具体代码、编译结果与基准测试判断。
+
+</details>
+
+### 9.8 var n int = Zero() 为什么不能推断 T，而给函数变量赋值可能可以？ {#type-inference}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：函数调用与函数值赋值的推断上下文、Go 1.21 的变化。
+
+**相关内容**：[返回值与类型推断](#返回值与类型推断)
+
+<details>
+<summary>参考回答</summary>
+
+**函数调用不会仅根据接收返回值的变量类型推断类型实参。** 对于无参数的 `Zero[T any]() T`，`Zero()` 缺少推断依据，需要写 `Zero[int]()`。
+
+Go 1.21 起，`var f func() int = Zero` 可以从目标函数类型推断 `T` 为 `int`。这里赋的是函数值，没有调用 `Zero`；`f := Zero` 没有目标函数类型，仍无法推断。
+
+</details>
+
+### 9.9 T 约束为 ~int 时，转为 any 后一定匹配类型分支中的 int 吗？ {#type-assertion}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：类型参数值的语法限制、动态类型与底层类型的区别。
+
+**相关内容**：[类型参数与类型分支](#类型参数与类型分支)
+
+<details>
+<summary>参考回答</summary>
+
+**不一定。`~int` 限制底层类型，不会改变实际类型的身份。** `type Count int` 的值转换成 `any` 后，动态类型仍是 `Count`，不会匹配 `case int`。
+
+类型参数值不能直接使用类型断言或类型分支，先转换成 `any` 才能按接口值检查。转换完成后，判断依据是具体动态类型，而不是约束中的底层类型范围。
+
+</details>
+
+## 10. 参考资料 {#参考资料}
+
+- [Go 1.22.12 语言规范：类型参数、接口类型集、实例化与类型推断](https://github.com/golang/go/blob/go1.22.12/doc/go_spec.html)
+- [Go 官方博客：An Introduction To Generics](https://go.dev/blog/intro-generics)
+- [Go 官方博客：All your comparable types](https://go.dev/blog/comparable)
+- [Go 官方博客：When To Use Generics](https://go.dev/blog/when-generics)
+- [Go 1.21 Release Notes：类型推断的扩展](https://go.dev/doc/go1.21#language)

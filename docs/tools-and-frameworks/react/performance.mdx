@@ -1,0 +1,415 @@
+---
+sidebar_position: 5
+knowledge:
+  id: tools-and-frameworks.react.performance
+---
+
+# React 性能优化
+
+React 性能优化先要确定一次交互的时间花在哪里：组件计算、重复更新、DOM 数量、布局绘制，还是资源等待。memo、useMemo 和 useCallback 只能处理其中一部分工作，不能代替对实际瓶颈的判断。
+
+一个缓存只有在“原本需要重复做的工作”被跳过时才有收益。为了让引用看起来稳定而到处增加 Hook，可能只增加依赖比较、内存保留和维护成本。面试中应说明具体慢在哪里、修改了什么，以及怎样确认交互确实改善。
+
+本文使用 React 18、19 的公共 API，示例没有启用 React Compiler。Compiler 是构建阶段的优化工具，不能仅凭 React 版本判断项目已经自动缓存组件和值。
+
+## 1. 面试核心 {#core}
+
+- **先测量具体交互，再判断更新范围和成本**。组件执行次数、React 渲染耗时和浏览器一帧耗时不是同一个指标。[卡](#optimization-process)
+- **memo 默认逐项用 Object.is 比较 props，用来尝试跳过父级引起的重复渲染**。组件自身 state 或所用 context 变化仍可能使它更新。[卡](#memo)
+- **useMemo 缓存计算结果，useCallback 缓存返回的函数身份**。依赖相同才有机会复用，它们都不是永久保存数据的语义保证。[卡](#memo-callback)
+- **父组件重新渲染，不等于子组件中的 useMemo 必须重算**。要检查那次子组件是否执行，以及依赖值有没有变化。[卡](#parent-render)
+- **对象和函数的身份变化会影响缓存，遗漏依赖则可能保留旧闭包**。先整理数据关系，再考虑稳定引用。[卡](#callback-limits)
+- **自定义比较器必须覆盖影响输出和行为的全部 props，包括函数**。memo 比较器返回 true 表示可跳过，shouldComponentUpdate 返回 true 则表示应更新。[卡](#custom-comparison)
+- **减少更新范围、控制更新频率和减少节点数量，往往比给所有组件加缓存更直接**。流式消息还需要合并片段、控制解析成本和处理清理。[卡](#stream-updates)
+
+## 2. 测量与定位 {#测量与定位}
+
+### 2.1 先固定一次交互 {#先固定一次交互}
+
+先选择具体问题，例如“输入搜索词时卡顿”“切换标签时长时间没有反馈”，并固定数据量、设备条件和操作步骤。浏览器 Performance 面板用于观察主线程任务、布局与绘制；React DevTools Profiler 用于定位哪些组件参与了更新。
+
+不要只看 console.log 的次数。开发环境 StrictMode 会额外执行一些计算，渲染也可能被放弃；函数执行过不表示对应结果已经提交。另一方面，重新执行的组件即使复用了 DOM，计算本身也可能很昂贵。
+
+优化前后应重复同一操作，确认用户可感知的延迟、渲染工作量和副作用行为。开发构建用于定位，最终还要在符合实际的构建、设备和数据条件下检查，不能拿一台开发机的单次数字当普遍结论。
+
+### 2.2 Profiler 记录什么 {#profiler记录什么}
+
+Profiler 可以记录某一子树完成提交时的 React 渲染信息。下面的 App.jsx 可以使用普通 createRoot 入口运行：
+
+```jsx
+import { Profiler, useState } from 'react';
+
+function record(id, phase, actualDuration, baseDuration, startTime, commitTime) {
+  console.log({ id, phase, actualDuration, baseDuration, startTime, commitTime });
+}
+function Counter() {
+  const [count, setCount] = useState(0);
+  return <button onClick={() => setCount(value => value + 1)}>{count}</button>;
+}
+export default function App() {
+  return <Profiler id="counter" onRender={record}><Counter /></Profiler>;
+}
+```
+
+首次挂载和后续点击会得到对应记录。actualDuration 是本次 React 渲染计算的耗时，baseDuration 是根据近期组件成本估算的整棵子树未利用缓存时的成本；后者不是每次都重新运行一遍“无优化版本”得到的实测对照。
+
+startTime 和 commitTime 是时间点，不应把两者相减就称为完整的用户交互耗时。Profiler 也不覆盖浏览器后续布局、绘制、网络等待的全部成本。普通生产构建默认关闭这类 profiling，需要专门支持 profiling 的生产构建才能按对应方式采集。
+
+## 3. memo 与组件更新 {#memo与组件更新}
+
+### 3.1 相同 props 可以跳过什么 {#相同props可以跳过什么}
+
+memo 包装组件，让 React 在 props 未变化时尝试跳过由父级重新渲染带来的重复计算。默认比较对每个 prop 使用 Object.is，不是递归深比较。
+
+```jsx
+import { memo, useState } from 'react';
+
+const Course = memo(function Course({ title }) {
+  const [likes, setLikes] = useState(0);
+  console.log('Course 渲染', title, likes);
+  return <section>
+    <p>{title}</p>
+    <button onClick={() => setLikes(value => value + 1)}>赞：{likes}</button>
+  </section>;
+});
+export default function App() {
+  const [extra, setExtra] = useState(0);
+  const [title, setTitle] = useState('React');
+  return <>
+    <button onClick={() => setExtra(value => value + 1)}>无关更新：{extra}</button>
+    <button onClick={() => setTitle(value => value === 'React' ? 'CSS' : 'React')}>换课程</button>
+    <Course title={title} />
+  </>;
+}
+```
+
+点击“无关更新”时，title 没变，Course 可以跳过；换课程时 title 改变，Course 需要更新。点击它内部的“赞”也会更新，因为 memo 并不冻结组件自己的 state。
+
+组件如果通过 useContext 读取上下文，对应 context 值变化时也需要得到新值。memo 只比较 props，不能阻挡这条更新关系。可以让较轻的外层读取 context，再把内层昂贵部分真正需要的字段作为 props 传下去；状态的拆分则应由数据职责决定。
+
+### 3.2 什么会使比较失去收益 {#什么会使比较失去收益}
+
+每次写 `{ options: ... }`、数组字面量或箭头函数，通常都会产生新的引用。如果把它们传给 memo 子组件，即使内容相同，Object.is 也会认为该项不同。
+
+优先让 props 表达最小的实际输入。例如子组件只需要 selected，不必传整个不断变化的页面状态对象。对象确有必要时，再考虑用 useMemo 保存计算结果；回调确实经过缓存边界时，再考虑 useCallback。
+
+同样的原则也适用于 children：父组件每次创建新的 JSX，作为 children 传入时也可能影响浅比较。不能只稳定一个 onClick，然后忽略其他每次都改变的 props。
+
+memo 是性能优化，不是组件正确性的前提。即使 React 再次执行组件，它也应当给出正确结果。
+
+## 4. useMemo {#usememo}
+
+### 4.1 缓存结果与依赖 {#缓存结果与依赖}
+
+useMemo 在渲染中计算结果，后续渲染时逐项比较依赖。如果依赖按 Object.is 相同，就可以复用上次结果；依赖改变时重新计算。
+
+```jsx
+import { useMemo, useState } from 'react';
+
+const courses = ['React', 'CSS', 'TypeScript'];
+function Results({ query }) {
+  const matches = useMemo(() => {
+    console.log('计算匹配', query);
+    return courses.filter(course => course.toLowerCase().includes(query.toLowerCase()));
+  }, [query]);
+  return <output>{matches.join(', ')}</output>;
+}
+export default function App() {
+  const [query, setQuery] = useState('');
+  const [extra, setExtra] = useState(0);
+  return <>
+    <input aria-label="课程搜索" value={query} onChange={event => setQuery(event.target.value)} />
+    <button onClick={() => setExtra(value => value + 1)}>无关更新：{extra}</button>
+    <Results query={query} />
+  </>;
+}
+```
+
+Results 没有包 memo，父级无关更新时它仍会执行；但 query 没变，筛选结果可以复用。输入 `re` 后结果为 React，依赖变化才需要重新筛选。这个小数组用于观察规则，不表示三个元素的过滤值得加缓存。
+
+因此，“依赖里有父组件 props，就一定重算”不准确。是否来自 props 并不决定结果，实际值与上次比较是否相同才关键。若父级每次传入新的 options 对象，再把 options 整体作为依赖，就会产生不同的表现。
+
+### 4.2 缓存不等于状态或完整历史 {#缓存不等于状态或完整历史}
+
+useMemo 保存的是可重新计算的结果，不适合承担必须永久保留的业务记录。React 在特定条件下可以丢弃缓存，例如初次挂载期间暂停；开发修改等情况也会影响它。需要持久保存组件状态时应使用 state 或合适的其他存储。
+
+它也不是按所有历史参数建立的无限缓存。query 从 `re` 变为 `css` 再回到 `re`，不能期待一定从某个历史查询表直接取回结果。
+
+计算函数应保持纯粹。不要在其中发请求、订阅事件或修改传入数组。StrictMode 的开发检查可能重复调用计算函数，正确性不能依赖“它只会执行一次”。
+
+## 5. useCallback {#usecallback}
+
+### 5.1 缓存函数身份 {#缓存函数身份}
+
+useCallback 返回函数而不调用它。依赖未变化时，可以返回上次保存的函数；依赖变化时，返回这次的新函数。函数表达式仍会在组件执行时被求值，它不是“从此再也不创建函数”。
+
+```jsx
+import { memo, useCallback, useState } from 'react';
+
+const PayButton = memo(function PayButton({ onPay }) {
+  console.log('PayButton 渲染');
+  return <button onClick={onPay}>计算价格</button>;
+});
+export default function App() {
+  const [discount, setDiscount] = useState(1);
+  const [extra, setExtra] = useState(0);
+  const [price, setPrice] = useState(null);
+  const pay = useCallback(() => setPrice(100 * discount), [discount]);
+  return <>
+    <button onClick={() => setExtra(value => value + 1)}>无关更新：{extra}</button>
+    <button onClick={() => setDiscount(value => value === 1 ? 0.8 : 1)}>切换折扣</button>
+    <PayButton onPay={pay} />
+    <output>{price === null ? '尚未计算' : price}</output>
+  </>;
+}
+```
+
+无关更新不改变 pay 的身份，PayButton 有机会跳过。discount 变为 0.8 后，必须产生捕获新折扣的回调，再点击显示 80。若为了“稳定”删除 discount 依赖，回调会继续使用旧折扣，这不是优化，而是行为错误。
+
+如果把调用改成 `<PayButton onPay={() => pay()} />`，传入的又是一份新函数，前面的缓存可能不再帮助这层 memo。更直接的方式是传 pay；若需要传条目参数，可以让子组件接收稳定回调和条目 ID，在自己的事件中调用。
+
+### 5.2 函数式更新能减少哪些依赖 {#函数式更新能减少哪些依赖}
+
+回调只需根据前一个 state 计算下一值时，可以用 updater，避免为了读取该 state 而增加依赖：
+
+```jsx
+import { useCallback, useState } from 'react';
+
+export default function App() {
+  const [count, setCount] = useState(0);
+  const increment = useCallback(() => setCount(value => value + 1), []);
+  return <button onClick={increment}>{count}</button>;
+}
+```
+
+连续点击可以得到 1、2、3，函数不需要读取外层 count。这里的按钮本身不需要 useCallback 才能正确工作，示例只说明依赖如何被移除；在没有消费稳定引用的地方，这个缓存未必有收益。
+
+函数式更新不能替代其他真实依赖。前一例的 discount 不是 price 的前一个状态，不能因为用了 updater 就随意省略它。
+
+### 5.3 三种缓存的分工 {#三种缓存的分工}
+
+| API | 主要缓存对象 | 哪些变化可能使缓存失效 |
+| --- | --- | --- |
+| memo | 跳过组件重复计算的机会 | props 改变，自身 state 或 context 更新等 |
+| useMemo | 计算返回的值 | 依赖改变，或缓存被丢弃 |
+| useCallback | 返回的函数身份 | 依赖改变，或缓存被丢弃 |
+
+useMemo 可以返回函数，但与 useCallback 的主要表达目的不同。两者都需要正确的依赖，不能用来修补原本不正确的状态关系。
+
+## 6. 比较器与旧代码 {#比较器与旧代码}
+
+### 6.1 自定义比较器必须包括行为 {#自定义比较器必须包括行为}
+
+memo 的自定义 arePropsEqual 返回 true，表示旧 props 和新 props 可以产生相同输出与行为，允许跳过更新。它不只是比较“页面文字是否相同”。
+
+例如只比较按钮标题、却忽略 onPay，父组件改变 discount 后，子组件可能继续保留旧 onPay。按钮外观没变，点击结果却错了。函数也可能捕获旧 props、state，因此不能因为“都是函数”就判为相等。
+
+深比较也不是免费方案。复杂列表每次递归比较，可能比重新渲染更贵；循环引用、对象类型与未来结构变化还会增加正确性风险。只有在比较范围明确、测量证明合算时才考虑定制，通常先改进 props 设计。
+
+### 6.2 PureComponent 与 shouldComponentUpdate {#purecomponent与shouldcomponentupdate}
+
+维护类组件时，PureComponent 会对 props、state 做浅比较；它仍需要正确的不可变更新，不能在原对象上修改内容后期待浅比较发现差异。
+
+```jsx
+import { PureComponent, useState } from 'react';
+
+class Course extends PureComponent {
+  render() {
+    console.log('类组件渲染', this.props.title);
+    return <p>{this.props.title}</p>;
+  }
+}
+export default function App() {
+  const [extra, setExtra] = useState(0);
+  const [title, setTitle] = useState('React');
+  return <>
+    <button onClick={() => setExtra(value => value + 1)}>无关更新：{extra}</button>
+    <button onClick={() => setTitle(value => value === 'React' ? 'CSS' : 'React')}>换课程</button>
+    <Course title={title} />
+  </>;
+}
+```
+
+无关更新时 Course 可以跳过，换 title 时更新。普通 Component 也可以实现 shouldComponentUpdate，但它的布尔含义与 memo 比较器相反：返回 true 表示应该更新，false 表示可以跳过。
+
+这类方法也不应承担副作用或业务正确性。新函数组件一般先使用普通组件，只有发现值得跳过的重复工作，再考虑相应优化。
+
+## 7. 更新范围与流式消息 {#更新范围与流式消息}
+
+### 7.1 先减少需要重复做的工作 {#先减少需要重复做的工作}
+
+局部输入状态可以放在对应组件里，避免每个字符都推动整页更新。根据已有数据能直接计算的结果，不必再用 Effect 写回另一份 state；否则一次输入可能引出额外更新链。
+
+大型列表应考虑分页、按需加载和[虚拟列表](../../frontend/performance/virtual-list.mdx#滚动空间与渲染窗口)，减少实际节点。重计算可以优化算法、缓存适当结果或移到 Worker。需要保留输入响应时，可使用[React 并发渲染](./concurrent-rendering.mdx#分离输入与结果更新)安排更新优先级，但它不会消除节点与计算成本。
+
+### 7.2 合并流式文本更新 {#合并流式文本更新}
+
+SSE 聊天逐片段返回文本时，每个片段都 setState、重新解析全部 Markdown、重新计算所有消息，会放大更新成本。可以先保存待显示片段，再按帧或合适的时间窗口合并提交；解析与长列表仍应分别优化。
+
+下面用 EventTarget 模拟提供 message 事件的稳定数据源。Hook 把同一帧前到达的文本按顺序合并；实际接入 EventSource 时，仍由创建连接的一层负责关闭连接：
+
+```jsx
+import { useEffect, useState } from 'react';
+
+const source = new EventTarget();
+export function useBufferedText(source) {
+  const [text, setText] = useState('');
+  useEffect(() => {
+    let parts = [];
+    let frame = null;
+    function flush() {
+      frame = null;
+      const addition = parts.join('');
+      parts = [];
+      setText(previous => previous + addition);
+    }
+    function receive(event) {
+      parts.push(event.data);
+      if (frame === null) frame = requestAnimationFrame(flush);
+    }
+    source.addEventListener('message', receive);
+    return () => {
+      source.removeEventListener('message', receive);
+      if (frame !== null) cancelAnimationFrame(frame);
+      parts = [];
+    };
+  }, [source]);
+  return text;
+}
+export default function App() {
+  const text = useBufferedText(source);
+  return <>
+    <button onClick={() => {
+      for (const data of ['理解', '组件', '状态']) {
+        source.dispatchEvent(new MessageEvent('message', { data }));
+      }
+    }}>模拟片段</button>
+    <output>{text}</output>
+  </>;
+}
+```
+
+点击一次显示“理解组件状态”，三个片段不会因为只保留最后一次参数而丢失；再次点击会继续追加。卸载时移除监听、取消尚未执行的帧，并丢弃本组件还没显示的片段。
+
+这是固定会话的显示缓冲，不是完整的消息存储。实际应用应按会话身份隔离状态，定义完成事件是否立即 flush，限制待显示缓存与历史长度。后台页面的 requestAnimationFrame 可能暂停，不能把这个刷新频率当成服务端背压或持久化保证。若消息涉及确认、计费等业务，不能只存在显示缓冲里。
+
+## 8. 常见问题 {#常见问题}
+
+### 8.1 给每个函数加 useCallback 会不会更稳妥？ {#给每个函数加usecallback会不会更稳妥}
+
+不会自动更好。必须有地方使用函数身份，比如 memo 子组件的 prop 或确有必要的依赖关系，缓存才可能减少工作。依赖比较、保留闭包和理解依赖也有成本；如果接收方每次仍因其他 prop 变化而更新，稳定这个函数未必有实际收益。
+
+### 8.2 缓存结果为什么会过时？ {#缓存结果为什么会过时}
+
+常见原因是遗漏依赖、原地修改数据，或自定义比较器忽略了影响行为的字段。先检查数据是否按只读方式更新，再核对所有响应式依赖；不能靠清空依赖数组或强制刷新来代替正确的数据关系。
+
+### 8.3 启用 React Compiler 后还需要理解这些规则吗？ {#启用reactcompiler后还需要理解这些规则吗}
+
+需要。Compiler 可以在构建时自动处理许多组件、值与函数的缓存，但组件纯度、状态归属、依赖关系和实际瓶颈仍然存在。面试讨论手写缓存时，应先说明项目是否启用了 Compiler，避免把不同构建结果混在一起比较。
+
+## 9. 面试题 {#面试题}
+
+### 9.1 React 页面卡顿时，你会按什么顺序定位和优化？ {#optimization-process}
+
+**题型**：综合题
+
+**考察重点**：可复现交互、测量范围、更新与浏览器成本、验证闭环。
+
+**相关内容**：[测量与定位](#测量与定位)、[更新范围与流式消息](#更新范围与流式消息)。
+
+<details>
+<summary>参考回答</summary>
+
+**先固定具体交互和数据规模，再区分组件计算、更新频率、DOM 数量、浏览器布局绘制与资源等待。** 用浏览器 Performance 和 React Profiler 定位，优先缩小更新范围、减少计算和节点，再决定是否缓存或调整更新优先级。修改后重复同一操作，检查用户延迟与正确性。Profiler 的 React 渲染耗时不等于整帧耗时，开发日志次数也不能直接代表生产成本。
+
+</details>
+
+### 9.2 React.memo 怎样判断能否跳过更新，自身 state 和 context 变化会怎样？ {#memo}
+
+**考察重点**：逐项比较、更新来源、稳定 props 与优化边界。
+
+**相关内容**：[memo 与组件更新](#memo与组件更新)。
+
+<details>
+<summary>参考回答</summary>
+
+**memo 默认逐项用 Object.is 比较 props，尝试跳过父级重新渲染带来的重复工作。** 自身 state 或读取的 context 变化仍可能要求更新。新对象、新函数和新 children 也可能使 props 不相等。它是性能优化，组件再次执行也必须正确，不能靠 memo 隐藏不纯渲染。
+
+</details>
+
+### 9.3 useMemo 与 useCallback 有什么区别，分别适合什么场景？ {#memo-callback}
+
+**考察重点**：结果缓存、函数身份、依赖比较和实际收益。
+
+**相关内容**：[useMemo](#usememo)、[useCallback](#usecallback)。
+
+<details>
+<summary>参考回答</summary>
+
+**useMemo 缓存计算结果，useCallback 缓存返回的函数身份而不执行该函数。** 两者都逐项比较依赖。前者适合有证据的重复昂贵计算或需要稳定结果引用的场景；后者适合函数身份确实影响 memo 子组件或依赖关系的场景。缓存有比较和内存成本，也可能被丢弃，不能用作业务状态的永久保证。
+
+</details>
+
+### 9.4 父组件重新渲染，子组件中的 useMemo 一定会重新计算吗？ {#parent-render}
+
+**考察重点**：组件执行与计算函数执行的区别、依赖实际值。
+
+**相关内容**：[缓存结果与依赖](#缓存结果与依赖)。
+
+<details>
+<summary>参考回答</summary>
+
+**不一定。先看子组件是否被跳过；即使执行了，也要看 useMemo 的依赖是否改变。** 依赖按 Object.is 相同就可以复用，来自父 props 不意味着自动失效。父级每次创建新的对象依赖会导致重算，传入相同字符串则不会仅因父级执行而改变。缓存被丢弃等条件应另行考虑。
+
+</details>
+
+### 9.5 useCallback 有什么局限，为什么可能保留旧状态？ {#callback-limits}
+
+**考察重点**：闭包、完整依赖、缓存边界与创建成本。
+
+**相关内容**：[缓存函数身份](#缓存函数身份)、[函数式更新能减少哪些依赖](#函数式更新能减少哪些依赖)。
+
+<details>
+<summary>参考回答</summary>
+
+**useCallback 只根据依赖决定复用哪个函数，不会让旧闭包自动读取新 state。** 省略 discount 等真实依赖会保留旧行为；调用处又包一层新箭头函数，也可能让稳定身份失去用途。函数式更新能消除对前一个同类 state 的直接读取，但不能消除其他输入依赖。没有接收方利用稳定身份时，缓存可能只增加成本。
+
+</details>
+
+### 9.6 memo 的自定义比较器与 shouldComponentUpdate 有什么区别？ {#custom-comparison}
+
+**考察重点**：布尔含义、函数行为、浅比较与深比较成本。
+
+**相关内容**：[比较器与旧代码](#比较器与旧代码)。
+
+<details>
+<summary>参考回答</summary>
+
+**memo 比较器返回 true 表示可以跳过，shouldComponentUpdate 返回 true 表示应该更新，二者含义相反。** 比较必须覆盖影响输出和行为的 props，忽略函数可能保留旧闭包。PureComponent 对 props、state 做浅比较，依赖正确的不可变更新；定制深比较要衡量成本，不能假定一定优于重渲染。
+
+</details>
+
+### 9.7 SSE 聊天逐片段更新导致 React 页面卡顿，应该怎样处理？ {#stream-updates}
+
+**题型**：综合题
+
+**考察重点**：片段合并、更新范围、解析成本、资源清理与缓存边界。
+
+**相关内容**：[合并流式文本更新](#合并流式文本更新)、[先固定一次交互](#先固定一次交互)。
+
+<details>
+<summary>参考回答</summary>
+
+**先区分状态更新、文本解析和长列表渲染的成本，再按约定合并片段并缩小更新范围。** 显示层可按帧或时间窗口把多个片段顺序拼接后提交，不能像只保留末次参数的防抖一样丢掉中间文本。完成、取消、会话切换和卸载需要清理规则；待显示缓存、历史长度和后台暂停也要处理。减少 setState 次数不等于已经解决整段 Markdown 重算与大量 DOM 的成本。
+
+</details>
+
+## 10. 参考资料 {#参考资料}
+
+- [React：memo](https://react.dev/reference/react/memo)
+- [React：useMemo](https://react.dev/reference/react/useMemo)
+- [React：useCallback](https://react.dev/reference/react/useCallback)
+- [React：Profiler](https://react.dev/reference/react/Profiler)
+- [React：PureComponent](https://react.dev/reference/react/PureComponent)
+- [React：Component](https://react.dev/reference/react/Component)
+- [React：React Compiler Introduction](https://react.dev/learn/react-compiler/introduction)

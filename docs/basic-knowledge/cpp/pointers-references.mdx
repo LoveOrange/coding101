@@ -1,0 +1,187 @@
+---
+knowledge:
+  id: basic-knowledge.cpp.pointers-references
+  type: concept
+description: "解释 C++ 指针与引用的绑定、赋值和参数传递，结合数组衰变、const 与对象生命周期分析空指针、悬空和越界。"
+keywords: [C++ 指针, C++ 引用, 数组衰变, const, 悬空指针]
+---
+
+# C++ 指针与引用
+
+**指针**是能够保存对象或函数指向信息的值，**引用**则为已经存在的对象或函数提供别名。指针可以为空、可以改指向；引用初始化后不能重新绑定。两者都不会自动延长任意目标对象的生命，所以会使用 `*` 和 `&`，还不等于能安全管理对象。本文以 C++17 为准。
+
+## 1. 面试核心 {#core}
+
+- 指针变量和它指向的对象是两个对象，**修改指针与修改目标是两种操作**；按值传指针只复制指针值。[卡](#pointer-reference-parameter)
+- 引用赋值修改的是当前绑定对象，**不是重新绑定到右侧对象**；接口用引用表达必需的对象，但仍要保证生命周期。[卡](#pointer-reference-difference)
+- 数组在许多表达式中会转换为首元素指针，**数组本身不是指针**；长度信息不能从退化后的普通指针恢复。[卡](#array-decay)
+- 指针非空只排除了空值，**不证明对象仍存活，也不证明下标有效**。悬空、越界和释放后访问需要从所有权与边界检查预防。
+- 指针算术用于同一个数组的范围，**尾后指针可以形成但不能解引用**；不相关对象之间不能靠指针相减推导距离。
+
+## 2. 指向、别名与赋值 {#指向别名与赋值}
+
+`&object` 取得对象的地址信息，`*pointer` 通过有效指针访问所指对象。声明里的 `int&` 表示引用类型，不是一次取地址运算。
+
+```cpp
+#include <cassert>
+
+int main() {
+    int first = 1;
+    int second = 2;
+    int* pointer = &first;
+    int& alias = first;
+
+    *pointer = 3;
+    assert(first == 3);
+    pointer = &second;
+    *pointer = 4;
+    assert(second == 4);
+
+    alias = second;
+    assert(first == 4);
+    alias = 5;
+    assert(first == 5 && second == 4);
+}
+```
+
+`pointer = &second` 改变了指针的指向。`alias = second` 却只是把 `second` 的值赋给 `first`，之后 `alias` 仍表示 `first`。引用不能被“换绑”，正是两段代码行为不同的原因。
+
+| 属性 | 指针 | 引用 |
+| --- | --- | --- |
+| 是否有独立可赋值的指向值 | 有 | 初始化后不能重新绑定 |
+| 能否表达“没有对象” | 可以使用 `nullptr` | 正确程序中应绑定有效对象或函数 |
+| 能否做数组范围内的算术 | 可以 | 引用本身不提供这种游标行为 |
+| 是否保证目标仍存活 | 不保证 | 不保证 |
+
+实现可能用地址保存引用，也可能优化掉引用的独立存储。语言没有保证“所有引用都占一个指针大小”；`sizeof(reference)` 得到的是被引用类型的大小。
+
+## 3. 参数传递与修改范围 {#参数传递与修改范围}
+
+按值传递指针，会创建一个指针形参，复制实参的指针值。通过它改目标能影响调用方，但重新给形参赋值不会改掉调用方的指针变量。
+
+```cpp
+#include <cassert>
+
+void update(int* pointer) {
+    *pointer = 7;
+    pointer = nullptr;
+}
+
+void redirect(int*& pointer, int& target) {
+    pointer = &target;
+}
+
+int main() {
+    int first = 1;
+    int second = 2;
+    int* pointer = &first;
+    update(pointer);
+    assert(first == 7 && pointer == &first);
+    redirect(pointer, second);
+    assert(pointer == &second);
+}
+```
+
+`update` 的 `pointer` 只是一份副本。`redirect` 使用 `int*&`，也就是“指针对象的引用”，所以赋值直接改变调用方的指针。
+
+接口选择要表达真实约束：只读大对象可以接收 `const T&`；必须修改调用方对象可以接收 `T&`；允许没有对象时可以使用可空指针。资源所有权不应该只靠一个裸指针暗示，需要释放责任时使用明确的所有权接口，例如智能指针。引用并不意味着函数可以长期保存这个对象。
+
+## 4. 数组与指针算术 {#数组与指针算术}
+
+数组是连续排列的一组元素，而普通指针只保存位置，不保存长度。数组到指针的转换在很多表达式中自动发生，但 `sizeof(array)` 和取得数组地址等场景会保留数组类型。
+
+```cpp
+#include <cassert>
+#include <cstddef>
+
+template<std::size_t N>
+std::size_t length(const int (&values)[N]) {
+    return N;
+}
+
+int main() {
+    int values[] = {10, 20, 30};
+    int* begin = values;
+    int* end = values + 3;
+    assert(*(begin + 1) == 20);
+    assert(end - begin == 3);
+    assert(length(values) == 3);
+}
+```
+
+`begin + 1` 移动到下一个 `int` 元素，不是仅向后一个字节。`end` 指向数组末尾之后的位置，适合做循环结束标记，但不能读取 `*end`。
+
+`length` 用数组引用保留了长度 `N`。如果形参写成 `int values[]` 或 `int values[3]`，普通函数参数类型都会调整为 `int*`，方括号里的 `3` 不强制实参数组长度为 3。C++17 中也可使用 `std::array`、`std::vector` 或明确的指针加长度参数；需要借用连续范围时，C++20 提供了 `std::span`。
+
+`&values` 的类型是“指向整个数组的指针”，而 `values` 转换后的类型是“指向首个 `int` 的指针”。它们都关联同一段存储的起始位置，但类型不同，`+1` 的移动单位也不同。
+
+## 5. 生命周期与无效访问 {#生命周期与无效访问}
+
+**悬空指针或引用**指的是仍保留访问路径，但目标对象已经不在可访问的生命周期内。局部对象离开作用域、动态对象被释放、容器扩容使元素迁移，都可能让旧指针失效。
+
+```cpp
+// 反例：不要返回局部对象的引用。
+// int& invalid() {
+//     int value = 1;
+//     return value;  // value 在函数结束时销毁，返回的引用悬空
+// }
+```
+
+把指针设成 `nullptr` 只能清理这个变量，不能同时清理其他别名。一个对象有三个裸指针指向它，释放后把其中一个置空，另外两个仍然悬空。
+
+临时对象还有特定的生命周期延长规则，例如局部 `const std::string& text = std::string("abc");` 可以把该临时对象延长到 `text` 的生命周期。但这种延长不会沿着任意函数返回、再次绑定或成员传递自动传播，因此不能把“`const&` 能绑定临时值”记成“引用总能保活”。
+
+排查无效访问时，依次确认目标由谁创建和销毁、当前访问是否还在生命周期内、下标是否在范围内、容器操作是否使旧地址失效。AddressSanitizer 可以暴露部分错误，但一次运行未报错不证明没有未定义行为。
+
+## 6. 面试题 {#面试题}
+
+### 6.1 指针和引用的区别是什么？ {#pointer-reference-difference}
+
+**考察重点**：指向、绑定、空值和生命周期。
+
+**相关内容**：[指向、别名与赋值](#指向别名与赋值)、[生命周期与无效访问](#生命周期与无效访问)。
+
+<details>
+<summary>参考回答</summary>
+
+**指针保存可重新赋值的指向值，引用在初始化后作为目标的别名，不能重新绑定。** 指针可以使用 `nullptr` 表达没有对象，引用应绑定有效对象或函数。指针有范围受限的算术操作，引用赋值修改的是目标。两者都不自动管理目标生命周期，所以非空指针和已绑定引用仍可能悬空。引用底层是否占用独立存储属于实现问题。
+
+</details>
+
+### 6.2 按值传递指针，能否改变调用方的指针和对象？ {#pointer-reference-parameter}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：形参副本、间接访问和指针引用。
+
+**相关内容**：[参数传递与修改范围](#参数传递与修改范围)。
+
+<details>
+<summary>参考回答</summary>
+
+**可以通过有效指针修改共享目标，但给指针形参重新赋值只改变副本。** 如果需要修改调用方保存的指针，应返回新指针让调用方接收，或显式接收指针的引用 `T*&` 等接口。修改目标、修改指向和转移所有权是不同意图，要分别表达。
+
+</details>
+
+### 6.3 数组为什么不能在普通指针参数中用 sizeof 求长度？ {#array-decay}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：数组到指针转换、参数类型调整和长度契约。
+
+**相关内容**：[数组与指针算术](#数组与指针算术)。
+
+<details>
+<summary>参考回答</summary>
+
+**普通数组形参会调整为指针参数，函数里只剩指针类型，原数组长度没有随它传入。** 因而 `sizeof(parameter)` 计算指针对象大小。可以显式传长度，使用数组引用模板保留 `N`，或接收带大小的容器；C++20 还可以用 `std::span` 表达借用的连续范围。
+
+</details>
+
+## 7. 参考资料 {#参考资料}
+
+- [C++17 草案 N4659：References](https://timsong-cpp.github.io/cppwp/n4659/dcl.ref)
+- [C++17 草案 N4659：Array-to-pointer conversion](https://timsong-cpp.github.io/cppwp/n4659/conv.array)
+- [C++17 草案 N4659：Additive operators](https://timsong-cpp.github.io/cppwp/n4659/expr.add)
+- [C++17 草案 N4659：Lifetime](https://timsong-cpp.github.io/cppwp/n4659/basic.life)
+- [Clang：AddressSanitizer](https://clang.llvm.org/docs/AddressSanitizer.html)

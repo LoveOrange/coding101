@@ -1,9 +1,10 @@
+import {priorityForRole, withRole} from '../roles';
 import {useMemo, useState} from 'react';
 import clsx from 'clsx';
 import Link from '@docusaurus/Link';
 import {useHistory} from '@docusaurus/router';
 
-import {articlesForRole, domainShortLabel, isWeak, shuffle, useLearningIndex} from '../content';
+import {articlesForRole, domainShortLabel, isWeak, shuffle, useActiveRoleId, useLearningIndex} from '../content';
 import {UpgradeDialog} from '../review/UpgradeDialog';
 import {summarize} from '../review/WeakList';
 import {accessOf, learnerActions, toDay, useLearner} from '../store';
@@ -33,14 +34,17 @@ function ExamSetupPage() {
   const index = useLearningIndex();
   const learner = useLearner();
   const history = useHistory();
-  const role = index.roles.find((item) => item.id === learner.preferences.roleId);
-  const groups = useMemo(() => domainGroups(index), [index]);
+  const roleId = useActiveRoleId();
+  const role = index.roles.find((item) => item.id === roleId);
+  const roleArticles = articlesForRole(index, role?.id);
+  const groups = useMemo(() => domainGroups(index).filter(group =>
+    roleArticles.some(article => group.ids.includes(article.domainId))), [index, role?.id]);
   const [setup, setSetup] = useState<ExamSetup>(learner.examSetup ?? {scope: 'role', domainIds: [], count: 20, timed: false});
   const [upgradeOpen, setUpgradeOpen] = useState(false);
 
-  const roleCards = articlesForRole(index, role?.id).flatMap((article) => article.cardIds);
-  const weakCards = Object.keys(learner.cards).filter((id) => index.cards[id] && isWeak(index.cards[id], learner.cards[id]));
-  const domainCards = Object.values(index.articles)
+  const roleCards = roleArticles.flatMap((article) => article.cardIds);
+  const weakCards = roleCards.filter((id) => isWeak(index.cards[id], learner.cards[id]));
+  const domainCards = roleArticles
     .filter((article) => setup.domainIds.includes(article.domainId))
     .flatMap((article) => article.cardIds);
   const pool = setup.scope === 'role' ? roleCards : setup.scope === 'weak' ? weakCards : domainCards;
@@ -65,25 +69,25 @@ function ExamSetupPage() {
     }
     // Weight by roadmap priority so 必会 topics come up more often.
     const weighted = shuffle(pool)
-      .map((id) => ({id, weight: PRIORITY_WEIGHT[index.articles[index.cards[id].articleId].priority ?? 'optional'] + Math.random() * 2}))
+      .map((id) => ({id, weight: PRIORITY_WEIGHT[priorityForRole(index.articles[index.cards[id].articleId], role?.id) ?? 'optional'] + Math.random() * 2}))
       .sort((a, b) => b.weight - a.weight)
       .slice(0, count)
       .map((item) => item.id);
     learnerActions.setExamSetup(setup);
     const scopeLabel = setup.scope === 'role' ? role?.label ?? '全部领域' : setup.scope === 'weak' ? '待补' : '自选领域';
     const sessionId = learnerActions.startSession('exam', `模拟测试 · ${scopeLabel} · ${weighted.length} 题`, shuffle(weighted), setup);
-    history.push(`/review?session=${sessionId}`);
+    history.push(withRole(`/review?session=${sessionId}`, roleId));
   };
 
   return (
     <main className={styles.page}>
       <div className={styles.column}>
         <div className={styles.intro}>
-          <Link to="/questions" className={styles.back}>
+          <Link to={withRole('/questions', roleId)} className={styles.back}>
             ← 返回题库
           </Link>
           <h1 className={styles.title}>模拟一次面试</h1>
-          <p className={styles.lead}>按考频抽题，题目不显示出处。先在心里或出声回答，再揭开答案，勾选你答到的要点。</p>
+          <p className={styles.lead}>在所选岗位范围内按复习优先级抽题。先在心里或出声回答，再揭开答案，勾选你答到的要点。</p>
         </div>
 
         <fieldset className={styles.group}>

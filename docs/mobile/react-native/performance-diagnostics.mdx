@@ -1,0 +1,288 @@
+---
+title: React Native 性能诊断
+description: 区分 JS 更新、原生界面、列表与动画的成本，用可比较的测量定位 React Native 卡顿和内存增长。
+knowledge:
+  id: mobile.react-native.performance-diagnostics
+---
+
+**React Native 性能诊断**要找出一次交互在哪个阶段等待、执行或占用资源。JS 计算慢、列表填充跟不上、原生绘制昂贵和图片内存增长，可能都表现为“页面卡”，但需要的证据和改法不同。
+
+本文以 React Native 0.76.9、React 18.3.1 为基线。面试和项目复盘的重点是解释测量对象、定位过程与改动代价，不能只罗列 `memo`、缓存和原生驱动等配置。
+
+## 1. 面试核心 {#core}
+
+- **先用目标发布构建建立基线，再选择能定位问题的分析环境**。开发检查、日志、调试器与采样本身都会改变耗时；诊断结果还要回到目标条件验证。[卡](#baseline)
+- **JS 更新、原生布局绘制和最终显示是不同阶段**。某条线程空闲或一个 FPS 数字正常，不能证明整个交互没有延迟。[卡](#threads)
+- **React Profiler 测量 React 子树的渲染成本**，不代表原生布局、GPU 或屏幕完成一帧的时间；普通生产构建默认也不开启该分析能力。[卡](#profiler)
+- **长列表是在内存、填充速度与响应性之间取舍**。扩大渲染窗口或批量可能减少空白，也会增加常驻内容或连续 JS 工作。[卡](#list-window)
+- **`getItemLayout` 的前提是尺寸可靠**。偏移要计入分隔线；动态内容或字体变化使尺寸失效时，错误的固定值会影响定位。[卡](#item-layout)
+- **减少重复渲染要保持行为正确**。稳定数据和回调可以帮助跳过工作，错误比较函数或遗漏依赖却会保留旧状态。
+- **原生驱动只转移受支持的动画工作**。它不让任意 JS 计算离开 JS 线程，也不保证复杂原生界面一定流畅。[卡](#animation)
+- **内存分析需要同时看 JS、原生与图片等资源**。长期增长要追踪持有关系和生命周期；一次峰值不能直接判成泄漏。[卡](#memory)
+
+## 2. 从现象建立测量条件 {#从现象建立测量条件}
+
+### 2.1 基线与分析环境 {#基线与分析环境}
+
+先固定应用版本、RN 架构、JS 引擎、设备、系统、数据量、缓存状态和操作路径。例如“连续滚动包含 500 条消息的列表，再进入详情返回”，比“多滑几次看是否流畅”更容易比较。
+
+发布构建用于观察目标用户的表现。开发模式会加入额外检查，频繁日志也可能占用 JS 时间。需要分析组件时，可以使用支持 React profiling 的环境；需要原生时间线时，选择平台允许采样的构建，并记录它和发布配置的差异。不能因为普通 release 中没有 Profiler 回调，就断言组件没有重新渲染。
+
+基线和分析环境承担不同工作：前者确认问题及最终改善，后者帮助解释原因。启动、帧、网络与内存的统计范围见 [移动端性能指标](../common/performance-metrics.mdx#测量对象与实验条件)。
+
+### 2.2 把延迟拆成可观察阶段 {#把延迟拆成可观察阶段}
+
+点击后很久才出现内容，可以沿着“事件进入 JS—请求或计算—状态更新—React 渲染—原生提交与显示”定位。先确认具体哪个阶段长，再决定查 CPU、网络、组件更新还是平台绘制。
+
+| 现象 | 优先观察的证据 | 不能直接推出的结论 |
+| --- | --- | --- |
+| 滚动尚可，点击反馈明显迟到 | JS 事件和长任务、回调进入时间 | 原生界面所有阶段都没问题 |
+| 快速滚动出现空白 | 列表填充、单项成本、窗口与批量 | 只要增大窗口就能解决 |
+| JS 计算不多但动画仍卡 | 主线程、布局绘制、合成与资源加载 | 新架构或 JSI 已失效 |
+| 多次进出页面后内存持续增加 | JS 与原生对象、缓存、订阅和释放路径 | 所有增长都是 JS 泄漏 |
+
+## 3. JS 与原生工作 {#JS与原生工作}
+
+### 3.1 线程指标的含义 {#线程指标的含义}
+
+JS 线程负责大量业务逻辑、React 更新和事件处理。一次耗时的排序、解析或大范围渲染，会延迟同一线程上其他待处理的工作。把它放进 Promise 回调，并不会自动得到一个后台线程；`setTimeout` 也只是改变开始时机，不能消除任务本身的执行成本。
+
+原生滚动、受支持的原生动画可以在 JS 忙碌时继续部分工作，但新的 JS 处理和内容准备仍可能跟不上。原生视图的创建、布局、绘制与合成也有各自成本。观察两类帧率有助于缩小范围，却不能替代一次交互的完整时间线。
+
+60 Hz 的显示间隔约为 16.67 ms，120 Hz 约为 8.33 ms。这是理解截止时间的参考，不是给每个阶段各发一份同样长的独立预算；队列等待、阶段重叠与显示时机都会影响最终结果。
+
+### 3.2 新架构仍需要定位具体工作 {#新架构仍需要定位具体工作}
+
+RN 0.76 默认启用新架构，但实际工程仍应确认构建配置。不能把所有成本都解释成旧 Bridge 的序列化，也不能把 JSI 理解为“调用原生就自动异步”。同步调用中的耗时工作仍可能阻塞调用者。
+
+Fabric、Yoga 和原生视图分别处理不同环节，布局和渲染任务也不能一概绑定到旧架构的固定三条线程。相关执行阶段见 [React Native 渲染](rendering.mdx)。性能分析应结合实际调用栈、调度与原生时间线，确认工作在哪里发生。
+
+## 4. 组件更新与 React Profiler {#组件更新与ReactProfiler}
+
+**React Profiler**记录一棵 React 子树的提交和渲染耗时。`actualDuration` 描述这次更新的 React 渲染成本；`baseDuration` 是不跳过子树工作时的估计，二者都不是屏幕帧耗时。
+
+下面的探针只保留最近 120 条记录，避免在每次提交时打印大量日志。它需要支持 profiling 的 React 运行环境：
+
+```tsx
+import React, {Profiler} from 'react';
+
+type Sample = {
+  phase: string;
+  actualDuration: number;
+  baseDuration: number;
+  commitTime: number;
+};
+export const samples: Sample[] = [];
+export const recordRender: React.ProfilerOnRenderCallback =
+  (_id, phase, actualDuration, baseDuration, _startTime, commitTime) => {
+    samples.push({phase, actualDuration, baseDuration, commitTime});
+    if (samples.length > 120) samples.splice(0, samples.length - 120);
+  };
+
+export function MeasuredPanel({children}: {children: React.ReactNode}) {
+  return <Profiler id="panel" onRender={recordRender}>{children}</Profiler>;
+}
+```
+
+探针能帮助判断一次操作触发了哪些 React 提交，以及渲染成本是否集中在某个子树。它不会测出原生图片解码、视图绘制或 GPU 时间；采样数组只保存短窗口，开始新实验前还应清空，完整采集按需要另行保存。
+
+如果更新范围过大，先检查状态是否放得过高、上下文是否频繁变化，以及列表项是否每次都接到新对象或新回调。`memo` 默认按各 prop 的 `Object.is` 结果比较，自己的 state 或读取的 context 改变仍可触发更新。函数缓存和比较条件应服务于已经观察到的重复工作，不能为了“少渲染”忽略会改变显示或行为的属性。缓存比较与闭包的规则见 [React 性能优化](../../tools-and-frameworks/react/performance.mdx#core)，其中浏览器布局指标不直接套用于 RN 原生界面。
+
+## 5. 长列表与尺寸信息 {#长列表与尺寸信息}
+
+### 5.1 窗口、批量与内容复杂度 {#窗口批量与内容复杂度}
+
+**列表虚拟化**让列表按需维护可见区域附近的内容，避免同时挂载全部项目。它不会自动释放业务层持有的整份数据，也不代表所有项目的状态都永久保存在视图中。
+
+| 配置 | 主要影响 | 调整代价 |
+| --- | --- | --- |
+| `initialNumToRender` | 首批准备的项目数量 | 太少可能填不满首屏，太多增加初始工作 |
+| `maxToRenderPerBatch` | 后续每批渲染数量 | 增大可能改善填充，也可能延长 JS 连续工作 |
+| `updateCellsBatchingPeriod` | 后续批次的间隔 | 太慢可能出现空白，太频繁可能影响响应 |
+| `windowSize` | 渲染窗口相对可见区域的范围 | 增大减少部分空白风险，同时增加常驻内容 |
+
+`windowSize` 的单位与可见区域有关，不是项目个数。`removeClippedSubviews` 则把区域外视图从原生层级中分离，不等于释放全部对象；复杂变换和定位还可能出现内容缺失，不能把它当成无条件节省内存的开关。
+
+优化还要检查单项本身：大图、复杂嵌套、昂贵文本或每次渲染的重复计算，可能比调几个窗口参数更值得处理。保留稳定业务 key，数据更新采用能被比较识别的新值；离屏项目的重要状态放到数据或合适的状态容器中。
+
+### 5.2 固定尺寸示例 {#固定尺寸示例}
+
+下面的列表约定每项高 48、分隔线高 2，因此第 `index` 项的偏移是 `50 * index`。这是一个尺寸契约明确的示例，实际产品若需要随字体或多行内容增加高度，就应调整布局策略，不能继续硬套这个偏移。
+
+```tsx
+import React, {memo, useCallback} from 'react';
+import {FlatList, Pressable, Text, View} from 'react-native';
+
+type Item = {id: string; title: string};
+const ROW_HEIGHT = 48;
+const GAP = 2;
+const Separator = () => <View style={{height: GAP}} />;
+export const getItemLayout = (_data: ArrayLike<Item> | null | undefined,
+  index: number) => ({length: ROW_HEIGHT, offset: (ROW_HEIGHT + GAP) * index, index});
+const Row = memo(function Row({item, selected, onSelect}: {
+  item: Item; selected: boolean; onSelect: (id: string) => void;
+}) {
+  return <Pressable style={{height: ROW_HEIGHT}} accessibilityRole="button"
+    accessibilityState={{selected}} onPress={() => onSelect(item.id)}>
+    <Text numberOfLines={1}>{item.title}</Text>
+  </Pressable>;
+});
+
+export function FixedList({items, selectedId, onSelect}: {
+  items: Item[]; selectedId: string | null; onSelect: (id: string) => void;
+}) {
+  const renderItem = useCallback(({item}: {item: Item}) =>
+    <Row item={item} selected={item.id === selectedId} onSelect={onSelect} />,
+    [selectedId, onSelect]);
+  return <FlatList data={items} renderItem={renderItem}
+    extraData={selectedId} keyExtractor={item => item.id}
+    getItemLayout={getItemLayout} ItemSeparatorComponent={Separator} />;
+}
+```
+
+`getItemLayout` 让列表利用已知尺寸定位，偏移包括前面的分隔线。`extraData` 明确告诉列表，选中状态也会影响渲染；`renderItem` 的依赖还必须包含 `selectedId` 和 `onSelect`，否则缓存了函数也可能读到旧值。
+
+这里的 `memo` 能在 item 引用、选中状态和 `onSelect` 都不变时帮助跳过重复工作。修改标题应生成新的 item，而不是原地改对象后期望浅比较发现变化。这个示例说明更新和尺寸关系，不承诺某个设备上的帧率，也不要求所有列表都固定行高。
+
+## 6. 动画、图片与内存 {#动画图片与内存}
+
+### 6.1 原生驱动的适用范围 {#原生驱动的适用范围}
+
+`Animated` 的 `useNativeDriver: true` 可以把受支持的动画配置交给原生执行，减少每一帧对 JS 驱动的依赖。在本基线中，典型适用属性是 `transform` 和 `opacity`，不能据此把 Flexbox 或布局位置属性都交给它。
+
+动画开始后不再依赖每帧 JS 计算，不代表初始准备、业务回调和原生绘制没有成本。长时间或循环动画还可能影响列表后续渲染；本基线可以按用途将对应动画配置为 `isInteraction: false`，但这不能消除真实的 JS 或绘制负载。
+
+把重计算塞进 `requestAnimationFrame` 也不是性能优化的保证。任务如果仍然很长，只是换了执行时点；需要根据业务拆分、减少计算，或通过有明确线程和取消契约的原生实现处理。
+
+### 6.2 图片与资源生命周期 {#图片与资源生命周期}
+
+压缩图片文件大小不能直接代表解码内存。一个 2000 × 1500 的图像，若按每像素 4 字节展开，单份像素数据约为 12 MB；缓存、临时副本和图形资源还会增加占用。列表应结合显示尺寸准备合适资源，不能只因下载很小就忽略解码成本。
+
+JS 堆、原生对象、图像缓存和图形资源不是同一个统计范围。反复进出页面后内存增长时，分别检查订阅、计时器、原生模块、图片请求与缓存是否按设计结束或受限。缓存会保留对象，但有界缓存和无界持有需要不同判断。
+
+分析应记录多次操作后的趋势与持有路径，并结合实际 GC 和原生释放条件。清空所有缓存后峰值变小，只能说明资源减少；还需比较重新加载、网络和用户体验的代价。
+
+## 7. 采样与改动验证 {#采样与改动验证}
+
+JS CPU 采样适合定位计算集中的调用路径；React Profiler 帮助观察组件更新；平台时间线用于分析主线程、布局绘制、调度和系统资源。采样栈中的时间比例也不是每次函数调用的精确计时，需要结合操作区间和足够样本解释。
+
+Android 的系统时间线、帧与分配分析见 [Android 性能诊断](../android/performance-diagnostics.mdx)；iOS 的 Instruments 与内存分析见 [iOS 性能诊断](../ios/performance-diagnostics.mdx)。涉及不同工具时保留明确的操作标记与时间范围，避免把不同运行中的两个高峰误认为同一原因。
+
+一次可评估的改动应保留：原始现象、定位证据、改动理由、同条件前后样本，以及可能增加的内存、网络或交互代价。组件测试可保护行为，却不能用 Jest 的运行时长证明真机更快；验证范围见 [React Native 测试](testing.mdx#测试范围与运行环境)。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 开发模式很卡，为什么还要检查发布构建？ {#baseline}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：基线、诊断环境与测量成本。
+
+**相关内容**：[基线与分析环境](#基线与分析环境)
+
+<details>
+<summary>参考回答</summary>
+
+**开发检查、日志和调试工具会改变工作量，发布构建更接近目标用户的条件。** 先确认发布环境中的问题，再用合适的分析构建定位，最后在相同目标条件验证。普通生产构建默认不开启 React profiling，缺少回调也不能说明没有更新。
+
+</details>
+
+### 8.2 JS 线程忙时页面还在滚动，能说明没有性能问题吗？ {#threads}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：线程职责、事件响应与端到端延迟。
+
+**相关内容**：[JS 与原生工作](#JS与原生工作)
+
+<details>
+<summary>参考回答</summary>
+
+**不能，原生滚动可以继续部分工作，但 JS 事件处理和新内容准备仍可能延迟。** 还要观察点击响应、列表填充和原生绘制。新架构减少部分通信成本，也不能自动消除长 JS 任务或复杂原生工作。
+
+</details>
+
+### 8.3 React Profiler 的 actualDuration 能当作一帧的完整耗时吗？ {#profiler}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：组件渲染与原生显示的测量范围。
+
+**相关内容**：[组件更新与 React Profiler](#组件更新与ReactProfiler)
+
+<details>
+<summary>参考回答</summary>
+
+**不能，它反映对应 React 子树这次更新的渲染成本。** 原生布局、绘制、GPU、合成和显示还需要其他证据。baseDuration 也是子树成本估计，不能相减后直接得到节省的屏幕帧时间。
+
+</details>
+
+### 8.4 FlatList 快速滚动出现空白，增大窗口和批量有什么代价？ {#list-window}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：填充速度、响应性与内存。
+
+**相关内容**：[窗口、批量与内容复杂度](#窗口批量与内容复杂度)
+
+<details>
+<summary>参考回答</summary>
+
+**更大窗口会增加常驻内容，更大批量可能让 JS 连续执行更久。** 它们可能减少空白，也可能增加内存和点击延迟。应同时检查单项复杂度、图片、批次间隔与实际滚动条件，不把某组参数当成通用答案。
+
+</details>
+
+### 8.5 getItemLayout 为什么要计入分隔线，动态行高能直接使用固定值吗？ {#item-layout}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：尺寸契约、累计偏移与定位正确性。
+
+**相关内容**：[固定尺寸示例](#固定尺寸示例)
+
+<details>
+<summary>参考回答</summary>
+
+**偏移描述项目在内容中的位置，前面每条分隔线都会增加距离。** 示例行高 48、间隔 2，第 3 项索引为 2，偏移为 100。动态内容或字体改变真实高度时，固定值可能使定位不准确，需使用符合实际布局的信息或其他测量策略。
+
+</details>
+
+### 8.6 useNativeDriver 为什么不能解决全部动画卡顿？ {#animation}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：动画支持范围、JS 依赖与原生成本。
+
+**相关内容**：[原生驱动的适用范围](#原生驱动的适用范围)
+
+<details>
+<summary>参考回答</summary>
+
+**它只转移受支持的动画工作，不能自动处理任意布局属性或业务计算。** 初始准备、回调和复杂原生绘制仍有成本。需要确认卡顿所在阶段，再决定减少 JS 工作、调整动画属性还是优化原生界面。
+
+</details>
+
+### 8.7 退出页面后内存没有立即下降，就一定是 JS 内存泄漏吗？ {#memory}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：统计范围、持有关系和资源生命周期。
+
+**相关内容**：[图片与资源生命周期](#图片与资源生命周期)
+
+<details>
+<summary>参考回答</summary>
+
+**不能只凭一次数值判断，更不能直接归因于 JS。** 需要区分 JS 堆、原生与图像资源，观察重复操作后的趋势，并查订阅、缓存等持有路径。GC、缓存策略和原生释放时机都会影响观察结果。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+
+- [React Native 0.76：Performance Overview](https://github.com/react/react-native-website/blob/1e510146b8d4d17877f8890acd9e5709796633cc/website/versioned_docs/version-0.76/performance.md)
+- [React Native 0.76：Optimizing FlatList Configuration](https://github.com/react/react-native-website/blob/1e510146b8d4d17877f8890acd9e5709796633cc/website/versioned_docs/version-0.76/optimizing-flatlist-configuration.md)
+- [React Native 0.76：FlatList](https://github.com/react/react-native-website/blob/1e510146b8d4d17877f8890acd9e5709796633cc/website/versioned_docs/version-0.76/flatlist.md)
+- [React Native 0.76：Animations](https://github.com/react/react-native-website/blob/1e510146b8d4d17877f8890acd9e5709796633cc/website/versioned_docs/version-0.76/animations.md)
+- [React Native 0.76：Animated](https://github.com/react/react-native-website/blob/1e510146b8d4d17877f8890acd9e5709796633cc/website/versioned_docs/version-0.76/animated.md)
+- [React 18：Profiler API](https://legacy.reactjs.org/docs/profiler.html)
+- [React：memo](https://react.dev/reference/react/memo)

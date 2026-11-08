@@ -1,0 +1,288 @@
+---
+sidebar_position: 1
+knowledge:
+  id: basic-knowledge.database.storage.innodb
+  type: concept
+description: "以 MySQL 8.0 介绍 InnoDB 的事务存储职责、页与表空间、Buffer Pool 读取和淘汰，以及脏页刷写。对照 MyISAM 的事务、锁和缓存边界，通过回滚实验与状态指标解释提交、持久化、缓存命中和查询性能之间的关系。"
+keywords: ["InnoDB", "MyISAM", "Buffer Pool", "脏页", "存储引擎", "表空间"]
+---
+
+# InnoDB
+
+**InnoDB** 是 MySQL 8.0 默认的事务存储引擎，负责组织表和索引数据，并提供事务、并发控制与崩溃恢复能力。应用发出的 SQL 最终需要访问数据页：页面可能已经在内存，也可能需要从文件读取；修改后的页面又不一定立即写回文件。
+
+面试准备的重点是把这些环节连起来。既要说明 InnoDB 支持什么，也要解释 Buffer Pool 为什么能减少读取、脏页为什么不能直接丢弃，以及“提交成功”和“数据页全部刷盘”为什么是两回事。
+
+## 1. 面试核心 {#core}
+
+- **存储引擎实现表的数据存储和访问能力**。InnoDB 支持事务提交、回滚、MVCC 与记录级锁，但完整业务规则仍需正确的约束和事务边界。[卡](#innodb-features)
+- InnoDB 以**页**组织数据，默认页大小为 16 KiB；聚簇索引组织行数据，二级索引保存定位行所需的聚簇键。[卡](#innodb-storage)
+- **Buffer Pool 缓存表和索引页面，不缓存一条 SQL 的最终结果**。命中页面只减少相应读取，查询仍可能需要扫描、计算或等待锁。[卡](#buffer-pool-query-result)
+- 页面淘汰采用改进的 LRU 管理，新读入页面与反复访问的热页区别对待，减少一次性扫描挤走热页的机会。
+- **刷写把脏页的修改写回数据文件，淘汰则让页面离开缓存**；刷写后页面可以继续留在内存，事务提交也不要求同时刷完全部脏页。[卡](#dirty-page-flush-eviction)
+- MyISAM 不提供 InnoDB 的事务回滚和 MVCC，主要采用表级锁。**写了 `START TRANSACTION` 不能让 MyISAM 的修改变成可回滚操作**。[卡](#myisam-rollback)
+- 缓存与刷写问题要看**同一时间窗口的指标变化和 SQL 证据**，不能只凭高命中率宣布没有性能问题。[卡](#buffer-pool-diagnosis)
+
+## 2. 存储引擎的职责 {#存储引擎的职责}
+
+MySQL Server 接收 SQL，完成解析、优化等工作，再通过存储引擎接口访问表。**存储引擎**决定表的数据怎样组织、怎样读取和修改，以及支持哪些事务和并发能力。它不是 SQL 客户端，也不是另一个独立数据库服务。
+
+在 MySQL 8.0 中，没有改动默认引擎配置时，省略 `ENGINE` 的建表语句会使用 InnoDB。已有表却不一定使用当前默认引擎，因此判断某张表的行为要看它实际的引擎，不能只看服务器默认值。
+
+InnoDB 的事务能力主要体现在：
+
+- 一组 DML 修改可以提交或回滚，并通过日志参与崩溃恢复。
+- 一致性读可以读取符合当前事务视图的版本，写入则需要与冲突操作协调。
+- 主键、唯一约束及受支持的外键关系，可以由数据库强制检查。
+
+这些能力不能代替业务建模。例如两笔余额的总和必须保持不变，需要应用把相关修改放入正确的事务，并处理失败；一个远程 HTTP 请求也不会自动进入这个本地事务。ACID 和事务边界见 [数据库事务](../transaction/index.mdx)。InnoDB 分区表另有外键限制，见 [MySQL 分区](../partitioning.mdx#唯一键与外键限制)。
+
+## 3. 页、表空间与索引 {#页表空间与索引}
+
+**页**是 InnoDB 管理数据和执行缓存读写的基本单位之一，一页通常容纳多条记录，而不是一行占一页。MySQL 8.0 的默认 `innodb_page_size` 为 16384 字节，即 16 KiB；也可以在初始化实例前选择受支持的其他页大小，所以不能把 16 KiB 说成所有实例不可改变的常量。
+
+**表空间**是 InnoDB 管理页面存储的容器，落在相应的数据文件中。默认启用 `innodb_file_per_table` 时，普通未分区表通常使用独立的 `.ibd` 文件，里面同时保存该表的数据和索引。InnoDB 也支持共享表空间，因此“每张表永远对应一个独立文件”并不准确。
+
+InnoDB 使用聚簇索引组织行：叶子记录承载行数据，较长的变长值可能存到页外。二级索引记录保存聚簇键，读取未覆盖的列时再定位到聚簇记录。聚簇键选择、回表和页外值的边界由 [聚簇索引](../indices/clustered_index/index.mdx) 展开，索引导航与页面分裂见 [B+ 树](../indices/b_plus_tree/index.mdx)。
+
+这也解释了为什么记录数不能直接换算成文件页数：行宽、索引数量、页内开销、填充率和页外数据都影响空间。页的逻辑顺序也不代表它们在物理存储上相邻。
+
+## 4. Buffer Pool 的读取与淘汰 {#buffer-pool-的读取与淘汰}
+
+**Buffer Pool** 是 InnoDB 用来缓存表和索引页面的内存区域。同一个实例中的多张 InnoDB 表会使用它，不是每张表都独占一个只放自己数据的缓存。
+
+一次索引查询需要访问某个页面时，可以按下面的过程理解：
+
+1. 先确认页面是否已经在 Buffer Pool 中，并处于可访问状态。
+2. 如果已缓存，直接使用内存中的页面，继续定位记录和判断条件。
+3. 如果没有缓存，就需要安排读取，把页面载入后再访问；预读也可能提前载入后续页面。
+4. 缓存空间有限时，选择可以替换的页面为新页面让位。
+
+这里缓存的是页面。两条不同 SQL 可能复用同一个页面，同一条 SQL 也可能访问许多页面。命中 Buffer Pool 后，数据库仍要执行索引导航、条件过滤、版本判断和结果计算，所以不能把它等同于“直接返回上次查询结果”。
+
+### 4.1 改进的 LRU 与扫描影响 {#改进的-lru-与扫描影响}
+
+LRU 按最近使用情况选择淘汰对象。InnoDB 在这个思路上区分较新的热页区域和较旧页面区域，新读入页面先放入旧区域的前部，而不是一读入就占据最热的位置。
+
+页面能否移入热页区域，还受再次访问和 `innodb_old_blocks_time` 等条件影响。MySQL 8.0 默认的保护时间为 1000 毫秒，短时间的一次扫描即使访问一页中的多条记录，也不必把这页当成长时间反复使用的热页。
+
+这种管理减少了扫描污染，但不保证任意大扫描都不会影响缓存。工作集超过容量、扫描持续发生或访问分布改变时，热页仍可能被挤出。因此遇到扫描后查询变慢，要同时查看访问模式、数据文件读取和缓存容量，不能只背“使用 LRU”。
+
+### 4.2 内存容量的边界 {#内存容量的边界}
+
+`innodb_buffer_pool_size` 决定 Buffer Pool 的配置容量，设置时要给连接、排序、其他 MySQL 内存和操作系统留下空间。增加容量可能减少缺页读取，但不能直接解决锁冲突、低效 SQL 或写入存储瓶颈。
+
+如果为了扩大缓存而让整个进程和系统出现内存压力，反而可能使延迟更差。容量应根据工作集与整体内存预算确定，不套用一个对所有机器都成立的固定百分比。
+
+## 5. 脏页与后台刷写 {#脏页与后台刷写}
+
+**脏页**是已经在内存中修改、相应修改尚未写回数据文件的页面。**干净页**的缓存内容与相应数据文件状态已经一致。脏页不是“未提交数据页”的同义词：同一页面可能包含多个事务涉及的记录，事务状态与页面是否刷写属于不同维度。
+
+InnoDB 更新记录时，需要完成事务和锁相关处理，在内存页面上修改并生成日志。数据页可以稍后刷写，但必须满足相关 redo 先持久化的 WAL 条件；具体恢复保证见 [MySQL 事务日志](./transaction-logs.mdx#redo-与-wal)。
+
+刷写和淘汰需要分开理解：
+
+| 操作 | 改变什么 | 操作之后 |
+| --- | --- | --- |
+| 刷写脏页 | 把相应修改写回数据文件 | 页面可以继续留在 Buffer Pool；如果又被修改，仍会成为脏页 |
+| 淘汰页面 | 让页面离开缓存，释放可复用空间 | 后续访问可能需要重新读取 |
+
+一个满足淘汰条件的干净页可以直接让位；脏页不能直接丢弃，必须先按规则刷写。正在被使用或处理中的页面也不能仅凭“很久没访问”就强行移走。
+
+后台 page cleaner 负责刷写工作，既要为新页面保留可用空间，也要让较早的修改落入数据文件，帮助检查点推进。刷写策略会考虑脏页比例、redo 产生速度和存储能力，不能概括为“只有缓存满了才刷盘”。
+
+持续写入快于刷写能力时，前台可能等待可用页面，或因日志空间压力受到影响。刷写太猛也会与正常读写竞争存储资源。判断瓶颈要结合等待、I/O 延迟和负载变化，而不是看到脏页数量非零就认定数据库异常。
+
+## 6. 事务、锁与 MyISAM {#事务锁与-myisam}
+
+InnoDB 与 MyISAM 都能保存表数据并提供索引，但它们给应用的保证不同。以 MySQL 8.0 为准，可以先比较这些边界：
+
+| 能力 | InnoDB | MyISAM |
+| --- | --- | --- |
+| 事务提交与回滚 | 支持事务 DML | 不支持事务回滚 |
+| 并发读取 | 通过 MVCC 提供一致性读，锁定读另有加锁规则 | 不提供 InnoDB 式 MVCC |
+| 主要锁粒度 | 记录与索引范围，并有表级意向锁等机制 | 主要采用表级锁 |
+| 数据与索引缓存 | Buffer Pool 缓存表和索引页面 | 引擎 key cache 主要缓存索引，数据文件读取依赖操作系统等缓存 |
+| 外键约束 | 在受支持的表结构中提供检查 | 不提供外键检查 |
+| 崩溃后处理 | 依靠事务日志完成恢复 | 表检查与修复不等价于事务回滚与恢复 |
+
+InnoDB 支持记录级锁，不表示一条更新永远只锁最终命中的那一行。索引、扫描范围和隔离级别决定实际锁范围，见 [InnoDB 锁](../transaction/innodb-locking-ranges.mdx)。普通一致性读与锁定读也不能混为一谈。
+
+MyISAM 采用表级锁，也不意味着所有读取都必须串行：多个读取可以并行，在满足 `concurrent_insert` 等条件时，读取和尾部插入也可以并发。它不能因此获得 InnoDB 的事务语义。
+
+### 6.1 回滚行为的最小对照 {#回滚行为的最小对照}
+
+在独立练习库中创建两张只有存储引擎不同的表，再分别执行更新与回滚：
+
+```sql
+CREATE TABLE engine_demo_innodb (
+  id INT PRIMARY KEY,
+  balance INT NOT NULL
+) ENGINE=InnoDB;
+
+CREATE TABLE engine_demo_myisam (
+  id INT PRIMARY KEY,
+  balance INT NOT NULL
+) ENGINE=MyISAM;
+
+INSERT INTO engine_demo_innodb VALUES (1, 100);
+INSERT INTO engine_demo_myisam VALUES (1, 100);
+
+START TRANSACTION;
+UPDATE engine_demo_innodb SET balance = 80 WHERE id = 1;
+ROLLBACK;
+
+START TRANSACTION;
+UPDATE engine_demo_myisam SET balance = 80 WHERE id = 1;
+ROLLBACK;
+SHOW WARNINGS;
+
+SELECT 'InnoDB' AS engine, balance FROM engine_demo_innodb
+UNION ALL
+SELECT 'MyISAM' AS engine, balance FROM engine_demo_myisam
+ORDER BY engine;
+```
+
+InnoDB 的 `balance` 恢复为 100，MyISAM 仍为 80；MyISAM 的回滚会报告不能回滚非事务表的警告。`START TRANSACTION` 只是请求事务边界，并不能给不支持事务的引擎补上 undo 等机制。
+
+如果一个业务同时修改事务表与非事务表，失败时就不能期待全部撤销。选择引擎时先确认原子性和并发要求，再做有代表性的性能比较，不能仅凭“某引擎查询更快”决定。
+
+## 7. Buffer Pool 的观测 {#buffer-pool-的观测}
+
+可以先查看页面配置与少量相关指标：
+
+```sql
+SELECT @@innodb_page_size AS page_bytes,
+       @@innodb_buffer_pool_size AS buffer_pool_bytes;
+
+SHOW GLOBAL STATUS
+WHERE Variable_name IN (
+  'Innodb_buffer_pool_read_requests',
+  'Innodb_buffer_pool_reads',
+  'Innodb_buffer_pool_pages_dirty',
+  'Innodb_buffer_pool_pages_flushed',
+  'Innodb_buffer_pool_wait_free'
+);
+```
+
+默认页大小对应 `page_bytes=16384`，其他结果取决于实例配置和运行负载，不应照抄一个固定输出。几个指标需要分别解释：
+
+- `Innodb_buffer_pool_read_requests` 是逻辑读取请求数；`Innodb_buffer_pool_reads` 是不能从 Buffer Pool 满足、需要从数据文件读取的逻辑读取数。后者也不能简单换算成底层介质实际执行的 I/O 次数。
+- `Innodb_buffer_pool_pages_dirty` 是当前脏页数量，属于时刻值。
+- `Innodb_buffer_pool_pages_flushed` 反映累计页面刷写请求，`Innodb_buffer_pool_wait_free` 记录为了取得可用页面而等待刷写的次数。
+
+累计计数应在同一负载窗口采样两次，用差值观察变化，并排除实例重启等计数重置。逻辑读取差值大于零时，可以用 `1 - Δreads / Δread_requests` 粗略观察 Buffer Pool 的读取命中情况；这个比例不是某条 SQL 的命中率，更不是端到端响应时间。
+
+例如命中率很高，查询仍可能扫描大量内存页、做昂贵排序或等待热点记录锁。需要把指标和 [执行计划](../indices/execution-plan.mdx)、SQL 耗时、锁等待及存储延迟放在一起判断。只有证据指向容量不足，扩大 Buffer Pool 才是相应的解决方向。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 MySQL 存储引擎负责什么，InnoDB 支持哪些事务能力？ {#innodb-features}
+
+**考察重点**：Server 与引擎分工、事务能力及业务边界。
+
+**相关内容**：[存储引擎的职责](#存储引擎的职责)、[事务、锁与 MyISAM](#事务锁与-myisam)。
+
+<details>
+<summary>参考回答</summary>
+
+**存储引擎负责表的数据组织和访问；InnoDB 支持事务提交、回滚、MVCC、锁与崩溃恢复。** Server 处理 SQL 解析与优化等工作，再调用引擎访问数据。
+
+InnoDB 的能力让相关 DML 可以放在同一个事务内，但业务仍需正确设计约束与事务边界，处理并发冲突和失败。远程调用、非事务表修改不会因此自动获得相同保证。
+
+</details>
+
+### 8.2 InnoDB 怎样组织表和索引，页、聚簇索引与表空间是什么关系？ {#innodb-storage}
+
+**考察重点**：物理存储管理单位与逻辑索引组织的关系。
+
+**相关内容**：[页、表空间与索引](#页表空间与索引)、[聚簇索引](../indices/clustered_index/index.mdx#聚簇索引)。
+
+<details>
+<summary>参考回答</summary>
+
+**InnoDB 以页管理存储，页面归入表空间；聚簇索引用这些页面组织行数据，二级索引保存索引列与聚簇键。** 默认页大小为 16 KiB，但实例初始化前可以选择受支持的其他大小。
+
+默认独立表空间下，普通表的数据与索引位于同一个 `.ibd` 文件；共享表空间也存在。页数还受行宽、索引、填充率和页外数据影响，不能把一行等同于一页。
+
+</details>
+
+### 8.3 查询命中 Buffer Pool，为什么仍需要执行 SQL，也可能很慢？ {#buffer-pool-query-result}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：页面缓存与结果缓存的区别，以及查询剩余成本。
+
+**相关内容**：[Buffer Pool 的读取与淘汰](#buffer-pool-的读取与淘汰)。
+
+<details>
+<summary>参考回答</summary>
+
+**Buffer Pool 缓存页面，命中只是免去相应页面的重新读取，不会直接返回上一次 SQL 的结果。** 数据库仍要导航索引、过滤记录、判断版本并计算结果，也可能等待锁。
+
+因此大量内存扫描、排序或热点锁竞争仍能造成高延迟。要根据执行计划和等待证据判断，不把扩大缓存当成所有慢查询的解法。
+
+</details>
+
+### 8.4 刷写脏页和淘汰页面有什么区别，事务提交会同时完成它们吗？ {#dirty-page-flush-eviction}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：内存状态、数据文件、缓存空间和事务提交的区别。
+
+**相关内容**：[脏页与后台刷写](#脏页与后台刷写)。
+
+<details>
+<summary>参考回答</summary>
+
+**刷写把修改保存到数据文件，淘汰让页面离开缓存，提交则完成事务结果与相应日志要求。** 它们不是同一个操作。
+
+页面刷写后可以继续被缓存；准备淘汰的脏页必须先按规则刷写。提交可以依赖 WAL 与日志持久化完成恢复保护，不要求同步刷完全部数据页，更不要求提交后立即淘汰它们。
+
+</details>
+
+### 8.5 为什么 MyISAM 表执行了 START TRANSACTION 和 ROLLBACK，修改仍然存在？ {#myisam-rollback}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：引擎能力、事务边界与混合引擎的原子性限制。
+
+**相关内容**：[事务、锁与 MyISAM](#事务锁与-myisam)、[回滚行为的最小对照](#回滚行为的最小对照)。
+
+<details>
+<summary>参考回答</summary>
+
+**MyISAM 不支持事务回滚，事务语句不能给它增加这项能力。** 示例更新已经改变 MyISAM 表，随后 `ROLLBACK` 无法撤销，并产生相应警告；InnoDB 的同样更新则恢复原值。
+
+一个业务若混用事务表和非事务表，必须认识到失败不能保证全部撤销。原子性要求应先决定数据与引擎方案，不能靠在外面补一条 `START TRANSACTION` 解决。
+
+</details>
+
+### 8.6 Buffer Pool 命中率很高，怎样判断是否还存在缓存或刷写问题？ {#buffer-pool-diagnosis}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：累计计数与时刻值、时间窗口、SQL 和存储证据。
+
+**相关内容**：[Buffer Pool 的观测](#buffer-pool-的观测)、[脏页与后台刷写](#脏页与后台刷写)。
+
+<details>
+<summary>参考回答</summary>
+
+**先在同一负载窗口看读取、刷写和等待的增量，再结合 SQL 计划与存储延迟判断。** 高命中率只说明大量逻辑读取由缓存满足，可能掩盖少量昂贵读取，也不排除大量内存扫描、锁等待或刷写压力。
+
+同时观察当前脏页量、刷写请求变化和 `Innodb_buffer_pool_wait_free`，检查是否出现等可用页的现象。调整容量或刷写策略应针对已有证据，不能只追求一个更好看的比例。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+
+- [MySQL 8.0：Introduction to InnoDB](https://dev.mysql.com/doc/refman/8.0/en/innodb-introduction.html)
+- [MySQL 8.0：innodb_page_size](https://dev.mysql.com/doc/refman/8.0/en/innodb-parameters.html#sysvar_innodb_page_size)
+- [MySQL 8.0：File-Per-Table Tablespaces](https://dev.mysql.com/doc/refman/8.0/en/innodb-file-per-table-tablespaces.html)
+- [MySQL 8.0：Buffer Pool](https://dev.mysql.com/doc/refman/8.0/en/innodb-buffer-pool.html)
+- [MySQL 8.0：Making the Buffer Pool Scan Resistant](https://dev.mysql.com/doc/refman/8.0/en/innodb-performance-midpoint_insertion.html)
+- [MySQL 8.0：Configuring Buffer Pool Flushing](https://dev.mysql.com/doc/refman/8.0/en/innodb-buffer-pool-flushing.html)
+- [MySQL 8.0：The MyISAM Storage Engine](https://dev.mysql.com/doc/refman/8.0/en/myisam-storage-engine.html)
+- [MySQL 8.0：Optimizing MyISAM Queries，表级锁与并发插入](https://dev.mysql.com/doc/refman/8.0/en/optimizing-queries-myisam.html)
+- [MySQL 8.0：Server Status Variables](https://dev.mysql.com/doc/refman/8.0/en/server-status-variables.html)

@@ -1,0 +1,525 @@
+---
+sidebar_position: 2
+knowledge:
+  id: frontend.performance.resource-loading
+---
+
+# Web 资源加载
+
+Web 资源加载优化首先要找到当前页面真正需要的内容，以及它依赖哪些请求和执行步骤。让关键资源更早被发现、减少不必要的字节与计算、延后当前不需要的工作，通常比不分用途地压缩所有文件更容易解释和验证。
+
+首屏图片、路由代码、字体和接口数据的加载条件不同。图片懒加载解决离屏资源过早下载，代码分割调整模块交付边界，预加载则提前准备当前页的重要资源；把它们混用，可能反而延迟用户需要的内容。
+
+## 1. 面试核心 {#core}
+
+- **加载优化要沿关键请求链定位：发现、排队、传输、解析执行和呈现分别判断**。先确认 FCP、LCP 或业务可用时间，再说明动作影响哪一段。[卡](#loading-plan)
+- **传输压缩、代码压缩和图片编码是不同机制**。gzip/Brotli 减少传输字节，不会自动减少解压后的 JavaScript 解析与执行工作。[卡](#compression-types)
+- **图片应同时考虑尺寸、编码、质量、加载时机和空间预留**。只换格式或降低质量，不保证每个页面的首屏都明显改善。[卡](#image-compression)
+- **picture 的格式选择与 srcset/sizes 的尺寸选择不同**。CSS 把大图缩小，不代表浏览器下载的是小图。[卡](#image-selection)
+- **首屏关键图片应尽早被发现，离屏图片才适合懒加载**。不要给 LCP 图片机械加上 loading="lazy"。[卡](#lazy-images)
+- **IntersectionObserver 异步观察交叉状态，不需要每次滚动手动读所有元素位置**；它不是任意遮挡和实际可见像素的完整检测器。[卡](#intersection-observer)
+- **preload 提前获取当前页资源，prefetch 提示可能的后续需要，preconnect 提前准备连接**。提示过多会竞争资源；preload 的 URL、用途和跨源模式还要与后续消费匹配。[卡](#resource-hints)
+- **动态 import 可以把模块加载推迟到需要时，但分包不等于删除代码，也不保证所有拆包都减少关键路径**。[卡](#code-splitting)
+- **网络请求完成不等于页面可用**。大接口的解析、对象分配与渲染也可能成为瓶颈，需要减少无用数据或分批处理。[卡](#large-response)
+
+## 2. 关键路径与测量 {#关键路径与测量}
+
+### 2.1 先确定用户等待的对象 {#先确定用户等待的对象}
+
+页面变慢可能发生在多个阶段：服务器迟迟不返回 HTML，浏览器很晚才知道图片地址，脚本下载后长时间执行，或者数据已经到达但布局与渲染仍很重。相同的“白屏很久”，不一定需要相同优化。
+
+先在性能面板与网络面板里确定具体对象，再选择动作：
+
+| 观察到的现象 | 优先检查 | 可能的动作 |
+| --- | --- | --- |
+| HTML 首字节晚 | 连接、网络、服务端处理、缓存命中 | 缩短响应链路，改善可缓存内容的复用 |
+| 关键图片请求很晚才开始 | 图片地址是否藏在脚本、样式或后续接口中 | 让 HTML 更早暴露资源，必要时预加载 |
+| 传输时间长 | 传输大小、带宽、编码和缓存 | 合适压缩、图片尺寸、减少无用依赖 |
+| 脚本执行占用主线程 | 初始代码、第三方逻辑、重复计算 | 按需加载、减少工作、分块或 Worker |
+| 资源到达后仍迟迟不呈现 | 样式、布局、字体、渲染依赖 | 减少阻塞，调整关键资源和渲染工作 |
+
+FCP、LCP、INP 等定义和统计口径见 [Web 性能指标](./metrics.mdx)。HTTP/2 多路复用等机制也不意味着带宽、CPU 或服务端容量无限，不能据此无限增加并发请求。
+
+### 2.2 用资源时间区分字节和耗时 {#用资源时间区分字节和耗时}
+
+Resource Timing 提供资源条目的时长和大小信息：
+
+```js
+function reportResource(name) {
+  const url = new URL(name, location.href).href;
+  const entries = performance.getEntriesByName(url, 'resource');
+  const entry = entries.at(-1);
+  if (!entry) return;
+  console.log({
+    initiatorType: entry.initiatorType,
+    duration: entry.duration,
+    transferSize: entry.transferSize,
+    encodedBodySize: entry.encodedBodySize,
+    decodedBodySize: entry.decodedBodySize,
+  });
+}
+```
+
+`encodedBodySize` 与传输编码后的正文大小有关，`decodedBodySize` 是移除这层传输编码后的正文大小，`transferSize` 还计入用于表示响应头的固定开销，并非逐字节抓包结果。字段可用性受同源、CORS、Timing-Allow-Origin、缓存和浏览器实现影响，不能仅凭某个字段为 0 就断定请求没有发生。
+
+把时间线、响应头和服务端记录结合起来，才能判断是缓存命中、权限限制还是确实少传了数据。构建目录里一个文件的大小，也不能直接当作用户本次网络传输量。
+
+## 3. 压缩、缓存与交付 {#压缩缓存与交付}
+
+### 3.1 三种压缩处理不同对象 {#三种压缩处理不同对象}
+
+| 方式 | 主要处理对象 | 对加载链路的影响 |
+| --- | --- | --- |
+| gzip、Brotli 等传输压缩 | HTML、CSS、JavaScript、JSON 等响应字节 | 减少传输量，接收后仍要解压 |
+| JavaScript/CSS 压缩与安全删除 | 空白、标识符、不可达或未使用代码等 | 减少源码与部分执行负担，依赖正确分析 |
+| 图片编码与质量调整 | 图像像素的表示方式 | 改变文件大小、质量和解码成本 |
+
+服务器通常根据 `Accept-Encoding` 选择支持的编码，通过 `Content-Encoding` 告知浏览器，并正确处理 `Vary: Accept-Encoding` 等缓存区分。没有发送对应编码字节，却只添加响应头，会让浏览器解码失败。
+
+已经高度压缩的图片、视频再次使用通用传输压缩，收益通常有限，仍需要测量成本。传输层压缩也不会把解压后的大型 JavaScript 自动变成更少的逻辑：解析、编译和执行仍可能很重。
+
+删除未使用模块属于构建分析，和压缩传输字节不同。具体规则见 [Tree Shaking](../../basic-knowledge/javascript/tree-shaking.mdx#产物验证与代码分包)。
+
+### 3.2 缓存与 CDN 的职责 {#缓存与cdn的职责}
+
+可长期复用的静态资源通常采用带内容版本的 URL，再配合合适的缓存规则。HTML 或入口清单则要能够及时引用新的资源版本。不能只把所有文件都设置很长的有效期，却没有版本更新办法。
+
+CDN 可以让可缓存内容在更接近用户的位置响应，减少回源或链路成本，但不会自动优化页面内的依赖顺序、脚本长任务和错误的缓存键。是否适合缓存，还取决于响应是否公共、如何失效以及是否包含用户状态。
+
+缓存命中、新鲜度与条件请求见 [HTTP 缓存](../../basic-knowledge/network/http-cache.mdx)。CDN 与浏览器缓存的层次不同，不能仅因为本地曾经打开过，就认为每位新用户都能复用相同数据。
+
+## 4. 图片与字体 {#图片与字体}
+
+### 4.1 图片优化不只是降低质量 {#图片优化不只是降低质量}
+
+图片需要同时匹配显示尺寸、设备像素密度与内容特点。一个只显示为 300 像素宽的区域，不应无条件下载几千像素的大图；但高像素密度屏幕又可能需要更多实际像素。
+
+JPEG 适合许多照片场景；PNG 提供无损表示和透明等能力；WebP 提供有损、无损及透明等模式；AVIF 在一些场景下可以获得较好的压缩效果，但编码、解码成本和目标环境仍需评估；SVG 则适合可以用矢量表达的图形，不是照片的通用替代品。
+
+不能把 WebP 简化为“从 PNG 删除了几个字段”。编码方式、是否有损、预测和压缩策略、图像内容及元信息都会影响大小。比较时应看同一视觉质量下的文件与解码成本，而不是只看扩展名。
+
+质量压缩可能缩短关键图片的传输时间，从而改善首屏；如果图片不在关键路径，或者真正耗时在 HTML 响应与主线程执行，收益就可能有限。应通过资源时间与 LCP 元素验证。
+
+### 4.2 格式回退与响应式图片 {#格式回退与响应式图片}
+
+`picture` 可以根据浏览器支持的类型等条件选择资源，`srcset` 与 `sizes` 则帮助浏览器根据候选宽度、布局尺寸和像素密度选择图片：
+
+```html
+<picture>
+  <source
+    type="image/webp"
+    srcset="/images/card-480.webp 480w, /images/card-960.webp 960w"
+    sizes="(max-width: 600px) 100vw, 480px"
+  >
+  <img
+    src="/images/card-480.png"
+    srcset="/images/card-480.png 480w, /images/card-960.png 960w"
+    sizes="(max-width: 600px) 100vw, 480px"
+    width="480"
+    height="320"
+    alt="课程介绍"
+    style="max-width: 100%; height: auto"
+  >
+</picture>
+```
+
+这里宽度描述符用于候选尺寸，`sizes` 应反映实际布局。选中的资源可以通过 `img.currentSrc` 查看；浏览器还会结合缓存和自己的策略选择，不能把每次选择都写死为简单的某个乘法结果。
+
+为图片声明宽高或合理的 `aspect-ratio`，可以在内容到达前预留比例，减少布局跳动。`picture` 的格式支持回退并不等于网络错误自动回退：浏览器选中了 WebP，但该 URL 返回 404 时，不应假定它会自动改请求 PNG。
+
+响应式图片的尺寸规则详见 [响应式布局](../css/responsive-layout.mdx#响应式图片与细线)。
+
+### 4.3 关键图片与加载提示 {#关键图片与加载提示}
+
+首屏关键图片应尽早被发现。若图片本来就在 HTML 中，直接声明准确地址通常比等待脚本运行后再设置更直接；若资源因样式或其他依赖很晚才被发现，可以评估预加载：
+
+```html
+<link rel="preload" as="image" href="/images/hero.png" fetchpriority="high">
+<img src="/images/hero.png" width="960" height="640" fetchpriority="high" alt="页面主图">
+```
+
+`fetchpriority="high"` 是相对优先级提示，不保证请求绝对最先完成，也不会减少图片字节。不要给所有图片都标 high，否则难以表达真实优先级。
+
+LCP 图片不应机械使用 `loading="lazy"`。`decoding="async"` 主要是解码调度提示，不等于懒加载，更不会把网络请求变成“只在滚到图片时才发送”。
+
+### 4.4 字体显示与空间稳定性 {#字体显示与空间稳定性}
+
+字体可能影响文字何时出现，以及替换字体时是否发生布局变化。`font-display: swap` 允许较快使用回退字体显示，再在字体可用后替换；它改善可见性，但字体度量差异仍可能带来偏移。
+
+```html
+<link rel="preload" href="/fonts/demo.woff2" as="font" type="font/woff2" crossorigin>
+<style>
+  @font-face {
+    font-family: Demo;
+    src: url('/fonts/demo.woff2') format('woff2');
+    font-display: swap;
+  }
+  .title { font-family: Demo, sans-serif; }
+</style>
+<h1 class="title">Course</h1>
+```
+
+字体预加载应与实际字体请求的 URL、类型及跨源模式匹配，字体场景即使同源也通常需要相应的 `crossorigin` 声明。只预加载真正需要的字体与字重；拆分字符范围、使用合适回退字体和减少无用字形也有助于控制成本。
+
+## 5. 图片懒加载 {#图片懒加载}
+
+### 5.1 原生懒加载 {#原生懒加载}
+
+**懒加载**是在资源接近需要时才开始加载，减少初始阶段的无用请求。离屏图片可以先采用原生能力：
+
+```html
+<img
+  src="/images/detail.png"
+  loading="lazy"
+  decoding="async"
+  width="480"
+  height="320"
+  alt="课程详情"
+>
+```
+
+浏览器决定提前多远开始加载，不是保证图片进入视口那一瞬间才发送请求。声明宽高有助于布局和加载判断；原生懒加载也应在目标浏览器与页面环境中验证。
+
+首屏关键图片仍应正常加载。对滚动很长的列表，懒加载减少网络工作，虚拟列表减少同时存在的渲染节点，两者解决的问题不同。
+
+### 5.2 IntersectionObserver 的实现 {#intersectionobserver的实现}
+
+**IntersectionObserver** 让浏览器异步通知目标与根区域的交叉变化。`root: null` 采用视口，`rootMargin` 可扩展判断区域，从而提前准备即将进入视口的内容。
+
+以下示例把地址放在 `data-src`，进入视口外 200 像素的预备区域后才赋给 `src`：
+
+```html
+<img data-src="/images/lesson.png" width="480" height="320" alt="课程配图">
+<script>
+  function installLazyImages(root = document) {
+    const controller = new AbortController();
+    const images = [...root.querySelectorAll('img[data-src]')];
+    const load = image => {
+      const source = image.dataset.src;
+      if (!source) return;
+      delete image.dataset.src;
+      image.dataset.state = 'loading';
+      image.addEventListener('load', () => {
+        image.dataset.state = 'loaded';
+      }, { once: true, signal: controller.signal });
+      image.addEventListener('error', () => {
+        image.dataset.state = 'error';
+      }, { once: true, signal: controller.signal });
+      image.src = source;
+    };
+    let observer;
+    if ('IntersectionObserver' in window) {
+      observer = new IntersectionObserver(entries => {
+        for (const entry of entries) {
+          if (!entry.isIntersecting) continue;
+          observer.unobserve(entry.target);
+          load(entry.target);
+        }
+      }, { root: null, rootMargin: '200px 0px', threshold: 0 });
+      for (const image of images) observer.observe(image);
+    } else {
+      for (const image of images) load(image);
+    }
+    return () => {
+      observer?.disconnect();
+      controller.abort();
+    };
+  }
+  const disposeLazyImages = installLazyImages();
+  // 组件卸载时调用 disposeLazyImages()。
+</script>
+```
+
+开始加载前先取消观察，避免反复进入视口触发重复赋值。加载失败记录为 error，由界面提供明确反馈或重试入口，不在错误回调里无限重试。
+
+这个函数观察调用时已有的图片。后续插入的节点需要继续调用相应观察逻辑；不要以为一次 querySelectorAll 会自动包含未来节点。清理观察器和事件监听，也不代表已经发出的图片请求一定被取消。
+
+交叉状态不等于完整可见性：元素可能被其他内容遮挡，或受到透明度等影响。基础 IntersectionObserver 适合判断接近或进入区域，不是精确的广告曝光或可见像素统计器。
+
+### 5.3 手动滚动判断的核心 {#手动滚动判断的核心}
+
+如果题目要求使用滚动事件，核心是初次检查、矩形相交判断、限制检查频率和清理监听。视口矩形可以从 `getBoundingClientRect()` 与窗口尺寸得到：
+
+```js
+function isNearViewport(element, margin = 200) {
+  const rect = element.getBoundingClientRect();
+  return rect.bottom > -margin && rect.top < innerHeight + margin &&
+    rect.right > -margin && rect.left < innerWidth + margin;
+}
+```
+
+在页面初始状态、滚动和视口尺寸变化后检查尚未加载的图片，满足条件时设置真实地址并移出待检查集合。不要只监听 scroll 而漏掉初始可见图片，也不要每轮重新处理已经加载的节点。
+
+滚动处理中应减少反复读写布局，使用合适的节流或 rAF 合并检查，并在组件卸载时移除监听。嵌套滚动容器还需要改用容器的可见区域；基础实现不能无条件照搬整页窗口坐标。
+
+## 6. 预加载与连接准备 {#预加载与连接准备}
+
+### 6.1 几种资源提示的分工 {#几种资源提示的分工}
+
+| 提示 | 主要目的 | 边界 |
+| --- | --- | --- |
+| preload | 提前获取当前页确定需要的资源 | 不会仅因下载就执行脚本或应用样式 |
+| modulepreload | 为模块提前获取并准备模块相关工作 | 不是提前执行模块；依赖处理与浏览器实现有关 |
+| prefetch | 提示将来可能需要的资源 | 是否执行及何时执行由浏览器策略决定 |
+| preconnect | 提前准备到目标源的连接 | 不是下载资源，过多连接有成本 |
+| dns-prefetch | 提前做 DNS 解析 | 不包含完整连接建立与资源下载 |
+
+提前准备不意味着越多越好。错误的提示会消耗用户没有用到的带宽、连接和缓存空间，还可能和关键请求竞争。
+
+### 6.2 预加载需要匹配实际消费 {#预加载需要匹配实际消费}
+
+预加载与消费方需要匹配正确 URL、资源用途和相应请求模式。`as` 帮助浏览器判断资源类别及相关处理；跨源和字体等场景还要检查 `crossorigin`。地址、候选尺寸或模式不一致，可能造成重复请求或预加载资源未被使用。
+
+响应式图片的预加载还要对应实际候选规则，不能先下载固定大图，又让 `srcset` 选择另一张图。浏览器控制台的未使用预加载提示、网络请求和资源时间能帮助发现这类问题。
+
+`modulepreload` 可以用在已确认需要的模块上：
+
+```html
+<link rel="modulepreload" href="/report.js">
+```
+
+它提前准备模块，但不会仅因为这条 link 就执行模块顶层逻辑。是否值得预加载，应依据使用概率和关键路径；不应把所有动态模块预加载后又宣称它们全部被延迟到使用时才下载。
+
+## 7. 代码分割与数据加载 {#代码分割与数据加载}
+
+### 7.1 动态导入与功能边界 {#动态导入与功能边界}
+
+**代码分割**把应用代码组织成可以分别交付的部分，**按需加载**决定何时请求这些部分。动态 `import()` 常作为拆分和延迟加载的入口，但最终是否拆成独立产物还取决于构建工具、依赖关系和配置。
+
+下面在用户打开报告时才导入模块，并处理等待与失败：
+
+```html
+<button id="open-report">打开报告</button>
+<output id="report-state"></output>
+<section id="report"></section>
+<script type="module">
+  const button = document.querySelector('#open-report');
+  const state = document.querySelector('#report-state');
+  let pendingModule;
+  function loadReport() {
+    if (!pendingModule) {
+      pendingModule = import('./report.js').catch(error => {
+        pendingModule = undefined;
+        throw error;
+      });
+    }
+    return pendingModule;
+  }
+  button.addEventListener('click', async () => {
+    button.disabled = true;
+    state.textContent = '正在加载';
+    try {
+      const { renderReport } = await loadReport();
+      renderReport(document.querySelector('#report'));
+      state.textContent = '已就绪';
+    } catch {
+      state.textContent = '加载失败，请检查网络或刷新页面';
+    } finally {
+      button.disabled = false;
+    }
+  });
+</script>
+```
+
+同目录的 `report.js`：
+
+```js
+export function renderReport(container) {
+  container.textContent = '报告内容';
+}
+```
+
+首次点击会等待模块加载与求值，后续复用这个 Promise 和模块实例。失败时清掉应用保存的 Promise，使后续调用可以再次尝试；浏览器对部分模块失败也可能有缓存，尤其是模块执行错误，不能保证仅清掉这个变量就能修复损坏的发布。
+
+路由懒加载是在进入某个路由时取得相应模块，组件懒加载是在需要该组件时取得代码，两者通常都建立在模块边界之上。IntersectionObserver 可以作为“接近视口”的触发条件，但它不会自己完成框架组件代码拆分。
+
+模块缓存与动态导入见 [ES Module 与 CommonJS](../../basic-knowledge/javascript/modules.mdx#动态导入与浏览器加载)。
+
+### 7.2 分包的收益与代价 {#分包的收益与代价}
+
+按路由、功能和使用频率拆分，可能减少初始下载与执行；提取共享依赖，可以减少重复代码并改善复用。但拆得太碎也会增加请求与依赖链，过度合并则可能让用户下载很多当前不用的功能。
+
+分包不等于 Tree Shaking：前者改变代码交付边界，后者尝试删除可证明不需要的部分。也不要把某个构建工具的专有配置名当作通用 API，例如 webpack 的 SplitChunks 并不是所有构建工具都具有的同名配置。
+
+需要检查初始入口实际请求哪些 chunk、动态模块依赖哪些共享文件、是否重复打包，以及发布后旧页面引用的文件是否仍可取得。不能只统计产物文件数量就判断优化成功。
+
+### 7.3 大接口响应的完整成本 {#大接口响应的完整成本}
+
+大接口除了网络传输，还需要读取正文、解析 JSON、分配对象，并让界面处理这些数据。传输压缩可以减少字节，但不会自动消除解压后的解析和渲染成本。
+
+优先考虑只返回当前需要的字段、分页或按需获取、合适缓存，以及避免重复请求。大量数据已经到达时，可以按业务协议分批处理，减少一次性主线程工作；渲染大量列表还要控制同时存在的节点数量。
+
+`response.json()` 会等待并解析整个 JSON 正文，不是逐条记录的流式迭代接口。确需流式数据时，服务端协议、增量解析、错误处理和界面提交都要配合，不能只给普通 JSON 请求增加一个前端循环就变成流式。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 首屏加载慢，可以从哪些方面优化？ {#loading-plan}
+
+**考察重点**：关键请求链、网络与执行成本、改动的适用条件。
+
+**相关内容**：[先确定用户等待的对象](#先确定用户等待的对象)。
+
+<details>
+<summary>参考回答</summary>
+
+**先确认等待的是 HTML、关键图片、脚本执行还是数据渲染，再沿关键路径处理。** 可选动作包括改善响应与缓存、让关键资源更早被发现、压缩和减少传输、调整图片尺寸、延后非关键代码，以及减少主线程与渲染工作。
+
+每个动作都要说明影响哪段时间，并用相同条件的资源时间、FCP、LCP 或业务指标验证，不能只列一组工具名。
+
+</details>
+
+### 8.2 gzip、代码压缩和图片压缩分别解决什么问题？ {#compression-types}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：传输编码、源码处理与图像表示的区别。
+
+**相关内容**：[三种压缩处理不同对象](#三种压缩处理不同对象)。
+
+<details>
+<summary>参考回答</summary>
+
+**gzip/Brotli 主要减少传输字节，代码压缩和安全删除处理源码与依赖，图片压缩改变图像表示及质量。** 它们影响的对象不同，可以组合，但不能互相替代。
+
+响应头要与实际编码一致。传输压缩后的代码仍需解压、解析和执行，已经压缩的媒体再次通用压缩也不保证有明显收益。
+
+</details>
+
+### 8.3 图片质量压缩为什么可能缩短首屏时间？WebP 只是删掉 PNG 字段吗？ {#image-compression}
+
+**考察重点**：关键路径、图像编码、质量与解码代价。
+
+**相关内容**：[图片优化不只是降低质量](#图片优化不只是降低质量)。
+
+<details>
+<summary>参考回答</summary>
+
+**图片在关键路径上时，减少传输字节可以缩短它的下载等待，但不保证整体时间按相同比例下降。** 还要考虑资源发现、网络、解码与主线程工作。
+
+WebP 不是从 PNG 简单删除几个字段；编码方式、是否有损、图像内容及参数都会影响结果。应在可接受视觉质量下比较尺寸和成本，并提供目标环境需要的回退。
+
+</details>
+
+### 8.4 桌面与移动端怎样加载合适尺寸的图片，并处理格式兼容？ {#image-selection}
+
+**考察重点**：picture、srcset、sizes、像素密度与布局预留。
+
+**相关内容**：[格式回退与响应式图片](#格式回退与响应式图片)。
+
+<details>
+<summary>参考回答</summary>
+
+**使用 picture 提供格式选择，用 srcset 的候选和准确的 sizes 描述布局尺寸，让浏览器结合环境选择。** CSS 缩小大图不等于少下载字节，选择结果可以查看 currentSrc。
+
+声明尺寸或比例以减少布局跳动。格式不受支持的回退与网络错误回退不同，选中资源返回 404 时不应假定浏览器一定改用下一张图。
+
+</details>
+
+### 8.5 图片懒加载怎么实现，首屏图片也应该懒加载吗？ {#lazy-images}
+
+**考察重点**：延迟时机、初始可见内容、资源请求与渲染成本。
+
+**相关内容**：[原生懒加载](#原生懒加载)、[IntersectionObserver 的实现](#intersectionobserver的实现)、[手动滚动判断的核心](#手动滚动判断的核心)。
+
+<details>
+<summary>参考回答</summary>
+
+**离屏图片可使用 loading="lazy"，或先把地址放在 data-src，接近可视区域时再赋给 src。** 自定义实现可以用 IntersectionObserver；手动滚动判断还要做初次检查、矩形相交、频率控制与清理。
+
+首屏关键或 LCP 图片应尽早加载，不能机械延迟。图片需要预留尺寸并处理失败；懒加载减少网络工作，不等于减少所有 DOM 节点。
+
+</details>
+
+### 8.6 图片懒加载怎样使用 IntersectionObserver？ {#intersection-observer}
+
+**考察重点**：异步交叉通知、提前加载、重复处理与生命周期。
+
+**相关内容**：[IntersectionObserver 的实现](#intersectionobserver的实现)。
+
+<details>
+<summary>参考回答</summary>
+
+**rootMargin 调整根区域的判断边界，正值可以在目标接近视口时提前加载。** 交叉通知是异步的，满足条件后取消观察并移除待加载标记，可避免重复处理。
+
+组件卸载时断开观察和监听，新插入节点需继续观察。基础交叉状态不等于像素完全可见，不能忽略遮挡等条件直接当成精确曝光结果。
+
+</details>
+
+### 8.7 preload、prefetch、preconnect 和 modulepreload 有什么区别？ {#resource-hints}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：当前资源、未来资源、连接准备和模块语义。
+
+**相关内容**：[几种资源提示的分工](#几种资源提示的分工)、[预加载需要匹配实际消费](#预加载需要匹配实际消费)。
+
+<details>
+<summary>参考回答</summary>
+
+**preload 提前获取当前页确定需要的资源，prefetch 提示将来可能需要的资源，preconnect 准备连接，modulepreload 为模块提前获取和准备。** 下载或准备不等于已经执行脚本、应用样式或使用模块。
+
+提示要匹配真实用途与请求条件；不匹配可能重复请求，过多提示也会竞争关键资源。是否产生收益需要观察实际网络链路。
+
+</details>
+
+### 8.8 路由懒加载和代码分包是什么关系，拆包越多越好吗？ {#code-splitting}
+
+**考察重点**：动态导入、交付边界、触发条件与依赖成本。
+
+**相关内容**：[动态导入与功能边界](#动态导入与功能边界)、[分包的收益与代价](#分包的收益与代价)。
+
+<details>
+<summary>参考回答</summary>
+
+**分包决定代码如何分别交付，路由懒加载决定在进入路由时取得对应代码，动态 import 常作为入口。** 最终产物还取决于工具与配置，不等于只写一个 import 就必然得到理想分包。
+
+拆分可以减少初始负担，过碎也会增加请求和依赖链。应检查共享依赖、重复打包、缓存与旧版本文件保留，并处理等待、失败和重试边界。
+
+</details>
+
+### 8.9 一个接口返回的数据非常大，前端和接口设计可以怎样优化？ {#large-response}
+
+**考察重点**：传输、解析、对象分配与渲染的完整成本。
+
+**相关内容**：[大接口响应的完整成本](#大接口响应的完整成本)。
+
+<details>
+<summary>参考回答</summary>
+
+**先减少当前不需要的数据，例如字段裁剪、分页和按需获取，再考虑压缩、缓存和避免重复请求。** 响应到达后仍有解析、对象分配与渲染成本，必要时分批处理并控制节点数量。
+
+response.json 会消费整个 JSON 正文，不是逐记录流式接口。流式方案需要服务端协议与增量解析配合，不能只在前端加一个循环。
+
+</details>
+
+### 8.10 给所有图片设高优先级，或者全部预加载，是否能加快首屏？ {#priority-budget}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：相对优先级、带宽竞争与关键资源识别。
+
+**相关内容**：[关键图片与加载提示](#关键图片与加载提示)、[几种资源提示的分工](#几种资源提示的分工)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能保证，所有资源竞争有限带宽和处理能力，全部提前可能延迟真正关键的资源。** fetchpriority 是相对提示，不减少字节，也不保证绝对完成顺序。
+
+应识别首屏关键图片和明确依赖，优先让它们早被发现；离屏或低概率使用的资源可以延后，并通过网络与性能记录验证。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+
+- [web.dev：Optimize LCP](https://web.dev/articles/optimize-lcp)
+- [web.dev：Fetch Priority](https://web.dev/articles/fetch-priority)
+- [MDN：PerformanceResourceTiming](https://developer.mozilla.org/en-US/docs/Web/API/PerformanceResourceTiming)
+- [MDN：HTTP compression](https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/Compression)
+- [MDN：Image file types and formats](https://developer.mozilla.org/en-US/docs/Web/Media/Guides/Formats/Image_types)
+- [MDN：img](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/img)
+- [MDN：Lazy loading](https://developer.mozilla.org/en-US/docs/Web/Performance/Guides/Lazy_loading)
+- [MDN：Intersection Observer API](https://developer.mozilla.org/en-US/docs/Web/API/Intersection_Observer_API)
+- [MDN：preload](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Attributes/rel/preload)
+- [MDN：modulepreload](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Attributes/rel/modulepreload)
+- [MDN：prefetch](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Attributes/rel/prefetch)
+- [MDN：font-display](https://developer.mozilla.org/en-US/docs/Web/CSS/Reference/At-rules/@font-face/font-display)

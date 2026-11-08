@@ -1,0 +1,440 @@
+---
+sidebar_position: 5
+knowledge:
+  id: basic-knowledge.go.language.interfaces
+  type: concept
+description: "讲解 Go 接口的隐式实现、静态类型与动态值、接口赋值、带类型 nil、类型断言和比较，解释空接口的用途与 []T 到 []any 的边界。"
+keywords: ["Go 接口", "typed nil", "类型断言", "接口比较", "any"]
+---
+
+# Go 接口
+
+Go 接口可以用一组方法描述调用方需要的行为。具体类型只要提供这些方法，就能作为接口使用，不需要显式声明实现关系。调用方因此可以依赖行为，把具体实现留给程序的组装代码选择。
+
+接口变量还保留了实际存入的类型信息。判断它能调用什么、是不是 nil、能否比较，需要把变量的静态类型和其中的动态值分开看。本文以 Go 1.22 为基线，讨论可以作为变量和参数使用的普通接口；用于泛型类型约束的接口另有使用限制。
+
+## 1. 面试核心 {#core}
+
+- 具体类型通过方法集隐式实现接口，**要求的方法名和签名需要匹配**。指针接收者可能使 `*T` 实现接口而 `T` 不实现，不能只凭某个变量能调用方法来判断。[卡](#implicit-implementation)
+- 接口变量有静态类型，也可以保存具体的动态类型和值。**接口之间赋值保留具体动态类型，不会把接口一层层套起来**；保存结构体值和保存指针值也有不同的复制效果。[卡](#interface-copy)
+- **只有没有动态类型、也没有动态值的接口才等于 nil**。把 nil 指针存入接口后，具体类型信息仍然存在，因此接口不为 nil。[卡](#typed-nil)
+- `value.(T)` 是类型断言，**不会把一种数值类型自动转换成另一种**。不确定动态类型时，使用 `result, ok := value.(T)` 或类型分支处理失败情况。[卡](#type-assertion)
+- 接口之间比较，先要满足静态类型的可赋值条件。即使能够编译，**相同动态类型的值还要按其自身规则比较，遇到不可比较的动态值可能 panic**；接口与 nil 的比较不需要比较内部数据。[卡](#interface-comparison)
+- `any` 是 `interface{}` 的别名，**保留动态类型信息，但不提供任意类型的操作能力**。它适合确实需要接收不同类型值的边界；明确的数据结构优先用明确类型。[卡](#empty-interface)
+- `[]int` 不能直接赋给 `[]any`。**元素能赋给接口，不意味着整个切片类型也能赋值**，需要按元素构造目标切片。[卡](#slice-to-any)
+
+## 2. 隐式实现与接口组合 {#隐式实现与接口组合}
+
+接口可以只声明调用方真正需要的方法。实现类型允许有额外的方法，使用接口的代码只依赖接口列出的部分。
+
+```go
+package main
+
+import "fmt"
+
+type Greeter interface {
+    Greet() string
+}
+
+type Person struct{ Name string }
+func (p Person) Greet() string { return "hello " + p.Name }
+
+func welcome(g Greeter) string { return g.Greet() }
+
+var _ Greeter = Person{}
+
+func main() {
+    fmt.Println(welcome(Person{Name: "Lin"})) // hello Lin
+}
+```
+
+`Person` 没有声明实现 `Greeter`，但它的方法集已经包含签名匹配的 `Greet`。`var _ Greeter = Person{}` 让编译器检查这种关系，后续改动方法签名时可以及时发现不兼容。
+
+参数类型、返回值类型或数量不同，都不是同一个方法签名。返回一个实现了某接口的具体类型，也不能替代签名中明确要求返回该接口的方法；方法实现匹配不会自动调整返回值类型。
+
+接口判断还要区分 `T` 和 `*T`。只声明在 `*T` 上的方法不会因为调用处能自动取地址，就加入 `T` 的方法集。相关规则和可运行对照见[Go 结构体与方法集](./structs-method-sets.mdx#方法集与接口实现)。
+
+### 2.1 组合已有接口 {#接口组合}
+
+一个接口可以嵌入其他接口，表示同时需要它们的行为：
+
+```go
+type Reader interface {
+    Read([]byte) (int, error)
+}
+
+type Closer interface {
+    Close() error
+}
+
+type ReadCloser interface {
+    Reader
+    Closer
+}
+```
+
+实现 `ReadCloser` 的类型需要同时提供 `Read` 和 `Close`。嵌入接口中若出现同名方法，签名必须一致；这也不会自动生成实现代码。
+
+接口适合围绕使用方的需求定义。例如一个函数只读取数据，可以接收 `Reader`，无需要求对象还会写入、关闭或处理配置。也不必为每个结构体先建立一个字段和方法完全对应的大接口；只有需要替换实现、表达行为边界时，接口才解决了实际问题。
+
+## 3. 静态类型、动态类型与复制 {#静态类型动态类型与复制}
+
+**静态类型**是编译期确定的类型，例如变量声明中的 `Greeter`。**动态类型**是接口当前保存的具体值的类型，**动态值**则是保存的那个值。
+
+```go
+package main
+
+import "fmt"
+
+type Greeter interface{ Greet() string }
+type Person struct{ Name string }
+func (p Person) Greet() string { return p.Name }
+
+func main() {
+    var greeter Greeter = Person{Name: "Lin"}
+    var value any = greeter
+    fmt.Printf("%T %v\n", value, value) // main.Person {Lin}
+    fmt.Println(greeter.Greet())       // Lin
+    // fmt.Println(greeter.Name) // 编译错误：Greeter 没有 Name 字段
+}
+```
+
+`greeter` 的静态类型是 `Greeter`，动态类型是 `Person`。即使运行时保存了 `Person`，编译器仍只允许通过 `greeter` 使用接口所提供的操作，不能直接访问 `Name` 字段。
+
+把 `greeter` 赋给 `any` 后，`value` 的动态类型仍是 `Person`，不会变成“外层 any 保存一个 Greeter 接口对象”。类型断言和类型分支也依据这个具体动态类型判断。
+
+### 3.1 存入值和存入指针 {#接口赋值与数据共享}
+
+接口赋值遵守值传递规则。存入结构体值时保存结构体值的副本；存入指针时复制指针值，仍可能指向原来的对象。
+
+```go
+package main
+
+import "fmt"
+
+type Counter struct{ N int }
+
+func main() {
+    counter := Counter{N: 1}
+    var copied any = counter
+    var shared any = &counter
+    counter.N = 2
+
+    fmt.Println(copied.(Counter).N)  // 1
+    fmt.Println(shared.(*Counter).N) // 2
+}
+```
+
+`copied` 保留赋值时的整数值，`shared` 保存指向 `counter` 的指针。接口不会自动深拷贝对象：结构体字段如果包含切片、map 或指针，复制后仍可能共享其引用的数据。
+
+这描述的是语言行为，不要求某一种固定的内存布局。保存到接口是否发生堆分配，还要看编译器优化和逃逸情况，不能从“用了接口”直接推出“一定分配在堆上”。
+
+## 4. nil 接口与带类型 nil {#nil接口与带类型nil}
+
+接口的零值是 nil，此时没有保存任何具体类型。一个具体类型的 nil 值存入接口后，接口仍保留这个类型，所以不等于 nil。
+
+```go
+package main
+
+import "fmt"
+
+func main() {
+    var empty any
+    var pointer *int
+    var value any = pointer
+
+    fmt.Println(empty == nil)   // true
+    fmt.Println(pointer == nil) // true
+    fmt.Println(value == nil)   // false
+
+    value = nil
+    fmt.Println(value == nil) // true
+}
+```
+
+可以用下面的语义表帮助判断，不必把它理解成要求读者操作的运行时内存结构：
+
+| 接口保存的内容 | 动态类型 | 动态值 | 接口是否为 nil |
+| --- | --- | --- | --- |
+| 尚未赋值，或直接赋 nil | 无 | 无 | 是 |
+| `(*int)(nil)` | `*int` | nil 指针 | 否 |
+| `[]int(nil)` | `[]int` | nil 切片 | 否 |
+| `0` | `int` | 0 | 否 |
+
+### 4.1 error 返回值中的 nil {#error返回值中的nil}
+
+`error` 也是接口，要求实现 `Error() string`。函数表示成功时应返回 nil 接口，不能把某个具体错误类型的 nil 指针当成等价写法。
+
+```go
+package main
+
+import "fmt"
+
+type Problem struct{}
+func (*Problem) Error() string { return "problem" }
+
+func badResult() error {
+    var problem *Problem
+    return problem
+}
+
+func goodResult() error { return nil }
+
+func main() {
+    fmt.Println(badResult() == nil)  // false
+    fmt.Println(goodResult() == nil) // true
+}
+```
+
+`badResult` 返回时，把 nil 指针转换为动态类型是 `*Problem` 的 `error`，调用方会进入错误分支。`goodResult` 直接返回 nil，不带具体类型。
+
+同样，`value != nil` 不能保证它内部的指针可解引用。需要处理某种具体指针时，可以先断言类型，再判断该指针是否为 nil；业务接口也应明确是否接受带类型 nil 的实现。
+
+## 5. 类型断言与类型分支 {#类型断言与类型分支}
+
+**类型断言**从接口值中取得满足指定类型条件的值。断言到具体类型时，动态类型需要与目标类型相同；断言到另一个接口时，动态类型需要实现目标接口。
+
+```go
+package main
+
+import "fmt"
+
+type Code int
+
+func main() {
+    var value any = Code(7)
+    number, ok := value.(int)
+    fmt.Println(number, ok) // 0 false
+
+    code, ok := value.(Code)
+    fmt.Println(code, ok) // 7 true
+    fmt.Println(int(code)) // 7
+    // _ = value.(int) // 运行时 panic：动态类型是 Code，不是 int
+}
+```
+
+`Code` 和 `int` 是不同类型，即使底层类型相同，`value.(int)` 也不会替你转换。双返回值形式失败时返回目标类型的零值和 `false`；单返回值形式失败时会 panic。显式转换 `int(code)` 才是在这两个数值类型之间转换。
+
+断言到接口的例子是 `reader, ok := value.(io.Reader)`：它检查具体动态类型是否实现 `Read`，不要求动态类型本身叫 `io.Reader`。对 nil 接口进行断言会失败；对保存 nil 指针的接口断言到那个指针类型，可以成功并得到 nil 指针。
+
+### 5.1 类型分支中的 nil {#类型分支中的nil}
+
+**类型分支**用 `switch value.(type)` 按动态类型选择处理逻辑。`case nil` 匹配的是 nil 接口，不会匹配所有内部值为 nil 的情况。
+
+```go
+package main
+
+import "fmt"
+
+func describe(value any) string {
+    switch item := value.(type) {
+    case nil:
+        return "nil interface"
+    case *int:
+        if item == nil {
+            return "nil *int"
+        }
+        return "non-nil *int"
+    case int:
+        return fmt.Sprintf("int %d", item)
+    default:
+        return "other"
+    }
+}
+
+func main() {
+    fmt.Println(describe(nil))
+    fmt.Println(describe((*int)(nil)))
+    fmt.Println(describe(7))
+}
+```
+
+输出依次为 `nil interface`、`nil *int`、`int 7`。类型分支可以处理明确允许的几种输入；如果一个接口设计要求调用方反复断言几十种具体实现，应重新检查是否缺少更合适的行为方法或数据类型。
+
+## 6. 接口比较与 map 键 {#接口比较与map键}
+
+普通接口类型允许使用 `==` 和 `!=`，但两个操作数的静态类型首先要满足一方可赋给另一方。例如两边都是 `any` 可以比较，两个方法要求互不包含的接口则不能直接比较，即使当前保存了同一种具体值。
+
+满足编译条件后，实际比较还要检查动态类型和值。两个接口都为 nil 时相等；动态类型不同则不相等；动态类型相同时，继续按该类型的规则比较动态值。
+
+```go
+package main
+
+import "fmt"
+
+func main() {
+    var first any = int(1)
+    var second any = int64(1)
+    var third any = int(1)
+    fmt.Println(first == second, first == third) // false true
+
+    var left any = []int{1}
+    var right any = []int{1}
+    fmt.Println(left == nil, right == nil) // false false
+    // fmt.Println(left == right) // 运行时 panic：[]int 不可比较
+}
+```
+
+整数值都看起来是 1，不代表 `int` 与 `int64` 两种动态类型相同。切片则不能按 `==` 比较，所以两个动态类型同为 `[]int` 的接口值比较时会 panic，即使两边保存的都是 nil 切片也一样。
+
+接口与 nil 的比较不需要比较内部切片，因此 `left == nil` 可以安全执行。两个接口的动态类型不同时会直接不相等，例如分别保存 `[]int` 和 `[]string`，也不会进入切片内容比较。
+
+还有一层边界：结构体或数组的类型即使允许比较，里面的接口字段或元素仍可能保存不可比较的数据。比较一旦执行到这种内部值，仍可能 panic。判断泛化容器是否安全，不能只看最外层声明是否允许写 `==`。
+
+`map[any]V` 同样不是“任何值都可以当键”。放入的动态值需要能够作为键处理；把切片、map 或函数值用作这样的键会在运行时 panic。已知键的类型时，优先直接声明具体键类型。
+
+## 7. 空接口的用途与边界 {#空接口的用途与边界}
+
+**空接口** `interface{}` 不要求任何方法，可以保存不同具体类型的值。Go 1.18 起，`any` 是它的别名，两种写法表达同一个类型。
+
+空接口适合输入类型确实不固定的场合，例如格式化输出、通用日志字段、某些动态数据解析结果。它保留实际类型，但静态类型不提供加法、字段访问等具体操作，需要断言、类型分支或反射后才能按相应规则处理。
+
+空接口与空结构体也不同：前者保存不同类型的值，后者是没有字段的具体类型。集合占位与无数据通知可以使用空结构体，具体对照见[Go 结构体与方法集](./structs-method-sets.mdx#空结构体与空接口)。
+
+### 7.1 切片不会逐元素自动转换 {#切片与空接口}
+
+一个 `int` 可以赋给 `any`，但 `[]int` 不能直接赋给 `[]any`。两者的元素类型不同，Go 不会在普通赋值中隐式遍历整个切片并构造另一个切片。
+
+```go
+package main
+
+import "fmt"
+
+func main() {
+    numbers := []int{1, 2}
+    values := make([]any, len(numbers))
+    for index, number := range numbers {
+        values[index] = number
+    }
+    fmt.Printf("%T %v\n", values[0], values[0]) // int 1
+    // var invalid []any = numbers // 编译错误：[]int 不能赋给 []any
+}
+```
+
+把整个 `numbers` 赋给一个 `any` 是另一回事：那个接口保存的动态类型是 `[]int`，不是元素分别装进接口的 `[]any`。同理，参数为 `...any` 的函数不能直接接收 `numbers...`；需要按调用目的传入整个切片，或先构造 `[]any`。
+
+如果函数本来只处理整数，就直接接收 `[]int`。仅仅为了让签名看起来更通用而改为 `[]any`，会把类型检查和错误处理推迟到运行时。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 Go 类型怎样实现接口，为什么 T 和 *T 的结果可能不同？ {#implicit-implementation}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：隐式实现、方法签名与接收者方法集。
+
+**相关内容**：[隐式实现与接口组合](#隐式实现与接口组合)、[Go 结构体与方法集](./structs-method-sets.mdx#方法集与接口实现)。
+
+<details>
+<summary>参考回答</summary>
+
+**类型的方法集满足接口要求，就隐式实现接口。** 方法名、参数与返回值等签名必须匹配，不需要额外的实现声明。
+
+对没有嵌入的普通结构体，`T` 的方法集不包含仅以 `*T` 为接收者的方法，而 `*T` 包含值与指针接收者方法。因此可能只有 `*T` 实现某个接口；调用处自动取地址的简写不会改变这个判断。
+
+</details>
+
+### 8.2 接口赋值是否会复制对象，接口之间赋值会不会嵌套？ {#interface-copy}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：静态类型、具体动态类型、值复制与对象共享。
+
+**相关内容**：[静态类型、动态类型与复制](#静态类型动态类型与复制)、[接口赋值与数据共享](#接口赋值与数据共享)。
+
+<details>
+<summary>参考回答</summary>
+
+**赋值遵守值复制规则，接口之间赋值保留具体动态类型，不会形成一层接口包一层接口。** 存入结构体值，语义上得到值副本；存入指针值，则复制指针并可能共享原对象。
+
+结构体中的切片、map 和指针字段仍可能共享数据，所以不能把接口赋值当作深拷贝，也不能仅凭使用接口就断言一定发生堆分配。
+
+</details>
+
+### 8.3 为什么 nil 指针赋给 error 后可能不等于 nil？ {#typed-nil}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：nil 接口、具体动态类型与成功返回值。
+
+**相关内容**：[nil 接口与带类型 nil](#nil接口与带类型nil)、[error 返回值中的 nil](#error返回值中的nil)。
+
+<details>
+<summary>参考回答</summary>
+
+**因为接口仍保存着该指针的具体类型，只有动态类型和值都不存在的接口才是 nil。** 一个 `*Problem` 类型的 nil 指针存入 `error` 后，接口动态类型仍为 `*Problem`。
+
+表示成功时应直接返回 nil 接口。接口非 nil 也不保证内部指针可解引用，需要遵守实现是否允许 nil 的约定，必要时断言后再检查具体指针。
+
+</details>
+
+### 8.4 类型断言和类型转换有什么区别，失败时会怎样？ {#type-assertion}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：动态类型匹配、接口实现、双返回值断言与转换。
+
+**相关内容**：[类型断言与类型分支](#类型断言与类型分支)。
+
+<details>
+<summary>参考回答</summary>
+
+**类型断言检查接口已经保存的值是否满足目标类型，不会自动做数值转换。** 断言到具体类型要求动态类型相同；断言到接口要求动态类型实现该接口。
+
+单返回值断言失败会 panic，双返回值形式返回目标类型零值和 `false`。例如动态类型为 `Code` 时，不能断言为 `int`；取得 `Code` 后，才能用 `int(code)` 显式转换。
+
+</details>
+
+### 8.5 两个 interface 变量能否比较，什么情况下相等？ {#interface-comparison}
+
+**考察重点**：动态类型与值、不可比较类型、nil 及嵌套接口数据。
+
+**相关内容**：[接口比较与 map 键](#接口比较与map键)。
+
+<details>
+<summary>参考回答</summary>
+
+**接口可以使用相等比较，但先要满足静态类型之间一方可赋给另一方，实际比较也可能在运行时 panic。** 两个 nil 接口相等；非 nil 接口需要动态类型相同，且动态值按对应类型规则比较相等，结果才为真。
+
+动态类型不同时直接不相等。动态类型同为切片、map 或函数时，比较会 panic；结构体或数组中包含的接口数据也可能在比较时触发同类问题。接口与 nil 比较只检查接口是否为空，不会比较内部切片内容。
+
+</details>
+
+### 8.6 空接口适合在哪些地方使用？ {#empty-interface}
+
+**考察重点**：异构值、静态操作范围与具体类型设计。
+
+**相关内容**：[空接口的用途与边界](#空接口的用途与边界)。
+
+<details>
+<summary>参考回答</summary>
+
+**空接口适合需要保存或接收不同具体类型值的边界，例如格式化输出、日志字段和动态数据解析。** `any` 是 `interface{}` 的别名，不要求实现任何方法，但仍保存具体动态类型。
+
+使用具体类型的操作前，需要进行断言、类型分支或其他类型处理。业务字段明确时优先定义具体类型；只需要某种行为时优先定义小接口，不必把所有参数都改成 `any`。
+
+</details>
+
+### 8.7 为什么 []int 不能直接赋给 []any？ {#slice-to-any}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：元素赋值与容器类型、逐元素转换和可变参数。
+
+**相关内容**：[切片与空接口](#切片与空接口)。
+
+<details>
+<summary>参考回答</summary>
+
+**因为切片的元素类型不同，普通赋值不会自动遍历并包装每个元素。** 单个 `int` 可以赋给 `any`，但这不使 `[]int` 变成 `[]any`。
+
+需要后者时，应创建目标切片并逐元素赋值。把整个 `[]int` 赋给一个 `any` 则合法，此时动态类型仍为 `[]int`，不等同于 `[]any`，也不能直接展开给 `...any` 参数。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+
+- [Go 1.22.12 语言规范：接口、赋值、类型断言与比较](https://github.com/golang/go/blob/go1.22.12/doc/go_spec.html)
+- [Go FAQ：为什么 nil error 不等于 nil](https://go.dev/doc/faq#nil_error)
+- [Go FAQ：为什么不能将 []T 转换为 []interface{}](https://go.dev/doc/faq#convert_slice_of_interface)
+- [Effective Go：Interfaces and other types](https://go.dev/doc/effective_go#interfaces_and_types)

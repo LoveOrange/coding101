@@ -78,6 +78,20 @@ Elasticsearch 8.19 默认使用 `index.translog.durability=request`。返回成�
 
 自定义 `routing` 可以把相关文档放到一起，减少查询涉及的分片，但写入和读取必须采用相同的路由规则。代价是某个路由值对应的数据或流量过多时，负载会集中到单个分片。
 
+### 6.1 分片上的 Top K {#分片上的-top-k}
+
+按确定的文档排序取前 K 条时，可以先由各分片保留自己的前 K 条候选，再由协调节点合并、选出全局前 K 条，最后取得这些文档的内容。这样不必把全部匹配文档都传到协调节点。若有 S 个相关分片，候选规模通常要按 S × K 考虑；`from + size` 分页则需要考虑 S ×（from + size）。
+
+这个做法依赖所有候选采用可比较的排序规则，并处理并列值。可以这样推导：一个文档在自己的分片里已经排在 K 条文档之后，就不可能进入同一排序下的全局前 K。分片内怎样保留候选，可结合[堆](../data-structures/heap.mdx)理解；实际引擎还会利用索引信息跳过不可能进入结果的候选，并不总是扫描全部匹配项。
+
+不要把这条推导直接套到「按全局词频选 Top K」。同一个词可能分散在多个分片，需要先合并计数；只取每片的局部高频词，可能漏掉全局高频词。按相关性评分时，也要区分分片局部词频与全局统计的差别，不能把合并候选等同于所有评分条件完全相同。
+
+### 6.2 查询速度的排查顺序 {#查询速度的排查顺序}
+
+搜索慢时，先确认耗时来自候选查找、评分排序、聚合、文档读取还是跨分片协调。倒排索引减少全文扫描，精确过滤和合适的字段类型缩小候选，doc values 支持字段排序；这些优化各自针对不同环节。
+
+再检查是否查询了过多字段、扇出到过多分片，是否存在深分页、复杂脚本或大规模关联。热点索引能否留在文件系统缓存里，也会影响磁盘读取成本。自定义路由、调整分片或反规范化文档都可能改善特定负载，但会增加热点或更新成本，需用真实查询的延迟、吞吐和资源占用验证。
+
 ## 7. 深分页 {#深分页}
 
 `from + size` 的页码越深，各分片需要保留的候选结果越多，内存和排序开销也越高。例如跳过前 9000 条再取 10 条，各分片仍需考虑前面的候选结果。Elasticsearch 8.19 的 `index.max_result_window` 默认是 10000，用来限制这类结果窗口。
@@ -204,3 +218,4 @@ Elasticsearch 8.19 默认 `index.translog.durability=request`，成功响应前�
 - [Elasticsearch 8.19：Aliases](https://www.elastic.co/guide/en/elasticsearch/reference/8.19/aliases.html)
 - [Elasticsearch 8.19：Term query](https://www.elastic.co/guide/en/elasticsearch/reference/8.19/query-dsl-term-query.html)
 - [Elasticsearch 8.19：Replication model](https://www.elastic.co/guide/en/elasticsearch/reference/8.19/docs-replication.html)
+- [Elasticsearch 8.19：Tune for Search Speed](https://www.elastic.co/guide/en/elasticsearch/reference/8.19/tune-for-search-speed.html)

@@ -1,0 +1,335 @@
+---
+sidebar_position: 2
+knowledge:
+  id: basic-knowledge.go.web.http-client
+  type: concept
+description: "讲解 Go HTTP 客户端的 Client 与 Transport、连接池配置、响应体生命周期、超时取消、重定向和重试边界。"
+keywords: ["Go", "http.Client", "Transport", "连接池", "HTTP 客户端", "响应体"]
+---
+
+# Go HTTP 客户端
+
+`http.Client` 负责发起 HTTP 请求，并按配置处理重定向、Cookie 和整体超时；`http.Transport` 负责底层连接、协议交换与连接复用。一个请求拿到响应头后，响应体可能还没读完，因此 `Do` 返回并不等于这次网络操作已经结束。
+
+客户端代码既要检查返回的数据，也要处理资源的生命周期。忘记关闭响应体会影响连接复用，把空闲连接上限当作并发上限则可能让请求数远超预期。本文按 Go 1.22.12 的标准库行为展开。
+
+## 1. 面试核心 {#core}
+
+- **`Client` 管请求策略，`Transport` 管连接与一次 HTTP 交换**。两者都可以被多个 goroutine 并发使用；配置应在开始服务请求前完成，不能一边请求一边修改字段。[卡](#client-transport)
+- **空闲连接数量与总连接数量是两个限制**。`MaxIdleConns`、`MaxIdleConnsPerHost` 控制保留多少空闲连接，`MaxConnsPerHost` 才限制包含建连中、活跃和空闲状态的连接数量。[卡](#connection-pool)
+- **成功取得响应后，调用方负责关闭响应体**。对于普通 HTTP/1 持久连接，读到 EOF 并关闭响应体有助于后续复用；只调用 `Close` 不能保证复用。[卡](#body-lifetime)
+- **`Do` 的错误与 HTTP 状态码分开检查**。`404`、`500` 等状态本身不会让 `Do` 返回错误，响应体读取也可能在 `Do` 成功之后失败。[卡](#response-errors)
+- **整体期限要覆盖等待连接、重定向和读取响应体**。`Client.Timeout` 与请求 context 可以提供整体取消，`ResponseHeaderTimeout` 只限制请求写完后等待响应头的阶段。[卡](#client-timeout)
+- **重定向或重试可能再次发送请求，必须明确方法、请求体重建和业务幂等性**。标准库的有限自动重试不等于任意失败都能安全重试。[卡](#redirect-retry)
+
+## 2. Client 与 Transport {#Client与Transport}
+
+### 2.1 两层职责 {#两层职责}
+
+**`http.RoundTripper`** 是执行一次 HTTP 交换的接口，方法为 `RoundTrip(*http.Request) (*http.Response, error)`。标准库的 `http.Transport` 实现它，负责连接获取、发送请求和读取响应头。
+
+`http.Client` 在这一层之上处理重定向、Cookie Jar 和整体超时。通常调用 `client.Do(req)` 即可；直接调用 `Transport.RoundTrip` 不会自动得到 Client 提供的这些策略。
+
+`Client` 的零值可以使用，未设置 `Transport` 时使用 `http.DefaultTransport`。因此，每次创建 `&http.Client{}` 并不一定创建了新的连接池：这些 Client 默认仍共享全局 Transport。但它会让配置与生命周期更难统一；反过来，如果每个请求都新建 Transport，则会创建彼此独立的连接复用状态。
+
+更清晰的做法是在服务初始化时建立一个或少数几个配置明确的 Client，并在请求间复用。同一 Transport 可以服务并发请求，但不能在使用中修改超时、TLS 或连接池字段。每次调用需要独立构造 Request，不要并发修改同一个请求的 Header 或复用正在被读取的请求体。
+
+### 2.2 配置示例 {#配置示例}
+
+下面从标准 `DefaultTransport` 克隆配置，再设置这个客户端自己的限制。克隆得到新的 Transport，不会把原对象已建立的空闲连接一起复制过来。
+
+```go title="client.go"
+package fetch
+
+import (
+    "net"
+    "net/http"
+    "time"
+)
+
+func NewClient() *http.Client {
+    transport := http.DefaultTransport.(*http.Transport).Clone()
+    transport.DialContext = (&net.Dialer{
+        Timeout:   2 * time.Second,
+        KeepAlive: 30 * time.Second,
+    }).DialContext
+    transport.TLSHandshakeTimeout = 3 * time.Second
+    transport.ResponseHeaderTimeout = 2 * time.Second
+    transport.MaxIdleConns = 64
+    transport.MaxIdleConnsPerHost = 8
+    transport.MaxConnsPerHost = 16
+    transport.IdleConnTimeout = 60 * time.Second
+    return &http.Client{
+        Transport: transport,
+        Timeout:   5 * time.Second,
+    }
+}
+```
+
+示例假定程序没有替换全局 `http.DefaultTransport`，并沿用其代理与 HTTP/2 等配置。`net.Dialer.KeepAlive` 是 TCP 保活探测设置，与 HTTP 连接池的空闲保留数量、HTTP 持久连接不是同一个概念。
+
+这些数字只是展示不同配置的责任，不是所有接口通用的推荐值。整体 5 秒预算也不是把各阶段的 2 秒、3 秒再依次相加：整体期限可能先到，任何一个适用期限先耗尽都可能结束当前请求。流式订阅或长时间下载需要另外设计符合任务生命周期的预算。
+
+## 3. 连接池 {#连接池}
+
+### 3.1 空闲连接与总连接 {#空闲连接与总连接}
+
+**空闲连接**是当前没有承担请求、但仍保留给后续请求复用的连接。它和正在使用的连接、尚在建立的连接占用不同的状态。
+
+| 配置 | 限制对象 | Go 1.22.12 中的零值 |
+| --- | --- | --- |
+| `MaxIdleConns` | 所有目标合计保留的空闲连接数 | 不设总空闲数量上限 |
+| `MaxIdleConnsPerHost` | 每个目标保留的空闲连接数 | 使用 `DefaultMaxIdleConnsPerHost`，值为 `2` |
+| `MaxConnsPerHost` | 每个目标的建连中、活跃和空闲连接总数 | 不设这个总数上限 |
+| `IdleConnTimeout` | 一条连接连续空闲的保留时间 | 不设这个空闲期限 |
+
+这里的“目标”按 Transport 实际连接键区分，涉及协议、地址以及代理等条件；不要只按一个业务服务名估算所有连接都进入了同一个池。
+
+把 `MaxIdleConnsPerHost` 设成 `2`，不表示同时最多只能发起两个请求。并发请求仍可建立更多活跃连接；请求结束后，多余连接才可能因为空闲保留限制而关闭。若要限制某个目标的连接总数，需要配置 `MaxConnsPerHost`，达到限制时，获取新连接的请求会等待可用机会。
+
+连接数也不总等于请求并发数。HTTP/2 可以在一个连接上承载多个流，因而 `MaxConnsPerHost=1` 不能普遍解释成“最多一个业务请求执行”。如果目标是限制下游业务并发、请求速率或排队量，应在调用层使用适当的并发与队列控制，见 [Go 并发任务管理](../concurrency/task-coordination.mdx#固定worker与有界派发)。
+
+### 3.2 复用与清理 {#复用与清理}
+
+HTTP/1 的普通持久连接只有在前一个响应处理到合适边界、连接仍健康等条件满足时，才有机会交给后续请求。响应体还没读完，不能直接把剩余字节当成下一次响应的一部分。
+
+`client.CloseIdleConnections()` 关闭已处于空闲状态的连接，不中断正在使用的连接。它适合客户端退出使用或需要清理空闲资源的时刻，不能用来取消所有在途请求；每次请求结束都调用它，也会破坏原本想保留的复用机会。
+
+设置 `DisableKeepAlives` 会让 Transport 不再按普通 HTTP 持久连接方式复用连接。不能因为偶尔出现陈旧连接或响应体处理错误，就直接把它当作所有连接问题的修复方式；应先检查实际错误和连接生命周期。
+
+## 4. 响应体与结果检查 {#响应体与结果检查}
+
+### 4.1 有限读取 {#有限读取}
+
+下面的 `ReadSmall` 只接受 `2xx`，并把单个响应体限制为 1 MiB。它与前面的 `client.go` 属于同一个包，Client 由调用方创建和复用。
+
+```go title="read.go"
+package fetch
+
+import (
+    "context"
+    "errors"
+    "fmt"
+    "io"
+    "net/http"
+)
+
+var ErrTooLarge = errors.New("response body too large")
+
+func ReadSmall(ctx context.Context, client *http.Client, url string) ([]byte, error) {
+    req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+    if err != nil {
+        return nil, fmt.Errorf("create request: %w", err)
+    }
+    resp, err := client.Do(req)
+    if err != nil {
+        return nil, fmt.Errorf("send request: %w", err)
+    }
+    defer resp.Body.Close()
+    if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+        return nil, fmt.Errorf("unexpected HTTP status: %d", resp.StatusCode)
+    }
+
+    const limit = 1 << 20
+    data, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+    if err != nil {
+        return nil, fmt.Errorf("read response: %w", err)
+    }
+    if len(data) > limit {
+        return nil, ErrTooLarge
+    }
+    return data, nil
+}
+```
+
+多读一个字节用于区分“恰好 1 MiB”与“还有更多”。`io.LimitReader` 到自己的上限会表现为 EOF，并不会自动报告原始数据过大，所以必须检查实际读到的长度。只比较 `ContentLength` 不够：它可能未知，而且标准 Transport 自动处理 gzip 时，暴露给调用方的响应体可以是解压后的内容。
+
+这个限制作用于读取到的响应体，避免把任意大的响应全部放进内存。它没有让任意后续解析或业务处理都变成常量成本，也不能替代时间预算。
+
+### 4.2 关闭不等于读完 {#关闭不等于读完}
+
+`Do` 成功后，即使响应没有业务数据，调用方也应关闭 `resp.Body`。对于普通 HTTP/1 持久连接，完整读到 EOF 后关闭，有助于复用；如果提前关闭尚未读完的响应体，标准 Transport 通常会放弃这条连接。
+
+上面的示例在错误状态或超大响应时选择提前返回并关闭，可能因此失去本次连接复用。这个取舍保住了读取边界。不要为了复用连接，无条件对任意响应执行没有大小和期限限制的 `io.Copy(io.Discard, resp.Body)`。
+
+在循环里逐个发请求时，直接把 `defer resp.Body.Close()` 放进一个很长的外层函数，会把关闭推迟到整个函数返回。可以把单次请求处理放入短函数，让 `defer` 与一次读取的生命周期对应；并发调用时，每个任务也应负责自己的响应体。
+
+### 4.3 不同层次的失败 {#不同层次的失败}
+
+需要区分请求建立失败、HTTP 状态失败、响应体读取失败和业务数据失败。
+
+- 域名解析、连接、TLS、取消或客户端策略等问题可能让 `Do` 返回错误。
+- `Do` 返回成功时，状态仍可能是 `404` 或 `500`，需要按接口约定检查。
+- 拿到 `200` 后，连接可能在响应体中间断开，读取会返回错误，不能只检查 `Do`。
+- 状态和读取都成功，也可能得到不符合业务格式的数据，还需要解析与校验。
+
+`ReadSmall` 用 `%w` 保留底层错误。调用方可以用 `errors.Is(err, context.Canceled)` 等检查已知的取消错误，用 `errors.As` 检查实现 `net.Error` 的错误及其 `Timeout()`。Go 1.22.12 中，Client 总超时发生在响应体读取阶段时，错误可以报告 `Timeout() == true`，却不满足 `errors.Is(err, context.DeadlineExceeded)`，不能只靠这一种比较识别所有超时。
+
+真正的失败位置应与操作一起记录，才能分清“没拿到响应”与“拿到头后读取失败”。完整错误文本适合诊断，不宜作为唯一的分类规则。
+
+## 5. 超时与取消 {#超时与取消}
+
+### 5.1 整体预算与阶段预算 {#整体预算与阶段预算}
+
+**整体期限**限制一次客户端调用从发起到读取完成所允许的总时间；**阶段期限**限制其中某段网络工作。阶段限制通常不能覆盖所有排队与读取时间。
+
+| 控制项 | 主要范围 | 不覆盖的部分 |
+| --- | --- | --- |
+| `Client.Timeout` | 建连、重定向及读取响应体等整体请求时间 | 响应体处理完之后独立执行的业务计算 |
+| 请求 context | 获取连接、发送请求、读取响应头和响应体的生命周期 | 不配合 context 的独立工作 |
+| `net.Dialer.Timeout` | 建立连接的期限，包含相应解析过程 | 已建立连接上的整个 HTTP 交换 |
+| `TLSHandshakeTimeout` | Transport 执行 TLS 握手的阶段 | 后续响应头与响应体；自定义 TLS 建连路径还需看其契约 |
+| `ResponseHeaderTimeout` | 完整写完请求后等待响应头 | 请求体上传时间、响应体读取时间 |
+| `IdleConnTimeout` | 已空闲连接的保留时间 | 活跃请求的处理时间 |
+
+`Client.Timeout` 的零值表示不设置整体期限。`http.DefaultClient` 因此不会自动给每次请求加上一个总时限；默认 Transport 的某些阶段期限不能替代整体期限。
+
+请求同时具有 context 截止时间和 Client 总超时时，较早生效的取消会结束当前操作。`Do` 已经返回后，Client 的计时仍可能打断响应体读取，不能把“拿到响应头”当成总超时失效的时刻。
+
+### 5.2 取消的生命周期 {#取消的生命周期}
+
+请求 context 应存活到调用方完成响应体处理。一个函数如果创建带超时的 context、`defer cancel()`，然后只返回未读取的 `resp.Body`，就会在调用方开始读取前取消自己的请求。
+
+因此，要么在创建 context 的函数内完成读取并返回结果，要么把流的关闭与取消责任一起明确交给调用方。`ReadSmall` 接收外部 context 并在返回前完成读取，调用方可以在包围整个调用的作用域内 `defer cancel()`。
+
+取消也可能发生在等待连接时。比如 `MaxConnsPerHost=1`，第一个请求迟迟不释放响应体，第二个请求可能一直等连接。应检查谁占用了连接，以及第二个请求是否有有效的取消条件，而不是只增加连接数掩盖生命周期错误。
+
+## 6. 重定向、重试与定位 {#重定向重试与定位}
+
+### 6.1 再次发送请求 {#再次发送请求}
+
+`Client` 默认会按策略跟随重定向。`301`、`302`、`303` 可能把原方法改成 `GET`，原本是 `HEAD` 时保留 `HEAD`，并且不再携带原请求体；`307`、`308` 则要求保留原方法与请求体，有请求体时需要能重新创建它。
+
+`Request.GetBody` 提供重新取得请求体的函数。`http.NewRequest` 对 `strings.Reader`、`bytes.Reader`、`bytes.Buffer` 等常见输入能自动设置它，但任意流不一定可以重放。业务若不允许自动跳转，可用 `CheckRedirect` 决定策略；返回 `http.ErrUseLastResponse` 会把最后一个响应交给调用方，且仍需关闭其 Body。
+
+标准 Transport 在复用连接遇到某些网络错误时会尝试重新发送请求，能否重放、是否已经写入以及请求的幂等条件都会影响决定。它不会因为收到任意 `500` 就自动执行业务重试，也不保证所有断连都能恢复。
+
+如果业务需要额外重试，应明确允许重试的错误、次数与总预算、等待策略、请求体重建，以及操作是否具备幂等性。超时可能发生在服务端已经完成操作之后；仅增加 `Idempotency-Key` 请求头，也不能凭空让服务端具备去重记录和幂等实现。
+
+### 6.2 按阶段定位 {#按阶段定位}
+
+`net/http/httptrace` 提供解析、连接、TLS、获取连接、写完请求和收到首字节等事件，适合判断等待发生在哪个阶段。`GotConnInfo.Reused` 可以帮助观察本次请求是否复用了连接；它不是“整个响应已经成功”的标志。
+
+| 现象 | 优先检查 |
+| --- | --- |
+| 并发增加后长时间等连接 | `MaxConnsPerHost`、未完成响应体、调用层队列 |
+| 顺序请求仍不断新建连接 | Transport 是否复用、响应是否读完并关闭、服务端是否关闭连接 |
+| 拿到响应头后仍卡住 | 响应体读取、整体 deadline、服务端流式行为 |
+| `Do` 成功但业务失败 | 状态码、读取错误、响应格式与业务结果 |
+| 吞吐提高但内存持续增长 | 未限制的任务数量、响应大小、已完成结果保留量 |
+
+并发读取多个 URL 再合并文件时，Client 的连接池只解决网络连接这一层。下载任务数量、结果顺序、单响应大小、输出错误与取消要共同设计；完整任务组织见 [Go 并发任务管理](../concurrency/task-coordination.mdx#结果汇聚与并发下载)。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 Client 与 Transport 分别负责什么，为什么应该复用？ {#client-transport}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：请求策略、一次协议交换和连接缓存的分工。
+
+**相关内容**：[Client 与 Transport](#Client与Transport)。
+
+<details>
+<summary>参考回答</summary>
+
+**Client 处理重定向、Cookie 和整体超时等策略，Transport 负责连接与底层 HTTP 交换。** 两者都支持并发使用，初始化好配置后复用，可以统一策略并保留连接复用机会。
+
+新建零值 Client 默认仍共享 `DefaultTransport`；真正每次创建新的 Transport 才会建立独立的连接池。不能一边使用一边修改共享配置，每次请求也应有独立的 Request 与明确的请求体所有权。
+
+</details>
+
+### 7.2 Go HTTP 连接池有哪些关键配置，空闲连接上限是否等于并发上限？ {#connection-pool}
+
+**考察重点**：全局空闲数、单目标空闲数、连接总数与空闲期限，以及 HTTP/2 流的区别。
+
+**相关内容**：[连接池](#连接池)。
+
+<details>
+<summary>参考回答</summary>
+
+**空闲连接上限不等于请求并发上限。** `MaxIdleConns` 限制所有目标的空闲连接总数，`MaxIdleConnsPerHost` 限制单目标保留的空闲连接，`IdleConnTimeout` 限制空闲时间。
+
+`MaxConnsPerHost` 才限制单目标的建连中、活跃与空闲连接总数，超过时获取连接需要等待。HTTP/2 可以在一条连接上承载多个流，所以连接总数也不是通用的业务请求并发限制；调用层仍可能需要独立的任务上限。
+
+</details>
+
+### 7.3 只关闭响应体，是否就能保证 HTTP/1 连接复用？ {#body-lifetime}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：EOF、关闭、连接健康与有界读取之间的关系。
+
+**相关内容**：[有限读取](#有限读取)、[关闭不等于读完](#关闭不等于读完)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能。普通 HTTP/1 持久连接通常需要把响应体读到 EOF 并关闭，且连接仍健康，才有机会复用。** 提前关闭未读完的响应体，标准 Transport 通常会放弃这条连接。
+
+也不能为了复用而无限读取不可信的超大响应。应先设大小与时间边界，超限时关闭并放弃本次复用；循环或并发任务中，让每次请求及时完成自己的关闭。
+
+</details>
+
+### 7.4 Do 返回 nil 错误，是否就代表请求成功？ {#response-errors}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：传输错误、HTTP 状态、响应体读取与业务校验的不同层次。
+
+**相关内容**：[不同层次的失败](#不同层次的失败)。
+
+<details>
+<summary>参考回答</summary>
+
+**只代表成功取得了一个符合客户端策略的 HTTP 响应，不代表业务成功。** `404`、`500` 等状态本身不会导致 `Do` 返回错误，应继续检查状态码。
+
+响应体可能只传了一部分，也可能在读取期间超时，所以还要检查读取错误；读取完整后再检查数据格式与业务结果。无论业务判断成功与否，已经取得的响应体都需要按生命周期关闭。
+
+</details>
+
+### 7.5 Client.Timeout 与 ResponseHeaderTimeout 有什么区别？ {#client-timeout}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：整体预算、阶段预算、连接等待与返回后的响应体读取。
+
+**相关内容**：[超时与取消](#超时与取消)。
+
+<details>
+<summary>参考回答</summary>
+
+**Client.Timeout 限制整体请求时间，包括建连、重定向和读取响应体；ResponseHeaderTimeout 只限制请求完整写出后等待响应头的时间。** 后者不能覆盖上传或读取响应体的全部过程。
+
+请求 context 也可控制整个请求生命周期，包括等待连接；它应保持有效直到响应体处理完。即使 `Do` 已返回，Client 总超时或 context 取消仍可能使后续读取失败。
+
+</details>
+
+### 7.6 重定向与网络失败重试为什么要关心请求体和幂等性？ {#redirect-retry}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：方法变化、请求体重放、已发生操作与有限重试策略。
+
+**相关内容**：[再次发送请求](#再次发送请求)。
+
+<details>
+<summary>参考回答</summary>
+
+**再次发送需要能重建请求内容，也需要判断重复执行的业务后果。** `301`、`302`、`303` 可以改用 GET；`307`、`308` 保留方法和请求体，有请求体时需要 `GetBody` 等重建条件。
+
+标准 Transport 只在部分条件下自动重试网络错误，不会把所有 `500` 变成重试。业务添加重试时，要同时限制总预算与次数，并确认幂等或去重机制；客户端超时不证明服务端尚未执行操作。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [Go 1.22.12 net/http：Client](https://pkg.go.dev/net/http@go1.22.12#Client)
+- [Go 1.22.12 net/http：Client.Do](https://pkg.go.dev/net/http@go1.22.12#Client.Do)
+- [Go 1.22.12 net/http：Transport](https://pkg.go.dev/net/http@go1.22.12#Transport)
+- [Go 1.22.12 net/http：NewRequestWithContext](https://pkg.go.dev/net/http@go1.22.12#NewRequestWithContext)
+- [Go 1.22.12 net：Dialer](https://pkg.go.dev/net@go1.22.12#Dialer)
+- [Go 1.22.12 net/http/httptrace](https://pkg.go.dev/net/http/httptrace@go1.22.12)
+- [Go 1.22.12 io：LimitReader](https://pkg.go.dev/io@go1.22.12#LimitReader)
+- [Go 1.22.12 HTTP 客户端实现](https://github.com/golang/go/blob/go1.22.12/src/net/http/client.go)
+- [Go 1.22.12 Transport 实现](https://github.com/golang/go/blob/go1.22.12/src/net/http/transport.go)

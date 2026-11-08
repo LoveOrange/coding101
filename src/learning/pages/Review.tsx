@@ -1,3 +1,6 @@
+import {reviewHref} from '../article/ArticleParts';
+import {withRole} from '../roles';
+import {useActiveRoleId} from '../content';
 import {useCallback, useEffect, useRef, useState} from 'react';
 import clsx from 'clsx';
 import Link from '@docusaurus/Link';
@@ -106,6 +109,8 @@ function SessionStarter({mode, cardIds}: {mode: 'today' | 'quiz'; cardIds?: stri
 /* ---- Article mode (03) ---- */
 
 function ArticleReview({details, articleId, cardId}: {details: Record<string, CardDetail>; articleId: string | null; cardId: string | null}) {
+  const topicId = new URLSearchParams(useLocation().search).get('topic') ?? undefined;
+  const roleId = useActiveRoleId();
   const index = useLearningIndex();
   const learner = useLearner();
   const history = useHistory();
@@ -130,12 +135,13 @@ function ArticleReview({details, articleId, cardId}: {details: Record<string, Ca
     (target?: CardDetail) => {
       if (!target || !article) return;
       setRevealed(false);
-      history.replace(`/review?article=${encodeURIComponent(article.id)}&card=${encodeURIComponent(target.id)}`);
+      history.replace(reviewHref(article, target, roleId, topicId));
     },
-    [article, history],
+    [article, history, roleId, topicId],
   );
 
-  const backHref = article ? `${article.permalink}#${article.interviewAnchor ?? ''}` : '/topics';
+  const backHref = withRole(article ? `${article.permalink}#${article.interviewAnchor ?? ''}` : '/topics', roleId);
+  const role = index.roles.find(item => item.id === roleId);
   const state: CardState | undefined = card ? learner.cards[card.id] : undefined;
   const ratedToday = state && state.reps > 0 && toDay(new Date(state.reviewedAt)) === today() ? state.rating : undefined;
   const baseState = card && card.id in beforeRating ? beforeRating[card.id] : state;
@@ -212,7 +218,7 @@ function ArticleReview({details, articleId, cardId}: {details: Record<string, Ca
           return (
             <div key={id}>
               <Link
-                to={item.cardIds.length ? `/review?article=${encodeURIComponent(id)}` : item.permalink}
+                to={item.cardIds.length ? reviewHref(item, undefined, roleId, topicId) : withRole(item.permalink, roleId)}
                 className={clsx(styles.treeArticle, current && styles.treeArticleCurrent, features && learner.reading[id]?.done && !current && styles.treeArticleRead)}>
                 <span>{item.title}</span>
                 {features && learner.reading[id]?.done && <span className={styles.treeCount}>✓</span>}
@@ -246,6 +252,7 @@ function ArticleReview({details, articleId, cardId}: {details: Record<string, Ca
       </aside>
 
       <section className={styles.stage}>
+        <Link to={withRole(topicId ? `/questions?topic=${encodeURIComponent(topicId)}` : '/questions', roleId)}>← 返回{role?.label ?? '全部岗位'}题库</Link>
         <Link to={backHref} className={styles.backBar}>
           <span>
             <b>← 回到文章</b>

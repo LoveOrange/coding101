@@ -22,10 +22,16 @@ DP 题的难点不在写循环，而在想清楚「一个状态到底代表什�
 ## 1. 面试核心 {#core}
 
 - 状态必须**包含决定后续合法选择的全部信息**。只有后续选择和目标值都相同的子问题，才能共用一个状态的结果。
+- 限制交易次数时，**明确一次交易在哪个动作完成**，并区分状态中的恰好次数与答案要求的至多次数。[卡](#limited-stock-transactions)
 - 编辑距离**用两个字符串的前缀长度定义状态**，末尾字符不同时，比较插入、删除和替换三种来源。[卡](#edit-distance)
 - 最长公共子序列**允许跳过字符**，公共子串则要求字符连续，所以两者的状态和答案位置不同。[卡](#longest-common-subsequence)
-- 背包压成一维数组后，**0/1 背包按容量倒序更新，完全背包按容量正序更新**。[卡](#knapsack-state-version)
+- 严格 LIS **以当前位置结尾保存长度**，最大子数组则以当前位置结尾保存连续和；全局答案都要比较所有结尾位置。[卡](#longest-increasing-subsequence) [卡](#maximum-subarray-range)
+- 相邻天不能重复活动时，**保留最后一天的活动种类**，三个新状态都从上一天读取。[卡](#daily-activity-reward)
 - 初值由状态含义推出：计数 DP 把空方案算作一种时**初值为 1**，不可达状态要用**区别于合法零值的标记**表示。
+- 二叉搜索树计数**按根划分，左右方案数相乘、各根结果相加**，空树计数为 1。[卡](#count-unique-bsts)
+- 背包压成一维数组后，**0/1 背包按容量倒序更新，完全背包按容量正序更新**。[卡](#knapsack-state-version)
+- 业务约束决定状态和可行规模；**预算内独立方案选择可映射到 0/1 背包**，预算取值大时仍要评估 O(nB) 成本。[卡](#dp-business-constraints)
+- 求最少项数组合时，**保存最后一次选择就能回退恢复方案**；不可达与零目标的空方案必须区分。[卡](#min-count-combination)
 
 ## 2. 适用信号 {#适用信号}
 
@@ -56,6 +62,20 @@ hold[i] = 第 i 天结束时，持有一股的最大利润
 ```
 
 规则变了，状态就要跟着变。限制交易次数时，状态里要加上剩余次数；有冷冻期时，要区分当前能不能买入；有手续费时，状态不变，只在买卖的转移里扣掉费用。原则是只保留影响未来的条件：不影响后续选择的历史细节都可以丢掉，这样不同的历史才能合并到同一个子问题。
+
+### 3.1 交易次数限制 {#交易次数限制}
+
+限制为至多 k 笔交易时，需要把**已经完成的卖出次数**放进状态；一次买入再卖出才算完成一笔交易。仍约定最多持有一股、价格非负、没有手续费和冷冻期，每天至多进行一次买入或卖出。设 `cash[i][t]`、`hold[i][t]` 分别表示第 i 天结束、**恰好完成 t 次卖出**时不持股和持股的最大利润：
+
+```text
+cash[i][t] = max(cash[i-1][t], hold[i-1][t-1] + price[i])  // t >= 1 才能卖出
+hold[i][t] = max(hold[i-1][t], cash[i-1][t] - price[i])    // t < k 才有必要再买
+```
+
+买入不增加 t，卖出才增加。开始前一天只有 `cash[-1][0]=0` 可达，其余状态都不可达；读取不可达前驱时跳过这条转移，不能直接对哨兵做加减。每一天都从上一天读取，t 的范围是 0 到 k。t 为 0 的 `cash` 只能沿用上一天，t 为 k 时不再开启新交易。
+
+状态里用“恰好”区分历史，最终要求“至多”时，答案取最后一天所有 `cash[t]` 的最大值，包含 t=0 的不交易方案；如果题目要求恰好 k 笔，则只看 `cash[k]`，还要判断它是否可达。k=0 或没有交易日时，至多交易的答案为 0。完整计算需要 O(nk) 时间，按天滚动后用 O(k) 空间。面试只说“股票买卖”或“最简单版”时，不能据此判断究竟是一笔还是不限次数，应先问清限制。
+
 
 ## 4. 状态转移 {#状态转移}
 
@@ -92,6 +112,33 @@ dp[0][j] = j，dp[i][0] = i
 
 两串长度为 m、n 时，表格有 (m+1)(n+1) 格，时间和空间都是 O(mn)。如果只要距离、不要具体操作，当前格只依赖上一行和当前行的左侧，保留两行就够了，空间降到 O(n)。
 
+下面把递推直接写成二维表。这里约定两个参数都不能为 `null`，编辑单位是 Unicode 码点；`codePoints()` 会把一对合法的 UTF-16 代理项合成一个码点。它不做 Unicode 规范化，也不把多个码点组成的可见字符视为一个单位。这些是示例的接口约定，题目未说明字符单位时应先确认。
+
+```java
+static int editDistance(String a, String b) {
+    java.util.Objects.requireNonNull(a);
+    java.util.Objects.requireNonNull(b);
+    int[] x = a.codePoints().toArray();
+    int[] y = b.codePoints().toArray();
+    int[][] dp = new int[x.length + 1][y.length + 1];
+    for (int i = 0; i <= x.length; i++) dp[i][0] = i;
+    for (int j = 0; j <= y.length; j++) dp[0][j] = j;
+    for (int i = 1; i <= x.length; i++) {
+        for (int j = 1; j <= y.length; j++) {
+            if (x[i - 1] == y[j - 1]) {
+                dp[i][j] = dp[i - 1][j - 1];
+            } else {
+                dp[i][j] = 1 + Math.min(dp[i - 1][j - 1],
+                        Math.min(dp[i - 1][j], dp[i][j - 1]));
+            }
+        }
+    }
+    return dp[x.length][y.length];
+}
+```
+
+`editDistance("cat", "cut")` 返回 1，`editDistance("", "😀")` 也返回 1，因为后者是插入一个码点。空串仍需保存边界行或列，所以包含空输入时，更完整的时间和空间写法是 O((m+1)(n+1))，m、n 为码点数；另有 O(m+n) 的码点数组。二维表适合规模可容纳于内存的输入，长文本应根据是否需要恢复编辑过程选择空间压缩。
+
 ### 4.2 最长公共子序列 {#最长公共子序列}
 
 **子序列**是从字符串里删掉若干字符、保持剩余字符顺序得到的序列，它允许跳过字符。最长公共子序列（LCS）是两个字符串共有的最长子序列。设 `dp[i][j]` 为 A 的前 i 个字符与 B 的前 j 个字符的 LCS 长度：
@@ -107,6 +154,100 @@ dp[0][j] = dp[i][0] = 0
 比如 `abc` 和 `ac` 的结果是 2，跳过 b 后得到 ac。时间和空间都是 O(mn)，m、n 是两串长度。
 
 最长公共子串不同，它要求字符连续，不能跳过。所以状态要改成「以 A 的第 i 个字符和 B 的第 j 个字符结尾的连续匹配长度」：末尾不相等时，连续匹配中断，状态直接归零。最长的那段匹配可能在任意位置结束，答案要取全表的最大值，而不是右下角。
+
+### 4.3 最长严格递增子序列 {#最长严格递增子序列}
+
+**最长严格递增子序列**（LIS）是在保持原顺序的前提下，选出尽量多的数，使后一个数严格大于前一个。它只处理一个序列，与比较两个序列的 LCS 是不同问题。`[3,1,2,2,4]` 可以选 `[1,2,4]`，长度为 3；相等的两个 2 不能同时接入严格递增序列。
+
+设 `dp[i]` 为**以 `nums[i]` 结尾**的最长严格递增子序列长度。只选它自己就有长度 1；再枚举 i 之前的 j，只有 `nums[j] < nums[i]` 时才能接在 j 后面，候选长度为 `dp[j]+1`。每一种以 i 结尾的多元素方案都有倒数第二个位置 j，因此枚举这些 j 不会漏解。答案取所有 `dp[i]` 的最大值，不一定在最后一个位置。
+
+```java
+static int lisLength(int[] nums) {
+    java.util.Objects.requireNonNull(nums);
+    int[] dp = new int[nums.length];
+    int best = 0;
+    for (int i = 0; i < nums.length; i++) {
+        dp[i] = 1;
+        for (int j = 0; j < i; j++) {
+            if (nums[j] < nums[i]) dp[i] = Math.max(dp[i], dp[j] + 1);
+        }
+        best = Math.max(best, dp[i]);
+    }
+    return best;
+}
+```
+
+代码拒绝 `null`，空数组返回 0，`[2,2,2]` 返回 1，负数也能直接比较。时间 O(n²)，辅助空间 O(n)。只说“递增”而没有说明严格性时，应先确认相等值能否相邻；若要求最长非降子序列，比较条件改成 `<=`，结果就可能不同。
+
+### 4.4 最大子数组和与区间 {#最大子数组和与区间}
+
+**最大子数组和**是在所有非空连续片段中找出最大的元素和。连续性意味着，以位置 i 结尾的最优片段只有两种来源：把 `nums[i]` 接到前一个片段后，或者从 i 重新开始。因此 `ending[i]=max(nums[i], ending[i-1]+nums[i])`，全局答案再取所有结尾位置的最大值。
+
+恢复区间只需要额外记住当前片段的起点。前一个片段的和小于 0 时，接上它只会降低当前和，所以从 i 重新开始；否则保留原起点。全局最优值变大时，同时保存这次的起点和终点。
+
+```java
+record Subarray(long sum, int from, int toExclusive) {}
+
+static Subarray maxSubarray(int[] nums) {
+    java.util.Objects.requireNonNull(nums);
+    if (nums.length == 0) throw new IllegalArgumentException("nonempty array required");
+    long ending = nums[0], best = nums[0];
+    int start = 0, bestStart = 0, bestEnd = 1;
+    for (int i = 1; i < nums.length; i++) {
+        if (ending < 0) {
+            ending = nums[i];
+            start = i;
+        } else {
+            ending += nums[i];
+        }
+        if (ending > best) {
+            best = ending;
+            bestStart = start;
+            bestEnd = i + 1;
+        }
+    }
+    return new Subarray(best, bestStart, bestEnd);
+}
+```
+
+返回区间使用左闭右开 `[from,toExclusive)`，这是本例的接口约定。`[-2,1,-3,4,-1,2,1,-5,4]` 返回和 6、区间 `[3,7)`，对应 `[4,-1,2,1]`。`[-3,-1,-2]` 返回和 −1、区间 `[1,2)`，所以初值必须来自第一个元素，不能用 0 暗中允许空片段；本例拒绝 `null` 和空数组。
+
+并列时约定先选结束位置最早的片段，再选起点最早的片段：只有 `ending > best` 才更新全局答案，前缀和为 0 时继续延长。累计值用 `long`，Java `int[]` 的长度和每项都是 `int` 范围，任意片段的和都可放入 `long`；若接口改收任意 `long` 元素，就要另行检查溢出。总时间 O(n)，辅助空间 O(1)。
+
+### 4.5 相邻天活动限制 {#相邻天活动限制}
+
+每天必须从三种活动中选一种、相邻两天不能相同时，**最后一天选了什么**决定下一天的合法选择。只保留“截至今天的最大收益”会丢掉这个条件。设 `dp[i][a]` 为第 i 天选择活动 a 时，前 i+1 天的最大累计收益：
+
+```text
+dp[i][a] = reward[i][a] + max(dp[i-1][b])，其中 b != a
+dp[0][a] = reward[0][a]
+```
+
+每一天的三个新状态都从前一天读取，不能算完今天的 A 后，立即拿它去算今天的 B。下面用三个临时变量保留这一轮的新结果：
+
+```java
+static long maxActivityReward(int[][] reward) {
+    java.util.Objects.requireNonNull(reward);
+    for (int[] row : reward) {
+        if (row == null || row.length != 3) {
+            throw new IllegalArgumentException("three rewards per day required");
+        }
+    }
+    if (reward.length == 0) return 0;
+    long a = reward[0][0], b = reward[0][1], c = reward[0][2];
+    for (int day = 1; day < reward.length; day++) {
+        long nextA = Math.max(b, c) + reward[day][0];
+        long nextB = Math.max(a, c) + reward[day][1];
+        long nextC = Math.max(a, b) + reward[day][2];
+        a = nextA;
+        b = nextB;
+        c = nextC;
+    }
+    return Math.max(a, Math.max(b, c));
+}
+```
+
+收益表 `[[10,40,70],[20,50,80],[30,60,90]]` 返回 210，选择 C、B、C 得到 `70+50+90`。本例另作教学约定：收益可以为负，0 天返回 0，每行恰有三项，`null` 输入或无效行被拒绝。非空时每天必须选一种，因此 `[[−3,−1,−2]]` 的结果是 −1，不能用“不选”的 0 覆盖它。累计收益用 `long`，对 Java `int[][]` 的天数和整数收益范围足够；时间 O(n)，辅助空间 O(1)。
 
 ## 5. 初始化 {#初始化}
 
@@ -139,6 +280,35 @@ static long maxProfit(int[] prices) {
 
 这段代码假定价格非负。`[3,1,4]` 返回 3，对应价格 1 时买入、价格 4 时卖出；空数组直接返回 0。每个交易日只更新两个变量，时间是 O(n)，辅助空间是 O(1)。
 
+### 5.1 二叉搜索树数量 {#二叉搜索树数量}
+
+使用互不相同的键 1 到 n 构造二叉搜索树时，**根的取值确定了左右子树各有多少节点**。选 r 为根，左边只能放 1 到 r−1，右边只能放 r+1 到 n。每一种左子树都可以与每一种右子树组合，所以固定根时两侧方案数相乘；不同根产生不同的树，再将各根的方案数相加。
+
+设 `count[n]` 为 n 个互异有序键能构成的树形数量。具体键值不会改变树形数，只有相对顺序和节点数有影响：
+
+```text
+count[n] = sum(count[left] * count[n-1-left])，left 从 0 到 n-1
+count[0] = 1
+```
+
+空树算一种，是为了让“左边为空、右边有一种树”仍能组合出一种结果；如果空树计数为 0，任何带空孩子的组合都会被错误消掉。
+
+```java
+static long countBsts(int n) {
+    if (n < 0 || n > 19) throw new IllegalArgumentException("0 <= n <= 19 required");
+    long[] count = new long[n + 1];
+    count[0] = 1;
+    for (int size = 1; size <= n; size++) {
+        for (int left = 0; left < size; left++) {
+            count[size] += count[left] * count[size - 1 - left];
+        }
+    }
+    return count[n];
+}
+```
+
+`countBsts(3)` 返回 5：左右规模分别为 `(0,2)`、`(1,1)`、`(2,0)`，贡献为 `2+1+2`。代码采用 LC96 的 n≤19 范围，并为递推边界额外允许 n=0；`countBsts(19)` 为 1767263190，`long` 足以容纳范围内的乘积和总数。更大 n 不能直接沿用这个数值保证，应估算上界或使用 `BigInteger`。时间 O(n²)，辅助空间 O(n)，无需生成每一棵树。
+
 ## 6. 计算顺序 {#计算顺序}
 
 计算顺序要保证两点：读取一个状态时，它已经算好了，而且存的还是转移需要的那一轮结果。`dp[i]` 依赖 `dp[i-1]` 时按 i 递增计算；二维网格依赖左方和上方时，按行、列递增即可。
@@ -156,6 +326,14 @@ for (int i = 0; i < weights.length; i++) {
 这里 `weights` 都是正整数，`values` 是非负收益，`dp[c]` 表示容量不超过 c 时的最大收益，初值全为 0。容量从大到小更新时，比 `c` 小的位置还没被当前物品更新过，`dp[c - weights[i]]` 读到的仍是上一轮的值，所以当前物品最多被加入一次。
 
 用一个反例看正序为什么错：只有一件重量 2、收益 3 的物品，容量为 4，正确答案是 3。正序更新会先写入 `dp[2]=3`，算 `dp[4]` 时又读到这个新值，得到 `dp[4]=6`，同一件物品用了两次。**完全背包**允许同一物品重复使用，正好需要这种效果，所以它按容量正序更新。循环方向由状态依赖决定，解释时要和状态含义一起讲。
+
+### 6.1 预算内方案选择 {#预算内方案选择}
+
+业务约束能否对应一个可计算的状态，比给问题贴上“动态规划”的名字更重要。假设要从候选推广方案中选一批：每个方案最多执行一次，成本是正整数，预估收益是非负整数，总预算不超过 B，收益可相加且方案之间没有互斥或依赖。这是一个用于说明建模的简化业务例子。
+
+令 `dp[i][b]` 表示只考虑前 i 个方案、预算上限为 b 时的最大预估收益。第 i 个方案要么不选，沿用 `dp[i-1][b]`；要么选，在成本不超过 b 时比较 `dp[i-1][b-cost[i]]+gain[i]`。预算只是上限，空方案收益为 0，因此初值为 0，最后读取 `dp[n][B]`；压成一维后就是上面的倒序容量循环。
+
+例如预算 5，三个方案的 `(成本,收益)` 分别为 `(2,3)`、`(3,4)`、`(4,5)`，选择前两个得到 7，高于只选第三个的 5。模型需要 O(nB) 时间、压缩后 O(B) 空间，成本取值很大时，按金额建表未必合适；还要按收益总和选择数值类型。如果两个方案组合后收益不再可加，或者必须配套执行，现有转移就不成立，必须重新表达这些约束，不能直接把背包模板套到实际系统里。
 
 ## 7. 自顶向下与自底向上 {#自顶向下与自底向上}
 
@@ -183,6 +361,49 @@ for (int i = 0; i < weights.length; i++) {
 
 压缩的代价是状态的读取顺序更难看出来，恢复具体方案所需的前驱信息也被覆盖了。如果要返回具体选择，可以另外记录每一步的决策，或者保留完整的表再倒推，也可以按需重新计算。面试时先讲清完整状态，再说明哪些结果已经用完、可以覆盖。
 
+### 8.1 最少项数组合 {#最少项数组合}
+
+从一组数中重复选择若干项，使总和恰好为 target，既要项数最少，又要输出一种组合。下面先约定**可选值都是正整数、target 是非负整数**；若题目未给出符号和范围，这只是教学模型，需要先向面试官确认。含负数时，不能把所有中间和直接限制在 0 到 target。
+
+令 `count[sum]` 为恰好组成 sum 的最少项数，`count[0]=0`，其余先标记不可达。枚举最后选的值 value，只从可达的 `sum-value` 转移，候选项数为 `count[sum-value]+1`。所有 value 为正，前驱严格更小，所以 sum 递增时已经算好了。每次找到更优答案，额外记住 `last[sum]=value`；求完后从 target 反复减去 last，就能恢复最少项数的一种组合。
+
+```java
+static java.util.Optional<java.util.List<Integer>> minCombination(int[] values, int target) {
+    java.util.Objects.requireNonNull(values);
+    if (target < 0 || target == Integer.MAX_VALUE) {
+        throw new IllegalArgumentException("0 <= target < Integer.MAX_VALUE required");
+    }
+    for (int value : values) {
+        if (value <= 0) throw new IllegalArgumentException("positive values required");
+    }
+    int[] count = new int[target + 1];
+    int[] last = new int[target + 1];
+    java.util.Arrays.fill(count, -1);
+    count[0] = 0;
+    for (int sum = 1; sum <= target; sum++) {
+        for (int value : values) {
+            if (value <= sum && count[sum - value] != -1) {
+                int candidate = count[sum - value] + 1;
+                if (count[sum] == -1 || candidate < count[sum]) {
+                    count[sum] = candidate;
+                    last[sum] = value;
+                }
+            }
+        }
+    }
+    if (count[target] == -1) return java.util.Optional.empty();
+    java.util.List<Integer> result = new java.util.ArrayList<>();
+    for (int sum = target; sum > 0; sum -= last[sum]) result.add(last[sum]);
+    return java.util.Optional.of(result);
+}
+```
+
+`values=[1,3,4]`、`target=6` 时返回 `[3,3]`，项数为 2；按最大值优先拿到的 `[4,1,1]` 并非最优。`values=[2]`、`target=3` 返回空 `Optional` 表示无解，target=0 则返回包含空列表的 `Optional`，表示有一个不选任何项的有效方案。相同项数时保留第一次找到的来源，返回任意一个最优组合，不承诺字典序；重复面值不影响最少项数。
+
+设可选值数量为 m，目标为 T，状态转移需要 O(mT) 时间，另有 O(m+T) 的输入校验、数组初始化和按目标和推进的开销；恢复方案最多需要 O(T) 时间。数组空间为 O(T+1)，返回列表最多 T 项。代码拒绝 `null`、非正面值、负目标以及会使 `target+1` 溢出的最大 `int`；这只保证索引与计数运算的范围，实际 T 还必须能被时间和内存预算接受。恢复时每次总和严格减小，且每个可达正数状态都记录过 last，所以会回到 0。
+
+固定面值 `1、3、5、10` 兑换 100 则可以直接证明：每枚最多贡献 10，至少需要 10 枚；十枚 10 正好达到下界。这不代表任意面值都能贪心，面值一变就需要重新证明，或用上述通用递推。
+
 ## 9. 转移完整性 {#证明转移完整}
 
 转移式写出来以后，还要确认它没有漏掉合法方案，也没有算进非法方案。可以逐项核对这五个条件：
@@ -194,6 +415,8 @@ for (int i = 0; i < weights.length; i++) {
 5. **计算有序**：前驱已经计算完成，读取的是转移要求的那一轮结果。
 
 哪一项说不清楚，就回到状态定义和转移重新推导。另一个实用的办法是写一个暴力穷举，在小规模输入上和 DP 结果对拍，检查有没有漏算或多算。
+
+树上的状态还要区分“整棵子树里的最优答案”与“能继续接到父节点的结果”。例如二叉树最大路径和在节点处可以合并左右两臂，向父节点却只能返回单臂，否则路径会分叉。具体机制与实现见[树与图搜索](./trees-graphs-search.mdx#二叉树最大路径和)。
 
 ## 10. 常见问题 {#常见问题}
 
@@ -270,6 +493,97 @@ LCS 的末尾字符相等时，接在更短前缀的公共子序列后面，得�
 
 </details>
 
+### 11.4 如何求可重复选取的最少项数组合，并恢复一种方案？ {#min-count-combination}
+
+**考察重点**：状态可达性、正值依赖顺序与前驱恢复。
+
+**相关内容**：[最少项数组合](#最少项数组合)。
+
+<details>
+<summary>参考回答</summary>
+
+**以目标和定义最少项数状态，并在变优时记住最后选取的值。** 在正整数教学模型中，`count[0]=0`，其他和先不可达；每个状态枚举最后一项，只从可达前驱转移。按和递增计算后，从目标沿 `last` 回退，得到一种最优组合。零目标有空方案，不可达则无解；原题未明确的符号、规模和并列要求应先确认。
+
+</details>
+
+### 11.5 如何计算 n 个互异有序键能构成多少种二叉搜索树？ {#count-unique-bsts}
+
+**考察重点**：按根分组、左右组合乘法与空树计数。
+
+**相关内容**：[二叉搜索树数量](#二叉搜索树数量)。
+
+<details>
+<summary>参考回答</summary>
+
+**枚举根，将左右子树方案数相乘，再对所有根求和。** 根确定两侧节点数，每种左右组合都对应唯一树形；不同根的方案互不重复。令 `count[0]=1`，按节点数递增计算 `count[n]=sum(count[left]*count[n-1-left])`。时间 O(n²)、空间 O(n)，扩大 n 前要重新检查计数范围。
+
+</details>
+
+### 11.6 如何实现最长严格递增子序列？ {#longest-increasing-subsequence}
+
+**考察重点**：以位置结尾的状态、严格比较与答案位置。
+
+**相关内容**：[最长严格递增子序列](#最长严格递增子序列)。
+
+<details>
+<summary>参考回答</summary>
+
+**定义 `dp[i]` 为以位置 i 结尾的最长严格递增长度。** 初值为 1；只从 `j<i` 且 `nums[j]<nums[i]` 的位置转移，候选为 `dp[j]+1`。答案是全表最大值，空数组返回 0，相等元素不能互相延长。直接实现需要 O(n²) 时间、O(n) 空间；“递增”未明确严格性时先确认。
+
+</details>
+
+### 11.7 股票交易次数受限时，应怎样定义状态和转移？ {#limited-stock-transactions}
+
+**考察重点**：完成次数的含义、持仓区别与至多/恰好终态。
+
+**相关内容**：[交易次数限制](#交易次数限制)。
+
+<details>
+<summary>参考回答</summary>
+
+**用日期、持仓状态和已经完成的卖出次数区分子问题。** 买入不增加次数，卖出才加一。开始前只有未持股且完成 0 笔的利润 0 可达，其余不可达；每次转移读取前一天并跳过不可达来源。至多 k 笔取最终未持股的 0 到 k 次状态的最大值，恰好 k 笔只看第 k 次状态并检查可达性。
+
+</details>
+
+### 11.8 如何求最大子数组和，并返回它的区间？ {#maximum-subarray-range}
+
+**考察重点**：连续结尾状态、区间恢复与全负输入。
+
+**相关内容**：[最大子数组和与区间](#最大子数组和与区间)。
+
+<details>
+<summary>参考回答</summary>
+
+**每一步比较从当前元素重新开始，还是延长前一个连续片段。** 前一个片段的和为负时重置起点，否则继续延长；全局最大值变大时同时保存区间端点。用首元素初始化，才能在全负数组中返回一个实际元素。本例拒绝空数组，用 `long` 累加并返回左闭右开区间，并列时先取结束最早、再取起点最早的片段。
+
+</details>
+
+### 11.9 每天从三种活动中选一种，相邻天不能相同，怎样求最大收益？ {#daily-activity-reward}
+
+**考察重点**：保留最后活动、读取上一天与每天必选的初始化。
+
+**相关内容**：[相邻天活动限制](#相邻天活动限制)。
+
+<details>
+<summary>参考回答</summary>
+
+**按“日期、当天活动”保存累计最大收益，只从前一天的其他活动转移。** 第一天的三个状态直接取三项收益，之后每项加上前一天另两项的较大值；三个新状态算完后再一起覆盖旧值。最后取三项最大值。每天必选时，负收益也必须参与，不能用 0 代表跳过一天。时间 O(n)，额外空间 O(1)。
+
+</details>
+
+### 11.10 动态规划怎样对应业务开发中的具体约束？ {#dp-business-constraints}
+
+**考察重点**：从输入、约束和目标推导状态，并判断计算规模。
+
+**相关内容**：[预算内方案选择](#预算内方案选择)。
+
+<details>
+<summary>参考回答</summary>
+
+**先明确哪些历史会影响后续选择，再确定状态和代价。** 例如每个方案最多执行一次、成本为正整数、收益可加且无依赖时，预算内选方案可以用 0/1 背包：状态是考虑到的方案数和预算上限，比较选与不选的收益。计算成本为 O(nB)，预算很大时可能不可行；若方案互斥、相互依赖或收益不独立，需要重新建模。这是说明方法的例子，不是对某个实际系统的效果承诺。
+
+</details>
+
 ## 12. 参考资料 {#参考资料}
 
 - [Java SE 21：Math](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/Math.html)
@@ -278,3 +592,6 @@ LCS 的末尾字符相等时，接在更短前缀的公共子序列后面，得�
 - [MIT 6.006：Edit Distance and Knapsack](https://ocw.mit.edu/courses/6-006-introduction-to-algorithms-fall-2011/resources/lecture-21-dp-iii-parenthesization-edit-distance-knapsack/)
 - [Princeton：Longest Common Subsequence](https://introcs.cs.princeton.edu/java/23recursion/)
 - [Antti Laaksonen：Competitive Programmer’s Handbook](https://cses.fi/book/book.pdf)
+- [Java SE 21：String](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/String.html)
+- [LeetCode：Unique Binary Search Trees](https://leetcode.com/problems/unique-binary-search-trees/description/)
+- [AtCoder Educational DP Contest：Vacation](https://atcoder.jp/contests/dp/tasks/dp_c)

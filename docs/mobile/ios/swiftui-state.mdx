@@ -1,0 +1,362 @@
+---
+title: SwiftUI 状态管理
+description: 理解 SwiftUI 状态所有权、Binding、视图身份、ObservableObject 与 Observation，以及随视图运行的异步任务。
+knowledge:
+  id: mobile.ios.swiftui-state
+---
+
+SwiftUI 根据数据描述界面，数据变化后更新依赖它的部分。**状态管理**首先要回答两个问题：谁保存数据，哪些视图通过什么关系读取或修改它。选对属性包装器之后，还要理解视图身份：新的 `View` 值不一定带来新的状态，但身份变化可能使状态重新初始化。
+
+本文同时说明两套部署范围不同的机制：`ObservableObject`、`@Published` 与 iOS 14 起的 `@StateObject`，以及 iOS 17 起 SwiftUI 对 Observation 的支持。已有项目不需要为了使用同一套术语，就把不同版本的模型观察机制混在一起。
+
+## 1. 面试核心 {#core}
+
+- **`@State` 保存当前视图身份关联的状态，`@Binding` 提供对已有状态的读写连接**。把值复制到另一个 `@State`，不会自动建立双向同步。[卡](#state-binding)
+- **`View` 值、视图身份和状态存储不是同一个对象**。输入变化可以生成新的 `View` 值，但同一身份的状态仍然保留；改变 `.id` 会重置对应身份的状态。[卡](#identity)
+- 使用 `ObservableObject` 时，**`@StateObject` 用于视图拥有的模型，`@ObservedObject` 用于观察外部传入的模型**。`@EnvironmentObject` 从环境中取得共享对象，仍需祖先注入。[卡](#object-ownership)
+- iOS 17 起，`@Observable` 模型由 Observation 跟踪属性访问；**SwiftUI 依据 `body` 实际读取的可观察属性建立依赖**。视图拥有模型时可用 `@State`，需要属性绑定时用 `@Bindable`。[卡](#observation)
+- **环境传递不等于全局单例，观察机制也不等于线程安全**。共享范围、对象所有权和并发隔离要分别设计。[卡](#environment)
+- `body` 用来描述界面，**不要在其中启动网络请求或修改驱动本次更新的状态**。`.task(id:)` 可以把任务与视图及输入关联，但取消仍是协作式的。[卡](#effects)
+- SwiftUI 和 UIKit 的核心差异之一是**界面表达与更新方式**；框架选择还受部署版本、已有代码和控件能力影响，不能只用“新旧”判断。[卡](#uikit-comparison)
+
+## 2. 状态所有权与双向绑定 {#状态所有权与双向绑定}
+
+### 2.1 State 保存什么 {#state保存什么}
+
+**`@State`** 是把一个值交给 SwiftUI 管理，并与特定视图身份关联的属性包装器。视图通过它保存自身负责的交互状态，例如展开状态、筛选条件和尚未提交的输入。
+
+状态应放在真正拥有它、需要协调相关子视图的层级。如果两个子视图需要共同修改同一数量，可以由父视图保存数量，再把读写连接传下去，而不是让两个子视图各保存一份需要手工同步的副本。
+
+```swift
+import SwiftUI
+
+struct QuantityScreen: View {
+    @State private var quantity = 1
+
+    var body: some View {
+        VStack {
+            Text("数量：\(quantity)")
+            QuantityEditor(quantity: $quantity)
+        }
+    }
+}
+
+struct QuantityEditor: View {
+    @Binding var quantity: Int
+
+    var body: some View {
+        Stepper("调整数量", value: $quantity, in: 1...10)
+    }
+}
+```
+
+`QuantityScreen` 保存数量；`$quantity` 提供绑定，`QuantityEditor` 通过它修改同一处状态。子视图没有另建一份数量。父视图显示的文字依赖 `quantity`，因此数量变化会使相关界面更新。
+
+### 2.2 Binding 不是另一个存储容器 {#binding不是另一个存储容器}
+
+**`Binding`** 是对其他位置保存的数据进行读写的连接。它可以由状态属性投影得到，也可以通过 `Binding(get:set:)` 自定义读取和写入逻辑。
+
+只需要展示时，传普通值或模型通常就够；需要子视图修改上层状态时，再提供绑定或明确的操作回调。例如“删除文章”包含校验、网络和错误处理时，传一个删除动作往往比把整个可变集合暴露给子视图更清楚。
+
+如果子视图用父视图传入的值初始化自己的 `@State`，那是建立独立状态，不是绑定。编辑表单可以有意保存草稿，再在“保存”时提交；但应明确取消、外部数据更新和切换编辑对象时怎样处理草稿。
+
+普通引用类型也不能自动变成可观察模型。把普通 class 放进 `@State` 后，修改它内部的一个普通属性，不等于替换这个状态值，也不会凭空产生属性观察通知。需要根据部署版本选用下面的模型观察方式。
+
+## 3. 视图身份与状态生命周期 {#视图身份与状态生命周期}
+
+SwiftUI 的 `View` 通常是描述界面的值。父视图重新求值时，可以创建新的子 `View` 值；SwiftUI 再根据结构与显式 ID 判断它们与原有界面的对应关系。状态存储由这种身份关系管理，不是简单地放在每次临时生成的结构体里。
+
+因此，不能看到子视图的初始化器再次执行，就推断 `@State` 或 `@StateObject` 已经全部重置。相反，视图离开对应结构、分支发生身份变化，或 `.id` 的值改变，都可能让原来的状态生命周期结束。
+
+`Editor(document: document).id(document.id)` 可以有意把编辑器身份与文档绑定。切换文档时，原草稿状态重新建立；代价是该身份范围内的其他状态、焦点和任务也可能重建。它不是修复所有刷新问题的通用按钮。
+
+列表的 `ForEach` 应使用稳定的业务身份。每次求值都生成新的 UUID，会让原本同一项不断被当成新项；在可插入、删除、排序的列表中，把位置当身份还可能把状态错误地保留给另一项。数据身份与位置的区别也适用于 [iOS 列表视图](./list-views.mdx#indexpath为什么不能长期代表一条数据)。
+
+## 4. ObservableObject 的对象所有权 {#observableobject的对象所有权}
+
+### 4.1 StateObject 与 ObservedObject {#stateobject与observedobject}
+
+**`ObservableObject`** 是支持对象变化通知的协议。模型通常用 `@Published` 属性发布变化，SwiftUI 通过相应的观察包装器订阅它。
+
+`@StateObject` 表示当前视图层级拥有该模型，并让 SwiftUI 在同一身份的生命周期内保持实例。`@ObservedObject` 表示模型由外部提供，当前视图观察它；它不负责为反复创建的视图值建立同样的实例生命周期保障。
+
+```swift
+import SwiftUI
+
+@MainActor
+final class LegacyCounter: ObservableObject {
+    @Published var count = 0
+}
+
+@MainActor
+struct LegacyCounterScreen: View {
+    @StateObject private var model = LegacyCounter()
+
+    var body: some View {
+        LegacyCounterEditor(model: model)
+    }
+}
+
+@MainActor
+struct LegacyCounterEditor: View {
+    @ObservedObject var model: LegacyCounter
+
+    var body: some View {
+        Stepper("计数：\(model.count)", value: $model.count)
+    }
+}
+```
+
+父视图创建并持有 `LegacyCounter`；子视图观察同一个对象。把父视图中的声明改成 `@ObservedObject var model = LegacyCounter()`，并不能获得 `@StateObject` 提供的身份绑定存储语义，父视图重建时就可能引入新的对象。
+
+用外部输入初始化 `@StateObject` 时也要注意：初始值用于建立该身份下的对象，不表示输入每变化一次就自动替换对象。需要同步参数时，应显式更新模型；确实要换整个模型生命周期时，再调整身份或把对象交由更高层管理。
+
+### 4.2 EnvironmentObject 的共享范围 {#environmentobject的共享范围}
+
+`@EnvironmentObject` 从视图环境取得一个 `ObservableObject`，适合多层后代共享的状态。祖先通过 `.environmentObject(model)` 注入，后代按类型读取，不必每层都手工传参。
+
+它仍有明确的作用域。不同窗口或不同子树可以注入不同实例，不能把它解释成应用进程里唯一的全局对象。没有注入所需对象会在运行时出错，预览和测试也必须提供依赖。
+
+对象由谁创建和持有，应独立于“通过环境分发”来确定。例如根视图用 `@StateObject` 拥有模型，再注入后代。共享对象越多，依赖越隐蔽，局部组件只需一个值或一个动作时，仍应优先保持接口清楚。
+
+## 5. Observation 的属性依赖 {#observation的属性依赖}
+
+### 5.1 Observable 与 State {#observable与state}
+
+从 iOS 17 起，SwiftUI 支持 Observation。**`@Observable`** 宏为模型提供属性访问和变化跟踪；它不要求给每个可观察属性添加 `@Published`。
+
+SwiftUI 求值 `body` 时，跟踪其中实际读取的可观察属性。如果正文只读取 `model.query`，仅改变另一个未读取的属性，不会因为该属性的 Observation 依赖而要求这个视图更新。其他输入或环境变化仍可能使视图重新求值，因此不要把它理解成对 `body` 调用次数的保证。
+
+这与基于 `ObservableObject` 的对象通知不同：订阅该对象的视图可能因为其他 `@Published` 属性变化而重新更新。两套机制可以在迁移中共存，但不能把 `@ObservedObject`、`@StateObject` 直接套在只采用 `@Observable` 的模型上。
+
+### 5.2 Bindable 为属性提供绑定 {#bindable为属性提供绑定}
+
+只读或调用模型方法时，可以直接传递 `@Observable` 对象；要给 `TextField` 等控件传属性绑定时，使用 `@Bindable`：
+
+```swift
+import SwiftUI
+import Observation
+
+@Observable
+@MainActor
+final class SearchModel {
+    var query = ""
+    var onlyFavorites = false
+}
+
+@MainActor
+struct SearchScreen: View {
+    @State private var model = SearchModel()
+
+    var body: some View {
+        SearchEditor(model: model)
+    }
+}
+
+@MainActor
+struct SearchEditor: View {
+    @Bindable var model: SearchModel
+
+    var body: some View {
+        VStack {
+            TextField("搜索", text: $model.query)
+            Toggle("仅收藏", isOn: $model.onlyFavorites)
+            Text("当前关键词：\(model.query)")
+        }
+    }
+}
+```
+
+`SearchScreen` 用 `@State` 保持当前身份拥有的模型引用；`SearchEditor` 用 `@Bindable` 取得 `query` 和 `onlyFavorites` 的绑定。**`@Bindable` 的职责是提供绑定，不是创建一套 `@StateObject` 式的对象所有权。**
+
+Observation 模型也可以通过 `.environment(model)` 注入，再用 `@Environment(SearchModel.self)` 读取；这与旧机制的 `.environmentObject`、`@EnvironmentObject` 是不同接口。按类型读取必需对象时，祖先仍应注入；如果设计上允许缺失，可使用适当的可选读取形式并处理空值。
+
+`@Observable` 不会自动把访问变成线程安全，`@Published` 也不是锁。示例把 UI 模型明确隔离到 `MainActor`；耗时工作和跨 actor 数据传递仍应遵守 [Swift 并发](../../basic-knowledge/swift/concurrency.mdx) 的规则。
+
+## 6. 界面更新与副作用 {#界面更新与副作用}
+
+### 6.1 body 只描述当前界面 {#body只描述当前界面}
+
+`body` 可能因状态、输入或环境变化反复求值，不是只执行一次的页面初始化函数。网络请求、文件写入、埋点和改变状态等副作用，不应直接混进 `body` 的求值过程。
+
+可以把副作用放在用户动作、明确的模型方法，或与视图生命周期关联的修饰器中。`onAppear` 表示视图出现，不能保证整个应用生命周期只运行一次；导航返回、条件分支和身份变化都可能使出现过程再次发生。需要“只做一次”的业务，应在合适的数据层记录条件，而不是仅靠一次页面回调。
+
+### 6.2 task 与输入变化 {#task与输入变化}
+
+iOS 15 起的 `.task` 让 SwiftUI 管理与视图相关的异步任务。`.task(id:)` 还会在输入 ID 改变时取消旧任务并重新开始。下面只使用这组 API 的基本能力，不依赖较新系统的任务诊断参数：
+
+```swift
+import SwiftUI
+
+@MainActor
+struct DocumentPreview: View {
+    let documentID: String
+    let load: @MainActor (String) async throws -> String
+    @State private var text = "加载中"
+
+    var body: some View {
+        Text(text)
+            .task(id: documentID) {
+                text = "加载中"
+                do {
+                    let result = try await load(documentID)
+                    try Task.checkCancellation()
+                    text = result
+                } catch is CancellationError {
+                    // 取消不作为加载失败展示。
+                } catch {
+                    guard !Task.isCancelled else { return }
+                    text = "加载失败"
+                }
+            }
+    }
+}
+```
+
+文档 ID 变化后，旧任务进入取消状态。即使 `load` 没有立即终止，返回后也要检查取消，避免把已经失效的结果写回界面。任务取消的具体执行时间由框架和任务代码共同决定，不能把视图消失理解成底层网络请求瞬间完成清理。
+
+这里的异步闭包并不保证同步计算自动移到后台。`load` 应采用合适的异步 I/O 或计算隔离方式；不要在主 actor 上先执行长时间同步解码，再以为加一个 `await` 就解决了阻塞。
+
+## 7. SwiftUI 与 UIKit 的关系 {#swiftui与uikit的关系}
+
+SwiftUI 侧重用数据和声明式结构描述界面，再由框架维护更新关系。UIKit 中通常需要管理视图、控制器、布局和事件，再把模型变化应用到相应对象；Diffable Data Source 等机制也能减少手工同步，不能把 UIKit 简化成“所有更新都必须逐项手写”。
+
+SwiftUI 可以通过 `UIHostingController` 放进 UIKit 页面，也可以通过 `UIViewRepresentable`、`UIViewControllerRepresentable` 包装 UIKit 能力。混合使用时，应明确哪一侧拥有状态、怎样传递更新，以及避免双向回调互相触发。
+
+选择框架时看最低部署版本、已有页面和组件、复杂交互的实现成本、团队维护方式，以及项目是否需要渐进迁移。语言选择和界面框架选择也不完全相同：UIKit 可以由 Swift 使用，采用 Swift 并不意味着必须重写成 SwiftUI。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 SwiftUI 中 State 和 Binding 有什么区别？ {#state-binding}
+
+**考察重点**：状态存储与读写连接的分工。
+
+**相关内容**：[状态所有权与双向绑定](#状态所有权与双向绑定)。
+
+<details>
+<summary>参考回答</summary>
+
+**`@State` 表示由当前视图身份关联并保存的状态，`@Binding` 表示对其他位置已有状态的读写连接。** 父视图可以保存数量，子视图接收 `$quantity` 并通过绑定修改同一数量。
+
+把传入值复制到子视图的 `@State` 会产生独立状态，不会自动保持同步。需要草稿时可以有意复制，但要定义提交、取消和外部更新的规则。
+
+</details>
+
+### 8.2 View 初始化器再次执行，State 一定重置吗？ {#identity}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：临时 View 值、身份与状态生命周期的区别。
+
+**相关内容**：[视图身份与状态生命周期](#视图身份与状态生命周期)。
+
+<details>
+<summary>参考回答</summary>
+
+**不一定；状态由 SwiftUI 按视图身份管理，不是随每个临时 View 值重新创建。** 同一身份下的输入变化可以产生新的 View 值，同时继续使用原状态。
+
+改变 `.id` 或使对应视图身份离开层级，会影响状态生命周期。因此不能用“初始化器又运行了”直接判断状态丢失，也不应靠不断换 ID 强制刷新所有内容。
+
+</details>
+
+### 8.3 StateObject、ObservedObject 和 EnvironmentObject 怎样分工？ {#object-ownership}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：ObservableObject 模型的所有权与传递方式。
+
+**相关内容**：[ObservableObject 的对象所有权](#observableobject的对象所有权)。
+
+<details>
+<summary>参考回答</summary>
+
+**`@StateObject` 用来让当前视图身份拥有并保持模型，`@ObservedObject` 观察外部传入的模型，`@EnvironmentObject` 从祖先环境取得共享模型。** 后两者的使用不能代替创建方对生命周期的安排。
+
+`@StateObject` 不因每次输入变化重新创建对象；身份变化才可能开始新的生命周期。环境对象必须注入，且作用域是相关视图子树，不天然等于全局单例。
+
+</details>
+
+### 8.4 Observation 怎样决定界面依赖？Bindable 负责什么？ {#observation}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：iOS 17 起的属性观察与绑定职责。
+
+**相关内容**：[Observation 的属性依赖](#observation的属性依赖)。
+
+<details>
+<summary>参考回答</summary>
+
+**SwiftUI 对 `@Observable` 模型按 `body` 实际读取的可观察属性建立依赖，`@Bindable` 则提供模型属性的读写绑定。** 不需要为每个可观察属性加 `@Published`，只读取模型也不一定需要 `@Bindable`。
+
+视图拥有模型时可用 `@State` 管理引用。属性观察不等于对象所有权，也不保证并发安全；其他输入变化仍可能让 `body` 求值，不能承诺固定的调用次数。
+
+</details>
+
+### 8.5 环境对象是不是全局单例？观察模型是不是线程安全的？ {#environment}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：依赖作用域、所有权与并发隔离。
+
+**相关内容**：[EnvironmentObject 的共享范围](#environmentobject的共享范围)、[Bindable 为属性提供绑定](#bindable为属性提供绑定)。
+
+<details>
+<summary>参考回答</summary>
+
+**都不能这样推断。** 环境按视图层级传递依赖，不同窗口和子树可以使用不同实例；谁创建和持有对象仍需明确。缺少必需注入还会导致运行时错误。
+
+`@Observable` 和 `@Published` 提供观察能力，不是互斥锁。UI 模型可以明确使用 `MainActor`，其他并发访问按 actor 或同步规则处理。
+
+</details>
+
+### 8.6 为什么不在 body 中发请求？task(id:) 能解决什么？ {#effects}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：声明式求值、副作用与协作取消。
+
+**相关内容**：[界面更新与副作用](#界面更新与副作用)。
+
+<details>
+<summary>参考回答</summary>
+
+**`body` 可以反复求值，在里面直接发请求会把界面计算和副作用耦合，造成重复工作或更新循环。** 可以由用户动作、模型方法或生命周期任务触发。
+
+`.task(id:)` 在视图相关生命周期内执行任务，并在 ID 变化时取消旧任务、启动新任务。取消仍需任务配合，异步结果写回前应检查取消；它也不会自动把同步重活移出主 actor。
+
+</details>
+
+### 8.7 SwiftUI 和 UIKit 有什么区别？ {#uikit-comparison}
+
+**考察重点**：界面表达、更新关系、部署与渐进集成。
+
+**相关内容**：[SwiftUI 与 UIKit 的关系](#swiftui与uikit的关系)。
+
+<details>
+<summary>参考回答</summary>
+
+**SwiftUI 侧重由状态描述界面，再由框架维护依赖和更新；UIKit 通常由代码管理视图与控制器，再将模型变化应用到对象。** UIKit 也有增量更新等抽象，两者不是绝对互斥。
+
+选择时要看部署版本、已有代码和组件、复杂交互及维护成本。可以通过 Hosting Controller 和 Representable 渐进集成；使用 Swift 语言也不等于必须使用 SwiftUI。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+
+- [Apple：Managing model data in your app](https://developer.apple.com/documentation/swiftui/managing-model-data-in-your-app)
+- [Apple：Migrating from the Observable Object protocol to the Observable macro](https://developer.apple.com/documentation/swiftui/migrating-from-the-observable-object-protocol-to-the-observable-macro)
+- [Apple：State](https://developer.apple.com/documentation/swiftui/state)
+- [Apple：Binding](https://developer.apple.com/documentation/swiftui/binding)
+- [Apple：StateObject](https://developer.apple.com/documentation/swiftui/stateobject)
+- [Apple：ObservedObject](https://developer.apple.com/documentation/swiftui/observedobject)
+- [Apple：EnvironmentObject](https://developer.apple.com/documentation/swiftui/environmentobject)
+- [Apple：Bindable](https://developer.apple.com/documentation/swiftui/bindable)
+- [Apple：View.id(_:)](https://developer.apple.com/documentation/swiftui/view/id(_:))
+- [Apple：View.task](https://developer.apple.com/documentation/swiftui/view/task(id:name:priority:file:line:_:))
+- [Apple：View.onAppear(perform:)](https://developer.apple.com/documentation/swiftui/view/onappear(perform:))
+- [Apple：Environment](https://developer.apple.com/documentation/swiftui/environment)
+- [Apple：View](https://developer.apple.com/documentation/swiftui/view)
+- [Apple：UIHostingController](https://developer.apple.com/documentation/swiftui/uihostingcontroller)
+- [Apple：UIViewRepresentable](https://developer.apple.com/documentation/swiftui/uiviewrepresentable)
+- [Apple：UIViewControllerRepresentable](https://developer.apple.com/documentation/swiftui/uiviewcontrollerrepresentable)

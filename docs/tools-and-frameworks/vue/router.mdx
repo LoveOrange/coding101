@@ -1,0 +1,431 @@
+---
+sidebar_position: 6
+knowledge:
+  id: tools-and-frameworks.vue.router
+---
+
+# Vue Router
+
+**Vue Router** 把路由记录、导航过程和 Vue 组件连接起来。地址变化之后，它先解析目标、执行守卫并加载路由组件，再确认当前位置，由 `RouterView` 展示对应界面。
+
+本文以 Vue 3 与 Vue Router 4 为基线。重点是理解一次导航为什么成功、为什么留在原页，以及组件复用后哪些状态需要更新。Hash、History 与刷新回退的浏览器机制见 [前端路由](../../frontend/routing/client-routing.mdx#url与历史条目)。
+
+## 1. 面试核心 {#core}
+
+- **router 是执行导航的实例，route 是当前已确认位置的响应式描述。** 调用 `push` 不代表新位置已经确认，`resolve` 也不会执行导航。[卡](#router-route)
+- **嵌套路由匹配的是一组路由记录，嵌套 `RouterView` 决定它们的组件显示在哪里。** URL 的层级与视图层级有关联，但不是同一个概念。[卡](#nested-routes)
+- **命名路由用 params 生成路径，query 保存查询参数，props 可以把位置转换为组件输入。** URL 输入需要校验，不能直接当作已验证的业务数据。[卡](#route-input)
+- **同一路由记录的参数或查询变化可以复用组件，beforeEnter 不会因此重新执行。** 需要阻止变化时用更新守卫，需要响应已确认变化时观察具体参数。[卡](#parameter-update)
+- **守卫按离开、全局前置、复用更新、进入与解析的顺序参与导航，afterEach 不能阻止导航。** 异步守卫会让导航等待，但不会自动取消它内部启动的请求。[卡](#guard-flow)
+- **导航被阻止通常通过 push 返回值识别，意外错误则可能使 Promise 拒绝。** 重定向成功不等于导航失败，不能只检查是否抛错。[卡](#navigation-results)
+- **路由组件代码缓存、KeepAlive 实例缓存和服务端数据缓存各自独立。** 一次下载过组件代码，不代表再次进入时仍有原来的草稿。[卡](#route-cache)
+- **SSR 要为每次请求创建自己的 router，并主动完成目标 URL 的初始导航。** `isReady` 等待路由初始化，不承诺所有组件的异步数据或浏览器绘制已经完成。[卡](#initial-navigation)
+
+## 2. 路由记录与视图 {#路由记录与视图}
+
+### 2.1 router、route 与 RouterView {#router与route和routerview}
+
+`createRouter` 创建管理路由记录与导航的实例。组件中的 `useRouter()` 返回这个实例，提供 `push`、`replace` 等方法；`useRoute()` 返回当前路由位置的响应式对象，包含 `path`、`params`、`query`、`matched` 等信息。在组件外，可以通过 `router.currentRoute.value` 读取当前位置。
+
+`RouterLink` 负责生成链接并发起导航，`RouterView` 负责显示匹配组件。`router.resolve(target)` 只解析目标位置与链接，不运行守卫，也不改变 `currentRoute`。这适合预先生成地址或检查匹配结果，不能用来证明一次导航已通过权限判断。
+
+路由位置由路由器管理。需要改变筛选参数时调用 `router.push` 或 `router.replace`，不要直接给 `route.query` 赋值，试图绕过导航更新地址。
+
+### 2.2 嵌套匹配 {#嵌套匹配}
+
+**路由记录**是路由配置中的一个条目，描述路径、组件与附加规则。一个位置可以同时匹配父记录和子记录。下面的 `routes.js` 为课程区提供布局、默认列表与详情：
+
+```js
+import { h } from 'vue';
+import { RouterView } from 'vue-router';
+
+export function courseProps(route) {
+  const raw = route.query.page;
+  const page = typeof raw === 'string' && /^[1-9]\d*$/.test(raw)
+    ? Number(raw) : 1;
+  return {
+    id: String(route.params.id),
+    page: Number.isSafeInteger(page) ? page : 1
+  };
+}
+
+export function createRoutes(CoursePage) {
+  return [
+    {
+      path: '/courses',
+      component: { render: () => h('section', null, [h('h1', '课程区'), h(RouterView)]) },
+      meta: { area: 'courses', display: { sidebar: true, density: 'normal' } },
+      children: [
+        { path: '', name: 'course-list', component: { render: () => h('p', '课程列表') } },
+        {
+          path: ':id', name: 'course', component: CoursePage,
+          props: courseProps,
+          meta: { display: { density: 'compact' } }
+        }
+      ]
+    },
+    { path: '/:pathMatch(.*)*', name: 'missing', component: { render: () => h('p', '页面不存在') } }
+  ];
+}
+```
+
+访问 `/courses`，顶层 `RouterView` 显示课程区布局，布局里的 `RouterView` 显示“课程列表”。访问 `/courses/vue`，父布局仍在，内部换成 `CoursePage`。空子路径表示父路径下的默认内容；子路径以 `/` 开头时按根路径匹配，仍可保留视图嵌套关系。
+
+`route.matched` 保存匹配的记录序列。`route.meta` 则把父到子的 `meta` 做非递归合并：详情位置保留 `area: 'courses'`，但子记录的 `display` 整体覆盖父对象，因此不会自动保留 `sidebar: true`。若需要检查每层独立的规则，应遍历 `matched`，不要假定 `meta` 会递归合并所有权限条件。
+
+命名视图解决的是同一层多个显示出口，例如 default 与 sidebar；嵌套路由解决的是不同层的匹配与显示。两者可以结合，但不能把“多个组件”都理解成父子路径。
+
+## 3. 参数与组件输入 {#参数与组件输入}
+
+### 3.1 params、query 与 props {#params与query和props}
+
+`params` 对应路径中的动态部分，`query` 对应问号后的查询部分。对于命名路由，路由器可以根据 `params` 编码并构造路径；直接给出 `path` 时，不会再用 `params` 替你填入缺失片段。
+
+在已有 router 上调用下面的函数：
+
+```js
+export function inspectLocations(router) {
+  const named = router.resolve({
+    name: 'course', params: { id: 'a/b' }, query: { page: '2' }
+  });
+  const explicit = router.resolve({ path: '/courses/vue', params: { id: 'react' } });
+  return {
+    namedPath: named.fullPath,
+    namedId: named.params.id,
+    explicitPath: explicit.fullPath,
+    unchanged: router.currentRoute.value.fullPath
+  };
+}
+```
+
+`namedPath` 为 `/courses/a%2Fb?page=2`，`namedId` 为 `a/b`。`explicitPath` 仍是 `/courses/vue`，不会改成 React 的地址；开发环境还会提示这次 `params` 被忽略。`unchanged` 保持调用前的位置，因为 `resolve` 没有执行导航。
+
+URL 是外部输入。上节的 `courseProps` 将合法正整数查询参数转为数字；缺失、重复的 `page` 数组、负数、小数或超出安全整数范围的值回退为 `1`。`props: true` 只直接传递 `params`，不会自动转换 query；需要转换时使用这样的 props 函数，并保持它只依赖当前输入。
+
+### 3.2 复用组件与未保存编辑 {#复用组件与未保存编辑}
+
+组件复用意味着参数改变时 `setup` 不一定重新执行。更新守卫可以在确认导航之前阻止变化；watch 则处理已确认的输入变化。下面的 `CoursePage.vue` 区分了这两件事：
+
+```vue
+<script setup>
+import { computed, ref, watch } from 'vue';
+import { onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router';
+
+defineOptions({ name: 'CoursePage' });
+const props = defineProps({ id: String, page: Number });
+const draft = ref('');
+const dirty = computed(() => draft.value !== '');
+
+onBeforeRouteUpdate((to, from) => {
+  if (to.params.id !== from.params.id && dirty.value) return false;
+});
+onBeforeRouteLeave(() => {
+  if (dirty.value) return false;
+});
+watch(() => props.id, () => { draft.value = ''; });
+</script>
+
+<template>
+  <h2>课程 {{ id }}</h2>
+  <p>第 {{ page }} 页</p>
+  <label>草稿 <input v-model="draft"></label>
+  <button @click="draft = ''">丢弃草稿</button>
+  <p v-if="dirty">有草稿时不能切换课程或离开课程页</p>
+</template>
+```
+
+在 `/courses/vue` 输入草稿后，切换到 `/courses/react` 会被更新守卫阻止，切回课程列表会被离开守卫阻止。只改变 `page` 不改变课程 ID，本例允许导航并保留草稿。点击“丢弃草稿”后可以切换课程，组件仍可能复用，但 props 与标题会更新。
+
+这里故意用明确的“丢弃”按钮，避免把清空草稿说成保存。实际产品可以弹出确认或执行保存，但要处理保存失败，并明确是否仍允许离开。路由守卫控制应用内导航；关闭标签页、刷新与离开当前文档属于浏览器生命周期，不能只靠这个守卫保证提醒或数据保存。
+
+### 3.3 浏览器入口 {#浏览器入口}
+
+把组件与路由表接入 `main.js`，HTML 中提供 `<div id="app"></div>`，由支持 Vue SFC 的构建工具加载：
+
+```js
+import { createApp, h } from 'vue';
+import { createRouter, createWebHistory, RouterLink, RouterView } from 'vue-router';
+import { createRoutes } from './routes.js';
+import CoursePage from './CoursePage.vue';
+
+const router = createRouter({ history: createWebHistory(), routes: createRoutes(CoursePage) });
+const Root = {
+  render: () => h('div', null, [
+    h('nav', null, [
+      h(RouterLink, { to: '/courses' }, () => '列表 '),
+      h(RouterLink, { to: '/courses/vue' }, () => 'Vue '),
+      h(RouterLink, { to: '/courses/react' }, () => 'React '),
+      h(RouterLink, { to: '/courses/vue?page=2' }, () => 'Vue 第 2 页')
+    ]),
+    h(RouterView)
+  ])
+};
+const app = createApp(Root);
+app.use(router);
+await router.isReady();
+app.mount('#app');
+```
+
+`app.use(router)` 安装路由器并启动浏览器初始导航。等待 `isReady()` 后再挂载，可以让首次界面使用已经解析的路由；History 模式仍要求服务器正确支持直接访问这些地址，见 [刷新回退与服务器边界](../../frontend/routing/client-routing.mdx#刷新回退与服务器边界)。
+
+## 4. 导航守卫与结果 {#导航守卫与结果}
+
+### 4.1 守卫的执行阶段 {#守卫的执行阶段}
+
+一次导航会比较当前与目标的匹配记录，区分即将离开的组件、被复用的组件和新进入的组件，因此不是所有守卫每次都执行。
+
+| 阶段 | 主要入口 | 用途或边界 |
+| --- | --- | --- |
+| 离开现有记录 | `beforeRouteLeave` / `onBeforeRouteLeave` | 在离开编辑页面前处理未保存状态 |
+| 全局前置 | `beforeEach` | 每次导航统一判断身份、规则等 |
+| 复用记录更新 | `beforeRouteUpdate` / `onBeforeRouteUpdate` | 对参数变化等导航作决定 |
+| 进入新记录 | 路由配置的 `beforeEnter` | 只在进入该记录时执行 |
+| 解析组件 | 路由组件加载函数 | 等待所需代码 |
+| 进入组件与最终解析 | `beforeRouteEnter`、`beforeResolve` | 进入守卫和确认前的进一步判断 |
+| 导航确认后 | `afterEach` | 观察结果、统计等，不能阻止导航 |
+
+从同一课程记录的 ID A 切到 B，不会重新运行该记录的 `beforeEnter`。在共享父记录的两个子页面之间切换，也不会重新进入父记录。不能把所有需要随参数重新检查的逻辑都放在 `beforeEnter`。
+
+下面的 `guard-demo.js` 提供独立的顺序示例；将返回的 router 安装到显示 `RouterView` 的应用后观察：
+
+```js
+import { h } from 'vue';
+import { createRouter } from 'vue-router';
+
+export function createGuardDemo(history, events) {
+  const PageA = {
+    render: () => h('p', 'A'),
+    beforeRouteLeave() { events.push('leave'); }
+  };
+  const PageB = {
+    render: () => h('p', 'B'),
+    beforeRouteEnter() { events.push('enter'); },
+    beforeRouteUpdate() { events.push('update'); }
+  };
+  const router = createRouter({ history, routes: [
+    { path: '/a', component: PageA },
+    {
+      path: '/b/:id',
+      beforeEnter() { events.push('beforeEnter'); },
+      component: async () => { events.push('load'); return PageB; }
+    }
+  ] });
+  router.beforeEach(() => { events.push('beforeEach'); });
+  router.beforeResolve(() => { events.push('beforeResolve'); });
+  router.afterEach((_to, _from, failure) => { events.push(failure ? 'failed' : 'afterEach'); });
+  return router;
+}
+```
+
+已挂载 A 后清空记录，再进入 `/b/1`，依次得到 `leave`、`beforeEach`、`beforeEnter`、`load`、`enter`、`beforeResolve`、`afterEach`。接着切到 `/b/2`，得到 `beforeEach`、`update`、`beforeResolve`、`afterEach`，没有重新进入或加载组件。
+
+`beforeRouteEnter` 执行时新组件实例还没创建，不能访问该实例的 `this`。Vue Router 4 也支持带 `next` 的旧式守卫；每条可能的执行分支应恰好完成一次导航决策，不能既调用 `next` 又继续落入另一个 `next`。新代码通常直接返回决定，减少分支遗漏与重复调用。
+
+### 4.2 返回值与异常 {#返回值与异常}
+
+守卫返回 `false` 阻止本次导航，返回位置发起重定向，返回 `undefined` 或 `true` 放行；抛出异常则进入错误处理。异步守卫可以返回 Promise，路由器会等待其结果。`afterEach` 已经处于观察阶段，返回 `false` 也不能撤销导航。
+
+`router.push` 的结果要同时处理正常完成、预期阻止与意外错误。`navigate.js` 将它们转换为适合调用方判断的结果：
+
+```js
+import { isNavigationFailure, NavigationFailureType } from 'vue-router';
+
+export async function navigate(router, target) {
+  try {
+    const failure = await router.push(target);
+    if (isNavigationFailure(failure, NavigationFailureType.aborted)) return { status: 'aborted' };
+    if (isNavigationFailure(failure, NavigationFailureType.cancelled)) return { status: 'cancelled' };
+    if (isNavigationFailure(failure, NavigationFailureType.duplicated)) return { status: 'duplicated' };
+    return { status: 'success', path: router.currentRoute.value.fullPath };
+  } catch (error) {
+    return { status: 'error', error };
+  }
+}
+```
+
+三种预期失败分别表示守卫返回 `false`、等待中被新导航取代、已经处于目标位置。它们通常是 Promise 的兑现值，不会全部进入 `catch`；守卫抛错或异步组件加载失败，则需要处理拒绝并通过 `router.onError` 等入口记录。
+
+成功重定向属于成功结果，此时应该看最终位置；需要追踪原目标时可查看 `redirectedFrom`。例如打开受保护页面后进入登录页，不能继续假定现在展示的还是原目标。菜单收起、成功提示和统计都应依据实际结果。
+
+### 4.3 异步导航与业务副作用 {#异步导航与业务副作用}
+
+路由器可以取消过时导航的确认，但不会自动停止守卫中的网络请求，也不会回滚它已写入 store 的数据。A 导航等待请求时又发起 B，即使 A 最终被标为 `cancelled`，A 请求的回调仍可能执行。
+
+因此，预加载数据需要明确归属：按目标键保存到缓存，或在确认仍属于当前目标时更新界面；可取消的请求再使用 AbortController。不要把取消导航当成取消所有业务工作。
+
+页面数据既可以在确认前加载，也可以进入后展示加载状态。前者让旧页等待，后者更早切换界面但需要加载、错误和过期结果处理。参数变化后的 watch 应观察实际依赖，例如 ID，而不是一律观察整个 route；异步清理与过期响应处理见 [computed 与 watch](./computed-watch.mdx#异步副作用与清理)。
+
+## 5. 代码缓存与实例身份 {#代码缓存与实例身份}
+
+路由懒加载函数返回组件 Promise，构建工具可以据此拆分代码。Vue Router 在需要进入时解析组件，随后复用已经解析的组件定义。路由记录应直接使用返回组件 Promise 的函数；`defineAsyncComponent` 服务于组件内部的异步组件，不应与路由级加载入口混为一谈。
+
+代码已经加载，并不说明组件实例被保留。离开页面后实例可能卸载，重新进入时仍会重新建立局部状态。`KeepAlive` 才负责保留组件实例；它应该包住 `RouterView` 插槽中的路由组件，而不是只缓存 `RouterView` 自身。
+
+给路由组件设置不同 key 可以改变复用边界。以课程 ID 为身份时，可以按 ID 建立独立实例；如果直接用 `fullPath`，每次查询或片段改变也可能生成不同实例或缓存条目，造成草稿重置与缓存增长。是否隔离实例由业务状态归属决定，不把加 key 当成所有参数更新问题的通用修复。
+
+无论组件代码还是实例被缓存，服务端数据都可能过期。重新激活后的刷新、离开时订阅清理以及缓存容量，是另一组需要设计的条件，见 [Vue 组件](./components.mdx#keepalive)。
+
+## 6. 初始导航与 SSR {#初始导航与ssr}
+
+`createWebHistory` 连接浏览器地址；`createMemoryHistory` 不依赖浏览器，也不会自动根据地址触发初始导航。SSR 必须显式导航到请求 URL，并为每个请求创建独立实例。
+
+下面的 `render-url.js` 复用前面的路由配置与组件。它需要在能够处理 `.vue` 文件的服务端构建中运行：
+
+```js
+import { createSSRApp, h } from 'vue';
+import { renderToString } from 'vue/server-renderer';
+import { createRouter, createMemoryHistory, RouterView } from 'vue-router';
+import { createRoutes } from './routes.js';
+import CoursePage from './CoursePage.vue';
+
+export async function renderUrl(url) {
+  const router = createRouter({ history: createMemoryHistory(), routes: createRoutes(CoursePage) });
+  const app = createSSRApp({ render: () => h(RouterView) });
+  app.use(router);
+  await router.push(url);
+  await router.isReady();
+  return {
+    html: await renderToString(app),
+    notFound: router.currentRoute.value.name === 'missing'
+  };
+}
+```
+
+请求 `/courses/vue?page=2` 时得到课程区、课程 Vue 与第 2 页对应的 HTML；另一个 React 请求使用另一套 router，不会改写前者的位置。调用方根据 `notFound` 设置 HTTP 状态，返回 HTML 中的“页面不存在”本身不会把响应自动变成 `404`。
+
+`isReady()` 表示初始导航，包括相关异步进入守卫与路由组件解析，已经完成。它不等待组件随意启动的后台请求，也不是 DOM 更新或屏幕绘制完成信号。客户端接管时还要保持初始 URL 与数据一致，相关机制见 [Web 渲染模式](../../frontend/rendering/rendering-modes.mdx#初始状态与一致性)。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 router、route、RouterLink 与 RouterView 各负责什么？ {#router-route}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：导航实例、位置描述、声明式链接与视图出口。
+
+**相关内容**：[router、route 与 RouterView](#router与route和routerview)。
+
+<details>
+<summary>参考回答</summary>
+
+**router 管理并执行导航，route 描述当前已确认的位置，RouterLink 发起链接导航，RouterView 显示匹配组件。** 组件中用 `useRouter` 与 `useRoute` 获取前两者。`resolve` 只解析位置，不运行守卫；`push` 发起异步导航，应等待并检查结果，不能把调用完成当成页面已经切换。
+
+</details>
+
+### 7.2 为什么匹配了子路由，却看不到子组件，meta 又是怎样合并的？ {#nested-routes}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：匹配记录序列、嵌套出口、非递归元信息合并。
+
+**相关内容**：[嵌套匹配](#嵌套匹配)。
+
+<details>
+<summary>参考回答</summary>
+
+**匹配成功只确定路由记录，还需要父布局中的 RouterView 提供子组件出口。** 应检查子路径与默认空路径、实际匹配记录和视图层级。`route.meta` 按父到子非递归合并，同名嵌套对象会整体覆盖；需要逐层判断规则时读取 `route.matched`，不能假设 meta 自动合并所有内部字段。
+
+</details>
+
+### 7.3 用 path 和 params 导航为什么没有得到预期地址，query 怎样传给组件？ {#route-input}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：命名路由的路径生成、参数编码、URL 校验与 props 转换。
+
+**相关内容**：[params、query 与 props](#params与query和props)。
+
+<details>
+<summary>参考回答</summary>
+
+**给出 path 后，params 不会再参与路径填充；需要自动构造路径时使用 name 与 params。** query 独立组成查询部分。`props: true` 只传 params，转换 query 可以用 props 函数，并校验空值、数组、非法格式与范围。组件接收明确 props 后更容易复用和测试。
+
+</details>
+
+### 7.4 课程 ID 改变时，应该用 beforeEnter、更新守卫还是 watch？ {#parameter-update}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：记录复用、导航前决策与已确认参数的响应。
+
+**相关内容**：[复用组件与未保存编辑](#复用组件与未保存编辑)、[守卫的执行阶段](#守卫的执行阶段)。
+
+<details>
+<summary>参考回答</summary>
+
+**需要在确认前阻止参数切换时用更新守卫，需要根据已确认参数更新内容时用 watch。** 同一记录内仅改变 params、query 或 hash 不会重新执行 `beforeEnter`，组件也可能不重新挂载。观察具体 ID 能避免无关查询触发重复取数，异步取数还要处理过期结果。
+
+</details>
+
+### 7.5 一次导航的守卫顺序是什么，afterEach 能取消导航吗？ {#guard-flow}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：离开、复用与进入阶段，确认前后边界。
+
+**相关内容**：[守卫的执行阶段](#守卫的执行阶段)、[返回值与异常](#返回值与异常)。
+
+<details>
+<summary>参考回答</summary>
+
+**主要顺序是离开守卫、beforeEach、复用更新守卫、beforeEnter、异步组件解析、beforeRouteEnter、beforeResolve，然后确认导航并调用 afterEach。** 只执行当前导航涉及的阶段。`afterEach` 观察成功或失败结果，不能阻止导航；组件 DOM 更新也不应被等同于 afterEach 已执行。
+
+</details>
+
+### 7.6 push 没有抛错，是否说明导航成功，重定向属于失败吗？ {#navigation-results}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：预期失败、异常拒绝、重定向结果与并发导航。
+
+**相关内容**：[返回值与异常](#返回值与异常)、[异步导航与业务副作用](#异步导航与业务副作用)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能只检查异常，还要检查 push 兑现的 Navigation Failure。** `aborted` 表示守卫阻止，`cancelled` 表示被新导航取代，`duplicated` 表示已在目标位置。成功重定向属于成功，应读取最终位置。意外抛错与加载失败需要处理拒绝；被取消的导航也不会自动停止所有网络或 store 写入。
+
+</details>
+
+### 7.7 路由懒加载后再次进入，为什么草稿仍然丢失？ {#route-cache}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：组件定义、实例身份、KeepAlive 与数据缓存。
+
+**相关内容**：[代码缓存与实例身份](#代码缓存与实例身份)。
+
+<details>
+<summary>参考回答</summary>
+
+**懒加载缓存的是组件代码或定义，不是原组件实例的全部状态。** 离开后实例可能卸载，再进入时局部草稿重新初始化。需要保留实例时使用合适的 KeepAlive 范围与 key，需要跨刷新时另设持久化。`fullPath` 作为 key 还会把查询或片段变化纳入身份，应按业务决定。
+
+</details>
+
+### 7.8 SSR 为什么使用独立的 memory router，isReady 保证了什么？ {#initial-navigation}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：请求隔离、初始导航、服务器状态与等待边界。
+
+**相关内容**：[初始导航与 SSR](#初始导航与ssr)。
+
+<details>
+<summary>参考回答</summary>
+
+**Memory history 不依赖浏览器，SSR 每个请求独立创建 router，才能避免当前位置和请求状态串用。** 它不会自动按请求 URL 导航，需要主动 push 并等待初始化。`isReady` 等待初始导航相关的守卫与组件解析，不保证任意异步数据、DOM 或绘制已完成；HTTP 404 仍由服务器根据匹配结果设置。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [Vue Router：Nested Routes](https://router.vuejs.org/guide/essentials/nested-routes.html)
+- [Vue Router：Programmatic Navigation](https://router.vuejs.org/guide/essentials/navigation.html)
+- [Vue Router：Passing Props to Route Components](https://router.vuejs.org/guide/essentials/passing-props.html)
+- [Vue Router：Route Meta Fields](https://router.vuejs.org/guide/advanced/meta.html)
+- [Vue Router：Navigation Guards](https://router.vuejs.org/guide/advanced/navigation-guards.html)
+- [Vue Router：Navigation Failures](https://router.vuejs.org/guide/advanced/navigation-failures.html)
+- [Vue Router：Composition API](https://router.vuejs.org/guide/advanced/composition-api.html)
+- [Vue Router：Lazy Loading Routes](https://router.vuejs.org/guide/advanced/lazy-loading.html)
+- [Vue Router：RouterView Slot](https://router.vuejs.org/guide/advanced/router-view-slot.html)
+- [Vue Router：Different History Modes](https://router.vuejs.org/guide/essentials/history-mode.html)

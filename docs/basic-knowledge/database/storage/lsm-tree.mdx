@@ -1,0 +1,321 @@
+---
+sidebar_position: 3
+knowledge:
+  id: basic-knowledge.database.storage.lsm-tree
+  type: concept
+description: "以 RocksDB 9.10.0 解释 LSM 树的 WAL、MemTable、SSTable、读取与合并过程，说明删除标记和快照保留条件。比较读放大、写放大、空间放大及与 B+ 树的取舍，用实际引擎示例验证更新、删除、范围扫描与合并后的可见性。"
+keywords: ["LSM 树", "RocksDB", "MemTable", "SSTable", "WAL", "compaction", "写放大"]
+---
+
+# LSM 树
+
+**LSM 树**（Log-Structured Merge Tree）是一类把修改先积累在内存、再批量生成有序文件，并通过合并整理文件的存储结构。它减少了每次更新都去修改分散磁盘页面的需求，代价是读取可能需要检查多个位置，同一批数据也可能被反复重写。
+
+理解 LSM，重点是沿着一次写入解释数据何时可读、何时能够恢复、何时能清理旧版本，再说明后台整理为什么会影响前台延迟。本文以 **RocksDB 9.10.0 的普通 `Put`/`Delete` 与 leveled compaction** 为实现例子；RocksDB 是嵌入应用进程的键值存储引擎库，LSM 则是它采用的存储组织方式。
+
+## 1. 面试核心 {#core}
+
+- LSM 把前台修改积累为**内存中的新记录和可恢复日志，再批量形成有序文件**。RocksDB 的核心对象是 WAL、MemTable 与 SSTable。[卡](#lsm-write-path)
+- **WAL 提供恢复依据，MemTable 提供近期数据的读取，SSTable 保存已刷出的有序记录**；有 WAL 不等于每次写入都已同步到持久存储。[卡](#wal-durability)
+- 普通点查需要在多个候选位置中找到**符合读取视图的最新版本**。范围扫描合并有序输入，过滤旧版本和删除标记，并不是 LSM 不支持范围查询。[卡](#lsm-read-path)
+- **删除也先写成记录**。删除标记阻止更旧的值重新出现；清理旧值和标记时，还要考虑较老文件与活跃快照。[卡](#tombstone-snapshot)
+- **compaction 合并并重写有序数据**，控制文件重叠和旧版本积累；它不是文件压缩，也不保证每次合并都能马上删除所有旧版本。
+- 写放大、读放大和空间放大分别描述**额外写入、额外读取与额外占用**。改变合并策略是在这些代价之间取舍，不能只比较一次 `Put` 的耗时。[卡](#lsm-amplification)
+- LSM 与 B+ 树都需要缓存、持久化与后台工作。**选择取决于读写分布、范围扫描、延迟和资源约束**，没有一种结构对所有负载都更快。[卡](#lsm-btree-choice)
+
+## 2. WAL、MemTable 与 SSTable {#wal-memtable-与-sstable}
+
+如果每次更新都要找到磁盘上的旧记录，再修改它所在的页面，大量随机键写入就会分散到许多位置。LSM 先记录新版本，等积累到一定规模后再写出有序文件，把一部分零散更新转化为批量工作。
+
+**MemTable** 是接收近期修改的内存结构。RocksDB 默认用跳表组织它，支持按键查找和有序遍历；MemTable 并不等同于必须使用某一种树。
+
+**SSTable**（Sorted String Table）是保存有序键值记录的不可变文件。RocksDB 的 SST 文件通常包含数据块、索引及可配置的过滤器。不可变表示不直接在原文件里改掉某一条旧值；后续更新进入新的记录，整理时再生成替代文件。
+
+**WAL**（Write-Ahead Log，预写日志）记录尚未完全进入 SST 的修改，用于恢复丢失的内存状态。普通读取主要访问 MemTable 和 SST，而不是从头重放 WAL 来回答查询。
+
+| 对象 | 主要作用 | 不能替代的部分 |
+| --- | --- | --- |
+| WAL | 保存可重放的修改，保护尚未刷出的数据 | 不代替有序查询结构，写出日志也不一定等于同步完成 |
+| 可写 MemTable | 接收修改并供查询访问 | 进程内存不能单独提供崩溃持久性 |
+| 不可变 MemTable | 停止接收新修改，等待或正在刷出 | 仍需读取它，不能切换后立即丢弃 |
+| SSTable | 保存刷出或合并生成的有序记录 | 单个文件不代表数据库的全部最新状态 |
+
+## 3. 写入、刷出与恢复 {#写入刷出与恢复}
+
+在本文采用的普通写入路径中，RocksDB 先为修改安排序列号和 WAL 记录，再把记录加入 MemTable。新版本可被相应读取看到后，写入按配置返回；日志同步是否已经完成，需要单独看持久化选项。
+
+MemTable 到达刷出条件时，原来的 MemTable 转为不可变状态，新的 MemTable 接收后续写入。后台把不可变 MemTable 写成 SST，成功安装到当前文件集合后，才能按规则释放相关内存。查询在这个过程中仍要考虑尚未刷完的 MemTable。
+
+对于 leveled compaction，刷出的 SST 首先进入 **L0**。L0 只是文件层级的名称，不是另一个 MemTable。MANIFEST 元数据文件记录有效文件集合及层级变化，因此恢复不能只靠“把目录里的所有 SST 拼起来”。
+
+进程重启时，RocksDB 打开有效的文件集合，再重放仍需恢复的 WAL 记录，重建尚未进入 SST 的修改。WAL 只有在其中相关数据不再依赖它恢复时，才可按回收或归档规则处理。一个实例可以有多个分别管理键空间的 column family（列族）；它们共享 WAL 时，还要考虑其他列族的刷出进度。
+
+### 3.1 写入成功的持久化条件 {#写入成功的持久化条件}
+
+RocksDB 9.10.0 中，普通写入默认启用 WAL，`WriteOptions::sync` 默认为 `false`。在默认 `manual_wal_flush=false` 下，成功写入的 WAL 已从进程缓冲区写到操作系统，进程单独崩溃时可以据此恢复；机器崩溃或掉电仍可能丢失尚未同步的修改。
+
+设置 `WriteOptions::sync=true`，写入会等待 WAL 同步，再按 API 条件返回成功。设置 `disableWAL=true` 则跳过这次写入的 WAL，尚未进入 SST 的数据在进程崩溃时也可能丢失。若启用 `manual_wal_flush=true`，还要自行管理 WAL 缓冲区的写出，不能照搬默认配置的保证。
+
+这些条件说明，“写日志”“同步日志”“刷出 MemTable”是不同操作。WAL 的恢复思路与 [MySQL 事务日志](./transaction-logs.mdx#redo-与-wal) 有共同目的，但 RocksDB 的普通键值写入不使用 MySQL 的 redo/undo/binlog 内部提交协议。单机同步仍依赖操作系统与存储兑现承诺，也不覆盖介质永久损毁。
+
+## 4. 点查、范围扫描与删除 {#点查范围扫描与删除}
+
+同一个键可以同时出现在 MemTable 和多个 SST 中。RocksDB 用序列号区分版本，并结合读取视图决定返回哪个版本；不能简单把“任意一个文件中找到的值”当成当前值。
+
+### 4.1 点查的候选位置 {#点查的候选位置}
+
+普通点查先考虑可写和不可变 MemTable，再检查可能包含该键的 SST。在 leveled compaction 下，L0 文件的键范围可以互相重叠，需要考虑多个候选文件；L1 及后续同一层的 SST 按不重叠的键范围组织，可以先用文件范围缩小候选集合。不同层之间仍可能包含同一个键。
+
+文件内部还可以用索引定位数据块。配置的 **Bloom filter** 用于判断一个键是否可能在对应文件或数据范围中：否定结果可以跳过相应查找，肯定结果还要检查真实数据，因为可能误报。共享位与误判条件见[布隆过滤器](../../data-structures/bloom-filter.mdx#位数组与多哈希)。缓存也能避免实际存储读取，所以“检查多个层级”不等于固定发生多次磁盘 I/O。
+
+### 4.2 有序输入的范围合并 {#有序输入的范围合并}
+
+范围扫描需要把多个有序来源合并为一条按键排列的结果，同时处理同键版本和删除标记。下面用逻辑记录说明，不表示 SST 的真实字节格式：
+
+| 来源 | 有序记录，`@` 后为示意序列号 |
+| --- | --- |
+| 较旧 SST | `a=1@10`、`b=9@11` |
+| 较新 SST | `a=2@12`、`b=删除@13`、`c=3@14` |
+
+当前视图扫描 `[a, d)`，结果是 `a=2`、`c=3`。`a=1` 被较新版本覆盖；`b` 的最新记录表示删除，所以不能继续返回旧文件里的 `b=9`。
+
+LSM 因而支持范围扫描，但扫描可能需要合并多个来源、跳过大量旧记录。点查 Bloom filter 的收益不能直接套到任意范围：仅知道起始键不存在，并不意味着后续区间没有数据。
+
+### 4.3 删除标记与快照 {#删除标记与快照}
+
+**删除标记**（tombstone）是一条表示某个键已删除的记录。它的作用是遮住旧版本。若只从当前 MemTable 移除 `b`，旧 SST 中的 `b=9` 还在，下次读取就可能错误地把它返回。
+
+合并时也不能见到删除标记就立即丢弃：如果更老的文件仍有被它遮住的值，就需要保留遮挡关系，或在这次安全清理中一并处理。存在旧快照时，还必须保留该快照能看到的版本。
+
+**快照**是对某个读取时点的稳定视图。假设在 `a=2` 和删除 `b` 之前取得快照，这个快照仍应读到 `a=1`、`b=9`。合并改变物理文件组织，不能改变快照应观察到的逻辑结果。释放快照后，旧版本才可能在后续整理中被回收，不保证释放动作立刻回收磁盘空间。
+
+## 5. Compaction 与放大代价 {#compaction-与放大代价}
+
+**Compaction** 是读取一组有序文件、合并记录并生成新文件的整理过程。它控制文件重叠与旧版本积累，也会消耗读取带宽、写入带宽、CPU 和临时空间。这里的 compaction 与 Snappy、Zstd 等字节压缩算法是两件事，二者可以同时发生。
+
+### 5.1 Leveled 与 tiered {#leveled-与-tiered}
+
+RocksDB 的 leveled compaction 会选择需要整理的文件，把它们与目标层中键范围重叠的文件合并，维持目标层的范围组织与容量要求。因为目标层的已有数据也可能被重写，同一条记录并不只写一次。
+
+不能把这个过程固定背成“每次 L0 都只能进入 L1”。RocksDB 9.10.0 默认启用动态层级容量，实际承接 L0 的基础层可以不是 L1；理解取舍时，重点是 L0 的重叠与后续层的范围约束。
+
+**Tiered compaction** 倾向于先保留多个有序集合，达到条件后再把它们合并；RocksDB 的 universal compaction 属于这一类实现思路。相比更积极地维护较少重叠，保留多个集合通常可以减少重写，却增加查询候选位置与临时空间需求。真实收益仍受键分布、更新比例、压缩和合并选择影响。
+
+### 5.2 三种放大分别计算什么 {#三种放大分别计算什么}
+
+| 代价 | 含义 | 在 LSM 中的来源 |
+| --- | --- | --- |
+| 写放大 | 实际写入量相对于应用逻辑写入量的增加 | WAL、刷出 SST、合并重写与元数据 |
+| 读放大 | 回答一次查询需要的额外候选检查或读取量 | 多个重叠文件、旧版本、过滤器误报 |
+| 空间放大 | 实际占用相对于当前有效数据量的增加 | 旧版本、删除标记、索引过滤器及合并期间新旧文件并存 |
+
+比较数值之前要固定统计口径。例如应用写入 100 MiB，同一窗口引擎共写出 400 MiB，按这个边界得到 4 倍写放大；不能把应用每次覆盖写的流量，换成最终仅剩的有效数据大小作分母。引擎写入字节与 SSD 内部写入字节也不是同一个指标。
+
+读放大可以按候选次数、数据块或字节统计，需要说明单位；缓存命中时，候选检查仍有 CPU 成本，却未必产生存储读取。空间放大则应说明是否包括 WAL、备份和暂时保留的文件，不能拿不同范围的占用直接比较。
+
+### 5.3 后台积压与写入停顿 {#后台积压与写入停顿}
+
+如果持续写入速度超过 flush 或 compaction 的处理能力，内存表、L0 文件或待合并数据就会积压。RocksDB 会根据相应阈值放慢甚至暂停前台写入，避免内存和磁盘压力无限增长。
+
+因此，只测一个短时间窗口的写入峰值可能高估长期吞吐。评估时要观察稳态写入、读取延迟、后台合并量、待处理数据和可用空间。增大缓冲区可以吸收突发，却不能消除持续的存储带宽不足。
+
+## 6. 与 B+ 树的取舍 {#与-b-树的取舍}
+
+[B+ 树](../indices/b_plus_tree/index.mdx)通过树导航找到目标叶子，维护有序页面；LSM 则把修改保存在多个有序来源，再通过读取与合并协调版本。两者都能支持等值和范围查询，也都存在缓存与写入维护成本。
+
+| 维度 | B+ 树的典型页面组织 | LSM 的典型有序文件组织 |
+| --- | --- | --- |
+| 更新 | 定位并修改相关页面，可能分裂或合并 | 先写新版本，随后批量刷出与合并 |
+| 点查 | 通过树导航定位；可能还有二级索引回表 | 可能检查多个候选来源，再定位文件内的数据块 |
+| 范围查询 | 定位起点后沿有序叶子扫描 | 合并多个有序输入并过滤版本 |
+| 后台成本 | 脏页刷写、空间管理等 | flush、compaction、旧版本和文件回收等 |
+| 需要重点观测 | 页面缓存、访问局部性、分裂与锁等待 | 候选文件、合并积压、放大与写入停顿 |
+
+大量随机更新、能够提供合并资源的负载，可以考虑 LSM 的批量写入方式；对点查或范围读取延迟有严格要求时，要比较实际重叠、缓存与扫描成本。B+ 树也会把脏页缓存在内存并利用日志，因此不能说它“每次更新都立即随机写盘”。
+
+同时，存储结构不直接决定完整产品能力。RocksDB 不是自带 SQL 优化器和网络服务的 MySQL 替代接口，也不能因为采用 LSM 就断言不支持事务；事务 API、并发保证、运维和查询层都需要另行确认。
+
+## 7. RocksDB 示例 {#rocksdb-示例}
+
+下面的 C++17 示例使用 RocksDB 9.10.0，传入一个尚不存在的练习数据库目录。先刷出旧值，再写入更新和删除，最后在保留快照的情况下合并。关闭自动合并只是为了让这几个阶段容易观察，不是生产调优建议。
+
+```cpp
+#include <iostream>
+#include <memory>
+#include <stdexcept>
+#include <string>
+#include "rocksdb/db.h"
+
+void Check(const rocksdb::Status& status) {
+  if (!status.ok()) throw std::runtime_error(status.ToString());
+}
+
+int main(int argc, char** argv) {
+  if (argc != 2) return 2;
+  rocksdb::Options options;
+  options.create_if_missing = true;
+  options.error_if_exists = true;
+  options.disable_auto_compactions = true;
+
+  rocksdb::DB* raw = nullptr;
+  Check(rocksdb::DB::Open(options, argv[1], &raw));
+  std::unique_ptr<rocksdb::DB> db(raw);
+  rocksdb::WriteOptions write;
+  write.sync = true;
+  rocksdb::FlushOptions flush;
+  flush.wait = true;
+
+  Check(db->Put(write, "a", "1"));
+  Check(db->Put(write, "b", "9"));
+  Check(db->Flush(flush));
+
+  const rocksdb::Snapshot* snapshot = db->GetSnapshot();
+  if (!snapshot) throw std::runtime_error("snapshot unavailable");
+  rocksdb::ReadOptions old;
+  old.snapshot = snapshot;
+
+  Check(db->Put(write, "a", "2"));
+  Check(db->Delete(write, "b"));
+  Check(db->Put(write, "c", "3"));
+  Check(db->Flush(flush));
+  Check(db->CompactRange(rocksdb::CompactRangeOptions(), nullptr, nullptr));
+
+  std::string value;
+  Check(db->Get(rocksdb::ReadOptions(), "a", &value));
+  std::cout << "current a=" << value << '\n';
+  Check(db->Get(old, "a", &value));
+  std::cout << "snapshot a=" << value << '\n';
+  Check(db->Get(old, "b", &value));
+  std::cout << "snapshot b=" << value << '\n';
+  rocksdb::Status deleted = db->Get(rocksdb::ReadOptions(), "b", &value);
+  if (!deleted.IsNotFound()) throw std::runtime_error("b must be absent");
+  std::cout << "current b=NotFound\n";
+
+  std::unique_ptr<rocksdb::Iterator> it(db->NewIterator(rocksdb::ReadOptions()));
+  for (it->Seek("a"); it->Valid() && it->key().compare("d") < 0; it->Next()) {
+    std::cout << it->key().ToString() << '=' << it->value().ToString() << '\n';
+  }
+  Check(it->status());
+  it.reset();
+  db->ReleaseSnapshot(snapshot);
+}
+```
+
+输出依次为 `current a=2`、`snapshot a=1`、`snapshot b=9`、`current b=NotFound`，范围迭代输出 `a=2`、`c=3`。合并保留了快照需要的旧版本，当前读取仍按最新视图处理更新与删除。
+
+这个小例子验证可见性和 API 行为，没有测量生产写放大、缓存命中率或 compaction 的长期吞吐。`sync=true` 也不意味着这个正常执行的例子已经模拟过掉电。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 RocksDB 使用的 LSM 树怎样组织写入与存储？ {#lsm-write-path}
+
+**考察重点**：LSM 的组织方式、RocksDB 的实现角色，以及日志、内存和文件之间的关系。
+
+**相关内容**：[WAL、MemTable 与 SSTable](#wal-memtable-与-sstable)、[写入、刷出与恢复](#写入刷出与恢复)。
+
+<details>
+<summary>参考回答</summary>
+
+**LSM 先把修改积累为内存记录和恢复日志，再批量生成有序文件，通过合并管理文件重叠与旧版本。** RocksDB 是采用这种思路的嵌入式键值引擎。
+
+普通写入先进入 WAL 与 MemTable；MemTable 达到条件后转为不可变并刷成 SST，后续修改进入新 MemTable。查询需要在这些来源中找到可见版本，后台 compaction 则合并文件、清理可以安全回收的记录。批量写入降低零散页面修改需求，但带来读写和空间放大的取舍。
+
+</details>
+
+### 8.2 RocksDB 开启了 WAL，写入成功后是否一定不会丢失？ {#wal-durability}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：写出与同步、故障范围、WAL 和 MemTable 刷出的区别。
+
+**相关内容**：[写入成功的持久化条件](#写入成功的持久化条件)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能只根据“开启 WAL”判断，必须说明同步选项和故障类型。** 默认启用 WAL、`manual_wal_flush=false`、`sync=false` 时，成功写入已写到操作系统，进程单独崩溃可以恢复，但机器崩溃或掉电可能丢失近期修改。
+
+`sync=true` 要求返回前同步 WAL；`disableWAL=true` 的未刷出数据在进程崩溃时也可能丢失。启用手动 WAL 写出还会改变保证。同步依赖底层存储，介质损毁需要其他保护。
+
+</details>
+
+### 8.3 LSM 的点查和范围查询为什么可能访问多个文件？ {#lsm-read-path}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：候选文件、版本可见性、有序合并与过滤器边界。
+
+**相关内容**：[点查的候选位置](#点查的候选位置)、[有序输入的范围合并](#有序输入的范围合并)。
+
+<details>
+<summary>参考回答</summary>
+
+**因为修改保存在多个有序来源中，同键的新旧版本可能分布在不同文件。** 点查需要按读取视图找到最新可见记录，文件范围、Bloom filter、索引与缓存可以减少实际读取。
+
+范围扫描把多个有序输入合并，跳过不可见版本和删除标记。LSM 支持范围查询，但不等于只扫描一份连续文件；普通点查过滤器也不能证明任意区间为空。
+
+</details>
+
+### 8.4 为什么删除标记和旧值不能在一次 compaction 中无条件清除？ {#tombstone-snapshot}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：旧值重新出现的风险、文件范围与快照保留条件。
+
+**相关内容**：[删除标记与快照](#删除标记与快照)、[RocksDB 示例](#rocksdb-示例)。
+
+<details>
+<summary>参考回答</summary>
+
+**清理必须同时保证当前视图不再返回已删除的值，以及旧快照仍能读取它应看到的版本。** 更老文件中若还存在被遮住的值，过早丢弃删除标记可能让旧值重新出现。
+
+快照也可能继续需要删除前的数据。合并只能按版本、快照与相关文件范围判断哪些记录已经无用；释放快照允许后续回收，不等于立刻删除所有旧文件。
+
+</details>
+
+### 8.5 LSM 的读放大、写放大和空间放大分别是什么，为什么不能只追求最低写放大？ {#lsm-amplification}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：统计口径、合并策略的代价转移与后台资源约束。
+
+**相关内容**：[Compaction 与放大代价](#compaction-与放大代价)。
+
+<details>
+<summary>参考回答</summary>
+
+**写放大是额外写入，读放大是额外检查或读取，空间放大是超出当前有效数据的占用。** 统计时要固定字节或次数、时间窗口及引擎或设备边界。
+
+减少合并重写可以降低写放大，却可能保留更多重叠文件和旧版本，增加读取候选与空间占用。反过来，积极合并会消耗带宽和 CPU。若后台处理跟不上，前台还会出现写入停顿，因此需要结合长期吞吐、读延迟和可用空间取舍。
+
+</details>
+
+### 8.6 什么条件下会考虑 LSM，为什么不能直接断言它比 B+ 树快？ {#lsm-btree-choice}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：结构、负载、后台维护与产品能力的区分。
+
+**相关内容**：[与 B+ 树的取舍](#与-b-树的取舍)、[后台积压与写入停顿](#后台积压与写入停顿)。
+
+<details>
+<summary>参考回答</summary>
+
+**随机更新较多且能够承担后台合并资源时，可以考虑 LSM，但最终要用目标负载比较。** 它把部分前台修改转为批量整理，同时承担多来源读取、重写和临时空间成本。
+
+B+ 树支持树导航与有序叶子扫描，也会使用缓存、日志和后台刷写。比较需要固定数据量、键值大小、读写比例、缓存预算、持久性和延迟目标，不能用短期写入峰值代替结论；事务和 SQL 等产品能力也需要单独确认。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+
+- [RocksDB：Overview，存储组织与 MemTable](https://github.com/facebook/rocksdb/wiki/RocksDB-Overview)
+- [RocksDB：Write-Ahead Log，恢复与回收条件](https://github.com/facebook/rocksdb/wiki/Write-Ahead-Log-(WAL))
+- [RocksDB：Leveled Compaction](https://github.com/facebook/rocksdb/wiki/Leveled-Compaction)
+- [RocksDB：Compaction，策略与放大取舍](https://github.com/facebook/rocksdb/wiki/Compaction)
+- [RocksDB：Bloom Filter](https://github.com/facebook/rocksdb/wiki/RocksDB-Bloom-Filter)
+- [RocksDB：Write Stalls](https://github.com/facebook/rocksdb/wiki/Write-Stalls)
+- [RocksDB 9.10.0：写入与 WAL 选项](https://github.com/facebook/rocksdb/blob/v9.10.0/include/rocksdb/options.h)
+- [RocksDB 9.10.0：层级与 compaction 选项](https://github.com/facebook/rocksdb/blob/v9.10.0/include/rocksdb/advanced_options.h)
+- [RocksDB 9.10.0：DB、快照、迭代与合并 API](https://github.com/facebook/rocksdb/blob/v9.10.0/include/rocksdb/db.h)
+- [RocksDB 9.10.0：CompactionIterator，删除标记与快照保留判断](https://github.com/facebook/rocksdb/blob/v9.10.0/db/compaction/compaction_iterator.cc)

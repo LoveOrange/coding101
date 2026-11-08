@@ -1,0 +1,530 @@
+---
+sidebar_position: 1
+knowledge:
+  id: tools-and-frameworks.react.components
+---
+
+# React 组件
+
+**React 组件**把界面的一部分及其渲染逻辑组织在一起，根据输入和当前状态描述应该显示什么。父组件通过 props 提供输入，组件通过 state 保存需要随交互变化的信息，React 再把新的渲染结果更新到页面。
+
+理解组件不能只停在 JSX 写法。面试中的状态更新、父子通信和表单问题，都依赖同一个基础：当前一次渲染读到的是哪份数据，谁拥有状态，以及下一次渲染怎样被请求。
+
+本文使用 React 18、19 都支持的函数组件和 createRoot，示例分别可作为独立的 App.jsx。Hooks 的生命周期与依赖、组件身份和协调机制在对应主题中展开。
+
+## 1. 面试核心 {#core}
+
+- **组件根据 props 与 state 计算界面，渲染本身应保持纯粹**。不要在渲染时直接发请求、修改外部变量或执行用户操作。[卡](#component-model)
+- **JSX 是描述界面的 JavaScript 语法扩展，不是 HTML 字符串**。它需要构建工具转换，浏览器不会直接把 JSX 当原生语法执行。[卡](#jsx)
+- **props 是外部输入，state 是由 React 为组件位置管理的状态**。两者在当前渲染中都应按只读快照使用，子组件通过回调请求父组件更新。[卡](#props-state)
+- **状态 setter 请求后续更新，不会改写当前闭包已经取得的值**。依赖队列中前一个状态计算时，使用函数式更新。[卡](#state-update)
+- **对象和数组状态需要产生新的更新路径，不能直接修改旧对象**。浅拷贝一层不代表嵌套对象也已独立。[卡](#immutable-state)
+- **受控表单的当前值由 state 驱动，非受控表单的当前值主要由 DOM 保存**。value/checked 与 defaultValue/defaultChecked 的职责不同。[卡](#controlled-input)
+- **需要共同变化的状态可以提升到最近的合适公共父组件**。能由现有数据计算出的结果，通常不需要再保存一份状态。[卡](#communication)
+- **函数组件与类组件都能接收 props 并管理状态，但状态 API 和执行方式不同**。函数组件并不是每次执行就丢失全部状态，也不是没有生命周期。[卡](#function-class)
+- **组件拆分要围绕职责、变化和交互边界**。提取组件可以提高复用与局部理解，不保证自动减少渲染工作。[卡](#component-boundary)
+
+## 2. 组件与 JSX {#组件与jsx}
+
+### 2.1 根节点与应用入口 {#根节点与应用入口}
+
+Web 应用需要一个 React 管理的 DOM 容器，HTML 中可以放置：
+
+```html
+<div id="root"></div>
+```
+
+构建工具把入口中的 JSX 转换后，再交给浏览器执行。main.jsx 可以写成：
+
+```jsx
+import { createRoot } from 'react-dom/client';
+import App from './App.jsx';
+
+const container = document.querySelector('#root');
+if (!container) throw new Error('缺少 root 容器');
+const root = createRoot(container);
+root.render(<App />);
+```
+
+createRoot 建立根，root.render 提交要显示的组件树。组件内部不需要每次更新都重新创建根；结束整个挂载时可调用 root.unmount。服务端已经生成的 HTML 需要水合时，应采用对应的水合入口，而不是把普通 createRoot 当作所有场景的通用入口。
+
+### 2.2 输入与组合 {#输入与组合}
+
+函数组件接收 props，返回 React 可以渲染的内容。组件名以大写字母开头，JSX 中的小写标签通常表示内置元素：
+
+```jsx
+function CourseCard({ title, level = '基础', children }) {
+  return (
+    <article>
+      <h2>{title}</h2>
+      <p>{level}</p>
+      <div>{children}</div>
+    </article>
+  );
+}
+export default function App() {
+  return (
+    <>
+      <CourseCard title="浏览器">
+        <p>理解一次页面导航。</p>
+      </CourseCard>
+      <CourseCard title="React" level="进阶">
+        <button type="button">查看课程</button>
+      </CourseCard>
+    </>
+  );
+}
+```
+
+title 和 level 是输入，children 接收标签中间的内容，使外层布局能够组合不同子内容。参数默认值只在未传入或传入 undefined 时生效，null 不会自动替换成“基础”。
+
+组件应通过 `<CourseCard />` 让 React 调用，而不是把 CourseCard 当普通函数在父组件里手动执行。React 需要管理组件的位置、状态和调用过程。组件定义也应放在适当的模块位置，不要无意中在父组件每次渲染时重新定义一种新的子组件类型。
+
+### 2.3 JSX 的表达式与边界 {#jsx的表达式与边界}
+
+JSX 中的大括号嵌入 JavaScript 表达式，属性与 HTML 写法并不完全一致，例如 className、htmlFor 和对象形式的 style。多个相邻元素可以用 Fragment 组合，不必为了语法增加一个实际 div。
+
+```jsx
+export default function App() {
+  const count = 0;
+  const text = '<b>课程名称</b>';
+  return (
+    <section className="summary" style={{ padding: 8 }}>
+      <p>{text}</p>
+      <p>直接使用 count：{count && <span>有结果</span>}</p>
+      <p>显式比较：{count > 0 && <span>有结果</span>}</p>
+    </section>
+  );
+}
+```
+
+第一行显示文本 `<b>课程名称</b>`，不会创建 b 元素。第二行末尾会出现数字 0，因为 `0 && ...` 的结果是 0，而数字可以被渲染；第三行的条件结果是 false，不会产生对应子内容。
+
+普通对象不能直接作为文本子节点渲染，需要选择字段或先转换为合适内容。不要为了插入字符串就使用 dangerouslySetInnerHTML；它绕过普通文本渲染，需要独立处理输入可信度。
+
+JSX 转换可生成 React 元素描述；现代自动运行时通常使用 jsx/jsxs 等辅助函数，并不意味着所有构建结果都必须出现 React.createElement。元素描述也不是已经创建好的 DOM 节点。
+
+## 3. props、state 与状态快照 {#props-state与状态快照}
+
+### 3.1 状态属于哪次渲染 {#状态属于哪次渲染}
+
+**props** 是组件从外部接收的输入，**state** 是 React 为组件保留、可通过更新 API 改变的状态。父组件的 state 可以作为子组件的 props，因此它们描述的是数据在某个组件中的角色，不是两种互不相关的数据类型。
+
+函数组件每次渲染都会重新执行，但 React 会按组件身份与 Hook 调用位置关联状态。普通局部变量没有同样的保留和更新能力；修改局部变量也不会自动请求 React 更新页面。
+
+useState 返回当前状态和更新函数。更新函数可以接收新值，或接收从待处理前态计算下一状态的函数：
+
+```jsx
+import { useState } from 'react';
+
+export default function App() {
+  const [credits, setCredits] = useState(10);
+  function replaceTwice() {
+    setCredits(credits + 2);
+    setCredits(credits + 2);
+    console.log('当前快照', credits);
+  }
+  function addTwice() {
+    setCredits(previous => previous + 2);
+    setCredits(previous => previous + 2);
+  }
+  return (
+    <>
+      <output>{credits}</output>
+      <button type="button" onClick={replaceTwice}>两次传入计算值</button>
+      <button type="button" onClick={addTwice}>两次函数式更新</button>
+    </>
+  );
+}
+```
+
+从 10 开始点击第一个按钮，当前事件中的 credits 仍是 10，两次传入的都是 12，控制台输出 10，后续界面显示 12。若从 10 开始点击第二个按钮，两个更新函数依次计算 12、14，后续显示 14。
+
+如果先点第一个按钮再点第二个，第二次事件已经来自显示 12 的渲染，函数式更新会得到 16。不要把不同事件的快照也当作永远是初始值。
+
+### 3.2 排队、批处理与异步闭包 {#排队批处理与异步闭包}
+
+React 可以把一批更新一起处理，避免每个 setter 都立即完成一次 DOM 更新。React 18 起使用 createRoot 时，自动批处理覆盖更多 Promise、定时器等场景；旧根入口与旧版本的观察结果不能无条件套用。
+
+但“同步还是异步”不是解释状态的充分答案。setter 调用本身会执行，当前闭包的状态值不会被它改写，后续渲染与提交则由 React 安排。setter 不是一个表示 DOM 提交完成的 Promise，不能用 await setState 来等待页面更新。
+
+```jsx
+import { useState } from 'react';
+
+export default function App() {
+  const [count, setCount] = useState(0);
+  function recordLater() {
+    setTimeout(() => console.log('点击时的值', count), 150);
+  }
+  return (
+    <>
+      <output>{count}</output>
+      <button type="button" onClick={recordLater}>稍后记录</button>
+      <button type="button" onClick={() => setCount(value => value + 1)}>增加</button>
+    </>
+  );
+}
+```
+
+先在 count 为 0 时点击“稍后记录”，再点击“增加”，页面可以先变成 1，稍后的日志仍是 0。回调保留了当次渲染中的 count，这正是 JavaScript 闭包与 React 快照共同产生的结果。
+
+有时需要事件发生时的值，有时需要执行时的最新值，应先明确业务语义，再选择参数、函数式更新或 ref。不要把所有闭包保存旧值的现象都当作错误，也不要靠任意延长 setTimeout 猜测状态何时可用。
+
+### 3.3 渲染纯度与相同状态 {#渲染纯度与相同状态}
+
+渲染可以被重新调用，因此不要在组件函数体中直接发送订单、注册监听或修改共享对象。事件处理器负责用户动作，和外部系统建立同步关系的工作需要相应生命周期处理。
+
+开发环境的 StrictMode 会额外检查部分执行过程，例如重复调用组件或状态更新函数，以帮助发现不纯逻辑；不能把开发日志次数直接当成生产提交次数。函数式更新应只返回下一状态，不在里面发请求或修改外部变量。
+
+React 使用 Object.is 比较相同状态时，可以跳过不必要的更新。不要把这个优化理解为“setter 一定从不调用组件”，也不要用直接修改旧对象再传回原引用的方式要求界面可靠更新。
+
+## 4. 对象与数组状态 {#对象与数组状态}
+
+### 4.1 更新对象路径 {#更新对象路径}
+
+useState 的 setter 替换对应状态值，不会像类组件 setState 那样自动浅合并对象。修改嵌套字段时，要为发生变化的每一层建立新对象：
+
+```jsx
+import { useState } from 'react';
+
+export default function App() {
+  const [course, setCourse] = useState({
+    title: 'React',
+    owner: { name: 'Lin', team: 'Web' },
+  });
+  function rename() {
+    setCourse(previous => ({
+      ...previous,
+      owner: { ...previous.owner, name: 'Ada' },
+    }));
+  }
+  return (
+    <>
+      <p>{course.title} / {course.owner.name} / {course.owner.team}</p>
+      <button type="button" onClick={rename}>更换负责人</button>
+    </>
+  );
+}
+```
+
+更新后仍保留 title 与 team，同时产生新的 course 和 owner。若只展开最外层，再直接修改 owner.name，旧状态与新对象仍可能共享同一个 owner，历史快照也被修改。
+
+不需要为了一个字段深拷贝整个应用状态；没有变化的分支可以继续共享。对象关系见 [JavaScript 对象拷贝](../../basic-knowledge/javascript/copying.mdx)。
+
+### 4.2 更新数组中的一项 {#更新数组中的一项}
+
+数组需要新的数组容器，变化的对象项也需要新的对象；未变化的项可以复用：
+
+```jsx
+import { useState } from 'react';
+
+export default function App() {
+  const [tasks, setTasks] = useState([
+    { id: 'http', label: 'HTTP', done: false },
+    { id: 'react', label: 'React', done: false },
+  ]);
+  function toggle(id) {
+    setTasks(previous => previous.map(task =>
+      task.id === id ? { ...task, done: !task.done } : task,
+    ));
+  }
+  return (
+    <ul>
+      {tasks.map(task => (
+        <li key={task.id}>
+          <label>
+            <input type="checkbox" checked={task.done} onChange={() => toggle(task.id)} />
+            {task.label}
+          </label>
+        </li>
+      ))}
+    </ul>
+  );
+}
+```
+
+点击一项只改变对应对象，另一项保持原值。map、filter 或先复制再排序可以用于产生新数组；直接 push、splice 或修改数组项会改变原数组。
+
+key 用于列表项身份，不会作为普通 props 自动传给子组件。这里采用稳定的数据 ID；组件身份和状态保留的具体规则在协调主题中进一步解释。
+
+## 5. 事件与表单 {#事件与表单}
+
+### 5.1 传入处理函数 {#传入处理函数}
+
+onClick 等属性接收事件处理函数。`onClick={handleClick}` 是把函数交给 React，`onClick={handleClick()}` 则会在渲染时立即调用 handleClick，并把返回值当作属性。
+
+需要传参数时，可以写成 `onClick={() => select(id)}`。React 的事件对象提供 target、currentTarget、preventDefault 和 stopPropagation 等能力，但事件绑定的内部方式不等于每个节点都由应用直接调用 addEventListener。
+
+在延后执行前，应取出所需的值。event.currentTarget 表达当前处理器对应的元素，不应假设事件结束后仍能从它获得同样的状态。提交表单时阻止默认导航，也不会自动完成业务校验或服务端保存。
+
+### 5.2 受控与非受控输入 {#受控与非受控输入}
+
+**受控输入**的当前值由 React 状态决定，输入事件负责更新状态。**非受控输入**主要由 DOM 维护当前值，React 可以设置初始值，在提交时读取。
+
+```jsx
+import { useState } from 'react';
+
+export default function App() {
+  const [query, setQuery] = useState('');
+  const [onlyOpen, setOnlyOpen] = useState(false);
+  const [submitted, setSubmitted] = useState('');
+  function submit(event) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    setSubmitted(`${query} / ${onlyOpen} / ${form.get('nickname')}`);
+  }
+  return (
+    <form onSubmit={submit}>
+      <label>搜索词<input value={query} onChange={event => setQuery(event.target.value)} /></label>
+      <label>
+        <input type="checkbox" checked={onlyOpen}
+          onChange={event => setOnlyOpen(event.target.checked)} />
+        只看开放课程
+      </label>
+      <label>昵称<input name="nickname" defaultValue="Lin" /></label>
+      <button type="submit">确认</button>
+      <output>{submitted}</output>
+    </form>
+  );
+}
+```
+
+query 与 onlyOpen 跟随状态更新；nickname 的当前值在提交时从 DOM 表单读取。checkbox 使用 checked 与 target.checked，不应把它当成普通文本 value 处理。
+
+受控文本输入应保持字符串，例如用空字符串初始化，避免先传 undefined 后传字符串而在非受控与受控之间切换。提供 value 却没有更新它的处理器，会让输入被原值约束；只读时应明确使用 readOnly。
+
+defaultValue 表达初始值，不用于持续控制用户输入后的当前值。表单结构、标签和键盘语义仍然重要，使用 React 不会替代 HTML 可访问性要求。
+
+## 6. 组件通信与拆分 {#组件通信与拆分}
+
+### 6.1 状态提升与单向数据流 {#状态提升与单向数据流}
+
+两个组件需要同步变化时，可以由公共父组件保存一份状态，再通过 props 下发值和修改回调。子组件调用回调表达变化意图，真正的状态更新仍由拥有它的组件负责。
+
+```jsx
+import { useState } from 'react';
+
+function SearchField({ label, value, onValueChange }) {
+  return (
+    <label>{label}
+      <input value={value} onChange={event => onValueChange(event.target.value)} />
+    </label>
+  );
+}
+export default function App() {
+  const [query, setQuery] = useState('');
+  const courses = ['HTTP', 'React', 'TypeScript'];
+  const results = courses.filter(name => name.toLowerCase().includes(query.toLowerCase()));
+  return (
+    <>
+      <SearchField label="顶部搜索" value={query} onValueChange={setQuery} />
+      <SearchField label="底部搜索" value={query} onValueChange={setQuery} />
+      <p>找到 {results.length} 门课程</p>
+      <ul>{results.map(name => <li key={name}>{name}</li>)}</ul>
+    </>
+  );
+}
+```
+
+两个输入共享 query，修改任意一个都会让下一次渲染显示相同值。results 与数量可以直接由 query 和 courses 得出，不需要再建两份 state，然后用 Effect 追着同步。
+
+单向数据流不等于子组件不能通知父组件。父组件传入回调，子组件调用它，是清楚的数据更新入口；不需要直接修改 props 对象。
+
+当共享范围扩大时，再考虑 Context、reducer 或外部状态工具；并不是每次兄弟通信都必须引入全局状态库。ref 暴露命令属于另一种交互接口，不应代替所有正常数据流。
+
+### 6.2 拆分的依据 {#拆分的依据}
+
+组件边界可以围绕独立职责、交互状态、复用和变化原因建立。展示课程卡片、管理搜索条件与获取接口数据，不一定都由同一个组件承担。
+
+但“拆得越小越好”也不成立。没有明确用途的转发层会让 props 层层穿过，定位状态反而更困难。提取组件首先改善职责与复用；是否减少重渲染，要结合状态放置、身份、props 和实际性能证据判断。
+
+## 7. 函数组件与类组件 {#函数组件与类组件}
+
+函数组件通过函数调用计算结果，使用 Hooks 访问 React 管理的状态和同步能力；类组件通过实例、this.props、this.state 和类方法组织相应行为。两者都可以描述有状态界面。
+
+下面的类组件用于阅读存量代码：
+
+```jsx
+import { Component } from 'react';
+
+export default class App extends Component {
+  state = { count: 0, label: '次数' };
+  increment = () => {
+    this.setState(previous => ({ count: previous.count + 1 }));
+  };
+  render() {
+    return (
+      <button type="button" onClick={this.increment}>
+        {this.state.label}：{this.state.count}
+      </button>
+    );
+  }
+}
+```
+
+类组件 setState 会浅合并这里返回的对象，因此 label 仍然保留；useState 的 setter 则替换该状态值。两者基于前态计算时都应注意更新队列，不能只凭“类实例中的字段”推断每个调用点都能立即读到提交后的值。
+
+类组件使用挂载、更新和卸载等生命周期方法；函数组件没有这些同名实例方法，但仍经历渲染、提交和清理。Effect 围绕与外部系统的同步组织，不宜机械理解为某三个类生命周期的简单替身。
+
+新代码通常优先使用函数组件，面试中仍需要读懂类组件与状态 API 差异。不能再把“函数组件没有状态”作为两者区别。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 React 组件如何由数据描述界面，函数组件每次执行为什么没有丢失状态？ {#component-model}
+
+**考察重点**：组件输入、React 管理的状态、渲染与更新请求。
+
+**相关内容**：[输入与组合](#输入与组合)、[状态属于哪次渲染](#状态属于哪次渲染)、[渲染纯度与相同状态](#渲染纯度与相同状态)。
+
+<details>
+<summary>参考回答</summary>
+
+**组件根据当前 props 和 state 返回界面描述，状态由 React 按组件身份与 Hook 位置关联保存。** setter 请求后续更新，React 再计算并提交需要的界面变化。
+
+普通局部变量没有相同的保留与更新能力。渲染可能重复发生，应保持纯粹，不在函数体中直接执行不可重复的业务操作。
+
+</details>
+
+### 8.2 JSX 是 HTML 字符串吗，为什么 count 为 0 时 count && 元素会显示 0？ {#jsx}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：语法转换、表达式结果与可渲染值。
+
+**相关内容**：[JSX 的表达式与边界](#jsx的表达式与边界)。
+
+<details>
+<summary>参考回答</summary>
+
+**JSX 是需要转换的 JavaScript 语法扩展，用来创建界面描述，不是浏览器直接解析的 HTML 字符串。** 大括号中的表达式按 JavaScript 规则计算，0 && 元素的结果是数字 0，因此会被渲染。
+
+需要布尔条件时显式比较 count > 0。普通字符串内容按文本渲染，不能据此把原始 HTML 注入能力当作同一种机制。
+
+</details>
+
+### 8.3 props 与 state 有什么区别，子组件可以直接修改 props 吗？ {#props-state}
+
+**考察重点**：数据所有权、输入角色与更新入口。
+
+**相关内容**：[状态属于哪次渲染](#状态属于哪次渲染)、[状态提升与单向数据流](#状态提升与单向数据流)。
+
+<details>
+<summary>参考回答</summary>
+
+**props 是组件接收的输入，state 是 React 为组件管理的可更新状态；父组件的 state 可以作为子组件 props。** 当前渲染中的两者都应按只读快照使用。
+
+子组件通过回调表达更新意图，由状态拥有者调用 setter。直接修改传入对象会破坏数据关系，也不等于正确通知 React 更新。
+
+</details>
+
+### 8.4 setState 或 useState 的更新是同步还是异步，为什么连续更新可能只增加一次？ {#state-update}
+
+**考察重点**：快照、队列、批处理与函数式更新。
+
+**相关内容**：[状态属于哪次渲染](#状态属于哪次渲染)、[排队、批处理与异步闭包](#排队批处理与异步闭包)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能仅用同步或异步二选一解释：setter 会安排更新，但不会改写当前闭包里的状态快照。** 多次传入由同一个旧值算出的新值，可能只是重复替换成同一结果。
+
+依赖待处理前态时使用函数式更新，React 按队列计算。批处理和提交时机还受版本与根入口影响，setter 也不是可 await 的提交完成 Promise。
+
+</details>
+
+### 8.5 更新嵌套对象或数组状态时，为什么只复制最外层还可能有问题？ {#immutable-state}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：共享引用、历史快照与更新路径。
+
+**相关内容**：[更新对象路径](#更新对象路径)、[更新数组中的一项](#更新数组中的一项)。
+
+<details>
+<summary>参考回答</summary>
+
+**浅拷贝只建立外层容器，嵌套对象仍可能与旧状态共享。** 修改共享对象会同时改变旧快照，不能只因最外层引用变了就认为更新是独立的。
+
+为发生变化的路径创建新对象，未变化分支可以共享。数组更新既需要新数组，也需要为变化的对象项创建新对象；不必无条件深拷贝整个状态。
+
+</details>
+
+### 8.6 受控与非受控输入有什么区别，value 和 defaultValue 能互换吗？ {#controlled-input}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：当前值所有权、初始化、事件更新和稳定模式。
+
+**相关内容**：[受控与非受控输入](#受控与非受控输入)。
+
+<details>
+<summary>参考回答</summary>
+
+**受控输入由 React 状态决定当前值，非受控输入主要由 DOM 保存当前值。** value 持续约束文本值，defaultValue 主要提供初始值，不能用来替代持续控制。
+
+受控输入通过 onChange 更新状态，checkbox 使用 checked；文本状态保持字符串，避免在 undefined 与字符串之间意外切换模式。是否选择受控取决于联动、校验与数据读取需求。
+
+</details>
+
+### 8.7 父子组件怎样通信，共同状态放在哪里？ {#communication}
+
+**考察重点**：单向数据流、回调、状态提升与派生数据。
+
+**相关内容**：[状态提升与单向数据流](#状态提升与单向数据流)。
+
+<details>
+<summary>参考回答</summary>
+
+**父组件通过 props 传值和回调，子组件调用回调表达变化，由拥有状态的组件更新。** 多个组件要同步变化时，把状态放到合适的公共父组件，再向下传递。
+
+能由现有输入计算的结果通常不必另存 state。共享范围扩大后再考虑 Context 或状态库，不必为每次兄弟通信引入全局工具。
+
+</details>
+
+### 8.8 函数组件与类组件有哪些区别，函数组件没有状态或生命周期吗？ {#function-class}
+
+**考察重点**：执行模型、状态 API 与生命周期组织。
+
+**相关内容**：[函数组件与类组件](#函数组件与类组件)。
+
+<details>
+<summary>参考回答</summary>
+
+**函数组件可以通过 Hooks 使用状态和同步能力，不能说它没有状态或生命周期。** 函数组件按调用计算界面，类组件通过实例、this.props、this.state 和类方法组织。
+
+类组件 setState 浅合并对象，useState setter 替换对应状态值。函数组件仍经历渲染、提交与清理，Effect 不能机械等同于某个类生命周期方法。
+
+</details>
+
+### 8.9 组件应该按什么依据拆分，拆成更多组件一定更快吗？ {#component-boundary}
+
+**考察重点**：职责、状态边界、复用和性能依据。
+
+**相关内容**：[拆分的依据](#拆分的依据)。
+
+<details>
+<summary>参考回答</summary>
+
+**按独立职责、交互状态、复用和变化原因拆分，目标是让输入与责任清楚。** 没有明确用途的多层转发会增加理解成本，并不是组件越小越好。
+
+拆分不保证减少渲染。性能还要看状态位置、组件身份、props 和实际更新成本，再根据证据选择优化。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+
+- [React：Your First Component](https://react.dev/learn/your-first-component)
+- [React：Writing Markup with JSX](https://react.dev/learn/writing-markup-with-jsx)
+- [React：Passing Props to a Component](https://react.dev/learn/passing-props-to-a-component)
+- [React：State as a Snapshot](https://react.dev/learn/state-as-a-snapshot)
+- [React：Queueing a Series of State Updates](https://react.dev/learn/queueing-a-series-of-state-updates)
+- [React：Updating Objects in State](https://react.dev/learn/updating-objects-in-state)
+- [React：Updating Arrays in State](https://react.dev/learn/updating-arrays-in-state)
+- [React：Sharing State Between Components](https://react.dev/learn/sharing-state-between-components)
+- [React：input](https://react.dev/reference/react-dom/components/input)
+- [React：createRoot](https://react.dev/reference/react-dom/client/createRoot)
+- [React：Component](https://react.dev/reference/react/Component)
+- [React：useState](https://react.dev/reference/react/useState)
+- [React：StrictMode](https://react.dev/reference/react/StrictMode)
+- [React：React 18](https://react.dev/blog/2022/03/29/react-v18)
+- [React：Keeping Components Pure](https://react.dev/learn/keeping-components-pure)

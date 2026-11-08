@@ -1,0 +1,438 @@
+---
+sidebar_position: 1
+knowledge:
+  id: tools-and-frameworks.nodejs.middleware
+  type: concept
+description: "理解 Express 与 Koa 中间件的执行顺序、异步错误、请求状态和响应边界，并区分 Express、Koa 与 Egg 的职责。"
+keywords: ["Node.js", "中间件", "Express", "Koa", "Egg", "洋葱模型", "错误处理"]
+---
+
+# Node.js 中间件
+
+**中间件**是参与一次请求处理的函数：它可以读取请求、准备后续需要的状态、决定是否继续处理，或者生成响应。把日志、认证、参数解析等公共逻辑放进中间件，可以让业务接口专注于自己的工作；但注册顺序、异步等待和错误传递一旦写错，也会造成请求悬挂、提前返回或重复响应。
+
+理解中间件不能只背“按顺序执行”。面试中更需要能沿着代码说明：控制权交给了谁，当前函数是否等待下游，异常会被谁接住，响应是否已经开始发送。本文以 Koa 2、Express 4 和 Express 5 为范围，代码在 Node.js 22.16.0、Koa 2.16.1、Express 4.22.2 与 5.1.0 中核验。
+
+## 1. 面试核心 {#core}
+
+- 中间件按注册顺序参与匹配与调用，但**只有继续传递控制权，后面的处理才会发生**。Express 中既不响应也不调用 `next()`，请求就会停在那里。[卡](#middleware-chain)
+- Koa 的 `next()` 返回下游执行的 Promise。**`await next()` 前的代码向内执行，后面的代码在下游完成后向外恢复**，这就是洋葱模型。[卡](#execution-order)
+- Express 的 `next()` 用于继续分发，**它不是表示下游完成的 Promise**。Express 5 接住返回 Promise 的拒绝，并不等于把 Express 变成 Koa。[卡](#async-errors)
+- 每个请求的状态放在 `ctx.state` 或 `res.locals` 等请求对象上。**进程级变量会被并发请求共享，`await` 期间其他请求可以修改它**。[卡](#request-state)
+- 请求体解析只得到一个 JavaScript 值，**不证明字段合法，也不证明用户有权执行操作**。解析、校验、认证和授权有不同职责。[卡](#input-order)
+- 错误处理依赖错误进入当前调用链。**未返回的 Promise、独立定时器和已经发送的响应，都不能靠一个外层 `try/catch` 自动修复**。[卡](#response-boundary)
+- Express 提供较轻的路由与中间件基础，Egg 在 Koa 模型上增加应用组织、配置和插件等约定。**框架差异要结合执行模型与项目组织解释，不能只比较 API 数量**。[卡](#express-egg)
+
+## 2. 请求处理链 {#请求处理链}
+
+一次 HTTP 请求进入服务后，通常要经过公共处理和业务处理。中间件让这些步骤能够组合，但顺序表达的是真实依赖，不能随意互换。
+
+| 步骤 | 职责 | 顺序的影响 |
+| --- | --- | --- |
+| 请求标识与观测 | 为当前请求记录标识、耗时和结果 | 放在前面才能覆盖后续失败 |
+| 身份认证 | 校验凭据，得到可信身份 | 依赖身份的授权必须在它之后 |
+| 请求体解析 | 把允许的内容类型解析为值，并限制大小 | 业务读取 `req.body` 前必须完成 |
+| 参数校验与授权 | 验证字段，并判断当前用户能否操作目标资源 | 应在产生业务副作用之前完成 |
+| 业务处理 | 查询或修改资源，生成结果 | 不再假设所有上游一定成功 |
+| 未匹配与错误处理 | 处理正常走到底的请求，或处理传来的异常 | Express 的兜底通常位于路由之后 |
+
+这张表描述职责，不规定所有应用都使用同一顺序。使用请求头凭据的接口可以在解析大请求体前拒绝未认证请求；验证 Webhook 签名时可能需要原始字节，不能先把请求体转换成 JSON 再拿它代替原文验签。
+
+Express 的普通中间件接收 `req`、`res` 和 `next`。调用 `next()` 继续分发，调用 `next(error)` 进入错误处理链；通过 `res.send()`、`res.json()` 等生成响应后，通常应结束当前分支。`next()` 本身不会停止当前函数，后面的语句仍然会执行。
+
+Koa 用 `ctx` 表示当前请求的上下文，其中封装了请求和响应操作；中间件通常写成 `async (ctx, next) => { ... }`。不调用 `next()` 就不会进入下游，但它的响应流程与 Express 不同：正常情况下，Koa 等组合后的 Promise 完成，再根据 `ctx.body` 等状态生成响应。
+
+## 3. Koa 洋葱模型 {#koa-洋葱模型}
+
+### 3.1 向内调用与向外恢复 {#向内调用与向外恢复}
+
+**洋葱模型**是通过等待下游完成，让每一层都能在下游执行前后做处理的调用结构。下面三个中间件分别负责外层记录、内层记录和业务响应。
+
+```js
+// koa-order.mjs
+import Koa from 'koa';
+import { setTimeout as delay } from 'node:timers/promises';
+
+export const app = new Koa();
+
+app.use(async (ctx, next) => {
+  ctx.state.trace = ['outer:start'];
+  const start = performance.now();
+  await next();
+  ctx.state.trace.push('outer:end');
+  ctx.set('X-Handler-Time', String(performance.now() - start));
+});
+
+app.use(async (ctx, next) => {
+  ctx.state.trace.push('inner:start');
+  await next();
+  ctx.state.trace.push('inner:end');
+});
+
+app.use(async ctx => {
+  await delay(10);
+  ctx.state.trace.push('handler');
+  ctx.body = { trace: ctx.state.trace };
+});
+```
+
+导入 `app` 后调用 `app.listen(3000)` 即可访问。响应中的 `trace` 依次为 `outer:start`、`inner:start`、`handler`、`inner:end`、`outer:end`。`ctx.body.trace` 与 `ctx.state.trace` 指向同一个数组，所以业务层设置 `ctx.body` 后，外层追加的内容也会进入最终 JSON。
+
+`X-Handler-Time` 记录的是这段中间件执行所覆盖的时间，不代表客户端已经接收完响应。这里能够在 `await next()` 后设置响应头，是因为业务层只设置了 `ctx.body`，没有提前通过底层 `ctx.res.write()` 开始发送。
+
+### 3.2 提前返回与遗漏等待 {#提前返回与遗漏等待}
+
+中间件主动拒绝请求时，可以设置状态和响应，然后直接返回，不调用 `next()`。外层已进入的中间件仍会恢复执行，但被跳过的下游不会执行。
+
+遗漏 `await` 或 `return` 则是另一回事。把例子中的 `await next()` 改成单独的 `next()`，下游会开始执行，但当前中间件不再等待它完成。外层可能在业务层的 `delay(10)` 结束前就退出，Koa 因而提前生成响应；业务层稍后设置 `ctx.body` 已经来不及。异步拒绝也可能脱离外层错误处理。
+
+如果某层只负责转交，没有后置逻辑，`return next()` 可以保持 Promise 链；需要在下游完成后继续处理，就使用 `await next()`。这与普通异步函数的等待规则相同，参见 [async 与 await](../../basic-knowledge/javascript/async-await.mdx)。
+
+### 3.3 最小组合函数 {#最小组合函数}
+
+组合函数的关键是为每一层提供一个调用下一层的 `next`，并让当前层返回的 Promise 包含下游工作。下面是教学用实现，只负责组合函数，不实现 HTTP、路由或 Koa 的全部扩展能力。
+
+```js
+// compose.mjs
+export function compose(middleware) {
+  if (!Array.isArray(middleware) ||
+      [...middleware].some(fn => typeof fn !== 'function')) {
+    throw new TypeError('middleware must be an array of functions');
+  }
+  const stack = [...middleware];
+
+  return async function execute(ctx) {
+    async function run(index) {
+      if (index === stack.length) return;
+      let continued = false;
+      await stack[index](ctx, () => {
+        if (continued) {
+          return Promise.reject(new Error('next called twice'));
+        }
+        continued = true;
+        return run(index + 1);
+      });
+    }
+    await run(0);
+  };
+}
+```
+
+每次 `execute(ctx)` 都会建立独立的执行状态；同一层重复调用 `next()` 会得到拒绝的 Promise，避免业务处理重复执行。`run` 是异步函数，因此中间件同步抛错和返回的 Promise 拒绝都能沿调用链传播。不过，调用者仍需等待或返回 `next()`，组合函数无法替调用者接回已经丢弃的 Promise。
+
+```js
+// compose-demo.mjs
+import { compose } from './compose.mjs';
+
+const execute = compose([
+  async (ctx, next) => {
+    ctx.trace.push('before');
+    await next();
+    ctx.trace.push('after');
+  },
+  ctx => { ctx.trace.push('handler'); },
+]);
+
+const ctx = { trace: [] };
+await execute(ctx);
+console.log(ctx.trace.join(',')); // before,handler,after
+```
+
+这个结果来自嵌套调用与 Promise 等待，不是“把所有中间件先正序跑一次，再倒序跑一次”。某层可能不调用 `next()`，也可能因异常跳过后置语句；必须清理的资源应放进 `finally`。
+
+## 4. Express 的控制权与异步错误 {#express-的控制权与异步错误}
+
+### 4.1 next 不等待下游完成 {#next-不等待下游完成}
+
+Express 的 `next()` 会继续寻找匹配的处理函数，但不向当前中间件返回一个代表下游全部完成的 Promise。下面的例子在 Express 4 和 Express 5 中都不能产生 Koa 的洋葱顺序。
+
+```js
+// express-order.mjs
+import express from 'express';
+import { setTimeout as delay } from 'node:timers/promises';
+
+export const app = express();
+
+app.use((req, res, next) => {
+  res.locals.trace = ['outer:start'];
+  next();
+  res.locals.trace.push('outer:end');
+});
+
+app.use((req, res, next) => {
+  res.locals.trace.push('inner:start');
+  delay(10).then(() => {
+    res.locals.trace.push('inner:done');
+    next();
+  }).catch(next);
+});
+
+app.get('/', (req, res) => {
+  res.locals.trace.push('handler');
+  res.json({ trace: res.locals.trace });
+});
+```
+
+访问 `/` 得到的顺序是 `outer:start`、`inner:start`、`outer:end`、`inner:done`、`handler`。第二层发起异步等待后先返回，第一层随即继续执行 `outer:end`；十毫秒左右之后，第二层才继续分发到业务处理函数。
+
+即使把第一层改成 `async` 并写 `await next()`，也不会让它等待下游异步工作。要记录响应结束，可以监听响应生命周期事件；要在发出响应前统一转换业务结果，则应设计明确的结果传递方式，不能把 `next()` 当成 Koa 的 Promise。
+
+### 4.2 Express 4 与 Express 5 的区别 {#express-4-与-express-5-的区别}
+
+Express 4 能接住处理函数直接同步抛出的异常，但不会自动接住处理函数返回 Promise 的拒绝。可以用下面的包装把同步异常与异步拒绝都交给 `next`。
+
+```js
+// async-handler.mjs
+export const asyncHandler = handler => (req, res, next) =>
+  Promise.resolve()
+    .then(() => handler(req, res, next))
+    .catch(next);
+```
+
+这里先进入 `.then()` 再调用 `handler`，所以调用本身同步抛错也会变成拒绝。包装函数只负责错误传递，不会在成功后自动调用 `next()`；业务处理函数仍需要生成响应，或明确继续处理。
+
+Express 5 会把中间件或路由处理函数**返回的 Promise** 的拒绝交给 `next`，因此可以直接注册返回 Promise 的 `async` 函数。独立创建但没有返回的 Promise，或者 `setTimeout` 回调稍后抛出的异常，仍需要自己接入错误处理。外层已经返回后，框架不能凭空知道这些异步任务属于哪一条错误链。
+
+## 5. 状态、校验与响应边界 {#状态校验与响应边界}
+
+### 5.1 请求状态与输入校验 {#请求状态与输入校验}
+
+`ctx.state` 和 `res.locals` 都适合保存一次请求内的中间状态。不要使用模块级 `currentUser` 保存当前用户：请求 A 在等待数据库时，请求 B 可能覆盖它，A 恢复后就会读到 B 的身份。共享缓存可以位于进程级，但必须使用明确的键和独立的权限判断，不能与“当前请求”混为一谈。
+
+请求体解析之后还要检查字段。下面的最小接口只演示 JSON 解析、输入验证和错误响应，不包含数据库或完整身份认证。
+
+```js
+// express-api.mjs
+import express from 'express';
+import { asyncHandler } from './async-handler.mjs';
+
+export const app = express();
+app.use(express.json({ limit: '1kb' }));
+
+app.post('/items', asyncHandler(async (req, res) => {
+  if (!req.is('application/json')) {
+    return res.status(415).json({ error: 'JSON required' });
+  }
+  const name = req.body?.name;
+  if (typeof name !== 'string' || name.trim().length === 0 ||
+      name.trim().length > 40) {
+    return res.status(400).json({ error: 'invalid name' });
+  }
+  return res.status(201).json({ name: name.trim() });
+}));
+
+app.use((req, res) => {
+  res.status(404).json({ error: 'not found' });
+});
+
+app.use((err, req, res, next) => {
+  if (res.headersSent) return next(err);
+  const status = Number.isInteger(err.status) &&
+    err.status >= 400 && err.status <= 599 ? err.status : 500;
+  res.status(status).json({
+    error: status < 500 ? 'invalid request' : 'internal error',
+  });
+});
+```
+
+合法 JSON 中的 `name` 为非空字符串时返回 `201`；字段类型或长度不符返回 `400`，不支持的内容类型返回 `415`。JSON 语法错误会由解析器进入错误处理，超过 `1kb` 的请求体也会被解析器拒绝。这里的字段长度采用 JavaScript 字符串的 `length`，即 UTF-16 码元数量；产品若按用户感知字符计数，需要另行定义规则。
+
+最后两个中间件职责不同：没有匹配接口是正常分发走到底，返回 `404`；错误处理函数必须保留四个参数 `(err, req, res, next)`，用来接收传来的异常。错误响应不直接回传内部异常消息，避免把路径、查询语句或凭据带给客户端。
+
+### 5.2 Koa 的错误边界 {#koa-的错误边界}
+
+Koa 可以在最外层用 `try/catch` 包住 `await next()`，统一处理仍在 Promise 链中的错误。下面只给出可插在业务中间件之前的错误处理函数。
+
+```js
+// koa-errors.mjs
+export async function errorBoundary(ctx, next) {
+  try {
+    await next();
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error('request failed');
+    ctx.app.emit('error', err, ctx);
+    if (ctx.headerSent) {
+      ctx.res.destroy(err);
+      return;
+    }
+    const status = Number.isInteger(err.status) &&
+      err.status >= 400 && err.status <= 599 ? err.status : 500;
+    ctx.status = status;
+    ctx.body = { error: status < 500 ? 'invalid request' : 'internal error' };
+  }
+}
+```
+
+应用通过 `app.use(errorBoundary)` 注册后，再注册业务中间件。`app.on('error', ...)` 可以记录错误，但监听器本身不等于响应处理；这里因为已经捕获并处理异常，所以显式发出事件。错误监听器应当可靠，不能再向外抛出新的错误。
+
+`try/catch` 只接住同步抛错和被等待的 Promise 拒绝。后台定时任务、未接入当前 Promise 链的回调，以及响应流之后的错误，还需要相应的错误监听和取消处理。流的失败传播参见 [Buffer 与 Stream](../../basic-knowledge/nodejs/buffer-stream.mdx)。
+
+### 5.3 响应开始后的限制 {#响应开始后的限制}
+
+响应头一旦发出，就不能再把同一响应改成另一套状态码和 JSON。Express 错误处理中先检查 `res.headersSent`，已经发送时把错误继续交给后续错误处理或默认处理器；Koa 示例中则终止已经无法正常完成的连接。二者都无法撤回客户端已经读到的字节。
+
+调用 `res.json()` 后不意味着当前函数自动结束。使用 `return` 结束当前分支，是为了避免后面的代码继续写响应或调用 `next()`。否则下游再写一次，可能出现响应头已经发送或流已经结束的错误。
+
+响应的 `finish` 事件表示服务器已把最后一段响应交给底层系统发送，不保证客户端已经读完。`close` 可能发生在正常完成后，也可能表示提前断开；判断异常中断时还要结合 `res.writableFinished` 等状态。请求处理耗时、服务端发送完成和客户端完整接收是不同观测点。
+
+## 6. Express、Koa 与 Egg {#express-koa-与-egg}
+
+Express 和 Koa 都提供 HTTP 请求处理基础，但组织控制流的方式不同。Egg 则在 Koa 模型之上提供更多应用层约定。
+
+| 框架 | 请求处理特点 | 项目组织特点 |
+| --- | --- | --- |
+| Express | `req`、`res`、`next` 分发；错误走错误中间件；4 与 5 的 Promise 拒绝处理有区别 | 路由与中间件基础较轻，应用自行组合目录、依赖与约定 |
+| Koa 2 | `ctx` 与 Promise 组合，支持 `await next()` 的前后处理 | 核心较小，路由、请求体解析等能力按需组合 |
+| Egg | 延续 Koa 上下文与中间件执行模型 | 通过目录约定、配置、扩展和插件组织应用能力 |
+
+选择时先看已有项目、团队约定和所需集成。小服务可能更需要直接可见的处理链；多个模块共同维护的应用可能更看重统一配置和插件机制。采用约定较多的框架仍要理解实际执行顺序；使用较轻的框架也不等于可以省略校验、错误处理和测试。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 Express 中间件的执行原理是什么？ {#middleware-chain}
+
+**考察重点**：注册顺序、路由匹配、控制权传递、错误分支与响应结束。
+
+**相关内容**：[请求处理链](#请求处理链)、[next 不等待下游完成](#next-不等待下游完成)。
+
+<details>
+<summary>参考回答</summary>
+
+**Express 按注册顺序匹配并调用中间件，当前处理函数通过 `next()` 继续分发，通过 `next(error)` 转入错误处理，或者直接生成响应。** 不是所有注册过的函数都会执行：路径、方法、提前响应和错误状态都会影响后续流程。
+
+既不响应也不调用 `next()`，请求会悬挂；调用 `next()` 后当前函数还会继续执行。它不返回代表下游全部完成的 Promise，所以不能用 `await next()` 获得 Koa 的洋葱顺序。
+
+</details>
+
+### 7.2 Koa 的洋葱模型为什么成立，漏写 await 会怎样？ {#execution-order}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：嵌套调用、Promise 等待、响应时机和异常传播。
+
+**相关内容**：[向内调用与向外恢复](#向内调用与向外恢复)、[提前返回与遗漏等待](#提前返回与遗漏等待)。
+
+<details>
+<summary>参考回答</summary>
+
+**每层 `await next()` 都等待下游 Promise，所以前置逻辑按进入顺序执行，后置逻辑按返回顺序恢复。** 下游完成后才回到外层，并非框架把每个函数执行两遍。
+
+只调用 `next()` 却不等待或返回它，当前层可能提前结束，响应可能早于业务完成发出，异步拒绝也可能脱离外层捕获。如果某层主动设置响应后返回、不调用 `next()`，则是有意跳过下游。
+
+</details>
+
+### 7.3 实现一个中间件组合函数，需要处理哪些边界？ {#compose-boundaries}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：独立请求状态、同步与异步异常、重复调用和空链。
+
+**相关内容**：[最小组合函数](#最小组合函数)。
+
+<details>
+<summary>参考回答</summary>
+
+**组合函数为每层提供调用下一层的 `next`，并返回覆盖整条执行链的 Promise。** 应校验输入是函数数组，空数组可以正常完成；每次请求建立独立执行状态，同步抛错与返回 Promise 的拒绝都向上传播。
+
+同一层重复调用 `next()` 应拒绝，避免下游执行两次。中间件主动不调用 `next()` 时允许提前结束；调用者丢弃的 Promise 不能由组合函数自动找回。验证时至少覆盖顺序、短路、同步异常、异步拒绝、重复 `next()` 和并发请求。
+
+</details>
+
+### 7.4 Express 4 和 Express 5 怎样处理 async 函数的错误？ {#async-errors}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：Promise 返回值、错误转交和版本边界。
+
+**相关内容**：[Express 4 与 Express 5 的区别](#express-4-与-express-5-的区别)。
+
+<details>
+<summary>参考回答</summary>
+
+**Express 4 需要显式把异步拒绝交给 `next`；Express 5 会自动把处理函数返回 Promise 的拒绝交给 `next`。** Express 4 可使用 `Promise.resolve().then(() => handler(...)).catch(next)` 形式的包装。
+
+Express 5 仍不能自动处理未返回的 Promise 或独立定时器中的抛错，也没有改变 `next()` 的返回语义。错误处理函数保留四个参数，并注册在相关路由之后。
+
+</details>
+
+### 7.5 为什么不能用模块级变量保存当前请求的用户？ {#request-state}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：进程内共享状态、请求交错和上下文隔离。
+
+**相关内容**：[请求状态与输入校验](#请求状态与输入校验)。
+
+<details>
+<summary>参考回答</summary>
+
+**模块级变量会被同一进程中的请求共享，一个请求等待时另一个请求可能覆盖它。** JavaScript 主线程一次只执行一段代码，不代表整次异步请求独占线程。
+
+应把经过认证的身份保存在当前请求的 `ctx.state` 或 `res.locals` 等对象中。进程级缓存需要按用户或资源正确分键，并单独执行权限判断。
+
+</details>
+
+### 7.6 JSON 解析、参数校验和认证中间件应该怎样安排？ {#input-order}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**题型**：综合题
+
+**考察重点**：数据依赖、输入信任、资源限制和业务副作用。
+
+**相关内容**：[请求处理链](#请求处理链)、[请求状态与输入校验](#请求状态与输入校验)。
+
+<details>
+<summary>参考回答</summary>
+
+**按实际依赖排序：读取解析结果前先完成解析，依赖身份的授权前先完成认证，业务副作用前先完成必要校验与授权。** 请求体解析要限制大小并检查内容类型；解析得到对象后仍要验证字段类型、长度和业务约束。
+
+请求头认证可以早于大请求体解析；原始请求体签名验证则需要保留原始字节。不存在适合所有接口的固定顺序，应针对这些依赖写集成测试。
+
+</details>
+
+### 7.7 响应已经开始发送后，错误中间件还能返回统一 JSON 吗？ {#response-boundary}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：响应头提交、重复写入和异步错误边界。
+
+**相关内容**：[Koa 的错误边界](#koa-的错误边界)、[响应开始后的限制](#响应开始后的限制)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能保证；响应头或部分正文已经发出后，无法撤回这些字节再发送另一套完整响应。** Express 中检查 `res.headersSent`，已经发送时继续交给后续错误处理或默认处理器；必要时结束异常连接并记录错误。
+
+应在发送前尽量完成可预先完成的校验，发送后避免重复写响应。`finish` 仅表示服务端向底层系统交付完成，不证明客户端读完；独立异步任务的错误也要接入自己的错误处理。
+
+</details>
+
+### 7.8 Express 和 Egg 有什么区别？ {#express-egg}
+
+**考察重点**：执行模型、框架职责和应用组织。
+
+**相关内容**：[Express、Koa 与 Egg](#express-koa-与-egg)。
+
+<details>
+<summary>参考回答</summary>
+
+**Express 提供较轻的路由与中间件基础；Egg 在 Koa 的上下文和中间件模型上，增加配置、目录约定、扩展和插件等应用组织能力。** Express 使用 `req`、`res`、`next` 分发；Egg 所基于的 Koa 模型支持通过 `await next()` 进行前后处理。
+
+选择需要结合现有项目与协作方式：较轻的基础带来自由组合，也需要自行建立约定；更多约定可以统一模块接入方式，同时需要理解框架的装配和生命周期。不能仅凭“轻”或“企业级”判断性能与适用性。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [Express：Using middleware](https://expressjs.com/en/guide/using-middleware/)
+- [Express：Error handling](https://expressjs.com/en/guide/error-handling/)
+- [Express：Migrating to Express 5](https://expressjs.com/en/guide/migrating-5/)
+- [Express 4：express.json](https://expressjs.com/en/4x/api/express/)
+- [Express 4.22.2：Router Layer](https://github.com/expressjs/express/blob/v4.22.2/lib/router/layer.js)
+- [Koa 2.16.1：Middleware and Context](https://github.com/koajs/koa/blob/v2.16.1/Readme.md)
+- [Koa 2.16.1：Application](https://github.com/koajs/koa/blob/v2.16.1/lib/application.js)
+- [Koa 2.16.1：Error handling](https://github.com/koajs/koa/blob/v2.16.1/docs/error-handling.md)
+- [koa-compose 4.1.0](https://github.com/koajs/compose/blob/4.1.0/index.js)
+- [Egg：Egg and Koa](https://eggjs.org/intro/egg-and-koa)
+- [Node.js 22：HTTP](https://nodejs.org/docs/latest-v22.x/api/http.html)

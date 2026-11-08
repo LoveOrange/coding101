@@ -1,0 +1,293 @@
+---
+sidebar_position: 11
+knowledge:
+  id: tools-and-frameworks.testing.ui-automation
+  type: concept
+description: "讲解 Web UI 自动化的定位、条件等待、浏览器会话隔离与失败追踪，用 Playwright 可运行示例说明真实可见结果和测试替身的边界。"
+keywords: [Web UI 自动化, Playwright, Selenium, 元素定位, 条件等待, 浏览器上下文]
+---
+
+# Web UI 自动化测试
+
+**Web UI 自动化测试**驱动浏览器执行用户操作，并核对页面可见行为及其关联结果。输入标题后点击保存，按钮能被点击只是过程；正确标题是否显示、错误是否提示、页面是否进入预期状态，才是需要验证的行为。
+
+浏览器页面会异步更新，定位和操作又依赖 DOM 与交互条件。稳定的自动化因此需要可靠定位、明确等待目标、独立会话和可追溯证据，不能靠给每一步增加固定睡眠来解决所有失败。
+
+## 1. 面试核心 {#core}
+
+- UI 自动化应围绕**明确的用户流程和可见结果**组织，输入、操作和断言缺一不可。接口层和组件层的规则检查可以承担更细的覆盖。[卡](#ui-workflow)
+- 定位要表达稳定语义并限制作用范围，**CSS 或 XPath 的语法选择本身不能保证健壮性**。长结构路径、动态类名和模糊文本都可能失效。[卡](#locator-strategy)
+- 元素找不到时先核对页面、会话、frame、定位与加载状态，**不要把所有失败都归因于等待不够**。[卡](#element-not-found)
+- 自动等待操作条件与等待业务结果是两件事。**按钮可点击，不代表点击后的保存已经完成**。[卡](#waiting-conditions)
+- 浏览器上下文隔离 Cookie 等浏览器状态，**不能隔离服务端共享账号、订单和配额**。[卡](#context-isolation)
+- 不稳定失败需要追踪时序、网络、页面和数据证据，**重试后通过仍应保留首次失败**，无限重试不能证明可靠。[卡](#flaky-ui)
+- 替换网络响应可以稳定验证页面分支，但**不能同时声称真实服务集成已经通过**。[卡](#network-double-boundary)
+
+## 2. 流程与定位 {#流程与定位}
+
+先选择需要浏览器证据的流程，例如用户能否填写、提交并看见保存结果。大量参数校验可以放在 [接口测试](api-testing.mdx)，组件内部的事件和状态则由 [前端组件测试](../frontend-testing/component-testing.mdx)验证，浏览器自动化保留关键用户路径。
+
+**定位器**描述怎样在当前页面找到目标元素。Playwright 的定位器在操作时重新解析目标，适合处理页面重新渲染后的元素；Selenium 保存的元素引用在 DOM 节点被替换后可能失效，需要按条件重新查找。
+
+| 定位依据 | 适合表达 | 风险 |
+| --- | --- | --- |
+| 角色与可访问名称 | “保存”按钮、命名输入框 | 同名控件需缩小到对应区域 |
+| 关联 label | 用户实际识别的表单项 | 页面缺少正确标签关联时无法准确定位 |
+| 稳定测试属性 | 没有清晰用户语义的组件 | 需要作为约定维护，不能随样式随机变化 |
+| CSS | 属性和层级关系明确的节点 | 动态类名、`nth-child` 和长路径易受结构变化影响 |
+| XPath | 明确的文档关系或文本条件 | 绝对路径和过宽匹配同样脆弱 |
+
+例如页面里有多个“删除”按钮，应先定位目标文章所在行，再定位行内按钮。直接取第一个匹配元素虽然能消除多匹配错误，却可能删除错误对象。
+
+可访问名称的来由见 [HTML 语义与可访问性](../../frontend/html/semantics-accessibility.mdx)。采用角色定位也不能替代完整可访问性检查，它只是让这条测试依赖更接近用户识别方式的语义。
+
+## 3. 操作等待与结果等待 {#操作等待与结果等待}
+
+Playwright 对点击会等待目标满足相应操作条件，例如匹配唯一元素、可见、稳定、可接收事件且启用。条件在超时内无法满足时，操作失败，而不是无条件继续下一步。
+
+操作完成后，页面可能还在等待网络、处理数据或重新渲染。因此需要对业务结果使用可重试断言，例如等待状态区域出现“已保存”，而不是点击成功就结束。
+
+固定睡眠的问题是等待时间和实际条件脱节：服务快时浪费时间，服务慢时仍然过早检查。等待整个页面“网络空闲”也未必对应目标业务完成，长连接或后台请求可能持续存在。
+
+Selenium 中可以用显式等待表达“某元素出现并可操作”等条件。隐式等待主要影响元素查找，不自动覆盖任意业务状态；混用隐式和显式等待可能让实际等待时间难以预测，应统一等待策略。
+
+如果元素被遮挡，不应默认使用强制点击绕过检查。遮挡可能正是用户无法操作的产品问题；先确认期望交互，再决定是否需要调整定位或准备条件。
+
+## 4. 可运行的异步页面示例 {#可运行的异步页面示例}
+
+下面的本地页面在点击后延迟更新状态，模拟异步 UI 更新。它没有后端保存操作，因此测试只验证表单交互和展示结果。
+
+保存为 `note-form.html`：
+
+```html
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<title>笔记示例</title>
+<label for="title">标题</label>
+<input id="title">
+<button id="save">保存</button>
+<p role="status" aria-live="polite"></p>
+<script>
+  const input = document.querySelector("#title");
+  const save = document.querySelector("#save");
+  const status = document.querySelector('[role="status"]');
+  save.addEventListener("click", () => {
+    const title = input.value.trim();
+    save.disabled = true;
+    setTimeout(() => {
+      status.textContent = title ? `已保存：${title}` : "标题不能为空";
+      save.disabled = false;
+    }, 150);
+  });
+</script>
+</html>
+```
+
+在安装了 Playwright 及其 Chromium 的 Python 环境中，将下面脚本保存到同一目录并运行。示例使用 Playwright 1.56 的同步 API：
+
+```python
+from pathlib import Path
+from playwright.sync_api import expect, sync_playwright
+
+with sync_playwright() as playwright:
+    browser = playwright.chromium.launch()
+    context = browser.new_context()
+    context.tracing.start(screenshots=True, snapshots=True, sources=True)
+    try:
+        page = context.new_page()
+        page.goto(Path("note-form.html").resolve().as_uri())
+        page.get_by_label("标题").fill("回归检查")
+        page.get_by_role("button", name="保存", exact=True).click()
+        expect(page.get_by_role("status")).to_have_text("已保存：回归检查")
+        print("visible result verified")
+    finally:
+        context.tracing.stop(path="trace.zip")
+        context.close()
+        browser.close()
+```
+
+脚本应输出 `visible result verified`，并生成 `trace.zip`。`expect(...).to_have_text(...)` 等待实际状态文本符合期望，所以测试不需要猜测页面的 150 毫秒延迟再写一条固定睡眠。
+
+可把页面实际输出临时改成其他文字，确认断言会失败；失败时仍生成 trace，便于查看操作与页面状态。不要同步修改期望来让错误输出通过，期望应来自已确认规则。
+
+同一个页面还应有空标题等独立用例。框架化时，可以通过 [pytest fixture](../../basic-knowledge/python/quality/pytest.mdx#fixture-与依赖)管理浏览器和上下文，再为每条测试分别建立数据，避免沿用上一个测试留下的状态。
+
+## 5. 浏览器上下文与数据 {#浏览器上下文与数据}
+
+**浏览器上下文**是相互隔离的浏览器会话环境。Playwright 可以在同一个浏览器进程中建立多个上下文，让它们拥有独立 Cookie 和存储状态。
+
+下面的独立脚本只检查 Cookie 隔离，不访问外部站点：
+
+```python
+from playwright.sync_api import sync_playwright
+
+with sync_playwright() as playwright:
+    browser = playwright.chromium.launch()
+    first = browser.new_context()
+    second = browser.new_context()
+    try:
+        first.add_cookies([
+            {"name": "session", "value": "user-a", "url": "https://example.test/"}
+        ])
+        assert first.cookies("https://example.test/")[0]["value"] == "user-a"
+        assert second.cookies("https://example.test/") == []
+        print("cookies isolated")
+    finally:
+        first.close()
+        second.close()
+        browser.close()
+```
+
+输出 `cookies isolated`。如果两个上下文都登录同一个服务端账号，它们仍可能共同修改该账号余额或配额。浏览器隔离与[测试数据管理](test-data-management.mdx#并行隔离与运行标识)必须一起设计。
+
+复用已登录的存储状态可以减少登录成本，但快照中的身份凭证需要按测试秘密处理；加载同一快照也不等于得到不同服务端用户。普通新上下文不会自动继承另一个上下文的登录态，是否加载状态由测试明确决定。
+
+## 6. 失败定位与维护 {#失败定位与维护}
+
+元素找不到时，先确认失败发生在哪一层：
+
+| 证据 | 需要核对 |
+| --- | --- |
+| 当前 URL 与页面截图 | 是否到了预期页面，是否被重定向到登录或错误页 |
+| DOM 与匹配数量 | 定位是否过时、元素是否尚未创建、是否匹配多个 |
+| 页面与 frame | 是否进入了新窗口或 iframe，当前查找上下文是否正确 |
+| 可操作性 | 是否被遮挡、禁用、隐藏或仍在动画中 |
+| 网络与控制台 | 是否因请求失败或脚本异常没有渲染目标 |
+| 账号和测试数据 | 是否具备展示该控件的身份与状态 |
+
+trace 可以关联动作、DOM 快照、网络和时间信息；截图只记录某一时刻，无法单独解释此前发生了什么。测试结果还应带环境、版本、浏览器配置和数据标识，便于重新建立条件。
+
+不稳定失败要保留首次失败、重试次数和后续结果。重试可以帮助收集证据或应对明确可重试的暂时条件，但持续重试直到通过，会掩盖竞态、环境问题或真实缺陷。
+
+页面变化时，可以把重复定位和业务操作集中在页面对象中，例如 `fill_title`、`save`。它减少重复维护，但不应把所有断言和异常都藏进一个庞大的基类。测试仍应看得出用户做了什么、在验证什么。
+
+## 7. 网络替身与覆盖边界 {#网络替身与覆盖边界}
+
+替换网络响应可以稳定构造加载失败、空列表和长时间等待等页面状态。此时验证的是页面如何处理这份响应，不是服务端真的能够返回正确数据。
+
+需要真实集成证据时，应保留连接实际测试服务的关键链路。替身测试与真实集成测试可以共同存在，但报告应标明依赖是被替换还是实际调用；通用原则见 [测试替身](../../basic-knowledge/java/quality/test-doubles-mock-stub-boundaries.mdx)。
+
+浏览器自动化的单次耗时还包含启动、导航、网络、等待和页面操作。若关注某一环节性能，应分段测量；不能把整套脚本运行时间直接称为页面加载性能，也不能仅凭模拟设备参数就认定已覆盖真实移动设备。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 怎样组织一条能重复执行的 Web UI 自动化流程？ {#ui-workflow}
+
+**考察重点**：用户路径、准备、定位、断言与资源清理。
+
+**相关内容**：[流程与定位](#流程与定位)、[可运行的异步页面示例](#可运行的异步页面示例)。
+
+<details>
+<summary>参考回答</summary>
+
+**先定义用户流程的起始状态和可见结果，再建立独立会话与数据，执行定位、输入和操作，最后用明确条件断言结果。** 浏览器和数据应有对应清理，失败保留截图、trace 及关联标识。
+
+选择关键用户路径，而不是把所有接口参数都通过页面穷举。组件与接口测试承担细粒度规则，UI 流程补用户交互和真实协作证据。
+
+</details>
+
+### 8.2 CSS 与 XPath 定位有什么区别，怎样提高定位稳定性？ {#locator-strategy}
+
+**考察重点**：查询表达能力、稳定语义与匹配范围。
+
+**相关内容**：[流程与定位](#流程与定位)。
+
+<details>
+<summary>参考回答</summary>
+
+**CSS 擅长按元素属性和样式选择关系定位，XPath 可以表达文档路径及相应关系；两者都可能写得稳定或脆弱。** 不能只凭选择其中一种就保证用例健壮。
+
+优先使用稳定身份、角色和标签等语义，缩小到目标区域，避免长绝对路径、动态类名和靠位置猜元素。出现多匹配时修正定位含义，不要默认取第一个。
+
+</details>
+
+### 8.3 Selenium 或 Playwright 找不到元素时，应怎样排查？ {#element-not-found}
+
+**考察重点**：页面状态、定位上下文、时序与依赖故障。
+
+**相关内容**：[失败定位与维护](#失败定位与维护)。
+
+<details>
+<summary>参考回答</summary>
+
+**先确认当前页面和身份正确，再检查 DOM、匹配规则、frame 或窗口以及加载条件。** 页面跳到登录页、依赖请求失败或控件被条件隐藏，都不是延长等待就能解决的问题。
+
+结合截图、DOM、网络、控制台和 trace 判断原因。节点被重建时重新定位；尚未满足明确条件时使用条件等待，保留超时证据。
+
+</details>
+
+### 8.4 自动等待已经让按钮点击成功，为什么还要等待结果？ {#waiting-conditions}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：可操作性与异步业务完成的区别。
+
+**相关内容**：[操作等待与结果等待](#操作等待与结果等待)。
+
+<details>
+<summary>参考回答</summary>
+
+**点击前的自动等待只确认操作条件，点击后的请求、计算和渲染可能尚未完成。** 应等待预期文本、目标状态或其他与业务完成对应的条件。
+
+固定睡眠不与条件绑定，网络空闲也不一定代表业务完成。等待应有明确目标和超时，不能无期限重试。
+
+</details>
+
+### 8.5 不同浏览器上下文能否保证用例完全隔离？ {#context-isolation}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：浏览器状态和服务端资源边界。
+
+**相关内容**：[浏览器上下文与数据](#浏览器上下文与数据)。
+
+<details>
+<summary>参考回答</summary>
+
+**上下文可以隔离 Cookie 等浏览器状态，但不能自动隔离服务端共享资源。** 两个上下文登录同一账号，仍可能共同修改余额、配额或订单。
+
+还需为测试分配独立数据范围并定向查询清理。复用登录快照也不会生成新的服务端身份，应明确快照和账号的共享关系。
+
+</details>
+
+### 8.6 UI 自动化偶尔失败、重试后通过，应怎样处理？ {#flaky-ui}
+
+**考察重点**：不稳定性的证据、原因与重试边界。
+
+**相关内容**：[失败定位与维护](#失败定位与维护)、[网络替身与覆盖边界](#网络替身与覆盖边界)。
+
+<details>
+<summary>参考回答</summary>
+
+**保留首次失败与重试记录，按时序、定位、网络、环境和共享数据逐项找原因。** 重试后通过不能把原失败变成不存在，也不能自动认定是测试脚本问题。
+
+用明确条件替代猜测等待，修复数据污染和定位依赖；需要暂时隔离不稳定用例时保留范围、原因和恢复条件。执行耗时要分解，避免用无限重试或整体加长超时掩盖故障。
+
+</details>
+
+### 8.7 替换所有后端响应后，页面测试通过能证明什么？ {#network-double-boundary}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：替身提供的输入证据与真实集成范围。
+
+**相关内容**：[网络替身与覆盖边界](#网络替身与覆盖边界)。
+
+<details>
+<summary>参考回答</summary>
+
+**只能证明页面在提供的响应条件下完成了被断言的行为，不能证明真实服务集成正确。** 替换适合稳定构造错误、延迟和边界响应。
+
+还需保留关键真实集成路径，检查协议、认证和实际数据协作。报告应区分被替换依赖和实际调用的依赖，避免扩大结论。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+
+- [Playwright：Locators](https://playwright.dev/python/docs/locators)
+- [Playwright：Auto-waiting](https://playwright.dev/python/docs/actionability)
+- [Playwright：Isolation](https://playwright.dev/python/docs/browser-contexts)
+- [Playwright：Trace viewer](https://playwright.dev/python/docs/trace-viewer)
+- [Selenium：Waiting Strategies](https://www.selenium.dev/documentation/webdriver/waits/)
+- [Selenium：Locator strategies](https://www.selenium.dev/documentation/webdriver/elements/locators/)

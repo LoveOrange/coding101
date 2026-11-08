@@ -1,0 +1,275 @@
+---
+sidebar_position: 6
+knowledge:
+  id: basic-knowledge.python.language.closures-decorators
+  type: concept
+description: "讲解 Python 闭包保留外层绑定、循环中的延迟查找、函数装饰器的等价展开、参数转发和包装顺序，说明 wraps 的作用及保持返回值和异常语义的重要性。"
+keywords: [Python 闭包, 装饰器, functools.wraps, 参数转发, 函数包装]
+---
+
+# Python 闭包与装饰器
+
+**闭包**让一个函数在外层函数调用结束后，仍能访问它用到的外层绑定。**装饰器**在对象定义完成时接收这个对象，并返回用于替换它的对象；在函数场景中，常用包装函数加入日志、计时或检查。
+
+两者经常一起使用：包装函数通过闭包记住被包装函数，再在每次调用时转发参数。但闭包不等于装饰器，装饰器也不一定必须由嵌套函数实现。参数绑定的前置规则见 [Python 函数参数与作用域](./functions-scope.mdx)。
+
+## 1. 面试核心 {#core}
+
+- 闭包保存对外层绑定的访问能力，**默认不是把每个值冻结成定义时的快照**。循环中创建的多个函数可能共享同一个最终绑定。[卡](#closure-binding)
+- `@decorate` 在函数定义时应用，函数场景可以理解为 **`func = decorate(func)`**。包装函数体则通常在后续调用时才执行。[卡](#decorator-mechanism)
+- 通用包装需要正确转发位置和关键字实参，**保留返回值并让异常按原约定传播**，否则会改变调用方能观察到的行为。[卡](#forwarding-return)
+- `functools.wraps` 复制名称、文档等元数据并设置 `__wrapped__`；**它不替包装器完成参数校验、重试或错误处理**。[卡](#wrapper-metadata)
+- 多个装饰器按从下到上应用，**调用时先进入最外层包装**。带参数装饰器通常先调用工厂，再把返回的装饰器用于原函数。[卡](#decorator-order)
+
+## 2. 闭包中的状态 {#闭包中的状态}
+
+内部函数引用外层函数的局部名称时，这些绑定可以随返回的函数继续存在。
+
+```python
+def make_prefixer(prefix):
+    def format_name(name):
+        return prefix + name
+    return format_name
+
+format_api = make_prefixer("api:")
+format_ui = make_prefixer("ui:")
+print(format_api("login"))  # api:login
+print(format_ui("login"))   # ui:login
+```
+
+两次 `make_prefixer` 调用分别建立自己的 `prefix` 绑定。外层调用结束后，两个内部函数仍能访问各自的前缀，不需要把状态放到模块全局变量里。
+
+如果要在内部函数中重新绑定外层变量，需要 `nonlocal`。如果只是修改外层列表里的内容，则是修改对象，是否需要声明仍按名称绑定规则判断。
+
+### 2.1 循环中的延迟查找 {#循环中的延迟查找}
+
+闭包访问的是绑定，调用时才读取当前值。下面三个函数共享一次外层调用里的 `index`：
+
+```python
+def make_readers():
+    readers = []
+    for index in range(3):
+        readers.append(lambda: index)
+    return readers
+
+print([read() for read in make_readers()])  # [2, 2, 2]
+```
+
+循环结束后 `index` 是 `2`，三个函数此时才执行读取，所以得到相同结果。需要每个函数保存当前索引，可以利用默认参数在函数创建时求值：
+
+```python
+def make_readers():
+    return [lambda index=index: index for index in range(3)]
+
+print([read() for read in make_readers()])  # [0, 1, 2]
+```
+
+右侧 `index` 在创建每个函数时求值，成为各自的默认实参。它不是改变闭包的查找规则，而是让函数使用自己的参数绑定。另一种方式是额外调用一个工厂函数，为每个值创建独立的外层作用域。
+
+## 3. 函数装饰器 {#函数装饰器}
+
+函数装饰器在不改动原函数主体的前提下，为它增加一层调用行为。
+
+```python
+from functools import wraps
+
+def trace(func):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        print("before")
+        try:
+            return func(*args, **kwargs)
+        finally:
+            print("after")
+    return wrapper
+
+@trace
+def add(left, right):
+    return left + right
+
+print(add(2, right=3))
+# before
+# after
+# 5
+```
+
+`trace` 接收原来的 `add`，返回 `wrapper`；名称 `add` 随后引用包装函数。包装函数通过闭包保留对原函数的引用，所以 `func(*args, **kwargs)` 可以继续调用原实现。
+
+不使用 `@` 时，这段定义可以写成先定义 `add`，再执行 `add = trace(add)`。装饰器应用发生在定义阶段，并非每次调用 `add` 都重新执行一遍 `trace`。
+
+`finally` 让收尾日志也覆盖原函数抛异常的情况，但没有捕获或替换原异常。`return func(...)` 则确保正常调用仍返回原结果。如果漏掉 `return`，包装器默认返回 `None`，调用方就观察不到原来的和。
+
+## 4. 元数据与包装边界 {#元数据与包装边界}
+
+包装函数默认有自己的名称和文档。只返回一个名叫 `wrapper` 的函数，日志或测试报告可能把所有被包装函数都显示成相同名字。
+
+`functools.wraps(func)` 为包装器保留原函数的常用元数据，并通过 `__wrapped__` 指向被包装函数，便于检查和解包。
+
+```python
+from functools import wraps
+
+def preserve(func):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        return func(*args, **kwargs)
+    return wrapper
+
+@preserve
+def check_status(code):
+    """Check a response code."""
+    return code == 200
+
+print(check_status.__name__)                 # check_status
+print(check_status.__doc__)                  # Check a response code.
+print(check_status.__wrapped__(200))         # True
+```
+
+元数据被保留，不表示包装器已经自动复制全部调用行为。比如同步包装器返回协程对象，与真正的 `async def` 包装器在执行时机上不同；生成器函数、方法绑定与上下文管理器也有相应协议。先保证当前函数类型的语义，再扩展包装范围。
+
+也不能因为装饰器容易统一入口，就默认给所有请求添加重试。重复执行可能产生重复写入，是否可以重试取决于被包装操作的幂等性和错误类型。
+
+## 5. 带参数装饰器与顺序 {#带参数装饰器与顺序}
+
+带参数装饰器通常有三层：工厂接收配置，装饰器接收函数，包装函数接收实际调用参数。
+
+```python
+from functools import wraps
+
+def labeled(label):
+    def decorate(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            print(label)
+            return func(*args, **kwargs)
+        return wrapper
+    return decorate
+
+@labeled("api-check")
+def check_status(code):
+    return code == 200
+
+print(check_status(200))
+# api-check
+# True
+```
+
+定义阶段先执行 `labeled("api-check")` 得到 `decorate`，再执行 `decorate(check_status)` 得到包装函数。之后调用 `check_status(200)` 才进入 `wrapper`。
+
+多个装饰器的关系可以直接展开：
+
+```python
+events = []
+
+def layer(name):
+    def decorate(func):
+        def wrapper():
+            events.append(name)
+            return func()
+        return wrapper
+    return decorate
+
+outer = layer("outer")
+inner = layer("inner")
+
+@outer
+@inner
+def task():
+    events.append("task")
+
+task()
+print(events)  # ['outer', 'inner', 'task']
+```
+
+其结构等价于 `task = outer(inner(task))`。示例中调用时先进入外层 `outer`，再进入 `inner`，最后到原函数，返回方向相反。
+
+顺序会影响实际观察范围。例如“计时包装在重试之外”通常统计整个尝试过程，计时放在重试里面则分别统计每次尝试；不能仅因为两个装饰器都能单独工作，就认为交换顺序没有影响。
+
+## 6. 面试题 {#面试题}
+
+### 6.1 Python 装饰器怎样增加函数行为，什么时候执行装饰过程？ {#decorator-mechanism}
+
+**考察重点**：函数作为对象、定义时应用与调用时包装。
+
+**相关内容**：[函数装饰器](#函数装饰器)。
+
+<details>
+<summary>参考回答</summary>
+
+**装饰器接收被装饰函数，并返回替代对象；函数包装场景中，`@decorate` 可理解为定义后执行 `func = decorate(func)`。** 返回的包装函数通过闭包记住原函数，在调用前后增加操作。
+
+装饰器在函数定义执行时应用，包装函数通常在之后每次调用时执行。二者的执行时机不同。
+
+</details>
+
+### 6.2 包装函数怎样接收不同参数，并保留原函数返回值？ {#forwarding-return}
+
+**考察重点**：参数收集与解包、返回值和异常传播。
+
+**相关内容**：[函数装饰器](#函数装饰器)、[元数据与包装边界](#元数据与包装边界)。
+
+<details>
+<summary>参考回答</summary>
+
+**可以用 `*args, **kwargs` 接收调用，再用 `return func(*args, **kwargs)` 转发并返回结果。** 漏掉 `return` 会让调用方拿到 `None`；捕获异常后不再抛出，也会改变失败语义。
+
+需要在失败时同样收尾，可使用 `try/finally`。同时使用 `wraps` 保留名称和文档，但具体参数限制仍由原函数或显式检查执行。
+
+</details>
+
+### 6.3 为什么循环里创建的多个闭包可能都读到最后一个值？ {#closure-binding}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：共享外层绑定、调用时读取与定义时求值。
+
+**相关内容**：[循环中的延迟查找](#循环中的延迟查找)。
+
+<details>
+<summary>参考回答</summary>
+
+**这些函数共享同一个外层名称绑定，调用时才读取其当前值；循环结束后这个绑定已经是最后一个值。**
+
+可以使用默认参数在创建函数时保存当前对象，例如 `lambda index=index: index`，或者通过工厂函数为每个对象建立独立作用域。默认参数方案改变的是值的保存方式，并没有修改闭包本身的查找规则。
+
+</details>
+
+### 6.4 functools.wraps 解决什么问题，不能代替什么？ {#wrapper-metadata}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：函数元数据与运行语义的区别。
+
+**相关内容**：[元数据与包装边界](#元数据与包装边界)。
+
+<details>
+<summary>参考回答</summary>
+
+**`wraps` 保留原函数的常用元数据，并用 `__wrapped__` 建立被包装关系，便于日志、文档和检查工具识别原函数。**
+
+它不会替包装器正确转发参数、返回结果、等待协程或处理异常。包装器仍要根据原函数协议实现相应行为。
+
+</details>
+
+### 6.5 多个装饰器如何应用，调用时谁先执行？ {#decorator-order}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：从下到上的装饰与从外到内的调用。
+
+**相关内容**：[带参数装饰器与顺序](#带参数装饰器与顺序)。
+
+<details>
+<summary>参考回答</summary>
+
+**`@outer` 在上、`@inner` 在下时，应用结果是 `outer(inner(func))`。** 先把原函数交给 `inner`，再把它的返回值交给 `outer`。
+
+如果两者都返回调用包装器，运行时先进入 `outer` 的包装，再进入 `inner`，然后调用原函数。顺序改变可能影响计时、缓存或重试的作用范围。
+
+</details>
+
+## 7. 参考资料 {#参考资料}
+
+- [Python 3.12：Function definitions 与装饰器](https://docs.python.org/3.12/reference/compound_stmts.html#function-definitions)
+- [Python 3.12：Naming and binding](https://docs.python.org/3.12/reference/executionmodel.html#naming-and-binding)
+- [Python Programming FAQ：循环创建函数时的绑定](https://docs.python.org/3.12/faq/programming.html#why-do-lambdas-defined-in-a-loop-with-different-values-all-return-the-same-result)
+- [Python 3.12 functools：wraps](https://docs.python.org/3.12/library/functools.html#functools.wraps)

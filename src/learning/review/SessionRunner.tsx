@@ -4,7 +4,8 @@ import Head from '@docusaurus/Head';
 import Link from '@docusaurus/Link';
 import {useHistory} from '@docusaurus/router';
 
-import {RATING_LABELS} from '../content';
+import {RATING_LABELS, useActiveRoleId} from '../content';
+import {withRole} from '../roles';
 import {accessOf, learnerActions, nextInterval, useLearner} from '../store';
 import type {CardDetail, Rating, ReviewSession} from '../types';
 import {Dialog, formatInterval, Kbd, Segments} from '../ui';
@@ -33,6 +34,7 @@ function formatClock(seconds: number) {
 
 export function SessionRunner({sessionId, details}: {sessionId: string; details: Record<string, CardDetail>}) {
   const learner = useLearner();
+  const roleId = useActiveRoleId();
   const history = useHistory();
   const session = learner.sessions.find((item) => item.id === sessionId);
   const answered = new Set(session?.answers.map((answer) => answer.cardId));
@@ -62,8 +64,8 @@ export function SessionRunner({sessionId, details}: {sessionId: string; details:
   const finish = useCallback(() => {
     if (!session) return;
     learnerActions.finishSession(session.id);
-    history.replace(reportHref(session));
-  }, [history, session]);
+    history.replace(withRole(reportHref(session), roleId));
+  }, [history, session, roleId]);
 
   const advance = useCallback(() => {
     if (!session) return;

@@ -64,6 +64,8 @@ B 也不能靠猜测解决问题。A 写入的是 1 还是 2，对 B 来说没�
 
 CP、AP 只能粗略描述这种取舍。落实到接口时，要写清分区期间会返回成功、陈旧值、冲突还是错误。
 
+也不能看到异步复制，就把整个产品直接归为 AP。例如 Redis Cluster 采用异步复制，故障切换可能丢失已经确认的写入；少数派一侧又会在检测到分区后停止服务。因此，它既不能仅凭异步复制就满足 CAP 的全节点可用性，也不能凭拒绝少数派写入就证明线性一致性。分析时要结合[复制与故障切换](../../basic-knowledge/nosql/redis/high-availability.mdx)，说明讨论的是哪种部署和哪项操作。
+
 ### 6.1 多数派服务与请求范围 {#多数派服务与请求范围}
 
 多数派能继续服务，不代表全系统满足 CAP 的 A。三节点分成两节点和单节点两个分区后，多数侧可以继续确认写入；但单节点侧如果仍能收到请求却拒绝处理，就不满足“每个非故障节点”的要求。
@@ -73,6 +75,10 @@ CP、AP 只能粗略描述这种取舍。落实到接口时，要写清分区期
 ## 7. CAP 与一致性模型 {#cap-与一致性模型}
 
 CAP 的 C 与 ACID 的一致性说的是不同问题。前者约束读写操作能观察到的结果，采用线性一致性定义；后者指事务维护业务约束。其他可见性保证的区别见[一致性模型](./consistency-models-quorum-linearizability.mdx)。
+
+**BASE** 是基本可用（Basically Available）、软状态（Soft state）和最终一致（Eventually consistent）的概括。它描述一种工程思路：允许局部故障时保留部分服务，允许副本暂时不同，再通过异步传播、冲突处理和补偿收敛。软状态表示中间状态可能随着传播或过期等过程变化，不要求每次读取都立即看到一致结果。
+
+BASE 不是另一条与 CAP 对等的定理，也不意味着可以不要本地 ACID 事务。订单与待发送事件仍可在本地事务中一起保存，远端投影稍后更新。要声称最终一致，还必须说明传播如何重试、冲突如何解决，以及没有新写入且故障恢复后为什么能够收敛；仅说「稍后同步」不构成保证。
 
 ## 8. 延迟与一致性 {#延迟与一致性}
 
@@ -135,3 +141,4 @@ CAP 的 C 与 ACID 的一致性说的是不同问题。前者约束读写操作�
 - [Gilbert 与 Lynch：Brewer's Conjecture and the Feasibility of Consistent, Available, Partition-Tolerant Web Services](https://www.comp.nus.edu.sg/~gilbert/pubs/BrewersConjecture-SigAct.pdf)
 - [Brewer：CAP Twelve Years Later](https://www.infoq.com/articles/cap-twelve-years-later-how-the-rules-have-changed/)
 - [Daniel Abadi：Consistency Tradeoffs in Modern Distributed Database System Design](https://www.cs.umd.edu/~abadi/papers/abadi-pacelc.pdf)
+- [Redis：Cluster Specification](https://redis.io/docs/latest/operate/oss_and_stack/reference/cluster-spec/)

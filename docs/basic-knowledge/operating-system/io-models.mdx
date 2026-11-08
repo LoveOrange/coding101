@@ -14,6 +14,7 @@ keywords: ["阻塞 I/O", "非阻塞 I/O", "同步异步 I/O", "socket 读写"]
 ## 1. 面试核心 {#core}
 
 - socket 没有数据可读时，阻塞读取会等待，非阻塞读取则以 `EAGAIN` 等错误返回，**由应用稍后重试**。[卡](#blocking-vs-nonblocking)
+- DMA 可以承担设备与内存之间的传输，但**请求管理、驱动与协议处理仍需要 CPU**；等待 I/O 的线程让出 CPU，不等于 I/O 不消耗 CPU。[卡](#io-cpu-dma)
 - **就绪通知后还要执行读写**；完成通知则交付此前已提交操作的结果，两者处在不同阶段。
 - 对正长度的 TCP `recv`，正数表示读到的字节数，**0 表示对端已关闭发送方向且数据已读完**，`EAGAIN` 只表示暂时没数据。[卡](#socket-read-results)
 - `send` 可能只接受一部分字节，应用要**保留尚未发送的部分**，等可写后继续发送。
@@ -27,6 +28,18 @@ keywords: ["阻塞 I/O", "非阻塞 I/O", "同步异步 I/O", "socket 读写"]
 非阻塞改变的是没数据时的行为。真正读到数据时，结果仍由本次系统调用返回，而且一次读取可能只拿到应用所需数据的一部分。
 
 TCP 的消息拆分由应用协议负责，见 [RPC](../network/rpc-serialization-netty-event-loop.mdx#半包与粘包)。
+
+### 2.1 CPU、DMA 与设备完成 {#cpu-dma与设备完成}
+
+**DMA**（Direct Memory Access，直接内存访问）让设备与主存之间的数据传输不必由 CPU 逐字搬运，但 I/O 的发起、驱动处理、协议解析和结果交付仍需要 CPU。把「设备传输阶段可以交给 DMA」说成「I/O 不需要 CPU」，会漏掉这些工作。
+
+以 Linux 上普通缓冲文件读取为例，页缓存命中时，可以直接从内存中的缓存取得数据，不一定触发磁盘读取；缓存未命中时，CPU 执行文件系统和驱动代码，准备请求与 DMA 缓冲区映射，设备再把数据传入内存。设备完成后，内核处理完成状态、更新缓存并使等待任务可以继续；普通 `read` 还要把结果交给用户缓冲区。数据搬运与线程等待是两个问题：线程等待设备时可以让出 CPU，CPU 仍可运行别的任务。
+
+典型网络接收则由网卡把收到的数据放入内存中的接收缓冲，CPU 执行驱动与协议栈代码，检查并把数据交给相应 socket，应用再通过 `recv` 取得数据。网络还涉及分组、协议状态与对端行为，不能把它简化成「读取某个磁盘偏移」；普通文件的页缓存与 socket 接收缓冲也不是同一种对象。
+
+**中断**用来通知 CPU 有设备事件需要处理；**轮询**则是 CPU 主动检查完成状态。实际系统可以组合两者，例如 Linux 网络 NAPI 可以先由中断触发，再批量轮询处理数据包。因此，不要把每个数据包都想成必然产生一次独立中断，也不要把 DMA 与中断当成互斥的两种 I/O 模型：前者负责传输，后者负责通知。
+
+上面是帮助理解职责的常见路径，不是所有设备都固定执行相同次数的复制。直接 I/O、内存映射、零拷贝或设备卸载会改变路径，但不会自动消除请求管理、完成处理和应用计算。磁盘和网络都可能使用 DMA；阻塞、非阻塞、就绪与完成仍应从应用所用接口判断。
 
 ## 3. 就绪与完成 {#就绪与完成}
 
@@ -128,6 +141,21 @@ socket 的非阻塞规则不能直接套用到普通文件。Linux 普通文件�
 
 </details>
 
+### 6.4 I/O 需要 CPU 吗，磁盘 I/O 与网络 I/O 的过程有什么不同？ {#io-cpu-dma}
+
+**考察重点**：请求管理、设备传输、完成通知与数据交付的职责。
+
+**相关内容**：[CPU、DMA 与设备完成](#cpu-dma与设备完成)、[等待数据与执行读取](#等待数据与执行读取)。
+
+<details>
+<summary>参考回答</summary>
+
+**I/O 需要 CPU；DMA 只减少设备与内存之间逐字搬运的 CPU 工作，不负责整个 I/O 流程。** CPU 仍要准备请求、运行驱动或协议栈、处理完成与错误，并把结果交给应用。等待设备的线程可以让出 CPU，不代表整个系统不再需要 CPU。
+
+缓冲文件读取先看页缓存，未命中时才需要后续设备读取；网络接收要经过网卡、驱动、协议栈和 socket 缓冲。两者都可能使用 DMA，也都可能结合中断或轮询处理完成。具体复制次数、通知方式和是否阻塞取决于接口、驱动及配置，不能仅凭「磁盘」或「网络」二选一判断。
+
+</details>
+
 ## 7. 参考资料 {#参考资料}
 
 - [Linux man-pages：recv](https://man7.org/linux/man-pages/man2/recv.2.html)
@@ -137,3 +165,6 @@ socket 的非阻塞规则不能直接套用到普通文件。Linux 普通文件�
 - [Linux man-pages：open(2)](https://man7.org/linux/man-pages/man2/open.2.html)
 - [Linux man-pages：io_uring(7)](https://man7.org/linux/man-pages/man7/io_uring.7.html)
 - [Boost.Asio：The Proactor Design Pattern](https://www.boost.org/doc/libs/latest/doc/html/boost_asio/overview/core/async.html)
+- [Linux Kernel：Dynamic DMA mapping Guide](https://www.kernel.org/doc/html/v6.6/core-api/dma-api-howto.html)
+- [Linux Kernel：NAPI](https://docs.kernel.org/networking/napi.html)
+- [OSTEP：I/O Devices](https://pages.cs.wisc.edu/~remzi/OSTEP/file-devices.pdf)

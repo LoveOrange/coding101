@@ -1,0 +1,507 @@
+---
+sidebar_position: 3
+knowledge:
+  id: basic-knowledge.nodejs.buffer-stream
+  type: concept
+description: "解释 Buffer 的字节与共享视图、Stream 的分块和背压，以及流的错误、结束、取消和内存边界。"
+keywords: ["Node.js", "Buffer", "Stream", "背压", "pipeline", "StringDecoder"]
+---
+
+# Buffer 与 Stream
+
+**Buffer** 用来表示字节序列，**Stream** 用来逐步传递和处理数据。文件读取、压缩、上传与下载可以把 Buffer 作为数据块交给 Stream，边读取边处理，不必先把全部内容放进一个大对象。
+
+流式处理的价值不只是“分成很多块”。如果生产者不断读取，而消费者处理得很慢，数据仍会在内存里积压；如果把每块都当成完整字符串或完整消息，还可能破坏内容。本文以 Node.js 22 为基线，示例使用 Node.js 22.16.0，重点解释字节边界、背压和资源生命周期。
+
+## 1. 面试核心 {#core}
+
+- Buffer 表示字节，字符串表示字符序列。**字节数取决于编码，不能用字符串的 `length` 直接代替传输字节数**；Buffer 也是 `Uint8Array` 的子类。[卡](#buffer)
+- `Buffer.from(buffer)` 复制字节，`subarray()` 创建共享视图。**视图的修改会影响原数据，创建 ArrayBuffer 视图时要保留 `byteOffset` 和长度**。[卡](#buffer-views)
+- 数据块边界不等于字符或业务消息边界。**跨块的 UTF-8 字节需要保留解码状态，不能逐块 `toString()` 后假定结果仍然正确**。[卡](#chunk-boundaries)
+- Node.js 的流包括 Readable、Writable、Duplex 和 Transform。**流把生产与消费连接起来，减少一次性持有全部数据的需要；它不自动消除业务代码里的累积缓存**。[卡](#stream-types)
+- 背压用于让较快的生产者等待较慢的消费者。**`write()` 返回 `false` 表示这块数据已接受，但应暂停后续写入并等待 `drain`；不是让调用方重写同一块**。[卡](#backpressure)
+- `highWaterMark` 是缓冲阈值。**它不是整个进程的内存上限；字节流、对象流和字符串解码后的计量方式也不同**。[卡](#memory-boundary)
+- `pipeline()` 协调背压、完成与错误传播，适合完整处理链。**`pipe()` 本身不等于完整的错误清理，`close` 也不等于成功完成**。[卡](#pipeline-errors)
+- 接收原始文件请求体时，可以让 **`req` 经过字节上限检查，再流式写入独立临时文件**。multipart 表单需要先解析，不能把表单协议字节当成文件内容。[卡](#node-file-upload)
+- 取消或失败后要终止相关流，并处理部分结果。**流关闭不会撤销已经写出的内容，`finish` 也不等于数据已持久化到物理存储**。[卡](#cancellation)
+
+## 2. Buffer 的字节语义 {#buffer的字节语义}
+
+### 2.1 字符串与编码 {#字符串与编码}
+
+字符需要通过编码变成字节，字节也需要按对应编码解释。Buffer 自己不记录“这些字节一定是 UTF-8 文本”，同一组字节还可以表示图片、压缩内容或协议字段。
+
+```js
+const text = '中文';
+const bytes = Buffer.from(text, 'utf8');
+console.log(text.length);                   // 2
+console.log(bytes.length);                  // 6
+console.log(bytes.toString('hex'));         // e4b8ade69687
+console.log(bytes.toString('utf8'));        // 中文
+console.log(Buffer.byteLength(text, 'utf8')); // 6
+```
+
+这里“中”的 UTF-8 字节为 `E4 B8 AD`，“文”为 `E6 96 87`。字符串 `length` 计算 UTF-16 码元数量；Buffer 的 `length` 计算字节数量。即使只讨论字符，某些字符也不只占一个 UTF-16 码元，因此不能把字符串长度、字符数量和字节数混成一个概念。
+
+创建需要初始化的缓冲区时，`Buffer.alloc(size)` 会把内容初始化为零。`Buffer.allocUnsafe(size)` 不承诺清零，只能在确定所有对外可见字节都会被覆盖时使用；没有写满就发送或保存，可能暴露缓冲区中原有的内容。需要从现有字符串或字节创建 Buffer 时，优先使用对应的 `Buffer.from`。
+
+### 2.2 复制与共享视图 {#复制与共享视图}
+
+**视图**是同一段底层字节的另一个访问范围，不会自动复制内容：
+
+```js
+const original = Buffer.from([10, 20, 30, 40]);
+const view = original.subarray(1, 3);
+const copy = Buffer.from(view);
+view[0] = 99;
+console.log([...original]); // [10, 99, 30, 40]
+console.log([...copy]);     // [20, 30]
+
+const exactView = new Uint8Array(
+  original.buffer, original.byteOffset, original.length
+);
+exactView[2] = 88;
+console.log(original[2]); // 88
+```
+
+`view[0]` 对应 `original[1]`，所以赋值会修改原 Buffer；`copy` 持有复制后的字节，保持原来的 `20`。Node.js 的 `Buffer.slice()` 也具有共享视图语义，容易与某些数组的复制式 `slice` 混淆，表达视图时可以使用含义更明确的 `subarray`。
+
+小 Buffer 可能来自更大的底层内存池，`original.buffer` 不一定只覆盖这一个 Buffer。使用 `new Uint8Array(original.buffer)` 会看到整个 ArrayBuffer 的范围，因此要像示例一样保留偏移与长度。`Buffer.from(arrayBuffer, offset, length)` 同样可以共享底层内存；是否复制不能只看方法名 `from`，还要看参数类型。
+
+共享视图也会影响内存释放：即使只留下原 Buffer 的一小段视图，它仍可能让那块较大的底层内存继续存活。需要长期保留少量内容时，可以评估复制这段内容的成本。
+
+## 3. 分块与文本边界 {#分块与文本边界}
+
+Stream 传递的 **chunk** 是一次交给消费者的数据块。块大小可能受读取方式、缓冲状态和底层来源影响，不能推断“一块就是一行”“一次网络写入就对应一次读取”或“一块恰好包含完整 UTF-8 字符”。
+
+假设“中”的三个字节被拆成了 `E4 B8` 与 `AD`。前一块并不是完整字符，对两块分别调用 `toString('utf8')` 会丢失正确拼接的机会。**StringDecoder** 会保留末尾未完成的字符字节，等下一块补齐后再输出：
+
+```js
+const { StringDecoder } = require('node:string_decoder');
+const decoder = new StringDecoder('utf8');
+console.log(JSON.stringify(decoder.write(Buffer.from([0xe4, 0xb8])))); // ""
+console.log(decoder.write(Buffer.from([0xad]))); // 中
+console.log(JSON.stringify(decoder.end()));    // ""
+```
+
+第一步输出空字符串，第二步才输出完整的“中”。`Readable.setEncoding('utf8')` 也会处理跨块的多字节字符，之后读到的是字符串，`chunk.length` 的意义也随之改变。
+
+解码器只能保留正确拼接所需的状态，不能修复本来就损坏或最终截断的输入。若流结束时仍缺少字符字节，`StringDecoder.end()` 会按相应编码的替代规则处理，不会凭空补回丢失的字节。需要严格拒绝无效编码时，应使用明确支持这种校验的解码方式。
+
+文本解码以后仍需要处理业务边界。例如一行 JSON 可以跨越两块，一块也可以包含多行；长度前缀协议则要累积到声明长度后再解析完整消息。累积区必须有最大长度，不能为了等一条始终不结束的消息无限保留数据。
+
+## 4. Stream 的类型与读取 {#stream的类型与读取}
+
+### 4.1 四种流类型 {#四种流类型}
+
+| 类型 | 提供的能力 | 例子 |
+| --- | --- | --- |
+| Readable | 产生可读取的数据 | 文件读取流 |
+| Writable | 接收写入的数据 | 文件写入流 |
+| Duplex | 同时有可读和可写两端，两端可以相互独立 | TCP Socket |
+| Transform | 可写端的输入经过转换后成为可读端的输出 | gzip 压缩流 |
+
+Transform 是一种 Duplex，但并不是每个 Duplex 都把收到的输入变成自己的输出。**对象模式**允许流直接传递普通 JavaScript 值，此时缓冲阈值按对象数量计算；它不会自动把对象变成网络或文件中的 JSON。
+
+`Readable.from` 默认采用对象模式。处理字节数据时，可以显式写出 `objectMode: false`，避免把阈值的计量方式理解错。
+
+### 4.2 异步迭代与消费速度 {#异步迭代与消费速度}
+
+`for await...of` 可以按异步迭代方式消费 Readable，并在循环体里等待当前块处理结束：
+
+```js
+// iterate.mjs
+import { Readable } from 'node:stream';
+const input = Readable.from(
+  [Buffer.from('ab'), Buffer.from('cdef')],
+  { objectMode: false }
+);
+let total = 0;
+for await (const chunk of input) {
+  total += chunk.length;
+}
+console.log(total); // 6
+```
+
+结果为 `6`，但不应依赖循环恰好执行两次：字节流可能把可用数据合并为更大的块。处理逻辑应当基于实际读到的内容，而不是原生产者调用的次数。
+
+同一个流应选定一种消费方式，不要同时混用 `data` 事件、`readable` 事件、`pipe` 和异步迭代。特别是 `on('data', async chunk => ...)`：事件分发不会等待回调返回的 Promise，下一块可能在上一块处理完成前继续进入。若处理需要串行完成，异步迭代里的 `await` 更容易表达这个约束。
+
+使用普通 `for await...of` 提前 `break` 或抛错退出时，Node.js 会销毁对应的 Readable。需要保留流继续消费时，应明确采用相应的迭代接口和生命周期设计，不能先假定退出循环后原流一定还能使用。
+
+## 5. 背压与缓冲 {#背压与缓冲}
+
+### 5.1 write 的返回值 {#write的返回值}
+
+**背压**是消费者处理不过来时，要求生产者暂缓继续生产的机制。对 Writable，`write(chunk)` 返回 `false` 表示缓冲达到需要暂停后续写入的条件；这次传入的 `chunk` 已经被接受。
+
+下面用延迟完成写入的 Writable 模拟慢消费者：
+
+```js
+// backpressure.mjs
+import { Writable } from 'node:stream';
+import { finished } from 'node:stream/promises';
+const received = [];
+const output = new Writable({
+  highWaterMark: 4,
+  write(chunk, encoding, callback) {
+    setTimeout(() => {
+      received.push(chunk.toString());
+      callback();
+    }, 5);
+  }
+});
+const completion = finished(output, { cleanup: true });
+const canContinue = output.write(Buffer.from('ABCD'));
+console.log(canContinue, output.writableLength); // false 4
+output.once('drain', () => {
+  console.log('drain');
+  output.end('EF');
+});
+await completion;
+console.log(received.join('')); // ABCDEF
+```
+
+输出依次为 `false 4`、`drain`、`ABCDEF`。`ABCD` 没有因为返回 `false` 而丢失，也不能在 `drain` 后再写一次 `ABCD`，否则结果会重复。
+
+手动生产数据时，应在返回 `false` 后停止继续写入，等待 `drain`，并同时处理失败和销毁。上面只演示固定的一次写入与后续结束；真正连接多个流时，优先让 `pipeline` 协调背压，减少手工管理监听器和异常分支的负担。
+
+### 5.2 highWaterMark 与内存范围 {#缓冲阈值与内存范围}
+
+**`highWaterMark` 是流内部缓冲的调节阈值，不是强制内存上限。** 单个 chunk 就可能超过阈值，忽略 `write()` 返回值也可以继续把更多块排入缓冲。Duplex 和 Transform 的可读端、可写端还各有自己的缓冲。
+
+通常字节流按字节计量，对象模式按对象个数计量；Readable 设置字符串编码后，相关缓冲计量会涉及字符串的 UTF-16 码元，而不是原始字节。一个对象也可能引用很大的数据，不能由“最多几个对象”推断只会占用很少内存。
+
+即使流本身遵守背压，下面这些做法仍会增加内存占用：
+
+- 把每块都存进数组，结束后再 `Buffer.concat`，使全部输入重新常驻内存。
+- 在 `data` 事件中启动大量异步任务，让流以为当前块已处理完，业务任务却仍在等待。
+- 只限制压缩前的输入，却没有限制解压后的体积或解析出的对象数量。
+- 保留许多大 Buffer 的小视图，使底层内存不能及时释放。
+
+评估流式处理时，要同时检查读写缓冲、转换过程和业务持有的数据。调大 `highWaterMark` 可能减少某些调用开销，也可能增加排队和内存，需要按工作负载测量，不能把它当成通用提速参数。
+
+## 6. pipeline 与错误传播 {#pipeline与错误传播}
+
+### 6.1 完整的处理链 {#完整的处理链}
+
+`pipeline()` 把来源、转换和目标连接成一条处理链，协调背压，并在完成或失败时给出统一结果。准备一个 `input.txt`，可以运行下面的文件压缩示例：
+
+```js
+// gzip.mjs
+import { createReadStream, createWriteStream } from 'node:fs';
+import { createGzip } from 'node:zlib';
+import { pipeline } from 'node:stream/promises';
+
+try {
+  await pipeline(
+    createReadStream('input.txt'),
+    createGzip(),
+    createWriteStream('output.txt.gz')
+  );
+  console.log('compressed');
+} catch (error) {
+  console.error(error.code ?? error.message);
+  process.exitCode = 1;
+}
+```
+
+成功时输出 `compressed`，gzip 解压后的字节应当与原文件完全一致；没有必要先读取整个文件再压缩。任一环节失败时，Promise 会拒绝，`pipeline` 会销毁相关流，避免只停止一端而让其他环节继续工作。
+
+`source.pipe(destination)` 能协调基本的数据流动与背压，但来源报错时，不会替你完整关闭目标。因此，“把每段 `.pipe()` 连起来，再只监听最后一个流的错误”不能代替统一的失败处理。
+
+失败后的流也不应随意复用为下一次完整任务。重试通常应创建新的来源、转换和目标，并先决定怎样处理上一次产生的部分结果。`pipeline` 还可能在结束后保留用于错误处理的监听器，不能把同一组流反复传入并假定没有资源影响。
+
+### 6.2 有界转换与业务限制 {#有界转换与业务限制}
+
+流式传输不代表可以接受无限输入。可以在处理链中加入只负责字节上限的 Transform：
+
+```js
+// byte-limit.mjs
+import { Transform } from 'node:stream';
+export class ByteLimit extends Transform {
+  constructor(maxBytes) {
+    super();
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) {
+      throw new RangeError('invalid byte limit');
+    }
+    this.maxBytes = maxBytes;
+    this.total = 0;
+  }
+  _transform(chunk, encoding, callback) {
+    if (chunk.length > this.maxBytes - this.total) {
+      callback(new RangeError('input exceeds byte limit'));
+      return;
+    }
+    this.total += chunk.length;
+    callback(null, chunk);
+  }
+}
+
+// limit-main.mjs
+import { Readable, Writable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
+import { ByteLimit } from './byte-limit.mjs';
+const received = [];
+try {
+  await pipeline(
+    Readable.from(['ab', 'cd', 'ef'].map((text) => Buffer.from(text)), { objectMode: false }),
+    new ByteLimit(5),
+    new Writable({
+      write(chunk, encoding, callback) {
+        received.push(chunk);
+        callback();
+      }
+    })
+  );
+} catch (error) {
+  console.log(error.message); // input exceeds byte limit
+}
+console.log(Buffer.concat(received).toString()); // abcd
+```
+
+前四个字节已经写入，第三块使累计长度超过 `5`，因此转换报错，不再转发这一块。自定义 Transform 通过 `callback(error)` 报告失败，每块只调用一次回调；不能一边报错一边继续调用成功回调。
+
+这里数组收集只用于观察最小示例的结果。真正接收大文件时应写入文件或下游存储。限制放在哪个位置决定限制什么：在解压前限制的是压缩体积，在解压后才能限制展开体积；解析器内部的单条记录长度还需要另外约束。
+
+### 6.3 HTTP 入站文件流 {#http入站文件流}
+
+**Node.js HTTP 服务收到的 `req` 是 `IncomingMessage`，也是 Readable。** 如果接口约定整个请求体就是文件字节，可以把它接到字节上限检查和文件写入流，不必先收集所有 chunk 再拼成一个 Buffer。
+
+下面的函数复用前面的 `ByteLimit`。调用前，接口应完成认证、上传权限及媒体类型检查，确认请求体使用 `application/octet-stream`，且尚未被其他中间件消费或设置文本编码。`storageDir` 是服务端配置的、已经存在的私有目录，不来自客户端路径或文件名。
+
+```js
+// receive-file.mjs
+import { createWriteStream } from 'node:fs';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { pipeline } from 'node:stream/promises';
+import { ByteLimit } from './byte-limit.mjs';
+
+export async function receiveFile(req, storageDir, maxBytes, signal) {
+  const directory = await mkdtemp(join(storageDir, 'upload-'));
+  const file = join(directory, 'body.bin');
+  try {
+    const limit = new ByteLimit(maxBytes);
+    await pipeline(
+      req,
+      limit,
+      createWriteStream(file, { flags: 'wx' }),
+      { signal }
+    );
+    return { directory, file, bytes: limit.total };
+  } catch (error) {
+    await rm(directory, { recursive: true, force: true });
+    throw error;
+  }
+}
+```
+
+`receiveFile()` 成功返回时，请求体已按流处理完成，`bytes` 是实际接收并转发的字节数，文件仍处于私有临时目录。调用方再执行内容校验、登记元数据或发布结果；这些业务步骤如果失败，也要处理已保存的临时文件。成功完成流不等于完成业务提交或获得物理落盘保证。
+
+超限、连接中断或取消会使处理链失败，再清理本次创建的目录。`pipeline` 可能连 HTTP socket 一起销毁，所以此时不能保证再向客户端发送一份 413 JSON；接口可以在读取前检查声明长度来提前拒绝，但实际字节数仍必须受限。临时文件清理本身也可能失败，生产环境需要记录并回收残留，不能把 `force: true` 理解为忽略所有文件系统错误。
+
+普通浏览器表单的 `multipart/form-data` 包含分隔符、字段和各文件头，不能把完整 `req` 直接当成单个文件保存。应使用维护中的 multipart 解析器，限制总量、文件数量、字段大小和单文件大小，把解析出的文件流接入保存链。上传会话、完成提交和资源限制见[文件上传](../network/file-upload.mdx#权限资源限制与验证)，这里仅解释 Node.js 的入站字节流。
+
+## 7. 完成、关闭与取消 {#完成关闭与取消}
+
+### 7.1 结束事件的含义 {#结束事件的含义}
+
+| 状态或事件 | 含义 |
+| --- | --- |
+| Readable 的 `end` | 可读数据已被消费完，不会再提供新数据 |
+| Writable 的 `finish` | 已调用 `end()`，写入的数据已完成流实现要求的处理 |
+| `close` | 底层资源已经关闭；可能来自成功，也可能来自失败或取消 |
+| `error` | 流处理发生错误，需要进入失败清理 |
+| `destroy()` | 终止并释放流的相关资源，不能用它表示成功完成全部数据 |
+
+文件写入流发出 `finish`，不等于应用已经获得物理落盘保证。是否需要额外同步存储，要根据持久化要求和对应文件 API 决定。下载目标关闭，也不能单凭 `close` 就认定文件完整，应结合成功状态和必要的长度、校验值判断。
+
+### 7.2 AbortSignal 与部分结果 {#取消与部分结果}
+
+`pipeline` 支持传入 `AbortSignal`。取消会让处理链失败并销毁相关流，调用方应区分取消与正常成功：
+
+```js
+// copy.mjs
+import { createReadStream, createWriteStream } from 'node:fs';
+import { pipeline } from 'node:stream/promises';
+const controller = new AbortController();
+const timeout = setTimeout(() => controller.abort(), 1_000);
+try {
+  await pipeline(
+    createReadStream('input.txt'),
+    createWriteStream('copy.txt'),
+    { signal: controller.signal }
+  );
+  console.log('copied');
+} catch (error) {
+  console.error(error.name === 'AbortError' ? 'copy cancelled' : error.message);
+  process.exitCode = 1;
+} finally {
+  clearTimeout(timeout);
+}
+```
+
+小文件通常会在超时前复制成功；较慢任务可能被取消。这里的 1 秒是发起取消的调度条件，不是保证精确在 1 秒时中断一切工作。
+
+无论报错还是取消，`copy.txt` 都可能已包含一部分内容，流关闭不会自动删除它或恢复原文件。需要保证读者只看到完整结果时，可以先写独立临时文件，成功后再按存储系统的语义切换；失败时清理临时产物。对 HTTP 响应或远端上传，已经发送的内容也不能靠本地销毁流撤回。
+
+如果处理链里还有自定义异步生成器、外部请求或其他任务，也需要把取消信号传递进去。销毁一个 Node.js 流不能保证第三方资源或任意 Promise 都立即终止。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 Buffer 是什么，与字符串有什么区别？ {#buffer}
+
+**考察重点**：字节序列、编码、长度与初始化。
+
+**相关内容**：[Buffer 的字节语义](#buffer的字节语义)。
+
+<details>
+<summary>参考回答</summary>
+
+**Buffer 表示字节序列，字符串表示文本，需要通过编码在两者之间转换。** Buffer 是 `Uint8Array` 的子类，适合文件、网络与二进制处理；它自身不保证内容是合法 UTF-8。
+
+字符串 `length` 是 UTF-16 码元数，Buffer 的 `length` 是字节数，例如“中文”编码为 UTF-8 后是 6 字节。新建缓冲区可用 `Buffer.alloc` 清零；使用 `allocUnsafe` 时必须确保所有对外可见字节都被正确覆盖。
+
+</details>
+
+### 8.2 Buffer.subarray() 与 Buffer.from(buffer) 会共享内存吗？ {#buffer-views}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：共享视图、复制、偏移与底层内存保留。
+
+**相关内容**：[复制与共享视图](#复制与共享视图)。
+
+<details>
+<summary>参考回答</summary>
+
+**`subarray()` 产生共享底层字节的视图，`Buffer.from(buffer)` 复制字节。** 修改视图会改变原 Buffer 对应位置，修改副本不会影响原 Buffer。
+
+把 Buffer 的底层 ArrayBuffer 交给其他视图时，要保留 `byteOffset` 与有效长度，不能默认整个 ArrayBuffer 都属于当前 Buffer。小视图还可能保留较大的底层内存；长期只需少量字节时，可以考虑复制。
+
+</details>
+
+### 8.3 为什么逐块调用 toString() 可能破坏文本？ {#chunk-boundaries}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：传输块、字符与业务消息的不同边界。
+
+**相关内容**：[分块与文本边界](#分块与文本边界)。
+
+<details>
+<summary>参考回答</summary>
+
+**一个多字节字符可能被拆在两块中，单独解码每块时缺少完整字符所需的字节。** 可以用 `StringDecoder` 或 Readable 的 `setEncoding` 保留跨块解码状态，等待后续字节补齐。
+
+字符正确还不代表消息完整。一行 JSON 或协议消息仍可能跨块，也可能多条合在一块，需要按业务分隔符或长度字段解析，并限制累积区大小。
+
+</details>
+
+### 8.4 Node.js 中流是什么，有哪些类型？ {#stream-types}
+
+**考察重点**：渐进处理、四种流的职责和对象模式。
+
+**相关内容**：[Stream 的类型与读取](#stream的类型与读取)。
+
+<details>
+<summary>参考回答</summary>
+
+**流按块提供或消费数据，让处理链能够边读取边处理，而不必先持有全部内容。** Readable 负责产生数据，Writable 负责接收数据，Duplex 同时有读写两端，Transform 则把写入内容转换为读出内容。
+
+流需要通过背压协调生产与消费速度。对象模式可以直接传 JavaScript 值，缓冲按对象个数计量；它不等于已经把对象序列化成文件或网络字节。
+
+</details>
+
+### 8.5 write() 返回 false 时，是否应该重新写入这一块？ {#backpressure}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：接受数据、暂停生产与 drain 的关系。
+
+**相关内容**：[write 的返回值](#write的返回值)。
+
+<details>
+<summary>参考回答</summary>
+
+**不应该，这一块已经被接受；返回 `false` 要求暂停后续写入。** 等待 `drain` 后继续生产下一块，同时处理错误和销毁。如果把刚才的块再写一次，会产生重复内容。
+
+完整流处理链优先使用 `pipeline` 协调背压。忽略返回值持续调用 `write`，可能让待写数据不断积压。
+
+</details>
+
+### 8.6 使用 Stream 后，内存占用就一定很小吗？ {#memory-boundary}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：缓冲阈值、生产速度、对象大小和业务持有的数据。
+
+**相关内容**：[缓冲阈值与内存范围](#缓冲阈值与内存范围)、[有界转换与业务限制](#有界转换与业务限制)。
+
+<details>
+<summary>参考回答</summary>
+
+**不一定，Stream 只有在生产与消费受控、业务不额外累积全部数据时，才有助于控制内存。** `highWaterMark` 是调节阈值，不是严格内存上限；大 chunk、对象模式中的大对象、忽略背压和无限并发任务都可能突破预期。
+
+还要检查解压后的体积、单条消息的长度、数组缓存以及共享视图保留的底层内存。需要按处理链各阶段设置适用的业务上限。
+
+</details>
+
+### 8.7 pipe 与 pipeline 在错误处理上有什么区别？ {#pipeline-errors}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：背压、多个流的生命周期和统一失败结果。
+
+**相关内容**：[完整的处理链](#完整的处理链)。
+
+<details>
+<summary>参考回答</summary>
+
+**`pipe` 能连接数据流并协调基本背压，但不负责完整的跨流错误清理；`pipeline` 更适合管理完整处理链。** 例如来源报错时，单纯 `pipe` 不会自动替调用方关闭目标流。
+
+Promise 形式的 `pipeline` 在成功时兑现，在某环节失败时拒绝并销毁相关流。调用方仍需处理部分文件或远端结果，重试时通常创建新流，不能把失败清理等同于业务回滚。
+
+</details>
+
+### 8.8 怎样取消流处理，怎样判断结果完整？ {#cancellation}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：AbortSignal、成功与关闭、部分结果和取消传播。
+
+**相关内容**：[完成、关闭与取消](#完成关闭与取消)。
+
+<details>
+<summary>参考回答</summary>
+
+**可以把 `AbortSignal` 传给 `pipeline`，取消时让处理链失败并释放相关流，再由业务处理部分结果。** 需要把信号继续传给自定义异步任务或外部请求，不能认为所有 Promise 都会随流销毁而终止。
+
+`close` 只说明资源关闭，不代表全部数据成功完成；`finish` 表示写入流完成处理，也不自动提供物理持久化保证。完整性应结合成功结果及必要的长度、校验值，文件交付还可以采用临时文件成功后切换的方式。
+
+</details>
+
+### 8.9 Node.js 怎样接收文件并写入服务器？ {#node-file-upload}
+
+**考察重点**：HTTP 请求流、背压、请求体格式、实际字节限制与部分文件清理。
+
+**相关内容**：[HTTP 入站文件流](#http入站文件流)、[有界转换与业务限制](#有界转换与业务限制)。
+
+<details>
+<summary>参考回答</summary>
+
+**把请求中的文件字节作为流处理，经过必要检查后写入服务端控制的目标。** 对原始二进制请求体，`req` 是 Readable，可以通过 `pipeline(req, limit, fileStream)` 协调背压和错误；对 multipart 表单，先用解析器取得具体文件流。
+
+上传前检查身份、权限和格式，读取过程中限制实际字节数，不只相信 Content-Length。使用独立的私有临时文件，失败或取消后清理；成功后再做内容校验和业务登记。HTTP 流失败时 socket 可能已关闭，因此不能承诺任何错误都能再返回完整 JSON。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+
+- [Node.js 22：Buffer](https://nodejs.org/download/release/v22.16.0/docs/api/buffer.html)
+- [Node.js 22：Stream](https://nodejs.org/download/release/v22.16.0/docs/api/stream.html)
+- [Node.js 22：StringDecoder](https://nodejs.org/download/release/v22.16.0/docs/api/string_decoder.html)
+- [Node.js：Backpressuring in Streams](https://nodejs.org/en/learn/modules/backpressuring-in-streams)
+- [Node.js 22：HTTP IncomingMessage](https://nodejs.org/download/release/v22.16.0/docs/api/http.html#class-httpincomingmessage)
+- [Node.js 22：文件系统流与临时目录](https://nodejs.org/download/release/v22.16.0/docs/api/fs.html)

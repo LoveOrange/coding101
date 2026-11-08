@@ -5,19 +5,16 @@ import type {LoadContext, Plugin} from '@docusaurus/types';
 import {normalizeUrl} from '@docusaurus/utils';
 import type {DocMetadata, LoadedContent} from '@docusaurus/plugin-content-docs';
 
-import {agentInterviewRoadmap} from '../../src/data/interviewRoadmaps/agent';
-import {javaInterviewRoadmap} from '../../src/data/interviewRoadmaps/java';
-import {sreInterviewRoadmap} from '../../src/data/interviewRoadmaps/sre';
+import {buildRoleGuides, buildRoleReadings, roadmapPath as normalizePath} from '../../src/data/interviewRoadmaps/learningRoles';
 import {knowledgeTree} from '../../src/data/knowledgeTree';
 import moves from '../../src/data/contentMoves.json';
+import readingResources from '../../src/data/reviewPlans/javaReadingResources.json';
 import type {
   ArticleIndex,
   CardDetail,
   CardIndex,
   CardRef,
   Domain,
-  Priority,
-  Role,
   Topic,
 } from '../../src/learning/types';
 import {compactIndex} from '../../src/learning/compact';
@@ -72,12 +69,6 @@ function checkMoves(cards: Record<string, CardIndex>, articles: Record<string, A
   return errors;
 }
 
-const PRIORITY_RANK: Record<Priority, number> = {must: 3, common: 2, optional: 1};
-
-function normalizePath(href: string): string {
-  return href.split('#')[0].replace(/\/$/, '');
-}
-
 /**
  * Domains for the knowledge tree from src/data/knowledgeTree.ts. Draft docs are
  * skipped (they only exist in development); any other unknown id fails the build.
@@ -110,31 +101,6 @@ function buildDomains(docs: Map<string, DocMetadata>, drafts: Set<string>): Doma
   return domains;
 }
 
-function roadmapRoles(): {roles: Role[]; byPermalink: Map<string, {priority: Priority; roles: string[]}>} {
-  const roadmaps = [
-    {data: javaInterviewRoadmap, href: '/java-interview-roadmap/'},
-    {data: agentInterviewRoadmap, href: '/agent-interview-roadmap/'},
-    {data: sreInterviewRoadmap, href: '/sre-interview-roadmap/'},
-  ];
-  const byPermalink = new Map<string, {priority: Priority; roles: string[]}>();
-  for (const {data} of roadmaps) {
-    for (const phase of data.phases) {
-      for (const topic of phase.topics) {
-        for (const article of topic.articles) {
-          if (!article.href) continue;
-          const key = normalizePath(article.href);
-          const current = byPermalink.get(key);
-          const priority =
-            current && PRIORITY_RANK[current.priority] >= PRIORITY_RANK[topic.priority] ? current.priority : topic.priority;
-          const roles = new Set(current?.roles ?? []);
-          roles.add(data.id);
-          byPermalink.set(key, {priority, roles: [...roles]});
-        }
-      }
-    }
-  }
-  return {roles: roadmaps.map(({data, href}) => ({id: data.id, label: data.label, href})), byPermalink};
-}
 
 export default function learningContentPlugin(context: LoadContext, options: {learnerFeatures?: boolean} = {}): Plugin {
   return {
@@ -154,7 +120,7 @@ export default function learningContentPlugin(context: LoadContext, options: {le
       ]);
       const domains = buildDomains(docs, draftIds);
 
-      const {roles, byPermalink} = roadmapRoles();
+      const {roles, byPermalink} = buildRoleReadings();
       // Roadmap hrefs are site-relative; permalinks include the baseUrl.
       const sitePath = (doc: DocMetadata) => normalizePath('/' + doc.permalink.slice(context.baseUrl.length));
       const articles: Record<string, ArticleIndex> = {};
@@ -256,8 +222,8 @@ export default function learningContentPlugin(context: LoadContext, options: {le
             domainId: domain.id,
             topicId: topic.id,
             minutes: parsed.minutes,
-            priority: roadmap?.priority,
-            roles: roadmap?.roles ?? [],
+            rolePriorities: roadmap ?? {},
+            roles: Object.keys(roadmap ?? {}),
             sections: h2s.map(({id, title, number}) => ({id, title, number})),
             cardIds,
             interviewAnchor: parsed.interviewAnchor,
@@ -276,8 +242,21 @@ export default function learningContentPlugin(context: LoadContext, options: {le
       actions.setGlobalData(compactIndex({domains, articles, cards, roles}));
 
       const detailsPath = await actions.createData('card-details.json', JSON.stringify(details));
+      const roleGuides = buildRoleGuides(Object.values(articles).map(article => ({
+        ...article, permalink: '/' + article.permalink.slice(context.baseUrl.length),
+      })));
+      const coreReadings = readingResources.articles as Record<string, {scope: string; coreHref: string}>;
+      for (const guides of Object.values(roleGuides)) for (const guide of guides) for (const reading of guide.readings) {
+        const core = reading.core && coreReadings[reading.href];
+        if (core) {
+          reading.href = core.coreHref;
+          reading.scope ??= core.scope;
+        }
+      }
+      const guidesPath = await actions.createData('role-guides.json', JSON.stringify(roleGuides));
       for (const route of options.learnerFeatures ? [...ROUTES, ...LEARNER_ROUTES] : ROUTES) {
-        actions.addRoute({path: normalizeUrl([context.baseUrl, route.path]), component: route.component, exact: true, modules: {details: detailsPath}});
+        actions.addRoute({path: normalizeUrl([context.baseUrl, route.path]), component: route.component, exact: true,
+          modules: route.path === '/topics' ? {guides: guidesPath} : {details: detailsPath}});
       }
     },
   };

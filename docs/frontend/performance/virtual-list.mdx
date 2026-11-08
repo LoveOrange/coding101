@@ -1,0 +1,473 @@
+---
+sidebar_position: 4
+knowledge:
+  id: frontend.performance.virtual-list
+---
+
+# 虚拟列表
+
+**虚拟列表**只为当前可见范围及附近的一小部分数据创建渲染节点，同时保留整个列表应有的滚动空间。数据可以有很多条，但页面不必同时维护同样多的 DOM 和组件。
+
+它主要减少渲染节点、布局与更新工作，不会自动减少接口数据、解析成本或 JavaScript 中保存的对象。准备这个主题时，要能从滚动位置算出应显示哪些行，也要解释行高变化、焦点和查找等代价。
+
+## 1. 面试核心 {#core}
+
+- **虚拟列表保留完整滚动空间，只渲染可见窗口及少量缓冲行**。它减少同时存在的渲染节点，不等于只下载可见数据。[卡](#principle)
+- **固定行高可以直接由 scrollTop、视口高度和行高计算区间**。起点向下取整，终点按右开区间处理，再限制在数据范围内。[卡](#fixed-height)
+- **overscan 在窗口前后多渲染少量内容，以额外工作换取滚动余量**。过小容易露出空白，过大又削弱虚拟化收益。[卡](#optimization)
+- **不固定行高需要累计位置、估计值与实际测量**。按偏移查找行可以使用二分，不能继续把下标直接乘同一个行高。[卡](#variable-height)
+- **行高变化后应保持读者正在看的数据与行内位置**。只保存旧 scrollTop，不能保证内容不跳动。[卡](#scroll-anchor)
+- **稳定的数据 ID 与组件状态归属仍然重要**。节点离开窗口会卸载，输入、选择和展开状态不能只留在短暂存在的行里。[卡](#identity-state)
+- **虚拟列表、分页与懒加载解决不同成本，可以组合**。是否使用应由实际瓶颈和交互要求决定。[卡](#choice)
+- **可访问性、页面查找、打印与内容定位需要单独设计**。补上 ARIA 位置说明，不会让尚未渲染的行自动出现在可访问性树里。[卡](#accessibility)
+
+## 2. 滚动空间与渲染窗口 {#滚动空间与渲染窗口}
+
+### 2.1 数据数量与节点数量 {#数据数量与节点数量}
+
+假设有 10,000 条数据，每行 40 像素，可视区域高 240 像素。直接渲染会创建 10,000 行；虚拟列表通常只需要 6 个完整可见行，加上边缘处可能露出的行和前后缓冲。
+
+但滚动条仍需要知道总高度为 400,000 像素。实现可以创建一个有完整高度的占位容器，再把当前需要的行定位到各自原本的位置。未渲染的行没有 DOM，空间由占位容器表达。
+
+| 组成 | 作用 |
+| --- | --- |
+| 滚动容器 | 提供可视高度和 scrollTop |
+| 完整高度的占位区域 | 保留总滚动距离 |
+| 当前渲染行 | 展示窗口内的数据 |
+| 行的位置偏移 | 让局部节点出现在完整列表中的正确位置 |
+
+这与虚拟 DOM 不是同一个概念。虚拟 DOM 描述界面与更新；虚拟列表决定当前实际保留哪些行。使用框架并不意味着所有长列表已经自动虚拟化。
+
+### 2.2 固定高度的区间计算 {#固定高度的区间计算}
+
+令行高为 h、滚动位置为 s、容器可视高度为 v。第一条可见行的下标由 s/h 向下取整得到；可见终点由 (s+v)/h 向上取整得到，作为不包含该下标的右端点。
+
+以下函数约定 count 和 overscan 是非负整数，rowHeight 是有限正数，其余尺寸是有限数值。滚动位置会限制在有效范围，空数据或不可见容器返回空区间：
+
+```js
+function fixedRange(scrollTop, viewportHeight, count, rowHeight, overscan = 3) {
+  if (count === 0 || viewportHeight <= 0) return { start: 0, end: 0 };
+  const maxScroll = Math.max(0, count * rowHeight - viewportHeight);
+  const offset = Math.min(Math.max(0, scrollTop), maxScroll);
+  const first = Math.floor(offset / rowHeight);
+  const end = Math.ceil((offset + viewportHeight) / rowHeight);
+  return {
+    start: Math.max(0, first - overscan),
+    end: Math.min(count, end + overscan),
+  };
+}
+
+console.log(fixedRange(85, 240, 10000, 40, 3));
+// { start: 0, end: 12 }，渲染下标 0 到 11。
+```
+
+85 像素位于下标 2 的行内，视口底部在 325 像素，已经露出下标 8 的行，因此未加缓冲的区间是 [2, 9)。加上两侧各 3 行并处理顶部边界，得到 [0, 12)。
+
+如果只用“容器高除以行高”得到 6 行，而没有考虑首行被遮住一部分，就可能漏掉底部露出的行。底部、空列表、容器高度变化也要按同一套边界计算。
+
+## 3. 固定行高实现 {#固定行高实现}
+
+### 3.1 容器与行的尺寸 {#容器与行的尺寸}
+
+先准备一个专用空容器。这里展示只读文本行，不包含需要维持焦点的行内控件：
+
+```html
+<style>
+  #course-list {
+    height: 240px;
+    overflow: auto;
+    padding: 0;
+    border: 1px solid #888;
+    overflow-anchor: none;
+  }
+  .virtual-space { position: relative; }
+  .virtual-row {
+    position: absolute;
+    top: 0;
+    inset-inline: 0;
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    padding: 0 12px;
+    border-bottom: 1px solid #ddd;
+    overflow: hidden;
+    white-space: nowrap;
+  }
+</style>
+<div id="course-list" role="list" tabindex="0" aria-label="课程列表"></div>
+```
+
+rowHeight 表示行的整个布局高度，包括内边距和边框；这里用 border-box 保持一致。若行允许自然换行、图片撑高或任意上下外边距，就不能继续假定实际高度固定。
+
+容器自身可以获得键盘焦点并滚动。overflow-anchor 关闭这个示例区域的浏览器自动滚动锚定，以免它与显式窗口位置处理相互影响；不应因此在整个站点无条件关闭锚定。
+
+### 3.2 窗口更新与清理 {#窗口更新与清理}
+
+下面复用 fixedRange，数据格式为具有唯一字符串 id 和字符串 label 的对象。setItems 替换数据时明确回到顶部；需要保留当前阅读位置的场景，使用后文的锚点思路。
+
+```js
+function mountFixedList(viewport, initialItems, { rowHeight = 40, overscan = 3 } = {}) {
+  if (!Number.isFinite(rowHeight) || rowHeight <= 0) {
+    throw new RangeError('rowHeight 必须是有限正数');
+  }
+  if (!Number.isInteger(overscan) || overscan < 0) {
+    throw new RangeError('overscan 必须是非负整数');
+  }
+  function copyItems(value) {
+    if (!Array.isArray(value)) throw new TypeError('items 必须是数组');
+    if (!Number.isFinite(value.length * rowHeight)) throw new RangeError('总高度溢出');
+    const keys = new Set();
+    return Array.from(value, item => {
+      if (!item || typeof item.id !== 'string' || typeof item.label !== 'string' ||
+          keys.has(item.id)) throw new TypeError('数据格式或唯一 ID 无效');
+      keys.add(item.id);
+      return { id: item.id, label: item.label };
+    });
+  }
+  let items = copyItems(initialItems);
+  let frame = null;
+  let destroyed = false;
+  let previous = '';
+  const nodes = new Map();
+  const space = document.createElement('div');
+  space.className = 'virtual-space';
+  viewport.append(space);
+
+  function render() {
+    const { start, end } = fixedRange(
+      viewport.scrollTop, viewport.clientHeight, items.length, rowHeight, overscan,
+    );
+    const range = `${start}:${end}`;
+    if (range === previous) return;
+    previous = range;
+    const visible = new Set();
+    for (let index = start; index < end; index++) {
+      const item = items[index];
+      visible.add(item.id);
+      let row = nodes.get(item.id);
+      if (!row) {
+        row = document.createElement('div');
+        row.className = 'virtual-row';
+        row.setAttribute('role', 'listitem');
+        nodes.set(item.id, row);
+      }
+      row.textContent = item.label;
+      row.dataset.id = item.id;
+      row.style.height = `${rowHeight}px`;
+      row.style.transform = `translateY(${index * rowHeight}px)`;
+      row.setAttribute('aria-posinset', String(index + 1));
+      row.setAttribute('aria-setsize', String(items.length));
+      space.append(row);
+    }
+    for (const [id, row] of nodes) {
+      if (!visible.has(id)) {
+        row.remove();
+        nodes.delete(id);
+      }
+    }
+  }
+  function schedule() {
+    if (destroyed || frame !== null) return;
+    frame = requestAnimationFrame(() => {
+      frame = null;
+      render();
+    });
+  }
+  function setItems(value) {
+    if (destroyed) throw new Error('列表已经卸载');
+    const next = copyItems(value);
+    items = next;
+    nodes.clear();
+    space.replaceChildren();
+    space.style.height = `${items.length * rowHeight}px`;
+    viewport.scrollTop = 0;
+    previous = '';
+    render();
+  }
+  space.style.height = `${items.length * rowHeight}px`;
+  viewport.addEventListener('scroll', schedule, { passive: true });
+  const observer = new ResizeObserver(schedule);
+  observer.observe(viewport);
+  render();
+  return {
+    setItems,
+    destroy() {
+      if (destroyed) return;
+      destroyed = true;
+      viewport.removeEventListener('scroll', schedule);
+      observer.disconnect();
+      if (frame !== null) cancelAnimationFrame(frame);
+      frame = null;
+      nodes.clear();
+      items = [];
+      space.remove();
+    },
+  };
+}
+```
+
+scroll 与容器尺寸变化共享同一个待执行帧回调。实际渲染范围没变时直接返回；范围改变时，保留仍在窗口中的节点，并移除已离开的行。节点总量取决于窗口和缓冲，而不是总数据条数。
+
+ResizeObserver 观察容器尺寸，避免只监听 window.resize 而漏掉侧栏展开、面板调整等变化。destroy 同时停止监听、观察和待执行帧，并释放该实例持有的数据。setItems 在替换前先校验，因此无效输入不会把当前有效列表清空。
+
+接上前面的 HTML 与两个函数即可运行：
+
+```js
+const list = mountFixedList(
+  document.querySelector('#course-list'),
+  Array.from({ length: 10000 }, (_, index) => ({
+    id: `course-${index}`,
+    label: `课程 ${index + 1}`,
+  })),
+);
+// 筛选或替换结果：list.setItems(nextItems)，本例回到顶部。
+// 卸载页面：list.destroy()。
+```
+
+初始渲染 6 个可见行和 3 个下方缓冲行；滚到中间时，前后都有缓冲。可在 Elements 面板确认节点数量，再检查快速滚动、底部与容器缩放，不要只看第一屏是否正常。
+
+这段实现没有提供可编辑单元格、双向网格、自动加载下一页和不定高测量。行内交互更复杂时，需要在保持这些约束的基础上选择成熟组件或继续设计相应能力。
+
+## 4. 不固定高度的定位 {#不固定高度的定位}
+
+### 4.1 累计偏移与二分查找 {#累计偏移与二分查找}
+
+不固定行高时，每行起点等于前面所有行高度之和。设高度为 [40, 60, 30]，累计偏移就是 [0, 40, 100, 130]：第 1 行占 [0, 40)，第 2 行占 [40, 100)，第 3 行占 [100, 130)。
+
+已经知道各行高度时，可以先建立累计偏移，再二分查找滚动位置落在哪一行：
+
+```js
+function buildOffsets(heights) {
+  const offsets = [0];
+  for (const height of heights) {
+    if (!Number.isFinite(height) || height <= 0) {
+      throw new RangeError('行高必须是有限正数');
+    }
+    const previous = offsets.at(-1);
+    const next = previous + height;
+    if (!Number.isFinite(next) || next <= previous) {
+      throw new RangeError('总高度溢出或精度不足');
+    }
+    offsets.push(next);
+  }
+  return offsets;
+}
+function findRow(offsets, position) {
+  let low = 0;
+  let high = offsets.length;
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    if (offsets[middle] <= position) low = middle + 1;
+    else high = middle;
+  }
+  return Math.min(offsets.length - 1, Math.max(0, low - 1));
+}
+const offsets = buildOffsets([40, 60, 30]);
+console.log(offsets);          // [0, 40, 100, 130]
+console.log(findRow(offsets, 50));   // 1
+console.log(findRow(offsets, 100));  // 2
+console.log(findRow(offsets, 130));  // 3，已在列表末端，没有对应行
+```
+
+findRow 约定传入有效累计偏移和有限 position。它查找第一个大于 position 的边界，再取前一段；位置恰好等于某行起点时，应归到新行。返回值可能等于行数，调用方不能无条件把它当成有效数据下标。
+
+查找是 O(log n)，但建立累计数组是 O(n)。修改一行高度后，简单数组中它后面的累计位置都要更新，不能只因为用了二分就声称每种操作都是 O(log n)。更新很多时可以考虑树状数组或线段树等累计结构，复杂度与维护成本要一起评估。
+
+### 4.2 估计、测量与修正 {#估计测量与修正}
+
+未渲染的行通常没有实际布局高度，需要先用估计值提供滚动空间。渲染后测量实际高度，更新缓存与累计位置；文字换行、字体加载、图片到达和容器宽度变化，都可能让原测量失效。
+
+可以用 ResizeObserver 观察已挂载行的尺寸变化，但要统一测量的盒模型：记录的是内容高度还是包含边框的高度，外边距与行间距如何计入。不要把不同口径的数值混入累计偏移。
+
+测量结果有变化才更新缓存，并把必要的布局写入合并处理，避免“测量后改变尺寸，改变后又触发测量”的无效循环。新估计可能让目标行的位置再次改变，因此远距离跳转也可能经历定位、测量、修正，而不是一次乘法就精确到位。
+
+## 5. 滚动位置与交互状态 {#滚动位置与交互状态}
+
+### 5.1 保持阅读锚点 {#保持阅读锚点}
+
+**阅读锚点**是当前正在看的数据项及其相对视口的位置。保持锚点比机械保存旧 scrollTop 更能表达用户希望页面不跳动的需求。
+
+假设当前首行数据 ID 为 course-2，它原本位于 100 像素处，scrollTop 为 115，读者看到的是这行向下 15 像素的位置。上方某行增加 20 像素后，course-2 起点变成 120；为了保留同一个行内位置，新的 scrollTop 应为 135。
+
+插入、删除或重排时同样应通过数据 ID 找回锚点，而不是沿用旧下标。锚点被删除时，需要定义转向相邻项还是回到顶部。聊天列表追加消息还要区分用户是否原本贴近底部，不能每来一条消息都把正在阅读历史内容的人拉到底部。
+
+浏览器自动滚动锚定也可能调整位置。若组件自己维护锚点，应避免两套修正叠加；关闭自动锚定后，就要由组件承担相应稳定性。
+
+### 5.2 节点身份与状态 {#节点身份与状态}
+
+数据 ID 表示业务项，DOM 节点或组件实例表示当前渲染出来的对象。虚拟列表会移除窗口外节点，因此行的选择、编辑草稿和展开状态应按数据 ID 保存到适当的外部状态中。
+
+若用当前可见窗口的下标作为 key，窗口移动后，同一个组件可能被用于另一条数据，旧状态就可能出现在错误行上。使用稳定 ID 也不代表组件卸载后内部状态会自动永久保存；身份匹配与状态持久化是两个问题。
+
+聚焦在行内输入框时，直接把该行卸载会破坏焦点和正在进行的输入。可以保持活动行挂载、把编辑器移到稳定区域，或明确提供提交与切换规则；不能只靠增加 overscan 保证任何滚动情况下都保住焦点。
+
+## 6. 适用条件与验证 {#适用条件与验证}
+
+### 6.1 与分页、懒加载的区别 {#与分页懒加载的区别}
+
+| 方式 | 主要控制的成本 | 不自动解决的问题 |
+| --- | --- | --- |
+| 分页或按需获取数据 | 一次传输、解析和保留的数据量 | 每一页内部节点仍可能很多 |
+| 图片或模块懒加载 | 资源开始下载的时机 | 列表节点可能仍全部存在 |
+| 虚拟列表 | 同时挂载、布局和更新的行数 | 全量数据与对象可能仍在内存 |
+| 分批渲染 | 一次连续任务的工作量 | 最终可能仍留下全部节点 |
+
+这些方式可以组合，例如服务端分页、前端只保留有限页数据，再对当前数据虚拟化。content-visibility 等浏览器优化也可以减少部分离屏渲染工作，但其 DOM 仍然存在，不能与移除窗口外节点画等号。
+
+小列表、每行很轻、需要完整打印或浏览器全文查找的页面，未必值得加入虚拟化。先测量真实瓶颈，比较节点数量、渲染与交互时延，再决定复杂度是否合适。不能仅凭“有几百条”就得出必须使用的结论。
+
+### 6.2 可访问性与内容定位 {#可访问性与内容定位}
+
+示例使用 list/listitem 语义，并在行上声明 aria-posinset 与 aria-setsize，表示它在完整集合中的位置及总数。但窗口外行没有节点，不会因为补了这两个属性就自动变成可导航内容。
+
+需要结合键盘、屏幕阅读器和实际任务设计访问方式，例如明确的分页、按项目搜索与跳转，以及可获得完整结果的导出。交互列表可能需要更具体的组件模式；不能为了虚拟化随意把普通列表声明成 listbox。
+
+浏览器页面查找、跨行文本选择、锚点定位和打印也会受到未渲染内容影响。应提供相应替代入口或按场景禁用虚拟化，而不是把这些能力当作默认仍然完整可用。
+
+### 6.3 验证边界 {#验证边界}
+
+实现后应检查窗口与数据一起变化时的表现：
+
+- 空列表、少于一屏、顶部、底部、部分行露出，以及快速跳到远处。
+- 容器变高、变窄、暂时隐藏后恢复，滚动范围与行高缓存是否仍有效。
+- 筛选、删除、重排和追加数据后，阅读位置与状态是否按预定规则处理。
+- 行高被图片或字体改变时，是否出现累计误差、空白或来回跳动。
+- 卸载后是否还有观察器、帧回调或数据引用被保留。
+
+浏览器能够表示的滚动尺寸也有上限，极端数量乘行高不一定能形成准确的无限长滚动条。真正的海量数据应结合分段、分页与定位设计，不应把示例的线性占位高度当作无限扩展方案。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 虚拟列表怎样减少渲染成本，为什么还需要完整高度？ {#principle}
+
+**考察重点**：数据、节点、滚动空间与位置映射。
+
+**相关内容**：[数据数量与节点数量](#数据数量与节点数量)。
+
+<details>
+<summary>参考回答</summary>
+
+**只挂载可见窗口及少量缓冲行，以较少节点承载当前界面；完整高度用于保留总滚动距离。** 当前节点仍需放到它们在完整列表中的位置，不能直接把一小段数据从容器顶部开始排。
+
+这减少节点、布局和更新成本，但全量数据仍可能在内存，也不会自动减少接口请求。
+
+</details>
+
+### 7.2 固定行高时，怎样由 scrollTop 计算渲染区间？ {#fixed-height}
+
+**考察重点**：部分可见行、右开区间、缓冲与边界。
+
+**相关内容**：[固定高度的区间计算](#固定高度的区间计算)、[窗口更新与清理](#窗口更新与清理)。
+
+<details>
+<summary>参考回答</summary>
+
+**第一行由 scrollTop/rowHeight 向下取整，终点由 (scrollTop+视口高度)/rowHeight 向上取整，再加缓冲并限制在数据范围。** 终点不包含在区间内，行位置为下标乘行高。
+
+不能只渲染“视口高除以行高”的条数，因为首行可能只露出一部分。还要处理空数据、底部、尺寸变化和实际盒模型高度。
+
+</details>
+
+### 7.3 虚拟列表还可以怎样优化，overscan 越大越好吗？ {#optimization}
+
+**考察重点**：缓冲、重复更新、行成本与可验证收益。
+
+**相关内容**：[窗口更新与清理](#窗口更新与清理)、[验证边界](#验证边界)。
+
+<details>
+<summary>参考回答</summary>
+
+**优化包括适量缓冲、窗口不变时跳过更新、复用仍可见的节点、合并调度，以及减少每行的渲染成本。** overscan 可以减少快速滚动的空白风险，但越大保留的节点和工作越多。
+
+还应检查不定高测量、数据更新和清理。需要依据节点数量、渲染与交互记录验证，不能只看初始页面出现得快。
+
+</details>
+
+### 7.4 行高不固定时怎样定位，二分查找解决了哪部分问题？ {#variable-height}
+
+**考察重点**：累计位置、估计与测量、查找和更新复杂度。
+
+**相关内容**：[累计偏移与二分查找](#累计偏移与二分查找)、[估计、测量与修正](#估计测量与修正)。
+
+<details>
+<summary>参考回答</summary>
+
+**按各行高度建立累计偏移，再通过二分找到滚动位置所属区间。** 未渲染行先估计，挂载后测量实际高度并修正缓存和总空间。
+
+二分降低位置查找成本，不会自动降低累计数组的更新成本。宽度、字体和图片变化可能使高度失效，更新较频繁时再考虑更适合的累计数据结构。
+
+</details>
+
+### 7.5 上方行变高后怎样避免当前内容跳动？ {#scroll-anchor}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：阅读锚点、稳定数据身份与偏移修正。
+
+**相关内容**：[保持阅读锚点](#保持阅读锚点)。
+
+<details>
+<summary>参考回答</summary>
+
+**保存当前可见数据项的稳定 ID 和行内偏移，重新计算该项位置后调整 scrollTop。** 例如起点从 100 变为 120，原来在行内 15 像素处，就将 scrollTop 从 115 调整为 135。
+
+插入删除不能只沿用旧下标，还要处理锚点删除和浏览器自动滚动锚定，避免重复补偿。
+
+</details>
+
+### 7.6 虚拟列表中的 key 和行内编辑状态应该怎样处理？ {#identity-state}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：业务身份、节点复用、卸载与状态保存。
+
+**相关内容**：[节点身份与状态](#节点身份与状态)。
+
+<details>
+<summary>参考回答</summary>
+
+**使用稳定数据 ID 匹配业务项，把需跨卸载保留的状态按 ID 放在适当的外部状态中。** 当前窗口下标会变化，可能让旧状态落到另一条数据上；稳定 key 本身也不保证卸载后的组件内部状态被保留。
+
+焦点位于行内控件时，还需保留活动行或提供稳定编辑区域。不能只靠缓冲行数避免所有焦点丢失。
+
+</details>
+
+### 7.7 长列表一定需要虚拟化吗，和分页、懒加载有什么区别？ {#choice}
+
+**考察重点**：实际瓶颈、数据成本、渲染成本与功能代价。
+
+**相关内容**：[与分页、懒加载的区别](#与分页懒加载的区别)。
+
+<details>
+<summary>参考回答</summary>
+
+**不一定，应先确认瓶颈和交互要求。** 分页主要减少一次获取和保留的数据，懒加载延后资源请求，虚拟列表减少同时存在的行节点，它们可以组合。
+
+如果列表较小，或者完整查找、选择、打印更重要，虚拟化的维护和交互成本可能大于收益。海量数据也不能只靠一个巨大占位容器解决。
+
+</details>
+
+### 7.8 补上 aria-setsize 和 aria-posinset，就能让虚拟列表完整可访问吗？ {#accessibility}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：集合位置说明、未挂载内容和真实访问方式。
+
+**相关内容**：[可访问性与内容定位](#可访问性与内容定位)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能，它们说明当前项在完整集合中的位置和总数，不会创建未渲染项的节点。** 仍需验证键盘、屏幕阅读器、焦点和内容定位，并按任务提供搜索、分页或完整导出。
+
+普通列表、选项列表和数据网格的交互语义不同，不能为了增加属性而声明不符合实际行为的角色。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [web.dev：Virtualize large lists with react-window](https://web.dev/articles/virtualize-long-lists-react-window)
+- [MDN：ResizeObserver](https://developer.mozilla.org/en-US/docs/Web/API/ResizeObserver)
+- [MDN：CSS scroll anchoring](https://developer.mozilla.org/en-US/docs/Web/CSS/Guides/Scroll_anchoring)
+- [MDN：aria-setsize](https://developer.mozilla.org/en-US/docs/Web/Accessibility/ARIA/Reference/Attributes/aria-setsize)
+- [MDN：aria-posinset](https://developer.mozilla.org/en-US/docs/Web/Accessibility/ARIA/Reference/Attributes/aria-posinset)

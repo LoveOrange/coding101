@@ -1,0 +1,532 @@
+---
+sidebar_position: 5
+knowledge:
+  id: tools-and-frameworks.vue.state-management
+---
+
+# Vue 状态管理
+
+**状态管理**要确定数据由谁持有、哪些组件能读取、修改经过哪些入口，以及这份数据保留多久。Vuex 与 Pinia 提供共享 store，但它们不会替业务决定所有权，也不会自动处理请求乱序、刷新恢复或用户之间的隔离。
+
+面试中比较两个库时，应先讲清修改路径，再说明模块组织、响应式使用和生命周期。本文以 Vue 3、Vuex 4 与 Pinia 3 为示例基线，历史项目中的 Vuex 3 配合 Vue 2 使用，核心的 state、getter、mutation 和 action 分工仍可复用。
+
+## 1. 面试核心 {#core}
+
+- **store 适合多个组件共同使用、需要明确生命周期的业务状态。** 输入框临时值、局部展开状态和可直接计算的派生值，不必全部放进共享 store。[卡](#state-scope)
+- **Vuex 用 mutation 同步修改 state，action 组织异步流程并提交 mutation。** `commit` 与 `dispatch` 的含义不同，异步 action 也不代表 DOM 已完成更新。[卡](#vuex-flow)
+- **Pinia 保留 state、getter 和 action，允许直接修改已声明的 state，不要求 mutation 层。** action 仍适合集中业务规则，不能把“允许直接写”理解成没有数据归属。[卡](#vuex-pinia)
+- **Pinia store 的普通解构可能得到当前值，`storeToRefs` 保留 state 与 getter 的响应式入口。** action 已绑定到 store，可按需要解构使用。[卡](#store-refs)
+- **`$patch` 可以把多项修改归为一次补丁记录，但不是数据库事务。** 普通同步观察者仍可能看到中间状态，失败也不会自动回滚。[卡](#patch-reset)
+- **store 的生命周期通常长于单个组件，组件卸载不等于共享状态消失。** 订阅、请求与独立副作用需要明确释放，SSR 需要每个请求自己的容器。[卡](#store-lifecycle)
+- **持久化是恢复、校验和订阅写入的额外流程。** Pinia 本身不会自动把全部状态保存到浏览器；持久化插件也不能替代数据版本、用户隔离和服务端授权。[卡](#persistence)
+- **测试应创建独立 store 实例，并检验真实动作与失败分支。** 把 action 替换成桩以后，只能证明调用关系，不能证明原 action 的实现正确。[卡](#store-testing)
+
+## 2. 状态的归属 {#状态的归属}
+
+**store** 是有明确身份和生命周期的共享状态容器，提供响应式读取与约定的修改入口。它减少跨层传递或多份副本同步的负担，但把数据放得更远也会增加依赖范围。
+
+| 状态或需求 | 通常适合的位置 | 原因 |
+| --- | --- | --- |
+| 一个弹窗是否展开 | 当前组件或共同父组件 | 使用范围小，离开界面即可结束 |
+| 多页使用的购物车草稿 | 相应业务 store | 多个区域读写同一份状态 |
+| 单价和数量算出的总价 | computed / getter | 保留来源，避免再同步一份总价 |
+| 搜索筛选、页码、可分享的标签页 | URL 与必要的局部状态 | 刷新、回退、分享需要可恢复语义 |
+| 服务端数据及其缓存 | 数据请求层或有明确策略的 store | 需要区分新鲜度、加载、错误和更新失效 |
+| 祖先子树内的主题或表单上下文 | provide / inject 或局部状态 | 共享范围可能只在该子树内 |
+
+选择 store 之前，先确认是否真有多个组件共同拥有这份业务状态。如果只是子组件通知父组件一次变化，props 与事件通常已经足够；相关边界见 [Vue 组件](./components.mdx#props与组件事件)。
+
+## 3. Vuex 的修改路径 {#vuex的修改路径}
+
+### 3.1 state、getter、mutation 与 action {#state与getter和mutation与action}
+
+Vuex 的 **state** 保存当前状态，**getter**提供派生读取，**mutation**执行同步修改，**action**组织业务流程，包括异步工作。
+
+下面是可独立运行的 Vuex 4 模块：
+
+```js
+import { createStore } from 'vuex';
+
+const store = createStore({
+  strict: true,
+  state: () => ({ count: 0 }),
+  getters: { double: state => state.count * 2 },
+  mutations: {
+    increment(state, amount) { state.count += amount; }
+  },
+  actions: {
+    async incrementLater({ commit, state }, amount) {
+      await Promise.resolve();
+      commit('increment', amount);
+      return state.count;
+    }
+  }
+});
+store.commit('increment', 2);
+console.log(store.state.count, store.getters.double);
+const value = await store.dispatch('incrementLater', 3);
+console.log(value, store.state.count, store.getters.double);
+```
+
+输出 `2 4`，随后是 `5 5 10`。`commit` 立即执行相应 mutation；`dispatch` 返回的 Promise 可以等待 action 返回的异步流程。若 action 内部启动 Promise 却不返回或等待它，调用方就无法通过这次 dispatch 正确等待后续工作。
+
+### 3.2 mutation 为什么要求同步 {#mutation为什么要求同步}
+
+同步 mutation 让一次提交对应明确的修改边界，订阅与调试工具可以在提交前后观察状态。把异步回调藏进 mutation，会让真正的修改发生在原提交结束之后，破坏这种追踪关系。
+
+Vuex 的约定是通过 mutation 修改状态，不是说 JavaScript 从物理上无法写入 `store.state`。开发时启用 `strict: true`，会借助同步深层侦听检测 mutation 之外的修改并报错；它不承担权限验证，也不是自动撤销修改的机制。
+
+严格模式有遍历和检测成本，生产构建应按 Vuex 的建议关闭。示例固定开启是为了观察边界，不能把它直接当作生产配置。
+
+状态更新后，组件仍经过 Vue 的调度更新 DOM。等待 action 完成，只能说明 action 返回的工作完成；需要读取新 DOM 时还要考虑 Vue 的刷新时机。
+
+### 3.3 模块与命名空间 {#模块与命名空间}
+
+**模块**把不同业务的 state、getter、mutation 和 action 放到各自的范围。`namespaced: true` 给操作名加模块路径，避免所有操作都挤在同一命名空间中。
+
+```js
+import { createStore } from 'vuex';
+
+const store = createStore({
+  modules: {
+    cart: {
+      namespaced: true,
+      state: () => ({ count: 0 }),
+      mutations: { increment(state) { state.count += 1; } },
+      actions: { add({ commit }) { commit('increment'); } }
+    }
+  }
+});
+await store.dispatch('cart/add');
+console.log(store.state.cart.count);
+```
+
+输出 `1`。外部使用 `cart/add`，模块 action 中的 `commit('increment')` 默认访问局部命名空间；需要访问根操作时再明确使用根选项。模块内部的 state 函数也应为各实例生成独立状态，避免复用同一对象。
+
+## 4. Pinia 的 store {#pinia的store}
+
+### 4.1 定义与使用 {#定义与使用}
+
+**`defineStore`** 定义一个带唯一 ID 的 store 使用函数。同一个 Pinia 容器内，多次调用这个函数取得同一个 store；不同容器可以有各自独立的实例。
+
+`counter.js` 定义 Option Store：
+
+```js
+import { defineStore } from 'pinia';
+
+export const useCounterStore = defineStore('counter', {
+  state: () => ({ count: 0, label: '课程' }),
+  getters: { double: state => state.count * 2 },
+  actions: {
+    increment() { this.count += 1; }
+  }
+});
+```
+
+入口 `main.js` 安装容器：
+
+```js
+import { createApp } from 'vue';
+import { createPinia } from 'pinia';
+import App from './App.vue';
+
+createApp(App).use(createPinia()).mount('#app');
+```
+
+`App.vue` 使用 store：
+
+```vue
+<script setup>
+import { storeToRefs } from 'pinia';
+import { useCounterStore } from './counter.js';
+
+const counter = useCounterStore();
+const { count, double } = storeToRefs(counter);
+const { increment } = counter;
+</script>
+
+<template>
+  <button @click="increment">{{ count }} / {{ double }}</button>
+</template>
+```
+
+初始显示 `0 / 0`，点击后显示 `1 / 2`。state 保存实际计数，getter 推导双倍值，action 表达增加操作；Pinia action 里使用 `this` 时应采用普通方法，不能用箭头函数取代其绑定语义。
+
+### 4.2 解构与响应式 {#解构与响应式}
+
+store 是响应式对象。直接解构基本类型属性，会拿到解构时的值；`storeToRefs` 则为 state 与 getter 保留可跟随变化的入口：
+
+```js
+import { createPinia, storeToRefs } from 'pinia';
+import { useCounterStore } from './counter.js';
+
+const store = useCounterStore(createPinia());
+const { count: snapshot } = store;
+const { count, double } = storeToRefs(store);
+const { increment } = store;
+increment();
+console.log(snapshot, count.value, double.value);
+```
+
+输出 `0 1 2`。`snapshot` 是旧数字；`count` 和 `double` 是 ref。action 可以直接解构，因为 Pinia 为它保留了 store 调用语义；`storeToRefs` 不负责把方法都变成 ref。
+
+对象属性被解构后，旧对象本身仍可能响应，但整体替换时仍要考虑引用是否跟随。不能把“对象也响应”误读成任何解构都等价于 `storeToRefs`。
+
+### 4.3 Setup Store {#setup-store}
+
+**Setup Store** 在函数中组合 ref、computed 和函数：返回的 ref 成为 state，computed 成为 getter，函数成为 action。
+
+```js
+import { computed, ref } from 'vue';
+import { defineStore } from 'pinia';
+
+export const useScoreStore = defineStore('score', () => {
+  const score = ref(0);
+  const passed = computed(() => score.value >= 60);
+  function setScore(value) { score.value = value; }
+  function $reset() { score.value = 0; }
+  return { score, passed, setScore, $reset };
+});
+```
+
+调用 `setScore(80)` 后，`score` 为 80，`passed` 为 `true`；调用 `$reset()` 后回到 0 与 `false`。Setup Store 需要自己定义重置逻辑，不能假定它与 Option Store 一样自动生成完整重置。
+
+需要由 Pinia 管理的响应式状态应返回给 Pinia。把这些 ref 藏起来或改成只读返回，会影响 SSR、开发工具与插件识别；普通的内部流程变量与不属于 store 的外部依赖，则不应硬塞进可持久化状态。
+
+## 5. 修改、补丁与订阅 {#修改补丁与订阅}
+
+### 5.1 直接写入与 patch {#直接写入与patch}
+
+Pinia 允许直接修改已声明的 state，也支持 `$patch` 的对象或函数形式；函数 patch 必须同步执行。业务操作有规则、涉及多项状态或需要复用时，用 action 集中表达仍然有价值。
+
+```js
+import { createPinia } from 'pinia';
+import { useCounterStore } from './counter.js';
+
+const store = useCounterStore(createPinia());
+const stop = store.$subscribe((mutation, state) => {
+  console.log(mutation.type, state.count, state.label);
+}, { flush: 'sync' });
+store.count = 1;
+store.$patch({ count: 2, label: '练习' });
+store.$patch(state => {
+  state.count += 1;
+  state.label = '复习';
+});
+stop();
+store.count = 4;
+```
+
+依次输出 `direct 1 课程`、`patch object 2 练习`、`patch function 3 复习`。最后改到 4 时订阅已移除，因此没有输出。函数 patch 将这组修改归为一次补丁通知和调试记录。
+
+这不表示所有观察者都只能看到最终结果。普通 `watch(..., { flush: 'sync' })` 可能在每个底层写入后运行；patch 中途抛错，也不会自动回滚之前的赋值。需要不可分割的业务约束时，应先验证完整输入，再明确安排状态更新，不能把 patch 当成数据库事务。
+
+### 5.2 重置与释放 {#重置与释放}
+
+Option Store 的 `$reset()` 重新按 state 工厂恢复初始值；Setup Store 需要自定义重置。重置数据不等于清理浏览器持久化，也不自动让已经发出的请求失效。
+
+`$dispose()` 停止 store 自身作用域并从容器的 store 注册表移除，但不自动删除 `pinia.state.value` 中保留的状态。重新创建时仍可能使用那份数据；也不能期待它取消任意外部网络任务。退出登录、结束页面业务与销毁整个应用是不同的生命周期事件，应分别定义清理范围。
+
+在组件 `setup` 中注册的 `$subscribe` 默认绑定到该组件，卸载时移除；需要独立长期订阅时可指定 `{ detached: true }`，并保存返回的取消函数。共享 store 本身通常不会因为某个消费组件卸载而消失。
+
+## 6. 异步 action 与请求归属 {#异步action与请求归属}
+
+Pinia action 可以是 async 函数，但库不会自动替多个 action 调用安排“最新结果优先”。下面的 Setup Store 用每个实例独有的请求序号管理归属，读取函数由调用方传入，便于接实际 API 或独立测试：
+
+```js
+import { ref, shallowRef } from 'vue';
+import { defineStore } from 'pinia';
+
+export const useCourseStore = defineStore('course', () => {
+  const course = shallowRef(null);
+  const status = ref('idle');
+  let revision = 0;
+
+  async function load(id, readCourse) {
+    const request = ++revision;
+    course.value = null;
+    status.value = 'loading';
+    try {
+      const value = await readCourse(id);
+      if (request !== revision) return false;
+      course.value = value;
+      status.value = 'success';
+      return true;
+    } catch (error) {
+      if (request === revision) status.value = 'error';
+      return false;
+    }
+  }
+  function $reset() {
+    revision += 1;
+    course.value = null;
+    status.value = 'idle';
+  }
+  return { course, status, load, $reset };
+});
+```
+
+连续调用 `load('vue', readCourse)` 与 `load('react', readCourse)`，后者先返回时会成为当前结果；前者随后返回则得到 `false`，不会覆盖它。重置也递增序号，使之前的请求结果失效。序号是这个实例的流程控制变量，不是要展示或持久化的业务字段。
+
+这个实现采用“最后一次启动的请求负责当前状态”的规则，失败返回 `false` 并记录错误状态，没有向调用方重新抛出错误。其他业务可以选择返回错误对象或抛出异常，但需要统一契约。
+
+序号不真正中止网络传输。需要节省资源时，读取层可再接受 `AbortSignal`；需要缓存多个课程时，也应按课程 ID 分别管理，而不是复用一个“当前课程”的序号。不要把一种请求归属策略套到所有业务。
+
+## 7. 持久化与实例隔离 {#持久化与实例隔离}
+
+### 7.1 持久化的读写链路 {#持久化的读写链路}
+
+**持久化**把允许保存的状态写到存储中，并在下一次创建时恢复。一般包括读取、解析、校验、迁移和订阅写入；插件只是把这些步骤接入 store 生命周期。
+
+下面的 `persist-counter.js` 只持久化计数，要求非负整数，并用版本号明确格式：
+
+```js
+export function persistCounter(store, storage, reportError = console.error) {
+  const key = 'course-counter-v1';
+  try {
+    const raw = storage.getItem(key);
+    if (raw !== null) {
+      const saved = JSON.parse(raw);
+      if (saved && saved.version === 1 &&
+          Number.isSafeInteger(saved.count) && saved.count >= 0) {
+        store.$patch({ count: saved.count });
+      }
+    }
+  } catch (error) {
+    reportError(error);
+  }
+  return store.$subscribe((_mutation, state) => {
+    try {
+      storage.setItem(key, JSON.stringify({ version: 1, count: state.count }));
+    } catch (error) {
+      reportError(error);
+    }
+  }, { detached: true, flush: 'sync' });
+}
+```
+
+传入 `localStorage` 后，函数先恢复合法计数，再订阅变化；返回值用来停止写入。只选择 `count` 字段，既不会恢复未知字段，也不会把 getter、action 或临时请求状态一起序列化。
+
+这个简化接口假定运行中的业务操作也保证计数合法。`flush: 'sync'` 方便看清每次写入，高频变化时应另行合并写入；同步存储可能阻塞主线程。它没有处理多标签页冲突、用户切换和旧格式迁移，真实需求出现时必须补充相应策略。
+
+浏览器存储可以被用户修改，不能把其中的角色或权限字段当成授权依据。服务端渲染阶段没有浏览器 `localStorage`，应在客户端阶段恢复，或使用框架提供的水合流程。
+
+### 7.2 一个定义，多份实例 {#一个定义多份实例}
+
+store 定义可以共享，实例不应不加区分地跨用户共享。下面用两个 Pinia 容器验证隔离：
+
+```js
+import { createPinia } from 'pinia';
+import { useCounterStore } from './counter.js';
+
+const first = createPinia();
+const second = createPinia();
+const a = useCounterStore(first);
+const again = useCounterStore(first);
+const b = useCounterStore(second);
+a.increment();
+console.log(a === again, a === b, a.count, b.count);
+```
+
+输出 `true false 1 0`。同一容器复用实例，不同容器各自保留状态。
+
+SSR 应按请求创建应用与 Pinia，避免模块顶层的单例 store 把一个用户的数据带给另一个用户。在组件外使用 store 时，显式传入本次应用的 Pinia，可以避免依赖不明确的全局活动实例。把服务端状态写进 HTML 还需要安全序列化与正确恢复顺序，不应直接拼接任意 JSON 文本到脚本中。
+
+## 8. 选择、迁移与测试 {#选择迁移与测试}
+
+### 8.1 Vuex 与 Pinia 的区别 {#vuex与pinia的区别}
+
+| 方面 | Vuex 4 | Pinia 3 |
+| --- | --- | --- |
+| 状态修改约定 | 提交 mutation，action 可组织异步流程 | 允许直接修改 state，也可通过 action 与 patch |
+| 业务拆分 | 单一状态树中的模块，可使用命名空间 | 多个具唯一 ID 的 store，可以按业务组合 |
+| 派生状态 | getter | getter，Setup Store 可使用 computed |
+| 使用方式 | `commit` / `dispatch` 与模块操作名 | 普通属性和方法调用，适合类型推断 |
+| 组件绑定 | computed、映射辅助函数等 | store 属性、`storeToRefs` 等 |
+| 重置与持久化 | 根据业务设计 | Option / Setup Store 的重置有差异，持久化仍需另做 |
+
+比较时不要把 Vuex 说成“不能响应式”或“不能做模块化”。两者都能共享响应式状态，主要区别在操作约定、类型使用和组织方式。是否迁移还取决于现有模块、插件、测试和项目约束。
+
+迁移应先保持业务语义：把模块对应到合适的 store，getter 对应派生读取，mutation 中的规则与 action 中的流程合并到明确方法，替换调用点，再检查重置、订阅、持久化和 SSR 隔离。只把 `commit` 改成属性赋值，不代表迁移完整。
+
+### 8.2 验证实际行为 {#验证实际行为}
+
+测试至少检查初值、业务动作、派生结果、失败路径和实例隔离。异步动作还要控制完成顺序，验证旧结果、重置与失败不会写坏当前状态。
+
+```js
+import assert from 'node:assert/strict';
+import { createPinia } from 'pinia';
+import { useCounterStore } from './counter.js';
+
+const store = useCounterStore(createPinia());
+store.increment();
+assert.equal(store.count, 1);
+assert.equal(store.double, 2);
+store.$reset();
+assert.equal(store.count, 0);
+assert.equal(store.double, 0);
+```
+
+这个测试执行真实 action 和 getter，检查增加与重置。每个测试使用新容器，避免前一项测试留下状态。组件测试可以把 action 替换成桩，以检查按钮是否调用它；但验证 action 内部逻辑时必须运行真实实现，不能把桩的返回值当成实现正确的证据。
+
+## 9. 面试题 {#面试题}
+
+### 9.1 Vuex 或 Pinia 解决什么问题，所有状态都应该放进去吗？ {#state-scope}
+
+**考察重点**：共享需求、状态所有权与局部边界。
+
+**相关内容**：[状态的归属](#状态的归属)。
+
+<details>
+<summary>参考回答</summary>
+
+**它们为多个组件提供共享响应式状态与明确的修改入口，减少跨层传递和多副本同步。** 购物车等跨区域业务状态适合 store；单个弹窗、临时输入或可直接计算的结果，通常留在更小范围或用派生值表达。
+
+还要确定状态何时重置、是否跨页面保留、是否写入存储，以及谁可以修改。选择 store 不等于已经解决这些业务问题。
+
+</details>
+
+### 9.2 Vuex 怎样从 action 更新界面，为什么 mutation 要同步？ {#vuex-flow}
+
+**考察重点**：dispatch、commit、响应式更新与追踪边界。
+
+**相关内容**：[Vuex 的修改路径](#vuex的修改路径)。
+
+<details>
+<summary>参考回答</summary>
+
+**action 组织业务或异步工作，提交 mutation 同步修改 state，组件的响应式读取再触发 Vue 更新。** getter 提供派生结果，`dispatch` 可以等待 action 返回的 Promise，`commit` 则立即执行 mutation。
+
+同步 mutation 让提交前后状态有明确边界，便于订阅和调试。异步修改应由 action 安排，再在完成时提交；严格模式检测越过 mutation 的写入，不是权限控制或自动回滚。action 完成也不保证 DOM 已刷新。
+
+</details>
+
+### 9.3 Vuex 与 Pinia 有什么区别，迁移时应检查哪些内容？ {#vuex-pinia}
+
+**考察重点**：修改协议、模块组织与业务语义保持。
+
+**相关内容**：[Vuex 与 Pinia 的区别](#vuex与pinia的区别)。
+
+<details>
+<summary>参考回答</summary>
+
+**Vuex 用 mutation 与 action 分开表达同步修改和业务流程，Pinia 不要求 mutation，允许直接写 state 或使用 action。** Vuex 以模块和命名空间组织状态树，Pinia 以多个唯一 ID 的 store 组合业务，普通属性与方法调用也更便于类型推断。
+
+迁移时不仅替换 API，还要保持 getter、动作返回值、重置、插件订阅、持久化和 SSR 隔离语义。Vuex 本身也支持响应式和模块化，不能用这些能力的有无作为区别。
+
+</details>
+
+### 9.4 Pinia store 解构后为什么可能不更新，action 也要 storeToRefs 吗？ {#store-refs}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：响应式属性读取、ref 与绑定方法。
+
+**相关内容**：[解构与响应式](#解构与响应式)。
+
+<details>
+<summary>参考回答</summary>
+
+**普通解构基本类型属性得到当时的值，`storeToRefs` 为 state 与 getter 保留响应式入口。** 因此 store 增加后，旧数字不变，对应 ref 会更新。
+
+action 已由 Pinia 绑定到 store，可以直接解构调用，`storeToRefs` 不用于把动作函数变成 ref。对象引用的解构还要考虑整体替换，不能只看嵌套修改是否有效。
+
+</details>
+
+### 9.5 patch 是否具有事务语义，Option Store 与 Setup Store 怎样重置？ {#patch-reset}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：补丁记录、中间状态与重置范围。
+
+**相关内容**：[修改、补丁与订阅](#修改补丁与订阅)。
+
+<details>
+<summary>参考回答</summary>
+
+**patch 把一组修改归入一次补丁通知和调试记录，但不保证隔离或失败回滚。** 普通同步观察者仍可能看到写入过程，中途抛错也不会撤销已完成赋值。
+
+Option Store 可用自动提供的 `$reset()` 恢复 state 工厂初值，Setup Store 需要自己定义。数据重置、清除持久化和使旧请求失效是不同工作，应按需求一并处理。
+
+</details>
+
+### 9.6 组件卸载后 store 还在吗，SSR 为什么不能共享单例？ {#store-lifecycle}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：组件、订阅、store 容器与请求隔离。
+
+**相关内容**：[重置与释放](#重置与释放)、[一个定义，多份实例](#一个定义多份实例)。
+
+<details>
+<summary>参考回答</summary>
+
+**共享 store 通常不会随某个消费组件卸载而消失，组件内的默认订阅则会随组件移除。** detached 订阅需要手动取消，外部请求和副作用也应明确清理；`$dispose` 不等于删除所有保留状态或取消所有网络工作。
+
+SSR 中多个请求可能在同一进程执行，共享用户状态单例会造成数据串用。应为每个请求创建独立容器，组件外使用时传入正确的 Pinia 实例。
+
+</details>
+
+### 9.7 Pinia 持久化插件通常做了什么，需要处理哪些失败？ {#persistence}
+
+**考察重点**：恢复、序列化、订阅、格式与安全边界。
+
+**相关内容**：[持久化的读写链路](#持久化的读写链路)。
+
+<details>
+<summary>参考回答</summary>
+
+**插件通常在创建时读取、解析和恢复状态，再订阅后续变化写入存储。** Pinia 自身不会默认持久化全部 state；实现可以选择 localStorage、sessionStorage 或其他存储，具体取决于容量与生命周期。
+
+需要处理非法内容、旧格式、读写异常、用户切换和字段选择。高频同步写入应合并，SSR 不能直接访问浏览器存储；客户端可修改的权限字段不能代替服务端授权。
+
+</details>
+
+### 9.8 两个异步 action 乱序完成时，怎样保证当前结果正确？ {#async-actions}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：任务归属、失效策略与重置边界。
+
+**相关内容**：[异步 action 与请求归属](#异步action与请求归属)。
+
+<details>
+<summary>参考回答</summary>
+
+**先确定业务需要的顺序规则，再用请求版本或取消机制防止过期工作提交。** 对“当前课程”可采用最后一次启动者负责当前状态，结果返回时比较版本；重置时也使旧版本失效。
+
+版本检查不会中止网络，需要时另外使用取消信号。多条独立数据的缓存应按键管理，不能让一个全局版本把其他数据的合法请求都作废。
+
+</details>
+
+### 9.9 怎样验证 store 和使用它的组件？ {#store-testing}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：实例隔离、真实实现与桩的验证范围。
+
+**相关内容**：[验证实际行为](#验证实际行为)。
+
+<details>
+<summary>参考回答</summary>
+
+**每个测试创建独立容器，执行真实动作并检查状态、getter、错误和重置结果。** 异步测试控制请求完成顺序，确认过期响应、失败和重置不会污染当前状态。
+
+组件测试可把 action 替换成桩，验证交互是否调用它；这种测试不能证明 action 内部逻辑。持久化和订阅还需验证恢复失败、停止订阅与卸载后的行为。
+
+</details>
+
+## 10. 参考资料 {#参考资料}
+
+- [Vuex：Getting Started](https://vuex.vuejs.org/guide/)
+- [Vuex：Mutations](https://vuex.vuejs.org/guide/mutations.html)
+- [Vuex：Actions](https://vuex.vuejs.org/guide/actions.html)
+- [Vuex：Modules](https://vuex.vuejs.org/guide/modules.html)
+- [Vuex：Strict Mode](https://vuex.vuejs.org/guide/strict.html)
+- [Pinia：Defining a Store](https://pinia.vuejs.org/core-concepts/)
+- [Pinia：State](https://pinia.vuejs.org/core-concepts/state.html)
+- [Pinia：Actions](https://pinia.vuejs.org/core-concepts/actions.html)
+- [Pinia：Store API](https://pinia.vuejs.org/api/pinia/interfaces/StoreWithState.html)
+- [Pinia：Stores outside of Components](https://pinia.vuejs.org/core-concepts/outside-component-usage.html)
+- [Pinia：Server Side Rendering](https://pinia.vuejs.org/ssr/)
+- [Pinia：Testing](https://pinia.vuejs.org/cookbook/testing.html)

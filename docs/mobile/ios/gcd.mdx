@@ -1,0 +1,337 @@
+---
+title: Grand Central Dispatch
+description: 理解 GCD 队列、同步异步、barrier、任务组、信号量与取消，分析主队列死锁和共享数据访问。
+knowledge:
+  id: mobile.ios.gcd
+---
+
+**Grand Central Dispatch（GCD）** 用队列和工作项组织任务，由系统安排执行资源。开发者描述任务的顺序、并发关系和服务质量，不需要为每个任务创建一条线程。理解 GCD 的起点是把两个维度分开：`sync`、`async` 说明提交者是否等待任务完成，串行、并发说明队列是否允许任务重叠执行。
+
+队列并不自动保证所有共享数据安全，异步也不自动代表“在新线程上运行”。面试中的输出顺序、死锁、读写保护和多任务汇合题，都需要沿着实际等待与访问关系推导。本文示例采用 Swift 5 语言模式；Swift Task、actor 与 GCD 的区别见 [Swift 并发](../../basic-knowledge/swift/concurrency.mdx)。
+
+## 1. 面试核心 {#core}
+
+- **`sync` 等待工作项完成后返回，`async` 不等待它完成**；串行队列一次执行一个工作项，并发队列允许重叠。同步不等于串行，异步不等于并发。[卡](#sync-async)
+- **除主队列外，不应依赖队列始终使用同一线程**。系统可以复用线程，`sync` 还可能直接在调用线程执行工作项。[卡](#queue-thread)
+- **死锁来自无法解除的等待关系**。正在主队列或同一串行队列执行的任务，再同步等待该队列中的工作完成，会形成自我等待；实现也可能直接检测并终止程序。[卡](#deadlock)
+- **barrier 只为它所在的自建并发队列建立边界**：前面的工作完成后独占执行，后面的工作等它完成再开始。全局并发队列上的 barrier 不能提供这种保护。[卡](#barrier)
+- **DispatchGroup 汇合的是登记的工作完成，不会自动理解嵌套异步操作**。异步回调型任务应在开始前 `enter`，在真正完成时且仅一次 `leave`。[卡](#group)
+- **`notify` 安排完成回调，`wait` 阻塞调用线程**。超时返回不会取消组内工作，更不能阻塞负责执行完成回调的主线程。[卡](#group-wait)
+- **信号量控制可用名额或等待某个条件**，不是把回调自动转换成安全同步调用的工具。大量阻塞可能增加线程压力，Swift 协作任务也不应靠这种方式等待异步结果。[卡](#semaphore)
+- **取消已经开始的 DispatchWorkItem 不会强制中断其函数**。业务需要可取消时，应设计检查点和资源收尾；尚未执行的工作项则可跳过主体。[卡](#cancellation)
+- **QoS 表达任务的重要性与时效需求，不是固定优先级或完成顺序保证**。提高 QoS 无法解除锁等待，也不能缩短一个不合理的临界区。[卡](#qos)
+
+## 2. 队列、同步与执行顺序 {#队列同步与执行顺序}
+
+### 2.1 两个维度分别控制什么 {#两个维度分别控制什么}
+
+**调度队列**保存提交的工作项，并按照队列规则安排执行。主队列是与主线程关联的串行队列；应用还可以创建自己的串行或并发队列，或者使用系统全局并发队列。
+
+| 提交方式与队列 | 提交者是否等待 | 队列上的工作关系 |
+| --- | --- | --- |
+| `sync` 到串行队列 | 等本次工作完成 | 与该队列其他工作依次执行 |
+| `async` 到串行队列 | 不等本次工作完成 | 仍然一次只执行一个，不因异步而重叠 |
+| `sync` 到并发队列 | 等本次工作完成 | 可能与队列上其他非 barrier 工作重叠 |
+| `async` 到并发队列 | 不等本次工作完成 | 可以与其他工作重叠，完成先后不保证 |
+
+`async` 的语义是提交者不等待，不是“工作项一定晚于下一行代码开始”。其他线程可能很快执行它。多线程同时提交工作时，若业务需要确定的先后顺序，应建立明确依赖，不能依靠日志里偶然出现的一次顺序。
+
+### 2.2 串行队列上的顺序示例 {#串行队列上的顺序示例}
+
+```swift
+import Foundation
+
+func showSerialOrder(emit: @escaping (String) -> Void) {
+    let queue = DispatchQueue(label: "example.order")
+    queue.async { emit("A") }
+    queue.async { emit("B") }
+    queue.sync { emit("C") }
+    emit("D")
+}
+```
+
+在 `emit` 正常返回、不额外改变控制流的条件下，输出是 `A、B、C、D`。前三项按提交顺序在同一个串行队列执行，`sync` 又保证 C 完成后调用方才继续到 D。A、B 以异步方式提交，并不改变队列的串行约束。
+
+不要把这个结论扩展成“所有异步打印都有确定顺序”。如果把 C 改成 `async`，调用方的 D 不再等待它；D 与队列中的输出就需要重新分析。
+
+### 2.3 队列为什么不是线程 {#队列为什么不是线程}
+
+GCD 通过系统管理的执行资源运行工作项。主队列的工作在主线程上执行；普通队列不承诺固定线程。一个串行队列的相邻工作可以在不同线程执行，只要它们没有重叠，就仍满足串行要求。
+
+`sync` 在条件允许时可以直接借用调用线程执行工作，避免不必要的切换。因此，在主线程上同步提交到一个普通串行队列，并不能保证耗时计算离开主线程。相反，向主队列提交工作，即使来自后台线程，也必须由主线程执行。
+
+想确认“当前是否处于某个队列的执行上下文”，可以按需要使用队列 specific 数据或 `dispatchPrecondition`；线程编号不能代替队列身份。线程基础见 [进程与线程](../../basic-knowledge/operating-system/processes-threads.mdx)。
+
+## 3. 同步等待与死锁 {#同步等待与死锁}
+
+### 3.1 主队列为什么会自我等待 {#主队列为什么会自我等待}
+
+正在主队列执行的任务调用 `DispatchQueue.main.sync`，会等待新工作完成；新工作又必须等当前任务让出主队列才能执行。这就形成了无法自行解除的等待关系。
+
+同一串行队列中的任务再对自己 `sync`，也有相同问题。libdispatch 可以检测部分错误并直接触发运行时终止，所以“调试时崩溃而不是一直卡住”并不表示这种写法安全。相关调用不应在正常代码里尝试。
+
+从后台同步提交主队列并非必然死锁。如果主线程可正常处理工作，它可以执行回调并让后台继续。但当主线程又在等待这个后台任务、组或锁时，仍会形成循环等待。因此要画出谁等谁，而不是只背“出现 sync 就死锁”。
+
+### 3.2 把 sync 改成 async 就一定正确吗 {#把sync改成async就一定正确吗}
+
+`async` 可以去掉调用方的同步等待，却也改变完成时机。如果调用方后面立即读取结果，就可能读到旧值。正确修复通常需要同时调整控制流，例如用完成回调、任务组或 Swift 异步函数表达“完成之后再做下一步”。
+
+也不能为了等异步结果而在主线程调用 `semaphore.wait()`。如果结果回调安排在主队列，主线程阻塞后，回调就没有执行机会；即使回调不在主队列，这种等待仍会阻塞交互。
+
+## 4. barrier 与共享数据 {#barrier与共享数据}
+
+**barrier** 为同一条自建并发队列建立一个执行边界：它等待此前已提交的工作完成，然后独占队列执行；在它之后提交的工作，等 barrier 完成再继续。
+
+这个机制可以用于“读取之间允许并发，写入独占”的数据访问，但前提是相关访问全部经过同一队列：
+
+```swift
+import Foundation
+
+final class ScoreStore {
+    private let queue = DispatchQueue(
+        label: "example.scores", attributes: .concurrent
+    )
+    private var scores: [String: Int] = [:]
+
+    func score(for id: String) -> Int {
+        queue.sync { scores[id, default: 0] }
+    }
+
+    func increment(_ id: String) {
+        queue.sync(flags: .barrier) {
+            scores[id, default: 0] += 1
+        }
+    }
+}
+```
+
+`score` 的读取可以与其他读取重叠，`increment` 中的读取、加一和写回则在同一个独占区间完成。若把加一拆成公开的“先读取、再设置”，多个调用之间仍可能丢失更新，即使两个单独方法内部各自受保护。
+
+这里用同步 barrier，让 `increment` 返回时写入已经完成；改为异步 barrier 后，方法返回不再代表写入完成，接口必须说明这一差异。不要从该队列内部再次调用这些同步访问方法，也不要把内部可变对象暴露给绕过队列的访问者。
+
+barrier 不会阻止其他队列直接修改同一数据。提交到系统全局并发队列时，barrier 也不能作为该全局队列的独占屏障。对简单共享状态，普通锁或 actor 可能更容易管理；是否需要读并发，应根据访问成本和竞争情况决定。
+
+## 5. DispatchGroup 与任务汇合 {#dispatchgroup与任务汇合}
+
+### 5.1 登记的是哪段工作的完成 {#登记的是哪段工作的完成}
+
+**DispatchGroup** 记录一组尚未完成的工作，在登记的工作全部完成后提供通知或解除等待。`queue.async(group: group)` 可以把提交的闭包纳入组，但如果闭包只是启动一次网络请求就返回，组不会自动继续等待网络回调。
+
+对于回调型异步操作，应手工把真实的完成边界登记到组中：
+
+```swift
+import Foundation
+
+func afterBoth(
+    startA: (@escaping () -> Void) -> Void,
+    startB: (@escaping () -> Void) -> Void,
+    completion: @escaping () -> Void
+) {
+    let group = DispatchGroup()
+    group.enter()
+    group.enter()
+
+    startA { group.leave() }
+    startB { group.leave() }
+
+    group.notify(queue: .main, execute: completion)
+}
+```
+
+`startA`、`startB` 的契约是：完成时调用传入回调，并且每项恰好调用一次；成功、失败或取消都应走向明确的完成路径。两次 `enter` 在启动前执行，所以同步完成的实现也能正确处理。只有两项都 `leave` 后，`completion` 才会排到主队列。
+
+少调用 `leave`，组会一直有未完成工作；多调用 `leave`，计数失衡会触发错误。完成组内工作也不等于并发写入结果集合安全：结果共享仍需单独的隔离或同步。
+
+### 5.2 notify 与 wait 的区别 {#notify与wait的区别}
+
+`notify` 注册完成回调，当前线程可以继续做其他事；`wait` 阻塞当前线程，直到组完成或超时。组在注册时已完成，也仍需按通知队列的执行规则安排回调，不能假定 `notify` 等同于立刻内联调用完成函数。
+
+`wait(timeout:)` 超时只表示这次等待没有等到完成，不会取消组内任务。后续仍需处理迟到结果、资源释放和业务状态。不要在负责执行组内工作的串行队列上阻塞等待该组，也不要在主线程等待需要主线程完成的任务。
+
+## 6. 信号量、取消与服务质量 {#信号量取消与服务质量}
+
+### 6.1 信号量表达名额与等待 {#信号量表达名额与等待}
+
+**DispatchSemaphore** 是计数信号量。可以把初始计数理解为可用名额：`wait` 尝试获取一个名额，没有名额时等待；`signal` 归还或提供一个名额，使等待者有机会继续。
+
+控制并发时，应覆盖真实资源占用的整个生命周期。例如某任务只是启动网络请求便返回，如果立即 `signal`，限制的只是“启动请求”的并发，而不是在途请求数量。超时分支也要明确是否真正获得了名额，不能无条件 `signal` 把计数越加越大。
+
+阻塞不是没有代价。大量并发工作项等待信号量时，GCD 可能需要更多线程运行其他任务，造成线程资源压力。需要控制批量工作并发时，可以考虑具有明确并发上限的任务组织方式；在 Swift 的协作式异步代码中，应使用异步等待，不要用阻塞线程来模拟 `await`。
+
+### 6.2 DispatchWorkItem 的取消边界 {#dispatchworkitem的取消边界}
+
+**DispatchWorkItem** 封装一段可提交的工作。调用 `cancel()` 后，后续尝试执行尚未开始的工作项可以跳过主体；但已经开始执行的主体不会被强制中断。
+
+如果一个长任务需要提前停止，就要在合适位置检查取消状态或业务取消标记，并按规则结束。网络请求、文件句柄和其他异步资源还可能需要各自的取消 API，不能以为取消一个外层工作项就自动取消全部下游工作。
+
+被取消且没有运行主体的工作项，也不会执行主体里的清理语句。因此资源所有权不应建立在“这个 block 总有机会跑到末尾”这一假设上。完成通知、结果提交和资源释放都需要覆盖取消路径。
+
+### 6.3 QoS 与时间任务 {#qos与时间任务}
+
+**Quality of Service（QoS）** 描述任务对时效和资源的需求。常见类别包括用户正在等待的交互工作、用户主动发起的任务、持续工具性工作和后台维护，对应 `.userInteractive`、`.userInitiated`、`.utility`、`.background` 等类别。
+
+QoS 不是“指定第几个执行”，也不保证某项工作在固定时间内完成。系统还要结合资源、依赖和其他负载调度。把所有后台工作提升到最高类别，可能增加能耗并争抢交互所需资源。
+
+`DispatchSourceTimer` 可以向指定队列投递时间事件，不依赖调用线程的 RunLoop；但它仍不是硬实时定时器，回调会受到队列忙碌等条件影响。需要与 RunLoop 模式配合的 Foundation Timer 见 [RunLoop](./run-loop.mdx#timer的时间与生命周期)。选择时看调度与生命周期需求，不用“哪个一定更准”替代条件分析。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 同步、异步和串行、并发有什么区别？ {#sync-async}
+
+**考察重点**：提交者等待与队列执行约束的分离。
+
+**相关内容**：[两个维度分别控制什么](#两个维度分别控制什么)。
+
+<details>
+<summary>参考回答</summary>
+
+**同步和异步说明提交者是否等待工作项完成；串行和并发说明队列是否允许工作项重叠执行。** `sync` 完成后返回，`async` 不等待完成；串行队列即使用 `async` 提交，也仍然一次只执行一个工作项。
+
+异步不保证新建线程，也不保证任务一定晚于提交后的下一行代码开始。并发队列允许重叠，但实际并行程度仍由系统资源和调度决定。
+
+</details>
+
+### 7.2 串行队列中的任务一定在同一线程执行吗？ {#queue-thread}
+
+**考察重点**：队列身份与执行线程的区别。
+
+**相关内容**：[队列为什么不是线程](#队列为什么不是线程)。
+
+<details>
+<summary>参考回答</summary>
+
+**普通串行队列不保证固定线程，它保证的是工作项之间不重叠。** 系统可以为不同工作项选择不同线程，`sync` 还可能直接在调用线程执行。
+
+主队列是需要单独说明的情况，它的工作在主线程执行。因此不能根据“用了另一个队列”就认定任务已经离开主线程，也不能用线程编号判断是否属于某个普通队列。
+
+</details>
+
+### 7.3 在主队列任务中同步提交主队列，为什么会出问题？ {#deadlock}
+
+**考察重点**：串行执行与同步等待形成的循环。
+
+**相关内容**：[主队列为什么会自我等待](#主队列为什么会自我等待)。
+
+<details>
+<summary>参考回答</summary>
+
+**当前任务等待新任务完成，新任务又要等当前任务退出主队列，双方无法继续。** 同一串行队列中的自我同步等待也有这个问题，libdispatch 可能直接检测并终止程序。
+
+从后台同步提交主队列不能一概判为死锁，还要看主线程是否反向等待后台任务。判断依据是完整的等待关系。
+
+</details>
+
+### 7.4 dispatch_barrier_async 能用全局并发队列保护读写吗？ {#barrier}
+
+**考察重点**：屏障的队列范围与共享数据访问路径。
+
+**相关内容**：[barrier 与共享数据](#barrier与共享数据)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能把全局并发队列上的 barrier 当作独占读写屏障；需要使用同一条自建并发队列，并让相关访问都经过它。** barrier 等待此前工作完成，独占执行后，再放行后续工作。
+
+其他队列直接访问同一数据不受它保护。读改写也要放在同一个受保护区间里，不能只保证读取和写入各自安全。
+
+</details>
+
+### 7.5 任务 C 需要等 A、B 都完成后执行，GCD 可以怎样实现？ {#group}
+
+**考察重点**：真实完成边界与组计数。
+
+**相关内容**：[登记的是哪段工作的完成](#登记的是哪段工作的完成)。
+
+<details>
+<summary>参考回答</summary>
+
+**可以用 DispatchGroup 登记 A、B，在组完成的 `notify` 中安排 C。** 如果 A、B 本身就是提交闭包的全部工作，可以使用队列的 group 参数；如果闭包只启动异步请求，应在启动前 `enter`，在真实回调完成时 `leave`。
+
+每项必须恰好完成一次登记，失败与取消路径也要处理。组只负责汇合，不自动保护 A、B 并发写入的共享结果。
+
+</details>
+
+### 7.6 DispatchGroup 的 wait 超时，会停止组内任务吗？ {#group-wait}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：等待结果与工作生命周期的区别。
+
+**相关内容**：[notify 与 wait 的区别](#notify与wait的区别)。
+
+<details>
+<summary>参考回答</summary>
+
+**不会，超时只是调用方停止等待，不会自动取消组内工作。** 后续任务仍可能完成，需要处理迟到结果和资源释放。
+
+`wait` 阻塞当前线程，`notify` 安排完成回调。不能阻塞组内任务完成所依赖的主线程或串行队列，否则可能形成死锁。
+
+</details>
+
+### 7.7 用信号量限制异步请求数量，需要注意什么？ {#semaphore}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：名额生命周期、超时与线程阻塞代价。
+
+**相关内容**：[信号量表达名额与等待](#信号量表达名额与等待)。
+
+<details>
+<summary>参考回答</summary>
+
+**名额必须覆盖请求真正的在途时间，而不是只覆盖启动请求的几行代码。** 获得名额后，在成功、失败或取消的最终完成路径归还，且只归还一次；没有获得名额的超时分支不能无条件 `signal`。
+
+同时避免在主线程或 Swift 协作任务中阻塞等待，并警惕大量等待者造成线程压力。需要更复杂调度时，考虑明确限制并发数量的工作组织方式。
+
+</details>
+
+### 7.8 GCD 工作项可以取消吗？ {#cancellation}
+
+**考察重点**：尚未开始与已经执行的取消语义。
+
+**相关内容**：[DispatchWorkItem 的取消边界](#dispatchworkitem的取消边界)。
+
+<details>
+<summary>参考回答</summary>
+
+**DispatchWorkItem 可以标记取消，后续执行尝试可以跳过尚未开始的主体，但取消不会强行中断已经开始的函数。** 长任务要设置取消检查点，并处理必要收尾。
+
+下游网络或其他资源还可能需要各自取消。不能依赖主体一定执行来释放资源，也不能认为取消外层工作项等于停止所有异步操作。
+
+</details>
+
+### 7.9 QoS 能保证高优先级任务一定先完成吗？ {#qos}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：服务质量与顺序、依赖、资源的关系。
+
+**相关内容**：[QoS 与时间任务](#qos与时间任务)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能，QoS 表达重要性和时效需求，系统仍要结合资源、依赖与其他负载调度。** 等锁或等待前置任务的高 QoS 工作，不能靠提高类别解除这些条件。
+
+应按实际用途选择类别，而不是把所有任务都设成最高。业务需要确定顺序时，用队列规则和明确依赖表达。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [Apple：DispatchQueue](https://developer.apple.com/documentation/dispatch/dispatchqueue)
+- [Apple：DispatchQueue.sync(execute:)](https://developer.apple.com/documentation/dispatch/dispatchqueue/sync(execute:)-3segw)
+- [Apple：DispatchQueue.async(group:qos:flags:execute:)](https://developer.apple.com/documentation/dispatch/dispatchqueue/async(group:qos:flags:execute:))
+- [Apple：DispatchWorkItemFlags.barrier](https://developer.apple.com/documentation/dispatch/dispatchworkitemflags/barrier)
+- [Apple：Concurrency Programming Guide — Dispatch Queues](https://developer.apple.com/library/archive/documentation/General/Conceptual/ConcurrencyProgrammingGuide/OperationQueues/OperationQueues.html)
+- [Apple：DispatchGroup](https://developer.apple.com/documentation/dispatch/dispatchgroup)
+- [Apple：DispatchGroup.enter()](https://developer.apple.com/documentation/dispatch/dispatchgroup/enter())
+- [Apple：DispatchGroup.leave()](https://developer.apple.com/documentation/dispatch/dispatchgroup/leave())
+- [Apple：DispatchGroup.notify](https://developer.apple.com/documentation/dispatch/dispatchgroup/notify(qos:flags:queue:execute:))
+- [Apple：DispatchSemaphore](https://developer.apple.com/documentation/dispatch/dispatchsemaphore)
+- [Apple：DispatchWorkItem](https://developer.apple.com/documentation/dispatch/dispatchworkitem)
+- [Apple：DispatchWorkItem.cancel()](https://developer.apple.com/documentation/dispatch/dispatchworkitem/cancel())
+- [Apple：DispatchQoS](https://developer.apple.com/documentation/dispatch/dispatchqos)
+- [Apple：DispatchSource.makeTimerSource](https://developer.apple.com/documentation/dispatch/dispatchsource/maketimersource(flags:queue:))
+- [Apple：dispatch_barrier_async](https://developer.apple.com/documentation/dispatch/dispatch_barrier_async)
+- [Apple：DispatchGroup.wait(timeout:)](https://developer.apple.com/documentation/dispatch/dispatchgroup/wait(timeout:))

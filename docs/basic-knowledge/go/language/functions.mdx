@@ -1,0 +1,381 @@
+---
+sidebar_position: 2
+knowledge:
+  id: basic-knowledge.go.language.functions
+  type: concept
+description: "讲解 Go 函数类型、多返回值、可变参数、闭包与循环变量，区分参数求值、共享变量和调用约定。通过 Go 1.22 与旧语言版本的对照解释回调结果。"
+keywords: ["Go 函数", "多返回值", "可变参数", "闭包", "Go 1.22 循环变量"]
+---
+
+# Go 函数
+
+Go 函数通过参数接收输入，通过返回值交出结果；函数本身也可以作为值保存和传递。回调、延迟执行和并发任务都建立在这些规则上，区别在于函数什么时候执行、执行时能访问哪些变量。
+
+理解函数不能只看声明处。一个切片传给可变参数后是否共享数据，一个闭包稍后读到哪个值，一个多返回值调用怎样把结果交给调用方，都需要把类型、求值时机和变量作用域连起来。本文以 Go 1.22 为基线，循环变量另列旧语言版本的差异。
+
+## 1. 面试核心 {#core}
+
+- 函数也是值，**函数类型由参数和结果的类型、数量以及是否可变参数决定**，参数名称不参与类型身份。函数值只能与 nil 比较，不能用 `==` 比较两个函数是否相同。[卡](#function-type)
+- 多返回值是语言支持的调用结果，**不要求先构造一个装着所有结果的堆对象**。寄存器或栈如何承载结果，由目标架构、调用约定和优化决定。[卡](#multiple-results)
+- 可变参数 `...T` 在函数内表现为 `[]T`。**用 `slice...` 展开已有切片时，形参仍可共享其底层数组**，不能假设展开等于复制元素。[卡](#variadic-aliasing)
+- 闭包可以访问外层变量，**保存闭包不等于冻结变量当时的值**。需要快照时，应明确复制要保留的值；复制指针或切片也不自动深拷贝。[卡](#closure-capture)
+- 延迟调用的实参在登记时求值，闭包体中的变量则在执行时读取。**`defer print(n)` 与 `defer func() { print(n) }()` 的读取时机不同**。[卡](#defer-capture)
+- Go 1.22 的循环中，**由循环声明的变量每轮独立；给外部变量赋值的循环仍共享该变量**。判断旧代码还要看包采用的语言版本。[卡](#loop-variables)
+
+## 2. 函数类型与调用 {#函数类型与调用}
+
+**函数类型**描述一个调用需要哪些参数、返回哪些结果。函数声明同时给出名字、类型和函数体；函数值则可以保存在变量中，之后再调用。
+
+```go
+package main
+
+import "fmt"
+
+func twice(value int) int { return value * 2 }
+
+func main() {
+    var transform func(int) int = twice
+    fmt.Println(transform(3)) // 6
+
+    transform = func(value int) int { return value + 1 }
+    fmt.Println(transform(3)) // 4
+}
+```
+
+两个函数都接收一个 `int`、返回一个 `int`，可以赋给 `transform`。参数名即使不同，也不会改变函数类型。一个接收 `int64` 的函数则不能直接当成 `func(int) int` 使用。
+
+函数值的零值是 nil。调用它会 panic，所以允许为空的回调应在调用前检查，或者在接口契约中要求调用方必须提供。
+
+```go
+var callback func()
+fmt.Println(callback == nil) // true
+// callback() // 运行时 panic：调用 nil 函数
+
+first := func() {}
+second := first
+fmt.Println(first == nil, second == nil) // false false
+// fmt.Println(first == second) // 编译错误：函数值只能与 nil 比较
+```
+
+Go 不支持按参数列表重载同名函数，也没有默认参数。参数数量需要变化时可以使用可变参数；配置项较多时，应设计含义明确的配置值或其他适合当前接口的形式，不靠同名函数猜测调用规则。
+
+## 3. 多返回值与结果变量 {#多返回值与结果变量}
+
+**多返回值**允许函数一次交出多个独立结果。它适合结果之间有明确关系的情况，例如“找到的位置和是否找到”，或者“业务结果和错误”。
+
+```go
+package main
+
+import "fmt"
+
+func locate(items []int, target int) (int, bool) {
+    for index, value := range items {
+        if value == target {
+            return index, true
+        }
+    }
+    return 0, false
+}
+
+func main() {
+    index, found := locate([]int{4, 8}, 8)
+    fmt.Println(index, found) // 1 true
+
+    _, found = locate([]int{4, 8}, 9)
+    fmt.Println(found) // false
+    // result := locate([]int{4, 8}, 8) // 编译错误：一个变量不能接收两个结果
+}
+```
+
+`found` 为 `false` 时，`index` 的零值不代表在下标零处找到目标。返回值之间的约定需要由函数说明，调用方也不能只读取一个看似有意义的数值。
+
+Go 没有把这种调用结果自动包装成一个可随处保存的元组值。需要作为单个值保存和传递时，可以定义结构体。某些语法位置允许直接转交多返回值，例如 `fmt.Println(locate(items, target))`；这也不是先创建了一个通用元组对象。
+
+### 3.1 具名结果 {#具名结果}
+
+**具名结果**是在函数签名中为返回值命名。它们是函数内的局部变量，进入函数时取零值；不带表达式的 `return` 返回它们当时的值。
+
+```go
+package main
+
+import "fmt"
+
+func split(total int) (tens, units int) {
+    tens = total / 10
+    units = total % 10
+    return
+}
+
+func main() {
+    fmt.Println(split(27)) // 2 7
+}
+```
+
+结果名称可以帮助表达含义，但不会改变函数类型，也不意味着必须使用裸 `return`。函数较长或存在多个分支时，显式写出返回表达式通常更容易确认返回了什么。
+
+`return expression` 会先把表达式结果交给相应结果变量，再执行已登记的延迟调用。因此延迟函数如果修改了具名结果，可能影响最终结果；这属于返回过程的语义，不能只看 `return` 所在那一行。
+
+### 3.2 多个结果怎样交给调用方 {#多返回值的调用约定}
+
+**调用约定**规定调用方和被调用方怎样传递参数、结果以及保存运行状态。Go 的多返回值在语义上独立存在，具体承载方式由编译器和目标平台决定。
+
+Go 1.22 官方编译器使用的内部 ABI 可以把适合的参数和结果放进寄存器，也会使用栈空间。值的类型、可用寄存器和目标架构都会影响分配；内联以后甚至可能没有原来的函数调用边界。
+
+因此，“多个返回值全部放在栈上”不能作为 Go 1.22 的通用答案；“返回多个值就会分配一个堆对象”同样没有依据。分析某段程序的实际成本时，要固定 Go 版本和目标架构，检查编译结果或分配测量。内部 ABI 也不是跨版本稳定的公共接口。
+
+## 4. 可变参数 {#可变参数}
+
+**可变参数**允许调用方为最后一个参数提供零个或多个同类型实参，在声明中写作 `...T`。函数内部接收到的是 `[]T`。
+
+```go
+package main
+
+import "fmt"
+
+func total(values ...int) int {
+    sum := 0
+    for _, value := range values {
+        sum += value
+    }
+    return sum
+}
+
+func main() {
+    fmt.Println(total(), total(2, 3)) // 0 5
+    numbers := []int{4, 5}
+    fmt.Println(total(numbers...)) // 9
+}
+```
+
+没有提供可变实参时，`values` 是 nil 切片。逐个提供实参时，调用会建立供形参使用的切片；使用 `numbers...` 时，则把这个切片值传进去，不另外复制底层数组。
+
+```go
+package main
+
+import "fmt"
+
+func replaceFirst(values ...int) {
+    values[0] = 9 // 本例约定至少提供一个元素
+}
+
+func main() {
+    numbers := []int{1, 2}
+    replaceFirst(numbers...)
+    fmt.Println(numbers) // [9 2]
+}
+```
+
+`values` 与 `numbers` 共享数组，所以元素修改可见。函数如果只应读取输入，就不应悄悄修改它；确实需要独立副本时，先分配新切片并复制元素。复制的深度仍取决于元素类型，见[Go 类型与值传递](./types-value-passing.mdx#复制的深度)。
+
+`func(...int)` 和 `func([]int)` 的函数类型也不同。它们在函数体内都能处理切片，不代表可以直接互相赋值。
+
+## 5. 闭包与变量捕获 {#闭包与变量捕获}
+
+**闭包**是能访问其定义位置外层变量的函数值。这些变量可以在外层函数返回后继续被闭包使用；每次创建闭包时共享的是哪一个变量，由作用域决定。
+
+```go
+package main
+
+import "fmt"
+
+func counter() func() int {
+    count := 0
+    return func() int {
+        count++
+        return count
+    }
+}
+
+func main() {
+    first := counter()
+    second := counter()
+    fmt.Println(first(), first(), second()) // 1 2 1
+}
+```
+
+同一次 `counter()` 调用返回的闭包持续使用同一个 `count`。另一次调用创建另一个 `count`，所以 `second()` 从 1 开始。外层函数已经返回，并不意味着被闭包需要的变量立即失效。
+
+### 5.1 共享变量与值快照 {#共享变量与值快照}
+
+闭包读取的是它引用的变量，创建时不会自动冻结变量值。
+
+```go
+value := 1
+read := func() int { return value }
+snapshot := value
+readSnapshot := func() int { return snapshot }
+
+value = 2
+fmt.Println(read(), readSnapshot()) // 2 1
+```
+
+`read` 引用 `value`，执行时读到更新后的 2。`readSnapshot` 引用另一个变量 `snapshot`，它仍保存 1。这里的快照只复制了整数；如果保存的是指针或切片，被引用的数据仍可能共享。
+
+多个 goroutine 同时读写闭包共享的变量时，仍需要同步。闭包延长变量的可用时间，不会自动保护并发访问，也不保证变量一定分配在堆上。
+
+### 5.2 参数求值与延迟执行 {#参数求值与延迟执行}
+
+`defer` 会登记一个在当前函数返回前执行的调用。登记时会计算函数值及实参，但不会提前执行被登记的函数体。
+
+```go
+package main
+
+import "fmt"
+
+func show() {
+    value := 1
+    defer fmt.Println("argument", value)
+    defer func() { fmt.Println("closure", value) }()
+    value = 2
+}
+
+func main() { show() }
+```
+
+输出为：
+
+```text
+closure 2
+argument 1
+```
+
+第一条 `defer` 登记时已经把 `value` 的值 1 作为实参保存。第二条登记的是闭包调用，`value` 位于闭包体内，到真正执行时才读取，所以得到 2。两个延迟调用按后登记先执行的顺序运行。
+
+需要给闭包明确传入当时的值时，可以写 `defer func(saved int) { fmt.Println(saved) }(value)`。这个形式依赖的是参数求值和传参规则，不是特殊的“冻结闭包”机制。
+
+## 6. 循环变量 {#循环变量}
+
+Go 1.22 为循环声明的变量采用每轮独立的语义，减少不同迭代意外共享一个变量的问题。这里说的是循环自己声明的变量，例如 `for i := ...` 和 `for _, value := range ...`。
+
+```go
+var reads []func() int
+for index := 0; index < 3; index++ {
+    reads = append(reads, func() int { return index })
+}
+fmt.Println(reads[0](), reads[1](), reads[2]())
+```
+
+在采用 Go 1.22 语言语义的包中，输出是 `0 1 2`。如果包仍采用 Go 1.21 的语言语义，同一个循环变量会被复用，这段代码在循环结束后输出 `3 3 3`。判断时要看模块的 `go` 指令等语言版本设置，不能只看本机 `go version` 是否较新。
+
+给循环外已有变量赋值，则不属于“每轮声明新变量”：
+
+```go
+var reads []func() int
+index := 0
+for ; index < 3; index++ {
+    reads = append(reads, func() int { return index })
+}
+fmt.Println(reads[0](), reads[1](), reads[2]()) // 3 3 3
+```
+
+这个例子在 Go 1.22 下仍共享外部的 `index`。同理，`for _, value = range items` 是给已有变量赋值，与使用 `:=` 声明变量不同。
+
+循环变量各自独立，也不代表循环中使用的所有对象都独立。两个变量可以保存指向同一对象的指针；对该对象的并发修改仍然需要同步。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 参数名称不同的函数能赋给同一函数变量吗？ {#function-type}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：函数类型身份、可变参数、nil 与函数值比较。
+
+**相关内容**：[函数类型与调用](#函数类型与调用)、[可变参数](#可变参数)。
+
+<details>
+<summary>参考回答</summary>
+
+**可以，参数和结果的名称不参与函数类型身份。** 需要对应的参数类型、结果类型、数量以及可变参数属性一致。例如两个 `func(int) int` 可以赋给同一函数变量，`func(...int)` 与 `func([]int)` 则不同。
+
+函数值可以与 nil 比较，以判断是否设置了回调；不能用 `==` 比较两个函数值是否相同，也不能把函数值作为 map 的键。
+
+</details>
+
+### 7.2 Go 如何实现函数返回多个值？ {#multiple-results}
+
+**考察重点**：语言层结果列表、调用约定及版本和架构边界。
+
+**相关内容**：[多返回值与结果变量](#多返回值与结果变量)、[多返回值的调用约定](#多返回值的调用约定)。
+
+<details>
+<summary>参考回答</summary>
+
+**Go 的函数签名可以声明多个结果，调用方按对应位置接收；它不要求把所有结果包装成一个堆对象。** 需要作为单一值保存时，通常显式定义结构体。
+
+具体实现由调用约定安排寄存器和栈中的参数及结果位置。Go 1.22 官方编译器的内部 ABI 支持寄存器传递，不能统一回答成“全部返回值都放栈上”。类型、目标架构和优化会影响实际生成代码，内部 ABI 也不保证跨版本稳定。
+
+</details>
+
+### 7.3 把切片用 ... 传给可变参数后，函数能改到原切片的元素吗？ {#variadic-aliasing}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：可变参数的切片值、底层数组共享与复制边界。
+
+**相关内容**：[可变参数](#可变参数)。
+
+<details>
+<summary>参考回答</summary>
+
+**能，展开已有切片不会自动复制底层数组。** 形参获得切片值的副本，最初仍共享数组，所以修改已有元素可以被调用方看到。
+
+给形参重新赋值或把 `append` 结果只保存在形参中，不会更新调用方的切片变量。需要隔离元素数组时，应显式分配并复制；元素中还含引用时，要继续判断对象是否共享。
+
+</details>
+
+### 7.4 闭包创建后，外层变量变化会影响闭包读到的值吗？ {#closure-capture}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：捕获变量、独立调用的作用域及值快照。
+
+**相关内容**：[闭包与变量捕获](#闭包与变量捕获)、[共享变量与值快照](#共享变量与值快照)。
+
+<details>
+<summary>参考回答</summary>
+
+**会，闭包访问的是所捕获的变量，不是自动保存的一份创建时快照。** 如果外层随后修改同一个变量，闭包执行时会读到修改后的值。
+
+可以把需要的值先复制到独立变量，或通过实参传入另一个调用来形成快照。但复制指针或切片不等于复制它们引用的数据；并发访问共享对象仍需同步。
+
+</details>
+
+### 7.5 defer 中直接传参和闭包读取变量有什么区别？ {#defer-capture}
+
+**考察重点**：延迟调用的登记时机、参数求值和闭包体执行。
+
+**相关内容**：[参数求值与延迟执行](#参数求值与延迟执行)。
+
+<details>
+<summary>参考回答</summary>
+
+**直接传入的实参在执行 `defer` 语句时求值，闭包体内读取变量则发生在延迟函数真正执行时。** 因而登记后修改变量，可能只影响闭包读取的结果，不影响先前保存的整数实参。
+
+使用 `defer func(saved int) { ... }(value)` 时，`value` 同样在登记时求值，形参 `saved` 得到其副本。若值中包含引用，底层对象仍可能在稍后发生变化。
+
+</details>
+
+### 7.6 Go 1.22 是否解决了所有循环闭包共享问题？ {#loop-variables}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：循环声明和外部赋值、包语言版本与底层对象共享。
+
+**相关内容**：[循环变量](#循环变量)。
+
+<details>
+<summary>参考回答</summary>
+
+**没有。Go 1.22 改变的是循环自身声明的变量：每轮迭代具有独立变量。** 给循环外已有变量赋值的形式仍共享该变量。
+
+还要确认包实际采用的语言版本，而不只检查工具链版本。即使循环变量独立，它们保存的指针或切片也可能引用同一份数据，因此不能据此认为所有并发访问都安全。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [Go 1.22.12 语言规范：函数类型、函数调用、函数字面量和返回语句](https://github.com/golang/go/blob/go1.22.12/doc/go_spec.html)
+- [Go 1.22.12 内部 ABI：函数调用与参数、结果分配](https://github.com/golang/go/blob/go1.22.12/src/cmd/compile/abi-internal.md)
+- [Go Blog：Fixing For Loops in Go 1.22](https://go.dev/blog/loopvar-preview)
+- [Go 1.22 发布说明：循环变量](https://go.dev/doc/go1.22#language)
+- [Effective Go：Functions](https://go.dev/doc/effective_go#functions)

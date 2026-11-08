@@ -1,0 +1,377 @@
+---
+sidebar_position: 1
+knowledge:
+  id: system-design.patterns.backend-for-frontend
+  type: concept
+description: "理解 BFF 的客户端适配职责、接口聚合、认证边界、超时取消与部分失败，并判断增加中间层是否值得。"
+keywords: ["BFF", "Backend for Frontend", "接口聚合", "前端", "Node.js", "超时", "降级"]
+---
+
+# BFF
+
+**BFF**（Backend for Frontend）是为某一种客户端体验提供服务的后端层。它根据页面或应用的需要组织接口、聚合数据和调整返回结构，让客户端不必直接协调多个领域服务。BFF 可以使用 Node.js，也可以使用其他服务端语言；它的身份由职责决定，不由语言或框架决定。
+
+一个页面同时需要课程、推荐和学习进度时，BFF 可以提供适合这个页面的接口。但增加一层服务也增加了网络跳转、故障点和维护成本。面试讨论 BFF，重点是说明它解决了哪一类客户端问题，以及聚合后的权限、超时和失败语义是否仍然清楚。
+
+## 1. 面试核心 {#core}
+
+- BFF 按客户端体验组织接口。**页面数据的聚合与裁剪可以放在 BFF，价格规则、库存扣减和资源归属等领域规则仍由领域服务维护**。[卡](#responsibilities)
+- BFF 与 API 网关可以共存。**网关侧重统一入口策略，BFF 侧重具体客户端需要的数据和交互**；两者的功能可能重叠，职责仍要明确。[卡](#gateway-bff)
+- 多个独立下游可以并行请求，但**浏览器请求数减少，不代表后端工作量减少，也不保证延迟一定下降**。[卡](#aggregation-latency)
+- 聚合前要区分必要依赖与可选依赖。**可选区域不可用与成功返回空内容是两种状态，不能都伪装成空数组**。[卡](#partial-failure)
+- 每次聚合都需要总预算。**分支超时、重试与返回开销共享总预算；调用方离开后要取消仍在等待的工作**。[卡](#timeout-cancellation)
+- BFF 不能信任浏览器自报的用户身份。**下游仍要验证调用来源与资源权限，个性化缓存也必须按权限范围隔离**。[卡](#identity-boundary)
+- 是否拆出 BFF 应由客户端差异、聚合复杂度和独立交付需求决定。**只有转发、没有明确适配收益时，新增一层可能得不偿失**。[卡](#project-review)
+
+## 2. 职责与适用条件 {#职责与适用条件}
+
+### 2.1 面向客户端的数据组织 {#面向客户端的数据组织}
+
+假设桌面端课程首页展示课程列表、推荐和学习进度，移动端首页只展示几张课程卡片。底层课程服务维护课程本身，进度服务维护用户学习记录；客户端需要的字段和排列方式则不同。
+
+BFF 可以把这些差异放在服务端适配层：桌面端接口返回完整分区，移动端接口只返回当前屏幕需要的摘要。是否拆成两个 BFF，要看差异和发布需求是否足够大，不是“多一个终端就必须多一个服务”。同一体验下需求相近的客户端也可以共享一个 BFF。
+
+| 适合 BFF 的工作 | 应由其他位置负责的工作 |
+| --- | --- |
+| 把多个查询结果组成页面需要的结构 | 领域服务维护订单、库存、价格等业务规则 |
+| 裁剪字段、转换展示结构、适配旧客户端 | 领域服务维护权威数据和资源级授权 |
+| 为可选页面区域定义降级结果 | 网关集中处理通用入口路由、流量与基础安全策略 |
+| 协调页面查询的预算和取消 | 独立任务系统负责需要持久化的后台任务 |
+
+BFF 可以组织业务调用，但不能通过“先调用订单，再调用库存”就宣称实现了跨服务事务。写操作的幂等、事务和补偿需要单独设计，不能把查询聚合的 `Promise.all` 直接搬到交易流程中。
+
+### 2.2 与 API 网关和 GraphQL 的关系 {#与-api-网关和-graphql-的关系}
+
+[API 网关](../microservices/api-gateway-routing.mdx)是外部请求的统一入口，可以负责路由、凭据验证与限流。BFF 则围绕某个客户端定义接口，例如“课程首页需要哪些区域”。一种常见关系是客户端先进入网关，再到对应 BFF，由 BFF 调用多个领域服务。
+
+物理部署不一定一层对应一个独立进程。小系统可以在现有后端内实现一组客户端适配接口，确认独立扩容或交付确有收益后再拆服务。无论是否拆进程，都要避免把所有客户端的定制逻辑塞入统一入口，导致每次页面调整都影响公共网关。
+
+GraphQL 是接口查询方式，BFF 是职责划分。一个面向特定客户端的 GraphQL 服务可以承担 BFF 职责；使用 GraphQL 也不会自动解决授权、调用放大、超时或领域边界。应看系统实际承担了什么工作，而不是只看协议名称。
+
+## 3. 聚合与失败契约 {#聚合与失败契约}
+
+### 3.1 并行请求的成本 {#并行请求的成本}
+
+两个查询互不依赖时，可以并行开始。理想情况下，串行等待接近两个耗时之和，并行等待接近较慢的一项，再加上排队、解析、组装和网络开销。如果第二个查询必须使用第一个查询得到的结果，就不能把依赖关系直接改成并行。
+
+浏览器把两次请求合为一次，只减少了客户端到服务端这一段的调用次数。BFF 仍然会发出两个下游请求。页面有几十个条目时，再为每个条目逐个查询详情，可能把一次入口请求放大成几十次调用；应考虑批量接口、去重与并发上限。
+
+因此，不能只展示“请求从五个变成一个”。还要观察页面可用时间、BFF 总耗时、下游调用数、响应大小和错误率。浏览器原本可以独立展示已返回的区域，改成整包聚合后如果总要等待最慢服务，首屏反而可能变慢。
+
+### 3.2 必要依赖与可选依赖 {#必要依赖与可选依赖}
+
+**必要依赖**是没有它就无法满足接口承诺的数据；**可选依赖**是失败后仍可按约定提供主要功能的数据。例如公开课程首页必须有课程列表，推荐区则可以暂时不可用。
+
+| 情况 | 示例处理 | 客户端可以怎样展示 |
+| --- | --- | --- |
+| 课程查询成功，推荐成功且为空 | 返回课程与 `recommendations.state = "available"`、空 `items` | 正常的无推荐状态 |
+| 课程成功，推荐超时或返回无效数据 | 返回课程与 `recommendations.state = "unavailable"` | 隐藏推荐，或提示稍后重试 |
+| 课程查询失败 | 整个聚合失败 | 主内容错误页或明确的重试入口 |
+| 调用总预算耗尽 | 结束聚合并取消未完成分支 | 请求超时状态 |
+| 下游拒绝服务凭据 | 作为集成错误处理并记录 | 不把权限错误伪装成正常空内容 |
+
+降级不是“所有异常都返回成功”。资金、权限、库存等关键数据不能凭空补默认值；可选区域的失败也应进入监控。返回 `200` 的页面聚合仍可能部分降级，所以只看 HTTP 成功率会遗漏问题。
+
+## 4. 最小聚合接口 {#最小聚合接口}
+
+下面使用公开课程与公开推荐数据演示聚合，不处理用户身份或写操作。地址由服务端配置固定提供，不能让客户端传入任意目标 URL。示例使用 Node.js 22 的原生 `fetch`，三个文件放在同一目录。
+
+### 4.1 下游读取与返回校验 {#下游读取与返回校验}
+
+下游返回 `200` 只说明 HTTP 层成功，数据仍需要符合约定。先用一个读取函数处理 HTTP 状态，再由聚合层验证结构。
+
+```js
+// upstream-json.mjs
+export class UpstreamError extends Error {
+  constructor(status) {
+    super('upstream request failed');
+    this.status = status;
+  }
+}
+
+export async function getJson(url, signal) {
+  const response = await fetch(url, { signal, redirect: 'error' });
+  if (!response.ok) {
+    await response.body?.cancel();
+    throw new UpstreamError(response.status);
+  }
+  return response.json();
+}
+```
+
+失败状态先取消不需要的响应体，再抛出带状态码的错误。重定向在这个固定地址示例中直接拒绝，避免悄悄访问另一个目标。请求的 `signal` 同时约束等待响应和读取响应体；JSON 解析本身是同步工作，大响应还需要独立的大小限制，不能依赖定时器抢占解析。
+
+### 4.2 总预算与可选分支 {#总预算与可选分支}
+
+总预算由一次聚合共同持有，可选推荐分支还可以有更短的上限。这里的 `300` 和 `100` 毫秒仅用于演示，实际值要由页面目标与依赖延迟分布决定。
+
+```js
+// home.mjs
+import { getJson, UpstreamError } from './upstream-json.mjs';
+
+async function within(ms, parentSignal, work) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => {
+    controller.abort(new DOMException('budget exceeded', 'TimeoutError'));
+  }, ms);
+  const signal = AbortSignal.any([parentSignal, controller.signal]);
+  try {
+    signal.throwIfAborted();
+    return await work(signal);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function readCards(data) {
+  if (!Array.isArray(data?.items) || data.items.length > 20 ||
+      !data.items.every(item => typeof item?.id === 'string' &&
+        typeof item?.title === 'string')) {
+    throw new Error('invalid upstream data');
+  }
+  return data.items.map(({ id, title }) => ({ id, title }));
+}
+
+export async function loadHome({
+  catalogUrl, recommendationsUrl, signal = new AbortController().signal,
+  budgetMs = 300, recommendationMs = 100,
+}) {
+  for (const ms of [budgetMs, recommendationMs]) {
+    if (!Number.isSafeInteger(ms) || ms <= 0 || ms > 60_000) {
+      throw new RangeError('invalid budget');
+    }
+  }
+  const stop = new AbortController();
+  const parent = AbortSignal.any([signal, stop.signal]);
+  try {
+    return await within(budgetMs, parent, async totalSignal => {
+      const courses = getJson(catalogUrl, totalSignal).then(readCards);
+      const recommendations = within(recommendationMs, totalSignal,
+        childSignal => getJson(recommendationsUrl, childSignal).then(readCards)
+      ).then(items => ({ state: 'available', items })).catch(error => {
+        if (totalSignal.aborted ||
+            (error instanceof UpstreamError && [401, 403].includes(error.status))) {
+          throw error;
+        }
+        return { state: 'unavailable', items: [] };
+      });
+      const [courseItems, recommended] = await Promise.all([courses, recommendations]);
+      return { courses: courseItems, recommendations: recommended };
+    });
+  } finally {
+    stop.abort();
+  }
+}
+```
+
+两个分支在等待之前就已发起。课程失败时 `Promise.all` 拒绝，`finally` 会取消仍在等待的推荐请求；推荐超时则只降级推荐。总信号已经取消时，推荐的错误不能被吞成一次普通降级。
+
+`readCards` 验证必要字段，并仅返回 `id`、`title`，不会把下游额外字段原样送给客户端。它是这个小例子的结构校验，真实接口还应限制文本长度、响应字节数和业务取值。
+
+`Promise.all` 本身不会取消另一个请求；取消来自显式传下去的 `AbortSignal`。它也只能通知支持取消的操作停止等待，不能撤销下游已经完成的工作。预算与取消机制参见 [超时](../reliability/timeout-budget-cancellation.mdx#取消无效工作)。
+
+### 4.3 HTTP 入口与客户端断开 {#http-入口与客户端断开}
+
+HTTP 入口把客户端断开与聚合取消连起来，同时把内部失败转换成稳定的对外响应。示例只提供一个公开读取接口。
+
+```js
+// bff-server.mjs
+import { createServer } from 'node:http';
+import { loadHome } from './home.mjs';
+
+export function createBff(config) {
+  return createServer(async (req, res) => {
+    if (req.method !== 'GET' || req.url !== '/home') {
+      res.writeHead(404).end();
+      return;
+    }
+    const client = new AbortController();
+    const onClose = () => {
+      if (!res.writableFinished) client.abort();
+    };
+    res.on('close', onClose);
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-store');
+    try {
+      const home = await loadHome({ ...config, signal: client.signal });
+      if (!res.destroyed) res.end(JSON.stringify(home));
+    } catch (error) {
+      if (client.signal.aborted || res.destroyed) return;
+      res.statusCode = error?.name === 'TimeoutError' ? 504 : 502;
+      res.end(JSON.stringify({ error: 'home unavailable' }));
+    } finally {
+      res.off('close', onClose);
+    }
+  });
+}
+```
+
+用固定的 `catalogUrl` 和 `recommendationsUrl` 调用 `createBff(config)` 后，再调用返回服务器的 `listen()` 即可。课程成功、推荐失败时，客户端仍得到 `200`，并通过 `state` 识别推荐不可用；必要依赖失败返回 `502`，总预算耗尽返回 `504`。下游服务凭据错误也属于这里的集成失败，不能直接把它解释成浏览器用户没有登录。
+
+`close` 发生时检查 `res.writableFinished`，避免把正常完成误当成用户中断。示例中的预算从聚合开始计时，尚不包含入口排队、之前的认证与响应发送；完整请求的预算需要在更外层建立，并为序列化和返回预留时间。对大响应还需处理背压，不能把这个小型 JSON 接口当成流式下载实现。
+
+## 5. 身份与缓存边界 {#身份与缓存边界}
+
+### 5.1 用户身份与服务身份 {#用户身份与服务身份}
+
+个性化接口需要同时回答“哪个用户在请求”和“哪个服务在调用下游”。浏览器传入 `userId` 只是输入，不是认证结果。BFF 应从已验证的会话或令牌中取得当前身份，下游则验证服务调用来源，以及这个用户能否访问目标资源。
+
+如果网关向 BFF 传递身份头，要先清除外部伪造的同名头，再生成受保护的身份信息。仅仅把 BFF 放在内网，不能让任何 `X-User-Id` 都变得可信。资源级授权仍由掌握所有者和业务状态的服务完成，见 [认证与授权](../security/authentication-authorization-trust-boundaries.mdx#网关与服务的授权分工)。
+
+BFF 可以在服务端保存访问下游的凭据，浏览器只持有用于访问 BFF 的会话。但浏览器仍可能发送被诱导的请求；使用 Cookie 会话时要继续处理 CSRF，遭遇 XSS 时也不能因为令牌不在浏览器中就认为所有操作安全。BFF 只是改变凭据和接口的边界，不会消除应用安全问题。
+
+### 5.2 聚合结果的缓存 {#聚合结果的缓存}
+
+缓存要按结果实际依赖的输入分键。公共课程列表可能适合共享缓存；包含学习进度的首页则不能只用 `/home` 作为共享键，否则不同用户可能拿到同一份结果。
+
+缓存键应覆盖用户或租户、语言、客户端版本及影响权限的必要因素，并考虑权限撤销与过期。一个聚合结果混入个性化字段后，不能沿用原来公共接口的缓存策略。可以分别缓存公共下游数据，再与当前用户数据组合，减少整包缓存的权限复杂度。
+
+降级结果是否缓存也要单独决定。短时推荐故障不能不加区分地被长时间缓存成“没有推荐”；缓存旧数据时，应让客户端和监控能够区分新鲜结果、过期结果和不可用状态。
+
+## 6. 运行成本与验证 {#运行成本与验证}
+
+每个 BFF 都需要发布、监控和故障处理。请求扇出越多，一次请求占用的连接和内存也可能越多，因此要限制入口并发、单请求扇出、等待队列、响应大小和重试次数。总预算只能限制等待时间，不能单独防止瞬间启动大量下游请求。
+
+重试应共享剩余预算，并由明确的一层负责，避免浏览器、网关、BFF 和下游一起重试。写操作需要幂等语义，不能因为 BFF 超时就假定原操作没有发生，详见 [重试](../reliability/retry-backoff-jitter-storms.mdx)。
+
+验证需要覆盖调用契约，而不只是成功返回 JSON：
+
+1. 两个独立依赖是否真的并行；存在前置依赖时是否保持正确顺序。
+2. 必要依赖失败、可选依赖失败、空结果和无效结构能否被区分。
+3. 总预算是否覆盖响应体读取；客户端断开后，未完成调用是否收到取消。
+4. 用户和租户是否隔离，缓存与批量查询是否绕过授权。
+5. 下游变慢时，入口并发与队列是否受限；重试是否放大调用量。
+6. 页面成功率、部分降级率、下游错误和各分支耗时能否分别观察。
+
+本文的最小接口核验前面三类行为；身份系统、共享缓存与容量上限需要在接入相应实现后继续验证。它不包含完整生产网关或鉴权系统。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 BFF 应该承担哪些职责，哪些逻辑应留在领域服务？ {#responsibilities}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：客户端适配、权威数据与领域规则的归属。
+
+**相关内容**：[面向客户端的数据组织](#面向客户端的数据组织)。
+
+<details>
+<summary>参考回答</summary>
+
+**BFF 负责面向特定客户端的接口聚合、字段裁剪、展示结构与降级契约；领域服务维护权威数据和业务规则。** 例如 BFF 可以组合订单摘要和推荐，但订单能否取消、价格怎样计算、库存怎样扣减应由对应领域服务判断。
+
+BFF 可以协调调用，但一次聚合不自动具有事务能力。是否拆分多个 BFF，要看客户端差异和独立交付需求，而不是机械地按终端数量拆服务。
+
+</details>
+
+### 7.2 已经有 API 网关或 GraphQL，还需要 BFF 吗？ {#gateway-bff}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：逻辑职责、物理部署和协议的区别。
+
+**相关内容**：[与 API 网关和 GraphQL 的关系](#与-api-网关和-graphql-的关系)。
+
+<details>
+<summary>参考回答</summary>
+
+**要看客户端适配需求是否已经被合适的位置承担。** 网关主要处理统一入口策略，BFF 面向具体客户端组织接口；GraphQL 是查询方式，也可以用来实现 BFF。
+
+如果现有后端已经提供合适的数据与交付边界，不必再增加独立服务；如果客户端差异让公共接口难以演进，可以增加明确的适配层。部署层数与逻辑职责不要求一一对应。
+
+</details>
+
+### 7.3 把多个浏览器请求合并成一个 BFF 请求，一定更快吗？ {#aggregation-latency}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：关键路径、请求扇出与新增开销。
+
+**相关内容**：[并行请求的成本](#并行请求的成本)。
+
+<details>
+<summary>参考回答</summary>
+
+**不一定，收益取决于减少的客户端调用成本是否超过新增跳转、排队和聚合等待。** 独立下游并行时，等待接近较慢分支；有依赖关系时仍需串行，整包返回还可能让快区域等待慢区域。
+
+浏览器请求数变少不代表下游调用数减少。应同时比较页面可用时间、BFF 延迟、扇出数量、响应大小与失败率，再判断是否改善。
+
+</details>
+
+### 7.4 聚合接口的一个下游失败时，应该怎样返回？ {#partial-failure}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**题型**：综合题
+
+**考察重点**：必要依赖、可选依赖与客户端可解释的状态。
+
+**相关内容**：[必要依赖与可选依赖](#必要依赖与可选依赖)、[总预算与可选分支](#总预算与可选分支)。
+
+<details>
+<summary>参考回答</summary>
+
+**先按接口承诺区分必要依赖和可选依赖：必要数据缺失时整个请求失败，可选区域可以按明确契约降级。** 例如课程列表失败不能伪装成空首页；推荐失败可以返回 `state: "unavailable"`，与成功但无推荐区分。
+
+总预算取消和权限错误不能被普通降级吞掉。还应记录部分失败，即使对外返回 `200`，也能观察到推荐服务正在故障。
+
+</details>
+
+### 7.5 怎样限制聚合耗时，并取消不再需要的下游请求？ {#timeout-cancellation}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：总预算、分支上限、Promise 与底层操作的关系。
+
+**相关内容**：[总预算与可选分支](#总预算与可选分支)、[HTTP 入口与客户端断开](#http-入口与客户端断开)。
+
+<details>
+<summary>参考回答</summary>
+
+**一次请求建立共同的总预算，分支再叠加更短的本地上限，并把取消信号传给实际 HTTP 操作。** 请求超时、必要分支失败或客户端断开时，取消尚未完成的分支；重试也只能使用剩余预算。
+
+`Promise.all` 拒绝或 `Promise.race` 超时都不会自动停止网络调用。取消是协作信号，不会撤销已经完成的下游操作；还需给排队、解析与返回保留预算和资源限制。
+
+</details>
+
+### 7.6 BFF 已经验证用户身份，下游还需要授权吗？ {#identity-boundary}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：身份可信来源、资源权限与缓存隔离。
+
+**相关内容**：[用户身份与服务身份](#用户身份与服务身份)、[聚合结果的缓存](#聚合结果的缓存)。
+
+<details>
+<summary>参考回答</summary>
+
+**需要。BFF 确认用户是谁，下游仍要确认调用来源可信，并判断该用户能否访问具体资源。** 不能直接相信浏览器传入的用户 ID，也不能仅凭“请求来自内网”放行。
+
+个性化聚合缓存还要按用户、租户及影响权限的条件隔离。只检查接口入口身份，却把另一位用户的聚合缓存返回出去，同样会造成越权。
+
+</details>
+
+### 7.7 介绍你在 BFF 项目中做过的工作，以及遇到的困难和解决方法。 {#project-review}
+
+**题型**：综合题
+
+**考察重点**：实际职责、客户端问题、工程取舍与验证证据。
+
+**相关内容**：[职责与适用条件](#职责与适用条件)、[运行成本与验证](#运行成本与验证)。
+
+<details>
+<summary>参考回答</summary>
+
+**回答应把真实问题、自己负责的部分、具体改动和验证结果连起来。** 可以先说明某个页面原来需要协调哪些接口、返回结构或交付节奏有什么问题，再说明 BFF 实际做了哪些聚合与适配，以及哪些职责仍由后端服务承担。
+
+遇到的困难可以是慢依赖拖累页面、部分失败没有明确状态、权限上下文传递或缓存隔离，但只讲自己确实处理过的情况。说明怎样定位、做过哪些取舍、用什么测试或运行指标验证，并交代新增服务的成本。没有测量过的延迟或吞吐量不能补成漂亮数字。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [Sam Newman：Backends For Frontends](https://samnewman.io/patterns/architectural/bff/)
+- [Microsoft Azure Architecture Center：Backends for Frontends pattern](https://learn.microsoft.com/en-us/azure/architecture/patterns/backends-for-frontends)
+- [Microsoft Azure Architecture Center：Gateway Aggregation pattern](https://learn.microsoft.com/en-us/azure/architecture/patterns/gateway-aggregation)
+- [Node.js 22.16.0：AbortController、AbortSignal 与 fetch](https://nodejs.org/download/release/v22.16.0/docs/api/globals.html)
+- [Node.js 22.16.0：HTTP](https://nodejs.org/download/release/v22.16.0/docs/api/http.html)

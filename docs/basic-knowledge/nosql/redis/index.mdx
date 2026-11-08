@@ -32,6 +32,8 @@ Redis 提供直接操作数据结构的命令。递增、集合更新和队列�
 
 复杂关联查询和外键约束更适合关系型数据库。选择存储还需比较数据规模、恢复目标和一致性要求。
 
+与 Memcached 比较时，先说明操作和恢复需求。Memcached 主要缓存按键存取的预先序列化数据；Redis 还直接提供集合、排序和流等结构的操作，以及需要单独配置的持久化与复制能力。Memcached 服务进程可以用多个线程处理请求，Redis 6、7 的主要命令路径则仍串行；不能只凭线程数断言谁更快，应比较实际命令、数据大小、命中率和网络条件。缓存服务具备某种重启恢复功能，也不等于它具有权威数据库的持久性承诺，选型要看具体部署契约。
+
 ## 3. 数据类型 {#数据类型}
 
 String、Hash、List、Set、ZSet 和 Stream 提供不同操作。选择规则与内部编码见 [Redis 数据结构](./data_structure.mdx)。
@@ -44,7 +46,7 @@ Redis 6、7 的主要命令执行路径由主线程串行处理。多个命令�
 
 `io-threads` 可配置 I/O 线程数量。读取分担还由 `io-threads-do-reads` 控制。I/O 线程数增加后，主要命令仍串行执行。
 
-KEYS 全量扫描、大集合操作和长脚本会拖慢其他请求。渐进遍历与对象大小控制见 [SCAN 游标遍历](./data_structure.mdx#scan-游标遍历)。
+KEYS 全量扫描、大集合操作和长脚本会拖慢其他请求。渐进遍历见 [SCAN 游标遍历](./data_structure.mdx#scan-游标遍历)。热点键看访问频率，大键看数据体积或集合元素数，两者都可能集中消耗单节点资源，但处理办法不同，具体见[热点 key](./cache-penetration-stampede-avalanche-hotkeys.mdx#热点-key)与[大 key](./cache-penetration-stampede-avalanche-hotkeys.mdx#大-key)。
 
 ## 5. 过期与淘汰 {#过期与淘汰}
 
@@ -194,3 +196,5 @@ MULTI/EXEC 将队列作为一段连续命令执行。Lua 还支持在服务端�
 - [Redis：SLOWLOG](https://redis.io/docs/latest/commands/slowlog/)
 - [Redis 6.2：配置文件](https://github.com/redis/redis/blob/6.2/redis.conf)
 - [Redis 7.0：配置文件](https://github.com/redis/redis/blob/7.0/redis.conf)
+- [Memcached：Overview](https://docs.memcached.org/)
+- [Memcached：Performance and Efficiency](https://docs.memcached.org/serverguide/performance/)

@@ -1,0 +1,387 @@
+---
+sidebar_position: 4
+knowledge:
+  id: basic-knowledge.go.language.packages-initialization
+  type: concept
+description: "讲解 Go 包、导入与导出、包级变量依赖、init 和 main 的执行顺序，以及空白导入、循环依赖和初始化副作用的处理。"
+keywords: ["Go 包初始化", "init 顺序", "包依赖", "空白导入", "循环依赖"]
+---
+
+# Go 包初始化
+
+Go 程序在进入 `main` 之前，会先初始化所依赖的包：被依赖的包先完成初始化，一个包内先初始化包级变量，再执行 `init` 函数。这套顺序决定了全局配置何时可用、注册逻辑何时生效，也解释了为什么一些错误会发生在 `main` 的第一行之前。
+
+理解初始化顺序，需要同时看包的依赖关系、包内变量的依赖关系和源码顺序。只记“先变量、再 init、最后 main”，还无法解释变量引用后面声明的值、多文件初始化或循环导入。本文以 Go 1.22 为基线。
+
+## 1. 面试核心 {#core}
+
+- 包是组织源码与初始化的单位，**module 是依赖与版本管理的单位，两者不能混为一谈**。一个 module 可以包含多个包；导入名称只在当前文件生效。[卡](#package-module)
+- **被导入的包先初始化，包内变量全部初始化后才执行 init**。`main` 包也遵守这条规则，最后才调用 `main` 函数；同一个包被多处导入也只初始化一次。[卡](#initialization-order)
+- 包级变量按依赖决定何时可以初始化，**在已经满足依赖的变量中，选择声明顺序最靠前的一个**。不能把源码从上到下机械执行当成完整规则。[卡](#variable-dependencies)
+- 同一包可以有多个 `init`，按源码交给编译器的顺序执行。**跨文件的顺序不应被用来隐藏业务依赖**；需要先后关系的工作更适合显式组织。[卡](#initialization-order)
+- **空白导入仍会初始化目标包，只是不在当前文件引入可用的包名**。它适合依靠初始化注册功能的包，不能绕过循环导入限制。[卡](#blank-import)
+- Go 禁止直接或间接导入自身。**循环导入需要调整依赖关系**，改别名、改为 `_` 导入或把调用移进 `init` 都不会消除循环。[卡](#import-cycle)
+- 包初始化按包串行执行，但 `init` 可以启动 goroutine。**init 返回不代表它启动的任务已经完成**，等待和错误处理仍需要明确设计。[卡](#init-goroutine)
+
+## 2. 包、导入与导出 {#包导入与导出}
+
+**包**由共同声明同一个包名的一组源码文件组成。使用 Go 工具组织普通项目时，一个目录中的普通源码文件通常属于同一个包；测试包等特殊情况另按工具规则处理。
+
+同一包的文件可以访问彼此的包级声明。跨包使用时，通过导入路径找到包，再通过包名访问它导出的成员。
+
+- **导出标识符**要求名称以 Unicode 大写字母开头，且是包级声明、字段名或方法名。例如包级函数 `Load` 可以导出，`load` 不可以；局部变量即使叫 `Load`，也不会变成包的公共成员。
+- `import` 引入的包名只在当前源码文件中可用。同一个包的 `a.go` 导入了 `fmt`，不代表 `b.go` 可以直接使用 `fmt.Println`。
+- 导入别名只改变当前文件中使用的名字，不改变被导入包的身份和初始化次数。导入但没有使用时，普通导入会报错；仅需要初始化副作用时使用空白导入。
+
+**module** 是可以独立管理版本的一组包，`go.mod` 记录模块路径、Go 语言版本和依赖等信息。初始化发生在包之间，不会因为两个包处于同一个 module 就合并成一个初始化步骤。
+
+## 3. 从依赖包到 main {#从依赖包到main}
+
+下面是一个没有第三方依赖的小项目：
+
+```text
+initdemo/
+  go.mod
+  main.go
+  config/config.go
+  service/service.go
+```
+
+`go.mod` 的内容为：
+
+```text
+module example.com/initdemo
+
+go 1.22
+```
+
+`config/config.go` 定义配置值：
+
+```go
+package config
+
+import "fmt"
+
+var Port = loadPort()
+
+func loadPort() int {
+    fmt.Println("config variable")
+    return 8080
+}
+
+func init() { fmt.Println("config init") }
+```
+
+`service/service.go` 依赖 `config`：
+
+```go
+package service
+
+import (
+    "fmt"
+    "example.com/initdemo/config"
+)
+
+var Port = configure()
+
+func configure() int {
+    fmt.Println("service variable")
+    return config.Port
+}
+
+func init() { fmt.Println("service init") }
+```
+
+`main.go` 同时导入 `config` 和 `service`，并声明两个 `init`：
+
+```go
+package main
+
+import (
+    "fmt"
+    "example.com/initdemo/config"
+    "example.com/initdemo/service"
+)
+
+func init() { fmt.Println("main init 1") }
+func init() { fmt.Println("main init 2") }
+
+func main() {
+    fmt.Println("main", config.Port, service.Port)
+}
+```
+
+在项目根目录执行 `go run .`，输出顺序为：
+
+```text
+config variable
+config init
+service variable
+service init
+main init 1
+main init 2
+main 8080 8080
+```
+
+`service` 依赖 `config`，因此 `config` 的变量和 `init` 都完成后，才开始初始化 `service`。`main` 虽然也直接导入 `config`，但不会再执行一次 `config.init`。
+
+这个顺序由导入依赖决定，不是按 `main.go` 的 `import` 列表从上到下执行。Go 1.22 规范对没有相互依赖的包也给出选择规则：把包按导入路径排序，每轮选择其中第一个尚未初始化、且所有依赖都已初始化的包。业务代码需要某个包先准备好时，应表达真实依赖或显式调用，不能靠导入列表的书写位置安排顺序。
+
+## 4. 包内变量与 init 顺序 {#包内变量与init顺序}
+
+### 4.1 变量声明顺序受到依赖约束 {#变量初始化依赖}
+
+包级变量可以使用后面声明的变量。编译器会先分析依赖，再选择可以初始化的声明；对本包函数和非接口方法的引用，也会参与这种分析。
+
+```go
+package main
+
+import "fmt"
+
+var total = sum()
+var left = load("left", 1)
+var right = load("right", 2)
+
+func load(name string, value int) int {
+    fmt.Println(name)
+    return value
+}
+
+func sum() int {
+    fmt.Println("total")
+    return left + right
+}
+
+func init() { fmt.Println("init") }
+func main() { fmt.Println("main", total) }
+```
+
+输出为：
+
+```text
+left
+right
+total
+init
+main 3
+```
+
+`total` 虽然声明在最前面，但它调用的 `sum` 引用了 `left` 和 `right`，因此要等后两者初始化。`left`、`right` 都没有尚未初始化的变量依赖，先按声明顺序初始化，之后才轮到 `total`。
+
+同一个多返回值表达式初始化的多个变量会在同一步完成，例如 `var a, b = pair()`。如果包级变量存在无法消除的初始化环，例如 `a` 依赖 `b`、`b` 又依赖 `a`，程序会编译失败。
+
+这里分析的是源码引用关系，不是执行程序后猜测哪些数据被读取。通过接口动态调用等方式隐藏的数据依赖，不保证能按程序员期望的顺序初始化。对复杂依赖，显式传参和构造更容易检查。
+
+### 4.2 多个 init 与多个文件 {#多个init与多个文件}
+
+一个包中可以声明多个 `func init()`，同一个文件里也可以。它们没有参数和返回值，由初始化过程自动调用；程序不能把 `init` 当成普通函数直接调用，也不能保存成函数值。
+
+包级变量全部初始化完毕后，才开始执行该包所有 `init`。不是“执行完一个文件的变量和 init，再处理下一个文件”。
+
+跨文件的声明顺序取决于文件交给编译器的顺序。规范鼓励构建系统按文件名排序来保证可重复行为，通常使用 `go build` 或 `go run .` 时可以看到这种顺序；这不等于语言保证所有构建方式都按文件名排序。
+
+如果 `b.go` 中的 `init` 必须等待 `a.go` 的某段业务逻辑完成，应把先后关系写进显式函数调用中。仅靠重命名文件维持这种关系，会让依赖隐藏在目录结构里。
+
+## 5. 空白导入与注册 {#空白导入与注册}
+
+**空白导入**写作 `import _ "包路径"`，表示只需要这个包的初始化副作用，不在当前文件中使用它的包名。目标包及其依赖仍会正常初始化。
+
+可以给前面的项目添加一个最小注册示例。`registry/registry.go` 保存注册结果：
+
+```go
+package registry
+
+var names = make(map[string]struct{})
+
+func Register(name string) { names[name] = struct{}{} }
+func Has(name string) bool {
+    _, exists := names[name]
+    return exists
+}
+```
+
+`driver/driver.go` 在初始化时注册：
+
+```go
+package driver
+
+import "example.com/initdemo/registry"
+
+func init() { registry.Register("memory") }
+```
+
+把 `main.go` 替换为下面的内容，再运行 `go run .`：
+
+```go
+package main
+
+import (
+    "fmt"
+    _ "example.com/initdemo/driver"
+    "example.com/initdemo/registry"
+)
+
+func main() { fmt.Println(registry.Has("memory")) } // true
+```
+
+`driver` 依赖 `registry`，所以注册表先准备好，再执行 `driver.init`。删掉空白导入后，`driver` 不再进入程序的依赖图，输出变为 `false`；仅仅把源码目录留在 module 中，不会自动初始化该包。
+
+这个注册表只演示启动阶段的注册顺序，没有实现运行期并发写入的同步。实际库若允许程序运行中继续注册，需要另外定义并发访问规则。空白导入适合库约定的注册机制，不应成为隐藏网络连接或业务操作的入口。
+
+## 6. 循环导入与显式初始化 {#循环导入与显式初始化}
+
+Go 不允许包直接或间接导入自身。例如 `orders` 导入 `storage`，`storage` 又导入 `orders`，就形成了循环。把包改名、改用导入别名或改成空白导入，都没有改变这个依赖图。
+
+解决方式要根据循环产生的原因选择：
+
+| 循环的来源 | 可以采用的调整 |
+| --- | --- |
+| 两个包互相引用同一组数据类型或常量 | 把真正共享且职责明确的声明放到更底层的包，两边依赖它 |
+| 业务包需要存储实现，存储实现又要回调业务逻辑 | 由使用方定义所需的最小接口，在上层组装时传入实现 |
+| 两个包反复访问彼此内部状态，实际上难以独立变化 | 重新划分职责；必要时合并成一个更内聚的包 |
+
+例如 `orders` 需要读取用户名，可以在 `orders` 中声明只含 `Name(id string) string` 的接口；`storage.Store` 实现这个方法，不必导入 `orders`。由 `main` 同时导入两个包，将 `Store` 传给订单处理函数。依赖在组装处汇合，就不需要 `orders` 和 `storage` 互相导入。
+
+只为消除报错而建立一个什么都放的 `common` 包，容易让更多模块相互牵连。拆分应依据数据和行为的归属，而不是把出错的声明随便搬走。
+
+### 6.1 init 适合做什么 {#init的使用边界}
+
+`init` 适合少量、确定、无需调用方配置的包内准备，例如注册一个编解码器。它不能返回错误，也没有调用方传入的参数；依靠它完成复杂启动流程，会让失败、重试和资源关闭难以由程序入口统一控制。
+
+需要读取可变配置、访问外部服务、打开需要关闭的资源时，更适合提供显式构造函数，让调用方传入配置并处理错误。这样测试可以使用自己的配置和替身，不必为了改变初始化行为重新启动整个程序。
+
+### 6.2 init 启动的 goroutine {#init启动的goroutine}
+
+包初始化本身在一个 goroutine 中按顺序执行，但它启动的其他 goroutine 可以并发运行。只有当前 `init` 返回后，下一个 `init` 才开始；这不包含等待前一个 `init` 启动的后台任务。
+
+```go
+package main
+
+import "fmt"
+
+var ready bool
+var done = make(chan struct{})
+
+func init() {
+    go func() {
+        ready = true
+        close(done)
+    }()
+}
+
+func main() {
+    <-done
+    fmt.Println(ready) // true
+}
+```
+
+这个例子通过 channel 明确等待，`ready` 的写入在关闭 channel 之前完成，接收结束后再读取。删除 `<-done`，不能保证读取发生在写入之后，还可能产生数据竞争。
+
+不要让 `init` 等待一个必须到 `main` 才能启动的任务，否则 `main` 永远没有机会执行。`main` 返回时程序也不会自动等待其他 goroutine；后台任务的生命周期应由明确的启动、等待和关闭逻辑管理。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 package 和 module 有什么区别，同包文件会共享 import 吗？ {#package-module}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：源码组织、初始化单位、模块版本与文件作用域。
+
+**相关内容**：[包、导入与导出](#包导入与导出)。
+
+<details>
+<summary>参考回答</summary>
+
+**package 组织源码和包级声明，也是初始化单位；module 组织一组可以管理依赖与版本的包。** 一个 module 可以包含多个包，`go.mod` 中的模块路径用于构成其包的导入路径。
+
+同包文件可以访问彼此的包级声明，但 `import` 引入的包名只在当前文件有效。跨包访问还需要成员满足导出规则，不能把同包可见理解成跨包公开。
+
+</details>
+
+### 7.2 Go 的变量、多个 init 和 main 按什么顺序执行？ {#initialization-order}
+
+**考察重点**：包依赖、包级变量、多个初始化函数及跨文件顺序。
+
+**相关内容**：[从依赖包到 main](#从依赖包到main)、[包内变量与 init 顺序](#包内变量与init顺序)。
+
+<details>
+<summary>参考回答</summary>
+
+**先初始化依赖包，再初始化当前包；每个包先完成包级变量初始化，再顺序执行所有 init，最后调用 main.main。** 同一个包被多处导入，也只初始化一次。
+
+包内变量需要先满足初始化依赖，再在可初始化的声明中按声明顺序选择。多个 `init` 按源码呈交编译器的顺序执行；跨文件通常会使用文件名排序，但不应把文件名当成业务依赖的表达方式。`init` 无参数、无返回值，程序不能直接调用它。
+
+</details>
+
+### 7.3 为什么声明在前面的包级变量可能后初始化？ {#variable-dependencies}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：变量依赖、函数引用的传递分析与初始化环。
+
+**相关内容**：[变量初始化依赖](#变量初始化依赖)。
+
+<details>
+<summary>参考回答</summary>
+
+**因为它可能依赖还没有初始化的变量，只有依赖满足后才可以初始化。** 编译器会分析本包源码引用，包括初始化表达式所引用函数、非接口方法对其他变量的依赖。
+
+在已经满足依赖的变量中，再按声明顺序选择。依赖形成初始化环会报错；通过动态调用隐藏的数据依赖，也不能指望编译器总能按业务意图安排。
+
+</details>
+
+### 7.4 空白导入会不会执行目标包的 init？ {#blank-import}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：初始化副作用、注册机制与程序依赖图。
+
+**相关内容**：[空白导入与注册](#空白导入与注册)。
+
+<details>
+<summary>参考回答</summary>
+
+**会。空白导入保留对包的依赖和初始化，只是不引入可以在当前文件中使用的包名。** 被导入包仍会先初始化自己的依赖、包级变量和 `init`。
+
+它可以触发库约定的注册机制。源码目录仅仅存在于 module 中并不保证被初始化，需要有可达的导入关系；空白导入同样不能绕过循环导入检查。
+
+</details>
+
+### 7.5 init 中启动的 goroutine 会在 main 开始前完成吗？ {#init-goroutine}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：初始化串行性、并发任务完成条件与同步。
+
+**相关内容**：[init 启动的 goroutine](#init启动的goroutine)。
+
+<details>
+<summary>参考回答</summary>
+
+**没有这个保证。初始化过程等待 init 函数返回，不会自动等待它启动的 goroutine。** 后台任务可能与后续初始化、`main` 并发执行。
+
+需要使用任务结果时，要通过 channel 等同步手段明确等待和建立可见性。也不能在 `init` 中等待必须由 `main` 才能启动的工作，否则程序无法进入 `main`。
+
+</details>
+
+### 7.6 Go 出现循环包依赖时应该怎样解决？ {#import-cycle}
+
+**考察重点**：包依赖图、共享声明归属、接口与组装职责。
+
+**相关内容**：[循环导入与显式初始化](#循环导入与显式初始化)。
+
+<details>
+<summary>参考回答</summary>
+
+**需要调整包的职责和依赖方向，使导入关系不再成环。** 先找到形成环的具体导入链，判断双方依赖的是共享数据、抽象行为，还是本来就应该放在一起的实现。
+
+共享且职责明确的声明可以下移到两边都能依赖的包；行为依赖可以由使用方声明最小接口，在上层注入实现；过度互相访问的包可以重新划分或合并。改导入别名、空白导入或把调用移入 `init` 都不会改变包依赖图。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [Go 1.22.12 语言规范：包、导入声明、包初始化与程序执行](https://github.com/golang/go/blob/go1.22.12/doc/go_spec.html)
+- [Go Modules Reference：模块、包与 go.mod](https://go.dev/ref/mod)
+- [Effective Go：The init function](https://go.dev/doc/effective_go#init)
+- [Go 内存模型：初始化与 channel 同步](https://go.dev/ref/mem)

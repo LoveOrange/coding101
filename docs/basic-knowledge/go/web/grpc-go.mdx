@@ -1,0 +1,392 @@
+---
+sidebar_position: 4
+knowledge:
+  id: basic-knowledge.go.web.grpc-go
+  type: concept
+description: "讲解 gRPC-Go 的生成代码、ClientConn、deadline、状态码、拦截器、流与关闭流程，明确取消和重试的业务边界。"
+keywords: ["Go", "gRPC", "ClientConn", "deadline", "拦截器", "流式调用"]
+---
+
+# gRPC-Go
+
+**gRPC-Go** 是 gRPC 的 Go 实现，通过生成的客户端和服务端接口承载远程调用。写起来像调用一个 Go 方法，实际仍然经过连接建立、编码、网络传输和远端执行；返回错误时，不能只按本地函数失败来理解业务结果。
+
+本文使用 Go 1.22.12、gRPC-Go v1.65.0 与 Protocol Buffers Go v1.35.1，重点是调用生命周期和资源边界。协议分层、四种调用形式与最终状态见 [gRPC](../../network/grpc.mdx)。
+
+## 1. 面试核心 {#core}
+
+- **生成代码负责消息类型和调用接口，不自动实现业务规则**。服务端仍要校验输入、检查权限并处理失败。[卡](#generated-code)
+- **`ClientConn` 是可复用的逻辑通信入口，不等于一条永远不变的 TCP 连接**。NewClient 创建成功不证明远端可达；调用错误仍需逐次处理。[卡](#client-connection)
+- **deadline 限制一次调用的等待预算，取消需要处理器及下游配合**。它不是强制终止任意 goroutine，也不自动回滚已完成的副作用。[卡](#deadline-cancellation)
+- **状态码表达失败类别，不证明操作执行了几次或是否已经提交**。重试还需要幂等、次数、退避与总预算约束。[卡](#status-retry)
+- **一元与流式调用使用不同拦截器**。链中顺序影响观察和处理范围，共享状态仍要满足并发安全要求。[卡](#interceptors)
+- **创建流成功不代表整个流成功**。要读取到正常 EOF 或最终错误，并通过取消等方式释放提前结束的流。[卡](#stream-lifecycle)
+- **GracefulStop 会等待在途 RPC，长流可能使等待持续下去**。关闭流程需要明确排空预算和强制结束策略。[卡](#shutdown)
+
+## 2. 接口契约与生成代码 {#接口契约与生成代码}
+
+下面的服务包含一个一元查询和一个服务端流式列表。消息字段编号参与编码兼容，不因调整 Go 字段顺序随意复用：
+
+```proto title="catalog.proto"
+syntax = "proto3";
+package catalog.v1;
+option go_package = "example.com/grpcdemo/catalogpb";
+
+service Catalog {
+  rpc Get(GetRequest) returns (Item);
+  rpc List(ListRequest) returns (stream Item);
+}
+message GetRequest { int64 id = 1; }
+message ListRequest { int32 limit = 1; }
+message Item {
+  int64 id = 1;
+  string name = 2;
+}
+```
+
+假设 Go 模块名为 `example.com/grpcdemo`，使用 protoc 和已安装的 `protoc-gen-go`、`protoc-gen-go-grpc` 生成代码：
+
+```sh
+protoc -I . --go_out=. --go_opt=module=example.com/grpcdemo \
+  --go-grpc_out=. --go-grpc_opt=module=example.com/grpcdemo catalog.proto
+```
+
+本文使用 `protoc-gen-go` v1.35.1 和 `protoc-gen-go-grpc` v1.4.0。前者生成消息与序列化相关代码，后者生成 CatalogClient、CatalogServer、注册方法和流接口。生成物放入 `catalogpb` 包，业务实现放在自己的包中，不手工修改生成文件。
+
+proto3 的普通标量字段有默认值。这里请求中的 id 缺省时为零，是否接受由业务决定；如果必须区分“未提供”和“明确提供零”，应在契约中表达字段存在性，而不能只检查生成结构体里的零值。
+
+## 3. 服务端实现 {#服务端实现}
+
+下面只保留参数校验、状态码和逐条发送，用固定数据说明调用行为：
+
+```go title="server.go"
+package catalog
+
+import (
+    "context"
+    "fmt"
+
+    pb "example.com/grpcdemo/catalogpb"
+    "google.golang.org/grpc/codes"
+    "google.golang.org/grpc/status"
+)
+
+type Server struct {
+    pb.UnimplementedCatalogServer
+}
+
+func (Server) Get(ctx context.Context, req *pb.GetRequest) (*pb.Item, error) {
+    if err := ctx.Err(); err != nil {
+        return nil, status.FromContextError(err).Err()
+    }
+    if req.GetId() <= 0 {
+        return nil, status.Error(codes.InvalidArgument, "id must be positive")
+    }
+    if req.GetId() > 3 {
+        return nil, status.Error(codes.NotFound, "item not found")
+    }
+    return &pb.Item{Id: req.GetId(), Name: fmt.Sprintf("item-%d", req.GetId())}, nil
+}
+
+func (Server) List(req *pb.ListRequest, stream pb.Catalog_ListServer) error {
+    if req.GetLimit() < 1 || req.GetLimit() > 3 {
+        return status.Error(codes.InvalidArgument, "limit must be between 1 and 3")
+    }
+    for id := int64(1); id <= int64(req.GetLimit()); id++ {
+        if err := stream.Context().Err(); err != nil {
+            return status.FromContextError(err).Err()
+        }
+        if err := stream.Send(&pb.Item{Id: id, Name: fmt.Sprintf("item-%d", id)}); err != nil {
+            return err
+        }
+    }
+    return nil
+}
+```
+
+服务通过 `pb.RegisterCatalogServer(grpcServer, Server{})` 注册到 `grpc.Server`。Get 的正常请求返回一条记录，非法参数与缺失记录分别返回 InvalidArgument 和 NotFound；List 逐条发送，返回 nil 表示处理器正常结束。
+
+嵌入 UnimplementedCatalogServer 提供生成接口的默认未实现行为，但不会替新 RPC 完成业务。gRPC-Go 会并发调用处理器；这个示例没有可变共享状态，换成 map、计数器或连接依赖后，应另外保证并发安全。
+
+处理器里调用数据库或下游 RPC 时，继续传入当前 context。不要无条件换成 Background，否则上游取消和剩余 deadline 就无法沿这条调用链继续传递。
+
+## 4. 客户端与 deadline {#客户端与deadline}
+
+### 4.1 ClientConn 生命周期 {#ClientConn生命周期}
+
+**ClientConn** 管理目标解析、连接与调用等状态。可以在多个 goroutine 中复用同一个 ClientConn 和生成的客户端，应用退出时再关闭，不必每次 RPC 都新建和销毁。
+
+```go title="client.go"
+package catalog
+
+import (
+    "context"
+    "time"
+
+    pb "example.com/grpcdemo/catalogpb"
+    "google.golang.org/grpc"
+    "google.golang.org/grpc/credentials"
+)
+
+func NewClient(target string, creds credentials.TransportCredentials) (*grpc.ClientConn, pb.CatalogClient, error) {
+    conn, err := grpc.NewClient(target, grpc.WithTransportCredentials(creds))
+    if err != nil {
+        return nil, nil, err
+    }
+    return conn, pb.NewCatalogClient(conn), nil
+}
+
+func GetItem(parent context.Context, client pb.CatalogClient, id int64) (*pb.Item, error) {
+    ctx, cancel := context.WithTimeout(parent, 500*time.Millisecond)
+    defer cancel()
+    return client.Get(ctx, &pb.GetRequest{Id: id})
+}
+```
+
+调用方持有返回的 conn，并在不再需要时调用 `conn.Close()`。传输凭据由调用方提供；TLS 配置需要校验服务端身份和信任根，本机明文实验使用 insecure 凭据时也应限定在实验环境。
+
+本文版本的 `grpc.NewClient` 不执行网络 I/O。因此，即使端口没有服务，构造也可能成功，真正的连接或调用错误在 RPC 时出现。ClientConn 还可能管理重连与多个底层连接，不能把一次成功连接当作后续调用可用性的保证。
+
+### 4.2 总预算与取消 {#总预算与取消}
+
+GetItem 给当前调用设置最多 500 毫秒预算。如果 parent 更早到期，子 context 不能把期限延长到父级之后。超时预算要覆盖建立可用连接、排队、远端处理和返回等等待，不只是业务函数中某一段计算。
+
+没有 deadline 的调用可能等待很久；`WaitForReady(true)` 还可以让调用在连接处于暂时失败状态时继续等待可用性，因此更需要有限 deadline。它不是无限重试业务的授权，也不保证服务最终恢复。
+
+客户端超时后，服务端 context 会获得取消信号，但处理器要检查信号并让下游协作退出。忽略 context 的计算或阻塞动作可能继续存在；取消前已经提交的数据库修改也不会由 gRPC 回滚，见 [gRPC 的取消不等于回滚](../../network/grpc.mdx#取消不等于回滚)。
+
+## 5. 状态码与重试 {#状态码与重试}
+
+**状态码**帮助调用方区分失败类别。Go 中使用 `status.Code(err)` 读取，不通过匹配错误消息文本来决定行为：
+
+| 状态 | 常见语义 | 不能直接推出的结论 |
+| --- | --- | --- |
+| InvalidArgument | 请求参数不满足要求 | 反复发送相同请求就能成功 |
+| NotFound | 请求的对象不存在 | 底层服务整体不可用 |
+| DeadlineExceeded | 当前调用超过时间预算 | 远端没有执行或没有提交 |
+| Canceled | 调用被取消 | 远端所有后台动作已经结束 |
+| Unavailable | 当前服务或传输暂时不可用 | 操作一定没有产生副作用，可以任意重试 |
+| Internal | 服务内部出现问题 | 可以把内部 SQL、堆栈或凭据直接交给客户端 |
+
+普通 Go error 若没有映射为明确 gRPC 状态，客户端可能看到 Unknown。服务端应按 API 语义转换内部错误，保留诊断信息在受控日志中；不能把每种下游错误都原样透传成上层接口的同一种含义。
+
+重试需要同时回答：操作是否幂等，是否有稳定的请求标识，最多尝试几次，退避怎样进行，总 deadline 还剩多少。客户端没有收到成功响应时，远端仍可能已经提交，因此“重试后只执行一次”需要业务协议保证。
+
+库的透明重试和服务配置重试各有条件，不能把没有手写循环理解成“绝不会有重试”，也不能把自动重试理解成任意方法都获得恰好一次执行。具体重试策略应与服务端的幂等和结果确认方式共同设计。
+
+## 6. 拦截器与 metadata {#拦截器与metadata}
+
+**拦截器**在调用进入处理器或离开客户端时组织公共逻辑，例如观测、身份验证和错误转换。一元调用与流式调用分别配置 Unary 和 Stream 拦截器，不能只安装 Unary 就认为覆盖了所有 RPC。
+
+```go title="interceptor.go"
+package catalog
+
+import (
+    "context"
+    "time"
+
+    "google.golang.org/grpc"
+    "google.golang.org/grpc/codes"
+    "google.golang.org/grpc/status"
+)
+
+func TimingUnary(observe func(string, codes.Code, time.Duration)) grpc.UnaryServerInterceptor {
+    return func(ctx context.Context, req any, info *grpc.UnaryServerInfo,
+        handler grpc.UnaryHandler) (any, error) {
+        start := time.Now()
+        response, err := handler(ctx, req)
+        observe(info.FullMethod, status.Code(err), time.Since(start))
+        return response, err
+    }
+}
+```
+
+observe 由调用方提供，必须能够安全地被多个 RPC 并发调用。它观察的是这个拦截器包住的处理过程，不等于客户端测到的完整网络耗时，也不覆盖流式方法或处理器 panic 的恢复。
+
+`grpc.ChainUnaryInterceptor(A, B)` 让 A 包住 B，再进入处理器。入口通常按 A、B 的顺序执行，返回时反向展开；某层直接返回错误，可以阻止后续层和处理器执行。鉴权放在哪一层、日志能否观察拒绝结果，都取决于实际顺序。
+
+**metadata** 是随 RPC 传递的附加信息。客户端可以通过 `metadata.AppendToOutgoingContext` 发送指定字段，服务端通过 `metadata.FromIncomingContext` 读取。context 中任意 `Value` 不会自动序列化到网络另一端。
+
+metadata 本身也不是可信身份。令牌、租户和追踪字段需要各自的校验与传递规则；不要把收到的所有 metadata 不加选择地转发给任何下游。流的 metadata、最终 trailer 和状态也有自己的可用时机。
+
+## 7. 流与关闭流程 {#流与关闭流程}
+
+### 7.1 最终状态与资源释放 {#最终状态与资源释放}
+
+客户端需要持续读取服务端流，直到正常结束或遇到错误：
+
+```go title="stream.go"
+package catalog
+
+import (
+    "context"
+    "io"
+    "time"
+
+    pb "example.com/grpcdemo/catalogpb"
+)
+
+func ListItems(parent context.Context, client pb.CatalogClient, limit int32) ([]*pb.Item, error) {
+    ctx, cancel := context.WithTimeout(parent, time.Second)
+    defer cancel()
+    stream, err := client.List(ctx, &pb.ListRequest{Limit: limit})
+    if err != nil {
+        return nil, err
+    }
+    items := make([]*pb.Item, 0)
+    for {
+        item, err := stream.Recv()
+        if err == io.EOF {
+            return items, nil
+        }
+        if err != nil {
+            return nil, err
+        }
+        items = append(items, item)
+    }
+}
+```
+
+List 返回流对象只说明创建调用没有立即失败；服务端参数校验或后续处理错误可能在 Recv 时才出现。这里正常 EOF 才把整批结果视为成功；流中途失败时返回错误，不把已经收到的部分消息冒充完整列表。真实的大结果集应边读边处理，并设置业务数量和字节预算，不能无限追加到切片。
+
+提前结束读取时，取消该次调用的 context，让流的生命周期结束。对于客户端流或双向流，`CloseSend` 只关闭本端发送方向，不代表已经收到服务端最终结果；仍要接收最终状态或明确取消。
+
+同一个流可以由一个 goroutine 发送、另一个接收，但不能让多个 goroutine 同时调用同一方向的 Send 或 Recv。发送返回也不等于远端业务已持久化；流控只控制传输中的数据推进，不替应用的工作队列提供无限容量。
+
+### 7.2 服务排空 {#服务排空}
+
+`GracefulStop` 停止接受新的连接和 RPC，并等待在途 RPC 结束。长时间不结束的流可能让排空一直等待，因此应设定关闭预算：先启动优雅排空，达到预算仍未完成时再调用 Stop 关闭传输。
+
+Stop 会取消活动 RPC 并关闭连接，但不能强行结束忽略 context 的任意 Go 代码。服务还需要管理业务后台任务、数据库连接和其他资源，并在进程级关闭流程中等待或处理它们。客户端的 ClientConn 同样由明确的所有者统一关闭。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 生成的 gRPC 代码负责什么，业务代码还要做什么？ {#generated-code}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：消息契约、客户端与服务端接口、生成物和业务实现的边界。
+
+**相关内容**：[接口契约与生成代码](#接口契约与生成代码)、[服务端实现](#服务端实现)。
+
+<details>
+<summary>参考回答</summary>
+
+**生成代码提供消息类型、序列化支持、调用接口和服务注册能力。** 它不替业务检查对象权限、参数含义、数据库约束或幂等性。
+
+业务实现应放在自己的包里，通过生成接口接入服务，修改契约后重新生成。字段编号、存在性和默认值要按接口兼容规则维护，不直接手改生成文件来改变线上语义。
+
+</details>
+
+### 8.2 NewClient 成功是否证明服务可用，ClientConn 应该怎样复用？ {#client-connection}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：构造与网络调用、逻辑连接、并发复用和关闭所有权。
+
+**相关内容**：[ClientConn 生命周期](#ClientConn生命周期)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能。本文版本的 NewClient 不执行网络 I/O，真正的可达性与调用结果要在 RPC 中判断。** ClientConn 管理逻辑目标及底层连接，不等于一条固定 TCP 连接。
+
+可以并发复用 ClientConn 和生成客户端，由应用生命周期的所有者统一关闭。每个请求仍应设置预算并检查错误，不能把启动时连接成功当成后续可用性的保证。
+
+</details>
+
+### 8.3 客户端 deadline 到期后，服务端一定停止且没有副作用吗？ {#deadline-cancellation}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：取消通知、协作退出、下游传递与已提交结果。
+
+**相关内容**：[总预算与取消](#总预算与取消)。
+
+<details>
+<summary>参考回答</summary>
+
+**不一定。deadline 约束调用等待并触发取消，但处理器和下游要配合退出。** 任意忽略 context 的计算或阻塞动作不会因此被强制终止。
+
+已经提交的数据库修改也不会自动回滚。应传递当前 context、检查取消、管理后台任务，并为结果不确定的写操作提供幂等或结果确认方式。
+
+</details>
+
+### 8.4 收到 Unavailable 或 DeadlineExceeded 就能直接重试吗？ {#status-retry}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：失败类别与执行结果的区别、幂等和重试预算。
+
+**相关内容**：[状态码与重试](#状态码与重试)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能只凭状态码决定。** 远端可能已经完成副作用，只是结果没到达客户端；再次发送可能重复执行。
+
+先确认方法的幂等约定或请求去重机制，再设置最大次数、退避和总 deadline。用 status.Code 判断类别，不匹配消息文本；库的重试能力也不能替业务实现恰好一次执行。
+
+</details>
+
+### 8.5 Unary 拦截器能覆盖所有 RPC 吗，链的顺序有什么影响？ {#interceptors}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：一元与流式分工、包装顺序、短路与并发状态。
+
+**相关内容**：[拦截器与 metadata](#拦截器与metadata)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能，流式 RPC 要配置 Stream 拦截器。** ChainUnaryInterceptor(A, B) 中 A 在外层，先进入 A 再进入 B，正常返回时反向展开；直接返回错误的层可以阻止后续处理。
+
+因此观测和鉴权的覆盖范围受位置影响，流式方法也需要对应策略。拦截器和回调可能被并发调用，共享计数、map 或其他可变状态仍要同步。
+
+</details>
+
+### 8.6 为什么创建流成功和 CloseSend 都不等于调用最终成功？ {#stream-lifecycle}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：初始创建、单方向关闭、最终状态与提前结束。
+
+**相关内容**：[最终状态与资源释放](#最终状态与资源释放)。
+
+<details>
+<summary>参考回答</summary>
+
+**服务端后续处理仍可能失败，最终状态需要通过接收结果来判断。** 正常 EOF 表示服务端流正常结束，非 EOF 错误则要按失败处理，不能把部分消息当成完整成功。
+
+CloseSend 只关闭本端发送方向，不能代替最终接收；提前放弃时应取消 context。一个发送者与一个接收者可以并行，但同一方向不能被多个 goroutine 并发调用。
+
+</details>
+
+### 8.7 GracefulStop 为什么也需要关闭预算？ {#shutdown}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：在途 RPC、长流、传输停止与业务任务退出的区别。
+
+**相关内容**：[服务排空](#服务排空)。
+
+<details>
+<summary>参考回答</summary>
+
+**GracefulStop 等待在途 RPC，长流可能一直不结束。** 应设定排空预算，超过预算后根据策略调用 Stop 关闭传输并取消活动 RPC。
+
+Stop 也不能强制终止忽略 context 的任意 Go 代码。业务后台任务和其他资源要有自己的取消、等待与关闭流程，由应用统一管理。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+
+- [gRPC-Go v1.65.0：ClientConn 与 NewClient](https://github.com/grpc/grpc-go/blob/v1.65.0/clientconn.go)
+- [gRPC-Go v1.65.0：客户端使用边界](https://github.com/grpc/grpc-go/blob/v1.65.0/Documentation/anti-patterns.md)
+- [gRPC-Go v1.65.0：并发访问规则](https://github.com/grpc/grpc-go/blob/v1.65.0/Documentation/concurrency.md)
+- [gRPC-Go v1.65.0：流接口与生命周期](https://github.com/grpc/grpc-go/blob/v1.65.0/stream.go)
+- [gRPC-Go v1.65.0：服务端拦截器与关闭](https://github.com/grpc/grpc-go/blob/v1.65.0/server.go)
+- [gRPC-Go v1.65.0：metadata](https://github.com/grpc/grpc-go/blob/v1.65.0/metadata/metadata.go)
+- [gRPC-Go v1.65.0：状态码](https://github.com/grpc/grpc-go/blob/v1.65.0/codes/codes.go)
+- [gRPC-Go v1.65.0：状态转换](https://github.com/grpc/grpc-go/blob/v1.65.0/status/status.go)

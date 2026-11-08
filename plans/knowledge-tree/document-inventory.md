@@ -318,7 +318,7 @@
 | `eviction.mdx` | [Redis 内存淘汰](../../docs/basic-knowledge/nosql/redis/eviction.mdx) | 有正文 |
 | `expiration.mdx` | [Redis 过期](../../docs/basic-knowledge/nosql/redis/expiration.mdx) | 有正文 |
 | `index.mdx` | [Redis](../../docs/basic-knowledge/nosql/redis/index.mdx) | 索引／导读 |
-| `persistence.mdx` | [Redis 持久化、复制与集群](../../docs/basic-knowledge/nosql/redis/persistence.mdx) | 有正文 |
+| `persistence.mdx` | [Redis 持久化](../../docs/basic-knowledge/nosql/redis/persistence.mdx) | 有正文 |
 
 ## `docs/basic-knowledge/operating-system/`
 

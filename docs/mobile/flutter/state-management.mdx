@@ -1,0 +1,387 @@
+---
+title: Flutter 状态管理
+description: 理解 Flutter 状态的归属、依赖与通知，使用单向数据流处理共享状态、异步竞争和资源释放。
+knowledge:
+  id: mobile.flutter.state-management
+---
+
+**Flutter 状态管理**决定数据由谁保存、谁能修改、哪些界面依赖它，以及数据失效时如何更新和释放。选择一个状态库只是实现这些规则的一种方式；如果同一份业务状态在多个位置各存一份，即使接入了库，也仍然会出现不同步。
+
+准备这部分内容，重点是能沿着一次用户操作说明“事件如何改变状态，变化如何通知界面”，并处理异步结果乱序、组件退出和依赖替换。本文使用 Flutter 3.24.3 的基础 API 展开，状态库只作为组织方案说明。
+
+## 1. 面试核心 {#core}
+
+- **状态放在能够负责它的最小共同范围内**。局部展开状态可以属于组件，多个页面共享的业务状态需要明确的共同拥有者；共享不等于全部放进全局单例。[卡](#ownership)
+- **数据从拥有者流向界面，操作通过明确入口提交**。同一份业务事实保持一个权威状态，派生值尽量从它计算，减少重复维护。[卡](#flow)
+- **setState 通知对应 Element 需要重建，不会自动观察所有字段修改**。应先完成异步工作，再同步提交状态变化；其生命周期条件见对象树文章。[卡](#notifications)
+- **InheritedWidget 传递上下文数据并登记依赖，ChangeNotifier 提供变化通知**。二者职责不同，通知也不等于自动持久化或跨进程同步。[卡](#inherited)
+- **ValueNotifier 根据新旧值的相等比较决定是否通知**。直接修改现有可变集合的内容，不会自动变成一次 value 赋值通知。[卡](#value-notifier)
+- **异步状态要同时处理等待、成功、失败与结果有效性**。mounted 只能帮助判断组件生命周期，不能解决旧请求覆盖新请求的问题。[卡](#async-state)
+- **谁创建并拥有资源，谁负责结束其生命周期**。外部传入的模型通常由外部拥有者释放；监听关系变更还要退订旧对象。[卡](#disposal)
+- **状态库的价值由业务约束和团队使用方式决定**。比较状态归属、依赖追踪、异步表达、可测试性和复杂度，不把库名称当作正确性的证明。[卡](#libraries)
+
+## 2. 状态归属与单向数据流 {#状态归属与单向数据流}
+
+### 2.1 局部状态与共享状态 {#局部状态与共享状态}
+
+**局部状态**只影响一个较小的界面范围，例如某个面板是否展开、当前输入焦点或临时动画进度。把它放在相应 State 中，通常就能解释清楚归属与销毁时机。
+
+**共享状态**需要被多个组件或页面共同使用，例如购物车、当前登录用户和跨页面的筛选条件。可以提升到共同祖先，或者交给有明确作用域的模型管理。是否共享取决于消费者和生命周期，不取决于字段的数据类型。
+
+| 状态 | 需要确定的问题 | 可能的归属 |
+| --- | --- | --- |
+| 一张卡片是否展开 | 离开卡片后是否还需要保留 | 卡片或列表页面 |
+| 购物车商品 | 多页是否看到同一份数据 | 购物车模型与对应业务作用域 |
+| 搜索结果 | 查询词变化后旧结果是否有效 | 搜索页面或搜索模型 |
+| 登录身份 | 退出登录时哪些缓存必须清理 | 会话作用域 |
+
+内存状态、界面恢复与持久化也要区分。把数据放进共享模型，不代表进程退出后还能恢复；需要重启恢复的内容必须另行设计存储、读取、版本和失效规则。
+
+### 2.2 一份事实与多个显示结果 {#一份事实与多个显示结果}
+
+**单向数据流**让拥有者向下提供状态，界面通过事件请求修改，再根据新的状态重新描述显示结果。例如购物车页和顶部角标读取同一个模型，点击添加按钮调用模型方法，模型修改后通知消费者。
+
+如果已经保存商品集合，商品数量通常可以从集合计算。另存一个可独立修改的 `count`，就需要保证每条新增、删除、恢复和失败路径都同步维护它。可以计算的派生值不必再创建第二份权威状态。
+
+并非所有字段都必须不可变，但修改入口和通知规则必须清楚。让外部直接持有模型内部的可变集合，会使它绕过验证和通知；返回只读视图或不可变快照，可以使状态变化集中在模型方法里。
+
+## 3. 变化通知与界面更新 {#变化通知与界面更新}
+
+### 3.1 setState 的作用范围 {#setState的作用范围}
+
+`setState` 适合 State 自己拥有的局部变化。它同步执行修改回调，并通知框架安排对应子树重建；只改普通字段，不保证框架会自动知道需要更新。
+
+build 应根据当前配置和状态生成描述，不承担每次构建都发请求、写文件或添加监听的职责。build 可以因为多种原因重复执行，把副作用放进去容易造成重复请求、重复订阅和难以解释的状态变化。
+
+State 的保存位置、更新匹配和 `dispose` 条件见 [Flutter Widget、Element 与 RenderObject](widget-element-render-object.mdx#状态组件与State)。扩大 setState 所在范围会增加需要考虑的重建工作，因此状态应尽量靠近真正使用它的部分。
+
+### 3.2 ChangeNotifier 与消费者 {#ChangeNotifier与消费者}
+
+**ChangeNotifier** 提供注册、移除与通知监听者的能力。它不会自动观察字段；模型在有意义的变化后主动调用 `notifyListeners()`，消费者才能得到通知。
+
+下面用集合保存已加入购物车的商品 ID。重复加入同一个 ID 不改变状态，也不发出通知。`CartCount` 只负责订阅和显示，不拥有传入模型。
+
+```dart
+import 'package:flutter/widgets.dart';
+
+class CartModel extends ChangeNotifier {
+  final Set<String> _ids = {};
+
+  Set<String> get ids => Set.unmodifiable(_ids);
+  int get count => _ids.length;
+
+  void add(String id) {
+    if (_ids.add(id)) {
+      notifyListeners();
+    }
+  }
+
+  void remove(String id) {
+    if (_ids.remove(id)) {
+      notifyListeners();
+    }
+  }
+}
+
+class CartCount extends StatelessWidget {
+  const CartCount({super.key, required this.model});
+
+  final CartModel model;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: model,
+      builder: (context, child) => Text('${model.count} 件'),
+    );
+  }
+}
+```
+
+`add` 和 `remove` 是修改入口，`count` 是派生值，`ids` 返回不可修改的快照。`ListenableBuilder` 负责监听模型并在通知后重建；把 `CartCount` 放在提供文本方向的应用环境中即可显示。创建模型的拥有者仍需在业务作用域结束时调用 `dispose()`。
+
+如果某个子树不依赖变化的值，可以提前构建并通过 builder 的 `child` 参数复用。优化的是明确不变的部分；不能为了减少重建，把实际依赖数据的子树也当成永远不变。
+
+### 3.3 ValueNotifier 与可变集合 {#ValueNotifier与可变集合}
+
+**ValueNotifier** 保存一个 value，在赋入的新值与旧值通过 `==` 比较不相等时通知监听者。它不会递归追踪集合内部的每一次修改。
+
+```dart
+import 'package:flutter/foundation.dart';
+
+void main() {
+  final titles = ValueNotifier<List<String>>(['A']);
+  var notifications = 0;
+  titles.addListener(() => notifications++);
+
+  titles.value.add('B');
+  print(notifications); // 0
+
+  titles.value = [...titles.value, 'C'];
+  print(notifications); // 1
+
+  titles.dispose();
+}
+```
+
+第一次修改的是已有 List 的内容，没有经过 value 的新值通知判断。第二次赋入普通 List 的新实例，它与旧 List 不相等，因此发出通知。若自定义值类型重写了 `==`，还要根据其相等规则判断，不能概括为“任何新对象都会通知”。
+
+更清楚的做法是把 ValueNotifier 中的值作为不可变快照替换；如果业务需要多种内部可变操作，可以像 `CartModel` 一样集中管理修改和通知。
+
+## 4. 上下文传递与依赖登记 {#上下文传递与依赖登记}
+
+### 4.1 InheritedWidget 提供什么 {#InheritedWidget提供什么}
+
+**InheritedWidget** 把信息提供给后代，并让依赖它的 Element 在需要时收到更新。消费者通过 `dependOnInheritedWidgetOfExactType` 找到最近的对应祖先，同时登记依赖。
+
+当已有 InheritedElement 接收新配置时，`updateShouldNotify(oldWidget)` 决定这次变化是否应通知依赖者。它不是任意字段的自动观察器；如果把一个可变对象原地修改，却没有通过相应通知机制或提供新的有效配置，消费者不会因此自动知道变化。
+
+`getInheritedWidgetOfExactType` 可以取得当前祖先配置，但不会建立同样的依赖关系。读取一次数据和订阅它的变化是两种不同操作；需要随值更新的界面，应选择能登记依赖的入口。
+
+### 4.2 传递、通知与状态归属可以组合 {#传递通知与状态归属可以组合}
+
+InheritedWidget 可以传递一个模型引用，ChangeNotifier 可以通知模型变化，但仅把模型塞进普通 InheritedWidget，并不会自动把模型通知连接到所有后代。需要消费者直接监听，或使用 InheritedNotifier、Provider 等相应适配机制。
+
+依赖必须从正确的 context 位置登记。用于 build 的依赖可以在 build 或 `didChangeDependencies` 中建立，不能在 `initState` 中调用需要登记继承依赖的接口。由外部传入的监听对象更换时，应退订旧对象并监听新对象，避免界面仍响应已经不属于它的模型。
+
+## 5. 异步状态与结果有效性 {#异步状态与结果有效性}
+
+### 5.1 等待、结果和错误都属于状态 {#等待结果和错误都属于状态}
+
+异步请求不仅有返回的数据，还有等待过程、错误及当前数据对应哪个输入。先定义产品行为，例如刷新时保留旧列表、失败时显示错误且允许重试，再设计状态字段和转移。
+
+`FutureBuilder` 和 `StreamBuilder` 可以把异步结果交给 builder 描述界面，但它们不是持久化层或业务缓存。Future 应在初始化、依赖变化或明确操作时取得，不要在无关重建中反复创建；否则可能重复启动任务。builder 的调用节奏也不等于底层每个事件都单独显示了一帧。
+
+### 5.2 请求版本防止旧结果覆盖新结果 {#请求版本防止旧结果覆盖新结果}
+
+用户连续搜索 A、B，B 先返回、A 后返回时，A 已经不是当前查询的结果。即使页面仍挂载，接收 A 也会造成错误。因此，生命周期有效和业务结果有效需要分别判断。
+
+下面的模型使用递增请求版本，只有当前版本可以提交结果。它假定业务要求“最后发起的查询生效”，并在等待和失败时保留上一次成功列表。
+
+```dart
+import 'package:flutter/foundation.dart';
+
+enum SearchStatus { idle, loading, success, failure }
+
+class SearchModel extends ChangeNotifier {
+  SearchModel(this._load);
+
+  final Future<List<String>> Function(String query) _load;
+  int _version = 0;
+  bool _disposed = false;
+  SearchStatus _status = SearchStatus.idle;
+  List<String> _items = const [];
+  Object? _error;
+
+  SearchStatus get status => _status;
+  List<String> get items => _items;
+  Object? get error => _error;
+
+  Future<void> search(String query) async {
+    if (_disposed) throw StateError('SearchModel is disposed');
+    final requestVersion = ++_version;
+    _status = SearchStatus.loading;
+    _error = null;
+    notifyListeners();
+
+    try {
+      final received = await _load(query);
+      if (_disposed || requestVersion != _version) return;
+      _items = List.unmodifiable(received);
+      _status = SearchStatus.success;
+    } catch (error) {
+      if (_disposed || requestVersion != _version) return;
+      _error = error;
+      _status = SearchStatus.failure;
+    }
+    notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    _version++;
+    super.dispose();
+  }
+}
+```
+
+发起 B 会增加 `_version`，因此稍后返回的 A 无法提交；旧请求失败时也不能覆盖 B 的成功状态。模型销毁后，未完成结果同样被忽略。
+
+这段代码控制的是结果接收，不是底层取消。网络请求或计算可能仍在执行；如果依赖提供取消能力，拥有者还应在需求失效时调用它。分页追加、批量写入等业务也不一定适合“最后一次生效”，需要按各自契约设计合并、串行或去重规则。
+
+## 6. 生命周期与资源所有权 {#生命周期与资源所有权}
+
+组件拥有的模型可以在 `initState` 创建，在 `dispose` 释放；共享模型则由共享作用域管理。消费者收到外部模型引用，不代表它有权在自己退出时销毁模型，否则其他页面可能仍然需要它。
+
+监听关系与对象寿命也要分开。消费者离开时移除自己添加的监听，通常不等于销毁被监听对象；对象拥有者结束业务作用域时，才统一释放模型及其控制器、订阅等资源。
+
+`ChangeNotifier.dispose()` 清理监听资源，但不会替你撤销任意 Future、取消所有外部订阅或保存业务数据。模型要显式处理自己创建的工作。对组件中的异步更新，`mounted` 是避免已销毁状态更新的检查，配合取消和请求有效性判断使用，不是完整的异步状态方案。
+
+## 7. 状态方案的选择与验证 {#状态方案的选择与验证}
+
+### 7.1 比较机制和约束 {#比较机制和约束}
+
+局部状态可以直接使用 State，简单可观察值可以使用 ValueNotifier，多字段模型可以使用 ChangeNotifier。更大的项目可以采用库组织作用域、依赖、事件和状态，但仍要解释底层规则。
+
+| 方案示例 | 主要帮助 | 仍需自己确定 |
+| --- | --- | --- |
+| State 与 setState | 管理组件局部状态和重建 | 状态范围、异步有效性、资源释放 |
+| InheritedWidget 与监听接口 | 传递上下文数据、登记依赖或发出通知 | 拥有者、通知条件和消费范围 |
+| Provider 等作用域方案 | 组织对象提供、查找和监听 | 创建与复用方式、退出作用域时的责任 |
+| BLoC/Cubit 等事件或状态方案 | 组织业务输入与状态输出 | 状态转移、事件并发和错误策略 |
+| Riverpod 等依赖管理方案 | 组织提供者、依赖和生命周期策略 | 依赖边界、缓存失效和实际订阅范围 |
+
+这些名字不能单独决定性能和可维护性。同一个库可以被正确使用，也可以因全局状态过多、重复持有数据或监听范围过大而增加问题。准备项目回答时，选择自己实际使用的方案，说明它解决了哪条约束，再比较增加的复杂度。
+
+### 7.2 测试状态转移与通知边界 {#测试状态转移与通知边界}
+
+模型测试可以直接检查输入、状态序列和通知次数。例如同一商品重复加入不增加数量，删除不存在商品不通知；搜索失败保留旧列表，旧请求晚到不覆盖新结果，销毁后不再通知。
+
+界面测试再验证消费者是否连接到正确模型、通知后是否显示新值、替换模型后是否取消旧监听。把模型规则和界面连接分别测试，可以区分“业务状态算错”和“界面没有订阅”这两类问题。
+
+优化重建范围也需要证据。先确认哪些消费者依赖哪些状态，再使用测量和工具定位成本；不要只因为组件 build 了一次，就认定整屏重绘或状态库无效。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 Flutter 状态应该放在组件、父节点还是共享模型中？ {#ownership}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：消费者范围、生命周期、状态恢复与存储边界。
+
+**相关内容**：[局部状态与共享状态](#局部状态与共享状态)
+
+<details>
+<summary>参考回答</summary>
+
+**放在能够负责它的最小共同范围内。** 只有局部组件使用的临时状态可以属于该组件；多处共享同一业务事实时，需要共同拥有者或有明确作用域的模型。再根据离开页面、退出登录和重启后的要求确定生命周期与持久化，不把共享直接等同于全局单例。
+
+</details>
+
+### 8.2 单向数据流怎样减少多个页面之间的状态不同步？ {#flow}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：权威状态、操作入口、派生值和消费者。
+
+**相关内容**：[一份事实与多个显示结果](#一份事实与多个显示结果)
+
+<details>
+<summary>参考回答</summary>
+
+**让多个页面读取同一拥有者的状态，并通过明确入口提交操作。** 模型完成验证和修改后通知消费者，消费者重新描述界面。商品数量等派生值尽量从商品集合计算，减少多份可独立修改的数据。这样仍需处理异步竞争和缓存失效，但减少了相同事实多处维护造成的不一致。
+
+</details>
+
+### 8.3 修改字段后界面没有更新，应检查什么？ {#notifications}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：状态拥有者、通知入口和消费对象。
+
+**相关内容**：[变化通知与界面更新](#变化通知与界面更新)
+
+<details>
+<summary>参考回答</summary>
+
+**先确认改的是界面实际读取的那份状态，再检查通知与监听是否连接。** 局部字段修改是否通过 setState，模型是否调用 notifyListeners，消费者是否监听了当前模型，以及是否因原地修改 ValueNotifier 中的集合而没有触发通知。还要检查组件是否已销毁、context 是否处于正确作用域，不能简单再套一层全局刷新。
+
+</details>
+
+### 8.4 InheritedWidget 和 ChangeNotifier 有什么区别？ {#inherited}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：上下文数据传递、依赖登记与变化通知。
+
+**相关内容**：[上下文传递与依赖登记](#上下文传递与依赖登记)
+
+<details>
+<summary>参考回答</summary>
+
+**InheritedWidget 按树的位置提供数据并登记依赖，ChangeNotifier 提供对象变化的监听接口。** 前者接收新配置后通过 updateShouldNotify 决定是否通知依赖者；后者需要主动调用 notifyListeners。把模型引用放进普通 InheritedWidget 不会自动转发模型通知，需要消费者监听或相应适配机制。
+
+</details>
+
+### 8.5 为什么向 ValueNotifier 中的 List 添加元素，没有触发通知？ {#value-notifier}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：内部修改、value 赋值与相等比较。
+
+**相关内容**：[ValueNotifier 与可变集合](#ValueNotifier与可变集合)
+
+<details>
+<summary>参考回答</summary>
+
+**ValueNotifier 不递归观察 List 的内部修改。** 它在给 value 赋值时比较新旧值，只有不相等才通知。可以用新的不可变列表快照替换旧值，或者用 ChangeNotifier 把集合修改和通知统一管理；若自定义了相等规则，还需判断新值是否真的被视为不同。
+
+</details>
+
+### 8.6 页面仍然 mounted，为什么搜索结果还会显示错误内容？ {#async-state}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：生命周期与请求有效性、乱序结果和取消边界。
+
+**相关内容**：[请求版本防止旧结果覆盖新结果](#请求版本防止旧结果覆盖新结果)
+
+<details>
+<summary>参考回答</summary>
+
+**mounted 不能判断结果是否属于当前查询。** 旧请求可能在新请求后完成，覆盖最新结果。若业务要求最后一次查询生效，可以递增请求版本，只允许当前版本提交成功或错误状态；同时在销毁后忽略结果。版本检查不取消底层工作，依赖支持取消时还应主动停止无用请求。
+
+</details>
+
+### 8.7 消费者退出页面时，应该直接 dispose 共享模型吗？ {#disposal}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：资源拥有者、监听关系与共享作用域。
+
+**相关内容**：[生命周期与资源所有权](#生命周期与资源所有权)
+
+<details>
+<summary>参考回答</summary>
+
+**应先确定拥有者；普通消费者通常只移除自己的监听。** 自己创建并独占的模型可以随页面释放，共享模型则由其作用域管理，不能因为一个消费者离开就使其他页面失效。模型拥有的任务、订阅和控制器需要显式结束，dispose 不会自动撤销任意异步工作。
+
+</details>
+
+### 8.8 项目选择 Flutter 状态库时，应比较哪些条件？ {#libraries}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**题型**：综合题
+
+**考察重点**：实际约束、方案职责、复杂度与验证。
+
+**相关内容**：[状态方案的选择与验证](#状态方案的选择与验证)、[状态归属与单向数据流](#状态归属与单向数据流)、[异步状态与结果有效性](#异步状态与结果有效性)、[生命周期与资源所有权](#生命周期与资源所有权)。
+
+<details>
+<summary>参考回答</summary>
+
+**先比较状态范围、依赖关系、异步行为与团队维护成本。** 说明方案怎样管理拥有者和消费者、如何表达等待与错误、怎样处理并发和销毁，以及能否独立测试状态转移。局部状态不一定需要额外库；复杂业务采用库后，也仍需自己定义权威状态和失效规则，不能只报出库名。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+
+- [Flutter：Differentiate between ephemeral state and app state](https://docs.flutter.dev/data-and-backend/state-mgmt/ephemeral-vs-app)
+- [Flutter：Simple app state management](https://docs.flutter.dev/data-and-backend/state-mgmt/simple)
+- [Flutter：InheritedWidget](https://api.flutter.dev/flutter/widgets/InheritedWidget-class.html)
+- [Flutter：InheritedWidget.updateShouldNotify](https://api.flutter.dev/flutter/widgets/InheritedWidget/updateShouldNotify.html)
+- [Flutter：BuildContext.dependOnInheritedWidgetOfExactType](https://api.flutter.dev/flutter/widgets/BuildContext/dependOnInheritedWidgetOfExactType.html)
+- [Flutter：BuildContext.getInheritedWidgetOfExactType](https://api.flutter.dev/flutter/widgets/BuildContext/getInheritedWidgetOfExactType.html)
+- [Flutter：ChangeNotifier](https://api.flutter.dev/flutter/foundation/ChangeNotifier-class.html)
+- [Flutter：ValueNotifier](https://api.flutter.dev/flutter/foundation/ValueNotifier-class.html)
+- [Flutter：ListenableBuilder](https://api.flutter.dev/flutter/widgets/ListenableBuilder-class.html)
+- [Flutter：ValueListenableBuilder](https://api.flutter.dev/flutter/widgets/ValueListenableBuilder-class.html)
+- [Flutter：ChangeNotifier.dispose](https://api.flutter.dev/flutter/foundation/ChangeNotifier/dispose.html)
+- [Flutter：State.setState](https://api.flutter.dev/flutter/widgets/State/setState.html)
+- [Flutter：FutureBuilder](https://api.flutter.dev/flutter/widgets/FutureBuilder-class.html)
+- [Flutter：StreamBuilder](https://api.flutter.dev/flutter/widgets/StreamBuilder-class.html)
+- [Provider：Package documentation](https://pub.dev/packages/provider)
+- [Bloc：Bloc Concepts](https://bloclibrary.dev/bloc-concepts/)
+- [Riverpod：Documentation](https://riverpod.dev/)

@@ -1,0 +1,493 @@
+---
+sidebar_position: 1
+knowledge:
+  id: basic-knowledge.typescript.type-system
+  type: concept
+description: "解释 TypeScript 的静态检查、结构化类型、联合与交叉、类型收窄和运行时校验边界，以及 strict 与可选属性等配置条件。"
+keywords: ["TypeScript", "类型系统", "unknown", "never", "类型收窄", "strict"]
+---
+
+# TypeScript 类型系统
+
+**TypeScript** 在 JavaScript 之上增加类型描述和静态检查，帮助开发者在运行前发现不符合类型约定的使用方式。它不会因为代码通过检查，就把服务器返回的数据自动校验一遍，也不会改变 JavaScript 的闭包、对象引用和事件循环规则。
+
+理解类型系统，需要同时看两件事：编译器根据什么信息允许一次操作，以及运行时究竟存在什么值。本文按 TypeScript 5 的常用机制讲解，示例默认开启 `strict`；额外配置影响结论时会单独说明。
+
+## 1. 面试核心 {#core}
+
+- TypeScript 通过声明、推断与控制流分析检查代码。**类型注解、类型别名和接口通常不进入运行产物；类型通过不等于外部数据已校验，也不保证没有运行时错误**。[卡](#typescript-javascript)
+- 类型描述值允许具有的结构和操作。**基本类型、数组、元组、函数与对象类型表达不同约束，类型推断也能建立约束，不必每个局部变量都手写注解**。[卡](#basic-types)
+- TypeScript 主要使用结构化类型关系。**满足所需成员的对象可以兼容目标类型，但新鲜对象字面量还有多余属性检查，不能据此认为运行时对象会被裁剪**。[卡](#structural-types)
+- 联合表示多种可能，交叉要求同时满足。**联合值只能直接执行所有候选都安全的操作，互相冲突的交叉属性可能变成 never**。[卡](#union-intersection)
+- `any` 放宽检查，`unknown` 保留未知值的边界，`never` 表示不存在的可能。**unknown 要先收窄再使用；void 表示调用方不依赖返回值，不等于函数永远无法返回**。[卡](#any-unknown)
+- 收窄依靠可解释的运行时条件与控制流。**判断 typeof、空值、判别字段等可以缩小候选类型；类型断言则只是向编译器提供主张，不会生成验证**。[卡](#narrowing-validation)
+- 可选属性允许属性缺席，读取时要考虑 `undefined`。**缺席与存在但值为 undefined 不完全相同，exactOptionalPropertyTypes 会影响允许的写入形式**。[卡](#optional-properties)
+- `readonly` 和 `as const` 约束静态使用。**它们不是运行时深冻结，其他可变引用仍可能修改同一对象**。[卡](#readonly)
+- 判别联合可以表达互斥状态，`never` 可以检查分支是否处理完整。**把状态和对应数据放在同一分支，通常比多个彼此独立的可选字段更准确**。[卡](#exhaustiveness)
+- `enum` 描述一组具名常量，`Map` 是运行时键值集合。**普通 enum 可以生成 JavaScript 对象，不能把所有 TypeScript 语法都说成只存在于编译期**。[卡](#enum-map)
+- 项目配置决定检查与转换条件。**strict 不包含每一个更严格的选项，target 和 lib 也不会自动安装运行时缺少的 API**。[卡](#tsconfig)
+
+## 2. 静态类型与运行时值 {#静态类型与运行时值}
+
+**静态检查**是在执行应用之前，根据代码中可获得的信息检查约束。变量可以显式声明类型，也可以根据初始值和使用位置推断类型。
+
+```ts
+function double(value: number): number {
+  return value * 2;
+}
+const total = double(21);
+console.log(total); // 42
+// double("21"); // 编译错误：string 不能传给 number 参数
+```
+
+`double` 约定接收数字，编译器据此拒绝字符串调用。`total` 的类型可以从返回值推断为 `number`，不需要重复注解。生成 JavaScript 时，参数和返回值类型会被移除，剩下普通函数与调用。
+
+这个检查依赖进入系统的信息是否可信。`any`、错误的类型声明、类型断言或未校验的网络响应，都可能让运行时值偏离静态描述。类型系统也有为了 JavaScript 兼容性和使用便利保留的宽松边界，因此不能把“编译通过”当作所有行为正确的证明。
+
+检查与生成产物也不是同一个动作。`tsc` 可以只检查而不生成，是否在错误时仍输出文件取决于配置；部分转译工具只剥离类型语法，不执行完整类型检查。项目构建成功是否包含类型检查，需要看实际命令。
+
+## 3. 基本类型与推断 {#基本类型与推断}
+
+TypeScript 的类型用来描述可能的值及其使用方式，不是给 JavaScript 再增加一套同名的运行时基本类型。
+
+| 类型形式 | 表达的约束 |
+| --- | --- |
+| `string`、`number`、`boolean`、`bigint`、`symbol` | 相应 JavaScript 基本类型的值；通常使用小写类型，而不是装箱对象类型 `String` 等 |
+| `null`、`undefined` | 空值与未定义值，开启严格空值检查后不能随意赋给其他具体类型 |
+| `number[]`、`Array<number>` | 数组元素的类型；不自动保证某个索引存在 |
+| `[string, number]` | 元组，对已知位置分别约束类型与长度关系 |
+| `(value: number) => string` | 可调用对象的参数和返回值关系 |
+| `{ id: number; name: string }` | 对象需要提供的属性结构 |
+| `"loading"`、`200` | 字面量类型，只允许相应具体值 |
+
+```ts
+const displayName = "Lin";
+let phase = "loading";
+phase = "ready";
+const pair: [string, number] = [displayName, 2];
+const format: (value: number) => string = value => value.toFixed(1);
+console.log(pair[0], format(pair[1])); // Lin 2.0
+// pair[1] = "two"; // 编译错误：第二项需要 number
+```
+
+`const displayName` 可以保留字面量类型 `"Lin"`，`let phase` 则推断为允许其他字符串的 `string`。对象属性与可变容器还会有各自的推断规则，不能只因外层变量用了 `const`，就认为里面所有属性都只能取初始值。
+
+`object` 表示非基本类型的值，`{}` 在严格空值检查下表示非 `null`、非 `undefined` 的值，并不是“只能是空对象”。要约束业务字段，应写出具体结构，而不是把 `{}` 当作万能对象模型。
+
+## 4. 结构化类型关系 {#结构化类型关系}
+
+**结构化类型**主要根据值具有哪些成员判断兼容性，而不是要求类型名称相同或显式声明继承关系。
+
+```ts
+type Named = { name: string };
+function greet(value: Named): string {
+  return `Hello ${value.name}`;
+}
+const account = { name: "Lin", id: 7 };
+console.log(greet(account)); // Hello Lin
+// greet({ name: "Lin", id: 7 }); // 编译错误：新鲜字面量有多余属性 id
+```
+
+`account` 提供了所需的 `name: string`，额外的 `id` 不妨碍它用于 `Named`。但直接传入对象字面量时，编译器会额外检查未声明属性，帮助发现拼写错误或错误参数。
+
+这不是“先赋给变量就改变了对象结构”，只是检查上下文不同。运行时 `id` 仍然存在，类型系统不会删掉它。通过中间变量避开提示也不一定是好修复；先确认接口是否真的应该接受这个字段。
+
+结构兼容也不是没有例外。类的私有或受保护成员会影响兼容性，函数参数与返回值还有方向性规则。回答基础对象兼容时，应先说明所需成员，再讨论特定语法和配置条件。
+
+## 5. 联合类型与交叉类型 {#联合类型与交叉类型}
+
+**联合类型** `A | B` 表示值可能满足其中一种类型。读取前还不能确定是哪一种时，只能使用对所有可能都安全的操作。
+
+```ts
+function normalizeId(value: string | number): string {
+  if (typeof value === "string") return value.trim();
+  return value.toFixed(0);
+}
+console.log(normalizeId(" 42 "), normalizeId(42)); // 42 42
+
+type Identified = { id: number };
+type Named = { name: string };
+const user: Identified & Named = { id: 1, name: "Lin" };
+console.log(user.id, user.name); // 1 Lin
+```
+
+`typeof` 判断之后，字符串分支能调用 `trim()`，另一个分支只剩下 `number`。**交叉类型** `A & B` 则要求同时满足两个约束，所以 `user` 同时需要 `id` 和 `name`。
+
+交叉不是简单的后者覆盖前者。例如 `{ value: string } & { value: number }` 要求 `value` 同时是字符串和数字，这个属性会得到不可能的类型 `never`。不要把它当作运行时对象展开 `{ ...a, ...b }`：对象展开可能覆盖属性，交叉类型不会按这个顺序执行合并。
+
+## 6. any、unknown、never 与 void {#any-unknown-never-与-void}
+
+`any` 允许调用方绕过许多类型约束，并容易沿赋值和函数调用继续传播。**unknown** 同样能接收各种值，但在没有确认类型之前，不允许任意访问属性、调用或赋给某个具体类型。
+
+```ts
+function readLength(value: unknown): number {
+  if (typeof value === "string") return value.length;
+  if (Array.isArray(value)) return value.length;
+  return 0;
+}
+console.log(readLength("abc"), readLength([1, 2]), readLength(null)); // 3 2 0
+// function unsafe(value: unknown) { return value.length; } // 编译错误：尚未确定结构
+```
+
+将同样参数改成 `any`，编译器可能允许 `value.length`，但传入 `null` 时仍会在运行时失败。外部输入尚未验证时，用 `unknown` 可以把“先检查，再使用”的要求保留在代码中。
+
+**never** 表示没有可能的值，可以来自不返回的执行路径，也可以来自已经排除全部可能后的分支。**void** 描述调用方不依赖某个函数的返回值，两者含义不同。
+
+```ts
+function fail(message: string): never {
+  throw new Error(message);
+}
+const notify: () => void = () => 7;
+console.log(notify()); // 7
+```
+
+`fail` 通过抛出异常离开，正常返回路径不存在。`notify` 的目标签名表示调用方不应依赖返回内容，TypeScript 允许把返回数字的函数赋给它；运行时数字不会因此被删除。显式声明一个函数体的返回类型为 `void`，又直接 `return 7`，则是另一种检查上下文，会报类型错误。
+
+`unknown` 与具体类型求联合通常仍是 `unknown`，求交叉可以保留具体约束；`never` 与类型求联合不会增加新的可能。`any` 有特殊的兼容规则，不宜把它完全按集合代数推导，尤其不能说它在任何位置都能赋给 `never`。
+
+## 7. 收窄与运行时校验 {#收窄与运行时校验}
+
+**类型收窄**根据条件判断和控制流，把当前位置可能出现的类型缩小到更具体的范围。`typeof`、`instanceof`、`in`、相等比较和判别字段都可以提供依据，但条件本身仍需准确。
+
+例如 `typeof value === "object"` 仍包含 `null`，真值判断会排除 `0`、空串和 `false`。若业务只想排除空值，应判断 `value !== null && value !== undefined`，或使用符合项目约定的等价写法，而不是顺便丢掉合法的零和空串。
+
+### 7.1 类型谓词与输入校验 {#类型谓词与输入校验}
+
+**类型谓词**如 `value is User` 告诉编译器：函数返回 `true` 时，参数满足对应类型。这个声明需要由函数内部真实的运行时检查支撑。
+
+```ts
+type User = { id: number; name: string };
+function isUser(value: unknown): value is User {
+  return typeof value === "object" && value !== null
+    && "id" in value && typeof value.id === "number" && Number.isFinite(value.id)
+    && "name" in value && typeof value.name === "string";
+}
+function readName(text: string): string {
+  const value: unknown = JSON.parse(text);
+  if (!isUser(value)) throw new TypeError("Invalid user");
+  return value.name;
+}
+console.log(readName('{"id":1,"name":"Lin"}')); // Lin
+```
+
+这里把 JSON 解析结果放进 `unknown`，再检查对象、字段类型以及有限数值条件。格式非法的 JSON 仍会在解析阶段抛错；结构不符合则在校验阶段抛错。
+
+该函数允许额外字段，检查的字段也不要求必须是自有属性。对 JSON 解析后的普通数据，这份约定容易理解；若要校验任意复杂对象，还应明确继承属性、getter、Proxy、递归结构和业务数值范围是否接受。类型系统本身不会自动补上这些要求。
+
+编译器不会证明谓词函数真的做完了全部检查。若直接 `return true`，它仍可能相信声明，因此自定义谓词也是需要维护和测试的边界。
+
+### 7.2 类型断言与非空断言 {#类型断言与非空断言}
+
+**类型断言** `value as User` 请求编译器按给定类型理解值；**非空断言** `value!` 则从静态类型中排除 `null` 和 `undefined`。它们都不会生成运行时验证，也不会修复数据。
+
+```ts
+type User = { name: string };
+const value: unknown = JSON.parse('{"name":7}');
+const user = value as User;
+console.log(typeof user.name); // number
+```
+
+静态视角把 `user.name` 当成字符串，实际仍是数字 `7`。继续调用字符串方法可能报错。断言适用于已经通过其他可信方式确认条件、但编译器不能推导的场景，不应代替外部输入检查。
+
+## 8. 空值、可选属性与只读属性 {#空值可选属性与只读属性}
+
+### 8.1 可选属性与 undefined {#可选属性与-undefined}
+
+`name?: string` 表示 `name` 属性可以缺席；在严格空值检查下，读取结果需要考虑 `undefined`。`name: string | undefined` 则要求属性存在，只是值可以为 `undefined`。
+
+```ts
+type Options = { title?: string };
+function label(options: Options): string {
+  return options.title ?? "Untitled";
+}
+console.log(JSON.stringify([label({}), label({ title: "" })])); // ["Untitled",""]
+const missing = {};
+const present = { title: undefined };
+console.log("title" in missing, "title" in present); // false true
+```
+
+空值合并 `??` 只在左侧是 `null` 或 `undefined` 时采用默认值，所以空串不会被替换成 `"Untitled"`。使用 `||` 时，空串、零等假值也会触发默认值，表达的约定不同。
+
+默认情况下，`title?: string` 的写入可以显式提供 `undefined`。开启 `exactOptionalPropertyTypes` 后，如果希望允许这种写入，需要把 `undefined` 明确写进属性类型，例如 `title?: string | undefined`。无论是否开启，读取可选属性仍需考虑它缺席的情况。
+
+### 8.2 readonly 与 as const {#readonly-与-as-const}
+
+`readonly` 限制通过当前类型视角给属性重新赋值，不会自动生成运行时冻结。`as const` 可以保留字面量类型，并把字面量中的对象属性与数组位置视为只读，但不复制也不冻结对象。
+
+```ts
+const mutable = { name: "Lin" };
+const view: { readonly name: string } = mutable;
+mutable.name = "Kai";
+console.log(view.name); // Kai
+// view.name = "Other"; // 编译错误：只读属性不能通过 view 写入
+
+const tags: string[] = ["first"];
+const config = { mode: "dark", tags } as const;
+config.tags.push("second");
+console.log(config.mode, config.tags.length); // dark 2
+```
+
+`view` 和 `mutable` 指向同一对象，所以另一条允许写入的引用能影响读取结果。`config.tags` 引用的是外部已经建立的可变数组，`as const` 不会递归把这条引用背后的所有内容改成不可变数据。
+
+运行时是否允许修改，需要由封装、数据复制或冻结等机制决定。冻结的浅层边界见 [JavaScript 对象属性](../javascript/object-properties.mdx)。
+
+## 9. 判别联合与穷尽检查 {#判别联合与穷尽检查}
+
+**判别联合**让不同分支共享一个具有不同字面量值的字段，编译器据此确定其他字段的类型。它适合描述请求状态、消息类型和有限业务分支。
+
+```ts
+type Result =
+  | { kind: "success"; data: string }
+  | { kind: "failure"; error: Error };
+function assertNever(value: never): never {
+  throw new Error("Unexpected result");
+}
+function describe(result: Result): string {
+  switch (result.kind) {
+    case "success": return result.data;
+    case "failure": return result.error.message;
+    default: return assertNever(result);
+  }
+}
+console.log(describe({ kind: "success", data: "ready" })); // ready
+```
+
+`success` 分支中一定有 `data`，`failure` 分支中一定有 `error`，不需要把两个字段都写成可选再到处断言。处理完所有分支后，默认分支的 `result` 应是 `never`。
+
+如果后来增加 `{ kind: "loading" }`，却忘了更新 `describe`，传给 `assertNever` 的值就不再是 `never`，编译器会提示未覆盖。这是**穷尽检查**：让类型变化暴露遗漏的处理位置。
+
+它仍然依赖输入确实满足 `Result`。若外部数据未经验证就强行断言，运行时仍可能进入异常分支；穷尽检查不会替代边界校验。
+
+## 10. 枚举与运行时集合 {#枚举与运行时集合}
+
+**枚举**（enum）为一组相关常量提供名称。普通 TypeScript 枚举通常生成运行时对象，因此它与被擦除的 `type`、`interface` 不同。
+
+```ts
+enum Status {
+  Idle,
+  Ready,
+}
+const labels = new Map<Status, string>([
+  [Status.Idle, "idle"],
+  [Status.Ready, "ready"],
+]);
+console.log(Status.Ready, Status[1], labels.get(Status.Ready)); // 1 Ready ready
+```
+
+数字枚举通常包含名称到数字以及数字到名称的反向映射；字符串枚举不会生成相同的数字反向映射形式。`Map` 则是运行时键值集合，可以增删和查找任意允许的键值对，不负责声明一组固定常量。
+
+只需要约束一组字符串时，可以用 `"idle" | "ready"` 这样的联合；需要同时保留常量对象时，也可以按项目约定使用 `as const` 对象。`const enum` 的内联与产物保留还受编译配置和消费方式影响，不应在跨工具发布场景里只凭“更小”就替换普通枚举。
+
+## 11. 编译配置与项目边界 {#编译配置与项目边界}
+
+`tsconfig.json` 描述项目的检查、模块处理、目标语法和文件范围。下面是一份用于验证本文示例的独立配置；每个示例放在单独文件并作为模块处理，避免不同示例的类型名相互冲突。
+
+```json
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "ESNext",
+    "strict": true,
+    "noEmit": true
+  },
+  "include": ["src/**/*.ts"]
+}
+```
+
+`strict` 开启一组严格检查，包括 `strictNullChecks` 和 `noImplicitAny` 等；它不是“打开所有可能的严格选项”。`noUncheckedIndexedAccess` 会使未确认存在的数组或索引签名读取包含 `undefined`，`exactOptionalPropertyTypes` 改变可选属性的精确写入约束，它们需要按项目需要单独设置。
+
+`target` 影响输出语法的目标层级，`lib` 描述哪些标准库或宿主 API 的类型可用；声明里存在 `Promise`、`Map` 或 DOM API，不会让旧运行环境自动获得这些能力。模块格式与解析配置也必须匹配实际运行时和构建工具。
+
+多个项目统一配置时，可以通过 `extends` 复用共同检查策略，再由应用、工具脚本等子项目补充各自环境。不要把浏览器 DOM 类型和 Node.js 环境不加区分地合并到所有项目，也不要只为消除错误到处关闭检查。
+
+可以用 `tsc -p 路径 --showConfig` 查看合并后的实际配置，再用 `tsc -p 路径 --noEmit` 执行检查。显式给 `tsc` 传源码文件会改变配置读取方式，不能把一次脱离项目配置的单文件检查当作项目检查结果。`skipLibCheck` 可以跳过声明文件的部分检查，但不修正错误声明；转译步骤成功也不能代替独立类型检查。
+
+## 12. 面试题 {#面试题}
+
+### 12.1 TypeScript 与 JavaScript 有什么关系，类型检查能保证什么？ {#typescript-javascript}
+
+**考察重点**：静态检查、类型擦除、运行时语义与可信边界。
+
+**相关内容**：[静态类型与运行时值](#静态类型与运行时值)、[收窄与运行时校验](#收窄与运行时校验)。
+
+<details>
+<summary>参考回答</summary>
+
+**TypeScript 为 JavaScript 增加类型描述与静态检查，运行时仍遵循 JavaScript 的值和执行规则。** 它能根据声明、推断和控制流发现不符合约定的使用，支持更可靠的重构与工具提示。
+
+类型注解、接口和类型别名通常被移除，不会自动检查网络数据。`any`、断言、错误声明和类型系统保留的宽松边界都可能导致运行时值与描述不符；普通 enum 等语法又可能生成运行时代码，不能简单说所有 TS 语法都被擦除。
+
+</details>
+
+### 12.2 TypeScript 的基本类型、数组、元组和函数类型分别怎样表达？ {#basic-types}
+
+**考察重点**：值类型、位置约束、函数签名、推断与字面量类型。
+
+**相关内容**：[基本类型与推断](#基本类型与推断)。
+
+<details>
+<summary>参考回答</summary>
+
+**基本类型使用 string、number、boolean 等描述值，数组约束元素类型，元组进一步约束已知位置，函数类型描述参数与返回值。** 例如 `number[]`、`[string, number]` 和 `(value: number) => string` 表达不同关系。
+
+局部变量可以通过初值推断类型；`const` 基本值可能保留字面量类型，可变位置通常需要更宽类型。数组类型不保证任意索引存在，`{}` 也不是“只能有零个属性的对象”。
+
+</details>
+
+### 12.3 TypeScript 按结构判断兼容，为什么对象字面量还会报多余属性？ {#structural-types}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：所需成员、字面量检查上下文与运行时对象。
+
+**相关内容**：[结构化类型关系](#结构化类型关系)。
+
+<details>
+<summary>参考回答</summary>
+
+**结构兼容要求值满足目标需要的成员，新鲜对象字面量还会接受额外的多余属性检查。** 因此一个带 `name` 和 `id` 的变量可能可用于只要求 `name` 的参数，直接写同样字面量却会提示 `id` 不在目标类型里。
+
+这有助于发现错误配置与拼写，并不意味着赋给变量会删除属性。应检查接口约定是否准确，而不是仅用中间变量压掉提示。
+
+</details>
+
+### 12.4 联合类型和交叉类型有什么区别，交叉属性冲突时会覆盖吗？ {#union-intersection}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：可能性、同时满足、收窄与不可能类型。
+
+**相关内容**：[联合类型与交叉类型](#联合类型与交叉类型)。
+
+<details>
+<summary>参考回答</summary>
+
+**联合表示值可能属于其中一种类型，交叉要求同时满足所有约束。** 联合未收窄前，只能执行对所有候选都安全的操作。
+
+交叉不是对象展开的后者覆盖前者。同名属性同时要求 `string` 和 `number`，会形成 `never` 这样的不可能约束，应修改数据模型而不是按赋值顺序猜测结果。
+
+</details>
+
+### 12.5 any 与 unknown 有什么区别，never 和 void 又分别表示什么？ {#any-unknown}
+
+**考察重点**：未知输入、检查约束、不可达分支与返回值约定。
+
+**相关内容**：[any、unknown、never 与 void](#any-unknown-never-与-void)。
+
+<details>
+<summary>参考回答</summary>
+
+**any 会放宽许多检查，unknown 接收未知值但要求先确认类型再使用。** 对未验证输入，`unknown` 可以让安全检查保持可见，`any` 则可能把错误继续传播下去。
+
+`never` 表示没有可能的值，常用于不返回的执行路径或穷尽检查；`void` 表示调用方不依赖返回值。赋给 `() => void` 的函数可以实际返回内容，运行时返回值不会被类型系统删除。
+
+</details>
+
+### 12.6 类型收窄、类型谓词和类型断言分别提供什么保证？ {#narrowing-validation}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：控制流依据、用户定义检查与运行时边界。
+
+**相关内容**：[类型谓词与输入校验](#类型谓词与输入校验)、[类型断言与非空断言](#类型断言与非空断言)。
+
+<details>
+<summary>参考回答</summary>
+
+**收窄利用条件与控制流缩小类型范围，谓词把自定义检查结果暴露给编译器，断言则直接请求按某类型理解值。** 断言和非空断言都不会生成校验代码。
+
+自定义谓词也必须真实检查字段，编译器不会证明它的承诺正确。外部数据应先按 `unknown` 接收，再按协议和业务约束验证；不能用 `as User` 代替验证。
+
+</details>
+
+### 12.7 可选属性有什么作用，缺少属性与属性值为 undefined 一样吗？ {#optional-properties}
+
+**考察重点**：属性存在性、读取类型、默认值与精确可选配置。
+
+**相关内容**：[可选属性与 undefined](#可选属性与-undefined)。
+
+<details>
+<summary>参考回答</summary>
+
+**可选属性允许该属性缺席，读取时需要考虑 undefined；属性缺席与存在但值为 undefined 仍有差别。** `in`、键枚举等操作可以观察到存在性的不同。
+
+`title?: string` 与必须存在的 `title: string | undefined` 不同。开启 `exactOptionalPropertyTypes` 后，前者要允许显式写入 `undefined`，需把它写进类型。默认值还要区分 `??` 与 `||`，避免把合法空串或零一起替换。
+
+</details>
+
+### 12.8 readonly 和 as const 能让对象在运行时不可变吗？ {#readonly}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：静态视角、对象别名、字面量推断与冻结。
+
+**相关内容**：[readonly 与 as const](#readonly-与-as-const)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能，它们主要约束类型层面的使用，不会自动复制或深冻结对象。** `readonly` 阻止通过当前只读视角写属性，其他可变引用仍可能改变同一对象。
+
+`as const` 保留字面量并提供只读推断，但引用的外部可变数组等内容仍可能变化。运行时不变性需要另行设计封装、复制或冻结策略。
+
+</details>
+
+### 12.9 怎样让新增状态分支时，遗漏的处理逻辑被类型检查发现？ {#exhaustiveness}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：判别联合、字段相关性与 never 穷尽检查。
+
+**相关内容**：[判别联合与穷尽检查](#判别联合与穷尽检查)。
+
+<details>
+<summary>参考回答</summary>
+
+**用判别联合描述互斥状态，在各分支处理后把剩余值交给只接受 never 的检查函数。** 当新增状态未被覆盖，剩余类型就不再是 `never`，编译器会指出遗漏。
+
+状态对应的数据应放在各自分支里，让 `success` 必须有 `data`、`failure` 必须有 `error`。这个检查仍依赖输入类型可信，外部响应必须另外验证。
+
+</details>
+
+### 12.10 enum 与 Map 有什么区别？ {#enum-map}
+
+**考察重点**：具名常量、类型与值、运行时集合及生成代码。
+
+**相关内容**：[枚举与运行时集合](#枚举与运行时集合)。
+
+<details>
+<summary>参考回答</summary>
+
+**enum 为一组相关常量提供名称，Map 是用于增删和查找键值对的运行时集合。** 普通 enum 通常生成对象，数字枚举还能包含反向映射；字符串枚举不生成相同形式的数字反向映射。
+
+只约束有限字符串可以用字面量联合，需要常量对象可以考虑 `as const`。Map 可以用枚举值作键，但两者职责不同，不能因为都能“按键取值”就视为同一种机制。
+
+</details>
+
+### 12.11 多个项目怎样统一 tsconfig，排查配置时应关注什么？ {#tsconfig}
+
+**考察重点**：共享检查策略、环境边界、实际配置与类型检查命令。
+
+**相关内容**：[编译配置与项目边界](#编译配置与项目边界)。
+
+<details>
+<summary>参考回答</summary>
+
+**用 extends 复用共同检查策略，再由不同项目明确目标环境、模块方式和文件范围。** 通过 `tsc -p 路径 --showConfig` 查看实际合并结果，用项目模式执行独立类型检查，避免只验证脱离配置的单文件。
+
+`strict` 不包含 `noUncheckedIndexedAccess`、`exactOptionalPropertyTypes` 等所有附加选项；`lib` 提供类型声明，`target` 影响语法输出，都不会自动补齐运行时 API。还要区分仅转译与完整检查，以及跳过声明检查和修正错误声明。
+
+</details>
+
+## 13. 参考资料 {#参考资料}
+
+- [TypeScript Handbook：Everyday Types](https://www.typescriptlang.org/docs/handbook/2/everyday-types.html)
+- [TypeScript Handbook：Narrowing](https://www.typescriptlang.org/docs/handbook/2/narrowing.html)
+- [TypeScript Handbook：Object Types](https://www.typescriptlang.org/docs/handbook/2/objects.html)
+- [TypeScript Handbook：Type Compatibility](https://www.typescriptlang.org/docs/handbook/type-compatibility.html)
+- [TypeScript Handbook：More on Functions](https://www.typescriptlang.org/docs/handbook/2/functions.html)
+- [TypeScript Handbook：Enums](https://www.typescriptlang.org/docs/handbook/enums.html)
+- [TypeScript：strict](https://www.typescriptlang.org/tsconfig/strict.html)
+- [TypeScript：exactOptionalPropertyTypes](https://www.typescriptlang.org/tsconfig/exactOptionalPropertyTypes.html)
+- [TypeScript：noUncheckedIndexedAccess](https://www.typescriptlang.org/tsconfig/noUncheckedIndexedAccess.html)
+- [TypeScript：Project Configuration](https://www.typescriptlang.org/docs/handbook/tsconfig-json.html)

@@ -1,0 +1,406 @@
+---
+knowledge:
+  id: basic-knowledge.database.modeling.data-types
+title: MySQL 数据类型
+sidebar_label: MySQL 数据类型
+description: "以 MySQL 8.0 解释整数范围、DECIMAL 与浮点、CHAR 与 VARCHAR、字符集与长度、日期时间和 NULL，并说明类型选择对索引和存储的影响。"
+keywords: ["MySQL 数据类型", "CHAR", "VARCHAR", "DECIMAL", "utf8mb4", "TIMESTAMP"]
+---
+
+# MySQL 数据类型
+
+**数据类型**规定一列能够表达什么值，以及数据库怎样存储、比较和转换这些值。选类型首先要保住业务含义：金额不能因近似运算发生偏差，编号不能丢失前导零，时间也不能在换一个连接后被误读。
+
+MySQL 面试中的类型问题，需要把范围、精度和存储条件连起来。`VARCHAR(100)` 的 `100` 是字符数上限，不是每行固定占用 100 字节；同样一个字段能否建立完整索引，还取决于字符集和索引键长度限制。本文以 MySQL 8.0、InnoDB 为基线。
+
+## 1. 面试核心 {#core}
+
+- 整数类型的字节数决定范围，**`UNSIGNED` 把负数区间换成更大的非负区间，不增加存储字节**；`INT(11)` 中的 `11` 不决定整数范围。[卡](#integer-range)
+- **`DECIMAL(M,D)` 表达精确十进制值，`FLOAT` 和 `DOUBLE` 表达近似值**。小数位缩减可能舍入，选择 `DECIMAL` 仍要约定业务精度。[卡](#decimal-precision)
+- **`CHAR(M)` 定长，`VARCHAR(M)` 变长，`M` 都按字符计数**。变长是指内容可短于上限，并非允许超过声明长度；尾随空格的保存和读取规则也不同。[卡](#char-varchar)
+- **字符数、编码后的字节数、整行最大长度与索引键长度是不同限制**。MySQL 8.0 的 `utf8` 是 `utf8mb3` 的别名，新表应明确使用能表示完整 Unicode 范围的 `utf8mb4`。[卡](#varchar-length)
+- **`TIMESTAMP` 按会话时区转换，`DATETIME` 保存日期时间字段值**；还要比较支持范围和小数秒精度，不能只按是否“自动更新时间”选择。[卡](#datetime-timestamp)
+- `NULL` 表示缺失或未知，**不等于 `0`、空字符串或默认值**；是否允许它先由业务含义决定，查询和唯一约束需要遵守相应规则。[卡](#null-type)
+- **类型和字符集会影响行宽、索引宽度及比较方式**。参数类型不匹配可能改变查询语义与访问路径，不能只检查有没有建立索引。[卡](#type-index-cost)
+- 严格模式能拒绝许多无效写入，**不保证每次类型转换都原样保存或全部报错**。判断结果要同时说明 `sql_mode`、语句和目标类型。[卡](#strict-mode)
+
+## 2. 整数与取值范围 {#整数与取值范围}
+
+整数类型保存精确的整数值。InnoDB 中常用类型的值存储宽度如下，不含整条记录的其他开销：
+
+| 类型 | 字节数 | 有符号范围 | 无符号范围 |
+| --- | --- | --- | --- |
+| `TINYINT` | 1 | −128～127 | 0～255 |
+| `SMALLINT` | 2 | −32768～32767 | 0～65535 |
+| `MEDIUMINT` | 3 | −8388608～8388607 | 0～16777215 |
+| `INT` | 4 | −2147483648～2147483647 | 0～4294967295 |
+| `BIGINT` | 8 | −2⁶³～2⁶³−1 | 0～2⁶⁴−1 |
+
+一个 `n` 位整数，有符号范围为 −2ⁿ⁻¹～2ⁿ⁻¹−1，无符号范围为 0～2ⁿ−1。`INT UNSIGNED` 仍占 4 字节，只是不再表示负数。使用它之前，要确认应用语言、驱动和其他系统也能接收这个范围；数据库允许的值不一定落在应用的有符号整数范围内。
+
+旧表定义中的 `INT(11)` 曾用于显示宽度，不表示“最多 11 位十进制数”，也不会把 `INT` 变成 11 字节。需要更大范围，应选择 `BIGINT` 等合适类型。
+
+### 2.1 越界与严格模式 {#越界与严格模式}
+
+**严格模式**是由 `sql_mode` 中的 `STRICT_TRANS_TABLES` 或 `STRICT_ALL_TABLES` 等设置启用的一组数据校验规则。对下面的 InnoDB 表，严格模式下普通 `INSERT` 会拒绝越界值：
+
+```sql
+SET SESSION sql_mode = 'STRICT_TRANS_TABLES';
+CREATE TABLE int_demo (
+  signed_value TINYINT,
+  unsigned_value TINYINT UNSIGNED
+) ENGINE=InnoDB;
+
+INSERT INTO int_demo VALUES (-128, 0), (127, 255);
+-- 单独执行会报错 1264，不能写入：
+-- INSERT INTO int_demo VALUES (128, 256);
+```
+
+如果在实验连接中改成 `sql_mode=''`，同样的越界写入会产生警告，并把值调整到范围端点：`128` 存成 `127`，无符号列中的 `256` 存成 `255`，负数存成 `0`。关闭严格模式不等于扩大类型范围，也可能让应用以为原值已经保存。
+
+这里说明的是列赋值。数值表达式本身溢出有自己的规则，不能把“非严格模式会截到端点”推广到所有算术运算。应用应在写入前验证业务范围，并把数据库错误和警告纳入处理；不要靠关闭校验让错误数据通过。
+
+## 3. 精确小数与浮点数 {#精确小数与浮点数}
+
+**`DECIMAL(M,D)`** 是精确十进制数类型：`M` 是总有效数字位数，`D` 是小数位数，符号和小数点不计入 `M`。例如 `DECIMAL(5,2)` 留出 3 位整数和 2 位小数，范围是 −999.99～999.99。
+
+`FLOAT` 和 `DOUBLE` 使用近似的二进制浮点表示，普通声明分别占 4 和 8 字节。它们可以表达较大范围，但 `0.1` 等十进制小数无法用有限二进制位精确表示。
+
+```sql
+SELECT 0.1 + 0.2 = 0.3 AS exact_equal,
+       0.1E0 + 0.2E0 = 0.3E0 AS approximate_equal;
+```
+
+结果分别为 `1` 和 `0`。普通小数字面量走精确值运算，带指数的字面量走近似值运算。这个对照说明，判断计算结果时也要看表达式类型，不能只看打印出来是不是同一个小数。
+
+金额可以用约定最小单位的整数，或满足业务精度的 `DECIMAL`。前者需要全链路约定单位和溢出范围；后者需要约定总位数、小数位数以及舍入时机。测量值、允许误差的科学计算等场景，可以按精度要求选择浮点数。
+
+### 3.1 精确类型也会舍入 {#精确类型也会舍入}
+
+`DECIMAL` 精确保存的是**落在目标精度中的值**。输入超出目标小数位数时，MySQL 会进行舍入；严格模式不会把这种小数舍入一概变成错误。
+
+```sql
+SET SESSION sql_mode = 'STRICT_TRANS_TABLES';
+CREATE TABLE money_demo (amount DECIMAL(5,2)) ENGINE=InnoDB;
+INSERT INTO money_demo VALUES (1.235), (-1.235);
+SHOW WARNINGS;
+SELECT amount FROM money_demo ORDER BY amount;
+-- 单独执行会报错 1264：
+-- INSERT INTO money_demo VALUES (1000);
+```
+
+查询得到 `-1.24` 和 `1.24`，`SHOW WARNINGS` 能看到代码 `1265` 的提示。写入精确目标类型时，正好位于中点的值按远离零的方向舍入。`1000` 则超出了整数部分的范围，严格模式下不能写入。
+
+因此，“存成 `DECIMAL` 就不会丢精度”少了前提。驱动先把值转成近似浮点数，或者业务要求三位小数而列只留两位，数据库都不能替应用恢复已经丢失的精度。应用金额类型、参数传递和表定义需要一起约定。
+
+## 4. CHAR 与 VARCHAR {#char-与-varchar}
+
+**`CHAR(M)`** 是声明长度固定的字符类型，`M` 最大为 255；**`VARCHAR(M)`** 是有长度上限的变长字符类型。两者的 `M` 都表示字符数，不是字节数。
+
+`VARCHAR(100)` 可以存 `'a'`，也可以存 100 个字符，不会因为短值不足 100 个字符就自动补满。这里“变长”指各行内容的实际长度可以不同；超过 100 个字符仍然会受到限制。
+
+| 行为 | `CHAR(M)` | `VARCHAR(M)` |
+| --- | --- | --- |
+| 长度语义 | 按声明长度处理，不足部分右补空格 | 按实际内容处理，另有长度信息 |
+| 尾随空格读取 | 默认去掉尾随空格 | 保留已存储的尾随空格 |
+| 适合的内容 | 长度稳定、尾随空格不承载业务含义的短代码 | 长度变化的名称、标题等文本 |
+
+下面明确关闭 `PAD_CHAR_TO_FULL_LENGTH` 等其他模式，只保留严格模式，避免会话设置改变观察结果：
+
+```sql
+SET SESSION sql_mode = 'STRICT_TRANS_TABLES';
+CREATE TABLE text_demo (
+  fixed_text CHAR(4),
+  variable_text VARCHAR(4)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+INSERT INTO text_demo VALUES ('ab  ', 'ab  ');
+SELECT HEX(fixed_text), HEX(variable_text),
+       CHAR_LENGTH(fixed_text), CHAR_LENGTH(variable_text)
+FROM text_demo;
+```
+
+结果为 `6162`、`61622020`、`2`、`4`。`20` 是空格的十六进制字节值，`VARCHAR` 返回了两个尾随空格，`CHAR` 的返回值已经去掉它们。这是读取行为对照，不能直接用 `HEX(fixed_text)` 推算磁盘记录的字节布局。
+
+`CHAR` 定长也不意味着任意字符集、任意 InnoDB 行格式下都“每行恰好占 M 字节”。多字节字符集和引擎记录格式仍然参与存储；足够宽的固定长度字段还可能按变长字段处理。不要仅凭“定长”推导查询一定比 `VARCHAR` 快。
+
+### 4.1 尾随空格与比较规则 {#尾随空格与比较规则}
+
+**排序规则**（collation）规定字符怎样比较和排序。字符串保存了空格，不代表比较时空格一定有意义：
+
+```sql
+SELECT _utf8mb4'a' COLLATE utf8mb4_general_ci = _utf8mb4'a ' AS pad_equal,
+       _utf8mb4'a' COLLATE utf8mb4_0900_ai_ci = _utf8mb4'a ' AS no_pad_equal;
+```
+
+结果为 `1` 和 `0`。前一个排序规则为 `PAD SPACE`，比较时忽略这里的尾随空格；后一个为 `NO PAD`，空格参与比较。这与 `CHAR` 读取时去空格是不同的步骤，也会影响唯一约束怎样认定重复。业务要求参见 [数据约束](./constraints.mdx#使用边界)。
+
+对超过声明长度的非空格内容，严格模式下普通写入会报错。超出的尾随空格有特殊规则：`CHAR` 可去掉超出部分而不报警告，`VARCHAR` 会截去超出部分并给出警告，即使启用了严格模式。依赖完整原始文本的业务应在应用层校验长度，并选择能保留其含义的类型。
+
+## 5. 字符集与长度限制 {#字符集与长度限制}
+
+**字符集**规定字符如何编码成字节。`utf8mb4` 中一个字符最多占 4 字节，但英文字母通常只占 1 字节，常见汉字通常占 3 字节。
+
+```sql
+SET NAMES utf8mb4;
+SELECT CHAR_LENGTH('A中🙂') AS characters,
+       OCTET_LENGTH('A中🙂') AS bytes,
+       LENGTH('A中🙂') AS same_bytes;
+```
+
+结果是 `3`、`8`、`8`：`A`、`中`、`🙂` 分别占 1、3、4 字节。`CHAR_LENGTH` 按字符计数，具体说是编码中的码点；`LENGTH` 与 `OCTET_LENGTH` 按字节计数。组合字符或组合 emoji 可能包含多个码点，界面上看到的一个符号不一定只算一个字符。
+
+MySQL 8.0 中，`utf8` 实际指 `utf8mb3`，一个字符最多占 3 字节，不能存入上例的 `🙂`。新设计应明确使用 `utf8mb4`，同时检查连接与表列的字符集；只改客户端显示方式不能改变列的编码能力。
+
+### 5.1 VARCHAR 的长度信息 {#varchar-的长度信息}
+
+`VARCHAR` 除了内容，还需要保存长度信息。按类型的通用存储规则，最大可能字节长度不超过 255 时使用 1 字节长度前缀，超过时使用 2 字节。这个判断依据最大**字节**长度，不能只看声明的 `M` 是否超过 255。
+
+例如 `VARCHAR(100) CHARACTER SET utf8mb4` 最多需要 400 个内容字节，按这个通用规则计入 2 字节长度信息；某一行只存 `'a'` 时，内容仍只有 1 字节，不会预先填满 400 字节。InnoDB 的实际记录编码还会根据行格式和当前值做调整：`COMPACT`、`DYNAMIC` 中，即使列的最大长度超过 255 字节，未存到页外且实际内容不超过 127 字节时，长度信息仍可以只用 1 字节。因此，不能用通用长度前缀规则直接推算每条物理记录；记录头、NULL 标记等也另有开销。
+
+### 5.2 VARCHAR 最大能声明多长 {#varchar-最大能声明多长}
+
+MySQL 对内部行表示有 **65535 字节**的上限。普通列的最大长度、长度信息和 NULL 标记等共同占用这份预算，所以不能直接回答“`VARCHAR` 都能存 65535 个字符”。
+
+下面限定为只有一个 `NOT NULL` 列、InnoDB `DYNAMIC` 行格式：
+
+```sql
+CREATE TABLE max_mb3 (
+  value_text VARCHAR(21844) NOT NULL
+) ENGINE=InnoDB ROW_FORMAT=DYNAMIC DEFAULT CHARSET=utf8mb3;
+
+CREATE TABLE max_mb4 (
+  value_text VARCHAR(16383) NOT NULL
+) ENGINE=InnoDB ROW_FORMAT=DYNAMIC DEFAULT CHARSET=utf8mb4;
+
+-- 以下两种单列定义都会被拒绝：
+-- VARCHAR(21845) NOT NULL，字符集 utf8mb3
+-- VARCHAR(16384) NOT NULL，字符集 utf8mb4
+```
+
+两份成功定义分别为内容预留最多 `21844 × 3` 和 `16383 × 4` 字节，加上 2 字节长度信息后都未超过行预算。这些是给定条件下的最大声明值；再增加一个 `INT NOT NULL`，`VARCHAR(16383)` 就无法继续满足整行限制，需要减少长度。
+
+字符集决定最大编码宽度，实际内容决定某行用了多少字节，建表检查则必须考虑声明允许的最大值。只存英文不能使一个不合法的表定义变合法。
+
+InnoDB 还有页内记录大小限制，长的变长值可以移到页外；它与 MySQL 的 65535 字节限制不是同一层。改成 `DYNAMIC` 行格式不能取消服务层的整行上限。长文本应考虑 `TEXT` 等合适类型及实际读取需求，页与行的组织见 [InnoDB](../storage/innodb.mdx#页表空间与索引)。
+
+## 6. 日期与时间 {#日期与时间}
+
+时间类型首先区分“日期”“钟表字段”和“某个时刻”。以下范围按不含小数秒的正常值说明，不把零日期当作业务日期：
+
+| 类型 | 表达内容 | 主要范围或限制 |
+| --- | --- | --- |
+| `DATE` | 年、月、日 | 支持 1000-01-01～9999-12-31 |
+| `TIME` | 时分秒，也可表示有符号时长 | −838:59:59～838:59:59，不限于一天 |
+| `DATETIME` | 日期与时间字段 | 支持 1000-01-01 00:00:00～9999-12-31 23:59:59 |
+| `TIMESTAMP` | 经会话时区转换的时间值 | UTC 1970-01-01 00:00:01～2038-01-19 03:14:07 |
+
+`TIME`、`DATETIME`、`TIMESTAMP` 可以用括号指定 0～6 位小数秒，例如 `DATETIME(3)` 保留到毫秒；省略时默认精度为 0。声明为 `DATETIME(6)` 不会让输入时不存在的微秒信息自动变准确。
+
+### 6.1 DATETIME 与 TIMESTAMP 的时区行为 {#datetime-与-timestamp-的时区行为}
+
+对不带时区偏移的输入，`DATETIME` 保存日期时间字段值，切换会话时区后读取不会自动换算；`TIMESTAMP` 写入时按会话时区转为 UTC，读取时再换成读取连接的时区。
+
+```sql
+SET SESSION time_zone = '+00:00';
+CREATE TABLE clock_demo (
+  local_time DATETIME(6),
+  instant_time TIMESTAMP(6) NULL
+) ENGINE=InnoDB;
+INSERT INTO clock_demo VALUES
+  ('2025-01-01 00:00:00.123456', '2025-01-01 00:00:00.123456');
+SELECT local_time, instant_time FROM clock_demo;
+SET SESSION time_zone = '+08:00';
+SELECT local_time, instant_time FROM clock_demo;
+```
+
+第一次两个值都是 `2025-01-01 00:00:00.123456`。第二次 `local_time` 不变，`instant_time` 变为 `2025-01-01 08:00:00.123456`。它表达的仍是同一个时刻，变化的是显示所用时区；`TIMESTAMP` 不保存最初输入的时区名称。
+
+预约当地 9 点、生日、事件发生时刻是不同业务含义。跨地区事件需要统一时区约定；未来很远的预约日期还要考虑 `TIMESTAMP` 的 2038 年范围。也可以用 `DATETIME` 保存约定为 UTC 的字段值，但这个约定需要应用遵守，类型本身不会替你执行。
+
+自动填入当前时间或更新时刷新，由 `DEFAULT CURRENT_TIMESTAMP`、`ON UPDATE CURRENT_TIMESTAMP` 等列属性决定，`DATETIME` 和 `TIMESTAMP` 都能配置。MySQL 8.0 默认启用 `explicit_defaults_for_timestamp`，不应根据类型名称推断自动更新行为。
+
+### 6.2 无效日期与零日期 {#无效日期与零日期}
+
+`'2023-02-29'` 不是有效日期。对 InnoDB 的普通 `INSERT`，使用 `STRICT_TRANS_TABLES,NO_ZERO_DATE,NO_ZERO_IN_DATE` 且未启用 `ALLOW_INVALID_DATES` 时，写入 `DATE` 会报错；实验中改成 `sql_mode=''` 后，会警告并存成 `'0000-00-00'`。
+
+零日期不等于 `NULL`，也不能还原原来的错误输入。未知时间应按业务含义使用可空列或明确状态，不要把宽松模式产生的零日期当作正常默认值。对时长和小数秒，同样应验证范围、精度以及实际转换结果。
+
+## 7. NULL 与索引存储 {#null-与索引存储}
+
+### 7.1 NULL 的含义 {#null-的含义}
+
+**`NULL`** 表示没有一个已知的普通值。比如“未填写昵称”和“昵称是空字符串”可能代表不同状态，不能为了统一查询而随意互换。`NOT NULL` 是列约束，不是另一种数据类型。
+
+`NULL` 判断用 `IS NULL`；普通等值比较、聚合和唯一约束都有相应规则。MySQL 的可空唯一索引允许多个 `NULL`，普通索引也可以支持 `IS NULL` 查询，不能用“有 NULL 就不能建索引”解释选型。相关语义分别见 [SQL 查询](../sql/query.mdx#not-in-与-null)、[SQL 聚合](../sql/aggregation.mdx) 和 [数据约束](./constraints.mdx#null-与-check)。
+
+InnoDB 的 `COMPACT`、`DYNAMIC` 行格式用位图等信息记录可空列状态；NULL 值不保存该列的普通值内容，但这不代表整行完全没有 NULL 相关开销。是否设为 `NOT NULL` 应先回答业务上能否缺失，再考虑空间和查询，而不是凭空把缺失值改成 `0`。
+
+### 7.2 类型宽度影响索引 {#类型宽度影响索引}
+
+更宽的值可能让一页容纳更少记录，也会增加索引和缓存占用。InnoDB 二级索引还保存聚簇键，所以主键类型过宽会影响多个索引，具体机制见 [聚簇索引](../indices/clustered_index/index.mdx#主键宽度)。这些是成本方向，不是“某类型必然快几倍”的性能结论。
+
+索引键还有独立的长度限制。以 16 KiB 页、`DYNAMIC` 行格式为例，InnoDB 的索引键长度上限是 3072 字节。`utf8mb4` 的完整 `VARCHAR(768)` 索引最多涉及 `768 × 4 = 3072` 个字符内容字节；换成 `VARCHAR(769)`，相同的完整唯一索引定义就会被拒绝。联合索引需要合计各索引列，其他行格式或页大小的限制也可能不同。
+
+因此，把列声明从 100 放大到 10000，即使眼下只存短字符串，也可能影响表定义与索引能否建立。需要前缀索引或不同建模时，应结合实际查询判断，不要为了通过建表就截短业务值；索引选择由 [数据库索引](../indices/index.mdx#7-从查询反推索引) 展开。
+
+### 7.3 参数类型影响比较 {#参数类型影响比较}
+
+同样看起来是数字的编号，未必适合用数值比较。若字符串列存有 `'001'`、`'1'`、`'2'`：
+
+- `WHERE code = '1'` 按字符串比较，只匹配 `'1'`。
+- `WHERE code = 1` 会发生数值转换，`'001'` 和 `'1'` 都会匹配。
+
+第二种写法还不能按原字符串键直接进行等值定位，因为多个不同字符串都可能转换成同一个数。它仍可能扫描索引，不能把这件事简化成“所有类型转换都会全表扫描”。参数应与列的语义和类型一致，再结合 [执行计划](../indices/execution-plan.mdx) 确认实际访问路径。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 INT(11) 最多保存 11 位数字吗，UNSIGNED 会增加存储空间吗？ {#integer-range}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：整数存储宽度、范围、显示宽度及应用边界。
+
+**相关内容**：[整数与取值范围](#整数与取值范围)。
+
+<details>
+<summary>参考回答</summary>
+
+**都不会：`INT` 的范围由 4 字节决定，`11` 不限制十进制位数；`UNSIGNED` 仍使用 4 字节。** 有符号 `INT` 范围为 −2³¹～2³¹−1，无符号为 0～2³²−1。
+
+选择无符号类型要确认业务不需要负数，应用和驱动也能承接上界。越界写入在严格模式下会报错，不能靠改变显示宽度扩大范围。
+
+</details>
+
+### 8.2 金额为什么通常选择 DECIMAL 或整数，DECIMAL 是否完全不会丢精度？ {#decimal-precision}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：精确值与近似值、精度声明和舍入时机。
+
+**相关内容**：[精确小数与浮点数](#精确小数与浮点数)、[精确类型也会舍入](#精确类型也会舍入)。
+
+<details>
+<summary>参考回答</summary>
+
+**整数可以精确表示约定单位的金额，`DECIMAL` 可以精确表示目标精度内的十进制金额；浮点数会有近似误差。** 整数方案要约定单位，`DECIMAL(M,D)` 要约定总位数、小数位数和舍入规则。
+
+`DECIMAL` 不是无限精度。`1.235` 写入 `DECIMAL(5,2)` 会变成 `1.24`，严格模式下也可能只给出舍入提示。还要避免应用先把金额转换为近似浮点值。
+
+</details>
+
+### 8.3 CHAR 和 VARCHAR 有什么区别，VARCHAR(100) 为什么仍然是变长类型？ {#char-varchar}
+
+**考察重点**：字符数上限、定长与变长、尾随空格及物理存储的条件。
+
+**相关内容**：[CHAR 与 VARCHAR](#char-与-varchar)、[尾随空格与比较规则](#尾随空格与比较规则)。
+
+<details>
+<summary>参考回答</summary>
+
+**`CHAR(M)` 按固定声明长度处理，`VARCHAR(M)` 保存不同实际长度的内容；`M` 都是字符数上限。** `VARCHAR(100)` 的每一行可以少于 100 个字符，不会补满，也不能无限增长。
+
+`CHAR` 右补空格，默认读取时去掉尾随空格；`VARCHAR` 保留已存储的尾随空格。比较是否忽略空格还由排序规则决定。实际字节数受字符集和 InnoDB 行格式影响，不能直接断言 `CHAR(100)` 永远占 100 字节或一定更快。
+
+</details>
+
+### 8.4 utf8 下 VARCHAR 最长是多少，换成 utf8mb4 后怎样判断？ {#varchar-length}
+
+**考察重点**：字符与字节、字符集最大编码宽度、长度信息和整行限制。
+
+**相关内容**：[字符集与长度限制](#字符集与长度限制)、[VARCHAR 最大能声明多长](#varchar-最大能声明多长)。
+
+<details>
+<summary>参考回答</summary>
+
+**要按字符集和完整表定义计算，不能把 65535 字节直接当作 VARCHAR 的字符数。** MySQL 8.0 的 `utf8` 指 `utf8mb3`，每个字符最多 3 字节；`utf8mb4` 最多 4 字节。
+
+只有一个 `NOT NULL` 列、使用 InnoDB `DYNAMIC` 行格式时，可以分别声明 `VARCHAR(21844)` 和 `VARCHAR(16383)`。这是最大内容字节加长度信息不超过整行预算的结果；其他列、NULL 标记等会继续占用预算，索引还另有键长度限制。实际字符串的字符数用 `CHAR_LENGTH`，字节数用 `LENGTH` 或 `OCTET_LENGTH`。
+
+</details>
+
+### 8.5 DATETIME 与 TIMESTAMP 在时区、范围和自动更新方面有什么区别？ {#datetime-timestamp}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：字段时间与时区转换、类型范围、列属性。
+
+**相关内容**：[日期与时间](#日期与时间)、[DATETIME 与 TIMESTAMP 的时区行为](#datetime-与-timestamp-的时区行为)。
+
+<details>
+<summary>参考回答</summary>
+
+**`TIMESTAMP` 会在写入和读取时按会话时区与 UTC 转换；`DATETIME` 不因读取连接换时区而自动改变字段值。** `TIMESTAMP` 不保留原始时区名称。
+
+MySQL 8.0 的正常 `TIMESTAMP` 范围约为 1970～2038 年，`DATETIME` 的支持范围更大。两者都可声明最多 6 位小数秒，也都能配置 `DEFAULT CURRENT_TIMESTAMP` 和 `ON UPDATE CURRENT_TIMESTAMP`。是否自动更新取决于列属性及相关设置，不能只看类型名称。
+
+</details>
+
+### 8.6 NULL 可以用 0 或空字符串替代吗，会使索引不可用吗？ {#null-type}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：缺失值语义、索引支持与约束边界。
+
+**相关内容**：[NULL 的含义](#null-的含义)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能在没有业务约定时替代，它们表达的状态不同；NULL 也不会天然使索引不可用。** `IS NULL` 可以使用普通索引，但最终是否选择索引要看成本和实际计划。
+
+可空唯一索引允许多个 `NULL`，因此“未知值也只允许一个”等业务要求不能仅靠普通唯一索引实现。行格式还需要记录 NULL 状态，不能把它理解成完全没有存储开销。
+
+</details>
+
+### 8.7 字段类型怎样影响索引，字符串列与数字参数比较有什么问题？ {#type-index-cost}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：键宽度、字符集、隐式转换与访问路径。
+
+**相关内容**：[类型宽度影响索引](#类型宽度影响索引)、[参数类型影响比较](#参数类型影响比较)。
+
+<details>
+<summary>参考回答</summary>
+
+**类型影响索引键的字节宽度、比较规则和可用访问路径。** 宽键增加空间与缓存成本，InnoDB 的宽主键还会进入二级索引；字符列的完整索引要考虑字符集最大字节数与行格式限制。
+
+字符串列和数字比较时，可能先发生数值转换，例如 `'001'` 与 `'1'` 都匹配数字 `1`，也不能按原字符串键直接做等值定位。应使用符合列语义的参数类型，再通过执行计划确认，而不是把所有转换都叫作“索引完全失效”。
+
+</details>
+
+### 8.8 开启严格模式后，数据类型转换是否只会原样成功或报错？ {#strict-mode}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：严格模式的作用、转换条件和警告检查。
+
+**相关内容**：[越界与严格模式](#越界与严格模式)、[精确类型也会舍入](#精确类型也会舍入)、[无效日期与零日期](#无效日期与零日期)。
+
+<details>
+<summary>参考回答</summary>
+
+**不是，严格模式能拒绝许多无效写入，但不是“禁止一切转换”。** 对 InnoDB 普通 `INSERT`，整数越界会报错；`DECIMAL` 缩减小数位却可以舍入并给出提示，字符超长还要区分非空格和尾随空格。
+
+回答具体结果时要给出目标类型、`sql_mode` 和语句条件。应用也要校验业务范围并处理错误、检查必要警告，不能把“语句成功”直接等同于“输入原样保留”。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+
+- [MySQL 8.0：Integer Types](https://dev.mysql.com/doc/refman/8.0/en/integer-types.html)
+- [MySQL 8.0：Numeric Type Attributes](https://dev.mysql.com/doc/refman/8.0/en/numeric-type-attributes.html)
+- [MySQL 8.0：Out-of-Range and Overflow Handling](https://dev.mysql.com/doc/refman/8.0/en/out-of-range-and-overflow.html)
+- [MySQL 8.0：Fixed-Point Types](https://dev.mysql.com/doc/refman/8.0/en/fixed-point-types.html)
+- [MySQL 8.0：Rounding Behavior](https://dev.mysql.com/doc/refman/8.0/en/precision-math-rounding.html)
+- [MySQL 8.0：The CHAR and VARCHAR Types](https://dev.mysql.com/doc/refman/8.0/en/char.html)
+- [MySQL 8.0：String Functions and Operators](https://dev.mysql.com/doc/refman/8.0/en/string-functions.html)
+- [MySQL 8.0：The utf8 Character Set](https://dev.mysql.com/doc/refman/8.0/en/charset-unicode-utf8.html)
+- [MySQL 8.0：Data Type Storage Requirements](https://dev.mysql.com/doc/refman/8.0/en/storage-requirements.html)
+- [MySQL 8.0：Limits on Table Column Count and Row Size](https://dev.mysql.com/doc/refman/8.0/en/column-count-limit.html)
+- [MySQL 8.0：The DATE, DATETIME, and TIMESTAMP Types](https://dev.mysql.com/doc/refman/8.0/en/datetime.html)
+- [MySQL 8.0：Date and Time Data Type Syntax](https://dev.mysql.com/doc/refman/8.0/en/date-and-time-type-syntax.html)
+- [MySQL 8.0：The TIME Type](https://dev.mysql.com/doc/refman/8.0/en/time.html)
+- [MySQL 8.0：InnoDB Limits](https://dev.mysql.com/doc/refman/8.0/en/innodb-limits.html)
+- [MySQL 8.0：InnoDB Row Formats](https://dev.mysql.com/doc/refman/8.0/en/innodb-row-format.html)
+- [MySQL 8.0：Type Conversion in Expression Evaluation](https://dev.mysql.com/doc/refman/8.0/en/type-conversion.html)

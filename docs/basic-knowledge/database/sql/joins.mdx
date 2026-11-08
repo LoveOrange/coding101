@@ -17,7 +17,7 @@ keywords: ["JOIN", "LEFT JOIN", "EXISTS", "反连接", "SQL 连接面试"]
 
 - `INNER JOIN` **只返回匹配上的行**，`LEFT JOIN` **还会保留没匹配上的左表行，右表列补 NULL**。[卡](#left-join-where)
 - 一对多连接**为每个匹配对输出一行**，左表的一行会重复出现，直接对左表金额求和会被放大。
-- 在 `WHERE` 里对右表列写比较条件，**会把 `LEFT JOIN` 补出来的 NULL 行过滤掉**，外连接就退化成了内连接。[卡](#left-join-where)
+- 在 `WHERE` 里对右表列写 `p.amount >= 50` 这类条件，**会把 `LEFT JOIN` 补出来的 NULL 行过滤掉**，外连接就退化成了内连接；`IS NULL` 等保留补空行的条件不属于这种情况。[卡](#left-join-where)
 - `EXISTS` **只判断有没有匹配**，不会因为匹配多行而重复输出；`NOT EXISTS` 选出完全没有匹配的行。[卡](#exists-anti-join)
 - 连接多张明细表时，**先把每张明细聚合到目标粒度再连接**，才能避免重复求和。[卡](#join-fanout)
 
@@ -126,7 +126,7 @@ MySQL 8.0.18 起，适合的连接可以使用 **hash join**：先用其中一�
 <details>
 <summary>参考回答</summary>
 
-**会把没有匹配的左表行过滤掉，`LEFT JOIN` 退化成 `INNER JOIN` 的效果。**
+**取决于过滤条件：条件排除了右表的补空行时，`LEFT JOIN` 才会退化成 `INNER JOIN` 的效果。**
 
 `LEFT JOIN` 先给没匹配上的左表行补出右表 NULL，`WHERE` 再对连接结果过滤。`p.amount >= 50` 这类普通比较遇到 NULL 得到 UNKNOWN，补空行就被去掉了。要保留所有左表行、只限制哪些右表行参与匹配，应该把条件写在 `ON` 里。`WHERE p.id IS NULL` 则是反过来利用补空行，专门选出没有匹配的左表行。
 
@@ -186,6 +186,7 @@ MySQL 8.0.18 起，适合的连接可以使用 **hash join**：先用其中一�
 ## 9. 参考资料 {#参考资料}
 
 - [MySQL：JOIN Clause](https://dev.mysql.com/doc/refman/8.0/en/join.html)
+- [MySQL 8.0：Outer Join Simplification](https://dev.mysql.com/doc/refman/8.0/en/outer-join-simplification.html)
 - [MySQL 8.0：EXISTS and NOT EXISTS](https://dev.mysql.com/doc/refman/8.0/en/exists-and-not-exists-subqueries.html)
 - [MySQL 8.0：Hash Join Optimization](https://dev.mysql.com/doc/refman/8.0/en/hash-joins.html)
 - [MySQL 8.0：Comparison Operators](https://dev.mysql.com/doc/refman/8.0/en/comparison-operators.html)

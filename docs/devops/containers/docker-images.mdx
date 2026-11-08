@@ -56,6 +56,49 @@ CMD ["--spring.profiles.active=prod"]
 
 `EXPOSE 8080` 只记录服务端口，不会自动把它开放到宿主机；使用 `docker run -p` 才会建立主机端口发布。`HEALTHCHECK` 也只是定义检查命令，命令需要的工具仍必须存在于镜像中。
 
+### 2.1 构建镜像与进入容器 {#构建镜像与进入容器}
+
+`docker build` 的最后一个路径指定构建上下文，`-f` 选择 Dockerfile，`-t` 给产物命名。假设项目根目录已有 `target/app.jar`，上面的 Dockerfile 放在 `docker/Dockerfile`，在项目根目录执行：
+
+```bash
+docker build -t interview-app:local -f docker/Dockerfile .
+docker run -d --name interview-app interview-app:local
+docker exec -it interview-app sh
+```
+
+这里的 `COPY target/app.jar app.jar` 从最后的 `.` 所指目录取文件，不是从 `docker/` 取。改成 `docker build -f docker/Dockerfile docker/` 后，构建器就不能从该上下文取得根目录下的 `target/app.jar`；被 `.dockerignore` 排除的文件也不能被普通 `COPY` 复制。
+
+`docker exec` 在正在运行的容器中启动一个新进程；它不会创建新容器，也不会恢复已经退出的主进程。`-i` 保持标准输入打开，`-t` 分配伪终端，交互式 shell 通常一起使用。批处理执行 `docker exec interview-app java -version` 时不需要终端。镜像中必须有要执行的程序：精简镜像可能没有 `sh`，不能把这种失败当成容器没有运行。要执行管道、重定向或多条 shell 命令，需要明确调用 `sh -c`，不能把整段字符串当成可执行文件名。
+
+### 2.2 用 stats 区分资源现象 {#用stats区分资源现象}
+
+`docker stats` 展示容器资源统计，默认持续刷新；只取一次可以执行 `docker stats --no-stream interview-app`。它提供的是排查入口，不能只看某一列就断言应用存在泄漏或性能瓶颈。
+
+| 字段 | 观察内容与边界 |
+| --- | --- |
+| `CPU %` | 采样间隔内的 CPU 使用量；多核并行时可以超过 100%，不直接等于请求耗时 |
+| `MEM USAGE / LIMIT`、`MEM %` | 当前使用量、可用上限及比例；Linux CLI 会扣除相应文件缓存，不能和原始 API 数值不加转换地对比 |
+| `NET I/O` | 网络接口累计接收与发送字节；比较间隔内的增量才有吞吐量意义 |
+| `BLOCK I/O` | 块设备累计读写量，不等于应用每次文件调用的字节数，缓存会影响它 |
+| `PIDS` | 内核任务数量，包含进程和线程；线程增多也可能使该列上升 |
+
+Linux 的缓存扣除口径还取决于 cgroup 版本：v1 使用 `total_inactive_file`，v2 使用 `inactive_file`；原始 stats API 保留使用量和缓存字段，由客户端计算。宿主没有为容器设置独立内存限额时，显示的上限不能当作已经完成资源隔离。看到异常后，再结合进程、日志和时间趋势定位；例如查询非容器 MySQL 的监听端口，应使用 [Linux 端口与连接检查](../linux/performance-troubleshooting.mdx#连接与请求缺失)，而不是从 `stats` 推测端口。
+
+### 2.3 容器互访的路径 {#容器互访的路径}
+
+同一宿主上的两个容器互访，先确认网络模式，再确认名称、端口和服务监听地址。普通 bridge 容器各有自己的网络命名空间，容器 A 的 `127.0.0.1` 指向 A 自己，不能用它访问容器 B。`host` 模式共享宿主网络，`none` 模式没有普通外部网络连接，不能套用同一条地址判断。
+
+自定义 bridge 为加入同一网络的容器提供名称或别名解析。假设 `client` 与 `api` 都在 `app-net` 上，服务监听 `api` 的 `0.0.0.0:8080`，`client` 应访问 `api:8080`，通常不需要发布宿主端口。默认 `bridge` 不提供同样的容器名自动解析。不同宿主的 bridge 也不会因网络名称相同就自动连通。
+
+`-p 127.0.0.1:18080:8080` 另建宿主到容器的端口发布路径：宿主侧用 18080，容器间直接访问仍用 8080。发布端口不会替应用启动监听；如果服务只绑定容器自己的 `127.0.0.1:8080`，其他普通 bridge 容器仍不能通过该容器的网卡地址连接。
+
+排查时把失败定位到具体一段：
+
+1. 用 `docker ps -a`、`docker logs api` 确认进程是否仍在运行、是否启动完成，避免把应用退出当成网络故障。
+2. 用 `docker inspect client api` 和 `docker network inspect app-net` 核对网络模式、共同网络、地址和别名。不要看到两个容器都在运行，就假定它们可以互访。
+3. 从发起请求的容器检查目标名称解析；再按实际协议尝试目标 IP 和容器端口。名字失败而 IP 成功时，优先检查名称和 DNS；连接被拒绝时检查端口与监听；超时还要检查路由、防火墙和服务负载，不能只凭现象认定原因。
+4. 在目标容器确认监听地址、端口及协议。工具不在镜像中时，使用已具备的诊断方式；TCP 连接成功只证明传输路径可达，HTTP 状态、TLS、鉴权和业务响应仍要分别核对。
+
 ## 3. 分层与构建缓存 {#分层与构建缓存}
 
 镜像的文件系统由多个只读层组成，运行容器时再加上独立的可写层。这样，不同镜像或容器可以共享相同的只读内容，拉取镜像时也能复用本地已有的层。
@@ -218,6 +261,49 @@ RUN --mount=type=secret,id=token,required=true \
 
 </details>
 
+### 7.5 怎样构建镜像并进入一个正在运行的容器？ {#build-and-exec}
+
+**考察重点**：构建上下文与 Dockerfile 路径、运行实例、交互终端。
+
+**相关内容**：[构建镜像与进入容器](#构建镜像与进入容器)。
+
+<details>
+<summary>参考回答</summary>
+
+**先用 `docker build -t interview-app:local -f docker/Dockerfile .` 构建镜像，再对已经运行的容器执行 `docker exec -it interview-app sh`。** 最后的 `.` 决定普通 `COPY` 能读取哪些文件，`-f` 只选择 Dockerfile。`exec` 启动容器内的新进程；主进程已经退出、镜像没有 `sh`，或非交互环境不适合分配终端时，应分别处理，不能一律加 `-it`。
+
+</details>
+
+### 7.6 docker stats 是做什么的？ {#container-stats}
+
+**考察重点**：容器资源指标与统计口径。
+
+**相关内容**：[用 stats 区分资源现象](#用stats区分资源现象)。
+
+<details>
+<summary>参考回答</summary>
+
+**`docker stats` 用来观察容器的 CPU、内存、网络、块设备 I/O 和任务数量，`--no-stream` 只取一次。** 网络与块 I/O 是累计量，吞吐要看增量；`PIDS` 包含线程。Linux CLI 会从内存使用量中扣除相应文件缓存，直接与原始 API 比较前要统一口径。指标异常只是线索，还要结合应用日志和进程行为判断原因。
+
+</details>
+
+### 7.7 两个 Docker 容器无法互访，怎样排查？ {#container-connectivity}
+
+**题型**：综合题
+
+**考察重点**：容器生命周期、网络命名空间、名称解析、监听与端口路径。
+
+**相关内容**：[容器互访的路径](#容器互访的路径)、[常用指令](#常用指令)、[容器原理](./container-principles.mdx#namespace)。
+
+<details>
+<summary>参考回答</summary>
+
+**先确认应用运行与监听，再从发起请求的一侧按网络、名称、端口、协议逐段定位。** 用 `inspect` 核对网络模式和共同网络；同一自定义 bridge 通常按容器名和容器端口访问，不必绕宿主发布端口。`localhost` 指向当前网络命名空间，不能把 A 的回环地址当成 B。
+
+名称解析失败时对照目标 IP；连接失败时检查监听地址、容器端口、路由与防火墙。`-p` 是另一条宿主端口发布路径，不会替服务启动监听。传输连接成功后仍要核对 TLS、鉴权和业务响应。
+
+</details>
+
 ## 8. 参考资料 {#参考资料}
 
 - [Dockerfile reference](https://docs.docker.com/reference/dockerfile/)
@@ -228,3 +314,7 @@ RUN --mount=type=secret,id=token,required=true \
 - [Docker：Build secrets](https://docs.docker.com/build/building/secrets/)
 - [Docker：Daemon data directory](https://docs.docker.com/engine/daemon/#daemon-data-directory)
 - [Docker：Storage](https://docs.docker.com/engine/storage/)
+- [Docker：Build context](https://docs.docker.com/build/concepts/context/)
+- [Docker：docker container exec](https://docs.docker.com/reference/cli/docker/container/exec/)
+- [Docker：docker container stats](https://docs.docker.com/reference/cli/docker/container/stats/)
+- [Docker：Bridge network driver](https://docs.docker.com/engine/network/drivers/bridge/)

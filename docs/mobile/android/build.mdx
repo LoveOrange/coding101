@@ -1,0 +1,312 @@
+---
+sidebar_position: 25
+knowledge:
+  id: mobile.android.build
+  type: concept
+description: "理解 Android 的 Gradle 构建、变体与依赖、资源和 DEX 处理、R8、签名及 APK/AAB，定位只在发布构建中出现的问题。"
+keywords: [Android, Gradle, AGP, D8, R8, APK, AAB, 应用签名]
+---
+
+# Android 构建
+
+**Android 构建**把源码、资源、依赖和配置转换成可以安装或分发的应用产物。这个过程不只是编译 Java 或 Kotlin：同一份代码使用不同变体、资源、混淆规则和签名，可能得到行为不同的安装包。
+
+面试需要讲清各阶段负责什么，并能沿失败的位置查证。开发构建正常、发布构建崩溃时，应检查实际配置和产物；反复清理缓存并不能代替原因分析。本文按 AGP 8.x 的通用构建机制讲解，具体版本组合仍以项目所用插件的兼容要求为准。
+
+## 1. 面试核心 {#core}
+
+- Gradle 组织任务与依赖，AGP 提供 Android 构建能力；**源码编译、资源处理、DEX 转换与打包签名承担不同职责**。[卡](#pipeline)
+- Gradle、AGP、构建 JDK 和源码目标版本不是同一个配置，**升级其中一项要检查兼容关系**。[卡](#toolchain)
+- 构建变体由 build type 与 product flavor 等配置组合，**参与编译的源码、资源、依赖和应用标识都可能不同**。[卡](#variants)
+- 应用与库的 Manifest 按规则合并，**发生冲突要查看来源与最终结果，不能无条件覆盖属性**。[卡](#manifest)
+- `compileSdk`、`minSdk` 与 `targetSdk` 分别影响编译 API、最低系统要求和目标行为，**编译通过不保证旧系统能调用新 API**。[卡](#sdk)
+- R8 可以裁剪、优化和重命名代码，**反射、序列化与 JNI 等间接访问需要正确的保留契约**。[卡](#r8-reflection)
+- 签名用于校验产物完整性和应用签名身份，**更新需要满足应用标识与签名兼容等安装条件**，签名不会加密源码或替代 HTTPS。[卡](#signing)
+- APK 是安装产物，AAB 是发布格式，**AAB 需要生成设备所需 APK 后安装**。[卡](#apk-aab)
+- 包体优化先看组成与分发口径，**删除无用代码和资源、按需分发与减小运行内存是不同问题**。[卡](#size)
+
+## 2. 构建链路与工具职责 {#构建链路与工具职责}
+
+Gradle 根据项目配置建立任务依赖关系，再执行所需任务。**Android Gradle Plugin**，简称 AGP，是为 Gradle 增加 Android 模块、变体、资源与打包任务的插件。它与 Gradle 本身独立发布，版本号不要求相同。
+
+一次应用构建可以按下面的职责理解；实际任务可能增量执行、并行执行或根据配置省略，不能把这张表当成固定不变的任务调用顺序。
+
+| 阶段 | 主要工作与产物 |
+| --- | --- |
+| 解析配置与依赖 | 选定变体、工具链、源码集及依赖版本 |
+| 合并 Manifest 与资源 | 按来源优先级处理应用声明、XML、图片和其他资源 |
+| 资源编译与链接 | AAPT2 处理资源，产生资源表及相应引用信息 |
+| 源码与生成代码编译 | Java、Kotlin 等编译为 JVM 字节码；处理器按配置生成额外代码 |
+| DEX 与代码优化 | D8 将 JVM 字节码转换为 DEX；启用 R8 时进行全程序裁剪与优化并产生 DEX |
+| 本地代码处理 | 使用 NDK 的模块按目标 ABI 编译链接 `.so` |
+| 打包与签名 | 组合代码、资源、Manifest 和本地库等，形成 APK 或 AAB |
+
+**AAPT2** 是 Android 的资源处理工具，包含资源编译和链接两个阶段。**DEX** 是 Android 运行时使用的字节码格式；D8 不是 Java 编译器，输入可以是 `.class` 或包含字节码的 JAR。R8 处理字节码时也可以承担 DEX 输出，不应理解为“必定先完整运行 D8，再把结果交给 R8”。
+
+应用安装后的执行还涉及 [ART](art.mdx)，构建机上的 JDK 不会作为应用的一部分原样打进手机。包含 C/C++ 时，编译与链接的基本关系见 [C++ 编译与链接](../../basic-knowledge/cpp/compilation-linking.mdx)。
+
+## 3. 工具链、版本与 SDK {#工具链版本与sdk}
+
+### 3.1 Gradle 与构建 JDK {#gradle与构建jdk}
+
+Gradle Wrapper 固定项目使用的 Gradle 分发版本；项目配置再指定 AGP 和其他插件。运行 Gradle 的 JDK、编译 Java 源码使用的工具链、源码语言级别和生成的字节码目标，是相关但不同的设置。
+
+例如 AGP 8.3 的官方兼容信息要求 Gradle 至少为 8.4，JDK 为 17。这个例子说明应成组核对，而不是要求读者把所有项目都升级到该版本。Kotlin 插件、注解处理器和 Compose 编译器等还可能有自己的兼容要求。
+
+“本地能构建，CI 失败”时，先比较 Wrapper、JDK、SDK、插件、仓库和实际解析到的依赖。日志中的下载失败、插件加载失败、源码编译错误和 DEX 转换错误，发生在不同阶段，处理方法也不同。
+
+### 3.2 三个 SDK 配置 {#三个sdk配置}
+
+| 配置 | 主要含义 | 不提供的保证 |
+| --- | --- | --- |
+| `compileSdk` | 编译时可见的 Android 平台 API | 不会让旧设备自动获得新 API |
+| `minSdk` | 应用声明支持的最低 Android API 级别 | 不代替各系统版本的功能测试 |
+| `targetSdk` | 应用声明面向的行为基线，影响兼容行为与系统限制 | 不表示只能安装在这个版本，也不等于编译 API 上限 |
+
+例如用 API 34 编译，但最低支持 API 23，仍需在调用只存在于 API 29 的平台方法前判断版本，或使用有适当降级实现的兼容库。`@RequiresApi` 可以向检查工具声明要求，但它不会自动插入运行时版本判断。
+
+**Desugaring** 把部分较新的语言或库用法转换成低版本环境可用的实现。它支持的范围由工具和配置决定，不会把任意新 Android API 或整个桌面 JDK 搬到旧手机上。
+
+## 4. 变体、源码集与依赖 {#变体源码集与依赖}
+
+**Build type** 表达构建用途，例如调试与发布；**product flavor** 表达产品差异，例如演示与完整功能。二者组合得到构建变体。若有 `demo`、`full` 两个 flavor，以及 `debug`、`release` 两个 build type，就可能形成 `demoDebug`、`demoRelease`、`fullDebug` 和 `fullRelease`；多个 flavor dimension 会继续参与组合。
+
+每个变体选择相应源码集。`src/main` 提供共享内容，`src/debug`、`src/demo` 或 `src/demoDebug` 提供特定配置。资源和 Manifest 可以按规则覆盖或合并，但同一次编译中出现两个相同全限定名的 Java/Kotlin 类，通常是重复定义错误，不能套用资源覆盖规则。
+
+`namespace` 决定生成的 `R` 等类所属的命名空间，`applicationId` 是设备和分发系统识别应用的标识。它们可以不同。调试变体可以使用不同的应用标识以便共存，但仅仅换了代码包名，不代表已经改变安装身份。
+
+依赖配置也会改变可见范围：
+
+| 配置 | 主要用途 |
+| --- | --- |
+| `implementation` | 当前模块内部使用，不向下游的编译接口暴露该依赖 |
+| `api` | 在库模块中向使用该库的模块暴露编译所需依赖 |
+| `compileOnly` | 仅提供编译期类型，不能假定它会作为运行依赖打包 |
+| `testImplementation` | 本地测试依赖 |
+| `androidTestImplementation` | 设备测试依赖 |
+
+`implementation` 不表示“运行时不需要”或“不会进入最终应用”。如果库的公开方法签名使用了某个依赖的类型，使用方编译时也需要能看到这个类型，应检查公开 API 与依赖声明是否一致。
+
+冲突应从选定变体的依赖图查起。相同库的不同版本、不同库携带相同类、错误地同时引入两个实现，可能都表现为构建或运行错误，但不能统一靠排除某个传递依赖解决。排除之前要确认谁仍需要它，以及替代版本是否兼容。
+
+## 5. Manifest 合并与资源 {#manifest合并与资源}
+
+应用、源码集和依赖库都可能提供 Manifest。构建工具按优先级与合并规则生成结果；同一组件的属性冲突，并不一定由高优先级文件静默覆盖，可能需要开发者明确处理。
+
+例如两个库各自声明 `Application` 类，最终应用不能同时把二者都当成自己的应用类。需要确认各库真正需要的初始化方式，统一应用入口和初始化调用，而不是简单用 `tools:replace` 让错误消失。否则编译虽然通过，其中一个库依赖的初始化可能没有执行。
+
+定位时查看 Merged Manifest 和合并报告，确认属性来自哪个源码集或库。`tools:replace`、`tools:remove` 等标记用于表达明确的合并意图，应只作用于已经理解的冲突。还要检查最终权限、导出组件、Provider authority、占位符和版本条件，避免依赖变化悄悄改变应用声明。
+
+资源则还要经过类型、引用与配置检查。资源名不存在、XML 属性类型错误、同一配置下出现重复定义，属于资源处理问题。文件出现在源码目录里，并不等于它最终一定以原文件形式进入安装包；资源编译、裁剪和分发都可能改变最终内容。
+
+## 6. R8 与发布行为 {#r8与发布行为}
+
+### 6.1 裁剪、优化与混淆 {#裁剪优化与混淆}
+
+R8 的几种作用应分别理解：
+
+- 裁剪移除分析认为不可达的类、方法和字段。
+- 优化可以内联、合并或改写代码，减少运行和包体成本。
+- 混淆重命名类与成员，缩短名称并降低直接阅读的便利程度。
+
+AGP 中开启代码优化通常使用 `isMinifyEnabled = true`，规则文件沿用 ProGuard 语法并不说明实际执行工具仍是旧的 ProGuard。资源裁剪使用相应资源配置；代码可达性与资源可达性相关，但两者不是完全同一件事。
+
+### 6.2 间接访问与保留规则 {#间接访问与保留规则}
+
+直接调用关系较容易被静态分析识别；由外部字符串决定的类名、字段名、JNI 访问和部分序列化行为，可能无法完整推断。某些反射模式能被工具识别，因此也不能说“所有反射都一定失效”。关键是实际访问契约是否已向优化器表达。
+
+假设外部协议会按完整类名创建下面的类，并按 `displayName` 字段名读取它：
+
+```java
+package demo;
+
+public class User {
+    public String displayName = "Lin";
+    public User() {}
+}
+```
+
+`User` 只通过外部传入的名称使用时，优化器可能看不到它的使用。针对这个明确契约，可以保留类名、无参构造器和该字段：
+
+```proguard
+-keep class demo.User {
+    public <init>();
+    public java.lang.String displayName;
+}
+```
+
+规则限制在 `demo.User` 及实际需要的成员，不要求保留整个项目。这里的外部协议依赖类名和字段名，因此只保留成员但允许改名仍可能失败。真实序列化框架还可能依赖注解、泛型签名、生成适配器或其他构造方式，应按所用版本的契约和 consumer rules 处理，不能把这条示例规则当成所有 JSON 框架的通用配置。
+
+发布构建反序列化失败时，先用相同输入复现，再比较优化配置、最终类和规则。保留规则要验证它修复了哪一种删除或改名问题，同时检查其他 DTO。关掉全部优化可以帮助缩小原因，但不能单凭错误消失就结束定位。
+
+### 6.3 映射与崩溃定位 {#映射与崩溃定位}
+
+**Mapping 文件**记录优化前后的类和成员关系，还可以包含用于还原优化后调用栈的信息。R8 retrace 利用对应构建的 mapping 还原混淆堆栈；必须按版本和实际产物保存，另一次构建的同名文件不保证匹配。
+
+优化可能内联方法或改变行号对应关系，所以还原并不是简单把一个短类名替换成长类名。native 崩溃还需要匹配的本地符号等信息，Java/Kotlin mapping 不能替代它们。
+
+## 7. 安装产物、签名与包体 {#安装产物签名与包体}
+
+### 7.1 APK 与 AAB {#apk与aab}
+
+**APK** 是 Android 应用的安装包格式，常见内容包括 Manifest、资源表、资源文件、DEX、按 ABI 区分的本地库以及签名相关内容。具体文件取决于应用和构建配置。
+
+**Android App Bundle**，简称 AAB，是发布格式。分发端或 `bundletool` 根据它生成设备需要的 APK，例如基础 APK 和配置拆分 APK。AAB 文件不能直接当成普通 APK 安装；测试拆分安装时也不能只取一个缺少必需拆分的文件。
+
+多模块工程不等于动态功能分发。普通库模块通常在构建时进入应用；动态功能需要另外的模块与交付配置。组件化、插件化与热修复也不是同一个概念，不能因为 Gradle 中有多个模块就宣称应用能运行时加载任何功能。
+
+### 7.2 应用签名与更新 {#应用签名与更新}
+
+Android 在安装或更新时校验 APK 签名。签名证明包的内容与相应签名身份一致，并支持应用更新时的身份连续性；它不加密 DEX，也不保证代码没有漏洞。
+
+应用更新需要满足相同应用标识、兼容签名身份和版本等安装要求。普通情况下用另一把无关密钥签名，会导致无法覆盖已有安装；签名轮换还涉及平台支持的签名谱系等机制，不能把“换一把密钥重新打包”当成一般更新方案。
+
+调试密钥便于开发，不应替代正式发布密钥。采用 Play App Signing 时，上传密钥用于认证上传，应用签名密钥用于最终面向设备的 APK，两者职责不同。丢失上传密钥与丢失自管应用签名密钥的影响也不同。
+
+### 7.3 包体组成与优化 {#包体组成与优化}
+
+包体优化先确认在比较 APK 文件大小、商店下载量还是安装后的占用。压缩、设备配置拆分以及安装过程会让这些数值不同，不能仅凭 AAB 比 APK 大就判断分发更差。
+
+使用 APK Analyzer 等工具查看 DEX、图片资源、重复资产和本地库的组成，再按原因处理：删除无用依赖和资源，使用合适的图片尺寸与编码，检查 ABI 与语言资源分发，或启用正确的代码与资源裁剪。不能为了数字更小删除仍被动态引用的资源，或漏掉目标设备需要的本地库。
+
+包体小也不保证运行内存低。一个压缩很好的大图，解码后仍可能占用大量内存；更积极的磁盘压缩也可能增加读取或解码成本。应把下载、安装、启动与运行资源分别验证。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 Android 应用从源码到安装包经过哪些主要步骤？ {#pipeline}
+
+**考察重点**：构建调度、编译、资源、DEX 与产物职责。
+
+**相关内容**：[构建链路与工具职责](#构建链路与工具职责)。
+
+<details>
+<summary>参考回答</summary>
+
+**先选定变体和依赖，再处理 Manifest、资源与代码，最后打包签名。** AAPT2 编译链接资源，Java/Kotlin 编译为字节码，D8 或启用的 R8 完成相应 DEX 处理；R8 还可裁剪、优化和混淆。使用 NDK 时还要处理本地库。Gradle 与 AGP 组织任务，实际执行可能增量或并行，不能把构建与手机上 ART 的运行混在一起。
+
+</details>
+
+### 8.2 Gradle 与 Android Gradle Plugin 的版本是什么关系？ {#toolchain}
+
+**考察重点**：构建引擎、插件及 JDK 的兼容性。
+
+**相关内容**：[Gradle与构建JDK](#gradle与构建jdk)。
+
+<details>
+<summary>参考回答</summary>
+
+**它们独立发布，需要选择兼容组合，版本号不要求相同。** Gradle 负责构建执行框架，AGP 提供 Android 构建能力；还需匹配运行 Gradle 的 JDK 等工具。项目用 Wrapper 固定 Gradle，升级时查对应 AGP 兼容表，并检查 Kotlin、处理器和其他插件。
+
+</details>
+
+### 8.3 同一份 Android 工程为什么能生成行为不同的应用？ {#variants}
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：构建变体、源码集、依赖与标识。
+
+**相关内容**：[变体源码集与依赖](#变体源码集与依赖)。
+
+<details>
+<summary>参考回答</summary>
+
+**变体可以组合不同源码、资源、依赖和构建配置。** Build type 表达调试、发布等用途，flavor 表达产品差异；两者组合后可能改变功能、应用标识、签名和优化。定位问题应查看实际变体及最终产物，不能仅凭主源码相同认定行为相同。
+
+</details>
+
+### 8.4 模块化工程出现 Manifest 合并冲突时应怎样处理？ {#manifest}
+
+**考察重点**：声明来源、合并规则和初始化责任。
+
+**相关内容**：[Manifest合并与资源](#manifest合并与资源)。
+
+<details>
+<summary>参考回答</summary>
+
+**先通过合并报告确认冲突的声明来自哪里，以及最终应用需要什么行为。** 例如多个库声明 `Application` 时，要统一应用入口与必要初始化；不能直接覆盖后忽略另一个库的要求。理解规则后再使用有范围的合并标记，并检查最终权限、组件、authority 和占位符。
+
+</details>
+
+### 8.5 compileSdk、minSdk 和 targetSdk 有什么区别？ {#sdk}
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：编译 API、最低安装要求与行为兼容。
+
+**相关内容**：[三个SDK配置](#三个sdk配置)。
+
+<details>
+<summary>参考回答</summary>
+
+**`compileSdk` 决定编译可见 API，`minSdk` 声明最低系统要求，`targetSdk` 声明目标行为基线。** 用新 API 编译不意味着低版本设备具备它，仍需版本判断或兼容实现；注解不代替运行时检查，desugaring 也只有明确支持的转换范围。
+
+</details>
+
+### 8.6 Release 构建开启 R8 或 ProGuard 优化后，为什么可能出现反序列化异常？ {#r8-reflection}
+
+**考察重点**：静态可达性、动态访问、名称及元数据契约。
+
+**相关内容**：[间接访问与保留规则](#间接访问与保留规则)、[映射与崩溃定位](#映射与崩溃定位)。
+
+<details>
+<summary>参考回答</summary>
+
+**序列化框架依赖的类、构造器、字段、名称或元数据，可能被删除或改写。** 应用相同数据复现，检查对应版本的框架规则与产物，再保留实际需要的契约；依赖名字时不能只保留对象却允许随意改名。优先使用框架支持的生成适配器和 consumer rules，并验证优化后的包，而不是长期保留整个项目。
+
+</details>
+
+### 8.7 项目中的 APK 是怎样打包和签名的？ {#signing}
+
+**考察重点**：完整性、签名身份与更新条件。
+
+**相关内容**：[应用签名与更新](#应用签名与更新)。
+
+<details>
+<summary>参考回答</summary>
+
+**先由选定变体构建 APK，再使用相应签名配置生成可安装的包。** 调试构建通常使用调试密钥，发布构建应使用其正式签名流程。签名用于校验完整性和签名身份，更新还需满足身份兼容等条件。 相同应用标识通常不能被无关密钥签出的 APK 直接覆盖；受支持的密钥轮换还有额外机制。签名不加密代码、不替代 HTTPS，也不证明应用没有漏洞。上传密钥和最终应用签名密钥应按各自职责管理。
+
+</details>
+
+### 8.8 APK 与 AAB 有什么区别？ {#apk-aab}
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：发布格式、设备产物与拆分安装。
+
+**相关内容**：[APK与AAB](#apk与aab)。
+
+<details>
+<summary>参考回答</summary>
+
+**APK 用于安装，AAB 用于发布并生成设备所需的 APK。** 分发端或 `bundletool` 根据设备配置生成基础和配置拆分等产物，设备不直接把 AAB 当 APK 安装。测试时需要完整的必需拆分；比较大小也应区分上传文件、设备下载量和安装占用。
+
+</details>
+
+### 8.9 Android 安装包可以怎样瘦身？ {#size}
+
+**考察重点**：包体归因、代码资源裁剪与分发条件。
+
+**相关内容**：[包体组成与优化](#包体组成与优化)、[裁剪优化与混淆](#裁剪优化与混淆)。
+
+<details>
+<summary>参考回答</summary>
+
+**先分析包体组成，再处理无用依赖、代码、资源和不必要的设备配置内容。** 可使用正确的裁剪规则、合适图片尺寸与编码，并按目标设备分发 ABI 或语言等内容。验证动态引用和目标设备仍能工作，同时分别比较下载与安装占用；包体变小不等于运行内存或启动时间一定改善。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+
+- [Android：Configure your build](https://developer.android.com/build)
+- [Android：AGP 8.3 兼容信息](https://developer.android.com/build/releases/agp-8-3-0-release-notes)
+- [Android：Java versions in Android builds](https://developer.android.com/build/jdks)
+- [Android：Configure build variants](https://developer.android.com/build/build-variants)
+- [Android：Add build dependencies](https://developer.android.com/build/dependencies)
+- [Android：Configure the app module](https://developer.android.com/build/configure-app-module)
+- [Android：Manage manifest files](https://developer.android.com/build/manage-manifests)
+- [Android：AAPT2](https://developer.android.com/tools/aapt2)
+- [Android：D8](https://developer.android.com/tools/d8)
+- [R8 8.3.37：D8 与 R8 工具说明](https://r8.googlesource.com/r8/+/refs/tags/8.3.37/README.md)
+- [Android：About keep rules](https://developer.android.com/topic/performance/app-optimization/keep-rules-overview)
+- [Android：R8 retrace](https://developer.android.com/tools/retrace)
+- [Android：Sign your app](https://developer.android.com/studio/publish/app-signing)
+- [Android：About Android App Bundles](https://developer.android.com/guide/app-bundle)
+- [Android：Analyze your build with the APK Analyzer](https://developer.android.com/studio/debug/apk-analyzer)

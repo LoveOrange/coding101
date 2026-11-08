@@ -1,0 +1,226 @@
+---
+knowledge:
+  id: mobile.android.fragment-lifecycle
+  type: concept
+description: "解释 AndroidX Fragment 与 View 的双生命周期、事务与返回栈、视图引用清理、状态恢复和结果通信。"
+keywords: [Fragment 生命周期, viewLifecycleOwner, onDestroyView, FragmentManager, Fragment 事务]
+---
+
+# Fragment 生命周期
+
+Fragment 对象和它创建的 View 有各自的生命周期。一个 Fragment 可以还留在返回栈中，但旧 View 已经被销毁；稍后返回时，又为同一个 Fragment 创建新的 View。绑定对象、界面观察者和异步回调如果只跟着 Fragment 对象走，就可能继续持有或更新已经失效的界面。本文使用 AndroidX Fragment，以 1.6 系列的通用 API 为例。
+
+## 1. 面试核心 {#core}
+
+- Fragment 由 FragmentManager 管理，**Fragment 的生命周期状态不能超过其父级和管理器允许的状态**。[卡](#lifecycle)
+- Fragment 与 View 分别有 Lifecycle，**onDestroyView 结束的是当前视图，不一定结束 Fragment 对象**。[卡](#view-lifetime)
+- 只向当前 View 展示数据的观察者应绑定 `viewLifecycleOwner`，**销毁视图时还要清理 binding、适配器回调等不应继续持有的引用**。[卡](#view-observer)
+- Fragment 事务描述界面结构变化，**commit 默认异步执行，加入返回栈保存的是可回退的事务操作**。[卡](#transactions)
+- `hide/show` 主要改变 View 可见性，**不能据此推断 Fragment 自动停止或恢复**。[卡](#visibility)
+- 状态保存后的新事务可能无法进入恢复快照，**允许状态丢失意味着接受恢复后可能看不到这次导航变化**。[卡](#state-loss)
+
+## 2. Fragment 与宿主 {#fragment与宿主}
+
+**Fragment** 是由宿主承载、由 FragmentManager 管理的界面或行为单元。它不是一类独立的应用组件入口，也不直接替代 Activity 的窗口职责。
+
+`onAttach` 表示连接宿主，之后 Fragment 可以进入创建、开始和恢复状态；最终 `onDetach` 表示解除宿主连接。嵌套 Fragment 还会受到父 Fragment 的约束。FragmentManager 决定允许达到的状态，事务中的 `setMaxLifecycle` 也可以限制其最高状态。
+
+| 阶段 | 主要回调与对象关系 |
+| --- | --- |
+| 连接宿主 | `onAttach`，此时开始具备宿主环境 |
+| 创建 Fragment | `onCreate`，恢复 Fragment 自身状态；View 不一定已存在 |
+| 创建 View | `onCreateView` 返回 View，随后 `onViewCreated` 适合设置界面与观察者 |
+| 恢复 View 状态 | `onViewStateRestored`，框架保存的 View 状态已应用 |
+| 可见与恢复 | `onStart`、`onResume`，还受父级和最大状态约束 |
+| 当前 View 结束 | `onDestroyView`，应解除只属于该 View 的持有关系 |
+| Fragment 结束并分离 | `onDestroy`、`onDetach`，不能假定每次视图变化都走到这里 |
+
+`requireActivity()`、`requireContext()` 和 `requireView()` 都有有效阶段。方法名前有 require 并不意味着框架会替你延长宿主或视图寿命；在已经分离或尚无 View 时调用，可能抛出异常。
+
+框架重建 Fragment 时还需要可恢复的创建方式。常规情况下使用可由框架实例化的类，并把输入写进 arguments；若通过自定义构造传入依赖，需要正确设置 FragmentFactory 等创建机制，不能只验证手动 `new` 的第一次导航。
+
+## 3. 双生命周期与视图引用 {#双生命周期与视图引用}
+
+**视图生命周期**只覆盖当前这一轮 View 的创建到销毁。返回栈中的 Fragment 可能跨过多轮视图生命周期，因此“Fragment 还活着”和“它的旧 View 还能用”没有必然关系。
+
+考虑把 A 替换成 B，并把事务加入返回栈。A 的视图可以被销毁，但 A 的实例仍由管理器保留；回退时创建 A 的新视图。若 A 的字段继续引用旧 binding，binding 又引用旧 View 树，原界面就可能被无意义地保留。
+
+```kotlin
+import android.os.Bundle
+import android.view.LayoutInflater
+import android.view.View
+import android.view.ViewGroup
+import android.widget.TextView
+import androidx.fragment.app.Fragment
+import androidx.lifecycle.MutableLiveData
+
+class LabelFragment : Fragment() {
+    private var label: TextView? = null
+    private val message = MutableLiveData("ready")
+
+    override fun onCreateView(
+        inflater: LayoutInflater,
+        container: ViewGroup?,
+        savedInstanceState: Bundle?
+    ): View = TextView(requireContext())
+
+    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+        super.onViewCreated(view, savedInstanceState)
+        label = view as TextView
+        message.observe(viewLifecycleOwner) { text ->
+            label?.text = text
+        }
+    }
+
+    override fun onDestroyView() {
+        super.onDestroyView()
+        label = null
+    }
+}
+```
+
+观察者跟随 `viewLifecycleOwner`，旧视图生命周期结束时会被移除；字段也在 `onDestroyView` 清空。下一次创建 View 会建立新的观察关系。这里的 `MutableLiveData` 只演示绑定对象，不承诺跨进程保存消息。
+
+使用 View Binding 时同理：在创建视图时建立 `_binding`，在 `onDestroyView` 中把它设为 `null`。`binding` getter 里的 `!!` 只能表达“当前应有 View”这一前提，不能让返回栈中的 Fragment 永久持有有效 binding。
+
+异步请求还要考虑取消和结果归属。即使使用 `label?.text` 避免一次空引用，旧请求仍可能在新 View 创建后返回，并把旧内容写到新页面。因此还需要按任务所有权取消工作、检查请求 ID 或检查当前显示对象，不能把清空 binding 当作全部异步正确性方案。
+
+Flow 收集如果只负责更新当前界面，可以使用视图的生命周期作用域，并在合适的 started 状态范围内收集。这里同时有两个条件：View 仍存在，以及界面处于需要消费结果的状态；仅把协程绑定到 Fragment 对象的整个生命周期可能过宽。
+
+## 4. 事务与返回栈 {#事务与返回栈}
+
+**Fragment 事务**是一组由 FragmentManager 执行的结构变更，例如 add、remove、replace、show 和 hide。`replace` 可以理解为移除同一容器中的现有 Fragment，再加入目标 Fragment；是否保留可回退关系还要看是否加入返回栈。
+
+```kotlin
+import androidx.fragment.app.Fragment
+import androidx.fragment.app.FragmentManager
+
+class DetailFragment : Fragment(android.R.layout.simple_list_item_1)
+
+fun openDetail(manager: FragmentManager, containerId: Int) {
+    manager.beginTransaction()
+        .setReorderingAllowed(true)
+        .replace(containerId, DetailFragment())
+        .addToBackStack("detail")
+        .commit()
+}
+```
+
+`containerId` 应指向宿主中真实存在的 Fragment 容器。`commit()` 提交后返回，并不代表 `DetailFragment` 的 View 已立即创建；事务通常安排到主线程后续执行。`setReorderingAllowed(true)` 允许管理器优化同批状态变化，因此也不能要求每个中间操作都经过一套完整的可见回调。
+
+`addToBackStack` 记录的是可以回退的事务。回退后，管理器撤销相应结构变化；它不是把整个 View 树做一次永久快照。没有加入返回栈的 replace，并不因为用户按返回键就一定恢复上一个 Fragment。
+
+`commitNow()` 用于立即执行当前事务，但不能与 `addToBackStack` 配合；`executePendingTransactions()` 则会推动已经排队的事务，影响范围不只当前这一笔。应先确定为何必须同步获得结果，不要把同步方法当作解决时序问题的默认补丁。
+
+Fragment 自己也能拥有子 FragmentManager。嵌套界面应使用正确的管理器，否则事务可能进入错误的宿主或返回栈；Activity 的返回栈与 FragmentManager 的返回栈也不是同一个容器。
+
+## 5. 可见性、状态保存与通信 {#可见性状态保存与通信}
+
+`hide/show` 主要改变 View 的可见性，默认不会单独改变 Fragment 生命周期状态。若一个页面隐藏后不应继续消费资源，需要明确结合最大生命周期、导航机制或独立可见性条件处理，不能只等待一个不会因此出现的 `onStop`。
+
+当宿主已经保存状态后再提交普通事务，框架可能拒绝，因为恢复时保存的快照无法描述这次新变更。`commitAllowingStateLoss` 表示接受这次变更在恢复时丢失，并非保证导航已经可靠保存。若这是用户必须完成的导航，应保留业务意图，等宿主允许时再按当前状态执行，并避免重复提交。
+
+Fragment 状态恢复应依赖 arguments、保存状态和合适作用域的状态持有者。业务实体仍由数据层保存，具体保证可对照 [Activity 生命周期](./activity-lifecycle.mdx#状态保存与恢复)。恢复时不要既让 FragmentManager 恢复旧页面，又无条件手动 add 一份相同页面。
+
+通信方式取决于数据责任：共享 ViewModel 适合有共同状态所有者的界面；Fragment Result API 适合传递一次结果，并与监听者生命周期协调；业务长期数据则通过共同数据来源读取。直接保存另一个 Fragment 的 View 引用，会把两个视图生命周期耦合在一起。
+
+## 6. 面试题 {#面试题}
+
+### 6.1 AndroidX Fragment 的生命周期由什么管理？ {#lifecycle}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：宿主、FragmentManager 与父级状态约束。
+
+**相关内容**：[Fragment 与宿主](#fragment与宿主)。
+
+<details>
+<summary>参考回答</summary>
+
+**由 FragmentManager 根据宿主、父级和事务约束推进，Fragment 不能超过父级允许的状态。** onAttach/onDetach 表达宿主连接，创建和销毁 View 又有单独的回调。不能直接把 Activity 的回调表原样套给 Fragment，也不能在任何阶段都假定 requireView 有效。
+
+</details>
+
+### 6.2 onDestroyView 执行后，Fragment 是否已经销毁？ {#view-lifetime}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：实例生命周期与视图生命周期。
+
+**相关内容**：[双生命周期与视图引用](#双生命周期与视图引用)。
+
+<details>
+<summary>参考回答</summary>
+
+**不一定，它说明当前这一轮 View 已结束，Fragment 可能仍在返回栈中。** 回退时可以为它重新创建 View。因此 View Binding、View 字段和只用于旧视图的回调应及时解除，不能等到 Fragment 的 onDestroy 才处理。
+
+</details>
+
+### 6.3 为什么界面观察者通常使用 viewLifecycleOwner？ {#view-observer}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：观察作用域与异步结果归属。
+
+**相关内容**：[双生命周期与视图引用](#双生命周期与视图引用)。
+
+<details>
+<summary>参考回答</summary>
+
+**因为观察者只负责当前 View，应该在这轮 View 结束时一起结束，而 Fragment 实例可能活得更久。** 绑定视图生命周期可以避免旧观察关系持续存在，但仍要清理字段、取消不再需要的任务，并防止旧请求把结果写到新页面。
+
+</details>
+
+### 6.4 commit、commitNow 和 addToBackStack 有什么关系？ {#transactions}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：事务提交、执行时序与回退记录。
+
+**相关内容**：[事务与返回栈](#事务与返回栈)。
+
+<details>
+<summary>参考回答</summary>
+
+**commit 通常把事务排队执行，commitNow 立即执行但不能与 addToBackStack 配合。** addToBackStack 保留可以回退的事务操作，回退时撤销相关变化，不是永久保存旧 View。提交返回后不能直接假定新 Fragment 的 View 已经就绪。
+
+</details>
+
+### 6.5 hide 一个 Fragment 后一定会调用 onStop 吗？ {#visibility}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：View 可见性与 Lifecycle 状态。
+
+**相关内容**：[可见性、状态保存与通信](#可见性状态保存与通信)。
+
+<details>
+<summary>参考回答</summary>
+
+**不会仅因为 hide 就自动停止，hide/show 主要修改 View 的可见性。** 如果资源消费需要跟随页面是否真正展示，应由导航或明确的生命周期上限、可见性条件控制，而不是把所有隐藏行为都等同于 stopped。
+
+</details>
+
+### 6.6 commitAllowingStateLoss 是否能修复状态保存后的所有导航错误？ {#state-loss}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：恢复快照与导航意图的持久性。
+
+**相关内容**：[可见性、状态保存与通信](#可见性状态保存与通信)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能，它只是允许执行可能无法进入恢复快照的变更。** 恢复后可能丢失这次页面变化，因此只适合确实可以接受这种结果的场景。必须完成的导航应保留意图，在宿主可提交时根据当前状态执行，并处理去重，而不是用允许丢失掩盖所有时序问题。
+
+</details>
+
+## 7. 参考资料 {#参考资料}
+
+- [Android：Fragment lifecycle](https://developer.android.com/guide/fragments/lifecycle)
+- [Android：Fragment transactions](https://developer.android.com/guide/fragments/transactions)
+- [Android：View binding](https://developer.android.com/topic/libraries/view-binding)
+- [Android：Communicate with fragments](https://developer.android.com/guide/fragments/communicate)
+- [Android API：Fragment](https://developer.android.com/reference/androidx/fragment/app/Fragment)
+- [Android API：FragmentTransaction](https://developer.android.com/reference/androidx/fragment/app/FragmentTransaction)

@@ -1,0 +1,403 @@
+---
+sidebar_position: 1
+knowledge:
+  id: tools-and-frameworks.nuxt.index
+---
+
+# Nuxt
+
+**Nuxt** 是基于 Vue 的应用框架，提供文件路由、服务端渲染、数据获取、状态恢复与服务端接口等约定。它让 Vue 组件参与完整的页面请求，但两端的执行环境、数据可见性和生命周期仍需要开发者判断。
+
+本文以 Nuxt 3 为基线，示例使用 Nuxt 3.17、Vue 3 与 Nitro 2。准备相关项目时，重点是讲清首次 HTML 怎样生成、浏览器怎样恢复数据、后续导航怎样更新，以及哪些内容只属于服务器。
+
+## 1. 面试核心 {#core}
+
+- **Nuxt 从 pages 生成 Vue Router 路由，通过 NuxtPage 显示页面，Nitro 负责服务端运行与接口。** 路由中间件与服务端中间件处于不同边界。[卡](#framework-parts)
+- **useFetch 和 useAsyncData 可以把服务端读取结果传给客户端，避免 hydration 时为同一份初始数据再次请求。** 单独的 `$fetch` 不承担这份状态恢复工作。[卡](#fetch-differences)
+- **异步数据 key 表示数据身份，相同 key 可能共享状态。** key 需要反映影响结果的输入，响应式 URL 也必须在依赖变化时重新计算。[卡](#data-identity)
+- **useState 在一次 Nuxt 应用上下文内按 key 共享状态，并支持 SSR 数据恢复。** 它不是服务器上跨所有用户共享的可变单例，也不是跨刷新持久化。[卡](#shared-state)
+- **runtimeConfig 的 public 部分会暴露给客户端，普通私有配置只供服务端读取。** 服务器取到的字段一旦进入页面数据或共享状态，也可能随 payload 发给访问者。[卡](#runtime-config)
+- **Nuxt 默认的通用渲染仍会在浏览器运行组件以完成 hydration。** 浏览器专属操作应在合适的客户端生命周期中执行，不能仅靠条件分支制造不一致的初始 HTML。[卡](#universal-rendering)
+- **SSR、预渲染与按路由缓存可以组合，但部署产物决定了哪些服务端能力仍然存在。** 只部署静态文件时，不能期待 server/api 继续作为在线服务运行。[卡](#deployment-modes)
+
+## 2. 页面与服务器的职责 {#页面与服务器的职责}
+
+Nuxt 的文件约定把不同入口分开：
+
+| 位置或组件 | 职责 |
+| --- | --- |
+| `app.vue` | 应用外壳，可以放置 `NuxtLayout` 与 `NuxtPage` |
+| `pages/courses/[id].vue` | 生成动态页面路由 `/courses/:id` |
+| `layouts/` | 可复用的页面布局 |
+| `NuxtPage` | 承接 Nuxt 管理的页面渲染与相关生命周期 |
+| `NuxtLink` | 提供链接与客户端导航，可参与预取 |
+| `composables/` | 按约定自动导入的组合式函数 |
+| `middleware/` | Vue 应用导航前的路由中间件 |
+| `server/api/` | Nitro 的 HTTP API，路径带 `/api` 前缀 |
+| `server/middleware/` | 服务端请求处理中间件 |
+
+**Nitro** 是 Nuxt 使用的服务端引擎，负责构建和运行服务端处理逻辑。自动导入减少了重复导入语句，但不会消除执行环境差异：Vue 的组件组合式函数与 Nitro 请求处理器不是任意互换的入口。
+
+路由中间件可以重定向或阻止页面导航，服务端初始页面请求与客户端导航都可能涉及它。但它不替 `/api` 请求执行授权。接口必须在自己的服务端边界验证请求，不能因为页面路由经过某个守卫就默认接口调用可信。
+
+## 3. 配置与服务端接口 {#配置与服务端接口}
+
+### 3.1 运行时配置 {#运行时配置}
+
+`runtimeConfig` 声明应用运行时需要的配置。下面的 `nuxt.config.js` 把上游地址留在服务端，只公开站点名称：
+
+```js
+export default defineNuxtConfig({
+  runtimeConfig: {
+    courseApiOrigin: '',
+    public: { siteName: '课程示例' }
+  }
+});
+```
+
+启动生产服务时，用 `NUXT_COURSE_API_ORIGIN` 覆盖上游地址，用 `NUXT_PUBLIC_SITE_NAME` 覆盖公开名称。环境变量名称要与 runtimeConfig 的层级对应，不把任意 `process.env.OTHER_NAME` 在构建期读出的值误认为仍能在部署后动态覆盖。
+
+客户端能读取 `runtimeConfig.public`，所以其中不能放密钥。私有配置也不能被手动复制进组件 state、页面返回数据或 HTML 后，再声称它仍然保密。
+
+### 3.2 API 的输入与响应 {#api的输入与响应}
+
+`server/api/courses/[id].get.js` 对应课程 GET 接口。上游约定返回 `{ id: 'vue', title: 'Vue 基础' }`，本地接口做输入与数据形状校验：
+
+```js
+export default defineEventHandler(async event => {
+  const id = getRouterParam(event, 'id');
+  if (!id || !/^[a-z0-9-]+$/.test(id)) {
+    throw createError({ statusCode: 400, statusMessage: 'Invalid course ID' });
+  }
+  const config = useRuntimeConfig(event);
+  const response = await $fetch(
+    `${config.courseApiOrigin}/courses/${encodeURIComponent(id)}`,
+    { retry: 0 }
+  );
+  if (typeof response?.id !== 'string' || typeof response?.title !== 'string') {
+    throw createError({ statusCode: 502, statusMessage: 'Invalid course response' });
+  }
+  setResponseHeader(event, 'Cache-Control', 'no-store');
+  return { id: response.id, title: response.title };
+});
+```
+
+Nitro 将返回对象作为 JSON 响应。这里的 `$fetch` 负责请求与解析，上游非成功状态会进入错误路径；示例关闭自动重试，便于观察一次读取。上游返回值可能不符合约定，因此还要校验实际数据形状。
+
+这个接口提供公开课程，不包含身份认证。如果课程属于某个用户或组织，授权应在服务端读取数据之前完成。`server/api` 只是文件位置，不表示接口只能被自己的页面调用。
+
+## 4. 首屏数据与 hydration {#首屏数据与hydration}
+
+### 4.1 useFetch 的页面入口 {#usefetch的页面入口}
+
+**useFetch** 把请求与 Nuxt 的异步数据状态连接起来，包括数据、错误、状态和刷新入口。SSR 时它可以把结果写入 payload，客户端恢复时读取同一份结果。
+
+`pages/courses/[id].vue` 使用响应式 URL，并区分首次页面错误与后续刷新状态：
+
+```vue
+<script setup>
+const route = useRoute();
+const url = computed(() => `/api/courses/${encodeURIComponent(String(route.params.id))}`);
+const { data: course, status, error, refresh } = await useFetch(url);
+
+if (error.value) {
+  throw createError({
+    statusCode: error.value.statusCode || 500,
+    statusMessage: 'Course unavailable'
+  });
+}
+useSeoMeta({ title: () => course.value?.title || '课程' });
+</script>
+
+<template>
+  <main>
+    <p v-if="status === 'pending'" role="status">正在读取课程</p>
+    <p v-else-if="error" role="alert">读取失败，请重试</p>
+    <template v-else-if="course">
+      <h1>{{ course.title }}</h1>
+      <p>课程编号：{{ course.id }}</p>
+    </template>
+    <button :disabled="status === 'pending'" @click="() => refresh()">重新读取</button>
+  </main>
+</template>
+```
+
+首次 SSR 读取成功后，HTML 中可以包含课程标题，payload 中包含用于恢复的课程数据；浏览器 hydration 不必为这份初始数据再发一次相同请求。点击“重新读取”则明确发起刷新，数据源有变化时可以得到新值。
+
+`data`、`status` 与 `error` 是响应式引用，在脚本中用 `.value`，模板中会解包。调用 `refresh` 不会重新执行整个 setup，因此模板里的错误分支仍然必要；参数变化是否复用页面，还取决于页面 key 等设置。Nuxt 管理的页面中使用 Nuxt 提供的 `useRoute`，不要随意替换成另一份直接导入的路由实现。
+
+### 4.2 单独调用 $fetch 的区别 {#单独调用fetch的区别}
+
+**$fetch** 是请求工具，不会自动把任意调用结果登记为组件的 SSR 恢复数据。例如下面的 `pages/raw.vue` 是用于观察重复请求的对照：
+
+```vue
+<script setup>
+const course = await $fetch('/api/courses/vue');
+</script>
+
+<template>
+  <main><h1>{{ course.title }}</h1></main>
+</template>
+```
+
+SSR 执行 setup 时读取一次，浏览器恢复组件时又执行 setup，就可能再读取一次。如果两次结果不同，还可能产生 hydration 不匹配。这不是 `$fetch` 不能用于 Nuxt，而是当前调用没有建立服务器到客户端的数据恢复关系。
+
+用户点击提交、删除或刷新按钮时，单独的 `$fetch` 很合适；这些动作不要求在服务器首屏和浏览器 hydration 各执行一遍。不要为了“统一使用 Hook”，把每次事件请求都改成在事件回调中创建 `useFetch`。
+
+### 4.3 useAsyncData 与数据身份 {#useasyncdata与数据身份}
+
+**useAsyncData** 包装一段异步读取逻辑，让它参与 Nuxt 的数据状态与 payload 恢复，不限定为一个 URL。`pages/summary.vue` 同时读取两门公开课程：
+
+```vue
+<script setup>
+const { data, error } = await useAsyncData('course-summary', async () => {
+  const [vue, react] = await Promise.all([
+    $fetch('/api/courses/vue'),
+    $fetch('/api/courses/react')
+  ]);
+  return { titles: [vue.title, react.title] };
+});
+</script>
+
+<template>
+  <main>
+    <h1>课程汇总</h1>
+    <p v-if="error" role="alert">汇总读取失败</p>
+    <ul v-else><li v-for="title in data?.titles" :key="title">{{ title }}</li></ul>
+  </main>
+</template>
+```
+
+这里用同一个 key 表示固定的课程汇总，返回的数据有明确含义。若结果依赖课程 ID、语言、筛选条件或用户，则数据身份也需要包含相应条件，或使用框架支持的响应式 key／选项重新读取。相同 key 的调用可能共享 `data`、`error` 与 `status`，不是给每个组件强制创建独立副本。
+
+异步处理器应返回用于恢复的数据，不把发送通知、扣减库存等不可重复副作用放进去。返回 `undefined` 或 `null` 也可能使客户端无法认为已有可用结果，从而再次取数。
+
+参数变化时，只添加 watch 并不会自动改写已经拼好的普通字符串 URL。上节把 URL 放在 computed 中，使 ID 改变后请求地址也随之改变。刷新同一个旧地址与读取新 ID 是两件不同的事。
+
+### 4.4 请求上下文与缓存范围 {#请求上下文与缓存范围}
+
+在服务器用相对路径 `useFetch('/api/...')` 时，Nuxt 可以通过请求上下文处理内部调用，并转发适用的 Cookie 等请求信息。普通服务端 `$fetch` 不应被假定自动携带完整浏览器上下文；需要哪些头，应使用对应请求工具并限制转发范围。
+
+首屏 payload 的作用是让这次服务器输出与客户端恢复使用一致数据，不能由此推导“后续所有用户都命中长期缓存”。长期响应缓存、数据缓存和客户端刷新另有作用域，带用户身份的响应尤其要避免被无差别共享。
+
+## 5. 共享状态与请求隔离 {#共享状态与请求隔离}
+
+**useState** 创建 Nuxt 管理的响应式状态，同一应用上下文中使用相同 key 的组件可以共享它。SSR 时状态进入当前请求的 payload，浏览器据此恢复，不需要各自重新计算初始值。
+
+`composables/useReviewCount.js` 定义入口，而不是在模块顶层直接创建一份共享 ref：
+
+```js
+export const useReviewCount = () => useState('review-count', () => 0);
+```
+
+`components/SharedCount.vue` 读取同一个状态：
+
+```vue
+<script setup>
+const count = useReviewCount();
+</script>
+
+<template>
+  <p data-shared-count>已复习 {{ count }} 次</p>
+</template>
+```
+
+`app.vue` 将导航、计数与页面入口组合起来：
+
+```vue
+<script setup>
+const count = useReviewCount();
+const config = useRuntimeConfig();
+</script>
+
+<template>
+  <div>
+    <header>
+      <p>{{ config.public.siteName }}</p>
+      <nav>
+        <NuxtLink to="/courses/vue" :prefetch="false">Vue</NuxtLink>
+        <NuxtLink to="/courses/react" :prefetch="false">React</NuxtLink>
+        <NuxtLink to="/summary" :prefetch="false">课程汇总</NuxtLink>
+      </nav>
+      <button data-increment @click="count++">复习一次：{{ count }}</button>
+      <SharedCount />
+    </header>
+    <NuxtPage />
+  </div>
+</template>
+```
+
+点击按钮后，按钮与 `SharedCount` 同时更新。通过站内链接切换页面时，这份应用状态可以继续保留；新文档请求重新初始化为 `0`，因为没有写入持久化存储。
+
+如果在服务端模块顶层写一个可变 ref 并存入用户数据，多个请求就可能读写同一个对象。使用 `useState` 时也应在合法的 Nuxt 上下文中调用，不要在任意模块初始化或脱离上下文的异步回调里调用组合式函数。
+
+需要按请求初始化偏好时，`pages/preferences.vue` 可以从 Cookie 取得一个受限值：
+
+```vue
+<script setup>
+const theme = useState('preferred-theme', () => {
+  const value = useCookie('theme').value;
+  return value === 'dark' ? 'dark' : 'light';
+});
+</script>
+
+<template>
+  <main><h1>主题：{{ theme }}</h1></main>
+</template>
+```
+
+两个请求分别携带 dark 与 light Cookie 时，应各自得到对应初始值。Cookie 在这里是显示偏好，不是经过验证的用户身份；useState 也不会让放进去的秘密数据对客户端不可见。
+
+## 6. 环境、渲染与部署 {#环境渲染与部署}
+
+### 6.1 通用代码与浏览器 API {#通用代码与浏览器api}
+
+Nuxt 的通用渲染先在服务器产生 HTML，再由浏览器运行 Vue 完成 hydration。组件 setup 中直接读取 `window`，在服务器没有相应环境；只用 `import.meta.client` 产生不同的初始结构，也可能造成两端不匹配。
+
+`pages/browser.vue` 用一致占位处理浏览器专属信息：
+
+```vue
+<script setup>
+const width = ref(null);
+onMounted(() => { width.value = window.innerWidth; });
+</script>
+
+<template>
+  <main><p>{{ width === null ? '窗口宽度待获取' : `窗口宽度 ${width}` }}</p></main>
+</template>
+```
+
+服务器与客户端首次输出一致，挂载后才读窗口宽度。这里没有实现持续的 resize 订阅；若增加监听，就要在相应生命周期释放。`ClientOnly` 适合确实只能在浏览器运行的部分，但不应为了隐藏 hydration 问题而把整页都变成客户端内容。
+
+### 6.2 生成时机与产物 {#生成时机与产物}
+
+| 方式 | 页面怎样产生 | 部署时需要确认 |
+| --- | --- | --- |
+| 通用 SSR | 服务器按请求生成 HTML，再由客户端恢复 | 有能够运行服务端产物的环境 |
+| 预渲染 | 构建时生成已知路由的静态内容 | 路径是否被生成，数据什么时候更新 |
+| 客户端渲染 | 浏览器加载代码后产生主要内容 | 首屏等待、数据接口和搜索可见性 |
+| 按路由混合 | 不同路径选择预渲染、SSR 或缓存策略 | 具体部署预设支持哪些能力 |
+
+`nuxt build` 可以构建包含服务器能力的产物；`nuxt generate` 用于生成静态站点产物。只把静态目录交给文件托管服务时，`server/api` 不会凭空变成可运行接口，需要另外提供相应服务，或让静态页面直接访问已部署的数据入口。
+
+`routeRules` 可以为指定路径配置预渲染、关闭 SSR 或响应缓存。使用 SWR 等策略时，过期响应可能先继续服务，再后台更新；具体缓存位置与行为取决于 Nitro 部署预设，不能把本地 Node 进程的观察直接推广到全部边缘或 CDN 环境。
+
+选择方式应根据内容新鲜度、是否依赖身份、首屏与运行成本判断。共同的 SSR、SSG、hydration 与 SEO 边界见 [Web 渲染模式](../../frontend/rendering/rendering-modes.mdx)。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 Nuxt 与 Vue Router、Nitro 各有什么关系，路由中间件能保护 API 吗？ {#framework-parts}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：页面路由、组件框架、服务端引擎与请求边界。
+
+**相关内容**：[页面与服务器的职责](#页面与服务器的职责)、[API 的输入与响应](#api的输入与响应)。
+
+<details>
+<summary>参考回答</summary>
+
+**Nuxt 基于 Vue 组织应用，从 pages 生成 Vue Router 路由，并用 Nitro 构建和运行服务端入口。** 路由中间件在页面导航链路中执行，不替 API 请求执行授权。API 与服务端中间件必须在自己的请求边界校验身份、输入和数据访问条件。
+
+</details>
+
+### 7.2 useFetch、useAsyncData 与 $fetch 有什么区别，为什么会重复请求？ {#fetch-differences}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：请求工具、异步数据状态、payload 与 hydration。
+
+**相关内容**：[useFetch 的页面入口](#usefetch的页面入口)、[单独调用 $fetch 的区别](#单独调用fetch的区别)、[useAsyncData 与数据身份](#useasyncdata与数据身份)。
+
+<details>
+<summary>参考回答</summary>
+
+**$fetch 负责请求，useAsyncData 管理可恢复的异步数据，useFetch 则结合请求与这套数据机制。** 在 setup 中直接调用 $fetch，服务器和浏览器可能各执行一次；通过数据组合式函数，服务端结果可以随 payload 传递，客户端首次恢复时复用。事件触发的请求可以直接使用 $fetch，不需要每次重新创建数据组合式函数。
+
+</details>
+
+### 7.3 为什么改变课程 ID 后仍请求旧地址，相同 key 会产生什么影响？ {#data-identity}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：响应式输入、请求地址计算、共享数据身份。
+
+**相关内容**：[useAsyncData 与数据身份](#useasyncdata与数据身份)。
+
+<details>
+<summary>参考回答</summary>
+
+**观察 ID 变化不会自动修改已经构造好的普通字符串，应使用响应式 URL 或明确重新计算输入。** key 表示数据身份，相同 key 的调用可能共享数据与状态；不同 ID、筛选或身份产生不同结果时，应正确区分。handler 要返回有意义的数据，不把不可重复副作用藏在数据恢复逻辑中。
+
+</details>
+
+### 7.4 useState 为什么适合 SSR，共享状态会跨用户或跨刷新保留吗？ {#shared-state}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：应用上下文、按 key 共享、请求隔离与持久化。
+
+**相关内容**：[共享状态与请求隔离](#共享状态与请求隔离)。
+
+<details>
+<summary>参考回答</summary>
+
+**useState 在当前 Nuxt 应用上下文内共享状态，并将 SSR 初始值传到客户端恢复。** 它不应成为服务器所有用户共用的可变对象，也不自动跨硬刷新持久化。模块顶层的普通可变 ref 可能跨请求串用；需要持久化时另外设计存储、用户隔离与恢复规则。
+
+</details>
+
+### 7.5 runtimeConfig 的 public 与私有字段有什么区别？ {#runtime-config}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：运行时环境变量、客户端可见性与返回数据筛选。
+
+**相关内容**：[运行时配置](#运行时配置)、[API 的输入与响应](#api的输入与响应)。
+
+<details>
+<summary>参考回答</summary>
+
+**public 部分可以随应用配置暴露给客户端，私有部分只供服务端读取。** 部署覆盖值使用与配置结构对应的 NUXT_ 环境变量。私有字段一旦被复制进页面数据、useState 或返回 JSON，就仍可能泄露；字段原来存在哪里，不决定最终传输结果是否公开。
+
+</details>
+
+### 7.6 Nuxt 使用 SSR 后，为什么仍要处理 window 和 hydration 不匹配？ {#universal-rendering}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：两端执行、初始结构一致、客户端生命周期。
+
+**相关内容**：[通用代码与浏览器 API](#通用代码与浏览器api)。
+
+<details>
+<summary>参考回答</summary>
+
+**SSR 先生成 HTML，浏览器仍会执行 Vue 组件来完成 hydration。** 服务器没有 window，两个环境分别生成不同初始值又可能不匹配。可以先输出一致占位，在 onMounted 后读取浏览器值；确实只适合浏览器的局部能力再使用 ClientOnly，并保留需要的加载与布局处理。
+
+</details>
+
+### 7.7 Nuxt 预渲染部署后，为什么原来的 server/api 可能不可用？ {#deployment-modes}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：生成方式、部署产物、在线服务与缓存能力。
+
+**相关内容**：[生成时机与产物](#生成时机与产物)。
+
+<details>
+<summary>参考回答</summary>
+
+**静态文件托管只提供已生成的资源，不会运行 Nitro 接口处理器。** 需要在线服务能力时部署相应服务器产物，或将接口单独提供。还应确认动态路径是否预生成、数据何时刷新，以及部署预设是否支持所选 routeRules 与缓存行为。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [Nuxt 3：Routing](https://nuxt.com/docs/3.x/getting-started/routing)
+- [Nuxt 3：Server Directory](https://nuxt.com/docs/3.x/directory-structure/server)
+- [Nuxt 3：Runtime Config](https://nuxt.com/docs/3.x/guide/going-further/runtime-config)
+- [Nuxt 3：Data Fetching](https://nuxt.com/docs/3.x/getting-started/data-fetching)
+- [Nuxt 3：useAsyncData](https://nuxt.com/docs/3.x/api/composables/use-async-data)
+- [Nuxt 3：State Management](https://nuxt.com/docs/3.x/getting-started/state-management)
+- [Nuxt 3：useRoute](https://nuxt.com/docs/3.x/api/composables/use-route)
+- [Nuxt 3：Rendering Modes](https://nuxt.com/docs/3.x/guide/concepts/rendering)

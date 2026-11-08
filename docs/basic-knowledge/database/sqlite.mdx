@@ -1,0 +1,312 @@
+---
+knowledge:
+  id: basic-knowledge.database.sqlite
+  type: concept
+description: "解释 SQLite 的嵌入式模型、类型与约束、绑定参数、事务和 WAL 并发、schema 迁移，以及查询与备份边界。"
+keywords: [SQLite, WAL, SQLite 事务, BEGIN IMMEDIATE, 数据库迁移, 参数绑定]
+---
+
+# SQLite
+
+SQLite 是运行在应用进程内的数据库引擎，不需要独立的数据库服务器。应用通过库调用读取本地数据库，获得 SQL、索引、事务和恢复能力。移动端使用 Room、SQLite API 或其他封装时，仍然需要理解底层的事务、文件和并发边界：封装不会让多个写事务同时写入，也不会自动补齐失败的版本迁移。
+
+## 1. 面试核心 {#core}
+
+- SQLite 嵌入应用进程，**没有独立服务进程不代表没有事务、锁或持久化保证**。[卡](#embedded)
+- 普通表使用类型亲和性规则，**列声明不总像静态类型数据库那样拒绝其他类型，业务约束要明确表达**。[卡](#types-constraints)
+- 参数绑定把值与 SQL 结构分开，**参数不能随意替代表名、列名和排序关键字**。[卡](#parameters)
+- SQLite 同一数据库同时只能有一个写事务，**BEGIN DEFERRED 与 BEGIN IMMEDIATE 的区别包括何时申请写事务**。[卡](#transactions)
+- WAL 允许读者按快照读取，同时由写者追加日志，**读写可以并行不等于多个写者可以同时提交修改**。[卡](#wal)
+- 已建立的旧读快照不能总是直接升级为写事务，**SQLITE_BUSY_SNAPSHOT 需要结束旧事务后重新读取并重试业务单元**。[卡](#busy-snapshot)
+- schema 版本与数据变化应共同完成迁移，**迁移验证要从实际旧数据出发，并检查失败回滚和跨版本路径**。[卡](#migration)
+- WAL 文件可能包含已提交数据，**备份不能在数据库活动时只随意复制主文件**。[卡](#backup)
+
+## 2. 嵌入式模型与数据文件 {#嵌入式模型与数据文件}
+
+**嵌入式数据库**把数据库引擎作为库放进应用进程。SQLite 执行查询不需要先向一个独立的 MySQL 服务发送网络请求，但仍要解析 SQL、查索引、访问页缓存和文件，并协调其他连接的读写。
+
+一个数据库通常有一个主数据库文件。在不同日志模式和运行阶段，还可能出现回滚日志、`-wal` 和 `-shm` 等文件。不能把“单文件数据库”理解成运行期间永远只接触一个文件，更不能手动删除看起来像临时文件的 WAL 来释放空间。
+
+**数据库连接**是应用操作数据库的会话入口。多个连接可以访问同一数据库，隔离与锁负责协调它们；某些配置按连接生效。是否可以跨线程使用同一个连接，还取决于 SQLite 编译与运行模式、驱动封装和调用约束，不能因为底层有锁就忽略上层 API 的线程规则。
+
+SQLite 适合设备本地数据、缓存、离线业务状态和应用文件格式。大量远程客户端需要集中权限管理和高并发写入时，通常需要服务端数据系统；把数据库文件放到网络共享目录，不等于建立了可靠的数据库服务器。WAL 的共享内存协调也要求参与者位于同一主机，不能假定任意网络文件系统都适用。
+
+Room 提供 SQL 访问、类型映射和迁移等上层能力，底层仍受 SQLite 的具体运行版本与配置影响。Core Data 则是对象图与持久化框架，可以使用 SQLite 存储，但不能据此把它的 API 和模型直接当成 SQLite 表操作。
+
+## 3. 类型、约束与参数 {#类型约束与参数}
+
+### 3.1 类型亲和性 {#类型亲和性}
+
+**存储类别**描述值的实际表示，SQLite 包括 NULL、INTEGER、REAL、TEXT 和 BLOB。**类型亲和性**描述普通列偏好的转换规则；类型与值关系密切，不只是列名后面的声明决定一切。
+
+例如普通表的 INTEGER 列可以把可转换的文本数字转成整数，也可能保存不能转换的文本。`VARCHAR(20)` 也不自动意味着 SQLite 会检查字符串最长只能有 20 个字符。需要长度或取值约束时，应使用明确的 CHECK、NOT NULL 等规则，并在实际版本上验证。
+
+SQLite 3.37.0 起可以声明 STRICT 表，让允许的列类型和写入检查更严格。移动端系统自带或应用打包的 SQLite 版本可能不同，不能把开发机支持的语法直接视为所有目标设备都支持。
+
+```sql
+CREATE TABLE notes (
+    id INTEGER PRIMARY KEY,
+    title TEXT NOT NULL,
+    revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0)
+);
+INSERT INTO notes(id, title) VALUES (1, 'draft');
+SELECT id, title, revision FROM notes WHERE id = 1;
+```
+
+结果为 `(1, 'draft', 0)`。普通 rowid 表中的 `INTEGER PRIMARY KEY` 与 rowid 有特殊关系；不能把所有拼写近似的“整数主键”都视为相同规则。`AUTOINCREMENT` 另有避免复用历史 rowid 的语义和维护成本，并非得到自动分配整数 ID 的必选关键字。
+
+CHECK 条件得到 NULL 时不会单独拒绝这行，因此需要排除空值的字段还应使用 NOT NULL。外键约束也要检查实际配置：通常应在每个连接、事务开始前启用并确认 `PRAGMA foreign_keys = ON`，不能仅在 CREATE TABLE 中写 REFERENCES 就假定当前连接已经执行外键检查。
+
+### 3.2 绑定参数 {#绑定参数}
+
+**绑定参数**把 SQL 结构和运行时值分开，让引擎按值处理输入，不把用户字符串再次当作 SQL 语法。下面用 Python 标准库展示这一点，平台 API 的参数绑定遵循同样的基本原则：
+
+```python
+import sqlite3
+
+connection = sqlite3.connect(":memory:", isolation_level=None)
+try:
+    connection.execute("CREATE TABLE notes(id INTEGER PRIMARY KEY, title TEXT)")
+    title = "draft'); DROP TABLE notes; --"
+    connection.execute("INSERT INTO notes(title) VALUES (?)", (title,))
+    row = connection.execute("SELECT title FROM notes WHERE id = ?", (1,)).fetchone()
+    print(row[0] == title)  # True
+    print(connection.execute("SELECT COUNT(*) FROM notes").fetchone()[0])  # 1
+finally:
+    connection.close()
+```
+
+输入被完整保存为一个标题，没有执行其中看起来像 SQL 的片段。这里使用 `isolation_level=None` 明确不让 Python 包装层隐式开启额外事务，后文的事务讨论以 SQLite 自身的显式 BEGIN 为准。
+
+参数绑定不能代替任意 SQL 结构。需要动态选择排序列时，应从允许列表映射到确定的列名，再绑定筛选值；把列名传给 `ORDER BY ?`，得到的是按一个参数表达式排序，而不是把参数内容解释成列名。
+
+## 4. 事务与失败处理 {#事务与失败处理}
+
+**事务**把相关读写放到同一个提交或回滚范围。即使没有显式 BEGIN，访问数据库的语句也会在相应的隐式事务中执行。需要多条语句共同成功时，应显式管理事务，并确保异常路径结束当前事务。
+
+| 事务入口 | 关键行为 |
+| --- | --- |
+| `BEGIN` 或 `BEGIN DEFERRED` | 延后取得读或写事务；首次操作决定先进入哪种事务，后续由读升级到写可能失败 |
+| `BEGIN IMMEDIATE` | 一开始就尝试取得写事务；已有其他写者时可能返回 SQLITE_BUSY |
+| `BEGIN EXCLUSIVE` | 在回滚日志模式中还会限制其他连接读取；WAL 模式下与 IMMEDIATE 的行为相同 |
+| `SAVEPOINT` | 建立可局部回滚的保存点；不能通过重复 BEGIN 来嵌套事务 |
+
+“一次只有一个写事务”是对同一数据库说的，不是一个进程只能操作一个数据库。读者仍可能并发读取；具体与写者的互斥关系取决于日志模式和阶段。
+
+BEGIN IMMEDIATE 适合明确需要先读再写、希望较早知道写冲突的短事务，但会更早占住写入机会。不能在其中等待网络、用户输入或长时间计算，否则其他写者都要受影响。只读操作也不应为了习惯而统一申请写事务。
+
+语句失败不总意味着整个事务已经回滚。例如默认 ABORT 冲突处理会撤销当前语句的修改，但此前语句和事务可能仍保留。其他错误和冲突策略有不同结果；应用应按驱动返回状态判断，并在业务单元失败时明确回滚，避免意外提交前半部分。
+
+`SQLITE_BUSY` 表示当前无法取得需要的数据库访问条件。busy timeout 可以等待某些锁冲突，但不能保证所有冲突都能通过等待解决，也不能无限重试。应缩短事务、及时结束游标与语句，必要时有界重试整个业务单元；重试还要考虑事务外副作用的幂等性。
+
+## 5. 回滚日志与 WAL {#回滚日志与wal}
+
+**回滚日志**在修改数据库页之前保存恢复所需的旧内容。写入和提交过程中需要按锁协议保护主文件；某些阶段读写会互相阻挡。它不是 InnoDB 的 undo/redo 实现，不能直接套用 MySQL 的日志或锁参数。
+
+**WAL**（write-ahead logging）把修改追加到日志，已存在的数据库页暂时可以保留。读事务按照自己的结束位置读取数据库与日志中的合适版本，写者可以继续追加，之后通过 checkpoint 将适当内容合并回主数据库文件。
+
+| 关系 | WAL 下需要掌握的结果 |
+| --- | --- |
+| 读事务与写事务 | 通常可以并行；读者继续使用自己的快照 |
+| 写事务与另一个写事务 | 仍然只能有一个写者，WAL 不提供并行多写 |
+| 长读事务与 checkpoint | 老快照可能限制 checkpoint 推进与日志复用，使 WAL 增长 |
+| 提交与 checkpoint | 提交的数据可能仍在 WAL；不能把 checkpoint 才当作首次提交生效 |
+
+可以通过 `PRAGMA journal_mode = WAL` 请求 WAL 模式，并检查返回值确认实际模式。它会影响数据库文件的日志工作方式，而不是为某一条 SQL 临时开一个“并行查询”开关。
+
+以文件数据库、两个独立连接、不启用 shared cache 为例，初始 `counter.value = 10`：
+
+| 顺序 | 连接 A | 连接 B | 可观察结果 |
+| --- | --- | --- | --- |
+| 1 | BEGIN；SELECT value | — | A 建立快照并读到 10 |
+| 2 | — | UPDATE 为 20；提交 | B 的修改已经提交 |
+| 3 | 再次 SELECT value | — | A 在同一读事务中仍看到 10 |
+| 4 | 结束事务，重新 SELECT | — | 新读取看到 20 |
+
+这里展示的是 WAL 读快照。不同连接通常看不到对方未提交的修改；shared cache 再配合 read_uncommitted 是特殊条件，不能把这类例外当成普通连接的默认行为。
+
+如果 A 在第 3 步直接尝试写入，基于的是已经过期的快照，可能得到 `SQLITE_BUSY_SNAPSHOT`。仅原地等待不会把这个快照变新；需要结束当前事务，重新读取数据，再决定是否执行完整业务操作。如果一开始就确知需要写入，BEGIN IMMEDIATE 可以提前协调写者竞争，但不能消除所有错误处理。
+
+持久性还受 `PRAGMA synchronous` 和存储系统影响。WAL 下 FULL 会在每次事务提交时增加日志同步，NORMAL 则可以在进程崩溃后保持一致性，但断电等系统故障可能丢失最近确认的事务。应按数据要求选择，不能为了跑分快就把同步关闭，再声称所有提交都具有相同的掉电保证。
+
+## 6. schema 迁移 {#schema迁移}
+
+**schema 迁移**把已有数据库结构与数据转换到新版本。它处理的是用户设备上真实存在的旧文件，不只是让新安装时的 CREATE TABLE 看起来正确。
+
+下面假设第 3 节的旧表已存在，需要给每条笔记增加置顶标记：
+
+```sql
+BEGIN IMMEDIATE;
+ALTER TABLE notes ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;
+PRAGMA user_version = 2;
+COMMIT;
+
+SELECT id, title, pinned FROM notes;
+PRAGMA user_version;
+```
+
+原有笔记得到默认值 0，应用记录的 user_version 变为 2。`user_version` 是应用可管理的版本字段；SQLite 不会只因为这个数字变大就自动执行迁移。框架可能有自己的 schema 版本管理，应遵循它的契约，不同时维护相互矛盾的版本来源。
+
+迁移应先检查当前版本，再选择正确路径。不能每次启动都重复 ADD COLUMN，也不能只测试空数据库从 1 到 2，而遗漏已有数据、跨多个版本和失败后重启。
+
+常见验证包括：旧行是否保留，默认值是否正确，索引、触发器和外键是否仍有效，以及迁移中断后是否能回到可识别的状态。对于复杂表重建，需要按当前 SQLite 版本的官方步骤安排新表、数据复制、旧表替换和约束校验；不要把其他数据库支持的 ALTER 语法直接复制过来。
+
+不要把 `PRAGMA schema_version` 当作应用版本号随意修改，它是 SQLite 用来判断 schema 变化的内部字段。涉及外键设置时，还要注意在事务内切换 foreign_keys 不会按想象立即生效；迁移框架的外键策略和连接状态要先核实。
+
+破坏性重建会丢弃旧数据，只有明确允许丢弃的缓存等数据才能采用。用户未同步的草稿不能因为迁移失败就悄悄清空数据库。
+
+## 7. 查询成本与备份 {#查询成本与备份}
+
+索引应从实际查询的筛选与排序需求出发，而不是每个字段都建一个。下面仍使用前面的 notes 表：
+
+```sql
+CREATE INDEX idx_notes_title ON notes(title);
+EXPLAIN QUERY PLAN SELECT id FROM notes WHERE title = 'draft';
+```
+
+这个查询可以利用 title 索引查找，并可能由覆盖索引直接给出需要的数据。`EXPLAIN QUERY PLAN` 的输出格式不是稳定的应用接口，判断时关注是否扫描、使用哪个索引和是否需要临时排序，不把某个版本的一整行文字写死到业务逻辑中。
+
+一般 SQL 的过滤、NULL 与稳定排序规则可以复用 [SQL 查询](./sql/query.mdx#最小表与过滤) 中的基础部分，但其中 MySQL 专有运算符不能直接搬到 SQLite。性能判断也要同时观察结果集大小、事务时间和主线程阻塞，索引命中不等于整个界面就不会卡顿。
+
+**一致备份**要取得能正确恢复的数据库状态。WAL 中可能已经包含提交成功、尚未 checkpoint 到主文件的内容；在数据库活动时只复制 `.db`，可能遗漏这些数据。也不能一边写入一边分别复制几个文件，就假定它们恰好属于同一个一致时点。
+
+需要在线备份时，可以使用 SQLite Backup API 或平台提供的等价机制，并检查完成结果。需要搬移或替换数据库文件时，应按数据库关闭、锁和一致性要求操作，而不是直接处理一个仍被连接使用的文件。备份验证还要真正打开备份并检查关键数据，不能只确认文件大小大于零。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 SQLite 没有服务端进程，为什么仍然需要事务与锁？ {#embedded}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：嵌入式执行与共享数据协调。
+
+**相关内容**：[嵌入式模型与数据文件](#嵌入式模型与数据文件)。
+
+<details>
+<summary>参考回答</summary>
+
+**嵌入式只说明引擎运行在调用者进程中，不代表数据库永远只有一次访问。** 多线程、多连接或多个进程仍可能访问同一个文件，事务与锁要保护原子提交、并发可见性和故障恢复。是否能跨线程共用连接，还要遵守驱动的具体约束。
+
+</details>
+
+### 8.2 声明 INTEGER、VARCHAR 和外键之后，SQLite 会自动检查所有预期约束吗？ {#types-constraints}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：类型亲和性、长度规则与连接配置。
+
+**相关内容**：[类型亲和性](#类型亲和性)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能这样推断，普通表采用类型亲和性，VARCHAR 的长度声明也不自动成为长度检查。** 应明确添加 NOT NULL、CHECK 等约束，必要时在支持版本使用 STRICT 表。外键要在每个连接检查并启用 foreign_keys，不能只看到 REFERENCES 就认定已经执行检查。
+
+</details>
+
+### 8.3 绑定参数能不能用来指定排序列名？ {#parameters}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：值与 SQL 语法结构的分离。
+
+**相关内容**：[绑定参数](#绑定参数)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能把绑定值当作任意 SQL 结构，ORDER BY ? 不会把参数文本重新解析成列名。** 动态列名应从允许列表选出确定标识符，筛选值仍使用绑定参数。这样既保留查询结构的控制，也避免把输入拼接成可执行 SQL。
+
+</details>
+
+### 8.4 BEGIN DEFERRED 与 BEGIN IMMEDIATE 有什么区别？ {#transactions}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：事务建立时点、写者竞争与事务长度。
+
+**相关内容**：[事务与失败处理](#事务与失败处理)。
+
+<details>
+<summary>参考回答</summary>
+
+**DEFERRED 延后取得读或写事务，读事务后来升级为写事务可能失败；IMMEDIATE 一开始就尝试取得写事务。** 后者能较早发现写冲突，也更早占用写入机会，因此应保持事务短小。两者都需要明确处理失败和回滚，不能在持有写事务时等待网络或用户输入。
+
+</details>
+
+### 8.5 WAL 是否允许多个连接同时写入？ {#wal}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：读快照、日志追加与单写者约束。
+
+**相关内容**：[回滚日志与 WAL](#回滚日志与wal)。
+
+<details>
+<summary>参考回答</summary>
+
+**同一数据库仍只有一个写事务，WAL 改善的是读者与写者之间的并发关系。** 写者追加日志，读者继续按自己的快照读取；checkpoint 再合并适当内容。长读事务可能拖住日志复用，因此不应把“读不阻塞写”解释成读事务永远没有资源代价。
+
+</details>
+
+### 8.6 旧读事务写入时出现 SQLITE_BUSY_SNAPSHOT，延长超时能解决吗？ {#busy-snapshot}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：过期快照与完整业务重试。
+
+**相关内容**：[回滚日志与 WAL](#回滚日志与wal)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能只靠等待，旧读快照不会因为等待自动更新到其他连接已经提交的新状态。** 应结束当前事务，重新读取，再重试需要保证一致的业务单元。明确需要读后写时，可用 BEGIN IMMEDIATE 提前协调写者，但仍要处理竞争、失败和事务外副作用。
+
+</details>
+
+### 8.7 本地 schema 迁移需要怎样验证？ {#migration}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**题型**：综合题
+
+**考察重点**：旧数据、版本路径、约束和失败恢复。
+
+**相关内容**：[schema 迁移](#schema迁移)、[事务与失败处理](#事务与失败处理)、[类型、约束与参数](#类型约束与参数)。
+
+<details>
+<summary>参考回答</summary>
+
+**从真实旧版本结构与代表性数据迁移，检查新结构、原有数据、默认值、索引和约束，并验证失败回滚及跨版本升级。** 版本号和结构变化应保持一致，不能只改 user_version，也不能每次启动重复迁移。破坏性重建只适合明确允许丢弃的数据，不能直接用于未同步用户内容。
+
+</details>
+
+### 8.8 WAL 模式下只复制主数据库文件能保证备份完整吗？ {#backup}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：已提交日志、一致时点与恢复验证。
+
+**相关内容**：[查询成本与备份](#查询成本与备份)。
+
+<details>
+<summary>参考回答</summary>
+
+**数据库活动时不能这样保证，因为已提交数据可能还留在 WAL，尚未合并到主文件。** 应使用 Backup API 等一致备份机制，或按正确的关闭和锁协议操作，不能随意分别复制正在变化的文件。还要真正打开备份验证数据，文件存在不等于可恢复。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+
+- [SQLite：Appropriate Uses For SQLite](https://sqlite.org/whentouse.html)
+- [SQLite：Datatypes In SQLite](https://sqlite.org/datatype3.html)
+- [SQLite：Foreign Key Support](https://sqlite.org/foreignkeys.html)
+- [SQLite：Binding Values To Prepared Statements](https://sqlite.org/c3ref/bind_blob.html)
+- [SQLite：Transaction](https://sqlite.org/lang_transaction.html)
+- [SQLite：Isolation In SQLite](https://sqlite.org/isolation.html)
+- [SQLite：Write-Ahead Logging](https://sqlite.org/wal.html)
+- [SQLite：PRAGMA Statements](https://sqlite.org/pragma.html)
+- [SQLite：The ON CONFLICT Clause](https://sqlite.org/lang_conflict.html)
+- [SQLite：ALTER TABLE](https://sqlite.org/lang_altertable.html)
+- [SQLite：EXPLAIN QUERY PLAN](https://sqlite.org/eqp.html)
+- [SQLite：Online Backup API](https://sqlite.org/backup.html)

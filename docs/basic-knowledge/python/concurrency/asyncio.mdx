@@ -1,0 +1,487 @@
+---
+sidebar_position: 2
+knowledge:
+  id: basic-knowledge.python.concurrency.asyncio
+  type: concept
+title: asyncio
+sidebar_label: asyncio
+description: "解释 Python asyncio 的协程、事件循环、Task 与 Future，以及 TaskGroup、等待、超时、取消和资源清理，区分协作调度、阻塞调用与线程池执行。"
+keywords: [asyncio, Python 协程, 事件循环, TaskGroup, CancelledError, async await]
+---
+
+# asyncio
+
+**`asyncio`** 是 Python 标准库中的异步编程框架。它用事件循环协调协程、回调和 I/O：一个任务等待网络或定时器时，循环可以推进其他已经准备好的任务。
+
+它擅长重叠等待，不会自动把同步代码变成非阻塞操作，也不会把一个线程里的 Python 计算变成多核并行。理解 `asyncio`，重点是分清任务何时开始、何时让出执行机会，以及谁负责等待结果、处理取消和释放资源。
+
+本文以 Python 3.12 的标准事件循环与默认任务工厂为基线。`TaskGroup` 和 `asyncio.timeout` 从 Python 3.11 起可用；示例不使用提前执行任务的自定义工厂。
+
+## 1. 面试核心 {#core}
+
+- **事件循环采用协作调度**：同一循环线程一次执行一个任务或回调。任务暂停或完成、当前回调返回后，循环才能推进其他就绪工作。[卡](#asyncio-model)
+- 调用协程函数得到协程对象，**创建协程对象不等于已经执行**；`Task` 管理协程的调度与完成状态，`Future` 表示将来的结果。[卡](#coroutine-task-future)
+- **`await` 不等于新建任务，也不保证每次都切换任务**。顺序等待两个新协程仍然是顺序执行，等待已完成结果可能直接继续。[卡](#await-scheduling)
+- `TaskGroup` 把一组相关任务的生命周期放在同一个范围内，**退出时等待全部任务；某个任务发生普通异常时，会请求取消其余任务并等待收尾**。[卡](#taskgroup-failure)
+- **`task.cancel()` 发出取消请求，不表示任务已经结束**。取消通过 `CancelledError` 进入协程，通常应在 `finally` 中清理，清理后继续传播取消。[卡](#cancellation-completion)
+- 超时也依赖事件循环和取消机制，**不是强制终止同步代码的硬截止时间**。`timeout`、`wait_for` 和 `wait` 对等待对象的处理不同。[卡](#timeout-cancellation)
+- **阻塞调用会占住事件循环线程**。优先使用异步接口，阻塞 I/O 可考虑 `to_thread`；纯 Python 重计算则需另评估进程等执行方式。[卡](#blocking-call)
+- 单线程协作执行仍可能让业务操作在 `await` 两侧交错，**共享状态需要清楚的所有权或同步规则，并发数量也需要限制**。[卡](#shared-state)
+
+## 2. 协程与执行入口 {#协程与执行入口}
+
+**协程函数**是用 `async def` 定义、函数体中不含 `yield` 的函数；调用它得到的**协程对象**保存这次调用的执行状态，可以在等待点暂停，之后继续。含有 `yield` 的 `async def` 定义的是异步生成器，使用方式不同。
+
+```python
+import asyncio
+
+async def compute(events):
+    events.append("body")
+    return 42
+
+async def main():
+    events = []
+    coroutine = compute(events)
+    print(events)                   # []
+    print(await coroutine, events)  # 42 ['body']
+
+asyncio.run(main())
+```
+
+`compute(events)` 没有执行函数体，所以第一次打印为空。执行 `await coroutine` 时，当前任务进入 `compute`，取得返回值 `42`。这个函数体没有需要等待的操作，因此它直接完成。
+
+**`asyncio.run`** 是普通脚本的顶层入口：运行传入的主协程，并管理事件循环及退出收尾。已经在同一线程运行事件循环的环境中，应按宿主约定使用 `await`，不能再嵌套调用 `asyncio.run`。
+
+忘记等待或调度协程，操作不会因为对象被创建就自动完成，还可能产生“coroutine was never awaited”警告。一个已经执行完的原生协程对象也不能重新执行；需要再次调用协程函数创建新的对象。
+
+## 3. 事件循环与 await {#事件循环与-await}
+
+**事件循环**负责运行就绪的任务和回调、处理定时器，并衔接底层 I/O 通知。可以把一次异步等待理解为：
+
+1. 当前任务执行到等待操作，发现结果尚未就绪。
+2. 任务暂停，把控制权交回事件循环。
+3. 循环处理其他就绪任务、回调或 I/O。
+4. 等待结果就绪后，相应任务重新获得执行机会，从暂停处继续。
+
+等待结果就绪不等于任务马上抢占当前代码。任务仍要等事件循环调度；如果循环正执行长时间同步操作，其他任务和超时回调都要等。
+
+**`await`** 用于取得可等待对象的结果，结果也可能是异常。协程、Task、Future 都属于可等待对象，但 `await` 本身不创建新的并发任务。
+
+### 3.1 顺序等待与并发任务 {#顺序等待与并发任务}
+
+`await first()` 完成后才调用 `second()`，二者不会自动并发。要让两个独立操作都进入调度，可以先创建任务，再等待它们。
+
+```python
+import asyncio
+
+async def work(name, events):
+    events.append(name + ":start")
+    await asyncio.sleep(0)
+    events.append(name + ":end")
+    return name
+
+async def main():
+    serial = []
+    await work("A", serial)
+    await work("B", serial)
+    print(serial)
+
+    concurrent = []
+    first = asyncio.create_task(work("A", concurrent))
+    second = asyncio.create_task(work("B", concurrent))
+    print(await first, await second)
+    print(concurrent)
+
+asyncio.run(main())
+```
+
+在本文的默认调度条件下，输出为：
+
+```text
+['A:start', 'A:end', 'B:start', 'B:end']
+A B
+['A:start', 'B:start', 'A:end', 'B:end']
+```
+
+`asyncio.sleep(0)` 明确让当前任务暂停一次，方便观察交错。第二组先创建两个任务，所以等待 `first` 时，`second` 也有机会执行。这里的结果只说明给定示例的执行过程，业务不应依赖独立任务总按创建顺序完成。
+
+这个小例子中的任务都正常返回；实际相关任务还需要统一处理失败与退出，后面的 `TaskGroup` 更适合承担这项责任。
+
+### 3.2 await 不保证发生切换 {#await-不保证发生切换}
+
+等待一个已完成的 Future，或者直接等待一个立即返回的协程，可以在当前任务中继续执行，不把控制权交给其他任务。因此不能写一个无限循环，反复 `await` 已缓存的结果，再认为它一定会公平地让其他任务运行。
+
+需要重叠的操作必须提供真正的异步等待点。`sleep(0)` 能主动让出执行机会，但把它零散加进重计算循环并不等于解决了多核利用、任务粒度和资源隔离问题。
+
+## 4. Task 与 Future {#task-与-future}
+
+**`Task`** 把协程交给事件循环推进，同时保存正常返回、异常或取消后的状态。**`asyncio.Future`** 则是一个结果容器，用来衔接底层回调与 `await`；它本身不代表一定有一个协程正在执行。
+
+| 对象 | 承担的责任 | 需要注意的地方 |
+| --- | --- | --- |
+| 协程对象 | 保存一次协程调用的执行状态 | 仅创建时不执行，执行完后不能重复使用 |
+| Task | 调度协程，记录结果、异常和取消状态 | 保留引用并观察最终结果，不能只创建后遗忘 |
+| `asyncio.Future` | 表达尚未得到的结果，供回调或底层操作完成它 | 通常由库管理，应用较少需要手动创建 |
+
+下面用回调填入 Future 的结果，再观察已完成 Future 的等待行为：
+
+```python
+import asyncio
+
+async def main():
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+    loop.call_soon(future.set_result, 42)
+    print(await future)  # 42
+
+    events = []
+    loop.call_soon(events.append, "callback")
+    print(await future, events)  # 42 []
+    await asyncio.sleep(0)
+    print(events)                # ['callback']
+
+asyncio.run(main())
+```
+
+第一次等待时，Future 尚未完成，循环运行已经安排好的 `set_result` 回调。第二次等待同一个 Future 时，结果已经存在，后面的打印没有等待新安排的回调；直到 `sleep(0)` 让出执行机会，`events` 才被填入。
+
+Task 和 Future 都能被多次等待以取得同一个最终结果。不要把这一点与“重新执行同一个协程对象”混淆。
+
+### 4.1 结果与异常的观察 {#结果与异常的观察}
+
+`await task` 会取得返回值，或者重新抛出任务的异常。`task.done()` 只表示任务已结束，不表示成功；取消和失败的任务也会返回 `True`。
+
+`task.result()`、`future.result()` 在尚未完成时抛出 `InvalidStateError`，不会阻塞线程等待。这与 [Python 并发](./threads-processes-gil.mdx#线程池与任务结果) 中的 `concurrent.futures.Future.result(timeout=...)` 不同，两类同名对象的等待和取消规则不能混用。
+
+独立后台任务需要明确的持有者：保留强引用，观察异常，并在关闭时决定等待还是取消。仅仅 `create_task(...)` 后丢掉返回值，不能表达完整的任务管理。
+
+## 5. TaskGroup {#taskgroup}
+
+**`TaskGroup`** 是管理一组相关任务的异步上下文管理器。组内任务可以并发运行，离开 `async with` 时会等待它们全部结束；因此，调用方知道这批工作什么时候真正收尾。
+
+某个子任务抛出普通异常时，TaskGroup 会请求取消其余子任务，等待它们处理取消和清理，然后把相应异常组合后抛出。它不会撤销已经发生的外部副作用，也不能强制结束拒绝让出执行机会的代码。
+
+```python
+import asyncio
+
+async def waiting(started, events):
+    try:
+        started.set()
+        await asyncio.Event().wait()
+    finally:
+        events.append("cleaned")
+
+async def failing(started):
+    await started.wait()
+    raise ValueError("invalid result")
+
+async def main():
+    started = asyncio.Event()
+    events = []
+    try:
+        async with asyncio.TaskGroup() as group:
+            pending = group.create_task(waiting(started, events))
+            group.create_task(failing(started))
+    except* ValueError as errors:
+        print("errors", len(errors.exceptions))
+    print(pending.done(), pending.cancelled(), events)
+
+asyncio.run(main())
+```
+
+输出为 `errors 1`，随后是 `True True ['cleaned']`。`Event` 是协程之间的通知工具：这里先确认 `waiting` 已进入运行，再让 `failing` 抛异常，避免把“尚未开始”和“运行中被取消”混成同一个场景。
+
+**`ExceptionGroup`** 表示一组异常，`except* ValueError` 处理其中匹配的部分；不匹配的部分仍会继续传播。这里只产生一个 `ValueError`，复杂任务组可能收集到多个失败。`KeyboardInterrupt`、`SystemExit` 有单独的重新抛出规则，不按普通业务错误处理。
+
+### 5.1 TaskGroup 与 gather {#taskgroup-与-gather}
+
+`asyncio.gather` 适合收集多个可等待对象的结果，正常结果按输入顺序排列。它与 TaskGroup 的失败处理有区别：
+
+- 默认 `gather` 向等待者传播最先观察到的异常，但不会因此自动取消其他子任务。
+- `gather(..., return_exceptions=True)` 把相应异常放进结果列表，调用方仍要检查，不能把列表返回视为全部成功。
+- TaskGroup 在子任务出现非取消异常时，会请求取消其他成员并等待收尾，适合一组需要共同管理生命周期的操作。
+
+一个子任务被取消，与 TaskGroup 中发生普通失败也不相同：单个子任务的 `CancelledError` 本身不会触发其余成员全部取消。无论采用哪种接口，都应先明确哪些任务可以独立继续，哪些必须随整组退出。
+
+## 6. 取消与资源清理 {#取消与资源清理}
+
+**任务取消**是一种协作请求。`task.cancel()` 安排向协程送入 `asyncio.CancelledError`，让它在下一次能够处理取消时离开当前操作。它不是杀死线程，也不等于调用返回时协程已经执行完 `finally`。
+
+`CancelledError` 直接继承 `BaseException`，通常不会被 `except Exception` 捕获。协程若只需要清理资源，可以使用 `finally`；若显式捕获取消以记录日志，完成必要处理后通常应重新抛出。吞掉取消会改变调用方看到的结果，也可能破坏 TaskGroup 和超时管理的预期。
+
+### 6.1 发出取消与等待结束 {#发出取消与等待结束}
+
+下面让工作任务持有一把异步锁，取消时经过一个可暂停的清理步骤。`async with lock` 会在退出时释放锁。
+
+```python
+import asyncio
+
+async def worker(started, lock, events):
+    async with lock:
+        try:
+            started.set()
+            await asyncio.Event().wait()
+        finally:
+            events.append("cleanup:start")
+            await asyncio.sleep(0)
+            events.append("cleanup:end")
+
+async def main():
+    started = asyncio.Event()
+    lock = asyncio.Lock()
+    events = []
+    task = asyncio.create_task(worker(started, lock, events))
+    await started.wait()
+
+    print(task.cancel(), task.done())  # True False
+    try:
+        await task
+    except asyncio.CancelledError:
+        print("cancelled")
+    print(task.done(), task.cancelled(), lock.locked())  # True True False
+    print(events)  # ['cleanup:start', 'cleanup:end']
+
+asyncio.run(main())
+```
+
+`cancel()` 返回 `True` 时，任务仍未完成；`main` 继续等待，直到 `worker` 走完清理、释放锁，并以取消状态结束。这里的 `sleep(0)` 用来展示清理本身也可以暂停，没有把它当成真实资源关闭接口。
+
+`done()` 为真且 `cancelled()` 为真，才表示这个 Task 最终以取消结束。如果协程捕获取消后正常返回，Task 可以已经完成但并未处于取消状态；调用过 `cancel()` 不能替代对最终状态的检查。
+
+### 6.2 异步资源的退出边界 {#异步资源的退出边界}
+
+**异步上下文管理器**允许进入和退出过程等待异步操作。`async with` 等待 `__aenter__` 和 `__aexit__`；也可以用 `contextlib.asynccontextmanager` 把获取、一次 `yield` 和 `finally` 清理组织在一起。普通 `with` 的资源所有权与异常传播原则仍然适用，前置见 [Python 上下文管理器](../language/context-managers.mdx#资源释放与异常传播)。
+
+清理代码需要覆盖真实失败路径：
+
+- 任务已经进入 `try` 后被取消，通常会执行对应 `finally`；如果任务还没开始就被取消，不能依赖函数体中的清理替调用方释放提前创建的资源。
+- 进入管理器时已经部分取得资源，随后进入失败，要在获取逻辑中自行清理，不能等一个尚未成功进入的管理器退出。
+- `finally` 中的 `await` 仍可能被新的取消请求打断，清理操作自己也可能失败。需要规定重入、重试、关闭期限及失败报告方式，不能只写一个 `finally` 就宣布资源必然释放。
+
+`asyncio.shield(task)` 可以阻止等待者的取消经由这次等待传给被保护任务，但等待者仍然会收到取消。被保护任务也能被其他路径取消；仍须有人保留引用并观察它结束，不能把 `shield` 当成无人负责的后台清理保证。
+
+## 7. 等待与超时 {#等待与超时}
+
+**超时**为一次操作设置等待预算，但如何结束等待、是否请求取消，要看具体接口。
+
+| 接口 | 超时时的主要行为 | 调用方仍需负责 |
+| --- | --- | --- |
+| `asyncio.timeout(seconds)` | 取消当前任务；在退出管理范围时，将本次超时导致的取消转换为 `TimeoutError` | 在范围外捕获，正确处理内部取消和清理 |
+| `asyncio.wait_for(aw, seconds)` | 请求取消等待对象，并等待其完成取消；通常抛出 `TimeoutError` | 允许清理耗时，处理取消被抑制或清理失败的情况 |
+| `asyncio.wait(tasks, timeout=...)` | 返回已完成集合与仍待完成集合，不自动取消剩余任务 | 继续等待、取消并回收，或把任务交给明确的持有者 |
+
+Python 3.12 的 `asyncio.wait` 要传 Task/Future 等对象，不能直接传一组裸协程。接口名相近，不代表可以替换后保持相同的生命周期。
+
+```python
+import asyncio
+
+async def main():
+    events = []
+    try:
+        async with asyncio.timeout(0):
+            try:
+                await asyncio.Event().wait()
+            finally:
+                events.append("cleaned")
+    except TimeoutError:
+        events.append("timeout")
+    print(events)  # ['cleaned', 'timeout']
+
+asyncio.run(main())
+```
+
+`timeout(0)` 用于立即安排下一轮循环中的超时，免去示例的实际等待；真实业务应按操作预算设置期限。内部等待先被取消，执行 `finally`；离开超时管理范围后，外层才捕获到转换后的 `TimeoutError`。
+
+超时不是硬实时保证。事件循环被同步调用堵住时，超时回调也无法及时运行；`wait_for` 还可能等待取消清理，所以总耗时可能超过传入的秒数。如果被等待协程吞掉取消并返回，`wait_for` 也可能得到返回值；清理抛出其他异常时，调用方可能收到该异常。
+
+取消本地等待也不意味着远端请求没有执行。对于提交订单等有副作用的操作，还需要依靠业务状态查询与幂等约定判断结果，不能看到 `TimeoutError` 就直接认定“没有发生”。
+
+## 8. 阻塞调用与并发边界 {#阻塞调用与并发边界}
+
+### 8.1 同步调用占住事件循环 {#同步调用占住事件循环}
+
+`async def` 不改变内部普通函数的执行方式。把 `time.sleep`、同步网络请求、耗时文件操作或长时间计算直接放进去，这些操作仍在事件循环线程执行；在返回前，同一循环中的其他任务没有机会运行。
+
+阻塞 I/O 无法立刻替换为异步接口时，可以把调用交给线程执行：
+
+```python
+import asyncio
+import threading
+import time
+
+def blocking_read():
+    time.sleep(0.02)
+    return threading.get_ident()
+
+async def main():
+    loop_thread = threading.get_ident()
+    worker_thread = await asyncio.to_thread(blocking_read)
+    print(worker_thread != loop_thread)  # True
+
+asyncio.run(main())
+```
+
+`blocking_read` 在其他线程运行，当前任务异步等待结果；这段代码只验证执行位置，不证明线程方案比某个真实 I/O 库更快。已有异步客户端时，可以直接等待它的异步接口，减少线程转换与独立生命周期。
+
+取消 `to_thread` 的等待者，不能强行终止已经运行的线程函数。该函数仍需要自身的 I/O 超时、合作停止机制和资源管理。应用关闭时也要处理仍在运行的工作，不能把“等待它的 Task 已取消”写成“线程已退出”。
+
+常规带 GIL 的 CPython 中，`to_thread` 通常不能让纯 Python 重计算自动获得多核加速。可拆分的计算可以考虑进程池；释放 GIL 的扩展另行判断。执行模型、序列化和进程入口要求见 [Python 并发](./threads-processes-gil.mdx#执行模型)。
+
+### 8.2 状态交错与并发数量 {#状态交错与并发数量}
+
+同一个循环中没有同时执行两段 Python 代码，不代表一组跨 `await` 的操作不可分割。例如两个任务都读到“库存为 1”，分别等待校验，再各自扣减，就可能破坏业务约束。
+
+需要保护同一循环中的共享状态时，可以使用 `asyncio.Lock`，或者让一个明确的任务拥有该状态，通过队列接收请求。异步锁不能替代数据库事务，也不能拿来保护多个操作系统线程；反过来，在循环里同步等待一把被另一个协程持有的线程锁，会阻止持有者继续运行。
+
+并发数量也要与连接池、文件描述符、内存和下游容量匹配。`asyncio.Semaphore` 可以限制一段操作同时进入的数量，但一次创建百万个等待信号量的 Task 仍然会占用内存。需要限制总任务积压时，可采用有界队列和固定数量的工作任务。
+
+## 9. 面试题 {#面试题}
+
+### 9.1 asyncio 怎样实现并发，适合什么任务？ {#asyncio-model}
+
+**考察重点**：事件循环、协作调度、I/O 等待与同步阻塞的关系。
+
+**相关内容**：[事件循环与 await](#事件循环与-await)、[阻塞调用与并发边界](#阻塞调用与并发边界)。
+
+<details>
+<summary>参考回答</summary>
+
+**`asyncio` 用事件循环协作推进多个任务：某个任务等待未完成的异步操作时，循环可以执行其他就绪工作。** 它适合有异步接口、主要时间花在 I/O 等待上的并发任务。
+
+同一循环线程一次执行一段任务或回调，不会自动把纯 Python 计算变成多核并行。直接调用阻塞函数仍会卡住循环，还要管理任务结果、取消、资源和并发数量。
+
+</details>
+
+### 9.2 协程对象、Task 和 Future 有什么区别，调用 async 函数后是否已经执行？ {#coroutine-task-future}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：调用与调度、执行状态与最终结果。
+
+**相关内容**：[协程与执行入口](#协程与执行入口)、[Task 与 Future](#task-与-future)。
+
+<details>
+<summary>参考回答</summary>
+
+**调用协程函数只创建协程对象，不会自动执行函数体；Task 负责调度协程，Future 表示尚未得到的结果。** 可以在任务内直接等待协程，或者用 `create_task` 等接口把它安排为独立任务。这里的协程函数指函数体不含 `yield` 的 `async def` 函数。
+
+原生协程对象执行完不能重复运行，Task/Future 却可以被多次等待以取得同一最终结果。`asyncio.Future.result()` 在未完成时抛出 `InvalidStateError`，不能套用线程池 Future 的阻塞等待用法。
+
+</details>
+
+### 9.3 连续两个 await 是否并发执行，await 是否一定切换任务？ {#await-scheduling}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：任务创建时机、等待链与实际暂停。
+
+**相关内容**：[顺序等待与并发任务](#顺序等待与并发任务)、[await 不保证发生切换](#await-不保证发生切换)。
+
+<details>
+<summary>参考回答</summary>
+
+**都不一定。`await first()` 完成后才调用 `second()`，仍是顺序执行；`await` 已完成的 Future 或立即返回的协程可能不发生切换。**
+
+要重叠两个独立操作，可以先把它们创建为 Task，或交给 TaskGroup，再统一等待和处理结果。不能仅凭代码出现了 `await` 就判断已经并发或能够公平调度。
+
+</details>
+
+### 9.4 TaskGroup 中一个任务失败后，其他任务和异常怎样处理？ {#taskgroup-failure}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：任务组退出、取消与异常组合。
+
+**相关内容**：[TaskGroup](#taskgroup)、[TaskGroup 与 gather](#taskgroup-与-gather)。
+
+<details>
+<summary>参考回答</summary>
+
+**子任务发生非取消异常时，TaskGroup 会请求取消其余成员，等待它们收尾，再把相应异常组合后抛出。** `except*` 可以处理异常组中匹配的部分，不能把它理解为只剩一个普通异常。
+
+单个子任务的取消本身不会触发同样的整组失败处理。默认 `gather` 传播第一个异常后，也不会自动取消其他子任务。TaskGroup 管理生命周期，不会回滚已经发生的外部操作。
+
+</details>
+
+### 9.5 task.cancel() 返回 True 后，任务是否已经停止，资源怎样释放？ {#cancellation-completion}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：取消请求、终态、异常传播与清理责任。
+
+**相关内容**：[取消与资源清理](#取消与资源清理)、[异步资源的退出边界](#异步资源的退出边界)。
+
+<details>
+<summary>参考回答</summary>
+
+**没有，`cancel()` 只是发出请求，任务还可能需要获得调度、接收 `CancelledError` 并完成清理。** 应继续等待它结束，区分正常返回、失败和最终取消，不能只看 `cancel()` 的返回值。
+
+资源在 `finally` 或正确实现的异步上下文管理器中释放；捕获取消后通常继续抛出。任务开始前的取消、清理中的再次取消与清理失败都需要明确责任，`finally` 不是强制终止后的执行保证。
+
+</details>
+
+### 9.6 asyncio 的超时是否保证在指定时间内停止，wait 与 wait_for 有什么区别？ {#timeout-cancellation}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：超时取消对象、等待预算与任务持有者。
+
+**相关内容**：[等待与超时](#等待与超时)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能保证硬截止，超时回调需要事件循环运行，取消清理也可能继续耗时。** `wait_for` 超时会请求取消被等待对象，并等待取消处理；`wait` 只返回已完成与待完成集合，不会替调用方取消剩余任务。
+
+`asyncio.timeout` 对当前任务施加取消，并在范围外呈现相应 `TimeoutError`。被等待代码吞掉取消、同步调用阻塞循环或清理发生异常时，结果都不能仅按传入秒数推断。剩余任务与外部副作用仍需明确处理。
+
+</details>
+
+### 9.7 async 函数中的同步请求会阻塞循环吗，to_thread 能解决哪些问题？ {#blocking-call}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：执行线程、阻塞 I/O、GIL 与线程取消边界。
+
+**相关内容**：[同步调用占住事件循环](#同步调用占住事件循环)。
+
+<details>
+<summary>参考回答</summary>
+
+**会，`async def` 不改变普通同步函数的执行方式；耗时同步调用仍会占住事件循环线程。** 优先使用异步接口，必须调用阻塞 I/O 时可以考虑 `await asyncio.to_thread(...)`。
+
+它把函数交给其他线程，不会强行停止已经执行的线程函数，也通常不能在常规 GIL 配置下加速纯 Python 重计算。还要配置 I/O 超时、任务数量和关闭流程；重计算可另评估进程池。
+
+</details>
+
+### 9.8 一个事件循环只有一个执行线程，为什么仍需保护共享状态和限制任务量？ {#shared-state}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：跨等待点的交错、状态所有权和资源容量。
+
+**相关内容**：[状态交错与并发数量](#状态交错与并发数量)。
+
+<details>
+<summary>参考回答</summary>
+
+**业务操作可能跨越多个 `await`，其他任务能够在中途读取和修改同一状态。** 应保护完整不变量，例如使用异步锁，或通过单一状态持有者与队列组织修改；跨进程、跨服务的约束仍要由相应机制保证。
+
+任务也有内存和下游资源成本。信号量只限制进入某段操作的并发数，不自动限制已经创建的任务总量；需要控制积压时，可以使用有界队列与固定工作任务。
+
+</details>
+
+## 10. 参考资料 {#参考资料}
+
+- [Python 3.12：Coroutines and Tasks](https://docs.python.org/3.12/library/asyncio-task.html)
+- [CPython 3.12.13：协程与任务文档](https://github.com/python/cpython/blob/v3.12.13/Doc/library/asyncio-task.rst)
+- [Python 3.12：Futures](https://docs.python.org/3.12/library/asyncio-future.html)
+- [CPython 3.12.13：Future 的等待与结果](https://github.com/python/cpython/blob/v3.12.13/Lib/asyncio/futures.py)
+- [Python 3.12：Event Loop](https://docs.python.org/3.12/library/asyncio-eventloop.html)
+- [Python 3.12：Runners](https://docs.python.org/3.12/library/asyncio-runner.html)
+- [Python 3.12：Developing with asyncio](https://docs.python.org/3.12/library/asyncio-dev.html)
+- [CPython 3.12.13：TaskGroup 实现](https://github.com/python/cpython/blob/v3.12.13/Lib/asyncio/taskgroups.py)
+- [CPython 3.12.13：超时与取消转换](https://github.com/python/cpython/blob/v3.12.13/Lib/asyncio/timeouts.py)
+- [Python 3.12：异步上下文管理器](https://docs.python.org/3.12/library/contextlib.html#contextlib.asynccontextmanager)
+- [Python 3.12：Synchronization Primitives](https://docs.python.org/3.12/library/asyncio-sync.html)
+- [Python 3.12：Queues](https://docs.python.org/3.12/library/asyncio-queue.html)

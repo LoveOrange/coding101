@@ -21,6 +21,9 @@ TCP 建立连接时，通过三次握手交换并确认双方的初始序列号�
 - FIN 只表示**本端不再发送数据**，另一个方向仍可继续发送。两个方向分别关闭，确认对端的 ACK 与本端的 FIN 可以合并。[卡](#half-close-reset)
 - 常规单方主动关闭时，主动关闭者进入 `TIME_WAIT` 等待 `2MSL`，以便**响应 FIN 重传，并让旧报文失效**。[卡](#three-way-handshake-time-wait)
 - `CLOSE_WAIT` 表示已收到对端 FIN，**本地应用还没有关闭发送方向**；它持续堆积时，要检查应用关闭路径。`TIME_WAIT` 则要结合短连接频率和实际资源压力判断。[卡](#connection-states)
+- FIN 重传使用**动态 RTO 与超时退避**；MSL 是报文寿命假设，不能把二者的时间混为一谈。[卡](#fin-rto-msl)
+
+- SYN 半连接队列满时，**按 cookies 条件与后续资源判断结果**；未接纳的 SYN 可能依靠客户端重试，不能认为队列满必然直接返回 RST。[卡](#syn-queue-full)
 
 ## 2. TCP 连接状态 {#1-tcp-连接保存双方状态}
 
@@ -117,6 +120,16 @@ Linux 的 `net.ipv4.tcp_tw_reuse` 允许在协议安全条件下，为新连接�
 
 `tcp_tw_recycle` 的旧实现则依赖同一对端地址的时间戳单调递增。NAT 后的多台主机共用公网地址，时间戳却可能不同，因此会破坏这个假设。Linux 4.12 已经删除这个参数，新内核上设置它会报找不到 `/proc/sys/net/ipv4/tcp_tw_recycle`。不能把它与 `tcp_tw_reuse` 当成同一种机制。另一个参数 `tcp_fin_timeout` 管理的是孤儿 `FIN_WAIT_2` 的等待，也就是应用已不再持有、但仍等待对端 FIN 的连接，不控制 `TIME_WAIT` 的计时。
 
+### 6.2 FIN 重传计时与 MSL {#fin-重传计时与-msl}
+
+**FIN 的重传等待由 RTO 控制，`2MSL` 是 `TIME_WAIT` 的等待尺度，两者承担不同任务。** RTO 是重传超时时间，根据连接的往返时延及其波动估计；超时后还会退避，不能把 FIN 的重发间隔背成固定秒数，更不能说每隔 `2MSL` 重发。
+
+沿用前面的单方主动关闭过程：客户端已经确认服务端的 FIN 并进入 `TIME_WAIT`。如果最后这个 ACK 丢失，服务端仍在 `LAST_ACK` 等待确认，未被确认的 FIN 需要按重传机制处理。按照 RFC 6298 的超时退避规则，超时重传后 RTO 翻倍，允许实现设置上限。重传和最终放弃还受实现及重试策略影响，具体 RTO 计算见 [TCP 与 UDP](./tcp_udp.mdx#累计确认与重传)。客户端在等待期间收到重传 FIN，会再次确认，并重新开始 `2MSL` 等待。
+
+如果最后 ACK 已正常到达，服务端就已经进入 `CLOSED`，所以“客户端正在等 `2MSL`”不能单独推出服务端一定处于 `LAST_ACK`。
+
+MSL 的取值是协议实现对旧报文寿命作出的工程假设。RFC 9293 采用 2 分钟作为规范中的 MSL，并说明可根据经验调整；这不代表所有操作系统的实际 `TIME_WAIT` 都必须是 4 分钟。回答实际机器等待多久时，需要说明操作系统及实现，查看对应计时机制。MSL 不是测一次 RTT 得到的，也不能把 IP 的 TTL 跳数直接换算成秒数。
+
 ## 7. 握手丢包与半连接 {#握手丢包与半连接}
 
 握手报文丢失时，要分别看两端已经走到哪一步。尤其第三次 ACK 丢失后，客户端已经认为连接建立，服务端却仍在等待：
@@ -143,6 +156,16 @@ Linux 监听 socket 的两类队列对应不同等待阶段：**SYN 半连接队
 Linux 的 `listen()` 参数 `backlog` 指完成握手后的等待队列长度。例如，应用传入 1024、`somaxconn=4096` 时，配置按 1024 生效；应用传入 8192 时，会被上限截到 4096。这个参数约束的是等待应用接收的连接，已经被 `accept()` 取走的活跃连接数量，还要看应用和系统资源。
 
 SYN cookies 在触发时把握手信息编码进 SYN+ACK，减少保存半连接状态的压力，但不能解决应用来不及 `accept()` 的问题。后者需要检查应用接收速度。可以用 `ss -lnt` 查看监听队列，再结合 `TcpExtListenOverflows`、`TcpExtListenDrops` 等指标，区分握手积压与应用接收不足。
+
+### 7.2 SYN 半连接队列满 {#syn-半连接队列满}
+
+**半连接队列满时，新的 SYN 能否继续握手，取决于是否能够采用 SYN cookies，以及后续是否有资源建立连接。** 这里讨论普通 TCP 握手下的 Linux 行为，不能只回答“一律拒绝”或“开了 cookies 就一定成功”。
+
+内核支持 SYN cookies 且 `net.ipv4.tcp_syncookies=1` 时，半连接队列溢出可触发 cookie 路径：服务端把校验握手所需的信息编码进 SYN+ACK 的初始序列号，不为这次请求保留通常的半连接记录。客户端返回有效 ACK 后，服务端验证 cookie，再尝试创建完整连接。这节约的是握手完成前的状态存储；完整连接仍需要内存和 accept 队列空间。
+
+未启用或未能使用 cookies，且没有空间接纳请求时，新 SYN 可能被丢弃。没有收到 SYN+ACK 的客户端仍停在 `SYN_SENT`，按自己的握手重传定时器重试；后续有空位可能成功，持续拥塞或达到超时条件则连接失败。服务端没有保留该请求时，不能指望它之后主动为这次请求重传 SYN+ACK。
+
+因此，cookies 是缓解半连接压力的后备机制，不能增加应用的 `accept()` 速度，也不是无限连接容量。排查应结合队列统计、cookie 计数、应用处理速度和实际失败位置；不能仅凭一个队列参数就判断连接一定成功或一定返回 RST。
 
 ## 8. 半关闭、复位与业务完成 {#半关闭复位与业务完成}
 
@@ -280,6 +303,36 @@ CLOSE_WAIT 表示已收到对端 FIN，但应用尚未关闭本地发送方向�
 
 </details>
 
+### 10.7 FIN 按什么间隔重传，MSL 应该取多少？ {#fin-rto-msl}
+
+**考察重点**：重传计时、关闭双方的状态，以及规范假设与实际实现的区别。
+
+**相关内容**：[FIN 重传计时与 MSL](#fin-重传计时与-msl)。
+
+<details>
+<summary>参考回答</summary>
+
+**未确认的 FIN 使用连接的 RTO 和超时退避机制重传，MSL 则是旧报文最大寿命的工程假设。** RTO 依据往返时延估计，超时后按规则退避，不能说 FIN 每隔 `2MSL` 重发。最后 ACK 丢失时，服务端仍处于 `LAST_ACK`；ACK 已到达时，它已经关闭，即使客户端仍在 `TIME_WAIT`。
+
+RFC 9293 的 MSL 取 2 分钟，但具体系统的 `TIME_WAIT` 计时必须看实现，不能跨系统给出一个固定秒数。MSL 不等于 RTT，也不能直接从 TTL 跳数计算。
+
+</details>
+
+### 10.8 Linux 的 SYN 半连接队列满了，新连接会怎样？ {#syn-queue-full}
+
+**考察重点**：SYN cookies 的触发条件、无状态握手与失败重试边界。
+
+**相关内容**：[SYN 半连接队列满](#syn-半连接队列满)。
+
+<details>
+<summary>参考回答</summary>
+
+**支持并启用 SYN cookies 时，队列溢出可以转入 cookie 握手；无法接纳且不能使用该机制时，新 SYN 可能被丢弃。** `tcp_syncookies=1` 表示在溢出时使用后备机制。服务端通过 SYN+ACK 编码信息，等有效 ACK 返回后才尝试建立完整连接，因此仍受后续资源约束。
+
+SYN 被丢弃后，客户端等待并重试，持续失败则超时；服务端没保存请求，就没有这条请求的普通 SYN+ACK 重传状态。cookies 不能替代应用及时 `accept()`，也不保证过载时所有新连接成功。
+
+</details>
+
 ## 11. 参考资料 {#参考资料}
 
 - [RFC 9293：Transmission Control Protocol](https://www.rfc-editor.org/rfc/rfc9293)
@@ -289,3 +342,4 @@ CLOSE_WAIT 表示已收到对端 FIN，但应用尚未关闭本地发送方向�
 - [Linux Kernel：IP Sysctl](https://docs.kernel.org/networking/ip-sysctl.html)
 - [Linux man-pages：tcp(7)](https://man7.org/linux/man-pages/man7/tcp.7.html)
 - [Linux Kernel：SNMP counters](https://docs.kernel.org/networking/snmp_counter.html)
+- [RFC 6298：Computing TCP’s Retransmission Timer](https://www.rfc-editor.org/rfc/rfc6298)

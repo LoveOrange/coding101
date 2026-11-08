@@ -1,0 +1,197 @@
+---
+knowledge:
+  id: basic-knowledge.cpp.type-system
+  type: concept
+description: "从对象、类型和表达式理解 C++ 的基本类型、const、struct 与 class、sizeof 和内存对齐，区分语言保证与目标平台的实现。"
+keywords: [C++ 类型, const, sizeof, 内存对齐, struct class]
+---
+
+# C++ 类型系统
+
+C++ 的类型决定一个值能做哪些操作，也决定对象的存储要求。回答类型题时，需要分清**语言规定的行为**和**某台机器上的实现结果**：`sizeof(char)` 必定是 `1`，`sizeof(int)` 却不能脱离目标平台直接回答。本文示例使用 C++17。
+
+## 1. 面试核心 {#core}
+
+- C++ 的对象不只包括类实例，**一个整数、数组或指针变量也可以是对象**；引用则提供已有对象或函数的别名，本身不是对象类型。
+- `const` 限制通过当前类型进行修改，**不自动把所有间接指向的对象变成不可变对象**；指针本身与所指对象可以分别受限。[卡](#const-pointer)
+- `struct` 和 `class` 都能定义成员函数、构造函数和继承关系，主要语言差异是**默认成员访问权限与默认继承权限**。[卡](#struct-class)
+- `sizeof` 计算类型或对象表示占用的字节数，**不计算字符串内容的长度**；数组整体与退化后的指针必须分开。[卡](#sizeof-string)
+- 类对象可以包含对齐填充，**成员大小之和不一定等于对象大小**；具体大小和布局需要结合 ABI 与编译选项判断。[卡](#object-alignment)
+
+## 2. 类型、对象与表达式 {#类型对象与表达式}
+
+**对象**是程序运行时具有存储区域、类型和生命周期的实体。`int count = 3;` 定义了一个 `int` 对象；`int* pointer = &count;` 又定义了一个指针对象。不要把 C++ 的“对象”只理解成 Java 中通过 `new` 得到的类实例。
+
+**类型**规定合法的值和操作。例如整数可以做整数除法，指针可以指向对象，函数类型描述参数和返回结果。常用类型可以这样整理：
+
+| 类别 | 例子 | 准备重点 |
+| --- | --- | --- |
+| 基本类型 | `bool`、`char`、整数、浮点数、`void` | 表示范围、转换和适用操作；`void` 不能直接定义对象 |
+| 复合类型 | 数组、指针、引用、函数、类、枚举 | 对象关系、生命周期、访问和调用规则 |
+| cv 限定 | `const`、`volatile` | 类型上的访问限制；`volatile` 不提供线程同步 |
+
+表达式还具有值类别。例如变量名 `count` 是可以标识某个对象的左值表达式，`3 + 4` 是产生值的纯右值表达式。类型与值类别是两个维度：它们一起影响重载选择和引用绑定，进一步见[C++ 复制与移动](./copy-move.mdx#值类别与-stdmove)。
+
+`auto` 是类型推导，不是运行时动态类型。`auto count = 3;` 得到 `int`，后续赋值不会让 `count` 变成另一个类型。
+
+## 3. 数值类型与转换 {#数值类型与转换}
+
+基本类型的名字不等于固定宽度。C++ 保证整数类型之间的最低范围和大小关系，具体实现可能选择不同的宽度；`long` 在常见的 64 位 Unix 和 64 位 Windows 上就可能不同。需要固定宽度时，检查 `<cstdint>` 提供的 `std::int32_t` 等类型是否可用，并明确数据格式要求。
+
+`sizeof` 的一个单位是 C++ 的一个字节，即 `sizeof(char)`。一个字节至少能表示 8 位信息，确切位数可由 `<climits>` 的 `CHAR_BIT` 得到；不要仅从“一个字节”推出所有实现都恰好 8 位。
+
+整数混合运算还会发生转换：
+
+```cpp
+#include <cassert>
+
+int main() {
+    int negative = -1;
+    unsigned int positive = 1;
+    assert(!(negative < positive));
+
+    int count = 3;
+    double ratio = count / 2;
+    assert(ratio == 1.0);
+    assert(count / 2.0 == 1.5);
+}
+```
+
+第一处比较中，`int` 与 `unsigned int` 具有对应的转换等级，`negative` 转换为无符号值后再比较，所以结果不是数学上的 `-1 < 1`。第二处先执行整数除法得到 `1`，再转换成 `double`，赋值目标的类型不能倒过来改变已经完成的除法。
+
+在 C++17 中，无符号运算按其范围做模运算，有符号整数溢出则是未定义行为。**未定义行为**表示语言不再保证程序结果，不能把某次运行“刚好绕回去”当作正确算法。
+
+## 4. const 与初始化 {#const-与初始化}
+
+`const` 表示通过受限定的类型不能修改对象，但限制可能只作用于一层：
+
+```cpp
+int count = 3;
+const int* reader = &count;
+int* const fixed = &count;
+
+// *reader = 4;  // 编译错误：不能通过 reader 修改 int
+*fixed = 4;     // 可以修改 count
+// fixed = nullptr;  // 编译错误：fixed 本身不能重新赋值
+```
+
+`reader` 是“指向只读 `int` 的可变指针”，`fixed` 是“指向可变 `int` 的不可重新赋值指针”。`count` 本来不是 `const`，所以仍能通过允许修改的路径改变它；如果对象一开始就定义为 `const`，强制去掉限定后修改该对象本身是未定义行为。
+
+`const` 也不等于编译期常量。`const int size = read_size();` 可以在运行时取得值；需要满足常量表达式要求时，再考虑 `constexpr` 及其限制。
+
+初始化应该明确。函数内的 `int count;` 没有为这个标量提供可读取的确定值；`int count{};` 会得到 `0`。对于类对象，默认初始化是否设置每个成员，要看构造函数和成员初始化规则，不能一概称为“自动清零”。
+
+## 5. struct、class 与 union {#structclass-与-union}
+
+`struct` 与 `class` 都是定义类类型的方式。`struct` 默认公开成员、默认公开继承；`class` 默认私有成员、默认私有继承。显式写出访问控制后，可以得到相同的接口行为。
+
+```cpp
+struct PublicCounter {
+    int value = 0;
+    void increment() { ++value; }
+};
+
+class PrivateCounter {
+public:
+    void increment() { ++value; }
+    int get() const { return value; }
+private:
+    int value = 0;
+};
+```
+
+两者都能拥有构造函数、析构函数、虚函数和模板成员。工程上可以用 `struct` 表示直接承载数据的类型、用 `class` 维护需要保护的不变量，但这是设计习惯，不是“`struct` 不能封装”的语言限制。C 语言的 `struct` 不具备这一整套 C++ 类机制，讨论 C 与 C++ 时要先说明语言。
+
+**联合体** `union` 让多个成员共用存储，通常同一时刻只有一个活动成员。它的大小至少容纳最大成员，还可能需要满足对齐。不能通过依次写入不同成员，把它当成能同时保留所有值的结构体；也不能在 C++17 中无条件读取非活动成员来完成类型转换。需要带类型标签的安全选择，可以使用 C++17 的 `std::variant`。
+
+## 6. sizeof 与对象布局 {#sizeof-与对象布局}
+
+`sizeof` 的操作数通常不求值，结果类型是 `std::size_t`。它根据类型确定对象表示的大小，包含类对象的必要填充。
+
+```cpp
+#include <cassert>
+#include <cstring>
+
+int main() {
+    char text[] = "abc";
+    const char* pointer = text;
+
+    assert(sizeof(text) == 4);
+    assert(std::strlen(text) == 3);
+    assert(sizeof(pointer) == sizeof(const char*));
+
+    int count = 3;
+    auto bytes = sizeof(count++);
+    assert(count == 3);
+    assert(bytes == sizeof(int));
+}
+```
+
+`text` 是 4 个字符的数组，其中最后一个是终止符 `\0`；`strlen` 扫描到终止符前停止，所以是 `3`。`pointer` 则是一个指针对象，`sizeof(pointer)` 与它指向的字符串有多长无关。`count++` 位于不求值的操作数中，因此没有发生递增。
+
+**对齐要求**规定对象地址需要满足的边界，可以用 `alignof(T)` 查询。以 `struct Record { char flag; int value; };` 为例，实现可能在 `flag` 和 `value` 之间插入填充，也可能在末尾补齐，使数组中的每个 `Record` 都能满足对齐。因此对象大小不能简单写成 `sizeof(char) + sizeof(int)`。
+
+面试给定平台和布局规则时，可以逐个推算偏移，再补齐整个对象的尾部。没有这些前提时，回答“可能有填充，具体值需检查实现”比背一个固定数字准确。空类也不能简单推断为大小 `0`：完整的空类对象需要能具有可区分的身份；空基类等子对象则还有独立规则。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 C++ 的 struct 和 class 有什么区别？ {#struct-class}
+
+**考察重点**：默认访问、继承和语言边界。
+
+**相关内容**：[struct、class 与 union](#structclass-与-union)。
+
+<details>
+<summary>参考回答</summary>
+
+**主要区别是默认访问权限：`struct` 的成员与继承默认是 `public`，`class` 默认是 `private`。** 两者都能有构造、析构、成员函数、虚函数和继承。使用显式访问控制后，可以表达相同的类机制；“`struct` 只装数据”是约定，不是 C++ 的限制。C 的 `struct` 需要另按 C 语言规则讨论。
+
+</details>
+
+### 7.2 sizeof 和 strlen 对字符数组与指针分别计算什么？ {#sizeof-string}
+
+**考察重点**：数组类型、终止符、指针对象与不求值操作数。
+
+**相关内容**：[sizeof 与对象布局](#sizeof-与对象布局)。
+
+<details>
+<summary>参考回答</summary>
+
+**`sizeof` 计算类型对应的对象大小，`strlen` 扫描以零终止的字符串内容。** `char text[] = "abc"` 的 `sizeof` 是 `4`，包含终止符；`strlen` 是 `3`。指针变量的 `sizeof` 是指针对象本身的大小，不是目标字符串大小。数组作为普通函数参数会调整为指针参数，不能在函数内靠 `sizeof(parameter)` 找回原数组长度。
+
+</details>
+
+### 7.3 为什么结构体大小不一定等于各成员大小之和？ {#object-alignment}
+
+**考察重点**：成员偏移、对齐、尾部填充和实现条件。
+
+**相关内容**：[sizeof 与对象布局](#sizeof-与对象布局)。
+
+<details>
+<summary>参考回答</summary>
+
+**实现可能为成员和对象数组插入对齐填充。** 成员起始位置要满足相应对齐要求，整个对象末尾也可能补齐，确保数组中的下一项仍满足要求。实际大小取决于成员类型、ABI 和编译选项；应先给出这些条件，再推算偏移或用 `sizeof`、`alignof` 验证，不能只报一个平台上的固定值。
+
+</details>
+
+### 7.4 const int* 与 int* const 分别限制什么？ {#const-pointer}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：顶层与所指类型的 const 限定、修改路径和对象本身的性质。
+
+**相关内容**：[const 与初始化](#const-与初始化)。
+
+<details>
+<summary>参考回答</summary>
+
+**`const int*` 限制通过指针修改目标，`int* const` 限制指针变量重新赋值。** 前者可以换指向，但不能通过解引用写入；后者不能换指向，但目标不是 `const` 时仍能修改。目标本来是可变对象时，仍可能被其他可写路径修改，所以只读访问不等于整个对象不可变。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [C++17 草案 N4659：Types](https://timsong-cpp.github.io/cppwp/n4659/basic.types)
+- [C++17 草案 N4659：Sizeof](https://timsong-cpp.github.io/cppwp/n4659/expr.sizeof)
+- [C++17 草案 N4659：Member access control](https://timsong-cpp.github.io/cppwp/n4659/class.access)
+- [C++17 草案 N4659：Usual arithmetic conversions](https://timsong-cpp.github.io/cppwp/n4659/expr)

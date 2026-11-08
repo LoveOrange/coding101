@@ -42,4 +42,17 @@ keywords: ["数据库面试", "MySQL 复习", "SQL 基础", "事务与索引"]
 - [数据库死锁](./transaction/deadlock-detection-timeout-retry.mdx)
 - [长事务](./transaction/long-transactions-hot-updates-boundaries.mdx)
 
-主路径完成后，可以进入 [Redis](../nosql/redis/index.mdx)，解释缓存命中、失效与回源。存储引擎日志、复制与备份的独立专题仍需补齐，不将目录覆盖视为这些内容已经完成。
+## 5. 常考 · 存储与复制
+
+停止条件：能区分本地事务提交、日志传输和副本应用，解释崩溃恢复与写后读的条件。
+
+- [InnoDB](./storage/innodb.mdx)
+- [MySQL 事务日志](./storage/transaction-logs.mdx)
+- [MySQL 复制](./replication.mdx)
+
+## 6. 按岗选学 · 数据范围与存储模型
+
+- [MySQL 分区](./partitioning.mdx)：目标岗位或项目涉及分区时，重点解释裁剪、唯一键限制和数据生命周期。
+- [LSM 树](./storage/lsm-tree.mdx)：目标岗位涉及写入密集的存储引擎时，理解写入、查询与压缩的代价。
+
+主路径完成后，可以进入 [Redis](../nosql/redis/index.mdx)，解释缓存命中、失效与回源。备份与恢复的通用目标见[灾难恢复](../../system-design/availability/high-availability-backup-rto-rpo.mdx)，MySQL 备份操作的独立专题仍待补齐。

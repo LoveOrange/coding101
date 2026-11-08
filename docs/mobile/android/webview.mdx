@@ -1,0 +1,328 @@
+---
+knowledge:
+  id: mobile.android.webview
+  type: concept
+description: "解释 Android WebView 的加载、导航、JavaScript 交互、可信来源、生命周期和性能诊断。"
+keywords: [Android, WebView, WebViewClient, JavaScript, JSBridge, WebKit]
+---
+
+# Android WebView
+
+**WebView** 是 Android 中用于显示网页内容的 View。应用把页面交给 Web 引擎加载和渲染，同时决定导航、原生能力开放、错误处理与资源释放。它适合嵌入已有 Web 页面，但接入一个 `loadUrl()`，并不代表已经处理好原生应用与网页之间的边界。
+
+本文的导航示例使用 Android API 24 及以上接口，消息示例使用 AndroidX WebKit 1.8.0，并检查实际 WebView 实现是否支持相应特性。
+
+## 1. 面试核心 {#core}
+
+- WebView 使用 Web 引擎运行 HTML、CSS 和 JavaScript，**网页元素通常不对应一组 Android 原生控件**；这与 React Native 的基本界面模型不同。[卡](#mechanism)
+- `WebViewClient` 管理导航和加载回调，`WebChromeClient` 处理进度、标题、对话框等，**`shouldOverrideUrlLoading()` 不是所有请求必经的安全检查点**。[卡](#navigation)
+- JavaScript 与原生通过桥接通信，**开放能力必须限定来源、调用方和参数，不能仅检查顶层页面 URL**。[卡](#bridge)
+- HTTPS、精确主机匹配、最小文件访问和混合内容设置共同约束页面，**`@JavascriptInterface` 不等于接口已经完成授权**。[卡](#security)
+- WebView 有独立资源和状态，**`onPause()` 不暂停 JavaScript，`pauseTimers()` 却影响进程内所有 WebView**；销毁前应先移出 View 树。[卡](#lifecycle)
+- 加载完成、首帧可见和业务可交互是不同时间点，**性能优化要先分清引擎初始化、网络、脚本和渲染成本**。[卡](#performance)
+- 页面资源错误和 renderer 退出需要不同处理，**不能把一次图片加载失败当成整个页面失败，也不能继续使用已经失去 renderer 的 WebView**。[卡](#failures)
+
+## 2. 原生容器与 Web 页面 {#原生容器与web页面}
+
+WebView 继承 Android View，参与原生布局和触摸分发；内部的网页则由 Web 引擎解析、执行和绘制。可以把它理解为应用里承载网页的一块区域，但它并不是带完整地址栏、标签页和下载界面的浏览器应用。这些产品行为需要宿主自行决定。
+
+Android WebView 的具体引擎能力受系统、WebView provider 和配置影响。支持多进程的实现可以把网页渲染放到 renderer 进程中；不能由“创建了两个 WebView”直接推出“一定有两个独立 renderer 进程”。
+
+| 方式 | 界面由什么表达 | 原生能力如何接入 |
+| --- | --- | --- |
+| WebView | HTML、CSS、DOM，交给 Web 引擎布局绘制 | 宿主提供受控桥接或平台接口 |
+| React Native | React 组件描述，由其运行架构驱动原生界面组件 | Native Module 等机制 |
+| Android 原生 View | Android View/ViewGroup | 直接调用平台 API，仍需权限与业务授权 |
+
+React Native 项目也可以嵌入 WebView，因此比较的是主要渲染和通信机制，不是“某个项目只能选一种技术”。性能取决于具体工作量、通信、布局与实现，不能只按框架名称排出固定快慢顺序。
+
+## 3. 加载与导航 {#加载与导航}
+
+### 3.1 两类客户端的责任 {#两类客户端的责任}
+
+`WebViewClient` 负责页面导航、资源加载和错误等回调；`WebChromeClient` 补充浏览器界面相关行为，例如标题、加载进度、JavaScript 对话框和网页权限请求。
+
+网页请求摄像头，不意味着宿主应该直接同意所有资源。宿主仍需检查请求来源、申请的资源、Android 权限和当前业务操作，再作决定。下载、新窗口和外部 scheme 也应各自定义允许范围，不把收到的任意 URL 直接交给系统组件。
+
+| 接口 | 关键边界 |
+| --- | --- |
+| `loadUrl()` | 宿主主动发起加载；加载前自行验证输入 |
+| `shouldOverrideUrlLoading()` | 返回 `false` 让当前加载继续；返回 `true` 表示宿主接管并取消当前加载 |
+| `shouldInterceptRequest()` | 可返回替代资源响应；在非 UI 线程回调，不能直接操作 View |
+| `onPageFinished()` | 主 frame 的页面加载回调，不保证网页已经绘出下一帧或业务已可交互 |
+
+### 3.2 精确检查目的地址 {#精确检查目的地址}
+
+下面只允许 `https://learn.example.com` 的默认 HTTPS 端口，拒绝 user-info。示例把规则独立出来，便于验证看似相似但实际不可信的地址。
+
+```kotlin
+import java.net.URI
+
+fun isTrustedPage(url: String): Boolean {
+    val uri = runCatching { URI(url) }.getOrNull() ?: return false
+    return uri.scheme.equals("https", ignoreCase = true) &&
+        uri.host?.equals("learn.example.com", ignoreCase = true) == true &&
+        uri.rawUserInfo == null &&
+        (uri.port == -1 || uri.port == 443)
+}
+```
+
+`https://learn.example.com.evil.test/` 的主机并不是允许的主机；`https://learn.example.com@evil.test/` 中，前半段是 user-info，实际主机是 `evil.test`。因此不能使用 `contains("learn.example.com")` 或字符串前缀来判断可信来源。这里采用严格 URI 解析，无法按预期解析的输入直接拒绝。
+
+下面示例假定宿主运行于 API 24 及以上，并在 WebView 所在线程调用。第一个 URL 和页面发起的导航分别检查。
+
+```kotlin
+import android.annotation.SuppressLint
+import android.webkit.WebResourceRequest
+import android.webkit.WebSettings
+import android.webkit.WebView
+import android.webkit.WebViewClient
+
+@SuppressLint("SetJavaScriptEnabled")
+fun openTrustedPage(webView: WebView, url: String) {
+    require(isTrustedPage(url))
+    webView.settings.apply {
+        javaScriptEnabled = true
+        allowFileAccess = false
+        allowContentAccess = false
+        mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+    }
+    webView.webViewClient = object : WebViewClient() {
+        override fun shouldOverrideUrlLoading(
+            view: WebView,
+            request: WebResourceRequest
+        ): Boolean = !isTrustedPage(request.url.toString())
+    }
+    webView.loadUrl(url)
+}
+```
+
+允许导航时直接返回 `false`，不要再调用一次相同的 `loadUrl()` 并返回 `true`，否则会取消原导航并启动新导航。
+
+**这段代码只是导航规则示例，不能视为完整的网络防火墙。** `shouldOverrideUrlLoading()` 不会为宿主自身的 `loadUrl()` 调用触发，也不覆盖 POST 请求；还可能收到子 frame 或非 HTTP(S) 导航。页面内部资源请求、脚本行为和原生桥接必须有各自的约束。
+
+`shouldInterceptRequest()` 也不能概括为“每个请求都能拦截”：某些 URL 类型不经过它，重定向只回调初始资源 URL。若用它接管缓存，要正确处理状态、MIME 类型、编码、跨域以及资源版本，不能把任意字节都包装成一个成功响应。
+
+## 4. JavaScript 与原生交互 {#javascript与原生交互}
+
+### 4.1 调用方向与线程 {#调用方向与线程}
+
+原生可以通过 `evaluateJavascript()` 在当前页面执行脚本，并异步接收执行结果；该 API 从 Android API 19 提供，应在 UI 线程调用。传入的数据需要按 JavaScript 或 JSON 的语法正确编码，直接把用户输入拼进脚本会改变代码含义。
+
+JavaScript 调用原生可以使用 `addJavascriptInterface()` 暴露对象。面向现代 Android 版本时，可供 JavaScript 调用的方法需要 `@JavascriptInterface`。但注解只限定暴露的方法，不承担来源验证：对象会暴露到所有 frame，原生方法无法从这个接口可靠获知具体调用 frame 的来源。
+
+这类接口调用运行在 WebView 的私有后台线程。方法若要更新界面，需要切回 UI 线程；耗时工作也需要明确调度、取消和对象持有范围。不要把 WebView 的各类回调都记成同一个线程。
+
+这些入口负责跨环境传输，业务还需要用请求 ID 关联结果、用页面会话区分导航前后的调用。通用协议见 [JSBridge](../../frontend/browser/jsbridge.mdx#消息协议与回调关联)；超时与旧页面清理见其中的[生命周期、超时与取消](../../frontend/browser/jsbridge.mdx#生命周期超时与取消)。
+
+### 4.2 限定来源的消息接口 {#限定来源的消息接口}
+
+AndroidX WebKit 的 `addWebMessageListener()` 可以按 origin 规则注入消息对象，并在回调中提供 `sourceOrigin` 与 `isMainFrame`。**Origin** 由协议、主机和端口共同确定；只比较主机不足以区分 HTTP 与 HTTPS 或不同端口。
+
+下面的接口只允许可信主 frame 发送字符串 `ping`，回复 `pong`，不开放文件、账户或设备操作。它需在页面加载前安装，并由宿主在 WebView 所在线程调用。
+
+```kotlin
+import android.webkit.WebView
+import androidx.webkit.WebMessageCompat
+import androidx.webkit.WebViewCompat
+import androidx.webkit.WebViewFeature
+
+fun installPingBridge(webView: WebView): Boolean {
+    if (!WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
+        return false
+    }
+    WebViewCompat.addWebMessageListener(
+        webView,
+        "nativePing",
+        setOf("https://learn.example.com")
+    ) { _, message, sourceOrigin, isMainFrame, reply ->
+        if (isMainFrame && isTrustedPage(sourceOrigin.toString()) &&
+            message.type == WebMessageCompat.TYPE_STRING && message.data == "ping") {
+            reply.postMessage("pong")
+        }
+    }
+    return true
+}
+```
+
+可信页面可通过注入对象的 `postMessage("ping")` 发送消息，通过对象的消息回调接收回复。origin 规则对 frame 生效，同源子 frame 也可能获得对象，所以这里额外限制 `isMainFrame`。不支持该特性时，函数返回 `false`；宿主应关闭依赖此能力的功能或显示可理解的降级提示，不自动退回没有来源约束的敏感接口。
+
+真实业务还要定义消息类型、请求关联、超时、错误和参数校验。即使来源正确，也不能让页面传入任意方法名后用反射执行任意原生方法；支付、文件和账户操作还需要各自授权。页面导航或宿主销毁时，应结束待处理调用，避免把旧页面的结果交给新页面。
+
+## 5. 页面与宿主的安全边界 {#页面与宿主的安全边界}
+
+WebView 的信任范围不仅是第一次加载的 URL，还包括重定向、frame、页面脚本和原生能力。可信站点发生脚本注入后，其脚本仍可能具有该站点的 origin，来源规则也不能代替站点自身的安全防护。
+
+- **只启用实际需要的能力。** JavaScript 默认关闭，业务确实依赖时再开启；文件、内容提供器和其他访问能力分别判断，不因需要 JavaScript 就全部放开。
+- **使用 HTTPS 并正常验证证书。** 不在 `onReceivedSslError()` 中调用 `proceed()` 忽略证书错误；默认取消或显式取消，并展示失败状态。
+- **限制混合内容。** HTTPS 页面引入 HTTP 资源会破坏传输保障。示例用 `MIXED_CONTENT_NEVER_ALLOW`，不把允许混合内容作为修复加载失败的通用办法。
+- **避免给 file 页面开放普遍跨源访问。** 加载 APK 内资源时可以考虑 `WebViewAssetLoader`，通过受控 HTTPS origin 映射本地资源。它解决资源加载方式，不会自动保证资源中的脚本或桥接安全。
+- **让权限落实到具体操作。** 网页发来的“已登录”“拥有权限”只是一段输入；服务端仍需验证业务身份与操作授权，敏感原生操作也要限定能力和用户意图。
+
+旧版 Android 的桥接暴露规则和漏洞，需要结合运行系统与 `targetSdkVersion` 讨论。现代方法注解要求降低了某些历史风险，但无法解决“把高权限方法提供给不可信页面”这个设计问题。
+
+## 6. 生命周期与资源释放 {#生命周期与资源释放}
+
+### 6.1 暂停并不等于销毁 {#暂停并不等于销毁}
+
+`WebView.onPause()` 会尽力暂停可安全暂停的处理，例如动画与定位，但**不会暂停 JavaScript**。`pauseTimers()` 则暂停进程内所有 WebView 的布局、解析和 JavaScript timer，因此不适合无条件当成某一个页面的局部暂停方法。
+
+需要恢复时与对应恢复操作配对。页面不再可见时是否继续播放、请求或保持会话，应由业务和页面通信共同决定，不能仅靠某一个生命周期方法推断。
+
+WebView 通常属于 Activity 或 Fragment 的 View 生命周期。Fragment 的 View 已销毁但 Fragment 仍存活时，持有旧 WebView 可能连带保留 Activity、页面及回调。相应生命周期关系见 [Fragment 生命周期](./fragment-lifecycle.mdx)。
+
+### 6.2 销毁与会话 {#销毁与会话}
+
+释放时先停止与页面关联的业务工作，移除消息监听或接口，解除宿主持有的引用和回调，再把 WebView 从父 ViewGroup 中移除，最后在正确线程调用 `destroy()`。调用 `destroy()` 后不能继续调用该 WebView 的其他方法；不要只把字段设为 `null`，却把它留在 View 树或长期回调中。
+
+历史记录、DOM、JavaScript 堆、Cookie 和应用业务状态不是同一份数据。`saveState()`/`restoreState()` 不能作为“把运行中的整个网页永久冻结和恢复”的保证；重建后仍需要合理的页面恢复、登录与数据加载策略。
+
+同一应用中的 WebView 可能共享 Cookie 等存储。退出账号或复用容器时要明确清理范围：只换一个 URL 不代表旧会话完全消失，反过来，清空全局 Cookie 又可能影响另一个正在使用的页面。
+
+## 7. 性能与失败处理 {#性能与失败处理}
+
+### 7.1 把耗时拆到具体阶段 {#把耗时拆到具体阶段}
+
+WebView 首次展示可能包含引擎初始化、网络连接与资源加载、脚本执行、DOM/CSS 处理和绘制。预热、缓存和减少脚本工作针对的是不同阶段，只有测量后才能判断哪一项有效。
+
+| 现象或措施 | 需要验证的条件 |
+| --- | --- |
+| 第一次打开慢，后续快 | 区分引擎冷启动、网络连接、HTTP 缓存和业务数据缓存 |
+| 预创建 WebView | 验证主线程成本、额外内存、Context 与页面生命周期；不要在任意后台线程创建再搬到 UI |
+| 静态资源缓存或离线包 | 验证版本一致性、更新与回退、鉴权内容隔离；HTTP 缓存仍按响应规则工作 |
+| 页面已加载但点不动 | 检查 JavaScript 长任务、页面渲染和桥接调用，不仅看下载时间 |
+| 复用 WebView 容器 | 处理旧任务、回调、历史、账号状态和内存；复用不是免费加速 |
+
+`onPageFinished()` 不代表下一帧已经包含最新 DOM，也不代表数据加载和事件绑定已经完成。需要画面同步时可使用相应 visual state 回调；需要业务可交互时间时应由页面按明确条件上报，并测量用户能实际使用的操作。
+
+测试应保持设备、系统/provider、网络、页面版本、缓存条件和构建类型可比。对照冷启动与热启动、首次与重复访问，再说明优化前后发生变化的阶段。
+
+### 7.2 区分资源错误与进程退出 {#区分资源错误与进程退出}
+
+API 23 及以上的 `onReceivedError()` 可报告子资源错误。如果一张图片失败就展示整页错误，会把仍可使用的页面遮掉；整页失败状态通常应结合 `request.isForMainFrame` 和当前导航状态判断，资源错误另行记录或降级。
+
+API 26 及以上可通过 `onRenderProcessGone()` 处理 renderer 退出。对应 WebView 已不能继续使用，应解除引用、移除并销毁，再根据业务需要创建新实例。多个 WebView 可能共享 renderer，平台会分别回调受影响的实例；每次只清理回调参数对应的 WebView，不凭猜测销毁其他实例。返回值还表示宿主是否处理了退出；不能只返回“已处理”，却继续使用失效对象。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 WebView 的实现原理是什么？它与 React Native 有什么区别？ {#mechanism}
+
+**考察重点**：宿主 View、Web 引擎与原生组件的分工。
+
+**相关内容**：[原生容器与 Web 页面](#原生容器与web页面)。
+
+<details>
+<summary>参考回答</summary>
+
+**WebView 是原生应用中的网页容器，内部通过 Web 引擎处理 HTML、CSS、JavaScript 和绘制。** 宿主控制导航、生命周期以及允许网页调用的原生能力。
+
+React Native 的基本方式是由 React 组件描述界面，再驱动原生界面组件，不是把整套界面作为 DOM 放进 WebView。二者可以混用，实际性能还要根据脚本、布局、通信和渲染工作量判断。
+
+</details>
+
+### 8.2 shouldOverrideUrlLoading 返回 true 和 false 有什么区别？它能验证所有请求吗？ {#navigation}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：导航是否继续、回调覆盖范围和输入验证责任。
+
+**相关内容**：[加载与导航](#加载与导航)。
+
+<details>
+<summary>参考回答</summary>
+
+**返回 `false` 让当前加载继续，返回 `true` 表示宿主接管并取消当前加载。** 允许导航时不需要再次调用同一个 `loadUrl()`。
+
+它不覆盖宿主主动调用 `loadUrl()` 和 POST 请求，也不是页面资源请求的统一拦截点。首次加载、后续导航、资源访问和原生桥接要分别建立约束。
+
+</details>
+
+### 8.3 H5 与 Android 原生怎样交互？ {#bridge}
+
+**考察重点**：双向调用、线程、异步结果及能力边界。
+
+**相关内容**：[JavaScript 与原生交互](#javascript与原生交互)。
+
+<details>
+<summary>参考回答</summary>
+
+**原生可以通过 `evaluateJavascript()` 执行脚本，JavaScript 可以通过暴露对象或受支持的消息接口调用原生。** 结果和业务工作通常需要异步处理，并定义请求关联、错误、超时和页面失效后的取消。
+
+`addJavascriptInterface()` 需要注意暴露到所有 frame、调用线程和无法直接判断调用 frame 来源的问题。支持时可以使用按 origin 限定的 WebKit 消息接口，并继续校验 frame、参数和具体操作权限。调用原生能力不应等价于开放任意方法执行。
+
+</details>
+
+### 8.4 WebView 的安全风险有哪些？ {#security}
+
+**考察重点**：来源、脚本、文件、传输与原生权限的关系。
+
+**相关内容**：[页面与宿主的安全边界](#页面与宿主的安全边界)。
+
+<details>
+<summary>参考回答</summary>
+
+**主要风险来自不可信内容获得原生能力，或页面资源与传输约束过宽。** 应精确检查协议、主机和端口，限制原生接口和 frame，拒绝证书错误，并按需要开启 JavaScript、文件访问与其他能力。
+
+`@JavascriptInterface` 只控制方法暴露，不能完成调用方授权；可信 origin 的页面也可能存在脚本注入。系统权限、桥接权限与服务端业务授权仍需分别处理。
+
+</details>
+
+### 8.5 WebView 页面不可见或销毁时需要处理什么？ {#lifecycle}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：暂停范围、对象持有和销毁顺序。
+
+**相关内容**：[生命周期与资源释放](#生命周期与资源释放)。
+
+<details>
+<summary>参考回答</summary>
+
+**先区分暂时不可见和永久释放，并让 WebView 跟随所属 View 的生命周期。** `onPause()` 不会暂停 JavaScript，`pauseTimers()` 则影响进程内所有 WebView，不能把二者当作相同的局部暂停。
+
+永久释放时结束关联任务和桥接回调，解除引用，移出父 ViewGroup，再调用 `destroy()`，之后不再使用实例。页面历史、Cookie 与业务状态需要各自定义恢复或清理策略。
+
+</details>
+
+### 8.6 怎样优化 WebView？预加载和资源缓存分别解决什么问题？ {#performance}
+
+**考察重点**：性能阶段、测量条件、收益与成本。
+
+**相关内容**：[把耗时拆到具体阶段](#把耗时拆到具体阶段)。
+
+<details>
+<summary>参考回答</summary>
+
+**先把耗时拆成引擎初始化、网络、脚本与渲染，再选择对应措施。** 预加载可能提前承担初始化成本，资源缓存可能减少重复传输，减少脚本长任务和复杂布局则改善页面执行与交互。
+
+这些措施都有条件：预热增加内存和主线程工作，缓存需要版本及账号隔离，复用需要清理旧状态。比较冷暖状态一致的首帧和可交互指标，不把 `onPageFinished()` 当成用户已经能够操作。
+
+</details>
+
+### 8.7 页面图片加载失败和 renderer 退出应该怎样分别处理？ {#failures}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：资源层级与 WebView 实例是否仍可使用。
+
+**相关内容**：[区分资源错误与进程退出](#区分资源错误与进程退出)。
+
+<details>
+<summary>参考回答</summary>
+
+**图片失败通常是子资源降级，renderer 退出则会使受影响的 WebView 不能继续使用。** 加载错误结合 `isForMainFrame` 与当前导航判断，避免子资源失败遮掉整页。
+
+处理 `onRenderProcessGone()` 时清理受影响实例，移除并销毁，再按需重建。还要考虑多个 WebView 共享 renderer，不能仅返回“已处理”而继续使用旧实例。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+
+- [Android Developers：在 WebView 中构建 Web 应用](https://developer.android.com/develop/ui/views/layout/webapps/webview)
+- [Android Developers：WebViewClient](https://developer.android.com/reference/android/webkit/WebViewClient)
+- [Android Developers：WebView](https://developer.android.com/reference/android/webkit/WebView)
+- [Android Developers：WebSettings](https://developer.android.com/reference/android/webkit/WebSettings)
+- [Android Developers：不安全的 WebView 原生桥接](https://developer.android.com/privacy-and-security/risks/insecure-webview-native-bridges)
+- [Android Developers：加载应用内内容](https://developer.android.com/develop/ui/views/layout/webapps/load-local-content)
+- [AndroidX WebKit 1.8.0：官方源码包](https://dl.google.com/dl/android/maven2/androidx/webkit/webkit/1.8.0/webkit-1.8.0-sources.jar)
+- [Android Developers：WebViewCompat](https://developer.android.com/reference/kotlin/androidx/webkit/WebViewCompat)

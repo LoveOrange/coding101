@@ -1,0 +1,391 @@
+---
+sidebar_position: 3
+knowledge:
+  id: tools-and-frameworks.nodejs.data-access
+  type: concept
+description: "用 TypeORM 示例解释 Node.js 的查询边界、连接管理、事务上下文与 N+1，并核验实际 SQL、回滚和分页行为。"
+keywords: ["Node.js", "数据访问", "TypeORM", "ORM", "事务", "连接池", "N+1", "参数化查询"]
+---
+
+# Node.js 数据访问
+
+**数据访问**是应用把业务操作转换成数据库查询、维护连接和事务，并把结果交还给业务代码的过程。Node.js 可以直接使用数据库驱动，也可以通过查询构造器或 ORM 操作数据；这些工具改变代码的组织方式，不会替应用消除 SQL 成本、事务边界或权限问题。
+
+目标项目使用 ORM 时，需要能从一个方法追到它实际发出的 SQL：调用了几次、是否在同一事务里、用了哪条连接、返回多少数据，以及失败后留下什么状态。本文以 TypeORM 0.3.25 为例，用 sql.js 1.13.0 提供的本地 SQLite 执行查询和事务。sql.js 在当前进程中运行 SQLite，并非网络数据库驱动；这个单连接环境不代表 MySQL 或 PostgreSQL 的异步网络 I/O、连接池、锁与隔离行为。
+
+## 1. 面试核心 {#core}
+
+- 驱动负责与数据库通信，查询构造器组织 SQL，ORM 进一步映射实体与关系。**ORM 不替代 SQL、索引和执行计划的理解，也不能仅凭方法名判断查询成本**。[卡](#orm-boundary)
+- DataSource 管理数据库配置与连接资源。**通常在服务初始化时建立，在服务排空后关闭，不为每个请求重新创建一套连接池**。[卡](#connection-management)
+- 查询条件必须先校验，再按参数传递值。**参数化不等于授权，也不能把任意用户输入当成表名、列名或排序表达式拼接**。[卡](#query-input)
+- 事务操作必须使用事务提供的上下文。**TypeORM 事务回调内使用对应的 EntityManager，并等待所有必要数据库操作结束**。[卡](#transaction-context)
+- 事务回调正常返回通常意味着可以提交。**吞掉失败、遗漏 `await` 或把外部网络调用塞进长事务，都可能破坏预期边界**。[卡](#transaction-failure)
+- N+1 表示先查询一组主记录，再为每条记录追加查询。**并发发出这些查询不会减少数量；联查或批量加载也要权衡行数、分页与内存**。[卡](#relation-loading)
+- 验证数据访问要检查实际结果与 SQL。**用 SQLite 通过的测试不能证明另一种数据库的隔离级别、锁冲突、连接池等待和取消行为也相同**。[卡](#database-tests)
+
+## 2. 数据访问工具与资源 {#数据访问工具与资源}
+
+### 2.1 驱动、查询构造器与 ORM {#驱动查询构造器与-orm}
+
+**数据库驱动**负责连接、协议和结果传递。**查询构造器**通过方法调用组织 SQL 与参数。**ORM**（Object-Relational Mapping，对象关系映射）把表、记录和关联关系映射为应用对象，同时提供查询与持久化接口。
+
+TypeORM 的 `Repository` 面向一种实体，`EntityManager` 可以操作多种实体；两者最终仍通过连接和查询执行。一个 `save()` 可能需要判断实体状态、处理关联并执行多条语句，不能默认“调用一次方法就只有一条 SQL”。
+
+复杂统计或批量操作可以使用查询构造器或明确的 SQL，不必强行转成逐对象循环。选择工具时要保证参数绑定、返回结构、事务和可观测性仍然清楚。
+
+### 2.2 DataSource 与连接生命周期 {#datasource-与连接生命周期}
+
+**DataSource** 保存 TypeORM 的数据库配置、实体元数据与连接资源。调用 `initialize()` 建立可用状态，调用 `destroy()` 释放资源；不同数据库驱动可能使用单条连接，也可能使用连接池。
+
+长期运行的服务应共享受控的 DataSource，在启动阶段等待初始化，在停止新请求并完成在途工作后关闭它。每个请求都创建一份 DataSource，可能反复建立连接；多个服务进程各自建池时，还要把所有实例的连接上限加在一起评估。
+
+连接池满时，请求可能先排队等待连接，SQL 本身还没开始执行。应分别限制池容量、等待队列、获取连接的等待、语句执行和整个请求的总预算。调用方超时也不意味着数据库查询已经停止，需要确认驱动和数据库的取消能力。
+
+手动使用 `QueryRunner` 时，它代表特定连接上的操作上下文。开启事务、提交或回滚之后，要在 `finally` 里释放自己取得的资源；不要释放仍由其他工作使用的共享资源。关闭顺序参见 [Node.js 服务生命周期](../../basic-knowledge/nodejs/service-lifecycle.mdx#正常下线顺序)。
+
+## 3. 查询与输入边界 {#查询与输入边界}
+
+### 3.1 一个可运行的数据模型 {#一个可运行的数据模型}
+
+下面用课程与课时两张表演示：课程可以有多个课时，同一课程内的课时序号不能重复。`EntitySchema` 用普通对象描述映射，不要求示例使用 TypeScript 装饰器。
+
+```js
+// database.mjs
+import 'reflect-metadata';
+import { DataSource, EntitySchema } from 'typeorm';
+
+export const Course = new EntitySchema({
+  name: 'Course',
+  columns: {
+    id: { type: Number, primary: true, generated: true },
+    title: { type: String },
+  },
+  relations: {
+    lessons: { type: 'one-to-many', target: 'Lesson', inverseSide: 'course' },
+  },
+});
+
+export const Lesson = new EntitySchema({
+  name: 'Lesson',
+  columns: {
+    id: { type: Number, primary: true, generated: true },
+    courseId: { type: Number },
+    position: { type: Number },
+    title: { type: String },
+  },
+  uniques: [{ columns: ['courseId', 'position'] }],
+  relations: {
+    course: {
+      type: 'many-to-one', target: 'Course', inverseSide: 'lessons',
+      joinColumn: { name: 'courseId' }, nullable: false,
+    },
+  },
+});
+
+export function createDatabase() {
+  return new DataSource({
+    type: 'sqljs', entities: [Course, Lesson], synchronize: true,
+  });
+}
+```
+
+这个 DataSource 是一次性内存数据库，`synchronize: true` 只用于自动建立演示表。生产数据库应通过经过审查的迁移管理结构变化，不能把演示环境的自动同步直接作为发布方案。
+
+唯一约束让数据库拒绝同一课程的重复序号。应用可以提前校验，但数据库约束仍是最后一道一致性检查；并发请求可能同时通过应用里的“先查是否存在”。
+
+### 3.2 参数化与缺失条件 {#参数化与缺失条件}
+
+查询参数先通过业务校验，再交给 ORM。下面分别演示主键查询、按标题匹配与有界分页。
+
+```js
+// queries.mjs
+export function findCourse(db, id) {
+  if (!Number.isSafeInteger(id) || id <= 0) {
+    throw new TypeError('invalid course id');
+  }
+  return db.getRepository('Course').findOneBy({ id });
+}
+
+export function findByTitle(db, title) {
+  if (typeof title !== 'string' || title.length > 100) {
+    throw new TypeError('invalid title');
+  }
+  return db.getRepository('Course').createQueryBuilder('course')
+    .where('course.title = :title', { title })
+    .getMany();
+}
+
+export function listCourses(db, afterId = 0, limit = 20) {
+  if (!Number.isSafeInteger(afterId) || afterId < 0 ||
+      !Number.isSafeInteger(limit) || limit < 1 || limit > 50) {
+    throw new TypeError('invalid page');
+  }
+  return db.getRepository('Course').createQueryBuilder('course')
+    .select(['course.id', 'course.title'])
+    .where('course.id > :afterId', { afterId })
+    .orderBy('course.id', 'ASC')
+    .take(limit)
+    .getMany();
+}
+```
+
+`:title` 表示绑定值，而不是把标题拼进 SQL 语法。即使标题中包含引号或类似 SQL 条件的内容，它也应作为一个完整字符串参与匹配。表名、列名和排序方向属于 SQL 结构，不能靠普通值参数随意替换；需要动态选择时，应映射到服务端明确允许的选项。
+
+缺失条件尤其需要注意。TypeORM 0.3.25 的部分对象查询会跳过值为 `undefined` 或 `null` 的条件，例如把缺失的 `id` 直接交给 `findOneBy({ id })`，可能意外退化成没有主键限制的查询。`findCourse` 因此在调用 ORM 前拒绝无效 ID。查询数据库中的空值，应使用 ORM 明确表达 `IS NULL` 的操作，而不是假定传入 JavaScript `null` 总会得到这个含义。
+
+分页使用稳定的 `id` 顺序，下一页从上页最后一个 ID 之后开始。它避免了不断增大的偏移量，但不提供跨多次请求的快照，也不支持直接跳到任意页。换成非唯一排序字段时，还需要增加唯一字段作为并列顺序的依据，并让游标同时包含这些值。
+
+参数合法仍不表示用户有权读取对应课程。权限过滤应来自可信身份和业务规则，不能让调用方通过修改 ID 绕过资源授权。
+
+## 4. 事务上下文与异步边界 {#事务上下文与异步边界}
+
+### 4.1 在同一个事务中执行 {#在同一个事务中执行}
+
+创建课程与课时应该共同成功或共同失败。下面把这些操作放进一次事务，并只使用回调提供的 `manager`。
+
+```js
+// create-course.mjs
+export async function createCourseWithLessons(db, title, lessons) {
+  if (typeof title !== 'string' || title.trim().length === 0 ||
+      !Array.isArray(lessons) || lessons.length > 50 ||
+      ![...lessons].every(lesson => Number.isSafeInteger(lesson?.position) &&
+        lesson.position > 0 && typeof lesson.title === 'string' &&
+        lesson.title.trim().length > 0)) {
+    throw new TypeError('invalid course');
+  }
+  return db.transaction(async manager => {
+    const course = await manager.save('Course', { title: title.trim() });
+    for (const lesson of lessons) {
+      await manager.save('Lesson', {
+        courseId: course.id,
+        position: lesson.position,
+        title: lesson.title.trim(),
+      });
+    }
+    return course;
+  });
+}
+```
+
+正常返回时，课程与课时一起提交；若第二个课时违反 `(courseId, position)` 唯一约束，前面的课程和第一个课时也会回滚。事务提供的 EntityManager 绑定到当前事务的查询上下文，不能在回调里随意改用全局 Repository。
+
+数据库事务提供哪些隔离保证，仍由数据库与隔离级别决定，参见 [事务](../../basic-knowledge/database/transaction/index.mdx)。本地 SQLite 的回滚结果只能证明这组操作在本例中具备原子性，不能推断 MySQL 的行锁、死锁重试或连接池隔离行为。
+
+### 4.2 await 与回调返回 {#await-与回调返回}
+
+事务回调的 Promise 决定 ORM 什么时候认为这一段工作结束。回调正常完成可以触发提交，拒绝则进入回滚。必须等待需要参与事务的每一个操作；`forEach(async ...)` 不会等待所有回调完成，不能拿它当作这里的顺序循环。
+
+如果捕获错误后只记录日志并正常返回，ORM 可能认为事务已经成功完成。需要回滚的错误应继续向外抛出，或者明确使用手动事务 API 回滚。把错误转换成普通返回对象时，也要确认外层是否仍能识别事务应当失败。
+
+`Promise.all` 只是等待多个 Promise，不保证同一事务连接真的并行执行 SQL。大量并行查询还可能耗尽池容量或产生无界排队。事务内需要什么顺序，就显式表达什么顺序，不以“全部 Promise.all”作为默认优化。
+
+事务持有连接和锁的时间应尽量短。调用远端接口、等待用户操作或执行长计算时持续占着事务，会延长锁占用并放大故障。发消息与数据库写入需要共同保证时，应考虑事务消息或 Outbox 等单独设计，不能假设数据库回滚会撤销已经发出的网络请求。
+
+## 5. 关联加载与 N+1 {#关联加载与-n-加一}
+
+**N+1 查询**是先取出 N 条主记录，再为每条主记录各查询一次关联数据，总计约 N+1 次查询。它可能来自懒加载，也可能就是代码里的普通循环；并不要求使用某一种 ORM 特性。
+
+下面把有意保留的逐条查询与联查放在一起比较。
+
+```js
+// loading.mjs
+import { In } from 'typeorm';
+
+export async function loadOneByOne(db) {
+  const courses = await db.getRepository('Course').find({ order: { id: 'ASC' } });
+  for (const course of courses) {
+    course.lessons = await db.getRepository('Lesson').find({
+      where: { courseId: course.id }, order: { position: 'ASC' },
+    });
+  }
+  return courses;
+}
+
+export function loadWithJoin(db) {
+  return db.getRepository('Course').createQueryBuilder('course')
+    .leftJoinAndSelect('course.lessons', 'lesson')
+    .orderBy('course.id', 'ASC')
+    .addOrderBy('lesson.position', 'ASC')
+    .getMany();
+}
+
+export async function loadInBatch(db) {
+  const courses = await db.getRepository('Course').find({ order: { id: 'ASC' } });
+  if (courses.length === 0) return [];
+  const lessons = await db.getRepository('Lesson').find({
+    where: { courseId: In(courses.map(course => course.id)) },
+    order: { position: 'ASC' },
+  });
+  const grouped = new Map(courses.map(course => [course.id, []]));
+  for (const lesson of lessons) grouped.get(lesson.courseId).push(lesson);
+  return courses.map(course => ({ ...course, lessons: grouped.get(course.id) }));
+}
+```
+
+对于这组没有额外加载配置的函数，查询两门课程及其课时时，逐条方式发出三条查询，联查发出一条，批量方式发出两条。`LEFT JOIN` 会保留没有课时的课程；改用 `INNER JOIN` 会改变结果集合，不能只为少写一个判断而替换。
+
+查询次数少不等于所有成本都更低。一对多联查会在 SQL 结果中重复课程字段；再联查其他集合还可能乘法放大行数。批量加载可以先分页取课程，再查询当前页课时，避免把所有关系都放进一个巨大结果集；批量 ID 太多时也需要分组与数量上限。
+
+分页要按主记录的语义设计。直接对联查后的原始行使用 `LIMIT`，可能截断一门课程的课时，或得到不足预期数量的课程。要检查 ORM 实际生成的分页 SQL，必要时先查询主键页，再按这些主键加载关联。
+
+## 6. 运行与验证 {#运行与验证}
+
+安装对应版本的 `typeorm`、`sql.js` 与 `reflect-metadata`，把前面的文件放在同一目录，再运行下面的脚本：
+
+```js
+// demo.mjs
+import { createDatabase } from './database.mjs';
+import { createCourseWithLessons } from './create-course.mjs';
+import { findCourse, listCourses } from './queries.mjs';
+import { loadWithJoin } from './loading.mjs';
+
+const db = createDatabase();
+await db.initialize();
+try {
+  const course = await createCourseWithLessons(db, 'JavaScript', [
+    { position: 1, title: 'Values' },
+    { position: 2, title: 'Functions' },
+  ]);
+  console.log((await findCourse(db, course.id)).title);
+  console.log((await listCourses(db, 0, 10)).length);
+  console.log((await loadWithJoin(db))[0].lessons.length);
+} finally {
+  await db.destroy();
+}
+```
+
+输出依次为 `JavaScript`、`1`、`2`。最后关闭 DataSource，让示例拥有明确的资源生命周期；这里没有为了每个查询重新初始化数据库。
+
+验证事务时，不能只确认“抛了异常”，还要在异常后重新查询课程和课时，证明没有留下半成品。验证关联加载时，应记录发出的 SQL 数量和返回结构，并包含没有关联记录的主记录。验证分页时要覆盖首尾页、空结果和排序并列情况。
+
+真实项目还需要在目标数据库中验证并发唯一约束、隔离级别、锁等待、死锁、连接池耗尽与取消。SQLite 的轻量测试可以快速发现映射、SQL 结构和回滚错误，但不能替代这些环境相关测试。SQL 日志可能包含参数，应按数据权限记录和脱敏。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 使用 ORM 后，还需要理解 SQL 和数据库吗？ {#orm-boundary}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：抽象层职责与实际执行成本。
+
+**相关内容**：[驱动、查询构造器与 ORM](#驱动查询构造器与-orm)。
+
+<details>
+<summary>参考回答</summary>
+
+**需要，ORM 负责对象映射和访问接口，实际仍然执行 SQL 并受到索引、锁、事务和连接资源的约束。** 一次方法调用不一定对应一条 SQL，自动加载关系也可能产生额外查询。
+
+应能查看生成的 SQL、参数、查询数量与执行计划。复杂批量或统计查询可以使用查询构造器或明确 SQL，但仍要保证参数化、事务与返回契约。
+
+</details>
+
+### 7.2 为什么不应该为每个请求重新创建 DataSource 或连接池？ {#connection-management}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：资源复用、连接预算与关闭顺序。
+
+**相关内容**：[DataSource 与连接生命周期](#datasource-与连接生命周期)。
+
+<details>
+<summary>参考回答</summary>
+
+**长期服务通常共享受控的数据源，避免每个请求重复建立连接与初始化资源。** 池容量需要结合数据库上限与服务实例数评估，不能只看单进程配置。
+
+连接获取等待、SQL 执行和整体请求是不同阶段，需要分别限制。下线时先停止新工作并排空正在使用连接的任务，再关闭数据源；手动取得的 QueryRunner 也要在结束后释放。
+
+</details>
+
+### 7.3 参数化查询能否解决所有输入和权限问题？ {#query-input}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：值与 SQL 结构、缺失条件与资源授权。
+
+**相关内容**：[参数化与缺失条件](#参数化与缺失条件)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能。参数化把输入值与 SQL 语法分开，但仍要校验业务取值、限制查询范围并执行授权。** 动态表名、列名和排序表达式应来自服务端允许的选项，而不是直接拼接用户输入。
+
+还要了解 ORM 的空值语义。TypeORM 0.3.25 的部分对象查询会跳过 `undefined` 或 `null` 条件，缺失 ID 可能意外放宽查询，所以调用 ORM 前就应拒绝无效主键。
+
+</details>
+
+### 7.4 TypeORM 事务回调内为什么要使用传入的 EntityManager？ {#transaction-context}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：事务连接、操作上下文与原子性。
+
+**相关内容**：[在同一个事务中执行](#在同一个事务中执行)。
+
+<details>
+<summary>参考回答</summary>
+
+**传入的 EntityManager 绑定当前事务的执行上下文，参与这次事务的操作必须通过它进行。** 随意使用全局 Repository 不能保证查询加入同一事务，不能依赖单连接测试里的偶然表现。
+
+应等待所有必要操作完成，成功时共同提交，失败时共同回滚。事务隔离、锁和连接选择仍依赖具体数据库与驱动，不能把某个本地示例的结果推广到所有数据库。
+
+</details>
+
+### 7.5 事务里已经 try/catch，为什么仍可能留下错误结果？ {#transaction-failure}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：回调终态、错误传播与未等待的工作。
+
+**相关内容**：[await 与回调返回](#await-与回调返回)。
+
+<details>
+<summary>参考回答</summary>
+
+**如果错误被捕获后回调正常返回，ORM 可能按成功提交；如果漏掉 `await`，回调还可能早于数据库操作完成。** 需要回滚的失败应继续抛出或明确执行回滚，不要只打印日志。
+
+`forEach(async ...)` 不等待全部操作，`Promise.all` 也不代表一条事务连接能并行执行 SQL。外部消息与网络请求不是数据库事务的一部分，回滚无法自动撤销它们。
+
+</details>
+
+### 7.6 N+1 查询怎样出现，为什么不能总是改成一个大 JOIN？ {#relation-loading}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：查询数量、行数放大、空关系与分页语义。
+
+**相关内容**：[关联加载与 N+1](#关联加载与-n-加一)。
+
+<details>
+<summary>参考回答</summary>
+
+**先查 N 条主记录，再逐条查询关联，就会形成约 N+1 次查询；把循环改成并发不会减少查询数量。** 可以联查，也可以先取主记录页，再批量查询关联。
+
+大 JOIN 可能重复主表字段，多集合关联还会放大行数，并影响分页。应根据实际结果规模选择加载方式，检查没有关联记录时是否仍保留主记录，并记录真实 SQL 与返回行数。
+
+</details>
+
+### 7.7 怎样验证 ORM 代码，才能证明事务与查询行为正确？ {#database-tests}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：数据库状态、SQL 证据与测试环境边界。
+
+**相关内容**：[运行与验证](#运行与验证)。
+
+<details>
+<summary>参考回答</summary>
+
+**使用真实数据库执行操作，并检查最终数据和实际 SQL，不能只断言方法被调用或异常被抛出。** 事务失败后重新查询，确认没有部分写入；关联加载比较查询次数、完整结果和空关系；分页检查边界与稳定顺序。
+
+目标数据库中的隔离、锁、死锁、连接池等待和取消需要单独验证。SQLite 测试适合快速检查映射与回滚，但不能据此宣称 MySQL 或 PostgreSQL 的并发行为相同。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [TypeORM 0.3.25：DataSource](https://github.com/typeorm/typeorm/blob/0.3.25/docs/docs/data-source/1-data-source.md)
+- [TypeORM 0.3.25：Transactions](https://github.com/typeorm/typeorm/blob/0.3.25/docs/docs/advanced-topics/2-transactions.md)
+- [TypeORM 0.3.25：Select Query Builder](https://github.com/typeorm/typeorm/blob/0.3.25/docs/docs/query-builder/1-select-query-builder.md)
+- [TypeORM 0.3.25：Performance and optimization](https://github.com/typeorm/typeorm/blob/0.3.25/docs/docs/advanced-topics/7-performance-optimizing.md)
+- [TypeORM 0.3.25：SelectQueryBuilder 条件处理](https://github.com/typeorm/typeorm/blob/0.3.25/src/query-builder/SelectQueryBuilder.ts)
+- [TypeORM：SQLite 与 sql.js 驱动](https://typeorm.io/docs/drivers/sqlite/)

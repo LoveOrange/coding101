@@ -1,0 +1,371 @@
+---
+sidebar_position: 1
+knowledge:
+  id: basic-knowledge.go.database.database-sql
+  type: concept
+description: "讲解 database/sql 的连接池、Rows、Row、Tx、Conn 与 Stmt，说明查询结果释放、事务边界和 context 取消。"
+keywords: ["Go", "database/sql", "连接池", "Rows", "Tx", "事务"]
+---
+
+# database/sql
+
+`database/sql` 是 Go 标准库提供的数据库访问接口，具体数据库的协议由驱动实现。`sql.DB` 管理一个连接池；一次查询、尚未读完的结果或进行中的事务，会在不同的生命周期内占用连接。
+
+理解这些对象的分工，可以解释“数据库还能连接，程序却一直等待”的问题，也能避免事务里混用普通查询，导致一部分操作落在事务之外。本文使用 Go 1.22.12、`github.com/go-sql-driver/mysql` v1.8.1 与 MySQL 8.0，SQL 示例使用 InnoDB。
+
+## 1. 面试核心 {#core}
+
+- **`sql.DB` 是可以并发复用的连接池句柄，不是一条固定连接**。`sql.Open` 成功不保证已经连接数据库，需要验证可用性时使用带期限的 `PingContext`。[卡](#db-pool)
+- **连接池上限会让额外操作等待连接**。`SetMaxOpenConns` 限制打开的连接数，`SetMaxIdleConns` 控制保留的空闲连接数；连接寿命与空闲时间不等于 SQL 执行超时。[卡](#pool-wait)
+- **`Rows` 需要及时关闭，遍历后还要检查 `Rows.Err()`**。`Next()` 返回 false 既可能表示结束，也可能表示读取失败；提前返回时仍需要释放结果占用的资源。[卡](#rows-lifecycle)
+- **`QueryRowContext` 的错误通常在 `Scan` 时取得**。没有匹配行时返回 `sql.ErrNoRows`，不是得到一个填满零值的业务对象。[卡](#row-scan)
+- **事务中的操作必须通过同一个 `Tx` 执行，并最终提交或回滚**。调用 `db.ExecContext` 不会因为处于同一个 Go 函数内，就自动加入当前事务。[卡](#transaction-boundary)
+- **context 控制等待与取消，不能代替所有权和结果判断**。取消、提交失败与服务端是否完成操作，需要结合驱动和数据库行为判断，不能盲目重试。[卡](#database-cancel)
+
+## 2. DB 与连接池 {#DB与连接池}
+
+### 2.1 初始化与验证 {#初始化与验证}
+
+**`sql.DB`** 表示零条或多条底层连接组成的池。`QueryContext`、`ExecContext` 等方法会从池中取得可用连接，必要时建立新连接。连接不用时可以回到池中，供后续操作复用。
+
+标准库没有内置 MySQL 驱动。下面通过空白导入注册驱动，初始化连接池，再检查一次连通性：
+
+```go title="connect.go"
+package inventory
+
+import (
+    "context"
+    "database/sql"
+    "fmt"
+    "time"
+
+    _ "github.com/go-sql-driver/mysql"
+)
+
+func Connect(ctx context.Context, dsn string) (*sql.DB, error) {
+    db, err := sql.Open("mysql", dsn)
+    if err != nil {
+        return nil, fmt.Errorf("open database: %w", err)
+    }
+    db.SetMaxOpenConns(16)
+    db.SetMaxIdleConns(4)
+    db.SetConnMaxLifetime(3 * time.Minute)
+    db.SetConnMaxIdleTime(time.Minute)
+
+    pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+    defer cancel()
+    if err := db.PingContext(pingCtx); err != nil {
+        db.Close()
+        return nil, fmt.Errorf("ping database: %w", err)
+    }
+    return db, nil
+}
+```
+
+`dsn` 是驱动识别的连接配置字符串，由调用方提供。`Open` 可以先返回池句柄，直到 `PingContext` 或首次操作时才真正尝试建连，所以必须区分配置接受成功与数据库当前可达。
+
+这里的 `16`、`4` 和时间值只用于展示配置职责。实际预算需要考虑数据库容量、应用实例数、连接建立成本和数据库或代理的回收规则。连接池通常在进程或组件初始化时建立，在该组件不再接受请求且已有工作结束后关闭，不应为每条 SQL 重新 `Open`、`Close`。
+
+### 2.2 数量与时间 {#数量与时间}
+
+| 配置 | 控制的内容 | Go 1.22.12 的边界 |
+| --- | --- | --- |
+| `SetMaxOpenConns(n)` | 打开的连接总数，包括活跃与空闲连接 | `n <= 0` 不设上限；默认不设上限 |
+| `SetMaxIdleConns(n)` | 保留的空闲连接数量 | `n <= 0` 不保留空闲连接；默认保留上限为 `2` |
+| `SetConnMaxLifetime(d)` | 一条连接可被复用的最长寿命 | `d <= 0` 不因年龄回收；过期检查可以延后到复用前 |
+| `SetConnMaxIdleTime(d)` | 连接可保持空闲的最长时间 | `d <= 0` 不因空闲时长回收；不是查询 deadline |
+
+空闲数量不会超过配置的最大打开数量。连接寿命到期，也不能解释成“定时强行杀死执行中的事务”；这些设置主要控制连接是否继续保留和复用。SQL 操作需要多久、等待池多久，应另外通过 context 和数据库自身的执行约束控制。
+
+`DB.Stats()` 可以观察 `OpenConnections`、`InUse`、`Idle`、`WaitCount` 和 `WaitDuration` 等指标。`WaitCount` 与 `WaitDuration` 是累计值，分析一个时段时应看增量，并结合请求量、SQL 耗时和正在占用连接的对象。
+
+连接池总预算还要乘上应用实例数量。单实例允许 100 条连接，扩到 20 个实例后，不会自动继续维持全系统只有 100 条连接。
+
+## 3. 查询与结果 {#查询与结果}
+
+### 3.1 方法选择 {#方法选择}
+
+| 方法 | 适用结果 | 主要检查点 |
+| --- | --- | --- |
+| `ExecContext` | 不需要结果集的 INSERT、UPDATE、DELETE 等 | 操作错误，以及驱动支持的 `RowsAffected` 等信息 |
+| `QueryContext` | 需要逐行读取的结果集 | 返回错误、`Next`、`Scan`、`Err` 与 `Close` |
+| `QueryRowContext` | 只需要最多一行的读取 | 调用 `Scan` 取得查询或转换错误，识别 `ErrNoRows` |
+
+SQL 占位符由数据库和驱动决定。这里的 MySQL 驱动使用 `?` 表示参数值，不应通过字符串拼接把输入放进 SQL。参数占位符不能替代表名、列名或排序关键字；动态结构需要明确的允许范围。
+
+### 3.2 Rows 的遍历与关闭 {#Rows的遍历与关闭}
+
+**`sql.Rows`** 表示一个待遍历的查询结果。对于直接通过 `DB` 发起的查询，它通常在结果尚未结束时继续占用所用连接，直到结果关闭或完整结束；如果查询来自 `Tx`，事务自身还会继续持有那条连接。
+
+下面读取按 ID 排序的少量商品。示例表中 `name` 可以为 NULL，因此用 `sql.NullString` 区分空字符串和数据库 NULL：
+
+```go title="list.go"
+package inventory
+
+import (
+    "context"
+    "database/sql"
+)
+
+type Product struct {
+    ID    int64
+    Name  sql.NullString
+    Stock int
+}
+
+func ListProducts(ctx context.Context, db *sql.DB, afterID int64) ([]Product, error) {
+    rows, err := db.QueryContext(ctx,
+        "SELECT id, name, stock FROM products WHERE id > ? ORDER BY id LIMIT 20", afterID)
+    if err != nil {
+        return nil, err
+    }
+    defer rows.Close()
+
+    products := make([]Product, 0)
+    for rows.Next() {
+        var product Product
+        if err := rows.Scan(&product.ID, &product.Name, &product.Stock); err != nil {
+            return nil, err
+        }
+        products = append(products, product)
+    }
+    if err := rows.Err(); err != nil {
+        return nil, err
+    }
+    return products, nil
+}
+```
+
+`Next()` 为当前行做好准备，随后才能 `Scan`。`Scan` 的目标数量和列顺序要对应，类型转换也可能失败，必须直接检查它返回的错误。循环结束后的 `rows.Err()` 用于识别遍历期间的失败，不会代替 `Scan` 的转换错误检查；只检查最初的 `QueryContext` 错误会漏掉这些情况。
+
+当 `Next()` 已经到达最后结果集的末尾，结果会自动关闭。保留 `defer rows.Close()` 仍然有价值，因为中途 `Scan` 失败、业务决定提前停止或函数返回时，不一定已经到达末尾。
+
+`Name.Valid` 为 false 表示数据库 NULL；为 true 且 `Name.String == ""` 则是一个真实的空字符串。直接把 NULL 扫描到普通 string，不能自动得到相同语义。
+
+不要跨 goroutine 并发推进同一个 Rows。需要处理大量结果时，可以由一个读取者推进并复制需要保留的数据，再通过有界队列交给后续工作。`sql.RawBytes` 引用的是驱动提供的临时内存，只保证在下一次 `Next`、`Scan` 或 `Close` 前有效；想长期保留就需要复制，而不是把同一块底层缓冲交给所有任务。
+
+### 3.3 Row 与 ErrNoRows {#Row与ErrNoRows}
+
+**`sql.Row`** 是单行查询的结果入口。`QueryRowContext` 总会返回一个非空的 Row，查询错误延迟到 `Scan` 时取得；没有匹配行时，`Scan` 返回 `sql.ErrNoRows`。若查询返回多行，它只使用第一行，不能据此证明数据库里只有一条记录。
+
+例如，根据主键查商品时，应让 `Scan` 完成后再区分“商品不存在”“数据库访问失败”和“成功得到零库存商品”。忽略 `Scan` 的错误，把结构体零值当成结果，会混淆这些情况。
+
+同样，不应创建 Row 后一直不 `Scan`。底层查询可能已经开始并占用资源，Row 又没有对外提供单独的 `Close` 方法。只需要执行操作时应选择正确的方法，而不是借用单行查询却不消费结果。
+
+## 4. 事务 {#事务}
+
+### 4.1 Tx 的连接边界 {#Tx的连接边界}
+
+**`sql.Tx`** 表示进行中的事务，并绑定一条底层连接，直到提交或回滚。事务内的 SQL 必须经由这个 Tx 执行；另外调用 `db.QueryContext`、`db.ExecContext` 会从池中取得连接，在当前事务之外执行。
+
+不要用 `db.ExecContext(ctx, "BEGIN")` 开始事务，再期待后续 `db.ExecContext` 自动使用同一连接。应该用 `BeginTx`、`Commit`、`Rollback` 让标准库跟踪连接与事务生命周期。事务的隔离、锁和原子性由数据库实现，见 [数据库事务](../../database/transaction/index.mdx)。
+
+下面的示例约定一次预留扣减一件库存，并插入一条预留记录。表结构可以在独立实验数据库中创建：
+
+```sql
+CREATE TABLE products (
+    id BIGINT PRIMARY KEY,
+    name VARCHAR(100) NULL,
+    stock INT NOT NULL
+) ENGINE=InnoDB;
+
+CREATE TABLE reservations (
+    request_id VARCHAR(64) PRIMARY KEY,
+    product_id BIGINT NOT NULL
+) ENGINE=InnoDB;
+```
+
+### 4.2 提交与回滚 {#提交与回滚}
+
+```go title="reserve.go"
+package inventory
+
+import (
+    "context"
+    "database/sql"
+    "errors"
+)
+
+var ErrUnavailable = errors.New("product unavailable")
+
+func Reserve(ctx context.Context, db *sql.DB, requestID string, productID int64) error {
+    tx, err := db.BeginTx(ctx, nil)
+    if err != nil {
+        return err
+    }
+    defer tx.Rollback()
+
+    result, err := tx.ExecContext(ctx,
+        "UPDATE products SET stock = stock - 1 WHERE id = ? AND stock > 0", productID)
+    if err != nil {
+        return err
+    }
+    affected, err := result.RowsAffected()
+    if err != nil {
+        return err
+    }
+    if affected != 1 {
+        return ErrUnavailable
+    }
+    if _, err := tx.ExecContext(ctx,
+        "INSERT INTO reservations(request_id, product_id) VALUES (?, ?)",
+        requestID, productID); err != nil {
+        return err
+    }
+    return tx.Commit()
+}
+```
+
+有库存且预留记录插入成功时，两个变化一起提交。没有商品或库存不足时，返回 `ErrUnavailable`；若插入遇到重复主键等错误，函数返回前执行回滚，前面的库存扣减也应撤销。
+
+`defer tx.Rollback()` 为尚未成功结束的事务提供回滚路径。提交成功后再调用它会返回 `sql.ErrTxDone`，不会把已经提交的事务撤销。代码把 `Commit` 的错误返回给调用方，没有把“SQL 都执行成功”误当成“事务已经提交成功”。
+
+这段代码验证的是两个 SQL 的事务边界。虽然 `request_id` 是唯一键，但重复调用会返回插入错误，没有查询并返回第一次结果，因此它还不是一个完整的幂等业务接口。若要处理提交结果不确定后的重试，还需要围绕业务请求 ID 设计结果确认规则。
+
+### 4.3 连接池与事务相互等待 {#连接池与事务相互等待}
+
+假设 `MaxOpenConns=1`。当前函数已经开始事务，唯一连接被 Tx 占用；函数接着调用 `db.QueryRowContext`，想再取得一条连接。它需要等待事务释放连接，而函数又在等这次查询返回，才能走到提交或回滚。
+
+这类等待与数据库行锁死锁不同，可能连 SQL 都还没发到数据库。增加池大小有时暂时掩盖问题，但真正需要修正的是事务内调用对象：本来属于当前事务的操作应使用 `tx.QueryRowContext`。
+
+类似问题也会出现在未关闭 Rows 时又嵌套发查询，或者长期持有专用 Conn。定位时应同时查看池等待指标和连接拥有者，不能把所有等待都归为慢 SQL。
+
+## 5. context、Conn 与 Stmt {#context与Conn及Stmt}
+
+### 5.1 取消与结果 {#取消与结果}
+
+支持 context 的方法可以在等待连接和执行过程中响应取消。具体的执行取消能力取决于驱动：本文的 MySQL 驱动在执行中的查询或结果读取被取消时，会关闭相应连接。若只是还在等待池中的连接，取消可以直接结束等待，不需要关闭别的操作正在使用的连接。它不是把每种数据库都统一转换成同一条“取消 SQL”命令。
+
+传给 `BeginTx` 的 context 持续作用到事务结束。它被取消时，`database/sql` 会安排回滚，后续 `Commit` 返回错误。因此，不要在创建 Tx 的辅助函数里立即 `defer cancel()`，然后把 Tx 返回给外层继续使用；事务所需的 context 已经结束。
+
+取消返回与数据库操作结果需要分开判断。比如客户端在等待提交确认时断开，不能仅凭一个网络错误断言事务一定未提交。调用方不能继续使用失败的 Tx，也不应盲目把整个业务重复执行；需要根据具体错误和业务结果确认策略处理。
+
+连接寿命、网络读写期限、请求 context 和数据库锁等待期限各自控制不同环节。超时发生时，保留错误与操作位置，比只写一条笼统的“数据库超时”更有助于找到原因。
+
+### 5.2 专用连接 {#专用连接}
+
+**`sql.Conn`** 是从池中借出的一条专用连接。需要一组操作始终发生在同一会话时，可以通过 `db.Conn(ctx)` 获取，并在结束后调用 `conn.Close()` 归还。归还不必等于关闭物理连接。
+
+普通 CRUD 通常直接通过 DB 操作；需要事务则优先用 Tx。不要只为“连接池可能换连接”就把所有请求改成长期占有 Conn，否则会主动缩小池的可用容量。涉及会话变量等状态时，还需明确恢复和驱动重置规则，不能假设每次取到的连接都是刚创建的空白会话。
+
+### 5.3 预编译语句 {#预编译语句}
+
+**`sql.Stmt`** 是预编译语句的句柄。通过 DB 创建的 Stmt 可以并发使用，并按需要在不同底层连接上准备；它不是永久绑定唯一连接的证明。通过 Tx 或 Conn 创建的 Stmt 则跟随对应连接的范围。
+
+需要长期复用的 Stmt 应有明确的关闭时机。`PrepareContext` 的 context 用于准备阶段，不自动成为所有后续执行的期限；执行时仍需要 `ExecContext` 或 `QueryContext` 等方法传入当前操作的 context。
+
+参数化和显式长期 Prepare 是两个问题。使用 `db.ExecContext(ctx, sqlText, args...)` 也可以把参数与 SQL 分开交给驱动，不需要为了每次参数化查询都手动建立一个永久 Stmt。是否长期复用，应根据实际重复程度、驱动行为和测量判断。
+
+## 6. 面试题 {#面试题}
+
+### 6.1 sql.DB 是一条连接吗？sql.Open 成功能说明什么？ {#db-pool}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：池句柄、物理连接与延迟建立连接的区别。
+
+**相关内容**：[初始化与验证](#初始化与验证)。
+
+<details>
+<summary>参考回答</summary>
+
+**sql.DB 是管理多条底层连接的池句柄，可以被多个 goroutine 复用。** `sql.Open` 可以只接受驱动与连接配置，而没有立即连接数据库；需要确认当前可达性时，应使用有期限的 `PingContext`。
+
+DB 通常在组件初始化时创建，在组件停止使用后关闭。每条 SQL 新建一个 DB 会拆散连接复用，也使连接数量难以统一管理。
+
+</details>
+
+### 6.2 为什么数据库正常，程序却一直等连接？ {#pool-wait}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：连接占用、池上限和嵌套等待。
+
+**相关内容**：[数量与时间](#数量与时间)、[连接池与事务相互等待](#连接池与事务相互等待)。
+
+<details>
+<summary>参考回答</summary>
+
+**连接可能都被尚未结束的查询、Rows、Tx 或 Conn 占用，后续操作在池上限处等待。** 应看 `DB.Stats()` 中的使用数与等待增量，再追踪谁负责释放连接。
+
+例如最大连接数为 1，函数先开始 Tx，再通过 DB 发起另一个查询，就可能等待自己持有的连接。属于事务的操作应使用 Tx，结果和专用连接也应及时释放；单纯扩大池不能修复错误的生命周期。
+
+</details>
+
+### 6.3 遍历 Rows 时，为什么既要 Close，也要检查 Err？ {#rows-lifecycle}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：结果推进、提前退出和遍历错误。
+
+**相关内容**：[Rows 的遍历与关闭](#Rows的遍历与关闭)。
+
+<details>
+<summary>参考回答</summary>
+
+**Close 负责结束结果的资源生命周期，Err 用来区分遍历完成与读取失败。** `Next` 返回 false 不保证只是没有下一行，也可能是网络、取消或驱动读取错误。
+
+完整读到最终结果末尾会自动关闭，但函数可能因为 Scan 错误或业务条件提前返回，所以仍应安排 `defer rows.Close()`。事务内的 Rows 关闭后，Tx 仍持有连接，必须继续提交或回滚事务。
+
+</details>
+
+### 6.4 QueryRowContext 没有返回 error，怎样判断查询失败或没有记录？ {#row-scan}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：延迟错误、ErrNoRows、NULL 与转换错误。
+
+**相关内容**：[Row 与 ErrNoRows](#Row与ErrNoRows)、[Rows 的遍历与关闭](#Rows的遍历与关闭)。
+
+<details>
+<summary>参考回答</summary>
+
+**调用返回 Row 的 Scan，并检查它的错误。** 没有匹配行会得到 `sql.ErrNoRows`；查询或类型转换失败也会从这里返回，不能把结构体零值直接当成成功结果。
+
+数据库 NULL 也不是“没有这一行”。可用 `sql.NullString` 等类型保留空值信息，再由业务区分 NULL、空字符串和记录不存在。
+
+</details>
+
+### 6.5 开始 Tx 后，调用 db.ExecContext 会自动加入事务吗？ {#transaction-boundary}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：事务连接、调用对象和提交回滚责任。
+
+**相关内容**：[事务](#事务)。
+
+<details>
+<summary>参考回答</summary>
+
+**不会。事务绑定的是 Tx 持有的连接，事务内操作必须通过这个 Tx 执行。** 直接调用 DB 方法会从池中获取连接，可能在事务之外执行，或者因为池已被占满而等待。
+
+事务必须提交或回滚。通常在开始后安排延迟回滚，并在所有操作成功后检查 Commit 的结果；成功提交后的延迟 Rollback 不会撤销提交。
+
+</details>
+
+### 6.6 数据库操作超时后，能否直接认定操作未发生并重试？ {#database-cancel}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：取消传播、驱动行为与业务结果确认。
+
+**相关内容**：[取消与结果](#取消与结果)、[提交与回滚](#提交与回滚)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能。超时可能发生在等待连接、执行或等待确认的不同位置，服务端结果不能仅由一个超时错误推断。** 例如已经提交但确认丢失时，直接重试可能重复执行。
+
+BeginTx 的 context 取消会让标准库安排回滚，操作执行中的取消方式则与驱动有关。应结束当前失败对象的使用，并通过业务请求 ID、幂等处理或结果查询等规则确认后续动作。
+
+</details>
+
+## 7. 参考资料 {#参考资料}
+
+- [Go 1.22.12 database/sql](https://pkg.go.dev/database/sql@go1.22.12)
+- [Go 1.22.12 database/sql 实现](https://github.com/golang/go/blob/go1.22.12/src/database/sql/sql.go)
+- [Go 1.22.12 驱动的 context 适配](https://github.com/golang/go/blob/go1.22.12/src/database/sql/ctxutil.go)
+- [go-sql-driver/mysql v1.8.1 文档](https://github.com/go-sql-driver/mysql/tree/v1.8.1)
+- [go-sql-driver/mysql v1.8.1 context 与事务实现](https://github.com/go-sql-driver/mysql/blob/v1.8.1/connection.go)
+- [Go 数据库连接管理](https://go.dev/doc/database/manage-connections)
+- [Go 数据库事务](https://go.dev/doc/database/execute-transactions)

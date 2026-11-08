@@ -26,9 +26,35 @@ NoSQL 数据库的种类繁多，包括：
 - 列族数据库： HBase
 - 图数据库： Neo4j
 
-上面的产品用于说明分类，不表示本站已提供全部产品的教程。复习后端面试时，可从 [Redis](./redis/index.mdx)开始，再阅读 [Redis 持久化、复制与集群](./redis/persistence.mdx)和 [Redis 数据结构](./redis/data_structure.mdx)，解释缓存为什么快，以及故障时哪些数据可能丢失。
+上面的产品用于说明分类，不表示本站已提供全部产品的教程。复习后端面试时，可从 [Redis](./redis/index.mdx)开始，再阅读 [Redis 持久化](./redis/persistence.mdx)和 [Redis 数据结构](./redis/data_structure.mdx)，解释缓存为什么快，以及故障时哪些数据可能丢失。
 
-## 3. 参考资料 {#参考资料}
+## 3. 按访问方式选择 {#按访问方式选择}
 
+选择数据库时，先写出需要执行的查询和必须共同成立的约束，再比较数据模型：
+
+| 比较 | 适合优先评估的场景 | 需要核对的代价 |
+| --- | --- | --- |
+| MySQL 与 Redis | 订单、账务等需要表间约束和事务的持久业务数据，可先评估 MySQL；按键访问、缓存、计数及有序集合操作可评估 Redis | Redis 的内存容量、淘汰和持久化配置决定数据能否保留；MySQL 也有缓存，不能简化成「一个只用磁盘、一个只用内存」 |
+| MySQL 与 MongoDB | 关系清晰、需要多表关联及约束的业务可先评估 MySQL；经常整体读写、字段随实体种类变化的文档可评估 MongoDB | 文档嵌入可减少关联，但会引入重复更新和文档增长；引用模型仍需额外查询。灵活结构不等于不需要校验或数据设计 |
+| 关系型数据库与图数据库 | 固定结构的业务记录和聚合查询可用关系模型；好友关系、依赖关系等多跳路径查询可评估图模型 | 图模型显式保存节点和关系，但遍历仍要限制起点、深度与结果规模。关系型数据库也能表示边和递归查询，不能断言图数据库对所有查询都更快 |
+
+例如，商品的不同类别拥有不同属性，文档可以按一次详情读取组织数据；查询「某用户经过两层好友关系能到达谁」，图模型则直接表达节点与边。选型还应比较索引、事务范围、故障恢复和运维能力，最后用真实查询验证，不能只看「SQL」或「NoSQL」标签。
+
+### 3.1 文档模型与索引结构 {#文档模型与索引结构}
+
+**数据模型**说明一条记录怎样组织，**索引结构**说明怎样更快地找到记录。MongoDB 用文档组织数据，文档以 BSON 保存；BSON 是一种二进制表示，支持比 JSON 更丰富的数据类型。它并不意味着查找文档时只能顺序扫描，也不是索引树的名称。
+
+以 MongoDB 8.0 官方文档介绍的常规索引为例，索引采用 **B-tree**，按字段值或一组字段值维护有序索引项。这个顺序支持等值查找、范围查询，也可以在索引顺序与查询要求匹配时支持排序。例如，为商品价格建立合适的索引后，查找价格在某一区间的商品，可以沿索引缩小扫描范围。
+
+索引也需要维护：插入文档、删除文档或修改被索引字段时，都可能改变索引项，带来额外的写入和存储成本。因此，文档模型灵活不代表查询天然高效，也不意味着索引越多越好。
+
+MySQL 8.0 InnoDB 的常规索引采用 B+ 树，内部页负责导航，索引记录位于有序叶子页，具体见 [B+ 树](../database/indices/b_plus_tree/index.mdx#b-树的结构)。比较 MySQL 与 MongoDB 时，应分别说明表与文档的数据组织方式、相应产品的索引实现以及查询条件，不能用“关系型”和“文档型”直接推导查询快慢。
+
+## 4. 参考资料 {#参考资料}
+
+- [MongoDB 8.0：Documents](https://www.mongodb.com/docs/v8.0/core/document/)
+- [MongoDB 8.0：Indexes](https://www.mongodb.com/docs/v8.0/indexes/)
 - [MongoDB：Transactions](https://www.mongodb.com/docs/manual/core/transactions/)
 - [Redis：Transactions](https://redis.io/docs/latest/develop/using-commands/transactions/)
+- [MongoDB：Data Modeling](https://www.mongodb.com/docs/manual/data-modeling/)
+- [Neo4j：Graph Database](https://neo4j.com/docs/getting-started/graph-database/)

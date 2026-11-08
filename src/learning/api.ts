@@ -31,6 +31,7 @@ export class ApiError extends Error {
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const res = await fetch(path, {
     ...init,
+    signal: init.signal ?? AbortSignal.timeout(20000),
     credentials: 'same-origin',
     headers: {'Content-Type': 'application/json', ...init.headers},
   });
@@ -70,11 +71,13 @@ export const api = {
   me: () => request<{user: ServerUser; access: ServerAccess} | {user: null; access: null}>('/api/product/me'),
   startTrial: () => post<{access: ServerAccess}>('/api/product/trial'),
 
-  getRecords: () =>
-    request<{version: number; data: Partial<LearnerRecords> | null; writable: boolean}>('/api/c101/learner'),
+  getRecords: (userId: string) =>
+    request<{userId: string; version: number; data: Partial<LearnerRecords> | null; writable: boolean}>(
+      `/api/c101/learner?userId=${encodeURIComponent(userId)}`,
+    ),
   /** Resolves with the new version, or rejects with ApiError 409 carrying `body.current`. */
-  putRecords: (baseVersion: number, data: LearnerRecords) =>
-    request<{version: number}>('/api/c101/learner', {method: 'PUT', body: JSON.stringify({baseVersion, data})}),
+  putRecords: (userId: string, baseVersion: number, data: LearnerRecords) =>
+    request<{version: number}>('/api/c101/learner', {method: 'PUT', body: JSON.stringify({userId, baseVersion, data})}),
 
   redeem: (code: string) => post<{redemption: Redemption}>('/api/redeem', {code}),
   billing: () => request<{records: ServerBillingRecord[]}>('/api/product/billing'),

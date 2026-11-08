@@ -154,7 +154,7 @@ stack.push(root);
 Node current = stack.pop();
 ```
 
-`push` 把元素放到栈顶，`pop` 取出栈顶，顺序是后进先出。单线程下需要栈或双端队列时，优先用 `ArrayDeque`；旧的 `Stack` 类继承自 `Vector`，每个方法都加了同步，单线程使用没必要承担这份开销。
+`push` 把元素放到栈顶，`pop` 取出栈顶，顺序是后进先出。单线程下需要栈或双端队列时，优先用 `ArrayDeque`；旧的 `Stack` 类继承自 `Vector`，栈操作依靠自身或底层方法的同步保护，单线程使用通常不需要这份同步。多个调用组合成「检查非空、再出栈」时，仍要另外保证整个操作的原子性。
 
 跨线程交接任务时，如果还需要等待和限制积压，见 [BlockingQueue](./blockingqueue-producer-consumer.mdx)。
 
@@ -302,3 +302,4 @@ Queue<Task> tasks = new PriorityQueue<>(
 - [Java 21：PriorityQueue](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/PriorityQueue.html)
 - [Java 21：SequencedCollection](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/SequencedCollection.html)
 - [Java 21：HashSet](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/HashSet.html)
+- [OpenJDK 21：Stack 源码](https://github.com/openjdk/jdk/blob/jdk-21-ga/src/java.base/share/classes/java/util/Stack.java)

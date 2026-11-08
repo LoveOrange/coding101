@@ -1,0 +1,247 @@
+---
+sidebar_position: 3
+knowledge:
+  id: frontend.rendering.template-engines
+---
+
+# 模板引擎
+
+**模板引擎**把模板中的占位符、条件或重复结构与数据结合，生成文本或界面描述。最简单的实现可以把 `{{ user.name }}` 替换为对象里的名字；支持循环、分支和嵌套以后，就需要明确语法、作用域和求值规则。
+
+手写模板引擎的重点不只是完成字符串替换，还要说明哪些表达式允许执行、缺失字段怎样处理，以及结果放进页面时是否安全。编译模板与渲染数据也应分开，否则重复渲染时会做不必要的解析，或者误把上一个用户的数据缓存下来。
+
+## 1. 面试核心 {#core}
+
+- **先确定模板语法与输出用途，再选择实现方式**。固定占位符可以简单扫描；嵌套条件和循环需要能表达结构的解析结果，不能无限堆叠正则。[卡](#implement-template)
+- 模板处理可以分成解析、求值和输出。**编译结果保存模板结构，渲染时再读取本次数据**，同一个模板可以处理不同对象。[卡](#compile-cache)
+- **变量替换必须保留 `0`、`false` 和空字符串的区别**。缺失值、空值、对象和函数都要有明确规则，不能用 `value || ''` 代替判断。[卡](#value-boundaries)
+- **HTML 转义适用于特定输出上下文，不是通用的安全证明**。文本、URL、脚本和样式位置的约束不同，模板本身也需要可信。[卡](#escaping-context)
+- 不能为简单字段读取直接引入 `eval` 或 `new Function`。**模板语法允许什么能力，应由引擎明确决定**；禁止某几个字段名并不能把任意 JavaScript 变成安全沙箱。
+
+## 2. 模板、数据与输出 {#模板数据与输出}
+
+**模板**描述不随本次数据变化的结构，以及需要填入数据的位置。**渲染数据**是这一轮求值的输入。输出可以是邮件正文、配置文本、HTML 字符串，也可以是组件框架需要的渲染代码或节点描述；不同输出不能共用未经说明的安全规则。
+
+例如模板 `<p>{{ user.name }}</p>` 与数据 `{ user: { name: 'Lin' } }` 可以生成 `<p>Lin</p>`。这里 `user.name` 是引擎约定的数据路径，不一定是完整 JavaScript 表达式。是否支持 `user.name.toUpperCase()`、数组下标或函数调用，是另外的语言设计选择。
+
+模板引擎也不等于完整的组件框架。生成一次 HTML 不会自动提供状态更新、事件监听、节点身份与卸载清理。组件模板怎样参与更新，可以看 [Vue 渲染机制](../../tools-and-frameworks/vue/rendering.mdx#模板虚拟节点与dom)；本篇先处理字符串模板的职责。
+
+## 3. 解析、求值与渲染 {#解析求值与渲染}
+
+**解析**把模板拆成文字与有语义的节点，例如“输出字段路径”“重复一个区块”。**求值**按节点规则从当前数据读取值。**输出**把结果转换为目标格式，并执行相应的编码或安全处理。
+
+| 阶段 | 输入 | 结果 |
+| --- | --- | --- |
+| 扫描与解析 | `你好，{{ user.name }}` | 一段文字、一个字段路径 |
+| 字段求值 | 路径与本次数据 | 字符串 `Lin` |
+| 输出 | 静态文字与动态值 | `你好，Lin` |
+
+当语法只有无嵌套占位符时，这个解析结果可以是扁平数组。增加 `if`、`each` 等嵌套区块后，需要知道区块的开始、结束及子节点，通常会使用栈或语法树。解析阶段还应报告未闭合标签、错误表达式等问题，而不是默默生成半段页面。
+
+成熟引擎的语法各有约定。Mustache 有变量和 section 等标签，Handlebars 支持 helper、区块和路径表达式；相似的双花括号外观不表示它们与 JavaScript 或 Vue 模板完全兼容。
+
+## 4. 一个受限的字段模板 {#一个受限的字段模板}
+
+下面实现只支持 `{{ name }}` 和 `{{ user.name }}`。模板由开发者维护，占位符只放在普通 HTML 元素的文本内容中，例如 `<p>{{ name }}</p>`；**不能把它放进属性、URL、脚本、样式或 HTML 注释里**。代码没有解析 HTML 上下文，也不接受用户上传的任意模板。
+
+数据约定为 JSON 风格的普通数据，不使用 Proxy、访问器或可执行对象。缺失路径报错，`null`、`undefined` 输出空字符串，字符串、有限数字和布尔值输出文字；对象、数组和函数不能直接输出。所有这些都是本例的设计，不是模板引擎的统一标准。
+
+```js
+const escaped = {
+  '&': '&amp;', '<': '&lt;', '>': '&gt;',
+  '"': '&quot;', "'": '&#39;',
+};
+const forbidden = new Set(['__proto__', 'prototype', 'constructor']);
+
+function escapeText(value) {
+  if (value == null) return '';
+  if (!['string', 'number', 'boolean'].includes(typeof value)
+    || (typeof value === 'number' && !Number.isFinite(value))) {
+    throw new TypeError('占位符只能输出字符串、有限数字、布尔值或空值');
+  }
+  return String(value).replace(/[&<>"']/g, char => escaped[char]);
+}
+
+function readPath(data, keys) {
+  let value = data;
+  for (const key of keys) {
+    if (value === null || typeof value !== 'object') {
+      throw new ReferenceError(`无法读取字段：${key}`);
+    }
+    const field = Object.getOwnPropertyDescriptor(value, key);
+    if (!field) throw new ReferenceError(`缺少字段：${key}`);
+    if (!Object.hasOwn(field, 'value')) {
+      throw new TypeError('不支持访问器字段');
+    }
+    value = field.value;
+  }
+  return value;
+}
+
+export function compileTextTemplate(template) {
+  if (typeof template !== 'string') throw new TypeError('需要字符串模板');
+  const tokens = [];
+  let cursor = 0;
+  while (cursor < template.length) {
+    const start = template.indexOf('{{', cursor);
+    if (start === -1) {
+      tokens.push({ text: template.slice(cursor) });
+      break;
+    }
+    tokens.push({ text: template.slice(cursor, start) });
+    const end = template.indexOf('}}', start + 2);
+    if (end === -1) throw new SyntaxError('占位符没有闭合');
+    const expression = template.slice(start + 2, end).trim();
+    if (!/^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/.test(expression)) {
+      throw new SyntaxError('只支持字段路径');
+    }
+    const keys = expression.split('.');
+    if (keys.some(key => forbidden.has(key))) {
+      throw new SyntaxError('不允许此字段路径');
+    }
+    tokens.push({ keys });
+    cursor = end + 2;
+  }
+  return data => tokens.map(token => Object.hasOwn(token, 'text')
+    ? token.text
+    : escapeText(readPath(data, token.keys))).join('');
+}
+```
+
+`compileTextTemplate` 先保存文字与字段路径，返回的函数再处理每次传入的数据。它不执行模板中的 JavaScript；`{{ user.name() }}`、`{{ a + b }}` 和没有闭合的占位符会在编译时抛出 `SyntaxError`。
+
+字段读取只检查自有数据属性，不沿原型链找值，也不执行 getter。这里限制的数据来源很重要：Proxy 可以拦截属性描述符操作，所以不能把这种读取方式宣传成能够安全执行任意对象的沙箱。
+
+下面接着使用前面的函数：
+
+```js
+const render = compileTextTemplate(
+  '<p>{{ user.name }}：{{ count }} / {{ active }}</p>',
+);
+console.log(render({
+  user: { name: '<Lin & Co>' }, count: 0, active: false,
+}));
+// <p>&lt;Lin &amp; Co&gt;：0 / false</p>
+
+console.log(render({ user: { name: 'Ada' }, count: 2, active: true }));
+// <p>Ada：2 / true</p>
+```
+
+第一次输出保留了 `0` 和 `false`，名字中的特殊字符被编码。把结果放进可信的普通段落结构后，用户看到的是 `<Lin & Co>` 这段文字，不会生成一个名为 `Lin` 的标签。第二次调用仍读取第二份数据，说明保存的是解析结构，不是第一次渲染的值。
+
+这个实现没有循环、条件、helper、原始 HTML 输出和跨上下文编码。输出只是字符串，也没有事件或 DOM 更新能力；真正要维护长列表、表单或组件身份时，应使用适合的渲染机制，而不是反复替换整块 `innerHTML`。
+
+## 5. 输出上下文与信任边界 {#输出上下文与信任边界}
+
+**输出编码要跟随数据进入的位置。** 在普通 HTML 文本中，把 `<` 编码为 `&lt;` 能让它显示为文字；但 URL 是否可以导航、JavaScript 是否可以执行，不由这一个替换规则决定。
+
+| 插值位置 | 除字符编码外，还要考虑什么 |
+| --- | --- |
+| 普通 HTML 文本 | 保持数据为文本，或直接使用 `textContent` |
+| HTML 属性 | 属性名称可信、值被正确引用，且按属性语义校验 |
+| 链接与资源 URL | 解析后的协议、来源与允许目标 |
+| JavaScript、CSS、事件属性 | 避免直接拼入不可信数据，采用相应安全 API 与结构 |
+| 允许用户输入富文本 | 使用适合业务的内容净化规则，而非仅把它当文字转义 |
+
+例如把本例占位符挪到 `<a href="{{ url }}">`，输入 `javascript:...` 并不会因为转义了引号就变成安全 URL。本例不支持这种用法。若是普通 DOM 文本更新，直接赋给 `textContent` 更直观；如果需要允许一部分 HTML，则要另设内容策略，不能简单关闭转义。
+
+模板本身也有权限边界。静态片段会原样保留，恶意模板可以直接包含危险标签或属性。支持执行表达式的引擎还可能访问更多运行时能力，因此服务端模板注入不能只靠 HTML 转义解决。编译缓存、helper 注册和模板加载位置也应处于受控范围。
+
+## 6. 编译缓存与失效 {#编译缓存与失效}
+
+**编译缓存复用模板的解析结果，不能无条件复用渲染输出。** 本例保存返回的 `render`，同一个模板不必在每次调用时重新扫描，数据仍在每轮读取。
+
+如果项目维护多个模板，缓存键需要对应模板内容或稳定版本，并包含会改变解析与输出语义的配置。模板、转义策略或 helper 版本变化以后，旧编译结果可能已不适用。
+
+缓存本身也有内存上限。不能把任意用户提交的模板无限放进全局 `Map`；可以预编译固定模板，或设置容量与淘汰策略。缓存输出则是另一件事，还要考虑输入数据、用户权限、语言和失效时间，不能因为模板相同就返回上一个用户的结果。
+
+预编译也不意味着必须生成 `new Function`。本例解释执行 token 数组；其他引擎可以在构建阶段生成普通代码。选择应考虑语法需求、运行环境、内容安全策略与维护成本，而不是把动态执行当成替换变量的必需条件。
+
+## 7. 常见问题 {#常见问题}
+
+### 7.1 用一次正则 replace 能不能实现模板引擎？ {#用一次正则replace能不能实现模板引擎}
+
+固定且无嵌套的占位符可以这样实现，但必须同时定义匹配语法、字段读取和输出处理。需要嵌套区块、转义分隔符或作用域时，一次全局替换不再足以表达结构；应先解析，不要让多个替换规则互相依赖执行顺序。
+
+### 7.2 用户值里也有双花括号，会被再次执行吗？ {#用户值里也有双花括号会被再次执行吗}
+
+本例不会。解析只针对编译时的模板，渲染得到的值直接转义并输出，不再次当模板扫描。若把渲染结果再次送去编译，就改变了信任边界，需要另行分析。
+
+### 7.3 已经转义的内容再传入会怎样？ {#已经转义的内容再传入会怎样}
+
+本例会继续转义其中的 `&`，因此已有 `&lt;` 会成为 `&amp;lt;`。应统一数据的表示：保存原始业务文字，在输出位置执行编码，避免有的字段存原文、有的字段存预编码 HTML。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 怎样实现一个支持字段占位符的最小模板引擎？ {#implement-template}
+
+**考察重点**：语法范围、扫描解析、字段求值、输出与错误处理。
+
+**相关内容**：[解析、求值与渲染](#解析求值与渲染)、[一个受限的字段模板](#一个受限的字段模板)。
+
+<details>
+<summary>参考回答</summary>
+
+**先限定支持的语法，再把模板解析成文字和字段路径，渲染时从本次数据读取并输出。** 例如只支持双花括号中的点分路径，就不应顺便执行函数调用或任意 JavaScript。
+
+同时约定缺失值、空值、非字符串值和错误表达式的处理方式。生成 HTML 时按允许的输出上下文编码；需要嵌套循环或条件时，再引入能够表达区块关系的解析结构。
+
+</details>
+
+### 8.2 为什么不能用 value || '' 处理所有占位符？ {#value-boundaries}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：有效假值、缺失字段与显式的数据类型规则。
+
+**相关内容**：[一个受限的字段模板](#一个受限的字段模板)。
+
+<details>
+<summary>参考回答</summary>
+
+**`0` 和 `false` 也是假值，`value || ''` 会把本来应该显示的信息抹掉。** 应分别处理缺失字段、`null`、`undefined`，并明确字符串、数字、布尔值和对象的输出规则。
+
+例如本例让空值输出空字符串，保留 `0` 与 `false`，不支持的对象或函数直接报错，不依赖它们的隐式字符串转换。
+
+</details>
+
+### 8.3 对插值内容做 HTML 转义，是否就能放到模板的任意位置？ {#escaping-context}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：HTML 文本、属性、URL 与可执行上下文的不同边界。
+
+**相关内容**：[输出上下文与信任边界](#输出上下文与信任边界)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能，编码规则取决于输出上下文，还可能需要额外的语义校验。** 普通 HTML 文本转义不能判断 URL 协议是否允许，也不能把任意脚本、样式或事件属性变安全。
+
+模板本身必须可信，静态危险片段不会被插值转义处理。需要展示普通文本时使用文本 API；允许富文本时采用受控净化策略，避免让未经处理的内容进入可执行位置。
+
+</details>
+
+### 8.4 模板编译可以缓存什么，哪些变化需要失效？ {#compile-cache}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：模板结构与数据分离、缓存身份、权限和容量。
+
+**相关内容**：[编译缓存与失效](#编译缓存与失效)。
+
+<details>
+<summary>参考回答</summary>
+
+**可以缓存解析后的结构或编译函数，每次渲染仍读取当前输入数据。** 模板内容、语法配置、转义策略或 helper 发生影响语义的变化时，应使用新版本或让旧结果失效。
+
+编译缓存需要容量限制；渲染输出缓存还必须考虑数据、账号权限和语言等条件。不能把同模板下某个用户的输出直接复用给另一个用户。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+
+- [Handlebars：表达式与 HTML 转义](https://handlebarsjs.com/guide/expressions.html#html-escaping)
+- [Mustache：变量与区块语法](https://mustache.github.io/mustache.5.html)
+- [HTML Standard：HTML 解析状态](https://html.spec.whatwg.org/multipage/parsing.html#tokenization)
+- [OWASP：Cross Site Scripting Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Cross_Site_Scripting_Prevention_Cheat_Sheet.html)

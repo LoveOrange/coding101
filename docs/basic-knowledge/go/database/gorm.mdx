@@ -1,0 +1,320 @@
+---
+sidebar_position: 2
+knowledge:
+  id: basic-knowledge.go.database.gorm
+  type: concept
+description: "讲解 GORM 的模型映射、查询结果、零值更新、事务与关联预加载，说明如何从 ORM 调用检查实际 SQL 和数据库行为。"
+keywords: ["Go", "GORM", "ORM", "零值更新", "事务", "Preload", "N+1"]
+---
+
+# GORM
+
+**GORM** 是 Go 的对象关系映射库，把结构体、条件和关联转换为数据库操作。它减少了重复的 SQL 拼接和结果扫描，但最终仍由数据库执行 SQL、使用索引并保证事务。
+
+理解 GORM，关键是能从一次方法调用判断它会生成什么条件、更新哪些字段、怎样报告失败。本文使用 GORM v2 系列的 `gorm.io/gorm` v1.25.12、`gorm.io/driver/mysql` v1.5.7、Go 1.22.12 与 MySQL 8.0 InnoDB，采用返回 `*gorm.DB` 的传统 API。
+
+## 1. 面试核心 {#core}
+
+- **GORM 负责映射和组织数据库操作，不代替 SQL、索引和事务原理**。使用它时仍要核对生成的查询、条件、执行错误和影响行数。[卡](#orm-boundary)
+- **`First`、`Take`、`Last` 查不到记录会返回 `gorm.ErrRecordNotFound`，`Find` 查不到通常是零行且没有这个错误**。不能把目标结构体的零值当成查询成功。[卡](#query-result)
+- **使用结构体 `Updates` 时，默认跳过零值字段**。需要明确写入 `0`、`false` 或空字符串时，可以用字段 map，或显式选择待更新字段。[卡](#zero-value-update)
+- **一次业务的多步修改需要显式事务，并在回调中始终使用传入的 `tx`**。单次写操作的默认事务不会自动把前后多个方法调用合成一个业务事务。[卡](#transaction-scope)
+- **关联字段不会因为读取对象就自动完成所有查询**。逐个主对象查询关联会产生 N+1；`Preload` 可以按关联批量查询，但仍要控制返回规模。[卡](#association-loading)
+- **GORM 的 SQL 安全和性能边界需要按 API 判断**。参数值使用占位符，动态列名和排序规则采用允许范围；避免把慢查询都归因于 ORM 本身。[卡](#usage-checks)
+
+## 2. 模型与数据库句柄 {#模型与数据库句柄}
+
+### 2.1 结构体映射 {#结构体映射}
+
+**模型**是描述表字段及关联关系的 Go 类型。GORM 有默认命名规则，也允许通过标签和方法覆盖。下面的模型用于说明库存和作者关联：
+
+```go title="models.go"
+package catalog
+
+type Book struct {
+    ID        uint64 `gorm:"primaryKey"`
+    AuthorID  uint64
+    Title     string
+    Stock     int
+    Published bool
+}
+
+type Reservation struct {
+    RequestID string `gorm:"primaryKey;size:64"`
+    BookID    uint64
+}
+
+type Author struct {
+    ID    uint64 `gorm:"primaryKey"`
+    Name  string
+    Books []Book `gorm:"foreignKey:AuthorID"`
+}
+```
+
+按默认规则，这些模型对应 `books`、`reservations`、`authors` 表，`AuthorID` 对应 `author_id` 列。`Books` 是关联字段，不是一列用来保存整个切片的数据库字段。实际表结构还要明确字段类型、空值、索引和外键等约束，不能只凭 Go 类型就假定这些约束都已经存在。
+
+这些模型没有嵌入 `gorm.Model`，也没有声明时间戳和软删除字段，因此本文的普通更新不隐含修改 `UpdatedAt`，删除也不隐含软删除。项目使用 `gorm.DeletedAt` 等约定后，应另外检查自动附加的条件与删除行为。
+
+`AutoMigrate` 能依据模型创建或调整部分表结构，适合明确受控的初始化场景；它不会替项目审查所有存量数据迁移、索引成本或回滚条件。生产结构变更仍需要独立的迁移方案。
+
+### 2.2 GORM 与 database/sql {#GORM与database-sql}
+
+`gorm.Open` 根据数据库方言和驱动建立访问入口。普通的根 `*gorm.DB` 可以作为应用依赖复用；在本文的 MySQL 驱动下，可以通过 `db.DB()` 取得底层 `*sql.DB`，配置连接池并查看统计。连接预算与结果释放的基础机制见 [database/sql](./database-sql.mdx)。
+
+同名的 DB 并不代表相同对象：GORM 的 DB 还保存当前 Statement、配置、错误和影响行数等状态。`Where`、`Select` 等链式方法组织语句，`Find`、`Create`、`Updates` 等方法执行操作，随后检查返回对象的 `Error` 和 `RowsAffected`。
+
+复用根句柄不等于随意复用任何中间链。把已经带有 `Where` 等条件的链对象长期保存，再不断追加条件，可能让查询条件串到后续操作中。对每次操作从根句柄开始构造，或使用明确的新 Session；`WithContext` 也用于给当前工作设置 context，避免把一个请求的取消状态带到其他请求。
+
+## 3. 查询结果与条件 {#查询结果与条件}
+
+| API | 主要语义 | 没有匹配记录时 |
+| --- | --- | --- |
+| `First` | 限制一行，按主键升序等规则确定第一条 | `gorm.ErrRecordNotFound` |
+| `Last` | 限制一行，按主键降序等规则确定最后一条 | `gorm.ErrRecordNotFound` |
+| `Take` | 限制一行，不主动添加 First 那样的排序 | `gorm.ErrRecordNotFound` |
+| `Find` | 读取匹配的结果集，数量由条件和 Limit 等决定 | 通常 `Error == nil`、`RowsAffected == 0` |
+
+业务上需要一条记录时，应明确查询条件和缺失语义。`Find` 填入单个结构体不等于生成了唯一性约束，也不等于一定只扫描一行；列表查询则使用切片，并设置合理的分页与排序。
+
+查询前尽量使用新的目标值。如果目标模型的主键已经非零，GORM 可能把它也加入查询条件；复用上次查到的结构体，再用不同条件查下一条，可能意外同时带上旧主键。
+
+使用结构体构造条件同样要注意零值：`Where(&Book{Stock: 0})` 默认不会把 `stock = 0` 当作有效结构体条件。需要查询零库存时，可以明确写 `Where("stock = ?", 0)` 或使用条件 map。这里的规则与数据库 NULL 不同；NULL、空字符串和数字零的业务含义仍要分别建模。
+
+## 4. 更新字段 {#更新字段}
+
+### 4.1 零值更新 {#零值更新}
+
+**零值**是 Go 类型未初始化时的值，例如 int 的 `0`、bool 的 `false` 和 string 的空字符串。GORM 在用结构体执行 `Updates` 时，默认选择非零值字段，因此“字段明明赋成了零，数据库却没变”可能是字段根本没进入 UPDATE。
+
+| 调用形式 | 对零值的处理 |
+| --- | --- |
+| `Updates(Book{Stock: 0, Published: false})` | 默认跳过这两个零值字段 |
+| `Updates(map[string]any{"stock": 0, "published": false})` | 明确包含这两个字段 |
+| `Select("Stock").Updates(Book{Stock: 0})` | 显式选中 Stock，可以更新为零 |
+
+下面只修改库存，并把影响行数和错误交给调用方：
+
+```go title="updates.go"
+package catalog
+
+import (
+    "context"
+    "errors"
+
+    "gorm.io/gorm"
+)
+
+func SetStock(ctx context.Context, db *gorm.DB, id uint64, stock int) (int64, error) {
+    if id == 0 || stock < 0 {
+        return 0, errors.New("invalid stock update")
+    }
+    result := db.WithContext(ctx).Model(&Book{}).
+        Where("id = ?", id).
+        Updates(map[string]any{"stock": stock})
+    return result.RowsAffected, result.Error
+}
+```
+
+`stock == 0` 会进入更新，`Title`、`Published` 等其他字段不会被这个 map 修改。调用方仍要检查错误；在 MySQL 默认按实际改变行数计数的配置下，影响零行可能是目标不存在，也可能是新值与旧值相同，不能在所有驱动配置下直接等同于“记录不存在”。
+
+### 4.2 更新范围与 Save {#更新范围与Save}
+
+GORM 默认会阻止没有有效条件的批量更新或删除，并返回 `gorm.ErrMissingWhereClause`。这是防止遗漏条件的保护，不是业务权限检查；写出一个过宽的合法条件，仍可能修改大量记录。使用 `AllowGlobalUpdate` 等选项会改变这层保护，不能为了消除报错就默认打开。
+
+`Save` 也不只是“只改我填了的几个字段”。本文版本对普通结构体保存时会包含零值字段；主键为空时走创建，某些更新影响零行的情况下还会回退到创建。局部修改应明确选择列和条件，不把部分填充的结构体交给 Save，期待其自动保留其他列。
+
+更新接口还需要区分“客户端没有提交该字段”和“客户端要求清空该字段”。可以在请求对象中使用指针等方式表达是否提供，再构造允许修改的字段集合。不要把请求对象的所有字段直接当成可更新列，否则用户可能修改本不应由其控制的字段。
+
+## 5. 事务 {#事务}
+
+GORM 默认会为写操作使用事务来保护相应操作，但前后两次独立调用不会因此自动成为一个共同事务。库存扣减后还要插入预留记录时，应显式定义业务边界：
+
+```go title="reservation.go"
+package catalog
+
+import (
+    "context"
+    "errors"
+
+    "gorm.io/gorm"
+)
+
+var ErrUnavailable = errors.New("book unavailable")
+
+func Reserve(ctx context.Context, db *gorm.DB, requestID string, bookID uint64) error {
+    return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+        result := tx.Model(&Book{}).
+            Where("id = ? AND stock > 0", bookID).
+            Update("stock", gorm.Expr("stock - ?", 1))
+        if result.Error != nil {
+            return result.Error
+        }
+        if result.RowsAffected != 1 {
+            return ErrUnavailable
+        }
+        return tx.Create(&Reservation{
+            RequestID: requestID,
+            BookID:    bookID,
+        }).Error
+    })
+}
+```
+
+回调返回 nil 时，GORM 尝试提交，并把提交错误返回给外层；回调返回错误时回滚。示例中的两个操作都使用 `tx`，所以预留主键冲突导致插入失败时，库存扣减也能回滚。改用外层 `db.Create`，就会脱离当前事务的连接边界。
+
+`gorm.Expr("stock - ?", 1)` 把计算放进 SQL，`stock > 0` 在数据库更新时检查。它避免先读到旧库存，再在 Go 中计算并覆盖写回的竞争。完整的隔离、锁和条件更新机制见 [数据库事务](../../database/transaction/index.mdx)，这里不因使用 ORM 而改变。
+
+唯一请求 ID 不等于完整幂等接口。这个示例在重复 ID 时返回插入错误，不会自动查回第一次结果。遇到提交确认丢失、超时等情况，仍要设计结果确认和重试规则；GORM 不能只凭本地错误推断远端一定没有提交。
+
+传入的 context 用于当前事务和操作，应活到业务工作结束。不要在辅助函数返回前取消 context，然后继续把关联的事务交给上层使用。事务内也应避免无关网络等待，否则会延长连接和数据库锁的占用。
+
+## 6. 关联查询与 N+1 {#关联查询与N加一}
+
+**N+1 查询**是先查询一批主对象，再对每个对象单独查询关联，最终执行一次主查询加 N 次关联查询。例如先查 20 个作者，再循环查询每个作者的书，可能需要 21 次 SQL。
+
+GORM 不会仅因为结构体中存在 `Books` 字段，就在普通查询后自动填满所有书目。需要关联数据时可以显式使用 Preload：
+
+```go title="authors.go"
+package catalog
+
+import (
+    "context"
+
+    "gorm.io/gorm"
+)
+
+func ListAuthors(ctx context.Context, db *gorm.DB) ([]Author, error) {
+    authors := make([]Author, 0)
+    result := db.WithContext(ctx).
+        Order("id").Limit(20).
+        Preload("Books").Find(&authors)
+    return authors, result.Error
+}
+```
+
+对这个简单的一对多关联，存在作者时，GORM 查询作者及其 ID，再用这些 ID 批量查询 `books`，最后在内存中把书目放回对应作者。它使用独立查询，不是把每个作者都发一条 SELECT，也不是自动把 Preload 变成 JOIN。没有主对象时，不需要继续查询这层关联。
+
+关联查询减少往返次数，不代表结果规模已经受控。`Limit(20)` 限制作者数量，却没有限制这 20 个作者一共拥有多少本书；需要进一步选择字段、限制适用范围或设计独立的关联分页。给 Preload 随意加一个 Limit，也不能不经核验就认为是“每个作者分别最多 N 本”。
+
+JOIN 则是在同一条 SQL 中连接数据，结果行数、去重和分页语义可能不同。对于一对多，不能只为了减少 SQL 条数就盲目 JOIN；需要比较传输量、重复主表字段、扫描成本和实际业务所需数据。多级关联、连接表和自定义条件也会改变查询数量，不能把“Preload 永远两条 SQL”当成通用规则。
+
+## 7. SQL 检查与问题定位 {#SQL检查与问题定位}
+
+定位 GORM 问题时，先把方法调用还原成 SQL 和参数，再判断它是否符合业务意图。错误信息、更新列、WHERE 条件、影响行数和事务范围通常比只看 Go 方法名更直接。
+
+`DryRun` 可以生成语句而不执行，用于查看 `Statement.SQL` 与 `Statement.Vars`。它不能证明数据库会接受这条语句，更不能代替实际执行、约束检查或执行计划。Logger 可以观察实际操作，但输出经过格式化的 SQL 不应直接当作可安全执行的参数化语句。
+
+查询中的值使用占位符，例如 `Where("title = ?", title)`。表名、列名、排序表达式等属于 SQL 结构，不能把未经校验的用户输入直接传给 `Order`、`Select` 等接口；需要从明确允许的字段和方向中选择。
+
+性能排查也要看数据库工作量：是否缺少合适索引、扫描或返回太多行、是否 N+1、事务是否过长，以及连接池是否在等待。只有证据指向 ORM 自身的映射、反射或对象构造开销时，才继续比较相应实现成本。直接改成手写 SQL，不会自动解决相同查询计划的问题。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 GORM 解决什么问题，使用时还需要理解哪些数据库机制？ {#orm-boundary}
+
+**考察重点**：模型映射、SQL 生成、结果扫描与数据库职责。
+
+**相关内容**：[模型与数据库句柄](#模型与数据库句柄)、[SQL 检查与问题定位](#SQL检查与问题定位)。
+
+<details>
+<summary>参考回答</summary>
+
+**GORM 把模型、条件和关联转换成数据库调用，并把结果映射回 Go 值，减少重复的访问代码。** 使用时仍要检查实际 SQL、参数、执行错误和影响行数。
+
+索引选择、锁、隔离、约束和提交由数据库完成。ORM 不会自动把多步业务变成事务，也不会保证查询有合理的扫描量；出现问题时，需要回到 SQL 和数据库证据判断。
+
+</details>
+
+### 8.2 First 和 Find 查不到记录时有什么区别？ {#query-result}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：单条与列表语义、错误检查和目标值复用。
+
+**相关内容**：[查询结果与条件](#查询结果与条件)。
+
+<details>
+<summary>参考回答</summary>
+
+**First 查不到记录会返回 gorm.ErrRecordNotFound，Find 查不到通常是零行且没有这个错误。** First 限制一条并按主键等规则排序，Find 的结果范围由条件、排序与 Limit 等决定。
+
+需要同时检查 Error 和业务所需的结果数量。目标结构体零值不是成功证明；复用带非零主键的目标对象，还可能让旧主键进入下一次查询条件。
+
+</details>
+
+### 8.3 为什么 Updates 没有把库存改成 0？ {#zero-value-update}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：结构体零值、显式字段选择与影响行数。
+
+**相关内容**：[更新字段](#更新字段)。
+
+<details>
+<summary>参考回答</summary>
+
+**如果用结构体执行 Updates，GORM 默认跳过零值，stock 可能根本没有进入 UPDATE。** 可用 `map[string]any{"stock": 0}`，或 `Select("Stock")` 显式选择字段。
+
+还要核对 WHERE 条件、Error 和 RowsAffected。MySQL 默认实际改变行数语义下，零行不一定表示没有记录，也可能是新旧值相同；不能只改用 Save 而不看它包含零值及可能回退创建的行为。
+
+</details>
+
+### 8.4 两次 GORM 写操作怎样保证一起成功或一起失败？ {#transaction-scope}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：业务事务、回调错误与连接边界。
+
+**相关内容**：[事务](#事务)。
+
+<details>
+<summary>参考回答</summary>
+
+**把两次操作放进同一个 Transaction 回调，并始终使用回调传入的 tx。** 每次操作检查错误，失败返回错误触发回滚；返回 nil 后还要由外层检查事务提交结果。
+
+单次写操作的默认事务不能把两个独立调用自动合并。事务内使用外层 db 可能脱离当前事务；也不能把提交超时直接当成一定未提交，重试需要业务结果确认。
+
+</details>
+
+### 8.5 关联查询为什么会出现 N+1，Preload 能解决什么？ {#association-loading}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：查询数量、批量关联、JOIN 与结果规模。
+
+**相关内容**：[关联查询与 N+1](#关联查询与N加一)。
+
+<details>
+<summary>参考回答</summary>
+
+**先查一批主对象，再循环逐个查关联，就会产生一次主查询加 N 次关联查询。** 简单的一对多 Preload 可以根据主对象 ID 批量读取关联，再在内存中组装，减少逐对象往返。
+
+Preload 通常是额外查询，不能等同于 JOIN，也不保证任意复杂关联都只有两条 SQL。主对象分页不自动限制关联总量，仍要控制字段、范围和关联分页。
+
+</details>
+
+### 8.6 使用 GORM 时，应重点检查哪些容易影响结果的问题？ {#usage-checks}
+
+**考察重点**：把模型与链式调用还原成实际数据库行为。
+
+**相关内容**：[查询结果与条件](#查询结果与条件)、[更新字段](#更新字段)、[事务](#事务)、[SQL 检查与问题定位](#SQL检查与问题定位)。
+
+<details>
+<summary>参考回答</summary>
+
+**先检查生成的 SQL 是否选中了正确记录、写入了预期字段，并确认执行错误与事务边界。** 结构体条件和 Updates 的零值省略、复用目标值携带旧主键、Save 包含未填充字段，都可能让结果偏离预期。
+
+多步修改要使用同一事务对象；关联要防止逐对象查询和无界加载。参数值与动态 SQL 结构也要分开处理，排序和列名使用允许范围。具体问题需要结合实际 SQL、约束与执行计划判断。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+
+- [GORM v1.25.12 DB、Session 与初始化](https://github.com/go-gorm/gorm/blob/v1.25.12/gorm.go)
+- [GORM v1.25.12 查询、更新、Save 与事务 API](https://github.com/go-gorm/gorm/blob/v1.25.12/finisher_api.go)
+- [GORM v1.25.12 查询条件构造](https://github.com/go-gorm/gorm/blob/v1.25.12/statement.go)
+- [GORM v1.25.12 更新字段选择](https://github.com/go-gorm/gorm/blob/v1.25.12/callbacks/update.go)
+- [GORM v1.25.12 默认事务回调](https://github.com/go-gorm/gorm/blob/v1.25.12/callbacks/transaction.go)
+- [GORM v1.25.12 关联预加载](https://github.com/go-gorm/gorm/blob/v1.25.12/callbacks/preload.go)
+- [GORM v1.25.12 查询结果扫描](https://github.com/go-gorm/gorm/blob/v1.25.12/scan.go)
+- [GORM MySQL 驱动 v1.5.7](https://github.com/go-gorm/mysql/tree/v1.5.7)

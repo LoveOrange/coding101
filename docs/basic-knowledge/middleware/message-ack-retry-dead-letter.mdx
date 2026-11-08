@@ -29,7 +29,15 @@ keywords: ["消息确认", "ACK", "死信队列", "消息重试", "可靠投递"
 
 没有任何队列匹配的消息，也可能得到 publisher confirm。发布时设置 `mandatory=true`，broker 会先用 `basic.return` 返回不可路由的消息，再给出发布确认。因此客户端要同时处理返回消息和确认结果，不能只看到 confirm 就认定消息已进入目标队列。
 
-Kafka 的确认方式由 `acks` 等配置控制。**ISR**（In-Sync Replicas）是保持同步的副本集合，`acks=all` 等待其中的全部副本确认；`min.insync.replicas` 则规定成功写入至少需要多少个同步副本。以副本数为 3、`min.insync.replicas=2` 为例：
+Kafka 的生产确认由 `acks` 控制，它与消费者提交 offset 是两件事：
+
+| 配置 | 生产者等待什么 | 故障边界 |
+| --- | --- | --- |
+| `acks=0` | 不等待 broker 确认 | 无法据此确认 broker 已收到，生产者也无法依靠服务端响应重试这次发送 |
+| `acks=1` | Leader 写入本地日志后返回 | 若尚未复制就故障，已确认消息仍可能丢失 |
+| `acks=all`（或 `-1`） | 当前同步副本集合的确认 | 仍要结合最低同步副本数和副本故障范围判断可靠性 |
+
+**ISR**（In-Sync Replicas）是保持同步的副本集合，`acks=all` 等待其中的全部副本确认；`min.insync.replicas` 则规定这类写入至少需要多少个同步副本。以副本数为 3、`min.insync.replicas=2` 为例：
 
 - ISR 有 3 个副本，`acks=all` 等待这 3 个副本，而不是任取两个。
 - ISR 收缩到 2 个，仍满足最低要求，等待这 2 个确认。

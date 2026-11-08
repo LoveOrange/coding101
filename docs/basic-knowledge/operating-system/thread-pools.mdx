@@ -1,0 +1,440 @@
+---
+sidebar_position: 12
+draft: false
+knowledge:
+  id: basic-knowledge.operating-system.thread-pools
+  type: concept
+description: "解释线程池的任务队列、工作线程、结果与拒绝机制，重点讲清动态扩容、合作缩容和有序关闭。用 Python 3.12 的实际线程、条件变量与有界队列实现可调整大小的线程池，分析提交和关闭竞争、任务异常、同池等待以及资源回收的边界。"
+keywords: ["线程池", "动态扩缩容", "工作线程", "有界队列", "拒绝策略", "有序关闭"]
+---
+
+# 线程池
+
+**线程池**是复用一组工作线程来执行提交任务的机制。调用方提交的是任务，池负责决定任务能否接收、何时执行以及怎样取得结果。它既能减少反复创建线程的成本，也把并发执行和排队控制在约定范围内。
+
+动态调整线程池时，需要让任务和线程的生命周期衔接起来。缩容不能随意打断正在执行的任务，关闭不能漏掉刚接收的任务，执行失败也不能让等待结果的调用方一直等下去。本文解释这些共同机制；Java 的具体 API 与调度顺序见[Java 线程池](../java/concurrency/threadpoolexecutor-execution-path.mdx)，Python 标准执行器的使用见[Python 并发](../python/concurrency/threads-processes-gil.mdx#线程池与任务结果)。
+
+## 1. 面试核心 {#core}
+
+- 任务队列保存待执行工作，工作线程反复领取任务。**任务数量、排队数量和线程数量是三个不同的量**。[卡](#pool-components)
+- 线程数有限不代表积压有界。**队列容量和拒绝行为**决定过载时调用方会等待、收到失败，还是失去任务。[卡](#bounded-admission)
+- 动态扩容需要增加实际工作线程；缩容应在约定的安全位置让多余线程退出。**改变目标数量不代表已经完成缩容**。[卡](#resize-contract)
+- 提交与关闭必须有共同的同步边界，使每次提交都能确定为**已接受或已拒绝**。执行任务和等待线程退出时，不应占着管理队列的锁。[卡](#submit-shutdown-race)
+- 任务结果要有明确终态：成功返回值，失败返回异常。**等待结果超时不等于任务已停止**，有序关闭也可能被长期不返回的任务拖住。[卡](#task-results)
+- 手写动态线程池时，先说明容量、缩容、拒绝和关闭的约定，再把这些约定落实到**受锁保护的状态与工作循环**中。[卡](#dynamic-pool-design)
+
+## 2. 任务与工作线程 {#任务与工作线程}
+
+**任务**是一段待执行的函数或操作；**工作线程**是反复从队列领取任务并运行它的线程。一个线程可以依次执行许多任务，一个任务也不需要拥有专用线程。
+
+一次提交会经过三个不同阶段：
+
+| 阶段 | 需要回答的问题 | 典型结果 |
+| --- | --- | --- |
+| 接收 | 池是否关闭，队列还有没有空间？ | 接受并返回结果句柄，或明确拒绝。 |
+| 领取 | 哪个工作线程取得这项任务？ | 一个线程取得执行责任，其他线程不能重复领取。 |
+| 完成 | 函数正常返回还是抛出异常？ | 保存返回值或异常，并唤醒等待结果的人。 |
+
+接受任务不代表任务已经开始，更不代表已经完成。多个线程即使按队列顺序领取任务，也可能因耗时不同而以另一种顺序完成；不同线程真正开始执行用户代码的先后，也不由 FIFO 队列完全决定。
+
+线程池通常由语言运行库或应用实现，工作线程仍由操作系统调度。池不接管操作系统的线程调度器，也不能保证每个线程都同时占用一个 CPU 核心。Python 常规 CPython 的 GIL 限制和 I/O 场景见[Python 并发](../python/concurrency/threads-processes-gil.mdx#gil-的作用与边界)。
+
+## 3. 队列容量与拒绝 {#队列容量与拒绝}
+
+**有界队列**给等待中的任务数量设置上限。假设有 4 个工作线程、队列容量为 10，正在执行的任务不占这 10 个排队位置。固定大小、没有退出中线程的情况下，最多可以有 4 个执行任务和 10 个排队任务。
+
+队列满后需要明确接收策略：可以立即拒绝，也可以让提交者在期限内等待空间，还可以在允许的场景下由提交者执行。选择会改变调用方行为。例如让事件循环线程执行一个慢任务，可能把阻塞扩散到其他请求；让工作线程阻塞提交同池子任务，也可能造成资源等待环。
+
+返回结果句柄的接口尤其不能静默丢掉任务。任务没有执行、没有取消、也没有失败结果时，等待者可能永远得不到终态。本文参考实现采用立即拒绝：未接收的任务直接抛出 `Rejected`，不会返回一个悬空结果。
+
+队列只能吸收短暂波动。如果任务到达长期快于完成，再大队列也只是延后拒绝、增加等待和内存占用。调整时要看队列年龄、完成速率、任务耗时和下游余量，不能只盯着线程数。
+
+## 4. 动态扩容与缩容 {#动态扩容与缩容}
+
+**动态扩缩容**是在池已经运行、甚至有任务正在执行时，改变它可用于处理任务的工作线程数量。只修改一个数值而没有相应的创建、唤醒或退出流程，不算完成实现。
+
+### 4.1 目标数量与当前数量 {#目标数量与当前数量}
+
+**目标数量**是池希望保留多少个工作线程；**当前数量**是此刻仍登记在工作集合中的线程数。扩容时，根据两者的差额创建线程，让它们加入工作循环。缩容时，把目标调低，并唤醒空闲线程检查是否应该退出。
+
+例如 3 个线程正在执行任务，目标改成 1。立即杀掉两个线程可能留下持有的锁、未关闭的文件或执行了一半的操作。合作缩容允许它们先完成当前任务，再在领取下一项任务之前检查人数：仍超过目标就退出，直到留下 1 个。
+
+所以 `resize(1)` 返回时，当前数量仍可能是 3。要区分“目标已更新”“工作集合已缩到目标”和“退出中的系统线程已经完全结束”。正在运行的任务不返回，缩容就无法在这个安全位置完成。
+
+### 4.2 缩容与领取任务的竞争 {#缩容与领取任务的竞争}
+
+退出人数和任务领取要放在同一同步协议下。两个线程如果都无锁地看到“当前有 2 个、目标为 1”，然后都退出，就会把队列留给零个消费者。
+
+参考实现用同一把锁保护工作集合、目标和任务队列。线程先在锁内检查是否超出目标，决定退出时也在锁内减少登记数；后来的线程会看到更新后的数量。只有决定留下的线程，才从队列取下一项任务。
+
+这还处理了连续调整：刚要求缩到 1，又改成 3 时，工作线程检查的是当前目标，不会继续消费已经过时的“必须退出两个线程”指令。已经退出的线程则由扩容路径重新补充。
+
+### 4.3 自动调整与容量上限 {#自动调整与容量上限}
+
+自动伸缩是根据指标调用调整操作的控制策略；动态伸缩是池真正执行调整的能力。两者可以分开实现。
+
+控制策略需结合排队时间、活跃度、CPU 和下游容量，还应设置上下限、观察窗口及调整间隔。看到队列增长就持续加线程，可能让更多线程同时等待同一个数据库连接或锁，反而增加代价。参考实现提供显式 `resize`，没有根据某个固定阈值自动决策，也不把一次小规模实验当作容量建议。
+
+## 5. 关闭与任务结果 {#关闭与任务结果}
+
+**有序关闭**先停止接收新任务，再让已经接收的任务执行完，最后回收工作线程。调用方还要区分“发出关闭请求”和“等待关闭完成”。
+
+提交和关闭同时发生时，可以把受锁保护的接收步骤作为分界：提交先完成检查并入队，这项任务就属于已接受任务；关闭先改变状态，后来的提交就被拒绝。不能先在无锁状态下判断池仍开放，稍后不再复查就把任务塞进去。
+
+执行用户函数时应释放队列锁。否则一个慢任务就会阻塞其他线程取任务、提交和关闭；任务自己再次调用池的方法，也可能形成死锁。`join` 同样要在锁外调用，因为退出中的工作线程可能还需要取得这把锁，才能更新状态。
+
+**结果句柄**保存任务的返回值或异常，让提交者稍后检查结果。参考实现的 `Result.result(timeout)` 只限制这一次等待，超时不会取消已排队或运行中的任务。任务异常由工作线程捕获后保存，等待者读取结果时重新抛出；调用方仍需主动观察结果。
+
+立即停止则是另一种约定：要说明未领取任务怎样取消、正在执行的任务怎样合作停止，以及这些结果由谁通知。Python 没有通用、安全的强制结束任意线程的接口；本文实现只提供有序关闭，不把“不再接收”写成“所有任务已停止”。
+
+## 6. 可运行的动态线程池 {#可运行的动态线程池}
+
+下面用 Python 3.12 的真实线程演示动态控制，没有借助修改 `ThreadPoolExecutor` 私有字段来模拟伸缩。代码使用互斥条件变量保护管理状态，适合按执行顺序解释和验证；它不依赖 GIL 代替同步。
+
+### 6.1 实现约定 {#实现约定}
+
+以下是本站为参考实现补充的约定：
+
+- `size` 的目标范围为 1 到 `limit`，队列 `capacity` 至少为 1。禁止缩到 0，保证有序关闭时仍有消费者处理已接受任务。
+- 所有任务先进入有界 FIFO 队列；队列满或池已关闭时立即抛出 `Rejected`，不在提交线程中执行任务。
+- 缩容不打断用户函数，多余线程在下一次领取前退出。`limit` 限制登记工作线程数量；已退出工作集合的线程可能还在结束最后几步，不把它当成所有操作系统线程瞬时数量的严格上限。
+- 每个已接收任务在本进程内只领取一次，不自动重试。函数正常返回或抛出异常时产生结果；进程故障、永久阻塞和外部副作用不在这个完成保证内。
+- `shutdown(wait=False)` 发出有序关闭请求；`shutdown()` 还等待线程结束。工作线程不能阻塞等待自己所在的池关闭，但可以发出不等待的关闭请求。
+- `Result` 只提供结果读取和异常传播，不是完整的 `concurrent.futures.Future`，没有取消或回调接口。
+
+### 6.2 参考实现 {#参考实现}
+
+**条件变量**允许线程在条件尚未满足时释放关联的锁并等待，收到通知后重新取得锁检查状态。下面的 `Condition` 让空闲线程等待队列或管理状态变化，避免不断空转检查；`Result` 中的 `Event` 则在结果就绪后置位，用来通知结果等待者。
+
+```python
+from collections import deque
+from threading import Condition, Event, Thread, current_thread
+
+
+class Rejected(RuntimeError):
+    pass
+
+
+class Result:
+    def __init__(self):
+        self._ready = Event()
+        self._value = None
+        self._error = None
+
+    def result(self, timeout=None):
+        if not self._ready.wait(timeout):
+            raise TimeoutError("task is not finished")
+        if self._error is not None:
+            raise self._error
+        return self._value
+
+    def _finish(self, value=None, error=None):
+        self._value, self._error = value, error
+        self._ready.set()
+
+
+class ResizablePool:
+    def __init__(self, size, capacity, limit=32):
+        if type(capacity) is not int or capacity < 1:
+            raise ValueError("capacity must be a positive integer")
+        if type(limit) is not int or limit < 1:
+            raise ValueError("limit must be a positive integer")
+        self._cv = Condition()
+        self._queue = deque()
+        self._workers = set()
+        self._joinable = set()
+        self._target = 0
+        self._capacity = capacity
+        self._limit = limit
+        self._closed = False
+        self._serial = 0
+        try:
+            self.resize(size)
+        except BaseException:
+            self.shutdown()
+            raise
+
+    def submit(self, fn, *args, **kwargs):
+        if not callable(fn):
+            raise TypeError("fn must be callable")
+        with self._cv:
+            if self._closed or len(self._queue) >= self._capacity:
+                raise Rejected("pool closed or queue full")
+            result = Result()
+            self._queue.append((result, fn, args, kwargs))
+            self._cv.notify()
+            return result
+
+    def resize(self, size):
+        if type(size) is not int or not 1 <= size <= self._limit:
+            raise ValueError("size must be between 1 and limit")
+        with self._cv:
+            if self._closed:
+                raise Rejected("pool closed")
+            self._joinable = {t for t in self._joinable if t.is_alive()}
+            self._target = size
+            try:
+                while len(self._workers) < size:
+                    self._serial += 1
+                    thread = Thread(target=self._work, daemon=False,
+                                    name=f"demo-pool-{id(self)}-{self._serial}")
+                    self._workers.add(thread)
+                    try:
+                        thread.start()
+                    except RuntimeError:
+                        self._workers.remove(thread)
+                        raise
+                    self._joinable.add(thread)
+            except RuntimeError:
+                self._target = max(1, len(self._workers))
+                raise
+            finally:
+                self._cv.notify_all()
+
+    def snapshot(self):
+        with self._cv:
+            return {"target": self._target, "workers": len(self._workers),
+                    "queued": len(self._queue), "closed": self._closed}
+
+    def shutdown(self, wait=True):
+        with self._cv:
+            if wait and current_thread() in self._joinable:
+                raise RuntimeError("a worker cannot join its own pool")
+            self._closed = True
+            self._cv.notify_all()
+            threads = tuple(self._joinable)
+        if wait:
+            for thread in threads:
+                thread.join()
+            with self._cv:
+                self._joinable.difference_update(threads)
+
+    def _work(self):
+        while True:
+            with self._cv:
+                while True:
+                    if (len(self._workers) > self._target or
+                            (self._closed and not self._queue)):
+                        self._workers.remove(current_thread())
+                        self._cv.notify_all()
+                        return
+                    if self._queue:
+                        item = self._queue.popleft()
+                        break
+                    self._cv.wait()
+            try:
+                value = item[1](*item[2], **item[3])
+            except BaseException as error:
+                item[0]._finish(error=error)
+            else:
+                item[0]._finish(value=value)
+            finally:
+                item = None
+                value = None
+```
+
+`Condition` 同时提供锁和等待通知。工作线程调用 `wait()` 时释放锁，被唤醒后重新取得锁，再检查条件。通知只提示状态可能变化，不代表队列一定有任务；所以检查放在 `while` 中，而不是一次 `if`。
+
+`_workers` 记录仍参与领取的线程，`_joinable` 则保留需要等待退出的线程对象。缩容线程在锁内从 `_workers` 移除时，还没有完全退出自己的 `run`。如果只按 `_workers` 做 `join`，关闭可能漏掉这一小段退出过程。`resize` 清理已经结束的旧句柄，`shutdown()` 对保留句柄在锁外逐个等待。
+
+任务异常在用户函数周围捕获，连任务主动抛出的 `SystemExit` 也作为任务失败记录，不让它悄悄减少工作线程。这段代码无法保证进程强制终止、底层崩溃或任意异步中断后的收尾。任务自己打开的资源仍应使用 `with` 或 `finally`；线程池不能替它决定正确的清理动作。
+
+创建系统线程也可能失败。若 `Thread.start()` 报 `RuntimeError`，未启动线程的登记会撤销；扩容前已存在和此次成功创建的线程继续可用，目标调整为当前登记数，调用方收到异常。构造期间发生这类失败时，外层清理已经启动的线程。这是明确的部分成功策略，不是整次扩容的事务回滚。
+
+### 6.3 扩缩容示例 {#扩缩容示例}
+
+将下面代码接在类定义后运行。两个事件分别确认任务已经开始，`release` 则把它们停在可控的等待位置：
+
+```python
+from threading import Event
+
+pool = ResizablePool(size=1, capacity=4, limit=4)
+started = [Event(), Event()]
+release = Event()
+
+def job(i):
+    started[i].set()
+    release.wait()
+    return i * i
+
+try:
+    first = pool.submit(job, 0)
+    assert started[0].wait(2)
+    second = pool.submit(job, 1)
+    pool.resize(2)
+    assert started[1].wait(2)
+    print(pool.snapshot()["workers"])
+
+    pool.resize(1)
+    state = pool.snapshot()
+    print(state["target"], state["workers"])
+
+    release.set()
+    print(first.result(), second.result())
+finally:
+    release.set()
+    pool.shutdown()
+
+print(pool.snapshot())
+```
+
+输出依次为 `2`、`1 2`、`0 1`，最后是 `{'target': 1, 'workers': 0, 'queued': 0, 'closed': True}`。第一个任务还没结束，第二个任务已经开始，说明扩容增加了真实执行者。设置目标为 1 时两个任务仍被事件阻塞，因此当前登记数还是 2；释放事件后，多余线程才能完成任务并退出。
+
+最后的 `shutdown()` 等待了全部工作线程。单独看到 `closed=True` 只能证明停止接收，不能替代这次等待。
+
+## 7. 并发边界与验证 {#并发边界与验证}
+
+验证动态池应控制关键交错，而不只提交一批加法任务看结果正确。上述实现用 CPython 3.12.13 运行，实际检查了这些情况：
+
+| 受控场景 | 验证的约束 |
+| --- | --- |
+| 原线程停在事件上，再扩容 | 新任务由不同的真实线程开始执行。 |
+| 两个任务都在执行，缩到 1，再只放行其中一个 | 先完成的多余线程退出，不抢走队列下一项；剩余线程之后继续处理。 |
+| 单个线程被占用，队列放满 | 新提交立即拒绝，被拒绝的函数没有执行。 |
+| 多个提交者、两个调整者和两个关闭者同时开始 | 每个提交只有接受或拒绝一个结果；已接受任务只执行一次，拒绝任务没有执行。 |
+| 缩容后立即关闭，仍有任务排队 | 已接受任务继续处理，后续提交和调整被拒绝，等待关闭能回收全部线程。 |
+| 任务抛出普通异常或 `SystemExit` | 结果读取能观察失败，同一工作线程之后仍能运行任务；任务自己的上下文管理器关闭真实临时文件。 |
+| 注入第二次线程创建失败 | 构造失败会回收已启动线程；运行中扩容部分成功后，保留下来的线程仍可使用。 |
+
+并发压力检查覆盖了 30 轮、1440 次提交，以及快速反复伸缩、结果等待超时、空队列额外唤醒和空闲线程的任务参数释放。它能发现这些具体路径上的错误，不能证明所有可能调度下都无问题，更不代表生产吞吐或延迟。
+
+## 8. 常见问题 {#常见问题}
+
+### 8.1 调小线程数后，为什么正在运行的任务数没有立刻下降？ {#缩容的生效时间}
+
+因为缩容约定是完成当前任务后退出。目标值已经改变，但线程还没到达检查退出条件的位置。若任务长时间不返回，需要先解决任务自己的超时或合作停止机制，不能靠减小目标安全地中断它。
+
+### 8.2 有界队列能避免同池等待死锁吗？ {#同池等待}
+
+不能。假设只有一个工作线程，父任务向同一池提交子任务，然后无期限等待子任务结果；子任务已经入队，却没有可用线程执行。队列未满也会卡住。
+
+应避免占着同一组有限工作线程同步等待其内部新任务，例如在池外编排依赖、改成异步组合，或为确实独立的资源使用不同执行器。只增大池子可能暂时缓解，不能从结构上消除这类依赖环。
+
+### 8.3 结果等待超时后，能立刻释放任务使用的外部资源吗？ {#等待超时与资源归属}
+
+不能仅凭等待超时这样做。任务可能仍在读取连接或文件，调用方提前关闭会让它在执行中失败。资源生命周期应跟着任务的实际完成或合作取消确认走；需要限制耗时时，还要为底层 I/O 配置超时。
+
+### 8.4 在任务里调用关闭，为什么要限制等待？ {#任务内关闭}
+
+工作线程调用 `shutdown(wait=True)` 会试图等待自己结束，而它必须先从这个调用返回才能结束。参考实现直接拒绝这次调用，并且在拒绝前不改变池的开放状态。任务可以调用 `shutdown(wait=False)` 发出请求，再由池外的所有者负责等待。
+
+这只处理直接等待自己的情况。任务若等待另一个线程，而那个线程又等待本池关闭，仍可能形成更长的依赖环，需要在调用关系上避免。
+
+## 9. 面试题 {#面试题}
+
+### 9.1 线程池中的任务队列、工作线程和结果句柄分别负责什么？ {#pool-components}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：接收、领取、执行与结果之间的关系。
+
+**相关内容**：[任务与工作线程](#任务与工作线程)、[关闭与任务结果](#关闭与任务结果)。
+
+<details>
+<summary>参考回答</summary>
+
+**队列保存等待任务，工作线程领取并执行，结果句柄保存返回值或异常。** 提交成功只说明池接收了任务，不说明它已经开始或完成。
+
+同一工作线程可以执行多个任务；领取顺序、用户代码实际开始顺序和完成顺序也不能混为一谈。提交者需要观察结果，才能知道任务是否成功。
+
+</details>
+
+### 9.2 工作线程数量固定，为什么还需要限制任务队列？ {#bounded-admission}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：执行并发、积压、内存和明确拒绝。
+
+**相关内容**：[队列容量与拒绝](#队列容量与拒绝)。
+
+<details>
+<summary>参考回答</summary>
+
+**固定线程数只限制同时执行的任务，不限制等待任务数量。** 提交速度长期超过完成速度时，无界队列会持续增长，增加内存和排队延迟。
+
+有界队列达到容量后必须有明确结果，例如立即拒绝或限时等待。不能丢掉任务，却留下一个永远无法完成的结果句柄。队列容量要结合等待预算和单任务占用选择。
+
+</details>
+
+### 9.3 动态缩容为什么不能只给多个线程发送退出信号？ {#resize-contract}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：当前目标、安全退出位置与登记数竞争。
+
+**相关内容**：[目标数量与当前数量](#目标数量与当前数量)、[缩容与领取任务的竞争](#缩容与领取任务的竞争)。
+
+<details>
+<summary>参考回答</summary>
+
+**要让退出数量受同步控制，并说明什么时候允许退出。** 多个线程无锁地看到相同人数后一起退出，可能减到目标以下；固定的退出指令也可能在随后扩容时已经过时。
+
+参考实现让线程完成当前任务，在领取下一项之前持锁检查当前目标，并在同一锁内减少登记数。缩容返回表示目标更新，忙线程仍可能继续运行，最终关闭还需等待实际线程结束。
+
+</details>
+
+### 9.4 submit 和 shutdown 同时执行时，怎样避免已接受任务被遗漏？ {#submit-shutdown-race}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：接收分界、共享锁、有序关闭与锁外等待。
+
+**相关内容**：[关闭与任务结果](#关闭与任务结果)、[参考实现](#参考实现)。
+
+<details>
+<summary>参考回答</summary>
+
+**用共同的同步边界决定提交是否被接收。** 参考实现把状态检查和入队放在同一把锁下；提交先完成就纳入有序关闭的处理范围，关闭先改变状态就拒绝提交。
+
+工作线程在关闭后仍处理已有队列，直到没有任务。用户函数在锁外执行，`join` 也在锁外等待，避免占着管理锁阻止其他线程取任务或退出。
+
+</details>
+
+### 9.5 任务抛出异常或等待结果超时后，线程池应该怎样处理？ {#task-results}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：任务失败与线程退出、结果终态、等待与取消。
+
+**相关内容**：[关闭与任务结果](#关闭与任务结果)、[等待超时与资源归属](#等待超时与资源归属)。
+
+<details>
+<summary>参考回答</summary>
+
+**任务失败必须能被观察，等待超时则不能被当成任务已停止。** 参考实现捕获任务异常并保存到结果句柄，调用方读取结果时重新抛出，工作线程继续服务其他任务。
+
+`result(timeout)` 只结束本次等待；任务仍可能排队或执行。资源应由任务自己的 `with`、`finally` 或明确的所有者收尾。有序关闭要等任务结束，因此也需要任务本身具备合理的超时和退出条件。
+
+</details>
+
+### 9.6 实现一个支持动态扩容和缩容的线程池，需要怎样组织状态和工作循环？ {#dynamic-pool-design}
+
+**题型**：综合题
+
+**考察重点**：动态创建与回收、队列接收、同步不变量、结果与关闭。
+
+**相关内容**：[实现约定](#实现约定)、[参考实现](#参考实现)、[并发边界与验证](#并发边界与验证)。
+
+<details>
+<summary>参考回答</summary>
+
+**先定义容量、拒绝、缩容和关闭语义，再用统一的受锁状态协调提交、领取与退出。** 一个可运行方案如下：
+
+- 保存目标数量、工作集合、有界队列和关闭标志。提交时持锁检查开放状态与容量，接受后入队并通知工作线程。
+- 扩容创建实际线程；缩容更新目标并唤醒等待者。工作线程完成任务后，持锁决定退出或领取下一项，人数检查与登记变更不可分开。
+- 用户函数在锁外运行，正常结果和异常都通知等待者。拒绝必须立即返回明确失败，不留下悬空结果。
+- 有序关闭停止接收、处理已接收队列，再在锁外等待所有线程。另行保留已离开工作集合但仍在退出的线程句柄，避免漏等。
+- 验证提交/关闭竞争、忙线程缩容、连续伸缩、异常及创建线程失败；不能只用一批无竞争的简单任务证明实现正确。
+
+具体参考代码见正文。队列容量、最小人数和只支持有序关闭是这份参考方案的约定；换成阻塞提交或取消排队任务时，必须重新检查这些状态关系。
+
+</details>
+
+## 10. 参考资料 {#参考资料}
+
+- [Python 3.12：threading](https://docs.python.org/3.12/library/threading.html)
+- [Python 3.12：concurrent.futures](https://docs.python.org/3.12/library/concurrent.futures.html)
+- [CPython 3.12.13：条件变量、线程启动与 join 文档](https://github.com/python/cpython/blob/v3.12.13/Doc/library/threading.rst)
+- [CPython 3.12.13：执行器关闭与 Future 文档](https://github.com/python/cpython/blob/v3.12.13/Doc/library/concurrent.futures.rst)
+- [CPython 3.12.13：ThreadPoolExecutor 实现](https://github.com/python/cpython/blob/v3.12.13/Lib/concurrent/futures/thread.py)
+- [CPython 3.12.13：Thread 与 Condition 实现](https://github.com/python/cpython/blob/v3.12.13/Lib/threading.py)

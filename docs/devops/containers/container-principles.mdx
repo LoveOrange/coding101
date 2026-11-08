@@ -55,7 +55,7 @@ Linux 容器在 macOS 上运行时，需要 Linux 虚拟机。容器共享的是
 
 排查时，`ls -l /proc/<pid>/ns` 可以查看进程所属的 Namespace 标识，`nsenter -t <pid> -n ip addr` 则在目标进程的网络视图中查看地址。`docker exec` 也是让运行时新建一个容器内进程，并不会另建一台虚拟机。Linux 运行时可用 `setns()` 加入已有 Namespace；其中 PID Namespace 的加入对后续创建的子进程生效。
 
-容器可以显式共享部分 Namespace。例如 `--network=host` 使用宿主网络视图。
+容器可以显式共享部分 Namespace。例如 `--network=host` 使用宿主网络视图。Linux 上同一 Kubernetes Pod 的容器共享网络与 IPC Namespace，因此能通过 `localhost` 通信，也可能竞争同一监听端口；PID Namespace 默认不共享，可通过 `shareProcessNamespace: true` 开启。各容器的根文件系统仍独立，共用文件需要配置共享卷。Pod 的运行和探针机制见 [Pod：生命周期、探针与资源](../kubernetes/pods.mdx#pod-的组成)。
 
 ## 4. Cgroups {#cgroups}
 
@@ -172,3 +172,5 @@ v1 可以有多个控制器层级，v2 使用统一层级。父级的资源上�
 - [Docker：Engine security](https://docs.docker.com/engine/security/)
 - [Docker：Rootless mode](https://docs.docker.com/engine/security/rootless/)
 - [Linux man-pages：setns(2)](https://man7.org/linux/man-pages/man2/setns.2.html)
+- [Kubernetes：Pods](https://kubernetes.io/docs/concepts/workloads/pods/)
+- [Kubernetes：Share Process Namespace](https://kubernetes.io/docs/tasks/configure-pod-container/share-process-namespace/)

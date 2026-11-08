@@ -1,0 +1,378 @@
+---
+sidebar_position: 2
+knowledge:
+  id: basic-knowledge.javascript.scope-closures
+  type: concept
+description: "解释 JavaScript 词法作用域、var/let/const、声明初始化与暂时性死区，以及闭包捕获绑定、循环回调和资源生命周期。通过最小示例推导代码结果与应用边界。"
+keywords: ["JavaScript 作用域", "闭包", "暂时性死区", "let const var", "词法环境"]
+---
+
+# 作用域与闭包
+
+JavaScript 的变量查找由代码定义的位置决定。函数创建后会保留访问外层词法环境的能力，因此，即使外层函数已经返回，它仍可能读写原来的变量；这就是理解闭包的起点。
+
+闭包让计数器、回调和模块状态成为可能，也会让多个回调共享同一份状态。推导输出时，要分清当前读的是哪一个绑定、它什么时候初始化，以及调用发生前它是否被修改。
+
+## 1. 面试核心 {#core}
+
+- **词法作用域由定义位置决定**，不能从函数的调用位置反推它能读取哪个外部变量。[卡](#lexical-lookup)
+- `var` 通常以函数为作用域，`let` 和 `const` 以块为作用域。**声明、初始化和赋值不是同一个时刻**，用三者区分变量提升与暂时性死区。[卡](#declarations)
+- `let`、`const` 的绑定在作用域内已经存在，但初始化前不能访问。**暂时性死区内使用 `typeof` 也会抛出错误**。[卡](#temporal-dead-zone)
+- 闭包保留的是对词法环境中**绑定的访问能力，不是自动拍下值的快照**。同一调用创建的函数可以共享状态，不同调用通常有各自的状态。[卡](#closure-binding)
+- 循环回调的结果取决于绑定是否共享。`for (let i = ...)` 的每轮绑定可以被分别捕获，**只把声明从 `var` 改成循环外的 `let` 并不能解决共享问题**。[卡](#loop-callbacks)
+- 闭包本身不等于内存泄漏。需要检查**谁仍然持有函数、函数还需要哪些数据、何时解除订阅或清空引用**。[卡](#closure-lifetime)
+
+## 2. 变量从哪里查找 {#变量从哪里查找}
+
+**作用域**规定名字在哪一段代码中可见。**绑定**是某个名字与其保存的值之间的关系；同名变量可以属于不同的绑定。
+
+函数访问一个变量时，先检查自己的环境，再沿定义时形成的外层环境继续查找。找到最近的同名绑定就停止，这种遮住外层同名变量的行为叫作遮蔽。
+
+```js
+const label = "outer";
+
+function readLabel() {
+  return label;
+}
+
+function callReader() {
+  const label = "caller";
+  return readLabel();
+}
+
+console.log(callReader()); // outer
+```
+
+`readLabel` 定义在外层，所以它查找的是外层 `label`。调用方 `callReader` 的局部变量没有进入 `readLabel` 的作用域链。调用栈决定函数如何进入和返回，词法环境决定名字如何解析，两者不能混为一谈。
+
+规范使用**环境记录**描述绑定，以及指向外层环境的关系。它是解释语言行为的模型，不要求引擎把每个作用域都实现成一个 JavaScript 对象。
+
+## 3. var、let 与 const {#var-let-与-const}
+
+### 3.1 可见范围与初始化 {#可见范围与初始化}
+
+`var` 不以普通花括号形成块作用域；`let` 和 `const` 会。下面用函数包住示例，避免浏览器脚本与 Node 模块顶层的差异。
+
+```js
+function inspect() {
+  if (true) {
+    var shared = 1;
+    let local = 2;
+  }
+  console.log(shared); // 1
+  // console.log(local); // 运行错误：ReferenceError，local 不在此作用域
+}
+inspect();
+```
+
+三种声明还存在初始化和重复声明规则的差异。
+
+| 规则 | `var` | `let` | `const` |
+| --- | --- | --- | --- |
+| 主要作用域 | 函数；顶层依宿主/脚本模式而定 | 块 | 块 |
+| 执行到声明前 | 绑定已初始化为 `undefined` | 绑定尚未初始化，处于暂时性死区 | 同左 |
+| 是否必须在普通声明中给初值 | 否 | 否，执行到声明时初始化为 `undefined` | 是 |
+| 能否重新赋值 | 可以 | 可以 | 不可以 |
+| 同一作用域重复同名声明 | 同类 `var` 通常允许 | 不允许 | 不允许 |
+
+`var` 与同一作用域的 `let`/`const` 也不能随意重名。`for...of`、`for...in` 中的 `const` 由迭代过程初始化，不需要写普通声明形式的初值。
+
+`const` 只限制绑定重新赋值，对象属性仍可以修改，具体关系见[JavaScript 数据类型与类型转换](./types-conversion.mdx#对象共享与传参)。
+
+### 3.2 声明提升不是搬动代码 {#声明提升不是搬动代码}
+
+**声明提升**是描述某些声明在执行到其所在位置前已产生作用的说法，不是引擎真的把源码搬到顶部。
+
+```js
+function inspect() {
+  console.log(count); // undefined
+  var count = 3;
+  console.log(count); // 3
+}
+inspect();
+```
+
+进入函数时，`var count` 的绑定已经建立并初始化为 `undefined`；`= 3` 仍在执行到那一行时发生。普通函数声明则能在所在函数或模块的声明处理阶段初始化为函数，因此可以在其声明行之前调用。
+
+函数表达式跟随保存它的变量规则，不因右边写着函数就提前完成赋值：
+
+```js
+function inspect() {
+  console.log(typeof declared); // function
+  console.log(typeof assigned); // undefined
+  var assigned = function () {};
+  function declared() {}
+}
+inspect();
+```
+
+这里若在赋值前执行 `assigned()`，会因 `assigned` 当前为 `undefined` 而抛出 `TypeError`。块内函数声明还涉及严格模式及历史兼容规则，推导时应先明确环境，不拿浏览器非严格脚本的特殊结果推广到模块代码。
+
+## 4. 暂时性死区 {#暂时性死区}
+
+**暂时性死区**（Temporal Dead Zone，TDZ）是词法绑定已经建立、但还没有完成初始化的一段执行期间。在此期间读取或写入这个绑定会抛出 `ReferenceError`。
+
+```js
+const value = "outer";
+{
+  // console.log(value); // 运行错误：ReferenceError
+  let value = "inner";
+  console.log(value); // inner
+}
+```
+
+块里的 `value` 从该块作用域开始就遮住外层同名绑定，因此声明之前的访问不会“退回去读外层”。它找到的恰恰是尚未初始化的内层绑定。
+
+TDZ 看的是执行时刻，而不是函数定义是否写在声明上方：
+
+```js
+{
+  const read = () => value;
+  let value = 3;
+  console.log(read()); // 3
+}
+```
+
+创建 `read` 没有立即读取 `value`；真正调用时初始化已经完成，所以可以读取。如果把 `read()` 移到 `let value = 3` 之前，才会抛错。
+
+`typeof` 对完全不存在的名字通常返回 `"undefined"`，但对 TDZ 中的名字也会抛 `ReferenceError`。这两个情况分别是“找不到绑定”和“找到但尚不能访问”，不能用一个结果概括。
+
+## 5. 闭包捕获的内容 {#闭包捕获的内容}
+
+**闭包**是函数与其可访问的外层词法环境结合形成的能力。函数不必被返回才算使用闭包；被返回的函数只是更容易展示“外层调用已结束，变量仍能访问”的效果。
+
+```js
+function createCounter() {
+  let count = 0;
+  return {
+    increment: () => ++count,
+    read: () => count,
+  };
+}
+
+const first = createCounter();
+const second = createCounter();
+console.log(first.increment()); // 1
+console.log(first.read());      // 1
+console.log(second.read());     // 0
+```
+
+`first.increment` 和 `first.read` 来自同一次调用，共享那次调用的 `count`。再次执行 `createCounter()`，会创建另一份绑定，所以 `second` 的计数独立。外部没有获得直接给 `count` 赋值的接口，只能使用返回的方法。
+
+闭包读取的是调用时绑定中的当前值，并不自动保存创建时的快照：
+
+```js
+function createReader() {
+  let value = 1;
+  const read = () => value;
+  value = 2;
+  return read;
+}
+console.log(createReader()()); // 2
+```
+
+如果需要保存某一时刻的结果，可以先算出结果并放到单独绑定中。但复制对象引用仍会共享对象，不能把“新建一个变量”自动等同于深拷贝。
+
+这些关系也解释了闭包的用途：工厂函数封装私有状态，回调保存任务上下文，函数组合保存部分参数。使用时先说明需要保留什么状态、哪些函数共享它、什么时候不再需要它。
+
+## 6. 循环与回调 {#循环与回调}
+
+多个回调可能读同一个绑定，也可能各自读不同绑定。先用同步调用回调的例子排除定时器调度的干扰。
+
+```js
+function withVar() {
+  const readers = [];
+  for (var i = 0; i < 3; i++) {
+    readers.push(() => i);
+  }
+  return readers.map(read => read());
+}
+
+function withLet() {
+  const readers = [];
+  for (let i = 0; i < 3; i++) {
+    readers.push(() => i);
+  }
+  return readers.map(read => read());
+}
+
+console.log(withVar()); // [3, 3, 3]
+console.log(withLet()); // [0, 1, 2]
+```
+
+`withVar` 只有一个函数级 `i`，循环结束后它是 `3`，三个函数都读它。`for (let i = ...)` 会为迭代建立各自的绑定，因此函数分别保留对应那一轮的 `i`。
+
+如果把 `let i` 声明在循环外，循环体仍然反复修改同一个绑定，回调会读到最终值。旧代码使用 `var` 时，可以把每轮值作为参数传入一个新函数调用，让回调捕获这次调用自己的参数绑定：
+
+```js
+function makeReader(value) {
+  return () => value;
+}
+
+function buildReaders() {
+  const readers = [];
+  for (var i = 0; i < 3; i++) {
+    readers.push(makeReader(i));
+  }
+  return readers;
+}
+console.log(buildReaders().map(read => read())); // [0, 1, 2]
+```
+
+把回调交给 `setTimeout` 后，还有一个独立条件：回调会在当前同步任务结束后才有机会执行。循环里的 `var i` 已经达到退出值，因此会重复输出退出值；这不表示定时器会复制当时的变量值。
+
+## 7. 闭包与资源生命周期 {#闭包与资源生命周期}
+
+闭包会影响数据的可达性，但“存在闭包”不等于“发生泄漏”。只要程序不再需要的数据仍被长期持有，就可能出现不必要的内存占用。
+
+例如，一个长期存在的事件源持有监听函数，监听函数又访问一份大数据，这份数据可能随监听函数一起保留。外层函数返回并不能自动解除订阅。
+
+```js
+function subscribe(source, initialData) {
+  let data = initialData;
+  const onTick = () => {
+    if (data !== null) source.consume(data);
+  };
+  source.addEventListener("tick", onTick);
+
+  return function dispose() {
+    source.removeEventListener("tick", onTick);
+    data = null;
+  };
+}
+```
+
+`dispose` 使用原来的函数引用取消监听，并清空 `onTick` 实际读取的绑定。调用方在不再需要时执行清理，避免依赖垃圾回收器猜测业务生命周期。如果数据还有其他引用，清空这里也不会让它立即被回收；引擎同样不保证何时执行回收。
+
+真实排查要看保留路径、监听器、定时器和缓存，而不是看到闭包就删除。闭包还可能保留过期业务状态：数据虽然没有泄漏，却不是当前操作希望读取的那一份。此时应检查函数创建时对应的那次调用或订阅，而不是只看变量名相同。
+
+## 8. 常见问题 {#常见问题}
+
+### 8.1 浏览器顶层变量都属于 window 吗？ {#顶层变量与全局对象}
+
+不是。浏览器经典脚本顶层的 `var` 声明通常会成为全局对象属性；顶层 `let` 和 `const` 建立全局词法绑定，不因此成为 `window` 属性。模块的顶层声明属于模块作用域。Node.js 模块也有自己的顶层范围，不能把经典脚本的结论直接搬过去。
+
+### 8.2 Object.freeze 能模拟 const 吗？ {#freeze-与-const}
+
+不能。`Object.freeze` 限制一个对象的自有属性变化，不限制某个变量绑定，也不会创建块作用域或 TDZ。`Object.defineProperty` 能限制指定对象属性的写入，同样不能完整复现 `const` 的词法声明语义。
+
+旧环境下的代码转换可以改写作用域和部分检查，但不能把一个普通运行时函数说成能直接添加新的声明语法。解释兼容方案时，要说明能模拟哪些行为、哪些条件依赖编译转换。
+
+### 8.3 with 会改变变量查找吗？ {#with-与变量查找}
+
+`with` 会把对象加入名字解析过程，使未限定的名字更难静态判断。严格模式禁止 `with`，模块天然处于严格模式。理解旧代码时需要知道它影响查找，但新代码应使用显式属性访问或解构，不依赖它构造作用域。
+
+## 9. 面试题 {#面试题}
+
+### 9.1 函数的外部变量由定义位置还是调用位置决定？ {#lexical-lookup}
+
+**考察重点**：词法作用域、遮蔽与调用栈的分工。
+
+**相关内容**：[变量从哪里查找](#变量从哪里查找)。
+
+<details>
+<summary>参考回答</summary>
+
+**由定义位置形成的词法环境决定。** 函数先在当前环境查找绑定，找不到再沿外层环境查找。调用方恰好有一个同名局部变量，不会让这个变量自动进入被调用函数的作用域链。
+
+因此推导时要画出定义关系，再追踪执行时的值；不能把当前调用栈当作变量查找链。
+
+</details>
+
+### 9.2 var、let 与 const 有哪些区别？ {#declarations}
+
+**考察重点**：作用域、初始化、重复声明和重新赋值规则。
+
+**相关内容**：[var、let 与 const](#var-let-与-const)。
+
+<details>
+<summary>参考回答</summary>
+
+**`var` 通常是函数作用域，`let` 和 `const` 是块作用域。** `var` 绑定在声明执行前已初始化为 `undefined`，`let` 和 `const` 则在初始化前处于 TDZ。普通 `const` 声明需要初值，之后不能重新赋值，但对象属性仍可修改。
+
+同一作用域的 `let`/`const` 不能重复同名声明，也不能与已有同名 `var` 冲突。顶层行为还要区分经典脚本、模块和宿主，不能统一说“都会挂到 window”。
+
+</details>
+
+### 9.3 暂时性死区是什么，typeof 能否绕过它？ {#temporal-dead-zone}
+
+**考察重点**：绑定存在与绑定可访问不是同一件事。
+
+**相关内容**：[暂时性死区](#暂时性死区)。
+
+<details>
+<summary>参考回答</summary>
+
+**TDZ 是词法绑定建立后、初始化前不能访问的一段执行期间，`typeof` 也不能绕过。** 作用域内的同名绑定已经遮住外层变量，因此不会因为内层尚未初始化就去读外层。
+
+要区分完全未声明的名字与 TDZ 中的名字：前者使用 `typeof` 通常得到 `"undefined"`，后者抛 `ReferenceError`。闭包定义在声明前不一定出错，关键是实际读取是否发生在初始化之前。
+
+</details>
+
+### 9.4 闭包是什么，同一次调用返回的两个函数会共享状态吗？ {#closure-binding}
+
+**考察重点**：函数、外层词法环境和绑定之间的关系。
+
+**相关内容**：[闭包捕获的内容](#闭包捕获的内容)。
+
+<details>
+<summary>参考回答</summary>
+
+**闭包让函数保留访问外层词法绑定的能力。** 同一次调用创建的两个函数如果访问同一个外层变量，就共享那个绑定；其中一个修改后，另一个能读到新值。
+
+再次调用工厂函数会建立新的调用环境，通常得到独立状态。闭包不是自动复制创建时的值，也不要求外层函数已经返回才成立。可用它封装私有状态或保存回调上下文，并明确状态的生命周期。
+
+</details>
+
+### 9.5 为什么 var 循环里的异步回调可能重复输出同一个数字？ {#loop-callbacks}
+
+**考察重点**：共享绑定、每轮绑定与回调执行时刻。
+
+**相关内容**：[循环与回调](#循环与回调)、[闭包捕获的内容](#闭包捕获的内容)。
+
+<details>
+<summary>参考回答</summary>
+
+**多个回调捕获的是同一个 `var` 绑定，执行时读到的是循环结束后的值。** 定时器回调不能打断当前同步循环，因此会看到退出值，而不是注册回调时的每轮数字。
+
+使用 `for (let i = ...)` 让每轮拥有可分别捕获的绑定，或者每轮调用一个函数，把当前值放入该次调用的参数绑定。仅把 `let i` 放到循环外仍然共享同一个绑定。
+
+</details>
+
+### 9.6 闭包一定导致内存泄漏吗，怎样管理监听器持有的数据？ {#closure-lifetime}
+
+**考察重点**：可达性、资源所有者、解除订阅与清理边界。
+
+**相关内容**：[闭包与资源生命周期](#闭包与资源生命周期)。
+
+<details>
+<summary>参考回答</summary>
+
+**不一定。闭包只是让仍可访问的状态继续可达，泄漏取决于不再需要的资源是否还被长期持有。** 监听器或定时器持有闭包时，要在组件卸载、任务取消等生命周期结束点解除订阅、取消任务，必要时清空对大对象的引用。
+
+清理使用原来的监听函数引用，并检查其他保留路径。不能承诺清空一个变量就立即回收，也不应该为避免闭包而破坏必要的状态封装。
+
+</details>
+
+### 9.7 旧语法环境中，能否用 Object.defineProperty 完整模拟 const？ {#simulate-const}
+
+**考察重点**：变量绑定与对象属性规则的差异，以及代码转换的能力边界。
+
+**相关内容**：[可见范围与初始化](#可见范围与初始化)、[Object.freeze 能模拟 const 吗？](#freeze-与-const)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能完整模拟。不可写属性只能限制某个对象属性，`const` 还涉及词法绑定、块作用域、初始化和重复声明检查。** `Object.freeze` 也只约束对象，不约束变量绑定。
+
+需要兼容旧环境时可以用构建工具转换代码，但要分别说明作用域改写和运行时检查；不能把属性描述符的一个特性当作完整语言语义。
+
+</details>
+
+## 10. 参考资料 {#参考资料}
+
+- [ECMAScript：Environment Records](https://tc39.es/ecma262/multipage/executable-code-and-execution-contexts.html#sec-environment-records)
+- [MDN：Closures](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Closures)
+- [MDN：var](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Statements/var)
+- [MDN：let](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Statements/let)
+- [MDN：const](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Statements/const)

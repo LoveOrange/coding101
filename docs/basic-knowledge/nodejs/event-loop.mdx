@@ -1,0 +1,378 @@
+---
+sidebar_position: 1
+knowledge:
+  id: basic-knowledge.nodejs.event-loop
+  type: concept
+description: "解释 Node.js 的运行时分工、事件循环阶段、nextTick 与微任务、定时器顺序以及计算阻塞和进程存活边界。"
+keywords: ["Node.js", "事件循环", "libuv", "nextTick", "setImmediate", "微任务"]
+---
+
+# Node.js 事件循环
+
+**Node.js 事件循环**负责在 JavaScript 调用结束后，继续调度已经具备执行条件的回调。它让一个 JavaScript 线程在等待文件、网络等操作时继续处理其他工作，但不会把耗时的 JavaScript 计算自动搬到后台线程。
+
+解释 Node.js 的异步代码，需要同时看回调在哪种队列里、什么时候进入队列，以及当前代码处于什么执行环境。本文以 Node.js 22 为基线，示例使用 Node.js 22.16.0，分别标明 CommonJS 和 ES Module；定时器与 I/O 的顺序不能脱离这些条件判断。
+
+## 1. 面试核心 {#core}
+
+- Node.js 的运行时由 V8、Node.js API 及原生绑定、libuv 和操作系统共同协作。**默认一个 JavaScript 线程处理回调，不代表整个进程只有一个线程**。[卡](#runtime-parts)
+- 浏览器和 Node.js 都需要在当前 JavaScript 执行结束后继续调度异步工作，但**宿主提供的阶段、API 和检查点不同**；Node.js 不包含浏览器的页面渲染流程。[卡](#browser-difference)
+- 事件循环通过多个阶段处理不同回调，其中 **poll 处理 I/O，check 执行 `setImmediate`，timers 执行到期定时器**。`nextTick` 队列不属于这些阶段。
+- `process.nextTick` 使用 Node.js 的队列，Promise 回调与 `queueMicrotask` 使用 V8 微任务队列。**CommonJS 顶层与 ES Module 顶层的顺序可能不同**，正在执行的微任务不会被新加入的 `nextTick` 抢占。[卡](#tick-microtasks)
+- `setTimeout(fn, 0)` 表示按定时器规则等待调度，**不保证立即执行，也不保证与顶层 `setImmediate` 的固定顺序**；在同一个 I/O 回调中安排两者时，可以解释 `setImmediate` 先执行的原因。[卡](#immediate-timeout)
+- 长计算会阻塞当前 JavaScript 线程，连续追加 `nextTick` 或微任务也会推迟 I/O。**`async` 和 `await Promise.resolve()` 都不能保证让事件循环继续处理 I/O**。[卡](#cpu-blocking) [卡](#microtask-starvation)
+- `unref()` 改变的是定时器是否保持进程存活。**它不取消定时器；取消要使用 `clearTimeout` 等对应 API**。[卡](#unref)
+
+## 2. 运行时的分工 {#运行时的分工}
+
+V8 负责执行 JavaScript，Node.js 提供文件、网络、进程等 API，并通过原生实现把这些操作与底层能力连接起来。**libuv** 是 Node.js 使用的跨平台异步 I/O 库，提供事件循环、线程池等能力。
+
+假设服务收到了一个读取文件的请求：JavaScript 发起异步文件操作后返回；底层执行读取，完成后把结果交回事件循环；轮到对应回调时，JavaScript 才继续处理内容。在等待读取期间，事件循环有机会调度其他请求的回调。
+
+不同异步操作的底层路径并不相同：
+
+| 工作 | 主要执行位置 | 对 JavaScript 线程的影响 |
+| --- | --- | --- |
+| JavaScript 循环、普通函数、`JSON.parse` | 当前 JavaScript 线程 | 执行期间不能同时运行其他 JavaScript 回调 |
+| 网络连接与读写 | 通常借助操作系统的非阻塞 I/O，由事件循环接收通知 | 等待 I/O 时可以处理其他回调，结果处理仍要占用 JavaScript 线程 |
+| 异步文件操作、`dns.lookup`、部分加密与压缩 API | libuv 线程池中的相应任务 | 可以不阻塞 JavaScript 线程，但线程池拥塞仍会增加等待 |
+| 使用 `worker_threads` 执行的 JavaScript | 另一个 Worker 的 JavaScript 线程 | 可以并行计算，需要处理通信和资源成本 |
+
+这里的 libuv 线程池与 `worker_threads` 是两种机制。把业务函数写成 `async`，既不会自动创建 Worker，也不会把函数体投递给 libuv 线程池。网络 API 内部若调用 `dns.lookup`，这一部分仍可能使用线程池，因此也不能简单说“一次网络请求的所有步骤都与线程池无关”。
+
+## 3. 事件循环阶段 {#事件循环阶段}
+
+事件循环按阶段推进，回调进入与其来源相应的队列。理解阶段的用途，比背一个“宏任务先进先出”的总队列更有帮助，因为 Node.js 并没有把所有这些回调混在同一个队列里。
+
+| 阶段 | 主要用途 |
+| --- | --- |
+| pending callbacks | 执行推迟到后续循环的部分 I/O 回调，例如某些系统错误的回调 |
+| idle、prepare | libuv 内部工作 |
+| poll | 获取 I/O 事件、执行相应回调；条件允许时等待新事件 |
+| check | 执行 `setImmediate` 回调 |
+| close callbacks | 执行部分资源关闭回调 |
+| timers | 执行达到时间阈值的 `setTimeout`、`setInterval` 回调 |
+
+Node.js 20 起使用的 libuv 1.45 调整了定时器处理：常规循环迭代在 poll 之后处理 timers，不再按旧实现的方式在 poll 前后都检查。进入循环前仍有一次兼容性的定时器处理，因此“所有定时器绝不可能在第一次 poll 前运行”也不成立。
+
+poll 不会无限等待：已有 `setImmediate` 等待执行时，poll 可以结束并进入 check；已有定时器也会影响等待时间。正在运行的 JavaScript 回调不会因为某个定时器到期而被抢占，所以一个长回调可以让其他定时器明显晚于预期。
+
+这些阶段之外，Node.js 还在适当的回调边界处理 `nextTick` 和微任务。不能把检查点理解为“整个阶段全部执行完，才处理一次微任务”，下面会用同一批 `setImmediate` 验证这一点。
+
+## 4. nextTick 与微任务 {#nexttick与微任务}
+
+### 4.1 CommonJS 与 ES Module 顶层 {#模块顶层顺序}
+
+**`process.nextTick` 队列**是 Node.js 在继续事件循环前处理的一组回调。**微任务队列**用于执行 Promise 的反应回调、`queueMicrotask` 等工作；Promise 的基本状态与链式规则见 [Promise](../javascript/promise.mdx)。
+
+把下面的代码分别保存为 `order.cjs` 和 `order.mjs`，再用 `node` 运行：
+
+```js
+console.log('start');
+process.nextTick(() => console.log('tick'));
+Promise.resolve().then(() => console.log('promise'));
+queueMicrotask(() => console.log('micro'));
+console.log('end');
+```
+
+| 入口 | 输出顺序 |
+| --- | --- |
+| `node order.cjs` | `start → end → tick → promise → micro` |
+| `node order.mjs` | `start → end → promise → micro → tick` |
+
+CommonJS 顶层结束后，Node.js 先处理 `nextTick` 队列，再处理微任务。ES Module 的顶层执行本身处于微任务处理过程中，新加入的 Promise 回调与 `queueMicrotask` 会在这一轮微任务处理中继续执行，然后才轮到 `nextTick`。
+
+差异来自执行上下文，不是 `.mjs` 文件里每一个回调都永久采用另一套优先级。由定时器或 I/O 调用的普通回调，应当按那个回调结束时的队列状态判断。
+
+### 4.2 排队不会抢占正在执行的队列 {#队列之间的追加}
+
+在微任务里追加 `nextTick`，不会打断当前微任务队列的处理。下面仍使用 `.cjs` 文件：
+
+```js
+process.nextTick(() => {
+  console.log('tick-1');
+  Promise.resolve().then(() => console.log('promise-in-tick'));
+});
+Promise.resolve().then(() => {
+  console.log('promise-1');
+  process.nextTick(() => console.log('tick-in-promise'));
+  queueMicrotask(() => console.log('micro-in-promise'));
+});
+queueMicrotask(() => console.log('micro-1'));
+```
+
+输出为 `tick-1 → promise-1 → micro-1 → promise-in-tick → micro-in-promise → tick-in-promise`。`promise-in-tick` 加入已有微任务的队尾；随后 `promise-1` 又追加 `micro-in-promise`。这批微任务处理完以后，Node.js 才处理其中新加入的 `tick-in-promise`。
+
+对于普通应用中“当前同步调用结束以后执行”的需要，`queueMicrotask` 能跨浏览器与 Node.js 使用。只有确实依赖 Node.js 的 `nextTick` 时序或相应 API 行为时，才选择 `process.nextTick`。
+
+### 4.3 回调之间也有检查点 {#回调之间的检查点}
+
+一个阶段里有多个回调，不意味着它们之间不能运行微任务：
+
+```js
+setImmediate(() => {
+  console.log('immediate-1');
+  process.nextTick(() => console.log('tick'));
+  queueMicrotask(() => console.log('micro'));
+});
+setImmediate(() => console.log('immediate-2'));
+```
+
+输出为 `immediate-1 → tick → micro → immediate-2`。第一个回调返回以后，Node.js 已经处理了它加入的 `nextTick` 和微任务，然后才执行第二个 `setImmediate`。这也是为什么只背“check 阶段先于 timers 阶段”还不足以完成混合输出题。
+
+## 5. 定时器与 I/O {#定时器与io}
+
+### 5.1 顶层不依赖固定顺序 {#顶层定时器顺序}
+
+**定时器延迟是进入可执行状态的时间条件，不是精确执行时间。** 在 Node.js 22 中，小于 1 毫秒的 `setTimeout` 延迟会按 1 毫秒处理，超过 `2147483647` 毫秒也会按 1 毫秒处理，非整数会截断。无论参数怎样处理，回调实际执行还要等 JavaScript 线程和调度条件允许。
+
+```js
+// top-level.cjs
+setTimeout(() => console.log('timer'), 0);
+setImmediate(() => console.log('immediate'));
+```
+
+这段顶层代码不应作为固定先后顺序的业务依赖。启动耗时、定时器是否已到阈值等条件都会影响观察结果；连续运行很多次只出现一种顺序，也不能推出另一种顺序被 API 禁止。
+
+### 5.2 I/O 回调中的安排 {#io回调中的安排}
+
+在同一个 I/O 回调中安排 `setImmediate` 与零延迟定时器，`setImmediate` 会先执行。把下面代码保存为 `io-order.cjs`：
+
+```js
+const fs = require('node:fs');
+
+fs.readFile(__filename, (error) => {
+  if (error) throw error;
+  console.log('io');
+  setTimeout(() => console.log('timer'), 0);
+  setImmediate(() => console.log('immediate'));
+  process.nextTick(() => console.log('tick'));
+  Promise.resolve().then(() => console.log('promise'));
+});
+```
+
+输出为 `io → tick → promise → immediate → timer`。文件回调先完成同步工作，随后处理 `nextTick` 和微任务。接下来可以进入 check 执行刚安排的 `setImmediate`，再处理定时器。
+
+这个结论的条件是“在同一个 I/O 回调中安排”。换成顶层代码、换成微任务里嵌套安排，或者让回调执行期间继续注册其他任务，都应重新分析来源与排队位置。
+
+## 6. 阻塞与让出执行机会 {#阻塞与让出执行机会}
+
+### 6.1 async 不会自动分配计算线程 {#async与计算线程}
+
+`async` 函数在遇到需要暂停的位置之前，仍会在当前 JavaScript 线程执行：
+
+```js
+async function calculate() {
+  let sum = 0;
+  for (let i = 0; i < 1_000_000; i++) sum += i;
+  console.log('sum', sum);
+  await Promise.resolve();
+  console.log('after-await');
+}
+
+setTimeout(() => console.log('timer'), 0);
+calculate();
+console.log('caller');
+```
+
+输出为 `sum 499999500000 → caller → after-await → timer`。计算先同步执行，`await` 后的代码进入微任务；调用方继续执行 `caller`。到了处理微任务时，`after-await` 仍先于定时器。
+
+因此，服务把一段昂贵计算包进 `async`，仍可能让所有共享这个 JavaScript 线程的请求等待。需要先控制输入规模与算法成本，再考虑分片、Worker 或独立计算服务。
+
+### 6.2 连续微任务也会推迟 I/O {#连续微任务}
+
+不断向正在处理的队列追加任务，会让事件循环迟迟没有机会进入后续阶段。下面使用有限次数，便于实际观察：
+
+```js
+let count = 0;
+function step() {
+  count++;
+  if (count < 10_000) queueMicrotask(step);
+  else console.log('microtasks', count);
+}
+setTimeout(() => console.log('timer'), 0);
+queueMicrotask(step);
+```
+
+输出为 `microtasks 10000 → timer`。把 `queueMicrotask` 换成 `process.nextTick`，同样可以用连续追加回调推迟定时器。没有终止条件时，网络连接即使已经就绪，也可能一直等不到 JavaScript 处理。
+
+同样地，在一个大循环里反复 `await Promise.resolve()`，只是持续安排微任务，不是可靠的 I/O 让步方式。
+
+### 6.3 用 setImmediate 分片 {#使用setimmediate分片}
+
+**分片**是把大任务拆成有上限的小批次，每批完成后保存状态，再安排下一批。使用 `setImmediate` 可以让控制权回到事件循环，给其他回调执行机会：
+
+```js
+// batches.cjs
+const { setImmediate: yieldToLoop } = require('node:timers/promises');
+
+async function sumInBatches(limit, batchSize) {
+  if (!Number.isSafeInteger(limit) || limit < 0 ||
+      !Number.isSafeInteger(batchSize) || batchSize <= 0) {
+    throw new RangeError('invalid batch parameters');
+  }
+  let sum = 0;
+  for (let start = 0; start < limit; start += batchSize) {
+    const end = Math.min(start + batchSize, limit);
+    for (let i = start; i < end; i++) sum += i;
+    if (end < limit) await yieldToLoop();
+  }
+  return sum;
+}
+
+setImmediate(() => console.log('other-work'));
+sumInBatches(1_000_000, 1_000)
+  .then((sum) => console.log('sum', sum));
+```
+
+`other-work` 会在整项计算完成前输出，最终结果仍是 `499999500000`。每批计算仍发生在原线程，分片没有增加 CPU 核数，也可能增加总耗时；示例的参数只是便于验证，实际批次大小要结合单条任务成本和可接受的延迟选择。若单次操作本身就很昂贵，仅把它放进一批并不能改善阻塞。
+
+示例使用 `Number` 累加，参数是安全整数也不代表总和一定精确。对更大范围的整数，需要另外选择 `BigInt` 或限制结果范围；任务取消、并发上限和异常处理也应由调用边界补齐。
+
+## 7. 定时器与进程存活 {#定时器与进程存活}
+
+Node.js 的定时器默认会保持进程存活。调用 `unref()` 后，若已经没有其他需要等待的工作，进程可以退出，不再为了这个定时器继续等待：
+
+```js
+// unref.cjs
+const timer = setTimeout(() => console.log('background'), 20);
+timer.unref();
+console.log(timer.hasRef()); // false
+```
+
+单独运行这个文件，输出 `false` 后就可以退出，`background` 不一定有机会输出。如果再安排一个保持存活的普通定时器，例如延迟 50 毫秒的定时器，那么原来的 `background` 仍可能正常执行。
+
+`unref()` 没有把回调从调度中删除。要明确取消它，应调用 `clearTimeout(timer)`；要重新让它保持进程存活，可以调用 `timer.ref()`。后台统计之类的辅助任务可以考虑 `unref()`，但必须完成的持久化操作不能靠它保证结束前执行。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 Node.js 的底层由哪些部分组成？它是单线程的吗？ {#runtime-parts}
+
+**考察重点**：区分 JavaScript 执行、宿主 API、libuv、操作系统与不同线程。
+
+**相关内容**：[运行时的分工](#运行时的分工)。
+
+<details>
+<summary>参考回答</summary>
+
+**Node.js 默认由一个 JavaScript 线程处理回调，但运行时整体包含其他线程和操作系统能力。** V8 执行 JavaScript，Node.js 的 API 与原生绑定连接底层功能，libuv 提供事件循环和线程池，操作系统负责相应 I/O。
+
+异步文件操作等可以在线程池执行，网络 I/O 通常借助系统的非阻塞机制；完成后的 JavaScript 回调仍要等待事件循环调度。`worker_threads` 则允许显式创建执行 JavaScript 的其他线程，不能与 libuv 线程池混为一谈。
+
+</details>
+
+### 8.2 Node.js 与浏览器的事件循环有什么区别？ {#browser-difference}
+
+**考察重点**：共享的 JavaScript 异步机制与不同宿主的调度职责。
+
+**相关内容**：[事件循环阶段](#事件循环阶段)、[nextTick 与微任务](#nexttick与微任务)、[浏览器事件循环](../javascript/browser-event-loop.mdx)。
+
+<details>
+<summary>参考回答</summary>
+
+**两者都协调 JavaScript 与异步任务，但 Node.js 以 I/O 等运行时工作为中心，浏览器还要协调页面事件与渲染。** Node.js 使用 libuv 的多个阶段，并提供 `process.nextTick`、`setImmediate` 等 API；浏览器有自己的任务来源、微任务检查点和渲染机会。
+
+Promise 回调都属于微任务，但不能把某个宿主里的全部执行顺序照搬到另一个宿主。回答 Node.js 输出顺序时，还应确认版本、模块类型，以及代码是在顶层还是 I/O 回调中运行。
+
+</details>
+
+### 8.3 process.nextTick 一定比 Promise 回调先执行吗？ {#tick-microtasks}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：CommonJS 与 ES Module 的顶层上下文、微任务处理中的追加行为。
+
+**相关内容**：[模块顶层顺序](#模块顶层顺序)、[队列之间的追加](#队列之间的追加)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能写成无条件的优先级结论。** CommonJS 顶层结束后的常规检查中，`nextTick` 队列先于 Promise 微任务；ES Module 顶层本身处于微任务处理中，所以该示例中的 Promise 与 `queueMicrotask` 会先于 `nextTick`。
+
+如果已经在执行微任务，期间新增的 `nextTick` 也不会抢占这批微任务。应先确定执行上下文，再按入队顺序逐步推导。
+
+</details>
+
+### 8.4 setImmediate 与 setTimeout(fn, 0) 谁先执行？ {#immediate-timeout}
+
+**考察重点**：定时器阈值、check 阶段，以及顶层和 I/O 回调的区别。
+
+**相关内容**：[定时器与 I/O](#定时器与io)。
+
+<details>
+<summary>参考回答</summary>
+
+**顶层安排两者不能依赖固定顺序；同一个 I/O 回调中安排两者时，`setImmediate` 先执行。** `setTimeout(fn, 0)` 在 Node.js 中也要满足定时器阈值，并等待调度，不等于马上调用。
+
+I/O 回调结束并处理相应的 `nextTick`、微任务之后，事件循环可以进入 check 执行 `setImmediate`。只观察一次顶层输出不足以证明一种全局顺序。
+
+</details>
+
+### 8.5 一个 check 阶段的两个回调之间会执行微任务吗？ {#callback-checkpoints}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：区分阶段顺序和回调结束后的检查点。
+
+**相关内容**：[回调之间的检查点](#回调之间的检查点)。
+
+<details>
+<summary>参考回答</summary>
+
+**会，不能把微任务检查简化为每个阶段只进行一次。** 本文两个 `setImmediate` 的例子中，第一个回调安排的 `nextTick` 和微任务先被执行，然后才运行第二个回调，因此输出为 `immediate-1 → tick → micro → immediate-2`。
+
+</details>
+
+### 8.6 Node.js 面对 CPU 密集任务时有什么限制？ {#cpu-blocking}
+
+**考察重点**：同步计算对其他请求的影响，分片与并行计算的区别。
+
+**相关内容**：[运行时的分工](#运行时的分工)、[阻塞与让出执行机会](#阻塞与让出执行机会)。
+
+<details>
+<summary>参考回答</summary>
+
+**长时间的 JavaScript 计算会占住当前线程，让同线程的其他请求回调等待。** 把函数写成 `async` 不会自动把计算转移到后台线程，`await Promise.resolve()` 也只是安排微任务。
+
+先限制输入规模并改善算法；能拆分的任务可以分片后用 `setImmediate` 让事件循环继续推进。需要真正利用多个 CPU 核或隔离计算时，可以考虑 Worker 或独立进程，同时衡量通信、内存、任务队列与故障处理成本。
+
+</details>
+
+### 8.7 持续 await Promise.resolve() 能让网络请求得到处理吗？ {#microtask-starvation}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：微任务链、事件循环推进和 I/O 饥饿。
+
+**相关内容**：[连续微任务](#连续微任务)、[使用 setImmediate 分片](#使用setimmediate分片)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能依赖它让出 I/O 处理机会，因为后续代码持续进入微任务队列。** 如果每次恢复后又追加微任务，事件循环可以一直忙于处理这条链，迟迟不能推进到后续 I/O 阶段。
+
+需要让事件循环继续推进时，可以把有界批次之间的等待改为 `node:timers/promises` 的 `setImmediate`。这只改善调度机会，不会把计算变成多线程，也不能承诺精确的响应时间。
+
+</details>
+
+### 8.8 timer.unref() 与 clearTimeout(timer) 有什么区别？ {#unref}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：定时器调度与进程存活的两个独立问题。
+
+**相关内容**：[定时器与进程存活](#定时器与进程存活)。
+
+<details>
+<summary>参考回答</summary>
+
+**`unref()` 让进程不必为了这个定时器继续存活，`clearTimeout()` 才是取消定时器。** 如果还有其他工作保持进程存活，已经 `unref()` 的回调仍可以执行。`ref()` 可以恢复保持存活的行为，`hasRef()` 用于查询这种状态。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+
+- [Node.js：The Node.js Event Loop](https://nodejs.org/en/learn/asynchronous-work/event-loop-timers-and-nexttick)
+- [Node.js 22：process.nextTick 与 queueMicrotask](https://nodejs.org/download/release/v22.16.0/docs/api/process.html#when-to-use-queuemicrotask-vs-processnexttick)
+- [Node.js 22：Timers](https://nodejs.org/download/release/v22.16.0/docs/api/timers.html)
+- [Node.js：Don't Block the Event Loop](https://nodejs.org/en/learn/asynchronous-work/dont-block-the-event-loop)

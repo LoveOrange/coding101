@@ -1,0 +1,309 @@
+---
+title: WebSocket
+knowledge:
+  id: basic-knowledge.network.websocket
+---
+
+# WebSocket
+
+**WebSocket** 是一种支持客户端和服务端双向发送消息的通信协议。连接建立后，双方都可以主动发送消息，不必为每条消息发起一次 HTTP 请求。聊天、协同编辑、实时状态同步会用到这种能力，但连接不断开，不等于消息已经保存、用户已经阅读，也不等于网络故障后能自动恢复业务。
+
+理解 WebSocket，要把传输连接和应用协议分开：握手与帧解决双方怎样通信；认证、心跳、消息确认和断线补发决定业务怎样可靠地使用这条连接。
+
+## 1. 面试核心 {#core}
+
+- WebSocket 建立后支持**全双工通信**，双方可以独立发送消息；HTTP 长连接主要解决连接复用，两者不是同一概念。[卡](#http-versus-websocket)
+- 经典 HTTP/1.1 握手使用 **`Upgrade` 和 `101 Switching Protocols`**，成功后传输 WebSocket 帧。HTTP/2 的扩展 CONNECT 是另一种建立方式，不能把 `101` 当成所有部署的固定要求。[卡](#websocket-handshake)
+- **消息可以拆成多个帧**，浏览器的 `message` 事件提供完整消息；客户端掩码用于协议安全边界，不提供加密或身份认证。[卡](#websocket-handshake)
+- **心跳超时表示在约定时间内没有得到响应**，不能瞬间、准确地证明用户离线。浏览器没有向 JavaScript 暴露协议 Ping/Pong API。[卡](#heartbeat-and-recovery)
+- **重连建立新连接，业务恢复依赖消息 ID、确认和补发规则**。发送成功、服务端入库、对端收到和已读必须分别定义。[卡](#message-delivery)
+- WebSocket 服务端需要校验 **Origin、身份和每项操作的权限**；跨站页面能尝试建立连接，不能把普通 fetch 的 CORS 行为套在它上面。[卡](#websocket-security)
+- **浏览器 WebSocket API 只能作为客户端**，两台设备上的普通网页不能只靠它互相监听连接。[卡](#browser-peer-connection)
+
+## 2. 全双工与 HTTP 长连接 {#全双工与-http-长连接}
+
+**全双工**表示双方可以同时向对方发送数据。服务端可以在收到一条聊天消息后，把它转发给接收者已有的 WebSocket 连接，不必等接收者下一次轮询。
+
+HTTP 的请求和响应也可以复用连接，HTTP/2 还支持多路复用。因此，不能用“HTTP 每次都要重新连接，WebSocket 不用”解释两者的本质差异。关键是应用交互方式：普通 HTTP API 以请求和响应组织操作；WebSocket 建立后以双向消息组织交互，消息类型、请求关联和错误反馈需要应用自己约定。连接复用的机制见 [HTTP](./http-versions-connection-reuse-timeouts.mdx#http11-持久连接)。
+
+| 方案 | 服务端把新数据交给客户端的方式 | 适合的条件与代价 |
+| --- | --- | --- |
+| 短轮询 | 客户端定时请求，服务端立即返回当前结果 | 更新不频繁、允许一定延迟；无变化时仍产生请求 |
+| 长轮询 | 有数据或等待超时后返回，客户端再发起下一次请求 | 可以沿用 HTTP 请求体系；需要处理超时、重复请求和重新挂起 |
+| Server-Sent Events（SSE） | 持续的 HTTP 响应中发送文本事件 | 以服务端推送为主；客户端操作可另走 HTTP API |
+| WebSocket | 建立后双方主动发送文本或二进制消息 | 双向交互频繁；需要维护长连接与应用消息协议 |
+
+服务端逐步返回生成结果时，HTTP 流式响应或 SSE 就可能足够。多人协作中，双方都持续发送编辑操作，则更适合考虑 WebSocket。选择还要看代理支持、鉴权方式、断线恢复和运维成本，不能只根据“实时”两个字决定。
+
+## 3. 握手、消息与帧 {#握手消息与帧}
+
+### 3.1 HTTP/1.1 升级握手 {#升级握手}
+
+经典建立过程是先连接服务器，再通过 HTTP/1.1 请求确认双方同意切换协议。`ws://` 使用明文连接；`wss://` 还需要先完成 TLS 握手，保护传输中的机密性和完整性。
+
+下面省略无关请求头，展示 RFC 6455 的握手字段：
+
+```http
+GET /chat HTTP/1.1
+Host: server.example.com
+Upgrade: websocket
+Connection: Upgrade
+Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==
+Sec-WebSocket-Version: 13
+Origin: https://www.example.com
+
+HTTP/1.1 101 Switching Protocols
+Upgrade: websocket
+Connection: Upgrade
+Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=
+```
+
+`Sec-WebSocket-Key` 是客户端产生的随机值的 Base64 表示。服务端把收到的字符串与协议规定的固定 GUID 拼接，计算 SHA-1，再做 Base64 编码，形成 `Sec-WebSocket-Accept`。客户端核对结果，确认对方确实理解这次 WebSocket 升级，而不是返回了一个碰巧成功的普通 HTTP 响应。这个计算公开可复现，**不能作为登录认证或加密**。
+
+成功升级后，这条连接上的业务数据按 WebSocket 帧传输，不再为每条消息发送 HTTP 请求头。反向代理也需要支持升级和后续双向转发，空闲超时配置还会影响连接存活时间。
+
+这是 HTTP/1.1 的建立路径。RFC 8441 为 HTTP/2 定义了扩展 CONNECT，让 WebSocket 使用一条 HTTP/2 流，不走上述 `Upgrade`/`101` 流程。回答时先讲清经典路径，再说明部署可能采用不同的启动方式即可。
+
+### 3.2 帧边界与消息边界 {#帧边界与消息边界}
+
+**帧**是 WebSocket 协议组织传输数据的单位；**消息**是应用发送的一段完整文本或二进制数据。一条消息可以放在一个帧中，也可以拆成多个帧。帧头包含 FIN、操作码、载荷长度等信息，接收方据此判断消息类型及是否结束。
+
+TCP 提供有序字节流，不保留应用消息边界。WebSocket 在它上面定义边界，浏览器完成解帧和消息重组，再触发 `message`。因此，一次 `send()` 不等于一个 TCP 包，也不能把服务端底层 socket 的一次 `data` 回调当成一条完整 WebSocket 消息。
+
+文本消息必须是有效的 UTF-8；二进制消息可以承载应用约定的数据。浏览器收到文本时，`event.data` 是字符串；收到二进制时，默认得到 `Blob`，设置 `binaryType = "arraybuffer"` 后可以得到 `ArrayBuffer`。
+
+客户端发给服务端的帧必须使用掩码，服务端发给客户端的帧不使用掩码。掩码需要随帧传输，知道它就能还原载荷，因此不是加密。协议通过这一规则降低恶意页面构造字节攻击中间网络设施的风险，传输保密仍依赖 TLS。
+
+Ping、Pong、Close 属于控制帧，可以插入分片消息之间；控制帧不能分片，载荷长度最多 125 字节。底层库处理这些规则，应用代码不要自己把字符串 `"ping"` 当成协议 Ping 帧。
+
+## 4. 浏览器连接的生命周期 {#浏览器连接的生命周期}
+
+浏览器连接依次可能处于 `CONNECTING`、`OPEN`、`CLOSING`、`CLOSED`。只有 `OPEN` 时才适合发送业务消息：`CONNECTING` 时调用 `send()` 会抛出 `InvalidStateError`；关闭中或已关闭时调用不会把消息交付给对端。
+
+下面是只负责一条连接的最小封装。调用者提供有效 URL，以及不会抛异常的消息、状态回调；`onText` 只处理文本消息。`sendText()` 返回 `true` 只表示本次调用已进入浏览器的发送流程，不是业务确认。
+
+```js
+export function openTextChannel(url, onText, onState) {
+  const socket = new WebSocket(url);
+  let disposed = false;
+  const limit = 64 * 1024;
+  const onOpen = () => { if (!disposed) onState("open"); };
+  const onMessage = (event) => {
+    if (!disposed && typeof event.data === "string") onText(event.data);
+  };
+  const onError = () => { if (!disposed) onState("error"); };
+  const onClose = (event) => {
+    if (!disposed) onState("closed", event.code);
+  };
+  socket.addEventListener("open", onOpen);
+  socket.addEventListener("message", onMessage);
+  socket.addEventListener("error", onError);
+  socket.addEventListener("close", onClose);
+
+  return {
+    sendText(text) {
+      if (typeof text !== "string") throw new TypeError("text must be a string");
+      if (disposed || socket.readyState !== WebSocket.OPEN) return false;
+      const bytes = new TextEncoder().encode(text).byteLength;
+      if (socket.bufferedAmount + bytes > limit) return false;
+      socket.send(text);
+      return true;
+    },
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      socket.removeEventListener("open", onOpen);
+      socket.removeEventListener("message", onMessage);
+      socket.removeEventListener("error", onError);
+      socket.removeEventListener("close", onClose);
+      socket.close(1000, "disposed");
+    },
+  };
+}
+```
+
+在 `open` 前调用 `sendText("hello")` 得到 `false`；打开后，未超过本例队列上限时返回 `true`。发送队列过大时拒绝新消息，由调用者决定保留最新状态、稍后重试还是提示用户。本例的 64 KiB 是演示策略，不是协议限制。
+
+`bufferedAmount` 表示浏览器已排队、尚未传到网络的应用数据字节数，不含全部底层缓冲，也不表示对端已经处理多少消息。传统浏览器 WebSocket API 没有自动控制接收速率的完整背压机制；如果服务端推送速度远高于页面处理速度，仍要通过订阅范围、合并更新、批处理或应用层流控限制压力。
+
+`dispose()` 取消回调并关闭连接，重复调用不产生额外操作。页面组件卸载、退出账号或主动停止订阅时应做这种清理，同时清除业务自己创建的心跳和重连定时器。浏览器关闭页面通常会终止连接，但进程崩溃、设备休眠或断网时，服务端未必立即收到关闭通知，所以在线状态不能只依赖页面离开事件。
+
+## 5. 心跳与断线恢复 {#心跳与断线恢复}
+
+### 5.1 心跳响应 {#心跳响应}
+
+**心跳**是双方周期性交换探测消息，用超时发现连接可能已经不可用的机制。它也可能防止空闲连接被中间代理提前关闭，但周期要结合代理超时、耗电和网络成本设置。
+
+WebSocket 协议有 Ping/Pong 控制帧。服务端库可以发送 Ping 并等待 Pong，浏览器协议实现负责响应，但 JavaScript 的 `WebSocket` 对象没有 `ping()` 或 `pong()` 方法，也没有对应事件。如果业务需要页面主动探测，可以约定普通文本消息，例如带探测 ID 的 `heartbeat` 和 `heartbeat-ack`。
+
+每次探测记录 ID 与截止时间，只让对应响应解除等待，避免迟到的旧响应错误地延长新探测的期限。超时后关闭或放弃旧连接，进入恢复流程。后台标签页的定时器可能被节流，移动设备也可能休眠，因此阈值需要容忍调度延迟；没有及时响应只能支持“暂时不可达”的判断。
+
+协议 Pong 说明对端协议栈作出了响应，未必说明数据库、业务线程和用户界面都正常。若要判断业务是否可用，应用心跳必须明确由哪一层产生确认。多个设备登录同一账号时，也要区分“某条连接断开”和“整个账号离线”。
+
+### 5.2 重连与业务状态 {#重连与业务状态}
+
+浏览器原生 WebSocket 不自动重连。一个连接关闭后，需要创建新的 `WebSocket`，重新认证、订阅，并恢复游标。
+
+重连管理器应只保留一个有效连接尝试和一个重试定时器，主动退出时停止重试。失败后采用有上限的指数退避并加入随机抖动，避免服务恢复时大量客户端同时冲击服务器。只有连接稳定运行一段时间后才重置失败计数，可以防止“刚连接就断开”造成持续高频重试。认证失效则先恢复认证或要求登录，不应无休止地重连。
+
+旧连接的 `close` 事件可能在新连接建立后才到达。可以给每次连接分配递增的代次，处理回调前检查它是否仍是当前代次；否则旧回调可能关闭新连接、重复订阅或更新错误的在线状态。
+
+恢复时还要回答两个不同问题：
+
+- **发送出去的命令有没有生效？** 为命令分配稳定 ID，服务端完成规定的处理后返回确认；确认丢失时，重试同一 ID，由服务端去重并返回已有结果。
+- **断开期间漏了哪些事件？** 客户端保存最后成功应用的事件序号，重新订阅时携带它。服务端补发后续事件；历史已过期时返回当前快照和与它一致的游标，再接续增量。
+
+服务端在回放历史后切换到实时推送，必须避免两者之间出现空隙，可以使用统一有序日志，或先登记订阅再按确定的边界回放并去重。否则客户端即使记对了序号，也可能漏掉切换期间发生的事件。
+
+## 6. 消息送达与已读 {#消息送达与已读}
+
+**应用确认**是业务协议明确告诉发送方某个操作已经达到约定阶段的消息。TCP 有序传输不能替代它：连接中断时，发送方可能不知道最后一条消息是在服务端处理前丢失，还是处理后丢失了确认。
+
+以聊天为例，可以分别维护“服务端已持久化”“接收设备已收到”“用户已读”。`send()` 返回后就标成已读会跳过后面所有阶段。已读回执应绑定会话、用户和消息序号，由服务端校验成员权限并更新已读位置；同一用户的多个设备可以同步这份业务状态。仅把消息渲染到后台标签页，也未必符合产品对“已读”的定义。
+
+下面演示一个按会话连续序号接收事件的最小处理器。序号是正的安全整数，调用者保证 `apply` 同步、不会部分修改后抛异常；实际产品需要把状态变更与游标保存放进一致的提交过程。
+
+```js
+export function createReceiver(initialSequence, apply) {
+  if (!Number.isSafeInteger(initialSequence) || initialSequence < 0) {
+    throw new TypeError("invalid initial sequence");
+  }
+  let last = initialSequence;
+  return {
+    accept(event) {
+      if (!Number.isSafeInteger(event?.sequence) || event.sequence <= 0) {
+        throw new TypeError("invalid sequence");
+      }
+      if (event.sequence <= last) return "duplicate";
+      if (event.sequence !== last + 1) return "gap";
+      apply(event);
+      last = event.sequence;
+      return "applied";
+    },
+    get lastSequence() { return last; },
+  };
+}
+```
+
+从 `0` 开始，依次输入序号 `1、1、3、2、3`，结果是 `applied、duplicate、gap、applied、applied`，游标最后为 `3`。收到 `3` 时发现缺少 `2`，本例只报告缺口，不保存这条消息；调用方需要补取 `2`，再重新交付 `3`。这避免了看见较大序号就直接跳过中间事件。
+
+这个处理器只对同一会话、同一序号空间有效，不解决命令幂等、持久化和多服务节点排序。它把“按序应用并去重”这一职责单独展示出来，不能被当成完整的可靠消息系统。
+
+## 7. 认证与连接边界 {#认证与连接边界}
+
+### 7.1 来源、身份与权限 {#来源身份与权限}
+
+浏览器在握手中携带 `Origin`，服务端应按允许的页面来源校验它。浏览器 WebSocket 不采用普通跨域 fetch 的 CORS 预检和响应授权流程，因此不能只配置 `Access-Control-Allow-Origin`，就认为恶意网站无法尝试连接。跨站页面可能借助浏览器附带的 Cookie 建立连接；是否附带还取决于 Cookie 与浏览器策略。
+
+`Origin` 校验用于限制浏览器页面来源，不能替代身份认证：非浏览器客户端可以自己构造该字段。完成登录校验后，还要在订阅房间、发消息和读取历史时检查权限，不能相信客户端自报的用户 ID 或会话 ID。
+
+浏览器 `new WebSocket(url, protocols)` 不能像 `fetch` 一样随意设置 `Authorization` 请求头。可以使用满足安全条件的会话 Cookie，或先通过已认证的 HTTP 请求取得短期、限定用途的连接凭证。把长期令牌放进 URL 会增加日志泄露风险；若采用 URL 票据，应限制寿命和使用次数，并避免记录明文凭据。
+
+也可以连接后先发送认证消息，但服务端必须为未认证连接设置短超时和资源限制，认证前不开放业务操作。连接存活期间，令牌到期、退出登录、权限撤销也要有对应处理。使用 `wss://` 保护传输，与这些应用权限检查缺一不可。
+
+### 7.2 浏览器之间的连接 {#浏览器之间的连接}
+
+浏览器 WebSocket API 只能向一个已有的服务端端点发起连接，没有监听端口、接受另一台浏览器连接的接口。因此，“电脑浏览器和手机浏览器不借助服务端，只用 WebSocket 直接连接”在这个约束下不可行。即使两台设备处于同一个局域网，也不会因此获得监听能力。
+
+如果电脑上另有本地程序监听 WebSocket，手机可以连接这个程序，但这已经引入了服务端角色，还需要处理网络可达性和安全问题。浏览器之间的数据通道可以考虑 WebRTC DataChannel；它是不同的机制，连接建立通常仍需要交换信令，遇到网络限制时还可能需要中继。不能把换用 WebRTC 说成 WebSocket 自身支持点对点。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 WebSocket 与 HTTP、轮询、SSE 有什么区别，如何选择？ {#http-versus-websocket}
+
+**考察重点**：全双工、连接复用、推送方向与业务交互方式。
+
+**相关内容**：[全双工与 HTTP 长连接](#全双工与-http-长连接)。
+
+<details>
+<summary>参考回答</summary>
+
+**WebSocket 建立后支持双方独立发送消息，HTTP 长连接只是复用传输连接，不能与它等同。** 短轮询定时请求，长轮询挂起请求等待更新；SSE 在持续的 HTTP 响应中向客户端发送文本事件，适合主要由服务端推送的场景。
+
+频繁双向协作可以选择 WebSocket；只接收逐步生成的文本可以考虑 SSE 或 HTTP 流；低频状态查询也可以用轮询。还要比较代理兼容、认证、断线恢复和维护成本，不能把所有实时需求都归为 WebSocket。
+
+</details>
+
+### 8.2 WebSocket 如何建立连接并传输消息？ {#websocket-handshake}
+
+**考察重点**：升级握手、Accept 校验、帧与消息、HTTP 版本条件。
+
+**相关内容**：[握手、消息与帧](#握手消息与帧)。
+
+<details>
+<summary>参考回答</summary>
+
+**经典 HTTP/1.1 路径先建立传输连接，再通过 Upgrade 请求和 101 响应切换到 WebSocket 帧协议。** `wss://` 先进行 TLS 握手。客户端校验 `Sec-WebSocket-Accept`，但这一计算不承担用户认证。
+
+建立后双方独立发送文本或二进制消息；消息可拆成多个帧，由接收端重组。客户端帧使用掩码，保密依靠 TLS。浏览器按完整消息触发 `message`，不能按 TCP 分包理解消息边界。HTTP/2 扩展 CONNECT 是不同的启动路径，不使用上述 101 升级流程。
+
+</details>
+
+### 8.3 怎样判断 WebSocket 是否在线，断线后如何恢复？ {#heartbeat-and-recovery}
+
+**考察重点**：心跳检测范围、浏览器 API 限制、重连与业务恢复。
+
+**相关内容**：[心跳与断线恢复](#心跳与断线恢复)、[浏览器连接的生命周期](#浏览器连接的生命周期)。
+
+<details>
+<summary>参考回答</summary>
+
+**用心跳超时判断连接暂时不可达，再重新建立连接并恢复业务状态。** 服务端可使用协议 Ping/Pong；浏览器 JavaScript 没有对应控制帧 API，需要主动探测时可约定应用心跳，并匹配探测 ID 和截止时间。定时器节流、休眠和延迟可能影响判断，不能宣称瞬时准确识别离线。
+
+重试采用有上限的退避与抖动，避免并发重连，忽略旧连接代次的回调，主动退出时停止重试。新连接重新认证和订阅，根据已确认的命令 ID、最后应用的事件序号去重和补发。页面关闭不保证服务端立即获知，所以仍需要超时和连接清理机制。
+
+</details>
+
+### 8.4 聊天消息发送成功与已读有什么区别？ {#message-delivery}
+
+**考察重点**：传输状态、持久化确认、接收回执与已读语义。
+
+**相关内容**：[消息送达与已读](#消息送达与已读)、[重连与业务状态](#重连与业务状态)。
+
+<details>
+<summary>参考回答</summary>
+
+**`send()` 返回不表示服务端已保存，更不表示接收者已读。** 应分别定义服务端持久化确认、接收设备确认和用户已读回执。已读位置绑定会话、用户和消息序号，由服务端校验权限并同步多个设备；是否可见、是否主动打开会话等条件由产品定义。
+
+断线时确认可能丢失，应使用稳定命令 ID 重试并由服务端去重；事件恢复使用序号检测重复和缺口。TCP 的有序传输不能替代这些业务规则。
+
+</details>
+
+### 8.5 WebSocket 连接需要哪些认证与安全检查？ {#websocket-security}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：Origin、身份、操作权限及浏览器构造器限制。
+
+**相关内容**：[来源、身份与权限](#来源身份与权限)。
+
+<details>
+<summary>参考回答</summary>
+
+**需要同时检查来源、身份和操作权限，并使用 WSS 保护传输。** 服务端按允许列表检查浏览器 Origin，但非浏览器客户端可以构造该字段，所以它不能替代登录认证。订阅和发消息时继续验证用户对目标资源的权限。
+
+浏览器构造器不能任意设置 Authorization 头，可以使用合适的会话 Cookie 或受限的短期连接票据；不要把长期令牌随意放进 URL。采用连接后认证时，未认证连接必须有短超时和资源限制。普通 fetch 的 CORS 配置不能替代上述检查。
+
+</details>
+
+### 8.6 不借助服务端，能只用 WebSocket 连接电脑浏览器和手机浏览器吗？ {#browser-peer-connection}
+
+**考察重点**：浏览器客户端能力、服务端角色和点对点方案边界。
+
+**相关内容**：[浏览器之间的连接](#浏览器之间的连接)。
+
+<details>
+<summary>参考回答</summary>
+
+**两个普通网页不能只靠 WebSocket API 互相接受连接，因为浏览器只提供客户端接口。** 同一局域网也不改变这个限制。电脑上运行监听 WebSocket 的本地程序可以提供端点，但它已经是服务端。
+
+若目标是浏览器间数据通道，可以讨论 WebRTC DataChannel，同时说明信令交换和可能的中继需求；不能把它当成 WebSocket 的直接连接能力。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+
+- [RFC 6455：The WebSocket Protocol](https://www.rfc-editor.org/rfc/rfc6455.html)
+- [WHATWG：WebSockets Standard](https://websockets.spec.whatwg.org/)
+- [RFC 8441：Bootstrapping WebSockets with HTTP/2](https://www.rfc-editor.org/rfc/rfc8441.html)
+- [W3C：WebRTC Data Channels](https://www.w3.org/TR/webrtc/#peer-to-peer-data-api)

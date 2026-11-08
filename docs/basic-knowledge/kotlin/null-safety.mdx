@@ -1,0 +1,215 @@
+---
+knowledge:
+  id: basic-knowledge.kotlin.null-safety
+  type: concept
+description: "解释 Kotlin 可空类型、安全调用、Elvis、非空断言和智能转换，明确 Java 平台类型、初始化与并发状态的边界。"
+keywords: [Kotlin 空安全, 可空类型, Elvis, 平台类型, 智能转换, lateinit]
+---
+
+# Kotlin 空安全
+
+**空安全**把“这个值可能不存在”放进类型检查：`String` 要求非空，`String?` 允许 `null`。编译器据此要求调用方处理缺值情况，但它不能替应用决定缺值意味着什么，也不能消除 Java 互操作、错误断言和初始化顺序带来的风险。面试中需要解释每种处理方式的行为，而不只是背出 `?.` 和 `!!`。
+
+## 1. 面试核心 {#core}
+
+- `T?` 允许 `null`，**可空值不能直接按非空值调用成员**；处理方式要符合缺值的业务含义。
+- `?.` 在接收者为空时产生空结果，`?:` 在左侧为空时才计算右侧，**安全调用不会自动提供默认值**。[卡](#safe-call-elvis)
+- `!!` 把非空假设交给运行时检查，**值为空时仍会抛出异常**；它没有修复产生空值的原因。[卡](#non-null-assertion)
+- 智能转换要求检查后的值保持稳定，**可变属性和自定义 getter 不能仅靠前一次非空判断证明安全**。[卡](#smart-cast-stability)
+- Java 返回值缺少可用空值约束时可能表现为平台类型，**编译通过不代表 Java 实际返回非空**。[卡](#platform-types)
+- `lateinit` 延后的是初始化，不是取消初始化责任；**过早读取会抛 UninitializedPropertyAccessException**。
+
+## 2. 可空值与缺值分支 {#可空值与缺值分支}
+
+**可空类型**是在原类型允许的值之外，再允许 `null` 的类型。可空字符串和空字符串不同：`null` 表示缺值，`""` 是一个确实存在、长度为零的字符串。
+
+```kotlin
+fun lengthOrZero(text: String?): Int {
+    // return text.length // 编译错误：可空接收者不能直接访问 length
+    return text?.length ?: 0
+}
+
+fun main() {
+    println(lengthOrZero("Lin")) // 3
+    println(lengthOrZero(""))    // 0
+    println(lengthOrZero(null))  // 0
+}
+```
+
+这个函数主动把“没有字符串”和“空字符串”都归为长度 `0`。如果接口需要区分二者，就不应套用这个默认值，可以保留 `Int?`、返回明确的状态，或在输入边界拒绝缺值。
+
+**安全调用** `text?.length` 只在 `text` 非空时读取长度，结果类型是 `Int?`。**Elvis 运算符** `?:` 只在左侧结果为 `null` 时计算右侧；左侧是 `0`、`false` 或空字符串都不会触发默认分支。
+
+```kotlin
+fun requiredLength(text: String?): Int {
+    val present = text ?: return -1
+    return present.length
+}
+
+fun main() {
+    println(requiredLength(null)) // -1
+    println(requiredLength(""))   // 0
+}
+```
+
+`return` 结束当前函数，使后续代码只处理存在的字符串。若缺值违反调用约定，也可以使用抛异常的分支。关键是选择清楚的失败方式，而不是到处加一个可能掩盖错误的默认值。
+
+连续安全调用如 `order?.customer?.name` 会在某一步为空时得到 `null`，不会自动创建缺少的对象。读取结果仍需处理可空性。`?.let { ... }` 则让非空结果进入一个代码块，适合在一次读取后使用该值；作用域函数的返回规则见[Kotlin 函数](./functions.mdx#作用域函数)。
+
+## 3. 非空断言与类型转换 {#非空断言与类型转换}
+
+**非空断言** `!!` 表示“在这里要求它非空”。值非空时返回相应的非空值，值为空时抛出空指针异常。
+
+```kotlin
+fun forcedLength(text: String?): Int = text!!.length
+
+fun main() {
+    println(forcedLength("Lin")) // 3
+    // forcedLength(null) // 运行时抛出 NullPointerException
+}
+```
+
+`!!` 适合确有不变量保证、且违反时就应该失败的边界，但还应判断类型设计是否已经可以表达这个保证。如果数据本来可能缺失，反复使用断言只是把编译阶段的提醒推迟到运行时。
+
+类型转换也有相似区别：`as String` 要求值能够转换为非空字符串，不满足时抛异常；`as? String` 在转换失败时返回 `null`。安全转换不会把数字格式化成字符串，`42 as? String` 的结果是 `null`，要格式化应使用明确的转换方法。
+
+## 4. 智能转换与稳定值 {#智能转换与稳定值}
+
+**智能转换**让编译器根据已经成立的检查使用更具体的类型。局部 `val` 在检查后不会改指向，因此容易证明；可变属性可能在两次读取之间改变，编译器不能自动作出同样保证。
+
+```kotlin
+class Profile(var nickname: String?)
+
+fun showLength(profile: Profile): Int {
+    // if (profile.nickname != null) return profile.nickname.length
+    // 编译错误：可变属性不能由前一次检查证明后一次读取非空
+    val current = profile.nickname
+    return if (current != null) current.length else 0
+}
+
+fun main() {
+    val profile = Profile("Lin")
+    println(showLength(profile)) // 3
+    profile.nickname = null
+    println(showLength(profile)) // 0
+}
+```
+
+`current` 保存的是一次读取的结果。之后即使 `profile.nickname` 被重新赋值，`current` 也不因此改指向。自定义 getter 也有同类问题：一个 `val` 属性可以每次读取返回不同结果，不能把所有 `val` 属性都当作稳定局部变量。
+
+这不解决完整的并发一致性。如果结果是一个可变对象，保存引用不阻止其他线程修改它的字段；如果业务要求同时读取几个属性得到同一时刻的状态，还需要锁、不可变状态对象或其他同步设计。智能转换是类型证明，不是事务或同步原语。
+
+## 5. Java 平台类型与初始化 {#java-平台类型}
+
+**平台类型**是 Kotlin 在与 Java 等外部代码交互时，对未能确定可空性的类型采用的一种表示。IDE 中的 `String!` 是提示形式，不能在普通 Kotlin 源码中把变量声明为 `String!`。
+
+下面的 Java 方法没有空值注解，实际返回 `null`：
+
+```java
+public class LegacyApi {
+    public static String nickname() {
+        return null;
+    }
+}
+```
+
+Kotlin 调用方可以显式承接为可空值，再决定处理方式：
+
+```kotlin
+fun main() {
+    val nickname: String? = LegacyApi.nickname()
+    println(nickname?.length ?: 0) // 0
+    // val required: String = LegacyApi.nickname()
+    // 可编译，但 Java 返回 null 时会在非空要求处发生运行时失败
+}
+```
+
+如果直接把返回值当作非空字符串使用，Kotlin 无法仅凭这个 Java 签名证明假设正确。可识别的空值注解会帮助编译器收窄类型，但注解也必须符合真实实现。混合语言项目应优先在边界清理、校验数据，让内部接口表达明确的可空约定。
+
+泛型容器也有同样问题：Java 代码可能向 Kotlin 以为只含非空元素的集合放入 `null`。因此不仅返回对象是否为空需要检查，元素、回调与可变集合的跨语言共享也需要约定。
+
+**延迟初始化属性** `lateinit var` 允许非空属性稍后赋值，但只适用于符合条件的非空、非基本类型属性。读取前必须已经完成初始化；否则抛出 `UninitializedPropertyAccessException`，并不是自动得到 `null`。
+
+```kotlin
+class Presenter {
+    lateinit var title: String
+    fun ready(): Boolean = this::title.isInitialized
+}
+
+fun main() {
+    val presenter = Presenter()
+    println(presenter.ready()) // false
+    // println(presenter.title) // 运行时抛出 UninitializedPropertyAccessException
+    presenter.title = "Home"
+    println(presenter.title)   // Home
+}
+```
+
+Android 组件重建、依赖注入和回调时序都可能改变“什么时候已经初始化”的条件。能在构造阶段提供依赖时，构造参数通常能把要求表达得更直接；确需延迟时，应让生命周期和清理策略与属性的有效范围一致。构造期间把尚未完成初始化的对象暴露出去，也会破坏非空属性看似提供的保证。
+
+## 6. 面试题 {#面试题}
+
+### 6.1 安全调用与 Elvis 运算符分别做什么？ {#safe-call-elvis}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：可空结果、短路求值与缺值语义。
+
+**相关内容**：[可空值与缺值分支](#可空值与缺值分支)。
+
+<details>
+<summary>参考回答</summary>
+
+**安全调用在接收者为空时产生 null，Elvis 只在左侧为空时计算右侧。** `text?.length ?: 0` 将缺值映射为零，但空字符串的长度本来就是零，不会触发默认分支。是否这样合并状态应由业务决定；需要拒绝缺值时也可以返回或抛异常。
+
+</details>
+
+### 6.2 使用了 Kotlin，为什么仍然可能出现空指针异常？ {#non-null-assertion}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：静态保证的边界与运行时假设。
+
+**相关内容**：[非空断言与类型转换](#非空断言与类型转换)、[Java 平台类型与初始化](#java-平台类型)。
+
+<details>
+<summary>参考回答</summary>
+
+**空安全减少可空值的误用，但非空断言、Java 互操作和不正确的初始化仍可能破坏假设。** `!!` 遇到 null 会失败，平台类型的真实返回值也可能为空；构造期间暴露未初始化状态同样有风险。lateinit 过早读取则是另一类初始化异常，不能全部归为可空类型检查失效。
+
+</details>
+
+### 6.3 为什么判断可变属性不为空后，仍不能直接调用成员？ {#smart-cast-stability}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：重复读取、稳定值与并发边界。
+
+**相关内容**：[智能转换与稳定值](#智能转换与稳定值)。
+
+<details>
+<summary>参考回答</summary>
+
+**因为前后两次读取不一定得到同一个值，编译器不能证明检查后的属性仍非空。** 可以把一次读取保存到局部 val，再检查和使用这个局部值。这样保证的是该引用的稳定性，无法阻止对象内部被修改，也不能替代多个字段的一致性同步。
+
+</details>
+
+### 6.4 Kotlin 调用 Java 方法时，返回值是可空还是非空？ {#platform-types}
+
+**考察重点**：平台类型、注解与边界校验。
+
+**相关内容**：[Java 平台类型与初始化](#java-平台类型)。
+
+<details>
+<summary>参考回答</summary>
+
+**要看 Java 签名及编译器可识别的空值约束；缺少明确约束时，引用返回值可能表现为平台类型。** 调用方可以按可空或非空要求使用，但把实际 null 当作非空值会在运行时失败。更稳妥的做法是在互操作边界显式承接可空值并校验，或为真实契约补充准确注解；泛型元素与回调也要同时考虑。
+
+</details>
+
+## 7. 参考资料 {#参考资料}
+
+- [Kotlin 文档：Null safety](https://kotlinlang.org/docs/null-safety.html)
+- [Kotlin 文档：Type checks and casts](https://kotlinlang.org/docs/typecasts.html)
+- [Kotlin 文档：Calling Java from Kotlin，Null-safety and platform types](https://kotlinlang.org/docs/java-interop.html#null-safety-and-platform-types)
+- [Kotlin 文档：Properties，Late-initialized properties and variables](https://kotlinlang.org/docs/properties.html#late-initialized-properties-and-variables)

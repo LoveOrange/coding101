@@ -17,6 +17,7 @@ Linux 网络排查要先确定请求停在哪一步：域名解析、连接建�
 - **`ss -lntp` 查看 TCP 监听，`ss -Hant` 输出不带表头的连接列表**，分别用于定位监听进程和统计连接状态。[卡](#ports-connections)
 - **TIME_WAIT 保留连接关闭后的状态，CLOSE_WAIT 等待本地应用关闭**，两者堆积时的排查方向不同。[卡](#time-wait-close-wait)
 - 单端抓包只能看到经过该抓包点的流量，**双端对比才能进一步区分请求没到达，还是响应没返回**。[卡](#tcpdump)
+- HTTPS 调试代理需要让测试客户端**信任代理证书，并由代理分别建立两段 TLS 连接**；改写响应只能证明客户端如何处理该响应，不能证明服务端状态已改变。[卡](#https-debug-proxy)
 - **conntrack 保存连接状态与 NAT 映射，路由表决定下一跳和出口**，两者在报文处理过程中承担不同职责。[卡](#iptables)
 
 ## 2. 分层确认连通性 {#分层确认连通性}
@@ -93,6 +94,22 @@ tcpdump -nn -r a.pcap
 | 接收窗口趋近零 | 接收端提供的缓冲空间不足 |
 
 只在客户端看到 SYN 重传，无法判断是请求没到服务端，还是服务端的响应没回来。两端同时抓包后，才能进一步缩小丢失范围。分析时还要结合序列号、重传和工具的丢包统计；报文间隔也可能受处理延迟、抓包遗漏，以及网卡代为处理部分协议工作的卸载机制影响。
+
+### 5.1 应用代理与 HTTPS {#应用代理与-https}
+
+**HTTP 调试代理**位于客户端和服务端之间，接收、观察并转发应用请求。Charles、Fiddler 等工具能够展示请求字段、响应内容，并在断点处暂停或修改报文。它们与 tcpdump 的观察位置不同：tcpdump 从网络接口捕获报文，适合分析连接和重传；应用代理主要解释经过它的应用交互，不能自动看见所有进程、协议和网络路径。
+
+HTTPS 经过代理并不意味着代理能直接解密原有 TLS 连接。以 Charles 的 SSL Proxying 为例，测试客户端信任 Charles 的测试根证书后，代理为目标域名提供由该根签发的证书，并分别建立“客户端到代理”和“代理到服务端”两段 TLS。代理在中间取得明文，再加密转发。只开启系统代理、未启用目标域名的 SSL Proxying 时，也可能只是转发加密流量。
+
+信任系统证书也不保证所有应用接受代理证书：应用可能采用独立信任配置或证书固定。应在可控制的测试构建和环境中配置调试能力，不能把一次抓不到明文直接判断为服务器没有收到请求。证书验证的基本过程见 [TLS](../../basic-knowledge/network/tls.mdx#证书与握手)。
+
+**断点**是在转发请求或响应之前暂停处理。修改请求可以验证服务端对异常字段的处理；修改响应可以验证客户端对错误码、缺失字段和延迟的反应。记录中应保留原始内容、修改内容和断点位置：
+
+- 请求在发送前被阻断，服务端可能根本没有处理它。
+- 服务端处理完成后，把响应改成失败，不会自动回滚已经提交的写入。
+- 把失败响应改成 `200`，只能模拟客户端看到成功，不能证明业务真的成功。
+
+验证最终状态时，仍要查询服务端结果并关联请求标识。抓包产物中的令牌、Cookie 和个人数据要按测试数据要求处理，分享证据时保留必要字段即可。
 
 ## 6. iptables 规则 {#iptables-规则}
 
@@ -263,6 +280,21 @@ CLOSE_WAIT 持续堆积时，应定位进程和对端，检查关闭路径、异
 
 </details>
 
+### 8.7 Charles 或 Fiddler 怎样查看 HTTPS，断点修改响应能证明什么？ {#https-debug-proxy}
+
+**考察重点**：调试代理、证书信任、两段 TLS 与业务状态的证据边界。
+
+**相关内容**：[应用代理与 HTTPS](#应用代理与-https)。
+
+<details>
+<summary>参考回答</summary>
+
+**调试代理在受控测试环境中分别与客户端、服务端建立 TLS，客户端需要接受代理为目标域名提供的证书。** 未开启解密代理或应用不信任该证书时，不能据此取得 HTTPS 明文；tcpdump 抓到 TLS 报文也不自动得到应用内容。
+
+断点可以在转发前修改请求或响应。改响应适合验证客户端行为，但服务端已经提交的变化不会随响应内容一起改变。判断业务成功仍需检查服务端最终状态，并记录修改发生在哪一段。
+
+</details>
+
 ## 9. 参考资料 {#参考资料}
 
 - [man7：ss(8)](https://man7.org/linux/man-pages/man8/ss.8.html)
@@ -272,3 +304,5 @@ CLOSE_WAIT 持续堆积时，应定位进程和对端，检查关闭路径、异
 - [curl：Manual](https://curl.se/docs/manpage.html)
 - [Netfilter：NAT HOWTO](https://www.netfilter.org/documentation/HOWTO/NAT-HOWTO-5.html)
 - [nginx：HTTP proxy module](https://nginx.org/en/docs/http/ngx_http_proxy_module.html)
+- [Charles：SSL Proxying](https://www.charlesproxy.com/documentation/proxying/ssl-proxying/)
+- [Fiddler Everywhere：Using Breakpoints](https://www.telerik.com/fiddler/fiddler-everywhere/documentation/modify-and-filter-traffic/breakpoints)

@@ -1,0 +1,359 @@
+---
+sidebar_position: 5
+knowledge:
+  id: basic-knowledge.nodejs.profiling
+  type: concept
+description: "结合事件循环延迟、CPU profile、内存指标和堆快照，区分 Node.js 的计算阻塞、等待与对象保留，并验证修复。"
+keywords: ["Node.js", "性能分析", "CPU profile", "堆快照", "事件循环延迟", "ELU", "内存泄漏"]
+---
+
+# Node.js 性能分析
+
+**Node.js 性能分析**是把请求耗时、CPU 工作、事件循环调度和内存保留放在同一时间范围里观察，再用具体证据定位成本。服务变慢可能来自计算、同步阻塞、下游等待或排队；内存变大可能来自仍在使用的数据、无界缓存或已经失去用途却仍被引用的对象，不能仅凭一个数字下结论。
+
+求职时需要能说明：现象是什么，下一步采集什么证据，证据支持哪一种原因，以及修改后怎样证明问题已经改善。本文以 Node.js 22.16.0 的 API 和诊断文件为例，示例在独立进程中运行。
+
+## 1. 面试核心 {#core}
+
+- 先明确相同负载下的请求延迟、吞吐量和错误，再定位资源成本。**CPU 高、内存高或请求慢都只是现象，不能直接等同于某一种缺陷**。[卡](#diagnostic-order)
+- 事件循环延迟反映调度被推迟的程度，ELU 反映事件循环处于活动状态的比例。**ELU 不是 CPU 使用率，`monitorEventLoopDelay` 的统计值单位是纳秒**。[卡](#loop-metrics)
+- CPU profile 通过采样显示执行时间集中在哪些调用路径。**它适合定位计算热点，不会把等待数据库的全部墙钟时间自动记到某个 JavaScript 函数头上**。[卡](#cpu-profile)
+- `heapUsed`、`external`、`arrayBuffers` 与 RSS 观察的范围不同。**`arrayBuffers` 包含在 `external` 中，RSS 也不是这些数字的简单相加**。[卡](#memory-metrics)
+- 堆快照用于观察对象及保留关系。**比较相同业务周期后的快照，并找到持续保留对象的引用路径，才能把增长与具体代码联系起来**。[卡](#heap-retainers)
+- 快照和详细诊断有成本。**生成堆快照会同步阻塞事件循环并消耗额外内存，快照还可能包含业务数据**；应选择能承受这些影响的实例或复现环境。[卡](#snapshot-cost)
+- 修复需要回到原负载验证。**同时检查用户可见结果、资源趋势和边界条件，不能把“改完后一段时间没再报警”当成完整证据**。[卡](#verify-fix)
+
+## 2. 先确定现象与范围 {#现象与范围}
+
+一次有效分析需要可对照的工作负载。例如“上传 20 MiB 文件时，其他小请求的 p99 延迟明显增大”，比“Node.js 很慢”更容易定位。需要记录输入大小、并发量、持续时间、Node.js 版本、CPU 配额和关键依赖，避免把两次不同条件下的结果直接比较。
+
+可以从下面的组合决定下一步，但它们只是调查方向，不是单个指标就能完成的诊断：
+
+| 观察到的组合 | 接下来检查什么 |
+| --- | --- |
+| 主线程 CPU 工作增加，事件循环延迟也增加 | 同步计算、序列化、正则、同步 API、GC 等调用路径 |
+| 请求很慢，事件循环仍有较多空闲 | 下游响应时间、连接池等待、任务队列、超时和重试 |
+| 进程 CPU 增加，主事件循环未明显变忙 | Worker、libuv 线程池或其他原生线程的工作，确认采样范围 |
+| GC 后的堆基线随相同操作周期持续抬高 | 缓存、监听器、定时器、任务表等保留关系 |
+| RSS 增长，但 JavaScript 堆变化很小 | Buffer、ArrayBuffer、原生资源、线程和内存分配器行为 |
+
+先确定一个实例、一个时间窗口，再把日志、请求跟踪、进程指标和诊断文件对齐。多个实例的总 CPU 与某一个实例的单次快照不能直接互相解释。
+
+## 3. 事件循环延迟与 ELU {#事件循环延迟与elu}
+
+### 3.1 采样窗口与单位 {#采样窗口与单位}
+
+**事件循环延迟**表示基于事件循环的定时调度被推迟的程度。`monitorEventLoopDelay` 用定时采样形成直方图；`resolution` 按毫秒设置，返回的延迟值则按纳秒计量，换算成毫秒需要除以 `1e6`。
+
+**事件循环利用率**（Event Loop Utilization，ELU）描述事件循环在统计时间里处于活动状态的比例。用前后快照计算差值，可以观察某一段窗口，避免拿进程启动以来的累计比例代替最近一次故障。
+
+```js
+// loop-metrics.mjs
+import { monitorEventLoopDelay, performance } from 'node:perf_hooks';
+import { setTimeout as delay } from 'node:timers/promises';
+const histogram = monitorEventLoopDelay({ resolution: 10 });
+histogram.enable();
+while (histogram.count === 0) await delay(10); // 等待首个实际样本
+const start = performance.eventLoopUtilization();
+
+const deadline = performance.now() + 60;
+while (performance.now() < deadline) { /* 模拟同步阻塞 */ }
+await delay(30); // 给延迟的采样回调执行机会
+
+const delta = performance.eventLoopUtilization(start);
+histogram.disable();
+console.log(JSON.stringify({
+  samples: histogram.count,
+  maxDelayMs: histogram.max / 1e6,
+  p99DelayMs: histogram.percentile(99) / 1e6,
+  utilization: delta.utilization
+}));
+```
+
+运行后可以观察这次同步阻塞对采样延迟的影响，但具体数值会受系统调度和采样时机影响，不应把输出写成固定答案。示例先等到实际样本出现，再触发阻塞；直方图包含这段准备期，ELU 使用 `start` 之后的差值。采样器需要有机会运行，刚启用或重置后立即开始并结束一个很短的实验，可能遗漏需要观察的区间。Node.js 22.16.0 的直方图重置还会清除上次采样时间，下一次记录需要先重新建立时间基准。
+
+生产监控应按固定窗口导出并重置或差分，记录样本数。极少量样本的 p99 不能代替真实请求延迟分布，事件循环延迟也不包含网络传输、数据库执行等所有请求成本。
+
+### 3.2 ELU 与 CPU 的区别 {#elu与cpu的区别}
+
+ELU 观察的是事件循环活动状态，不是 CPU 在执行机器指令的比例。例如在主线程调用同步子进程 API 并等待子进程结束，主事件循环无法调度其他回调，ELU 可以很高；但父进程这段时间未必消耗很多 CPU。
+
+反过来，其他 Worker 正在计算时，进程总 CPU 可以上升，而主线程仍有空闲。`process.cpuUsage()` 提供进程在用户态和内核态消耗的 CPU 时间，单位是微秒，多线程累计时间也不能直接当成单个线程的墙钟时间。
+
+因此，解释“CPU 不高但接口慢”时，应继续看事件循环是否被阻塞、下游是否在等待以及任务是否在排队，不要立即归因于网络。
+
+## 4. CPU profile 与调用路径 {#cpu-profile与调用路径}
+
+### 4.1 采集一个可重复的样本 {#采集cpu样本}
+
+**CPU profile** 周期性采样正在执行的调用栈，帮助观察哪些函数及其调用路径占用了执行时间。下面用一个有界循环构造明确的计算负载：
+
+```js
+// cpu-demo.mjs
+import { setImmediate as yieldToLoop } from 'node:timers/promises';
+function hotLoop(seed) {
+  let value = seed;
+  for (let i = 1; i <= 2_000_000; i++) {
+    value = (value + Math.sqrt(i)) % 1_000;
+  }
+  return value;
+}
+let result = 0;
+for (let round = 0; round < 20; round++) {
+  result = hotLoop(result);
+  await yieldToLoop();
+}
+console.log(Number.isFinite(result)); // true
+```
+
+在该文件目录中运行：
+
+```sh
+mkdir -p profiles
+node --cpu-prof --cpu-prof-dir=./profiles --cpu-prof-name=cpu.cpuprofile cpu-demo.mjs
+```
+
+进程正常结束后，`profiles/cpu.cpuprofile` 会包含本次采样，可以加载到支持该格式的分析工具中查看。示例应能找到 `hotLoop` 对应的计算样本；具体样本数量和比例不是固定值，也不是性能基准。
+
+对真实服务应尽量让采样覆盖问题发生的时间段和代表性请求。只采集启动阶段，可能得到模块加载和初始化热点，无法解释运行数小时以后才出现的慢请求。
+
+### 4.2 从热点到可验证的修改 {#从热点到修改}
+
+分析时先看调用路径，再判断它为什么运行这么多次。一个小函数累计耗时很高，可能来自单次计算昂贵，也可能只是被上层重复调用了很多次；调整调用次数、输入规模或算法，往往比单独改写某条语句更有意义。
+
+还要区分**自身耗时**与**包含子调用的耗时**。父函数的累计成本可能主要发生在其子调用里，只看父函数名称就下结论容易找错修改位置。采样也有误差，短函数可能没有被直接采到，不能用“没看到样本”证明它毫无成本。
+
+CPU profile 主要反映实际执行。等待数据库或排队的墙钟时间，应结合请求跟踪、连接池指标和任务队列记录；主线程的一份资料也不自动涵盖所有 Worker 和原生执行路径。若证据指向重计算，再评估分片、缓存或 Worker，取舍见 [Node.js 进程与线程](./processes-workers.mdx#执行单元的选择)。
+
+## 5. 内存指标与保留关系 {#内存指标与保留关系}
+
+### 5.1 先分清统计范围 {#内存统计范围}
+
+`process.memoryUsage()` 返回字节数，可以先保留原始值，再在展示层换算：
+
+```js
+// memory-metrics.mjs
+const { rss, heapTotal, heapUsed, external, arrayBuffers } = process.memoryUsage();
+console.log(JSON.stringify({ rss, heapTotal, heapUsed, external, arrayBuffers }));
+```
+
+| 字段 | 主要观察范围 |
+| --- | --- |
+| `heapUsed` | V8 当前已使用的堆空间 |
+| `heapTotal` | V8 为堆管理的空间规模 |
+| `external` | 与 V8 管理的 JavaScript 对象关联的外部内存 |
+| `arrayBuffers` | ArrayBuffer、SharedArrayBuffer 和 Buffer 的相关内存，已包含在 `external` 中 |
+| `rss` | 整个进程当前驻留在物理内存中的部分，包括代码、JavaScript 与原生资源等 |
+
+存在 Worker 时，RSS 是整个进程范围，其余这些字段反映当前线程的相应统计。不要把每个线程报出的 RSS 再相加，也不要把 `external` 与 `arrayBuffers` 相加当作互不重叠的两类内存。
+
+RSS 没有立即下降，也不能单独证明泄漏。内存分配器、碎片、已保留的地址空间和实际驻留行为都可能让它与对象回收不同步。需要结合堆基线、外部内存和保留关系继续判断。
+
+### 5.2 相同业务周期的快照对照 {#快照对照}
+
+**堆快照**记录某个 V8 执行环境中的对象及其引用关系。为了判断对象为什么仍然存活，需要沿保留路径找到长期持有它的容器、闭包、监听器等；可达性机制见 [JavaScript 内存管理](../javascript/memory-management.mdx#可达性与垃圾回收)。
+
+下面在受控进程中分别保存“创建前、被保留、解除引用后”的快照：
+
+```js
+// heap-demo.mjs
+import { writeHeapSnapshot } from 'node:v8';
+if (typeof global.gc !== 'function') {
+  throw new Error('run with --expose-gc for this controlled experiment');
+}
+class RetainedRecord {
+  constructor(index) {
+    this.index = index;
+    this.payload = Buffer.alloc(1_024, index % 256);
+  }
+}
+globalThis.retainedRecords = [];
+global.gc();
+writeHeapSnapshot('before.heapsnapshot');
+
+function retainRecords(count) {
+  for (let i = 0; i < count; i++) {
+    globalThis.retainedRecords.push(new RetainedRecord(i));
+  }
+}
+retainRecords(300);
+global.gc();
+writeHeapSnapshot('retained.heapsnapshot');
+
+globalThis.retainedRecords.length = 0;
+global.gc();
+writeHeapSnapshot('released.heapsnapshot');
+console.log('snapshots written');
+```
+
+运行方式：
+
+```sh
+node --expose-gc heap-demo.mjs
+```
+
+比较快照时，可以查找 `RetainedRecord` 实例的数量，并沿引用找到 `globalThis.retainedRecords`。第二份快照保留这些实例的原因是数组仍引用它们；清空数组后，这条保留关系解除。Buffer 的外部字节并不等于普通 JavaScript 对象的浅层大小，所以还要结合外部内存指标。
+
+这里显式调用 GC 只是让受控实验的几个阶段更容易对比，不是修复生产内存泄漏的办法。仍然可达的对象不会因为多调用一次 GC 就失去用途；生产问题应修正不必要的引用、无界缓存或未完成任务。
+
+### 5.3 对象大小与增长趋势 {#对象大小与增长趋势}
+
+**浅层大小**描述对象自身占用的空间；**保留大小**关注因为该对象仍可达而一并保留的内存。一个很小的容器可能间接保留许多大对象，因此排查时不能只按浅层大小排序。
+
+更可靠的比较是：在相同业务操作开始前记录基线，重复执行并完成清理，再观察经过回收后哪些对象仍不断增加。增长一次后稳定下来可能是预热或有界缓存；每次相同操作都增加一批永远不释放的对象，则需要检查具体持有者。
+
+监听器、定时器、未删除的任务 ID、长期缓存和闭包都可能形成保留关系，但不能看到其中一个就直接判定错误。应确认它是否还承担业务职责，以及生命周期结束时清理是否真正发生。
+
+## 6. 诊断成本与边界 {#诊断成本与边界}
+
+生成堆快照会同步阻塞对应线程的事件循环，还需要明显的额外内存。对于已经接近内存上限的实例，采集本身可能导致失败；应优先在可复现、可隔离或可承受失效的环境中采集，而不是把它当作零成本监控接口。
+
+快照可能包含字符串、请求对象或其他业务内容，保存和共享时需要按照实际数据范围控制。开启 Inspector 也会提供强大的调试能力，应限制监听地址和访问范围，不能为方便分析直接把调试接口暴露给无关调用方。
+
+堆快照以单个 V8 isolate 为范围，主线程快照不包含所有 Worker 的堆。若进程 RSS 增长主要来自 Worker、Buffer 或原生分配，仅分析主线程的对象列表可能找不到主要成本。
+
+GC 日志可以辅助观察回收频率、停顿与回收后的空间，但“频繁 GC”既可能来自大量短命对象，也可能伴随长期保留。需要把分配速度、回收效果和请求表现联系起来，而不是看到日志里有 GC 就把它当成异常。
+
+## 7. 修复后的验证 {#修复后的验证}
+
+针对有证据支持的原因修改以后，回到原来的负载检查结果：
+
+1. 保持输入规模、并发、运行时与关键环境可对比，区分预热和稳定阶段。
+2. 验证输出正确性、错误处理和取消行为，避免用丢弃工作换取“变快”。
+3. 对计算问题重新比较调用路径、延迟分布和吞吐量；转移到 Worker 后也检查传输与排队成本。
+4. 对内存问题重复相同业务周期，确认对象保留关系解除或缓存有界，再观察堆、外部内存和 RSS 趋势。
+5. 检查修复是否把压力转移到了数据库、线程池、队列或另一实例。
+
+例如把所有上传内容收集进数组再合并，可能造成外部内存随并发增长。改成遵守背压的流式传输后，应检查每个上传结果一致、失败时清理，以及排队字节数是否受控；不能只用一次小文件上传成功证明大文件场景已改善。相关机制见 [Buffer 与 Stream](./buffer-stream.mdx#缓冲阈值与内存范围)。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 Node.js 接口变慢时，应该怎样安排排查顺序？ {#diagnostic-order}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**题型**：综合题
+
+**考察重点**：把业务现象、实例范围、时间窗口和资源证据对齐。
+
+**相关内容**：[现象与范围](#现象与范围)、[事件循环延迟与 ELU](#事件循环延迟与elu)。
+
+<details>
+<summary>参考回答</summary>
+
+**先建立可重复的慢请求范围，再结合事件循环、CPU、下游与队列证据缩小原因。** 记录输入大小、并发、延迟分布、错误和环境，确认是某个实例还是整体服务的问题。
+
+主线程计算和调度延迟同时增加时，采集 CPU profile 看调用路径；事件循环较空闲而请求仍慢时，继续查下游与排队。每一步都用证据决定下一步，不能仅凭 CPU 或内存一个数字直接改架构。
+
+</details>
+
+### 8.2 事件循环延迟、ELU 和 CPU 使用有什么区别？ {#loop-metrics}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：调度延迟、活动比例和 CPU 工作量的不同含义。
+
+**相关内容**：[采样窗口与单位](#采样窗口与单位)、[ELU 与 CPU 的区别](#elu与cpu的区别)。
+
+<details>
+<summary>参考回答</summary>
+
+**事件循环延迟观察调度被推迟的程度，ELU 观察事件循环活动比例，CPU 时间观察实际执行工作。** 三者有关联，但不等价，例如同步等待子进程会阻止事件循环继续调度，却不一定让父进程消耗很多 CPU。
+
+`monitorEventLoopDelay` 的统计值是纳秒，换算毫秒要除以 `1e6`；ELU 应按窗口差分，并结合样本数和请求指标解释，不能当作请求 p99 或 CPU 使用率。
+
+</details>
+
+### 8.3 CPU profile 能不能直接说明请求为什么等待了两秒？ {#cpu-profile}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：执行采样、墙钟等待与调用路径的区别。
+
+**相关内容**：[CPU profile 与调用路径](#cpu-profile与调用路径)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能保证，CPU profile 主要反映采样期间实际执行的调用路径。** 如果两秒主要花在数据库响应或队列等待上，需要请求跟踪和对应队列、连接池指标补充解释。
+
+分析计算热点时，还要区分自身耗时和子调用耗时，并检查执行次数和输入规模。没有样本也不能证明短函数没有成本，采样范围要覆盖问题发生的阶段和执行单元。
+
+</details>
+
+### 8.4 heapUsed 不变但 RSS 增长，是否说明没有内存问题？ {#memory-metrics}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：V8 堆、外部内存、整个进程与 Worker 的统计范围。
+
+**相关内容**：[内存统计范围](#内存统计范围)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能这样判断，RSS 还包含 JavaScript 堆之外的驻留内存。** 应继续看 Buffer、ArrayBuffer、原生资源、线程和分配器行为，并确认是不是其他 Worker 的内存增长。
+
+`arrayBuffers` 已包含在 `external` 中，不能重复相加。RSS 不立即下降也未必是泄漏，最终需要结合相同业务周期的趋势、对象保留关系和资源生命周期判断。
+
+</details>
+
+### 8.5 怎样用堆快照证明某批对象被错误保留？ {#heap-retainers}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：可比的操作周期、实例数量、保留路径和清理后的变化。
+
+**相关内容**：[快照对照](#快照对照)、[对象大小与增长趋势](#对象大小与增长趋势)。
+
+<details>
+<summary>参考回答</summary>
+
+**比较相同业务周期后的快照，找到持续增加且已无业务用途的对象，再沿保留路径定位长期持有者。** 不能只看对象很多或浅层大小很大，还要确认缓存是否有界、任务是否已经结束。
+
+修复后重复同样操作，检查对应引用是否解除、对象是否不再持续积累。受控实验中的手动 GC 可以辅助对照，但生产问题要修正引用和生命周期，不能靠反复触发 GC 修复。
+
+</details>
+
+### 8.6 能否在即将内存耗尽的实例上直接生成堆快照？ {#snapshot-cost}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：诊断自身的阻塞、额外内存和数据范围。
+
+**相关内容**：[诊断成本与边界](#诊断成本与边界)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能把它当作没有影响的操作，应先评估实例是否能承受阻塞与额外内存。** 生成快照会同步停止相应事件循环的其他工作，并可能使接近上限的进程失败，优先选择可隔离的复现环境或能承受失效的实例。
+
+快照可能包含业务数据，而且只覆盖对应 V8 isolate。需要控制访问范围，并确认是否还要检查 Worker 或外部内存。
+
+</details>
+
+### 8.7 怎样证明一次 Node.js 性能修复有效？ {#verify-fix}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：相同负载、正确性、资源趋势与成本转移。
+
+**相关内容**：[修复后的验证](#修复后的验证)。
+
+<details>
+<summary>参考回答</summary>
+
+**在可对比的原负载下，同时验证业务结果与对应性能证据。** 计算问题比较调用路径、吞吐和延迟分布；保留问题重复操作周期，检查对象关系、堆基线与外部内存是否符合预期。
+
+还要覆盖错误、取消和队列边界，并检查是否把成本转移到 Worker、数据库或其他实例。单次成功、平均耗时下降或暂时没有报警，都不足以独立证明问题已经解决。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+
+- [Node.js 22：Performance measurement APIs](https://nodejs.org/download/release/v22.16.0/docs/api/perf_hooks.html)
+- [Node.js 22：CPU profile 命令行选项](https://nodejs.org/download/release/v22.16.0/docs/api/cli.html#--cpu-prof)
+- [Node.js 22：process.memoryUsage](https://nodejs.org/download/release/v22.16.0/docs/api/process.html#processmemoryusage)
+- [Node.js 22：v8.writeHeapSnapshot](https://nodejs.org/download/release/v22.16.0/docs/api/v8.html#v8writeheapsnapshotfilenameoptions)
+- [Node.js 22.16.0：Histogram 的重置与时间差记录](https://github.com/nodejs/node/blob/v22.16.0/src/histogram-inl.h)
+- [Node.js：Using Heap Snapshot](https://nodejs.org/en/learn/diagnostics/memory/using-heap-snapshot)

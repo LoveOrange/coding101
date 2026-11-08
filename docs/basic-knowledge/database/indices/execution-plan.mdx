@@ -60,6 +60,8 @@ WHERE user_id = 7 ORDER BY created_at LIMIT 20;
 - `Using filesort`：需要额外排序。内存够用时，排序可以全部在内存中完成。
 - `Using temporary`：需要内部临时表。它同样不一定落盘，要结合实际的内存和落盘指标判断。
 
+`filesort` 不是某一种固定排序算法的名字。待排序数据能放进排序缓冲区时可以在内存完成；放不下时，可以先排序一批数据、写出有序段，再归并这些段，这体现了把大问题拆小后合并的思路。`ORDER BY ... LIMIT` 还可能采用保留少量候选的优化。因此，看到 `Using filesort` 不能直接断言使用了快速排序、归并排序，或一定发生磁盘 I/O；需要结合优化器跟踪和 `Sort_merge_passes` 等统计验证。
+
 ## 4. 访问类型 {#访问类型}
 
 `EXPLAIN` 的 `type` 列是**访问类型**，描述这张表的行是怎样取到的。下表大致从高效到低效排列，但成本最终还要看扫描量：
@@ -73,7 +75,7 @@ WHERE user_id = 7 ORDER BY created_at LIMIT 20;
 | `index` | 扫描索引树，仍需检查大量条目。 |
 | `ALL` | 扫描整张表。 |
 
-`index` 容易被误读成「用上了索引所以很快」，其实它是把整棵索引树扫一遍。如果是覆盖查询，它比 `ALL` 少读一些列，但仍然要遍历全部条目。另外在连接里，内层表的访问次数等于外层传过来的行数，即使内层是 `ref`，外层行很多时总成本也会被放大。
+`index` 容易被误读成「用上了索引所以很快」，它表示索引扫描，通常仍需检查大量条目；若上层 `LIMIT` 等条件提前停止，实际不一定读完整棵索引。覆盖查询可以少读数据列，但不能仅凭 `index` 判断扫描量小。对于嵌套循环连接，内层访问会随外层传入的行组合重复，即使内层是 `ref`，外层行很多时总成本也会放大。Hash Join 等路径要按实际执行树分析，不能一概套用逐行内层查找。
 
 ## 5. 实际统计与估算偏差 {#实际统计与估算偏差}
 
@@ -95,7 +97,7 @@ WHERE user_id = 7 ORDER BY created_at LIMIT 20;
 
 计划里出现全表扫描不一定是问题。小表全表扫描省去了索引定位的开销；查询要返回大部分行时，顺序扫描也比逐条回表便宜。比较优化前后的效果，要用相同的参数、数据规模和缓存条件。
 
-执行计划解释的是数据库内部怎样访问数据。锁等待、客户端取数和网络传输的耗时它看不到，要结合运行指标查。新增索引对写入的代价，由[索引设计](./index-review.mdx)来评估。
+执行计划解释的是数据库内部怎样访问数据。普通 `EXPLAIN` 不测量运行等待；`EXPLAIN ANALYZE` 的实际耗时可能包含执行期间的等待，但不能单凭一个耗时数字区分锁、I/O 或调度原因，也不代表客户端取数和网络传输的完整耗时。定位这些成本还要结合运行指标。新增索引对写入的代价，由[索引设计](./index-review.mdx)来评估。
 
 ## 7. 面试题 {#5-面试题}
 
@@ -112,7 +114,7 @@ WHERE user_id = 7 ORDER BY created_at LIMIT 20;
 
 **用了索引只说明选中了某条访问路径，扫描范围过大、回表太多、额外排序或连接循环次数多，查询仍然会慢。**
 
-定位时先看实际的 `key`、访问类型和 `rows × filtered`，判断扫描范围是否合理，再看 `Extra` 里有没有 `Using filesort`、`Using temporary`。然后在受控环境用 `EXPLAIN ANALYZE` 对照实际行数、耗时和 `loops`，找出估算偏差或被反复调用的节点。锁等待和网络耗时不在执行计划里，需要结合运行指标检查。
+定位时先看实际的 `key`、访问类型和 `rows × filtered`，判断扫描范围是否合理，再看 `Extra` 里有没有 `Using filesort`、`Using temporary`。然后在受控环境用 `EXPLAIN ANALYZE` 对照实际行数、耗时和 `loops`，找出估算偏差或被反复调用的节点。普通计划不提供等待耗时，实际执行统计也不能单独区分锁、I/O 和调度原因；网络与客户端耗时还需结合其他指标检查。
 
 </details>
 
@@ -172,7 +174,7 @@ WHERE user_id = 7 ORDER BY created_at LIMIT 20;
 - **`eq_ref` 是通过完整唯一键的等值查找**，每个外层行组合至多匹配一行。
 - **`ref` 是非唯一键或索引前缀的等值查找**，每个外层行组合可以匹配多行。
 - **`range` 扫描索引中选定的范围**，只访问这些区间。
-- **`index` 和 `ALL` 分别扫描整棵索引树和整张表**。`index` 是否更省，取决于索引宽度和是否覆盖查询。
+- **`index` 和 `ALL` 分别采用索引扫描和全表扫描**。`index` 是否更省，取决于索引宽度和是否覆盖查询；实际扫描量还受上层提前停止等条件影响。
 
 </details>
 
@@ -181,3 +183,4 @@ WHERE user_id = 7 ORDER BY created_at LIMIT 20;
 - [MySQL：EXPLAIN](https://dev.mysql.com/doc/refman/8.0/en/explain.html)
 - [MySQL：EXPLAIN Output](https://dev.mysql.com/doc/refman/8.0/en/explain-output.html)
 - [MySQL 8.0：Optimizer Statistics](https://dev.mysql.com/doc/refman/8.0/en/optimizer-statistics.html)
+- [MySQL 8.0：ORDER BY Optimization](https://dev.mysql.com/doc/refman/8.0/en/order-by-optimization.html)

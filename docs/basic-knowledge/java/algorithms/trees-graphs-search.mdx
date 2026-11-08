@@ -20,6 +20,7 @@ keywords: ["DFS", "BFS", "拓扑排序", "多源 BFS", "Java 图搜索"]
 - 边权相同且为正时，多源 BFS **第一次到达某个节点时的距离，就是它到最近源点的距离**。[卡](#multi-source-bfs)
 - 有向图 DFS 中，**遇到仍在当前路径上的灰色节点才说明有环**，遇到已完成的黑色节点不算。[卡](#directed-cycle-topological)
 - 判断二叉树是否平衡时，**后序遍历让子树同时返回高度和平衡结果**，每个节点只算一次，总时间 O(n)。[卡](#postorder-balance)
+- 最大路径和**向父节点返回单臂，在当前节点比较双臂**；全负树仍须保留一个实际节点作为非空路径。[卡](#binary-tree-maximum-path-sum)
 
 ## 2. 图的建模 {#图的建模}
 
@@ -228,6 +229,41 @@ for (int source : sources) {
 
 如果一个目标正好是另一个的祖先，搜索遇到它时直接返回，不再往下找；它确实就是答案，因为它是自己的祖先，另一个目标又在它下面。这个推理依赖「两个目标都存在」：如果允许目标不在树里，只找到一个目标时也会把它当作候选返回，所以还要额外确认两个目标都存在。完整遍历的时间是 O(n)，递归空间是 O(h)。
 
+### 9.2 二叉树最大路径和 {#二叉树最大路径和}
+
+**二叉树最大路径和**是在所有非空路径中找出最大的节点值之和。这里路径沿父子边连接，同一节点最多经过一次，可以不经过根；节点值可以为负。它需要区分两种结果：当前子树中已经形成的最大路径，以及还能接到父节点上的路径。
+
+向父节点返回的路径必须从当前节点出发，最多沿一个孩子继续往下，这里称为**单臂路径**。如果把“左孩子—当前节点—右孩子”整条路径再接到父节点，当前节点就连上了三个方向，形成分叉，不再是一条路径。因此，向上只能返回 `节点值 + max(0, 左单臂, 右单臂)`。
+
+当前子树的最终答案却可以同时使用两侧。在当前节点比较 `节点值 + max(0, 左单臂) + max(0, 右单臂)`，再与左右子树内部的最佳答案取最大值。每条路径都有一个离根最近的节点，路径在这个节点最多连接左右两臂，所以这样逐个节点合并不会漏掉合法路径。
+
+下面复用 [DFS](#dfs) 的 `TreeNode`，用 `PathResult` 同时返回单臂收益 `arm` 与子树最佳值 `best`。输入仍须是一棵无环且无共享子节点的普通树；`null` 根被拒绝，因为本题要求非空路径。
+
+```java
+record PathResult(long arm, long best) {}
+
+static long maxTreePathSum(TreeNode root) {
+    if (root == null) throw new IllegalArgumentException("nonempty tree required");
+    return pathResult(root).best();
+}
+
+static PathResult pathResult(TreeNode node) {
+    if (node == null) return new PathResult(0, Long.MIN_VALUE);
+    PathResult left = pathResult(node.left());
+    PathResult right = pathResult(node.right());
+    long leftArm = Math.max(0, left.arm());
+    long rightArm = Math.max(0, right.arm());
+    long through = Math.addExact(Math.addExact((long) node.value(), leftArm), rightArm);
+    long arm = Math.addExact((long) node.value(), Math.max(leftArm, rightArm));
+    long best = Math.max(through, Math.max(left.best(), right.best()));
+    return new PathResult(arm, best);
+}
+```
+
+根为 −10、左孩子为 9、右孩子为 20，20 的两个孩子为 15 和 7 时，答案是 `15+20+7=42`；这个结果留在 20 的子树里，不需要经过 −10。全树为负时，舍弃负孩子只表示不延长路径，当前节点本身仍被计入，所以 `[-3,-1,-2]` 这棵树的答案为 −1，不会错误返回空路径的 0。
+
+空子树的 `best` 用 `Long.MIN_VALUE` 表示没有非空路径，只参与比较，不参与求和。求和使用 `long` 和 `Math.addExact`，超出 `long` 时抛出异常而不静默溢出。每个节点合并一次，总时间 O(n)，递归及同时保留的结果空间 O(h)。这段递归实现适用于深度可容纳于调用栈的树；深链可能栈溢出，应按[递归深度](#递归深度)改为显式栈后序遍历，不能因算法是 O(n) 就忽略这一限制。
+
 ## 10. 常见问题 {#常见问题}
 
 ### 10.1 DFS 和 BFS 时间一样，空间有什么区别？ {#dfs-与-bfs-的成本}
@@ -356,6 +392,21 @@ Kahn 算法每次移除一个入度为 0 的节点。队列清空后如果还剩
 
 </details>
 
+### 11.7 二叉树最大路径和为什么不能把双臂结果直接返回父节点？ {#binary-tree-maximum-path-sum}
+
+**考察重点**：区分可向上连接的单臂状态与子树内的最大路径，并处理全负值和非空约束。
+
+**相关内容**：[二叉树最大路径和](#二叉树最大路径和)。
+
+<details>
+<summary>参考回答</summary>
+
+**双臂路径已经连接了左右两个方向，再接父节点就会分叉，所以只能向上返回一条单臂。** 单臂收益是当前值加上左右单臂与 0 中的最大值；当前节点形成的完整路径则可以同时使用两侧的非负收益，再与左右子树的最佳路径比较。
+
+不能把全局答案初始化为合法的 0，因为路径必须非空，全负树的结果应是最大的那个节点值。空子树的无答案标记只用于比较，不参与累加；累加值要检查数值范围，递归实现还要确认输入深度不会耗尽调用栈。
+
+</details>
+
 ## 12. 参考资料 {#参考资料}
 
 - [Java SE 21：ArrayDeque](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/ArrayDeque.html)
@@ -365,3 +416,5 @@ Kahn 算法每次移除一个入度为 0 的节点。队列清空后如果还剩
 - [Princeton Algorithms：BreadthFirstPaths 源码](https://algs4.cs.princeton.edu/41graph/BreadthFirstPaths.java.html)
 - [Java SE 21：JLS Record Classes](https://docs.oracle.com/javase/specs/jls/se21/html/jls-8.html#jls-8.10)
 - [Antti Laaksonen：Competitive Programmer’s Handbook](https://cses.fi/book/book.pdf)
+- [LeetCode：Binary Tree Maximum Path Sum](https://leetcode.com/problems/binary-tree-maximum-path-sum/description/)
+- [Java SE 21：Math.addExact](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/Math.html#addExact(long,long))

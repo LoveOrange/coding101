@@ -1,0 +1,399 @@
+---
+sidebar_position: 1
+knowledge:
+  id: frontend.graphics.canvas
+---
+
+# Canvas
+
+**Canvas** 是网页提供的脚本绘图表面。使用 Canvas 2D 时，代码把图形绘制到位图中；画出的圆和矩形不会自动成为独立 DOM 节点，也不会自带点击、布局和无障碍语义。
+
+它适合绘图、图像处理、图表和部分动画场景。真正实现可交互画布，需要自己保存图形数据、映射坐标、判断命中，并在数据变化后重绘。Canvas 的价值与这些额外职责应一起考虑。
+
+## 1. 面试核心 {#core}
+
+- **Canvas 2D 保存的是绘制结果，应用需要自己保存图形模型**。DOM、SVG 和 Canvas 各有职责，不能只按“图形多”就断定某一种总是更快。[卡](#canvas-role)
+- **CSS 显示尺寸与画布位图尺寸不同**。高像素密度显示需要相应扩大位图并调整绘图坐标，设置 width 或 height 还会重置画布状态。[卡](#canvas-size)
+- **save/restore 保存绘图状态，不保存像素，也不保存当前默认路径**。独立路径使用 beginPath 或 Path2D，不能把状态栈当作图形对象树。[卡](#drawing-state)
+- **事件命中要把视口坐标转换到正确的画布坐标**。图形没有自己的 DOM 事件目标，重叠顺序、变换和命中规则由应用确定。[卡](#hit-testing)
+- **像素读取与导出受源安全限制**。能显示跨源图片，不代表绘制后可以读取像素；加载模式与服务端 CORS 响应要配合。[卡](#canvas-cors)
+- **重绘范围和数据流往往比换一个 API 更重要**。先测量绘制、布局、读回和内存，再决定缓存、分层、批量绘制或 Worker。[卡](#canvas-project)
+- **OffscreenCanvas 可以把部分绘图交给 Worker，但不会自动解决通信和绘图成本**。画布控制权、尺寸同步和销毁都需要明确管理。[卡](#offscreen-worker)
+
+## 2. 图形模型与绘制方式 {#图形模型与绘制方式}
+
+### 2.1 Canvas、SVG 与 DOM {#canvas-svg与dom}
+
+Canvas 2D 把操作结果写进位图。调用 `fillRect()` 后，浏览器不会给这个矩形创建一个可查询、可绑定事件的子元素；下一次想移动它，通常要根据自己的模型重新绘制相关区域。
+
+| 方式 | 应用主要操作什么 | 需要关注什么 |
+| --- | --- | --- |
+| DOM 与 CSS | 元素、布局与样式 | 文档结构、布局、交互和语义 |
+| SVG | 矢量图形元素及属性 | 图形节点、样式、事件与节点数量 |
+| Canvas 2D | 位图绘制命令 | 图形模型、坐标、重绘与命中检测 |
+| WebGL | 图形管线、缓冲、纹理与着色器 | 数据组织、GPU 工作与资源管理 |
+
+Canvas 不是“无论多少图形都不用考虑性能”，SVG 也不是“只要缩放就永远没有成本”。图形数量、更新频率、交互方式、文字、设备能力和实现方式都会影响选择。
+
+### 2.2 图形模型与可访问入口 {#图形模型与可访问入口}
+
+**图形模型**是应用保存的对象及其属性，例如圆的中心、半径、颜色和选中状态。像素只是一种展示结果，不适合代替完整业务模型。
+
+下面的页面展示圆和矩形，同时给出可通过键盘操作的按钮和状态文本：
+
+```html
+<canvas id="scene" width="320" height="180" aria-describedby="description">
+  图中有一个圆和一个矩形，也可以使用下方按钮选择。
+</canvas>
+<p id="description">选择圆或矩形，查看选中状态。</p>
+<button type="button" data-shape="circle" aria-pressed="false">选择圆</button>
+<button type="button" data-shape="rect" aria-pressed="false">选择矩形</button>
+<output id="selection" aria-live="polite">未选中</output>
+```
+
+画布中的形状不会自动出现在无障碍树里。对于有实际操作意义的图形，应提供等价的键盘入口与文本状态，必要时提供数据表或列表；不能只画出一个像按钮的矩形，就认为它具有按钮语义。
+
+## 3. 尺寸、像素与坐标 {#尺寸像素与坐标}
+
+### 3.1 显示尺寸与位图尺寸 {#显示尺寸与位图尺寸}
+
+Canvas 的 `width`、`height` 属性决定位图尺寸，CSS 决定它在页面上显示多大。只把一个 320 像素宽的位图用 CSS 拉伸到更大，浏览器会缩放已有像素，而不是自动按新分辨率重画。
+
+**devicePixelRatio** 表示设备像素与 CSS 像素的比例。为了让 320×180 CSS 像素的画布在更高像素密度下保留细节，可以把位图按比例扩大，同时让绘图代码仍使用 320×180 的逻辑坐标：
+
+```js
+const canvas = document.querySelector('#scene');
+const ctx = canvas.getContext('2d');
+if (!ctx) throw new Error('Canvas 2D unavailable');
+
+function resizeScene(dpr = window.devicePixelRatio || 1) {
+  if (!Number.isFinite(dpr) || dpr <= 0) throw new RangeError('Invalid dpr');
+  canvas.style.width = '320px';
+  canvas.style.height = '180px';
+  canvas.style.border = '0';
+  canvas.style.padding = '0';
+  canvas.width = Math.max(1, Math.round(320 * dpr));
+  canvas.height = Math.max(1, Math.round(180 * dpr));
+  ctx.setTransform(canvas.width / 320, 0, 0, canvas.height / 180, 0, 0);
+}
+resizeScene();
+```
+
+例如比例为 2 时，显示区域仍为 320×180，位图为 640×360；绘制坐标 `(60, 90)` 会经过变换映射到对应位置。使用实际位图尺寸计算缩放比例，也考虑了取整。
+
+设置 `canvas.width` 或 `canvas.height` 会清空位图并重置绘图状态，即使赋值与原值相同也会重置。因此，尺寸变化后要重新设置变换、样式并重绘。实际响应式画布还应观察容器尺寸、像素比例变化和隐藏状态，并限制过大的像素分配；示例只展示固定逻辑尺寸。
+
+### 3.2 清晰度与资源成本 {#清晰度与资源成本}
+
+位图宽和高都扩大两倍，像素数量会变成四倍。以常见每像素四个 8 位通道估算，640×360 的单份像素数据约占 921,600 字节；浏览器实际还可能有其他缓冲、纹理和副本。
+
+不能把无限提高分辨率当成免费的清晰度优化。要结合屏幕尺寸、缩放需求、内存和绘制时间决定上限，也不要把这个简单像素估算当作进程内存总量。
+
+## 4. 路径与绘图状态 {#路径与绘图状态}
+
+### 4.1 保存模型并重绘 {#保存模型并重绘}
+
+**Path2D** 可以保存可重复使用的路径。下面接着前面的 `canvas` 和 `ctx`，建立两个形状并绘制：
+
+```js
+const circlePath = new Path2D();
+circlePath.arc(60, 90, 26, 0, Math.PI * 2);
+const rectPath = new Path2D();
+rectPath.rect(140, 50, 100, 80);
+const shapes = [
+  { id: 'circle', name: '圆', path: circlePath, color: '#2563eb' },
+  { id: 'rect', name: '矩形', path: rectPath, color: '#16a34a' }
+];
+let selected = null;
+function renderScene() {
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.restore();
+  for (const shape of shapes) {
+    ctx.save();
+    ctx.fillStyle = shape.color;
+    ctx.fill(shape.path);
+    if (selected === shape.id) {
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = '#111827';
+      ctx.stroke(shape.path);
+    }
+    ctx.restore();
+  }
+}
+renderScene();
+```
+
+圆与矩形的数据保留在 `shapes` 中。改变 `selected` 后再次绘制，才能更新选中边框；修改变量不会自动改动已有像素。
+
+清屏前暂时使用单位变换，按完整位图尺寸清除，再恢复逻辑坐标变换。这样不会误把 CSS 像素尺寸和位图尺寸混用。本例没有设置裁剪区域；若上层还有裁剪状态，清屏也会受它影响，应先恢复到合适的绘图状态。
+
+### 4.2 save、restore 与 beginPath {#save-restore与beginpath}
+
+`save()` 保存变换、裁剪区域、颜色、透明度和线条样式等绘图状态，`restore()` 恢复最近一次保存的状态。它们不会把已经绘制的像素恢复成旧图像。
+
+当前默认路径也不属于这个状态栈。使用 `moveTo()`、`lineTo()`、`arc()` 等构造默认路径时，新的独立图形通常先调用 `beginPath()`，避免前一个路径继续参与填充或描边。`clearRect()` 只清像素，也不会替代 `beginPath()`。
+
+`Path2D` 把路径作为独立对象保存，适合这里的绘制与命中复用。它保留路径几何，不自动保存颜色、对象事件和业务身份；这些仍由 `shapes` 管理。
+
+## 5. 命中检测与交互 {#命中检测与交互}
+
+### 5.1 从事件坐标到画布坐标 {#从事件坐标到画布坐标}
+
+指针事件的 `clientX`、`clientY` 是视口坐标。首先减去画布显示区域的位置，再按位图与显示尺寸的比例换算。以下代码适用于前例无边框、无内边距、没有旋转或倾斜的画布：
+
+```js
+function selectShape(id) {
+  selected = id;
+  const shape = shapes.find(item => item.id === id);
+  document.querySelector('#selection').textContent = shape ? `已选中${shape.name}` : '未选中';
+  for (const button of document.querySelectorAll('[data-shape]')) {
+    button.setAttribute('aria-pressed', String(button.dataset.shape === id));
+  }
+  renderScene();
+}
+function onPointerDown(event) {
+  const rect = canvas.getBoundingClientRect();
+  if (rect.width === 0 || rect.height === 0) return;
+  const x = (event.clientX - rect.left) * canvas.width / rect.width;
+  const y = (event.clientY - rect.top) * canvas.height / rect.height;
+  const hit = [...shapes].reverse().find(shape => ctx.isPointInPath(shape.path, x, y));
+  selectShape(hit?.id ?? null);
+}
+canvas.addEventListener('pointerdown', onPointerDown);
+for (const button of document.querySelectorAll('[data-shape]')) {
+  button.addEventListener('click', () => selectShape(button.dataset.shape));
+}
+```
+
+`isPointInPath(path, x, y)` 判断点是否落在填充路径内。传入的点坐标不会再自动乘当前变换；这里先换成位图坐标，而 `Path2D` 使用当前绘图变换参与判断，两者落在同一坐标系。
+
+形状逆序检查，是因为后画的通常覆盖先画的，本例选择最上层命中对象。CSS 旋转、倾斜、嵌套变换，或者应用内部额外的缩放和平移，都需要更完整的逆变换；只用 `getBoundingClientRect()` 的外接矩形比例不能处理任意变换。
+
+### 5.2 图形事件与组件生命周期 {#图形事件与组件生命周期}
+
+点击圆和点击矩形时，DOM 事件目标都是同一个 `canvas`。应用可以在命中后构造自己的图形事件，但浏览器不会自动把 `shape.id` 放进 `event.target`。
+
+只需要边线交互时，可以考虑 `isPointInStroke()`；规则图形也可以先做包围盒筛选。复杂场景要区分可见区域、填充规则、描边宽度与业务上希望可点击的区域，它们不必完全相同。
+
+拖拽还需要管理按下、移动、释放、取消和指针捕获。组件卸载时要移除监听器、取消动画或终止所属 Worker；不能只从 DOM 删除画布，就假定所有外部引用和任务都结束。
+
+## 6. 像素、图片与导出 {#像素图片与导出}
+
+### 6.1 像素数据不使用绘图变换 {#像素数据不使用绘图变换}
+
+`ImageData` 表示像素颜色数据。下面是一个与前例独立的最小示例：
+
+```js
+const sample = document.createElement('canvas');
+sample.width = sample.height = 2;
+const sampleCtx = sample.getContext('2d');
+sampleCtx.scale(2, 2);
+const pixel = sampleCtx.createImageData(1, 1);
+pixel.data.set([255, 0, 0, 255]);
+sampleCtx.putImageData(pixel, 0, 0);
+console.log([...sampleCtx.getImageData(0, 0, 1, 1).data]); // [255, 0, 0, 255]
+console.log([...sampleCtx.getImageData(1, 0, 1, 1).data]); // [0, 0, 0, 0]
+```
+
+这里使用默认的 8 位 RGBA 数据，四项分别是红、绿、蓝和透明度。`putImageData()` 直接处理位图像素，不受前面的二倍绘图变换影响，所以只写了一个像素。频繁从绘图表面读回大量像素也可能造成开销，不应在每个指针事件里无条件扫描整张位图。
+
+### 6.2 跨源图片与污染画布 {#跨源图片与污染画布}
+
+**污染画布**指画布已经包含不允许脚本读取的跨源内容。图片能够显示或绘制，并不保证脚本有权读取其像素；此时 `getImageData()`、`toDataURL()`、`toBlob()` 等可能抛出 `SecurityError`。
+
+如果远端图片允许 CORS 读取，应在设置 `src` 前配置加载模式，并要求服务端返回相应许可：
+
+```js
+async function exportImage(url) {
+  const image = new Image();
+  image.crossOrigin = 'anonymous';
+  image.src = url;
+  await image.decode();
+  const target = document.createElement('canvas');
+  target.width = image.naturalWidth;
+  target.height = image.naturalHeight;
+  const context = target.getContext('2d');
+  if (!context) throw new Error('Canvas 2D unavailable');
+  context.drawImage(image, 0, 0);
+  return new Promise((resolve, reject) => {
+    target.toBlob(blob => {
+      if (blob) resolve(blob);
+      else reject(new Error('Image encoding failed'));
+    }, 'image/png');
+  });
+}
+```
+
+在服务器允许跨源读取且图片可解码时，函数返回 PNG Blob。仅设置 `crossOrigin` 无法替代响应头；没有许可时，图片的 CORS 加载会失败，而不是自动变成可读图片。生产代码还需要限制输入图片的尺寸、来源和并发，避免一次解码或位图分配占用过多资源。
+
+清除已污染画布的像素不会自动恢复读取权限。重新设置画布尺寸会创建重置后的位图，但也会丢弃内容和状态；这不能让原来的跨源图片变得可读，再次绘制仍会受相同限制。
+
+## 7. 重绘、性能与 Worker {#重绘性能与worker}
+
+### 7.1 按实际瓶颈优化 {#按实际瓶颈优化}
+
+Canvas 的性能取决于处理多少数据、画多少像素、怎样更新以及在哪执行。先用真实交互记录定位，区分图形计算、绘制命令、像素读回、布局和资源加载。
+
+| 已确认的问题 | 可以评估的改进 | 需要付出的代价 |
+| --- | --- | --- |
+| 相同复杂图形反复生成 | 缓存路径或预绘制结果 | 缓存内存与失效管理 |
+| 静态背景跟着动态对象重画 | 分层或复用静态图像 | 多画布合成和尺寸同步 |
+| 每次更新都重画整个大场景 | 计算受影响区域并重绘 | 重叠、阴影、裁剪关系更复杂 |
+| 高频事件重复提交同帧绘制 | 合并状态，在 rAF 中绘制 | 明确丢弃中间状态是否符合需求 |
+| 大量图形逐个进行昂贵检测 | 包围盒或空间索引筛选 | 索引更新成本 |
+| 主线程图形计算过重 | Worker、OffscreenCanvas | 通信、生命周期和兼容处理 |
+
+动画中的位置应根据时间推导，不能假设每次 `requestAnimationFrame` 都对应固定毫秒数。后台或繁忙环境会影响调度；也不能只因为用了 rAF，就认为每次都能按屏幕刷新率完成绘制。
+
+### 7.2 OffscreenCanvas 与所有权 {#offscreencanvas与所有权}
+
+**OffscreenCanvas** 把绘图表面与 DOM 中的画布元素分离，可在支持的环境中交给 Worker 使用。主线程仍负责布局、输入与界面状态，双方还需要同步尺寸和操作数据。
+
+对于尚未取得绘图上下文的新画布，可把控制权转移给 Worker。主线程示例：
+
+```js
+function mountWorkerCanvas(canvas) {
+  const worker = new Worker('./canvas-worker.js');
+  try {
+    const surface = canvas.transferControlToOffscreen();
+    worker.postMessage({ surface }, [surface]);
+  } catch (error) {
+    worker.terminate();
+    throw error;
+  }
+  return () => worker.terminate();
+}
+```
+
+`canvas-worker.js`：
+
+```js
+self.onmessage = ({ data: { surface } }) => {
+  const context = surface.getContext('2d');
+  if (!context) throw new Error('Canvas 2D unavailable');
+  context.fillStyle = '#2563eb';
+  context.fillRect(10, 10, 40, 40);
+  self.postMessage({ type: 'drawn', width: surface.width, height: surface.height });
+};
+```
+
+这组代码用于独立的新画布，不应拿已经调用 `getContext('2d')` 的 `scene` 再转移。转移后由 Worker 操作对应表面；结束时调用返回的清理函数终止 Worker，后续重建通常需要新的画布和控制流程。完整组件还应处理 Worker 错误、尺寸变化与消息协议。
+
+这只改变部分工作执行的位置，不保证绘制本身更少，也不免除内存和传输成本。硬件加速路径依赖浏览器实现，不能把 Canvas 2D 等同于“只用 CPU”，或把使用 Worker 等同于“必然提高帧率”。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 Canvas 可以做什么，怎样判断是否适合当前页面？ {#canvas-role}
+
+**考察重点**：位图绘制、图形模型、交互与方案边界。
+
+**相关内容**：[图形模型与绘制方式](#图形模型与绘制方式)。
+
+<details>
+<summary>参考回答</summary>
+
+**Canvas 可用于绘图、图像处理、图表和动画，但应用要自己管理模型、重绘、命中与语义。** 按图形数量、更新方式、交互和无障碍需求比较 DOM、SVG 与 Canvas。不能只因为图形多或用了 Canvas 就断言性能更好。
+
+</details>
+
+### 8.2 为什么只设置 Canvas 的 CSS 宽高可能模糊，改变 width 又会清空图像？ {#canvas-size}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：CSS 像素、位图尺寸与状态重置。
+
+**相关内容**：[尺寸、像素与坐标](#尺寸像素与坐标)。
+
+<details>
+<summary>参考回答</summary>
+
+**CSS 改变展示尺寸，width/height 决定位图尺寸；只拉伸展示区域会缩放已有像素。** 高像素密度下扩大位图并设置坐标变换，才能按逻辑尺寸重画。设置 width/height 会重置像素和状态，所以需要重新设置样式、变换与内容，同时控制像素数量成本。
+
+</details>
+
+### 8.3 restore 能撤销已经画出的矩形吗？clearRect 能清掉当前路径吗？ {#drawing-state}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：状态栈、位图与路径的独立性。
+
+**相关内容**：[save、restore 与 beginPath](#save-restore与beginpath)。
+
+<details>
+<summary>参考回答</summary>
+
+**两者都不能：restore 恢复绘图状态，clearRect 清除像素，当前默认路径另行管理。** 新的独立默认路径通常用 beginPath 开始，或使用独立 Path2D。撤销图形应更新应用模型并重绘，不能把绘图状态栈当成图像历史。
+
+</details>
+
+### 8.4 怎样知道用户点击了 Canvas 中的哪个图形？ {#hit-testing}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：坐标映射、图形几何与绘制顺序。
+
+**相关内容**：[从事件坐标到画布坐标](#从事件坐标到画布坐标)。
+
+<details>
+<summary>参考回答</summary>
+
+**把事件的视口坐标映射到与图形判断一致的坐标系，再按业务顺序做几何命中检测。** 可使用 isPointInPath、isPointInStroke 或包围盒筛选，重叠时通常先检查后绘制对象。图形没有独立 DOM target；复杂 CSS 或场景变换需要正确逆变换，不能只减去画布左上角。
+
+</details>
+
+### 8.5 跨源图片能显示，为什么 Canvas 导出会报 SecurityError？ {#canvas-cors}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：显示许可与像素读取许可。
+
+**相关内容**：[跨源图片与污染画布](#跨源图片与污染画布)。
+
+<details>
+<summary>参考回答</summary>
+
+**显示跨源图片不等于允许脚本读取它，未经相应许可绘制后会使画布失去源安全状态。** 应在加载前设置正确的跨源模式，并由服务端配合 CORS 响应。只设置 crossOrigin 或清除像素无法绕过限制；图片加载失败和画布被污染也应区分。
+
+</details>
+
+### 8.6 怎样介绍一个 Canvas 场景的实现和优化？ {#canvas-project}
+
+**题型**：综合题
+
+**考察重点**：模型、更新链路、性能证据与取舍。
+
+**相关内容**：[保存模型并重绘](#保存模型并重绘)、[按实际瓶颈优化](#按实际瓶颈优化)。
+
+<details>
+<summary>参考回答</summary>
+
+**先说明图形模型、输入、坐标与重绘链路，再用测量指出具体瓶颈。** 根据问题选择路径缓存、静态分层、局部重绘、帧内合并或 Worker，并说明缓存内存、失效和通信成本。用同一场景的前后结果支持效果，不能仅列 API 名称或没有条件的帧率数字。
+
+</details>
+
+### 8.7 OffscreenCanvas 能解决什么，为什么不能重复转移原来的画布？ {#offscreen-worker}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：执行位置、控制权、上下文与生命周期。
+
+**相关内容**：[OffscreenCanvas 与所有权](#offscreencanvas与所有权)。
+
+<details>
+<summary>参考回答</summary>
+
+**OffscreenCanvas 可以让支持的绘图工作在 Worker 中执行，但控制权转移有明确生命周期。** 已取得上下文或已经转移控制权的画布，不能再按初始方式转移。主线程仍负责布局与输入，需同步尺寸、管理消息和终止 Worker；性能收益仍取决于实际瓶颈。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+
+- [WHATWG HTML：Canvas](https://html.spec.whatwg.org/multipage/canvas.html)
+- [MDN：Canvas tutorial](https://developer.mozilla.org/en-US/docs/Web/API/Canvas_API/Tutorial)
+- [MDN：save()](https://developer.mozilla.org/en-US/docs/Web/API/CanvasRenderingContext2D/save)
+- [MDN：isPointInPath()](https://developer.mozilla.org/en-US/docs/Web/API/CanvasRenderingContext2D/isPointInPath)
+- [MDN：Cross-origin images in a canvas](https://developer.mozilla.org/en-US/docs/Web/HTML/How_to/CORS_enabled_image)
+- [MDN：Optimizing canvas](https://developer.mozilla.org/en-US/docs/Web/API/Canvas_API/Tutorial/Optimizing_canvas)
+- [MDN：OffscreenCanvas](https://developer.mozilla.org/en-US/docs/Web/API/OffscreenCanvas)

@@ -1,0 +1,190 @@
+---
+sidebar_position: 9
+knowledge:
+  id: basic-knowledge.database.partitioning
+  type: concept
+description: "以 MySQL 8.0 InnoDB 介绍表分区、分区键和分区裁剪，给出按日期进行 RANGE COLUMNS 分区的建表与查询示例。解释唯一键必须包含分区列的限制，以及分区管理、索引、外键和跨节点分片的区别，帮助根据访问模式与数据生命周期判断是否适合分区。"
+keywords: ["MySQL 分区", "RANGE COLUMNS", "分区裁剪", "分区键", "分区与分表"]
+---
+
+# MySQL 分区
+
+**MySQL 表分区**把一张逻辑表的数据按规则放入不同分区，应用仍使用同一个表名查询。对 MySQL 8.0 的 InnoDB 表，它主要提供按数据范围管理存储和减少部分查询扫描范围的能力，不会自动把一张表分布到多台数据库服务器。
+
+选分区方案时，要先看数据保留方式和查询条件，再检查主键、唯一键与外键是否允许这个设计。表很大只是开始分析的理由，不是分区一定有收益的证据。
+
+## 1. 面试核心 {#core}
+
+- 分区由**分区键或表达式决定行的归属**；RANGE、LIST、HASH、KEY 适合不同的划分规则。[卡](#partition-key)
+- **分区裁剪**根据查询条件排除不可能命中的分区；是否发生应查看执行计划，分区不替代分区内部的索引。[卡](#partition-pruning)
+- MySQL 8.0 要求**每个唯一键，包括主键，都包含分区表达式涉及的全部列**。把日期加入联合主键，会改变唯一性约束的范围。[卡](#partition-unique-key)
+- InnoDB 分区表**不能使用外键，也不能作为外键的被引用表**；已有外键关系必须在选型时考虑。
+- 表分区仍由一个 MySQL 实例处理，**不等于跨节点分片**；它不能自动消除单机资源和热点写入瓶颈。[卡](#partition-vs-sharding)
+
+## 2. 分区规则与分区键 {#分区规则与分区键}
+
+**分区键**是用于判断数据应放入哪个分区的列。分区表达式还可以对列进行允许的计算，具体类型和函数受 MySQL 的分区规则限制。
+
+| 方式 | 划分依据 | 可考虑的场景 |
+| --- | --- | --- |
+| RANGE / RANGE COLUMNS | 不重叠的有序范围 | 按日期管理历史数据 |
+| LIST / LIST COLUMNS | 明确列出的值集合 | 已知且可维护的类别集合 |
+| HASH | 按整数表达式的结果分配，普通 HASH 使用取模 | 希望按键分散行，但不按时间整段管理 |
+| KEY | MySQL 对指定列进行散列 | 使用数据库支持的列类型进行散列划分 |
+
+`RANGE COLUMNS` 可以直接按 `DATE` 或 `DATETIME` 列划分，不必先把日期转成整数。按时间清理数据时，范围分区容易与保留周期对应；若主要查询总是按用户 ID 且不带日期，时间分区可能仍需访问很多分区。
+
+分区键要同时满足三件事：数据归属可确定、主要访问能利用划分、约束和维护方式能接受。数据均匀也不代表访问均匀：按月分区的历史记录很多，绝大多数新写入仍可能集中在当前月份。
+
+## 3. 日期范围分区 {#日期范围分区}
+
+下面是一张练习用事件表，按事件日期划分，ID 与日期共同构成主键：
+
+```sql
+CREATE TABLE partition_events (
+  id BIGINT NOT NULL,
+  event_date DATE NOT NULL,
+  user_id BIGINT NOT NULL,
+  PRIMARY KEY (id, event_date),
+  KEY idx_user_date (user_id, event_date)
+) ENGINE=InnoDB
+PARTITION BY RANGE COLUMNS(event_date) (
+  PARTITION p_before VALUES LESS THAN ('2026-01-01'),
+  PARTITION p202601 VALUES LESS THAN ('2026-02-01'),
+  PARTITION p202602 VALUES LESS THAN ('2026-03-01'),
+  PARTITION p_future VALUES LESS THAN (MAXVALUE)
+);
+
+INSERT INTO partition_events VALUES
+  (1, '2025-12-31', 7),
+  (2, '2026-01-01', 7),
+  (3, '2026-01-31', 8),
+  (4, '2026-02-01', 7),
+  (5, '2026-03-01', 9);
+```
+
+`VALUES LESS THAN` 使用不包含上界的范围。`p202601` 保存从 2026 年 1 月 1 日起、到 2 月 1 日之前的数据，因此 ID 2 和 3 落入该分区；ID 4 已属于 `p202602`。`MAXVALUE` 承接超过前面最高边界的值，示例中 ID 5 进入 `p_future`。
+
+这张表故意把日期声明为非空，让归属规则只讨论有效日期。没有覆盖目标值的分区时，插入可能失败；不能以为 MySQL 会自动创建下个月的分区。
+
+## 4. 分区裁剪与索引 {#分区裁剪与索引}
+
+**分区裁剪**（partition pruning）是优化器根据条件判断哪些分区不可能包含结果，并跳过它们。对于上面的表，可以比较以下两个计划：
+
+```sql
+EXPLAIN SELECT id, event_date
+FROM partition_events
+WHERE event_date >= '2026-01-01'
+  AND event_date < '2026-02-01';
+
+EXPLAIN SELECT id, event_date
+FROM partition_events
+WHERE user_id = 7;
+```
+
+第一条的日期范围只可能落在 `p202601`，计划的 `partitions` 列应显示这一分区。第二条没有限制日期，用户 7 的记录可以位于任何分区，因此需要考虑全部分区；每个分区内部仍可能使用 `idx_user_date` 查找。返回结果分别为 ID 2、3 和 ID 1、2、4，未写 `ORDER BY` 时不保证输出顺序。
+
+裁剪和索引解决不同问题：裁剪选择需要访问哪些分区，索引决定在选中分区里怎样定位行。给分区列套函数或写复杂条件时，优化器不一定能推出边界；也不能笼统地说所有函数都会让裁剪失效，MySQL 对某些分区函数有专门支持。以真实 SQL 的执行计划为准，进一步验证见 [执行计划](./indices/execution-plan.mdx)。
+
+小数据样例能验证归属与裁剪语义，不能证明生产性能。还要比较代表性数据量、访问分布、扫描行数、耗时和维护成本。
+
+## 5. 唯一键与外键限制 {#唯一键与外键限制}
+
+MySQL 8.0 的分区表要求每个唯一键包含分区表达式涉及的全部列。按 `event_date` 分区时，只有 `PRIMARY KEY(id)` 不符合要求；示例使用 `(id, event_date)` 才能建表。
+
+但这个改法改变了约束：`(2, '2026-01-01')` 与 `(2, '2026-02-01')` 是不同的联合键，因此允许同时存在。不能一边把日期加入主键，一边继续声称数据库保证 `id` 全表唯一。业务若必须有独立的全局唯一 ID，需要重新设计约束与标识方案，或放弃这个分区方案，而不是通过删除唯一约束掩盖要求。
+
+InnoDB 分区表还不能定义外键，也不能被其他表的外键引用。如果项目依赖数据库保证父子关系，这个限制就是选型条件。不要只为通过 DDL 而移除外键，却没有说明原来的完整性保证由什么承担。
+
+## 6. 分区维护与适用边界 {#分区维护与适用边界}
+
+范围分区适合按整段生命周期管理数据。确认历史数据可删除后，删除一个历史分区可以去掉整个范围，避免逐行删除同样数量的数据。但删除分区是真实的数据删除，不能当作单纯的路由调整；归档、备份和保留要求仍需先落实。
+
+存在 `MAXVALUE` 分区时，不能直接在它后面增加更大的普通范围。增加新的月份通常要用 `REORGANIZE PARTITION` 把原来的未来分区拆成新范围与新的 `MAXVALUE` 分区。这可能涉及已有行重分布和元数据锁，不能假定所有分区维护都没有停顿或数据移动。
+
+以下情况应先考虑其他方案：
+
+- 查询条件很少包含分区键，裁剪收益有限，普通复合索引可能更直接。
+- 表的唯一性或外键要求与分区限制冲突。
+- 主要问题是单个热点行竞争，分区并不拆开这行状态。
+- CPU、内存、I/O 或写入容量已超过单机能力，需要考虑跨实例扩展。
+
+跨实例分片由应用或中间件把数据路由到不同数据库，还要处理跨分片查询、事务和迁移。它与同实例内的表分区属于不同层面，通用机制见 [数据拆分](../../system-design/system-design/read-write-paths-hotspots-sharding.mdx)。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 MySQL 怎样按时间分区，分区键应该怎样选择？ {#partition-key}
+
+**考察重点**：范围边界、访问模式、生命周期与约束。
+
+**相关内容**：[分区规则与分区键](#分区规则与分区键)、[日期范围分区](#日期范围分区)。
+
+<details>
+<summary>参考回答</summary>
+
+**可以用 `RANGE COLUMNS` 按日期列定义不重叠的半开范围，每行按日期进入相应分区。** 分区键要与主要查询或历史清理方式匹配，并检查唯一键和外键限制。`VALUES LESS THAN` 不包含上界，超出已有范围也不会自动建新分区。
+
+按时间分区便于按周期管理历史记录，但不带日期的查询可能访问全部分区，新写入也可能集中在当前分区，因此不能只看数据总量选择。
+
+</details>
+
+### 7.2 表已经按月分区，为什么查询用户记录仍会访问全部分区？ {#partition-pruning}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：裁剪条件与分区内索引的区别。
+
+**相关内容**：[分区裁剪与索引](#分区裁剪与索引)。
+
+<details>
+<summary>参考回答</summary>
+
+**只按用户过滤时，无法确定记录属于哪个月份，因此不能排除其他日期分区。** 查询仍可以在各分区内部使用用户索引，但这与按日期裁剪不同。
+
+需要查询某个时间段时，应把真实时间约束写进条件，并查看 `EXPLAIN` 的 `partitions`。不能为了让计划只读一个分区而擅自缩小业务查询范围。
+
+</details>
+
+### 7.3 按日期分区时，为什么主键必须包含日期，这还保证 ID 全局唯一吗？ {#partition-unique-key}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：分区列与每个唯一键的关系，以及约束改变后的语义。
+
+**相关内容**：[唯一键与外键限制](#唯一键与外键限制)。
+
+<details>
+<summary>参考回答</summary>
+
+**MySQL 8.0 要求每个唯一键都包含分区表达式用到的全部列，因此日期分区下仅有 ID 的主键不满足要求。** 改成 `(id, event_date)` 后，数据库只保证这对值唯一，相同 ID 在不同日期仍可出现。
+
+如果业务要求 ID 独立全局唯一，应重新评估分区与标识设计，不能把修改后的联合约束当成原来的单列唯一约束。
+
+</details>
+
+### 7.4 MySQL 表分区能替代分库分表，自动提高写入容量吗？ {#partition-vs-sharding}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：实例边界、查询裁剪、热点与扩展成本。
+
+**相关内容**：[分区维护与适用边界](#分区维护与适用边界)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能，InnoDB 表分区仍由同一个 MySQL 实例处理，不会自动增加数据库节点。** 它可以改善与分区规则匹配的查询范围和历史数据管理，但单机资源上限、热点行以及不带分区条件的查询仍然存在。
+
+跨节点分片能分散存储和负载，同时引入路由、跨分片查询与事务、迁移等成本。应从具体瓶颈和业务约束判断，而不是只按表大小决定。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [MySQL 8.0：Overview of Partitioning](https://dev.mysql.com/doc/refman/8.0/en/partitioning-overview.html)
+- [MySQL 8.0：Partitioning Types](https://dev.mysql.com/doc/refman/8.0/en/partitioning-types.html)
+- [MySQL 8.0：RANGE Partitioning](https://dev.mysql.com/doc/refman/8.0/en/partitioning-range.html)
+- [MySQL 8.0：Partition Pruning](https://dev.mysql.com/doc/refman/8.0/en/partitioning-pruning.html)
+- [MySQL 8.0：Partitioning Keys and Unique Keys](https://dev.mysql.com/doc/refman/8.0/en/partitioning-limitations-partitioning-keys-unique-keys.html)
+- [MySQL 8.0：Partitioning Storage Engine Limitations](https://dev.mysql.com/doc/refman/8.0/en/partitioning-limitations-storage-engines.html)
+- [MySQL 8.0：Management of RANGE and LIST Partitions](https://dev.mysql.com/doc/refman/8.0/en/partitioning-management-range-list.html)

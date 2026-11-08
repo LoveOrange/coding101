@@ -1,0 +1,323 @@
+---
+knowledge:
+  id: mobile.android.jetpack-compose
+  type: concept
+description: "解释 Jetpack Compose 的可观察状态、重组、状态提升、组合身份、状态保存、副作用和布局绘制阶段。"
+keywords: [Jetpack Compose, 重组, remember, rememberSaveable, LaunchedEffect, 状态提升]
+---
+
+# Jetpack Compose
+
+**Jetpack Compose** 是 Android 的声明式界面工具包。可组合函数根据当前状态描述界面，状态变化后，运行时重新执行需要更新的部分，而不是要求业务代码逐个寻找 View 并修改属性。真正需要掌握的是状态在哪里读取、由谁修改、何时保留，以及界面重算之外的工作应该怎样管理。
+
+本文讨论 Android Compose 1.x 的基本机制，示例以 Compose 1.6.6 为验证基线。编译器的跳过策略会随版本和配置变化，不能把某一种优化规则当成所有项目的永恒行为。
+
+## 1. 面试核心 {#core}
+
+- Compose 追踪可观察状态的读取，**普通可变字段或 `MutableList` 的内部修改不会因此自动变成可观察更新**。[卡](#state)
+- 重组是重新执行需要更新的组合部分，**不等于重建 Activity，也不等于整页每个函数每次都执行**。[卡](#recomposition)
+- 状态提升把值和修改请求分开，**状态应由能负责相关规则的共同所有者维护，不必全部塞进全局对象**。[卡](#hoisting)
+- `remember` 保留当前组合中的值，`rememberSaveable` 接入保存状态，**两者都不是业务数据持久化方案**。[卡](#saving)
+- 组合身份会影响状态和副作用的归属，**列表顺序变化时，稳定业务 key 能避免把位置误当身份**。[卡](#identity)
+- 副作用需要明确进入、重启和退出条件，**`LaunchedEffect` 的 key 改变会取消旧任务并启动新任务**。[卡](#effects)
+- 组合、布局与绘制是不同阶段，**仅绘制阶段读取的状态变化不一定需要重组**。[卡](#phases)
+
+## 2. 状态与重组 {#状态与重组}
+
+### 2.1 可观察状态 {#可观察状态}
+
+**State** 表示可以被 Compose 观察的值，`MutableState` 还允许更新这个值。组合过程中读取 `state.value`，运行时就能建立依赖；符合变化策略的写入会让相关读取范围需要重新处理。
+
+`mutableStateOf()` 默认采用结构相等策略，相等的赋值可以被视为没有变化。它观察的是这个状态容器，并不会递归监控任意对象内部的所有字段。
+
+例如状态里放了一个普通 `MutableList`，直接调用其 `add()` 并没有给状态容器写入新值。即使外面套了 `remember`，也不能据此要求界面自动更新。常见做法是提交新的不可变列表，或使用 Compose 的可观察集合；集合里如果仍放着普通可变对象，对象字段也不会自动获得观察能力。
+
+`remember` 负责保留对象，`mutableStateOf` 负责提供可观察状态，这两个职责不同。普通局部变量会在函数再次执行时重新初始化，只写 `var count = 0` 并不能形成跨重组的计数器。
+
+### 2.2 重组的含义 {#重组的含义}
+
+**重组**是 Compose 根据变化重新执行需要更新的可组合部分，并更新组合记录的过程。可组合函数不是只在页面创建时运行一次的初始化函数。
+
+运行时可以跳过不需要重新执行的部分；参数、状态读取、稳定性以及编译器配置都会影响具体行为。重组也可能被后续变化取消或重新安排，因此不要在函数体里直接写文件、发网络请求或修改外部业务状态。
+
+重组次数不是唯一性能指标。十次很轻的组合可能比一次阻塞计算更便宜，而一次状态变化也可能主要触发布局或绘制。正确性先依赖明确的数据和副作用关系，性能再根据实际耗时与跳过情况判断。
+
+## 3. 状态提升 {#状态提升}
+
+**状态提升**把状态移到更合适的所有者，并向子组件传入当前值和事件回调。子组件负责展示和发出修改意图，所有者决定新状态。
+
+```kotlin
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.text.BasicText
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+
+@Composable
+fun CounterRoute() {
+    var count by remember { mutableStateOf(0) }
+    CounterText(count = count, onIncrement = { count += 1 })
+}
+
+@Composable
+fun CounterText(count: Int, onIncrement: () -> Unit) {
+    BasicText(
+        text = "次数：$count",
+        modifier = Modifier.clickable(onClick = onIncrement)
+    )
+}
+```
+
+`CounterRoute` 保留并更新 `count`，`CounterText` 接收值和回调。点击让状态变化，读取它的组合范围获得更新机会。`CounterText` 不必知道状态来自本地、ViewModel 还是测试数据，因此更容易复用和测试。
+
+如果两个子组件需要同一个筛选条件，应把它放到能够同时服务两者的共同所有者。若只有某个输入框自己的展开状态，则可以留在局部。把所有状态一律放到 ViewModel，会增加不必要的耦合；把所有状态都留在叶子组件，又可能形成多份互相冲突的数据。
+
+对业务状态，界面通常接收状态快照并上报事件。状态所有者再调用数据层、处理错误并更新结果，而不是让每个子组件各自启动相同请求。来自 Flow 的状态还应通过适合 Android 生命周期的方式收集，避免把“仍在组合中”误当成“页面一定处于前台”。
+
+## 4. 保留、身份与恢复 {#保留身份与恢复}
+
+### 4.1 remember 与保存状态 {#remember与保存状态}
+
+`remember` 会保留当前组合位置关联的值，后续重组可以继续使用。组合离开后，这份局部记忆不再具有原先的保留保证；传入的 key 改变时，也会重新计算相应值。
+
+| 方式 | 主要用途 | 边界 |
+| --- | --- | --- |
+| `remember` | 跨重组保留局部状态或对象 | 不承诺 Activity 重建和进程重建后恢复 |
+| `rememberSaveable` | 通过保存状态机制保留可保存的 UI 状态 | 受宿主保存与恢复流程、类型和大小限制 |
+| ViewModel | 由对应 owner 作用域持有屏幕状态 | 配置变化可保留，进程终止后不是同一对象 |
+| 数据库、文件或服务端 | 持久业务数据 | 需要明确写入、失败和同步策略 |
+
+Android 的 `rememberSaveable` 通常借助实例状态保存机制处理小型 UI 数据。适合保存搜索词、选中 ID、滚动位置等恢复线索；不适合把大图片或整个结果列表塞进 Bundle。自定义 `Saver` 负责把值转换成可保存表示，但不会改变容量与持久性边界。
+
+保存状态也不是“任何退出都能回来”。用户主动结束页面、任务被移除、宿主没有完成相应保存等情况，需要结合系统契约讨论。它不能代替订单、草稿等需要可靠保留的业务写入。
+
+### 4.2 组合身份与 key {#组合身份与key}
+
+**组合身份**决定运行时把哪次函数调用视为同一个组合实例，从而关联记忆状态和副作用。调用位置和执行顺序会参与身份判断，在同一调用位置生成多项时，顺序变化尤其重要。
+
+假设列表原来是 A、B、C，每行内部都有展开状态。若仅按位置区分，在头部插入 X 后，原位置对应的数据全部变化；状态或进行中的工作就可能被关联到不合适的项目，或被重新启动。
+
+可以用 `key(item.id)`，或者 `LazyColumn.items` 的 `key` 参数，显式提供这一组条目中的稳定身份。key 要在相应作用范围内唯一，列表可以重排时不宜用当前位置代替业务 ID。
+
+这与 `remember(item.id)` 不完全相同：后者表示这个记忆值在 key 改变时重新计算，不能单独替代父级列表的整体身份管理。`LaunchedEffect(item.id)` 又是在声明副作用的重启条件。虽然都接收 key，负责的关系并不相同。
+
+## 5. 副作用 {#副作用}
+
+**副作用**是组合描述界面之外、会影响外部状态或持续执行的工作，例如注册监听器、启动协程和同步外部对象。它必须与组合的进入、离开或输入变化建立明确关系。
+
+| API | 适用关系 |
+| --- | --- |
+| `LaunchedEffect(keys)` | 进入组合时启动协程，key 改变时取消并重启，离开时取消 |
+| `rememberCoroutineScope()` | 获取与当前组合关联的作用域，用于点击等事件触发的协程 |
+| `DisposableEffect(keys)` | 注册需要成对清理的资源，key 改变或离开时执行 `onDispose` |
+| `SideEffect` | 成功应用组合后向外部同步状态，不承担自动清理 |
+| `rememberUpdatedState(value)` | 保持一个可读取最新值的状态，使长期工作不必只因回调变化就重启 |
+
+### 5.1 任务身份与最新回调 {#任务身份与最新回调}
+
+下面在一条消息进入组合后等待一秒，随后调用当时最新的回调。消息 ID 改变应重新计时，单纯更换回调不应重新计时。
+
+```kotlin
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberUpdatedState
+import kotlinx.coroutines.delay
+
+@Composable
+fun DelayedNotice(messageId: Long, onTimeout: () -> Unit) {
+    val currentOnTimeout by rememberUpdatedState(onTimeout)
+    LaunchedEffect(messageId) {
+        delay(1_000)
+        currentOnTimeout()
+    }
+}
+```
+
+`messageId` 是任务身份，因此作为 effect key。`currentOnTimeout` 在任务执行时读取最新回调，避免协程一直持有旧回调。如果 `DelayedNotice` 在延时结束前离开组合，协程会被取消。
+
+取消仍遵循 [Kotlin 协程](../../basic-knowledge/kotlin/coroutines.mdx#取消与资源清理) 的协作式规则，不代表任意阻塞函数会被强制终止，也不保证外部请求已撤销。若执行结果可能过期，业务层仍要检查请求身份和代次。
+
+常量 key 表示这个组合实例内不因其他输入变化而重启，不等于整个应用只执行一次。某项输入变化确实应该重新请求，却被遗漏在 key 外，就可能继续使用旧结果。
+
+### 5.2 成对注册与清理 {#成对注册与清理}
+
+注册外部监听器要保证对应清理。下面的 `Updates` 只抽象注册关系，调用方应保证回调线程满足自身状态更新要求。
+
+```kotlin
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberUpdatedState
+
+interface Updates {
+    fun addListener(listener: () -> Unit)
+    fun removeListener(listener: () -> Unit)
+}
+
+@Composable
+fun ObserveUpdates(source: Updates, onUpdate: () -> Unit) {
+    val currentOnUpdate by rememberUpdatedState(onUpdate)
+    DisposableEffect(source) {
+        val listener = { currentOnUpdate() }
+        source.addListener(listener)
+        onDispose { source.removeListener(listener) }
+    }
+}
+```
+
+`source` 改变时，旧监听器先解除，再为新来源注册；组合离开时也会解除。注册和移除使用同一个 `listener` 对象，避免重新构造一个看起来相同、实际上不同的回调。
+
+组合生命周期与 Activity 的 `STARTED`、`RESUMED` 不相同。页面进入后台但组合仍保留时，`DisposableEffect` 不会仅因此自动执行 `onDispose`。需要跟随宿主前后台变化的监听，应进一步接入 Lifecycle。
+
+## 6. 布局、绘制与性能 {#布局绘制与性能}
+
+### 6.1 三个阶段 {#三个阶段}
+
+| 阶段 | 主要工作 | 状态读取的影响 |
+| --- | --- | --- |
+| 组合 | 执行可组合函数，建立或更新 UI 描述 | 在此读取的变化可能需要重组 |
+| 布局 | 测量子项并安排位置 | 某些变化只需重新测量或放置 |
+| 绘制 | 将节点绘制为画面 | 只影响绘制的状态可以仅触发重绘 |
+
+状态放在哪个对象里，不直接决定需要执行哪些阶段；关键是它的值在哪里被读取。例如把颜色留到绘制回调中读取，颜色改变时就有机会只更新绘制。若先在组合中读取并完成计算，再把结果交给绘制，读取依赖仍发生在组合阶段。
+
+Compose 的布局同样有父级约束、测量与放置，不能随意忽略父级提供的可用空间。自定义布局应按对应测量契约工作，不把 View 的每个回调名称直接套过来。
+
+### 6.2 Modifier 的顺序 {#modifier的顺序}
+
+**Modifier** 是依次附加布局、绘制、输入和语义等行为的链。顺序会影响范围和约束，通常不能任意交换。
+
+例如 `clickable` 在 `padding` 外侧时，内侧 padding 对应的区域也可以位于点击范围内；先在外侧加 padding，再为里面的内容设置 clickable，外侧留白就不属于同样的点击范围。尺寸、裁剪和背景也要按链顺序推演。
+
+因此排查“看起来一样但点击范围不同”时，要看完整 Modifier 链，而不是只检查是否出现了某个函数名。
+
+### 6.3 有依据地减少更新 {#有依据地减少更新}
+
+`derivedStateOf` 用于来源变化很频繁、但界面真正关心的派生结果变化较少的情况，例如滚动位置频繁改变，界面只关心是否越过某个阈值。它本身有跟踪成本，不应该包住每一个字符串拼接或简单计算。
+
+同样，`remember` 缓存计算结果时，key 必须包含影响结果的输入。遗漏 key 可能让旧结果一直保留；为了“减少重组”加入错误缓存，会把性能问题变成显示错误。
+
+优化时先核对状态可观察性与身份，再看不必要的读取范围、重计算、布局和绘制。跳过重组需要满足具体编译器与类型契约，随意标注稳定性而实际继续原地修改数据，可能导致界面无法正确更新。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 状态中的 MutableList 增加了元素，为什么界面可能不更新？ {#state}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：状态容器、变化策略与对象内部修改。
+
+**相关内容**：[可观察状态](#可观察状态)。
+
+<details>
+<summary>参考回答</summary>
+
+**普通列表内部的修改不一定经过 Compose 可观察状态，remember 也不负责观察。** 可提交新的不可变列表，或使用可观察集合；集合元素里的普通可变字段仍要单独设计。`mutableStateOf` 默认按结构相等判断变化，不能假定任何赋值都必然触发更新。
+
+</details>
+
+### 7.2 重组是否意味着整个页面重新创建？ {#recomposition}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：组合执行、跳过与外部副作用。
+
+**相关内容**：[重组的含义](#重组的含义)。
+
+<details>
+<summary>参考回答</summary>
+
+**不是，重组重新执行需要更新的组合部分，可能跳过其他部分，也不等于 Activity 重建。** 可组合函数可能多次执行或重算被取消，因此不能把函数体当成只执行一次的初始化区。外部工作应通过明确的副作用或事件入口管理。
+
+</details>
+
+### 7.3 状态提升解决什么问题，状态应放在哪里？ {#hoisting}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：所有权、共享需求与值和事件分离。
+
+**相关内容**：[状态提升](#状态提升)。
+
+<details>
+<summary>参考回答</summary>
+
+**状态提升让共同所有者维护状态，子组件接收值并上报事件，减少重复状态和耦合。** 多个组件共享的条件放到能够统一负责它的层级；纯局部界面状态可以保留在局部，涉及业务规则和数据层协调时再交给相应状态持有者，不必全部全局化。
+
+</details>
+
+### 7.4 remember、rememberSaveable 与 ViewModel 有什么区别？ {#saving}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：重组保留、保存状态与进程边界。
+
+**相关内容**：[remember 与保存状态](#remember与保存状态)。
+
+<details>
+<summary>参考回答</summary>
+
+**remember 保留当前组合中的值；rememberSaveable 接入小型 UI 状态保存与恢复；ViewModel 按 owner 作用域保存屏幕状态并可跨配置变化保留。** ViewModel 对象不跨进程存活，保存状态也不保证任意退出后都恢复。可靠业务数据应写入持久化层，恢复机制只保存必要线索。
+
+</details>
+
+### 7.5 列表插入或重排时，为什么需要稳定 key？ {#identity}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：组合实例、状态与副作用归属。
+
+**相关内容**：[组合身份与 key](#组合身份与key)。
+
+<details>
+<summary>参考回答</summary>
+
+**稳定 key 帮助运行时把变化位置的数据识别为同一个组合实例，正确关联状态和进行中的工作。** 可重排列表不应只用当前位置作身份；key 在对应作用范围内应唯一。列表 key、remember 的失效 key 和 effect 的重启 key 负责不同关系，不能互相替代。
+
+</details>
+
+### 7.6 LaunchedEffect、DisposableEffect 与 rememberUpdatedState 分别适用于什么情况？ {#effects}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：任务重启、资源清理和最新回调。
+
+**相关内容**：[副作用](#副作用)、[任务身份与最新回调](#任务身份与最新回调)、[成对注册与清理](#成对注册与清理)。
+
+<details>
+<summary>参考回答</summary>
+
+**LaunchedEffect 管理随组合进入、key 改变和离开而启动或取消的协程；DisposableEffect 管理注册与清理；rememberUpdatedState 让长期工作读取最新值而不必因此重启。** key 应表达任务或资源身份，组合取消仍遵循协程取消规则，组合保留也不表示宿主一直在前台。
+
+</details>
+
+### 7.7 状态变化是否一定同时触发重组、布局和绘制？ {#phases}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：读取阶段与更新范围。
+
+**相关内容**：[三个阶段](#三个阶段)、[有依据地减少更新](#有依据地减少更新)。
+
+<details>
+<summary>参考回答</summary>
+
+**不一定，Compose 按状态实际读取的阶段追踪依赖，变化可能只要求重新放置或绘制。** 关键是值在何处被读取，而不是存在哪个对象中。优化应基于真实耗时、输入与类型契约，不能为减少重组而遗漏缓存 key 或错误声明稳定性。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [Android：State and Jetpack Compose](https://developer.android.com/develop/ui/compose/state)
+- [Android：Lifecycle of composables](https://developer.android.com/develop/ui/compose/lifecycle)
+- [Android：Save UI state in Compose](https://developer.android.com/develop/ui/compose/state-saving)
+- [Android：Side-effects in Compose](https://developer.android.com/develop/ui/compose/side-effects)
+- [Android：Jetpack Compose phases](https://developer.android.com/develop/ui/compose/phases)
+- [Android：Compose modifiers](https://developer.android.com/develop/ui/compose/modifiers)
+- [Android：Compose to Kotlin Compatibility Map](https://developer.android.com/jetpack/androidx/releases/compose-kotlin)
+- [Google Maven：Compose Runtime 1.6.6 源码](https://dl.google.com/dl/android/maven2/androidx/compose/runtime/runtime-android/1.6.6/runtime-android-1.6.6-sources.jar)
+- [Google Maven：Runtime Saveable 1.6.6 源码](https://dl.google.com/dl/android/maven2/androidx/compose/runtime/runtime-saveable-android/1.6.6/runtime-saveable-android-1.6.6-sources.jar)

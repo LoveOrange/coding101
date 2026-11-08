@@ -292,6 +292,11 @@ export const agentInterviewRoadmap: InterviewRoadmapData = {
           articles: [
             {core: true, title: 'Python 并发与 asyncio'},
             {core: true, title: '类型注解与 Pydantic'},
+            {
+              "title": "asyncio",
+              "href": "/docs/basic-knowledge/python/concurrency/asyncio",
+              "core": false
+            }
           ],
         },
         {

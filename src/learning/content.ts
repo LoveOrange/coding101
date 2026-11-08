@@ -1,10 +1,22 @@
 import {usePluginData} from '@docusaurus/useGlobalData';
+import {useLocation} from '@docusaurus/router';
+import useIsBrowser from '@docusaurus/useIsBrowser';
 
 import {type CompactIndex, expandIndex} from './compact';
-import {today} from './store';
+import {today, useLearner} from './store';
+import {resolveRoleId} from './roles';
+export {priorityForRole} from './roles';
 import type {ArticleIndex, CardIndex, CardRef, CardState, LearnerState, LearningIndex, Priority, Rating} from './types';
 
 let expanded: {source: CompactIndex; index: LearningIndex} | undefined;
+
+export function useActiveRoleId(): string {
+  const index = useLearningIndex();
+  const learner = useLearner();
+  const location = useLocation();
+  const isBrowser = useIsBrowser();
+  return resolveRoleId(index.roles, isBrowser ? location.search : '', isBrowser ? learner.preferences.roleId : undefined);
+}
 
 export function useLearningIndex(): LearningIndex {
   const source = usePluginData('learning-content') as CompactIndex;

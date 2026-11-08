@@ -365,6 +365,11 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               title: '迭代一致性',
               href: '/docs/basic-knowledge/java/collections/concurrent-collection-iteration-consistency',
             },
+            {
+              "title": "并发队列",
+              "href": "/docs/basic-knowledge/data-structures/concurrent-queues",
+              "core": false
+            }
           ],
         },
         {
@@ -459,6 +464,16 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               title: '测试金字塔',
               href: '/docs/basic-knowledge/java/quality/test-pyramid-contract-regression',
             },
+            {
+              "title": "观察者模式",
+              "href": "/docs/basic-knowledge/design-patterns/observer",
+              "core": false
+            },
+            {
+              "title": "单例模式",
+              "href": "/docs/basic-knowledge/design-patterns/singleton",
+              "core": false
+            }
           ],
         },
       ],
@@ -508,6 +523,11 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
             {core: true, title: 'SQL 连接', href: '/docs/basic-knowledge/database/sql/joins'},
             {core: true, title: 'SQL 聚合', href: '/docs/basic-knowledge/database/sql/aggregation'},
             {core: true, title: '数据约束', href: '/docs/basic-knowledge/database/modeling/constraints'},
+            {
+              "title": "MySQL 数据类型",
+              "href": "/docs/basic-knowledge/database/modeling/data-types",
+              "core": false
+            }
           ],
         },
       ],
@@ -1350,6 +1370,11 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               title: '索引设计',
               href: '/docs/basic-knowledge/database/indices/index-review',
             },
+            {
+              "title": "InnoDB",
+              "href": "/docs/basic-knowledge/database/storage/innodb",
+              "core": false
+            }
           ],
         },
         {
@@ -1450,8 +1475,13 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
             },
             {
               core: false,
-              title: 'Redis 持久化、复制与集群',
+              title: 'Redis 持久化',
               href: '/docs/basic-knowledge/nosql/redis/persistence',
+            },
+            {
+              core: false,
+              title: 'Redis 高可用',
+              href: '/docs/basic-knowledge/nosql/redis/high-availability',
             },
             {
               core: false,
@@ -1680,6 +1710,11 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               title: '密钥、证书、审计与供应链安全',
               href: '/docs/system-design/security/secrets-certificates-audit-supply-chain',
             },
+            {
+              "title": "密码学基础",
+              "href": "/docs/system-design/security/cryptography",
+              "core": false
+            }
           ],
         },
         {
@@ -1816,6 +1851,21 @@ export const javaInterviewRoadmap: InterviewRoadmapData = {
               title: '跨地域复制',
               href: '/docs/system-design/distributed-system/cross-region-replication-latency-conflicts',
             },
+            {
+              "title": "Paxos",
+              "href": "/docs/system-design/distributed-system/paxos",
+              "core": false
+            },
+            {
+              "title": "MySQL 复制",
+              "href": "/docs/basic-knowledge/database/replication",
+              "core": false
+            },
+            {
+              "title": "一致性哈希",
+              "href": "/docs/basic-knowledge/data-structures/consistent-hashing",
+              "core": false
+            }
           ],
         },
         {

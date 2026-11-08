@@ -1,0 +1,344 @@
+---
+sidebar_position: 7
+knowledge:
+  id: frontend.css.style-organization
+---
+
+# CSS 样式组织
+
+**CSS 样式组织**规定样式怎样命名、复用、限定作用范围，以及怎样在主题和组件之间传递变化。页面变复杂后，困难往往不在某条属性怎么写，而在修改一个按钮时，能否判断还有哪些地方会受到影响。
+
+Sass、CSS Modules、Vue `scoped` 和 Tailwind 解决的问题不同，可以组合使用。面试回答应落到生成后的 CSS 和实际匹配关系：预处理器不自动隔离样式，类名改写不阻止所有外部规则，工具类也没有绕开浏览器的层叠规则。
+
+## 1. 面试核心 {#core}
+
+- **命名规范让样式归属更明确，但约定本身不会阻止规则跨组件匹配**。需要配合清晰的组件入口、状态和全局规则范围。[卡](#naming)
+- **Sass 与 Less 在构建阶段把扩展语法转换成 CSS**。变量、混入和模块帮助组织源码；浏览器运行的是生成结果，SCSS 变量与 CSS 自定义属性也不是同一机制。[卡](#preprocessors)
+- **CSS Modules 通常改写局部类名并导出映射，Vue scoped 通常改写选择器并为元素添加作用域属性**。它们都不等于独立文档或安全沙箱。[卡](#css-isolation)
+- **Tailwind 用工具类表达样式组合，并根据配置与可识别的类名生成 CSS**。动态拼接不完整类名可能导致构建没有生成对应规则。[卡](#tailwind-generation)
+- **主题可以通过有限的语义变量和根节点状态切换**。变量变化仍会触发依赖它的样式更新，不能宣称比任何类名切换都快。[卡](#theme-switch)
+- **选型要比较维护方式、构建成本、运行时成本和团队约束**。相同视觉结果可以由不同组织方式实现，没有一种方式自动消除层叠、可访问性或性能问题。[卡](#tailwind-choice)
+
+## 2. 命名、状态与主题 {#命名状态与主题}
+
+### 2.1 命名约定 {#命名约定}
+
+**BEM** 是一种命名约定，用块、元素和修饰符表达结构与变化，例如 `course-card`、`course-card__title`、`course-card--compact`。名字帮助人判断归属，浏览器仍把它们当作普通类选择器。
+
+组件样式尽量围绕公开的类名和状态编写。依赖过深的 DOM 嵌套，例如把标题样式绑在多个祖先标签顺序上，会让结构调整牵连样式。使用 ID 或不断追加 `!important` 也不能代替清晰的覆盖关系。
+
+全局样式适合重置、基础排版和共享变量，组件内部细节则尽量保持局部。确实需要改第三方组件时，应使用它提供的主题变量、配置或公开样式入口，并保留影响范围。
+
+### 2.2 CSS 自定义属性与主题 {#css自定义属性与主题}
+
+**CSS 自定义属性**是由浏览器参与层叠、继承和计算的属性，例如 `--surface`。用语义变量表达背景和文字颜色，可以让主题切换集中在根节点：
+
+```html
+<button id="theme-toggle" aria-pressed="false">深色主题</button>
+<article class="course-card">
+  <h2 class="course-card__title">JavaScript 基础</h2>
+  <p>准备本周复习。</p>
+</article>
+<style>
+  :root { --surface: #ffffff; --text: #172033; }
+  :root[data-theme="dark"] { --surface: #172033; --text: #ffffff; }
+  .course-card { background: var(--surface); color: var(--text); padding: 16px; }
+  .course-card__title { margin: 0 0 8px; }
+</style>
+<script>
+  const toggle = document.querySelector('#theme-toggle');
+  toggle.addEventListener('click', () => {
+    const dark = document.documentElement.dataset.theme !== 'dark';
+    document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+    toggle.setAttribute('aria-pressed', String(dark));
+  });
+</script>
+```
+
+点击后，根节点的状态改变，自定义属性通过继承影响卡片。按钮的 `aria-pressed` 同步表达开关状态。新增主题时，组件继续引用 `--surface` 和 `--text`，不必为每个主题复制整套结构选择器。
+
+这个例子没有持久化选择、读取系统偏好或避免服务端渲染首屏主题闪烁；这些需求应在初始化流程中补齐。变量切换也仍需浏览器更新受影响元素，改变布局变量还可能引发布局。比较性能时应测量实际规则与受影响范围，不能从“改了一个根属性”推出恒定成本。
+
+## 3. Sass 与 Less {#sass与less}
+
+### 3.1 预处理器的作用 {#预处理器的作用}
+
+**CSS 预处理器**在构建阶段处理变量、混入、函数和嵌套等扩展语法，输出浏览器可以使用的 CSS。Sass 支持 SCSS 与缩进式 Sass 语法，SCSS 使用大括号；Less 有自己的变量和混入语法。它们不是浏览器必须安装的运行环境。
+
+下面使用 Dart Sass 的模块语法。`_tokens.scss` 声明共享变量与混入：
+
+```scss
+$brand: #1769aa;
+@mixin focus-ring {
+  outline: 2px solid $brand;
+  outline-offset: 2px;
+}
+```
+
+`button.scss` 引用它：
+
+```scss
+@use 'tokens';
+.button {
+  color: tokens.$brand;
+  padding: 8px 16px;
+  &:focus-visible { @include tokens.focus-ring; }
+}
+```
+
+编译后，`color` 与 `outline` 中会出现具体颜色，嵌套规则变成 `.button:focus-visible`。`@use` 建立模块命名空间，并让同一次编译中相同模块的 CSS 只加载一次；它不会把输出的 `.button` 自动变成局部选择器。
+
+Less 可以用 `@brand` 表达变量，并通过自己的混入和导入规则组织源码。选择 Sass 或 Less 时，要看已有组件库、构建链和团队使用方式，而不是把两者的语法、变量求值或模块规则当作完全相同。
+
+### 3.2 编译期变量与运行时变量 {#编译期变量与运行时变量}
+
+| 机制 | 主要处理时机 | 结果与边界 |
+| --- | --- | --- |
+| Sass `$brand`、Less `@brand` | 预处理编译时 | 输出具体 CSS；页面不能通过修改同名 JavaScript 变量改变已生成值 |
+| CSS `--brand` 与 `var()` | 浏览器样式计算时 | 参与层叠、继承和依赖更新，可用于运行时主题 |
+| Sass/Less 嵌套 | 编译时展开选择器 | 减少源码重复，但深层嵌套可能输出高耦合的选择器 |
+| 原生 CSS 嵌套 | 浏览器或构建转换处理 | 不代表已经支持 Sass/Less 的所有语法与模块能力 |
+
+预处理器适合表达构建时复用，自定义属性适合需要在页面运行时变化的值。两者可以结合，但不应把需要实时切换的所有主题状态都固化成大量重复规则。
+
+## 4. CSS Modules 与 scoped CSS {#cssmodules与scopedcss}
+
+### 4.1 CSS Modules {#cssmodules}
+
+**CSS Modules** 是构建工具提供的一种局部命名机制。常见做法是改写局部类名，并让 JavaScript 导入原名到生成名的映射。它不是浏览器原生识别 `.module.css` 的特殊语法。
+
+在 Vite 6 的基础工程中，分别建立两个模块。`primary.module.css`：
+
+```css
+.button { color: #1769aa; padding: 8px; }
+```
+
+`danger.module.css`：
+
+```css
+.button { color: #b42318; padding: 12px; }
+```
+
+入口 `main.js` 使用各自导出的映射：
+
+```js
+import primary from './primary.module.css';
+import danger from './danger.module.css';
+
+for (const [label, styles] of [['继续', primary], ['删除', danger]]) {
+  const button = document.createElement('button');
+  button.className = styles.button;
+  button.textContent = label;
+  document.body.append(button);
+}
+```
+
+构建后，两个 `button` 局部名会映射为不同类名，两个按钮分别呈现蓝色与红色，以及不同的内边距。生成名字的具体格式是工具配置和实现细节，不应在业务中手写或依赖某个哈希结果。
+
+这种机制主要减少局部名字冲突。外部 `button` 选择器仍可能匹配这些按钮，继承仍然发生，显式 `:global(...)` 也可以保留全局规则。如果需要覆盖，还必须按真实的层叠关系判断，见 [CSS 层叠](./cascade.mdx)。
+
+### 4.2 Vue scoped {#vuescoped}
+
+Vue 单文件组件的 **scoped CSS** 通常通过编译改写选择器，并给相关元素附加作用域属性，限制规则匹配范围。
+
+```vue
+<template>
+  <section class="panel">
+    <p class="label">复习计划</p>
+    <div class="content"><span class="badge">进行中</span></div>
+  </section>
+</template>
+<style scoped>
+.label { color: #1769aa; }
+.panel :deep(.badge) { font-weight: 700; }
+</style>
+```
+
+概念上，`.label` 会变成带有该组件作用域属性的选择器，例如 `.label[data-v-xxx]`。`:deep(.badge)` 让选择器的这部分可以深入后代，而前面的 `.panel` 仍保留组件范围。这里的具体作用域 ID 由编译器生成。
+
+它与 CSS Modules 的主要差别是：前者通过额外的选择器条件限制匹配，后者通过局部命名改写减少冲突。Vue 的子组件根节点可以同时受到父、子组件 scoped 规则影响，以支持布局；深层内容、插槽和 `v-html` 又有各自规则，不能把 scoped 理解成整个子树完全不可覆盖。
+
+### 4.3 隔离的程度 {#隔离的程度}
+
+| 方式 | 提供的边界 | 仍需处理的情况 |
+| --- | --- | --- |
+| 命名规范 | 人为约定的归属 | 同名冲突、全局选择器仍可能发生 |
+| CSS Modules | 局部类名等标识的构建改写 | 标签选择器、继承、全局规则和层叠 |
+| Vue scoped | 选择器与元素作用域属性 | 子组件根节点、deep、插槽、动态 HTML |
+| Shadow DOM | 浏览器提供的 DOM 与样式封装边界 | 继承、自定义属性和主动开放的样式入口 |
+| iframe | 独立文档的样式环境 | 尺寸、通信、加载与文档管理成本 |
+
+这些方式都应按实际需要选择。样式封装不是 JavaScript 安全边界，也不能仅凭类名加了哈希就声称第三方代码已经被安全隔离。
+
+## 5. Tailwind 与工具类 {#tailwind与工具类}
+
+### 5.1 生成机制 {#生成机制}
+
+**工具类**用一个小范围的样式职责命名，例如设置间距、颜色或布局。Tailwind 根据设计配置和源码中可识别的候选类名生成相应 CSS，页面再组合这些类表达视觉效果。
+
+下面以 Tailwind CSS 3.4 为例。`tailwind.config.cjs` 指定扫描范围：
+
+```js
+module.exports = {
+  content: ['./src/**/*.js'],
+  theme: { extend: {} },
+  plugins: [],
+};
+```
+
+输入样式 `input.css`：
+
+```css
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+```
+
+`src/main.js` 保留完整的候选类名：
+
+```js
+const tones = {
+  info: 'bg-blue-600 hover:bg-blue-700',
+  danger: 'bg-red-600 hover:bg-red-700',
+};
+const button = document.createElement('button');
+button.className = `rounded px-4 py-2 text-white ${tones.info}`;
+button.textContent = '继续';
+button.addEventListener('click', () => {
+  button.className = `rounded px-4 py-2 text-white ${tones.danger}`;
+});
+document.body.append(button);
+```
+
+使用 Tailwind 3 的构建入口把 `input.css` 编译为输出文件，页面加载输出 CSS 和这个脚本后，按钮默认蓝色，点击后变为红色。工具类只是在源码中表达样式，最终仍是浏览器匹配 CSS 规则。
+
+`p-2` 中的 `2` 是默认间距表的键，不是直接写成 `2px`；Tailwind 3 默认对应 `0.5rem`，配置可以改变它。`px-4`、`py-2` 同样来自相应配置。响应式和悬停等变体会生成带媒体条件或伪类的规则，也不意味着 JavaScript 为每个类实时计算样式。
+
+Tailwind 4 的配置与接入方式有所调整；这里使用 3.4 的配置与构建示例，不把不同版本的入口混在一起。
+
+### 5.2 动态类名与层叠 {#动态类名与层叠}
+
+扫描器不会执行应用逻辑，推导任意字符串拼接的最终值。如果写成 `bg-${color}-600`，源码里可能没有完整的 `bg-purple-600` 候选，构建就不会生成所需规则。上面的 `tones` 映射保留完整类名，适合有限状态；确实需要额外候选时可按版本配置显式保留，避免无范围地生成所有组合。
+
+运行时连续变化的值，例如拖拽坐标或任意用户主题色，可以用受控的内联样式或 CSS 自定义属性，而不是为每个数值制造新工具类。样式值同样需要遵循业务允许的范围。
+
+一个元素同时写 `p-2` 和 `p-4` 时，最终内边距由生成 CSS 的层叠关系决定，不由 HTML 中两个类名的先后顺序决定。工具类组合不等于已经消除了冲突，应让组件 API 限制互相矛盾的状态。
+
+### 5.3 选择条件 {#选择条件}
+
+Tailwind 适合希望共享间距、颜色和响应式约定，并愿意在模板或组件中组合工具类的项目。它减少临时命名和部分重复 CSS，但会增加模板中的类名组合，也需要团队理解生成范围、变体和设计配置。
+
+如果大量相同组合重复，应通过组件或明确的样式抽象复用，而不是每处复制长字符串。复杂的伪元素、精细动效或第三方覆盖仍可以写普通 CSS。选择 Tailwind 并不禁止其他 CSS，也不自动保证体积、可访问性或运行性能更好。
+
+## 6. 构建与运行时的取舍 {#构建与运行时的取舍}
+
+**CSS-in-JS** 是把样式与 JavaScript 组织在一起的一类方案，并不意味着只有一种实现。部分方案运行时生成或注入规则，另一些方案在构建时提取静态 CSS。需要比较具体实现，不能把它们统一概括为“都需要运行时”或“都没有运行时”。
+
+运行时方案更容易根据动态属性生成样式，但要考虑计算、插入规则、缓存和服务端样式收集。静态提取可以把更多工作前移到构建，但动态值仍需要相应通道，例如自定义属性。SSR 中样式缺失、类名不一致或插入顺序变化，也应沿真实产物和加载流程排查。
+
+完整选型可以回答四个问题：共享哪些设计约定，哪些变化发生在构建时或运行时，需要多强的作用范围限制，以及已有框架与构建链承担什么成本。选择后仍要检查生成的 CSS、实际匹配规则和未使用样式，而不是只停留在源码写法上。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 怎样规范一个项目中的 CSS 命名与样式范围？ {#naming}
+
+**考察重点**：归属、状态、全局规则和组件接口。
+
+**相关内容**：[命名约定](#命名约定)、[隔离的程度](#隔离的程度)。
+
+<details>
+<summary>参考回答</summary>
+
+**先约定全局样式、组件样式和状态的边界，再选择命名或构建机制支持它。** 可以用 BEM 表达归属，也可以用 CSS Modules 降低局部名冲突；基础变量与重置集中维护，组件通过明确状态或属性切换。命名规范本身不阻止规则匹配，也不能用深层选择器和反复加重要性代替覆盖设计。
+
+</details>
+
+### 7.2 Sass、SCSS、Less 与 CSS 有什么关系？ {#preprocessors}
+
+**考察重点**：语法、构建产物、复用与运行时变量。
+
+**相关内容**：[Sass 与 Less](#sass与less)。
+
+<details>
+<summary>参考回答</summary>
+
+**Sass 和 Less 是把扩展样式语法编译成 CSS 的预处理器，SCSS 是 Sass 的一种语法。** 它们用变量、混入和模块等能力组织源码，浏览器运行生成的 CSS。编译期变量通常已经变成具体值；CSS 自定义属性由浏览器参与层叠与计算，适合运行时主题。预处理器不会自动隔离输出选择器。
+
+</details>
+
+### 7.3 CSS Modules 与 Vue scoped 怎样减少样式冲突，是否完全隔离？ {#css-isolation}
+
+**考察重点**：类名映射、选择器改写、继承和全局边界。
+
+**相关内容**：[CSS Modules 与 scoped CSS](#cssmodules与scopedcss)。
+
+<details>
+<summary>参考回答</summary>
+
+**CSS Modules 通常改写局部类名并导出映射，Vue scoped 则为选择器增加作用域条件，并给元素附加相应属性。** 它们减少了特定类型的冲突，但全局规则、继承和层叠仍然存在。Vue 子组件根节点、deep、插槽等也需要分别判断，不能将它们视为独立文档或安全沙箱。
+
+</details>
+
+### 7.4 Tailwind 怎样生成样式，为什么动态拼接类名可能失效？ {#tailwind-generation}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：扫描范围、完整候选、配置与运行时值。
+
+**相关内容**：[生成机制](#生成机制)、[动态类名与层叠](#动态类名与层叠)。
+
+<details>
+<summary>参考回答</summary>
+
+**它根据配置与扫描到的候选类名生成 CSS，扫描器不会执行任意应用逻辑。** 若源码只有 `bg-${color}-600`，可能没有生成最终颜色类。有限状态可以映射为完整类名，额外候选按版本显式保留；连续动态值可以用自定义属性或受控内联样式。生成后的规则仍遵循 CSS 层叠。
+
+</details>
+
+### 7.5 怎样给应用添加黑白主题切换？一定比切换类名更快吗？ {#theme-switch}
+
+**考察重点**：语义变量、根状态、初始化与影响范围。
+
+**相关内容**：[CSS 自定义属性与主题](#css自定义属性与主题)。
+
+<details>
+<summary>参考回答</summary>
+
+**把背景、文字等定义为语义自定义属性，通过根节点的主题状态选择取值，组件引用这些变量。** 根据需求补充系统偏好、持久化和首屏初始化。它便于集中维护，但变量改变仍影响依赖它的样式；类名、属性或变量方案的性能都要按实际规则和受影响元素测量，不能笼统排序。
+
+</details>
+
+### 7.6 为什么选择 Tailwind，它与手写 CSS 的取舍是什么？ {#tailwind-choice}
+
+**考察重点**：设计约定、组合方式、可维护性和构建范围。
+
+**相关内容**：[选择条件](#选择条件)、[构建与运行时的取舍](#构建与运行时的取舍)。
+
+<details>
+<summary>参考回答</summary>
+
+**Tailwind 用统一配置和工具类组合表达样式，适合希望共享设计约定并在组件中组织视觉状态的项目。** 它能减少部分临时命名和重复规则，但需要管理长类名组合、扫描范围和团队约定。普通 CSS 在复杂选择器、精细效果和已有样式体系中仍然适用，两者可以共存。是否更小或更快要检查实际产物和页面。
+
+</details>
+
+### 7.7 Tailwind 的 p-2 是 2px 吗？ {#spacing-scale}
+
+**考察重点**：配置标尺、单位和实际计算值。
+
+**相关内容**：[生成机制](#生成机制)。
+
+<details>
+<summary>参考回答</summary>
+
+**不是。Tailwind 3 默认的 p-2 对应 padding: 0.5rem，2 是间距配置中的键。** 配置可以改变映射，最终像素值还取决于根字体大小。判断时应查看所用版本、配置与生成规则，而不是把类名里的数字直接当像素。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [Sass：@use](https://sass-lang.com/documentation/at-rules/use/)
+- [Less：Features](https://lesscss.org/features/)
+- [Vite 6：CSS Modules](https://v6.vite.dev/guide/features#css-modules)
+- [Vue：SFC CSS Features](https://vuejs.org/api/sfc-css-features.html)
+- [Tailwind CSS 3：Content Configuration](https://v3.tailwindcss.com/docs/content-configuration)
+- [Tailwind CSS 3：Padding](https://v3.tailwindcss.com/docs/padding)
+- [MDN：Using CSS custom properties](https://developer.mozilla.org/en-US/docs/Web/CSS/CSS_cascading_variables/Using_CSS_custom_properties)

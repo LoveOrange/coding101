@@ -1,0 +1,249 @@
+---
+sidebar_position: 2
+knowledge:
+  id: frontend.architecture.view-models
+---
+
+# 视图架构模式
+
+MVC、MVP、MVVM 都是在分配界面的职责：业务数据和规则放在哪里，用户操作由谁处理，数据变化后由谁更新显示。理解它们，不能只记三个字母的展开，还要能沿着一次输入说明这些工作怎样衔接。
+
+这些名称存在不同变体。本文以经典交互式 MVC、被动视图形式的 MVP，以及通过绑定同步界面的 MVVM 作比较；具体项目应以实际依赖和更新链路为准。
+
+## 1. 面试核心 {#core}
+
+- 三种模式都希望**把业务规则与具体界面分开**。Model 不只是数据库或接口返回值，也可以包含业务状态、约束和操作。
+- 经典 MVC 由 Controller 解释输入并修改 Model，View 读取 Model，借助变化通知刷新。**MVC 不是所有场景都固定走同一条环形箭头**，服务端请求式 MVC 的执行过程也不同。[卡](#compare-view-patterns)
+- 被动视图 MVP 中，**Presenter 决定显示什么，并通过 View 接口更新界面**。可以用假的 View 测试 Presenter，但真实控件适配仍需要检查。[卡](#mvp-mvvm)
+- MVVM 中，**ViewModel 暴露面向界面的状态和操作，绑定机制把这些状态投射到 View**。ViewModel 不必持有 DOM 或控件引用，也不等于业务 Model。[卡](#what-is-mvvm)
+- **双向绑定只是同步方式，不是业务数据流的全部**。输入可以先写入草稿，校验或提交后才修改 Model；响应式机制不会自动完成业务校验。[卡](#binding-and-validation)
+
+## 2. 业务状态与界面状态 {#业务状态与界面状态}
+
+**Model** 是业务数据及其规则的承载者。**View** 是用户看到和操作的界面，负责呈现内容、接收控件事件。分离这两部分，是为了让规则不依赖某个按钮、输入框或页面布局。
+
+假设购物车里的商品数量必须是 `1` 到 `3` 的整数。这个约束属于业务规则，即使把输入框换成加减按钮，它也不应该消失。下面的 Model 不引用 DOM，也不依赖 Vue：
+
+```js
+export function createCart() {
+  let quantity = 1;
+  return {
+    get quantity() { return quantity; },
+    setQuantity(next) {
+      if (!Number.isInteger(next) || next < 1 || next > 3) {
+        throw new RangeError('数量必须是 1 到 3 的整数');
+      }
+      quantity = next;
+    },
+  };
+}
+```
+
+`cart.setQuantity(2)` 后，`cart.quantity` 为 `2`；传入 `0`、`4` 或 `1.5` 会抛错，原数量保持不变。真实下单时，服务端仍须按当时库存和业务规则校验，前端 Model 不能替代服务端的决定。
+
+页面还可能保存输入中的文字、错误提示、是否正在提交等信息。这些是**界面状态**：它们描述当前交互过程，不一定就是已经被业务接受的数据。例如用户暂时清空输入框时，草稿可以是空字符串，购物车数量仍然是 `1`。
+
+将两者混成一个字段，会迫使业务数据接受临时无效值，或让用户无法自然地编辑。架构模式要解决的一个问题，就是让这些不同职责有明确的归属。
+
+## 3. MVC 的输入与显示 {#mvc的输入与显示}
+
+**MVC**（Model–View–Controller）把输入处理交给 Controller，把数据和规则交给 Model，把显示交给 View。经典交互式 MVC 中，View 可以读取 Model，并订阅它的变化通知。
+
+以修改购物车数量为例，一次操作可以这样发生：
+
+1. 用户输入 `2`，Controller 将输入解释为修改数量的请求。
+2. Controller 调用 Model 的操作，Model 校验并更新数量。
+3. Model 发出变化通知，View 重新读取数量并刷新显示。
+
+第三步意味着：界面更新不必由 Controller 逐个调用控件完成。如果另一个操作入口修改了同一个 Model，只要它遵守同一套通知规则，相关 View 也能更新。前面的最小 `createCart` 只展示业务规则，没有实现通知机制；完整的这种 MVC 实现需要另行提供它。
+
+这里有两种不同的箭头：**调用关系**表示谁调用谁，**通知关系**表示变化怎样传递。Model 通过通用通知机制告知订阅者发生变化，不意味着 Model 要知道某个页面的元素 ID、文字颜色或排版。
+
+服务端请求式 MVC 则通常由 Controller 接收 HTTP 请求，调用业务层，再选择视图模板生成响应。浏览器拿到响应后怎样处理交互，是另一层问题。因此面试中先说明所讨论的是界面内的交互还是一次服务端请求，再解释数据流，会比背一张通用箭头图准确。
+
+## 4. MVP 的显示协调 {#mvp的显示协调}
+
+**MVP**（Model–View–Presenter）引入 Presenter，协调用户操作、业务 Model 和界面显示。在本文采用的**被动视图**（Passive View）形式中，View 不直接读取 Model，也不决定业务相关的显示规则；它把操作交给 Presenter，再执行 Presenter 给出的显示指令。
+
+下面的 Presenter 接收一个 View 接口。`show` 显示数量和错误，`onSubmit` 注册提交事件并返回取消注册函数。事件提供的是已经解析出的数字；空输入应由 View 适配成 `NaN`，交给同一个规则拒绝。
+
+```js
+export function createPresenter(cart, view) {
+  function refresh(error = '') {
+    view.show({ quantity: cart.quantity, error });
+  }
+  const dispose = view.onSubmit(next => {
+    try {
+      cart.setQuantity(next);
+    } catch (error) {
+      if (!(error instanceof RangeError)) throw error;
+      refresh(error.message);
+      return;
+    }
+    refresh();
+  });
+  refresh();
+  return { refresh, dispose };
+}
+```
+
+初始化显示数量 `1`。提交 `2` 后显示 `2`；再提交 `4`，显示仍为 `2`，同时出现错误提示。Presenter 只知道 `show` 和 `onSubmit`，不知道实际使用输入框还是下拉框。测试时记录 `show` 的参数并触发注册的回调，就能检查规则与显示协调，不必启动浏览器。
+
+这种分工的代价是显式同步代码：增加一个依赖业务状态的显示位置，可能需要扩展 View 接口和 Presenter。上面的实现也只处理自己的提交入口。如果其他模块直接修改 `cart`，必须再调用 `refresh()`，或设计统一的变化订阅；分了层不会自动避免界面过期。
+
+MVP 并非只有这一种写法。也有把简单同步交给绑定、让 Presenter 处理复杂交互的变体。讨论“MVP 的 View 能不能读取 Model”时，需要先约定采用哪种变体，不能把被动视图的约束当成全部 MVP 的定义。
+
+## 5. MVVM 的界面状态与绑定 {#mvvm的界面状态与绑定}
+
+**MVVM**（Model–View–ViewModel）用 ViewModel 表达面向界面的状态和操作，再由绑定机制连接 View 与 ViewModel。**ViewModel** 可以包含输入草稿、错误信息、按钮是否可用，以及提交等操作；它不需要知道具体控件怎样绘制。
+
+下面使用 Vue 3 的响应式原语实现一个小型 ViewModel，沿用前面的 `createCart`。它展示职责分离，不是在定义所有 Vue 项目的固定目录结构：
+
+```js
+import { ref } from 'vue';
+
+export function createCartViewModel(cart) {
+  const draft = ref(String(cart.quantity));
+  const quantity = ref(cart.quantity);
+  const error = ref('');
+
+  function refresh() {
+    quantity.value = cart.quantity;
+    draft.value = String(cart.quantity);
+    error.value = '';
+  }
+  function submit() {
+    const next = draft.value.trim() === '' ? NaN : Number(draft.value);
+    try {
+      cart.setQuantity(next);
+    } catch (cause) {
+      if (!(cause instanceof RangeError)) throw cause;
+      error.value = cause.message;
+      return;
+    }
+    refresh();
+  }
+  return { draft, quantity, error, submit, refresh };
+}
+```
+
+在 Vue 3 单文件组件中，可以通过下面的模板使用它；同目录保存前面的两个模块：
+
+```vue
+<script setup>
+import { createCart } from './cart.js';
+import { createCartViewModel } from './cart-view-model.js';
+
+const { draft, quantity, error, submit } = createCartViewModel(createCart());
+</script>
+
+<template>
+  <form @submit.prevent="submit">
+    <label>数量 <input v-model="draft" inputmode="numeric" /></label>
+    <button type="submit">应用</button>
+    <p>已接受数量：{{ quantity }}</p>
+    <p role="status">{{ error }}</p>
+  </form>
+</template>
+```
+
+输入 `4` 时，`draft` 变为字符串 `'4'`，但 `quantity` 仍为 `1`。点击“应用”后校验失败，草稿保留，错误提示更新。改成 `2` 再提交，Model 接受数量，`refresh()` 将已接受数量与草稿同步为 `2`，并清空错误。空字符串被显式转成 `NaN` 后拒绝；直接转换得到的 `0` 在这条业务规则中也无效，但显式处理能保留空输入的含义。
+
+这里的职责可以逐步看清：输入事件更新 `draft`；`submit` 尝试修改 Model；响应式状态发生变化后，Vue 根据模板更新界面。ViewModel 没有调用 `querySelector`，也没有调用 `view.show()`。与前面的 MVP 对照，主要差别在于**Presenter 发出显示指令，ViewModel 暴露可供绑定的状态**。
+
+这个示例有意只保留一个修改入口。若外部直接改动 Model，`quantity` 这个 ref 不会自动发现普通闭包里的变化，仍需调用 `refresh()`；它会覆盖当前草稿，因此编辑过程中不能不加判断地刷新。实际项目要决定外部变化出现时是保留草稿、提示冲突，还是放弃编辑。
+
+### 5.1 绑定与业务操作 {#绑定与业务操作}
+
+**绑定只负责约定好的同步关系，不负责决定数据何时在业务上生效。** 上例中 `v-model` 同步的是 `draft`，不是服务端库存，也不是已接受的购物车数量。一个只展示 `quantity` 的文本位置使用单向绑定就够了，MVVM 并不要求每个字段都双向绑定。
+
+对于普通文本输入，Vue 的 `v-model` 结合了值绑定和输入事件处理；脚本直接修改 DOM 的 `value` 属性，不会因此自动触发同样的输入事件。响应式依赖与输入绑定各自的实现见 [Vue 响应式](../../tools-and-frameworks/vue/reactivity.mdx#响应式与双向绑定)。
+
+框架可以帮助建立同步，但不能替你决定草稿归谁所有、失败后保留什么、组件卸载时清理哪些订阅。把这些都归结成“数据变了，页面自动变”，会遗漏架构问题中最需要设计的部分。
+
+## 6. 模式与框架的关系 {#模式与框架的关系}
+
+**架构模式描述职责，框架提供实现职责的工具。** 使用 Vue 的响应式状态与模板，很方便表达 MVVM 风格的分工；这不意味着 Vue 中每个对象都能机械对应 Model、View 或 ViewModel，更不意味着写了 `v-model` 就已经完成了业务与界面的分离。
+
+React 组件也可以读取一个面向界面的状态对象，通过事件调用其操作。是否把它称为 ViewModel，取决于实际职责，而不是 JSX 或模板的外形。React、Vue 的具体更新机制另见 [组件框架](component-frameworks.mdx#react与vue的更新模型)。
+
+| 比较对象 | 用户操作怎样进入逻辑 | 谁组织界面更新 | 适合检查什么 |
+| --- | --- | --- | --- |
+| 经典交互式 MVC | Controller 解释输入并操作 Model | View 读取 Model，并响应变化通知 | Model 的规则、通知是否完整、View 是否正确呈现 |
+| 被动视图 MVP | View 将事件交给 Presenter | Presenter 调用 View 接口 | 用假的 View 检查显示指令，再检查真实控件适配 |
+| 绑定式 MVVM | View 通过绑定或命令调用更新 ViewModel | 绑定机制同步 ViewModel 的可观察状态 | 单独检查状态与操作，再检查绑定和实际交互 |
+
+简单界面不必为了凑齐名称拆出很多文件。只有当业务规则复用、复杂编辑状态或测试隔离产生实际收益时，额外分层才值得维护。无论采用哪种模式，都要能回答：修改入口在哪里、状态以谁为准、失败后显示什么，以及页面不再使用时怎样结束监听。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 MVVM 是什么，ViewModel 负责什么？ {#what-is-mvvm}
+
+**考察重点**：业务 Model 与界面状态的区别，ViewModel 和绑定机制的分工。
+
+**相关内容**：[业务状态与界面状态](#业务状态与界面状态)、[MVVM 的界面状态与绑定](#mvvm的界面状态与绑定)。
+
+<details>
+<summary>参考回答</summary>
+
+**MVVM 将业务数据和规则放在 Model，将呈现放在 View，通过 ViewModel 暴露界面需要的状态与操作，再用绑定同步显示。** ViewModel 可以保存输入草稿、错误信息、按钮可用状态，并提供提交操作，而不直接操作 DOM。
+
+例如购物车数量输入先写入草稿，提交时让 Model 校验；成功后更新已接受数量，失败则保留草稿并显示错误。可观察状态变化让绑定更新界面，但校验和提交时机仍由应用决定。
+
+</details>
+
+### 7.2 MVVM 与 MVP 有什么区别？ {#mvp-mvvm}
+
+**考察重点**：显式 View 接口与可绑定状态，模式变体和测试边界。
+
+**相关内容**：[MVP 的显示协调](#mvp的显示协调)、[MVVM 的界面状态与绑定](#mvvm的界面状态与绑定)。
+
+<details>
+<summary>参考回答</summary>
+
+**以被动视图 MVP 与绑定式 MVVM 比较，Presenter 通过 View 接口发出显示指令，ViewModel 则提供状态和操作，由绑定机制更新 View。** Presenter 可以调用 `view.show({ quantity, error })`；ViewModel 修改 `quantity`、`error`，模板声明这些状态显示在哪里。
+
+两者都可以把重要逻辑从控件中分离出来。MVP 可以用假的 View 测试协调行为，MVVM 可以直接测试状态与操作，但真实控件适配或模板绑定仍需验证。MVP 存在其他变体，不能断言所有实现都禁止简单数据绑定。
+
+</details>
+
+### 7.3 除了 MVVM，还有哪些视图架构模式？MVC、MVP 怎样分工？ {#compare-view-patterns}
+
+**考察重点**：模式名称背后的职责与更新路径，MVC 的适用语境。
+
+**相关内容**：[MVC 的输入与显示](#mvc的输入与显示)、[模式与框架的关系](#模式与框架的关系)。
+
+<details>
+<summary>参考回答</summary>
+
+**还可以讨论 MVC、MVP 等模式，但应先约定变体，再解释具体职责。** 经典交互式 MVC 由 Controller 处理输入、Model 保存业务规则、View 读取 Model 并通过变化通知刷新。被动视图 MVP 由 Presenter 协调 Model 与 View，View 主要接收事件和执行显示指令。
+
+服务端请求式 MVC 则围绕 HTTP 请求与响应组织工作，不能把它与浏览器内持续交互的观察通知链路混为一谈。模式选择取决于业务与界面分离、状态同步和测试方面的需要，并非单向的升级关系。
+
+</details>
+
+### 7.4 使用双向绑定后，还需要单独维护草稿和业务校验吗？ {#binding-and-validation}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：输入同步、业务约束与已提交状态的边界。
+
+**相关内容**：[绑定与业务操作](#绑定与业务操作)。
+
+<details>
+<summary>参考回答</summary>
+
+**需要根据交互要求决定；双向绑定不会自动区分草稿与已接受数据，也不会自动执行业务校验。** 如果输入过程中允许空值或临时无效值，就可以先绑定草稿，在提交时校验。失败保留草稿并显示错误，成功后同步已接受状态。
+
+外部更新也必须有明确入口。普通 Model 发生变化不表示某个 ref 会自动同步；刷新若会覆盖未提交草稿，还要明确冲突或放弃编辑的规则。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [Martin Fowler：GUI Architectures](https://martinfowler.com/eaaDev/uiArchs.html)
+- [Martin Fowler：Passive View](https://martinfowler.com/eaaDev/PassiveScreen.html)
+- [Martin Fowler：Presentation Model](https://martinfowler.com/eaaDev/PresentationModel.html)
+- [Microsoft：Model-View-ViewModel](https://learn.microsoft.com/en-us/dotnet/architecture/maui/mvvm)
+- [Vue：Form Input Bindings](https://vuejs.org/guide/essentials/forms.html)
+- [Vue：Reactivity Fundamentals](https://vuejs.org/guide/essentials/reactivity-fundamentals.html)

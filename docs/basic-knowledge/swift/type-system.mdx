@@ -1,0 +1,225 @@
+---
+knowledge:
+  id: basic-knowledge.swift.type-system
+  type: concept
+description: "解释 Swift 的 struct、class、enum、值与引用语义、写时复制、String 索引和访问控制，并区分语言行为与内存实现。"
+keywords: [Swift 类型, struct class, 值类型 引用类型, 写时复制, String.Index, Swift 访问控制]
+---
+
+# Swift 类型系统
+
+Swift 的类型决定一个值支持哪些操作，也决定赋值后是独立的值还是共享的对象。`struct`、`enum` 与 `class` 都可以定义方法、初始化器并遵守协议，区别不能简化成“结构体只能放数据”。对客户端代码更有用的判断是：一次复制后，修改会影响谁，身份是否重要，字符串和集合的访问成本来自哪里。本文讨论常见可复制类型，使用 Swift 5.9 及以后可用的基础语法。
+
+## 1. 面试核心 {#core}
+
+- `struct` 和 `enum` 是值类型，`class` 是引用类型，**赋值值类型得到值的副本，赋值类实例的引用会共享同一个对象**。[卡](#struct-class)
+- `let` 对值类型限制整个值的修改，对类引用限制重新赋值，**不阻止修改该对象允许变化的属性**。
+- 值类型中的类属性仍可能共享引用，**值复制不会自动深复制所有引用对象**。
+- 标准库集合可以使用写时复制优化，**共享存储是实现方式，修改后保持相应值语义才是对调用方的保证**。[卡](#copy-on-write)
+- `String` 的字符不等长，**String.Index 表示有效字符位置，不能按整数下标假设每个字符固定占一字节**。[卡](#string-index)
+- 初始化必须建立可用状态，访问控制则限制 API 边界，**public 与 open 的跨模块继承能力不同，private 与 fileprivate 的范围也不同**。[卡](#access-control)
+
+## 2. 结构体、类与枚举 {#结构体类与枚举}
+
+**结构体** `struct` 定义值类型，**类** `class` 定义具有引用身份的类型。它们都能有属性、方法、初始化器、下标、扩展和协议遵循；类还支持类继承及基于身份的比较。
+
+| 维度 | `struct` | `class` |
+| --- | --- | --- |
+| 赋值与传递 | 复制值语义 | 复制指向同一实例的引用 |
+| 继承 | 不支持结构体之间的继承，可遵守协议 | 支持单一类继承，也可遵守协议 |
+| 身份比较 | 通常按值定义 `Equatable` 等规则 | 可用 `===` 判断是否同一实例 |
+| 修改自身状态的方法 | 需要符合可变性规则，通常标记 `mutating` | 可以修改实例允许变化的属性 |
+
+**枚举** `enum` 表达一组有名称的情况，也属于值类型。Swift 枚举不必只是整数常量：每个情况可以携带关联值，表达当前状态需要的数据。
+
+```swift
+enum LoadState {
+    case loading
+    case loaded(count: Int)
+    case failed(message: String)
+}
+
+func label(_ state: LoadState) -> String {
+    switch state {
+    case .loading: return "loading"
+    case .loaded(let count): return "count=\(count)"
+    case .failed(let message): return "error=\(message)"
+    }
+}
+
+print(label(.loaded(count: 3))) // count=3
+```
+
+关联值随每个枚举值变化，和固定映射的原始值 `rawValue` 不同。用枚举可以让“加载成功必须有数量，失败必须有错误说明”进入类型结构，减少多个可空字段与布尔值产生无意义组合。
+
+## 3. 值复制与引用共享 {#值复制与引用共享}
+
+**值语义**意味着一个值被复制后，对其中一份作符合其定义的修改，不应改变另一份值所表达的状态。**引用语义**则让多个引用可以共同观察同一实例。
+
+```swift
+struct Point {
+    var x: Int
+}
+
+final class Counter {
+    var value: Int
+    init(_ value: Int) { self.value = value }
+}
+
+var first = Point(x: 1)
+var second = first
+second.x = 2
+print(first.x, second.x) // 1 2
+
+let original = Counter(1)
+let alias = original
+alias.value = 2
+print(original.value) // 2
+print(original === alias) // true
+```
+
+`second` 的变化不影响 `first`；`original` 与 `alias` 则引用同一个 `Counter`。`alias` 是 `let`，不能改为引用另一实例，但可以修改当前实例的 `value`。
+
+值类型里如果保存引用，复制时仍会复制引用本身，而不会自动克隆对象：
+
+```swift
+final class Storage {
+    var value = 1
+}
+
+struct Wrapper {
+    var storage: Storage
+}
+
+let first = Wrapper(storage: Storage())
+let second = first
+second.storage.value = 9
+print(first.storage.value) // 9
+```
+
+两个 `Wrapper` 值中的 `storage` 指向同一个对象。若希望 `Wrapper` 对外也表现为独立状态，就需要控制引用的暴露和修改，例如显式复制或采用写时复制设计。仅仅把声明写成 `struct`，不保证它包住的整个对象图天然具有独立值语义。
+
+值类型也不等于“只在栈上”，引用类型也不能据此推导每次访问的固定成本。捕获、容器、优化和逃逸情况都会影响实际存储；选型应先看复制、共享和身份要求，再通过测量分析分配。
+
+## 4. 写时复制 {#写时复制}
+
+**写时复制**（Copy on Write，COW）允许多个值暂时共享底层存储，在需要修改且存储并非当前值独有时，先取得独立存储再修改。它减少不必要的立即复制，同时保持相应的外部值语义。
+
+```swift
+var first = [1, 2]
+var second = first
+second.append(3)
+print(first)  // [1, 2]
+print(second) // [1, 2, 3]
+```
+
+标准库 `Array` 使用这类优化，但例子的正确性依赖的是数组值语义，不是某次调试时看到两个地址是否相同。优化器可能消除、合并或提前完成复制，不能把“一定到第几行才分配”当作通用保证。
+
+自定义 COW 通常用值类型包装引用存储，在修改入口检查是否唯一持有，必要时复制。它必须覆盖所有会改变对外状态的入口；如果把内部可变对象直接交给外部，外部可以绕过检查，值语义就被破坏。
+
+COW 也不自动深复制数组中的类实例。复制 `[Storage]` 可以得到独立的数组值，但其中的实例仍可能共享，修改实例属性与替换数组元素是两种操作。是否继续复制元素，应按对象的语义决定。
+
+线程安全也需要单独设计。对同一个可变变量的并发访问仍可能冲突，唯一引用检查不是跨线程修改同一存储的通用锁。类实例的引用管理与共享边界见[Swift ARC](./arc.mdx)。
+
+## 5. String 与字符索引 {#string-与字符索引}
+
+Swift 的 `String` 按 `Character` 提供字符集合视图，`Character` 可以由多个 Unicode 标量组成，因此一个字符不一定对应一个字节、一个标量或一个 UTF-16 单元。
+
+```swift
+let text = "e\u{301}中"
+print(text.count)          // 2 个 Character
+print(text.unicodeScalars.count) // 3 个 Unicode 标量
+print(text.utf8.count)     // 6 个 UTF-8 字节
+
+let second = text.index(after: text.startIndex)
+print(text[second])        // 中
+print(text == "\u{E9}中")  // true：规范等价的文字
+```
+
+第一个字符由 `e` 与组合重音构成，显示为一个字符。`String.Index` 表示字符串中的有效位置，`startIndex` 指向开头，`endIndex` 是末尾之后的位置，不能直接拿它读取字符。
+
+`String` 支持双向集合操作，可以沿有效索引前后移动，但不是按字符提供常量时间整数随机访问的数组。反复从开头用偏移量寻找第 i 个字符，可能把看似一次遍历的代码变成重复扫描；若确实需要按字符随机访问，可以评估先建立 `[Character]` 的时间与内存成本。
+
+索引还与对应字符串及其有效状态有关。修改字符串后，不能假定之前缓存的索引仍适用于任何新内容，也不能把另一个字符串的整数偏移直接当作当前索引。网络长度、文本截断和 Foundation API 互操作需要明确字符、UTF-8 与 UTF-16 等单位，基础区别见[二进制数据表示](../computer-architecture/data-representation.mdx#文字码点与字节)。
+
+## 6. 初始化与访问控制 {#初始化与访问控制}
+
+**初始化器** `init` 在实例可用前建立所有存储属性的有效状态。结构体可在满足条件时获得成员初始化器，类不会简单地拥有同样的逐成员初始化规则；添加自定义初始化器也可能影响自动生成的入口。
+
+类初始化需要遵守父子关系。指定初始化器先建立本类新增的存储属性，再按规则委托给父类；整个继承链完成第一阶段后，才能安全使用完整实例进行进一步定制。便捷初始化器在本类内委托，最终应走到指定初始化路径。不要把“已经拿到 self”当作所有派生状态都已准备好的证明。
+
+**访问控制**限制声明被哪些代码使用。它按模块、包、文件和声明范围工作，与 Java 或 Kotlin 的同名关键字并非完全一致。
+
+| 级别 | 主要范围或能力 |
+| --- | --- |
+| `private` | 所在声明，以及同文件中该声明的扩展等允许范围 |
+| `fileprivate` | 当前源文件 |
+| `internal` | 当前模块，通常是默认级别 |
+| `package` | 同一包中的模块，Swift 5.9 起提供，需要相应构建包身份 |
+| `public` | 可以从导入该模块的外部代码使用 |
+| `open` | 对类与类成员，在公开访问之外允许跨模块继承或重写 |
+
+`public` 结构体的成员不会因此全部自动成为公开 API，公开类型也不意味着所有自动生成初始化器都公开。API 暴露的参数和返回类型必须满足对应访问级别，否则外部调用方无法合理使用它。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 Swift 的 class 和 struct 有什么区别？ {#struct-class}
+
+**考察重点**：值与引用语义、身份、继承和可变性。
+
+**相关内容**：[结构体、类与枚举](#结构体类与枚举)、[值复制与引用共享](#值复制与引用共享)。
+
+<details>
+<summary>参考回答</summary>
+
+**struct 是值类型，class 是引用类型；前者赋值复制值，后者赋值会共享实例引用。** 两者都可以有方法、初始化器和协议遵循，类还支持类继承与身份比较。let 结构体值不能直接修改其状态，let 类引用仍可修改实例的可变属性。结构体若含类属性仍可能共享内部对象，所以不能把值类型等同于深复制或固定栈分配。
+
+</details>
+
+### 7.2 Swift 的写时复制机制是什么？ {#copy-on-write}
+
+**考察重点**：存储共享、修改入口与值语义。
+
+**相关内容**：[写时复制](#写时复制)。
+
+<details>
+<summary>参考回答</summary>
+
+**写时复制先允许值共享存储，在修改且存储不唯一时取得独立副本，从而延迟不必要的复制。** Array 等标准库类型使用这种优化，但外部保证是相应的值语义，不是某次固定分配时机。自定义实现要控制所有修改入口，也不能自动深复制引用元素或保证对同一变量的并发访问安全。
+
+</details>
+
+### 7.3 Swift String 的索引有什么特点？ {#string-index}
+
+**考察重点**：Unicode 字符边界、集合能力与访问成本。
+
+**相关内容**：[String 与字符索引](#string-与字符索引)。
+
+<details>
+<summary>参考回答</summary>
+
+**String 使用 String.Index 表达有效字符位置，因为一个 Character 可能包含多个标量与字节，不能假定固定宽度。** String 提供双向集合操作，endIndex 位于最后一个字符之后，不能直接下标读取；按偏移反复定位字符可能产生重复扫描成本。索引还要与对应字符串的有效状态匹配，不能混用字符数、UTF-8 字节数和 UTF-16 单元数。
+
+</details>
+
+### 7.4 Swift 的访问控制级别如何区分？ {#access-control}
+
+**考察重点**：声明、文件、模块、包与跨模块扩展。
+
+**相关内容**：[初始化与访问控制](#初始化与访问控制)。
+
+<details>
+<summary>参考回答</summary>
+
+**private、fileprivate、internal 分别约束声明相关范围、文件和模块，package 允许同包访问，public/open 面向模块外使用。** open 专门让类与类成员可被模块外继承或重写，public 不自动提供这种能力。默认一般为 internal，公开类型的所有成员和初始化器也不会自动变成 public；package 需要 Swift 5.9 及相应构建支持。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [The Swift Programming Language：Structures and Classes](https://github.com/swiftlang/swift-book/blob/16a2a4caa408c86fc85bde1e1dfff4745b6e454c/TSPL.docc/LanguageGuide/ClassesAndStructures.md)
+- [The Swift Programming Language：Enumerations](https://github.com/swiftlang/swift-book/blob/16a2a4caa408c86fc85bde1e1dfff4745b6e454c/TSPL.docc/LanguageGuide/Enumerations.md)
+- [Apple Swift 标准库文档：Array](https://developer.apple.com/documentation/swift/array)
+- [The Swift Programming Language：Strings and Characters](https://github.com/swiftlang/swift-book/blob/16a2a4caa408c86fc85bde1e1dfff4745b6e454c/TSPL.docc/LanguageGuide/StringsAndCharacters.md)
+- [The Swift Programming Language：Initialization](https://github.com/swiftlang/swift-book/blob/16a2a4caa408c86fc85bde1e1dfff4745b6e454c/TSPL.docc/LanguageGuide/Initialization.md)
+- [The Swift Programming Language：Access Control](https://github.com/swiftlang/swift-book/blob/16a2a4caa408c86fc85bde1e1dfff4745b6e454c/TSPL.docc/LanguageGuide/AccessControl.md)

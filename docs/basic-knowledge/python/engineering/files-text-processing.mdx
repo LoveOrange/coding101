@@ -1,0 +1,256 @@
+---
+sidebar_position: 2
+knowledge:
+  id: basic-knowledge.python.engineering.files-text-processing
+  type: concept
+description: "讲解 Python 文本与字节、编码、文件模式、逐行处理及 JSON/CSV 解析，用日志汇总示例说明异常定位、内存边界和可重复验证。"
+keywords: [Python 文件, 文本编码, 日志处理, JSON, CSV]
+---
+
+# Python 文件与文本处理
+
+文件保存字节，Python 的文本处理使用字符串。文本模式会按指定编码在二者之间转换，二进制模式则直接读写 `bytes`。处理日志或测试数据时，要先确定格式和编码，再选择读取方式、错误处理与汇总结构。
+
+能读出文件还不够：脚本需要区分空输入与非法数据，保留失败所在位置，并说明大文件处理的内存占用由哪些部分决定。
+
+## 1. 面试核心 {#core}
+
+- **编码把字符串转换为字节，解码把字节转换为字符串**。文本文件应明确约定编码，不能把字符数当作字节数。[卡](#text-bytes-encoding)
+- `r` 读取，`w` 写入并截断已有文件，`a` 追加；`b` 使用二进制模式。**资源在 `with` 范围内使用，读写失败仍应保留异常**。[卡](#file-mode-resource)
+- 对文件对象逐行迭代可以避免一次加载全部内容。**总体内存还包括最长行、解析对象与汇总结构**，不能只因为使用 `for line in file` 就宣称常数内存。[卡](#streaming-memory)
+- JSON、CSV 应按其格式解析，**JSON 语法合法不等于字段满足业务约束，CSV 也不能一般化成按逗号分割**。[卡](#structured-text)
+- 可重复脚本需要明确过滤规则、输出顺序与失败策略。**静默跳过坏行会改变统计分母**，应显式报错或记录跳过数量和理由。[卡](#log-summary)
+
+## 2. 文本、字节与编码 {#文本字节与编码}
+
+**字符串** `str` 表示文本，**字节串** `bytes` 表示字节序列。编码与解码需要双方使用兼容的字符编码。
+
+```python
+text = "中"
+raw = text.encode("utf-8")
+print(len(text))          # 1
+print(len(raw))           # 3
+print(raw.hex())          # e4b8ad
+print(raw.decode("utf-8"))  # 中
+```
+
+`中` 的 UTF-8 字节为 `E4 B8 AD`，所以一个字符在这里占三个字节。文件大小、上传限制与文本长度的单位不同，判断边界时不能混用。
+
+解码使用错误编码可能失败，也可能得到不正确文本。`errors="ignore"` 会丢弃无法解码的数据，不能在需要核对完整结果时当作默认修复。应先确认来源编码，并明确非法字节是中止、替换还是单独记录。
+
+二进制数据如图片或压缩包，不应先按文本解码再处理；按 `bytes` 读取，交给对应格式的解析器。
+
+## 3. 打开方式与资源管理 {#打开方式与资源管理}
+
+文件模式同时决定读写权限和已有内容的处理方式。
+
+| 模式 | 含义 | 需要注意 |
+| --- | --- | --- |
+| `r` | 读取文本 | 文件不存在会失败 |
+| `w` | 写文本 | 文件已存在时先截断内容 |
+| `a` | 追加文本 | 新内容写到末尾，不重建整个文件 |
+| `rb` / `wb` | 读写二进制字节 | 不指定文本编码 |
+| `x` | 排他创建 | 文件已存在时失败，避免无意覆盖 |
+
+下面在临时目录中写入并读回文本，运行后由临时目录管理器清理：
+
+```python
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+with TemporaryDirectory() as directory:
+    path = Path(directory) / "result.txt"
+    with path.open("w", encoding="utf-8") as stream:
+        stream.write("passed\n")
+    with path.open("r", encoding="utf-8") as stream:
+        print(stream.read().rstrip("\n"))  # passed
+```
+
+`with` 在离开时关闭文件，但不把读写错误变成成功。正文需要写入的是结果时，只有写入过程完成且没有相关错误，才能报告该阶段成功；仅仅运行了清理逻辑不足以作此判断。
+
+文本模式可能按平台规则转换换行；二进制模式保留原字节。需要逐字节比较文件时，使用二进制读取，而不是先解码再比较文本。
+
+## 4. 逐行处理 {#逐行处理}
+
+`read()` 默认读取剩余全部内容，`readlines()` 构造剩余各行的列表。逐行迭代则让处理阶段可以在每行到达时执行。
+
+```python
+import io
+
+stream = io.StringIO("ok\n\nfailed\n")
+for line_number, line in enumerate(stream, start=1):
+    value = line.rstrip("\r\n")
+    if value:
+        print(line_number, value)
+# 1 ok
+# 3 failed
+```
+
+`rstrip("\r\n")` 只去掉尾部换行字符，`strip()` 还会去掉两端空白。用户名、签名文本或固定宽度字段中的空格可能有意义，因此清洗规则必须来自格式约定。
+
+逐行处理的内存通常与当前行和处理状态有关。如果一个文件只有一条极长的行，单次读取仍可能很大；如果需要维护所有用户的精确计数，字典仍会随不同用户数量增长。二进制或无可靠行边界的数据，可以按块处理，并显式维护跨块的未完成部分。
+
+## 5. 结构化格式 {#结构化格式}
+
+### 5.1 JSON 的解析与字段验证 {#json-的解析与字段验证}
+
+`json.loads` 负责把 JSON 文本解析为 Python 对象。之后仍需检查对象种类、必需字段及字段类型。
+
+```python
+import json
+
+record = json.loads('{"case_id": "login", "status": 200}')
+if not isinstance(record, dict):
+    raise ValueError("record must be an object")
+if not isinstance(record.get("case_id"), str):
+    raise ValueError("case_id must be a string")
+if type(record.get("status")) is not int:
+    raise ValueError("status must be an integer")
+print(record["case_id"], record["status"])  # login 200
+```
+
+这里用 `type(...) is int` 是为了同时拒绝布尔值；`bool` 是 `int` 的子类，直接用 `isinstance(True, int)` 会得到真。具体是否允许布尔值应由字段契约决定。
+
+`loads` 和 `dumps` 面向字符串，`load` 和 `dump` 面向文件对象。JSON Lines 约定每行一条独立 JSON，可以逐行 `loads`；一个整体 JSON 数组不是同一种格式，不能直接按行拆分后逐行解析。
+
+### 5.2 CSV 的引用规则 {#csv-的引用规则}
+
+CSV 字段可以包含分隔符和换行，并通过引用规则表示。按逗号直接 `split` 会破坏这些字段。
+
+```python
+import csv
+import io
+
+text = 'case_id,note\nlogin,"slow, retried"\n'
+rows = list(csv.DictReader(io.StringIO(text)))
+print(rows[0]["note"])  # slow, retried
+```
+
+实际打开 CSV 文件时使用 `newline=""`，由 CSV 模块处理格式中的换行。读取后的字段通常仍是字符串，需要再按业务约定转换数字、日期或布尔值；表头和记录缺失也要单独验证。
+
+## 6. 日志汇总实例 {#日志汇总实例}
+
+下面统计 JSON Lines 中各状态码的次数。规则是忽略空行；每条非空记录必须是对象，且 `status` 是整数；坏行立即报告行号，不静默丢弃。
+
+```python
+import json
+from collections import Counter
+
+def count_statuses(lines):
+    counts = Counter()
+    for line_number, line in enumerate(lines, start=1):
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"line {line_number}: invalid JSON") from exc
+        if not isinstance(record, dict) or type(record.get("status")) is not int:
+            raise ValueError(f"line {line_number}: invalid status")
+        counts[record["status"]] += 1
+    return dict(sorted(counts.items()))
+
+lines = ['{"status": 500}\n', '\n', '{"status": 200}\n', '{"status": 200}\n']
+print(count_statuses(lines))  # {200: 2, 500: 1}
+print(count_statuses([]))     # {}
+```
+
+输入参数只要求能够逐行迭代，因此实际文件对象与测试用列表都能使用同一个函数。排序让输出顺序固定，便于对比与回归；排序成本与不同状态码数量有关。
+
+设总输入长度为 `B`、不同状态码数量为 `u`，解析与遍历主要随 `B` 增长，最后排序需要 O(u log u)。汇总结构需要 O(u) 空间，此外还要容纳当前行和当前解析对象。如果键改为用户 ID，`u` 可能很大，应重新评估内存。
+
+验证时至少检查空输入、重复状态、无状态字段、布尔状态、非法 JSON 和带空白的记录。需要继续处理坏行的业务，应显式返回成功数、失败数与失败定位，不直接删掉异常分支。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 str 和 bytes 有什么区别，字符数为什么可能不等于文件字节数？ {#text-bytes-encoding}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：文本与字节、编码方向与长度单位。
+
+**相关内容**：[文本、字节与编码](#文本字节与编码)。
+
+<details>
+<summary>参考回答</summary>
+
+**`str` 表示文本，`bytes` 表示字节序列。** `encode` 按编码把文本转成字节，`decode` 按编码把字节转成文本。
+
+同一个字符在某种编码下可能占多个字节，例如 `中` 的 UTF-8 编码占三个字节。因此文本长度和文件大小是不同单位，上传大小验证要按字节而不是字符数判断。
+
+</details>
+
+### 7.2 w、a 和 x 模式怎样选择，with 是否保证写入一定成功？ {#file-mode-resource}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：截断、追加、排他创建与资源清理。
+
+**相关内容**：[打开方式与资源管理](#打开方式与资源管理)。
+
+<details>
+<summary>参考回答</summary>
+
+**`w` 写入并截断已有文件，`a` 追加，`x` 只在文件不存在时创建。** 根据是否允许覆盖或必须拒绝重复创建选择。
+
+`with` 负责退出时关闭资源，不保证底层读写不会失败。错误必须继续报告，不能因为关闭逻辑执行了就标记写入成功。
+
+</details>
+
+### 7.3 逐行读取大文件是否就能保证 O(1) 内存？ {#streaming-memory}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：读取粒度、最长记录与聚合状态。
+
+**相关内容**：[逐行处理](#逐行处理)、[日志汇总实例](#日志汇总实例)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能只看读取方式。** 逐行迭代避免保存整个文件，但仍需容纳当前行、解析结果以及处理过程中积累的状态。
+
+如果按用户计数，内存随不同用户数增长；单行极长也会占大量内存。应根据行长、唯一键数量和结果要求评估，必要时采用分块、外部存储或分区汇总。
+
+</details>
+
+### 7.4 JSON 能成功解析是否就有效，CSV 为什么不直接按逗号分割？ {#structured-text}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：格式语法与业务约束、引用与转义规则。
+
+**相关内容**：[JSON 的解析与字段验证](#json-的解析与字段验证)、[CSV 的引用规则](#csv-的引用规则)。
+
+<details>
+<summary>参考回答</summary>
+
+**JSON 解析成功只说明语法能够转换成对象，仍需验证对象类型、字段、类型与取值范围。** 例如 `{}` 是合法 JSON，却缺少必需的 `status`。
+
+CSV 字段可能通过引号包含逗号或换行，简单 `split` 会错误拆开字段。应使用 CSV 解析器，再检查字段类型和业务规则。
+
+</details>
+
+### 7.5 怎样验证一个按状态码汇总 JSON Lines 的脚本？ {#log-summary}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：输入边界、计数依据、失败定位与可重复结果。
+
+**相关内容**：[日志汇总实例](#日志汇总实例)。
+
+<details>
+<summary>参考回答</summary>
+
+**先明确哪些记录进入分母，再检查每类记录的计数与失败行为。** 正常样例包含重复状态和多个状态，验证计数总和与有效记录数一致；空输入应得到空结果。
+
+异常样例包括非法 JSON、缺字段、错误字段类型及布尔值。失败应带行号，不能静默跳过。需要继续处理时单独报告失败数和原因；同时验证输出顺序固定，避免无关顺序变化干扰回归。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [Python 3.12 教程：Reading and Writing Files](https://docs.python.org/3.12/tutorial/inputoutput.html#reading-and-writing-files)
+- [Python 3.12：open](https://docs.python.org/3.12/library/functions.html#open)
+- [Python 3.12 json：解析与序列化](https://docs.python.org/3.12/library/json.html)
+- [Python 3.12 csv：格式与换行处理](https://docs.python.org/3.12/library/csv.html)

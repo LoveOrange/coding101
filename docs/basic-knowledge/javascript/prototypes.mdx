@@ -1,0 +1,415 @@
+---
+sidebar_position: 4
+knowledge:
+  id: basic-knowledge.javascript.prototypes
+  type: concept
+description: "解释 JavaScript 的原型委托、属性查找、构造函数与 class、new 和 instanceof，并区分 prototype 属性、对象原型以及继承的状态共享边界。"
+keywords: ["JavaScript 原型", "原型链", "prototype", "new", "instanceof", "class 继承"]
+---
+
+# 原型与原型链
+
+**原型**是一个对象查找自身没有的属性时，继续查询的另一个对象。多个对象通过这种关系连起来，就形成了**原型链**。继承一个方法并不需要把它复制到每个实例里，实例可以沿原型链找到同一个函数。
+
+理解原型后，构造函数、`class`、`new` 和 `instanceof` 就能放进同一套关系里解释。判断代码时要分清：对象本身有什么属性、它的原型是谁，以及构造函数的 `prototype` 属性当前指向哪个对象。
+
+## 1. 面试核心 {#core}
+
+- 普通对象读取属性时，**先查自有属性，再沿原型链查找，直到 `null`**。找到值为 `undefined` 的自有属性也会停止，不会继续找同名继承属性。[卡](#property-lookup)
+- 对象的内部原型与构造函数的 `prototype` 属性是不同的关系。**普通构造调用把新实例的原型设为构造函数的 `prototype` 对象**，不是把实例指向构造函数本身。[卡](#prototype-relations)
+- 普通构造函数的 `new` 会创建对象、建立原型关系、执行初始化，并处理返回值。**显式返回对象会替代默认实例，返回原始值通常不会**；派生类构造器另有约束。[卡](#construction)
+- 继承需要同时考虑初始化和方法查找。**实例状态应各自初始化，共享方法可以放在原型上**；把可变数组放在共同原型上会让实例共享状态。[卡](#inheritance)
+- JavaScript 可以让不同对象提供同名方法，调用方按共同的操作使用它们。**多态不要求一定存在共同父类，原型链也不负责把状态变成私有**。[卡](#polymorphism)
+- `class` 的实例方法位于原型，静态方法位于类对象；`extends` 建立两条对应的继承关系。**类仍使用原型机制，但不等于任意普通构造函数写法**。[卡](#class-semantics)
+- 默认 `instanceof` 检查**目标原型是否出现在对象的原型链中**，不证明对象曾由该构造函数创建；自定义 `Symbol.hasInstance`、绑定函数和跨环境对象需要单独处理。[卡](#instanceof)
+- 扩展内置原型会影响共享这一原型的代码。**优先使用独立函数或自己的类，避免业务代码给 `Array.prototype` 等对象增加全局约定**。[卡](#builtin-extension)
+
+## 2. 属性查找与遮蔽 {#属性查找与遮蔽}
+
+**自有属性**是直接定义在对象上的属性；**继承属性**来自它的原型链。`Object.create(proto)` 创建一个以 `proto` 为原型的新对象，不复制 `proto` 的属性，也不执行构造函数。
+
+```js
+const defaults = { theme: "light" };
+const settings = Object.create(defaults);
+
+console.log(settings.theme);                    // light
+console.log(Object.hasOwn(settings, "theme"));  // false
+console.log("theme" in settings);               // true
+
+settings.theme = "dark";
+console.log(settings.theme, defaults.theme);    // dark light
+delete settings.theme;
+console.log(settings.theme);                    // light
+```
+
+开始时，`settings` 没有 `theme`，读取会到 `defaults` 查找。这里的继承属性是可写数据属性，给可扩展的 `settings.theme` 赋值会在 `settings` 上建立同名自有属性，遮住原型上的值。删除这个自有属性后，继承属性重新可见。
+
+如果自有属性仍存在，只是被赋为 `undefined`，就不会回退到原型：
+
+```js
+const settings = Object.create({ theme: "light" });
+settings.theme = undefined;
+console.log(settings.theme);                   // undefined
+console.log(Object.hasOwn(settings, "theme")); // true
+delete settings.theme;
+console.log(settings.theme);                   // light
+```
+
+因此，“删除属性”和“把值清空”有不同的含义。`Object.hasOwn` 只判断自有属性，`in` 还会搜索原型链；不能用 `obj.key !== undefined` 判断属性是否存在。
+
+上面的赋值结论有条件：若原型上是 setter，赋值会调用它；若继承的是不可写数据属性，赋值可能失败，而不是自动建立同名自有属性。属性描述符决定这些读写规则，不能把“写入永远只看自身”当成通则。
+
+方法查找也遵守同样的顺序。找到函数以后，调用接收者仍由调用表达式提供：`instance.run()` 即使从原型取到 `run`，函数中的 `this` 仍是 `instance`。调用规则见 [this 绑定](./this-binding.mdx#调用形式与接收者)。
+
+## 3. 对象原型与 prototype 属性 {#对象原型与-prototype-属性}
+
+每个普通对象都有内部的 `[[Prototype]]` 关系，取值是另一个对象或 `null`。`Object.getPrototypeOf(obj)` 可以读取它。`Constructor.prototype` 则是构造函数上的一个普通属性；在通常的构造调用中，它决定新实例使用哪个原型对象。
+
+```js
+function User(name) {
+  this.name = name;
+}
+User.prototype.read = function () { return this.name; };
+
+const user = new User("Lin");
+console.log(Object.getPrototypeOf(user) === User.prototype); // true
+console.log(Object.getPrototypeOf(User) === Function.prototype); // true
+console.log(user.read()); // Lin
+console.log(Object.hasOwn(user, "read")); // false
+```
+
+这里有两类对象：`User` 是函数对象，`User.prototype` 是为其实例准备的原型对象。它们各自也有自己的原型。
+
+| 被检查的对象 | 在这个例子中的直接原型 |
+| --- | --- |
+| `user` | `User.prototype` |
+| `User.prototype` | `Object.prototype` |
+| `User` | `Function.prototype` |
+| `Function.prototype` | `Object.prototype` |
+| `Object.prototype` | `null` |
+
+默认情况下，`User.prototype` 还有一个 `constructor` 属性指回 `User`，所以 `user.constructor` 通常也能查到 `User`。但 `constructor` 可以被遮蔽或修改，它不是不可伪造的类型标记，也不是 `new` 用来确定构造函数的入口。
+
+不要把 `obj.__proto__` 和 `Constructor.prototype` 当成两种写法。前者通常访问继承自 `Object.prototype` 的历史访问器，后者是普通属性；无原型对象可能根本没有这个访问器。读取关系时使用 `Object.getPrototypeOf` 更明确。
+
+### 3.1 原型对象的修改与替换 {#原型对象的修改与替换}
+
+修改原型对象会影响所有仍然委托给它的实例；替换构造函数的 `prototype` 属性，不会自动改接旧实例的原型。
+
+```js
+function Item() {}
+const oldItem = new Item();
+const oldPrototype = Item.prototype;
+
+Item.prototype.tag = "shared";
+console.log(oldItem.tag); // shared
+
+Item.prototype = { tag: "new" };
+const newItem = new Item();
+console.log(oldItem.tag, newItem.tag); // shared new
+console.log(Object.getPrototypeOf(oldItem) === oldPrototype); // true
+console.log(oldItem instanceof Item); // false
+```
+
+`oldItem` 继续指向原来的对象。最后一行变成 `false`，是因为默认 `instanceof` 用的是 `Item.prototype` 当前的值。原型关系描述对象当前怎样查找属性，不是一份永久保存的创建历史。
+
+## 4. 构造调用与 new {#构造调用与-new}
+
+对通常的普通构造函数 `new User("Lin")`，可以按四步理解：
+
+1. 准备一个新对象。
+2. 让新对象的原型使用 `User.prototype`。如果该属性不是对象，则使用相应运行环境的 `Object.prototype` 作为回退。
+3. 以新对象作为 `this`，执行 `User` 的初始化代码并传入参数。
+4. 若构造函数显式返回对象或函数，返回它；否则返回刚才的新对象。
+
+```js
+function KeepInstance() {
+  this.value = 1;
+  return 7;
+}
+function ReplaceInstance() {
+  this.value = 1;
+  return { value: 2 };
+}
+
+console.log(new KeepInstance().value); // 1
+const replaced = new ReplaceInstance();
+console.log(replaced.value); // 2
+console.log(replaced instanceof ReplaceInstance); // false
+```
+
+`ReplaceInstance` 返回的是另一个普通对象，它没有自动继承 `ReplaceInstance.prototype`。返回函数同样会替代默认实例，因为函数也是对象；返回 `null` 则不会，因为 `null` 是原始值。
+
+这四步用于解释普通构造函数，不能当成所有构造器的完整实现。类不能通过普通调用执行；派生类要通过 `super()` 完成父类构造并初始化 `this`，若显式返回非 `undefined` 的原始值会抛错。内置类型还可能有普通属性无法模拟的内部状态。需要动态构造时可使用 `Reflect.construct`，而不是假定 `Object.create` 加 `apply` 能替代所有 `new`。
+
+同样，是否有名为 `prototype` 的属性，不等于是否有构造能力。箭头函数不能用于 `new`；绑定函数是否可构造取决于其目标，绑定构造调用的规则见 [this 绑定](./this-binding.mdx#构造调用)。
+
+## 5. 继承与实例状态 {#继承与实例状态}
+
+继承包含两个不同的问题：实例状态由谁初始化，以及方法从哪里找到。只接上原型链，并不会自动执行父构造函数；只调用父构造函数，也不会自动继承它的原型方法。
+
+用普通函数表达时，可以分别完成这两件事：
+
+```js
+function User(name) {
+  this.name = name;
+  this.tags = [];
+}
+User.prototype.read = function () { return this.name; };
+
+function Admin(name) {
+  User.call(this, name);
+}
+Admin.prototype = Object.create(User.prototype, {
+  constructor: { value: Admin, writable: true, configurable: true },
+});
+
+const first = new Admin("Lin");
+const second = new Admin("Kai");
+first.tags.push("reviewer");
+console.log(first.read()); // Lin
+console.log(second.tags.length); // 0
+console.log(first instanceof User, first instanceof Admin); // true true
+```
+
+`User.call` 初始化当前实例的 `name` 和 `tags`，`Object.create` 接上实例方法的查找关系。每次构造都会产生一个新数组，所以修改 `first.tags` 不影响 `second.tags`。这里专门补回 `constructor`，方便检查和调试；决定继承查找的是原型关系，不是这个属性。
+
+旧代码中不同的继承写法，可以用这两个问题比较：
+
+| 写法 | 实例初始化 | 方法继承与限制 |
+| --- | --- | --- |
+| `Child.prototype = new Parent()`，通常称原型链继承 | 父构造函数在建立原型时执行 | 父初始化产生的引用值放在共同原型上，子实例可能共享 |
+| 在 `Child` 中执行 `Parent.call(this, ...)`，通常称借用构造函数 | 每个子实例单独初始化 | 单独这样做，得不到 `Parent.prototype` 上的方法 |
+| 同时使用以上两种，通常称组合继承 | 建立原型和构造实例时都执行父初始化 | 可继承方法，但建立原型的那次初始化往往多余 |
+| 借用构造函数，加 `Object.create(Parent.prototype)`，通常称寄生组合继承 | 每个子实例单独初始化 | 不为连接原型而执行父构造函数；仍需另行处理静态成员继承等问题 |
+
+这些名称用于识别既有问法。新代码优先用 `class extends` 清楚地表达类继承；只是需要几个行为时，也可以通过组合对象或传入函数复用，不必强行建立父子关系。
+
+### 5.1 共享方法与多态 {#共享方法与多态}
+
+**多态**在这里指调用方使用相同的操作，而不同对象提供各自的实现。例如读取不同对象的 `read()`，可以沿各自的原型链得到不同方法。JavaScript 也可以通过没有共同父类的对象实现同一套接口；能调用同名方法不一定意味着存在继承关系。
+
+```js
+function display(reader) { return reader.read(); }
+const cached = { read() { return "cache"; } };
+const fallback = { read() { return "default"; } };
+console.log(display(cached), display(fallback)); // cache default
+```
+
+`display` 只依赖传入对象具有可调用的 `read`，不要求两个对象声明共同父类。JavaScript 运行时不会像静态类型检查那样提前保证接口完整；传入缺少 `read` 的对象，调用时会失败。Java 中的声明式类型关系及动态分派可对照 [面向对象编程（Object-Oriented Programming）](../java/language/encapsulation-inheritance-polymorphism.mdx#多态)。
+
+封装则把状态及其修改方式组织在一起。闭包、模块和类的私有字段都能限制外部访问，原型链本身不负责把属性变成私有。选用继承时，应能说明子对象是否符合父对象的使用约定，以及共享可变状态会不会破坏这种约定。
+
+## 6. class 与 extends {#class-与-extends}
+
+`class` 用专门的语法定义构造器、实例方法、静态方法和字段。实例方法放在类的 `prototype` 上，静态方法放在类对象本身；实例字段在创建实例时初始化，通常是自有属性。
+
+```js
+class User {
+  constructor(name) { this.name = name; }
+  read() { return this.name; }
+  static kind() { return "user"; }
+}
+class Admin extends User {
+  read() { return "admin:" + super.read(); }
+}
+
+const admin = new Admin("Lin");
+console.log(admin.read()); // admin:Lin
+console.log(Admin.kind()); // user
+console.log(Object.getPrototypeOf(Admin.prototype) === User.prototype); // true
+console.log(Object.getPrototypeOf(Admin) === User); // true
+console.log(Object.hasOwn(admin, "name"), Object.hasOwn(admin, "read")); // true false
+```
+
+第一条原型关系让实例方法可以沿 `Admin.prototype` 找到 `User.prototype`；第二条让类对象 `Admin` 能找到 `User` 的静态方法。`super.read()` 从父原型寻找方法，但仍用当前的 `admin` 作为调用接收者。
+
+类和普通构造函数都使用原型机制，但类还有明确的语言约束。类体自动处于严格模式，类构造器只能用 `new` 调用，原型上的类方法默认不可枚举，类声明在初始化前不能访问。派生类构造器使用 `this` 前必须先完成 `super()`；私有字段也有专门的访问检查。
+
+因此，“class 是语法糖”最多说明它仍建立原型关系，不能据此推断它与任意函数写法完全相同。实例上的箭头函数字段也不是共享的原型方法，它在实例初始化时创建；这会影响函数身份和 `this` 的行为。
+
+## 7. instanceof 与原型判断 {#instanceof-与原型判断}
+
+在普通函数未自定义判断行为的情况下，`value instanceof Constructor` 会检查 `Constructor.prototype` 是否出现在 `value` 的原型链上。它不调用 `Constructor`，也不检查实例的 `constructor` 属性。
+
+```js
+function User() {}
+const user = Object.create(User.prototype);
+user.constructor = Array;
+console.log(user instanceof User); // true
+console.log(user instanceof Array); // false
+```
+
+`user` 没有经历 `new User()`，但仍满足默认的原型关系。反过来，替换 `User.prototype` 可以使旧实例不再通过判断。它不能证明某个构造器的初始化逻辑已经执行，涉及私有字段或内置内部状态时尤其如此。
+
+### 7.1 原型链检查的教学实现 {#原型链检查的教学实现}
+
+下面的函数只演示“沿链比较对象身份”。右侧约定为未定制行为、具有对象类型 `prototype` 的普通构造函数，不涵盖绑定函数或 `Symbol.hasInstance`：
+
+```js
+function hasConstructorPrototype(value, Constructor) {
+  const isObject = x => x !== null &&
+    (typeof x === "object" || typeof x === "function");
+  if (typeof Constructor !== "function" || !isObject(Constructor.prototype)) {
+    throw new TypeError("需要具有对象 prototype 的普通构造函数");
+  }
+  if (!isObject(value)) return false;
+  const expected = Constructor.prototype;
+  for (let current = Object.getPrototypeOf(value);
+       current !== null;
+       current = Object.getPrototypeOf(current)) {
+    if (current === expected) return true;
+  }
+  return false;
+}
+
+function User() {}
+console.log(hasConstructorPrototype(new User(), User)); // true
+console.log(hasConstructorPrototype({}, User));         // false
+console.log(hasConstructorPrototype(null, User));       // false
+```
+
+原生 `instanceof` 还会查找右侧的 `Symbol.hasInstance` 方法；方法可以自定义判定。默认处理绑定函数时还会委托其目标函数，因此不能把上面的循环称为完整实现。
+
+不同窗口或 iframe 有不同的内置构造函数和原型对象，另一个环境的数组未必通过本环境的 `instanceof Array`。识别真正的数组用 `Array.isArray`；需要判断一般对象时，先明确要判断的是原型关系、内置类型，还是某种能力。它们不是同一个问题。
+
+## 8. 内置原型扩展 {#内置原型扩展}
+
+给 `Array.prototype` 加一个方法，会让所有委托给这一原型且没有同名遮蔽属性的数组都能看到它。这样做可能与依赖库或后续标准的名字冲突，也会扩大代码之间的隐含约定。
+
+直接赋值添加的方法默认可枚举，还可能出现在 `for...in` 的继承属性遍历中。用 `Object.defineProperty` 设为不可枚举能解决这一个问题，却不能消除命名冲突和全局影响。
+
+业务里的数组转换通常写成 `transform(array)` 更明确。确实需要兼容性补丁时，要检查目标能力是否缺失，遵循规范语义和属性描述符，并使用经过验证的实现；不要用业务自定义方法冒充标准 API。
+
+## 9. 面试题 {#面试题}
+
+### 9.1 属性沿原型链怎样查找，删除与赋为 undefined 有什么区别？ {#property-lookup}
+
+**考察重点**：自有属性、继承属性、遮蔽和属性存在性。
+
+**相关内容**：[属性查找与遮蔽](#属性查找与遮蔽)。
+
+<details>
+<summary>参考回答</summary>
+
+**读取普通对象属性时，先查自身，缺失才沿原型链继续，直到 `null`。** 自有属性即使值为 `undefined` 也会遮蔽同名继承属性。
+
+`delete` 成功删除自有属性后，原型上的同名属性可能重新可见；赋值为 `undefined` 保留了属性。用 `Object.hasOwn` 判断自有属性，用 `in` 判断包含原型链的存在性。赋值是否建立自有属性还受 setter、可写性和可扩展性影响。
+
+</details>
+
+### 9.2 实例原型、构造函数的 prototype 和 constructor 分别是什么？ {#prototype-relations}
+
+**考察重点**：函数对象与原型对象、查找终点和属性身份。
+
+**相关内容**：[对象原型与 prototype 属性](#对象原型与-prototype-属性)。
+
+<details>
+<summary>参考回答</summary>
+
+**实例的内部原型决定属性委托关系，构造函数的 `prototype` 属性通常为新实例提供这个原型对象。** 因而普通情况下 `Object.getPrototypeOf(instance) === Constructor.prototype`，而不是等于 `Constructor`。
+
+默认原型对象的 `constructor` 属性指回构造函数，但它可修改，不是类型证明。普通对象的原型链通常经过 `Object.prototype`，最后到 `null`；无原型对象可以直接以 `null` 为原型。
+
+</details>
+
+### 9.3 new 一个普通构造函数会发生什么，返回值怎样影响结果？ {#construction}
+
+**考察重点**：实例分配、原型建立、初始化和对象返回值。
+
+**相关内容**：[构造调用与 new](#构造调用与-new)。
+
+<details>
+<summary>参考回答</summary>
+
+**普通构造调用会准备新对象、建立原型关系，以它作为 `this` 执行构造函数，再选择返回值。** `Constructor.prototype` 是对象时用于新实例的原型，否则使用对应环境的默认对象原型。
+
+显式返回对象或函数会替代默认实例，返回原始值则仍返回新实例。派生类和内置构造器存在额外规则，所以只靠 `Object.create` 加普通调用不能模拟所有构造行为。
+
+</details>
+
+### 9.4 JavaScript 继承怎样兼顾方法复用和实例状态独立？ {#inheritance}
+
+**考察重点**：初始化、原型委托、继承方式和共享可变状态。
+
+**相关内容**：[继承与实例状态](#继承与实例状态)、[class 与 extends](#class-与-extends)。
+
+<details>
+<summary>参考回答</summary>
+
+**在每个实例的构造过程中初始化可变状态，把可共享的方法放在原型上。** 连接原型链只解决方法查找，调用父构造函数才负责相应的状态初始化。
+
+若用 `new Parent()` 作为所有子实例的共同原型，父初始化产生的数组等对象会被共享。普通函数可以通过借用构造函数加 `Object.create(Parent.prototype)` 分别处理两件事；新代码也可以用 `class extends` 明确表达继承。是否采用继承，还要看子对象是否符合父对象的使用约定。
+
+</details>
+
+### 9.5 class extends 建立哪些关系，类与普通函数有哪些语义差异？ {#class-semantics}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：实例方法与静态方法的查找、严格模式和构造约束。
+
+**相关内容**：[class 与 extends](#class-与-extends)。
+
+<details>
+<summary>参考回答</summary>
+
+**通常的 `class Child extends Parent` 同时连接实例原型和类对象。** `Child.prototype` 的原型是 `Parent.prototype`，使实例继承方法；`Child` 的原型是 `Parent`，使类继承静态成员。
+
+类体严格执行，类构造器只能通过构造调用执行，原型方法默认不可枚举；类声明初始化前不能使用，派生构造器使用 `this` 前要先完成 `super()`。这些约束说明类使用原型机制，却不能被任意普通函数写法无条件替换。
+
+</details>
+
+### 9.6 怎样实现原型链检查，它与完整 instanceof 有哪些差别？ {#instanceof}
+
+**考察重点**：对象身份、原型遍历、自定义判定和跨环境边界。
+
+**相关内容**：[instanceof 与原型判断](#instanceof-与原型判断)、[原型链检查的教学实现](#原型链检查的教学实现)。
+
+<details>
+<summary>参考回答</summary>
+
+**在约定的普通构造函数范围内，可用 `Object.getPrototypeOf` 逐层查找，与目标的 `prototype` 做身份比较。** 找到返回 `true`，到 `null` 返回 `false`，原始值不具有这条对象原型链。
+
+原生 `instanceof` 还处理 `Symbol.hasInstance` 和绑定函数，不能只靠这段循环完整替代。它检查的是当前关系，不是创建历史；跨环境的内置原型也可能不同。判断数组应使用 `Array.isArray`。
+
+</details>
+
+### 9.7 给 Array.prototype 增加业务方法有哪些影响？ {#builtin-extension}
+
+**考察重点**：共享原型、属性枚举与 API 命名冲突。
+
+**相关内容**：[内置原型扩展](#内置原型扩展)。
+
+<details>
+<summary>参考回答</summary>
+
+**修改内置原型会影响共享该原型的对象，可能与其他代码或标准方法冲突。** 直接赋值新增的可枚举属性还会影响 `for...in`；设为不可枚举只能消除这一项影响。
+
+业务转换优先写独立函数，专有行为也可以放进自己的类。兼容性补丁需要能力检查和完整语义验证，不能只添加一个同名函数就声称兼容标准。
+
+</details>
+
+### 9.8 JavaScript 怎样体现封装和多态，是否必须有共同父类？ {#polymorphism}
+
+**考察重点**：状态访问、行为约定与继承关系的区别。
+
+**相关内容**：[共享方法与多态](#共享方法与多态)。
+
+<details>
+<summary>参考回答</summary>
+
+**封装组织并约束状态访问，多态让相同操作落到不同对象的实现，不要求所有对象一定继承共同父类。** JavaScript 可以通过对象提供相同的方法来满足调用方的行为约定，也可以通过原型继承和方法覆盖实现多态。
+
+闭包、模块和类私有字段能限制外部访问；原型继承本身只提供属性查找关系。没有静态检查或运行时校验时，传入不满足方法约定的对象仍会在调用时失败。
+
+</details>
+
+## 10. 参考资料 {#参考资料}
+
+- [MDN：Inheritance and the prototype chain](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Inheritance_and_the_prototype_chain)
+- [MDN：new](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Operators/new)
+- [MDN：extends](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Classes/extends)
+- [MDN：instanceof](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Operators/instanceof)
+- [ECMAScript：Ordinary Object Internal Methods and Internal Slots](https://tc39.es/ecma262/multipage/ordinary-and-exotic-objects-behaviours.html#sec-ordinary-object-internal-methods-and-internal-slots)
+- [ECMAScript：Class Definitions](https://tc39.es/ecma262/multipage/ecmascript-language-functions-and-classes.html#sec-class-definitions)

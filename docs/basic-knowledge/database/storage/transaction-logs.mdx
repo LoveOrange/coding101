@@ -1,0 +1,229 @@
+---
+sidebar_position: 2
+knowledge:
+  id: basic-knowledge.database.storage.transaction-logs
+  type: concept
+description: "以 MySQL 8.0 InnoDB 解释 redo、undo 和 binlog 的职责，串联内存脏页、WAL、checkpoint、崩溃恢复与内部两阶段提交。说明已写日志不等于事务已提交、提交不必等待所有数据页落盘，以及刷盘配置和存储故障对恢复保证的限制。"
+keywords: ["MySQL 事务日志", "redo log", "undo log", "binlog", "WAL", "两阶段提交", "checkpoint"]
+---
+
+# MySQL 事务日志
+
+MySQL 8.0 的 InnoDB 事务需要几种日志共同工作：**redo log 恢复数据页的修改，undo log 支持撤销和旧版本读取，binlog 记录可供复制与恢复使用的变更事件**。它们记录的对象和要解决的问题不同，不能因为都叫日志就互相替代。
+
+理解这组机制，才能解释两个现象：事务已经提交，修改过的数据页却可能还在内存里；日志里已经有某次修改，崩溃恢复时却仍可能撤销它。关键在于区分页面恢复、事务结果和日志持久化。
+
+## 1. 面试核心 {#core}
+
+- **redo 面向页面恢复，undo 面向撤销与历史版本，binlog 面向变更事件**；后两者不能替代 InnoDB 的页面恢复信息。[卡](#log-responsibilities)
+- **WAL 要求数据页落盘前，相关 redo 先持久化**。提交可以依靠日志提供恢复依据，不必同时刷完这次事务修改的所有页面。[卡](#wal-dirty-pages)
+- **checkpoint 推进后，不再需要用于恢复的旧 redo 才能回收复用**；不能因为某个事务已提交，就覆盖它仍然需要的恢复日志。[卡](#checkpoint-space)
+- binlog 与 InnoDB 的提交通过内部协调衔接；对处于 prepare 状态的事务，**有效的 binlog 提交记录是恢复决策的依据**。[卡](#prepare-binlog-recovery)
+- 持久性需要刷盘策略和存储共同兑现。`innodb_flush_log_at_trx_commit=1` 与 `sync_binlog=1` 保护提交日志，仍不能覆盖磁盘永久损毁或替代备份。
+- redo 随修改产生，**未提交事务也可能已有 redo**。崩溃恢复需要先恢复页面状态，再按事务结果完成提交或撤销。[卡](#redo-uncommitted)
+
+## 2. 三种日志的职责 {#三种日志的职责}
+
+先用一张表区分它们记录什么、谁来使用：
+
+| 日志 | 所属机制与记录对象 | 主要用途 | 不能据此推断什么 |
+| --- | --- | --- | --- |
+| redo log | InnoDB 的页面修改记录，不是原始 SQL 文本 | 崩溃后恢复尚未完整写入数据文件的修改 | 有 redo 不代表事务已提交 |
+| undo log | InnoDB 撤销记录，保存恢复修改前状态所需的信息 | 事务回滚、构造一致性读需要的旧版本 | 事务提交不代表所有 undo 都能立即清理 |
+| binlog | MySQL Server 的二进制变更事件，可按语句或行记录 | 复制、从备份位置继续恢复，以及提交协调 | 有 binlog 不代表副本已应用，也不等于数据页已经刷盘 |
+
+例如把 `balance` 从 100 改成 80，redo 描述 InnoDB 怎样恢复相关页面修改，undo 保留撤销更新和重建旧值所需的信息，binlog 则按配置记录可重放的变更事件。这里的 100 和 80 只是帮助理解职责，不意味着三种文件都保存同样一条“100→80”文本。
+
+面试中可以把 redo 概括为物理层面的恢复日志，把 undo 概括为逻辑撤销信息，但不能进一步说 redo 就是一整页的副本、undo 就是一条反向 SQL。它们都有具体记录格式；binlog 在行格式下也不等于 SQL 语句清单。
+
+## 3. redo 与 WAL {#redo-与-wal}
+
+InnoDB 用**页**组织存储，**Buffer Pool** 是缓存这些页面的内存区域。页面在内存中被修改后，如果还没有把同样的修改写回数据文件，就称为**脏页**。
+
+页面的载入、淘汰与后台刷写见 [InnoDB](./innodb.mdx#buffer-pool-的读取与淘汰)。这里重点解释日志必须满足的持久化顺序。
+
+如果每改一行都等待对应数据页刷盘，一次事务可能要等待许多分散的页面写入。InnoDB 先保存可用于恢复的日志，让数据页稍后批量刷写。
+
+**WAL**（Write-Ahead Logging，预写日志）要求：一个数据页的修改写入持久存储之前，恢复这次修改所需的 redo 必须先持久化。这里的“先”描述日志和数据文件的持久化顺序，不是要求业务每改一个字段都单独同步一次日志。
+
+redo 也有不同位置。修改先产生内存中的日志记录，写入日志文件后还可能停留在操作系统缓存中；只有完成相应同步，才达到配置承诺的持久化条件。“已经写日志”必须说明写到了哪一层。
+
+在要求提交日志持久化的配置下，日志持久化完成后，事务可以继续完成提交，脏页随后再刷入数据文件。若此时进程异常退出，重启后可以利用已有数据页和 redo 补齐修改。因此，提交成功不要求每个相关数据页都已经写回。
+
+### 3.1 LSN 与 checkpoint {#lsn-与-checkpoint}
+
+**LSN**（Log Sequence Number，日志序列号）表示 redo 流中的递增位置，用来跟踪日志生成、持久化与恢复进度。它不是业务事务号，也不是时间戳。
+
+**checkpoint** 是恢复可以从中继续向前处理的检查点。随着脏页刷入数据文件，较早的修改不再需要依靠旧 redo 补回，检查点就可以推进，相关日志空间也能按回收规则复用。InnoDB 不要求每次检查点都暂停业务并刷完全部脏页。
+
+如果写入持续产生 redo，而脏页刷写跟不上，检查点推进会受阻，有限的日志空间就形成压力。增大日志容量可以缓冲更长的写入突发，但不能消除长期写入速度超过存储处理能力的问题。redo 因此也不是可以无限保留的历史备份。
+
+## 4. undo 与撤销 {#undo-与撤销}
+
+undo 保存的是撤销修改所需的信息。更新前存在旧值，就需要能恢复旧值；插入产生新记录，回滚则需要撤销这条记录。具体处理由 InnoDB 完成，应用不需要自己生成一条反向 SQL。
+
+下面在练习库中用一个最小事务观察撤销结果：
+
+```sql
+CREATE TABLE log_demo_accounts (
+  id INT PRIMARY KEY,
+  balance INT NOT NULL
+) ENGINE=InnoDB;
+
+INSERT INTO log_demo_accounts VALUES (1, 100);
+
+START TRANSACTION;
+UPDATE log_demo_accounts SET balance = 80 WHERE id = 1;
+SELECT balance FROM log_demo_accounts WHERE id = 1;
+ROLLBACK;
+SELECT balance FROM log_demo_accounts WHERE id = 1;
+```
+
+两个查询依次返回 80 和 100。同一事务先能读到自己的修改，回滚后恢复原值。这个实验验证 SQL 的事务结果，并没有直接展示磁盘上的 undo 文件布局。
+
+undo 还供一致性读构造旧版本。事务提交后，其他活跃快照可能仍需要修改前的数据，相关更新 undo 就不能立即回收。哪些版本对哪个事务可见，由 [MVCC](../transaction/mvcc-read-view-consistent-read.mdx#2-read-view-描述快照建立时的事务状态) 的 Read View 规则判断；本文只区分日志职责，不重复那套可见性算法。
+
+普通持久表的 undo 页面本身也需要崩溃恢复保护，相应修改会产生 redo。undo 不是“只存在内存中的回滚备忘录”。用户临时表使用的临时 undo 有不同的恢复要求，不宜把临时表机制直接套到持久表。
+
+## 5. binlog 与事务提交 {#binlog-与事务提交}
+
+binlog 记录数据库变更事件，例如建表和行修改，供副本重放或在恢复备份后继续应用后续变更。日志的语句、行与混合格式见 [MySQL 复制](../replication.mdx#日志格式)。
+
+对于普通 InnoDB DML 事务，事件先在事务缓存中组织，提交时作为事务写入 binlog；事务回滚时，相应可回滚修改不会作为已提交事务留下。不能将这个结论推广到有隐式提交的 DDL 或不可回滚的非事务表修改。
+
+保存 binlog 也不等于保存了可独立启动的完整数据库。按时间点恢复需要基线备份及之后连续、完整的日志；副本能否查询到变化，还要经过接收与应用。恢复与复制的条件分别见 [灾难恢复](../../../system-design/availability/high-availability-backup-rto-rpo.mdx) 和 [MySQL 复制](../replication.mdx#日志与线程)。
+
+### 5.1 内部两阶段提交 {#内部两阶段提交}
+
+MySQL Server 需要让 binlog 的提交事实与 InnoDB 的事务结果一致。若先让 InnoDB 提交、随后在 binlog 写成之前崩溃，副本或日志恢复就可能缺少已经生效的变更；若 binlog 已完整记录，InnoDB 却简单回滚，同样会产生分歧。
+
+**内部两阶段提交**让 InnoDB 先进入可恢复的准备状态，再用协调日志决定最终结果。对启用 binlog 的普通 InnoDB 事务，可以沿下面的逻辑顺序理解：
+
+1. InnoDB 完成修改并进入 **prepare** 状态，保留足够的恢复信息，此时还没有最终提交。
+2. Server 写入事务的 binlog 事件及提交标识，并按配置完成日志同步。
+3. Server 通知 InnoDB 完成提交，再向客户端返回结果。
+
+这是一条解释恢复决策的逻辑链。实际执行会有组提交、多个事务的阶段交错和不同刷盘配置，不能把它理解成每个事务独占三次磁盘写入。这里的内部协调也不要求应用为普通事务发送 `XA START`、`XA PREPARE` 等命令。
+
+### 5.2 prepare 状态的恢复决策 {#prepare-状态的恢复决策}
+
+假设日志同步策略与存储保证都满足要求，对崩溃时处于内部 prepare 状态的事务，恢复需要核对有效 binlog 中的事务标识：
+
+| 恢复时可以确认的状态 | 处理方向 | 原因 |
+| --- | --- | --- |
+| InnoDB 已 prepare，但有效 binlog 没有该事务的完整提交记录 | 回滚这个未完成事务 | 尚未形成可依赖的提交决定 |
+| InnoDB 已 prepare，且有效 binlog 有完整提交记录 | 完成 InnoDB 提交 | 提交决定已经记录，不能随意撤销 |
+| 事务已经完成提交，但客户端没有收到回复 | 数据库保留提交结果，应用核对业务结果 | 响应是否到达不决定数据库是否提交 |
+
+检查的是有效的完整事务记录及其标识，不是“在文件里搜到了某条 SQL”。尾部不完整日志需要按恢复规则处理。客户端遇到提交断线时，仍应通过业务唯一标识核对，不能盲目重做一次扣款。
+
+### 5.3 持久化条件 {#持久化条件}
+
+提交协调不能代替刷盘。`innodb_flush_log_at_trx_commit=1` 要求提交时写出并同步 redo，`sync_binlog=1` 要求每组 binlog 提交同步磁盘；组提交可以让多个事务共享同步开销。若修改这些策略，就必须同时说明进程崩溃、操作系统崩溃或掉电时允许丢失什么。
+
+配置 0、1、2 的具体区别与后台刷盘周期统一见 [数据库事务的双 1 配置](../transaction/index.mdx#双-1-配置)。即使使用双 1，保证仍依赖操作系统和存储兑现同步；磁盘永久损毁需要副本与备份保护。
+
+## 6. 崩溃恢复的边界 {#崩溃恢复的边界}
+
+redo 可能在事务提交前写出，未提交事务改过的页面也可能已经刷盘，只要满足 WAL 条件。因而恢复不是“把日志里每条修改都当作成功事务再执行一次”。
+
+恢复会利用 checkpoint 之后需要的 redo 修复页面状态，再结合事务状态和提交协调信息确定结果。已决定提交的事务完成提交，未提交且没有提交决定的事务利用 undo 撤销。部分回滚可以在服务器开始接受新连接后由后台继续执行，新请求仍可能与这些恢复中的事务发生锁冲突。
+
+这样理解，才能同时解释 redo 和 undo 的必要性：redo 先使页面回到可继续处理的状态，其中可能包含未提交修改；undo 再按事务结果撤销不应生效的部分。redo 不需要只记录成功事务，undo 也不能替代 redo 修复尚未写完整的数据页。
+
+这个过程针对日志与数据文件仍可用的故障恢复。误删除本身是一个正常提交，通常也会进入 binlog 和副本；日志文件丢失、数据文件损坏或磁盘永久不可用，则需要备份恢复方案，不能宣称“有 redo 就一定能找回一切”。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 redo log、undo log 和 binlog 分别解决什么问题？ {#log-responsibilities}
+
+**考察重点**：日志所属层次、记录对象、恢复与回滚职责。
+
+**相关内容**：[三种日志的职责](#三种日志的职责)、[undo 与撤销](#undo-与撤销)、[binlog 与事务提交](#binlog-与事务提交)。
+
+<details>
+<summary>参考回答</summary>
+
+**redo 支持 InnoDB 页面崩溃恢复，undo 支持撤销修改和一致性读的旧版本，binlog 保存 Server 层变更事件，服务复制、恢复与提交协调。**
+
+redo 不是原始 SQL 清单，也不只包含已提交事务。undo 在事务提交后仍可能被其他快照需要。binlog 可以按语句或行记录，不能替代存储引擎的页面恢复日志。
+
+</details>
+
+### 7.2 WAL 是什么，redo 与数据页的持久化顺序是什么？ {#wal-dirty-pages}
+
+**考察重点**：日志先行、脏页、日志持久化与数据文件的关系。
+
+**相关内容**：[redo 与 WAL](#redo-与-wal)、[持久化条件](#持久化条件)。
+
+<details>
+<summary>参考回答</summary>
+
+**WAL 是预写日志原则：数据页的修改落盘前，恢复这次修改所需的 redo 必须先持久化。** 有了日志提供恢复依据，事务提交不必同时刷完全部数据页，但还要满足配置规定的日志同步和协调条件。
+
+崩溃时，已有数据文件加上必要 redo 可以补齐页面修改，避免每次提交等待全部分散页面写入。日志仍在进程内存或操作系统缓存时，不能直接宣称已具备同样的持久性。
+
+</details>
+
+### 7.3 redo 中包含未提交事务的修改，恢复后为什么不会把它们都当作成功？ {#redo-uncommitted}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：页面恢复与事务提交的区别，redo 与 undo 的配合。
+
+**相关内容**：[崩溃恢复的边界](#崩溃恢复的边界)。
+
+<details>
+<summary>参考回答</summary>
+
+**恢复页面不等于宣布事务提交，恢复流程还会根据事务状态和提交决定处理这些修改。** redo 可以重建包含未提交修改的页面；对于没有有效提交决定的事务，再利用 undo 撤销。
+
+处于内部 prepare 状态的事务，还需检查有效 binlog 是否已经记录提交。不能只按“有 redo”或“没有收到客户端成功响应”决定提交或回滚。
+
+</details>
+
+### 7.4 InnoDB 已 prepare，binlog 已持久化，但还没完成引擎提交就崩溃，怎样恢复？ {#prepare-binlog-recovery}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：内部提交协调、完整事务记录与恢复决策。
+
+**相关内容**：[内部两阶段提交](#内部两阶段提交)、[prepare 状态的恢复决策](#prepare-状态的恢复决策)。
+
+<details>
+<summary>参考回答</summary>
+
+**如果有效 binlog 中已有该事务完整的提交记录，恢复时会据此完成 InnoDB 提交。** prepare 状态保存了继续提交或撤销所需的信息，binlog 的有效事务标识提供协调依据。
+
+如果有效 binlog 没有完整提交记录，则回滚这个尚未完成的内部事务。上述判断依赖日志同步与存储可靠性，不能用“文件里出现过 SQL”替代完整性检查。
+
+</details>
+
+### 7.5 事务提交后为什么不能立即覆盖它产生的全部 redo？ {#checkpoint-space}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：事务提交、脏页持久化、检查点和日志空间回收。
+
+**相关内容**：[LSN 与 checkpoint](#lsn-与-checkpoint)。
+
+<details>
+<summary>参考回答</summary>
+
+**因为提交时相关数据页可能尚未落盘，崩溃恢复仍然需要这部分 redo。** 只有页面刷写使恢复起点能够前移，checkpoint 才能推进，不再需要的旧日志空间才能按规则复用。
+
+日志产生快于脏页刷写时，检查点落后会带来空间压力。增大容量可以缓冲突发，持续的存储瓶颈仍要解决。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [MySQL 8.0：Redo Log](https://dev.mysql.com/doc/refman/8.0/en/innodb-redo-log.html)
+- [MySQL 8.0：Undo Logs](https://dev.mysql.com/doc/refman/8.0/en/innodb-undo-logs.html)
+- [MySQL 8.0：InnoDB Multi-Versioning](https://dev.mysql.com/doc/refman/8.0/en/innodb-multi-versioning.html)
+- [MySQL 8.0：The Binary Log，事务缓存与崩溃提交协调](https://dev.mysql.com/doc/refman/8.0/en/binary-log.html)
+- [MySQL 8.0：InnoDB Recovery](https://dev.mysql.com/doc/refman/8.0/en/innodb-recovery.html)
+- [MySQL：MySQL 8.0 New Lock free, scalable WAL design](https://dev.mysql.com/blog-archive/mysql-8-0-new-lock-free-scalable-wal-design/)
+- [MySQL：InnoDB Clone and page tracking，WAL 与 LSN](https://dev.mysql.com/blog-archive/innodb-clone-and-page-tracking/)
+- [MySQL 8.0：innodb_flush_log_at_trx_commit](https://dev.mysql.com/doc/refman/8.0/en/innodb-parameters.html#sysvar_innodb_flush_log_at_trx_commit)
+- [MySQL 8.0：sync_binlog](https://dev.mysql.com/doc/refman/8.0/en/replication-options-binary-log.html#sysvar_sync_binlog)

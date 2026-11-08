@@ -1,0 +1,364 @@
+---
+title: Flutter 平台通信
+description: 理解 MethodChannel、EventChannel、消息编码与线程，处理错误返回、插件生命周期和跨平台验证。
+knowledge:
+  id: mobile.flutter.platform-channels
+---
+
+**Flutter 平台通道**在 Dart 与宿主平台之间传递编码后的消息，让 Flutter 调用 Android、iOS 的原生能力，或接收原生事件。两侧看起来像在调用方法，实际交换的却是通道名称、方法名称、参数和回复，并不共享任意语言对象。
+
+平台调用的难点不只在于“连通”：还要约定类型与错误、确认执行线程、管理监听资源，并验证原生实现。本文以 Flutter 3.24.3 的通道机制为基线。
+
+## 1. 面试核心 {#core}
+
+- **通道把 Dart 与宿主平台连接起来，方法调用仍以消息传输**。两侧需要匹配通道名、编码器和协议；这不是默认跨进程 RPC。[卡](#communication)
+- **MethodChannel、EventChannel 和 BasicMessageChannel 分别适合方法请求、事件流和自定义消息**。选择由交互语义决定，不由消息是否是字符串决定。[卡](#channel-types)
+- **标准编码只支持约定的值类型及其组合**。泛型声明不能让任意对象自动序列化，也不会替代接收后的类型检查。[卡](#codec)
+- **正常值、平台错误和未实现方法是不同结果**。成功返回 null 不等于方法不存在；双方要约定哪些空值和错误是合法业务结果。[卡](#errors)
+- **消息异步不表示处理工作自动离开主线程**。默认处理线程、TaskQueue、UI API 的线程要求和结果回复能力需要分别判断。[卡](#threads)
+- **FIFO 保证不能推出异步任务按发送顺序完成**。超时停止等待也不等于原生任务已经取消，重试副作用操作要另有约束。[卡](#ordering)
+- **EventChannel 的监听与取消对应资源建立和释放**。页面订阅、共享流和原生监听源应有明确拥有者，不能只停止更新 UI 却保留传感器或回调。[卡](#events)
+- **插件生命周期与 Activity 生命周期不同**。引擎分离、配置变化、权限结果和多引擎都需要处理，Dart 替身测试不能证明这些原生行为正确。[卡](#lifecycle)
+
+## 2. 消息通道的职责 {#消息通道的职责}
+
+### 2.1 从方法名到原生处理器 {#从方法名到原生处理器}
+
+**BinaryMessenger** 负责在通道上收发二进制消息。MethodChannel 在它上面增加方法调用协议：编码方法名与参数，发送后等待回复，再把成功值或错误交给调用者。
+
+一次典型请求会经历：Dart 编码调用 → messenger 与引擎传递消息 → 原生处理器解码和执行 → 编码回复 → Dart 完成对应 Future。编码器和方法协议必须匹配，仅仅让两侧使用相同通道名还不够。
+
+通道名在相应 messenger 的通信范围内标识通道。同一侧重复用相同名称注册处理器可能覆盖原处理器或干扰通信，因此通常使用有业务含义的命名空间。多个 FlutterEngine 各自具有通信上下文，不能把某个引擎的 messenger 当成全应用永久通用的对象。
+
+宿主代码通常与 Flutter 运行在同一个应用进程里；如果原生能力再通过 Binder 或系统服务访问其他进程，那是后续平台机制。不要因为“跨 Dart 和 Kotlin”就直接把整次调用解释成进程间通信。
+
+### 2.2 三类通道按交互方式划分 {#三类通道按交互方式划分}
+
+| 通道 | 交互方式 | 示例 |
+| --- | --- | --- |
+| MethodChannel | 方法名、参数与一次回复，也可以由原生调用 Dart 处理器 | 查询能力、执行操作 |
+| EventChannel | 建立监听后持续接收事件、错误或结束 | 传感器、播放状态变化 |
+| BasicMessageChannel | 发送编码消息并可取得回复，消息含义由双方约定 | 自定义同步协议 |
+
+MethodChannel 也可以接收原生发起的方法调用，BasicMessageChannel 也可以返回回复；不能把它们粗略分成“只能 Dart 调原生”和“只能原生调 Dart”。EventChannel 则进一步规定了 listen/cancel 等流生命周期协议。
+
+**Pigeon** 根据接口定义生成双方通信代码，减少手写方法名、字段和类型转换的重复工作。它不能替代平台权限、线程与生命周期处理；生成端和使用端仍需保持协议一致。
+
+**FFI** 面向 Dart 与具有兼容本地接口的代码之间的调用，适合相应本地库场景；它不自动提供 Android Activity 或 iOS 控制器的生命周期管理。平台通道、FFI 和平台视图各自解决不同问题，不能只用“都能调用原生”把它们视作完全等价。
+
+## 3. 消息编码与方法结果 {#消息编码与方法结果}
+
+### 3.1 类型必须能被双方编码器理解 {#类型必须能被双方理解}
+
+**StandardMessageCodec** 定义基础值如何编码，包括 null、布尔、数值、字符串、字节数据，以及受支持值组成的列表和映射。任意 Dart 类实例、闭包和循环对象图不能直接当作标准消息发送。
+
+**StandardMethodCodec** 使用消息编码器处理方法参数与结果，并增加方法调用和成功、错误回复的封装。下面的对应关系有助于理解接收端实际拿到什么：
+
+| Dart 值 | Android 接收侧 | iOS 接收侧 |
+| --- | --- | --- |
+| String | String | NSString / Swift 桥接字符串 |
+| int | 能放入 32 位时为 Integer，否则为 Long | 对应整数的 NSNumber |
+| Uint8List | byte[] | FlutterStandardTypedData |
+| List、Map | 列表、映射容器 | NSArray、NSDictionary |
+| null | null | 顶层 nil，容器内使用相应空值表示 |
+
+不要把接收到的数值全部强制转成某一种原生整数类型，也不要假设 Map 的泛型信息经过编码后原样保留。数据接收后需要检查实际字段、范围和类型；路径字符串只传递文本，不代表对方自动得到读取该文件的权限。
+
+大图片、音视频帧等数据还涉及编码、复制、消息队列与生命周期成本。应根据需要选择批量、降频、文件或其他平台机制，并测量实际成本，不能承诺普通通道消息天然零复制。
+
+### 3.2 区分成功、错误与未实现 {#区分成功错误与未实现}
+
+以 Android 的 MethodChannel.Result 为例，一次调用最终应选择一个完成路径：
+
+| 原生结果 | Dart 侧含义 |
+| --- | --- |
+| success(value) | Future 正常完成，value 可以是 null |
+| error(code, message, details) | Future 以 PlatformException 失败 |
+| notImplemented() | 普通 MethodChannel 调用得到 MissingPluginException |
+
+iOS 的对应方式是 FlutterResult 返回正常值、FlutterError 或 FlutterMethodNotImplemented。错误 details 本身也必须能被编码，不能直接放入任意原生异常对象。
+
+没有注册处理器、通道名不匹配和原生明确返回未实现，都可能表现为 MissingPluginException，应结合注册流程与日志定位。业务拒绝、权限不足和输入不合法则应使用明确错误码，不能一律报告“插件缺失”。
+
+正常返回 null 与未实现是不同的消息结果。调用端使用 `invokeMethod<String>` 也不代表原生一定返回字符串；实际类型不匹配时仍会产生运行时错误。
+
+## 4. 一个可核验的调用协议 {#可核验的调用协议}
+
+### 4.1 Dart 调用端 {#Dart调用端}
+
+下面用 greet 演示方法名、参数和结果约定。真实项目无需为了字符串拼接跨平台；这里保留一个没有权限和硬件依赖的处理逻辑，便于单独验证通信协议。
+
+```dart
+import 'package:flutter/services.dart';
+
+class NativeGreeting {
+  NativeGreeting({MethodChannel? channel})
+      : _channel = channel ?? const MethodChannel('coding101.example/greeting');
+
+  final MethodChannel _channel;
+
+  Future<String> greet(String name) async {
+    final result = await _channel.invokeMethod<String>('greet', {'name': name});
+    if (result == null) {
+      throw StateError('greet 必须返回字符串');
+    }
+    return result;
+  }
+}
+```
+
+NativeGreeting 不吞掉 PlatformException 或 MissingPluginException，调用者可以按场景处理。null 在编码层合法，但本协议规定 greet 必须返回字符串，因此包装层将它视为协议错误。
+
+### 4.2 Android 处理端 {#Android处理端}
+
+下面的 GreetingChannel 持有一个通道，注册处理器并提供 close 清理入口。创建它的插件或宿主对象负责在正确的引擎生命周期调用创建与关闭。
+
+```kotlin
+import io.flutter.plugin.common.BinaryMessenger
+import io.flutter.plugin.common.MethodChannel
+
+class GreetingChannel(messenger: BinaryMessenger) {
+    private val channel = MethodChannel(messenger, "coding101.example/greeting")
+
+    init {
+        channel.setMethodCallHandler { call, result ->
+            if (call.method != "greet") {
+                result.notImplemented()
+            } else {
+                val arguments = call.arguments as? Map<*, *>
+                val name = arguments?.get("name") as? String
+                if (name == null || name.isEmpty() || name.length > 40) {
+                    result.error("bad-arguments", "name 长度必须为 1 到 40", null)
+                } else {
+                    result.success("Hello, $name")
+                }
+            }
+        }
+    }
+
+    fun close() {
+        channel.setMethodCallHandler(null)
+    }
+}
+```
+
+发送 `{'name': 'Lin'}` 返回 `Hello, Lin`；空字符串、错误类型或过长输入返回 bad-arguments；未知方法返回未实现。这里的 Kotlin String.length 按 UTF-16 代码单元计数，不是用户眼中的字符数。需要跨平台一致的长度限制时，要把计数规则也写进协议。
+
+iOS 可以用相同通道名和方法协议实现 FlutterMethodChannel 的处理器，并使用 FlutterResult、FlutterError 和 FlutterMethodNotImplemented 对应三个结果分支。Dart 一侧不必知道宿主采用 Kotlin 还是 Swift，但协议约束必须一致。
+
+这个类没有直接持有 Activity，也没有启动后台任务。它只演示通信边界，不能据此推断真实相机、定位或支付插件已经处理了宿主生命周期。
+
+## 5. 异步、线程与完成顺序 {#异步线程与完成顺序}
+
+### 5.1 异步消息不自动创建后台任务 {#异步消息不自动创建后台任务}
+
+Dart 调用得到 Future，表示回复稍后到达，不代表原生处理器会自动在工作线程执行。默认通道处理通常位于平台主线程；耗时计算或阻塞 I/O 仍可能卡住 Android 或 iOS 的界面。
+
+支持 TaskQueue 的宿主接口可以为消息处理选择后台队列，但调用平台 UI API 时仍要回到它要求的线程。线程安排还要与共享状态和回调生命周期一起设计。
+
+平台主动向 Dart 发消息的通道调用需要遵守平台 API 的线程契约。也不要把“主线程调用”的要求误套到所有接口：例如 Android MethodChannel.Result 的 success、error 和 notImplemented 明确允许从任意线程回复。执行耗时工作、操作 UI、发送新调用和完成已有回复是不同动作。
+
+后台 Dart isolate 需要按要求初始化 BackgroundIsolateBinaryMessenger，并确认使用的插件支持该场景。它可以发请求并接收对应回复，但不能因此假设能接收原生主动推送的持续事件；Flutter 3.24.3 的后台 messenger 不支持注册这种消息处理器。
+
+### 5.2 收到顺序与完成顺序不同 {#收到顺序与完成顺序不同}
+
+内置 MethodChannel 保证消息按发送顺序被平台侧接收，但处理器可以启动异步任务。先收到的 A 如果等待较久，后收到的 B 完全可能先回复；FIFO 不能当作业务事务串行化保证。
+
+需要串行执行时，应在合适的一侧明确排队；需要保留最新结果时，应使用请求标识或版本判断。不能因为两个调用写在相邻行，就假设回复一定保持同样顺序。
+
+`Future.timeout` 只给等待设置期限，源 Future 仍可能稍后完成，原生任务也可能继续。要取消实际工作，协议需要明确取消请求、请求标识、清理行为和取消后的回复规则。付款、写入等操作超时后，也不能无条件重试；应确认操作是否已发生，并使用幂等设计。
+
+异步路径要保证一次调用只完成一次。成功回调、失败回调、超时清理和宿主销毁可能相互竞争，不能让每条路径各自回复一次，也不能把异常日志输出后就忘记完成调用。
+
+## 6. 事件流与插件生命周期 {#事件流与插件生命周期}
+
+### 6.1 监听的开始和结束都需要跨越边界 {#监听开始和结束}
+
+**EventChannel** 在 Dart 建立广播流，监听激活时向原生发送 listen，最后一个监听取消时发送 cancel。原生 StreamHandler 应在开始监听时注册资源，在取消时注销，并正确处理重复建立和拆除。
+
+下面缓存同一个广播流并检查每个事件的类型。示例假定宿主已经实现 coding101.example/ticks 的 EventChannel；它本身不创建原生计时器。
+
+```dart
+class NativeTicks {
+  NativeTicks(this._channel);
+
+  final EventChannel _channel;
+
+  late final Stream<int> values = _channel.receiveBroadcastStream().map((event) {
+    if (event is! int) throw StateError('ticks 必须发送整数');
+    return event;
+  });
+}
+```
+
+同一个 NativeTicks 的多个消费者复用 values；各消费者仍负责取消自己的 StreamSubscription。共享服务则决定什么时候不再需要整个事件源，不能让某个页面退出就误杀其他页面的订阅，也不能不断为同名通道创建互相覆盖的接收者。
+
+原生事件可以报告错误或流结束。错误不一定表示流永久结束，调用者需要根据协议区分；订阅暂停也不等于原生设备停止采集，更不保证无限缓存不会增长。高频事件要考虑采样、合并、缓冲上限和丢弃策略。
+
+### 6.2 引擎、Activity 与资源拥有者 {#引擎Activity与资源拥有者}
+
+Android FlutterPlugin 的 onAttachedToEngine 提供引擎绑定与 messenger，onDetachedFromEngine 表示不能再继续使用这份绑定。相应通道、监听器和任务需要解除，不能在分离后继续访问旧引擎资源。
+
+需要 Activity 的插件还要实现相应的 ActivityAware 生命周期。屏幕旋转等配置变化可能使 Activity 分离并重新附加，但引擎继续存在；持有旧 Activity 或旧回调会造成泄漏或把结果交给错误的宿主。应用 Context 与 Activity 不能只因都能调用某些方法就互换。
+
+iOS 同样需要明确插件注册、通道处理器、通知或系统回调的拥有者，结束监听时移除资源，并检查闭包是否形成保留环。弹出系统界面、申请权限等行为还受宿主控制器和平台状态约束，不能只靠 Dart Widget 是否 mounted 判断原生操作可用。
+
+重新加载 Dart 代码也不等于重新安装了原生插件。修改 Kotlin、Swift 或插件注册后，应使用包含这些原生变更的构建验证，不能只观察热重载后的 Dart 页面。
+
+## 7. 通信验证的层次 {#通信验证的层次}
+
+验证应同时覆盖协议与宿主行为：
+
+- Dart 单元或 widget 测试检查方法名、参数、正常值、空值、错误和 UI 生命周期处理。
+- 编码测试检查实际字节如何被双方编解码，尤其数值、字节数组、嵌套结构和不支持类型。
+- 原生处理器测试检查输入验证、未知方法、一次回复、监听注销和线程安排。
+- 集成测试使用真实插件注册与宿主环境，验证权限、系统回调、应用前后台、Activity 重建和引擎分离等路径。
+
+替换 BinaryMessenger 可以隔离协议，但不会启动真正的 FlutterEngine，也不会验证系统权限。用 Dart 替身返回成功值更不能证明相机或定位已经工作。应把测试结果与经过的真实边界对应起来，而不是把一个绿色测试结果推广到全部平台能力。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 Flutter 怎样调用原生平台能力？ {#communication}
+
+**考察重点**：通信协议、编码传输和宿主实现。
+
+**相关内容**：[消息通道的职责](#消息通道的职责)
+
+<details>
+<summary>参考回答</summary>
+
+**可以通过平台通道把方法或消息发送给 Android、iOS 的宿主实现，再异步接收结果或事件。** 双方约定通道名、编码器、参数与错误，原生侧调用实际平台 API。Pigeon 可以生成相应通信代码；本地库也可能适合 FFI，但权限、线程与生命周期仍需分别处理，跨语言不等于默认跨进程。
+
+</details>
+
+### 8.2 MethodChannel、EventChannel 和 BasicMessageChannel 怎样选择？ {#channel-types}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：请求回复、事件生命周期与自定义协议。
+
+**相关内容**：[三类通道按交互方式划分](#三类通道按交互方式划分)
+
+<details>
+<summary>参考回答</summary>
+
+**方法请求用 MethodChannel，持续事件用 EventChannel，自定义消息协议可以用 BasicMessageChannel。** MethodChannel 可以双向发起调用，BasicMessageChannel 也支持回复；EventChannel 额外约定监听和取消。不能按字符串或数字类型来决定用哪种通道。
+
+</details>
+
+### 8.3 invokeMethod 指定了泛型，为什么仍可能出现类型错误？ {#codec}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：编码支持范围、接收类型与字段校验。
+
+**相关内容**：[类型必须能被双方编码器理解](#类型必须能被双方理解)
+
+<details>
+<summary>参考回答</summary>
+
+**泛型不能约束另一种语言实际发送的值，也不会让任意对象自动可编码。** 标准消息支持有限基础类型及容器，解码后还需检查字段和范围；原生发来整数而 Dart 要求字符串时，仍会在运行时失败。复杂类型应定义明确消息结构或使用生成接口。
+
+</details>
+
+### 8.4 返回 null、PlatformException 和 MissingPluginException 有什么区别？ {#errors}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：成功结果、错误协议与未实现分支。
+
+**相关内容**：[区分成功、错误与未实现](#区分成功错误与未实现)
+
+<details>
+<summary>参考回答</summary>
+
+**null 可以是正常成功值，PlatformException 表示平台通过错误协议报告失败，MissingPluginException 表示调用没有得到对应实现。** 未注册、名称不匹配或主动返回未实现都要结合日志区分。业务协议可以进一步规定某个方法不允许 null，但不能在编码层把 null 直接当成插件不存在。
+
+</details>
+
+### 8.5 平台通道是异步的，为什么仍可能卡住原生界面？ {#threads}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：消息等待、处理线程与 UI 约束。
+
+**相关内容**：[异步消息不自动创建后台任务](#异步消息不自动创建后台任务)
+
+<details>
+<summary>参考回答</summary>
+
+**Future 表示回复稍后到达，不代表处理器自动运行在后台。** 默认处理器可能在平台主线程，阻塞 I/O 或计算仍会卡住界面。需要按接口选择 TaskQueue 或工作线程，UI 操作回到要求的线程，回复方法则遵循自己的线程契约。
+
+</details>
+
+### 8.6 FIFO 能否保证请求按顺序完成，超时能否自动取消原生工作？ {#ordering}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：接收顺序、完成顺序与取消协议。
+
+**相关内容**：[收到顺序与完成顺序不同](#收到顺序与完成顺序不同)
+
+<details>
+<summary>参考回答</summary>
+
+**都不能直接保证。FIFO 约束接收顺序，异步任务仍可按不同顺序回复；Future.timeout 只限制等待，源工作可能继续。** 串行化、请求版本、实际取消和幂等重试都要由明确协议实现，同时保证每次调用只完成一次。
+
+</details>
+
+### 8.7 页面停止监听 EventChannel 后，原生资源怎样释放？ {#events}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：订阅拥有者、共享广播流与原生取消。
+
+**相关内容**：[监听的开始和结束都需要跨越边界](#监听开始和结束)
+
+<details>
+<summary>参考回答</summary>
+
+**消费者先取消自己的订阅，流不再需要监听时通过 cancel 通知原生，原生再注销事件源和释放资源。** 共享消费者要明确所有权，不能误停其他页面，也不能保留无用的系统监听。暂停订阅不等于原生停止采集，高频数据还需明确缓冲和丢弃规则。
+
+</details>
+
+### 8.8 FlutterPlugin 已绑定引擎，为什么不能永久保留当前 Activity？ {#lifecycle}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：引擎与宿主生命周期、重建和原生验证。
+
+**相关内容**：[引擎、Activity 与资源拥有者](#引擎Activity与资源拥有者)、[通信验证的层次](#通信验证的层次)
+
+<details>
+<summary>参考回答</summary>
+
+**引擎可以继续存在，而 Activity 因配置变化分离并重建。** 插件应清除旧引用、注销旧监听，并在重新附加时使用新绑定；引擎分离后也不能继续使用旧引擎资源。这些路径需要原生或集成环境验证，Dart 替身成功不能证明宿主重建正确。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+
+- [Flutter：Platform channels](https://docs.flutter.dev/platform-integration/platform-channels)
+- [Flutter：MethodChannel](https://api.flutter.dev/flutter/services/MethodChannel-class.html)
+- [Flutter：EventChannel](https://api.flutter.dev/flutter/services/EventChannel-class.html)
+- [Flutter：BasicMessageChannel](https://api.flutter.dev/flutter/services/BasicMessageChannel-class.html)
+- [Flutter：StandardMessageCodec](https://api.flutter.dev/flutter/services/StandardMessageCodec-class.html)
+- [Flutter：MethodChannel.invokeMethod](https://api.flutter.dev/flutter/services/MethodChannel/invokeMethod.html)
+- [Flutter：EventChannel.receiveBroadcastStream](https://api.flutter.dev/flutter/services/EventChannel/receiveBroadcastStream.html)
+- [Flutter Android：MethodChannel](https://api.flutter.dev/javadoc/io/flutter/plugin/common/MethodChannel.html)
+- [Flutter Android：MethodChannel.Result](https://api.flutter.dev/javadoc/io/flutter/plugin/common/MethodChannel.Result.html)
+- [Flutter Android：FlutterPlugin](https://api.flutter.dev/javadoc/io/flutter/embedding/engine/plugins/FlutterPlugin.html)
+- [Flutter Android：ActivityAware](https://api.flutter.dev/javadoc/io/flutter/embedding/engine/plugins/activity/ActivityAware.html)
+- [Flutter Android：EventChannel.StreamHandler](https://api.flutter.dev/javadoc/io/flutter/plugin/common/EventChannel.StreamHandler.html)
+- [Flutter：BackgroundIsolateBinaryMessenger](https://api.flutter.dev/flutter/services/BackgroundIsolateBinaryMessenger-class.html)
+- [Dart：Future.timeout](https://api.dart.dev/dart-async/Future/timeout.html)
+- [Flutter：Pigeon](https://pub.dev/packages/pigeon)
+- [Flutter：Isolates](https://docs.flutter.dev/perf/isolates)
+- [Flutter iOS：FlutterMethodChannel](https://api.flutter.dev/ios-embedder/interface_flutter_method_channel.html)
+- [Flutter iOS：FlutterStreamHandler](https://api.flutter.dev/ios-embedder/protocol_flutter_stream_handler-p.html)
+- [Flutter 3.24.3：platform_channel.dart](https://github.com/flutter/flutter/blob/3.24.3/packages/flutter/lib/src/services/platform_channel.dart)
+- [Flutter 3.24.3：message_codecs.dart](https://github.com/flutter/flutter/blob/3.24.3/packages/flutter/lib/src/services/message_codecs.dart)
+- [Flutter 3.24.3：后台 BinaryMessenger](https://github.com/flutter/flutter/blob/3.24.3/packages/flutter/lib/src/services/_background_isolate_binary_messenger_io.dart)
+- [Flutter Android：MethodCallHandler](https://api.flutter.dev/javadoc/io/flutter/plugin/common/MethodChannel.MethodCallHandler.html)
+- [Dart：StreamSubscription.pause](https://api.dart.dev/dart-async/StreamSubscription/pause.html)
+- [Dart：C interop](https://dart.dev/interop/c-interop)

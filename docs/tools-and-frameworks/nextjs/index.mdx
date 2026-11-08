@@ -1,0 +1,431 @@
+---
+sidebar_position: 1
+knowledge:
+  id: tools-and-frameworks.nextjs.index
+---
+
+# Next.js
+
+**Next.js** 是基于 React 的应用框架，组织文件路由、页面渲染、数据读取、构建与服务端入口。React 负责组件，Next.js 决定这些组件怎样与 URL、服务器和页面产物连接。
+
+准备使用过 Next.js 的项目时，先说明项目采用哪种路由、哪些页面提前生成、哪些数据按请求读取，以及修改后怎样让缓存失效。仅仅说“用了 SSR，利于 SEO”，还不足以解释实际请求链路。
+
+本文的可运行示例使用 **Next.js 16 App Router，并关闭 Cache Components**，沿用显式 `fetch` 缓存策略。Pages Router 的旧项目单独对照，不混用两套路由 API。SSR、SSG 与 hydration 的共同机制见 [Web 渲染模式](../../frontend/rendering/rendering-modes.mdx)。
+
+## 1. 面试核心 {#core}
+
+- **App Router 通过 page、layout、loading、error 等文件组织路由与边界，Pages Router 使用另一套页面和取数约定。** 回答框架问题先确认目录与版本。[卡](#framework-role)
+- **共享 layout 可以在站内导航时保留客户端组件状态，页面切换不等于整页刷新。** 页面首次 HTML、后续 RSC 请求和客户端交互应分开解释。[卡](#layout-navigation)
+- **Server Component 可以直接调用服务端数据层，Route Handler 则是供 HTTP 调用的接口。** 服务器内部复用函数通常不需要再请求自己的 API 路由。[卡](#data-boundary)
+- **服务端 fetch 的数据缓存、完整路由产物与客户端路由缓存是不同层。** “每次重新请求页面”不代表每次都重新读取上游。[卡](#cache-layers)
+- **router.refresh 会重新取得当前路由结果，但不会自动清除服务端缓存。** 数据修改后要按真正受影响的路径或数据标签失效缓存。[卡](#refresh-invalidation)
+- **use client 声明客户端模块边界，不等于该组件永远只在浏览器执行。** 浏览器专属 API、敏感数据和请求上下文都需要放对位置。[卡](#universal-code)
+- **加载、缺失资源与意外错误需要不同界面和处理方式。** 流式响应开始后，界面进入错误或缺失状态也不代表还能修改已发出的 HTTP 状态。[卡](#loading-errors)
+
+## 2. 两套路由与渲染约定 {#两套路由与渲染约定}
+
+| 事项 | App Router | Pages Router |
+| --- | --- | --- |
+| 页面入口 | `app/.../page.jsx` | `pages/...jsx` |
+| 动态路径 | 文件夹 `[slug]` | 文件名或文件夹 `[slug]` |
+| 共享布局 | `layout.jsx`，可以嵌套 | 通常由 `_app` 与页面布局组织 |
+| 服务端取数 | async Server Component、服务端数据函数 | `getServerSideProps`、`getStaticProps` 等页面导出 |
+| HTTP 接口 | `route.js` 中导出 GET、POST 等 | `pages/api` 中的处理器 |
+| 客户端路由 Hook | `next/navigation` | `next/router` |
+
+Pages Router 的 `getServerSideProps` 在请求时运行；`getStaticProps` 用于静态生成，可配合再验证；动态静态页面用 `getStaticPaths` 描述预生成路径。返回的页面 props 会传到浏览器，不能因为取数函数在服务器运行就把秘密字段放进去。
+
+App Router 页面默认是 Server Component，但它仍可能在构建时预生成，也可能在请求时运行。因此，**Server Component 的执行位置与页面生成时机是两个维度**。需要根据动态请求 API、取数策略和配置判断，不能只看组件有没有 `async`。
+
+为固定下文缓存行为，`next.config.mjs` 明确写出：
+
+```js
+export default { cacheComponents: false };
+```
+
+开启 Cache Components 的项目采用相应的缓存声明与边界，不能直接套用本文的全部路由配置结论。项目复盘时应报告真实配置，而不是背一个不带条件的“Next.js 默认缓存所有请求”。
+
+## 3. 布局、页面与客户端导航 {#布局页面与客户端导航}
+
+### 3.1 共享布局的状态 {#共享布局的状态}
+
+`layout` 是相应路由段共享的界面。站内导航只替换变化的部分时，共享布局中的客户端组件可以保留状态；硬刷新或切到不同根布局则不能依赖同样的保留行为。
+
+`app/ClientShell.jsx` 放一个暂存输入框和导航入口：
+
+```jsx
+'use client';
+import { useState } from 'react';
+import Link from 'next/link';
+import { useRouter } from 'next/navigation';
+
+export default function ClientShell() {
+  const [note, setNote] = useState('');
+  const router = useRouter();
+  return <header>
+    <nav>
+      <Link href="/courses/vue" prefetch={false}>Vue</Link>{' '}
+      <Link href="/courses/react" prefetch={false}>React</Link>{' '}
+      <Link href="/cached" prefetch={false}>缓存课程</Link>
+    </nav>
+    <label>临时笔记 <input value={note} onChange={e => setNote(e.target.value)} /></label>
+    <button onClick={() => router.refresh()}>刷新路由数据</button>
+  </header>;
+}
+```
+
+示例关闭预取，便于观察导航时的实际请求；项目是否预取应结合访问概率、网络与负载决定。普通页面导航优先保留 `Link` 的链接语义，必要的程序化跳转才使用 `router.push` 或 `replace`，并校验来自外部的目标地址。
+
+`app/layout.jsx` 提供根文档，并把客户端壳与服务器页面组合起来：
+
+```jsx
+import ClientShell from './ClientShell';
+
+export const metadata = { title: '课程示例', description: '课程内容与复习示例' };
+export default function RootLayout({ children }) {
+  return <html lang="zh-CN"><body>
+    <ClientShell />
+    {children}
+  </body></html>;
+}
+```
+
+在 Vue 页面输入笔记，再通过 `Link` 进入 React 页面，笔记仍在；整页刷新后它回到空字符串，因为这个 state 没有持久化。布局组件通过 `children` 组合服务器内容，不要求把整个页面树都标成客户端模块。
+
+### 3.2 请求与参数 {#请求与参数}
+
+首次访问可以收到可展示的 HTML，客户端交互组件随后 hydration。后续 App Router 导航可以请求 React Server Components 的结果，合并变化的路由片段，而不是重新下载整份文档。预取与缓存会影响哪些请求实际发生。
+
+动态段 `app/courses/[slug]/page.jsx` 接收 `params`。在本文版本中，页面的 `params` 与 `searchParams` 使用异步接口，应先 `await`；客户端读取位置则使用 `usePathname`、`useSearchParams` 等相应 API，不把 Pages Router 的 `router.query` 直接搬过来。
+
+## 4. 服务端数据与 HTTP 接口 {#服务端数据与http接口}
+
+### 4.1 服务端数据函数 {#服务端数据函数}
+
+先把公开课程读取放在 `lib/courses.js`。运行前设置 `COURSE_API_ORIGIN`，上游 `GET /courses/vue` 返回 `{"id":"vue","title":"Vue 基础"}` 这样的对象：
+
+```js
+import 'server-only';
+
+export async function getCourse(id, cache = 'no-store') {
+  const response = await fetch(
+    `${process.env.COURSE_API_ORIGIN}/courses/${encodeURIComponent(id)}`,
+    { cache }
+  );
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error(`Course upstream HTTP ${response.status}`);
+  const value = await response.json();
+  if (typeof value?.id !== 'string' || typeof value?.title !== 'string') {
+    throw new Error('Invalid course response');
+  }
+  return { id: value.id, title: value.title };
+}
+```
+
+这里区分资源不存在与上游失败，并只返回公开字段。`server-only` 用于在错误的客户端导入处暴露边界问题；它不验证访问权限，也不会让传入客户端的结果变成秘密。对于个人资源，数据函数还必须根据请求身份检查授权。
+
+服务器发出的 fetch 不会自动继承浏览器的完整 Cookie 与认证上下文。需要什么凭据应由服务端明确取得并按目标接口传递，不能把所有入站请求头不加选择地转发。
+
+### 4.2 页面直接读取数据 {#页面直接读取数据}
+
+`app/courses/[slug]/page.jsx` 调用服务端函数，并把标题同时用于页面元信息：
+
+```jsx
+import { notFound } from 'next/navigation';
+import { getCourse } from '../../../lib/courses';
+
+export async function generateMetadata({ params }) {
+  const { slug } = await params;
+  const course = await getCourse(slug);
+  return { title: course ? `${course.title} | 课程` : '课程不存在' };
+}
+
+export default async function CoursePage({ params }) {
+  const { slug } = await params;
+  const course = await getCourse(slug);
+  if (!course) notFound();
+  return <main><h1>{course.title}</h1><p>课程编号：{course.id}</p></main>;
+}
+```
+
+本例显式 `no-store`，按请求读取上游。页面与 `generateMetadata` 中相同的 GET fetch 可以在一次渲染过程中复用，避免重复上游读取；这不等于把结果长期缓存给后续访问者。
+
+独立数据可以并行启动，存在依赖的数据再顺序等待。不要为了统一形式，把可直接访问的数据层包装成对本应用 `/api` 的 HTTP 请求：它会增加一次调用，还使构建期读取依赖正在运行的本应用服务器。
+
+### 4.3 Route Handler {#route-handler}
+
+**Route Handler** 是接收 HTTP 请求并返回 Response 的服务端入口。浏览器或外部调用方需要课程 JSON 时，可以提供 `app/api/courses/[slug]/route.js`：
+
+```js
+import { getCourse } from '../../../../lib/courses';
+
+export async function GET(_request, { params }) {
+  const { slug } = await params;
+  if (!/^[a-z0-9-]+$/.test(slug)) {
+    return Response.json({ error: 'Invalid course ID' }, { status: 400 });
+  }
+  try {
+    const course = await getCourse(slug);
+    if (!course) return Response.json({ error: 'Not found' }, { status: 404 });
+    return Response.json(course, { headers: { 'Cache-Control': 'no-store' } });
+  } catch {
+    return Response.json({ error: 'Course service unavailable' }, { status: 502 });
+  }
+}
+```
+
+页面和接口共享函数，各自在边界上选择 UI 或 HTTP 状态。接口文件与 `page` 不能占用相同路由位置；接口也不是隐藏的内部函数，公开可调用的入口必须执行自己的输入校验与权限规则。
+
+上例服务公开读取，没有实现账号、写入和 CSRF 防护。Server Function／Server Action 同样是可能被调用的服务端入口，不能用“按钮没有展示”或“参数来自 React”代替授权。相关模块与数据传输边界见 [React Server Components](../react/server-components.mdx)。
+
+## 5. 缓存与失效 {#缓存与失效}
+
+### 5.1 缓存发生在哪一层 {#缓存发生在哪一层}
+
+| 层次 | 保存什么 | 不应推导出的结论 |
+| --- | --- | --- |
+| 渲染内请求复用 | 一次组件树渲染中相同请求的结果 | 不保证下次 HTTP 请求仍复用 |
+| 服务端数据缓存 | 显式缓存的数据请求结果 | 不等于浏览器 HTTP 缓存 |
+| 完整路由产物 | 可预生成路由的 HTML 与 RSC 结果 | 不代表每次访问都重新执行页面 |
+| 客户端路由缓存 | 导航过程中使用的路由片段 | 不等于服务器数据库的最新状态 |
+| HTTP/CDN 缓存 | 按缓存头等规则存放的响应 | 不自动了解业务记录什么时候变化 |
+
+本文配置下用 `cache: 'no-store'` 明确要求按请求取数，用 `force-cache` 明确选择数据缓存；`next.revalidate` 可以设置再验证策略，不能与相互冲突的 `no-store` 混用。Next.js 不同版本和缓存配置的默认行为有差异，复习时以项目的明确策略为准。
+
+`app/cached/page.jsx` 故意复用公开课程，便于观察缓存：
+
+```jsx
+import { notFound } from 'next/navigation';
+import { getCourse } from '../../lib/courses';
+
+export default async function CachedPage() {
+  const course = await getCourse('vue', 'force-cache');
+  if (!course) notFound();
+  return <main><h1>缓存课程：{course.title}</h1></main>;
+}
+```
+
+在构建时上游返回“Vue 基础”，之后把上游改成“Vue 进阶”。`/courses/vue` 的 no-store 页面可以读到新值，`/cached` 仍可能返回构建或缓存时的旧值。这是缓存策略的结果，不应先归因于 React 没有重新渲染。
+
+### 5.2 refresh 与再验证 {#refresh与再验证}
+
+`router.refresh()` 请求当前路由的新结果并合并 RSC 内容，可以保留不受影响的客户端状态，例如共享布局中的临时笔记。但它不会自动清除服务端数据缓存或完整路由缓存，因此可能仍拿到同一个旧标题。
+
+数据修改成功后，应按影响范围失效缓存。路径级失效使用 `revalidatePath`；多个页面共享同一类数据时，可以按标签组织失效。不同版本的标签失效与立即过期 API 有区别，不把它们都理解为“立即重建全部页面”。
+
+下面的 `app/api/revalidate-course/route.js` 只允许持有服务端约定令牌的调用方，使固定公开页面 `/cached` 失效：
+
+```js
+import { revalidatePath } from 'next/cache';
+
+export async function POST(request) {
+  const token = process.env.REVALIDATE_TOKEN;
+  if (!token || request.headers.get('authorization') !== `Bearer ${token}`) {
+    return Response.json({ error: 'Forbidden' }, { status: 403 });
+  }
+  revalidatePath('/cached');
+  return Response.json({ revalidated: true });
+}
+```
+
+这是固定路径的内部调用示例，不是账号系统。令牌只在服务端设置，不放进客户端组件或 `NEXT_PUBLIC_` 变量。Route Handler 中的调用标记路径待再验证，后续访问才触发相应更新；它不直接替所有已打开的浏览器刷新界面。
+
+只清服务器缓存时，客户端当前视图可能还没有新请求；只刷新客户端时，服务器又可能继续提供旧缓存。排查“修改成功但页面没变”时，要逐层确认，而不是连续调用所有刷新 API。
+
+### 5.3 请求上下文与个人数据 {#请求上下文与个人数据}
+
+读取请求 Cookie 的 `app/preferences/page.jsx` 可以按请求选择主题：
+
+```jsx
+import { cookies } from 'next/headers';
+
+export default async function PreferencesPage() {
+  const cookieStore = await cookies();
+  const theme = cookieStore.get('theme')?.value === 'dark' ? 'dark' : 'light';
+  return <main><h1>主题：{theme}</h1></main>;
+}
+```
+
+这个 Cookie 只决定显示偏好，不代表身份或权限。本文配置下，读取请求上下文会影响路由的动态渲染；同时仍需检查各数据函数与 HTTP 缓存策略。个性化结果不能误放进所有访问者共用的公开缓存，缓存键也不能漏掉影响结果的用户或租户条件。
+
+## 6. 加载、缺失与错误 {#加载缺失与错误}
+
+**loading 文件**为相应路由段建立加载边界。`app/courses/[slug]/loading.jsx` 可以在慢数据返回前提供提示：
+
+```jsx
+export default function Loading() {
+  return <p role="status">正在读取课程</p>;
+}
+```
+
+共享布局在等待期间仍可交互，导航也可以被另一个导航打断。加载提示是否实际可见，取决于预取、缓存和等待时长，不能要求每次点击都闪一次 loading。
+
+资源不存在时调用 `notFound()`，由 `app/courses/[slug]/not-found.jsx` 提供对应界面：
+
+```jsx
+export default function NotFound() {
+  return <main><h1>课程不存在</h1></main>;
+}
+```
+
+`notFound` 通过框架控制流终止当前渲染，不要用宽泛的 `catch` 把它吞掉并转换成普通错误。它与上游超时、服务器异常不是同一类结果。
+
+意外渲染错误由 `app/courses/[slug]/error.jsx` 提供错误边界。下面明确使用整页重载重新尝试：
+
+```jsx
+'use client';
+
+export default function CourseError() {
+  return <main>
+    <h1>课程暂时无法加载</h1>
+    <button onClick={() => window.location.reload()}>重新加载页面</button>
+  </main>;
+}
+```
+
+整页重载会丢失未持久化的客户端状态，实际项目可以使用对应版本的边界恢复接口，并保留必要草稿。错误边界不包住同一段中位于它上方的 layout；根布局错误需要相应的全局错误边界。它也不能替事件处理器或任意后台 Promise 自动处理所有异常。
+
+如果流式响应已经开始，随后才发现资源缺失或渲染失败，HTTP 状态已经无法修改。不要只看 `200` 就认为页面没有错误，也不能只通过页面文字推断接口状态。分别记录服务器异常、框架边界和客户端运行错误，并关联发布版本与请求。
+
+## 7. 项目问题的解释与验证 {#项目问题的解释与验证}
+
+项目里遇到问题，应按实际链路给证据。例如“更新课程后仍显示旧标题”，先记录数据是否更新、上游是否被再次读取、页面是不是预生成、浏览器是否发起新路由请求，最后再说明失效策略怎样修复了问题。
+
+同一段逻辑需要两端运行时，共享纯转换函数，平台操作通过明确入口传入。服务器从请求读取身份与 Cookie，浏览器从交互或客户端状态读取；共享函数不应直接假设存在 `window`，也不应把服务器秘密带进浏览器。`use client` 组件仍可能参与初始 HTML 的服务端生成，浏览器 API 通常放在 Effect 或事件中。
+
+性能验证使用实际生产构建。开发服务器的编译、热更新与缓存行为不能直接代表线上；也不能把“使用 Next.js”当成自动获得首屏优势。应检查初始 HTML、脚本量、服务端耗时、缓存命中、导航和交互表现，再说明框架选择满足了哪个项目约束。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 Next.js 在项目中解决了什么问题，App Router 与 Pages Router 有何区别？ {#framework-role}
+
+**考察重点**：React 与应用框架分工、路由模式、数据获取与项目选择。
+
+**相关内容**：[两套路由与渲染约定](#两套路由与渲染约定)。
+
+<details>
+<summary>参考回答</summary>
+
+**Next.js 把 React 组件与路由、渲染、服务端取数和构建组织起来，是否采用取决于项目需求。** App Router 使用 page、layout 和 Server Components 等约定；Pages Router 使用 pages、getServerSideProps、getStaticProps 等入口。回答项目选型时应说明具体模式、页面生成时机、缓存与部署需求，而不是把两套 API 混在一起。
+
+</details>
+
+### 8.2 为什么切换 Next.js 页面后，布局中的输入仍然保留？ {#layout-navigation}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：共享布局身份、客户端导航与整页刷新。
+
+**相关内容**：[共享布局的状态](#共享布局的状态)、[请求与参数](#请求与参数)。
+
+<details>
+<summary>参考回答</summary>
+
+**App Router 站内导航可以复用共享布局中的客户端组件，只替换变化的路由部分。** 因而局部 state 可以保留。这不是持久化，硬刷新或改变组件身份后仍可能重置。首次 HTML 与后续 RSC 导航请求不同，预取与客户端缓存还会影响实际请求数量。
+
+</details>
+
+### 8.3 Server Component 取数与 Route Handler 有什么区别？ {#data-boundary}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：服务器内函数复用、公开 HTTP 边界、输入与授权。
+
+**相关内容**：[页面直接读取数据](#页面直接读取数据)、[Route Handler](#route-handler)。
+
+<details>
+<summary>参考回答</summary>
+
+**Server Component 为渲染读取数据，Route Handler 为 HTTP 调用方提供接口。** 二者可以共享服务端数据函数，服务器内部通常不必绕到自己的 HTTP 接口。公开入口仍须校验输入与授权；数据在服务器取得，也不代表传给客户端的字段不可见。
+
+</details>
+
+### 8.4 页面每次都请求服务器，为什么还可能读到旧数据？ {#cache-layers}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：渲染内复用、数据缓存、完整路由与 HTTP 缓存。
+
+**相关内容**：[缓存发生在哪一层](#缓存发生在哪一层)。
+
+<details>
+<summary>参考回答</summary>
+
+**请求到达服务器，不代表服务器一定重新读取上游。** 它可能复用完整路由产物，也可能执行渲染但读取数据缓存；HTTP/CDN 还有自己的缓存层。应结合版本、Cache Components 配置、fetch 策略和请求日志定位。一次渲染中的重复请求合并则是另一种作用范围较小的复用。
+
+</details>
+
+### 8.5 router.refresh 与 revalidatePath 的作用有什么不同？ {#refresh-invalidation}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：客户端刷新、服务器失效、数据更新与界面更新。
+
+**相关内容**：[refresh 与再验证](#refresh与再验证)。
+
+<details>
+<summary>参考回答</summary>
+
+**refresh 重新请求当前路由结果，revalidatePath 在服务端使对应路径的缓存失效。** refresh 不自动清服务器缓存，所以可能继续得到旧结果；Route Handler 中的 revalidatePath 标记下次访问再验证，也不会主动刷新所有已打开页面。应在真实数据修改成功后按影响范围失效，并让需要更新的客户端取得结果。
+
+</details>
+
+### 8.6 同一段逻辑需要在浏览器和服务器执行，怎样处理不同平台的依赖？ {#universal-code}
+
+**考察重点**：纯逻辑与平台入口、请求上下文、浏览器 API 与秘密数据。
+
+**相关内容**：[服务端数据函数](#服务端数据函数)、[项目问题的解释与验证](#项目问题的解释与验证)。
+
+<details>
+<summary>参考回答</summary>
+
+**共享不依赖平台的计算，把身份、存储和网络上下文通过明确入口提供。** 服务器从请求取得必要信息，浏览器从交互或客户端状态取得。Client Component 仍可能在服务器参与初始渲染，不能在渲染阶段直接访问 window；服务端秘密不传入客户端 props，也不写入公开环境变量。
+
+</details>
+
+### 8.7 loading、not-found 和 error 分别处理什么，HTTP 200 能代表页面正常吗？ {#loading-errors}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：等待、缺失与意外错误，错误边界与流式响应。
+
+**相关内容**：[加载、缺失与错误](#加载缺失与错误)。
+
+<details>
+<summary>参考回答</summary>
+
+**loading 提供等待界面，not-found 表达资源缺失，error 处理边界内的意外渲染错误。** error 不覆盖同层上方的 layout，也不能捕获所有事件与后台异步错误。流式响应已经发送后，后续失败不能再修改 HTTP 状态，因此 200 不能单独证明页面正常，需关联服务端和客户端错误证据。
+
+</details>
+
+### 8.8 介绍一次 Next.js 项目问题时，怎样说明原因与修复有效？ {#project-debugging}
+
+**题型**：综合题
+
+**考察重点**：具体触发、链路证据、版本配置、修复与回归。
+
+**相关内容**：[项目问题的解释与验证](#项目问题的解释与验证)、[缓存与失效](#缓存与失效)。
+
+<details>
+<summary>参考回答</summary>
+
+**先说明触发条件和实际症状，再用请求、构建或运行证据定位原因，最后验证修复后的行为。** 例如旧数据问题要区分写入失败、上游读取、服务器缓存和客户端视图；修改策略后用生产构建检查首次访问、重复访问、数据更新和失败分支。没有亲自做过的优化不补造指标，框架概念应服务于真实问题解释。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+
+- [Next.js：Layouts and Pages](https://nextjs.org/docs/app/getting-started/layouts-and-pages)
+- [Next.js：Fetching Data](https://nextjs.org/docs/app/getting-started/fetching-data)
+- [Next.js：fetch](https://nextjs.org/docs/app/api-reference/functions/fetch)
+- [Next.js：Caching without Cache Components](https://nextjs.org/docs/app/guides/caching-without-cache-components)
+- [Next.js：useRouter](https://nextjs.org/docs/app/api-reference/functions/use-router)
+- [Next.js：revalidatePath](https://nextjs.org/docs/app/api-reference/functions/revalidatePath)
+- [Next.js：cookies](https://nextjs.org/docs/app/api-reference/functions/cookies)
+- [Next.js：Route Handlers](https://nextjs.org/docs/app/api-reference/file-conventions/route)
+- [Next.js：generateMetadata](https://nextjs.org/docs/app/api-reference/functions/generate-metadata)
+- [Next.js：loading](https://nextjs.org/docs/app/api-reference/file-conventions/loading)
+- [Next.js：error](https://nextjs.org/docs/app/api-reference/file-conventions/error)
+- [Next.js：notFound](https://nextjs.org/docs/app/api-reference/functions/not-found)
+- [Next.js：getServerSideProps](https://nextjs.org/docs/pages/building-your-application/data-fetching/get-server-side-props)
+- [Next.js：getStaticProps](https://nextjs.org/docs/pages/building-your-application/data-fetching/get-static-props)

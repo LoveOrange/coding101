@@ -36,6 +36,16 @@ export const sreInterviewRoadmap: InterviewRoadmapData = {
             {core: true, title: 'I/O 模型', href: '/docs/basic-knowledge/operating-system/io-models'},
             {core: false, title: 'I/O 多路复用', href: '/docs/basic-knowledge/operating-system/io-multiplexing'},
             {core: false, title: '文件描述符', href: '/docs/basic-knowledge/operating-system/file-descriptors'},
+            {
+              "title": "磁盘调度",
+              "href": "/docs/basic-knowledge/operating-system/disk-scheduling",
+              "core": false
+            },
+            {
+              "title": "线程池",
+              "href": "/docs/basic-knowledge/operating-system/thread-pools",
+              "core": false
+            }
           ],
         },
         {
@@ -58,6 +68,16 @@ export const sreInterviewRoadmap: InterviewRoadmapData = {
             {core: false, title: 'TCP 与 UDP', href: '/docs/basic-knowledge/network/tcp_udp'},
             {core: false, title: 'HTTP 版本、连接复用与超时', href: '/docs/basic-knowledge/network/http-versions-connection-reuse-timeouts'},
             {core: false, title: 'TLS', href: '/docs/basic-knowledge/network/tls'},
+            {
+              "title": "ARP",
+              "href": "/docs/basic-knowledge/network/arp",
+              "core": false
+            },
+            {
+              "title": "DHCP",
+              "href": "/docs/basic-knowledge/network/dhcp",
+              "core": false
+            }
           ],
         },
       ],
@@ -101,6 +121,11 @@ export const sreInterviewRoadmap: InterviewRoadmapData = {
             {core: true, title: 'Linux 常用命令与文件权限', href: '/docs/devops/linux/commands-permissions'},
             {core: true, title: '进程管理与信号', href: '/docs/devops/linux/processes-signals'},
             {core: false, title: 'Shell 脚本'},
+            {
+              "title": "命令行接口",
+              "href": "/docs/tools-and-frameworks/command-line-interface",
+              "core": false
+            }
           ],
         },
         {
@@ -298,6 +323,11 @@ export const sreInterviewRoadmap: InterviewRoadmapData = {
           articles: [
             {core: true, title: '基础设施即代码（Terraform、Ansible）'},
             {core: true, title: '云网络与权限（VPC、安全组、IAM）'},
+            {
+              "title": "云计算",
+              "href": "/docs/devops/cloud-computing",
+              "core": false
+            }
           ],
         },
       ],
@@ -330,7 +360,8 @@ export const sreInterviewRoadmap: InterviewRoadmapData = {
             interviewQuestions: ['Redis 的 RDB、AOF、复制和 Cluster 分别解决什么问题？', '主节点故障后怎样保证新主不丢数据并避免双主？'],
           },
           articles: [
-            {core: true, title: 'Redis 持久化与高可用', href: '/docs/basic-knowledge/nosql/redis/persistence'},
+            {core: true, title: 'Redis 持久化', href: '/docs/basic-knowledge/nosql/redis/persistence'},
+            {core: true, title: 'Redis 高可用', href: '/docs/basic-knowledge/nosql/redis/high-availability'},
             {core: true, title: '主备复制', href: '/docs/system-design/distributed-system/primary_backup_replication'},
             {core: false, title: 'Kafka 与 RabbitMQ', href: '/docs/basic-knowledge/middleware/kafka-rabbitmq-queue-semantics'},
           ],

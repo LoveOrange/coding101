@@ -1,0 +1,198 @@
+---
+knowledge:
+  id: basic-knowledge.cpp.object-lifetime
+  type: concept
+description: "区分 C++ 对象生命周期与存储期，解释构造析构顺序、new/delete、malloc/free、RAII，以及构造失败和异常展开中的资源释放。"
+keywords: [C++ 生命周期, RAII, 构造析构, new malloc, 异常安全]
+---
+
+# C++ 对象生命周期
+
+**对象生命周期**描述一个对象何时成为可以使用的对象、何时结束；**存储期**描述它占用的存储何时存在。两者不能混为一谈：拿到一块内存不等于已经构造好对象，析构对象也不一定立即释放那块内存。理解这个区别，才能解释 `new`、`delete`、构造失败和 RAII。本文以 C++17 为准。
+
+## 1. 面试核心 {#core}
+
+- 对象需要满足存储、对齐和初始化等条件才能正常使用，**指针还保存地址不代表对象仍然存活**。
+- 构造先处理基类和成员，再执行构造函数体；**成员按声明顺序初始化，销毁按相反顺序进行**。[卡](#construction-order)
+- `new` 表达式负责取得存储并初始化对象，`delete` 表达式负责销毁并释放，**不能与只管理原始存储的 `malloc/free` 随意混用**。[卡](#new-malloc)
+- **RAII 把资源释放绑定到拥有者对象的析构**，因此正常返回和可进行栈展开的异常路径都能复用同一套清理逻辑。[卡](#raii-exception)
+- 构造函数抛异常时，**已经构造完成的基类和成员会被清理，未完成对象自身的析构函数不会执行**；裸资源需要提前交给 RAII 成员持有。
+
+## 2. 存储期与对象存续 {#存储期与对象存续}
+
+C++ 常用的存储期有四类：
+
+| 存储期 | 例子 | 主要边界 |
+| --- | --- | --- |
+| 自动存储期 | 函数内的普通局部对象 | 进入相应执行路径时初始化，离开作用域时销毁 |
+| 静态存储期 | 全局对象、局部 `static` 对象 | 存储持续到程序结束，初始化时机另有规则 |
+| 线程存储期 | `thread_local` 对象 | 对应线程存续期间拥有存储，按线程初始化和销毁 |
+| 动态存储期 | 普通 `new` 创建的对象 | 不随创建它的局部指针离开作用域自动销毁 |
+
+“局部变量在栈上，动态对象在堆上”可以帮助理解某些实现，但不是所有语言行为的定义。编译器可以优化实际存储位置，变量的作用域与对象的存续规则仍然要保持。
+
+对于普通类对象，初始化完成后才能按完整对象使用；具有非平凡析构函数的类对象，其生命周期在析构函数调用开始时结束，析构过程本身另有访问规则。面试通常不需要背所有特殊情况，但要知道已经被销毁的对象不能因为存储尚未覆盖就继续访问。
+
+动态对象与局部指针尤其容易混淆：局部指针离开作用域，只销毁指针变量，不会自动执行它指向对象的析构。反过来，动态对象已被 `delete` 后，指针变量仍可能存在，只是它已经不能用来访问原对象。
+
+## 3. 构造与析构顺序 {#构造与析构顺序}
+
+初始化列表是给成员指定初始值的位置，不能重新规定成员的初始化顺序。一般情况下，虚基类先由最派生类初始化，然后按声明顺序初始化直接基类，再按类内声明顺序初始化非静态成员，最后执行构造函数体。
+
+```cpp
+#include <iostream>
+
+struct Part {
+    const char* name;
+    explicit Part(const char* value) : name(value) {
+        std::cout << "+" << name << '\n';
+    }
+    ~Part() { std::cout << "-" << name << '\n'; }
+};
+
+struct Screen {
+    Part first;
+    Part second;
+    Screen() : first("first"), second("second") {
+        std::cout << "+screen\n";
+    }
+    ~Screen() { std::cout << "-screen\n"; }
+};
+
+int main() { Screen screen; }
+```
+
+输出依次为 `+first`、`+second`、`+screen`、`-screen`、`-second`、`-first`。析构函数体先执行，然后成员按逆序销毁，最后再销毁相应基类部分。这样，析构函数体运行时仍能使用成员完成清理。
+
+如果把初始化列表写成 `second("second"), first("first")`，仍会先初始化 `first`。当一个成员的初始值依赖另一个成员时，必须检查类内声明顺序，不能只检查初始化列表从左到右是否正确。
+
+## 4. 分配、初始化与释放 {#分配初始化与释放}
+
+`new T(args)` 是一个表达式，通常先调用分配函数取得存储，再在其中初始化 `T`，最后返回指针。`operator new` 则是其中可被调用的分配函数，两者不是同义词。类似地，`delete` 表达式会调用析构和对应的释放函数，`operator delete` 本身负责释放存储。
+
+| 创建方式 | 对象初始化 | 对应处理 |
+| --- | --- | --- |
+| `new T(args)` | 执行相应初始化，类类型会调用构造函数 | `delete pointer` |
+| `new T[n]` | 按数组规则初始化元素 | `delete[] pointer` |
+| `std::malloc(bytes)` | 不调用 C++ 类构造函数 | `std::free(pointer)`；类对象生命周期需另处理 |
+| placement new | 在调用方提供的存储中构造 | 显式结束对象生命，存储按其原来来源管理 |
+
+`new int` 和 `new int{}` 也不同：前者没有给这个标量提供确定的初始值，后者得到 `0`。分配并不意味着所有字节自动清零。
+
+不要混用 `new/free`、`malloc/delete`，也不要把 `new T[n]` 配成普通 `delete`。这些不匹配不能用“底层反正都是内存”解释为安全。普通抛异常形式的 `new` 分配失败时会抛 `std::bad_alloc`；`malloc` 失败则返回空指针。使用 `std::nothrow` 的 `new` 需要另按其接口处理。
+
+placement new 用来说明存储与对象的区别，但日常业务优先让容器和所有权对象管理这些步骤：
+
+```cpp
+#include <cassert>
+#include <new>
+
+struct Item {
+    int value;
+    explicit Item(int number) : value(number) {}
+    ~Item() {}
+};
+
+int main() {
+    alignas(Item) unsigned char storage[sizeof(Item)];
+    Item* item = new (storage) Item(7);
+    assert(item->value == 7);
+    item->~Item();
+    // Item 已销毁；storage 仍存在，直到离开 main。
+    // 不能对 item 调用 delete：存储来自局部数组。
+}
+```
+
+`alignas(Item)` 保证这块存储适合放 `Item`，placement new 返回可用对象指针。显式析构后不再读取 `item->value`，也不对局部数组来源的内存调用 `delete`。
+
+## 5. RAII 与异常路径 {#raii-与异常路径}
+
+**RAII**（Resource Acquisition Is Initialization，资源获取即初始化）让一个对象承担资源所有权，在成功构造时建立可用状态，在析构时释放资源。这里的资源不只包括内存，还可以是锁、文件或系统句柄。
+
+以互斥锁为例，`std::lock_guard` 构造时加锁，析构时解锁：
+
+```cpp
+#include <mutex>
+#include <stdexcept>
+
+std::mutex mutex;
+
+void update(bool fail) {
+    std::lock_guard<std::mutex> guard(mutex);
+    if (fail) {
+        throw std::runtime_error("update failed");
+    }
+    // 在锁保护下完成更新。
+}
+
+int main() {
+    try { update(true); }
+    catch (const std::runtime_error&) {}
+    update(false);
+}
+```
+
+第一次调用抛异常时，异常向外传播会销毁已构造的 `guard`，从而释放锁；第二次调用仍能完成。如果改成手写 `lock()` 和末尾 `unlock()`，异常路径就可能越过解锁语句。
+
+RAII 依赖正常的对象销毁或异常展开，不保证在进程被强制终止、`std::abort` 等情况下执行所有析构。它也不会自动决定共享所有权、处理数据竞争或回滚已经发送的网络请求。
+
+### 5.1 构造失败会清理什么？ {#构造失败会清理什么}
+
+构造函数抛出异常时，最外层对象没有完成构造，因此不会调用它自己的析构函数。已经成功构造的成员与基类会按相应规则销毁；若是普通 `new` 表达式进行的构造，取得的对象存储也会通过对应的释放路径回收。
+
+如果构造函数先取得一份裸资源，再在后续步骤抛异常，而没有把资源交给已经构造好的 RAII 成员，那么对象自身析构不执行，这份资源可能泄漏。让成员直接使用 `std::unique_ptr`、容器或专门的资源包装对象，可以让清理与构造进度对应。
+
+### 5.2 析构函数能抛异常吗？ {#析构函数能抛异常吗}
+
+资源释放应尽量设计成不向外抛异常。多数普通析构函数隐式具有不抛异常的约束，违反它会导致终止；即使显式允许抛异常，在另一个异常进行栈展开时再次逃出异常，也会触发 `std::terminate`。
+
+如果关闭文件等操作的失败需要业务处理，应提供显式的 `close()` 或提交方法，让调用者在对象仍可处理时检查结果；析构只做必要的最终清理。不要依赖析构异常通知用户关键业务失败。
+
+## 6. 面试题 {#面试题}
+
+### 6.1 构造函数和析构函数按什么顺序执行？ {#construction-order}
+
+**考察重点**：基类、成员、函数体和初始化列表的关系。
+
+**相关内容**：[构造与析构顺序](#构造与析构顺序)。
+
+<details>
+<summary>参考回答</summary>
+
+**构造先处理虚基类和直接基类，再按声明顺序初始化成员，最后进入构造函数体；销毁按相应的逆序进行。** 析构函数体先执行，再销毁成员和基类。成员顺序由类内声明决定，不受初始化列表书写顺序改变，因此成员之间的初始化依赖要按声明顺序检查。
+
+</details>
+
+### 6.2 new/delete 与 malloc/free 有什么区别？ {#new-malloc}
+
+**考察重点**：存储管理、对象初始化、失败方式和匹配关系。
+
+**相关内容**：[分配、初始化与释放](#分配初始化与释放)。
+
+<details>
+<summary>参考回答</summary>
+
+**`new/delete` 表达式管理对象的初始化与销毁，并调用对应的分配释放函数；`malloc/free` 主要提供原始存储管理，不调用类构造析构。** 普通 `new` 分配失败抛 `std::bad_alloc`，`malloc` 失败返回空指针。创建与释放必须匹配，数组 `new[]` 配 `delete[]`；placement new 的存储由外部提供，需要单独管理，不能直接按普通 `delete` 处理。
+
+</details>
+
+### 6.3 构造函数抛异常时会调用自身析构吗，RAII 如何避免泄漏？ {#raii-exception}
+
+**考察重点**：未完成对象、已完成成员和所有权。
+
+**相关内容**：[RAII 与异常路径](#raii-与异常路径)、[构造失败会清理什么](#构造失败会清理什么)。
+
+<details>
+<summary>参考回答</summary>
+
+**未完成构造的对象不会调用自身析构，但已经构造完成的基类和成员会被销毁。** 所以资源应尽早交给 RAII 成员，例如智能指针或容器，而不是指望对象自身析构清理构造过程中取得的裸资源。普通 `new` 的对象构造失败还会释放为该对象取得的存储，但它不会自动处理构造函数另外获得的所有外部资源。
+
+</details>
+
+## 7. 参考资料 {#参考资料}
+
+- [C++17 草案 N4659：Lifetime](https://timsong-cpp.github.io/cppwp/n4659/basic.life)
+- [C++17 草案 N4659：Initializing bases and members](https://timsong-cpp.github.io/cppwp/n4659/class.base.init)
+- [C++17 草案 N4659：New](https://timsong-cpp.github.io/cppwp/n4659/expr.new)
+- [C++17 草案 N4659：Delete](https://timsong-cpp.github.io/cppwp/n4659/expr.delete)
+- [C++ Core Guidelines：R.1，RAII](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#Rr-raii)

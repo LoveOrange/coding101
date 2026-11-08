@@ -17,6 +17,8 @@ keywords: ["Binary Search", "二分边界", "答案二分", "算法面试"]
 
 - 二分要求**判断结果分成连续的两段**。每次根据中点的判断排除一半候选，同时保证答案仍在剩下的区间里。
 - lower bound 返回**第一个大于等于目标的位置**。遇到相等值也要继续向左收缩，才能找到重复值的起点。[卡](#equal-value)
+- 用 Go 实现存在查找时，**先检查下标合法，再比较目标值**。返回第一个匹配位置还是任意位置、缺失用什么值表示，都要先约定。[卡](#go-binary-search)
+- 矩阵要先证明**按行展开后整体有序**；严格先升后降的数组则要**先找峰值，再分别查两段**，不能直接对整个数组套有序查找。[卡](#matrix-binary-search) [卡](#unimodal-binary-search)
 - upper bound 返回**第一个大于目标的位置**，两个边界之差就是目标出现的次数。[卡](#lower-upper-bound)
 - 答案二分在答案范围上搜索。范围宽度为 U、一次判定为 O(n) 时，**总成本是 O(n log U)**。
 
@@ -40,9 +42,139 @@ static int lowerBound(int[] a, int target) {
 
 每轮区间都会严格缩短，最后 `left == right`，两侧的条件拼在一起，`left` 就是第一个大于等于目标的位置。数组 `[1,3,3,7]` 查 3 返回 1，查 8 返回 4，空数组返回 0。
 
+### 2.1 Go 实现与存在检查 {#go实现与存在检查}
+
+在 Go 中，可以先找到 lower bound，再判断该位置是不是目标值。下面约定输入 `a` 已按非递减顺序排列，**找到时返回第一个匹配下标，找不到时返回 `-1`**。这是示例选择的接口约定；现场编码前，要先和面试官确认重复值与缺失值的返回要求。
+
+```go
+func binarySearch(a []int, target int) int {
+    left, right := 0, len(a)
+    for left < right {
+        middle := left + (right-left)/2
+        if a[middle] < target {
+            left = middle + 1
+        } else {
+            right = middle
+        }
+    }
+    if left < len(a) && a[left] == target {
+        return left
+    }
+    return -1
+}
+```
+
+循环与前面的 Java 实现维护同一个不变量。区别在返回前的存在检查：`left` 可能等于 `len(a)`，也可能指向一个比 `target` 大的值。Go 的 `&&` 先判断左侧，只有左侧为真才计算右侧，因此空切片和目标大于所有元素时都不会访问越界下标。
+
+| 输入 `a` | `target` | 返回值 | 原因 |
+| --- | --- | --- | --- |
+| `nil` 或空切片 | `3` | `-1` | 没有可匹配的元素 |
+| `[3]` | `3` | `0` | 唯一元素命中 |
+| `[1, 3, 3, 7]` | `3` | `1` | 返回第一个重复值的位置 |
+| `[1, 3, 3, 7]` | `1` / `7` | `0` / `3` | 首尾元素都能命中 |
+| `[1, 3, 3, 7]` | `0` / `2` / `8` | 均为 `-1` | 分别位于范围左侧、元素间隙和范围右侧 |
+
+实现不排序，也不修改输入，时间复杂度为 O(log n)，额外空间为 O(1)。非递减顺序是调用前提；函数没有额外扫描整个切片来检查顺序，否则这一步就会花 O(n) 时间。中点只对合法下标区间做减法，不计算 `target + 1`，因此目标为 `int` 的最大值或最小值时也不需要特殊加减。
+
+### 2.2 整体有序矩阵的虚拟下标 {#整体有序矩阵的虚拟下标}
+
+**整体有序矩阵**在这里指每行非递减，且下一行首值大于上一行末值。按行依次读取时，它就是一个有序序列，所以可以复用 lower bound，不必真的复制出一维数组。
+
+设矩阵有 `rows` 行、`cols` 列，虚拟下标 `k` 对应 `a[k/cols][k%cols]`。例如 `[[1,1,3],[5,7,9]]` 的虚拟下标 4 对应第 1 行第 1 列，值为 7。以下继续选择 Go 写参考实现；原题的矩阵查找要求本身并没有限定 Go。
+
+```go
+// rows 和 cols 由切片长度给出，因此非负。
+func checkedCellCount(rows, cols int) int {
+	maxInt := int(^uint(0) >> 1)
+	if cols != 0 && rows > maxInt/cols {
+		panic("matrix size overflows int")
+	}
+	return rows * cols
+}
+
+func matrixContains(a [][]int, target int) bool {
+	rows := len(a)
+	if rows == 0 {
+		return false
+	}
+	cols := len(a[0])
+	for _, row := range a {
+		if len(row) != cols {
+			panic("matrix must be rectangular")
+		}
+	}
+	if cols == 0 {
+		return false
+	}
+	count := checkedCellCount(rows, cols)
+	left, right := 0, count
+	for left < right {
+		middle := left + (right-left)/2
+		if a[middle/cols][middle%cols] < target {
+			left = middle + 1
+		} else {
+			right = middle
+		}
+	}
+	return left < count && a[left/cols][left%cols] == target
+}
+```
+
+`matrixContains` 返回目标是否存在，不修改输入。空矩阵和所有行均为空的矩阵返回 `false`；行长度不一致则拒绝，因为统一的除法和取模映射已经不成立。计算总元素数之前，`checkedCellCount` 用除法检查非负维度的乘积是否超出 `int`，避免先溢出再判断；读最终元素前也先检查 `left < count`。
+
+查找本身是 O(log(rows × cols))，额外空间 O(1)。这里逐行检查矩形形状还需要 O(rows)，所以包含这项防御检查的完整函数是 O(rows + log(rows × cols))；若输入接口已经保证矩形，可以省去该循环。函数不再扫描每个元素验证排序，行内与行间的有序关系仍是调用前提。
+
+只有“每行、每列各自有序”还不够。例如 `[[1,4],[2,5]]` 满足这两个条件，按行展开却是 `[1,4,2,5]`，上述函数可能漏掉存在的 4。必须先核对排序条件，不能看到二维数组就默认可以展平二分。
+
+### 2.3 严格单峰数组的分段查找 {#严格单峰数组的分段查找}
+
+先升后降的数组整体不是非递减序列，直接调用普通 `binarySearch` 会排除错误的一半。下面先明确教学前提：存在唯一峰值，峰值左侧严格递增、右侧严格递减；也允许峰值在端点，从而包含全升、全降及单元素。不同侧可以出现相同值，但同一侧不允许相等平台。
+
+比较相邻的 `a[middle]` 和 `a[middle+1]` 就能定位峰值：前者更小，说明仍在上坡，峰值一定在右侧；否则已经在峰值或下坡，峰值在中点或左侧。找到峰值后，左半段沿用前面的 `binarySearch`，右半段则反过来找第一个小于等于目标的位置。
+
+```go
+func unimodalSearch(a []int, target int) int {
+	if len(a) == 0 {
+		return -1
+	}
+	left, right := 0, len(a)-1
+	for left < right {
+		middle := left + (right-left)/2
+		if a[middle] < a[middle+1] {
+			left = middle + 1
+		} else {
+			right = middle
+		}
+	}
+	peak := left
+	if index := binarySearch(a[:peak+1], target); index >= 0 {
+		return index
+	}
+	left, right = peak+1, len(a)
+	for left < right {
+		middle := left + (right-left)/2
+		if a[middle] > target {
+			left = middle + 1
+		} else {
+			right = middle
+		}
+	}
+	if left < len(a) && a[left] == target {
+		return left
+	}
+	return -1
+}
+```
+
+`unimodalSearch` 返回第一个匹配下标，缺失或空输入返回 `-1`。它先查包含峰值的左段，再查不含峰值的右段，因此目标在两侧都出现时也会返回较小下标。例如 `[1,3,7,4,2]` 查 7 返回 2、查 4 返回 3、查 6 返回 `-1`；`[1,4,1]` 查 1 返回 0。找峰时 `left < right` 保证 `middle+1` 不越界，峰值位于任一端也能处理。
+
+在严格单峰前提下，找峰和两段查找各为 O(log n)，总时间仍为 O(log n)，额外空间 O(1)，不修改输入。函数没有 O(n) 扫描验证单峰条件，所以这一复杂度依赖调用者提供正确的输入。
+
+**原问只说“先升后降”，没有说明相等元素的规则，不能默认它已经保证严格单峰。** 若允许平台，`a[middle] == a[middle+1]` 不能说明峰值在哪一边。例如 `[1,1,1,1,2,1]` 会让上面的实现错误排除 2。此时需要先澄清约束；最直接的存在检查可以线性扫描，某些容许重复的二分变体也可能退化到 O(n)，不能沿用严格单峰的保证。
+
 ## 3. 左右边界与频次 {#左右边界与频次}
 
-upper bound 找的是第一个严格大于 `target` 的位置。只要把上面代码里的判断改成 `a[middle] <= target`，相等的元素就会被归到左侧，`left` 停在它们之后。
+upper bound 找的是第一个严格大于 `target` 的位置。只要把 Java `lowerBound` 中的判断改成 `a[middle] <= target`，相等的元素就会被归到左侧，`left` 停在它们之后。
 
 在 `[1,3,3,7]` 中，3 的 lower bound 是 1，upper bound 是 3。出现次数就是 `upper - lower = 2`，最后一次出现的位置是 `upper - 1`。如果两个边界相同，说明目标不存在。
 
@@ -100,7 +232,55 @@ lower bound 是第一个大于等于目标的位置，upper bound 是第一个�
 
 </details>
 
+### 6.3 用 Go 手写二分查找，找到数组中的目标值。 {#go-binary-search}
+
+**考察重点**：有序输入、区间不变量、缺失与重复值的返回语义。
+
+**相关内容**：[Go 实现与存在检查](#go实现与存在检查)、[半开区间不变量](#半开区间不变量)。
+
+<details>
+<summary>参考回答</summary>
+
+**先约定输入按非递减顺序排列，再用二分找到第一个大于等于目标的位置，最后检查是否命中。** 正文的 `binarySearch` 返回第一个匹配下标，找不到返回 `-1`；如果题目只要求任意一个匹配位置，也可以在中点相等时直接返回。
+
+以 `[left, right)` 为待检查区间，初始为 `[0, len(a))`。中点小于目标时更新 `left = middle + 1`，否则更新 `right = middle`。结束后先检查 `left < len(a)`，再判断 `a[left] == target`。这样空切片、重复元素、首尾命中和目标缺失都能按约定处理。
+
+</details>
+
+### 6.4 行内有序且下一行首值大于上一行末值，怎样查找矩阵中的目标？ {#matrix-binary-search}
+
+**考察重点**：整体单调性、虚拟下标映射、边界与总长度溢出。
+
+**相关内容**：[整体有序矩阵的虚拟下标](#整体有序矩阵的虚拟下标)。
+
+<details>
+<summary>参考回答</summary>
+
+**将矩阵视为按行排列的有序序列，虚拟下标 `k` 通过 `k/cols`、`k%cols` 定位原矩阵元素。** 在虚拟区间上做 lower bound，结束后检查位置有效且值等于目标，不需要复制展平数组。
+
+空矩阵与零列要提前处理，行长必须一致，总元素数相乘前要防止定宽整数溢出。只计算查找时是 O(log(rows × cols))；正文若保留逐行矩形校验，还需加上 O(rows)。只有各行各列有序不能推出按行展开有序。
+
+</details>
+
+### 6.5 怎样判断一个值是否存在于先升后降的数组？ {#unimodal-binary-search}
+
+**考察重点**：严格性假设、峰值定位、两侧比较方向和目标缺失。
+
+**相关内容**：[严格单峰数组的分段查找](#严格单峰数组的分段查找)。
+
+<details>
+<summary>参考回答</summary>
+
+**先澄清是否严格递增后严格递减；在严格单峰前提下，先找峰，再对升序段和降序段分别二分。** 找峰时，若中点小于右邻，峰值在右边，否则保留左边及中点；降序段把普通查找的比较方向反过来。
+
+正文先查左段，因此返回第一个匹配下标，缺失返回 `-1`，也处理空输入和端点峰值。严格单峰时总时间 O(log n)，额外空间 O(1)。如果允许重复平台，相等比较不能决定方向，应另定处理规则，不能直接宣称同一个实现仍正确且为 O(log n)。
+
+</details>
+
 ## 7. 参考资料 {#参考资料}
 
 - [Princeton Algorithms：BinarySearch](https://algs4.cs.princeton.edu/11model/BinarySearch.java.html)
 - [Antti Laaksonen：Competitive Programmer’s Handbook](https://cses.fi/book/book.pdf)
+- [Go 1.22.12：sort.Search 的不变量与存在检查](https://github.com/golang/go/blob/go1.22.12/src/sort/search.go)
+- [LeetCode：Search a 2D Matrix 的整体排序前提](https://leetcode.com/problems/search-a-2d-matrix/description/)
+- [LeetCode：Peak Index in a Mountain Array](https://leetcode.com/problems/peak-index-in-a-mountain-array/description/)

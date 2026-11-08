@@ -1,0 +1,242 @@
+---
+knowledge:
+  id: basic-knowledge.swift.optional
+  type: concept
+description: "理解 Swift Optional 的有值和无值状态、if let 与 guard let、可选链与合并，以及强制解包、隐式解包和错误处理的区别。"
+keywords: [Swift Optional, if let, guard let, 可选链, 强制解包, try]
+---
+
+# Swift Optional
+
+**Optional** 表达“有一个值”或“没有值”。`Int?` 不是随时可当作整数使用的特殊 `Int`，而是 `Optional<Int>` 的简写；解包是在确认有值后取出其中的整数。客户端数据解析、页面状态和接口返回都可能缺值，真正需要决定的是缺值能否接受、在哪里处理，以及是否还需要保留失败原因。
+
+## 1. 面试核心 {#core}
+
+- Optional 用 `.some(value)` 和 `.none` 区分有值与无值，**nil 不等于零、false 或空字符串**。[卡](#optional-model)
+- `if let` 在成功分支内提供解包值，`guard let` 要求失败分支退出当前作用域，**成功绑定可在 guard 之后继续使用**。[卡](#if-guard)
+- 可选链 `?.` 在缺值处停止，`??` 提供默认结果，**两者不会替业务区分不同缺值原因**。
+- 强制解包 `!` 和隐式解包都保留运行时前提，**解包 nil 是运行时错误，不是可以用普通 do-catch 恢复的 throw**。[卡](#forced-implicit)
+- 满足相等性条件时，可选值能进行相等比较，**Int 与 Int? 的比较可以通过可选提升匹配相应运算，不代表任意可选类型运算都自动解包**。[卡](#optional-comparison)
+- `map` 保留转换结果的一层 Optional，`flatMap` 组合返回 Optional 的转换，**两者对嵌套可选值的结果不同**。[卡](#optional-map)
+
+## 2. 有值与无值 {#有值与无值}
+
+`Optional<Wrapped>` 可以理解为包含 `.some(Wrapped)` 和 `.none` 的泛型枚举。`nil` 对应无值状态；具体内存布局可能使用优化，不能简单断言每个 Optional 一定额外占一个字节。
+
+```swift
+let present: Int? = .some(0)
+let missing: Int? = nil
+
+switch present {
+case .some(let value): print("value=\(value)") // value=0
+case .none: print("missing")
+}
+print(missing == nil) // true
+```
+
+`present` 包着一个真实的零，`missing` 没有整数。类似地，`String?` 中的 `""` 是一个存在的空字符串，不能与 `nil` 合并理解。Swift 的条件需要 `Bool`，不能因为某个可选值“有东西”就直接把它当作真假条件。
+
+可选类型还能嵌套。`Int??` 有“外层无值”“外层有值但内层无值”“两层都有值”三类状态。例如字典本身允许保存可空值时，查询结果可能需要区分键不存在和键存在但保存 nil。接口是否真的需要这三种状态，应在设计时明确，避免无意中增加嵌套。
+
+## 3. 可选绑定、可选链与默认值 {#可选绑定可选链与默认值}
+
+**可选绑定**在有值时为解包结果建立一个新的局部名称。`if let` 适合只在某个分支使用，`guard let` 适合先排除无效输入，让后续路径只处理有效值。
+
+```swift
+func greeting(_ name: String?) -> String {
+    guard let value = name else {
+        return "guest"
+    }
+    return "hello \(value)"
+}
+
+let name: String? = "Lin"
+if let value = name {
+    print(value) // Lin
+}
+print(greeting(nil)) // guest
+```
+
+`if` 中的 `value` 限于成功分支；`guard` 的 `value` 可在后续同一作用域使用。`guard` 的 `else` 必须通过 `return`、`throw`、`break` 等适合当前位置的方式离开，不能只记录日志后继续走到需要非空值的代码。
+
+**可选链**在当前可选值有值时访问后续成员，无值时产生 `nil`。**空值合并** `??` 仅在左侧为空时计算默认表达式。
+
+```swift
+struct Profile {
+    let nickname: String?
+}
+
+let profile: Profile? = Profile(nickname: nil)
+let length: Int? = profile?.nickname?.count
+print(length ?? 0) // 0
+
+let empty: String? = ""
+print(empty?.count ?? 10) // 0，不会因为长度为零而使用 10
+```
+
+链中的 `profile` 缺失、`nickname` 缺失都可能得到同一个 `nil` 结果。若错误提示需要区分两种原因，就应分别检查，而不是用更长的可选链隐藏区别。连续链式访问也不会仅因多个问号就不断叠加 Optional 层次，结果取决于成员类型与链式访问规则。
+
+## 4. 强制解包与隐式解包 {#强制解包与隐式解包}
+
+**强制解包** `value!` 声明当前必须有值。前提成立时得到包内值，前提不成立时触发运行时错误。
+
+```swift
+let value: Int? = 3
+print(value!) // 3
+
+let missing: Int? = nil
+// print(missing!) // 运行时错误：对 nil 强制解包
+```
+
+如果缺值是正常输入，不应靠 `!` 把处理责任推给崩溃。若确有不变量保证，应尽量让初始化和类型结构表达它，并在改变生命周期时重新核对，而不是只凭“以前运行过”判断安全。
+
+**隐式解包可选值**用 `T!` 声明。它仍具有 Optional 的缺值可能，只是在需要非可选值的上下文中，编译器可以插入解包；并不是一个永远非空的类型。
+
+```swift
+var title: String! = nil
+let observed: String? = title
+print(observed == nil) // true：承接为 Optional，没有强制读取包内值
+title = "Home"
+let required: String = title
+print(required) // Home
+```
+
+如果在 `title` 仍为 nil 时执行最后的非可选赋值，就会失败。UIKit 中某些连接由框架稍后建立，代码可能使用这类声明，但仍要遵守初始化和页面生命周期；不能把 `T!` 当作跳过生命周期设计的通用方式。
+
+## 5. 相等比较与可选转换 {#相等比较与可选转换}
+
+当包裹类型支持相等比较时，Optional 可以比较：双方都无值时相等，一方无值时不等，双方有值时比较内部值。非可选值也可提升为对应有值的 Optional 来匹配相应操作。
+
+```swift
+let count: Int? = 3
+let missing: Int? = nil
+print(count == 3)   // true
+print(missing == 0) // false
+// print(count + 1) // 编译错误：加法不能直接把 Int? 当作 Int
+```
+
+相等比较能编译，不代表 `count` 已经永久成为非可选变量，也不代表加法、大小比较和任意 API 都支持同样的运算。判断一段代码时，应看实际类型、运算符重载和可选提升规则。
+
+**Optional.map** 在有值时执行转换，并把结果包进 Optional；无值时保留无值。**Optional.flatMap** 用于转换本身也可能无值的情况，直接组合这个 Optional 结果。
+
+```swift
+let input: String? = "42"
+let nested: Int?? = input.map { Int($0) }
+let flattened: Int? = input.flatMap { Int($0) }
+
+if case .some(.some(let value)) = nested {
+    print(value) // 42
+}
+print(flattened ?? -1) // 42
+```
+
+`Int($0)` 的转换可能失败，因此返回 `Int?`；`map` 再包一层成为 `Int??`，`flatMap` 则保持一层。选择取决于是否需要区分“输入缺失”和“转换失败”，不能简单认为层数更少就一定更正确。
+
+## 6. Optional 与错误处理 {#optional-与错误处理}
+
+Optional 只能说明是否有值，不能自行携带缺值原因。需要区分不同失败并作出恢复决策时，可以使用遵守 `Error` 的错误值与 `throws`，或显式的 `Result`。
+
+```swift
+enum ParseError: Error {
+    case empty
+    case invalidNumber
+}
+
+func parse(_ text: String) throws -> Int {
+    guard !text.isEmpty else { throw ParseError.empty }
+    guard let value = Int(text) else { throw ParseError.invalidNumber }
+    return value
+}
+
+do {
+    print(try parse("wrong"))
+} catch ParseError.invalidNumber {
+    print("invalid number")
+} catch {
+    print("other error")
+}
+print((try? parse("")) == nil) // true
+```
+
+`do-catch` 保留错误类型以便分别处理；`try?` 把抛出的错误转为 nil，适合调用方确实不关心失败原因的情况。`try!` 则要求操作不抛错，实际抛错时会触发运行时错误，与 Optional 的 `!` 一样需要明确前提。
+
+普通 `throw` 与对 nil 强制解包造成的运行时错误不是同一种机制，不能用外围 `do-catch` 给所有强制解包兜底。需要在离开作用域时释放资源，可使用 `defer`，它与返回值是否为 Optional 没有绑定关系。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 Swift Optional 是什么？ {#optional-model}
+
+**考察重点**：泛型枚举、有值状态与缺值状态。
+
+**相关内容**：[有值与无值](#有值与无值)。
+
+<details>
+<summary>参考回答</summary>
+
+**Optional 表达有一个 Wrapped 值或没有值，`T?` 是 `Optional<T>` 的简写。** `nil` 是无值，`Optional.some(0)` 则保存一个真实的零；空字符串和 `false` 也不是无值。使用前通过绑定、模式匹配、可选链等处理缺值，具体内存布局由实现优化，不能从枚举模型直接推断固定额外字节数。
+
+</details>
+
+### 7.2 guard let 与 if let 有什么区别？ {#if-guard}
+
+**考察重点**：绑定作用域与失败路径。
+
+**相关内容**：[可选绑定、可选链与默认值](#可选绑定可选链与默认值)。
+
+<details>
+<summary>参考回答</summary>
+
+**if let 把解包值提供给成功分支，guard let 要求失败路径退出，并让成功绑定在之后的同一作用域可用。** guard 适合提前检查输入和前置条件，减少后续嵌套；if 适合只在某个分支处理可选值。两者都先确认有值，不会把原变量永久改成非可选类型。
+
+</details>
+
+### 7.3 强制解包和隐式解包可选值有什么区别？ {#forced-implicit}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：显式断言、上下文解包与运行时前提。
+
+**相关内容**：[强制解包与隐式解包](#强制解包与隐式解包)、[Optional 与错误处理](#optional-与错误处理)。
+
+<details>
+<summary>参考回答</summary>
+
+**显式 ! 在当前表达式要求有值，T! 声明则允许编译器在需要非可选值的上下文中自动解包。** T! 仍可能是 nil，承接为可选值时也可以不解包；真正解包 nil 时会发生运行时错误。它不是普通 throws 错误，不能靠 do-catch 恢复，仍需正确的初始化与生命周期保证。
+
+</details>
+
+### 7.4 Swift 的 Int? 和 Int 能比较吗？ {#optional-comparison}
+
+**考察重点**：相等比较、可选提升与运算符规则。
+
+**相关内容**：[相等比较与可选转换](#相等比较与可选转换)。
+
+<details>
+<summary>参考回答</summary>
+
+**可以进行符合 Optional 相等性规则的比较，例如包着 3 的 Int? 与整数 3 比较相等。** 非可选整数可以提升为对应的有值 Optional，双方再按可选相等性比较；nil 不等于零。但这不意味着所有比较或算术运算都自动解包，具体要看运算符要求，Int? 仍不能直接当 Int 做普通加法。
+
+</details>
+
+### 7.5 Optional 的 map 与 flatMap 有什么区别？ {#optional-map}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：转换返回类型与嵌套缺值状态。
+
+**相关内容**：[相等比较与可选转换](#相等比较与可选转换)。
+
+<details>
+<summary>参考回答</summary>
+
+**map 将转换结果再包一层 Optional，flatMap 接收返回 Optional 的转换并直接组合它。** 输入 String?、转换使用 Int 初始化器时，map 得到 Int??，flatMap 得到 Int?。多一层可以保留输入缺失与转换失败的区别，是否需要保留应由接口语义决定。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [The Swift Programming Language：The Basics，Optionals](https://github.com/swiftlang/swift-book/blob/16a2a4caa408c86fc85bde1e1dfff4745b6e454c/TSPL.docc/LanguageGuide/TheBasics.md)
+- [The Swift Programming Language：Control Flow，Early Exit](https://github.com/swiftlang/swift-book/blob/16a2a4caa408c86fc85bde1e1dfff4745b6e454c/TSPL.docc/LanguageGuide/ControlFlow.md)
+- [The Swift Programming Language：Optional Chaining](https://github.com/swiftlang/swift-book/blob/16a2a4caa408c86fc85bde1e1dfff4745b6e454c/TSPL.docc/LanguageGuide/OptionalChaining.md)
+- [The Swift Programming Language：Error Handling](https://github.com/swiftlang/swift-book/blob/16a2a4caa408c86fc85bde1e1dfff4745b6e454c/TSPL.docc/LanguageGuide/ErrorHandling.md)
+- [Apple Swift 标准库文档：Optional](https://developer.apple.com/documentation/swift/optional)

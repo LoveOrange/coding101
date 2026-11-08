@@ -1,0 +1,390 @@
+---
+sidebar_position: 1
+knowledge:
+  id: basic-knowledge.javascript.types-conversion
+  type: concept
+description: "理解 JavaScript 的原始值与对象、赋值和传参、typeof 与数组识别，以及数值转换和相等判断。通过可运行示例解释 null、NaN、Symbol、BigInt 和对象共享的边界。"
+keywords: ["JavaScript 数据类型", "类型转换", "typeof", "原始值", "相等判断"]
+---
+
+# JavaScript 数据类型与类型转换
+
+JavaScript 的类型属于值：一个变量可以先保存数字，再保存字符串。判断一段代码的结果，要先确定值的类型，再看当前操作是否会转换类型、是否在修改同一个对象。
+
+这些规则直接影响表单输入、接口数据、状态更新和现场编码。比起记住几组特殊输出，更有用的是能解释为什么对象赋值后会互相影响、为什么 `typeof null` 不能用来识别空值，以及字符串进入计算前应该怎样检查。
+
+## 1. 面试核心 {#core}
+
+- JavaScript 有 **七种原始类型和一种对象类型**。数组、普通函数和日期都是对象，不是与 `Object` 并列的语言类型。[卡](#language-types)
+- 原始值不可变；对象可以被多个变量共享。**修改对象和重新给变量赋值是两种操作**，传参时同样要区分。[卡](#value-sharing)
+- `typeof` 适合做基本分类，但 **`null` 需要单独判断，数组优先用 `Array.isArray`**。`instanceof` 检查原型关系，不能代替所有类型检查。[卡](#identify-types)
+- 转换前先确认输入约定。**`Number` 转换整个值，`parseInt` 读取整数前缀**；转换成功也不等于满足业务范围。[卡](#numeric-conversion)
+- `===` 不转换类型；`==` 按规则转换；`Object.is` 区分正负零并认为 `NaN` 与自身相同。**对象比较的是身份，不是内容**。[卡](#equality-rules)
+- **`Number` 有精度边界，`BigInt` 用于整数运算；`Symbol` 可作为独立属性键**。选择它们时，要考虑运算、序列化和调用方约定。[卡](#symbol-keys)
+
+## 2. 值的类型 {#值的类型}
+
+**原始值**是不能通过修改内部内容来改变的值。JavaScript 的七种原始类型如下。
+
+| 类型 | 例子 | 需要理解的边界 |
+| --- | --- | --- |
+| Undefined | `undefined` | 变量声明后尚未赋值、缺失属性等情况会得到它 |
+| Null | `null` | 一个独立的空值，常用于明确表示“没有对象或结果” |
+| Boolean | `true`、`false` | 条件判断会把其他值转换成布尔值 |
+| Number | `42`、`0.5`、`NaN` | 使用双精度浮点数表示，也包括无穷和正负零 |
+| BigInt | `42n` | 表示任意精度整数；不是小数类型 |
+| String | `"hello"` | 字符串值不可变；长度按 UTF-16 码元计算 |
+| Symbol | `Symbol("id")` | 创建独立标识，可作为对象属性键 |
+
+第八种语言类型是 **Object**。对象有身份，可以持有属性；数组、函数、`Date`、`Map` 等分别在对象语义上增加了不同能力。普通函数能够调用，但它仍然是对象。
+
+“不可变”说的是值，不是变量：
+
+```js
+let title = "code";
+title = title.toUpperCase();
+console.log(title); // CODE
+```
+
+`toUpperCase()` 返回新的字符串，随后 `title` 改为保存新值。原来的字符串没有被原地改写。与此相对，数组的 `push()` 会修改数组对象。
+
+`const` 则限制变量绑定：初始化以后不能给这个变量重新赋值。它不会自动冻结对象，因此 `const items = []` 后执行 `items.push(1)` 合法。
+
+## 3. 对象共享与传参 {#对象共享与传参}
+
+**对象身份**用来区分是不是同一个对象。两个对象即使属性相同，也可以有不同身份；两个变量也可以指向同一个对象。
+
+```js
+const original = { count: 1 };
+let alias = original;
+alias.count = 2;
+console.log(original.count); // 2
+
+alias = { count: 3 };
+console.log(original.count, alias.count); // 2 3
+```
+
+`alias = original` 没有复制对象内容，两个变量最初共享一个对象。修改 `alias.count` 就是在修改共享对象。后来给 `alias` 赋新对象，只改变 `alias`，不会把 `original` 一起换掉。
+
+函数调用也遵循值传递。对于对象，可以用“把对象引用这个值复制给形参”理解共享关系，但不能把它说成函数拿到了调用方变量本身。
+
+```js
+function update(record) {
+  record.count += 1;
+  record = { count: 100 };
+}
+
+const item = { count: 1 };
+update(item);
+console.log(item.count); // 2
+```
+
+形参 `record` 起初与 `item` 指向同一个对象，所以加一可见。`record = ...` 只替换函数内部的绑定，`item` 仍然指向原对象。如果希望调用方换成新对象，应返回新值，再由调用方赋值。
+
+“原始值放栈上、对象放堆上”不足以解释这些结果。实际存放位置会受到引擎表示和优化影响；语言层面保证的是值、对象身份和操作语义。面试推导先使用这些规则，不把特定内存布局当作 JavaScript 的定义。
+
+## 4. 类型识别 {#类型识别}
+
+类型检查应当服务于下一步操作：要遍历数组就检查是不是数组，要做有限数计算就检查是不是有限的 `number`，不必先构造一个包揽所有对象的“万能类型名”。
+
+### 4.1 typeof 与专用判断 {#typeof-与专用判断}
+
+`typeof` 返回字符串，能区分大部分原始类型，并将普通可调用函数识别为 `"function"`。
+
+```js
+console.log(typeof undefined); // undefined（字符串）
+console.log(typeof null);      // object（字符串）
+console.log(typeof []);        // object（字符串）
+console.log(typeof (() => 1)); // function（字符串）
+console.log(typeof NaN);       // number（字符串）
+```
+
+`typeof null === "object"` 是保留下来的历史行为，不表示 `null` 属于对象类型。检查 `null` 用 `value === null`；数组用 `Array.isArray(value)`。`Number.isNaN` 只判断参数本身是不是数值 `NaN`，不会先把字符串转成数字。
+
+```js
+console.log(Array.isArray([]));         // true
+console.log(Array.isArray({ 0: "a" })); // false
+console.log(Number.isNaN("oops"));      // false
+console.log(Number.isNaN(Number("oops"))); // true
+```
+
+对于接口中的对象，还要检查业务结构，例如 `id` 是否为字符串、`items` 是否为数组。`typeof value === "object"` 只能提供很粗的分类，不能验证对象的字段。
+
+### 4.2 instanceof 与对象标签 {#instanceof-与对象标签}
+
+`instanceof` 的普通判断过程检查右侧构造函数的 `prototype` 是否出现在左侧对象的原型链上。因此，它回答的是原型关系，而不是“这个值一定具有哪些内部能力”。它还可以被 `Symbol.hasInstance` 定制。
+
+下面的对象具有数组原型链，但不是真正的数组：
+
+```js
+const pretender = Object.create(Array.prototype);
+console.log(pretender instanceof Array); // true
+console.log(Array.isArray(pretender));   // false
+```
+
+不同页面执行环境有各自的 `Array` 构造函数。从同源 iframe 得到的数组，不一定通过当前页面的 `instanceof Array`；`Array.isArray` 可以识别这样的数组。这也是判断数组优先用专用 API 的原因。
+
+`Object.prototype.toString.call(value)` 可以得到 `"[object Array]"` 等标签，适合检查部分内置对象。不过对象能通过 `Symbol.toStringTag` 定制标签，不能把它当成对不可信输入的安全证明。
+
+## 5. 类型转换 {#类型转换}
+
+**类型转换**是按照某个操作的规则，把一个类型的值转换为另一个类型的值。显式调用 `Number`、`String`、`Boolean` 能表达意图；运算符也可能触发隐式转换。
+
+### 5.1 数字、字符串与布尔值 {#数字字符串与布尔值}
+
+HTML 输入框读到的 `value` 是字符串。进入计算前，要确定允许的是完整数字、整数前缀，还是必须符合固定格式的业务标识。
+
+| 表达式 | 结果 | 原因 |
+| --- | --- | --- |
+| `Number("12.5")` | `12.5` | 整个字符串能转换为数字 |
+| `Number("12px")` | `NaN` | 后缀不符合数字转换规则 |
+| `parseInt("12px", 10)` | `12` | 读取十进制整数前缀后停止 |
+| `parseInt("12.5", 10)` | `12` | 小数点不属于整数前缀 |
+| `Number("")` | `0` | 空字符串转换为零 |
+| `Number(null)` | `0` | `null` 的数值转换结果为零 |
+| `Number(undefined)` | `NaN` | `undefined` 不能转换成有效数值 |
+
+`parseInt` 先把输入转为字符串，再按进制读取整数前缀，省略进制时也不是简单的“永远按十进制”：`0x` 前缀会影响进制判断。处理约定为十进制的输入时，显式传 `10`，并检查是否应当接受前缀解析。
+
+如果业务要求非负整数，`Number(text)` 后还需要检查空输入、是否有限、是否为整数和是否在允许范围内。手机号或订单号通常是标识，不能仅因全由数字组成就转为 `Number`，否则可能丢失前导零或整数精度。
+
+布尔转换中，`undefined`、`null`、`false`、正负零、`0n`、`NaN` 和空字符串是假值；普通对象、空数组和字符串 `"0"`、`"false"` 都是真值。浏览器遗留的 `document.all` 是特殊例外，不用它设计业务判断。
+
+### 5.2 对象参与转换 {#对象参与转换}
+
+对象参与某些运算时，需要先转换成原始值。转换过程会优先使用对象的 `Symbol.toPrimitive`；没有该方法时，再按提示尝试 `valueOf()`、`toString()`。普通对象在数值提示下先尝试 `valueOf()`，字符串提示下先尝试 `toString()`；具体内置对象可能另有约定。
+
+加号会先获取两边的原始值：只要有一边是字符串，就做字符串拼接；否则尝试数值相加。
+
+```js
+console.log(1 + "2"); // "12"
+console.log("2" - 1); // 1
+console.log([] + 1);  // "1"
+```
+
+第二行的减号需要数值，把 `"2"` 转成 `2`。第三行中，普通空数组转换得到空字符串，随后执行 `"" + 1`，结果是字符串 `"1"`。同一个值放进不同操作中，会走不同的转换规则，不能只背“字符串优先”这一条。
+
+对象自定义的转换方法可以执行代码或抛异常。处理不可信数据时，先按接口契约验证结构，再做必要转换，避免把隐式转换当作输入校验。
+
+## 6. 相等判断 {#相等判断}
+
+比较前先确定要判断的是类型和值、缺失状态，还是同一个对象。JavaScript 提供了不同的比较规则。
+
+| 比较 | 是否转换类型 | `NaN` 与自身 | `+0` 与 `-0` |
+| --- | --- | --- | --- |
+| `===` | 否 | 不相等 | 相等 |
+| `==` | 按规则转换 | 不相等 | 相等 |
+| `Object.is` | 否 | 相等 | 不相等 |
+| SameValueZero | 否 | 相等 | 相等 |
+
+SameValueZero 是 `Set`、`Map` 的键以及 `Array.prototype.includes` 等使用的比较规则，不是一个名为 `SameValueZero` 的全局函数。
+
+```js
+console.log(0 === false);        // false
+console.log(0 == false);         // true
+console.log(null == undefined);  // true
+console.log(null == 0);          // false
+console.log(NaN === NaN);        // false
+console.log(Object.is(NaN, NaN)); // true
+console.log(Object.is(0, -0));   // false
+console.log([NaN].includes(NaN)); // true
+```
+
+`==` 不等于“把两边都变成数字”。例如 `null` 与 `undefined` 按专门规则相等，与 `0` 比较则不会直接套用 `Number(null)` 的结果。对于通常的业务值，使用 `===` 可以减少隐式转换；如果项目明确用 `value == null` 同时处理 `null` 和 `undefined`，也应知道这是有意使用规则。
+
+所有这些比较都不会递归比较两个不同对象的内容：
+
+```js
+const first = { id: 1 };
+const second = { id: 1 };
+const alias = first;
+console.log(first === second); // false
+console.log(first === alias);  // true
+```
+
+如果业务要比较记录，应明确比较字段、标识或版本。用 `JSON.stringify` 比较所有对象并不可靠：属性顺序、未序列化的值、循环结构和对象类型都可能影响结果。
+
+## 7. Number、BigInt 与 Symbol {#number-bigint-与-symbol}
+
+### 7.1 数值精度 {#数值精度}
+
+`Number` 使用 IEEE 754 双精度浮点数。不是每个十进制小数都能用有限的二进制位精确表示，因此 `0.1 + 0.2 === 0.3` 为 `false`。
+
+连续整数能安全表示的范围为 `-(2 ** 53 - 1)` 到 `2 ** 53 - 1`。超出安全整数范围后，不同整数可能落到同一个可表示值上。`Number.isSafeInteger` 可以检查一个数是不是安全整数，但不能恢复此前已经丢掉的精度。
+
+```js
+console.log(0.1 + 0.2); // 0.30000000000000004
+console.log(Number.MAX_SAFE_INTEGER + 1 ===
+            Number.MAX_SAFE_INTEGER + 2); // true
+console.log(BigInt("9007199254740993") + 1n); // 9007199254740994n
+```
+
+`BigInt` 适合需要精确整数的计算。应从准确的字符串或 BigInt 字面量构造它，不要先把超大整数转成已经失真的 `Number`。它不能与 `Number` 直接混合算术运算，整数除法也会截去小数部分；JSON 默认不能直接序列化 BigInt，需要双方约定字符串等表示。
+
+对于金额，可以在明确货币最小单位和数值范围后使用整数，或使用满足需求的十进制运算方案。浮点误差判断要考虑量级和允许误差，不能把 `Number.EPSILON` 当作所有业务通用的比较阈值。
+
+### 7.2 Symbol 属性键 {#symbol-属性键}
+
+`Symbol()` 每次创建不同的原始值，即使描述文字相同。用它作为属性键，可以避免与同名字符串属性或另一个新 Symbol 冲突。
+
+```js
+const internalId = Symbol("id");
+const otherId = Symbol("id");
+const record = { id: "public", [internalId]: 101 };
+
+console.log(internalId === otherId); // false
+console.log(record[internalId]);     // 101
+console.log(Object.keys(record));   // ["id"]
+console.log(Object.getOwnPropertySymbols(record).length); // 1
+```
+
+`Object.keys` 只返回可枚举的自有字符串键；要检查自有 Symbol 键，需要 `Object.getOwnPropertySymbols`，或用 `Reflect.ownKeys` 同时拿到两类自有键。Symbol 不是安全隔离机制，其他代码仍然能枚举到这些键。
+
+`Symbol.for("id")` 则会查找全局 Symbol 注册表，重复使用相同键会得到同一个 Symbol。它与每次独立创建的 `Symbol("id")` 用途不同。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 JavaScript 有哪些数据类型，数组和函数属于哪一类？ {#language-types}
+
+**考察重点**：区分语言类型与对象的具体种类，解释原始值和对象的差异。
+
+**相关内容**：[值的类型](#值的类型)。
+
+<details>
+<summary>参考回答</summary>
+
+**JavaScript 有 Undefined、Null、Boolean、Number、BigInt、String、Symbol 七种原始类型，以及 Object 对象类型。** 数组和普通函数都属于对象；函数增加了可调用能力，`typeof` 因而对普通函数返回 `"function"`，但这不代表它是第九种语言类型。
+
+原始值不可变，对象可以持有可变属性并被多个变量共享。解释赋值和传参时，应依据值与对象身份，不依赖“必定在栈或堆上”的简化描述。
+
+</details>
+
+### 8.2 对象赋值给另一个变量后，修改属性与重新赋值有什么区别？ {#value-sharing}
+
+**考察重点**：共享对象、变量绑定和函数参数之间的关系。
+
+**相关内容**：[对象共享与传参](#对象共享与传参)。
+
+<details>
+<summary>参考回答</summary>
+
+**直接赋值不会克隆对象，两个变量起初指向同一个对象。** 通过任一变量修改这个对象的属性，另一方能看到；给其中一个变量赋新对象，只改变该变量的绑定。
+
+传参时，形参也没有获得调用方变量本身。函数可以修改双方共享的对象，却不能通过给形参重新赋值替换调用方变量。`const` 只限制重新赋值，也不阻止对象属性修改。
+
+</details>
+
+### 8.3 typeof、instanceof 和 Array.isArray 分别适合检查什么？ {#identify-types}
+
+**考察重点**：根据目的选择检查方式，并解释 `null`、数组、跨执行环境和原型伪装的边界。
+
+**相关内容**：[typeof 与专用判断](#typeof-与专用判断)、[instanceof 与对象标签](#instanceof-与对象标签)。
+
+<details>
+<summary>参考回答</summary>
+
+**`typeof` 做基本分类，`instanceof` 检查原型关系，`Array.isArray` 检查数组身份。** `typeof null` 和 `typeof []` 都返回 `"object"`，因此 `null` 单独用全等判断，数组优先用 `Array.isArray`。
+
+`instanceof` 会受原型链、不同执行环境的构造函数以及 `Symbol.hasInstance` 定制影响。对象标签也可能被 `Symbol.toStringTag` 改写。检查接口数据最终还要检查业务字段，不能只看一个类型名。
+
+</details>
+
+### 8.4 字符串转数字时，Number 和 parseInt 有什么区别？ {#numeric-conversion}
+
+**考察重点**：完整转换与前缀解析的区别，以及空值、进制和范围校验。
+
+**相关内容**：[数字、字符串与布尔值](#数字字符串与布尔值)、[数值精度](#数值精度)。
+
+<details>
+<summary>参考回答</summary>
+
+**`Number` 按整个输入转换，`parseInt` 按指定进制读取整数前缀。** 所以 `Number("12px")` 是 `NaN`，`parseInt("12px", 10)` 是 `12`。`parseInt` 不能用来证明整个字符串都是整数，也不适合直接当作所有数字的截断工具。
+
+还要处理 `Number("") === 0`、非有限值、整数要求和安全范围。对订单号等标识保留字符串，避免前导零和精度丢失。十进制前缀解析显式传 `10`。
+
+</details>
+
+### 8.5 ===、== 与 Object.is 有哪些区别？ {#equality-rules}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：类型转换、对象身份及特殊数值比较。
+
+**相关内容**：[相等判断](#相等判断)。
+
+<details>
+<summary>参考回答</summary>
+
+**`===` 不转换类型，`==` 按抽象相等规则转换，`Object.is` 采用 SameValue 比较。** `Object.is(NaN, NaN)` 为 `true`，`Object.is(0, -0)` 为 `false`；`===` 对这两组值的结果相反。
+
+`==` 不是统一转数字，`null == undefined` 为 `true` 而 `null == 0` 为 `false`。三种方式都不做对象内容的深比较。业务比较应明确身份、字段和缺失值约定。
+
+</details>
+
+### 8.6 Symbol 属性键为什么不能只靠 Object.keys 获取？ {#symbol-keys}
+
+**考察重点**：字符串键、Symbol 键及属性枚举的范围。
+
+**相关内容**：[Symbol 属性键](#symbol-属性键)。
+
+<details>
+<summary>参考回答</summary>
+
+**`Object.keys` 只返回可枚举的自有字符串键，不包含 Symbol 键。** `Object.getOwnPropertySymbols` 返回自有 Symbol 键，`Reflect.ownKeys` 返回两类自有键，包括不可枚举的键。
+
+如果复制或检查对象时只遍历 `Object.keys`，可能遗漏 Symbol 属性。Symbol 可以减少命名冲突，但能被枚举，不是秘密字段。
+
+</details>
+
+### 8.7 设计一个按指定类型筛选数组元素的函数，怎样处理 null 和数组？ {#filter-by-type}
+
+**题型**：综合题
+
+**考察重点**：类型检查边界、输入约定与可扩展的判断规则。
+
+**相关内容**：[值的类型](#值的类型)、[类型识别](#类型识别)。
+
+<details>
+<summary>参考回答</summary>
+
+**先定义支持的类型名称，再用对应谓词检查；`null` 和数组单独处理。** 下例支持指定的几类值，`object` 明确表示“非 null、非数组、`typeof` 为 object 的值”，并不声称只接受普通对象。
+
+```js
+const typeChecks = {
+  null: value => value === null,
+  array: Array.isArray,
+  object: value => value !== null &&
+    typeof value === "object" && !Array.isArray(value),
+  number: value => typeof value === "number",
+  string: value => typeof value === "string",
+  boolean: value => typeof value === "boolean",
+  undefined: value => value === undefined,
+  bigint: value => typeof value === "bigint",
+  symbol: value => typeof value === "symbol",
+  function: value => typeof value === "function",
+};
+
+function filterByType(values, type) {
+  if (!Array.isArray(values) || !Object.hasOwn(typeChecks, type)) {
+    throw new TypeError("不支持的输入或类型");
+  }
+  return values.filter(typeChecks[type]);
+}
+
+console.log(filterByType([null, [], {}, 1], "array")); // [[]]
+```
+
+增加日期等业务分类时，新增对应判断函数即可，不必修改筛选过程。当前 `number` 包含 `NaN` 和无穷；如果要求有限数，应单独定义 `Number.isFinite` 规则。验证空数组、不支持的类型名、`null`、数组、普通对象与特殊数值，不能把类型名和业务有效性混为一谈。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+
+- [ECMAScript：Language Types](https://tc39.es/ecma262/multipage/ecmascript-data-types-and-values.html#sec-ecmascript-language-types)
+- [ECMAScript：IsLooselyEqual](https://tc39.es/ecma262/multipage/abstract-operations.html#sec-islooselyequal)
+- [MDN：JavaScript data types and data structures](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Data_structures)
+- [MDN：typeof](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Operators/typeof)
+- [MDN：Array.isArray](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/isArray)
+- [MDN：Equality comparisons and sameness](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Equality_comparisons_and_sameness)
+- [MDN：Number](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Number)
+- [MDN：Symbol](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Symbol)

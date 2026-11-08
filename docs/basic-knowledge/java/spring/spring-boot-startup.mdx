@@ -63,6 +63,8 @@ public class OrderApplication {
 
 **容器刷新**是解析配置、处理 Bean 定义并创建所需组件的过程。Boot 先把启动类注册为配置来源，再调用 `refresh()`。刷新时，后处理器解析用户配置和自动配置，得到一组 `BeanDefinition`，它记录了对象的类型、依赖和创建方式。所以自动配置是在这一步才真正被解析和判断的。
 
+自动配置候选怎样导入、`@ConditionalOnClass` 和 `@ConditionalOnMissingBean` 怎样筛选，以及用户配置怎样使默认配置退让，见 [Spring Boot 自动配置](./auto-configuration-conditions.mdx)。这些条件决定刷新时注册什么，不等于启动时把所有依赖包里的类都创建一遍。
+
 刷新先处理定义，再批量创建普通业务 Bean。两类后处理器的顺序见 [BeanDefinition](./beandefinition-container-startup.mdx#beanpostprocessor)。非懒加载的单例在刷新阶段完成创建和初始化，回调过程见 [Bean 生命周期](./bean-creation-lifecycle.mdx)。
 
 定义的注册顺序不等于实例的创建顺序。实例什么时候创建，还受**三类设置**影响：

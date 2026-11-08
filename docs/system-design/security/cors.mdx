@@ -1,0 +1,295 @@
+---
+title: 跨域与 CORS
+knowledge:
+  id: system-design.security.cors
+---
+
+# 跨域与 CORS
+
+**CORS**（Cross-Origin Resource Sharing，跨源资源共享）是服务器通过 HTTP 响应头，允许指定来源的浏览器脚本读取跨源响应的机制。浏览器负责检查这些许可；前端不能给自己的请求加一个“允许跨域”字段，就替服务器作出授权。
+
+排查跨域问题时，要分别确认预检是否通过、实际请求是否发出，以及响应是否向脚本开放。控制台报错并不说明服务器没有处理请求，返回 200 也不说明脚本一定能读取结果。源的判断与 DOM 隔离见[同源策略](../../frontend/browser/same-origin-policy.mdx#普通地址的同源判断)，本文集中讲接口请求的协商与配置。
+
+## 1. 面试核心 {#core}
+
+- CORS 由**服务端声明许可、浏览器执行检查**。普通跨源请求可能已到达后端，需要预检且预检失败时，浏览器不会发送实际请求。[卡](#cors-flow)
+- **是否预检取决于方法、请求头及请求方式，不只取决于 GET 或 POST**。JSON POST、自定义请求头和 PUT 等都可能触发预检。[卡](#cors-preflight)
+- **预检成功不等于实际响应免检**。实际成功和错误响应仍需要适当的 CORS 头；`Access-Control-Allow-Headers` 与 `Access-Control-Expose-Headers` 分别控制请求头许可和响应头可读性。[卡](#cors-headers)
+- 携带浏览器凭据时，通常需要 **`credentials: "include"`、准确的允许源和 `Access-Control-Allow-Credentials: true`**。Cookie 自己的范围与隐私规则仍然生效。[卡](#cors-credentials)
+- **预检缓存与业务响应缓存不同**。按 `Origin` 动态返回许可时，应正确设置 `Vary: Origin`，而不是把一个来源的响应错误复用给另一个来源。[卡](#cors-headers)
+- **同源代理改变浏览器访问的入口**，开发代理不会自动变成生产配置；JSONP 则是加载并执行受信任的脚本，能力与风险都不同于 CORS。[卡](#cors-solutions) [卡](#jsonp-mechanism)
+
+## 2. 请求与响应的检查 {#请求与响应的检查}
+
+普通 HTTP(S) 地址的协议、主机、有效端口中任一不同，就属于不同源。例如 `https://app.example.com` 请求 `https://api.example.com`，即使它们属于同一家公司、部署在同一台机器，浏览器仍按跨源请求处理。
+
+CORS 请求中，浏览器会按规则加入 `Origin`，表示发起方的源，例如 `https://app.example.com`。服务器据此选择允许的来源，返回 `Access-Control-Allow-Origin`。它的值可以是一个准确的源，或在符合条件时使用 `*`；不能返回用逗号拼接的多个源，也不能把路径或末尾斜杠放进源字符串。
+
+跨源请求可以分为两条路径：
+
+| 请求路径 | 浏览器做什么 | 服务端可能看到什么 |
+| --- | --- | --- |
+| 不需要预检 | 直接发实际请求，检查实际响应的 CORS 头 | 已收到并处理实际请求，但脚本可能读不到响应 |
+| 需要预检，且没有可复用的预检许可 | 先发 OPTIONS，验证许可后再发实际请求 | 预检失败时只收到 OPTIONS；通过时还会收到实际请求 |
+
+因此，CORS 不是完整的防伪造写入机制。一个不需要预检的 POST 可能已改变服务器状态，即使脚本读不到响应；服务端仍应检查身份、资源权限与 CSRF 防护条件。`Origin` 也不是给任意 HTTP 客户端使用的身份凭据，非浏览器客户端可以自行构造请求头。
+
+## 3. 预检条件与协商 {#预检条件与协商}
+
+**预检请求**是浏览器在某些实际跨源请求之前发出的 OPTIONS，用来询问服务器是否允许计划中的方法与请求头。业务代码通常只调用一次 `fetch()`，不用手工先发 OPTIONS。
+
+通常称为“简单请求”的请求满足一组不需要预检的限制。对于普通 Fetch/XHR 场景，主要看：
+
+- 方法是 `GET`、`HEAD` 或 `POST`。
+- 脚本设置的请求头符合 CORS 安全列表及各自的值限制，例如 `Accept`、`Accept-Language`、`Content-Language` 和受限的 `Content-Type`；单范围 `Range` 也有对应规则。
+- `Content-Type` 的媒体类型限于 `application/x-www-form-urlencoded`、`multipart/form-data`、`text/plain`。不是只看名称：头值长度和字符也有限制。
+- 没有因请求体流、XHR 上传事件监听等条件设置强制预检标记。
+
+这不是“请求不能出现 Cookie、User-Agent 等其他头”。浏览器自己管理的头有独立规则，不能把网络面板看到的所有字段与脚本可设置的安全列表混为一谈。
+
+| 请求 | 在无可复用预检缓存、无其他强制预检条件时 |
+| --- | --- |
+| 普通 GET，没有额外非安全列表头 | 通常不预检 |
+| POST 表单，使用合规的表单媒体类型 | 可以不预检 |
+| POST JSON，`Content-Type: application/json` | 需要预检 |
+| GET，设置 `X-Request-Id` 或 `Authorization` | 需要预检 |
+| PUT 或 DELETE | 需要预检 |
+
+以 POST JSON 为例，浏览器会在预检中带上 `Origin`、`Access-Control-Request-Method: POST` 和 `Access-Control-Request-Headers: content-type`。服务器用允许来源、方法和头部的响应字段作答。预检响应需要成功状态以及匹配的许可，仅返回 200 或 204 不够。
+
+`Access-Control-Allow-Methods` 描述允许的方法；`Access-Control-Allow-Headers` 描述允许的请求头。`Authorization` 必须显式列出，不能依赖请求头通配符。带凭据模式下也不要用方法、头部的 `*` 代替明确许可。
+
+浏览器在跨源预检中不发送 Cookie 等凭据，因此不能要求 OPTIONS 先提供业务会话才能继续。可以先按来源、目标路径、方法和请求头判断预检，再对实际请求执行真正的身份与权限检查。OPTIONS 是 HTTP 方法，CORS 预检只是它的一种用途；看到 OPTIONS 还应检查对应的预检头。
+
+### 3.1 一个有限范围的服务端示例 {#服务端示例}
+
+下面使用 Node.js 的请求与响应对象，给一个只允许 POST 的演示接口设置 CORS。调用方在业务路由之前执行 `applyCors()`，返回 `false` 时停止处理。`allowedOrigins` 是部署方明确维护的完整源集合，不能从请求中临时扩充。
+
+```js
+export function applyCors(req, res, allowedOrigins) {
+  const vary = String(res.getHeader("Vary") ?? "")
+    .split(",").map(value => value.trim()).filter(Boolean);
+  if (!vary.some(value => value.toLowerCase() === "origin" || value === "*")) {
+    vary.push("Origin");
+  }
+  res.setHeader("Vary", vary.join(", "));
+
+  const origin = req.headers.origin;
+  if (!origin) return true;
+  if (!allowedOrigins.has(origin)) {
+    res.writeHead(403);
+    res.end();
+    return false;
+  }
+  res.setHeader("Access-Control-Allow-Origin", origin);
+  res.setHeader("Access-Control-Allow-Credentials", "true");
+  res.setHeader("Access-Control-Expose-Headers", "X-Request-Id");
+
+  if (req.method !== "OPTIONS") return true;
+  const method = req.headers["access-control-request-method"];
+  const headers = String(req.headers["access-control-request-headers"] ?? "")
+    .split(",").map(value => value.trim().toLowerCase()).filter(Boolean);
+  const allowedHeaders = new Set(["content-type", "x-request-id"]);
+  if (method !== "POST" || headers.some(name => !allowedHeaders.has(name))) {
+    res.writeHead(403);
+    res.end();
+    return false;
+  }
+  res.setHeader("Access-Control-Allow-Methods", "POST");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Request-Id");
+  res.setHeader("Access-Control-Max-Age", "600");
+  res.writeHead(204);
+  res.end();
+  return false;
+}
+```
+
+允许的来源请求 POST JSON 时，OPTIONS 返回 204，浏览器才继续发实际请求；不允许的方法或头部得到 403。实际响应也会带上允许源、凭据许可和可读的 `X-Request-Id`。如果业务后来返回 401 或 500，不应清掉这些已设置的许可头，否则前端可能只能看到跨域失败，读不到原本的业务错误。
+
+这个函数不是完整接口中间件：路由仍需限制实际方法、请求体和权限，也要处理不带 `Origin` 的客户端。函数没有把“不带 Origin”当成已经登录。示例还把带 `Origin` 的 OPTIONS 都按预检处理；实际项目如有其他 OPTIONS 用途，应分别路由。已有框架的 CORS 中间件也要按同样的规则核对配置。
+
+## 4. 凭据与响应头 {#凭据与响应头}
+
+**凭据模式**决定 Fetch 是否在符合条件时带上 Cookie 等浏览器管理的身份信息。默认 `same-origin` 不会为跨源请求附带这些凭据；跨源会话请求通常需要 `credentials: "include"`，XHR 则使用 `withCredentials = true`。
+
+下面假设 `endpoint` 是前述接口，`draft` 是要提交的小型 JSON 数据，登录流程已经建立了可用会话：
+
+```js
+async function saveDraft(endpoint, draft) {
+  const response = await fetch(endpoint, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(draft),
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return {
+    requestId: response.headers.get("X-Request-Id"),
+    data: await response.json(),
+  };
+}
+```
+
+服务端既要允许准确的发起源，也要返回 `Access-Control-Allow-Credentials: true`。这里不能用 `Access-Control-Allow-Origin: *`；即使碰巧没有符合条件的 Cookie，`include` 模式下也不能用这个通配符。
+
+这些条件解决的是跨源凭据与响应共享许可，不会强行让所有 Cookie 都发送。`Domain`、`Path`、`Secure`、`SameSite` 和浏览器的第三方 Cookie 策略仍然有效。跨源不一定跨站，相关区别与属性见[浏览器存储](../../frontend/browser/storage.mdx#cookie作用域与属性)。
+
+服务端不应无条件照抄任何 `Origin`，再加上凭据许可。否则攻击者控制的页面也可能得到读取用户私有响应的授权。对于序列化为 `null` 的不透明源，也不能因为它“看起来像本地页面”就加入宽泛允许名单。
+
+### 4.1 允许请求头与暴露响应头 {#请求头与响应头}
+
+`Access-Control-Allow-Headers` 让浏览器知道哪些请求头可以发送；`Access-Control-Expose-Headers` 则决定脚本可以额外读取哪些响应头。这两个字段不能互相替代。
+
+CORS 成功后，脚本默认只能读安全列表中的响应头，例如 `Content-Type`、`Content-Length`、`Cache-Control`。服务端虽返回了 `X-Request-Id`，如果没有暴露它，`response.headers.get("X-Request-Id")` 仍会得到 `null`；网络面板能看到，并不等于页面脚本能读到。
+
+`Set-Cookie` 是被禁止向前端脚本暴露的响应头，不能通过 `Expose-Headers` 让它变得可读。浏览器是否接收 Cookie 由相应规则处理，也不需要页面先读出 `Set-Cookie` 再保存。
+
+### 4.2 预检缓存与响应缓存 {#预检缓存与响应缓存}
+
+`Access-Control-Max-Age: 600` 表示预检许可可缓存一段时间，浏览器仍可能施加自己的上限或提前清理。许可的匹配与来源、目标 URL、方法、请求头、凭据条件以及网络分区有关，不能理解成“一个接口预检一次，所有网站永久免检”。
+
+预检缓存保存的是许可，不是业务响应。命中后实际请求仍会发送，实际响应仍需要通过 CORS 检查；它与 `Cache-Control` 管理的 HTTP 响应缓存不同。
+
+如果服务器根据请求的 `Origin` 返回不同 `Access-Control-Allow-Origin`，应设置 `Vary: Origin`，告诉遵守 HTTP 缓存语义的缓存不要把不同来源的响应混为一份。已有 `Vary: Accept-Encoding` 时需要合并，不能简单覆盖。`Vary` 也不是私有数据的安全缓存策略，带用户数据的响应仍要独立考虑身份隔离和缓存资格。
+
+## 5. 同源代理与 JSONP {#同源代理与jsonp}
+
+解决跨源接口访问，先看自己能控制哪一侧。能配置 API 的服务端，就可以按需要开放 CORS；希望浏览器只访问一个源，则可以通过自己控制的后端或网关转发。
+
+**同源代理**让浏览器先请求页面同源的 `/api/...`，再由服务器访问真正的后端。浏览器检查的是自己这次请求的 URL，服务器之间的 HTTP 调用不受浏览器 CORS 检查约束。代理并没有关闭浏览器的同源策略。
+
+开发时，webpack-dev-server 对应 `devServer.proxy`，Vue CLI 项目通常在 `vue.config.js` 中配置 `devServer.proxy`，Vite 对应 `server.proxy`。例如把本地 `/api/profile` 转发到后端的 `/api/profile`，前端应请求本地相对路径；如果仍请求后端的绝对地址，就绕过了代理。需要删除 `/api` 前缀时，再配置对应的路径重写。
+
+代理选项 `changeOrigin` 主要改变发往目标服务的 `Host`，用于匹配目标虚拟主机，不是浏览器跨域问题的根本开关。开发代理也不会随静态打包产物自动部署，生产仍需设置网关路由或 API 的 CORS。转发目标应受控，不能把任意用户传入 URL 都转发出去。
+
+### 5.1 JSONP 的执行方式 {#jsonp的执行方式}
+
+**JSONP** 是服务端把数据包进一个 JavaScript 回调调用，再让页面通过普通 `<script src>` 加载执行的做法。它要求服务器配合，不能把任意 JSON 接口直接“改成 JSONP”。
+
+例如页面先定义 `window.onProfile`，再加载带 `callback=onProfile` 参数的脚本地址；服务器返回的不是纯 JSON，而是下面的 JavaScript：
+
+```js
+onProfile({ "name": "Lin" });
+```
+
+脚本执行后，页面定义的 `onProfile` 得到对象。为什么普通外部脚本可以这样执行，见[同源策略](../../frontend/browser/same-origin-policy.mdx#第三方脚本在哪里执行)。回调名称是客户端与服务端的约定，服务端不能不校验就把任意输入拼进可执行脚本。
+
+JSONP 依赖脚本 GET 加载，不能像 Fetch 一样选择任意方法、发送 JSON 请求体或设置自定义请求头。更关键的是，页面信任的是服务器返回的整段代码，而不只是一个数据对象。取消脚本节点也不能当作已经阻止服务端执行的证明；实际封装还需处理回调名称冲突、超时、错误和清理。
+
+对于新接口，CORS 或受控同源转发更容易保留标准 HTTP 语义和明确的权限边界。若问题是两个窗口或 iframe 交换数据，则应使用经过验证的消息协议，见[浏览器上下文通信](../../frontend/browser/cross-context-messaging.mdx#postmessage)；给 iframe 响应加 CORS 头不会开放 DOM。
+
+## 6. 排查顺序 {#排查顺序}
+
+排查时先把发起页面的源与实际请求 URL 写出来，然后沿请求链逐项核对：
+
+1. **浏览器有没有发请求**：控制台是否先报混合内容、CSP 或网络错误？`fetch` 的 `TypeError` 不是 CORS 专属错误。
+2. **有没有 OPTIONS**：核对 `Origin`、计划的方法与请求头，检查网关是否返回了成功状态和匹配许可，是否错误地要求预检先登录。
+3. **实际请求有没有发出**：结合浏览器网络记录和服务端日志判断，不能因为前端抛异常就断言业务未执行，更不能无条件重试写操作。
+4. **实际响应是否完整**：成功与错误响应都检查允许源、凭据许可，注意重定向和网关错误页是否改变了响应头。
+5. **是正文不可读，还是某个头不可读**：后者可能只是缺少 `Expose-Headers`；Cookie 未发送则另查凭据模式和 Cookie 条件。
+6. **是否命中缓存或绕过代理**：核对预检缓存、`Vary`、代理路径、生产配置和真实请求地址，不用清空所有缓存代替找原因。
+
+`mode: "no-cors"` 不会把受限 API 变成可读接口。它限制方法与请求头，跨源成功结果通常是不透明响应，状态显示为 0，正文不可用。详细示例见[同源策略](../../frontend/browser/same-origin-policy.mdx#no-cors响应为什么不能使用)。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 CORS 怎样处理跨源请求，报跨域错误说明请求没有到后端吗？ {#cors-flow}
+
+**考察重点**：浏览器与服务端的分工、预检和实际响应的检查阶段。
+
+**相关内容**：[请求与响应的检查](#请求与响应的检查)、[排查顺序](#排查顺序)。
+
+<details>
+<summary>参考回答</summary>
+
+**服务端通过响应头声明允许的来源等条件，浏览器检查后决定是否向脚本开放响应。** 不需要预检的请求可能已经到达并改变服务端状态，之后才因响应缺少许可而报错。
+
+需要预检且没有可用许可缓存时，浏览器先发 OPTIONS；预检不通过就不发实际请求。预检通过后，实际响应还要再检查。判断业务是否执行，应看 OPTIONS、实际请求和服务端记录，不能只看前端报错。
+
+</details>
+
+### 7.2 什么时候会发送 OPTIONS 预检，POST 一定会预检吗？ {#cors-preflight}
+
+**考察重点**：安全列表方法与请求头、媒体类型、强制预检条件和缓存。
+
+**相关内容**：[预检条件与协商](#预检条件与协商)。
+
+<details>
+<summary>参考回答</summary>
+
+**POST 不一定预检，GET 也可能预检。** 在普通场景下，合规表单类型的 POST 可以不预检，JSON POST 因 `application/json` 不在允许的媒体类型范围而预检；GET 带 `Authorization` 或自定义头也会预检，PUT、DELETE 同样需要。
+
+还要考虑请求头值限制、XHR 上传监听或流式请求体等条件，以及是否命中预检缓存。预检通过 `Access-Control-Request-Method`、`Access-Control-Request-Headers` 描述计划请求，服务器必须返回匹配许可，不能只返回 204。
+
+</details>
+
+### 7.3 CORS 有哪些关键响应头，为什么网络面板有 X-Request-Id 而脚本读不到？ {#cors-headers}
+
+**考察重点**：允许来源、请求许可、响应暴露及两种缓存。
+
+**相关内容**：[服务端示例](#服务端示例)、[请求头与响应头](#请求头与响应头)、[预检缓存与响应缓存](#预检缓存与响应缓存)。
+
+<details>
+<summary>参考回答</summary>
+
+**`Access-Control-Allow-Origin` 指定允许来源，`Access-Control-Allow-Methods` 和 `Access-Control-Allow-Headers` 用于预检许可，`Access-Control-Expose-Headers` 控制脚本额外可读的响应头。**自定义响应头 `X-Request-Id` 未被暴露时，即使网络面板能看到，脚本读取仍为 `null`；`Set-Cookie` 不能被暴露。
+
+`Access-Control-Allow-Credentials: true` 用于凭据响应共享，`Access-Control-Max-Age` 管理预检许可的缓存时间。按 `Origin` 改变响应时还应合并 `Vary: Origin`。预检缓存不缓存业务结果，命中后实际响应仍需通过检查。
+
+</details>
+
+### 7.4 跨源请求怎样携带 Cookie，允许源为什么不能写星号？ {#cors-credentials}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：凭据模式、允许源、Cookie 条件与权限范围。
+
+**相关内容**：[凭据与响应头](#凭据与响应头)。
+
+<details>
+<summary>参考回答</summary>
+
+**Fetch 使用 `credentials: "include"`，服务端返回准确的 `Access-Control-Allow-Origin` 与 `Access-Control-Allow-Credentials: true`。** 凭据模式为 `include` 时不接受允许源通配符 `*`，无条件反射任意来源也不安全。
+
+Cookie 是否发送还要满足其范围、SameSite、Secure 和浏览器隐私规则。CORS 许可不替代登录、权限或 CSRF 校验，预检本身也不会携带跨源 Cookie。
+
+</details>
+
+### 7.5 项目中有哪些处理跨域的方法，开发代理为什么上线后可能失效？ {#cors-solutions}
+
+**考察重点**：控制边界、服务端协作、代理路径与开发生产差异。
+
+**相关内容**：[同源代理与 JSONP](#同源代理与jsonp)、[排查顺序](#排查顺序)。
+
+<details>
+<summary>参考回答</summary>
+
+**API 可控时配置 CORS，或者让浏览器访问自己同源的后端入口，再由服务器受控转发。** webpack-dev-server 使用 `devServer.proxy`，Vite 使用 `server.proxy`；前端请求必须命中本地代理路径，直接请求后端绝对地址不会经过代理。
+
+开发代理不属于静态打包产物，上线后要有对应网关路由或服务端 CORS 配置。`changeOrigin` 主要影响代理到目标服务的 Host，并不是关闭浏览器限制。既有 JSONP 接口需要服务端返回脚本；跨窗口消息则使用校验来源与结构的 `postMessage`，这些机制适用的对象不同。
+
+</details>
+
+### 7.6 JSONP 怎样实现跨域访问，有哪些不足？ {#jsonp-mechanism}
+
+**考察重点**：普通脚本加载、回调包装、HTTP 能力与代码信任。
+
+**相关内容**：[JSONP 的执行方式](#jsonp的执行方式)。
+
+<details>
+<summary>参考回答</summary>
+
+**页面预先定义回调，通过普通 script 加载跨源地址，服务器返回回调调用，执行时把数据交给页面。** 例如返回 `onProfile({"name":"Lin"})`，而不是纯 JSON；服务端必须支持且校验回调格式。
+
+它依赖脚本 GET 加载，不能自由使用请求方法、自定义头和 JSON 请求体，还需要管理超时、错误与回调清理。返回内容会以页面权限执行，必须信任脚本提供方。新接口通常选择 CORS 或受控代理。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [WHATWG Fetch：CORS protocol](https://fetch.spec.whatwg.org/#http-cors-protocol)
+- [WHATWG Fetch：CORS-preflight fetch 与 cache](https://fetch.spec.whatwg.org/#cors-preflight-fetch)
+- [WHATWG HTML：Origins](https://html.spec.whatwg.org/multipage/browsers.html#origin)
+- [webpack-dev-server：devServer.proxy](https://webpack.js.org/configuration/dev-server/#devserverproxy)
+- [Vue CLI：devServer.proxy](https://cli.vuejs.org/config/#devserver-proxy)
+- [Vite：server.proxy](https://vite.dev/config/server-options#server-proxy)

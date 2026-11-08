@@ -1,0 +1,376 @@
+---
+sidebar_position: 1
+knowledge:
+  id: frontend.css.box-model-formatting-contexts
+---
+
+# CSS 盒模型与格式化上下文
+
+CSS 盒模型描述元素生成的盒子由哪些区域组成，格式化上下文决定这些盒子怎样排列。解释页面为何超出父容器、上下间距为何没有相加、浮动子元素为何没有撑开父元素，需要同时看这两层规则。
+
+面对具体布局，先确认 `width` 约束的是内容还是边框范围，再判断元素是否处于正常流、相邻外边距是否允许折叠。不要看到布局异常就给父元素添加 `overflow: hidden`，因为它在改变格式化上下文的同时，也改变了溢出处理。
+
+## 1. 面试核心 {#core}
+
+- 盒子从内到外包括内容、内边距、边框和外边距。**`content-box` 的宽高约束内容区，`border-box` 的宽高约束包含内边距与边框的范围**；外边距都不包含在指定宽度里。[卡](#box-size)
+- `border-box` 便于按组件外部尺寸分配空间，但**不会消除内容最小尺寸、外边距或布局算法带来的约束**。选择哪种模型取决于宽度所表达的意图。[卡](#box-choice)
+- 普通块盒的 `width: auto` 会按可用空间分配内容宽度；**`width: 100%` 再加内边距和边框，可能超过父容器**。[卡](#auto-width)
+- **外边距折叠有相邻条件**。普通块布局中的上下外边距可能折叠，左右外边距不按这套规则折叠；Flex 和 Grid 项目之间的外边距也不折叠。[卡](#margin-collapse)
+- BFC 是独立的块格式化上下文。它可以**约束内部浮动的影响、阻止自身与内部子盒的外边距折叠**；`display: flow-root` 能明确建立这项边界。[卡](#bfc-purpose)
+- 新建 BFC 影响的是边界两侧的关系，**不表示整个区域内外的所有 margin 都不再折叠**。两个相邻 BFC 根盒仍可能发生兄弟外边距折叠。[卡](#sibling-bfc)
+- 普通块容器的自动高度通常不由浮动子盒直接撑开；**BFC 根盒的自动高度会把参与自身 BFC 的浮动后代计入**。[卡](#float-height)
+- **建立 BFC 与裁剪溢出是两件事**。`flow-root` 不以裁剪为目的，`overflow: hidden` 会裁剪，`overflow: clip` 单独使用又不建立 BFC。[卡](#overflow-choice)
+
+## 2. 盒子的尺寸 {#盒子的尺寸}
+
+### 2.1 内容、内边距、边框与外边距 {#盒子组成}
+
+**内容区**容纳文字、图片等内容。**内边距**（padding）是内容与边框之间的空间，**边框**（border）围绕内边距，**外边距**（margin）用于盒子外侧的间隔。
+
+讨论一个元素“多宽”时，先说明测量范围。内容宽度、边框盒宽度和布局中的外部间隔不是同一个数；`getBoundingClientRect()` 返回的几何范围也不把外边距算进去，且会受到变换影响。
+
+下面用没有变换、没有滚动条的普通块盒对照两种尺寸规则。
+
+```html
+<style>
+  .box { width: 200px; padding: 20px; border: 5px solid; margin: 10px; }
+  .content { box-sizing: content-box; }
+  .border { box-sizing: border-box; }
+</style>
+<div class="box content">content-box</div>
+<div class="box border">border-box</div>
+```
+
+| 项目 | `content-box` | `border-box` |
+| --- | --- | --- |
+| 指定 `width` | 200px | 200px |
+| 内容宽度 | 200px | `200 − 40 − 10 = 150px` |
+| 左右内边距合计 | 40px | 40px |
+| 左右边框合计 | 10px | 10px |
+| 边框盒宽度 | 250px | 200px |
+| 再计入左右各 10px 外边距的宽度 | 270px | 220px |
+
+外边距没有进入任何一种模型的 `width`。上表计算的是水平尺寸，不能把上下外边距也不加判断地相加，因为垂直方向可能发生折叠。
+
+### 2.2 box-sizing 的使用条件 {#尺寸规则的条件}
+
+**`box-sizing`** 指定宽高等尺寸属性使用哪一种盒范围。`content-box` 适合明确约束内容空间；`border-box` 适合明确约束组件外部尺寸，例如一列卡片每张分配 240px，再在内部安排 padding。
+
+项目可以统一采用 `border-box`，也可以在特定组件上使用。需要注意它默认不继承；若希望后代跟随根元素的选择，可以显式建立继承规则。
+
+```css
+html { box-sizing: border-box; }
+*, *::before, *::after { box-sizing: inherit; }
+```
+
+这条规则也覆盖了伪元素。它使盒宽更好计算，但不会自动解决文字过长、固定最小宽度或 Flex 项目不肯收缩等问题。
+
+`border-box` 也不能把内容区压成负数。如果一个盒子的 `width` 是 10px，而左右 padding 与 border 合计已经有 50px，内容宽度最低是 0，最终边框盒仍至少需要 50px。
+
+面试中把 `content-box` 和 `border-box` 称为“标准盒模型、IE 盒模型或怪异盒模型”时，应先回答两种尺寸计算方式。随后说明：现代页面可以在标准模式下使用 `box-sizing: border-box`，它与整个文档是否进入历史兼容用的怪异模式不是一回事。
+
+### 2.3 auto 与 100% {#自动宽度与百分比宽度}
+
+普通正常流块盒的 `width: auto` 会结合包含块的可用宽度、padding、border 和 margin 计算内容宽度。这里的**包含块**是相关尺寸计算所依赖的矩形范围；对于下面这个普通结构，它就是 `.parent` 的内容区。
+
+```html
+<style>
+  .parent { width: 300px; }
+  .child { box-sizing: content-box; padding: 20px; border: 5px solid; }
+  .full { width: 100%; }
+</style>
+<div class="parent">
+  <div class="child auto">自动宽度</div>
+  <div class="child full">100% 内容宽度</div>
+</div>
+```
+
+`.auto` 未显式设置宽度，内容宽度是 250px，边框盒宽度是 300px。`.full` 的内容宽度已经是父内容区的 300px，再加内边距和边框，边框盒宽度变成 350px。
+
+把 `.full` 改为 `border-box`，在这个没有额外 margin、最小尺寸约束的例子中，边框盒才是 300px。不能把“`width: 100%` 总能填满且不溢出”当作通用结论。
+
+这些计算针对普通块盒。普通非替换行内盒的 `width`、`height` 不按相同方式决定尺寸；行内图片和 `inline-block` 又有自己的规则。解释前先确认实际盒类型，元素的默认显示方式可以参照 [HTML 语义与可访问性](../html/semantics-accessibility.mdx#语义与显示方式)。
+
+## 3. 正常流与外边距折叠 {#正常流与外边距折叠}
+
+### 3.1 格式化上下文 {#格式化上下文}
+
+**格式化上下文**是一组盒子共同遵守的布局规则。普通块盒通常沿块方向依次排列，行内内容则在行盒中排列；Flex 和 Grid 使用各自的布局算法。
+
+**正常流**是元素没有因浮动、绝对定位等方式脱离的常规布局关系。浮动仍会影响附近的行内内容，不能把“脱离正常流”理解为完全不影响其他元素。绝对定位和浮动也不能与正常流块盒使用同一套尺寸、高度和外边距判断。
+
+以下外边距示例都采用默认的横向书写模式，讨论上下间距；不要把它们未经核对地套到竖排布局。
+
+### 3.2 相邻兄弟的外边距 {#兄弟外边距}
+
+**外边距折叠**是符合条件的块级盒上下外边距合并为一个间距的规则。最直接的例子是正常流中相邻兄弟的下外边距与上外边距。
+
+```html
+<style>
+  .stack { display: flow-root; }
+  .first { height: 20px; margin-bottom: 30px; }
+  .second { height: 20px; margin-top: 20px; }
+</style>
+<div class="stack">
+  <div class="first">A</div>
+  <div class="second">B</div>
+</div>
+```
+
+两个元素之间的间距是 30px，不是 50px。`.stack` 建立独立上下文后，内部这两个普通块盒仍然满足折叠条件。
+
+如果参与折叠的值包括负数，计算也不是一律“取最大值”：
+
+| 相邻外边距 | 折叠后的值 |
+| --- | --- |
+| 30px 与 20px | 30px |
+| 30px 与 −10px | 20px |
+| −30px 与 −10px | −30px |
+
+一般可以把它理解为最大的正外边距加上最小的负外边距；没有正数或负数时，对应部分按 0 处理。负的折叠结果可以让相邻盒子发生重叠。
+
+### 3.3 父子之间的外边距 {#父子外边距}
+
+父元素与第一个正常流块级子元素之间，如果没有边框、内边距、行内内容或清除浮动形成的间隔等阻碍，上外边距也可能折叠。结果看起来像是给子元素加了上间距，却把父元素一起推开。
+
+```html
+<style>
+  .frame { display: flow-root; }
+  .parent { background: #dbeafe; }
+  .child { height: 20px; margin-top: 30px; }
+</style>
+<div class="frame">
+  <div class="parent"><div class="child">内容</div></div>
+</div>
+```
+
+在这个例子中，`.parent` 与 `.child` 的顶部对齐，父元素高度仍是 20px，30px 间距折叠到了父元素外部。若给 `.parent` 加 `display: flow-root`，子元素的上外边距不能再与它折叠：父元素高度变为 50px，子元素顶部在父元素内部向下 30px。
+
+给父元素添加上边框或上内边距也能分开这一对上外边距，但会改变实际视觉尺寸；不要只为消除折叠而随意添加 1px。父子下外边距是否折叠还涉及父元素的 `height`、`min-height`、底边框与底内边距等条件，不能由上边距规则直接类推。
+
+一个没有内容、边框、内边距和有效高度阻隔的空块，还可能让自己的上下外边距继续折叠，形成多盒参与的折叠链。定位复杂间距时，应查看整个相邻关系，而不是只看一个元素。
+
+## 4. 块格式化上下文 {#块格式化上下文}
+
+### 4.1 BFC 的边界 {#bfc边界}
+
+**块格式化上下文**（Block Formatting Context，BFC）是独立布局的一块区域，内部块盒按块布局规则排列，内部浮动的影响被约束在这块区域内。理解 BFC 的价值在于判断盒子之间的关系，不是把触发属性背成一组修复口诀。
+
+下面几种情况可以建立新的 BFC，具体元素还需满足相应的盒类型条件。
+
+| 条件 | 使用时注意 |
+| --- | --- |
+| 根元素 | 建立页面的初始块格式化上下文 |
+| `display: flow-root` | 明确建立独立块格式化上下文，通常最能表达这一目的 |
+| 浮动盒、绝对定位盒、`inline-block` | 建立独立上下文，同时还改变外部布局或定位方式 |
+| 普通块盒的 `overflow: hidden`、`auto`、`scroll` | 建立 BFC，同时改变裁剪或滚动行为；`visible` 与单独的 `clip` 不属于这一组 |
+
+Flex 容器建立的是 Flex 格式化上下文，Grid 容器建立的是 Grid 格式化上下文，不能只把它们称为“另一种触发 BFC 的方法”。它们同样形成布局边界，但内部项目按各自的规则排列，项目之间不发生普通块布局的外边距折叠。
+
+### 4.2 浮动与自动高度 {#浮动与自动高度}
+
+普通块容器计算自动高度时，不直接用浮动子元素来撑高自己。BFC 根盒的自动高度则会计入参与自身 BFC 的浮动后代，因此可以让背景和边框覆盖浮动内容。
+
+```html
+<style>
+  .panel { border: 1px solid; }
+  .photo { float: left; width: 80px; height: 60px; }
+</style>
+<div class="panel"><div class="photo">图片</div></div>
+```
+
+初始状态下，`.panel` 的内容高度是 0，边框盒高度只有上下边框合计的 2px。给 `.panel` 添加 `display: flow-root` 后，内容高度变为 60px，边框盒高度变为 62px。
+
+这里包含的是本 BFC 的浮动，不是“所有脱离文档流的后代”。如果把 `.photo` 改为绝对定位，仅给 `.panel` 建立 BFC 仍不会让这个后代撑高父元素。
+
+另一种处理已有浮动布局的方法是增加正常流中的清除浮动盒。
+
+```css
+.panel::after {
+  content: "";
+  display: block;
+  clear: both;
+}
+```
+
+**`clear`** 要求该盒避开同一 BFC 中指定方向上先前的浮动。这个伪元素被移到浮动下方，父元素计算正常流内容高度时因此覆盖浮动所在区域。`clear` 本身不等于创建 BFC，它与 `flow-root` 使用了不同的机制。
+
+### 4.3 避开外部浮动 {#避开外部浮动}
+
+普通块盒的行内内容会绕开同一 BFC 中的浮动，块盒自身的背景却可能延伸到浮动后面。让该块盒建立独立 BFC 后，其边框盒不能与相邻浮动的外边距盒重叠。
+
+```html
+<style>
+  .row { width: 300px; display: flow-root; }
+  .avatar { float: left; width: 80px; height: 60px; margin-right: 10px; }
+  .description { display: flow-root; }
+</style>
+<div class="row">
+  <div class="avatar">头像</div>
+  <div class="description">候选人的简短介绍。</div>
+</div>
+```
+
+在这个有足够剩余空间的例子中，`.description` 位于头像右侧，宽度为 210px，左边缘距离 `.row` 左边缘 90px。若内容或指定最小宽度使剩余空间不足，盒子也可能被放到浮动下方，不能保证 BFC 永远实现左右两列。新的二维或一维布局需求通常可以直接采用 Grid 或 Flex；这里用于理解已有浮动布局。
+
+### 4.4 BFC 不会取消所有外边距折叠 {#bfc与外边距}
+
+BFC 根盒的外边距不会与它内部正常流子盒的外边距折叠，但它本身仍可能作为普通块盒参与外部布局。
+
+```html
+<style>
+  .stack { display: flow-root; }
+  .item { display: flow-root; height: 20px; }
+  .first { margin-bottom: 30px; }
+  .second { margin-top: 20px; }
+</style>
+<div class="stack">
+  <div class="item first">A</div>
+  <div class="item second">B</div>
+</div>
+```
+
+`.first` 和 `.second` 各自建立 BFC，但它们作为相邻正常流块盒，外部上下间距仍折叠为 30px。要让两个项目之间保持明确的 50px，必须改变具体关系，例如将父容器改为纵向 Flex，此时项目 margin 相加；若需要统一的列表间距，也可以用父容器的 `gap` 设计，而不是同时维护两侧 margin。
+
+## 5. 溢出处理的选择 {#溢出处理的选择}
+
+选择建立 BFC 的方式时，同时检查它对外部布局和溢出的影响。`overflow: hidden` 能在一些布局中得到预期高度，但还可能裁掉下拉菜单、提示层或阴影。
+
+| 写法 | 独立 BFC | 溢出与滚动 |
+| --- | --- | --- |
+| `display: flow-root`，保持 `overflow: visible` | 是 | 本身不裁剪溢出内容 |
+| 普通块盒 `overflow: hidden` | 是 | 裁剪溢出，没有用户滚动条；仍允许程序滚动 |
+| 普通块盒 `overflow: auto` | 是 | 按需要提供滚动机制 |
+| 普通块盒 `overflow: clip` | 否 | 裁剪，不提供滚动，也不允许程序滚动 |
+| `display: flow-root; overflow: clip` | 是 | 独立布局与裁剪分别由两条声明提供 |
+
+表中 `overflow` 是同时设置两个轴的简写。只设置一个轴时，另一个轴的计算值可能联动，例如一轴为 `hidden` 时，另一轴的 `visible` 可能计算为 `auto`；判断时应查看最终计算样式。
+
+如果只是希望父元素包含浮动，优先表达这个布局目的。如果确实需要滚动面板，再根据交互要求选择溢出规则。不能因为两种写法都能使父元素变高，就认为它们行为完全等价。
+
+## 6. 面试题 {#面试题}
+
+### 6.1 content-box 与 border-box 怎样计算宽度？ {#box-size}
+
+**考察重点**：宽度约束范围、内边距与边框、外边距。
+
+**相关内容**：[内容、内边距、边框与外边距](#盒子组成)、[box-sizing 的使用条件](#尺寸规则的条件)。
+
+<details>
+<summary>参考回答</summary>
+
+**`content-box` 的 `width` 指内容宽度，`border-box` 的 `width` 包含内容、padding 和 border；两者都不包含 margin。** 例如 `width: 200px; padding: 20px; border: 5px solid`，前者边框盒宽 250px，后者边框盒宽 200px、内容宽 150px。内容宽不能为负，因此过小的边框盒指定值仍会受到 padding 与 border 的下限约束。标准模式页面也能使用 `border-box`，不需要进入文档怪异模式。
+
+</details>
+
+### 6.2 两种盒模型哪一种更合理？ {#box-choice}
+
+**考察重点**：尺寸意图与选用条件。
+
+**相关内容**：[box-sizing 的使用条件](#尺寸规则的条件)。
+
+<details>
+<summary>参考回答</summary>
+
+**没有脱离需求的唯一答案，要看声明的宽度表达内容空间还是组件外部尺寸。** 如果希望内容区始终有 200px，`content-box` 直接表达这个意图；如果卡片整体分配 200px，`border-box` 更方便在内部调整 padding 和 border。统一 `border-box` 能简化组件布局，但仍要处理 margin、内容最小尺寸和布局算法的约束。
+
+</details>
+
+### 6.3 width 为 auto 和 100% 为什么可能得到不同结果？ {#auto-width}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：普通块盒可用空间与百分比尺寸。
+
+**相关内容**：[auto 与 100%](#自动宽度与百分比宽度)。
+
+<details>
+<summary>参考回答</summary>
+
+**普通正常流块盒的 `auto` 会把 padding、border 和 margin 纳入可用宽度的分配，`100%` 则先按包含块宽度确定指定尺寸。** 在 `content-box` 下，300px 父内容区里的 `width: 100%` 子盒，再加左右各 20px padding 和 5px border，边框盒会宽到 350px；同条件下的自动宽度盒，其内容宽为 250px、边框盒为 300px。这一结论有盒类型前提，不能直接套到行内盒或 Flex 项目。
+
+</details>
+
+### 6.4 上下两个元素的 margin 一定相加吗？ {#margin-collapse}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：折叠条件、正负间距和布局模型。
+
+**相关内容**：[相邻兄弟的外边距](#兄弟外边距)、[父子之间的外边距](#父子外边距)。
+
+<details>
+<summary>参考回答</summary>
+
+**不一定，符合条件的正常流块盒上下外边距会折叠。** 30px 和 20px 折叠为 30px，30px 和 −10px 折叠为 20px，两个负数取更负的那个。父子间也可能折叠，需要检查边框、padding、内容、高度等条件。左右外边距不按这套规则折叠，Flex 和 Grid 项目之间的 margin 也不折叠。
+
+</details>
+
+### 6.5 BFC 是什么，可以解决哪些布局问题，如何建立？ {#bfc-purpose}
+
+**考察重点**：独立块布局边界、浮动与外边距关系。
+
+**相关内容**：[BFC 的边界](#bfc边界)、[浮动与自动高度](#浮动与自动高度)、[避开外部浮动](#避开外部浮动)。
+
+<details>
+<summary>参考回答</summary>
+
+**BFC 是独立的块格式化上下文，它约束内部布局与浮动对外部的影响。** BFC 根盒计算自动高度时会计入参与其 BFC 的浮动，根盒与内部子盒的外边距不折叠，边框盒也会避开相邻浮动。可以用 `display: flow-root` 明确建立；浮动、绝对定位、`inline-block`，以及普通块盒上的 `overflow: hidden/auto/scroll` 等也能建立，但各自有额外布局或裁剪影响。Flex、Grid 建立的是对应的独立格式化上下文，内部规则不同。
+
+</details>
+
+### 6.6 相邻兄弟都设置 flow-root，margin 还会折叠吗？ {#sibling-bfc}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：BFC 内部边界与根盒外部布局。
+
+**相关内容**：[BFC 不会取消所有外边距折叠](#bfc与外边距)。
+
+<details>
+<summary>参考回答</summary>
+
+**仍然可能折叠，建立 BFC 并不会取消根盒在外部普通块布局中的相邻关系。** `flow-root` 阻止的是根盒与内部子盒之间的外边距折叠。示例中两个相邻根盒的 30px 和 20px 仍折叠为 30px。若父容器改为纵向 Flex，兄弟成为 Flex 项目，它们之间不再按普通块规则折叠。
+
+</details>
+
+### 6.7 为什么浮动子元素没有撑高父元素，flow-root 和 clearfix 有什么区别？ {#float-height}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：自动高度的计算对象、清除浮动机制。
+
+**相关内容**：[浮动与自动高度](#浮动与自动高度)。
+
+<details>
+<summary>参考回答</summary>
+
+**普通块容器的自动高度不直接由浮动子元素撑开；`flow-root` 让父元素成为 BFC 根盒，将本 BFC 的浮动纳入自动高度。** clearfix 则添加一个正常流伪元素，通过 `clear: both` 把它移到浮动下方，使父元素的正常流高度覆盖该区域。`clear` 本身不建立 BFC，BFC 也不会把绝对定位后代一并计入父元素高度。
+
+</details>
+
+### 6.8 overflow: hidden、clip 和 flow-root 能互相替换吗？ {#overflow-choice}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：独立布局、裁剪与滚动的职责。
+
+**相关内容**：[溢出处理的选择](#溢出处理的选择)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能直接互换，三者处理的职责不同。** `flow-root` 明确建立独立块格式化上下文，本身不裁剪；普通块盒的 `overflow: hidden` 建立 BFC，同时裁剪并保留程序滚动能力；`overflow: clip` 裁剪且禁止滚动，但单独使用不建立 BFC。如果同时需要独立布局和禁止滚动的裁剪，可以组合 `flow-root` 与 `clip`，而不是依赖一个属性隐含解决所有问题。
+
+</details>
+
+## 7. 参考资料 {#参考资料}
+
+- [CSS 2.2：盒模型与外边距折叠](https://www.w3.org/TR/CSS22/box.html)
+- [CSS 2.2：视觉格式化模型与 BFC](https://www.w3.org/TR/CSS22/visuren.html#block-formatting)
+- [CSS 2.2：宽度与自动高度](https://www.w3.org/TR/CSS22/visudet.html)
+- [CSS Box Sizing：box-sizing](https://www.w3.org/TR/css-sizing-3/#box-sizing)
+- [CSS Display：flow-root](https://www.w3.org/TR/css-display-3/#valdef-display-flow-root)
+- [CSS Overflow：overflow 属性](https://www.w3.org/TR/css-overflow-3/#overflow-properties)
+- [CSS Flexible Box Layout：Flex 项目](https://www.w3.org/TR/css-flexbox-1/#flex-items)
+- [CSS Grid Layout：Grid 项目](https://www.w3.org/TR/css-grid-1/#grid-items)

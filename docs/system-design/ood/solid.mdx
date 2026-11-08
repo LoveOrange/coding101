@@ -16,7 +16,7 @@ keywords: ["单一职责", "开闭原则", "里氏替换", "接口隔离", "依�
 ## 1. 面试核心 {#core}
 
 - 单一职责按**变化原因划分职责**，同一个类可以包含多个服务于同一职责的方法。[卡](#srp-change-reasons)
-- 开闭原则通过**稳定的扩展点隔离变化**，不要求所有代码永远不能修改。
+- 开闭原则通过**稳定的扩展点隔离变化**，不要求所有代码永远不能修改。数组筛选可以保持遍历逻辑稳定，把新增的类型判断放进独立规则。[卡](#filter-open-closed)
 - 里氏替换要求子类型**遵守父类型的行为契约**，方法签名相同还不够。[卡](#lsp-contract)
 - 接口隔离按**调用方实际需要的能力**拆分接口，避免它依赖用不到的方法。
 - 依赖倒置让业务**依赖抽象而非具体实现**；依赖注入则负责把对象所需的依赖传进来。[卡](#dip-versus-di)
@@ -74,6 +74,39 @@ final class Renderer {
 `Renderer.render` 始终调用 `shape.draw()`。新增一种图形时，只要实现 `Shape`，绘图器的这段逻辑就不用跟着改。
 
 这里保持稳定的是绘图调用，注册实现、装配对象和修复缺陷仍然可能修改代码。扩展点应来自实际业务变化；为了尚未出现的需求提前建立插件系统，只会增加当前的维护成本。
+
+JavaScript 中也可以用函数表达扩展点，不必为每条规则创建一个类。假设 `filterArr(values, type)` 原来在函数内部用一长串 `if` 区分类型，新增一种判断就要修改这段筛选代码。可以把“遍历并保留匹配元素”与“怎样判断匹配”分开：
+
+```js
+const typeChecks = new Map([
+  ['number', value => typeof value === 'number'],
+  ['string', value => typeof value === 'string'],
+  ['null', value => value === null],
+  ['array', Array.isArray],
+  ['object', value => value !== null && typeof value === 'object'
+    && !Array.isArray(value)],
+]);
+
+function filterArr(values, type) {
+  if (!Array.isArray(values)) throw new TypeError('需要数组');
+  const matches = typeChecks.get(type);
+  if (typeof matches !== 'function') throw new TypeError('未知筛选规则');
+  return values.filter(value => matches(value));
+}
+
+const values = [1, 'a', null, [2], { x: 3 }, 1.5, NaN];
+console.log(filterArr(values, 'null')); // [null]
+console.log(filterArr(values, 'array')); // [[2]]
+
+typeChecks.set('integer', Number.isInteger);
+console.log(filterArr(values, 'integer')); // [1]
+```
+
+这里的**判断函数**接收一个值、返回是否保留它；注册表把规则名称映射到判断函数。新增 `integer` 时，只增加规则及其测试，`filterArr` 的遍历实现不用修改。未知规则明确报错，避免配置拼错后悄悄返回错误结果。注册规则来自应用代码，不执行用户提交的函数源码。
+
+规则仍要定义清楚。示例只预置列出的五类，`number` 包含 `NaN`，`object` 表示非 null、非数组的对象，也包括 Date 等实例，并不等于“普通对象”。`integer` 使用 `Number.isInteger` 判断实际数值是否为整数，不负责证明它是安全整数。类型识别细节见[JavaScript 数据类型与类型转换](../../basic-knowledge/javascript/types-conversion.mdx#类型识别)。
+
+这里保持的是普通数组 `filter` 的结果顺序与浅复制语义：它跳过没有元素的空槽，返回新数组，但保留其中对象的引用。规则应同步返回布尔值，不修改输入；直接传入 async 判断函数会返回 Promise，被当作真值，不能实现异步筛选。开闭原则只隔离新增规则这项变化，不免除正确性验证，也不要求给一个永远只有两种固定情况的小函数搭建复杂注册框架。
 
 ### 4.3 里氏替换原则 {#里氏替换原则}
 
@@ -185,8 +218,6 @@ SOLID 的价值要通过具体变更来检验。新增存储实现时，业务�
 
 ### 6.3 依赖倒置与依赖注入有什么区别？ {#dip-versus-di}
 
-<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
-
 **考察重点**：源码依赖方向与对象装配。
 
 **相关内容**：[依赖倒置原则](#依赖倒置原则)。
@@ -202,9 +233,27 @@ SOLID 的价值要通过具体变更来检验。新增存储实现时，业务�
 
 </details>
 
+### 6.4 filterArr 的类型判断硬编码后，怎样按开闭原则支持新增规则？ {#filter-open-closed}
+
+**考察重点**：稳定遍历逻辑与可变判断规则的拆分，以及 null、数组和未知规则的边界。
+
+**相关内容**：[开闭原则](#开闭原则)。
+
+<details>
+<summary>参考回答</summary>
+
+**把类型判断提取为独立函数，让 `filterArr` 只负责选择规则并调用数组筛选。** 可以按规则名注册判断函数，新增类型时增加对应规则，而不修改原来的遍历分支；如果调用方可以直接提供判断函数，也可以直接用这个函数作为扩展点。
+
+同时保留原有行为：null 不能误归普通对象，数组使用 `Array.isArray`，未知规则明确报错，结果保持顺序且不修改输入数组。新增规则仍要测试；修改注册配置不违反开闭原则，因为希望保持稳定的是已有的筛选流程。
+
+</details>
+
 ## 7. 参考资料 {#参考资料}
 
 - [Robert C. Martin：The Single Responsibility Principle](https://blog.cleancoder.com/uncle-bob/2014/05/08/SingleReponsibilityPrinciple.html)
 - [Robert C. Martin：SOLID Relevance](https://blog.cleancoder.com/uncle-bob/2020/10/18/Solid-Relevance.html)
 - [Liskov、Wing：A Behavioral Notion of Subtyping](https://www.cs.cmu.edu/~wing/publications/LiskovWing94.pdf)
 - [Martin Fowler：Inversion of Control Containers and Dependency Injection](https://martinfowler.com/articles/injection.html)
+- [Robert C. Martin：The Open Closed Principle](https://blog.cleancoder.com/uncle-bob/2014/05/12/TheOpenClosedPrinciple.html)
+- [MDN：Array.prototype.filter](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/filter)
+- [MDN：Number.isInteger](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Number/isInteger)

@@ -1,0 +1,476 @@
+---
+sidebar_position: 3
+knowledge:
+  id: basic-knowledge.go.language.structs-method-sets
+  type: concept
+description: "讲解 Go 结构体、值与指针接收者、方法集、接口实现和嵌入，解释可寻址值的调用简写、方法值的接收者保存，以及空结构体的用途。"
+keywords: ["Go 结构体", "方法集", "指针接收者", "嵌入", "空结构体"]
+---
+
+# Go 结构体与方法集
+
+**结构体**把一组有名字、有类型的字段组合成一个值；方法则为类型定义可以执行的操作。判断一段 Go 代码时，需要分别看结构体保存了什么、方法接收了什么，以及这个类型拥有哪些方法。
+
+这些区别直接影响接口实现和状态修改。一个变量能够调用 `Add`，不代表它的类型一定实现了要求 `Add` 的接口；方法用了值接收者，也不代表它无法修改共享数据。本文以 Go 1.22 为基线，用这些具体行为解释结构体与方法集。
+
+## 1. 面试核心 {#core}
+
+- 结构体赋值和传参都会**复制整个结构体值，但不会递归复制字段引用的数据**。值接收者得到的也是副本；切片、map 和指针字段仍可能共享对象。[卡](#receiver-copy)
+- 对没有嵌入字段的普通结构体类型 `T`，**`T` 的方法集包含值接收者方法，`*T` 的方法集还包含指针接收者方法**。接口实现按类型的方法集判断。[卡](#method-set-interface)
+- 对可寻址的变量，`value.PointerMethod()` 可以简写 `(&value).PointerMethod()`。**调用处的自动取地址不会改变 `T` 的方法集**，也不会在接口赋值时自动发生。[卡](#method-set-interface)
+- **map 元素不可寻址**，不能直接对 `map[string]T` 的元素调用仅属于 `*T` 的方法。可取出副本、修改并写回，或根据所有权需要保存指针。[卡](#map-element-method)
+- 嵌入让内部字段和方法可以通过外层选择器访问，**嵌入类型仍是一个字段，不会自动获得外层类型的身份**。同层同名成员可能产生歧义。[卡](#embedding)
+- **方法值在创建时保存接收者**。值接收者保存值副本，指针接收者保存指针值；它们对后续修改的观察结果可能不同。[卡](#method-value)
+- **nil 指针可以作为指针接收者传入方法，但方法能否完成取决于函数体**。需要先解引用以调用值接收者方法时，则会在进入方法体前发生 panic。[卡](#nil-receiver)
+- `struct{}` 是没有字段的具体类型，`any` 是空接口的别名。**前者适合不携带额外数据的标记，后者用于保存不同类型的值**，不能因为都有“空”字就互换。[卡](#empty-struct-interface)
+
+## 2. 字段、零值与复制 {#字段零值与复制}
+
+结构体的字段类型决定它能保存什么。结构体的零值由各字段的零值组成；构造时可以按字段名给出初始值，省略的字段保留零值。
+
+```go
+package main
+
+import "fmt"
+
+type User struct {
+    Name string
+    Age  int
+}
+
+func main() {
+    first := User{Name: "Lin"}
+    second := first
+    second.Name = "Ming"
+    fmt.Println(first.Name, first.Age)   // Lin 0
+    fmt.Println(second.Name, second.Age) // Ming 0
+}
+```
+
+`second := first` 复制两个字段的值，随后给 `second.Name` 赋值不会修改 `first.Name`。如果字段保存的是切片，复制的只是切片值，底层数组则可能仍由两份结构体共享。这个边界与普通变量一致，见[Go 类型与值传递](./types-value-passing.mdx#复制的深度)。
+
+字段还可以带标签，例如 ``Name string `json:"name"` ``。**字段标签**是类型上的字符串元数据，库可以通过反射读取它，标签也参与结构体类型身份的判断。标签不会让字段自己执行序列化；`json` 标签的含义由 `encoding/json` 解释，也不会单独改变字段在内存中的取值。
+
+## 3. 方法与接收者 {#方法与接收者}
+
+**方法**是带接收者的函数。**接收者**写在方法名前，表示本次调用针对哪个值。接收者基类型需要在声明方法的同一个包中定义，不能直接给其他包已有的类型增加方法。
+
+下面先比较修改整数状态的两种方法：
+
+```go
+package main
+
+import "fmt"
+
+type Counter struct{ N int }
+
+func (c Counter) AddCopy(delta int) { c.N += delta }
+func (c *Counter) Add(delta int)    { c.N += delta }
+func (c Counter) Value() int       { return c.N }
+
+func main() {
+    counter := Counter{N: 1}
+    counter.AddCopy(2)
+    fmt.Println(counter.Value()) // 1
+    counter.Add(2)
+    fmt.Println(counter.Value()) // 3
+}
+```
+
+`AddCopy` 接收 `Counter` 的副本，修改的是副本中的 `N`。`Add` 接收指针值的副本，它仍指向原来的 `counter`，所以 `c.N += delta` 修改了原结构体。
+
+这里并没有两种传参机制：接收者仍按值传递，只是被复制的值分别为结构体和指针。把方法中的 `c` 改为指向另一个 `Counter`，也不会让调用方的指针变量跟着改指向。
+
+### 3.1 值接收者也可能修改共享数据 {#值接收者与共享数据}
+
+值接收者只保证结构体值被复制，不保证方法没有副作用。
+
+```go
+package main
+
+import "fmt"
+
+type Batch struct {
+    Name   string
+    Values []int
+}
+
+func (b Batch) Change() {
+    b.Name = "copy"
+    b.Values[0] = 9
+}
+
+func main() {
+    batch := Batch{Name: "original", Values: []int{1, 2}}
+    batch.Change()
+    fmt.Println(batch.Name, batch.Values) // original [9 2]
+}
+```
+
+`b.Name` 的赋值只改变副本，`b.Values[0]` 却访问了共享数组。判断方法会不会影响外部状态，要继续检查字段类型和方法体，不能只看接收者有没有 `*`。
+
+### 3.2 接收者的选择 {#接收者的选择}
+
+需要修改结构体自身字段、保持对象身份，或者避免复制较大的结构体时，可以使用指针接收者。小型、适合独立复制的值，可以使用值接收者。
+
+含有 `sync.Mutex` 等不可在使用后复制的成员时，要遵守成员本身的复制约束，不能为了使用值接收者而复制锁。一个类型的操作需要共享同一份状态时，统一使用指针接收者也更容易明确其使用方式。
+
+这些是设计依据，不是“指针一定更快”的保证。指针可能带来间接访问和共享状态，是否发生堆分配还取决于逃逸分析。指针接收者也不会自动让方法具备并发安全性。
+
+## 4. 方法集与接口实现 {#方法集与接口实现}
+
+**方法集**是一个类型拥有的方法集合。先看没有嵌入字段的普通结构体类型 `T`：
+
+| 声明方式 | 属于 `T` 的方法集 | 属于 `*T` 的方法集 |
+| --- | --- | --- |
+| `func (t T) Read()` | 是 | 是 |
+| `func (t *T) Write()` | 否 | 是 |
+
+**接口**可以用一组方法声明约定所需行为。一个具体类型的方法集包含接口要求的方法，且方法签名匹配，就实现了这个接口，不需要另外写实现声明。
+
+```go
+package main
+
+import "fmt"
+
+type Counter struct{ N int }
+func (c Counter) Value() int    { return c.N }
+func (c *Counter) Add(n int)    { c.N += n }
+
+type Reader interface { Value() int }
+type Adder interface  { Add(int) }
+
+var _ Reader = Counter{}
+var _ Reader = (*Counter)(nil)
+var _ Adder = (*Counter)(nil)
+// var _ Adder = Counter{} // 编译错误：Counter 的方法集中没有 Add
+
+func main() {
+    counter := Counter{N: 1}
+    counter.Add(2)
+    var adder Adder = &counter
+    adder.Add(3)
+    fmt.Println(counter.Value()) // 6
+}
+```
+
+`var _ Adder = (*Counter)(nil)` 是编译期接口实现检查，不会创建一个待使用的对象，也不会调用 `Add`。`Counter` 实现 `Reader`，`*Counter` 同时实现 `Reader` 和 `Adder`。
+
+### 4.1 为什么 counter.Add 可以调用 {#可寻址值的调用简写}
+
+**可寻址**表示一个表达式对应可以取地址的存储位置，例如局部变量 `counter`。当 `counter` 可寻址、`&counter` 的方法集包含 `Add` 时，`counter.Add(2)` 可以简写 `(&counter).Add(2)`。
+
+这条规则作用于方法调用，不会把 `Add` 加入 `Counter` 的方法集。因此 `var adder Adder = counter` 仍不能编译；赋给接口时，程序不会自动把 `counter` 转成 `&counter`。
+
+### 4.2 map 元素和临时结果 {#不可寻址值的方法调用}
+
+map 索引得到的元素和普通函数调用返回的结构体值不可寻址，不能使用上述自动取地址规则。
+
+```go
+package main
+
+import "fmt"
+
+type Counter struct{ N int }
+func (c *Counter) Add(n int) { c.N += n }
+func makeCounter() Counter  { return Counter{N: 1} }
+
+func main() {
+    counters := map[string]Counter{"jobs": {N: 1}}
+    // counters["jobs"].Add(2) // 编译错误：map 元素不可寻址
+    // makeCounter().Add(2)    // 编译错误：函数返回值不可寻址
+
+    counter := counters["jobs"]
+    counter.Add(2)
+    counters["jobs"] = counter
+    fmt.Println(counters["jobs"].N) // 3
+}
+```
+
+先保存到局部变量后，可以取地址调用，再把结果写回 map。另一种设计是使用 `map[string]*Counter`，直接操作指针指向的对象；这同时引入 nil 和对象共享问题，需要根据实际所有权选择。
+
+切片元素通常可以取地址，例如 `countersSlice[0].Add(2)` 可以调用，但前提仍是下标有效。不要把 map 和切片都概括成“容器元素不能调用指针方法”。
+
+## 5. 嵌入与成员提升 {#嵌入与成员提升}
+
+**嵌入字段**是在结构体中只写类型、不另写字段名的字段。字段名由类型名确定；满足选择器规则时，可以省略中间字段名访问内部成员，这称为**提升**。
+
+```go
+package main
+
+import "fmt"
+
+type Named struct{ Name string }
+func (n Named) Label() string { return n.Name }
+
+type User struct {
+    Named
+    ID int
+}
+
+func main() {
+    user := User{Named: Named{Name: "Lin"}, ID: 7}
+    fmt.Println(user.Name, user.Label()) // Lin Lin
+    fmt.Println(user.Named.Label())     // Lin
+    // _ = User{Name: "Lin"} // 编译错误：提升字段不能直接作为外层字面量的字段名
+}
+```
+
+`user.Label()` 通过嵌入的 `Named` 调用方法，`Label` 的接收者仍是 `Named`，不是外层 `User`。构造字面量也要明确写出 `Named` 这一层。
+
+### 5.1 嵌入后的方法集 {#嵌入后的方法集}
+
+假设 `T` 是普通结构体类型，且没有同名冲突阻止提升：
+
+| 外层结构体 | 外层值的方法集 | 外层指针的方法集 |
+| --- | --- | --- |
+| `type S struct { T }` | 提升接收者为 `T` 的方法 | 提升接收者为 `T` 和 `*T` 的方法 |
+| `type S struct { *T }` | 提升接收者为 `T` 和 `*T` 的方法 | 提升接收者为 `T` 和 `*T` 的方法 |
+
+所以嵌入 `*T` 的外层值，也可能实现要求指针接收者方法的接口。但外层结构体的零值中，这个嵌入指针是 nil；拥有方法不代表调用时一定有可用的内部对象。
+
+### 5.2 嵌入不会产生隐式重写 {#嵌入与同名方法}
+
+外层定义同名方法，可以影响通过外层选择器调用哪个方法；它不会替换嵌入类型方法体里的调用。
+
+```go
+package main
+
+import "fmt"
+
+type Base struct{}
+func (Base) Name() string      { return "base" }
+func (b Base) Describe() string { return b.Name() }
+
+type Wrapper struct{ Base }
+func (Wrapper) Name() string { return "wrapper" }
+
+func main() {
+    value := Wrapper{}
+    fmt.Println(value.Name())     // wrapper
+    fmt.Println(value.Describe()) // base
+}
+```
+
+`Describe` 的接收者是 `Base`，其中的 `b.Name()` 调用 `Base.Name`。不能套用其他语言的继承模型，认为它会自动转向 `Wrapper.Name`。需要可替换行为时，应通过接口等明确的依赖传入。
+
+如果两个同层嵌入字段都提供 `Name`，且外层没有自己的 `Name`，直接写 `value.Name` 会产生歧义。应写出具体字段路径，或者为外层明确实现所需方法；编译器不会按嵌入字段的书写先后替你选择。
+
+## 6. 方法值与方法表达式 {#方法值与方法表达式}
+
+**方法值**把一个接收者和方法绑定成函数值，例如 `counter.Value`。接收者在创建方法值时求值并保存，之后调用时使用保存的接收者。
+
+```go
+package main
+
+import "fmt"
+
+type Counter struct{ N int }
+func (c Counter) Value() int { return c.N }
+func (c *Counter) Add(n int) { c.N += n }
+
+func main() {
+    counter := Counter{N: 1}
+    read := counter.Value
+    add := counter.Add
+    counter.N = 5
+    add(2)
+    fmt.Println(read(), counter.N) // 1 7
+
+    readExplicit := Counter.Value
+    addExplicit := (*Counter).Add
+    fmt.Println(readExplicit(counter)) // 7
+    addExplicit(&counter, 3)
+    fmt.Println(counter.N) // 10
+}
+```
+
+`read` 保存当时的 `Counter` 副本，所以读到 1。`add` 保存 `&counter` 的指针值，后续修改仍作用于同一个 `counter`。
+
+**方法表达式**从类型取得方法，把接收者变成显式的第一个参数。例如 `Counter.Value` 的类型是 `func(Counter) int`，`(*Counter).Add` 的类型是 `func(*Counter, int)`。它不提前绑定某个对象，调用时才提供接收者。
+
+方法值保存的是接收者值，不是整份对象图的快照。值接收者中若有切片或指针字段，引用的数据仍可能随后变化。通过指针创建值接收者的方法值时，如 `pointer.Value`，仍会先解引用并保存结构体副本。
+
+## 7. nil 接收者与空结构体 {#接收者与空值边界}
+
+### 7.1 nil 指针能否调用方法 {#nil指针接收者}
+
+指针接收者方法可以接收 nil，方法体可以先判断 nil，再决定行为。直接访问 nil 指针指向的字段仍会 panic。
+
+```go
+package main
+
+import "fmt"
+
+type Node struct{ Name string }
+func (n *Node) Label() string {
+    if n == nil {
+        return "missing"
+    }
+    return n.Name
+}
+func (n Node) Value() string { return n.Name }
+
+func main() {
+    var node *Node
+    fmt.Println(node.Label()) // missing
+    // fmt.Println(node.Value()) // 运行时 panic：需先解引用以取得 Node 值
+}
+```
+
+`Label` 直接接收 nil 指针并自行处理。`Value` 要求 `Node` 值，调用前需要从指针取得这个值，因此来不及进入 `Value` 方法体就会 panic。是否允许 nil 应是接口约定的一部分，不能因为某次调用没有立即报错，就认为所有指针方法都支持 nil。
+
+### 7.2 空结构体与空接口 {#空结构体与空接口}
+
+**空结构体** `struct{}` 是没有字段的具体类型。它的值不携带字段数据，适合表示“存在”或没有附加内容的信号。
+
+```go
+package main
+
+import (
+    "fmt"
+    "unsafe"
+)
+
+func main() {
+    visited := map[string]struct{}{"go": {}}
+    _, exists := visited["go"]
+    fmt.Println(exists, unsafe.Sizeof(struct{}{})) // true 0
+
+    var value any = "go"
+    fmt.Printf("%T %v\n", value, value) // string go
+}
+```
+
+`visited` 用 key 表示集合成员，不需要再给 value 保存一个布尔值。空结构体本身大小为 0，不表示整个 map、channel 或包含它的结构体都不占空间；容器还有其他数据，布局也可能受对齐影响。不同零大小变量的指针可能相等，不能用它们的地址作为稳定的唯一身份。
+
+**空接口** `interface{}` 不要求任何方法，Go 1.18 起可以用别名 `any` 表示。它可以保存字符串、整数、结构体等不同类型的值，使用具体类型的操作时通常需要类型断言或类型分支。
+
+两者的用途不同：集合占位和无数据通知可以用 `struct{}`；确实需要接收不同类型的值时可以使用 `any`。如果业务本来就有明确字段，应定义相应类型，避免把所有内容都塞进 `any` 后再到处猜类型。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 值接收者能否修改调用方的数据？ {#receiver-copy}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：接收者传值、结构体字段复制与共享对象。
+
+**相关内容**：[方法与接收者](#方法与接收者)、[值接收者与共享数据](#值接收者与共享数据)。
+
+<details>
+<summary>参考回答</summary>
+
+**可以修改共享对象，但不能通过给副本字段赋值来修改原结构体的对应字段。** 值接收者复制结构体值；如果字段是切片、map 或指针，副本仍可能访问同一份底层数据。
+
+例如给副本的字符串字段重新赋值只影响副本，修改切片已有元素则可能影响调用方。需要修改原结构体自身字段时，应使用指针接收者或返回修改后的值，由调用方接收。
+
+</details>
+
+### 8.2 能调用指针接收者方法的变量，为什么不一定能赋给对应接口？ {#method-set-interface}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：方法集、可寻址性与接口实现的检查时机。
+
+**相关内容**：[方法集与接口实现](#方法集与接口实现)、[可寻址值的调用简写](#可寻址值的调用简写)。
+
+<details>
+<summary>参考回答</summary>
+
+**可寻址变量调用指针方法时可以自动取地址，但接口赋值检查的是实际赋入类型的方法集。** 对没有嵌入的结构体 `T`，仅声明在 `*T` 上的方法不属于 `T` 的方法集。
+
+因此 `value.Add()` 可能是 `(&value).Add()` 的简写，而要求 `Add` 的接口需要接收 `&value`，不能因为前一行可以调用就认定 `T` 已实现接口。
+
+</details>
+
+### 8.3 为什么 map 中的结构体元素不能直接调用指针接收者方法？ {#map-element-method}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：map 索引的不可寻址性、修改后写回与指针共享。
+
+**相关内容**：[不可寻址值的方法调用](#不可寻址值的方法调用)。
+
+<details>
+<summary>参考回答</summary>
+
+**map 元素不可寻址，不能为指针接收者调用自动取得该元素的地址。** 可以先取出结构体副本，调用方法后写回 map。
+
+也可以按实际设计改为保存 `*T`，让方法修改指针指向的对象，但要处理 nil、对象共享以及必要的同步。切片元素可以取地址，不能把 map 的限制推广到所有容器。
+
+</details>
+
+### 8.4 嵌入结构体是否等同于继承，外层同名方法会自动替换内部调用吗？ {#embedding}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：成员提升、接收者类型、同名选择与方法集。
+
+**相关内容**：[嵌入与成员提升](#嵌入与成员提升)、[嵌入与同名方法](#嵌入与同名方法)。
+
+<details>
+<summary>参考回答</summary>
+
+**不等同。嵌入类型仍是外层的字段，提升只是让符合规则的成员能够通过外层选择器访问。** 嵌入方法执行时的接收者仍是内部类型，方法体中对自身方法的调用不会自动转向外层同名方法。
+
+外层可以定义自己的方法来明确行为。同层的多个嵌入字段若提供同名成员，直接选择可能产生歧义，需要明确路径或外层实现。嵌入也会按 `T` 与 `*T` 的规则影响外层方法集。
+
+</details>
+
+### 8.5 保存 value.Method 后再修改 value，调用结果会变吗？ {#method-value}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：方法值保存接收者的时机、值与指针复制、方法表达式。
+
+**相关内容**：[方法值与方法表达式](#方法值与方法表达式)。
+
+<details>
+<summary>参考回答</summary>
+
+**取决于接收者类型和共享数据，不能统一回答。** 方法值在创建时保存接收者：值接收者保存结构体副本，后续给原结构体的整数等字段赋值不会更新副本；指针接收者保存指针值，仍可能观察和修改原对象。
+
+值接收者的切片、map 或指针字段也可能共享数据。方法表达式 `T.Method` 则不预先绑定对象，而是在每次调用时显式传入接收者。
+
+</details>
+
+### 8.6 nil 指针调用方法一定会 panic 吗？ {#nil-receiver}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：nil 指针接收者、解引用与进入方法体的边界。
+
+**相关内容**：[nil 指针接收者](#nil指针接收者)。
+
+<details>
+<summary>参考回答</summary>
+
+**不一定。指针接收者方法可以收到 nil，并在方法体里判断和处理。** 如果直接访问 nil 指针指向的字段，仍会 panic。
+
+通过 nil 指针调用值接收者方法，需要先解引用取得结构体值，会在进入方法体前 panic。应按方法约定判断 nil 是否允许，不能把“类型拥有这个方法”等同于“任何值调用都安全”。
+
+</details>
+
+### 8.7 空结构体和空接口分别适合用在什么地方？ {#empty-struct-interface}
+
+**考察重点**：无字段的具体值、集合占位与异构值存储。
+
+**相关内容**：[空结构体与空接口](#空结构体与空接口)。
+
+<details>
+<summary>参考回答</summary>
+
+**`struct{}` 适合表示不携带字段数据的标记，`any` 适合保存不同具体类型的值。** 例如 `map[string]struct{}` 用 key 表示集合成员，value 不需要额外载荷；无数据通知也可以使用 `chan struct{}`。
+
+`any` 是 `interface{}` 的别名，不限制实现方法，可以接收不同类型的值，后续按类型处理。空结构体大小为零，不代表整个容器没有内存成本，也不能靠不同空结构体变量的指针保证唯一身份。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+
+- [Go 1.22.12 语言规范：结构体、方法集、选择器与方法调用](https://github.com/golang/go/blob/go1.22.12/doc/go_spec.html)
+- [Effective Go：Pointers vs. Values](https://go.dev/doc/effective_go#pointers_vs_values)
+- [Effective Go：Embedding](https://go.dev/doc/effective_go#embedding)
+- [Go 1.22.12 sync.Mutex：首次使用后不能复制](https://github.com/golang/go/blob/go1.22.12/src/sync/mutex.go)
+- [Go 1.22.12 encoding/json：字段标签](https://github.com/golang/go/blob/go1.22.12/src/encoding/json/encode.go)

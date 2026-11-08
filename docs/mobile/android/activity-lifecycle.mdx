@@ -1,0 +1,202 @@
+---
+knowledge:
+  id: mobile.android.activity-lifecycle
+  type: concept
+description: "解释 Activity 的可见与交互状态、配置变化、进程重建、状态恢复，以及生命周期回调的可靠性边界。"
+keywords: [Activity 生命周期, onCreate, onPause, onStop, 配置变化, 状态恢复]
+---
+
+# Activity 生命周期
+
+Activity 生命周期描述一个界面实例从创建、可见、可交互到停止和销毁的变化。它同时受用户导航、窗口状态、配置变化和进程存活影响。准备面试时，回调顺序只是起点，更重要的是能据此决定资源何时使用、状态保存在哪里，以及哪些回调不能当成最后一道数据保障。
+
+## 1. 面试核心 {#core}
+
+- `onCreate` 建立实例，`onStart` 对应进入可见阶段，`onResume` 对应恢复交互阶段，**可见和可以交互不是同一个状态**。[卡](#callbacks)
+- 暂停和停止不等于销毁，**从 stopped 返回通常经过 onRestart、onStart、onResume，前提是原实例仍存在**。[卡](#navigation)
+- 配置变化默认可能重建 Activity，**旧对象中的字段不会自动转移到新对象**。[卡](#configuration)
+- ViewModel、保存状态和持久化数据承担不同责任，**ViewModel 不保证跨进程终止，Bundle 不应承担大规模业务数据存储**。[卡](#state-storage)
+- `onDestroy` 不保证在进程终止前执行，**需要长期保存的业务数据应在合适的业务时点提交，不能只等退出回调**。[卡](#persistent-login)
+
+## 2. 回调与状态 {#回调与状态}
+
+**生命周期回调**是框架通知 Activity 状态变化的入口。一次正常首次启动通常依次调用 `onCreate`、`onStart`、`onResume`；之后根据用户操作进入暂停、停止或销毁路径。
+
+| 回调 | 可以据此理解的变化 | 适合考虑的工作 |
+| --- | --- | --- |
+| `onCreate` | 创建当前 Activity 实例 | 初始化界面、读取输入和恢复可保存状态 |
+| `onStart` | 进入可见阶段 | 连接与可见界面相关的观察或资源 |
+| `onResume` | 进入恢复状态 | 按实际交互需求处理焦点相关工作 |
+| `onPause` | 离开恢复状态，但仍可能可见 | 快速暂停需要暂停的操作，避免耗时提交 |
+| `onStop` | 不再对用户可见 | 停止只对可见界面有意义的工作 |
+| `onRestart` | 从 stopped 状态准备重新启动 | 衔接随后的 onStart，而不是重新创建实例 |
+| `onDestroy` | 当前实例结束 | 清理当前实例的本地持有关系；不作为必达的持久化时点 |
+
+Activity 回调通常在主线程执行。把大量数据库提交放进 `onPause`，不仅不是完整的可靠性方案，还会阻塞窗口切换；资源获取与释放应按实际需要成对安排，并让长时间工作有明确的线程和生命周期。
+
+`RESUMED` 也不能简单翻译成“整个设备只有这个 Activity 可见”。多窗口里可以有多个可见 Activity；Android 10（API 29）起支持多个 Activity 同时处于 resumed。若争用相机等独占资源，还要考虑顶层恢复状态、资源争用和实际窗口条件，而不能只背一张单窗口状态图。
+
+## 3. 导航与遮挡 {#导航与遮挡}
+
+分析导航时先给出前提：是否是另一个 Activity、是否完全遮挡、是否新建实例、原进程是否仍在。不同前提会得到不同的回调序列。
+
+| 场景 | 典型状态变化 |
+| --- | --- |
+| A 启动一个新的、不透明的 B | A 先暂停，B 创建并进入恢复状态，A 不再可见后停止 |
+| B 结束，A 原实例仍在 | B 暂停，A 经 onRestart、onStart、onResume 返回；B 随后停止并销毁 |
+| 新 Activity 只部分遮挡 A | A 可能暂停但仍可见，不一定进入 onStop |
+| 用户回到桌面 | 当前 Activity 通常停止；是否之后保留实例取决于进程等条件 |
+| 从 stopped 返回，但原进程已被系统终止 | 创建新的进程和实例，不能按旧实例的 onRestart 路径解释 |
+
+普通 Dialog 是当前窗口体系中的 UI，不因为外观上遮住了页面，就自动触发与另一个 Activity 相同的暂停流程。回答“弹框后有哪些回调”时，应先区分 Dialog 和采用对话框主题的 Activity。
+
+同一个 Activity 被任务栈复用时，也可能通过 `onNewIntent` 接收新的请求，而不重新走 `onCreate`；启动模式和返回栈规则见 [Android 任务栈](./task-back-stack.mdx#实例复用与新请求)。
+
+## 4. 配置变化与进程重建 {#配置变化与进程重建}
+
+**配置变化**包括屏幕方向、语言、部分显示条件等变化。默认处理方式可能销毁旧 Activity，并按新资源配置创建新实例。不是所有变化在所有设备上都会产生相同路径，关键是不要把“进程还在”误认为“原界面对象一定还在”。
+
+一个 `var count = 0` 字段属于当前实例。旧实例退出后，新实例会重新执行初始化；如果业务要求保留计数，就必须为它选择明确的保存位置。与 Activity 对应作用域绑定的 ViewModel 可以跨配置重建保留内存状态，但不能让已经被系统终止的进程中的对象继续存在。
+
+在 Manifest 中声明自己处理某些 `configChanges`，意味着应用承担这些变化下的资源和界面更新责任，并不保证再也不会重建，也不防止进程终止。把它作为通用的“防止数据丢失”开关，只会掩盖状态模型的问题。
+
+**进程重建**发生时，静态字段、单例和 Activity 字段都已失去原来的内存内容。系统保留的任务和轻量保存状态可以帮助恢复用户原来的位置，持久化层可以重新加载业务数据；恢复流程应能够从 ID、筛选条件等有限输入重新建立界面。
+
+“开发者选项中的不保留活动”可以暴露部分 Activity 重建问题，但不会完整模拟进程被终止的所有情况。验证时应分别检查配置变化、实例重建和后台进程终止，不能用其中一种替代全部恢复场景。
+
+## 5. 状态保存与恢复 {#状态保存与恢复}
+
+**界面状态**是为了恢复当前交互而保存的信息，例如选中的笔记 ID、搜索词和滚动位置。**持久化业务数据**则需要在应用重新启动后仍然存在，例如已经确认的草稿、用户设置和同步状态。两者可能相关，但可靠性要求不同。
+
+| 位置或机制 | 配置重建 | 系统终止进程后恢复 | 合适内容 |
+| --- | --- | --- | --- |
+| Activity 普通字段 | 不自动保留 | 不保留 | 当前实例的临时对象 |
+| 正确作用域的 ViewModel | 可以保留 | 不能只靠其内存恢复 | 正在使用的 UI 状态、协调逻辑 |
+| saved instance state、SavedStateHandle | 可参与恢复 | 在系统保留的恢复流程中可参与恢复 | 少量、可序列化的恢复输入 |
+| 文件或数据库等持久化层 | 不依赖 Activity 实例 | 按成功提交的数据恢复 | 需要长期保留的业务数据 |
+
+保存状态不是给进程拍完整内存快照，也不保证用户明确结束任务、强制停止等情形还按原任务恢复。放进 Bundle 的信息应轻量且可序列化：通常保存项目 ID，再从数据层重建对象，而不是保存大位图、整个列表和大量业务实体。
+
+```kotlin
+import android.app.Activity
+import android.os.Bundle
+import android.widget.Button
+
+class CounterActivity : Activity() {
+    private var count = 0
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        count = savedInstanceState?.getInt("count") ?: 0
+        val button = Button(this)
+        button.text = count.toString()
+        button.setOnClickListener {
+            count += 1
+            button.text = count.toString()
+        }
+        setContentView(button)
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putInt("count", count)
+        super.onSaveInstanceState(outState)
+    }
+}
+```
+
+这里明确保存的是计数值，新的实例可以在 `onCreate` 中恢复它。示例没有宣称一次点击就完成了磁盘持久化；若计数具有必须长期保存的业务意义，还应在相应业务操作中写入持久化层。
+
+框架也能自动保存部分 View 状态，通常需要 View 具有唯一 ID、启用状态保存并正确调用父类方法。但不能因此假定所有自定义状态都自动覆盖；自定义 View 和页面级状态仍要按其保存契约处理。
+
+`onSaveInstanceState` 不是生命周期的“最后回调”，也不保证每次退出都调用。用户明确 finish 的实例通常不需要留下恢复快照。它与 `onStop` 的先后还有版本和 target SDK 条件：目标 Android 9（API 28）及以上时，Activity 的保存回调在 `onStop` 之后；不要把旧版本的固定顺序套到所有环境。
+
+## 6. 保存时点与资源责任 {#保存时点与资源责任}
+
+进程可能在没有逐个调用 `onDestroy` 的情况下被终止，因此不要把唯一一次重要数据提交留到该回调。用户点击“保存”时，应让操作进入数据层并有明确成功或失败结果；需要自动保存时，应按输入变化、合适的合并窗口和业务容错要求提交，而不是等待某个退出动作。
+
+对于“登录页关闭后，下次打开仍能看到数据”，需要先确认要保存的是未提交输入、已登录会话，还是用户偏好。未提交输入可以作为轻量界面状态恢复；需要长期保留的非敏感数据应持久化；密码等敏感输入不能因为要恢复界面就随意写入 Bundle 或明文文件。登录凭据的安全存储属于单独的权限与存储问题。
+
+可见时才需要的观察可以随 started 状态开始、结束；与整个屏幕任务对应的请求可能由 ViewModel 持有；必须离开界面继续的工作则需要应用或系统级任务机制。生命周期负责提供条件，不能替代对任务所有权的判断。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 Activity 的主要生命周期回调分别表示什么？ {#callbacks}
+
+**考察重点**：实例、可见性、恢复状态和销毁。
+
+**相关内容**：[回调与状态](#回调与状态)。
+
+<details>
+<summary>参考回答</summary>
+
+**首次创建通常经过 onCreate、onStart、onResume；离开恢复状态进入 onPause，不再可见进入 onStop，实例结束进入 onDestroy。** 停止后原实例再次返回会经过 onRestart、onStart、onResume。暂停不等于不可见，停止不等于销毁，进程终止也不保证先收到 onDestroy。
+
+</details>
+
+### 7.2 A 打开 B 再返回，为什么不能只给出一条无条件的回调序列？ {#navigation}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：遮挡、实例复用和进程存活前提。
+
+**相关内容**：[导航与遮挡](#导航与遮挡)。
+
+<details>
+<summary>参考回答</summary>
+
+**要先说明 B 是否新建且完全遮挡 A，以及返回时 A 的实例是否仍然存在。** 典型不透明新页面会使 A 暂停并停止，返回原实例时 A 经过 onRestart、onStart、onResume；部分遮挡可能只暂停，进程已被终止则需要重新创建。任务栈复用还可能走 onNewIntent。
+
+</details>
+
+### 7.3 屏幕旋转后字段丢失，应该怎样解释和处理？ {#configuration}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：配置重建、状态所有权与恢复范围。
+
+**相关内容**：[配置变化与进程重建](#配置变化与进程重建)。
+
+<details>
+<summary>参考回答</summary>
+
+**默认配置处理可能创建新的 Activity，旧实例字段不会自动迁移。** 应按状态用途选 ViewModel、保存状态或持久化层。ViewModel 可以帮助跨配置保留状态，但还要为进程重建准备恢复输入；声明 configChanges 只改变特定配置变化的处理责任，不能代替可靠恢复。
+
+</details>
+
+### 7.4 ViewModel、Bundle 和数据库分别应该保存什么？ {#state-storage}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：内存存续、恢复快照与持久化业务数据。
+
+**相关内容**：[状态保存与恢复](#状态保存与恢复)。
+
+<details>
+<summary>参考回答</summary>
+
+**ViewModel 管理对应作用域内的内存状态，Bundle 保存少量恢复输入，数据库或文件保存需要长期存在的数据。** ViewModel 不靠自身跨进程终止；Bundle 不适合大对象，也不承诺用户主动结束任务后的永久恢复。可以保存记录 ID 和筛选条件，再从持久化层恢复实际数据。
+
+</details>
+
+### 7.5 登录 Activity 下次打开还要看到数据，应该在哪个生命周期保存？ {#persistent-login}
+
+**题型**：综合题
+
+**考察重点**：界面状态与持久化要求、提交时点和回调保证。
+
+**相关内容**：[状态保存与恢复](#状态保存与恢复)、[保存时点与资源责任](#保存时点与资源责任)。
+
+<details>
+<summary>参考回答</summary>
+
+**先区分恢复临时输入还是长期保存业务数据，不能仅指定一个生命周期回调就认为可靠。** 临时界面状态可使用保存状态机制；长期数据应在业务确认或合适的自动保存时点提交，避免把唯一提交留到 onDestroy。onPause 时间短，也不适合做耗时写入；敏感登录输入不能为了恢复而随意持久化。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [Android：The activity lifecycle](https://developer.android.com/guide/components/activities/activity-lifecycle)
+- [Android API：Activity](https://developer.android.com/reference/android/app/Activity)
+- [Android：Save UI states](https://developer.android.com/topic/libraries/architecture/saving-states)
+- [Android：Handle configuration changes](https://developer.android.com/guide/topics/resources/runtime-changes)
+- [Android：Multi-window support](https://developer.android.com/develop/ui/views/layout/support-multi-window-mode)

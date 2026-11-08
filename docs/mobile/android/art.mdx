@@ -1,0 +1,232 @@
+---
+knowledge:
+  id: mobile.android.art
+  type: concept
+description: "解释 ART 的 DEX 执行、解释器与 JIT/AOT、profile、类加载、垃圾回收和进程内存，并区分 Android 与 HotSpot。"
+keywords: [ART, DEX, JIT, AOT, Android GC, Zygote, 类加载]
+---
+
+# ART
+
+ART（Android Runtime）是 Android 用来执行托管代码的运行时。它读取 DEX，配合解释器、即时编译和提前编译执行方法，并管理对象分配、垃圾回收和线程等运行时工作。Android 应用虽然可以用 Java 或 Kotlin 编写，但不能直接把服务端 HotSpot 的内存分区、垃圾收集器和参数作为 ART 的答案。
+
+## 1. 面试核心 {#core}
+
+- Android 构建工具将相应字节码转换为 DEX，**DEX 是运行时输入，不等于已经为某种 CPU 编译好的机器码**。[卡](#dex)
+- Android 7 起 ART 采用解释、JIT 与 AOT 的混合方式，**不能把现代 ART 概括为安装时把全部代码一次编译完**。[卡](#execution)
+- 类加载还涉及加载器、验证与解析，**同名类不一定是同一个运行时类型，也不保证都来自同一个加载路径**。[卡](#class-loading)
+- ART 通过可达性等运行时信息回收对象，**并发 GC 仍有 CPU、暂停、分配和同步成本**。[卡](#gc)
+- Java/Kotlin 堆只是进程内存的一部分，**对象被回收不等于进程占用必然立即按相同比例下降**。[卡](#memory)
+- Zygote 预加载和派生进程可以复用部分页面，**写时复制不意味着不同应用可以任意共享可变 Java 对象**。[卡](#zygote)
+- 语言契约与运行时实现要分开，**ART 的诊断结论要与设备、系统版本和实际编译状态对应**。[卡](#hotspot)
+
+## 2. DEX 与执行代码 {#dex与执行代码}
+
+**DEX**（Dalvik Executable）是 Android 托管代码使用的文件与字节码格式。Java、Kotlin 等源代码经构建过程转换后进入 DEX；D8 可以把 Java 字节码转换为 DEX，启用优化的构建还可能由 R8 完成压缩、优化和相关转换。
+
+| 产物 | 主要作用 | 不能混淆的概念 |
+| --- | --- | --- |
+| `.class` 等中间字节码 | 承接语言编译器输出 | 不是 Android 最终执行包里唯一的代码表示 |
+| `.dex` | 表达类、方法与 Android 字节码 | 不等于某个 CPU 的机器指令 |
+| ART 编译产物与运行时代码缓存 | 保存部分方法编译结果或辅助信息 | 是否存在、包含哪些方法与版本和编译状态有关 |
+| native `.so` | 存放对应 ABI 的本地代码 | 不由 Java 对象堆 GC 自动管理全部资源 |
+
+DEX 字节码采用基于寄存器的执行模型，这里的“寄存器”是字节码层面的虚拟寄存器，不是保证每个变量永久占用一个 CPU 寄存器。真正生成机器码时，还需要目标架构的指令选择、寄存器分配和调用约定。
+
+APK 可以携带多个 DEX。DEX 的具体索引数量限制与构建工具的 multidex 处理属于构建问题，不能由“用了多个文件”推导出多个应用进程或多个独立 GC 堆。
+
+ART 的验证会检查代码是否满足相应结构和类型要求，但验证通过不等于业务逻辑正确，更不保证线程安全。反过来，开发机上的 JVM 单元测试通过，也不能证明所用 Android API、DEX 转换和设备行为全部兼容。
+
+## 3. 解释、JIT、AOT 与 profile {#解释jit-aot与profile}
+
+**解释执行**由解释器按字节码语义执行。**JIT**（just-in-time compilation）在运行过程中把选中的代码编译成机器码。**AOT**（ahead-of-time compilation）在相应代码执行前完成编译，可以由安装、后台优化等流程安排。
+
+三种方式各有成本：解释器启动准备较少，但逐条解释有运行开销；JIT 能观察运行时信息并优化热点，同时消耗编译时间与代码缓存；AOT 可以提前准备机器码，但增加编译与存储成本，也需要处理依赖变化和产物失效。
+
+Android 7 起 ART 将三者混合使用，实际方法可以处于解释、JIT 编译或 AOT 编译状态。运行时不会只因为 APK 已安装，就保证每个方法都已经编译成机器码。
+
+**profile** 记录与实际执行有关的选择信息，例如被使用的方法和类，帮助后续编译优先覆盖重要路径。profile 引导的 AOT 可以把有限的时间与空间用于更可能影响启动和交互的代码，而不是无差别编译全部内容。
+
+Baseline Profiles 则让应用提供具有代表性的执行路径信息，帮助符合条件的环境更早完成相关优化。它不是给每个方法增加一个“永远更快”的标记，也不能补救主线程网络等待、过大的布局工作或算法复杂度问题。
+
+| 比较性能时的条件 | 为什么影响结论 |
+| --- | --- |
+| 首次安装、首次运行与多次运行后 | 编译与 profile 状态可能不同 |
+| debug 与 release 构建 | 优化、调试支持和代码形态不同 |
+| 方法是否已有编译代码 | 解释成本与代码缓存命中不同 |
+| 设备架构、温度与系统调度 | 机器码、CPU 状态和可用执行资源不同 |
+
+解释 ART 与 Dalvik 的区别时，可以说明 ART 引入并持续发展了提前编译、垃圾回收与诊断能力，同时仍执行 DEX；但不能把对早期 ART 的“安装时 AOT”描述当成所有现代版本的完整实现。
+
+## 4. 类加载与运行时类型 {#类加载与运行时类型}
+
+**类加载器**负责按自己的搜索与委派规则取得类定义。Android 提供 `BaseDexClassLoader` 及其相关实现，用于从相应 DEX 路径建立类定义；具体目录、父级与加载策略由平台和创建方式决定。
+
+加载、验证、解析和初始化承担不同责任。找到一个类名不代表它的所有依赖已经可用，也不代表静态初始化已经成功。面试中遇到 `ClassNotFoundException`、`NoClassDefFoundError` 等问题，应检查实际失败阶段、依赖路径和此前的初始化错误，而不是只比较字符串类名。
+
+运行时类型身份还包含定义它的加载器。同一个全限定名若由不同定义加载器分别建立，可能成为不能相互强制转换的类型。普通父级委派能够减少重复加载并保护共享类型的一致性，但特殊加载器和动态加载会改变关系，不能假定所有 Android 加载路径都完全一样。
+
+Java 的类型与引用规则可以复用，Android 的具体 DEX 路径、平台 API 与内部结构则需要按 Android 核验。动态加载还涉及代码来源、签名与完整性、资源与本地库等边界；类能加载成功只是其中一步。
+
+## 5. 垃圾回收与分配成本 {#垃圾回收与分配成本}
+
+**垃圾回收**根据运行时可达性等信息判断哪些托管对象可以回收。活动线程仍在使用的引用、类与静态字段的可达链、JNI 持有的引用等都可能让对象继续存活。基本推理可参考 [GC Roots 与可达性](../../basic-knowledge/java/jvm/gc-roots-reachability.mdx#gc-roots-的来源)，具体根类别与扫描实现以 ART 和分析工具为准。
+
+页面退出不是一条 GC 指令。只要它仍被全局列表、监听器、消息或 JNI 全局引用持有，运行时就可能认为它可达。GC 不知道业务上“已经不再需要”，因此修复泄漏仍要解除错误持有关系。例如 [Android 消息机制](./handler-looper.mdx#生命周期引用与退出) 中的待执行回调可以延长页面寿命。
+
+**并发 GC**让一部分回收工作与应用线程重叠进行，不等于完全没有暂停或资源竞争。为了正确扫描和处理移动对象，运行时仍需要屏障、同步或暂停协调；回收线程也会使用 CPU 和内存带宽。
+
+AOSP 的 ART 文档以 Concurrent Copying（CC）说明并发复制：移动存活对象有助于减少碎片，读屏障协助应用访问正在移动的对象；Android 10 起相应实现支持分代回收，以较低成本处理大量短命对象。收集器和策略存在系统版本、构建与厂商配置条件，不能把一种实现说成所有设备永恒不变的唯一布局。
+
+大量临时对象即使最终都能回收，也可能带来分配和频繁 GC 成本。诊断应同时观察分配速率、存活对象规模、暂停时间和用户交互时段，而不是只统计“GC 发生了几次”。某次 GC 总耗时长，也不等于应用线程在整个期间都暂停。
+
+调用 `System.gc()` 不能替代内存责任设计，也不保证立即释放某个指定对象。文件描述符、数据库游标和其他 native 资源还应明确关闭，不能把所有资源释放都托付给托管堆的回收时机。
+
+## 6. 进程内存与 Zygote {#进程内存与zygote}
+
+**进程内存**包括托管堆、native 分配、线程栈、映射文件、代码与其他运行时资源。某些图形资源还受独立的管理与统计方式影响；Java/Kotlin 堆快照不能自动覆盖全部进程或图形内存。
+
+对象被回收后，空间可能先回到运行时或分配器，以供下一次分配使用，不一定立即归还给操作系统。映射页、共享页和其他 native 分配也可能保持不变，所以不能要求一次 GC 后 RSS 必须立刻减少同样的字节数。
+
+**Zygote** 预先初始化部分运行时、类和资源，再通过派生进程为应用建立执行环境。可共享的代码和只读内容，以及尚未发生写入的相关页面，可以减少重复初始化与内存成本。
+
+**写时复制**意味着进程派生后可以先共享某些物理页，发生写入时再建立私有副本；它不意味着两个应用的普通 Java 对象形成可任意修改的共享业务状态。进程地址空间仍然隔离，应用需要跨进程共享数据时使用明确的 IPC 或共享存储机制。
+
+因此衡量一个应用的内存成本，应区分私有占用、共享映射和统计口径。复制进程后看到相似地址，不代表可以从一个进程直接读写另一个进程的对象；系统回收后台进程，也不等于 ART 对某个 Java 对象做了一次普通 GC。
+
+## 7. Android 与 HotSpot 的边界 {#android与hotspot的边界}
+
+Java 语法、对象模型中的基本契约、异常与同步语义，可以作为共同基础。运行时怎样组织堆、选择收集器、生成机器码和暴露诊断接口，则属于具体实现。
+
+| 可以作为共同理解起点 | 需要重新按 ART 确认 |
+| --- | --- |
+| 对象是否仍然可达 | 根的具体类别、扫描方式与 GC 日志 |
+| 锁与可见性的语言语义 | 锁实现、调度、优化与暂停行为 |
+| 类与定义加载器共同影响身份 | Android 类路径、DEX 加载与动态加载限制 |
+| 解释与编译的基本区别 | 方法实际编译状态、profile 与编译产物 |
+
+不要向 Android 应用照搬 `-Xmx`、G1 Region 或 HotSpot Metaspace 的调优结论。平台可以存在自己的配置入口和类似目标，但参数可用性、内存布局和生效条件都要重新确认。
+
+实际排查从设备上的证据开始：看构建类型与系统版本，再结合内存分析、线程栈和系统 trace 判断是分配压力、持有链、native 占用还是调度问题。只在桌面 JVM 跑一段代码，不能据此证明 Android 设备采用相同 GC 或编译路径。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 DEX 是什么，是否已经是 CPU 机器码？ {#dex}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：构建产物、运行时输入与目标架构代码。
+
+**相关内容**：[DEX 与执行代码](#dex与执行代码)。
+
+<details>
+<summary>参考回答</summary>
+
+**DEX 是 Android 托管代码使用的文件和字节码格式，不等于某种 CPU 的机器码。** ART 可以解释执行或把方法编译为目标架构代码。DEX 的虚拟寄存器也不等于实际 CPU 寄存器；native so 则属于另一个按 ABI 构建的代码层面。
+
+</details>
+
+### 8.2 ART 是否只在安装时做 AOT 编译？ {#execution}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：解释、JIT、AOT 与 profile 的互补关系。
+
+**相关内容**：[解释、JIT、AOT 与 profile](#解释jit-aot与profile)。
+
+<details>
+<summary>参考回答</summary>
+
+**不是，Android 7 起 ART 使用解释、JIT 和 AOT 的混合方式，AOT 还可以由 profile 引导。** 解释减少提前准备，JIT 根据运行信息优化，AOT 提前准备重要代码但有编译和存储成本。性能测量要区分首次运行、后续运行和实际编译状态。
+
+</details>
+
+### 8.3 两个同名类为什么仍可能无法互相转换？ {#class-loading}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：类定义身份与加载器关系。
+
+**相关内容**：[类加载与运行时类型](#类加载与运行时类型)。
+
+<details>
+<summary>参考回答</summary>
+
+**运行时类型身份不仅看全限定名，还看定义该类的加载器。** 不同加载器分别定义的同名类可能是不同类型。应检查父级委派、依赖路径和实际加载器，而不是只看类名或 dex 文件里是否存在同样的文本。
+
+</details>
+
+### 8.4 ART 使用并发 GC，为什么应用仍可能受回收影响？ {#gc}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：暂停、屏障、分配与共享执行资源。
+
+**相关内容**：[垃圾回收与分配成本](#垃圾回收与分配成本)。
+
+<details>
+<summary>参考回答</summary>
+
+**并发表示部分回收与应用重叠执行，不代表没有暂停、协调和 CPU 成本。** 高频分配、过大的存活集和资源竞争仍会影响交互。应区分 GC 总耗时与应用暂停时间，并结合分配速率和用户操作时段分析，不能只数 GC 次数。
+
+</details>
+
+### 8.5 GC 回收对象后，为什么进程内存没有立即明显下降？ {#memory}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：托管堆、分配器保留与进程统计口径。
+
+**相关内容**：[进程内存与 Zygote](#进程内存与zygote)。
+
+<details>
+<summary>参考回答</summary>
+
+**回收空间可能先留给运行时复用，而进程还有 native 分配、线程栈、代码和共享映射等占用。** 因此不能要求 RSS 与 Java 活对象大小同步变化。要分别检查托管堆和其他内存来源，并确认使用的统计指标代表什么。
+
+</details>
+
+### 8.6 Zygote 共享页面是否意味着应用之间共享可变 Java 对象？ {#zygote}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：进程派生、写时复制与地址空间隔离。
+
+**相关内容**：[进程内存与 Zygote](#进程内存与zygote)。
+
+<details>
+<summary>参考回答</summary>
+
+**不是，预加载和写时复制可以复用部分物理页面，但进程仍有隔离的地址空间和应用状态。** 写入会按规则产生私有副本，不能把一个进程的对象地址直接交给另一进程任意使用。跨进程业务共享仍需要明确的通信或共享存储机制。
+
+</details>
+
+### 8.7 能否直接用 HotSpot 的内存分区和 GC 参数解释 ART？ {#hotspot}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：语言契约与运行时实现的区别。
+
+**相关内容**：[Android 与 HotSpot 的边界](#android与hotspot的边界)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能直接套用，可以复用 Java 的基本语言契约与可达性推理，但具体布局、收集器、参数和工具需要按 ART 确认。** 应结合设备版本、构建和运行状态看实际证据，不能用桌面 JVM 的测试结果代替 Android 的 GC 或编译行为。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+
+- [AOSP：Android runtime and Dalvik](https://source.android.com/docs/core/runtime)
+- [AOSP：Configure ART](https://source.android.com/docs/core/runtime/configure)
+- [AOSP：ART JIT compiler](https://source.android.com/docs/core/runtime/jit-compiler)
+- [AOSP：Debug ART garbage collection](https://source.android.com/docs/core/runtime/gc-debug)
+- [AOSP：Dalvik executable format](https://source.android.com/docs/core/runtime/dex-format)
+- [AOSP：Dalvik bytecode format](https://source.android.com/docs/core/runtime/dalvik-bytecode)
+- [AOSP：About the Zygote processes](https://source.android.com/docs/core/runtime/zygote)
+- [Android：D8](https://developer.android.com/tools/d8)
+- [JVMS 17：Creation and Loading](https://docs.oracle.com/javase/specs/jvms/se17/html/jvms-5.html#jvms-5.3)
+- [Android API：BaseDexClassLoader](https://developer.android.com/reference/dalvik/system/BaseDexClassLoader)
+- [Android：Baseline Profiles overview](https://developer.android.com/topic/performance/baselineprofiles/overview)
+- [Android：Overview of memory management](https://developer.android.com/topic/performance/memory-overview)

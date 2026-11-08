@@ -78,6 +78,12 @@ CPU 热点要沿着「机器—进程—线程—代码」逐步缩小范围，�
 3. 查看 OOM 日志与 cgroup 内存事件。
 4. 结合 GC、回收和 I/O 指标确认因果关系。
 
+`free` 的 `free` 列表示完全空闲的内存，`available` 则估计在不交换的情况下，还能供新应用使用多少内存，其中考虑了部分可回收缓存。缓存占用高、`free` 很少，不足以证明内存紧张。
+
+频繁缺页也要区分类型。`pidstat -r -p <pid> 1` 的 `minflt/s` 是不需要从磁盘装入页面的次缺页速率，`majflt/s` 是需要从磁盘装入页面的主缺页速率。程序刚访问新内存或映射文件时也会缺页；要结合工作集、`si/so`、I/O 延迟和请求耗时，才能判断是否发生了影响业务的反复换页，不能把所有缺页都当成交换。
+
+容器里的 Go 进程突然退出时，先查容器终止原因、内核日志和对应 cgroup 的 `memory.events`，核对 `oom`、`oom_kill` 等计数在故障时段的增量。`oom_kill` 记录组内进程被 OOM killer 杀死的次数；只看到退出码 137，不能排除其他 `SIGKILL` 原因。进程被内核直接杀死时，应用可能没有机会写出最后一条日志或 profile。限制与事件的机制见[容器原理](../containers/container-principles.mdx#cgroups)；之后再结合 Go 的[heap profile](../../basic-knowledge/go/engineering/profiling.mdx#heap-profile)区分存活对象增长与分配压力，不能把进程 RSS 全部解释成 Go 堆。
+
 swap 已用量表示有页面驻留在交换空间，并不说明当前还在频繁交换；持续换入换出才是当前交换活动的证据。没有启用 swap，也可能发生内存压力。怀疑泄漏时，还要证明对象或内存持续保留，不能把内存占用高直接等同于泄漏。
 
 ### 4.3 低 CPU 与高延迟 {#低-cpu-与高延迟}
@@ -87,6 +93,14 @@ swap 已用量表示有页面驻留在交换空间，并不说明当前还在频
 接下来按请求的执行过程分解耗时。设备 `await` 上升时，关联进程 I/O 和资源受阻时间，后者可以用下一节的 PSI 查看。怀疑线程池、连接池或锁等待时，检查队列和线程栈；怀疑下游变慢时，用追踪记录和下游指标核对。
 
 线程处于等待状态本身不代表故障。只有把堆栈与慢请求、队列增长联系起来，才能判断它是否挡住了请求。日志、指标和追踪的关联方法见[可观测性](../../system-design/production/logs-metrics-traces-correlation.mdx)。
+
+### 4.4 连接与请求缺失 {#连接与请求缺失}
+
+定位监听进程可用 `ss -lntp 'sport = :3306'`；统计当前网络命名空间内已建立的 TCP socket，可用 `ss -Hant state established | wc -l`。`-H` 去掉表头，`-n` 避免服务名解析，`-t` 限定 TCP。这个结果是 socket 条目数，不是 HTTP 请求数；同机通信的两个端点还可能各占一条。端口、连接状态与抓包方法见[Linux 网络排查](./network-troubleshooting.mdx#端口与连接状态)。
+
+并发脚本声称“发了 100 个请求，服务只收到 80 个”时，先用请求标识逐段对账：任务是否真的启动并等待完成、客户端是否报错或超时、连接是否建立、服务是否收到请求、响应是否送达、日志是否完整。客户端成功创建任务不等于请求已经到达；超时也不等于服务端未执行。结合客户端错误、访问日志、队列和网络证据缩小丢失的位置，再判断是否需要重试及幂等保护。
+
+Go 服务吞吐上不去时，把上述机器指标与 [goroutine profile 和执行 trace](../../basic-knowledge/go/engineering/profiling.mdx#goroutine-profile与执行trace)对应起来。goroutine 多可能表示并发工作，也可能表示大量等待；仅增加 goroutine 数量不能消除锁、连接池或下游限额。
 
 ## 5. PSI 与容器限流 {#psi-与容器限流}
 
@@ -190,3 +204,6 @@ PSI 补充的是任务因资源受阻的时间。把组级 PSI、限流计数和
 - [Linux man-pages：iostat(1)](https://man7.org/linux/man-pages/man1/iostat.1.html)
 - [Linux Kernel：PSI](https://docs.kernel.org/accounting/psi.html)
 - [Linux Kernel：Control Group v2](https://docs.kernel.org/admin-guide/cgroup-v2.html)
+- [procps-ng：free(1)](https://man7.org/linux/man-pages/man1/free.1.html)
+- [sysstat：pidstat(1)](https://man7.org/linux/man-pages/man1/pidstat.1.html)
+- [iproute2：ss(8)](https://man7.org/linux/man-pages/man8/ss.8.html)

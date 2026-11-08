@@ -3,7 +3,8 @@ import clsx from 'clsx';
 import Link from '@docusaurus/Link';
 import {useLocation} from '@docusaurus/router';
 
-import {domainOf, domainShortLabel, useLearningIndex} from '../content';
+import {domainOf, domainShortLabel, useActiveRoleId, useLearningIndex} from '../content';
+import {withRole} from '../roles';
 import {nextReview, summarize, WeakRow} from '../review/WeakList';
 import styles from '../review/report.module.css';
 import {addDays, toDay, today, useLearner} from '../store';
@@ -36,6 +37,7 @@ function domainBreakdown(session: ReviewSession, index: LearningIndex) {
 function ReportPage() {
   const index = useLearningIndex();
   const learner = useLearner();
+  const roleId = useActiveRoleId();
   const sessionId = new URLSearchParams(useLocation().search).get('session');
   const [expanded, setExpanded] = useState(false);
   const session = learner.sessions.find((item) => item.id === sessionId) ?? learner.sessions.find((item) => item.mode === 'exam' && item.finishedAt);
@@ -44,7 +46,7 @@ function ReportPage() {
     return (
       <main className={styles.empty}>
         <span className={styles.emptyTitle}>还没有测试报告</span>
-        <Link className={styles.primary} to="/exam">
+        <Link className={styles.primary} to={withRole('/exam', roleId)}>
           设置一次模拟测试 →
         </Link>
       </main>
@@ -171,7 +173,7 @@ function ReportPage() {
           {tomorrowCount ? `，明天的今日复习多 ${tomorrowCount} 张` : ''}
         </span>
         <div className={styles.footActions}>
-          <Link className={styles.outline} to="/exam">
+          <Link className={styles.outline} to={withRole('/exam', roleId)}>
             再来一次
           </Link>
           <Link className={styles.dark} to="/progress">

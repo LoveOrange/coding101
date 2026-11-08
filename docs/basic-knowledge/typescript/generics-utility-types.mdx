@@ -1,0 +1,405 @@
+---
+sidebar_position: 2
+knowledge:
+  id: basic-knowledge.typescript.generics-utility-types
+  type: concept
+description: "解释泛型如何保留输入输出关系，通过约束、keyof、索引访问、映射与条件类型推导常用工具类型，并实现具有明确边界的 DeepPartial。"
+keywords: ["TypeScript", "泛型", "工具类型", "keyof", "infer", "DeepPartial"]
+---
+
+# TypeScript 泛型与工具类型
+
+**泛型**用类型参数表达多处类型之间的关系，使同一段实现可以用于不同类型，同时保留调用方需要的信息。它的价值不是把类型都写成一个字母，而是让“传入什么，允许怎样操作，返回什么”保持一致。
+
+**工具类型**根据已有类型生成新的约束，减少重复声明。它们不会在运行时筛选字段、深拷贝对象或验证响应。阅读本文需要先理解 [TypeScript 类型系统](./type-system.mdx) 中的联合、交叉和静态检查边界；示例按 TypeScript 5、`strict: true` 验证。
+
+## 1. 面试核心 {#core}
+
+- 泛型在不同位置共享类型参数。**它保留输入、输出和成员之间的关系，any 则会丢失许多检查；只出现一次且没有关系需要保留的类型参数可能没有必要**。[卡](#generic-purpose)
+- 类型推断可以从实参和上下文确定参数。**泛型实现必须对约束允许的所有类型成立，不能假设调用方总是传某个熟悉的具体类型**。[卡](#constraints)
+- `K extends keyof T` 限制键，`T[K]` 表示对应属性的类型。**键和返回值需要关联，不能把所有键的结果都宽化成一个失去对应关系的联合**。[卡](#keyof-indexed)
+- 映射类型逐个处理键，条件类型根据类型关系选择结果。**它们发生在类型层面，不是运行时循环和 if**。[卡](#mapped-utilities)
+- `Partial`、`Pick`、`Omit` 等工具改变可接受的结构。**Partial 默认只处理一层，Pick 与 Omit 不会从实际对象中删除字段**。[卡](#pick-omit)
+- 条件类型中直接检查裸类型参数时，可以对联合成员分别计算。**用元组包裹可改为整体判断，never 的分发行为也要纳入推导**。[卡](#conditional-distribution)
+- `infer` 从匹配成功的类型结构中提取一部分。**提取结果仍是类型，不会执行函数或等待 Promise**。[卡](#infer-types)
+- DeepPartial 的行为需要先定义。**对象属性、数组元素、元组位置、函数和内建对象有不同语义，递归到 object 不是通用的深层更新协议**。[卡](#deep-partial)
+- 复杂类型也有成本。**优先保留清楚的业务关系与可理解的报错，不用递归类型谜题替代运行时校验或必要的普通代码**。
+
+## 2. 类型参数与关系保留 {#类型参数与关系保留}
+
+**类型参数**是声明中暂时还未确定的类型，例如 `identity<T>` 中的 `T`。调用时可以显式传入，也可以由编译器推断。
+
+```ts
+function identity<T>(value: T): T {
+  return value;
+}
+const text = identity("hello");
+const count = identity<number>(3);
+console.log(text.toUpperCase(), count.toFixed(1)); // HELLO 3.0
+// count.toUpperCase(); // 编译错误：number 没有字符串方法
+```
+
+同一个 `T` 把参数与返回值连起来，所以返回值保持对应类型。若改成 `(value: any): any`，调用方就无法靠返回类型发现 `count.toUpperCase()` 这样的错误；若都写成 `unknown`，又会失去已知输入与输出相同的关系，需要重新收窄。
+
+联合类型同样不能替代所有泛型关系。`(value: string | number) => string | number` 只说明输入和输出各有两种可能，没有保证输入字符串时输出也是字符串。
+
+### 2.1 返回类型仍要符合实际边界 {#返回类型仍要符合实际边界}
+
+泛型不会让运行时不存在的值出现。取数组第一项时，空数组必须有明确结果：
+
+```ts
+function first<T>(items: readonly T[]): T | undefined {
+  return items[0];
+}
+console.log(first([10, 20]), first<string>([])); // 10 undefined
+```
+
+这里显式返回 `T | undefined`，表达了空输入。`readonly T[]` 允许接收只读数组，因为实现只读取元素，不需要修改调用方容器。若希望空数组抛错或要求输入是非空元组，也应在签名与实现中同时表达，而不是只把返回类型写成 `T`。
+
+类型参数可以出现在函数、接口、类型别名和类中。`type Response<T = unknown> = { data: T }` 的默认参数让调用方省略类型实参时使用 `unknown`，不意味着对所有具体响应做了验证。
+
+## 3. 泛型约束 {#泛型约束}
+
+**泛型约束**通过 `extends` 说明类型参数至少需要满足哪些条件。实现只能依赖这些已知条件，不能把满足约束的所有类型都当成约束本身。
+
+```ts
+function describeLength<T extends { length: number }>(value: T): T {
+  console.log(value.length);
+  return value;
+}
+const text = describeLength("abc"); // 3
+const values = describeLength([1, 2]); // 2
+console.log(text.toUpperCase(), values.length); // ABC 2
+// describeLength(123); // 编译错误：number 不提供 length
+```
+
+函数能读取 `length`，返回时仍保留字符串或数组的具体类型。若只需要打印长度、返回 `void`，而没有其他位置需要保留 `T`，直接声明参数为 `{ length: number }` 往往就够用。
+
+约束也不允许实现随意构造一个替代 `T` 的对象：
+
+```ts
+function keep<T extends { length: number }>(value: T): T {
+  // return { length: value.length }; // 编译错误：只有 length 不保证满足调用方的 T
+  return value;
+}
+const input = { length: 2, label: "pair" };
+console.log(keep(input).label); // pair
+```
+
+调用方的 `T` 可能还有 `label`、方法或其他约束。`{ length: value.length }` 只满足最低约束，不能保证是同一个 `T`。强行写 `as T` 会隐藏这个缺口，而不是修复实现。
+
+## 4. keyof、typeof 与索引访问 {#keyof-typeof-与索引访问}
+
+**keyof** 取得某个类型允许访问的键，**索引访问类型** `T[K]` 取得这些键对应的值类型。把它们组合起来，可以准确描述取属性操作。
+
+```ts
+function getProperty<T, K extends keyof T>(value: T, key: K): T[K] {
+  return value[key];
+}
+const user = { id: 7, name: "Lin" };
+const id = getProperty(user, "id");
+const name = getProperty(user, "name");
+console.log(id.toFixed(0), name.toUpperCase()); // 7 LIN
+// getProperty(user, "missing"); // 编译错误：键不属于 keyof typeof user
+```
+
+`K` 不仅限制可用键，还决定返回值：`"id"` 对应 `number`，`"name"` 对应 `string`。如果只写返回 `T[keyof T]`，每次结果就可能退化为所有属性类型的联合，丢失这次调用具体选中了哪个键的信息。
+
+**类型位置的 typeof** 从一个已有变量或属性取得静态类型，例如 `type User = typeof user`。它与运行时 `typeof user` 返回字符串 `"object"` 不同。
+
+`keyof` 也不总是字符串字面量联合。数字索引、字符串索引和 symbol 键会影响结果；有字符串索引签名时，数字键也可能被包含，因为 JavaScript 对象的数字属性访问会涉及字符串键转换。
+
+不能把 `Object.keys(value)` 一律断言成 `(keyof T)[]` 并认为它总是精确。类型允许一个值实际带有额外属性，`Object.keys` 返回运行时自有可枚举字符串键，也不包含 symbol。这两组键的定义不同，通用封装需要说明自己额外保证了什么。
+
+## 5. 映射类型与常用工具 {#映射类型与常用工具}
+
+**映射类型**按一组键生成属性定义。例如下面的类型从 `T` 的每个键出发，把对应属性改成可选，同时保留属性值类型：
+
+```ts
+type OptionalFields<T> = { [K in keyof T]?: T[K] };
+type User = { id: number; name: string };
+const patch: OptionalFields<User> = { name: "Kai" };
+console.log(patch.name); // Kai
+// const invalid: OptionalFields<User> = { id: "7" }; // 编译错误：id 仍需 number
+```
+
+`[K in keyof T]` 是类型层面依次处理各个键，不会生成 JavaScript 的循环。加上 `?` 改变可选性，原有的值类型并未被替换成任意值。对应的标准工具是 `Partial<T>`。
+
+映射修饰符还可以增加或移除只读与可选约束，例如 `readonly`、`-readonly`、`-?`。直接从 `keyof T` 映射的形式也会按规则保留已有修饰符，并能处理数组和元组，不是只能用于普通对象。
+
+| 工具类型 | 作用与边界 |
+| --- | --- |
+| `Partial<T>` | 将这一层属性设为可选，不自动递归 |
+| `Required<T>` | 移除这一层可选修饰符，不负责生成缺失数据 |
+| `Readonly<T>` | 提供只读使用视角，不等于运行时冻结 |
+| `Pick<T, K>` | 保留选定键的类型定义，`K` 需要满足键约束 |
+| `Omit<T, K>` | 从类型中省略指定键，不删除实际对象字段 |
+| `Record<K, V>` | 为键集合建立统一的值类型；有限键联合可要求这些键都存在 |
+| `Exclude<T, U>`、`Extract<T, U>` | 根据可赋值关系排除或保留联合成员 |
+| `NonNullable<T>` | 从类型中排除 `null` 与 `undefined`，不执行运行时判空 |
+| `Parameters<F>`、`ReturnType<F>` | 提取函数参数元组与返回类型 |
+| `Awaited<T>` | 模拟 await 对 Promise 或 thenable 等类型的解包关系，不发起等待 |
+
+### 5.1 Pick、Omit 与运行时字段 {#pick-omit-与运行时字段}
+
+`Pick` 可以用索引访问直接推导；`Omit` 则可先排除键，再选择剩余键：
+
+```ts
+type MyPick<T, K extends keyof T> = { [P in K]: T[P] };
+type MyOmit<T, K extends PropertyKey> = Pick<T, Exclude<keyof T, K>>;
+type User = { id: number; name: string; token: string };
+const source: User = { id: 1, name: "Lin", token: "demo" };
+const display: MyPick<User, "id" | "name"> = source;
+const publicView: MyOmit<User, "token"> = source;
+console.log(display.name, Object.keys(publicView).join(",")); // Lin id,name,token
+```
+
+赋值没有创建新对象，`token` 在运行时仍然存在。若接口响应确实不能包含某个字段，需要写运行时选择或序列化代码，不能只把变量类型改成 `Omit`。
+
+这里的 `MyOmit` 与常用工具一样，主要用于单一对象结构。对联合类型，如果需要逐个分支保留各自独有字段，应先理解 `keyof` 与条件类型的分发，不能直接假定所有工具都会按业务期待逐分支操作。
+
+### 5.2 浅层 Partial {#浅层-partial}
+
+`Partial<T>` 只改变当前层属性。一个嵌套属性一旦提供，它的内部结构仍按原类型检查。
+
+```ts
+type Settings = { account: { name: string; active: boolean }; theme: string };
+const first: Partial<Settings> = {};
+const second: Partial<Settings> = { account: { name: "Lin", active: true } };
+console.log(Object.keys(first).length, second.account?.name); // 0 Lin
+// const invalid: Partial<Settings> = { account: { name: "Lin" } }; // 编译错误：缺少 active
+```
+
+这适合“要么不更新 account，要么给出完整 account”的接口。若业务允许只改内部某一个字段，就需要进一步定义递归更新约定，而不是认为 `Partial` 已经自动完成。
+
+## 6. 条件类型与联合分发 {#条件类型与联合分发}
+
+**条件类型**形如 `T extends U ? X : Y`，根据类型是否满足关系选择结果。它不是运行时对某个值做判断。
+
+```ts
+type ToArray<T> = T extends unknown ? T[] : never;
+type WholeArray<T> = [T] extends [unknown] ? T[] : never;
+type Split = ToArray<string | number>; // string[] | number[]
+type Together = WholeArray<string | number>; // (string | number)[]
+const separate: Split = [1, 2];
+const mixed: Together = [1, "two"];
+console.log(separate.length, mixed.length); // 2 2
+// const invalid: Split = [1, "two"]; // 编译错误：不是单一分支的数组
+```
+
+在 `ToArray` 中，被检查的是裸类型参数 `T`。当传入联合时，条件可以分别作用于各个成员，再把结果合成联合，这称为**分发条件类型**。
+
+`[T]` 把被检查对象包成元组后，就改成整体判断。因此 `Together` 的每个元素都可以属于字符串或数字，而 `Split` 要求整个数组满足某一个分支。
+
+`never` 在这类分发中相当于没有可处理的联合成员，因此 `ToArray<never>` 得到 `never`，并不是 `never[]`。要判断一个类型整体是不是 `never`，可以使用 `[T] extends [never]`，而不是直接依赖会分发的形式。
+
+`Exclude<T, U>` 可以按 `T extends U ? never : T` 理解；`Extract<T, U>` 则反过来保留满足条件的成员。这里比较的是类型的可赋值关系，不是字符串值相等。
+
+## 7. infer 与类型提取 {#infer-与类型提取}
+
+**infer** 在条件类型的匹配部分声明一个待推断的类型变量，供匹配成功的分支使用。它适合提取数组元素、函数返回值或容器内部类型。
+
+```ts
+type ElementOf<T> = T extends readonly (infer Item)[] ? Item : never;
+type FunctionResult<T> = T extends (...args: any[]) => infer Result ? Result : never;
+type Value = ElementOf<readonly [1, "two"]>; // 1 | "two"
+type Output = FunctionResult<(value: number) => string>; // string
+const value: Value = "two";
+const output: Output = "ready";
+console.log(value, output); // two ready
+```
+
+`Item` 来自数组的元素结构，`Result` 来自函数签名；这里没有调用函数，也没有读取运行时数组。函数模式中的 `any[]` 用于匹配参数列表，不能据此认为业务参数也应全部改成 `any`。
+
+复杂函数的提取有边界。例如对重载函数提取返回类型时，推断通常依据最后一个签名，而不是根据某个实际调用参数重新选择重载。需要某次调用结果时，通常让普通函数调用和推断发挥作用，比手写越来越复杂的提取类型更直接。
+
+Promise 类型解包优先使用 `Awaited<T>`，因为它不仅是简单剥掉一层 `Promise` 包装，还需要处理递归和 thenable 等关系。工具类型求值不会执行异步操作。
+
+## 8. DeepPartial 的递归约定 {#deeppartial-的递归约定}
+
+**DeepPartial** 通常指递归地让嵌套对象属性变为可选的自定义工具类型，但它不是 TypeScript 内置的统一标准。数组是否允许缺项、元组是否保留位置、函数是否保留调用能力，都需要先约定。
+
+本节选择适合普通配置对象的一组规则：普通对象属性递归可选；数组保持容器与元素位置，只递归处理元素结构；元组保留原有长度、可选性和只读性；函数与 `Date` 作为整体值保留。输入不包含 `Map`、`Set` 或其他需要专门处理的类实例。
+
+```ts
+type DeepPartial<T> =
+  T extends (...args: any[]) => unknown ? T :
+  T extends Date ? T :
+  T extends readonly unknown[] ? { [K in keyof T]: DeepPartial<T[K]> } :
+  T extends object ? { [K in keyof T]?: DeepPartial<T[K]> } :
+  T;
+
+type Settings = {
+  account: { name: string; active: boolean };
+  items: { id: number; label: string }[];
+  range: readonly [number, { unit: string }];
+  updatedAt: Date;
+  onSave: (id: number) => void;
+};
+const patch: DeepPartial<Settings> = {
+  account: { name: "Lin" },
+  items: [{ id: 1 }],
+  range: [0, {}],
+  updatedAt: new Date(0),
+  onSave: id => console.log(id),
+};
+console.log(patch.account?.name, patch.items?.[0]?.id); // Lin 1
+patch.onSave?.(7); // 7
+// const invalid: DeepPartial<Settings> = { range: [0] }; // 编译错误：本约定保留元组位置
+```
+
+先处理函数和 `Date`，是为了避免把它们都当作普通对象拆成可选成员，丢掉本来需要保留的行为。数组分支没有给索引添加 `?`，所以元素不因这条规则自动获得 `undefined`；对象分支才把属性设成可选。
+
+条件中的 `T` 允许对联合成员分别处理，因此原有 `null` 或 `undefined` 可以走对应分支保留。映射类型也会保留原有只读关系；它只生成类型，不改变 `patch` 的运行时对象。
+
+这不是通用深合并函数。`items: [{ id: 1 }]` 是替换整个数组、按索引合并，还是按 `id` 更新，类型本身没有定义。业务还要明确删除、显式 `undefined`、数组更新和不可变数据等规则。对任意类实例、复杂容器或无限递归结构，也不应直接承诺这个定义完整适用。
+
+## 9. 使用边界与验证 {#使用边界与验证}
+
+泛型首先服务关系。如果一个类型参数既不约束后续操作，也不连接多个位置，直接写结构类型可能更清楚。反过来，如果输入与输出应该保持对应，就不要为了简短把两边都宽化成 `any` 或一个大联合。
+
+工具类型也应该有可验证的合同。可以准备应被接受和应被拒绝的赋值、函数调用，再检查推断出的结果。只写一个“看起来能编译”的声明，不足以证明它正确保留了只读、空值、联合成员和容器结构。
+
+递归条件与大量联合组合会增加编译器工作，也可能生成难理解的错误或达到实例化深度限制。没有一个跨版本、跨类型结构都适用的固定安全递归层数。遇到复杂度问题，先减少无意义的分发和重复展开，把业务类型拆清楚，不把无限扩展类型技巧当作目标。
+
+面向网络或存储输入时，`parse<T>(text): T` 若只是解析后 `as T`，并没有获得 `T` 的运行时验证器。需要正确性保证时，应传入与 `T` 对应的校验函数或模式，并实际执行；类型参数本身在运行时不可用于反射验证。
+
+## 10. 面试题 {#面试题}
+
+### 10.1 TypeScript 泛型解决什么问题，为什么不能直接用 any？ {#generic-purpose}
+
+**考察重点**：类型关系、复用、推断与检查信息。
+
+**相关内容**：[类型参数与关系保留](#类型参数与关系保留)、[返回类型仍要符合实际边界](#返回类型仍要符合实际边界)。
+
+<details>
+<summary>参考回答</summary>
+
+**泛型让同一份实现适用于不同类型，同时保留输入、输出或成员之间的对应关系。** `identity<T>(value: T): T` 能让返回值保持输入类型，`any` 则丢失许多检查，`unknown` 又不能表达已知的同类型关系。
+
+类型参数可以由调用推断，也可显式指定；实现仍要处理真实边界。例如取数组第一项必须考虑空数组，不能因为用了 `T` 就承诺总能返回一个元素。
+
+</details>
+
+### 10.2 泛型约束的作用是什么，为什么满足约束的对象不一定能当作 T 返回？ {#constraints}
+
+**考察重点**：最低结构要求、具体类型信息与实现普遍性。
+
+**相关内容**：[泛型约束](#泛型约束)。
+
+<details>
+<summary>参考回答</summary>
+
+**约束让实现能够依赖某些成员，但调用方的 T 可能具有更多要求。** `T extends { length: number }` 允许读取 `length`，却不允许随便返回一个只有 `length` 的新对象作为 `T`，因为调用方可能还需要 `label` 等字段。
+
+应返回真正满足具体关系的值，或把返回签名改成实际能保证的结构。强制断言不会补回丢失成员。
+
+</details>
+
+### 10.3 怎样让取属性函数的返回类型跟传入的键对应？ {#keyof-indexed}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：keyof 约束、索引访问与调用推断。
+
+**相关内容**：[keyof、typeof 与索引访问](#keyof-typeof-与索引访问)。
+
+<details>
+<summary>参考回答</summary>
+
+**用 T 描述对象，用 K extends keyof T 描述本次选择的键，并返回 T[K]。** 这样 `"id"` 可以得到数字类型，`"name"` 可以得到字符串类型，非法键则被拒绝。
+
+直接返回 `T[keyof T]` 容易丢失本次键与值之间的关系。还要区分类型中的键与 `Object.keys` 的运行时自有可枚举字符串键，后者不一定恰好等于 `keyof T`。
+
+</details>
+
+### 10.4 映射类型怎样实现 Partial，Required 与 Readonly 又改变什么？ {#mapped-utilities}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：键遍历、属性类型、修饰符与浅层语义。
+
+**相关内容**：[映射类型与常用工具](#映射类型与常用工具)、[浅层 Partial](#浅层-partial)。
+
+<details>
+<summary>参考回答</summary>
+
+**映射类型从已有键生成属性，Partial 可理解为 `{ [K in keyof T]?: T[K] }`。** `Required` 移除可选修饰符，`Readonly` 提供只读视角，值类型仍受原约束。
+
+这些变化不执行运行时循环，不生成缺失字段，也不冻结对象。`Partial` 默认只处理一层，嵌套对象一旦提供，内部仍要满足原结构。
+
+</details>
+
+### 10.5 Pick 与 Omit 分别做什么，会从实际对象中删除字段吗？ {#pick-omit}
+
+**考察重点**：键选择、类型变换与运行时值。
+
+**相关内容**：[Pick、Omit 与运行时字段](#pick-omit-与运行时字段)。
+
+<details>
+<summary>参考回答</summary>
+
+**Pick 从类型中选择指定键，Omit 从类型中省略指定键，两者都不删除运行时字段。** `Pick<T, K>` 可按 `{ [P in K]: T[P] }` 推导，`Omit` 可先排除键再选择剩余结构。
+
+把含有 `token` 的对象赋给 `Omit<User, "token">`，同一对象仍可能带着该字段。真正的输出裁剪必须有运行时构造或序列化逻辑。
+
+</details>
+
+### 10.6 条件类型什么时候对联合分发，怎样改成整体判断？ {#conditional-distribution}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：裸类型参数、联合成员、元组包裹与 never。
+
+**相关内容**：[条件类型与联合分发](#条件类型与联合分发)。
+
+<details>
+<summary>参考回答</summary>
+
+**条件左侧直接检查裸类型参数时，可以对联合的各个成员分别计算，再合并结果。** 因此 `T extends unknown ? T[] : never` 传入字符串与数字的联合，会得到两种数组的联合。
+
+把两侧包成元组，例如 `[T] extends [U]`，可以进行整体判断。`never` 在分发中没有成员可展开，判断整体是否为 `never` 时也应使用这种包裹方式。
+
+</details>
+
+### 10.7 infer 能提取哪些信息，ReturnType 与 Awaited 会执行函数吗？ {#infer-types}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：模式匹配、类型变量作用域与运行时边界。
+
+**相关内容**：[infer 与类型提取](#infer-与类型提取)。
+
+<details>
+<summary>参考回答</summary>
+
+**infer 在条件类型的匹配部分引入待推断类型，可以提取数组元素、函数返回值或容器内部类型。** 匹配成功后，后续类型分支使用提取结果。
+
+`ReturnType` 不调用函数，`Awaited` 不执行等待，它们只是描述类型关系。重载和递归结构还有具体推断规则，不能把类型提取当作某次实际运行的结果。
+
+</details>
+
+### 10.8 怎样实现 DeepPartial，需要先约定哪些边界？ {#deep-partial}
+
+**考察重点**：递归、联合、容器结构、只读关系与更新协议。
+
+**相关内容**：[DeepPartial 的递归约定](#deeppartial-的递归约定)、[使用边界与验证](#使用边界与验证)。
+
+<details>
+<summary>参考回答</summary>
+
+**先定义哪些对象递归、数组和元组怎样处理，再用条件类型选择分支、映射类型递归属性。** 本文让普通对象属性可选，保留数组与元组的容器关系，递归元素；函数和 `Date` 保留为整体，不承诺支持所有内建容器与类实例。
+
+需要测试嵌套缺省、错误值类型、只读、元组长度、空值和函数调用能力。类型不会规定运行时深合并策略，数组替换、删除和显式 `undefined` 的语义仍由业务接口决定。
+
+</details>
+
+## 11. 参考资料 {#参考资料}
+
+- [TypeScript Handbook：Generics](https://www.typescriptlang.org/docs/handbook/2/generics.html)
+- [TypeScript Handbook：Keyof Type Operator](https://www.typescriptlang.org/docs/handbook/2/keyof-types.html)
+- [TypeScript Handbook：Typeof Type Operator](https://www.typescriptlang.org/docs/handbook/2/typeof-types.html)
+- [TypeScript Handbook：Indexed Access Types](https://www.typescriptlang.org/docs/handbook/2/indexed-access-types.html)
+- [TypeScript Handbook：Mapped Types](https://www.typescriptlang.org/docs/handbook/2/mapped-types.html)
+- [TypeScript Handbook：Conditional Types](https://www.typescriptlang.org/docs/handbook/2/conditional-types.html)
+- [TypeScript Handbook：Utility Types](https://www.typescriptlang.org/docs/handbook/utility-types.html)

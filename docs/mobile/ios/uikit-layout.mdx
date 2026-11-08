@@ -1,0 +1,320 @@
+---
+knowledge:
+  id: mobile.ios.uikit-layout
+  type: concept
+description: "解释 UIView 与 CALayer、坐标系、Auto Layout 约束与优先级、布局更新，以及 Masonry 和离屏渲染的边界。"
+keywords: [UIView, CALayer, frame, bounds, Auto Layout, Masonry, UIStackView, 离屏渲染]
+---
+
+# UIKit 布局
+
+**UIKit 布局**决定视图在界面中的位置和尺寸。手工设置几何属性与 Auto Layout 约束是两种相关手段：前者直接给出几何结果，后者描述视图之间必须满足的关系，再由布局系统求解。
+
+页面显示异常时，先判断问题属于坐标、约束、布局时机还是绘制合成。改变一个约束后 frame 暂时没变，与图层绘制成本过高，是不同问题，排查方式也不同。
+
+## 1. 面试核心 {#core}
+
+- UIView 管理界面层级、布局与交互，CALayer 承担视觉内容和合成相关职责，**图层并不替代 UIView 的事件响应能力**。[卡](#view-layer)
+- `frame` 使用父视图坐标，`bounds` 使用自身坐标，**bounds 的原点不保证永远是零，非单位 transform 下不能继续把 frame 当可靠几何依据**。[卡](#coordinates)
+- Auto Layout 通过关系、常量和优先级求解位置尺寸，**不是给每个视图机械凑够固定数量的约束**。[卡](#autolayout)
+- 约束冲突是没有可行解，歧义是存在多个解，**界面暂时看起来正常不能证明约束正确**。[卡](#constraints)
+- intrinsic content size 提供内容相关的自然尺寸，**hugging 抵抗变大，compression resistance 抵抗变小**，需要分轴考虑。[卡](#intrinsic)
+- 布局更新与重绘分开调度，**setNeedsLayout 标记需要布局，layoutIfNeeded 按需要执行当前布局，setNeedsDisplay 请求重绘内容**。[卡](#passes)
+- Masonry 是 Auto Layout 的封装，**make、update 和 remake 对已有约束的处理不同**。[卡](#masonry)
+- 等分布局应表达总宽度、间距和相等关系，**point 可以有小数，不必提前把每个宽度截成整数**。[卡](#equal-buttons)
+- 离屏渲染使用中间结果再参与合成，**圆角、阴影或缓存开关是否增加成本，需要结合组合条件和实际测量**。[卡](#offscreen)
+
+## 2. UIView、CALayer 与坐标 {#uiviewcalayer与坐标}
+
+### 2.1 视图和图层的分工 {#视图和图层的分工}
+
+**UIView** 管理界面区域、视图层级、布局和事件响应。**CALayer** 保存视觉内容与相关属性，并参与动画和合成。UIKit 的 UIView 由图层支持，可以通过 `view.layer` 配置阴影、边框等效果。
+
+CALayer 不属于 UIResponder 响应链。直接添加一个图层，不能期待它自动获得 UIButton 的触摸处理、无障碍语义或 Auto Layout 约束行为。纯装饰内容可以使用图层，但交互与布局责任仍需要明确。
+
+UIKit 管理着视图与其 backing layer 的协作，不能任意替换这层关系或把视图关联图层的 delegate 当作普通业务代理改写。界面层级操作与布局一般应在主线程执行；把相同 API 移到后台队列并不能自动解决主线程卡顿。
+
+### 2.2 frame、bounds 与 center {#framebounds与center}
+
+在没有非单位变换的情况下，`frame` 描述视图在父视图坐标系中的位置和尺寸；`bounds` 描述视图自身的坐标区域；`center` 表示视图中心在父视图坐标系中的位置。它们的单位是 **point**，不等于固定数量的物理像素。
+
+`bounds.origin` 默认是 `(0, 0)`，但可以改变。它改变的是视图内部坐标区域，不必让视图在父视图中的位置一起移动。下面通过坐标转换观察差异：
+
+```swift
+import UIKit
+
+@MainActor
+func coordinateExample() -> (CGPoint, CGPoint) {
+    let parent = UIView(frame: CGRect(x: 0, y: 0, width: 300, height: 300))
+    let child = UIView(frame: CGRect(x: 30, y: 40, width: 100, height: 60))
+    parent.addSubview(child)
+
+    let before = child.convert(CGPoint.zero, to: parent)
+    child.bounds.origin = CGPoint(x: 10, y: 20)
+    let after = child.convert(CGPoint.zero, to: parent)
+    return (before, after)
+}
+```
+
+变更前，child 的本地 `(0, 0)` 对应父坐标 `(30, 40)`；变更后，它对应 `(20, 20)`。视图在父坐标中的 frame 没有因为这次原点变化而平移，但本地坐标与父坐标之间的映射改变了。
+
+跨层级或跨窗口计算位置时，优先使用 `convert` 等坐标转换接口，不手工累加几个 frame。滚动、非零 bounds 原点和变换都会让手工计算遗漏条件。
+
+### 2.3 transform 与布局几何 {#transform与布局几何}
+
+**transform** 对视图施加平移、缩放或旋转等仿射变换。UIView 官方契约要求：当 transform 不是单位变换时，frame 的值不应作为可靠依据使用或修改。需要调整此时的几何，应根据具体操作使用 bounds、center 和坐标转换。
+
+例如一个旋转后的视图，在父坐标里占据的轴对齐包围区域，不等于它在自身坐标里的内容尺寸。不能拿某个观察到的 frame 宽度反推原始内容宽度，再继续用它构造约束。
+
+使用 Auto Layout 时，约束决定布局几何。直接改受约束视图的 frame，可能在下一次布局时被重新计算的结果覆盖。需要改变布局时更新约束；需要在已有布局基础上做视觉动画时，再明确变换的用途。
+
+## 3. Auto Layout 的约束模型 {#auto-layout的约束模型}
+
+### 3.1 用关系求解尺寸和位置 {#用关系求解尺寸和位置}
+
+**约束**表达两个布局属性之间的相等或不等关系，例如“按钮左边与容器左边相差 20 point”“两个按钮宽度相同”。关系还可以包含乘数、常量和优先级。
+
+求解需要足够的信息确定目标几何，但这些信息不全来自显式宽高约束。边缘关系、内容自然尺寸、布局引导和容器已有几何，都可能参与求解。因此“一个视图固定写四条约束就够了”不成立：四条互相重复的约束仍可能留下自由度。
+
+代码创建视图后，使用自定义 Auto Layout 约束通常需要把 `translatesAutoresizingMaskIntoConstraints` 设为 `false`，避免旧的 autoresizing mask 被转换成另一组约束，与自定义关系冲突。这个设置不代表视图会自动获得完整布局。
+
+`safeAreaLayoutGuide` 表达相对于当前视图安全区域的布局关系，不是固定的顶部或底部数值。导航容器、设备、窗口大小和系统界面都会影响它。相同内容在不同容器里，不应一律硬编码同一个状态栏高度。
+
+### 3.2 优先级、冲突与歧义 {#优先级冲突与歧义}
+
+**优先级**决定约束发生竞争时的取舍。required 的优先级为 `1000`，必须满足；较低优先级允许布局系统在必要时放弃相应要求。比如宽度必须等于 `200`，同时有一个优先级 `999` 的“希望宽度等于 `100`”，可以保留前者而不满足后者。
+
+如果这两个矛盾关系都要求 `1000`，就构成**不可满足约束**。UIKit 会报告冲突，并尝试打破部分约束以继续显示；具体打破哪一条不应当成为业务依赖。应根据需求调整约束或优先级，而不是看到界面能用就忽略日志。
+
+**布局歧义**表示约束允许多个结果，例如普通 UIView 只有中心位置，没有足够信息决定宽高。它和互相矛盾的约束不是同一个问题。可用 `hasAmbiguousLayout`、约束检查与调试工具定位。应在视图接入实际层级并完成相关布局后检查，同时覆盖不同内容、语言和尺寸条件。
+
+把所有约束都提到 `1000`，不会自动提升正确性；随意降低所有优先级，也只是让布局丢失意图。应明确哪些关系必须保证，哪些尺寸或间距可以先让步。
+
+### 3.3 内容自然尺寸与抗拉伸、抗压缩 {#内容自然尺寸与抗拉伸抗压缩}
+
+**intrinsic content size** 是视图根据内容提供的自然尺寸，例如 UILabel 的文本和字体会影响它。普通 UIView 通常没有这样的自然宽高，不能把任何子视图都当作自带尺寸。
+
+**Content hugging** 倾向于不让视图比自然尺寸更大；**compression resistance** 倾向于不让视图比自然尺寸更小。两个优先级分别作用于水平和垂直方向：空间多时需要决定谁伸展，空间不足时需要决定谁先压缩。
+
+两个标签排在一行时，可以让某个标签更容易拉长，同时让另一个标签更不容易被压缩。多行文本还需要合适的可用宽度才能确定换行后的高度。动态字体、长翻译文本和空内容会改变约束结果，需要在这些输入下检查，而不是只验证默认中文标题。
+
+## 4. 等分布局与更新时机 {#等分布局与更新时机}
+
+### 4.1 三个按钮等宽排列 {#三个按钮等宽排列}
+
+UIStackView 可以管理 arranged subviews 的排列。横向栈配合 `.fillEqually` 与固定间距，可以表达三个按钮等宽的要求：
+
+```swift
+import UIKit
+
+@MainActor
+func makeToolbar(in container: UIView) -> UIStackView {
+    let buttons = ["上一项", "收藏", "下一项"].map { title in
+        let button = UIButton(type: .system)
+        button.setTitle(title, for: .normal)
+        return button
+    }
+    let stack = UIStackView(arrangedSubviews: buttons)
+    stack.axis = .horizontal
+    stack.distribution = .fillEqually
+    stack.spacing = 8
+    stack.translatesAutoresizingMaskIntoConstraints = false
+    container.addSubview(stack)
+    NSLayoutConstraint.activate([
+        stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 20),
+        stack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -20),
+        stack.topAnchor.constraint(equalTo: container.topAnchor),
+        stack.heightAnchor.constraint(equalToConstant: 44)
+    ])
+    return stack
+}
+```
+
+若容器宽度是 `321` point，可分给按钮的宽度为 `321 - 40 - 16 = 265` point，每个按钮约 `88.333` point。point 坐标允许小数；最终显示还涉及屏幕比例和像素对齐，不需要先把三个宽度各自截为整数，再让最后一个按钮填补逻辑误差。
+
+这段示例刻意使用容器边缘，假定容器本身已经放在合适的可用区域。真正页面若要避开系统遮挡，可把对应约束连接到 safe area。等宽也不是所有内容都适用：长文本、辅助功能字号和最小点击区域仍要验证。
+
+### 4.2 约束更新通常延后求解 {#约束更新通常延后求解}
+
+改变约束常量、激活状态或视图层级后，系统通常安排后续布局过程，不要求在每次赋值之后立即修改全部 frame。这有助于合并同一轮中的多项变化。
+
+| API | 含义 |
+| --- | --- |
+| `setNeedsUpdateConstraints()` | 标记约束需要更新 |
+| `setNeedsLayout()` | 标记需要布局，等待后续处理 |
+| `layoutIfNeeded()` | 如果接收视图的相关布局需要更新，就执行所需布局 |
+| `setNeedsDisplay()` | 标记内容需要重新绘制，不负责求解约束 |
+
+`layoutSubviews()` 是布局回调，不应靠业务代码直接调用来模拟系统流程。自定义布局时按要求调用 `super`，只处理本次需要改变的子视图；不要在回调里无条件再次标记相同布局，制造反馈循环。
+
+使用约束动画时，通常先让共同容器完成旧布局，再修改约束，在动画块中让该容器执行新布局。调用层级需要覆盖受影响的共同关系；只对一个子视图调用布局，不一定能更新父级约束决定的全部几何。
+
+几何变化也不一定要求重新执行 `draw(_:)`。已有内容可以随尺寸或合成属性变化重新显示，是否重新绘制取决于内容与配置。将布局、绘制和屏幕合成都统称为“刷新一次”，会掩盖实际成本来源。
+
+## 5. Masonry 的约束管理 {#masonry的约束管理}
+
+**Masonry** 用 Objective-C 的链式接口组织 Auto Layout 约束，本质上仍创建和管理 NSLayoutConstraint，不是另一套绕过 UIKit 的布局引擎。下面按 Masonry 1.1.0 解释三个入口：
+
+| 方法 | 对已有约束的处理 |
+| --- | --- |
+| `mas_makeConstraints` | 为本次描述建立约束，不自动把重复描述解释为更新 |
+| `mas_updateConstraints` | 查找符合匹配条件的 Masonry 约束，找到后更新常量；找不到时可能创建新约束 |
+| `mas_remakeConstraints` | 先移除该视图已登记的 Masonry 约束，再安装本次描述 |
+
+1.1.0 的 update 匹配不只看“都是宽度”：还检查两端对象、属性、关系、乘数和优先级等。因此改变约束对象、关系或乘数后，不能假定 update 会替换旧关系，可能留下旧约束并增加新约束。
+
+remake 也不是删除 UIKit、Storyboard 或其他代码为整个界面建立的所有约束。它处理 Masonry 为相关视图登记的集合；新约束仍需要与其他来源的约束兼容。
+
+动态修改一个高度常量时，保留原约束并更新通常更清楚；整体布局关系改变时，再选择明确的移除与重建。框架封装减少了表达代码，并没有改变冲突、歧义、优先级和延迟布局这些基础规则。
+
+## 6. 布局与渲染成本 {#布局与渲染成本}
+
+**离屏渲染**先生成中间图像，再把该结果用于后续合成，而不是直接把所有内容一次写到最终目标。中间存储、额外处理和结果复用都会影响成本；它属于绘制合成层面的机制，不是 Auto Layout 求解的另一种名称。
+
+某些遮罩、阴影和组合效果可能需要额外中间处理，但不能仅看一个 `cornerRadius` 就断言所有系统与所有组合都会走同一条昂贵路径。应先确定具体内容、裁剪、透明度和动画条件，再用性能工具观察。
+
+设置 `shadowPath` 可以直接提供阴影形状，避免始终依赖合成后的透明度轮廓来决定形状；尺寸变化时，路径也需要按实际几何更新。`shouldRasterize = true` 表示先把图层内容栅格化为位图再合成，不等于无条件开启优化。内容频繁变化时，生成中间结果的成本可能反复发生，缩放与栅格化比例还会影响清晰度。
+
+定位问题时，应分别检查主线程上的约束更新、布局与绘制工作，以及渲染合成成本。只有确认哪一段超过预算，才能判断是减少重复约束、简化视图层级、调整效果，还是改变数据更新方式。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 UIView 与 CALayer 有什么区别？ {#view-layer}
+
+**考察重点**：界面管理、交互与视觉合成的分工。
+
+**相关内容**：[视图和图层的分工](#视图和图层的分工)。
+
+<details>
+<summary>参考回答</summary>
+
+**UIView 管理界面层级、布局和交互，CALayer 管理视觉内容及动画合成相关属性。** UIKit 的视图由图层支持，但 CALayer 不属于 UIResponder 响应链，不能仅添加图层就获得控件事件或无障碍行为。自定义效果可以通过图层实现，仍要明确谁负责布局和交互。
+
+</details>
+
+### 7.2 frame 和 bounds 有什么区别？ {#coordinates}
+
+**考察重点**：坐标系、原点与变换条件。
+
+**相关内容**：[frame、bounds 与 center](#framebounds与center)、[transform 与布局几何](#transform与布局几何)。
+
+<details>
+<summary>参考回答</summary>
+
+**frame 使用父视图坐标，bounds 使用自身坐标，二者均以 point 表示。** bounds 原点可以改变，进而改变本地到父坐标的映射，不必让父坐标中的视图位置一起移动。transform 非单位变换时，不应继续依赖或修改 frame，应结合 bounds、center 和坐标转换处理。
+
+</details>
+
+### 7.3 Auto Layout 的基本原理与好处是什么？ {#autolayout}
+
+**考察重点**：约束关系、优先级、内容尺寸与适配。
+
+**相关内容**：[Auto Layout 的约束模型](#auto-layout的约束模型)。
+
+<details>
+<summary>参考回答</summary>
+
+**Auto Layout 用约束描述视图属性之间的关系，再结合优先级和内容尺寸求解布局。** 它让布局关系随容器尺寸、文本和安全区域变化而调整，减少手工为每种尺寸计算 frame。约束仍需足够且不互相矛盾，也需要验证长文本、动态字号和不同窗口环境。
+
+</details>
+
+### 7.4 约束冲突与布局歧义有什么区别？把优先级全部设为 1000 能解决吗？ {#constraints}
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：可行解、唯一解与约束取舍。
+
+**相关内容**：[优先级、冲突与歧义](#优先级冲突与歧义)。
+
+<details>
+<summary>参考回答</summary>
+
+**冲突表示要求无法同时满足，歧义表示允许多个布局结果。** 全部设为 1000 不能补齐缺失信息，还可能让原本可让步的关系变成冲突。应明确必须满足的关系与可让步项，并通过调试和输入场景验证结果。
+
+</details>
+
+### 7.5 Content hugging 与 compression resistance 分别解决什么问题？ {#intrinsic}
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：自然尺寸、可伸展空间与压缩竞争。
+
+**相关内容**：[内容自然尺寸与抗拉伸、抗压缩](#内容自然尺寸与抗拉伸抗压缩)。
+
+<details>
+<summary>参考回答</summary>
+
+**Hugging 抵抗大于自然尺寸，compression resistance 抵抗小于自然尺寸。** 空间多时决定谁更容易伸展，空间不足时决定谁更容易压缩；两个方向分别有优先级。它们依赖视图提供的 intrinsic content size，普通 UIView 不会因此自动知道自己的宽高。
+
+</details>
+
+### 7.6 setNeedsLayout、layoutIfNeeded 和 setNeedsDisplay 有什么区别？ {#passes}
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：延迟布局、按需执行和绘制内容。
+
+**相关内容**：[约束更新通常延后求解](#约束更新通常延后求解)。
+
+<details>
+<summary>参考回答</summary>
+
+**setNeedsLayout 标记后续布局，layoutIfNeeded 按当前需要执行布局，setNeedsDisplay 标记重绘内容。** 改约束后不一定立即更新全部 frame，调用布局时还要选对覆盖相关约束的容器。布局完成不等于所有内容都重新绘制，更不等于 GPU 已完成最终显示。
+
+</details>
+
+### 7.7 Masonry 的 make、update 和 remake 有什么区别？ {#masonry}
+
+**考察重点**：约束创建、匹配更新与登记集合的替换。
+
+**相关内容**：[Masonry 的约束管理](#masonry的约束管理)。
+
+<details>
+<summary>参考回答</summary>
+
+**make 建立本次约束，update 尝试匹配已有约束并更新常量，remake 先移除该视图登记的 Masonry 约束再建立新关系。** 在 1.1.0 中，update 匹配还要求对象、属性、关系、乘数和优先级等一致，找不到时可能新建，所以不能把它当作任意关系替换。remake 也不会删除整个界面的所有来源约束。
+
+</details>
+
+### 7.8 三个按钮怎样均匀排列？宽度除不尽时怎么办？ {#equal-buttons}
+
+**考察重点**：相等关系、总宽度、间距和坐标单位。
+
+**相关内容**：[三个按钮等宽排列](#三个按钮等宽排列)。
+
+<details>
+<summary>参考回答</summary>
+
+**可以约束三个按钮等宽并明确边缘和间距，或者使用横向 UIStackView 的 fillEqually。** point 允许小数，不必先把每个宽度截成整数。还要考虑最终像素对齐、动态字号和最小可点击区域，不能只在某个固定宽度下验证。
+
+</details>
+
+### 7.9 什么是离屏渲染？ {#offscreen}
+
+**考察重点**：中间结果、合成成本与效果选择。
+
+**相关内容**：[布局与渲染成本](#布局与渲染成本)。
+
+<details>
+<summary>参考回答</summary>
+
+**离屏渲染先生成中间结果，再参与后续合成。** 它可能增加中间存储和处理成本，也可能让稳定内容得到复用。具体效果是否触发额外路径要结合组合与实现，不能简单说所有圆角都昂贵；shadowPath 和 shouldRasterize 也需要根据几何、更新频率和清晰度测量取舍。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [Apple：UIView](https://developer.apple.com/documentation/uikit/uiview)
+- [Apple：frame](https://developer.apple.com/documentation/uikit/uiview/frame)
+- [Apple：bounds](https://developer.apple.com/documentation/uikit/uiview/bounds)
+- [Apple：Auto Layout 约束模型](https://developer.apple.com/library/archive/documentation/UserExperience/Conceptual/AutolayoutPG/AnatomyofaConstraint.html)
+- [Apple：不可满足约束](https://developer.apple.com/library/archive/documentation/UserExperience/Conceptual/AutolayoutPG/ConflictingLayouts.html)
+- [Apple：布局歧义](https://developer.apple.com/library/archive/documentation/UserExperience/Conceptual/AutolayoutPG/AmbiguousLayouts.html)
+- [Apple：约束更新](https://developer.apple.com/library/archive/documentation/UserExperience/Conceptual/AutolayoutPG/ModifyingConstraints.html)
+- [Apple：UIStackView](https://developer.apple.com/documentation/uikit/uistackview)
+- [Apple：layoutIfNeeded](https://developer.apple.com/documentation/uikit/uiview/layoutifneeded())
+- [Apple：setNeedsDisplay](https://developer.apple.com/documentation/uikit/uiview/setneedsdisplay())
+- [Apple：safeAreaLayoutGuide](https://developer.apple.com/documentation/uikit/uiview/safearealayoutguide)
+- [Apple：CALayer 光栅化](https://developer.apple.com/documentation/quartzcore/calayer/shouldrasterize)
+- [Apple：shadowPath](https://developer.apple.com/documentation/quartzcore/calayer/shadowpath)
+- [Masonry 1.1.0：约束安装与匹配](https://github.com/SnapKit/Masonry/blob/v1.1.0/Masonry/MASViewConstraint.m)
+- [Masonry 1.1.0：约束批次管理](https://github.com/SnapKit/Masonry/blob/v1.1.0/Masonry/MASConstraintMaker.m)
+- [Masonry 1.1.0：UIView 扩展入口](https://github.com/SnapKit/Masonry/blob/v1.1.0/Masonry/View%2BMASAdditions.m)
+- [Apple：CALayer delegate](https://developer.apple.com/documentation/quartzcore/calayer/delegate)

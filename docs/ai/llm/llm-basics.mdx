@@ -18,6 +18,7 @@ keywords: ["LLM 原理", "Token", "上下文窗口", "自回归生成", "模型�
 - Token 数**由分词器决定**，同一段中文在不同模型下数量不同。输入和输出都占上下文窗口，并**按不同单价计费**，实际用量以 API 返回的 `usage` 为准。[卡](#token-usage)
 - 自回归生成先**预填充整段输入**，再一步步**预测、选择并追加下一个 Token**，直到遇到结束标记、停止序列或输出上限。[卡](#generation-flow)
 - temperature **调整概率分布的形状**，top-k **保留概率最高的 k 个候选**，top-p **保留累计概率达到 p 的最小集合**。temperature 为 0 时，批次大小引起的浮点误差**仍可能改变候选 Token 的排名**，所以输出不保证逐字一致。[卡](#sampling-params) [卡](#temperature-zero-nondeterminism)
+- 深度学习属于机器学习，生成式 AI 则按**生成内容的目标**分类；深度模型也可以只做分类，不能把三者当作同义词。[卡](#ml-dl-generative-ai)
 - 预训练让模型**学习语言和知识**，指令微调让它**学会按指令回答**，偏好优化让回答**更符合偏好**。
 - 推理模型的输出上限**同时包含推理 Token 和可见回答**。所以用户看到的回答很短，也可能已经耗尽输出预算。[卡](#reasoning-budget)
 
@@ -172,7 +173,21 @@ top-k 和 top-p 都会缩小候选范围，区别在于筛选条件：top-k 固�
 
 ## 5. 训练阶段与能力边界 {#训练阶段与能力边界}
 
-前面讲的是调用时怎样生成和控制输出，这一节看模型的能力从哪里来。训练就是用数据调整模型参数，也就是模型内部参与计算的那些数值。
+LLM 的训练属于机器学习，但机器学习不等于大语言模型。区分下面三个概念，可以看清它们的关系：
+
+| 概念 | 定义与例子 |
+| --- | --- |
+| **机器学习**（Machine Learning，ML） | 从数据中学习规律，用于预测、分类或生成等任务。例如从带标签的邮件中学习垃圾邮件分类规则 |
+| **深度学习**（Deep Learning，DL） | 机器学习中的一类方法，通过多层计算学习逐层组合的表示。例如深层神经网络可以从图片中学习用于分类的特征 |
+| **生成式 AI**（Generative AI） | 以生成文本、图像、音频等内容为目标的一类 AI 模型。本文讨论的自回归 LLM 是文本生成的例子 |
+
+三者的分类角度并不完全相同。深度学习说明采用什么学习方法，是机器学习的一部分；生成式 AI 强调输出目标。用深层网络判断“这是猫还是狗”属于深度学习分类任务，不因此变成图像生成。现代生成模型可以采用深度学习，但不能反过来说所有深度学习模型都在生成内容。
+
+回到本文的 LLM，训练就是用数据调整模型参数，也就是模型内部参与计算的那些数值。
+
+与典型的任务专用模型相比，通用 LLM 先从广泛文本中做**自监督预训练**，也就是从文本本身构造预测目标，学习可用于多种任务的表示和规律。任务专用模型通常围绕特定输入、输出和目标训练；通用 LLM 则可以通过提示、少量示例或进一步微调适配不同任务，不必为每个任务都从头训练一个模型。这不保证它在每项任务上都优于专用模型。
+
+规模化依赖大量且合适的数据、足够的计算资源、可扩展的模型架构和训练方法共同配合，而不是仅靠参数变多或某一种架构。Transformer 支持了这类发展，但 **2020 年不是传统模型与大模型的技术分界**：更早的研究已经使用深度学习、语言模型预训练和任务微调。“传统模型”涵盖很广，不能一概说它们只用人工特征、没有预训练或不能生成内容。
 
 不同训练阶段用的**训练信号**不同，训练信号就是告诉模型该怎样调整的依据。三个阶段分别让模型学会语言、任务和回答偏好：
 
@@ -307,12 +322,30 @@ top-k 和 top-p 都会缩小候选范围，区别在于筛选条件：top-k 固�
 
 </details>
 
+### 6.7 Machine Learning、Deep Learning 与 Generative AI 是什么关系？ {#ml-dl-generative-ai}
+
+**考察重点**：学习方法的包含关系与生成目标的区别。
+
+**相关内容**：[训练阶段与能力边界](#训练阶段与能力边界)。
+
+<details>
+<summary>参考回答</summary>
+
+**深度学习是机器学习的一类方法，生成式 AI 则按生成内容这一目标来分类。** 机器学习从数据中学习规律；深度学习通过多层计算学习逐层组合的表示，可以用于分类，也可以用于生成。
+
+生成式 AI 生成文本、图像或音频等内容。自回归 LLM 同时使用深度学习方法并承担文本生成任务；一个只判断图片类别的深层网络，则说明深度学习不等于生成式 AI。
+
+</details>
+
 ## 7. 参考资料 {#参考资料}
 
 - [OpenAI：What are tokens and how to count them?](https://help.openai.com/en/articles/4936856-what-are-tokens-and-how-to-count-them)
 - [Hugging Face：Generation strategies](https://huggingface.co/docs/transformers/generation_strategies)
 - [The Curious Case of Neural Text Degeneration（核采样论文）](https://arxiv.org/abs/1904.09751)
 - [Training language models to follow instructions with human feedback](https://arxiv.org/abs/2203.02155)
+- [OpenAI：Language models are few-shot learners](https://openai.com/index/language-models-are-few-shot-learners/)
+- [OpenAI：Scaling laws for neural language models](https://openai.com/index/scaling-laws-for-neural-language-models/)
+- [OpenAI：Improving language understanding with unsupervised learning](https://openai.com/index/language-unsupervised/)
 - [OpenAI：Conversation state](https://developers.openai.com/api/docs/guides/conversation-state)
 - [OpenAI：Reasoning models](https://developers.openai.com/api/docs/guides/reasoning)
 - [Direct Preference Optimization](https://arxiv.org/abs/2305.18290)
@@ -326,3 +359,5 @@ top-k 和 top-p 都会缩小候选范围，区别在于筛选条件：top-k 固�
 - [Anthropic：Messages API（temperature 说明）](https://platform.claude.com/docs/en/api/messages/create)
 - [OpenAI：Advanced usage（输出复现）](https://developers.openai.com/api/docs/guides/advanced-usage)
 - [OpenAI：GPT-4o（模型快照说明）](https://developers.openai.com/api/docs/models/gpt-4o)
+- [Goodfellow、Bengio、Courville：Deep Learning，第 1 章](https://www.deeplearningbook.org/contents/intro.html)
+- [NIST：Generative artificial intelligence 定义](https://csrc.nist.gov/glossary/term/generative_artificial_intelligence)

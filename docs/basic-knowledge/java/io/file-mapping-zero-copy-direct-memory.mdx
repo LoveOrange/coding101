@@ -75,6 +75,14 @@ try (
 
 文件直接传到 Socket 的这条路径，适合不需要应用处理字节的场景。要在用户态压缩、加密、改写协议内容或逐字节解析时，数据仍需由应用访问；不需要处理的部分，例如静态文件响应体，才可以单独考虑直接传输。
 
+### 3.3 Go 的通道传输 {#go-的通道传输}
+
+Go 也可以让标准库根据实际对象选择传输路径。以 Go 1.22 为例，`io.Copy(dst, src)` 先检查 `src` 是否实现 `io.WriterTo`，其次检查 `dst` 是否实现 `io.ReaderFrom`；两者都不满足时，才使用缓冲区循环读写。实现这些接口只表示可以接管复制过程，不自动等于零拷贝。
+
+在 Linux 上，文件到普通 TCP 连接的标准库实现可以利用 `sendfile`，省去文件内容经过 Go 用户态缓冲区的步骤。是否选中它，取决于实际文件、连接类型和操作系统支持。给连接套上只暴露普通 `Read`、`Write` 的包装，可能遮住优化接口；TLS 加密、压缩等需要在用户态处理字节的操作，也不能直接套用这条原样发送路径。
+
+因此，回答「Go 怎样实现零拷贝」时，可以从文件到 TCP 的 `io.Copy` 链路解释，但不能承诺每次 `io.Copy` 都调用 `sendfile`。要同时检查返回的字节数与错误，并在目标 Linux 环境跟踪实际系统调用；只有数据内容正确，还不足以证明复制路径已经优化。
+
 ## 4. 内存映射 {#内存映射}
 
 **内存映射**（memory-mapped file）是把文件区域映射到进程地址空间，让应用通过内存访问读取内容；能否修改、修改是否写回文件，则取决于映射模式。`FileChannel.map` 建立映射，返回的 `MappedByteBuffer` 是访问入口：
@@ -275,3 +283,6 @@ HotSpot 用堆缓冲区做通道 I/O 时，需要临时直接缓冲区：写入�
 - [OpenJDK 21：Bits](https://github.com/openjdk/jdk/blob/jdk-21-ga/src/java.base/share/classes/java/nio/Bits.java)
 - [OpenJDK 21：FileChannelImpl](https://github.com/openjdk/jdk/blob/jdk-21-ga/src/java.base/share/classes/sun/nio/ch/FileChannelImpl.java)
 - [OpenJDK 21：IOUtil](https://github.com/openjdk/jdk/blob/jdk-21-ga/src/java.base/share/classes/sun/nio/ch/IOUtil.java)
+- [Go 1.22：io.Copy](https://github.com/golang/go/blob/go1.22.12/src/io/io.go)
+- [Go 1.22：Linux 文件传输](https://github.com/golang/go/blob/go1.22.12/src/os/zero_copy_linux.go)
+- [Go 1.22：TCP sendfile](https://github.com/golang/go/blob/go1.22.12/src/net/sendfile_linux.go)

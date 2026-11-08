@@ -1,0 +1,276 @@
+---
+sidebar_position: 3
+knowledge:
+  id: basic-knowledge.go.database.sqlx
+  type: concept
+description: "讲解 go-zero sqlx 的 Session、结果映射、事务与取消边界，区分同名库并核对实际 SQL 行为。"
+keywords: ["Go", "go-zero", "sqlx", "Session", "事务", "结果映射"]
+---
+
+# go-zero sqlx
+
+**go-zero sqlx** 是 `github.com/zeromicro/go-zero/core/stores/sqlx` 包，在 `database/sql` 上提供查询映射、事务回调及日志、追踪和熔断等访问能力。它仍然执行调用方写出的 SQL，不会根据结构体自动替你生成全部增删改查。
+
+使用这层封装，需要知道一次调用通过哪条连接执行、结果怎样进入结构体，以及错误是否会导致事务回滚。本文以 go-zero v1.7.3、Go 1.22.12 和 MySQL 8.0 InnoDB 为例；连接池与事务的基础规则见 [database/sql](./database-sql.mdx)。
+
+## 1. 面试核心 {#core}
+
+- **先通过完整包路径区分同名工具**。go-zero 的 sqlx、sqlc 分别负责 SQL 访问与缓存访问；`github.com/jmoiron/sqlx` 和 sqlc-dev 的代码生成器是另外的项目。[卡](#sql-tools)
+- **`SqlConn` 是访问入口，`Session` 可以代表普通访问或事务会话**。事务回调里的 SQL 必须使用传入的 Session，换回外层 SqlConn 就可能离开当前事务。[卡](#transaction-session)
+- **查询的列、`db` 标签和目标类型必须对应**。本文版本没有标签时按字段顺序扫描，有标签时按列名匹配；不能把其他库的默认命名规则套过来。[卡](#row-mapping)
+- **单行缺失与空列表是不同结果**。`QueryRowCtx` 没有记录时返回 `sqlx.ErrNotFound`，它是 `sql.ErrNoRows` 的别名；`QueryRowsCtx` 没有记录通常正常返回。[卡](#query-result)
+- **`TransactCtx` 的名字不代表所有版本都采用 `BeginTx(ctx, ...)`**。本文版本的默认启动路径调用 `DB.Begin()`，回调错误、语句取消与事务生命周期要分别判断。[卡](#transaction-context)
+- **库提供日志、追踪和熔断，不代表数据库约束、缓存或重试已经自动正确**。参数绑定、影响行数、连接预算与错误处理仍由调用代码明确安排。
+
+## 2. 包名与访问入口 {#包名与访问入口}
+
+### 2.1 同名工具 {#同名工具}
+
+只说“用了 sqlx 和 sqlc”，还不能确定具体 API。阅读代码和回答项目问题时，先核对依赖路径：
+
+| 名称 | 实际对象 | 主要职责 |
+| --- | --- | --- |
+| go-zero `core/stores/sqlx` | 运行时数据库访问包 | 执行 SQL、映射结果、组织事务及访问观测 |
+| go-zero `core/stores/sqlc` | `CachedConn` 缓存访问包 | 在数据库查询外组织缓存读取、回源和失效 |
+| `github.com/jmoiron/sqlx` | 独立数据库访问库 | 在 database/sql 上提供扫描、命名参数等辅助 |
+| sqlc-dev/sqlc | 代码生成工具 | 分析 SQL 与 schema，生成类型化的数据库调用代码 |
+
+后两者的 API 和生成流程不属于本文所讲的 go-zero 包。包名相似，也不能据此认为 go-zero sqlc 会把 SQL 编译成 Go 代码，或认为 go-zero sqlx 存在 jmoiron/sqlx 的 `GetContext`、`SelectContext`、`In` 等接口。
+
+### 2.2 SqlConn 与 Session {#SqlConn与Session}
+
+**`Session`** 定义执行、查询和预备语句等操作；**`SqlConn`** 在它的基础上提供 `TransactCtx` 和 `RawDB` 等入口。接收 Session 的查询函数，可以在普通连接入口或事务回调中复用，不必为了进入事务再复制一遍 SQL。
+
+`sqlx.NewMysql(dsn)` 创建 MySQL 访问入口。需要与已有连接池配合时，可以用 `sqlx.NewSqlConnFromDB(db)` 包装已有的 `*sql.DB`。这不会把连接池变成单条物理连接；底层连接的获取与归还仍遵循 database/sql 的规则。
+
+通过 `RawDB()` 可以取得底层句柄，检查连接池统计或统一配置。go-zero 自己管理的共享句柄不能在每个请求结束时关闭；若应用自己创建 DB 再传入包装，应由明确的所有者在应用退出时关闭。`PrepareCtx` 返回的预备语句也要按其生命周期调用 `Close`。
+
+## 3. 查询与结果映射 {#查询与结果映射}
+
+### 3.1 单行与列表 {#单行与列表}
+
+下面的 `FindProduct` 只接收 Session。调用方可以传普通 SqlConn，也可以传事务内的 Session：
+
+```go title="product.go"
+package catalog
+
+import (
+    "context"
+    "database/sql"
+
+    "github.com/zeromicro/go-zero/core/stores/sqlx"
+)
+
+type Product struct {
+    ID    int64          `db:"id"`
+    Name  sql.NullString `db:"name"`
+    Stock int64          `db:"stock"`
+}
+
+func FindProduct(ctx context.Context, session sqlx.Session, id int64) (Product, error) {
+    var product Product
+    err := session.QueryRowCtx(ctx, &product,
+        "SELECT id, name, stock FROM products WHERE id = ?", id)
+    return product, err
+}
+```
+
+`id` 是参数值，不被拼接进 SQL 结构。查到记录后，列按 `db` 标签填入字段；`Name.Valid == false` 表示数据库 NULL，与合法的空字符串不同。普通 string 不能接收 NULL，映射库不会替你决定 NULL 的业务含义。
+
+没有记录时，使用 `errors.Is(err, sqlx.ErrNotFound)` 判断缺失，不把零值 Product 当成成功。QueryRow 只取一行，不负责验证“条件最多命中一行”；示例依赖 `id` 的主键约束，其他条件仍要明确唯一性或排序。
+
+列表查询把结果追加到传入的切片。**本文版本不会先清空已有切片**，所以每次查询使用新的结果变量，避免把上一页和下一页意外拼在一起：
+
+```go title="list.go"
+package catalog
+
+import (
+    "context"
+
+    "github.com/zeromicro/go-zero/core/stores/sqlx"
+)
+
+func ListProducts(ctx context.Context, session sqlx.Session, afterID int64) ([]Product, error) {
+    products := make([]Product, 0)
+    err := session.QueryRowsCtx(ctx, &products,
+        "SELECT id, name, stock FROM products WHERE id > ? ORDER BY id LIMIT 20",
+        afterID)
+    return products, err
+}
+```
+
+没有下一页时，返回空切片且没有缺失错误。库会扫描返回行并关闭结果集，但仍会把这些记录装入内存；`LIMIT 20` 是这条 SQL 的结果规模边界，不是 QueryRows 自动提供的限制。扫描中途出错时，切片可能已经包含前面成功扫描的行，调用方应先处理错误，不把部分结果当成完整成功。
+
+### 3.2 标签、列名与部分查询 {#标签列名与部分查询}
+
+go-zero v1.7.3 的结构体映射有两种路径：没有 `db` 标签时按可写字段顺序对应列；出现有效标签时，按返回列名寻找对应标签。建议明确列名并为查询结果字段统一写标签，避免 SELECT 顺序变化或混用标签后出现静默错配。
+
+例如，结构体有 `First`、`Second` 两个 int64 字段，SQL 返回 `SELECT 10 AS second, 20 AS first`。没有标签时，结果是 First 为 10、Second 为 20；分别声明 `db:"first"`、`db:"second"` 后，才会得到 First 为 20、Second 为 10。字段英文名称本身并不建立这里的列名映射。
+
+普通 `QueryRowCtx` 对列数少于目标字段数的情况会报告 `ErrNotMatchDestination`；`QueryRowPartialCtx` 放宽这一限制，适合明确的部分查询。但 **Partial 不会自动清空未返回字段，也不会验证所有列都拼对了名字**。在有标签的映射路径中，未匹配标签的返回列可以被忽略，即使没有使用 Partial，也不能把扫描成功当成完整的 schema 校验。
+
+如果只查 id 和 name，优先定义只含这两个字段的结果结构体。确实需要 Partial 时使用新的目标值，并明确哪些字段有效；不要复用旧 Product，再把没查的 Stock 当成数据库当前值。NULL 到普通类型的转换失败，也不会因为改用 Partial 而消失。
+
+JOIN 还可能返回多个同名列。应使用明确别名和对应标签，例如 `product_id`、`category_id`，不要依赖两个 `id` 自动进入不同嵌套对象。
+
+## 4. 事务会话 {#事务会话}
+
+### 4.1 回调与同一连接 {#回调与同一连接}
+
+**事务边界由传入回调的 Session 承载。** 下面把条件扣库存和插入预留记录放在同一个事务中：
+
+```go title="reservation.go"
+package catalog
+
+import (
+    "context"
+    "errors"
+
+    "github.com/zeromicro/go-zero/core/stores/sqlx"
+)
+
+var ErrUnavailable = errors.New("product unavailable")
+
+func Reserve(ctx context.Context, conn sqlx.SqlConn, requestID string, productID int64) error {
+    return conn.TransactCtx(ctx, func(ctx context.Context, session sqlx.Session) error {
+        result, err := session.ExecCtx(ctx,
+            "UPDATE products SET stock = stock - 1 WHERE id = ? AND stock > 0",
+            productID)
+        if err != nil {
+            return err
+        }
+        affected, err := result.RowsAffected()
+        if err != nil {
+            return err
+        }
+        if affected != 1 {
+            return ErrUnavailable
+        }
+        if _, err := session.ExecCtx(ctx,
+            "INSERT INTO reservations (request_id, product_id) VALUES (?, ?)",
+            requestID, productID); err != nil {
+            return err
+        }
+        return ctx.Err()
+    })
+}
+```
+
+回调返回 nil 后，库尝试提交，并把提交错误返回；返回错误则尝试回滚。预留主键冲突时，前面的库存扣减也应回滚。条件更新在数据库里同时检查库存并递减，避免先读取旧库存，再在应用里计算并覆盖写回。
+
+如果第二条 SQL 改用外层 `conn.ExecCtx`，它会从普通入口获取连接，不再属于回调 Session 的事务。连接池够用时，这次写入可能独立提交；连接池只有一条连接且被事务占住时，外层调用还可能等待连接。函数写在同一个回调中，不代表所有数据库调用就在同一个事务里。
+
+重复 requestID 在这个示例中是错误，不是自动返回首次成功的幂等结果。提交结果不确定、重试与结果确认的设计仍要由业务完成，见 [database/sql 的事务](./database-sql.mdx#事务)。
+
+### 4.2 context 与版本边界 {#context与版本边界}
+
+`ExecCtx`、`QueryRowCtx` 等会把 context 传给相应的 database/sql 操作；但 **go-zero v1.7.3 默认的 `TransactCtx` 启动路径调用 `DB.Begin()`，不是 `DB.BeginTx(ctx, ...)`**。因此，不能照搬“传入 context 取消后，database/sql 一定自动回滚整个事务”的结论。
+
+需要逐步判断：某条使用已取消 context 的 SQL 会返回错误，回调把错误返回时触发回滚；如果先完成写入，随后 context 被取消，而回调忽略取消继续返回 nil，这个版本仍会尝试提交。上例在结束前返回 `ctx.Err()`，能拒绝当时已经观察到的取消，但不能把检查与提交之间的间隔变成原子操作。
+
+需要让事务本身受 `BeginTx` context 管理时，可以在自己管理的 `*sql.DB` 上调用 `BeginTx`，再用 `sqlx.NewSessionFromTx(tx)` 取得扫描和执行能力，并由调用方负责 Commit/Rollback。不要再把它套进另一层 Transact 回调，误以为获得了自动嵌套事务。
+
+本版本的回调还会捕获 panic、尝试回滚，再返回包含 panic 信息的错误；它不是先回滚再原样重新 panic。业务调用方应检查返回值。这个恢复范围也不覆盖另一个 goroutine 的 panic，事务内不应把未等待的数据库工作丢给后台后就返回。
+
+## 5. 访问观测与错误处理 {#访问观测与错误处理}
+
+sqlx 在普通访问路径中加入追踪、SQL 耗时记录和熔断判断。**熔断是否把某种错误计为故障，与调用方是否收到这个错误是两件事。** 例如查无记录应由业务处理为缺失，而不能因为它不代表数据库不可用就把错误丢掉。
+
+实际查询仍使用 SQL 文本和参数调用底层驱动。日志为了显示语句而格式化参数，不代表应用应该复制日志再执行；值使用占位符，表名、列名和排序表达式则从允许范围选择。也要根据数据性质控制日志内容，不把整个请求中的敏感值无条件留在诊断日志里。
+
+排查慢查询时，区分连接等待、数据库执行、结果扫描和应用处理。扫描封装不会替代索引、分页或连接预算；sqlx 本身也没有自动缓存所有查询。需要缓存时，应另外分析缓存键、回源、失效以及失败后果，而不是只换一个相似包名。
+
+## 6. 面试题 {#面试题}
+
+### 6.1 sqlx 与 sqlc 分别解决什么问题？ {#sql-tools}
+
+**考察重点**：完整包路径、运行时访问、缓存访问与代码生成的职责区别。
+
+**相关内容**：[同名工具](#同名工具)、[SqlConn 与 Session](#SqlConn与Session)。
+
+<details>
+<summary>参考回答</summary>
+
+**先确认指的是哪一组包。** 在 go-zero 中，`core/stores/sqlx` 提供 SQL 执行、结果映射和事务等能力，`core/stores/sqlc` 用 CachedConn 组织数据库查询与缓存访问。
+
+`github.com/jmoiron/sqlx` 是另一个独立的 database/sql 扩展库；sqlc-dev/sqlc 则根据 SQL 和 schema 生成类型化调用代码。不能因为名字相同，就把它们的 API、缓存行为或生成流程混为一谈。无论使用哪一种，索引、数据库事务与业务约束都仍要单独设计。
+
+</details>
+
+### 6.2 为什么 SQL 查询成功，结构体里的字段仍可能不是预期值？ {#row-mapping}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：顺序扫描、标签映射、Partial 与未查询字段。
+
+**相关内容**：[标签、列名与部分查询](#标签列名与部分查询)。
+
+<details>
+<summary>参考回答</summary>
+
+**要核对查询列与映射规则，不能只看 SQL 是否执行成功。** 本文版本没有标签时按字段顺序扫描；有标签时按列名匹配，未匹配的列可能被忽略。
+
+Partial 允许部分列查询，但不会清空旧对象中没查的字段，也不会修复拼错的标签。使用明确列名、统一标签和新的结果对象；只查询少数列时，定义对应的投影结构体，避免把旧值或零值当成数据库结果。
+
+</details>
+
+### 6.3 QueryRowCtx 和 QueryRowsCtx 没有记录时怎样处理？ {#query-result}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：单行缺失、空结果集、切片复用与部分扫描结果。
+
+**相关内容**：[单行与列表](#单行与列表)。
+
+<details>
+<summary>参考回答</summary>
+
+**单行查询没有记录返回 `sqlx.ErrNotFound`，列表没有记录通常正常返回。** `ErrNotFound` 是 `sql.ErrNoRows` 的别名，可以用 `errors.Is` 判断。
+
+QueryRows 会向目标切片追加结果，本文版本不会先清空它。每次查询用新的切片；扫描出错时先处理错误，不把已经追加的部分行当成完整结果。QueryRow 也不验证唯一性，唯一约束、排序和返回范围仍由 SQL 及表结构确定。
+
+</details>
+
+### 6.4 事务回调内为什么必须使用传入的 Session？ {#transaction-session}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：事务连接、外层访问逃离事务与连接池等待。
+
+**相关内容**：[回调与同一连接](#回调与同一连接)。
+
+<details>
+<summary>参考回答</summary>
+
+**回调的 Session 才关联当前事务。** 改用外层 SqlConn 会走普通连接入口，即使调用写在同一个回调内，也不自动加入事务。
+
+连接池能提供其他连接时，外层写入可能独立提交，不随当前事务回滚；只有一条连接时，还可能等待被事务占用的连接。需要复用查询逻辑时，让辅助函数接收 Session，并在回调中传入当前会话。
+
+</details>
+
+### 6.5 TransactCtx 的 context 取消后，一定自动回滚吗？ {#transaction-context}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：版本实现、语句取消、回调返回值与事务启动 context。
+
+**相关内容**：[context 与版本边界](#context与版本边界)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能仅凭方法名判断。** go-zero v1.7.3 默认路径用 DB.Begin 启动事务，没有把传入 context 绑定为 BeginTx 的事务生命周期。
+
+语句因取消失败并由回调返回错误时，会触发回滚；若写入已经成功，之后取消但回调仍返回 nil，库仍会尝试提交。需要事务级 context 管理时，在自己管理的 DB 上使用 BeginTx，再以 NewSessionFromTx 复用访问能力，并明确负责提交和回滚。
+
+</details>
+
+## 7. 参考资料 {#参考资料}
+
+- [go-zero v1.7.3 sqlx：SqlConn、Session 与查询入口](https://github.com/zeromicro/go-zero/blob/v1.7.3/core/stores/sqlx/sqlconn.go)
+- [go-zero v1.7.3 sqlx：结果映射与 Partial](https://github.com/zeromicro/go-zero/blob/v1.7.3/core/stores/sqlx/orm.go)
+- [go-zero v1.7.3 sqlx：事务启动、提交、回滚与 panic](https://github.com/zeromicro/go-zero/blob/v1.7.3/core/stores/sqlx/tx.go)
+- [go-zero v1.7.3 sqlx：语句执行与结果释放](https://github.com/zeromicro/go-zero/blob/v1.7.3/core/stores/sqlx/stmt.go)
+- [go-zero v1.7.3 sqlc：CachedConn](https://github.com/zeromicro/go-zero/blob/v1.7.3/core/stores/sqlc/cachedsql.go)
+- [jmoiron/sqlx v1.4.0：独立的 database/sql 扩展库](https://github.com/jmoiron/sqlx/tree/v1.4.0)
+- [sqlc v1.27.0：SQL 代码生成工具](https://github.com/sqlc-dev/sqlc/tree/v1.27.0)

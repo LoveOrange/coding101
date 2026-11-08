@@ -1,0 +1,342 @@
+---
+sidebar_position: 9
+knowledge:
+  id: basic-knowledge.go.concurrency.context
+  type: concept
+description: "讲解 Go context 的取消传播、截止时间、资源释放和请求作用域值，区分取消通知与任务退出，并解释 Go 1.22.12 的 cancelCtx、timerCtx 和 valueCtx。"
+keywords: ["Go", "context", "取消", "deadline", "WithTimeout", "WithValue", "cancelCtx"]
+---
+
+# context
+
+**`context`** 是 Go 用来沿调用链传递取消信号、截止时间和请求相关信息的标准库包。一次请求派生出多层调用时，下游可以沿用上游的工作期限和取消状态，而不必为每一层重新设计通知接口。
+
+它传递的是工作约束，不会强制终止 goroutine，也不会自动回滚业务操作。面试中需要把“通知谁取消”“哪里观察取消”“何时释放资源”连起来解释。本文以 Go 1.22.12 为准。
+
+## 1. 面试核心 {#core}
+
+- `context.Context` 提供 `Deadline`、`Done`、`Err` 和 `Value`。**它承载取消、期限与请求作用域信息，不是通用消息队列，也不是业务参数容器**。[卡](#context-purpose)
+- `WithCancel`、`WithTimeout` 等函数从父 context 派生子 context。**正常取消沿父到子的方向传播；取消一个子节点，不会自动取消父节点或兄弟节点**。[卡](#cancellation-tree)
+- `Done()` 返回的是取消通知 channel，**关闭表示这项工作应该取消，不表示使用它的所有任务都已结束**。任务必须观察信号、解除阻塞、清理资源，并另行报告完成。
+- `WithTimeout` 从创建时开始计算期限，子节点还受父节点约束。**下游不能通过设置更长的超时延长上游剩余预算，超时也不是强制终止任意同步调用**。[卡](#timeout-control)
+- **创建可取消 context 后，要在不再需要它时调用 cancel，包括操作提前成功的路径**。这用于解除派生关系、停止关联计时器；它不替代文件关闭、事务处理或等待任务退出。[卡](#cancel-cleanup)
+- 两个任务需要在任意一个失败后共同停止时，应共享合适的取消范围。**取消失败任务自己的子 context，并不能通知另一个兄弟任务**；错误传递和任务完成确认仍要单独安排。[卡](#sibling-failure)
+- `WithValue` 创建一层新的键值关联，查询从当前层向父层查找。**它不修改父 context，也不深拷贝值；Context 支持并发使用，不代表存入的可变对象自动获得保护**。[卡](#request-values)
+
+## 2. Context 接口 {#context接口}
+
+**`context.Context`** 是描述一次工作范围的接口。需要接受上游约束的函数，通常把它作为第一个参数，命名为 `ctx`。
+
+| 方法 | 表达什么 | 使用边界 |
+| --- | --- | --- |
+| `Deadline() (time.Time, bool)` | 工作的截止时间，以及是否存在截止时间 | 没有期限时 `bool` 为 false |
+| `Done() <-chan struct{}` | 取消通知 | 不可取消的 context 可以返回 nil；不要向它发送或尝试关闭它 |
+| `Err() error` | 取消状态的原因类别 | 尚未取消时为 nil，取消后为 `context.Canceled` 或 `context.DeadlineExceeded` |
+| `Value(key any) any` | 读取请求相关的值 | 未找到时返回 nil，不承担参数类型检查和共享对象同步 |
+
+对同一个 context 多次调用 `Done()`，返回的是相同 channel。关闭后的接收可以让多个观察者都得知取消，不需要为每个 goroutine 发送一条消息。关闭的广播效果与 channel 基础一致，见 [channel 的竞争消费与广播通知](./channels.mdx#竞争消费与广播通知)。
+
+`Err()` 不是任意业务错误的收集器。数据库查询失败，不会自动出现在 `ctx.Err()` 里；业务代码需要返回或记录查询错误，再根据需要调用取消函数。context 一旦进入取消状态，后续 `Err()` 保持该结果，不会被更晚的取消或超时覆盖。
+
+`context.Background()` 和 `context.TODO()` 都返回非 nil、没有期限、不会取消、没有值的 context。前者用于明确的顶层入口，后者表达暂时还未确定应传哪个 context；它不是 nil 的另一种拼写，也不应该长期掩盖已经存在的请求上下文。
+
+同一个 context 可以传给多个 goroutine。通常显式传参，而不是藏在一个长期复用的服务结构体里，让请求之间意外共用生命周期。上游已经传入 `ctx` 时，下游重新创建 `Background()` 会切断原本的取消和期限传播。
+
+Web 框架也可能把包含请求、响应和中间件状态的结构体称为 context。要区分它是否实现标准 `context.Context`、其中哪一个字段承载请求取消，以及哪些状态只能在当前请求内使用，不能只凭名字把两者当作同一类型。
+
+## 3. 派生与取消传播 {#派生与取消传播}
+
+### 3.1 父子关系 {#父子关系}
+
+**派生 context** 是在父 context 的约束上增加取消入口、期限或值的下游视图。`WithCancel(parent)` 返回子 context 和对应的 `CancelFunc`；调用这个函数取消的是子节点及其后代，而不是传入的父节点。
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+)
+
+func main() {
+    root, stopRoot := context.WithCancel(context.Background())
+    defer stopRoot()
+    left, stopLeft := context.WithCancel(root)
+    defer stopLeft()
+    right, stopRight := context.WithCancel(root)
+    defer stopRight()
+
+    stopLeft()
+    <-left.Done()
+    fmt.Println(root.Err(), left.Err(), right.Err())
+
+    stopRoot()
+    <-right.Done()
+    fmt.Println(root.Err(), left.Err(), right.Err())
+}
+```
+
+第一行输出 `<nil> context canceled <nil>`，只有 `left` 被取消。第二行三个结果都是 `context canceled`，因为取消 `root` 同时影响它下面的 `right`；已经取消的 `left` 保持原状态。
+
+派生操作不会启动业务任务。把 `left` 传给一个函数，或让一个 goroutine 使用 `right`，仍由调用方决定。context 的派生关系与业务调用关系有关，但并不是运行时自动推导出的 goroutine 家谱。
+
+### 3.2 取消通知与退出确认 {#取消通知与退出确认}
+
+**`CancelFunc`** 是通知对应工作范围取消的函数。它可以被多个 goroutine 调用，重复调用没有新的取消效果，但它不会等待业务任务停止。
+
+收到 `ctx.Done()` 后，任务还可能正在释放资源。另一个任务也可能还没执行到检查位置，甚至阻塞在一个不接受 context 的调用里。因此，不能在 `cancel()` 返回后就释放仍被任务使用的资源；需要通过完成 channel、`WaitGroup` 等确认退出。具体的完成通知示例见 [goroutine 的取消与退出确认](./goroutines.mdx#取消后还要确认退出)。
+
+取消应抵达真正可能等待的位置。例如 channel 收发可以与 `<-ctx.Done()` 一起放入 `select`；一个网络操作则需要使用它所支持的 context、期限或关闭机制。把不支持取消的阻塞函数包进 goroutine，再让外层超时返回，只会放弃等待，不会自动停止里面的调用。
+
+计算循环也要在适当位置检查取消。即使检查了 `ctx.Err()`，检查之后仍可能立即发生取消；`select` 的取消和业务分支同时就绪时，也不保证优先取消。严格的“取消后绝不再开始一次业务操作”需要额外协调，见 [select 的取消优先级](./select.mdx#取消没有隐含优先权)。
+
+### 3.3 失败后的共同取消 {#失败后的共同取消}
+
+两个任务需要互相影响时，应让它们处于一个共同的取消范围。例如由协调者创建 `groupCtx, cancel := context.WithCancel(parent)`，把 `groupCtx` 传给两个任务；任一任务报告需要终止整个操作的错误时，由协调逻辑调用共同的 `cancel`。
+
+若每个任务还有独立超时，可以继续从 `groupCtx` 派生各自的子 context。一个子任务超时，只会取消自己的分支；要让整个操作失败，还要把这个错误报告给协调者，再取消共同父范围。前面的 `left`、`right` 示例正好解释了为什么只调用 `stopLeft` 不够。
+
+共同取消也不等于撤销已经完成的副作用。另一个任务可能已经写入数据，或者恰好在收到信号前成功返回。需要保留原始业务错误，等待相关任务完成，并按业务协议处理已经发生的动作。任务并发上限、结果汇聚和错误选择属于更完整的任务管理设计。
+
+## 4. 截止时间与资源释放 {#截止时间与资源释放}
+
+### 4.1 期限不能向下放宽 {#期限不能向下放宽}
+
+**截止时间**是一个绝对时间点；`WithDeadline` 直接接受它，`WithTimeout` 则按创建时的当前时间加上一段时长计算。经过中间层后，剩余时间会减少，不会因为函数又调用一次就自动重置。
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "time"
+)
+
+func main() {
+    parent, cancelParent := context.WithTimeout(context.Background(), time.Hour)
+    defer cancelParent()
+    child, cancelChild := context.WithTimeout(parent, 2*time.Hour)
+    defer cancelChild()
+
+    parentDeadline, _ := parent.Deadline()
+    childDeadline, _ := child.Deadline()
+    fmt.Println(childDeadline.Equal(parentDeadline))
+}
+```
+
+输出 `true`。虽然下游请求两小时，父 context 的一小时期限更早，子 context 仍受这个期限约束。这里仅比较期限，不实际等待一小时；两个取消函数在程序返回时释放对应资源。
+
+如果每次重试都从 `Background()` 创建一个新超时，就丢掉了原请求的总预算。应保留共同的上游 context，再按需要为单次尝试派生更短的期限。单次预算可以更短，不能把上游已经消耗掉的时间重新补回来。
+
+### 4.2 在等待点观察超时 {#在等待点观察超时}
+
+下面的 `waitReady` 等待通知或取消。传入 nil channel 时，通知分支永远不能就绪，所以会在 context 超时后返回。
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "time"
+)
+
+func waitReady(ctx context.Context, ready <-chan struct{}) error {
+    select {
+    case <-ready:
+        return nil
+    case <-ctx.Done():
+        return ctx.Err()
+    }
+}
+
+func main() {
+    ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+    defer cancel()
+    fmt.Println(waitReady(ctx, nil))
+}
+```
+
+输出 `context deadline exceeded`。10 毫秒是取消期限，不保证当前 goroutine 恰好在第 10 毫秒运行并返回；还需要等待调度和实际执行。
+
+如果在期限之前手动调用 `cancel`，`Err()` 会是 `context.Canceled`。若先因期限到达而取消，之后再调用 `cancel`，仍保留 `context.DeadlineExceeded`。返回哪一个，取决于哪个取消原因先使该 context 进入终止状态。
+
+标准库还提供 `WithCancelCause` 和 `Cause`，用于给取消附带更具体的原因。在 Go 1.22.12 中，使用 `cancel(err)` 主动取消后，`ctx.Err()` 仍是 `context.Canceled`，而 `context.Cause(ctx)` 可以取得传入的错误。它也遵循首次取消的结果，不替代业务结果的正常返回。
+
+### 4.3 提前完成也要调用 cancel {#提前完成也要调用cancel}
+
+从 `WithCancel`、`WithDeadline` 或 `WithTimeout` 取得取消函数后，应在这项工作不再需要 context 时调用它。函数只负责一次操作时，通常创建后紧接 `defer cancel()`，让成功、失败和提前返回都经过清理。
+
+调用取消函数会解除相应的父子登记，并停止关联计时器。即使操作已经成功，也不应让这些关联一直留到父 context 取消或期限到达。`go vet` 能检查一部分丢失取消调用的控制流，但不能替你证明所有业务资源都已释放。
+
+如果在很长的循环中每次创建新 context，却把所有 `defer cancel()` 都留到整个循环所在函数结束，清理仍会延后。可以让每次操作在独立函数中完成，或者在每轮不再使用它时立即取消。
+
+这里清理的是 context 关联的资源。文件、连接、响应体、事务和业务任务都有各自的生命周期；取消不会自动调用它们的关闭方法，也不能证明远端操作没有发生。不要把“请求超时”直接解释成“服务端肯定未处理”。
+
+## 5. 请求作用域值 {#请求作用域值}
+
+**请求作用域值**是在一次请求处理过程中，需要跨若干 API 传递的信息，例如请求标识。`WithValue(parent, key, value)` 返回新 context，当前层记录一对键值，找不到时继续沿父链查找。
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+)
+
+type requestIDKey struct{}
+
+func withRequestID(ctx context.Context, id string) context.Context {
+    return context.WithValue(ctx, requestIDKey{}, id)
+}
+
+func requestID(ctx context.Context) (string, bool) {
+    id, ok := ctx.Value(requestIDKey{}).(string)
+    return id, ok
+}
+
+func main() {
+    parent := withRequestID(context.Background(), "req-1")
+    child := withRequestID(parent, "req-2")
+    fmt.Println(requestID(parent))
+    fmt.Println(requestID(child))
+}
+```
+
+输出 `req-1 true` 和 `req-2 true`。同一个包中两个 `requestIDKey{}` 相等，所以查询能找到对应键；子层的 `req-2` 遮蔽了父层同键的值，但没有修改 `parent`。
+
+key 必须非 nil 且可比较。使用包内未导出的自定义类型，能避免不同包都把字符串 `"requestID"` 当键而意外冲突；再通过类型化访问函数集中处理断言。不要把函数必须依赖的业务参数藏进 `Value`，让调用者只能靠运行时约定猜测缺少什么。
+
+存入的是指针、切片或 map 时，`WithValue` 不深拷贝它们。多个 goroutine 从 context 中拿到同一 map 后并发修改，依然需要锁或其他共享约束。请求标识这类不再变化的值比较容易安全传递；可变状态的同步规则见 [Go 内存模型](./memory-model.mdx#共享访问与数据竞争)。
+
+context 本身也不会把值序列化到网络。跨进程传播请求标识，需要调用方编码到约定的请求字段，接收方再提取并构造自己的 context；期限和取消是否能够继续传递，同样依赖具体协议与客户端、服务端的支持。
+
+## 6. Go 1.22.12 的实现结构 {#实现结构}
+
+### 6.1 取消节点与树形关系 {#取消节点与树形关系}
+
+Go 1.22.12 用几种内部结构承担不同职责，而不是让所有 context 都维护一张业务值 map：
+
+| 内部结构 | 主要职责 |
+| --- | --- |
+| `backgroundCtx`、`todoCtx` | 提供不会取消的空上下文 |
+| `cancelCtx` | 保存取消状态、`Done` channel 和需要跟随取消的子节点 |
+| `timerCtx` | 在取消节点上增加截止时间和计时器 |
+| `valueCtx` | 保存一对键值及父 context，其他能力沿父链委托 |
+
+`cancelCtx` 的 `children` 是登记可取消子节点的集合，`mu` 保护取消状态和子节点关系，`done` 使用 `atomic.Value` 保存 channel。`Done()` 可以懒创建 channel；若在创建之前已经取消，也可以直接使用预先关闭的 channel。
+
+取消时，节点先记录错误状态并关闭自己的通知，再取消已登记的子节点，清空子节点集合。子节点主动取消时，会把自己从父节点的登记中移除。中间经过 `WithValue` 的包装，并不意味着每层包装都需要新建一套取消通知。
+
+这解释了常说的树形组织：父节点可以关联多个可取消子节点，取消向后代传播；值查询则从当前包装沿父引用向上查找。两种方向服务于不同职责，不能把整棵 context 树理解成普通的键值数据存储树。
+
+### 6.2 传播不一定创建一个 goroutine {#传播不一定创建一个goroutine}
+
+标准库能够识别父 context 对应的取消节点时，会直接登记子节点，不需要为每一次 `WithCancel` 创建一个持续等待的 goroutine。父节点已经取消时，新派生的子节点也会取消；父 `Done()` 为 nil 时，则没有父取消信号需要监听。
+
+如果父 context 是其他实现，标准库还会尝试它支持的通知方式；无法直接登记时，才可能使用一个 goroutine 等待父或子取消。因此，不能把 `WithCancel` 一律解释成“启动一个 goroutine 监听父 channel”，也不能反过来承诺它永远不会产生额外 goroutine。
+
+`timerCtx` 使用计时器触发取消，取消路径会停止计时器并解除关联。通知关闭与传播属于 context 的内部工作；至于使用者何时观察信号、何时做完清理，仍然在业务代码中决定。`Context` 接口允许取消通知异步完成，通用代码应观察 `Done()`，而不是把取消函数返回当作所有工作完成的屏障。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 context 用来解决什么问题？ {#context-purpose}
+
+**考察重点**：标准 Context 的职责、接口约束与不同上下文类型的区别。
+
+**相关内容**：[Context 接口](#context接口)
+
+<details>
+<summary>参考回答</summary>
+
+**标准 context 沿调用链传递取消信号、截止时间和请求作用域信息。** 它通过 `Deadline`、`Done`、`Err`、`Value` 暴露这些能力，通常作为函数的第一个参数传递。
+
+channel 可以承担消息交付或完成通知，context 的 `Done` 则专门表达取消。框架里同名的结构体可能还保存请求、响应和中间件状态，应检查它与标准 `context.Context` 的关系，不能只凭名字认定相同。
+
+</details>
+
+### 7.2 context 为什么说是树形结构，取消信号怎样传播？ {#cancellation-tree}
+
+**考察重点**：派生关系、取消方向、Done 关闭与具体实现职责。
+
+**相关内容**：[父子关系](#父子关系)、[取消节点与树形关系](#取消节点与树形关系)、[传播不一定创建一个 goroutine](#传播不一定创建一个goroutine)
+
+<details>
+<summary>参考回答</summary>
+
+**父 context 可以派生多个子 context，取消通常从父节点向后代传播，子节点取消不反向取消父节点和兄弟。** `Done()` 的关闭通知使用者应该结束相应工作，但不代表任务已经退出。
+
+Go 1.22.12 的 `cancelCtx` 保存取消状态和可取消子节点集合；取消时关闭通知、向已登记子节点传播。标准父节点通常直接登记，特殊父实现才可能需要其他通知机制或等待 goroutine。`valueCtx` 则保存键值与父引用，不是每层都拥有独立的取消 channel。
+
+</details>
+
+### 7.3 任务执行太慢时，怎样用 context 设置超时，超时后任务一定结束了吗？ {#timeout-control}
+
+**考察重点**：等待预算、期限继承、协作式取消与任务退出。
+
+**相关内容**：[期限不能向下放宽](#期限不能向下放宽)、[在等待点观察超时](#在等待点观察超时)、[取消通知与退出确认](#取消通知与退出确认)
+
+<details>
+<summary>参考回答</summary>
+
+**可以通过 `WithTimeout` 或 `WithDeadline` 派生 context，但任务必须在等待点或耗时操作中支持取消。** 子 context 的有效期限不会晚于父期限，应该把它继续传到下游。
+
+期限到达会触发取消，`Err()` 通常表现为 `context.DeadlineExceeded`；若先被手动或父级取消，则保留先发生的原因。超时不强制终止 goroutine，外层放弃等待也不等于内部调用已停止，还需要完成通知和资源清理。
+
+</details>
+
+### 7.4 两个任务中一个失败后，怎样通知另一个停止？取消自己的子 context 够吗？ {#sibling-failure}
+
+**题型**：综合题
+
+**考察重点**：共同取消范围、父子传播方向、业务错误与完成确认。
+
+**相关内容**：[失败后的共同取消](#失败后的共同取消)、[取消通知与退出确认](#取消通知与退出确认)、[一批任务的约定](./task-coordination.mdx#一批任务的约定)
+
+<details>
+<summary>参考回答</summary>
+
+**应让两个任务共享共同的取消范围，并在需要整体失败时取消这个范围。** 如果只取消一个任务自己的子 context，不会传播到兄弟任务。
+
+任务还必须在实际阻塞点观察取消；协调者需要接收错误，保留导致失败的业务原因，再等待相关任务退出。取消只是请求停止，不能把另一个任务已经完成的副作用自动回滚，也不能保证它一定返回失败。
+
+</details>
+
+### 7.5 context 怎样向下游传递请求相关的信息？ {#request-values}
+
+**考察重点**：值的查找方向、键类型、父层遮蔽与共享引用。
+
+**相关内容**：[请求作用域值](#请求作用域值)
+
+<details>
+<summary>参考回答</summary>
+
+**`WithValue` 创建新的键值关联层，不修改父 context；查询先看当前层，找不到再向父层查找。** 子层相同键会遮蔽父层的值。
+
+key 应使用非 nil、可比较的包内自定义类型，配合类型化访问函数。值适合请求标识等请求相关信息，不应代替必需业务参数；指针、切片或 map 不会被深拷贝，取出的可变状态仍需同步。跨进程还需要协议显式传播，context 不会自动序列化这些值。
+
+</details>
+
+### 7.6 操作已经成功或已经超时，为什么还要安排调用 cancel？ {#cancel-cleanup}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：取消函数的资源责任、重复调用与业务资源清理。
+
+**相关内容**：[提前完成也要调用 cancel](#提前完成也要调用cancel)
+
+<details>
+<summary>参考回答</summary>
+
+**创建派生 context 的代码应保证所有退出路径都会调用取消函数，尤其不能遗漏提前成功。** 这样可以及时解除父子关联、停止计时器；若已经取消，重复调用也不会再次改变结果。
+
+通常在取得取消函数后立即 `defer cancel()`；长循环则应让每次操作及时清理，而不是把所有取消推迟到大函数返回。context 的清理不等于业务资源清理，仍需按实际生命周期关闭资源并等待任务退出。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [Go 1.22.12 context API](https://pkg.go.dev/context@go1.22.12)
+- [Go 1.22.12 context 实现与接口契约](https://github.com/golang/go/blob/go1.22.12/src/context/context.go)

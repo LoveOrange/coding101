@@ -1,0 +1,333 @@
+---
+knowledge:
+  id: mobile.android.recyclerview
+  type: concept
+description: "解释 RecyclerView 的职责分工、ViewHolder 复用、缓存、DiffUtil、异步绑定、分页与列表性能。"
+keywords: [RecyclerView, ViewHolder, Adapter, DiffUtil, ListAdapter, RecycledViewPool]
+---
+
+# RecyclerView
+
+**RecyclerView** 是通过复用条目视图来展示可滚动数据的 Android 组件。它不为每一条数据永久创建一套 View，而是在布局需要时取得合适的 ViewHolder，绑定当前数据，再把暂时不用的视图纳入复用流程。复用减少创建成本，也要求我们始终分清视图对象、数据身份和列表位置。
+
+## 1. 面试核心 {#core}
+
+- Adapter 绑定数据，ViewHolder 保存条目视图，LayoutManager 安排布局和滚动；**复用视图不等于同一 ViewHolder 永远代表同一条数据**。[卡](#roles)
+- 布局临时复用、近端缓存与按类型分类的回收池各有用途，**命中缓存不一定重新绑定，命中池通常仍要绑定当前数据**。[卡](#cache)
+- 数据 ID、viewType 和 position 分别表达身份、视图兼容类型与当前位置，**点击和异步回调不能永久保存绑定时的 position**。[卡](#identity)
+- DiffUtil 区分“同一条数据”和“显示内容相同”，**参与差异比较的列表及字段不能在比较期间原地改变**。[卡](#diff)
+- 异步请求可能晚于视图复用完成，**回填前要验证请求仍属于当前绑定，并覆盖旧显示状态**。[卡](#async-binding)
+- 分页要处理加载状态、去重和查询代次，**缓存池解决视图复用，不能代替分页的数据控制**。[卡](#paging)
+- 性能优化要从创建、绑定、测量、绘制和请求链路定位，**扩大缓存只是用内存换部分工作，不是统一的优化答案**。[卡](#performance)
+- `setHasFixedSize(true)` 说明 Adapter 内容变化不影响 RecyclerView 自身尺寸，**不是声明所有条目高度相同**。[卡](#fixed-size)
+
+## 2. 组件分工与绑定 {#组件分工与绑定}
+
+| 对象 | 负责什么 | 不应承担的工作 |
+| --- | --- | --- |
+| Adapter | 描述条目类型、创建 ViewHolder、把数据绑定到视图 | 在每次绑定中阻塞等待网络或数据库 |
+| ViewHolder | 持有条目 View 与相关视图引用、绑定状态 | 充当独立且永久有效的数据身份 |
+| LayoutManager | 决定需要哪些条目、测量布局和滚动安排 | 维护业务数据来源与请求重试 |
+| ItemDecoration | 装饰及条目间相关偏移 | 代替整套业务条目布局 |
+| ItemAnimator | 协调条目变化动画 | 修复错误的数据身份或通知 |
+| Recycler / RecycledViewPool | 按状态和类型保存、寻找可复用的 ViewHolder | 缓存网络响应或数据库查询结果 |
+
+`onCreateViewHolder()` 处理创建，`onBindViewHolder()` 把某条数据展示到已有 ViewHolder。后者可能执行多次，不能假定控件属性仍是刚创建时的默认值。
+
+例如上一条数据把图片隐藏了，下一条有图片时只设置图片内容却忘记恢复可见性，就会出现“某些行图片消失”。绑定必须完整表达当前状态：文本、显隐、选中、透明度、可点击性和占位图都应根据当前数据设置，而不是只处理其中一种分支。
+
+`onViewRecycled()` 是清理可复用条目资源的入口，但条目离开屏幕不等于立刻进入回收池，也不保证每次重新绑定前都先经过这个回调。因此，新绑定本身也要负责替换过期请求和状态。
+
+## 3. 复用与缓存 {#复用与缓存}
+
+以下分工以 AndroidX RecyclerView 1.3.2 为具体实现参考；理解用途比背固定“几级缓存”和默认容量更重要。
+
+| 机制 | 主要作用 | 复用时关注什么 |
+| --- | --- | --- |
+| attached / changed scrap | 在布局和变化处理过程中临时保存相关 ViewHolder | 布局阶段、位置变化和条目更新状态 |
+| `mCachedViews` | 保留一部分近期离屏但仍能与 Adapter 数据对应的条目 | 若有效且内容未变，可能直接复用已有绑定 |
+| `ViewCacheExtension` | 应用可提供的额外查找入口 | 属于可选扩展，不是默认一定存在的一层 |
+| `RecycledViewPool` | 按 viewType 保存可再次使用的 ViewHolder | 主要复用视图结构，重新对应数据时需要绑定 |
+
+查找不是每次都无条件走完同一条链。预布局、稳定 ID、条目是否失效、位置映射和预取时间限制都会影响路径。理解基本方向即可：优先复用仍然适配当前需求的条目，没有可用结构时才创建新的 ViewHolder。
+
+**viewType** 表示哪些 ViewHolder 结构可以相互替换。标题行和商品行若布局、Holder 类型不同，应使用不同类型。多个 RecyclerView 共享一个池时，相同类型值还必须代表兼容的 Holder 和绑定契约；两个独立 Adapter 都把类型写成 `0`，不代表它们天然兼容。
+
+`setItemViewCacheSize()` 调整近端缓存，池还可以按类型配置容量。增加缓存可能减少重复创建或绑定，也会保留更多 View、图片和引用。若缓存已经很大但绑定里仍做复杂计算，继续加容量可能只增加内存压力。
+
+预取会提前准备部分可能即将需要的条目，但受时间和布局策略限制，不承诺未来滚动完全没有创建或绑定成本。无论预取还是缓存，都不能把阻塞操作放进绑定回调。
+
+## 4. 身份、位置与差异更新 {#身份位置与差异更新}
+
+### 4.1 三种不同标识 {#三种不同标识}
+
+| 标识 | 回答的问题 | 例子 |
+| --- | --- | --- |
+| 业务 ID | 这是不是同一条数据 | 文章 ID 为 42 |
+| viewType | 能否复用同类视图结构 | 普通文章行或广告行 |
+| position | 现在排在列表的哪里 | 当前第 3 行 |
+
+在列表开头插入一行，原来 position 为 3 的文章可能变成 4，但文章 ID 没变。点击回调若一直保存旧 position，就可能打开另一篇文章。
+
+需要当前绑定 Adapter 中的位置时，可在事件发生时读取 `bindingAdapterPosition`，并处理 `RecyclerView.NO_POSITION`。组合 Adapter 还要区分相对绑定 Adapter 的位置与整个 RecyclerView 中的位置，不能混用索引空间。
+
+稳定 ID 是 Adapter 向 RecyclerView 提供的稳定身份承诺，启用后要保证同一条数据在位置变化时仍使用相同 ID，且当前条目之间不会冲突。它与 DiffUtil 的身份判断相关，但不是同一个开关：使用 ListAdapter 不要求一定开启稳定 ID，开启稳定 ID 也不能修复错误的 Diff 回调。
+
+### 4.2 DiffUtil 与不可变快照 {#diffutil与不可变快照}
+
+**DiffUtil** 比较旧列表与新列表，计算插入、删除、移动和内容更新等变化。`areItemsTheSame()` 判断是否同一条业务数据，`areContentsTheSame()` 判断会影响显示的内容是否相同。
+
+例如 ID 42 的标题由“旧标题”变成“新标题”，应是同一条数据的内容变化；若直接把标题当身份，就可能被当成删除旧条目并插入新条目。
+
+比较期间需要保留旧状态。若先把旧列表里的可变对象改掉，再复制一份只有外层结构不同的列表，旧、新两边可能仍指向同一个已修改对象，DiffUtil 就看不到原来的值。只调用 `toList()` 不一定形成内容快照；参与比较的对象及字段也要保持稳定。
+
+`ListAdapter` 利用 `AsyncListDiffer` 组织差异更新。已有旧列表时，差异计算通常在后台进行，更新通知应用到主线程；第一次提交、清空等简单情况可以直接处理，不应断言每次提交都必然启动一轮后台比较。
+
+在 1.3.2 实现中，同一个列表对象再次提交会走快速返回路径，因此不能靠“改原列表后再次 submit”强迫重算。后台差异结果还会检查提交代次，防止旧计算覆盖后来的列表。某次提交被更新提交取代时，对应 commit callback 不保证执行，不能把它当作业务请求必达的完成通知。
+
+### 4.3 最小 ListAdapter 示例 {#最小listadapter示例}
+
+下面用不可变字段表示显示快照，点击时读取当前有效位置。示例只用标准 TextView，便于把关注点放在身份和绑定上。
+
+```kotlin
+import android.view.ViewGroup
+import android.widget.TextView
+import androidx.recyclerview.widget.DiffUtil
+import androidx.recyclerview.widget.ListAdapter
+import androidx.recyclerview.widget.RecyclerView
+
+data class NewsRow(val id: Long, val title: String, val selected: Boolean)
+
+object NewsDiff : DiffUtil.ItemCallback<NewsRow>() {
+    override fun areItemsTheSame(oldItem: NewsRow, newItem: NewsRow) =
+        oldItem.id == newItem.id
+
+    override fun areContentsTheSame(oldItem: NewsRow, newItem: NewsRow) =
+        oldItem == newItem
+}
+
+class NewsAdapter(private val onOpen: (Long) -> Unit) :
+    ListAdapter<NewsRow, NewsAdapter.Holder>(NewsDiff) {
+
+    class Holder(val titleView: TextView) : RecyclerView.ViewHolder(titleView)
+
+    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): Holder {
+        val text = TextView(parent.context).apply {
+            layoutParams = RecyclerView.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        }
+        val holder = Holder(text)
+        text.setOnClickListener {
+            val position = holder.bindingAdapterPosition
+            if (position != RecyclerView.NO_POSITION) {
+                onOpen(getItem(position).id)
+            }
+        }
+        return holder
+    }
+
+    override fun onBindViewHolder(holder: Holder, position: Int) {
+        val row = getItem(position)
+        holder.titleView.text = row.title
+        holder.titleView.isSelected = row.selected
+    }
+}
+
+fun updateTitle(adapter: NewsAdapter, id: Long, title: String) {
+    val next = adapter.currentList.map { row ->
+        if (row.id == id) row.copy(title = title) else row
+    }
+    adapter.submitList(next)
+}
+```
+
+`NewsDiff` 用 ID 判断身份，用三个字段的值判断内容；标题改变会触发内容更新，不会让文章变成另一条数据。`updateTitle()` 创建新的列表和变化行，未变化的不可变行可以继续共享。
+
+这里的 `selected` 只是演示完整设置状态，具体选中样式由 TextView 的背景等配置决定。`updateTitle()` 也只是一次基于当前显示列表的更新示例：连续快速操作不能都从尚未提交的 `currentList` 推导业务状态，否则可能互相覆盖。正式应用应在状态持有者中维护最新模型，再向 Adapter 提交快照。
+
+### 4.4 payload 与完整绑定 {#payload与完整绑定}
+
+**payload** 是内容局部变化时可以传给绑定过程的补充信息，例如只有收藏状态改变，可减少无关更新。但 payload 可能因条目未附着等情况被丢弃，也可能合并多次变化；空 payload 必须支持完整绑定。
+
+手动调用 `notifyItemInserted()`、`notifyItemRemoved()` 等方法时，底层数据变化与通知的索引必须一致。通知不是修改数据本身。使用 ListAdapter 提交差异时，也不要在外部再随意修改它使用的列表并混发另一套通知。
+
+## 5. 异步结果与复用 {#异步结果与复用}
+
+**异步绑定错误**是请求开始时 ViewHolder 代表 A，结果返回时已经绑定 B，却仍把 A 的内容写进去。网络请求取消能减少浪费，但取消不一定阻止已经完成或排队的回调，因此还需要身份检查。
+
+一个可靠的处理顺序是：新绑定先取消或替换旧请求，设置占位状态，记录当前条目与本次请求标识；回调到主线程后验证它仍匹配，再更新显示。只比较业务 ID 有时也不够：同一条数据的图片 URL 变化，或者同一 ID 发起了新的请求，还需要版本、URL 或请求代次来区分。
+
+| 时刻 | ViewHolder 当前绑定 | 请求状态 |
+| --- | --- | --- |
+| 开始加载 | A，请求代次 1 | A 图片正在加载 |
+| 视图复用 | B，请求代次 2 | 取消 A 或将其标记过期，显示 B 占位图 |
+| A 结果晚到 | 仍为 B、代次 2 | 因身份或代次不匹配而丢弃 |
+| B 结果到达 | 仍为 B、代次 2 | 更新 B 图片 |
+
+“当前 View 仍然附着在窗口上”不能证明结果属于它；它可能一直附着，只是绑定数据变了。图片加载库通常提供与目标 View 关联的请求管理，应按其契约使用，同时处理空 URL、失败和占位状态。
+
+复用也不等于数据缓存。ViewHolder 池、图片解码缓存和网络响应缓存解决的是不同成本，不能把一处命中直接推导成另一处无需工作。
+
+## 6. 分页与性能 {#分页与性能}
+
+### 6.1 分页状态 {#分页状态}
+
+**分页**按批次取得和展示数据，避免一次加载全部记录。列表接近末尾可以成为请求信号，但真正发请求前还要判断是否已经加载中、是否到达末尾、当前查询是否仍有效。
+
+最少需要区分空闲、加载中、失败可重试和已结束，并保存下一页键或游标。一次失败不能直接标成数据末尾，也不能因为滚动回调连续触发就发出许多相同请求。
+
+搜索词从 A 改成 B 时，还要使 A 的分页结果失效。可以通过取消和查询代次校验，避免旧页晚到后被拼接进新结果。刷新与追加同时发生时，也应明确哪一代数据仍能提交；根据稳定 ID 去重，不能只按返回的数组位置判断。
+
+Paging 3 提供分页加载和状态管理等支持，RecyclerView 一侧可通过对应 Adapter 接收分页数据。它仍依赖正确的数据源、页键和错误语义，不会自动修复后端不稳定排序。本文的停止点是能解释请求状态与旧结果处理，不展开完整 Paging 项目配置。
+
+### 6.2 定位列表卡顿 {#定位列表卡顿}
+
+先确认卡顿发生在首次展示、快速滚动、图片返回、追加页还是大范围更新，再看具体耗时。
+
+| 证据指向 | 可评估的处理 |
+| --- | --- |
+| 大量创建与复杂布局 | 简化条目结构，检查类型分裂，评估合理复用 |
+| 绑定中有阻塞或重计算 | 把数据准备放到合适的后台流程，提交显示快照 |
+| 图片尺寸或解码成本过大 | 按显示尺寸加载，使用合适缓存与请求管理 |
+| 频繁全量通知 | 核对身份和内容，采用正确差异更新 |
+| 大量测量、布局或绘制 | 结合 [Android View](./view-layout-drawing.mdx#绘制命令与帧调度) 判断实际阶段 |
+| 内存因缓存持续升高 | 检查缓存容量、图片与持有链，避免无依据扩容 |
+
+`setHasFixedSize(true)` 的前提是 Adapter 内容变化不会改变 RecyclerView 自身尺寸，例如列表占据父容器给定的区域。它不要求每行一样高，也不意味着屏幕旋转后 RecyclerView 不能变大。若 RecyclerView 的高度随内容变化，就不能为了性能盲目设置这个承诺。
+
+关闭动画、增加缓存、共享池等都是有条件的选择。应保留同一操作下的耗时、分配和帧证据，说明改善发生在哪一段，也说明换来了多少内存或交互变化。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 Adapter、ViewHolder 与 LayoutManager 分别负责什么？ {#roles}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：数据绑定、视图持有与布局职责。
+
+**相关内容**：[组件分工与绑定](#组件分工与绑定)。
+
+<details>
+<summary>参考回答</summary>
+
+**Adapter 描述类型并创建、绑定条目，ViewHolder 保存条目视图及相关状态，LayoutManager 决定布局和滚动时需要哪些条目。** 同一 Holder 会绑定不同数据，完整绑定必须覆盖当前显示状态，不能依赖上一次留下的属性，也不能在绑定中阻塞等待数据。
+
+</details>
+
+### 7.2 RecyclerView 的缓存与复用机制是什么？ {#cache}
+
+**考察重点**：临时复用、已绑定缓存与按类型回收的差别。
+
+**相关内容**：[复用与缓存](#复用与缓存)。
+
+<details>
+<summary>参考回答</summary>
+
+**布局阶段有 scrap，近期离屏条目可进入近端缓存，按类型回收的 Holder 可进入 RecycledViewPool，还存在可选扩展入口。** 有效近端缓存可能保留绑定；池主要复用结构，重新对应数据通常需要绑定。具体查找受预布局、身份和失效状态影响，缓存容量不能脱离内存成本讨论。
+
+</details>
+
+### 7.3 列表插入数据后，为什么点击可能打开错误条目？ {#identity}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：稳定身份、位置变化与回调时机。
+
+**相关内容**：[三种不同标识](#三种不同标识)、[最小 ListAdapter 示例](#最小listadapter示例)。
+
+<details>
+<summary>参考回答</summary>
+
+**常见原因是回调保存了绑定时的位置，而插入、删除或移动已经改变了它。** 事件发生时读取正确 Adapter 空间中的当前位置并处理 `NO_POSITION`，或者以明确的业务身份执行业务。业务 ID、viewType 与 position 不能相互替代。
+
+</details>
+
+### 7.4 修改对象后再提交列表，为什么 DiffUtil 可能看不出变化？ {#diff}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：旧状态保留、身份比较与异步计算。
+
+**相关内容**：[DiffUtil 与不可变快照](#diffutil与不可变快照)。
+
+<details>
+<summary>参考回答</summary>
+
+**旧、新列表可能共享同一个已经被修改的对象，旧值已经丢失；同一个列表对象重新提交还可能走快速返回。** 应保留不可变显示快照，用业务 ID 判断同一条数据，用显示相关字段比较内容。复制外层列表不等于复制了可变元素，提交期间也不能继续修改参与比较的字段。
+
+</details>
+
+### 7.5 RecyclerView 快速滚动后出现图片错位，应该怎样分析？ {#async-binding}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**题型**：综合题
+
+**考察重点**：复用后的异步结果归属与完整绑定。
+
+**相关内容**：[组件分工与绑定](#组件分工与绑定)、[异步结果与复用](#异步结果与复用)、[三种不同标识](#三种不同标识)。
+
+<details>
+<summary>参考回答</summary>
+
+**先检查旧请求是否把结果写入已经绑定其他数据的 Holder，以及新绑定是否清空了旧状态。** 绑定时设置占位、替换旧请求并记录身份或代次，主线程回调前重新确认。取消是减少工作，身份检查是防止过期写入；同一 ID 的新 URL 也可能需要新请求标识。
+
+</details>
+
+### 7.6 RecyclerView 分页加载如何实现？ {#paging}
+
+**题型**：综合题
+
+**考察重点**：追加、刷新、失败与旧查询结果的关系。
+
+**相关内容**：[分页状态](#分页状态)、[身份、位置与差异更新](#身份位置与差异更新)、[异步结果与复用](#异步结果与复用)。
+
+<details>
+<summary>参考回答</summary>
+
+**至少维护是否加载中、下一页键、是否结束、失败重试以及当前查询代次。** 滚动信号要防止重复请求，失败与末尾要区分；查询变化或刷新后拒绝过期追加，并按稳定身份去重。缓存池复用视图，不能替代这些数据状态，Paging 也需要正确的页键与数据源语义。
+
+</details>
+
+### 7.7 怎样定位和优化 RecyclerView 卡顿？ {#performance}
+
+**题型**：综合题
+
+**考察重点**：触发场景、耗时阶段与优化代价。
+
+**相关内容**：[定位列表卡顿](#定位列表卡顿)、[复用与缓存](#复用与缓存)。
+
+<details>
+<summary>参考回答</summary>
+
+**先复现具体操作，再用帧、trace 和分配证据判断成本在创建、绑定、布局、绘制还是请求回填。** 可据此简化布局、移出重计算、改善图片尺寸和正确增量更新。调整缓存或关闭动画必须说明收益与内存、交互代价，不能把扩大缓存当成所有卡顿的答案。
+
+</details>
+
+### 7.8 setHasFixedSize(true) 是否要求所有条目高度相同？ {#fixed-size}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：RecyclerView 自身尺寸与子条目尺寸。
+
+**相关内容**：[定位列表卡顿](#定位列表卡顿)。
+
+<details>
+<summary>参考回答</summary>
+
+**不要求，它承诺的是 Adapter 内容变化不影响 RecyclerView 自身尺寸。** 各条目可以有不同高度，父容器变化仍可改变 RecyclerView 的大小。若列表自身尺寸跟着内容伸缩，就不能无条件开启。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [Android API：RecyclerView](https://developer.android.com/reference/androidx/recyclerview/widget/RecyclerView)
+- [Android API：RecyclerView.Adapter](https://developer.android.com/reference/androidx/recyclerview/widget/RecyclerView.Adapter)
+- [Android API：RecyclerView.ViewHolder](https://developer.android.com/reference/androidx/recyclerview/widget/RecyclerView.ViewHolder)
+- [Android API：RecycledViewPool](https://developer.android.com/reference/androidx/recyclerview/widget/RecyclerView.RecycledViewPool)
+- [Android API：DiffUtil](https://developer.android.com/reference/androidx/recyclerview/widget/DiffUtil)
+- [Android API：ListAdapter](https://developer.android.com/reference/androidx/recyclerview/widget/ListAdapter)
+- [Android：Paging library overview](https://developer.android.com/topic/libraries/architecture/paging/v3-overview)
+- [Google Maven：RecyclerView 1.3.2 源码包](https://dl.google.com/dl/android/maven2/androidx/recyclerview/recyclerview/1.3.2/recyclerview-1.3.2-sources.jar)

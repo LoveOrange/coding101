@@ -1,0 +1,250 @@
+---
+knowledge:
+  id: basic-knowledge.objective-c.block
+  type: concept
+description: "解释 Objective-C Block 的类型、捕获、__block 共享存储、复制与逃逸，以及 ARC 下的对象持有和循环引用。"
+keywords: [Objective-C Block, __block, Block_copy, 循环引用, weakSelf]
+---
+
+# Objective-C Block
+
+**Block** 是 Objective-C 使用的带有捕获能力的可调用对象，能把一段代码和它需要的上下文一起传递。它既不是普通 C 函数指针，也不是把外部变量原封不动搬进函数体。理解回调的正确性，需要同时看捕获时保存了什么、Block 保存多久，以及这些关系是否让对象无法释放。本文示例默认使用 ARC。
+
+## 1. 面试核心 {#core}
+
+- Block 包含调用入口与捕获上下文，**普通局部变量在创建 Block 时按值捕获，之后改外部变量不改变已捕获值**。[卡](#capture)
+- 捕获对象变量保存的是对象引用，**不能重新给捕获变量赋值，不等于对象内容不能修改**。
+- `__block` 让作用域与相关 Block 共享可修改存储，**它不表示弱引用，也不自动提供线程同步**。[卡](#byref)
+- 需要离开创建作用域继续使用的 Block 必须有合适的存活方式，**ARC 会在需要的持有或逃逸转换中完成复制，属性仍宜明确声明 copy**。[卡](#block-lifetime)
+- Block 与对象可能互相持有，**ARC 下仅加 __block 并不能保证打破循环引用**。[卡](#cycle)
+- 弱引用避免长期拥有，局部强引用维持当前调用所需生命，**两者要按回调的实际工作范围配合使用**。[卡](#weak-strong)
+- Block 适合局部完成回调，协议委托适合一组持续交互，**选择还要考虑所有权与多次回调的管理方式**。[卡](#delegate)
+
+## 2. 类型与普通捕获 {#类型与普通捕获}
+
+Block 类型用 `^` 声明，例如 `NSInteger (^transform)(NSInteger)` 表示接收并返回一个整数的 Block。调用时和函数值一样传参，但 Block 还可以使用定义处的局部状态。
+
+```objectivec
+#import <Foundation/Foundation.h>
+
+int main(void) {
+    @autoreleasepool {
+        NSInteger base = 1;
+        NSInteger (^add)(NSInteger) = ^NSInteger(NSInteger value) {
+            return base + value;
+        };
+        base = 10;
+        printf("%ld %ld\n", (long)add(2), (long)base); // 3 10
+    }
+}
+```
+
+`base` 在 Block 创建时被按值捕获为 `1`，外部随后变成 `10` 不影响这份捕获。普通捕获在 Block 内不可直接重新赋值；如果把 `base += 1` 写进这里，编译器会要求使用适当的可修改共享存储。
+
+对象变量也按变量的值捕获，但这个值是对象引用，因此引用所指对象仍可具有可变状态：
+
+```objectivec
+#import <Foundation/Foundation.h>
+
+int main(void) {
+    @autoreleasepool {
+        NSMutableString *text = [NSMutableString stringWithString:@"A"];
+        void (^append)(void) = ^{ [text appendString:@"!"]; };
+        append();
+        printf("%s\n", text.UTF8String); // A!
+    }
+}
+```
+
+Block 没有重新给 `text` 赋值，而是修改共同引用的可变字符串。若捕获的是一个 C 指针，按值复制指针也不自动延长它所指缓冲区的生命；不能把 Objective-C 对象的 ARC 持有规则套到任意地址。
+
+全局变量与静态变量有自己的存储期，Block 对它们的访问不等同于普通自动局部变量的快照捕获。判断输出时，先确认变量是哪一种，再推导读取的是哪份存储。
+
+## 3. 共享存储与 __block {#共享存储与__block}
+
+**`__block` 存储**让外部作用域与捕获它的 Block 访问同一份可修改变量。多个 Block 可以共享这份状态，修改会互相可见。
+
+```objectivec
+#import <Foundation/Foundation.h>
+
+int main(void) {
+    @autoreleasepool {
+        __block NSInteger count = 1;
+        void (^increment)(void) = ^{ count += 1; };
+        NSInteger (^read)(void) = ^{ return count; };
+        increment();
+        printf("%ld %ld\n", (long)count, (long)read()); // 2 2
+    }
+}
+```
+
+这不是给每个 Block 都复制一个可变整数。实现上可以使用一个 byref 存储单元，把相关访问导向同一状态；当捕获该存储的 Block 需要跨出栈帧时，存储也要有足够长的生命周期。Apple Block ABI 用 forwarding 指针等机制让迁移前后的访问找到正确位置。
+
+这种间接存储解决共享与生命周期问题，不负责并发互斥。两个线程同时执行 `count += 1` 仍然可能发生数据竞争。需要锁、串行队列或其他同步机制时，`__block` 不能替代它们。
+
+ARC 下，`__block` 对象变量仍按其所有权限定管理，默认强引用不会因为加了 `__block` 就消失。旧 MRC 资料中“`__block` 对象捕获不隐式 retain”的条件，不能搬到 ARC 项目里解释循环引用。需要弱关系时，应明确使用 `__weak` 等符合设计的方式。
+
+## 4. Block 复制与实现结构 {#block复制与实现结构}
+
+Block 的实现包含调用函数入口、描述信息以及需要保存的捕获状态；需要管理对象或 byref 捕获时，还可能有复制和销毁辅助函数。调用函数负责执行代码，辅助函数负责在 Block 生命周期变化时正确处理捕获内容，两者职责不同。
+
+可以用“无捕获的全局形式、具有局部捕获的形式、为长期保存而复制的形式”理解存储差异，但不要仅凭源代码中有一个 `^` 就断言它一定在栈或堆上。ARC 和优化器会根据持有、逃逸与使用方式调整实现。
+
+```objectivec
+#import <Foundation/Foundation.h>
+
+typedef NSInteger (^Reader)(void);
+
+static Reader MakeReader(NSInteger value) {
+    return [^{ return value; } copy];
+}
+
+int main(void) {
+    @autoreleasepool {
+        Reader read = MakeReader(7);
+        printf("%ld\n", (long)read()); // 7
+    }
+}
+```
+
+`MakeReader` 返回后仍能读取创建时的 `value`，因为返回的 Block 有适合继续使用的生命周期。ARC 对相应 Block 指针的强持有和逃逸转换会按规则处理复制；例子显式写 `copy`，是为了让跨作用域保存的意图清楚。
+
+Block 属性通常写成 `@property (nonatomic, copy) void (^completion)(void);`。MRC 下必须自行平衡复制后的拥有与释放；ARC 下编译器承担相应管理。不能直接保存指向已经失效栈帧的裸捕获地址，也不能手工修改 Block 的私有布局来“延长生命”。
+
+在实现层面，Block 复制不是任意对象图深复制。捕获的 Objective-C 对象通常按持有关系保留，byref 单元继续保持共享语义；C++ 对象在 Objective-C++ 中还涉及其复制和析构规则。调试编译输出可以帮助理解这些过程，但 ABI 结构不是业务层随意构造的公开数据模型。
+
+## 5. 引用环与回调生命周期 {#引用环与回调生命周期}
+
+当对象保存 Block，Block 又强捕获该对象，就会形成相应的强引用环。在实例方法中直接访问 ivar，也可能隐含捕获 `self`，不能只搜索 `self.` 这一种写法。
+
+```objectivec
+#import <Foundation/Foundation.h>
+#import <objc/runtime.h>
+
+@interface Screen : NSObject
+@property (nonatomic, copy) void (^completion)(void);
+- (void)configure;
+@end
+@implementation Screen
+- (void)configure {
+    __weak Screen *weakSelf = self;
+    self.completion = ^{
+        Screen *strongSelf = weakSelf;
+        if (!strongSelf) { printf("closed\n"); return; }
+        printf("active %s\n", class_getName([strongSelf class]));
+    };
+}
+- (void)dealloc { printf("screen released\n"); }
+@end
+
+int main(void) {
+    @autoreleasepool {
+        void (^completion)(void);
+        @autoreleasepool {
+            Screen *screen = [Screen new];
+            [screen configure];
+            completion = screen.completion;
+            completion(); // active Screen
+        }
+        completion(); // 页面释放后输出 closed
+    }
+}
+```
+
+Block 保存弱关系，使回调可以比 `Screen` 更长寿；每次开始执行时读取为局部强引用，在需要访问的这段工作内维持对象有效。第一次输出 `active Screen`，内层作用域结束并释放对象后出现 `screen released`，之后回调输出 `closed`。
+
+如果换成强捕获 `self`，外部变量消失不会自动拆掉 `Screen → completion → Screen` 的环。只改成 `__block Screen *blockSelf = self`，在 ARC 下也不能保证解决问题，因为共享存储中的对象引用仍可能是强的。
+
+弱捕获也不是所有回调的唯一正确选择。一个短期操作可能有意持有完成所需对象；长期订阅则应有明确取消或注销入口。让对象在需要时存活、在不需要时结束，才是选择强弱关系的依据。
+
+Block 与 delegate 也应按交互形态选择。一次请求的完成回调适合用 Block 把处理逻辑留在调用附近；一组持续事件、可选行为和协作契约可以用协议委托表达。委托若使用弱属性，需要有其他对象真正拥有它；Block 若长期保存，需要明确捕获与清理责任。两者都不自动保证线程安全。
+
+## 6. 面试题 {#面试题}
+
+### 6.1 Block 如何捕获和管理外部变量？ {#capture}
+
+**考察重点**：局部值捕获、对象引用、全局存储与捕获生命周期。
+
+**相关内容**：[类型与普通捕获](#类型与普通捕获)、[Block 复制与实现结构](#block复制与实现结构)。
+
+<details>
+<summary>参考回答</summary>
+
+**普通自动局部变量在 Block 创建时按值捕获，普通捕获在内部不能重新赋值；对象变量捕获的是引用，并按相应所有权规则管理。** 对象内容仍可通过引用修改，C 指针捕获则不会自动管理所指缓冲区。全局和静态变量按其原有存储访问，`__block` 使用共享可修改存储，不能把所有变量概括为同一种捕获。
+
+</details>
+
+### 6.2 __block 修饰符有什么作用？ {#byref}
+
+**考察重点**：共享可修改存储、逃逸与 ARC 条件。
+
+**相关内容**：[共享存储与 __block](#共享存储与__block)。
+
+<details>
+<summary>参考回答</summary>
+
+**它让外部作用域与相关 Block 共享一份可修改变量，修改结果互相可见。** 存储可以随逃逸 Block 获得更长生命周期，实现通过间接访问保持一致。`__block` 不等于弱引用，在 ARC 下对象仍按所有权限定持有，也不提供多线程同步。
+
+</details>
+
+### 6.3 Block 为什么需要 copy，ARC 下又怎样处理？ {#block-lifetime}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：捕获上下文、跨作用域存活与自动管理。
+
+**相关内容**：[Block 复制与实现结构](#block复制与实现结构)。
+
+<details>
+<summary>参考回答</summary>
+
+**离开创建作用域后继续使用的 Block 必须保留代码所需的捕获状态，复制是建立合适长期存储的重要机制。** ARC 会在相应强持有或逃逸转换中处理 Block 复制，属性使用 `copy` 也能明确这一契约。复制不等于深复制所有捕获对象，也不能由此断言每个 Block 都发生一次新的堆分配。
+
+</details>
+
+### 6.4 Block 为什么可能造成循环引用，如何处理？ {#cycle}
+
+**考察重点**：对象与 Block 的双向拥有、隐含捕获与结束条件。
+
+**相关内容**：[引用环与回调生命周期](#引用环与回调生命周期)。
+
+<details>
+<summary>参考回答</summary>
+
+**对象持有 Block、Block 强捕获对象时，会形成外部引用消失后仍然存在的环。** 应按所有权让其中的非拥有关系变弱，或在明确完成、取消时断开持有；访问 ivar 也可能隐含捕获 `self`。ARC 下仅增加 `__block` 不能保证打破强关系，仍要检查实际引用图。
+
+</details>
+
+### 6.5 使用 weakSelf 时，如何保证回调执行期间需要的对象仍然有效？ {#weak-strong}
+
+**考察重点**：弱读取、局部强持有与操作范围。
+
+**相关内容**：[引用环与回调生命周期](#引用环与回调生命周期)。
+
+<details>
+<summary>参考回答</summary>
+
+**开始处理时把弱引用读入局部强引用，确认非空后通过这个局部引用完成所需访问。** 弱引用只避免长期拥有；局部强引用保证当前确实需要对象的工作不会访问已经销毁的对象。若工作还把对象传给更长寿的异步任务，需要继续分析后续持有与取消，不能只检查当前这一层回调。
+
+</details>
+
+### 6.6 Block 和 delegate 如何选择？ {#delegate}
+
+**考察重点**：交互形态、契约表达与生命周期责任。
+
+**相关内容**：[引用环与回调生命周期](#引用环与回调生命周期)。
+
+<details>
+<summary>参考回答</summary>
+
+**局部的一次完成回调适合 Block，一组持续事件和协作能力可以通过协议 delegate 表达。** Block 便于在调用处捕获上下文，但要管理捕获与清理；委托提供明确接口，可选方法需要检查，弱委托还要由其他对象持有。最终应结合事件数量、拥有关系和取消方式选择，而不是认为某一种总能避免泄漏。
+
+</details>
+
+## 7. 参考资料 {#参考资料}
+
+- [Apple：Working with Blocks](https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/ProgrammingWithObjectiveC/WorkingwithBlocks/WorkingwithBlocks.html)
+- [Apple：Blocks and Variables](https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/Blocks/Articles/bxVariables.html)
+- [Clang：Language Specification for Blocks](https://clang.llvm.org/docs/BlockLanguageSpec.html)
+- [Clang：Block Implementation Specification](https://clang.llvm.org/docs/Block-ABI-Apple.html)
+- [Clang：Objective-C Automatic Reference Counting](https://clang.llvm.org/docs/AutomaticReferenceCounting.html)

@@ -1,0 +1,260 @@
+---
+title: iOS 性能诊断
+description: 用 Instruments、调用栈、内存分配和 signpost 诊断 iOS 卡顿、启动与内存问题，并验证优化效果。
+knowledge:
+  id: mobile.ios.performance-diagnostics
+---
+
+**iOS 性能诊断**是把用户感受到的慢、卡顿或内存增长，定位到具体场景、执行阶段和代码的过程。先找到受影响的操作与时间区间，再判断应用是在计算、等待，还是没能及时完成渲染；工具名称和优化技巧都应服务于这个判断。
+
+准备面试时，重点是能说清“什么条件下出现问题、拿到什么证据、为什么这样修改、怎样确认改善”。只说使用 Instruments 或把代码放到子线程，还没有解释问题的原因。
+
+## 1. 面试核心 {#core}
+
+- **卡顿需要区分主线程忙、主线程等待和渲染超时**。CPU 占用低，也可能因为锁、同步 I/O 或依赖等待导致界面不响应。[卡](#ui-causes)
+- **工具要按问题选择**。Time Profiler 看 CPU 执行采样，线程状态帮助分析等待，Allocations 看分配，Memory Graph 看对象关系，Leaks 提供泄漏线索。[卡](#tools)
+- **采样权重不等于精确调用次数或单次耗时**。先限定问题区间，再看调用链；需要业务阶段的起止时间时补充 signpost。[卡](#sampling)
+- **内存曲线不下降不一定是泄漏，Leaks 没报错也不能证明生命周期正确**。要结合对象数量、分配栈、保留路径和重复进入退出的实验。[卡](#memory-growth)
+- **启动第一帧与业务真正可用是不同终点**。把不必要的初始化移后有价值，但不能把阻塞移到用户第一下点击时就宣称解决。[卡](#launch)
+- **优化需要保持测量条件与业务结果可比**。记录构建、设备、数据、冷热状态和操作过程，再检查改善与代价。[卡](#optimization-project)
+- **本地一次运行和线上分布回答不同问题**。Organizer 与 MetricKit 可帮助发现版本和设备维度的变化，本地 trace 用来定位具体执行原因。[卡](#verification)
+
+## 2. 从现象确定测量对象 {#从现象确定测量对象}
+
+### 2.1 先描述可重复的操作 {#先描述可重复的操作}
+
+“首页很卡”还不足以开始修改。可以进一步描述为：首次进入含一千条记录的列表，快速滚动时出现停顿；再次进入却较流畅。这个差异提示我们检查首次解析、图片解码、缓存建立或布局计算，而不是一开始就更换整个页面框架。
+
+记录输入规模、设备型号、系统版本、构建配置、网络和缓存状态。选择明确的观测终点，例如点击到内容可操作、列表滚动时的 hitch、进入退出页面后的稳定内存。均值、分位数与帧间隔的含义见 [移动端性能指标](../common/performance-metrics.mdx)。
+
+尽量使用接近发布配置的构建和目标设备。调试器、额外日志、检查器和采样本身会改变运行条件；模拟器上的 CPU、内存与显示行为不能直接代表手机上的性能。
+
+### 2.2 选择能回答当前问题的工具 {#选择能回答当前问题的工具}
+
+| 问题 | 优先观察 | 希望得到的证据 |
+| --- | --- | --- |
+| 操作时 CPU 忙 | Time Profiler | 问题区间内反复出现的调用链与线程 |
+| CPU 不高但操作迟迟不返回 | 线程状态、调用栈、System Trace 等 | 主线程等待什么，依赖链停在哪里 |
+| 滚动或动画不连续 | Animation Hitches、渲染相关轨迹 | 哪一帧错过截止时间，应用提交还是渲染阶段过长 |
+| 内存不断增加 | Allocations、Memory Graph、Leaks | 增长的对象或分配类别，以及谁仍持有它 |
+| 启动慢 | App Launch、Time Profiler、业务 signpost | 初始化、主线程工作、首帧与业务准备各占多少 |
+| 线上某版本退化 | Xcode Organizer、MetricKit | 受影响的版本、设备与场景分布 |
+
+Thread Performance Checker 可以发现部分主线程不合适的工作和优先级反转，Main Thread Checker 则关注部分需要主线程调用的 API。它们提供具体问题线索，不等于检测了所有竞态、卡顿或错误。
+
+## 3. 主线程与渲染卡顿 {#主线程与渲染卡顿}
+
+### 3.1 忙于计算和等待需要不同处理 {#忙于计算和等待需要不同处理}
+
+主线程要处理事件、更新视图并提交界面变化。如果它长时间解析 JSON、解码大图或反复计算布局，后面的事件就只能排队。Time Profiler 能帮助找到这些 CPU 工作的调用链。
+
+主线程也可能没有大量计算，而是在等锁、信号量、同步文件操作或另一个队列完成。此时 CPU 采样不密集，界面仍然不能响应。应检查等待状态和调用栈，沿着依赖关系找出被等待的工作；仅提高等待方的 QoS，不能保证解除阻塞。
+
+把重计算移到合适的执行上下文，可以减轻主线程压力，但要控制并发与结果交付。一次启动大量任务，最后把几千次界面更新同时提交回来，仍会卡住主线程；异步代码也可能继承主 actor，不能看到 `Task` 就认为计算已离开主线程。执行关系见 [Swift 并发](../../basic-knowledge/swift/concurrency.mdx)。
+
+### 3.2 一帧是否及时显示，不只取决于主线程 {#一帧是否及时显示}
+
+**Hitch** 是动画或连续交互中，画面更新未按预期时机呈现造成的停顿。应用的事件处理、布局和提交，以及之后的渲染工作，都可能造成错过帧截止时间。长期不响应通常称为 hang，两者关注的时间尺度与观测方式不同。
+
+列表中可以检查重复布局、同步读取、图片解码、视图配置次数和复用是否有效；具体机制见 [iOS 列表视图](./list-views.mdx)。复杂图层、离屏处理或过量合成则需要查看渲染轨迹，不能仅凭主线程 CPU 正常就排除渲染问题。
+
+`CADisplayLink` 能让代码与显示更新节奏协调，也可作为应用内观测的辅助。但回调时间受运行循环与主线程调度影响，自己统计一个平均 FPS，不能完整还原每一帧在渲染和显示链路中的延迟。可变刷新率设备上，也不要把每一帧预算固定成 16.7 毫秒。
+
+## 4. CPU 采样与业务区间 {#CPU采样与业务区间}
+
+### 4.1 从问题区间阅读调用树 {#从问题区间阅读调用树}
+
+Time Profiler 通过采样观察 CPU 上正在执行的调用栈。先选择发生卡顿的区间，再看主线程和相关工作线程，避免让整段空闲时间或无关操作稀释问题。
+
+调用树中的累计权重包含该路径及其后续调用，自身权重更接近采样直接落在当前函数中的部分。某个入口累计占比很高，可能只是因为它调用了真正耗时的子函数；反过来，同一个小函数执行很多次，也可能积累大量权重。
+
+采样不能直接告诉我们“函数执行了多少次、每次精确花了多久”。没有采到某个短函数，也不代表它没有运行。遇到等待期间缺少 CPU 样本时，结合线程状态，而不是据此判断应用没有问题。
+
+### 4.2 用 signpost 标记业务阶段 {#用signpost标记业务阶段}
+
+**Signpost** 是写入性能记录的事件或时间区间，用来把代码里的业务步骤与工具时间轴对应起来。iOS 15 起可以使用 `OSSignposter`；下面给一次解码分配独立标识，并用 `defer` 保证成功或抛错都会结束区间。
+
+```swift
+import Foundation
+import os
+
+struct FeedEntry: Decodable {
+    let id: Int
+    let title: String
+}
+
+private let feedSignposter = OSSignposter(subsystem: "com.example.reader",
+                                          category: "performance")
+
+func decodeFeed(_ data: Data) throws -> [FeedEntry] {
+    let id = feedSignposter.makeSignpostID()
+    let interval = feedSignposter.beginInterval("DecodeFeed", id: id)
+    defer { feedSignposter.endInterval("DecodeFeed", interval) }
+    return try JSONDecoder().decode([FeedEntry].self, from: data)
+}
+```
+
+多个 `decodeFeed` 并发调用时，独立 ID 让同名区间仍能正确配对。这个函数只负责测量解码段，没有自动切换线程；调用方仍要选择合适的执行上下文。
+
+在 Instruments 中把这些区间与 CPU、线程和界面事件对齐，可以判断耗时集中在下载、解码还是展示。不要把整个流程只包成一个“大任务”，却在面试里把总耗时归因于 JSON 解码；也不要把令牌、账号或完整响应内容当作测量元数据写进去。
+
+## 5. 内存增长与生命周期 {#内存增长与生命周期}
+
+### 5.1 分清瞬时峰值、缓存与未释放对象 {#分清瞬时峰值缓存与未释放对象}
+
+一次加载产生大量临时对象，可能造成短暂峰值；缓存会有意保留可重用对象；某个已经关闭的页面却一直被订阅或闭包持有，则是生命周期问题。这几种现象都可能表现为内存上升，但处理方式不同。
+
+用同一组操作重复进入、退出页面，观察稳定后的分配数量和增长趋势。Allocations 可以记录分配类别、次数与调用栈，并通过阶段标记帮助比较某次操作新增且仍存活的分配。不要只看进程数字是否立即回到最初值：分配器、缓存和系统框架都可能保留可复用空间。
+
+图片尤其需要区分压缩文件大小与解码后像素占用。对大图缩略显示、并发解码数量和缓存容量做约束；不能因为网络只下载了几百 KB，就认定内存代价也只有几百 KB。
+
+### 5.2 沿保留路径解释为什么没有释放 {#沿保留路径解释为什么没有释放}
+
+Memory Graph 用于检查对象及其关系。发现关闭的控制器仍存在后，应沿保留路径寻找订阅、计时器、闭包、集合或缓存，而不是给所有引用批量加 `weak`。
+
+Leaks 能提示部分不可回收分配，但不是所有业务上无用的对象都表现为它能识别的泄漏。例如单例数组仍合法地强持有已经不再使用的页面，这条引用在图上仍然可达；Leaks 没有报告，不代表页面生命周期正确。
+
+确认强引用环后，再修改真正不该持有的一条边，或在生命周期结束时注销任务和订阅。Swift 的引用关系见 [Swift ARC](../../basic-knowledge/swift/arc.mdx)。若怀疑越界、释放后使用或数据竞争，使用相应诊断工具；这些是正确性问题，不能仅按“少分配一点内存”解决。
+
+## 6. 启动与线上验证 {#启动与线上验证}
+
+### 6.1 第一帧不等于业务可用 {#第一帧不等于业务可用}
+
+启动时可以分开观察进程初始化、运行时与框架准备、应用启动回调、首屏布局和第一帧。首屏不需要的缓存预热、数据扫描或第三方初始化，可以评估延后；必要的数据一致性和安全初始化则不能随意跳过。
+
+第一帧已经显示，但用户还不能点击或必须继续等待数据，也会感到启动慢。应另设业务可用的终点，用 signpost 记录它。把所有工作挪到首帧之后，会改善一个指标，却可能让第一次交互更差。
+
+冷启动、热启动、进程仍在内存中的恢复，以及首次安装后的准备，成本不同。比较前后版本时保留相同的启动条件，并明确究竟减少了哪个阶段。
+
+### 6.2 用同条件复测支持优化结论 {#用同条件复测支持优化结论}
+
+一次可说明原因的优化记录至少应包含：触发操作、原始证据、原因假设、修改内容、复测结果和代价。例如分批解码降低了主线程连续占用，却可能增加总任务时间；缓存减少重复计算，却会增加内存与失效处理成本。
+
+在相同设备、构建、输入和冷热状态下重复测量，检查分布及异常值，而不是只挑一次最快结果。还要验证业务结果、取消与错误处理没有退化。指标本身和停止条件见 [移动端性能指标](../common/performance-metrics.mdx)。
+
+Xcode Organizer 与 MetricKit 可以提供真实使用中的性能统计和诊断信息，帮助发现版本、系统或设备差异。它们的采样和汇总有自己的覆盖范围，不是每次操作的实时完整记录；线上指标提示问题之后，仍需要用本地复现、调用栈和 trace 建立原因证据。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 iOS 界面卡顿可能有哪些原因？ {#ui-causes}
+
+**考察重点**：主线程执行、等待与渲染阶段之间的区别。
+
+**相关内容**：[主线程与渲染卡顿](#主线程与渲染卡顿)。
+
+<details>
+<summary>参考回答</summary>
+
+**可能是主线程计算过多、等待依赖，或渲染未赶上帧截止时间。** 计算方面检查解析、解码、布局和更新次数；等待方面检查锁、同步 I/O 和队列依赖；渲染方面结合图层与帧轨迹。先限定触发场景和问题区间，再选择 CPU、线程状态或渲染工具，不能只用 CPU 高低判断。
+
+</details>
+
+### 7.2 Xcode 和 Instruments 中有哪些性能诊断工具，各自看什么？ {#tools}
+
+**考察重点**：现象与工具能力的匹配，以及单个工具的局限。
+
+**相关内容**：[选择能回答当前问题的工具](#选择能回答当前问题的工具)。
+
+<details>
+<summary>参考回答</summary>
+
+**Time Profiler 看 CPU 执行采样，线程状态帮助分析等待，Allocations 看内存分配，Memory Graph 看对象关系，Leaks 提供泄漏线索。** 动画问题结合 Animation Hitches，启动问题结合 App Launch；业务阶段用 signpost 标记，线上变化看 Organizer 或 MetricKit。选择依据是要回答的问题，而不是工具越多越好。
+
+</details>
+
+### 7.3 Time Profiler 中某函数占比很高，能直接说它单次执行很慢吗？ {#sampling}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：采样、累计权重、调用频率和执行时长的区别。
+
+**相关内容**：[从问题区间阅读调用树](#从问题区间阅读调用树)、[用 signpost 标记业务阶段](#用signpost标记业务阶段)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能，较高权重可能来自单次执行较长、调用很多次，或子调用累计成本。** 应先确认时间区间、线程和调用路径，再区分自身与累计权重。要测具体阶段的起止时间，可增加 signpost；采样占比也不提供精确调用次数。
+
+</details>
+
+### 7.4 页面退出后内存没有立即下降，就一定存在泄漏吗？ {#memory-growth}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：内存总量、存活对象、缓存和业务生命周期。
+
+**相关内容**：[内存增长与生命周期](#内存增长与生命周期)。
+
+<details>
+<summary>参考回答</summary>
+
+**不一定，需要区分缓存、可复用空间、临时峰值和不该继续存活的对象。** 重复进入退出同一场景，观察分配数量和稳定后的增长，再用 Memory Graph 查保留路径。Leaks 没有报告也不能排除单例或集合仍持有无用页面的情况。
+
+</details>
+
+### 7.5 把初始化全部挪到首帧之后，就算启动优化成功了吗？ {#launch}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：首帧、业务可用、必要前置与交互代价。
+
+**相关内容**：[第一帧不等于业务可用](#第一帧不等于业务可用)。
+
+<details>
+<summary>参考回答</summary>
+
+**不一定，首帧更早可能伴随首次交互更慢。** 应区分必要与可延期工作，分别测首帧和业务可用时间，确认延后没有破坏初始化依赖、数据一致性或交互体验，并保持相同的启动条件复测。
+
+</details>
+
+### 7.6 介绍一次项目中的性能优化，你会怎样说明过程？ {#optimization-project}
+
+**题型**：综合题
+
+**考察重点**：现象、测量证据、原因、修改和代价之间的因果关系。
+
+**相关内容**：[从现象确定测量对象](#从现象确定测量对象)、[用同条件复测支持优化结论](#用同条件复测支持优化结论)。
+
+<details>
+<summary>参考回答</summary>
+
+**先说明具体操作与问题指标，再用 trace、调用栈或分配证据定位原因，最后说明修改与复测结果。** 补充设备、构建、输入和冷热状态，以及是否引入更多内存、延迟或维护成本。真实项目没有测过的数据不要编造，明确已有证据和仍未验证的部分。
+
+</details>
+
+### 7.7 本地一次运行变快，足以证明线上性能改善吗？ {#verification}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：测量可比性、分布、真实设备差异和线上观测。
+
+**相关内容**：[用同条件复测支持优化结论](#用同条件复测支持优化结论)。
+
+<details>
+<summary>参考回答</summary>
+
+**不够，需要同条件重复测量，并检查实际受影响设备和场景。** 本地验证用于建立原因与修改的关系，线上统计用于观察版本和用户群体变化；两者还需结合业务正确性与异常情况，不能把模拟器单次结果推广为所有设备的收益。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+- [Apple：Improving app responsiveness](https://developer.apple.com/documentation/xcode/improving-app-responsiveness)
+- [Apple：Understanding hangs in your app](https://developer.apple.com/documentation/xcode/understanding-hangs-in-your-app)
+- [Apple：Diagnosing performance issues early](https://developer.apple.com/documentation/xcode/diagnosing-performance-issues-early)
+- [Apple：Addressing CPU bottlenecks](https://developer.apple.com/documentation/xcode/addressing-cpu-bottlenecks)
+- [Apple：Gathering information about memory use](https://developer.apple.com/documentation/xcode/gathering-information-about-memory-use)
+- [Apple：Reducing your app’s memory use](https://developer.apple.com/documentation/xcode/reducing-your-app-s-memory-use)
+- [Apple：Improving your app’s performance](https://developer.apple.com/documentation/xcode/improving-your-app-s-performance)
+- [Apple：OSSignposter](https://developer.apple.com/documentation/os/ossignposter)
+- [Apple：beginInterval(_:id:)](https://developer.apple.com/documentation/os/ossignposter/begininterval(_:id:))
+- [Apple：endInterval(_:_:)](https://developer.apple.com/documentation/os/ossignposter/endinterval(_:_:))
+- [Apple：MetricKit](https://developer.apple.com/documentation/metrickit)
+- [Apple：Reducing your app’s launch time](https://developer.apple.com/documentation/xcode/reducing-your-app-s-launch-time)
+- [Apple：Analyzing responsiveness issues in your shipping app](https://developer.apple.com/documentation/xcode/analyzing-responsiveness-issues-in-your-shipping-app)
+- [Apple：Understanding hitches in your app](https://developer.apple.com/documentation/xcode/understanding-hitches-in-your-app)
+- [Apple：CADisplayLink](https://developer.apple.com/documentation/quartzcore/cadisplaylink)
+- [Apple：makeSignpostID()](https://developer.apple.com/documentation/os/ossignposter/makesignpostid())
+- [Apple：Analyzing CPU profiles with call tree views](https://developer.apple.com/documentation/xcode/analyzing-cpu-profiles-with-call-tree-views)
+- [Apple：Analyze hangs with Instruments（WWDC23）](https://developer.apple.com/videos/play/wwdc2023/10248/)
+- [Apple：Analyze heap memory（WWDC24）](https://developer.apple.com/videos/play/wwdc2024/10173/)
+- [Apple：Diagnosing memory, thread, and crash issues early](https://developer.apple.com/documentation/xcode/diagnosing-memory-thread-and-crash-issues-early)

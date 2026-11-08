@@ -1,0 +1,508 @@
+---
+sidebar_position: 4
+knowledge:
+  id: frontend.browser.storage
+---
+
+# 浏览器存储
+
+浏览器存储用于保存页面再次需要的数据，但不同机制的作用域、生命周期、读写方式和网络行为并不相同。Cookie 参与 HTTP 状态管理，Web Storage 保存同步读写的字符串，IndexedDB 提供异步记录、索引与事务。
+
+选择时先看数据做什么：它是否需要随请求发送、是否需要跨标签页共享、丢失后能否恢复，以及读写量是否会影响页面响应。仅比较“谁存得更多”不足以说明方案是否合适。
+
+## 1. 面试核心 {#core}
+
+- **Cookie 会按请求条件参与发送，localStorage、sessionStorage 和 IndexedDB 不会自动变成 Cookie 请求头**。HTTP 缓存又是响应复用机制，不能和这些存储混为一谈。[卡](#storage-comparison)
+- **Web Storage 按源隔离，sessionStorage 还按顶层页面会话区分**。刷新通常保留 sessionStorage，同源独立标签页也不因此实时共享它；隐私分区策略还可能附加边界。[卡](#storage-scope)
+- **Cookie 的 Domain、Path 与源隔离不是同一套规则**。默认主机范围、不按端口隔离、路径匹配和安全属性都需要分别判断。[卡](#cookie-scope)
+- 服务端用 `Set-Cookie`，脚本可通过 `document.cookie` 写入允许脚本访问的 Cookie；**HttpOnly 需要服务端设置，前端读取不到也不代表浏览器不发送**。[卡](#cookie-write)
+- 删除 Cookie 需要让相应作用域的记录过期；**只删除同名、不同 Path 的记录，原 Cookie 可能仍然存在**。Cookie 过期与服务端会话失效也不是同一操作。[卡](#cookie-delete)
+- **localStorage 没有内建逐项过期时间**。可以在值中保存时间戳并在读取时校验，但客户端时钟和存储都不能成为服务端鉴权依据。[卡](#local-expiry)
+- **Web Storage 的同步接口和字符串模型适合小量数据，IndexedDB 更适合记录、索引和事务需求**，不能只为了使用某个 API 增加复杂度。[卡](#indexeddb-choice)
+- **IndexedDB 单个请求成功不等于整个事务已经提交**。跨异步等待、升级被其他连接阻塞和迁移重试都要单独处理。[卡](#indexeddb-transactions)
+- **浏览器存储可能受限、被清理或写满**。容量数字是环境约束，不是永久可用空间承诺；重要内容应有同步或导出恢复方案。[卡](#storage-loss)
+- **前端可读取的存储不是秘密保管库**。放到 localStorage 的服务端 API Key 仍暴露给页面执行环境，改成编码或前端加密并不能自动解决授权问题。[卡](#sensitive-data)
+
+## 2. 存储方式与数据用途 {#存储方式与数据用途}
+
+| 机制 | 主要数据模型 | 读写特点 | 生命周期与用途 |
+| --- | --- | --- | --- |
+| Cookie | 小型名称和值，附带发送和过期属性 | 浏览器按条件附带到请求；脚本访问受 HttpOnly 等限制 | 会话标识、需要服务端读取的少量状态 |
+| localStorage | 字符串键值 | 同步 API，没有事务性读改写 | 超出当前页面会话的小型偏好或可恢复缓存 |
+| sessionStorage | 字符串键值 | 同步 API，顶层页面会话隔离 | 当前标签页流程中的临时状态 |
+| IndexedDB | 可结构化克隆的记录、键与索引 | 异步请求，支持事务与版本升级 | 较多草稿、离线记录、按键或索引查询 |
+
+这些机制都不能替代服务端权限校验。HTTP 缓存则保存响应并按新鲜度或条件请求决定能否复用，相关规则见 [HTTP 缓存](../../basic-knowledge/network/http-cache.mdx#存储与新鲜度)。Cache Storage 保存请求和响应对象，也不是给 localStorage 换一个更大的容量。
+
+“Session”通常指应用的登录会话机制，不是 `sessionStorage` 的简称。服务端可以保存会话数据，让浏览器通过 Cookie 携带会话标识；也可以采用其他协议。会话模型见 [Session、JWT、OAuth 2.0 与 OIDC](../../system-design/security/session-jwt-oauth-oidc.mdx#session)。
+
+## 3. Cookie 的写入、发送与删除 {#cookie的写入发送与删除}
+
+### 3.1 响应头与脚本接口 {#cookie写入}
+
+**Cookie** 是浏览器保存的一组带作用域和其他属性的名称和值。服务器通过响应头请求保存，浏览器在后续符合条件的请求中发送相应名称和值。
+
+```http
+Set-Cookie: session_id=example-value; Path=/; Secure; HttpOnly; SameSite=Lax
+```
+
+这是 HTTPS 服务端响应中的示例，`example-value` 只是说明格式的占位值，不是可用于生产的会话标识。符合发送条件时，后续请求可以包含：
+
+```http
+Cookie: session_id=example-value
+```
+
+请求头不会把 `Path`、`HttpOnly` 等全部属性原样带回。前端 Fetch 代码也不能通过读取响应的 `Set-Cookie` 头来获得这份值；浏览器会按相应规则过滤这个响应头。
+
+普通页面偏好可以使用脚本写入：
+
+```js
+document.cookie = 'theme=dark; Path=/; Max-Age=3600; SameSite=Lax';
+document.cookie = 'density=compact; Path=/; Max-Age=3600; SameSite=Lax';
+console.log(document.cookie);
+```
+
+每次赋值处理一条 Cookie，并不是用第二次赋值整体替换第一次。读取得到的是当前页面允许访问的 Cookie 名称和值组合，顺序不应成为业务依赖；它不会显示 HttpOnly Cookie 或返回完整属性列表。复杂值需要合适编码，也不应假设所有 Cookie 值都已按 JSON 或 URI 编码。
+
+### 3.2 作用域和安全属性 {#cookie作用域与属性}
+
+Cookie 的发送同时受到目标地址、到期状态、请求上下文和浏览器策略等条件影响，不能概括成“每次请求都把所有 Cookie 发出去”。
+
+| 属性或条件 | 主要含义 | 容易误解的边界 |
+| --- | --- | --- |
+| 不设置 `Domain` | 只匹配设置它的主机范围 | 不是自动共享给所有子域 |
+| `Domain=example.com` | 在合法设置条件下，可匹配该域及相应子域 | 不能给任意无关域设置，也不等于按端口隔离 |
+| `Path=/app` | 限定相应路径匹配 | 不是可靠的脚本安全隔离边界 |
+| `Max-Age` | 按秒表示寿命 | 与 `Expires` 同时存在时优先使用；浏览器仍可能提前清理 |
+| `Expires` | 绝对到期时间 | 没有这两种到期设置时是会话 Cookie，实际会话恢复策略由浏览器决定 |
+| `Secure` | 限制安全传输条件下发送 | 不是对本地值加密，也不等于阻止脚本访问 |
+| `HttpOnly` | 禁止普通页面脚本通过 Cookie API 读取或修改该记录 | 浏览器仍可自动发送，恶意脚本仍可能借页面发起操作 |
+| `SameSite` | 根据同站或跨站上下文约束发送 | 同站不等于同源，不能替代全部 CSRF 防御 |
+
+`SameSite=Strict` 的跨站限制更严格；显式 `Lax` 在部分顶层安全方法导航中允许发送；`None` 用于需要跨站发送的场景，并要求相应的 `Secure` 条件。第三方 Cookie 限制、分区存储和浏览器配置还可能进一步影响结果，不能把 `None` 理解成无条件放行。
+
+同一主机的不同端口可以受到同一 Cookie 作用域影响，而 localStorage 按源区分端口。`Path=/app` 也不会匹配任意以同样字母开头的路径，例如 `/application` 并不满足 `/app` 的路径段匹配关系。
+
+### 3.3 删除与会话失效 {#cookie删除}
+
+删除 Cookie 通常是针对相同名称与相应作用域写入立即过期的值。普通非分区 Cookie 需要特别核对名称、Domain 和 Path；使用分区 Cookie 时还涉及对应分区上下文。
+
+```js
+document.cookie = 'theme=dark; Path=/app; Max-Age=3600';
+document.cookie = 'theme=; Path=/; Max-Age=0';
+```
+
+第二句不能据此保证第一句已经删除，因为 Path 不同。删除 `/app` 这条记录应匹配它的路径：
+
+```js
+document.cookie = 'theme=; Path=/app; Max-Age=0';
+```
+
+服务端设置的 HttpOnly 会话 Cookie 应由服务端响应进行清理，并按登录协议使对应会话或刷新凭据失效。只在前端隐藏“已登录”按钮，或者只删除某条可见 Cookie，都不等于后端授权已经撤销。
+
+## 4. Web Storage 的范围与操作 {#web-storage的范围与操作}
+
+### 4.1 源与页面会话 {#存储作用域}
+
+**源**由协议、主机和端口共同确定。正常第一方环境中，同源页面可以使用同一 localStorage 区域，路径不同不会自动产生独立区域。
+
+sessionStorage 还与顶层页面会话有关：同一标签页中的同源页面通常沿用该会话的数据，刷新也不会自动清空。独立打开的另一个标签页具有自己的区域，不能把“同源”直接推成“同一 sessionStorage”。
+
+若新窗口保留 opener 关系，浏览器可以从打开方复制初始 sessionStorage；复制之后两份区域仍独立，不实时同步。`noopener`、会话恢复和具体打开方式会影响关系，回答“新标签页一定为空”或“关闭浏览器必定永久删除”都过于绝对。
+
+隐私保护还可能按顶层站点等附加条件分区。对于嵌入到不同站点的第三方内容，只检查 iframe 自己的源不足以保证它看到同一存储。使用 `file:`、不透明源、禁用存储或特殊浏览模式时，也应核验实际可用性。
+
+### 4.2 字符串读写与失败 {#字符串读写}
+
+```js
+localStorage.setItem('preferences', JSON.stringify({ theme: 'dark' }));
+const raw = localStorage.getItem('preferences');
+const preferences = raw === null ? null : JSON.parse(raw);
+console.log(preferences.theme);
+localStorage.removeItem('preferences');
+console.log(localStorage.getItem('preferences'));
+```
+
+在存储可用且写入成功的情况下，输出 `dark` 和 `null`。取不到键返回的是 `null`，不是字符串 `"null"`。`setItem` 的值会按字符串处理，直接传普通对象通常得到 `"[object Object]"`；需要对象时必须选择合适的序列化方式，并处理旧数据和解析失败。
+
+Web Storage API 是同步的。大对象序列化、频繁同步读写和多份重复快照都可能增加主线程工作，不能只因“存在本地”就认为没有性能成本。浏览器禁止访问时可能抛出安全相关异常，容量不足时写入也可能失败，因此存储调用与序列化都应纳入错误处理。
+
+`clear()` 会清理当前区域中的所有键，容易删除同源其他模块保存的数据。业务一般应使用自己的键前缀和明确的删除范围。
+
+### 4.3 跨文档变化通知 {#跨文档变化通知}
+
+`storage` 事件通知使用同一存储区域的其他适用文档发生了变化，不在执行这次写入的同一窗口中再自动触发一遍。
+
+```js
+window.addEventListener('storage', event => {
+  if (event.storageArea === localStorage && event.key === 'theme') {
+    console.log(event.oldValue, event.newValue);
+  }
+});
+```
+
+在另一个使用同一 localStorage 的同源页面执行 `setItem('theme', 'dark')`，这边可以收到变化。写入方自己的界面仍应主动更新；把同一个值再次写入通常不会产生新的变化事件。sessionStorage 的通知也受顶层页面会话范围限制，不能靠它同步独立标签页。
+
+这不是事务或锁。两个页面都执行“读取计数、加一、写回”，可能相互覆盖；`storage` 事件也不会让这段读改写自动原子化。需要事务性更新或可靠跨设备同步时，应使用相应数据库或服务端协议。
+
+## 5. 本地过期时间 {#本地过期时间}
+
+localStorage 没有逐键 TTL。应用可以把值与到期时间一起保存，在读到过期记录时返回未命中。下面把“一段有效期”明确约定为毫秒时长，值限定为可 JSON 序列化的数据：
+
+```js
+function setExpiring(storage, key, value, ttlMs, now = Date.now()) {
+  if (!Number.isFinite(ttlMs) || ttlMs < 0 || !Number.isFinite(now)) {
+    throw new TypeError('时间参数无效');
+  }
+  const expiresAt = now + ttlMs;
+  if (!Number.isFinite(expiresAt)) throw new RangeError('过期时间超出范围');
+  const serialized = JSON.stringify(value);
+  if (serialized === undefined) throw new TypeError('值不能序列化');
+  storage.setItem(key, `{"value":${serialized},"expiresAt":${expiresAt}}`);
+}
+
+function getExpiring(storage, key, now = Date.now()) {
+  if (!Number.isFinite(now)) throw new TypeError('当前时间无效');
+  const raw = storage.getItem(key);
+  if (raw === null) return null;
+  let record;
+  try { record = JSON.parse(raw); } catch { return null; }
+  if (!record || typeof record !== 'object' || !Object.hasOwn(record, 'value') ||
+      !Number.isFinite(record.expiresAt)) return null;
+  if (now >= record.expiresAt) return null;
+  return record.value;
+}
+
+setExpiring(localStorage, 'draft-preview', { title: '申请记录' }, 1000, 10000);
+console.log(getExpiring(localStorage, 'draft-preview', 10999));
+console.log(getExpiring(localStorage, 'draft-preview', 11000));
+localStorage.removeItem('draft-preview');
+```
+
+第一次得到标题对象，第二次返回 `null`。示例通过传入时间验证边界，不需要真实等待。它采用读取时判定，不承诺到点立即回收；也刻意没有在读取中自动删除，避免把其他标签页刚写入的同名新值误删。需要回收空间时，还要设计相应清理策略。
+
+这里 `null` 表示未命中，也允许业务值为 null，调用者不能区分这两种情况；需要区分时应返回 `{ found, value }` 这类明确结果。存储不可用、配额错误或序列化环等异常交给调用方处理，不静默宣称已经保存成功。
+
+“一个月”还需要明确是固定 30 天还是日历月份，不能偷偷把产品语义换成一个固定毫秒数。用户可以调整设备时钟或修改本地记录，所以客户端 TTL 只用于缓存体验，不负责确认登录凭据是否仍有效。
+
+## 6. IndexedDB 的记录与事务 {#indexeddb的记录与事务}
+
+### 6.1 什么时候需要 IndexedDB {#indexeddb选择}
+
+**IndexedDB** 是浏览器提供的异步记录数据库。**对象仓库**（object store）保存带键的记录，**索引**帮助按某个字段找到记录，**事务**把相关操作组织为一组成功或失败的工作。
+
+例如草稿逐渐增加，每条都有编号、更新时间和正文，需要按编号修改、按更新时间查询时，用 IndexedDB 的记录与索引比反复读取、解析、重写一个大型 JSON 字符串更贴合需求。它还可以保存 Blob 等可结构化克隆的数据，不要求所有值先转换成 JSON 字符串。
+
+只有一个主题偏好或几项很小的设置时，IndexedDB 的连接、升级和事务代码可能并不划算。异步接口也不表示零开销，输入序列化、数据复制、索引维护和结果处理都需要资源。
+
+### 6.2 打开与升级 {#数据库打开与升级}
+
+数据库版本增加时，`upgradeneeded` 提供修改结构的机会。示例创建按 `id` 定位的草稿仓库，并为 `updatedAt` 建索引：
+
+```js
+function openDraftDatabase() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open('interview-drafts', 1);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      const store = db.createObjectStore('drafts', { keyPath: 'id' });
+      store.createIndex('updatedAt', 'updatedAt');
+    };
+    request.onblocked = () => console.warn('数据库操作等待其他页面关闭旧连接');
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const db = request.result;
+      db.onversionchange = () => db.close();
+      resolve(db);
+    };
+  });
+}
+```
+
+首次打开时创建结构；已经是版本 1 时直接打开，不再次创建。以后升到版本 2，应根据 `oldVersion` 逐步迁移，而不是照抄这段代码每次无条件创建同名仓库。其他页面持有旧连接时，升级或删除可能等待它们关闭，所以这里为已打开连接注册 `versionchange` 清理。
+
+`blocked` 不是已经完成升级，也不是保证系统稍后自动替应用关闭所有连接。产品应提示关闭旧页面或重载，保留可观察的等待状态。
+
+### 6.3 等待事务完成 {#事务提交}
+
+以下函数假设草稿有字符串 `id` 和数字 `updatedAt`，内容可被结构化克隆。保存成功以事务 `complete` 为准：
+
+```js
+function saveDraft(db, draft) {
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction('drafts', 'readwrite');
+    transaction.oncomplete = () => resolve();
+    transaction.onabort = () => reject(transaction.error ?? new Error('事务已取消'));
+    try {
+      transaction.objectStore('drafts').put(draft);
+    } catch (error) {
+      transaction.abort();
+      reject(error);
+    }
+  });
+}
+
+function readDraft(db, id) {
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction('drafts', 'readonly');
+    let value;
+    transaction.oncomplete = () => resolve(value);
+    transaction.onabort = () => reject(transaction.error ?? new Error('事务已取消'));
+    const request = transaction.objectStore('drafts').get(id);
+    request.onsuccess = () => { value = request.result; };
+  });
+}
+```
+
+单个 `put` 请求触发成功事件后，事务中的其他请求仍可能失败并使整组修改回滚。所以不能只在某一个请求的 `onsuccess` 中就宣布整个保存批次已经完成。
+
+```js
+async function example() {
+  const db = await openDraftDatabase();
+  try {
+    await saveDraft(db, { id: 'draft-1', title: '申请记录', updatedAt: 1000 });
+    console.log((await readDraft(db, 'draft-1')).title);
+    console.log(await readDraft(db, 'missing'));
+  } finally {
+    db.close();
+  }
+}
+example().catch(console.error);
+```
+
+在前述函数已定义的同一脚本中执行，输出 `申请记录` 和 `undefined`。缺失记录与 Web Storage 的 `null` 不同，调用方要按接口处理。数据库中已经存在的同键记录会被 `put` 更新；需要禁止覆盖时可以使用 `add` 并处理约束错误。
+
+IndexedDB 事务的活动期有明确规则。事务里插入一个无关的 `await fetch()`，然后继续使用它，可能发现事务已经不再活动或已经提交。一般应先取得需要的网络或异步输入，再创建短事务；不能把它当成跨任意等待一直保持的服务端长事务。
+
+### 6.4 从 localStorage 迁移 {#存储迁移}
+
+迁移不仅是把 JSON 放进另一个 API，还要保证中断后可以重试：
+
+1. 读取旧值并校验版本、结构与数据类型，明确无法解析的数据如何提示和保留。
+2. 准备好目标数据库结构，按稳定主键写入，避免重试产生重复记录。
+3. 等待目标事务提交，再记录迁移状态；验证必要记录可以读回。
+4. 在确认没有其他页面继续写旧格式后，按协议切换读写并清理旧数据。
+
+localStorage 与 IndexedDB 之间没有一个共同事务。若旧标签页仍在写入旧快照，直接“复制一次然后删除”可能漏掉更新；应采用版本协调、暂时兼容或让旧页面重载等具体策略。重要数据还需要服务端同步或导出，不能把本机存储迁移成功误当成备份已经完成。
+
+## 7. 配额、丢失与安全 {#配额丢失与安全}
+
+### 7.1 容量与持久化 {#容量与持久化}
+
+面试可以先说明量级：Cookie 是约几 KiB 的小记录，Web Storage 通常是 MiB 级的小型键值存储，IndexedDB 的可用空间通常更大且受动态配额管理。不要把单个浏览器中测到的数字当成所有环境的统一永久上限。
+
+RFC 6265 对通用浏览器给出每条至少支持 4096 字节的能力建议，常见实现也存在约 4 KiB 的单条约束，但名称、值与属性怎样计数需要看实现。Web Storage 常见为 localStorage 和 sessionStorage 各约 5 MiB，仍应处理实际写入错误，而不是等到写满后才发现字符计数与配额计数不同。
+
+```js
+async function inspectStorage() {
+  const { usage, quota } = await navigator.storage.estimate();
+  console.log(Number.isFinite(usage), Number.isFinite(quota));
+  console.log(await navigator.storage.persisted());
+}
+inspectStorage().catch(console.error);
+```
+
+在支持这些接口的安全上下文中，可以观察估计用量、估计配额和持久化状态。估计不是精确字节承诺，也不能直接把这个 quota 当成 localStorage 单项可用容量。`persist()` 可以请求持久化待遇，但不保证获得，也不能阻止用户主动清理数据或删除浏览器配置。
+
+### 7.2 数据丢失后的处理 {#数据丢失后的处理}
+
+本地存储被清理时，页面必须能够识别未命中或重新初始化。可重建的列表缓存可以重新请求；未同步的用户草稿则可能无法恢复，应该明确保存状态并提供同步或导出，而不是返回一个空数组假装数据从未存在。
+
+乐观更新可以先显示预期结果，但本地持久化成功与服务端操作成功仍是两件事。应记录待同步状态、确认服务端结果、处理冲突或失败回退；不能仅凭 localStorage 中有一条记录就把业务操作标为已完成。
+
+容量不足时可以清理明确可重建的缓存、提示减少占用或停止继续写入。存储完全不可用时，某些临时交互可以退回内存，但刷新后会丢失；如果某项功能依赖持久身份或离线草稿，就应说明限制并提供适当恢复流程，不能悄悄把它包装成相同保证。
+
+### 7.3 凭据与客户端信任 {#凭据与客户端信任}
+
+localStorage、sessionStorage 和页面可读取的 IndexedDB，都能被具有相应页面执行权限的代码访问。XSS 或不可信依赖进入页面环境后，不能因为值叫 `encryptedToken` 就认为它安全：若解密密钥与逻辑也在同一前端，攻击者通常仍可利用它们。
+
+应用自己的服务端 API Key 应保留在受控服务端，由后端完成授权、调用和用量约束。用户主动提供自己的凭据是另一种产品设计，需要明确授权、存储与清理安排；也不能把它当作同源脚本无法读取的秘密。
+
+HttpOnly Cookie 可以减少凭据被普通页面脚本直接读取的风险，但不阻止所有 XSS 操作，也不单独解决 CSRF。令牌存储的完整取舍见 [Session、JWT、OAuth 2.0 与 OIDC](../../system-design/security/session-jwt-oauth-oidc.mdx#浏览器令牌存储)，权限仍必须由服务端判断，见 [认证与授权](../../system-design/security/authentication-authorization-trust-boundaries.mdx#信任边界)。
+
+“Cookie 对移动端不友好”不是一个不带条件的技术结论。移动浏览器可以支持 Cookie；原生网络栈、嵌入式 WebView、不同应用容器和第三方隐私策略可能使用不同的 Cookie 管理或隔离方式，才会让登录共享与跨域联调更复杂。回答时先明确平台和请求上下文，不要把“移动端”当作一种统一 Cookie 行为。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 Cookie、localStorage、sessionStorage 和 IndexedDB 怎样选择？ {#storage-comparison}
+
+**考察重点**：网络发送、作用域、数据模型、读写方式与生命周期。
+
+**相关内容**：[存储方式与数据用途](#存储方式与数据用途)。
+
+<details>
+<summary>参考回答</summary>
+
+**先按数据用途选择，而不是只比较容量。** Cookie 适合浏览器按条件随请求携带的少量状态；localStorage 适合跨页面会话的小量字符串偏好或可恢复缓存；sessionStorage 适合顶层页面会话中的临时数据；IndexedDB 适合较多结构化记录、索引和事务需求。后三者不自动随 HTTP 请求发送，也都不能替代服务端授权。HTTP 缓存另管响应复用，不属于同一套接口。
+
+</details>
+
+### 8.2 刷新后 sessionStorage 还在吗，哪些存储可以跨标签页？ {#storage-scope}
+
+**考察重点**：源、顶层页面会话、初始复制与隐私分区。
+
+**相关内容**：[源与页面会话](#存储作用域)、[跨文档变化通知](#跨文档变化通知)。
+
+<details>
+<summary>参考回答</summary>
+
+**刷新通常保留 sessionStorage，但独立标签页不会因同源就实时共享同一份 sessionStorage。** localStorage 在正常同源第一方环境中可以跨标签页共享；sessionStorage 还按顶层页面会话隔离。保留 opener 的新窗口可能获得初始副本，之后各自独立；noopener、会话恢复、第三方分区和浏览模式等还会影响边界。storage 事件用于通知其他适用文档，不会自动在写入窗口自身触发。
+
+</details>
+
+### 8.3 Cookie 的 Domain 和 Path 决定什么，是否与同源隔离一致？ {#cookie-scope}
+
+**考察重点**：主机范围、路径段匹配、端口与安全边界。
+
+**相关内容**：[作用域和安全属性](#cookie作用域与属性)。
+
+<details>
+<summary>参考回答</summary>
+
+**Domain 和 Path 约束 Cookie 匹配范围，与协议、主机、端口组成的源隔离不相同。** 不设置 Domain 时使用主机范围，合法 Domain 可以覆盖相应子域；Cookie 不按端口独立隔离。Path=/app 匹配相应路径段，不匹配任意 /app 字母前缀，更不是可靠脚本安全边界。最终发送还要满足过期、安全、SameSite 和浏览器策略等条件。
+
+</details>
+
+### 8.4 Cookie 如何写入，HttpOnly 与 Secure 有什么区别？ {#cookie-write}
+
+**考察重点**：服务端响应头、脚本接口、传输与读取限制。
+
+**相关内容**：[响应头与脚本接口](#cookie写入)、[作用域和安全属性](#cookie作用域与属性)。
+
+<details>
+<summary>参考回答</summary>
+
+**服务端通过 Set-Cookie 写入，脚本可用 document.cookie 处理允许脚本访问的记录；HttpOnly 与 Secure 保护不同边界。** HttpOnly 需要服务端设置，限制普通脚本直接读取和修改该 Cookie，但浏览器仍可能发送；Secure 约束安全传输条件，不是本地加密。document.cookie 逐条处理记录，不是整个 Cookie 仓库赋值，Fetch 也不会向页面暴露 Set-Cookie 响应头。
+
+</details>
+
+### 8.5 怎样删除 Cookie，为什么设了 Max-Age=0 仍可能读到同名值？ {#cookie-delete}
+
+**考察重点**：记录身份、作用域匹配与服务器会话失效。
+
+**相关内容**：[删除与会话失效](#cookie删除)。
+
+<details>
+<summary>参考回答</summary>
+
+**应让对应名称和作用域的 Cookie 立即过期，同名但不同 Path 或 Domain 的记录可能不是同一条。** 分区 Cookie 还要考虑相应分区上下文。HttpOnly 会话 Cookie 由服务端清理，并按协议撤销对应会话或凭据；只清一条可见 Cookie 不代表后端已撤销授权，也不保证浏览器不存在其他同名记录。
+
+</details>
+
+### 8.6 怎样让 localStorage 中的数据一段时间后过期？ {#local-expiry}
+
+**考察重点**：读取时校验、时间语义、异常与客户端信任。
+
+**相关内容**：[本地过期时间](#本地过期时间)。
+
+<details>
+<summary>参考回答</summary>
+
+**把值与 expiresAt 一起保存，在读取时检查格式和当前时间，过期则按未命中处理。** localStorage 没有内建逐键 TTL，读取时判定也不等于到点立即回收空间。“一个月”需明确固定时长或日历语义；清理还要考虑其他页面的新写入。用户可以修改时钟和本地数据，所以这种时间只用于客户端缓存体验，登录授权仍由服务端判定。
+
+</details>
+
+### 8.7 为什么项目使用 IndexedDB 而不是 localStorage？ {#indexeddb-choice}
+
+**考察重点**：数据量、记录访问、索引事务与同步接口成本。
+
+**相关内容**：[什么时候需要 IndexedDB](#indexeddb选择)。
+
+<details>
+<summary>参考回答</summary>
+
+**当项目需要较多结构化记录、按键或索引查询、局部修改与事务时，IndexedDB 的模型更贴合需求。** 它避免每次都同步解析和重写一整个大型 JSON 字符串，还支持 Blob 等可克隆数据；但异步不代表没有成本，连接和升级也增加复杂度。若只有很小的偏好设置，localStorage 可能已经足够，选择必须对应实际访问方式。
+
+</details>
+
+### 8.8 IndexedDB 请求成功是否代表事务已提交，事务中可以任意 await 吗？ {#indexeddb-transactions}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：请求生命周期、事务回滚与活动期。
+
+**相关内容**：[等待事务完成](#事务提交)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能，单个请求成功后其他请求仍可能失败，整组保存应等待事务 complete，并处理 abort。** 事务也不能跨任意异步等待无限保持活动，await 无关网络请求后可能已经无法继续操作。应先准备外部输入，再开启短事务；异步包装不能悄悄改变这些生命周期规则。
+
+</details>
+
+### 8.9 从 localStorage 迁移到 IndexedDB，要怎样处理中断和旧页面？ {#storage-migration}
+
+**题型**：综合题
+
+**考察重点**：版本升级、幂等写入、提交确认与跨存储协调。
+
+**相关内容**：[打开与升级](#数据库打开与升级)、[从 localStorage 迁移](#存储迁移)、[字符串读写与失败](#字符串读写)。
+
+<details>
+<summary>参考回答</summary>
+
+**先校验旧数据、建立目标结构，按稳定主键写入并等待提交，再协调切换与清理。** 迁移要可重试，不能写一半就删除旧值；localStorage 和 IndexedDB 没有共同事务，其他标签页继续写旧格式时还需要版本协调或重载协议。数据库升级可能被旧连接阻塞，应处理 versionchange 和 blocked，而不是假装升级已经完成。
+
+</details>
+
+### 8.10 浏览器存储多大，是否可以保证永远不丢失？ {#storage-loss}
+
+**考察重点**：容量量级、动态配额、清理、持久化与数据恢复。
+
+**相关内容**：[容量与持久化](#容量与持久化)、[数据丢失后的处理](#数据丢失后的处理)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能保证永久保留，也没有一个适用于所有浏览器和存储的固定容量数字。** Cookie 通常是约几 KiB 的小记录，Web Storage 常见各约 5 MiB，IndexedDB 受较大的动态配额管理。写入要处理实际异常，estimate 只是估计，持久化待遇也不能阻止用户清理。可重建缓存应能重新获取，重要草稿应有同步或导出，不能把本地唯一副本当作可靠备份。
+
+</details>
+
+### 8.11 localStorage 中保存服务端 API Key 或令牌是否安全？ {#sensitive-data}
+
+**考察重点**：页面代码权限、凭据暴露与服务端授权边界。
+
+**相关内容**：[凭据与客户端信任](#凭据与客户端信任)。
+
+<details>
+<summary>参考回答</summary>
+
+**localStorage 不能替前端保管对同源脚本保密的凭据，应用自己的服务端 API Key 应保留在服务端。** XSS 或不可信依赖进入页面后可以读取可访问存储；把解密密钥也放在前端并不能解决这个问题。HttpOnly Cookie 能限制普通脚本读取，但不能单独解决 XSS 操作或 CSRF，令牌方案要结合完整授权与撤销协议选择。
+
+</details>
+
+### 8.12 Cookie、Session 和 sessionStorage 是同一个概念吗？ {#session-terms}
+
+**考察重点**：浏览器状态传输、应用会话与页面会话存储。
+
+**相关内容**：[存储方式与数据用途](#存储方式与数据用途)、[Session、JWT、OAuth 2.0 与 OIDC](../../system-design/security/session-jwt-oauth-oidc.mdx#session)。
+
+<details>
+<summary>参考回答</summary>
+
+**不是，Cookie 是浏览器保存并按条件发送的状态机制，Session 通常指应用登录会话，sessionStorage 是页面会话范围内的字符串存储。** 常见服务端 Session 方案用 Cookie 携带会话标识，但会话状态和权限在服务端维护。sessionStorage 不会因名称里有 session 就自动参与登录，也不会自动随请求发送。
+
+</details>
+
+### 8.13 Cookie 是否天然不适合移动端？ {#mobile-cookies}
+
+**考察重点**：移动浏览器、WebView、原生请求容器与隐私策略。
+
+**相关内容**：[凭据与客户端信任](#凭据与客户端信任)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能笼统判断，先明确移动浏览器、WebView 还是原生网络请求。** 它们可能拥有不同 Cookie 仓库、生命周期与共享接口，跨站限制也会影响嵌入场景。移动浏览器支持 Cookie，不代表应用内所有请求容器自动共享登录；排查应检查实际发送条件、容器隔离和业务会话协议。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+
+- [WHATWG HTML：Web storage](https://html.spec.whatwg.org/multipage/webstorage.html)
+- [RFC 6265：HTTP State Management Mechanism](https://httpwg.org/specs/rfc6265.html)
+- [IETF Cookie 规范修订草案：SameSite 与 Cookie 属性](https://httpwg.org/http-extensions/draft-ietf-httpbis-rfc6265bis.html)
+- [MDN：Set-Cookie](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Set-Cookie)
+- [W3C：Indexed Database API](https://www.w3.org/TR/IndexedDB-3/)
+- [WHATWG：Storage Standard](https://storage.spec.whatwg.org/)
+- [MDN：Storage quotas and eviction criteria](https://developer.mozilla.org/en-US/docs/Web/API/Storage_API/Storage_quotas_and_eviction_criteria)

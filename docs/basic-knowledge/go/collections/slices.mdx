@@ -1,0 +1,512 @@
+---
+sidebar_position: 1
+knowledge:
+  id: basic-knowledge.go.collections.slices
+  type: concept
+description: "讲解 Go 切片与数组、长度和容量、截取边界、append 共享与扩容、copy、删除、引用保留及并发访问。"
+keywords: ["Go 切片", "slice", "append", "len cap", "切片扩容", "底层数组"]
+---
+
+import GoSliceAppend from '@site/src/components/Diagram/GoSliceAppend';
+
+# Go 切片
+
+**切片**（slice）是对底层数组一段连续元素的描述，包含对数组的引用、长度和容量。复制切片不会自动复制数组，所以两个看似独立的变量，可能仍然读写同一批元素。
+
+这种共享让截取和传参很方便，也带来了需要判断的边界：追加元素会不会覆盖别的切片可见的数据，删除后对象是否仍被保留，并发操作是否触碰了同一块存储。本文以 Go 1.22 为基线，把语言保证与官方运行时的扩容策略分别说明。
+
+## 1. 面试核心 {#core}
+
+- 数组的长度属于类型，切片的长度不属于类型。**数组赋值复制数组元素，切片赋值复制描述信息，仍可能共享底层数组**。[卡](#array-slice)
+- **长度决定当前能按下标访问的范围，容量决定从切片起点向后可以重新切片的范围**。`len(s)` 为零时，即使容量大于零，也不能访问 `s[0]`。[卡](#slice-bounds)
+- nil 切片和非 nil 的空切片都可以遍历、追加，**但 nil 判断和某些 API 的处理不同**；例如 `encoding/json` 对 `[]int` 的两种状态分别输出 `null` 和 `[]`。[卡](#nil-empty)
+- **`append` 在容量足够时复用数组，不足时分配新的底层数组，并返回新的切片值**。判断共享关系要逐次追踪，不能把一次扩容前后的变量当成始终共享。[卡](#append-aliasing)
+- Go 1.22 的扩容先计算候选容量，再按内存分配规则调整。**具体增长倍数和最终容量属于实现细节，不能作为跨版本保证**。[卡](#slice-growth)
+- **`copy` 复制的元素数取两边长度的较小值，支持源和目标重叠**；目标只有容量、长度为零时，仍然复制零个元素。[卡](#copy-length)
+- 删除中间元素需要移动后续元素并更新长度。**缩短长度不会自动清掉原尾部的引用**；Go 1.22 的 `slices.Delete` 会清零其移除后留下的尾部位置。[卡](#slice-delete)
+- **限制容量不会复制底层数组，也不会自动释放原数组**。长期保留小片段时，应按需要复制到独立存储。[卡](#retained-array)
+- 切片没有内置同步。**并发安全取决于是否无同步地访问同一个切片变量、同一元素或元素引用的对象**，不能只根据“使用了切片”作判断。[卡](#slice-concurrency)
+
+## 2. 数组、切片与描述信息 {#数组切片与描述信息}
+
+**数组**是长度固定、元素类型一致的值。`[3]int` 表示包含三个 `int` 的数组，和 `[4]int` 是不同类型。切片写作 `[]int`，同一个类型的值可以具有不同长度。
+
+| 对比项 | 数组 | 切片 |
+| --- | --- | --- |
+| 长度 | 属于类型，创建后固定 | 属于值，可以通过重新切片或追加获得不同长度的值 |
+| 赋值 | 复制整个数组的元素值 | 复制数组引用、长度和容量，底层数组仍可共享 |
+| 零值 | 每个元素取零值 | nil，长度和容量均为零 |
+| 相等比较 | 元素类型可比较时，数组类型也可比较 | 只能直接与 nil 比较，不能用 `==` 比较两个切片 |
+| 使用场景 | 固定数量的数据，例如固定长度摘要 | 可变数量的数据、数组中的连续区间 |
+
+复制数组也不一定形成完整的深拷贝。如果数组元素本身是指针、切片等值，它们引用的数据仍可能共享。复制深度见[Go 类型与值传递](../language/types-value-passing.mdx#复制的深度)。
+
+```go
+package main
+
+import "fmt"
+
+func main() {
+    array := [3]int{1, 2, 3}
+    copied := array
+    copied[0] = 9
+    view := array[:2]
+    view[1] = 8
+    fmt.Println(array, copied, view) // [1 8 3] [9 2 3] [1 8]
+    fmt.Println(len(view), cap(view)) // 2 3
+}
+```
+
+`copied` 是独立的数组值，修改它的第一个元素不影响 `array`。`view` 则从 `array` 截取，修改 `view[1]` 会改到同一个数组元素。
+
+### 2.1 长度与容量 {#长度与容量}
+
+**长度**是切片当前包含的元素个数，`len(s)` 返回它。**容量**是从切片起点到底层数组可用末端的元素个数，`cap(s)` 返回它。容量不包括切片起点之前的部分。
+
+```go
+package main
+
+import "fmt"
+
+func main() {
+    values := make([]int, 0, 3)
+    fmt.Println(len(values), cap(values)) // 0 3
+    values = values[:2]
+    values[1] = 7
+    fmt.Println(values) // [0 7]
+
+    tail := values[1:3]
+    fmt.Println(tail, len(tail), cap(tail)) // [7 0] 2 2
+}
+```
+
+刚创建时不能访问 `values[0]`，因为长度为零。重新切片到长度 2 后，才可以访问前两个位置。`values[1:3]` 的上界超过当前长度 2，但没有超过容量 3，所以合法；新切片从原下标 1 开始，容量只剩 2。
+
+切片描述信息可以帮助理解语义，但业务代码不应依赖其内部字段布局，也不应通过 `reflect.SliceHeader` 手工拼接存储关系。底层数组放在栈还是堆上，同样需要由具体生命周期和编译器分析判断。
+
+### 2.2 nil 与空切片 {#nil与空切片}
+
+nil 切片是切片的零值；非 nil 切片也可以长度为零，例如 `[]int{}` 或 `make([]int, 0)`。
+
+```go
+package main
+
+import (
+    "encoding/json"
+    "fmt"
+)
+
+func main() {
+    var absent []int
+    empty := []int{}
+    first, _ := json.Marshal(absent)
+    second, _ := json.Marshal(empty)
+    fmt.Println(absent == nil, empty == nil) // true false
+    fmt.Println(len(absent), len(empty)) // 0 0
+    fmt.Println(string(first), string(second)) // null []
+    fmt.Println(append(absent, 1), append(empty, 1)) // [1] [1]
+}
+```
+
+两者都可以执行 `range`、`append`、`copy`，也都不能直接按下标访问元素。JSON 示例使用的是 `[]int`；不要把它直接套到有特殊编码规则的 `[]byte` 或实现了自定义序列化的类型。
+
+接口是否区分“没有提供”和“提供了空集合”，应由业务约定决定。不能仅为了统一写法，就在所有边界上互换 nil 和空切片。
+
+## 3. 截取边界与容量限制 {#截取边界与容量限制}
+
+对切片使用 `s[low:high]` 时，需要满足 `0 <= low <= high <= cap(s)`。结果长度是 `high-low`，容量是 `cap(s)-low`。省略 `low` 时默认取 0；省略 `high` 时默认取 `len(s)`，不是容量。
+
+| 操作 | 边界依据 |
+| --- | --- |
+| `s[index]` | `0 <= index < len(s)` |
+| 切片的 `s[low:high]` | `0 <= low <= high <= cap(s)` |
+| 数组的 `a[low:high]` | 上界不能超过数组长度；数组本身还需要可寻址 |
+| `s[low:high:max]` | `0 <= low <= high <= max <= cap(s)` |
+
+运行时边界不满足会 panic；如果非法边界在编译时就能确定，也可能直接编译失败。对 nil 切片使用 `s[:0]` 是合法操作，结果仍为 nil。
+
+**完整切片表达式** `s[low:high:max]` 多了一个容量上界。它得到的长度为 `high-low`，容量为 `max-low`。这可以限制某个切片继续向后重新切片、以及原地追加的范围。
+
+```go
+package main
+
+import "fmt"
+
+func main() {
+    base := []int{1, 2, 3, 4}
+    limited := base[:2:2]
+    limited[0] = 9
+    fmt.Println(base, len(limited), cap(limited)) // [9 2 3 4] 2 2
+
+    grown := append(limited, 7)
+    grown[0] = 8
+    fmt.Println(base, grown) // [9 2 3 4] [8 2 7]
+}
+```
+
+限制容量时没有发生复制，所以 `limited[0]` 仍能修改 `base[0]`。追加一个元素超过了限制后的容量，`append` 才为 `grown` 分配新的数组；之后修改 `grown[0]` 不再影响 `base`。
+
+因此，限制容量可以阻止通过这份切片原地追加覆盖后续位置，却不是只读视图或完整的隔离副本。`slices.Clip(s)` 在 Go 1.22 中具有与 `s[:len(s):len(s)]` 对应的作用，也不复制元素。
+
+## 4. append 与共享关系 {#append与共享关系}
+
+**`append`** 返回包含原有元素和新增元素的切片。如果原容量足够，就复用原数组；容量不足时，分配足够容纳结果的新数组并保留原有元素。调用方需要接收返回值，才能获得更新后的长度和数组引用。
+
+```go
+package main
+
+import "fmt"
+
+func main() {
+    base := []int{1, 2, 0, 0}
+    view := base[:2]
+    shared := append(view, 3)
+    isolated := append(view[:2:2], 4)
+    shared[0] = 9
+    isolated[0] = 7
+    fmt.Println(base)     // [9 2 3 0]
+    fmt.Println(shared)   // [9 2 3]
+    fmt.Println(isolated) // [7 2 4]
+}
+```
+
+`view` 的长度为 2、容量为 4，第一次追加能复用数组，因此 `shared` 与 `base` 共享元素。第二次追加使用容量被限制为 2 的切片，必须创建新数组；`isolated` 后续的元素修改与原数组分开。
+
+<GoSliceAppend />
+
+图中只展示新数组中已经属于 `isolated` 的三个元素，不假定其实际容量。`view` 自身的长度仍为 2：把追加结果赋给 `shared` 或 `isolated`，不会替其他切片变量更新描述信息。切片作为参数时也遵循这一规则，见[切片传参](../language/types-value-passing.mdx#切片与-map)。
+
+即使一次扩容让两个切片分开，元素内部引用的对象也可能继续共享。例如 `[]*User` 的扩容会复制指针值，不会自动复制每个 `User`。
+
+### 4.1 Go 1.22 的扩容策略 {#扩容策略}
+
+规范只保证新容量足够，具体容量由实现决定。Go 1.22 官方运行时先通过 `nextslicecap` 计算候选容量，再按元素大小和分配器规则调整：
+
+1. 如果需要的新长度大于旧容量的两倍，候选容量直接取所需长度。
+2. 否则，当旧容量小于 256 时，候选容量取旧容量的两倍。
+3. 旧容量达到 256 后，使用逐步趋近于较缓增长的计算方式，必要时重复计算直到足够。
+4. 将候选元素数转换为分配字节数，再结合分配器尺寸进行调整；最终容量不一定等于候选容量。
+
+因此，“切片总是扩成两倍”和“大切片严格扩成 1.25 倍”都不是 Go 1.22 的准确描述。元素大小、是否包含指针、需要追加多少元素以及目标平台，也会影响实际分配结果。零大小元素还有专门处理，不能把某个 `[]int` 的观测结果推广到所有切片。
+
+实际写代码应依赖 `len`、`cap` 和是否超过容量来判断语义，不应依赖某次测得的增长序列。已知大致元素数量时，可以用 `make([]T, 0, expected)` 预留容量以减少后续增长，但预留过大也会增加内存占用。
+
+## 5. copy 与重叠复制 {#copy与重叠复制}
+
+**`copy(dst, src)`** 将源切片中的元素复制到目标切片，返回实际复制的元素数。复制数量为两个切片长度的较小值，目标容量不会自动变成长度，也不会自动扩容。
+
+```go
+package main
+
+import "fmt"
+
+func main() {
+    source := []int{1, 2, 3}
+    target := make([]int, 0, 3)
+    fmt.Println(copy(target, source)) // 0
+    target = target[:2]
+    fmt.Println(copy(target, source), target) // 2 [1 2]
+
+    values := []int{1, 2, 3, 4}
+    moved := copy(values[1:], values[:3])
+    fmt.Println(moved, values) // 3 [1 1 2 3]
+}
+```
+
+最后一次复制的源与目标重叠，但 `copy` 支持这种情况，结果等价于保留所需的原元素值再完成复制。它适合在同一个数组内移动连续元素。
+
+如果要让复制后的切片拥有独立数组，先分配足够长度的目标再 `copy`。独立数组仍不代表元素内部对象已经深拷贝；需要隔离到哪一层，应按数据结构决定。
+
+## 6. 删除元素与尾部清理 {#删除元素与尾部清理}
+
+切片没有内置的“删除下标”操作。保持元素相对顺序时，可以将后续元素左移、清理旧尾部，再返回长度减一的切片。
+
+```go
+package main
+
+import "fmt"
+
+type Item struct{ Name string }
+
+func removeAt(items []*Item, index int) []*Item {
+    if index < 0 || index >= len(items) {
+        panic("index out of range")
+    }
+    copy(items[index:], items[index+1:])
+    last := len(items) - 1
+    items[last] = nil
+    return items[:last]
+}
+
+func main() {
+    items := []*Item{{Name: "go"}, {Name: "db"}, {Name: "net"}}
+    original := items
+    items = removeAt(items, 1)
+    fmt.Println(len(items), items[0].Name, items[1].Name) // 2 go net
+    fmt.Println(original[2] == nil) // true
+}
+```
+
+`copy` 把 `net` 左移，随后清掉旧尾部的指针。`original` 仍然保留旧长度，因此可以直接看到尾部已被清理；它并不是删除前的独立快照。
+
+如果只缩短长度而不清理，原尾部仍可能保存对象引用。只要底层数组仍可达，这些引用就可能使原本不再使用的对象继续存活。多个位置引用同一个对象时，清掉一个位置也不代表对象立即可回收。
+
+Go 1.22 的 `slices.Delete` 提供了保持顺序的删除，并清零删除后留下的旧尾部位置：
+
+```go
+package main
+
+import (
+    "fmt"
+    "slices"
+)
+
+func main() {
+    values := []string{"go", "db", "net"}
+    original := values
+    values = slices.Delete(values, 1, 2)
+    fmt.Println(values) // [go net]
+    fmt.Println(len(original), original[2] == "") // 3 true
+}
+```
+
+调用后仍然要使用返回的切片。删除不保证释放底层数组，也不会替其他别名更新长度；其他持有旧切片的代码可能观察到移动后的元素和清零的尾部。
+
+如果不要求保留顺序，可以用最后一个元素覆盖待删位置，再清理尾部和缩短长度，从而避免移动整段元素。两种方式的选择取决于是否要求稳定顺序。
+
+## 7. 截断与内存保留 {#截断与内存保留}
+
+重新切片通常只改变描述信息。一个很小的切片仍可能引用很大的数组，使这块数组继续存活；`s[:0]`、完整切片表达式和 `slices.Clip` 都不能当作释放存储的操作。
+
+```go
+package main
+
+import "fmt"
+
+func main() {
+    buffer := []byte{1, 2, 3, 4, 5, 6}
+    view := buffer[2:4:4]
+    detached := make([]byte, len(view))
+    copy(detached, view)
+    buffer[2] = 9
+    fmt.Println(view, detached) // [9 4] [3 4]
+}
+```
+
+`view` 的容量虽然只有 2，仍然与 `buffer` 共享数组。`detached` 才拥有独立存储。如果业务只需要长期保留这两个字节，应保留 `detached`，并确保没有其他引用继续保留大数组。示例用小数组展示关系，不依赖某次垃圾回收的时间来判断共享。
+
+`clear(s)` 会把当前长度范围内的元素设为零值，但不会修改长度和容量，也不释放数组本身。清理长度之外的旧元素，需要在拥有相应范围的前提下明确重新切片；存在共享使用者时，不能随意清空它们仍在使用的数据。
+
+## 8. 并发访问 {#并发访问}
+
+切片描述信息和底层数组是两个不同的共享对象。即使两个 goroutine 各自拿到一份切片值，也可能访问相同的数组位置。
+
+| 场景 | 判断 |
+| --- | --- |
+| 多个 goroutine 只读取已经正确发布、之后不再变化的数据 | 可以并发读取 |
+| 多个 goroutine 无同步地执行 `shared = append(shared, value)` | 同时读写同一个切片变量，还可能竞争数组元素，存在数据竞争 |
+| 各自持有独立的切片描述信息，但无同步地修改同一个元素 | 仍然存在数据竞争 |
+| 各自追加到共享数组的同一空闲位置 | 切片变量不同也不能避免元素写冲突 |
+| 固定长度后，每个 goroutine 只写不同元素，并在汇总前等待全部完成 | 可以按元素划分工作；还需确认元素内部没有另一个共享可变对象 |
+
+```go
+package main
+
+import (
+    "fmt"
+    "sync"
+)
+
+func main() {
+    results := make([]int, 3)
+    var group sync.WaitGroup
+    for index := range results {
+        group.Add(1)
+        go func(index int) {
+            defer group.Done()
+            results[index] = index * index
+        }(index)
+    }
+    group.Wait()
+    fmt.Println(results) // [0 1 4]
+}
+```
+
+每个任务只写自己的下标，没有修改切片长度；`WaitGroup` 用于等待任务完成，主 goroutine 在 `Wait` 返回后再读取结果。这里显式传入 `index`，不依赖闭包稍后读取同一个外层变量。
+
+如果结果数量事先未知，可以通过锁保护追加过程，或让一个 goroutine 负责收集结果。仅预留足够容量不会消除对同一个切片变量的竞争；“不扩容就并发安全”并不成立。
+
+## 9. 面试题 {#面试题}
+
+### 9.1 Go 数组和切片有什么区别，切片内部需要保存什么？ {#array-slice}
+
+**考察重点**：类型、复制行为和切片描述信息。
+
+**相关内容**：[数组、切片与描述信息](#数组切片与描述信息)。
+
+<details>
+<summary>参考回答</summary>
+
+**数组是固定长度的值，切片描述底层数组的一段连续元素。** 数组长度属于类型；切片类型只声明元素类型，不把当前长度放进类型。
+
+切片需要保存对数组的引用、长度和容量。赋值或传参复制这些信息，底层数组仍可能共享；数组赋值则复制元素值。数组元素包含引用时，也要继续判断其引用对象是否共享，不能简单把数组复制称为完整深拷贝。
+
+</details>
+
+### 9.2 容量为 15 的切片能截取 [2:20] 吗？长度为零时能访问下标零吗？ {#slice-bounds}
+
+**考察重点**：下标访问与重新切片的不同上界。
+
+**相关内容**：[长度与容量](#长度与容量)、[截取边界与容量限制](#截取边界与容量限制)。
+
+<details>
+<summary>参考回答</summary>
+
+**这两种操作都不合法。** 容量为 15 的切片截取到 20，超过容量边界；长度为零的切片访问下标零，则超过当前可访问范围，即使预留了容量也不行。
+
+下标访问以长度为界，切片的双下标截取则允许上界达到容量。长度为零、容量大于零时，可以先在容量范围内重新切片，再访问合法下标。运行时越界会 panic；部分能静态确定的非法表达式会在编译时被拒绝。
+
+</details>
+
+### 9.3 nil 切片与空切片有什么区别，能直接 append 吗？ {#nil-empty}
+
+**考察重点**：零值、长度与 API 契约。
+
+**相关内容**：[nil 与空切片](#nil与空切片)。
+
+<details>
+<summary>参考回答</summary>
+
+**两者都能直接追加，并且都可以长度为零；nil 判断和部分 API 行为不同。** nil 切片与 nil 比较为真，`[]int{}` 则不为 nil。对这两个 `[]int` 使用 `encoding/json`，分别得到 `null` 和 `[]`。
+
+调用 `append` 后仍需接收返回的切片，不能以原变量长度为零判断追加没有成功。接口要不要保留两种状态，应看业务语义。
+
+</details>
+
+### 9.4 Go 切片怎样扩容，是固定两倍吗？ {#slice-growth}
+
+**考察重点**：容量判断、数据迁移和版本相关的分配策略。
+
+**相关内容**：[append 与共享关系](#append与共享关系)、[扩容策略](#扩容策略)。
+
+<details>
+<summary>参考回答</summary>
+
+**追加后长度超过容量时，需要新的底层数组；增长比例不是语言保证。** 原有元素会保留在结果中，调用方通过返回的切片获得新的数组引用、长度和容量。
+
+Go 1.22 官方实现会结合所需长度和旧容量计算候选容量：小容量时可采用翻倍，大容量时使用更缓的增长方式；大量追加也可能直接以所需长度作为候选。之后还要按元素大小和分配器规则调整。因此最终容量不能只按固定两倍或固定 1.25 倍计算。
+
+</details>
+
+### 9.5 两个共享数组的切片连续 append，下面代码输出什么？ {#append-aliasing}
+
+**考察重点**：每次追加前的长度、容量和数组共享关系。
+
+**相关内容**：[append 与共享关系](#append与共享关系)。
+
+```go
+package main
+
+import "fmt"
+
+func main() {
+    original := []int{1, 2, 3}
+    copied := original[:2]
+    copied = append(copied, 4)
+    original = append(original, 5)
+    copied = append(copied, 6)
+    original = append(original, 7)
+    fmt.Println(original)
+    fmt.Println(copied)
+}
+```
+
+<details>
+<summary>参考回答</summary>
+
+**输出分别是 `[1 2 4 5 7]` 和 `[1 2 4 6]`。** 初始两个切片的容量都是 3。
+
+1. `copied` 长度为 2，追加 4 后仍在容量内，把原数组第三个元素改为 4。
+2. `original` 再追加 5 时需要扩容，得到包含 `[1 2 4 5]` 的新数组，与 `copied` 分开。
+3. `copied` 追加 6 也需要扩容，保留自己当时看到的 `[1 2 4]`。
+4. `original` 继续追加 7。是否再次扩容取决于实现给出的容量，但都不再修改 `copied` 的数组。
+
+推导输出不需要假设第一次扩容的最终容量一定是多少。
+
+</details>
+
+### 9.6 为什么目标切片容量足够，copy 仍然可能复制零个元素？ {#copy-length}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：目标长度、复制数量和重叠范围。
+
+**相关内容**：[copy 与重叠复制](#copy与重叠复制)。
+
+<details>
+<summary>参考回答</summary>
+
+**`copy` 根据目标和源的长度决定数量，不根据容量扩展目标。** `make([]int, 0, 10)` 的长度为零，因此复制数量也是零。先创建足够长度的目标，或在容量范围内重新切片，才能复制到这些位置。
+
+源与目标可以重叠；`copy` 会正确处理重叠复制。不过它只复制元素值，不会递归复制元素指向的对象。
+
+</details>
+
+### 9.7 怎样删除切片中间的元素，需要处理哪些边界？ {#slice-delete}
+
+**考察重点**：元素移动、顺序、长度与尾部引用。
+
+**相关内容**：[删除元素与尾部清理](#删除元素与尾部清理)。
+
+<details>
+<summary>参考回答</summary>
+
+**要求保留顺序时，可以左移后续元素、清理旧尾部，再返回缩短后的切片。** 需要先检查下标范围；空切片没有合法删除下标，删除最后一个元素则无需移动后续元素。
+
+Go 1.22 的 `slices.Delete` 可完成区间删除并清零旧尾部，调用方要接收返回值。如果不要求顺序，可用最后一个元素覆盖待删位置，减少移动成本。
+
+这些操作会修改共享数组，其他切片别名可能观察到变化。删除后容量不会因此自动缩小，也不能把减少长度等同于释放底层数组。
+
+</details>
+
+### 9.8 小切片为什么可能保留大数组？限制容量能解决吗？ {#retained-array}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：底层数组的可达性、容量限制与独立复制。
+
+**相关内容**：[截断与内存保留](#截断与内存保留)。
+
+<details>
+<summary>参考回答</summary>
+
+**小切片仍引用原数组，原数组可能因此继续存活。** 完整切片表达式或 `slices.Clip` 只限制容量，不复制数据，不能保证释放大数组。
+
+需要独立保留小片段时，分配合适长度的新切片并复制数据，同时移除不再需要的旧引用。若问题是旧元素仍引用其他对象，还要在具有所有权的前提下清理这些位置；清理元素与释放数组本身是两件事。
+
+</details>
+
+### 9.9 切片是并发安全的吗，提前预留容量是否足够？ {#slice-concurrency}
+
+**考察重点**：切片变量、共享数组元素和同步边界。
+
+**相关内容**：[并发访问](#并发访问)。
+
+<details>
+<summary>参考回答</summary>
+
+**切片没有自动同步，预留容量也不能消除数据竞争。** 多个 goroutine 同时更新同一个切片变量，或无同步地读写同一元素，都可能竞争。不同切片变量共享数组时，同样要检查元素访问范围。
+
+可以用锁保护共享追加，或者由单个 goroutine 汇总结果。结果数量固定时，也可以预先分配长度、让任务分别写不同元素，并在读取前等待完成；元素内部若有共享可变对象，仍需单独处理同步。
+
+</details>
+
+## 10. 参考资料 {#参考资料}
+
+- [Go 1.22.12 语言规范：数组、切片、切片表达式与内置函数](https://github.com/golang/go/blob/go1.22.12/doc/go_spec.html)
+- [Go Blog：Go Slices: usage and internals](https://go.dev/blog/slices-intro)
+- [Go 1.22.12 runtime/slice.go：growslice 与 nextslicecap](https://github.com/golang/go/blob/go1.22.12/src/runtime/slice.go)
+- [Go 1.22.12 slices：Delete、Clip 与其他操作](https://pkg.go.dev/slices@go1.22.12)
+- [Go 1.22.12 encoding/json：Marshal](https://pkg.go.dev/encoding/json@go1.22.12#Marshal)
+- [Go 内存模型](https://go.dev/ref/mem)
+- [Go Data Race Detector](https://go.dev/doc/articles/race_detector)

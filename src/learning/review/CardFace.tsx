@@ -1,20 +1,22 @@
 import clsx from 'clsx';
 import Link from '@docusaurus/Link';
 
-import {domainOf, domainShortLabel, primaryRef, refHref, sectionLabel, useLearningIndex} from '../content';
+import {domainOf, domainShortLabel, primaryRef, refHref, sectionLabel, priorityForRole, useActiveRoleId, useLearningIndex} from '../content';
 import type {CardRef} from '../types';
 import type {CardDetail} from '../types';
 import {Companies, InlineText, PriorityDots, RichText} from '../ui';
+import {withRole} from '../roles';
 import styles from './review.module.css';
 
 export function SourceLink({card, variant = 'read'}: {card: CardDetail; variant?: 'read' | 'view'}) {
   const index = useLearningIndex();
+  const roleId = useActiveRoleId();
   const ref = primaryRef(card);
   const section = ref ? `${sectionLabel(ref.number)} ${variant === 'view' ? ref.title : ''}`.trim() : '';
   const label = variant === 'view' ? `在原文中查看${section ? ` · ${section}` : ''} →` : `读 ${section || '原文'} 原文 →`;
   const others = card.refs.filter((item: CardRef) => item.articleId !== card.articleId);
   const link = (
-    <Link className={styles.sourceLink} to={refHref(index, card, ref)}>
+    <Link className={styles.sourceLink} to={withRole(refHref(index, card, ref), roleId)}>
       {label}
     </Link>
   );
@@ -25,7 +27,7 @@ export function SourceLink({card, variant = 'read'}: {card: CardDetail; variant?
       <span className={styles.sourceOthers}>
         另见
         {others.map((item) => (
-          <Link key={`${item.articleId}#${item.id}`} className={styles.sourceOther} to={refHref(index, card, item)}>
+          <Link key={`${item.articleId}#${item.id}`} className={styles.sourceOther} to={withRole(refHref(index, card, item), roleId)}>
             {index.articles[item.articleId]?.title}
             {item.id && item.id !== item.section ? ` · ${item.title}` : item.number ? ` · ${sectionLabel(item.number)}` : ''}
           </Link>
@@ -37,6 +39,7 @@ export function SourceLink({card, variant = 'read'}: {card: CardDetail; variant?
 
 export function CardMeta({card, showCompanies = true}: {card: CardDetail; showCompanies?: boolean}) {
   const index = useLearningIndex();
+  const roleId = useActiveRoleId();
   const article = index.articles[card.articleId];
   const domain = domainOf(index, article);
   const ref = primaryRef(card);
@@ -48,7 +51,7 @@ export function CardMeta({card, showCompanies = true}: {card: CardDetail; showCo
         {card.composite ? ' · 综合题' : ref?.number && ref.articleId === card.articleId ? ` · ${sectionLabel(ref.number)}` : ''}
       </span>
       <div className={styles.metaRight}>
-        <PriorityDots priority={article.priority} />
+        <PriorityDots priority={priorityForRole(article, roleId)} />
         {showCompanies && <Companies cardId={card.id} selfTest={card.selfTest} />}
       </div>
     </div>

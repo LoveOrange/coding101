@@ -1,0 +1,239 @@
+---
+sidebar_position: 1
+knowledge:
+  id: basic-knowledge.python.language.object-model
+  type: concept
+description: "解释 Python 名称与对象的绑定、可变性、相等性和对象身份，通过赋值、嵌套列表与复制示例说明共享修改的边界，帮助判断测试数据是否真正隔离。"
+keywords: [Python 对象, 可变对象, is, 深拷贝, 浅拷贝]
+---
+
+# Python 对象模型
+
+Python 用对象表示数据，变量名用来引用对象。执行 `second = first` 时，`second` 会引用 `first` 当前引用的对象，并不会复制一份对象内容。理解这条规则，就能解释列表为何会被另一段代码改动，以及浅拷贝为什么未必能隔离测试数据。
+
+## 1. 面试核心 {#core}
+
+- 对象有身份、类型和值；**名称可以重新绑定，对象是否可修改由类型决定**。给名称赋新值与修改原对象是两种操作。
+- `==` 判断相等性，`is` 判断是否是同一个对象。**比较业务值用 `==`，判断 `None` 用 `is None`**，不要依赖整数或字符串复用对象的结果。[卡](#equality-identity)
+- 赋值继续共享对象；浅拷贝复制外层容器；深拷贝递归处理内部对象。**是否隔离修改，要检查实际发生修改的那一层**。[卡](#assignment-shallow-deep)
+- 元组不能替换其中的元素，但元素引用的列表仍然可变。**不可变容器不保证内部整个对象图不可变**。[卡](#tuple-nested-mutation)
+- `deepcopy` 会记录本次已经处理过的对象，因此能处理循环引用并保留副本内部原有的共享关系；**它不保证任意资源都能复制，也不保证所有对象都产生新实例**。[卡](#deepcopy-sharing)
+
+## 2. 名称与对象 {#名称与对象}
+
+**对象**是 Python 中承载数据的实体，它具有身份、类型和值。列表 `[1, 2]` 是一个对象，它的类型是 `list`，支持添加元素；整数 `10` 也是对象，但不能把整数对象本身改成 `11`。
+
+**绑定**是名称与对象之间的关联。赋值给一个名称，就是建立或改变这条关联。
+
+```python
+first = [1]
+second = first
+second.append(2)
+print(first)  # [1, 2]
+
+second = [9]
+print(first)   # [1, 2]
+print(second)  # [9]
+```
+
+`second.append(2)` 修改两者共享的列表，`first` 能看到新增元素。`second = [9]` 创建另一个列表并重新绑定 `second`，没有改变 `first` 与原列表的关系。
+
+名称没有被永久限制为某个类型。例如 `value = 10` 之后可以执行 `value = "done"`，这表示名称改为引用字符串，原整数对象没有变成字符串。类型注解也不会自动为普通赋值添加运行时类型检查。
+
+## 3. 可变性 {#可变性}
+
+**可变对象**允许内容在对象身份不变的情况下发生变化，例如列表、字典和集合。整数、字符串和元组是不可变对象。
+
+```python
+count = 1
+previous = count
+count += 1
+print(previous, count)  # 1 2
+
+items = [1]
+shared = items
+items += [2]
+print(shared)  # [1, 2]
+```
+
+整数加法产生结果，再让 `count` 引用结果，`previous` 仍引用 `1`。列表的 `+=` 在这里扩展原列表，所以 `shared` 也能看到变化。不能把所有 `+=` 都当成只发生重新赋值，也不能把它们都当成原地修改，要看类型实现。
+
+元组的不可变性约束的是它包含哪些元素对象：
+
+```python
+record = ([1], "ready")
+record[0].append(2)
+print(record)  # ([1, 2], 'ready')
+# record[0] = [3]  # 运行时报 TypeError：不能替换元组元素
+```
+
+元组仍然引用原来的列表和字符串，没有替换元素；变化发生在列表内部。选择元组来表示固定结构，并不自动获得深层不可变的数据。
+
+## 4. 相等性与对象身份 {#相等性与对象身份}
+
+**对象身份**用于区分对象本身，`is` 比较两个表达式是否得到同一个对象。**相等性**由类型定义，`==` 对列表会比较元素，对自定义类可以由 `__eq__` 定义。
+
+```python
+left = [1, 2]
+right = [1, 2]
+alias = left
+
+print(left == right, left is right)  # True False
+print(left is alias)                 # True
+```
+
+`left` 和 `right` 是内容相等的两个列表；`alias` 与 `left` 引用同一个列表。两个名字相同、两个对象内容相同和两个表达式引用同一对象，不能混为一谈。
+
+`None` 是单例，判断“未提供值”可以写 `value is None`。如果写 `if not value`，还会匹配 `0`、空字符串、空列表等假值，是否正确取决于业务是否把它们也当成缺失。
+
+`id(obj)` 返回对象身份对应的整数，在对象存活期间保持不变。CPython 通常用对象地址作为这个值，但 Python 代码不应把它当作可操作的内存地址；生命周期不重叠的不同对象也可能得到相同的 `id`。
+
+## 5. 赋值、浅拷贝与深拷贝 {#赋值浅拷贝与深拷贝}
+
+**浅拷贝**创建新的外层容器，内部元素仍引用原对象。**深拷贝**递归处理容器里的对象，在需要时创建相应副本。
+
+```python
+import copy
+
+original = [[1], [2]]
+assigned = original
+shallow = original.copy()
+deep = copy.deepcopy(original)
+
+original[0].append(9)
+original.append([3])
+
+print(assigned)  # [[1, 9], [2], [3]]
+print(shallow)   # [[1, 9], [2]]
+print(deep)      # [[1], [2]]
+```
+
+这两次修改发生在不同层：
+
+| 操作 | `assigned` | `shallow` | `deep` |
+| --- | --- | --- | --- |
+| 修改 `original[0]` 引用的列表 | 可见，共享外层与内层 | 可见，共享内层列表 | 不可见，内层列表已有副本 |
+| 向 `original` 添加元素 | 可见，同一个外层列表 | 不可见，外层列表独立 | 不可见，外层列表独立 |
+
+列表的 `copy()`、`list(original)` 和 `original[:]` 在这个例子里都只复制一层。测试输入是“字典里包含列表”时，只复制字典仍然会共享列表；复制层数应由要修改的数据决定。
+
+### 5.1 深拷贝中的共享关系 {#深拷贝中的共享关系}
+
+`deepcopy` 使用本次复制过程中的记录表，遇到已复制过的对象就复用对应副本。这样既避免无限递归，也保留同一对象被多处引用的关系。
+
+```python
+import copy
+
+child = []
+original = [child, child]
+copied = copy.deepcopy(original)
+
+print(copied is original)       # False
+print(copied[0] is child)       # False
+print(copied[0] is copied[1])    # True
+```
+
+`copied` 与原结构隔离，但 `copied[0]` 和 `copied[1]` 仍共享一个新的列表。深拷贝的目标不是把每一条引用都改成互不相干的对象。
+
+### 5.2 复制范围 {#复制范围}
+
+深拷贝会增加时间和内存开销，还可能复制本来应当共享的配置或缓存。它也不能通用地复制文件、网络连接等外部资源；类可以自定义复制行为，函数等对象可能直接返回原对象。
+
+如果只要修改几个字段，重新构造一份明确的数据通常更容易检查：保留哪些不可变值、复制哪些列表，都在代码里可见。需要完整隔离嵌套数据时，再使用适合其对象类型的深拷贝策略。
+
+## 6. 常见问题 {#常见问题}
+
+### 6.1 为什么 `[[0] * 2] * 3` 的多行一起变化？ {#重复列表的共享}
+
+因为外层乘法重复的是对同一个内层列表的引用。执行 `grid[0][0] = 1` 会修改所有行共同引用的那个列表。
+
+```python
+shared_rows = [[0] * 2] * 3
+shared_rows[0][0] = 1
+print(shared_rows)  # [[1, 0], [1, 0], [1, 0]]
+
+independent_rows = [[0] * 2 for _ in range(3)]
+independent_rows[0][0] = 1
+print(independent_rows)  # [[1, 0], [0, 0], [0, 0]]
+```
+
+第二种写法每次循环都会构造新的内层列表，所以只修改第一行。区别是对象创建的次数，不是外层最终有没有三个元素。
+
+### 6.2 删除一个变量名就会销毁对象吗？ {#删除名称与对象}
+
+不会。`del name` 删除的是当前名称绑定；其他名称或容器仍引用该对象时，它仍然可访问。何时回收对象取决于解释器的内存管理，不应依赖删除名称立即关闭文件或连接。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 Python 的赋值、浅拷贝和深拷贝有什么区别？ {#assignment-shallow-deep}
+
+**考察重点**：名称绑定、容器层次、修改位置与对象共享。
+
+**相关内容**：[名称与对象](#名称与对象)、[赋值、浅拷贝与深拷贝](#赋值浅拷贝与深拷贝)。
+
+<details>
+<summary>参考回答</summary>
+
+**赋值不复制对象，浅拷贝复制外层容器，深拷贝递归处理内部对象。**
+
+例如 `original = [[1]]`：赋值后的变量仍引用同一个外层列表；`original.copy()` 创建新外层列表，但仍共享内层 `[1]`；`deepcopy(original)` 会为内层列表也创建副本。修改内层列表时，赋值和浅拷贝得到的变量都能看到变化。
+
+深拷贝仍有类型和资源边界，不能把数据库连接等任意对象都当成普通数据复制。
+
+</details>
+
+### 7.2 `==` 和 `is` 有什么区别，怎样判断一个值是否为 None？ {#equality-identity}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：相等性、对象身份、单例与假值的区别。
+
+**相关内容**：[相等性与对象身份](#相等性与对象身份)。
+
+<details>
+<summary>参考回答</summary>
+
+**`==` 比较类型定义的相等性，`is` 判断是不是同一个对象。** 两个内容相同的列表可以 `==` 为真、`is` 为假。
+
+判断 `None` 使用 `value is None`。`if not value` 还会命中 `0` 和空容器，不能在需要区分这些值时替代它。也不应根据某次整数或字符串的对象复用结果，使用 `is` 比较业务值。
+
+</details>
+
+### 7.3 元组不可变，为什么元组中的列表仍能增加元素？ {#tuple-nested-mutation}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：容器元素的身份与元素自身内容之间的区别。
+
+**相关内容**：[可变性](#可变性)。
+
+<details>
+<summary>参考回答</summary>
+
+**元组不能替换其中的元素，但不限制元素引用的对象发生内部变化。** `record = ([1],)` 不能执行 `record[0] = [2]`，却能执行 `record[0].append(2)`，因为元组仍然引用同一个列表。
+
+</details>
+
+### 7.4 深拷贝后，原本共享一个子对象的两处引用会分开吗？ {#deepcopy-sharing}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：深拷贝记录表、循环引用和副本内部的共享关系。
+
+**相关内容**：[深拷贝中的共享关系](#深拷贝中的共享关系)。
+
+<details>
+<summary>参考回答</summary>
+
+**通常仍会共享同一个子对象副本。** `deepcopy` 对同一次复制已经处理过的对象保存记录，后面遇到同一个对象时复用副本。`[child, child]` 深拷贝后的两个元素仍相同，但可变子对象副本与原 `child` 不同。
+
+这种机制也能避免循环引用导致无限递归；自定义类仍需正确实现自己的复制逻辑。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [Python 3.12 数据模型：Objects, values and types](https://docs.python.org/3.12/reference/datamodel.html#objects-values-and-types)
+- [Python 3.12 执行模型：Naming and binding](https://docs.python.org/3.12/reference/executionmodel.html#naming-and-binding)
+- [Python 3.12 copy：浅拷贝与深拷贝](https://docs.python.org/3.12/library/copy.html)
+- [Python Programming FAQ：多维列表中的共享对象](https://docs.python.org/3.12/faq/programming.html#how-do-i-create-a-multidimensional-list)

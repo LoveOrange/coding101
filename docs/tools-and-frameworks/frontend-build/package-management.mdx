@@ -1,0 +1,368 @@
+---
+sidebar_position: 2
+knowledge:
+  id: tools-and-frameworks.frontend-build.package-management
+---
+
+# JavaScript 包管理
+
+**JavaScript 包管理**负责声明依赖、解析版本、取得包内容，并建立代码运行时能够找到依赖的安装结构。`package.json` 描述项目的需求，锁文件记录解析结果，`node_modules` 则是一次安装得到的实际布局。三个位置承担的职责不同。
+
+理解这些区别，才能解释“本地能运行，CI 却找不到模块”“明明版本范围兼容，安装却冲突”“提交了锁文件，为什么还不完全一致”。本文以 npm 10、pnpm 9 的常用安装方式为例；具体行为还取决于 Node.js、工具版本、平台和项目配置。
+
+## 1. 面试核心 {#core}
+
+- **package.json 声明包身份、脚本、入口与依赖要求，锁文件记录选中的依赖版本和关系。** 声明文件、锁文件和实际安装目录不能互相替代。[卡](#manifest-lock)
+- **版本范围表示允许选择哪些版本，不表示每次安装一定升级到最新版本。** 已有锁文件、安装命令和解析条件都会影响结果。[卡](#version-ranges)
+- **dependencies、devDependencies 与 peerDependencies 表达不同关系。** 是否进入浏览器 bundle 由引用与构建决定，不能只看依赖写在哪个字段。[卡](#dependency-kinds)
+- **peerDependencies 表示包对宿主依赖的兼容要求，不是“永远不安装的依赖”。** 跳过 peer 检查不会让不兼容的组合自动变得可用。[卡](#peer-conflict)
+- **锁文件配合固定工具与冻结安装，可以减少依赖漂移，但不能消除平台、原生模块和安装脚本的全部差异。** npm ci 会拒绝不匹配的清单与锁文件。[卡](#reproducible-install)
+- **未声明却能导入的依赖属于脆弱的隐式依赖，提升布局可能暂时掩盖它。** pnpm 的隔离布局有助于暴露问题，仍要检查 hoist 等配置。[卡](#phantom-dependency)
+- **pnpm 的内容复用与链接布局解决存储和依赖可见性问题，不等于自动减少浏览器产物体积。** 包管理与前端分包是不同阶段。[卡](#package-manager-choice)
+- **Monorepo 把多个包放在一个仓库中，workspace 声明包之间的依赖，构建仍需遵守依赖顺序。** 共用仓库不意味着每个包可以随意导入兄弟包的内部文件。[卡](#workspace)
+- **发布前应检查实际打包内容和消费方式。** 本地源码能运行，不证明用户下载的 tarball 包含正确入口与声明文件。[卡](#package-distribution)
+
+## 2. 清单与依赖关系 {#清单与依赖关系}
+
+### 2.1 package.json 的职责 {#packagejson的职责}
+
+一个应用的 `package.json` 可以是：
+
+```json
+{
+  "name": "review-app",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "node index.js"
+  },
+  "dependencies": {
+    "dayjs": "^1.11.13"
+  },
+  "devDependencies": {
+    "typescript": "~5.2.2"
+  }
+}
+```
+
+`private: true` 防止这个应用包被意外发布；`type: module` 影响 Node.js 对 `.js` 文件的模块解释方式。`scripts.check` 定义要执行的命令，依赖字段说明项目需要哪些包及允许的版本。
+
+`index.js` 使用项目声明的依赖：
+
+```js
+import dayjs from 'dayjs';
+
+console.log(dayjs('2025-01-02').format('YYYY-MM-DD'));
+```
+
+安装依赖后运行 check，会输出 `2025-01-02`。脚本里的 Node.js 执行代码，包管理器负责执行命令和提供本地依赖环境，并不亲自解释应用业务逻辑。
+
+`npm run` 会把项目相关的本地可执行文件目录加入脚本 PATH，因此脚本中可以使用已安装工具的命令名。直接在任意 shell 里敲同名命令，可能找不到工具，或者找到另一份全局版本。
+
+### 2.2 依赖类别 {#依赖类别}
+
+| 字段 | 表达的关系 | 示例与边界 |
+| --- | --- | --- |
+| `dependencies` | 包运行或被使用时需要的普通依赖 | 应用运行时调用的工具库，或库内部依赖 |
+| `devDependencies` | 开发、测试、构建所需依赖 | 类型检查、构建、测试工具 |
+| `peerDependencies` | 当前包与宿主依赖的兼容关系 | React 组件库声明支持的 React 范围 |
+| `optionalDependencies` | 可缺少的普通依赖 | 安装失败后应用仍应有明确处理方式 |
+| `peerDependenciesMeta` | 对 peer 关系的补充说明 | 把某个 peer 标为可选 |
+
+前端应用的构建器常位于 devDependencies，但生产构建阶段仍需要它。把构建阶段也设置成只安装生产依赖，可能导致构建命令不存在；静态产物生成完成后，运行文件托管服务通常又不需要保留整套构建工具。
+
+字段位置也不决定 bundle 内容。源码导入了某个包，构建器仍可能将它纳入产物；dependencies 中没有被引用的包，也不必然全部进入浏览器。要看依赖图、外置配置和 [前端构建](./build-pipeline.mdx) 的实际结果。
+
+### 2.3 peerDependencies 与冲突 {#peerdependencies与冲突}
+
+一个 React 组件库可以声明它支持的宿主范围：
+
+```json
+{
+  "name": "@course/react-widget",
+  "version": "1.0.0",
+  "peerDependencies": {
+    "react": "^18.0.0"
+  }
+}
+```
+
+这表达“组件库需要在兼容 React 18 的宿主关系中使用”，并不是“把 React 的源码复制进组件库”。是否在构建时外置 React，还要单独配置；peer 声明不会自动改写打包器。
+
+npm 7 起默认会尝试安装 peer，因此不能用旧版本印象回答“peer 永远只提示，不安装”。如果应用明确使用 React 19，而组件库只声明兼容 18，解析可能出现冲突。应该确认组件库实际支持范围，升级组件库、选择兼容组合，或在验证后修正自己的兼容声明。
+
+`--legacy-peer-deps` 会忽略相应 peer 约束来构建依赖树，它是改变解析方式，不是证明运行时兼容。`--force` 也不能代替验证。pnpm 的 peer 警告或失败还取决于 strict-peer-dependencies 等设置，不能把某个项目的一次安装现象推广为所有版本的默认行为。
+
+## 3. 版本范围与锁文件 {#版本范围与锁文件}
+
+### 3.1 允许范围与实际版本 {#允许范围与实际版本}
+
+**语义化版本**使用主版本、次版本、修订版本表达发布兼容性意图，例如 `1.2.3`。包管理器按范围规则选择版本，但作者写了一个兼容版本号，并不能保证其中没有缺陷或行为变化。
+
+以下范围按普通稳定版本理解；预发布版本还有额外匹配规则：
+
+| 声明 | 允许的稳定版本范围 |
+| --- | --- |
+| `1.2.3` | 只允许 1.2.3 |
+| `~1.2.3` | 从 1.2.3 到低于 1.3.0 |
+| `^1.2.3` | 从 1.2.3 到低于 2.0.0 |
+| `^0.2.3` | 从 0.2.3 到低于 0.3.0 |
+| `^0.0.3` | 只允许 0.0.3 这一稳定版本 |
+
+`^` 不能简单背成“永远不升级主版本”：零主版本下，它保留的是最左侧非零部分所限定的兼容边界。`latest` 则是 registry 中的分发标签，不是语义化版本范围，也不保证永远指向数值最大的版本。
+
+已有锁文件中的版本若满足声明，安装工具可以继续使用它。想升级依赖时，应使用对应更新命令并审阅锁文件差异，不要通过删除整个锁文件来完成一个局部版本更新。
+
+### 3.2 锁文件记录什么 {#锁文件记录什么}
+
+**锁文件**记录一次解析得到的具体依赖图，包括适用的版本、来源、完整性信息和依赖关系。npm 使用 `package-lock.json`，pnpm 使用 `pnpm-lock.yaml`；它们的格式与解析模型不完全相同，不能混用来表达同一次安装结果。
+
+只把顶层依赖写成精确版本，仍可能留下间接依赖范围。锁文件需要记录整棵解析关系，才能避免每次重新解析间接依赖。对于可从 registry 获取的包，完整性校验还用于发现下载内容与记录不符；它不是对包代码质量或安全性的全面证明。
+
+应用通常提交清单与所选工具的锁文件，CI 按同一套规则安装。不要随手提交多个工具各自重新生成的锁文件，让不同人实际上使用不同依赖图。
+
+## 4. 安装与复现 {#安装与复现}
+
+### 4.1 npm install 与 npm ci {#npminstall与npmci}
+
+在上面的独立示例目录中，下面的命令先产生锁文件，再验证一次冻结安装：
+
+```sh
+npm install
+npm run check
+npm ci
+npm run check
+```
+
+两次 check 都输出相同日期。`npm install` 可以根据声明解析和更新锁文件；`npm ci` 要求已有锁文件，并在清单与锁文件不匹配时失败，而不是顺手改写它。它还会清理当前 node_modules 后重新安装，不适合把它当作添加单个依赖的命令。
+
+若锁文件使用影响依赖树的配置生成，例如特定 peer 处理方式，CI 也要使用一致配置。仅复制锁文件、却改变包管理器或关键解析选项，不能保证得到同样结果。
+
+如果这个示例只需要运行 `index.js`，可以演示省略开发依赖：
+
+```sh
+npm ci --omit=dev
+npm run check
+```
+
+dayjs 仍可用于运行，TypeScript 不会作为开发依赖安装到这个项目的 node_modules。锁文件仍可记录开发依赖，`--omit=dev` 不是删除清单中的 devDependencies。真实项目如果还要构建或测试，应先确认该阶段需要哪些工具。
+
+### 4.2 pnpm 的冻结安装 {#pnpm的冻结安装}
+
+另选一个使用 pnpm 的示例目录，先执行普通安装产生 pnpm 锁文件，再执行冻结安装：
+
+```sh
+pnpm install
+pnpm install --frozen-lockfile
+pnpm run check
+```
+
+`--frozen-lockfile` 要求锁文件满足当前声明，不允许安装过程为了适应新的依赖声明而更新锁文件。在自动化环境中显式表达这一要求，比依赖当前机器是否被工具识别为 CI 更清楚。
+
+冻结依赖图不等于冻结全部执行环境。还需要对齐 Node.js、包管理器、平台、架构与项目安装配置。原生扩展、可选平台包和安装脚本可能产生平台相关结果；构建和行为检查仍不能省略。
+
+## 5. 安装布局与依赖可见性 {#安装布局与依赖可见性}
+
+### 5.1 提升、嵌套与 pnpm 链接 {#提升嵌套与pnpm链接}
+
+npm 的常用提升布局会尽量把可复用版本放到较高层目录，冲突版本则可能保留在更深层。它既不是“所有包永远平铺”，也不是“每一条依赖边都复制一份完整目录”。
+
+pnpm 的常用 isolated 布局把实际包组织在虚拟存储目录中，再用链接建立各包可见的依赖关系。包文件可以通过内容寻址存储复用；具体导入方式还受文件系统和 package-import-method 等设置影响，可能采用硬链接、克隆或复制，不能把所有环境都描述成同一种磁盘操作。
+
+Node.js 沿模块解析规则寻找依赖，而不是扫描磁盘上的所有包。下面的 `locate.cjs` 可以观察当前项目实际解析到的位置：
+
+```js
+console.log(require.resolve('dayjs'));
+```
+
+npm 与 pnpm 安装同一依赖后，输出路径可能不同，但依赖应能通过其声明的入口使用。路径里出现 `.pnpm` 不表示业务代码需要手写这个内部目录；不要绕过正常包名去依赖存储布局。
+
+### 5.2 幽灵依赖 {#幽灵依赖}
+
+**幽灵依赖**指代码使用了某个包，却没有在自己的依赖声明中表达这项关系。例如应用只声明 A，A 依赖 B；B 被提升到应用可找到的目录后，应用直接导入 B，表面上也能运行。
+
+一旦 A 升级、不再依赖 B，或安装布局改变，应用就可能找不到 B。问题根源是声明缺失，修复方式是由实际使用 B 的包声明 B，而不是为了继续碰巧访问它而不断调整目录。
+
+pnpm 的隔离布局可以减少根应用意外访问间接依赖，但 hoist、public-hoist-pattern、shamefully-hoist、workspace 根依赖等配置仍会影响可见性。不能说“用了 pnpm，就绝对不存在幽灵依赖”。多包项目还应分别检查每个包自己的声明。
+
+### 5.3 包管理与浏览器分包 {#包管理与浏览器分包}
+
+内容复用可以降低重复下载或磁盘存储，安装布局可以改变依赖解析，但最终浏览器是否下载两份框架，还取决于打包器的模块解析、版本、外置与共享策略。
+
+因此，选择 pnpm 的依据可以是依赖隔离、workspace 支持和存储复用，不应直接把“node_modules 占用减少”当作“首屏 bundle 变小”的证据。更换工具时需要比较真实安装与构建结果，不能只比较目录的表观大小。
+
+## 6. Workspace 与包交付 {#workspace与包交付}
+
+### 6.1 多包仓库的依赖关系 {#多包仓库的依赖关系}
+
+**Monorepo** 是在一个仓库内管理多个项目或包。**Workspace** 是包管理器识别本地包集合并连接依赖的机制，它不自动决定模块边界、构建顺序或每个包的发布策略。
+
+npm 示例的根 `package.json` 可以声明：
+
+```json
+{
+  "name": "course-workspace",
+  "private": true,
+  "workspaces": ["packages/*"]
+}
+```
+
+假设 `packages/shared` 的包名是 `@course/shared`、版本为 `1.0.0`，`packages/app` 的依赖声明中包含 `"@course/shared": "1.0.0"`，npm workspace 安装可以把本地包链接给 app。pnpm 用 `pnpm-workspace.yaml` 识别包集合，并可通过 `workspace:` 协议明确要求使用本地 workspace 包。
+
+如果 shared 的公开入口指向 dist，app 启动之前就需要先生成对应产物。链接成功只证明包关系已经建立，不证明入口文件存在。开发时直接导入兄弟目录源码，还可能绕开包的 exports、类型入口和发布边界，导致仓库里能运行、发布后却失败。
+
+### 6.2 tarball 与消费检查 {#tarball与消费检查}
+
+**tarball** 是包分发使用的压缩归档。一个准备分发的工具包可以声明公开入口和文件范围：
+
+```json
+{
+  "name": "@course/review-utils",
+  "version": "1.0.0",
+  "type": "module",
+  "exports": "./dist/index.js",
+  "files": ["dist"]
+}
+```
+
+为这个示例准备 `dist/index.js`，内容是 `export const topic = '模块';`。然后在该包目录中检查并生成归档：
+
+```sh
+npm pack --dry-run
+npm pack
+```
+
+`--dry-run` 用于检查待打包文件，`npm pack` 生成本地 tgz，不会上传 registry。检查入口、类型声明、许可与实际文件列表，再在独立消费项目中安装这个 tgz，验证公开导出能否使用。README、LICENSE、package.json 等文件还可能按工具规则自动纳入，不能把 files 字段当作完全忽略这些规则的逐文件清单。
+
+真正发布前还需确定包名、版本、目标 registry、访问权限与发布凭据，并对实际发布产物做检查。这里的示例只生成本地归档，不执行远程发布。库的开发锁文件帮助维护者复现开发环境，也不意味着所有消费者都会按这份锁文件安装它的间接依赖。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 package.json、锁文件和 node_modules 分别负责什么？ {#manifest-lock}
+
+**考察重点**：需求声明、解析结果、安装布局与脚本职责。
+
+**相关内容**：[package.json 的职责](#packagejson的职责)、[锁文件记录什么](#锁文件记录什么)。
+
+<details>
+<summary>参考回答</summary>
+
+**package.json 声明项目身份、入口、脚本与依赖要求，锁文件记录选定的依赖图，node_modules 是一次安装建立的实际结构。** 只有范围声明还可能重新解析间接依赖，只有现成安装目录又不能可靠表达项目应如何安装。npm run 执行脚本定义的工具命令，并提供本地可执行文件的查找环境。
+
+</details>
+
+### 7.2 ^1.2.3、~1.2.3 与 ^0.2.3 分别允许哪些版本？ {#version-ranges}
+
+**考察重点**：版本范围、零主版本、锁定结果与更新行为。
+
+**相关内容**：[允许范围与实际版本](#允许范围与实际版本)。
+
+<details>
+<summary>参考回答</summary>
+
+**对普通稳定版本，^1.2.3 允许从 1.2.3 到低于 2.0.0，~1.2.3 到低于 1.3.0，^0.2.3 到低于 0.3.0。** 零主版本不能套用“^ 永远只限制主版本”的口号。范围表达允许选择的集合，实际安装还受到锁文件与命令影响，不表示每次都升级；预发布版本需另外考虑其匹配规则。
+
+</details>
+
+### 7.3 dependencies、devDependencies 和 peerDependencies 有什么区别？ {#dependency-kinds}
+
+**考察重点**：使用关系、构建阶段、宿主兼容与产物内容。
+
+**相关内容**：[依赖类别](#依赖类别)、[peerDependencies 与冲突](#peerdependencies与冲突)。
+
+<details>
+<summary>参考回答</summary>
+
+**dependencies 表达普通使用依赖，devDependencies 表达开发测试构建依赖，peerDependencies 表达与宿主包的兼容关系。** 生产构建仍可能需要 devDependencies 中的工具，构建完成后的静态服务则未必需要它们。包是否进入浏览器产物取决于引用与构建配置，peer 也不会自动让打包器把对应依赖外置。
+
+</details>
+
+### 7.4 peerDependencies 冲突为什么不能直接用 legacy-peer-deps 当作修复？ {#peer-conflict}
+
+**考察重点**：宿主范围、安装解析与运行时兼容。
+
+**相关内容**：[peerDependencies 与冲突](#peerdependencies与冲突)。
+
+<details>
+<summary>参考回答</summary>
+
+**legacy-peer-deps 改变的是安装时的约束处理，不会改变两个包的接口与运行时行为。** npm 7 起会默认尝试安装 peer，遇到冲突要检查宿主版本、组件库兼容范围和是否存在可用升级。忽略约束可能让安装完成，但仍需证明组合能够运行；不能把安装退出码当作兼容结论。
+
+</details>
+
+### 7.5 提交了锁文件，怎样尽量保证 CI 与本地依赖一致？ {#reproducible-install}
+
+**考察重点**：冻结安装、工具与平台、清单同步和验证边界。
+
+**相关内容**：[安装与复现](#安装与复现)。
+
+<details>
+<summary>参考回答</summary>
+
+**同时提交清单与所选工具的锁文件，固定 Node.js、包管理器和关键配置，并使用冻结安装。** npm ci 要求锁文件已存在且与清单匹配，pnpm 可显式使用 --frozen-lockfile。平台包、原生扩展和脚本仍可能有差异，因此还要运行构建与行为检查。依赖图一致不能被夸大成任意机器上的全部产物逐字节一致。
+
+</details>
+
+### 7.6 什么是幽灵依赖，为什么更换包管理器后才暴露？ {#phantom-dependency}
+
+**考察重点**：直接声明、提升布局、间接依赖与模块可见性。
+
+**相关内容**：[幽灵依赖](#幽灵依赖)。
+
+<details>
+<summary>参考回答</summary>
+
+**幽灵依赖是代码使用了未在自身清单中声明的包，旧布局可能因为提升而让它碰巧可见。** 更严格的链接布局或间接依赖升级后，这种访问就可能失败。应由实际使用者补充正确声明，再验证安装，而不是只调整 hoist 来延续偶然可见性。pnpm 也受配置和 workspace 根依赖影响，不能保证绝对没有此问题。
+
+</details>
+
+### 7.7 pnpm 相比 npm 的主要差异是什么，磁盘占用减少就代表首屏更快吗？ {#package-manager-choice}
+
+**考察重点**：存储复用、链接布局、依赖隔离与构建阶段。
+
+**相关内容**：[提升、嵌套与 pnpm 链接](#提升嵌套与pnpm链接)、[包管理与浏览器分包](#包管理与浏览器分包)。
+
+<details>
+<summary>参考回答</summary>
+
+**pnpm 的常用方式通过内容存储复用与链接布局管理依赖，npm 的常用布局则进行依赖提升。** 具体效果受到版本、配置与文件系统影响。安装占用减少不等于浏览器 bundle 变小；浏览器产物还由模块引用、构建分包、版本重复和外置策略决定，应分别测量。
+
+</details>
+
+### 7.8 Monorepo 中多个包怎样管理依赖，为什么链接成功还可能无法运行？ {#workspace}
+
+**考察重点**：workspace 声明、包入口、构建顺序与独立消费。
+
+**相关内容**：[多包仓库的依赖关系](#多包仓库的依赖关系)。
+
+<details>
+<summary>参考回答</summary>
+
+**各包仍应声明自己的依赖，通过 workspace 建立本地包关系，而不是依赖共享仓库中的偶然路径。** 链接成功后，如果公开入口指向尚未生成的 dist，消费方仍无法运行，因此构建需要按依赖顺序处理。还要验证 exports、类型声明和发布后消费，避免开发时绕过公开入口掩盖问题。
+
+</details>
+
+### 7.9 开发一个 npm 包后，发布前应怎样验证交付内容？ {#package-distribution}
+
+**考察重点**：包入口、打包文件、归档消费与开发环境差异。
+
+**相关内容**：[tarball 与消费检查](#tarball与消费检查)。
+
+<details>
+<summary>参考回答</summary>
+
+**先检查实际 tarball，再用独立消费项目验证公开入口，而不只在源码仓库里运行。** 使用 npm pack --dry-run 查看文件范围，npm pack 生成归档，确认入口、类型声明和许可等需要的文件存在，然后安装归档进行测试。发布还要明确名称、版本、registry 和权限，开发锁文件也不替消费者锁定全部依赖。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [npm 10：package.json](https://docs.npmjs.com/cli/v10/configuring-npm/package-json/)
+- [npm 10：package-lock.json](https://docs.npmjs.com/cli/v10/configuring-npm/package-lock-json/)
+- [npm 10：npm ci](https://docs.npmjs.com/cli/v10/commands/npm-ci/)
+- [npm 10：Workspaces](https://docs.npmjs.com/cli/v10/using-npm/workspaces/)
+- [npm 10：npm pack](https://docs.npmjs.com/cli/v10/commands/npm-pack/)
+- [npm：node-semver 范围规则](https://github.com/npm/node-semver)
+- [pnpm：Symlinked node_modules structure](https://pnpm.io/symlinked-node-modules-structure)
+- [pnpm：pnpm install](https://pnpm.io/cli/install)

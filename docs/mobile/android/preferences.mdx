@@ -1,0 +1,242 @@
+---
+knowledge:
+  id: mobile.android.preferences
+  type: concept
+description: "解释 SharedPreferences 的内存与磁盘更新、线程和进程边界、集合访问，以及 MMKV 和 DataStore 的存储选择。"
+keywords: [SharedPreferences, commit, apply, MMKV, mmap, DataStore]
+---
+
+# Android 偏好存储
+
+**偏好存储**用键值保存主题、排序方式等少量设置。Android 的 `SharedPreferences` 是其中一种实现；理解它时，需要区分“当前进程已经读到新值”“文件已经写入”和“多个调用者共同完成了一次业务更新”。这三个条件不能互相替代。
+
+本文以 Android 14 的 `SharedPreferencesImpl` 解释实现细节，以 MMKV 1.3.5 说明替换存储组件时的语义差异。数据量大、需要条件查询或多条记录共同约束时，应使用数据库，而不是继续扩充偏好文件。
+
+## 1. 面试核心 {#core}
+
+- `commit()` 和 `apply()` 都先更新进程内的状态，**区别主要在于是否等待磁盘写入及报告结果**。`commit()` 返回失败，也不代表内存值已经回滚。[卡](#commit-apply)
+- 单次读取和一次 Editor 提交受到内部同步保护，**跨调用的读改写仍需要所有参与者遵守同一套同步规则**。[卡](#threads)
+- `SharedPreferences` **不支持多个进程共同可靠读写**；进程内单例和 `synchronized` 无法同步另一个进程。[卡](#process)
+- `getStringSet()` 返回的集合**不能直接修改**。应先复制，再通过 Editor 写回；复制也不会自动解决并发覆盖。[卡](#string-set)
+- MMKV 使用内存映射和键值编码，**不能把它的 SharedPreferences 兼容接口当成完全相同的提交协议**。[卡](#mmkv)
+- 存储迁移要确定新的唯一写入入口，**复制旧值不等于完成切换，也不等于解决并发一致性**。[卡](#migration)
+
+## 2. SharedPreferences 的读写过程 {#sharedpreferences的读写过程}
+
+### 2.1 文件、内存和 Editor {#文件内存和editor}
+
+`Context.getSharedPreferences(name, MODE_PRIVATE)` 获取应用私有的命名偏好存储。Android 的实现把文件内容装入进程内的映射，读取通常查询这份内存状态，写入则通过 `Editor` 收集修改。`MODE_PRIVATE` 限制其他普通应用的直接文件访问，不表示内容经过加密，也不决定备份策略。
+
+`Editor.putBoolean()` 等调用暂存修改，直到 `apply()` 或 `commit()` 才提交到 SharedPreferences。一次提交可以包括多个 key，因此可以把一组直接赋值放在同一个 Editor 中。两个独立 Editor 分别提交，仍然是两次更新。
+
+Android 14 的文件加载在后台启动，但 `getInt()`、`edit()` 等操作会等待加载完成。因此首次访问不是无条件的内存快路径：如果主线程立刻读取一个尚未加载完成的文件，它仍可能等待磁盘读取。把所有磁盘风险简单归到 `commit()` 上，会漏掉这条路径。
+
+### 2.2 commit 与 apply {#commit与apply}
+
+| 行为 | `commit()` | `apply()` |
+| --- | --- | --- |
+| 更新当前进程的内存状态 | 提交时更新 | 提交时更新 |
+| 等待磁盘结果 | 等待 | 不等待完成再返回 |
+| 返回写入结果 | 返回 `Boolean` | 无结果返回值 |
+| 是否适合在主线程等待 | 可能阻塞，不应依赖文件小就安全 | 没有同步等待结果，但仍有其他成本 |
+
+Android 14 中，两者都先执行 `commitToMemory()`。`commit()` 随后等待磁盘写入完成；等待被中断或写入失败时，可能返回 `false`，但前面的内存修改并没有因此撤销。业务不能把返回值解释成一套包含内存回滚的数据库事务。
+
+`apply()` 把磁盘写入安排到后台，并登记尚未完成的工作。组件生命周期切换等路径可能等待这些工作，因此高频 `apply()` 仍可能造成主线程停顿。若有未完成的 `apply()`，后续 `commit()` 也可能等待相关写入。
+
+需要取得保存结果时，可以在 IO 调度器执行 `commit()`：
+
+```kotlin
+import android.content.SharedPreferences
+import java.io.IOException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+
+suspend fun saveTheme(preferences: SharedPreferences, dark: Boolean) {
+    withContext(Dispatchers.IO) {
+        val saved = preferences.edit()
+            .putBoolean("dark_theme", dark)
+            .commit()
+        if (!saved) throw IOException("主题设置未确认写入")
+    }
+}
+```
+
+`saveTheme()` 正常完成，表示 `commit()` 报告成功；抛出异常时，调用者可以提示重试，但不能断言所有读取者仍看到旧主题。设置同一个主题值是幂等操作，重新执行不会像“计数加一”那样重复累加。协程取消也不会自动撤销一个已经执行的阻塞提交。
+
+### 2.3 监听与持久化不是一回事 {#监听与持久化不是一回事}
+
+`OnSharedPreferenceChangeListener` 通知的是偏好状态变化。`apply()` 可以在磁盘写入完成前通知监听者，因此回调不能作为文件持久化成功的证据。监听回调运行在主线程，不应在其中执行耗时工作。
+
+SharedPreferences 不为注册的监听器保留强引用。调用者需要持有监听器，并在对应生命周期结束时注销，避免监听意外消失或长时间持有界面对象。监听适合刷新设置显示，不提供每次写入都不可丢失的业务事件日志。
+
+## 3. 线程与进程边界 {#线程与进程边界}
+
+### 3.1 单次操作安全不等于读改写原子 {#单次操作安全不等于读改写原子}
+
+假设计数原来是 `5`。线程 A 调用 `getInt()` 得到 `5`，线程 B 也得到 `5`，随后各自提交 `6`。最终值可以是 `6`，尽管每次读取、每次提交都没有破坏 SharedPreferences 的内部结构。
+
+问题出在“读出旧值—计算—写回”没有作为一个整体保护。使用 `commit()` 替换 `apply()` 不能补上这个边界；它改变的是等待磁盘结果的方式。
+
+如果继续使用 SharedPreferences，所有读改写入口必须共享同一把锁，并把读取和提交都放在保护范围内。每个 Repository 各建一把锁、只锁写入、让部分调用绕过 Repository，都不能保证这项业务不丢更新。阻塞磁盘操作还会延长锁的持有时间。
+
+需要明确的串行读改写时，可以使用 [Android DataStore](./datastore.mdx#读改写必须位于更新内部) 的 `edit` 或 `updateData`，把读取当前状态和修改放进更新函数。对于多表或多记录关系，应使用数据库事务。
+
+两个 Editor 修改不同 key 时，提交会合并相应修改；修改同一个 key 时，后提交的修改可以覆盖先前结果。`clear()` 还会清除整个当前映射，不能把它当作只清除创建 Editor 那一刻看到的旧 key。
+
+### 3.2 多进程需要真正的协调机制 {#多进程需要真正的协调机制}
+
+SharedPreferences 官方契约不支持多进程共同使用。每个进程都有自己的内存状态，进程内同步无法保证另一个进程看到及时更新，也无法把两边的读改写变成一个操作。旧的 `MODE_MULTI_PROCESS` 不能作为可靠的一致性方案。
+
+可选办法取决于谁拥有数据：
+
+- 让一个进程负责读写，通过 [Binder](./binder.mdx) 或 ContentProvider 暴露受控操作。在服务端完成“检查后修改”，不要只暴露一个不受保护的先读后写流程。
+- 使用明确支持多进程协调的存储实现，并确认同一文件的实例模式、锁和错误处理规则。DataStore 的[多进程约束](./datastore.mdx#单进程与多进程)与普通单进程实例不同。
+- 数据需要事务和查询时，采用数据库及其支持的并发访问方式。数据库也不会自动替业务决定冲突如何处理。
+
+跨进程锁只负责协调访问；消息通知、进程退出、重试和业务幂等仍需要分别设计。
+
+## 4. 集合、类型和文件规模 {#集合类型和文件规模}
+
+### 4.1 读取集合后先复制 {#读取集合后先复制}
+
+`getStringSet()` 的契约禁止调用者修改返回的集合。Android 14 的实现可能直接返回内存映射里保存的 Set；直接 `add()` 会绕过 Editor、磁盘写入和监听流程，并可能与其他访问发生冲突。
+
+```kotlin
+import android.content.SharedPreferences
+
+fun addTagWithoutConcurrentWriters(preferences: SharedPreferences, tag: String) {
+    val tags = preferences.getStringSet("tags", emptySet())
+        .orEmpty().toMutableSet()
+    tags.add(tag)
+    preferences.edit().putStringSet("tags", tags).apply()
+}
+```
+
+这里通过 `toMutableSet()` 得到独立副本，再写回。函数名明确限定了没有并发写入者的使用条件：若两个线程分别复制旧集合、各加一个 tag，后提交仍可能覆盖前一个新增值。集合复制解决的是不应修改共享返回值的问题，不负责协调更新。
+
+### 4.2 key 的类型和数据量也属于约定 {#key的类型和数据量也属于约定}
+
+同名 key 不能在某处当字符串、另一处当整数读取。读取类型与已保存类型不匹配时，会出现 `ClassCastException`。改变字段类型时，应通过新 key 或显式迁移处理旧数据，不能只修改默认值。
+
+SharedPreferences 的 Android 实现以 XML 文件保存一份映射。文件加载、序列化和写盘成本会受总数据量影响；把大列表或大 JSON 塞进一个 key，既不获得数据库的局部查询，也不获得结构化更新能力。偏好文件还可能包含其他模块的设置，不能为了重置一个功能就无条件 `clear()`。
+
+## 5. MMKV 与存储迁移 {#mmkv与存储迁移}
+
+### 5.1 MMKV 的基本机制 {#mmkv的基本机制}
+
+**MMKV** 是腾讯开源的键值存储组件，使用 `mmap` 把文件映射到虚拟地址空间，并使用 Protocol Buffers 相关编码保存键值。映射建立后，程序可以通过访问映射区域修改文件对应内容，操作系统负责相应页面的回写。
+
+它采用追加更新等方式减少每次修改都重写整份内容的成本，空间不足等条件下需要整理有效数据。性能仍取决于数据大小、编码、锁竞争、缺页和同步开销，不能仅凭使用 `mmap` 就宣称任何场景都更快。
+
+进程崩溃、系统崩溃和突然断电是不同故障；“数据写进映射内存”不等于已经按所需级别到达持久介质。MMKV 提供 `sync()`、`async()` 等接口，但业务仍需结合平台和故障模型定义可靠性要求。不能把内存映射概括成“绝不会丢数据”。
+
+多进程使用需要明确选择 `MULTI_PROCESS_MODE` 等对应配置。单个 key 的访问能力也不能自动保证多个独立调用共同组成的业务事务。
+
+### 5.2 接口兼容不等于提交语义相同 {#接口兼容不等于提交语义相同}
+
+MMKV 1.3.5 实现了部分 SharedPreferences 和 Editor 接口，但 `edit()` 返回实例自身，`putString()` 等方法直接调用底层编码写入，不是先建立一个独立的待提交 Editor。
+
+因此把下面这个 SharedPreferences 思路原样搬过去是不成立的：“先调用多个 `put`，最后 `commit` 才让它们一起可见。”该版本 MMKV 的 `commit()` 调用同步接口后直接返回 `true`，不能把这个返回值当成与 SharedPreferences 完全相同的错误报告。`getAll()` 和 SharedPreferences 变更监听也不是完整兼容。
+
+迁移时需要检查实际调用者依赖了哪些行为：是否依赖批量提交、监听回调、失败返回、跨进程更新或特定类型。仅让代码重新编译通过，还不能证明替换后的行为正确。
+
+### 5.3 迁移要确定唯一写入者 {#迁移要确定唯一写入者}
+
+从 SharedPreferences 迁移到 DataStore 或 MMKV，可以按“读取旧值—转换类型—写入新存储—确认完成—切换读写入口”处理，但每一步都可能被进程退出打断。迁移应允许重试，已有新值是否覆盖也应有明确规则。
+
+新旧存储继续各自接收修改，会产生两份互相覆盖的状态。应先收拢数据访问入口，再完成切换；确需短期兼容时，要设计同步协议和回滚策略。DataStore 提供的 [SharedPreferences 迁移](./datastore.mdx#sharedpreferences迁移)可以承担迁移生命周期，但不会修复仍在写旧文件的业务代码。
+
+## 6. 面试题 {#面试题}
+
+### 6.1 commit 和 apply 有什么区别？ {#commit-apply}
+
+**考察重点**：内存可见、磁盘完成、失败报告和阻塞路径。
+
+**相关内容**：[commit 与 apply](#commit与apply)、[监听与持久化不是一回事](#监听与持久化不是一回事)。
+
+<details>
+<summary>参考回答</summary>
+
+**两者都先更新内存，commit 等待磁盘结果并返回 Boolean，apply 安排异步写入且不返回结果。** Android 14 中 `commit()` 失败或等待被中断，不会自动撤销之前的内存修改。`apply()` 的未完成写入也可能在生命周期切换时被等待，所以它不是无条件没有主线程风险。
+
+</details>
+
+### 6.2 SharedPreferences 支持多线程吗？怎样避免并发更新丢失？ {#threads}
+
+**考察重点**：内部同步与跨调用业务操作的区别。
+
+**相关内容**：[单次操作安全不等于读改写原子](#单次操作安全不等于读改写原子)。
+
+<details>
+<summary>参考回答</summary>
+
+**可以从多个线程调用，但不能把多个独立调用当成一个原子业务操作。** 两个线程都读到 `5` 再分别写入 `6`，会丢失一次加一。需要让所有参与者使用同一个同步入口，保护完整读改写；也可以使用 DataStore 的原子更新或数据库事务。把 `apply()` 改成 `commit()` 只改变磁盘等待，不解决这项竞争。
+
+</details>
+
+### 6.3 SharedPreferences 支持跨进程吗？多个进程需要共同修改数据时怎么办？ {#process}
+
+**考察重点**：进程内缓存和同步的作用范围，数据所有权。
+
+**相关内容**：[多进程需要真正的协调机制](#多进程需要真正的协调机制)。
+
+<details>
+<summary>参考回答</summary>
+
+**SharedPreferences 不提供可靠的多进程共同读写契约。** 可以由单一进程通过 Binder 或 ContentProvider 提供受控操作，也可以采用明确支持多进程的存储模式。方案还要说明怎样完成检查后修改、处理冲突和失败；进程内单例、锁或旧的 `MODE_MULTI_PROCESS` 都不能直接解决这些问题。
+
+</details>
+
+### 6.4 可以直接修改 getStringSet 返回的集合吗？ {#string-set}
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：返回对象的所有权、受控写入与并发覆盖。
+
+**相关内容**：[读取集合后先复制](#读取集合后先复制)。
+
+<details>
+<summary>参考回答</summary>
+
+**不可以，应复制为自己的集合，修改后通过 Editor 写回。** 直接修改可能改变内部共享状态，却绕过正常提交。复制后再写回仍是多个步骤，有并发修改者时还需要协调完整更新，不能只靠集合复制。
+
+</details>
+
+### 6.5 MMKV 是什么？ {#mmkv}
+
+**考察重点**：键值存储、内存映射及替换已有存储时需要核对的行为。
+
+**相关内容**：[MMKV 的基本机制](#mmkv的基本机制)、[接口兼容不等于提交语义相同](#接口兼容不等于提交语义相同)。
+
+<details>
+<summary>参考回答</summary>
+
+**MMKV 是基于内存映射的键值存储组件，使用编码和追加更新等方式保存数据。** `mmap` 减少的是部分访问与写入路径的成本，仍有同步、缺页和故障恢复边界。替换 SharedPreferences 时需要检查提交、监听和多进程语义；例如 MMKV 1.3.5 的 `put` 会直接执行底层写入，不能套用独立 Editor 最后统一提交的理解。
+
+</details>
+
+### 6.6 从 SharedPreferences 切换到其他存储，只复制一次旧值是否足够？ {#migration}
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：迁移重试、类型转换、并发写入和切换边界。
+
+**相关内容**：[迁移要确定唯一写入者](#迁移要确定唯一写入者)。
+
+<details>
+<summary>参考回答</summary>
+
+**不够，还要保证迁移可重试，并把后续读写统一切换到新入口。** 需要定义旧值转换、新值覆盖和完成标记的规则，避免中断后误判迁移完成。继续让新旧存储分别写入，会产生两份状态；这需要明确协议，不能交给一次复制自动解决。
+
+</details>
+
+## 7. 参考资料 {#参考资料}
+
+- [Android：SharedPreferences](https://developer.android.com/reference/android/content/SharedPreferences)
+- [Android：SharedPreferences.Editor](https://developer.android.com/reference/android/content/SharedPreferences.Editor)
+- [Android：SharedPreferences 使用说明](https://developer.android.com/training/data-storage/shared-preferences)
+- [AOSP Android 14：SharedPreferencesImpl](https://android.googlesource.com/platform/frameworks/base/+/android-14.0.0_r1/core/java/android/app/SharedPreferencesImpl.java)
+- [Android：DataStore](https://developer.android.com/topic/libraries/architecture/datastore)
+- [MMKV 1.3.5：项目说明](https://github.com/Tencent/MMKV/blob/v1.3.5/README.md)
+- [MMKV：设计原理](https://github.com/Tencent/MMKV/wiki/design)
+- [MMKV 1.3.5：Android 兼容接口实现](https://github.com/Tencent/MMKV/blob/v1.3.5/Android/MMKV/mmkv/src/main/java/com/tencent/mmkv/MMKV.java)
+- [POSIX：msync](https://pubs.opengroup.org/onlinepubs/9799919799/functions/msync.html)

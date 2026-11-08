@@ -1,0 +1,255 @@
+---
+sidebar_position: 2
+knowledge:
+  id: basic-knowledge.python.language.functions-scope
+  type: concept
+description: "讲解 Python 调用时的参数绑定、默认值求值、位置与关键字参数、名称查找和局部变量规则，通过可运行示例区分修改共享对象与重新绑定名称。"
+keywords: [Python 参数, 默认参数, 作用域, global, nonlocal]
+---
+
+# Python 函数参数与作用域
+
+Python 调用函数时，会把实参得到的对象绑定到函数内的形参名称。形参与调用方可以引用同一个对象，所以函数里修改列表可能影响调用方；给形参重新赋值，则只改变函数内的绑定。
+
+这套规则对列表、整数和字符串都一样。准备面试时，比“值传递还是引用传递”的标签更有用的是说明：名称在哪里定义、引用哪个对象、这条语句修改对象还是重新绑定名称。名称和对象的基础关系见 [Python 对象模型](./object-model.mdx#名称与对象)。
+
+## 1. 面试核心 {#core}
+
+- 调用时形参绑定实参对象，**修改共享可变对象与重新绑定形参产生不同结果**，不能按可变、不可变类型划分成两套传参规则。[卡](#argument-binding)
+- 默认参数表达式在函数定义执行时求值。**同一个函数对象会复用保存的默认对象**，默认列表因此可能在多次调用之间积累内容。[卡](#mutable-default)
+- `/` 前的参数只能按位置传入，`*` 后的参数只能按关键字传入。**`*args` 收集多余的位置实参，`**kwargs` 收集多余的关键字实参**，它们不负责复制实参内部对象。[卡](#parameter-kinds)
+- 普通函数中的名称通常按局部、外层函数、模块全局、内置名称查找。**函数体内对名称赋值会使它被视为局部名称**，除非使用 `global` 或 `nonlocal` 声明。[卡](#unbound-local)
+- `global` 指向当前模块的全局绑定，`nonlocal` 指向外层函数已有绑定。**修改列表内容不需要重新绑定该名称**，不能仅因为对象发生变化就加 `global`。[卡](#global-nonlocal)
+
+## 2. 实参与形参 {#实参与形参}
+
+**实参**是调用时传入的对象，**形参**是函数声明中接收这些对象的名称。每次调用都有本次调用的局部绑定，多个调用仍可以通过实参引用同一个对象。
+
+```python
+def update(items, count):
+    items.append("done")
+    items = ["replacement"]
+    count = count + 1
+    return items, count
+
+original = ["start"]
+total = 1
+returned_items, returned_count = update(original, total)
+
+print(original, total)                 # ['start', 'done'] 1
+print(returned_items, returned_count)   # ['replacement'] 2
+```
+
+`items.append("done")` 修改调用方也引用的列表。之后给 `items` 赋新列表，只让局部名称改为引用新对象；`original` 仍引用原列表。整数加法也产生结果并重新绑定局部 `count`，没有修改调用方的 `total`。
+
+函数通过返回值表达新的结果，调用方再决定是否接收：`original, total = update(original, total)` 会更新调用方的名称，但那是调用方执行赋值的结果，不是函数直接改写了调用方变量。
+
+## 3. 参数的传入方式 {#参数的传入方式}
+
+位置参数按顺序匹配，关键字参数按名称匹配。函数签名可以限制调用方式，帮助区分必需输入和容易混淆的配置。
+
+```python
+def request(path, /, method="GET", *, timeout=3):
+    return path, method, timeout
+
+print(request("/health", timeout=1))  # ('/health', 'GET', 1)
+print(request("/users", "POST"))      # ('/users', 'POST', 3)
+# request(path="/health")  # 运行时报 TypeError：path 只能按位置传入
+# request("/health", "GET", 1)  # 运行时报 TypeError：timeout 只能按关键字传入
+```
+
+这里 `/` 之前的 `path` 是仅限位置参数；`method` 可以用位置或关键字传入；`*` 后的 `timeout` 是仅限关键字参数。参数名本身没有特殊功能，限制来自签名里的 `/` 和 `*`。
+
+### 3.1 参数收集与解包 {#参数收集与解包}
+
+函数定义里的 `*args` 把多余的位置实参收集成元组，`**kwargs` 把多余的关键字实参收集成字典。`args` 和 `kwargs` 是惯用名称，也可以换成其他名称。
+
+调用处的 `*` 和 `**` 则展开已有内容：
+
+```python
+def collect(first, *args, **kwargs):
+    return first, args, kwargs
+
+values = ["a", "b", "c"]
+options = {"timeout": 2}
+print(collect(*values, **options))
+# ('a', ('b', 'c'), {'timeout': 2})
+```
+
+`**options` 要求键是字符串，并且不能与已经传入的同名参数冲突。多余的位置参数、重复赋值给同一形参、缺少必需参数等，都会使调用失败并抛出 `TypeError`。
+
+收集得到新元组或字典不等于深拷贝：如果某个实参是列表，`args` 或 `kwargs` 中仍可以引用那个列表。包装函数转发参数时，也要保留这种对象共享关系。
+
+## 4. 默认参数 {#默认参数}
+
+**默认参数值**是函数定义执行时计算并保存的对象。省略相应实参时，后续调用会使用这个对象，不会每次重新计算默认表达式。
+
+```python
+def add_case(case_id, collected=[]):
+    collected.append(case_id)
+    return collected
+
+print(add_case("A"))  # ['A']
+print(add_case("B"))  # ['A', 'B']
+```
+
+两次调用绑定到了同一个默认列表，因此第二次保留了第一次的内容。测试之间通过默认列表共享数据时，单独执行可能成功，组合执行却受前一次状态影响。
+
+需要每次创建独立列表，可以把缺省状态与实际列表区分开：
+
+```python
+def add_case(case_id, collected=None):
+    if collected is None:
+        collected = []
+    collected.append(case_id)
+    return collected
+
+print(add_case("A"))  # ['A']
+print(add_case("B"))  # ['B']
+
+existing = []
+print(add_case("C", existing) is existing)  # True
+```
+
+显式传入列表时仍然修改该列表，这是函数接口的一部分。`collected = collected or []` 会把调用方传入的空列表也替换掉，因此不能在需要保留显式空列表身份时替代 `is None`。
+
+如果 `None` 本身也是合法输入，可以使用 `sentinel = object()` 创建独立标记，并用 `is sentinel` 判断是否缺省。默认表达式只求值一次的规则并不限于列表，也适用于读取当前时间、创建对象等表达式。
+
+## 5. 名称查找与局部绑定 {#名称查找与局部绑定}
+
+**作用域**决定一段代码可以通过名称找到哪些绑定。普通函数里的名称通常依次在局部作用域、外层函数作用域、所在模块全局作用域与内置名称中查找，通常用 LEGB 记忆这个顺序。
+
+这个顺序需要结合“名称是否属于局部变量”的判断：如果函数体中对某个名称赋值，Python 会在分析函数体时把该名称视为局部变量，除非有 `global` 或 `nonlocal` 声明。
+
+```python
+count = 10
+
+def broken():
+    print(count)
+    count = 11
+
+# broken()  # 运行时报 UnboundLocalError
+```
+
+`count = 11` 使 `count` 成为 `broken` 的局部名称。执行 `print(count)` 时，这个局部名称尚未得到值，因此报错；它不会因为赋值还没执行，就退回去读取模块级的 `count`。
+
+如果函数内完全不重新绑定 `count`，读取时可以找到全局名称。修改 `items.append(...)` 或 `items[0] = ...` 则修改已有对象，并未把名称 `items` 重新绑定到另一个对象。
+
+LEGB 是理解普通函数的概括，不表示所有语法块都创建同样的作用域。`if` 和普通 `for` 不创建独立函数作用域；类体、推导式等有自身规则，需要结合相应语法判断。
+
+## 6. global 与 nonlocal {#global-与-nonlocal}
+
+`global` 声明名称指向当前模块的全局绑定；`nonlocal` 声明名称指向外层函数作用域中已有的绑定。
+
+```python
+def make_counter():
+    count = 0
+
+    def increment():
+        nonlocal count
+        count += 1
+        return count
+
+    return increment
+
+counter = make_counter()
+print(counter(), counter())  # 1 2
+```
+
+`increment` 重新绑定外层的 `count`，所以需要 `nonlocal`。没有这条声明，`count += 1` 会把 `count` 当作本次调用的局部名称，读取未赋值的局部变量时就会失败。
+
+`nonlocal` 不能凭空创建外层变量；找不到相应外层函数绑定时，函数定义会触发 `SyntaxError`。`global` 的“全局”是当前模块，不表示任意模块里的同名变量都会被修改。
+
+共享状态会增加调用之间的依赖。需要可独立执行的测试辅助函数时，优先通过参数和返回值传递状态；确实需要累计状态的计数器或缓存，再明确其生命周期和清理责任。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 Python 传参是否按可变和不可变类型分成两套规则？ {#argument-binding}
+
+**考察重点**：参数绑定、对象共享、原地修改与重新赋值。
+
+**相关内容**：[实参与形参](#实参与形参)。
+
+<details>
+<summary>参考回答</summary>
+
+**不是，两类对象都按同一套对象绑定规则传入。** 函数内的形参可以与调用方引用同一个对象；修改共享列表会被调用方看到，给形参赋新列表只改变局部绑定。
+
+整数和字符串不可变，对它们执行相应运算后通常得到结果对象，再重新绑定名称，因此不能通过改变形参让调用方的名称自动变化。需要把新结果交给调用方时，使用返回值并由调用方赋值。
+
+</details>
+
+### 7.2 默认列表为什么会保留上一次调用的内容，怎样修复？ {#mutable-default}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：默认值的求值时机、共享对象与缺省标记。
+
+**相关内容**：[默认参数](#默认参数)。
+
+<details>
+<summary>参考回答</summary>
+
+**默认列表在函数定义执行时创建，同一函数对象的多次调用会复用它。** 每次向列表追加都会留下状态。
+
+需要独立列表时使用 `None` 作为默认值，在函数内部用 `if collected is None` 创建新列表。这样既隔离省略参数的多次调用，又保留调用方显式传入的空列表。`None` 是合法业务值时，使用独立标记对象区分缺省。
+
+</details>
+
+### 7.3 `/`、`*args`、`**kwargs` 与仅限关键字参数分别表示什么？ {#parameter-kinds}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：签名约束、参数收集与调用处解包。
+
+**相关内容**：[参数的传入方式](#参数的传入方式)、[参数收集与解包](#参数收集与解包)。
+
+<details>
+<summary>参考回答</summary>
+
+**`/` 前的参数只能按位置传入，`*` 或 `*args` 后的普通参数只能按关键字传入。** `*args` 收集多余的位置实参为元组，`**kwargs` 收集多余的关键字实参为字典。
+
+调用处 `*values` 展开可迭代对象作为位置实参，`**options` 展开字符串键的映射作为关键字实参。传入不允许的关键字、缺少必需参数或对同一形参重复赋值，都会使调用失败。
+
+</details>
+
+### 7.4 模块已有 count，为什么函数中先读取再赋值仍报 UnboundLocalError？ {#unbound-local}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：局部名称的确定时机与执行时的赋值状态。
+
+**相关内容**：[名称查找与局部绑定](#名称查找与局部绑定)。
+
+<details>
+<summary>参考回答</summary>
+
+**函数体内的赋值使 `count` 被视为局部名称，读取发生时这个局部名称还没有值。** Python 不会在读取失败后自动改读同名全局变量。
+
+根据实际意图，可以通过参数和返回值传递结果；确实要修改模块绑定时使用 `global count`，要修改外层函数已有绑定时使用 `nonlocal count`。
+
+</details>
+
+### 7.5 global 和 nonlocal 有什么区别，修改全局列表一定需要 global 吗？ {#global-nonlocal}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：模块与外层函数作用域、绑定变化与对象变化。
+
+**相关内容**：[global 与 nonlocal](#global-与-nonlocal)、[名称查找与局部绑定](#名称查找与局部绑定)。
+
+<details>
+<summary>参考回答</summary>
+
+**`global` 指向当前模块全局绑定，`nonlocal` 指向外层函数已有绑定。** 两者都用于说明函数中对名称绑定的操作落在哪里。
+
+如果只是调用 `items.append(...)` 修改通过全局名称找到的列表，没有给 `items` 重新赋值，就不需要 `global`。若要用 `items = [...]` 替换模块的绑定，才需要相应声明。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [Python 3.12：Function definitions](https://docs.python.org/3.12/reference/compound_stmts.html#function-definitions)
+- [Python 3.12：Naming and binding](https://docs.python.org/3.12/reference/executionmodel.html#naming-and-binding)
+- [Python 3.12 教程：More on defining functions](https://docs.python.org/3.12/tutorial/controlflow.html#more-on-defining-functions)
+- [Python Programming FAQ：参数传递与返回值](https://docs.python.org/3.12/faq/programming.html#how-do-i-write-a-function-with-output-parameters-call-by-reference)

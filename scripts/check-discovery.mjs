@@ -26,10 +26,13 @@ async function filesIn(directory) {
 const sources = new Map();
 for (const filePath of (await filesIn('docs')).filter((file) => /\.mdx?$/.test(file))) {
   const source = await fs.readFile(filePath, 'utf8');
-  const {frontMatter, content} = await parseMarkdownFile({filePath, fileContent: source, parseFrontMatter: DEFAULT_PARSE_FRONT_MATTER});
+  const {frontMatter, content, excerpt} = await parseMarkdownFile({filePath, fileContent: source, parseFrontMatter: DEFAULT_PARSE_FRONT_MATTER});
   if (frontMatter.draft || frontMatter.unlisted) continue;
-  assert(!sources.has(frontMatter.description), `${filePath}: duplicate description prevents distinct discovery entries`);
-  sources.set(frontMatter.description, {filePath, frontMatter, content});
+  // Match the docs plugin: an omitted description uses the parsed excerpt.
+  const description = frontMatter.description ?? excerpt ?? '';
+  assert(description.trim(), `${filePath}: public discovery entry needs a description`);
+  assert(!sources.has(description), `${filePath}: duplicate description prevents distinct discovery entries`);
+  sources.set(description, {filePath, frontMatter, content});
 }
 
 const directory = await fs.readFile(path.join(outDir, 'articles/index.html'), 'utf8');

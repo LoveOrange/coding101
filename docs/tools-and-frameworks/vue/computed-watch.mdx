@@ -1,0 +1,529 @@
+---
+sidebar_position: 4
+knowledge:
+  id: tools-and-frameworks.vue.computed-watch
+---
+
+# computed 与 watch
+
+**`computed` 表达从现有状态推导出的值，`watch` 和 `watchEffect` 在状态变化后执行副作用。** 总价可以由单价与数量算出来，通常不需要再维护一个总价状态；搜索词变化后发请求，却需要处理异步结果、失败与过期请求，这属于侦听的职责。
+
+区分它们，不能只背“computed 有缓存”。还要说清依赖从哪里来、什么时候重新执行、回调看到的是哪一版 DOM，以及上一次工作怎样结束。本文使用 Vue 3，涉及版本差异时单独标明。
+
+## 1. 面试核心 {#core}
+
+- **计算属性按响应式依赖缓存派生结果，普通函数每次调用都会执行。** 缓存不按时间自动失效，`Date.now()` 自身不会提供响应式通知。[卡](#computed-watch)
+- **计算属性的 getter 应保持纯粹，更新源状态由事件或明确的 setter 完成。** 异步请求、DOM 修改与状态写入不应藏在 getter 中。[卡](#computed-purity)
+- **`watch` 明确声明侦听来源，回调里读到的其他值不会自动变成来源。** 基本类型属性要传 getter 或 ref，不能把当时的数字传给 `watch`。[卡](#watch-sources)
+- **深层侦听靠遍历建立依赖，不会自动保存旧对象快照。** 同一个对象的嵌套属性被修改时，回调的新旧值可以是同一个引用。[卡](#deep-watch)
+- **`watchEffect` 自动收集同步执行期间的读取，`await` 后新读取的状态不在这轮收集范围内。** 依赖范围需要精确控制时，显式 `watch` 更容易表达。[卡](#watch-effect)
+- **默认侦听会批处理，并在所属组件 DOM 更新前运行；`flush: 'post'` 用于更新后的 DOM。** `flush: 'sync'` 取消这种批处理，不适合大量连续修改。[卡](#flush-timing)
+- **每轮副作用都要有失效与清理方式，旧请求不得覆盖当前状态。** 取消请求与检查结果是否仍属于当前任务，可以一起使用。[卡](#async-cleanup)
+- **同步建立在组件上下文中的侦听会随卸载停止，独立或延迟创建的侦听需要明确管理。** 停止还应触发已登记的资源清理。[卡](#watch-lifecycle)
+
+## 2. 计算属性与派生值 {#计算属性与派生值}
+
+### 2.1 缓存依赖的结果 {#缓存依赖的结果}
+
+**计算属性**是由 getter 计算得到的响应式 ref。Vue 记录 getter 执行时读取的响应式依赖；在依赖没有变化时，重复读取可以复用已有结果。
+
+下面用 `runs` 观察 getter 的执行次数。计数仅用于验证机制，业务 getter 不应依靠这种副作用工作：
+
+```js
+import { computed, ref } from 'vue';
+
+const price = ref(10);
+const quantity = ref(2);
+let runs = 0;
+const total = computed(() => {
+  runs += 1;
+  return price.value * quantity.value;
+});
+console.log(runs);
+console.log(total.value, total.value, runs);
+quantity.value = 3;
+console.log(total.value, runs);
+```
+
+输出依次为 `0`、`20 20 1`、`30 2`。创建计算属性时还没有读取它；第一次读取执行 getter，第二次复用结果。数量变化后，再读取才得到新结果。
+
+如果改成普通 `calculateTotal()` 函数，每次显式调用都会重新计算。函数用于模板时，相关组件重新渲染可能再次调用它；计算属性则可以复用依赖未变化时的结果。选择不取决于计算式是否够长，而取决于它是否表达可复用的派生值。
+
+`computed(() => Date.now())` 不会成为实时钟表。时间流逝不会触发 Vue 的响应式依赖；需要时钟效果，应由计时器更新 ref，再由它驱动显示，并负责清理计时器。
+
+### 2.2 单一来源与可写计算属性 {#单一来源与可写计算属性}
+
+总价等派生结果通常不需要通过 `watch` 再写入另一个 ref。那样会同时维护源状态和结果状态，还要处理初始化、更新顺序与漏掉的依赖。
+
+默认计算属性不能直接赋值。**可写计算属性**另外提供 setter，把对派生值的赋值转换成对源状态的修改：
+
+```js
+import { computed, ref } from 'vue';
+
+const celsius = ref(0);
+const fahrenheit = computed({
+  get: () => celsius.value * 9 / 5 + 32,
+  set(value) { celsius.value = (value - 32) * 5 / 9; }
+});
+fahrenheit.value = 212;
+console.log(celsius.value, fahrenheit.value);
+```
+
+输出 `100 212`。实际状态仍是 `celsius`，setter 按明确换算更新它，再由 getter 得到华氏温度；Vue 没有额外保存一份互相同步的温度副本。
+
+getter 应只读取依赖并返回值，不在里面发请求、修改 DOM 或写入会反过来影响自己的状态。把 getter 写成 `async` 返回的是 Promise，Vue 不会因此自动得到请求结果、加载态和取消机制。异步工作应放到有清理边界的副作用中。
+
+## 3. watch 的侦听来源 {#watch的侦听来源}
+
+### 3.1 ref、getter 与多个来源 {#ref和getter与多个来源}
+
+**侦听来源**描述“什么变化时需要考虑重新执行回调”。`watch` 接受 ref、响应式对象、返回值的 getter，以及由这些来源组成的数组。
+
+```js
+import { reactive, ref, watch, nextTick } from 'vue';
+
+const filters = reactive({ keyword: 'vue' });
+const page = ref(1);
+const stop = watch(
+  [() => filters.keyword, page],
+  (current, previous) => console.log(current, previous)
+);
+filters.keyword = 'react';
+page.value = 2;
+await nextTick();
+stop();
+```
+
+输出一次 `['react', 2] ['vue', 1]`。两个同步修改进入同一批处理，回调拿到最终的一组新值和上次的一组旧值。它不是每次赋值的完整历史日志。
+
+`watch(filters.keyword, callback)` 传进去的是当时的字符串，不是响应式来源。`watch(() => filters.keyword, callback)` 才让 Vue 能在读取时收集依赖；`toRef(filters, 'keyword')` 也能表达这个属性入口。
+
+### 3.2 回调读取不扩大来源 {#回调读取不扩大来源}
+
+`watch` 的依赖收集发生在来源 getter 等入口中，不把回调里的任意读取都加入来源：
+
+```js
+import { ref, watch, nextTick } from 'vue';
+
+const selected = ref('vue');
+const theme = ref('light');
+const stop = watch(selected, value => console.log(value, theme.value));
+theme.value = 'dark';
+await nextTick();
+selected.value = 'react';
+await nextTick();
+stop();
+```
+
+只输出 `react dark`。改变 `theme` 不会触发这条侦听；`selected` 变化后运行回调，回调读取的则是此时的主题。
+
+如果来源 getter 重新执行，但返回值与上次相同，普通浅层侦听不一定执行回调。例如侦听 `() => count.value % 2`，从 1 改到 3，结果仍是 1，就不需要把它当作新的奇偶状态通知。是否执行还要结合深层模式、来源类型等条件判断。
+
+## 4. 深层侦听与对象身份 {#深层侦听与对象身份}
+
+### 4.1 直接对象与返回对象的 getter {#直接对象与返回对象的getter}
+
+直接 `watch(reactiveObject, callback)` 会隐式进行深层侦听；`watch(() => state.course, callback)` 默认主要观察 `course` 是否被替换。二者的来源看起来接近，含义不同。
+
+```js
+import { reactive, watch, nextTick } from 'vue';
+
+const state = reactive({ course: { title: 'Vue' } });
+const stop = watch(
+  () => state.course,
+  (current, previous) => console.log(current === previous, current.title),
+  { deep: true }
+);
+state.course.title = 'React';
+await nextTick();
+state.course = { title: 'CSS' };
+await nextTick();
+stop();
+```
+
+先输出 `true React`，再输出 `false CSS`。修改嵌套属性时，新旧参数指向同一个对象；整体替换后，两次 getter 返回的对象才不同。`deep: true` 不会事先帮我们深拷贝一份旧值。
+
+如果必须比较修改前后的字段，可以侦听 `() => state.course.title` 这样的具体值；确实需要对象快照时，再按数据类型、大小和比较范围设计快照策略。不要直接用新旧对象相等就断定没有发生变化。
+
+### 4.2 遍历深度与成本 {#遍历深度与成本}
+
+深层侦听会访问对象内部属性，用这些读取建立依赖。大型数据结构的全面遍历可能较贵，业务只关心几个字段时，应优先缩小来源。
+
+Vue 3.5 起 `deep` 可以指定最大遍历深度。对于一个 ref 保存的数组，`deep: 1` 可以观察数组替换及数组自身的变动，而不递归追踪元素对象的深层字段：
+
+```js
+import { ref, watch, nextTick } from 'vue';
+
+const rows = ref([{ id: 1, title: 'Vue' }]);
+const stop = watch(rows, value => console.log(value.length), { deep: 1 });
+rows.value[0].title = 'React';
+await nextTick();
+rows.value.push({ id: 2, title: 'CSS' });
+await nextTick();
+stop();
+```
+
+只输出 `2`。修改元素的 `title` 没有触发这条回调，`push` 改变数组结构后触发。深度的解释必须结合来源结构，不能把 `deep: 1` 概括为“所有对象只观察一层业务字段”。
+
+## 5. watchEffect {#watcheffect}
+
+**`watchEffect`**立即执行副作用，并自动收集这次同步执行中读取的响应式依赖。默认情况下，依赖变化后再安排执行；条件分支改变时，也会重新调整依赖集合。
+
+```js
+import { ref, watchEffect, nextTick } from 'vue';
+
+const keyword = ref('vue');
+const page = ref(1);
+const stop = watchEffect(() => console.log(keyword.value, page.value));
+page.value = 2;
+await nextTick();
+stop();
+```
+
+先输出 `vue 1`，再输出 `vue 2`。不需要单独传来源数组，回调读取的两个 ref 就构成了依赖。
+
+自动收集只覆盖同步执行部分。下面的 `theme` 在 `await` 后读取，不会成为本轮依赖：
+
+```js
+import { ref, watchEffect, nextTick } from 'vue';
+
+const selected = ref('vue');
+const theme = ref('light');
+const stop = watchEffect(async () => {
+  const id = selected.value;
+  await Promise.resolve();
+  console.log(id, theme.value);
+});
+await nextTick();
+theme.value = 'dark';
+await nextTick();
+selected.value = 'react';
+await nextTick();
+stop();
+```
+
+输出 `vue light` 和 `react dark`，主题变化没有独立触发执行。要让主题也成为依赖，可以在 `await` 前读取并保存，或改成显式侦听 `[selected, theme]`。
+
+| 需求 | 更直接的选择 |
+| --- | --- |
+| 需要一个可供模板或其他计算使用的派生值 | `computed` |
+| 指定某个或某组来源变化后执行工作，并需要旧值 | `watch` |
+| 副作用使用的同步依赖就是触发条件，不需要旧值 | `watchEffect` |
+| 用户点击后执行一次动作 | 普通事件处理函数 |
+
+不能因为 `watchEffect` 少写一个来源参数，就认为它总能替代 `watch`。副作用读取的辅助信息未必都应该成为重新执行的理由。
+
+## 6. 侦听时机与 DOM 更新 {#侦听时机与dom更新}
+
+### 6.1 pre、post 与 sync {#pre和post与sync}
+
+**刷新时机**决定侦听回调相对于组件更新什么时候运行。默认 `flush: 'pre'` 会批处理，通常在父组件相关更新之后、所属组件 DOM 更新之前运行；`post` 用于读取所属组件更新后的 DOM。
+
+```vue
+<script setup>
+import { ref, watch, nextTick } from 'vue';
+const count = ref(0);
+const output = ref(null);
+
+watch(count, () => console.log('pre', output.value.textContent));
+watch(count, () => console.log('post', output.value.textContent), { flush: 'post' });
+watch(count, value => console.log('sync', value), { flush: 'sync' });
+async function increment() {
+  count.value += 1;
+  count.value += 1;
+  console.log('同步 DOM', output.value.textContent);
+  await nextTick();
+  console.log('nextTick', output.value.textContent);
+}
+</script>
+
+<template>
+  <button @click="increment">增加两次</button>
+  <output ref="output">{{ count }}</output>
+</template>
+```
+
+首次点击依次输出 `sync 1`、`sync 2`、`同步 DOM 0`、`pre 0`、`post 2`、`nextTick 2`。同步侦听看到了每次赋值；默认与后置侦听只处理这批更新一次，但看到的 DOM 不同。
+
+`flush: 'sync'` 不进行这种批处理，连续修改大数组可能导致回调反复执行。只有确实需要同步失效等行为、且能控制代价时才使用它，不能把同步当作默认更可靠。
+
+`watchPostEffect` 和 `watchSyncEffect` 分别是相应刷新选项的便捷形式。它们与 `nextTick` 都不保证物理屏幕已经绘制；`nextTick` 等待的是 Vue 当前更新刷新，见 [Vue 渲染机制](./rendering.mdx#数据变化与dom刷新)。
+
+### 6.2 immediate 与 once {#immediate与once}
+
+`watch` 默认不会立即调用回调；`immediate: true` 会在建立时执行一次，第一次旧值为 `undefined`。这适合先加载初始数据，再随来源变化重载。
+
+```js
+import { ref, watch, nextTick } from 'vue';
+
+const count = ref(0);
+const stop = watch(count, (value, old) => console.log(value, old), { immediate: true });
+count.value = 1;
+await nextTick();
+stop();
+```
+
+输出 `0 undefined`，随后输出 `1 0`。`immediate` 改变首次调用时机，不意味着 DOM 已挂载；回调若读取模板引用，必须考虑空值。
+
+Vue 3.4 起 `once: true` 会在回调首次执行后停止。与 `immediate: true` 同时使用时，立即执行也会消耗这一次，不能理解成“立即执行一次，之后再等一次变化”。
+
+## 7. 异步副作用与清理 {#异步副作用与清理}
+
+### 7.1 每轮工作都有归属 {#每轮工作都有归属}
+
+搜索词从 Vue 改成 React 时，两个请求可能交错完成。仅凭“后发请求通常后返回”无法保证正确性；旧请求即使成功，也不能再覆盖当前搜索结果。
+
+下面的单文件组件约定 `/api/course?name=...` 返回 `{ title: string }`。每轮侦听创建自己的取消控制器与有效标记：
+
+```vue
+<script setup>
+import { ref, watch } from 'vue';
+
+const query = ref('');
+const result = ref(null);
+const status = ref('idle');
+
+watch(query, async (name, _old, onCleanup) => {
+  const controller = new AbortController();
+  let active = true;
+  onCleanup(() => {
+    active = false;
+    controller.abort();
+  });
+  const isCurrent = () => active && query.value === name;
+  result.value = null;
+  if (!name.trim()) {
+    status.value = 'idle';
+    return;
+  }
+  status.value = 'loading';
+  try {
+    const response = await fetch('/api/course?name=' + encodeURIComponent(name), {
+      signal: controller.signal
+    });
+    if (!response.ok) throw new Error('HTTP ' + response.status);
+    const data = await response.json();
+    if (!isCurrent()) return;
+    result.value = data;
+    status.value = 'success';
+  } catch (error) {
+    if (isCurrent()) status.value = 'error';
+  }
+}, { immediate: true });
+</script>
+
+<template>
+  <input v-model="query" aria-label="搜索课程">
+  <p aria-live="polite">{{ status }}：{{ result?.title ?? '' }}</p>
+</template>
+```
+
+空词时显示 `idle：`，输入后显示 `loading：`，成功后显示结果，当前请求失败则显示 `error：`。来源变化或侦听停止时，清理函数使旧轮次失效，并尝试中止请求。
+
+`active` 检查工作是否已失效；`query.value === name` 还检查当前输入是否已经改变，避免依赖变更后、旧轮次清理尚未运行的短暂间隙。取消可以节省仍可取消的工作，但对已经完成、无法取消或不遵守取消协议的任务，仍需要结果归属检查。
+
+这个组件没有实现防抖、缓存与重试策略。需要减少请求次数时，可以另外给输入增加防抖；防抖控制开始时机，清理和归属检查保证结果正确，二者不能互相替代。
+
+### 7.2 清理 API 的调用条件 {#清理api的调用条件}
+
+`watch` 回调的第三个参数 `onCleanup` 用来登记清理；`watchEffect` 则把它作为第一个参数。清理在下一轮执行前或停止时发生，适合撤销本轮订阅、计时器或请求。
+
+Vue 3.5 还提供 `onWatcherCleanup`，但它必须在侦听回调的同步执行期间调用，不能等 `await` 之后再登记。参数形式的 `onCleanup` 绑定到对应侦听实例，没有相同的同步调用限制；不过仍应尽早登记，否则异步等待期间可能已经发生失效，错过应当清理的时机。
+
+## 8. 停止、暂停与版本边界 {#停止暂停与版本边界}
+
+### 8.1 侦听的生命周期 {#侦听的生命周期}
+
+同步建立在组件 `setup` 上下文中的侦听，会随组件卸载停止。若在计时器、独立模块或其他脱离组件上下文的异步回调中创建，需要保留停止句柄并管理清理，不能期待 Vue 自动推断归属。
+
+下面在 Vue 3.5 中暂停、恢复和停止一个侦听：
+
+```js
+import { ref, watch, nextTick } from 'vue';
+
+const count = ref(0);
+const handle = watch(count, (value, old, onCleanup) => {
+  console.log('运行', value, old);
+  onCleanup(() => console.log('清理', value));
+});
+count.value = 1;
+await nextTick();
+handle.pause();
+count.value = 2;
+count.value = 3;
+await nextTick();
+handle.resume();
+await nextTick();
+handle.stop();
+count.value = 4;
+await nextTick();
+```
+
+输出 `运行 1 0`、`清理 1`、`运行 3 1`、`清理 3`。暂停期间没有逐次输出 2 和 3，恢复后处理当前状态；停止会运行已登记清理，之后变到 4 不再响应。这里暂停的是侦听调度，不应把它当作自动取消已启动网络请求的接口。
+
+### 8.2 Vue 2 与 Vue 3 的依赖基础 {#vue2与vue3的依赖基础}
+
+Vue 2 和 Vue 3 的侦听都需要知道读取了哪些响应式数据，再在数据变化后安排相关计算。主要差异来自底层能拦截哪些操作，以及依赖和调度的具体实现，而不是“Vue 2 轮询，Vue 3 直接回调”。
+
+Vue 2 主要对已有属性设置 getter/setter，数组的变更方法另作处理；直接新增对象属性、直接写数组索引等操作存在限制。Vue 3 使用 Proxy 拦截对象操作，也针对数组、Map 等集合提供相应处理。具体行为见 [Vue 响应式](./reactivity.mdx#vue2的实现与限制)。
+
+Proxy 本身不负责完整的 `watch`。来源归一化、依赖收集、深度遍历、新旧结果判断、批处理与清理，仍由框架完成。Vue 3 也不能观察任意局部变量的重新赋值；解构出基本类型后失去读取入口，仍可能断开依赖。
+
+## 9. 面试题 {#面试题}
+
+### 9.1 computed 与 watch 有什么区别，怎样选择？ {#computed-watch}
+
+**考察重点**：派生值、依赖缓存与副作用。
+
+**相关内容**：[计算属性与派生值](#计算属性与派生值)、[watchEffect](#watcheffect)。
+
+<details>
+<summary>参考回答</summary>
+
+**`computed` 用于表达派生值，`watch` 用于来源变化后的副作用。** 总价等可以直接由状态推导的结果优先使用计算属性；请求、存储或其他外部操作需要侦听和清理。
+
+计算属性根据响应式依赖缓存结果，普通函数每次调用都会执行。`watch` 也会保存比较所需的上次结果，但这不是给业务读取提供计算属性式的派生值缓存。不要为了维护可直接算出的值，再增加一个需要同步的 ref。
+
+</details>
+
+### 9.2 computed 的 getter 能发请求吗，可写计算属性怎样更新？ {#computed-purity}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：纯 getter、Promise 与源状态所有权。
+
+**相关内容**：[单一来源与可写计算属性](#单一来源与可写计算属性)。
+
+<details>
+<summary>参考回答</summary>
+
+**getter 应只计算和返回结果，异步副作用应放到有失效与清理机制的工作中。** async getter 返回 Promise，不会自动得到加载、失败和请求取消状态。
+
+可写计算属性提供 setter，把赋值转换成源状态修改，例如华氏温度 setter 更新摄氏温度；getter 再从源状态计算。它不是自动创建两个互相同步的状态副本。
+
+</details>
+
+### 9.3 为什么 watch(state.count, callback) 不能正确侦听数字属性？ {#watch-sources}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：读取入口、来源 getter 与回调依赖。
+
+**相关内容**：[watch 的侦听来源](#watch的侦听来源)。
+
+<details>
+<summary>参考回答</summary>
+
+**传入的是当时的数字，Vue 无法从这个数字重新读取响应式属性。** 应传 `() => state.count` 或对应的属性 ref，让来源求值经过响应式读取入口。
+
+`watch` 只跟踪显式来源，回调里读取其他状态不会自动扩展来源；如果希望一组状态都触发，应该明确写成来源数组或使用符合需求的 `watchEffect`。
+
+</details>
+
+### 9.4 deep watch 为什么可能拿到相同的新旧对象，怎样控制成本？ {#deep-watch}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：对象身份、深度遍历与快照。
+
+**相关内容**：[深层侦听与对象身份](#深层侦听与对象身份)。
+
+<details>
+<summary>参考回答</summary>
+
+**深层侦听建立内部属性的依赖，但不会自动保存旧对象的深拷贝。** 原对象的字段被修改时，新旧参数仍可能指向它；整体替换才会得到不同引用。
+
+优先侦听业务需要的具体字段，避免遍历整个大对象。Vue 3.5 可指定最大深度；确实需要历史对照时，另行设计有限范围的快照，不把 `deep` 当作快照功能。
+
+</details>
+
+### 9.5 watch 与 watchEffect 怎样收集依赖，await 有什么影响？ {#watch-effect}
+
+**考察重点**：显式来源、自动同步收集与异步边界。
+
+**相关内容**：[回调读取不扩大来源](#回调读取不扩大来源)、[watchEffect](#watcheffect)。
+
+<details>
+<summary>参考回答</summary>
+
+**`watch` 跟踪明确指定的来源，`watchEffect` 自动跟踪同步执行期间读到的依赖。** `watch` 默认延迟到来源变化后回调，可以得到新旧值；`watchEffect` 默认立即执行，不提供同样的新旧值参数。
+
+异步 effect 在第一次 `await` 后新增的读取不会加入这轮依赖。需要触发更新的值应提前读取，或用显式来源表达；是否发请求、怎样取消仍需单独设计。
+
+</details>
+
+### 9.6 watch 回调里为什么可能读到旧 DOM，flush 怎样选择？ {#flush-timing}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：组件更新顺序、批处理与同步代价。
+
+**相关内容**：[侦听时机与 DOM 更新](#侦听时机与dom更新)。
+
+<details>
+<summary>参考回答</summary>
+
+**默认回调在所属组件 DOM 更新之前运行，因此可能看到更新前的内容。** 需要读取更新后 DOM 时使用 `flush: 'post'`，或在合适位置等待 `nextTick`。
+
+`flush: 'sync'` 在变化时同步执行，不进行普通的批处理，连续大量修改可能反复触发。它与 post 的选择取决于依赖的时机，不是越同步越好；这些选项也不保证屏幕已经绘制。
+
+</details>
+
+### 9.7 搜索词快速变化时，怎样避免旧请求覆盖新结果？ {#async-cleanup}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**题型**：综合题
+
+**考察重点**：请求归属、清理登记、取消与过期结果。
+
+**相关内容**：[异步副作用与清理](#异步副作用与清理)、[侦听的生命周期](#侦听的生命周期)。
+
+<details>
+<summary>参考回答</summary>
+
+**每轮请求都要有独立的有效标记或版本，提交结果前确认它仍属于当前输入。** 来源变化或侦听停止时使旧轮次失效，并通过 `AbortController` 取消仍可取消的请求；成功和失败分支都不能让旧轮次改当前状态。
+
+在第一次等待之前登记清理。Vue 3.5 的 `onWatcherCleanup` 要在同步执行期间调用；参数形式 `onCleanup` 虽没有相同限制，也不应拖到可能已经失效之后才登记。防抖减少请求启动，不代替归属检查。
+
+</details>
+
+### 9.8 组件卸载后 watch 会停止吗，暂停与停止有什么区别？ {#watch-lifecycle}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：创建上下文、手动停止与副作用释放。
+
+**相关内容**：[侦听的生命周期](#侦听的生命周期)。
+
+<details>
+<summary>参考回答</summary>
+
+**同步绑定到组件 setup 上下文的侦听会随卸载停止，独立或延迟创建的侦听需要手动管理。** 保存停止句柄，并为每轮工作登记资源清理，停止时才能释放相应工作。
+
+Vue 3.5 的 pause / resume 暂缓并恢复响应，停止则结束侦听且运行清理。暂停调度不等于自动取消已经发出的请求，也不会记录和逐条重放每次中间变化。
+
+</details>
+
+### 9.9 Vue 2 和 Vue 3 的 watch 实现基础有什么不同？ {#vue-version}
+
+**考察重点**：属性拦截、依赖通知与侦听调度的分工。
+
+**相关内容**：[Vue 2 与 Vue 3 的依赖基础](#vue2与vue3的依赖基础)、[Vue 响应式](./reactivity.mdx#vue2的实现与限制)。
+
+<details>
+<summary>参考回答</summary>
+
+**两者都依靠响应式读取建立依赖，再由写入通知相关侦听；主要差别在底层拦截能力与具体实现。** Vue 2 主要使用已有属性的 getter/setter，并单独处理数组变更方法；Vue 3 用 Proxy 扩大对象与集合操作的拦截范围。
+
+Proxy 不会自动完成 watch，框架还要处理来源、遍历、结果比较、调度和清理。Vue 3 也不能追踪任意普通局部变量赋值，解构出基本类型等行为仍可能使依赖断开。
+
+</details>
+
+## 10. 参考资料 {#参考资料}
+
+- [Vue：Computed Properties](https://vuejs.org/guide/essentials/computed.html)
+- [Vue：Watchers](https://vuejs.org/guide/essentials/watchers.html)
+- [Vue：Reactivity API: Core](https://vuejs.org/api/reactivity-core.html)
+- [Vue：Reactivity in Depth](https://vuejs.org/guide/extras/reactivity-in-depth.html)
+- [Vue 2：Reactivity in Depth](https://v2.vuejs.org/v2/guide/reactivity.html)

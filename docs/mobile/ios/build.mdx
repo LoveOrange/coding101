@@ -1,0 +1,280 @@
+---
+title: iOS 构建
+description: 理解 Xcode 构建配置、编译链接、静态与动态框架、应用包、签名和发布产物，定位不同阶段的构建问题。
+knowledge:
+  id: mobile.ios.build
+---
+
+**iOS 构建**把源代码、依赖、资源和配置转换成可运行的应用产物。编译成功只是其中一步：链接要找到符号，应用包要包含所需资源和动态依赖，设备还要接受对应的签名与授权，运行时也必须满足 API 和系统版本条件。
+
+准备这部分面试，需要能沿着一次构建说明产物如何变化，并根据报错发生的阶段缩小问题。不要把 `.framework` 一概当作动态库，也不要把得到一个 `.ipa` 文件等同于应用已具备正确的运行条件。
+
+## 1. 面试核心 {#core}
+
+- **Target、配置和 Scheme 各有职责**：Target 描述要构建的产品，配置提供一组设置，Scheme 选择构建、运行、测试或归档的目标与环境。[卡](#configuration)
+- **编译生成目标代码，链接组合并解析符号，打包处理资源和元数据**。签名和运行时加载又是后续的独立环节。[卡](#pipeline)
+- **静态与动态描述链接和加载方式，framework 描述封装形式**。静态 framework 的主二进制可以是静态归档，不能只看扩展名判断。[卡](#framework)
+- **平台、架构、SDK 和最低系统版本必须一起判断**。真机和模拟器都可能是 arm64，但它们不是可互换的平台产物。[卡](#platform)
+- **`.app` 是应用包，`.ipa` 是分发归档，`.xcarchive` 保存一次归档构建及相关资料**。dSYM 用于定位问题，不是应用运行时必须加载的代码。[卡](#artifacts)
+- **签名、证书、描述文件和 entitlement 解决不同条件**。能证明代码完整性，不等于任意设备、任意能力都被允许使用。[卡](#signing)
+- **编译、链接、加载与资源错误需要分别排查**。看第一条有意义的错误及其上下文，检查配置和实际产物，不把清缓存当作通用原因解释。[卡](#failure-stage)
+- **Debug 运行正常不代表 Release 分发正常**。优化、条件编译、依赖、签名、数据迁移和调试器环境都可能造成差异。[卡](#release)
+
+## 2. Xcode 构建的输入 {#Xcode构建的输入}
+
+### 2.1 Target、配置与 Scheme {#Target配置与Scheme}
+
+**Target** 定义一种构建产品及其输入，例如主应用、测试包、扩展或框架。文件出现在项目导航栏里，不代表它一定属于当前 Target；源文件是否参与编译、资源是否进入应用包，要检查对应归属和构建阶段。
+
+**Build Configuration** 是一组构建设置，常见名称是 Debug 和 Release。它们可以有不同的优化、编译条件、Info.plist 和签名设置，但具体行为取决于项目实际配置，不是名称本身强制规定的。
+
+**Scheme** 选择某个动作要构建哪些 Target、使用哪个配置，以及运行或测试的环境。Archive 通常映射到 Release，Run 通常映射到 Debug，但项目可以修改这个映射。
+
+构建系统按依赖安排工作：框架必须先生成，应用才能链接它；没有依赖关系的步骤可以并行。维护清楚的输入、输出与依赖，比把全部脚本串行放在一个阶段更容易定位和重现问题。
+
+### 2.2 最终生效的设置比界面中的一处值更重要 {#最终生效的设置}
+
+设置可能来自默认值、项目、Target、`.xcconfig` 和命令行等位置。排查时查看最终解析结果，特别注意继承是否被覆盖、不同配置是否使用了不同值，以及 Scheme 当前选择的配置。
+
+依赖版本也属于构建输入。Swift Package Manager 的版本要求与解析结果共同影响实际使用的代码；团队应保留项目需要的解析记录，不能假设同一条宽泛版本规则在所有时间都得到同一依赖。
+
+下面是针对已有项目的构建信息和产物检查示例；项目名、Scheme 和路径需要替换为实际值：
+
+```bash
+xcodebuild -list -project Reader.xcodeproj
+xcodebuild -showBuildSettings -project Reader.xcodeproj -scheme Reader -configuration Release
+file Reader.app/Reader
+xcrun lipo -archs Reader.app/Reader
+xcrun otool -L Reader.app/Reader
+codesign --display --entitlements - Reader.app
+codesign --verify --strict --verbose=2 Reader.app
+```
+
+`file` 和 `lipo` 帮助确认二进制类型与架构，`otool -L` 查看动态依赖，`codesign` 检查签名信息和完整性。它们各自只回答一部分问题：签名验证通过不表示描述文件和目标设备匹配，也不表示业务逻辑已验证。
+
+## 3. 从源文件到应用包 {#从源文件到应用包}
+
+### 3.1 编译与链接各自产生什么 {#编译与链接各自产生什么}
+
+对于 C、Objective-C 等源文件，可以用预处理、编译、汇编和链接来理解处理过程。宏展开与头文件包含发生在预处理相关阶段；编译器检查语法、类型并生成相应表示和目标代码；目标文件再交给链接器组合。
+
+Swift 也需要编译与链接，但它有自己的模块和编译流程，不能把 C 的文本头文件展开机械套到 Swift 上。前端、中间表示和优化属于编译器内部过程，求职准备中首先要讲清“源代码检查”和“跨目标文件解析符号”的分工。共享的目标文件与链接机制见 [C++ 编译与链接](../../basic-knowledge/cpp/compilation-linking.mdx)。
+
+链接器把目标文件和需要的静态库代码组合成产物，解析符号引用，并记录所需动态依赖。最后的可执行文件通常采用 Mach-O 格式，含代码、数据、加载命令等内容；应用资源不是因此全部变成同一个机器代码文件。
+
+### 3.2 资源、打包与运行时加载 {#资源打包与运行时加载}
+
+图片资源、storyboard、字符串和配置等由相应构建步骤处理，随后按规则放入应用包。Info.plist 描述可执行文件、标识、版本和平台要求等元数据；用途说明也来自相应配置。
+
+应用启动时，系统加载可执行文件，并由动态加载机制处理依赖映像。链接成功只能说明构建时找到了需要的信息；如果实际应用包漏掉了自带动态框架，或依赖路径和签名不正确，运行时仍可能失败。
+
+使用 `@rpath` 等路径时，要同时核对动态库记录的加载名称、应用的运行时搜索路径和实际嵌入位置。不要通过随意复制同名文件掩盖版本或架构不匹配。
+
+## 4. 库、framework 与 XCFramework {#库framework与XCFramework}
+
+### 4.1 静态和动态是链接方式 {#静态和动态是链接方式}
+
+**静态库**通常是目标文件的归档，例如 `.a`。链接应用时，链接器按符号引用和相关选项纳入所需代码；不能简单说“静态库中每个函数都会被原样复制进应用”。符号可见性、保留选项和死代码移除会影响结果。
+
+**动态库**作为独立映像被依赖，运行时需要找到并加载兼容版本。应用自带的动态框架通常需要正确嵌入和签名；系统提供的框架则按平台机制使用，不由应用复制一份系统库来分发。
+
+静态链接会影响最终应用中代码的组织和重复引入风险，动态链接会引入独立映像、加载与分发条件。两者都可能增加包体或启动工作，不能只凭“动态库”三个字就断言一定更小、更快。
+
+### 4.2 framework 是封装形式 {#framework是封装形式}
+
+**Framework** 把库二进制、头文件、模块信息或资源等组织成一个包。它可以包含动态库，也可以包含静态归档；因此 `.framework` 与 `.a` 不是简单的“动态对静态”关系。
+
+静态 framework 能把接口和资源组织在一起，但资源如何进入客户端应用，要看使用的工具链和配置。Xcode 15 起支持将静态 framework 的资源嵌入客户端，同时省略已静态链接的主二进制；不能把旧项目中的手工资源打包经验说成所有版本都相同的规则。
+
+### 4.3 XCFramework 保留不同平台变体 {#XCFramework保留不同平台变体}
+
+**XCFramework** 是用于分发多个平台或平台变体的二进制包。它可以同时包含真机、模拟器等版本，内部库也可以是静态或动态；构建系统为当前目标选择合适变体。
+
+真机 arm64 与 Apple 芯片 Mac 上的模拟器 arm64 虽然使用相同指令集名称，目标平台仍不同。不能只把它们视为同一种架构切片，合成一个库就期待两边都能链接；应按平台分别构建，再用 XCFramework 表达这些变体。
+
+## 5. SDK、系统版本与分发产物 {#SDK系统版本与分发产物}
+
+### 5.1 编译环境与运行环境分别检查 {#编译环境与运行环境分别检查}
+
+**SDK** 提供编译时需要的接口声明与系统库信息，**Deployment Target** 表示应用支持的最低系统版本。使用较新的 SDK 编译，并不表示所有调用的 API 都在最低支持版本上可用。
+
+对于较新系统才提供的接口，需要相应可用性检查与可用的回退路径。模拟器通过编译，也不能证明真机架构、系统能力、签名或硬件功能都符合要求。
+
+排查“同样是 arm64 为什么不能链接”时，除了架构，还要检查平台标记、最低系统版本和依赖的目标环境。把架构限制改成排除 arm64，可能只是暂时绕过某个构建目标，没有补齐缺少的二进制变体。
+
+### 5.2 应用包和归档各保存什么 {#应用包和归档各保存什么}
+
+| 产物 | 作用 |
+| --- | --- |
+| `.app` | 应用包，包含可执行文件、资源、Info.plist 等，以及按需要嵌入的框架和扩展 |
+| `.ipa` | iOS 分发归档，通常可按 ZIP 查看 `Payload` 中的应用包等内容；它本身不是单个 Mach-O 可执行文件 |
+| `.xcarchive` | Xcode 保存的一次归档构建，包含产品、符号及归档元数据，用于后续分发与诊断 |
+| `.dSYM` | 对应二进制构建的调试符号，帮助把地址还原成可读调用位置 |
+| `.xcframework` | 面向构建依赖的多平台二进制分发包，不是完整可安装应用 |
+
+归档、导出和上传是不同动作。把文件改成 `.ipa` 扩展名，不会自动获得有效的应用结构或签名。发布后也要保留匹配 Archive 与 dSYM，具体 UUID 核对和符号化见 [iOS 崩溃诊断](./crash-diagnostics.mdx#符号化与构建身份)。
+
+## 6. 签名与配置 {#签名与配置}
+
+### 6.1 签名不能代替全部授权条件 {#签名不能代替全部授权条件}
+
+**代码签名**把代码身份与完整性检查联系起来，帮助系统发现签名后的修改。签名所用身份涉及证书与对应私钥；仅有一个证书文件，不代表就能完成同样的签名操作。
+
+**Provisioning Profile**（描述文件）把允许签名的身份、应用标识、设备或分发范围、有效时间和能力授权等条件联系起来。**Entitlement** 是应用声明使用的能力；声明受限能力不等于已获得相应授权。
+
+排查真机安装或启动问题时，核对 Bundle ID、团队与应用标识、签名身份、描述文件范围和有效期，以及 entitlement 是否被授权。主应用和扩展可能有各自的标识和配置，需要分别检查。相机等用途说明和用户运行时许可又属于另一层，见 [iOS 应用沙箱与权限](./sandbox-permissions.mdx#权限的几个层次)。
+
+描述文件在不同分发方式中的处理不同。不能因为某个从 App Store 下载的应用没有嵌入描述文件，就断言它绕过了授权；App Store 分发过程中会检查并重新签名。
+
+### 6.2 修改产物与嵌套代码 {#修改产物与嵌套代码}
+
+应用包中的可执行代码、资源或元数据被修改，可能使原签名失效。自己的构建流程应在资源处理和嵌入工作完成后，按正确依赖顺序签名；嵌套代码先处理，主应用最后处理。
+
+签名错误不能靠关闭检查作为发布方案。应回到具体产物与配置，区分缺少身份、能力不匹配、嵌入遗漏和内容被改写；自动签名可以管理部分配置，但不会让任意标识和能力都自动成立。
+
+## 7. 定位构建与发布差异 {#定位构建与发布差异}
+
+| 阶段 | 典型线索 | 先检查什么 |
+| --- | --- | --- |
+| 编译 | 找不到声明、类型不匹配、头文件或模块错误 | 源文件归属、接口、搜索路径、条件编译和模块配置 |
+| 链接 | Undefined symbols、duplicate symbols | 实现是否参与构建、库是否链接、重复定义、平台与架构 |
+| 加载 | Library not loaded 等 | 自带动态依赖是否嵌入、加载路径、兼容平台和签名 |
+| 安装或启动授权 | 签名、描述文件、能力相关错误 | 身份、Bundle ID、有效期、设备或分发范围、entitlement |
+| 资源或业务运行 | 找不到文件、Release 行为不同 | 最终应用包内容、资源路径、配置值与真实运行环境 |
+
+先找到第一条能解释失败的错误，再看后续连锁报错。清理构建缓存可以作为验证环境污染的实验，但不能代替对缺失符号或错误配置的解释。
+
+Release 验证还应覆盖优化与条件编译、真实依赖和资源、新安装与旧数据升级，以及脱离调试器后的运行。调试器会影响挂起与看门狗等条件，不能把连着 Xcode 的一次运行当成所有分发场景都已通过。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 Target、Build Configuration 和 Scheme 有什么区别？ {#configuration}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：产品输入、设置集合与构建动作的关系。
+
+**相关内容**：[Xcode 构建的输入](#Xcode构建的输入)。
+
+<details>
+<summary>参考回答</summary>
+
+**Target 定义产品及其输入，配置定义一组构建设置，Scheme 定义某个动作使用的 Target、配置和运行环境。** 文件在项目中不代表属于当前 Target；Debug 和 Release 的实际差异要看设置，不能只靠名称判断。
+
+</details>
+
+### 8.2 iOS 程序从编译到运行经历哪些主要步骤？ {#pipeline}
+
+**考察重点**：源文件检查、目标文件、符号解析、资源与加载的分工。
+
+**相关内容**：[从源文件到应用包](#从源文件到应用包)。
+
+<details>
+<summary>参考回答</summary>
+
+**源文件经过相应预处理和编译生成目标代码，链接器组合目标文件与依赖，资源和配置进入应用包，随后完成签名与分发，运行时再加载可执行文件及动态依赖。** C/Objective-C 的宏与头文件处理不能机械套到 Swift；编译成功也不能保证后续链接、资源和设备授权都正确。
+
+</details>
+
+### 8.3 framework 一定是动态库吗？和 `.a` 有什么区别？ {#framework}
+
+**考察重点**：链接方式与封装形式，以及资源和平台变体。
+
+**相关内容**：[库、framework 与 XCFramework](#库framework与XCFramework)。
+
+<details>
+<summary>参考回答</summary>
+
+**不一定，framework 是封装形式，主二进制可以是动态库，也可以是静态归档。** `.a` 通常只是目标文件归档，framework 还能组织接口、模块与资源；资源嵌入方式受工具链和配置影响。多个平台变体可使用 XCFramework 分发，静态或动态性质仍由内部二进制决定。
+
+</details>
+
+### 8.4 真机和模拟器都是 arm64，为什么库仍可能不兼容？ {#platform}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：指令集、平台变体、SDK 与最低系统版本。
+
+**相关内容**：[XCFramework 保留不同平台变体](#XCFramework保留不同平台变体)、[编译环境与运行环境分别检查](#编译环境与运行环境分别检查)。
+
+<details>
+<summary>参考回答</summary>
+
+**架构相同不代表目标平台相同，真机与模拟器需要对应平台的构建产物。** 应检查平台标记、架构、最低系统版本与依赖环境，按平台构建后用 XCFramework 组织变体。简单排除某个架构不能从根本上补齐缺失库。
+
+</details>
+
+### 8.5 `.ipa` 内是什么？和可执行文件有什么区别？ {#artifacts}
+
+**考察重点**：分发归档、应用包和 Mach-O 文件的层次。
+
+**相关内容**：[应用包和归档各保存什么](#应用包和归档各保存什么)。
+
+<details>
+<summary>参考回答</summary>
+
+**`.ipa` 是分发归档，可查看其中 `Payload` 下的应用包等内容；可执行文件位于应用包内，通常是 Mach-O 文件。** 应用包还包括资源、配置及按需嵌入的框架或扩展。Archive 与 dSYM 用于保留构建和诊断资料，不能把这些产物当成同一种文件。
+
+</details>
+
+### 8.6 签名验证通过，为什么仍可能不能在目标设备运行？ {#signing}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：完整性、身份、描述文件与能力授权的边界。
+
+**相关内容**：[签名与配置](#签名与配置)。
+
+<details>
+<summary>参考回答</summary>
+
+**完整性验证只是一个条件，还要满足目标平台、系统、描述文件和能力授权要求。** 检查 Bundle ID、团队、签名身份、设备或分发范围、有效期及 entitlement；资源、动态依赖与运行时权限也可能单独影响启动或功能。
+
+</details>
+
+### 8.7 Undefined symbols 和 Library not loaded 应分别怎样排查？ {#failure-stage}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：链接阶段和运行时动态加载的区别。
+
+**相关内容**：[定位构建与发布差异](#定位构建与发布差异)。
+
+<details>
+<summary>参考回答</summary>
+
+**Undefined symbols 先查实现是否参与链接、依赖是否正确以及平台架构是否匹配；Library not loaded 先查实际包中的动态依赖和加载路径。** 后者还需要检查兼容性与签名。按错误阶段分析实际产物，不用重复清缓存代替定位。
+
+</details>
+
+### 8.8 Debug 正常而 Release 出错，应该比较哪些条件？ {#release}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：有效配置、优化、分发环境与数据状态。
+
+**相关内容**：[最终生效的设置](#最终生效的设置)、[定位构建与发布差异](#定位构建与发布差异)。
+
+<details>
+<summary>参考回答</summary>
+
+**比较实际配置与运行环境，包括优化、编译条件、Info.plist、依赖资源、签名和数据状态。** 使用对应 Archive 检查新安装与升级，脱离调试器验证后台和看门狗相关行为。先建立可重复条件，不把所有差异都归因于编译器优化。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+- [Apple：Customizing the build schemes for a project](https://developer.apple.com/documentation/xcode/customizing-the-build-schemes-for-a-project)
+- [Apple：Configuring the build settings of a target](https://developer.apple.com/documentation/xcode/configuring-the-build-settings-of-a-target)
+- [Apple：Build settings reference](https://developer.apple.com/documentation/xcode/build-settings-reference)
+- [Apple：Creating a static framework](https://developer.apple.com/documentation/xcode/creating-a-static-framework)
+- [Apple：Creating a multiplatform binary framework bundle](https://developer.apple.com/documentation/xcode/creating-a-multi-platform-binary-framework-bundle)
+- [Apple：TN3125: Inside Code Signing: Provisioning Profiles](https://developer.apple.com/documentation/technotes/tn3125-inside-code-signing-provisioning-profiles)
+- [Apple：Using the latest code signature format](https://developer.apple.com/documentation/xcode/using-the-latest-code-signature-format)
+- [Apple：Testing a release build](https://developer.apple.com/documentation/xcode/testing-a-release-build)
+- [Apple：Building your app to include debugging information](https://developer.apple.com/documentation/xcode/building-your-app-to-include-debugging-information)
+- [Apple：QA1798：Checking Distribution Entitlements](https://developer.apple.com/library/archive/qa/qa1798/_index.html)
+- [Apple：TN2435：Embedding Frameworks In An App](https://developer.apple.com/library/archive/technotes/tn2435/_index.html)
+- [Apple：CFBundleExecutable](https://developer.apple.com/documentation/bundleresources/information-property-list/cfbundleexecutable)
+- [Apple：Adding package dependencies to your app](https://developer.apple.com/documentation/xcode/adding-package-dependencies-to-your-app)
+- [Apple：Adding a build configuration file to your project](https://developer.apple.com/documentation/xcode/adding-a-build-configuration-file-to-your-project)
+- [Apple：TN3161: Inside Code Signing: Certificates](https://developer.apple.com/documentation/technotes/tn3161-inside-code-signing-certificates)

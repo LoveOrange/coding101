@@ -1,0 +1,377 @@
+---
+title: Flutter 测试
+description: 区分单元、Widget 与集成测试，掌握帧推进、异步控制、平台替身和失败证据的边界。
+knowledge:
+  id: mobile.flutter.testing
+---
+
+**Flutter 测试**通过可重复的输入和断言检查业务逻辑、Widget 行为及应用协作。测试是否有价值，取决于它能否发现要防止的错误，以及它实际经过了哪些依赖。
+
+Widget 测试可以执行构建、布局和输入，但通常使用受控时钟与简化环境。掌握 pump 的含义，才能分清“异步结果完成了”“安排了新帧”和“界面已经更新”。本文以 Flutter 3.24.3 的 flutter_test 为基线。
+
+## 1. 面试核心 {#core}
+
+- **单元、Widget 和集成测试覆盖不同边界**。用较小测试定位业务分支，再用必要集成路径验证注册、平台和外部协作，不把数量比例当成固定规则。[卡](#levels)
+- **一次用户动作不等于界面已经完成重建**。tap 发送输入，pump 推进帧；断言应该对应读者实际要观察的状态。[卡](#pump)
+- **pump(Duration) 在常见自动测试环境中推进虚拟时间并处理一帧**，不等于真实等待同样时长，也不等于逐帧播放了这段时间内的全部动画。[卡](#clock)
+- **pumpAndSettle 等待没有待调度帧，不判断业务是否完成**。持续动画可以让它超时，尚未安排帧的请求也可能让它过早返回。[卡](#settle)
+- **异步测试要控制完成、失败和取消条件**。明确观察中间状态，避免用任意延迟掩盖事件顺序。[卡](#async)
+- **平台替身只能证明替身所在边界的行为**。Dart 测试成功不能证明插件注册、原生权限或系统界面可用。[卡](#plugins)
+- **Golden 测试检查图像差异，不代替业务断言**。基线需要人工判断，字体、尺寸、像素比例和渲染环境需要可重复。[卡](#golden)
+- **测试应保留失败证据并隔离资源**。修复不稳定用例前先分清产品行为、测试调度与环境问题，不以重复重跑代替解释。[卡](#stability)
+
+## 2. 根据行为选择测试边界 {#根据行为选择测试边界}
+
+**单元测试**检查一个函数、类或独立规则；**Widget 测试**在测试框架中运行 Widget 树，观察构建、布局、语义和输入；**集成测试**在较完整的应用环境中检查多层协作。
+
+| 行为 | 合适的起点 | 仍需补充的边界 |
+| --- | --- | --- |
+| 金额计算、参数解析、状态转换 | 单元测试 | 外部数据是否正确接入 |
+| 按钮状态、错误提示、列表交互 | Widget 测试 | 设备输入与真实平台能力 |
+| 平台通道包装层 | 可控制消息回复的测试 | 原生实现、插件注册与宿主生命周期 |
+| 登录后打开详情、数据库读写流程 | 按层拆分测试并保留关键集成路径 | 真实账号规则、后端环境与网络条件 |
+
+同一个业务行为可以在不同层验证不同条件。低层测试检查边界输入，高层测试检查真实连接；不需要把每个边界输入都重复成昂贵的完整启动流程。
+
+一个测试替换了网络、数据库和原生层，就应描述为对这些依赖的受控模拟。它可能很好地验证 UI 分支，但不会因为页面完整显示就自动成为完整系统验证。
+
+## 3. 用户输入与帧推进 {#用户输入与帧推进}
+
+### 3.1 tap 与 pump 的职责 {#tap与pump的职责}
+
+**WidgetTester** 提供安装 Widget、发送输入和推进帧的能力。pumpWidget 安装根 Widget 并运行相应帧；tap 在找到的目标位置发送点击输入；pump 让已安排的界面更新得到执行。
+
+下面的 CounterButton 在点击后更新计数：
+
+```dart
+import 'package:flutter/material.dart';
+
+class CounterButton extends StatefulWidget {
+  const CounterButton({super.key});
+
+  @override
+  State<CounterButton> createState() => _CounterButtonState();
+}
+
+class _CounterButtonState extends State<CounterButton> {
+  int count = 0;
+
+  @override
+  Widget build(BuildContext context) {
+    return TextButton(
+      key: const ValueKey('increment'),
+      onPressed: () => setState(() => count++),
+      child: Text('次数 $count'),
+    );
+  }
+}
+```
+
+对应测试先检查初始状态，再点击、推进帧，最后检查可见结果：
+
+```dart
+import 'package:flutter_test/flutter_test.dart';
+
+void main() {
+  testWidgets('点击后显示新计数', (tester) async {
+    await tester.pumpWidget(
+      const MaterialApp(home: Scaffold(body: CounterButton())),
+    );
+    expect(find.text('次数 0'), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('increment')));
+    await tester.pump();
+
+    expect(find.text('次数 1'), findsOneWidget);
+    expect(find.text('次数 0'), findsNothing);
+  });
+}
+```
+
+这里的断言检查点击是否产生预期显示。只断言按钮存在，不能证明点击回调正确；只断言内部变量变化，也不能证明用户看到的文本已经更新。
+
+### 3.2 找到 Widget 不代表可以点击 {#找到Widget不代表可以点击}
+
+Finder 用于定位树中的对象。默认查找通常跳过 offstage 等非当前显示内容，但“找到了”仍不等于目标未被遮挡、处于可点击位置或业务上启用。
+
+测试列表中的项目时，要让目标进入实际可操作区域。已存在但在滚动窗口外的目标可以按需要 ensureVisible；惰性列表中尚未构建的项目则需要通过滚动触发构建，不能只反复查找一个还不存在的 Widget。
+
+Key 适合定位缺少稳定可见文本的交互目标，但不能为了让测试通过而绕过用户路径。多个目标使用相同 Key、局部和全局 Navigator 混淆、点击了遮挡下的对象，都可能让断言与实际行为脱节。
+
+## 4. 异步任务与受控时钟 {#异步任务与受控时钟}
+
+### 4.1 完成任务与完成界面更新之间还有帧 {#任务完成与界面更新}
+
+**Completer** 允许测试决定 Future 何时完成，适合验证加载中的状态与完成后的状态。它控制的是异步结果，不会直接替 Widget 执行新一轮构建。
+
+```dart
+import 'dart:async';
+
+class FutureTitle extends StatelessWidget {
+  const FutureTitle(this.title, {super.key});
+  final Future<String> title;
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<String>(
+      future: title,
+      builder: (context, snapshot) {
+        if (snapshot.hasError) return const Text('加载失败');
+        if (snapshot.connectionState != ConnectionState.done) {
+          return const Text('加载中');
+        }
+        return Text(snapshot.data!);
+      },
+    );
+  }
+}
+
+void registerFutureTitleTests() {
+  testWidgets('结果完成后显示标题', (tester) async {
+    final response = Completer<String>();
+    await tester.pumpWidget(
+      Directionality(
+        textDirection: TextDirection.ltr,
+        child: FutureTitle(response.future),
+      ),
+    );
+    expect(find.text('加载中'), findsOneWidget);
+
+    response.complete('已完成');
+    await tester.pump();
+    await tester.pump();
+
+    expect(find.text('已完成'), findsOneWidget);
+    expect(find.text('加载中'), findsNothing);
+  });
+}
+```
+
+这是与前例共用 import 的测试片段；测试文件的 main 还需调用 registerFutureTitleTests 注册这组用例。FutureTitle 接收已经创建的 Future，没有在每次 build 中重新发起任务。
+
+在这个受控例子中，Future 的完成回调经微任务执行后安排界面更新，再由后续帧构建新文本；测试明确推进这两个阶段。不能据此得出“所有异步 UI 永远固定 pump 两次”，其他回调、动画和 binding 模式会改变时序。
+
+失败分支应使用 completeError 注入真实异常，检查加载提示被替换为错误提示。需要验证旧请求覆盖或页面销毁的场景时，还应分别控制多个请求的完成顺序与 Widget 的移除。
+
+### 4.2 虚拟时间不是墙上时钟 {#虚拟时间不是墙上时钟}
+
+常见的 `flutter test` 使用自动测试 binding 和 FakeAsync。此时 `pump(const Duration(seconds: 1))` 推进测试时钟，让相应定时条件有机会满足，再执行帧；它不要求真实等待一秒，也不会替你模拟这一秒内每个显示刷新时刻。
+
+因此，测试动画中间值要明确选择观察时间和帧；测试定时器要先确认它在受控时钟中创建。直接等待由虚拟时间驱动的 Future，却从不推进该时钟，可能让测试一直等待自己没有触发的条件。
+
+runAsync 用于确实需要真实异步工作的情况，例如产生 OS 线程或 isolate 的操作；它不是给任何等待套上的万能修复。需要在其回调中等待明确完成信号，理解测试时钟与真实工作边界，并检查它捕获的异常。能通过依赖注入控制完成的 Widget 行为，优先使用可控依赖。
+
+### 4.3 pumpAndSettle 不知道业务何时结束 {#pumpAndSettle不判断业务完成}
+
+pumpAndSettle 反复推进帧，直到没有已安排的新帧；即使开始时没有帧，也至少 pump 一次以处理可能继续安排帧的微任务。
+
+这会产生两个不同的边界：
+
+- 持续旋转的进度动画一直安排帧，pumpAndSettle 可能超时，虽然“仍在加载”正是应用的正确状态。
+- 请求还没完成、界面也没有动画时，可能没有待调度帧；pumpAndSettle 可以返回，但业务仍未完成。
+
+测试应先控制或等待业务完成条件，再推进需要的帧。有限转场确实需要稳定后观察时可以使用 pumpAndSettle；需要验证准确时序时，显式 pump 更有助于发现多一帧或少一帧的变化。
+
+## 5. 平台替身与集成测试 {#平台替身与集成测试}
+
+### 5.1 替身要明确模拟的边界 {#替身模拟的边界}
+
+测试插件包装层时，可以替换 BinaryMessenger 的方法处理器。下面的片段检查方法名并提供一个受控结果，测试结束后撤销处理器：
+
+```dart
+import 'package:flutter/services.dart';
+
+void registerChannelTests() {
+  test('读取受控平台结果', () async {
+    final binding = TestWidgetsFlutterBinding.ensureInitialized();
+    final messenger = binding.defaultBinaryMessenger;
+    const channel = MethodChannel('coding101.example/count');
+
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      expect(call.method, 'count');
+      return 3;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+
+    expect(await channel.invokeMethod<int>('count'), 3);
+  });
+}
+```
+
+测试文件的 main 需要调用 registerChannelTests。这个结果只证明 Dart 侧按预期请求并处理了替身回复，原生插件并未运行。实际项目可以把同样的控制点用在自己的包装类上，覆盖空值、类型错误、平台错误和未实现分支。
+
+平台通道的双侧协议、原生处理与生命周期分工见 [Flutter 平台通信](platform-channels.mdx#通信验证的层次)。包装层替身、真实编码器回放和完整引擎集成是不同证据，不应互相替代。
+
+### 5.2 原生系统界面需要相应验证工具 {#原生系统界面验证}
+
+integration_test 可以在设备或模拟器上检查应用中较完整的 Flutter 流程，但 Flutter Finder 不会自动找到 Android 权限弹窗、iOS 系统通知等原生系统界面。需要与对应平台的自动化能力配合，或采用明确支持原生交互的工具。
+
+权限场景除了预设环境，还要观察应用 API 实际返回的状态，再验证应用行为。预设命令执行成功不等于应用已经看到目标权限状态；模拟器与真机也可能存在差别。
+
+集成测试要记录设备、系统、构建方式、插件版本与服务端环境。测试可以证明某条路径在这些条件下完成，不能据此宣称所有系统版本、所有权限状态或所有网络条件都已覆盖。
+
+## 6. 图像、语义与失败证据 {#图像语义与失败证据}
+
+### 6.1 Golden 基线需要独立判断 {#Golden基线需要独立判断}
+
+**Golden 测试**把渲染结果与已认可的参考图像比较，适合发现布局、颜色、裁剪和排版变化。它并不知道按钮对应的业务动作是否正确，也不能仅凭像素相同证明可访问性符合要求。
+
+生成第一份参考图后需要人工确认。代码改错后重新生成一份相同错误的基线，再得到绿色结果，不能算验证了修复。发现差异时要检查当前图、参考图和差异区域，再判断是预期设计变化还是回归。
+
+字体、语言、文字缩放、视口尺寸、设备像素比例和渲染环境会影响图像。测试需要固定相关条件，并在结束后恢复修改过的 view 设置。业务结果仍需断言，可访问性则根据语义标签、动作和实际辅助技术路径验证。
+
+### 6.2 清理资源与解释不稳定失败 {#清理资源与解释不稳定失败}
+
+测试结束后要释放属于该测试的 controller、订阅、定时器、临时文件和替身注册。需要检查 dispose 行为时，可以主动替换根 Widget，再断言释放结果；不要依赖下一条测试偶然帮上一条测试清理。
+
+takeException 用于观察框架捕获的异常，但不能把“取走异常”当作修复。负例测试应检查异常类型和对应原因；正常流程则不应忽略意外异常。
+
+发生不稳定失败时，先保留原始输出、测试输入和环境，再判断：业务条件是否真的满足，微任务与帧是否推进，等待的是虚拟时间还是真实工作，以及外部依赖是否发生变化。重跑通过只是新的运行结果，不会把旧失败变成通过。
+
+修改测试预期时需要解释原因。如果功能本该显示错误却只删除错误断言，覆盖范围就缩小了；如果测试错误地把 Future 完成当成已绘制，应修正观察时机，同时保留对最终业务结果的检查。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 单元、Widget 和集成测试分别验证什么？ {#levels}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：行为边界、依赖真实性和测试成本。
+
+**相关内容**：[根据行为选择测试边界](#根据行为选择测试边界)
+
+<details>
+<summary>参考回答</summary>
+
+**单元测试验证独立规则，Widget 测试验证受控环境中的界面行为，集成测试验证较完整应用中的协作。** 低层覆盖边界输入，高层保留关键真实连接；替换了哪些依赖，就明确哪些行为没有经过真实环境，不用固定数量比例代替覆盖判断。
+
+</details>
+
+### 7.2 tester.tap 之后为什么通常还要 pump？ {#pump}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：输入回调、状态变化与帧调度。
+
+**相关内容**：[tap 与 pump 的职责](#tap与pump的职责)
+
+<details>
+<summary>参考回答</summary>
+
+**tap 发送输入，回调可以更新状态并安排重建，但界面还需要帧来执行更新。** pump 让相应工作运行后，再断言用户能看到的结果。找到目标、调用了回调和显示正确内容是不同条件，应按测试目的检查。
+
+</details>
+
+### 7.3 pump 一秒是否等于真实等一秒并渲染所有中间帧？ {#clock}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：自动测试时钟、定时条件与帧数量。
+
+**相关内容**：[虚拟时间不是墙上时钟](#虚拟时间不是墙上时钟)
+
+<details>
+<summary>参考回答</summary>
+
+**在常见自动测试 binding 中不是，它推进虚拟时间，再执行相应帧。** 它不会按真实刷新率补齐这一秒所有中间画面。动画采样和定时任务测试应明确观察时间；真实异步工作还需要与受控时钟区分。
+
+</details>
+
+### 7.4 pumpAndSettle 返回能否证明网络请求已经完成？ {#settle}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：帧队列稳定与业务状态。
+
+**相关内容**：[pumpAndSettle 不知道业务何时结束](#pumpAndSettle不判断业务完成)
+
+<details>
+<summary>参考回答</summary>
+
+**不能，它判断没有待调度帧，不判断请求完成。** 请求仍在等待时可能没有新帧；持续动画反而可能一直不稳定。先控制或等待明确业务条件，再推进所需帧，并对结果作断言。
+
+</details>
+
+### 7.5 怎样稳定测试加载、失败和旧请求晚完成？ {#async}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：完成控制、中间状态与结果有效性。
+
+**相关内容**：[完成任务与完成界面更新之间还有帧](#任务完成与界面更新)
+
+<details>
+<summary>参考回答</summary>
+
+**注入可控制的异步依赖，分别决定成功、错误和多个请求的完成顺序。** 先检查加载状态，再完成目标 Future 并推进对应帧；旧结果和页面销毁单独覆盖。不要只增加固定延迟，让竞争条件在当前机器上暂时消失。
+
+</details>
+
+### 7.6 Dart 中模拟平台成功，能否证明插件和权限正确？ {#plugins}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：替身、原生实现和系统界面边界。
+
+**相关内容**：[平台替身与集成测试](#平台替身与集成测试)
+
+<details>
+<summary>参考回答</summary>
+
+**不能，替身只验证 Dart 侧与模拟回复的交互。** 插件注册、真实原生处理、权限和宿主生命周期需要对应环境验证；Flutter Finder 也不会自动操作系统弹窗。权限预设之后还要观察应用 API 的实际状态。
+
+</details>
+
+### 7.7 Golden 测试通过，为什么还需要业务和语义断言？ {#golden}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：像素比较的能力与基线质量。
+
+**相关内容**：[Golden 基线需要独立判断](#Golden基线需要独立判断)
+
+<details>
+<summary>参考回答</summary>
+
+**图像相同只能说明当前渲染与基线接近，不能说明点击做对了事或语义可用。** 基线还可能本身就是错误结果，需要人工认可并固定字体、尺寸和渲染条件。业务状态与可访问性应按各自可观察结果验证。
+
+</details>
+
+### 7.8 不稳定测试重跑通过后，还应该检查什么？ {#stability}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：失败证据、调度原因和覆盖完整性。
+
+**相关内容**：[清理资源与解释不稳定失败](#清理资源与解释不稳定失败)
+
+<details>
+<summary>参考回答</summary>
+
+**保留失败记录，检查业务完成条件、时钟与帧调度、资源清理和外部环境。** 重跑只是另一次结果，不能抹掉原失败；修改测试要解释原预期为何不成立，并保留真正要验证的行为，不能只删除失败断言。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [Flutter：Testing overview](https://docs.flutter.dev/testing/overview)
+- [Flutter：WidgetTester.pump](https://api.flutter.dev/flutter/flutter_test/WidgetTester/pump.html)
+- [Flutter：WidgetTester.pumpAndSettle](https://api.flutter.dev/flutter/flutter_test/WidgetTester/pumpAndSettle.html)
+- [Flutter：WidgetTester.runAsync](https://api.flutter.dev/flutter/flutter_test/WidgetTester/runAsync.html)
+- [Flutter：WidgetTester.pumpWidget](https://api.flutter.dev/flutter/flutter_test/WidgetTester/pumpWidget.html)
+- [Flutter：WidgetController.tap](https://api.flutter.dev/flutter/flutter_test/WidgetController/tap.html)
+- [Flutter：WidgetController.ensureVisible](https://api.flutter.dev/flutter/flutter_test/WidgetController/ensureVisible.html)
+- [Flutter：CommonFinders.byKey](https://api.flutter.dev/flutter/flutter_test/CommonFinders/byKey.html)
+- [Flutter：WidgetTester.takeException](https://api.flutter.dev/flutter/flutter_test/WidgetTester/takeException.html)
+- [Flutter：setMockMethodCallHandler](https://api.flutter.dev/flutter/flutter_test/TestDefaultBinaryMessenger/setMockMethodCallHandler.html)
+- [Flutter：Plugins in tests](https://docs.flutter.dev/testing/plugins-in-tests)
+- [Flutter：Testing plugins](https://docs.flutter.dev/testing/testing-plugins)
+- [Flutter：Integration tests](https://docs.flutter.dev/testing/integration-tests)
+- [Flutter：matchesGoldenFile](https://api.flutter.dev/flutter/flutter_test/matchesGoldenFile.html)
+- [Flutter：FutureBuilder](https://api.flutter.dev/flutter/widgets/FutureBuilder-class.html)
+- [Flutter：testWidgets](https://api.flutter.dev/flutter/flutter_test/testWidgets.html)
+- [Flutter：TestFlutterView](https://api.flutter.dev/flutter/flutter_test/TestFlutterView-class.html)
+- [Dart test：addTearDown](https://pub.dev/documentation/test/latest/test/addTearDown.html)
+- [Flutter 3.24.3：flutter_test/binding.dart](https://github.com/flutter/flutter/blob/3.24.3/packages/flutter_test/lib/src/binding.dart)
+- [Flutter 3.24.3：widget_tester.dart](https://github.com/flutter/flutter/blob/3.24.3/packages/flutter_test/lib/src/widget_tester.dart)
+- [Flutter 3.24.3：test_default_binary_messenger.dart](https://github.com/flutter/flutter/blob/3.24.3/packages/flutter_test/lib/src/test_default_binary_messenger.dart)

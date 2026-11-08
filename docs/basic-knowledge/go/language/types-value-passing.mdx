@@ -1,0 +1,443 @@
+---
+sidebar_position: 1
+knowledge:
+  id: basic-knowledge.go.language.types-value-passing
+  type: concept
+description: "理解 Go 的静态类型、零值、指针与值传递，区分数组和结构体复制、切片与 map 的底层共享，以及 new 和 make 的初始化职责。用可运行示例判断函数调用后哪些修改对调用方可见。"
+keywords: ["Go 类型", "Go 值传递", "Go 指针", "零值", "new 和 make", "浅拷贝"]
+---
+
+# Go 类型与值传递
+
+Go 的赋值和传参都会复制值。传入整数，形参得到整数的副本；传入指针，形参得到指针的副本。切片、map 和包含指针的结构体也遵循这个规则，只是复制后的值可能继续共享底层数据。
+
+这直接决定一个函数能改到什么：修改共享对象可能被调用方看到，给形参重新赋值则不会替换调用方的变量。理解这一区别，才能判断集合传参、配置复制和对象更新的结果。本文以 Go 1.22 的语言规则为基线，先解释类型与复制，具体容器的扩容和并发机制另行展开。
+
+## 1. 面试核心 {#core}
+
+- Go 变量的类型在编译时确定，**类型推断不会让变量变成动态类型**。`int` 与 `int32` 是不同类型，运算和赋值需要满足类型规则。[卡](#basic-types)
+- 未显式初始化的变量具有对应类型的**零值**。零值不等于所有操作都可用：nil 切片可以追加，nil map 不能直接写入。[卡](#zero-value)
+- 在 Go 1.22 中，**`new(T)` 返回指向 `T` 零值的 `*T`，`make` 返回初始化后的切片、map 或 channel 值**。两者都不能直接决定对象最终放在栈上还是堆上。[卡](#new-make)
+- Go 只有**值传递**。通过指针形参修改目标变量，与给指针形参重新赋值，是两种不同的操作。[卡](#pass-by-value)
+- 数组和结构体复制各自包含的值；**复制遇到指针、切片或 map 时，不会继续递归复制底层数据**。不能笼统地说 Go 的赋值全部是深拷贝或全部是浅拷贝。[卡](#copy-depth)
+- 切片传参会复制它的长度、容量和对底层数组的引用。**修改元素与修改形参的长度分属不同层次**；`append` 返回的新切片通常应由调用方接收。[卡](#slice-parameter)
+
+## 2. 类型与变量 {#类型与变量}
+
+**类型**规定一个值可以是什么，以及允许对它做哪些操作。Go 是静态类型语言：变量的类型在编译时确定，不会因为后来存入另一个值而变化。
+
+### 2.1 基本类型与类型推断 {#基本类型与类型推断}
+
+Go 的基本类型包括布尔类型、数值类型和字符串类型。
+
+| 类别 | 主要类型 | 需要区分的地方 |
+| --- | --- | --- |
+| 布尔 | `bool` | 只有 `true`、`false`；条件表达式不能直接用整数代替 |
+| 有符号整数 | `int`、`int8`、`int16`、`int32`、`int64` | `int` 的宽度取决于目标实现，是 32 或 64 位；`int32` 固定为 32 位 |
+| 无符号整数 | `uint`、`uint8`、`uint16`、`uint32`、`uint64`、`uintptr` | `uintptr` 是整数类型，不是保持对象存活的指针 |
+| 浮点数与复数 | `float32`、`float64`、`complex64`、`complex128` | 精度和表示范围不同，不能认为所有十进制小数都能精确表示 |
+| 字符串 | `string` | 表示不可变的字节序列；`len` 返回字节数 |
+
+`byte` 是 `uint8` 的别名，`rune` 是 `int32` 的别名。`rune` 用于表达 Unicode 码点，但一个用户看到的字符可能包含多个码点，不能直接把它当成所有场景下的“一个字符”。
+
+数组、结构体、指针、切片、map、函数、接口和 channel 则用于组织值及其操作。`any` 是 `interface{}` 的别名；接口变量可以保存不同具体类型的值，但变量自身的接口类型仍然确定。
+
+```go
+n := 10
+var small int32 = 20
+fmt.Printf("%T %T\n", n, small) // int int32
+fmt.Println(n + int(small))    // 30
+
+// fmt.Println(n + small) // 编译错误：int 与 int32 不能直接相加
+// n = "10"              // 编译错误：不能把 string 赋给 int
+```
+
+`n := 10` 让编译器推断 `n` 的类型为 `int`，之后仍要遵守 `int` 的赋值规则。即使某个平台上的 `int` 恰好也是 32 位，它与 `int32` 依然是不同类型。
+
+数值转换也不等于范围检查。例如把超出目标范围的整数变量转换为较窄整数时，可能截断高位。处理外部输入时，应先验证范围，再转换类型。
+
+### 2.2 定义类型与类型别名 {#定义类型与类型别名}
+
+**定义类型**会建立一个新的类型身份；**类型别名**只是为已有类型增加另一个名字。
+
+```go
+type UserID int64
+type RawID = int64
+
+var id UserID = 7
+var raw RawID = 8
+var number int64 = raw // RawID 就是 int64
+number = int64(id)
+fmt.Println(number) // 7
+
+// number = id // 编译错误：UserID 与 int64 是不同的定义类型
+```
+
+`UserID` 的底层类型是 `int64`，但不能因此省略所有赋值和转换规则。建立独立类型有助于区分业务含义，例如避免把用户编号直接当成订单编号。
+
+例子中的常量 `7` 可以赋给 `UserID`，是因为它是能由目标类型表示的无类型常量。这不意味着一个 `int64` 变量也能不经转换直接赋给 `UserID`。
+
+## 3. 零值与初始化 {#零值与初始化}
+
+**零值**是变量没有显式初始值时获得的值。Go 不要求先写一次赋值才能读取这样的变量，但后续操作是否有效仍取决于类型。
+
+| 类型 | 零值 | 直接使用时的边界 |
+| --- | --- | --- |
+| 数值、布尔、字符串 | `0`、`false`、`""` | 可以参与对应运算 |
+| 数组、结构体 | 每个元素或字段分别取零值 | 其中的指针、切片或 map 字段也可能为 nil |
+| 指针、切片、map、函数、channel、接口 | `nil` | nil 是这些类型的零值表示，但它们的操作规则并不相同 |
+
+```go
+var numbers []int
+var counts map[string]int
+fmt.Println(numbers == nil, len(numbers)) // true 0
+numbers = append(numbers, 7)
+fmt.Println(numbers) // [7]
+
+value, ok := counts["go"]
+fmt.Println(value, ok, len(counts)) // 0 false 0
+// counts["go"] = 1 // 运行时 panic：向 nil map 写入
+```
+
+nil 切片的长度和容量都是零，`append` 可以创建所需存储并返回新切片。nil map 可以查询，缺失键返回元素零值和 `false`，但写入前需要用 `make` 或 map 字面量初始化。
+
+nil 指针解引用、调用 nil 函数会 panic；nil channel 的发送和接收会一直阻塞。接口还需要区分“接口本身为 nil”和“接口保存一个有具体类型的 nil 指针”，不能只看底层指针是否为空来判断接口是否为 nil。
+
+`nil` 不是一个能脱离类型单独推断的普通常量：`var p *int = nil` 合法，`p := nil` 无法确定变量类型，不能编译。
+
+### 3.1 new 与 make {#new-与-make}
+
+Go 1.22 中，`new(T)` 为一个 `T` 变量提供零值，并返回指向它的 `*T`。`make` 只用于切片、map 和 channel，返回对应类型本身的已初始化值。
+
+```go
+number := new(int)
+fmt.Printf("%T %d\n", number, *number) // *int 0
+
+slicePointer := new([]int)
+numbers := make([]int, 0, 3)
+fmt.Println(*slicePointer == nil)              // true
+fmt.Println(numbers == nil, len(numbers), cap(numbers)) // false 0 3
+
+mapPointer := new(map[string]int)
+counts := make(map[string]int)
+fmt.Println(*mapPointer == nil, counts == nil) // true false
+counts["go"] = 1
+fmt.Println(counts["go"]) // 1
+```
+
+`new(map[string]int)` 得到的是“指向一个 nil map 变量的指针”，不会连 map 的内部存储一起初始化成可写状态。`make(map[string]int)` 则直接得到可写的 map 值。
+
+`make([]int, 0, 3)` 中，容量是 3，长度仍是 0。此时不能读写 `numbers[0]`；可以先 `append`，或者在容量范围内重新切片后再访问。容量表示可扩展的范围，不等于当前已有的元素数量。
+
+`new` 和 `make` 描述创建及初始化的语义，不是“堆分配”和“栈分配”的两个开关。编译器会根据逃逸分析和优化决定具体存储位置。
+
+## 4. 赋值与传参 {#赋值与传参}
+
+函数的**形参**是函数内部的变量，**实参**是调用时提供的值。调用函数时，实参的值交给形参；形参之后如何赋值，不会自动改变调用方变量。
+
+### 4.1 普通值与指针值 {#普通值与指针值}
+
+**指针**保存对某个变量的引用。`&x` 取得指向变量 `x` 的指针，`*p` 访问指针 `p` 指向的变量。
+
+```go
+package main
+
+import "fmt"
+
+func update(value int, pointer *int) {
+    value = 10
+    *pointer = 20
+    other := 30
+    pointer = &other
+}
+
+func main() {
+    first, second := 1, 2
+    update(first, &second)
+    fmt.Println(first, second) // 1 20
+}
+```
+
+`value` 是 `first` 当前值的副本，`value = 10` 只修改形参。`pointer` 是 `&second` 的副本，所以 `*pointer = 20` 修改了 `second`。最后 `pointer = &other` 只改变局部指针变量，不会让 `second` 变成 `other`。
+
+如果函数需要让调用方换成一个新值，通常直接返回这个值，再由调用方赋值。确实要修改“调用方保存的指针”时，可以传入指针的地址，也就是 `**T`；它仍然是把这个地址值复制给形参，并没有引入另一种传参规则。
+
+### 4.2 数组与结构体 {#数组与结构体}
+
+数组的值包含全部元素。复制数组会复制元素值，数组长度也是类型的一部分。
+
+```go
+first := [2]int{1, 2}
+second := first
+second[0] = 9
+fmt.Println(first, second) // [1 2] [9 2]
+```
+
+这里没有共享可变元素，因为元素都是 `int`。如果数组元素是指针，复制的是每个指针的值，被指向的变量仍然可能共享。
+
+结构体同样按字段复制；字段的类型决定复制到哪一层。
+
+```go
+type Record struct {
+    Count int
+    Tags  []string
+}
+
+first := Record{Count: 1, Tags: []string{"go"}}
+second := first
+second.Count = 2
+second.Tags[0] = "db"
+fmt.Println(first.Count, second.Count) // 1 2
+fmt.Println(first.Tags, second.Tags)   // [db] [db]
+```
+
+`Count` 的整数值各有一份，`Tags` 的切片值也各有一份，但两个切片仍引用同一个底层数组。因此结构体复制以后，修改 `Count` 与修改 `Tags[0]` 会产生不同结果。
+
+### 4.3 切片与 map {#切片与-map}
+
+**切片**是对底层数组一段元素的描述，包含长度、容量和对底层数组的引用。传递切片时复制这些信息，不会自动复制数组。
+
+```go
+package main
+
+import "fmt"
+
+func change(numbers []int) {
+    numbers[0] = 9
+    numbers = append(numbers, 3)
+    fmt.Println(numbers, len(numbers)) // [9 2 3] 3
+}
+
+func main() {
+    original := make([]int, 2, 3)
+    copy(original, []int{1, 2})
+    change(original)
+    fmt.Println(original, len(original)) // [9 2] 2
+    fmt.Println(original[:3])            // [9 2 3]
+}
+```
+
+`numbers[0] = 9` 修改共享数组，调用方能看到。`append` 返回的新切片赋给 `numbers`，只改变形参的长度。因为这个例子还有容量，追加的 `3` 也写入共享数组，只是位于 `original` 当前长度之外；重新切片以后才会出现在可访问范围内。
+
+如果追加时容量不足，`append` 会分配新底层数组。不能据某一次追加的结果假定以后总会共享，也不能把切片长度变化当作对调用方变量的修改。需要让调用方获得追加结果时，使用 `original = append(original, 3)`，或接收函数返回的新切片。
+
+map 也需要区分修改内容与重新赋值：
+
+```go
+package main
+
+import "fmt"
+
+func change(counts map[string]int) {
+    counts["go"] = 2
+    counts = map[string]int{"go": 3}
+}
+
+func main() {
+    original := map[string]int{"go": 1}
+    change(original)
+    fmt.Println(original["go"]) // 2
+}
+```
+
+形参最初与 `original` 共享 map 数据，键值更新可见。后一次赋值让形参保存另一个 map 值，不会替换调用方的 `original`。
+
+## 5. 复制的深度 {#复制的深度}
+
+**浅拷贝**只复制当前层的值，内部引用继续共享；**深拷贝**还要按业务需要复制被引用的数据。Go 的普通赋值没有“递归复制整个对象关系”的保证。
+
+复制切片元素也不一定能隔离元素背后的对象：
+
+```go
+type User struct{ Score int }
+
+first := []*User{{Score: 1}}
+second := make([]*User, len(first))
+copy(second, first)
+second[0].Score = 9
+fmt.Println(first[0].Score) // 9
+
+second[0] = &User{Score: 5}
+fmt.Println(first[0].Score, second[0].Score) // 9 5
+```
+
+两个切片的底层数组已经不同，但两个数组起初都保存指向同一个 `User` 的指针。因此修改 `Score` 仍然可见；后来替换 `second[0]`，只改变第二个数组中的指针值，`first[0]` 没有一起替换。
+
+真正需要隔离时，应明确复制边界。例如只含字符串元素的 `Tags` 可以分配新切片并复制元素；含 `*User` 时，还要决定是否复制 `User`，以及它内部可能持有的其他对象。遇到共享子对象、循环引用、锁或文件句柄时，“把所有字段再复制一遍”未必具有合理语义。
+
+```go
+type Record struct {
+    Count int
+    Tags  []string
+}
+
+first := Record{Count: 1, Tags: []string{"go"}}
+second := first
+second.Tags = make([]string, len(first.Tags))
+copy(second.Tags, first.Tags)
+second.Tags[0] = "db"
+fmt.Println(first.Tags, second.Tags) // [go] [db]
+```
+
+这里能隔离 `Tags`，是因为复制后数组独立，字符串内容也不可变。不能把这个结论不加条件地推广到任意元素类型。
+
+## 6. 常见问题 {#常见问题}
+
+### 6.1 传指针是不是一定比传值快？ {#指针与复制成本}
+
+不是。指针能减少较大对象的值复制，但也可能引入共享、间接访问和逃逸。小对象直接传值可能更简单，也可能更容易优化。先根据修改责任和对象大小选择接口；性能确实成为问题时，再在实际调用路径上测量。
+
+无论编译器最终有没有执行物理复制，都必须保留语言规定的可观察结果。不能用一次汇编观察推翻值传递语义。
+
+### 6.2 返回局部变量的指针会悬空吗？ {#局部变量指针}
+
+正常 Go 代码可以返回局部变量的指针。只要仍能通过有效引用访问这个变量，它所需的存储就必须继续存在；编译器会处理其生命周期。
+
+```go
+package main
+
+import "fmt"
+
+func createScore() *int {
+    score := 7
+    return &score
+}
+
+func main() {
+    score := createScore()
+    fmt.Println(*score) // 7
+}
+```
+
+能否把分配留在栈上属于逃逸分析问题，不能简单地说“函数返回，所以地址必定失效”，也不能反过来说“写了 `new`，所以必定堆分配”。
+
+### 6.3 nil 和长度为零的切片完全等价吗？ {#nil-与空切片}
+
+它们都可能长度为零，也都能使用 `append`，但 nil 判断不同，序列化等 API 也可能区别对待。
+
+```go
+var missing []int
+empty := make([]int, 0)
+fmt.Println(len(missing), len(empty))     // 0 0
+fmt.Println(missing == nil, empty == nil) // true false
+```
+
+如果业务区分“没有提供”和“提供了空集合”，接口应写清约定。不要仅靠 `len == 0` 判断两种状态完全相同。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 Go 有哪些基本类型，int 与 int32 有什么区别？ {#basic-types}
+
+**考察重点**：基本类型、平台宽度、类型身份与显式转换。
+
+**相关内容**：[基本类型与类型推断](#基本类型与类型推断)。
+
+<details>
+<summary>参考回答</summary>
+
+**Go 的基本类型包括布尔、数值和字符串；`int` 与 `int32` 是不同类型。** 数值类型包括有符号和无符号整数、浮点数与复数，`byte`、`rune` 分别是 `uint8`、`int32` 的别名。
+
+`int` 的宽度由目标实现决定，是 32 或 64 位；`int32` 固定为 32 位。即使两者宽度相同，类型身份也不同，变量之间的运算或赋值仍需满足规则，必要时显式转换。转换前还应检查值是否落在目标范围内。
+
+</details>
+
+### 7.2 零值是否意味着变量可以直接执行所有操作？ {#zero-value}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：初始化、nil 与不同类型的操作条件。
+
+**相关内容**：[零值与初始化](#零值与初始化)。
+
+<details>
+<summary>参考回答</summary>
+
+**零值保证变量有确定的初始值，不保证所有操作都有效。** 数值零值为 `0`，布尔为 `false`，字符串为 `""`；数组和结构体递归初始化其元素或字段。
+
+nil 切片可以读长度并追加，nil map 可以查询但不能写入；nil 指针解引用和 nil 函数调用会 panic，nil channel 收发会阻塞。必须按具体类型判断操作的前置条件。
+
+</details>
+
+### 7.3 new 和 make 有什么区别？ {#new-make}
+
+**考察重点**：返回类型、零值、容器初始化与存储位置的区别。
+
+**相关内容**：[new 与 make](#new-与-make)。
+
+<details>
+<summary>参考回答</summary>
+
+**以 Go 1.22 为准，`new(T)` 返回指向 `T` 零值的 `*T`；`make` 只用于切片、map、channel，返回初始化后的对应类型值。**
+
+例如 `new(map[string]int)` 返回 `*map[string]int`，解引用后仍是 nil map，不能直接写入；`make(map[string]int)` 返回可写的 map。`make([]int, 0, 3)` 得到长度零、容量三的切片，不能直接访问下标零。
+
+二者的区别不是固定的栈分配与堆分配。实际存储位置由编译器结合逃逸分析和优化决定。
+
+</details>
+
+### 7.4 Go 是值传递还是引用传递？ {#pass-by-value}
+
+**考察重点**：形参与调用方变量、指针复制及修改目标的区别。
+
+**相关内容**：[普通值与指针值](#普通值与指针值)、[切片与 map](#切片与-map)。
+
+<details>
+<summary>参考回答</summary>
+
+**Go 只有值传递，形参得到实参值的副本。** 传整数时复制整数，传指针时复制指针值，被指向的变量没有随之复制。
+
+通过指针形参修改目标变量，调用方能看到；给形参重新赋值，只改变函数内的变量。切片和 map 的值包含对底层数据的引用，复制这些值后可以共享数据，但不会让函数直接获得调用方变量本身。
+
+</details>
+
+### 7.5 Go 的赋值和传参是深拷贝还是浅拷贝？ {#copy-depth}
+
+**考察重点**：值包含的数据、引用共享与复制边界。
+
+**相关内容**：[数组与结构体](#数组与结构体)、[复制的深度](#复制的深度)。
+
+<details>
+<summary>参考回答</summary>
+
+**更准确的说法是复制当前值，不自动递归复制它引用的数据。** 整数数组复制后，各元素独立；包含切片或指针字段的结构体复制后，这些字段的值各有一份，底层对象仍可能共享。
+
+`copy` 到一个新切片也只复制元素值。元素是 `*User` 时，新的底层数组仍可能指向原来的 `User`。需要深度隔离时，应按对象结构和资源所有权明确复制到哪一层。
+
+</details>
+
+### 7.6 切片传参后，对底层数组的修改会影响调用方吗？ {#slice-parameter}
+
+**考察重点**：切片描述信息、底层数组共享、长度与追加结果。
+
+**相关内容**：[切片与 map](#切片与-map)。
+
+<details>
+<summary>参考回答</summary>
+
+**修改元素作用于底层数组，`append` 则返回一个新的切片值。** 形参与调用方起初共享底层数组，所以原有元素的修改可见；函数中把追加结果赋给形参，不会更新调用方的长度和容量。
+
+容量足够时，追加会复用原数组；容量不足时会使用新数组。需要调用方获得追加后的切片，应把它返回并由调用方接收，不能依赖偶然存在的容量。
+
+</details>
+
+### 7.7 复制一个存放指针的切片后，修改新切片会影响原切片吗？ {#pointer-elements}
+
+**考察重点**：切片底层数组与元素指向的对象是两个共享层次。
+
+**相关内容**：[复制的深度](#复制的深度)。
+
+<details>
+<summary>参考回答</summary>
+
+**先确认复制方式，再确认修改的是数组元素还是元素指向的对象。** 直接赋值会共享底层数组，替换元素也会被另一切片看到；分配新切片再 `copy`，则底层数组独立。
+
+但元素是指针时，`copy` 复制的是指针值。此后通过新切片修改同一个 `User` 的字段，原切片仍能观察到；把新切片某个位置替换为指向另一个 `User` 的指针，则不改变原数组中的指针。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [Go 1.22.12 语言规范：类型、赋值、调用、零值与内置函数](https://github.com/golang/go/blob/go1.22.12/doc/go_spec.html)
+- [Go FAQ：When are function parameters passed by value?](https://go.dev/doc/faq#pass_by_value)
+- [Effective Go：Data](https://go.dev/doc/effective_go#data)
+- [Go Blog：Go Slices: usage and internals](https://go.dev/blog/slices-intro)

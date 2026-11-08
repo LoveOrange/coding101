@@ -1,0 +1,331 @@
+---
+title: iOS 事件响应链
+description: 理解 UIKit 命中测试、响应者链、手势识别与控件事件的分工，分析越界点击和手势冲突。
+knowledge:
+  id: mobile.ios.responder-chain
+---
+
+**响应者链**是 UIKit 中由 `UIResponder.next` 连接起来的一组对象，用来转交尚未处理的事件，以及查找部分操作的接收者。一次点击涉及的不只有这条链：UIKit 先通过命中测试找到触摸所在的视图，手势识别器参与识别，视图和控件再处理相应输入。
+
+按钮看得见却点不到、页面手势拦住了按钮、手指移出按钮后谁继续接收触摸，都要沿着这几步分析。本文讨论 UIKit 的触摸事件与 target-action，示例使用 Swift；自定义绘制和布局见 [UIKit 布局](./uikit-layout.mdx)。
+
+## 1. 面试核心 {#core}
+
+- **命中测试从视图层级中选目标，响应者链通过 `next` 转交事件**，两者不是同一次遍历。视图控制器也可以是响应者，却不是命中测试中的子视图。[卡](#responder-chain)
+- `point(inside:with:)` 判断局部坐标中的点是否属于自身交互区域；`hitTest(_:with:)` 在符合条件的分支中找最前面的目标。**父视图拒绝该点时，默认实现也会跳过它的子视图**。[卡](#hit-test)
+- **可见区域和可点击区域由不同机制决定**。`clipsToBounds = false` 允许绘制超出父视图的部分，但不自动扩大父视图的命中区域。[卡](#outside-parent)
+- 扩大按钮触控范围可以重写 `point(inside:with:)`，但仍受祖先视图、相邻控件重叠和命中顺序约束。[卡](#larger-target)
+- **手势识别器不属于响应者链**。它观察关联视图及子视图中的触摸，通过识别状态、失败依赖和取消规则与视图协调。[卡](#gesture-chain)
+- 按钮上的 tap 手势成功后，默认 `cancelsTouchesInView = true` 可以取消按钮的触摸；**不能只按谁在父视图、谁后添加来判断回调结果**。[卡](#button-tap)
+- **同时识别、等待另一个手势失败、不取消视图触摸，是三种不同配置**。例如单击等待双击失败，应配置单击对双击的失败依赖。[卡](#gesture-coordination)
+- 一次触摸开始后，`UITouch.view` 保持关联的原视图；**手指移出视图，不等于重新命中另一个视图**。视图仍可能收到结束或取消通知。[卡](#touch-lifetime)
+
+## 2. 从触摸位置到命中视图 {#从触摸位置到命中视图}
+
+### 2.1 命中测试查找什么 {#命中测试查找什么}
+
+**命中测试**是根据输入位置和视图层级，确定哪个视图作为触摸目标的过程。普通视图默认会排除隐藏、关闭用户交互或几乎完全透明的分支，再通过 `point(inside:with:)` 判断是否继续查找。
+
+`point(inside:with:)` 接收的点处于当前视图的局部坐标系，默认按 `bounds` 判断。遍历到子视图时，必须先转换坐标，不能把父视图中的坐标直接交给子视图。`frame` 与 `bounds` 的区别见 [UIKit 布局的坐标说明](./uikit-layout.mdx#framebounds与center)。
+
+对普通视图层级，可以用下面的过程解释 `hitTest` 的主要思路。这是教学伪代码，不是 UIKit 源码，也不覆盖所有系统控件的重写行为：
+
+```text
+hitTest(view, pointInView):
+    如果 view 不允许交互、被隐藏或几乎完全透明：返回 nil
+    如果 view.pointInside(pointInView) 为 false：返回 nil
+    按从前到后的顺序遍历子视图 child：
+        childPoint = 把 pointInView 转换到 child 坐标系
+        target = child.hitTest(childPoint)
+        如果 target 不为空：返回 target
+    返回 view
+```
+
+普通兄弟视图按 `subviews` 的逆序检查，先找到的有效分支先返回；可以用 `bringSubviewToFront` 改变视图前后关系。这不是“整棵树中层数最多的视图一定获胜”：前面的一个兄弟视图可能先截住位置，后面更深的分支根本不会被遍历。
+
+命中测试也不按像素透明度逐点检测。背景色为透明的普通 `UIView`，只要其他条件满足，仍可能挡住后面的按钮。反过来，`UILabel`、`UIImageView` 默认不允许用户交互，需要交互时应检查 `isUserInteractionEnabled`。
+
+### 2.2 父视图外为什么点不到 {#父视图外为什么点不到}
+
+默认命中测试会在父视图的 `point(inside:with:)` 返回 `false` 时停止搜索该分支。因此，子按钮即使通过 `clipsToBounds = false` 显示在外面，也可能点不到。
+
+优先让布局和交互区域一致：扩大父视图、把按钮移到能容纳它的公共容器。确实需要越界交互时，可以针对允许交互的子视图扩展容器的命中区域：
+
+```swift
+import UIKit
+
+@MainActor
+final class OverflowContainer: UIView {
+    weak var overflowTarget: UIView?
+
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        if super.point(inside: point, with: event) {
+            return true
+        }
+        guard let target = overflowTarget,
+              target.superview === self else {
+            return false
+        }
+        let targetPoint = target.convert(point, from: self)
+        return target.hitTest(targetPoint, with: event) != nil
+    }
+}
+```
+
+假设 `OverflowContainer` 宽 100，按钮放在 `x = 80`、宽 40 的位置。容器中的点 `(110, 20)` 超出自身 `bounds`，但转换到按钮后可能仍在按钮内，容器因此允许继续搜索。实际目标仍由后续的 `hitTest` 按子视图顺序决定，不是无条件指定 `overflowTarget`。
+
+这个例子只允许指定的直属子视图扩展范围，并让该子视图自己的 `hitTest` 检查隐藏、交互等条件。如果容器的祖先先拒绝该点，执行还到不了这里。不能把所有祖先的 `point(inside:with:)` 都改成永远返回 `true`，否则会抢走周围控件的触摸。
+
+### 2.3 扩大按钮的触控区域 {#扩大按钮的触控区域}
+
+按钮的视觉尺寸可以小于触控区域。对于没有复杂子视图命中规则的按钮，可以只改变自身区域判断：
+
+```swift
+import UIKit
+
+@MainActor
+final class LargerHitButton: UIButton {
+    var hitExpansion: CGFloat = 10
+
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        let expansion = max(0, hitExpansion)
+        return bounds.insetBy(dx: -expansion, dy: -expansion).contains(point)
+    }
+}
+```
+
+宽高均为 20 的按钮，设置 `hitExpansion = 10` 后，局部触控范围扩大到横纵方向各 40。按钮的 `frame`、绘制内容和 Auto Layout 约束没有因此改变。父视图必须允许这块区域参与命中；两个按钮扩展后发生重叠时，还需要明确优先关系，不能指望 UIKit 同时把一次触摸分配给两个按钮。
+
+## 3. 响应者链与触摸生命周期 {#响应者链与触摸生命周期}
+
+### 3.1 next 连接哪些对象 {#next连接哪些对象}
+
+`UIResponder` 是能够接收和处理事件的对象基类。`UIView`、`UIViewController`、`UIWindowScene`、`UIApplication` 都属于这一体系。
+
+在使用 Scene 的简单页面中，省略中间容器后，可以用下面的关系理解响应链：
+
+```text
+普通子视图 → 父视图 → 控制器根视图 → UIViewController
+         → … → UIWindow → UIWindowScene → UIApplication → 合适的 AppDelegate
+```
+
+控制器根视图的 `next` 指向控制器，普通视图通常指向父视图。UIKit 插入的容器视图、容器控制器、模态呈现和自定义 `next` 都可能改变中间关系，因此排查问题时应查看对象实际的 `next`，不能把示意链当成所有页面都一样的固定表。AppDelegate 还需要是符合条件的 `UIResponder` 才会进入链中。
+
+视图的 `touchesBegan`、`touchesMoved`、`touchesEnded`、`touchesCancelled` 处理触摸的不同阶段。对于未由自己处理的触摸，可以调用对应的 `super` 实现，让默认逻辑沿响应者链转交。自己完整接管触摸时，要同时考虑移动、结束和取消；只写一个 `touchesBegan`，往往会留下按下状态无法复原的问题。
+
+这里的转交不等于 Web 事件的捕获和冒泡，也不保证所有祖先都会各收到一次独立回调。对象可能处理事件，也可能通过重写改变转交行为。
+
+### 3.2 手指移出后发生什么 {#手指移出后发生什么}
+
+UIKit 在触摸开始时把 `UITouch` 关联到命中视图，后续更新同一触摸的位置和阶段。`UITouch.view` 不会因为手指跨入另一个按钮就改指向那个按钮。
+
+例如手指在按钮 A 上按下，拖到按钮 B 上再松开。不能据此断言 B 收到一轮完整点击。A 的触摸跟踪、按钮是否仍处于有效区域、手势是否取消触摸，都会影响最终行为。应用也可能被中断，因此自定义绘画、拖拽等逻辑必须在 `touchesCancelled` 中清理临时状态。
+
+“触摸最先交给哪个视图”也不能与“谁正在输入文字”混为一谈。键盘编辑中的第一响应者可以是文本框；触摸的初始目标仍由触摸位置确定，不要求每个被点中的视图先调用 `becomeFirstResponder()`。
+
+## 4. 手势识别与控件事件 {#手势识别与控件事件}
+
+### 4.1 手势不是链中的下一个响应者 {#手势不是链中的下一个响应者}
+
+**手势识别器**是把一串触摸解释为点击、拖动、缩放等动作的对象。`UIGestureRecognizer` 继承自 `NSObject`，不通过 `UIResponder.next` 串在响应者链中。关联在父视图上的识别器也能观察子视图中的相关触摸，所以按钮成为命中目标，不意味着父视图上的手势就不参与。
+
+离散手势如 tap 在识别成功时发出动作；连续手势如 pan 通过 `.began`、`.changed`、`.ended` 或 `.cancelled` 表示过程。业务应在合适的状态提交或撤销操作，例如拖拽中更新预览、结束时保存位置、取消时恢复临时状态。
+
+UIKit 会协调识别器与视图接收触摸的时机。两个参数不能混淆：
+
+| 配置 | 控制的行为 | 需要注意 |
+| --- | --- | --- |
+| `cancelsTouchesInView` | 识别成功后是否取消发给视图的触摸 | 默认 `true`；已经收到的触摸可通过 `touchesCancelled` 结束 |
+| `delaysTouchesBegan` | 是否先暂缓把触摸开始交给视图 | 默认 `false`；设为 `true` 可能影响控件按下反馈 |
+| `delaysTouchesEnded` | 是否延迟把触摸结束交给视图，以等待识别结论 | 影响完成时机，不是扩大命中区域 |
+
+把 `cancelsTouchesInView` 设为 `false`，只是避免该识别器在成功后取消视图触摸，并不能自动解决两个手势之间的竞争，也不保证业务回调必定发生。
+
+### 4.2 按钮与 tap 为什么会冲突 {#按钮与tap为什么会冲突}
+
+**target-action** 是控件或手势识别器向指定对象发送操作消息的方式。`UIButton` 把触摸跟踪抽象成 `.touchUpInside` 等控件事件，业务一般直接监听这些事件，而不用重写原始触摸处理。指定 target 时，操作直接发给该对象；target 为 `nil` 时，可以通过响应者链寻找能够处理该操作的对象。
+
+如果给按钮本身添加一个 tap 识别器，并且它接收了这次触摸、成功识别，默认取消规则可能使按钮的触摸跟踪结束于取消，而不是正常的 `.touchUpInside`。若想保留按钮行为，应先判断是否有必要同时安装两套点击处理；确需同时处理时，再明确 `cancelsTouchesInView` 和业务去重规则。
+
+对于父容器的“点击空白处收起键盘”，更直接的办法是让背景手势忽略控件范围。判断时应沿触摸视图的祖先查找 `UIControl`，因为触摸可能落在控件内部的子视图上：
+
+```swift
+import UIKit
+
+@MainActor
+final class BackgroundTapDelegate: NSObject, UIGestureRecognizerDelegate {
+    func shouldAcceptTouch(on view: UIView?) -> Bool {
+        var current = view
+        while let candidate = current {
+            if candidate is UIControl {
+                return false
+            }
+            current = candidate.superview
+        }
+        return true
+    }
+
+    func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldReceive touch: UITouch
+    ) -> Bool {
+        shouldAcceptTouch(on: touch.view)
+    }
+}
+```
+
+把这个对象设为背景 tap 的 `delegate`，并由控制器用强属性保存它；识别器的 delegate 是弱引用。例子拒绝控件及其后代中的触摸，其他区域仍可参与背景点击。不要把这种过滤写成所有手势的通用规则，滑动条、绘画和嵌套滚动需要各自的交互设计。
+
+### 4.3 同时识别与失败依赖 {#同时识别与失败依赖}
+
+两个手势能否同时成立，应由交互目标决定。图片的双指缩放与旋转可以同时进行，而单击和双击往往需要区分。
+
+`gestureRecognizer(_:shouldRecognizeSimultaneouslyWith:)` 返回 `true`，允许两个识别器同时识别。返回 `false` 不一定能单方面禁止同时识别，因为另一个识别器的 delegate 仍可能允许。不要为了消除冲突而对所有组合返回 `true`，否则页面滑动和内部拖动可能一起修改状态。
+
+`singleTap.require(toFail: doubleTap)` 表示单击需要等待双击失败。双击成功时单击失败；双击失败后，单击才可以按自己的识别条件继续。这会带来必要的等待，不是“先执行单击，双击成功后再撤回单击”。依赖方向写反，会改变整个交互语义。
+
+对于滚动视图与内部控件，还要考虑 `UIScrollView` 自己的触摸延迟、取消和 pan 识别器。先确认冲突发生在命中、触摸取消还是识别器竞争阶段，再决定过滤输入、调整失败依赖或允许特定组合同时识别。
+
+## 5. 面试题 {#面试题}
+
+### 5.1 什么是 iOS 响应者链？ {#responder-chain}
+
+**考察重点**：`UIResponder`、`next` 与视图层级的区别。
+
+**相关内容**：[next 连接哪些对象](#next连接哪些对象)。
+
+<details>
+<summary>参考回答</summary>
+
+**响应者链由一组 `UIResponder` 对象通过 `next` 连接起来，用于转交未处理的事件，以及查找某些操作的处理者。** 普通子视图通常指向父视图，控制器根视图会指向控制器，再按页面结构继续到窗口、Scene 和应用对象。
+
+命中测试是在视图层级中找触摸目标；响应链包含视图控制器等非视图对象，不能把两者当成同一个遍历过程。实际关系可能受容器、呈现和重写 `next` 的影响。
+
+</details>
+
+### 5.2 怎样用伪代码解释 hitTest 的查找过程？ {#hit-test}
+
+**考察重点**：分支过滤、局部坐标转换与前后顺序。
+
+**相关内容**：[命中测试查找什么](#命中测试查找什么)。
+
+<details>
+<summary>参考回答</summary>
+
+**先判断当前视图是否参与交互、是否包含该点，再从前到后查找子视图；找到目标就返回，否则返回自身。** 隐藏、交互关闭或几乎完全透明的视图会被跳过。普通层级可以逆序遍历 `subviews`，把点转换到子视图坐标后调用子视图的 `hitTest`。
+
+这是默认行为的主要模型。子类可能重写 `point(inside:with:)` 或 `hitTest`，因此实际排查时还要确认自定义命中规则。
+
+</details>
+
+### 5.3 子视图超出父视图范围后，怎样让它响应事件？ {#outside-parent}
+
+**考察重点**：绘制裁剪与命中区域的区别、祖先视图的限制。
+
+**相关内容**：[父视图外为什么点不到](#父视图外为什么点不到)。
+
+<details>
+<summary>参考回答</summary>
+
+**先让布局和交互区域一致；确需越界时，再为指定子视图扩展父容器的命中区域。** `clipsToBounds = false` 只影响可见内容，不会让父视图默认接受 `bounds` 外的点。
+
+可以重写父容器的 `point(inside:with:)`，把坐标转换到允许越界的子视图后判断；也可以在有明确目标规则时重写 `hitTest`。同时检查更高层祖先是否已拒绝该点，并避免扩大区域后抢走相邻控件的触摸。
+
+</details>
+
+### 5.4 怎样扩大 UIButton 的可触控范围？ {#larger-target}
+
+**考察重点**：局部区域判断与视觉尺寸的分离。
+
+**相关内容**：[扩大按钮的触控区域](#扩大按钮的触控区域)。
+
+<details>
+<summary>参考回答</summary>
+
+**可以在按钮子类中重写 `point(inside:with:)`，按向外扩展的 `bounds` 判断触摸位置。** 这样不必同时改变按钮的视觉尺寸和布局约束。
+
+还要确认扩展部分位于祖先允许参与命中的区域内，以及与旁边按钮重叠时的优先关系。只扩大按钮自己的判断范围，无法越过已经拒绝该点的父容器。
+
+</details>
+
+### 5.5 手势识别器和响应者链是什么关系？ {#gesture-chain}
+
+**考察重点**：识别器继承关系、触摸观察与取消。
+
+**相关内容**：[手势不是链中的下一个响应者](#手势不是链中的下一个响应者)。
+
+<details>
+<summary>参考回答</summary>
+
+**手势识别器参与触摸处理，但本身不是通过 `next` 连接的响应者。** 它观察关联视图及子视图中的触摸，根据识别状态发送 action，并与视图的触摸处理协调。
+
+识别成功后，默认的 `cancelsTouchesInView = true` 可以取消视图已经收到的触摸。响应者链则负责视图等对象未处理事件的转交，两套机制不能简单理解为一个固定先后队列。
+
+</details>
+
+### 5.6 UIButton 添加 tap 手势后，哪个会响应？ {#button-tap}
+
+**考察重点**：原始触摸、控件 action 和手势取消条件。
+
+**相关内容**：[按钮与 tap 为什么会冲突](#按钮与tap为什么会冲突)。
+
+<details>
+<summary>参考回答</summary>
+
+**先确认手势加在哪里、是否接收并成功识别这次触摸，以及取消和延迟配置。** 对直接加在按钮上的 tap，识别成功时默认的 `cancelsTouchesInView = true` 可取消按钮触摸，使按钮无法正常完成这次 `.touchUpInside`，而手势发出自己的 action。
+
+若把取消设为 `false`，按钮仍有机会完成正常触摸处理，但还要满足控件自身条件。背景手势需要避开按钮时，可以通过 delegate 拒绝控件范围的触摸，不应仅凭添加顺序推断。
+
+</details>
+
+### 5.7 同时识别、失败依赖和 cancelsTouchesInView 有什么区别？ {#gesture-coordination}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：手势间竞争与手势对视图触摸的影响。
+
+**相关内容**：[同时识别与失败依赖](#同时识别与失败依赖)、[手势不是链中的下一个响应者](#手势不是链中的下一个响应者)。
+
+<details>
+<summary>参考回答</summary>
+
+**同时识别决定两个识别器能否一起成功，失败依赖决定一个是否要等待另一个失败，`cancelsTouchesInView` 决定识别成功后是否取消视图的触摸。** 三者不能互相替代。
+
+例如缩放与旋转可以允许同时识别；单击要区分双击，可让单击等待双击失败；背景点击不应打断控件时，要考虑取消配置或直接过滤控件范围的输入。
+
+</details>
+
+### 5.8 手指从按钮 A 移到按钮 B，会重新选择触摸目标吗？ {#touch-lifetime}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：`UITouch.view` 的稳定性与结束、取消处理。
+
+**相关内容**：[手指移出后发生什么](#手指移出后发生什么)。
+
+<details>
+<summary>参考回答</summary>
+
+**同一次触摸的 `UITouch.view` 保持关联的原视图，不会因为位置移动而改成按钮 B。** 位置和阶段会更新，按钮 A 再按自己的触摸跟踪规则决定是否产生有效控件事件。
+
+手势识别或系统中断还可能取消触摸，因此自定义交互必须处理取消状态，不能只等待正常松手，也不能把手指跨入 B 等同于点击 B。
+
+</details>
+
+## 6. 参考资料 {#参考资料}
+
+- [Apple：Using responders and the responder chain to handle events](https://developer.apple.com/documentation/uikit/using-responders-and-the-responder-chain-to-handle-events)
+- [Apple：UIView.hitTest(_:with:)](https://developer.apple.com/documentation/uikit/uiview/hittest(_:with:))
+- [Apple：UIView.point(inside:with:)](https://developer.apple.com/documentation/uikit/uiview/point(inside:with:))
+- [Apple：UIResponder.next](https://developer.apple.com/documentation/uikit/uiresponder/next)
+- [Apple：UITouch.view](https://developer.apple.com/documentation/uikit/uitouch/view)
+- [Apple：UIResponder.touchesBegan(_:with:)](https://developer.apple.com/documentation/uikit/uiresponder/touchesbegan(_:with:))
+- [Apple：UIGestureRecognizer](https://developer.apple.com/documentation/uikit/uigesturerecognizer)
+- [Apple：Handling UIKit gestures](https://developer.apple.com/documentation/uikit/handling-uikit-gestures)
+- [Apple：cancelsTouchesInView](https://developer.apple.com/documentation/uikit/uigesturerecognizer/cancelstouchesinview)
+- [Apple：delaysTouchesBegan](https://developer.apple.com/documentation/uikit/uigesturerecognizer/delaystouchesbegan)
+- [Apple：delaysTouchesEnded](https://developer.apple.com/documentation/uikit/uigesturerecognizer/delaystouchesended)
+- [Apple：require(toFail:)](https://developer.apple.com/documentation/uikit/uigesturerecognizer/require(tofail:))
+- [Apple：gestureRecognizer(_:shouldRecognizeSimultaneouslyWith:)](https://developer.apple.com/documentation/uikit/uigesturerecognizerdelegate/gesturerecognizer(_:shouldrecognizesimultaneouslywith:))
+- [Apple：gestureRecognizer(_:shouldReceive:)](https://developer.apple.com/documentation/uikit/uigesturerecognizerdelegate/gesturerecognizer(_:shouldreceive:)-16fuh)
+- [Apple：UIControl](https://developer.apple.com/documentation/uikit/uicontrol)

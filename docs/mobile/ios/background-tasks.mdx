@@ -1,0 +1,289 @@
+---
+title: iOS 后台任务
+description: 区分 iOS 有限后台执行、系统调度、后台传输与推送，理解任务过期、完成回调和可恢复执行。
+knowledge:
+  id: mobile.ios.background-tasks
+---
+
+**iOS 后台任务**是在应用离开前台后，由系统允许继续或择机执行的工作。应用进入后台，不代表所有线程马上结束；进入挂起状态后，也不能指望普通线程、Timer 或 Swift Task 继续运行。能否执行、什么时候执行、允许执行多久，要看采用的系统机制与当时的条件。
+
+面试里解释后台下载、内容刷新或离线同步时，应先区分“把正在做的事收尾”和“以后有机会再做”。本文以 UIKit 的有限执行时间、iOS 13 起的 BackgroundTasks 和后台 URLSession 为主，不把它们解释为任意保活能力。
+
+## 1. 面试核心 {#core}
+
+- **后台是应用状态，后台线程是线程用途，两者没有相互保证**。普通 GCD 队列或 Swift Task 不会自行获得后台运行资格。[卡](#background-thread)
+- **`beginBackgroundTask` 为已有重要工作争取有限收尾时间**，每次成功申请都要匹配结束；过期时尽快取消、清理并结束。[卡](#finite-time)
+- **BackgroundTasks 提交的是调度请求，不是定时器**。`earliestBeginDate` 只表示最早允许开始的时间，不能承诺准点甚至一定执行。[卡](#scheduling)
+- **刷新、较重处理与大文件传输应选择不同机制**。把请求发送到服务器，不等于适合让应用进程长时间等待。[卡](#mechanism-choice)
+- **过期和完成都需要明确处理**。停止不再有用的工作、保存可恢复进度，并对每次系统交付的任务报告完成结果。[卡](#expiration)
+- **任务可能重复、延迟或被中断，业务应能够恢复和去重**。检查账号、网络、文件保护与服务端状态，不能只依赖内存里的“已完成”。[卡](#recovery)
+- **后台推送是刷新提示，不是可靠消息队列或定时触发保证**。关键状态以服务端和持久化记录为准。[卡](#background-push)
+
+## 2. 后台、挂起与执行资格 {#后台挂起与执行资格}
+
+**挂起**表示进程仍可能保留在内存中，但不执行应用代码。普通应用离开前台后，通常只有有限时间处理状态保存等工作，之后可能被挂起，也可能被系统终止。具体应用状态和 Scene 回调见 [iOS 应用生命周期](./app-lifecycle.mdx)。
+
+创建一个线程、提交 GCD block 或启动 `Task`，只是安排应用进程内部的工作，不会阻止挂起。Timer 需要运行循环或相应执行机制得到运行机会，也不能在进程停止执行时持续触发。
+
+音频播放、位置更新等后台模式是针对真实功能的能力，必须满足相应配置和框架条件。不能用播放静音音频或反复创建任务的方式，把任意业务伪装成可以无限运行的后台功能。
+
+## 3. 有限后台执行时间 {#有限后台执行时间}
+
+### 3.1 申请的是执行时间，不是工作线程 {#申请的是执行时间}
+
+`UIApplication.beginBackgroundTask(withName:expirationHandler:)` 标记一项需要在应用转入后台后继续完成的工作。它返回任务标识；如果无法获得资格，返回 `.invalid`。方法不会替你创建线程、保存数据或自动结束业务操作。
+
+应在需要保护的工作开始时申请，不能拖到应用即将挂起的最后一刻才期待一定成功。完成后调用 `endBackgroundTask`；系统即将收回时间时，通过 expiration handler 给应用短暂的清理机会。
+
+`backgroundTimeRemaining` 在前台已开始任务、应用进入后台后才有对应的有效意义；它是当前条件下的剩余时间信息，不是业务时限承诺。不要写死“每次都有几分钟”，也不要认为多申请几个任务就能把时间相加。
+
+### 3.2 明确管理开始和结束 {#明确管理开始和结束}
+
+```swift
+import UIKit
+
+@MainActor
+final class BackgroundLease {
+    private var token: UIBackgroundTaskIdentifier = .invalid
+
+    func begin(onExpiration: @escaping @MainActor () -> Void) -> Bool {
+        guard token == .invalid else { return false }
+        token = UIApplication.shared.beginBackgroundTask(withName: "SaveDraft") { [self] in
+            onExpiration()
+            end()
+        }
+        return token != .invalid
+    }
+
+    func end() {
+        guard token != .invalid else { return }
+        let finished = token
+        token = .invalid
+        UIApplication.shared.endBackgroundTask(finished)
+    }
+}
+```
+
+调用方持有 `BackgroundLease`，在开始保存前调用 `begin`，无论正常完成还是失败，都回到主 actor 调用 `end`。如果申请返回 `false`，就不能假定能在后台完成，应保留恢复所需的信息。
+
+`onExpiration` 用来通知实际操作停止，例如取消请求或设置协作取消标记；它必须快速返回，不能在里面同步等待一个可能永远不结束的线程。这个例子在过期回调中持有 `self`，确保仍能结束对应标识；正常完成时也必须主动 `end`，不能把系统过期当作常规回收方式。
+
+取消和结束是两件事：`end` 归还执行资格，不会替你取消网络请求；调用 `Task.cancel()` 也不会自动终止不检查取消的计算。相关取消机制见 [Swift 并发](../../basic-knowledge/swift/concurrency.mdx)。
+
+## 4. BackgroundTasks 系统调度 {#BackgroundTasks系统调度}
+
+### 4.1 注册、提交与执行是不同阶段 {#注册提交与执行是不同阶段}
+
+**BackgroundTasks** 允许应用提交未来的后台工作，由系统结合使用情况、资源和设备条件决定何时交付。应用先注册任务标识与处理器，再提交请求；提交成功只说明请求被接受。
+
+以 iOS 13 起的两类任务为例：
+
+| 类型 | 适合的工作 | 要注意的条件 |
+| --- | --- | --- |
+| `BGAppRefreshTask` | 更新少量内容，让用户下次打开时更及时 | 系统给的时间有限，任务应短小 |
+| `BGProcessingTask` | 可延后进行的数据库维护、较重同步等 | 可声明网络、外部电源需求，仍由系统调度 |
+
+在 Info.plist 的 `BGTaskSchedulerPermittedIdentifiers` 中声明允许的标识，并按任务类型配置 Background Modes。在应用启动回调完成前注册处理器；同一标识重复注册会导致系统终止应用，也不能等收到任务之后才临时补注册。
+
+### 4.2 最早时间不是预约时间 {#最早时间不是预约时间}
+
+```swift
+import BackgroundTasks
+import Foundation
+
+let refreshIdentifier = "com.example.reader.refresh"
+
+func registerReaderRefresh(
+    handler: @escaping (BGAppRefreshTask) -> Void
+) -> Bool {
+    BGTaskScheduler.shared.register(forTaskWithIdentifier: refreshIdentifier,
+                                    using: nil) { task in
+        guard let refresh = task as? BGAppRefreshTask else {
+            task.setTaskCompleted(success: false)
+            return
+        }
+        handler(refresh)
+    }
+}
+
+func requestReaderRefresh(notBefore date: Date) throws {
+    let request = BGAppRefreshTaskRequest(identifier: refreshIdentifier)
+    request.earliestBeginDate = date
+    try BGTaskScheduler.shared.submit(request)
+}
+```
+
+这段代码只处理注册和提交。调用方传入的 `handler` 还必须负责实际工作、过期取消和最终的 `setTaskCompleted(success:)`；不能收到任务后立即返回，却忘了报告完成。
+
+`using: nil` 让系统提供处理回调的队列，不等于主队列。需要修改主线程隔离的状态时，明确切换到相应执行上下文。
+
+即使传入十分钟后的日期，也只是告诉系统不要更早开始。任务可能更晚执行，系统条件也可能使它没有机会执行。请求提交可能失败，调用方要处理错误，而不是把异常吞掉后在界面显示“已同步”。
+
+再次提交尚未执行的同一任务请求，会替换之前的待处理请求，不能把每次提交都理解为新建一条一定执行的业务消息。需要周期性机会时再次安排请求，但不要据此承诺严格周期。
+
+### 4.3 过期、取消和完成 {#过期取消和完成}
+
+收到 `BGTask` 后，尽早设置 `expirationHandler`。系统回收执行时间时，在其中取消未完成工作、进行必要清理；真正的操作也要能响应取消。
+
+对每次交付的任务调用 `setTaskCompleted(success:)`。正常完成、业务失败和过期都需要有明确出口；并发的完成回调与过期回调可能竞争，应由一个串行状态机或同步保护确保只报告一次。成功表示本次工作达成目标，不应仅凭“没有收到取消”推断网络或数据库操作成功。
+
+保存进度应贯穿实际工作，而不是只放在过期回调里。系统可能终止进程，过期处理也只有很短时间；例如同步一批记录时，每完成一批就记录游标，比最后一次性把整个内存队列写盘更容易恢复。
+
+## 5. 后台传输与后台推送 {#后台传输与后台推送}
+
+### 5.1 大文件交给后台 URLSession {#大文件交给后台URLSession}
+
+**后台 URLSession** 让系统在独立于应用进程的环境中管理适合的上传和下载。它适合文件传输，不要求应用为了等待下载而一直保持执行；配置、代理回调与普通请求的区别见 [URLSession](./url-session.mdx#后台传输怎样交还结果)。
+
+应用恢复时用相同的会话标识重新关联任务，并处理系统交付的事件。下载成功后还要把临时文件移动到适合的位置；后台上传需要满足文件等条件，不能把普通内存流上传直接视为同样可靠。
+
+系统终止与用户主动划掉应用不是同一情况。用户强制退出会影响后台传输和自动唤起，不应向用户保证“退出后一定继续”。调试时也要区分调试器连接、模拟器和真实设备的行为。
+
+### 5.2 后台推送只表示有机会更新 {#后台推送只表示有机会更新}
+
+**后台推送**通过通知告诉应用有内容需要更新，系统可能给予短暂后台执行机会。它不是显示通知的另一种固定计时器；系统可能限制、延迟或不交付，不能用它保证每隔一分钟唤醒。
+
+收到提示后拉取服务端当前状态，比把每一条推送都当成不可遗漏的业务事件更稳妥。提交订单、收款状态等关键结果应由服务端维护，应用下次前台启动时也能重新获取；不能因为没有收到推送就断定服务端没有变化。
+
+## 6. 可恢复的后台工作 {#可恢复的后台工作}
+
+后台执行允许业务继续推进，但不能消除中断。设计一次同步时，可以按下面的顺序检查：
+
+1. 确认当前账号和任务归属。用户可能已经退出，旧账号的任务不能把结果写入新账号缓存。
+2. 从持久化记录读取游标、待发送内容或未完成文件，避免依赖上一次进程的内存。
+3. 使用幂等键、记录版本等手段，让重复提交不会产生重复业务结果。网络超时可能发生在服务端已经成功之后。
+4. 分批提交并保存进度，取消时停止安排新批次，保留能继续的状态。
+5. 检查文件和凭据当前是否可读。设备锁定时，某些保护等级可能阻止访问，见 [iOS 应用沙箱与权限](./sandbox-permissions.mdx#沙箱位置不决定锁屏访问)。
+
+这些措施不能保证任务按时执行，但能让它在再次获得机会时继续工作。校验时分别检查业务处理和系统调度：Apple 提供的调试器触发方式仅用于开发中的真机验证，可以检查回调、取消和完成流程，不能证明系统在真实使用中会以同样频率调度。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 把工作放到后台线程，应用退到后台后就能一直执行吗？ {#background-thread}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：线程调度、应用状态和系统执行资格的区别。
+
+**相关内容**：[后台、挂起与执行资格](#后台挂起与执行资格)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能，普通线程、GCD 队列和 Swift Task 都在应用进程的执行资格内工作。** 进程挂起后不能继续执行这些代码。需要按工作性质选择有限收尾时间、系统调度或后台传输等机制，并处理系统拒绝或收回时间。
+
+</details>
+
+### 7.2 `beginBackgroundTask` 应该怎样配对结束？过期时做什么？ {#finite-time}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：任务标识、有限时间与取消和结束的职责。
+
+**相关内容**：[有限后台执行时间](#有限后台执行时间)。
+
+<details>
+<summary>参考回答</summary>
+
+**每次成功申请得到的标识，都要在正常完成或过期清理后调用 `endBackgroundTask`。** 返回 `.invalid` 时不能假定后台资格有效。过期时快速通知操作取消并结束标识，不等待长时间工作；结束资格不会自动取消请求，取消请求也不会自动归还资格。
+
+</details>
+
+### 7.3 设置 `earliestBeginDate` 为十分钟后，任务就会在那时运行吗？ {#scheduling}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：提交、最早时间和实际执行之间的关系。
+
+**相关内容**：[最早时间不是预约时间](#最早时间不是预约时间)。
+
+<details>
+<summary>参考回答</summary>
+
+**不会，它只规定最早允许开始的时间，实际时机由系统决定。** 提交成功不表示已执行，也不能保证严格周期。应用需要处理提交失败、延迟和未执行，并在下次获得机会时从持久化状态恢复。
+
+</details>
+
+### 7.4 刷新少量内容、维护数据库和下载大文件分别适合什么机制？ {#mechanism-choice}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：任务性质、系统调度与传输服务的分工。
+
+**相关内容**：[注册、提交与执行是不同阶段](#注册提交与执行是不同阶段)、[大文件交给后台 URLSession](#大文件交给后台URLSession)。
+
+<details>
+<summary>参考回答</summary>
+
+**短小刷新可考虑 `BGAppRefreshTask`，可延期的较重处理可考虑 `BGProcessingTask`，文件传输优先评估后台 URLSession。** 已在进行的重要操作需要短暂收尾时，可以申请 UIKit 的有限后台时间。选择还要结合网络、电源、数据保护和任务能否中断，不能只按“需要后台”使用同一个接口。
+
+</details>
+
+### 7.5 BackgroundTasks 的业务完成和过期回调同时发生，怎样处理？ {#expiration}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：取消、实际结果、资源清理与一次完成。
+
+**相关内容**：[过期、取消和完成](#过期取消和完成)。
+
+<details>
+<summary>参考回答</summary>
+
+**用受同步保护的状态决定谁负责完成，确保同一次系统任务只报告一次结果。** 过期路径通知业务停止，完成路径依据实际结果判断成功或失败；两条路径都要释放资源。不能把“发出了取消”当成已经停止，也不能把“未取消”当成业务成功。
+
+</details>
+
+### 7.6 后台同步执行到一半被终止，下一次怎样继续？ {#recovery}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**题型**：综合题
+
+**考察重点**：持久化进度、账号隔离、幂等与数据保护。
+
+**相关内容**：[可恢复的后台工作](#可恢复的后台工作)、[有限后台执行时间](#有限后台执行时间)。
+
+<details>
+<summary>参考回答</summary>
+
+**从持久化的任务与进度恢复，并让重复执行不会产生重复业务结果。** 分批保存游标，发送操作使用幂等键或版本校验；再次执行前确认账号仍匹配、文件和凭据可访问。不能只在最后或过期回调中保存全部状态，也不能仅凭客户端超时判断服务端失败。
+
+</details>
+
+### 7.7 能否用后台推送保证每隔一分钟同步一次？ {#background-push}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：提示交付、系统限制和业务可靠性的边界。
+
+**相关内容**：[后台推送只表示有机会更新](#后台推送只表示有机会更新)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能，后台推送可能延迟、受限或不交付，不提供精确周期保证。** 把它作为“有变化，可以刷新”的提示，实际读取服务端当前状态；关键数据在前台启动时也应能恢复，不依赖每条推送都到达。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [Apple：Extending your app’s background execution time](https://developer.apple.com/documentation/uikit/extending-your-app-s-background-execution-time)
+- [Apple：beginBackgroundTask(withName:expirationHandler:)](https://developer.apple.com/documentation/uikit/uiapplication/beginbackgroundtask(withname:expirationhandler:))
+- [Apple：endBackgroundTask(_:)](https://developer.apple.com/documentation/uikit/uiapplication/endbackgroundtask(_:))
+- [Apple：backgroundTimeRemaining](https://developer.apple.com/documentation/uikit/uiapplication/backgroundtimeremaining)
+- [Apple：Choosing Background Strategies for Your App](https://developer.apple.com/documentation/backgroundtasks/choosing-background-strategies-for-your-app)
+- [Apple：register(forTaskWithIdentifier:using:launchHandler:)](https://developer.apple.com/documentation/backgroundtasks/bgtaskscheduler/register(fortaskwithidentifier:using:launchhandler:))
+- [Apple：submit(_:)](https://developer.apple.com/documentation/backgroundtasks/bgtaskscheduler/submit(_:))
+- [Apple：earliestBeginDate](https://developer.apple.com/documentation/backgroundtasks/bgtaskrequest/earliestbegindate)
+- [Apple：BGProcessingTaskRequest](https://developer.apple.com/documentation/backgroundtasks/bgprocessingtaskrequest)
+- [Apple：expirationHandler](https://developer.apple.com/documentation/backgroundtasks/bgtask/expirationhandler)
+- [Apple：setTaskCompleted(success:)](https://developer.apple.com/documentation/backgroundtasks/bgtask/settaskcompleted(success:))
+- [Apple：Starting and Terminating Tasks During Development](https://developer.apple.com/documentation/backgroundtasks/starting-and-terminating-tasks-during-development)
+- [Apple：Downloading files in the background](https://developer.apple.com/documentation/foundation/downloading-files-in-the-background)
+- [Apple：Pushing background updates to your App](https://developer.apple.com/documentation/usernotifications/pushing-background-updates-to-your-app)
+- [Apple：BGAppRefreshTask](https://developer.apple.com/documentation/backgroundtasks/bgapprefreshtask)
+- [Apple：requiresNetworkConnectivity](https://developer.apple.com/documentation/backgroundtasks/bgprocessingtaskrequest/requiresnetworkconnectivity)
+- [Apple：requiresExternalPower](https://developer.apple.com/documentation/backgroundtasks/bgprocessingtaskrequest/requiresexternalpower)
+- [Apple：BGTaskScheduler.Error.Code.unavailable](https://developer.apple.com/documentation/backgroundtasks/bgtaskscheduler/error/code/unavailable)
+- [Apple：background(withIdentifier:)](https://developer.apple.com/documentation/foundation/urlsessionconfiguration/background(withidentifier:))

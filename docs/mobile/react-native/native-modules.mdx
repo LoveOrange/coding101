@@ -1,0 +1,342 @@
+---
+title: React Native 原生模块
+description: 解释 TurboModule 的类型契约、Codegen、原生注册、Promise、事件与资源生命周期，并区分旧模块接口。
+knowledge:
+  id: mobile.react-native.native-modules
+---
+
+**React Native 原生模块**把平台能力提供给 JavaScript 调用，例如读取系统信息、访问蓝牙或使用已有原生 SDK。接口之外还要处理参数、线程、错误和资源归属；JS 能调用一个方法，不代表整个设备操作已经正确完成。
+
+本文以 React Native 0.76.9 为基线，用 TurboModule 说明新模块的契约与实现，并单独说明旧模块事件接口。Fabric 与 JSI 的分工见 [React Native 渲染](rendering.mdx#新旧架构的职责)，这里重点讨论非 UI 能力的调用边界。
+
+## 1. 面试核心 {#core}
+
+- **TurboModule 由类型规范、生成接口、原生实现和注册共同组成**。只有 TypeScript 文件不会自动生成设备能力。[卡](#codegen)
+- **类型检查与运行时业务校验解决不同问题**。参数类型正确，还可能超出长度、数值、权限或业务状态允许的范围。[卡](#validation)
+- **Promise 表达一次结果，事件表达持续变化**。Promise 不自动提供取消，订阅移除也不必然停止底层设备工作。[卡](#async)
+- **同步访问能力不等于后台执行**。耗时工作要安排线程，平台 UI 操作要遵守主线程要求。[卡](#threads)
+- **模块、页面和原生资源有不同生命周期**。异步回调、监听器和设备连接需要明确释放时机与所有者。[卡](#lifetime)
+- **模块找不到要检查名称、生成、注册和原生构建**。刷新 JS 不能替代安装含有新原生代码的应用。[卡](#registration)
+- **设备能力接入需要完整状态路径**。权限、连接、持续事件、断线和页面退出都属于方案的一部分。[卡](#bluetooth)
+
+## 2. 接口与实现的连接 {#接口与实现的连接}
+
+### 2.1 类型规范描述跨边界契约 {#类型规范描述契约}
+
+**TurboModule 规范**用 TypeScript 或 Flow 声明 JS 与原生之间的方法及数据类型。Codegen 读取规范，生成平台接口和连接代码；具体业务仍由开发者实现。
+
+将以下文件命名为 `specs/NativeGreeting.ts`：
+
+```ts
+import type {TurboModule} from 'react-native';
+import {TurboModuleRegistry} from 'react-native';
+
+export interface Spec extends TurboModule {
+  greet(name: string): Promise<string>;
+}
+
+export default TurboModuleRegistry.getEnforcing<Spec>('NativeGreeting');
+```
+
+`Native` 文件名前缀用于让工具识别模块规范。`NativeGreeting` 是运行时查找使用的名称，需要与原生注册一致。`getEnforcing` 用于必须存在的模块，找不到会报错；可选能力可以使用 `get` 并处理空值，而不是等调用时再意外失败。
+
+规范支持的是 Codegen 能表达的类型集合，不是完整 TypeScript 语法。不能把任意类实例、函数闭包或平台对象当作普通参数直接跨边界传递；支持范围要按当前版本核对。
+
+### 2.2 Codegen 生成什么 {#codegen生成什么}
+
+在已有 React Native 应用的 `package.json` 中加入相应配置，其他配置保持原有内容：
+
+```json
+{
+  "codegenConfig": {
+    "name": "GreetingSpec",
+    "type": "modules",
+    "jsSrcsDir": "specs",
+    "android": {
+      "javaPackageName": "com.coding101.greeting"
+    }
+  }
+}
+```
+
+这里的 `GreetingSpec` 标识生成的库，`jsSrcsDir` 指向规范目录，Java 包名决定 Android 生成代码的位置。应用构建集成 Codegen；排查时也可以通过对应版本的生成脚本检查实际输出。
+
+对于这个规范，Android 会得到 `NativeGreetingSpec` 等连接代码，原生方法接收 `name` 和用于完成异步结果的 `Promise`。生成成功只证明规范可以转换，不能证明原生业务正确、模块已注册或用户已授权。
+
+## 3. Android 实现与注册 {#android实现与注册}
+
+### 3.1 实现生成接口 {#实现生成接口}
+
+下面的 Java 实现只处理一个立即可完成的小操作，展示参数校验与结果返回。它放在对应 Java 包下，并继承真实生成的 `NativeGreetingSpec`：
+
+```java
+package com.coding101.greeting;
+
+import com.facebook.react.bridge.Promise;
+import com.facebook.react.bridge.ReactApplicationContext;
+
+public final class NativeGreetingModule extends NativeGreetingSpec {
+  public static final String NAME = "NativeGreeting";
+
+  public NativeGreetingModule(ReactApplicationContext context) {
+    super(context);
+  }
+
+  @Override
+  public String getName() {
+    return NAME;
+  }
+
+  @Override
+  public void greet(String name, Promise promise) {
+    if (name == null || name.isEmpty() || name.length() > 40) {
+      promise.reject("E_ARGUMENT", "name 长度必须为 1 到 40");
+      return;
+    }
+    promise.resolve("Hello, " + name);
+  }
+}
+```
+
+成功时 JS 的 Promise 得到字符串；空值、空字符串或过长输入走拒绝分支。这里的长度按 Java `String.length()` 的 UTF-16 代码单元计算，不应把它解释成所有语言下的用户可见字符数量。
+
+`return` 确保拒绝后不继续返回成功。真实异步操作还需要让完成、超时和取消分支协调，避免同一个请求重复完成；不要依赖重复回调被忽略来代替正确的任务状态。
+
+### 3.2 将模块交给运行时 {#将模块交给运行时}
+
+下面的包提供按名称创建模块的方法，并声明它是 TurboModule：
+
+```java
+package com.coding101.greeting;
+
+import com.facebook.react.BaseReactPackage;
+import com.facebook.react.bridge.NativeModule;
+import com.facebook.react.bridge.ReactApplicationContext;
+import com.facebook.react.module.model.ReactModuleInfo;
+import com.facebook.react.module.model.ReactModuleInfoProvider;
+import java.util.Collections;
+
+public final class GreetingPackage extends BaseReactPackage {
+  @Override
+  public NativeModule getModule(String name, ReactApplicationContext context) {
+    return NativeGreetingModule.NAME.equals(name)
+        ? new NativeGreetingModule(context)
+        : null;
+  }
+
+  @Override
+  public ReactModuleInfoProvider getReactModuleInfoProvider() {
+    return () -> Collections.singletonMap(
+        NativeGreetingModule.NAME,
+        new ReactModuleInfo(
+            NativeGreetingModule.NAME,
+            NativeGreetingModule.class.getName(),
+            false, false, false, true));
+  }
+}
+```
+
+四个布尔值依次表示是否允许覆盖同名模块、是否需要提前初始化、是否为 C++ 模块、是否为 TurboModule。这个示例不要求启动时提前创建。
+
+应用内自行编写的包还要加入实际宿主的 `getPackages()` 列表，例如在已有列表上调用 `packages.add(new GreetingPackage())`，然后重新构建并安装原生应用。独立库可以通过符合要求的自动链接配置接入，不能把“放进源码目录”当作完成注册。
+
+示例只给出 Android 实现。iOS 需要实现生成的协议及对应的 TurboModule 连接，接入 Objective-C++ 等平台代码并重新构建；同一份 TS 规范不会替你生成 iOS 的业务实现。
+
+## 4. 类型、Promise 与错误 {#类型Promise与错误}
+
+### 4.1 类型之外还有有效性 {#类型之外还有有效性}
+
+`name` 是字符串，只说明它属于这一类型，不代表它满足长度规则。类似地，数字还要判断是否有限、单位是什么、是否在范围内；路径、设备 ID 和权限状态也需要各自的校验。
+
+Codegen 限制跨边界可表达的类型并生成转换代码，能够减少接口不一致。它不能代替业务校验、权限检查或数据授权，也不意味着任意 JavaScript 值都可以安全传入。
+
+大数组和频繁调用仍有处理成本。新架构减少了对旧 Bridge 的依赖，不代表数据转换、对象持有与跨语言调用全部免费。优先传递明确的小型契约；大型数据需要根据平台能力设计文件、缓冲区或批量接口。
+
+### 4.2 Promise 与取消不是同一件事 {#promise与取消}
+
+**Promise** 表达一次操作最终成功或失败，不自带原生任务取消协议。JS 放弃等待、页面卸载或用超时 Promise 抢先返回，都不保证底层扫描、请求或文件操作已经停止。
+
+需要取消时，接口应明确请求标识和取消动作，并定义完成与取消同时发生时的处理方式。JS 端还要检查结果是否仍属于当前页面或当前请求，避免旧结果覆盖新状态。
+
+错误码应区分参数错误、权限问题、设备状态和操作失败，让调用者能决定提示、重试或结束。不要把所有拒绝都当作“模块不存在”，也不要无限重试权限被拒绝的操作。
+
+## 5. 持续事件与资源生命周期 {#持续事件与资源生命周期}
+
+### 5.1 事件不是重复 resolve {#事件不是重复resolve}
+
+持续扫描结果、连接状态或传感器变化适合事件订阅，不应反复完成同一个 Promise。事件还需要明确名称、数据结构、顺序要求和丢失后的恢复方式。
+
+在 0.76 的旧模块接口中，`NativeEventEmitter` 用于建立 JS 监听，并通过模块的 `addListener`、`removeListeners` 等约定通知原生监听数量。下面只展示消费事件时的数据校验，假设调用者已经获得对应模块的 emitter：
+
+```ts
+import type {NativeEventEmitter} from 'react-native';
+
+type DeviceEvent = {id: string; rssi: number};
+
+export function subscribeDevices(
+  emitter: NativeEventEmitter,
+  onDevice: (event: DeviceEvent) => void,
+) {
+  return emitter.addListener('deviceFound', (event: unknown) => {
+    if (typeof event !== 'object' || event === null) return;
+    const value = event as Record<string, unknown>;
+    if (
+      typeof value.id === 'string' && value.id.length > 0 &&
+      typeof value.rssi === 'number' && Number.isFinite(value.rssi)
+    ) {
+      onDevice({id: value.id, rssi: value.rssi});
+    }
+  });
+}
+```
+
+这个旧接口通过共享的 `RCTDeviceEventEmitter` 分发事件，创建两个 emitter 并不会自动隔离同名事件。实际模块应采用带模块前缀的事件名，并保留设备或请求身份，避免不同能力的事件互相混入。
+
+返回的订阅需要在所属页面或其他所有者结束时调用 `remove()`。这段代码没有实现蓝牙扫描，也不把旧模块 emitter 的约定当作所有版本的新类型化事件接口；接入已有库时，应按它的实际架构和版本选择 API。
+
+### 5.2 清理监听不一定停止设备工作 {#清理监听与设备工作}
+
+移除一个 JS 监听，只说明该监听不再接收事件。是否停止原生扫描，要看原生模块是否维护监听数量、是否还有其他使用者，以及扫描是否由独立任务持有。
+
+模块需要根据资源建立方式，在失效、连接结束或宿主状态变化时释放对应资源。Android 模块可以通过 `initialize()`、`invalidate()` 与宿主生命周期接口安排清理；页面退出不一定销毁整个 React Native 运行时，不能只等模块被回收。
+
+有多个页面共享同一设备时，应该明确连接由谁持有，或者使用请求标识、引用计数等方式管理。不能让一个页面随意停止所有页面正在使用的扫描，也不能让已经结束的任务继续保留页面回调。
+
+## 6. 线程与集成排查 {#线程与集成排查}
+
+### 6.1 接口形式不决定执行线程 {#接口形式不决定执行线程}
+
+返回 Promise 不等于方法里的同步代码已经移到工作线程。JSI 允许直接交互，也不替你选择安全的线程；耗时磁盘、计算或设备操作应按实现安排异步工作，UI 操作则切回平台要求的主线程。
+
+不要依赖某个版本观察到的模块调用线程作为永久保证。尤其是同步接口，调用方需要等结果返回，锁等待和长计算会直接增加阻塞；还要避免两个线程互相同步等待形成死锁。
+
+### 6.2 模块找不到时逐层定位 {#模块找不到时逐层定位}
+
+先检查 JS 查找名称与原生导出名是否一致，再检查 Codegen 输入目录和生成结果、原生实现是否进入构建、包是否被宿主注册，以及设备上安装的二进制是否包含这次改动。
+
+JS 热刷新可以更新脚本，新增 Java、Objective-C++ 或原生依赖通常需要重新构建安装。模块已存在但方法拒绝，应继续检查错误码与实际状态，不能把所有问题都归到“桥接失败”。
+
+验证也分层：TS 编译检查接口使用，Codegen 检查规范转换，原生测试检查实现，设备集成检查运行时注册和平台能力。JS 测试中的模块替身只覆盖约定好的返回，不证明权限弹窗、蓝牙连接或原生线程已经通过。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 写完 TurboModule 的 TypeScript 规范后，还缺哪些工作？ {#codegen}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：规范、生成、实现和运行时注册。
+
+**相关内容**：[接口与实现的连接](#接口与实现的连接)、[Android 实现与注册](#android实现与注册)
+
+<details>
+<summary>参考回答</summary>
+
+**还需要生成平台接口、实现业务、完成注册并重新构建原生应用。** TS 规范只定义契约，Codegen 生成连接代码；它们都不能自动产生设备能力。Android 与 iOS 还要分别提供对应实现和集成验证。
+
+</details>
+
+### 7.2 Codegen 有类型检查，为什么原生实现仍要校验参数？ {#validation}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：类型、取值范围与平台状态。
+
+**相关内容**：[类型之外还有有效性](#类型之外还有有效性)
+
+<details>
+<summary>参考回答</summary>
+
+**类型正确不代表值或当前操作合法。** 字符串可能为空或过长，数字可能越界，设备操作可能没有权限或已经结束。Codegen 负责受支持类型的接口与转换，业务和平台条件仍由实现校验。
+
+</details>
+
+### 7.3 Promise、事件订阅与取消请求分别解决什么问题？ {#async}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：一次结果、持续通知和任务控制。
+
+**相关内容**：[Promise 与取消不是同一件事](#promise与取消)、[事件不是重复 resolve](#事件不是重复resolve)
+
+<details>
+<summary>参考回答</summary>
+
+**Promise 表达一次结果，事件表达持续变化，取消协议控制底层任务。** 不等待 Promise 不会自动停止原生工作；删除监听也不一定停止设备。需要明确请求标识、取消行为和资源归属，并处理取消与完成的竞争。
+
+</details>
+
+### 7.4 TurboModule 返回 Promise，就可以直接执行耗时同步操作吗？ {#threads}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：接口返回形式、线程安排与阻塞。
+
+**相关内容**：[接口形式不决定执行线程](#接口形式不决定执行线程)
+
+<details>
+<summary>参考回答</summary>
+
+**不能，Promise 只描述结果形式，不会自动搬走方法中的同步工作。** 耗时任务需要安排工作线程或平台异步 API，UI 操作遵守主线程要求；同步调用更要控制耗时和锁等待，不能假设 JSI 会消除阻塞。
+
+</details>
+
+### 7.5 页面退出后，怎样避免原生监听和设备任务继续占用资源？ {#lifetime}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：页面、模块、任务与共享资源的生命周期。
+
+**相关内容**：[清理监听不一定停止设备工作](#清理监听与设备工作)
+
+<details>
+<summary>参考回答</summary>
+
+**按所有者清理订阅与任务，并区分页面结束和模块失效。** 页面移除监听，任务通过取消或释放接口结束；原生模块还需清理对应回调和连接。共享设备资源要检查其他使用者，不能一个页面退出就关闭全部连接。
+
+</details>
+
+### 7.6 JS 报 NativeGreeting 不存在，应该检查哪里？ {#registration}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：名字、生成、构建与注册链路。
+
+**相关内容**：[模块找不到时逐层定位](#模块找不到时逐层定位)
+
+<details>
+<summary>参考回答</summary>
+
+**沿查找名称、生成结果、原生实现、宿主注册和已安装二进制逐层检查。** 新原生代码需要进入原生构建并安装，单独刷新 JS 不够；还要区分模块缺失与模块方法返回的业务错误。
+
+</details>
+
+### 7.7 App 新增蓝牙连接硬件，怎样把硬件广播的信息显示到页面？ {#bluetooth}
+
+**题型**：综合题
+
+**考察重点**：平台能力接入、权限与连接状态、事件传递和资源清理。
+
+**相关内容**：[持续事件与资源生命周期](#持续事件与资源生命周期)、[线程与集成排查](#线程与集成排查)
+
+<details>
+<summary>参考回答</summary>
+
+**由平台模块管理蓝牙能力，把明确的数据和状态事件交给页面模型。** 先处理系统支持、权限和蓝牙开关，再按设备协议发现、连接或接收广播；原生侧解析并校验消息，JS 侧按设备身份更新状态。广播与建立连接是不同路径，需要按硬件协议选择。
+
+还要定义扫描结束、断线、重连、重复消息和页面退出的处理，控制事件频率并释放监听。分别在目标平台和实际硬件上验证，不能用 JS 替身返回数据就宣布连接流程完成。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [React Native 0.76：Native Modules](https://github.com/react/react-native-website/blob/1e510146b8d4d17877f8890acd9e5709796633cc/website/versioned_docs/version-0.76/turbo-native-modules.md)
+- [React Native 0.76：Turbo Native Modules Android](https://github.com/react/react-native-website/blob/1e510146b8d4d17877f8890acd9e5709796633cc/website/versioned_docs/version-0.76/turbo-native-modules-android.md)
+- [React Native 0.76：Turbo Native Modules iOS](https://github.com/react/react-native-website/blob/1e510146b8d4d17877f8890acd9e5709796633cc/website/versioned_docs/version-0.76/turbo-native-modules-ios.md)
+- [React Native 0.76：What is Codegen](https://github.com/react/react-native-website/blob/1e510146b8d4d17877f8890acd9e5709796633cc/website/versioned_docs/version-0.76/the-new-architecture/what-is-codegen.md)
+- [React Native 0.76：Using Codegen](https://github.com/react/react-native-website/blob/1e510146b8d4d17877f8890acd9e5709796633cc/website/versioned_docs/version-0.76/the-new-architecture/using-codegen.md)
+- [React Native 0.76：Legacy Android Native Modules](https://github.com/react/react-native-website/blob/1e510146b8d4d17877f8890acd9e5709796633cc/website/versioned_docs/version-0.76/legacy/native-modules-android.md)
+- [React Native 0.76：Legacy iOS Native Modules](https://github.com/react/react-native-website/blob/1e510146b8d4d17877f8890acd9e5709796633cc/website/versioned_docs/version-0.76/legacy/native-modules-ios.md)
+- [React Native 0.76.9：TurboModuleRegistry](https://github.com/facebook/react-native/blob/v0.76.9/packages/react-native/Libraries/TurboModule/TurboModuleRegistry.js)
+- [React Native 0.76.9：NativeEventEmitter](https://github.com/facebook/react-native/blob/v0.76.9/packages/react-native/Libraries/EventEmitter/NativeEventEmitter.js)
+- [React Native 0.76.9：BaseReactPackage](https://github.com/facebook/react-native/blob/v0.76.9/packages/react-native/ReactAndroid/src/main/java/com/facebook/react/BaseReactPackage.java)
+- [React Native 0.76.9：BaseJavaModule](https://github.com/facebook/react-native/blob/v0.76.9/packages/react-native/ReactAndroid/src/main/java/com/facebook/react/bridge/BaseJavaModule.java)

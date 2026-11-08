@@ -1,0 +1,361 @@
+---
+sidebar_position: 3
+knowledge:
+  id: frontend.interaction.file-upload
+---
+
+# 浏览器文件上传
+
+**浏览器文件上传**从用户选择的 `File` 开始，经过读取、切片和请求调度，把字节交给接收端。前端不仅要发出请求，还要管理进度、取消、重试和文件切换，避免界面显示与实际上传任务脱节。
+
+实现上传组件时，重点是把文件对象、异步任务和页面状态对应起来。本文讲浏览器侧实现；服务端的会话、幂等和完成协议见[文件上传](../../basic-knowledge/network/file-upload.mdx#上传会话与断点续传)，下面的客户端代码依赖接收端提供这些能力。
+
+## 1. 面试核心 {#core}
+
+- 浏览器用 **`File` 表示带名称等信息的文件，`Blob` 表示不可变字节数据**。`File` 继承 `Blob`，`slice(start, end)` 按字节切出左闭右开的范围。[卡](#file-slicing)
+- 浏览器续传应**重新取得对应文件，并核对服务端确认的已收清单**。文件名与本地进度不能证明当前选择的字节属于原会话。[卡](#resumable-upload)
+- **内容哈希根据字节计算，名称和大小不能唯一标识内容**。整文件哈希、分片哈希和清单摘要含义不同；哈希相同也不代表用户有权访问该文件。[卡](#file-hash)
+- 并发上传用有限任务池控制在途请求。**暂停应停止调度并取消在途请求，恢复时仍以服务端接收状态为准**。[卡](#upload-concurrency)
+- **按字节统计进度，并区分传输、分片确认和文件完成**。重试不能重复累计同一片，上传事件完成也不等于服务端处理完成。[卡](#upload-progress)
+- 客户端的大小、后缀和 MIME 检查改善交互；**服务端必须独立验证权限、实际内容、总量和文件存储位置**。[卡](#upload-validation)
+
+## 2. 文件对象与请求体 {#文件对象与请求体}
+
+**`Blob`** 是一段不可变字节数据，提供 `size`、`type`、`slice()`、`arrayBuffer()` 等接口。**`File`** 在此基础上增加 `name`、`lastModified` 等文件信息。用户通过文件输入框或拖放交出 `File` 后，网页才能读取相应内容；普通文件输入框不会赋予网页任意读取本地路径的能力。
+
+`ArrayBuffer` 表示内存中的字节缓冲区，类型化数组提供访问视图；Node.js 的 `Buffer` 属于 Node 的二进制处理 API。它们与浏览器的 `File`、`Blob` 职责不同，不需要为了上传先把文件转换成 Base64 或 Node `Buffer`。
+
+### 2.1 一次性上传 {#一次性上传}
+
+**`FormData`** 按表单字段组织请求体，可以同时携带文件和普通文本。下面的函数上传单个文件，只有收到成功的 HTTP 响应后才返回：
+
+```js
+export async function uploadFile(file, signal) {
+  const form = new FormData();
+  form.append('file', file, file.name);
+  const response = await fetch('/api/files', {
+    method: 'POST', body: form, signal,
+  });
+  if (!response.ok) throw new Error(`上传失败：HTTP ${response.status}`);
+  return response.json();
+}
+```
+
+传入用户选中的 `File`，浏览器会编码 multipart 请求体并生成相应的 `Content-Type` 和 boundary。这里不要手工设置裸的 `multipart/form-data`，否则可能丢失解析请求体所需的 boundary。请求失败、取消或响应 JSON 不合法时，返回的 Promise 拒绝，调用方需要展示错误。
+
+也可以直接把 `Blob` 作为请求体；接口双方此时需要约定文件标识、类型和其他元数据放在哪里。它适合逐片上传，不要求每一片都再套一层表单。
+
+## 3. 分片与内容哈希 {#分片与内容哈希}
+
+**分片**按固定字节范围把文件划成若干块，使一次失败只需重传相关部分。`Blob.slice(start, end)` 不修改原文件，`end` 不包含在结果内；它得到的仍然是 `Blob`，不会自动上传。
+
+```js
+export function* splitFile(file, chunkSize) {
+  if (!Number.isSafeInteger(chunkSize) || chunkSize <= 0) {
+    throw new RangeError('分片大小必须是正安全整数');
+  }
+  for (let start = 0, index = 0; start < file.size; index++) {
+    const end = Math.min(start + chunkSize, file.size);
+    yield { index, start, end, blob: file.slice(start, end) };
+    start = end;
+  }
+}
+
+const file = new File(['abcdefghij'], 'letters.txt');
+for (const part of splitFile(file, 4)) {
+  console.log(part.index, part.start, part.end, await part.blob.text());
+}
+// 0 0 4 abcd
+// 1 4 8 efgh
+// 2 8 10 ij
+```
+
+这个例子有 `10` 字节，三片的大小实际是 `4`、`4`、`2` 字节。空文件不会生成分片，协议可以通过创建并完成一个零字节上传会话来处理它。边界按字节计算，若文件中含 UTF-8 中文，一个字符可能横跨两片；把原始字节按正确顺序合并能恢复文件，不应把每片单独解码成文本后再拼接。
+
+分片太小，请求与元数据开销增加；太大，一次失败的重传代价和在途内存可能增加。切片大小还要符合接收端的最小片大小、最大片数等约束。应结合网络、文件规模和服务端能力测量，不把某个固定大小当作所有项目的最优值。
+
+### 3.1 文件身份与哈希成本 {#文件身份与哈希成本}
+
+**内容哈希**是把字节内容映射为固定长度摘要。相同字节使用同一算法会得到相同摘要；同名、同大小的两个文件仍可能内容不同。`name + size + lastModified` 可以帮助找候选恢复记录，但不能据此确认内容完全相同。
+
+下面只演示小文件的 SHA-256，主动限制输入大小，避免把任意大文件一次读入内存：
+
+```js
+export async function hashSmallFile(file) {
+  if (file.size > 8 * 1024 * 1024) {
+    throw new RangeError('此示例仅处理不超过 8 MiB 的文件');
+  }
+  const bytes = await file.arrayBuffer();
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(digest), byte =>
+    byte.toString(16).padStart(2, '0')).join('');
+}
+```
+
+在支持 Web Crypto 的安全上下文运行，`hashSmallFile(new Blob(['abc']))` 得到 `ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad`。这里摘要对应的是 UTF-8 字节 `61 62 63`，不是文件名。
+
+`crypto.subtle.digest` 接收完整字节输入，没有通过同一次调用逐块追加的接口。把读取和计算移到 Worker 能减少主线程工作，但不会自动消除整文件缓冲区的内存需求。大文件整体验证需要真正支持增量处理的实现，或由服务端流式计算；逐片计算摘要则只能直接证明各片内容。
+
+**把各片哈希拼起来再哈希，不等于原文件哈希**。前者需要另行定义清单格式；整文件与各片验证的分工见[文件上传](../../basic-knowledge/network/file-upload.mdx#分块摘要与完整文件摘要)。客户端不能用一个自定义清单摘要冒充接收端要求的整文件 SHA-256。
+
+Worker 可以接收 `File` 或 `Blob` 并读取分片；若主线程已经得到 `ArrayBuffer`，还可以通过 transfer list 转移它，转移后原缓冲区会被分离，不能继续按原字节使用。不要一边转移同一个缓冲区，一边又把它留给另一项上传任务。
+
+## 4. 浏览器续传状态 {#浏览器续传状态}
+
+**恢复上传先核对文件和服务端状态，再调度缺少的部分。** 浏览器可以保存 `uploadId`、切片规则和文件摘要等恢复线索，但本地的“已发送”不等于服务端已经保存；响应也可能在保存之后丢失。
+
+客户端需要从会话查询结果中取得固定的分片大小和已确认编号，与当前文件的切片计划核对。本文代码使用从 `0` 开始的分片下标；[文件上传](../../basic-knowledge/network/file-upload.mdx#会话需要保存什么)中的协议示例从 `1` 开始编号，接入时应在适配层转换，不能直接混用。
+
+同一片重传应使用原会话和原编号，接收端需要识别相同内容与冲突内容，具体约束见[文件上传](../../basic-knowledge/network/file-upload.mdx#分块写入的幂等规则)。本文任务池假设各片独立按编号接收；按连续偏移上传的接口不能直接用这个并发方式，其区别见[文件上传](../../basic-knowledge/network/file-upload.mdx#客户端怎样恢复)。
+
+### 4.1 重新取得文件 {#重新取得文件}
+
+**把文件名写进 `localStorage`，不能在刷新后重新获得这个 `File` 的字节。** 普通文件输入框场景通常需要用户重新选择；选择后根据约定的文件身份检查内容及切片规则，不能因为名称、大小相同就继续旧任务。
+
+使用持久化文件句柄等能力时，需要另行处理目标浏览器支持、用户授权和文件内容变化。若把字节保存在 IndexedDB，也要考虑配额、清理和账号隔离；它不是一个不占空间的文件引用。
+
+用户切换文件时，为新任务建立新的状态身份。旧任务的进度和响应只能更新原任务，不能写进刚创建的进度条。暂停、恢复和组件卸载也应围绕任务身份处理，而不是仅保存一个全局 `loading`。
+
+## 5. 有限并发与取消 {#有限并发与取消}
+
+**并发任务池**让有限数量的发送任务轮流领取缺失分片。直接 `Promise.all(parts.map(send))` 会立即启动所有 `send`，并没有限制请求数量；文件多时还要考虑所有文件共享的总并发上限。
+
+下面的函数只负责当前会话的缺片调度，不负责创建会话、最终合并和自动重试。`session.received` 来自刚查询的服务端清单；`sendPart` 只有在服务端可靠确认该片后才兑现，并必须支持传入的 `AbortSignal`。
+
+```js
+export async function uploadMissing(file, session, sendPart, {
+  concurrency = 3, signal, onAck = () => {},
+} = {}) {
+  const { uploadId, chunkSize, received } = session;
+  if (typeof uploadId !== 'string' || !uploadId
+    || !Number.isSafeInteger(chunkSize) || chunkSize <= 0
+    || !Array.isArray(received)
+    || !Number.isSafeInteger(concurrency) || concurrency < 1) {
+    throw new TypeError('上传会话或并发数无效');
+  }
+  const count = Math.ceil(file.size / chunkSize);
+  const done = new Set(received);
+  for (const index of done) {
+    if (!Number.isSafeInteger(index) || index < 0 || index >= count) {
+      throw new RangeError('服务端分片清单无效');
+    }
+  }
+  const controller = new AbortController();
+  const stop = () => controller.abort(signal.reason);
+  signal?.throwIfAborted();
+  signal?.addEventListener('abort', stop, { once: true });
+  let cursor = 0;
+  let confirmedBytes = [...done].reduce((total, index) => total
+    + Math.min(chunkSize, file.size - index * chunkSize), 0);
+  let failed = false;
+  let failure;
+
+  async function worker() {
+    try {
+      while (true) {
+        controller.signal.throwIfAborted();
+        while (cursor < count && done.has(cursor)) cursor++;
+        if (cursor >= count) return;
+        const index = cursor++;
+        const start = index * chunkSize;
+        const blob = file.slice(start, Math.min(start + chunkSize, file.size));
+        await sendPart({ uploadId, index, blob, signal: controller.signal });
+        controller.signal.throwIfAborted();
+        done.add(index);
+        confirmedBytes += blob.size;
+        onAck({ index, confirmedBytes, totalBytes: file.size });
+      }
+    } catch (error) {
+      if (!failed) {
+        failed = true;
+        failure = error;
+        controller.abort(error);
+      }
+    }
+  }
+
+  try {
+    await Promise.all(Array.from(
+      { length: Math.min(concurrency, count) }, () => worker(),
+    ));
+    if (failed) throw failure;
+    controller.signal.throwIfAborted();
+    return { confirmedBytes, received: [...done].sort((a, b) => a - b) };
+  } finally {
+    signal?.removeEventListener('abort', stop);
+  }
+}
+```
+
+调用 `uploadMissing` 时，每个 worker 领取编号后才等待网络，因此同一编号不会被两个 worker 同时领取。服务器已确认的片会跳过；最后一片按实际字节计数，不会被当成完整 `chunkSize`。成功返回只表示全部分片已确认，调用方还需请求完成并等待服务端最终结果。
+
+任一发送失败后，函数停止领取新任务并通知其余请求取消，再等待这些任务结束。`sendPart` 如果不响应取消且一直不结束，函数也不能凭空终止它；适配层需要实现超时和请求清理。`onAck` 应是同步且不抛异常的状态更新函数；如果它抛出异常，这个实现也会停止当前批次，下次仍通过服务端清单恢复。
+
+暂停可以调用外部 `AbortController.abort()`，恢复则创建新的控制器并重新查询会话。不要复用已经中止的 signal。取消只阻止继续等待或发送，不证明服务端撤回已收到的字节；用户主动删除上传任务时，还需明确终止会话和清理临时数据。
+
+自动重试应限制次数，并对可重试错误退避；权限错误、内容校验失败不应无限重发。服务端已保存但响应丢失时，重复上传必须遵守接收端的幂等规则。完成阶段结果未知时查询原会话，具体恢复流程见[文件上传](../../basic-knowledge/network/file-upload.mdx#超时后的再次完成)。
+
+## 6. 进度与完成状态 {#进度与完成状态}
+
+**上传进度需要说明度量的是哪一层。** 使用 XHR 时，`xhr.upload` 的 `progress` 事件可以反映请求体上传过程；在 `lengthComputable` 为真时用 `loaded / total` 计算该请求的比例。它不能证明服务端已经完成文件落盘、校验或业务发布。
+
+Fetch 没有与 XHR upload 进度事件等价的通用接口。把文件读入缓冲区、从上传流取出字节，也不能直接当作接收端已经收到。组件可以展示按分片确认累计的进度，再单独显示“正在校验”；需要平滑的在途进度时，选择适合目标浏览器的传输方案。
+
+总进度应按字节加权。例如 `4 + 4 + 2` 字节的三片，确认前两片后是 `8 / 10 = 80%`，不是按片数算出的约 `67%`。已确认片的字节只累计一次；正在重试的片如果上一轮传输已经计入，应重置或替换该片的在途进度，不能再加一遍。
+
+同时维护多个阶段会更清楚：准备与校验、上传中、暂停、分片已确认、服务端处理、可用或失败。前端组件应按上传任务 ID 更新状态，避免用户换了文件后，旧请求的进度与结果写到新文件上。
+
+## 7. 选择校验与本地预览 {#选择校验与本地预览}
+
+**客户端校验用于尽早提醒，不能替代接收端验证。** 文件输入框的 `accept` 帮助用户筛选类型，`file.size` 可以判断大小，`file.type` 提供 MIME 信息，但类型可能为空，也不代表内容已经被可信地解析。用户还可以绕过界面直接请求接口。
+
+例如只收头像时，可以在选择后提示大小上限和支持格式，再尝试解码预览。解码成功只说明浏览器能按相应格式读取它，不能证明服务端的授权、尺寸限制和内容策略已经满足。接收端边界见[文件上传](../../basic-knowledge/network/file-upload.mdx#权限资源限制与验证)。
+
+**对象 URL** 是浏览器为 `Blob` 建立的临时引用，适合在上传前预览图片。它不是已经发布到服务器的图片地址；不用后应释放，尤其不能在用户连续换图时一直保留旧引用。
+
+```js
+export function mountImagePreview(input, image) {
+  const listeners = new AbortController();
+  let url = null;
+  function clear() {
+    image.removeAttribute('src');
+    if (url !== null) URL.revokeObjectURL(url);
+    url = null;
+  }
+  input.addEventListener('change', () => {
+    const file = input.files?.[0];
+    clear();
+    if (file) {
+      url = URL.createObjectURL(file);
+      image.src = url;
+    }
+  }, { signal: listeners.signal });
+  return () => {
+    listeners.abort();
+    clear();
+  };
+}
+```
+
+页面传入文件输入框和 `<img>` 元素，选中图片后显示本地预览；再次选择时先解除旧引用，组件卸载时调用返回的清理函数。这个示例只展示资源生命周期，格式限制、解码失败提示和图片替代文本由页面补充。不要创建 URL 后立即撤销，再期待之后的异步解码一定成功。
+
+## 8. 常见问题 {#常见问题}
+
+### 8.1 分片以后还要为每一片建一个 Worker 吗？ {#分片以后还要为每一片建一个worker吗}
+
+不需要。网络并发不要求为每个请求创建线程；Worker 主要用于把计算移出主线程。可以用少量计算 Worker 配合有限网络任务池，避免线程数量、缓冲区和请求数量同时失控。
+
+### 8.2 已经用了 HTTPS，还需要检查文件内容吗？ {#已经用了https还需要检查文件内容吗}
+
+需要。HTTPS 保护传输通道，不证明用户有权上传，也不证明内容符合业务格式或不会在展示时执行脚本。内容校验、权限和发布策略仍由接收端负责。
+
+### 8.3 把分片顺序打乱发送，会改变最终文件吗？ {#把分片顺序打乱发送会改变最终文件吗}
+
+按独立编号保存、按正确编号合并时不会。若服务端只是按到达顺序追加，乱序就会破坏文件；按连续偏移的协议则应遵守偏移检查，不能任意乱序发送。
+
+## 9. 面试题 {#面试题}
+
+### 9.1 浏览器用什么 API 给文件分片，边界怎样计算？ {#file-slicing}
+
+**考察重点**：`File`、`Blob`、字节范围和最后一片。
+
+**相关内容**：[文件对象与请求体](#文件对象与请求体)、[分片与内容哈希](#分片与内容哈希)。
+
+<details>
+<summary>参考回答</summary>
+
+**使用 `Blob.slice(start, end)`，`File` 继承 `Blob`，所以可以直接切片。** 第 `index` 片从 `index * chunkSize` 开始，结束位置是该位置加 `chunkSize` 与文件大小中的较小值，结束位置不包含在片内。
+
+切片按字节而非字符，最后一片可能更短。`slice` 只产生范围对应的 `Blob`，发送、编号和服务端合并需要另外设计。
+
+</details>
+
+### 9.2 浏览器刷新后，怎样恢复一个未完成的文件上传？ {#resumable-upload}
+
+**题型**：综合题
+
+**考察重点**：重新取得文件、会话核对、权威进度和客户端恢复。
+
+**相关内容**：[浏览器续传状态](#浏览器续传状态)、[有限并发与取消](#有限并发与取消)、[文件上传](../../basic-knowledge/network/file-upload.mdx#客户端怎样恢复)。
+
+<details>
+<summary>参考回答</summary>
+
+**先重新取得对应的 `File`，再用原会话查询服务端已确认的分片，核对切片计划后补传缺片。** 本地保存的文件名和进度不能证明字节内容相同，也不能证明服务器已经保存。
+
+普通文件输入框通常需要用户重新选择文件。恢复时确认账号、会话有效性、文件内容和分片规则，创建新的取消控制器，再调度缺片；全部分片确认以后，还需等待完成接口返回最终状态。
+
+</details>
+
+### 9.3 文件哈希根据什么生成，为什么不能只用文件名和大小？ {#file-hash}
+
+**考察重点**：内容身份、整文件与分片摘要、计算成本和访问权限。
+
+**相关内容**：[文件身份与哈希成本](#文件身份与哈希成本)、[文件上传](../../basic-knowledge/network/file-upload.mdx#分块摘要与完整文件摘要)。
+
+<details>
+<summary>参考回答</summary>
+
+**内容哈希根据实际字节和确定的算法生成，文件名和大小相同不代表内容相同。** 整文件摘要用于识别整体内容，分片摘要用于验证各片，不能把分片哈希拼接后当作整文件哈希。
+
+大文件要考虑读取和计算内存，Worker 不会自动让整文件算法变成增量算法。服务端仍要核验收到的字节，并独立检查权限；哈希命中不能直接授予私有文件访问权。
+
+</details>
+
+### 9.4 上传组件怎样限制并发，并支持暂停与恢复？ {#upload-concurrency}
+
+**题型**：综合题
+
+**考察重点**：任务领取、在途请求、取消与恢复后的权威状态。
+
+**相关内容**：[有限并发与取消](#有限并发与取消)、[浏览器续传状态](#浏览器续传状态)。
+
+<details>
+<summary>参考回答</summary>
+
+**用有限任务池领取缺失分片，暂停时停止领取并取消在途请求，恢复时重新查询已收清单。** `Promise.all` 本身不会限制同时启动的请求数，跨多个文件还应有总并发控制。
+
+取消不保证服务端没收到分片，所以不能只把本地标记退回未上传。重传要使用稳定会话与分片身份，明确可重试错误、退避和最大尝试次数；恢复时换用新的 `AbortController`。
+
+</details>
+
+### 9.5 上传进度到 100% 为什么仍不能显示文件已经可用？ {#upload-progress}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：传输事件、可靠确认、最终处理和字节加权。
+
+**相关内容**：[进度与完成状态](#进度与完成状态)。
+
+<details>
+<summary>参考回答</summary>
+
+**传输结束与文件校验、合并、发布完成是不同阶段。** XHR upload 进度反映请求体上传，不证明接收端已经把最终文件处理成可用状态。
+
+整体进度按各片实际字节加权，重试不重复累计。分片全部确认后，可以显示正在处理，直到收到服务端最终结果才显示文件可用。
+
+</details>
+
+### 9.6 前端已经检查格式和大小，后端还需要检查什么？ {#upload-validation}
+
+**考察重点**：客户端可绕过、授权、实际字节、存储与资源限制。
+
+**相关内容**：[选择校验与本地预览](#选择校验与本地预览)、[文件上传](../../basic-knowledge/network/file-upload.mdx#权限资源限制与验证)。
+
+<details>
+<summary>参考回答</summary>
+
+**后端必须独立检查权限、实际内容和资源限制，不能信任客户端字段。** 上传会话绑定用户和业务对象，限制大小、片数和有效期，按实际字节核验格式与摘要。
+
+前端把检查失败尽早提示给用户，接收端负责受控存储、内容处理和最终发布。二者可以共享格式约定，但服务端不能跳过自己的验证。
+
+</details>
+
+## 10. 参考资料 {#参考资料}
+
+- [W3C File API：File、Blob 与 slice](https://w3c.github.io/FileAPI/)
+- [Fetch Standard：请求体与 FormData 编码](https://fetch.spec.whatwg.org/#bodyinit-unions)
+- [Web Cryptography API：digest](https://w3c.github.io/webcrypto/#SubtleCrypto-method-digest)
+- [HTML Standard：可转移对象](https://html.spec.whatwg.org/multipage/structured-data.html#transferable-objects)
+- [XMLHttpRequest Standard：上传事件与进度](https://xhr.spec.whatwg.org/)
+- [OWASP：File Upload Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/File_Upload_Cheat_Sheet.html)

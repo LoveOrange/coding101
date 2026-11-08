@@ -1,0 +1,342 @@
+---
+sidebar_position: 6
+knowledge:
+  id: basic-knowledge.javascript.copying
+  type: concept
+description: "区分赋值、浅拷贝与深拷贝，解释 JSON 和 structuredClone 的适用范围，并实现保留循环引用、重复引用和数据属性描述符的对象图复制。"
+keywords: ["浅拷贝", "深拷贝", "structuredClone", "循环引用", "WeakMap", "对象拷贝"]
+---
+
+# JavaScript 对象拷贝
+
+赋值会复制对象引用，浅拷贝会新建外层对象但共享嵌套引用，深拷贝则按约定复制可达的对象结构。**深拷贝不是一个不需要定义边界的操作**：函数、类实例、访问器、循环引用和共享内存，都需要先说明希望保留什么。
+
+面试中的关键是解释复制后哪些对象相同、哪些对象独立，并让实现符合这个约定。只写递归而不处理重复引用，或者把 JSON 转换当作通用复制，都可能得到形状相似、行为却不同的结果。
+
+## 1. 面试核心 {#core}
+
+- 赋值后的两个变量仍指向同一对象；浅拷贝创建新的外层对象。**浅拷贝只复制这一层的值，嵌套对象仍然共享**。[卡](#copy-levels)
+- 深拷贝要先确定类型和属性范围。**JSON 序列化不是通用深拷贝，`structuredClone` 也不保留任意对象的行为和原型**。[卡](#copy-strategies)
+- 环与重复引用都属于对象图关系。**先登记“源对象 → 副本”，再处理子对象**，才能终止循环并保留共享关系。[卡](#graph-copy)
+- 复制键、复制当前值、复制属性描述符是不同选择。**Symbol、不可枚举属性、访问器与类实例不能靠一个默认循环自动覆盖**。[卡](#copy-contract)
+- 循环引用不等于递归深度过大。**去重表解决重复访问，显式工作栈解决调用栈随深度增长**。[卡](#stack-depth)
+- 指定深度时要定义根对象和数组算几层，以及到达边界后是否保留原引用。**路径深度限制与完整保留共享关系可能冲突，不能省略语义约定**。[卡](#bounded-depth)
+
+## 2. 赋值与浅拷贝 {#赋值与浅拷贝}
+
+**浅拷贝**创建一个新的外层容器，把选中的属性值复制过去。属性值是引用时，复制的仍然是引用，而不是引用指向的对象。
+
+```js
+const source = { name: "Lin", profile: { level: 1 } };
+const alias = source;
+const shallow = { ...source };
+
+console.log(alias === source, shallow === source); // true false
+console.log(shallow.profile === source.profile);   // true
+shallow.name = "Kai";
+shallow.profile.level = 2;
+console.log(source.name, source.profile.level);    // Lin 2
+```
+
+`shallow.name` 是新对象自己的属性，重新赋值不影响 `source.name`。但 `shallow.profile` 和 `source.profile` 指向同一个对象，所以修改其 `level` 会被双方看到。若执行的是 `shallow.profile = { level: 3 }`，则是在新对象上换引用，不会替换 `source.profile`。
+
+对象展开、`Object.assign`，以及数组的 `slice`、展开等操作都能产生浅拷贝，但属性选择、稀疏数组和访问器行为未必相同。尤其对象展开与 `Object.assign` 只处理可枚举自有属性，并会读取源 getter；具体规则见 [JavaScript 对象属性](./object-properties.mdx#值拷贝与描述符拷贝)。
+
+## 3. 深拷贝的目标 {#深拷贝的目标}
+
+**对象图**把每个对象看成节点，把对象之间的引用看成边。深拷贝不只是多层嵌套：一个对象可能被两处引用，也可能回指自身或祖先。
+
+```js
+const shared = { value: 1 };
+const source = { left: shared, right: shared };
+source.self = source;
+const copy = structuredClone(source);
+
+console.log(copy !== source);                 // true
+console.log(copy.left !== shared);            // true
+console.log(copy.left === copy.right);        // true
+console.log(copy.self === copy);              // true
+```
+
+前两行说明新对象独立于原对象；后两行说明原来共享一个节点的关系，在副本里仍然共享一个新节点，原来的自环也指向副本自身。若把 `left`、`right` 分别复制成两个互不关联的对象，就改变了原对象图的关系。
+
+不是所有业务都需要完整复制对象图。更新界面状态时，往往只需复制发生变化的那条路径，未变化部分继续共享：
+
+```js
+const previous = { profile: { level: 1 }, items: ["book"] };
+const next = {
+  ...previous,
+  profile: { ...previous.profile, level: 2 },
+};
+console.log(next.profile !== previous.profile); // true
+console.log(next.items === previous.items);     // true
+console.log(previous.profile.level);            // 1
+```
+
+这种**结构共享**用新对象表达变化，同时保留未修改部分的引用。前提是后续代码也遵守不直接修改旧状态的约定；一次浅拷贝不会自动让共享对象不可变。
+
+## 4. JSON 与结构化克隆 {#json-与结构化克隆}
+
+### 4.1 JSON 序列化 {#json-序列化}
+
+`JSON.stringify` 把值转换为 JSON 文本，`JSON.parse` 再解析成新值。它适合交换约定好的 JSON 数据，但不是保留任意 JavaScript 值的协议。
+
+| 输入情况 | 默认 JSON 转换的影响 |
+| --- | --- |
+| 对象属性值为 `undefined`、函数或 Symbol | 该属性被省略 |
+| 数组元素为以上值或空槽 | 对应位置变为 `null` |
+| `NaN`、`Infinity` | 变成 `null` |
+| `Date` | 通常通过 `toJSON` 变成日期字符串 |
+| `Map`、`Set` | 不会按条目序列化，默认通常得到 `{}` |
+| BigInt | 默认抛错，除非显式提供相应转换逻辑 |
+| 循环引用 | 抛错 |
+| 两个属性引用同一子对象 | 分别序列化，解析后不再共享同一对象 |
+
+Symbol 键和不可枚举属性不会被普通对象的默认序列化保留，原型和描述符也不会保留。顶层 `undefined` 等值甚至不能得到可交给 `JSON.parse` 的 JSON 字符串。getter、`toJSON` 或 replacer 还可能执行代码，序列化并不保证没有副作用。
+
+```js
+const source = { missing: undefined, value: NaN, date: new Date(0) };
+const copy = JSON.parse(JSON.stringify(source));
+console.log(Object.hasOwn(copy, "missing")); // false
+console.log(copy.value);                    // null
+console.log(typeof copy.date);              // string
+```
+
+### 4.2 structuredClone {#structuredclone}
+
+`structuredClone` 使用结构化克隆算法，支持普通数据对象、数组、Date、Map、Set、ArrayBuffer 等类型，并保留支持范围内的循环引用与重复引用。它适合复制需要保留这些数据类型的结构。
+
+但它不是复制任意执行环境的工具：函数、DOM 节点、WeakMap/WeakSet、Proxy 等不能按这个算法克隆；Symbol 值也不支持。普通对象的 Symbol 键、不可枚举属性、原型链和描述符不按原样保留。访问器会被读取成数据，用户自定义类实例也不会因此完整保留方法与私有状态。
+
+```js
+const source = {
+  createdAt: new Date(0),
+  counts: new Map([["done", 2]]),
+};
+const copy = structuredClone(source);
+console.log(copy.createdAt instanceof Date); // true
+console.log(copy.counts.get("done"));         // 2
+console.log(copy.counts !== source.counts);   // true
+```
+
+应先确认运行环境支持 `structuredClone` 和所需类型。它在主线程上处理大对象时仍有计算和分配成本；API 名称不意味着它会自动在后台执行。
+
+### 4.3 复制与转移 {#复制与转移}
+
+**转移**把可转移资源交给目标，原对象不再拥有对应资源，不等于保留两份可继续使用的数据。
+
+```js
+const source = new Uint8Array([1, 2, 3]);
+const copy = structuredClone(source, { transfer: [source.buffer] });
+console.log(copy[0], copy.byteLength); // 1 3
+console.log(source.byteLength);       // 0
+```
+
+这里原 ArrayBuffer 被分离，原视图不再能访问原来的内容。跨 Worker 传大缓冲区时，是否允许转移所有权是需要明确的设计条件。SharedArrayBuffer 又不同：支持它的环境中，结构化克隆的结果仍可以共享同一块底层内存，不能套用“所有嵌套数据都独立”的结论。
+
+## 5. 对象图复制的实现 {#对象图复制的实现}
+
+手写实现先缩小输入范围，才能让代码和承诺一致。下面复制同一运行环境中的普通对象、无原型对象和普通数组，保留数据属性的键、描述符以及对象图关系。原始值直接保留；函数、访问器、自定义类实例和其他内置类型拒绝处理，Proxy 不在输入约定内。
+
+这里使用 `WeakMap` 保存源对象到副本的映射。只要见过源对象，就复用它的副本。辅助工作栈负责保存尚未填充属性的对象，不再通过函数递归处理每一层。
+
+```js
+function cloneDataGraph(root) {
+  const seen = new WeakMap();
+  const pending = [];
+
+  function prepare(value) {
+    if (typeof value === "function") {
+      throw new TypeError("不支持复制函数");
+    }
+    if (value === null || typeof value !== "object") return value;
+    if (seen.has(value)) return seen.get(value);
+    const proto = Object.getPrototypeOf(value);
+    const isArray = Array.isArray(value);
+    if (isArray ? proto !== Array.prototype :
+        proto !== Object.prototype && proto !== null) {
+      throw new TypeError("仅支持普通对象和普通数组");
+    }
+    const copy = isArray ? new Array(value.length) : Object.create(proto);
+    seen.set(value, copy);
+    pending.push({ source: value, copy });
+    return copy;
+  }
+
+  const result = prepare(root);
+  while (pending.length > 0) {
+    const { source, copy } = pending.pop();
+    for (const key of Reflect.ownKeys(source)) {
+      const descriptor = Object.getOwnPropertyDescriptor(source, key);
+      if (!Object.hasOwn(descriptor, "value")) {
+        throw new TypeError("不支持复制访问器");
+      }
+      descriptor.value = prepare(descriptor.value);
+      Object.defineProperty(copy, key, descriptor);
+    }
+  }
+  return result;
+}
+
+const shared = { count: 1 };
+const source = { first: shared, second: shared };
+source.self = source;
+const copy = cloneDataGraph(source);
+console.log(copy.first === copy.second, copy.self === copy); // true true
+copy.first.count = 2;
+console.log(source.first.count); // 1
+```
+
+`prepare` 在复制子属性前就登记映射，所以再次遇到 `source` 时可以拿到已经创建的 `copy`，不必继续展开自环。对重复引用也是同一规则，不需要单独设计“环检测”和“别名检测”两套机制。
+
+`Reflect.ownKeys` 选择所有自有字符串键与 Symbol 键；读取描述符可以发现访问器而不执行 getter。`Object.defineProperty` 保留数据属性标志，也避免把名为 `__proto__` 的普通数据键误当成原型设置。数组通过保留长度和实际存在的索引，保留空槽，而不是把所有空槽都改为 `undefined` 元素。
+
+这个实现没有复制对象的可扩展状态，因此冻结输入不会自动得到 `Object.isFrozen` 为真的副本。它也不是 Map、Date、类实例或 DOM 对象的复制工具；这些对象需要按对应语义处理，不能只复制普通属性后假定内部状态存在。
+
+### 5.1 循环引用与调用栈 {#循环引用与调用栈}
+
+循环引用会导致没有去重的遍历反复处理同一对象；非常深的无环链，也可能使递归函数先耗尽调用栈。前者用源对象到副本的映射解决，后者可以用显式工作栈或队列解决。
+
+上面的算法每个支持的对象只创建一个副本，每个自有属性处理一次。若对象数为 `V`、属性总数为 `E`，不计具体引擎的属性操作差异，遍历工作量为 `O(V + E)`，辅助映射和待处理对象占 `O(V)` 空间，副本另需保存复制的数据。
+
+换成 `Map` 也能完成这次同步复制。`WeakMap` 的弱引用不是终止循环的原因；关键是先查映射、提前登记以及复用已有结果。函数结束后局部 Map 同样可以随其引用释放，不能把“只要用 Map 就泄漏”当成结论。
+
+## 6. 指定复制深度 {#指定复制深度}
+
+指定深度是另一种契约。可以约定：根容器算第一层，数组与对象各算一层，深度为 `0` 时直接保留原值，深度为 `1` 时只复制根容器。达到边界后仍与原对象共享引用。
+
+如果只处理普通对象和数组的可枚举自有字符串数据属性，可以按每条路径限制层数：
+
+```js
+function cloneToDepth(value, depth) {
+  if (!Number.isInteger(depth) || depth < 0) {
+    throw new RangeError("depth 必须是非负整数");
+  }
+  if (depth === 0 || value === null || typeof value !== "object") return value;
+  const proto = Object.getPrototypeOf(value);
+  const isArray = Array.isArray(value);
+  if (isArray ? proto !== Array.prototype :
+      proto !== Object.prototype && proto !== null) {
+    throw new TypeError("仅支持普通对象和普通数组");
+  }
+  const copy = isArray ? new Array(value.length) : Object.create(proto);
+  for (const key of Object.keys(value)) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!Object.hasOwn(descriptor, "value")) throw new TypeError("不支持访问器");
+    Object.defineProperty(copy, key, {
+      value: cloneToDepth(descriptor.value, depth - 1),
+      writable: true, enumerable: true, configurable: true,
+    });
+  }
+  return copy;
+}
+
+const source = { list: [{ count: 1 }] };
+const copy = cloneToDepth(source, 2);
+console.log(copy !== source, copy.list !== source.list); // true true
+console.log(copy.list[0] === source.list[0]);             // true
+```
+
+这个版本有意使用另一组较窄规则：只复制枚举到的值，不保留原描述符，函数等非对象值按原值共享，不处理 Symbol 键。它不使用全局去重表，因此不同路径遇到同一对象时分别复制；有限深度会在边界停止展开环，不能称为完整保留对象图的深拷贝。非常大的深度仍可能耗尽调用栈。
+
+为什么不能直接加一个不区分深度的 `WeakMap`？同一对象可能在浅路径剩余三层、在深路径只剩一层时被遇到。只缓存一份副本，会让结果受首次访问路径影响。如果题目同时要求深度限制和共享关系，应先确定以路径为准还是以对象为准，再决定缓存键、遍历方式和输出语义。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 赋值、浅拷贝与深拷贝有什么区别，修改嵌套对象会影响谁？ {#copy-levels}
+
+**考察重点**：引用身份、外层容器与嵌套对象的共享关系。
+
+**相关内容**：[赋值与浅拷贝](#赋值与浅拷贝)、[深拷贝的目标](#深拷贝的目标)。
+
+<details>
+<summary>参考回答</summary>
+
+**赋值复制引用，浅拷贝新建外层容器，深拷贝按约定复制可达的对象结构。** 浅拷贝后重新给某个外层属性赋值，不会直接改原对象的同名属性；通过共享嵌套引用修改子对象，双方都会观察到变化。
+
+深拷贝要说明支持哪些类型和关系。若要求保留对象图，原来两个属性共享同一子对象，副本中也应共享同一个新子对象；不是每遇到一次引用就随意创建一份独立副本。
+
+</details>
+
+### 7.2 JSON 转换、structuredClone 和手写深拷贝分别适合什么情况？ {#copy-strategies}
+
+**考察重点**：数据类型、序列化协议、对象行为和成本。
+
+**相关内容**：[JSON 与结构化克隆](#json-与结构化克隆)、[对象图复制的实现](#对象图复制的实现)。
+
+<details>
+<summary>参考回答</summary>
+
+**JSON 转换适合约定好的 JSON 数据；`structuredClone` 适合其支持的数据类型与对象图；手写实现适合需求明确的有限范围。** JSON 会丢失或改变部分值，不能处理循环引用，也不保留重复引用关系。
+
+`structuredClone` 支持循环和 Date、Map 等类型，但不完整复制函数、DOM、Proxy、用户类行为及描述符。需要复制类实例、访问器或自定义资源时，应设计专门的复制协议。任何方案都要考虑数据量、线程阻塞，以及是否允许转移缓冲区所有权。
+
+</details>
+
+### 7.3 实现深拷贝时怎样处理循环引用和重复引用？ {#graph-copy}
+
+**考察重点**：对象图、映射登记时机及共享关系。
+
+**相关内容**：[深拷贝的目标](#深拷贝的目标)、[对象图复制的实现](#对象图复制的实现)。
+
+<details>
+<summary>参考回答</summary>
+
+**先创建空副本，立即把源对象到副本的对应关系写入映射，再复制子属性。** 再次遇到源对象时直接返回已有副本，既能终止循环，也能让重复引用仍指向同一个新对象。
+
+只用 Set 记录“见过”通常不够，因为还需要找到对应副本。映射可以使用 WeakMap；若使用局部 Map，只要生命周期正确也能完成任务。输入类型、属性范围和访问器策略仍需先约定。
+
+</details>
+
+### 7.4 写深拷贝前，需要怎样约定属性、函数和特殊类型的处理？ {#copy-contract}
+
+**考察重点**：复制范围、行为保留与显式拒绝。
+
+**相关内容**：[对象图复制的实现](#对象图复制的实现)、[JavaScript 对象属性](./object-properties.mdx#值拷贝与描述符拷贝)。
+
+<details>
+<summary>参考回答</summary>
+
+**先约定支持的类型和需要保留的语义，再选择遍历与构造方式。** 属性要区分自有或继承、字符串或 Symbol、可枚举或不可枚举；还要决定复制当前值还是描述符，是否允许执行 getter。
+
+函数、访问器闭包、类私有字段和内置内部状态不能靠普通属性递归完整复制。可以拒绝不支持的类型、保留原引用，或提供专门处理器，但必须明确告诉调用方。静默产生一个“外形相似”的对象，会掩盖行为差异。
+
+</details>
+
+### 7.5 已经处理循环引用，为什么深拷贝还可能栈溢出？ {#stack-depth}
+
+**考察重点**：图重复访问与调用深度是两个不同问题。
+
+**相关内容**：[循环引用与调用栈](#循环引用与调用栈)。
+
+<details>
+<summary>参考回答</summary>
+
+**没有循环的对象链也可以非常深，递归调用仍会逐层占用调用栈。** 映射只避免重复处理同一对象，并不会减少这条无环路径的调用深度。
+
+可以改用显式工作栈或队列，保存待处理对象，用循环逐个填充副本。这样仍有输出与辅助结构的内存成本，但不再让函数调用栈随嵌套层数增长。
+
+</details>
+
+### 7.6 怎样实现只复制指定层数的对象，数组和重复引用如何处理？ {#bounded-depth}
+
+**考察重点**：深度定义、边界引用和路径语义。
+
+**相关内容**：[指定复制深度](#指定复制深度)。
+
+<details>
+<summary>参考回答</summary>
+
+**先约定根容器和数组是否各算一层，以及深度耗尽后保留原引用还是采用其他处理。** 例如深度 `0` 原样返回，深度 `1` 只复制根容器，每进入一个对象或数组减一。
+
+按每条路径限制深度时，同一对象在不同路径可能得到不同副本；按对象复用副本时，又必须决定不同剩余深度怎样合并。不能直接使用不区分深度的缓存而忽略访问顺序影响。还要明确属性范围、环的展开方式和深度过大的栈限制。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [MDN：Window.structuredClone](https://developer.mozilla.org/en-US/docs/Web/API/Window/structuredClone)
+- [MDN：The structured clone algorithm](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API/Structured_clone_algorithm)
+- [MDN：JSON.stringify](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/JSON/stringify)
+- [MDN：Object.assign](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Object/assign)
+- [HTML Standard：StructuredSerializeInternal](https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializeinternal)

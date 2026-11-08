@@ -1,0 +1,631 @@
+---
+sidebar_position: 2
+knowledge:
+  id: frontend.css.layout
+---
+
+# CSS 布局
+
+CSS 布局把内容的尺寸、顺序和空间关系转成页面。Flex 适合沿一个方向分配空间，Grid 适合同时约束行列，定位适合让某个元素依附在指定参照位置。选择方案时，先说明哪些尺寸固定、哪些随内容变化，以及空间不足后应该换行、收缩还是滚动。
+
+居中只是其中一种结果。能写出 `display: flex` 之后，还要解释主轴、剩余空间、最小尺寸和溢出，否则同一段代码换成长文本、窄屏或多项目就可能失效。尺寸计算依赖 [CSS 盒模型与格式化上下文](./box-model-formatting-contexts.mdx#盒子的尺寸) 中的盒范围规则。
+
+## 1. 面试核心 {#core}
+
+- **先按约束选择布局模型**：正常流组织文档，Flex 分配一维空间，Grid 约束二维行列，定位处理覆盖或依附关系；不必让所有页面都使用同一种方式。[卡](#layout-model)
+- Flex 的主轴由 `flex-direction` 决定，**`justify-content` 沿主轴分配空间，`align-items` 沿交叉轴对齐项目**。`align-content` 处理多行整体分布，不是单项目对齐。[卡](#flex-axis)
+- `flex` 组合 `grow`、`shrink` 和 `basis`。**增长按权重分配剩余空间，收缩还要乘上项目的基准尺寸**，最终结果仍受最小和最大尺寸约束。[卡](#flex-size)
+- **`flex: 1` 与 `flex: auto` 的基准不同**。浏览器中的前者通常展开为 `1 1 0%`，后者为 `1 1 auto`，不能都概括成“平均分”。[卡](#flex-shorthand)
+- 长内容撑开布局时，先检查自动最小尺寸。**允许 Flex 项目收缩可以设置 `min-width: 0`，Grid 轨道可以使用 `minmax(0, 1fr)`**，随后仍要安排内容如何换行或裁剪。[卡](#long-content)
+- **居中必须说明参照对象与可用空间**。Flex/Grid 可以处理未知内容尺寸，绝对定位加变换适合独立覆盖；多个项目中的一个要相对容器居中，不能只依赖整组 `justify-content: center`。[卡](#centering) [卡](#single-item-center)
+- `absolute` 和 `fixed` 脱离正常流。**`fixed` 不保证永远相对视口**，建立相应包含块的变换祖先可以改变它的参照。[卡](#positioning)
+- `sticky` 保留正常流位置，**偏移受最近滚动容器与所属包含块共同约束**；要检查滚动空间、阈值和祖先的溢出设置。[卡](#sticky)
+- 固定一侧、自适应另一侧时，**固定尺寸与弹性尺寸分别表达，再补窄屏策略**；固定列宽之和超过可用宽度时，单靠 `flex: 1` 不能解决问题。[卡](#columns)
+- **省略号需要受约束的尺寸和溢出条件**。单行与多行截断使用不同规则，重要内容还应提供完整阅读方式。[卡](#ellipsis)
+- 弹层背景滚动与滚动链传递要分别处理。**`stopPropagation()` 不等于阻止浏览器滚动，`overscroll-behavior` 也不等于锁住整个页面**。[卡](#scroll-penetration)
+
+## 2. 布局模型的选择 {#布局模型的选择}
+
+**布局模型**规定父容器如何安排子盒。选择模型时，先看它能否直接表达内容关系。
+
+| 模型 | 适合表达的关系 | 需要说明的条件 |
+| --- | --- | --- |
+| 正常流 | 文章、段落和从上到下的文档内容 | 内容自然撑开高度；注意外边距折叠 |
+| Flex | 工具栏、横向列表、固定一侧的两栏 | 一个主轴；换行后每行独立分配空间 |
+| Grid | 表格式卡片区域、页面行列分区 | 可以让不同行共享列轨道 |
+| 浮动 | 文字环绕图片、维护已有浮动结构 | 浮动影响行内内容和父容器自动高度 |
+| 定位 | 角标、悬浮按钮、覆盖层 | 要明确包含块、是否脱离正常流、是否遮挡内容 |
+
+Flex 也能换行，Grid 也能只写一行。二者的区别不在于最终有几行，而在于是否由共同的行列轨道约束对齐。布局还会影响焦点和阅读体验，不能用视觉顺序替代合理的 DOM 顺序。
+
+## 3. Flex 布局 {#flex布局}
+
+### 3.1 主轴、交叉轴与对齐 {#轴与对齐}
+
+**Flex 容器**是设置了 `display: flex` 或 `inline-flex` 的盒子；直接参与其布局的子盒是 Flex 项目。**主轴**由 `flex-direction` 决定，**交叉轴**与主轴垂直。以下示例都使用通常的横向书写模式。
+
+```html
+<style>
+  .center {
+    display: flex;
+    min-height: 200px;
+    justify-content: center;
+    align-items: center;
+  }
+</style>
+<div class="center"><button type="button">确认</button></div>
+```
+
+默认 `flex-direction: row`，按钮在水平与垂直方向都居中，无须预先知道按钮宽高。父容器要有可用高度，才会出现可分配的垂直空间；如果它的高度刚好等于按钮高度，就没有额外空间可体现垂直居中。
+
+| 属性 | 主要职责 |
+| --- | --- |
+| `flex-direction` | `row`、`column` 及反向值决定主轴方向；不能把主轴永久理解为水平轴 |
+| `justify-content` | 沿主轴分配剩余空间，如 `flex-start`、`center`、`space-between`、`space-around`、`space-evenly` |
+| `align-items` | 项目在各自所在行的交叉轴上对齐，如 `stretch`、`center`、`flex-start`、`baseline` |
+| `align-self` | 覆盖单个项目的交叉轴对齐 |
+| `flex-wrap` | 决定是否允许分成多行，默认 `nowrap` |
+| `align-content` | 多行容器中各行沿交叉轴的整体分布，需要有可分配空间 |
+| `gap` | 行或项目之间的间距，不等价于在容器外侧也加间距 |
+| `order` | 改变布局顺序，但不能据此假定键盘或辅助技术的阅读顺序同步改变 |
+
+两个元素想上下排列并作为一组居中，可以把主轴改为 `column`，再沿两个轴设置对齐。若只想让某个项目在交叉轴居中，可以用 `align-self: center`；主轴上没有对应的 Flex `justify-self` 来独立居中一个项目。
+
+`space-between` 只把空间放在项目之间，单项目不会因此居中。`space-around` 让每个项目两侧都有空间，最外侧通常只有内部间隔的一半；`space-evenly` 则让边缘与内部间隔相等。自动 margin 会先吸收相应方向上的可用空间，因此也可能使 `justify-content` 看不出效果。
+
+### 3.2 基准尺寸、增长与收缩 {#空间分配}
+
+**`flex-basis`** 给出项目参与主轴空间分配时的基准尺寸。**`flex-grow`** 指定正剩余空间的增长权重，**`flex-shrink`** 指定空间不足时的收缩权重。
+
+```html
+<style>
+  .row { display: flex; width: 300px; }
+  .item { flex-basis: 100px; flex-shrink: 1; min-width: 0; }
+  .one { flex-grow: 1; }
+  .two { flex-grow: 2; }
+</style>
+<div class="row"><div class="item one">A</div><div class="item two">B</div></div>
+```
+
+两个基准尺寸合计 200px，剩余 100px 按 1:2 分配，所以 A 大约宽 133.33px，B 大约宽 166.67px。这里没有额外 padding、border、margin、gap 或最小最大尺寸干扰；浏览器还会处理子像素取整。增长因子之和小于 1 时，项目还可能只消耗对应比例的空闲空间，而不是把权重自动放大到占满整行。
+
+收缩不是简单按 `flex-shrink` 的数值分配。假设容器宽 240px，A、B 的基准尺寸分别是 100px、200px，`shrink` 都为 1，则要消除的 60px 按 `1×100 : 1×200` 分配，得到 80px 与 160px。若某项目先碰到 `min-width`，它会停止按这一初步比例收缩，再重新分配剩余差额。
+
+`flex-basis: auto` 会参考主轴尺寸属性：横向时通常参考 `width`，纵向时通常参考 `height`；相应尺寸也是自动值时，再依赖内容。显式的非自动 `basis` 通常优先参与 Flex 基准计算，不能因为写了 `width` 就忽略 `basis`。
+
+### 3.3 flex 简写 {#flex简写}
+
+`flex` 的三个长属性依次是 `flex-grow`、`flex-shrink`、`flex-basis`。常见写法表达的意图不同。
+
+| 写法 | 对应规则 | 意图 |
+| --- | --- | --- |
+| 初始值 `flex: initial` | `0 1 auto` | 不主动扩张，允许收缩，基准参考尺寸或内容 |
+| `flex: auto` | `1 1 auto` | 从自身基准出发增长或收缩 |
+| `flex: none` | `0 0 auto` | 不参与弹性增长和收缩 |
+| `flex: 1` | 浏览器通常展开为 `1 1 0%` | 从零百分比基准参与分配 |
+| `flex: 1 1 0` | 明确的零长度基准 | 避免依赖百分比在不确定主轴尺寸下的解析 |
+
+在有明确宽度、允许项目收缩的横向容器中，两个 `flex: 1` 项目往往等分可用空间；两个 `flex: auto` 项目则可能保留不同的内容基准再分配空间。即使前者权重相同，自动最小尺寸、padding 或 border 不同也可能使最终外部宽度不相等。
+
+`0%` 与 `0` 不能在所有场景中互换。如果纵向 Flex 容器没有确定高度，百分比 `basis` 无法据此解析，可能退回内容尺寸；明确的零长度则没有这项百分比依赖。需要精确约束时写出三个长值，并在实际容器中验证。
+
+### 3.4 长内容与自动最小尺寸 {#长内容与收缩}
+
+Flex 项目默认的主轴最小尺寸可能受内容约束。一长串不能断行的文本，会使项目不愿意收缩，即使它已经写了 `flex: 1`。
+
+```html
+<style>
+  .toolbar { display: flex; width: 300px; gap: 12px; }
+  .name {
+    flex: 1 1 0;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  .action { flex: 0 0 60px; }
+</style>
+<div class="toolbar">
+  <div class="name">candidate-profile-with-a-very-long-unbroken-name</div>
+  <button class="action" type="button">查看</button>
+</div>
+```
+
+按钮分配 60px，间距占 12px，文本盒宽度为 228px。`min-width: 0` 明确允许文本盒收缩，另外三条声明才负责单行截断。若产品要求看完整名称，可以改成适当换行，而不是将省略号作为所有溢出的默认答案。
+
+这里的 `overflow: hidden` 本身也会影响自动最小尺寸；显式写 `min-width: 0` 是把收缩意图独立表达出来，便于改成换行或其他溢出方案。纵向 Flex 中，内部滚动区域还常需 `min-height: 0`，道理相同，但作用轴不同。
+
+### 3.5 换行与固定列数 {#换行与固定列数}
+
+Flex 换行后，每一行独立分配空间。如果设置 `flex-grow: 1`，最后一行只有一个项目时，它也可能把整行的剩余空间占满。
+
+```html
+<style>
+  .cards { display: flex; flex-wrap: wrap; gap: 10px; width: 500px; }
+  .card { box-sizing: border-box; flex: 0 0 calc((100% - 40px) / 5); }
+</style>
+<div class="cards">
+  <div class="card">1</div><div class="card">2</div><div class="card">3</div>
+  <div class="card">4</div><div class="card">5</div><div class="card">6</div>
+</div>
+```
+
+每行五张卡片，四个间隙共 40px，每张宽 92px。第六张换到下一行且不伸长，因为增长权重是 0。若需求是“不显示第五张，也不保留它的布局位置”，可以对该项目使用 `display: none`；`visibility: hidden` 会保留位置，`opacity: 0` 还会保留默认交互能力。必须先澄清“不占空间”是隐藏项目，还是最后一行不要拉伸。
+
+项目数量固定成五列是本例约束，不代表窄屏也应一直五列。列数随可用空间改变时，可以使用媒体查询或 Grid 的自动重复轨道。
+
+## 4. Grid 与页面分区 {#grid与页面分区}
+
+### 4.1 轨道与剩余空间 {#网格轨道}
+
+**Grid 轨道**是相邻网格线之间的一行或一列。`grid-template-columns` 定义列，`grid-template-rows` 定义行，项目可以通过网格线或命名区域跨越多个轨道。
+
+`fr` 表示参与分配剩余空间的比例。它不是永远等于容器宽度的某个百分比：固定轨道、gap、内容最小尺寸都需要先参与计算。单写 `1fr` 还带有自动最小尺寸行为；需要允许轨道收缩到 0 时，可以用 `minmax(0, 1fr)`，再安排内部内容的溢出策略。
+
+```html
+<style>
+  .page { display: grid; grid-template-columns: 160px minmax(0, 1fr) 120px; gap: 16px; }
+  .main { min-width: 0; overflow-wrap: anywhere; }
+  @media (max-width: 40rem) {
+    .page { grid-template-columns: minmax(0, 1fr); }
+  }
+</style>
+<div class="page">
+  <nav>分类导航</nav><main class="main">职位列表与详细介绍</main><aside>相关信息</aside>
+</div>
+```
+
+当容器宽 800px 且未触发窄屏规则时，中间列得到 `800 − 160 − 120 − 32 = 488px`。视口变窄后，三个区域按 DOM 顺序上下排列，不继续挤压一条已经放不下的三栏。
+
+如果只需要右侧固定、左侧自适应，两栏 Flex 同样直接：左侧使用 `flex: 1 1 0; min-width: 0`，右侧使用 `flex: 0 0 120px`。真正要确认的是固定区域是否允许收缩，以及空间不足后改成上下排列还是横向滚动。
+
+### 4.2 多项目中的独立居中 {#独立居中}
+
+把一整组项目居中，不等于把其中某一个项目的中心放在容器中心。例如左侧是返回按钮，右侧是两个操作按钮，两边宽度不相等时，`space-between` 不能保证中间标题几何居中。
+
+```html
+<style>
+  .header { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 12px; }
+  .left { justify-self: start; min-width: 0; }
+  .right { justify-self: end; min-width: 0; }
+  .title { margin: 0; }
+</style>
+<div class="header">
+  <button class="left" type="button">返回</button>
+  <h2 class="title">职位</h2>
+  <button class="right" type="button">收藏与分享</button>
+</div>
+```
+
+两侧轨道等宽，中间轨道按标题内容分配，所以标题相对整个容器居中。若两侧内容在窄屏下放不下，仍要换行、截断或改变结构；不能靠居中算法消除真实的空间冲突。
+
+## 5. 定位与居中 {#定位与居中}
+
+### 5.1 position 的参照关系 {#定位参照}
+
+**定位**通过 `position` 和偏移属性，决定盒子如何相对某个参照区域放置。`top`、`right`、`bottom`、`left` 的作用取决于定位方式，`inset` 是它们的简写。
+
+| 值 | 是否保留正常流布局位置 | 偏移参照 |
+| --- | --- | --- |
+| `static` | 是 | 正常布局，定位偏移不生效 |
+| `relative` | 是 | 在正常位置基础上偏移，后续元素仍按原位置布局 |
+| `absolute` | 否 | 最近建立绝对定位包含块的祖先；普通情况可由非 `static` 祖先建立，没有则使用初始包含块 |
+| `fixed` | 否 | 通常相对视口；建立固定定位包含块的祖先可以改变参照 |
+| `sticky` | 是 | 正常流位置结合滚动容器的阈值调整，并受所属包含块边界约束 |
+
+`absolute` 不是一定相对直接父元素，`fixed` 也不是一定相对视口。例如祖先具有非 `none` 的 `transform`，就会为相关绝对定位和固定定位后代建立包含块。
+
+```html
+<style>
+  .host { width: 300px; height: 200px; margin: 40px; transform: translateZ(0); }
+  .badge { position: fixed; top: 0; left: 0; }
+</style>
+<div class="host"><button class="badge" type="button">操作</button></div>
+```
+
+虽然 `.badge` 写了 `fixed`，它仍定位在 `.host` 的参照区域左上方。去掉 `transform`，且没有其他建立固定定位包含块的祖先时，按钮才回到视口左上方。页面右下角悬浮按钮可以使用 `position: fixed; right: 16px; bottom: 16px`，但仍要检查祖先是否改变了这个参照。
+
+### 5.2 未知尺寸的居中 {#未知尺寸居中}
+
+Flex 或 Grid 可以让正常流中的未知尺寸内容居中。Grid 单项目可以写 `display: grid; place-items: center`；Flex 则使用前文的两个轴对齐。若内容超过可用区域，居中还可能使起始部分溢出，应按需求改成安全对齐或保留可滚动的起始位置。
+
+绝对定位加变换适用于不希望内容撑开父元素的覆盖场景。
+
+```html
+<style>
+  .stage { position: relative; width: 300px; height: 200px; }
+  .label { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); }
+</style>
+<div class="stage"><div class="label">内容尺寸由文字决定</div></div>
+```
+
+`top`、`left` 的百分比依赖定位包含块，先把 `.label` 的起始位置移到参照区域中心。这里的 `translate` 百分比再按自身变换参考盒的尺寸回退一半，默认 CSS 盒场景下相当于按自身边框盒计算，所以不需要预先知道宽高。
+
+`transform` 是变换属性，`translate()` 是其中一个变换函数；此外还有独立的 `translate` 属性。变换改变呈现和相关几何测量，不会让周围正常流元素按变换后的尺寸重新排队。多个变换的顺序会影响结果，例如缩放和平移交换顺序后，平移量可能也被缩放。
+
+已知尺寸时也能通过偏移加负 margin 居中，但尺寸变化后需要同步维护。`text-align: center` 对齐的是行内内容，不负责任意块盒的垂直居中；让 `line-height` 等于容器高度只适合受控的单行文字，不能推广到多行内容。
+
+### 5.3 sticky 的生效条件 {#粘性定位}
+
+`sticky` 在正常位置参与布局，滚动达到阈值后再偏移。通常至少需要在目标轴上设置一个非 `auto` 偏移，例如 `top: 0`。
+
+```html
+<style>
+  .scroll { height: 120px; overflow: auto; }
+  .sticky { position: sticky; top: 0; height: 30px; background: white; }
+  .content { height: 400px; }
+</style>
+<div class="scroll">
+  <div class="sticky">职位筛选</div>
+  <div class="content">滚动内容</div>
+</div>
+```
+
+滚动 `.scroll` 时，`.sticky` 在滚动区域顶端保持可见。排查不生效时，先看实际滚动的是哪个元素，再看祖先 `overflow` 是否建立了另一个滚动容器，最后检查项目和所属包含块是否还有移动空间。父区域本身太短、项目被拉伸到占满可用高度，或没有设置阈值，都可能让粘性效果无从出现。
+
+## 6. 文本、尺寸与溢出 {#文本尺寸与溢出}
+
+### 6.1 单行与多行省略 {#文本省略}
+
+`text-overflow: ellipsis` 只规定被裁剪的行内溢出如何表示，它不会自动限制宽度、禁止换行或创建裁剪区域。
+
+```html
+<style>
+  .single { width: 180px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .multiple {
+    width: 180px;
+    line-height: 20px;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+    overflow: hidden;
+  }
+</style>
+<p class="single">这是一段需要在有限宽度中展示的职位介绍文字。</p>
+<p class="multiple">这是一段更长的职位介绍。它包含工作内容、技术要求和实习安排，需要在卡片里最多展示三行，剩余文字由详情页继续展示。</p>
+```
+
+`.single` 将文本限制为一行，在 180px 宽度内截断。`.multiple` 使用已广泛实现的带前缀组合，最多显示三行；这里三行高度为 60px，但不应只把 `height: 60px` 当成自动添加省略号的替代方案。应在目标浏览器检查截断表现，不把 DOM 文本被保留等同于所有读者都能方便读取全文。
+
+国际化后文本变长，可以允许换行、使用 `overflow-wrap: anywhere` 处理长串、放宽高度或在窄屏重排。按钮、关键状态和操作名称不宜随意截断；需要省略的说明文字，应提供详情或展开入口。
+
+### 6.2 页面高度与内部滚动 {#页面高度与内部滚动}
+
+“页脚在内容少时靠底，内容多时跟随正文”与“页脚永远固定在视口”是两种需求。前者可以使用纵向 Flex，让主要内容填充剩余高度。
+
+```html
+<style>
+  body { margin: 0; }
+  .shell { min-height: 100vh; display: flex; flex-direction: column; }
+  .body { flex: 1; }
+</style>
+<div class="shell">
+  <header>页眉</header><main class="body">页面内容</main><footer>页脚</footer>
+</div>
+```
+
+内容少时，`.body` 占据多余空间；内容变多时，整个页面继续向下增长，页脚不覆盖正文。这里使用 `min-height`，没有把页面内容强制裁进一屏。移动端动态视口还需结合目标浏览器决定视口单位。
+
+如果需求是固定高度面板内只有列表滚动，则应明确面板高度，让列表所在的弹性项目设置 `min-height: 0; overflow: auto`。页面滚动和内部列表滚动应有明确分工，否则容易出现两套滚动条或内容无法滚动到底。
+
+### 6.3 CSS 三角形 {#css三角形}
+
+边框在角点交汇时会形成斜边。把内容区宽高设为 0，再只保留一个可见方向的边框，就可以得到三角形。
+
+```html
+<style>
+  .triangle {
+    width: 0; height: 0;
+    border-left: 12px solid transparent;
+    border-right: 12px solid transparent;
+    border-bottom: 20px solid #2563eb;
+  }
+</style>
+<div class="triangle" aria-hidden="true"></div>
+```
+
+内容区为 0，不代表整个盒子没有面积：边框范围宽 24px、高 20px，底边框形成向上的三角形。装饰图形可以从可访问性表示中隐藏；如果它是操作入口，仍需要按钮等语义和名称。持续旋转属于动画规则，而不是边框造型本身的功能。
+
+## 7. 覆盖层与滚动 {#覆盖层与滚动}
+
+### 7.1 全屏图片预览 {#图片预览}
+
+全屏预览包含至少三件事：覆盖层占据可视区域，图片按比例适配可用空间，关闭操作仍可用。可以用固定定位覆盖层实现，也可以使用进入浏览器顶层的模态 `dialog`，避免只靠越来越大的 `z-index` 争夺层级。
+
+```html
+<style>
+  #preview { border: 0; padding: 16px; max-width: 90vw; max-height: 90vh; }
+  #preview::backdrop { background: rgb(0 0 0 / 65%); }
+  #preview img { display: block; max-width: 80vw; max-height: 70vh; object-fit: contain; }
+  html.preview-open { overflow: hidden; }
+</style>
+<button type="button" id="open-preview">预览图片</button>
+<dialog id="preview" aria-label="图片预览">
+  <button type="button" id="close-preview">关闭</button>
+  <img src="/photo.svg" width="600" height="400" alt="会议室布局">
+</dialog>
+<script>
+  const preview = document.querySelector('#preview');
+  document.querySelector('#open-preview').addEventListener('click', () => {
+    preview.showModal();
+    document.documentElement.classList.add('preview-open');
+  });
+  document.querySelector('#close-preview').addEventListener('click', () => preview.close());
+  preview.addEventListener('close', () => {
+    document.documentElement.classList.remove('preview-open');
+  });
+</script>
+```
+
+这是一个单弹层示例：打开时用 `showModal()` 建立模态交互，并锁住根页面滚动；按钮或 Escape 关闭后，在统一的 `close` 入口清理样式。`object-fit` 控制图片内容在盒中的适配，不能替代盒子本身的最大尺寸约束。工程实现还要处理嵌套弹层、滚动条消失造成的宽度变化，以及目标移动浏览器的行为。
+
+缩放与拖动可以用独立的 `scale`、`x`、`y` 状态，统一生成 `transform: translate(x, y) scale(scale)`。缩放应限制范围；拖动根据指针位移更新位置，并处理指针捕获、取消和结束。若要求围绕鼠标所在点缩放，还要在缩放前后保持该图片坐标映射到同一屏幕位置，而不能只修改 `scale`。这是交互状态与坐标计算问题，CSS 负责应用最终变换。
+
+### 7.2 滚动穿透与滚动链 {#滚动穿透}
+
+“滚动穿透”可能描述两种现象：弹层打开时背景仍可以滚动，或弹层内的滚动区域到达边缘后，滚动继续传递到外层。这两者要分别定位。
+
+**滚动链**是一个滚动容器到达边界后，滚动操作继续交给其他滚动容器的行为。可以在内部滚动容器上设置 `overscroll-behavior: contain`，阻止这类边界传递。
+
+```html
+<style>
+  .outer { height: 180px; overflow: auto; }
+  .inner { height: 100px; overflow: auto; overscroll-behavior: contain; }
+  .inner-content { height: 300px; }
+  .outer-content { height: 500px; }
+</style>
+<div class="outer">
+  <div class="inner"><div class="inner-content">内部滚动内容</div></div>
+  <div class="outer-content">外部滚动内容</div>
+</div>
+```
+
+`.inner` 滚到底后，用户继续在它上面滚动，不应再推动 `.outer`。这条规则作用于滚动边界，不负责锁住所有其他区域；用户直接在外部区域滚动，外层仍可以滚动。
+
+锁住背景则需要针对实际滚动元素操作，并在关闭时恢复。简单页面可以像预览示例那样切换根元素的 `overflow`。某些移动布局需要保存滚动位置，将背景固定并用负偏移维持画面，再在关闭时恢复位置；要在目标设备验证，不能把锁 `body` 当作所有页面的通用解。
+
+事件冒泡与浏览器默认滚动是不同机制。`stopPropagation()` 只停止事件传播；直接给所有 `touchmove` 加 `preventDefault()` 又可能使弹层内部也无法滚动，还受被动监听器规则影响。先确定真实滚动容器和边界，再选择 CSS 约束或必要的事件处理。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 正常流、Flex、Grid 和定位分别适合什么场景？ {#layout-model}
+
+**考察重点**：内容关系与布局模型的选用。
+
+**相关内容**：[布局模型的选择](#布局模型的选择)。
+
+<details>
+<summary>参考回答</summary>
+
+**先按关系选择：文档顺序用正常流，一维空间分配用 Flex，共同行列约束用 Grid，依附或覆盖位置用定位。** Flex 换行后各行独立分配，Grid 可以让多行共享同一列轨道；绝对定位不参与正常流，不能依靠它的高度撑开父容器。选型时还要说明内容增长、窄屏和阅读顺序如何处理。
+
+</details>
+
+### 8.2 Flex 的主轴、交叉轴及几个对齐属性有什么区别？ {#flex-axis}
+
+**考察重点**：方向、项目对齐与行分布。
+
+**相关内容**：[主轴、交叉轴与对齐](#轴与对齐)。
+
+<details>
+<summary>参考回答</summary>
+
+**主轴由 `flex-direction` 决定，`justify-content` 沿主轴分配剩余空间，`align-items` 在交叉轴对齐项目。** 单项目可以用 `align-self` 覆盖交叉轴对齐。`align-content` 调整多行容器中各行的整体分布，不能代替单项目对齐。`row` 改为 `column` 后，主轴与交叉轴的实际方向随之改变；没有额外空间时，一些对齐设置也不会产生明显效果。
+
+</details>
+
+### 8.3 flex-grow 和 flex-shrink 怎样分配空间？ {#flex-size}
+
+**考察重点**：基准尺寸、增长权重与加权收缩。
+
+**相关内容**：[基准尺寸、增长与收缩](#空间分配)。
+
+<details>
+<summary>参考回答</summary>
+
+**增长按 `grow` 权重分配正剩余空间，收缩按 `shrink × 基准尺寸` 分配不足空间。** 两个 100px 基准的项目在 300px 容器中以 1:2 增长，会得到约 133.33px 和 166.67px。两个 100px、200px 基准的项目在 240px 容器中，即使 `shrink` 都为 1，也先按 1:2 收缩到 80px、160px。实际算法还要处理最小、最大尺寸和空间重新分配，不能无条件套一个比例。
+
+</details>
+
+### 8.4 flex: 1、flex: auto 和默认值有什么区别？ {#flex-shorthand}
+
+**考察重点**：三个长属性和基准尺寸的影响。
+
+**相关内容**：[flex 简写](#flex简写)。
+
+<details>
+<summary>参考回答</summary>
+
+**默认是 `0 1 auto`，`flex: auto` 是 `1 1 auto`，浏览器中的 `flex: 1` 通常展开为 `1 1 0%`。** 前两个使用尺寸或内容基准，`auto` 还允许增长；`flex: 1` 从零百分比基准分配。它不保证任何条件下都等宽，内容最小尺寸、padding 和 border 仍会影响结果。主轴尺寸不确定时，`0%` 与明确的 `0` 也可能不同，所以精确控制时可以写 `flex: 1 1 0`。
+
+</details>
+
+### 8.5 已经设置 flex: 1，长文本为什么仍可能撑开容器？ {#long-content}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：自动最小尺寸、收缩与内容溢出。
+
+**相关内容**：[长内容与自动最小尺寸](#长内容与收缩)、[轨道与剩余空间](#网格轨道)。
+
+<details>
+<summary>参考回答</summary>
+
+**弹性分配仍受自动最小尺寸约束，不能断开的内容可能阻止项目继续收缩。** 可以在合适的横向 Flex 项目上设置 `min-width: 0`，再选择换行、省略或滚动；纵向内部滚动区域则要检查 `min-height`。Grid 中还要检查轨道的自动最小尺寸，必要时用 `minmax(0, 1fr)`。只放开盒子尺寸，不处理内部内容，并不能完成溢出修复。
+
+</details>
+
+### 8.6 如何实现未知尺寸元素的水平垂直居中？ {#centering}
+
+**考察重点**：正常流与覆盖场景、百分比参照。
+
+**相关内容**：[主轴、交叉轴与对齐](#轴与对齐)、[未知尺寸的居中](#未知尺寸居中)。
+
+<details>
+<summary>参考回答</summary>
+
+**正常流内容可以用 Flex 的双轴居中，或 Grid 的 `place-items: center`。** 父元素需要提供可用空间。覆盖元素可以使用绝对定位，`top/left: 50%` 将起点移到包含块中心，再用 `translate(-50%, -50%)` 按自身参考盒尺寸回退一半。后者不会撑开父元素，也要处理超大内容。单行 `line-height` 技巧不能直接适用于多行或任意元素。
+
+</details>
+
+### 8.7 多个横向项目中，如何让其中一个相对整个容器居中？ {#single-item-center}
+
+**考察重点**：单项目与整体居中、对称轨道和空间冲突。
+
+**相关内容**：[多项目中的独立居中](#独立居中)。
+
+<details>
+<summary>参考回答</summary>
+
+**先确认是沿交叉轴对齐，还是要求项目中心落在容器中心。** 交叉轴可用 `align-self: center`；容器水平中心则不能只用整组 `justify-content: center`，也没有 Flex `justify-self` 来完成。左右内容不等宽时，可以用 `minmax(0, 1fr) auto minmax(0, 1fr)` 建立两侧等宽的 Grid 轨道，使中间内容居中；窄屏还需处理两侧放不下的情况。
+
+</details>
+
+### 8.8 position 有哪些值，absolute 和 fixed 相对谁定位？ {#positioning}
+
+**考察重点**：正常流位置与包含块的建立。
+
+**相关内容**：[position 的参照关系](#定位参照)。
+
+<details>
+<summary>参考回答</summary>
+
+**常用值为 `static`、`relative`、`absolute`、`fixed`、`sticky`；`absolute` 和 `fixed` 脱离正常流。** `relative` 保留原布局位置后再偏移。`absolute` 依赖最近建立绝对定位包含块的祖先，不能只找直接父元素；`fixed` 通常相对视口，但非 `none` 的变换祖先等条件可以建立固定定位包含块。`sticky` 则保留正常流关系，结合滚动阈值和所属区域边界偏移。
+
+</details>
+
+### 8.9 sticky 为什么可能没有出现吸附效果？ {#sticky}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：滚动容器、阈值与移动空间。
+
+**相关内容**：[sticky 的生效条件](#粘性定位)。
+
+<details>
+<summary>参考回答</summary>
+
+**先检查目标轴是否设置了非 `auto` 阈值，以及实际滚动的是不是它所参照的滚动容器。** 祖先的 `overflow` 可能改变滚动参照，而该祖先本身却没有滚动。还要检查所属包含块是否太短、项目是否被拉伸得过高，导致没有可移动空间。它不是无条件固定在视口上的 `fixed`。
+
+</details>
+
+### 8.10 如何实现右侧固定、左侧自适应，或两侧固定、中间自适应？ {#columns}
+
+**考察重点**：固定约束、弹性轨道与窄屏行为。
+
+**相关内容**：[轨道与剩余空间](#网格轨道)。
+
+<details>
+<summary>参考回答</summary>
+
+**把固定尺寸和可分配尺寸分别声明，再定义空间不足后的布局。** 两栏 Flex 可让左侧 `flex: 1 1 0; min-width: 0`、右侧 `flex: 0 0 120px`。三栏 Grid 可使用 `160px minmax(0, 1fr) 120px` 并设置间距。内容要能换行或采用明确溢出策略；窄屏可改成单列，不能要求固定列宽之和超过容器时仍无代价地容纳所有内容。
+
+</details>
+
+### 8.11 单行省略号和最多三行省略分别如何实现？ {#ellipsis}
+
+**考察重点**：尺寸约束、换行与裁剪组合。
+
+**相关内容**：[单行与多行省略](#文本省略)。
+
+<details>
+<summary>参考回答</summary>
+
+**单行需要受约束的宽度，加上 `white-space: nowrap`、溢出裁剪与 `text-overflow: ellipsis`。** Flex 项目还要允许自身收缩。三行可以用 `display: -webkit-box`、`-webkit-box-orient: vertical`、`-webkit-line-clamp: 3` 和裁剪组合，并验证目标浏览器。仅固定三行高度不会自动生成省略号。重要文本应提供完整阅读入口。
+
+</details>
+
+### 8.12 Flex 一行五张卡片，如何让指定项目不占空间，并避免末行拉伸？ {#five-cards}
+
+**考察重点**：隐藏要求、基准尺寸、换行与增长。
+
+**相关内容**：[换行与固定列数](#换行与固定列数)。
+
+<details>
+<summary>参考回答</summary>
+
+**这两个要求要分开处理：隐藏且移除布局位置用 `display: none`，末行不伸长则把项目增长权重设为 0。** 每行五个、间隔 10px 时，可设置 `flex: 0 0 calc((100% - 40px) / 5)`，父容器允许换行。`visibility: hidden` 保留布局位置，透明度为 0 也不会移除它。实际题目应先澄清“不占空间”的含义，再确定隐藏与末行策略。
+
+</details>
+
+### 8.13 怎样用 CSS 画一个三角形？ {#triangle}
+
+**考察重点**：内容区与边框的几何关系。
+
+**相关内容**：[CSS 三角形](#css三角形)。
+
+<details>
+<summary>参考回答</summary>
+
+**可以将内容宽高设为 0，用透明的两侧边框配合一个有色边框形成三角形。** 例如左右各 12px 透明边框、底部 20px 有色边框，得到边框范围宽 24px、高 20px 的向上三角形。盒子仍有边框面积；如果图形作为按钮使用，还需提供控件语义和名称，旋转则另外由变换或动画实现。
+
+</details>
+
+### 8.14 图片全屏预览需要哪些布局和交互处理？ {#image-preview}
+
+**题型**：综合题
+
+**考察重点**：覆盖层、图片尺寸、变换状态和交互恢复。
+
+**相关内容**：[全屏图片预览](#图片预览)、[未知尺寸的居中](#未知尺寸居中)、[滚动穿透与滚动链](#滚动穿透)。
+
+<details>
+<summary>参考回答</summary>
+
+**先建立覆盖和关闭能力，再处理图片适配、缩放拖动与页面状态恢复。** 可以用固定定位覆盖层，或用 `dialog.showModal()` 和 `::backdrop` 建立模态预览，限制图片最大尺寸并按比例适配。缩放和拖动用独立状态生成变换，限制缩放范围、处理指针捕获和取消；围绕鼠标缩放还需保持对应图片坐标不跳动。关闭时恢复背景滚动和合理焦点，不能只移除一层半透明背景。
+
+</details>
+
+### 8.15 弹层为什么会滚动穿透，应该如何处理？ {#scroll-penetration}
+
+**考察重点**：背景滚动、滚动链与事件默认行为。
+
+**相关内容**：[滚动穿透与滚动链](#滚动穿透)。
+
+<details>
+<summary>参考回答</summary>
+
+**先区分背景未锁定，还是内部滚动到边界后向外传递。** 前者要锁定实际背景滚动元素，并在关闭时恢复样式与位置；后者可以在内部滚动容器设置 `overscroll-behavior: contain`。`stopPropagation()` 不负责阻止默认滚动，全局取消触摸移动又可能禁用内部滚动。移动浏览器还需验证具体滚动根、视口与固定定位行为。
+
+</details>
+
+### 8.16 内容少时页脚靠底、内容多时跟随正文，为什么不直接 fixed？ {#footer-flow}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：页面最小高度、正常流与内容增长。
+
+**相关内容**：[页面高度与内部滚动](#页面高度与内部滚动)。
+
+<details>
+<summary>参考回答</summary>
+
+**这个需求要求页脚继续参与内容布局，`fixed` 却会脱离正常流并可能遮挡正文。** 可以让页面使用纵向 Flex 和最小视口高度，让主要内容 `flex: 1` 填充剩余空间。内容增多时页面自然变高，页脚跟随其后。内部列表固定高度滚动是另一个需求，应单独声明容器高度与溢出规则。
+
+</details>
+
+### 8.17 切换语言后文本变长，怎样避免破坏布局？ {#language-layout}
+
+**考察重点**：内容约束、收缩、换行与操作可用性。
+
+**相关内容**：[长内容与自动最小尺寸](#长内容与收缩)、[单行与多行省略](#文本省略)。
+
+<details>
+<summary>参考回答</summary>
+
+**先允许布局容纳内容变化，再根据文本的重要性选择换行、重排或省略。** 检查固定宽高和 Flex/Grid 的自动最小尺寸，允许合适的项目收缩；长串可采用 `overflow-wrap`，多行内容则让高度自然增长。按钮与关键状态不能为了对齐而随意截断，说明文字省略后应提供详情入口。还应在窄屏和较长译文下实际检查，不能只按原语言的字数设计固定盒子。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+
+- [CSS Flexible Box Layout：布局与弹性空间分配](https://www.w3.org/TR/css-flexbox-1/)
+- [MDN：flex 简写与 0%/0 的区别](https://developer.mozilla.org/en-US/docs/Web/CSS/Reference/Properties/flex)
+- [CSS Grid Layout：网格轨道](https://www.w3.org/TR/css-grid-1/)
+- [CSS Positioned Layout：定位与包含块](https://www.w3.org/TR/css-position-3/)
+- [CSS Box Alignment：对齐与溢出](https://www.w3.org/TR/css-align-3/)
+- [CSS Transforms：变换、包含块与变换顺序](https://www.w3.org/TR/css-transforms-1/)
+- [CSS Overflow：溢出与单行截断](https://www.w3.org/TR/css-overflow-3/)
+- [CSS Overflow Level 4：多行截断与兼容语法](https://www.w3.org/TR/css-overflow-4/#line-clamp)
+- [CSS Overscroll Behavior：滚动边界](https://www.w3.org/TR/css-overscroll-1/)
+- [HTML Standard：dialog](https://html.spec.whatwg.org/multipage/interactive-elements.html#the-dialog-element)

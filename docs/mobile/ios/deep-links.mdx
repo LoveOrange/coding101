@@ -1,0 +1,277 @@
+---
+title: iOS 深层链接
+description: 区分 URL Schemes 与 Universal Links，组织域名关联、Scene 分发、路由校验、登录恢复和失败定位。
+knowledge:
+  id: mobile.ios.deep-links
+---
+
+**深层链接**（deep link）把外部 URL 转换成应用内的具体目标，例如打开一篇文章。iOS 可以通过自定义 URL Scheme 或 Universal Link 把链接交给应用，但收到链接之后，参数校验、登录与授权、Scene 选择和页面准备仍由应用完成。
+
+这个主题的重点是分清三件事：系统为什么把链接交给这个应用，应用如何理解链接，以及当前用户是否可以进入目标内容。能唤起应用不等于可以执行 URL 中描述的任意操作。
+
+## 1. 面试核心 {#core}
+
+- **URL Scheme 依靠应用注册，Universal Link 依靠网站与应用的双向关联**。Scheme 可能被多个应用注册；Universal Link 使用普通网页链接，并需要匹配签名 entitlement 与站点关联文件。[卡](#comparison)
+- **Universal Link 配置分布在应用和网站两侧**。Associated Domains、应用标识、AASA 文件和 URL 匹配规则必须对应，单独写路由代码不能完成关联。[卡](#association)
+- **冷启动与已有 Scene 接收链接的入口不同**。Scene 应用要同时处理连接选项、`openURLContexts` 和 `continue userActivity`，不能只写一个热启动回调。[卡](#delivery)
+- **外部 URL 是输入，不能直接作为授权依据**。校验 scheme、host、路径与参数，再把它转换成有限的内部路由；内容访问和敏感动作仍需业务授权。[卡](#security)
+- **路由意图可以先保存，页面跳转要等条件满足**。导航容器、登录、账号与数据准备完成后重新检查目标，避免启动时丢链接或登录后越权。[卡](#readiness)
+- **解析通过、应用收到回调和系统关联成功是不同证据**。测试与排查要分别覆盖这几层，不能把手动构造的 URL 或 user activity 当成系统分发已经通过。[卡](#diagnosis)
+
+## 2. 两种链接入口 {#两种链接入口}
+
+### 2.1 自定义 URL Scheme {#自定义URLScheme}
+
+**URL Scheme**是 URL 开头标明协议或处理方式的部分。应用可以注册自己的 scheme，例如 `readerdemo`，使 `readerdemo://article/42` 成为应用可接收的入口。
+
+在 Xcode 的 URL Types 中注册后，构建产物的 Info.plist 会包含对应声明。下面是相关片段，合并到应用现有的 plist 字典中：
+
+```xml
+<key>CFBundleURLTypes</key>
+<array>
+  <dict>
+    <key>CFBundleURLName</key>
+    <string>com.example.reader.links</string>
+    <key>CFBundleURLSchemes</key>
+    <array><string>readerdemo</string></array>
+  </dict>
+</array>
+```
+
+反向域名形式的 `CFBundleURLName` 便于标识用途，但不会阻止其他应用注册 `readerdemo`。多个应用注册同一 scheme 时，系统选择目标的结果没有唯一性保证，因此它不适合单独承担可信身份的判断。
+
+注册的是接收能力。调用 `canOpenURL` 时的查询配置、调用 `open` 的结果与应用内部真正完成目标操作，又是不同问题，不能看到“打开成功”就当成业务成功。
+
+### 2.2 Universal Link {#UniversalLink}
+
+**Universal Link**是与应用关联的 HTTP 或 HTTPS 网页链接。本文使用 `https://links.example.com/article/42` 作为示例；应用未安装或没有接管这次打开时，仍可以通过网页承接内容。
+
+网站通过关联文件声明哪些应用可以处理哪些链接，应用通过签名 entitlement 声明支持哪些域名。这个双向关联解决的是网站与应用的关联关系，不会替应用验证某个用户是否能读文章 42。
+
+是否进入应用还与系统关联状态、链接上下文和用户行为有关。不能把“任何地方打开相同 HTTPS URL 都一定跳 App”作为产品或测试前提，网页回退也应能让用户理解当前结果。
+
+## 3. 域名关联与匹配规则 {#域名关联与匹配规则}
+
+### 3.1 应用侧声明 {#应用侧声明}
+
+在目标的 Signing & Capabilities 中添加 Associated Domains，并配置 `applinks:links.example.com`。它进入 `com.apple.developer.associated-domains` entitlement，随正确签名和能力配置生效；不是往 Info.plist 加一个同名字符串就完成。
+
+域名项不带路径、普通查询参数或结尾斜杠。需要多个子域时，按实际站点和规则分别配置，不能假定根域名自动覆盖所有子域。检查时应看最终构建的签名 entitlement，而不只看 Xcode 编辑器中显示的值。
+
+### 3.2 网站侧关联文件 {#网站侧关联文件}
+
+网站提供没有扩展名的 `apple-app-site-association` 文件，通常放在 `https://links.example.com/.well-known/apple-app-site-association`。它应通过有效 HTTPS 证书直接返回，不能依赖重定向。
+
+下面是使用 `components` 的示例，只声明接管文章路径。`ABCDE12345.com.example.reader` 是占位应用标识，实际要对应签名中的应用标识前缀和 Bundle ID，不能原样复制：
+
+```json
+{
+  "applinks": {
+    "details": [
+      {
+        "appIDs": ["ABCDE12345.com.example.reader"],
+        "components": [{"/": "/article/*"}]
+      }
+    ]
+  }
+}
+```
+
+**AASA**是这个关联文件名的常用简称。`components` 定义 URL 组件的匹配规则，决定哪些链接适合交给应用；它不代替应用内部的参数与权限校验。比如 `/article/*` 可以匹配更广的路径，应用仍可只接受自己定义的数字 ID。
+
+iOS 14 及以后，常规关联文件获取经过 Apple 管理的 CDN。站点上的文件更新，不代表每个已安装设备立刻使用新内容。排查时应同时确认站点响应、关联缓存、安装与签名条件；开发模式的特殊设置也不能直接当成正式分发条件。
+
+## 4. App 与 Scene 分发 {#App与Scene分发}
+
+### 4.1 Scene 生命周期入口 {#Scene生命周期入口}
+
+采用 UIKit Scene 生命周期的应用，需要区分首次建立 Scene 与已有 Scene 接收链接：
+
+| 情形 | 接收入口 | URL 所在位置 |
+| --- | --- | --- |
+| 自定义 scheme 引发新 Scene 连接 | `scene(_:willConnectTo:options:)` | `connectionOptions.urlContexts` 中的 `url` |
+| 已有 Scene 接收自定义 scheme | `scene(_:openURLContexts:)` | `UIOpenURLContext.url` |
+| Universal Link 引发新 Scene 连接 | `scene(_:willConnectTo:options:)` | `connectionOptions.userActivities` |
+| 已有 Scene 接收 Universal Link | `scene(_:continue:)` | `NSUserActivity.webpageURL` |
+
+Universal Link 对应的 activity 类型为 `NSUserActivityTypeBrowsingWeb`，读取前应核对类型和 `webpageURL`。连接选项与运行中回调应汇入相同的解析逻辑，避免两套规则逐渐不一致。
+
+Scene 是具体窗口场景，不能在多窗口应用里拿一个全局“当前控制器”处理所有链接。应把意图交给系统指定或业务明确选择的 Scene，再由它的导航状态决定如何展示。窗口与应用状态的分工见 [iOS 应用生命周期](app-lifecycle.mdx)。
+
+### 4.2 其他生命周期入口 {#其他生命周期入口}
+
+未采用 Scene 的 UIKit 应用通常通过 AppDelegate 的 `application(_:open:options:)` 接收自定义 scheme，通过 `application(_:continue:restorationHandler:)` 接收对应 user activity。不能把这些入口与 Scene 版本随意混用，导致冷启动或运行中路径遗漏。
+
+SwiftUI 应用可以用 `onOpenURL` 接收自定义 URL 和 Universal Link。SwiftUI 会把 Universal Link 直接作为 URL 交给这个处理器，其他类型的 user activity 再使用相应的 `onContinueUserActivity`。仍要考虑哪个 Scene 接收、路由状态何时准备完成，修饰符不是完整的导航与授权方案。
+
+## 5. URL 解析与信任边界 {#URL解析与信任边界}
+
+### 5.1 把外部输入转换成有限路由 {#把外部输入转换成有限路由}
+
+**内部路由**是应用认可的目标类型，例如 `article(id: 42)`。解析器把外部字符串约束成这些类型，后续代码不再到处自行切分 URL 或解释任意参数。
+
+下面的 Swift 5 示例只接受两种形式：`readerdemo://article/42` 和 `https://links.example.com/article/42`。ID 是 1 到 9 位 ASCII 数字且大于 0；为保持示例的协议简单，不接受查询、片段、凭据、端口和编码后的路径。
+
+```swift
+import Foundation
+
+enum LinkRoute: Equatable {
+    case article(id: Int)
+}
+
+func parseLink(_ url: URL) -> LinkRoute? {
+    guard let parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
+          parts.user == nil, parts.password == nil, parts.port == nil,
+          parts.query == nil, parts.fragment == nil else { return nil }
+    let scheme = parts.scheme?.lowercased()
+    let host = parts.host?.lowercased()
+    let path = parts.percentEncodedPath
+    let prefix: String
+    if scheme == "readerdemo", host == "article" {
+        prefix = "/"
+    } else if scheme == "https", host == "links.example.com" {
+        prefix = "/article/"
+    } else {
+        return nil
+    }
+    guard path.hasPrefix(prefix) else { return nil }
+    let digits = String(path.dropFirst(prefix.count))
+    guard (1...9).contains(digits.utf8.count),
+          digits.utf8.allSatisfy({ $0 >= 48 && $0 <= 57 }),
+          let id = Int(digits), id > 0 else { return nil }
+    return .article(id: id)
+}
+```
+
+`URLComponents` 负责分解结构，白名单负责定义应用接受什么。通过完整 host 比较，可以拒绝 `links.example.com.evil.test`；先限制字符和长度，再转换整数，避免把任意路径或超长数字交给后续业务。
+
+这个解析器刻意拒绝 percent-encoded 路径，不代表所有深链都应这样设计。若协议允许中文、查询参数或可选字段，就要分别定义解码次数、重复键、未知键、长度和类型，避免多个模块对同一个 URL 解释不同。不要在一处检查编码字符串，另一处反复解码后执行更宽的路径。
+
+### 5.2 接收可信域名链接仍需要授权 {#接收可信域名链接仍需要授权}
+
+Universal Link 关联的是域名与应用，外部用户仍然可以构造这个域名下的 URL。文章是否存在、当前账号是否能读取、是否允许进入某个业务动作，应由登录态和服务端权限共同判断。
+
+不要让 URL 直接触发删除、支付、修改账号等敏感副作用。即使需要这类入口，也应转换成可审查的业务意图，完成必要的授权和确认，不能仅依据 URL 中的 `userId` 或 `isAdmin`。
+
+如果链接带有业务签名或一次性凭证，还要明确校验端、有效期、防重放和使用范围；签名只解决它覆盖的内容完整性，不能替代完整权限检查。日志也不应无差别保存可能包含凭据的完整 URL。
+
+## 6. 页面准备与登录恢复 {#页面准备与登录恢复}
+
+链接可能在导航容器尚未创建、账号状态尚未恢复时到达。入口层先保存已校验的路由意图，等相关 Scene 和业务条件就绪后再执行，比在启动回调里立即寻找最上层控制器更可靠。
+
+如果目标需要登录，可以记录待处理路由，完成登录后再次检查账号、内容权限和路由是否仍有效，再决定是否进入。用户取消登录、退出账号、切换账号或收到新的链接，都需要定义旧意图怎样处理；不能无限期保存并在将来某次登录后自动跳转。
+
+同一链接可能经过恢复流程或重复入口。去重应依据具体操作和当前导航状态，避免重复 push 同一页面；也不能永久拒绝同一个 URL，因为用户稍后可能确实想再次打开它。对于多个候选链接，需要业务选择处理顺序，不能依赖集合的遍历顺序。
+
+## 7. 验证与故障定位 {#验证与故障定位}
+
+验证分为三个层次，证据不能互相替代。
+
+| 层次 | 要验证什么 | 示例 |
+| --- | --- | --- |
+| 解析与路由逻辑 | 接受合法输入，拒绝非法输入，恢复状态正确 | host 后缀、编码路径、超长 ID、旧登录意图 |
+| 应用生命周期分发 | 系统通过哪个入口把链接交给应用 | 安装测试 App 后分别触发冷启动和已有 Scene |
+| 网站与系统关联 | 正确签名、AASA、匹配路径及真实链接行为 | 在具备站点关联条件的设备上打开真实链接 |
+
+自定义 scheme 可以在模拟器安装测试应用后使用 `xcrun simctl openurl` 触发，但应读取应用实际记录的回调与解析结果。若出现系统打开确认，应按真实用户流程处理后再检查回调；命令成功本身不能证明页面已经进入目标。
+
+手动构造 `NSUserActivity` 调用处理函数，只能检查处理代码；直接测试 `parseLink` 接受 HTTPS，也不能证明 Universal Link 的 AASA 下载与系统关联已经成功。后者必须使用实际域名、签名与安装条件单独验证。
+
+故障可以按层定位：应用未被打开先看 scheme 注册或域名关联；已经进入但无跳转看冷启动和 Scene 入口；路由被拒绝看解析规则；登录后失败看账号、授权与页面准备。保留失败条件和实际回调，避免靠反复重装偶然成功就宣称原因已经解决。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 URL Schemes 和 Universal Links 有什么区别，分别怎样接入？ {#comparison}
+
+**考察重点**：注册、双向关联、唯一性与回退。
+
+**相关内容**：[两种链接入口](#两种链接入口)、[域名关联与匹配规则](#域名关联与匹配规则)
+
+<details>
+<summary>参考回答</summary>
+
+**Scheme 在应用中注册自定义前缀，Universal Link 使用网页链接并关联网站与应用。** 多个应用可能注册同一 scheme；Universal Link 需要应用的 Associated Domains entitlement 和站点 AASA 对应。两者收到 URL 后都需要解析和业务授权，Universal Link 还要考虑网页承接与实际系统打开条件。
+
+</details>
+
+### 8.2 AASA 文件能访问，为什么 Universal Link 仍可能不进入应用？ {#association}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：配置两侧、签名、缓存与链接匹配。
+
+**相关内容**：[域名关联与匹配规则](#域名关联与匹配规则)、[验证与故障定位](#验证与故障定位)
+
+<details>
+<summary>参考回答</summary>
+
+**文件能访问只证明站点的一部分条件，还要核对实际签名 entitlement、应用标识、域名和路径规则。** 还需确认 HTTPS 无重定向、系统取得的关联版本以及链接打开条件。浏览器里看到最新 JSON，不等于设备立即更新了关联状态。
+
+</details>
+
+### 8.3 为什么只实现 scene(_:openURLContexts:) 会漏掉部分深链？ {#delivery}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：冷启动、Scene 连接与两类载体。
+
+**相关内容**：[App 与 Scene 分发](#App与Scene分发)
+
+<details>
+<summary>参考回答</summary>
+
+**它主要接收已有 Scene 的自定义 URL，首次连接和 Universal Link 有其他入口。** 新 Scene 从 connectionOptions 读取 URL contexts 或 user activities；已有 Scene 的 Universal Link 由 continue userActivity 接收。入口应统一交给同一解析与路由逻辑。
+
+</details>
+
+### 8.4 外部深链路由应该怎样限制可执行的内容？ {#security}
+
+**考察重点**：输入白名单、权限与敏感操作。
+
+**相关内容**：[URL 解析与信任边界](#URL解析与信任边界)
+
+<details>
+<summary>参考回答</summary>
+
+**先把 URL 校验成有限内部路由，再根据当前账号和服务端规则授权。** 校验完整 host、路径、参数类型和长度，明确编码与重复参数规则。Universal Link 的域名关联不等于用户授权，不能直接按外部参数执行删除、支付或访问敏感信息；可配置的路由开关也要在这些边界内生效。
+
+</details>
+
+### 8.5 深链到达时还没登录或导航容器尚未建立，应该怎样处理？ {#readiness}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：路由意图、状态恢复与重复处理。
+
+**相关内容**：[页面准备与登录恢复](#页面准备与登录恢复)
+
+<details>
+<summary>参考回答</summary>
+
+**先保存已校验的意图，等对应 Scene、导航和登录状态就绪后重新检查再执行。** 明确取消登录、换账号和新链接到来时旧意图如何处理，避免丢链接、重复跳转或在错误账号下打开内容。
+
+</details>
+
+### 8.6 解析器接受 HTTPS 链接，是否说明 Universal Link 接入已经完成？ {#diagnosis}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：逻辑测试与系统集成证据。
+
+**相关内容**：[验证与故障定位](#验证与故障定位)
+
+<details>
+<summary>参考回答</summary>
+
+**不能，它只说明解析规则接受这个输入。** 还要分别验证系统回调分发、正确签名和真实域名关联。手动调用 user activity 处理函数同样不证明 AASA 获取或系统选择目标已经通过。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+
+- [Apple：Defining a Custom URL Scheme for Your App](https://developer.apple.com/documentation/xcode/defining-a-custom-url-scheme-for-your-app)
+- [Apple：Supporting Associated Domains](https://developer.apple.com/documentation/xcode/supporting-associated-domains)
+- [Apple：Supporting Universal Links in Your App](https://developer.apple.com/documentation/xcode/supporting-universal-links-in-your-app)
+- [Apple：Associated Domains Entitlement](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.developer.associated-domains)
+- [Apple：UIScene.ConnectionOptions](https://developer.apple.com/documentation/uikit/uiscene/connectionoptions)
+- [Apple：onOpenURL](https://developer.apple.com/documentation/swiftui/view/onopenurl(perform:))

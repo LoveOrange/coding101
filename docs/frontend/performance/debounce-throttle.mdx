@@ -1,0 +1,463 @@
+---
+sidebar_position: 3
+knowledge:
+  id: frontend.performance.debounce-throttle
+---
+
+# 防抖与节流
+
+**防抖**把间隔很近的一组调用合并，通常等调用停止一段时间后再处理；**节流**限制持续调用期间的执行频率，让处理仍能间歇发生。输入搜索词更关心最后的内容，滚动位置更新则可能需要持续反馈，两者的等待条件不同。
+
+实现时最重要的是说清触发约定：第一次是否立即执行，最后一次是否补上，保留哪次参数，以及组件卸载时如何取消。只记住“一个清除定时器，一个设置标记”，还不足以解释边界行为。
+
+## 1. 面试核心 {#core}
+
+- **防抖等待一段安静时间，节流限制持续触发时的处理频率**。场景选择取决于是否需要持续反馈，不能只按事件名称选择。[卡](#difference)
+- **leading 与 trailing 分别控制一组调用的开始和结束是否执行**。它们属于具体实现的约定，节流不一定只执行第一次。[卡](#edges)
+- **防抖需要在每次调用时更新等待计时，并保留最近一次的参数与 this**。同一个实例必须共享闭包状态，不能在每次事件里重新创建。[卡](#debounce-implementation)
+- **节流的尾次执行之后仍需保留新的冷却期**。若立即恢复空闲，下一次事件可能紧接着再执行，破坏预期频率。[卡](#throttle-implementation)
+- **取消要清除定时器和待执行参数；立即执行待处理内容的 flush 与取消是不同操作**。状态应在调用业务回调前整理好，以支持回调重入和异常恢复。[卡](#cleanup)
+- **防抖和节流减少调用次数，不保证定时准确，也不减少每次回调本身的工作量**。rAF 合并适合绘制相关更新，不能承诺固定 60 次每秒。[卡](#timer-and-raf)
+- **异步请求是否过期必须单独判断**。新输入出现时就应让旧结果失效，不能等新的防抖请求发出才更新标识。[卡](#search-race)
+- **浏览器端限制触发不等于服务端幂等或并发控制**。它不能保证交易只发生一次，也不能保证耗时请求之间不重叠。[卡](#async-and-idempotency)
+
+## 2. 时间窗口与触发约定 {#时间窗口与触发约定}
+
+### 2.1 同一组事件的不同结果 {#同一组事件的不同结果}
+
+假设输入分别在 0、40、80、250 毫秒发生，等待时间是 100 毫秒。先用理想计时说明机制，实际浏览器执行可能更晚：
+
+| 方案 | 预期处理时刻 | 保留的内容 |
+| --- | --- | --- |
+| 只在结束执行的防抖 | 180、350 | 80、250 毫秒的输入 |
+| 只在开始执行的防抖 | 0、250 | 每组第一条输入 |
+| 开始和结束都执行的防抖 | 0、180、250 | 第一组开头与最后输入，第二组只有一次调用，不重复补尾 |
+| 本文默认节流 | 0、100、250 | 立即处理第一条，100 毫秒处理 80 毫秒的输入，空闲后立即处理新一组 |
+
+防抖的等待点会随新调用向后移动，因此持续输入可能一直不执行尾次回调。需要“持续编辑期间也定期保存”时，可以选择适合的节流，或者增加 **maxWait**，即限制一组连续调用能够被延迟的最长时间。maxWait 仍受事件循环调度限制，不是精确时钟保证。
+
+### 2.2 首次、尾次与返回值 {#首次尾次与返回值}
+
+**leading** 表示空闲后第一次调用是否立即执行，**trailing** 表示等待结束后是否执行保留的调用。两者都开启时，第一次已经执行，只有后面又来了调用才需要补尾，避免一次点击执行两次。
+
+下面的实现是用于解释状态的独立版本，约定如下：
+
+- wait 必须是 1 到 2,147,483,647 之间的整数毫秒；不隐式转换字符串或接收负值。
+- leading 与 trailing 必须是布尔值，至少开启一个。
+- 待执行时只保留最新参数和调用者；多次调用不会累积成队列。
+- 包装函数返回 undefined，业务结果不通过包装函数的返回值传递。它也不为每次调用创建一个 Promise。
+- 防抖提供 cancel 和 flush；节流提供 cancel，不提供会提前突破冷却期的 flush。
+
+成熟库可能有不同的返回值、maxWait、时钟处理和边界定义。使用时应按实际版本的契约理解，不能把不同实现的例子混在一起推导。
+
+## 3. 防抖实现 {#防抖实现}
+
+### 3.1 计时器与待处理调用 {#计时器与待处理调用}
+
+防抖需要区分两件事：当前是否处于一组连续调用中，以及是否有尚未执行的尾次调用。只用一个布尔值，无法表达所有首尾组合。
+
+```js
+function debounce(fn, wait, { leading = false, trailing = true } = {}) {
+  if (typeof fn !== 'function') throw new TypeError('fn 必须是函数');
+  if (!Number.isInteger(wait) || wait < 1 || wait > 2147483647) {
+    throw new RangeError('wait 必须是有效的正整数毫秒');
+  }
+  if (typeof leading !== 'boolean' || typeof trailing !== 'boolean' ||
+      (!leading && !trailing)) throw new TypeError('首尾选项无效');
+
+  let timer;
+  let pendingArgs;
+  let pendingThis;
+
+  function runPending() {
+    const args = pendingArgs;
+    const receiver = pendingThis;
+    pendingArgs = pendingThis = undefined;
+    if (args !== undefined) Reflect.apply(fn, receiver, args);
+  }
+  function finish() {
+    timer = undefined;
+    runPending();
+  }
+  function wrapped(...args) {
+    const idle = timer === undefined;
+    clearTimeout(timer);
+    timer = setTimeout(finish, wait);
+    if (idle && leading) {
+      Reflect.apply(fn, this, args);
+    } else if (trailing) {
+      pendingArgs = args;
+      pendingThis = this;
+    }
+  }
+  wrapped.cancel = () => {
+    clearTimeout(timer);
+    timer = pendingArgs = pendingThis = undefined;
+  };
+  wrapped.flush = () => {
+    if (timer === undefined) return;
+    clearTimeout(timer);
+    timer = undefined;
+    runPending();
+  };
+  return wrapped;
+}
+```
+
+每次 wrapped 都重新安排 finish。默认只开启 trailing，因此最后一次调用后安静 wait 毫秒，才把 pendingArgs 交给 fn。开启 leading 时，第一条立即执行；后面还有调用，才留下尾次参数。
+
+计时器先建立，再执行 leading 回调。回调如果再次调用 wrapped，就会看到已有窗口，而不会无限重复把自己当成首次调用。runPending 则先取走并清空旧参数，再执行 fn，避免回调重入后保存的新参数被旧执行过程擦掉。
+
+finish 在调用业务函数前恢复空闲。因此开始和结束都开启的防抖，尾次执行后很快出现的新一组调用，可以立即执行新的 leading；这个实现**不承诺相邻两次执行至少间隔 wait**，有这种要求应使用节流。
+
+### 3.2 参数、this 与立即处理 {#参数this与立即处理}
+
+调用者和参数都应取最后一次待处理调用，不能在创建包装函数时固定成某个值：
+
+```js
+const save = debounce(function (value) {
+  console.log(this.name, value);
+}, 100);
+
+save.call({ name: '草稿 A' }, '旧内容');
+save.call({ name: '草稿 B' }, '新内容');
+save.flush();  // 输出：草稿 B 新内容
+save.flush();  // 没有待处理内容，不再执行
+```
+
+第二次调用替换了第一条待处理记录。flush 清除等待并立即处理最新记录；cancel 则丢弃记录。两者都不会撤销已经执行的业务。
+
+包装函数使用普通函数接收动态 this；内部定时器回调不依赖它自己的 this。剩余参数 `...args` 是数组，可以传给 Reflect.apply，也可以在明确语义后使用 fn.apply；箭头函数本身的词法 this 不会被 apply 改写。相关机制见 [this 绑定](../../basic-knowledge/javascript/this-binding.mdx)。
+
+## 4. 节流实现 {#节流实现}
+
+### 4.1 冷却期间保留最新调用 {#冷却期间保留最新调用}
+
+下面采用冷却期实现节流。首次立即执行，冷却期间只保留最后一次调用；尾次执行后，再开启一个冷却期。没有待处理调用时，冷却结束才恢复空闲。
+
+```js
+function throttle(fn, wait, { leading = true, trailing = true } = {}) {
+  if (typeof fn !== 'function') throw new TypeError('fn 必须是函数');
+  if (!Number.isInteger(wait) || wait < 1 || wait > 2147483647) {
+    throw new RangeError('wait 必须是有效的正整数毫秒');
+  }
+  if (typeof leading !== 'boolean' || typeof trailing !== 'boolean' ||
+      (!leading && !trailing)) throw new TypeError('首尾选项无效');
+
+  let timer;
+  let pendingArgs;
+  let pendingThis;
+
+  function finishWindow() {
+    timer = undefined;
+    if (pendingArgs === undefined) return;
+    const args = pendingArgs;
+    const receiver = pendingThis;
+    pendingArgs = pendingThis = undefined;
+    timer = setTimeout(finishWindow, wait);
+    Reflect.apply(fn, receiver, args);
+  }
+  function wrapped(...args) {
+    if (timer === undefined) {
+      timer = setTimeout(finishWindow, wait);
+      if (leading) {
+        Reflect.apply(fn, this, args);
+      } else {
+        pendingArgs = args;
+        pendingThis = this;
+      }
+    } else if (trailing) {
+      pendingArgs = args;
+      pendingThis = this;
+    }
+  }
+  wrapped.cancel = () => {
+    clearTimeout(timer);
+    timer = pendingArgs = pendingThis = undefined;
+  };
+  return wrapped;
+}
+```
+
+默认 leading 与 trailing 都开启。只调用一次，会立即执行一次，冷却到期时没有 pendingArgs，不会再执行。连续调用时，冷却结束取出最新参数，先安排下一段冷却，再调用 fn。
+
+把 leading 设为 false 时，空闲后的第一条也要等待一个窗口；把 trailing 设为 false 时，窗口内的后续调用直接丢弃。cancel 会同时取消尾次处理并恢复空闲，之后的新调用按首次规则重新开始。
+
+这里只合并调用，没有把每次事件放进队列。需要逐个执行所有任务、控制同时进行的异步任务数时，应使用任务队列或并发控制，不应丢弃中间任务。
+
+### 4.2 时间戳方案的边界 {#时间戳方案的边界}
+
+另一种实现记录上次执行时间，下一次调用时比较经过了多久。只在事件到来时比较、没有尾次计时器的版本，通常只处理符合时间间隔的当次调用；最后一条发生在窗口内时，之后不再有事件，就不会自动补上。
+
+需要尾次处理时，要一起维护最后参数、剩余等待时间和定时器，不能让时间戳分支与定时器分支各自独立执行。同一截止点附近，事件任务和计时器任务的实际处理顺序会影响调用归属；测试应明确顺序，而不是假设“时间数值相同就同时执行”。
+
+衡量经过时间时，performance.now 提供单调时间，通常比会受系统时间调整影响的 Date.now 更合适。但使用单调时钟也不会让繁忙主线程上的回调准时执行。
+
+## 5. 事件与组件生命周期 {#事件与组件生命周期}
+
+### 5.1 保存稳定实例并及时取值 {#保存稳定实例并及时取值}
+
+创建一次包装函数，把它作为同一个事件生命周期中的状态持有者。输入事件中立即取出字符串，避免把整个事件对象保留到稍后处理：
+
+```js
+function mountPreview(input, output) {
+  const update = debounce(value => {
+    output.textContent = value;
+  }, 150);
+  const onInput = event => update(event.currentTarget.value);
+  input.addEventListener('input', onInput);
+  return () => {
+    input.removeEventListener('input', onInput);
+    update.cancel();
+  };
+}
+```
+
+event.currentTarget 只在处理事件期间指向当前监听对象，处理结束后不应依赖它仍然可用。即使保存 DOM 元素，稍后读到的 value 也可能已经变化；先取出值可以明确保存的是哪次输入。
+
+如果每次 input 事件都执行 debounce 创建新实例，每个实例都有自己的定时器，它们无法相互取消。组件重新渲染时也要考虑实例是否稳定，以及回调读到的是旧闭包还是最新状态；框架中的处理方式还需要遵守对应的 Hook 或生命周期规则。
+
+### 5.2 清理与异常 {#清理与异常}
+
+卸载时既要移除事件监听，也要取消已经排定的工作。只移除监听不会自动清除定时器；只 cancel 而保留监听，下一次事件又会建立计时器。
+
+本文实现会在调用业务回调前整理待处理记录，因此回调抛错不会留下同一条待处理参数反复执行。leading 或 flush 中的同步错误会抛给当前调用者；定时器内的错误则属于之后的任务，创建定时器外面的 try/catch 捕获不到。async 回调还需要自行处理 Promise 拒绝。
+
+cancel 清理的是尚未执行的回调，不会取消已经发出的网络请求，也不会回滚服务端已经发生的修改。
+
+## 6. 帧合并与异步搜索 {#帧合并与异步搜索}
+
+### 6.1 rAF 合并 {#raf合并}
+
+**帧合并**是在已有一条 requestAnimationFrame 回调等待时，只更新它要使用的状态，不再安排更多回调。它适合拖动位置、滚动相关绘制等需要靠近渲染时机的工作。
+
+```js
+function rafCoalesce(fn) {
+  if (typeof fn !== 'function') throw new TypeError('fn 必须是函数');
+  let frame = null;
+  let args;
+  let receiver;
+  function wrapped(...values) {
+    args = values;
+    receiver = this;
+    if (frame !== null) return;
+    frame = requestAnimationFrame(() => {
+      frame = null;
+      const currentArgs = args;
+      const currentThis = receiver;
+      args = receiver = undefined;
+      Reflect.apply(fn, currentThis, currentArgs);
+    });
+  }
+  wrapped.cancel = () => {
+    if (frame !== null) cancelAnimationFrame(frame);
+    frame = null;
+    args = receiver = undefined;
+  };
+  return wrapped;
+}
+```
+
+一批调用共享一个尚未执行的帧回调，最终使用最近参数。它不是“每 16 毫秒执行一次”：刷新率不同、页面进入后台、主线程繁忙都会影响实际执行。若事件本来每帧只触发一次，再包一层 rAF 也不保证减少调用次数。
+
+无论用定时器还是 rAF，单次回调执行 200 毫秒仍会阻塞主线程。需要减少计算、拆分工作或使用 Worker，不能仅靠降低入口频率。
+
+### 6.2 防抖与过期结果 {#防抖与过期结果}
+
+搜索框可能先发出 A 请求，用户接着输入 B，B 还在等待防抖，A 就返回了。若只在真正发送 B 时更新请求 ID，A 仍可能把界面改成过期结果。因此**新的输入意图出现时就应让旧结果失效**。
+
+下面的 load 接收 query 和 signal，返回字符串数组。防抖负责少发请求，版本号负责判断结果归属，AbortController 则帮助停止不再需要的工作：
+
+```js
+function mountSearch(input, output, load) {
+  let version = 0;
+  let active;
+  let disposed = false;
+  const search = debounce(async (query, ownVersion) => {
+    const controller = new AbortController();
+    active = controller;
+    output.textContent = '正在查询';
+    try {
+      const items = await load(query, { signal: controller.signal });
+      if (disposed || ownVersion !== version) return;
+      if (!Array.isArray(items) || !items.every(item => typeof item === 'string')) {
+        throw new TypeError('搜索结果必须是字符串数组');
+      }
+      output.textContent = items.join('、') || '没有匹配结果';
+    } catch {
+      if (!disposed && ownVersion === version) output.textContent = '查询失败';
+    } finally {
+      if (active === controller) active = undefined;
+    }
+  }, 150);
+  function onInput(event) {
+    const ownVersion = ++version;
+    search.cancel();
+    active?.abort();
+    active = undefined;
+    const query = input.value.trim();
+    if (event.type === 'compositionstart' || event.isComposing || !query) {
+      output.textContent = '';
+      return;
+    }
+    output.textContent = '等待查询';
+    search(query, ownVersion);
+  }
+  for (const type of ['input', 'compositionstart', 'compositionend']) {
+    input.addEventListener(type, onInput);
+  }
+  return () => {
+    disposed = true;
+    version++;
+    search.cancel();
+    active?.abort();
+    active = undefined;
+    for (const type of ['input', 'compositionstart', 'compositionend']) {
+      input.removeEventListener(type, onInput);
+    }
+  };
+}
+```
+
+新输入先增加 version，再清理等待和旧请求。即使 load 忽略取消信号，旧成功或旧失败也不会覆盖新状态；空输入、中文输入法组合阶段和卸载同样使旧结果失效。
+
+组合输入结束后再安排查询；浏览器随后若又产生 input，防抖会合并这两次触发。真实界面还需要合适的结果结构、加载反馈与可访问性，示例只保留请求生命周期。
+
+实际 Fetch 的 HTTP 错误、取消和竞态处理见 [Fetch API](../browser/fetch.mdx)。这里不能只写“有防抖就不会有重复或乱序请求”：防抖窗口之间仍然可能同时存在多个耗时请求。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 防抖与节流有什么区别，怎样选择场景？ {#difference}
+
+**考察重点**：安静时间、持续反馈与中间状态能否丢弃。
+
+**相关内容**：[同一组事件的不同结果](#同一组事件的不同结果)。
+
+<details>
+<summary>参考回答</summary>
+
+**防抖把连续调用合并，通常等最后一次调用后安静一段时间再处理；节流限制持续调用的处理频率。** 搜索建议可等待输入稳定，拖动或滚动反馈可能需要持续更新。
+
+选择还取决于首尾触发和业务要求。如果每条任务都必须处理，就不能用丢弃中间调用的办法代替任务队列。
+
+</details>
+
+### 7.2 节流一定只执行第一次吗？leading 和 trailing 都开启会重复执行吗？ {#edges}
+
+**考察重点**：触发契约、单次调用与连续调用的差别。
+
+**相关内容**：[首次尾次与返回值](#首次尾次与返回值)、[冷却期间保留最新调用](#冷却期间保留最新调用)。
+
+<details>
+<summary>参考回答</summary>
+
+**不一定，leading 控制开始，trailing 控制窗口结束时是否处理保留的调用。** 本文默认节流首次立即执行，窗口内有新调用才补上最新一次，单独一次调用不会重复补尾。
+
+具体时间边界由实现规定。防抖窗口会被新调用延后，节流冷却期间不会因为每次新调用而重新等待完整间隔。
+
+</details>
+
+### 7.3 实现防抖时，需要保存哪些状态，怎样验证最后一次参数和 this？ {#debounce-implementation}
+
+**考察重点**：闭包、定时器、参数保留与动态调用者。
+
+**相关内容**：[计时器与待处理调用](#计时器与待处理调用)、[参数、this 与立即处理](#参数this与立即处理)。
+
+<details>
+<summary>参考回答</summary>
+
+**保存同一个实例的定时器、最后一组参数和调用者，每次调用重新安排等待。** 包装函数用普通函数取得 this，业务调用通过 Reflect.apply 或 apply 传递；剩余参数可以代替 arguments。
+
+测试连续调用后只处理最后一条、不同调用者被正确保留，以及取消、flush、首次/尾次组合。不能在每次事件里重新创建一个互不共享状态的防抖函数。
+
+</details>
+
+### 7.4 实现带尾次执行的节流时，为什么尾次执行后还要保留冷却期？ {#throttle-implementation}
+
+**考察重点**：持续触发时的频率限制和最后状态。
+
+**相关内容**：[冷却期间保留最新调用](#冷却期间保留最新调用)、[时间戳方案的边界](#时间戳方案的边界)。
+
+<details>
+<summary>参考回答</summary>
+
+**尾次回调本身也是一次执行，之后若立即恢复空闲，紧接着的新事件可能再次立即执行。** 本文在处理尾次参数之前先开启新的冷却期，期间继续合并最新调用。
+
+如果只用时间戳并在事件到来时检查，没有尾次定时器，最后一条落在窗口内的调用可能永远不会补上。实现前要先明确需要哪种行为。
+
+</details>
+
+### 7.5 组件卸载时只移除事件监听够吗？cancel 与 flush 有什么区别？ {#cleanup}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：待执行任务、引用持有、业务执行与组件生命周期。
+
+**相关内容**：[保存稳定实例并及时取值](#保存稳定实例并及时取值)、[清理与异常](#清理与异常)。
+
+<details>
+<summary>参考回答</summary>
+
+**不够，已安排的计时器不会因为监听被移除而自动取消。** 需要同时移除监听、取消等待并释放保存的参数；已开始的网络工作还需另外处理。
+
+cancel 丢弃待处理调用，flush 立即处理待处理调用。组件卸载通常不应未经业务判断就 flush；自动保存场景是否需要最后提交，要由业务生命周期决定。
+
+</details>
+
+### 7.6 setTimeout 和 requestAnimationFrame 能保证准时执行吗？ {#timer-and-raf}
+
+**考察重点**：调度等待、渲染时机、刷新率和回调成本。
+
+**相关内容**：[时间戳方案的边界](#时间戳方案的边界)、[rAF 合并](#raf合并)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能，定时器延迟表示等待条件，不保证回调在指定时刻执行；rAF 与浏览器渲染调度相关，也不是固定 16 毫秒时钟。** 主线程占用、后台限制与刷新率都会影响实际表现。
+
+rAF 合并可以减少同一帧前重复安排的绘制工作，但每次回调仍要足够短。需要固定业务间隔或并发控制时，应另行设计。
+
+</details>
+
+### 7.7 搜索建议已经防抖，为什么旧请求仍可能覆盖新输入的结果？ {#search-race}
+
+**题型**：综合题
+
+**考察重点**：输入意图、请求发起时刻、完成顺序与取消边界。
+
+**相关内容**：[计时器与待处理调用](#计时器与待处理调用)、[防抖与过期结果](#防抖与过期结果)。
+
+<details>
+<summary>参考回答</summary>
+
+**防抖只控制何时发起，不能保证多个请求按输入顺序完成。** 新输入可能还在等待防抖，旧请求已返回，因此新输入出现时就要更新版本号，让旧结果失效。
+
+提交成功或失败状态前检查版本和组件状态，取消信号用于减少无用工作。即使请求不支持取消，版本校验仍应阻止旧结果覆盖；空输入与卸载也要失效旧请求。
+
+</details>
+
+### 7.8 给提交按钮节流，能保证服务端只处理一次，并防止异步任务重叠吗？ {#async-and-idempotency}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：客户端触发频率、在途任务与服务端正确性。
+
+**相关内容**：[冷却期间保留最新调用](#冷却期间保留最新调用)、[清理与异常](#清理与异常)、[防抖与过期结果](#防抖与过期结果)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能，节流间隔结束时，上一次异步任务可能还没完成；多窗口、重试等也可能重复发起请求。** 需要根据业务增加在途状态、队列或并发限制，不能把时间窗口当作互斥锁。
+
+重要写操作仍需服务端幂等与正确约束。客户端按钮禁用和节流可以改善体验，但不能独立保证只执行一次。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [MDN：Debounce](https://developer.mozilla.org/en-US/docs/Glossary/Debounce)
+- [MDN：Throttle](https://developer.mozilla.org/en-US/docs/Glossary/Throttle)
+- [HTML Standard：Timers](https://html.spec.whatwg.org/multipage/timers-and-user-prompts.html#timers)
+- [MDN：setTimeout](https://developer.mozilla.org/en-US/docs/Web/API/Window/setTimeout)
+- [MDN：requestAnimationFrame](https://developer.mozilla.org/en-US/docs/Web/API/Window/requestAnimationFrame)
+- [MDN：Event.currentTarget](https://developer.mozilla.org/en-US/docs/Web/API/Event/currentTarget)

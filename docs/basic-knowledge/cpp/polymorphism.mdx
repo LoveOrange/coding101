@@ -1,0 +1,237 @@
+---
+knowledge:
+  id: basic-knowledge.cpp.polymorphism
+  type: concept
+description: "区分 C++ 重载、覆盖和隐藏，解释虚函数派发、虚析构、抽象类、对象切片及构造析构期间的调用规则。"
+keywords: [C++ 多态, 虚函数, 虚析构, 对象切片, override]
+---
+
+# C++ 多态
+
+C++ 可以通过重载、模板和虚函数表达多态。**运行时多态**主要依靠虚函数：通过基类接口调用时，根据实际对象选择对应实现。关键不是记住“有一张虚函数表”，而是能判断某次调用会进入哪个函数，以及通过基类销毁对象是否安全。本文以 C++17 为准。
+
+## 1. 面试核心 {#core}
+
+- 重载在编译期从候选函数中选择，虚函数覆盖支持运行时派发；**同名函数不一定构成覆盖**，`override` 能让编译器检查这一意图。[卡](#overload-override-hiding)
+- 虚调用通常根据对象的动态类型选择最终覆盖者，**非虚函数和显式限定调用不按同一规则派发**。[卡](#virtual-dispatch)
+- 通过基类指针删除派生对象时，普通删除场景需要**基类具有虚析构函数**，否则会产生未定义行为。[卡](#virtual-destructor)
+- 按值复制派生对象到基类对象会产生**对象切片**：新对象只保留基类部分，不能再派发到原来的派生实现。
+- 构造和析构期间的虚调用以当前正在构造或销毁的类为边界，**不会调用尚未构造好或已经销毁的更派生部分**。[卡](#constructor-virtual-call)
+
+## 2. 静态类型与动态类型 {#静态类型与动态类型}
+
+**静态类型**是编译器根据声明和表达式确定的类型；**动态类型**描述运行时实际对象的最派生类型。二者可以不同：`Base& reference = derived;` 的接口类型是 `Base&`，但它引用的完整对象可以是 `Derived`。
+
+```cpp
+#include <cassert>
+
+struct Base {
+    virtual int value() const { return 1; }
+    int label() const { return 10; }
+    virtual ~Base() = default;
+};
+
+struct Derived : Base {
+    int value() const override { return 2; }
+    int label() const { return 20; }
+};
+
+int main() {
+    Derived derived;
+    Base& reference = derived;
+    assert(reference.value() == 2);
+    assert(reference.label() == 10);
+    assert(reference.Base::value() == 1);
+
+    Base copied = derived;
+    assert(copied.value() == 1);
+}
+```
+
+`value` 是虚函数，所以 `reference.value()` 调用 `Derived::value`。`label` 不是虚函数，通过 `Base&` 调用时选择 `Base::label`。`reference.Base::value()` 显式指定了基类实现，抑制这次调用的虚派发。
+
+`copied` 是一个新建的 `Base` 对象，不是指向原 `derived` 的别名。这就是**对象切片**：派生部分没有成为新对象的一部分，因此 `copied.value()` 返回 `1`。需要保留运行时多态时，应通过合适的引用或所有权指针传递对象，而不是按基类值复制。
+
+## 3. 重载、覆盖与隐藏 {#重载覆盖与隐藏}
+
+**重载**是在相同查找范围中用不同参数列表提供同名函数，编译器根据实参选择。**覆盖**是派生类为基类虚函数提供对应实现。**隐藏**则影响名字查找：派生类声明了同名成员，可能让基类的其他同名重载不再参与普通查找。
+
+```cpp
+#include <cassert>
+
+struct Base {
+    virtual int read(int) const { return 1; }
+    int read(double) const { return 2; }
+};
+
+struct Derived : Base {
+    using Base::read;
+    int read(int) const override { return 3; }
+    // int read(int) override { return 4; }
+    // 编译错误：缺少 const，不覆盖基类的 const 成员函数
+};
+
+int main() {
+    Derived item;
+    assert(item.read(1) == 3);
+    assert(item.read(1.5) == 2);
+}
+```
+
+`using Base::read` 把基类重载带回当前查找范围，因而 `read(1.5)` 选择参数为 `double` 的版本。如果去掉 `using`，派生类的 `read(int)` 会隐藏基类同名函数，`1.5` 就可能转换成 `int` 后调用派生版本。
+
+覆盖需要匹配相应的参数、cv 限定和引用限定等条件；返回类型还存在受限的协变规则。仅返回类型不同不能作为普通函数重载的依据。写 `override` 可以在签名不符合覆盖规则时直接得到编译错误，避免把拼写失误变成一个新的重载或隐藏。
+
+## 4. 虚函数与抽象类 {#虚函数与抽象类}
+
+**纯虚函数**通过 `= 0` 声明一个需要派生类完成的虚接口。如果一个类仍有纯虚的最终覆盖者，它就是抽象类，不能直接创建完整对象；可以通过它的指针和引用使用具体派生对象。
+
+```cpp
+struct Decoder {
+    virtual int decode() = 0;
+    virtual ~Decoder() = default;
+};
+
+struct ImageDecoder : Decoder {
+    int decode() override { return 1; }
+};
+```
+
+抽象类可以有数据成员、构造函数和已经实现的普通方法。纯虚函数也不等于永远不能有函数定义；例如纯虚析构函数仍需要定义，因为销毁派生对象时必须执行基类析构。但普通接口优先使用清楚的虚析构声明即可，不必为展示语法而把析构写成纯虚。
+
+虚函数表是常见实现方式：对象通过相应信息找到虚函数表，再从表中取得实现入口。多继承可能需要额外的指针调整和不同的表项。但 C++ 标准规定的是调用行为，并不要求所有对象都采用某个固定的虚表布局，也不保证虚表指针永远位于对象的第一个字节。
+
+编译器能证明实际目标时，还可以把虚调用优化成直接调用。因此不能简单说“每次调用虚函数都必定多一次运行时查表”，也不能仅凭存在虚函数就推断性能瓶颈。
+
+### 4.1 菱形继承与虚继承 {#菱形继承与虚继承}
+
+**菱形继承**是两条继承路径都来自同一个基类，最后再汇合到一个派生类。普通继承会在最终对象中产生两份相应基类子对象，访问公共基类成员时可能歧义；虚继承可以让这些路径共享一份虚基类子对象。
+
+```cpp
+#include <cassert>
+
+struct Root { int id = 1; };
+struct Left : virtual Root {};
+struct Right : virtual Root {};
+struct Leaf : Left, Right {};
+
+int main() {
+    Leaf leaf;
+    Root* through_left = static_cast<Left*>(&leaf);
+    Root* through_right = static_cast<Right*>(&leaf);
+    assert(through_left == through_right);
+    leaf.id = 2;
+    assert(through_left->id == 2);
+}
+```
+
+虚基类由最派生类负责初始化，子对象定位也可能需要额外的实现信息。**虚继承解决重复基类子对象的问题，虚函数解决动态派发的问题**，不能因为都写 `virtual` 就当成同一机制。如果多条路径又分别覆盖同一个虚函数，最终类仍可能需要提供自己的覆盖来消除最终覆盖者的歧义。组合能表达需求时，不必仅为复用少量代码引入复杂继承图。
+
+## 5. 销毁与构造期间的边界 {#销毁与构造期间的边界}
+
+如果接口允许调用方通过基类指针删除派生对象，应提供公开虚析构函数。删除时先执行派生类析构，再依次销毁成员和基类部分。
+
+```cpp
+#include <cassert>
+
+int destroyed = 0;
+
+struct Base {
+    virtual ~Base() { destroyed = destroyed * 10 + 1; }
+};
+struct Derived : Base {
+    ~Derived() override { destroyed = destroyed * 10 + 2; }
+};
+
+int main() {
+    Base* pointer = new Derived;
+    delete pointer;
+    assert(destroyed == 21);
+}
+```
+
+如果去掉基类的虚析构，不能把结果解释为“只是少调用一个析构函数”。在这里通过 `Base*` 删除 `Derived` 会产生未定义行为，程序结果没有保证。另一种接口设计是使用受保护的非虚析构，明确禁止外部通过基类删除；这与提供公开虚析构是不同的所有权契约。
+
+构造与析构中的虚调用也有特殊边界：在 `Base` 构造函数中调用虚函数，只会使用当前 `Base` 阶段的最终覆盖者，不会进入尚未完成构造的 `Derived`。到了基类析构阶段，更派生部分也已经销毁，不能再按完整派生对象派发。
+
+构造函数不能声明成虚函数；静态成员函数也不能使用对象的虚派发。若初始化需要派生行为，可以先完成对象构造，再通过明确的初始化步骤调用，避免在基类构造中要求尚未建立的派生状态。
+
+## 6. 面试题 {#面试题}
+
+### 6.1 重载、覆盖和隐藏分别是什么？ {#overload-override-hiding}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：名字查找、编译期选择和虚接口匹配。
+
+**相关内容**：[重载、覆盖与隐藏](#重载覆盖与隐藏)。
+
+<details>
+<summary>参考回答</summary>
+
+**重载是同名不同参数的候选选择，覆盖是派生类实现基类虚接口，隐藏是派生同名声明影响基类名字的查找。** 参数或 `const` 等不匹配时，同名函数可能并没有覆盖虚函数。使用 `override` 检查覆盖意图，使用 `using Base::name` 可以按需要把基类重载带入派生类查找范围。
+
+</details>
+
+### 6.2 C++ 虚函数如何实现多态，虚表属于语言保证吗？ {#virtual-dispatch}
+
+**考察重点**：静态与动态类型、最终覆盖者、实现边界。
+
+**相关内容**：[静态类型与动态类型](#静态类型与动态类型)、[虚函数与抽象类](#虚函数与抽象类)。
+
+<details>
+<summary>参考回答</summary>
+
+**虚调用根据实际对象选择最终覆盖的实现；虚表是常见实现方式，固定布局不是语言保证。** 通过基类引用或指针能保留派生对象的动态类型，按值复制为基类对象则会切片。非虚成员按静态接口选择，显式限定到某个类的调用也会抑制虚派发。编译器还能在目标已知时消除间接调用。
+
+</details>
+
+### 6.3 基类析构为什么需要是虚函数？ {#virtual-destructor}
+
+**考察重点**：多态删除和资源所有权契约。
+
+**相关内容**：[销毁与构造期间的边界](#销毁与构造期间的边界)。
+
+<details>
+<summary>参考回答</summary>
+
+**当接口允许通过基类指针删除派生对象时，公开虚析构保证沿实际派生类型执行销毁链。** 普通删除场景缺少这个条件会产生未定义行为，不能只理解为派生析构未执行。如果设计上不允许经基类删除，可以使用受保护的非虚析构来限制接口，而不是无条件要求所有类都使用虚析构。
+
+</details>
+
+### 6.4 基类构造函数中调用虚函数，会进入派生类实现吗？ {#constructor-virtual-call}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：对象构造阶段与虚派发边界。
+
+**相关内容**：[销毁与构造期间的边界](#销毁与构造期间的边界)。
+
+<details>
+<summary>参考回答</summary>
+
+**不会派发到尚未构造完成的更派生部分。** 在基类构造函数阶段，按当前构造类的最终覆盖者调用；在基类析构阶段，更派生部分已经销毁，也遵守对应边界。依赖派生状态的动作应安排在对象构造完成后，不能靠基类构造期间的虚调用完成。
+
+</details>
+
+### 6.5 菱形继承产生什么问题，虚继承改变了什么？ {#diamond-inheritance}
+
+**考察重点**：基类子对象数量、访问歧义与最派生类责任。
+
+**相关内容**：[菱形继承与虚继承](#菱形继承与虚继承)。
+
+<details>
+<summary>参考回答</summary>
+
+**普通菱形继承可能包含两份共同基类子对象，导致状态重复和成员访问歧义；虚继承让相关路径共享一份虚基类。** 虚基类由最派生类初始化。它与虚函数派发是不同机制，也不能自动消除所有多重继承问题，例如多个最终覆盖者仍需要明确解决。
+
+</details>
+
+## 7. 参考资料 {#参考资料}
+
+- [C++17 草案 N4659：Virtual functions](https://timsong-cpp.github.io/cppwp/n4659/class.virtual)
+- [C++17 草案 N4659：Abstract classes](https://timsong-cpp.github.io/cppwp/n4659/class.abstract)
+- [C++17 草案 N4659：Construction and destruction](https://timsong-cpp.github.io/cppwp/n4659/class.cdtor)
+- [C++17 草案 N4659：Multiple base classes](https://timsong-cpp.github.io/cppwp/n4659/class.mi)
+- [C++17 草案 N4659：Delete](https://timsong-cpp.github.io/cppwp/n4659/expr.delete)
+- [C++ Core Guidelines：C.35，基类析构](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines#Rc-dtor-virtual)

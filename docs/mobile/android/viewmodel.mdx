@@ -1,0 +1,300 @@
+---
+knowledge:
+  id: mobile.android.viewmodel
+  type: concept
+description: "解释 Android ViewModel 的状态所有权、作用域、配置变化、SavedStateHandle、生命周期感知观察与架构分工。"
+keywords: [ViewModel, ViewModelStore, SavedStateHandle, StateFlow, LiveData, repeatOnLifecycle, MVVM]
+---
+
+# Android ViewModel
+
+**ViewModel** 是 AndroidX 提供的屏幕状态持有者。它把界面需要的数据和相关处理从 Activity、Fragment 等界面控制器中分离出来，并在对应作用域内保留，避免配置变化时重新创建所有状态。它既不是全局单例，也不是磁盘存储；解释它的生命周期，必须先说明由哪个 owner 持有。
+
+## 1. 面试核心 {#core}
+
+- ViewModel 让状态和相关工作独立于一次界面实例，**配置变化可保留同一实例，进程终止后不能保留原内存对象**。[卡](#benefits)
+- 实例由 `ViewModelStoreOwner` 与 key 等条件决定，**同一个 ViewModel 类在不同 owner 下可以有不同实例**。[卡](#scope)
+- `viewModelScope` 跟随 ViewModel 清理，**页面暂时不可见不等于该作用域自动取消**。[卡](#work)
+- UI 观察要匹配实际视图生命周期，**Fragment 的 View 销毁后，不应继续更新旧 View**。[卡](#observe)
+- `SavedStateHandle` 用于小型恢复线索，**写入它不等于立刻完成可靠持久化**。[卡](#restoration)
+- MVVM 是职责组织方式，AndroidX ViewModel 是具体组件，**使用它不强制使用 Data Binding，也不会自动让任意字段可观察**。[卡](#architecture)
+- 长任务、状态与一次性动作有不同保证，**请求取消、结果过期与操作已生效必须分别处理**。[卡](#events)
+
+## 2. 状态所有权与作用域 {#状态所有权与作用域}
+
+### 2.1 ViewModelStoreOwner 与 key {#viewmodelstoreowner与key}
+
+**ViewModelStoreOwner** 提供用于保存 ViewModel 的 `ViewModelStore`。Activity、Fragment 和导航返回栈条目等都可以成为 owner；`ViewModelProvider` 从相应 Store 中取得已有实例，或者通过 Factory 创建实例。
+
+可以把查找关系理解为“在这个 owner 的 Store 中，按对应 key 取得匹配类型的 ViewModel”。默认 key 通常与类有关，也可以显式传入 key。因此，同一类不一定全应用只有一份；同一个 Activity 下的两个 Fragment，也只有在明确选用共享 owner 时才会共享相应实例。
+
+| owner 选择 | 典型用途 | 需要注意 |
+| --- | --- | --- |
+| 当前 Activity | Activity 内多个界面共享状态 | 生命周期和共享范围较大 |
+| 当前 Fragment | Fragment 自己的屏幕状态 | 不等于它的 View 生命周期 |
+| 导航条目或导航图 | 对应目的地或一段导航流程 | 返回栈弹出后可能结束作用域 |
+
+直接调用 `CounterViewModel()` 只是创建普通对象，不会自动把它登记进 ViewModelStore。需要配置变化保留与自动清理时，应从正确 owner 的 Provider 或相应委托获取。
+
+### 2.2 配置变化与清理 {#配置变化与清理}
+
+屏幕旋转可能重建 Activity，但相应 ViewModelStore 可以被保留并交给新的界面实例。新的 Activity 或 Fragment 再从相应 owner 获取时，能够继续使用原状态，而不必因为这次重建再次发出相同请求。
+
+这个结论有作用域前提。Activity 真正结束、Fragment 被永久移除或相应导航条目退出时，框架会按 owner 的规则清理 Store，进而清理其中的 ViewModel。不是每次 `onDestroy()` 都表示同一种清理原因。
+
+`onCleared()` 用来释放 ViewModel 自己负责的资源，但进程被系统直接终止时，不保证执行这个回调。需要可靠保存的数据不能等到 `onCleared()` 才写入。
+
+ViewModel 还可能比某个 View 或 Activity 实例活得更久，因此不应长期保存旧 View、Fragment、Activity，或捕获它们的回调。需要访问数据时优先通过数据层接口；确需应用级资源也应限定作用域，不能把 Activity Context 当成可永久保留的对象。
+
+## 3. 状态与单向更新 {#状态与单向更新}
+
+**UI 状态**是界面当前需要展示的数据。ViewModel 可以把它作为只读流暴露给 UI，通过方法接受用户事件，内部负责更新。UI 不直接修改同一份公开可变集合，有助于让变化来源可追踪。
+
+```kotlin
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.ViewModelStoreOwner
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+
+class CounterViewModel : ViewModel() {
+    private val mutableCount = MutableStateFlow(0)
+    val count: StateFlow<Int> = mutableCount.asStateFlow()
+
+    fun increment() {
+        mutableCount.update { it + 1 }
+    }
+}
+
+fun counterFor(owner: ViewModelStoreOwner): CounterViewModel =
+    ViewModelProvider(owner)[CounterViewModel::class.java]
+```
+
+调用 `increment()` 更新内部状态，UI 从 `count` 观察新值。对同一个保留的 owner Store 重复获取，会继续取得相应 ViewModel；换成另一个 Store，则是另一份计数。
+
+示例使用无参构造函数。若 ViewModel 依赖 Repository 等对象，应通过合适的 Factory 或依赖注入提供；不要为了绕开创建过程，把依赖和屏幕状态一起放进全局静态变量。
+
+**Repository** 负责组织数据来源、缓存、读写和错误语义。ViewModel 根据屏幕需求调用它，组合成加载、内容、空态或错误等 UI 状态。Repository 不需要知道具体 TextView，ViewModel 也不应该替 UI 操作 View 树。
+
+这里的单向关系是：UI 上报事件，状态所有者执行规则并更新状态，UI 根据新状态展示。可观察数据解决“变化如何到达 UI”，并不会自动保证网络请求顺序或业务操作幂等。
+
+## 4. 任务与生命周期感知观察 {#任务与生命周期感知观察}
+
+### 4.1 viewModelScope 的边界 {#viewmodelscope的边界}
+
+`viewModelScope` 是与 ViewModel 关联的协程作用域，在 ViewModel 清理时取消其中的任务。以 Lifecycle 2.6.2 为例，默认包含 `SupervisorJob` 与 `Dispatchers.Main.immediate`；启动协程并不意味着自动转移到后台线程。
+
+页面进入后台或被另一个页面遮住，但 owner 仍存在时，这些任务可以继续。是否在不可见时停止，应由实际需求决定：界面动画适合跟随 UI，屏幕数据请求可以由屏幕状态持有者管理，需要跨进程或应用退出后继续的工作则不能只依赖内存中的 ViewModel 协程。
+
+阻塞 IO 应由合适的数据层实现切换执行环境；CPU 密集计算也需要合适调度。取消是协作式的，不能据此保证远端服务器没有处理请求，相关机制见 [Kotlin 协程](../../basic-knowledge/kotlin/coroutines.mdx#取消与资源清理)。
+
+### 4.2 Fragment 的 View 生命周期 {#fragment的view生命周期}
+
+Fragment 对象存在时，它的 View 可能已经销毁并稍后重建。更新 View 的观察应绑定 `viewLifecycleOwner`，而不是只绑定 Fragment 对象本身，具体关系见 [Fragment 生命周期](./fragment-lifecycle.mdx#双生命周期与视图引用)。
+
+下面的函数应在 `onViewCreated()` 之后、对应 View 仍存在时调用一次。它在 View 生命周期至少为 `STARTED` 时收集计数，离开该状态时取消本轮收集，再次进入时重新收集。
+
+```kotlin
+import android.widget.TextView
+import androidx.fragment.app.Fragment
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
+
+fun Fragment.observeCount(count: StateFlow<Int>, textView: TextView) {
+    viewLifecycleOwner.lifecycleScope.launch {
+        viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            count.collect { value -> textView.text = value.toString() }
+        }
+    }
+}
+```
+
+`lifecycleScope` 在相应生命周期销毁时取消；`repeatOnLifecycle` 进一步处理启停区间。把普通 `collect` 放在 `lifecycleScope` 里，并不自动获得“停止时暂停收集”的同等行为。
+
+若需在同一活跃区间并行收集两条持续流，应在 `repeatOnLifecycle` 的 block 中分别 `launch`。先顺序调用第一条 StateFlow 的 `collect`，它通常不会自行结束，第二条就可能永远到不了。
+
+取消收集也不一定停止上游所有工作。冷 Flow 的这一轮生产可能随收集取消；热流或由其他作用域启动的共享任务有自己的生命周期与共享策略。返回前台重新收集时，还要考虑是否重新触发加载以及是否已有缓存。
+
+### 4.3 LiveData 与可见性 {#livedata与可见性}
+
+**LiveData** 可以根据绑定的 LifecycleOwner 判断观察者是否活跃，通常在 `STARTED`、`RESUMED` 状态分发更新；owner 销毁时解除相关观察。`observeForever()` 则没有相同的自动生命周期限制，需要主动移除。
+
+Fragment 的 `hide()` 主要改变显示状态，不能直接推断生命周期降到 `STARTED` 以下。因此，“页面被隐藏”与“LiveData 一定停止更新”不是同一结论。应检查观察使用的 owner、实际生命周期状态，以及是否还有其他持续任务。
+
+StateFlow 本身也不带 Android 的可见性判断，需要用 `repeatOnLifecycle`、Compose 的生命周期感知收集等方式接入。两者不能仅靠“会自动刷新 UI”归为同一种保证。
+
+## 5. SavedStateHandle 与恢复 {#savedstatehandle与恢复}
+
+**SavedStateHandle** 是 ViewModel 可使用的键值状态接口，通过宿主保存状态机制保留小型恢复数据。它可以帮助新进程中的新 ViewModel 恢复查询词或选中 ID，但不会让旧 ViewModel 对象跨进程继续存活。
+
+```kotlin
+import androidx.lifecycle.SavedStateHandle
+import androidx.lifecycle.ViewModel
+import kotlinx.coroutines.flow.StateFlow
+
+class QueryViewModel(private val savedState: SavedStateHandle) : ViewModel() {
+    val query: StateFlow<String> = savedState.getStateFlow("query", "")
+
+    fun setQuery(value: String) {
+        savedState["query"] = value
+    }
+}
+```
+
+`getStateFlow()` 在没有已有值时提供默认值，通过同一个 key 写入后，流中的值也随之更新。要接入真实保存恢复流程，应由支持 SavedState 的默认 Factory 或正确配置的自定义 Factory 创建；手动构造一个空 `SavedStateHandle` 只能得到普通状态容器，不会自动连接宿主恢复。
+
+| 数据 | 通常放在哪里 |
+| --- | --- |
+| 搜索词、选中 ID、恢复所需的小型标记 | 保存状态 |
+| 根据 ID 可重新获取的大列表 | 数据层、缓存或重新加载 |
+| 必须保留的草稿、交易结果和业务记录 | 明确的持久化层或服务端 |
+| View、Context、大图片和不适合序列化的对象 | 不应塞进保存状态 |
+
+写入 SavedStateHandle 不代表每次赋值都立即保存到可靠介质。它依赖宿主保存周期、任务与恢复流程；在宿主停止期间继续改变的值，若没有再经过相应保存过程，进程被终止时可能丢失。
+
+因此恢复设计通常保存最小标识，再从 Repository 重建较大状态。系统恢复与用户主动结束任务也有不同条件，不应该承诺“无论怎样关闭，下次都能恢复”。
+
+## 6. 架构与事件边界 {#架构与事件边界}
+
+### 6.1 ViewModel 与 MVVM {#viewmodel与mvvm}
+
+**MVVM** 将界面展示与可观察的展示状态、相关处理分开。AndroidX ViewModel 可以承载其中的状态持有者职责，但它主要提供作用域与保留机制，不会仅凭继承就自动生成数据绑定。
+
+| 模式 | 讨论重点 | Android 项目中需要继续说明的内容 |
+| --- | --- | --- |
+| MVC | Controller 协调输入、Model 与 View | Activity 同时承担多种职责时怎样划分代码 |
+| MVP | Presenter 通过 View 接口协调展示 | 接口边界、视图解绑和 Presenter 生命周期 |
+| MVVM | View 观察 ViewModel 暴露的状态并上报事件 | 观察机制、状态所有权、作用域和错误处理 |
+
+这些模式在具体项目中有不同实现，不是按文件夹命名就能判定的固定模板。说明架构价值时，要能指出数据从哪里来、谁处理事件、谁持有状态、谁负责持久化，以及界面销毁后什么工作仍会继续。
+
+Data Binding、View Binding 与 ViewModel 也不是一回事：View Binding 提供类型化 View 引用，Data Binding 支持布局表达式等绑定能力，ViewModel 管理状态与作用域。使用普通 XML View 或 Compose，都可以通过 StateFlow、LiveData 等机制观察状态，不强制双向绑定。
+
+### 6.2 请求、结果与一次性动作 {#请求结果与一次性动作}
+
+搜索请求 A 比 B 更早发起，但可能更晚返回。ViewModel 活得更久，并不能解决这个顺序问题。需要根据业务使用最新任务策略、取消和请求代次检查，避免 A 的过期结果覆盖 B。
+
+持续 UI 状态适合表达“目前正在展示什么”；提示、导航等动作还需要决定未显示时是否保留、重复收集是否重放、多个消费者如何处理。StateFlow 会保留当前值，而不是保证每个中间事件都逐条送达。SharedFlow 和 Channel 的缓冲、重放与消费规则也不同，不能随意把布尔字段叫作“一次性事件”就获得恰好一次保证。
+
+对必须可靠完成的业务操作，应保存可确认的业务状态，再让 UI 根据状态展示或确认消费。关键依据不是某个控件有没有显示 Toast，而是操作是否已被接受、成功或需要重试。完整流语义可参考 [Kotlin Flow](../../basic-knowledge/kotlin/flow.mdx#stateflow-与-sharedflow)。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 ViewModel 有什么优势？ {#benefits}
+
+**考察重点**：状态职责、配置变化与内存生命周期。
+
+**相关内容**：[状态所有权与作用域](#状态所有权与作用域)、[状态与单向更新](#状态与单向更新)。
+
+<details>
+<summary>参考回答</summary>
+
+**ViewModel 把屏幕状态和相关逻辑从一次界面实例中分离，并在对应作用域内跨配置变化保留。** UI 可以重建并重新观察已有状态，减少重复加载，也更便于测试。但它不是全局单例或持久化存储，进程终止后仍要通过恢复线索和数据层重建。
+
+</details>
+
+### 7.2 同一个 ViewModel 类是否总能取得同一个实例？ {#scope}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：owner、Store、key 与 Factory。
+
+**相关内容**：[ViewModelStoreOwner 与 key](#viewmodelstoreowner与key)。
+
+<details>
+<summary>参考回答</summary>
+
+**不是，实例查找依赖对应 owner 的 Store 和 key 等条件。** 不同 Fragment 自己的 Store 可以各有一份，明确选择同一个 Activity owner 才能共享相应实例。手动调用构造函数不会自动进入框架的保留和清理机制。
+
+</details>
+
+### 7.3 页面进入后台后，viewModelScope 中的任务是否自动取消？ {#work}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：ViewModel 清理与界面可见性的差别。
+
+**相关内容**：[viewModelScope 的边界](#viewmodelscope的边界)。
+
+<details>
+<summary>参考回答</summary>
+
+**不会仅因为暂时进入后台就自动取消，viewModelScope 跟随 ViewModel 清理。** 需要按可见区间启停的工作，应接入 UI 生命周期；需要跨进程继续的工作又不能只依赖它。默认主线程上下文也不意味着阻塞工作会自动切到后台。
+
+</details>
+
+### 7.4 Fragment 中怎样安全地持续观察界面状态？ {#observe}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：View 生命周期、活跃区间与上游工作。
+
+**相关内容**：[Fragment 的 View 生命周期](#fragment的view生命周期)、[LiveData 与可见性](#livedata与可见性)。
+
+<details>
+<summary>参考回答</summary>
+
+**更新 View 时绑定 viewLifecycleOwner，并按需要用 repeatOnLifecycle 在活跃区间收集。** View 销毁后应取消旧观察；多条持续流要并行收集。停止收集不等于所有热流生产停止，hide 也不一定改变生命周期，必须检查真实 owner 和状态。
+
+</details>
+
+### 7.5 屏幕旋转时，ViewModel 怎样参与数据保留与恢复？ {#restoration}
+
+**考察重点**：内存保留、保存状态与可靠持久化。
+
+**相关内容**：[配置变化与清理](#配置变化与清理)、[SavedStateHandle 与恢复](#savedstatehandle与恢复)。
+
+<details>
+<summary>参考回答</summary>
+
+**配置变化可以在正确作用域内复用 ViewModel；进程重建时应利用保存状态中的小型线索，从数据层恢复内容。** SavedStateHandle 要正确连接宿主保存机制，且写入不等于立即持久化；重要草稿和业务记录应明确落盘或由服务端保存，不等待 onCleared，也不把大对象塞进 Bundle。
+
+</details>
+
+### 7.6 MVC、MVP 与 MVVM 有什么区别，View 怎样感知 ViewModel 的变化？ {#architecture}
+
+**考察重点**：职责划分、观察机制与具体组件的边界。
+
+**相关内容**：[ViewModel 与 MVVM](#viewmodel与mvvm)、[状态与单向更新](#状态与单向更新)。
+
+<details>
+<summary>参考回答</summary>
+
+**MVC 由 Controller 协调，MVP 侧重 Presenter 与 View 接口，MVVM 侧重 View 观察展示状态并上报事件。** 具体实现还要解释生命周期和数据归属。AndroidX ViewModel 不会自动观察任意字段，UI 可通过 LiveData、StateFlow 或绑定机制接收变化，也不强制使用 Data Binding。
+
+</details>
+
+### 7.7 ViewModel 是否能自动保证请求结果有序、界面事件只执行一次？ {#events}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：任务身份、状态流与业务确认。
+
+**相关内容**：[请求、结果与一次性动作](#请求结果与一次性动作)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能，ViewModel 的保留机制不等于请求顺序或恰好一次交付保证。** 旧结果要按取消和代次规则处理，状态与事件要明确重放、缓冲和消费者语义。重要业务依赖可确认的持久状态，而不是以一次界面回调作为最终完成证据。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [Android：ViewModel overview](https://developer.android.com/topic/libraries/architecture/viewmodel)
+- [Android：ViewModel Scoping APIs](https://developer.android.com/topic/libraries/architecture/viewmodel/viewmodel-apis)
+- [Android：Saved State module for ViewModel](https://developer.android.com/topic/libraries/architecture/viewmodel/viewmodel-savedstate)
+- [Android API：RepeatOnLifecycleKt](https://developer.android.com/reference/androidx/lifecycle/RepeatOnLifecycleKt)
+- [Android：LiveData overview](https://developer.android.com/topic/libraries/architecture/livedata)
+- [Android：UI events](https://developer.android.com/topic/architecture/ui-layer/events)
+- [Android：View binding](https://developer.android.com/topic/libraries/view-binding)
+- [Android：Data Binding Library](https://developer.android.com/topic/libraries/data-binding)
+- [Google Maven：ViewModel 2.6.2 源码](https://dl.google.com/dl/android/maven2/androidx/lifecycle/lifecycle-viewmodel/2.6.2/lifecycle-viewmodel-2.6.2-sources.jar)
+- [Google Maven：ViewModel KTX 2.6.2 源码](https://dl.google.com/dl/android/maven2/androidx/lifecycle/lifecycle-viewmodel-ktx/2.6.2/lifecycle-viewmodel-ktx-2.6.2-sources.jar)
+- [Google Maven：Lifecycle Runtime KTX 2.6.2 源码](https://dl.google.com/dl/android/maven2/androidx/lifecycle/lifecycle-runtime-ktx/2.6.2/lifecycle-runtime-ktx-2.6.2-sources.jar)
+- [Google Maven：ViewModel SavedState 2.6.2 源码](https://dl.google.com/dl/android/maven2/androidx/lifecycle/lifecycle-viewmodel-savedstate/2.6.2/lifecycle-viewmodel-savedstate-2.6.2-sources.jar)

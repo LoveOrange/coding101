@@ -1,0 +1,323 @@
+---
+knowledge:
+  id: tools-and-frameworks.rxjava
+  type: concept
+description: "解释 RxJava 的订阅协议、核心类型、操作符、线程调度、背压、取消、错误传播和异步任务组合。"
+keywords: [RxJava, Observable, Flowable, subscribeOn, observeOn, flatMap, Disposable, 背压]
+---
+
+# RxJava
+
+**RxJava** 用可订阅的数据流组织事件与异步工作，再通过操作符描述转换、组合、线程调度和错误处理。它的价值是让一连串依赖或并发任务可以按统一协议组合，而不是把每一步都展开成相互嵌套的回调。
+
+本文示例以 RxJava 3.1.8 为准。RxJava 2 使用 `io.reactivex` 包，RxJava 3 使用 `io.reactivex.rxjava3` 包；主要概念相近，但类型和依赖不能直接混用。Android 主线程 Scheduler 由匹配版本的 RxAndroid 提供，下面的 Android 示例使用 RxAndroid 3.0.2。
+
+## 1. 面试核心 {#core}
+
+- 订阅连接数据源与观察者，操作符构建处理链，**RxJava 不等于自动异步，多数普通操作默认沿当前执行线程运行**。[卡](#mechanism)
+- Observable、Flowable、Single、Maybe、Completable 表达不同结果协议，**要根据结果数量和是否需要背压选择类型**。[卡](#types)
+- `map` 把一个值转换成另一个值，`flatMap` 把值转换成内部流再合并，**flatMap 不保证保持源顺序，也不会自动让同步工作并行**。[卡](#operators)
+- `subscribeOn` 调度向上游建立订阅，`observeOn` 切换后续通知的执行环境，**重复调用的效果要沿订阅和通知的方向分析**。[卡](#schedulers)
+- 背压协调生产速度与消费需求，**把 Observable 换成 Flowable，不会自动让无法暂停的数据源变慢**。[卡](#backpressure)
+- Disposable 用于终止订阅关联的工作，**取消是否释放底层资源，取决于数据源有没有正确接入取消**。[卡](#disposal)
+- 错误是终止信号，恢复和重试会改变订阅流程，**必须提供错误处理，并考虑取消后无法交付的异常**。[卡](#errors)
+- 多请求组合需要明确并发、顺序、失败和取消规则，**合并操作符不提供跨服务端操作的回滚**。[卡](#requests)
+
+## 2. 订阅协议与执行时机 {#订阅协议与执行时机}
+
+**数据源**负责产生值和终止信号，**观察者**接收这些信号，**订阅**把两者连接起来。以 Observable 为例，正常协议是先 `onSubscribe`，随后可以有零到多次 `onNext`，最终至多出现一次 `onComplete` 或 `onError`。
+
+完成与错误是互斥的终止信号，终止后不应继续发送正常数据。持续事件流也可以长时间不终止。RxJava 2、3 不允许把 `null` 当作普通数据项，应通过空结果、Maybe 或明确的业务类型表达缺失。
+
+`map`、`filter` 等操作通常先构建新的数据源对象，订阅时再把这些对象连接成链。默认情况下，同步源及普通转换可以在调用 `subscribe()` 的线程立即执行；异步与线程切换要看具体数据源和 Scheduler。
+
+### 2.1 冷源与热源 {#冷源与热源}
+
+**冷源**通常为每个订阅者重新执行一次生产过程，例如 `fromCallable` 在每次订阅时调用传入函数。**热源**的事件生产不以每个订阅者分别从头开始，后加入者是否能得到过去的值，取决于具体源和重放策略。
+
+```kotlin
+import io.reactivex.rxjava3.core.Observable
+import java.util.concurrent.atomic.AtomicInteger
+
+fun subscriptionValues(): List<Int> {
+    val count = AtomicInteger()
+    val values = Observable.fromCallable { count.incrementAndGet() }
+        .map { it * 10 }
+    check(count.get() == 0)
+    return listOf(values.blockingFirst(), values.blockingFirst())
+}
+```
+
+调用 `subscriptionValues()` 返回 `[10, 20]`：构建 `values` 时没有执行函数，两次订阅各自增加一次计数。`blockingFirst()` 只为这个同步小例子便于观察结果，不能用于 Android 主线程上的网络等待。
+
+`Observable.just(load())` 则不同：普通函数 `load()` 会先求值，再把结果交给 `just`。如果希望订阅时才执行，应使用 `fromCallable`，或用 `defer` 为每次订阅创建相应源。把 `subscribeOn` 放在已经求值的 `just(load())` 后面，不能把过去那次计算搬到后台。
+
+Subject 可以把外部事件接入流，但不同 Subject 的重放与终止行为不同。多线程向同一个源发信号时，还需要序列化通知，例如使用相应的 serialized 形式；“用了 RxJava”不代表任意并发 `onNext()` 都自动安全。
+
+## 3. 核心类型 {#核心类型}
+
+| 类型 | 成功结果形式 | 适合表达 |
+| --- | --- | --- |
+| Observable | 零到多项，可完成或失败；不提供背压协议 | UI 事件等可控规模事件流 |
+| Flowable | 零到多项，通过 Reactive Streams 需求协议协调生产 | 需要需求计数或明确溢出策略的数据流 |
+| Single | 一个成功值或一个错误 | 一次必须有结果的请求 |
+| Maybe | 一个成功值、空完成或错误 | 查询可能没有结果 |
+| Completable | 完成或错误，不携带成功值 | 只关心是否完成的保存或删除 |
+
+类型表达的是信号协议，不是网络协议，也不是线程模型。Single 不保证自动在后台执行，Flowable 不代表一定有海量数据，Completable 也不保证任务已经在创建时启动。
+
+结果本来可能缺失时，用 Maybe 或明确的结果类型，比强行让 Single 发出 `null` 更符合协议。若服务端返回的是一个列表，也可以用 `Single<List<T>>` 表达“一次得到一个列表”，不必把列表元素自动解释为多次独立网络结果。
+
+## 4. 转换与组合操作符 {#转换与组合操作符}
+
+### 4.1 map、flatMap 与顺序 {#map-flatmap与顺序}
+
+**map** 对每个值执行一次转换，输出对应的新值。例如把 User 转成用户名。转换函数返回的是另一个普通值；若它返回一个 Observable，得到的就是“元素本身是 Observable”的外层流，并不会自动订阅内部流。
+
+**flatMap** 先把每个值映射为内部数据源，再订阅这些内部源并合并结果。例如根据用户 ID 发起详情请求，再把多个请求结果合到同一条流中。
+
+内部源可以交错完成，所以 flatMap 不保证保持输入顺序。即使第二个请求先完成，它的结果也可能先到。flatMap 本身没有“把任意函数放进线程池并行执行”的保证：内部源若同步执行，仍可能顺序完成；并行来自内部异步源或具体调度。
+
+| 操作符 | 主要差异 | 使用条件 |
+| --- | --- | --- |
+| `flatMap` | 合并内部源，结果可以交错 | 任务彼此独立，允许按完成顺序处理 |
+| `concatMap` | 按顺序订阅并连接内部源 | 后一个任务必须等待前一个完成 |
+| `switchMap` | 新内部源到来时解除旧内部源订阅 | 搜索输入只关心最新查询结果 |
+
+switchMap 解除旧订阅，不等于旧请求在服务端从未执行。网络适配层还需要把 dispose 传到底层取消，UI 也应按实际业务识别过期结果。
+
+### 4.2 多源组合与状态 {#多源组合与状态}
+
+`zip` 按对应次序取各源的值进行组合，需要每一边都有可配对的值；`combineLatest` 则在各源至少产生过一个值后，使用各自最新值组合后续变化。前者适合配对，后者适合由多个状态共同决定页面。
+
+`merge` 合并多个源的通知，`concat` 依次订阅源。选择前先说明是等待全部完成、逐项展示，还是只保留最新结果，再确定顺序与错误策略。
+
+操作符的名称不能替代边界判断。例如一边从未发出值，zip 或 combineLatest 就不一定产生预期结果；一边永远不结束，依赖全部完成的组合也可能一直等待。
+
+## 5. Scheduler 与线程切换 {#scheduler与线程切换}
+
+**Scheduler** 是 RxJava 安排工作执行的抽象。`Schedulers.io()` 适合阻塞 IO，`computation()` 适合受控的计算工作；Android 的 `AndroidSchedulers.mainThread()` 负责把工作安排到主线程消息循环。
+
+### 5.1 subscribeOn 与 observeOn {#subscribeon与observeon}
+
+`subscribeOn` 把对上游的订阅安排到指定 Scheduler。对于普通同步冷源，上游生产及没有其他线程边界的处理会跟随这次订阅执行。
+
+`observeOn` 接收上游通知，再把后续通知安排到指定 Scheduler。因此，一个链条可以先在后台读取数据，再切到主线程通知 UI：
+
+```kotlin
+import io.reactivex.rxjava3.core.Single
+import io.reactivex.rxjava3.disposables.Disposable
+import io.reactivex.rxjava3.schedulers.Schedulers
+import io.reactivex.rxjava3.android.schedulers.AndroidSchedulers
+
+fun loadForUi(
+    load: () -> String,
+    render: (String) -> Unit,
+    onError: (Throwable) -> Unit
+): Disposable = Single.fromCallable { load() }
+    .subscribeOn(Schedulers.io())
+    .observeOn(AndroidSchedulers.mainThread())
+    .subscribe(render, onError)
+```
+
+`load()` 在订阅后的 IO 调度中执行，`render` 或 `onError` 在主线程观察阶段执行。这个函数返回 Disposable，页面需要按自己的生命周期管理它；线程切换不会自动解除对旧 View 的引用。
+
+重复添加 observeOn 可以建立多个后续执行边界，位置决定哪些操作在边界之前或之后。对于没有内部异步调度的同一条同步源链，多个 subscribeOn 中，最靠近源的那个决定源订阅最终在哪里执行；其余仍可能带来订阅调度开销，不能概括为“后面的代码完全不会执行”。
+
+若源本身使用 timer、事件回调或自己的 Scheduler，通知线程可能由它另外决定；内部流的 subscribeOn 也会作用于自己的订阅。分析时应沿“订阅向上游建立、通知向下游传递”两个方向逐段判断。
+
+### 5.2 切线程也带来队列 {#切线程也带来队列}
+
+对于多项数据流，异步 observeOn 往往需要把上游通知放入队列，再由目标线程取出。上游很快、UI 很慢时，即使线程用对了，仍可能积压数据、增加延迟或内存占用。
+
+不应把重计算放到主线程 observeOn 之后，也不应把大量阻塞 IO 放进计算线程池。可以根据业务减少无用事件、限制并发、分批消费或引入背压，但这些策略会改变时效或数据完整性，应明确选择。
+
+## 6. 背压与溢出策略 {#背压与溢出策略}
+
+**背压**是消费者把可处理需求反馈给上游，让生产与消费速率能够协调。Flowable 基于 Reactive Streams，订阅者通过 `request(n)` 表达还需要多少项，上游按协议交付。
+
+可按需生产的源能够等待需求；外部传感器或不可暂停的回调却未必能被 request 控制。这类源转成 Flowable 时，仍需要决定来不及消费的数据怎样处理：
+
+| 策略 | 行为 | 代价或适用条件 |
+| --- | --- | --- |
+| 缓冲 | 暂存尚未消费的项 | 无界缓冲可能耗尽内存；需要容量与溢出规则 |
+| 丢弃 | 没有需求时丢掉相应项 | 业务必须允许缺失 |
+| 保留最新 | 在待消费数据中保留较新的状态 | 适合位置、进度等状态，不适合逐笔交易 |
+| 报错 | 无法按需求交付时终止 | 失败路径必须可处理 |
+
+Flowable 不会让无限输入与有限内存之间的矛盾消失。异步操作符还可能预取数据，`request(1)` 也不意味着所有上游环节都绝对只保存一项。应结合具体源、操作符和缓冲参数分析。
+
+Observable 没有背压需求协议，并不意味着它不需要处理速率问题。事件太多时，同样可能需要节流、采样或丢弃；这些属于业务与流控制选择，不能混同为所有 Observable 都自动具有背压。
+
+## 7. 生命周期、错误与取消 {#生命周期错误与取消}
+
+### 7.1 Disposable 与底层资源 {#disposable与底层资源}
+
+**Disposable** 用来解除订阅及其关联工作。调用 `dispose()` 后，数据源应尽可能停止工作与通知，但已经进入执行的代码可能存在竞争，服务端已发生的操作也不会被自动撤销。
+
+自定义数据源必须把取消接到底层，例如取消网络 Call、注销监听或关闭自己拥有的资源。仅停止向下游发值，而底层线程仍无限运行，不算完成资源释放。
+
+**CompositeDisposable** 把多个 Disposable 作为一组管理。`clear()` 解除当前已有订阅，但容器以后还可以加入新订阅；`dispose()` 同时把容器标为已解除，后来加入的 Disposable 会立即被解除。
+
+在 Fragment 中，更新 View 的订阅应跟随 View 生命周期释放，而不是等 Fragment 对象最终销毁。若在 `onDestroyView()` 中 dispose 一个长期字段容器，下次创建 View 时还要重建容器；否则新订阅加入后会立即失效。生命周期关系见 [Fragment 生命周期](../mobile/android/fragment-lifecycle.mdx#双生命周期与视图引用)。
+
+### 7.2 终止错误、恢复与无法交付的异常 {#终止错误恢复与无法交付的异常}
+
+`onError` 会终止当前订阅，不是普通业务数据。订阅时应提供错误处理；只提供成功消费者，错误可能被包装并交给全局错误处理机制。
+
+`onErrorReturn` 可以把错误转换成一个替代值再完成，`onErrorResumeNext` 切换到另一条源，`retry` 则重新订阅上游。重试可能重新执行之前的副作用，所以需要限制次数、等待策略和可重试错误类型，不能遇到任何错误都无限重试。
+
+解除订阅后，下游已经不能正常接收某些晚到异常，这类无法交付的错误可能进入 `RxJavaPlugins` 的全局错误处理器。需要区分预期取消带来的 IO 异常和真实程序缺陷，不能通过全局吞掉所有异常来让日志“看起来正常”。
+
+自定义 emitter 可以使用 `tryOnError` 判断错误能否交付，并按约定处理返回结果；多线程发信号还要遵守序列化要求。恢复操作符不自动弥补源违反协议的问题。
+
+## 8. 多请求组合 {#多请求组合}
+
+多个请求全部完成后汇总，需要先决定并发上限和失败策略。下面接受一个返回 Single 的加载函数，最多同时订阅 3 个内部请求，任何错误立即使组合失败并解除其余相关订阅：
+
+```kotlin
+import io.reactivex.rxjava3.core.Flowable
+import io.reactivex.rxjava3.core.Single
+
+fun loadNames(
+    ids: List<Int>,
+    load: (Int) -> Single<String>
+): Single<List<String>> = Flowable.fromIterable(ids)
+    .flatMapSingle({ id -> load(id) }, false, 3)
+    .toList()
+```
+
+第二个参数 `false` 表示不延迟错误，第三个参数 `3` 限制同时订阅的内部源。`toList()` 等待全部完成后产生列表；输入为空时得到空列表。结果按到达顺序收集，不保证与 `ids` 顺序相同。
+
+并发能力来自 `load(id)` 返回的异步源，或其内部正确设置的调度。若 `load` 在返回 Single 之前就执行阻塞工作，flatMapSingle 不会替这段提前执行的代码自动并行。
+
+解除其他内部订阅，能否取消请求要看适配器有没有正确处理 Disposable。即使本地停止了剩余请求，已完成的服务端操作也不会回滚。业务需要全部成功才能生效时，必须在服务端或业务协议层设计一致性，而不是期待一个合并操作符提供分布式事务。
+
+若需求是逐项保序，可以考虑顺序连接对应的 Single；若要保留并行但按输入顺序输出，也需要选择明确支持该语义的组合方式或携带输入索引后整理。不能在测试时恰好按顺序返回，就认定 flatMap 有顺序保证。
+
+## 9. 面试题 {#面试题}
+
+### 9.1 RxJava 怎样组织任务，有什么优势？ {#mechanism}
+
+**考察重点**：订阅协议、操作符组合与执行时机。
+
+**相关内容**：[订阅协议与执行时机](#订阅协议与执行时机)。
+
+<details>
+<summary>参考回答</summary>
+
+**RxJava 用数据源、订阅和操作符把转换、组合、错误与调度组织成一条协议明确的链。** 它能减少多层回调中分散的控制逻辑，但不等于自动异步。同步源和普通操作可能在当前线程执行，冷源还会为不同订阅重新运行；`just(load())` 的函数求值也发生在构建时，应与延迟执行区分。
+
+</details>
+
+### 9.2 Observable、Flowable、Single、Maybe、Completable 怎样选择？ {#types}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：结果数量、空结果和需求控制。
+
+**相关内容**：[核心类型](#核心类型)。
+
+<details>
+<summary>参考回答</summary>
+
+**先按结果协议选择，再判断是否需要背压。** 零到多项且不使用背压协议可选 Observable，需要需求控制可选 Flowable；一个结果用 Single，可能没有结果用 Maybe，只关心完成或失败用 Completable。它们都不保证自动切到后台线程，也不能用 `null` 代替缺失结果。
+
+</details>
+
+### 9.3 map 与 flatMap 有什么区别？ {#operators}
+
+**考察重点**：普通值转换、内部源订阅与合并顺序。
+
+**相关内容**：[map、flatMap 与顺序](#map-flatmap与顺序)。
+
+<details>
+<summary>参考回答</summary>
+
+**map 把每个值转换成另一个值；flatMap 把值转换成内部源，再订阅并合并内部结果。** map 返回 Observable 时不会自动展开它。flatMap 的内部源可以交错完成，因此不保证顺序，也不自动使同步源并行。需要顺序订阅可考虑 concatMap，只关心最新内部源可考虑 switchMap，并同时处理真实取消边界。
+
+</details>
+
+### 9.4 subscribeOn 与 observeOn 有什么作用，可以重复调用吗？ {#schedulers}
+
+**考察重点**：订阅方向、通知方向和多个线程边界。
+
+**相关内容**：[Scheduler 与线程切换](#scheduler与线程切换)。
+
+<details>
+<summary>参考回答</summary>
+
+**subscribeOn 调度向上游建立订阅，observeOn 调度后续通知。** 多次 observeOn 可以建立多个后续边界。普通同步源链上多个 subscribeOn 中，靠近源的那个决定源订阅线程，其他仍可能带来调度开销；源自己的 Scheduler 或内部流调度又有独立影响。因此要沿订阅与通知逐段分析，不能简单背“只能调用一次”。
+
+</details>
+
+### 9.5 Flowable 的背压能否保证永远不丢数据、不耗尽内存？ {#backpressure}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：需求协议、不可暂停源与容量约束。
+
+**相关内容**：[背压与溢出策略](#背压与溢出策略)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能。需求协议可以协调支持按需生产的上游，但无法自动暂停所有外部事件源。** 生产快于消费时仍需选择缓冲、丢弃、保留最新或报错。无界缓冲可能耗尽内存，丢弃则要求业务允许缺失；预取和异步队列也影响实际保存量，不能只看下游一次 request 的数字。
+
+</details>
+
+### 9.6 CompositeDisposable 的 clear 与 dispose 有什么区别？ {#disposal}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：容器状态、生命周期重建和底层取消。
+
+**相关内容**：[Disposable 与底层资源](#disposable与底层资源)。
+
+<details>
+<summary>参考回答</summary>
+
+**clear 解除当前订阅但容器可复用，dispose 还会把容器标为已解除，后来加入的订阅立即解除。** Fragment View 重建时，不能继续向已 dispose 的旧容器添加新订阅。解除订阅是否停止网络或监听，还取决于源是否把取消接到底层资源，不能自动撤销服务端操作。
+
+</details>
+
+### 9.7 RxJava 的错误为什么不能只靠全局处理器忽略？ {#errors}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：终止信号、取消后异常、恢复与重试副作用。
+
+**相关内容**：[终止错误、恢复与无法交付的异常](#终止错误恢复与无法交付的异常)。
+
+<details>
+<summary>参考回答</summary>
+
+**正常业务错误应在对应订阅链中处理，全局处理器主要还会接到无法交付的异常等情况。** 全部忽略会隐藏协议违规和程序缺陷。恢复值、切换源和重新订阅的语义不同，retry 还可能重复副作用；应限制次数和错误类型。取消后的预期异常也要与真实缺陷区分，不能一概吞掉。
+
+</details>
+
+### 9.8 怎样组合十个请求，在全部完成后输出结果，出错时停止并处理线程切换？ {#requests}
+
+**题型**：综合题
+
+**考察重点**：并发上限、终止条件、取消传播与结果顺序。
+
+**相关内容**：[多请求组合](#多请求组合)、[Scheduler 与线程切换](#scheduler与线程切换)。
+
+<details>
+<summary>参考回答</summary>
+
+**可以把输入 ID 转成 Flowable，用有并发上限且不延迟错误的 flatMapSingle 合并，再用 toList 等待全部完成。** 示例上限为 3；成功后统一输出，错误使组合失败并解除其他内部订阅。内部源需正确异步执行和响应取消，UI 通知在相应 observeOn 后处理。结果默认按到达顺序，服务端已完成的操作不会被回滚。
+
+</details>
+
+## 10. 参考资料 {#参考资料}
+
+- [RxJava 3.1.8 发布源码包](https://repo.maven.apache.org/maven2/io/reactivex/rxjava3/rxjava/3.1.8/rxjava-3.1.8-sources.jar)
+- [RxJava 3.1.8 Observable：订阅协议与操作符](https://github.com/ReactiveX/RxJava/blob/v3.1.8/src/main/java/io/reactivex/rxjava3/core/Observable.java)
+- [RxJava 3.1.8 Flowable：背压与组合](https://github.com/ReactiveX/RxJava/blob/v3.1.8/src/main/java/io/reactivex/rxjava3/core/Flowable.java)
+- [RxJava 3.1.8 ObservableSubscribeOn](https://github.com/ReactiveX/RxJava/blob/v3.1.8/src/main/java/io/reactivex/rxjava3/internal/operators/observable/ObservableSubscribeOn.java)
+- [RxJava 3.1.8 ObservableObserveOn](https://github.com/ReactiveX/RxJava/blob/v3.1.8/src/main/java/io/reactivex/rxjava3/internal/operators/observable/ObservableObserveOn.java)
+- [RxJava 3.1.8 CompositeDisposable](https://github.com/ReactiveX/RxJava/blob/v3.1.8/src/main/java/io/reactivex/rxjava3/disposables/CompositeDisposable.java)
+- [RxJava 3.1.8 RxJavaPlugins：错误处理](https://github.com/ReactiveX/RxJava/blob/v3.1.8/src/main/java/io/reactivex/rxjava3/plugins/RxJavaPlugins.java)
+- [RxAndroid 3.0.2 发布源码包](https://repo.maven.apache.org/maven2/io/reactivex/rxjava3/rxandroid/3.0.2/rxandroid-3.0.2-sources.jar)

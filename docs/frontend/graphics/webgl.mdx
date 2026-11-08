@@ -1,0 +1,440 @@
+---
+sidebar_position: 2
+knowledge:
+  id: frontend.graphics.webgl
+---
+
+# WebGL
+
+**WebGL** 是浏览器提供的图形渲染 API。JavaScript 准备数据和绘制状态，着色器处理顶点与片元，绘制结果再显示到画布。它可以用于三维场景，也可以处理二维图形；“用了 WebGL”不等于“所有工作都在 GPU 上运行”。
+
+准备图形相关岗位或项目时，需要能说明数据怎样变成画面，以及画面不正确、页面变慢或资源没有释放时该检查哪一层。本文以 WebGL 2 为例，重点是流水线、缓冲、纹理和生命周期，不展开完整的图形学数学体系。
+
+## 1. 面试核心 {#core}
+
+- WebGL 与 Canvas 2D 是不同的绘图接口，**不能用“二维与三维”作为二者的唯一分界**。WebGL 提供可编程图形流水线，Three.js 等库在它之上组织场景。[卡](#webgl-role)
+- **顶点着色器决定顶点的位置和传给后续阶段的数据，片元着色器计算候选片元的输出**。片元经过深度、混合等处理后才可能影响最终像素。[卡](#pipeline)
+- 缓冲对象保存数值数据，顶点属性描述怎样读取，uniform 提供一次绘制使用的参数。**上传了数组还不够，属性布局、程序和绘制数量必须对应**。[卡](#buffer-layout)
+- CSS 尺寸、绘图缓冲区尺寸和视口各有职责。**修改画布尺寸后仍要更新 viewport，三维相机还可能需要更新投影参数**。[卡](#resize)
+- **纹理是供着色器采样的数据，采样器使用纹理单元编号**。图片加载成功不表示跨源图片可以直接上传为纹理。[卡](#texture)
+- **上下文丢失后要停止使用旧资源，恢复时重新创建程序、缓冲与纹理**。正常卸载也应停止动画、解除事件并释放自己拥有的资源。[卡](#context-lifecycle)
+- Three.js 提供场景、相机、几何体和材质等抽象。**项目回答应讲清自己的效果与数据处理，区分库完成的工作，并用测量说明成本**。[卡](#three-project)
+
+## 2. API 与绘图方式 {#api与绘图方式}
+
+HTML 的 `canvas` 是承载绘图的元素，`getContext('2d')`、`getContext('webgl')` 与 `getContext('webgl2')` 请求不同类型的上下文。一个画布已经建立一种类型的上下文后，不能再随意换成另一种类型。
+
+| 方式 | 应用主要描述什么 | 需要自己管理什么 |
+| --- | --- | --- |
+| DOM / SVG | 元素、形状和文档关系 | 元素数量、布局、样式与交互状态 |
+| Canvas 2D | 路径、文字、图片等绘制操作 | 图形模型、重绘与形状命中 |
+| WebGL | 顶点数据、着色器、纹理与绘制状态 | 资源、坐标变换、绘制顺序与交互模型 |
+| Three.js 的 WebGLRenderer | 场景、相机、几何体、材质等对象 | 业务场景、资源归属、加载和性能取舍 |
+
+Canvas 2D 的实现也可能使用图形硬件，WebGL 也可能由软件渲染器实现。应按 API 能力和实际成本选择，不能简单说“Canvas 用 CPU，WebGL 用 GPU”。少量普通按钮仍适合原生 HTML，大量相似图形、三维模型和自定义像素效果则可能需要图形流水线。
+
+WebGL 1 的基础来自 OpenGL ES 2.0，WebGL 2 对应 OpenGL ES 3.0 风格的能力。本文使用 WebGL 2 的 VAO 和 GLSL ES 3.00 语法；不能把上下文名称改成 `webgl` 就假定代码自动兼容。`getContext` 也可能返回 `null`，产品应准备提示、静态图或其他可接受的降级。
+
+## 3. 从顶点到像素 {#从顶点到像素}
+
+**顶点**描述图形的输入位置及其属性，例如位置、颜色和纹理坐标。一次绘制可以用这些顶点组成点、线或三角形；浏览器不会从一组任意数字中自动识别“这是一个按钮”。
+
+可以按下面的顺序理解一幅三角形画面：
+
+1. JavaScript 把顶点数组上传到缓冲对象，指定每个属性的读取方式。
+2. **顶点着色器**对输入顶点执行计算，把裁剪空间中的位置写入 `gl_Position`，并输出后续需要的属性。
+3. 图形装配、裁剪和光栅化确定哪些位置可能被图形覆盖，并为片元提供插值后的数据。
+4. **片元着色器**计算候选片元的颜色等输出，也可以丢弃片元。
+5. 深度、模板与混合等处理决定这些结果怎样影响帧缓冲区，画布再参与页面合成。
+
+**片元**是光栅化产生的候选绘制结果，不应直接等同于屏幕上已经确定的一个像素。多个三角形可以覆盖同一位置，部分片元会被测试拒绝，抗锯齿还涉及采样。
+
+顶点着色器输出的是四维齐次坐标。裁剪后进行透视除法，得到归一化设备坐标，再由视口映射到绘图区域。下面的二维例子令 `w = 1`，直接提供位于可见范围的坐标；真实三维场景通常还需要模型、观察和投影变换。
+
+着色器是 GLSL 程序，不能访问 `document`、发起 Fetch 或执行任意 JavaScript 回调。JavaScript 仍负责准备数据、事件处理和发出绘制调用；硬件并行的收益取决于工作量与数据组织，见 [指令执行](../../basic-knowledge/computer-architecture/instruction-execution.mdx#risccisc-与-cpugpu)。
+
+## 4. 一个三角形 {#一个三角形}
+
+下面四段代码构成一个最小示例：将 HTML 放入页面，把后续 JavaScript 按顺序放在它后面的脚本中。示例独占自己的 WebGL 上下文，显示蓝色三角形，并处理尺寸变化、上下文恢复与卸载。
+
+```html
+<canvas id="triangle" style="width:320px;height:180px"
+        role="img" aria-label="浅灰背景上的蓝色三角形"></canvas>
+<p id="gl-status" role="status"></p>
+```
+
+### 4.1 着色器与程序 {#着色器与程序}
+
+**程序对象**连接顶点着色器与片元着色器，形成一次绘制使用的着色器组合。编译负责检查各阶段的代码，链接还要检查阶段之间的接口等条件，两步都可能失败。
+
+```js
+const vertexSource = `#version 300 es
+in vec2 aPosition;
+void main() {
+  gl_Position = vec4(aPosition, 0.0, 1.0);
+}`;
+const fragmentSource = `#version 300 es
+precision mediump float;
+out vec4 outColor;
+void main() {
+  outColor = vec4(0.0, 0.0, 1.0, 1.0);
+}`;
+
+function createProgram(gl, vertex, fragment) {
+  const program = gl.createProgram();
+  const shaders = [];
+  if (!program) throw new Error('无法创建程序');
+  try {
+    for (const [type, source] of [
+      [gl.VERTEX_SHADER, vertex], [gl.FRAGMENT_SHADER, fragment]
+    ]) {
+      const shader = gl.createShader(type);
+      if (!shader) throw new Error('无法创建着色器');
+      shaders.push(shader);
+      gl.shaderSource(shader, source);
+      gl.compileShader(shader);
+      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+        throw new Error(gl.getShaderInfoLog(shader) || '着色器编译失败');
+      }
+      gl.attachShader(program, shader);
+    }
+    gl.linkProgram(program);
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+      throw new Error(gl.getProgramInfoLog(program) || '程序链接失败');
+    }
+    return program;
+  } catch (error) {
+    gl.deleteProgram(program);
+    throw error;
+  } finally {
+    for (const shader of shaders) gl.deleteShader(shader);
+  }
+}
+```
+
+`aPosition` 每次提供两个浮点分量，`gl_Position` 补上 `z = 0` 与 `w = 1`。片元着色器固定输出不透明蓝色，不依赖光照或纹理。
+
+`#version 300 es` 必须位于着色器源码的第一行。链接成功后，可以删除不再单独使用的着色器句柄；程序仍可使用已经链接的结果。删除请求不等于底层正在使用的资源必须立刻回收，程序本身也需要在不再使用时释放。
+
+### 4.2 缓冲与属性布局 {#缓冲与属性布局}
+
+**缓冲对象**保存上传的数值数据。**顶点属性**描述一次顶点处理怎样从这些数据中读取输入，**VAO**（顶点数组对象）保存相关属性配置，方便在绘制时恢复这套输入布局。
+
+```js
+function createTriangle(gl) {
+  const program = createProgram(gl, vertexSource, fragmentSource);
+  const buffer = gl.createBuffer();
+  const vao = gl.createVertexArray();
+  let disposed = false;
+  function dispose() {
+    if (disposed) return;
+    disposed = true;
+    gl.bindVertexArray(null);
+    gl.bindBuffer(gl.ARRAY_BUFFER, null);
+    gl.useProgram(null);
+    gl.deleteVertexArray(vao);
+    gl.deleteBuffer(buffer);
+    gl.deleteProgram(program);
+  }
+  try {
+    if (!buffer || !vao) throw new Error('无法创建顶点资源');
+    gl.bindVertexArray(vao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+      -0.75, -0.75, 0.75, -0.75, 0.0, 0.75
+    ]), gl.STATIC_DRAW);
+    const position = gl.getAttribLocation(program, 'aPosition');
+    if (position < 0) throw new Error('缺少位置属性');
+    gl.enableVertexAttribArray(position);
+    gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 0, 0);
+    gl.bindVertexArray(null);
+  } catch (error) {
+    dispose();
+    throw error;
+  }
+  return {
+    draw() {
+      if (disposed || gl.isContextLost()) return;
+      gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+      gl.clearColor(0.9, 0.9, 0.9, 1);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      gl.useProgram(program);
+      gl.bindVertexArray(vao);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      gl.bindVertexArray(null);
+    },
+    dispose
+  };
+}
+```
+
+数组有六个数，每两个数构成一个顶点，所以 `drawArrays` 的数量是 `3`。`vertexAttribPointer` 指定每个顶点读取两个 `FLOAT`，步长 `0` 表示紧密排列，偏移 `0` 表示从缓冲开头读取。步长与偏移的单位是字节；多种属性交错保存时，不能把数组下标直接当作字节偏移。
+
+`vertexAttribPointer` 将调用时绑定的缓冲与属性读取方式关联起来，之后只切换 `ARRAY_BUFFER` 不会自动重写这份配置。属性名称被优化掉或不存在时，查询可能返回 `-1`，不应继续把它当作有效位置。
+
+绘制数量超过属性缓冲范围，也不能只靠捕获 JavaScript 异常发现。规范允许实现拒绝这次绘制并记录错误，或按受约束的越界取值规则处理；没有读到错误不代表输入数量正确。应用仍需保证属性数据足够，不能把越界结果当作有效图形。
+
+**uniform** 是绘制程序使用的统一参数，例如变换矩阵、时间和颜色；它不会像顶点属性那样随着每个输入顶点读取下一组数组元素。修改 uniform 前应使用对应程序，并使用该程序查询得到的位置。
+
+### 4.3 尺寸与重新绘制 {#尺寸与重新绘制}
+
+```js
+function mountTriangle(canvas, status) {
+  const gl = canvas.getContext('webgl2');
+  if (!gl) {
+    status.textContent = '当前环境无法显示 WebGL 图形';
+    return () => {};
+  }
+  let renderer = null;
+  let disposed = false;
+  function draw() {
+    if (disposed || !renderer || gl.isContextLost()) return;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const width = Math.max(1, Math.round(canvas.clientWidth * dpr));
+    const height = Math.max(1, Math.round(canvas.clientHeight * dpr));
+    if (canvas.width !== width || canvas.height !== height) {
+      canvas.width = width;
+      canvas.height = height;
+    }
+    renderer.draw();
+  }
+  function initialize() {
+    if (disposed) return;
+    try {
+      renderer = createTriangle(gl);
+      draw();
+      status.textContent = '图形已就绪';
+    } catch (error) {
+      renderer?.dispose();
+      renderer = null;
+      status.textContent = '图形初始化失败';
+      console.error(error);
+    }
+  }
+  function lost(event) {
+    event.preventDefault();
+    renderer = null;
+    status.textContent = '图形上下文已丢失，等待恢复';
+  }
+  canvas.addEventListener('webglcontextlost', lost);
+  canvas.addEventListener('webglcontextrestored', initialize);
+  window.addEventListener('resize', draw);
+  initialize();
+  return () => {
+    if (disposed) return;
+    disposed = true;
+    window.removeEventListener('resize', draw);
+    canvas.removeEventListener('webglcontextlost', lost);
+    canvas.removeEventListener('webglcontextrestored', initialize);
+    renderer?.dispose();
+    renderer = null;
+  };
+}
+
+const stopTriangle = mountTriangle(
+  document.querySelector('#triangle'), document.querySelector('#gl-status')
+);
+// 页面组件卸载时调用 stopTriangle()。
+```
+
+正常运行时显示蓝色三角形和“图形已就绪”。`canvas.width/height` 决定绘图缓冲区请求的尺寸，CSS 决定页面显示尺寸，`viewport` 决定归一化坐标映射到哪个绘图区域；修改尺寸后不更新视口，可能导致内容只占一部分区域。
+
+示例把像素比例上限设为 `2`，是控制像素量的选择，不是所有项目都必须使用的值。二维尺寸同时翻倍，像素数量约变为四倍；高分辨率会增加绘制和存储成本。这里使用固定 CSS 尺寸并监听窗口变化，容器独立伸缩时还需用 `ResizeObserver` 等方式触发重绘。
+
+三维相机的宽高比也应与显示区域对应。更新 `viewport` 不会替应用自动更新投影矩阵；把画布拉宽而保留旧投影，可能得到被拉伸的场景。
+
+## 5. 纹理与采样 {#纹理与采样}
+
+**纹理**保存可被着色器按坐标采样的数据，可以来自图片、视频、TypedArray 或之前的渲染结果。它不只是“一张贴在模型上的图片”，但具体格式和用途受上下文能力约束。
+
+下面在一个有效的 WebGL 2 上下文 `gl` 中创建一个不透明绿色纹素，单独演示上传与采样参数，不会改变前面的三角形：
+
+```js
+function createGreenTexture(gl) {
+  const texture = gl.createTexture();
+  if (!texture) throw new Error('无法创建纹理');
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0,
+    gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 255, 0, 255]));
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.bindTexture(gl.TEXTURE_2D, null);
+  return texture;
+}
+```
+
+调用者拥有返回的纹理，使用结束后调用 `gl.deleteTexture(texture)`。这里设置 `NEAREST` 缩小过滤，只需要当前这一层；如果选择依赖多级纹理的过滤方式，就要满足对应完整性条件，不能仅上传一层后忽略过滤参数。
+
+实际采样还需要三个对应关系：选择 `TEXTURE0` 等纹理单元，把纹理绑定到该单元，再将 shader 的 `sampler2D` uniform 设为单元编号，例如 `0`。uniform 接收的是编号，不能传 JavaScript 的纹理对象或把 `gl.TEXTURE0` 常量当成编号。
+
+纹理坐标通常由顶点属性传给片元着色器，并在三角形内部插值。图片行方向、纹理坐标约定、过滤、透明度与颜色空间都会影响最终效果，出现上下颠倒或颜色不符时，要检查整条数据链，而不是任意翻转多次。
+
+跨源图片需要以适当 CORS 模式加载，并获得资源服务器许可，才能作为纹理数据上传。普通 `<img>` 能显示只说明页面可以嵌入它；WebGL 不允许借纹理读取任意跨源像素。来源约束也见 [Canvas](./canvas.mdx#跨源图片与污染画布)。
+
+## 6. 上下文与资源生命周期 {#上下文与资源生命周期}
+
+**上下文丢失**表示原来的图形执行环境已经不可用，可能与资源压力、图形设备变化或其他环境原因有关。不能仅凭收到事件就断定是应用泄漏，也不能继续每帧尝试使用原资源。
+
+前面的 `lost` 回调调用 `preventDefault()`，表达应用愿意在允许时处理恢复，并丢弃旧渲染器引用。恢复不是立即发生，也不保证一定发生；收到 `webglcontextrestored` 后，`initialize` 重新编译程序、上传顶点并设置状态。旧 buffer、program、纹理等对象不能继续当作新上下文的有效资源。
+
+可用 `WEBGL_lose_context` 扩展模拟这一流程。先等待丢失事件处理完成，再请求恢复，并等待恢复事件；调用 `restoreContext()` 返回不代表已经恢复。这适合验证恢复逻辑，不是遇到任意渲染错误都强制重启的默认方案。
+
+正常卸载时则需要按所有权清理：停止 `requestAnimationFrame`，取消监听和观察器，删除自己创建且不再共享的缓冲、纹理、程序等资源。示例没有连续动画，因此只解除监听并释放当前渲染器；`dispose` 可重复调用，但不会代替宿主移除整个业务组件。
+
+不要只把 Canvas 元素从 DOM 中删掉。JavaScript 仍持有资源、动画仍在调度或共享缓存没有淘汰时，相关工作与占用可能继续存在。反过来，共享资源还被其他场景使用时，也不能由一个卸载的组件随意删除。
+
+## 7. Three.js 与项目效果 {#threejs与项目效果}
+
+### 7.1 场景、相机与材质 {#场景相机与材质}
+
+Three.js 用 **Scene** 组织场景对象，用 **Camera** 描述观察与投影，用 **Geometry** 表示几何数据，用 **Material** 描述表面绘制方式。**Mesh** 把几何体和材质组合成场景中的对象，`WebGLRenderer` 根据场景和相机执行绘制。
+
+这层封装省去了大量缓冲、着色器和状态管理代码，但没有消除这些工作。材质选择仍影响着色器与绘制成本，场景层级仍要转成具体变换，纹理仍需要加载、上传和释放。
+
+`scene.remove(mesh)` 只改变场景关系，不会自动释放所有几何体、材质和纹理。应在不再被其他对象使用时调用对应资源的 `dispose()`；材质释放也不能推断其共享纹理已经自动释放。渲染器、动画调度和外部控制器有各自的清理责任。
+
+### 7.2 动态字符画与后处理 {#动态字符画与后处理}
+
+**后处理**把已有渲染结果当作下一步处理的输入。例如动态字符画，可以先得到场景图像，再按区域的亮度选择字符，把不同明暗区域映射为一组字符。
+
+实现路径会影响成本。把图像读回 JavaScript、计算字符并更新 DOM，便于使用文本，但会引入读回同步、CPU 计算和大量节点更新。另一种路径是把结果保留在纹理中，使用字符图集和片元着色器生成显示效果；它减少了这种逐帧读回，却仍要处理采样分辨率、字符单元和额外绘制。
+
+这两种方法不是效果名称自动决定的。介绍自己的项目时，应说明原始场景、数据如何变换、哪些代码来自库、自己实现了哪些阶段，以及卸载和降级怎样处理。没有做过测量，就不要声称换成着色器一定更快。
+
+### 7.3 性能定位的层次 {#性能定位的层次}
+
+| 现象与证据 | 优先检查的工作 |
+| --- | --- |
+| JavaScript 长任务明显 | 数据构造、每帧分配、交互和场景遍历 |
+| 绘制调用或状态切换过多 | 是否能批处理、复用几何数据或实例化 |
+| 调低像素分辨率后明显改善 | 片元计算、覆盖面积、多次全屏处理与带宽 |
+| 资源首次出现时卡顿 | 解码、纹理上传、编译和加载时机 |
+| 多轮切换后占用增加 | 共享缓存、资源删除、动画和订阅清理 |
+
+`readPixels`、频繁查询同步状态以及等待绘制完成，可能迫使执行链同步。JavaScript 包围 `drawArrays` 测得的时间主要说明调用与提交耗时，不能直接叫作 GPU 绘制时间。
+
+开发时检查编译日志、链接日志和 WebGL 错误，确认程序、属性、纹理、视口、深度与裁剪状态是否符合预期。性能比较还应固定画面、数据、设备与分辨率；软件渲染器可以核对行为，不能代表目标设备的硬件加速表现。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 WebGL 是什么，和 Canvas 2D、Three.js 有什么关系？ {#webgl-role}
+
+**考察重点**：画布载体、绘图接口与场景库的分工。
+
+**相关内容**：[API 与绘图方式](#api与绘图方式)、[场景、相机与材质](#场景相机与材质)。
+
+<details>
+<summary>参考回答</summary>
+
+**WebGL 是可编程图形渲染 API，Canvas 2D 提供路径与图片等二维绘制接口，Three.js 则用场景和材质等抽象组织图形。** WebGL 可以画二维内容，Canvas 2D 也可能获得硬件加速，因此不能仅按二维/三维或 CPU/GPU 区分。
+
+选择时看图形数量、效果、交互、资源与维护成本。普通文档控件通常仍用 HTML，复杂三维场景或自定义像素处理再考虑相应图形方案。
+
+</details>
+
+### 8.2 顶点着色器和片元着色器分别做什么？ {#pipeline}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：输入顶点、裁剪、光栅化与最终像素。
+
+**相关内容**：[从顶点到像素](#从顶点到像素)。
+
+<details>
+<summary>参考回答</summary>
+
+**顶点着色器处理输入顶点并输出裁剪空间位置，片元着色器处理光栅化后的候选片元并计算输出。** 中间会进行图形装配、裁剪和插值，后续还有深度、模板和混合等处理。片元不是已经确定的屏幕像素，着色器也不执行任意 JavaScript 或 DOM 操作。
+
+</details>
+
+### 8.3 顶点数组已经上传，为什么仍可能画不出三角形？ {#buffer-layout}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：属性布局、绑定状态、数量与坐标。
+
+**相关内容**：[缓冲与属性布局](#缓冲与属性布局)、[着色器与程序](#着色器与程序)。
+
+<details>
+<summary>参考回答</summary>
+
+**上传只提供数据，还要让程序、属性读取方式和绘制调用正确对应。** 检查编译与链接状态、有效属性位置、启用状态、缓冲关联、分量数、类型、步长与偏移，以及绘制数量和坐标是否在可见范围。步长与偏移按字节计算，六个位置分量不一定代表六个顶点。
+
+</details>
+
+### 8.4 画布变大后，为什么图形可能模糊、变形或只占一部分？ {#resize}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：CSS、绘图缓冲区、viewport 与投影。
+
+**相关内容**：[尺寸与重新绘制](#尺寸与重新绘制)。
+
+<details>
+<summary>参考回答</summary>
+
+**要分别检查显示尺寸、绘图缓冲区尺寸、视口和相机投影。** 只放大 CSS 可能拉伸旧像素；只改缓冲区而不更新 viewport，映射区域可能不对；三维相机宽高比未更新则可能拉伸场景。提高像素比例要考虑像素量和资源成本，不能无限追求最大尺寸。
+
+</details>
+
+### 8.5 纹理对象、纹理单元和 sampler uniform 是什么关系？ {#texture}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：数据对象、绑定位置与采样参数。
+
+**相关内容**：[纹理与采样](#纹理与采样)。
+
+<details>
+<summary>参考回答</summary>
+
+**纹理对象保存数据，纹理单元提供绑定位置，sampler uniform 用整数编号选择单元。** 例如把纹理绑定到 `TEXTURE0`，再用编号 `0` 设置 sampler。还要满足格式、层级与过滤等完整性要求；跨源图像显示成功不代表已有上传为纹理的许可。
+
+</details>
+
+### 8.6 WebGL 上下文丢失后怎样恢复，卸载时怎样清理？ {#context-lifecycle}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：失效资源、恢复事件与所有权。
+
+**相关内容**：[上下文与资源生命周期](#上下文与资源生命周期)、[尺寸与重新绘制](#尺寸与重新绘制)。
+
+<details>
+<summary>参考回答</summary>
+
+**丢失时停止使用旧资源，允许恢复后在恢复事件中重新创建程序、缓冲、纹理和绘制状态。** 不能认为请求恢复返回后已经恢复，也不能假定恢复一定成功。正常卸载时停止动画与监听，释放自己拥有且不再共享的资源；移除 DOM 或 Three.js 场景节点不等于完成全部清理。
+
+</details>
+
+### 8.7 怎样解释 Three.js 项目中的动态字符画背景实现？ {#three-project}
+
+**题型**：综合题
+
+**考察重点**：场景到效果的处理链、库与业务职责、资源和成本。
+
+**相关内容**：[动态字符画与后处理](#动态字符画与后处理)、[上下文与资源生命周期](#上下文与资源生命周期)、[性能定位的层次](#性能定位的层次)。
+
+<details>
+<summary>参考回答</summary>
+
+**按自己的实际实现说明场景图像怎样转换为字符，以及每一步在哪个执行环境中完成。** 例如读回图像、按区域亮度选字符再更新文本，或将场景结果保留为纹理，通过字符图集和着色器显示；不能只报一个 Three.js 插件名。
+
+说明自己负责的计算、交互、加载与清理，区分库已有功能。用相同场景和分辨率检查主线程、绘制、读回与资源占用，再解释效果质量和性能之间的取舍。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+
+- [Khronos：WebGL 2.0 规范](https://registry.khronos.org/webgl/specs/latest/2.0/)
+- [Khronos：WebGL 1.0 规范，属性范围与来源约束](https://registry.khronos.org/webgl/specs/latest/1.0/)
+- [MDN：Adding 2D content to a WebGL context](https://developer.mozilla.org/en-US/docs/Web/API/WebGL_API/Tutorial/Adding_2D_content_to_a_WebGL_context)
+- [MDN：vertexAttribPointer](https://developer.mozilla.org/en-US/docs/Web/API/WebGLRenderingContext/vertexAttribPointer)
+- [MDN：viewport](https://developer.mozilla.org/en-US/docs/Web/API/WebGLRenderingContext/viewport)
+- [MDN：Using textures in WebGL](https://developer.mozilla.org/en-US/docs/Web/API/WebGL_API/Tutorial/Using_textures_in_WebGL)
+- [Khronos：WEBGL_lose_context](https://registry.khronos.org/webgl/extensions/WEBGL_lose_context/)
+- [MDN：WebGL best practices](https://developer.mozilla.org/en-US/docs/Web/API/WebGL_API/WebGL_best_practices)
+- [Three.js：Fundamentals](https://threejs.org/manual/pages/fundamentals.html)
+- [Three.js：Cleanup](https://threejs.org/manual/pages/cleanup.html)

@@ -1,0 +1,287 @@
+---
+knowledge:
+  id: basic-knowledge.objective-c.object-model
+  type: concept
+description: "解释 Objective-C 实例、类和元类、属性与实例变量、copy 语义、分类与类扩展，以及协议的职责边界。"
+keywords: [Objective-C 对象模型, 元类, property, Category, copy strong, 协议]
+---
+
+# Objective-C 对象模型
+
+Objective-C 对象保存实例状态，类描述对象可响应的行为；类本身也是运行时对象。属性、分类和协议则从不同角度组织接口：属性声明访问约定，分类扩展既有类的方法，协议声明需要提供的能力。理解这些关系，才能解释“属性为什么不等于成员变量”“copy 为什么不一定深复制”等具体问题。本文使用 Apple 现代 Objective-C 运行时，代码默认启用 ARC。
+
+## 1. 面试核心 {#core}
+
+- 实例、类对象和元类承担不同职责，**实例方法由类描述，类方法可按元类上的实例方法理解**。[卡](#class-metaclass)
+- `@property` 声明访问器契约，**属性不等于实例变量；访问属性和直接写 ivar 也不一定经过同一条逻辑**。[卡](#property-ivar)
+- `strong` 持有对象，`copy` 在 setter 中按复制契约取得要保存的对象，**copy 是否返回新对象、是否复制元素取决于类型的实现**。[卡](#string-copy) [卡](#collection-copy)
+- `weak` 不拥有对象并支持释放后清零，`assign` 不提供同样的对象生命周期保障；**属性修饰符表达的是接口语义，手写访问器仍需遵守它**。[卡](#property-attributes)
+- 分类能添加方法与协议遵循，**不能为既有类直接增加实例变量；类扩展则参与原类的编译实现**。[卡](#category-ivar)
+- Objective-C 类是单继承，**分类不构成多继承，协议也不会自动复制一份实现或状态**。[卡](#category-protocol)
+
+## 2. 实例、类与元类 {#实例类与元类}
+
+**实例**是通过类创建的具体对象，保存各自的实例变量。**类对象**表示一个类，描述它的实例方法、实例布局以及继承关系等运行时信息。**元类**是类对象所属的类，类方法的查找可以沿这层关系理解。
+
+```objectivec
+#import <Foundation/Foundation.h>
+#import <objc/runtime.h>
+
+@interface Item : NSObject
+@end
+@implementation Item
+@end
+
+int main(void) {
+    @autoreleasepool {
+        Item *item = [Item new];
+        Class cls = object_getClass(item);
+        Class meta = object_getClass(cls);
+        printf("%d %d %d\n", cls == [Item class],
+               class_isMetaClass(cls), class_isMetaClass(meta));
+    }
+}
+```
+
+输出 `1 0 1`：实例的运行时类是 `Item`，它不是元类；类对象的类则是元类。普通子类的类方法继承可沿元类的父类链查找。根类附近的连接关系有特殊规则，不宜把所有 `isa` 与 `superclass` 连线都画成同一种继承关系。
+
+面试会用 `isa` 表示对象与所属类的联系，但现代运行时可能使用编码后的 `isa`、Tagged Pointer 等布局优化。应通过 `object_getClass` 等公开 API 理解关系，不把“对象前八字节永远是裸 Class 指针”当作通用保证。
+
+`Item *` 是带静态类信息的对象指针，`id` 表达一般 Objective-C 对象，`Class` 用于类对象。`instancetype` 常用于返回与接收者类型相关的结果，让编译器保留更具体的类型信息；这些声明不改变对象本身的实际运行时类。
+
+`[item method]` 是向接收者发送消息，实际实现可以在运行时选择；`self` 是当前接收者，`super` 表示从父类一侧开始方法查找，接收者仍然是当前对象。具体查找与转发流程见 [Objective-C Runtime](./runtime.mdx#消息查找与动态派发)。
+
+## 3. 属性与实例变量 {#属性与实例变量}
+
+**实例变量**（ivar）直接参与对象状态存储。**属性** `@property` 声明 getter、setter 及其访问、持有或复制约定；现代编译器在适用情况下可以自动生成访问器和对应 ivar。
+
+例如 `@property (nonatomic, copy) NSString *name;` 通常对应 `name` 与 `setName:` 两个访问器，并由合成实现使用 `_name` 保存状态。`object.name = value` 调用 setter；在允许访问的位置写 `_name = value` 则直接修改存储，不会自动执行 setter 中的校验、复制或其他逻辑。
+
+直接写一个 ARC 强 ivar 仍然遵守强引用赋值规则，但不会凭属性声明自动执行一次 `copy`。这也是自定义初始化器或 setter 中需要认真处理 `_name = [value copy]` 等代码的原因。
+
+| 属性约定 | 含义 |
+| --- | --- |
+| `readonly` / `readwrite` | 对外是否声明 setter；不是对象深度不可变的证明 |
+| `strong` | 对对象建立拥有关系 |
+| `weak` | 不拥有对象，支持对象释放后置 `nil` |
+| `copy` | setter 保存按 `copy` 契约得到的结果 |
+| `assign` | 直接赋值，适合标量；对象引用不因此获得清零保护 |
+| `atomic` / `nonatomic` | 合成访问器的原子性约定；不保证复合业务操作原子 |
+| `getter=` / `setter=` | 指定访问器的名称 |
+
+`@synthesize` 可以显式指定合成关系，`@dynamic` 则告诉编译器访问器会通过其他方式提供；后者不会凭空生成可调用实现。如果运行时最终也没有实现，发送相应消息仍然会失败。
+
+手写访问器时，属性特性仍是对调用者的承诺。标成 `copy` 却直接保存外部可变对象，或者标成 `atomic` 却提供没有相应同步的自定义访问器，都会让声明与实际行为不一致。引用生命周期与原子性的详细边界见 [Objective-C 内存管理](./memory-management.mdx#属性原子性与线程安全)。
+
+## 4. 复制契约与可变性 {#复制契约与可变性}
+
+**复制契约**由类型的 `NSCopying` 等实现决定。`copy` 不是语言内建的任意对象深复制操作，属性声明也不会递归遍历所有成员。
+
+NSString 属性使用 `copy` 的直接目的，是隔离调用者传入可变字符串后继续修改的影响：
+
+```objectivec
+#import <Foundation/Foundation.h>
+
+@interface Names : NSObject
+@property (nonatomic, strong) NSString *shared;
+@property (nonatomic, copy) NSString *snapshot;
+@end
+@implementation Names
+@end
+
+int main(void) {
+    @autoreleasepool {
+        NSMutableString *input = [NSMutableString stringWithString:@"Lin"];
+        Names *names = [Names new];
+        names.shared = input;
+        names.snapshot = input;
+        [input appendString:@"!"];
+        printf("%s %s\n", names.shared.UTF8String, names.snapshot.UTF8String);
+    }
+}
+```
+
+输出 `Lin! Lin`。`shared` 持有原对象，`snapshot` 通过字符串的复制契约取得内容快照。若输入本来就是不可变字符串，`copy` 可以返回同一对象，并按相应所有权规则处理；不能用“地址必须不同”验证复制是否正确。
+
+`mutableCopy` 用于获得支持修改的副本。若属性声明成 `NSMutableString *` 却使用普通 `copy`，得到的结果可能是不可变字符串，再发送修改消息可能失败。静态指针类型不会把对象的实际运行时能力改成可变。
+
+集合复制还要区分容器与元素：
+
+```objectivec
+#import <Foundation/Foundation.h>
+
+int main(void) {
+    @autoreleasepool {
+        NSMutableString *element = [NSMutableString stringWithString:@"A"];
+        NSMutableArray<NSMutableString *> *original = [NSMutableArray arrayWithObject:element];
+        NSArray<NSMutableString *> *snapshot = [original copy];
+        [original addObject:[NSMutableString stringWithString:@"B"]];
+        [element appendString:@"!"];
+        printf("%lu %lu %s\n", (unsigned long)original.count,
+               (unsigned long)snapshot.count, snapshot[0].UTF8String);
+    }
+}
+```
+
+输出 `2 1 A!`。外层容器已经独立，因此向 `original` 加元素不改变 `snapshot.count`；两个容器仍然持有同一个可变字符串，所以都能观察到 `A!`。若业务需要深度快照，要逐层定义复制范围以及对象共享关系；即使让集合逐个调用元素的 `copy`，也不自动保证任意对象图全部深复制。
+
+## 5. 分类、类扩展与协议 {#分类类扩展与协议}
+
+**分类**（Category）为已经存在的类增加方法或声明协议遵循，可以用于系统类以及没有源码的类。它不创建新的子类，也不会让每个实例获得额外的 ivar 空间。
+
+**类扩展**（Class Extension）使用没有名称的括号，参与原类的编译实现，可用于补充内部声明，并在支持的现代运行时下增加 ivar。它常用于把公开 `readonly` 属性在内部重新声明为 `readwrite`，前提是可以参与原类实现的编译。
+
+```objectivec
+#import <Foundation/Foundation.h>
+
+@protocol Named <NSObject>
+- (NSString *)name;
+@end
+
+@interface Item : NSObject <Named>
+@property (nonatomic, copy, readonly) NSString *name;
+- (instancetype)initWithName:(NSString *)name;
+@end
+
+@interface Item ()
+@property (nonatomic, copy, readwrite) NSString *name;
+@end
+
+@implementation Item
+- (instancetype)initWithName:(NSString *)name {
+    self = [super init];
+    if (self) { _name = [name copy]; }
+    return self;
+}
+@end
+
+@interface Item (Display)
+- (NSString *)displayName;
+@end
+@implementation Item (Display)
+- (NSString *)displayName { return [@"item:" stringByAppendingString:self.name]; }
+@end
+
+int main(void) {
+    @autoreleasepool {
+        Item *item = [[Item alloc] initWithName:@"Lin"];
+        id<Named> named = item;
+        printf("%s %s\n", named.name.UTF8String, item.displayName.UTF8String);
+    }
+}
+```
+
+输出 `Lin item:Lin`。协议描述读取名称的能力，类扩展声明内部写入能力，分类增加显示方法，三者各有职责。普通分类里即使声明属性，也不会自动合成新的存储和访问器；需要自己实现访问器，并使用已有状态或[关联对象](./runtime.mdx#关联对象与方法交换)等外部存储机制。
+
+分类可以访问声明可见的已有 ivar，但不能改变已经确定的对象布局。两个分类实现同名方法，或者分类与原类方法同名，不应依赖某个链接或加载顺序得到稳定选择；公共扩展方法宜使用清楚且不易冲突的命名。
+
+**协议** `@protocol` 声明一组方法或属性要求，不要求遵守者属于同一个类层次。`@optional` 方法可以不实现，调用前需要确认接收者能响应相应 selector；遵守协议不意味着每个可选方法都存在。
+
+Objective-C 类只有一个直接父类。分类添加行为、协议声明能力，都不能把它变成拥有多套父类状态的多继承。需要组合不同职责时，可以让对象持有协作者并通过协议通信，而不是把同名方法覆盖当成继承机制。
+
+## 6. 面试题 {#面试题}
+
+### 6.1 Objective-C 实例、类对象与元类有什么关系？ {#class-metaclass}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：实例状态、方法归属与运行时类型关系。
+
+**相关内容**：[实例、类与元类](#实例类与元类)。
+
+<details>
+<summary>参考回答</summary>
+
+**实例保存自身状态，类对象描述实例布局和实例方法，元类描述类对象对应的方法行为。** 类方法可以按元类上的实例方法理解；实例方法查找与类方法查找因此经过不同的起点。现代 `isa` 可能使用编码布局，应通过运行时 API 获取关系，不把它一律当作可直接解引用的裸指针。
+
+</details>
+
+### 6.2 property 与 ivar 是同一个东西吗？ {#property-ivar}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：接口契约、存储与访问器路径。
+
+**相关内容**：[属性与实例变量](#属性与实例变量)。
+
+<details>
+<summary>参考回答</summary>
+
+**不是，属性声明访问器和相关约定，ivar 是对象中的实际存储。** 编译器可在适用情况下为属性合成访问器和 ivar，但计算属性可以不对应独立存储，分类属性也不会自动得到新 ivar。直接写 ivar 不经过 setter，所以不会自动执行其中的复制、校验等逻辑。
+
+</details>
+
+### 6.3 NSString 类型的属性为什么使用 copy？ {#string-copy}
+
+**考察重点**：可变子类、外部修改与字符串复制契约。
+
+**相关内容**：[复制契约与可变性](#复制契约与可变性)。
+
+<details>
+<summary>参考回答</summary>
+
+**为了按字符串的复制契约保存内容，避免调用方传入可变字符串后继续修改同一对象而改变属性。** `strong` 只持有原对象，`copy` 会取得相应不可变副本。输入本来不可变时，复制可以复用原对象，因此不能要求地址一定不同；如果 API 本身需要共享可变对象，应明确设计这种语义。
+
+</details>
+
+### 6.4 NSArray 的 copy 是否会深复制所有元素？ {#collection-copy}
+
+**考察重点**：容器复制、元素引用与类型自己的复制实现。
+
+**相关内容**：[复制契约与可变性](#复制契约与可变性)。
+
+<details>
+<summary>参考回答</summary>
+
+**不会自动深复制所有元素，数组复制与元素对象复制是两层关系。** 可变数组的 `copy` 能提供独立的不可变容器，但元素对象仍可共享；修改可变元素会被两个容器观察到。不可变数组的 `copy` 也可能复用自身。深度快照应按元素及嵌套状态的复制契约单独设计。
+
+</details>
+
+### 6.5 property 的常见修饰符分别有什么含义？ {#property-attributes}
+
+**考察重点**：可写性、拥有关系、复制与访问器原子性。
+
+**相关内容**：[属性与实例变量](#属性与实例变量)。
+
+<details>
+<summary>参考回答</summary>
+
+**应从访问能力、对象关系和访问器行为三个方面区分。** `readonly` 与 `readwrite` 决定是否声明 setter；`strong`、`weak`、`copy` 分别表示持有、不拥有且清零、保存复制结果，标量通常使用 `assign`；`atomic` 与 `nonatomic` 约定合成访问器的原子性，不能由此推出整个对象线程安全。自定义访问器仍要实现声明所承诺的语义。
+
+</details>
+
+### 6.6 分类为什么不能直接增加实例变量？ {#category-ivar}
+
+**考察重点**：既有对象布局、编译期扩展与关联存储。
+
+**相关内容**：[分类、类扩展与协议](#分类类扩展与协议)。
+
+<details>
+<summary>参考回答</summary>
+
+**分类为既有类补充行为，不重新确定该类和已有实例的存储布局，因此不能直接追加 ivar。** 分类可以声明属性，但要自行实现访问器，使用已有状态或关联对象保存额外数据。类扩展参与原类编译，与普通分类不同；关联对象也不是把新字段塞进每个实例的原有布局。
+
+</details>
+
+### 6.7 分类和协议能否让 Objective-C 类拥有多继承？ {#category-protocol}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：类继承、行为扩展与接口约束。
+
+**相关内容**：[分类、类扩展与协议](#分类类扩展与协议)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能，Objective-C 类仍然是单继承，分类只增加行为，协议只声明能力契约。** 多个协议可以同时遵守，但不会自动带来多个父类的状态和实现。不同职责可以通过组合与委托协作；分类方法冲突也不应当作可控的多继承方法解析来使用。
+
+</details>
+
+## 7. 参考资料 {#参考资料}
+
+- [Apple：Objects, Classes, and Messaging](https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/ObjectiveC/Chapters/ocObjectsClasses.html)
+- [Apple：Declared Properties](https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/ObjectiveC/Chapters/ocProperties.html)
+- [Apple：Customizing Existing Classes](https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/ProgrammingWithObjectiveC/CustomizingExistingClasses/CustomizingExistingClasses.html)
+- [Apple：Working with Protocols](https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/ProgrammingWithObjectiveC/WorkingwithProtocols/WorkingwithProtocols.html)
+- [Apple：Object Copying](https://developer.apple.com/library/archive/documentation/General/Conceptual/DevPedia-CocoaCore/ObjectCopying.html)

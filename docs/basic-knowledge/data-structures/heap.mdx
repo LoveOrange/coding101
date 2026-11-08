@@ -18,8 +18,11 @@ keywords: ["Binary Heap", "Top K", "堆排序基础", "优先队列"]
 ## 1. 面试核心 {#core}
 
 - 二叉堆**查看堆顶是 O(1)**，**插入和删除堆顶是 O(log n)**。
-- 自底向上对非叶节点依次下沉，**建堆总时间是 O(n)**。靠近叶子的节点很多，但每个能下沉的距离很短。[卡](#heapify-linear)
 - 求最大的 k 个元素，要维护**大小为 k 的最小堆**。堆顶是候选中最小的一个，新元素比它大时就替换它。[卡](#top-k)
+- 求最小的 k 项则维护**最大堆**，返回的是 k 个候选，不是一个第 k 大的标量；输出顺序要另作约定。[卡](#smallest-k-items)
+- 快速选择分区后只进入目标所在的一侧，均匀随机基准下**期望 O(n)，最坏仍为 O(n²)**。[卡](#quickselect-kth)
+- 自底向上对非叶节点依次下沉，**建堆总时间是 O(n)**。靠近叶子的节点很多，但每个能下沉的距离很短。[卡](#heapify-linear)
+- 按 ID 立即删除任务需要**堆与位置表一起更新**，末项补位后可能上浮也可能下沉。[卡](#indexed-timer-cancel)
 
 ## 2. 数组位置与堆序 {#数组位置与堆序}
 
@@ -57,6 +60,77 @@ static int kthLargest(int[] values, int k) {
 
 每个元素最多做一次 O(log k) 的堆操作，时间是 O(n log(k+1))，空间是 O(k)。写成 log(k+1) 是为了让 k=1 时也成立，这时就是 O(n) 的线性扫描。数据量远大于 k 时，这比把整个数组排序要省得多。
 
+### 3.1 返回最小 K 项 {#返回最小k项}
+
+**取最小的 k 个数，要用最大堆保存候选，让最大的候选随时可以被淘汰。** 新值比堆顶小时，替换堆顶；否则保留现有候选。这与上一节的最大 k 项正好反向，不能只改函数名而保留比较方向。
+
+下面返回 k 个数，重复值分别占一个名次，结果不承诺排序。`k=0` 返回空数组，`k` 超出 `[0, values.length]` 报错；`values` 要求非空引用，函数不修改输入。Java 只是沿用本篇的参考语言，不代表原题限定语言。
+
+```java
+static int[] smallestK(int[] values, int k) {
+    if (k < 0 || k > values.length) throw new IllegalArgumentException();
+    if (k == 0) return new int[0];
+    java.util.PriorityQueue<Integer> candidates =
+        new java.util.PriorityQueue<>(java.util.Comparator.reverseOrder());
+    for (int value : values) {
+        if (candidates.size() < k) candidates.offer(value);
+        else if (value < candidates.peek()) {
+            candidates.poll();
+            candidates.offer(value);
+        }
+    }
+    int[] result = new int[k];
+    int i = 0;
+    for (int value : candidates) result[i++] = value;
+    return result;
+}
+```
+
+`Comparator.reverseOrder()` 让较大的整数成为堆顶，没有用减法比较，能正确处理整数两端的值。例如 `[3,1,1,5,2]` 的最小 3 项是两个 1 和一个 2；直接迭代堆时可能以其他次序返回，调用方不应依赖数组排列。如果需要升序结果，可以再排序返回的 k 项，额外花 O(k log(k+1)) 时间。
+
+`k>0` 时扫描时间 O(n log(k+1))，候选与输出共占 O(k) 空间；`k=0` 直接返回，不扫描输入。取最小 100 项就是把 k 设为 100，候选不变量没有变化。若问题求的是词频或 IP 流量前 k 名，要先把每个键的贡献完整汇总，再把汇总结果送入候选堆，不能把每条记录直接当作一个最终排名；高基数汇总见 [Linux 常用命令与文件权限](../../devops/linux/commands-permissions.mdx#大文件与高基数聚合)。
+
+### 3.2 快速选择 {#快速选择}
+
+**快速选择**（Quickselect）借用快排的分区，但每轮只继续处理包含目标名次的一侧，不把两侧都排好序。对长度为 n 的数组，按升序排的下标 `n-k` 对应第 k 大；相等元素仍分别占名次。
+
+下面用三路分区，把当前区间分成小于、等于和大于基准值的三段。分区方式与 [排序的三路快排实现](../algorithms/sorting.mdx#三路快排实现) 相同，区别在分区之后只缩小一个目标区间。数组必须能放入内存，允许原地修改；`random` 由调用方传入，例如 `new java.util.Random()`，测试时可传固定种子。
+
+```java
+static int selectKthLargest(int[] values, int k, java.util.Random random) {
+    if (k < 1 || k > values.length) throw new IllegalArgumentException();
+    int target = values.length - k;
+    int lo = 0, hi = values.length - 1;
+    while (lo <= hi) {
+        int pivot = values[lo + random.nextInt(hi - lo + 1)];
+        int lt = lo, i = lo, gt = hi;
+        while (i <= gt) {
+            if (values[i] < pivot) swapValues(values, lt++, i++);
+            else if (values[i] > pivot) swapValues(values, i, gt--);
+            else i++;
+        }
+        if (target < lt) hi = lt - 1;
+        else if (target > gt) lo = gt + 1;
+        else return pivot;
+    }
+    throw new AssertionError("unreachable");
+}
+
+static void swapValues(int[] values, int i, int j) {
+    int temporary = values[i];
+    values[i] = values[j];
+    values[j] = temporary;
+}
+```
+
+循环中 `[lo,lt)` 小于基准，`[lt,i)` 等于基准，`[i,gt]` 尚未检查，`(gt,hi]` 大于基准。从右侧换来的值还没有检查，所以大于分支只减 `gt`，不能同时推进 `i`。分区结束后，目标下标小于 `lt` 就保留左段，大于 `gt` 就保留右段，落在中间则直接返回基准值。大量重复值因此可以一次排除，而不必逐个递归处理。
+
+例如 `[3,1,5,5,2]` 求第 2 大，目标下标是 3；若基准为 5，两个 5 占据下标 3、4，目标在相等区间内，直接返回 5。输出只是一个值，输入数组被重排，但不保证整个数组有序。空数组、k 为 0 或超过长度都会报错。
+
+在每轮均匀随机选基准的分析模型下，时间为**期望 O(n)，最坏 O(n²)**。原因是选择只进入一个区间，随机分区的剩余规模在期望意义下不断缩小；若一直选到极端值，仍可能扫描 n、n−1、n−2……个元素。比如把选择策略故意固定为首元素，对降序数组求最小值，本实现就会出现这种退化，不能用一次随机运行很快来证明最坏线性。
+
+这个迭代实现不建立递归栈，辅助空间 O(1)，前提是允许修改原数组；先复制数组则要另计 O(n) 空间。题目只说“O(n)”时，应先问清是期望还是最坏保证。严格最坏线性需要能保证分区质量的选择方法，例如中位数的中位数，不能把这里的随机实现改个复杂度标签就当作满足。输入只能流式读取、无法在内存中重排时，前面的候选堆更适合。
+
 ## 4. 自底向上建堆 {#自底向上建堆}
 
 把一个无序数组变成堆，可以逐个插入，也可以自底向上建堆。后者更快。
@@ -75,6 +149,95 @@ static int kthLargest(int[] values, int k) {
 
 自定义比较器时用 `Integer.compare`，不要写成两个数相减，否则数值相差很大时减法会溢出，比较结果的符号就反了。
 
+### 5.1 支持立即取消的定时器队列 {#支持立即取消的定时器队列}
+
+**索引堆**在堆数组之外维护“元素 ID → 当前下标”，使按 ID 查找和堆序修复可以衔接起来。用于定时器管理时，把到期时间 `deadline` 最早的任务放在堆顶；取消任务先用 ID 定位，再从数组中真实移除，不必等它到期后才丢弃。
+
+下面只实现单线程的待执行队列。调用方传入统一时间尺度的 `deadline` 和 `now`，队列不读取时钟、不睡眠，也不执行回调，因此不依赖 `time` 一类定时 API。`takeDue(now)` 每次取出一个已经到期的任务，外部驱动需要持续调用，并自行安排何时再次检查。
+
+```java
+static final class TimerQueue {
+    record Task(long id, long deadline) {}
+    private final java.util.ArrayList<Task> heap = new java.util.ArrayList<>();
+    private final java.util.HashMap<Long, Integer> position = new java.util.HashMap<>();
+
+    void add(long id, long deadline) {
+        if (position.containsKey(id)) throw new IllegalArgumentException("duplicate id");
+        heap.add(new Task(id, deadline));
+        position.put(id, heap.size() - 1);
+        up(heap.size() - 1);
+    }
+
+    boolean cancel(long id) {
+        Integer i = position.get(id);
+        if (i == null) return false;
+        removeAt(i);
+        return true;
+    }
+
+    Task takeDue(long now) {
+        if (heap.isEmpty() || heap.get(0).deadline() > now) return null;
+        return removeAt(0);
+    }
+
+    private Task removeAt(int i) {
+        Task removed = heap.get(i);
+        Task last = heap.remove(heap.size() - 1);
+        position.remove(removed.id());
+        if (i < heap.size()) {
+            heap.set(i, last);
+            position.put(last.id(), i);
+            if (i > 0 && before(i, (i - 1) / 2)) up(i);
+            else down(i);
+        }
+        return removed;
+    }
+
+    private boolean before(int i, int j) {
+        Task a = heap.get(i), b = heap.get(j);
+        int c = Long.compare(a.deadline(), b.deadline());
+        return c < 0 || (c == 0 && Long.compare(a.id(), b.id()) < 0);
+    }
+
+    private void exchange(int i, int j) {
+        Task a = heap.get(i), b = heap.get(j);
+        heap.set(i, b);
+        heap.set(j, a);
+        position.put(a.id(), j);
+        position.put(b.id(), i);
+    }
+
+    private void up(int i) {
+        while (i > 0) {
+            int parent = (i - 1) / 2;
+            if (!before(i, parent)) return;
+            exchange(i, parent);
+            i = parent;
+        }
+    }
+
+    private void down(int i) {
+        while (i < heap.size() / 2) {
+            int child = 2 * i + 1;
+            if (child + 1 < heap.size() && before(child + 1, child)) child++;
+            if (!before(child, i)) return;
+            exchange(i, child);
+            i = child;
+        }
+    }
+}
+```
+
+三个关系需要同时保持：父节点不晚于孩子；`position` 记录每个待执行 ID 的实际位置；每个 ID 在队列中只出现一次。相同到期时间按 ID 排序只是为了确定先后，不表示按添加顺序执行。比较使用 `Long.compare`，不做可能溢出的时间相减。
+
+`removeAt` 先移除数组末项，再用它填补删除位置。如果原目标本来就是末项，不需要修复。否则，替补项比父节点更早就上浮；不早于父节点，就检查是否需要下沉。这两个方向不能都忽略：例如堆的到期时间按数组存为 `[1,10,2,11,12,3,4]`，删除 11 后用 4 补位，4 小于父节点 10，必须上浮；删除根节点时则可能需要下沉。每次交换都同步更新两个 ID 的位置，否则下一次取消可能误删另一个任务。
+
+`add` 拒绝当前仍在队列中的重复 ID。`cancel` 成功返回 `true`，任务立即不再参与到期检查；不存在或已经取出的 ID 返回 `false`。`takeDue` 以 `deadline <= now` 为到期条件，先把任务移出队列再返回，所以后续取消不能撤回已交给执行器的任务，更不能中断正在执行的回调。若外部还保留旧取消请求，不应马上重用同一 ID，或者需要另加代次来区分两次任务。
+
+在位置表查询平均 O(1) 的条件下，取消和取出任务的堆序修复为 O(log n)；插入的堆操作也为 O(log n)，动态数组与哈希表扩容另有摊还成本。堆与位置表共占 O(n)。`takeDue` 不会一次清空所有到期任务；连续取出 d 项要累计计算 d 次删除成本。
+
+输入时间必须可直接比较：同一进程的超时管理可由外部提供一致的单调时间刻度，不能把不同机器的时钟或不同单位混在一起，也不能让数值回绕后继续按普通大小比较。轮询间隔会影响执行延迟；没有真实时间源和调度驱动，就不能承诺“到点立即执行”。多个线程并发添加、取消、取出时还需同步整个堆和位置表，不能只把 `HashMap` 换成并发容器就称为线程安全。
+
 ## 6. 面试题 {#面试题}
 
 ### 6.1 求最大的 k 项为何维护最小堆？ {#top-k}
@@ -90,7 +253,7 @@ static int kthLargest(int[] values, int k) {
 
 **最小堆能在 O(1) 时间取到候选中最小的值，也就是下一个该被淘汰的候选。**
 
-堆里保存目前最大的 k 个元素。新值比堆顶大，说明它应该进入前 k，就替换堆顶；否则丢弃。这样堆里始终是已读部分最大的 k 项，扫描结束时堆顶就是第 k 大的值。重复值分别占名次。时间是 O(n log k)，空间是 O(k)。
+堆里保存目前最大的 k 个元素。新值比堆顶大，说明它应该进入前 k，就替换堆顶；否则丢弃。这样堆里始终是已读部分最大的 k 项，扫描结束时堆顶就是第 k 大的值。重复值分别占名次。时间是 O(n log(k+1))，空间是 O(k)；k=1 时仍需 O(n) 扫描。
 
 </details>
 
@@ -111,7 +274,57 @@ static int kthLargest(int[] values, int k) {
 
 </details>
 
+### 6.3 怎样返回最小的 k 个数，为什么使用最大堆？ {#smallest-k-items}
+
+**考察重点**：候选门槛、返回集合与重复值边界。
+
+**相关内容**：[返回最小 K 项](#返回最小k项)。
+
+<details>
+<summary>参考回答</summary>
+
+**用大小最多为 k 的最大堆保存已读部分最小的 k 项。** 堆顶是当前候选中最大的值，新值更小时替换它；相等值分别占名次，不做集合去重。
+
+正文允许 k=0，拒绝越界，不修改输入，返回数组不保证有序。k>0 时扫描为 O(n log(k+1))，候选和结果占 O(k)；若要求输出有序，再对 k 项排序。
+
+</details>
+
+### 6.4 如何通过分区求第 k 大，能保证最坏 O(n) 吗？ {#quickselect-kth}
+
+**考察重点**：目标名次、单侧收缩与随机复杂度条件。
+
+**相关内容**：[快速选择](#快速选择)。
+
+<details>
+<summary>参考回答</summary>
+
+**快速选择每轮分区后只进入目标所在的一侧；随机基准带来期望 O(n)，不保证最坏 O(n)。** 第 k 大转换成升序下标 n−k，目标落入相等区间就可以返回，否则缩小到左段或右段。
+
+极端分区连续出现时仍会退化为 O(n²)。严格最坏线性需要另一种有分区保证的选择策略。正文迭代实现辅助空间 O(1)，但修改输入，不能直接用于无法整体载入的流。
+
+</details>
+
+### 6.5 不用定时 API，怎样管理到期任务并支持立即删除？ {#indexed-timer-cancel}
+
+**题型**：综合题
+
+**考察重点**：到期顺序、ID位置索引、删除修复与取消边界。
+
+**相关内容**：[数组位置与堆序](#数组位置与堆序)、[支持立即取消的定时器队列](#支持立即取消的定时器队列)。
+
+<details>
+<summary>参考回答</summary>
+
+**用按到期时间排序的最小堆，加一张 ID 到堆下标的位置表。** 添加后上浮；取消时先定位，用末项补位，再按它与父、子的关系上浮或下沉。每次交换都更新位置表，才不会让后续按 ID 删除失效。
+
+外部传入当前时间并驱动检查，队列只取出已到期任务，不负责获取时间或执行回调。取消只保证任务仍在队列时不再被取出，不能撤回已经交付执行的任务；多线程还要同步队列和索引的整次操作。
+
+</details>
+
 ## 7. 参考资料 {#参考资料}
 
 - [Open Data Structures：BinaryHeap](https://opendatastructures.org/ods-java/10_1_BinaryHeap_Implicit_Bi.html)
 - [Java SE 21：PriorityQueue](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/PriorityQueue.html)
+- [Princeton Algorithms：Quick.select，分区后只保留目标区间](https://github.com/kevin-wayne/algs4/blob/master/src/main/java/edu/princeton/cs/algs4/Quick.java)
+- [MIT 6.046J：Randomized Select，期望运行时间分析](https://ocw.mit.edu/courses/6-046j-design-and-analysis-of-algorithms-spring-2015/08020963ae819d4c6dcf177983bb7c6b_MIT6_046JS15_Recitation4.pdf)
+- [Princeton Algorithms：IndexMinPQ，位置索引与任意元素删除](https://github.com/kevin-wayne/algs4/blob/master/src/main/java/edu/princeton/cs/algs4/IndexMinPQ.java)

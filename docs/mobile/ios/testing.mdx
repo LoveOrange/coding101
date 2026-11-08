@@ -1,0 +1,409 @@
+---
+title: iOS 测试
+description: 使用 XCTest 与 XCUITest 验证同步逻辑、异步状态和用户流程，理解网络替身、性能测量及模拟器的证据边界。
+knowledge:
+  id: mobile.ios.testing
+---
+
+**iOS 测试**通过可重复的输入、操作和断言，检查应用在给定条件下是否满足预期。测试的价值不在于按钮点过多少次，而在于能否发现具体错误，并说明通过以后仍有哪些条件没有被覆盖。
+
+XCTest 可以验证逻辑、异步行为和性能；XCUITest 从应用外部操作界面，检查用户流程。准备相关面试时，需要解释测试在哪里运行、依赖由谁提供、什么时候算完成，以及失败后留下什么证据。本文以 XCTest 为主；Xcode 16 起也提供 Swift Testing，但 UI 自动化和 XCTest 性能测试仍有各自的使用方式，不能只替换断言名称就认为完成迁移。
+
+## 1. 面试核心 {#core}
+
+- **测试层级由覆盖的边界决定**。调用一个函数、组合真实持久化组件、启动应用操作界面，能发现的问题不同；采用 XCTest 并不会自动把测试变成单元测试。[卡](#levels)
+- **每条测试需要可控的初始状态和有意义的结果断言**。共享单例、固定文件名、未结束任务和残留登录状态都可能让用例互相影响。[卡](#isolation)
+- **异步测试必须等待目标行为完成**。`async` 测试直接 `await` 结果，回调测试用 expectation 表达完成条件；等待超时与结果错误需要分别判断。[卡](#async-wait)
+- **替换依赖后，只能证明保留下来的部分**。预设网络响应能验证解码、错误处理和状态更新，不能证明真实服务器、TLS 或后台传输正常。[卡](#network-double)
+- **UI 测试要区分元素存在、可以操作和业务完成**。稳定标识、明确测试数据与条件等待，比固定延迟更容易重现问题。[卡](#ui-wait)
+- **性能测试先定义测量区间、指标和比较环境**。测到耗时不等于建立了回归门槛，更不能把模拟器结果当成目标设备的耗电或流畅度结论。[卡](#performance)
+- **权限与生命周期需要状态组合和真实 API 观察**。重启应用、重新安装、系统授权重置和业务数据清理不是同一件事。[卡](#platform-state)
+- **通过、失败和未执行必须分开报告**。覆盖率说明代码被执行的范围，不能说明所有结果都被正确断言；偶发失败也不能靠重试后的一次成功直接关闭。[卡](#evidence)
+
+## 2. 测试对象与执行环境 {#测试对象与执行环境}
+
+### 2.1 按边界选择测试 {#按边界选择测试}
+
+**单元测试**针对一小块行为，把无关的外部变化控制住。例如固定输入后检查解析结果，或者给列表状态对象注入一个返回指定数据的加载函数。
+
+**集成测试**检查多个真实组件之间的连接，例如使用临时数据库验证写入、读取和迁移，或让真实网络客户端访问受控测试服务。替身可以存在于部分边界，但报告要说明哪些组件实际参与了执行。
+
+**UI 测试**通过应用界面操作验证用户流程。它能发现按钮接线、导航、可访问性标识或页面状态的问题，但不适合承担每一种解析错误和数据组合；这些分支通常可以在更小的范围里更快、更准确地定位。
+
+| 待验证行为 | 合适的入口 | 通过后仍不能直接推断 |
+| --- | --- | --- |
+| JSON 字段缺失时返回预期错误 | 解析函数或客户端测试 | 页面正确展示错误 |
+| 保存后重新读取、升级后旧数据可用 | 真实本地存储集成 | 多设备同步没有冲突 |
+| 点击刷新后展示新列表 | UI 测试 | 所有网络错误都被处理 |
+| 后台恢复后继续处理任务 | 平台集成与设备测试 | 系统在任意时刻都会调度任务 |
+
+通用的测试条件与预期结果设计见 [测试分析](../../tools-and-frameworks/testing/test-analysis.mdx#测试条件与用例)。在 iOS 项目中，还要说明测试是无宿主的逻辑测试、在宿主应用中执行的测试，还是通过独立 UI 测试进程观察目标应用；这会影响可用环境与失败定位。
+
+### 2.2 XCTest 的基本组织 {#XCTest的基本组织}
+
+**测试用例类**继承 `XCTestCase`，测试方法以 `test` 开头、没有参数且不返回结果；异步测试可以声明为 `async` 或 `async throws`。XCTest 发现并执行测试方法，记录断言失败和未处理的抛出错误。
+
+断言要对应对外行为。检查返回内容、状态变化、持久化结果或必须发生的交互，通常比断言私有方法的调用顺序更稳定。如果需求只规定“失败后保留已有列表”，测试就应该检查列表是否保留；不必要求实现必须经过某个内部辅助函数。
+
+## 3. 状态隔离与测试替身 {#状态隔离与测试替身}
+
+### 3.1 让依赖可以控制 {#让依赖可以控制}
+
+**依赖注入**是在创建或调用对象时把它需要的协作者传进去。测试可以提供可控实现，生产代码提供真实实现，调用者仍按照相同接口工作。
+
+下面的 `FeedStore` 接收一个异步加载函数。只有加载成功且任务未取消时，才替换 `titles`；抛出错误时保留旧内容。示例假定调用者串行发起刷新，重叠刷新还需要单独定义“哪次结果生效”的规则。
+
+```swift
+import Foundation
+
+@MainActor
+final class FeedStore {
+    private(set) var titles: [String]
+    private let load: () async throws -> [String]
+
+    init(titles: [String] = [], load: @escaping () async throws -> [String]) {
+        self.titles = titles
+        self.load = load
+    }
+
+    func refresh() async throws {
+        let received = try await load()
+        try Task.checkCancellation()
+        titles = received
+    }
+}
+```
+
+`load` 的完成结果是测试输入，`titles` 是被观察的状态。这里不访问全局网络单例，也不需要通过真实请求才能触发失败。`Task.checkCancellation()` 让已经取消的刷新不再写入结果，但不会强行终止一个不响应取消的 `load`；取消的协作机制见 [Swift 并发](../../basic-knowledge/swift/concurrency.mdx)。
+
+对应的测试放在测试 Target 中。下面为便于阅读与 `FeedStore` 使用同一编译模块；实际项目通常通过测试模块导入被测模块，必要时使用 `@testable import` 访问内部声明。
+
+```swift
+import XCTest
+
+final class FeedStoreTests: XCTestCase {
+    @MainActor
+    func testSuccessReplacesTitles() async throws {
+        let store = FeedStore(titles: ["旧文章"]) { ["Swift", "UIKit"] }
+        try await store.refresh()
+        XCTAssertEqual(store.titles, ["Swift", "UIKit"])
+    }
+
+    @MainActor
+    func testFailureKeepsTitles() async {
+        let store = FeedStore(titles: ["旧文章"]) {
+            throw URLError(.notConnectedToInternet)
+        }
+        do {
+            try await store.refresh()
+            XCTFail("预期刷新失败")
+        } catch {
+            XCTAssertEqual((error as? URLError)?.code, .notConnectedToInternet)
+            XCTAssertEqual(store.titles, ["旧文章"])
+        }
+    }
+}
+```
+
+第一条验证成功更新，第二条同时验证错误类型与旧状态保留。仅写“调用没有崩溃”不能表达这些要求。测试方法标记 `@MainActor`，与 `FeedStore` 的隔离条件一致；`async` 本身不保证测试代码运行在主 actor。
+
+### 3.2 初始化和清理分别负责什么 {#初始化和清理分别负责什么}
+
+每条测试应从明确状态开始。可以在测试方法内创建对象，也可以在每条测试执行前的 `setUpWithError()` 或异步 `setUp()` 中准备资源。类级别的 `setUp()` 适合不需要逐条重置的公共准备，不能拿它保存会被多条测试任意修改的业务状态。
+
+清理要涵盖临时目录、独立的 UserDefaults suite、数据库、通知观察者、网络会话和未完成任务。用 `addTeardownBlock` 或 teardown 方法释放资源；注册的 teardown block 按后进先出顺序执行。测试进程崩溃时不能保证执行清理，因此下一次初始化也要能建立独立状态。
+
+并行测试尤其需要避免固定路径和全局可变响应表。唯一临时目录、独立账号或数据命名空间、每个测试自己的依赖对象，能减少互相污染。环境隔离的共同边界见 [测试环境](../../tools-and-frameworks/testing/test-environments.mdx#临时环境与共享依赖)。
+
+## 4. 异步完成与取消 {#异步完成与取消}
+
+### 4.1 等结果，不等一个猜测的时间 {#等结果不等猜测的时间}
+
+对 `async` API，测试方法直接 `await` 它的完成结果，再断言状态。不要在同步测试里创建一个无人等待的 `Task` 后立即返回：测试可能在实际行为发生前已经结束。
+
+对回调 API，**expectation** 表达测试需要观察到的事件。先创建 expectation，再触发操作，在回调中检查结果并 `fulfill()`，最后等待它完成。Swift 并发测试使用 `await fulfillment(of:timeout:)`，避免用同步等待占住异步工作需要的执行资源。
+
+```swift
+import XCTest
+
+func fetchCachedTitle(completion: @escaping (String) -> Void) {
+    DispatchQueue.main.async { completion("Swift") }
+}
+
+final class CallbackTests: XCTestCase {
+    @MainActor
+    func testCallbackReturnsTitle() async {
+        let received = expectation(description: "收到缓存标题")
+        received.assertForOverFulfill = true
+
+        fetchCachedTitle { title in
+            XCTAssertEqual(title, "Swift")
+            received.fulfill()
+        }
+
+        await fulfillment(of: [received], timeout: 1)
+    }
+}
+```
+
+这里的 1 秒是测试的等待上限，不是规定实现应该耗时 1 秒。回调及时完成时，等待可以提前结束。回调给出错误标题会使结果断言失败；没有回调则使等待超时，它们指向不同的问题。
+
+如果契约要求回调多次，设置并检查预期次数；如果某个事件不应发生，可以使用反向 expectation。反向等待只能说明在观察窗口内没有发生，不能证明事件永远不会发生。`assertForOverFulfill` 也不能代替完整生命周期检查：测试结束以后才出现的多余回调仍可能污染后续用例。
+
+### 4.2 让完成顺序成为输入 {#让完成顺序成为输入}
+
+异步缺陷往往涉及顺序。搜索框先发出 A、再发出 B，若 B 先完成、A 后完成，页面是否被旧结果覆盖？用户离开页面后结果到达，是否还更新已经失效的状态？
+
+测试这类问题时，可以让替身保留完成回调或 continuation，再由测试明确释放 A、B。先确认请求已经进入等待点，再按指定顺序完成，并等待被测任务结束。不要用“睡眠 100 毫秒，应该已发出请求”替代这个同步条件。
+
+取消测试同样需要两个观察：操作是否收到了取消信号，以及取消后是否仍发生不允许的状态写入。若底层不响应取消，测试要能够释放它并回收任务，避免遗留工作影响下一条测试。不要为了让测试通过而删除超时场景或无限延长等待。
+
+## 5. 网络测试的边界 {#网络测试的边界}
+
+在状态对象层注入返回值，只能验证状态逻辑。如果还要检查 URL、HTTP 方法、请求头、状态码和解码，就应该让真实客户端参与，替换更靠外的传输边界。
+
+`URLSessionConfiguration.protocolClasses` 可以给指定会话配置自定义 `URLProtocol`，在受控测试中返回响应和数据。测试需要明确匹配哪些请求、怎样发送成功或失败事件、取消后怎样停止，以及未匹配请求是否立即失败。避免把“任何 URL 都返回 200”作为通用替身，否则错误地址也会得到成功结果。
+
+至少区分以下条件：成功且数据合法、成功但内容非法、HTTP 错误、传输错误、取消与完成顺序。HTTP 404 和没有连上服务器不是同一种错误；客户端的状态码检查见 [URLSession](url-session.mdx)。
+
+自定义 `URLProtocol` 不能与后台会话配合使用。即便普通会话的替身测试全部通过，也没有执行真实 DNS、连接、TLS、代理和服务器规则。真实服务契约、证书环境和后台传输仍需对应集成测试；不要把一次替身返回成功称为“网络链路验证完成”。
+
+## 6. XCUITest 与用户流程 {#XCUITest与用户流程}
+
+### 6.1 控制启动条件和定位方式 {#控制启动条件和定位方式}
+
+**XCUITest** 通过应用代理和可访问性元素查询操作目标应用。测试代码与目标应用不共享普通内存对象，不能在 UI 测试中直接修改应用里的 `FeedStore` 实例。
+
+`XCUIApplication` 用于启动、激活和终止应用；`launchArguments` 或 `launchEnvironment` 可以传入测试条件，但应用必须显式解析它们。测试参数不是框架自动提供的“清空数据库”功能，也不应让线上应用通过任意参数绕过登录或访问控制。
+
+给关键控件设置稳定的 `accessibilityIdentifier`，让测试不依赖坐标或容易变化的展示文案。标识应在当前查询范围内可区分；不要给列表里每个元素都用同一个标识，再依靠偶然的排列位置选择目标。
+
+下面的示例要求目标应用支持 `-ui-testing-empty-feed` 测试配置，提供 `feed.refresh` 按钮，并在刷新完成后插入 `feed.count` 文本。固定测试数据返回两篇文章，应用端测试配置只在相应测试构建中启用。
+
+```swift
+import XCTest
+
+final class FeedUITests: XCTestCase {
+    @MainActor
+    func testRefreshShowsCount() {
+        let app = XCUIApplication()
+        app.launchArguments = ["-ui-testing-empty-feed"]
+        app.launch()
+        defer { app.terminate() }
+
+        let refresh = app.buttons["feed.refresh"]
+        XCTAssertTrue(refresh.waitForExistence(timeout: 3))
+        XCTAssertTrue(refresh.isHittable)
+        refresh.tap()
+
+        let count = app.staticTexts["feed.count"]
+        XCTAssertTrue(count.waitForExistence(timeout: 3))
+        XCTAssertEqual(count.label, "2 篇")
+    }
+}
+```
+
+测试先等待按钮出现，再操作，最后等待结果元素出现并检查内容。`feed.count` 在完成前不存在是本例明确的页面契约；如果页面始终显示旧计数，等待存在就不够，应该等待计数变化或加载状态结束，并断言新结果。
+
+### 6.2 存在、可操作和完成不是一回事 {#存在可操作和完成}
+
+`exists` 或 `waitForExistence` 只判断元素是否存在。`isHittable` 还涉及当前是否能计算出可点击的位置；元素在屏幕外、被遮挡或尚未出现时可能不可操作。按钮点击成功以后，后台请求与页面渲染也未必完成。
+
+因此，一条用户流程至少有操作前条件与业务后置条件。框架的同步与等待机制不能替代业务断言。固定 `sleep` 会让快环境多等、慢环境仍失败；条件等待则把真正未满足的条件暴露出来。
+
+失败时保留截图、元素树、目标应用日志、测试步骤与初始数据。若按钮存在但无法点击，先区分遮挡、滚动位置、应用状态和查询错误；如果点击完成但结果没有出现，再检查业务状态与请求证据。
+
+## 7. 权限、生命周期与设备条件 {#权限生命周期与设备条件}
+
+平台相关测试要覆盖状态变化，而不是只测一次干净启动。以照片访问为例，需要区分未决定、拒绝、完整授权和受限访问；应用从设置返回后还应重新读取对应 API 的状态。具体授权语义见 [iOS 应用沙箱与权限](sandbox-permissions.mdx#授权状态如何驱动界面)。
+
+UI 测试可以针对支持的受保护资源使用 `resetAuthorizationStatus(for:)` 重置状态，但“调用了重置工具”不是最终断言。测试还要观察目标 API 返回值、授权界面和应用分支；工具状态与应用观察不一致时，记录未覆盖部分，不能把预设成功当成应用行为成功。
+
+生命周期检查可选择首次启动、后台再前台、进程重新创建、已有持久化数据、请求未结束时离开页面等条件。终止后再次 `launch()` 不会自动清除所有持久化内容；新安装也不能笼统等同于所有系统和服务状态重置。业务数据、应用进程和系统授权应分别控制。
+
+模拟器适合快速重复逻辑、布局和流程测试，但不复现物理设备的全部能力与性能。相机、蓝牙、后台调度、锁屏数据保护、温度与耗电等条件，需要按实际 API 和环境补充设备证据。不能把一个配置下的模拟器通过写成“所有 iPhone 兼容性已验证”。
+
+## 8. 性能测试与结果解释 {#性能测试与结果解释}
+
+### 8.1 先定义测量区间 {#先定义测量区间}
+
+XCTest 的 `measure` 系列方法重复执行被测区间，记录选择的指标。`XCTClockMetric` 关注经过时间；其他指标可以关注 CPU、内存、启动或特定区间。测量什么必须与要改善的问题一致。
+
+下面测量固定输入的排序成本。输入在测量区间外建立，输出仍被断言，防止测试只记录时间却没有检查是否完成了正确工作。
+
+```swift
+import XCTest
+
+final class SortingPerformanceTests: XCTestCase {
+    func testSortingPerformance() {
+        let input = Array((0..<10_000).reversed())
+        var output: [Int] = []
+        measure(metrics: [XCTClockMetric()]) {
+            output = input.sorted()
+        }
+        XCTAssertEqual(output, Array(0..<10_000))
+    }
+}
+```
+
+该区间包括排序和结果赋值，不包括输入构造。它没有测量网络、布局或用户感知的刷新完成时间；更换测量区间后，数字不能直接沿用同一个解释。
+
+### 8.2 测量结果与回归门槛 {#测量结果与回归门槛}
+
+建立回归检查需要固定或记录设备、系统、构建配置、输入规模、缓存状态及测量方法，再设置合适的基线与容差。没有基线的测试可以产生测量数据，但不能因此宣称“性能未退化”。
+
+接近实际表现的性能测试应使用合适的 Release 配置，关闭调试器、覆盖率和运行时诊断等会改变测量成本的选项。功能排错时开启诊断很有用，但不要把诊断构建与正常发布构建的数字直接比较。
+
+出现退化后，需要结合 [iOS 性能诊断](performance-diagnostics.mdx) 定位执行链路。一次测量变慢可能涉及代码变化、缓存、环境竞争或设备状态；应保留分布、输入和执行条件，再判断变化是否可重复。
+
+## 9. 测试报告与失败定位 {#测试报告与失败定位}
+
+报告应说明执行了哪些测试、对应哪个构建和环境、哪些通过、哪些失败、哪些跳过。通过 `xcodebuild` 执行测试时可以保留结果 bundle，在 Xcode 中查看测试、日志与附件；不要只保存最后一句“测试通过”。
+
+**代码覆盖率**记录代码在测试中被执行的情况。一个分支执行过，但没有检查输出是否正确，仍可能漏掉错误；覆盖率也不能替代输入边界、错误路径和用户流程设计。
+
+偶发失败需要保留第一次失败的记录，再检查状态污染、未等待任务、共享资源、时序假设和环境差异。重跑成功说明当前运行没有重现，不自动解释前一次失败。修复后应增加能暴露原因的回归检查，并把已确定的原因与仍未知的限制分开写。
+
+## 10. 面试题 {#面试题}
+
+### 10.1 XCTest、集成测试和 XCUITest 应怎样分工？ {#levels}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：工具、测试层级和执行边界的区别。
+
+**相关内容**：[按边界选择测试](#按边界选择测试)
+
+<details>
+<summary>参考回答</summary>
+
+**按需要发现的错误选择边界，而不是只按框架名称分类。** 小范围逻辑测试检查算法、解码和状态规则；集成测试让真实组件协作，检查存储、迁移或网络契约；XCUITest 从界面检查关键用户流程。XCTest 可以用于不同范围的测试，使用它不等于只测试了一个单元。
+
+</details>
+
+### 10.2 iOS 测试为什么需要隔离状态，应该清理哪些内容？ {#isolation}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：初始状态、资源生命周期、并行与崩溃后的边界。
+
+**相关内容**：[初始化和清理分别负责什么](#初始化和清理分别负责什么)
+
+<details>
+<summary>参考回答</summary>
+
+**隔离使结果由当前输入决定，减少前一条测试或并行测试的影响。** 使用独立对象、目录、数据库和数据命名空间；结束时清理任务、会话、观察者及持久化内容。每次初始化都要能建立正确状态，不能依赖上一条 teardown 一定执行，因为测试进程崩溃时清理可能无法运行。
+
+</details>
+
+### 10.3 怎样正确测试 async API 和回调 API？ {#async-wait}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：任务完成、actor 隔离、expectation 与超时语义。
+
+**相关内容**：[等结果，不等一个猜测的时间](#等结果不等猜测的时间)
+
+<details>
+<summary>参考回答</summary>
+
+**async 测试等待 API 结果，回调测试等待明确事件，然后检查结果。** 前者把测试方法声明为 `async`，直接 `await` 被测操作；需要主 actor 时显式标记 `@MainActor`。后者先建立 expectation，在回调中断言并完成它，再使用并发安全的 `fulfillment(of:timeout:)` 等待。超时是未观察到完成，结果断言失败是观察到错误结果；固定睡眠不能代替二者。
+
+</details>
+
+### 10.4 用 URLProtocol 返回预设响应，能够验证哪些网络行为？ {#network-double}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：替换位置、请求匹配、协议限制与真实集成。
+
+**相关内容**：[网络测试的边界](#网络测试的边界)
+
+<details>
+<summary>参考回答</summary>
+
+**可以让真实客户端检查请求构造、状态码处理、解码与状态更新，但没有验证真实网络和服务器。** 替身要严格匹配请求，覆盖错误和取消，避免错误 URL 也返回成功。自定义 `URLProtocol` 不支持后台会话；真实连接、TLS、服务端契约和后台传输仍需相应环境验证。
+
+</details>
+
+### 10.5 UI 测试中等待元素存在，为什么仍可能失败？ {#ui-wait}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：存在、可操作、业务后置条件与稳定定位。
+
+**相关内容**：[存在、可操作和完成不是一回事](#存在可操作和完成)
+
+<details>
+<summary>参考回答</summary>
+
+**存在不代表可点击，点击完成也不代表业务完成。** 元素可能被遮挡或在屏幕外，页面也可能还显示旧结果。应使用稳定标识，在操作前等待合适条件，在操作后等待业务状态变化并断言内容。失败时保留截图、元素树和日志，区分定位问题、交互条件和业务错误。
+
+</details>
+
+### 10.6 XCTest 记录了执行耗时，能否证明优化有效？ {#performance}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：区间、正确性、环境、基线与设备适用范围。
+
+**相关内容**：[性能测试与结果解释](#性能测试与结果解释)
+
+<details>
+<summary>参考回答</summary>
+
+**单次耗时不足以证明优化有效。** 先确认测量区间覆盖目标行为且输出正确，再在可比较的构建、输入、缓存和设备条件下观察多次结果。设置基线与容差才能形成回归门槛；模拟器数字只描述对应环境，不能直接证明真机的启动、流畅度或耗电改善。
+
+</details>
+
+### 10.7 权限和生命周期测试应怎样准备初始状态？ {#platform-state}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**题型**：综合题
+
+**考察重点**：授权、进程、数据与平台环境分别控制。
+
+**相关内容**：[权限、生命周期与设备条件](#权限生命周期与设备条件)、[初始化和清理分别负责什么](#初始化和清理分别负责什么)。
+
+<details>
+<summary>参考回答</summary>
+
+**分别控制系统授权、应用进程和业务数据，并通过应用 API 验证实际状态。** 覆盖未决定、拒绝、允许或受限等相关分支，以及前后台切换、重新创建进程和恢复已有数据。调用授权重置工具后仍需观察返回状态与页面行为；模拟器无法证明的硬件、后台或保护条件，补充设备验证并明确未覆盖项。
+
+</details>
+
+### 10.8 测试覆盖率很高，但用例偶尔失败，应怎样解释和处理？ {#evidence}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：覆盖与断言、失败证据、复现和回归。
+
+**相关内容**：[测试报告与失败定位](#测试报告与失败定位)
+
+<details>
+<summary>参考回答</summary>
+
+**覆盖率不保证断言充分，重跑成功也不能解释原失败。** 保留首次失败的日志、环境、输入和任务状态，检查共享状态、遗漏等待、时序假设或资源竞争。确认原因后修复并增加能触发该问题的回归检查；仍未解释的失败如实记录，不把跳过或重跑成功混入原始通过结果。
+
+</details>
+
+## 11. 参考资料 {#参考资料}
+
+- [Apple：Defining Test Cases and Test Methods](https://developer.apple.com/documentation/xctest/defining-test-cases-and-test-methods)
+- [Apple：Asynchronous Tests and Expectations](https://developer.apple.com/documentation/xctest/asynchronous-tests-and-expectations)
+- [Apple：fulfillment(of:timeout:enforceOrder:)](https://developer.apple.com/documentation/xctest/xctestcase/fulfillment(of:timeout:enforceorder:))
+- [Apple：Set Up and Tear Down State in Your Tests](https://developer.apple.com/documentation/xctest/set-up-and-tear-down-state-in-your-tests)
+- [Apple：XCTestExpectation](https://developer.apple.com/documentation/xctest/xctestexpectation)
+- [Apple：XCUIApplication](https://developer.apple.com/documentation/xcuiautomation/xcuiapplication)
+- [Apple：waitForExistence(timeout:)](https://developer.apple.com/documentation/xcuiautomation/xcuielement/waitforexistence(timeout:))
+- [Apple：isHittable](https://developer.apple.com/documentation/xcuiautomation/xcuielement/ishittable)
+- [Apple：Writing and running performance tests](https://developer.apple.com/documentation/xcode/writing-and-running-performance-tests)
+- [Apple：measure(metrics:options:block:)](https://developer.apple.com/documentation/xctest/xctestcase/measure(metrics:options:block:))
+- [Apple：Testing a release build](https://developer.apple.com/documentation/xcode/testing-a-release-build)
+- [Apple：protocolClasses](https://developer.apple.com/documentation/foundation/urlsessionconfiguration/protocolclasses)
+- [Apple：resetAuthorizationStatus(for:)](https://developer.apple.com/documentation/xcuiautomation/xcuiapplication/resetauthorizationstatus(for:))
+- [Apple：Migrating a test from XCTest](https://developer.apple.com/documentation/testing/migratingfromxctest)
+- [Apple：Running tests and interpreting results](https://developer.apple.com/documentation/xcode/running-tests-and-interpreting-results)
+- [Apple：wait(for:timeout:)](https://developer.apple.com/documentation/xctest/xctestcase/wait(for:timeout:))
+- [Apple：Testing](https://developer.apple.com/documentation/xcode/testing)

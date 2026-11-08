@@ -1,0 +1,226 @@
+---
+title: CSRF
+knowledge:
+  id: system-design.security.csrf
+---
+
+# CSRF
+
+**CSRF**（Cross-Site Request Forgery，跨站请求伪造）是攻击者诱使浏览器向另一个应用发送请求，利用浏览器自动携带的身份凭据，让服务端执行用户并未打算执行的操作。服务端知道请求属于哪个登录用户，不代表知道这次操作是用户通过可信页面发起的。
+
+防护的重点是让改变状态的请求通过服务端校验。需要结合凭据怎样携带、请求从哪里发起，以及接口接受什么格式来判断，不能只看是否用了 POST、HTTPS 或 JWT。
+
+## 1. 面试核心 {#core}
+
+- CSRF 利用的是**浏览器自动携带凭据，以及服务端没有确认请求意图的组合**。攻击者通常不需要知道登录 Cookie，也不需要读取响应。[卡](#csrf-mechanism-defense)
+- 同源策略主要限制跨源读取，**表单等请求仍可能发出去**。CSRF 防护应在业务写入之前执行，不能靠响应端的 CORS 报错补救。[卡](#csrf-cors)
+- **CSRF Token 应不可预测并绑定当前会话**，由可信页面取得，随写入请求显式提交，由服务器验证；它与自动携带的 Session Cookie 分工不同。[卡](#csrf-mechanism-defense)
+- **Origin 检查必须匹配准确的可信源**；缺失或 `null` 不能无条件放行。反向代理后的目标源应来自可信配置。[卡](#csrf-mechanism-defense)
+- **SameSite 判断同站，不等于判断同源**。`Lax` 允许部分跨站顶层导航携带 Cookie；同站的其他子域也可能不可信。[卡](#csrf-samesite)
+- **XSS 可能绕过 CSRF 防线**，因为已在同源页面运行的脚本可以取得 Token 并发起请求。认证、资源授权、CSRF 防护和 XSS 防护分别解决不同问题。[卡](#csrf-token-xss)
+
+## 2. 请求伪造的条件 {#请求伪造的条件}
+
+以修改个人资料为例，用户已经登录 `https://app.example.com`，浏览器保存着 Session Cookie。另一个页面准备了一份表单，提交到该应用的资料修改接口。如果 Cookie 规则允许携带凭据，接口又只检查“已经登录”，就可能把这个提交当作用户的正常操作。
+
+这里有三个条件需要一起判断：
+
+1. 浏览器能够从攻击者控制的页面触发目标请求，例如提交普通表单或发起导航。
+2. 请求能获得目标应用认可的身份，例如自动带上的 Session Cookie。
+3. 服务端没有要求攻击者无法提供的请求证明，也没有在执行前拒绝不可信来源。
+
+攻击者不一定能读取返回的页面或 JSON。只要修改已经发生，响应被同源策略挡住也不会撤销修改。预检、实际请求和响应可读性的区别见[跨域与 CORS](./cors.mdx#请求与响应的检查)。
+
+Cookie 是否发送仍受 Domain、Path、Secure、SameSite、凭据模式及浏览器隐私策略影响。因此，“任何跨站请求都会带上全部 Cookie”并不准确；应按实际入口和 Cookie 配置验证。
+
+### 2.1 请求方法不代表用户意图 {#请求方法不代表用户意图}
+
+**POST 不是 CSRF 防线。** 普通 HTML 表单就能发送 POST；攻击者不需要先在目标网站运行脚本。把接口从 GET 改为 POST，是纠正 HTTP 语义，不是完成请求防伪。
+
+GET 等安全方法应保持只读。若“点击一个 GET 链接”就能删除数据，除了跨站导航，还可能被预加载、爬虫或重复访问触发。写入接口使用适当的方法，再执行身份、权限和 CSRF 检查。
+
+HTTPS 保护传输过程，不区分请求是从可信页面还是攻击页面触发。把敏感操作改成 HTTPS 也不能代替这些检查。
+
+## 3. Token 与会话绑定 {#token-与会话绑定}
+
+**同步 Token 模式**是在服务端会话中保存一个不可预测的 CSRF Token，并要求写入请求显式携带与当前会话匹配的值。浏览器自动发送 Session Cookie，用于找到会话；可信页面取得 Token 后，通过表单隐藏字段或自定义请求头提交它。
+
+两者的区别在于携带方式。攻击页面可能让浏览器附上 Cookie，但在没有 XSS、错误的跨源读取授权或其他泄露时，无法读取可信页面里的随机 Token。服务端检查当前会话中的预期值，拒绝没有 Token 或拿着其他会话 Token 的请求。
+
+Token 可以随页面 HTML 或同源 JSON 返回，但不能把它放进 URL、日志或公开缓存。同步 Token 模式也不能只从自动携带的 Cookie 读取 Token，然后认为已经完成验证——那没有要求发起方额外证明什么。
+
+每个会话生成一次 Token 是一种实现方式。登录或会话重建时随之更新，过期会话不再接受旧值。每次请求轮换也可以实现，但需要处理并发请求、多个标签页和后退重提，不应让正常请求因为另一个请求刚完成就无故失效。
+
+### 3.1 双重提交 Cookie 的区别 {#双重提交-cookie-的区别}
+
+**双重提交 Cookie**让请求同时携带 CSRF Cookie 和另一处显式提交的 Token，例如请求头，服务端验证两者及必要的真实性信息。前端需要读取的 CSRF Cookie 与 HttpOnly 的登录 Cookie 不是同一个用途。
+
+只比较“两处字符串相等”的朴素做法依赖 Cookie 无法被攻击者覆盖或注入。存在不可信子域等情况时，这个前提可能失效。需要无状态方案时，优先使用框架提供的、通过 HMAC 等方式签名并绑定当前登录会话的实现；仅给一个与会话无关的值签名仍不充分。不要自行把用户 ID 的普通哈希当作不可预测 Token。
+
+## 4. 来源检查与服务端示例 {#来源检查与服务端示例}
+
+**Origin** 表示发起请求的源，包含协议、主机和有效端口。对于允许同源页面写入的应用，可以要求它准确匹配配置中的应用源。比较 `https://app.example.com` 时，不能把 `https://app.example.com.attacker.invalid`、不同端口或协议也放行。
+
+浏览器不会允许普通页面脚本任意设置 `Origin`，但它不是给所有 HTTP 客户端使用的身份凭据。服务端仍要认证和授权，不能因为某个命令行请求写了正确 Origin 就认为它已登录。
+
+有些请求缺少 Origin，或者来自不透明来源而得到 `Origin: null`。应明确拒绝、使用适当的 Token 检查，或按兼容性需求解析 Referer 并验证其中的准确来源。不能用“没有就跳过”的默认分支。反向代理后的应用源优先使用受信任配置，不要直接相信客户端可伪造的转发头。
+
+下面用 Node.js 演示一个**只服务同源 JSON POST 写入接口**的校验函数。`session` 必须由认证中间件根据当前请求的有效会话恢复，创建会话时调用 `createCsrfToken()` 保存 `session.csrfToken`；`expectedOrigin` 是可信配置中的标准源字符串。本例选择同时检查 Origin 与 Token，缺少 Origin 直接拒绝。
+
+```js
+import { randomBytes, timingSafeEqual } from 'node:crypto';
+
+export function createCsrfToken() {
+  return randomBytes(32).toString('hex');
+}
+
+export function isValidCsrfPost(req, session, expectedOrigin) {
+  if (req.method !== 'POST' || !session) return false;
+  if (req.headers.origin !== expectedOrigin) return false;
+
+  const actual = req.headers['x-csrf-token'];
+  const expected = session.csrfToken;
+  if (typeof actual !== 'string' || !/^[0-9a-f]{64}$/.test(actual)) {
+    return false;
+  }
+  if (typeof expected !== 'string' || !/^[0-9a-f]{64}$/.test(expected)) {
+    return false;
+  }
+  return timingSafeEqual(Buffer.from(actual, 'hex'), Buffer.from(expected, 'hex'));
+}
+```
+
+返回 `false` 时应拒绝请求，不能继续业务写入。身份、资源权限、`Content-Type`、请求体大小和字段合法性仍由接口处理；这个函数不替代它们，也不是可以直接套到所有请求上的通用中间件。
+
+浏览器端从可信页面或同源接口取得 `csrfToken` 后，调用固定的资料修改接口：
+
+```js
+export async function saveDisplayName(name, csrfToken) {
+  const response = await fetch('/api/profile', {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-CSRF-Token': csrfToken,
+    },
+    body: JSON.stringify({ name }),
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.json();
+}
+```
+
+接口仍需在返回成功前完成校验与写入。Token 没有代替 Session Cookie，也不是每个请求都可以任意填写的固定标志。路径由应用决定，避免把 URL 参数里的任意地址交给一个“自动附加 Token”的请求封装。
+
+实际项目应优先使用框架提供的 CSRF 能力，确认哪些路由、方法和客户端受保护，以及异常返回是否阻止业务继续执行。服务间接口或第三方回调需要自己的认证方案，可以有明确的例外，但不能为了兼容它们关闭整个浏览器入口的防护。
+
+## 5. SameSite 的范围 {#samesite-的范围}
+
+**SameSite** 是控制 Cookie 在跨站上下文是否发送的属性。现代浏览器的同站判断考虑协议及可注册域；端口不参与普通站点的比较。源的比较还包含完整主机和端口，所以跨源请求可能仍然同站。
+
+例如，`https://app.example.com` 与 `https://other.example.com` 同站而不同源；同一主机的两个 HTTPS 端口也可以同站但不同源。`http://app.example.com` 与 `https://app.example.com` 则因协议不同而跨站。嵌套 iframe 还会受到祖先页面上下文影响，不能只比较两个 URL 就推断所有 Cookie 行为。
+
+| 显式取值 | 对跨站请求的主要影响 | 需要考虑的代价或限制 |
+| --- | --- | --- |
+| `Strict` | 不随跨站请求发送，包括从外站进入的顶层导航 | 外部链接进入应用时可能暂时没有登录状态 |
+| `Lax` | 允许安全方法的跨站顶层导航携带 Cookie，如普通 GET 链接 | 不能保护误用 GET 的写入接口；跨站子资源请求不等同于顶层导航 |
+| `None` | 不以 SameSite 为由排除跨站携带，需要配合 `Secure` | 仍受第三方 Cookie 限制等浏览器策略影响，不保证一定发送 |
+
+不显式设置 SameSite 时，浏览器可能采用默认值及兼容性例外；不能把默认行为与显式 `Lax` 完全等同。需要什么边界，就明确配置并测试。
+
+SameSite 不负责判断同站子域是否可信。如果另一个同站子域托管用户内容，或被攻击者控制，它发起的请求仍可能携带 SameSite Cookie。Token、准确来源检查及合理的 Cookie 作用范围仍有价值。登录 Cookie 还应配置 `Secure`、`HttpOnly`；前者约束安全传输，后者约束脚本读取，都不等于 CSRF 防护。
+
+## 6. CORS、请求头与 XSS {#cors-请求头与-xss}
+
+**不开放 CORS 响应读取，不等于拒绝了请求。** 普通跨源表单 POST 可能直接到达接口。完整协商规则见[跨域与 CORS](./cors.mdx#预检条件与协商)。
+
+对只接受 JSON 的 API，可以严格拒绝表单和 `text/plain`，并要求自定义请求头。跨源脚本要设置这些头，通常必须通过预检；只允许可信源通过预检，可以构成防线。但服务端必须真的检查格式和头，不能既声称只收 JSON，又宽容地把 `text/plain` 解析成 JSON；也不能任意反射 Origin 并允许携带凭据。
+
+Token、来源检查和 SameSite 都假设可信页面本身没有被攻击者接管。成功执行的 XSS 可以读取页面 Token，再发出符合来源条件的请求。两者的区别是：CSRF 可以只利用另一个页面发起请求，XSS 则让攻击代码进入目标页面；具体输出防护见[XSS](./xss.mdx#输出上下文与安全接口)。
+
+即使没有 XSS，自家脚本也可能被不可信参数诱导。例如页面从地址片段读取目标路径，自动附带 Token 发起写入，攻击者就可以构造链接让这段“可信脚本”替自己提交。应固定敏感操作的目标与方法，校验业务参数，并由明确的交互触发写入。
+
+## 7. 常见问题 {#常见问题}
+
+### 7.1 使用 JWT 就不需要防 CSRF 吗？ {#使用-jwt-就不需要防-csrf-吗}
+
+不能按令牌格式判断。如果 JWT 放在自动携带的 Cookie 中，仍要考虑 CSRF。如果访问令牌只由可信页面显式放入 `Authorization`，且没有自动 Cookie 认证的备用路径，经典的跨站表单伪造通常无法补上这个头；但 XSS 窃取令牌、错误 CORS 和客户端请求诱导等风险仍需分别处理。
+
+### 7.2 Token 校验通过，就能确认用户有权修改资源吗？ {#token-校验通过就能确认用户有权修改资源吗}
+
+不能。CSRF Token 说明请求满足防伪造条件，不说明当前用户有权修改任意对象。服务端仍需依据当前身份检查对象所有权或权限；让用户带着自己的有效 Token 修改另一个用户的资料，依然是越权。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 CSRF 的攻击原理是什么？可以怎样防御？ {#csrf-mechanism-defense}
+
+**考察重点**：自动携带身份凭据、请求意图与服务端防伪造检查的关系。
+
+**相关内容**：[请求伪造的条件](#请求伪造的条件)、[Token 与会话绑定](#token-与会话绑定)、[来源检查与服务端示例](#来源检查与服务端示例)。
+
+<details>
+<summary>参考回答</summary>
+
+**CSRF 利用浏览器自动携带的身份凭据，让服务端执行用户并未打算执行的操作。** 攻击者可以诱导浏览器提交表单等请求；即使拿不到 Cookie、读不到响应，只要请求带上有效身份且接口缺少校验，修改就可能发生。
+
+防护应在服务端写入之前完成：使用框架提供的 CSRF Token 机制，验证 Token 与当前会话绑定；检查准确的可信 Origin，明确处理缺失值；按业务设置 SameSite 等 Cookie 属性。GET 保持只读，POST 仍要校验身份、权限与防伪造条件。不能把 HTTPS、POST 或单纯的 CORS 报错当成完整防护。
+
+</details>
+
+### 8.2 浏览器提示跨域失败，服务器为什么仍可能修改成功？ {#csrf-cors}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：请求发出、服务端执行与响应可读性之间的先后关系。
+
+**相关内容**：[请求伪造的条件](#请求伪造的条件)、[CORS、请求头与 XSS](#cors-请求头与-xss)。
+
+<details>
+<summary>参考回答</summary>
+
+**某些请求不需要预检，可以先到达服务器，之后浏览器才限制脚本读取响应。** 普通表单格式的 POST 就可能如此。响应端 CORS 检查失败不会回滚已经发生的写入。
+
+应在执行前检查身份、权限和 CSRF 条件。只接受需要预检的格式与请求头也能形成一道防线，但必须严格执行接口约束并限制允许的跨源调用方。
+
+</details>
+
+### 8.3 设置 SameSite=Lax 后，哪些请求仍需考虑 CSRF？ {#csrf-samesite}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：同站与同源的差异，以及顶层导航例外。
+
+**相关内容**：[SameSite 的范围](#samesite-的范围)。
+
+<details>
+<summary>参考回答</summary>
+
+**跨站的安全方法顶层导航，以及来自同站但不可信页面的请求，仍需关注。** 显式 `Lax` 允许普通跨站 GET 链接携带 Cookie，所以 GET 不能承担写入；同站子域也不因为不同源就被 SameSite 排除。
+
+需要结合实际 Cookie 范围、来源与接口行为检查，并保留合适的 Token 或准确来源验证。未显式设置的默认 SameSite 还可能存在浏览器兼容性例外。
+
+</details>
+
+### 8.4 有 CSRF Token，为什么还必须防 XSS？ {#csrf-token-xss}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：防伪造机制依赖的页面信任前提。
+
+**相关内容**：[CORS、请求头与 XSS](#cors-请求头与-xss)。
+
+<details>
+<summary>参考回答</summary>
+
+**XSS 可以让攻击代码在目标页面上下文读取 Token 并发送请求。** 此时请求可能同时带着登录 Cookie、正确 Origin 和有效 Token，CSRF 校验无法修复页面已经被接管的问题。
+
+应对不可信输出做正确的编码或净化，同时保留 CSRF 防护。两种防线解决不同入口，不能互相替代。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+
+- [OWASP：Cross-Site Request Forgery Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html)
+- [WHATWG HTML：Sites 与同站判断](https://html.spec.whatwg.org/multipage/browsers.html#sites)
+- [IETF HTTPbis：Cookies 草案，SameSite 属性与请求判断](https://datatracker.ietf.org/doc/html/draft-ietf-httpbis-rfc6265bis-22#section-4.1.2.7)
+- [Node.js：crypto.randomBytes 与 crypto.timingSafeEqual](https://nodejs.org/api/crypto.html)

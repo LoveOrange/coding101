@@ -1,0 +1,258 @@
+---
+knowledge:
+  id: mobile.android.parcelable
+  type: concept
+description: "解释 Parcelable、Parcel 与 Serializable 的关系，字段读写协议、Parcelize、Binder 大小限制和长期存储边界。"
+keywords: [Parcelable, Parcel, Serializable, Parcelize, Bundle, CREATOR]
+---
+
+# Parcelable
+
+**Parcelable** 是 Android 对象将自身写入 `Parcel` 并从中重建的协议。它服务于组件间参数、状态保存和 Binder 通信等场景。理解它的重点是字段怎样编码、接收方怎样还原，以及这份数据能传多大、保存多久。
+
+实现 Parcelable 不等于对象会自动跨进程共享，也不等于对象获得了稳定的磁盘格式。`Parcel` 是传输容器，`Parcelable` 描述对象的读写方法，两者分工不同。
+
+## 1. 面试核心 {#core}
+
+- Parcelable 面向 Android 的数据传输，Serializable 属于 Java 对象序列化机制，**比较时应说明场景、编码工作和对象结构，不能只背“一个快、一个慢”**。[卡](#serializable)
+- `writeToParcel()` 写入字段，`CREATOR` 负责重建，**读取顺序、类型和可空约定必须与写入一致**。[卡](#protocol)
+- `@Parcelize` 在编译期生成实现，**不会自动把任意对象、系统资源或业务关系变成可传输数据**。[卡](#parcelize)
+- Binder 的事务缓冲区是共享资源，**单个对象小于 1 MB 也不意味着调用一定成功**。大数据应通过标识、文件或受控共享资源传递。[卡](#size)
+- `Parcel` 的字节**不适合作为长期持久化或通用网络协议**；应用升级、系统实现与接收方类定义都会影响还原。[卡](#persistence)
+- 收到一个正确类型的 Parcelable，**仍需要验证字段和调用者权限**。类型可还原不代表内容可信。[卡](#validation)
+
+## 2. Parcel 与对象还原 {#parcel与对象还原}
+
+### 2.1 Parcel 中保存的内容 {#parcel中保存的内容}
+
+**Parcel** 是承载数据和特定对象引用的消息容器。整数、字符串和列表等数据被按对应格式写入；Binder 引用、文件描述符等特殊对象则有专门的传递规则，并不是把任意内存地址复制给另一个进程。
+
+跨进程还原普通 Parcelable 时，接收方得到根据字段重建的对象。发送方继续修改原对象，不会自动改变接收方的副本。也不能据此断言任何 Parcelable 都是通用深拷贝：实现可能传递 Binder 能力、文件描述符，或者只编码原对象的一部分状态。
+
+同进程调用也应区分路径。普通函数传参仍可能传递原引用；经 Binder 代理跨进程时才会走相应编解码流程。[Binder](./binder.mdx#aidl与asinterface) 的本地接口优化说明了为什么不能靠接口类型判断是否发生了传输。
+
+### 2.2 字段读写是一份协议 {#字段读写是一份协议}
+
+`writeToParcel()` 负责写入；公开静态的 `CREATOR` 字段提供 `Parcelable.Creator<T>`，其中 `createFromParcel()` 从当前位置读取数据并建立对象，`newArray()` 创建相应数组。
+
+下面手写一个只包含 `id` 和 `title` 的对象，展示顺序要求：
+
+```kotlin
+import android.os.Parcel
+import android.os.Parcelable
+
+data class ArticleKey(val id: Long, val title: String) : Parcelable {
+    private constructor(parcel: Parcel) : this(
+        id = parcel.readLong(),
+        title = requireNotNull(parcel.readString())
+    )
+
+    override fun writeToParcel(dest: Parcel, flags: Int) {
+        dest.writeLong(id)
+        dest.writeString(title)
+    }
+
+    override fun describeContents(): Int = 0
+
+    companion object {
+        @JvmField
+        val CREATOR: Parcelable.Creator<ArticleKey> =
+            object : Parcelable.Creator<ArticleKey> {
+                override fun createFromParcel(source: Parcel): ArticleKey =
+                    ArticleKey(source)
+
+                override fun newArray(size: Int): Array<ArticleKey?> =
+                    arrayOfNulls(size)
+            }
+    }
+}
+```
+
+写入是 `Long` 再 `String`，读取必须采用相同顺序。若把两个相同类型字段的位置交换，甚至可能不抛异常，只是业务含义错位。这里 `title` 不允许为空，读取到 `null` 时直接拒绝；这种检查没有替代标题长度、`id` 有效性或访问权限校验。
+
+`describeContents()` 返回特殊对象类型的位标记，不是字节数。本文对象不包含文件描述符，因此返回 `0`；包含文件描述符时，需要按约定返回 `CONTENTS_FILE_DESCRIPTOR` 对应位。自定义封装还应正确传递嵌套对象需要的标记与写入 flags。
+
+### 2.3 位置与资源释放 {#位置与资源释放}
+
+Parcel 维护当前读写位置。写完以后若要在同一个 Parcel 上从头验证，还需要把位置移回开始：
+
+```kotlin
+import android.os.Parcel
+
+fun roundTripArticleKey(value: ArticleKey): ArticleKey {
+    val parcel = Parcel.obtain()
+    try {
+        value.writeToParcel(parcel, 0)
+        parcel.setDataPosition(0)
+        return ArticleKey.CREATOR.createFromParcel(parcel)
+    } finally {
+        parcel.recycle()
+    }
+}
+```
+
+在 Android 运行环境中，传入 `ArticleKey(7, "Android")` 应还原出相等的字段值。`finally` 保证读取异常时也回收容器；回收后不能继续使用该 Parcel。这段往返检查验证的是当前实现的字段协议，不证明跨版本兼容，也不证明 Binder 事务大小安全。
+
+测试应包含空值规则、Unicode 字符、边界数字和嵌套类型。若只比较序列化前后的对象非空，字段顺序错位等问题仍可能漏过。
+
+## 3. Parcelize 与 Serializable {#parcelize与serializable}
+
+### 3.1 编译期生成 Parcelable {#编译期生成parcelable}
+
+**Parcelize** 是 Kotlin 的 Parcelable 实现生成插件。启用 `kotlin-parcelize` 后，可以让编译器生成字段写入、读取和 `CREATOR`：
+
+```kotlin
+import android.os.Parcelable
+import kotlinx.parcelize.IgnoredOnParcel
+import kotlinx.parcelize.Parcelize
+
+@Parcelize
+data class ScreenArgs(
+    val itemId: Long,
+    val query: String?,
+    @IgnoredOnParcel val debugLabel: String = ""
+) : Parcelable
+```
+
+Kotlin 1.9.23 中，这些类型可以由插件处理；`debugLabel` 被明确排除，还原时采用默认值。不能因此用 `@IgnoredOnParcel` 随意丢掉业务必需字段，也不能把 Activity、线程或网络连接随意放进参数对象。
+
+插件按支持的类型生成代码；复杂类型可以定义 `Parceler`。`@RawValue` 让生成代码改用 `Parcel.writeValue()`，把部分类型检查推迟到运行期，并不保证传入的任何值都能成功编码。类名和字段参与的协议仍然需要考虑接收方能否识别。
+
+### 3.2 与 Serializable 的区别 {#与serializable的区别}
+
+**Serializable** 是 Java 对象序列化的标记接口，配合对象流记录对象状态、类型等信息，并维护对象图中重复引用等关系。默认字段规则、`serialVersionUID` 和安全边界见 [Java 序列化](../../basic-knowledge/java/io/java-serialization-compatibility-security.mdx)。
+
+| 维度 | Parcelable | Java Serializable |
+| --- | --- | --- |
+| 主要适用范围 | Android 参数、状态和 IPC 传输 | Java 对象流协议及其兼容场景 |
+| 实现工作 | 手写字段协议或编译期生成 | 标记接口与默认规则，可自定义 |
+| 还原入口 | `CREATOR` 等 Parcelable 协议 | `ObjectInputStream` 等对象流机制 |
+| 格式边界 | Parcel 不承诺长期稳定存储 | 有自身版本兼容规则，仍需设计演进 |
+| 性能判断 | 可直接按已知字段读写 | 涉及对象图、描述信息等工作 |
+
+对于 Android 的已知参数结构，Parcelable 可以减少通用对象序列化机制所需的工作，因此适合作为这类传输方案。但具体耗时和分配量取决于字段、嵌套结构、生成代码、运行环境及测量方式，不能承诺固定倍数。
+
+两者也不是完全互斥：Parcel 可以写 Serializable，Parcelize 支持的某些字段也可能走对应路径。仅给外层加上 `@Parcelize`，不能推出内部所有数据都采用同一种高效编码。需要优化时，应检查实际字段和生成实现，再做基准测量。
+
+## 4. 传输大小与协议演进 {#传输大小与协议演进}
+
+### 4.1 Bundle 不是无限大的容器 {#bundle不是无限大的容器}
+
+**Bundle** 是 Android 的键值容器，可以保存多种受支持类型，包括 Parcelable。它用于 Intent extras、保存状态等场景，但其中的数据最终可能参与 Binder 事务。
+
+Android 文档给出的 Binder 事务缓冲区大小目前为 1 MB，并由进程正在进行的事务共享。参数、回复和其他同时进行的事务都会影响可用空间，所以不能把“每个 Bundle 不超过 1 MB”当作安全承诺。多个中等大小的操作也可能导致 `TransactionTooLargeException`。
+
+传递列表页面时，优先传查询条件、条目 ID 和必要的小型状态，让接收方从 Repository 恢复数据。大图片、整段音视频和大数组可以通过文件、受控 URI 或合适的共享机制传递；同时说明访问权限、资源有效期和释放责任。仅把 Serializable 换成 Parcelable，不会消除数据规模限制。
+
+### 4.2 长期存储需要独立的数据协议 {#长期存储需要独立的数据协议}
+
+Parcel 官方明确不把它定义为通用序列化格式。把 `marshall()` 得到的字节写进文件，未来仍可能因系统内部表示变化而无法读取；即使应用自己的类没有变，也不能据此获得长期兼容保证。
+
+应用自身改变读写字段顺序，也会改变自定义协议。如果通信双方可以独立升级，需要明确版本、可选字段和未知字段策略，必要时采用适合版本化的 AIDL 数据结构或独立编码格式。给任意 Parcel 开头写一个版本号，只解决自己设计的部分协议，不会把整个 Parcel 格式变成跨系统长期标准。
+
+持久化应选择数据库、DataStore 或有稳定演进规则的数据格式；网络通信也应使用双方约定的协议。组件状态只保存恢复所需的小量信息，不能替代业务数据库。
+
+## 5. 接收方的验证责任 {#接收方的验证责任}
+
+接收自定义 Parcelable 时，需要能找到对应类。Bundle 的 ClassLoader 设置、插件类加载环境和接收方是否具备同一类定义，都可能影响还原。Android 13 提供带目标类参数的部分读取 API，能改善类型约束，但不能替代业务检查。
+
+对外暴露的组件不能信任 Intent 或 Bundle 中的参数。应验证必需字段、数量和大小、标识是否存在、调用者是否有权限访问，并在合适边界处理解析失败。不能先完成敏感操作，再以“对象已经成功反序列化”为授权依据。
+
+读写格式异常和字段合法但无权限是两类问题。前者需要可靠拒绝与错误处理；后者需要访问控制。序列化接口本身不提供后者。
+
+## 6. 面试题 {#面试题}
+
+### 6.1 Parcelable 和 Serializable 是什么，有什么用途和性能差异？ {#serializable}
+
+**考察重点**：Android 传输协议、Java 对象流、实现方式和性能判断条件。
+
+**相关内容**：[Parcel 与对象还原](#parcel与对象还原)、[与 Serializable 的区别](#与serializable的区别)。
+
+<details>
+<summary>参考回答</summary>
+
+**Parcelable 定义 Android 对象写入 Parcel 和还原的协议，Serializable 是 Java 对象序列化的标记接口。** 前者由手写或生成代码按字段处理，适合 Android 参数和 IPC；后者使用对象流及相应类型、对象图和版本规则。Parcelable 可以减少通用机制的部分开销，但性能要结合实际字段和测量，不能仅凭接口名称承诺固定倍数。Parcel 字节也不适合作为长期文件格式。
+
+</details>
+
+### 6.2 手写 Parcelable 时，CREATOR 和 describeContents 分别负责什么？ {#protocol}
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：编码与还原对应关系、静态创建入口及特殊对象位标记。
+
+**相关内容**：[字段读写是一份协议](#字段读写是一份协议)。
+
+<details>
+<summary>参考回答</summary>
+
+**CREATOR 提供从 Parcel 创建对象和创建数组的入口，describeContents 描述文件描述符等特殊内容。** `describeContents()` 不返回字节数。`writeToParcel()` 与读取逻辑的字段顺序、类型和可空规则必须一致；公开静态的 `CREATOR` 让框架找到相应还原方法。
+
+</details>
+
+### 6.3 使用 Parcelize 后，是否任意 Kotlin 对象都可以传输？ {#parcelize}
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：编译期生成、支持类型、自定义编码和忽略字段。
+
+**相关内容**：[编译期生成 Parcelable](#编译期生成parcelable)。
+
+<details>
+<summary>参考回答</summary>
+
+**不可以，插件只能为支持的类型或明确提供的编码规则生成实现。** Activity、连接等对象不能仅靠注解变成合理参数。`@IgnoredOnParcel` 会排除字段，主构造器中的此类字段需要默认值；`@RawValue` 使用运行期写值机制，也可能失败。仍要检查字段语义、大小和接收方定义。
+
+</details>
+
+### 6.4 Parcelable 对象不到 1 MB，为什么仍可能出现 TransactionTooLargeException？ {#size}
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：共享事务缓冲区、同时进行的调用和大数据传输方案。
+
+**相关内容**：[Bundle 不是无限大的容器](#bundle不是无限大的容器)。
+
+<details>
+<summary>参考回答</summary>
+
+**Binder 缓冲区由正在进行的事务共享，1 MB 不是每个对象独享的配额。** 还要考虑其他参数、回复和并发调用。应减少传输内容，传 ID、查询条件或受控文件引用，并定义权限和有效期；仅替换序列化接口不能解决规模问题。
+
+</details>
+
+### 6.5 可以把 Parcel 字节保存到文件，作为升级后的恢复格式吗？ {#persistence}
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：IPC 容器与持久化协议的不同兼容承诺。
+
+**相关内容**：[长期存储需要独立的数据协议](#长期存储需要独立的数据协议)。
+
+<details>
+<summary>参考回答</summary>
+
+**不应把 Parcel 字节作为长期稳定的存储格式。** 底层表示和应用字段协议变化都可能使旧字节无法读取。长期状态应使用数据库、DataStore 或明确设计版本演进的数据格式；自己增加一个版本号也不能替平台承诺 Parcel 的兼容性。
+
+</details>
+
+### 6.6 外部 Intent 中的 Parcelable 成功读取后，还需要验证什么？ {#validation}
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：类型、内容和授权三个不同层次。
+
+**相关内容**：[接收方的验证责任](#接收方的验证责任)。
+
+<details>
+<summary>参考回答</summary>
+
+**仍要验证字段范围、数据规模和调用者权限。** 还原成功只说明数据按某个类的协议被解析，不证明 ID 合法、资源存在或调用者有权操作。类型读取 API、错误处理和业务授权应各自承担相应职责。
+
+</details>
+
+## 7. 参考资料 {#参考资料}
+
+- [Android：Parcelable](https://developer.android.com/reference/android/os/Parcelable)
+- [Android：Parcel](https://developer.android.com/reference/android/os/Parcel)
+- [Android：Parcelable 实现生成器](https://developer.android.com/kotlin/parcelize)
+- [Kotlin 1.9.23：Parcelize 注解定义](https://github.com/JetBrains/kotlin/blob/v1.9.23/plugins/parcelize/parcelize-runtime/src/kotlinx/parcelize/Parcelize.kt)
+- [Android：TransactionTooLargeException](https://developer.android.com/reference/android/os/TransactionTooLargeException)
+- [Android：Bundle](https://developer.android.com/reference/android/os/Bundle)
+- [Java 17：对象序列化体系](https://docs.oracle.com/en/java/javase/17/docs/specs/serialization/serial-arch.html)
+- [Android：不安全的反序列化](https://developer.android.com/privacy-and-security/risks/unsafe-deserialization)
+- [Android：Stable AIDL](https://source.android.com/docs/core/architecture/aidl/stable-aidl)

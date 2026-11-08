@@ -3,7 +3,8 @@ import clsx from 'clsx';
 import Link from '@docusaurus/Link';
 import Heading from '@theme/Heading';
 
-import {cardsInSection, crossArticles, localRefs, moduleOf, RATING_LABELS, sectionLabel, topicsHref, useLearningIndex} from '../content';
+import {cardsInSection, crossArticles, localRefs, moduleOf, RATING_LABELS, sectionLabel, topicsHref, priorityForRole, useActiveRoleId, useLearningIndex} from '../content';
+import {withRole} from '../roles';
 import {useLearnerFeatures} from '../features';
 import {useCurrentArticle} from './context';
 import {useLearner} from '../store';
@@ -11,9 +12,11 @@ import type {ArticleIndex, CardIndex, CardState} from '../types';
 import {Companies, PriorityDots} from '../ui';
 import styles from './article.module.css';
 
-export function reviewHref(article: ArticleIndex, card?: CardIndex): string {
+export function reviewHref(article: ArticleIndex, card?: CardIndex, roleId?: string, topicId?: string): string {
   const params = new URLSearchParams({article: article.id});
   if (card) params.set('card', card.id);
+  if (roleId !== undefined) params.set('role', roleId);
+  if (topicId) params.set('topic', topicId);
   return `/review?${params.toString()}`;
 }
 
@@ -22,19 +25,20 @@ export function reviewHref(article: ArticleIndex, card?: CardIndex): string {
  * shown only when the topic groups several articles.
  */
 export function TreeBreadcrumb({article, className}: {article: ArticleIndex; className?: string}) {
+  const roleId = useActiveRoleId();
   const index = useLearningIndex();
   const module = moduleOf(index, article);
   if (!module) return null;
   const domainHref = `/topics?domain=${encodeURIComponent(module.domain.id)}`;
   return (
     <nav className={clsx(styles.crumbs, className)} aria-label="知识树位置">
-      <Link to={domainHref}>{module.domain.label}</Link>
+      <Link to={withRole(domainHref, roleId)}>{module.domain.label}</Link>
       {module.topic && module.topic.articleIds.length > 1 && (
         <>
           <span className={styles.crumbSep} aria-hidden="true">
             /
           </span>
-          <Link to={topicsHref(article)}>{module.topic.label}</Link>
+          <Link to={withRole(topicsHref(article), roleId)}>{module.topic.label}</Link>
         </>
       )}
     </nav>
@@ -128,30 +132,33 @@ export function useCoreItem(children: ReactNode): {className: string; content: R
 }
 
 export function CoreCardChip({article, card}: {article: ArticleIndex; card: CardIndex}) {
+  const roleId = useActiveRoleId();
   return (
-    <Link className={styles.coreChip} to={reviewHref(article, card)} title={card.question}>
+    <Link className={styles.coreChip} to={reviewHref(article, card, roleId)} title={card.question}>
       卡 · {card.label}
     </Link>
   );
 }
 
 function CardChip({article, card}: {article: ArticleIndex; card: CardIndex}) {
+  const roleId = useActiveRoleId();
   return (
-    <Link className={styles.chip} to={reviewHref(article, card)} title={card.question}>
+    <Link className={styles.chip} to={reviewHref(article, card, roleId)} title={card.question}>
       卡 · {card.question}
     </Link>
   );
 }
 
 export function SectionTags({article, sectionId}: {article: ArticleIndex; sectionId: string}) {
+  const roleId = useActiveRoleId();
   const index = useLearningIndex();
   const cards = cardsInSection(index, article, sectionId);
   if (!cards.length) return null;
   return (
     <div className={styles.tags}>
-      {article.priority && (
+      {priorityForRole(article, roleId) && (
         <>
-          <PriorityDots priority={article.priority} />
+          <PriorityDots priority={priorityForRole(article, roleId)} />
           <span className={styles.divider} />
         </>
       )}
@@ -207,6 +214,7 @@ function StatusDot({state}: {state?: CardState}) {
 }
 
 export function InterviewCards({article, headingId}: {article: ArticleIndex; headingId: string}) {
+  const roleId = useActiveRoleId();
   const index = useLearningIndex();
   const learner = useLearner();
   const features = useLearnerFeatures();
@@ -224,17 +232,17 @@ export function InterviewCards({article, headingId}: {article: ArticleIndex; hea
             <span className={styles.interviewHint}>先在心里答一遍，再点开卡片对照参考回答。卡片之间可以左右切换，看完会回到这里。</span>
           </div>
           {cards.length > 0 && (
-            <Link className={styles.flipAll} to={reviewHref(article)}>
+            <Link className={styles.flipAll} to={reviewHref(article, undefined, roleId)}>
               逐张翻看 {cards.length} 张 →
             </Link>
           )}
         </div>
         <div className={styles.grid}>
           {cards.map((card) => (
-            <Link key={card.id} className={styles.card} to={reviewHref(article, card)}>
+            <Link key={card.id} className={styles.card} to={reviewHref(article, card, roleId)}>
               <div className={styles.cardTop}>
                 <span className={styles.cardLabel}>{card.label}</span>
-                <PriorityDots priority={article.priority} />
+                <PriorityDots priority={priorityForRole(article, roleId)} />
               </div>
               <div className={styles.cardQuestion}>{card.question}</div>
               <Companies cardId={card.id} selfTest={card.selfTest} tone="paper" />

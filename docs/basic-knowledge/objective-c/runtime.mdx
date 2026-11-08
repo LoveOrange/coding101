@@ -1,0 +1,366 @@
+---
+knowledge:
+  id: basic-knowledge.objective-c.runtime
+  type: concept
+description: "解释 Objective-C 消息派发、动态方法解析与转发、关联对象、方法交换，以及 KVC 和 KVO 的机制与使用边界。"
+keywords: [Objective-C Runtime, objc_msgSend, 消息转发, KVC, KVO, 关联对象, method swizzling]
+---
+
+# Objective-C Runtime
+
+**Objective-C Runtime** 是支持对象、类和动态消息派发的运行时系统。代码写下一个方法名时，接收者最终执行哪个实现，可以在运行时确定；动态方法解析、消息转发和 KVO 都建立在相关机制上。面试需要讲清查找路径和改变行为的范围，不能只把几个 API 名称背成固定调用顺序。
+
+## 1. 面试核心 {#core}
+
+- `SEL` 标识消息名称，`IMP` 指向具体方法实现，**相同 selector 在不同类上可以对应不同实现**。[卡](#dispatch)
+- 普通消息从接收者运行时类开始查找，**super 改变查找起点，接收者仍然是 self**。
+- 找不到实现时，运行时提供动态解析与转发机会，**方法签名、接收者和返回值必须符合真实契约**。[卡](#forwarding)
+- 关联对象用对象与键关联额外状态，**没有改变原实例布局，关联策略也不等于弱引用机制**。[卡](#associated-object)
+- 方法交换改变 selector 与实现的关系，**作用范围、继承关系、签名和其他交换方都会影响结果**。[卡](#swizzling)
+- KVC 根据键按规则访问属性，KVO 观察变化，**两者用途不同，不是同一个机制的两种写法**。[卡](#kvc-kvo)
+- 自动 KVO 可通过动态子类与重写 setter 截获变化，**直接写 ivar 不会自动经过那条 setter 通知路径**。[卡](#kvo-mechanism)
+
+## 2. 消息查找与动态派发 {#消息查找与动态派发}
+
+**selector**（`SEL`）标识方法名，包括参数位置所需的冒号，例如 `setName:`。**方法实现**（`IMP`）是具体实现的函数入口。一个 `Method` 描述还包含 selector、实现和类型编码等信息；selector 本身不等于函数地址，也不完整携带参数类型。
+
+普通 Objective-C 消息表达式由编译器生成适合目标 ABI 的消息派发调用。可以用以下过程理解查找：先根据接收者的运行时类尝试命中方法缓存，未命中再查找类及父类中的实现，找到后执行并按运行时策略更新缓存。
+
+实例方法从实例的类开始，类方法从类对象的元类一侧开始，前置关系见[Objective-C 对象模型](./object-model.mdx#实例类与元类)。继承来的方法也可以进入派发缓存，因此缓存不是“只存本类自己实现的方法”。
+
+方法实现至少接收 `self` 与 `_cmd` 两个隐含参数，再接收声明中的业务参数。`[super work]` 仍把当前对象作为接收者，只是从父类一侧查找相应实现，不会临时构造一个父类对象。
+
+业务代码通常应让编译器生成消息发送。手工调用 `IMP` 或消息函数时，必须使用与实际参数、返回类型和平台 ABI 一致的函数类型；错误的强转可能产生寄存器传参、返回值或 ARC 所有权问题。直接缓存 `IMP` 还会绕开之后的动态查找，不应仅凭“少一次查表”就在普通业务代码中使用。
+
+向 `nil` 发送普通对象消息与解引用空指针不同，部分常见返回类型会得到零值；不要把这个规则无限推广到任意 ABI 下的任意聚合返回类型，也不要把它当作掩盖对象意外缺失的业务方案。
+
+## 3. 动态解析与消息转发 {#动态解析与消息转发}
+
+**动态方法解析**允许类在找不到方法时补充实现。实例方法通常通过 `+resolveInstanceMethod:` 处理，类方法通过 `+resolveClassMethod:` 处理，并需要把实现放到正确的类或元类中。
+
+```objectivec
+#import <Foundation/Foundation.h>
+#import <objc/runtime.h>
+
+@interface DynamicItem : NSObject
+@property (nonatomic, readonly) NSString *message;
+@end
+
+static id ReadMessage(id receiver, SEL selector) {
+    (void)receiver;
+    (void)selector;
+    return @"resolved";
+}
+
+@implementation DynamicItem
+@dynamic message;
++ (BOOL)resolveInstanceMethod:(SEL)selector {
+    if (selector == @selector(message)) {
+        return class_addMethod(self, selector, (IMP)ReadMessage, "@@:");
+    }
+    return [super resolveInstanceMethod:selector];
+}
+@end
+
+int main(void) {
+    @autoreleasepool {
+        DynamicItem *item = [DynamicItem new];
+        printf("%s\n", item.message.UTF8String); // resolved
+    }
+}
+```
+
+`@dynamic` 让编译器不合成这个 getter，运行时解析再用 `class_addMethod` 添加。类型编码 `@@:` 表达对象返回值以及接收者、selector 两个隐含参数，必须与 `ReadMessage` 的真实签名一致。
+
+若解析没有解决问题，还可以使用转发机制：
+
+| 阶段 | 主要入口 | 适用能力 |
+| --- | --- | --- |
+| 动态解析 | `resolveInstanceMethod:` / `resolveClassMethod:` | 给正确的类补上方法实现 |
+| 快速转发 | `forwardingTargetForSelector:` | 把未知消息交给另一个接收者 |
+| 完整转发 | `methodSignatureForSelector:` 与 `forwardInvocation:` | 根据方法签名构造调用，再决定目标、参数或结果处理 |
+| 无法处理 | `doesNotRecognizeSelector:` | 默认报告未识别消息错误 |
+
+快速转发不适合改变参数和聚合多个目标，也不能把接收者返回为自身形成循环。完整转发需要提供真实的方法签名，下面让桥接对象代为调用一个工作对象：
+
+```objectivec
+#import <Foundation/Foundation.h>
+
+@interface Worker : NSObject
+- (NSString *)greet:(NSString *)name;
+@end
+@implementation Worker
+- (NSString *)greet:(NSString *)name {
+    return [@"hello " stringByAppendingString:name];
+}
+@end
+
+@interface Bridge : NSObject
+@property (nonatomic, strong) Worker *worker;
+@end
+@interface Bridge (Messages)
+- (NSString *)greet:(NSString *)name;
+@end
+
+@implementation Bridge
+- (NSMethodSignature *)methodSignatureForSelector:(SEL)selector {
+    return [super methodSignatureForSelector:selector]
+        ?: [self.worker methodSignatureForSelector:selector];
+}
+- (void)forwardInvocation:(NSInvocation *)invocation {
+    if ([self.worker respondsToSelector:invocation.selector]) {
+        [invocation invokeWithTarget:self.worker];
+    } else {
+        [super forwardInvocation:invocation];
+    }
+}
+@end
+
+int main(void) {
+    @autoreleasepool {
+        Bridge *bridge = [Bridge new];
+        bridge.worker = [Worker new];
+        printf("%s\n", [[bridge greet:@"Lin"] UTF8String]); // hello Lin
+    }
+}
+```
+
+`Bridge` 只声明 `greet:`，没有直接实现它，完整转发把调用交给 `Worker`。若 `Bridge` 已有相应实现，就不会因为同时写了 `forwardInvocation:` 而自动进入转发。
+
+转发并不自动修正所有对象查询接口。一个代理即使能够转发消息，也可能需要按自身契约正确实现 `respondsToSelector:`、协议检查等行为，否则调用者可能在发送消息前就判断“不支持”。这些接口不能随意全部返回真，仍应与实际可处理的消息一致。
+
+## 4. 关联对象与方法交换 {#关联对象与方法交换}
+
+**关联对象**用宿主对象和一个稳定的键关联额外值，适合在不能增加 ivar 的分类中保存少量状态。键通常使用静态变量的地址，避免不同模块误用同一个键。
+
+```objectivec
+#import <Foundation/Foundation.h>
+#import <objc/runtime.h>
+
+static char NameKey;
+
+int main(void) {
+    @autoreleasepool {
+        NSObject *host = [NSObject new];
+        NSMutableString *input = [NSMutableString stringWithString:@"Lin"];
+        objc_setAssociatedObject(host, &NameKey, input, OBJC_ASSOCIATION_COPY_NONATOMIC);
+        [input appendString:@"!"];
+        NSString *name = objc_getAssociatedObject(host, &NameKey);
+        printf("%s\n", name.UTF8String); // Lin
+        objc_setAssociatedObject(host, &NameKey, nil, OBJC_ASSOCIATION_COPY_NONATOMIC);
+        printf("%d\n", objc_getAssociatedObject(host, &NameKey) == nil); // 1
+    }
+}
+```
+
+关联策略决定保留、复制和访问语义。`OBJC_ASSOCIATION_ASSIGN` 不是自动清零的 `weak`；若要表达弱关系，需要单独设计弱引用容器等机制。关联值也可能反过来持有宿主，形成引用环。删除自己的一项关联应针对自己的键，不要为了清理一项就移除其他模块的全部关联。
+
+**方法交换**（method swizzling）改变方法名与实现的对应关系。对于两个签名相同、直接由同一类实现的方法，可以用以下最小例子观察效果：
+
+```objectivec
+#import <Foundation/Foundation.h>
+#import <objc/runtime.h>
+
+@interface Speaker : NSObject
+- (NSString *)first;
+- (NSString *)second;
+@end
+@implementation Speaker
+- (NSString *)first { return @"A"; }
+- (NSString *)second { return @"B"; }
+@end
+
+int main(void) {
+    @autoreleasepool {
+        Speaker *speaker = [Speaker new];
+        Method first = class_getInstanceMethod([Speaker class], @selector(first));
+        Method second = class_getInstanceMethod([Speaker class], @selector(second));
+        printf("%s\n", speaker.first.UTF8String); // A
+        method_exchangeImplementations(first, second);
+        printf("%s\n", speaker.first.UTF8String); // B
+        method_exchangeImplementations(first, second);
+    }
+}
+```
+
+交换作用于方法所在的类关系，不是只修改变量 `speaker` 指向的某一个实例。若取到的是继承自父类的方法，直接交换可能影响父类及其他子类，应先分清方法归属，并在需要时为目标子类建立独立实现。
+
+实际埋点还要处理重复安装、多个库的交换顺序、递归调用原实现、签名兼容和系统实现变化。公开委托或明确的包装层能满足需求时，优先使用可见的调用关系；运行时交换会把影响扩展到原调用者看不见的位置。
+
+## 5. 键值编码 {#键值编码}
+
+**KVC**（Key-Value Coding，键值编码）按字符串键访问对象属性，常用入口是 `valueForKey:`、`setValue:forKey:` 和键路径接口。它是一套有约定的访问机制，不是任意反射读取内存。
+
+以 `valueForKey:@"count"` 为例，默认基础 getter 查找先寻找 `getCount`、`count`、`isCount`、`_count` 等访问器。若没有普通访问器，还会考虑集合访问模式；在允许直接访问 ivar 时，再按 `_count`、`_isCount`、`count`、`isCount` 等次序查找实例变量。setter 也优先查找对应设置方法，再考虑允许的直接存储访问。
+
+```objectivec
+#import <Foundation/Foundation.h>
+
+@interface Counter : NSObject {
+    NSInteger _count;
+}
+@end
+@implementation Counter
+@end
+
+int main(void) {
+    @autoreleasepool {
+        Counter *counter = [Counter new];
+        [counter setValue:@7 forKey:@"count"];
+        NSNumber *value = [counter valueForKey:@"count"];
+        printf("%ld\n", (long)value.integerValue); // 7
+    }
+}
+```
+
+这个类没有属性访问器，默认允许的 ivar 回退仍使 KVC 可以访问 `_count`。标量通过 `NSNumber` 等对象形式承接，因此它不是把任意 C 值直接当作对象指针。
+
+键不存在会进入 undefined-key 处理，默认抛出异常；给不接受空值的标量设置 `nil` 也需要相应处理。字符串键失去了普通属性访问的一部分编译期检查，拼写错误可能推迟到运行时，所以不应仅为了“少写类型”就把明确的接口全部换成 KVC。
+
+## 6. 键值观察 {#键值观察}
+
+**KVO**（Key-Value Observing，键值观察）让观察者接收属性变化通知。经典 Objective-C 自动 KVO 可以通过创建中间子类、改变被观察对象的运行时类关系，并重写相应 setter，在修改前后接入通知；这种处理只影响被观察的对象，而不是把原类所有实例统一替换。
+
+```objectivec
+#import <Foundation/Foundation.h>
+
+static char ObservationContext;
+
+@interface Counter : NSObject
+@property (nonatomic) NSInteger count;
+- (void)setRawCount:(NSInteger)value;
+@end
+@implementation Counter
+- (void)setRawCount:(NSInteger)value { _count = value; }
+@end
+
+@interface Watcher : NSObject
+@end
+@implementation Watcher
+- (void)observeValueForKeyPath:(NSString *)keyPath ofObject:(id)object
+                       change:(NSDictionary *)change context:(void *)context {
+    if (context == &ObservationContext) {
+        printf("observed %ld\n", (long)[change[NSKeyValueChangeNewKey] integerValue]);
+    } else {
+        [super observeValueForKeyPath:keyPath ofObject:object change:change context:context];
+    }
+}
+@end
+
+int main(void) {
+    @autoreleasepool {
+        Counter *counter = [Counter new];
+        Watcher *watcher = [Watcher new];
+        [counter addObserver:watcher forKeyPath:@"count"
+                     options:NSKeyValueObservingOptionNew context:&ObservationContext];
+        counter.count = 3;
+        [counter setRawCount:4];
+        printf("stored %ld\n", (long)counter.count);
+        [counter removeObserver:watcher forKeyPath:@"count" context:&ObservationContext];
+    }
+}
+```
+
+输出 `observed 3` 与 `stored 4`。第二次更新直接写 `_count`，没有经过 `count` 的 setter，因而没有沿自动 setter 通知路径产生第二条观察回调。KVC 与 KVO 还有配套行为，不能由此推断“所有直接 ivar 访问路径都永远无法通知”。
+
+手动通知使用 `willChangeValueForKey:` 与 `didChangeValueForKey:` 包围状态变化。若对同一个 key 同时保留自动通知又手动通知，可能重复发送；应按实现选择 `automaticallyNotifiesObserversForKey:` 等配置。集合变化还需要使用相应的集合通知或 KVC 代理，不能只修改内部数组就假设父对象的属性观察一定触发。
+
+观察注册、移除和上下文应成对管理。示例显式移除自己的注册，不依赖不同系统版本或不同观察 API 对生命周期清理的差异。回调也不会因为来自 KVO 就自动切到主线程；更新 UI 前应确认执行环境。
+
+动态子类的具体名称、缓存和内部字段属于实现细节。排查时可以观察运行时类变化，但业务逻辑不应依赖某个私有类名前缀。理解 KVO 的关键是修改拦截、通知时机和观察生命周期，而不是复制一段固定的 runtime 内部结构。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 Objective-C 消息发送如何找到方法实现？ {#dispatch}
+
+**考察重点**：接收者、selector、类层次与派发缓存。
+
+**相关内容**：[消息查找与动态派发](#消息查找与动态派发)。
+
+<details>
+<summary>参考回答</summary>
+
+**根据接收者的运行时类和 selector 查找相应 IMP，通常先查缓存，再沿类与父类查找。** 相同 selector 在不同类上可以对应不同实现，继承方法也可被缓存。`super` 改变查找起点而不改变接收者；最终还找不到实现时，才考虑动态解析与转发等处理机会。
+
+</details>
+
+### 7.2 Objective-C 的消息转发有哪些阶段？ {#forwarding}
+
+**考察重点**：动态解析、替代接收者、方法签名与完整调用。
+
+**相关内容**：[动态解析与消息转发](#动态解析与消息转发)。
+
+<details>
+<summary>参考回答</summary>
+
+**查找失败后可以先尝试动态补充实现，再选择快速转发或完整转发。** `resolveInstanceMethod:` 等提供实现；`forwardingTargetForSelector:` 选择另一个接收者；完整转发需要正确的 `methodSignatureForSelector:` 和 `forwardInvocation:`。仍无法处理时默认报告未识别消息。已有实现会正常调用，不会因为写了转发方法就自动转发。
+
+</details>
+
+### 7.3 关联对象是否改变实例布局，assign 策略是否等同 weak？ {#associated-object}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：外部关联存储、唯一键与引用生命周期。
+
+**相关内容**：[关联对象与方法交换](#关联对象与方法交换)。
+
+<details>
+<summary>参考回答</summary>
+
+**关联对象在对象与键之间维护额外状态，不往既有实例布局中添加 ivar；assign 也不提供自动清零的 weak 语义。** 需要稳定且不冲突的键，并按拥有关系选择保留或复制。关联值反向持有宿主仍可能形成环，清理时应只移除自己负责的关联。
+
+</details>
+
+### 7.4 如何用 Runtime 替换方法实现？ {#swizzling}
+
+**考察重点**：方法归属、影响范围、签名与安装顺序。
+
+**相关内容**：[关联对象与方法交换](#关联对象与方法交换)。
+
+<details>
+<summary>参考回答</summary>
+
+**可以取得相应方法描述后用 `method_exchangeImplementations` 交换实现，或按需要用添加、替换方法的 API 安装新实现。** 先确认方法属于哪个类、是否继承而来，以及新旧签名是否兼容。类级修改会影响相关实例，还要处理重复安装、其他库的交换链和原实现调用；若需要限定单实例，必须另行设计影响范围。
+
+</details>
+
+### 7.5 KVC 与 KVO 有什么区别？ {#kvc-kvo}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：键访问规则与变化观察的不同职责。
+
+**相关内容**：[键值编码](#键值编码)、[键值观察](#键值观察)。
+
+<details>
+<summary>参考回答</summary>
+
+**KVC 按字符串键访问属性，KVO 接收属性变化通知。** KVC 有访问器与 ivar 的查找规则，未知键默认会失败；KVO 关心修改是否触发合适的通知、观察者怎样注册和结束。两者存在配套行为，但不能把“能按键读写”直接等同于“所有修改都会通知”。
+
+</details>
+
+### 7.6 KVO 的原理是什么？ {#kvo-mechanism}
+
+**考察重点**：动态子类、setter 拦截、手动通知与生命周期。
+
+**相关内容**：[键值观察](#键值观察)。
+
+<details>
+<summary>参考回答</summary>
+
+**经典自动 KVO 可以通过中间子类重写 setter，在状态修改前后接入通知。** 被观察对象的运行时类关系随之变化，直接给 ivar 赋值不会自动走这个 setter 路径。若自行维护通知，要配对 `willChangeValueForKey:` 与 `didChangeValueForKey:`，避免和自动通知重复，并管理好注册、移除与回调线程。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [Apple：Messaging](https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/ObjCRuntimeGuide/Articles/ocrtHowMessagingWorks.html)
+- [Apple：Dynamic Method Resolution](https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/ObjCRuntimeGuide/Articles/ocrtDynamicResolution.html)
+- [Apple：Message Forwarding](https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/ObjCRuntimeGuide/Articles/ocrtForwarding.html)
+- [Apple：Key-Value Coding Accessor Search Patterns](https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/KeyValueCoding/SearchImplementation.html)
+- [Apple：Key-Value Observing Implementation Details](https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/KeyValueObserving/Articles/KVOImplementation.html)
+- [Apple：KVO Compliance](https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/KeyValueObserving/Articles/KVOCompliance.html)
+- [Apple：Registering for Key-Value Observing](https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/KeyValueObserving/Articles/KVOBasics.html)
+- [Apple objc4-906.2：关联对象实现](https://github.com/apple-oss-distributions/objc4/blob/objc4-906.2/runtime/objc-references.mm)
+- [Apple objc4-906.2：运行时类与方法实现](https://github.com/apple-oss-distributions/objc4/blob/objc4-906.2/runtime/objc-runtime-new.mm)

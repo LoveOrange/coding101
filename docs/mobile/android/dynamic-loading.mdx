@@ -1,0 +1,238 @@
+---
+knowledge:
+  id: mobile.android.dynamic-loading
+  type: concept
+description: "解释 Android 的 DEX 类加载、委派顺序、类型身份、插件资源与组件，以及动态代码的版本和安全边界。"
+keywords: [DexClassLoader, PathClassLoader, ClassLoader, 插件化, 热修复, DEX]
+---
+
+# Android 动态加载
+
+**动态加载**是在应用运行时，通过类加载器取得并使用代码定义。Android 上这类代码通常采用 DEX 格式。它能让宿主发现原先未使用的实现，但不会自动完成资源整合、组件注册、版本兼容或权限隔离。
+
+理解插件化与历史热修复方案时，应先分清代码如何进入运行时，再讨论系统框架是否认识这些对象。仅说明“把一个 DEX 放进搜索路径”，还没有解释插件页面为什么能显示、如何启动，以及失败后怎样恢复。
+
+## 1. 面试核心 {#core}
+
+- Android 的 DEX 类加载器负责寻找类定义，**普通 Java class 文件、DEX、Android 资源表和本地库分别有自己的加载要求**。[卡](#loaders)
+- 默认父加载器优先委派有助于共享类型，**类身份由类名和定义它的加载器共同决定**；同名接口加载两份仍可能无法转换。[卡](#identity)
+- `DelegateLastClassLoader` 等有不同查找顺序，**子加载器优先也不是任意覆盖系统类或已加载类**。[卡](#delegation)
+- 插件化还要处理资源、Context、组件生命周期和依赖，**成功 new 出一个 Activity 对象，不等于系统能启动它**。[卡](#plugin)
+- 历史热修复依赖具体运行时与实现条件，**修改查找路径不能自动替换已经存在的类、对象或编译结果**。[卡](#hotfix)
+- 动态代码在宿主进程中执行，**类加载器不是权限沙箱**；可信来源、完整性、兼容性和发布约束需要分别满足。[卡](#security)
+
+## 2. DEX 与类加载器 {#dex与类加载器}
+
+### 2.1 加载的对象是什么 {#加载的对象是什么}
+
+Android 构建通常先把 Java、Kotlin 源码编译为 JVM 字节码，再经 D8 或 R8 处理为 DEX，具体职责见 [Android 构建](./build.mdx)。APK 或 JAR 容器里可以携带 DEX；文件后缀是 `.jar`，不代表里面仅有普通 `.class` 文件就能由 Android 的 DEX 加载器执行。
+
+类加载器按名称找到定义后，运行时还需要验证、链接，并在相应条件下初始化类。`loadClass()` 与类初始化不是同一个动作，基础阶段见 [类加载](../../basic-knowledge/java/jvm/class-loading-stages.mdx)。查找到类以后，静态初始化、构造器或后续方法仍可能失败。
+
+Android 还有资源表、布局、图片和 `.so` 等内容。类加载器能够查到某些路径资源，不等于它已经把另一 APK 的 Android 资源表接入当前 `Resources`；代码中的资源 ID、设备配置选择和主题仍需要对应资源环境。
+
+### 2.2 常见 DEX 加载器 {#常见dex加载器}
+
+| 加载器 | 主要职责与条件 |
+| --- | --- |
+| `PathClassLoader` | 从给定 DEX、APK 或 JAR 路径查找类，常见于已安装应用的代码环境 |
+| `DexClassLoader` | 从指定路径的 DEX 容器取得类，允许应用配置加载路径和父加载器 |
+| `InMemoryDexClassLoader` | 从 ByteBuffer 中的 DEX 内容加载，基本构造器从 API 26 提供 |
+| `DelegateLastClassLoader` | 采用特定的后委派顺序，不能直接套用普通父优先描述 |
+
+`DexClassLoader` 在 API 26 以前需要应用私有、可写的优化输出目录；API 26 起构造器的 `optimizedDirectory` 参数不再起作用。不能把旧教程中缓存目录、优化文件和 Dalvik 行为不加条件地套到所有 ART 设备。
+
+加载器的 native 库查找路径也需要与 ABI、依赖和运行环境匹配。Java 类存在，不代表它随后加载的 `.so` 就存在或兼容；本地方法注册和错误排查见 [JNI](./jni.mdx#类加载与发布构建)。
+
+## 3. 委派与类型身份 {#委派与类型身份}
+
+### 3.1 父优先委派与例外 {#父优先委派与例外}
+
+**父优先委派**是类加载器先尝试使用已经加载的类，再委托父加载器查找，最后才尝试自己的定义。这里的父关系是加载器之间的关联，不是 Java 类继承关系。
+
+让宿主和插件共享父加载器中的接口，可以避免每个插件各自定义一份公共类型。基础模型见 [类加载器](../../basic-knowledge/java/jvm/classloaders-spi-isolation.mdx)。它也解释了为什么把同名类放进子加载器的路径，通常不能覆盖父加载器已经提供的类。
+
+委派策略可以有例外。Android 的 `DelegateLastClassLoader` 按“启动类路径—自身 DEX 路径—指定父加载器”查找，因此它并不是所有类都无条件先查自身。某个框架是否改变委派，还要看其加载器实现，不能把“Android 都是父优先”或“插件都先查自己”当作统一规则。
+
+### 3.2 同名不等于同一类型 {#同名不等于同一类型}
+
+假设宿主和插件都需要 `TextFormatter`。如果插件引用的是父加载器提供的那份接口，宿主可以把实例视为自己的 `TextFormatter`；如果插件加载器又独立定义了一份同名接口，两边看起来名称一样，却不是同一个运行时类型。
+
+下面定义宿主提供的最小契约，并在实例化时验证类型：
+
+```kotlin
+package com.example.contract
+
+interface TextFormatter {
+    fun format(text: String): String
+}
+
+fun loadFormatter(loader: ClassLoader, className: String): TextFormatter {
+    val implementation = loader.loadClass(className)
+        .asSubclass(TextFormatter::class.java)
+    return implementation.getDeclaredConstructor().newInstance()
+}
+```
+
+该函数假定加载器已经按可信来源和版本规则配置，插件实现有可访问的无参构造器。`asSubclass()` 检查的是实际运行时类型关系，名字相同不够。它也不检查插件是否安全；构造器运行时已经可以执行代码。
+
+公共契约应由双方共享的一份定义提供。插件构建时可以依赖契约完成编译，但最终打包与加载方案应避免独立重复定义。接口方法变更、参数类型、R8 名称变化和默认实现兼容性，也需要一起管理。
+
+### 3.3 加载器与静态状态 {#加载器与静态状态}
+
+两个加载器分别定义同名类，会得到各自的类对象和静态状态。“这个类用了 static 单例”只约束对应类定义的状态，不保证进程中所有同名类共享一个实例。
+
+新建加载器也不会让旧对象消失。线程、回调、静态注册表或全局引用继续持有旧对象时，旧加载器相关对象仍可能存活。插件退出需要撤销回调、停止工作和释放资源，而不是仅把某个 `loader` 变量赋成 `null`。
+
+## 4. 插件化与框架接入 {#插件化与框架接入}
+
+**插件化**把宿主与可独立组织的功能实现分开，并为两者建立加载和交互协议。类加载只是其中一部分。
+
+| 责任 | 需要回答的问题 |
+| --- | --- |
+| 代码与契约 | 哪个加载器定义公共接口，依赖冲突怎样处理 |
+| 资源与主题 | 资源 ID 对应哪份资源表，布局用哪个 Context 与主题解析 |
+| 系统组件 | 系统怎样识别 Activity、Service、Provider，生命周期怎样接入 |
+| 本地库 | ABI、查找路径、依赖和本地全局状态怎样管理 |
+| 状态与退出 | 任务、回调、文件和历史数据怎样随插件版本处理 |
+
+`new SomeActivity()` 只建立了一个 Java 对象，没有执行系统的组件启动流程，也没有完成窗口、token、Context 等框架关联。系统启动 Activity 还依赖应用声明、解析和生命周期管理。相关基础见 [Android 应用组件](./app-components.mdx) 与 [Activity 生命周期](./activity-lifecycle.mdx)。
+
+历史插件框架可能使用预先声明的代理组件、容器页面或替换某些调用入口来接入流程。**Hook** 是在已有调用或分发路径中介入行为的做法，不是某一个固定 API。其可行性依赖具体入口、权限、版本和限制，不能因为演示机上生效，就视为稳定公开契约。
+
+若需求是把正式应用的某些功能按条件或按需交付，可以考虑分模块构建与平台支持的功能交付方式。Play Feature Delivery 使用应用包和功能模块的分发机制，与任意下载外部 DEX 并执行不属于同一套流程；可用平台、模块依赖和版本管理仍需符合产品实际条件。
+
+## 5. 历史热修复与版本边界 {#历史热修复与版本边界}
+
+**热修复**试图在不按普通全量应用升级流程立即替换全部代码的情况下修正行为。历史 Android 方案包括调整 DEX 搜索优先级、间接调用补丁实现，以及依赖运行时内部方法结构的替换等。这些方案的生效时机和限制不同。
+
+调整查找顺序主要影响后续查找：某个类已经由加载器定义后，再把同名补丁放到路径前面，不会自动把旧类变成新类。旧对象、已解析引用、内联或其他编译结果也不会仅因路径变化而整体重建。是否需要重启进程、哪些类必须提前或延后加载，取决于方案的具体机制。
+
+通过替换运行时内部结构介入执行，还可能受 ART 实现、指令集、访问限制和优化方式影响。涉及非 SDK 接口时，也不能把反射成功视为长期可用的承诺。面试可以说明历史方案的因果链路与限制，不应把未标版本的内部字段操作当作当前通用部署步骤。
+
+评估修复方案至少要定义适配范围、失败回退、监测和恢复路径。补丁加载失败后继续执行半初始化逻辑，可能比原缺陷更难恢复。数据结构迁移还可能无法随代码回退自动撤销，应独立设计兼容规则。
+
+## 6. 可信代码与加载边界 {#可信代码与加载边界}
+
+### 6.1 加载器不隔离权限 {#加载器不隔离权限}
+
+同进程加载的代码通常在宿主应用的进程和权限环境中执行。一个独立 ClassLoader 可以区分类型定义，但不是抵御恶意代码的权限沙箱。代码可以在初始化或构造阶段访问宿主已经有权访问的资源，不能等实例化以后才决定是否信任它。
+
+必须在执行前确定代码来源与完整性，并保护校验后到使用时之间的文件，避免校验了一个内容却加载另一个。单独校验 SHA-256 只能证明内容与期望摘要一致；摘要本身也需要来自可信渠道或签名元数据。HTTPS 保护传输，不自动证明下载内容就是被授权发布的版本。
+
+### 6.2 平台规则与运行时约束 {#平台规则与运行时约束}
+
+以 Android 14、`targetSdkVersion` 34 及以上的应用为例，动态加载的相关文件需要满足只读要求，以减少代码文件被篡改的风险。官方流程要求在打开文件后、写入内容前设置只读状态，再通过已打开的文件描述符写入。不能把“写完后再 chmod”当成完全等价的窗口控制；既有文件还要按文档处理和校验。
+
+这个文件条件也不替代来源验证、签名和版本兼容。应用分发平台可能限制某些动态代码加载方式，尤其是远程加载；API 能执行不等于发布渠道允许这样交付。落地时需要核对目标渠道规则，而不是从历史教程推断。
+
+## 7. 故障定位 {#故障定位}
+
+动态加载失败时，先把失败阶段说清楚：
+
+- 找不到类：检查二进制名称、实际 DEX 内容、搜索路径和委派结果，不只检查压缩包文件存在。
+- 类型转换失败：打印双方类的定义加载器，检查公共契约是否重复定义。
+- 找到类却无法使用：检查静态初始化、构造器、方法签名和依赖版本，必要时参考 [类加载故障](../../basic-knowledge/java/jvm/class-initialization-conflicts.mdx)。
+- 页面或资源失败：检查 Manifest、组件容器、Context、主题与资源表，不把所有异常都归为 DEX 加载。
+- 只在发布版或部分设备失败：检查 R8 保留、API 和 targetSdk 条件、ABI、本地库及非 SDK 接口依赖。
+
+应记录版本、类来源和加载阶段，避免把失败吞掉后返回一个表面可用的空对象。功能可以按设计降级，但降级行为与原功能成功应能在日志和监测中区分。
+
+## 8. 面试题 {#面试题}
+
+### 8.1 PathClassLoader、DexClassLoader 与 InMemoryDexClassLoader 有什么区别？ {#loaders}
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：DEX 来源、用途与版本条件。
+
+**相关内容**：[DEX 与类加载器](#dex与类加载器)。
+
+<details>
+<summary>参考回答</summary>
+
+**前两者从配置路径查找 DEX 相关内容，InMemoryDexClassLoader 从内存缓冲区中的 DEX 加载。** PathClassLoader 常见于已安装应用环境，DexClassLoader 可配置额外路径。API 26 以前 DexClassLoader 还需要私有优化目录，之后该参数不再起作用。它们都不能因为容器叫 JAR 就把任意普通 class 文件当成 DEX，也不会自动整合 Android 组件和资源。
+
+</details>
+
+### 8.2 宿主与插件的接口名称相同，为什么还会类型转换失败？ {#identity}
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：定义加载器、共享契约和重复打包。
+
+**相关内容**：[同名不等于同一类型](#同名不等于同一类型)。
+
+<details>
+<summary>参考回答</summary>
+
+**运行时类型身份还包括定义它的类加载器。** 如果两边各定义了一份同名接口，插件对象并没有实现宿主看到的那份类型。应让双方共享同一个公共契约定义，并检查委派、打包与版本；排查时同时记录类名和加载器。
+
+</details>
+
+### 8.3 把同名类放进子加载器，是否就能覆盖父加载器的类？ {#delegation}
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：委派顺序和已定义类的边界。
+
+**相关内容**：[父优先委派与例外](#父优先委派与例外)。
+
+<details>
+<summary>参考回答</summary>
+
+**普通父优先委派会优先使用父加载器的结果，放入同名类并不自动覆盖。** 改变委派策略可以影响查找，但仍有启动类路径等规则。已经定义的类也不会只因路径变化而被替换；应说明具体加载器、查找顺序和生效时机。
+
+</details>
+
+### 8.4 Android 插件化的原理是什么？Hook 在其中起什么作用？ {#plugin}
+
+**考察重点**：代码、资源、组件接入及介入调用路径的边界。
+
+**相关内容**：[插件化与框架接入](#插件化与框架接入)。
+
+<details>
+<summary>参考回答</summary>
+
+**插件化通过约定加载和交互协议，让宿主使用独立组织的功能实现；类加载只解决其中的代码定义部分。** 还要处理公共类型、资源、Context、系统组件和退出清理。历史方案中的 Hook 用于介入某些调用或分发入口，可能配合代理组件或容器，但依赖具体实现与版本。实例化一个 Activity 并不会自动完成系统组件启动。
+
+</details>
+
+### 8.5 调整 DEX 查找顺序，为什么不能无条件修复已运行的代码？ {#hotfix}
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：后续查找、已定义类、对象与编译状态。
+
+**相关内容**：[历史热修复与版本边界](#历史热修复与版本边界)。
+
+<details>
+<summary>参考回答</summary>
+
+**查找顺序主要影响后续寻找定义，不会自动改造已经定义的类和已有对象。** 已解析引用与编译优化也可能依赖原实现。修复方案必须说明生效时机、是否重启、支持版本和回退路径；依赖运行时内部结构的方案还需要额外适配，不能仅用修改路径解释全部行为。
+
+</details>
+
+### 8.6 使用独立 ClassLoader 加载代码，是否就隔离了代码权限？ {#security}
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：类型隔离、进程权限、代码完整性和执行前验证。
+
+**相关内容**：[可信代码与加载边界](#可信代码与加载边界)。
+
+<details>
+<summary>参考回答</summary>
+
+**没有，ClassLoader 的类型区分不是权限沙箱。** 同进程代码仍处于宿主权限环境，需要在执行前确认来源、完整性、兼容版本和文件保护，还要符合平台与渠道规则。摘要校验要求期望摘要可信，不能让待执行文件和摘要一起被任意替换。
+
+</details>
+
+## 9. 参考资料 {#参考资料}
+
+- [Android：PathClassLoader](https://developer.android.com/reference/dalvik/system/PathClassLoader)
+- [Android：DexClassLoader](https://developer.android.com/reference/dalvik/system/DexClassLoader)
+- [Android：InMemoryDexClassLoader](https://developer.android.com/reference/dalvik/system/InMemoryDexClassLoader)
+- [Android：DelegateLastClassLoader](https://developer.android.com/reference/dalvik/system/DelegateLastClassLoader)
+- [Java 17：ClassLoader](https://docs.oracle.com/en/java/javase/17/docs/api/java.base/java/lang/ClassLoader.html)
+- [Java 17 虚拟机规范：运行时类与接口](https://docs.oracle.com/javase/specs/jvms/se17/html/jvms-5.html)
+- [Android：动态代码加载的安全风险](https://developer.android.com/privacy-and-security/risks/dynamic-code-loading)
+- [Android 14：动态代码加载要求](https://developer.android.com/about/versions/14/behavior-changes-14#safer-dynamic-code-loading)
+- [Android：非 SDK 接口限制](https://developer.android.com/guide/app-compatibility/restrictions-non-sdk-interfaces)
+- [Android：Play Feature Delivery](https://developer.android.com/guide/playcore/feature-delivery)
+- [Android：Activity 声明](https://developer.android.com/guide/topics/manifest/activity-element)

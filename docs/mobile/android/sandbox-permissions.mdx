@@ -1,0 +1,276 @@
+---
+knowledge:
+  id: mobile.android.sandbox-permissions
+  type: concept
+description: "解释 Android 应用 UID 沙箱、文件访问、运行时权限、拒绝路径、URI 授权与 Keystore 的责任。"
+keywords: [Android, 沙箱, UID, 运行时权限, FileProvider, Keystore]
+---
+
+# Android 应用沙箱与权限
+
+Android 用应用身份和系统访问控制隔离资源，再通过权限与受控接口开放必要能力。沙箱决定应用默认能接触什么，权限决定系统是否允许某项访问，业务授权则决定当前用户是否有权执行具体业务操作。三者解决的问题不同，取得相机权限并不代表可以读取任意账号的资料。
+
+运行时权限部分以运行于 Android 6.0（API 23）及以上、`targetSdkVersion` 为 23 及以上的应用为基本场景；影响结论的后续版本变化单独说明。
+
+## 1. 面试核心 {#core}
+
+- Android 通常为应用分配独立 UID，并结合 Linux 访问控制与 SELinux 隔离资源，**沙箱约束同样适用于应用中的 Java/Kotlin 和 native 代码**。[卡](#sandbox)
+- Manifest 声明权限不等于所有能力都已获得，**普通权限、运行时权限、签名权限和特殊访问有不同授予方式**。[卡](#permission-types)
+- 权限申请应跟随具体用户操作，**检查、必要说明、请求、结果处理与拒绝降级构成完整流程**。[卡](#request-flow)
+- `shouldShowRequestPermissionRationale()` 为 `false` 有多种原因，**不能单凭它断言用户永久拒绝，也不能把一次授权永久缓存下来**。[卡](#denial)
+- 文件共享应限定到必要资源，**content URI 与临时 URI 权限不同于暴露整个目录或把文件设为公共可读**。[卡](#storage)
+- Keystore 用于保护密钥及其使用条件，**不可导出密钥不等于应用中的明文、令牌和业务操作都已经安全**。[卡](#keystore)
+
+## 2. 应用身份与沙箱 {#应用身份与沙箱}
+
+**UID** 是 Linux 用于识别用户身份的整数。在 Android 的常规应用模型中，应用拥有自己的 UID，进程以该身份访问文件和系统资源。应用私有目录的访问权限阻止其他普通应用直接读取其内容。
+
+**SELinux** 是根据安全标签和策略进一步限制进程能访问哪些资源的机制。它与 UID、文件权限等共同构成隔离，不是用一个 Java 类或虚拟机对象模拟出来的保护。
+
+因此，通过 JNI 调用 C/C++ 不会自动绕过沙箱。native 代码仍在相应进程身份和系统策略下运行。它可能带来内存安全风险，但“语言可以操作指针”和“有权读取其他应用文件”是两回事。
+
+同一应用可以声明多个进程，这些常规进程通常仍使用该应用身份；独立进程不自动提供独立的应用权限边界。隔离进程和历史共享 UID 等特殊机制有各自规则，不能据此把“每个进程都一定有一个独立应用 UID”当成通用结论。
+
+需要跨应用协作时，Android 通过 Binder、Provider、Intent 等入口传递请求。入口能否被访问、调用方拥有什么权限、请求参数是否合法，需要逐层检查。组件的导出规则见 [Android 应用组件](./app-components.mdx#intent与入口声明)。
+
+## 3. 权限的授予方式 {#权限的授予方式}
+
+**权限**是系统控制某类操作的访问条件。它通常通过 Manifest 声明，但不同类别不共用一套授权流程。
+
+| 类别 | 典型处理方式 | 需要分清的边界 |
+| --- | --- | --- |
+| 普通权限，如 `INTERNET` | 按平台规则随安装授予，不弹运行时授权框 | 能访问网络不代表服务端会接受任意业务请求 |
+| 危险权限，如直接访问相机所需的 `CAMERA` | 在适用版本上请求运行时授权 | 用户可以拒绝或撤回，应用要处理不可用路径 |
+| 签名权限 | 根据声明方与申请方的签名身份等规则授予 | 不是让用户点一次“允许”即可取得 |
+| 特殊应用访问 | 使用对应系统设置或专门 API 检查和申请 | 不应全部塞进普通运行时权限请求 |
+
+权限的要求还取决于所用 API、运行系统和目标 SDK。例如直接访问相机与把拍照任务委托给合适的外部组件，不必然要求应用自己取得同一组权限；选择系统文件或照片也可以使用提供精确授权的选择器。
+
+权限组主要帮助用户理解，不应作为程序推断权限的依据。请求一个权限后，使用另一个权限前仍要检查那个具体权限，不假定组内其他权限一定同时获得。
+
+## 4. 运行时权限流程 {#运行时权限流程}
+
+### 4.1 由操作触发请求 {#由操作触发请求}
+
+用户点击“扫描二维码”时，才能理解为什么需要相机。先检查相机是否已经获准；尚未获准时，按系统建议解释用途，再请求权限。拒绝后保留手动输入等替代路径，比应用一启动就连续弹出所有权限更符合实际使用关系。
+
+下面的基类只处理相机权限。子类实现 `openCameraPreview()` 与 `showCameraUnavailable()`，分别承接相机界面和拒绝后的提示或替代操作；它不是相机采集的完整实现。
+
+```kotlin
+import android.Manifest
+import android.app.AlertDialog
+import android.content.pm.PackageManager
+import androidx.activity.ComponentActivity
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
+
+abstract class CameraPermissionActivity : ComponentActivity() {
+    private val cameraPermission = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) openCameraPreview() else showCameraUnavailable()
+    }
+
+    fun onUserRequestsCamera() {
+        when {
+            ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) ==
+                PackageManager.PERMISSION_GRANTED -> openCameraPreview()
+            shouldShowRequestPermissionRationale(Manifest.permission.CAMERA) -> {
+                AlertDialog.Builder(this)
+                    .setMessage("扫描二维码需要使用相机，也可以取消后手动输入。")
+                    .setPositiveButton("继续") { _, _ ->
+                        cameraPermission.launch(Manifest.permission.CAMERA)
+                    }
+                    .setNegativeButton("取消") { _, _ -> showCameraUnavailable() }
+                    .show()
+            }
+            else -> cameraPermission.launch(Manifest.permission.CAMERA)
+        }
+    }
+
+    protected abstract fun openCameraPreview()
+    protected abstract fun showCameraUnavailable()
+}
+```
+
+Manifest 还需声明 `android.permission.CAMERA`。声明表示应用提出这项能力需求，运行时结果才决定当前是否允许访问。
+
+`registerForActivityResult()` 在 Activity 初始化时注册，使结果处理与生命周期保持一致；`launch()` 才触发实际请求。不要等到结果即将返回时才临时注册回调，也不要用一个全局变量假定某个旧 Activity 仍然存在。
+
+具体相机实现还需处理设备不可用、权限在检查后发生变化等失败；授权成功只是调用 API 的必要条件之一，不保证打开设备一定成功。多权限请求则要逐项检查返回结果，不能把“收到一次结果”视为全部获准。
+
+### 4.2 拒绝与再次进入 {#拒绝与再次进入}
+
+`shouldShowRequestPermissionRationale()` 表达系统是否建议在再次申请前解释用途，不是完整的权限状态机。首次申请前可能返回 `false`；系统不再弹框等情况下也可能返回 `false`。因此不能写成“`false` 就是永久拒绝”。
+
+请求结果为拒绝时，应说明对应功能不可用，继续提供其他功能。若用户主动选择重新开启能力，可以解释如何在系统设置中调整；不要在拒绝回调里无限重试，也不要自动把用户反复送进设置页。
+
+从设置页返回并不意味着权限一定改变。真正使用相应功能前，重新检查当前权限，再决定后续操作。应用可以保存“是否曾展示过解释”等产品状态，但不应用自存布尔值替代系统权限查询。
+
+### 4.3 授权具有条件和时效 {#授权具有条件和时效}
+
+Android 11（API 30）起，相机、麦克风和位置信息的部分授权场景支持一次性权限。系统也可能对长期未使用应用重置权限，用户还可以主动撤回。因此，首次安装后的某次成功不能证明几个月后仍然获准。
+
+位置还可能区分粗略与精确、使用期间与后台访问。Android 12（API 31）上的近似位置选择就是一个例子：应用需要围绕实际得到的能力提供功能，不能用“已授予位置权限”掩盖精度不足。
+
+这类限制会影响后台服务。一个在使用期间有效的权限，不表示应用进入后台后仍能任意启动访问相机或麦克风的工作。检查具体操作的权限与后台运行条件，需要同时成立。
+
+## 5. 文件访问与共享 {#文件访问与共享}
+
+### 5.1 选择与用途匹配的存储 {#选择与用途匹配的存储}
+
+应用私有文件、共享媒体和用户选择的文档有不同访问方式。不要为了保存一份应用配置就申请整个设备的文件访问。
+
+| 数据用途 | 合适的访问方式 |
+| --- | --- |
+| 应用自身配置或缓存 | 私有目录、DataStore、数据库等；内部私有存储不需要广泛存储权限 |
+| 需要进入共享媒体库的图片等 | 按版本要求使用 MediaStore |
+| 用户明确选择的一份文档 | Storage Access Framework 与返回的 URI 权限 |
+| 临时把本应用文件交给其他应用 | FileProvider 生成 content URI，授予必要的读写访问 |
+
+Android 10（API 29）引入分区存储；Android 11 上目标 API 30 及以上应用不能再依靠旧的 `WRITE_EXTERNAL_STORAGE` 取得任意共享目录写入能力。访问共享媒体还存在后续版本的细分权限，应按“谁创建的数据、访问哪种媒体、用户是否只选择个别文件”判断，不能把旧读写权限复制到所有版本。
+
+文件路径应由平台目录 API 获取，不硬编码 `/data/...` 或假定所有设备目录一致。还要区分持久文件与缓存：系统可以清理缓存，不能把未同步的唯一业务数据只放在缓存目录中。
+
+### 5.2 URI 授权只开放必要内容 {#uri授权只开放必要内容}
+
+**Content URI** 是通过 ContentProvider 标识某项资源的地址。FileProvider 可以把指定范围内的文件转换成这样的 URI，让接收应用通过 ContentResolver 访问。
+
+发送文件时使用适当的临时 URI 权限，例如只授予 `FLAG_GRANT_READ_URI_PERMISSION`。这样可以限定接收者和访问范围，不需要把整个文件目录改成公共可读。
+
+FileProvider 的配置同样重要。把可共享路径配置得过宽，或者把不可信输入当作文件路径，会扩大实际暴露的数据范围。接收外部 URI 时也要验证所需访问、内容大小与类型，不把 URI 字符串直接当成本地文件路径拼接。
+
+URI 授权的存续规则取决于授予方式。临时共享与支持持久授权的文档选择流程不同；需要跨进程重建继续读取文档时，应确认是否取得并保留了相应持久权限。
+
+## 6. 密钥与敏感数据 {#密钥与敏感数据}
+
+**Android Keystore** 提供受控的密钥存储和密码运算能力。应用可以使用密钥执行允许的运算，而不是先把密钥原始字节导出到应用进程，再自行完成所有操作。
+
+密钥可以附带用途、算法模式和用户认证等限制。某些设备和算法组合还支持硬件保护，但不能仅凭“使用 Android Keystore”断言每一把密钥都位于独立安全硬件中；需要按设备与具体密钥查询能力和安全级别。
+
+| 需要保护的对象 | Keystore 能帮助什么 | 仍需应用处理什么 |
+| --- | --- | --- |
+| 加密密钥 | 降低密钥材料被导出的风险，限制使用方式 | 密钥失效、重新认证、恢复与轮换策略 |
+| 本地加密数据 | 提供加解密所需密钥操作 | 算法和随机数使用、密文格式、错误与迁移 |
+| 会话令牌或业务明文 | 可以作为加密存储方案的一部分 | 使用时的明文、日志、传输、服务端过期和撤销 |
+
+如果应用进程已被控制，攻击者仍可能在允许条件下调用应用可用的密钥运算，或读取应用此刻正在使用的明文。不可导出并不等于不可滥用。
+
+私有目录也不是“数据永不泄露”的承诺。调试日志、备份、导出组件、错误的共享配置与运行时内存都可能绕过开发者原本设想的数据路径。保存敏感信息时，应明确实际需要保留什么、保留多久、退出账号怎样处理，而不是只给文件加上“私有”标签。
+
+## 7. 面试题 {#面试题}
+
+### 7.1 Android 应用沙箱怎样隔离应用？JNI 能绕过它吗？ {#sandbox}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：应用身份、内核访问控制与语言执行环境的关系。
+
+**相关内容**：[应用身份与沙箱](#应用身份与沙箱)。
+
+<details>
+<summary>参考回答</summary>
+
+**Android 通常用独立应用 UID，并结合文件权限与 SELinux 等机制隔离资源。** 其他普通应用不能直接读取本应用私有目录；跨应用访问要通过受控入口与授权。
+
+JNI 代码仍在相应进程身份和系统策略下运行，不能因使用 C/C++ 就跳过沙箱。一个应用的多个常规进程也不等于多个独立的应用授权身份。
+
+</details>
+
+### 7.2 Manifest 声明权限后，为什么还可能无法使用对应能力？ {#permission-types}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：不同授权方式与运行条件。
+
+**相关内容**：[权限的授予方式](#权限的授予方式)。
+
+<details>
+<summary>参考回答</summary>
+
+**Manifest 主要声明需求，不代表所有权限都已授予或当前操作条件都满足。** 危险权限可能需要运行时授权，签名权限依赖身份匹配，特殊访问需要专门流程。
+
+用户还可以撤回权限，某些能力只在使用期间有效。系统允许访问后，设备状态、后台限制和业务授权仍可能使具体操作失败。
+
+</details>
+
+### 7.3 一个完整的运行时权限请求流程包含哪些步骤？ {#request-flow}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：检查、说明、请求、结果处理和生命周期。
+
+**相关内容**：[由操作触发请求](#由操作触发请求)。
+
+<details>
+<summary>参考回答</summary>
+
+**由具体用户操作触发，先检查已有权限，再按需说明用途并发起请求，最后分别处理允许和拒绝。** 使用 Activity Result API 时预先注册回调，在合适时机 `launch()`，不把旧 Activity 的引用当作长期结果接收者。
+
+允许后执行对应功能并处理实际 API 失败；拒绝后提供替代操作或关闭局部能力，不能无限重试或让无关功能一起失效。
+
+</details>
+
+### 7.4 rationale 为 false 是否表示永久拒绝？曾经授权后还要检查吗？ {#denial}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：查询语义、一次性权限与状态变化。
+
+**相关内容**：[拒绝与再次进入](#拒绝与再次进入)、[授权具有条件和时效](#授权具有条件和时效)。
+
+<details>
+<summary>参考回答</summary>
+
+**不能仅凭 `false` 判断永久拒绝，而且实际使用前仍应检查当前权限。** 首次申请前和系统不再显示请求等情形，都可能不要求显示 rationale。
+
+用户撤回、一次性授权到期或系统重置都可能改变结果。从设置页返回也不保证已经授权，应用自己的布尔缓存不能替代系统查询。
+
+</details>
+
+### 7.5 怎样把一份私有文件提供给另一个应用？ {#storage}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：资源范围、content URI 与临时授权。
+
+**相关内容**：[文件访问与共享](#文件访问与共享)。
+
+<details>
+<summary>参考回答</summary>
+
+**通过 FileProvider 等受控 Provider 生成 content URI，再向接收方授予必要的临时读写权限。** 接收方使用 ContentResolver 读取，不必把文件变成公共可读，也不用把整个私有目录暴露出去。
+
+同时限制可共享路径，验证输入和内容范围，并区分临时共享与文档选择中的持久 URI 授权。
+
+</details>
+
+### 7.6 使用 Keystore 后，密钥和业务数据分别得到什么保护？ {#keystore}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**：密钥材料、使用限制与明文边界。
+
+**相关内容**：[密钥与敏感数据](#密钥与敏感数据)。
+
+<details>
+<summary>参考回答</summary>
+
+**Keystore 主要保护密钥材料并限制密钥用途，业务数据的完整保护还需要应用设计。** 硬件保护取决于设备和具体密钥，不能一概保证。
+
+应用仍需处理明文在内存和日志中的暴露、传输、令牌撤销以及密钥失效。进程被控制后，攻击者可能调用仍被允许的密钥操作，所以不可导出不等于任何情况下都不可滥用。
+
+</details>
+
+## 8. 参考资料 {#参考资料}
+
+- [AOSP：Application Sandbox](https://source.android.com/docs/security/app-sandbox)
+- [Android Developers：应用权限](https://developer.android.com/guide/topics/permissions/overview)
+- [Android Developers：请求运行时权限](https://developer.android.com/training/permissions/requesting)
+- [Android Developers：Activity Result API](https://developer.android.com/training/basics/intents/result)
+- [Android Developers：数据与文件存储](https://developer.android.com/training/data-storage)
+- [Android Developers：安全共享文件](https://developer.android.com/training/secure-file-sharing)
+- [Android Developers：Android 11 权限变化](https://developer.android.com/about/versions/11/privacy/permissions)
+- [Android Developers：位置权限](https://developer.android.com/develop/sensors-and-location/location/permissions)
+- [Android Developers：Android Keystore](https://developer.android.com/privacy-and-security/keystore)
+- [AOSP Android 14：PermissionManagerServiceImpl](https://android.googlesource.com/platform/frameworks/base/+/android-14.0.0_r1/services/core/java/com/android/server/pm/permission/PermissionManagerServiceImpl.java)
