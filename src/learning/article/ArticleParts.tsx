@@ -215,57 +215,51 @@ function StatusDot({state}: {state?: CardState}) {
   );
 }
 
-export function InterviewCards({article, headingId}: {article: ArticleIndex; headingId: string}) {
+export function InterviewCards({article}: {article: ArticleIndex}) {
   const roleId = useActiveRoleId();
   const index = useLearningIndex();
   const learner = useLearner();
   const features = useLearnerFeatures();
-  const section = article.sections.find((item) => item.id === headingId);
   const cards = article.cardIds.map((id) => index.cards[id]);
   return (
-    <>
-      <Heading as="h2" id={headingId} className={clsx(styles.interviewHeading, 'c101-interview')}>
-        {section?.number ? `${section.number} · ` : ''}面试题卡片
-      </Heading>
-      <div className={clsx(styles.interview, 'c101-interview-cards')}>
-        <div className={styles.interviewHead}>
-          <div className={styles.interviewIntro}>
-            <span className={styles.interviewTitle}>先想答案，再翻面</span>
-            <span className={styles.interviewHint}>先在心里答一遍，再点开卡片对照参考回答。卡片之间可以左右切换，看完会回到这里。</span>
-          </div>
-          {cards.length > 0 && (
-            <Link className={styles.flipAll} to={reviewHref(article, undefined, roleId)}>
-              逐张翻看 {cards.length} 张 →
-            </Link>
-          )}
+    <div className={clsx(styles.interview, 'c101-interview-cards')}>
+      <div className={styles.interviewHead}>
+        <div className={styles.interviewIntro}>
+          <span className={styles.interviewTitle}>先想答案，再翻面</span>
+          <span className={styles.interviewHint}>先在心里答一遍，再点开卡片对照参考回答。卡片之间可以左右切换，看完会回到这里。</span>
         </div>
-        <div className={styles.grid}>
-          {cards.map((card) => (
-            <Link key={card.id} id={card.anchor} className={styles.card} to={reviewHref(article, card, roleId)}>
-              <div className={styles.cardTop}>
-                <span className={styles.cardLabel}>{card.label}</span>
-                <PriorityDots priority={priorityForRole(article, roleId)} />
-              </div>
-              <div className={styles.cardQuestion}>{card.question}</div>
-              <Companies cardId={card.id} selfTest={card.selfTest} tone="paper" />
-              <div className={styles.cardFoot}>
-                <span>
-                  考察 {card.checkpointCount} 点
-                  {localRefs(card).length > 0 && ` · 相关 ${localRefs(card).map((ref) => sectionLabel(ref.number)).filter(Boolean).join(' ')}`}
-                  {crossArticles(index, card).length > 0 && ` · 另涉及 ${crossArticles(index, card).length} 篇`}
-                </span>
-                {features && <StatusDot state={learner.cards[card.id]} />}
-              </div>
-            </Link>
-          ))}
-        </div>
-        {features && (
-          <div className={styles.interviewNote}>
-            <span className={clsx(styles.dot, styles.dotGreen)} />
-            未标记的卡读完后明天进入复习；已标记的按状态安排
-          </div>
+        {cards.length > 0 && (
+          <Link className={styles.flipAll} to={reviewHref(article, undefined, roleId)}>
+            逐张翻看 {cards.length} 张 →
+          </Link>
         )}
       </div>
-    </>
+      <div className={styles.grid}>
+        {cards.map((card) => (
+          <Link key={card.id} id={card.anchor} className={styles.card} to={reviewHref(article, card, roleId)}>
+            <div className={styles.cardTop}>
+              <span className={styles.cardLabel}>{card.label}</span>
+              <PriorityDots priority={priorityForRole(article, roleId)} />
+            </div>
+            <div className={styles.cardQuestion}>{card.question}</div>
+            <Companies cardId={card.id} selfTest={card.selfTest} tone="paper" />
+            <div className={styles.cardFoot}>
+              <span>
+                考察 {card.checkpointCount} 点
+                {localRefs(card).length > 0 && ` · 相关 ${localRefs(card).map((ref) => sectionLabel(ref.number)).filter(Boolean).join(' ')}`}
+                {crossArticles(index, card).length > 0 && ` · 另涉及 ${crossArticles(index, card).length} 篇`}
+              </span>
+              {features && <StatusDot state={learner.cards[card.id]} />}
+            </div>
+          </Link>
+        ))}
+      </div>
+      {features && (
+        <div className={styles.interviewNote}>
+          <span className={clsx(styles.dot, styles.dotGreen)} />
+          未标记的卡读完后明天进入复习；已标记的按状态安排
+        </div>
+      )}
+    </div>
   );
 }

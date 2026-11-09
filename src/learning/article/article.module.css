@@ -244,38 +244,11 @@
 }
 
 /* Interview cards section */
-.interviewHeading::before {
-  content: '';
-  position: absolute;
-  left: 32px;
-  top: 0;
-  width: 2px;
-  height: 18px;
-  background: var(--c-accent);
-}
-
-.interviewHeading {
-  margin-top: 48px !important;
-  margin-bottom: 6px !important;
-  padding: 28px 32px 0 !important;
-  border: none !important;
-  background: var(--c-fill);
-  border-radius: 16px 16px 0 0;
-  position: relative;
-  font-family: 'JetBrains Mono', monospace !important;
-  font-size: 12px !important;
-  font-weight: 600 !important;
-  color: var(--c-accent) !important;
-  letter-spacing: 0 !important;
-  margin-left: 0 !important;
-  margin-right: 0 !important;
-}
-
 .interview {
-  margin: -6px 0 var(--ifm-leading);
+  margin: 0 0 var(--ifm-leading);
   background: var(--c-fill);
-  border-radius: 0 0 16px 16px;
-  padding: 6px 32px 28px;
+  border-radius: 16px;
+  padding: 28px 32px;
   display: flex;
   flex-direction: column;
   gap: 20px;
@@ -553,16 +526,8 @@
 }
 
 @media (max-width: 996px) {
-  .interviewHeading::before {
-    left: 16px;
-  }
-
-  .interviewHeading {
-    padding: 20px 16px 0 !important;
-  }
-
   .interview {
-    padding: 6px 16px 20px;
+    padding: 20px 16px;
   }
 }
 

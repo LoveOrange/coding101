@@ -20,7 +20,7 @@ import ValuePassing from '@site/src/components/Diagram/ValuePassing';
 
 - 基本类型的变量存的是具体的值，引用类型的变量存的是**引用值**或 `null`，对象本身并不在变量里。
 - 赋值和传参都是**复制变量当前的值**。引用类型复制的是引用值，所以复制之后，两个变量指向同一个对象。[卡](#pass-by-value)
-- 通过形参修改对象，**调用方能看到**；给形参重新赋值，**只影响形参自己**。[卡](#rename-vs-replace)
+- 通过形参修改对象，**调用方能看到**；给形参重新赋值，**只影响形参自己**。[卡](#rename-vs-replace) [卡](#swap-parameters)
 - `final` 变量**赋值后不能再次赋值**。如果它保存的是引用，引用的指向不能改变，但对象本身的可变内容仍可修改。[卡](#final-reference-copy)
 - 引用数组的 `clone()` 是**浅拷贝**，复制后的数组和原数组仍然共享元素引用指向的对象。[卡](#final-reference-copy)
 
@@ -249,7 +249,37 @@ System.out.println(first[0]); // AB
 
 </details>
 
-### 7.3 final 引用和数组 clone 能否隔离对象修改？ {#final-reference-copy}
+### 7.3 为什么在 swap 方法中交换两个形参，不能交换调用方变量保存的引用？ {#swap-parameters}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+**考察重点**
+
+- 区分调用方变量与形参各自保存的引用。
+- 能根据形参赋值过程，推导方法返回后调用方变量的状态。
+
+**相关内容**：[参数交换](#参数交换)。
+
+<details>
+<summary>参考回答</summary>
+
+**`swap` 交换的是两个形参保存的引用副本，调用方变量保存的引用没有改变。**
+
+例如，`first` 指向名字为 `Lin` 的对象，`second` 指向名字为 `Asuka` 的对象。调用 `swap(first, second)` 后，下面的代码只会交换 `a` 和 `b` 的值：
+
+```java
+static void swap(User a, User b) {
+    User temp = a;
+    a = b;
+    b = temp;
+}
+```
+
+执行完后，`a` 指向名字为 `Asuka` 的对象，`b` 指向名字为 `Lin` 的对象；`first` 和 `second` 都没有被重新赋值。因此，方法返回后，`first.getName()` 仍是 `Lin`，`second.getName()` 仍是 `Asuka`。
+
+</details>
+
+### 7.4 final 引用和数组 clone 能否隔离对象修改？ {#final-reference-copy}
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
