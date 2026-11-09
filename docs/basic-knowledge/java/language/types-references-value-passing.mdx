@@ -23,7 +23,7 @@ Java 只有值传递。传递基本类型时，复制的是具体的值；传递
 
 ## 2. 核心术语 {#核心术语}
 
-理解传参，先分清变量、引用和对象，以及调用时的实参与方法声明中的形参。下面依据 Java 语言规范，用中文转述这些术语的含义。
+理解传参，先分清变量、引用和对象，以及调用时的实参与方法声明中的形参。下面依据语言规范和官方文档，用中文转述这些术语的含义。
 
 | 术语 | 含义与例子 |
 | --- | --- |
@@ -33,10 +33,14 @@ Java 只有值传递。传递基本类型时，复制的是具体的值；传递
 | **引用值**（reference value，简称 reference） | 指向对象的值；特殊的空引用 `null` 不指向任何对象。例如 `User first = new User("Lin")` 中，`first` 保存的是新对象的引用。 |
 | **实参**（argument） | 调用方法时提供的表达式，求值结果称为实参值。例如 `rename(first)` 中的 `first` 是实参，求值后得到它保存的引用；实参也可以是 `101`、`count + 1` 这样的表达式。 |
 | **形参**（formal parameter） | 方法声明中用于接收实参值的变量。例如 `void rename(User user)` 中的 `user`。每次调用都会创建新的形参变量。 |
+| **值传递**（pass by value） | 形参保存实参值的一份副本。给形参重新赋值，不会改变调用方的变量。 |
+| **引用传递**（pass by reference） | 形参是调用方变量的别名。给形参赋值，会改变调用方的变量。 |
 
-**值传递**（pass by value）是把实参求得的值复制给形参的传递方式。形参有自己的值；引用值被复制后，两个变量仍可指向同一个对象。
+Java 只有值传递。引用类型传参时，复制的是引用值，因此“传递引用值”仍然属于值传递。
 
 变量、值、对象和引用的定义见 [JLS 第 4 章](https://docs.oracle.com/javase/specs/jls/se21/html/jls-4.html)；实参求值与形参初始化见 [JLS §15.12.4.2](https://docs.oracle.com/javase/specs/jls/se21/html/jls-15.html#jls-15.12.4.2) 和 [JLS §8.4.1](https://docs.oracle.com/javase/specs/jls/se21/html/jls-8.html#jls-8.4.1)。
+
+引用传递作为对照概念，参见 [C# 官方文档中的引用参数说明](https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/keywords/method-parameters#reference-parameters)。
 
 ## 3. 变量保存的值 {#变量保存的值}
 
@@ -249,3 +253,4 @@ record Range(int min, int max) {}
 - [Java Language Specification：Formal Parameters](https://docs.oracle.com/javase/specs/jls/se21/html/jls-8.html#jls-8.4.1)
 - [Java Language Specification：Run-Time Evaluation of Method Invocation](https://docs.oracle.com/javase/specs/jls/se21/html/jls-15.html#jls-15.12.4)
 - [JLS：Arrays](https://docs.oracle.com/javase/specs/jls/se21/html/jls-10.html#jls-10.7)
+- [C# 官方文档：Reference parameters（引用传递的对照定义）](https://learn.microsoft.com/en-us/dotnet/csharp/language-reference/keywords/method-parameters#reference-parameters)
