@@ -6,6 +6,8 @@ import {DEFAULT_PARSE_FRONT_MATTER, parseMarkdownFile, loadFreshModule} from '@d
 const outDir = path.resolve(process.argv[2] ?? 'build');
 const catalog = JSON.parse(await fs.readFile('i18n/en/catalog.json', 'utf8'));
 const discovery = JSON.parse(await fs.readFile('i18n/en/discovery.json', 'utf8'));
+const {parseDoc} = await loadFreshModule(path.resolve('plugins/learning-content/parse.ts'));
+const {cardTranslationErrors} = await loadFreshModule(path.resolve('plugins/learning-content/translation.ts'));
 for (const file of catalog.pages) {
   const translated = await fs.readFile(path.join('i18n/en/docusaurus-plugin-content-pages', file), 'utf8');
   assert.notEqual(translated, await fs.readFile(path.join('src/pages', file), 'utf8'), `Page translation is missing: ${file}`);
@@ -36,6 +38,29 @@ async function readPage(url) {
 
 const chineseSitemap = locs(await fs.readFile(path.join(outDir, 'sitemap.xml'), 'utf8'));
 const allUrls = new Set([...chineseSitemap, ...englishSitemap]);
+const chineseHome = await readPage(site);
+const englishHome = await readPage(englishSite);
+const region = (html, tag) => html.match(new RegExp(`<${tag}\\b[^>]*>[\\s\\S]*?</${tag}>`))?.[0] ?? '';
+const logicalLinks = (html) => tags(html, 'a').filter((tag) => tag.href && !tag.lang).map((tag) => {
+  const url = new URL(tag.href, site);
+  if (url.origin !== site.origin) return url.href;
+  const base = url.pathname.startsWith(englishSite.pathname) ? englishSite.pathname : site.pathname;
+  return '/' + url.pathname.slice(base.length) + url.search + url.hash;
+});
+for (const section of ['nav', 'main', 'footer']) {
+  assert.deepEqual(logicalLinks(region(englishHome, section)), logicalLinks(region(chineseHome, section)), `Both homepages must retain the same ${section} destinations and order`);
+}
+const chineseMain = region(chineseHome, 'main');
+const englishMain = region(englishHome, 'main');
+assert.deepEqual(tags(englishMain, 'section'), tags(chineseMain, 'section'), 'Homepage sections must share the same layout');
+assert(!/[㐀-鿿]/.test(englishMain.replace(/<[^>]+>/g, '')), 'Homepage copy must be translated');
+assert(!tags(region(englishHome, 'nav'), 'a').some((tag) => tag.href === new URL('articles/', englishSite).pathname), 'Article directory must remain an auxiliary entry, as in Chinese');
+for (const link of tags(englishHome, 'a').filter((tag) => tag.hreflang === 'zh-Hans' && !tag.lang)) {
+  assert.equal(link.target, '_self', 'Locale fallback must navigate in the current tab');
+  const target = new URL(link.href, site);
+  assert(!target.pathname.startsWith(englishSite.pathname), `Fallback points into the English bundle: ${target}`);
+  await readPage(target);
+}
 for (const url of allUrls) {
   const html = await readPage(url);
   const alternates = tags(html, 'link').filter((tag) => tag.rel === 'alternate' && tag.hreflang);
@@ -122,13 +147,23 @@ for (const file of catalog.docs) {
   const original = await parse(source);
   const translated = await parse(translation);
   assert.deepEqual(translated.frontMatter.knowledge, original.frontMatter.knowledge, `Knowledge identity changed: ${file}`);
+  const parsed = parseDoc(translation, 'en');
+  assert.deepEqual(cardTranslationErrors(parseDoc(source), parsed), [], `Invalid translated cards: ${file}`);
+  for (const card of parsed.cards) {
+    for (const ref of card.related.filter((ref) => ref.path)) {
+      const target = path.posix.normalize(path.posix.join(path.posix.dirname(file), ref.path));
+      assert(catalog.docs.includes(target), `Card reference needs a published translation: ${file}#${card.anchor} -> ${target}`);
+      const other = parseDoc(await fs.readFile(path.join('i18n/en/docusaurus-plugin-content-docs/current', target), 'utf8'), 'en');
+      if (ref.anchor) assert(other.headings.some((heading) => heading.id === ref.anchor), `Missing translated card reference: ${target}#${ref.anchor}`);
+    }
+  }
   const entry = englishEntries.find(([, , description]) => description.startsWith(`Full text: en. ${translated.frontMatter.description} Chinese original: `));
   assert(entry, `Missing translated description: ${file}`);
   const html = await readPage(entry[1]);
   const schema = JSON.parse(html.match(/<script[^>]*id="c101-document-schema"[^>]*>(.*?)<\/script>/)?.[1] ?? 'null');
   assert.equal(schema?.inLanguage, 'en');
   assert.equal(schema.url, entry[1]);
-  for (const [, id] of source.matchAll(/^### .*\{#([^}]+)\}/gm)) {
+  for (const {anchor: id} of parseDoc(source).cards) {
     assert(translation.includes(`{#${id}}`), `Stable question id changed: ${file}#${id}`);
     assert(tags(html, 'h3').some((tag) => tag.id === id), `Question not present in static HTML: ${id}`);
   }

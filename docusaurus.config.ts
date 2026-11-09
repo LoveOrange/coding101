@@ -241,29 +241,22 @@ const config: Config = {
 
 const theme = config.themeConfig as Preset.ThemeConfig;
 if (english) {
-  theme.navbar = {
-    title: 'Coding 101',
-    items: [
-      {to: '/articles/', label: 'Articles', position: 'left'},
-      {to: '/docs/intro', label: 'Study guide', position: 'left'},
-      {to: '/about', label: 'About', position: 'left'},
-    ],
+  const labels: Record<string, string> = {
+    '主题': 'Topics', '题库': 'Questions', '我的进度': 'My progress', '更多': 'More',
+    '岗位路线': 'Role guides', '面试准备': 'Interview preparation', '工具与框架': 'Tools and frameworks',
+    'ChatGPT 辅助面试复习': 'Studying with ChatGPT', '关于本站': 'About',
+    '学习': 'Study', '资料': 'Resources', '项目': 'Project',
+    'Java 后端路线': 'Java backend guide', 'Agent 开发路线': 'Agent development guide',
+    '运维 / SRE 路线': 'DevOps / SRE guide', '文章目录': 'Article directory', '使用指南': 'Study guide',
+    '联系与纠错': 'Contact and corrections', '隐私与 Cookie': 'Privacy and cookies (Chinese)', '服务条款': 'Terms',
   };
-  theme.footer = {
-    style: 'light',
-    links: [
-      {title: 'Study', items: [
-        {label: 'Articles', to: '/articles/'},
-        {label: 'Study guide', to: '/docs/intro'},
-      ]},
-      {title: 'Project', items: [
-        {label: 'About', to: '/about'},
-        {label: 'GitHub', href: 'https://github.com/loveorange/coding101'},
-        {label: 'Privacy and cookies (Chinese)', href: 'https://coding101.linsama.com/privacy/'},
-      ]},
-    ],
-    copyright: `© ${new Date().getFullYear()} Coding 101 · Linsama Builds`,
+  const localize = (item: {label?: unknown; title?: unknown; items?: unknown}) => {
+    if (typeof item.label === 'string') item.label = labels[item.label] ?? item.label;
+    if (typeof item.title === 'string') item.title = labels[item.title] ?? item.title;
+    if (Array.isArray(item.items)) item.items.forEach(localize);
   };
+  theme.navbar?.items?.forEach(localize);
+  theme.footer?.links?.forEach(localize);
 }
 theme.navbar?.items?.push({type: 'localeDropdown', position: 'right'});
 

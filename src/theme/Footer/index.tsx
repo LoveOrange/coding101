@@ -1,5 +1,5 @@
 import type {ReactNode} from 'react';
-import Link from '@docusaurus/Link';
+import Link from '@site/src/i18n/LocalizedLink';
 import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
 import {useThemeConfig} from '@docusaurus/theme-common';
 

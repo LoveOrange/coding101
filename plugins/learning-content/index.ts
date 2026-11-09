@@ -19,6 +19,8 @@ import type {
 } from '../../src/learning/types';
 import {compactIndex} from '../../src/learning/compact';
 import {parseDoc, type ParsedDoc} from './parse';
+import {cardTranslationErrors} from './translation';
+import englishCatalog from '../../i18n/en/catalog.json';
 
 /** Routes served by the learning pages; each receives the card details module. */
 const ROUTES: {path: string; component: string}[] = [
@@ -110,6 +112,14 @@ export default function learningContentPlugin(context: LoadContext, options: {le
       // English starts with public reading. Role selection, accounts and review
       // routes remain in Chinese until those complete flows are translated.
       if (context.i18n.currentLocale === 'en') {
+        // Validate translated questions even while the review UI uses the
+        // shared Chinese flow. No locale suffix may enter a saved card ID.
+        for (const file of englishCatalog.docs) {
+          const original = parseDoc(await fs.readFile(path.join(context.siteDir, 'docs', file), 'utf8'));
+          const translated = parseDoc(await fs.readFile(path.join(context.siteDir, 'i18n/en/docusaurus-plugin-content-docs/current', file), 'utf8'), 'en');
+          const errors = cardTranslationErrors(original, translated);
+          if (errors.length) throw new Error(`learning-content: ${file}\n${errors.join('\n')}`);
+        }
         actions.setGlobalData(compactIndex({domains: [], articles: {}, cards: {}, roles: []}));
         return;
       }

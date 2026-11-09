@@ -1,5 +1,6 @@
+import {translate} from '@docusaurus/Translate';
 import {type FormEvent, useEffect, useState} from 'react';
-import Link from '@docusaurus/Link';
+import Link, {useLocaleLink} from '@site/src/i18n/LocalizedLink';
 import {useHistory} from '@docusaurus/router';
 import Layout from '@theme/Layout';
 
@@ -9,19 +10,19 @@ import styles from './index.module.css';
 
 const steps = [
   {
-    title: '读文章',
-    description: '按领域和主题组织，全文阅读，无需登录。',
+    title: translate({message: "读文章"}),
+    description: translate({message: "按领域和主题组织，全文阅读，无需登录。"}),
   },
   {
-    title: '练闪卡',
-    description: '每节末尾的面试题，答完标「没想起来 / 模糊 / 记得」，按间隔生成今日复习队列。',
+    title: translate({message: "练闪卡"}),
+    description: translate({message: "每节末尾的面试题，答完标「没想起来 / 模糊 / 记得」，按间隔生成今日复习队列。"}),
     // Shown while spaced review is held back (learnerFeatures off).
-    plain: '每篇文章末尾的面试题都能翻卡自测：先想答案，再对照考察重点和参考回答。',
+    plain: translate({message: "每篇文章末尾的面试题都能翻卡自测：先想答案，再对照考察重点和参考回答。"}),
   },
   {
-    title: '回到原文',
-    description: '汇总薄弱点，一键跳回对应段落，补读后重测。',
-    plain: '每张卡都标出相关章节，答不上来就跳回原文对应段落补读。',
+    title: translate({message: "回到原文"}),
+    description: translate({message: "汇总薄弱点，一键跳回对应段落，补读后重测。"}),
+    plain: translate({message: "每张卡都标出相关章节，答不上来就跳回原文对应段落补读。"}),
   },
 ];
 
@@ -29,42 +30,36 @@ const topic = (domain: string, topicId?: string) =>
   `/topics?domain=${encodeURIComponent(domain)}${topicId ? `&topic=${encodeURIComponent(topicId)}` : ''}`;
 
 const domains: {label: string; href?: string}[] = [
-  {label: '后端', href: topic('basic-knowledge/java', 'basic-knowledge/java/language')},
-  {label: '算法', href: topic('basic-knowledge/algorithms')},
-  {label: '系统设计', href: topic('system-design/system-design')},
-  {label: '数据库', href: topic('basic-knowledge/database')},
-  {label: '网络', href: topic('basic-knowledge/network')},
+  {label: translate({message: "后端"}), href: topic('basic-knowledge/java', 'basic-knowledge/java/language')},
+  {label: translate({message: "算法"}), href: topic('basic-knowledge/algorithms')},
+  {label: translate({message: "系统设计"}), href: topic('system-design/system-design')},
+  {label: translate({message: "数据库"}), href: topic('basic-knowledge/database')},
+  {label: translate({message: "网络"}), href: topic('basic-knowledge/network')},
 ];
 
-const ratings = ['没想起来', '模糊', '记得'];
+const ratings = [translate({message: "没想起来"}), translate({message: "模糊"}), translate({message: "记得"})];
 
 function Intro() {
   const features = useLearnerFeatures();
   return (
     <section className={styles.intro}>
       <div className={styles.introCopy}>
-        <p className={styles.eyebrow}>技术面试复习</p>
-        <h1 className={styles.title}>
-          读懂一遍，
-          <br />
-          再练到记住。
-        </h1>
+        <p className={styles.eyebrow}>{translate({message: "技术面试复习"})}</p>
+        <h1 className={styles.title}>{translate({message: "读懂一遍，"})}<br />{translate({message: "再练到记住。"})}</h1>
         <p className={styles.lead}>
           {features
-            ? 'Coding101 把后端、算法、系统设计、数据库、网络等面试内容整理成文章，每篇末尾配面试闪卡。读过的内容进入复习队列，答不上来的题会带你回到原文段落。'
-            : 'Coding101 把后端、算法、系统设计、数据库、网络等面试内容整理成文章，每篇末尾配面试闪卡。先想答案再翻面，答不上来的题会带你回到原文段落。'}
+            ? translate({message: "Coding101 把后端、算法、系统设计、数据库、网络等面试内容整理成文章，每篇末尾配面试闪卡。读过的内容进入复习队列，答不上来的题会带你回到原文段落。"})
+            : translate({message: "Coding101 把后端、算法、系统设计、数据库、网络等面试内容整理成文章，每篇末尾配面试闪卡。先想答案再翻面，答不上来的题会带你回到原文段落。"})}
         </p>
         <div className={styles.actions}>
           <a className={styles.primaryButton} href="#choose">
-            <span>开始复习</span>
+            <span>{translate({message: "开始复习"})}</span>
             <span aria-hidden="true">↓</span>
           </a>
-          <Link className={styles.secondaryButton} to="/docs/basic-knowledge/network/tls">
-            先读一篇文章
-          </Link>
+          <Link className={styles.secondaryButton} to="/docs/basic-knowledge/network/tls">{translate({message: "先读一篇文章"})}</Link>
         </div>
         <p className={styles.note}>
-          {features ? '文章全文免费阅读，无需登录。注册即 7 天完整 Pro，不绑卡。' : '文章和面试题全部免费，无需登录。'}
+          {features ? translate({message: "文章全文免费阅读，无需登录。注册即 7 天完整 Pro，不绑卡。"}) : translate({message: "文章和面试题全部免费，无需登录。"})}
         </p>
       </div>
 
@@ -72,10 +67,10 @@ function Intro() {
         <div className={styles.cardShadow} />
         <div className={styles.card}>
           <div className={styles.cardMeta}>
-            <span>网络 · HTTPS</span>
-            <span>正面</span>
+            <span>{translate({message: "网络 · HTTPS"})}</span>
+            <span>{translate({message: "正面"})}</span>
           </div>
-          <p className={styles.cardQuestion}>HTTPS 握手时，客户端如何确认服务器的身份？</p>
+          <p className={styles.cardQuestion}>{translate({message: "HTTPS 握手时，客户端如何确认服务器的身份？"})}</p>
           {features ? (
           <div className={styles.ratings}>
             {ratings.map((rating, index) => (
@@ -87,7 +82,7 @@ function Intro() {
             ))}
           </div>
           ) : (
-            <div className={styles.flipHint}>先想一想，再翻面看答案</div>
+            <div className={styles.flipHint}>{translate({message: "先想一想，再翻面看答案"})}</div>
           )}
         </div>
       </div>
@@ -100,10 +95,8 @@ function HowItWorks() {
   return (
     <section className={styles.how} aria-labelledby="how-title">
       <div className={styles.sectionHeading}>
-        <p className={styles.eyebrow}>怎么用</p>
-        <h2 id="how-title" className={styles.howTitle}>
-          阅读、作答与补习
-        </h2>
+        <p className={styles.eyebrow}>{translate({message: "怎么用"})}</p>
+        <h2 id="how-title" className={styles.howTitle}>{translate({message: "阅读、作答与补习"})}</h2>
       </div>
       <ol className={styles.steps}>
         {steps.map((step, index) => (
@@ -120,10 +113,13 @@ function HowItWorks() {
 
 function QuestionSearch() {
   const history = useHistory();
+  const resolve = useLocaleLink();
   const [query, setQuery] = useState('');
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    history.push(query.trim() ? `/questions?q=${encodeURIComponent(query.trim())}` : '/questions');
+    const target = resolve(query.trim() ? `/questions?q=${encodeURIComponent(query.trim())}` : '/questions');
+    if (target.fallback) window.location.assign(target.href);
+    else history.push(target.href);
   };
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -144,8 +140,8 @@ function QuestionSearch() {
         type="search"
         value={query}
         onChange={(event) => setQuery(event.target.value)}
-        placeholder="搜索问题，例如「HTTPS 握手过程」"
-        aria-label="搜索问题"
+        placeholder={translate({message: "搜索问题，例如「HTTPS 握手过程」"})}
+        aria-label={translate({message: "搜索问题"})}
       />
       <kbd className={styles.kbd}>/</kbd>
     </form>
@@ -157,21 +153,19 @@ function Choose() {
   return (
     <section id="choose" className={styles.choose} aria-labelledby="choose-title">
       <div className={styles.chooseHeading}>
-        <h2 id="choose-title" className={styles.chooseTitle}>
-          今天，你想怎么复习？
-        </h2>
-        <p className={styles.chooseLead}>两种方式用的是同一套文章和闪卡，随时可以切换。</p>
+        <h2 id="choose-title" className={styles.chooseTitle}>{translate({message: "今天，你想怎么复习？"})}</h2>
+        <p className={styles.chooseLead}>{translate({message: "两种方式用的是同一套文章和闪卡，随时可以切换。"})}</p>
       </div>
 
       <div className={styles.routes}>
         <div className={styles.routeTopic}>
           <div className={styles.routeHead}>
             <div className={styles.routeMeta}>
-              <span>路线 A · 先学再测</span>
-              <span className={styles.badgeFree}>阅读免费</span>
+              <span>{translate({message: "路线 A · 先学再测"})}</span>
+              <span className={styles.badgeFree}>{translate({message: "阅读免费"})}</span>
             </div>
-            <h3 className={styles.routeTitle}>按主题学习</h3>
-            <p className={styles.routeTextInverse}>{features ? '按领域读文章，每节末尾附面试题，读过的内容会进入复习。' : '按领域阅读技术文章，再用文末面试题检查能否独立解释。'}</p>
+            <h3 className={styles.routeTitle}>{translate({message: "按主题学习"})}</h3>
+            <p className={styles.routeTextInverse}>{features ? translate({message: "按领域读文章，每节末尾附面试题，读过的内容会进入复习。"}) : translate({message: "按领域阅读技术文章，再用文末面试题检查能否独立解释。"})}</p>
           </div>
           <div className={styles.routeFoot}>
             <ul className={styles.chips}>
@@ -188,7 +182,7 @@ function Choose() {
               ))}
             </ul>
             <Link className={styles.routeButtonTopic} to="/topics">
-              <span>选一个领域</span>
+              <span>{translate({message: "选一个领域"})}</span>
               <span aria-hidden="true">→</span>
             </Link>
           </div>
@@ -197,16 +191,16 @@ function Choose() {
         <div className={styles.routeQuestion}>
           <div className={styles.routeHead}>
             <div className={`${styles.routeMeta} ${styles.routeMetaAccent}`}>
-              <span>路线 B · 先测再补</span>
+              <span>{translate({message: "路线 B · 先测再补"})}</span>
               {features && <span className={styles.badgePro}>Pro</span>}
             </div>
-            <h3 className={styles.routeTitle}>从问题出发</h3>
-            <p className={styles.routeText}>先答题，哪里答不上来，再去读对应的文章。</p>
+            <h3 className={styles.routeTitle}>{translate({message: "从问题出发"})}</h3>
+            <p className={styles.routeText}>{translate({message: "先答题，哪里答不上来，再去读对应的文章。"})}</p>
           </div>
           <div className={styles.routeFoot}>
             <QuestionSearch />
             <Link className={styles.routeButtonQuestion} to={features ? '/review?mode=quiz' : '/questions'}>
-              <span>{features ? '随机来 10 道题' : '去题库挑题'}</span>
+              <span>{features ? translate({message: "随机来 10 道题"}) : translate({message: "去题库挑题"})}</span>
               <span aria-hidden="true">→</span>
             </Link>
           </div>
@@ -219,21 +213,21 @@ function Choose() {
 export default function Home(): JSX.Element {
   return (
     <Layout
-      title="技术面试复习"
-      description="Coding 101 面向校招、社招和转岗的技术求职者，提供岗位复习路线、技术原理文章和面试自测，帮助确定复习重点、解释运行机制并准备项目与面试回答。">
+      title={translate({message: "技术面试复习"})}
+      description={translate({message: "Coding 101 面向校招、社招和转岗的技术求职者，提供岗位复习路线、技术原理文章和面试自测，帮助确定复习重点、解释运行机制并准备项目与面试回答。"})}>
       <main className={styles.home}>
         <Intro />
         <HowItWorks />
         <Choose />
         <section className={styles.reading} aria-labelledby="reading-title">
-          <h2 id="reading-title">从具体问题开始阅读</h2>
-          <p>还没有确定复习范围时，先选<a href="/interview-roadmaps/">岗位路线</a>。想补一个知识点时，可以直接阅读下面的文章；每篇都提供原理说明和参考资料。</p>
+          <h2 id="reading-title">{translate({message: "从具体问题开始阅读"})}</h2>
+          <p>{translate({message: "还没有确定复习范围时，先选"})}<Link to="/interview-roadmaps/">{translate({message: "岗位路线"})}</Link>{translate({message: "。想补一个知识点时，可以直接阅读下面的文章；每篇都提供原理说明和参考资料。"})}</p>
           <div className={styles.readingGrid}>
-            <article><h3><Link to="/docs/basic-knowledge/network/tls">TLS</Link></h3><p>从证书验证、密钥协商到加密通信，解释 HTTPS 怎样确认服务端身份，以及它的保护边界。</p></article>
-            <article><h3><Link to="/docs/basic-knowledge/algorithms/binary-search">二分查找</Link></h3><p>用半开区间推导重复值的左右边界，检查空数组、目标缺失和整数溢出。</p></article>
-            <article><h3><Link to="/docs/basic-knowledge/algorithms/backtracking">回溯</Link></h3><p>通过子集枚举解释选择与撤销，区分路径恢复、同层去重和保存答案的复制成本。</p></article>
+            <article><h3><Link to="/docs/basic-knowledge/network/tls">TLS</Link></h3><p>{translate({message: "从证书验证、密钥协商到加密通信，解释 HTTPS 怎样确认服务端身份，以及它的保护边界。"})}</p></article>
+            <article><h3><Link to="/docs/basic-knowledge/algorithms/binary-search">{translate({message: "二分查找"})}</Link></h3><p>{translate({message: "用半开区间推导重复值的左右边界，检查空数组、目标缺失和整数溢出。"})}</p></article>
+            <article><h3><Link to="/docs/basic-knowledge/algorithms/backtracking">{translate({message: "回溯"})}</Link></h3><p>{translate({message: "通过子集枚举解释选择与撤销，区分路径恢复、同层去重和保存答案的复制成本。"})}</p></article>
           </div>
-          <p><Link to="/articles/">浏览完整文章目录</Link> · <Link to="/about">了解内容范围与资料来源</Link></p>
+          <p><Link to="/articles/">{translate({message: "浏览完整文章目录"})}</Link> · <Link to="/about">{translate({message: "了解内容范围与资料来源"})}</Link></p>
         </section>
       </main>
     </Layout>

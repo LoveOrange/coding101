@@ -35,6 +35,11 @@ export type ParsedDoc = {
 };
 
 const NUMBER_RE = /^(\d+(?:\.\d+)*)\.?\s+/;
+export type ContentLocale = 'zh-Hans' | 'en';
+const LABELS = {
+  'zh-Hans': {interview: '面试题', answer: '参考回答', focus: '考察重点', kind: '题型', composite: '综合题', related: '相关内容'},
+  en: {interview: 'Interview questions', answer: 'Reference answer', focus: 'What to explain', kind: 'Question type', composite: 'Composite', related: 'Related reading'},
+};
 const SELF_TEST_COMMENT = '<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->';
 
 function plainHeading(text: string): string {
@@ -147,7 +152,7 @@ function parseList(lines: string[]): Inline[][] {
 // Counts only what a reader reads: hidden comments, link
 // URLs and the reference list are left out.
 function estimateMinutes(lines: string[]): number {
-  const references = lines.findIndex((line) => /^##\s+(?:\d+\.\s*)?参考资料/.test(line));
+  const references = lines.findIndex((line) => /^##\s+(?:\d+\.\s*)?(?:参考资料|References)/.test(line));
   const text = (references === -1 ? lines : lines.slice(0, references))
     .join('\n')
     .replace(/<!--[\s\S]*?-->/g, '')
@@ -157,7 +162,9 @@ function estimateMinutes(lines: string[]): number {
   return Math.max(1, Math.round(cjk / 450 + words / 200));
 }
 
-function parseCard(heading: ParsedHeading, lines: string[]): ParsedCard {
+function parseCard(heading: ParsedHeading, lines: string[], locale: ContentLocale): ParsedCard {
+  const labels = LABELS[locale];
+  const field = (label: string) => new RegExp(`^\\*\\*${label}\\*\\*[：:]?\\s*(.*)$`);
   const related: ParsedLink[] = [];
   let composite = false;
   const selfTest = lines.join('\n').includes(SELF_TEST_COMMENT);
@@ -174,23 +181,23 @@ function parseCard(heading: ParsedHeading, lines: string[]): ParsedCard {
       answerLines.push(line);
       continue;
     }
-    if (/<summary>\s*参考回答\s*<\/summary>/.test(line)) {
+    if (new RegExp(`<summary>\\s*${labels.answer}\\s*</summary>`).test(line)) {
       mode = 'answer';
       continue;
     }
-    const focus = /^\*\*考察重点\*\*[：:]?\s*(.*)$/.exec(line);
+    const focus = field(labels.focus).exec(line);
     if (focus) {
       mode = 'checkpoints';
       if (focus[1]) checkpointLines.push(`- ${focus[1]}`);
       continue;
     }
-    const kind = /^\*\*题型\*\*[：:]\s*(.+)$/.exec(line);
+    const kind = field(labels.kind).exec(line);
     if (kind) {
-      composite = /综合/.test(kind[1]);
+      composite = kind[1].trim() === labels.composite;
       mode = 'none';
       continue;
     }
-    const refs = /^\*\*相关内容\*\*[：:]\s*(.+)$/.exec(line);
+    const refs = field(labels.related).exec(line);
     if (refs) {
       for (const match of refs[1].matchAll(/\]\(([^)\s]+)\)/g)) {
         const [target, hash] = match[1].split('#');
@@ -219,7 +226,7 @@ function parseCard(heading: ParsedHeading, lines: string[]): ParsedCard {
   };
 }
 
-export function parseDoc(source: string): ParsedDoc {
+export function parseDoc(source: string, locale: ContentLocale = 'zh-Hans'): ParsedDoc {
   const lines = bodyLines(source);
   const slugger = createSlugger();
   const headings: ParsedHeading[] = [];
@@ -244,7 +251,7 @@ export function parseDoc(source: string): ParsedDoc {
 
   const cards: ParsedCard[] = [];
   let interviewAnchor: string | undefined;
-  const interview = headings.find((heading) => heading.depth === 2 && heading.title === '面试题');
+  const interview = headings.find((heading) => heading.depth === 2 && heading.title === LABELS[locale].interview);
   if (interview) {
     interviewAnchor = interview.id;
     const nextH2 = headings.find((heading) => heading.depth <= 2 && heading.line > interview.line);
@@ -254,7 +261,7 @@ export function parseDoc(source: string): ParsedDoc {
     );
     questions.forEach((question, index) => {
       const stop = questions[index + 1]?.line ?? end;
-      cards.push(parseCard(question, lines.slice(question.line + 1, stop)));
+      cards.push(parseCard(question, lines.slice(question.line + 1, stop), locale));
     });
   }
 
