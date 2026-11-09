@@ -28,7 +28,7 @@ import ValuePassing from '@site/src/components/Diagram/ValuePassing';
 | 术语 | 含义与例子 |
 | --- | --- |
 | **变量**<br />variable | 用来保存值的存储位置，有自己的类型。例如 `int original = 101` 中，`original` 是一个 `int` 变量。 |
-| **值**<br />value | 可以存入变量、传给方法或从方法返回的数据。Java 的值分为基本值和引用值，例如整数 `101` 是基本值，对象的引用也是值。 |
+| **值**<br />value | 可以存入变量、传给方法或从方法返回的数据。Java 的值分为基本值和引用值，例如整数 `101` 是基本值，对象的引用是引用值。 |
 | **对象**<br />object | 类的实例或数组。例如 `new User("Lin")` 创建一个 `User` 实例，`new int[3]` 创建一个数组，两者都是对象。 |
 | **引用值**<br />reference value，简称 reference | 指向对象的值；特殊的空引用 `null` 不指向任何对象。例如 `User first = new User("Lin")` 中，`first` 保存的是新对象的引用。 |
 | **实参**<br />argument | 调用方法时提供的表达式，求值结果称为实参值。例如 `rename(first)` 中的 `first` 是实参，求值后得到它保存的引用；实参也可以是 `101`、`count + 1` 这样的表达式。 |
