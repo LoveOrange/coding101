@@ -1,13 +1,15 @@
 import {spawn} from 'node:child_process';
 import {createWriteStream} from 'node:fs';
 import {readFile, writeFile, mkdtemp, readdir} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
+import {tmpdir, homedir} from 'node:os';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createHash, randomUUID} from 'node:crypto';
 import {setTimeout as delay} from 'node:timers/promises';
 import {git, requireClean, requireAncestor, currentDeployment, sourceCommit,
   requireSameDeployment, remoteRef, acquireLock, releaseLock} from './release-policy.mjs';
+import {snapshotCompanyMetadata, requireSameMetadataSource} from './release-company-metadata.mjs';
+import {savePrivateJson, verifyCounts} from '../worker/scripts/company-metadata.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const args = process.argv.slice(2);
@@ -26,6 +28,8 @@ const releaseId = randomUUID();
 const report = {source, releaseId, checkOnly, startedAt: new Date().toISOString(), success: false, steps: []};
 let lock, container, activeChild, interrupted = false;
 let deployStarted = false, deploymentConfirmed = false;
+let companySnapshot;
+let metadataSyncStarted = false;
 const safeEnv = Object.fromEntries(['PATH', 'HOME', 'TMPDIR', 'TEMP', 'SystemRoot', 'DOCKER_HOST', 'DOCKER_CONTEXT',
   'SSH_AUTH_SOCK'].filter(k => process.env[k]).map(k => [k, process.env[k]]));
 safeEnv.CI = 'true';
@@ -73,6 +77,32 @@ async function get(path) {
   return Buffer.from(await response.arrayBuffer());
 }
 
+async function companies(mode) {
+  const request = {
+    mode, metadataFile: companySnapshot.metadataFile, sourceHash: companySnapshot.sourceHash,
+    cardsFile: join(workspace, '.docusaurus/learning-content/default/card-details.json'),
+    connectionFile: process.env.CODING101_CONTENT_ENV_FILE || join(homedir(), '.config/coding101-content-import/.env'),
+    target: config.companyMetadata.target,
+    preflightFile: join(companySnapshot.dir, 'check-result.json'),
+    backupFile: join(companySnapshot.dir, 'before.json'),
+    outputFile: join(companySnapshot.dir, `${mode}-result.json`),
+  };
+  const requestFile = join(companySnapshot.dir, `${mode}-request.json`);
+  await savePrivateJson(requestFile, request);
+  try {
+    await run(`company-metadata-${mode}`, process.execPath,
+      ['scripts/import-companies.mjs', requestFile], join(workspace, 'worker'));
+  } finally {
+    const result = await readFile(request.outputFile, 'utf8').then(JSON.parse).catch(() => null);
+    report.companyMetadata[mode] = result ?? {status: 'unknown', error: '元信息子进程没有留下结果；须核对实际数据库。'};
+  }
+  const result = report.companyMetadata[mode];
+  if (result.status !== (mode === 'check' ? 'checked' : 'synced') || (mode === 'sync' && !result.fullReadback)) {
+    throw new Error('公司元信息步骤没有返回完整的成功记录，停止发布。');
+  }
+  return result;
+}
+
 console.log(`[release] ${checkOnly ? 'CHECK' : 'DEPLOY'} ${source}\n[release] 日志：${reportDir}`);
 try {
   // Fetch the actual remote main, not a possibly stale local tracking reference.
@@ -83,6 +113,8 @@ try {
     lock = acquireLock(root, config.repository, config.lockRef, source);
     verifyMain();
   }
+  companySnapshot = await snapshotCompanyMetadata(reportDir, config.companyMetadata);
+  report.companyMetadata = {sourceCommit: companySnapshot.commit, sourceHash: companySnapshot.sourceHash};
   await run('snapshot-clone', 'git', ['clone', '--no-local', '--no-checkout', root, workspace], reportDir);
   git(workspace, ['checkout', '--detach', source]);
   // Only committed files and freshly installed, lockfile-pinned dependencies enter the build.
@@ -101,13 +133,15 @@ try {
   if (!port) throw new Error('测试数据库没有绑定到本机随机端口。');
   await writeFile(join(workspace, 'worker/.env.test'), `TEST_DATABASE_URL=postgresql://postgres:release-test-only@127.0.0.1:${port}/postgres\n`, {mode: 0o600});
   await run('site-tests', 'node', ['--test', ...((await readdir(join(workspace, 'scripts')))
-    .filter(f => f.endsWith('.test.mjs')).map(f => `scripts/${f}`))]);
+    .filter(f => f.endsWith('.test.mjs')).map(f => `scripts/${f}`))], workspace,
+    {...safeEnv, METADATA_TEST_DATABASE_URL: `postgresql://postgres:release-test-only@127.0.0.1:${port}/postgres`});
   await run('operations-tests', 'npm', ['run', 'ops:test'], workspace, {...safeEnv, OPS_TEST_POSTGRES_CONTAINER: container});
   await run('worker-tests', 'npm', ['test'], join(workspace, 'worker'));
   await run('site-typecheck', 'npm', ['run', 'typecheck']);
   await run('worker-typecheck', 'npm', ['run', 'typecheck'], join(workspace, 'worker'));
   await run('production-build', 'npm', ['run', 'build:production']);
   await run('discovery', 'npm', ['run', 'check:discovery']);
+  await companies('check');
   const assets = {};
   for (const name of await readdir(join(workspace, 'build/assets/js'))) {
     if (/^(main|runtime~main)\.[a-f0-9]+\.js$/.test(name)) {
@@ -124,6 +158,7 @@ try {
   await wrangler('worker-dry-run', ['deploy', '--dry-run', '--keep-vars', '--strict']);
   requireClean(root, source);
   requireSameDeployment(before, await live('pre-deploy'));
+  requireSameMetadataSource(config.companyMetadata, companySnapshot);
   if (checkOnly) {
     // A new main commit during this check also invalidates the result.
     const freshMain = remoteRef(root, config.repository, `refs/heads/${config.branch}`);
@@ -139,6 +174,12 @@ try {
     report.after = after;
     if (after.commit !== source || after.message !== message) throw new Error('部署后线上版本与本次源码或发布批次不符。');
     deploymentConfirmed = true;
+    verifyLock();
+    requireSameMetadataSource(config.companyMetadata, companySnapshot);
+    metadataSyncStarted = true;
+    const synced = await companies('sync');
+    verifyCounts(JSON.parse((await get(`/api/c101/companies/counts?release=${releaseId}`)).toString()), synced.expectedCounts);
+    report.companyMetadata.onlineCountsVerified = true;
     let verified = false;
     for (let attempt = 0; attempt < 4; attempt++) {
       try {
@@ -169,8 +210,9 @@ try {
     try { await run('postgres-cleanup', 'docker', ['rm', '-f', container], reportDir, safeEnv, true); }
     catch (error) { report.cleanupError = error.message; report.success = false; process.exitCode = 1; }
   }
-  if (lock && deployStarted && !deploymentConfirmed) {
-    report.lockCleanupError = `上传结果尚未确认，保留发布锁 ${config.lockRef}（${lock}）。请先核对线上版本与日志，不能直接重试。`;
+  const syncState = report.companyMetadata?.sync?.commitState;
+  if (lock && ((deployStarted && !deploymentConfirmed) || (metadataSyncStarted && (!syncState || syncState === 'unknown')))) {
+    report.lockCleanupError = `上传或元信息提交结果尚未确认，保留发布锁 ${config.lockRef}（${lock}）。请先核对线上版本、数据库与日志，不能直接重试。`;
     report.success = false; process.exitCode = 1;
   } else if (lock) {
     try { releaseLock(root, config.repository, config.lockRef, lock); }
