@@ -30,7 +30,8 @@
   flex-direction: column;
   gap: 4px;
   font-size: 15px;
-  max-height: calc(100vh - var(--ifm-navbar-height) - 81px);
+  /* The role controls scroll away; only the sticky navbar takes viewport space. */
+  max-height: calc(100vh - var(--ifm-navbar-height));
   overflow-y: auto;
   position: sticky;
   top: var(--ifm-navbar-height);
