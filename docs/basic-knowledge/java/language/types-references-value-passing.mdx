@@ -33,6 +33,7 @@ import ValuePassing from '@site/src/components/Diagram/ValuePassing';
 | **引用值**<br />reference value，简称 reference | 指向对象的值；特殊的空引用 `null` 不指向任何对象。例如 `User first = new User("Lin")` 中，`first` 保存的是新对象的引用。 |
 | **实参**<br />argument | 调用方法时提供的表达式，求值结果称为实参值。例如 `rename(first)` 中的 `first` 是实参，求值后得到它保存的引用；实参也可以是 `101`、`count + 1` 这样的表达式。 |
 | **形参**<br />formal parameter | 方法声明中用于接收实参值的变量。例如 `void rename(User user)` 中的 `user`。每次调用都会创建新的形参变量。 |
+| **调用方**<br />caller | 发起方法调用的代码。例如 `main` 中执行 `rename(first)`，`main` 就是调用方，`rename` 是被调用的方法。 |
 | **值传递**<br />pass by value | 形参保存实参值的一份副本。给形参重新赋值，不会改变调用方的变量。 |
 | **引用传递**<br />pass by reference | 形参是调用方变量的别名。给形参赋值，会改变调用方的变量。 |
 
@@ -56,54 +57,44 @@ System.out.println(original); // 101
 User first = new User("Lin");
 User second = first;
 
-second.setName("Asuka");
-System.out.println(first.getName()); // Asuka
+System.out.println(first == second); // true
 ```
 
-现在 `first` 和 `second` 是两个变量，但存的是同一个 `User` 对象的引用。通过 `second` 改了名字，再通过 `first` 去读，读到的就是 `Asuka`。这里变的是对象的字段，两个变量本身都没动。
+`first` 和 `second` 是两个变量，保存着同一个 `User` 对象的引用。这里的 `==` 比较两个引用是否指向同一个对象，所以结果是 `true`。赋值复制了引用，没有复制对象。
 
 有一种解释是「基本类型在栈上，对象在堆上」，用它来理解传参并不可靠。JVM 可以优化数据实际存放的位置，但赋值和传参的规则不会跟着变。所以讲语言语义的时候，看变量里存的是基本值还是引用值就够了。
 
 ## 4. 赋值与传参 {#赋值与传参}
 
-修改对象，所有指向它的变量都能看到；给变量重新赋值，只改变这个变量自己。先看重新赋值：
+传参时，形参得到的是实参值的一份副本。下面的 `main` 依次调用 `rename` 和 `replace`，观察两次调用后 `first` 指向的对象：
 
 ```java
-User first = new User("Lin");
-User second = first;
+public static void main(String[] args) {
+    User first = new User("Lin");
 
-second = new User("Asuka");
+    rename(first);
+    System.out.println(first.getName()); // Asuka
 
-System.out.println(first.getName());  // Lin
-System.out.println(second.getName()); // Asuka
-```
+    replace(first);
+    System.out.println(first.getName()); // Asuka
+}
 
-`second = new User("Asuka")` 让 `second` 指向了一个新对象。`first` 里的引用没有变，指向的还是原来那个 `Lin`。
-
-调用方法时，Java 会新建形参变量，把实参的值复制给它。看下面两个方法：
-
-```java
 static void rename(User user) {
     user.setName("Asuka");
 }
 
 static void replace(User user) {
-    user = new User("Asuka");
+    user = new User("Rei");
 }
 ```
 
-假设调用方传进去一个名字是 `Lin` 的用户，两个方法的区别如下：
+执行 `rename(first)` 时，`first` 保存的引用会复制给形参 `user`，类似于上一节的 `User second = first`。`first` 和 `user` 是两个独立变量，指向同一个对象。`user.setName("Asuka")` 修改了这个对象的 `name` 字段，所以第一次输出是 `Asuka`。
 
-| 操作 | 修改的内容 | 调用方是否可见 |
-| --- | --- | --- |
-| `user.setName(...)` | 双方共同指向的对象 | 可见 |
-| `user = new User(...)` | 形参变量保存的引用 | 不可见 |
+接着执行 `replace(first)`，这次调用会创建新的形参 `user`，它最初也指向名字已经变成 `Asuka` 的原对象。`user = new User("Rei")` 让 `user` 指向了新对象，`first` 保存的引用没有变，因此第二次输出仍是 `Asuka`。
+
+下图展示两个方法执行完修改操作、尚未返回时的引用关系：
 
 <ValuePassing />
-
-调用 `rename` 时，形参和调用方的变量指向同一个对象。方法里改了这个对象的名字，调用方再去读，读到的就是 `Asuka`。`replace` 只是让形参 `user` 指向了一个新对象，调用方的变量还指着原来那个 `Lin`。
-
-两个方法拿到的都是引用值的副本。`rename` 顺着副本改了对象，`replace` 改的是副本本身。方法没有办法通过形参替换调用方变量里的引用，所以我们说 Java 没有引用传递。
 
 ## 5. 数组与 String {#数组与-string}
 
@@ -197,13 +188,13 @@ record Range(int min, int max) {}
 
 **Java 只有值传递。**
 
-调用方法时，形参是一个新变量，用实参求得的值来初始化。基本类型复制的是具体的值，引用类型复制的是引用值。
+调用方法时，形参是一个新变量，得到实参值的一份副本。基本类型复制的是具体的值，引用类型复制的是引用值。
 
 传入对象的引用后，形参和调用方的变量指向同一个对象，所以在方法里通过形参修改字段，调用方能看到。但如果给形参重新赋值，改的只是方法里的局部变量，调用方保存的引用不会变。
 
 </details>
 
-### 8.2 `rename` 与 `replace` 为什么产生不同结果 {#rename-vs-replace}
+### 8.2 为什么 `rename` 能修改对象，而 `replace` 不能改变 `first` 的指向？ {#rename-vs-replace}
 
 **考察重点**
 
@@ -215,9 +206,9 @@ record Range(int min, int max) {}
 <details>
 <summary>参考回答</summary>
 
-**`rename` 改的是共享的对象，`replace` 改的只是形参自己的引用，所以调用方看到的结果不一样。**
+**`rename` 修改了 `first` 指向的对象，`replace` 只给形参 `user` 重新赋值，`first` 始终指向原对象。**
 
-两个方法收到的都是引用值的副本，一开始都和调用方指向同一个对象。`rename` 通过这个引用改了名字，调用方也能读到新名字。`replace` 让形参指向了另一个对象，调用方的变量还保存着原来的引用，原对象没有任何变化。
+按正文的调用顺序，`rename(first)` 把原对象的名字从 `Lin` 改成 `Asuka`。随后调用 `replace(first)`，`user` 最初也指向这个对象，再被赋予名字为 `Rei` 的新对象的引用；`first` 保存的引用不变。因此，`main` 中两次 `first.getName()` 都得到 `Asuka`。
 
 </details>
 
