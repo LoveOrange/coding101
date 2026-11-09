@@ -21,7 +21,8 @@ import ValuePassing from '@site/src/components/Diagram/ValuePassing';
 - 基本类型的变量存的是具体的值，引用类型的变量存的是**引用值**或 `null`，对象本身并不在变量里。
 - 赋值和传参都是**复制变量当前的值**。引用类型复制的是引用值，所以复制之后，两个变量指向同一个对象。[卡](#pass-by-value)
 - 通过形参修改对象，**调用方能看到**；给形参重新赋值，**只影响形参自己**。[卡](#rename-vs-replace)
-- `final` 引用**不能再指向别的对象**，但它指向的可变对象仍然可以修改。数组的 `clone()` 是**浅拷贝**，复制后的数组和原数组仍然共享元素对象。[卡](#final-reference-copy)
+- `final` 变量**赋值后不能再次赋值**。如果它保存的是引用，引用的指向不能改变，但对象本身的可变内容仍可修改。[卡](#final-reference-copy)
+- 引用数组的 `clone()` 是**浅拷贝**，复制后的数组和原数组仍然共享元素引用指向的对象。[卡](#final-reference-copy)
 
 ## 2. 核心术语 {#核心术语}
 
@@ -133,22 +134,45 @@ System.out.println(title); // Coding
 
 ## 6. final 引用与浅拷贝 {#final-引用与浅拷贝}
 
-`final` 引用和数组的 `clone()` 都挡不住共享对象被修改：`final` 只限制变量重新赋值，`clone()` 只复制外层的数组。放在一起看：
+### 6.1 final 变量 {#final-变量}
+
+`final` 修饰的变量只能赋值一次。赋值后，再给这个变量赋值会编译报错：
 
 ```java
-final List<String> names = new ArrayList<>();
-names.add("Lin"); // 合法：修改列表
-// names = new ArrayList<>(); // 编译错误：重新赋值
+final int number = 101;
+// number = 202; // 编译错误：number 已经赋过值
+```
 
+对于基本类型，变量保存的是基本值，因此 `number` 不能从 `101` 改成 `202`。对于引用类型，变量保存的是引用值，因此 `final` 限制的是这个变量不能再指向其他对象，也不能改成 `null`。
+
+变量指向的对象仍然可以修改，只要对象本身支持相应操作。例如，数组可以修改元素，`ArrayList` 可以添加元素：
+
+```java
+final int[] numbers = {101};
+numbers[0] = 202;
+System.out.println(numbers[0]); // 202
+// numbers = new int[] {303}; // 编译错误：给 numbers 重新赋值
+
+final List<String> names = new ArrayList<>();
+names.add("Lin");
+System.out.println(names); // [Lin]
+// names = new ArrayList<>(); // 编译错误：给 names 重新赋值
+```
+
+`numbers[0] = 202` 修改的是数组元素，`names.add("Lin")` 修改的是列表内容。`numbers` 和 `names` 保存的引用都没有变，所以这两种修改符合 `final` 的限制。`final` 修饰的是变量，不会让数组元素或集合内容也变成不可修改的。
+
+### 6.2 浅拷贝 {#浅拷贝}
+
+数组的 `clone()` 做的是**浅拷贝**：新建一个数组，复制每个元素的值。元素是引用时，不会继续复制引用指向的对象。下面的两个数组就共享同一个 `StringBuilder`：
+
+```java
 StringBuilder[] first = {new StringBuilder("A")};
 StringBuilder[] second = first.clone();
 second[0].append("B");
 System.out.println(first[0]); // AB
 ```
 
-`final` 管的是变量 `names` 能不能再指向别的列表，不限制列表里的内容。所以 `names.add("Lin")` 可以通过编译，注释掉的那行重新赋值才会编译报错。
-
-`first.clone()` 做的是**浅拷贝**，也就是只复制外层容器，里面的对象仍然共享。它确实新建了一个数组，但新数组里的元素是从旧数组复制过来的引用，指向的还是同一个 `StringBuilder`。所以执行 `second[0].append("B")` 之后，`first[0]` 也变成了 `AB`。
+`first` 和 `second` 指向两个不同的数组，但 `first[0]` 和 `second[0]` 指向同一个 `StringBuilder`。`second[0].append("B")` 修改了这个共享对象的内容，所以通过 `first[0]` 读到的也是 `AB`。
 
 <ShallowCopy />
 
@@ -220,14 +244,14 @@ record Range(int min, int max) {}
 
 **考察重点**：`final` 限制的是哪个变量，以及浅拷贝之后哪些对象仍然共享。
 
-**相关内容**：[final 引用与浅拷贝](#final-引用与浅拷贝)。
+**相关内容**：[final 变量](#final-变量)、[浅拷贝](#浅拷贝)。
 
 <details>
 <summary>参考回答</summary>
 
 **都不能。**
 
-`final` 只限制变量不能重新赋值，所以 `final` 修饰的列表仍然可以添加元素。
+`final` 变量赋值后不能再次赋值，但它指向的可变对象仍然可以修改。例如，可以修改 `numbers[0]`，也可以向 `names` 指向的 `ArrayList` 添加元素；两种操作都没有改变变量保存的引用。
 
 引用数组的 `clone()` 会新建一个数组，但复制过去的是元素的引用，两个数组仍然共享里面的可变对象。比如 `first[0]` 指向内容为 `A` 的 `StringBuilder`，执行 `second = first.clone()` 后再调用 `second[0].append("B")`，通过 `first[0]` 读到的也是 `AB`。要隔离这类修改，需要把内部的可变对象也复制一份。
 
@@ -236,6 +260,7 @@ record Range(int min, int max) {}
 ## 9. 参考资料 {#参考资料}
 
 - [Java Language Specification：Types, Values, and Variables](https://docs.oracle.com/javase/specs/jls/se21/html/jls-4.html)
+- [Java Language Specification：final Variables](https://docs.oracle.com/javase/specs/jls/se21/html/jls-4.html#jls-4.12.4)
 - [Java Language Specification：Method Invocation Contexts](https://docs.oracle.com/javase/specs/jls/se21/html/jls-5.html#jls-5.3)
 - [Java Language Specification：Formal Parameters](https://docs.oracle.com/javase/specs/jls/se21/html/jls-8.html#jls-8.4.1)
 - [Java Language Specification：Run-Time Evaluation of Method Invocation](https://docs.oracle.com/javase/specs/jls/se21/html/jls-15.html#jls-15.12.4)
