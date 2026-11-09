@@ -80,7 +80,7 @@ System.out.println(second.getName()); // Asuka
 
 `second = new User("Asuka")` 让 `second` 指向了一个新对象。`first` 里的引用没有变，指向的还是原来那个 `Lin`。
 
-方法调用也是同一个道理。每次调用，Java 都会新建形参变量，再用实参求得的值去初始化它。看下面两个方法：
+调用方法时，Java 会新建形参变量，把实参的值复制给它。看下面两个方法：
 
 ```java
 static void rename(User user) {
