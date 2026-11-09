@@ -134,7 +134,11 @@ export default function InterviewRoadmap({
   );
   const brokenLinks = useBrokenLinks();
   roadmap.phases.forEach((phase) => brokenLinks.collectAnchor(phase.id));
-  topics.forEach((topic) => brokenLinks.collectAnchor(topic.id));
+  topics.forEach((topic) => {
+    brokenLinks.collectAnchor(topic.id);
+    brokenLinks.collectAnchor(`reading-${topic.id}`);
+  });
+  brokenLinks.collectAnchor('reading-directory');
   const {search, hash, pathname} = useLocation();
   const history = useHistory();
   const [round, setRound] = useState<Round>('first');
@@ -186,20 +190,20 @@ export default function InterviewRoadmap({
     setSelectedTopic(topic);
     dialogRef.current?.showModal();
   }
-  function articleList(articles: RoadmapArticle[]) {
+  function articleList(articles: RoadmapArticle[], deep = isDeepReview(selectedTopic, round)) {
     return (
       <ol className={styles.articleList}>
         {articles.map((article) => (
           <li key={article.title}>
             <div>
               {article.href ? (
-                <Link to={withRole(article.core && !isDeepReview(selectedTopic, round) ? coreReadings[article.href]?.coreHref ?? article.href : article.href, roadmap.questionRoleId ?? roadmap.id)}>
+                <Link to={withRole(article.core && !deep ? coreReadings[article.href]?.coreHref ?? article.href : article.href, roadmap.questionRoleId ?? roadmap.id)}>
                   {article.title}
                 </Link>
               ) : (
                 <span>{article.title} · 建设中</span>
               )}
-              {article.core && !isDeepReview(selectedTopic, round) && <small>{coreReadings[article.href ?? '']?.scope ?? article.scope}</small>}
+              {article.core && !deep && <small>{coreReadings[article.href ?? '']?.scope ?? article.scope}</small>}
             </div>
           </li>
         ))}
@@ -219,6 +223,7 @@ export default function InterviewRoadmap({
           <h1>{roadmap.title}</h1>
           <p>{roadmap.introduction}</p>
           <p><Link to={`/questions?role=${encodeURIComponent(roadmap.questionRoleId ?? roadmap.id)}`}>进入本路线题库 →</Link></p>
+          <p><a href="#reading-directory">查看完整阅读目录</a></p>
         </header>
         {children}
         <nav className={styles.rounds} aria-label="选择复习范围">
@@ -301,12 +306,16 @@ export default function InterviewRoadmap({
                         {topic.guide && !deep ? (
                           <Link to={topic.guide.href}>查看重点 →</Link>
                         ) : (
-                          <button
-                            type="button"
-                            onClick={() => openTopic(topic)}
+                          <a
+                            href={`#reading-${topic.id}`}
+                            onClick={(event) => {
+                              if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+                              event.preventDefault();
+                              openTopic(topic);
+                            }}
                           >
                             查看重点 →
-                          </button>
+                          </a>
                         )}
                       </div>
                     </article>
@@ -316,6 +325,30 @@ export default function InterviewRoadmap({
             );
           })}
         </div>
+        <section id="reading-directory" className={styles.readingDirectory} data-roadmap-readings={roadmap.id}>
+          <h2>完整阅读目录</h2>
+          <p>按主题展开核心阅读与深入阅读。先完成目标岗位需要的核心内容，再按面试要求补充。</p>
+          {roadmap.phases.map((phase) => (
+            <section key={phase.id}>
+              <h3>{phase.title}</h3>
+              {phase.topics.map((topic) => (
+                <details key={topic.id} id={`reading-${topic.id}`}>
+                  <summary>{topic.title} · {PRIORITY_LABELS[topic.priority]}</summary>
+                  <p>{outcomesFor(topic, 'first').join(' ')}</p>
+                  {topic.guide && <p><Link to={topic.guide.href}>查看本主题导读</Link></p>}
+                  {topic.articles.some((article) => article.core) && <>
+                    <h4>核心阅读</h4>
+                    {articleList(topic.articles.filter((article) => article.core), false)}
+                  </>}
+                  {topic.articles.some((article) => !article.core) && <>
+                    <h4>深入阅读</h4>
+                    {articleList(topic.articles.filter((article) => !article.core), true)}
+                  </>}
+                </details>
+              ))}
+            </section>
+          ))}
+        </section>
         <details className={styles.help}>
           <summary>复习优先级与回答深度</summary>
           <p>{roadmap.reviewHint}</p>

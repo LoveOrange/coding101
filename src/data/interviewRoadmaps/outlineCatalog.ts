@@ -37,3 +37,12 @@ export const roleOutlines: OutlineCatalogEntry[] = [
     {label: 'AI Agent', href: '/agent-interview-roadmap/'},
   ]},
 ];
+
+/** Public descriptions and discovery indexes share the catalog's published entries. */
+export const publishedRoleEntries = roleOutlines.flatMap((entry) =>
+  entry.routes
+    ? entry.routes.filter((route) => route.href).map((route) => ({
+        ...route, href: route.href!, label: `${entry.label}（${route.label}）`,
+      }))
+    : entry.href ? [{label: entry.label, href: entry.href, status: entry.status}] : [],
+);

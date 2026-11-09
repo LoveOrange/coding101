@@ -1,6 +1,5 @@
-import React from 'react';
-import {Redirect} from '@docusaurus/router';
+import LegacyArticleRedirect from '@site/src/components/LegacyArticleRedirect';
 
-export default function SpringProxyFailureRedirect(): React.JSX.Element {
-  return <Redirect to="/docs/basic-knowledge/java/spring/aop-pointcut-interceptor-chain#代理边界" />;
+export default function RedirectPage() {
+  return <LegacyArticleRedirect to="/docs/basic-knowledge/java/spring/aop-pointcut-interceptor-chain#代理边界" title="Spring AOP" />;
 }

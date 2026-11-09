@@ -107,6 +107,12 @@ export default function learningContentPlugin(context: LoadContext, options: {le
     name: 'learning-content',
 
     async allContentLoaded({allContent, actions}) {
+      // English starts with public reading. Role selection, accounts and review
+      // routes remain in Chinese until those complete flows are translated.
+      if (context.i18n.currentLocale === 'en') {
+        actions.setGlobalData(compactIndex({domains: [], articles: {}, cards: {}, roles: []}));
+        return;
+      }
       const docsContent = allContent['docusaurus-plugin-content-docs']?.default as LoadedContent | undefined;
       const version = docsContent?.loadedVersions[0];
       if (!version) throw new Error('learning-content: docs content is not available');

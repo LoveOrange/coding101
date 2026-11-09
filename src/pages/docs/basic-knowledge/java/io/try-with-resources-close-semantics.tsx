@@ -1,17 +1,5 @@
-import { Redirect } from "@docusaurus/router";
-import Head from "@docusaurus/Head";
+import LegacyArticleRedirect from '@site/src/components/LegacyArticleRedirect';
 
-const destination =
-  "/docs/basic-knowledge/java/language/exceptions-error-boundaries#try-with-resources-与资源关闭";
-
-export default function TryWithResourcesRedirect(): JSX.Element {
-  return (
-    <>
-      <Head>
-        <title>Java 异常</title>
-        <meta httpEquiv="refresh" content={`0; url=${destination}`} />
-      </Head>
-      <Redirect to={destination} />
-    </>
-  );
+export default function RedirectPage() {
+  return <LegacyArticleRedirect to="/docs/basic-knowledge/java/language/exceptions-error-boundaries#try-with-resources-与资源关闭" title="Java 异常" />;
 }

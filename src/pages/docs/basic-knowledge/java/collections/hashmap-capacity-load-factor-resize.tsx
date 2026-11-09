@@ -1,8 +1,5 @@
-import { Redirect } from "@docusaurus/router";
-import Head from "@docusaurus/Head";
+import LegacyArticleRedirect from '@site/src/components/LegacyArticleRedirect';
 
-const destination = "/docs/basic-knowledge/java/collections/hashmap-structure-lookup-path";
-
-export default function HashMapResizeRedirect(): JSX.Element {
-  return <><Head><title>HashMap</title><meta httpEquiv="refresh" content={`0; url=${destination}#hashmap-resize`} /></Head><Redirect to={`${destination}#hashmap-resize`} /></>;
+export default function RedirectPage() {
+  return <LegacyArticleRedirect to="/docs/basic-knowledge/java/collections/hashmap-structure-lookup-path#容量与扩容" title="HashMap" />;
 }

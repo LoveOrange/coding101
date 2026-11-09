@@ -220,7 +220,7 @@ export default function Home(): JSX.Element {
   return (
     <Layout
       title="技术面试复习"
-      description="Coding 101 提供 Java 后端、AI Agent 开发与运维 / SRE 岗位路线，以及算法、数据库、网络和系统设计文章与面试自测。">
+      description="Coding 101 面向校招、社招和转岗的技术求职者，提供岗位复习路线、技术原理文章和面试自测，帮助确定复习重点、解释运行机制并准备项目与面试回答。">
       <main className={styles.home}>
         <Intro />
         <HowItWorks />

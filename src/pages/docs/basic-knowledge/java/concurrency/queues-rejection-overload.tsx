@@ -1,8 +1,5 @@
-import { Redirect } from "@docusaurus/router";
-import Head from "@docusaurus/Head";
+import LegacyArticleRedirect from '@site/src/components/LegacyArticleRedirect';
 
-const destination = "/docs/basic-knowledge/java/concurrency/threadpoolexecutor-execution-path";
-
-export default function ThreadPoolOverloadRedirect(): JSX.Element {
-  return <><Head><title>Java 线程池</title><meta httpEquiv="refresh" content={`0; url=${destination}#thread-pool-overload`} /></Head><Redirect to={`${destination}#thread-pool-overload`} /></>;
+export default function RedirectPage() {
+  return <LegacyArticleRedirect to="/docs/basic-knowledge/java/concurrency/threadpoolexecutor-execution-path#过载保护" title="Java 线程池" />;
 }

@@ -17,7 +17,7 @@
     "preview:local": "LOCAL_PREVIEW=true npm run build && docusaurus serve --host 127.0.0.1 --port 3000 --no-open",
     "check:doc-links": "node scripts/normalize-doc-links.mjs --check",
     "check:article-format": "node scripts/check-article-format.mjs --strict",
-    "check:discovery": "node scripts/check-discovery.mjs",
+    "check:discovery": "node scripts/check-discovery.mjs && node scripts/check-i18n.mjs",
     "check:content-status": "node scripts/content-status.mjs --check",
     "content-status": "node scripts/content-status.mjs",
     "fix:doc-links": "node scripts/normalize-doc-links.mjs --write",
@@ -29,7 +29,9 @@
     "check:review-resources": "node scripts/check-review-resources.mjs && node scripts/generate-interview-research.mjs --check",
     "release:production": "node scripts/release.mjs",
     "release:check": "node scripts/release.mjs --check",
-    "release:test": "node --test scripts/release-*.test.mjs"
+    "release:test": "node --test scripts/release-*.test.mjs",
+    "check:i18n": "node scripts/check-i18n.mjs",
+    "audit:crawl": "node scripts/audit-crawl.mjs"
   },
   "dependencies": {
     "@docusaurus/core": "^3.10.2",

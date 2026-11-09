@@ -1,5 +1,7 @@
 import type {ReactNode} from 'react';
 import Link from '@docusaurus/Link';
+import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
+import ChineseLink from '@site/src/components/ChineseLink';
 import {useLocation} from '@docusaurus/router';
 import Layout from '@theme-original/DocItem/Layout';
 import type LayoutType from '@theme/DocItem/Layout';
@@ -18,6 +20,7 @@ type Props = WrapperProps<typeof LayoutType>;
 // the package under pnpm, whose context the theme never provides.
 export default function LayoutWrapper(props: Props): ReactNode {
   const {pathname} = useLocation();
+  const english = useDocusaurusContext().i18n.currentLocale === 'en';
   const article = articleByPermalink(useLearningIndex().articles, pathname);
   useReadingTracker(useLearnerFeatures() ? article : undefined);
   return (
@@ -26,9 +29,9 @@ export default function LayoutWrapper(props: Props): ReactNode {
         <Layout {...props}>
           {props.children}
           <p className="margin-top--lg text--small">
-            来源：<Link to={pathname}>Coding 101 原文</Link>
-            {' · 免费阅读，引用请保留出处。'}
-            <Link to="/terms#内容与反馈">内容使用说明</Link>
+            {english ? 'Source: ' : '来源：'}<Link to={pathname}>{english ? 'Coding 101 original article' : 'Coding 101 原文'}</Link>
+            {english ? ' · Free to read. Credit the original when citing. ' : ' · 免费阅读，引用请保留出处。'}
+            <ChineseLink to="/terms#内容与反馈">{english ? 'Content-use terms (Chinese)' : '内容使用说明'}</ChineseLink>
           </p>
           {article && <ArticleAd key={pathname} permalink={pathname} />}
         </Layout>

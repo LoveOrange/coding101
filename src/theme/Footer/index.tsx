@@ -1,5 +1,6 @@
 import type {ReactNode} from 'react';
 import Link from '@docusaurus/Link';
+import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
 import {useThemeConfig} from '@docusaurus/theme-common';
 
 import styles from './styles.module.css';
@@ -14,6 +15,7 @@ type FooterColumn = {title?: string; items: FooterItem[]};
  */
 export default function Footer(): ReactNode {
   const {footer} = useThemeConfig();
+  const english = useDocusaurusContext().i18n.currentLocale === 'en';
   if (!footer) return null;
   const columns = (footer.links ?? []) as FooterColumn[];
 
@@ -24,9 +26,9 @@ export default function Footer(): ReactNode {
           <Link to="/" className={styles.logo}>
             coding<span>101</span>
           </Link>
-          <p className={styles.tagline}>技术面试复习：按主题读文章，用每篇末尾的面试题自测。</p>
+          <p className={styles.tagline}>{english ? 'Prepare for technical interviews: understand the concepts, then test your explanations.' : '技术面试复习：按主题读文章，用每篇末尾的面试题自测。'}</p>
         </div>
-        <nav className={styles.columns} aria-label="页脚">
+        <nav className={styles.columns} aria-label={english ? 'Footer' : '页脚'}>
           {columns.map((column) => (
             <div key={column.title} className={styles.column}>
               {column.title && <span className={styles.label}>{column.title}</span>}

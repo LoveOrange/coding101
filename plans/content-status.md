@@ -8,11 +8,11 @@
 
 | 状态 | Codex 生成 | Claude 校验 | Lin 校验 | English | 日本語 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| ✅ | 667 | 252 | 0 | 0 | 0 |
-| 🔁 | 0 | 97 | 0 | 0 | 0 |
+| ✅ | 667 | 251 | 0 | 2 | 0 |
+| 🔁 | 0 | 98 | 0 | 0 | 0 |
 | 👀 | 0 | 0 | 7 | 0 | 0 |
 | ⚠️ | 0 | 0 | 0 | 0 | 0 |
-| · | 0 | 318 | 660 | 667 | 667 |
+| · | 0 | 318 | 660 | 665 | 667 |
 | — | 0 | 0 | 0 | 0 | 0 |
 
 ## ai
@@ -328,7 +328,7 @@
 | [ARP](../docs/basic-knowledge/network/arp.mdx) | ✅ | · | · | · | · |
 | [CDN](../docs/basic-knowledge/network/cdn.mdx) | ✅ | · | · | · | · |
 | [DHCP](../docs/basic-knowledge/network/dhcp.mdx) | ✅ | · | · | · | · |
-| [DNS](../docs/basic-knowledge/network/dns.mdx) | ✅ | ✅ | · | · | · |
+| [DNS](../docs/basic-knowledge/network/dns.mdx) | ✅ | ✅ | · | ✅ | · |
 | [邮件协议](../docs/basic-knowledge/network/email-protocols.mdx) | ✅ | · | · | · | · |
 | [文件上传](../docs/basic-knowledge/network/file-upload.mdx) | ✅ | · | · | · | · |
 | [GraphQL](../docs/basic-knowledge/network/graphql.mdx) | ✅ | · | · | · | · |
@@ -492,7 +492,7 @@
 
 | 文章 | Codex 生成 | Claude 校验 | Lin 校验 | English | 日本語 |
 | --- | :---: | :---: | :---: | :---: | :---: |
-| [Coding 101](../docs/intro.md) | ✅ | ✅ | · | · | · |
+| [Coding 101](../docs/intro.md) | ✅ | 🔁 | · | ✅ | · |
 
 ## leetcode
 

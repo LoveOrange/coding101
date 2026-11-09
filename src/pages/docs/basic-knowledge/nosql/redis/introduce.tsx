@@ -1,16 +1,5 @@
-import { Redirect } from "@docusaurus/router";
-import Head from "@docusaurus/Head";
+import LegacyArticleRedirect from '@site/src/components/LegacyArticleRedirect';
 
-const destination = "/docs/basic-knowledge/nosql/redis/";
-
-export default function RedisIntroductionRedirect(): JSX.Element {
-  return (
-    <>
-      <Head>
-        <title>Redis</title>
-        <meta httpEquiv="refresh" content={`0; url=${destination}`} />
-      </Head>
-      <Redirect to={destination} />
-    </>
-  );
+export default function RedirectPage() {
+  return <LegacyArticleRedirect to="/docs/basic-knowledge/nosql/redis/" title="Redis" />;
 }

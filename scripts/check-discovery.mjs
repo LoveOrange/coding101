@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import {DEFAULT_PARSE_FRONT_MATTER, parseMarkdownFile} from '@docusaurus/utils';
+import {DEFAULT_PARSE_FRONT_MATTER, parseMarkdownFile, loadFreshModule} from '@docusaurus/utils';
 
 const outDir = path.resolve(process.argv[2] ?? 'build');
 const decode = (value) => value.replace(/&(?:amp|quot|apos|lt|gt|#\d+|#x[\da-f]+);/gi, (entity) => {
@@ -110,6 +110,34 @@ for (const [, escapedTitle, href, description] of entries) {
 }
 
 const llms = await fs.readFile(path.join(outDir, 'llms.txt'), 'utf8');
+const {publishedRoleEntries} = await loadFreshModule(path.resolve('src/data/interviewRoadmaps/outlineCatalog.ts'));
+const about = await readPage(new URL('about', site));
+const guide = await readPage(new URL('docs/intro', site));
+const guideLinks = new Set(tags(guide, 'a').filter((tag) => tag.href).map((tag) => new URL(tag.href, site).href));
+const aboutLinks = new Set(tags(about, 'a').filter((tag) => tag.href).map((tag) => new URL(tag.href, site).href));
+for (const role of publishedRoleEntries) {
+  const roleUrl = new URL(role.href.replace(/^\//, ''), site);
+  const expected = new URL(canonical(await readPage(roleUrl)));
+  expected.search = roleUrl.search;
+  const href = expected.href;
+  assert(guideLinks.has(href), `Study guide is missing published role: ${role.label}`);
+  assert(aboutLinks.has(href), `About page is missing published role: ${role.label}`);
+  assert(llms.includes(`](${href}):`), `Machine index is missing published role: ${role.label}`);
+}
+const {learningRoutes} = await loadFreshModule(path.resolve('src/data/interviewRoadmaps/learningRoles.ts'));
+for (const [roleId, route] of [['java-backend', 'java-interview-roadmap/'], ['agent', 'agent-interview-roadmap/'], ['sre', 'sre-interview-roadmap/']]) {
+  const {roadmap} = learningRoutes.find(({role}) => role.id === roleId);
+  const html = await readPage(new URL(route, site));
+  assert(html.includes('data-roadmap-readings='), `${route}: missing native reading directory`);
+  const links = new Set(tags(html, 'a').filter((tag) => tag.href).map((tag) => new URL(tag.href, site).pathname.replace(/\/$/, '')));
+  for (const topic of roadmap.phases.flatMap((phase) => phase.topics)) {
+    assert(tags(html, 'details').some((tag) => tag.id === `reading-${topic.id}` && !('hidden' in tag)), `${route}: topic needs a readable native disclosure: ${topic.id}`);
+    for (const article of topic.articles.filter((article) => article.href)) {
+      const url = new URL(article.href.replace(/^\//, ''), site);
+      assert(links.has(url.pathname.replace(/\/$/, '')), `${route}: article requires a JavaScript interaction: ${article.href}`);
+    }
+  }
+}
 assert(llms.includes(new URL('llms-index.txt', site).href), 'llms.txt must link to the complete index');
 for (const [, href] of llms.matchAll(/^- \[.*?\]\((https?:\/\/[^)]+)\):/gm)) {
   const url = new URL(href);
@@ -150,7 +178,18 @@ const redirects = await fs.readFile(path.join(outDir, '_redirects'), 'utf8');
 for (const line of redirects.trim().split('\n').filter((line) => line && !line.startsWith('#'))) {
   const [from, to, status] = line.split(/\s+/);
   assert.equal(status, '301', `Article consolidation must use a permanent redirect: ${from}`);
-  await readPage(new URL(to.replace(/^\//, ''), site));
+  const destination = new URL(to.replace(/^\//, ''), site);
+  const destinationHtml = await readPage(destination);
+  if (destination.hash) assert([...tags(destinationHtml, 'h2'), ...tags(destinationHtml, 'h3')].some((tag) => tag.id === decodeURIComponent(destination.hash.slice(1))), `Redirect target anchor is missing: ${destination}`);
+  const sourceFile = path.join('src/pages', from.replace(/^\//, '').replace(/\/$/, '') + '.tsx');
+  if (await fs.access(sourceFile).then(() => true, () => false)) {
+    const fallback = await readPage(new URL(from.replace(/^\//, ''), site));
+    assert.equal(canonical(fallback), canonical(destinationHtml), `Redirect fallback canonical must point to destination: ${from}`);
+    assert(/noindex/.test(meta(fallback, 'robots') ?? ''), `Redirect fallback must be noindex: ${from}`);
+    const expected = new URL(canonical(destinationHtml));
+    expected.hash = destination.hash;
+    assert(tags(fallback, 'a').some((tag) => tag.href && new URL(tag.href, site).href === expected.href), `Redirect fallback needs a real destination link: ${from}`);
+  }
   const sourcePath = new URL(from.replace(/^\//, ''), site).pathname.replace(/\/$/, '');
   assert(![...sitemap].some((url) => new URL(url).pathname.replace(/\/$/, '') === sourcePath), `Redirect source must not enter sitemap: ${from}`);
 }

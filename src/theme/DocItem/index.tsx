@@ -29,8 +29,8 @@ export default function DocItemWrapper(props: Props): ReactNode {
     ...(knowledge ? {
       headline: metadata.title,
       identifier: knowledge.id,
-      learningResourceType: '技术文章',
-      educationalUse: '技术面试准备',
+      learningResourceType: i18n.currentLocale === 'en' ? 'Technical article' : '技术文章',
+      educationalUse: i18n.currentLocale === 'en' ? 'Technical interview preparation' : '技术面试准备',
       mainEntityOfPage: {'@type': 'WebPage', '@id': url},
     } : {}),
     description: metadata.description,

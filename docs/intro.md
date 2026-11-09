@@ -6,6 +6,8 @@ keywords: ["技术求职准备", "Java 后端面试", "计算机基础复习", "
 
 # Coding 101
 
+import PublishedRoleLinks from '@site/src/components/PublishedRoleLinks';
+
 Coding 101 是一个面向技术岗位求职者的就业准备网站。它帮助你从目标岗位出发，确定要复习什么、先复习什么，以及每个知识点需要回答到什么程度。
 
 ## 适合哪些读者
@@ -23,11 +25,15 @@ Coding 101 是一个面向技术岗位求职者的就业准备网站。它帮助
 - **面试自测**：用代表性问题检查你能否独立解释，而不是继续堆积阅读量。
 - **算法与项目准备**：补齐现场编码、简历项目和系统设计环节。
 
-当前可以使用 Java 后端、AI Agent 开发和运维 / SRE 三条岗位路线，以及[通用基础复习](./basic-knowledge/common/index.mdx)。求职材料可结合[简历准备](./interview/resume.mdx)与[项目准备](./interview/project-preparation.mdx)整理。
+当前可从以下岗位入口安排复习，建设状态以列表标注为准：
+
+<PublishedRoleLinks />
+
+也可以从[通用基础复习](./basic-knowledge/common/index.mdx)开始。求职材料可结合[简历准备](./interview/resume.mdx)与[项目准备](./interview/project-preparation.mdx)整理。
 
 ## 如何使用
 
-1. 从[岗位面试路线](/interview-roadmaps/)选择 Java 后端、AI Agent 开发或运维 / SRE 方向；应届求职者也可以先看 [Java 校招复习范围](./interview/java-campus-review.mdx)。
+1. 从[岗位面试路线](/interview-roadmaps/)选择目标方向；应届求职者也可以先看 [Java 校招复习范围](./interview/java-campus-review.mdx)。
 2. 第一轮只完成“必会”和每个主题的“核心阅读”。
 3. 能脱离文章回答自测问题后，再进入“常考”。
 4. “按岗选学”和深入阅读只根据 JD、简历项目与面试反馈补充。

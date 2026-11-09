@@ -6,6 +6,8 @@ import {normalizeUrl} from '@docusaurus/utils';
 import {applyTrailingSlash} from '@docusaurus/utils-common';
 
 import {knowledgeTree} from '../../src/data/knowledgeTree';
+import {publishedRoleEntries} from '../../src/data/interviewRoadmaps/outlineCatalog';
+import englishCatalog from '../../i18n/en/catalog.json';
 import type {ArticleGroup, PublicArticle} from '../../src/discovery/types';
 
 const OTHER_GROUPS: Record<string, string> = {
@@ -23,6 +25,7 @@ const label = (text: string) => text.replace(/[\r\n]+/g, ' ').replace(/([\\[\]])
 
 export default function contentDiscoveryPlugin(context: LoadContext): Plugin {
   let groups: ArticleGroup[] = [];
+  const english = context.i18n.currentLocale === 'en';
   const sitePath = (pathname: string) => normalizeUrl([context.baseUrl, pathname]);
   const absolute = (pathname: string) => new URL(pathname, context.siteConfig.url).href;
 
@@ -52,7 +55,11 @@ export default function contentDiscoveryPlugin(context: LoadContext): Plugin {
             placed.add(articleId);
           }
         }
-        if (entries.length) groups.push({id, title, articles: entries});
+        if (entries.length) {
+          const localizedTitle = english ? (englishCatalog.groupTitles as Record<string, string>)[id] : title;
+          if (!localizedTitle) throw new Error(`content-discovery: missing English group title for ${id}`);
+          groups.push({id, title: localizedTitle, articles: entries});
+        }
       };
       for (const domain of knowledgeTree) {
         addGroup(domain.id, domain.label, [domain.overview, ...domain.topics.flatMap((topic) => topic.articles)].filter(Boolean));
@@ -74,33 +81,57 @@ export default function contentDiscoveryPlugin(context: LoadContext): Plugin {
     async postBuild({outDir}) {
       const root = absolute(sitePath('/'));
       const directory = absolute(applyTrailingSlash(sitePath('/articles/'), context.siteConfig));
-      const entry = [
+      const englishRoot = context.i18n.localeConfigs.en;
+      const chineseRoot = context.i18n.localeConfigs[context.i18n.defaultLocale];
+      const chinese = (pathname: string) => new URL(applyTrailingSlash(normalizeUrl([chineseRoot.baseUrl, pathname]), context.siteConfig), chineseRoot.url).href;
+      const entry = (english ? [
+        `# ${context.siteConfig.title}`,
+        '',
+        '> Technical interview preparation: explanations, examples and self-assessment questions for software engineering candidates.',
+        '',
+        'English translations are being added; the English article index lists those currently available. Role guides, the full article collection, the question bank and progress tools are available in Chinese. Do not infer that an untranslated page has an English version.',
+        '',
+        `Free to read. Credit the author, title and original URL when citing. Content-use terms (Chinese): ${chinese('/terms')}#内容与反馈. This index does not grant permission to republish, mirror or commercially reuse full articles.`,
+        '',
+        '## Reading',
+        '',
+        `- [Home](${root}): Technical interview preparation and the available English material.`,
+        `- [Articles](${directory}): Published English articles and summaries.`,
+        `- [Complete English article index](${absolute(sitePath('/llms-index.txt'))}): Canonical URLs, titles and summaries.`,
+        `- [Role guides (Chinese)](${chinese('/interview-roadmaps/')}): Available study directions and their current status.`,
+        '',
+      ] : [
         `# ${context.siteConfig.title}`,
         '',
         '> 面向技术岗位求职者的中文就业准备网站，提供技术文章、面试自测、岗位路线和算法及项目准备资料。',
         '',
-        '现有岗位路线覆盖 Java 后端、Go 后端、前端开发、移动端开发、测试开发、AI Agent 开发与运维 / SRE。路线按必会、常考、按岗选学安排复习，并区分基础回答、原理解释和场景分析。',
+        '岗位复习入口见下方列表；建设中与规划中的内容以岗位目录标注为准。路线按必会、常考、按岗选学安排复习，并区分基础回答、原理解释和场景分析。',
         '',
         '技术文章包含定义、执行机制、适用条件、版本边界、示例和参考资料。面试题是学习自测；公司名称仅表示题目曾见于公开复盘，不代表公司的固定题库。招聘资料和历史使用笔记以各页注明的范围为准。',
         '',
-        `内容免费阅读；引用请保留作者、标题和原文链接。内容使用说明：${absolute(sitePath('/terms'))}#内容与反馈。索引提供发现入口，不授予全文转载、镜像或商业使用许可。`,
+        `内容免费阅读；引用请保留作者、标题和原文链接。内容使用说明：${absolute(applyTrailingSlash(sitePath('/terms'), context.siteConfig))}#内容与反馈。索引提供发现入口，不授予全文转载、镜像或商业使用许可。`,
         '',
         '## 阅读入口',
         '',
         `- [站点首页](${root}): Coding 101 的内容与使用入口。`,
+        `- [English](${new URL(englishRoot.baseUrl, englishRoot.url).href}): 已发布的英文内容与阅读入口。`,
         `- [岗位面试路线](${absolute(applyTrailingSlash(sitePath('/interview-roadmaps/'), context.siteConfig))}): 根据目标岗位选择复习重点和回答深度。`,
         `- [文章目录](${directory}): 按主题浏览全部公开文章及摘要。`,
         `- [完整文章索引](${absolute(sitePath('/llms-index.txt'))}): 自动同步的文章标题、规范页面地址和内容摘要。`,
+        '',
+        '## 岗位复习入口',
+        '',
+        ...publishedRoleEntries.map((role) => `- [${label(role.label)}](${absolute(applyTrailingSlash(sitePath(role.href), context.siteConfig))}): ${role.status === 'building' ? '建设中，已发布内容可开始阅读。' : '按岗位选择复习重点与阅读顺序。'}`),
         '',
         '## 技术主题与资料',
         '',
         ...groups.map((group) => `- [${label(group.title)}](${directory}#${group.id}): ${group.articles.length} 篇公开文章。`),
         '',
-      ].join('\n');
+      ]).join('\n');
       const index = [
-        `# ${context.siteConfig.title} 公开文章索引`,
+        `# ${context.siteConfig.title} ${english ? 'English article index' : '公开文章索引'}`,
         '',
-        '> 每个链接指向文章的规范页面。摘要来自当前文章；版本条件、完整解释与参考资料请见对应原文。草稿和未列出的文章不包含在本索引中。',
+        english ? '> Each link points to a canonical English article. See the article for version scope, explanations and sources. Drafts, unlisted articles and untranslated content are excluded.' : '> 每个链接指向文章的规范页面。摘要来自当前文章；版本条件、完整解释与参考资料请见对应原文。草稿和未列出的文章不包含在本索引中。',
         '',
         ...groups.flatMap((group) => [
           `## ${group.title}`, '',
@@ -113,17 +144,18 @@ export default function contentDiscoveryPlugin(context: LoadContext): Plugin {
         fs.writeFile(path.join(outDir, 'llms-index.txt'), index),
       ]);
 
+      if (english) return;
       // Keep any explicit robots policy supplied through static/ authoritative.
       const robots = path.join(outDir, 'robots.txt');
       try {
         // Discovery policy only: private API data still requires server-side access checks.
         await fs.writeFile(robots, [
-          `# Content use: ${absolute(sitePath('/terms'))}#内容与反馈`,
+          `# Content use: ${absolute(applyTrailingSlash(sitePath('/terms'), context.siteConfig))}#内容与反馈`,
           'User-agent: *',
           'Allow: /',
           `Disallow: ${sitePath('/api/')}`,
           '',
-          `Sitemap: ${absolute(sitePath('/sitemap.xml'))}`,
+          ...Object.values(context.i18n.localeConfigs).map((locale) => `Sitemap: ${new URL(normalizeUrl([locale.baseUrl, '/sitemap.xml']), locale.url).href}`),
           '',
         ].join('\n'), {flag: 'wx'});
       } catch (error) {

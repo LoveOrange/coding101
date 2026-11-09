@@ -1,0 +1,179 @@
+---
+sidebar_position: 3
+knowledge:
+  id: basic-knowledge.network.dns
+  type: concept
+description: Follow a DNS lookup through recursive resolvers, delegation and authoritative servers. Understand record types, TTL, negative caching and TCP fallback, then test how you would explain address changes and distinguish DNS failures from connection failures in an interview.
+keywords: [DNS resolution, DNS caching, recursive queries, iterative queries, TTL, networking interviews]
+---
+
+import ChineseLink from '@site/src/components/ChineseLink';
+
+# DNS
+
+**DNS** (Domain Name System) is a query system that translates domain names into information such as IP addresses. Responsibility follows the name hierarchy: servers maintain records for their own zones, and parent zones delegate responsibility so a resolver knows where to ask next.
+
+Two practical questions illustrate why this matters: why do some clients still use an old address after a record changes, and why can a newly added name still be missing? Answering them requires knowing which servers a lookup visits, how long each cache can retain an answer, and what happens after resolution succeeds.
+
+## 1. Interview essentials {#core}
+
+- A and AAAA records provide **IPv4 and IPv6 addresses**, respectively. A CNAME provides **another name**, which the resolver must resolve in turn.
+- A client asks a recursive resolver for an answer. The resolver **checks its cache first, then follows delegations to authoritative servers when needed** and returns the result. [Question](#dns-resolution)
+- TTL determines **how long a record can normally be cached**. After a record changes, caches may still return the old value for the remaining TTL. Existing connections do not close just because DNS changes.
+- NXDOMAIN means **the name does not exist**. NODATA means **the name exists but has no record of the requested type**. Both negative answers can be cached, with their lifetime determined by the SOA record. [Question](#dns-negative-cache)
+- DNS uses both UDP and TCP. A resolver **retries over TCP when a UDP response is truncated, as indicated by the TC bit**. A response larger than 512 bytes does not automatically require TCP: EDNS can advertise support for larger UDP messages. [Question](#dns-tcp-fallback)
+
+## 2. Resource records {#resource-records}
+
+A **resource record** is a DNS data entry containing a name, type, TTL and type-specific data. **TTL** (time to live) is its cache lifetime in seconds. A query specifies both a name and the type of record requested.
+
+| Type | Meaning |
+| --- | --- |
+| A / AAAA | The IPv4 / IPv6 address associated with a name. |
+| CNAME | An alias target; the resolver continues looking up the target. |
+| NS | The authoritative name servers for a zone. |
+| MX | Mail servers and their preference values. |
+| SOA | Zone administration information, including parameters used for negative caching. |
+
+A CNAME points to another name, not an address. If `www.example.com` points to `example.cdn-provider.net`, the resolver still needs that target's A or AAAA record to obtain an address. The alias and target records have separate TTLs and are cached and expired independently.
+
+## 3. Recursive and iterative queries {#recursive-and-iterative-queries}
+
+A complete lookup has two parts: the client makes a recursive query to a recursive resolver, and that resolver makes iterative queries to authoritative servers.
+
+An application usually calls the operating system's name-resolution interface instead of sending DNS messages itself. Depending on its configuration, the system checks the hosts file and local caches before querying the configured **recursive resolver**, such as one provided by an ISP or a corporate network. The client asks it to return the final answer. This is a **recursive query**.
+
+The resolver first checks its own cache. If a valid answer is available, it returns it immediately. Without a cached answer or useful delegation, it starts at the root:
+
+```text
+Client → Recursive resolver
+           → Root: referral to top-level domain servers
+           → Top-level domain: referral to the target zone
+           → Authoritative server: record or alias
+```
+
+A **delegation** tells the resolver which servers are responsible for a part of the namespace, using NS records. A root server does not know the address of `www.example.com`, but it knows which servers handle `.com`. Those servers know which servers are authoritative for `example.com`. In an **iterative query**, the resolver asks each server in turn. A server returns an answer or a referral to the next servers; the resolver continues until it obtains a result.
+
+Delegation information is also cached. A resolver that already knows the authoritative servers for `example.com` can skip the root and top-level domain servers. Real lookups are therefore often shorter than the sequence above.
+
+## 4. Caching and service cutovers {#caching-and-service-cutovers}
+
+Changing a DNS record does not immediately affect every client. Caches can continue returning the old record for its remaining TTL, and existing connections can keep using the old address.
+
+Suppose the old address has a TTL of 300 seconds. When the authoritative server changes the record, a recursive resolver may have just cached the old value and can continue returning it for up to another 300 seconds. Lowering the TTL in advance, for example to 60 seconds, can speed up a cutover. But that lower TTL also takes time to reach caches: already cached records still carry the old 300-second TTL. Wait at least for that old TTL to expire before changing the address.
+
+Even after DNS starts returning the new address, pooled connections may still lead to old instances. Reusing those connections does not trigger a new lookup. A cutover must therefore also consider connection lifetimes, gradually drain old instances, and keep both sets of endpoints serving until traffic to the old instances has stopped.
+
+## 5. Negative caching {#negative-caching}
+
+A failed lookup can also be cached. This is **negative caching**, and two kinds of answer must be distinguished:
+
+- **NXDOMAIN** means the queried name does not exist.
+- **NODATA** means the name exists but has no record of the requested type.
+
+For example, a name may have an A record but no AAAA record. An AAAA query then returns NODATA. That means the name has no IPv6 address, not that the name itself is absent.
+
+The zone's SOA record determines the negative cache lifetime. RFC 2308 specifies the smaller of the SOA record's TTL and its MINIMUM field; a resolver can impose an additional local cap. This explains why a newly added name may still appear missing: if an earlier query cached NXDOMAIN, that resolver can keep returning the negative answer until it expires.
+
+## 6. DNS transport {#dns-transport}
+
+Traditional DNS uses port 53 for both UDP and TCP. Ordinary queries commonly use UDP, with a TCP retry when the response does not fit.
+
+UDP needs only a request and response, so it has low overhead. Without EDNS, a UDP DNS message is limited to 512 bytes. **EDNS** is an extension mechanism through which a client can advertise a larger UDP payload size. If both ends support the advertised size, responses larger than 512 bytes can still use UDP.
+
+When an answer does not fit, the server sets the **TC bit** (truncated) in the UDP response. The client retries over TCP to obtain the complete answer. AXFR zone transfers also use TCP. RFC 7766 requires full DNS implementations to support TCP, so allowing only UDP port 53 through a firewall can break queries that need larger responses.
+
+## 7. Limits and security {#limits-and-security}
+
+DNS security mechanisms protect different things. **DNSSEC** signs DNS data so a validating resolver can verify its origin and integrity. **DoT** (DNS over TLS) and **DoH** (DNS over HTTPS) encrypt transport between a client and a DNS service, protecting queries against observation or modification in transit. An encrypted channel protects transport; trusting the answer itself still depends on DNSSEC validation or trust in the DNS service.
+
+Successful resolution only discovers an address. For example, accessing an HTTPS site over HTTP/1.1 still requires a TCP connection, a <ChineseLink to="/docs/basic-knowledge/network/tls">TLS handshake (Chinese article)</ChineseLink> and an HTTP request. Any step can fail. When investigating an inaccessible site, first distinguish a DNS failure from a connection failure after successful resolution.
+
+## 8. Interview questions {#interview-questions}
+
+### 8.1 How is a domain resolved, and why can clients still use an old address after its record changes? {#dns-resolution}
+
+**What to explain**: Recursive resolution, authoritative delegation and how cache TTL affects address changes.
+
+**Related reading**: [Interview essentials](#core), [Recursive and iterative queries](#recursive-and-iterative-queries), [Limits and security](#limits-and-security).
+
+<details>
+<summary>Reference answer</summary>
+
+**The client asks a recursive resolver, which checks its cache and then queries authoritative servers using cached delegations or starting at the root. After a record changes, caches can keep returning the old value for the remaining TTL.**
+
+The application calls the system's resolution interface. After checking hosts and local caches, the system sends a recursive query. Without usable cached information, the resolver asks the root, top-level domain and target zone's authoritative servers in turn. The first two provide referrals; the last provides the record. Cached delegations often let it skip earlier steps.
+
+There are two reasons for continued traffic to an old address. First, client, system and resolver caches can still hold the old record. Second, pooled connections keep using the old instances independently of DNS changes. Lower TTL in advance and wait for the old TTL to expire before a cutover, then drain old instances while both sets of endpoints remain available.
+
+</details>
+
+### 8.2 What should you check if a newly added name still returns NXDOMAIN? {#dns-negative-cache}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+*Site-authored self-assessment; not attributed to a company interview.*
+
+**What to explain**: Negative answer types, SOA parameters and cache layers.
+
+**Related reading**: [Negative caching](#negative-caching).
+
+<details>
+<summary>Reference answer</summary>
+
+**Check whether the recursive resolver or client still holds an earlier NXDOMAIN response.**
+
+A query before the record was created may have cached the name's absence. The resolver can keep returning that result until the negative cache entry expires, even if the authoritative server now has the record. Its lifetime is the smaller of the SOA TTL and MINIMUM field, possibly further limited by the resolver.
+
+Also distinguish NXDOMAIN from NODATA. If the name exists but lacks the requested type, such as having A but no AAAA, the answer is NODATA. Investigate the record type rather than treating the name as absent.
+
+</details>
+
+### 8.3 When does DNS use TCP? Does exceeding 512 bytes always require it? {#dns-tcp-fallback}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+*Site-authored self-assessment; not attributed to a company interview.*
+
+**What to explain**: The TC bit, EDNS and TCP support.
+
+**Related reading**: [DNS transport](#dns-transport).
+
+<details>
+<summary>Reference answer</summary>
+
+**A client retries over TCP when a UDP response is truncated, indicated by the TC bit. AXFR zone transfers also use TCP. Exceeding 512 bytes alone does not require a switch.**
+
+The 512-byte limit applies to UDP DNS messages without EDNS. With a larger payload size advertised through EDNS and supported by the server, larger answers can still use UDP. Use the TC bit to detect truncation rather than deciding solely from the answer's size. Full DNS implementations must support TCP, so the network must also allow TCP port 53.
+
+</details>
+
+### 8.4 What protection do DNSSEC, DoH and DoT provide? {#dnssec-encrypted-dns}
+
+<!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
+
+*Site-authored self-assessment; not attributed to a company interview.*
+
+**What to explain**: The boundary between validating records and encrypting transport.
+
+**Related reading**: [Limits and security](#limits-and-security).
+
+<details>
+<summary>Reference answer</summary>
+
+**DNSSEC uses signatures to validate the origin and integrity of DNS data. DoH and DoT encrypt transport between the client and DNS service.**
+
+DNSSEC lets a validator check that signed data comes from the zone and has not been altered, but it does not hide the query. DoH and DoT protect queries and responses in transit, but do not by themselves prove that the DNS service returned trustworthy data. That still requires DNSSEC validation or trust in the service. The mechanisms can be used together.
+
+</details>
+
+## 9. References {#references}
+
+- [RFC 1034: Domain Names — Concepts and Facilities](https://www.rfc-editor.org/rfc/rfc1034.html)
+- [RFC 2308: Negative Caching of DNS Queries](https://www.rfc-editor.org/rfc/rfc2308.html)
+- [RFC 1035: Domain Names — Implementation and Specification](https://www.rfc-editor.org/rfc/rfc1035.html)
+- [RFC 7766: DNS Transport over TCP](https://www.rfc-editor.org/rfc/rfc7766.html)
+- [RFC 6891: Extension Mechanisms for DNS (EDNS(0))](https://www.rfc-editor.org/rfc/rfc6891.html)
+- [RFC 4033: DNS Security Introduction and Requirements](https://www.rfc-editor.org/rfc/rfc4033.html)
+- [RFC 7858: DNS over TLS](https://www.rfc-editor.org/rfc/rfc7858.html)
+- [RFC 8484: DNS Queries over HTTPS (DoH)](https://www.rfc-editor.org/rfc/rfc8484.html)

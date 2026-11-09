@@ -49,6 +49,32 @@ npm run check:discovery
 
 部署后以 Google Search Console 的索引和搜索表现、Bing Webmaster Tools 的 AI Performance 引用情况，以及网站分析中的 AI 来源访问作为观察依据。抽查问题应覆盖真实求职需求，例如 Java 21 虚拟线程的适用边界、InnoDB 锁等待排查和 Agent 工具授权；记录问题、时间、引用 URL 与答案准确性，不把一次问答当作稳定排名。
 
+## 2026-11：静态发现入口与国际化
+
+岗位路线保留原有弹窗，同时提供原生 `details` 阅读目录，所有已发布的核心阅读和深入阅读链接都存在于首屏 HTML 中。无 JavaScript 时也可以展开目录阅读；没有发布的文章仍标为建设中。关于页、使用指南与 `llms.txt` 的岗位入口共用 `outlineCatalog.ts`，避免人工分别维护路线数量。
+
+线上抽查发现旧 HashMap 入口返回 200 和空正文，实际只包含跳转信息。同类的 11 个合并文章入口统一补充 Cloudflare `_redirects` 301；镜像站保留 `noindex`、目标 canonical、meta refresh 和可读的新地址链接。旧入口不再进入 sitemap。原有章节和卡片 ID 不变。
+
+新增 `npm run audit:crawl`，检查线上 robots、其声明的各语言 sitemap、首页／目录／岗位路线以及均匀抽取的文章。报告包含 HTTP 状态、canonical、noindex、静态正文与通用客户端探测。直接执行 `node scripts/audit-crawl.mjs > /tmp/coding101-crawl.json` 可保留 JSON 结果。它只检查公开 HTTP 响应，不等同于搜索引擎已经收录，也不伪装成经过验证的搜索机器人。
+
+本次观察到默认 `Python-urllib/3.9` 请求被 Cloudflare 返回 403/1010，而明确标识的审计客户端和浏览器请求正常。现有 Wrangler 凭据不能读取该 zone 的安全设置，未更改 Browser Integrity Check 或 WAF。实际搜索机器人是否受到影响，仍需结合 Search Console 的实时 URL 检查与 Cloudflare 已验证机器人请求记录判断。不能根据 User-Agent 字符串探测成功就宣称 Googlebot、OAI-SearchBot 或 Claude 已经抓取。
+
+### 英文试点范围
+
+中文继续使用现有 URL；英文使用 `/en/`。首批提供首页、关于页、文章目录、使用指南和 DNS，共五个可索引页面。英文文章完整翻译正文、题目和参考回答；账号、复习队列、题库与岗位筛选仍使用中文入口，不生成中文正文的英文 URL 副本。
+
+`i18n/en/catalog.json` 明确列出已发布译文，Docusaurus 只构建这些英文源文件。英文和中文各有独立的 canonical、sitemap、`llms.txt` 和 `llms-index.txt`；根 robots 同时声明两份 sitemap。仅在确有对应译文的页面输出双向 hreflang。未翻译页面的语言菜单指向英文首页，并标明 `English home`。切换语言不携带原语言的章节锚点，因为章节锚点随正文语言变化。
+
+增加译文时：
+
+1. 在 `i18n/en/docusaurus-plugin-content-docs/current/` 或 `i18n/en/docusaurus-plugin-content-pages/` 下添加完整译文，并加入 catalog。文档相对路径与中文保持一致；自定义 slug 需要同时扩展路由映射和校验。
+2. 保留 `knowledge.id` 和题目显式 ID；普通章节使用英文锚点，更新文内链接。尚未翻译的延伸阅读使用 `ChineseLink` 并明确标注中文。
+3. 新领域在 catalog 的 `groupTitles` 中同步提供目录的英文名称，使用知识领域的稳定 ID；缺少名称时构建会报错。新增学习功能需要翻译完整流程，不能仅开放中文功能的 `/en/` 地址。
+4. 校对后运行 `npm run content-status -- mark en done <中文 docs 路径>`。中文源文后续修改会使翻译状态过期，需重新核对。
+5. 运行类型检查、构建和 `npm run check:discovery`。检查包括全部中文内容、英文精确页面集合、无翻译回退、双向 hreflang、独立 canonical、静态正文、题目 ID 与原生折叠答案。GitHub Pages 子路径构建也执行同一检查。
+
+`SiteMetadata` 和语言菜单基于 Docusaurus 3.10.2 的对应主题组件，增加对实际译文集合的过滤；升级主题时需核对这两个覆盖组件。
+
 ## 参考资料
 
 - [Google：AI features and your website](https://developers.google.com/search/docs/appearance/ai-features)

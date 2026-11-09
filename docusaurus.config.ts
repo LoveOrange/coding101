@@ -2,6 +2,15 @@ import { themes as prismThemes } from "prism-react-renderer";
 import type { Config } from "@docusaurus/types";
 import type * as Preset from "@docusaurus/preset-classic";
 import remarkArticleBlocks from "./plugins/remark-article-blocks";
+import englishCatalog from './i18n/en/catalog.json';
+
+const english = process.env.DOCUSAURUS_CURRENT_LOCALE === 'en';
+const routeFromFile = (file: string) => '/' + file.replace(/\.(?:mdx?|tsx?)$/, '').replace(/(^|\/)index$/, '');
+const englishRoutes = [
+  ...englishCatalog.pages.map(routeFromFile),
+  ...englishCatalog.docs.map((file) => '/docs' + routeFromFile(file)),
+  ...englishCatalog.generatedRoutes,
+];
 
 const enableAnalytics =
   process.env.NODE_ENV === "production" && process.env.LOCAL_PREVIEW !== "true";
@@ -30,7 +39,7 @@ const stylePreviewPlugins: NonNullable<Config["plugins"]> =
 
 const config: Config = {
   title: "Coding 101",
-  tagline: "技术求职准备，从岗位路线到面试回答",
+  tagline: english ? 'Technical interview preparation, from study priorities to clear answers' : "技术求职准备，从岗位路线到面试回答",
   favicon: "img/logo-duck.svg",
 
   // Set the production url of your site here
@@ -47,6 +56,7 @@ const config: Config = {
   onBrokenLinks: "throw",
 
   customFields: {
+    englishRoutes,
     // Local previews only: enables ?mock=<preset> sample learner states.
     learnerMocks: process.env.LEARNER_MOCKS === "true",
     learnerFeatures,
@@ -66,7 +76,11 @@ const config: Config = {
   // may want to replace "en" with "zh-Hans".
   i18n: {
     defaultLocale: "zh-Hans",
-    locales: ["zh-Hans"],
+    locales: ["zh-Hans", "en"],
+    localeConfigs: {
+      'zh-Hans': {label: '简体中文', htmlLang: 'zh-Hans'},
+      en: {label: 'English', htmlLang: 'en'},
+    },
   },
 
   presets: [
@@ -74,14 +88,17 @@ const config: Config = {
       "classic",
       {
         docs: {
-          sidebarPath: "./sidebars.ts",
+          sidebarPath: english ? false : "./sidebars.ts",
+          ...(english ? {include: englishCatalog.docs} : {}),
           // Please change this to your repo.
           // Remove this to remove the "edit this page" links.
           editUrl: "https://github.com/loveorange/coding101/tree/main/",
+          editLocalizedFiles: true,
           showLastUpdateTime: true,
           remarkPlugins: [remarkArticleBlocks],
         },
-        blog: {
+        pages: english ? {include: englishCatalog.pages} : {},
+        blog: english ? false : {
           showReadingTime: true,
           // Please change this to your repo.
           // Remove this to remove the "edit this page" links.
@@ -218,5 +235,33 @@ const config: Config = {
     // ],
   ],
 };
+
+const theme = config.themeConfig as Preset.ThemeConfig;
+if (english) {
+  theme.navbar = {
+    title: 'Coding 101',
+    items: [
+      {to: '/articles/', label: 'Articles', position: 'left'},
+      {to: '/docs/intro', label: 'Study guide', position: 'left'},
+      {to: '/about', label: 'About', position: 'left'},
+    ],
+  };
+  theme.footer = {
+    style: 'light',
+    links: [
+      {title: 'Study', items: [
+        {label: 'Articles', to: '/articles/'},
+        {label: 'Study guide', to: '/docs/intro'},
+      ]},
+      {title: 'Project', items: [
+        {label: 'About', to: '/about'},
+        {label: 'GitHub', href: 'https://github.com/loveorange/coding101'},
+        {label: 'Privacy and cookies (Chinese)', href: 'https://coding101.linsama.com/privacy/'},
+      ]},
+    ],
+    copyright: `© ${new Date().getFullYear()} Coding 101 · Linsama Builds`,
+  };
+}
+theme.navbar?.items?.push({type: 'localeDropdown', position: 'right'});
 
 export default config;

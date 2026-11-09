@@ -8,9 +8,9 @@
 
 type Node = {type: string; depth?: number; value?: string; children?: Node[]; [key: string]: unknown};
 
-const CORE_TITLE = /面试核心/;
+const CORE_TITLE = /面试核心|Interview essentials/i;
 const FAQ_TITLE = /常见问题/;
-const INTERVIEW_TITLE = /^(?:\d+\.\s*)?面试题(?:\s*\{#[^}]+\})?$/;
+const INTERVIEW_TITLE = /^(?:\d+\.\s*)?(?:面试题|Interview questions)(?:\s*\{#[^}]+\})?$/i;
 
 function textOf(node: Node): string {
   if (typeof node.value === 'string') return node.value;

@@ -1,3 +1,4 @@
+import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
 import {Children, cloneElement, createContext, isValidElement, type ReactNode, useContext, useMemo} from 'react';
 import clsx from 'clsx';
 import Link from '@docusaurus/Link';
@@ -60,12 +61,13 @@ export function ArticleMeta({article}: {article: ArticleIndex}) {
 const CoreContext = createContext(false);
 
 export function CoreSummary({title = '面试核心', children}: {title?: ReactNode; children: ReactNode}) {
+  const english = useDocusaurusContext().i18n.currentLocale === 'en';
   return (
     <CoreContext.Provider value>
       <div className={styles.core}>
         <div className={styles.coreHead}>
           {typeof title === 'string' ? <span className={styles.coreTitle}>{title}</span> : title}
-          <span className={styles.coreHint}>先记住这几条，再读正文</span>
+          <span className={styles.coreHint}>{english ? 'Start with these points, then read the explanation' : '先记住这几条，再读正文'}</span>
         </div>
         <div className={styles.coreBody}>{children}</div>
       </div>
