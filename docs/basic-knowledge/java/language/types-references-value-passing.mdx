@@ -39,7 +39,9 @@ import ValuePassing from '@site/src/components/Diagram/ValuePassing';
 
 ## 3. 变量保存的值 {#变量保存的值}
 
-`int`、`double`、`boolean` 这些基本类型的变量，里面存的就是值本身。把它赋给另一个变量，就是把这个值复制一份：
+Java 的数据类型分为**基本类型**和**引用类型**。基本类型的变量保存基本值；引用类型的变量保存引用值，也就是对象的引用或 `null`。
+
+`int`、`double`、`boolean` 都是基本类型。把一个基本类型变量赋给另一个变量，会复制它保存的基本值：
 
 ```java
 int original = 101;
