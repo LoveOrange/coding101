@@ -12,9 +12,7 @@ import ValuePassing from '@site/src/components/Diagram/ValuePassing';
 
 # Java 值传递
 
-Java 是值传递还是引用传递？答案是：Java 只有值传递。调用方法时，实参当前保存的值会复制一份，交给形参。
-
-对引用类型来说，复制的是引用值，复制完以后，两个变量指向同一个对象。这道题考的不只是一个名词，而是方法里改了参数，调用方到底能不能看到。把这一点讲清楚，`final` 引用和浅拷贝也能用同一套道理解释。
+Java 只有值传递。传递基本类型时，复制的是具体的值；传递引用类型时，复制的是引用值。
 
 ## 1. 面试核心 {#core}
 
@@ -23,9 +21,24 @@ Java 是值传递还是引用传递？答案是：Java 只有值传递。调用�
 - 通过形参修改对象，**调用方能看到**；给形参重新赋值，**只影响形参自己**。[卡](#rename-vs-replace)
 - `final` 引用**不能再指向别的对象**，但它指向的可变对象仍然可以修改。数组的 `clone()` 是**浅拷贝**，复制后的数组和原数组仍然共享元素对象。[卡](#final-reference-copy)
 
-## 2. 变量保存的值 {#变量保存的值}
+## 2. 核心术语 {#核心术语}
 
-变量里存的要么是值本身，要么是引用值：基本类型存的是值，引用类型存的是能找到对象的**引用值**。理解传参，先要分清这一点。
+理解传参，先分清变量、引用和对象，以及调用时的实参与方法声明中的形参。下面依据 Java 语言规范，用中文转述这些术语的含义。
+
+| 术语 | 含义与例子 |
+| --- | --- |
+| **变量**（variable） | 用来保存值的存储位置，有自己的类型。例如 `int original = 101` 中，`original` 是一个 `int` 变量。 |
+| **值**（value） | 可以存入变量、传给方法或从方法返回的数据。Java 的值分为基本值和引用值，例如整数 `101` 是基本值，对象的引用也是值。 |
+| **对象**（object） | 类的实例或数组。例如 `new User("Lin")` 创建一个 `User` 实例，`new int[3]` 创建一个数组，两者都是对象。 |
+| **引用值**（reference value，简称 reference） | 指向对象的值；特殊的空引用 `null` 不指向任何对象。例如 `User first = new User("Lin")` 中，`first` 保存的是新对象的引用。 |
+| **实参**（argument） | 调用方法时提供的表达式，求值结果称为实参值。例如 `rename(first)` 中的 `first` 是实参，求值后得到它保存的引用；实参也可以是 `101`、`count + 1` 这样的表达式。 |
+| **形参**（formal parameter） | 方法声明中用于接收实参值的变量。例如 `void rename(User user)` 中的 `user`。每次调用都会创建新的形参变量。 |
+
+**值传递**（pass by value）是把实参求得的值复制给形参的传递方式。形参有自己的值；引用值被复制后，两个变量仍可指向同一个对象。
+
+变量、值、对象和引用的定义见 [JLS 第 4 章](https://docs.oracle.com/javase/specs/jls/se21/html/jls-4.html)；实参求值与形参初始化见 [JLS §15.12.4.2](https://docs.oracle.com/javase/specs/jls/se21/html/jls-15.html#jls-15.12.4.2) 和 [JLS §8.4.1](https://docs.oracle.com/javase/specs/jls/se21/html/jls-8.html#jls-8.4.1)。
+
+## 3. 变量保存的值 {#变量保存的值}
 
 `int`、`double`、`boolean` 这些基本类型的变量，里面存的就是值本身。把它赋给另一个变量，就是把这个值复制一份：
 
@@ -39,7 +52,7 @@ System.out.println(original); // 101
 
 `copied` 拿到的是 `101` 这个数。之后把它改成 `202`，和 `original` 没有关系，所以 `original` 还是 `101`。
 
-引用类型就不一样了。对象是 `new` 出来的，变量里存的只是一个能找到这个对象的引用值（变量也可以存 `null`，表示不指向任何对象）。把 `first` 赋给 `second`，复制的也是这个引用值：
+给引用类型的变量赋值，复制的就是引用值。下面用 `new` 创建一个 `User` 对象，再把 `first` 保存的引用赋给 `second`：
 
 ```java
 User first = new User("Lin");
@@ -51,9 +64,9 @@ System.out.println(first.getName()); // Asuka
 
 现在 `first` 和 `second` 是两个变量，但存的是同一个 `User` 对象的引用。通过 `second` 改了名字，再通过 `first` 去读，读到的就是 `Asuka`。这里变的是对象的字段，两个变量本身都没动。
 
-有一种解释是「基本类型在栈上，对象在堆上」，用它来理解传参并不可靠。JVM 可以优化数据实际存放的位置，但赋值和传参的规则不会跟着变。所以讲语言语义的时候，看变量里存的是值还是引用值就够了。
+有一种解释是「基本类型在栈上，对象在堆上」，用它来理解传参并不可靠。JVM 可以优化数据实际存放的位置，但赋值和传参的规则不会跟着变。所以讲语言语义的时候，看变量里存的是基本值还是引用值就够了。
 
-## 3. 赋值与传参 {#赋值与传参}
+## 4. 赋值与传参 {#赋值与传参}
 
 修改对象，所有指向它的变量都能看到；给变量重新赋值，只改变这个变量自己。先看重新赋值：
 
@@ -69,7 +82,7 @@ System.out.println(second.getName()); // Asuka
 
 `second = new User("Asuka")` 让 `second` 指向了一个新对象。`first` 里的引用没有变，指向的还是原来那个 `Lin`。
 
-方法调用也是同一个道理。这里先说明两个名词：**实参**（argument）是调用时传进去的值，**形参**（parameter）是方法声明里接收它的变量。每次调用，Java 都会新建形参变量，再用实参当前的值去初始化它。看下面两个方法：
+方法调用也是同一个道理。每次调用，Java 都会新建形参变量，再用实参求得的值去初始化它。看下面两个方法：
 
 ```java
 static void rename(User user) {
@@ -94,7 +107,7 @@ static void replace(User user) {
 
 两个方法拿到的都是引用值的副本。`rename` 顺着副本改了对象，`replace` 改的是副本本身。方法没有办法通过形参替换调用方变量里的引用，所以我们说 Java 没有引用传递。
 
-## 4. 数组与 String {#数组与-string}
+## 5. 数组与 String {#数组与-string}
 
 数组和 `String` 也是引用类型，传参时一样复制引用值。它们的区别在于，数组的内容能改，`String` 的内容不能改。先看数组：
 
@@ -127,7 +140,7 @@ System.out.println(title); // Coding
 
 `String` 在传参时没有特殊处理，它和其他引用类型走的是同一套规则，只是它自己的内容改不了。
 
-## 5. final 引用与浅拷贝 {#final-引用与浅拷贝}
+## 6. final 引用与浅拷贝 {#final-引用与浅拷贝}
 
 `final` 引用和数组的 `clone()` 都挡不住共享对象被修改：`final` 只限制变量重新赋值，`clone()` 只复制外层的数组。放在一起看：
 
@@ -150,13 +163,13 @@ System.out.println(first[0]); // AB
 
 想让两份数据互不影响，就要用**深拷贝**，把里面的可变对象也复制一份。如果原来有多个引用指向同一个子对象，深拷贝时还要想好：复制出来的结构里，它们是继续共享同一个副本，还是各自一份。
 
-## 6. 常见问题 {#常见问题}
+## 7. 常见问题 {#常见问题}
 
-### 6.1 为什么交换两个对象参数无法交换调用方变量？ {#参数交换}
+### 7.1 为什么交换两个对象参数无法交换调用方变量？ {#参数交换}
 
 因为方法里交换的是两个形参，也就是两份引用的副本。交换以后，两个形参各自指向了对方原来的对象，但调用方的两个变量还保存着原来的引用，所以方法返回后，调用方的变量没有任何变化。
 
-### 6.2 方法怎样返回多个结果？ {#多结果返回}
+### 7.2 方法怎样返回多个结果？ {#多结果返回}
 
 可以把多个结果放进一个对象里返回，比如记录类（record）、自定义的结果类或者集合。下面这个记录类同时装下了最小值和最大值：
 
@@ -166,13 +179,13 @@ record Range(int min, int max) {}
 
 方法里写 `return new Range(min, max)`，调用方再用 `min()` 和 `max()` 取出来。Java 不能通过给形参重新赋值来替换调用方变量，但可以修改双方共享的数组或结果对象，把多个值交给调用方。直接返回结果对象通常更容易说明这次调用产生了什么。
 
-### 6.3 引用值就是内存地址吗？ {#引用与内存地址}
+### 7.3 引用值就是内存地址吗？ {#引用与内存地址}
 
 不一定。引用是 JVM 用来找到对象的值，具体怎么表示由 JVM 决定，不保证等于程序能直接操作的内存地址。而且垃圾收集器（GC）整理内存时还会移动对象。写代码时只要知道通过引用能访问到对象，赋值和传参的规则和引用的具体表示无关。
 
-## 7. 面试题 {#面试题}
+## 8. 面试题 {#面试题}
 
-### 7.1 Java 是值传递还是引用传递 {#pass-by-value}
+### 8.1 Java 是值传递还是引用传递 {#pass-by-value}
 
 **考察重点**
 
@@ -186,13 +199,13 @@ record Range(int min, int max) {}
 
 **Java 只有值传递。**
 
-调用方法时，形参是一个新变量，用实参当前的值来初始化。基本类型复制的是具体的值，引用类型复制的是引用值。
+调用方法时，形参是一个新变量，用实参求得的值来初始化。基本类型复制的是具体的值，引用类型复制的是引用值。
 
-引用值复制过去以后，形参和实参指向同一个对象，所以在方法里通过形参修改字段，调用方能看到。但如果给形参重新赋值，改的只是方法里的局部变量，调用方保存的引用不会变。
+传入对象的引用后，形参和调用方的变量指向同一个对象，所以在方法里通过形参修改字段，调用方能看到。但如果给形参重新赋值，改的只是方法里的局部变量，调用方保存的引用不会变。
 
 </details>
 
-### 7.2 `rename` 与 `replace` 为什么产生不同结果 {#rename-vs-replace}
+### 8.2 `rename` 与 `replace` 为什么产生不同结果 {#rename-vs-replace}
 
 **考察重点**
 
@@ -210,7 +223,7 @@ record Range(int min, int max) {}
 
 </details>
 
-### 7.3 final 引用和数组 clone 能否隔离对象修改？ {#final-reference-copy}
+### 8.3 final 引用和数组 clone 能否隔离对象修改？ {#final-reference-copy}
 
 <!-- 本题为本站原理自测，尚未核验对应公司面经，不作公司归属。 -->
 
@@ -229,9 +242,10 @@ record Range(int min, int max) {}
 
 </details>
 
-## 8. 参考资料 {#参考资料}
+## 9. 参考资料 {#参考资料}
 
 - [Java Language Specification：Types, Values, and Variables](https://docs.oracle.com/javase/specs/jls/se21/html/jls-4.html)
 - [Java Language Specification：Method Invocation Contexts](https://docs.oracle.com/javase/specs/jls/se21/html/jls-5.html#jls-5.3)
+- [Java Language Specification：Formal Parameters](https://docs.oracle.com/javase/specs/jls/se21/html/jls-8.html#jls-8.4.1)
 - [Java Language Specification：Run-Time Evaluation of Method Invocation](https://docs.oracle.com/javase/specs/jls/se21/html/jls-15.html#jls-15.12.4)
 - [JLS：Arrays](https://docs.oracle.com/javase/specs/jls/se21/html/jls-10.html#jls-10.7)
