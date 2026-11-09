@@ -1,7 +1,8 @@
 /**
- * Wraps two article sections in theme elements, keeping their headings inside
- * so the TOC and anchors are unchanged:
+ * Wraps article sections in theme elements, preserving headings for the TOC:
  * - a "面试核心" h2 and its body become `<CoreSection>`, the dark summary block;
+ * - question source under "面试题" becomes `<InterviewQuestionList>`; leading
+ *   navigation anchors remain before the heading that renders the card list;
  * - each h3 under a "常见问题" h2 becomes a collapsible `<FaqItem>`; the first
  *   one starts open.
  */
@@ -51,11 +52,12 @@ export default function remarkArticleBlocks() {
         continue;
       }
 
-      output.push(node);
       if (h2 && INTERVIEW_TITLE.test(h2.trim())) {
+        output.push(...takeUntil(3), node);
         output.push(element('InterviewQuestionList', takeUntil(2)));
         continue;
       }
+      output.push(node);
       if (!h2 || !FAQ_TITLE.test(h2)) continue;
 
       output.push(...takeUntil(3));

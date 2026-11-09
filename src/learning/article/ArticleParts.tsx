@@ -241,7 +241,7 @@ export function InterviewCards({article, headingId}: {article: ArticleIndex; hea
         </div>
         <div className={styles.grid}>
           {cards.map((card) => (
-            <Link key={card.id} className={styles.card} to={reviewHref(article, card, roleId)}>
+            <Link key={card.id} id={card.anchor} className={styles.card} to={reviewHref(article, card, roleId)}>
               <div className={styles.cardTop}>
                 <span className={styles.cardLabel}>{card.label}</span>
                 <PriorityDots priority={priorityForRole(article, roleId)} />

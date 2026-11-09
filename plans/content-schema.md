@@ -30,7 +30,7 @@ knowledge:
 
 ## 3. 卡片
 
-卡片仍写在文章的“面试题”章节中，每个三级标题是一张卡，文章与题库共用同一份内容。新增两项约定：
+卡片源码写在文章的“面试题”章节中，每个三级标题是一张卡。构建从这份源码提取题目、考察重点、相关内容和参考回答，文章与题库共用同一份卡片数据。已接入卡片的文章页只渲染卡片入口，答案通过翻卡组件展示，不再重复显示原始问答；原题目锚点保留在对应卡片入口上。
 
 ```markdown
 ### 6.2 如果让你从零设计一个 Coding Agent，你会怎么设计？ {#design-coding-agent}
@@ -42,6 +42,13 @@ knowledge:
 - ……
 
 **相关内容**：[模块与职责](#modules)、[停止条件与预算](./agent-loop.mdx#stop)、[编码 Agent 评测](../development/coding-agent-evaluation.mdx)。
+
+<details>
+<summary>参考回答</summary>
+
+……
+
+</details>
 ```
 
 | 项 | 规则 |
@@ -49,6 +56,7 @@ knowledge:
 | 显式 ID `{#…}` | 必填。小写英文单词用 `-` 连接，在文章内唯一。卡片 ID = `{knowledge.id}#{显式 ID}`，例如 `ai.agents.harness#design-coding-agent`。题目措辞和编号可以修改，ID 不变 |
 | `**题型**：综合题` | 可选。不写即为原子卡片 |
 | `**相关内容**` | 至少一个链接。可以是本文锚点 `#anchor`，其他文章的锚点 `../x.mdx#anchor`，或者整篇文章 `../x.mdx` |
+| 参考回答 | 在源码中使用 `<details><summary>参考回答</summary>…</details>`，构建提取为 `CardDetail.answer`，由现有卡片组件渲染 |
 | 修订号 | 不需要手写。构建时对题目、考察重点和参考回答计算哈希，写入卡片的 `rev` |
 
 `面试核心` 中的 `[卡](#…)` 链接直接使用卡片的显式 ID。

@@ -1,32 +1,25 @@
-import {type ReactNode, useEffect, useRef} from 'react';
+import {type ReactNode, useEffect} from 'react';
 import {useLocation} from '@docusaurus/router';
-import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
+import {useCurrentArticle} from './context';
 
-/** Keep the original questions readable at their stable article anchors. */
+/** Indexed answers are rendered by cards; other docs retain their source questions. */
 export function InterviewQuestionList({children}: {children: ReactNode}) {
-  const ref = useRef<HTMLDetailsElement>(null);
+  const article = useCurrentArticle();
   const {hash} = useLocation();
-  const english = useDocusaurusContext().i18n.currentLocale === 'en';
 
+  // Client-rendered pages need to resolve old question links after cards mount.
   useEffect(() => {
-    if (!hash || !ref.current) return;
-    let id: string;
+    if (!hash || !article?.cardIds.length) return;
+    let anchor: string;
     try {
-      id = decodeURIComponent(hash.slice(1));
+      anchor = decodeURIComponent(hash.slice(1));
     } catch {
       return;
     }
-    const target = document.getElementById(id);
-    if (target && ref.current.contains(target)) {
-      ref.current.open = true;
-      target.scrollIntoView();
+    if (article.cardIds.some(id => id.endsWith(`#${anchor}`))) {
+      document.getElementById(anchor)?.scrollIntoView();
     }
-  }, [hash]);
+  }, [article, hash]);
 
-  return (
-    <details ref={ref} className="c101-question-list">
-      <summary>{english ? 'Questions and reference answers' : '本页题目与参考回答'}</summary>
-      {children}
-    </details>
-  );
+  return article?.cardIds.length ? null : <>{children}</>;
 }
