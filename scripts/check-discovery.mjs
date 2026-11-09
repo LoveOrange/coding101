@@ -184,7 +184,7 @@ for (const line of redirects.trim().split('\n').filter((line) => line && !line.s
   assert.equal(status, localePause ? '302' : '301', `Unexpected redirect status: ${from}`);
   const destination = redirectUrl(to);
   const destinationHtml = await readPage(destination);
-  if (destination.hash) assert([...tags(destinationHtml, 'h2'), ...tags(destinationHtml, 'h3')].some((tag) => tag.id === decodeURIComponent(destination.hash.slice(1))), `Redirect target anchor is missing: ${destination}`);
+  if (destination.hash) assert([...tags(destinationHtml, 'h2'), ...tags(destinationHtml, 'h3'), ...tags(destinationHtml, 'div'), ...tags(destinationHtml, 'main')].some((tag) => tag.id === decodeURIComponent(destination.hash.slice(1))), `Redirect target anchor is missing: ${destination}`);
   const sourceFile = path.join('src/pages', from.replace(/^\//, '').replace(/\/$/, '') + '.tsx');
   if (await fs.access(sourceFile).then(() => true, () => false)) {
     const fallback = await readPage(new URL(from.replace(/^\//, ''), site));

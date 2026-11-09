@@ -199,8 +199,9 @@ export default function contentDiscoveryPlugin(context: LoadContext): Plugin {
         const redirects = routes.flatMap((route) => {
           const from = sitePath('/en' + (route === '/' ? '' : route));
           const to = applyTrailingSlash(sitePath(route), context.siteConfig);
-          // Clear language-specific fragments on cross-language navigation.
-          return [`${from.replace(/\/$/, '')} ${to}# 302`, `${from.replace(/\/$/, '')}/ ${to}# 302`];
+          // An explicit content anchor replaces old language-specific fragments.
+          // Workers normalizes an empty fragment away, so a trailing # is insufficient.
+          return [`${from.replace(/\/$/, '')} ${to}#__docusaurus_skipToContent_fallback 302`, `${from.replace(/\/$/, '')}/ ${to}#__docusaurus_skipToContent_fallback 302`];
         });
         await fs.appendFile(path.join(outDir, '_redirects'), '\n# English is held back until the interface and one study direction are ready.\n' + redirects.join('\n') + '\n');
       }

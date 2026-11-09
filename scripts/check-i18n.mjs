@@ -42,7 +42,7 @@ if (!publicI18n) {
   for (const route of expected) {
     const source = new URL('en' + (route === '/' ? '' : route), site).pathname.replace(/\/$/, '');
     const target = new URL(route.replace(/^\//, ''), site).pathname.replace(/\/?$/, '/');
-    for (const from of [source, source + '/']) assert(redirects.includes(`${from} ${target}# 302`), `Missing temporary locale redirect: ${from}`);
+    for (const from of [source, source + '/']) assert(redirects.includes(`${from} ${target}#__docusaurus_skipToContent_fallback 302`), `Missing temporary locale redirect: ${from}`);
   }
   for (const file of catalog.docs) {
     const original = await fs.readFile(path.join('docs', file), 'utf8');
