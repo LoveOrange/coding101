@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import {DEFAULT_PARSE_FRONT_MATTER, parseMarkdownFile} from '@docusaurus/utils';
+import {DEFAULT_PARSE_FRONT_MATTER, parseMarkdownFile, loadFreshModule} from '@docusaurus/utils';
 
 const outDir = path.resolve(process.argv[2] ?? 'build');
 const catalog = JSON.parse(await fs.readFile('i18n/en/catalog.json', 'utf8'));
+const discovery = JSON.parse(await fs.readFile('i18n/en/discovery.json', 'utf8'));
 for (const file of catalog.pages) {
   const translated = await fs.readFile(path.join('i18n/en/docusaurus-plugin-content-pages', file), 'utf8');
   assert.notEqual(translated, await fs.readFile(path.join('src/pages', file), 'utf8'), `Page translation is missing: ${file}`);
@@ -64,7 +65,54 @@ for (const url of allUrls) {
 
 const index = await fs.readFile(path.join(outDir, 'en/llms-index.txt'), 'utf8');
 const entries = [...index.matchAll(/^- \[.*?\]\((https?:\/\/[^)]+)\): (.+)$/gm)];
-assert.equal(entries.length, catalog.docs.length, 'English machine index must exclude untranslated docs');
+const directory = await readPage(new URL('articles/', englishSite));
+const directoryItems = tags(directory, 'li').filter((tag) => tag['data-article-id']);
+const expectedIds = new Set([...Object.keys(discovery.articles), ...catalog.docs.map((file) => file.replace(/\.mdx?$/, ''))]);
+assert.deepEqual(new Set(directoryItems.map((item) => item['data-article-id'])), expectedIds, 'Discovery must include introductions and actual translations, without duplicates');
+assert.equal(directoryItems.length, expectedIds.size);
+assert.equal(entries.length, expectedIds.size, 'Human and machine directories must cover the same articles');
+assert.equal(new Set(entries.map((entry) => entry[1])).size, entries.length, 'Every article needs a single preferred destination');
+const links = tags(directory, 'a').filter((tag) => tag.href);
+const englishEntries = entries.filter((entry) => entry[2].startsWith('Full text: en. '));
+assert.equal(englishEntries.length, catalog.docs.length, 'Only complete translations may be marked English');
+for (const [, href, description] of entries) {
+  assert(allUrls.has(href), `Discovery destination must be in a sitemap: ${href}`);
+  const html = await readPage(href);
+  assert.equal(canonical(html), href, `Discovery must use the real canonical, including index docs: ${href}`);
+  const language = description.match(/^Full text: (en|zh-Hans)\. /)?.[1];
+  assert(language, `Missing full-text language: ${href}`);
+  assert.equal(tags(html, 'html')[0].lang, language, `Mislabelled full-text language: ${href}`);
+  assert(links.some((link) => new URL(link.href, englishSite).href === href && link.hreflang === language), `Missing labelled static article link: ${href}`);
+  if (language === 'zh-Hans') {
+    const introduction = Object.values(discovery.articles).find((item) => description === `Full text: zh-Hans. ${item.description}`);
+    assert(introduction, `Unknown English introduction: ${href}`);
+    assert(directory.includes(introduction.description.replaceAll('&', '&amp;')), `Missing visible introduction: ${href}`);
+    assert(!tags(html, 'link').some((tag) => tag.rel === 'alternate' && tag.hreflang === 'en'), `An introduction is not a full translation: ${href}`);
+  }
+}
+// Cross-locale links require full navigation, the correct mirror base path and
+// actual Chinese anchors. Query filters (for roles) must survive normalization.
+for (const link of links.filter((link) => link.hreflang === 'zh-Hans')) {
+  const target = new URL(link.href, englishSite);
+  assert.equal(target.origin, site.origin);
+  assert(target.pathname.startsWith(site.pathname) && !target.pathname.startsWith(englishSite.pathname));
+  const html = await readPage(target);
+  const destination = new URL(target); destination.search = ''; destination.hash = '';
+  assert.equal(canonical(html), destination.href, `Cross-locale link must not redirect: ${target}`);
+  if (target.hash) assert(tags(html, 'section').some((tag) => tag.id === decodeURIComponent(target.hash.slice(1))), `Missing Chinese topic anchor: ${target}`);
+}
+const {publishedRoleEntries} = await loadFreshModule(path.resolve('src/data/interviewRoadmaps/outlineCatalog.ts'));
+const llms = await fs.readFile(path.join(outDir, 'en/llms.txt'), 'utf8');
+for (const role of publishedRoleEntries) {
+  const target = new URL(role.href.replace(/^\//, ''), site);
+  const expected = new URL(canonical(await readPage(target))); expected.search = target.search;
+  assert(links.some((link) => new URL(link.href, englishSite).href === expected.href), `Missing role or role filter: ${role.href}`);
+  assert(llms.includes(`](${expected.href}): Full guide language: zh-Hans`), `Missing role in text index: ${role.href}`);
+  assert(directory.includes(discovery.roles[role.href].title));
+}
+const chineseDirectory = await readPage(new URL('articles/', site));
+const chineseSections = tags(chineseDirectory, 'section').map((tag) => tag.id);
+assert.deepEqual(tags(directory, 'section').map((tag) => tag.id).filter((id) => id !== 'role-preparation'), chineseSections, 'English introductions must cover every published topic group');
 for (const file of catalog.docs) {
   const source = await fs.readFile(path.join('docs', file), 'utf8');
   const filePath = path.join('i18n/en/docusaurus-plugin-content-docs/current', file);
@@ -74,7 +122,7 @@ for (const file of catalog.docs) {
   const original = await parse(source);
   const translated = await parse(translation);
   assert.deepEqual(translated.frontMatter.knowledge, original.frontMatter.knowledge, `Knowledge identity changed: ${file}`);
-  const entry = entries.find(([, , description]) => description === translated.frontMatter.description);
+  const entry = englishEntries.find(([, , description]) => description.startsWith(`Full text: en. ${translated.frontMatter.description} Chinese original: `));
   assert(entry, `Missing translated description: ${file}`);
   const html = await readPage(entry[1]);
   const schema = JSON.parse(html.match(/<script[^>]*id="c101-document-schema"[^>]*>(.*?)<\/script>/)?.[1] ?? 'null');
@@ -90,4 +138,4 @@ for (const file of catalog.docs) {
     assert(answers.every(([, attributes]) => !/\bopen\b/.test(attributes)), 'Answers must start collapsed');
   }
 }
-console.log(`国际化检查通过：${englishSitemap.length} 个英文页面、${entries.length} 篇翻译，语言链接互指、静态正文、稳定题目 ID 与独立索引一致。`);
+console.log(`国际化检查通过：${englishSitemap.length} 个英文页面、${englishEntries.length} 篇全文翻译、${entries.length - englishEntries.length} 篇英文简介、${publishedRoleEntries.length} 个岗位入口；语言标注、规范链接、主题覆盖与双向 hreflang 一致。`);

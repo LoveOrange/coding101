@@ -65,21 +65,38 @@ HTTP 复核还发现，Workers 会将无尾斜杠的目录地址以 307 跳转�
 
 中文继续使用现有 URL；英文使用 `/en/`。首批提供首页、关于页、文章目录、使用指南和 DNS，共五个可索引页面。英文文章完整翻译正文、题目和参考回答；账号、复习队列、题库与岗位筛选仍使用中文入口，不生成中文正文的英文 URL 副本。
 
-`i18n/en/catalog.json` 明确列出已发布译文，Docusaurus 只构建这些英文源文件。英文和中文各有独立的 canonical、sitemap、`llms.txt` 和 `llms-index.txt`；根 robots 同时声明两份 sitemap。仅在确有对应译文的页面输出双向 hreflang。未翻译页面的语言菜单指向英文首页，并标明 `English home`。切换语言不携带原语言的章节锚点，因为章节锚点随正文语言变化。
+`i18n/en/catalog.json` 明确列出已发布译文，Docusaurus 只构建这些英文源文件。英文和中文各有独立的 canonical、sitemap、`llms.txt` 和 `llms-index.txt`；根 robots 同时声明两份 sitemap。仅在确有对应语言页面时输出双向 hreflang；文章的英文简介不算全文译文。未翻译页面的语言菜单指向英文首页，并标明 `English home`。切换语言不携带原语言的章节锚点，因为章节锚点随正文语言变化。
 
 增加译文时：
 
 1. 在 `i18n/en/docusaurus-plugin-content-docs/current/` 或 `i18n/en/docusaurus-plugin-content-pages/` 下添加完整译文，并加入 catalog。文档相对路径与中文保持一致；自定义 slug 需要同时扩展路由映射和校验。
 2. 保留 `knowledge.id` 和题目显式 ID；普通章节使用英文锚点，更新文内链接。尚未翻译的延伸阅读使用 `ChineseLink` 并明确标注中文。
-3. 新领域在 catalog 的 `groupTitles` 中同步提供目录的英文名称，使用知识领域的稳定 ID；缺少名称时构建会报错。新增学习功能需要翻译完整流程，不能仅开放中文功能的 `/en/` 地址。
+3. 新领域在 `i18n/en/discovery.json` 的 `groups` 中提供英文名称与简介，使用知识领域的稳定 ID；缺少介绍时构建会报错。新增学习功能需要翻译完整流程，不能仅开放中文功能的 `/en/` 地址。
 4. 校对后运行 `npm run content-status -- mark en done <中文 docs 路径>`。中文源文后续修改会使翻译状态过期，需重新核对。
 5. 运行类型检查、构建和 `npm run check:discovery`。检查包括全部中文内容、英文精确页面集合、无翻译回退、双向 hreflang、独立 canonical、静态正文、题目 ID 与原生折叠答案。GitHub Pages 子路径构建也执行同一检查。
 
 `SiteMetadata` 和语言菜单基于 Docusaurus 3.10.2 的对应主题组件，增加对实际译文集合的过滤；升级主题时需核对这两个覆盖组件。
 
+### 英文内容发现入口
+
+`/en/articles/` 同时展示岗位与主题介绍、已发布的英文全文，以及配有英文简介的中文原文。目录覆盖现有 7 个岗位入口、28 个知识领域和额外资料分组；首批为 34 篇代表性文章提供英文简介，保留原有 2 篇全文译文。没有增加独立路线页或文章的英文空壳 URL。
+
+- 岗位链接和建设状态来自 `publishedRoleEntries`，分组、阅读顺序及各组文章数量来自知识树和公开文档；英文文案集中维护在 `i18n/en/discovery.json`，不另建路线或复制知识正文。
+- `articles` 以 Docusaurus doc ID 关联中文原文，仅保存英文标题、摘要和 `sourceDigest`。摘要校验值是中文元数据 `title + '\n' + description` 的 SHA-256；元信息变化后构建会报出需复核的条目及新校验值。先阅读新源信息并调整英文摘要，再更新校验值，不能只为通过检查批量刷新。
+- 未翻译文章显示 `Read in Chinese` 和原文标题，使用中文 canonical；译文显示 `Read in English` 并保留中文原文链接。跨语言链接使用普通 HTML 锚点，保留镜像站的子路径和岗位筛选参数。
+- 全文译文加入发布清单后，目录自动优先采用译文的实际标题、摘要与 URL。对应的简介条目可以删除；尚未清理的旧简介不覆盖译文，也不重复产生文章入口。正文翻译状态仍由 `content-status` 管理，英文简介不将 `en` 状态标为完成。
+- HTML 目录与英文文本索引共用构建数据；文本索引逐条标注 `Full text: en` 或 `Full text: zh-Hans`。完整中文目录仍列出全部公开文章，英文目录通过分组链接提供完整集合入口。
+- `sourceDocs.ts` 复用 Docusaurus 3.10.2 的元数据解析方法，只读取中文源信息，不注册路由。它保留编号目录、`index` 文档与自定义 slug 的规则；框架升级时应核对导入的内部 API。译文路由映射目前仍遵守上文的同路径约定。
+
+`check:i18n` 同时验证英文简介与全文译文的语言、实际 canonical、静态 HTML 链接、全主题覆盖、岗位筛选参数、中文原文链接和镜像路径。它仍要求英文 sitemap 只包含实际发布的英文页面，不把简介当作文章译文声明 hreflang。
+
+这些入口用于帮助读者和检索工具发现内容，不意味着必然被索引或引用。Google 明确说明其搜索不使用 `llms.txt`；HTML 可访问性、内容质量及真实抓取与收录仍是主要验证对象。
+
 ## 参考资料
 
 - [Google：AI features and your website](https://developers.google.com/search/docs/appearance/ai-features)
+- [Google：生成式 AI 搜索优化指南](https://developers.google.com/search/docs/fundamentals/ai-optimization-guide)
+- [Google：多语言网站](https://developers.google.com/search/docs/specialty/international/managing-multi-regional-sites)
 - [Google：结构化数据通用要求](https://developers.google.com/search/docs/appearance/structured-data/sd-policies)
 - [OpenAI：搜索与训练爬虫](https://developers.openai.com/api/docs/bots)
 - [Anthropic：各类爬虫的用途与控制](https://support.claude.com/en/articles/8896518-does-anthropic-crawl-data-from-the-web-and-how-can-site-owners-block-the-crawler)
