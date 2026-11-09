@@ -36,6 +36,7 @@ for (const url of maps) {
     const result = {url: href, status: response.status, effectiveUrl: response.effectiveUrl, canonical, noindex: blocked, hasMain: /<main\b/.test(response.body)};
     report.pages.push(result);
     if (result.status !== 200 || !canonical || blocked || !result.hasMain) report.errors.push(`Public page failed crawl checks: ${href}`);
+    if (canonical && canonical !== response.effectiveUrl.split('#')[0]) report.errors.push(`Canonical differs from the final HTTP destination: ${href} → ${response.effectiveUrl}, canonical ${canonical}`);
   }
 }
 // Detect generic-client filtering separately. Do not impersonate verified bots.

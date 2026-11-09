@@ -47,6 +47,9 @@ const config: Config = {
   // Set the /<baseUrl>/ pathname under which your site is served
   // For GitHub pages deployment, it is often '/<projectName>/'
   baseUrl: "/",
+  // Workers serves directory index files at trailing-slash URLs. Canonicals,
+  // sitemaps and internal links must name that final HTTP 200 destination.
+  trailingSlash: true,
 
   // GitHub pages deployment config.
   // If you aren't using GitHub pages, you don't need these.

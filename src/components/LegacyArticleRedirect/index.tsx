@@ -9,7 +9,7 @@ import Layout from '@theme/Layout';
 /** Readable fallback for mirrors; Cloudflare serves the matching HTTP 301. */
 export default function LegacyArticleRedirect({to, title}: {to: string; title: string}) {
   const {siteConfig} = useDocusaurusContext();
-  const destination = useBaseUrl(to);
+  const destination = applyTrailingSlash(useBaseUrl(to), siteConfig);
   const canonical = new URL(applyTrailingSlash(destination.split('#')[0], siteConfig), siteConfig.url).href;
   return <Layout title={title}>
     <Head>

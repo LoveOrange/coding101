@@ -55,6 +55,8 @@ npm run check:discovery
 
 线上抽查发现旧 HashMap 入口返回 200 和空正文，实际只包含跳转信息。同类的 11 个合并文章入口统一补充 Cloudflare `_redirects` 301；镜像站保留 `noindex`、目标 canonical、meta refresh 和可读的新地址链接。旧入口不再进入 sitemap。原有章节和卡片 ID 不变。
 
+HTTP 复核还发现，Workers 会将无尾斜杠的目录地址以 307 跳转到带 `/` 的地址，而此前 Docusaurus 的默认配置生成无尾斜杠的 canonical。现在显式使用 `trailingSlash: true`，让 canonical、sitemap、内链和合并文章的重定向目标都指向实际返回 200 的地址。旧地址仍可访问，文章路径和 ID 不变；线上审计会检查 canonical 与最终 HTTP 地址是否一致。
+
 新增 `npm run audit:crawl`，检查线上 robots、其声明的各语言 sitemap、首页／目录／岗位路线以及均匀抽取的文章。报告包含 HTTP 状态、canonical、noindex、静态正文与通用客户端探测。直接执行 `node scripts/audit-crawl.mjs > /tmp/coding101-crawl.json` 可保留 JSON 结果。它只检查公开 HTTP 响应，不等同于搜索引擎已经收录，也不伪装成经过验证的搜索机器人。
 
 本次观察到默认 `Python-urllib/3.9` 请求被 Cloudflare 返回 403/1010，而明确标识的审计客户端和浏览器请求正常。现有 Wrangler 凭据不能读取该 zone 的安全设置，未更改 Browser Integrity Check 或 WAF。实际搜索机器人是否受到影响，仍需结合 Search Console 的实时 URL 检查与 Cloudflare 已验证机器人请求记录判断。不能根据 User-Agent 字符串探测成功就宣称 Googlebot、OAI-SearchBot 或 Claude 已经抓取。
