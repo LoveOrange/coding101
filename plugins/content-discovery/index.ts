@@ -9,6 +9,7 @@ import {applyTrailingSlash} from '@docusaurus/utils-common';
 import {knowledgeTree} from '../../src/data/knowledgeTree';
 import {publishedRoleEntries} from '../../src/data/interviewRoadmaps/outlineCatalog';
 import discovery from '../../i18n/en/discovery.json';
+import englishCatalog from '../../i18n/en/catalog.json';
 import type {ArticleGroup, PublicArticle, DiscoveryRole} from '../../src/discovery/types';
 import {readSourceDocs} from './sourceDocs';
 
@@ -121,7 +122,7 @@ export default function contentDiscoveryPlugin(context: LoadContext): Plugin {
     async postBuild({outDir}) {
       const root = absolute(sitePath('/'));
       const directory = absolute(applyTrailingSlash(sitePath('/articles/'), context.siteConfig));
-      const englishRoot = context.i18n.localeConfigs.en;
+      const englishRoot = context.i18n.locales.includes('en') ? context.i18n.localeConfigs.en : undefined;
       const entry = (english ? [
         `# ${context.siteConfig.title}`,
         '',
@@ -158,7 +159,7 @@ export default function contentDiscoveryPlugin(context: LoadContext): Plugin {
         '## 阅读入口',
         '',
         `- [站点首页](${root}): Coding 101 的内容与使用入口。`,
-        `- [English](${new URL(englishRoot.baseUrl, englishRoot.url).href}): 已发布的英文内容与阅读入口。`,
+        ...(englishRoot ? [`- [English](${new URL(englishRoot.baseUrl, englishRoot.url).href}): 已发布的英文内容与阅读入口。`] : []),
         `- [岗位面试路线](${absolute(applyTrailingSlash(sitePath('/interview-roadmaps/'), context.siteConfig))}): 根据目标岗位选择复习重点和回答深度。`,
         `- [文章目录](${directory}): 按主题浏览全部公开文章及摘要。`,
         `- [完整文章索引](${absolute(sitePath('/llms-index.txt'))}): 自动同步的文章标题、规范页面地址和内容摘要。`,
@@ -190,6 +191,19 @@ export default function contentDiscoveryPlugin(context: LoadContext): Plugin {
       ]);
 
       if (english) return;
+      if (!englishRoot) {
+        // Keep published bookmarks usable while the English experience is held
+        // back. Temporary redirects disappear when the locale is enabled again.
+        const route = (file: string) => '/' + file.replace(/\.(?:mdx?|tsx?)$/, '').replace(/(^|\/)index$/, '');
+        const routes = [...englishCatalog.pages.map(route), ...englishCatalog.docs.map((file) => '/docs' + route(file)), ...englishCatalog.generatedRoutes];
+        const redirects = routes.flatMap((route) => {
+          const from = sitePath('/en' + (route === '/' ? '' : route));
+          const to = applyTrailingSlash(sitePath(route), context.siteConfig);
+          // Clear language-specific fragments on cross-language navigation.
+          return [`${from.replace(/\/$/, '')} ${to}# 302`, `${from.replace(/\/$/, '')}/ ${to}# 302`];
+        });
+        await fs.appendFile(path.join(outDir, '_redirects'), '\n# English is held back until the interface and one study direction are ready.\n' + redirects.join('\n') + '\n');
+      }
       // Keep any explicit robots policy supplied through static/ authoritative.
       const robots = path.join(outDir, 'robots.txt');
       try {
@@ -200,7 +214,7 @@ export default function contentDiscoveryPlugin(context: LoadContext): Plugin {
           'Allow: /',
           `Disallow: ${sitePath('/api/')}`,
           '',
-          ...Object.values(context.i18n.localeConfigs).map((locale) => `Sitemap: ${new URL(normalizeUrl([locale.baseUrl, '/sitemap.xml']), locale.url).href}`),
+          ...context.i18n.locales.map((id) => context.i18n.localeConfigs[id]).map((locale) => `Sitemap: ${new URL(normalizeUrl([locale.baseUrl, '/sitemap.xml']), locale.url).href}`),
           '',
         ].join('\n'), {flag: 'wx'});
       } catch (error) {

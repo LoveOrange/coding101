@@ -175,10 +175,14 @@ for (const route of ['review', 'weak', 'progress', 'account', 'account/redeem', 
 assert(![...sitemap].some((url) => url.includes('/markdown-page')), 'Template page must not be published');
 await assert.rejects(fs.access(path.join(outDir, 'markdown-page/index.html')), {code: 'ENOENT'});
 const redirects = await fs.readFile(path.join(outDir, '_redirects'), 'utf8');
+const redirectUrl = (href) => new URL(href.startsWith(site.pathname) ? href : href.replace(/^\//, ''), site);
 for (const line of redirects.trim().split('\n').filter((line) => line && !line.startsWith('#'))) {
   const [from, to, status] = line.split(/\s+/);
-  assert.equal(status, '301', `Article consolidation must use a permanent redirect: ${from}`);
-  const destination = new URL(to.replace(/^\//, ''), site);
+  const sourceUrl = redirectUrl(from);
+  const englishBase = new URL('en/', site).pathname;
+  const localePause = sourceUrl.pathname === englishBase.slice(0, -1) || sourceUrl.pathname.startsWith(englishBase);
+  assert.equal(status, localePause ? '302' : '301', `Unexpected redirect status: ${from}`);
+  const destination = redirectUrl(to);
   const destinationHtml = await readPage(destination);
   if (destination.hash) assert([...tags(destinationHtml, 'h2'), ...tags(destinationHtml, 'h3')].some((tag) => tag.id === decodeURIComponent(destination.hash.slice(1))), `Redirect target anchor is missing: ${destination}`);
   const sourceFile = path.join('src/pages', from.replace(/^\//, '').replace(/\/$/, '') + '.tsx');
@@ -190,7 +194,7 @@ for (const line of redirects.trim().split('\n').filter((line) => line && !line.s
     expected.hash = destination.hash;
     assert(tags(fallback, 'a').some((tag) => tag.href && new URL(tag.href, site).href === expected.href), `Redirect fallback needs a real destination link: ${from}`);
   }
-  const sourcePath = new URL(from.replace(/^\//, ''), site).pathname.replace(/\/$/, '');
+  const sourcePath = sourceUrl.pathname.replace(/\/$/, '');
   assert(![...sitemap].some((url) => new URL(url).pathname.replace(/\/$/, '') === sourcePath), `Redirect source must not enter sitemap: ${from}`);
 }
 const robots = await fs.readFile(path.join(outDir, 'robots.txt'), 'utf8');

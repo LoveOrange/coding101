@@ -3,6 +3,9 @@ import type { Config } from "@docusaurus/types";
 import type * as Preset from "@docusaurus/preset-classic";
 import remarkArticleBlocks from "./plugins/remark-article-blocks";
 import englishCatalog from './i18n/en/catalog.json';
+import releaseConfig from './release/production.json';
+
+const publicI18n = (process.env.PUBLIC_I18N ?? releaseConfig.features.PUBLIC_I18N) === 'true';
 
 const english = process.env.DOCUSAURUS_CURRENT_LOCALE === 'en';
 const routeFromFile = (file: string) => '/' + file.replace(/\.(?:mdx?|tsx?)$/, '').replace(/(^|\/)index$/, '');
@@ -59,7 +62,7 @@ const config: Config = {
   onBrokenLinks: "throw",
 
   customFields: {
-    englishRoutes,
+    englishRoutes: publicI18n ? englishRoutes : [],
     // Local previews only: enables ?mock=<preset> sample learner states.
     learnerMocks: process.env.LEARNER_MOCKS === "true",
     learnerFeatures,
@@ -79,7 +82,7 @@ const config: Config = {
   // may want to replace "en" with "zh-Hans".
   i18n: {
     defaultLocale: "zh-Hans",
-    locales: ["zh-Hans", "en"],
+    locales: publicI18n ? ["zh-Hans", "en"] : ["zh-Hans"],
     localeConfigs: {
       'zh-Hans': {label: '简体中文', htmlLang: 'zh-Hans'},
       en: {label: 'English', htmlLang: 'en'},
@@ -258,6 +261,6 @@ if (english) {
   theme.navbar?.items?.forEach(localize);
   theme.footer?.links?.forEach(localize);
 }
-theme.navbar?.items?.push({type: 'localeDropdown', position: 'right'});
+if (publicI18n) theme.navbar?.items?.push({type: 'localeDropdown', position: 'right'});
 
 export default config;

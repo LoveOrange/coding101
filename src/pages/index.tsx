@@ -41,6 +41,8 @@ const ratings = [translate({message: "没想起来"}), translate({message: "模�
 
 function Intro() {
   const features = useLearnerFeatures();
+  const resolve = useLocaleLink();
+  const canReview = !resolve('/topics').fallback || !resolve('/questions').fallback;
   return (
     <section className={styles.intro}>
       <div className={styles.introCopy}>
@@ -52,10 +54,10 @@ function Intro() {
             : translate({message: "Coding101 把后端、算法、系统设计、数据库、网络等面试内容整理成文章，每篇末尾配面试闪卡。先想答案再翻面，答不上来的题会带你回到原文段落。"})}
         </p>
         <div className={styles.actions}>
-          <a className={styles.primaryButton} href="#choose">
+          {canReview && <a className={styles.primaryButton} href="#choose">
             <span>{translate({message: "开始复习"})}</span>
             <span aria-hidden="true">↓</span>
-          </a>
+          </a>}
           <Link className={styles.secondaryButton} to="/docs/basic-knowledge/network/tls">{translate({message: "先读一篇文章"})}</Link>
         </div>
         <p className={styles.note}>
@@ -150,6 +152,8 @@ function QuestionSearch() {
 
 function Choose() {
   const features = useLearnerFeatures();
+  const resolve = useLocaleLink();
+  if (resolve('/topics').fallback && resolve('/questions').fallback) return null;
   return (
     <section id="choose" className={styles.choose} aria-labelledby="choose-title">
       <div className={styles.chooseHeading}>
@@ -198,7 +202,7 @@ function Choose() {
             <p className={styles.routeText}>{translate({message: "先答题，哪里答不上来，再去读对应的文章。"})}</p>
           </div>
           <div className={styles.routeFoot}>
-            <QuestionSearch />
+            {!resolve('/questions').fallback && <QuestionSearch />}
             <Link className={styles.routeButtonQuestion} to={features ? '/review?mode=quiz' : '/questions'}>
               <span>{features ? translate({message: "随机来 10 道题"}) : translate({message: "去题库挑题"})}</span>
               <span aria-hidden="true">→</span>
@@ -211,6 +215,7 @@ function Choose() {
 }
 
 export default function Home(): JSX.Element {
+  const resolve = useLocaleLink();
   return (
     <Layout
       title={translate({message: "技术面试复习"})}
@@ -221,11 +226,11 @@ export default function Home(): JSX.Element {
         <Choose />
         <section className={styles.reading} aria-labelledby="reading-title">
           <h2 id="reading-title">{translate({message: "从具体问题开始阅读"})}</h2>
-          <p>{translate({message: "还没有确定复习范围时，先选"})}<Link to="/interview-roadmaps/">{translate({message: "岗位路线"})}</Link>{translate({message: "。想补一个知识点时，可以直接阅读下面的文章；每篇都提供原理说明和参考资料。"})}</p>
+          <p>{!resolve('/interview-roadmaps/').fallback ? <>{translate({message: "还没有确定复习范围时，先选"})}<Link to="/interview-roadmaps/">{translate({message: "岗位路线"})}</Link>{translate({message: "。想补一个知识点时，可以直接阅读下面的文章；每篇都提供原理说明和参考资料。"})}</> : translate({message: "可以通过文章目录选择需要复习的知识点，每篇文章都提供原理说明和参考资料。"})}</p>
           <div className={styles.readingGrid}>
-            <article><h3><Link to="/docs/basic-knowledge/network/tls">TLS</Link></h3><p>{translate({message: "从证书验证、密钥协商到加密通信，解释 HTTPS 怎样确认服务端身份，以及它的保护边界。"})}</p></article>
-            <article><h3><Link to="/docs/basic-knowledge/algorithms/binary-search">{translate({message: "二分查找"})}</Link></h3><p>{translate({message: "用半开区间推导重复值的左右边界，检查空数组、目标缺失和整数溢出。"})}</p></article>
-            <article><h3><Link to="/docs/basic-knowledge/algorithms/backtracking">{translate({message: "回溯"})}</Link></h3><p>{translate({message: "通过子集枚举解释选择与撤销，区分路径恢复、同层去重和保存答案的复制成本。"})}</p></article>
+            {!resolve('/docs/basic-knowledge/network/tls').fallback && <article><h3><Link to="/docs/basic-knowledge/network/tls">TLS</Link></h3><p>{translate({message: "从证书验证、密钥协商到加密通信，解释 HTTPS 怎样确认服务端身份，以及它的保护边界。"})}</p></article>}
+            {!resolve('/docs/basic-knowledge/algorithms/binary-search').fallback && <article><h3><Link to="/docs/basic-knowledge/algorithms/binary-search">{translate({message: "二分查找"})}</Link></h3><p>{translate({message: "用半开区间推导重复值的左右边界，检查空数组、目标缺失和整数溢出。"})}</p></article>}
+            {!resolve('/docs/basic-knowledge/algorithms/backtracking').fallback && <article><h3><Link to="/docs/basic-knowledge/algorithms/backtracking">{translate({message: "回溯"})}</Link></h3><p>{translate({message: "通过子集枚举解释选择与撤销，区分路径恢复、同层去重和保存答案的复制成本。"})}</p></article>}
           </div>
           <p><Link to="/articles/">{translate({message: "浏览完整文章目录"})}</Link> · <Link to="/about">{translate({message: "了解内容范围与资料来源"})}</Link></p>
         </section>
