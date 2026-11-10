@@ -1,5 +1,5 @@
 import type {ReactNode} from 'react';
-import Link from '@site/src/i18n/LocalizedLink';
+import Link, {useLocaleLink} from '@site/src/i18n/LocalizedLink';
 import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
 import {useThemeConfig} from '@docusaurus/theme-common';
 
@@ -15,9 +15,21 @@ type FooterColumn = {title?: string; items: FooterItem[]};
  */
 export default function Footer(): ReactNode {
   const {footer} = useThemeConfig();
-  const english = useDocusaurusContext().i18n.currentLocale === 'en';
+  const {siteConfig, i18n} = useDocusaurusContext();
+  const english = i18n.currentLocale === 'en';
+  const resolve = useLocaleLink();
   if (!footer) return null;
-  const columns = (footer.links ?? []) as FooterColumn[];
+  const columns = ((footer.links ?? []) as FooterColumn[]).map((column) => ({
+    ...column,
+    items: column.items.filter((item) => {
+      if (item.to) return !resolve(item.to).fallback;
+      if (!english || !item.href) return true;
+      const url = new URL(item.href, siteConfig.url);
+      // The canonical privacy URL may differ from the mirror's origin.
+      if (url.origin === siteConfig.url || url.origin === 'https://coding101.linsama.com') return !resolve(url.pathname).fallback;
+      return true;
+    }),
+  })).filter((column) => column.items.length);
 
   return (
     <footer className={styles.footer}>

@@ -23,6 +23,37 @@ const expected = [...catalog.pages.map(route), ...catalog.docs.map((file) => '/d
 const site = new URL(canonical(await fs.readFile(path.join(outDir, 'index.html'), 'utf8')));
 const englishSite = new URL('en/', site);
 const normalize = (pathname) => pathname.replace(/\/$/, '') || '/';
+const release = JSON.parse(await fs.readFile('release/production.json', 'utf8'));
+const publicI18n = (process.env.PUBLIC_I18N ?? release.features.PUBLIC_I18N) === 'true';
+if (!publicI18n) {
+  assert.equal(await fs.stat(path.join(outDir, 'en')).then(() => true, () => false), false, 'Closed locales must not leave public English assets');
+  const sitemap = locs(await fs.readFile(path.join(outDir, 'sitemap.xml'), 'utf8'));
+  for (const url of sitemap) {
+    assert(!url.startsWith(englishSite.href), `Hidden English URL in sitemap: ${url}`);
+    const html = await readPage(url);
+    assert(!tags(html, 'link').some(tag => tag.hreflang === 'en'), `Hidden English hreflang: ${url}`);
+    assert(!tags(html, 'a').some(tag => tag.lang || (tag.href && new URL(tag.href, site).href.startsWith(englishSite.href))), `Hidden locale navigation: ${url}`);
+  }
+  for (const file of ['robots.txt', 'llms.txt', 'llms-index.txt']) {
+    const text = await fs.readFile(path.join(outDir, file), 'utf8');
+    assert(!text.includes(englishSite.href), `Hidden English discovery entry: ${file}`);
+  }
+  const redirects = await fs.readFile(path.join(outDir, '_redirects'), 'utf8');
+  for (const route of expected) {
+    const source = new URL('en' + (route === '/' ? '' : route), site).pathname.replace(/\/$/, '');
+    const target = new URL(route.replace(/^\//, ''), site).pathname.replace(/\/?$/, '/');
+    for (const from of [source, source + '/']) assert(redirects.includes(`${from} ${target}#__docusaurus_skipToContent_fallback 302`), `Missing temporary locale redirect: ${from}`);
+  }
+  for (const file of catalog.docs) {
+    const original = await fs.readFile(path.join('docs', file), 'utf8');
+    const translated = await fs.readFile(path.join('i18n/en/docusaurus-plugin-content-docs/current', file), 'utf8');
+    assert.deepEqual(cardTranslationErrors(parseDoc(original), parseDoc(translated, 'en')), [], `Preserved translation has invalid cards: ${file}`);
+  }
+  console.log(`国际化关闭检查通过：${sitemap.length} 个中文页面无语言入口及英文发现声明；英文产物未公开，${expected.length} 个旧入口暂时跳转中文，译文卡片校验通过。`);
+  process.exit(0);
+}
+const activeRedirects = await fs.readFile(path.join(outDir, '_redirects'), 'utf8');
+assert(!activeRedirects.split('\n').some(line => line.startsWith(englishSite.pathname) || line.startsWith(englishSite.pathname.slice(0, -1) + ' ')), 'Enabled English pages must not retain pause redirects');
 const englishSitemap = locs(await fs.readFile(path.join(outDir, 'en/sitemap.xml'), 'utf8'));
 assert.deepEqual(new Set(englishSitemap.map((url) => normalize('/' + new URL(url).pathname.slice(englishSite.pathname.length)))), new Set(expected.map(normalize)), 'English sitemap must contain exactly the translated pages');
 const robots = await fs.readFile(path.join(outDir, 'robots.txt'), 'utf8');
@@ -48,11 +79,14 @@ const logicalLinks = (html) => tags(html, 'a').filter((tag) => tag.href && !tag.
   return '/' + url.pathname.slice(base.length) + url.search + url.hash;
 });
 for (const section of ['nav', 'main', 'footer']) {
-  assert.deepEqual(logicalLinks(region(englishHome, section)), logicalLinks(region(chineseHome, section)), `Both homepages must retain the same ${section} destinations and order`);
+  const chineseLinks = logicalLinks(region(chineseHome, section));
+  const englishLinks = logicalLinks(region(englishHome, section));
+  assert(englishLinks.every(link => chineseLinks.includes(link)), `English ${section} must use the shared structure`);
+  assert(!region(englishHome, section).includes('(Chinese)'), `Untranslated navigation must be hidden in ${section}`);
 }
 const chineseMain = region(chineseHome, 'main');
 const englishMain = region(englishHome, 'main');
-assert.deepEqual(tags(englishMain, 'section'), tags(chineseMain, 'section'), 'Homepage sections must share the same layout');
+assert(tags(englishMain, 'section').every(section => tags(chineseMain, 'section').some(original => JSON.stringify(section) === JSON.stringify(original))), 'Visible homepage sections must share the same layout');
 assert(!/[㐀-鿿]/.test(englishMain.replace(/<[^>]+>/g, '')), 'Homepage copy must be translated');
 assert(!tags(region(englishHome, 'nav'), 'a').some((tag) => tag.href === new URL('articles/', englishSite).pathname), 'Article directory must remain an auxiliary entry, as in Chinese');
 for (const link of tags(englishHome, 'a').filter((tag) => tag.hreflang === 'zh-Hans' && !tag.lang)) {

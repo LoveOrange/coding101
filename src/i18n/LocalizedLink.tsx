@@ -13,12 +13,10 @@ export function useLocaleLink() {
   });
 }
 
-/** Shared pages link to a real translation, or clearly marked original content. */
+/** Hide navigation to pages that have no translation in the current locale. */
 export default function LocalizedLink({to, children, ...props}: ComponentProps<typeof DocusaurusLink>) {
   const resolve = useLocaleLink();
   const target = typeof to === 'string' ? resolve(to) : undefined;
-  if (target?.fallback) return <DocusaurusLink {...props} to={`pathname://${target.href}`} autoAddBaseUrl={false} target={props.target ?? "_self"} hrefLang="zh-Hans">
-    {children}<span className="c101-link-language"> (Chinese)</span>
-  </DocusaurusLink>;
+  if (target?.fallback) return null;
   return <DocusaurusLink {...props} to={target?.href ?? to} autoAddBaseUrl={target ? false : props.autoAddBaseUrl}>{children}</DocusaurusLink>;
 }
