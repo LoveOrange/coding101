@@ -8,11 +8,11 @@
 
 | 状态 | Codex 生成 | Claude 校验 | Lin 校验 | English | 日本語 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| ✅ | 667 | 251 | 0 | 2 | 0 |
-| 🔁 | 0 | 98 | 0 | 0 | 0 |
+| ✅ | 667 | 247 | 1 | 2 | 0 |
+| 🔁 | 0 | 102 | 0 | 0 | 0 |
 | 👀 | 0 | 0 | 7 | 0 | 0 |
 | ⚠️ | 0 | 0 | 0 | 0 | 0 |
-| · | 0 | 318 | 660 | 665 | 667 |
+| · | 0 | 318 | 659 | 665 | 667 |
 | — | 0 | 0 | 0 | 0 | 0 |
 
 ## ai
@@ -33,17 +33,17 @@
 | [RAG 评估](../docs/ai/evaluation/rag-evaluation.mdx) | ✅ | 🔁 | · | · | · |
 | [AI 应用与 Agent](../docs/ai/index.mdx) | ✅ | ✅ | · | · | · |
 | [模型幻觉](../docs/ai/llm/hallucination.mdx) | ✅ | ✅ | · | · | · |
-| [大语言模型基础](../docs/ai/llm/llm-basics.mdx) | ✅ | 🔁 | · | · | · |
-| [Transformer 与注意力机制](../docs/ai/llm/transformer.mdx) | ✅ | ✅ | · | · | · |
+| [大语言模型基础](../docs/ai/llm/llm-basics.mdx) | ✅ | 🔁 | ✅ | · | · |
+| [Transformer 与注意力机制](../docs/ai/llm/transformer.mdx) | ✅ | 🔁 | · | · | · |
 | [卷积神经网络](../docs/ai/models/convolutional-neural-networks.mdx) | ✅ | · | · | · | · |
 | [上下文压缩](../docs/ai/prompting/context-compaction.mdx) | ✅ | ✅ | · | · | · |
-| [上下文管理](../docs/ai/prompting/context-management.mdx) | ✅ | ✅ | · | · | · |
-| [提示词工程](../docs/ai/prompting/prompt-engineering.mdx) | ✅ | ✅ | · | · | · |
+| [上下文管理](../docs/ai/prompting/context-management.mdx) | ✅ | 🔁 | · | · | · |
+| [提示词工程](../docs/ai/prompting/prompt-engineering.mdx) | ✅ | 🔁 | · | · | · |
 | [文档解析与切分](../docs/ai/rag/chunking.mdx) | ✅ | ✅ | · | · | · |
 | [Embedding 与向量检索](../docs/ai/rag/embedding-vector-search.mdx) | ✅ | 🔁 | · | · | · |
 | [混合检索与重排序](../docs/ai/rag/hybrid-search-rerank.mdx) | ✅ | 🔁 | · | · | · |
 | [检索增强生成（RAG）](../docs/ai/rag/rag.mdx) | ✅ | 🔁 | · | · | · |
-| [延迟、成本与服务扩展](../docs/ai/safety/latency-cost-scaling.mdx) | ✅ | ✅ | · | · | · |
+| [延迟、成本与服务扩展](../docs/ai/safety/latency-cost-scaling.mdx) | ✅ | 🔁 | · | · | · |
 | [提示注入](../docs/ai/safety/prompt-injection.mdx) | ✅ | ✅ | · | · | · |
 | [工具授权与执行沙箱](../docs/ai/safety/tool-authorization-sandbox.mdx) | ✅ | ✅ | · | · | · |
 | [Agent 状态与持久化执行](../docs/ai/state/durable-execution.mdx) | ✅ | ✅ | · | · | · |
