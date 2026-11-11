@@ -8,9 +8,9 @@
 
 | 状态 | Codex 生成 | Claude 校验 | Lin 校验 | English | 日本語 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| ✅ | 667 | 247 | 0 | 2 | 0 |
-| 🔁 | 0 | 102 | 1 | 0 | 0 |
-| 👀 | 0 | 0 | 7 | 0 | 0 |
+| ✅ | 667 | 246 | 2 | 2 | 0 |
+| 🔁 | 0 | 103 | 0 | 0 | 0 |
+| 👀 | 0 | 0 | 6 | 0 | 0 |
 | ⚠️ | 0 | 0 | 0 | 0 | 0 |
 | · | 0 | 318 | 659 | 665 | 667 |
 | — | 0 | 0 | 0 | 0 | 0 |
@@ -32,8 +32,8 @@
 | [模型评测](../docs/ai/evaluation/model-evaluation.mdx) | ✅ | · | · | · | · |
 | [RAG 评估](../docs/ai/evaluation/rag-evaluation.mdx) | ✅ | 🔁 | · | · | · |
 | [AI 应用与 Agent](../docs/ai/index.mdx) | ✅ | ✅ | · | · | · |
-| [模型幻觉](../docs/ai/llm/hallucination.mdx) | ✅ | ✅ | · | · | · |
-| [大语言模型基础](../docs/ai/llm/llm-basics.mdx) | ✅ | 🔁 | 🔁 | · | · |
+| [模型幻觉](../docs/ai/llm/hallucination.mdx) | ✅ | 🔁 | · | · | · |
+| [大语言模型基础](../docs/ai/llm/llm-basics.mdx) | ✅ | 🔁 | ✅ | · | · |
 | [Transformer 与注意力机制](../docs/ai/llm/transformer.mdx) | ✅ | 🔁 | · | · | · |
 | [卷积神经网络](../docs/ai/models/convolutional-neural-networks.mdx) | ✅ | · | · | · | · |
 | [上下文压缩](../docs/ai/prompting/context-compaction.mdx) | ✅ | ✅ | · | · | · |
@@ -265,7 +265,7 @@
 | [Java 反射](../docs/basic-knowledge/java/language/reflection-method-handles.mdx) | ✅ | ✅ | · | · | · |
 | [Java 注解处理器](../docs/basic-knowledge/java/language/runtime-scanning-compile-time-generation.mdx) | ✅ | ✅ | · | · | · |
 | [String](../docs/basic-knowledge/java/language/string-immutability-pool.mdx) | ✅ | 🔁 | 👀 | · | · |
-| [Java 值传递](../docs/basic-knowledge/java/language/types-references-value-passing.mdx) | ✅ | 🔁 | 👀 | · | · |
+| [Java 值传递](../docs/basic-knowledge/java/language/types-references-value-passing.mdx) | ✅ | 🔁 | ✅ | · | · |
 | [包装类型](../docs/basic-knowledge/java/language/wrappers-boxing-cache.mdx) | ✅ | ✅ | 👀 | · | · |
 | [Java API 设计](../docs/basic-knowledge/java/quality/api-design-from-invariants.mdx) | ✅ | ✅ | · | · | · |
 | [不可变对象](../docs/basic-knowledge/java/quality/immutable-objects-defensive-copying.mdx) | ✅ | ✅ | · | · | · |
