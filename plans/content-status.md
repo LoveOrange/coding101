@@ -8,8 +8,8 @@
 
 | 状态 | Codex 生成 | Claude 校验 | Lin 校验 | English | 日本語 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| ✅ | 667 | 247 | 1 | 2 | 0 |
-| 🔁 | 0 | 102 | 0 | 0 | 0 |
+| ✅ | 667 | 247 | 0 | 2 | 0 |
+| 🔁 | 0 | 102 | 1 | 0 | 0 |
 | 👀 | 0 | 0 | 7 | 0 | 0 |
 | ⚠️ | 0 | 0 | 0 | 0 | 0 |
 | · | 0 | 318 | 659 | 665 | 667 |
@@ -33,7 +33,7 @@
 | [RAG 评估](../docs/ai/evaluation/rag-evaluation.mdx) | ✅ | 🔁 | · | · | · |
 | [AI 应用与 Agent](../docs/ai/index.mdx) | ✅ | ✅ | · | · | · |
 | [模型幻觉](../docs/ai/llm/hallucination.mdx) | ✅ | ✅ | · | · | · |
-| [大语言模型基础](../docs/ai/llm/llm-basics.mdx) | ✅ | 🔁 | ✅ | · | · |
+| [大语言模型基础](../docs/ai/llm/llm-basics.mdx) | ✅ | 🔁 | 🔁 | · | · |
 | [Transformer 与注意力机制](../docs/ai/llm/transformer.mdx) | ✅ | 🔁 | · | · | · |
 | [卷积神经网络](../docs/ai/models/convolutional-neural-networks.mdx) | ✅ | · | · | · | · |
 | [上下文压缩](../docs/ai/prompting/context-compaction.mdx) | ✅ | ✅ | · | · | · |

@@ -312,7 +312,7 @@ onMounted(() => { width.value = window.innerWidth; });
 <details>
 <summary>参考回答</summary>
 
-**$fetch 负责请求，useAsyncData 管理可恢复的异步数据，useFetch 则结合请求与这套数据机制。** 在 setup 中直接调用 $fetch，服务器和浏览器可能各执行一次；通过数据组合式函数，服务端结果可以随 payload 传递，客户端首次恢复时复用。事件触发的请求可以直接使用 $fetch，不需要每次重新创建数据组合式函数。
+**`$fetch` 负责请求，useAsyncData 管理可恢复的异步数据，useFetch 则结合请求与这套数据机制。** 在 setup 中直接调用 `$fetch`，服务器和浏览器可能各执行一次；通过数据组合式函数，服务端结果可以随 payload 传递，客户端首次恢复时复用。事件触发的请求可以直接使用 `$fetch`，不需要每次重新创建数据组合式函数。
 
 </details>
 

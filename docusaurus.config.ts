@@ -2,6 +2,8 @@ import { themes as prismThemes } from "prism-react-renderer";
 import type { Config } from "@docusaurus/types";
 import type * as Preset from "@docusaurus/preset-classic";
 import remarkArticleBlocks from "./plugins/remark-article-blocks";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
 import englishCatalog from './i18n/en/catalog.json';
 import releaseConfig from './release/production.json';
 
@@ -101,7 +103,8 @@ const config: Config = {
           editUrl: "https://github.com/loveorange/coding101/tree/main/",
           editLocalizedFiles: true,
           showLastUpdateTime: true,
-          remarkPlugins: [remarkArticleBlocks],
+          remarkPlugins: [remarkMath, remarkArticleBlocks],
+          rehypePlugins: [rehypeKatex],
         },
         pages: english ? {include: englishCatalog.pages} : {},
         blog: english ? false : {
@@ -111,7 +114,7 @@ const config: Config = {
           editUrl: "https://github.com/loveorange/coding101/tree/main/",
         },
         theme: {
-          customCss: "./src/css/custom.css",
+          customCss: [require.resolve("katex/dist/katex.min.css"), "./src/css/custom.css"],
         },
       } satisfies Preset.Options,
     ],
