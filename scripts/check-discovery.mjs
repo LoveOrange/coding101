@@ -2,8 +2,13 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {DEFAULT_PARSE_FRONT_MATTER, parseMarkdownFile, loadFreshModule} from '@docusaurus/utils';
+import {assertDiscoverableCard} from './discovery-card.mjs';
 
 const outDir = path.resolve(process.argv[2] ?? 'build');
+const cardDetails = JSON.parse(await fs.readFile(path.resolve(
+  process.env.DOCUSAURUS_GENERATED_FILES_DIR_NAME ?? '.docusaurus',
+  'learning-content/default/card-details.json',
+), 'utf8'));
 const decode = (value) => value.replace(/&(?:amp|quot|apos|lt|gt|#\d+|#x[\da-f]+);/gi, (entity) => {
   const named = {'&amp;': '&', '&quot;': '"', '&apos;': "'", '&lt;': '<', '&gt;': '>'};
   return named[entity] ?? String.fromCodePoint(entity[2].toLowerCase() === 'x'
@@ -94,15 +99,27 @@ for (const [, escapedTitle, href, description] of entries) {
     `Missing article content-use link: ${href}`);
     const interview = /\n##\s+(?:\d+\.\s*)?面试题[^\n]*\n([\s\S]*?)(?=\n##\s|$)/.exec(source.content);
     if (interview) {
-      const disclosure = tags(html, 'details').find((tag) => tag.class?.split(' ').includes('c101-question-list'));
-      assert(disclosure, `Questions must be readable in a native disclosure: ${href}`);
-      assert(!('hidden' in disclosure) && !('open' in disclosure), `Questions should start collapsed, not permanently hidden: ${href}`);
-      const ids = new Set(tags(html, 'h3').map((tag) => tag.id));
-      for (const [, anchor] of interview[1].matchAll(/^###\s+.*\{#([^}]+)\}\s*$/gm)) {
-        assert(ids.has(anchor), `Lost question anchor ${anchor}: ${href}`);
-        questionAnchors += 1;
+      const anchors = [...interview[1].matchAll(/^###\s+.*\{#([^}]+)\}\s*$/gm)].map((match) => match[1]);
+      const knowledgeId = source.frontMatter.knowledge.id;
+      const indexed = Object.keys(cardDetails).some((id) => id.startsWith(`${knowledgeId}#`));
+      if (indexed) {
+        assert(tags(html, 'div').some((tag) => tag.class?.split(' ').includes('c101-interview-cards')),
+          `Missing server-rendered card list: ${href}`);
+        const links = [...html.matchAll(/<a\b([^>]*)>([\s\S]*?)<\/a>/gi)].map((match) => ({
+          ...attributes(match[1]), text: decode(match[2].replace(/<[^>]*>/g, '')),
+        }));
+        for (const anchor of anchors) {
+          const cardId = `${knowledgeId}#${anchor}`;
+          assertDiscoverableCard({link: links.find((link) => link.id === anchor), card: cardDetails[cardId],
+            cardId, anchor, site, articleUrl: href});
+        }
+      } else {
+        // Docs outside the learning index retain their original questions and answers.
+        const ids = new Set(tags(html, 'h3').map((tag) => tag.id));
+        for (const anchor of anchors) assert(ids.has(anchor), `Lost question anchor ${anchor}: ${href}`);
+        assert(/<summary\b[^>]*>参考回答<\/summary>/.test(html), `Missing server-rendered reference answers: ${href}`);
       }
-      assert(/<summary\b[^>]*>参考回答<\/summary>/.test(html), `Missing server-rendered reference answers: ${href}`);
+      questionAnchors += anchors.length;
     }
   } else {
     assert.equal(data['@type'], 'WebPage', `Do not label directories or historical notes as technical articles: ${href}`);
@@ -158,7 +175,7 @@ for (const [, , href, description] of entries) {
 assert(questionLinks.length > 0, 'Question catalog must link directly to article questions before JavaScript runs');
 for (const url of questionLinks) {
   const html = await readPage(url);
-  assert(tags(html, 'h3').some((tag) => tag.id === decodeURIComponent(url.hash.slice(1))), `Question catalog has a broken anchor: ${url}`);
+  assert([...tags(html, 'h3'), ...tags(html, 'a')].some((tag) => tag.id === decodeURIComponent(url.hash.slice(1))), `Question catalog has a broken anchor: ${url}`);
 }
 for (const route of ['topics', 'questions']) {
   const html = await readPage(new URL(route, site));
