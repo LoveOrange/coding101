@@ -8,7 +8,8 @@ import {createHash, randomUUID} from 'node:crypto';
 import {setTimeout as delay} from 'node:timers/promises';
 import {git, requireClean, requireAncestor, currentDeployment, sourceCommit,
   requireSameDeployment, remoteRef, acquireLock, releaseLock} from './release-policy.mjs';
-import {snapshotCompanyMetadata, requireSameMetadataSource} from './release-company-metadata.mjs';
+import {snapshotCompanyMetadata, requireSameMetadataSource, companyInputsHash, companyVerification,
+  readCompanyVerification, recordCompanyVerification} from './release-company-metadata.mjs';
 import {savePrivateJson, verifyCounts} from '../worker/scripts/company-metadata.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -24,11 +25,12 @@ try { source = requireClean(root); }
 catch (error) { console.error(`[release] STOP: ${error.message}`); process.exit(1); }
 const reportDir = await mkdtemp(join(tmpdir(), 'coding101-release-'));
 const workspace = join(reportDir, 'workspace');
+const cardsFile = join(workspace, '.docusaurus/learning-content/default/card-details.json');
 const releaseId = randomUUID();
 const report = {source, releaseId, checkOnly, startedAt: new Date().toISOString(), success: false, steps: []};
 let lock, container, activeChild, interrupted = false;
 let deployStarted = false, deploymentConfirmed = false;
-let companySnapshot;
+let companySnapshot, previousVerification;
 let metadataSyncStarted = false;
 const safeEnv = Object.fromEntries(['PATH', 'HOME', 'TMPDIR', 'TEMP', 'SystemRoot', 'DOCKER_HOST', 'DOCKER_CONTEXT',
   'SSH_AUTH_SOCK'].filter(k => process.env[k]).map(k => [k, process.env[k]]));
@@ -80,7 +82,7 @@ async function get(path) {
 async function companies(mode) {
   const request = {
     mode, metadataFile: companySnapshot.metadataFile, sourceHash: companySnapshot.sourceHash,
-    cardsFile: join(workspace, '.docusaurus/learning-content/default/card-details.json'),
+    cardsFile,
     connectionFile: process.env.CODING101_CONTENT_ENV_FILE || join(homedir(), '.config/coding101-content-import/.env'),
     target: config.companyMetadata.target,
     preflightFile: join(companySnapshot.dir, 'check-result.json'),
@@ -141,7 +143,18 @@ try {
   await run('worker-typecheck', 'npm', ['run', 'typecheck'], join(workspace, 'worker'));
   await run('production-build', 'npm', ['run', 'build:production']);
   await run('discovery', 'npm', ['run', 'check:discovery']);
-  await companies('check');
+  const entries = JSON.parse(await readFile(companySnapshot.metadataFile, 'utf8'));
+  const cards = JSON.parse(await readFile(cardsFile, 'utf8'));
+  const inputsHash = companyInputsHash(entries, cards, config.companyMetadata.target);
+  previousVerification = readCompanyVerification(root, config.repository);
+  const needsCompanySync = previousVerification.record !== companyVerification(before, inputsHash);
+  Object.assign(report.companyMetadata, {inputsHash, previousVerification: previousVerification.head,
+    action: needsCompanySync ? 'sync-required' : 'unchanged'});
+  if (needsCompanySync) {
+    await companies('check');
+  } else {
+    console.log('[release] 卡片和公司元信息与线上已验收记录一致，跳过生产库预检和同步。');
+  }
   const assets = {};
   for (const name of await readdir(join(workspace, 'build/assets/js'))) {
     if (/^(main|runtime~main)\.[a-f0-9]+\.js$/.test(name)) {
@@ -176,10 +189,12 @@ try {
     deploymentConfirmed = true;
     verifyLock();
     requireSameMetadataSource(config.companyMetadata, companySnapshot);
-    metadataSyncStarted = true;
-    const synced = await companies('sync');
-    verifyCounts(JSON.parse((await get(`/api/c101/companies/counts?release=${releaseId}`)).toString()), synced.expectedCounts);
-    report.companyMetadata.onlineCountsVerified = true;
+    if (needsCompanySync) {
+      metadataSyncStarted = true;
+      const synced = await companies('sync');
+      verifyCounts(JSON.parse((await get(`/api/c101/companies/counts?release=${releaseId}`)).toString()), synced.expectedCounts);
+      report.companyMetadata.onlineCountsVerified = true;
+    }
     let verified = false;
     for (let attempt = 0; attempt < 4; attempt++) {
       try {
@@ -209,6 +224,16 @@ try {
   if (container) {
     try { await run('postgres-cleanup', 'docker', ['rm', '-f', container], reportDir, safeEnv, true); }
     catch (error) { report.cleanupError = error.message; report.success = false; process.exitCode = 1; }
+  }
+  if (!checkOnly && report.success) {
+    try {
+      verifyLock();
+      report.companyMetadata.verificationCommit = recordCompanyVerification(root, config.repository, previousVerification,
+        companyVerification(report.after, report.companyMetadata.inputsHash));
+    } catch (error) {
+      report.error = error.message; report.success = false; process.exitCode = 1;
+      console.error(`[release] STOP: ${error.message}`);
+    }
   }
   const syncState = report.companyMetadata?.sync?.commitState;
   if (lock && ((deployStarted && !deploymentConfirmed) || (metadataSyncStarted && (!syncState || syncState === 'unknown')))) {

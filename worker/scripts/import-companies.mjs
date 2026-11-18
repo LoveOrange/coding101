@@ -23,7 +23,8 @@ try {
     }
   }
   const connectionString = await readConnection(request.connectionFile, request.target);
-  client = new pg.Client({connectionString, connectionTimeoutMillis: 20_000, query_timeout: 30_000,
+  // Receiving the full production snapshot can take over a minute on the release host.
+  client = new pg.Client({connectionString, connectionTimeoutMillis: 20_000, query_timeout: 180_000,
     application_name: `coding101-release-metadata-${request.mode}`});
   client.on('error', () => {});
   await client.connect();

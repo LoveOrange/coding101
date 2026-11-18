@@ -6,7 +6,8 @@ import {join} from 'node:path';
 import {createRequire} from 'node:module';
 import {randomUUID} from 'node:crypto';
 import {git} from './release-policy.mjs';
-import {snapshotCompanyMetadata, requireSameMetadataSource} from './release-company-metadata.mjs';
+import {snapshotCompanyMetadata, requireSameMetadataSource, companyInputsHash, companyVerification,
+  readCompanyVerification, recordCompanyVerification} from './release-company-metadata.mjs';
 import {validateMetadata, readConnection, savePrivateJson, checkMetadata, syncMetadata, verifyCounts}
   from '../worker/scripts/company-metadata.mjs';
 
@@ -26,6 +27,39 @@ test('metadata must cover every sourced card exactly, including undisclosed comp
     [entry('a', [], 'unverified'), ...entries.slice(1)]]) {
     assert.throws(() => validateMetadata(input, cards));
   }
+});
+
+test('the release compares card identities, source status, company lists, evidence and database target', () => {
+  const target = {host: 'db.example', database: 'coding101'};
+  const hash = companyInputsHash(entries, cards, target);
+  const editedAnswer = {self: cards.self, c: cards.c, b: cards.b, a: {id: 'a', answer: 'new answer'}};
+  assert.equal(companyInputsHash([...entries].reverse(), editedAnswer, target), hash);
+  assert.notEqual(companyInputsHash(entries, {...cards, newCard: {id: 'newCard', selfTest: true}}, target), hash);
+  assert.notEqual(companyInputsHash(entries.slice(1), {...cards, a: {id: 'a', selfTest: true}}, target), hash);
+  assert.notEqual(companyInputsHash([entry('a', ['Another']), ...entries.slice(1)], cards, target), hash);
+  assert.notEqual(companyInputsHash([entry('a', ['Updated'], 'https://example.test/new'), ...entries.slice(1)], cards, target), hash);
+  assert.notEqual(companyInputsHash(entries, cards, {...target, database: 'restored'}), hash);
+  assert.throws(() => companyInputsHash(entries.slice(1), cards, target), /缺少/);
+});
+
+test('only the verified live deployment and its inputs can be reused from another checkout', async t => {
+  const dir = await directory(t), remote = join(dir, 'remote.git'), one = join(dir, 'one'), two = join(dir, 'two');
+  git(dir, ['init', '-q', '--bare', remote]);
+  git(dir, ['init', '-q', one]); git(dir, ['init', '-q', two]);
+  const live = {deployment: 'deployment-A', version: 'worker-A', commit: 'public-source'};
+  const record = companyVerification(live, 'input-A');
+  const missing = readCompanyVerification(one, remote);
+  assert.notEqual(missing.record, record);
+  const head = recordCompanyVerification(one, remote, missing, record);
+  const saved = readCompanyVerification(two, remote);
+  assert.deepEqual(saved, {head, record});
+  assert.notEqual(saved.record, companyVerification(live, 'private-metadata-only-change'));
+  assert.notEqual(saved.record, companyVerification({...live, deployment: 'rollback-to-A'}, 'input-A'));
+  const next = companyVerification({deployment: 'deployment-B', version: 'worker-B', commit: 'next-source'}, 'input-A');
+  assert.notEqual(saved.record, next); // Cloudflare switched, acceptance has not completed.
+  const newHead = recordCompanyVerification(two, remote, saved, next);
+  assert.throws(() => recordCompanyVerification(one, remote, saved, record), /验收记录写入失败/);
+  assert.deepEqual(readCompanyVerification(one, remote), {head: newHead, record: next});
 });
 
 test('connection files are restricted, pinned to the production target, and errors hide secrets', async t => {
@@ -106,17 +140,24 @@ test('check is read-only; sync backs up, preserves retired rows and learning dat
   assert.deepEqual([check.inserted, check.updated, check.unchanged, check.retained], [1, 1, 1, 1]);
   const backupFile = join(await directory(t), 'before.json');
   const receipt = {};
-  await syncMetadata(client, {...input, expectedDigest: check.databaseDigest, receipt,
+  const writes = [];
+  const observed = {query(sql, params) {
+    if (sql.startsWith('INSERT INTO public.card_companies')) writes.push(JSON.parse(params[0]).map(row => row.card_id));
+    return client.query(sql, params);
+  }};
+  await syncMetadata(observed, {...input, expectedDigest: check.databaseDigest, receipt,
     backup: async snapshot => { assert.deepEqual(await rows(), before); await savePrivateJson(backupFile, snapshot); }});
   assert.equal(JSON.parse(await readFile(backupFile, 'utf8')).length, 3);
   assert.equal(receipt.commitState, 'committed'); assert.equal(receipt.fullReadback, true);
+  assert.deepEqual(writes, [['a', 'c']]);
   assert.deepEqual(receipt.expectedCounts, {a: 1, b: 1, retired: 1});
   const after = await rows();
   assert.equal(after.find(row => row.card_id === 'b').updated_at.getTime(), before.find(row => row.card_id === 'b').updated_at.getTime());
   assert.deepEqual((await client.query('SELECT * FROM learner_docs')).rows, learner);
   const secondCheck = await checkMetadata(client, input), second = {};
-  await syncMetadata(client, {...input, expectedDigest: secondCheck.databaseDigest, receipt: second, backup: async () => {}});
+  await syncMetadata(observed, {...input, expectedDigest: secondCheck.databaseDigest, receipt: second, backup: async () => {}});
   assert.deepEqual([second.inserted, second.updated, second.deleted], [0, 0, 0]);
+  assert.deepEqual(writes, [['a', 'c']]);
   assert.deepEqual(await rows(), after);
 });
 

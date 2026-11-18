@@ -26,14 +26,21 @@ export function validateMetadata(entries, cards) {
   return entries.map(entry => ({card_id: entry.cardId, companies: entry.companies, sources: entry.sources}));
 }
 
-export function planMetadata(rows, desired, cards) {
+function metadataChanges(rows, desired, cards) {
   if (rows.some(row => cards[row.card_id]?.selfTest)) fail('生产元信息与本站自测标记冲突；请先核对并单独处理，发布不会自动删记录。');
   const before = new Map(rows.map(row => [row.card_id, row]));
   const ids = new Set(desired.map(row => row.card_id));
-  const inserted = desired.filter(row => !before.has(row.card_id)).length;
-  const updated = desired.filter(row => before.has(row.card_id) && content(row) !== content(before.get(row.card_id))).length;
-  return {inserted, updated, unchanged: desired.length - inserted - updated,
-    retained: rows.filter(row => !ids.has(row.card_id)).length, deleted: 0};
+  const changed = desired.filter(row => !before.has(row.card_id) || content(row) !== content(before.get(row.card_id)));
+  const inserted = changed.filter(row => !before.has(row.card_id)).length;
+  const counts = {
+    inserted, updated: changed.length - inserted, unchanged: desired.length - changed.length,
+    retained: rows.filter(row => !ids.has(row.card_id)).length, deleted: 0,
+  };
+  return {changed, counts};
+}
+
+export function planMetadata(rows, desired, cards) {
+  return metadataChanges(rows, desired, cards).counts;
 }
 
 export async function readConnection(file, target) {
@@ -102,21 +109,23 @@ export async function syncMetadata(client, {entries, cards, database, expectedDi
     await client.query('LOCK TABLE public.card_companies IN SHARE ROW EXCLUSIVE MODE');
     const before = await inspectDatabase(client, database);
     if (rowDigest(before) !== expectedDigest) fail('生产公司元信息在检查后发生变化，停止同步并重新检查。');
-    const plan = planMetadata(before, desired, cards);
+    const {changed, counts} = metadataChanges(before, desired, cards);
     await backup(before);
-    const result = await client.query(`INSERT INTO public.card_companies AS existing (card_id, companies, sources)
-      SELECT card_id, companies, sources FROM jsonb_to_recordset($1::jsonb)
-        AS incoming(card_id text, companies text[], sources text)
-      ON CONFLICT (card_id) DO UPDATE SET companies = EXCLUDED.companies,
-        sources = EXCLUDED.sources, updated_at = now()
-      WHERE (existing.companies, existing.sources) IS DISTINCT FROM (EXCLUDED.companies, EXCLUDED.sources)`, [JSON.stringify(desired)]);
-    if (result.rowCount !== plan.inserted + plan.updated) fail('元信息实际写入数量与预检不符。');
+    if (changed.length) {
+      const result = await client.query(`INSERT INTO public.card_companies AS existing (card_id, companies, sources)
+        SELECT card_id, companies, sources FROM jsonb_to_recordset($1::jsonb)
+          AS incoming(card_id text, companies text[], sources text)
+        ON CONFLICT (card_id) DO UPDATE SET companies = EXCLUDED.companies,
+          sources = EXCLUDED.sources, updated_at = now()
+        WHERE (existing.companies, existing.sources) IS DISTINCT FROM (EXCLUDED.companies, EXCLUDED.sources)`, [JSON.stringify(changed)]);
+      if (result.rowCount !== changed.length) fail('元信息实际写入数量与预检不符。');
+    }
     const expected = new Map(before.map(row => [row.card_id, row]));
     for (const row of desired) expected.set(row.card_id, row);
     const expectedHash = rowDigest([...expected.values()]);
     const readback = await inspectDatabase(client, database);
     if (rowDigest(readback) !== expectedHash) fail('事务内公司元信息回读不一致。');
-    Object.assign(receipt, plan, {databaseDigest: expectedHash, expectedCounts: countsOf(readback)});
+    Object.assign(receipt, counts, {databaseDigest: expectedHash, expectedCounts: countsOf(readback)});
     // If the COMMIT response is lost, never report a rollback as proof that it
     // did not commit. The persisted receipt and backup support explicit recovery.
     receipt.commitState = 'unknown';
